@@ -18,7 +18,7 @@ N = args.n
 
 
 @tilelang.jit(out_idx=[-1])
-def matmul(M, N, block_M, block_N, dtype="float"):
+def vec_add(M, N, block_M, block_N, dtype="float"):
     m_num = M // block_M
     n_num = N // block_N
 
@@ -50,7 +50,7 @@ def matmul(M, N, block_M, block_N, dtype="float"):
     return main
 
 
-func = matmul(M, N, 128, 256)
+func = vec_add(M, N, 128, 256)
 
 torch.manual_seed(0)
 

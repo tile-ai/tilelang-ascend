@@ -20,7 +20,7 @@ K = args.k
 
 
 @tilelang.jit(out_idx=[-2])
-def matmul(M, N, K, block_M, block_N, block_K, dtype="float16", accum_dtype="float"):
+def matmul_add(M, N, K, block_M, block_N, block_K, dtype="float16", accum_dtype="float"):
     m_num = M // block_M
     n_num = N // block_N
 
@@ -78,7 +78,7 @@ def matmul(M, N, K, block_M, block_N, block_K, dtype="float16", accum_dtype="flo
     return main
 
 
-func = matmul(M, N, K, 128, 256, 64)
+func = matmul_add(M, N, K, 128, 256, 64)
 
 torch.manual_seed(0)
 
