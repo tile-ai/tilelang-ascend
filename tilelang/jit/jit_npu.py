@@ -898,7 +898,7 @@ class compiler_npu:
             # Check if the types includes the target type
             found_type = None
             for t_type in target_types:
-                # Check for type includes the target type
+                # check for types with an x perfix (e.g., xf16)
                 x_pattern = r'\bx' + t_type + r'\b'
                 if re.search(x_pattern, param):
                     found_type = '*' + t_type
@@ -943,8 +943,8 @@ class compiler_npu:
             ]
             cmd_list = (
                 [npu_compiler_path, ttadapter_path] 
-                + _compile_option_list +
-                ["-o", bin_file]
+                + _compile_option_list
+                + ["-o", bin_file]
             )
             ret = subprocess.run(cmd_list, capture_output=True, check=True)
             return Path(bin_path).read_bytes()
