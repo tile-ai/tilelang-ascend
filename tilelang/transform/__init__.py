@@ -9,6 +9,15 @@ from .pass_config import PassConfigKey  # noqa: F401
 from tilelang import tvm as tvm  # noqa: F401
 from tvm.ir.transform import PassContext  # noqa: F401
 
+def HostProcesser():
+    """HostProcesser
+
+    Returns
+    -------
+    fpass : tvm.transform.Pass
+        The result pass
+    """
+    return _ffi_api.HostLegalize()  # type: ignore
 
 def get_pass_context():
     """Get the current pass context"""

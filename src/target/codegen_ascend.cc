@@ -1007,10 +1007,79 @@ void ProcessHostInput(std::ostream &os, std::vector<std::string> &arg_names,
   }
 }
 
-void PrintHostFunc(const PrimFunc &f, const std::string &name,
-                   std::ostringstream &os, std::string &core,
-                   std::vector<const tir::VarNode *> &shape_vars) {
+void CodeGenTileLangAscend::CallTilingInput(std::ostream &os, std::string func_name, std::vector<std::string> &tiling_args,
+  std::vector<const tir::VarNode*> &shape_vars)
+{
+  for (auto &tiling_arg : tiling_args) {
+    this->PrintIndent();
+    os << "int64_t " << tiling_arg << ";\n";
+  }
+  this->PrintIndent();
+  os << func_name << "_tiling(";
+  size_t index = 0;
+  for (auto shape_var : shape_vars) {
+      os << shape_var->name_hint;
+      if (index != shape_vars.size() - 1) {
+        os << ", ";
+      }
+      index++;
+  }
+  index = 0;
+  if (tiling_args.size() != 0) {
+    os << ", ";
+  }
+  for (auto tiling_arg : tiling_args) {
+      os << tiling_arg;
+      if (index != tiling_args.size() - 1) {
+        os << ", ";
+      }
+      index++;
+  }
+  os << ");\n";
+}
+
+void CodeGenTileLangAscend::ProcessTilingInput(std::ostream &os, std::string func_name, std::vector<std::string> &tiling_args,
+  std::vector<const tir::VarNode*> &shape_vars)
+{
+  std::string name = "void " + func_name + "_tiling(";
+  os << name;
+  for (size_t i = 0; i < shape_vars.size(); ++i) {
+      os << "int64_t " << shape_vars[i]->name_hint;
+      if (i != shape_vars.size() - 1) {
+        os << ", ";
+      }
+  }
+  if (tiling_map_.size() != 0 && shape_vars.size() != 0) {
+    os << ", ";
+  }
+  size_t index = 0;
+  for (auto &pair : tiling_map_) {
+      os << "int64_t &" << pair.first;
+      if (index != tiling_map_.size() - 1) {
+        os << ", ";
+      }
+      tiling_args.push_back(pair.first->name_hint);
+      index++;
+  }
+  os << ") {\n";
+  int func_scope = this->BeginScope();
+  for (auto &pair : tiling_map_) {
+    this->PrintIndent();
+    os << pair.first << " = ";
+    PrintExpr(arith::Analyzer().Simplify(pair.second), os);
+    os << ";\n";
+  }
+  this->EndScope(func_scope);
+  os << "}\n\n";
+}
+
+void CodeGenTileLangAscend::PrintHostFunc(const PrimFunc &f, const std::string &name,
+                                          std::ostringstream &os, std::string &core,
+                                          std::vector<const tir::VarNode *> &shape_vars) {
   // TODO: implement dynamic shape version
+  std::vector<std::string> tiling_args;                
+  std::string tiling_func_name = name;                
+  ProcessTilingInput(os, tiling_func_name, tiling_args, shape_vars);
   os << "extern \"C\" void call(";
   std::vector<std::string> arg_names;
   for (size_t i = 0; i < f->params.size(); ++i) {
@@ -1024,9 +1093,12 @@ void PrintHostFunc(const PrimFunc &f, const std::string &name,
   ProcessHostInput(os, arg_names, shape_vars);
   os << ", aclrtStream stream) {\n  ";
 
-  os << "uint32_t fftsLen{0};\n";
-  os << "uint64_t fftsAddr{0};\n";
+  os << "uint32_t fftsLen{0};\n  ";
+  os << "uint64_t fftsAddr{0};\n  ";
   os << "rtGetC2cCtrlAddr(&fftsAddr, &fftsLen);\n";
+  int func_scope = this->BeginScope();
+  CallTilingInput(os, tiling_func_name, tiling_args, shape_vars);
+  this->PrintIndent();
 
   os << name << "<<<" << core << ", nullptr, stream>>>(";
   for (auto &arg_name : arg_names) {
@@ -1035,8 +1107,19 @@ void PrintHostFunc(const PrimFunc &f, const std::string &name,
       os << ", ";
     }
   }
+  if (!tiling_args.empty()) {
+    os << ", ";
+  }
+  for (auto &tiling_data : tiling_args) {
+    os << tiling_data;
+    if (tiling_data != tiling_args.back()) {
+      os << ", ";
+    }
+  }
   os << ", fftsAddr);\n";
   os << "}\n";
+  this->EndScope(func_scope);
+  std::string content = os.str();
 }
 
 void CodeGenTileLangAscend::AddFunction(const GlobalVar &gvar,
@@ -1053,6 +1136,7 @@ void CodeGenTileLangAscend::AddFunction(const GlobalVar &gvar,
 
   use_swizzle_ = f->GetAttr<Bool>("use_swizzle").value();
 
+  tiling_map_ = f->GetAttr<Map<Var, PrimExpr>>("tiling_map").value();
   ICHECK(global_symbol.defined())
       << "CodeGenC: Expect PrimFunc to have the global_symbol attribute";
   bool no_alias = f->HasNonzeroAttr(tir::attr::kNoAlias);
@@ -1069,13 +1153,12 @@ void CodeGenTileLangAscend::AddFunction(const GlobalVar &gvar,
     if (f->buffer_map.find(v) != f->buffer_map.end()) {
       tir::Buffer buffer = f->buffer_map[v];
       for (size_t j = 0; j < buffer->shape.size(); j++) {
-        auto shape_var = buffer->shape[j].as<VarNode>();
-        if (std::find(shape_vars.begin(), shape_vars.end(), shape_var) ==
-                shape_vars.end() &&
-            shape_var != 0) {
-          (void)AllocVarID(shape_var);
-          shape_vars.push_back(shape_var);
-        }
+          auto shape_var = buffer->shape[j].as<VarNode>();
+          if ((std::find(shape_vars.begin(), shape_vars.end(), shape_var) ==
+               shape_vars.end()) && shape_var != 0) {
+              (void)AllocVarID(shape_var);
+              shape_vars.push_back(shape_var);
+          }
       }
     }
 
@@ -1106,14 +1189,25 @@ void CodeGenTileLangAscend::AddFunction(const GlobalVar &gvar,
     stream << " " << vid;
   }
   size_t index = 0;
-  if (shape_vars.size() != 0) {
-    stream << ", ";
+  if (shape_vars.size() != 0 && f->params.size() != 0) {
+      stream << ", ";
   }
   for (auto shape_var : shape_vars) {
-    stream << "int64_t"
-           << " " << GetVarID(shape_var); // 当前写死int64_t
-    if (index != shape_vars.size() - 1) {
+      stream << "int64_t" << " " << GetVarID(shape_var);
+      if (index != shape_vars.size() - 1) {
+          stream << ", ";
+      }
+      index++;
+  }
+  index = 0;
+  if (tiling_map_.size() != 0 &&
+     (shape_vars.size() != 0 || f->params.size() != 0)) {
       stream << ", ";
+  }
+  for (const auto &pair : tiling_map_) {
+    stream << "int64_t " << GetVarID(pair.first.get());
+    if (index != tiling_map_.size() - 1) {
+        stream << ", ";
     }
     index++;
   }

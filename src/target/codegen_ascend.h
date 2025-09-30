@@ -32,6 +32,13 @@ public:
   void PrintStorageScope(const std::string &scope,
                          std::ostream &os) final;     // NOLINT(*)
   void PrintType(DataType t, std::ostream &os) final; // NOLINT(*)
+  void ProcessTilingInput(std::ostream &os, std::string func_name, std::vector<std::string> &arg_names,
+    std::vector<const tir::VarNode*> &shape_vars);
+  void CallTilingInput(std::ostream &os, std::string func_name, std::vector<std::string> &tiling_args,
+    std::vector<const tir::VarNode*> &shape_vars);
+  void PrintHostFunc(const PrimFunc &f, const std::string &name, std::ostringstream &os,
+                     std::string &core,
+                     std::vector<const tir::VarNode*> &shape_vars);
 
   // overload visitor
   void VisitExpr_(const FloatImmNode *op, std::ostream &os) final;
@@ -84,6 +91,8 @@ private:
   std::string block_id_;
 
   Map<Var, PrimExpr> address_map_;
+
+  Map<Var, PrimExpr> tiling_map_;
 
   Map<String, PrimExpr> address_offset_;
 
