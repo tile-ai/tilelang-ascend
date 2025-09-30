@@ -898,7 +898,7 @@ class compiler_npu:
             # Check if the types includes the target type
             found_type = None
             for t_type in target_types:
-                # check for types with an x prefix (e.g., xf16)
+                # Check for types with an x prefix (e.g., xf16)
                 x_pattern = r'\bx' + t_type + r'\b'
                 if re.search(x_pattern, param):
                     found_type = '*' + t_type
