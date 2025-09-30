@@ -688,7 +688,6 @@ def read_binary_file(file_path, mode='rb', chunk_size=None, return_type='bytes')
 
 
 class NPUUtils(object):
-
     def __new__(cls):
         if not hasattr(cls, 'instance'):
             cls.instance = super(NPUUtils, cls).__new__(cls)
@@ -725,7 +724,6 @@ class NPUUtils(object):
 
 
 class JitKernel_NPU:
-
     def __init__(self, metadata: dict) -> None:
         # 1 launch path
         self.so_launcher_path = f"{metadata['kernel_name']}.so"
@@ -764,7 +762,6 @@ class JitKernel_NPU:
 
 
 class compiler_npu:
-
     def __init__(self) -> None:
         pass
 
@@ -857,7 +854,7 @@ class compiler_npu:
             "f16"
         }
 
-        # Extract the funciton signature part (the content within the parentheses)
+        # Extract the function signature part (the content within the parentheses)
         pattern = r'func\.func\s*@[^(]*\(([^)]*)\)'
         match = re.search(pattern, self.mlir_content)
 
@@ -898,7 +895,7 @@ class compiler_npu:
             if re.match(r'%arg\d+', param.strip()):
                 continue
 
-            # Check if the type includes the target type
+            # Check if the types includes the target type
             found_type = None
             for t_type in target_types:
                 # Check for type includes the target type
@@ -913,7 +910,7 @@ class compiler_npu:
 
             if found_type:
                 # Special handling: f16 should be mapped to fp16,
-                # and f32 should be mapped to fp32
+                # and f32 should be mapped to fp32.
                 if found_type == 'f16':
                     found_type = 'fp16'
                 elif found_type == '*f16':
@@ -945,7 +942,8 @@ class compiler_npu:
                 "--enable-hivm-compile=true", "--disable-hivm-tensor-compile=true"
             ]
             cmd_list = (
-                [npu_compiler_path, ttadapter_path] + _compile_option_list +
+                [npu_compiler_path, ttadapter_path] 
+                + _compile_option_list +
                 ["-o", bin_file]
             )
             ret = subprocess.run(cmd_list, capture_output=True, check=True)
@@ -1008,7 +1006,6 @@ class compiler_npu:
         ]
 
         if kernel_launcher == "torch":
-
             torch_path = os.path.dirname(os.path.realpath(torch.__file__))
             torch_npu_path = os.path.dirname(os.path.realpath(torch_npu.__file__))
             use_cxx11_abi = self._check_cxx11_abi()
