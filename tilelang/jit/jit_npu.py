@@ -898,7 +898,7 @@ class compiler_npu:
             # Check if the types includes the target type
             found_type = None
             for t_type in target_types:
-                # check for types with an x perfix (e.g., xf16)
+                # check for types with an x prefix (e.g., xf16)
                 x_pattern = r'\bx' + t_type + r'\b'
                 if re.search(x_pattern, param):
                     found_type = '*' + t_type
@@ -942,7 +942,7 @@ class compiler_npu:
                 "--enable-hivm-compile=true", "--disable-hivm-tensor-compile=true"
             ]
             cmd_list = (
-                [npu_compiler_path, ttadapter_path] 
+                [npu_compiler_path, ttadapter_path]
                 + _compile_option_list
                 + ["-o", bin_file]
             )
