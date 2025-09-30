@@ -17,15 +17,15 @@ from ..engine import lower
 
 
 def _get_npucompiler_path() -> str:
-    # 设置编译器的环境变量
+    # set the environment variables for the compiler
     ascend_home = os.environ.get('ASCEND_HOME_PATH')
     if ascend_home is None:
-        raise Exception("No CAN environment detected")
-    bishengir = os.path.join(ascend_home, "bisheng_toolkit", "bishengir", "bin")
+        raise Exception("CANN environment not detected (ASCEND_HOME_PATH)")
     bisheng_install_path = os.environ.get("BISHENG_INSTALL_PATH")
     if bisheng_install_path is not None:
         return os.path.join(bisheng_install_path, "bishengir-compile")
     else:
+        bishengir = os.path.join(ascend_home, "bisheng_toolkit", "bishengir", "bin")
         os.environ["BISHENG_INSTALL_PATH"] = bishengir
         return os.path.join(bishengir, "bishengir-compile")
 
@@ -54,9 +54,7 @@ def convert_sigtype_to_int(sigty: str):
     return MAP_SIGTYPE_TO_INT[sigty]
 
 
-def generate_npu_wrapper_src(constants, signature, workspace_size, mix_mode, lock_num,
-                             lock_ini_val):
-
+def generate_npu_wrapper_src(constants, signature, workspace_size, mix_mode, lock_num, lock_ini_val):
     def _ty_to_cpp(ty):
         if ty[0] == '*':
             return "void*"
@@ -117,11 +115,11 @@ def generate_npu_wrapper_src(constants, signature, workspace_size, mix_mode, loc
 
     grid_info = {'X': 'i32', 'Y': 'i32', 'Z': 'i32'}
 
-    enable_taskqueue = os.getenv("TRITON_ENABLE_TASKQUEUE", 'true').lower() in ('true', '1')
+    enable_taskqueue = os.getenv(
+        "TILELANG_ENABLE_TASKQUEUE", 'true').lower() in ('true', '1')
     enable_auto_map_parallel_blocks = False
     npu_utils = NPUUtils()
-    num_physical_blocks = npu_utils.get_aivector_core_num(
-    ) if mix_mode == "aiv" else npu_utils.get_aicore_num()
+    num_physical_blocks = npu_utils.get_aivector_core_num() if mix_mode == "aiv" else npu_utils.get_aicore_num()
     task_type = "MSPROF_GE_TASK_TYPE_AIV" if mix_mode == "aiv" else "MSPROF_GE_TASK_TYPE_AI_CORE"
     LINE_CHANGE_CHAR = chr(10)  # it is \n
 
@@ -505,27 +503,27 @@ static std::unordered_map<std::string, std::unique_ptr<size_t>> func_stubs;
 static std::tuple<void *, void *>
 registerKernel(const char *name, const void *data, size_t data_size, int shared,
                int device, const char *kernel_mode_str) {
-  // name 内核名称
-  // data 指向内核2进制的指针
-  // data_size 二进制数据的大小
-  // shared 未使用
-  // device 目标设备ID
-  // kernel mod str 内核模式字符串(aiv or others)
+  // name: Kernel Name
+  // data: Pointer to the kernel binary
+  // data_size: The size of binary data
+  // shared: Unused
+  // device: Target Device ID
+  // kernel mod str: Kernel mode string(aiv or others)
   rtError_t rtRet;
 
-  // 创建二进制数据结构
+  // Create a binary data structure
   rtDevBinary_t devbin;
   devbin.data = data;
   devbin.length = data_size;
 
-  // 根据内核模式设置模数
+  // Set the modulus according to the kernel mode
   const std::string kernel_mode{kernel_mode_str};
   if (kernel_mode == "aiv")
     devbin.magic = RT_DEV_BINARY_MAGIC_ELF_AIVEC;
   else
     devbin.magic = RT_DEV_BINARY_MAGIC_ELF;
 
-  // 设置版本号
+  // Set version number
   devbin.version = 0;
 
   rtRet = rtSetDevice(device);
@@ -534,7 +532,7 @@ registerKernel(const char *name, const void *data, size_t data_size, int shared,
     return {NULL, NULL};
   }
 
-  // 注册二进制数据，获取句柄
+  // Register binary data, obtain handle
   void *devbinHandle = NULL;
   rtRet = rtDevBinaryRegister(&devbin, &devbinHandle);
   if (rtRet != RT_ERROR_NONE) {
@@ -542,16 +540,16 @@ registerKernel(const char *name, const void *data, size_t data_size, int shared,
     return {NULL, NULL};
   }
 
-  // 创建唯一的存根名称（避免命名冲突）
+  // Create a unique stub name (avoid naming conflicts)
   std::string stubName = name;
   stubName += "_" + std::to_string(registered_names[name]);
   registered_names[name]++;
 
-  // 在全局映射并创建存储存根
+  // Perform global mapping and create storage stubs
   auto registered = func_stubs.emplace(stubName, std::make_unique<size_t>(0));
   void *func_stub_handle = registered.first->second.get();
 
-  // 注册函数，将二进制句柄与存根关联
+  // Register function to associate binary handle with stub
   rtRet = rtFunctionRegister(devbinHandle, func_stub_handle, stubName.c_str(),
                              (void *)name, 0);
   if (rtRet != RT_ERROR_NONE) {
@@ -734,7 +732,7 @@ class JitKernel_NPU:
         self.utils_name = f"{metadata['name']}"
         # 2 kernel path
         self.utils_kernel_src = metadata['kernel_src']
-        self.utils_shared = metadata['shared']  # 保留接口，暂不生效
+        self.utils_shared = metadata['shared']  # Retain the interface, temporarily not in effect
         self.mix_mode = metadata['mix_mode']
         self.utils_device = torch.npu.current_device()
         self.launch_stream = torch.npu.current_stream(torch.npu.current_device()).npu_stream
@@ -758,8 +756,7 @@ class JitKernel_NPU:
     def __call__(self, *args: Any) -> Any:
         npu_utils = NPUUtils()
         t_module, t_function, t_n_regs, t_n_spills = npu_utils.load_binary(
-            self.utils_name, self.utils_kernel_src, self.utils_shared, self.utils_device,
-            self.mix_mode)
+            self.utils_name, self.utils_kernel_src, self.utils_shared, self.utils_device, self.mix_mode)
         return self.launch_npu(self.launch_grid[0], self.launch_grid[1], self.launch_grid[2],
                                self.launch_stream, t_function, self.launch_packedMetadata,
                                self.launch_metadata, self.launch_enter_hook, self.launch_exit_hook,
@@ -804,7 +801,7 @@ class compiler_npu:
 
     def _read_mlir_file(self, file_path) -> str:
         """
-        读取MLIR文件内容并返回字符串
+        Read the content of the MLIR file and return it as a string
         """
         try:
             with open(file_path, 'r', encoding='utf-8') as file:
@@ -852,15 +849,15 @@ class compiler_npu:
 
     def _parse_signature(self) -> dict:
         """
-        从MLIR文本中解析参数类型并返回字典
+        Parse parameter types from MLIR text and return a dictionary
         """
-        # 定义关心的数据类型
+        # Define the data types of concern
         target_types = {
             "i1", "i8", "i16", "i32", "i64", "u32", "u64", "fp16", "bf16", "fp32", "f32", "fp64",
             "f16"
         }
 
-        # 提取函数签名部分（括号内的内容）
+        # Extract the funciton signature part (the content within the parentheses)
         pattern = r'func\.func\s*@[^(]*\(([^)]*)\)'
         match = re.search(pattern, self.mlir_content)
 
@@ -869,7 +866,7 @@ class compiler_npu:
 
         params_str = match.group(1)
 
-        # 分割参数
+        # Segmentation parameters
         params = []
         current_param = ""
         brace_count = 0
@@ -897,25 +894,26 @@ class compiler_npu:
         index = 0
 
         for param in params:
-            # 跳过以%arg开头的参数
+            # Skip parameters that start with %arg
             if re.match(r'%arg\d+', param.strip()):
                 continue
 
-            # 检查类型是否包含目标类型
+            # Check if the type includes the target type
             found_type = None
             for t_type in target_types:
-                # 检查是否有x前缀的类型（如xf16）
+                # Check for type includes the target type
                 x_pattern = r'\bx' + t_type + r'\b'
                 if re.search(x_pattern, param):
                     found_type = '*' + t_type
                     break
-                # 检查普通类型（如i32）
+                # Check the common type (such as i32)
                 elif re.search(r'\b' + t_type + r'\b', param):
                     found_type = t_type
                     break
 
             if found_type:
-                # 特殊处理：f16应映射为fp16，f32映射为fp32
+                # Special handling: f16 should be mapped to fp16,
+                # and f32 should be mapped to fp32
                 if found_type == 'f16':
                     found_type = 'fp16'
                 elif found_type == '*f16':
@@ -946,8 +944,10 @@ class compiler_npu:
                 "--enable-auto-multi-buffer=true", "--enable-triton-kernel-compile=true",
                 "--enable-hivm-compile=true", "--disable-hivm-tensor-compile=true"
             ]
-            cmd_list = ([npu_compiler_path, ttadapter_path] + _compile_option_list +
-                        ["-o", bin_file])
+            cmd_list = (
+                [npu_compiler_path, ttadapter_path] + _compile_option_list +
+                ["-o", bin_file]
+            )
             ret = subprocess.run(cmd_list, capture_output=True, check=True)
             return Path(bin_path).read_bytes()
 
