@@ -57,11 +57,14 @@ NPUIR_BINARY_OP_CLASS(Min)
     Npuir##OPNAME(Array<PrimExpr> args, BufferMap vmap);                       \
     static const Op &Get();                                                    \
                                                                                \
+    std::string op_name;                                                       \
     Buffer src, dst;                                                           \
     Array<Range> src_range, dst_range;                                         \
   };
 
 NPUIR_UNARY_OP_CLASS(Exp)
+NPUIR_UNARY_OP_CLASS(Ln)
+NPUIR_UNARY_OP_CLASS(Relu)
 
 class NpuirDot : public Operator {
 public:
@@ -233,6 +236,25 @@ public:
   std::vector<int> reduce_dims;
 
   Array<Range> src_range, dst_range;
+};
+
+class NpuirSelect : public Operator {
+public:
+  NpuirSelect(Array<PrimExpr> args, BufferMap vmap);
+  static const Op &Get();
+
+  Buffer cond, src0, src1, dst;
+  Array<Range> cond_range, src0_range, src1_range, dst_range;
+};
+
+class NpuirCmp : public Operator {
+public:
+  NpuirCmp(Array<PrimExpr> args, BufferMap vmap);
+  static const Op &Get();
+
+  Buffer src0, src1, dst;
+  Array<Range> src0_range, src1_range, dst_range;
+  std::string cmp_mod;
 };
 
 } // namespace tl

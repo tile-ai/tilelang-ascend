@@ -102,9 +102,11 @@ public:
   void VisitExpr_(const FloorModNode *op, std::ostream &os);
   void VisitExpr_(const CastNode *op, std::ostream &os) final;
   void VisitExpr_(const SelectNode *op, std::ostream &os) final;
+  void VisitExpr_(const BufferLoadNode* op, std::ostream& os) final;
   void VisitStmt_(const AllocateNode *op) final;
   void VisitStmt_(const AttrStmtNode *op) final;
   void VisitStmt_(const LetStmtNode *op) final;
+  void VisitStmt_(const BufferStoreNode* op) final;
 
   // Override this as a work around for __grid_constant__ parameter
   void AddFunction(const GlobalVar &gvar, const PrimFunc &f);
@@ -113,15 +115,20 @@ public:
 private:
   template <typename T>
   std::string ScalarConvertType(T *imm, DataType targetDtype);
+  std::string ConstIntCodegen(const IntImmNode *op);
+  std::string ConstFloatCodegen(const FloatImmNode *op);
   void CallExternCodegen(const CallNode *op, std::ostream &os);
   void AscendCopyCodegen(const CallNode *op, std::ostream &os);
   void Nd2NzCodegen(const CallNode *op, std::ostream &os);
-  void VexpCodegen(const CallNode *op, std::ostream &os);
+  template <typename T>
+  void UnaryVecOpCodegen(const CallNode *op, std::ostream &os);
   void VbrcCodegen(const CallNode *op, std::ostream &os);
   void VcastCodegen(const CallNode *op, std::ostream &os);
   void VreduceCodegen(const CallNode *op, std::ostream &os);
   void FixpipeCodegen(const CallNode *op, std::ostream &os);
   void DotCodegen(const CallNode *op, std::ostream &os);
+  void VcmpCodegen(const CallNode *op, std::ostream &os);
+  void VselectCodegen(const CallNode *op, std::ostream &os);
   void BinaryVecOpCodegen(const CallNode *op, std::string opName,
                           std::ostream &os);
   template <typename T>
@@ -143,6 +150,7 @@ private:
                         String &recast_inst);
   String GetMemrefInfo(String name);
   String GetMemrefInfo(Memref *memrefObj);
+  std::string GetBufferRef(const BufferNode* buffer, Array<PrimExpr> indices);
   // save memref name and type
   std::map<String, SSAType *> type_info;
 

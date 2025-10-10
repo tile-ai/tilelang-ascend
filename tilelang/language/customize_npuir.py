@@ -85,123 +85,113 @@ def npuir_copy(src: Union[tir.Buffer, tir.BufferLoad, tir.BufferRegion],
 
     return tir.call_intrin("handle", tir.op.Op.get("tl.ascend_copy"), src, dst)
 
+class AscendBinaryOp(object):
+    """
+    Args:
+        A (Union[tir.Buffer, tir.Var]): Input argument to legalize
+        B (Union[tir.Buffer, tir.Var]): Input argument to legalize
+        C (Union[tir.Buffer, tir.Var]): Output argument to legalize
+    Returns:
+        tir.Call: A handle to the npuir binary operation
+    """
+    def __init__(self, opName, src0, src1, dst):
+        self.__opName = opName
+        self.__src0 = src0
+        self.__src1 = src1
+        self.__dst = dst
+    def buildTirCall(self):
+        src0 = _to_region(self.__src0, "r", _get_extent(self.__src0))
+        src1 = _to_region(self.__src1, "r", _get_extent(self.__src1))
+        dst = _to_region(self.__dst, "w", _get_extent(self.__dst))
+        return tir.call_intrin("handle", tir.op.Op.get("tl.npuir_" + self.__opName), src0, src1, dst)
 
+"""npuir add at tile-level."""
 def npuir_add(A, B, C):
-    """npuir add at tile-level.
+    return AscendBinaryOp("add", A, B, C).buildTirCall()
 
-    Args:
-        A (Union[tir.Buffer, tir.Var]): Input argument to legalize
-        B (Union[tir.Buffer, tir.Var]): Input argument to legalize
-        C (Union[tir.Buffer, tir.Var]): Output argument to legalize
-    Returns:
-        tir.Call: A handle to the npuir_add operation
-    """
-
-    A = _to_region(A, "r", _get_extent(A))
-    B = _to_region(B, "r", _get_extent(B))
-    C = _to_region(C, "w", _get_extent(C))
-    return tir.call_intrin("handle", tir.op.Op.get("tl.npuir_add"), A, B, C)
-
-
+"""npuir sub at tile-level."""
 def npuir_sub(A, B, C):
-    """npuir sub at tile-level.
+    return AscendBinaryOp("sub", A, B, C).buildTirCall()
 
-    Args:
-        A (Union[tir.Buffer, tir.Var]): Input argument to legalize
-        B (Union[tir.Buffer, tir.Var]): Input argument to legalize
-        C (Union[tir.Buffer, tir.Var]): Output argument to legalize
-    Returns:
-        tir.Call: A handle to the npuir_sub operation
-    """
-
-    A = _to_region(A, "r", _get_extent(A))
-    B = _to_region(B, "r", _get_extent(B))
-    C = _to_region(C, "w", _get_extent(C))
-    return tir.call_intrin("handle", tir.op.Op.get("tl.npuir_sub"), A, B, C)
-
-
+"""npuir mul at tile-level."""
 def npuir_mul(A, B, C):
-    """npuir mul at tile-level.
+    return AscendBinaryOp("mul", A, B, C).buildTirCall()
 
-    Args:
-        A (Union[tir.Buffer, tir.Var]): Input argument to legalize
-        B (Union[tir.Buffer, tir.Var]): Input argument to legalize
-        C (Union[tir.Buffer, tir.Var]): Output argument to legalize
-    Returns:
-        tir.Call: A handle to the npuir_mul operation
-    """
-
-    A = _to_region(A, "r", _get_extent(A))
-    B = _to_region(B, "r", _get_extent(B))
-    C = _to_region(C, "w", _get_extent(C))
-    return tir.call_intrin("handle", tir.op.Op.get("tl.npuir_mul"), A, B, C)
-
-
+"""npuir div at tile-level."""
 def npuir_div(A, B, C):
-    """npuir div at tile-level.
+    return AscendBinaryOp("div", A, B, C).buildTirCall()
 
-    Args:
-        A (Union[tir.Buffer, tir.Var]): Input argument to legalize
-        B (Union[tir.Buffer, tir.Var]): Input argument to legalize
-        C (Union[tir.Buffer, tir.Var]): Output argument to legalize
-    Returns:
-        tir.Call: A handle to the npuir_div operation
-    """
-
-    A = _to_region(A, "r", _get_extent(A))
-    B = _to_region(B, "r", _get_extent(B))
-    C = _to_region(C, "w", _get_extent(C))
-    return tir.call_intrin("handle", tir.op.Op.get("tl.npuir_div"), A, B, C)
-
-
+"""npuir max at tile-level."""
 def npuir_max(A, B, C):
-    """npuir max at tile-level.
+    return AscendBinaryOp("max", A, B, C).buildTirCall()
 
-    Args:
-        A (Union[tir.Buffer, tir.Var]): Input argument to legalize
-        B (Union[tir.Buffer, tir.Var]): Input argument to legalize
-        C (Union[tir.Buffer, tir.Var]): Output argument to legalize
-    Returns:
-        tir.Call: A handle to the npuir_max operation
-    """
-
-    A = _to_region(A, "r", _get_extent(A))
-    B = _to_region(B, "r", _get_extent(B))
-    C = _to_region(C, "w", _get_extent(C))
-    return tir.call_intrin("handle", tir.op.Op.get("tl.npuir_max"), A, B, C)
-
-
+"""npuir min at tile-level."""
 def npuir_min(A, B, C):
-    """npuir min at tile-level.
+    return AscendBinaryOp("min", A, B, C).buildTirCall()
 
-    Args:
-        A (Union[tir.Buffer, tir.Var]): Input argument to legalize
-        B (Union[tir.Buffer, tir.Var]): Input argument to legalize
-        C (Union[tir.Buffer, tir.Var]): Output argument to legalize
-    Returns:
-        tir.Call: A handle to the npuir_min operation
+class AscendUnaryOp(object):
     """
-
-    A = _to_region(A, "r", _get_extent(A))
-    B = _to_region(B, "r", _get_extent(B))
-    C = _to_region(C, "w", _get_extent(C))
-    return tir.call_intrin("handle", tir.op.Op.get("tl.npuir_min"), A, B, C)
-
-
-def npuir_exp(A, B):
-    """npuir exponent at tile-level.
-
     Args:
         A (Union[tir.Buffer, tir.Var]): Input argument to legalize
         B (Union[tir.Buffer, tir.Var]): Output argument to legalize
     Returns:
-        tir.Call: A handle to the npuir_exp operation
+        tir.Call: A handle to the npuir unary operation
     """
+    def __init__(self, opName, src, dst):
+        self.__opName = opName
+        self.__src = src
+        self.__dst = dst
+    def buildTirCall(self):
+        src = _to_region(self.__src, "r", _get_extent(self.__src))
+        dst = _to_region(self.__dst, "w", _get_extent(self.__dst))
+        return tir.call_intrin("handle", tir.op.Op.get("tl.npuir_" + self.__opName), src, dst)
+
+"""npuir exp at tile-level."""
+def npuir_exp(A, B):
+    return AscendUnaryOp("exp", A, B).buildTirCall()
+
+"""npuir relu at tile-level."""
+def npuir_relu(A, B):
+    return AscendUnaryOp("relu", A, B).buildTirCall()
+
+"""npuir ln at tile-level."""
+def npuir_ln(A, B):
+    return AscendUnaryOp("ln", A, B).buildTirCall()
+
+def npuir_select(Cond, A, B, Out):
+    """npuir select at tile-level.
+    Args:
+        Cond (Union[tir.Buffer, tir.Var]): Input argument to legalize
+        A (Union[tir.Buffer, tir.Var]): Input argument to legalize
+        B (Union[tir.Buffer, tir.Var]): Input argument to legalize
+        Out (Union[tir.Buffer, tir.Var]): Output argument to legalize
+    Returns:
+        tir.Call: A handle to the npuir_select operation
+     """
+ 
+    Cond = _to_region(Cond, "r", _get_extent(A))
+    A = _to_region(A, "r", _get_extent(A))
+    B = _to_region(B, "r", _get_extent(B))
+    Out = _to_region(Out, "w", _get_extent(Out))
+    return tir.call_intrin("handle", tir.op.Op.get("tl.npuir_select"), Cond, A, B, Out)
+
+def npuir_cmp(A, B, C, cmp_mod):
+    """npuir cmp at tile-level.
+    Args:
+        A (Union[tir.Buffer, tir.Var]): Input argument to legalize
+        B (Union[tir.Buffer, tir.Var]): Input argument to legalize
+        C (Union[tir.Buffer, tir.Var]): Output argument to legalize
+    Returns:
+        tir.Call: A handle to the npuir_cmp operation
+    """
+ 
+    valid_cmp_mode = {"eq", "ne", "lt", "gt", "ge", "le"}
+    assert cmp_mod in valid_cmp_mode, "cmp mode is invalid."
 
     A = _to_region(A, "r", _get_extent(A))
-    B = _to_region(B, "w", _get_extent(B))
-    return tir.call_intrin("handle", tir.op.Op.get("tl.npuir_exp"), A, B)
-
+    B = _to_region(B, "r", _get_extent(B))
+    C = _to_region(C, "w", _get_extent(C))
+    return tir.call_intrin("handle", tir.op.Op.get("tl.npuir_cmp"), A, B, C, cmp_mod)
 
 def npuir_dot(A: Union[tir.Buffer, tir.Var],
               B: Union[tir.Buffer, tir.Var],
@@ -321,7 +311,7 @@ def npuir_brc(src, dst):
     return tir.call_intrin("handle", tir.op.Op.get("tl.npuir_brc"), src, dst)
 
 
-def npuir_cast(src, dst, round_mode):
+def npuir_cast(src, dst, size=[], round_mode="rint"):
     """Performs element-wise operation on N operands and produces a single result.
 
     Args:
@@ -340,8 +330,8 @@ def npuir_cast(src, dst, round_mode):
     """
     broadcast_dims = []
     valid_round_mode = {"round", "rint", "floor", "ceil", "trunc", "odd"}
-    src_extent = _get_extent(src)
-    dst_extent = _get_extent(dst)
+    src_extent = _get_extent(src) if size == [] else size
+    dst_extent = _get_extent(dst) if size == [] else size
 
     assert not isinstance(src, tir.Var), "The first input is vector-only."
     assert len(src_extent) == len(
@@ -358,7 +348,7 @@ def npuir_cast(src, dst, round_mode):
     return tir.call_intrin("handle", tir.op.Op.get("tl.npuir_cast"), src, dst, round_mode)
 
 
-def npuir_reduce(src, dst, dims: Union[list, tuple], reduce_mode):
+def npuir_reduce(src, dst, dims:Union[list, tuple], reduce_mode, size=[]):
     """Reduce one or more axes of the source vector according to the reduction axes array, starting from an init value.
 
     Args:
@@ -379,8 +369,11 @@ def npuir_reduce(src, dst, dims: Union[list, tuple], reduce_mode):
         "sum", "prod", "max", "min", "max_with_index", "min_with_index", "any", "all", "xori",
         "ori", "none"
     }
-    src_extent = _get_extent(src)
-    dst_extent = _get_extent(dst)
+    src_extent = _get_extent(src) if size == [] else size.copy()
+    if size != []:
+        for dim in dims:
+            size[dim] = 1
+    dst_extent = _get_extent(dst) if size == [] else size.copy()
     assert len(src_extent) == len(
         dst_extent), "The input vector and output vector must have same rank."
     assert reduce_mode in valid_reduce_mode, "Reduce mode is invalid."

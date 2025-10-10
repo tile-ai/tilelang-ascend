@@ -73,6 +73,7 @@ from .customize import (
 )
 from .customize_npuir import (npuir_copy as copy, npuir_add, npuir_sub, npuir_max, npuir_min,
                               npuir_mul, npuir_div, npuir_exp, npuir_dot, npuir_load_nd2nz,
+                              npuir_ln, npuir_relu, npuir_select, npuir_cmp,
                               npuir_store_fixpipe, npuir_brc, npuir_cast, npuir_reduce, rs,
                               set_flag, wait_flag, pipe_barrier, block_barrier, subblock_barrier,
                               sync_block_set, sync_block_wait, Scope)

@@ -658,6 +658,7 @@ String CodeGenTileLangNPUIR::GenSubviewFromRegion(Buffer buffer_data,
         dynamic_cast<Memref *>(type_info[buffer_name_val])->address_space,
         offset == -1,
         dynamic_cast<Memref *>(type_info[buffer_name_val])->stride, offset);
+    GetMemrefInfo(new_buffer_name);
   }
   return new_buffer_name;
 }
@@ -707,21 +708,23 @@ void CodeGenTileLangNPUIR::AscendCopyCodegen(const CallNode *op,
   this->stream << "\n";
 }
 
-void CodeGenTileLangNPUIR::VexpCodegen(const CallNode *op, std::ostream &os) {
+template <typename T>
+void CodeGenTileLangNPUIR::UnaryVecOpCodegen(const CallNode *op,
+                                             std::ostream &os) {
   // Generate hivm.hir.vexp for tl.npuir_exp.
   // before:
   //   T.npuir_exp(T.region(A_VEC[0], 1, 1024), T.region(B_VEC[0], 2, 1024))
   // after:
   //   hivm.hir.vexp ins(%9 : memref<1024xf32, #hivm.address_space<ub>>)
   //       outs(%16 : memref<1024xf32, #hivm.address_space<ub>>)
-  tvm::tl::NpuirExp npuirop(op->args, this->vmap);
+  T npuirop(op->args, this->vmap);
   std::string in_data_name = "", out_data_name = "";
   Array<PrimExpr> buffer_shape0 = npuirop.src->shape,
                   buffer_shape1 = npuirop.dst->shape;
   in_data_name = GenSubviewFromRegion(npuirop.src, npuirop.src_range);
   out_data_name = GenSubviewFromRegion(npuirop.dst, npuirop.dst_range);
   this->PrintIndent();
-  this->stream << "hivm.hir.vexp ins(\%" << in_data_name << " : "
+  this->stream << npuirop.op_name << " ins(\%" << in_data_name << " : "
                << this->type_info[in_data_name]->printType() << ") outs(\%"
                << out_data_name << " : "
                << this->type_info[out_data_name]->printType() << ")";
@@ -730,6 +733,56 @@ void CodeGenTileLangNPUIR::VexpCodegen(const CallNode *op, std::ostream &os) {
     this->stream << " broadcast" << dims;
   }
   this->stream << "\n";
+}
+
+void CodeGenTileLangNPUIR::VselectCodegen(const CallNode *op,
+                                          std::ostream &os) {
+  /// Generate hivm.hir.vsel for tl.npuir_select.
+  /// before:
+  ///   T.npuir_select(Cond_VEC, A_VEC, B_VEC, C_VEC)
+  /// after:
+  ///   hivm.hir.vsel ins(%v__9, %A_VEC, %B_VEC : memref<32x64xi1, strided<[64,
+  ///   1], offset:0>, #hivm.address_space<ub>>, memref<32x64xf16, strided<[64,
+  ///   1], offset:0>, #hivm.address_space<ub>>, memref<32x64xf16, strided<[64,
+  ///   1], offset:0>, #hivm.address_space<ub>>) outs(%C_VEC : memref<32x64xf16,
+  ///   strided<[64, 1], offset:0>, #hivm.address_space<ub>>)
+  tvm::tl::NpuirSelect npuirop(op->args, this->vmap);
+  // gen memref.subview
+  String cond_data_name =
+      GenSubviewFromRegion(npuirop.cond, npuirop.cond_range);
+  String src0_data_name =
+      GenSubviewFromRegion(npuirop.src0, npuirop.src0_range);
+  String src1_data_name =
+      GenSubviewFromRegion(npuirop.src1, npuirop.src1_range);
+  String dst_data_name = GenSubviewFromRegion(npuirop.dst, npuirop.dst_range);
+
+  // gen hivm.hir.nd2nz
+  this->PrintIndent();
+  this->stream << "hivm.hir.vsel";
+  this->stream << " ins(%" << cond_data_name << ", %" << src0_data_name << ", %"
+               << src1_data_name << " : ";
+  this->stream << GetMemrefInfo(cond_data_name) << ", "
+               << GetMemrefInfo(src0_data_name) << ", "
+               << GetMemrefInfo(src1_data_name) << ")";
+  this->stream << " outs(%" << dst_data_name << " : "
+               << GetMemrefInfo(dst_data_name) << ")";
+  this->stream << "\n";
+}
+
+void CodeGenTileLangNPUIR::VcmpCodegen(const CallNode *op, std::ostream &os) {
+  /// Generate hivm.hir.vcmp for tl.npuir_cmp.
+  /// before:
+  ///   T.npuir_cmp(A_VEC, B_VEC, Cond_VEC, "ge")
+  /// after:
+  ///   hivm.hir.vcmp ins(%A_VEC, %B_VEC : memref<32x64xf16, strided<[64, 1],
+  ///   offset:0>, #hivm.address_space<ub>>, memref<32x64xf16, strided<[64, 1],
+  ///   offset:0>, #hivm.address_space<ub>>) outs(%Cond_VEC : memref<32x64xi1,
+  ///   strided<[64, 1], offset:0>, #hivm.address_space<ub>>) compare_mode =
+  ///   <ge>
+  BinaryVecOpCodegen(op, "cmp", os);
+  this->stream.seekp(-1, std::ios_base::end);
+  this->stream << " compare_mode = <"
+               << op->args[3].as<StringImm>().value()->value << ">\n";
 }
 
 void CodeGenTileLangNPUIR::VbrcCodegen(const CallNode *op, std::ostream &os) {
@@ -1100,6 +1153,32 @@ void CodeGenTileLangNPUIR::BinaryVecOpCodegen(const CallNode *op,
   }
   this->stream << "\n";
 }
+
+std::string CodeGenTileLangNPUIR::ConstIntCodegen(const IntImmNode *op) {
+  std::ostringstream temp;
+  temp << "arith.constant ";
+  if (op->dtype.is_bool()) {
+    temp << (op->value == 1 ? "true" : "false");
+  } else {
+    temp << op->value << " : ";
+    PrintType(op->dtype, temp);
+  }
+  return temp.str();
+}
+
+std::string CodeGenTileLangNPUIR::ConstFloatCodegen(const FloatImmNode *op) {
+  std::ostringstream temp;
+  if (op->value == -std::numeric_limits<float>::infinity()) {
+    temp << "arith.constant 0xFF800000 : ";
+  } else if (op->value == std::numeric_limits<float>::infinity()) {
+    temp << "arith.constant 0x7F800000 : ";
+  } else {
+    temp << "arith.constant " << op->value << " : ";
+  }
+  PrintType(op->dtype, temp);
+  return temp.str();
+}
+
 void CodeGenTileLangNPUIR::VisitExpr_(const CallNode *op, std::ostream &os) {
   if (op->op.same_as(Op::Get("tl.npuir_pipe_barrier"))) {
     BarrierCodegen(op, os);
@@ -1124,7 +1203,15 @@ void CodeGenTileLangNPUIR::VisitExpr_(const CallNode *op, std::ostream &os) {
   } else if (op->op.same_as(Op::Get("tl.npuir_add"))) {
     BinaryVecOpCodegen(op, "add", os);
   } else if (op->op.same_as(Op::Get("tl.npuir_exp"))) {
-    VexpCodegen(op, os);
+    UnaryVecOpCodegen<tvm::tl::NpuirExp>(op, os);
+  } else if (op->op.same_as(Op::Get("tl.npuir_ln"))) {
+    UnaryVecOpCodegen<tvm::tl::NpuirLn>(op, os);
+  } else if (op->op.same_as(Op::Get("tl.npuir_relu"))) {
+    UnaryVecOpCodegen<tvm::tl::NpuirRelu>(op, os);
+  } else if (op->op.same_as(Op::Get("tl.npuir_select"))) {
+    VselectCodegen(op, os);
+  } else if (op->op.same_as(Op::Get("tl.npuir_cmp"))) {
+    VcmpCodegen(op, os);
   } else if (op->op.same_as(Op::Get("tl.npuir_load_nd2nz"))) {
     Nd2NzCodegen(op, os);
   } else if (op->op.same_as(Op::Get("tl.npuir_store_fixpipe"))) {
@@ -1152,7 +1239,14 @@ void CodeGenTileLangNPUIR::VisitExpr_(const CallNode *op, std::ostream &os) {
   }
 }
 void CodeGenTileLangNPUIR::VisitStmt_(const LetStmtNode *op) {
-  std::string value = PrintExpr(op->value);
+  std::string value = "";
+  if (const IntImmNode *int_imm = op->value.as<IntImmNode>()) {
+    value = ConstIntCodegen(int_imm);
+  } else if (const FloatImmNode *float_imm = op->value.as<FloatImmNode>()) {
+    value = ConstFloatCodegen(float_imm);
+  } else {
+    value = PrintExpr(op->value);
+  }
   PrintIndent();
   this->stream << '%' << AllocVarID(op->var.get()) << " = " << value << "\n";
   PrintStmt(op->body);
@@ -1258,28 +1352,13 @@ void CodeGenTileLangNPUIR::VisitExpr_(const SubNode *op, std::ostream &os) {
 
 void CodeGenTileLangNPUIR::VisitExpr_(const FloatImmNode *op,
                                       std::ostream &os) { // NOLINT(*)
-  std::ostringstream temp;
-  if (op->value == -std::numeric_limits<float>::infinity()) {
-    temp << "arith.constant 0xFF800000 : ";
-  } else if (op->value == std::numeric_limits<float>::infinity()) {
-    temp << "arith.constant 0x7F800000 : ";
-  } else {
-    temp << "arith.constant " << op->value << " : ";
-  }
-  PrintType(op->dtype, temp);
-  os << SSAGetID(temp.str(), op->dtype);
+  std::string temp = ConstFloatCodegen(op);
+  os << SSAGetID(temp, op->dtype);
 }
 
 void CodeGenTileLangNPUIR::VisitExpr_(const IntImmNode *op, std::ostream &os) {
-  std::ostringstream temp;
-  temp << "arith.constant ";
-  if (op->dtype.is_bool()) {
-    temp << (op->value == 1 ? "true" : "false");
-  } else {
-    temp << op->value << " : ";
-    PrintType(op->dtype, temp);
-  }
-  os << SSAGetID(temp.str(), op->dtype);
+  std::string temp = ConstIntCodegen(op);
+  os << SSAGetID(temp, op->dtype);
 }
 
 void CodeGenTileLangNPUIR::VisitExpr_(const MulNode *op, std::ostream &os) {
@@ -1338,6 +1417,76 @@ void PrintHostFunc(const PrimFunc &f, const std::string &name, std::ostream &os,
   }
   os << ");\n";
   os << "}\n";
+}
+
+std::string CodeGenTileLangNPUIR::GetBufferRef(const BufferNode* buffer,
+                                               Array<PrimExpr> indices) {
+  std::vector<std::string> idx_names;
+  for (auto index : indices) {
+    auto index_str = SSAGetID(PrintExpr(index), index.dtype());
+    std::ostringstream temp;
+    temp << "arith.index_cast %" << index_str << " : ";
+    PrintType(index.dtype(), temp);
+    temp << " to index";
+    idx_names.push_back(SSAGetID(temp.str(), index.dtype()));
+  }
+
+  // FIXME: Some Vars maybe have specific types when they are from Allocate
+  // operator, in this case, the corresponding Buffer dtype and the Var data
+  // type may be different.
+  const VarNode* buffer_var = buffer->data.get();
+  std::string vid = GetVarID(buffer_var);
+  if (auto memrefInfo = dynamic_cast<Memref *>(type_info[vid])) {
+    if (memrefInfo->is_arg) {
+      vid = vid + "_Recast";
+    }
+  } else {
+    LOG(FATAL) << vid << " should be a memref";
+  }
+
+  std::ostringstream temp;
+  temp << "%" << vid << "[";
+  bool first = true;
+  for (auto name : idx_names) {
+    if (first) {
+      first = false;
+    } else {
+      temp << ", ";
+    }
+    temp << "%" << name;
+  }
+  temp <<  "] : ";
+  temp << GetMemrefInfo(vid);
+  return temp.str();
+}
+
+void CodeGenTileLangNPUIR::VisitExpr_(const BufferLoadNode* op, std::ostream& os) {
+  if (op->dtype.lanes() != 1) {
+    LOG(FATAL) << "lanes not one";
+  }
+  auto buffer = op->buffer.get();
+  if (op->dtype != buffer->dtype) {
+    LOG(FATAL) << "The load type and buffer element type do not match";
+  }
+
+  auto buffer_ref =  GetBufferRef(buffer, op->indices);
+  os << "memref.load " << buffer_ref;
+}
+
+void CodeGenTileLangNPUIR::VisitStmt_(const BufferStoreNode* op) {
+  if (op->value.dtype().lanes() != 1) {
+    LOG(FATAL) << "lanes not one";
+  }
+  auto buffer = op->buffer.get();
+  if (op->value.dtype() != buffer->dtype) {
+    LOG(FATAL) << "The load type and buffer element type do not match";
+  }
+
+  auto buffer_ref = GetBufferRef(buffer, op->indices);
+  std::string value = this->PrintExpr(op->value);
+  this->PrintIndent();
+  stream << "memref.store %";
+  stream << value << ", " << buffer_ref << "\n";
 }
 
 void CodeGenTileLangNPUIR::GenRecastFromArg(Buffer curr_buffer, String arg_name,

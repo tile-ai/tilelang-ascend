@@ -186,6 +186,7 @@ NPUIR_BINARY_OP_CTOR(Min, min)
     }                                                                          \
     std::tie(this->src, this->dst) = std::tie(bf[0], bf[1]);                   \
     std::tie(this->src_range, this->dst_range) = std::tie(rgs[0], rgs[1]);     \
+    op_name = "hivm.hir.v" #opname;                                            \
   }                                                                            \
   TIR_REGISTER_TL_OP(Npuir##OPNAME, npuir_##opname)                            \
       .set_num_inputs(2)                                                       \
@@ -193,6 +194,8 @@ NPUIR_BINARY_OP_CTOR(Min, min)
                                  Integer(CallEffectKind::kOpaque));
 
 NPUIR_UNARY_OP_CTOR(Exp, exp)
+NPUIR_UNARY_OP_CTOR(Ln, ln)
+NPUIR_UNARY_OP_CTOR(Relu, relu)
 
 NpuirBrc::NpuirBrc(Array<PrimExpr> args, BufferMap vmap) {
   in = args[0], out = args[1];
@@ -345,6 +348,41 @@ NpuirReduce::NpuirReduce(Array<PrimExpr> args, BufferMap vmap) {
 
   reduce_mode = args[3].as<StringImmNode>()->value;
 }
+
+NpuirSelect::NpuirSelect(Array<PrimExpr> args, BufferMap vmap) {
+  Array<Range> rgs[4];
+  Buffer bf[4];
+  for (int i = 0; i < 4; i++) {
+    auto expr = args[i];
+    auto call = expr.as<CallNode>();
+    ICHECK(call);
+    auto region = RegionOp(call->args, vmap);
+    rgs[i] = region.GetRanges();
+    bf[i] = region.GetBuffer();
+  }
+  std::tie(this->cond, this->src0, this->src1, this->dst) =
+      std::tie(bf[0], bf[1], bf[2], bf[3]);
+  std::tie(this->cond_range, this->src0_range, this->src1_range,
+           this->dst_range) = std::tie(rgs[0], rgs[1], rgs[2], rgs[3]);
+}
+
+NpuirCmp::NpuirCmp(Array<PrimExpr> args, BufferMap vmap) {
+  Array<Range> rgs[4];
+  Buffer bf[4];
+  for (int i = 0; i < 3; i++) {
+    auto expr = args[i];
+    auto call = expr.as<CallNode>();
+    ICHECK(call);
+    auto region = RegionOp(call->args, vmap);
+    rgs[i] = region.GetRanges();
+    bf[i] = region.GetBuffer();
+  }
+  std::tie(this->src0, this->src1, this->dst) = std::tie(bf[0], bf[1], bf[2]);
+  std::tie(this->src0_range, this->src1_range, this->dst_range) =
+      std::tie(rgs[0], rgs[1], rgs[2]);
+  cmp_mod = args[3].as<StringImm>().value()->value;
+}
+
 TIR_REGISTER_TL_OP(AscendCopy, ascend_copy)
     .set_num_inputs(2)
     .set_attr<TCallEffectKind>("TCallEffectKind",
@@ -400,6 +438,16 @@ TIR_REGISTER_TL_OP(NpuirCast, npuir_cast)
                                Integer(CallEffectKind::kOpaque));
 
 TIR_REGISTER_TL_OP(NpuirReduce, npuir_reduce)
+    .set_num_inputs(4)
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
+
+TIR_REGISTER_TL_OP(NpuirSelect, npuir_select)
+    .set_num_inputs(4)
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
+
+TIR_REGISTER_TL_OP(NpuirCmp, npuir_cmp)
     .set_num_inputs(4)
     .set_attr<TCallEffectKind>("TCallEffectKind",
                                Integer(CallEffectKind::kOpaque));
