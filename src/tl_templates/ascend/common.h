@@ -303,7 +303,7 @@ gemm_v0(LocalTensor<T1> const &A, LocalTensor<T1> const &B,
 template <typename T>
 CATLASS_DEVICE void MergeSort(const LocalTensor<T> &dst,
                               const LocalTensor<T> &src, uint32_t blockSize,
-                              uint32_t block_num, uint32_t is_copy) {
+                              uint32_t blockNum, uint32_t is_copy) {
   // 初始化合并排序参数
   AscendC::MrgSort4Info params;
   params.elementLengths[0] = blockSize;
@@ -323,7 +323,7 @@ CATLASS_DEVICE void MergeSort(const LocalTensor<T> &dst,
   AscendC::MrgSort<T>(dst, srcList, params);
   PipeBarrier<PIPE_V>();
   if (is_copy) {
-    AscendC::DataCopy(src, dst, block_num * blockSize * 2);
+    AscendC::DataCopy(src, dst, blockNum * blockSize * 2);
   }
 }
 
