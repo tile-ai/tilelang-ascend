@@ -44,7 +44,7 @@ CodeGenTileLangAscend::CodeGenTileLangAscend() {
 }
 
 void CodeGenTileLangAscend::PrintFuncPrefix(std::ostream &os) {
-  os << "CATLASS_GLOBAL\n";
+  os << "extern \"C\" CATLASS_GLOBAL\n";
 }
 
 std::string CodeGenTileLangAscend::Finish() {
