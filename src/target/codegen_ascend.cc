@@ -414,36 +414,37 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
       auto src_type = op->args[1].as<CallNode>()->args[0].as<CallNode>()->dtype;
       auto dst_type = op->args[2].as<CallNode>()->args[0].as<CallNode>()->dtype;
 
-      if (op_name.find("copy_l0c_to_gm") != std::string::npos) {
+      static const std::unordered_map<std::string, int> kCopyOpExtraArgs = {
+        {"copy_l0c_to_gm", 2},
+        {"copy_gm_to_l1", 1},
+        {"copy_l1_to_l0a", 0},
+        {"copy_l1_to_l0b", 0},
+        {"copy_gm_to_ub", 1},
+        {"copy_ub_to_gm", 1},
+        {"copy_ub_to_ub", 0}
+      };
+
+      bool found = false;
+      int extra_args = 0;
+
+      for (const auto& pair : kCopyOpExtraArgs) {
+        if (op_name.find(pair.first) != std::string::npos) {
+          found = true;
+          extra_args = pair.second;
+          break;
+        }
+      }
+
+      if (found) {
         this->PrintIndent();
         this->stream << op_name << "(" << dst_var_id << "[" << dst_offset
-                     << "], " << src_var_id << "[" << src_offset << "], "
-                     << PrintExpr(op->args[3]) << ");\n";
-      } else if (op_name.find("copy_gm_to_l1") != std::string::npos) {
-        this->PrintIndent();
-        this->stream << op_name << "(" << dst_var_id << "[" << dst_offset
-                     << "], " << src_var_id << "[" << src_offset << "]);\n";
-      } else if (op_name.find("copy_l1_to_l0a") != std::string::npos) {
-        this->PrintIndent();
-        this->stream << op_name << "(" << dst_var_id << "[" << dst_offset
-                     << "], " << src_var_id << "[" << src_offset << "]);\n";
-      } else if (op_name.find("copy_l1_to_l0b") != std::string::npos) {
-        this->PrintIndent();
-        this->stream << op_name << "(" << dst_var_id << "[" << dst_offset
-                     << "], " << src_var_id << "[" << src_offset << "]);\n";
-      } else if (op_name.find("copy_gm_to_ub") != std::string::npos) {
-        this->PrintIndent();
-        this->stream << op_name << "(" << dst_var_id << "[" << dst_offset
-                     << "], " << src_var_id << "[" << src_offset << "], "
-                     << PrintExpr(op->args[3]) << ");\n";
-      } else if (op_name.find("copy_ub_to_gm") != std::string::npos) {
-        this->PrintIndent();
-        this->stream << op_name << "(" << dst_var_id << "[" << dst_offset
-                     << "], " << src_var_id << "[" << src_offset << "]);\n";
-      } else if (op_name.find("copy_ub_to_ub") != std::string::npos) {
-        this->PrintIndent();
-        this->stream << op_name << "(" << dst_var_id << "[" << dst_offset
-                     << "], " << src_var_id << "[" << src_offset << "]);\n";
+                    << "], " << src_var_id << "[" << src_offset << "]";
+
+        for (int i = 0; i < extra_args; ++i) {
+          this->stream << ", " << PrintExpr(op->args[3 + i]);
+        }
+
+        this->stream << ");\n";
       } else {
         this->PrintIndent();
         this->stream << "not implemented yet\n";

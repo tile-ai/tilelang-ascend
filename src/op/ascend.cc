@@ -23,20 +23,22 @@ using namespace tir;
 AscendCopy::AscendCopy(Array<PrimExpr> args, BufferMap vmap) : args_(args) {
   Array<Range> rgs[2];
   Buffer bf[2];
+  Array<PrimExpr> ets[2];
   for (int i = 0; i < 2; i++) {
     auto expr = args[i];
     auto call = expr.as<CallNode>();
     ICHECK(call);
     auto region = RegionOp(call->args, vmap);
+    ets[i] = region.GetExtents();
     rgs[i] = region.GetRanges();
     bf[i] = region.GetBuffer();
   }
-  if (args.size() >= 3) {
-    srcN = static_cast<int>(args[2].as<IntImmNode>()->value);
-    enRelu = args[3].as<Bool>().value();
+  if (args.size() >= 2) {
+    enRelu = args[2].as<Bool>().value();
   }
   std::tie(this->src, this->dst) = std::tie(bf[0], bf[1]);
   std::tie(this->src_range, this->dst_range) = std::tie(rgs[0], rgs[1]);
+  std::tie(this->src_extents, this->dst_extents) = std::tie(ets[0], ets[1]);
 }
 
 Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
@@ -57,98 +59,129 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
     return "";
   };
 
+  auto compute_strideN = [](const Buffer &buf, const Array<PrimExpr> &extents) -> PrimExpr {
+    PrimExpr strideN = buf->shape[buf->shape.size() - 1];
+    if (extents.size() > 1) {
+      for (int i = extents.size() - 2; i >= 0; --i) {
+        auto extend = static_cast<int>(extents[i].as<IntImmNode>()->value);
+        if (extend != 1) {
+          break;
+        }
+        strideN = strideN * buf->shape[i];
+      }
+    }
+    return strideN;
+  };
+
+  auto build_indices = [](const Array<Range> &range) -> Array<PrimExpr> {
+    Array<PrimExpr> indices;
+    for (size_t i = 0; i < range.size(); i++) {
+      indices.push_back(range[i]->min);
+    }
+    return indices;
+  };
+
+  struct CopyConfig {
+    bool needs_strideN = false;
+    bool l0c2gm = false;
+    bool gm2l1 = false;
+    bool print_gm_layout = false;
+    bool print_src_layout = false;
+    bool print_dst_layout = false;
+    bool print_ub = false;
+  } config;
+
   std::stringstream ss;
   ss << "tl::ascend::";
-  bool flag = false;
-  bool gm2ub_flag = false;
-  bool print_dst_layout = false;
-  bool print_src_layout = false;
-  bool print_gm_layout = false;
-  bool print_ub = false;
+  PrimExpr strideN;
+
   if (src.scope() == "global" && dst.scope() == "shared.dyn") {
     ss << "copy_gm_to_l1";
+    config.gm2l1 = true;
   } else if (src.scope() == "shared.dyn" && dst.scope() == "wmma.matrix_a") {
     ss << "copy_l1_to_l0a";
-    print_src_layout = true;
+    config.print_src_layout = true;
   } else if (src.scope() == "shared.dyn" && dst.scope() == "wmma.matrix_b") {
     ss << "copy_l1_to_l0b";
-    print_src_layout = true;
+    config.print_src_layout = true;
   } else if (src.scope() == "wmma.accumulator" && dst.scope() == "global") {
     ss << "copy_l0c_to_gm";
-    flag = true;
-    print_gm_layout = true;
+    config.l0c2gm = true;
+    config.print_gm_layout = true;
   } else if (src.scope() == "shared" || dst.scope() == "shared") {
+    config.print_ub = true;
+
     if (src.scope() == "global") {
-      gm2ub_flag = true;
+      strideN = compute_strideN(src, src_extents);
+      config.needs_strideN = true;
+
       ss << "copy_gm_to_ub<";
       ss << get_dtype(src) << ", ";
-      ss << src->shape[src->shape.size() - 1] << ", ";
       ss << dst->shape[dst->shape.size() - 1];
       if (dst->shape.size() > 1) {
         ss << ", " << dst->shape[dst->shape.size() - 2];
       }
       ss << ">";
     } else if (dst.scope() == "global") {
+      strideN = compute_strideN(dst, dst_extents);
+      config.needs_strideN = true;
+
       ss << "copy_ub_to_gm<";
       ss << get_dtype(dst) << ", ";
-      ss << dst->shape[dst->shape.size() - 1] << ", ";
       ss << src->shape[src->shape.size() - 1];
       if (src->shape.size() > 1) {
         ss << ", " << src->shape[src->shape.size() - 2];
       }
       ss << ">";
     } else {
-      ss << "copy_ub_to_ub<";
-      ss << get_dtype(dst) << ", ";
-      ss << get_dtype(src) << ", ";
       PrimExpr len = 1;
       for (auto &shape : src->shape) {
         len *= shape;
       }
-      ss << len;
-      ss << ">";
+      ss << "copy_ub_to_ub<" << get_dtype(dst) << ", "
+         << get_dtype(src) << ", " << len << ">";
     }
-
-    print_ub = true;
   } else {
     LOG(FATAL) << "Unsupported scope: src = " << src.scope()
                << ", dst = " << dst.scope();
   }
-  if (!print_ub) {
+
+  if (!config.print_ub) {
     ss << "<" << get_dtype(src) << ", ";
 
-    if (flag) {
+    if (config.l0c2gm) {
       ss << get_dtype(dst) << ", ";
     }
-    if (print_gm_layout) {
-      if (T.layout_map.count(src))
-        ss << T.layout_map[src]->AscendLayoutStr() << ", ";
-      else
-        ss << "layout::RowMajor, ";
+
+    if (config.print_gm_layout) {
+      ss << (T.layout_map.count(src) ? T.layout_map[src]->AscendLayoutStr()
+                                     : "layout::RowMajor") << ", ";
     }
 
-    if (print_src_layout) {
+    if (config.print_src_layout) {
       ICHECK(T.layout_map.count(src))
           << "Layout map does not contain source buffer: " << src->name;
       ss << T.layout_map[src]->AscendLayoutStr() << ", ";
-    } else if (print_dst_layout) {
+    } else if (config.print_dst_layout) {
       ICHECK(T.layout_map.count(dst))
           << "Layout map does not contain destination buffer: " << dst->name;
       ss << T.layout_map[dst]->AscendLayoutStr() << ", ";
     }
+
     int src_ndim = src->shape.size(), dst_ndim = dst->shape.size();
-    ss << src->shape[src_ndim - 2] << ", " << src->shape[src_ndim - 1] << ", "
-       << dst->shape[dst_ndim - 2] << ", " << dst->shape[dst_ndim - 1] << ">";
-  }
-  Array<PrimExpr> src_indices, dst_indices;
 
-  for (size_t i = 0; i < src_range.size(); i++) {
-    src_indices.push_back(src_range[i]->min);
+    if (dst.scope() == "global") {
+      ss << src->shape[src_ndim - 2] << ", " << src->shape[src_ndim - 1] << ">";
+    } else if (src.scope() == "global") {
+      ss << dst->shape[dst_ndim - 2] << ", " << dst->shape[dst_ndim - 1] << ">";
+    } else {
+      ss << src->shape[src_ndim - 2] << ", " << src->shape[src_ndim - 1] << ", "
+         << dst->shape[dst_ndim - 2] << ", " << dst->shape[dst_ndim - 1] << ">";
+    }
   }
 
-  for (size_t i = 0; i < dst_range.size(); i++) {
-    dst_indices.push_back(dst_range[i]->min);
-  }
+  auto src_indices = build_indices(src_range);
+  auto dst_indices = build_indices(dst_range);
 
   auto src_new_indices = T.layout_map.count(src)
                              ? T.layout_map[src]->Forward(src_indices)
@@ -159,28 +192,37 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
 
   auto src_new_buffer = T.buffer_remap.count(src) ? T.buffer_remap[src] : src;
   auto dst_new_buffer = T.buffer_remap.count(dst) ? T.buffer_remap[dst] : dst;
+
   auto src_ptr = src_new_buffer.access_ptr(
       1, DataType::Handle(), 1,
       src_new_buffer.OffsetOf(src_new_indices).back());
   auto dst_ptr = dst_new_buffer.access_ptr(
       2, DataType::Handle(), 1,
       dst_new_buffer.OffsetOf(dst_new_indices).back());
+
   Array<PrimExpr> new_args;
   new_args.push_back(StringImm(ss.str()));
-
   new_args.push_back(src_ptr);
   new_args.push_back(dst_ptr);
 
-  if (gm2ub_flag) {
-    new_args.push_back(srcN);
+  if (config.needs_strideN) {
+    new_args.push_back(strideN);
   }
-  if (flag) {
+
+  if (config.l0c2gm) {
+    new_args.push_back(compute_strideN(dst, dst_extents));
     new_args.push_back(enRelu);
+  }
+
+  if (config.gm2l1) {
+    new_args.push_back(compute_strideN(src, src_extents));
   }
 
   auto new_call = Call(DataType::Handle(), builtin::call_extern(), new_args);
   return Evaluate(new_call);
 }
+
+
 
 LayoutMap AscendCopy::InferLayout(const LayoutInferArgs &T, InferLevel level) {
   LayoutMap results;

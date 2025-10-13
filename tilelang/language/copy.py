@@ -179,7 +179,6 @@ def c2d_im2col(
 
 def npu_copy_v2(src: Union[tir.Buffer, tir.BufferLoad, tir.BufferRegion],
                 dst: Union[tir.Buffer, tir.BufferLoad],
-                srcN=-1,
                 enable_relu: bool = False):
     """Copy data between memory regions.
 
@@ -228,8 +227,5 @@ def npu_copy_v2(src: Union[tir.Buffer, tir.BufferLoad, tir.BufferRegion],
 
     src = _to_region(src, "r")
     dst = _to_region(dst, "w")
-    if srcN == -1:
-        # TODO: need check
-        srcN = src_shape[-1]
 
-    return tir.call_intrin("handle", tir.op.Op.get("tl.ascend_copy"), src, dst, srcN, enable_relu)
+    return tir.call_intrin("handle", tir.op.Op.get("tl.ascend_copy"), src, dst, enable_relu)

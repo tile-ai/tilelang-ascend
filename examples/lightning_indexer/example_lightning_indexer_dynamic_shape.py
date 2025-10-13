@@ -9,11 +9,8 @@ tilelang.disable_cache()
 
 
 @tilelang.jit(out_idx=[-1])  # for jit
-def indexer(B,
-            N2,
+def indexer(N2,
             G,
-            S1,
-            S2,
             D,
             TOP_K,
             VECTOR_BASEN,
@@ -24,11 +21,16 @@ def indexer(B,
             input_dtype="float16",
             calc_dtype="float"):
 
+    B = T.symbolic("B")
+    S1 = T.symbolic("S1")
+    S2 = T.symbolic("S2")
+
     @T.prim_func
     def main(Query: T.Tensor((B, S1, N2, G * D), input_dtype), KEY: T.Tensor(
         (B, S2, N2, D), input_dtype), QK_RES: T.Tensor((B, N2, S1, G, S2), calc_dtype),
              WEIGHTS: T.Tensor((B, S1, N2, G), calc_dtype), OUT: T.Tensor((B, N2, S1, TOP_K),
                                                                           "int")):
+
         total_process_num = N2 * S1
         each_core_process_num = total_process_num // 2
         with T.Kernel(B * N2, is_npu=True) as (cid, vid):
@@ -53,7 +55,7 @@ def indexer(B,
                     for g in T.serial(G):
                         for m in T.serial(S1 // BLOCK_M):
                             for n in T.serial(S2 // BLOCK_N):
-                                T.barrier_all() 
+                                T.barrier_all()
                                 T.copy(Query[cid, m * BLOCK_M: (m + 1) * BLOCK_M, n2, g * D: (g + 1) * D], Q_L1)
                                 T.barrier_all()
                                 T.copy(KEY[cid, n * BLOCK_N: (n + 1) * BLOCK_N, n2, 0: D], K_L1)
@@ -161,11 +163,8 @@ def indexer(B,
     return main
 
 
-B = 2
 N2 = 1
 G = 64
-S1 = 1024
-S2 = 8192
 D = 128
 TOP_K = 2048
 
@@ -231,7 +230,11 @@ def compare_tensors(tensor1, tensor2):
 
 
 def test_indexer():
-    func = indexer(B, N2, G, S1, S2, D, TOP_K, 512, 32, 128, 128, 128)
+    B = 2
+    S1 = 1024
+    S2 = 8192
+    func = indexer(N2, G, D, TOP_K, 512, 32, 128, 128, 128)
+    print(f"{func.get_kernel_source()}")
 
     q = torch.randn(B, S1, N2, G, D).half()
     k = torch.randn(B, S2, N2, D).half()

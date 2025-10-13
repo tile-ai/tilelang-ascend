@@ -30,7 +30,7 @@ private:
   Buffer src, dst;
 
   Array<Range> src_range, dst_range;
-
+  Array<PrimExpr> src_extents, dst_extents;
   int srcN;
   bool enRelu;
 };

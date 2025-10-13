@@ -83,6 +83,7 @@ public:
 
   const Buffer &GetBuffer() const { return buffer_; }
   const Array<Range> &GetRanges() const { return ranges_; }
+  const Array<PrimExpr> &GetExtents() const { return extents_; }
   int GetAccessMask() const { return access_mask_; }
   bool IsFullRegion() const;
 
@@ -90,6 +91,7 @@ private:
   Buffer buffer_;
   Array<Range> ranges_;
   int access_mask_;
+  Array<PrimExpr> extents_;
 };
 
 Var GetVarFromAccessPtr(const PrimExpr &expr);

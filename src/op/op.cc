@@ -64,6 +64,7 @@ RegionOp::RegionOp(Array<PrimExpr> args, BufferMap vmap) {
     PrimExpr min = load->indices[i];
     PrimExpr extent = args[2 + i];
     ranges_.push_back(Range::FromMinExtent(min, extent));
+    extents_.push_back(extent);
   }
 }
 

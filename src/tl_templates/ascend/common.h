@@ -49,11 +49,11 @@ template <> struct CopyL0CToGmQuantMode<int32_t, half> {
   static constexpr auto VALUE = QuantMode_t::DEQF16;
 };
 
-template <typename T, uint32_t srcM, uint32_t srcN, uint32_t dstM,
-          uint32_t dstN>
+template <typename T, uint32_t dstM, uint32_t dstN>
 CATLASS_DEVICE void copy_gm_to_l1(LocalTensor<T> dstTensor,
-                                  GlobalTensor<T> srcTensor) {
-  AscendC::DataCopy(dstTensor, srcTensor, {1, dstM, dstN, 0, srcN, dstM, 1, 0});
+                                  GlobalTensor<T> srcTensor,
+                                  uint16_t realSrcN = 1) {
+  AscendC::DataCopy(dstTensor, srcTensor, {1, dstM, dstN, 0, realSrcN, dstM, 1, 0});
 }
 
 template <typename T, typename LayoutL1, uint32_t srcM, uint32_t srcN,
@@ -132,15 +132,15 @@ CATLASS_DEVICE void mma(LocalTensor<T1> A, LocalTensor<T1> B, LocalTensor<T2> C,
   // }
 }
 
-template <typename T1, typename T2, typename LayoutGM, uint32_t srcM,
-          uint32_t srcN, uint32_t dstM, uint32_t dstN>
+template <typename T1, typename T2, typename LayoutGM, uint32_t srcM, uint32_t srcN>
 CATLASS_DEVICE void copy_l0c_to_gm(GlobalTensor<T2> dstTensor,
                                    LocalTensor<T1> srcTensor,
+                                   uint32_t realDstN = 1,
                                    bool enRelu = false) {
   static constexpr auto quantMode = CopyL0CToGmQuantMode<T1, T2>::VALUE;
   AscendC::Fixpipe<T2, T1, AscendC::CFG_ROW_MAJOR>(
       dstTensor, srcTensor,
-      {srcN, srcM, srcM, dstN, enRelu, quantMode, 0, 1, 0, 0, false});
+      {srcN, srcM, srcM, realDstN, enRelu, quantMode, 0, 1, 0, 0, false});
 }
 
 template <uint32_t M, uint32_t N, uint32_t K, uint32_t block_M,
@@ -162,21 +162,22 @@ CATLASS_DEVICE auto thread_block_swizzle(uint64_t pid) {
   return coord.m() * cols + coord.n();
 }
 
-template <typename T, uint32_t srcN, uint32_t dstN, uint32_t dstM = 1>
+template <typename T, uint32_t dstN, uint32_t dstM = 1>
 CATLASS_DEVICE void copy_gm_to_ub(LocalTensor<T> dstTensor,
                                   GlobalTensor<T> srcTensor,
-                                  uint32_t realSrcN = srcN) {
+                                  uint32_t realSrcN = 1) {
   AscendC::DataCopyExtParams dataCopyParams(
       dstM, dstN * sizeof(T), (realSrcN - dstN) * sizeof(T), 0, 0);
   AscendC::DataCopyPadExtParams<T> padParams(false, 0, 0, 0);
   AscendC::DataCopyPad(dstTensor, srcTensor, dataCopyParams, padParams);
 }
 
-template <typename T, uint32_t dstN, uint32_t srcN, uint32_t srcM = 1>
+template <typename T, uint32_t srcN, uint32_t srcM = 1>
 CATLASS_DEVICE void copy_ub_to_gm(GlobalTensor<T> dstTensor,
-                                  LocalTensor<T> srcTensor) {
+                                  LocalTensor<T> srcTensor,
+                                  uint32_t realdstN = 1) {
   AscendC::DataCopyExtParams dataCopyParams(srcM, srcN * sizeof(T), 0,
-                                            (dstN - srcN) * sizeof(T), 0);
+                                            (realdstN - srcN) * sizeof(T), 0);
   AscendC::DataCopyPad(dstTensor, srcTensor, dataCopyParams);
 }
 
