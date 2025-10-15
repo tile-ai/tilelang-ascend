@@ -147,12 +147,7 @@ def matmul(M, N, K, block_M, block_N, K_L1, dtype="float16", accum_dtype="float"
                     T.barrier_all()
 
                     # Perform matrix multiplication
-                    if k == 0:
-                        # First iteration: initialize accumulator
-                        T.gemm_v0(A_L1, B_L1, C_L0, init=True)
-                    else:
-                        # Subsequent iterations: accumulate results
-                        T.gemm_v0(A_L1, B_L1, C_L0)
+                    T.gemm_v0(A_L1, B_L1, C_L0, init=(k == 0))
 
                     # Synchronize all cores after computation
                     T.barrier_all()

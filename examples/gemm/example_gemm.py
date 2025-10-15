@@ -44,10 +44,7 @@ def matmul(M, N, K, block_M, block_N, K_L1, dtype="float16", accum_dtype="float"
                     T.copy(B[k * K_L1, by * block_N], B_L1)
 
                     T.barrier_all()
-                    if k == 0:
-                        T.gemm_v0(A_L1, B_L1, C_L0, init=True)
-                    else:
-                        T.gemm_v0(A_L1, B_L1, C_L0)
+                    T.gemm_v0(A_L1, B_L1, C_L0, init=(k == 0))
 
                     T.barrier_all()
 
