@@ -601,12 +601,21 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
       this->stream << op_name << "(" << var_name << ", "
                    << PrintExpr(op->args[2]) << ", " << PrintExpr(op->args[3])
                    << ", " << PrintExpr(op->args[4]) << ");\n";
+    } else if (op_name.find("AscendC::LeakyRelu") != std::string::npos ||
+               op_name.find("AscendC::Axpy") != std::string::npos) {
+      this->PrintIndent();
+      auto var_name = print_buffer_offset(op->args[1].as<CallNode>());
+      auto var_name_1 = print_buffer_offset(op->args[2].as<CallNode>());
+      this->stream << op_name << "(" << var_name << ", "
+                   << var_name_1 << "," << PrintExpr(op->args[3])
+                   << ", " << PrintExpr(op->args[4]) << ");\n";
     } else if (op_name == "AscendC::Add" || op_name == "AscendC::Max" ||
-               op_name == "AscendC::Sub" || op_name == "AscendC::Mul" ||
-               op_name == "AscendC::Exp" || op_name == "AscendC::Ln" ||
-               op_name == "AscendC::Abs" || op_name == "AscendC::Reciprocal" ||
-               op_name == "AscendC::Sqrt" || op_name == "AscendC::Rsqrt" ||
-               op_name == "AscendC::Not" || op_name == "AscendC::Relu") {
+               op_name == "AscendC::Min" || op_name == "AscendC::Sub" ||
+               op_name == "AscendC::Mul" || op_name == "AscendC::Exp" ||
+               op_name == "AscendC::Ln" || op_name == "AscendC::Abs" ||
+               op_name == "AscendC::Reciprocal" || op_name == "AscendC::Sqrt" ||
+               op_name == "AscendC::Rsqrt" || op_name == "AscendC::Not" ||
+               op_name == "AscendC::Relu") {
       std::vector<std::string> var_names;
       for (int i = 1; i < op->args.size() - 1; i++) {
         auto var_name = print_buffer_offset(op->args[i].as<CallNode>());

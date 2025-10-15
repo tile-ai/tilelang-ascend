@@ -330,6 +330,10 @@ def max(dst: Buffer, src0: Buffer, src1: Union[Buffer]):
     return binary_op(dst, src0, src1, "Max")
 
 
+def min(dst: Buffer, src0: Buffer, src1: Union[Buffer]):
+    return binary_op(dst, src0, src1, "Min")
+
+
 def unary_op(dst: Buffer, src0: Buffer, op: str):
     size_0 = math.prod(src0.shape)
     size_2 = math.prod(dst.shape)
@@ -366,6 +370,25 @@ def rsqrt(dst: Buffer, src0: Buffer):
 
 def relu(dst: Buffer, src0: Buffer):
     return unary_op(dst, src0, "Relu")
+
+
+def scalar_op(dst: Buffer, src0: Buffer, scalar_value: PrimExpr, op: str):
+    size_0 = math.prod(src0.shape)
+    size_2 = math.prod(dst.shape)
+
+    assert size_0 == size_2, "size must be same"
+
+    return T.call_extern("handle", f"AscendC::{op}<{_dtype(src0)}>", dst.access_ptr("w"), src0.access_ptr("r"),
+                         scalar_value, size_0)
+
+
+
+def leaky_relu(dst: Buffer, src0: Buffer, scalar_value: PrimExpr):
+    return scalar_op(dst, src0, scalar_value, "LeakyRelu")
+
+
+def axpy(dst: Buffer, src0: Buffer, scalar_value: PrimExpr):
+    return scalar_op(dst, src0, scalar_value, "Axpy")
 
 
 def reduce(out: Buffer, buffer: Buffer, tmp: Buffer, reduce_type: str, dim: int):
