@@ -1205,6 +1205,10 @@ void CodeGenTileLangAscend::AddFunction(const GlobalVar &gvar,
       stream << ", ";
   }
   for (const auto &pair : tiling_map_) {
+    auto tiling_varnode = pair.first.get();
+    if (var_idmap_.count(tiling_varnode) == 0) {
+      (void)AllocVarID(tiling_varnode);
+    }
     stream << "int64_t " << GetVarID(pair.first.get());
     if (index != tiling_map_.size() - 1) {
         stream << ", ";
