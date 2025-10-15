@@ -602,7 +602,10 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
                    << ", " << PrintExpr(op->args[4]) << ");\n";
     } else if (op_name == "AscendC::Add" || op_name == "AscendC::Max" ||
                op_name == "AscendC::Sub" || op_name == "AscendC::Mul" ||
-               op_name == "AscendC::Exp") {
+               op_name == "AscendC::Exp" || op_name == "AscendC::Ln" ||
+               op_name == "AscendC::Abs" || op_name == "AscendC::Reciprocal" ||
+               op_name == "AscendC::Sqrt" || op_name == "AscendC::Rsqrt" ||
+               op_name == "AscendC::Not" || op_name == "AscendC::Relu") {
       std::vector<std::string> var_names;
       for (int i = 1; i < op->args.size() - 1; i++) {
         auto var_name = print_buffer_offset(op->args[i].as<CallNode>());

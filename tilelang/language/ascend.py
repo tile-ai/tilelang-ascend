@@ -344,6 +344,30 @@ def exp(dst: Buffer, src0: Buffer):
     return unary_op(dst, src0, "Exp")
 
 
+def ln(dst: Buffer, src0: Buffer):
+    return unary_op(dst, src0, "Ln")
+
+
+def abs(dst: Buffer, src0: Buffer):
+    return unary_op(dst, src0, "Abs")
+
+
+def reciprocal(dst: Buffer, src0: Buffer):
+    return unary_op(dst, src0, "Reciprocal")
+
+
+def sqrt(dst: Buffer, src0: Buffer):
+    return unary_op(dst, src0, "Sqrt")
+
+
+def rsqrt(dst: Buffer, src0: Buffer):
+    return unary_op(dst, src0, "Rsqrt")
+
+
+def relu(dst: Buffer, src0: Buffer):
+    return unary_op(dst, src0, "Relu")
+
+
 def reduce(out: Buffer, buffer: Buffer, tmp: Buffer, reduce_type: str, dim: int):
     dtype = _dtype(buffer)
     shape = f"{buffer.shape[0]}, {buffer.shape[1]}"
