@@ -249,6 +249,35 @@ def gather_mask(dst: Buffer, src: Buffer, num):
     return T.call_extern("handle", f"tl::ascend::GatherMask<{_dtype(dst)}>", dst.access_ptr("w"),
                          src.access_ptr("r"), num)
 
+def select(dst: Buffer, selMask: Buffer, src0: Buffer, src1: Union[Buffer, BufferLoad, PrimExpr], selMode: str):
+    dst_ptr = dst.access_ptr("w")
+    sel_mask_ptr = selMask.access_ptr("r")
+    src0_ptr = src0.access_ptr("r")
+    src0_extent = src0.shape
+
+    assert selMode in ["VSEL_CMPMASK_SPR", "VSEL_TENSOR_SCALAR_MODE", "VSEL_TENSOR_TENSOR_MODE"]
+
+    sel_mode = f"AscendC::SELMODE::{selMode}"
+    size_0 = math.prod(src0_extent)
+
+    if isinstance(src1, BufferLoad):
+        assert selMode in ["VSEL_CMPMASK_SPR", "VSEL_TENSOR_TENSOR_MODE"], "selMode must be VSEL_CMPMASK_SPR or VSEL_TENSOR_TENSOR_MODE"
+
+        src1_type = 0
+        buffer_1 = src1.buffer
+        indices_1 = src1.indices
+        return T.call_extern("handle", f"AscendC::Select", dst_ptr, sel_mask_ptr, src0_ptr, src1_type, buffer_1.access_ptr("r"), indices_1[0], sel_mode, size_0)
+    elif isinstance(src1, (PrimExpr, float)):
+        assert selMode == "VSEL_TENSOR_SCALAR_MODE", "selMode must be VSEL_TENSOR_SCALAR_MODE"
+
+        src1_type = 1
+        return T.call_extern("handle", f"AscendC::Select", dst_ptr, sel_mask_ptr, src0_ptr, src1_type, src1, sel_mode, size_0)
+    else:
+        assert selMode in ["VSEL_CMPMASK_SPR", "VSEL_TENSOR_TENSOR_MODE"], "selMode must be VSEL_CMPMASK_SPR or VSEL_TENSOR_TENSOR_MODE"
+
+        src1_type = 2
+        src1_ptr = src1.access_ptr("r")
+        return T.call_extern("handle", f"AscendC::Select", dst_ptr, sel_mask_ptr, src0_ptr, src1_type, src1_ptr, sel_mode, size_0)
 
 def init_sort_buf(buffer: Buffer, num, rsv):
     pass
@@ -412,3 +441,30 @@ def wait_flag(src: _pipe, dst: _pipe, eventId: int):
 
 def pipe_barrier(pipe: _pipe):
     return T.call_extern("handle", f"AscendC::PipeBarrier<PIPE_{pipe.upper()}>")
+
+def compare(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferLoad, PrimExpr], mode: str):
+    assert mode in ["EQ", "NE", "GT", "GE", "LT", "LE"]
+
+    dst_ptr = dst.access_ptr("w")
+    dst_extent = dst.shape
+
+    src0_ptr = src0.access_ptr("r")
+    src0_extent = src0.shape
+
+    size_0 = math.prod(dst_extent)
+    size_1 = math.prod(src0_extent)
+
+    cmp_mode = f"AscendC::CMPMODE::{mode}"
+    dst_size = size_1
+
+    if isinstance(src1, BufferLoad):
+        buffer_1 = src1.buffer
+        indices_1 = src1.indices
+        # we only can pass the extra index
+        return T.call_extern("handle", f"AscendC::CompareScalar", dst_ptr, src0_ptr,
+                             buffer_1.access_ptr("r"), indices_1[0], cmp_mode, dst_size)
+    elif isinstance(src1, (PrimExpr, float)):
+        return T.call_extern("handle", f"AscendC::CompareScalar", dst_ptr, src0_ptr, src1, cmp_mode, dst_size)
+    else:
+        return T.call_extern("handle", f"AscendC::Compare", dst_ptr, src0_ptr, src1.access_ptr("r"), cmp_mode, dst_size)
+

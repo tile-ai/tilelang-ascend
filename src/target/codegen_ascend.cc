@@ -716,6 +716,120 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
 
       this->stream << ", " << PrintExpr(op->args[op->args.size() - 1])
                    << ");\n";
+    } else if (op_name == "AscendC::Compare") {
+      std::vector<std::string> var_names;
+       for (int i = 1; i < op->args.size() - 2; i++) {
+         auto var_name = print_buffer_offset(op->args[i].as<CallNode>());
+         var_names.push_back(var_name);
+       }
+       this->PrintIndent();
+       this->stream << op_name << "(";
+       for (int i = 0; i < var_names.size(); i++) {
+         this->stream << var_names[i];
+         if (i != var_names.size() - 1) {
+           this->stream << ", ";
+         }
+       }
+       this->stream << ", " << Downcast<StringImm>(op->args[op->args.size() - 2])->value << ", " << PrintExpr(op->args[op->args.size() - 1])
+                    << ");\n";
+    } else if (op_name == "AscendC::CompareScalar") {
+      std::vector<std::string> var_names;
+      int para_idx = 0;
+      for (int i = 1; i <= 2; i++) {
+        auto var_name = print_buffer_offset(op->args[i].as<CallNode>());
+        var_names.push_back(var_name);
+      }
+
+      para_idx = 3;
+      if (op->args[para_idx].as<CallNode>()) {
+        auto var_name = print_buffer_offset(op->args[para_idx].as<CallNode>(), false);
+        this->PrintIndent();
+        this->stream << "auto " << var_name << "_scalar = " << var_name
+                     << ".GetValue(" << PrintExpr(op->args[para_idx+1])
+                     << ");\n";
+        var_names.push_back(var_name + "_scalar");
+        this->PrintIndent();
+        this->stream << "AscendC::PipeBarrier<PIPE_ALL>();\n";
+        para_idx++;
+      } else {
+        var_names.push_back(PrintExpr(op->args[op->args.size() - 3]));
+      }
+      para_idx++;
+
+      auto var_name_mode = Downcast<StringImm>(op->args[para_idx])->value;
+      var_names.push_back(var_name_mode);
+      para_idx++;
+
+      auto var_name_size = PrintExpr(op->args[para_idx]);
+      var_names.push_back(var_name_size);
+      
+      this->PrintIndent();
+      this->stream << op_name << "(";
+      for (int i = 0; i < var_names.size(); i++) {
+        this->stream << var_names[i];
+        if (i != var_names.size() - 1) {
+          this->stream << ", ";
+        }
+      }
+      this->stream << ");\n";
+
+    } else if (op_name == "AscendC::Select") {
+      std::vector<std::string> var_names;
+      int para_idx = 0;
+      //For para1:dst, para2:selMask, para3:src0
+      for (int i = 1; i <= 3; i++) {
+        auto var_name = print_buffer_offset(op->args[i].as<CallNode>());
+        var_names.push_back(var_name);
+      }
+
+      //For para4:src1_type
+      int src1_type = std::stoi(PrintExpr(op->args[4]));
+      if (src1_type == 0) {
+        if (op->args[5].as<CallNode>()) {
+          auto var_name5 = print_buffer_offset(op->args[5].as<CallNode>(), false);
+          this->PrintIndent();
+          this->stream << "auto " << var_name5 << "_scalar = " << var_name5
+                      << ".GetValue(" << PrintExpr(op->args[5])
+                      << ");\n";
+          var_names.push_back(var_name5 + "_scalar");
+          this->PrintIndent();
+          this->stream << "AscendC::PipeBarrier<PIPE_ALL>();\n";
+        }
+
+        auto var_name6 = Downcast<StringImm>(op->args[6])->value;
+        var_names.push_back(var_name6);
+
+        auto var_name7 = PrintExpr(op->args[7]);
+        var_names.push_back(var_name7);
+      } else if (src1_type == 1) {
+        auto var_name5 = PrintExpr(op->args[5]);
+        var_names.push_back(var_name5);
+
+        auto var_name6 = Downcast<StringImm>(op->args[6])->value;
+        var_names.push_back(var_name6);
+
+        auto var_name7 = PrintExpr(op->args[7]);
+        var_names.push_back(var_name7);
+      } else if (src1_type == 2) {
+        auto var_name5 = print_buffer_offset(op->args[5].as<CallNode>());
+        var_names.push_back(var_name5);
+
+        auto var_name6 = Downcast<StringImm>(op->args[6])->value;
+        var_names.push_back(var_name6);
+
+        auto var_name7 = PrintExpr(op->args[7]);
+        var_names.push_back(var_name7);
+      }
+
+      this->stream << op_name << "(";
+      for (int i = 0; i < var_names.size(); i++) {
+        this->stream << var_names[i];
+        if (i != var_names.size() - 1) {
+          this->stream << ", ";
+        }
+      }
+      this->stream << ");\n";
+
     } else if (op_name.find("thread_block_swizzle") != std::string::npos) {
       this->PrintIndent();
       std::string expr = PrintExpr(op->args[1]);
