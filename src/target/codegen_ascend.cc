@@ -517,6 +517,22 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
       // this->EndScope(func_scope);
       // this->PrintIndent();
       // this->stream << "}\n";
+    } else if (op_name == "AscendC::Sort32") {
+      std::vector<std::string> var_names;
+      for (int i = 1; i < op->args.size() - 1; i++) {
+        auto var_name = print_buffer_offset(op->args[i].as<CallNode>());
+        var_names.push_back(var_name);
+      }
+      this->PrintIndent();
+      this->stream << op_name << "(";
+      for (int i = 0; i < var_names.size(); i++) {
+        this->stream << var_names[i];
+        if (i != var_names.size() - 1) {
+          this->stream << ", ";
+        }
+      }
+      this->stream << ", " << PrintExpr(op->args[op->args.size() - 1])
+                   << ");\n";
     } else if (op_name.find("MergeSort") != std::string::npos) {
       // vtm::Dump(op);
       std::vector<std::string> var_names;
@@ -535,7 +551,7 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
       this->stream << ", " << PrintExpr(op->args[op->args.size() - 3]) << ", "
                    << PrintExpr(op->args[op->args.size() - 2]) << ", "
                    << PrintExpr(op->args[op->args.size() - 1]) << ");\n";
-    } else if (op_name == "Sort") {
+    } else if (op_name.find("Sort") != std::string::npos) {
       // tvm::Dump(op);
       std::vector<std::string> var_names;
       for (int i = 1; i < op->args.size() - 3; i++) {
@@ -696,22 +712,6 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
         this->stream << ", " << PrintExpr(op->args[i]);
       }
       this->stream << ");\n";
-    } else if (op_name == "AscendC::Sort32") {
-      std::vector<std::string> var_names;
-      for (int i = 1; i < op->args.size() - 1; i++) {
-        auto var_name = print_buffer_offset(op->args[i].as<CallNode>());
-        var_names.push_back(var_name);
-      }
-      this->PrintIndent();
-      this->stream << op_name << "(";
-      for (int i = 0; i < var_names.size(); i++) {
-        this->stream << var_names[i];
-        if (i != var_names.size() - 1) {
-          this->stream << ", ";
-        }
-      }
-      this->stream << ", " << PrintExpr(op->args[op->args.size() - 1])
-                   << ");\n";
     } else if (op_name == "AscendC::CreateVecIndex") {
       std::vector<std::string> var_names;
       for (int i = 1; i < 2; i++) {
