@@ -420,6 +420,26 @@ def axpy(dst: Buffer, src0: Buffer, scalar_value: PrimExpr):
     return scalar_op(dst, src0, scalar_value, "Axpy")
 
 
+def shiftleft(dst: Buffer, src0: Buffer, scalarValue: PrimExpr):
+    size_0 = math.prod(src0.shape)
+    size_2 = math.prod(dst.shape)
+
+    assert size_0 == size_2, "size must be same"
+
+    return T.call_extern("handle", f"AscendC::ShiftLeft", dst.access_ptr("w"),
+                         src0.access_ptr("r"), scalarValue, size_0)
+
+
+def shiftright(dst: Buffer, src0: Buffer, scalarValue: PrimExpr):
+    size_0 = math.prod(src0.shape)
+    size_2 = math.prod(dst.shape)
+
+    assert size_0 == size_2, "size must be same"
+
+    return T.call_extern("handle", f"AscendC::ShiftRight", dst.access_ptr("w"),
+                         src0.access_ptr("r"), scalarValue, size_0)
+
+
 def reduce(out: Buffer, buffer: Buffer, tmp: Buffer, reduce_type: str, dim: int):
     dtype = _dtype(buffer)
     shape = f"{buffer.shape[0]}, {buffer.shape[1]}"
