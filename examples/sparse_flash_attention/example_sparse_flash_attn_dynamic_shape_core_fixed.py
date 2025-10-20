@@ -78,20 +78,20 @@ def sparse_attention_fwd(
             KV: T.Tensor(kv_shape, dtype),  # type: ignore
             Indices: T.Tensor(indices_shape, indices_dtype),  # type: ignore
             Output: T.Tensor(o_shape, dtype),  # type: ignore
-            workspace_1: T.Tensor([*block_num, BI, D],
+            workspace_1: T.Tensor([core_num, BI, D],
                                   dtype),  # T.Tensor([block_num, BI, D], dtype),
-            workspace_2: T.Tensor([*block_num, BI, D_tail],
+            workspace_2: T.Tensor([core_num, BI, D_tail],
                                   dtype),  # T.Tensor([block_num, BI, D_tail], dtype),
             workspace_3: T.Tensor(
-                [*block_num, H_per_block, BI],
+                [core_num, H_per_block, BI],
                 accum_dtype),  # T.Tensor([block_num, H_per_block, BI], accum_dtype),
-            workspace_4: T.Tensor([*block_num, H_per_block, BI],
+            workspace_4: T.Tensor([core_num, H_per_block, BI],
                                   dtype),  # T.Tensor([block_num, H_per_block, BI], dtype),
             workspace_5: T.Tensor(
-                [*block_num, H_per_block, D],
+                [core_num, H_per_block, D],
                 accum_dtype),  # T.Tensor([block_num, H_per_block, D], accum_dtype),
     ):
-        with T.Kernel(seq_len * REPLICATE_H * batch * kv_group, is_npu=True) as (cid, vid):
+        with T.Kernel(core_num, is_npu=True) as (cid, vid):
             # Alloc Memory
             q_l1 = T.alloc_L1([H_per_block, D], dtype)
             q_tail_l1 = T.alloc_L1([H_per_block, D_tail], dtype)
@@ -152,9 +152,9 @@ def sparse_attention_fwd(
             for core_index in T.serial(T.ceildiv(seq_len * REPLICATE_H * batch * kv_group, core_num)):
                 pid = core_index * core_num + cid
                 if pid < seq_len * REPLICATE_H * batch * kv_group:
-                    bx = cid % (seq_len * REPLICATE_H)
-                    by = cid // (seq_len * REPLICATE_H) % batch
-                    bz = cid // (seq_len * REPLICATE_H) // batch % kv_group
+                    bx = pid % (seq_len * REPLICATE_H)
+                    by = pid // (seq_len * REPLICATE_H) % batch
+                    bz = pid // (seq_len * REPLICATE_H) // batch % kv_group
                     
                     b_i = by
                     g_i = bz
@@ -199,7 +199,7 @@ def sparse_attention_fwd(
 
                             T.set_cross_flag("FIX", 3)
                             T.wait_cross_flag(4)
-                        T.wait_cross_flag(8)
+                        # T.wait_cross_flag(8)
 
                     with T.Scope("V"):
 
@@ -311,7 +311,7 @@ def sparse_attention_fwd(
 
                         T.barrier_all()
 
-                        T.set_cross_flag("MTE3", 8)
+                        # T.set_cross_flag("MTE3", 8)
 
     return main
 
