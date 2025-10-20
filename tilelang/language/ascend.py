@@ -411,13 +411,22 @@ def scalar_op(dst: Buffer, src0: Buffer, scalar_value: PrimExpr, op: str):
                          scalar_value, size_0)
 
 
-
 def leaky_relu(dst: Buffer, src0: Buffer, scalar_value: PrimExpr):
     return scalar_op(dst, src0, scalar_value, "LeakyRelu")
 
 
 def axpy(dst: Buffer, src0: Buffer, scalar_value: PrimExpr):
     return scalar_op(dst, src0, scalar_value, "Axpy")
+
+
+def transpose(dst: Buffer, src: Buffer):
+    return T.call_extern("handle", "AscendC::Transpose", dst.access_ptr("w"), src.access_ptr("r"))
+
+
+def gather(dst: Buffer, src: Buffer, src_offset: Buffer, src_base_addr: PrimExpr):
+    count = math.prod(src.shape)
+    return T.call_extern("handle", "AscendC::Gather", dst.access_ptr("w"), src.access_ptr("r"),
+                          src_offset.access_ptr("r"), src_base_addr, count)
 
 
 def reduce(out: Buffer, buffer: Buffer, tmp: Buffer, reduce_type: str, dim: int):

@@ -609,6 +609,31 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
       this->stream << op_name << "(" << var_name << ", "
                    << var_name_1 << "," << PrintExpr(op->args[3])
                    << ", " << PrintExpr(op->args[4]) << ");\n";
+    } else if (op_name == "AscendC::Transpose") {
+      std::vector<std::string> var_names;
+      for (int i = 1; i < op->args.size(); i++) {
+        auto var_name = print_buffer_offset(op->args[i].as<CallNode>());
+        var_names.push_back(var_name);
+      }
+      this->PrintIndent();
+      this->stream << op_name << "(";
+      for (int i = 0; i < var_names.size(); i++) {
+        this->stream << var_names[i];
+        if (i != var_names.size() - 1) {
+          this->stream << ", ";
+        }
+      }
+      this->stream << ");\n";
+    } else if (op_name == "AscendC::Gather") {
+      this->PrintIndent();
+      auto var_name_1 = print_buffer_offset(op->args[1].as<CallNode>());
+      auto var_name_2 = print_buffer_offset(op->args[2].as<CallNode>());
+      auto var_name_3 = print_buffer_offset(op->args[3].as<CallNode>());
+
+      this->stream << op_name << "(" << var_name_1 << ", "
+                   << var_name_2 << ", " << var_name_3
+                   << ", " << PrintExpr(op->args[4])
+                   << ", " << PrintExpr(op->args[5]) << ");\n";
     } else if (op_name == "AscendC::Add" || op_name == "AscendC::Max" ||
                op_name == "AscendC::Min" || op_name == "AscendC::Sub" ||
                op_name == "AscendC::Mul" || op_name == "AscendC::Exp" ||
