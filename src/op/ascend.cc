@@ -52,6 +52,8 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
       return "int";
     } else if (dtype.is_uint() && dtype.bits() == 8) {
       return "uint8_t";
+    } else if (dtype.is_uint() && dtype.bits() == 16) {
+      return "uint16_t";
     } else if (dtype.is_uint() && dtype.bits() == 32) {
       return "uint32_t";
     }

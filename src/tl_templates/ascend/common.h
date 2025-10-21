@@ -366,6 +366,23 @@ CATLASS_DEVICE void GatherMask(const LocalTensor<T> &dst,
 }
 
 template <typename T>
+CATLASS_DEVICE void Gatherb(const LocalTensor<T> &dst,
+                            const LocalTensor<T> &src0,
+                            const LocalTensor<uint32_t> &offset,
+                            uint8_t repeat_time,
+                            uint8_t dst_blk_stride,
+                            uint8_t dst_rep_stride) {
+  GatherRepeatParams gatherRepeatParams;
+  gatherRepeatParams.dstBlkStride = dst_blk_stride;
+  gatherRepeatParams.dstRepStride = dst_rep_stride;
+  Gatherb(dst.template ReinterpretCast<uint32_t>(),
+          src0.template ReinterpretCast<uint32_t>(),
+          offset.template ReinterpretCast<uint32_t>(),
+          repeat_time, gatherRepeatParams);
+  PipeBarrier<PIPE_V>();
+}
+
+template <typename T>
 CATLASS_DEVICE void InitSortBuf(const LocalTensor<T> &src, int64_t eleNum,
                                 int64_t rsv = 0) {
   constexpr int32_t NEG_INF = 0xFF800000;

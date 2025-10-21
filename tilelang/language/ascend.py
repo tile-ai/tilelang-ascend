@@ -6,7 +6,7 @@ import math
 
 
 def _dtype(buf):
-    type_map = {"float16": "half", "float32": "float", "int32": "int", "uint32": "uint32_t"}
+    type_map = {"float16": "half", "float32": "float", "int32": "int", "uint32": "uint32_t", "uint16": "uint16_t"}
     if isinstance(buf, BufferRegion):
         buf = buf.buffer
     return type_map[buf.dtype]
@@ -248,6 +248,12 @@ def topk(dst: Buffer, src: Buffer, tmp: Buffer, block_size):
 def gather_mask(dst: Buffer, src: Buffer, num):
     return T.call_extern("handle", f"tl::ascend::GatherMask<{_dtype(dst)}>", dst.access_ptr("w"),
                          src.access_ptr("r"), num)
+
+
+def gatherb(dst: Buffer, src0: Buffer, offset: Buffer, repeat_time, dst_blk_stride, dst_rep_stride):
+    return T.call_extern("handle", f"tl::ascend::Gatherb<{_dtype(dst)}>", dst.access_ptr("w"),
+                         src0.access_ptr("r"), offset.access_ptr("r"), repeat_time, dst_blk_stride, dst_rep_stride)
+
 
 def select(dst: Buffer, selMask: Buffer, src0: Buffer, src1: Union[Buffer, BufferLoad, PrimExpr], selMode: str):
     dst_ptr = dst.access_ptr("w")

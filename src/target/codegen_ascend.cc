@@ -32,6 +32,8 @@ std::string getType(const DataType &dtype) {
     return "int";
   } else if (dtype.is_uint() && dtype.bits() == 8) {
     return "uint8_t";
+  } else if (dtype.is_uint() && dtype.bits() == 16) {
+    return "uint16_t";
   } else if (dtype.is_uint() && dtype.bits() == 32) {
     return "uint32_t";
   }
@@ -587,6 +589,24 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
         }
       }
       this->stream << ", " << PrintExpr(op->args[op->args.size() - 1])
+                   << ");\n";
+    } else if (op_name.find("Gatherb") != std::string::npos) {
+      std::vector<std::string> var_names;
+      for (int i = 1; i < 4; i++) {
+        auto var_name = print_buffer_offset(op->args[i].as<CallNode>());
+        var_names.push_back(var_name);
+      }
+      this->PrintIndent();
+      this->stream << op_name << "(";
+      for (int i = 0; i < var_names.size(); i++) {
+        this->stream << var_names[i];
+        if (i != var_names.size() - 1) {
+          this->stream << ", ";
+        }
+      }
+      this->stream << ", " << PrintExpr(op->args[4])
+                   << ", " << PrintExpr(op->args[5])
+                   << ", " << PrintExpr(op->args[6])
                    << ");\n";
     } else if (op_name.find("InitSortBuf") != std::string::npos) {
       tvm::Dump(op);
