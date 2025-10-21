@@ -60,6 +60,13 @@ private:
     return arith::IRMutatorWithAnalyzer::VisitStmt_(op);
   }
 
+  Stmt VisitStmt_(const ForNode *op) final {
+    if (isNeedTiling(op->loop_var, op->min) || isNeedTiling(op->loop_var, op->extent)) {
+      return arith::IRMutatorWithAnalyzer::VisitStmt_(op);
+    }
+    return arith::IRMutatorWithAnalyzer::VisitStmt_(op);
+  }
+
   Stmt VisitStmt_(const AttrStmtNode *op) final {
     if (op->attr_key == "thread_extent") {
       IterVar iv = Downcast<IterVar>(op->node);
