@@ -531,7 +531,7 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
       this->stream << ", " << PrintExpr(op->args[op->args.size() - 3]) << ", "
                    << PrintExpr(op->args[op->args.size() - 2]) << ", "
                    << PrintExpr(op->args[op->args.size() - 1]) << ");\n";
-    } else if (op_name.find("Sort") != std::string::npos) {
+    } else if (op_name == "Sort") {
       // tvm::Dump(op);
       std::vector<std::string> var_names;
       for (int i = 1; i < op->args.size() - 3; i++) {
@@ -690,7 +690,7 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
       }
       this->stream << ", " << PrintExpr(op->args[op->args.size() - 1])
                    << ");\n";
-    } else if (op_name == "AscendC::CreatVecIndex") {
+    } else if (op_name == "AscendC::CreateVecIndex") {
       std::vector<std::string> var_names;
       for (int i = 1; i < 2; i++) {
         auto var_name = print_buffer_offset(op->args[i].as<CallNode>());
