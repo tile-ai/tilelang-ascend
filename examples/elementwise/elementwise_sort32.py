@@ -37,14 +37,14 @@ def sort32(M, N, block_M, block_N):
             b_ub = T.alloc_ub((block_M, block_N // VEC_NUM), "uint32")
             c_ub = T.alloc_ub((block_M, 2 * block_N // VEC_NUM), "float")
             with T.Scope("V"):
-                T.copy(A[bx * block_M, by * block_N + vid * block_M // VEC_NUM],a_ub)
-                T.copy(B[bx * block_M, by * block_N + vid * block_M // VEC_NUM],b_ub)
+                T.copy(A[bx * block_M, by * block_N + vid * block_N // VEC_NUM],a_ub)
+                T.copy(B[bx * block_M, by * block_N + vid * block_N // VEC_NUM],b_ub)
 
                 T.barrier_all()
                 T.sort32(c_ub, a_ub, b_ub)
                 T.barrier_all()
 
-                T.copy(c_ub, C[bx * block_M, 2 * (by * block_N + vid * block_M // VEC_NUM)])
+                T.copy(c_ub, C[bx * block_M, 2 * (by * block_N + vid * block_N // VEC_NUM)])
 
     return main
 
@@ -59,18 +59,18 @@ b = torch.zeros((M,N), dtype=torch.uint32).npu()
 torch.npu.synchronize()
 print("init successful!")
 
-c = func()
+c = func(a, b)
 #计算ref_c
 group_size = 32
-tolal_elements = M * N
+total_elements = M * N
 b_ref = torch.zeros((M,N), dtype=torch.int32, device="npu")
 src0_flat = a.flatten()
 src1_flat = b_ref.flatten()
 
-total_groups = (tolal_elements + group_size - 1) // group_size
-for i in rang(total_groups):
+total_groups = (total_elements + group_size - 1) // group_size
+for i in range(total_groups):
     start = i * group_size
-    end = min((i + 1) * group_size, tolal_elements)
+    end = min((i + 1) * group_size, total_elements)
 
     group_src0 = src0_flat[start:end]
     group_src1 = src1_flat[start:end]
