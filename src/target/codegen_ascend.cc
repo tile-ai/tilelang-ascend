@@ -34,6 +34,8 @@ std::string getType(const DataType &dtype) {
     return "uint8_t";
   } else if (dtype.is_uint() && dtype.bits() == 32) {
     return "uint32_t";
+  } else if (dtype.is_bfloat16()) {
+    return "bfloat16_t";
   }
   LOG(FATAL) << "Unsupported data type: " << dtype;
   return "";

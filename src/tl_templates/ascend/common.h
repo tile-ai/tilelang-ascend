@@ -285,14 +285,14 @@ gemm_v0(LocalTensor<T1> const &A, LocalTensor<T1> const &B,
   auto l0b = l0b_.Get<T1>();
   AscendC::PipeBarrier<PIPE_ALL>();
   if constexpr (!transpose_A) {
-    tl::ascend::copy_l1_to_l0a<half, layout::zN, M, K, M, K>(l0a, A);
+    tl::ascend::copy_l1_to_l0a<T1, layout::zN, M, K, M, K>(l0a, A);
   } else {
-    tl::ascend::copy_l1_to_l0a<half, layout::nZ, M, K, M, K>(l0a, A);
+    tl::ascend::copy_l1_to_l0a<T1, layout::nZ, M, K, M, K>(l0a, A);
   }
   if constexpr (!transpose_B) {
-    tl::ascend::copy_l1_to_l0b<half, layout::zN, K, N, K, N>(l0b, B);
+    tl::ascend::copy_l1_to_l0b<T1, layout::zN, K, N, K, N>(l0b, B);
   } else {
-    tl::ascend::copy_l1_to_l0b<half, layout::nZ, K, N, K, N>(l0b, B);
+    tl::ascend::copy_l1_to_l0b<T1, layout::nZ, K, N, K, N>(l0b, B);
   }
 
   AscendC::PipeBarrier<PIPE_ALL>();

@@ -21,6 +21,7 @@ def sparse_attention_fwd(
     sm_scale=None,
     is_causal=True,
     block_I=64,
+    dtype="bfloat16"
 ):
     assert dim == tilelang.math.next_power_of_2(
         dim), f"haven't check padding correctness yet, dim={dim}"
@@ -46,7 +47,6 @@ def sparse_attention_fwd(
     indices_shape = [batch, seq_len, kv_group, topk]
     # lse_shape = [batch, seq_len, heads]
     indices_dtype = "int32"
-    dtype = "float16"
     accum_dtype = "float"
 
     H = head_kv
@@ -368,11 +368,11 @@ def ref_sparse_attention_fwd_interface(q,
     p = p.view(b, g, -1, sq, sk)
     o = torch.einsum("bghmn,bngd->bmghd", p.type(v.dtype), v)
     o = o.reshape(b, sq, h, dim_v)
-    return o.to(torch.float16)
+    return o.to(torch.bfloat16)
 
 
 B, S, SKV, H, HKV, DQK, DV, topk = 2, 273, 44444, 128, 1, 576, 512, 2048
-dtype = torch.float16
+dtype = torch.bfloat16
 
 KV_stride = 1
 q_start_s_index = 4096 * 7
