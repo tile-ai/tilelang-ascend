@@ -494,6 +494,9 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
     } else if (op_name.find("PipeBarrier") != std::string::npos) {
       this->PrintIndent();
       this->stream << op_name << "();\n";
+    } else if (op_name.find("SyncAll") != std::string::npos) {
+      this->PrintIndent();
+      this->stream << op_name << "();\n";
     } else if (op_name.find("reduce") != std::string::npos) {
       // this->PrintIndent();
       // this->stream << "{\n";
@@ -1289,11 +1292,14 @@ void CodeGenTileLangAscend::ProcessTilingInput(std::ostream &os, std::string fun
   }
   os << ") {\n";
   int func_scope = this->BeginScope();
-  for (auto &pair : tiling_map_) {
-    this->PrintIndent();
-    os << pair.first << " = ";
-    PrintExpr(arith::Analyzer().Simplify(pair.second), os);
-    os << ";\n";
+  for (auto &key : var_sequence_) {
+    if (tiling_map_.find(key) != tiling_map_.end()) {
+      auto value = tiling_map_[key];
+      this->PrintIndent();
+      os << key << " = ";
+      PrintExpr(arith::Analyzer().Simplify(value), os);
+      os << ";\n";
+    }
   }
   this->EndScope(func_scope);
   os << "}\n\n";
@@ -1363,6 +1369,7 @@ void CodeGenTileLangAscend::AddFunction(const GlobalVar &gvar,
   use_swizzle_ = f->GetAttr<Bool>("use_swizzle").value();
 
   tiling_map_ = f->GetAttr<Map<Var, PrimExpr>>("tiling_map").value();
+  var_sequence_ = f->GetAttr<Array<Var>>("var_sequence").value();
   ICHECK(global_symbol.defined())
       << "CodeGenC: Expect PrimFunc to have the global_symbol attribute";
   bool no_alias = f->HasNonzeroAttr(tir::attr::kNoAlias);

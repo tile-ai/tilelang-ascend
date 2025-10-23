@@ -93,6 +93,7 @@ private:
   Map<Var, PrimExpr> address_map_;
 
   Map<Var, PrimExpr> tiling_map_;
+  Array<Var> var_sequence_;
 
   Map<String, PrimExpr> address_offset_;
 

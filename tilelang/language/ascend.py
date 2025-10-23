@@ -536,3 +536,5 @@ def compare(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferLoad, PrimExpr]
     else:
         return T.call_extern("handle", f"AscendC::Compare", dst_ptr, src0_ptr, src1.access_ptr("r"), cmp_mode, dst_size)
 
+def sync_all():
+    return T.call_extern("handle", f"AscendC::SyncAll<false>")

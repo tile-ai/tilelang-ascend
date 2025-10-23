@@ -77,6 +77,19 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
     return strideN;
   };
 
+  auto compute_blocklen = [](const Buffer &buf, const Array<PrimExpr> &extents) -> PrimExpr {
+      PrimExpr res = buf->shape[buf->shape.size() - 2];
+      auto ext_size = extents.size();
+      if (ext_size > 1 && extents[ext_size - 2]->IsInstance<IntImmNode>() &&
+      res->IsInstance<IntImmNode>()) {
+        auto extent = static_cast<int>(extents[ext_size - 2].as<IntImmNode>()->value);
+        auto shape = static_cast<int>(res.as<IntImmNode>()->value);
+        res = shape < extent ? res : extents[ext_size - 2];
+      }
+
+    return res;
+  };
+
   auto build_indices = [](const Array<Range> &range) -> Array<PrimExpr> {
     Array<PrimExpr> indices;
     for (size_t i = 0; i < range.size(); i++) {
@@ -123,7 +136,7 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
       ss << get_dtype(src) << ", ";
       ss << dst->shape[dst->shape.size() - 1];
       if (dst->shape.size() > 1) {
-        ss << ", " << dst->shape[dst->shape.size() - 2];
+        ss << ", " << compute_blocklen(dst, src_extents);
       }
       ss << ">";
     } else if (dst.scope() == "global") {
@@ -134,7 +147,7 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
       ss << get_dtype(dst) << ", ";
       ss << src->shape[src->shape.size() - 1];
       if (src->shape.size() > 1) {
-        ss << ", " << src->shape[src->shape.size() - 2];
+        ss << ", " << compute_blocklen(src, dst_extents);
       }
       ss << ">";
     } else {
