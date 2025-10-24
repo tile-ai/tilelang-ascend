@@ -425,6 +425,14 @@ def axpy(dst: Buffer, src0: Buffer, scalar_value: PrimExpr):
     return scalar_op(dst, src0, scalar_value, "Axpy")
 
 
+def bilinear_interpolation(dst: Buffer, src0: Buffer, src0_offset: Buffer, src1:Buffer, mask: PrimExpr,
+                           h_repeat: PrimExpr, repeat_mode: bool, dst_blk_stride: PrimExpr, v_r_offset: PrimExpr,
+                           v_repeat: PrimExpr, shared_tmp_buffer: Buffer):
+    return T.call_extern("handle", "AscendC::BilinearInterpolation", dst.access_ptr("w"), src0.access_ptr("r"),
+                         src0_offset.access_ptr("r"), src1.access_ptr("r"), mask, h_repeat, repeat_mode, dst_blk_stride, v_r_offset,
+                         v_repeat, shared_tmp_buffer.access_ptr("r"))
+
+
 def shiftleft(dst: Buffer, src0: Buffer, scalarValue: PrimExpr):
     size_0 = math.prod(src0.shape)
     size_2 = math.prod(dst.shape)

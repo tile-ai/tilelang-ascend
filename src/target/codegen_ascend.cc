@@ -712,6 +712,19 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
       }
       this->stream << ", " << PrintExpr(op->args[op->args.size() - 1])
                    << ");\n";
+    } else if (op_name == "AscendC::BilinearInterpolation") {
+      this->PrintIndent();
+      auto var_name = print_buffer_offset(op->args[1].as<CallNode>());
+      auto var_name_1 = print_buffer_offset(op->args[2].as<CallNode>());
+      auto var_name_2 = print_buffer_offset(op->args[3].as<CallNode>());
+      auto var_name_3 = print_buffer_offset(op->args[4].as<CallNode>());
+      auto var_name_4 = print_buffer_offset(op->args[11].as<CallNode>());
+      this->stream << op_name << "(" << var_name << ", "
+                   << var_name_1 << ", " << var_name_2
+                   << ", " << var_name_3 << ", " << PrintExpr(op->args[5])
+                   << ", " << PrintExpr(op->args[6]) << ", " << PrintExpr(op->args[7])
+                   << ", " << PrintExpr(op->args[8]) << ", " << PrintExpr(op->args[9])
+                   << ", " << PrintExpr(op->args[10]) << ", "<< var_name_4 << ");\n";
     } else if (op_name == "AscendC::CreateVecIndex") {
       std::vector<std::string> var_names;
       for (int i = 1; i < 2; i++) {
