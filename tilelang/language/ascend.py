@@ -6,7 +6,7 @@ import math
 
 
 def _dtype(buf):
-    type_map = {"float16": "half", "float32": "float", "int32": "int", "uint32": "uint32_t", "bfloat16": "bfloat16_t", "uint16": "uint16_t"}
+    type_map = {"float16": "half", "float32": "float", "int32": "int", "uint32": "uint32_t", "bfloat16": "bfloat16_t", "uint16": "uint16_t", "uint8": "uint8_t"}
     if isinstance(buf, BufferRegion):
         buf = buf.buffer
     return type_map[buf.dtype]
@@ -255,11 +255,49 @@ def gatherb(dst: Buffer, src0: Buffer, offset: Buffer, repeat_time, dst_blk_stri
                          src0.access_ptr("r"), offset.access_ptr("r"), repeat_time, dst_blk_stride, dst_rep_stride)
 
 
-def select(dst: Buffer, selMask: Buffer, src0: Buffer, src1: Union[Buffer, BufferLoad, PrimExpr], selMode: str):
-    dst_ptr = dst.access_ptr("w")
+def select(dst: Union[Buffer, BufferRegion], selMask: Buffer, src0: Union[Buffer, BufferRegion], src1: Union[Buffer, BufferLoad, PrimExpr], selMode: str):
+    def retrieve_shape(object: Union[Buffer, BufferRegion]) -> List[int]:
+        if isinstance(object, Buffer):
+            return object.shape
+        elif isinstance(object, BufferRegion):
+            region = object.region
+            shape = []
+            for r in region:
+                shape.append(r.extent)
+            return shape
+        else:
+            raise ValueError(f"Unsupported argument type: {type(object)} for buffer {object}")
+
+    dst_shape = retrieve_shape(dst)
+    src0_shape = retrieve_shape(src0)
+
+    assert dst_shape == src0_shape, "dst and src0 must have the same shape"
+
+    def retrieve_ptr(object: Union[Buffer, BufferRegion], access_type: str = "r") -> PrimExpr:
+        if isinstance(object, Buffer):
+            return object.access_ptr(access_type)
+        elif isinstance(object, BufferRegion):
+            buffer, region = object.buffer, object.region
+            indices = []
+            for r in region:
+                indices.append(r.min)
+            strides = []
+            stride = 1
+            for s in reversed(buffer.shape):
+                strides.insert(0, stride)
+                stride *= s
+            offset = 0
+            for i in range(len(indices)):
+                offset += indices[i] * strides[i]
+            return buffer.access_ptr(access_mask=access_type, offset=offset)
+        else:
+            raise ValueError(f"Unsupported argument type: {type(object)} for buffer {object}")
+
+    dst_ptr = retrieve_ptr(dst, "r")
+    src0_ptr = retrieve_ptr(src0, "r")
+    
     sel_mask_ptr = selMask.access_ptr("r")
-    src0_ptr = src0.access_ptr("r")
-    src0_extent = src0.shape
+    src0_extent = src0_shape
 
     assert selMode in ["VSEL_CMPMASK_SPR", "VSEL_TENSOR_SCALAR_MODE", "VSEL_TENSOR_TENSOR_MODE"]
 

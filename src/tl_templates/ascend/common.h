@@ -6,6 +6,8 @@
 #include "catlass/gemm/tile/tile_copy.hpp"
 #include "catlass/layout/layout.hpp"
 
+#define CUDART_INF_F 1.0f / 0.0f
+
 namespace tl::ascend {
 using namespace Catlass;
 using namespace tla;
