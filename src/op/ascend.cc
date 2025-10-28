@@ -48,14 +48,22 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
       return "half";
     } else if (dtype.is_float() && dtype.bits() == 32) {
       return "float";
-    } else if (dtype.is_int()) {
+    } else if (dtype.is_int() && dtype.bits() == 8) {
+      return "int8_t";
+    } else if (dtype.is_int() && dtype.bits() == 16) {
+      return "int16_t";
+    } else if (dtype.is_int() && dtype.bits() == 32) {
       return "int";
+    } else if (dtype.is_int() && dtype.bits() == 64) {
+      return "int64_t";
     } else if (dtype.is_uint() && dtype.bits() == 8) {
       return "uint8_t";
     } else if (dtype.is_uint() && dtype.bits() == 16) {
       return "uint16_t";
     } else if (dtype.is_uint() && dtype.bits() == 32) {
       return "uint32_t";
+    } else if (dtype.is_uint() && dtype.bits() == 64) {
+      return "uint64_t";
     } else if (dtype.is_bfloat16()) {
       return "bfloat16_t";
     }

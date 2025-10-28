@@ -28,14 +28,22 @@ std::string getType(const DataType &dtype) {
     return "half";
   } else if (dtype.is_float()) {
     return "float";
-  } else if (dtype.is_int()) {
+  } else if (dtype.is_int() && dtype.bits() == 8) {
+    return "int8_t";
+  } else if (dtype.is_int() && dtype.bits() == 16) {
+    return "int16_t";
+  } else if (dtype.is_int() && dtype.bits() == 32) {
     return "int";
+  } else if (dtype.is_int() && dtype.bits() == 64) {
+    return "int64_t";
   } else if (dtype.is_uint() && dtype.bits() == 8) {
     return "uint8_t";
   } else if (dtype.is_uint() && dtype.bits() == 16) {
     return "uint16_t";
   } else if (dtype.is_uint() && dtype.bits() == 32) {
     return "uint32_t";
+  } else if (dtype.is_uint() && dtype.bits() == 64) {
+    return "uint64_t";
   } else if (dtype.is_bfloat16()) {
     return "bfloat16_t";
   }
@@ -681,7 +689,8 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
                op_name == "AscendC::Ln" || op_name == "AscendC::Abs" ||
                op_name == "AscendC::Reciprocal" || op_name == "AscendC::Sqrt" ||
                op_name == "AscendC::Rsqrt" || op_name == "AscendC::Not" ||
-               op_name == "AscendC::Relu") {
+               op_name == "AscendC::Relu" || op_name == "AscendC::Div" ||
+               op_name == "AscendC::And" || op_name == "AscendC::Or" ) {
       std::vector<std::string> var_names;
       for (int i = 1; i < op->args.size() - 1; i++) {
         auto var_name = print_buffer_offset(op->args[i].as<CallNode>());

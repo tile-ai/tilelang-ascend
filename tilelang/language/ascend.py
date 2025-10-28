@@ -6,7 +6,8 @@ import math
 
 
 def _dtype(buf):
-    type_map = {"float16": "half", "float32": "float", "int32": "int", "uint32": "uint32_t", "bfloat16": "bfloat16_t", "uint16": "uint16_t", "uint8": "uint8_t"}
+    type_map = {"float16": "half", "float32": "float", "int32": "int", "uint32": "uint32_t", "bfloat16": "bfloat16_t", "uint16": "uint16_t", "uint8": "uint8_t",
+                "int8": "int8_t", "int16": "int16_t", "int64": "int64_t", "uint64": "uint64_t"}
     if isinstance(buf, BufferRegion):
         buf = buf.buffer
     return type_map[buf.dtype]
@@ -271,7 +272,7 @@ def select(dst: Union[Buffer, BufferRegion], selMask: Buffer, src0: Union[Buffer
     dst_shape = retrieve_shape(dst)
     src0_shape = retrieve_shape(src0)
 
-    assert dst_shape == src0_shape, "dst and src0 must have the same shape"
+    assert tuple(dst_shape) == tuple(src0_shape), "dst and src0 must have the same shape"
 
     def retrieve_ptr(object: Union[Buffer, BufferRegion], access_type: str = "r") -> PrimExpr:
         if isinstance(object, Buffer):
@@ -406,6 +407,12 @@ def max(dst: Buffer, src0: Buffer, src1: Union[Buffer]):
 def min(dst: Buffer, src0: Buffer, src1: Union[Buffer]):
     return binary_op(dst, src0, src1, "Min")
 
+def and_tl(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferLoad, PrimExpr]):
+    return binary_op(dst, src0, src1, "And")
+
+def or_tl(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferLoad, PrimExpr]):
+    return binary_op(dst, src0, src1, "Or")
+
 
 def unary_op(dst: Buffer, src0: Buffer, op: str):
     size_0 = math.prod(src0.shape)
@@ -443,6 +450,9 @@ def rsqrt(dst: Buffer, src0: Buffer):
 
 def relu(dst: Buffer, src0: Buffer):
     return unary_op(dst, src0, "Relu")
+
+def not_tl(dst: Buffer, src0: Buffer):
+    return unary_op(dst, src0, "Not")
 
 
 def scalar_op(dst: Buffer, src0: Buffer, scalar_value: PrimExpr, op: str):
