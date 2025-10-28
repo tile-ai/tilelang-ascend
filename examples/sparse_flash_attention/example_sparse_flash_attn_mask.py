@@ -376,7 +376,7 @@ def ref_sparse_attention_fwd_interface(q,
     return o.to(torch.bfloat16)
 
 
-B, S, SKV, H, HKV, DQK, DV, topk = 1, 128, 32768, 128, 1, 576, 512, 2048
+B, S, SKV, H, HKV, DQK, DV, topk = 1, 1024, 32768, 128, 1, 576, 512, 2048
 dtype = torch.bfloat16
 
 
@@ -407,8 +407,5 @@ torch.npu.synchronize()
 ref_output = ref_sparse_attention_fwd_interface(q, kv, indices)
 torch.npu.synchronize()
 
-print(ref_output)
-print(output)
-print(ref_output[0, 66, 61, 0], output[0, 66, 61, 0])
 torch.testing.assert_close(ref_output, output, rtol=1e-2, atol=1e-2)
 print("Test Passed!")
