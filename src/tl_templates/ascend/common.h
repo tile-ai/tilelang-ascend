@@ -22,98 +22,64 @@ using LayoutL0A = layout::zZ;
 using LayoutL0B = layout::nZ;
 using LayoutL1 = layout::zN;
 
-template <typename T1, typename T2> struct CopyL0CToGmQuantMode {
-  static_assert(sizeof(T1) == 0, "No specialization available for these types");
-};
-
-// CopyL0ToGm cast fp32 to fp16
-template <> struct CopyL0CToGmQuantMode<float, half> {
-  static constexpr auto VALUE = QuantMode_t::F322F16;
-};
-
-// CopyL0ToGm cast fp32 to bf16
-template <> struct CopyL0CToGmQuantMode<float, bfloat16_t> {
-  static constexpr auto VALUE = QuantMode_t::F322BF16;
-};
-
-// CopyL0ToGm output fp32
-template <> struct CopyL0CToGmQuantMode<float, float> {
-  static constexpr auto VALUE = QuantMode_t::NoQuant;
-};
-
-// CopyL0ToGm output int32
-template <> struct CopyL0CToGmQuantMode<int32_t, int32_t> {
-  static constexpr auto VALUE = QuantMode_t::NoQuant;
-};
-
-// CopyL0ToGm cast int32_t to fp16
-template <> struct CopyL0CToGmQuantMode<int32_t, half> {
-  static constexpr auto VALUE = QuantMode_t::DEQF16;
-};
-
 template <typename T, uint32_t dstM, uint32_t dstN>
 CATLASS_DEVICE void copy_gm_to_l1(LocalTensor<T> dstTensor,
-                                  GlobalTensor<T> srcTensor,
-                                  uint16_t realSrcN = 1) {
-  AscendC::DataCopy(dstTensor, srcTensor, {1, dstM, dstN, 0, realSrcN, dstM, 1, 0});
+                                  GlobalTensor<T> srcTensor, uint32_t realSrcN = 1) {
+  auto layout = MakeLayoutFromTag(LayoutGM{dstM, realSrcN});
+  auto src_LAYOUT = MakeLayoutTile(layout, tla::MakeShape(dstM, dstN));
+  auto src = tla::MakeTensor<decltype(srcTensor), decltype(src_LAYOUT),
+                             AscendC::TPosition::GM>(srcTensor, src_LAYOUT);
+
+  using LayoutL1_ = Catlass::detail::TagToLayout_t<T, LayoutL1>;
+  constexpr auto layoutInL1 = tla::MakeLayout<T, LayoutL1_>(dstM, dstN);
+  auto dst = tla::MakeTensor<decltype(dstTensor), decltype(layoutInL1),
+                             AscendC::TPosition::A1>(dstTensor, layoutInL1);
+
+  TileCopyTla<ArchTag, decltype(src), decltype(dst)> tileCopier; 
+  tileCopier(dst, src);
 }
 
 template <typename T, typename LayoutL1, uint32_t srcM, uint32_t srcN,
           uint32_t dstM, uint32_t dstN>
 CATLASS_DEVICE void copy_l1_to_l0a(LocalTensor<T> dstTensor,
                                    LocalTensor<T> srcTensor) {
-  AscendC::LoadData3DParamsV2<T> loadParams;
-  loadParams.l1H = srcM;
-  loadParams.l1W = 1;
-  loadParams.channelSize = dstN;
-  loadParams.mExtension = dstM;
-  loadParams.kExtension = dstN;
-  loadParams.mStartPt = 0;
-  loadParams.kStartPt = 0;
-  loadParams.strideW = 1;
-  loadParams.strideH = 1;
-  loadParams.filterW = 1;
-  loadParams.filterSizeW = 0;
-  loadParams.filterH = 1;
-  loadParams.filterSizeH = 0;
-  loadParams.dilationFilterW = 1;
-  loadParams.dilationFilterH = 1;
-  loadParams.enTranspose = false;
-  loadParams.fMatrixCtrl = 0;
-  AscendC::LoadData(dstTensor, srcTensor, loadParams);
+  using LayoutL1_ = Catlass::detail::TagToLayout_t<T, LayoutL1>;
+  constexpr auto layout = tla::MakeLayout<T, LayoutL1_>(srcM, srcN);
+  auto src_LAYOUT = MakeLayoutTile(layout, tla::MakeShape(dstM, dstN));
+
+  auto src = MakeTensor<decltype(srcTensor), decltype(src_LAYOUT),
+                        AscendC::TPosition::A1>(srcTensor, src_LAYOUT);
+
+  using LayoutL0A_ = Catlass::detail::TagToLayout_t<T, LayoutL0A>;
+  constexpr auto layoutAInL0 = tla::MakeLayout<T, LayoutL0A_>(dstM, dstN);
+  auto dst = tla::MakeTensor<decltype(dstTensor), decltype(layoutAInL0),
+                             AscendC::TPosition::A2>(dstTensor, layoutAInL0);
+
+  TileCopyTla<ArchTag, decltype(src), decltype(dst)> tileCopier;
+  tileCopier(dst, src);
 }
 
 template <typename T, typename LayoutL1, uint32_t srcM, uint32_t srcN,
           uint32_t dstM, uint32_t dstN>
 CATLASS_DEVICE void copy_l1_to_l0b(LocalTensor<T> dstTensor,
                                    LocalTensor<T> srcTensor) {
-  uint32_t srcOuterStrideRow = 16 * 32 / sizeof(T);
-  uint32_t srcOuterStrideCol = srcM * 32 / sizeof(T);
-  uint32_t dstOuterShapeRow = dstM / 16;
-  uint32_t dstOuterShapeCol = dstN / 32 * sizeof(T);
-  uint32_t dstOuterStrideRow = 16 * dstN;
-  bool transpose = true;
+  using LayoutL1_ = Catlass::detail::TagToLayout_t<T, LayoutL1>;
+  constexpr auto LAYOUT = tla::MakeLayout<T, LayoutL1_>(srcM, srcN);
+  auto src_LAYOUT = MakeLayoutTile(LAYOUT, tla::MakeShape(dstM, dstN));
+  ;
 
-  if (std::is_same_v<LayoutL1, layout::zN> == false) {
-    srcOuterStrideRow = 16 * srcN;
-    srcOuterStrideCol = 16 * 32 / sizeof(T);
-    transpose = false;
-  }
+  auto src = MakeTensor<decltype(srcTensor), decltype(src_LAYOUT),
+                        AscendC::TPosition::A1>(srcTensor, src_LAYOUT);
 
-  AscendC::LoadData2DParams loadDataParams;
+  using LayoutL0B_ = Catlass::detail::TagToLayout_t<T, LayoutL0B>;
+  constexpr auto layoutBInL0 = tla::MakeLayout<T, LayoutL0B_>(dstM, dstN);
+  auto dst = tla::MakeTensor<decltype(dstTensor), decltype(layoutBInL0),
+                             AscendC::TPosition::B2>(dstTensor, layoutBInL0);
 
-  loadDataParams.startIndex = 0;
-  loadDataParams.repeatTimes = dstOuterShapeCol;
-  loadDataParams.srcStride = srcOuterStrideCol / 256;
-  loadDataParams.sid = 0;
-  loadDataParams.dstGap = 0;
-  loadDataParams.ifTranspose = transpose;
-  loadDataParams.addrMode = 0;
-  for (uint32_t i = 0; i < dstOuterShapeRow; i++) {
-    AscendC::LoadData(dstTensor[i * dstOuterStrideRow],
-                      srcTensor[i * srcOuterStrideRow], loadDataParams);
-  }
+  TileCopyTla<ArchTag, decltype(src), decltype(dst)> tileCopier;
+  tileCopier(dst, src);
 }
+
 
 template <typename T1, typename T2, uint32_t M, uint32_t N, uint32_t K>
 CATLASS_DEVICE void mma(LocalTensor<T1> A, LocalTensor<T1> B, LocalTensor<T2> C,
@@ -137,12 +103,20 @@ CATLASS_DEVICE void mma(LocalTensor<T1> A, LocalTensor<T1> B, LocalTensor<T2> C,
 template <typename T1, typename T2, typename LayoutGM, uint32_t srcM, uint32_t srcN>
 CATLASS_DEVICE void copy_l0c_to_gm(GlobalTensor<T2> dstTensor,
                                    LocalTensor<T1> srcTensor,
-                                   uint32_t realDstN = 1,
-                                   bool enRelu = false) {
-  static constexpr auto quantMode = CopyL0CToGmQuantMode<T1, T2>::VALUE;
-  AscendC::Fixpipe<T2, T1, AscendC::CFG_ROW_MAJOR>(
-      dstTensor, srcTensor,
-      {srcN, srcM, srcM, realDstN, enRelu, quantMode, 0, 1, 0, 0, false});
+                                   uint32_t realDstN = 1, bool enRelu = false) {
+  auto layoutInL0C = tla::MakeLayoutL0C(srcM, srcN); 
+  auto src = tla::MakeTensor<decltype(srcTensor), decltype(layoutInL0C),
+                             AscendC::TPosition::CO1>(srcTensor, layoutInL0C);
+  LayoutGM gm{srcM, realDstN};
+  auto layout = MakeLayoutFromTag(gm);
+  auto dTensor = MakeTensor(dstTensor, layout, Arch::PositionGM{});
+  auto layout_ = dTensor.layout();
+  auto dst_LAYOUT = MakeLayoutTile(layout_, tla::MakeShape(srcM, srcN));
+  auto dst = MakeTensor<decltype(dstTensor), decltype(dst_LAYOUT),
+                        AscendC::TPosition::GM>(dstTensor, dst_LAYOUT);
+
+  CopyL0CToGmTla<ArchTag, decltype(src), decltype(dst)> tileCopier;
+  tileCopier(dst, src, 0);
 }
 
 template <uint32_t M, uint32_t N, uint32_t K, uint32_t block_M,

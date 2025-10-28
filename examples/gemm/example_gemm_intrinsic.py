@@ -97,10 +97,8 @@ def matmul(M, N, K, block_M, block_N, block_K, K_L1, S1, S2, dtype="float16", ac
                             T.set_flag("mte1", "m", kk % S2)
                             T.wait_flag("mte1", "m", kk % S2)
 
-                            if k == 0 and kk == 0:
-                                T.mma(A_L0[kk % S2, :, :], B_L0[kk % S2, :, :], C_L0, init=True)
-                            else:
-                                T.mma(A_L0[kk % S2, :, :], B_L0[kk % S2, :, :], C_L0)
+                            
+                            T.mma(A_L0[kk % S2, :, :], B_L0[kk % S2, :, :], C_L0, init=T.And(k == 0, kk == 0))
 
                             T.set_flag("m", "mte1", kk % S2)
 
@@ -111,7 +109,6 @@ def matmul(M, N, K, block_M, block_N, block_K, K_L1, S1, S2, dtype="float16", ac
 
                 clear_flag()
 
-                T.barrier_all()
 
     return main
 
