@@ -34,11 +34,8 @@ def sparse_attention_fwd(
     sm_scale = (1.0 / (dim + tail_dim))**0.5 if sm_scale is None else sm_scale
 
     batch = T.symbolic("batch")
-    # batch = 2
     seq_len = T.symbolic("seq_len")
-    # seq_len = 273
 
-    # seq_len_kv = 44444 # T.symbolic("seq_len_kv")
     seq_len_kv = T.symbolic("seq_len_kv")
     head_kv = heads // kv_group
     q_shape = [batch, seq_len, heads, dim + tail_dim]
@@ -206,7 +203,6 @@ def sparse_attention_fwd(
                             T.wait_cross_flag(4)
 
                     with T.Scope("V"):
-
                         T.fill(acc_o, 0.0)
                         T.fill(sumexp, 0.0)
                         T.fill(m_i, -2.0**30)
@@ -333,7 +329,6 @@ func = sparse_attention_fwd(
     kv_stride=1,
 )
 
-print(func.get_kernel_source())
 
 def ref_sparse_attention_fwd_interface(q,
                                        kv,
@@ -376,7 +371,7 @@ def ref_sparse_attention_fwd_interface(q,
     return o.to(torch.bfloat16)
 
 
-B, S, SKV, H, HKV, DQK, DV, topk = 1, 1024, 32768, 128, 1, 576, 512, 2048
+B, S, SKV, H, HKV, DQK, DV, topk = 1, 1024, 32 * 1024, 128, 1, 576, 512, 2048
 dtype = torch.bfloat16
 
 
@@ -389,7 +384,9 @@ for b in range(B):
         for h in range(HKV):
             i_i = torch.randperm(max(1, t))[:topk]
             indices[b, t, h, :len(i_i)] = i_i
+
 torch.npu.synchronize()
+
 # output = torch.empty((B, S, H, DV), dtype=dtype)
 workspace_1 = torch.zeros((core_num, 64, 512), dtype=dtype)
 workspace_2 = torch.zeros((core_num, 64, 64), dtype=dtype)
