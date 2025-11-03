@@ -36,7 +36,7 @@ def sparse_attention_fwd(
     # batch = 2
     seq_len = T.symbolic("seq_len")
 
-    block_table_len = T.symbolic("block_table_len")
+    block_table_len = 32768 // 128 #T.symbolic("block_table_len")
     # seq_len = 273
 
     # seq_len_kv = 44444 # T.symbolic("seq_len_kv")
@@ -233,11 +233,11 @@ def sparse_attention_fwd(
                                 for bi_i in range(BI // 2):
                                     index_i = indices_ub_[bi_i + vid * BI // 2]
                                     T.barrier_all()
-                                    block_idx = index_i // block_size
-                                    block_i = block_table[b_i, block_idx]
-                                    block_inter = index_i % block_size
-                                    T.barrier_all()
                                     if index_i > -1:
+                                        block_idx = index_i // block_size
+                                        block_i = block_table[b_i, block_idx]
+                                        block_inter = index_i % block_size
+                                        T.barrier_all()
                                         T.copy(KV[block_i, block_inter, 0, :D], kv_ub)
                                         T.copy(KV[block_i, block_inter, 0, D:], kv_tail_ub)
                                     else:
@@ -409,14 +409,14 @@ dtype = torch.bfloat16
 
 q = torch.randn((B, S, H, DQK), dtype=dtype)
 kv = torch.randn((block_num, block_size, 1, DQK), dtype=dtype)
-indices = torch.full((S, HKV, topk), SKV, dtype=torch.int32)
+indices = torch.full((S, HKV, topk), -1, dtype=torch.int32)
 
 for t in range(S):
     for h in range(HKV):
         i_i = torch.randperm(max(1, t))[:topk]
         indices[t, h, :len(i_i)] = i_i
 torch.npu.synchronize()
-# output = torch.empty((B, S, H, DV), dtype=dtype)
+
 workspace_1 = torch.zeros((core_num, 64, 512), dtype=dtype)
 workspace_2 = torch.zeros((core_num, 64, 64), dtype=dtype)
 workspace_3 = torch.zeros((core_num, 64, 64), dtype=torch.float)
@@ -428,7 +428,6 @@ block_table = torch.zeros((B, SKV // block_size), dtype=torch.int32)
 actual_q_len = torch.tensor([S] * B, dtype=torch.int32)
 actual_kv_len = torch.tensor([SKV] * B, dtype=torch.int32)
 
-
 torch.npu.synchronize()
 print("init successful!")
 
@@ -437,10 +436,4 @@ output = func(q, kv, indices, actual_q_len, actual_kv_len, block_table, workspac
 torch.npu.synchronize()
 
 print(output)
-# exit(0)
 
-# ref_output = ref_sparse_attention_fwd_interface(q, kv, indices)
-# torch.npu.synchronize()
-
-# torch.testing.assert_close(ref_output, output, rtol=1e-2, atol=1e-2)
-# print("Test Passed!")
