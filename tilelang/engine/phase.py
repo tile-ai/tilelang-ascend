@@ -53,7 +53,7 @@ def LowerAndLegalize(mod: IRModule, target: Target) -> IRModule:
     mod = tir.transform.BindTarget(target)(mod)
     # Identify and filter host tiling data for npu
     mod = tilelang.transform.HostProcesser()(mod)
-    mod = tilelang.transform.FrontendLegalize()(mod)
+    # mod = tilelang.transform.FrontendLegalize()(mod)
     # Simplify the IR expressions
     mod = tir.transform.Simplify()(mod)
     # Infer memory layouts for fragments and shared memory
@@ -68,8 +68,7 @@ def LowerAndLegalize(mod: IRModule, target: Target) -> IRModule:
     # that may have been introduced by safety checks
     mod = tir.transform.Simplify()(mod)
     # Try to vectorize loop with dynamic shape
-    mod = tilelang.transform.LoopVectorizeDynamic()(mod)
-
+    # mod = tilelang.transform.LoopVectorizeDynamic()(mod)
     return mod
 
 
@@ -88,4 +87,5 @@ def OptimizeForTarget(mod: IRModule, target: Target) -> IRModule:
     mod = tir.transform.RemoveNoOp()(mod)
     mod = tir.transform.RewriteUnsafeSelect()(mod)
     mod = tir.transform.HoistIfThenElse()(mod)
+    # print(mod)
     return mod

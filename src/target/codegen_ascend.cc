@@ -374,23 +374,9 @@ void CodeGenTileLangAscend::VisitExpr_(const FloorModNode *op,
 
 void CodeGenTileLangAscend::VisitExpr_(const BufferLoadNode *op,
                                        std::ostream &os) {
-  static int index = 0;
-  Array<PrimExpr> indices;
-  indices.push_back(0);
-
-  auto new_i = op->buffer->ElemOffset(indices).back();
   auto var_name = var_idmap_[op->buffer->data.get()];
-
-  auto new_var_name = var_name + "_scalar_" + std::to_string(index);
-
-  this->PrintIndent();
-  this->stream << "auto " << new_var_name << "= " << var_name << ".GetValue("
-               << PrintExpr(op->indices.back()) << ");\n";
-  this->PrintIndent();
-  this->stream << "AscendC::PipeBarrier<PIPE_ALL>();\n";
-  os << new_var_name;
-  index++;
-  // os << var_name << "_scalar";
+  os << var_name << ".GetValue("
+                << PrintExpr(op->indices.back()) << ")";
 }
 
 void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
@@ -1373,12 +1359,10 @@ void CodeGenTileLangAscend::AddFunction(const GlobalVar &gvar,
 
   auto global_symbol = f->GetAttr<String>(tvm::attr::kGlobalSymbol);
 
-  address_map_ = f->GetAttr<Map<Var, PrimExpr>>("address_map").value();
-
-  use_swizzle_ = f->GetAttr<Bool>("use_swizzle").value();
-
-  tiling_map_ = f->GetAttr<Map<Var, PrimExpr>>("tiling_map").value();
-  var_sequence_ = f->GetAttr<Array<Var>>("var_sequence").value();
+  address_map_ = f->GetAttr<Map<Var, PrimExpr>>("address_map").value_or(Map<Var, PrimExpr>());
+  use_swizzle_ = f->GetAttr<Bool>("use_swizzle").value_or(Bool(false));
+  tiling_map_ = f->GetAttr<Map<Var, PrimExpr>>("tiling_map").value_or(Map<Var, PrimExpr>());
+  var_sequence_ = f->GetAttr<Array<Var>>("var_sequence").value_or(Array<Var>());
   ICHECK(global_symbol.defined())
       << "CodeGenC: Expect PrimFunc to have the global_symbol attribute";
   bool no_alias = f->HasNonzeroAttr(tir::attr::kNoAlias);

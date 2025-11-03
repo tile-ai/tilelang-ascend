@@ -1,0 +1,20 @@
+bisheng --cce-aicore-arch=dav-c220 \
+    -O2 -std=c++17 -xcce \
+    -mllvm -cce-aicore-stack-size=0x8000 \
+    -mllvm -cce-aicore-function-stack-size=0x8000 \
+    -mllvm -cce-aicore-record-overflow=true \
+    -mllvm -cce-aicore-addr-transform \
+    -mllvm -cce-aicore-dcci-insert-for-scalar=false \
+    -DL2_CACHE_HINT \
+    -I${ASCEND_HOME_PATH}/include/experiment/runtime \
+    -I${ASCEND_HOME_PATH}/compiler/tikcpp \
+    -I${ASCEND_HOME_PATH}/compiler/tikcpp/tikcfw \
+    -I${ASCEND_HOME_PATH}/compiler/tikcpp/tikcfw/impl \
+    -I${ASCEND_HOME_PATH}/compiler/tikcpp/tikcfw/interface \
+    -I${ASCEND_HOME_PATH}/include \
+    -I${ASCEND_HOME_PATH}/include/experiment/msprof \
+    -I../../3rdparty/catlass/include \
+    -I../../src/ \
+    -L${ASCEND_HOME_PATH}/lib64 -Wno-macro-redefined -Wno-ignored-attributes \
+    -lruntime -lstdc++ -lascendcl -lm -ltiling_api -lplatform -lc_sec -ldl \
+    -fPIC --shared $1 -o kernel_lib.so

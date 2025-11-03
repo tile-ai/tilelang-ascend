@@ -259,7 +259,7 @@ def gatherb(dst: Buffer, src0: Buffer, offset: Buffer, repeat_time, dst_blk_stri
 def select(dst: Union[Buffer, BufferRegion], selMask: Buffer, src0: Union[Buffer, BufferRegion], src1: Union[Buffer, BufferLoad, PrimExpr], selMode: str):
     def retrieve_shape(object: Union[Buffer, BufferRegion]) -> List[int]:
         if isinstance(object, Buffer):
-            return object.shape
+            return list(object.shape)
         elif isinstance(object, BufferRegion):
             region = object.region
             shape = []
@@ -272,7 +272,7 @@ def select(dst: Union[Buffer, BufferRegion], selMask: Buffer, src0: Union[Buffer
     dst_shape = retrieve_shape(dst)
     src0_shape = retrieve_shape(src0)
 
-    assert tuple(dst_shape) == tuple(src0_shape), "dst and src0 must have the same shape"
+    assert dst_shape == src0_shape, "dst and src0 must have the same shape"
 
     def retrieve_ptr(object: Union[Buffer, BufferRegion], access_type: str = "r") -> PrimExpr:
         if isinstance(object, Buffer):
