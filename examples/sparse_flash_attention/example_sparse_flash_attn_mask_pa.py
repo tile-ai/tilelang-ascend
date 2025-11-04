@@ -36,7 +36,7 @@ def sparse_attention_fwd(
     # batch = 2
     seq_len = T.symbolic("seq_len")
 
-    block_table_len = 32768 // 128 #T.symbolic("block_table_len")
+    block_table_len = T.symbolic("block_table_len")
     # seq_len = 273
 
     # seq_len_kv = 44444 # T.symbolic("seq_len_kv")
@@ -227,8 +227,8 @@ def sparse_attention_fwd(
                                 T.barrier_all()
                                 valid_kv_len = T.Min(T.float32(s_i), T.float32(actual_len))
                                 T.barrier_all()
-                                T.compare(mask_ub, indices_ub_float, valid_kv_len, "LE")
-                                T.barrier_all()
+                                # T.compare(mask_ub, indices_ub_float, valid_kv_len, "LE")
+                                # T.barrier_all()
 
                                 for bi_i in range(BI // 2):
                                     index_i = indices_ub_[bi_i + vid * BI // 2]
@@ -253,10 +253,9 @@ def sparse_attention_fwd(
                                 T.fill(acc_s_ub_, 0.0)
                                 T.barrier_all()
 
-                                for i in T.serial(v_block):
-                                    # T.barrier_all()
-                                    T.select(acc_s_ub[i, :], mask_ub, acc_s_ub_[i, :], -T.infinity(accum_dtype), "VSEL_TENSOR_SCALAR_MODE")
-                                    T.barrier_all()
+                                # for i in T.serial(v_block):
+                                #     T.select(acc_s_ub[i, :], mask_ub, acc_s_ub_[i, :], -T.infinity(accum_dtype), "VSEL_TENSOR_SCALAR_MODE")
+                                #     T.barrier_all()
 
                                 T.copy(m_i, m_i_prev)
                                 T.barrier_all()
