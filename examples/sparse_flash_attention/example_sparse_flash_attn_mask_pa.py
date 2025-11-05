@@ -33,13 +33,10 @@ def sparse_attention_fwd(
     sm_scale = (1.0 / (dim + tail_dim))**0.5 if sm_scale is None else sm_scale
 
     batch = T.symbolic("batch")
-    # batch = 2
     seq_len = T.symbolic("seq_len")
 
     block_table_len = T.symbolic("block_table_len")
-    # seq_len = 273
 
-    # seq_len_kv = 44444 # T.symbolic("seq_len_kv")
     seq_len_kv = T.symbolic("seq_len_kv")
     head_kv = heads // kv_group
     q_shape = [batch, seq_len, heads, dim + tail_dim]
@@ -227,8 +224,8 @@ def sparse_attention_fwd(
                                 T.barrier_all()
                                 valid_kv_len = T.Min(T.float32(s_i), T.float32(actual_len))
                                 T.barrier_all()
-                                # T.compare(mask_ub, indices_ub_float, valid_kv_len, "LE")
-                                # T.barrier_all()
+                                T.compare(mask_ub, indices_ub_float, T.float32(actual_len - actual_q_len + s_i), "LE")
+                                T.barrier_all()
 
                                 for bi_i in range(BI // 2):
                                     index_i = indices_ub_[bi_i + vid * BI // 2]
@@ -253,9 +250,9 @@ def sparse_attention_fwd(
                                 T.fill(acc_s_ub_, 0.0)
                                 T.barrier_all()
 
-                                # for i in T.serial(v_block):
-                                #     T.select(acc_s_ub[i, :], mask_ub, acc_s_ub_[i, :], -T.infinity(accum_dtype), "VSEL_TENSOR_SCALAR_MODE")
-                                #     T.barrier_all()
+                                for i in T.serial(v_block):
+                                    T.select(acc_s_ub[i, :], mask_ub, acc_s_ub_[i, :], -T.infinity(accum_dtype), "VSEL_TENSOR_SCALAR_MODE")
+                                    T.barrier_all()
 
                                 T.copy(m_i, m_i_prev)
                                 T.barrier_all()
@@ -344,7 +341,7 @@ def sparse_attention_fwd(
     return main
 
 
-core_num = 20
+core_num = 24
 
 block_num = 516
 block_size = 128
@@ -402,7 +399,7 @@ def ref_sparse_attention_fwd_interface(q,
     o = o.reshape(b, sq, h, dim_v)
     return o.to(torch.bfloat16)
 
-B, S, SKV, H, HKV, DQK, DV, topk = 1, 1024, 32768, 128, 1, 576, 512, 2048
+B, S, SKV, H, HKV, DQK, DV, topk = 1, 512, 32 * 1024, 128, 1, 576, 512, 2048
 dtype = torch.bfloat16
 
 
@@ -435,4 +432,3 @@ output = func(q, kv, indices, actual_q_len, actual_kv_len, block_table, workspac
 torch.npu.synchronize()
 
 print(output)
-
