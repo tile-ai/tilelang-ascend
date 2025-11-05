@@ -224,7 +224,7 @@ def sparse_attention_fwd(
                                 T.barrier_all()
                                 valid_kv_len = T.Min(T.float32(s_i), T.float32(actual_len))
                                 T.barrier_all()
-                                T.compare(mask_ub, indices_ub_float, T.float32(actual_len - actual_q_len + s_i), "LE")
+                                T.compare(mask_ub, indices_ub_float, T.float32(actual_len - act_q_len + s_i), "LE")
                                 T.barrier_all()
 
                                 for bi_i in range(BI // 2):
