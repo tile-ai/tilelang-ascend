@@ -7,6 +7,8 @@ torch.manual_seed(0)
 
 tilelang.disable_cache()
 
+core_num = 24
+
 
 @tilelang.jit(out_idx=[3])
 def sparse_attention_fwd(
@@ -19,6 +21,7 @@ def sparse_attention_fwd(
     sm_scale=None,
     is_causal=True,
     block_I=64,
+    dtype="bfloat16"
 ):
     assert dim == tilelang.math.next_power_of_2(
         dim), f"haven't check padding correctness yet, dim={dim}"
@@ -44,7 +47,6 @@ def sparse_attention_fwd(
     indices_shape = [batch, seq_len, kv_group, topk]
     # lse_shape = [batch, seq_len, heads]
     indices_dtype = "int32"
-    dtype = "float16"
     accum_dtype = "float"
 
     H = head_kv
@@ -76,24 +78,21 @@ def sparse_attention_fwd(
             KV: T.Tensor(kv_shape, dtype),  # type: ignore
             Indices: T.Tensor(indices_shape, indices_dtype),  # type: ignore
             Output: T.Tensor(o_shape, dtype),  # type: ignore
-            workspace_1: T.Tensor([*block_num, BI, D],
+            workspace_1: T.Tensor([core_num, BI, D],
                                   dtype),  # T.Tensor([block_num, BI, D], dtype),
-            workspace_2: T.Tensor([*block_num, BI, D_tail],
+            workspace_2: T.Tensor([core_num, BI, D_tail],
                                   dtype),  # T.Tensor([block_num, BI, D_tail], dtype),
             workspace_3: T.Tensor(
-                [*block_num, H_per_block, BI],
+                [core_num, H_per_block, BI],
                 accum_dtype),  # T.Tensor([block_num, H_per_block, BI], accum_dtype),
-            workspace_4: T.Tensor([*block_num, H_per_block, BI],
+            workspace_4: T.Tensor([core_num, H_per_block, BI],
                                   dtype),  # T.Tensor([block_num, H_per_block, BI], dtype),
             workspace_5: T.Tensor(
-                [*block_num, H_per_block, D],
+                [core_num, H_per_block, D],
                 accum_dtype),  # T.Tensor([block_num, H_per_block, D], accum_dtype),
     ):
-        with T.Kernel(seq_len * REPLICATE_H * batch * kv_group, is_npu=True) as (cid, vid):
-            bx = cid % (seq_len * REPLICATE_H)
-            by = cid // (seq_len * REPLICATE_H) % batch
-            bz = cid // (seq_len * REPLICATE_H) // batch % kv_group
-
+        with T.Kernel(core_num, is_npu=True) as (cid, vid):
+            # Alloc Memory
             q_l1 = T.alloc_L1([H_per_block, D], dtype)
             q_tail_l1 = T.alloc_L1([H_per_block, D_tail], dtype)
             kv_l1 = T.alloc_L1([BI, D], dtype)
@@ -149,162 +148,170 @@ def sparse_attention_fwd(
                 acc_o_half: 98944
             })
 
-            b_i = by
-            g_i = bz
+            # fixed core
+            for core_index in T.serial(T.ceildiv(seq_len * REPLICATE_H * batch * kv_group, core_num)):
+                pid = core_index * core_num + cid
+                if pid < seq_len * REPLICATE_H * batch * kv_group:
+                    bx = pid % (seq_len * REPLICATE_H)
+                    by = pid // (seq_len * REPLICATE_H) % batch
+                    bz = pid // (seq_len * REPLICATE_H) // batch % kv_group
+                    
+                    b_i = by
+                    g_i = bz
 
-            s_i = (bx // REPLICATE_H)
-            h_i = (bx % REPLICATE_H)
+                    s_i = (bx // REPLICATE_H)
+                    h_i = (bx % REPLICATE_H)
 
-            H0 = g_i * padded_H + (0 if REPLICATE_H == 1 else (bx % REPLICATE_H) * 64)
-            H1 = H0 + H_per_block
+                    H0 = g_i * padded_H + (0 if REPLICATE_H == 1 else (bx % REPLICATE_H) * 64)
+                    H1 = H0 + H_per_block
 
-            with T.Scope("C"):
-                T.copy(Q[b_i, s_i, H0:H1, :D], q_l1)
-                T.copy(Q[b_i, s_i, H0:H1, D:], q_tail_l1)
-                T.barrier_all()
-                for _ in T.serial(NI):
-                    T.wait_cross_flag(0)
-                    T.barrier_all()
-                    T.copy(workspace_1[b_i, s_i, h_i, g_i, 0:BI, 0:D], kv_l1)
-                    T.copy(workspace_2[b_i, s_i, h_i, g_i, 0:BI, 0:D_tail], kv_tail_l1)
-                    T.barrier_all()
-
-                    T.gemm_v0(q_l1, kv_l1, acc_s_l0c, transpose_B=True, init=True)
-                    T.barrier_all()
-                    T.gemm_v0(q_tail_l1, kv_tail_l1, acc_s_l0c, transpose_B=True)
-                    T.barrier_all()
-
-                    T.copy(acc_s_l0c, workspace_3[b_i, s_i, h_i, g_i, 0:H_per_block, 0:BI])
-                    T.barrier_all()
-                    T.set_cross_flag("FIX", 1)
-
-                    T.wait_cross_flag(2)
-                    T.barrier_all()
-
-                    T.copy(workspace_4[b_i, s_i, h_i, g_i, 0:H_per_block, 0:BI], acc_s_l1)
-                    T.barrier_all()
-
-                    T.gemm_v0(acc_s_l1, kv_l1, acc_o_l0c, init=True)
-                    T.barrier_all()
-
-                    T.copy(acc_o_l0c, workspace_5[b_i, s_i, h_i, g_i, 0:H_per_block, 0:D])
-                    T.barrier_all()
-
-                    T.set_cross_flag("FIX", 3)
-                    T.wait_cross_flag(4)
-                T.wait_cross_flag(8)
-
-            with T.Scope("V"):
-
-                T.fill(acc_o, 0.0)
-                T.fill(sumexp, 0.0)
-                T.fill(m_i, -2.0**30)
-                T.barrier_all()
-
-                for i_i in range(NI):
-                    T.copy(Indices[b_i, s_i, g_i, i_i * BI:i_i * BI + BI], indices_ub_)
-                    T.barrier_all()
-
-                    for bi_i in range(BI // 2):
-                        T.copy(KV[b_i, indices_ub_[bi_i + vid * BI // 2], g_i, :D], kv_ub)
-                        T.copy(KV[b_i, indices_ub_[bi_i + vid * BI // 2], g_i, D:], kv_tail_ub)
+                    with T.Scope("C"):
+                        T.copy(Q[b_i, s_i, H0:H1, :D], q_l1)
+                        T.copy(Q[b_i, s_i, H0:H1, D:], q_tail_l1)
                         T.barrier_all()
-                        T.copy(kv_ub, workspace_1[b_i, s_i, h_i, g_i, bi_i + vid * BI // 2, :])
-                        T.copy(kv_tail_ub, workspace_2[b_i, s_i, h_i, g_i, bi_i + vid * BI // 2, :])
+                        for _ in T.serial(NI):
+                            T.wait_cross_flag(0)
+                            T.barrier_all()
+                            T.copy(workspace_1[cid, 0:BI, 0:D], kv_l1)
+                            T.copy(workspace_2[cid, 0:BI, 0:D_tail], kv_tail_l1)
+                            T.barrier_all()
+
+                            T.gemm_v0(q_l1, kv_l1, acc_s_l0c, transpose_B=True, init=True)
+                            T.barrier_all()
+                            T.gemm_v0(q_tail_l1, kv_tail_l1, acc_s_l0c, transpose_B=True)
+                            T.barrier_all()
+
+                            T.copy(acc_s_l0c, workspace_3[cid, 0:H_per_block, 0:BI])
+                            T.barrier_all()
+                            T.set_cross_flag("FIX", 1)
+
+                            T.wait_cross_flag(2)
+                            T.barrier_all()
+
+                            T.copy(workspace_4[cid, 0:H_per_block, 0:BI], acc_s_l1)
+                            T.barrier_all()
+
+                            T.gemm_v0(acc_s_l1, kv_l1, acc_o_l0c, init=True)
+                            T.barrier_all()
+
+                            T.copy(acc_o_l0c, workspace_5[cid, 0:H_per_block, 0:D])
+                            T.barrier_all()
+
+                            T.set_cross_flag("FIX", 3)
+                            T.wait_cross_flag(4)
+                        # T.wait_cross_flag(8)
+
+                    with T.Scope("V"):
+
+                        T.fill(acc_o, 0.0)
+                        T.fill(sumexp, 0.0)
+                        T.fill(m_i, -2.0**30)
                         T.barrier_all()
 
-                    T.set_cross_flag("MTE3", 0)
+                        for i_i in range(NI):
+                            T.copy(Indices[b_i, s_i, g_i, i_i * BI:i_i * BI + BI], indices_ub_)
+                            T.barrier_all()
 
-                    T.fill(acc_s_ub, 0.0)
-                    T.barrier_all()
+                            for bi_i in range(BI // 2):
+                                T.copy(KV[b_i, indices_ub_[bi_i + vid * BI // 2], g_i, :D], kv_ub)
+                                T.copy(KV[b_i, indices_ub_[bi_i + vid * BI // 2], g_i, D:], kv_tail_ub)
+                                T.barrier_all()
+                                T.copy(kv_ub, workspace_1[cid, bi_i + vid * BI // 2, :])
+                                T.copy(kv_tail_ub, workspace_2[cid, bi_i + vid * BI // 2, :])
+                                T.barrier_all()
 
-                    T.copy(m_i, m_i_prev)
-                    T.barrier_all()
+                            T.set_cross_flag("MTE3", 0)
 
-                    T.wait_cross_flag(1)
-                    T.copy(
-                        workspace_3[b_i, s_i, h_i, g_i, vid * v_block:vid * v_block + v_block, :],
-                        acc_s_ub_)
-                    T.barrier_all()
+                            T.fill(acc_s_ub, 0.0)
+                            T.barrier_all()
 
-                    T.add(acc_s_ub, acc_s_ub, acc_s_ub_)
-                    T.barrier_all()
+                            T.copy(m_i, m_i_prev)
+                            T.barrier_all()
 
-                    T.mul(acc_s_ub, acc_s_ub, sm_scale)
-                    T.barrier_all()
+                            T.wait_cross_flag(1)
+                            T.copy(
+                                workspace_3[cid, vid * v_block:vid * v_block + v_block, :],
+                                acc_s_ub_)
+                            T.barrier_all()
 
-                    T.reduce_max(m_i, acc_s_ub, tmp_ub, dim=-1)
-                    T.barrier_all()
+                            T.add(acc_s_ub, acc_s_ub, acc_s_ub_)
+                            T.barrier_all()
 
-                    T.max(m_i, m_i, m_i_prev)
-                    T.barrier_all()
+                            T.mul(acc_s_ub, acc_s_ub, sm_scale)
+                            T.barrier_all()
 
-                    # alpha_ub = m_i_prev
+                            T.reduce_max(m_i, acc_s_ub, tmp_ub, dim=-1)
+                            T.barrier_all()
 
-                    T.sub(m_i_prev, m_i_prev, m_i)
-                    T.barrier_all()
+                            T.max(m_i, m_i, m_i_prev)
+                            T.barrier_all()
 
-                    T.exp(m_i_prev, m_i_prev)
-                    T.barrier_all()
+                            # alpha_ub = m_i_prev
 
-                    for h_i in range(v_block):
+                            T.sub(m_i_prev, m_i_prev, m_i)
+                            T.barrier_all()
+
+                            T.exp(m_i_prev, m_i_prev)
+                            T.barrier_all()
+
+                            for h_i in range(v_block):
+                                T.barrier_all()
+                                T.sub(acc_s_ub[h_i, :], acc_s_ub[h_i, :], m_i[h_i])  # -
+                                T.barrier_all()
+
+                            T.exp(acc_s_ub, acc_s_ub)
+                            T.barrier_all()
+
+                            T.reduce_sum(sumexp_i_ub, acc_s_ub, tmp_ub, dim=-1)
+                            T.barrier_all()
+
+                            T.mul(sumexp, sumexp, m_i_prev)  # check
+                            T.barrier_all()
+
+                            T.add(sumexp, sumexp, sumexp_i_ub)
+                            T.barrier_all()
+
+                            for h_i in range(v_block):
+                                T.barrier_all()
+                                T.mul(acc_o[h_i, :], acc_o[h_i, :], m_i_prev[h_i])
+                                T.barrier_all()
+
+                            T.copy(acc_s_ub, acc_s_half)
+                            T.barrier_all()
+
+                            T.copy(
+                                acc_s_half, workspace_4[cid,
+                                                        vid * v_block:vid * v_block + v_block, :])
+                            T.barrier_all()
+
+                            T.set_cross_flag("MTE3", 2)
+
+                            T.wait_cross_flag(3)
+                            T.barrier_all()
+
+                            T.copy(
+                                workspace_5[cid, vid * v_block:vid * v_block + v_block, :],
+                                acc_o_ub)
+                            T.barrier_all()
+
+                            T.add(acc_o, acc_o, acc_o_ub)
+                            T.barrier_all()
+
+                            T.set_cross_flag("V", 4)
+                            T.barrier_all()
+
+                        for h_i in range(v_block):
+                            T.barrier_all()
+                            T.div(acc_o[h_i, :], acc_o[h_i, :], sumexp[h_i])
+                            T.barrier_all()
+
+                        T.copy(acc_o, acc_o_half)
                         T.barrier_all()
-                        T.sub(acc_s_ub[h_i, :], acc_s_ub[h_i, :], m_i[h_i])  # -
+                        T.copy(acc_o_half, Output[b_i, s_i, H0 + vid * v_block:H1 + vid * v_block, :])
+
                         T.barrier_all()
 
-                    T.exp(acc_s_ub, acc_s_ub)
-                    T.barrier_all()
-
-                    T.reduce_sum(sumexp_i_ub, acc_s_ub, tmp_ub, dim=-1)
-                    T.barrier_all()
-
-                    T.mul(sumexp, sumexp, m_i_prev)  # check
-                    T.barrier_all()
-
-                    T.add(sumexp, sumexp, sumexp_i_ub)
-                    T.barrier_all()
-
-                    for h_i in range(v_block):
-                        T.barrier_all()
-                        T.mul(acc_o[h_i, :], acc_o[h_i, :], m_i_prev[h_i])
-                        T.barrier_all()
-
-                    T.copy(acc_s_ub, acc_s_half)
-                    T.barrier_all()
-
-                    T.copy(
-                        acc_s_half, workspace_4[b_i, s_i, h_i, g_i,
-                                                vid * v_block:vid * v_block + v_block, :])
-                    T.barrier_all()
-
-                    T.set_cross_flag("MTE3", 2)
-
-                    T.wait_cross_flag(3)
-                    T.barrier_all()
-
-                    T.copy(
-                        workspace_5[b_i, s_i, h_i, g_i, vid * v_block:vid * v_block + v_block, :],
-                        acc_o_ub)
-                    T.barrier_all()
-
-                    T.add(acc_o, acc_o, acc_o_ub)
-                    T.barrier_all()
-
-                    T.set_cross_flag("V", 4)
-                    T.barrier_all()
-
-                for h_i in range(v_block):
-                    T.barrier_all()
-                    T.div(acc_o[h_i, :], acc_o[h_i, :], sumexp[h_i])
-                    T.barrier_all()
-
-                T.copy(acc_o, acc_o_half)
-                T.barrier_all()
-                T.copy(acc_o_half, Output[b_i, s_i, H0 + vid * v_block:H1 + vid * v_block, :])
-
-                T.barrier_all()
-
-                T.set_cross_flag("MTE3", 8)
+                        # T.set_cross_flag("MTE3", 8)
 
     return main
 
@@ -361,11 +368,11 @@ def ref_sparse_attention_fwd_interface(q,
     p = p.view(b, g, -1, sq, sk)
     o = torch.einsum("bghmn,bngd->bmghd", p.type(v.dtype), v)
     o = o.reshape(b, sq, h, dim_v)
-    return o.to(torch.float16)
+    return o.to(torch.bfloat16)
 
 
 B, S, SKV, H, HKV, DQK, DV, topk = 2, 273, 44444, 128, 1, 576, 512, 2048
-dtype = torch.float16
+dtype = torch.bfloat16
 
 KV_stride = 1
 q_start_s_index = 4096 * 7
@@ -380,11 +387,11 @@ for b in range(B):
             indices[b, t, h, :len(i_i)] = i_i
 
 # output = torch.empty((B, S, H, DV), dtype=dtype)
-workspace_1 = torch.zeros((2, 273, 2, 1, 64, 512), dtype=dtype)
-workspace_2 = torch.zeros((2, 273, 2, 1, 64, 64), dtype=dtype)
-workspace_3 = torch.zeros((2, 273, 2, 1, 64, 64), dtype=torch.float)
-workspace_4 = torch.zeros((2, 273, 2, 1, 64, 64), dtype=dtype)
-workspace_5 = torch.zeros((2, 273, 2, 1, 64, 512), dtype=torch.float)
+workspace_1 = torch.zeros((core_num, 64, 512), dtype=dtype)
+workspace_2 = torch.zeros((core_num, 64, 64), dtype=dtype)
+workspace_3 = torch.zeros((core_num, 64, 64), dtype=torch.float)
+workspace_4 = torch.zeros((core_num, 64, 64), dtype=dtype)
+workspace_5 = torch.zeros((core_num, 64, 512), dtype=torch.float)
 
 torch.npu.synchronize()
 print("init successful!")
