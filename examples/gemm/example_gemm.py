@@ -61,7 +61,6 @@ a = torch.randn(M, K).half().npu()
 b = torch.randn(K, N).half().npu()
 c = torch.empty(M, N).half().npu()
 print("init successful!")
-print("c")
 
 c = func(a, b)
 
