@@ -521,6 +521,27 @@ def gather(dst: Buffer, src: Buffer, src_offset: Buffer, src_base_addr: PrimExpr
                           src_offset.access_ptr("r"), src_base_addr, count)
 
 
+def wholereducemax(dst: Buffer, src: Buffer, mask: PrimExpr, repeattimes: PrimExpr, dstrepstride: PrimExpr, srcblkstride: PrimExpr,
+                   srcrepstride: PrimExpr, ReduceOrder: str = "ORDER_VALUE_INDEX"):
+    
+    return T.call_extern("handle", "AscendC::WholeReduceMax", dst.access_ptr("w"), src.access_ptr("r"), mask, repeattimes, dstrepstride,
+                         srcblkstride, srcrepstride, ReduceOrder)
+
+
+def wholereducemin(dst: Buffer, src: Buffer, mask: PrimExpr, repeattimes: PrimExpr, dstrepstride: PrimExpr, srcblkstride: PrimExpr,
+                   srcrepstride: PrimExpr, ReduceOrder: str = "ORDER_VALUE_INDEX"):
+    
+    return T.call_extern("handle", "AscendC::WholeReduceMin", dst.access_ptr("w"), src.access_ptr("r"), mask, repeattimes, dstrepstride,
+                         srcblkstride, srcrepstride, ReduceOrder)
+
+
+def wholereducesum(dst: Buffer, src: Buffer, mask: PrimExpr, repeattimes: PrimExpr, dstrepstride: PrimExpr, srcblkstride: PrimExpr,
+                   srcrepstride: PrimExpr):
+    
+    return T.call_extern("handle", "AscendC::WholeReduceSum", dst.access_ptr("w"), src.access_ptr("r"), mask, repeattimes, dstrepstride,
+                         srcblkstride, srcrepstride)
+
+
 def reduce(out: Buffer, buffer: Buffer, tmp: Buffer, reduce_type: str, dim: int):
     dtype = _dtype(buffer)
     shape = f"{buffer.shape[0]}, {buffer.shape[1]}"
