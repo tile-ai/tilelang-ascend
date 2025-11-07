@@ -432,3 +432,4 @@ output = func(q, kv, indices, actual_q_len, actual_kv_len, block_table, workspac
 torch.npu.synchronize()
 
 print(output)
+print("Test Passed!")
