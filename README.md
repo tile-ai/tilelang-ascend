@@ -260,6 +260,43 @@ def matmul(M, N, K, block_M, block_N, block_K, K_L1, S1, S2, dtype="float16", ac
     return main
 ```
 
+### Automatic insertion of synchronization instruction
+
+We have supported automatic insertion of synchronization instructions within the core, which can be enabled by setting the enable_auto_sync attribute in the PrimFunc. Here is a simple example:
+
+```python
+@tilelang.jit(out_idx=[-1])
+def vec_add(M, N, block_M, block_N, dtype="float"):
+    m_num = M // block_M
+    n_num = N // block_N
+
+    VEC_NUM = 2
+
+    @T.prim_func
+    def main(
+            A: T.Tensor((M, N), dtype),
+            B: T.Tensor((M, N), dtype),
+            C: T.Tensor((M, N), dtype),
+    ):
+        # Enable by setting the enable_auto_sync attribute
+        T.func_attr({"enable_auto_sync": True})
+        with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
+            bx = cid // n_num
+            by = cid % n_num
+
+            a_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
+            b_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
+            c_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
+            with T.Scope("V"):
+                T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a_ub)
+                T.copy(B[bx * block_M + vid * block_M // VEC_NUM, by * block_N], b_ub)
+
+                T.add(c_ub, a_ub, b_ub)
+
+                T.copy(c_ub, C[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
+
+    return main
+```
 
 ### Dive Deep into TileLang Beyond GEMM
 
