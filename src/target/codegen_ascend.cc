@@ -413,7 +413,7 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
       auto dst_type = op->args[2].as<CallNode>()->args[0].as<CallNode>()->dtype;
 
       static const std::unordered_map<std::string, int> kCopyOpExtraArgs = {
-        {"copy_l0c_to_gm", 2},
+        {"copy_l0c_to_gm", 1},
         {"copy_gm_to_l1", 1},
         {"copy_l1_to_l0a", 0},
         {"copy_l1_to_l0b", 0},

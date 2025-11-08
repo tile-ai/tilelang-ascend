@@ -100,10 +100,10 @@ CATLASS_DEVICE void mma(LocalTensor<T1> A, LocalTensor<T1> B, LocalTensor<T2> C,
   // }
 }
 
-template <typename T1, typename T2, typename LayoutGM, uint32_t srcM, uint32_t srcN>
+template <typename T1, typename T2, typename LayoutGM, uint32_t srcM, uint32_t srcN, bool enRelu = false>
 CATLASS_DEVICE void copy_l0c_to_gm(GlobalTensor<T2> dstTensor,
                                    LocalTensor<T1> srcTensor,
-                                   uint32_t realDstN = 1, bool enRelu = false) {
+                                   uint32_t realDstN = 1) {
   auto layoutInL0C = tla::MakeLayoutL0C(srcM, srcN); 
   auto src = tla::MakeTensor<decltype(srcTensor), decltype(layoutInL0C),
                              AscendC::TPosition::CO1>(srcTensor, layoutInL0C);
@@ -115,7 +115,7 @@ CATLASS_DEVICE void copy_l0c_to_gm(GlobalTensor<T2> dstTensor,
   auto dst = MakeTensor<decltype(dstTensor), decltype(dst_LAYOUT),
                         AscendC::TPosition::GM>(dstTensor, dst_LAYOUT);
 
-  CopyL0CToGmTla<ArchTag, decltype(src), decltype(dst)> tileCopier;
+  CopyL0CToGmTla<ArchTag, decltype(src), decltype(dst), ScaleGranularity::NO_QUANT, enRelu> tileCopier;
   tileCopier(dst, src, 0);
 }
 
