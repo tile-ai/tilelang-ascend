@@ -287,13 +287,23 @@ private:
   }
 
   Stmt VisitStmt_(const IfThenElseNode* op) override {
+    std::vector<Stmt> stmts;
+    InsertSynchronization("PipeBarrier_ALL", stmts);
+
+    current_access_history_.clear();
     Stmt then_case = VisitStmt(op->then_case);
 
     Optional<Stmt> else_case;
     if (op->else_case.defined()) {
+        current_access_history_.clear();
         else_case = VisitStmt(op->else_case.value());
     }
-    return IfThenElse(op->condition, then_case, else_case);
+
+    stmts.push_back(IfThenElse(op->condition, then_case, else_case));
+
+    InsertSynchronization("PipeBarrier_ALL", stmts);
+    current_access_history_.clear();
+    return SeqStmt(stmts);
   }
 
   Stmt MergeAndRebuildForLoops(const Stmt& processed_stmt, const std::vector<LoopInfo>& loop_infos) {
@@ -1009,31 +1019,7 @@ private:
           std::string buffer_name = op->buffer->data->name_hint;
           accessed_buffers_.insert(buffer_name);
           
-          bool is_sliced = false;
-          
-          for (const auto& index : op->indices) {
-              if (auto int_imm = index.as<IntImmNode>()) {
-                  if (int_imm->value != 0) {
-                      is_sliced = true;
-                      break;
-                  }
-              } else {
-                  auto simplified = arith::Analyzer().Simplify(index);
-                  if (auto simplified_int = simplified.as<IntImmNode>()) {
-                      if (simplified_int->value != 0) {
-                          is_sliced = true;
-                          break;
-                      }
-                  } else {
-                      is_sliced = true;
-                      break;
-                  }
-              }
-          }
-          
-          if (is_sliced) {
-              sliced_buffers_.insert(buffer_name);
-          }
+          sliced_buffers_.insert(buffer_name);
           
           for (const auto& index : op->indices) {
               VisitExpr(index);
@@ -1179,21 +1165,14 @@ private:
             info.buffer_name = var->name_hint;
           }
 
-          if (auto offset = call->args[2].as<IntImmNode>()) {
-            if (offset->value != 0) {
-              info.is_sliced = true;
-            }
-          } else {
-            auto simplified_offset = arith::Analyzer().Simplify(call->args[2]);
-            if (auto int_imm = simplified_offset.as<IntImmNode>()) {
-              if (int_imm->value != 0) {
-                info.is_sliced = true;
-              }
-            } else {
+          ExprAccessAnalyzer analyzer;
+          analyzer(call->args[2]);
+          for (const auto& buffer_name : analyzer.GetAccessedBuffers()) {
+            if (analyzer.IsBufferSliced(buffer_name)) {
               info.is_sliced = true;
             }
           }
-          
+
           if (auto access_mask = call->args[4].as<IntImmNode>()) {
             int mask = access_mask->value;
             info.is_read = (mask & 1) != 0;

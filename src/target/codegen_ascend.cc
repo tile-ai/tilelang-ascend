@@ -738,12 +738,12 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
       if (op->args[3].as<CallNode>()) {
         auto var_name = print_buffer_offset(op->args[3].as<CallNode>(), false);
         this->PrintIndent();
+        this->stream << "AscendC::PipeBarrier<PIPE_ALL>();\n";
+        this->PrintIndent();
         this->stream << "auto " << var_name << "_scalar = " << var_name
                      << ".GetValue(" << PrintExpr(op->args[op->args.size() - 2])
                      << ");\n";
         var_names.push_back(var_name + "_scalar");
-        this->PrintIndent();
-        this->stream << "AscendC::PipeBarrier<PIPE_ALL>();\n";
       } else {
         var_names.push_back(PrintExpr(op->args[op->args.size() - 2]));
       }
@@ -769,12 +769,12 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
         auto var_name = print_buffer_offset(op->args[3].as<CallNode>(), false);
 
         this->PrintIndent();
+        this->stream << "AscendC::PipeBarrier<PIPE_ALL>();\n";
+        this->PrintIndent();
         this->stream << "auto " << var_name << "_scalar = 1.0f / " << var_name
                      << ".GetValue(" << PrintExpr(op->args[op->args.size() - 2])
                      << ");\n";
         var_names.push_back(var_name + "_scalar");
-        this->PrintIndent();
-        this->stream << "AscendC::PipeBarrier<PIPE_ALL>();\n";
       } else {
         var_names.push_back(PrintExpr(op->args[op->args.size() - 2]));
       }
@@ -801,12 +801,12 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
         auto var_name = print_buffer_offset(op->args[3].as<CallNode>(), false);
 
         this->PrintIndent();
+        this->stream << "AscendC::PipeBarrier<PIPE_ALL>();\n";
+        this->PrintIndent();
         this->stream << "auto " << var_name << "_scalar = " << var_name
                      << ".GetValue(" << PrintExpr(op->args[op->args.size() - 2])
                      << ");\n";
         var_names.push_back("- " + var_name + "_scalar");
-        this->PrintIndent();
-        this->stream << "AscendC::PipeBarrier<PIPE_ALL>();\n";
       } else {
         var_names.push_back(PrintExpr(op->args[op->args.size() - 2]));
       }
@@ -850,12 +850,12 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
       if (op->args[para_idx].as<CallNode>()) {
         auto var_name = print_buffer_offset(op->args[para_idx].as<CallNode>(), false);
         this->PrintIndent();
+        this->stream << "AscendC::PipeBarrier<PIPE_ALL>();\n";
+        this->PrintIndent();
         this->stream << "auto " << var_name << "_scalar = " << var_name
                      << ".GetValue(" << PrintExpr(op->args[para_idx+1])
                      << ");\n";
         var_names.push_back(var_name + "_scalar");
-        this->PrintIndent();
-        this->stream << "AscendC::PipeBarrier<PIPE_ALL>();\n";
         para_idx++;
       } else {
         var_names.push_back(PrintExpr(op->args[op->args.size() - 3]));
@@ -894,12 +894,12 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
         if (op->args[5].as<CallNode>()) {
           auto var_name5 = print_buffer_offset(op->args[5].as<CallNode>(), false);
           this->PrintIndent();
+          this->stream << "AscendC::PipeBarrier<PIPE_ALL>();\n";
+          this->PrintIndent();
           this->stream << "auto " << var_name5 << "_scalar = " << var_name5
                       << ".GetValue(" << PrintExpr(op->args[5])
                       << ");\n";
           var_names.push_back(var_name5 + "_scalar");
-          this->PrintIndent();
-          this->stream << "AscendC::PipeBarrier<PIPE_ALL>();\n";
         }
 
         auto var_name6 = Downcast<StringImm>(op->args[6])->value;
