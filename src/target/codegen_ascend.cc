@@ -64,6 +64,9 @@ std::string CodeGenTileLangAscend::Finish() {
   decl_stream << "#include \"acl/acl.h\"\n";
   decl_stream << "#include <runtime/rt_ffts.h>\n";
   decl_stream << "using namespace Catlass;\n";
+  decl_stream << "using uint = unsigned int;\n";
+  decl_stream << "using uchar = unsigned char;\n";
+  decl_stream << "using ushort = unsigned short;\n";
   decl_stream << "\n";
   std::ostringstream code;
   code << decl_stream.str();
@@ -377,6 +380,15 @@ void CodeGenTileLangAscend::VisitExpr_(const BufferLoadNode *op,
   auto var_name = var_idmap_[op->buffer->data.get()];
   os << var_name << ".GetValue("
                 << PrintExpr(op->indices.back()) << ")";
+}
+
+void CodeGenTileLangAscend::VisitStmt_(const BufferStoreNode *op) {
+  auto var_name = var_idmap_[op->buffer->data.get()];
+  this->PrintIndent();
+  this->stream << var_name << ".SetValue("
+                << PrintExpr(op->indices.back())
+                << ", " << PrintExpr(op->value)
+                << ");\n";
 }
 
 void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {

@@ -1,6 +1,8 @@
 import tilelang
 from tilelang import DataType, language as T
 import torch
+import sfa_golden as ref
+import numpy as np
 
 torch.set_default_device('npu')
 torch.manual_seed(0)
@@ -120,6 +122,7 @@ def sparse_attention_fwd(
             acc_o_ub = T.alloc_ub([v_block, D], accum_dtype)
             acc_o_half = T.alloc_ub([v_block, D], dtype)
             mask_ub = T.alloc_ub([BI // 8], "uint8")
+            mask_ub_2 = T.alloc_ub([BI // 8], "uint8")
 
 
             # Currently manually set the address.
@@ -152,6 +155,7 @@ def sparse_attention_fwd(
                 acc_o_ub: 98944,
                 acc_o_half: 98944,
                 mask_ub: 164480,
+                mask_ub_2: 164512,
             })
 
             # fixed core
@@ -225,7 +229,9 @@ def sparse_attention_fwd(
                                 valid_kv_len = T.Min(T.float32(s_i), T.float32(actual_len))
                                 T.barrier_all()
                                 T.compare(mask_ub, indices_ub_float, T.float32(actual_len - act_q_len + s_i), "LE")
+                                T.compare(mask_ub_2, indices_ub_float, T.float32(-1.0), "NE")
                                 T.barrier_all()
+                                T.and_tl(mask_ub, mask_ub, mask_ub_2)
 
                                 for bi_i in range(BI // 2):
                                     index_i = indices_ub_[bi_i + vid * BI // 2]
@@ -428,8 +434,22 @@ torch.npu.synchronize()
 print("init successful!")
 
 output = func(q, kv, indices, actual_q_len, actual_kv_len, block_table, workspace_1, workspace_2, workspace_3, workspace_4, workspace_5)
-
 torch.npu.synchronize()
 
-print(output)
+indices_ref = indices.unsqueeze(0)
+import math
+scale_value = math.sqrt(1 / DQK)
+sparse_block_size = 1
+cpu_out = ref.cpu_sparse_flash_attention(
+            q[..., 0:512], kv[..., 0:512], kv[..., 0:512], indices_ref, scale_value, sparse_block_size,
+            actual_seq_lengths_query=actual_q_len, actual_seq_lengths_kv=actual_kv_len,
+            query_rope=q[..., 512:], key_rope=kv[..., 512:],
+            layout_query='BSND', layout_kv='PA_BSND', sparse_mode=3, block_table=block_table)
+
+cpu_out = torch.from_numpy(cpu_out).to(dtype).to("npu")
+
+print(f"output:{output}, \nshape:{output.shape}")
+print(f"cpu_out:{cpu_out}, \nshape:{cpu_out.shape}")
+
+torch.testing.assert_close(cpu_out, output, rtol=1e-2, atol=1e-2)
 print("Test Passed!")
