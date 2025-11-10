@@ -24,7 +24,7 @@ srcRepStride = 8
 
 
 @tilelang.jit(out_idx=[-1])
-def blockreducemax(M, N, block_M, block_N, repeat, mask, dstRepStride, srcBlkStride, srcRepStride, dtype="float16"):
+def blockReduceMax(M, N, block_M, block_N, repeat, mask, dstRepStride, srcBlkStride, srcRepStride, dtype="float16"):
     m_num = M // block_M
     n_num = N // block_N
 
@@ -46,7 +46,7 @@ def blockreducemax(M, N, block_M, block_N, repeat, mask, dstRepStride, srcBlkStr
                 T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a_ub)
 
                 T.barrier_all()
-                T.blockreducemax(b_ub, a_ub, repeat, mask, dstRepStride, srcBlkStride, srcRepStride)
+                T.blockReduceMax(b_ub, a_ub, repeat, mask, dstRepStride, srcBlkStride, srcRepStride)
                 T.barrier_all()
 
                 T.copy(b_ub, B[bx * block_M + vid * block_M // VEC_NUM, by * block_N // DATA_BLOCK_HALF_NUM])
@@ -54,7 +54,7 @@ def blockreducemax(M, N, block_M, block_N, repeat, mask, dstRepStride, srcBlkStr
     return main
 
 
-func = blockreducemax(M, N, block_M, block_N, repeat, mask, dstRepStride, srcBlkStride, srcRepStride)
+func = blockReduceMax(M, N, block_M, block_N, repeat, mask, dstRepStride, srcBlkStride, srcRepStride)
 
 torch.manual_seed(0)
 
