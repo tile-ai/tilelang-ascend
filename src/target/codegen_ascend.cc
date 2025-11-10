@@ -938,7 +938,7 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
 
     } else if (op_name == "AscendC::BlockReduceMax") {
       std::vector<std::string> var_names;
-      for (int i = 1; i < 2; i++) {
+      for (int i = 1; i < 3; i++) {
         auto var_name = print_buffer_offset(op->args[i].as<CallNode>());
         var_names.push_back(var_name);
       }
@@ -950,13 +950,13 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
           this->stream << ", ";
         }
       }
-      for (int i = 2; i < op->args.size(); i++) {
+      for (int i = 3; i < op->args.size(); i++) {
         this->stream << ", " << PrintExpr(op->args[i]);
       }
       this->stream << ");\n";
     } else if (op_name == "AscendC::BlockReduceMin") {
       std::vector<std::string> var_names;
-      for (int i = 1; i < 2; i++) {
+      for (int i = 1; i < 3; i++) {
         auto var_name = print_buffer_offset(op->args[i].as<CallNode>());
         var_names.push_back(var_name);
       }
@@ -968,13 +968,13 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
           this->stream << ", ";
         }
       }
-      for (int i = 2; i < op->args.size(); i++) {
+      for (int i = 3; i < op->args.size(); i++) {
         this->stream << ", " << PrintExpr(op->args[i]);
       }
       this->stream << ");\n";
     } else if (op_name == "AscendC::BlockReduceSum") {
       std::vector<std::string> var_names;
-      for (int i = 1; i < 2; i++) {
+      for (int i = 1; i < 3; i++) {
         auto var_name = print_buffer_offset(op->args[i].as<CallNode>());
         var_names.push_back(var_name);
       }
@@ -986,7 +986,7 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
           this->stream << ", ";
         }
       }
-      for (int i = 2; i < op->args.size(); i++) {
+      for (int i = 3; i < op->args.size(); i++) {
         this->stream << ", " << PrintExpr(op->args[i]);
       }
       this->stream << ");\n";
