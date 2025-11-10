@@ -54,7 +54,7 @@ def blockreducemax(M, N, block_M, block_N, repeat, mask, dstRepStride, srcBlkStr
     return main
 
 
-func = wholereducemax(M, N, block_M, block_N, repeat, mask, dstRepStride, srcBlkStride, srcRepStride)
+func = blockreducemax(M, N, block_M, block_N, repeat, mask, dstRepStride, srcBlkStride, srcRepStride)
 
 torch.manual_seed(0)
 
