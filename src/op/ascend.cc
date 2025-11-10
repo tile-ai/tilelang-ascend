@@ -196,7 +196,11 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
     int src_ndim = src->shape.size(), dst_ndim = dst->shape.size();
 
     if (dst.scope() == "global") {
-      ss << src->shape[src_ndim - 2] << ", " << src->shape[src_ndim - 1] << ">";
+      ss << src->shape[src_ndim - 2] << ", " << src->shape[src_ndim - 1]; 
+      if (config.l0c2gm) {
+        ss << ", " << enRelu;
+      }
+      ss<< ">";
     } else if (src.scope() == "global") {
       ss << dst->shape[dst_ndim - 2] << ", " << dst->shape[dst_ndim - 1] << ">";
     } else {
@@ -236,7 +240,6 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
 
   if (config.l0c2gm) {
     new_args.push_back(compute_strideN(dst, dst_extents));
-    new_args.push_back(enRelu);
   }
 
   if (config.gm2l1) {
