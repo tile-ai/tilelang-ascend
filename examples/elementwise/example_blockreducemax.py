@@ -68,8 +68,8 @@ print("init successful!")
 b = func(a)
 print("b", b)
 
-# num_groups = M * N // dataBlockHalfNum
-num_groups = 2
+num_groups = M * N // dataBlockHalfNum
+# num_groups = 2
 ref_b = torch.zeros((1, num_groups)).to(torch.float16)
 a_flag = a.reshape(-1)
 for i in range(num_groups):
