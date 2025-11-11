@@ -39,7 +39,7 @@ def blockReduceMax(M, N, block_M, block_N, repeat, mask, dstRepStride, srcBlkStr
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
             by = cid % n_num
-            print(B)
+            print("B", B[bx * block_M + vid * block_M // VEC_NUM, by * block_N // dataBlockNum])
             a_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
             b_ub = T.alloc_ub((block_M // VEC_NUM, block_N // dataBlockNum), dtype)
             with T.Scope("V"):
