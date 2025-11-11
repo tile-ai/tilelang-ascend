@@ -937,24 +937,9 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
       this->stream << ");\n";
 
     } else if (op_name.find("thread_block_swizzle") != std::string::npos) {
-      this->PrintIndent();
       std::string expr = PrintExpr(op->args[1]);
-      if (!block_id_.empty()) {
-        size_t pos = 0;
-        const std::string replacement = block_id_ + '_';
-        const size_t block_len = block_id_.length();
-        while ((pos = expr.find(block_id_, pos)) != std::string::npos) {
-          expr.replace(pos, block_len, replacement);
-          pos += replacement.length();
-        }
-      }
-      this->stream << "auto " << this->block_id_ << " = " << op_name << "("
-                   << expr << ");\n";
-      if (op->args.size() > 2) {
-        this->PrintIndent();
-        this->stream << "if (" << this->block_id_
-                     << " >= " << PrintExpr(op->args[2]) << ") continue;\n";
-      }
+      os << op_name << "("
+                   << expr << ")";
     }
 
     else if (op_name.find("gemm_v0") != std::string::npos) {
