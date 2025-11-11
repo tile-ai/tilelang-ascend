@@ -57,15 +57,12 @@ func = blockReduceSum(M, N, block_M, block_N, repeat, mask, dstRepStride, srcBlk
 
 torch.manual_seed(0)
 
-# a = torch.randn(M, N, dtype=torch.float16).npu()
-
 a = torch.full((M, N), fill_value=65500).half().npu()
 print(a)
 torch.npu.synchronize()
 print("init successful!")
 
 b = func(a)
-print("b", b)
 
 num_groups = M * N // dataBlockHalfNum
 ref_b = torch.zeros((1, num_groups)).to(torch.float16)
@@ -78,8 +75,6 @@ for i in range(num_groups):
     ref_b[0, i] = sum_val
 ref_b = ref_b.reshape(M, N // dataBlockHalfNum)
 ref_b = ref_b.npu().to(dtype=torch.float16)
-print("ref_b", ref_b)
-print(func.get_kernel_source())
 
 torch.testing.assert_close(b, ref_b, rtol=1e-2, atol=1e-2)
 print("Kernel Output Match!")

@@ -75,7 +75,6 @@ for i in range(num_groups):
     ref_b[0, i] = min_val
 ref_b = ref_b.reshape(M, N // dataBlockHalfNum)
 ref_b = ref_b.npu().to(dtype=torch.float16)
-print(func.get_kernel_source())
 
 torch.testing.assert_close(b, ref_b, rtol=1e-2, atol=1e-2)
 print("Kernel Output Match!")
