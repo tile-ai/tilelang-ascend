@@ -58,8 +58,8 @@ func = blockReduceMax(M, N, block_M, block_N, repeat, mask, dstRepStride, srcBlk
 
 torch.manual_seed(0)
 
-# a = torch.randn(M, N, dtype=torch.float16).npu()
-a = torch.randn(2, 16, dtype=torch.float16).npu()
+a = torch.randn(M, N, dtype=torch.float16).npu()
+# a = torch.randn(2, 16, dtype=torch.float16).npu()
 print("a", a)
 
 torch.npu.synchronize()
