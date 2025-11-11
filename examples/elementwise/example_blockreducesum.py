@@ -65,6 +65,7 @@ torch.npu.synchronize()
 print("init successful!")
 
 b = func(a)
+print("b", b)
 
 num_groups = M * N // dataBlockHalfNum
 ref_b = torch.zeros((1, num_groups)).to(torch.float16)
