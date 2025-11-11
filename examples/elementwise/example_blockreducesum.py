@@ -24,7 +24,7 @@ srcRepStride = 8
 
 
 @tilelang.jit(out_idx=[-1])
-def blockReduceMin(M, N, block_M, block_N, repeat, mask, dstRepStride, srcBlkStride, srcRepStride, dataBlockNum, dtype="float16"):
+def blockReduceSum(M, N, block_M, block_N, repeat, mask, dstRepStride, srcBlkStride, srcRepStride, dataBlockNum, dtype="float16"):
     m_num = M // block_M
     n_num = N // block_N
 
@@ -45,7 +45,7 @@ def blockReduceMin(M, N, block_M, block_N, repeat, mask, dstRepStride, srcBlkStr
                 T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a_ub)
 
                 T.barrier_all()
-                T.blockReduceMin(b_ub, a_ub, repeat, mask, dstRepStride, srcBlkStride, srcRepStride)
+                T.blockReduceSum(b_ub, a_ub, repeat, mask, dstRepStride, srcBlkStride, srcRepStride)
                 T.barrier_all()
 
                 T.copy(b_ub, B[bx * block_M + vid * block_M // VEC_NUM, by * block_N // dataBlockNum])
@@ -53,7 +53,7 @@ def blockReduceMin(M, N, block_M, block_N, repeat, mask, dstRepStride, srcBlkStr
     return main
 
 
-func = blockReduceMin(M, N, block_M, block_N, repeat, mask, dstRepStride, srcBlkStride, srcRepStride, dataBlockHalfNum)
+func = blockReduceSum(M, N, block_M, block_N, repeat, mask, dstRepStride, srcBlkStride, srcRepStride, dataBlockHalfNum)
 
 torch.manual_seed(0)
 
@@ -71,8 +71,8 @@ for i in range(num_groups):
     start = i * dataBlockHalfNum
     end = start + dataBlockHalfNum
     group = a_flag[start:end]
-    min_val = torch.min(group).item()
-    ref_b[0, i] = min_val
+    sum_val = torch.sum(group).item()
+    ref_b[0, i] = sum_val
 ref_b = ref_b.reshape(M, N // dataBlockHalfNum)
 ref_b = ref_b.npu().to(dtype=torch.float16)
 print(func.get_kernel_source())
