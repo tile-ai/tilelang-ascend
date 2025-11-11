@@ -63,6 +63,7 @@ torch.npu.synchronize()
 print("init successful!")
 
 b = func(a)
+print("b", b)
 
 num_groups = M * N // dataBlockHalfNum
 ref_b = torch.zeros((1, num_groups)).to(torch.float16)
@@ -75,6 +76,7 @@ for i in range(num_groups):
     ref_b[0, i] = max_val
 ref_b = ref_b.reshape(M, N // dataBlockHalfNum)
 ref_b = ref_b.npu().to(dtype=torch.float16)
+print("ref_b", ref_b)
 print(func.get_kernel_source())
 
 torch.testing.assert_close(b, ref_b, rtol=1e-2, atol=1e-2)
