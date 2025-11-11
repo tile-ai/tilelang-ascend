@@ -16,7 +16,8 @@ N = 512
 block_M = 2
 block_N = 128
 dataBlockHalfNum = 16
-mask = 128
+# mask = 128
+mask = 64
 repeat = 1
 dstRepStride = 1
 srcBlkStride = 1
@@ -57,7 +58,8 @@ func = blockReduceMax(M, N, block_M, block_N, repeat, mask, dstRepStride, srcBlk
 
 torch.manual_seed(0)
 
-a = torch.randn(M, N, dtype=torch.float16).npu()
+# a = torch.randn(M, N, dtype=torch.float16).npu()
+a = torch.randn(2, 16, dtype=torch.float16).npu()
 print("a", a)
 
 torch.npu.synchronize()
@@ -66,7 +68,8 @@ print("init successful!")
 b = func(a)
 print("b", b)
 
-num_groups = M * N // dataBlockHalfNum
+# num_groups = M * N // dataBlockHalfNum
+num_groups = 2
 ref_b = torch.zeros((1, num_groups)).to(torch.float16)
 a_flag = a.reshape(-1)
 for i in range(num_groups):
