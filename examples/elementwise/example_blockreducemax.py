@@ -24,24 +24,23 @@ srcRepStride = 8
 
 
 @tilelang.jit(out_idx=[-1])
-def blockReduceMax(M, N, block_M, block_N, repeat, mask, dstRepStride, srcBlkStride, srcRepStride, dtype="float16"):
+def blockReduceMax(M, N, block_M, block_N, repeat, mask, dstRepStride, srcBlkStride, srcRepStride, dataBlockNum, dtype="float16"):
     m_num = M // block_M
     n_num = N // block_N
 
     VEC_NUM = 2
-    DATA_BLOCK_HALF_NUM = 16
 
     @T.prim_func
     def main(
             A: T.Tensor((M, N), dtype),
-            B: T.Tensor((M, N // DATA_BLOCK_HALF_NUM), dtype),
+            B: T.Tensor((M, N // dataBlockNum), dtype),
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
             by = cid % n_num
 
             a_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
-            b_ub = T.alloc_ub((block_M // VEC_NUM, block_N // DATA_BLOCK_HALF_NUM), dtype)
+            b_ub = T.alloc_ub((block_M // VEC_NUM, block_N // dataBlockNum), dtype)
             with T.Scope("V"):
                 T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a_ub)
 
@@ -49,12 +48,12 @@ def blockReduceMax(M, N, block_M, block_N, repeat, mask, dstRepStride, srcBlkStr
                 T.blockReduceMax(b_ub, a_ub, repeat, mask, dstRepStride, srcBlkStride, srcRepStride)
                 T.barrier_all()
 
-                T.copy(b_ub, B[bx * block_M + vid * block_M // VEC_NUM, by * block_N // DATA_BLOCK_HALF_NUM])
+                T.copy(b_ub, B[bx * block_M + vid * block_M // VEC_NUM, by * block_N // dataBlockNum])
 
     return main
 
 
-func = blockReduceMax(M, N, block_M, block_N, repeat, mask, dstRepStride, srcBlkStride, srcRepStride)
+func = blockReduceMax(M, N, block_M, block_N, repeat, mask, dstRepStride, srcBlkStride, srcRepStride, dataBlockHalfNum)
 
 torch.manual_seed(0)
 
