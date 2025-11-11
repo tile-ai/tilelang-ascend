@@ -48,7 +48,7 @@ def blockReduceMax(M, N, block_M, block_N, repeat, mask, dstRepStride, srcBlkStr
                 # T.blockReduceMax(b_ub, a_ub, repeat, mask, dstRepStride, srcBlkStride, srcRepStride)
                 # T.barrier_all()
 
-                T.copy(b_ub, B[bx * block_M + vid * block_M // VEC_NUM, by * block_N // dataBlockNum])
+                # T.copy(b_ub, B[bx * block_M + vid * block_M // VEC_NUM, by * block_N // dataBlockNum])
 
     return main
 
@@ -76,9 +76,6 @@ for i in range(num_groups):
     end = start + dataBlockHalfNum
     group = a_flag[start:end]
     max_val = torch.max(group).item()
-    print(i % 8)
-    if i % 8 > 3:
-        max_val = 1
     ref_b[0, i] = max_val
 ref_b = ref_b.reshape(M, N // dataBlockHalfNum)
 ref_b = ref_b.npu().to(dtype=torch.float16)
