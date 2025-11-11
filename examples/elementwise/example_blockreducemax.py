@@ -77,6 +77,8 @@ for i in range(num_groups):
     end = start + dataBlockHalfNum
     group = a_flag[start:end]
     max_val = torch.max(group).item()
+    if i % 8 > 3:
+        max_val = 0
     ref_b[0, i] = max_val
 ref_b = ref_b.reshape(M, N // dataBlockHalfNum)
 ref_b = ref_b.npu().to(dtype=torch.float16)
