@@ -57,8 +57,10 @@ func = blockReduceSum(M, N, block_M, block_N, repeat, mask, dstRepStride, srcBlk
 
 torch.manual_seed(0)
 
-a = torch.randn(M, N, dtype=torch.float16).npu()
+# a = torch.randn(M, N, dtype=torch.float16).npu()
 
+a = torch.full((M, N), fill_value=65500).half().npu()
+print(a)
 torch.npu.synchronize()
 print("init successful!")
 
