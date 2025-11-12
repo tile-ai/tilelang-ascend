@@ -56,7 +56,7 @@ CodeGenTileLangAscend::CodeGenTileLangAscend() {
 }
 
 void CodeGenTileLangAscend::PrintFuncPrefix(std::ostream &os) {
-  os << "extern \"C\" CATLASS_GLOBAL\n";
+  os << "extern \"C\" __global__ __aicore__ ";
 }
 
 std::string CodeGenTileLangAscend::Finish() {
@@ -984,6 +984,46 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
                    << b_name << "[" << b_offset << "], " << c_name << "["
                    << c_offset << "], ascend_l0a, ascend_l0b, "
                    << PrintExpr(op->args[4]) << ");\n";
+    } else if (op_name == "AscendC::PRINTF" || op_name == "AscendC::printf") {
+      this->PrintIndent();
+      this->stream << op_name << "(";
+      for (size_t i = 1; i < op->args.size(); ++i) {
+        if (i > 1) {
+          this->stream << ", ";
+        }
+        if (auto *arg = op->args[i].as<CallNode>()) {
+          if (arg->op.same_as(builtin::tvm_access_ptr())) {
+            this->stream << print_buffer_offset(arg, false) << ".GetPhyAddr()";
+          } else {
+            std::cout << "CallNode with builtin::tvm_access_ptr is requested, but got " << op->args[i] << ".\n";
+          }
+        } else {
+          this->stream << PrintExpr(op->args[i]); 
+        }
+      }
+      this->stream << ");\n";
+    } else if (op_name == "AscendC::DumpTensor") {
+      this->PrintIndent();
+      this->stream << op_name << "(";
+      this->stream << print_buffer_offset(op->args[1].as<CallNode>()) << ",";
+      this->stream << PrintExpr(op->args[2]) << ", ";
+      this->stream << PrintExpr(op->args[3]) << ");\n";
+    } else if (op_name == "tl::ascend::DumpTensor") {
+      decl_stream << "#include \"tl_templates/ascend/printf.h\"\n";   
+      this->PrintIndent();
+      this->stream << op_name << "(";
+      this->stream << print_buffer_offset(op->args[1].as<CallNode>()) << ",";
+      this->stream << PrintExpr(op->args[2]) << ", ";
+      this->stream << PrintExpr(op->args[3]) << ", ";
+      this->stream << PrintExpr(op->args[4]) << ", ";
+      this->stream << "(uint32_t[]){";
+      for (int i = 5; i < op->args.size(); ++i) {
+        if (i > 5) {
+          this->stream << ", ";
+        }
+        this->stream << PrintExpr(op->args[i]);
+      }
+      this->stream << "});\n";
     }
 
     if (op_name == "AscendC::AutoBarrier") {
@@ -1183,7 +1223,7 @@ void CodeGenTileLangAscend::VisitExpr_(const FloatImmNode *op,
 void CodeGenTileLangAscend::PreFunctionBody(const PrimFunc &f) {
   int func_scope = this->BeginScope();
   this->PrintIndent();
-  stream << "AscendC::SetSyncBaseAddr(fftsAddr);\n";
+  stream << "KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_MIX_AIC_1_2)\n";
   this->PrintIndent();
   stream << "AscendC::TPipe pipe;\n\n";
   ICHECK(this->para_.size() % 3 == 0)

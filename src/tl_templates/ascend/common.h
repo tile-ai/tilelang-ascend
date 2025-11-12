@@ -8,6 +8,7 @@
 
 #define CUDART_INF_F 1.0f / 0.0f
 
+
 namespace tl::ascend {
 using namespace Catlass;
 using namespace tla;
@@ -463,5 +464,4 @@ CATLASS_DEVICE void gemmL1(LocalTensor<T1> A, LocalTensor<T1> B,
     AscendC::PipeBarrier<PIPE_ALL>();
   }
 }
-
 } // namespace tl::ascend

@@ -586,3 +586,31 @@ def compare(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferLoad, PrimExpr]
 
 def sync_all():
     return T.call_extern("handle", f"AscendC::SyncAll<false>")
+
+def printf(format_str: str, *args):
+    format_str =  format_str.replace('%p', '0x%x')
+    escaped_format = format_str.encode('unicode_escape').decode('utf-8')
+
+    args_list = list(args)
+    for i in range(len(args_list)):
+        if isinstance(args_list[i], Buffer):
+            args_list[i] = args_list[i].access_ptr("r")
+        if isinstance(args_list[i], str):
+            args_list[i] = args_list[i].encode('unicode_escape').decode('utf-8')
+    new_args = tuple(args_list)
+
+    all_args = (escaped_format, ) + new_args
+    return T.call_extern("handle", f"AscendC::PRINTF", *all_args)
+
+def dump_tensor(tensor: Buffer, desc: int, dump_size: int, shape_info: tuple=()):
+    if not isinstance(desc, int) or desc < 0 or desc > 0xFFFFFFFF:
+        raise ValueError(f"desc must be uint32, but your desc is {desc}")
+    if not isinstance(dump_size, int) or dump_size < 0 or dump_size > 0xFFFFFFFF:
+        raise ValueError(f"dump_size must be uint32, but your dump_size is {dump_size}")
+    
+    tensor_ptr = tensor.access_ptr("r")
+    if (len(shape_info) == 0):
+        return T.call_extern("handle", f"AscendC::DumpTensor", tensor_ptr, desc, dump_size)
+    else:
+        return T.call_extern("handle", f"tl::ascend::DumpTensor", tensor_ptr, desc, dump_size, len(shape_info), *shape_info)
+        
