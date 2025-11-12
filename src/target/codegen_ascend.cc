@@ -936,9 +936,11 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
       }
       this->stream << ");\n";
 
-    } else if (op_name == "AscendC::BlockReduceMax") {
+    } else if (op_name == "AscendC::BlockReduceMax" || op_name == "AscendC::BlockReduceMin" ||
+               op_name == "AscendC::BlockReduceSum") {
       std::vector<std::string> var_names;
-      for (int i = 1; i < 3; i++) {
+      int exprStartIndex = 3;
+      for (int i = 1; i < exprStartIndex; i++) {
         auto var_name = print_buffer_offset(op->args[i].as<CallNode>());
         var_names.push_back(var_name);
       }
@@ -950,43 +952,7 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
           this->stream << ", ";
         }
       }
-      for (int i = 3; i < op->args.size(); i++) {
-        this->stream << ", " << PrintExpr(op->args[i]);
-      }
-      this->stream << ");\n";
-    } else if (op_name == "AscendC::BlockReduceMin") {
-      std::vector<std::string> var_names;
-      for (int i = 1; i < 3; i++) {
-        auto var_name = print_buffer_offset(op->args[i].as<CallNode>());
-        var_names.push_back(var_name);
-      }
-      this->PrintIndent();
-      this->stream << op_name << "(";
-      for (int i = 0; i < var_names.size(); i++) {
-        this->stream << var_names[i];
-        if (i != var_names.size() - 1) {
-          this->stream << ", ";
-        }
-      }
-      for (int i = 3; i < op->args.size(); i++) {
-        this->stream << ", " << PrintExpr(op->args[i]);
-      }
-      this->stream << ");\n";
-    } else if (op_name == "AscendC::BlockReduceSum") {
-      std::vector<std::string> var_names;
-      for (int i = 1; i < 3; i++) {
-        auto var_name = print_buffer_offset(op->args[i].as<CallNode>());
-        var_names.push_back(var_name);
-      }
-      this->PrintIndent();
-      this->stream << op_name << "(";
-      for (int i = 0; i < var_names.size(); i++) {
-        this->stream << var_names[i];
-        if (i != var_names.size() - 1) {
-          this->stream << ", ";
-        }
-      }
-      for (int i = 3; i < op->args.size(); i++) {
+      for (int i = exprStartIndex; i < op->args.size(); i++) {
         this->stream << ", " << PrintExpr(op->args[i]);
       }
       this->stream << ");\n";
