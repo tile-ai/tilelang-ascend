@@ -19,19 +19,19 @@ def cast_tl(M, N, block_M, block_N, mode, count, scale):
     m_num = M // block_M
     n_num = N // block_N
 
-    VEC_NUM = 2
+    VEC_NUM = 1
 
     @T.prim_func
     def main(
-            A: T.Tensor((M, N), "int32"),
-            B: T.Tensor((M, N), "float16"),
+            A: T.Tensor((M, N), "float"),
+            B: T.Tensor((M, N), "float"),
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
             by = cid % n_num
 
-            a_ub = T.alloc_ub((block_M // VEC_NUM, block_N), "int32")
-            b_ub = T.alloc_ub((block_M // VEC_NUM, block_N), "float16")
+            a_ub = T.alloc_ub((block_M // VEC_NUM, block_N), "float")
+            b_ub = T.alloc_ub((block_M // VEC_NUM, block_N), "float")
             with T.Scope("V"):
                 T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a_ub)
 
@@ -45,19 +45,26 @@ def cast_tl(M, N, block_M, block_N, mode, count, scale):
 
     return main
 
-
-func = cast_tl(M, N, 128, 256, "CAST_NONE", 256, 1.0)
+func = cast_tl(M, N, 1024, 1024, "CAST_RINT", 256, 1.0)
 
 torch.manual_seed(0)
 
-a = torch.randn(M, N).npu()
+# a = torch.randn(M, N).npu()
+
+a = torch.full((M, N), 0.5, dtype=torch.float).npu()
+rint("------src value--------")
+print(a)
 
 torch.npu.synchronize()
 print("init successful!")
 
 b = func(a)
+print("------ascend c value--------")
+print(b)
 
-ref_b = a.to(torch.float16)
+ref_b = a.to(torch.float).npu()
+print("------true value--------")
+print(ref_b)
 
 torch.testing.assert_close(b, ref_b, rtol=1e-2, atol=1e-2)
 print("Kernel Output Match!")
