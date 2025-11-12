@@ -13,8 +13,6 @@ def _dtype(buf):
     return type_map[buf.dtype]
 
 
-
-
 def wait_cross_flag(flag: int):
     return T.call_extern("handle", "AscendC::CrossCoreWaitFlag", flag)
 
