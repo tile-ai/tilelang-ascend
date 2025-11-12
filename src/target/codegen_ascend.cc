@@ -1025,8 +1025,43 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
       this->stream << "AscendC::WaitFlag<AscendC::HardEvent::" << event_type
                   << ">(" << event_id << ");\n";
       return;
-    }
+    } else if (op_name.find("cast") != std::string::npos) {
+      std::vector<std::string> var_names;
 
+      for (int i = 1; i <= 2; i++) {
+        auto var_name = print_buffer_offset(op->args[i].as<CallNode>());
+        var_names.push_back(var_name);
+      }
+
+      for (int i = 3; i <= 4; i++) {
+        auto var_name = PrintExpr(op->args[i]);
+        var_names.push_back(var_name);
+      }
+
+      this->PrintIndent();
+      this->stream << op_name << "(";
+      
+      for (int i = 0; i < var_names.size(); i++) {
+        this->stream << var_names[i];
+        if (i != var_names.size() - 1) {
+          this->stream << ", ";
+        }
+      }
+
+      this->stream << ");\n";
+
+    } else if (op_name == "AscendC::SetDeqScale") {
+      this->PrintIndent();
+
+      this->stream << op_name << "(";
+      this->stream << PrintExpr(op->args[1]);
+
+      for (int i = 1; i < op->args.size(); i++) {
+        this->stream << ", " << PrintExpr(op->args[i]);
+      }
+
+      this->stream << ");\n";
+    }
   } else {
     tvm::Dump(op);
     CodeGenC::VisitExpr_(op, os);
