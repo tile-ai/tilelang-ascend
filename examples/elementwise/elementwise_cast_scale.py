@@ -52,7 +52,7 @@ torch.manual_seed(0)
 torch.set_printoptions(precision=4, threshold=float('inf'), edgeitems=3,linewidth=150)
 
 # 涉及setdeqscale
-a2 = torch.full((M, N), 1, dtype=torch.float).npu()
+a2 = torch.full((M, N), 1, dtype=torch.int32).npu()
 print("------src value--------")
 print(a2)
 
