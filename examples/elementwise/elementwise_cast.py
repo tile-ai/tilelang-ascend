@@ -52,7 +52,7 @@ torch.manual_seed(0)
 # a = torch.randn(M, N).npu()
 
 a = torch.full((M, N), 0.5, dtype=torch.float).npu()
-rint("------src value--------")
+print("------src value--------")
 print(a)
 
 torch.npu.synchronize()
