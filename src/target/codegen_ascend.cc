@@ -433,8 +433,8 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
       static const std::unordered_map<std::string, int> kCopyOpExtraArgs = {
         {"copy_l0c_to_gm", 1},
         {"copy_gm_to_l1", 1},
-        {"copy_l1_to_l0a", 0},
-        {"copy_l1_to_l0b", 0},
+        {"copy_l1_to_l0a", 2},
+        {"copy_l1_to_l0b", 2},
         {"copy_gm_to_ub", 1},
         {"copy_ub_to_gm", 1},
         {"copy_ub_to_ub", 0}
@@ -483,7 +483,8 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
       this->PrintIndent();
       this->stream << op_name << "(" << a_name << "[" << a_offset << "],"
                    << b_name << "[" << b_offset << "]," << c_name << "["
-                   << c_offset << "], " << PrintExpr(op->args[4]) << ");\n";
+                   << c_offset << "], " << PrintExpr(op->args[4]) << ", "
+                   << PrintExpr(op->args[5]) << ");\n";
     } else if (op_name.find("AscendC::CrossCoreWaitFlag") !=
                std::string::npos) {
       this->PrintIndent();
