@@ -1028,7 +1028,6 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
     } else if (op_name == "AscendC::Cast") {
       this->PrintIndent();
       this->stream << op_name << "(";
-      std::cout << op_name << "(";
 
       std::vector<std::string> var_names;
       for (int i = 1; i <= 2; i++) {
@@ -1038,32 +1037,24 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
 
       for (int i = 0; i < var_names.size(); i++) {
         this->stream << var_names[i];
-        std::cout << var_names[i];
         if (i != var_names.size() - 1) {
           this->stream << ", ";
-          std::cout << ", ";
         }
       }
 
       this->stream << ", " << Downcast<StringImm>(op->args[3])->value;
-      std::cout << ", " << Downcast<StringImm>(op->args[3])->value;
 
       this->stream << ", " << PrintExpr(op->args[4]);
-      std::cout << ", " << PrintExpr(op->args[4]);
 
       this->stream << ");\n";
-      std::cout << ");\n";
 
     } else if (op_name == "AscendC::SetDeqScale") {
       this->PrintIndent();
 
       this->stream << op_name << "(";
-      std::cout << op_name << "(";
       this->stream << PrintExpr(op->args[1]);
-      std::cout << PrintExpr(op->args[1]);
 
       this->stream << ");\n";
-      std::cout << ");\n";
     }
   } else {
     tvm::Dump(op);

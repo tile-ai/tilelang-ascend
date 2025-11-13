@@ -59,7 +59,7 @@ a = torch.full((M, N), 0.5, dtype=torch.float).npu()
 torch.npu.synchronize()
 print("init successful!")
 
-print(func_1.get_kernel_source())
+# print(func_1.get_kernel_source())
 
 b = func_1(a)
 # print("------ascend c value--------")

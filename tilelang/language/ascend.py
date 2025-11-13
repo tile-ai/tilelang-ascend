@@ -595,17 +595,9 @@ def cast_tl(dst: Buffer, src: Buffer, mode: str, count: PrimExpr):
 
     # int32转half的场景，roundMode不生效，与SetDeqScale(half scale)接口配合使用
     # if (src.dtype == "int32" and dst.dtype == "float16"):
-    #     print("------------setDeqScale------------")
     #     T.call_extern("handle", f"AscendC::SetDeqScale", scale)
     
     return T.call_extern("handle", f"AscendC::Cast", dst.access_ptr("w"), src.access_ptr("r"), round_mode, count)
-    # return T.call_extern("handle", f"tl::ascend::cast<{_dtype(dst)}, {_dtype(src)}", round_mode, count, dst.access_ptr("w"), src.access_ptr("r"))
 
 def set_deq_scale(scale: PrimExpr):
     return T.call_extern("handle", f"AscendC::SetDeqScale", scale)
-
-#     elif isinstance(scale, float):
-#         return T.call_extern("handle", f"AscendC::SetDeqScale", scale, offset, sign_mode)
-
-# def set_vdeq_scale(vdeq: buffer, vdeq_scale: float[], vdeq_offset: int16_t[], vdeq_sign_mode: bool[]):
-#         return T.call_extern("handle", f"tl::ascend::SetDeqScale", vdeq.access_ptr("r"), vdeq_scale, vdeq_offset, vdeq_sign_mode)
