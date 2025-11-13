@@ -1059,13 +1059,12 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
       this->PrintIndent();
 
       this->stream << op_name << "(";
+      std::cout << op_name << "(";
       this->stream << PrintExpr(op->args[1]);
-
-      for (int i = 1; i < op->args.size(); i++) {
-        this->stream << ", " << PrintExpr(op->args[i]);
-      }
+      std::cout << PrintExpr(op->args[1]);
 
       this->stream << ");\n";
+      std::cout << ");\n";
     }
   } else {
     tvm::Dump(op);
