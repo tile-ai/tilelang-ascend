@@ -192,8 +192,8 @@ def npu_gemm(A, B, C, init=False):
     Bptr = retrieve_ptr(B, "r")
     Cptr = retrieve_ptr(C, "rw")
 
-    return T.call_extern("handle", f"tl::ascend::mma<{_dtype(A)}, {_dtype(C)}, {M}, {N}, {K}>",
-                         Aptr, Bptr, Cptr, init)
+    return T.call_extern("handle", f"tl::ascend::mma<{_dtype(A)}, {_dtype(C)}, {M}, {N}>",
+                         Aptr, Bptr, Cptr, init, K)
 
 def loop_break():
     """Break out of the innermost loop.

@@ -40,10 +40,10 @@ CATLASS_DEVICE void copy_gm_to_l1(LocalTensor<T> dstTensor,
   tileCopier(dst, src);
 }
 
-template <typename T, typename LayoutL1, uint32_t srcM, uint32_t srcN,
-          uint32_t dstM, uint32_t dstN>
+template <typename T, typename LayoutL1, uint32_t srcM, uint32_t srcN>
 CATLASS_DEVICE void copy_l1_to_l0a(LocalTensor<T> dstTensor,
-                                   LocalTensor<T> srcTensor) {
+                                   LocalTensor<T> srcTensor,
+                                   uint32_t dstM, uint32_t dstN) {
   using LayoutL1_ = Catlass::detail::TagToLayout_t<T, LayoutL1>;
   constexpr auto layout = tla::MakeLayout<T, LayoutL1_>(srcM, srcN);
   auto src_LAYOUT = MakeLayoutTile(layout, tla::MakeShape(dstM, dstN));
@@ -52,7 +52,7 @@ CATLASS_DEVICE void copy_l1_to_l0a(LocalTensor<T> dstTensor,
                         AscendC::TPosition::A1>(srcTensor, src_LAYOUT);
 
   using LayoutL0A_ = Catlass::detail::TagToLayout_t<T, LayoutL0A>;
-  constexpr auto layoutAInL0 = tla::MakeLayout<T, LayoutL0A_>(dstM, dstN);
+  auto layoutAInL0 = tla::MakeLayout<T, LayoutL0A_>(dstM, dstN);
   auto dst = tla::MakeTensor<decltype(dstTensor), decltype(layoutAInL0),
                              AscendC::TPosition::A2>(dstTensor, layoutAInL0);
 
@@ -60,10 +60,10 @@ CATLASS_DEVICE void copy_l1_to_l0a(LocalTensor<T> dstTensor,
   tileCopier(dst, src);
 }
 
-template <typename T, typename LayoutL1, uint32_t srcM, uint32_t srcN,
-          uint32_t dstM, uint32_t dstN>
+template <typename T, typename LayoutL1, uint32_t srcM, uint32_t srcN>
 CATLASS_DEVICE void copy_l1_to_l0b(LocalTensor<T> dstTensor,
-                                   LocalTensor<T> srcTensor) {
+                                   LocalTensor<T> srcTensor,
+                                   uint32_t dstM, uint32_t dstN) {
   using LayoutL1_ = Catlass::detail::TagToLayout_t<T, LayoutL1>;
   constexpr auto LAYOUT = tla::MakeLayout<T, LayoutL1_>(srcM, srcN);
   auto src_LAYOUT = MakeLayoutTile(LAYOUT, tla::MakeShape(dstM, dstN));
@@ -73,7 +73,7 @@ CATLASS_DEVICE void copy_l1_to_l0b(LocalTensor<T> dstTensor,
                         AscendC::TPosition::A1>(srcTensor, src_LAYOUT);
 
   using LayoutL0B_ = Catlass::detail::TagToLayout_t<T, LayoutL0B>;
-  constexpr auto layoutBInL0 = tla::MakeLayout<T, LayoutL0B_>(dstM, dstN);
+  auto layoutBInL0 = tla::MakeLayout<T, LayoutL0B_>(dstM, dstN);
   auto dst = tla::MakeTensor<decltype(dstTensor), decltype(layoutBInL0),
                              AscendC::TPosition::B2>(dstTensor, layoutBInL0);
 
@@ -82,9 +82,9 @@ CATLASS_DEVICE void copy_l1_to_l0b(LocalTensor<T> dstTensor,
 }
 
 
-template <typename T1, typename T2, uint32_t M, uint32_t N, uint32_t K>
-CATLASS_DEVICE void mma(LocalTensor<T1> A, LocalTensor<T1> B, LocalTensor<T2> C,
-                        bool init, uint8_t unitFlag = 0) {
+template <typename T1, typename T2, uint32_t M, uint32_t N>
+CATLASS_DEVICE void mma(LocalTensor<T1> const A, LocalTensor<T1> const B, LocalTensor<T2> const C,
+                        bool init, uint32_t K, uint8_t unitFlag = 0) {
   MmadParams mmadParams;
   mmadParams.m = M;
   mmadParams.n = N;
@@ -257,6 +257,8 @@ CATLASS_DEVICE void reduce_max(LocalTensor<T> const &dstTensor,
                                  true);
 }
 
+static constexpr uint32_t L0AB_EVENT = 0;
+
 template <typename T1, typename T2, uint32_t M, uint32_t N, uint32_t K,
           bool transpose_A = false, bool transpose_B = false>
 CATLASS_DEVICE void
@@ -266,22 +268,41 @@ gemm_v0(LocalTensor<T1> const &A, LocalTensor<T1> const &B,
         AscendC::TBuf<AscendC::TPosition::B2> &l0b_, bool clear) {
   auto l0a = l0a_.Get<T1>();
   auto l0b = l0b_.Get<T1>();
-  AscendC::PipeBarrier<PIPE_ALL>();
-  if constexpr (!transpose_A) {
-    tl::ascend::copy_l1_to_l0a<T1, layout::zN, M, K, M, K>(l0a, A);
-  } else {
-    tl::ascend::copy_l1_to_l0a<T1, layout::nZ, M, K, M, K>(l0a, A);
+  uint32_t kL0Size = 128;
+  uint32_t kL0split = (K + kL0Size - 1) / kL0Size;
+  uint32_t kL0Tail = K - (kL0split - 1) * kL0Size;
+  bool initflag = false;
+  SetFlag<HardEvent::M_MTE1>(L0AB_EVENT);
+  SetFlag<HardEvent::M_MTE1>(L0AB_EVENT + 1);
+  for (uint32_t kL0Idx = 0; kL0Idx < kL0split; kL0Idx++) {
+    initflag = (clear && (kL0Idx == 0));
+    if (kL0Idx == kL0split - 1) {
+        kL0Size = kL0Tail;
+    }
+    WaitFlag<HardEvent::M_MTE1>(L0AB_EVENT + kL0Idx % 2);
+    if constexpr (!transpose_A) {
+      tl::ascend::copy_l1_to_l0a<T1, layout::zN, M, K>(
+        l0a[(kL0Idx % 2) * (M * kL0Size)], A[kL0Idx * M * kL0Size], M, kL0Size);
+    } else {
+      tl::ascend::copy_l1_to_l0a<T1, layout::nZ, M, K>(
+        l0a[(kL0Idx % 2) * (M * kL0Size)], A[kL0Idx * 16 * kL0Size], M, kL0Size);
+    }
+    if constexpr (!transpose_B) {
+      tl::ascend::copy_l1_to_l0b<T1, layout::zN, K, N>(
+        l0b[(kL0Idx % 2) * (N * kL0Size)], B[kL0Idx * 16 * kL0Size], kL0Size, N);
+    } else {
+      tl::ascend::copy_l1_to_l0b<T1, layout::nZ, K, N>(
+        l0b[(kL0Idx % 2) * (N * kL0Size)], B[kL0Idx * N * kL0Size], kL0Size, N);
+    }
+    SetFlag<HardEvent::MTE1_M>(L0AB_EVENT + kL0Idx % 2);
+    WaitFlag<HardEvent::MTE1_M>(L0AB_EVENT + kL0Idx % 2);
+    tl::ascend::mma<T1, T2, M, N>(
+      l0a[(kL0Idx % 2) * (M * kL0Size)], l0b[(kL0Idx % 2) * (N * kL0Size)], C, initflag, kL0Size);
+    AscendC::PipeBarrier<PIPE_ALL>();
+    SetFlag<HardEvent::M_MTE1>(L0AB_EVENT + kL0Idx % 2);
   }
-  if constexpr (!transpose_B) {
-    tl::ascend::copy_l1_to_l0b<T1, layout::zN, K, N, K, N>(l0b, B);
-  } else {
-    tl::ascend::copy_l1_to_l0b<T1, layout::nZ, K, N, K, N>(l0b, B);
-  }
-
-  AscendC::PipeBarrier<PIPE_ALL>();
-
-  tl::ascend::mma<T1, T2, M, N, K>(l0a, l0b, C, clear);
-  AscendC::PipeBarrier<PIPE_ALL>();
+  WaitFlag<HardEvent::M_MTE1>(L0AB_EVENT);
+  WaitFlag<HardEvent::M_MTE1>(L0AB_EVENT + 1);
 }
 
 template <typename T>
