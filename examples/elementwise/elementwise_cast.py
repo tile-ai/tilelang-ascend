@@ -45,7 +45,7 @@ def cast_tl(M, N, block_M, block_N, mode, count, scale):
 
     return main
 
-func = cast_tl(M, N, 128, 256, "CAST_RINT", 128, 1.0)
+func = cast_tl(M, N, 128, 256, "CAST_CEIL", 128, 1.0)
 
 torch.manual_seed(0)
 
