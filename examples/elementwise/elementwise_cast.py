@@ -7,8 +7,8 @@ import torch
 tilelang.cache.clear_cache()
 
 parser = argparse.ArgumentParser(description="NPU Kernel Compilation")
-parser.add_argument("--m", type=int, default=1024, help="Matrix M dimension")
-parser.add_argument("--n", type=int, default=1024, help="Matrix N dimension")
+parser.add_argument("--m", type=int, default=256, help="Matrix M dimension")
+parser.add_argument("--n", type=int, default=256, help="Matrix N dimension")
 args = parser.parse_args()
 
 M = args.m
@@ -45,7 +45,7 @@ def cast_tl(M, N, block_M, block_N, mode, count, scale):
 
     return main
 
-func = cast_tl(M, N, 1024, 1024, "CAST_RINT", 256, 1.0)
+func = cast_tl(M, N, 128, 256, "CAST_RINT", 128, 1.0)
 
 torch.manual_seed(0)
 
