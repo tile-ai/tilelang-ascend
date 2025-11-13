@@ -65,8 +65,8 @@ b2 = func_2(a2)
 print("------ascend c value--------")
 print(b2)
 
-ref_b2 = a2.to(torch.float).npu()
-# ref_b = torch.full((M, N), 1.0, dtype=torch.float).npu()
+# ref_b2 = a2.to(torch.float).npu()
+ref_b = torch.full((M, N), 1.0, dtype=torch.float16).npu()
 print("------true value--------")
 print(ref_b2)
 
