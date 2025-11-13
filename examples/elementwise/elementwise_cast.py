@@ -15,7 +15,7 @@ M = args.m
 N = args.n
 
 @tilelang.jit(out_idx=[-1])
-def cast_1(M, N, block_M, block_N, mode, count, scale):
+def cast_1(M, N, block_M, block_N, mode, count):
     m_num = M // block_M
     n_num = N // block_N
 
@@ -37,7 +37,7 @@ def cast_1(M, N, block_M, block_N, mode, count, scale):
 
                 T.barrier_all()
 
-                T.cast_tl(b_ub, a_ub, mode, count, scale)
+                T.cast_tl(b_ub, a_ub, mode, count)
 
                 T.barrier_all()
 
@@ -45,7 +45,7 @@ def cast_1(M, N, block_M, block_N, mode, count, scale):
 
     return main
 
-func_1 = cast_1(M, N, 16, 16, "CAST_RINT", 4096, 1.0)
+func_1 = cast_1(M, N, 16, 16, "CAST_RINT", 4096)
 
 torch.manual_seed(0)
 
