@@ -1026,16 +1026,27 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
                   << ">(" << event_id << ");\n";
       return;
     } else if (op_name.find("cast") != std::string::npos) {
-      std::vector<std::string> var_names;
+      this->PrintIndent();
+      this->stream << "extern const char mode_str[] = " << PrintExpr(op->args[1]) << ";\n";
 
-      for (int i = 1; i <= 2; i++) {
+      this->PrintIndent();
+      this->stream << op_name;
+      std::cout << op_name;
+
+      this->stream << ", " << "mode_str";
+      std::cout << ", " << "mode_str";
+
+      this->stream << ", " << PrintExpr(op->args[2]);
+      std::cout << ", " << PrintExpr(op->args[2]);
+
+      this->stream << ">(";
+      std::cout << ">(";
+
+      std::vector<std::string> var_names;
+      for (int i = 3; i <= 4; i++) {
         auto var_name = print_buffer_offset(op->args[i].as<CallNode>());
         var_names.push_back(var_name);
       }
-
-      this->PrintIndent();
-      this->stream << op_name << "(";
-      std::cout << op_name << "(";
 
       for (int i = 0; i < var_names.size(); i++) {
         this->stream << var_names[i];
@@ -1044,11 +1055,6 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
           this->stream << ", ";
           std::cout << ", ";
         }
-      }
-
-      for (int i = 3; i < op->args.size(); i++) {
-        this->stream << ", " << PrintExpr(op->args[i]);
-        std::cout << ", " << PrintExpr(op->args[i]);
       }
 
       this->stream << ");\n";
