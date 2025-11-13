@@ -1026,9 +1026,9 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
                   << ">(" << event_id << ");\n";
       return;
     } else if (op_name.find("cast") != std::string::npos) {
-      this->PrintIndent();
-      this->stream << "extern const char mode_str[];";
-      std::cout << "extern const char mode_str[];";
+      // this->PrintIndent();
+      // this->stream << "const char mode_str[];";
+      // std::cout << "const char mode_str[];";
 
       this->PrintIndent();
       this->stream << "const char mode_str[] = " << PrintExpr(op->args[1]) << ";\n";
