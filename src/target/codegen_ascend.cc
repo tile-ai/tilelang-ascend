@@ -1029,10 +1029,10 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
       this->PrintIndent();
       this->stream << "extern const char mode_str[];";
       std::cout << "extern const char mode_str[];";
-      
+
       this->PrintIndent();
       this->stream << "const char mode_str[] = " << PrintExpr(op->args[1]) << ";\n";
-      std::cout << "extern const char mode_str[] = " << PrintExpr(op->args[1]) << ";\n";
+      std::cout << "const char mode_str[] = " << PrintExpr(op->args[1]) << ";\n";
 
       this->PrintIndent();
       this->stream << op_name;
