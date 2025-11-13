@@ -599,14 +599,3 @@ def cast_tl(dst: Buffer, src: Buffer, mode: str, count: PrimExpr, scale: PrimExp
         T.call_extern("handle", f"AscendC::SetDeqScale", scale)
     
     return T.call_extern("handle", f"AscendC::Cast", dst.access_ptr("w"), src.access_ptr("r"), round_mode, count)
-    # return T.call_extern("handle", f"tl::ascend::cast<{_dtype(dst)}, {_dtype(src)}", round_mode, count, dst.access_ptr("w"), src.access_ptr("r"))
-
-# def set_deq_scale(scale: Union[half, float], offset: PrimExpr = 0, sign_mode: bool = true):
-#     if isinstance(scale, half):
-#         return T.call_extern("handle", f"AscendC::SetDeqScale", scale)
-
-#     elif isinstance(scale, float):
-#         return T.call_extern("handle", f"AscendC::SetDeqScale", scale, offset, sign_mode)
-
-# def set_vdeq_scale(vdeq: buffer, vdeq_scale: float[], vdeq_offset: int16_t[], vdeq_sign_mode: bool[]):
-#         return T.call_extern("handle", f"tl::ascend::SetDeqScale", vdeq.access_ptr("r"), vdeq_scale, vdeq_offset, vdeq_sign_mode)

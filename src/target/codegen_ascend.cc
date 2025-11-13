@@ -1045,7 +1045,6 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
         }
       }
 
-
       this->stream << ", " << Downcast<StringImm>(op->args[3])->value;
       std::cout << ", " << Downcast<StringImm>(op->args[3])->value;
 
