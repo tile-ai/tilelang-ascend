@@ -1035,19 +1035,24 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
 
       this->PrintIndent();
       this->stream << op_name << "(";
+      std::cout << op_name << "(";
 
       for (int i = 0; i < var_names.size(); i++) {
         this->stream << var_names[i];
+        std::cout << var_names[i];
         if (i != var_names.size() - 1) {
           this->stream << ", ";
+          std::cout << ", ";
         }
       }
 
       for (int i = 3; i < op->args.size(); i++) {
         this->stream << ", " << PrintExpr(op->args[i]);
+        std::cout << ", " << PrintExpr(op->args[i]);
       }
 
       this->stream << ");\n";
+      std::cout << ");\n";
 
     } else if (op_name == "AscendC::SetDeqScale") {
       this->PrintIndent();
