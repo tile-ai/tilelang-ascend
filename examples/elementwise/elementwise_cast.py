@@ -58,6 +58,8 @@ print(a)
 torch.npu.synchronize()
 print("init successful!")
 
+print(func.get_kernel_source())
+
 b = func(a)
 print("------ascend c value--------")
 print(b)
