@@ -1033,19 +1033,18 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
         var_names.push_back(var_name);
       }
 
-      for (int i = 3; i <= 4; i++) {
-        auto var_name = PrintExpr(op->args[i]);
-        var_names.push_back(var_name);
-      }
-
       this->PrintIndent();
       this->stream << op_name << "(";
-      
+
       for (int i = 0; i < var_names.size(); i++) {
         this->stream << var_names[i];
         if (i != var_names.size() - 1) {
           this->stream << ", ";
         }
+      }
+
+      for (int i = 3; i < op->args.size(); i++) {
+        this->stream << ", " << PrintExpr(op->args[i]);
       }
 
       this->stream << ");\n";
