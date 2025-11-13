@@ -221,7 +221,7 @@ CATLASS_DEVICE void elementwise_unary(LocalTensor<T> const &ubIn,
   }
 }
 
-template <typename dst, typename src, char* round_mode, uint32_t Len>
+template <typename dst, typename src, const char* round_mode, uint32_t Len>
 CATLASS_DEVICE void cast(LocalTensor<dst> const &ubOut,
                          LocalTensor<src> const &ubIn) {
   AscendC::Cast(ubOut, ubIn, round_mode, Len);
