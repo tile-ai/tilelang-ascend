@@ -1025,7 +1025,7 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
       this->stream << "AscendC::WaitFlag<AscendC::HardEvent::" << event_type
                   << ">(" << event_id << ");\n";
       return;
-    } else if (op_name.find("cast") != std::string::npos) {
+    } else if (op_name == "AscendC::Cast") {
       this->PrintIndent();
       this->stream << op_name << "(";
       std::cout << op_name << "(";
@@ -1048,7 +1048,7 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
 
       this->stream << ", " << PrintExpr(op->args[3]);
       std::cout << ", " << PrintExpr(op->args[3]);
-      
+
       this->stream << ", " << PrintExpr(op->args[3]);
       std::cout << ", " << PrintExpr(op->args[4]);
 
