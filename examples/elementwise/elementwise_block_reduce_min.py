@@ -24,7 +24,7 @@ srcRepStride = 8
 
 
 @tilelang.jit(out_idx=[-1])
-def blockReduceMin(M, N, block_M, block_N, repeat, mask, dstRepStride, srcBlkStride, srcRepStride, dataBlockNum, dtype="float16"):
+def block_reduce_min(M, N, block_M, block_N, repeat, mask, dstRepStride, srcBlkStride, srcRepStride, dataBlockNum, dtype="float16"):
     m_num = M // block_M
     n_num = N // block_N
 
@@ -45,7 +45,7 @@ def blockReduceMin(M, N, block_M, block_N, repeat, mask, dstRepStride, srcBlkStr
                 T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a_ub)
 
                 T.barrier_all()
-                T.blockReduceMin(b_ub, a_ub, repeat, mask, dstRepStride, srcBlkStride, srcRepStride)
+                T.block_reduce_min(b_ub, a_ub, repeat, mask, dstRepStride, srcBlkStride, srcRepStride)
                 T.barrier_all()
 
                 T.copy(b_ub, B[bx * block_M + vid * block_M // VEC_NUM, by * block_N // dataBlockNum])
@@ -53,7 +53,7 @@ def blockReduceMin(M, N, block_M, block_N, repeat, mask, dstRepStride, srcBlkStr
     return main
 
 
-func = blockReduceMin(M, N, block_M, block_N, repeat, mask, dstRepStride, srcBlkStride, srcRepStride, dataBlockHalfNum)
+func = block_reduce_min(M, N, block_M, block_N, repeat, mask, dstRepStride, srcBlkStride, srcRepStride, dataBlockHalfNum)
 
 torch.manual_seed(0)
 

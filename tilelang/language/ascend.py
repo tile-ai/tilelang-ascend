@@ -559,11 +559,11 @@ def block_reduce_max(dst: Buffer, src: Buffer, repeat: PrimExpr, mask: PrimExpr,
     return T.call_extern("handle", "AscendC::BlockReduceMax", dst.access_ptr("w"), src.access_ptr("r"), repeat, mask, dstPepStride, srcBlkStride, srcRepStride)  
 
 
-def blockReduceMin(dst: Buffer, src: Buffer, repeat: PrimExpr, mask: PrimExpr, dstPepStride: PrimExpr, srcBlkStride: PrimExpr, srcRepStride: PrimExpr):
+def block_reduce_min(dst: Buffer, src: Buffer, repeat: PrimExpr, mask: PrimExpr, dstPepStride: PrimExpr, srcBlkStride: PrimExpr, srcRepStride: PrimExpr):
     return T.call_extern("handle", "AscendC::BlockReduceMin", dst.access_ptr("w"), src.access_ptr("r"), repeat, mask, dstPepStride, srcBlkStride, srcRepStride)    
 
 
-def blockReduceSum(dst: Buffer, src: Buffer, repeat: PrimExpr, mask: PrimExpr, dstPepStride: PrimExpr, srcBlkStride: PrimExpr, srcRepStride: PrimExpr):
+def block_reduce_sum(dst: Buffer, src: Buffer, repeat: PrimExpr, mask: PrimExpr, dstPepStride: PrimExpr, srcBlkStride: PrimExpr, srcRepStride: PrimExpr):
     return T.call_extern("handle", "AscendC::BlockReduceSum", dst.access_ptr("w"), src.access_ptr("r"), repeat, mask, dstPepStride, srcBlkStride, srcRepStride)    
 
 def pipe_barrier(pipe: _pipe):
