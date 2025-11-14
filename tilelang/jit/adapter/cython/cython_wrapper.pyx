@@ -153,7 +153,7 @@ cdef class CythonKernelWrapper:
 
         # Add dynamic dimension values to kernel arguments
         for _, (buffer_idx, shape_idx) in self.dynamic_symbolic_map.items():
-            call_args.append(tensor_list[buffer_idx].shape[shape_idx])
+            call_args.append(ctypes.c_int64(tensor_list[buffer_idx].shape[shape_idx]))
 
         # Add npu stream to kernel arguments
         call_args.append(ctypes.c_void_p(stream))
