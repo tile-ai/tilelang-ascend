@@ -234,7 +234,7 @@ def test_indexer():
     S1 = 1024
     S2 = 8192
     func = indexer(N2, G, D, TOP_K, 512, 32, 128, 128, 128)
-    print(f"{func.get_kernel_source()}")
+    # print(f"{func.get_kernel_source()}")
 
     q = torch.randn(B, S1, N2, G, D).half()
     k = torch.randn(B, S2, N2, D).half()
@@ -250,15 +250,13 @@ def test_indexer():
     torch.npu.synchronize()
     npu_out = func(q_npu, k_npu, qk_res_workspace_npu, weights_npu).to(torch.int32)
     torch.npu.synchronize()
-    print(npu_out.cpu().shape)
-    print(f"npu out: {npu_out.cpu()}")
-    print(golden_out.cpu().shape)
-    print(f"golden out: {golden_out.cpu()}")
 
     total_mismatches = count_mismatches_last_dim(golden_out.cpu(), npu_out.cpu())
-    print(
-        f"mismatch number: {total_mismatches}, accuracy: {1 - total_mismatches / (B * S1 * N2 * TOP_K)}"
-    )
+
+    if (1 - total_mismatches / (B * S1 * N2 * TOP_K)) > 0.99:
+        print("Test passed!")
+    else:
+        print('Test failed! The precision is not correct!')
 
 
 if __name__ == "__main__":

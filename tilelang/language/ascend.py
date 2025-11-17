@@ -1,6 +1,7 @@
 import tilelang.language as T
 from tvm.tir import PrimExpr, Buffer, BufferRegion, BufferLoad, Var
 from typing import List, Union, Literal
+import numpy as np
 
 import math
 
@@ -555,6 +556,17 @@ def wait_flag(src: _pipe, dst: _pipe, eventId: int):
                          eventId)
 
 
+def block_reduce_max(dst: Buffer, src: Buffer, repeat: PrimExpr, mask: PrimExpr, dstPepStride: PrimExpr, srcBlkStride: PrimExpr, srcRepStride: PrimExpr):
+    return T.call_extern("handle", "AscendC::BlockReduceMax", dst.access_ptr("w"), src.access_ptr("r"), repeat, mask, dstPepStride, srcBlkStride, srcRepStride)  
+
+
+def block_reduce_min(dst: Buffer, src: Buffer, repeat: PrimExpr, mask: PrimExpr, dstPepStride: PrimExpr, srcBlkStride: PrimExpr, srcRepStride: PrimExpr):
+    return T.call_extern("handle", "AscendC::BlockReduceMin", dst.access_ptr("w"), src.access_ptr("r"), repeat, mask, dstPepStride, srcBlkStride, srcRepStride)    
+
+
+def block_reduce_sum(dst: Buffer, src: Buffer, repeat: PrimExpr, mask: PrimExpr, dstPepStride: PrimExpr, srcBlkStride: PrimExpr, srcRepStride: PrimExpr):
+    return T.call_extern("handle", "AscendC::BlockReduceSum", dst.access_ptr("w"), src.access_ptr("r"), repeat, mask, dstPepStride, srcBlkStride, srcRepStride)    
+
 def pipe_barrier(pipe: _pipe):
     return T.call_extern("handle", f"AscendC::PipeBarrier<PIPE_{pipe.upper()}>")
 
@@ -614,3 +626,16 @@ def dump_tensor(tensor: Buffer, desc: int, dump_size: int, shape_info: tuple=())
     else:
         return T.call_extern("handle", f"tl::ascend::DumpTensor", tensor_ptr, desc, dump_size, len(shape_info), *shape_info)
         
+def cast_tl(dst: Buffer, src: Buffer, mode: str, count: PrimExpr):
+    assert mode in ["CAST_NONE", "CAST_RINT", "CAST_FLOOR", "CAST_CEIL", "CAST_ROUND", "CAST_TRUNC", "CAST_ODD"]
+
+    round_mode = f"AscendC::RoundMode::{mode}"
+
+    # int32 cast half，roundMode not work，should SetDeqScale(half scale)
+    # if (src.dtype == "int32" and dst.dtype == "float16"):
+    #     T.call_extern("handle", f"AscendC::SetDeqScale", scale)
+    
+    return T.call_extern("handle", f"AscendC::Cast", dst.access_ptr("w"), src.access_ptr("r"), round_mode, count)
+
+def set_deq_scale(scale: PrimExpr):
+    return T.call_extern("handle", f"AscendC::SetDeqScale", scale)

@@ -64,6 +64,9 @@ std::string CodeGenTileLangAscend::Finish() {
   decl_stream << "#include \"acl/acl.h\"\n";
   decl_stream << "#include <runtime/rt_ffts.h>\n";
   decl_stream << "using namespace Catlass;\n";
+  decl_stream << "using uint = unsigned int;\n";
+  decl_stream << "using uchar = unsigned char;\n";
+  decl_stream << "using ushort = unsigned short;\n";
   decl_stream << "\n";
   std::ostringstream code;
   code << decl_stream.str();
@@ -377,6 +380,15 @@ void CodeGenTileLangAscend::VisitExpr_(const BufferLoadNode *op,
   auto var_name = var_idmap_[op->buffer->data.get()];
   os << var_name << ".GetValue("
                 << PrintExpr(op->indices.back()) << ")";
+}
+
+void CodeGenTileLangAscend::VisitStmt_(const BufferStoreNode *op) {
+  auto var_name = var_idmap_[op->buffer->data.get()];
+  this->PrintIndent();
+  this->stream << var_name << ".SetValue("
+                << PrintExpr(op->indices.back())
+                << ", " << PrintExpr(op->value)
+                << ");\n";
 }
 
 void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
@@ -936,6 +948,26 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
       }
       this->stream << ");\n";
 
+    } else if (op_name == "AscendC::BlockReduceMax" || op_name == "AscendC::BlockReduceMin" ||
+               op_name == "AscendC::BlockReduceSum") {
+      std::vector<std::string> var_names;
+      int exprStartIndex = 3;
+      for (int i = 1; i < exprStartIndex; i++) {
+        auto var_name = print_buffer_offset(op->args[i].as<CallNode>());
+        var_names.push_back(var_name);
+      }
+      this->PrintIndent();
+      this->stream << op_name << "(";
+      for (int i = 0; i < var_names.size(); i++) {
+        this->stream << var_names[i];
+        if (i != var_names.size() - 1) {
+          this->stream << ", ";
+        }
+      }
+      for (int i = exprStartIndex; i < op->args.size(); i++) {
+        this->stream << ", " << PrintExpr(op->args[i]);
+      }
+      this->stream << ");\n";
     } else if (op_name.find("thread_block_swizzle") != std::string::npos) {
       std::string expr = PrintExpr(op->args[1]);
       os << op_name << "("
@@ -1050,8 +1082,37 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
       this->stream << "AscendC::WaitFlag<AscendC::HardEvent::" << event_type
                   << ">(" << event_id << ");\n";
       return;
-    }
+    } else if (op_name == "AscendC::Cast") {
+      this->PrintIndent();
+      this->stream << op_name << "(";
 
+      std::vector<std::string> var_names;
+      for (int i = 1; i <= 2; i++) {
+        auto var_name = print_buffer_offset(op->args[i].as<CallNode>());
+        var_names.push_back(var_name);
+      }
+
+      for (int i = 0; i < var_names.size(); i++) {
+        this->stream << var_names[i];
+        if (i != var_names.size() - 1) {
+          this->stream << ", ";
+        }
+      }
+
+      this->stream << ", " << Downcast<StringImm>(op->args[3])->value;
+
+      this->stream << ", " << PrintExpr(op->args[4]);
+
+      this->stream << ");\n";
+
+    } else if (op_name == "AscendC::SetDeqScale") {
+      this->PrintIndent();
+
+      this->stream << op_name << "(";
+      this->stream << PrintExpr(op->args[1]);
+
+      this->stream << ");\n";
+    }
   } else {
     tvm::Dump(op);
     CodeGenC::VisitExpr_(op, os);
