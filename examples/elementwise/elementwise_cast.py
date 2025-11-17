@@ -49,26 +49,15 @@ func_1 = cast_1(M, N, 16, 16, "CAST_RINT", 4096)
 
 torch.manual_seed(0)
 
-# torch.set_printoptions(precision=4, threshold=float('inf'), edgeitems=3,linewidth=150)
-
-# 不涉及setdeqscale
+# without setdeqscale
 a = torch.full((M, N), 0.5, dtype=torch.float).npu()
-# print("------src value--------")
-# print(a)
 
 torch.npu.synchronize()
 print("init successful!")
 
-# print(func_1.get_kernel_source())
-
 b = func_1(a)
-# print("------ascend c value--------")
-# print(b)
 
-# ref_b = a.to(torch.float).npu()
 ref_b = torch.full((M, N), 0.0, dtype=torch.float).npu()
-# print("------true value--------")
-# print(ref_b)
 
 torch.testing.assert_close(b, ref_b, rtol=1e-2, atol=1e-2)
 print("Kernel Output Match!")
