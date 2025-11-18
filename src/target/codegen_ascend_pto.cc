@@ -106,7 +106,7 @@ void CodeGenTileLangAscendPto::VisitStmt_(const tir::ForNode *op) {
   }
 }
 
-void CodeGenTileLangAscend::PrintType(DataType t,
+void CodeGenTileLangAscendPto::PrintType(DataType t,
                                       std::ostream &os) { // NOLINT(*)
   int lanes = t.lanes();
   if (t.is_handle()) {
@@ -403,7 +403,23 @@ void CodeGenTileLangAscendPto::VisitExpr_(const FloatImmNode *op,
 }
 
 void CodeGenTileLangAscendPto::PreFunctionBody(const PrimFunc &f) {
-  
+  int func_scope = this->BeginScope();
+  this->PrintIndent();
+
+  // 分配GlobalTensor  i:var_name_handle  i+1:var_name  i+2:dtype  i+3:shape0  i+4:shape1
+  // GlobalTensor最大支持5维，后续修改可能需要增加判断
+  for (size_t i = 0; i < this->para_.size(); i += 5) {
+    this->PrintIndent();
+    std::string shape0 = this->para_[i + 3], shape1 = this->para_[i + 4];
+    stream << "GlobalTensor<" << this->para_[i + 2] << ", Shape<1, 1, 1, " << 
+    shape0 << ", " << shape1 << ">, Stride<" << shape0 << " * " << shape1 << 
+    ", " << shape0 << " * " << shape1 << ", " << shape0 << " * " << shape1 << 
+    ", " << shape1 << ", 1>> " << this->para_[i + 1] << "Global(" << 
+    this->para_[i + 1] << ");\n";
+    this->PrintIndent();
+  }
+
+  this->EndScope(func_scope);
 }
 
 void CodeGenTileLangAscendPto::VisitExpr_(const SelectNode *op, std::ostream &os) {
