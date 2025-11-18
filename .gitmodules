@@ -11,5 +11,5 @@
 	path = 3rdparty/catlass
 	url = https://gitee.com/ascend/catlass.git
 [submodule "3rdparty/pto-tile-lib"]
-        path = 3rdparty/pto-tile-lib
+	path = 3rdparty/pto-tile-lib
 	url = https://gitcode.com/cann/pto-tile-lib.git
