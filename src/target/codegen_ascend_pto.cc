@@ -406,6 +406,10 @@ void CodeGenTileLangAscendPto::PreFunctionBody(const PrimFunc &f) {
   int func_scope = this->BeginScope();
   this->PrintIndent();
 
+  ICHECK(this->para_.size() % 5 == 0)
+      << "CodeGenTileLangAscendPto: parameters should be in pairs of (var, "
+         "handle, dtype, shape0, shape1)";
+
   // 分配GlobalTensor  i:var_name_handle  i+1:var_name  i+2:dtype  i+3:shape0  i+4:shape1
   // GlobalTensor最大支持5维，后续修改可能需要增加判断
   for (size_t i = 0; i < this->para_.size(); i += 5) {
