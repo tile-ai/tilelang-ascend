@@ -37,7 +37,7 @@ Within the `examples` directory, you will also find additional complex kernelsâ€
 ## Installation
 
 ### Environment Preparation
-We assume you already have an ascend environment with CANN (at least [8.2.RC1](https://www.hiascend.com/developer/download/community/result?from=firmware&product=1&model=30&cann=8.2.RC1)) and torch-npu (at least 2.6.0.RC1) installed. Firstly, set cann environment variables.
+We assume you already have an ascend environment with CANN (at least [8.3.RC1](https://www.hiascend.com/developer/download/community/result?cann=8.3.RC1&product=1&model=30)) and torch-npu (at least 2.6.0.RC1) installed. Firstly, set cann environment variables.
 
   ```bash
   source {your-cann-installed-path}/ascend-toolkit/set_env.sh
