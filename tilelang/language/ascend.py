@@ -1,6 +1,7 @@
 import tilelang.language as T
 from tvm.tir import PrimExpr, Buffer, BufferRegion, BufferLoad, Var
 from typing import List, Union, Literal
+import numpy as np
 
 import math
 
@@ -555,6 +556,17 @@ def wait_flag(src: _pipe, dst: _pipe, eventId: int):
                          eventId)
 
 
+def block_reduce_max(dst: Buffer, src: Buffer, repeat: PrimExpr, mask: PrimExpr, dstPepStride: PrimExpr, srcBlkStride: PrimExpr, srcRepStride: PrimExpr):
+    return T.call_extern("handle", "AscendC::BlockReduceMax", dst.access_ptr("w"), src.access_ptr("r"), repeat, mask, dstPepStride, srcBlkStride, srcRepStride)  
+
+
+def block_reduce_min(dst: Buffer, src: Buffer, repeat: PrimExpr, mask: PrimExpr, dstPepStride: PrimExpr, srcBlkStride: PrimExpr, srcRepStride: PrimExpr):
+    return T.call_extern("handle", "AscendC::BlockReduceMin", dst.access_ptr("w"), src.access_ptr("r"), repeat, mask, dstPepStride, srcBlkStride, srcRepStride)    
+
+
+def block_reduce_sum(dst: Buffer, src: Buffer, repeat: PrimExpr, mask: PrimExpr, dstPepStride: PrimExpr, srcBlkStride: PrimExpr, srcRepStride: PrimExpr):
+    return T.call_extern("handle", "AscendC::BlockReduceSum", dst.access_ptr("w"), src.access_ptr("r"), repeat, mask, dstPepStride, srcBlkStride, srcRepStride)    
+
 def pipe_barrier(pipe: _pipe):
     return T.call_extern("handle", f"AscendC::PipeBarrier<PIPE_{pipe.upper()}>")
 
@@ -586,3 +598,44 @@ def compare(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferLoad, PrimExpr]
 
 def sync_all():
     return T.call_extern("handle", f"AscendC::SyncAll<false>")
+
+def printf(format_str: str, *args):
+    format_str =  format_str.replace('%p', '0x%x')
+    escaped_format = format_str.encode('unicode_escape').decode('utf-8')
+
+    args_list = list(args)
+    for i in range(len(args_list)):
+        if isinstance(args_list[i], Buffer):
+            args_list[i] = args_list[i].access_ptr("r")
+        if isinstance(args_list[i], str):
+            args_list[i] = args_list[i].encode('unicode_escape').decode('utf-8')
+    new_args = tuple(args_list)
+
+    all_args = (escaped_format, ) + new_args
+    return T.call_extern("handle", f"AscendC::PRINTF", *all_args)
+
+def dump_tensor(tensor: Buffer, desc: int, dump_size: int, shape_info: tuple=()):
+    if not isinstance(desc, int) or desc < 0 or desc > 0xFFFFFFFF:
+        raise ValueError(f"desc must be uint32, but your desc is {desc}")
+    if not isinstance(dump_size, int) or dump_size < 0 or dump_size > 0xFFFFFFFF:
+        raise ValueError(f"dump_size must be uint32, but your dump_size is {dump_size}")
+    
+    tensor_ptr = tensor.access_ptr("r")
+    if (len(shape_info) == 0):
+        return T.call_extern("handle", f"AscendC::DumpTensor", tensor_ptr, desc, dump_size)
+    else:
+        return T.call_extern("handle", f"tl::ascend::DumpTensor", tensor_ptr, desc, dump_size, len(shape_info), *shape_info)
+        
+def cast_tl(dst: Buffer, src: Buffer, mode: str, count: PrimExpr):
+    assert mode in ["CAST_NONE", "CAST_RINT", "CAST_FLOOR", "CAST_CEIL", "CAST_ROUND", "CAST_TRUNC", "CAST_ODD"]
+
+    round_mode = f"AscendC::RoundMode::{mode}"
+
+    # int32 cast half，roundMode not work，should SetDeqScale(half scale)
+    # if (src.dtype == "int32" and dst.dtype == "float16"):
+    #     T.call_extern("handle", f"AscendC::SetDeqScale", scale)
+    
+    return T.call_extern("handle", f"AscendC::Cast", dst.access_ptr("w"), src.access_ptr("r"), round_mode, count)
+
+def set_deq_scale(scale: PrimExpr):
+    return T.call_extern("handle", f"AscendC::SetDeqScale", scale)

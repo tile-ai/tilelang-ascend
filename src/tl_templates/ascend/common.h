@@ -8,6 +8,7 @@
 
 #define CUDART_INF_F 1.0f / 0.0f
 
+
 namespace tl::ascend {
 using namespace Catlass;
 using namespace tla;
@@ -221,10 +222,10 @@ CATLASS_DEVICE void elementwise_unary(LocalTensor<T> const &ubIn,
   }
 }
 
-template <typename src, typename dst, uint32_t Len>
-CATLASS_DEVICE void cast(LocalTensor<src> const &ubIn,
-                         LocalTensor<dst> const &ubOut) {
-  AscendC::Cast(ubOut, ubIn, AscendC::RoundMode::CAST_RINT, Len);
+template <typename dst, typename src, const char round_mode[], uint32_t Len>
+CATLASS_DEVICE void cast(LocalTensor<dst> const &ubOut,
+                         LocalTensor<src> const &ubIn) {
+  AscendC::Cast(ubOut, ubIn, round_mode, Len);
 }
 
 template <typename T, uint32_t Len>
@@ -463,5 +464,4 @@ CATLASS_DEVICE void gemmL1(LocalTensor<T1> A, LocalTensor<T1> B,
     AscendC::PipeBarrier<PIPE_ALL>();
   }
 }
-
 } // namespace tl::ascend
