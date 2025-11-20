@@ -87,6 +87,7 @@ def OptimizeForTarget(mod: IRModule, target: Target) -> IRModule:
     mod = tir.transform.RemoveNoOp()(mod)
     mod = tir.transform.RewriteUnsafeSelect()(mod)
     mod = tir.transform.HoistIfThenElse()(mod)
+    mod = tilelang.transform.AscendMemoryPlanning()(mod)
     mod = tilelang.transform.AscendSyncInsert()(mod)
     # print(mod)
     return mod

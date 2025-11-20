@@ -354,6 +354,17 @@ def MergeSharedMemoryAllocations():
     """
     return _ffi_api.MergeSharedMemoryAllocations()  # type: ignore
 
+def AscendMemoryPlanning():
+    """Memory planning for Ascend NPU
+
+    Returns
+    -------
+    fpass : tvm.transform.Pass
+        The result pass
+    ----
+    """
+    return _ffi_api.AscendMemoryPlanning()  # type: ignore
+
 def AscendSyncInsert():
     """Auto insert sync for Ascend.
 

@@ -262,10 +262,13 @@ def matmul(M, N, K, block_M, block_N, block_K, K_L1, S1, S2, dtype="float16", ac
 
 ### Automatic insertion of synchronization instruction
 
-We have supported automatic insertion of synchronization instructions within the core, which can be enabled by setting the enable_auto_sync attribute in the PrimFunc. Here is a simple example:
+We have supported automatic insertion of synchronization instructions within the core, which can be enabled by setting the TL_ASCEND_AUTO_SYNC attribute in the JIT's pass_configs parameter. Here is a simple example:
 
 ```python
-@tilelang.jit(out_idx=[-1])
+pass_configs = {
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True
+}
+@tilelang.jit(out_idx=[-1], pass_configs=pass_configs)
 def vec_add(M, N, block_M, block_N, dtype="float"):
     m_num = M // block_M
     n_num = N // block_N
@@ -296,6 +299,53 @@ def vec_add(M, N, block_M, block_N, dtype="float"):
                 T.copy(c_ub, C[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
 
     return main
+```
+
+### Automatic Buffer Reuse
+
+We have supported automatic buffer reuse, which can be enabled by setting the TL_ASCEND_MEMORY_PLANNING attribute in the JIT's pass_configs parameter. Here is a example based on example_sparse_flash_attn.py:
+
+```python
+pass_configs = {
+    tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True
+}
+@tilelang.jit(out_idx=[3], pass_configs=pass_configs)
+def sparse_attention_fwd(
+    # other code...
+    
+    #Manual configuration of T.annotate_address is no longer needed.
+
+    # T.annotate_address({
+    #             # L1 address
+    #             q_l1: 0,
+    #             q_tail_l1: 65536,
+    #             kv_l1: 73728,
+    #             kv_tail_l1: 139264,
+    #             acc_s_l1: 139264,
+
+    #             # L0C address
+    #             acc_s_l0c: 0,
+    #             acc_o_l0c: 0,
+
+    #             ## ub address
+    #             acc_o: 0,
+    #             sumexp: 65536,
+    #             m_i: 65664,
+    #             indices_ub_: 65792,
+    #             kv_ub: 66048,
+    #             kv_tail_ub: 67072,
+    #             acc_s_ub: 66048,
+    #             m_i_prev: 74240,
+    #             acc_s_ub_: 74368,
+    #             tmp_ub: 74368,
+    #             sumexp_i_ub: 98944,
+    #             acc_s_half: 98944,
+    #             acc_o_ub: 98944,
+    #             acc_o_half: 98944
+    #         })
+    
+    # other code...
+)
 ```
 
 ### Dive Deep into TileLang Beyond GEMM

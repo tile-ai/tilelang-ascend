@@ -31,10 +31,15 @@ namespace tvm {
 namespace tl {
 
 using namespace tir;
+using namespace tir::transform;
+
+static constexpr const char *kAscendAutoSync = "tl.ascend_auto_sync";
+
+TVM_REGISTER_PASS_CONFIG_OPTION(kAscendAutoSync, Bool);
 
 class AscendSyncInsert : public arith::IRMutatorWithAnalyzer {
 public:
-  static PrimFunc Substitute(PrimFunc f, const std::string& config_path) {
+  static PrimFunc Substitute(PrimFunc f, const std::string& config_path, PassContext ctx) {
     arith::Analyzer analyzer;
     AscendSyncInsert syncInserter(&analyzer);
     
@@ -44,8 +49,8 @@ public:
     PrimFuncNode* fptr = f.CopyOnWrite();
     auto fn_attr = fptr->attrs.CopyOnWrite();
 
-    bool enable_auto_sync_value = f->GetAttr<Bool>("enable_auto_sync").value_or(Bool(false));
-    if (!enable_auto_sync_value) {
+    bool ascend_auto_sync = ctx->GetConfig<Bool>(kAscendAutoSync, Bool(false)).value();
+    if (!ascend_auto_sync) {
       return f;
     }
     
@@ -160,6 +165,7 @@ private:
       {"AscendC::CompareScalar", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
       {"AscendC::Duplicate", {{{0, "write"}}, "PIPE_V"}},
       {"AscendC::Muls", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
+      {"AscendC::And", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
       {"reduce_max", {{{0, "read"}, {1, "write"}}, "PIPE_V"}},
       {"reduce_max", {{{0, "read"}, {1, "write"}}, "PIPE_V"}},
       {"reduce_sum", {{{0, "read"}, {1, "write"}}, "PIPE_V"}},
@@ -1401,11 +1407,9 @@ private:
   Map<Var, PrimExpr> address_map_;
 };
 
-using namespace tir::transform;
-
 tvm::transform::Pass AscendSyncInsert() {
   auto pass_func = [=](PrimFunc f, IRModule m, PassContext ctx) {
-    auto new_func = AscendSyncInsert::Substitute(std::move(f), "config_path");
+    auto new_func = AscendSyncInsert::Substitute(std::move(f), "config_path", ctx);
     return new_func;
   };
   return CreatePrimFuncPass(pass_func, 0, "tl.AscendSyncInsert", {});
