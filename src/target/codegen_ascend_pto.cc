@@ -383,13 +383,118 @@ void CodeGenTileLangAscendPto::VisitExpr_(const FloorModNode *op,
 
 void CodeGenTileLangAscendPto::VisitExpr_(const BufferLoadNode *op,
                                        std::ostream &os) {
-  // auto var_name = var_idmap_[op->buffer->data.get()];
-  // os << var_name << ".GetValue("
-  //               << PrintExpr(op->indices.back()) << ")";
+  std::string scope = GetPtrStorageScope(op->buffer->data);
+  std::cout << "check buf load:" << op->buffer->data.get()->name_hint << "\n";
+  if (scope == "wmma.matrix_a" || scope == "wmma.matrix_b" ||
+      scope == "wmma.accumulator" || scope == "shared.dyn" ||
+      scope == "shared") {
+    bool do_not_sup_get_from_tile = false;
+    ICHECK(do_not_sup_get_from_tile); // Currently not supported
+  } else {
+    for (size_t i = 0; i < this->para_.size(); i += 3) {
+      std::cout << "check gm var:" << this->para_[i]
+      << this->para_[i + 1] << this->para_[i + 2] << "\n";
+      if (this->para_[i + 1] == op->buffer->data.get()->name_hint) {
+        os << "*(" << this->para_[i] << " + "
+                   << PrintExpr(op->indices.back()) << ")";
+        break;
+      }
+    }
+  }
 }
 
 void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) {
-  
+  auto print_buffer_offset = [&](const CallNode *op,
+                                 bool has_offset = true) -> std::string {
+    auto _var = op->args[1].as<VarNode>();
+    auto _var_offset = PrintExpr(op->args[2]);
+    auto _var_name = var_idmap_[_var];
+    if (has_offset)
+      return _var_name + "[" + _var_offset + "]";
+    return _var_name;
+  };
+
+  if (op->op.same_as(builtin::call_extern())) {
+    std::string op_name = Downcast<StringImm>(op->args[0])->value;
+    if (op_name.find("tl::ascend::copy") != std::string::npos) {
+      auto src_var = op->args[1].as<CallNode>()->args[1].as<VarNode>();
+      auto dst_var = op->args[2].as<CallNode>()->args[1].as<VarNode>();
+
+      auto src_var_id = var_idmap_[src_var];
+      auto dst_var_id = var_idmap_[dst_var];
+      if (src_var_id == "") {
+        src_var_id = src_var->name_hint;
+      }
+      if (dst_var_id == "") {
+        dst_var_id = dst_var->name_hint;
+      }
+
+      auto src_offset = PrintExpr(op->args[1].as<CallNode>()->args[2]);
+      auto dst_offset = PrintExpr(op->args[2].as<CallNode>()->args[2]);
+
+      auto src_type = op->args[1].as<CallNode>()->args[0].as<CallNode>()->dtype;
+      auto dst_type = op->args[2].as<CallNode>()->args[0].as<CallNode>()->dtype;
+
+      static const std::unordered_map<std::string, int> kCopyOpExtraArgs = {
+        {"copy_l0c_to_gm", 1},
+        {"copy_gm_to_l1", 1},
+        {"copy_l1_to_l0a", 0},
+        {"copy_l1_to_l0b", 0},
+        {"copy_gm_to_ub", 1},
+        {"copy_ub_to_gm", 1},
+        {"copy_ub_to_ub", 0}
+      };
+
+      std::unordered_map<std::string, std::string> 
+        ptoCopyMap = {
+        {"copy_l0c_to_gm", "TSTORE"},
+        {"copy_gm_to_l1", "TLOAD"},
+        {"copy_l1_to_l0a", "TEXTRACT"},
+        {"copy_l1_to_l0b", "TEXTRACT"},
+        {"copy_gm_to_ub", "TLOAD"},
+        {"copy_ub_to_gm", "TSTORE"},
+        {"copy_ub_to_ub", "TMOV"}
+      };
+
+      bool found = false;
+      int extra_args = 0;
+      std::string real_name = "";
+
+      for (const auto& pair : kCopyOpExtraArgs) {
+        if (op_name.find(pair.first) != std::string::npos) {
+          real_name = pair.first;
+          found = true;
+          extra_args = pair.second;
+          break;
+        }
+      }
+
+      if (found) {
+        if (ptoCopyMap[real_name] == "TLOAD") {
+          ICHECK((copy_base_addr_map_.find(String(src_var_id)) != copy_base_addr_map_.end()));
+          ICHECK((copy_tmplte_map_.find(String(src_var_id)) != copy_tmplte_map_.end()));
+          std::string tensor_addr = copy_base_addr_map_[String(src_var_id)];
+          std::string tensor_template = copy_tmplte_map_[String(src_var_id)];
+          this->PrintIndent();
+          this->stream << tensor_template << " " << src_var_id
+          << "(" << tensor_addr << " + " << src_offset << ");\n";
+          this->PrintIndent();
+        } else if (ptoCopyMap[real_name] == "TSTORE") {
+          ICHECK((copy_base_addr_map_.find(String(dst_var_id)) != copy_base_addr_map_.end()));
+          ICHECK((copy_tmplte_map_.find(String(dst_var_id)) != copy_tmplte_map_.end()));
+          std::string tensor_addr = copy_base_addr_map_[String(dst_var_id)];
+          std::string tensor_template = copy_tmplte_map_[String(dst_var_id)];
+          this->PrintIndent();
+          this->stream << tensor_template << " " << dst_var_id
+          << "(" << tensor_addr << " + " << dst_offset << ");\n";
+        }
+        this->stream << ptoCopyMap[real_name] << "(" << dst_var_id << ", " << src_var_id << ");\n";
+      } else {
+        this->PrintIndent();
+        this->stream << "not implemented yet\n";
+      }
+    }
+  }
 }
 
 void CodeGenTileLangAscendPto::VisitStmt_(const AttrStmtNode *op) {
@@ -465,12 +570,15 @@ void CodeGenTileLangAscendPto::PreFunctionBody(const PrimFunc &f) {
   for (size_t i = 0; i < this->para_.size(); i += 5) {
     this->PrintIndent();
     std::string shape0 = this->para_[i + 3], shape1 = this->para_[i + 4];
-    stream << "GlobalTensor<" << this->para_[i + 2] << ", Shape<1, 1, 1, " << 
-    shape0 << ", " << shape1 << ">, Stride<" << shape0 << " * " << shape1 << 
-    ", " << shape0 << " * " << shape1 << ", " << shape0 << " * " << shape1 << 
-    ", " << shape1 << ", 1>> " << this->para_[i + 1] << "Global(" << 
+    std::string copy_tmplte = "GlobalTensor<" + this->para_[i + 2] + ", Shape<1, 1, 1, " + 
+    shape0 + ", " + shape1 + ">, Stride<" + shape0 + " * " + shape1 + 
+    ", " + shape0 + " * " + shape1 + ", " + shape0 + " * " + shape1 + 
+    ", " + shape1 + ", 1>>";
+    stream << copy_tmplte << " " << this->para_[i + 1] << "Global(" << 
     this->para_[i + 1] << ");\n";
     this->PrintIndent();
+    copy_tmplte_map_.Set(String(this->para_[i + 1]), String(copy_tmplte));
+    copy_base_addr_map_.Set(String(this->para_[i + 1]), String(this->para_[i]));
   }
 
   this->EndScope(func_scope);

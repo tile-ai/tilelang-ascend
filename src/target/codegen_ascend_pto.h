@@ -97,6 +97,9 @@ private:
 
   Map<String, PrimExpr> address_offset_;
 
+  Map<String, String> copy_tmplte_map_;
+  Map<String, String> copy_base_addr_map_;
+
   bool use_swizzle_{false};
 };
 
