@@ -15,10 +15,17 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include <sstream>
+#include <iomanip>
 
 #include "../op/builtin.h"
 
 #include "arith/pattern_match.h"
+
+#define DEC_STR_TO_HEX_STR(dec_str) \
+  ([](const std::string& s){ std::stringstream ss; \
+  ss << std::showbase << std::hex << std::uppercase << std::stoi(s); \
+  return ss.str(); }(dec_str))
 
 namespace tvm {
 namespace codegen {
@@ -390,7 +397,50 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AttrStmtNode *op) {
 }
 
 void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
+  ICHECK(!is_zero(op->condition));
+  std::string vid = AllocVarID(op->buffer_var.get()); // var_name
+  std::string scope = GetPtrStorageScope(op->buffer_var);
+  std::string type = getType(op->dtype);
+  const VarNode *buffer = op->buffer_var.as<VarNode>();
   
+  /// Allocate PTO Tile Memory Address
+  auto print_buffer = [&](const std::string &pos) {
+    this->PrintIndent();
+    // Allocate buffer
+    if (address_map_.find(op->buffer_var) != address_map_.end()) {
+      stream << "Tile<Location::" << pos << ", " << type << ", " << op->extents[0] 
+      << ", " << op->extents[1] << ", " << op->extents[0] <<", " << op->extents[1] 
+      << ", 512> " << vid << ";\n";
+      // Allocate Start Address
+      stream << "TASSIGN(" << vid << ", " << DEC_STR_TO_HEX_STR(PrintExpr(address_map_[op->buffer_var])) << ");\n";
+
+    } else {
+      if (address_offset_.find(String(pos)) == address_offset_.end()) {
+        address_offset_.Set(String(pos), 0);
+      }
+      stream << "Tile<Location::" << pos << ", " << type << ", " << op->extents[0] 
+      << ", " << op->extents[1] << ", " << op->extents[0] <<", " << op->extents[1] 
+      << ", 512> " << vid << ";\n";
+      stream << "TASSIGN(" << vid << ", " << DEC_STR_TO_HEX_STR(PrintExpr(address_offset_[String(pos)])) << ");\n";
+      address_offset_.Set(
+          String(pos),
+          PrimExpr(int(op->ConstantAllocationSize() * op->dtype.bytes())) +
+              address_offset_[String(pos)]);
+    }
+  };
+
+  if (scope == "wmma.matrix_a") {
+    print_buffer("Left");
+  } else if (scope == "wmma.matrix_b") {
+    print_buffer("Right");
+  } else if (scope == "wmma.accumulator") {
+    print_buffer("Acc");
+  } else if (scope == "shared.dyn") {
+    print_buffer("Mat");
+  } else if (scope == "shared") {
+    print_buffer("Vec");
+  }
+  this->PrintStmt(op->body);
 }
 
 inline void PrintConst(const FloatImmNode *op, std::ostream &os,
