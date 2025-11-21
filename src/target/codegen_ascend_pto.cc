@@ -438,8 +438,8 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) 
       static const std::unordered_map<std::string, int> kCopyOpExtraArgs = {
         {"copy_l0c_to_gm", 1},
         {"copy_gm_to_l1", 1},
-        {"copy_l1_to_l0a", 0},
-        {"copy_l1_to_l0b", 0},
+        {"copy_l1_to_l0a", 3},
+        {"copy_l1_to_l0b", 3},
         {"copy_gm_to_ub", 1},
         {"copy_ub_to_gm", 1},
         {"copy_ub_to_ub", 0}
@@ -470,7 +470,10 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) 
       }
 
       if (found) {
-        if (ptoCopyMap[real_name] == "TLOAD") {
+        auto api_name = ptoCopyMap[real_name];
+        PrimExpr row_index;
+        PrimExpr col_index;
+        if (api_name == "TLOAD") {
           ICHECK((copy_base_addr_map_.find(String(src_var_id)) != copy_base_addr_map_.end()));
           ICHECK((copy_tmplte_map_.find(String(src_var_id)) != copy_tmplte_map_.end()));
           std::string tensor_addr = copy_base_addr_map_[String(src_var_id)];
@@ -478,8 +481,7 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) 
           this->PrintIndent();
           this->stream << tensor_template << " " << src_var_id
           << "(" << tensor_addr << " + " << src_offset << ");\n";
-          this->PrintIndent();
-        } else if (ptoCopyMap[real_name] == "TSTORE") {
+        } else if (api_name == "TSTORE") {
           ICHECK((copy_base_addr_map_.find(String(dst_var_id)) != copy_base_addr_map_.end()));
           ICHECK((copy_tmplte_map_.find(String(dst_var_id)) != copy_tmplte_map_.end()));
           std::string tensor_addr = copy_base_addr_map_[String(dst_var_id)];
@@ -487,8 +489,22 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) 
           this->PrintIndent();
           this->stream << tensor_template << " " << dst_var_id
           << "(" << tensor_addr << " + " << dst_offset << ");\n";
+        } else if (api_name == "TEXTRACT") {
+          if (op->args.size() >= 3 && op->args[5].as<IntImmNode>()->value != 0) {
+              row_index = op->args[4];
+              col_index = op->args[3];
+          } else {
+              api_name = "TMOV";
+          }
         }
-        this->stream << ptoCopyMap[real_name] << "(" << dst_var_id << ", " << src_var_id << ");\n";
+        this->PrintIndent();
+        this->stream << api_name << "(" << dst_var_id << ", "
+          << src_var_id;
+        if (api_name == "TEXTRACT") {
+        this->stream << ", " << row_index << ", "
+          << col_index;
+        }
+        this->stream << ");\n";
       } else {
         this->PrintIndent();
         this->stream << "not implemented yet\n";
