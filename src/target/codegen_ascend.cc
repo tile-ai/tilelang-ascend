@@ -401,6 +401,12 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
       return _var_name + "[" + _var_offset + "]";
     return _var_name;
   };
+  auto add_decl_stream = [&](std::ostringstream &ss, const std::string &str) {
+    std::string content = ss.str();
+    if (content.find(str) == std::string::npos) {
+      ss << str;
+    }
+  };
 
   if (op->op.same_as(builtin::call_extern())) {
     std::string op_name = Downcast<StringImm>(op->args[0])->value;
@@ -1041,7 +1047,7 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
       this->stream << PrintExpr(op->args[2]) << ", ";
       this->stream << PrintExpr(op->args[3]) << ");\n";
     } else if (op_name == "tl::ascend::DumpTensor") {
-      decl_stream << "#include \"tl_templates/ascend/printf.h\"\n";   
+      add_decl_stream(decl_stream, "#include \"tl_templates/ascend/printf.h\"\n");
       this->PrintIndent();
       this->stream << op_name << "(";
       this->stream << print_buffer_offset(op->args[1].as<CallNode>()) << ",";
