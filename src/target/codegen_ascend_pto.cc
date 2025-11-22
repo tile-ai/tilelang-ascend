@@ -68,8 +68,8 @@ void CodeGenTileLangAscendPto::PrintFuncPrefix(std::ostream &os) {
 }
 
 std::string CodeGenTileLangAscendPto::Finish() {
-  decl_stream << "#include <common/tile_tensor_impl.hpp>\"\n";
-  decl_stream << "#include <common/pto_tileop.hpp>\"\n";
+  decl_stream << "#include <common/tile_tensor_impl.hpp>\n";
+  decl_stream << "#include <common/pto_tileop.hpp>\n";
   decl_stream << "#include <common/constants.hpp>\n";
   decl_stream << "#include \"acl/acl.h\"\n";
   decl_stream << "using namespace pto;\n";
@@ -533,6 +533,7 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
       << ", " << op->extents[1] << ", " << op->extents[0] <<", " << op->extents[1] 
       << ", 512> " << vid << ";\n";
       // Allocate Start Address
+      this->PrintIndent();
       stream << "TASSIGN(" << vid << ", " << DEC_STR_TO_HEX_STR(PrintExpr(address_map_[op->buffer_var])) << ");\n";
 
     } else {
@@ -542,6 +543,7 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
       stream << "Tile<Location::" << pos << ", " << type << ", " << op->extents[0] 
       << ", " << op->extents[1] << ", " << op->extents[0] <<", " << op->extents[1] 
       << ", 512> " << vid << ";\n";
+      this->PrintIndent();
       stream << "TASSIGN(" << vid << ", " << DEC_STR_TO_HEX_STR(PrintExpr(address_offset_[String(pos)])) << ");\n";
       address_offset_.Set(
           String(pos),
