@@ -61,6 +61,7 @@ static std::string getType(const DataType &dtype) {
 }
 
 CodeGenTileLangAscendPto::CodeGenTileLangAscendPto() {
+  restrict_keyword_ = "__gm__ uint8_t *";
 }
 
 void CodeGenTileLangAscendPto::PrintFuncPrefix(std::ostream &os) {
@@ -514,7 +515,52 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) 
 }
 
 void CodeGenTileLangAscendPto::VisitStmt_(const AttrStmtNode *op) {
-  
+  if (op->attr_key == "threadblock_swizzle_pattern") {
+    this->PrintIndent();
+    const StringImmNode *pattern = op->value.as<StringImmNode>();
+    ICHECK(pattern);
+    this->stream << this->block_id_ << " = " << pattern->value << "("
+                 << this->block_id_ << ");\n";
+    this->VisitStmt(op->body);
+    return;
+  } else if (op->attr_key == "thread_extent") {
+    IterVar iv = Downcast<IterVar>(op->node);
+    if (iv->thread_tag == "blockIdx.x" && iv->var->name_hint != "_") {
+      this->block_id_ = AllocVarID(iv->var.get());
+      this->PrintIndent();
+      auto current_block_id = this->block_id_;
+      if (this->use_swizzle_) {
+        current_block_id = current_block_id + "_";
+      }
+      this->stream << "auto " << current_block_id
+                   << " = block_idx;\n";
+      this->PrintIndent();
+      this->stream << "if ASCEND_IS_AIV {\n";
+      this->PrintIndent();
+      this->PrintIndent();
+      this->stream << current_block_id << " = " << current_block_id
+                   << " / 2;\n";
+      this->PrintIndent();
+      this->stream << "}\n";
+
+      this->core_num_ = PrintExpr(op->value);
+    }
+    this->VisitStmt(op->body);
+    return;
+  } else if (op->attr_key == "resource_scope") { // other core
+    auto resource_id = Downcast<IntImm>(op->value)->value;
+    auto resource_name = resource_id == 0 ? "AIC" : "AIV";
+
+    this->PrintIndent();
+    stream << "if ASCEND_IS_" << resource_name << " {\n";
+    int func_scope = this->BeginScope();
+    this->VisitStmt(op->body);
+    this->EndScope(func_scope);
+    this->PrintIndent();
+    stream << "}\n";
+    return;
+  }
+  CodeGenC::VisitStmt_(op);
 }
 
 void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
@@ -634,7 +680,85 @@ void CodeGenTileLangAscendPto::PrintHostFunc(const PrimFunc &f, const std::strin
 
 void CodeGenTileLangAscendPto::AddFunction(const GlobalVar &gvar,
                                         const PrimFunc &f) {
+  CodeGenC::DeclareFunction(gvar, f);
+  // clear previous generated state.
+  this->InitFuncState(f);
+
+  auto global_symbol = f->GetAttr<String>(tvm::attr::kGlobalSymbol);
+
+  address_map_ = f->GetAttr<Map<Var, PrimExpr>>("address_map").value_or(Map<Var, PrimExpr>());
+  use_swizzle_ = f->GetAttr<Bool>("use_swizzle").value_or(Bool(false));
+  // tiling_map_ = f->GetAttr<Map<Var, PrimExpr>>("tiling_map").value_or(Map<Var, PrimExpr>());
+  var_sequence_ = f->GetAttr<Array<Var>>("var_sequence").value_or(Array<Var>());
+  ICHECK(global_symbol.defined())
+      << "CodeGenC: Expect PrimFunc to have the global_symbol attribute";
+  bool no_alias = f->HasNonzeroAttr(tir::attr::kNoAlias);
+
+  this->PrintFuncPrefix(stream);
+  this->stream << "__aicore__ ";
+  CodeGenC::PrintType(f->ret_type, stream);
+
+  auto func_name = static_cast<std::string>(global_symbol.value()) + "_kernel";
+  this->stream << " " << func_name << "(";
+  std::vector<const tir::VarNode *> shape_vars;
   
+  for (size_t i = 0; i < f->params.size(); ++i) {
+    tir::Var v = f->params[i];
+    std::string vid = AllocVarID(v.get());
+    if (f->buffer_map.find(v) != f->buffer_map.end()) {
+      tir::Buffer buffer = f->buffer_map[v];
+      for (size_t j = 0; j < buffer->shape.size(); j++) {
+          auto shape_var = buffer->shape[j].as<VarNode>();
+          if ((std::find(shape_vars.begin(), shape_vars.end(), shape_var) ==
+               shape_vars.end()) && shape_var != 0) {
+              (void)AllocVarID(shape_var);
+              shape_vars.push_back(shape_var);
+          }
+      }
+    }
+
+    if (i != 0)
+      stream << ",";
+    if (v.dtype().is_handle()) {
+      auto real_v = f->buffer_map[v]->data;
+      this->para_.push_back(vid);
+      // vid = AllocVarID(real_v.get());
+      this->para_.push_back(AllocVarID(real_v.get()));
+      this->para_.push_back(getType(f->buffer_map[v]->dtype));
+      std::string shape0 = PrintExpr(f->buffer_map[v]->shape[0]);
+      std::string shape1 = PrintExpr(f->buffer_map[v]->shape[1]);
+      this->para_.push_back(shape0);
+      this->para_.push_back(shape1);
+
+      PrintRestrict(v, stream);
+
+      auto it = alloc_storage_scope_.find(v.get());
+      if (it != alloc_storage_scope_.end()) {
+        PrintStorageScope(it->second, stream);
+      }
+
+      if (auto *ptr = v->type_annotation.as<PointerTypeNode>()) {
+        if (auto *prim = ptr->element_type.as<PrimTypeNode>()) {
+          RegisterHandleType(v.get(), prim->dtype);
+        }
+      }
+
+    } else {
+      CodeGenC::PrintType(GetType(v), stream);
+    }
+    stream << vid;
+  }
+
+  stream << ") {\n";
+  this->PreFunctionBody(f);
+  int func_scope = this->BeginScope();
+  this->PrintStmt(f->body);
+  this->EndScope(func_scope);
+  this->PrintIndent();
+  this->stream << "}\n\n";
+
+  PrintHostFunc(f, func_name, stream, this->core_num_, shape_vars);
+  std::string content = stream.str();
 }
 
 } // namespace codegen
