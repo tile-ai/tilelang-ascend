@@ -639,7 +639,7 @@ void CodeGenTileLangAscendPto::PreFunctionBody(const PrimFunc &f) {
     ", " + shape0 + " * " + shape1 + ", " + shape0 + " * " + shape1 + 
     ", " + shape1 + ", 1>>";
     stream << copy_tmplte << " " << this->para_[i + 1] << "Global(" << 
-    this->para_[i + 1] << ");\n";
+    this->para_[i] << ");\n";
     this->PrintIndent();
     copy_tmplte_map_.Set(String(this->para_[i + 1]), String(copy_tmplte));
     copy_base_addr_map_.Set(String(this->para_[i + 1]), String(this->para_[i]));
