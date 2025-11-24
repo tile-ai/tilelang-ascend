@@ -61,7 +61,7 @@ static std::string getType(const DataType &dtype) {
 }
 
 CodeGenTileLangAscendPto::CodeGenTileLangAscendPto() {
-  restrict_keyword_ = "__gm__ uint8_t *";
+  // restrict_keyword_ = "__gm__ uint8_t *";
 }
 
 void CodeGenTileLangAscendPto::PrintFuncPrefix(std::ostream &os) {
@@ -700,7 +700,7 @@ void CodeGenTileLangAscendPto::PrintHostFunc(const PrimFunc &f, const std::strin
     auto v = f->params[i];
     if (i != 0) {os << ",\n     ";}
     // Todo: Fix correct v->dtype
-    os << "reinterpret_cast<__gm__ " << getType(f->buffer_map[v]->dtype) << " *>(" << v->name_hint << ")";
+    os << "reinterpret_cast<__gm__ void *" << v->name_hint << ")";
   }
   os << ");\n}\n\n";
 
@@ -780,7 +780,7 @@ void CodeGenTileLangAscendPto::AddFunction(const GlobalVar &gvar,
     }
 
     if (i != 0)
-      stream << ",";
+      stream << ", ";
     if (v.dtype().is_handle()) {
       auto real_v = f->buffer_map[v]->data;
       this->para_.push_back(vid);
@@ -808,7 +808,7 @@ void CodeGenTileLangAscendPto::AddFunction(const GlobalVar &gvar,
     } else {
       CodeGenC::PrintType(GetType(v), stream);
     }
-    stream << vid;
+    stream <<  "__gm__ " << getType(f->buffer_map[v]->dtype) << " *" << vid;
   }
 
   stream << ") {\n";
