@@ -510,6 +510,27 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) 
         this->PrintIndent();
         this->stream << "not implemented yet\n";
       }
+    } else if(op_name.find("gemm_v0") != std::string::npos) {
+      this->PrintIndent();
+      auto a_var = op->args[1].as<CallNode>()->args[1].as<VarNode>();
+      auto b_var = op->args[2].as<CallNode>()->args[1].as<VarNode>();
+      auto c_var = op->args[3].as<CallNode>()->args[1].as<VarNode>();
+
+      auto a_offset = PrintExpr(op->args[1].as<CallNode>()->args[2]);
+      auto b_offset = PrintExpr(op->args[2].as<CallNode>()->args[2]);
+      auto c_offset = PrintExpr(op->args[3].as<CallNode>()->args[2]);
+
+      auto a_name = var_idmap_[a_var];
+      auto b_name = var_idmap_[b_var];
+      auto c_name = var_idmap_[c_var];
+      
+      auto src_type = op->args[1].as<CallNode>()->args[0].as<CallNode>()->dtype;
+      auto dst_type = op->args[3].as<CallNode>()->args[0].as<CallNode>()->dtype;
+
+      this->stream << op_name << "(" << a_name << "[" << a_offset << "], "
+                   << b_name << "[" << b_offset << "], " << c_name << "["
+                   << c_offset << "], "
+                   << PrintExpr(op->args[4]) << ");\n";
     }
   }
 }
@@ -700,7 +721,7 @@ void CodeGenTileLangAscendPto::PrintHostFunc(const PrimFunc &f, const std::strin
     auto v = f->params[i];
     if (i != 0) {os << ",\n     ";}
     // Todo: Fix correct v->dtype
-    os << "reinterpret_cast<__gm__ void *" << v->name_hint << ")";
+    os << "reinterpret_cast<__gm__ void *>(" << v->name_hint << ")";
   }
   os << ");\n}\n\n";
 
