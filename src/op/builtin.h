@@ -281,6 +281,21 @@ const Op &muls();
 
 const Op &exp();
 
+/*!
+ * \brief ascend pto intrinsic
+ */
+const Op &ascend_fill();
+
+const Op &ascend_reduce();
+
+const Op &ascend_scalar_op();
+
+const Op &ascend_unary_op();
+
+const Op &ascend_binary_op();
+
+const Op &ascend_binary_ops();
+
 } // namespace tl
 } // namespace tvm
 

@@ -405,13 +405,9 @@ void CodeGenTileLangAscendPto::VisitExpr_(const BufferLoadNode *op,
 }
 
 void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) {
-  auto print_buffer_offset = [&](const CallNode *op,
-                                 bool has_offset = true) -> std::string {
+  auto print_tile = [&](const CallNode *op) -> std::string {
     auto _var = op->args[1].as<VarNode>();
-    auto _var_offset = PrintExpr(op->args[2]);
     auto _var_name = var_idmap_[_var];
-    if (has_offset)
-      return _var_name + "[" + _var_offset + "]";
     return _var_name;
   };
 
@@ -532,6 +528,33 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) 
                    << c_offset << "], "
                    << PrintExpr(op->args[4]) << ");\n";
     }
+  } else if (op->op.same_as(tl::ascend_fill())) {
+    this->PrintIndent();
+    this->stream << op->args[0].as<StringImmNode>()->value << "(" << print_tile(op->args[1].as<CallNode>()) << ", "
+               << PrintExpr(op->args[2]) << ");\n";
+  } else if (op->op.same_as(tl::ascend_reduce())) {
+    this->PrintIndent();
+    this->stream << op->args[0].as<StringImmNode>()->value << "(" << print_tile(op->args[1].as<CallNode>()) << ", "
+               << print_tile(op->args[2].as<CallNode>()) << ");\n";
+  } else if (op->op.same_as(tl::ascend_scalar_op())) {
+    this->PrintIndent();
+    this->stream << op->args[0].as<StringImmNode>()->value << "(" << print_tile(op->args[1].as<CallNode>()) << ", "
+                  << print_tile(op->args[2].as<CallNode>()) << ", "
+                  << PrintExpr(op->args[3]) << ");\n";
+  } else if (op->op.same_as(tl::ascend_unary_op())) {
+    this->PrintIndent();
+    this->stream << op->args[0].as<StringImmNode>()->value << "(" << print_tile(op->args[1].as<CallNode>()) << ", "
+               << print_tile(op->args[2].as<CallNode>()) << ");\n";
+  } else if (op->op.same_as(tl::ascend_binary_op())) {
+    this->PrintIndent();
+    this->stream << op->args[0].as<StringImmNode>()->value << "(" << print_tile(op->args[1].as<CallNode>()) << ", "
+               << print_tile(op->args[2].as<CallNode>()) << ", "
+               << print_tile(op->args[3].as<CallNode>()) << ");\n";
+  } else if (op->op.same_as(tl::ascend_binary_ops())) {
+    this->PrintIndent();
+    this->stream << op->args[0].as<StringImmNode>()->value << "(" << print_tile(op->args[1].as<CallNode>()) << ", "
+               << print_tile(op->args[2].as<CallNode>()) << ", "
+               << PrintExpr(op->args[3]) << ");\n";
   }
 }
 
