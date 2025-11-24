@@ -675,7 +675,69 @@ void CodeGenTileLangAscendPto::ProcessTilingInput(std::ostream &os, std::string 
 void CodeGenTileLangAscendPto::PrintHostFunc(const PrimFunc &f, const std::string &name,
                                           std::ostringstream &os, std::string &core,
                                           std::vector<const tir::VarNode *> &shape_vars) {
+  std::vector<std::string> tiling_args;                
+  std::string tiling_func_name = name;                
+  // ProcessTilingInput(os, tiling_func_name, tiling_args, shape_vars);
   
+  // launch kernel
+  os << "extern \"C\" __global__ __aicore__ void launch_kernel(";
+  std::vector<std::string> arg_names;
+  for (size_t i = 0; i < f->params.size(); ++i) { // params
+    auto v = f->params[i];
+    if (i != 0) {
+      os << ", ";
+    }
+    arg_names.push_back(v->name_hint);
+    os << "__gm__ uint8_t *" << v->name_hint;
+  }
+  ProcessHostInput(os, arg_names, shape_vars);
+  int func_scope = this->BeginScope();
+  os << ")\n{\n  ";
+  this->PrintIndent();
+  // template function
+  os << name << "(";
+  for (size_t i = 0; i < f->params.size(); ++i) { // params
+    auto v = f->params[i];
+    if (i != 0) {os << ",\n     ";}
+    // Todo: Fix correct v->dtype
+    os << "reinterpret_cast<__gm__ " << getType(f->buffer_map[v]->dtype) << " *>(" << v->name_hint << ")";
+  }
+  os << ");\n}\n\n";
+
+
+  // call kernel
+  os << "extern \"C\" void call(";
+  for (size_t i = 0; i < f->params.size(); ++i) { // params
+    auto v = f->params[i];
+    if (i != 0) {
+      os << ", ";
+    }
+    // arg_names.push_back(v->name_hint);
+    os << "uint8_t *" << v->name_hint;
+  }
+  ProcessHostInput(os, arg_names, shape_vars);
+  os << ", void stream)\n{\n  ";
+  this->PrintIndent();
+
+  os << "launch_kernel" << "<<<" << core << ", nullptr, stream>>>(";
+  for (auto &arg_name : arg_names) {
+    os << arg_name;
+    if (arg_name != arg_names.back()) {
+      os << ", ";
+    }
+  }
+  if (!tiling_args.empty()) {
+    os << ", ";
+  }
+  for (auto &tiling_data : tiling_args) {
+    os << tiling_data;
+    if (tiling_data != tiling_args.back()) {
+      os << ", ";
+    }
+  }
+  os << ");\n}\n";
+  this->EndScope(func_scope);
+  std::string content = os.str();
 }
 
 void CodeGenTileLangAscendPto::AddFunction(const GlobalVar &gvar,
