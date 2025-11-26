@@ -31,7 +31,6 @@ def and_tl(M, N, block_M, block_N, dtype="int16"):
             B: T.Tensor((M, N), dtype),
             C: T.Tensor((M, N), dtype),
     ):
-        T.printf("=================================begin======================================\n")
         T.printf("===========A:\n")
         T.dump_tensor(A, 111, M * N, (M, N))
         T.printf("===========B:\n")
@@ -66,7 +65,6 @@ def and_tl(M, N, block_M, block_N, dtype="int16"):
 
         T.printf("===========C:\n")
         T.dump_tensor(C, 111, M * N, (M, N))
-        T.printf("=================================end======================================\n")
     return main
 
 

@@ -132,11 +132,11 @@ torch.npu.synchronize()
 
 print(c, ref_c)
 
-torch.testing.assert_close(c, ref_c, rtol=1e-2, atol=1e-2)
-print("Kernel Output Match!")
-
 tilelang_time = do_bench(lambda: func(a, b))
 torch_time = do_bench(lambda: a @ b)
 
 print(f"tilelang time: {tilelang_time} ms")
 print(f"torch time: {torch_time} ms")
+
+torch.testing.assert_close(c, ref_c, rtol=1e-2, atol=1e-2)
+print("Kernel Output Match!")

@@ -257,6 +257,10 @@ def test_indexer():
         f"mismatch number: {total_mismatches}, accuracy: {1 - total_mismatches / (B * S1 * N2 * TOP_K)}"
     )
 
+    if (1 - total_mismatches / (B * S1 * N2 * TOP_K)) > 0.99:
+        print("Test passed!")
+    else:
+        print('Test failed! The precision is not correct!')
 
 if __name__ == "__main__":
     test_indexer()

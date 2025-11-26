@@ -11,8 +11,8 @@ failed_files=()
 # 收集所有要执行的脚本文件
 all_scripts=()
 
-# 添加普通Python文件（排除gemm_aot目录）
-python_files=$(find . -maxdepth 2 -name "*.py" -not -path "./gemm_aot/*" | sort)
+# 添加普通Python文件（排除gemm_aot目录以及reference，golden代码）
+python_files=$(find . -maxdepth 2 -name "*.py" -not -path "./gemm_aot/*" -not -name "sfa_golden.py" | sort)
 if [ -n "$python_files" ]; then
     for file in $python_files; do
         all_scripts+=("$file")
