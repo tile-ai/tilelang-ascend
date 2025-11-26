@@ -87,6 +87,26 @@ def softmax_online(M, N, block_M, block_N, dtype="float"):
                              by * block_N: (by + 1) * block_N])
                     T.barrier_all()
 
+                    # Correct previously stored blocks
+                    if by > 0:
+                        for prev_by in T.serial(by):
+                            # Load previous block
+                            T.copy(B[bx * block_M + vid * block_M // VEC_NUM: bx * block_M + (vid + 1) * block_M // VEC_NUM,
+                                     prev_by * block_N: (prev_by + 1) * block_N], a_ub)
+                            T.barrier_all()
+
+                            # Multiply by correction factor
+                            for i in range(block_M // VEC_NUM):
+                                T.barrier_all()
+                                T.mul(a_ub[i, :], a_ub[i, :], correction[i])
+                                T.barrier_all()
+
+                            # Store back
+                            T.copy(a_ub,
+                                   B[bx * block_M + vid * block_M // VEC_NUM: bx * block_M + (vid + 1) * block_M // VEC_NUM,
+                                     prev_by * block_N: (prev_by + 1) * block_N])
+                            T.barrier_all()
+
                 # Pass 2: Normalize
                 for by in T.serial(n_num):
                     # Load unnormalized exp values
