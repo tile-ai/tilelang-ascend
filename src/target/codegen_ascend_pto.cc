@@ -472,17 +472,36 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) 
         PrimExpr col_index;
         if (api_name == "TLOAD") {
           ICHECK((copy_base_addr_map_.find(String(src_var_id)) != copy_base_addr_map_.end()));
-          ICHECK((copy_tmplte_map_.find(String(src_var_id)) != copy_tmplte_map_.end()));
+          // ICHECK((copy_tmplte_map_.find(String(src_var_id)) != copy_tmplte_map_.end()));
           std::string tensor_addr = copy_base_addr_map_[String(src_var_id)];
-          std::string tensor_template = copy_tmplte_map_[String(src_var_id)];
+          // std::string tensor_template = copy_tmplte_map_[String(src_var_id)];
+          std::string tensor_template = "";
+          std::string shape_template = PrintExpr(op->args[4]) + " * " +PrintExpr(op->args[5]);
+
+          // get gm2l1 shape
+          if(op_name.find("copy_gm_to_l1") != std::string::npos) {
+            tensor_template = "GlobalTensor<half, Shape<1, 1, 1, " + PrintExpr(op->args[4])
+            + ", " + PrintExpr(op->args[5]) + ">, Stride<" + shape_template + ", "
+            + shape_template + ", " + shape_template + ", "
+            + PrintExpr(op->args[5]) + ", 1>>";
+          }
           this->PrintIndent();
           this->stream << tensor_template << " " << src_var_id
           << "(" << tensor_addr << " + " << src_offset << ");\n";
         } else if (api_name == "TSTORE") {
           ICHECK((copy_base_addr_map_.find(String(dst_var_id)) != copy_base_addr_map_.end()));
-          ICHECK((copy_tmplte_map_.find(String(dst_var_id)) != copy_tmplte_map_.end()));
+          // ICHECK((copy_tmplte_map_.find(String(dst_var_id)) != copy_tmplte_map_.end()));
           std::string tensor_addr = copy_base_addr_map_[String(dst_var_id)];
-          std::string tensor_template = copy_tmplte_map_[String(dst_var_id)];
+          // std::string tensor_template = copy_tmplte_map_[String(dst_var_id)];
+          std::string tensor_template = "";
+          std::string shape_template = PrintExpr(op->args[4]) + " * " +PrintExpr(op->args[5]);
+
+          if(op_name.find("copy_l0c_to_gm") != std::string::npos) {
+            tensor_template = "GlobalTensor<half, Shape<1, 1, 1, " + PrintExpr(op->args[4])
+            + ", " + PrintExpr(op->args[5]) + ">, Stride<" + shape_template + ", "
+            + shape_template + ", " + shape_template + ", "
+            + PrintExpr(op->args[5]) + ", 1>>";
+          }
           this->PrintIndent();
           this->stream << tensor_template << " " << dst_var_id
           << "(" << tensor_addr << " + " << dst_offset << ");\n";
@@ -523,10 +542,8 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) 
       auto src_type = op->args[1].as<CallNode>()->args[0].as<CallNode>()->dtype;
       auto dst_type = op->args[3].as<CallNode>()->args[0].as<CallNode>()->dtype;
 
-      this->stream << op_name << "(" << a_name << "[" << a_offset << "], "
-                   << b_name << "[" << b_offset << "], " << c_name << "["
-                   << c_offset << "], "
-                   << PrintExpr(op->args[4]) << ");\n";
+      this->stream << op_name << "(" << a_name << ", " << b_name << ", " 
+      << c_name << ", " << PrintExpr(op->args[4]) << ");\n";
     }
   } else if (op->op.same_as(tl::ascend_fill())) {
     this->PrintIndent();
@@ -667,7 +684,7 @@ void CodeGenTileLangAscendPto::VisitExpr_(const FloatImmNode *op,
 
 void CodeGenTileLangAscendPto::PreFunctionBody(const PrimFunc &f) {
   int func_scope = this->BeginScope();
-  this->PrintIndent();
+  // this->PrintIndent();
 
   ICHECK(this->para_.size() % 5 == 0)
       << "CodeGenTileLangAscendPto: parameters should be in pairs of (var, "
@@ -676,15 +693,14 @@ void CodeGenTileLangAscendPto::PreFunctionBody(const PrimFunc &f) {
   // 分配GlobalTensor  i:var_name_handle  i+1:var_name  i+2:dtype  i+3:shape0  i+4:shape1
   // GlobalTensor最大支持5维，后续修改可能需要增加判断
   for (size_t i = 0; i < this->para_.size(); i += 5) {
-    this->PrintIndent();
+    // this->PrintIndent();
     std::string shape0 = this->para_[i + 3], shape1 = this->para_[i + 4];
     std::string copy_tmplte = "GlobalTensor<" + this->para_[i + 2] + ", Shape<1, 1, 1, " + 
     shape0 + ", " + shape1 + ">, Stride<" + shape0 + " * " + shape1 + 
     ", " + shape0 + " * " + shape1 + ", " + shape0 + " * " + shape1 + 
     ", " + shape1 + ", 1>>";
-    stream << copy_tmplte << " " << this->para_[i + 1] << "Global(" << 
-    this->para_[i] << ");\n";
-    this->PrintIndent();
+    // stream << copy_tmplte << " " << this->para_[i + 1] << "(" << this->para_[i] << ");\n";
+    // this->PrintIndent();
     copy_tmplte_map_.Set(String(this->para_[i + 1]), String(copy_tmplte));
     copy_base_addr_map_.Set(String(this->para_[i + 1]), String(this->para_[i]));
   }
