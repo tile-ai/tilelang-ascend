@@ -718,7 +718,13 @@ void CodeGenTileLangAscendPto::VisitExpr_(const SelectNode *op, std::ostream &os
 }
 
 static void ProcessHostInput(std::ostream &os, std::vector<std::string> &arg_names,
-                      std::vector<const tir::VarNode *> &shape_vars) {
+                      std::vector<const tir::VarNode *> &shape_vars, bool add_args = true) {
+  for (auto shape_var : shape_vars) {
+    os << ", "
+       << "int64_t " << shape_var->name_hint;
+  if (add_args)
+    { arg_names.push_back(shape_var->name_hint); }
+  }
 }
 
 void CodeGenTileLangAscendPto::CallTilingInput(std::ostream &os, std::string func_name, std::vector<std::string> &tiling_args,
@@ -775,7 +781,7 @@ void CodeGenTileLangAscendPto::PrintHostFunc(const PrimFunc &f, const std::strin
     // arg_names.push_back(v->name_hint);
     os << "uint8_t *" << v->name_hint;
   }
-  ProcessHostInput(os, arg_names, shape_vars);
+  ProcessHostInput(os, arg_names, shape_vars, false);
   os << ", void stream)\n{\n  ";
   this->PrintIndent();
 
@@ -869,6 +875,17 @@ void CodeGenTileLangAscendPto::AddFunction(const GlobalVar &gvar,
       CodeGenC::PrintType(GetType(v), stream);
     }
     stream <<  "__gm__ " << getType(f->buffer_map[v]->dtype) << " *" << vid;
+  }
+  size_t index = 0;
+  if (shape_vars.size() != 0 && f->params.size() != 0) {
+      stream << ", ";
+  }
+  for (auto shape_var : shape_vars) {
+      stream << "int64_t" << " " << GetVarID(shape_var);
+      if (index != shape_vars.size() - 1) {
+          stream << ", ";
+      }
+      index++;
   }
 
   stream << ") {\n";
