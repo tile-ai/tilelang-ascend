@@ -52,11 +52,11 @@ def _find_rocm_home() -> str:
 CUDA_HOME = _find_cuda_home()
 ROCM_HOME = _find_rocm_home()
 
-CUTLASS_INCLUDE_DIR: str = os.environ.get("TL_CUTLASS_PATH", None)
-COMPOSABLE_KERNEL_INCLUDE_DIR: str = os.environ.get("TL_COMPOSABLE_KERNEL_PATH", None)
-TVM_PYTHON_PATH: str = os.environ.get("TVM_IMPORT_PYTHON_PATH", None)
-TVM_LIBRARY_PATH: str = os.environ.get("TVM_LIBRARY_PATH", None)
-TILELANG_TEMPLATE_PATH: str = os.environ.get("TL_TEMPLATE_PATH", None)
+CUTLASS_INCLUDE_DIR: str | None = os.environ.get("TL_CUTLASS_PATH", None)
+COMPOSABLE_KERNEL_INCLUDE_DIR: str | None = os.environ.get("TL_COMPOSABLE_KERNEL_PATH", None)
+TVM_PYTHON_PATH: str | None = os.environ.get("TVM_IMPORT_PYTHON_PATH", None)
+TVM_LIBRARY_PATH: str | None = os.environ.get("TVM_LIBRARY_PATH", None)
+TILELANG_TEMPLATE_PATH: str | None = os.environ.get("TL_TEMPLATE_PATH", None)
 TILELANG_PACKAGE_PATH: str = pathlib.Path(__file__).resolve().parents[0]
 
 TILELANG_CACHE_DIR: str = os.environ.get("TILELANG_CACHE_DIR",
@@ -64,6 +64,29 @@ TILELANG_CACHE_DIR: str = os.environ.get("TILELANG_CACHE_DIR",
 
 # Auto-clear cache if environment variable is set
 TILELANG_CLEAR_CACHE = os.environ.get("TILELANG_CLEAR_CACHE", "0")
+
+# Auto-tuning related environment variables (used by autotuner.tuner)
+# CPU utilization ratio when TILELANG_AUTO_TUNING_CPU_COUNTS is not set (>0)
+_DEFAULT_CPU_UTILS = "0.9"
+_DEFAULT_CPU_COUNTS = "-1"   # 0 means use utilization ratio
+_DEFAULT_CPU_MAX = "-1"      # 0 means no hard cap
+
+def _get_env_number(name: str, default: str) -> str:
+    val = os.environ.get(name, default)
+    # Basic validation: allow int/float strings only; fallback to default if invalid
+    try:
+        float(val)
+    except ValueError:
+        logger.warning(f"Invalid value '{val}' for {name}, fallback to {default}.")
+        val = default
+    return val
+
+TILELANG_AUTO_TUNING_CPU_UTILITIES: str = _get_env_number(
+    "TILELANG_AUTO_TUNING_CPU_UTILITIES", _DEFAULT_CPU_UTILS)
+TILELANG_AUTO_TUNING_CPU_COUNTS: str = _get_env_number(
+    "TILELANG_AUTO_TUNING_CPU_COUNTS", _DEFAULT_CPU_COUNTS)
+TILELANG_AUTO_TUNING_MAX_CPU_COUNT: str = _get_env_number(
+    "TILELANG_AUTO_TUNING_MAX_CPU_COUNT", _DEFAULT_CPU_MAX)
 
 # SETUP ENVIRONMENT VARIABLES
 CUTLASS_NOT_FOUND_MESSAGE = ("CUTLASS is not installed or found in the expected path")
@@ -194,6 +217,9 @@ __all__ = [
     "CUDA_HOME",
     "ROCM_HOME",
     "TILELANG_CACHE_DIR",
+    "TILELANG_AUTO_TUNING_CPU_UTILITIES",
+    "TILELANG_AUTO_TUNING_CPU_COUNTS",
+    "TILELANG_AUTO_TUNING_MAX_CPU_COUNT",
     "enable_cache",
     "disable_cache",
     "is_cache_enabled",

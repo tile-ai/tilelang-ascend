@@ -94,9 +94,15 @@ class Profiler:
         """
         ins = self._get_inputs() if input_tensors is None else input_tensors
         ref_outs = reference_program(*ins)
-        torch.cuda.synchronize()
+        if hasattr(torch, 'npu') and torch.npu.is_available():
+            torch.npu.synchronize()
+        elif torch.cuda.is_available():
+            torch.cuda.synchronize()
         lib_outs = self.func(*ins)
-        torch.cuda.synchronize()
+        if hasattr(torch, 'npu') and torch.npu.is_available():
+            torch.npu.synchronize()
+        elif torch.cuda.is_available():
+            torch.cuda.synchronize()
 
         if isinstance(lib_outs, torch.Tensor):
             lib_outs = [lib_outs]
@@ -148,9 +154,15 @@ class Profiler:
         """
         ins = self._get_inputs() if input_tensors is None else input_tensors
         ref_outs = reference_program(*ins)
-        torch.cuda.synchronize()
+        if hasattr(torch, 'npu') and torch.npu.is_available():
+            torch.npu.synchronize()
+        elif torch.cuda.is_available():
+            torch.cuda.synchronize()
         lib_outs = self.func(*ins)
-        torch.cuda.synchronize()
+        if hasattr(torch, 'npu') and torch.npu.is_available():
+            torch.npu.synchronize()
+        elif torch.cuda.is_available():
+            torch.cuda.synchronize()
 
         if isinstance(lib_outs, torch.Tensor):
             lib_outs = [lib_outs]

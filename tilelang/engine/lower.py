@@ -207,10 +207,14 @@ def lower(
         params = extrac_params(func) if not runtime_only else None
         mod = tvm.IRModule({func.attrs["global_symbol"]: func})
 
+    # Convert "auto" target to a specific target kind
+    if isinstance(target, str):
+        target = determine_target(target)
+
     target_host = canon_target_host(None, target_host)
 
     target_host = tvm.target.Target.canon_target(target_host)
-    target = tvm.target.Target(target_host, target_host)
+    target = tvm.target.Target(target, target_host)
 
     # Phase 1: Lower and legalize the IR
     mod = LowerAndLegalize(mod, target)
