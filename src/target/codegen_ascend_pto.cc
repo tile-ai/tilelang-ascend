@@ -93,10 +93,9 @@ void CodeGenTileLangAscendPto::VisitStmt_(const tir::ForNode *op) {
   }
   std::string extent =
       PrintExpr(arith::Analyzer().Simplify(op->extent + op->min));
-  PrintIndent();
   std::string vid = AllocVarID(op->loop_var.get());
   std::string start = PrintExpr(op->min);
-  stream << "for (";
+  stream << "\n  for (";
   PrintType(op->loop_var.dtype(), stream);
   stream << ' ' << vid << " = " << start << "; " << vid << " < " << extent
          << "; ++" << vid << ") {\n";
@@ -542,6 +541,7 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) 
       auto src_type = op->args[1].as<CallNode>()->args[0].as<CallNode>()->dtype;
       auto dst_type = op->args[3].as<CallNode>()->args[0].as<CallNode>()->dtype;
 
+      for(size_t pos=0;(pos=op_name.find("tl::ascend",pos))!=std::string::npos;pos+=5) {op_name.replace(pos,10,"tl::pto");}
       this->stream << op_name << "(" << a_name << ", " << b_name << ", " 
       << c_name << ", " << PrintExpr(op->args[4]) << ");\n";
     }
@@ -594,31 +594,31 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AttrStmtNode *op) {
         current_block_id = current_block_id + "_";
       }
       this->stream << "auto " << current_block_id
-                   << " = block_idx;\n";
-      this->PrintIndent();
-      this->stream << "if ASCEND_IS_AIV {\n";
-      this->PrintIndent();
-      this->PrintIndent();
-      this->stream << current_block_id << " = " << current_block_id
-                   << " / 2;\n";
-      this->PrintIndent();
-      this->stream << "}\n";
+                   << " = 32;\n\n";
+      // this->PrintIndent();
+      // this->stream << "if ASCEND_IS_AIV {\n";
+      // this->PrintIndent();
+      // this->PrintIndent();
+      // this->stream << current_block_id << " = " << current_block_id
+      //              << " / 2;\n";
+      // this->PrintIndent();
+      // this->stream << "}\n";
 
       this->core_num_ = PrintExpr(op->value);
     }
     this->VisitStmt(op->body);
     return;
   } else if (op->attr_key == "resource_scope") { // other core
-    auto resource_id = Downcast<IntImm>(op->value)->value;
-    auto resource_name = resource_id == 0 ? "AIC" : "AIV";
+    // auto resource_id = Downcast<IntImm>(op->value)->value;
+    // auto resource_name = resource_id == 0 ? "AIC" : "AIV";
 
-    this->PrintIndent();
-    stream << "if ASCEND_IS_" << resource_name << " {\n";
+    // this->PrintIndent();
+    // stream << "if ASCEND_IS_" << resource_name << " {\n";
     int func_scope = this->BeginScope();
     this->VisitStmt(op->body);
     this->EndScope(func_scope);
-    this->PrintIndent();
-    stream << "}\n";
+    // this->PrintIndent();
+    // stream << "}\n";
     return;
   }
   CodeGenC::VisitStmt_(op);
@@ -636,22 +636,20 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
     this->PrintIndent();
     // Allocate buffer
     if (address_map_.find(op->buffer_var) != address_map_.end()) {
-      stream << "Tile<Location::" << pos << ", " << type << ", " << op->extents[0] 
-      << ", " << op->extents[1] << ", " << op->extents[0] <<", " << op->extents[1] 
-      << ", 512> " << vid << ";\n";
+      stream << pos << "<" << type << ", " << op->extents[0] 
+      << ", " << op->extents[1] << "> " << vid << ";\n";
       // Allocate Start Address
-      this->PrintIndent();
-      stream << "TASSIGN(" << vid << ", " << DEC_STR_TO_HEX_STR(PrintExpr(address_map_[op->buffer_var])) << ");\n";
+      // this->PrintIndent();
+      // stream << "TASSIGN(" << vid << ", " << DEC_STR_TO_HEX_STR(PrintExpr(address_map_[op->buffer_var])) << ");\n";
 
     } else {
       if (address_offset_.find(String(pos)) == address_offset_.end()) {
         address_offset_.Set(String(pos), 0);
       }
-      stream << "Tile<Location::" << pos << ", " << type << ", " << op->extents[0] 
-      << ", " << op->extents[1] << ", " << op->extents[0] <<", " << op->extents[1] 
-      << ", 512> " << vid << ";\n";
-      this->PrintIndent();
-      stream << "TASSIGN(" << vid << ", " << DEC_STR_TO_HEX_STR(PrintExpr(address_offset_[String(pos)])) << ");\n";
+      stream << pos << "<" << type << ", " << op->extents[0] 
+      << ", " << op->extents[1] << "> " << vid << ";\n";
+      // this->PrintIndent();
+      // stream << "TASSIGN(" << vid << ", " << DEC_STR_TO_HEX_STR(PrintExpr(address_offset_[String(pos)])) << ");\n";
       address_offset_.Set(
           String(pos),
           PrimExpr(int(op->ConstantAllocationSize() * op->dtype.bytes())) +
@@ -660,13 +658,13 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
   };
 
   if (scope == "wmma.matrix_a") {
-    print_buffer("Left");
+    print_buffer("TileLeft");
   } else if (scope == "wmma.matrix_b") {
-    print_buffer("Right");
+    print_buffer("TileRight");
   } else if (scope == "wmma.accumulator") {
-    print_buffer("Acc");
+    print_buffer("TileAcc");
   } else if (scope == "shared.dyn") {
-    print_buffer("Mat");
+    print_buffer("tl::pto::TileMatL1");
   } else if (scope == "shared") {
     print_buffer("Vec");
   }
