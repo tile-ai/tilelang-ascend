@@ -76,7 +76,7 @@ def vec_compare(M, N, block_M, block_N, mode, dtype="float"):
                 T.copy(B[bx * block_M + vid * block_M // VEC_NUM, by * block_N], b_ub)
 
                 T.barrier_all()
-                T.compare(c_ub, a_ub, b_ub, mode)
+                T.tile.compare(c_ub, a_ub, b_ub, mode)
                 T.barrier_all()
 
                 T.copy(c_ub, C[bx * block_M + vid * block_M // VEC_NUM, by * block_N // 8])

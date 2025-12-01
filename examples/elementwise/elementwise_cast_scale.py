@@ -37,9 +37,9 @@ def cast_2(M, N, block_M, block_N, mode, count, scale):
 
                 T.barrier_all()
 
-                T.set_deq_scale(scale)
+                T.tile.set_deq_scale(scale)
 
-                T.cast_tl(b_ub, a_ub, mode, count)
+                T.tile.cast_tl(b_ub, a_ub, mode, count)
 
                 T.barrier_all()
 

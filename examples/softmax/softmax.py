@@ -32,8 +32,8 @@ def softmax_online(M, N, block_M, block_N, dtype="float"):
 
             with T.Scope("V"):
                 # Initialize
-                T.fill(max_i, -1e38)
-                T.fill(sum_i, 0.0)
+                T.tile.fill(max_i, -1e38)
+                T.tile.fill(sum_i, 0.0)
                 T.barrier_all()
 
                 # Pass 1: Compute exp values with online max, store unnormalized
@@ -44,7 +44,7 @@ def softmax_online(M, N, block_M, block_N, dtype="float"):
                     T.barrier_all()
 
                     # Find local max
-                    T.reduce_max(local_max, a_ub, tmp_ub, dim=-1)
+                    T.tile.reduce_max(local_max, a_ub, tmp_ub, dim=-1)
                     T.barrier_all()
 
                     # Save prevois max
@@ -52,33 +52,33 @@ def softmax_online(M, N, block_M, block_N, dtype="float"):
                     T.barrier_all()
 
                     # Update global max
-                    T.max(max_i, max_i, local_max)
+                    T.tile.max(max_i, max_i, local_max)
                     T.barrier_all()
 
                     # Compute correction factor
-                    T.sub(correction, max_prev, max_i)
+                    T.tile.sub(correction, max_prev, max_i)
                     T.barrier_all()
-                    T.exp(correction, correction)
+                    T.tile.exp(correction, correction)
                     T.barrier_all()
 
                     # Correct running sum
-                    T.mul(sum_i, sum_i, correction)
+                    T.tile.mul(sum_i, sum_i, correction)
                     T.barrier_all()
 
                     # Compute exp(x - max_i) and store
                     for i in range(block_M // VEC_NUM):
                         T.barrier_all()
-                        T.sub(exp_ub[i, :], a_ub[i, :], max_i[i])
+                        T.tile.sub(exp_ub[i, :], a_ub[i, :], max_i[i])
                         T.barrier_all()
-                    T.exp(exp_ub, exp_ub)
+                    T.tile.exp(exp_ub, exp_ub)
                     T.barrier_all()
 
                     # Sum current block
-                    T.reduce_sum(local_sum, exp_ub, tmp_ub, dim=-1)
+                    T.tile.reduce_sum(local_sum, exp_ub, tmp_ub, dim=-1)
                     T.barrier_all()
 
                     # Update running sum
-                    T.add(sum_i, sum_i, local_sum)
+                    T.tile.add(sum_i, sum_i, local_sum)
                     T.barrier_all()
 
                     # Store unnormalized exp values
@@ -98,7 +98,7 @@ def softmax_online(M, N, block_M, block_N, dtype="float"):
                             # Multiply by correction factor
                             for i in range(block_M // VEC_NUM):
                                 T.barrier_all()
-                                T.mul(a_ub[i, :], a_ub[i, :], correction[i])
+                                T.tile.mul(a_ub[i, :], a_ub[i, :], correction[i])
                                 T.barrier_all()
 
                             # Store back
@@ -117,7 +117,7 @@ def softmax_online(M, N, block_M, block_N, dtype="float"):
                     # Normalize
                     for i in range(block_M // VEC_NUM):
                         T.barrier_all()
-                        T.div(exp_ub[i, :], exp_ub[i, :], sum_i[i])
+                        T.tile.div(exp_ub[i, :], exp_ub[i, :], sum_i[i])
                         T.barrier_all()
                     
                     # Store result

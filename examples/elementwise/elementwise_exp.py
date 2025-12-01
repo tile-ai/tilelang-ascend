@@ -38,7 +38,7 @@ def exp(M, N, block_M, block_N, dtype="float"):
                 T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a_ub)
 
                 T.barrier_all()
-                T.exp(b_ub, a_ub)
+                T.tile.exp(b_ub, a_ub)
                 T.barrier_all()
 
                 T.copy(b_ub, B[bx * block_M + vid * block_M // VEC_NUM, by * block_N])

@@ -109,14 +109,14 @@ def indexer(N2,
                 s1_end_idx = s1_start_idx + each_core_process_num
 
                 T.wait_cross_flag(0)
-                T.arith_progression(topk_indices_tmp_ub, 0, 1, VECTOR_BASEN)
+                T.tile.arith_progression(topk_indices_tmp_ub, 0, 1, VECTOR_BASEN)
                 for s1_id in T.serial(s1_start_idx, s1_end_idx):
                     T.barrier_all()
-                    T.init_sort_buf(topk_global_ub2, TOP_K * 2, 0)
+                    T.tile.init_sort_buf(topk_global_ub2, TOP_K * 2, 0)
                     for s2_id in T.serial(S2 // VECTOR_BASEN):
                         T.barrier_all()
-                        T.fill(reduce_tmp_ub, 0)
-                        T.fill(reduce_g_ub, 0)
+                        T.tile.fill(reduce_tmp_ub, 0)
+                        T.tile.fill(reduce_g_ub, 0)
                         T.barrier_all()
 
                         for g_id in T.serial(G // VECTOR_BASEG):
@@ -127,35 +127,35 @@ def indexer(N2,
                             T.barrier_all()
                             for i in range(VECTOR_BASEG):
                                 T.barrier_all()
-                                T.mul(mm_res_ub[i, :], mm_res_ub[i, :], weight_ub[i])
+                                T.tile.mul(mm_res_ub[i, :], mm_res_ub[i, :], weight_ub[i])
                                 T.barrier_all()
                             T.barrier_all()
-                            T.add(reduce_tmp_ub, mm_res_ub, reduce_tmp_ub)
+                            T.tile.add(reduce_tmp_ub, mm_res_ub, reduce_tmp_ub)
                             T.barrier_all()
                         # topK
                         merge_sort_times = TOP_K // VECTOR_BASEN
                         T.barrier_all()
-                        T.reduce_sum(reduce_g_ub, reduce_tmp_ub, mm_res_ub_uint8, 0)
+                        T.tile.reduce_sum(reduce_g_ub, reduce_tmp_ub, mm_res_ub_uint8, 0)
                         T.barrier_all()
-                        T.add(sort_indice_tmp_ub, topk_indices_tmp_ub,
+                        T.tile.add(sort_indice_tmp_ub, topk_indices_tmp_ub,
                               T.int32(s2_id * VECTOR_BASEN))
                         T.barrier_all()
-                        T.sort(topk_global_ub1[(s2_id % merge_sort_times), :], reduce_g_ub,
+                        T.tile.sort(topk_global_ub1[(s2_id % merge_sort_times), :], reduce_g_ub,
                                sort_indice_tmp_ub_uint, mm_res_ub, VECTOR_BASEN // 32)
                         T.barrier_all()
                         if s2_id % merge_sort_times == merge_sort_times - 1:
                             if s2_id == merge_sort_times - 1:
-                                T.merge_sort(topk_global_ub2, topk_global_ub1, VECTOR_BASEN,
+                                T.tile.merge_sort(topk_global_ub2, topk_global_ub1, VECTOR_BASEN,
                                              merge_sort_times, 0)
                             else:
-                                T.merge_sort(mm_res_ub, topk_global_ub1, VECTOR_BASEN,
+                                T.tile.merge_sort(mm_res_ub, topk_global_ub1, VECTOR_BASEN,
                                              merge_sort_times, 1)
                                 T.barrier_all()
-                                T.topk(topk_global_ub2, topk_global_ub1, mm_res_ub,
+                                T.tile.topk(topk_global_ub2, topk_global_ub1, mm_res_ub,
                                        VECTOR_BASEN * merge_sort_times)
                         T.barrier_all()
                     T.barrier_all()
-                    T.gather_mask(topk_global_ub1, topk_global_ub2, TOP_K)
+                    T.tile.gather_mask(topk_global_ub1, topk_global_ub2, TOP_K)
                     T.barrier_all()
                     T.copy(topk_global_ub1_flat, OUT[cid, n2_id, s1_id, 0:TOP_K])
                     T.barrier_all()

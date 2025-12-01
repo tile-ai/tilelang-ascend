@@ -56,6 +56,8 @@ def LowerAndLegalize(mod: IRModule, target: Target) -> IRModule:
     # mod = tilelang.transform.FrontendLegalize()(mod)
     # Simplify the IR expressions
     mod = tir.transform.Simplify()(mod)
+    # Lower parallel loops to vector instructions for Ascend.
+    mod = tilelang.transform.AscendLowerParallelToVector()(mod)
     # Infer memory layouts for fragments and shared memory
     mod = tilelang.transform.LayoutInference()(mod)
     # Lower high-level tile operations to low-level operations

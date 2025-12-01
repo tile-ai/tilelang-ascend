@@ -51,7 +51,7 @@ def gather(M, N, block_M, block_N, dtype="int32"):
                 T.copy(B[bx * block_M + vid * block_M // VEC_NUM, by * block_N], b_ub)
 
                 T.barrier_all()
-                T.gather(c_ub, a_ub, b_ub, 0)
+                T.tile.gather(c_ub, a_ub, b_ub, 0)
                 T.barrier_all()
 
                 T.copy(c_ub, C[bx * block_M + vid * block_M // VEC_NUM, by * block_N])

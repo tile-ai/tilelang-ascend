@@ -75,7 +75,7 @@ def vec_select(M, N, block_M, block_N, mode, b_scalar, dtype="float"):
                 T.copy(MASK[bx * block_M + vid * block_M // VEC_NUM, by * block_N // 8], selmask_ub)
 
                 T.barrier_all()
-                T.select(c_ub, selmask_ub, a_ub, b_scalar, mode)
+                T.tile.select(c_ub, selmask_ub, a_ub, b_scalar, mode)
                 T.barrier_all()
 
                 T.copy(c_ub, C[bx * block_M + vid * block_M // VEC_NUM, by * block_N])

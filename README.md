@@ -353,6 +353,37 @@ def sparse_attention_fwd(
     # other code...
 )
 ```
+### T.Parallel
+We have supported `T.parallel`, which transforms the parallel iteration space into vectorized operations that are lowered into AscendC vector instructions. Here is an example based on [example_sparse_flash_attn.py](https://github.com/tile-ai/tilelang-ascend/blob/ascendc_pto/examples/sparse_flash_attention/example_sparse_flash_attn.py):
+
+```python
+pass_configs = {
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True
+}
+@tilelang.jit(out_idx=[3], pass_configs=pass_configs)
+def sparse_attention_fwd(
+    ...
+    # T.add(acc_s_ub, acc_s_ub, acc_s_ub_)
+    for (i, j) in T.Parallel(v_block, BI):
+        acc_s_ub[i, j] = acc_s_ub[i, j] + acc_s_ub_[i, j]
+    ...
+
+    # T.mul(acc_s_ub, acc_s_ub, sm_scale)
+    for (i, j) in T.Parallel(v_block, BI):
+        acc_s_ub[i, j] = acc_s_ub[i, j] * sm_scale
+    ...
+
+    # T.max(m_i, m_i, m_i_prev)
+    for i in T.Parallel(v_block):
+        m_i[i] = T.max(m_i[i], m_i_prev[i])
+    ...
+
+    # for h_i in range(v_block):
+        # T.sub(acc_s_ub[h_i, :], acc_s_ub[h_i, :], m_i[h_i])
+    for (h_i, j) in T.Parallel(v_block, D):
+        acc_s_ub[h_i, j] = acc_s_ub[h_i, j] - m_i[h_i]
+)
+```
 
 ### Dive Deep into TileLang Beyond GEMM
 

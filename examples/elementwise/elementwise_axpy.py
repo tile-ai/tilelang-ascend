@@ -40,7 +40,7 @@ def axpy(M, N, block_M, block_N, dtype="float"):
                 T.copy(B[bx * block_M + vid * block_M // VEC_NUM, by * block_N], b_ub)
 
                 T.barrier_all()
-                T.axpy(b_ub, a_ub, 2.0)
+                T.tile.axpy(b_ub, a_ub, 2.0)
                 T.barrier_all()
 
                 T.copy(b_ub, B[bx * block_M + vid * block_M // VEC_NUM, by * block_N])

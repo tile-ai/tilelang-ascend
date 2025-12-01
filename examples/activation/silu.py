@@ -26,16 +26,16 @@ def silu(M, N, block_M, block_N, dtype="float"):
             zero_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
             with T.Scope("V"):
                 T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a_ub)
-                T.fill(zero_ub, 0.0)
+                T.tile.fill(zero_ub, 0.0)
                 
                 T.barrier_all()
-                T.sub(denom_ub, zero_ub, a_ub)
+                T.tile.sub(denom_ub, zero_ub, a_ub)
                 T.barrier_all()
-                T.exp(denom_ub, denom_ub)
+                T.tile.exp(denom_ub, denom_ub)
                 T.barrier_all()
-                T.add(denom_ub, denom_ub, 1.0)
+                T.tile.add(denom_ub, denom_ub, 1.0)
                 T.barrier_all()
-                T.div(b_ub, a_ub, denom_ub)
+                T.tile.div(b_ub, a_ub, denom_ub)
                 T.barrier_all()
                 
                 T.copy(b_ub, B[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
