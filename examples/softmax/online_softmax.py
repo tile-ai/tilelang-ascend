@@ -30,8 +30,8 @@ def online_softmax(M, N, block_M, block_N, dtype="float"):
 
     @T.prim_func
     def main(
-        A: T.Tensor((M, N), dtype),  # type: ignore
-        B: T.Tensor((M, N), dtype),   # type: ignore
+        A: T.Tensor([M, N], dtype),  # type: ignore
+        B: T.Tensor([M, N], dtype),   # type: ignore
     ):
         T.func_attr({"enable_auto_sync": True})
         # One core process one block row
@@ -53,10 +53,10 @@ def online_softmax(M, N, block_M, block_N, dtype="float"):
                     T.copy(A[bx * block_M + vid * sub_block_M: bx * block_M + (vid + 1) * sub_block_M,
                              by * block_N: (by + 1) * block_N], a) # Load input
                     T.reduce_max(tile_max, a, tmp, dim=-1)  # Compute tile max
-                    T.max(tile_max, tile_max, prev_max) # m_j = max(m_{j-1}, x_j)
+                    T.max(tile_max, prev_max, tile_max) # m_j = max(m_{j-1}, x_j)
                     T.sub(tmp_exp, prev_max, tile_max) # m_{j-1} - m_j
                     T.exp(tmp_exp, tmp_exp) # exp(m_{j-1} - m_j)
-                    T.mul(prev_sum, prev_sum, tmp_exp) # s_{j-1} * exp(m_{j-1} - m_j)
+                    T.mul(tmp_exp, prev_sum, tmp_exp) # s_{j-1} * exp(m_{j-1} - m_j)
                     for i in range(sub_block_M):
                         T.sub(a[i, :], a[i, :], tile_max[i]) # x_j - m_j
                     T.exp(a, a) # exp(x_j - m_j)
