@@ -61,7 +61,7 @@ def online_softmax(M, N, block_M, block_N, dtype="float"):
                         T.sub(a[i, :], a[i, :], tile_max[i]) # x_j - m_j
                     T.exp(a, a) # exp(x_j - m_j)
                     T.reduce_sum(tile_sum, a, tmp, dim=-1) # sum_j exp(x_j - m_j)
-                    T.add(tile_sum, tile_sum, prev_sum) # s_j = s_{j-1} * exp(m_{j-1} - m_j) + exp(x_j - m_j)
+                    T.add(tile_sum, tile_sum, tmp_exp) # s_j = s_{j-1} * exp(m_{j-1} - m_j) + exp(x_j - m_j)
                     T.copy(tile_sum, prev_sum)
                     T.copy(tile_max, prev_max)
                 
@@ -82,7 +82,7 @@ def online_softmax(M, N, block_M, block_N, dtype="float"):
 
 torch.manual_seed(0)
 test_configs = [
-    (1024, 1024, 128, 128,),
+    (1024, 1024, 64, 64),
 ]
 
 for M, N, block_M, block_N in test_configs:
