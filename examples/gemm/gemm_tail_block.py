@@ -15,6 +15,7 @@ def matmul_with_tail(M, N, K, block_M, block_N, K_L1, dtype="float16", accum_dty
     # Calculate main blocks and tail sizes
     m_main_blocks = M // block_M
     n_main_blocks = N // block_N
+    k_main_blocks = K // K_L1
     
     m_tail = M % block_M
     n_tail = N % block_N
@@ -22,6 +23,7 @@ def matmul_with_tail(M, N, K, block_M, block_N, K_L1, dtype="float16", accum_dty
     
     has_m_tail = m_tail > 0
     has_n_tail = n_tail > 0
+    has_k_tail = k_tail > 0
     
     @T.prim_func
     def main(
@@ -39,23 +41,36 @@ def matmul_with_tail(M, N, K, block_M, block_N, K_L1, dtype="float16", accum_dty
             C_L0 = T.alloc_L0C((block_M, block_N), accum_dtype)
 
             with T.Scope("C"):
-                loop_k = T.ceildiv(K, K_L1)
-                for k in T.serial(loop_k):
-                    is_k_tail = (k == loop_k - 1) and (k_tail > 0)
-                    curr_k = k_tail if is_k_tail else K_L1
-                    
+                # Process main K blocks
+                for k in T.serial(k_main_blocks):
                     T.copy(A[bx * block_M : bx * block_M + block_M, 
-                            k * K_L1 : k * K_L1 + curr_k], 
-                          A_L1[:block_M, :curr_k])
+                            k * K_L1 : k * K_L1 + K_L1], 
+                          A_L1[:block_M, :K_L1])
                     
-                    T.copy(B[k * K_L1 : k * K_L1 + curr_k, 
+                    T.copy(B[k * K_L1 : k * K_L1 + K_L1, 
                             by * block_N : by * block_N + block_N], 
-                          B_L1[:curr_k, :block_N])
+                          B_L1[:K_L1, :block_N])
 
-                    T.gemm_v0(A_L1[:block_M, :curr_k], 
-                             B_L1[:curr_k, :block_N], 
+                    T.gemm_v0(A_L1[:block_M, :K_L1], 
+                             B_L1[:K_L1, :block_N], 
                              C_L0[:block_M, :block_N], 
                              init=(k == 0))
+                
+                # Process K tail block if exists
+                if has_k_tail:
+                    k = k_main_blocks
+                    T.copy(A[bx * block_M : bx * block_M + block_M, 
+                            k * K_L1 : k * K_L1 + k_tail], 
+                          A_L1[:block_M, :k_tail])
+                    
+                    T.copy(B[k * K_L1 : k * K_L1 + k_tail, 
+                            by * block_N : by * block_N + block_N], 
+                          B_L1[:k_tail, :block_N])
+
+                    T.gemm_v0(A_L1[:block_M, :k_tail], 
+                             B_L1[:k_tail, :block_N], 
+                             C_L0[:block_M, :block_N], 
+                             init=(k_main_blocks == 0))
 
                 T.copy(C_L0[:block_M, :block_N], 
                       C[bx * block_M : bx * block_M + block_M, 
@@ -71,23 +86,36 @@ def matmul_with_tail(M, N, K, block_M, block_N, K_L1, dtype="float16", accum_dty
                 C_L0 = T.alloc_L0C((block_M, block_N), accum_dtype)
 
                 with T.Scope("C"):
-                    loop_k = T.ceildiv(K, K_L1)
-                    for k in T.serial(loop_k):
-                        is_k_tail = (k == loop_k - 1) and (k_tail > 0)
-                        curr_k = k_tail if is_k_tail else K_L1
-                        
+                    # Process main K blocks
+                    for k in T.serial(k_main_blocks):
                         T.copy(A[bx * block_M : bx * block_M + m_tail, 
-                                k * K_L1 : k * K_L1 + curr_k], 
-                              A_L1[:m_tail, :curr_k])
+                                k * K_L1 : k * K_L1 + K_L1], 
+                              A_L1[:m_tail, :K_L1])
                         
-                        T.copy(B[k * K_L1 : k * K_L1 + curr_k, 
+                        T.copy(B[k * K_L1 : k * K_L1 + K_L1, 
                                 by * block_N : by * block_N + block_N], 
-                              B_L1[:curr_k, :block_N])
+                              B_L1[:K_L1, :block_N])
 
-                        T.gemm_v0(A_L1[:m_tail, :curr_k], 
-                                 B_L1[:curr_k, :block_N], 
+                        T.gemm_v0(A_L1[:m_tail, :K_L1], 
+                                 B_L1[:K_L1, :block_N], 
                                  C_L0[:m_tail, :block_N], 
                                  init=(k == 0))
+                    
+                    # Process K tail block if exists
+                    if has_k_tail:
+                        k = k_main_blocks
+                        T.copy(A[bx * block_M : bx * block_M + m_tail, 
+                                k * K_L1 : k * K_L1 + k_tail], 
+                              A_L1[:m_tail, :k_tail])
+                        
+                        T.copy(B[k * K_L1 : k * K_L1 + k_tail, 
+                                by * block_N : by * block_N + block_N], 
+                              B_L1[:k_tail, :block_N])
+
+                        T.gemm_v0(A_L1[:m_tail, :k_tail], 
+                                 B_L1[:k_tail, :block_N], 
+                                 C_L0[:m_tail, :block_N], 
+                                 init=(k_main_blocks == 0))
 
                     T.copy(C_L0[:m_tail, :block_N], 
                           C[bx * block_M : bx * block_M + m_tail, 
@@ -103,24 +131,36 @@ def matmul_with_tail(M, N, K, block_M, block_N, K_L1, dtype="float16", accum_dty
                 C_L0 = T.alloc_L0C((block_M, block_N), accum_dtype)
 
                 with T.Scope("C"):
-                    loop_k = T.ceildiv(K, K_L1)
-                    for k in T.serial(loop_k):
-                        is_k_tail = (k == loop_k - 1) and (k_tail > 0)
-                        curr_k = k_tail if is_k_tail else K_L1
-                        
+                    # Process main K blocks
+                    for k in T.serial(k_main_blocks):
                         T.copy(A[bx * block_M : bx * block_M + block_M, 
-                                k * K_L1 : k * K_L1 + curr_k], 
-                              A_L1[:block_M, :curr_k])
+                                k * K_L1 : k * K_L1 + K_L1], 
+                              A_L1[:block_M, :K_L1])
                         
-                        T.copy(B[k * K_L1 : k * K_L1 + curr_k, 
+                        T.copy(B[k * K_L1 : k * K_L1 + K_L1, 
                                 by * block_N : by * block_N + n_tail], 
-                              B_L1[:curr_k, :n_tail])
+                              B_L1[:K_L1, :n_tail])
 
-
-                        T.gemm_v0(A_L1[:block_M, :curr_k], 
-                                 B_L1[:curr_k, :n_tail], 
+                        T.gemm_v0(A_L1[:block_M, :K_L1], 
+                                 B_L1[:K_L1, :n_tail], 
                                  C_L0[:block_M, :n_tail], 
                                  init=(k == 0))
+                    
+                    # Process K tail block if exists
+                    if has_k_tail:
+                        k = k_main_blocks
+                        T.copy(A[bx * block_M : bx * block_M + block_M, 
+                                k * K_L1 : k * K_L1 + k_tail], 
+                              A_L1[:block_M, :k_tail])
+                        
+                        T.copy(B[k * K_L1 : k * K_L1 + k_tail, 
+                                by * block_N : by * block_N + n_tail], 
+                              B_L1[:k_tail, :n_tail])
+
+                        T.gemm_v0(A_L1[:block_M, :k_tail], 
+                                 B_L1[:k_tail, :n_tail], 
+                                 C_L0[:block_M, :n_tail], 
+                                 init=(k_main_blocks == 0))
 
                     T.copy(C_L0[:block_M, :n_tail], 
                           C[bx * block_M : bx * block_M + block_M, 
@@ -137,23 +177,36 @@ def matmul_with_tail(M, N, K, block_M, block_N, K_L1, dtype="float16", accum_dty
                 C_L0 = T.alloc_L0C((block_M, block_N), accum_dtype)
 
                 with T.Scope("C"):
-                    loop_k = T.ceildiv(K, K_L1)
-                    for k in T.serial(loop_k):
-                        is_k_tail = (k == loop_k - 1) and (k_tail > 0)
-                        curr_k = k_tail if is_k_tail else K_L1
-                        
+                    # Process main K blocks
+                    for k in T.serial(k_main_blocks):
                         T.copy(A[bx * block_M : bx * block_M + m_tail, 
-                                k * K_L1 : k * K_L1 + curr_k], 
-                              A_L1[:m_tail, :curr_k])
+                                k * K_L1 : k * K_L1 + K_L1], 
+                              A_L1[:m_tail, :K_L1])
                         
-                        T.copy(B[k * K_L1 : k * K_L1 + curr_k, 
+                        T.copy(B[k * K_L1 : k * K_L1 + K_L1, 
                                 by * block_N : by * block_N + n_tail], 
-                              B_L1[:curr_k, :n_tail])
+                              B_L1[:K_L1, :n_tail])
 
-                        T.gemm_v0(A_L1[:m_tail, :curr_k], 
-                                 B_L1[:curr_k, :n_tail], 
+                        T.gemm_v0(A_L1[:m_tail, :K_L1], 
+                                 B_L1[:K_L1, :n_tail], 
                                  C_L0[:m_tail, :n_tail], 
                                  init=(k == 0))
+                    
+                    # Process K tail block if exists
+                    if has_k_tail:
+                        k = k_main_blocks
+                        T.copy(A[bx * block_M : bx * block_M + m_tail, 
+                                k * K_L1 : k * K_L1 + k_tail], 
+                              A_L1[:m_tail, :k_tail])
+                        
+                        T.copy(B[k * K_L1 : k * K_L1 + k_tail, 
+                                by * block_N : by * block_N + n_tail], 
+                              B_L1[:k_tail, :n_tail])
+
+                        T.gemm_v0(A_L1[:m_tail, :k_tail], 
+                                 B_L1[:k_tail, :n_tail], 
+                                 C_L0[:m_tail, :n_tail], 
+                                 init=(k_main_blocks == 0))
 
                     T.copy(C_L0[:m_tail, :n_tail], 
                           C[bx * block_M : bx * block_M + m_tail, 
