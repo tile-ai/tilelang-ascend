@@ -101,13 +101,13 @@ class ProfileArgs:
     rep: int = 100
     timeout: int = 30
     supply_type: tilelang.TensorSupplyType = tilelang.TensorSupplyType.Auto
-    ref_prog: Callable = None
-    supply_prog: Callable = None
+    ref_prog: Callable | None = None
+    supply_prog: Callable | None = None
     rtol: float = 1e-2
     atol: float = 1e-2
     max_mismatched_ratio: float = 0.01
     skip_check: bool = False
-    manual_check_prog: Callable = None
+    manual_check_prog: Callable | None = None
     cache_input_tensors: bool = True
 
     def __hash__(self):

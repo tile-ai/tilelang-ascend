@@ -93,3 +93,4 @@ def matmul(M, N, K, block_M, block_N, K_L1, dtype="float16", accum_dtype="float"
 func = matmul(M, N, K)
 
 print("Best Config:", func.get_tuner_result())
+print("Test passed!")

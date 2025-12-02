@@ -174,13 +174,13 @@ class AutoTuner:
                          rep: int = 100,
                          timeout: int = 30,
                          supply_type: tilelang.TensorSupplyType = tilelang.TensorSupplyType.Auto,
-                         ref_prog: Callable = None,
-                         supply_prog: Callable = None,
+                         ref_prog: Callable | None = None,
+                         supply_prog: Callable | None = None,
                          rtol: float = 1e-2,
                          atol: float = 1e-2,
                          max_mismatched_ratio: float = 0.01,
                          skip_check: bool = False,
-                         manual_check_prog: Callable = None,
+                         manual_check_prog: Callable | None = None,
                          cache_input_tensors: bool = False):
         """Set profiling arguments for the auto-tuner.
 
@@ -611,25 +611,26 @@ _T = TypeVar('_T')
 class AutoTuneImpl(Generic[_P, _T]):
     jit_impl: JITImpl
 
-    warmup: int = 25
-    rep: int = 100
-    timeout: int = 100
-    configs: dict | Callable = None
-    supply_type: tilelang.TensorSupplyType = tilelang.TensorSupplyType.Auto
-    ref_prog: Callable = None
-    supply_prog: Callable = None
-    rtol: float = 1e-2
-    atol: float = 1e-2
-    max_mismatched_ratio: float = 0.01
-    skip_check: bool = False
-    manual_check_prog: Callable = None
-    cache_input_tensors: bool = False
+    warmup: int
+    rep: int
+    timeout: int
+    configs: dict | Callable
+    supply_type: tilelang.TensorSupplyType
+    ref_prog: Callable | None
+    supply_prog: Callable | None
+    rtol: float
+    atol: float
+    max_mismatched_ratio: float
+    skip_check: bool
+    manual_check_prog: Callable | None
+    cache_input_tensors: bool
 
     def __post_init__(self):
         self._tuner_cache = {}
 
     def get_tunner(self):
         # Use the real function from jit_impl, not a placeholder
+        assert self.jit_impl.func is not None
         autotuner = AutoTuner(
             self.jit_impl.func, configs=self.configs).set_profile_args(
                 supply_type=self.supply_type,
@@ -681,13 +682,13 @@ def autotune(  # This is the new public interface
     timeout: int = 100,
     # compile arguments
     supply_type: tilelang.TensorSupplyType = tilelang.TensorSupplyType.Auto,
-    ref_prog: Callable = None,
-    supply_prog: Callable = None,
+    ref_prog: Callable | None = None,
+    supply_prog: Callable | None = None,
     rtol: float = 1e-2,
     atol: float = 1e-2,
     max_mismatched_ratio: float = 0.01,
     skip_check: bool = False,
-    manual_check_prog: Callable = None,
+    manual_check_prog: Callable | None = None,
     cache_input_tensors: bool = False,
 ):
     """
