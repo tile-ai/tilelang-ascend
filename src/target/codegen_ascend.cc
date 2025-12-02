@@ -1119,6 +1119,9 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
 
       this->stream << ");\n";
     }
+  } else if (op->op.same_as(tl::loop_break())) {
+    this->PrintIndent();
+    this->stream << "break;\n";
   } else {
     tvm::Dump(op);
     CodeGenC::VisitExpr_(op, os);

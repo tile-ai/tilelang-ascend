@@ -10,6 +10,7 @@
 #include "./transform/common/attr.h"
 #include <tvm/arith/analyzer.h>
 #include <tvm/script/ir_builder/tir/ir.h>
+#include "op/builtin.h"
 
 namespace tvm {
 namespace tl {
@@ -104,6 +105,75 @@ ForFrame PipelinedFor(PrimExpr start, PrimExpr stop, int num_stages,
                /*thread_binding=*/NullOpt, /*annotations=*/anno);
     return body;
   };
+  return ForFrame(n);
+}
+
+ForFrame PersistentFor(const Array<PrimExpr> &domain, const PrimExpr &wave_size,
+                       const PrimExpr &index, PrimExpr group_size) {
+  using namespace tvm::tir;
+  ICHECK(!domain.empty());
+  ObjectPtr<ForFrameNode> n = make_object<ForFrameNode>();
+  n->vars.reserve(domain.size());
+  n->doms.reserve(domain.size());
+  PrimExpr domain_size = domain[0];
+  for (int i = 1; i < domain.size(); i++) {
+    domain_size *= domain[i];
+  }
+
+  auto waves = ceildiv(domain_size, wave_size);
+  auto loop_var = Var("w", waves.dtype());
+  group_size = min(group_size, domain[domain.size() - 1]);
+  Array<Var> coord_vars;
+
+  for (int i = 0; i < domain.size(); ++i) {
+    DataType dtype = domain[i].dtype();
+    Var coord("v" + std::to_string(i), dtype);
+    coord_vars.push_back(coord);
+    n->vars.push_back(coord);
+    n->doms.push_back(Range(make_const(dtype, 0), domain[i]));
+  }
+
+  Array<PrimExpr> grouped_domain;
+  grouped_domain.push_back(truncdiv(domain[domain.size() - 1], group_size));
+  for (int i = 0; i < domain.size() - 1; ++i) {
+    grouped_domain.push_back(domain[i]);
+  }
+  grouped_domain.push_back(group_size);
+
+  n->f_make_for_loop = [=](const Array<Var> &vars, const Array<Range> &doms,
+                           const Stmt &body) -> Stmt {
+    ICHECK_EQ(vars.size(), doms.size());
+    Map<String, ObjectRef> anno;
+    Array<PrimExpr> idxs(grouped_domain.size(), PrimExpr());
+    PrimExpr rem = loop_var * wave_size + index;
+
+    for (int i = grouped_domain.size() - 1; i >= 1; --i) {
+      idxs.Set(i, truncmod(rem, grouped_domain[i]));
+      rem = truncdiv(rem, grouped_domain[i]);
+    }
+    idxs.Set(0, rem);
+
+    auto out_if = tvm::tir::IfThenElse(
+        domain_size <= (loop_var * wave_size + index),
+        tvm::tir::Evaluate(
+            tvm::tir::Call(DataType::Handle(), tvm::tl::loop_break(), {})),
+        Stmt());
+
+    arith::Analyzer analyzer;
+    Stmt new_body = body;
+    if (analyzer.CanProveGreaterEqual(waves, 2)) {
+      new_body = SeqStmt({out_if, body});
+    }
+    Stmt outer =
+        For(loop_var, 0, waves, ForKind::kSerial, new_body, NullOpt, anno);
+    for (int i = 0; i < vars.size() - 1; ++i) {
+      outer = tvm::tir::LetStmt(vars[i], idxs[i + 1], outer);
+    }
+    outer = tvm::tir::LetStmt(vars[vars.size() - 1],
+                              idxs[0] * group_size + idxs[vars.size()], outer);
+    return outer;
+  };
+
   return ForFrame(n);
 }
 
@@ -219,11 +289,11 @@ KernelLaunchFrame KernelLaunch(Array<PrimExpr> grid_size,
   }
 
   if (attrs.defined()) {
-    auto empty_block = Block(MainBlockName);
+    auto empty_block = ::tvm::script::ir_builder::tir::Block(MainBlockName);
     empty_block->annotations = attrs;
     n->frames.push_back(empty_block);
   } else {
-    n->frames.push_back(Block(MainBlockName));
+    n->frames.push_back(::tvm::script::ir_builder::tir::Block(MainBlockName));
   }
 
   return KernelLaunchFrame(n);
@@ -233,6 +303,7 @@ TVM_REGISTER_NODE_TYPE(KernelLaunchFrameNode);
 
 TVM_REGISTER_GLOBAL("tl.Parallel").set_body_typed(ParallelFor);
 TVM_REGISTER_GLOBAL("tl.Pipelined").set_body_typed(PipelinedFor);
+TVM_REGISTER_GLOBAL("tl.Persistent").set_body_typed(PersistentFor);
 TVM_REGISTER_GLOBAL("tl.KernelLaunch").set_body_typed(KernelLaunch);
 
 class WarpSpecializeFrameNode : public TIRFrameNode {
