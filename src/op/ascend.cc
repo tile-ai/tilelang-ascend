@@ -114,6 +114,7 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
     bool print_src_layout = false;
     bool print_dst_layout = false;
     bool print_ub = false;
+    bool l0_dst_split = false;
   } config;
 
   std::stringstream ss;
@@ -126,9 +127,11 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
   } else if (src.scope() == "shared.dyn" && dst.scope() == "wmma.matrix_a") {
     ss << "copy_l1_to_l0a";
     config.print_src_layout = true;
+    config.l0_dst_split = true;
   } else if (src.scope() == "shared.dyn" && dst.scope() == "wmma.matrix_b") {
     ss << "copy_l1_to_l0b";
     config.print_src_layout = true;
+    config.l0_dst_split = true;
   } else if (src.scope() == "wmma.accumulator" && dst.scope() == "global") {
     ss << "copy_l0c_to_gm";
     config.l0c2gm = true;
@@ -204,8 +207,7 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
     } else if (src.scope() == "global") {
       ss << dst->shape[dst_ndim - 2] << ", " << dst->shape[dst_ndim - 1] << ">";
     } else {
-      ss << src->shape[src_ndim - 2] << ", " << src->shape[src_ndim - 1] << ", "
-         << dst->shape[dst_ndim - 2] << ", " << dst->shape[dst_ndim - 1] << ">";
+      ss << src->shape[src_ndim - 2] << ", " << src->shape[src_ndim - 1] << ">";
     }
   }
 
@@ -236,6 +238,12 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
 
   if (config.needs_strideN) {
     new_args.push_back(strideN);
+  }
+
+  if (config.l0_dst_split) {
+    int dst_dim = dst->shape.size();
+    new_args.push_back(dst->shape[dst_dim - 2]);
+    new_args.push_back(dst->shape[dst_dim - 1]);
   }
 
   if (config.l0c2gm) {
