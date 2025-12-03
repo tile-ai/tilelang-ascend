@@ -13,6 +13,10 @@ using TileMatL1 = Tile<Location::Mat, T, Rows, Cols,
                        SLayout::RowMajor,
                        512>;
 
+template <typename T, int Rows, int Cols>
+using TileUbData = Tile<Location::Vec, T, Rows, Cols,
+                       BLayout::RowMajor, -1, -1>;
+
 template <typename T1, typename T2, uint32_t M, uint32_t N, uint32_t K,
           bool transpose_A = false, bool transpose_B = false>
 __aicore__ PTO_INLINE void gemm_v0(
@@ -22,11 +26,15 @@ __aicore__ PTO_INLINE void gemm_v0(
             bool clear) {
     // Allocate l0a/l0b
     TileLeft<T1, M, K> l0a;
+    TASSIGN(l0a, 0x0);
     TileRight<T1, K, N> l0b;
+    TASSIGN(l0b, 0x0);
 
     // copy l1 to l0a/l0b
     TEXTRACT(l0a, A, 0, 0);
     TEXTRACT(l0b, B, 0, 0);
+    set_flag(PIPE_MTE1, PIPE_M, EVENT_ID0);
+    wait_flag(PIPE_MTE1, PIPE_M, EVENT_ID0);
      
     if(clear) {
         TMATMUL(C, l0a, l0b);

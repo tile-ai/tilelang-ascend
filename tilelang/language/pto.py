@@ -14,9 +14,8 @@ def _dtype(buf):
     return type_map[buf.dtype]
 
 
-# Todo: PTO Barrier_all
 def barrier_all():
-    return T.call_extern("handle", "")
+    return T.call_extern("handle", "pipe_barrier(PIPE_ALL);")
 
 
 def gemm_v0(A, B, C, transpose_A=False, transpose_B=False, init=False):
