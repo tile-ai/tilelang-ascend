@@ -46,7 +46,7 @@ def supply_prog(params):
     ]
 
 @tilelang.autotune(
-    configs=get_config_combination(), # get_config is also ok
+    configs=get_config(), # get_config_combination is also ok
     ref_prog=ref_prog,
     supply_prog=supply_prog,
     atol=1e-2,
