@@ -43,9 +43,8 @@ def online_softmax(M, N, block_M, block_N, dtype="float"):
             tile_sum = T.alloc_ub([sub_block_M], dtype)
             prev_sum = T.alloc_ub([sub_block_M], dtype)
             tmp_exp = T.alloc_ub([sub_block_M], dtype)
-            tmp_size = DataType(dtype).bits // 8 * sub_block_M * block_N
-            tmp = T.alloc_ub([tmp_size], "uint8")
-            T.fill(prev_max, -1e20)
+            tmp = T.alloc_ub([2 * sub_block_M * block_N], "uint8")
+            T.fill(prev_max, -1e38)
             T.fill(prev_sum, 0.0)
             with T.Scope("V"):
                 # First pass: compute max and sum
@@ -61,8 +60,7 @@ def online_softmax(M, N, block_M, block_N, dtype="float"):
                         T.sub(a[i, :], a[i, :], tile_max[i]) # x_j - m_j
                     T.exp(a, a) # exp(x_j - m_j)
                     T.reduce_sum(tile_sum, a, tmp, dim=-1) # sum_j exp(x_j - m_j)
-                    T.add(tile_sum, tile_sum, tmp_exp) # s_j = s_{j-1} * exp(m_{j-1} - m_j) + exp(x_j - m_j)
-                    T.copy(tile_sum, prev_sum)
+                    T.add(prev_sum, tile_sum, tmp_exp) # s_j = s_{j-1} * exp(m_{j-1} - m_j) + exp(x_j - m_j)
                     T.copy(tile_max, prev_max)
                 
                 # Second pass: compute final output
@@ -82,7 +80,7 @@ def online_softmax(M, N, block_M, block_N, dtype="float"):
 
 torch.manual_seed(0)
 test_configs = [
-    (1024, 1024, 64, 64),
+    (1024, 51200, 128, 128),
 ]
 
 for M, N, block_M, block_N in test_configs:
@@ -91,6 +89,6 @@ for M, N, block_M, block_N in test_configs:
     a = torch.randn(M, N).npu()
     b = func(a)
     ref_b = torch.nn.functional.softmax(a, dim=1)
-    torch.testing.assert_close(b, ref_b, rtol=1e-2, atol=1e-2)
+    torch.testing.assert_close(b, ref_b, rtol=1e-4, atol=1e-4)
     print("Test passed!")
 print("Kernel Output Match!")
