@@ -32,6 +32,7 @@ def gemm_tail_block(M, N, K, block_M, block_N, block_K, dtype="float16", accum_t
         B: T.Tensor([K, N], dtype),
         C: T.Tensor([M, N], dtype),
     ):
+         T.func_attr({"enable_auto_sync": True})
          with T.Kernel(total_blocks, is_npu=True) as (cid, _):
             bx = cid // total_n_blocks
             by = cid % total_n_blocks
