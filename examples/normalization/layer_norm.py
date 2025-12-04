@@ -63,7 +63,7 @@ def layer_norm(M, N, block_M, block_N, eps=1e-5, dtype="float"):
                 T.barrier_all()
                 T.mul(sum_ub, mean_ub, mean_ub)
                 T.barrier_all()
-                T.sub(mean_square_ub, mean_square_ub, mean_square_ub)
+                T.sub(mean_square_ub, mean_square_ub, sum_ub)
                 T.barrier_all()
                 T.fill(sum_ub, eps)
                 T.barrier_all()

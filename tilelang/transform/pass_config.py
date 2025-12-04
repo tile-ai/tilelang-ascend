@@ -38,6 +38,9 @@ class PassConfigKey(str, Enum):
     TL_ASCEND_MEMORY_PLANNING = "tl.ascend_memory_planning"
     """Enable/disable TileLang AscendMemoryPlanning pass. Default: False"""
 
+    TL_ASCEND_AUTO_CV_COMBINE = "tl.ascend_auto_cv_combine"
+    """Enable/disable TileLang AscendSyncInsert pass. Default: False"""
+
     # TIR related configs
     TIR_ENABLE_EQUIV_TERMS_IN_CSE = "tir.enable_equiv_terms_in_cse_tir"
     """Enable equivalent terms in TIR Common Subexpression Elimination. Default: True"""

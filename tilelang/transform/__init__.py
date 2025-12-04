@@ -375,3 +375,13 @@ def AscendSyncInsert():
     ----
     """
     return _ffi_api.AscendSyncInsert()  # type: ignore
+
+def CombineCV():
+    """CombineCV
+
+    Returns
+    -------
+    fpass : tvm.transform.Pass
+        The result pass
+    """
+    return _ffi_api.CombineCV()  # type: ignore
