@@ -69,9 +69,10 @@ void CodeGenTileLangAscendPto::PrintFuncPrefix(std::ostream &os) {
 }
 
 std::string CodeGenTileLangAscendPto::Finish() {
-  decl_stream << "#include <common/tile_tensor_impl.hpp>\n";
-  decl_stream << "#include <common/pto_tileop.hpp>\n";
-  decl_stream << "#include <common/constants.hpp>\n";
+  decl_stream << "#include \"tl_templates/pto/common.h\"\n";
+  decl_stream << "#include \"common/tile_tensor_impl.hpp\"\n";
+  decl_stream << "#include \"common/pto_tileop.hpp\"\n";
+  decl_stream << "#include \"common/constants.hpp\"\n";
   decl_stream << "#include \"acl/acl.h\"\n";
   decl_stream << "using namespace pto;\n";
   decl_stream << "\n";
