@@ -30,8 +30,8 @@ def online_softmax(M, N, block_M, block_N, dtype="float"):
 
     @T.prim_func
     def main(
-        A: T.Tensor([M, N], dtype),  # type: ignore
-        B: T.Tensor([M, N], dtype),   # type: ignore
+        A: T.Tensor([M, N], dtype),
+        B: T.Tensor([M, N], dtype),
     ):
         T.func_attr({"enable_auto_sync": True})
         # One core process one block row
