@@ -35,6 +35,68 @@ namespace tl {
 
 using namespace tir;
 
+struct OperationConfig {
+  std::vector<std::pair<size_t, std::string>> buffer_accesses;
+  std::string default_pipeline;
+
+  std::string toString() const {
+    std::ostringstream oss;
+    oss << "OperationConfig{";
+    oss << "buffer_accesses: [";
+    bool first_access = true;
+    for (const auto& access : buffer_accesses) {
+      if (!first_access) oss << ", ";
+      oss << "(" << access.first << ", '" << access.second << "')";
+      first_access = false;
+    }
+    oss << "], ";
+    oss << "default_pipeline: '" << default_pipeline << "'";
+    oss << "}";
+    return oss.str();
+  }
+};
+
+std::unordered_map<std::string, OperationConfig> operation_config_ = {
+  {"copy_gm_to_l1", {{{0, "read"}, {1, "write"}}, "PIPE_MTE2"}},
+  {"copy_gm_to_l0a", {{{0, "read"}, {1, "write"}}, "PIPE_MTE2"}},
+  {"copy_gm_to_l0b", {{{0, "read"}, {1, "write"}}, "PIPE_MTE2"}},
+  {"copy_gm_to_ub", {{{0, "read"}, {1, "write"}}, "PIPE_MTE2"}},
+  {"copy_l1_to_l0a", {{{0, "read"}, {1, "write"}}, "PIPE_MTE1"}},
+  {"copy_l1_to_l0b", {{{0, "read"}, {1, "write"}}, "PIPE_MTE1"}},
+  {"copy_ub_to_gm", {{{0, "read"}, {1, "write"}}, "PIPE_MTE3"}},
+  {"copy_ub_to_l1", {{{0, "read"}, {1, "write"}}, "PIPE_MTE3"}},
+  {"copy_l0c_to_gm", {{{0, "read"}, {1, "write"}}, "PIPE_FIX"}},
+  {"copy_l0c_to_l1", {{{0, "read"}, {1, "write"}}, "PIPE_FIX"}},
+  {"copy_ub_to_ub", {{{0, "read"}, {1, "write"}}, "PIPE_V"}},
+  {"mma", {{{0, "read"}, {1, "read"}, {2, "write"}}, "PIPE_M"}},
+  {"gemm_v0", {{{0, "read"}, {1, "read"}, {2, "write"}}, "PIPE_M"}},
+  {"gemm_v1", {{{0, "read"}, {1, "read"}, {2, "write"}}, "PIPE_M"}},
+  {"AscendC::Add", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
+  {"AscendC::Mul", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
+  {"AscendC::Sub", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
+  {"AscendC::Subs", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
+  {"AscendC::Div", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
+  {"AscendC::Divs", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
+  {"AscendC::Reduce", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
+  {"AscendC::Scalar", {{{0, "write"}, {1, "read"}}, "PIPE_S"}},
+  {"AscendC::Exp", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
+  {"AscendC::Ln", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
+  {"AscendC::Sqrt", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
+  {"AscendC::Relu", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
+  {"AscendC::Axpy", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
+  {"AscendC::Select", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
+  {"AscendC::Abs", {{{0, "write"}, {1, "read"}}, "PIPE_M"}},
+  {"Gatherb", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
+  {"AscendC::CompareScalar", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
+  {"AscendC::Duplicate", {{{0, "write"}}, "PIPE_V"}},
+  {"AscendC::Muls", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
+  {"AscendC::And", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
+  {"reduce_max", {{{0, "read"}, {1, "write"}}, "PIPE_V"}},
+  {"reduce_max", {{{0, "read"}, {1, "write"}}, "PIPE_V"}},
+  {"reduce_sum", {{{0, "read"}, {1, "write"}}, "PIPE_V"}},
+  {"AscendC::Max", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}}
+};
+
 /*!
  * \brief Check whether two regions have intersections.
  * \param region1 The first region.
@@ -75,6 +137,21 @@ public:
   PrimExpr GetConditonalExpr() const { return conditonal_expr; }
 
 private:
+  std::string NormalizeFunctionName(const std::string& func_name) {
+    std::string result = func_name;
+    size_t template_pos = result.find('<');
+    if (template_pos != std::string::npos) {
+      result = result.substr(0, template_pos);
+    }
+    
+    size_t ns_pos = result.find("tl::ascend::");
+    if (ns_pos != std::string::npos) {
+      result = result.substr(ns_pos + 12);
+    }
+    
+    return result;
+  }
+
   void VisitStmt_(const BufferStoreNode *op) final {
     Buffer store_buffer = op->buffer;
     Array<PrimExpr> indices = op->indices;
@@ -139,6 +216,41 @@ private:
       conditonal_expr = cond;
       this->VisitExpr(then_expr);
       this->VisitExpr(else_expr);
+    } else if (const auto* func_name = op->args[0].as<StringImmNode>()) {
+      std::string func_str = func_name->value;
+      std::string normalized_name = NormalizeFunctionName(func_str);
+      auto config_it = operation_config_.find(normalized_name);
+      if (config_it != operation_config_.end()) {
+        const auto& config = config_it->second;
+        for (const auto& buffer_config: config.buffer_accesses) {
+          size_t arg_index = buffer_config.first;
+          const std::string& access_type = buffer_config.second;
+          if (const auto* access_ptr = op->args[arg_index + 1].as<CallNode>()) {
+            if (access_ptr->op.same_as(builtin::tvm_access_ptr())) {
+              const VarNode* buffer_var = access_ptr->args[1].as<VarNode>();
+              if (buffer_var) {
+                auto it = buffer_data_to_buffer_.find(GetRef<Var>(buffer_var));
+                if (it != buffer_data_to_buffer_.end()) {
+                  const Buffer& buffer = (*it).second;
+                  const BufferRegion buffer_region = BufferRegion::FullRegion(buffer);
+                  if (access_type == "read") {
+                    reads_.push_back(buffer_region);
+                    if (buffer.scope() == "global") {
+                      is_global_read_ = true;
+                    }
+                  } else if (access_type == "write") {
+                    writes_.push_back(buffer_region);
+                    if (is_global_read_ && (buffer.scope() == "shared" ||
+                        buffer.scope() == "shared.dyn")) {
+                          is_global_copy_pattern_ = true;
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
     } else {
       StmtExprVisitor::VisitExpr_(op);
     }

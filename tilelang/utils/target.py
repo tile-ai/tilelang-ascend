@@ -43,6 +43,19 @@ def check_hip_availability() -> bool:
         return False
 
 
+def check_npu_availability() -> bool:
+    """
+    Check if NPU (Ascend) is available on the system by checking torch.npu.
+    Returns:
+        bool: True if NPU is available, False otherwise.
+    """
+    try:
+        import torch
+        return hasattr(torch, 'npu') and torch.npu.is_available()
+    except Exception:
+        return False
+
+
 def determine_target(target: Union[str, Target, Literal["auto"]] = "auto",
                      return_object: bool = False) -> Union[str, Target]:
     """
@@ -67,14 +80,19 @@ def determine_target(target: Union[str, Target, Literal["auto"]] = "auto",
         # Check for CUDA and HIP availability
         is_cuda_available = check_cuda_availability()
         is_hip_available = check_hip_availability()
+        is_npu_available = check_npu_availability()
 
         # Determine the target based on availability
         if is_cuda_available:
             return_var = "cuda"
         elif is_hip_available:
             return_var = "hip"
+        elif is_npu_available:
+            # NPU (Ascend) is available, use llvm as the TVM target
+            # tilelang will handle Ascend-specific compilation internally
+            return_var = "llvm"
         else:
-            raise ValueError("No CUDA or HIP available on this system.")
+            raise ValueError("No CUDA, HIP, or NPU available on this system.")
     else:
         # Validate the target if it's not "auto"
         assert isinstance(

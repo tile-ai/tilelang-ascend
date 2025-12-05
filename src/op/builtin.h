@@ -259,6 +259,14 @@ TVM_DLL const Op &tvm_rdna_wmma();
  */
 TVM_DLL const Op &tvm_rdna_wmma_store();
 
+/*!
+ * \brief tvm intrinsic for loop continue
+ *
+ * loop_break()
+ *
+ */
+TVM_DLL const Op &loop_break();
+
 const Op &add();
 
 const Op &sub();

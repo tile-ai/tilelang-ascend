@@ -26,6 +26,7 @@ from tilelang.cache import cached
 from os import path, makedirs
 from logging import getLogger
 import functools
+import inspect
 from tilelang.jit.param import Kernel, _P, _RProg
 
 logger = getLogger(__name__)
@@ -89,6 +90,9 @@ class _JitImplementation:
     verbose: bool
     pass_configs: Optional[Dict[str, Any]]
     debug_root_path: Optional[str]
+    func: Optional[Callable] = None  # Store the original function
+    signature: Optional[Any] = None  # Store the signature
+    wrapper: Optional[Callable] = None  # Store the wrapped function for autotuner access
 
     def __init__(self,
                  out_idx: Any = None,
@@ -136,6 +140,8 @@ class _JitImplementation:
         self.target_host = target_host
         self.verbose = verbose
         self.pass_configs = pass_configs
+        self.func = None
+        self.signature = None
 
         # Corrected debug_root_path handling
         self.debug_root_path = debug_root_path
@@ -163,6 +169,9 @@ class _JitImplementation:
         self,
         func: Callable[_P, _RProg]  # func is Union[Callable[_P, _RProg], PrimFunc] in original
     ) -> Callable[_P, Any]:
+        # Store the function and its signature for autotuner access
+        self.func = func
+        self.signature = inspect.signature(func)
 
         @functools.wraps(func)
         def wrapper(*args: _P.args, **kwargs: _P.kwargs) -> Any:
@@ -206,6 +215,11 @@ class _JitImplementation:
                 self._kernel_cache[key] = kernel_result
 
             return self._kernel_cache[key]
+
+        # Attach reference to _JitImplementation for autotuner to access
+        wrapper.__jit_impl__ = self
+        # Store the wrapper for autotuner to call it directly
+        self.wrapper = wrapper
 
         return wrapper
 

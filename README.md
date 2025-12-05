@@ -17,6 +17,12 @@ Tile Language Ascend (**tilelang-ascend**) is a specialized variant of the tile-
 </p>
 
 ## Latest News
+- 11/25/2025 ✨: [Automatic buffer reuse](https://github.com/tile-ai/tilelang-ascend?tab=readme-ov-file#automatic-buffer-reuse) support, see [Pull Request#101](
+https://github.com/tile-ai/tilelang-ascend/pull/101)!
+- 11/17/2025 ✨: Added debug tools for tilelang-ascend—`T.printf` and `T.dump_tensor`, enabling users to [print and dump](https://github.com/tile-ai/tilelang-ascend/tree/ascendc_pto/examples/print) device-side buffers for easier inspection and troubleshooting.
+- 11/07/2025 ✨: [Automatic insertion of intra-kernel synchronization](https://github.com/tile-ai/tilelang-ascend?tab=readme-ov-file#automatic-insertion-of-synchronization-instruction) support, see [Pull Request#74](
+https://github.com/tile-ai/tilelang-ascend/pull/74)!
+- 10/28/2025 🚀: Enhanced the performance of tl_templates and completed a high-performance [GEMM kernel](https://github.com/tile-ai/tilelang-ascend/blob/ascendc_pto/examples/gemm/example_gemm_intrinsic.py).
 - 09/29/2025 🚀: We are excited to announce that tilelang-ascend, a dsl for high performance AI workloads on Ascend NPUs, is now open source and available to the public!
 
 ## Tested Devices

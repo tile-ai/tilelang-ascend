@@ -54,11 +54,7 @@ private:
   }
 
   Stmt VisitStmt_(const LetStmtNode *op) final {
-    if (isNeedTiling(op->var, op->value) && after_thread_flag) {
-      tiling_map_.Set(op->var, op->value);
-      var_sequence_.push_back(op->var);
-      return arith::IRMutatorWithAnalyzer::VisitStmt(op->body);
-    }
+    // disable temporarily
     return arith::IRMutatorWithAnalyzer::VisitStmt_(op);
   }
 
