@@ -456,6 +456,22 @@ def not_tl(dst: Buffer, src0: Buffer):
     return unary_op(dst, src0, "Not")
 
 
+def sin(dst: Buffer, src: Buffer, tmp: Buffer):
+    size_dst = math.prod(dst.shape)
+    size_src = math.prod(src.shape)
+    assert size_dst == size_src, "size must be same"
+    return T.call_extern("handle", "AscendC::Sin", dst.access_ptr("w"), src.access_ptr("r"),
+                         tmp.access_ptr("r"), size_dst)
+
+
+def cos(dst: Buffer, src: Buffer, tmp: Buffer):
+    size_dst = math.prod(dst.shape)
+    size_src = math.prod(src.shape)
+    assert size_dst == size_src, "size must be same"
+    return T.call_extern("handle", "AscendC::Cos", dst.access_ptr("w"), src.access_ptr("r"),
+                         tmp.access_ptr("r"), size_dst)
+
+
 def scalar_op(dst: Buffer, src0: Buffer, scalar_value: PrimExpr, op: str):
     size_0 = math.prod(src0.shape)
     size_2 = math.prod(dst.shape)

@@ -589,7 +589,9 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
       }
       this->stream << ", " << PrintExpr(op->args[op->args.size() - 1])
                    << ");\n";
-    } else if (op_name.find("TopK") != std::string::npos) {
+    } else if (op_name.find("TopK") != std::string::npos ||
+               op_name.find("AscendC::Sin") != std::string::npos ||
+               op_name.find("AscendC::Cos") != std::string::npos) {
       // tvm::Dump(op);
       std::vector<std::string> var_names;
       for (int i = 1; i < op->args.size() - 1; i++) {
