@@ -169,7 +169,9 @@ private:
       {"reduce_max", {{{0, "read"}, {1, "write"}}, "PIPE_V"}},
       {"reduce_max", {{{0, "read"}, {1, "write"}}, "PIPE_V"}},
       {"reduce_sum", {{{0, "read"}, {1, "write"}}, "PIPE_V"}},
-      {"AscendC::Max", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}}
+      {"AscendC::Max", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
+      {"AscendC::Sin", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
+      {"AscendC::Cos", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
     };
   }
 
