@@ -473,15 +473,36 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) 
         if (api_name == "TLOAD") {
           ICHECK((copy_base_addr_map_.find(String(src_var_id)) != copy_base_addr_map_.end()));
           std::string tensor_addr = copy_base_addr_map_[String(src_var_id)];
-          std::string tensor_template = "";
-          std::string shape_template = copy_tmplte_shape[String(tensor_addr)][0] + " * "
-          + copy_tmplte_shape[String(tensor_addr)][1];
+          std::string tensor_template = "GlobalTensor<" + copy_tmplte_shape[String(tensor_addr)][0] + ", ";
+          std::string shape_template = "Shape<", stride_template = "Stride<";
+          size_t len = copy_tmplte_shape[String(tensor_addr)].size();
+          size_t op_arg_len = op->args.size();
+          // generate shape
+          for (size_t i = 0; i < 5; i++) {
+            // if op->args.size() changes with GM shapes, add one more len.
+            if (4 - i < op_arg_len - 4) shape_template += PrintExpr(op->args[i + len -2]);
+            else shape_template += "1";
+            if (i < 4) shape_template += ", ";
+          }
+          shape_template += ">";
+          // generate stride
+          for (size_t i = 0; i < 4; i++) {
+            if (len - 1 > 3 - i) {
+              std::string tmp_shape = "";
+              for(size_t j = 0; j < 4 - i; j++) {
+                tmp_shape += copy_tmplte_shape[String(tensor_addr)][j + 1];
+                if (j < 3 - i) tmp_shape += "*";
+              }
+              stride_template = stride_template +  tmp_shape + ", ";
+            } else {
+              stride_template += "1, ";
+            }
+          }
+          stride_template += "1>>";
 
           // get gm2l1 shape
           if(op_name.find("copy_gm_to_l1") != std::string::npos) {
-            tensor_template = "GlobalTensor<half, Shape<1, 1, 1, " + PrintExpr(op->args[4])
-            + ", " + PrintExpr(op->args[5]) + ">, Stride<" + "1, 1, " + shape_template + ", "
-            + copy_tmplte_shape[String(tensor_addr)][1] + ", 1>>";
+            tensor_template = tensor_template + shape_template + ", " + stride_template;
           }
           this->PrintIndent();
           this->stream << tensor_template << " " << src_var_id
@@ -489,14 +510,34 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) 
         } else if (api_name == "TSTORE") {
           ICHECK((copy_base_addr_map_.find(String(dst_var_id)) != copy_base_addr_map_.end()));
           std::string tensor_addr = copy_base_addr_map_[String(dst_var_id)];
-          std::string tensor_template = "";
-          std::string shape_template = copy_tmplte_shape[String(tensor_addr)][0] + " * "
-          + copy_tmplte_shape[String(tensor_addr)][1];
+          std::string tensor_template = "GlobalTensor<" + copy_tmplte_shape[String(tensor_addr)][0] + ", ";
+          std::string shape_template = "Shape<", stride_template = "Stride<";
+          size_t len = copy_tmplte_shape[String(tensor_addr)].size();
+          size_t op_arg_len = op->args.size();
+          // generate shape
+          for (size_t i = 0; i < 5; i++) {
+            if (4 - i < op_arg_len - 4) shape_template += PrintExpr(op->args[i + len -2]);
+            else shape_template += "1";
+            if (i < 4) shape_template += ", ";
+          }
+          shape_template += ">";
+          // generate stride
+          for (size_t i = 0; i < 4; i++) {
+            if (len - 1 > 3 - i) {
+              std::string tmp_shape = "";
+              for(size_t j = 0; j < 4 - i; j++) {
+                tmp_shape += copy_tmplte_shape[String(tensor_addr)][j + 1];
+                if (j < 3 - i) tmp_shape += "*";
+              }
+              stride_template = stride_template +  tmp_shape + ", ";
+            } else {
+              stride_template += "1, ";
+            }
+          }
+          stride_template += "1>>";
 
           if(op_name.find("copy_l0c_to_gm") != std::string::npos) {
-            tensor_template = "GlobalTensor<half, Shape<1, 1, 1, " + PrintExpr(op->args[4])
-            + ", " + PrintExpr(op->args[5]) + ">, Stride<" + "1, 1, " + shape_template + ", "
-            + copy_tmplte_shape[String(tensor_addr)][1] + ", 1>>";
+            tensor_template = tensor_template + shape_template + ", " + stride_template;
           }
           this->PrintIndent();
           this->stream << tensor_template << " " << dst_var_id
@@ -759,7 +800,7 @@ void CodeGenTileLangAscendPto::PrintHostFunc(const PrimFunc &f, const std::strin
   for (size_t i = 0; i < f->params.size(); ++i) { // params
     auto v = f->params[i];
     if (i != 0) {os << ",\n     ";}
-    os << "reinterpret_cast<__gm__ " << copy_tmplte_shape[String(v->name_hint)][2]
+    os << "reinterpret_cast<__gm__ " << copy_tmplte_shape[String(v->name_hint)][0]
     << " *>(" << v->name_hint << ")";
   }
   os << ");\n}\n\n";
@@ -847,10 +888,13 @@ void CodeGenTileLangAscendPto::AddFunction(const GlobalVar &gvar,
       // vid = AllocVarID(real_v.get());
       this->para_.push_back(AllocVarID(real_v.get()));
       this->para_.push_back(getType(f->buffer_map[v]->dtype));
-      std::string shape0 = PrintExpr(f->buffer_map[v]->shape[0]);
-      std::string shape1 = PrintExpr(f->buffer_map[v]->shape[1]);
-      copy_tmplte_shape.Set(String(vid), {String(shape0), String(shape1), String(getType(f->buffer_map[v]->dtype))});
-
+      Array<String> copy_tmp_shape;
+      copy_tmp_shape.push_back(String(getType(f->buffer_map[v]->dtype)));
+      for (size_t i = 0; i < f->buffer_map[v]->shape.size(); i++) {
+        copy_tmp_shape.push_back(String(PrintExpr(f->buffer_map[v]->shape[i])));
+      }
+      copy_tmplte_shape.Set(String(vid), copy_tmp_shape);
+  
       PrintRestrict(v, stream);
 
       auto it = alloc_storage_scope_.find(v.get());
