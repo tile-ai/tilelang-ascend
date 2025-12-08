@@ -362,6 +362,23 @@ In addition to GEMM, we provide a variety of examples to showcase the versatilit
 - [LightningIndexer](./examples/lightning_indexer/): Implementations of LightningIndexer with TileLang-Ascend.
 - [SparseFlashAttention](./examples/sparse_flash_attention/): Implementations of SparseFlashAttention with TileLang-Ascend.
 
+### Automatic insert synchronization flags between AIC and AIV, such as CrossCoreSetFlag / CrossCoreWaitFlag.
+
+Two switches need to be turned on:
+```python
+pass_configs = {
+    "tl.ascend_auto_cv_combine": True,
+    "tl.ascend_auto_cross_core_sync": True,
+}
+```
+
+Here is an example:
+- [FlashAttention](./examples/flash_attention/flash_attn_bhsd_cc_sync.py): Implementations of FlashAttention without inserting synchronization flags manually.
+
+**Attention**
+
+Currently, accessing to the same workspace address in a for loop is not supported.
+
 ## Upcoming Features
 
 Check our [tilelang-ascend development plan](https://github.com/tile-ai/tilelang-ascend/issues/3) for upcoming features.
