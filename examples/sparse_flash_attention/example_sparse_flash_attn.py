@@ -12,7 +12,7 @@ pass_configs = {
     tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True
 }
 
-@tilelang.jit(out_idx=[3], pass_configs=pass_configs)
+@tilelang.jit(out_idx=[3], workspace_idx=[4,5,6,7,8], pass_configs=pass_configs)
 def sparse_attention_fwd(
     heads,
     dim,
@@ -79,7 +79,7 @@ def sparse_attention_fwd(
             Output: T.Tensor(o_shape, dtype),  # type: ignore
 
             # TODO: implement automatically
-        workspace_1: T.Tensor([block_num, BI, D], dtype),
+            workspace_1: T.Tensor([block_num, BI, D], dtype),
             workspace_2: T.Tensor([block_num, BI, D_tail], dtype),
             workspace_3: T.Tensor([block_num, H_per_block, BI], accum_dtype),
             workspace_4: T.Tensor([block_num, H_per_block, BI], dtype),
@@ -333,16 +333,16 @@ for b in range(B):
             indices[b, t, h, :len(i_i)] = i_i
 
 # output = torch.empty((B, S, H, DV), dtype=dtype)
-workspace_1 = torch.zeros((256, 64, 512), dtype=dtype)
-workspace_2 = torch.zeros((256, 64, 64), dtype=dtype)
-workspace_3 = torch.zeros((256, 64, 64), dtype=torch.float)
-workspace_4 = torch.zeros((256, 64, 64), dtype=dtype)
-workspace_5 = torch.zeros((256, 64, 512), dtype=torch.float)
+# workspace_1 = torch.zeros((256, 64, 512), dtype=dtype)
+# workspace_2 = torch.zeros((256, 64, 64), dtype=dtype)
+# workspace_3 = torch.zeros((256, 64, 64), dtype=torch.float)
+# workspace_4 = torch.zeros((256, 64, 64), dtype=dtype)
+# workspace_5 = torch.zeros((256, 64, 512), dtype=torch.float)
 
 torch.npu.synchronize()
 print("init successful!")
 
-output = func(q, kv, indices, workspace_1, workspace_2, workspace_3, workspace_4, workspace_5)
+output = func(q, kv, indices)
 
 torch.npu.synchronize()
 

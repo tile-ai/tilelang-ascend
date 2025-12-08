@@ -8,7 +8,7 @@ torch.manual_seed(0)
 tilelang.disable_cache()
 
 
-@tilelang.jit(out_idx=[3])
+@tilelang.jit(out_idx=[3], workspace_idx=[4, 5, 6, 7])
 def sparse_attention_fwd(
     heads,
     dim,
@@ -372,15 +372,15 @@ for b in range(B):
             indices[b, t, h, :len(i_i)] = i_i
 
 # output = torch.empty((B, S, H_Q, DIM), dtype=dtype)
-workspace_1 = torch.zeros((B, S, 1, H_KV, 64, DIM), dtype=dtype)
-workspace_2 = torch.zeros((B, S, 1, H_KV, kv_group, 64), dtype=torch.float)
-workspace_3 = torch.zeros((B, S, 1, H_KV, kv_group, 64), dtype=dtype)
-workspace_4 = torch.zeros((B, S, 1, H_KV, kv_group, DIM), dtype=torch.float)
+# workspace_1 = torch.zeros((B, S, 1, H_KV, 64, DIM), dtype=dtype)
+# workspace_2 = torch.zeros((B, S, 1, H_KV, kv_group, 64), dtype=torch.float)
+# workspace_3 = torch.zeros((B, S, 1, H_KV, kv_group, 64), dtype=dtype)
+# workspace_4 = torch.zeros((B, S, 1, H_KV, kv_group, DIM), dtype=torch.float)
 
 torch.npu.synchronize()
 print("init successful!")
 
-output = func(q, kv, indices, workspace_1, workspace_2, workspace_3, workspace_4)
+output = func(q, kv, indices)
 
 torch.npu.synchronize()
 

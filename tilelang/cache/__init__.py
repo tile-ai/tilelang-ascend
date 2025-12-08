@@ -17,6 +17,7 @@ _kernel_cache_instance = KernelCache()
 def cached(
     func: PrimFunc = None,
     out_idx: List[int] = None,
+    workspace_idx: List[int] = None,
     *args,
     target: Union[str, Target] = "auto",
     target_host: Union[str, Target] = None,
@@ -30,6 +31,7 @@ def cached(
     return _kernel_cache_instance.cached(
         func,
         out_idx,
+        workspace_idx,
         *args,
         target=target,
         target_host=target_host,

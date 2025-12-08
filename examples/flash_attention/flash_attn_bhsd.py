@@ -8,7 +8,7 @@ torch.manual_seed(0)
 tilelang.disable_cache()
 
 
-@tilelang.jit(out_idx=[3],)
+@tilelang.jit(out_idx=[3], workspace_idx=[4,5,6])
 def flash_attention_fwd(
     heads,
     dim,
@@ -243,14 +243,14 @@ v = torch.randn((B, H, S, D), dtype=torch.float16)
 
 block_num = S // 64 * H * B
 
-workspace_1 = torch.zeros((block_num, 64, 64), dtype=torch.float)
-workspace_2 = torch.zeros((block_num, 64, 64), dtype=torch.float16)
-workspace_3 = torch.zeros((block_num, 64, 512), dtype=torch.float)
+# workspace_1 = torch.zeros((block_num, 64, 64), dtype=torch.float)
+# workspace_2 = torch.zeros((block_num, 64, 64), dtype=torch.float16)
+# workspace_3 = torch.zeros((block_num, 64, 512), dtype=torch.float)
 
 torch.npu.synchronize()
 print("init successful!")
 
-output = func(q, k, v, workspace_1, workspace_2, workspace_3)
+output = func(q, k, v)
 ref_output = ref_flash_attn(q, k, v)
 torch.npu.synchronize()
 

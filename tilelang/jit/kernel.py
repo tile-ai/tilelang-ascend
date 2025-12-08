@@ -45,6 +45,7 @@ class JITKernel(object):
         self,
         func: PrimFunc = None,
         out_idx: Union[List[int], int] = None,
+        workspace_idx: Union[List[int], int] = None,
         execution_backend: Literal["dlpack", "ctypes", "cython"] = "cython",
         target: Union[str, Target] = "auto",
         target_host: Union[str, Target] = None,
@@ -61,6 +62,8 @@ class JITKernel(object):
             The TileLang TIR function to compile and wrap.
         out_idx : Union[List[int], int], optional
             Index(es) of the output tensors to return (default: None).
+        workspace_idx : Union[List[int], int], optional
+            Index(es) of the workspace tensors to auto-allocate (default: None).
         execution_backend : Literal["dlpack", "ctypes"], optional
             Execution backend to use for kernel execution (default: "dlpack").
         target : Union[str, Target], optional
@@ -106,7 +109,7 @@ class JITKernel(object):
             return
 
         # Compile the TileLang function and create a kernel adapter for execution.
-        adapter = self._compile_and_create_adapter(func, out_idx)
+        adapter = self._compile_and_create_adapter(func, out_idx, workspace_idx)
 
         # The adapter's function is assigned as the callable function for this instance.
         self.adapter = adapter
@@ -122,6 +125,7 @@ class JITKernel(object):
         target: Union[str, Target],
         target_host: Union[str, Target],
         out_idx: Union[List[int], int],
+        workspace_idx: Union[List[int], int],
         execution_backend: Literal["dlpack", "ctypes", "cython"],
         pass_configs: Optional[Dict[str, Any]] = None,
     ):
@@ -131,6 +135,7 @@ class JITKernel(object):
         instance = cls(
             func=func,
             out_idx=out_idx,
+            workspace_idx=workspace_idx,
             execution_backend=execution_backend,
             target=target,
             target_host=target_host,
@@ -142,6 +147,7 @@ class JITKernel(object):
             func_or_mod=func,
             params=params,
             result_idx=out_idx,
+            workspace_idx=workspace_idx,
             target=target,
             kernel_global_source=kernel_global_source,
             kernel_lib_path=kernel_lib_path,
@@ -181,7 +187,8 @@ class JITKernel(object):
         return self.torch_function(*modify_args, **kwds)
 
     def _compile_and_create_adapter(self, tilelang_func: PrimFunc,
-                                    out_idx: List[int]) -> BaseKernelAdapter:
+                                    out_idx: List[int],
+                                    workspace_idx: List[int]) -> BaseKernelAdapter:
         """
         Compiles the given TileLang PrimFunc using TVM and creates a kernel adapter.
 
@@ -239,6 +246,7 @@ class JITKernel(object):
             adapter = CythonKernelAdapter(
                 params=artifact.params,
                 result_idx=out_idx,
+                workspace_idx=workspace_idx,
                 target=target,
                 func_or_mod=tilelang_func,
                 host_mod=artifact.host_mod,
@@ -257,6 +265,7 @@ class JITKernel(object):
         self,
         params: List[KernelParam],
         result_idx: Union[List[int], int],
+        workspace_idx: Union[List[int], int],
         target: Union[str, Target],
         func_or_mod: Union[PrimFunc, tvm.runtime.Module],
         kernel_global_source: str,
@@ -283,6 +292,7 @@ class JITKernel(object):
             adapter = CythonKernelAdapter.from_database(
                 params=params,
                 result_idx=result_idx,
+                workspace_idx=workspace_idx,
                 target=target,
                 func_or_mod=func_or_mod,
                 kernel_global_source=kernel_global_source,
@@ -329,7 +339,7 @@ class JITKernel(object):
         Profiler
             A Profiler instance for benchmarking the runtime module.
         """
-        return Profiler(self.params, self.out_idx,
+        return Profiler(self.params, self.out_idx, self.workspace_idx,
                         tensor_supply_type).with_default_adapter(self.adapter)
 
     def get_kernel_source(self) -> str:
@@ -402,6 +412,10 @@ class JITKernel(object):
     @property
     def out_idx(self) -> List[int]:
         return self.adapter.result_idx
+    
+    @property
+    def workspace_idx(self) -> List[int]:
+        return self.adapter.workspace_idx
 
     @property
     def params(self) -> List[KernelParam]:

@@ -209,6 +209,7 @@ class CythonKernelAdapter(BaseKernelAdapter):
     def __init__(self,
                  params: List[KernelParam],
                  result_idx: List[int],
+                 workspace_idx: List[int],
                  target: Union[str, Target],
                  func_or_mod: Union[tir.PrimFunc, tvm.IRModule],
                  host_mod: Optional[tvm.IRModule] = None,
@@ -221,12 +222,14 @@ class CythonKernelAdapter(BaseKernelAdapter):
         Args:
             params: List of tensor types for inputs/outputs
             result_idx: Indices of output tensors
+            workspace_idx: Indices of auto-allocated workspace tensors
             target: Target platform (e.g., 'cuda')
             func_or_mod: TIR function or module to be compiled
             verbose: Enable verbose logging
         """
         self.params = params
-        self.result_idx = self._legalize_result_idx(result_idx)
+        self.result_idx = self._legalize_auto_memory_idx(result_idx, "result_idx")
+        self.workspace_idx = self._legalize_auto_memory_idx(workspace_idx, "workspace_idx")
         self.kernel_global_source = kernel_global_source
 
         if isinstance(func_or_mod, tir.PrimFunc):
@@ -265,7 +268,7 @@ class CythonKernelAdapter(BaseKernelAdapter):
         #     error_msg += f"\n{self.lib_code}"
         #     raise RuntimeError(f"Initialization failed: {error_msg}")
 
-        self.cython_wrapper = CythonKernelWrapper(self.result_idx, self.params, self.lib)
+        self.cython_wrapper = CythonKernelWrapper(self.result_idx, self.workspace_idx, self.params, self.lib)
         self.cython_wrapper.set_dynamic_symbolic_map(self.dynamic_symbolic_map)
         self.cython_wrapper.set_buffer_dtype_map(self.buffer_dtype_map)
         self.cython_wrapper.set_static_shape_map(self.static_shape_map)
@@ -277,6 +280,7 @@ class CythonKernelAdapter(BaseKernelAdapter):
     def from_database(cls,
                       params: List[TensorType],
                       result_idx: List[int],
+                      workspace_idx: List[int],
                       target: str,
                       func_or_mod: Union[tir.PrimFunc, tvm.IRModule],
                       kernel_global_source: str,
@@ -285,7 +289,8 @@ class CythonKernelAdapter(BaseKernelAdapter):
                       pass_configs: Optional[Dict[str, Any]] = None):
         adapter = cls.__new__(cls)
         adapter.params = params
-        adapter.result_idx = adapter._legalize_result_idx(result_idx)
+        adapter.result_idx = adapter._legalize_auto_memory_idx(result_idx, "result_idx")
+        adapter.workspace_idx = adapter._legalize_auto_memory_idx(workspace_idx, "workspace_idx")
         adapter.kernel_global_source = kernel_global_source
         adapter.wrapped_source = kernel_global_source
         adapter.pass_configs = pass_configs
@@ -314,7 +319,7 @@ class CythonKernelAdapter(BaseKernelAdapter):
         #     error_msg = adapter.lib.get_last_error().decode('utf-8')
         #     raise RuntimeError(f"Initialization failed: {error_msg}")
 
-        adapter.cython_wrapper = CythonKernelWrapper(adapter.result_idx, adapter.params,
+        adapter.cython_wrapper = CythonKernelWrapper(adapter.result_idx, adapter.workspace_idx, adapter.params,
                                                      adapter.lib)
         adapter.cython_wrapper.set_dynamic_symbolic_map(adapter.dynamic_symbolic_map)
         adapter.cython_wrapper.set_buffer_dtype_map(adapter.buffer_dtype_map)
@@ -335,13 +340,17 @@ class CythonKernelAdapter(BaseKernelAdapter):
         params = func.params
         buffer_map = func.buffer_map
         dynamic_symbolic_map = {}
+        temp = 0
         for i, param in enumerate(params):
+            if i in self.result_idx or i in self.workspace_idx:
+                temp += 1
+                continue
             if param in buffer_map:
                 buffer = buffer_map[param]
                 for j, shape in enumerate(buffer.shape):
                     if (isinstance(shape, tir.Var) and (shape not in dynamic_symbolic_map) and
                         (shape not in params)):
-                        dynamic_symbolic_map[shape] = (i, j)
+                        dynamic_symbolic_map[shape] = (i - temp, j)
         return dynamic_symbolic_map
 
     def _process_buffer_dtype(self) -> Dict[tir.Var, Tuple[int, torch.dtype]]:

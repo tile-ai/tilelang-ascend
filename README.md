@@ -387,6 +387,55 @@ def sparse_attention_fwd(
 )
 ```
 
+### Auto-allocated Workspace
+We now support [automatic workspace allocation](./docs/tutorials/automatic_workspace_allocation.md), enabling users to call operators without managing workspace or output tensor allocation—they only need to handle input tensors. Refer to [example_sparse_flash_attn.py](https://github.com/tile-ai/tilelang-ascend/blob/ascendc_pto/examples/sparse_flash_attention/example_sparse_flash_attn.py) for a concrete example.
+```python
+# Specify workspace positions in parameter list via workspace_idx
+@tilelang.jit(out_idx=[3], workspace_idx=[4,5,6,7,8])
+def sparse_attention_fwd(...):
+    @T.prim_func
+    def main(
+            # --- Input tensors ---
+            Q: T.Tensor(q_shape, dtype),  
+            KV: T.Tensor(kv_shape, dtype),  
+            Indices: T.Tensor(indices_shape, indices_dtype), 
+
+            # --- Auto-allocated output (index 3 in out_idx) --- 
+            Output: T.Tensor(o_shape, dtype),  
+
+            # --- Auto-allocated workspaces (indices 4-8 in workspace_idx) ---
+            # These are temporary buffers managed by the runtime
+            workspace_1: T.Tensor([block_num, BI, D], dtype),
+            workspace_2: T.Tensor([block_num, BI, D_tail], dtype),
+            workspace_3: T.Tensor([block_num, H_per_block, BI], accum_dtype),
+            workspace_4: T.Tensor([block_num, H_per_block, BI], dtype),
+            workspace_5: T.Tensor([block_num, H_per_block, D], accum_dtype),
+    ):
+
+    ...
+
+# Instantiate sparse attention function
+func = sparse_attention_fwd(
+    heads=128,
+    dim=512,
+    tail_dim=64,
+    topk=2048,
+    kv_stride=1,
+)
+
+# Prepare input tensors
+q = torch.randn((B, S, H, DQK), dtype=dtype)
+kv = torch.randn((B, SKV, HKV, DQK), dtype=dtype)
+indices = torch.full((B, S, HKV, topk), SKV, dtype=torch.int32)
+for b in range(B):
+    for t in range(S):
+        for h in range(HKV):
+            i_i = torch.randperm(max(1, ((t + q_start_s_index) // KV_stride)))[:topk]
+            indices[b, t, h, :len(i_i)] = i_i
+
+# Call operator - output and workspaces are automatically allocated!
+output = func(q, kv, indices)
+```
 ### Dive Deep into TileLang Beyond GEMM
 
 In addition to GEMM, we provide a variety of examples to showcase the versatility and power of TileLang-Ascend, including:
