@@ -707,7 +707,7 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
   } else if (scope == "shared.dyn") {
     print_buffer("tl::pto::TileMatL1");
   } else if (scope == "shared") {
-    print_buffer("Vec");
+    print_buffer("tl::pto::TileUbData");
   }
   this->PrintStmt(op->body);
 }
