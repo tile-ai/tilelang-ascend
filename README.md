@@ -17,6 +17,8 @@ Tile Language Ascend (**tilelang-ascend**) is a specialized variant of the tile-
 </p>
 
 ## Latest News
+- 12/08/2025 ✨: Added [T.Parallel](https://github.com/tile-ai/tilelang-ascend?tab=readme-ov-file#tparallel) support, check out [Pull Request#113](
+https://github.com/tile-ai/tilelang-ascend/pull/113) for details.
 - 11/25/2025 ✨: [Automatic buffer reuse](https://github.com/tile-ai/tilelang-ascend?tab=readme-ov-file#automatic-buffer-reuse) support, see [Pull Request#101](
 https://github.com/tile-ai/tilelang-ascend/pull/101)!
 - 11/17/2025 ✨: Added debug tools for tilelang-ascend—`T.printf` and `T.dump_tensor`, enabling users to [print and dump](https://github.com/tile-ai/tilelang-ascend/tree/ascendc_pto/examples/print) device-side buffers for easier inspection and troubleshooting.
@@ -354,7 +356,7 @@ def sparse_attention_fwd(
 )
 ```
 ### T.Parallel
-We have supported `T.parallel`, which transforms the parallel iteration space into vectorized operations that are lowered into AscendC vector instructions. Here is an example based on [example_sparse_flash_attn.py](https://github.com/tile-ai/tilelang-ascend/blob/ascendc_pto/examples/sparse_flash_attention/example_sparse_flash_attn.py):
+We have supported [T.parallel](https://github.com/tile-ai/tilelang-ascend/blob/ascendc_pto/docs/tutorials/t_parallel.md), which transforms the parallel iteration space into vectorized operations that are lowered into AscendC vector instructions. Here is an example based on [example_sparse_flash_attn.py](https://github.com/tile-ai/tilelang-ascend/blob/ascendc_pto/examples/sparse_flash_attention/example_sparse_flash_attn.py):
 
 ```python
 pass_configs = {
