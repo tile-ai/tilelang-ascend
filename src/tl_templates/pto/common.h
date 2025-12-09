@@ -1,6 +1,4 @@
-#include <common/tile_tensor_impl.hpp>
-#include <common/pto_tileop.hpp>
-#include <common/constants.hpp>
+#include <pto/pto-inst.hpp>
 
 namespace tl::pto {
 using namespace pto;

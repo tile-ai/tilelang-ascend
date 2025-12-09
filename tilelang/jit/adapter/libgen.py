@@ -67,7 +67,7 @@ class LibraryGenerator(object):
             command = [
                 "bisheng",
                 "--cce-aicore-arch=dav-c220-cube",
-                "-D__DAV_V220",
+                "-DMEMORY_BASE",
                 "-O2",
                 "-std=gnu++17",
                 "-xcce",
@@ -86,7 +86,6 @@ class LibraryGenerator(object):
                 f"-I{ASCEND_HOME_PATH}/include",
                 f"-I/usr/local/Ascend/driver/kernel/inc",
                 f"-I{TL_ROOT}/3rdparty/pto-tile-lib/include",
-                f"-I{TL_ROOT}/3rdparty/pto-tile-lib/include/common",
                 f"-L{ASCEND_HOME_PATH}/lib64",
                 "-Wno-macro-redefined",
                 "-Wno-ignored-attributes",
