@@ -471,75 +471,105 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) 
         if (api_name == "TLOAD") {
           ICHECK((copy_base_addr_map_.find(String(src_var_id)) != copy_base_addr_map_.end()));
           std::string tensor_addr = copy_base_addr_map_[String(src_var_id)];
-          std::string tensor_template = "GlobalTensor<" + copy_tmplte_shape[String(tensor_addr)][0] + ", ";
+          std::string tensor_template = "GlobalTensor<" + global_tensor_template[String(tensor_addr)].dtype + ", ";
           std::string shape_template = "Shape<", stride_template = "Stride<";
-          size_t len = copy_tmplte_shape[String(tensor_addr)].size();
+          size_t len = global_tensor_template[String(tensor_addr)].shape_list.size();
           size_t op_arg_len = op->args.size();
+          // Dynamic Shape and Static Shape
+
           // generate shape
           for (size_t i = 0; i < 5; i++) {
             // if op->args.size() changes with GM shapes, add one more len.
-            if (4 - i < op_arg_len - 4) shape_template += PrintExpr(op->args[i + len -2]);
+            if (4 - i < op_arg_len - 4) shape_template += PrintExpr(op->args[i + len - 1]);
             else shape_template += "1";
             if (i < 4) shape_template += ", ";
           }
           shape_template += ">";
           // generate stride
           for (size_t i = 0; i < 4; i++) {
-            if (len - 1 > 3 - i) {
-              std::string tmp_shape = "";
-              for(size_t j = 0; j < 4 - i; j++) {
-                tmp_shape += copy_tmplte_shape[String(tensor_addr)][j + 1];
-                if (j < 3 - i) tmp_shape += "*";
+            if (len > 3 - i) {
+              if (global_tensor_template[String(tensor_addr)].shape_type=="dynamic") stride_template += "-1, ";
+              else {
+                std::string tmp_shape = "";
+                for(size_t j = 0; j < 4 - i; j++) {
+                  tmp_shape += global_tensor_template[String(tensor_addr)].shape_list[j];
+                  if (j < 3 - i) tmp_shape += "*";
+                }
+                stride_template = stride_template +  tmp_shape + ", ";
               }
-              stride_template = stride_template +  tmp_shape + ", ";
             } else {
               stride_template += "1, ";
             }
           }
-          stride_template += "1>>";
+          stride_template += "1>";
 
           // get gm2l1 shape
-          if(op_name.find("copy_gm_to_l1") != std::string::npos) {
-            tensor_template = tensor_template + shape_template + ", " + stride_template;
+          if(op_name.find("copy_gm_to_l1") != std::string::npos
+          || op_name.find("copy_gm_to_ub") != std::string::npos) {
+            tensor_template = tensor_template + shape_template + ", " + stride_template + ">";
           }
           this->PrintIndent();
           this->stream << tensor_template << " " << src_var_id
-          << "(" << tensor_addr << " + " << src_offset << ");\n";
+          << "(" << tensor_addr << " + " << src_offset;
+          if(global_tensor_template[String(tensor_addr)].shape_type=="dynamic") {
+            this->stream << ", " << shape_template << "(), " << stride_template << "(";
+            for(size_t i = 0; i < len; i++) {
+              std::string tmp_shape_info = global_tensor_template[String(tensor_addr)].shape_list[i];
+              if(tmp_shape_info[0]<'1' || tmp_shape_info[0]>'9') this->stream << tmp_shape_info;
+              if(i<len-1) this->stream << ", ";
+            }
+            this->stream << ")";
+          }
+          this->stream << ");\n";
         } else if (api_name == "TSTORE") {
           ICHECK((copy_base_addr_map_.find(String(dst_var_id)) != copy_base_addr_map_.end()));
           std::string tensor_addr = copy_base_addr_map_[String(dst_var_id)];
-          std::string tensor_template = "GlobalTensor<" + copy_tmplte_shape[String(tensor_addr)][0] + ", ";
+          std::string tensor_template = "GlobalTensor<" + global_tensor_template[String(tensor_addr)].dtype+ ", ";
           std::string shape_template = "Shape<", stride_template = "Stride<";
-          size_t len = copy_tmplte_shape[String(tensor_addr)].size();
+          size_t len = global_tensor_template[String(tensor_addr)].shape_list.size();
           size_t op_arg_len = op->args.size();
           // generate shape
           for (size_t i = 0; i < 5; i++) {
-            if (4 - i < op_arg_len - 4) shape_template += PrintExpr(op->args[i + len -2]);
+            if (4 - i < op_arg_len - 4) shape_template += PrintExpr(op->args[i + len - 1]);
             else shape_template += "1";
             if (i < 4) shape_template += ", ";
           }
           shape_template += ">";
           // generate stride
           for (size_t i = 0; i < 4; i++) {
-            if (len - 1 > 3 - i) {
-              std::string tmp_shape = "";
-              for(size_t j = 0; j < 4 - i; j++) {
-                tmp_shape += copy_tmplte_shape[String(tensor_addr)][j + 1];
-                if (j < 3 - i) tmp_shape += "*";
+            if (len > 3 - i) {
+              if (global_tensor_template[String(tensor_addr)].shape_type=="dynamic") stride_template += "-1, ";
+              else {
+                std::string tmp_shape = "";
+                for(size_t j = 0; j < 4 - i; j++) {
+                  tmp_shape += global_tensor_template[String(tensor_addr)].shape_list[j];
+                  if (j < 3 - i) tmp_shape += "*";
+                }
+                stride_template = stride_template +  tmp_shape + ", ";
               }
-              stride_template = stride_template +  tmp_shape + ", ";
             } else {
               stride_template += "1, ";
             }
           }
-          stride_template += "1>>";
+          stride_template += "1>";
 
-          if(op_name.find("copy_l0c_to_gm") != std::string::npos) {
-            tensor_template = tensor_template + shape_template + ", " + stride_template;
+          if(op_name.find("copy_l0c_to_gm") != std::string::npos
+          || op_name.find("copy_ub_to_gm") != std::string::npos) {
+            tensor_template = tensor_template + shape_template + ", " + stride_template + ">";
           }
           this->PrintIndent();
           this->stream << tensor_template << " " << dst_var_id
-          << "(" << tensor_addr << " + " << dst_offset << ");\n";
+          << "(" << tensor_addr << " + " << dst_offset;
+          if(global_tensor_template[String(tensor_addr)].shape_type=="dynamic") {
+            this->stream << ", " << shape_template << "(), " << stride_template << "(";
+            for(size_t i = 0; i < len; i++) {
+              std::string tmp_shape_info = global_tensor_template[String(tensor_addr)].shape_list[i];
+              if(tmp_shape_info[0]<'1' || tmp_shape_info[0]>'9') this->stream << tmp_shape_info;
+              if(i<len-1) this->stream << ", ";
+            }
+            this->stream << ")";
+          }
+          this->stream << ");\n";
         } else if (api_name == "TEXTRACT") {
           if (op->args.size() >= 3 && op->args[5].as<IntImmNode>()->value != 0) {
               row_index = op->args[4];
@@ -798,8 +828,11 @@ void CodeGenTileLangAscendPto::PrintHostFunc(const PrimFunc &f, const std::strin
   for (size_t i = 0; i < f->params.size(); ++i) { // params
     auto v = f->params[i];
     if (i != 0) {os << ",\n     ";}
-    os << "reinterpret_cast<__gm__ " << copy_tmplte_shape[String(v->name_hint)][0]
+    os << "reinterpret_cast<__gm__ " << global_tensor_template[String(v->name_hint)].dtype
     << " *>(" << v->name_hint << ")";
+  }
+  for (auto shape_var : shape_vars) {
+    os << ", " << shape_var->name_hint;
   }
   os << ");\n}\n\n";
 
@@ -886,12 +919,15 @@ void CodeGenTileLangAscendPto::AddFunction(const GlobalVar &gvar,
       // vid = AllocVarID(real_v.get());
       this->para_.push_back(AllocVarID(real_v.get()));
       this->para_.push_back(getType(f->buffer_map[v]->dtype));
-      Array<String> copy_tmp_shape;
-      copy_tmp_shape.push_back(String(getType(f->buffer_map[v]->dtype)));
+      Array<String> copy_tmp_shape = {};
+      String shape_type = "static";
       for (size_t i = 0; i < f->buffer_map[v]->shape.size(); i++) {
-        copy_tmp_shape.push_back(String(PrintExpr(f->buffer_map[v]->shape[i])));
+        std::string shape_info = PrintExpr(f->buffer_map[v]->shape[i]);
+        copy_tmp_shape.push_back(shape_info);
+        if(shape_info[0]<'1' || shape_info[0]>'9') shape_type = "dynamic";
       }
-      copy_tmplte_shape.Set(String(vid), copy_tmp_shape);
+      global_tensor gt = {shape_type, String(getType(f->buffer_map[v]->dtype)), copy_tmp_shape};
+      global_tensor_template[String(vid)] = gt;
   
       PrintRestrict(v, stream);
 

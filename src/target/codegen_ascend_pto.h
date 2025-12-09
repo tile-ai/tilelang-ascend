@@ -99,7 +99,13 @@ private:
 
   Map<String, String> copy_tmplte_map_;
   Map<String, String> copy_base_addr_map_;
-  Map<String, Array<String>> copy_tmplte_shape;
+  
+  struct global_tensor{
+    String shape_type;
+    String dtype;
+    Array<String> shape_list;
+  };
+  std::unordered_map<String, global_tensor> global_tensor_template;
 
   bool use_swizzle_{false};
 };
