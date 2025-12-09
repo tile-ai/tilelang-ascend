@@ -44,23 +44,23 @@ def online_softmax(M, N, block_M, block_N, dtype="float"):
             prev_sum = T.alloc_ub([sub_block_M], dtype)
             tmp_exp = T.alloc_ub([sub_block_M], dtype)
             tmp = T.alloc_ub([2 * sub_block_M * block_N], "uint8")
-            T.fill(prev_max, -1e38)
-            T.fill(prev_sum, 0.0)
+            T.tile.fill(prev_max, -1e38)
+            T.tile.fill(prev_sum, 0.0)
             with T.Scope("V"):
                 # First pass: compute max and sum
                 for by in T.serial(n_num):
                     T.copy(A[bx * block_M + vid * sub_block_M: bx * block_M + (vid + 1) * sub_block_M,
                              by * block_N: (by + 1) * block_N], a) # Load input
-                    T.reduce_max(tile_max, a, tmp, dim=-1)  # Compute tile max
-                    T.max(tile_max, prev_max, tile_max) # m_j = max(m_{j-1}, x_j)
-                    T.sub(tmp_exp, prev_max, tile_max) # m_{j-1} - m_j
-                    T.exp(tmp_exp, tmp_exp) # exp(m_{j-1} - m_j)
-                    T.mul(tmp_exp, prev_sum, tmp_exp) # s_{j-1} * exp(m_{j-1} - m_j)
+                    T.tile.reduce_max(tile_max, a, tmp, dim=-1)  # Compute tile max
+                    T.tile.max(tile_max, prev_max, tile_max) # m_j = max(m_{j-1}, x_j)
+                    T.tile.sub(tmp_exp, prev_max, tile_max) # m_{j-1} - m_j
+                    T.tile.exp(tmp_exp, tmp_exp) # exp(m_{j-1} - m_j)
+                    T.tile.mul(tmp_exp, prev_sum, tmp_exp) # s_{j-1} * exp(m_{j-1} - m_j)
                     for i in range(sub_block_M):
-                        T.sub(a[i, :], a[i, :], tile_max[i]) # x_j - m_j
-                    T.exp(a, a) # exp(x_j - m_j)
-                    T.reduce_sum(tile_sum, a, tmp, dim=-1) # sum_j exp(x_j - m_j)
-                    T.add(prev_sum, tile_sum, tmp_exp) # s_j = s_{j-1} * exp(m_{j-1} - m_j) + exp(x_j - m_j)
+                        T.tile.sub(a[i, :], a[i, :], tile_max[i]) # x_j - m_j
+                    T.tile.exp(a, a) # exp(x_j - m_j)
+                    T.tile.reduce_sum(tile_sum, a, tmp, dim=-1) # sum_j exp(x_j - m_j)
+                    T.tile.add(prev_sum, tile_sum, tmp_exp) # s_j = s_{j-1} * exp(m_{j-1} - m_j) + exp(x_j - m_j)
                     T.copy(tile_max, prev_max)
                 
                 # Second pass: compute final output
@@ -69,10 +69,10 @@ def online_softmax(M, N, block_M, block_N, dtype="float"):
                     T.copy(A[bx * block_M + vid * sub_block_M: bx * block_M + (vid + 1) * sub_block_M,
                              by * block_N: (by + 1) * block_N], a) # Load input
                     for i in range(sub_block_M):
-                        T.sub(a[i, :], a[i, :], prev_max[i]) # x_j - m_N
-                    T.exp(a, a) # exp(x_j - m_N)
+                        T.tile.sub(a[i, :], a[i, :], prev_max[i]) # x_j - m_N
+                    T.tile.exp(a, a) # exp(x_j - m_N)
                     for i in range(sub_block_M):
-                        T.div(a[i, :], a[i, :], prev_sum[i]) # y_j = exp(x_j - m_N) / s_N
+                        T.tile.div(a[i, :], a[i, :], prev_sum[i]) # y_j = exp(x_j - m_N) / s_N
                     T.copy(a, B[bx * block_M + vid * sub_block_M: bx * block_M + (vid + 1) * sub_block_M,
                                  by * block_N: (by + 1) * block_N]) # Store output
     

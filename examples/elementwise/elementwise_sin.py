@@ -31,9 +31,7 @@ def sin(M, N, block_M, block_N, dtype="float"):
             with T.Scope("V"):
                 T.copy(A[bx * block_M + vid * sub_block_M: bx * block_M + (vid + 1) * sub_block_M,
                          by * block_N: (by + 1) * block_N], a) # Load input
-                T.barrier_all()
-                T.sin(b, a, tmp)  # Compute sin
-                T.barrier_all()
+                T.tile.sin(b, a, tmp)  # Compute sin
                 T.copy(b, B[bx * block_M + vid * sub_block_M: bx * block_M + (vid + 1) * sub_block_M,
                             by * block_N: (by + 1) * block_N]) # Store output
     return main

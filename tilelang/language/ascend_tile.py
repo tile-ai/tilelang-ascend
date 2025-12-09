@@ -411,3 +411,24 @@ def cast_tl(dst: Buffer, src: Buffer, mode: str, count: PrimExpr):
 
 def set_deq_scale(scale: PrimExpr):
     return T.call_extern("handle", f"AscendC::SetDeqScale", scale)
+
+
+def sin(dst: Buffer, src: Buffer, tmp: Buffer):
+    size_0 = math.prod(src.shape)
+    size_2 = math.prod(dst.shape)
+
+    assert size_0 == size_2, "size must be same"
+
+    return T.call_extern("handle", f"AscendC::Sin", dst.access_ptr("w"), src.access_ptr("r"),
+                         tmp.access_ptr("r"), size_0)
+
+                
+def cos(dst: Buffer, src: Buffer, tmp: Buffer):
+    size_0 = math.prod(src.shape)
+    size_2 = math.prod(dst.shape)
+
+    assert size_0 == size_2, "size must be same"
+
+    return T.call_extern("handle", f"AscendC::Cos", dst.access_ptr("w"), src.access_ptr("r"),
+                         tmp.access_ptr("r"), size_0)
+
