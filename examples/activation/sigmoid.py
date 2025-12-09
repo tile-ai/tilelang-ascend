@@ -25,16 +25,16 @@ def sigmoid(M, N, block_M, block_N, dtype="float"):
             zero_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
             with T.Scope("V"):
                 T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a_ub)
-                T.fill(zero_ub, 0.0)
+                T.tile.fill(zero_ub, 0.0)
                 
                 T.barrier_all()
-                T.sub(a_ub, zero_ub, a_ub)
+                T.tile.sub(a_ub, zero_ub, a_ub)
                 T.barrier_all()
-                T.exp(a_ub, a_ub)
+                T.tile.exp(a_ub, a_ub)
                 T.barrier_all()
-                T.add(a_ub, a_ub, 1.0)
+                T.tile.add(a_ub, a_ub, 1.0)
                 T.barrier_all()
-                T.reciprocal(b_ub, a_ub)
+                T.tile.reciprocal(b_ub, a_ub)
                 T.barrier_all()
                 
                 T.copy(b_ub, B[bx * block_M + vid * block_M // VEC_NUM, by * block_N])

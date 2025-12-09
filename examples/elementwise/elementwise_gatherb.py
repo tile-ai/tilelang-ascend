@@ -47,7 +47,7 @@ def gatherb(M, N, block_M, block_N, b_len, repeat_time, dtype="uint16"):
                 T.copy(B[bx * block_M + vid * block_M // VEC_NUM, by * b_len], b_ub)
 
                 T.barrier_all()
-                T.gatherb(c_ub, a_ub, b_ub, repeat_time, 1, 8)
+                T.tile.gatherb(c_ub, a_ub, b_ub, repeat_time, 1, 8)
                 T.barrier_all()
 
                 T.copy(c_ub, C[bx * block_M + vid * block_M // VEC_NUM, by * block_N])

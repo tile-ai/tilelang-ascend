@@ -203,9 +203,9 @@ def sparse_attention_fwd(
 
                     with T.Scope("V"):
 
-                        T.fill(acc_o, 0.0)
-                        T.fill(sumexp, 0.0)
-                        T.fill(m_i, -2.0**30)
+                        T.tile.fill(acc_o, 0.0)
+                        T.tile.fill(sumexp, 0.0)
+                        T.tile.fill(m_i, -2.0**30)
                         T.barrier_all()
 
                         for i_i in range(NI):
@@ -222,7 +222,7 @@ def sparse_attention_fwd(
 
                             T.set_cross_flag("MTE3", 0)
 
-                            T.fill(acc_s_ub, 0.0)
+                            T.tile.fill(acc_s_ub, 0.0)
                             T.barrier_all()
 
                             T.copy(m_i, m_i_prev)
@@ -234,46 +234,46 @@ def sparse_attention_fwd(
                                 acc_s_ub_)
                             T.barrier_all()
 
-                            T.add(acc_s_ub, acc_s_ub, acc_s_ub_)
+                            T.tile.add(acc_s_ub, acc_s_ub, acc_s_ub_)
                             T.barrier_all()
 
-                            T.mul(acc_s_ub, acc_s_ub, sm_scale)
+                            T.tile.mul(acc_s_ub, acc_s_ub, sm_scale)
                             T.barrier_all()
 
-                            T.reduce_max(m_i, acc_s_ub, tmp_ub, dim=-1)
+                            T.tile.reduce_max(m_i, acc_s_ub, tmp_ub, dim=-1)
                             T.barrier_all()
 
-                            T.max(m_i, m_i, m_i_prev)
+                            T.tile.max(m_i, m_i, m_i_prev)
                             T.barrier_all()
 
                             # alpha_ub = m_i_prev
 
-                            T.sub(m_i_prev, m_i_prev, m_i)
+                            T.tile.sub(m_i_prev, m_i_prev, m_i)
                             T.barrier_all()
 
-                            T.exp(m_i_prev, m_i_prev)
-                            T.barrier_all()
-
-                            for h_i in range(v_block):
-                                T.barrier_all()
-                                T.sub(acc_s_ub[h_i, :], acc_s_ub[h_i, :], m_i[h_i])  # -
-                                T.barrier_all()
-
-                            T.exp(acc_s_ub, acc_s_ub)
-                            T.barrier_all()
-
-                            T.reduce_sum(sumexp_i_ub, acc_s_ub, tmp_ub, dim=-1)
-                            T.barrier_all()
-
-                            T.mul(sumexp, sumexp, m_i_prev)  # check
-                            T.barrier_all()
-
-                            T.add(sumexp, sumexp, sumexp_i_ub)
+                            T.tile.exp(m_i_prev, m_i_prev)
                             T.barrier_all()
 
                             for h_i in range(v_block):
                                 T.barrier_all()
-                                T.mul(acc_o[h_i, :], acc_o[h_i, :], m_i_prev[h_i])
+                                T.tile.sub(acc_s_ub[h_i, :], acc_s_ub[h_i, :], m_i[h_i])  # -
+                                T.barrier_all()
+
+                            T.tile.exp(acc_s_ub, acc_s_ub)
+                            T.barrier_all()
+
+                            T.tile.reduce_sum(sumexp_i_ub, acc_s_ub, tmp_ub, dim=-1)
+                            T.barrier_all()
+
+                            T.tile.mul(sumexp, sumexp, m_i_prev)  # check
+                            T.barrier_all()
+
+                            T.tile.add(sumexp, sumexp, sumexp_i_ub)
+                            T.barrier_all()
+
+                            for h_i in range(v_block):
+                                T.barrier_all()
+                                T.tile.mul(acc_o[h_i, :], acc_o[h_i, :], m_i_prev[h_i])
                                 T.barrier_all()
 
                             T.copy(acc_s_ub, acc_s_half)
@@ -294,7 +294,7 @@ def sparse_attention_fwd(
                                 acc_o_ub)
                             T.barrier_all()
 
-                            T.add(acc_o, acc_o, acc_o_ub)
+                            T.tile.add(acc_o, acc_o, acc_o_ub)
                             T.barrier_all()
 
                             T.set_cross_flag("V", 4)
@@ -302,7 +302,7 @@ def sparse_attention_fwd(
 
                         for h_i in range(v_block):
                             T.barrier_all()
-                            T.div(acc_o[h_i, :], acc_o[h_i, :], sumexp[h_i])
+                            T.tile.div(acc_o[h_i, :], acc_o[h_i, :], sumexp[h_i])
                             T.barrier_all()
 
                         T.copy(acc_o, acc_o_half)

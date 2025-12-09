@@ -28,7 +28,7 @@ def transpose(M, N, block_M, block_N, dtype="int16"):
                 T.copy(A, a_ub)
 
                 T.barrier_all()
-                T.transpose(b_ub, a_ub)
+                T.tile.transpose(b_ub, a_ub)
                 T.barrier_all()
 
                 T.copy(b_ub, B)

@@ -41,7 +41,7 @@ def sort32(M, N, block_M, block_N):
                 T.copy(B[bx * block_M, by * block_N + vid * block_N // VEC_NUM],b_ub)
 
                 T.barrier_all()
-                T.sort32(c_ub, a_ub, b_ub)
+                T.tile.sort32(c_ub, a_ub, b_ub)
                 T.barrier_all()
 
                 T.copy(c_ub, C[bx * block_M, 2 * (by * block_N + vid * block_N // VEC_NUM)])

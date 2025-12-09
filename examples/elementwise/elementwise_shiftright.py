@@ -39,7 +39,7 @@ def shiftright(M, N, block_M, block_N, scalarvalue, dtype="int32"):
                 T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a_ub)
 
                 T.barrier_all()
-                T.shiftright(b_ub, a_ub, scalarvalue)
+                T.tile.shiftright(b_ub, a_ub, scalarvalue)
                 T.barrier_all()
 
                 T.copy(b_ub, B[bx * block_M + vid * block_M // VEC_NUM, by * block_N])

@@ -32,12 +32,12 @@ def layer_norm(M, N, block_M, block_N, eps=1e-5, dtype="float"):
 
             with T.Scope("V"):
                 # Initialize
-                T.fill(sum_i, 0.0)
-                T.fill(sum_square_i, 0.0)
-                T.fill(sum_ub, 0.0)
-                T.fill(sum_square_ub, 0.0)
-                T.fill(mean_ub, N)
-                T.fill(mean_square_ub, N)
+                T.tile.fill(sum_i, 0.0)
+                T.tile.fill(sum_square_i, 0.0)
+                T.tile.fill(sum_ub, 0.0)
+                T.tile.fill(sum_square_ub, 0.0)
+                T.tile.fill(mean_ub, N)
+                T.tile.fill(mean_square_ub, N)
                 T.barrier_all()
 
                 # Accumulation
@@ -45,31 +45,31 @@ def layer_norm(M, N, block_M, block_N, eps=1e-5, dtype="float"):
                     T.copy(A[bx*block_M+vid*block_M//VEC_NUM:bx*block_M+(vid+1)*block_M//VEC_NUM,
                              by*block_N:(by+1)*block_N], a_ub)
                     T.barrier_all()
-                    T.add(sum_i, sum_i, a_ub)
+                    T.tile.add(sum_i, sum_i, a_ub)
                     T.barrier_all()
-                    T.mul(a_ub, a_ub, a_ub)
+                    T.tile.mul(a_ub, a_ub, a_ub)
                     T.barrier_all()
-                    T.add(sum_square_i, sum_square_i, a_ub)
+                    T.tile.add(sum_square_i, sum_square_i, a_ub)
                     T.barrier_all()
                 
                 # Reduce
-                T.reduce_sum(sum_ub, sum_i, tmp_ub, dim=-1)
-                T.reduce_sum(sum_square_ub, sum_square_i, tmp_ub, dim=-1)
+                T.tile.reduce_sum(sum_ub, sum_i, tmp_ub, dim=-1)
+                T.tile.reduce_sum(sum_square_ub, sum_square_i, tmp_ub, dim=-1)
                 T.barrier_all()
 
                 # Compute mean and variance
-                T.div(mean_ub, sum_ub, mean_ub)
-                T.div(mean_square_ub, sum_square_ub, mean_square_ub)
+                T.tile.div(mean_ub, sum_ub, mean_ub)
+                T.tile.div(mean_square_ub, sum_square_ub, mean_square_ub)
                 T.barrier_all()
-                T.mul(sum_ub, mean_ub, mean_ub)
+                T.tile.mul(sum_ub, mean_ub, mean_ub)
                 T.barrier_all()
-                T.sub(mean_square_ub, mean_square_ub, sum_ub)
+                T.tile.sub(mean_square_ub, mean_square_ub, sum_ub)
                 T.barrier_all()
-                T.fill(sum_ub, eps)
+                T.tile.fill(sum_ub, eps)
                 T.barrier_all()
-                T.add(mean_square_ub, mean_square_ub, sum_ub)
+                T.tile.add(mean_square_ub, mean_square_ub, sum_ub)
                 T.barrier_all()
-                T.sqrt(mean_square_ub, mean_square_ub)
+                T.tile.sqrt(mean_square_ub, mean_square_ub)
                 T.barrier_all()
 
                 # Normalize
@@ -78,9 +78,9 @@ def layer_norm(M, N, block_M, block_N, eps=1e-5, dtype="float"):
                              by*block_N:(by+1)*block_N], a_ub)
                     T.barrier_all()
                     for i in range(block_M // VEC_NUM):
-                        T.sub(a_ub[i, :], a_ub[i, :], mean_ub[i])
+                        T.tile.sub(a_ub[i, :], a_ub[i, :], mean_ub[i])
                         T.barrier_all()
-                        T.div(a_ub[i, :], a_ub[i, :], mean_square_ub[i])
+                        T.tile.div(a_ub[i, :], a_ub[i, :], mean_square_ub[i])
                         T.barrier_all()
 
                     T.copy(a_ub, B[bx*block_M+vid*block_M//VEC_NUM:bx*block_M+(vid+1)*block_M//VEC_NUM,

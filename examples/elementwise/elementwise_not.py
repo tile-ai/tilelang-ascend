@@ -38,7 +38,7 @@ def not_tl(M, N, block_M, block_N, dtype="int16"):
                 T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a_ub)
 
                 T.barrier_all()
-                T.not_tl(b_ub, a_ub)
+                T.tile.not_tl(b_ub, a_ub)
                 T.barrier_all()
 
                 T.copy(b_ub, B[bx * block_M + vid * block_M // VEC_NUM, by * block_N])

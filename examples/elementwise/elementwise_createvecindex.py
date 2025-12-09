@@ -38,7 +38,7 @@ def createvecindex(M, N, block_M, block_N, firstValue, dtype="int32"):
             with T.Scope("V"):
 
                 T.barrier_all()
-                T.createvecindex(c_ub, firstValue)
+                T.tile.createvecindex(c_ub, firstValue)
                 T.barrier_all()
 
                 T.copy(c_ub, C[bx * block_M + vid * block_M // VEC_NUM, by * block_N])

@@ -247,9 +247,9 @@ def sparse_attention_fwd(
                         T.wait_cross_flag(8)
 
                     with T.Scope("V"):
-                        T.fill(acc_o, 0.0)
-                        T.fill(sumexp, 0.0)
-                        T.fill(m_i, -2.0**30)
+                        T.tile.fill(acc_o, 0.0)
+                        T.tile.fill(sumexp, 0.0)
+                        T.tile.fill(m_i, -2.0**30)
 
                         for i_i in range(NI):
 
@@ -264,44 +264,44 @@ def sparse_attention_fwd(
                             T.set_flag("mte2", "v", 0)
                             T.wait_flag("mte2", "v", 0)
 
-                            T.mul(acc_s_ub, acc_s_ub, sm_scale)
+                            T.tile.mul(acc_s_ub, acc_s_ub, sm_scale)
                             T.pipe_barrier("v")
 
-                            T.reduce_max(m_i, acc_s_ub, tmp_ub, dim=-1)
+                            T.tile.reduce_max(m_i, acc_s_ub, tmp_ub, dim=-1)
                             T.pipe_barrier("v")
 
 
-                            T.max(m_i, m_i, m_i_prev)
+                            T.tile.max(m_i, m_i, m_i_prev)
                             T.pipe_barrier("v")
 
                             # alpha_ub = m_i_prev
 
-                            T.sub(m_i_prev, m_i_prev, m_i)
+                            T.tile.sub(m_i_prev, m_i_prev, m_i)
                             T.pipe_barrier("v")
 
-                            T.exp(m_i_prev, m_i_prev)
+                            T.tile.exp(m_i_prev, m_i_prev)
                             T.set_flag("v", "s", 0)
                             T.wait_flag("v", "s", 0)
 
                             for h_i in range(v_block):
-                                T.sub(acc_s_ub[h_i, :], acc_s_ub[h_i, :], m_i[h_i])  # -
+                                T.tile.sub(acc_s_ub[h_i, :], acc_s_ub[h_i, :], m_i[h_i])  # -
 
                             T.pipe_barrier("v")
-                            T.exp(acc_s_ub, acc_s_ub)
+                            T.tile.exp(acc_s_ub, acc_s_ub)
                             T.pipe_barrier("v")
 
-                            T.reduce_sum(sumexp_i_ub, acc_s_ub, tmp_ub, dim=-1)
+                            T.tile.reduce_sum(sumexp_i_ub, acc_s_ub, tmp_ub, dim=-1)
                             T.pipe_barrier("v")
 
-                            T.mul(sumexp, sumexp, m_i_prev)  # check
+                            T.tile.mul(sumexp, sumexp, m_i_prev)  # check
                             T.pipe_barrier("v")
 
-                            T.add(sumexp, sumexp, sumexp_i_ub)
+                            T.tile.add(sumexp, sumexp, sumexp_i_ub)
 
                             for h_i in range(v_block):
                                 T.set_flag("v", "s", 0)
                                 T.wait_flag("v", "s", 0)
-                                T.mul(acc_o[h_i, :], acc_o[h_i, :], m_i_prev[h_i])
+                                T.tile.mul(acc_o[h_i, :], acc_o[h_i, :], m_i_prev[h_i])
 
                             T.copy(acc_s_ub, acc_s_half)
                             T.set_flag("v", "mte3", 0)
@@ -323,7 +323,7 @@ def sparse_attention_fwd(
                             T.set_flag("mte2", "v", 1)
                             T.wait_flag("mte2", "v", 1)
 
-                            T.add(acc_o, acc_o, acc_o_ub)
+                            T.tile.add(acc_o, acc_o, acc_o_ub)
                             # T.barrier_all()
 
                             T.set_cross_flag("V", 4)
@@ -331,7 +331,7 @@ def sparse_attention_fwd(
                         T.set_flag("v", "s", 1)
                         T.wait_flag("v", "s", 1)
                         for h_i in range(v_block):
-                            T.div(acc_o[h_i, :], acc_o[h_i, :], sumexp[h_i])
+                            T.tile.div(acc_o[h_i, :], acc_o[h_i, :], sumexp[h_i])
                             # T.barrier_all()
 
                         T.copy(acc_o, acc_o_half)

@@ -45,7 +45,7 @@ def block_reduce_sum(M, N, block_M, block_N, repeat, mask, dstRepStride, srcBlkS
                 T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a_ub)
 
                 T.barrier_all()
-                T.block_reduce_sum(b_ub, a_ub, repeat, mask, dstRepStride, srcBlkStride, srcRepStride)
+                T.tile.block_reduce_sum(b_ub, a_ub, repeat, mask, dstRepStride, srcBlkStride, srcRepStride)
                 T.barrier_all()
 
                 T.copy(b_ub, B[bx * block_M + vid * block_M // VEC_NUM, by * block_N // dataBlockNum])

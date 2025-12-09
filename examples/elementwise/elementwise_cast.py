@@ -37,7 +37,7 @@ def cast_1(M, N, block_M, block_N, mode, count):
 
                 T.barrier_all()
 
-                T.cast_tl(b_ub, a_ub, mode, count)
+                T.tile.cast_tl(b_ub, a_ub, mode, count)
 
                 T.barrier_all()
 
