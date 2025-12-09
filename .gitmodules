@@ -9,4 +9,4 @@
 	url = https://github.com/ROCm/composable_kernel
 [submodule "3rdparty/catlass"]
 	path = 3rdparty/catlass
-	url = https://gitee.com/ascend/catlass.git
+	url = https://gitcode.com/cann/catlass.git
