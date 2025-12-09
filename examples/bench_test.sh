@@ -132,3 +132,4 @@ echo "====================================="
 
 echo "Executing pytest script: ..\\testing\\python\\language\\test_tilelang_ascend_language_parallel.py"
 python ../testing/python/language/test_tilelang_ascend_language_parallel.py
+python ../testing/python/language/test_tilelang_ascend_language_cast_on_copy.py
