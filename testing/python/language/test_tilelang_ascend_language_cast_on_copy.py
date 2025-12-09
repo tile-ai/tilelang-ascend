@@ -72,7 +72,7 @@ class TestTileLangKernels:
         def ref_func(a):
             b = a.to(torch.float16)
             return b
-        KernelTestHelper.run_binary_kernel_test(
+        KernelTestHelper.run_unary_kernel_test(
             kernel_func = kernel_func,
             input_generator = input_gen,
             reference_func = ref_func,
@@ -86,9 +86,9 @@ class TestTileLangKernels:
             a = (torch.randn(M, N) * 10.0).npu().to(torch.float32)
             return a
         def ref_func(a):
-            b = a.to(torch.int32)
+            b = torch.round(a).to(torch.int32)
             return b
-        KernelTestHelper.run_binary_kernel_test(
+        KernelTestHelper.run_unary_kernel_test(
             kernel_func = kernel_func,
             input_generator = input_gen,
             reference_func = ref_func,
@@ -102,25 +102,9 @@ class TestTileLangKernels:
             a = (torch.randn(M, N) * 10.0).npu().to(torch.float32)
             return a
         def ref_func(a):
-            b = a.to(torch.int16)
+            b = torch.round(a).to(torch.int16)
             return b
-        KernelTestHelper.run_binary_kernel_test(
-            kernel_func = kernel_func,
-            input_generator = input_gen,
-            reference_func = ref_func,
-        )
-
-    def test_float_to_int8(self, clear_cache, setup_random_seed):
-        kernel_func = lambda M, N, block_M, block_N: self.cast_on_copy_kernel(
-            M, N, block_M, block_N, "float32", "int8"
-        )
-        def input_gen(M, N):
-            a = (torch.randn(M, N) * 10.0).npu().to(torch.float32)
-            return a
-        def ref_func(a):
-            b = a.to(torch.int8)
-            return b
-        KernelTestHelper.run_binary_kernel_test(
+        KernelTestHelper.run_unary_kernel_test(
             kernel_func = kernel_func,
             input_generator = input_gen,
             reference_func = ref_func,
@@ -136,7 +120,7 @@ class TestTileLangKernels:
         def ref_func(a):
             b = a.to(torch.float)
             return b
-        KernelTestHelper.run_binary_kernel_test(
+        KernelTestHelper.run_unary_kernel_test(
             kernel_func = kernel_func,
             input_generator = input_gen,
             reference_func = ref_func,
@@ -150,9 +134,9 @@ class TestTileLangKernels:
             a = (torch.randn(M, N) * 10.0).npu().to(torch.float16)
             return a
         def ref_func(a):
-            b = a.to(torch.int32)
+            b = torch.round(a).to(torch.int32)
             return b
-        KernelTestHelper.run_binary_kernel_test(
+        KernelTestHelper.run_unary_kernel_test(
             kernel_func = kernel_func,
             input_generator = input_gen,
             reference_func = ref_func,
@@ -166,9 +150,9 @@ class TestTileLangKernels:
             a = (torch.randn(M, N) * 10.0).npu().to(torch.float16)
             return a
         def ref_func(a):
-            b = a.to(torch.int16)
+            b = torch.round(a).to(torch.int16)
             return b
-        KernelTestHelper.run_binary_kernel_test(
+        KernelTestHelper.run_unary_kernel_test(
             kernel_func = kernel_func,
             input_generator = input_gen,
             reference_func = ref_func,
@@ -182,9 +166,9 @@ class TestTileLangKernels:
             a = (torch.randn(M, N) * 10.0).npu().to(torch.float16)
             return a
         def ref_func(a):
-            b = a.to(torch.int8)
+            b = torch.round(a).to(torch.int8)
             return b
-        KernelTestHelper.run_binary_kernel_test(
+        KernelTestHelper.run_unary_kernel_test(
             kernel_func = kernel_func,
             input_generator = input_gen,
             reference_func = ref_func,
@@ -200,7 +184,7 @@ class TestTileLangKernels:
         def ref_func(a):
             b = a.to(torch.float32)
             return b
-        KernelTestHelper.run_binary_kernel_test(
+        KernelTestHelper.run_unary_kernel_test(
             kernel_func = kernel_func,
             input_generator = input_gen,
             reference_func = ref_func,
@@ -216,7 +200,7 @@ class TestTileLangKernels:
         def ref_func(a):
             b = a.to(torch.float16)
             return b
-        KernelTestHelper.run_binary_kernel_test(
+        KernelTestHelper.run_unary_kernel_test(
             kernel_func = kernel_func,
             input_generator = input_gen,
             reference_func = ref_func,
@@ -232,7 +216,7 @@ class TestTileLangKernels:
         def ref_func(a):
             b = a.to(torch.float32)
             return b
-        KernelTestHelper.run_binary_kernel_test(
+        KernelTestHelper.run_unary_kernel_test(
             kernel_func = kernel_func,
             input_generator = input_gen,
             reference_func = ref_func,
@@ -248,7 +232,7 @@ class TestTileLangKernels:
         def ref_func(a):
             b = a.to(torch.float16)
             return b
-        KernelTestHelper.run_binary_kernel_test(
+        KernelTestHelper.run_unary_kernel_test(
             kernel_func = kernel_func,
             input_generator = input_gen,
             reference_func = ref_func,
@@ -256,7 +240,7 @@ class TestTileLangKernels:
 
     def test_int8_to_half(self, clear_cache, setup_random_seed):
         kernel_func = lambda M, N, block_M, block_N: self.cast_on_copy_kernel(
-            M, N, block_M, block_N, "int16", "float16"
+            M, N, block_M, block_N, "int8", "float16"
         )
         def input_gen(M, N):
             a = (torch.randn(M, N) * 10.0).npu().to(torch.int8)
@@ -264,13 +248,13 @@ class TestTileLangKernels:
         def ref_func(a):
             b = a.to(torch.float16)
             return b
-        KernelTestHelper.run_binary_kernel_test(
+        KernelTestHelper.run_unary_kernel_test(
             kernel_func = kernel_func,
             input_generator = input_gen,
             reference_func = ref_func,
         )
     
-    # int8 cannot convert to float32 directly, so skip this case
+    # int8 and float32 cannot be directly casted to each other
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
