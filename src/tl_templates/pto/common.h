@@ -5,19 +5,19 @@ using namespace pto;
 
 template <typename T, int Rows, int Cols,
           int RowValid = Rows, int ColValid = Cols>
-using TileMatL1 = Tile<Location::Mat, T, Rows, Cols,
+using TileMatL1 = Tile<TileType::Mat, T, Rows, Cols,
                        BLayout::ColMajor,
                        RowValid, ColValid,
                        SLayout::RowMajor,
                        512>;
 
 template <typename T, int Rows, int Cols>
-using TileUbData = Tile<Location::Vec, T, Rows, Cols,
+using TileUbData = Tile<TileType::Vec, T, Rows, Cols,
                        BLayout::RowMajor, -1, -1>;
 
 template <typename T1, typename T2, uint32_t M, uint32_t N, uint32_t K,
           bool transpose_A = false, bool transpose_B = false>
-__aicore__ PTO_INLINE void gemm_v0(
+AICORE PTO_INLINE void gemm_v0(
             TileMatL1<T1, M, K> const &A, // l1a
             TileMatL1<T1, K, N> const &B, // l1b
             TileAcc<T2, M, N> const &C,   // l0c

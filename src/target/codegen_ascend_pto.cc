@@ -809,7 +809,7 @@ void CodeGenTileLangAscendPto::PrintHostFunc(const PrimFunc &f, const std::strin
   // ProcessTilingInput(os, tiling_func_name, tiling_args, shape_vars);
   
   // launch kernel
-  os << "extern \"C\" __global__ __aicore__ void launch_kernel(";
+  os << "extern \"C\" __global__ AICORE void launch_kernel(";
   std::vector<std::string> arg_names;
   for (size_t i = 0; i < f->params.size(); ++i) { // params
     auto v = f->params[i];
@@ -889,7 +889,7 @@ void CodeGenTileLangAscendPto::AddFunction(const GlobalVar &gvar,
   bool no_alias = f->HasNonzeroAttr(tir::attr::kNoAlias);
 
   this->PrintFuncPrefix(stream);
-  this->stream << "__aicore__ ";
+  this->stream << "AICORE ";
   CodeGenC::PrintType(f->ret_type, stream);
 
   auto func_name = static_cast<std::string>(global_symbol.value()) + "_kernel";
