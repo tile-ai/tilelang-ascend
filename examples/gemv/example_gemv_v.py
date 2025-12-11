@@ -7,7 +7,10 @@ import torch
 
 @tl.jit(
     out_idx=[-1],
-    pass_configs={tl.PassConfigKey.TIR_MERGE_STATIC_SMEM: True}
+    pass_configs={
+        tl.PassConfigKey.TIR_MERGE_STATIC_SMEM: True,
+        tl.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
+    }
 )
 def simple_gemv(
     N:int, K:int, block_N:int, block_K:int, 
@@ -47,19 +50,13 @@ def simple_gemv(
                 for bk in T.serial(k_num):
                     T.copy(x[bk * block_K], x_ub)
                     T.copy(A[bn * block_N, bk * block_K], A_ub)
-                    T.barrier_all()
                     T.tile.cast_tl(x_32_ub, x_ub, CAST_MODE, block_K)  # cast to float for reduce_sum
                     T.tile.cast_tl(A_32_ub, A_ub, CAST_MODE, block_N * block_K)  # cast to float for reduce_sum
-                    T.barrier_all()
                     for i in T.serial(block_N):
                         T.tile.mul(A_32_ub[i, :], A_32_ub[i, :], x_32_ub)
-                    T.barrier_all()
                     T.tile.reduce_sum(y_single_32_ub, A_32_ub, temp_ub, dim=-1)
-                    T.barrier_all()
                     T.tile.add(y_total_32_ub, y_total_32_ub, y_single_32_ub)
-                    T.barrier_all()
                     T.tile.cast_tl(y_ub, y_total_32_ub, CAST_MODE, block_N)  # cast back
-                    T.barrier_all()
                 
                 T.copy(y_ub, y[bn * block_N])
     return main
