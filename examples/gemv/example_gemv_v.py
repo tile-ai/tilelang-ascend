@@ -10,6 +10,7 @@ import torch
     pass_configs={
         tl.PassConfigKey.TIR_MERGE_STATIC_SMEM: True,
         tl.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
+        tl.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
     }
 )
 def simple_gemv(
@@ -43,20 +44,19 @@ def simple_gemv(
             y_total_32_ub = T.alloc_ub((block_N,), accum_dtype)
             y_ub = T.alloc_ub((block_N,), dtype)
 
-            with T.Scope("V"):
-                T.tile.fill(y_total_32_ub, 0.0)
+            T.tile.fill(y_total_32_ub, 0.0)
 
-                # block_N * K  per vector core
-                for bk in T.serial(k_num):
-                    T.copy(x[bk * block_K], x_ub)
-                    T.copy(A[bn * block_N, bk * block_K], A_ub)
-                    T.tile.cast_tl(x_32_ub, x_ub, CAST_MODE, block_K)  # cast to float for reduce_sum
-                    T.tile.cast_tl(A_32_ub, A_ub, CAST_MODE, block_N * block_K)  # cast to float for reduce_sum
-                    for i in T.serial(block_N):
-                        T.tile.mul(A_32_ub[i, :], A_32_ub[i, :], x_32_ub)
-                    T.tile.reduce_sum(y_single_32_ub, A_32_ub, temp_ub, dim=-1)
-                    T.tile.add(y_total_32_ub, y_total_32_ub, y_single_32_ub)
-                    T.tile.cast_tl(y_ub, y_total_32_ub, CAST_MODE, block_N)  # cast back
+            # block_N * K  per vector core
+            for bk in T.serial(k_num):
+                T.copy(x[bk * block_K], x_ub)
+                T.copy(A[bn * block_N, bk * block_K], A_ub)
+                T.tile.cast_tl(x_32_ub, x_ub, CAST_MODE, block_K)  # cast to float for reduce_sum
+                T.tile.cast_tl(A_32_ub, A_ub, CAST_MODE, block_N * block_K)  # cast to float for reduce_sum
+                for i in T.serial(block_N):
+                    T.tile.mul(A_32_ub[i, :], A_32_ub[i, :], x_32_ub)
+                T.tile.reduce_sum(y_single_32_ub, A_32_ub, temp_ub, dim=-1)
+                T.tile.add(y_total_32_ub, y_total_32_ub, y_single_32_ub)
+                T.tile.cast_tl(y_ub, y_total_32_ub, CAST_MODE, block_N)  # cast back
                 
                 T.copy(y_ub, y[bn * block_N])
     return main
