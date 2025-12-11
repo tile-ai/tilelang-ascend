@@ -1121,6 +1121,22 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
 
       this->stream << ");\n";
     }
+
+    // For AutoCrossCoreSetFlag and AutoCrossCoreWaitFlag, we use the op_name with adding "Auto" prefix.
+    if (op_name == "AscendC::AutoCrossCoreSetFlag") {
+      this->PrintIndent();
+      auto model_id = op->args[1].as<IntImmNode>()->value;
+      auto pipe = op->args[2].as<StringImmNode>()->value;
+      auto flag_id = op->args[3].as<IntImmNode>()->value;
+      this->stream << "AscendC::CrossCoreSetFlag<" << model_id << ", PIPE_" << pipe << ">(" << flag_id << ");\n";
+      return;
+    } else if (op_name == "AscendC::AutoCrossCoreWaitFlag") {
+      this->PrintIndent();
+      auto flag_id = op->args[1].as<IntImmNode>()->value;
+      this->stream << "AscendC::CrossCoreWaitFlag(" << flag_id << ");\n";
+      return;
+    }
+
   } else if (op->op.same_as(tl::loop_break())) {
     this->PrintIndent();
     this->stream << "break;\n";

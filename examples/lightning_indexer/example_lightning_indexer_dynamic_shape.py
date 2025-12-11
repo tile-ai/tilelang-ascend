@@ -8,7 +8,7 @@ import tilelang.language as T
 tilelang.disable_cache()
 
 
-@tilelang.jit(out_idx=[-1])  # for jit
+@tilelang.jit(out_idx=[-1], workspace_idx=[2])  # for jit
 def indexer(N2,
             G,
             D,
@@ -26,10 +26,12 @@ def indexer(N2,
     S2 = T.symbolic("S2")
 
     @T.prim_func
-    def main(Query: T.Tensor((B, S1, N2, G * D), input_dtype), KEY: T.Tensor(
-        (B, S2, N2, D), input_dtype), QK_RES: T.Tensor((B, N2, S1, G, S2), calc_dtype),
-             WEIGHTS: T.Tensor((B, S1, N2, G), calc_dtype), OUT: T.Tensor((B, N2, S1, TOP_K),
-                                                                          "int")):
+    def main(Query: T.Tensor((B, S1, N2, G * D), input_dtype), 
+             KEY: T.Tensor((B, S2, N2, D), input_dtype), 
+             QK_RES: T.Tensor((B, N2, S1, G, S2), calc_dtype),
+             WEIGHTS: T.Tensor((B, S1, N2, G), calc_dtype), 
+             OUT: T.Tensor((B, N2, S1, TOP_K),
+             "int")):
 
         total_process_num = N2 * S1
         each_core_process_num = total_process_num // 2
@@ -240,15 +242,15 @@ def test_indexer():
     k = torch.randn(B, S2, N2, D).half()
     weights = torch.randn(B, S1, N2, G, 1).float()
 
-    qk_res_workspace = torch.zeros(B, N2, S1, G, S2).float()
+    # qk_res_workspace = torch.zeros(B, N2, S1, G, S2).float()
     qk_res_workspace_, golden_out = index_golden(q, k, weights)
 
     q_npu = q.view(B, S1, N2, -1).npu()
     k_npu = k.npu()
     weights_npu = weights.npu()
-    qk_res_workspace_npu = qk_res_workspace.npu()
+    # qk_res_workspace_npu = qk_res_workspace.npu()
     torch.npu.synchronize()
-    npu_out = func(q_npu, k_npu, qk_res_workspace_npu, weights_npu).to(torch.int32)
+    npu_out = func(q_npu, k_npu, weights_npu).to(torch.int32)
     torch.npu.synchronize()
 
     total_mismatches = count_mismatches_last_dim(golden_out.cpu(), npu_out.cpu())

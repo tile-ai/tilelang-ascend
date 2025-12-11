@@ -35,6 +35,7 @@ logger = getLogger(__name__)
 def compile(
     func: PrimFunc = None,
     out_idx: Union[List[int], int, None] = None,
+    workspace_idx: Union[List[int], int, None] = None,
     execution_backend: Literal["dlpack", "ctypes", "cython"] = "cython",
     target: Union[str, Target] = "auto",
     target_host: Union[str, Target] = None,
@@ -49,6 +50,8 @@ def compile(
         The TileLang TIR function to compile and wrap.
     out_idx : Union[List[int], int], optional
         Index(es) of the output tensors to return (default: None).
+    workspace_idx : Union[List[int], int], optional
+        Index(es) of the auto-allocated workspace tensors.
     execution_backend : Literal["dlpack", "ctypes"], optional
         Execution backend to use for kernel execution (default: "dlpack").
     target : Union[str, Target], optional
@@ -73,6 +76,7 @@ def compile(
     return cached(
         func=func,
         out_idx=out_idx,
+        workspace_idx=workspace_idx,
         execution_backend=execution_backend,
         target=target,
         target_host=target_host,
@@ -84,6 +88,7 @@ def compile(
 class _JitImplementation:
 
     out_idx: Any
+    workspace_idx: Any
     target: Union[str, Target]
     target_host: Union[str, Target]
     execution_backend: Literal["dlpack", "ctypes", "cython"]
@@ -96,6 +101,7 @@ class _JitImplementation:
 
     def __init__(self,
                  out_idx: Any = None,
+                 workspace_idx: Any = None,
                  target: Union[str, Target] = "auto",
                  target_host: Union[str, Target] = None,
                  execution_backend: Literal["dlpack", "ctypes", "cython"] = "cython",
@@ -110,6 +116,8 @@ class _JitImplementation:
         out_idx : Any, optional
             Index(es) of the output tensors to return from the compiled kernel
             (default: None, meaning all outputs are returned or determined by the kernel itself).
+        workspace_idx : Any, optional
+            Index(es) of the auto-allocated workspace tensors.
         target : Union[str, Target], optional
             Compilation target for TVM. Can be a string (e.g., "cuda", "llvm")
             or a TVM Target object. If "auto", the target is determined automatically
@@ -135,6 +143,7 @@ class _JitImplementation:
             or current working directory.
         """
         self.out_idx = out_idx
+        self.workspace_idx = workspace_idx
         self.execution_backend = execution_backend
         self.target = target
         self.target_host = target_host
@@ -195,6 +204,7 @@ class _JitImplementation:
                 kernel_result = compile(
                     program_result,
                     out_idx=self.out_idx,
+                    workspace_idx=self.workspace_idx,
                     execution_backend=self.execution_backend,
                     target=self.target,
                     target_host=self.target_host,
@@ -228,6 +238,7 @@ def jit(  # This is the new public interface
         func: Union[Callable[_P, _RProg], PrimFunc, None] = None,
         *,  # Indicates subsequent arguments are keyword-only
         out_idx: Any = None,
+        workspace_idx: Any = None,
         target: Union[str, Target] = "auto",
         target_host: Union[str, Target] = None,
         execution_backend: Literal["dlpack", "ctypes", "cython"] = "cython",
@@ -246,6 +257,8 @@ def jit(  # This is the new public interface
         If using `@tilelang.jit(...)` to configure, this is the `out_idx` parameter.
         If using `@tilelang.jit` directly on a function, this argument is implicitly
         the function to be decorated (and `out_idx` will be `None`).
+    workspace_idx : Any, optional
+        Index(es) of the auto-allocated workspace tensors.
     target : Union[str, Target], optional
         Compilation target for TVM (e.g., "cuda", "llvm"). Defaults to "auto".
     target_host : Union[str, Target], optional
@@ -270,6 +283,7 @@ def jit(  # This is the new public interface
         # Create a default _JitImplementation instance and apply it to the function.
         default_decorator = _JitImplementation(
             out_idx=out_idx,  # Explicitly None for the default case
+            workspace_idx=workspace_idx,
             target=target,
             target_host=target_host,
             execution_backend=execution_backend,
@@ -285,6 +299,7 @@ def jit(  # This is the new public interface
         # This instance is a decorator that will be applied to the function later.
         configured_decorator = _JitImplementation(
             out_idx=out_idx,  # Pass along; could be an actual out_idx or None
+            workspace_idx=workspace_idx,
             target=target,
             target_host=target_host,
             execution_backend=execution_backend,

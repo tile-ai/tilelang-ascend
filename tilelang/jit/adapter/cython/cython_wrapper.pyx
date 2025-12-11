@@ -19,15 +19,17 @@ cdef class CythonKernelWrapper:
         object static_shape_map     # Maps buffer variables to their corresponding static shapes
         object ptr_map              # Maps pointer arguments to their corresponding buffer indices
         list result_idx             # Indices of output tensors in the params list
+        list workspace_idx          # Indices of auto-allocated workspace tensors in the params list
         list params                 # List of parameter specifications (includes both inputs and outputs)
         object lib                  # Reference to the compiled library containing the kernel
         # Add new cache attributes
         list param_dtypes    # Cache for parameter dtypes
         list param_shapes    # Cache for parameter shapes as native Python lists
         object get_current_device
-    def __cinit__(self, result_idx, params, lib):
+    def __cinit__(self, result_idx, workspace_idx, params, lib):
         # Initialize wrapper with kernel configuration
         self.result_idx = result_idx
+        self.workspace_idx = workspace_idx
         self.params = params
         self.lib = lib
         # Convert TVM types to native Python types during initialization
@@ -71,6 +73,7 @@ cdef class CythonKernelWrapper:
         cdef int total_params = len(self.params)
         cdef int total_inputs = len(inputs)
         cdef int total_result_idx = len(self.result_idx)
+        cdef int total_workspace_idx = len(self.workspace_idx)
         cdef int total_dynamic_symbolics = len(self.dynamic_symbolic_map)
 
         # Ensure the number of inputs matches expected parameter count
@@ -86,18 +89,17 @@ cdef class CythonKernelWrapper:
 
         # Prepare input and output tensors
         for i in range(len(self.params)):
-            if i in self.result_idx:
+            if i in self.result_idx or i in self.workspace_idx:
                 dtype = self.param_dtypes[i]
                 shape = []
                 # Now working with native Python list, no FFI calls needed
-                for s in self.param_shapes[i]:
-                    if isinstance(s, tir.Var):
-                        for key in self.dynamic_symbolic_map:
-                            if(str(s) == str(key)):
-                                ref_tensor_idx, ref_shape_idx = self.dynamic_symbolic_map[key]
-                                shape.append(tensor_list[ref_tensor_idx].shape[ref_shape_idx])
+                for dim_name in self.param_shapes[i]:
+                    if dim_name in self.dynamic_symbolic_map:
+                        # Dynamic dimension, will be filled later
+                        ref_tensor_idx, ref_shape_idx = self.dynamic_symbolic_map[dim_name]
+                        shape.append(inputs[ref_tensor_idx].shape[ref_shape_idx])
                     else:  # Already converted to Python int during initialization
-                        shape.append(s)
+                        shape.append(dim_name)
                 device = inputs[0].device if len(inputs) > 0 else torch.npu.current_device()
                 tensor = torch.empty(*shape, dtype=dtype, device=device)
             else:
@@ -153,7 +155,7 @@ cdef class CythonKernelWrapper:
 
         # Add dynamic dimension values to kernel arguments
         for _, (buffer_idx, shape_idx) in self.dynamic_symbolic_map.items():
-            call_args.append(ctypes.c_int64(tensor_list[buffer_idx].shape[shape_idx]))
+            call_args.append(ctypes.c_int64(inputs[buffer_idx].shape[shape_idx]))
 
         # Add npu stream to kernel arguments
         call_args.append(ctypes.c_void_p(stream))
