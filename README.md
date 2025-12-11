@@ -365,23 +365,23 @@ pass_configs = {
 @tilelang.jit(out_idx=[3], pass_configs=pass_configs)
 def sparse_attention_fwd(
     ...
-    # T.add(acc_s_ub, acc_s_ub, acc_s_ub_)
+    # T.tile.add(acc_s_ub, acc_s_ub, acc_s_ub_)
     for (i, j) in T.Parallel(v_block, BI):
         acc_s_ub[i, j] = acc_s_ub[i, j] + acc_s_ub_[i, j]
     ...
 
-    # T.mul(acc_s_ub, acc_s_ub, sm_scale)
+    # T.tile.mul(acc_s_ub, acc_s_ub, sm_scale)
     for (i, j) in T.Parallel(v_block, BI):
         acc_s_ub[i, j] = acc_s_ub[i, j] * sm_scale
     ...
 
-    # T.max(m_i, m_i, m_i_prev)
+    # T.tile.max(m_i, m_i, m_i_prev)
     for i in T.Parallel(v_block):
         m_i[i] = T.max(m_i[i], m_i_prev[i])
     ...
 
     # for h_i in range(v_block):
-        # T.sub(acc_s_ub[h_i, :], acc_s_ub[h_i, :], m_i[h_i])
+        # T.tile.sub(acc_s_ub[h_i, :], acc_s_ub[h_i, :], m_i[h_i])
     for (h_i, j) in T.Parallel(v_block, D):
         acc_s_ub[h_i, j] = acc_s_ub[h_i, j] - m_i[h_i]
 )
