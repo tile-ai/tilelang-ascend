@@ -151,7 +151,10 @@ cd ..
 TILELANG_PATH="$(pwd)"
 echo "TileLang path set to: $TILELANG_PATH"
 echo "Configuring environment variables for TVM..."
-echo "export PYTHONPATH=${TILELANG_PATH}:\$PYTHONPATH" >> ~/.bashrc
+EXPORT_PYTHONPATH="export PYTHONPATH=${TILELANG_PATH}:\$PYTHONPATH"
+if ! grep -qxF "$EXPORT_PYTHONPATH" ~/.bashrc; then
+    echo "$EXPORT_PYTHONPATH" >> ~/.bashrc
+fi
 
 # Step 12: Source .bashrc to apply changes
 echo "Applying environment changes by sourcing .bashrc..."
