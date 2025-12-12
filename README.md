@@ -457,9 +457,6 @@ pass_configs = {
 Here is an example:
 - [FlashAttention](./examples/flash_attention/flash_attn_bhsd_cc_sync.py): Implementations of FlashAttention without inserting synchronization flags manually.
 
-**Attention**
-
-Currently, accessing to the same workspace address in a for loop is not supported.
 
 ## Upcoming Features
 
