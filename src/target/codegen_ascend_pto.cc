@@ -625,7 +625,7 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) 
         var_names.push_back(var_name);
       }
       this->PrintIndent();
-      this->stream << op->arg[0].as<StringImmNode>()->value << "(";
+      this->stream << op->args[0].as<StringImmNode>()->value << "(";
       for (int i = 0; i < var_names.size(); i++) {
         this->stream << var_names[i];
         if (i != var_names.size() - 1) {
@@ -645,7 +645,7 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) 
         var_names.push_back(var_name);
       }
       this->PrintIndent();
-      this->stream << op_name << "(";
+      this->stream << op->args[0].as<StringImmNode>()->value << "(";
       for (int i = 0; i < var_names.size(); i++) {
         this->stream << var_names[i];
         if (i != var_names.size() - 1) {
@@ -677,7 +677,7 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) 
         var_names.push_back(PrintExpr(op->args[op->args.size() - 1]));
       }
       this->PrintIndent();
-      this->stream << op_name << "(";
+      this->stream << op->args[0].as<StringImmNode>()->value << "(";
       for (int i = 0; i < var_names.size(); i++) {
         this->stream << var_names[i];
         if (i != var_names.size() - 1) {
