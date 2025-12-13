@@ -619,28 +619,72 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) 
     this->stream << op->args[0].as<StringImmNode>()->value << "(" << print_tile(op->args[1].as<CallNode>()) << ", "
                << PrintExpr(op->args[2]) << ");\n";
   } else if (op->op.same_as(tl::ascend_reduce())) {
-    this->PrintIndent();
-    this->stream << op->args[0].as<StringImmNode>()->value << "(" << print_tile(op->args[1].as<CallNode>()) << ", "
-               << print_tile(op->args[2].as<CallNode>()) << ");\n";
+     std::vector<std::string> var_names;
+      for (int i = 1; i < op->args.size(); i++) {
+        auto var_name = print_buffer_offset(op->args[i].as<CallNode>());
+        var_names.push_back(var_name);
+      }
+      this->PrintIndent();
+      this->stream << op_name << "(";
+      for (int i = 0; i < var_names.size(); i++) {
+        this->stream << var_names[i];
+        if (i != var_names.size() - 1) {
+          this->stream << ", ";
+        }
+      }
+      this->stream << ");\n";
   } else if (op->op.same_as(tl::ascend_scalar_op())) {
     this->PrintIndent();
     this->stream << op->args[0].as<StringImmNode>()->value << "(" << print_tile(op->args[1].as<CallNode>()) << ", "
                   << print_tile(op->args[2].as<CallNode>()) << ", "
                   << PrintExpr(op->args[3]) << ");\n";
   } else if (op->op.same_as(tl::ascend_unary_op())) {
-    this->PrintIndent();
-    this->stream << op->args[0].as<StringImmNode>()->value << "(" << print_tile(op->args[1].as<CallNode>()) << ", "
-               << print_tile(op->args[2].as<CallNode>()) << ");\n";
+      std::vector<std::string> var_names;
+      for (int i = 1; i < op->args.size(); i++) {
+        auto var_name = print_buffer_offset(op->args[i].as<CallNode>());
+        var_names.push_back(var_name);
+      }
+      this->PrintIndent();
+      this->stream << op_name << "(";
+      for (int i = 0; i < var_names.size(); i++) {
+        this->stream << var_names[i];
+        if (i != var_names.size() - 1) {
+          this->stream << ", ";
+        }
+      }
+      this->stream << ");\n";
   } else if (op->op.same_as(tl::ascend_binary_op())) {
     this->PrintIndent();
     this->stream << op->args[0].as<StringImmNode>()->value << "(" << print_tile(op->args[1].as<CallNode>()) << ", "
                << print_tile(op->args[2].as<CallNode>()) << ", "
                << print_tile(op->args[3].as<CallNode>()) << ");\n";
   } else if (op->op.same_as(tl::ascend_binary_ops())) {
-    this->PrintIndent();
-    this->stream << op->args[0].as<StringImmNode>()->value << "(" << print_tile(op->args[1].as<CallNode>()) << ", "
-               << print_tile(op->args[2].as<CallNode>()) << ", "
-               << PrintExpr(op->args[3]) << ");\n";
+      std::vector<std::string> var_names;
+      for (int i = 1; i < op->args.size() - 1; i++) {
+        auto var_name = print_tile(op->args[i].as<CallNode>());
+        var_names.push_back(var_name);
+      }
+      if (op->args[3].as<CallNode>()) {
+        auto var_name = print_tile(op->args[3].as<CallNode>());
+        this->PrintIndent();
+        this->stream << "pipe_barrier(PIPE_ALL);\n";
+        this->PrintIndent();
+        this->stream << "auto " << var_name << "_scalar = " << var_name
+                     << ".GetValue(" << PrintExpr(op->args[op->args.size() - 1])
+                     << ");\n";
+        var_names.push_back(var_name + "_scalar");
+      } else {
+        var_names.push_back(PrintExpr(op->args[op->args.size() - 1]));
+      }
+      this->PrintIndent();
+      this->stream << op_name << "(";
+      for (int i = 0; i < var_names.size(); i++) {
+        this->stream << var_names[i];
+        if (i != var_names.size() - 1) {
+          this->stream << ", ";
+        }
+      }
+      this->stream << ");\n";
   }
 }
 
@@ -742,6 +786,51 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
 
 inline void PrintConst(const FloatImmNode *op, std::ostream &os,
                        CodeGenTileLangAscendPto *p) { // NOLINT(*)
+  // Type code is kBFloat
+  if (op->dtype.is_bfloat16()) {
+    os << "bfloat16_t";
+    os << '(' << std::scientific << op->value << 'f' << ')';
+    return;
+  }
+  // Type code is kFloat8_e5m2 or kE4M4Float
+  if (op->dtype.is_float8() || op->dtype.is_float4()) {
+    p->PrintType(op->dtype, os);
+    os << '(' << std::scientific << op->value << 'f' << ')';
+    return;
+  }
+  // Type code is kFloat
+  switch (op->dtype.bits()) {
+  case 64:
+  case 32: {
+    std::ostringstream temp;
+    if (std::isinf(op->value)) {
+      if (op->value < 0) {
+        temp << "-";
+      }
+      temp << ((op->dtype.bits() == 32) ? "CUDART_INF_F" : "CUDART_INF");
+      p->need_math_constants_h_ = true;
+    } else if (std::isnan(op->value)) {
+      temp << ((op->dtype.bits() == 32) ? "CUDART_NAN_F" : "CUDART_NAN");
+      p->need_math_constants_h_ = true;
+    } else {
+      temp << std::scientific << op->value;
+      if (op->dtype.bits() == 32)
+        temp << 'f';
+    }
+    p->MarkConst(temp.str());
+    os << temp.str();
+    break;
+  }
+  case 16: {
+    os << "half_t" << '(';
+    FloatImm const_f32 = FloatImm(DataType::Float(32), op->value);
+    PrintConst(const_f32.get(), os, p);
+    os << ')';
+    break;
+  }
+  default:
+    LOG(FATAL) << "Bad bit-width for float: " << op->dtype << "\n";
+  }
 }
 
 void CodeGenTileLangAscendPto::VisitExpr_(const FloatImmNode *op,
