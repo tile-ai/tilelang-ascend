@@ -621,11 +621,11 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) 
   } else if (op->op.same_as(tl::ascend_reduce())) {
      std::vector<std::string> var_names;
       for (int i = 1; i < op->args.size(); i++) {
-        auto var_name = print_buffer_offset(op->args[i].as<CallNode>());
+        auto var_name = print_tile(op->args[i].as<CallNode>());
         var_names.push_back(var_name);
       }
       this->PrintIndent();
-      this->stream << op_name << "(";
+      this->stream << op->arg[0].as<StringImmNode>()->value << "(";
       for (int i = 0; i < var_names.size(); i++) {
         this->stream << var_names[i];
         if (i != var_names.size() - 1) {
@@ -641,7 +641,7 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) 
   } else if (op->op.same_as(tl::ascend_unary_op())) {
       std::vector<std::string> var_names;
       for (int i = 1; i < op->args.size(); i++) {
-        auto var_name = print_buffer_offset(op->args[i].as<CallNode>());
+        auto var_name = print_tile(op->args[i].as<CallNode>());
         var_names.push_back(var_name);
       }
       this->PrintIndent();
