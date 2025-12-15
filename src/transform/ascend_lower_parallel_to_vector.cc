@@ -189,7 +189,7 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
           row_body = SeqStmt::Flatten(row_stmts);
         }
 
-        if (has_outer_serial) {
+        if (has_outer_serial || outer_extent == 1) {
           return row_body;
         }
 
