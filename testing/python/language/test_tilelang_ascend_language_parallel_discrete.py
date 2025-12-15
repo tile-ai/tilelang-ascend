@@ -24,7 +24,7 @@ def _make_idx(M: int, block_M: int, vec_num: int, mode: str = "reverse") -> torc
         idx_cpu = ((torch.arange(block_rows, dtype=torch.int32) * 3 + 1) % block_rows).to(torch.int32)
     else:
         raise ValueError(f"Unknown mode: {mode}")
-    return idx_cpu.repeat(M // block_M).npu()
+    return idx_cpu.repeat(M // block_M * vec_num).npu()
 
 
 def _ref_discrete_gather_2d(A, IDX, block_M: int, vec_num: int):
@@ -81,8 +81,8 @@ def ref_discrete_case_mat_mat(A, B, IDX, C, block_M=128, vec_num=2):
     return _ref_discrete_gather_2d(A, IDX, block_M, vec_num) * B
 
 
-@pytest.mark.parametrize("mode", ["reverse", "mod_k", "affine"])
-def test_parallel_discrete_mat_mat(mode):
+@pytest.mark.parametrize("idx_mode", ["reverse", "mod_k", "affine"])
+def test_parallel_discrete_mat_mat(idx_mode):
     torch.manual_seed(0)
     M, N = 1024, 1024
     block_M, block_N = 128, 128
@@ -91,7 +91,7 @@ def test_parallel_discrete_mat_mat(mode):
     func = discrete_case_mat_mat(M, N, block_M, block_N)
     A = torch.randn((M, N), device="npu", dtype=torch.float32)
     B = torch.randn((M, N), device="npu", dtype=A.dtype)
-    IDX = _make_idx(M, block_M, vec_num, mode=mode)
+    IDX = _make_idx(M, block_M, vec_num, mode=idx_mode)
     C = torch.empty((M, N), device="npu", dtype=A.dtype)
 
     torch.npu.synchronize()
@@ -142,8 +142,8 @@ def ref_discrete_case_mat_row(A, B, IDX, C, block_M=128, vec_num=2):
     return _ref_discrete_gather_2d(A, IDX, block_M, vec_num) + B.unsqueeze(1)
 
 
-@pytest.mark.parametrize("mode", ["reverse", "mod_k", "affine"])
-def test_parallel_discrete_mat_row(mode):
+@pytest.mark.parametrize("idx_mode", ["reverse", "mod_k", "affine"])
+def test_parallel_discrete_mat_row(idx_mode):
     torch.manual_seed(0)
     M, N = 1024, 1024
     block_M, block_N = 128, 128
@@ -152,7 +152,7 @@ def test_parallel_discrete_mat_row(mode):
     func = discrete_case_mat_row(M, N, block_M, block_N)
     A = torch.randn((M, N), device="npu", dtype=torch.float32)
     B = torch.randn((M,), device="npu", dtype=A.dtype)
-    IDX = _make_idx(M, block_M, vec_num, mode=mode)
+    IDX = _make_idx(M, block_M, vec_num, mode=idx_mode)
     C = torch.empty((M, N), device="npu", dtype=A.dtype)
 
     torch.npu.synchronize()
@@ -203,8 +203,8 @@ def ref_discrete_case_mat_col(A, B, IDX, C, block_M=128, vec_num=2):
     return _ref_discrete_gather_2d(A, IDX, block_M, vec_num) + B.unsqueeze(0)
 
 
-@pytest.mark.parametrize("mode", ["reverse", "mod_k", "affine"])
-def test_parallel_discrete_mat_col(mode):
+@pytest.mark.parametrize("idx_mode", ["reverse", "mod_k", "affine"])
+def test_parallel_discrete_mat_col(idx_mode):
     torch.manual_seed(0)
     M, N = 1024, 1024
     block_M, block_N = 128, 128
@@ -213,7 +213,7 @@ def test_parallel_discrete_mat_col(mode):
     func = discrete_case_mat_col(M, N, block_M, block_N)
     A = torch.randn((M, N), device="npu", dtype=torch.float32)
     B = torch.randn((N,), device="npu", dtype=A.dtype)
-    IDX = _make_idx(M, block_M, vec_num, mode=mode)
+    IDX = _make_idx(M, block_M, vec_num, mode=idx_mode)
     C = torch.empty((M, N), device="npu", dtype=A.dtype)
 
     torch.npu.synchronize()
