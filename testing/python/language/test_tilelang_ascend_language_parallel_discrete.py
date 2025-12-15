@@ -82,7 +82,7 @@ def ref_discrete_case_mat_mat(A, B, IDX, C, block_M=128, vec_num=2):
 
 
 @pytest.mark.parametrize("mode", ["reverse", "mod_k", "affine"])
-def test_parallel_discrete_mat_mat(idx_mode):
+def test_parallel_discrete_mat_mat(mode):
     torch.manual_seed(0)
     M, N = 1024, 1024
     block_M, block_N = 128, 128
@@ -91,7 +91,7 @@ def test_parallel_discrete_mat_mat(idx_mode):
     func = discrete_case_mat_mat(M, N, block_M, block_N)
     A = torch.randn((M, N), device="npu", dtype=torch.float32)
     B = torch.randn((M, N), device="npu", dtype=A.dtype)
-    IDX = _make_idx(M, block_M, vec_num, mode=idx_mode)
+    IDX = _make_idx(M, block_M, vec_num, mode=mode)
     C = torch.empty((M, N), device="npu", dtype=A.dtype)
 
     torch.npu.synchronize()
