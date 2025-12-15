@@ -66,10 +66,15 @@ for M, N, block_M, block_N in test_configs:
     func = gelu_mul(M, N, block_M, block_N)
     print("Init successful!")
     a = torch.randn(M, N, dtype=torch.float).npu()
+    print("a", a)
     b = func(a)
+    print("b", b)
     gelu = nn.GELU(approximate='tanh')
     a1, a2 = torch.split(a, N // 2, dim=1)
+    print("a1", a1)
+    print("a2", a2)
     ref_b = gelu(a1) * a2
+    print("ref_b", ref_b)
     torch.testing.assert_close(b.cpu(), ref_b.cpu(), rtol=1e-2, atol=1e-2)
     print("Test passed!")
 
