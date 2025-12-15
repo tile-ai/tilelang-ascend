@@ -28,6 +28,9 @@ def gelu_mul(M, N, block_M, block_N, dtype="float"):
             with T.Scope("V"):
                 T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a1_ub)
                 T.barrier_all()
+                T.printf("===========a1_ub after copy:\n")
+                T.dump_tensor(a1_ub, 222, block_M // VEC_NUM * block_N, (block_M // VEC_NUM, block_N))
+                T.barrier_all()
                 T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N + N // 2], a2_ub)
                 T.barrier_all()
                 T.tile.mul(temp_ub, a1_ub, a1_ub)
