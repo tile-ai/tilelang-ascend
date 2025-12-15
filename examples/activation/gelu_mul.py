@@ -6,7 +6,7 @@ import torch.nn as nn
 tilelang.cache.clear_cache()
 
 @tilelang.jit(out_idx=[1])
-def gelu_mul(M, N, block_M, block_N, dtype="float"):
+def gelu_mul(M, N, block_M, block_N, dtype="float16"):
     m_num = T.ceildiv(M, block_M)
     n_num = T.ceildiv(N, block_N)
     
@@ -60,7 +60,7 @@ for M, N, block_M, block_N in test_configs:
     print(f"Testing gelu_mul with M={M}, N={N}, block_M={block_M}, block_N={block_N}")
     func = gelu_mul(M, N, block_M, block_N)
     print("Init successful!")
-    a = torch.randn(M, N).npu()
+    a = torch.randn(M, N, dtype=torch.float16).npu()
     b = func(a)
     gelu = nn.GELU(approximate='tanh')
     ref_b = gelu(a)
