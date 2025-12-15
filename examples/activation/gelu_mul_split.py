@@ -46,9 +46,9 @@ def gelu_mul(M, N, block_M, block_N, dtype="float"):
                 T.barrier_all()
                 T.tile.div(b_ub, a1_ub, temp_ub)
                 T.barrier_all()
-                # T.printf("===========b_ub after copy:\n")
-                # T.dump_tensor(b_ub, 222, block_M // VEC_NUM * block_N, (block_M // VEC_NUM, block_N))
-                # T.barrier_all()
+                T.printf("===========b_ub after copy:\n")
+                T.dump_tensor(b_ub, 222, block_M // VEC_NUM * block_N, (block_M // VEC_NUM, block_N))
+                T.barrier_all()
                 # T.tile.mul(b_ub, temp_ub, a2_ub)
                 # T.barrier_all()
                 T.copy(b_ub, B[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
@@ -59,7 +59,7 @@ def gelu_mul(M, N, block_M, block_N, dtype="float"):
 torch.manual_seed(0)
 # Tests
 test_configs = [
-    (8, 8, 2, 2),
+    (16, 16, 4, 4),
     # (300, 300, 64, 64),
     # (1100, 50000, 128, 128),
 ]
@@ -69,9 +69,7 @@ for M, N, block_M, block_N in test_configs:
     func = gelu_mul(M, N, block_M, block_N)
     print("Init successful!")
     a = torch.randn(M, N, dtype=torch.float).npu()
-    # print("a", a)
     b = func(a)
-    # print("b", b)
     gelu = nn.GELU(approximate='tanh')
     a1, a2 = torch.split(a, N // 2, dim=1)
     ref_b = gelu(a1)
