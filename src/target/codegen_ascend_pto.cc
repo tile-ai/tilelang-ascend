@@ -486,7 +486,7 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) 
                   shape_template += PrintExpr(op->args[op_arg_len - shape_size + i]);
               }
               if (i < shape_size - 1) {
-                  shape_template += ", "
+                  shape_template += ", ";
               }
           }
           shape_template += ">";
@@ -542,7 +542,7 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) 
                   shape_template += PrintExpr(op->args[op_arg_len - shape_size + i]);
               }
               if (i < shape_size - 1) {
-                  shape_template += ", "
+                  shape_template += ", ";
               }
           }
           shape_template += ">";
