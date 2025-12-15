@@ -733,16 +733,16 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AttrStmtNode *op) {
     this->VisitStmt(op->body);
     return;
   } else if (op->attr_key == "resource_scope") { // other core
-    // auto resource_id = Downcast<IntImm>(op->value)->value;
-    // auto resource_name = resource_id == 0 ? "AIC" : "AIV";
+    auto resource_id = Downcast<IntImm>(op->value)->value;
+    auto resource_name = resource_id == 0 ? "CUBE" : "VEC";
 
-    // this->PrintIndent();
-    // stream << "if ASCEND_IS_" << resource_name << " {\n";
+    this->PrintIndent();
+    stream << "#if defined(__DAV_C220_)" << resource_name << "__)\n";
     int func_scope = this->BeginScope();
     this->VisitStmt(op->body);
     this->EndScope(func_scope);
-    // this->PrintIndent();
-    // stream << "}\n";
+    this->PrintIndent();
+    stream << "endif\n";
     return;
   }
   CodeGenC::VisitStmt_(op);
