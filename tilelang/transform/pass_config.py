@@ -39,7 +39,10 @@ class PassConfigKey(str, Enum):
     """Enable/disable TileLang AscendMemoryPlanning pass. Default: False"""
 
     TL_ASCEND_AUTO_CV_COMBINE = "tl.ascend_auto_cv_combine"
-    """Enable/disable TileLang AscendSyncInsert pass. Default: False"""
+    """Enable/disable TileLang CombineCV pass. Default: False"""
+
+    TL_ASCEND_AUTO_CV_SYNC = "tl.ascend_auto_cross_core_sync"
+    """Enable/disable TileLang Auto CV Syncronization. Default: False"""
 
     # TIR related configs
     TIR_ENABLE_EQUIV_TERMS_IN_CSE = "tir.enable_equiv_terms_in_cse_tir"

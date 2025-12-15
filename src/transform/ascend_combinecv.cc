@@ -37,19 +37,27 @@ static constexpr const int DEFAUT_MODEL_ID = 2;
 struct CrossCoreSyncPoint {
   int scope; // 0: cube, 1: vec
   int order; // excute order
+  int sync_flag_id; // cross core sync flag id
   bool is_write;
   const std::string workspace_name;
   const std::string pipe;
   const EvaluateNode* node;
+  const std::optional<const ForNode*> target_for_node = std::nullopt;
 
   std::string ToString() const {
     std::ostringstream oss;
     oss << "CrossCoreSyncPoint(";
     oss << "scope=" << scope;
     oss << ", order=" << order;
+    oss << ", sync_flag_id=" << sync_flag_id;
     oss << ", is_write=" << is_write;
     oss << ", workspace_name=" << workspace_name;
     oss << ", pipe=" << pipe;
+    if (target_for_node.has_value()) {
+      oss << ", target_for_node=" << target_for_node.value()->loop_var->name_hint;
+    } else {
+      oss << ", target_for_node=None";
+    }
     oss << ")";
     return oss.str();
   }
@@ -79,20 +87,44 @@ public:
           sync_points_.push_back({
             is_aiv_ ? 1 : 0,
             order_,
+            sync_flag_id_++,
             is_write,
             workspace_name_opt.value(),
             pipe,
-            op
+            op,
+            GetVarUsedOuterMostForNode(call_node),
           });
         }
       }
     }
   }
 
+  void VisitStmt_(const ForNode *op) override {
+    current_loops_.push_back(op);
+    StmtVisitor::VisitStmt_(op);
+    current_loops_.pop_back();
+  }
+
+  class PrimExprVisitor : public tir::ExprVisitor {
+    public:
+      void VisitExpr_(const VarNode* op) override {
+        var_names_.insert(op->name_hint);
+      }
+      std::unordered_set<std::string> GetVarNames(const PrimExpr& expr) {
+        var_names_.clear();
+        this->VisitExpr(expr);
+        return var_names_;
+      }
+    private:
+      std::unordered_set<std::string> var_names_;
+  };
+
 private:
   std::vector<CrossCoreSyncPoint>& sync_points_;
   const bool is_aiv_{false};
   int order_{0};
+  int sync_flag_id_{0};
+  std::vector<const ForNode*> current_loops_;
 
   /**
    * The configuration info table
@@ -131,6 +163,35 @@ private:
     }
     return std::nullopt;
   }
+
+  const std::optional<const ForNode*> GetVarUsedOuterMostForNode(const CallNode* call_node) {
+    std::unordered_set<std::string> var_names =  GetUsedVarNames(call_node->args);
+
+    for (const ForNode* parent_loop : current_loops_) {
+      if (IsVarUsedInForNode(var_names, parent_loop)) {
+        return parent_loop;
+      }
+    }
+    return std::nullopt;
+  }
+
+  std::unordered_set<std::string> GetUsedVarNames(const Array<PrimExpr>& exprs) {
+    PrimExprVisitor visitor;
+    std::unordered_set<std::string> result;
+    for (const auto& expr : exprs) {
+      result.merge(visitor.GetVarNames(expr));
+    }
+    return result;
+  }
+
+  bool IsVarUsedInForNode(const std::unordered_set<std::string>& var_names, const ForNode* for_node) {
+    for (const std::string var_name : var_names) {
+      if (for_node->loop_var->name_hint == var_name) {
+        return true;
+      }
+    }
+    return false;
+  }
 };
 
 class CrossCoreSyncInserter : public StmtMutator {
@@ -142,16 +203,49 @@ public:
   Stmt VisitStmt_(const EvaluateNode *op) override {
     if (auto call_node = op->value.as<CallNode>()) {
       cur_order_++;
-      int flag_id = 0;
       for (const auto& sp : sync_points_) {
-        if (sp.order == cur_order_) {
-          // same order，insert sync statement
-          return AttachSyncStmt(sp, op, flag_id);
+        // Match sync point
+        if (sp.order != cur_order_) {
+          continue;
         }
-        flag_id++;
+
+        // ForNode target, skip here, handled in ForNode visitor
+        if (sp.target_for_node) {
+          continue;
+        }
+
+        // Insert wait/set flag
+        return AttachSyncStmt(sp, op);
       }
     }
     return GetRef<Stmt>(op);
+  }
+
+  Stmt VisitStmt_(const ForNode *op) override {
+    Stmt new_body = this->VisitStmt(op->body);
+    Stmt new_stmt = For(op->loop_var, op->min, op->extent, op->kind, new_body, op->thread_binding, op->annotations);
+
+    for (const auto& sp : sync_points_) {
+      // Check write
+      if (!sp.is_write) {
+        continue;
+      }
+
+      // Check ForNode
+      if (!sp.target_for_node) {
+        continue;
+      }
+
+      // Check ForNode match
+      if (!op->body.same_as(sp.target_for_node.value()->body)) {
+        continue;
+      }
+
+      // Insert SetFlag after the For loop
+      new_stmt = SeqStmt({new_stmt, GenAutoCrossCoreSetFlagStmt(sp)});
+    }
+
+    return new_stmt;
   }
 
 private:
@@ -161,33 +255,33 @@ private:
   /**
    * SetFlag After Write, WaitFlag Before Read.
    */
-  Stmt AttachSyncStmt(const CrossCoreSyncPoint& sp, const EvaluateNode* op, const int flag_id) {
+  Stmt AttachSyncStmt(const CrossCoreSyncPoint& sp, const EvaluateNode* op) {
     if (sp.is_write) {
-      return SeqStmt({GetRef<Stmt>(op), GenAutoCrossCoreSetFlagStmt(sp, flag_id)});
+      return SeqStmt({GetRef<Stmt>(op), GenAutoCrossCoreSetFlagStmt(sp)});
     } else {
-      return SeqStmt({GenAutoCrossCoreWaitFlagStmt(sp, flag_id), GetRef<Stmt>(op)});
+      return SeqStmt({GenAutoCrossCoreWaitFlagStmt(sp), GetRef<Stmt>(op)});
     }
   }
 
   /**
    * Generate CrossCoreSetFlag
    */
-  Stmt GenAutoCrossCoreSetFlagStmt(const CrossCoreSyncPoint& sp, const int flag_id) {
+  Stmt GenAutoCrossCoreSetFlagStmt(const CrossCoreSyncPoint& sp) {
     return Evaluate(Call(DataType::Handle(), builtin::call_extern(), {
       StringImm("AscendC::AutoCrossCoreSetFlag"),
       Integer(DEFAUT_MODEL_ID),
       StringImm(sp.pipe),
-      Integer(flag_id)
+      Integer(sp.sync_flag_id),
     }));
   }
 
   /**
    * Generate CrossCoreWaitFlag
    */
-  Stmt GenAutoCrossCoreWaitFlagStmt(const CrossCoreSyncPoint& sp, const int flag_id) {
+  Stmt GenAutoCrossCoreWaitFlagStmt(const CrossCoreSyncPoint& sp) {
     return Evaluate(Call(DataType::Handle(), builtin::call_extern(), {
       StringImm("AscendC::AutoCrossCoreWaitFlag"),
-      Integer(flag_id)
+      Integer(sp.sync_flag_id),
     }));
   }
 };

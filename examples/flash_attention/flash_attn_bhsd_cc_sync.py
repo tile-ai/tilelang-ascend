@@ -8,9 +8,9 @@ torch.manual_seed(0)
 tilelang.disable_cache()
 
 pass_configs = {
-    "tl.ascend_auto_cv_combine": True,
-    "tl.ascend_auto_cross_core_sync": True,
-    "tl.ascend_auto_sync": True,
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_SYNC: True,
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True
 }
 
 @tilelang.jit(out_idx=[3], pass_configs=pass_configs)
