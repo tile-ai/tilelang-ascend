@@ -71,7 +71,7 @@ for M, N, block_M, block_N in test_configs:
     a = torch.randn(M, N, dtype=torch.float).npu()
     print("a", a)
     b = func(a)
-    print("b", b)
+    # print("b", b)
     gelu = nn.GELU(approximate='tanh')
     a1, a2 = torch.split(a, N // 2, dim=1)
     ref_b = gelu(a1)
