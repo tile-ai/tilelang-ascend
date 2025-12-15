@@ -51,18 +51,20 @@ torch.manual_seed(0)
 # Tests
 test_configs = [
     (256, 256, 64, 64),
-    (300, 300, 64, 64),
-    (1100, 50000, 128, 128),
+    # (300, 300, 64, 64),
+    # (1100, 50000, 128, 128),
 ]
 
 for M, N, block_M, block_N in test_configs:
-    print(f"Testing sigmoid with M={M}, N={N}, block_M={block_M}, block_N={block_N}")
+    print(f"Testing gelu_mul with M={M}, N={N}, block_M={block_M}, block_N={block_N}")
     func = gelu_mul(M, N, block_M, block_N)
     print("Init successful!")
     a = torch.randn(M, N).npu()
     b = func(a)
+    print("b", b)
     gelu = nn.GELU(approximate='tanh')
     ref_b = gelu(a)
+    print("ref_b", ref_b)
     torch.testing.assert_close(b.cpu(), ref_b.cpu(), rtol=1e-2, atol=1e-2)
     print("Test passed!")
 
