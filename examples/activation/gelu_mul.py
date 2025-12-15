@@ -62,10 +62,8 @@ for M, N, block_M, block_N in test_configs:
     print("Init successful!")
     a = torch.randn(M, N).npu()
     b = func(a)
-    print("b", b)
     gelu = nn.GELU(approximate='tanh')
     ref_b = gelu(a)
-    print("ref_b", ref_b)
     torch.testing.assert_close(b.cpu(), ref_b.cpu(), rtol=1e-2, atol=1e-2)
     print("Test passed!")
 
