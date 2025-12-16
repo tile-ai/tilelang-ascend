@@ -74,6 +74,7 @@ for M, N, block_M, block_N in test_configs:
     print("Init successful!")
     a = torch.randn(M, N, dtype=torch.float).npu()
     b = func(a)
+    print(func.get_kernel_source())
     gelu = nn.GELU(approximate='tanh')
     a1, a2 = torch.split(a, N // 2, dim=1)
     # ref_b = gelu(a1)
