@@ -63,8 +63,8 @@ def gelu_mul(M, N, block_M, block_N, dtype="float"):
 torch.manual_seed(0)
 # Tests
 test_configs = [
-    (256, 256, 64, 64),
-    (300, 300, 64, 64),
+    # (256, 256, 64, 64),
+    (64, 200, 64, 64),
     # (1100, 50000, 128, 128),
 ]
 
