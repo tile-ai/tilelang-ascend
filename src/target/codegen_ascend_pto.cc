@@ -814,14 +814,7 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
       for (size_t i = 0; i < op->extents.size(); i++) {
           stream << ", " << op->extents[i];
       }
-      stream << "> " << vid << "(";
-      for (size_t i = 0; i < op->extents.size(); i++) {
-          if (i < op->extents.size() - 1) {
-              stream << op->extents[i] << ", ";
-          } else {
-              stream << op->extents[i] << ");\n";
-          }
-      }
+      stream << "> " << vid << ";\n";
       // Allocate Start Address
       this->PrintIndent();
       stream << "TASSIGN(" << vid << ", " << DEC_STR_TO_HEX_STR(PrintExpr(address_map_[op->buffer_var])) << ");\n";
@@ -834,14 +827,7 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
       for (size_t i = 0; i < op->extents.size(); i++) {
           stream << ", " << op->extents[i];
       }
-      stream << "> " << vid << "(";
-      for (size_t i = 0; i < op->extents.size(); i++) {
-          if (i < op->extents.size() - 1) {
-              stream << op->extents[i] << ", ";
-          } else {
-              stream << op->extents[i] << ");\n";
-          }
-      }
+      stream << "> " << vid << ";\n";
       this->PrintIndent();
       stream << "TASSIGN(" << vid << ", " << DEC_STR_TO_HEX_STR(PrintExpr(address_offset_[String(pos)])) << ");\n";
       address_offset_.Set(
