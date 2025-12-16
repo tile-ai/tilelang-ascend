@@ -737,12 +737,12 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AttrStmtNode *op) {
     auto resource_name = resource_id == 0 ? "CUBE" : "VEC";
 
     this->PrintIndent();
-    stream << "#if defined(__DAV_C220_)" << resource_name << "__)\n";
+    stream << "#if defined(__DAV_C220_" << resource_name << "__)\n";
     int func_scope = this->BeginScope();
     this->VisitStmt(op->body);
     this->EndScope(func_scope);
     this->PrintIndent();
-    stream << "endif\n";
+    stream << "#endif\n";
     return;
   }
   CodeGenC::VisitStmt_(op);
