@@ -78,31 +78,31 @@ c = func(src0, src0offset, src1)
 
 # 计算ref_c
 
-def fun_ref(a, b, c, hrepeat, vrepeat, repeatmod, vRoffset):
+def fun_ref(a, b, c, hRepeat, vRepeat, repeatMode, vROffset):
     a = a.flatten()
     b = b.flatten()
     c = c.flatten()
     re = []
     
-    if repeatmod:
-        for k in range(vrepeat):
+    if repeatMode:
+        for k in range(vRepeat):
             s = torch.zeros(128, dtype=torch.float16).npu()  #初始化累加器
-            r = torch.zeros(128 * hrepeat, dtype=torch.float16).npu()
-            for i in range(hrepeat):
+            r = torch.zeros(128 * hRepeat, dtype=torch.float16).npu()
+            for i in range(hRepeat):
                 for j in range(8):
-                    idx = b[k*8*hrepeat + i*8 + j].to(torch.int64) // 32
-                    r[i*128+j*16 : i*128+(j+1)*16] = a[idx*16 : (idx+1)*16] * c[k*8*hrepeat+i*8+j]
-                s += r[i*128 : (i+1)*128]
+                    idx = b[k * 8 * hRepeat + i * 8 + j].to(torch.int64) // 32
+                    r[i * 128 + j * 16 : i * 128 + (j+1) * 16] = a[idx * 16 : (idx + 1) * 16] * c[k * 8 * hRepeat + i * 8 + j]
+                s += r[i * 128 : (i + 1) * 128]
             re.append(s)
     else:
-        for k in range(vrepeat):
+        for k in range(vRepeat):
             s = torch.zeros(128, dtype=torch.float16).npu()
-            r = torch.zeros(128 * hrepeat, dtype=torch.float16).npu()
-            for i in range(hrepeat):
+            r = torch.zeros(128 * hRepeat, dtype=torch.float16).npu()
+            for i in range(hRepeat):
                 for j in range(8):
-                    idx = b[k*8*hrepeat + i*8 + j].to(torch.int64) // 32
-                    r[i*128+j*16 : i*128+(j+1)*16] = a[idx*16 : (idx+1)*16] * c[k*hrepeat+i]
-                s += r[i*128 : (i+1)*128]
+                    idx = b[k * 8 * hRepeat + i * 8 + j].to(torch.int64) // 32
+                    r[i * 128 + j * 16 : i * 128 + (j + 1) * 16] = a[idx * 16 : (idx + 1) * 16] * c[k * hRepeat + i]
+                s += r[i * 128 : (i + 1) * 128]
             re.append(s)
     return torch.cat(re, dim=0).flatten()
 
@@ -119,10 +119,10 @@ if mask0 == 0:
         n = mask1 // 16
         l = mask1 % 16
         for j in range(n):
-            out_real[i*vROffset+j*16 : i*vROffset+(j+1)*16] = out[i*128+j*16 : i*128+(j+1)*16]
-        out_real[i*vROffset+n*16 : i*vROffset+n*16+l] = out[i*128+n*16 : i*128+n*16+l]
+            out_real[i * vROffset + j * 16 : i * vROffset + (j + 1) * 16] = out[i * 128 + j * 16 : i * 128 + (j + 1) * 16]
+        out_real[i * vROffset + n * 16 : i * vROffset + n * 16 + l] = out[i * 128 + n * 16 : i * 128 + n * 16 + l]
 
-ref_c = out_real[:vRepeat*128].unsqueeze(0)
+ref_c = out_real[:vRepeat * 128].unsqueeze(0)
                     
 torch.testing.assert_close(c, ref_c, rtol=1e-2, atol=1e-2)
 print("Kernel Output Match!")
