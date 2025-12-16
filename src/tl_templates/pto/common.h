@@ -11,9 +11,11 @@ using TileMatL1 = Tile<TileType::Mat, T, Rows, Cols,
                        SLayout::RowMajor,
                        512>;
 
-template <typename T, int Rows, int Cols>
+template <typename T, int Rows, int Cols,
+          int RowValid = Rows, int ColValid = Cols>
 using TileUbData = Tile<TileType::Vec, T, Rows, Cols,
-                       BLayout::RowMajor, -1, -1>;
+                       BLayout::RowMajor,
+                       RowValid, ColValid>;
 
 template <typename T1, typename T2, uint32_t M, uint32_t N, uint32_t K,
           bool transpose_A = false, bool transpose_B = false>

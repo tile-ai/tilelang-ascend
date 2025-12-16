@@ -66,7 +66,7 @@ class LibraryGenerator(object):
         elif self.target == "pto":
             command = [
                 "bisheng",
-                "--cce-aicore-arch=dav-c220-cube",
+                "--cce-aicore-arch=dav-c220",
                 "-DMEMORY_BASE",
                 "-O2",
                 "-std=gnu++17",
