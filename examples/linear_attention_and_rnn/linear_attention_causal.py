@@ -28,7 +28,7 @@ def linear_attention_ker(B, H, L, D, C, dtype="float16", accum_dtype="float"):
 			workspace_2: T.Tensor([B, H, D, D], dtype),
 			O: T.Tensor(shape, dtype),
 	):
-		with T.kernel(B * H, is_npu=True) as (cid, vid):
+		with T.Kernel(B * H, is_npu=True) as (cid, vid):
 			by = cid % H
 			bz = cid // H
 
