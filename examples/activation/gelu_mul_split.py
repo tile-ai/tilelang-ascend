@@ -8,7 +8,7 @@ tilelang.cache.clear_cache()
 @tilelang.jit(out_idx=[1])
 def gelu_mul(M, N, block_M, block_N, dtype="float"):
     m_num = T.ceildiv(M, block_M)
-    # 算子将输入Tensor按照最后一个维度分为左右两个Tensor：x1和x2，对x1进行GELU计算，结果与x2相乘，因此分核只相对于x1的维度
+    # gelu_mul算子将输入Tensor按照最后一个维度分为左右两个Tensor：x1和x2，对x1进行GELU计算，结果与x2相乘，因此分核只相对于x1的维度
     n_num = T.ceildiv(N // 2, block_N)
     
     VEC_NUM = 2
@@ -78,7 +78,6 @@ for M, N, block_M, block_N in test_configs:
     print("Init successful!")
     a = torch.randn(M, N, dtype=torch.float).npu()
     b = func(a)
-    print(func.get_kernel_source())
     gelu = nn.GELU(approximate='tanh')
     a1, a2 = torch.split(a, N // 2, dim=1)
     ref_b = gelu(a1) * a2
