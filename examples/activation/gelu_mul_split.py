@@ -32,7 +32,7 @@ def gelu_mul(M, N, block_M, block_N, dtype="float"):
             testb_ub = T.alloc_ub((block_M // VEC_NUM, 36), dtype)
             testtemp_ub = T.alloc_ub((block_M // VEC_NUM, 36), dtype)
             with T.Scope("V"):
-                if vid == n_num - 1:
+                if by == n_num - 1:
                     T.printf("inner-----cid:%d-------------vid:%d--------------------------------------\n", cid, vid)
                     T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], testa1_ub)
                     T.barrier_all()
