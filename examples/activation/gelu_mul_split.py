@@ -20,7 +20,8 @@ def gelu_mul(M, N, block_M, block_N, dtype="float"):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
             by = cid % n_num
-            
+            T.printf("-----cid:%d-------------vid:%d--------------------------------------\n", cid, vid)
+            T.printf("-----m_num:%d-------------n_num:%d--------------------------------------\n", m_num, n_num)
             a1_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
             a2_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
             b_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
@@ -28,7 +29,7 @@ def gelu_mul(M, N, block_M, block_N, dtype="float"):
             with T.Scope("V"):
                 T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a1_ub)
                 T.barrier_all()
-                T.printf("===========a1_ub after copy:\n")
+                T.printf("===========a1_ub before copy:\n")
                 T.dump_tensor(a1_ub, 222, block_M // VEC_NUM * block_N, (block_M // VEC_NUM, block_N))
                 T.barrier_all()
                 T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N + N // 2], a2_ub)
