@@ -5,7 +5,11 @@ import torch.nn as nn
 
 tilelang.cache.clear_cache()
 
-@tilelang.jit(out_idx=[1])
+pass_configs = {
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
+}
+
+@tilelang.jit(out_idx=[1], pass_configs=pass_configs)
 def gelu_mul(M, N, block_M, block_N, dtype="float"):
     m_num = T.ceildiv(M, block_M)
     # The `gelu_mul` operator splits the input tensor into two tensors, x1 and x2, based on the last dimension. 
@@ -30,37 +34,26 @@ def gelu_mul(M, N, block_M, block_N, dtype="float"):
             with T.Scope("V"):
                 # The left half is cached using a1_ub
                 T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a1_ub)
-                T.barrier_all()
                 # The right half is cached using a2_ub
                 T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N + N // 2], a2_ub)
-                T.barrier_all()
                 # Calculation formula:x^2
                 T.tile.mul(temp_ub, a1_ub, a1_ub)
-                T.barrier_all()
                 # Calculation formula:x^3
                 T.tile.mul(temp_ub, a1_ub, temp_ub)
-                T.barrier_all()
                 # Calculation formula:0.044715 * x^3
                 T.tile.mul(temp_ub, temp_ub, 0.044715)
-                T.barrier_all()
                 # Calculation formula:x + 0.044715 * x^3
                 T.tile.add(temp_ub, a1_ub, temp_ub)
-                T.barrier_all()
                 # Calculation formula:-sqrt(8/pi)(x + 0.044715 * x^3)
                 T.tile.mul(temp_ub, temp_ub, -1.5957691)
-                T.barrier_all()
                 # Calculation formula:exp(-sqrt(8/pi)(x + 0.044715 * x^3))
                 T.tile.exp(temp_ub, temp_ub)
-                T.barrier_all()
                 # Calculation formula:1 + exp(-sqrt(8/pi)(x + 0.044715 * x^3))
                 T.tile.add(temp_ub, temp_ub, 1.0)
-                T.barrier_all()
                 # Calculation formula:x / (1 + exp(-sqrt(8/pi)(x + 0.044715 * x^3)))
                 T.tile.div(temp_ub, a1_ub, temp_ub)
-                T.barrier_all()
                 # Multiply the result of the left half by the right half
                 T.tile.mul(b_ub, temp_ub, a2_ub)
-                T.barrier_all()
                 T.copy(b_ub, B[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
 
     return main
