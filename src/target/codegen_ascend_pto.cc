@@ -748,6 +748,44 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AttrStmtNode *op) {
   CodeGenC::VisitStmt_(op);
 }
 
+void UbShapeInputCheck(const AllocateNode *op) {
+  if (op->extents.size() != 2){
+    ICHECK(false) << "Unsupported ubsize which is expected to be 2";
+  }
+}
+
+int8_t GetTypeLen(std::string type) {
+  int8_t typeSize = 1;
+  if (type == "float") {
+    typeSize = 4;
+  } else if (type == "half") {
+    typeSize = 2;
+  } else if (type == "int8_t") {
+    typeSize = 1;
+  } else if (type == "int16_t") {
+    typeSize = 2;
+  } else if (type == "int") {
+    typeSize = 4;
+  } else {
+    ICHECK(false) << "Unsupported datatype";
+  }
+  return typeSize;
+}
+
+std::string GetPreferedUbLayout(const AllocateNode *op) {
+  std::string layout = "NoneLayout";
+  std::string type = getType(op->dtype);
+  int8_t typeSize = GetTypeLen(type);
+  if (tvm::tir::is_zero(tvm::truncmod(op->extents[1] * typeSize, 32))) {
+    layout = "ND";
+  } else if (tvm::tir::is_zero(tvm::truncmod(op->extents[0] * typeSize, 32))) {
+    layout = "DN";
+  } else {
+    ICHECK(layout != "NoneLayout") << "Can not get correct layout";
+  }
+  return layout;
+}
+
 void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
   ICHECK(!is_zero(op->condition));
   std::string vid = AllocVarID(op->buffer_var.get()); // var_name
@@ -756,7 +794,19 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
   const VarNode *buffer = op->buffer_var.as<VarNode>();
   
   /// Allocate PTO Tile Memory Address
-  auto print_buffer = [&](const std::string &pos) {
+  auto print_buffer = [&](const std::string &posInit) {
+    auto pos = posInit;
+    if (pos == "ub") {
+      UbShapeInputCheck(op);
+      auto layout = GetPreferedUbLayout(op);
+      if (layout == "ND") {
+        pos = std::string("tl::pto::TileUbDataND");
+      } else if (layout == "DN") {
+        pos = std::string("tl::pto::TileUbDataDN");
+      } else {
+        ICHECK(false) << "Can not select correct tile ub type";
+      }
+    }
     this->PrintIndent();
     // Allocate buffer
     if (address_map_.find(op->buffer_var) != address_map_.end()) {
