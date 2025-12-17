@@ -31,8 +31,8 @@ def gelu_mul(M, N, block_M, block_N, dtype="float"):
             a1_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
             a2_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
             b_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
-            temp_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
             T.printf("-----outer cid:%d-------------vid:%d--------------------------------------\n", cid, vid)
+            temp_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
 
             ## [In vector]
             # The left half is cached using a1_ub
