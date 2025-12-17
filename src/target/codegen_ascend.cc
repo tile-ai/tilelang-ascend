@@ -826,9 +826,9 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
         this->stream << "auto " << var_name << "_scalar = " << var_name
                      << ".GetValue(" << PrintExpr(op->args[op->args.size() - 2])
                      << ");\n";
-        var_names.push_back("- " + var_name + "_scalar");
+        var_names.push_back("-" + var_name + "_scalar");
       } else {
-        var_names.push_back(PrintExpr(op->args[op->args.size() - 2]));
+        var_names.push_back("-" + PrintExpr(op->args[op->args.size() - 2]));
       }
       this->PrintIndent();
       this->stream << "AscendC::Adds"

@@ -195,7 +195,7 @@ def binary_op(dst: Union[Buffer, BufferRegion], src0: Union[Buffer, BufferRegion
         return T.call_extern("handle", f"AscendC::{op}s", dst_ptr, src0_ptr,
                              buffer_1.access_ptr("r"), indices_1[0], size_0)
 
-    elif isinstance(src1, (PrimExpr, float)):
+    elif isinstance(src1, (PrimExpr, float, int)):
         return T.call_extern("handle", f"AscendC::{op}s", dst_ptr, src0_ptr, src1, size_0)
     else:
         return T.call_extern("handle", f"AscendC::{op}", dst_ptr, src0_ptr, src1.access_ptr("r"),
