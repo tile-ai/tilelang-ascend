@@ -7,6 +7,7 @@ tilelang.cache.clear_cache()
 
 pass_configs = {
     tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
 }
 
 @tilelang.jit(out_idx=[1], pass_configs=pass_configs)
@@ -32,31 +33,32 @@ def gelu_mul(M, N, block_M, block_N, dtype="float"):
             b_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
             temp_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
             T.printf("-----outer cid:%d-------------vid:%d--------------------------------------\n", cid, vid)
-            with T.Scope("V"):
-                # The left half is cached using a1_ub
-                T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a1_ub)
-                # The right half is cached using a2_ub
-                T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N + N // 2], a2_ub)
-                # Calculation formula:x^2
-                T.tile.mul(temp_ub, a1_ub, a1_ub)
-                T.printf("-----inner cid:%d-------------vid:%d--------------------------------------\n", cid, vid)
-                # Calculation formula:x^3
-                T.tile.mul(temp_ub, a1_ub, temp_ub)
-                # Calculation formula:0.044715 * x^3
-                T.tile.mul(temp_ub, temp_ub, 0.044715)
-                # Calculation formula:x + 0.044715 * x^3
-                T.tile.add(temp_ub, a1_ub, temp_ub)
-                # Calculation formula:-sqrt(8/pi)(x + 0.044715 * x^3)
-                T.tile.mul(temp_ub, temp_ub, -1.5957691)
-                # Calculation formula:exp(-sqrt(8/pi)(x + 0.044715 * x^3))
-                T.tile.exp(temp_ub, temp_ub)
-                # Calculation formula:1 + exp(-sqrt(8/pi)(x + 0.044715 * x^3))
-                T.tile.add(temp_ub, temp_ub, 1.0)
-                # Calculation formula:x / (1 + exp(-sqrt(8/pi)(x + 0.044715 * x^3)))
-                T.tile.div(temp_ub, a1_ub, temp_ub)
-                # Multiply the result of the left half by the right half
-                T.tile.mul(b_ub, temp_ub, a2_ub)
-                T.copy(b_ub, B[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
+
+            ## [In vector]
+            # The left half is cached using a1_ub
+            T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a1_ub)
+            # The right half is cached using a2_ub
+            T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N + N // 2], a2_ub)
+            # Calculation formula:x^2
+            T.tile.mul(temp_ub, a1_ub, a1_ub)
+            T.printf("-----inner cid:%d-------------vid:%d--------------------------------------\n", cid, vid)
+            # Calculation formula:x^3
+            T.tile.mul(temp_ub, a1_ub, temp_ub)
+            # Calculation formula:0.044715 * x^3
+            T.tile.mul(temp_ub, temp_ub, 0.044715)
+            # Calculation formula:x + 0.044715 * x^3
+            T.tile.add(temp_ub, a1_ub, temp_ub)
+            # Calculation formula:-sqrt(8/pi)(x + 0.044715 * x^3)
+            T.tile.mul(temp_ub, temp_ub, -1.5957691)
+            # Calculation formula:exp(-sqrt(8/pi)(x + 0.044715 * x^3))
+            T.tile.exp(temp_ub, temp_ub)
+            # Calculation formula:1 + exp(-sqrt(8/pi)(x + 0.044715 * x^3))
+            T.tile.add(temp_ub, temp_ub, 1.0)
+            # Calculation formula:x / (1 + exp(-sqrt(8/pi)(x + 0.044715 * x^3)))
+            T.tile.div(temp_ub, a1_ub, temp_ub)
+            # Multiply the result of the left half by the right half
+            T.tile.mul(b_ub, temp_ub, a2_ub)
+            T.copy(b_ub, B[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
 
     return main
 
