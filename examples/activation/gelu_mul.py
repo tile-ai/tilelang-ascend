@@ -64,9 +64,9 @@ def gelu_mul(M, N, block_M, block_N, dtype="float"):
 torch.manual_seed(0)
 # Tests
 test_configs = [
-    (300, 300, 64, 64),
     (256, 256, 64, 64),
     (1024, 1024, 128, 128),
+    (300, 300, 64, 64),
 ]
 
 for M, N, block_M, block_N in test_configs:
@@ -81,4 +81,4 @@ for M, N, block_M, block_N in test_configs:
     torch.testing.assert_close(b.cpu(), ref_b.cpu(), rtol=1e-2, atol=1e-2)
     print("Test passed!")
 
-print("All processes completed!")
+print("Kernel Output Match!")
