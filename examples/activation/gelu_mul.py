@@ -31,6 +31,7 @@ def gelu_mul(M, N, block_M, block_N, dtype="float"):
             a2_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
             b_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
             temp_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
+            T.printf("-----outer cid:%d-------------vid:%d--------------------------------------\n", cid, vid)
             with T.Scope("V"):
                 # The left half is cached using a1_ub
                 T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a1_ub)
@@ -38,6 +39,7 @@ def gelu_mul(M, N, block_M, block_N, dtype="float"):
                 T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N + N // 2], a2_ub)
                 # Calculation formula:x^2
                 T.tile.mul(temp_ub, a1_ub, a1_ub)
+                T.printf("-----inner cid:%d-------------vid:%d--------------------------------------\n", cid, vid)
                 # Calculation formula:x^3
                 T.tile.mul(temp_ub, a1_ub, temp_ub)
                 # Calculation formula:0.044715 * x^3
