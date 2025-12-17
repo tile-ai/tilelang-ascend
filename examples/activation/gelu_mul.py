@@ -41,7 +41,6 @@ def gelu_mul(M, N, block_M, block_N, dtype="float"):
             T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N + N // 2], a2_ub)
             # Calculation formula:x^2
             T.tile.mul(temp_ub, a1_ub, a1_ub)
-            T.printf("-----inner cid:%d-------------vid:%d--------------------------------------\n", cid, vid)
             # Calculation formula:x^3
             T.tile.mul(temp_ub, a1_ub, temp_ub)
             # Calculation formula:0.044715 * x^3
@@ -76,11 +75,10 @@ for M, N, block_M, block_N in test_configs:
     print("Init successful!")
     a = torch.randn(M, N, dtype=torch.float).npu()
     b = func(a)
-    print(func.get_kernel_source())
     gelu = nn.GELU(approximate='tanh')
     a1, a2 = torch.split(a, N // 2, dim=1)
     ref_b = gelu(a1) * a2
     torch.testing.assert_close(b.cpu(), ref_b.cpu(), rtol=1e-2, atol=1e-2)
     print("Test passed!")
 
-print("All processes completed!")
+print("Kernel Output Match!")
