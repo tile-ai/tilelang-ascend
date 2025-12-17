@@ -31,7 +31,6 @@ def gelu_mul(M, N, block_M, block_N, dtype="float"):
             a1_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
             a2_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
             b_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
-            T.printf("-----outer cid:%d-------------vid:%d--------------------------------------\n", cid, vid)
             temp_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
 
             ## [In vector]
@@ -41,7 +40,6 @@ def gelu_mul(M, N, block_M, block_N, dtype="float"):
             T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N + N // 2], a2_ub)
             # Calculation formula:x^2
             T.tile.mul(temp_ub, a1_ub, a1_ub)
-            T.printf("-----inner cid:%d-------------vid:%d--------------------------------------\n", cid, vid)
             # Calculation formula:x^3
             T.tile.mul(temp_ub, a1_ub, temp_ub)
             # Calculation formula:0.044715 * x^3
@@ -66,6 +64,7 @@ def gelu_mul(M, N, block_M, block_N, dtype="float"):
 torch.manual_seed(0)
 # Tests
 test_configs = [
+    (300, 300, 64, 64),
     (256, 256, 64, 64),
     (1024, 1024, 128, 128),
 ]
@@ -76,7 +75,6 @@ for M, N, block_M, block_N in test_configs:
     print("Init successful!")
     a = torch.randn(M, N, dtype=torch.float).npu()
     b = func(a)
-    print(func.get_kernel_source())
     gelu = nn.GELU(approximate='tanh')
     a1, a2 = torch.split(a, N // 2, dim=1)
     ref_b = gelu(a1) * a2
