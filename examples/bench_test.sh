@@ -132,4 +132,7 @@ echo "====================================="
 
 echo "Executing pytest script: ..\\testing\\python\\language\\test_tilelang_ascend_language_parallel.py"
 python ../testing/python/language/test_tilelang_ascend_language_parallel.py
+echo "Executing pytest script: ..\\testing\\python\\language\\test_tilelang_ascend_language_cast_on_copy.py"
 python ../testing/python/language/test_tilelang_ascend_language_cast_on_copy.py
+echo "Executing pytest script: ..\\testing\\python\\language\\test_tilelang_ascend_language_parallel_discrete.py"
+python ../testing/python/language/test_tilelang_ascend_language_parallel_discrete.py

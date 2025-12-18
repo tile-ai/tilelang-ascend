@@ -162,9 +162,8 @@ def brcb(dst: Buffer, src: Buffer, repeat_times: PrimExpr, dst_blk_stride: PrimE
     return T.call_extern("handle", f"tl::ascend::brcb<{_dtype(src)}>", dst_ptr, src_ptr,
                          repeat_times, dst_blk_stride, dst_repeat_stride)
 
-
 def binary_op(dst: Union[Buffer, BufferRegion], src0: Union[Buffer, BufferRegion],
-              src1: Union[Buffer, BufferLoad, PrimExpr, float], op: str):
+              src1: Union[Buffer, BufferRegion, BufferLoad, PrimExpr, float], op: str):
 
     def _handle_buffer_region(br: BufferRegion, mask):
         bf = br.buffer
@@ -197,38 +196,43 @@ def binary_op(dst: Union[Buffer, BufferRegion], src0: Union[Buffer, BufferRegion
 
     elif isinstance(src1, (PrimExpr, float, int)):
         return T.call_extern("handle", f"AscendC::{op}s", dst_ptr, src0_ptr, src1, size_0)
+    elif isinstance(src1, BufferRegion):
+        src1_ptr, src1_extent = _handle_buffer_region(src1, "r")
+        size_2 = math.prod(src1_extent)
+        assert size_0 == size_2, "size must be same"
+        return T.call_extern("handle", f"AscendC::{op}", dst_ptr, src0_ptr, src1_ptr, size_0)
     else:
         return T.call_extern("handle", f"AscendC::{op}", dst_ptr, src0_ptr, src1.access_ptr("r"),
                              size_0)
 
 
-def add(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferLoad, PrimExpr]):
+def add(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, BufferLoad, PrimExpr]):
     return binary_op(dst, src0, src1, "Add")
 
 
-def sub(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferLoad]):
+def sub(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, BufferLoad]):
     return binary_op(dst, src0, src1, "Sub")
 
 
-def mul(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferLoad, PrimExpr]):
+def mul(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, BufferLoad, PrimExpr]):
     return binary_op(dst, src0, src1, "Mul")
 
 
-def div(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferLoad]):
+def div(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, BufferLoad]):
     return binary_op(dst, src0, src1, "Div")
 
 
-def max(dst: Buffer, src0: Buffer, src1: Union[Buffer]):
+def max(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion]):
     return binary_op(dst, src0, src1, "Max")
 
 
-def min(dst: Buffer, src0: Buffer, src1: Union[Buffer]):
+def min(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion]):
     return binary_op(dst, src0, src1, "Min")
 
-def and_tl(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferLoad, PrimExpr]):
+def and_tl(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, BufferLoad, PrimExpr]):
     return binary_op(dst, src0, src1, "And")
 
-def or_tl(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferLoad, PrimExpr]):
+def or_tl(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, BufferLoad, PrimExpr]):
     return binary_op(dst, src0, src1, "Or")
 
 
