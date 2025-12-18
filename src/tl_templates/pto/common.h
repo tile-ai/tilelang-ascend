@@ -13,9 +13,15 @@ using TileMatL1 = Tile<TileType::Mat, T, Rows, Cols,
 
 template <typename T, int Rows, int Cols,
           int RowValid = Rows, int ColValid = Cols>
-using TileUbData = Tile<TileType::Vec, T, Rows, Cols,
+using TileUbDataND = Tile<TileType::Vec, T, Rows, Cols,
                        BLayout::RowMajor,
-                       RowValid, ColValid>;
+                       -1, -1>;
+
+template <typename T, int Rows, int Cols,
+          int RowValid = Rows, int ColValid = Cols>
+using TileUbDataDN = Tile<TileType::Vec, T, Rows, Cols,
+                       BLayout::ColMajor,
+                       -1, -1>;
 
 template <typename T1, typename T2, uint32_t M, uint32_t N, uint32_t K,
           bool transpose_A = false, bool transpose_B = false>
