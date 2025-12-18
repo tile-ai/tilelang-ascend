@@ -5,13 +5,13 @@ import torch.nn as nn
 
 tilelang.cache.clear_cache()
 
-pass_configs = {
-    tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
-    tilelang.PassConfigKey.TIR_MERGE_STATIC_SMEM: True,
-    # tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
-}
+# pass_configs = {
+#     tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
+#     tilelang.PassConfigKey.TIR_MERGE_STATIC_SMEM: True,
+#     tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
+# }
 
-@tilelang.jit(out_idx=[1], pass_configs=pass_configs)
+@tilelang.jit(out_idx=[1])
 def swi_glu(M, N, block_M, block_N, dtype="float"):
     m_num = T.ceildiv(M, block_M)
     # The `swi_glu` operator splits the input tensor into two tensors, x1 and x2, based on the last dimension. 
@@ -36,8 +36,11 @@ def swi_glu(M, N, block_M, block_N, dtype="float"):
             ## [In vector]
             with T.Scope("V"):
                 T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a0_ub)
+                T.barrier_all()
                 T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N + N // 2], a1_ub)
+                T.barrier_all()
                 T.tile.swi_glu(b_ub, a0_ub, a1_ub, 1.0, block_M // VEC_NUM * block_N)
+                T.barrier_all()
                 T.copy(b_ub, B[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
 
     return main
@@ -56,6 +59,7 @@ for M, N, block_M, block_N in test_configs:
     print("Init successful!")
     a = torch.randn(M, N, dtype=torch.float).npu()
     b = func(a)
+    print(func.get_kernel_source())
     a1, a2 = torch.split(a, N // 2, dim=1)
     gelu = nn.SiLU()
     ref_b = gelu(a1) * a2
