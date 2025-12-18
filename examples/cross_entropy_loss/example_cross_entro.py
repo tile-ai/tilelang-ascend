@@ -1,5 +1,5 @@
 
-from typing import Literal, Optional
+from typing import Literal
 import argparse
 
 import tilelang as tl
@@ -25,7 +25,8 @@ def cross_entropy(
     VEC_NUM = 2
     CAL_DTYPE = "float32"
     TEMP_DTYPE = "uint8"
-    CAST_MODE = "CAST_NONE"
+    CAST_MODE_LOW2HIGH = "CAST_NONE"
+    CAST_MODE_HIGH2LOW = "CAST_RINT"
 
     n_num = T.ceildiv(N, block_N)
     c_num = T.ceildiv(C, block_C)
@@ -34,6 +35,14 @@ def cross_entropy(
 
     def bytes_of(dtype: str) -> int:
         return DataType(dtype).bits // 8
+
+    not_same_dtype = x_dtype != CAL_DTYPE
+
+    def cast_or_copy(dst, src, mode, count):
+        if not_same_dtype:
+            return T.tile.cast_tl(dst, src, mode, count)
+        else:
+            return T.copy(src, dst)
 
     @T.prim_func
     def main(
@@ -65,7 +74,7 @@ def cross_entropy(
                 # Find sum e^{x_c - x_max}
                 for bc in T.serial(c_num):
                     T.copy(x[bn * block_N_2, bc * block_C], x_ub)
-                    T.tile.cast_tl(x_32, x_ub, CAST_MODE, block_N_2 * block_C)
+                    cast_or_copy(x_32, x_ub, CAST_MODE_LOW2HIGH, block_N_2 * block_C)
 
                     T.tile.reduce_max(tile_max, x_32, temp_reduce, dim=-1)
                     T.tile.max(tile_max, prev_max, tile_max)
@@ -84,12 +93,12 @@ def cross_entropy(
                 # log(e^{x_c - x_max} / sum e^{x_c - x_max}) = x_c - x_max - log(sum e^{x_c - x_max})
                 for bc in T.serial(c_num):
                     T.copy(x[bn * block_N_2, bc * block_C], x_ub)
-                    T.tile.cast_tl(x_32, x_ub, CAST_MODE, block_N_2 * block_C)
+                    cast_or_copy(x_32, x_ub, CAST_MODE_LOW2HIGH, block_N_2 * block_C)
 
                     for n_idx in T.serial(block_N_2):
                         T.tile.sub(x_32[n_idx, :], x_32[n_idx, :], prev_max[n_idx] + prev_sum[n_idx])  # x_c - (x_max + log(sum e^{x_c - x_max}))
                     
-                    T.tile.cast_tl(x_ub, x_32, CAST_MODE, block_N_2 * block_C)
+                    cast_or_copy(x_ub, x_32, CAST_MODE_HIGH2LOW, block_N_2 * block_C)
                     T.copy(x_ub, log_prob[bn * block_N_2, bc * block_C])
                     
                     for n_idx in T.serial(block_N_2):
@@ -97,7 +106,7 @@ def cross_entropy(
                             l_n_32[n_idx] = -x_32[n_idx, y_ub[n_idx]]  # -(x_c - x_max - log(sum e^{x_c - x_max}))
                     T.tile.sub(y_ub, y_ub, block_C)
 
-                T.tile.cast_tl(l_n, l_n_32, CAST_MODE, block_N_2)
+                cast_or_copy(l_n, l_n_32, CAST_MODE_HIGH2LOW, block_N_2)
                 T.copy(l_n, loss[bn * block_N_2])
 
     return main
@@ -142,8 +151,9 @@ def main(custom_args=None):
 
     torch.manual_seed(0)
 
-    check_case(N, C, 32, 32)
     check_case(N, C, 128, 128)
+    check_case(N, C, 128, 128, x_dtype="float32")
+    check_case(N, C, 128, 128, x_dtype="bfloat16")
     check_case(64, 64, 16, 16)
 
     print("cross_entropy_loss example passed!")
