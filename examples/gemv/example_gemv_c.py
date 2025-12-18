@@ -17,23 +17,12 @@ def simple_gemv(
     N:int, K:int, block_N:int, block_K:int, 
     dtype:str = "float16", accum_dtype:str = "float32"
 ):
-    """ Vector core GEMV implementation"""
-    VEC_NUM = 2
-    TEMP_DTYPE = "uint8"
-    CAST_MODE = "CAST_NONE"
+    """ Cube core GEMV implementation"""
+    FRACTAL_SIZE = 16  
+    # one fractal is 16x16, even (1, 16) will actually take (16, 16) spaces in L1
 
     n_num = T.ceildiv(N, block_N)
     k_num = T.ceildiv(K, block_K)
-
-    kernel_num = T.ceildiv(n_num, VEC_NUM)
-
-    not_same_dtype = dtype != accum_dtype
-
-    def cast_or_copy(dst, src, mode, count):
-        if not_same_dtype:
-            return T.tile.cast_tl(dst, src, mode, count)
-        else:
-            return T.copy(src, dst)
 
     @T.prim_func
     def main(
@@ -41,33 +30,21 @@ def simple_gemv(
         A: T.Tensor((N, K), dtype), # type: ignore
         y: T.Tensor((N,), dtype),   # type: ignore
     ):
-        with T.Kernel(kernel_num, is_npu=True) as (cid, vid):
-            bn = (cid * VEC_NUM + vid) % n_num
+        with T.Kernel(n_num, is_npu=True) as (cid, _):
+            bn = cid  % n_num
 
-            x_ub = T.alloc_ub((1, block_K), dtype)
-            x_32_ub = T.alloc_ub((1, block_K), accum_dtype)
-            A_ub = T.alloc_ub((block_N, block_K), dtype)
-            temp_ub = T.alloc_ub((block_N, block_K), TEMP_DTYPE)  # for reduce_sum
-            A_32_ub = T.alloc_ub((block_N, block_K), accum_dtype)
-            y_single_32_ub = T.alloc_ub((block_N,), accum_dtype)
-            y_total_32_ub = T.alloc_ub((block_N,), accum_dtype)
-            y_ub = T.alloc_ub((block_N,), dtype)
+            A_L1 = T.alloc_L1((block_N, block_K), dtype)
+            x_L1 = T.alloc_L1((FRACTAL_SIZE, block_K), dtype)
+            C_L0 = T.alloc_L0C((FRACTAL_SIZE, block_N), accum_dtype)
 
-            T.tile.fill(y_total_32_ub, 0.0)
-
-            # block_N * K  per vector core
+            # block_N * K  per cube core
             for bk in T.serial(k_num):
-                T.copy(x[bk * block_K], x_ub)
-                T.copy(A[bn * block_N, bk * block_K], A_ub)
-                cast_or_copy(x_32_ub, x_ub, CAST_MODE, block_K)  # cast to float for reduce_sum
-                cast_or_copy(A_32_ub, A_ub, CAST_MODE, block_N * block_K)
-                for i in T.serial(block_N):
-                    T.tile.mul(A_32_ub[i, :], A_32_ub[i, :], x_32_ub)
-                T.tile.reduce_sum(y_single_32_ub, A_32_ub, temp_ub, dim=-1)
-                T.tile.add(y_total_32_ub, y_total_32_ub, y_single_32_ub)
+                T.copy(x[bk * block_K], x_L1)
+                T.copy(A[bn * block_N, bk * block_K], A_L1)
+                T.gemm_v0(x_L1, A_L1, C_L0, transpose_B=True, init=(bk == 0))
             
-            cast_or_copy(y_ub, y_total_32_ub, CAST_MODE, block_N)  # cast back
-            T.copy(y_ub, y[bn * block_N])
+            T.copy(C_L0, y[bn * block_N])
+
     return main
 
 
