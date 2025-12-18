@@ -7,7 +7,7 @@ tilelang.cache.clear_cache()
 
 pass_configs = {
     tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
-    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
+    # tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
 }
 
 @tilelang.jit(out_idx=[1], pass_configs=pass_configs)
@@ -33,10 +33,11 @@ def swi_glu(M, N, block_M, block_N, dtype="float"):
             b_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
 
             ## [In vector]
-            T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a0_ub)
-            T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N + N // 2], a1_ub)
-            T.tile.swi_glu(b_ub, a0_ub, a1_ub, 1.0)
-            T.copy(b_ub, B[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
+            with T.Scope("V"):
+                T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a0_ub)
+                T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N + N // 2], a1_ub)
+                T.tile.swi_glu(b_ub, a0_ub, a1_ub, 1.0)
+                T.copy(b_ub, B[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
 
     return main
 
