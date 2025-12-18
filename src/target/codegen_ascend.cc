@@ -984,7 +984,7 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
         var_names.push_back(var_name);
       }
       this->PrintIndent();
-      this->stream << op_name << "(";
+      this->stream << op_name << "<float>" << "(";
       for (int i = 0; i < var_names.size(); i++) {
         this->stream << var_names[i];
         if (i != var_names.size() - 1) {
