@@ -63,6 +63,7 @@ std::string CodeGenTileLangAscend::Finish() {
   decl_stream << "#include \"tl_templates/ascend/common.h\"\n";
   decl_stream << "#include \"acl/acl.h\"\n";
   decl_stream << "#include <runtime/rt_ffts.h>\n";
+  decl_stream << "#include \"kernel_operator.h\"\n";
   decl_stream << "using namespace Catlass;\n";
   decl_stream << "using uint = unsigned int;\n";
   decl_stream << "using uchar = unsigned char;\n";
