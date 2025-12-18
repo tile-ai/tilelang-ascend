@@ -72,6 +72,7 @@ std::string CodeGenTileLangAscendPto::Finish() {
   decl_stream << "#include \"tl_templates/pto/common.h\"\n";
   decl_stream << "#include <pto/pto-inst.hpp>\n";
   decl_stream << "#include \"acl/acl.h\"\n";
+  decl_stream << "#include <runtime/rt_ffts.h>\n";
   decl_stream << "using namespace pto;\n";
   decl_stream << "\n";
   std::ostringstream code;
@@ -718,7 +719,9 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AttrStmtNode *op) {
         current_block_id = current_block_id + "_";
       }
       this->stream << "auto " << current_block_id
-                   << " = get_block_idx();\n\n";
+                   << " = get_block_idx();\n";
+      this->PrintIndent();
+      stream << "set_ffts_base_addr(ffts_Addr);\n\n";
       // this->PrintIndent();
       // this->stream << "if ASCEND_IS_AIV {\n";
       // this->PrintIndent();
@@ -990,7 +993,7 @@ void CodeGenTileLangAscendPto::PrintHostFunc(const PrimFunc &f, const std::strin
   for (auto shape_var : shape_vars) {
     os << ", " << shape_var->name_hint;
   }
-  os << ");\n}\n\n";
+  os << ", fftsAddr);\n}\n\n";
 
 
   // call kernel
@@ -1005,9 +1008,12 @@ void CodeGenTileLangAscendPto::PrintHostFunc(const PrimFunc &f, const std::strin
   }
   ProcessHostInput(os, arg_names, shape_vars, false);
   os << ", void *stream)\n{\n  ";
+  os << "  uint32_t fftsLen{0};\n  ";
+  os << "  uint64_t fftsAddr{0};\n  ";
+  os << "  rtGetC2cCtrlAddr(&fftsAddr, &fftsLen);\n";
   this->PrintIndent();
+  os << "  launch_kernel" << "<<<" << core << ", nullptr, stream>>>(";
 
-  os << "launch_kernel" << "<<<" << core << ", nullptr, stream>>>(";
   for (auto &arg_name : arg_names) {
     os << arg_name;
     if (arg_name != arg_names.back()) {
@@ -1023,7 +1029,7 @@ void CodeGenTileLangAscendPto::PrintHostFunc(const PrimFunc &f, const std::strin
       os << ", ";
     }
   }
-  os << ");\n}\n";
+  os << ", fftsAddr);\n}\n";
   this->EndScope(func_scope);
   std::string content = os.str();
 }

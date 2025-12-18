@@ -14,6 +14,16 @@ def _dtype(buf):
     return type_map[buf.dtype]
 
 
+def set_cross_flag(pipe: str, flag: int):
+    mode = 2
+    config = 1 | (mode << 4) | (flag << 8)
+    return T.call_extern("handle", f"ffts_cross_core_sync(PIPE_{pipe.upper()}, {config});")
+
+
+def wait_cross_flag(flag: int):
+    return T.call_extern("handle", f"wait_intra_block(PIPE_FIX, {flag});")
+
+
 def barrier_all():
     return T.call_extern("handle", "pipe_barrier(PIPE_ALL);")
 
