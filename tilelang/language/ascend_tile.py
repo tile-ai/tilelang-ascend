@@ -371,7 +371,11 @@ def block_reduce_min(dst: Buffer, src: Buffer, repeat: PrimExpr, mask: PrimExpr,
 
 
 def block_reduce_sum(dst: Buffer, src: Buffer, repeat: PrimExpr, mask: PrimExpr, dstPepStride: PrimExpr, srcBlkStride: PrimExpr, srcRepStride: PrimExpr):
-    return T.call_extern("handle", "AscendC::BlockReduceSum", dst.access_ptr("w"), src.access_ptr("r"), repeat, mask, dstPepStride, srcBlkStride, srcRepStride)    
+    return T.call_extern("handle", "AscendC::BlockReduceSum", dst.access_ptr("w"), src.access_ptr("r"), repeat, mask, dstPepStride, srcBlkStride, srcRepStride)
+
+
+def swi_gul(dst: Buffer, src0: Buffer, src1: Buffer, scalarValue: PrimExpr):
+    return T.call_extern("handle", "AscendC::SwiGLU", dst.access_ptr("w"), src0.access_ptr("r"), src0.access_ptr("r"), scalarValue)        
 
 
 def compare(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferLoad, PrimExpr], mode: str):

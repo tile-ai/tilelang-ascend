@@ -976,6 +976,25 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
         this->stream << ", " << PrintExpr(op->args[i]);
       }
       this->stream << ");\n";
+    } else if (op_name == "AscendC::SwiGLU") {
+      std::vector<std::string> var_names;
+      int exprStartIndex = 4;
+      for (int i = 1; i < exprStartIndex; i++) {
+        auto var_name = print_buffer_offset(op->args[i].as<CallNode>());
+        var_names.push_back(var_name);
+      }
+      this->PrintIndent();
+      this->stream << op_name << "(";
+      for (int i = 0; i < var_names.size(); i++) {
+        this->stream << var_names[i];
+        if (i != var_names.size() - 1) {
+          this->stream << ", ";
+        }
+      }
+      for (int i = exprStartIndex; i < op->args.size(); i++) {
+        this->stream << ", " << PrintExpr(op->args[i]);
+      }
+      this->stream << ");\n";
     } else if (op_name.find("thread_block_swizzle") != std::string::npos) {
       std::string expr = PrintExpr(op->args[1]);
       os << op_name << "("
