@@ -7,6 +7,7 @@ tilelang.cache.clear_cache()
 
 pass_configs = {
     tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
+    tilelang.PassConfigKey.TIR_MERGE_STATIC_SMEM: True,
     # tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
 }
 
