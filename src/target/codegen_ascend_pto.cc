@@ -1002,7 +1002,7 @@ void CodeGenTileLangAscendPto::PrintHostFunc(const PrimFunc &f, const std::strin
   }
   ProcessHostInput(os, arg_names, shape_vars);
   int func_scope = this->BeginScope();
-  os << ")\n{\n  ";
+  os << ", uint64_t fftsAddr)\n{\n  ";
   this->PrintIndent();
   // template function
   os << name << "(";
@@ -1143,7 +1143,7 @@ void CodeGenTileLangAscendPto::AddFunction(const GlobalVar &gvar,
       index++;
   }
 
-  stream << ") {\n";
+  stream << ", uint64_t ffts_Addr) {\n";
   this->PreFunctionBody(f);
   int func_scope = this->BeginScope();
   this->PrintStmt(f->body);
