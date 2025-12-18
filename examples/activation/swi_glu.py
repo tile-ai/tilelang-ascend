@@ -36,7 +36,7 @@ def swi_glu(M, N, block_M, block_N, dtype="float"):
             with T.Scope("V"):
                 T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a0_ub)
                 T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N + N // 2], a1_ub)
-                T.tile.swi_glu(b_ub, a0_ub, a1_ub, 1.0)
+                T.tile.swi_glu(b_ub, a0_ub, a1_ub, 1.0, block_M // VEC_NUM * block_N)
                 T.copy(b_ub, B[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
 
     return main
