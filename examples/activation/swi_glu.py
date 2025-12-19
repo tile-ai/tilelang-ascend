@@ -35,11 +35,11 @@ def swi_glu(M, N, block_M, block_N, dtype="float"):
             zero_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
             temp_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
 
-            ta0_ub = T.alloc_ub((block_M // VEC_NUM, 35), dtype)    
-            ta1_ub = T.alloc_ub((block_M // VEC_NUM, 35), dtype)
-            tb_ub = T.alloc_ub((block_M // VEC_NUM, 35), dtype)
-            tzero_ub = T.alloc_ub((block_M // VEC_NUM, 35), dtype)
-            ttemp_ub = T.alloc_ub((block_M // VEC_NUM, 35), dtype)
+            ta0_ub = T.alloc_ub((block_M // VEC_NUM, 37), dtype)    
+            ta1_ub = T.alloc_ub((block_M // VEC_NUM, 37), dtype)
+            tb_ub = T.alloc_ub((block_M // VEC_NUM, 37), dtype)
+            tzero_ub = T.alloc_ub((block_M // VEC_NUM, 37), dtype)
+            ttemp_ub = T.alloc_ub((block_M // VEC_NUM, 37), dtype)
 
             with T.Scope("V"):
                 if by == 1:
