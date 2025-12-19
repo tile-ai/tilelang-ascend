@@ -374,10 +374,6 @@ def block_reduce_sum(dst: Buffer, src: Buffer, repeat: PrimExpr, mask: PrimExpr,
     return T.call_extern("handle", "AscendC::BlockReduceSum", dst.access_ptr("w"), src.access_ptr("r"), repeat, mask, dstPepStride, srcBlkStride, srcRepStride)
 
 
-def swi_glu(dst: Buffer, src0: Buffer, src1: Buffer, scalarValue: PrimExpr, dataSize: PrimExpr):
-    return T.call_extern("handle", f"AscendC::SwiGLU", dst.access_ptr("w"), src0.access_ptr("r"), src1.access_ptr("r"), scalarValue, dataSize)        
-
-
 def compare(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferLoad, PrimExpr], mode: str):
     assert mode in ["EQ", "NE", "GT", "GE", "LT", "LE"]
 

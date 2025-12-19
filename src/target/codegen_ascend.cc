@@ -63,7 +63,6 @@ std::string CodeGenTileLangAscend::Finish() {
   decl_stream << "#include \"tl_templates/ascend/common.h\"\n";
   decl_stream << "#include \"acl/acl.h\"\n";
   decl_stream << "#include <runtime/rt_ffts.h>\n";
-  decl_stream << "#include \"kernel_operator.h\"\n";
   decl_stream << "using namespace Catlass;\n";
   decl_stream << "using uint = unsigned int;\n";
   decl_stream << "using uchar = unsigned char;\n";
@@ -967,25 +966,6 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
       }
       this->PrintIndent();
       this->stream << op_name << "(";
-      for (int i = 0; i < var_names.size(); i++) {
-        this->stream << var_names[i];
-        if (i != var_names.size() - 1) {
-          this->stream << ", ";
-        }
-      }
-      for (int i = exprStartIndex; i < op->args.size(); i++) {
-        this->stream << ", " << PrintExpr(op->args[i]);
-      }
-      this->stream << ");\n";
-    } else if (op_name == "AscendC::SwiGLU") {
-      std::vector<std::string> var_names;
-      int exprStartIndex = 4;
-      for (int i = 1; i < exprStartIndex; i++) {
-        auto var_name = print_buffer_offset(op->args[i].as<CallNode>());
-        var_names.push_back(var_name);
-      }
-      this->PrintIndent();
-      this->stream << op_name << "<float>" << "(";
       for (int i = 0; i < var_names.size(); i++) {
         this->stream << var_names[i];
         if (i != var_names.size() - 1) {
