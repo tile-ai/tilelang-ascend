@@ -32,13 +32,25 @@ def swi_glu(M, N, block_M, block_N, dtype="float"):
             a0_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
             a1_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
             b_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
+            zero_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
+            temp_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
 
             with T.Scope("V"):
                 T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a0_ub)
                 T.barrier_all()
                 T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N + N // 2], a1_ub)
                 T.barrier_all()
-                T.tile.swi_glu(b_ub, a0_ub, a1_ub, T.float32(1.0), block_M // VEC_NUM * block_N)
+                T.tile.fill(zero_ub, 0.0)
+                T.barrier_all()
+                T.tile.sub(temp_ub, zero_ub, a0_ub)
+                T.barrier_all()
+                T.tile.exp(temp_ub, temp_ub)
+                T.barrier_all()
+                T.tile.add(temp_ub, temp_ub, 1.0)
+                T.barrier_all()
+                T.tile.div(temp_ub, a0_ub, temp_ub)
+                T.barrier_all()
+                T.tile.mul(b_ub, temp_ub, a1_ub)
                 T.barrier_all()
                 T.copy(b_ub, B[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
 
@@ -60,8 +72,8 @@ for M, N, block_M, block_N in test_configs:
     b = func(a)
     print(func.get_kernel_source())
     a1, a2 = torch.split(a, N // 2, dim=1)
-    gelu = nn.SiLU()
-    ref_b = gelu(a1) * a2
+    silu = nn.SiLU()
+    ref_b = silu(a1) * a2
     torch.testing.assert_close(b.cpu(), ref_b.cpu(), rtol=1e-2, atol=1e-2)
     print("Test passed!")
 
