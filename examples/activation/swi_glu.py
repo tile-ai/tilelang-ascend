@@ -29,18 +29,14 @@ def swi_glu(M, N, block_M, block_N, dtype="float"):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
             by = cid % n_num
+            ub_length = block_N
             if by == 1:
-                a0_ub = T.alloc_ub((block_M // VEC_NUM, 36), dtype)
-                a1_ub = T.alloc_ub((block_M // VEC_NUM, 36), dtype)
-                b_ub = T.alloc_ub((block_M // VEC_NUM, 36), dtype)
-                zero_ub = T.alloc_ub((block_M // VEC_NUM, 36), dtype)
-                temp_ub = T.alloc_ub((block_M // VEC_NUM, 36), dtype)
-            else:
-                a0_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
-                a1_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
-                b_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
-                zero_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
-                temp_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
+                ub_length = 36
+            a0_ub = T.alloc_ub((block_M // VEC_NUM, ub_length), dtype)    
+            a1_ub = T.alloc_ub((block_M // VEC_NUM, ub_length), dtype)
+            b_ub = T.alloc_ub((block_M // VEC_NUM, ub_length), dtype)
+            zero_ub = T.alloc_ub((block_M // VEC_NUM, ub_length), dtype)
+            temp_ub = T.alloc_ub((block_M // VEC_NUM, ub_length), dtype)
 
             with T.Scope("V"):
                 T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a0_ub)
