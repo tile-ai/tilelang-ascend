@@ -35,49 +35,24 @@ def swi_glu(M, N, block_M, block_N, dtype="float"):
             zero_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
             temp_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
 
-            ta0_ub = T.alloc_ub((block_M // VEC_NUM, 37), dtype)    
-            ta1_ub = T.alloc_ub((block_M // VEC_NUM, 37), dtype)
-            tb_ub = T.alloc_ub((block_M // VEC_NUM, 37), dtype)
-            tzero_ub = T.alloc_ub((block_M // VEC_NUM, 37), dtype)
-            ttemp_ub = T.alloc_ub((block_M // VEC_NUM, 37), dtype)
-
             with T.Scope("V"):
-                if by == 1:
-                    T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], ta0_ub)
-                    T.barrier_all()
-                    T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N + N // 2], ta1_ub)
-                    T.barrier_all()
-                    T.tile.fill(tzero_ub, 0.0)
-                    T.barrier_all()
-                    T.tile.sub(ttemp_ub, tzero_ub, ta0_ub)
-                    T.barrier_all()
-                    T.tile.exp(ttemp_ub, ttemp_ub)
-                    T.barrier_all()
-                    T.tile.add(ttemp_ub, ttemp_ub, 1.0)
-                    T.barrier_all()
-                    T.tile.div(ttemp_ub, ta0_ub, ttemp_ub)
-                    T.barrier_all()
-                    T.tile.mul(tb_ub, ttemp_ub, ta1_ub)
-                    T.barrier_all()
-                    T.copy(tb_ub, B[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
-                else:
-                    T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a0_ub)
-                    T.barrier_all()
-                    T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N + N // 2], a1_ub)
-                    T.barrier_all()
-                    T.tile.fill(zero_ub, 0.0)
-                    T.barrier_all()
-                    T.tile.sub(temp_ub, zero_ub, a0_ub)
-                    T.barrier_all()
-                    T.tile.exp(temp_ub, temp_ub)
-                    T.barrier_all()
-                    T.tile.add(temp_ub, temp_ub, 1.0)
-                    T.barrier_all()
-                    T.tile.div(temp_ub, a0_ub, temp_ub)
-                    T.barrier_all()
-                    T.tile.mul(b_ub, temp_ub, a1_ub)
-                    T.barrier_all()
-                    T.copy(b_ub, B[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
+                T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a0_ub)
+                T.barrier_all()
+                T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N + N // 2], a1_ub)
+                T.barrier_all()
+                T.tile.fill(zero_ub, 0.0)
+                T.barrier_all()
+                T.tile.sub(temp_ub, zero_ub, a0_ub)
+                T.barrier_all()
+                T.tile.exp(temp_ub, temp_ub)
+                T.barrier_all()
+                T.tile.add(temp_ub, temp_ub, 1.0)
+                T.barrier_all()
+                T.tile.div(temp_ub, a0_ub, temp_ub)
+                T.barrier_all()
+                T.tile.mul(b_ub, temp_ub, a1_ub)
+                T.barrier_all()
+                T.copy(b_ub, B[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
 
     return main
 
@@ -85,8 +60,7 @@ def swi_glu(M, N, block_M, block_N, dtype="float"):
 torch.manual_seed(0)
 # Tests
 test_configs = [
-    # (256, 256, 64, 64),
-    (64, 200, 64, 64),
+    (256, 256, 64, 64),    
 ]
 
 for M, N, block_M, block_N in test_configs:
