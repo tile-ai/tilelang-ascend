@@ -12,11 +12,21 @@ tilelang.cache.clear_cache()
 # }
 
 @tilelang.jit(out_idx=[1])
-def swi_glu(M, N, block_M, block_N, dtype="float"):
-    m_num = T.ceildiv(M, block_M)
+def swi_glu(M, N, block_M, block_N, split_dim, dtype="float"):
+    m_div = 1
+    n_div = 2
+    m_offset = 0
+    n_offset = N // 2
+    if split_dim == split_dim == 0 or split_dim == -2:
+        m_div = 2
+        n_div = 1
+        m_offset = M // 2
+        n_offset = 0
+
+    m_num = T.ceildiv(M // m_div, block_M)
     # The `swi_glu` operator splits the input tensor into two tensors, x1 and x2, based on the last dimension. 
     # It performs a GELU operation on x1 and multiplies the result by x2. Therefore, the kernel splitting is only relative to the dimension of x1.
-    n_num = T.ceildiv(N // 2, block_N)
+    n_num = T.ceildiv(N // n_div, block_N)
     
     VEC_NUM = 2
 
@@ -24,7 +34,7 @@ def swi_glu(M, N, block_M, block_N, dtype="float"):
     @T.prim_func
     def main(
             A: T.Tensor((M, N), dtype),
-            B: T.Tensor((M, N // 2), dtype)
+            B: T.Tensor((M // m_div, N // n_div), dtype)
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
@@ -38,7 +48,7 @@ def swi_glu(M, N, block_M, block_N, dtype="float"):
             with T.Scope("V"):
                 T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a0_ub)
                 T.barrier_all()
-                T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N + N // 2], a1_ub)
+                T.copy(A[bx * block_M + vid * block_M // VEC_NUM + m_offset, by * block_N + n_offset], a1_ub)
                 T.barrier_all()
                 T.tile.fill(zero_ub, 0.0)
                 T.barrier_all()
@@ -60,17 +70,21 @@ def swi_glu(M, N, block_M, block_N, dtype="float"):
 torch.manual_seed(0)
 # Tests
 test_configs = [
-    (256, 256, 64, 64),    
+    (256, 256, 64, 64, 0),
+    (256, 256, 64, 64, 1),    
 ]
 
-for M, N, block_M, block_N in test_configs:
+for M, N, block_M, block_N, split_dim in test_configs:
     print(f"Testing swi_gul with M={M}, N={N}, block_M={block_M}, block_N={block_N}")
-    func = swi_glu(M, N, block_M, block_N)
+    func = swi_glu(M, N, block_M, block_N, split_dim)
     print("Init successful!")
     a = torch.randn(M, N, dtype=torch.float).npu()
     b = func(a)
     print(func.get_kernel_source())
-    a1, a2 = torch.split(a, N // 2, dim=1)
+    split_size = N // 2
+    if split_dim == 0 or split_dim == -2:
+        split_size = M // 2
+    a1, a2 = torch.split(a, split_size, dim=split_dim)
     silu = nn.SiLU()
     ref_b = silu(a1) * a2
     torch.testing.assert_close(b.cpu(), ref_b.cpu(), rtol=1e-2, atol=1e-2)
