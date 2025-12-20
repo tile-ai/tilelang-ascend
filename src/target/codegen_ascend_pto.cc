@@ -449,7 +449,7 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) 
         {"copy_l1_to_l0b", "TEXTRACT"},
         {"copy_gm_to_ub", "TLOAD"},
         {"copy_ub_to_gm", "TSTORE"},
-        {"copy_ub_to_ub", "TMOV"}
+        {"copy_ub_to_ub", "TCVT"}
       };
 
       bool found = false;
@@ -587,7 +587,7 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) 
               row_index = op->args[4];
               col_index = op->args[3];
           } else {
-              api_name = "TMOV";
+              api_name = "TCVT";
           }
         }
         this->PrintIndent();
