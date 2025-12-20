@@ -236,7 +236,7 @@ CATLASS_DEVICE void shmem_put(const GlobalTensor<T> &output, const GlobalTensor<
     AscendC::TBuf<AscendC::TPosition::VECIN> ub_buf;                                                            
     pipe.InitBuffer(ub_buf, ub_size);                                                                           
     auto ub_tensor = ub_buf.Get<uint8_t>();                                                                     
-    aclshmem_aicore_init(reinterpret_cast<__ubuf__ uint8_t *>(ub_tensor.GetPhyAddr()), ub_size, 0x5);           
+    aclshmemx_aicore_init(reinterpret_cast<__ubuf__ uint8_t *>(ub_tensor.GetPhyAddr()), ub_size, 0x5);           
     aclshmem_putmem(const_cast<__gm__ T*>(output.GetPhyAddr()),                                               
         reinterpret_cast<__gm__ const T*>(input.GetPhyAddr()), nelems * sizeof(T), newPe);  
 }
@@ -250,7 +250,7 @@ CATLASS_DEVICE void shmem_put_nbi(const GlobalTensor<T> &output, const GlobalTen
     AscendC::TBuf<AscendC::TPosition::VECIN> ub_buf;                                                            
     pipe.InitBuffer(ub_buf, ub_size);                                                                           
     auto ub_tensor = ub_buf.Get<uint8_t>();                                                                     
-    aclshmem_aicore_init(reinterpret_cast<__ubuf__ uint8_t *>(ub_tensor.GetPhyAddr()), ub_size, 0x5);           
+    aclshmemx_aicore_init(reinterpret_cast<__ubuf__ uint8_t *>(ub_tensor.GetPhyAddr()), ub_size, 0x5);           
     aclshmem_putmem_nbi(const_cast<__gm__ T*>(output.GetPhyAddr()),                                           
         reinterpret_cast<__gm__ const T*>(input.GetPhyAddr()), nelems * sizeof(T), newPe);                                                                                
 }
@@ -272,7 +272,7 @@ CATLASS_DEVICE void shmem_get(const GlobalTensor<T> &output, const GlobalTensor<
     AscendC::TBuf<AscendC::TPosition::VECIN> ub_buf;
     pipe.InitBuffer(ub_buf, ub_size);
     auto ub_tensor = ub_buf.Get<uint8_t>();
-    aclshmem_aicore_init(reinterpret_cast<__ubuf__ uint8_t *>(ub_tensor.GetPhyAddr()), ub_size, 0x5);
+    aclshmemx_aicore_init(reinterpret_cast<__ubuf__ uint8_t *>(ub_tensor.GetPhyAddr()), ub_size, 0x5);
     __gm__ T* outputPtr = const_cast<__gm__ T*>(output.GetPhyAddr());
     aclshmem_getmem(outputPtr,
         reinterpret_cast<__gm__ const T*>(input.GetPhyAddr()), nelems * sizeof(T), newPe);
@@ -287,7 +287,7 @@ CATLASS_DEVICE void shmem_get_nbi(const GlobalTensor<T> &output, const GlobalTen
     AscendC::TBuf<AscendC::TPosition::VECIN> ub_buf;
     pipe.InitBuffer(ub_buf, ub_size);
     auto ub_tensor = ub_buf.Get<uint8_t>();
-    aclshmem_aicore_init(reinterpret_cast<__ubuf__ uint8_t *>(ub_tensor.GetPhyAddr()), ub_size, 0x5);
+    aclshmemx_aicore_init(reinterpret_cast<__ubuf__ uint8_t *>(ub_tensor.GetPhyAddr()), ub_size, 0x5);
     __gm__ T* outputPtr = const_cast<__gm__ T*>(output.GetPhyAddr());
     aclshmem_getmem_nbi(outputPtr, 
         reinterpret_cast<__gm__ const T*>(input.GetPhyAddr()), nelems * sizeof(T), newPe);

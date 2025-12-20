@@ -55,7 +55,7 @@ def worker(rank, barrier, rank_table_path):
     
     # 初始化aclshmem
     print(f"Rank {rank}: Initializing aclshmem...")
-    result = aclshmem_module.aclshmem_init_attr(1, attr)  # flags=1
+    result = aclshmem_module.aclshmemx_init_attr(1, attr)  # flags=1
     
     if result == 0:
         print(f"Rank {rank}: Initialization successful")
