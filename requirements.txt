@@ -9,3 +9,4 @@ psutil
 torch
 pytest
 pytest-xdist
+pybind11
