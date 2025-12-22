@@ -77,6 +77,7 @@ def LowerAndLegalize(mod: IRModule, target: Target) -> IRModule:
 def OptimizeForTarget(mod: IRModule, target: Target) -> IRModule:
     pass_ctx = tilelang.transform.get_pass_context()
     mod = tir.transform.PlanAndUpdateBufferAllocationLocation()(mod)
+    mod = tilelang.transform.CrossCorePipeline()(mod)
     mod = tilelang.transform.CombineCV()(mod)
     mod = tilelang.transform.PipelinePlanning()(mod)
     mod = tilelang.transform.InjectSoftwarePipeline()(mod)
