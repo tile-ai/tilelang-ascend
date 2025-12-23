@@ -61,6 +61,25 @@ for (i, j) in T.Parallel(block_M // VEC_NUM, block_N):
 
 Each iteration of `(i, j)` executes independently, representing a parallelizable region.
 
+### 2.2 Complex Expression Cases
+
+When dealing with complex expressions like:
+
+```python
+for (i, j) in T.Parallel(block_M // VEC_NUM, block_N):
+    c_ub[i, j] = a_ub[i, j] * b_ub[i, j] + a_ub[i, j] / b_ub[i, j]
+```
+
+`T.Parallel` will allocate temporary buffer to decompose it into simpler expressions like:
+
+```python
+for (i, j) in T.Parallel(block_M // VEC_NUM, block_N):
+    c_tmp_0[i, j] = a_ub[i, j] * b_ub[i, j]
+    c_tmp_1[i, j] = a_ub[i, j] / b_ub[i, j]
+    c_ub[i, j] = c_tmp_0[i, j] + c_tmp_1[i, j]
+```
+
+Currently, temporary buffer will be the same size of tiles. So we strongly recommend to turn automatic buffer reuse on in order to avoid space waste.
 
 ## 3. Supported Operations
 
