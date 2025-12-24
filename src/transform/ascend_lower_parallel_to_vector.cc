@@ -339,12 +339,11 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
         // Must be compatible buffer store
         VectorPlan curr_plan;
         if (!DetectVectorPlan(st, element_count, &curr_plan) ||
-            curr_plan.inner_vec_len != plan.inner_vec_len ||
             curr_plan.outer_extent != plan.outer_extent) {
               return Stmt();
         }
 
-        auto body_opt = VectorizeStoreAsRowBody(st, plan.inner_vec_len, parallel_vars);
+        auto body_opt = VectorizeStoreAsRowBody(st, curr_plan.inner_vec_len, parallel_vars);
         if (!body_opt.defined()) return Stmt();
         bodies.push_back(body_opt.value());
       } else {
