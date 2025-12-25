@@ -17,7 +17,7 @@ import torch
 def simple_quant_matmul(
     M:int, N:int, K:int, scale_size:Literal["1", "N"],
     block_M:int, block_N:int, block_K:int, 
-    in_dtype: Literal["int8"] = "int8", out_dtype: Literal["float16"] = "float16", 
+    in_dtype: Literal["int8"] = "int8", out_dtype: Literal["float16", "bfloat16"] = "float16", 
     accum_dtype: Literal["int32"] = "int32", scale_dtype: Literal["float32"] = "float32"
 ):
     """Simple QuantMatmul implementation with per-tensor / per-channel quantization scale"""
@@ -96,7 +96,7 @@ def ref_program(A, B, scale, out_dtype, accum_dtype):
 def check_case(
     M:int, N:int, K:int, scale_size:Literal[1, "N"],
     block_M:int, block_N:int, block_K:int, 
-    in_dtype: Literal["int8"] = "int8", out_dtype: Literal["float16"] = "float16", 
+    in_dtype: Literal["int8"] = "int8", out_dtype: Literal["float16", "bfloat16"] = "float16", 
     accum_dtype: Literal["int32"] = "int32", scale_dtype: Literal["float32"] = "float32"
 ):
     torch_dtype_map = {
@@ -128,7 +128,7 @@ def main(custom_args=None):
     tl.cache.clear_cache()
     torch.manual_seed(0)
 
-    check_case(M, N, K, scale_size="1", block_M=128, block_N=256, block_K=64)
+    check_case(M, N, K, scale_size="1", block_M=128, block_N=256, block_K=64, out_dtype="bfloat16")
     check_case(M, N, K, scale_size="N", block_M=128, block_N=256, block_K=64)
 
     print("QuantMatmul example passed!")
