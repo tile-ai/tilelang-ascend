@@ -38,6 +38,8 @@ struct CrossCoreSyncPoint {
   int scope; // 0: cube, 1: vec
   int order; // excute order
   int sync_flag_id; // cross core sync flag id
+  int sync_loop_depth; // record the sync point loop depth
+  bool is_same_depth; // mark the sync point (set/wait) is same loop depth
   bool is_write;
   const std::string workspace_name;
   const std::string pipe;
@@ -50,6 +52,8 @@ struct CrossCoreSyncPoint {
     oss << "scope=" << scope;
     oss << ", order=" << order;
     oss << ", sync_flag_id=" << sync_flag_id;
+    oss << ", sync_loop_depth=" << sync_loop_depth;
+    oss << ", is_same_depth=" << is_same_depth;
     oss << ", is_write=" << is_write;
     oss << ", workspace_name=" << workspace_name;
     oss << ", pipe=" << pipe;
@@ -88,6 +92,8 @@ public:
             is_aiv_ ? 1 : 0,
             order_,
             sync_flag_id_++,
+            current_loops_.size(), // record current loop depth
+            false,  // default: false, will be updated later
             is_write,
             workspace_name_opt.value(),
             pipe,
@@ -210,7 +216,7 @@ public:
         }
 
         // ForNode target, skip here, handled in ForNode visitor
-        if (sp.target_for_node) {
+        if (sp.target_for_node && sp.is_write && !sp.is_same_depth) {
           continue;
         }
 
@@ -226,6 +232,11 @@ public:
     Stmt new_stmt = For(op->loop_var, op->min, op->extent, op->kind, new_body, op->thread_binding, op->annotations);
 
     for (const auto& sp : sync_points_) {
+      // Ignore same depth
+      if (sp.is_same_depth) {
+        continue;
+      }
+
       // Check write
       if (!sp.is_write) {
         continue;
@@ -318,6 +329,20 @@ public:
               LOG(FATAL) << "Inconsistent workspace names at sync point " << i << ": "
                           << "cube workspace=" << cube_sp.workspace_name << ", "
                           << "vec workspace=" << vec_sp.workspace_name;
+          }
+      }
+
+      // Update the same depth marker
+      for (auto& cube_sp : cube_sync_points) {
+          for (auto& vec_sp : vec_sync_points) {
+              if (cube_sp.sync_flag_id != vec_sp.sync_flag_id) {
+                  continue;
+              }
+              if (cube_sp.sync_loop_depth == vec_sp.sync_loop_depth) {
+                  cube_sp.is_same_depth = true;
+                  vec_sp.is_same_depth = true;
+                  break;
+              }
           }
       }
 
