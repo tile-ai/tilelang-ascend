@@ -67,7 +67,8 @@ def vec_add_pipeline(M, N, block_M, block_N, sub_M, dtype="float"):
                         T.set_flag("mte2", "v", nxt)
 
                     T.wait_flag("mte2", "v", cur)
-                    T.tile.add(c_ub[cur, :, :], a_ub[cur, :, :], b_ub[cur, :, :])
+                    for (i, j) in T.Parallel(sub_M // VEC_NUM, block_N):
+                        c_ub[cur, i, j] = a_ub[cur, i, j] + b_ub[cur, i, j]
                     T.set_flag("v", "mte3", cur)
                     T.wait_flag("v", "mte3", cur)
 

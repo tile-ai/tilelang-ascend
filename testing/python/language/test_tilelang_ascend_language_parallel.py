@@ -609,7 +609,7 @@ class TestTileLangKernels:
 
     @staticmethod
     @tilelang.jit(out_idx=[-1], pass_configs=pass_configs)
-    def buffer_scalar_mul_kernel(M, N, block_M, block_N, dtype="float"):
+    def column_parallel_buffer_scalar_mul_kernel(M, N, block_M, block_N, dtype="float"):
         "Test buffer scaler mul kernel"
         m_num = M // block_M
         n_num = N // block_N
@@ -629,20 +629,18 @@ class TestTileLangKernels:
                 with T.Scope("V"):
                     T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a_ub)
                     T.copy(B[bx * block_M + vid * block_M // VEC_NUM], b_ub)
-
                     
                     for (i, j) in T.Parallel(block_M // VEC_NUM, block_N):
                         c_ub[i, j] = a_ub[i, j] * b_ub[i]
-                    
 
                     T.copy(c_ub, C[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
 
         return main
 
-    def test_buffer_scalar_mul(self, clear_cache, setup_random_seed):
+    def test_column_parallel_buffer_scalar_mul(self, clear_cache, setup_random_seed):
 
         def kernel_func(M, N, block_M, block_N):
-            return self.buffer_scalar_mul_kernel(M, N, block_M, block_N)
+            return self.column_parallel_buffer_scalar_mul_kernel(M, N, block_M, block_N)
 
         def input_gen(M, N):
             a = torch.randn(M, N).npu()
@@ -651,6 +649,56 @@ class TestTileLangKernels:
 
         def reference_func(a, b):
             return a * b.unsqueeze(1)
+
+        KernelTestHelper.run_binary_kernel_test(
+            kernel_func=kernel_func,
+            input_generator=input_gen,
+            reference_func=reference_func
+        )
+
+    @staticmethod
+    @tilelang.jit(out_idx=[-1], pass_configs=pass_configs)
+    def row_parallel_buffer_scalar_mul_kernel(M, N, block_M, block_N, dtype="float"):
+        "Test buffer scaler mul kernel"
+        m_num = M // block_M
+        n_num = N // block_N
+        VEC_NUM = 2
+
+        @T.prim_func
+        def main(A: T.Tensor((M, N), dtype),
+                 B: T.Tensor((N,), dtype),
+                 C: T.Tensor((M, N), dtype)):
+            with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
+                bx = cid // n_num
+                by = cid % n_num
+
+                a_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
+                b_ub = T.alloc_ub((block_N,), dtype)
+                c_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
+                with T.Scope("V"):
+                    T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a_ub)
+                    T.copy(B[by * block_N], b_ub)
+
+                    for (i, j) in T.Parallel(block_M // VEC_NUM, block_N):
+                        c_ub[i, j] = a_ub[i, j] * b_ub[j]
+
+
+                    T.copy(c_ub, C[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
+
+        return main
+
+    def test_row_parallel_buffer_scalar_mul(self, clear_cache, setup_random_seed):
+
+        def kernel_func(M, N, block_M, block_N):
+            return self.row_parallel_buffer_scalar_mul_kernel(M, N, block_M, block_N)
+
+        def input_gen(M, N):
+            a = torch.randn(M, N).npu()
+            b = torch.randn(N).npu()
+            return a, b
+
+        def reference_func(a, b):
+            return a * b.unsqueeze(0)
 
         KernelTestHelper.run_binary_kernel_test(
             kernel_func=kernel_func,
