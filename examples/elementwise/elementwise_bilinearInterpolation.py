@@ -58,7 +58,7 @@ def bilinear_interpolation(mask, h_repeat, repeat_mode,
                 T.copy(src1[0, 0], src1_ub)
 
                 T.barrier_all()
-                T.bilinear_interpolation(dst_ub, src0_ub, src0_offset_ub, src1_ub, mask, h_repeat,
+                T.tile.bilinear_interpolation(dst_ub, src0_ub, src0_offset_ub, src1_ub, mask, h_repeat,
                                          repeat_mode, dst_blk_stride, v_r_offset, v_repeat, shared_tmp_buffer_ub)
                 T.barrier_all()
 

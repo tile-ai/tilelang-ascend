@@ -44,7 +44,7 @@ def wholereducesum(M, N, block_M, block_N, mask, repeatTimes, dstRepStride, srcB
                 T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a_ub)
 
                 T.barrier_all()
-                T.wholereducesum(b_ub, a_ub, mask, repeatTimes, dstRepStride, srcBlkStride, srcRepStride)
+                T.tile.wholereducesum(b_ub, a_ub, mask, repeatTimes, dstRepStride, srcBlkStride, srcRepStride)
                 T.barrier_all()
 
                 T.copy(b_ub, B[bx * block_M + vid * block_M // VEC_NUM, by * block_N // mask])
