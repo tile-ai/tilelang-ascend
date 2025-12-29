@@ -272,6 +272,13 @@ gemm_v0(LocalTensor<T1> const &A, LocalTensor<T1> const &B,
   uint32_t kL0split = (K + kL0Size - 1) / kL0Size;
   uint32_t kL0Tail = K - (kL0split - 1) * kL0Size;
   bool initflag = false;
+
+  // Defensive Programming: Ensure all previous operations are complete
+  SetFlag<HardEvent::MTE2_MTE1>(L0AB_EVENT);
+  WaitFlag<HardEvent::MTE2_MTE1>(L0AB_EVENT);
+  SetFlag<HardEvent::FIX_M>(L0AB_EVENT);
+  WaitFlag<HardEvent::FIX_M>(L0AB_EVENT);
+
   SetFlag<HardEvent::M_MTE1>(L0AB_EVENT);
   SetFlag<HardEvent::M_MTE1>(L0AB_EVENT + 1);
   for (uint32_t kL0Idx = 0; kL0Idx < kL0split; kL0Idx++) {
@@ -298,11 +305,16 @@ gemm_v0(LocalTensor<T1> const &A, LocalTensor<T1> const &B,
     WaitFlag<HardEvent::MTE1_M>(L0AB_EVENT + kL0Idx % 2);
     tl::ascend::mma<T1, T2, M, N>(
       l0a[(kL0Idx % 2) * (M * kL0Size)], l0b[(kL0Idx % 2) * (N * kL0Size)], C, initflag, kL0Size);
-    AscendC::PipeBarrier<PIPE_ALL>();
     SetFlag<HardEvent::M_MTE1>(L0AB_EVENT + kL0Idx % 2);
   }
   WaitFlag<HardEvent::M_MTE1>(L0AB_EVENT);
   WaitFlag<HardEvent::M_MTE1>(L0AB_EVENT + 1);
+  
+  // Defensive Programming: Reverse Sync
+  SetFlag<HardEvent::MTE1_MTE2>(L0AB_EVENT);
+  WaitFlag<HardEvent::MTE1_MTE2>(L0AB_EVENT);
+  SetFlag<HardEvent::M_FIX>(L0AB_EVENT);
+  WaitFlag<HardEvent::M_FIX>(L0AB_EVENT);
 }
 
 template <typename T>
@@ -426,24 +438,24 @@ gemm_v1(LocalTensor<T1> const &A, LocalTensor<T1> const &B,
   AscendC::PipeBarrier<PIPE_ALL>();
 
   if constexpr (!transpose_A) {
-    tl::ascend::copy_l1_to_l0a<half, layout::zN, L1_block_M, L1_block_K,
-                               BLOCK_M, BLOCK_K>(l0a, A);
+    tl::ascend::copy_l1_to_l0a<half, layout::zN, L1_block_M, L1_block_K>
+                               (l0a, A, BLOCK_M, BLOCK_K);
   } else {
-    tl::ascend::copy_l1_to_l0a<half, layout::nZ, L1_block_M, L1_block_K,
-                               BLOCK_M, BLOCK_K>(l0a, A);
+    tl::ascend::copy_l1_to_l0a<half, layout::nZ, L1_block_M, L1_block_K>
+                               (l0a, A, BLOCK_M, BLOCK_K);
   }
 
   if constexpr (!transpose_B) {
-    tl::ascend::copy_l1_to_l0b<half, layout::zN, L1_block_K, L1_block_N,
-                               BLOCK_K, BLOCK_N>(l0b, B);
+    tl::ascend::copy_l1_to_l0b<half, layout::zN, L1_block_K, L1_block_N>
+                               (l0b, B, BLOCK_K, BLOCK_N);
   } else {
-    tl::ascend::copy_l1_to_l0b<half, layout::nZ, L1_block_K, L1_block_N,
-                               BLOCK_K, BLOCK_N>(l0b, B);
+    tl::ascend::copy_l1_to_l0b<half, layout::nZ, L1_block_K, L1_block_N>
+                               (l0b, B, BLOCK_K, BLOCK_N);
   }
 
   AscendC::PipeBarrier<PIPE_ALL>();
 tl:
-  ascend::mma<T1, T2, BLOCK_M, BLOCK_N, BLOCK_K>(l0a, l0b, C, clear);
+  ascend::mma<T1, T2, BLOCK_M, BLOCK_N>(l0a, l0b, C, clear, BLOCK_K);
   AscendC::PipeBarrier<PIPE_ALL>();
 }
 
