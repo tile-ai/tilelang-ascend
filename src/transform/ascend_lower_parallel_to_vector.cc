@@ -20,12 +20,113 @@
 #include "../op/builtin.h"
 #include "./common/collector.h"
 
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
+#include <functional>
 
 namespace tvm {
 namespace tl {
 
 using namespace tir;
+
+namespace {
+
+
+// TIR unary operation to AscendC operation mapping
+const std::unordered_map<std::string, std::string> kTIRUnaryOpMap = {
+  {"tir.exp", "AscendC::Exp"},
+  {"tir.log", "AscendC::Ln"},
+  {"tir.sqrt", "AscendC::Sqrt"},
+  {"tir.rsqrt", "AscendC::Rsqrt"},
+  {"tir.fabs", "AscendC::Abs"}
+};
+
+// Binary operation matcher and extractor
+using BinaryMatcher = std::function<bool(const PrimExpr&)>;
+using BinaryExtractor = std::function<void(const PrimExpr&, PrimExpr*, PrimExpr*)>;
+
+struct BinaryOpInfo {
+  std::string op_name;
+  BinaryMatcher matcher;
+  BinaryExtractor extractor;
+};
+
+// Create binary operation table
+inline std::vector<BinaryOpInfo> CreateBinaryOpTable() {
+  std::vector<BinaryOpInfo> table;
+  
+  // Template for arithmetic operations
+  auto add_arith_op = [&table](const char* name, auto matcher_fn, auto cast_fn) {
+    table.push_back({
+      name,
+      [matcher_fn](const PrimExpr& e) { return matcher_fn(e) != nullptr; },
+      [cast_fn](const PrimExpr& e, PrimExpr* a, PrimExpr* b) {
+        auto node = cast_fn(e);
+        *a = node->a;
+        *b = node->b;
+      }
+    });
+  };
+  
+  add_arith_op("AscendC::Add", 
+    [](const PrimExpr& e) { return e.as<AddNode>(); },
+    [](const PrimExpr& e) { return e.as<AddNode>(); });
+  
+  add_arith_op("AscendC::Sub",
+    [](const PrimExpr& e) { return e.as<SubNode>(); },
+    [](const PrimExpr& e) { return e.as<SubNode>(); });
+  
+  add_arith_op("AscendC::Mul",
+    [](const PrimExpr& e) { return e.as<MulNode>(); },
+    [](const PrimExpr& e) { return e.as<MulNode>(); });
+  
+  add_arith_op("AscendC::Div",
+    [](const PrimExpr& e) { return e.as<DivNode>(); },
+    [](const PrimExpr& e) { return e.as<DivNode>(); });
+  
+  add_arith_op("AscendC::Min",
+    [](const PrimExpr& e) { return e.as<MinNode>(); },
+    [](const PrimExpr& e) { return e.as<MinNode>(); });
+  
+  add_arith_op("AscendC::Max",
+    [](const PrimExpr& e) { return e.as<MaxNode>(); },
+    [](const PrimExpr& e) { return e.as<MaxNode>(); });
+  
+  // Template for builtin call operations
+  auto add_builtin_op = [&table](const char* name,auto builtin_fn) {
+    table.push_back({
+      name,
+      [builtin_fn](const PrimExpr& e) {
+        auto call = e.as<CallNode>();
+        return call && call->op.same_as(builtin_fn());
+      },
+      [](const PrimExpr& e, PrimExpr* a, PrimExpr* b) {
+        auto call = e.as<CallNode>();
+        if (call && call->args.size() >= 2) {
+          *a = call->args[0];
+          *b = call->args[1];
+        }
+      }
+    });
+  };
+  
+  add_builtin_op("AscendC::And", builtin::bitwise_and);
+  add_builtin_op("AscendC::Or", builtin::bitwise_or);
+  add_builtin_op("AscendC::ShiftLeft", builtin::shift_left);
+  add_builtin_op("AscendC::ShiftRight", builtin::shift_right);
+  
+  return table;
+}
+
+static const std::vector<BinaryOpInfo> kBinaryOpTable = CreateBinaryOpTable();
+
+const std::unordered_set<std::string> kNoSuffixOps = {
+  "AscendC::ShiftLeft",
+  "AscendC::ShiftRight"
+};
+
+}  // namespace
 
 class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
  public:
@@ -114,8 +215,6 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
     ) -> Stmt {
       int64_t element_count = 0;
       if (!TryGetElementCount(total_elements, &element_count)) return Stmt();
-      // vector_dim_var_ is a single, fixed vector lane variable.
-      // No nested vectorization exists in this pass.
       const VarNode* old_vector = vector_dim_var_;
       const VarNode* old_outer = outer_dim_var_;
       vector_dim_var_ = vector_dim;
@@ -275,7 +374,7 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
       if (idx_var == nullptr) return false;
       if (idx_var != vector_dim_var_) return false;
       if (element_count <= 0) return false;
-    
+  
       plan->inner_vec_len = element_count;
       plan->outer_extent = 1;
       plan->outer_index_var = nullptr;
@@ -301,7 +400,6 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
       plan->inner_vec_len = inner_vec_len;
       plan->outer_extent = element_count / inner_vec_len;
       plan->outer_index_var = outer_var;
-    
 
       plan->is_2d_vectorizable = (outer_dim_var_ != nullptr && outer_var == outer_dim_var_);
       return true;
@@ -339,7 +437,7 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
     class BufferLoadCollector : public StmtExprVisitor {
     public:
       std::vector<const BufferLoadNode*> loads;
-    
+  
       void VisitExpr_(const BufferLoadNode* op) override {
         loads.push_back(op);
         StmtExprVisitor::VisitExpr_(op);
@@ -580,27 +678,14 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
         return false;
       }
 
-      std::string ascend_op;
-
-      if (op_name == "tir.exp") {
-        ascend_op = "AscendC::Exp";
-      } else if (op_name == "tir.log") {
-        ascend_op = "AscendC::Ln";
-      } else if (op_name == "tir.sqrt") {
-        ascend_op = "AscendC::Sqrt";
-      } else if (op_name == "tir.rsqrt") {
-        ascend_op = "AscendC::Rsqrt";
-      } else if (op_name == "tir.fabs") {
-        ascend_op = "AscendC::Abs";
+      auto it = kTIRUnaryOpMap.find(op_name);
+      if (it != kTIRUnaryOpMap.end()) {
+        if (op_type) *op_type = it->second;
+      } else if (call->op.same_as(builtin::bitwise_not())) {
+        if (op_type) *op_type = "AscendC::Not";
       } else {
-        if (call->op.same_as(builtin::bitwise_not())) {
-          ascend_op = "AscendC::Not";
-        } else {
-          return false;
-        }
+        return false;
       }
-
-      if (op_type) *op_type = ascend_op;
 
       if (call->args.size() >= 1) {
         if (auto load = call->args[0].as<BufferLoadNode>()) {
@@ -769,90 +854,21 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
 
   bool IsBinaryOp(const PrimExpr& expr, std::string* op_type,
                   Array<PrimExpr>* operands) {
-    if (auto node = expr.as<AddNode>()) {
-      if (op_type) *op_type = "AscendC::Add";
-      if (operands) {
-        operands->push_back(node->a);
-        operands->push_back(node->b);
-      }
-      return true;
-    }
-    if (auto node = expr.as<SubNode>()) {
-      if (op_type) *op_type = "AscendC::Sub";
-      if (operands) {
-        operands->push_back(node->a);
-        operands->push_back(node->b);
-      }
-      return true;
-    }
-    if (auto node = expr.as<MulNode>()) {
-      if (op_type) *op_type = "AscendC::Mul";
-      if (operands) {
-        operands->push_back(node->a);
-        operands->push_back(node->b);
-      }
-      return true;
-    }
-    if (auto node = expr.as<DivNode>()) {
-      if (op_type) *op_type = "AscendC::Div";
-      if (operands) {
-        operands->push_back(node->a);
-        operands->push_back(node->b);
-      }
-      return true;
-    }
-    if (auto node = expr.as<MinNode>()) {
-      if (op_type) *op_type = "AscendC::Min";
-      if (operands) {
-        operands->push_back(node->a);
-        operands->push_back(node->b);
-      }
-      return true;
-    }
-    if (auto node = expr.as<MaxNode>()) {
-      if (op_type) *op_type = "AscendC::Max";
-      if (operands) {
-        operands->push_back(node->a);
-        operands->push_back(node->b);
-      }
-      return true;
-    }
 
-    if (auto call = expr.as<CallNode>()) {
-      if (call->op.same_as(builtin::bitwise_and())) {
-        if (op_type) *op_type = "AscendC::And";
-        if (operands && call->args.size() == 2) {
-          operands->push_back(call->args[0]);
-          operands->push_back(call->args[1]);
+    for (const auto& op_info : kBinaryOpTable) {
+      if (op_info.matcher(expr)) {
+        if (op_type) {
+          *op_type = op_info.op_name;
         }
-        return true;
-      }
-      if (call->op.same_as(builtin::bitwise_or())) {
-        if (op_type) *op_type = "AscendC::Or";
-        if (operands && call->args.size() == 2) {
-          operands->push_back(call->args[0]);
-          operands->push_back(call->args[1]);
-        }
-        return true;
-      }
-      if (call->op.same_as(builtin::shift_left())) {
-        if (op_type) *op_type = "AscendC::ShiftLeft";
-        if (operands && call->args.size() == 2) {
-          operands->push_back(call->args[0]);
-          operands->push_back(call->args[1]);
-        }
-        return true;
-      }
-      if (call->op.same_as(builtin::shift_right())) {
-        if (op_type) *op_type = "AscendC::ShiftRight";
-        if (operands && call->args.size() == 2) {
-          operands->push_back(call->args[0]);
-          operands->push_back(call->args[1]);
+        if (operands) {
+          PrimExpr a, b;
+          op_info.extractor(expr, &a, &b);
+          operands->push_back(a);
+          operands->push_back(b);
         }
         return true;
       }
     }
-
     return false;
   }
 
@@ -916,12 +932,8 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
     DataType dtype = output_buffer->dtype;
     std::string dtype_str = DTypeToString(dtype);
 
-    static const std::unordered_set<std::string> no_suffix_ops = {
-        "AscendC::ShiftLeft",
-        "AscendC::ShiftRight"};
 
-    std::string scalar_op_type =
-        no_suffix_ops.count(op_type) > 0 ? op_type : op_type + "s";
+    std::string scalar_op_type = kNoSuffixOps.count(op_type) > 0 ? op_type : op_type + "s";
 
     Array<PrimExpr> call_args;
     call_args.push_back(StringImm(scalar_op_type));
@@ -949,12 +961,7 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
     DataType dtype = output_buffer->dtype;
     std::string dtype_str = DTypeToString(dtype);
 
-    static const std::unordered_set<std::string> no_suffix_ops = {
-        "AscendC::ShiftLeft",
-        "AscendC::ShiftRight"};
-
-    std::string scalar_op_type =
-        no_suffix_ops.count(op_type) > 0 ? op_type : op_type + "s";
+    std::string scalar_op_type = kNoSuffixOps.count(op_type) > 0 ? op_type : op_type + "s";
 
     int64_t scalar_extent = 1;
     if (scalar_buffer->shape.size() > 0) {
