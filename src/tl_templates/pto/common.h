@@ -11,14 +11,12 @@ using TileMatL1 = Tile<TileType::Mat, T, Rows, Cols,
                        SLayout::RowMajor,
                        512>;
 
-template <typename T, int Rows, int Cols,
-          int RowValid = Rows, int ColValid = Cols>
+template <typename T, int Rows, int Cols>
 using TileUbDataND = Tile<TileType::Vec, T, Rows, Cols,
                        BLayout::RowMajor,
                        -1, -1>;
 
-template <typename T, int Rows, int Cols,
-          int RowValid = Rows, int ColValid = Cols>
+template <typename T, int Rows, int Cols>
 using TileUbDataDN = Tile<TileType::Vec, T, Rows, Cols,
                        BLayout::ColMajor,
                        -1, -1>;

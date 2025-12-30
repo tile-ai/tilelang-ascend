@@ -89,6 +89,7 @@ private:
   std::vector<std::string> para_;
 
   std::string block_id_;
+  std::string vec_id_;
 
   Map<Var, PrimExpr> address_map_;
 

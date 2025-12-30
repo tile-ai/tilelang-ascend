@@ -383,24 +383,27 @@ void CodeGenTileLangAscendPto::VisitExpr_(const FloorModNode *op,
 
 void CodeGenTileLangAscendPto::VisitExpr_(const BufferLoadNode *op,
                                        std::ostream &os) {
-  std::string scope = GetPtrStorageScope(op->buffer->data);
-  std::cout << "check buf load:" << op->buffer->data.get()->name_hint << "\n";
-  if (scope == "wmma.matrix_a" || scope == "wmma.matrix_b" ||
-      scope == "wmma.accumulator" || scope == "shared.dyn" ||
-      scope == "shared") {
-    bool do_not_sup_get_from_tile = false;
-    ICHECK(do_not_sup_get_from_tile); // Currently not supported
-  } else {
-    for (size_t i = 0; i < this->para_.size(); i += 3) {
-      std::cout << "check gm var:" << this->para_[i]
-      << this->para_[i + 1] << this->para_[i + 2] << "\n";
-      if (this->para_[i + 1] == op->buffer->data.get()->name_hint) {
-        os << "*(" << this->para_[i] << " + "
-                   << PrintExpr(op->indices.back()) << ")";
-        break;
-      }
-    }
-  }
+  // std::string scope = GetPtrStorageScope(op->buffer->data);
+  // std::cout << "check buf load:" << op->buffer->data.get()->name_hint << "\n";
+  // if (scope == "wmma.matrix_a" || scope == "wmma.matrix_b" ||
+  //     scope == "wmma.accumulator" || scope == "shared.dyn" ||
+  //     scope == "shared") {
+  //   bool do_not_sup_get_from_tile = false;
+  //   ICHECK(do_not_sup_get_from_tile); // Currently not supported
+  // } else {
+  //   for (size_t i = 0; i < this->para_.size(); i += 3) {
+  //     std::cout << "check gm var:" << this->para_[i]
+  //     << this->para_[i + 1] << this->para_[i + 2] << "\n";
+  //     if (this->para_[i + 1] == op->buffer->data.get()->name_hint) {
+  //       os << "*(" << this->para_[i] << " + "
+  //                  << PrintExpr(op->indices.back()) << ")";
+  //       break;
+  //     }
+  //   }
+  // }
+  auto var_name = var_idmap_[op->buffer->data.get()];
+  os << var_name << ".GetValue("
+                << PrintExpr(op->indices.back()) << ")";
 }
 
 void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) {
@@ -732,6 +735,12 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AttrStmtNode *op) {
       // this->stream << "}\n";
 
       this->core_num_ = PrintExpr(op->value);
+    } else if (iv->thread_tag == "blockIdx.y" && iv->var->name_hint != "_") {
+      this->vec_id_ = AllocVarID(iv->var.get());
+      this->PrintIndent();
+      auto current_vec_id = this->vec_id_;
+      this->stream << "auto " << current_vec_id
+                   << " = get_subblockid();\n";
     }
     this->VisitStmt(op->body);
     return;
@@ -739,12 +748,16 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AttrStmtNode *op) {
     auto resource_id = Downcast<IntImm>(op->value)->value;
     auto resource_name = resource_id == 0 ? "CUBE" : "VEC";
 
-    this->PrintIndent();
     stream << "#if defined(__DAV_C220_" << resource_name << "__)\n";
+    if (resource_name == "VEC") {
+      this->PrintIndent();
+      stream << "  set_mask_norm();\n";
+      this->PrintIndent();
+      stream << "  set_vector_mask(-1, -1);\n";
+    }
     int func_scope = this->BeginScope();
     this->VisitStmt(op->body);
     this->EndScope(func_scope);
-    this->PrintIndent();
     stream << "#endif\n";
     return;
   }
@@ -752,8 +765,8 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AttrStmtNode *op) {
 }
 
 void UbShapeInputCheck(const AllocateNode *op) {
-  if (op->extents.size() != 2){
-    ICHECK(false) << "Unsupported ubsize which is expected to be 2";
+  if (op->extents.size() > 2 || op->extents.size() == 0){
+    ICHECK(false) << "Unsupported ubsize which is expected to be 1 or 2";
   }
 }
 
@@ -775,18 +788,16 @@ int8_t GetTypeLen(std::string type) {
   return typeSize;
 }
 
-std::string GetPreferedUbLayout(const AllocateNode *op) {
-  std::string layout = "NoneLayout";
+bool ValidLayoutEnabled(const AllocateNode *op) {
+  bool valid = false;
   std::string type = getType(op->dtype);
   int8_t typeSize = GetTypeLen(type);
   if (tvm::tir::is_zero(tvm::truncmod(op->extents[1] * typeSize, 32))) {
-    layout = "ND";
-  } else if (tvm::tir::is_zero(tvm::truncmod(op->extents[0] * typeSize, 32))) {
-    layout = "DN";
+    valid = false;
   } else {
-    ICHECK(layout != "NoneLayout") << "Can not get correct layout";
+    valid = true;
   }
-  return layout;
+  return valid;
 }
 
 void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
@@ -797,37 +808,45 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
   const VarNode *buffer = op->buffer_var.as<VarNode>();
   
   /// Allocate PTO Tile Memory Address
-  auto print_buffer = [&](const std::string &posInit) {
-    auto pos = posInit;
-    if (pos == "ub") {
+  auto print_buffer = [&](const std::string &pos) {
+    if (pos == "tl::pto::TileUbData") {
       UbShapeInputCheck(op);
-      auto layout = GetPreferedUbLayout(op);
-      if (layout == "ND") {
-        pos = std::string("tl::pto::TileUbDataND");
-      } else if (layout == "DN") {
-        pos = std::string("tl::pto::TileUbDataDN");
-      } else {
-        ICHECK(false) << "Can not select correct tile ub type";
-      }
     }
     this->PrintIndent();
     // Allocate buffer
     if (address_map_.find(op->buffer_var) != address_map_.end()) {
-      stream << pos << "<" << type;
-      for (size_t i = 0; i < op->extents.size(); i++) {
-          stream << ", " << op->extents[i];
-      }
-      if (posInit == "ub") {
-        stream << "> " << vid << "(";
-        for (size_t i = 0; i < op->extents.size(); i++) {
-            if (i < op->extents.size() - 1) {
-                stream << op->extents[i] << ", ";
-            } else {
-                stream << op->extents[i] << ");\n";
+      if (pos == "tl::pto::TileUbData") {
+        if (op->extents.size() == 2) {
+          auto valid = ValidLayoutEnabled(op);
+          if (!valid) {
+            stream << pos << "ND<" << type;
+            for (size_t i = 0; i < op->extents.size(); i++) {
+                stream << ", " << op->extents[i];
             }
+          } else {
+            int8_t typeSize = GetTypeLen(type);
+            int8_t NDBlockSize = 32 / typeSize;
+            stream << pos << "ND<" << type;
+            stream << ", " << op->extents[0];
+            stream << ", " << tvm::floordiv(op->extents[1] + NDBlockSize - 1, NDBlockSize) * NDBlockSize;
+          }
+          stream << "> " << vid << "(";
+          for (size_t i = 0; i < op->extents.size(); i++) {
+              if (i < op->extents.size() - 1) {
+                  stream << op->extents[i] << ", ";
+              } else {
+                  stream << op->extents[i] << ");\n";
+              }
+          }
+        } else if (op->extents.size() == 1) {
+          stream << pos << "DN<" << type << ", " << op->extents[0] << ", 1> " << vid << "(" << op->extents[0] << ", 1);\n";
         }
       } else {
-          stream << "> " << vid << ";\n";
+        stream << pos << "<" << type;
+        for (size_t i = 0; i < op->extents.size(); i++) {
+            stream << ", " << op->extents[i];
+        }
+        stream << "> " << vid << ";\n";
       }
       // Allocate Start Address
       this->PrintIndent();
@@ -837,22 +856,40 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
       if (address_offset_.find(String(pos)) == address_offset_.end()) {
         address_offset_.Set(String(pos), 0);
       }
-      stream << pos << "<" << type;
-      for (size_t i = 0; i < op->extents.size(); i++) {
-          stream << ", " << op->extents[i];
-      }
-      if (posInit == "ub") {
-        stream << "> " << vid << "(";
-        for (size_t i = 0; i < op->extents.size(); i++) {
-            if (i < op->extents.size() - 1) {
-                stream << op->extents[i] << ", ";
-            } else {
-                stream << op->extents[i] << ");\n";
+      if (pos == "tl::pto::TileUbData") {
+        if (op->extents.size() == 2) {
+          auto valid = ValidLayoutEnabled(op);
+          if (!valid) {
+            stream << pos << "ND<" << type;
+            for (size_t i = 0; i < op->extents.size(); i++) {
+                stream << ", " << op->extents[i];
             }
+          } else {
+            int8_t typeSize = GetTypeLen(type);
+            int8_t NDBlockSize = 32 / typeSize;
+            stream << pos << "ND<" << type;
+            stream << ", " << op->extents[0];
+            stream << ", " << tvm::floordiv(op->extents[1] + NDBlockSize - 1, NDBlockSize) * NDBlockSize;
+          }
+          stream << "> " << vid << "(";
+          for (size_t i = 0; i < op->extents.size(); i++) {
+              if (i < op->extents.size() - 1) {
+                  stream << op->extents[i] << ", ";
+              } else {
+                  stream << op->extents[i] << ");\n";
+              }
+          }
+        } else if (op->extents.size() == 1) {
+          stream << pos << "DN<" << type << ", " << op->extents[0] << ", 1> " << vid << "(" << op->extents[0] << ", 1);\n";
         }
       } else {
-          stream << "> " << vid << ";\n";
+        stream << pos << "<" << type;
+        for (size_t i = 0; i < op->extents.size(); i++) {
+            stream << ", " << op->extents[i];
+        }
+        stream << "> " << vid << ";\n";
       }
+      // Allocate Start Address
       this->PrintIndent();
       stream << "TASSIGN(" << vid << ", " << DEC_STR_TO_HEX_STR(PrintExpr(address_offset_[String(pos)])) << ");\n";
       address_offset_.Set(
@@ -871,7 +908,7 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
   } else if (scope == "shared.dyn") {
     print_buffer("tl::pto::TileMatL1");
   } else if (scope == "shared") {
-    print_buffer("ub");
+    print_buffer("tl::pto::TileUbData");
   }
   this->PrintStmt(op->body);
 }
