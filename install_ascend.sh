@@ -5,15 +5,20 @@
 
 # Add command line option parsing
 USE_LLVM=false
+USE_SHMEM=false
 while [[ $# -gt 0 ]]; do
     case $1 in
         --enable-llvm)
             USE_LLVM=true
             shift
             ;;
+        --enable-shmem)
+            USE_SHMEM=true
+            shift
+            ;;
         *)
             echo "Unknown option: $1"
-            echo "Usage: $0 [--enable-llvm]"
+            echo "Usage: $0 [--enable-llvm] [--enable-shmem]"
             exit 1
             ;;
     esac
@@ -31,6 +36,7 @@ fi
 
 echo "Starting installation script..."
 echo "LLVM enabled: $USE_LLVM"
+echo "SHMEM enabled: $USE_SHMEM"
 
 # Step 1: Install Python requirements
 echo "Installing Python requirements from requirements.txt..."
@@ -152,6 +158,47 @@ TILELANG_PATH="$(pwd)"
 echo "TileLang path set to: $TILELANG_PATH"
 echo "Configuring environment variables for TVM..."
 echo "export PYTHONPATH=${TILELANG_PATH}:\$PYTHONPATH" >> ~/.bashrc
+
+# compile and install aclshmem package
+if $USE_SHMEM; then
+    echo "Starting installation aclshmem..."
+    cd 3rdparty/aclshmem-dev
+    bash scripts/build.sh --package --python_extension
+    ACLSHMEM_INSTALL_PATH=$(pwd)/install
+    arch=$(uname -m)
+    cd package/$arch/
+    chmod +x ACLSHMEM*.run
+    ./ACLSHMEM*.run --check
+    ./ACLSHMEM*.run --install --install-path=$ACLSHMEM_INSTALL_PATH
+    if [ $? -ne 0 ]; then
+        echo "Error: ACLSHMEM C++ pkg install failed."
+        exit 1
+    else
+        echo "ACLSHMEM C++ pkg install success in $ACLSHMEM_INSTALL_PATH."
+    fi
+    cd ../../src/python/dist
+    python -m pip install aclshmem*.whl --force-reinstall
+    if [ $? -ne 0 ]; then
+        echo "python -m pip install failed, try pip3 install ..."
+        pip3 install aclshmem*.whl --force-reinstall
+        if [ $? -ne 0 ]; then
+            echo "Error: aclshmem-xxx.whl install failed."
+            exit 1
+        else
+            echo "aclshmem-xxx.whl install success."
+        fi
+    else
+        echo "aclshmem-xxx.whl install success."
+    fi
+    source ../../../install/aclshmem/latest/set_env.sh
+    if [ $? -ne 0 ]; then
+        echo "Error: set aclshmem env failed."
+        exit 1
+    fi
+    # back to path tilelang-ascend/
+    cd ../../../../..
+    echo "Install aclshmem all success."
+fi
 
 # Step 12: Source .bashrc to apply changes
 echo "Applying environment changes by sourcing .bashrc..."
