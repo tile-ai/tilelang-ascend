@@ -19,6 +19,16 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# Check Python Version, require greater then 3.10
+python_version=$(python3 --version 2>&1 | grep -oP '\d+\.\d+')
+IFS='.' read -r major minor <<< "$python_version"
+if (( major >= 3 && minor >= 10 )); then
+    echo "Python version $python_version >= 3.10, pass"
+else
+    echo "[ERROR] Python version $python_version < 3.10, please upgrade it."
+    exit 1
+fi
+
 echo "Starting installation script..."
 echo "LLVM enabled: $USE_LLVM"
 

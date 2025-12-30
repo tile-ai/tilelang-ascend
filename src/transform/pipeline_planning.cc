@@ -72,6 +72,7 @@ std::unordered_map<std::string, OperationConfig> operation_config_ = {
   {"gemm_v0", {{{0, "read"}, {1, "read"}, {2, "write"}}, "PIPE_M"}},
   {"gemm_v1", {{{0, "read"}, {1, "read"}, {2, "write"}}, "PIPE_M"}},
   {"AscendC::Add", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
+  {"AscendC::Adds", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
   {"AscendC::Mul", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
   {"AscendC::Sub", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
   {"AscendC::Subs", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
@@ -82,19 +83,27 @@ std::unordered_map<std::string, OperationConfig> operation_config_ = {
   {"AscendC::Exp", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
   {"AscendC::Ln", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
   {"AscendC::Sqrt", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
+  {"AscendC::Rsqrt", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
   {"AscendC::Relu", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
   {"AscendC::Axpy", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
   {"AscendC::Select", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
-  {"AscendC::Abs", {{{0, "write"}, {1, "read"}}, "PIPE_M"}},
+  {"AscendC::Abs", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
   {"Gatherb", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
   {"AscendC::CompareScalar", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
   {"AscendC::Duplicate", {{{0, "write"}}, "PIPE_V"}},
   {"AscendC::Muls", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
   {"AscendC::And", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
-  {"reduce_max", {{{0, "read"}, {1, "write"}}, "PIPE_V"}},
+  {"AscendC::Or", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
+  {"AscendC::Not", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
   {"reduce_max", {{{0, "read"}, {1, "write"}}, "PIPE_V"}},
   {"reduce_sum", {{{0, "read"}, {1, "write"}}, "PIPE_V"}},
-  {"AscendC::Max", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}}
+  {"AscendC::Max", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
+  {"AscendC::Min", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
+  {"AscendC::Sin", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
+  {"AscendC::Cos", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
+  {"AscendC::Cast", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
+  {"AscendC::ShiftLeft", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
+  {"AscendC::ShiftRight", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}}
 };
 
 /*!

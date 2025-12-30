@@ -190,8 +190,12 @@ def discrete_case_mat_col(M, N, block_M=128, block_N=128, dtype="float"):
                 T.copy(IDX[bx * block_M + vid * (block_M // vec_num)], idx)
 
                 T.barrier_all()
-                for i, j in T.Parallel(block_M // vec_num, block_N):
-                    c[i, j] = a[idx[i], j] + b[j]
+                # for i, j in T.Parallel(block_M // vec_num, block_N):
+                #     c[i, j] = a[idx[i], j] + b[j]
+                for i in T.serial(block_M // vec_num):
+                    row = idx[i]
+                    for j in T.Parallel(block_N):
+                        c[i, j] = a[row, j] + b[j]
                 T.barrier_all()
 
                 T.copy(c, C[bx * block_M + vid * (block_M // vec_num), by * block_N])

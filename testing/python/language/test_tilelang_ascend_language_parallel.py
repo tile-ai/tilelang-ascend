@@ -5,6 +5,10 @@ import tilelang.language as T
 import torch
 import random
 
+pass_configs = {
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
+    tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
+}
 
 @pytest.fixture(scope="session")
 def clear_cache():
@@ -24,7 +28,7 @@ class KernelTestHelper:
     """Helper class for common kernel testing operations"""
   
     @staticmethod
-    def run_binary_kernel_test(kernel_func, input_generator, reference_func, M=1024, N=1024, block_M=128, block_N=256):
+    def run_binary_kernel_test(kernel_func, input_generator, reference_func, M=1024, N=1024, block_M=128, block_N=128):
         """Common test pattern for binary kernel execution and verification"""
         func = kernel_func(M, N, block_M, block_N)
         inputs = input_generator(M, N)
@@ -34,7 +38,7 @@ class KernelTestHelper:
         torch.testing.assert_close(output, ref_output, rtol=1e-2, atol=1e-2)
   
     @staticmethod
-    def run_unary_kernel_test(kernel_func, input_generator, reference_func, M=1024, N=1024, block_M=128, block_N=256, equal_nan=False):
+    def run_unary_kernel_test(kernel_func, input_generator, reference_func, M=1024, N=1024, block_M=128, block_N=128, equal_nan=False):
         """Common test pattern for unary kernel execution and verification"""
         func = kernel_func(M, N, block_M, block_N)
         input_tensor = input_generator(M, N)
@@ -59,7 +63,7 @@ class TestTileLangKernels:
   
     # Binary operation kernels (2D)
     @staticmethod
-    @tilelang.jit(out_idx=[-1])
+    @tilelang.jit(out_idx=[-1], pass_configs=pass_configs)
     def binary_op_kernel_float(M, N, block_M, block_N, op_func, dtype="float"):
         """Generic binary operation kernel for float types"""
         m_num = M // block_M
@@ -83,17 +87,17 @@ class TestTileLangKernels:
                     T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a_ub)
                     T.copy(B[bx * block_M + vid * block_M // VEC_NUM, by * block_N], b_ub)
 
-                    T.barrier_all()
+                    
                     for (local_x, local_y) in T.Parallel(block_M // VEC_NUM, block_N):
                         c_ub[local_x, local_y] = op_func(a_ub[local_x, local_y], b_ub[local_x, local_y])
-                    T.barrier_all()
+                    
 
                     T.copy(c_ub, C[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
 
         return main
   
     @staticmethod
-    @tilelang.jit(out_idx=[-1])
+    @tilelang.jit(out_idx=[-1], pass_configs=pass_configs)
     def binary_op_kernel_int(M, N, block_M, block_N, op_func, dtype="int16"):
         """Generic binary operation kernel for int types"""
         m_num = M // block_M
@@ -117,10 +121,10 @@ class TestTileLangKernels:
                     T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a_ub)
                     T.copy(B[bx * block_M + vid * block_M // VEC_NUM, by * block_N], b_ub)
 
-                    T.barrier_all()
+                    
                     for (local_x, local_y) in T.Parallel(block_M // VEC_NUM, block_N):
                         c_ub[local_x, local_y] = op_func(a_ub[local_x, local_y], b_ub[local_x, local_y])
-                    T.barrier_all()
+                    
 
                     T.copy(c_ub, C[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
 
@@ -128,7 +132,7 @@ class TestTileLangKernels:
   
     # Unary operation kernels (2D)
     @staticmethod
-    @tilelang.jit(out_idx=[-1])
+    @tilelang.jit(out_idx=[-1], pass_configs=pass_configs)
     def unary_op_kernel_float(M, N, block_M, block_N, op_func, dtype="float"):
         """Generic unary operation kernel for float types"""
         m_num = M // block_M
@@ -149,17 +153,17 @@ class TestTileLangKernels:
                 with T.Scope("V"):
                     T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a_ub)
 
-                    T.barrier_all()
+                    
                     for (local_x, local_y) in T.Parallel(block_M // VEC_NUM, block_N):
                         b_ub[local_x, local_y] = op_func(a_ub[local_x, local_y])
-                    T.barrier_all()
+                    
 
                     T.copy(b_ub, B[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
 
         return main
   
     @staticmethod
-    @tilelang.jit(out_idx=[-1])
+    @tilelang.jit(out_idx=[-1], pass_configs=pass_configs)
     def unary_op_kernel_int(M, N, block_M, block_N, op_func, dtype="int16"):
         """Generic unary operation kernel for int types"""
         m_num = M // block_M
@@ -180,10 +184,10 @@ class TestTileLangKernels:
                 with T.Scope("V"):
                     T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a_ub)
 
-                    T.barrier_all()
+                    
                     for (local_x, local_y) in T.Parallel(block_M // VEC_NUM, block_N):
                         b_ub[local_x, local_y] = op_func(a_ub[local_x, local_y])
-                    T.barrier_all()
+                    
 
                     T.copy(b_ub, B[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
 
@@ -191,7 +195,7 @@ class TestTileLangKernels:
   
     # 1D binary operation kernel
     @staticmethod
-    @tilelang.jit(out_idx=[-1])
+    @tilelang.jit(out_idx=[-1], pass_configs=pass_configs)
     def binary_op_kernel_1d(N, block_N, op_func, dtype="float"):
         """Generic binary operation kernel for 1D tensors"""
         n_num = N // block_N
@@ -213,10 +217,10 @@ class TestTileLangKernels:
                     T.copy(A[vid * block_N // VEC_NUM + by * block_N], a_ub)
                     T.copy(B[vid * block_N // VEC_NUM + by * block_N], b_ub)
 
-                    T.barrier_all()
+                    
                     for local_y in T.Parallel(block_N // VEC_NUM):
                         c_ub[local_y] = op_func(a_ub[local_y], b_ub[local_y])
-                    T.barrier_all()
+                    
 
                     T.copy(c_ub, C[vid * block_N // VEC_NUM + by * block_N])
 
@@ -555,7 +559,7 @@ class TestTileLangKernels:
         )
 
     @staticmethod
-    @tilelang.jit(out_idx=[-1])
+    @tilelang.jit(out_idx=[-1], pass_configs=pass_configs)
     def row_split_mul_kernel(M, N, block_M, block_N, dtype="float"):
         "Test row split kernel"
         m_num = M // block_M
@@ -577,11 +581,11 @@ class TestTileLangKernels:
                     T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a_ub)
                     T.copy(B[bx * block_M + vid * block_M // VEC_NUM, by * block_N], b_ub)
 
-                    T.barrier_all()
+                    
                     for i in range(block_M // VEC_NUM):
                         for j in T.Parallel(block_N):
                             c_ub[i, j] = a_ub[i, j] * b_ub[i, j]
-                    T.barrier_all()
+                    
 
                     T.copy(c_ub, C[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
 
@@ -604,7 +608,7 @@ class TestTileLangKernels:
         )
 
     @staticmethod
-    @tilelang.jit(out_idx=[-1])
+    @tilelang.jit(out_idx=[-1], pass_configs=pass_configs)
     def buffer_scalar_mul_kernel(M, N, block_M, block_N, dtype="float"):
         "Test buffer scaler mul kernel"
         m_num = M // block_M
@@ -626,10 +630,10 @@ class TestTileLangKernels:
                     T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a_ub)
                     T.copy(B[bx * block_M + vid * block_M // VEC_NUM], b_ub)
 
-                    T.barrier_all()
+                    
                     for (i, j) in T.Parallel(block_M // VEC_NUM, block_N):
                         c_ub[i, j] = a_ub[i, j] * b_ub[i]
-                    T.barrier_all()
+                    
 
                     T.copy(c_ub, C[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
 
@@ -655,7 +659,5 @@ class TestTileLangKernels:
         )
 
 
-
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "-n", "8"])
-
