@@ -179,7 +179,10 @@ private:
       {"AscendC::Cos", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
       {"AscendC::Cast", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
       {"AscendC::ShiftLeft", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
-      {"AscendC::ShiftRight", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}}
+      {"AscendC::ShiftRight", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
+      {"AscendC::Sort", {{{0, "write"}, {1, "read"}, {2, "read"}, {3, "read"}}, "PIPE_V"}},
+      {"AscendC::ArithProgression", {{{0, "write"}}, "PIPE_V"}},
+      {"GatherMask", {{{0, "write"}, {1, "read"}}, "PIPE_V"}}
     };
   }
 
