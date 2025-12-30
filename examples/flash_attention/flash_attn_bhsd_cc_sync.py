@@ -7,21 +7,23 @@ torch.manual_seed(0)
 
 tilelang.disable_cache()
 
+B, S, H, D = 1, 128, 1, 512
+
 pass_configs = {
     tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
     tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_SYNC: True,
     tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True
 }
 
-@tilelang.jit(out_idx=[3], pass_configs=pass_configs)
+@tilelang.jit(out_idx=[3], workspace_idx=[4,5,6], pass_configs=pass_configs)
 def flash_attention_fwd(
     heads,
     dim,
 ):
     block_M, block_N = 64, 64
 
-    batch = 1
-    seq_len = 128
+    batch = B
+    seq_len = S
 
     dtype = "float16"
     accum_dtype = "float"
@@ -149,8 +151,8 @@ def flash_attention_fwd(
 
 
 func = flash_attention_fwd(
-    heads=1,
-    dim=512,
+    heads=H,
+    dim=D,
 )
 
 
@@ -165,22 +167,15 @@ def ref_flash_attn(q, k, v):
     return o.to(torch.float16)
 
 
-B, S, H, D = 1, 128, 1, 512
-
 q = torch.randn((B, H, S, D), dtype=torch.float16)
 k = torch.randn((B, H, S, D), dtype=torch.float16)
 v = torch.randn((B, H, S, D), dtype=torch.float16)
 
-block_num = S // 64 * H * B
-
-workspace_1 = torch.zeros((block_num, 64, 64), dtype=torch.float)
-workspace_2 = torch.zeros((block_num, 64, 64), dtype=torch.float16)
-workspace_3 = torch.zeros((block_num, 64, 512), dtype=torch.float)
 
 torch.npu.synchronize()
 print("init successful!")
 
-output = func(q, k, v, workspace_1, workspace_2, workspace_3)
+output = func(q, k, v)
 ref_output = ref_flash_attn(q, k, v)
 torch.npu.synchronize()
 
