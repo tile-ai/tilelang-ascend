@@ -21,8 +21,11 @@ dstRepStride = 1
 srcBlkStride = 1
 srcRepStride = 4
 
-
-@tilelang.jit(out_idx=[-1])
+pass_configs = {
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
+}
+@tilelang.jit(out_idx=[-1], pass_configs=pass_configs)
 def wholereducesum(M, N, block_M, block_N, mask, repeatTimes, dstRepStride, srcBlkStride, srcRepStride, dtype="float16"):
     m_num = M // block_M
     n_num = N // block_N
@@ -40,14 +43,10 @@ def wholereducesum(M, N, block_M, block_N, mask, repeatTimes, dstRepStride, srcB
 
             a_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
             b_ub = T.alloc_ub((block_M // VEC_NUM, block_N // mask), dtype)
-            with T.Scope("V"):
-                T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a_ub)
 
-                T.barrier_all()
-                T.tile.wholereducesum(b_ub, a_ub, mask, repeatTimes, dstRepStride, srcBlkStride, srcRepStride)
-                T.barrier_all()
-
-                T.copy(b_ub, B[bx * block_M + vid * block_M // VEC_NUM, by * block_N // mask])
+            T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a_ub)
+            T.tile.wholereducesum(b_ub, a_ub, mask, repeatTimes, dstRepStride, srcBlkStride, srcRepStride)
+            T.copy(b_ub, B[bx * block_M + vid * block_M // VEC_NUM, by * block_N // mask])
 
     return main
 

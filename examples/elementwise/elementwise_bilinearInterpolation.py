@@ -6,13 +6,6 @@ import torch
 
 tilelang.cache.clear_cache()
 
-# parser = argparse.ArgumentParser(description="NPU Kernel Compilation")
-# parser.add_argument("--m", type=int, default=1024, help="Matrix M dimension")
-# parser.add_argument("--n", type=int, default=1024, help="Matrix N dimension")
-# args = parser.parse_args()
-
-# M = args.m
-# N = args.n
 src0 = torch.arange(1, 513, dtype=torch.float16).reshape(1, -1).npu()
 src0offset_int = torch.arange(0, 1024, 32, dtype=torch.int64).reshape(1, -1).npu()
 src0offset = src0offset_int.to(dtype=torch.uint32)
@@ -26,8 +19,11 @@ vROffset = 128
 vRepeat = 2
 mask0 = 0
 
-
-@tilelang.jit(out_idx=[-1])
+pass_configs = {
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
+}
+@tilelang.jit(out_idx=[-1], pass_configs=pass_configs)
 def bilinear_interpolation(mask, h_repeat, repeat_mode,
                            dst_blk_stride, v_r_offset, v_repeat):
     m_num = 1
@@ -52,17 +48,14 @@ def bilinear_interpolation(mask, h_repeat, repeat_mode,
             dst_ub = T.alloc_ub((src0.shape[0] // VEC_NUM, src0.shape[1] // 2), "float16")
             shared_tmp_buffer_ub = T.alloc_ub((src0.shape[0], src0.shape[1]), "uint8")
 
-            with T.Scope("V"):
-                T.copy(src0[0, 0], src0_ub)
-                T.copy(src0_offset[0, 0], src0_offset_ub)
-                T.copy(src1[0, 0], src1_ub)
+            T.copy(src0[0, 0], src0_ub)
+            T.copy(src0_offset[0, 0], src0_offset_ub)
+            T.copy(src1[0, 0], src1_ub)
 
-                T.barrier_all()
-                T.tile.bilinear_interpolation(dst_ub, src0_ub, src0_offset_ub, src1_ub, mask, h_repeat,
-                                         repeat_mode, dst_blk_stride, v_r_offset, v_repeat, shared_tmp_buffer_ub)
-                T.barrier_all()
+            T.tile.bilinear_interpolation(dst_ub, src0_ub, src0_offset_ub, src1_ub, mask, h_repeat,
+                                        repeat_mode, dst_blk_stride, v_r_offset, v_repeat, shared_tmp_buffer_ub)
 
-                T.copy(dst_ub, dst[0, 0])
+            T.copy(dst_ub, dst[0, 0])
 
     return main
 
