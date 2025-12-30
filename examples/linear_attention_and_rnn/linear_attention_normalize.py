@@ -52,6 +52,7 @@ def linear_attention_ker1(B, H, L, D, block_L, block_D, dtype="float16", accum_d
 				T.copy(acc_l0, Acc[bz, by, bx * block_D, 0])
 			
 			with T.Scope("V"):
+				T.tile.fill(acc_ub, 0.0)
 				for i in T.serial(lb_num):
 					T.copy(K[bz, by, i * block_L, bx * block_D + vid * block_D // VEC_NUM], k_half_ub)
 					T.copy(k_half_ub, k_ub)
@@ -152,7 +153,7 @@ torch.manual_seed(0)
 torch.set_printoptions(threshold = float('inf'), sci_mode = False)
 
 test_configs = [
-	(2, 2, 512, 128, 64, 64),
+	(2, 32, 512, 128, 64, 64),
 ]
 
 for B, H, L, D, block_L, block_D in test_configs:
