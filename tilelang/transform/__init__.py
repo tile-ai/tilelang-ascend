@@ -411,3 +411,15 @@ def AscendLowerParallelToVector():
     ----
     """
     return _ffi_api.AscendLowerParallelToVector()  # type: ignore
+
+
+def AscendInferBufferScope():
+    """Infer Buffer Scope for Ascend.
+
+    Returns
+    -------
+    fpass : tvm.transform.Pass
+        The result pass
+    ----
+    """
+    return _ffi_api.InferAllocScope()  # type: ignore

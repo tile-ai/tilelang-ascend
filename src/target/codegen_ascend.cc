@@ -1222,10 +1222,24 @@ void CodeGenTileLangAscend::VisitStmt_(const AllocateNode *op) {
 
   auto print_buffer = [&](const std::string &pos) {
     this->PrintIndent();
-    if (address_map_.find(op->buffer_var) != address_map_.end()) {
+
+    PrimExpr target_expr;
+    bool found_by_name = false;
+    std::string target_var_name = op->buffer_var->name_hint;
+
+    for (const auto& pair : address_map_) {
+      Var var_key = pair.first;
+      if (var_key->name_hint == target_var_name) {
+        target_expr = pair.second;
+        found_by_name = true;
+        break;
+      }
+    }
+
+    if (found_by_name) {
       stream << "auto " << vid << " = " << pos << ".GetWithOffset<" << type
              << ">(" << op->ConstantAllocationSize() << ", "
-             << PrintExpr(address_map_[op->buffer_var]) << ");\n";
+             << PrintExpr(target_expr) << ");\n";
     } else {
       if (address_offset_.find(String(pos)) == address_offset_.end()) {
         address_offset_.Set(String(pos), 0);

@@ -49,6 +49,7 @@ def allow_vectorize(pass_ctx: Optional[PassContext] = None) -> bool:
 
 
 def LowerAndLegalize(mod: IRModule, target: Target) -> IRModule:
+    mod = tilelang.transform.AscendInferBufferScope()(mod)
     # Bind the target device information to the module
     mod = tir.transform.BindTarget(target)(mod)
     # Identify and filter host tiling data for npu
