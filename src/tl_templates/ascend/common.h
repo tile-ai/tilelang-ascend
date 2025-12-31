@@ -9,6 +9,7 @@
 #include "aclshmem_api.h"
 #include "aicore/aicore_init.h"
 #include "aicore/aicore_rma.h"
+#include "shmem.h"
 
 #define CUDART_INF_F 1.0f / 0.0f
 
@@ -291,6 +292,22 @@ CATLASS_DEVICE void shmem_get_nbi(const GlobalTensor<T> &output, const GlobalTen
     __gm__ T* outputPtr = const_cast<__gm__ T*>(output.GetPhyAddr());
     aclshmem_getmem_nbi(outputPtr, 
         reinterpret_cast<__gm__ const T*>(input.GetPhyAddr()), nelems * sizeof(T), newPe);
+}
+
+template <typename T>
+CATLASS_DEVICE void shmem_get_nbi_new(const GlobalTensor<T> &output, const GlobalTensor<T> &input,
+                                size_t nelems, size_t newPe) {
+    if ASCEND_IS_AIC return;
+    AscendC::TPipe pipe;
+    uint32_t ub_size = UB_HALF_SIZE * 2 + 64;
+    AscendC::TBuf<AscendC::TPosition::VECIN> ub_buf;
+    pipe.InitBuffer(ub_buf, ub_size);
+    auto ub_tensor = ub_buf.Get<uint8_t>();
+    __gm__ T* outputPtr = const_cast<__gm__ T*>(output.GetPhyAddr());
+    __gm__ T* inputPtr = const_cast<__gm__ T*>(input.GetPhyAddr());
+    __ubuf__ int8_t* buf = reinterpret_cast<__ubuf__ uint8_t *>(ub_tensor.GetPhyAddr());
+    // TODO:EVENT_ID0再确认下含义
+    aclshmemx_mte_get_mem_nbi(outputPtr, inputPtr, buf, ub_size, nelems * sizeof(T), newPe, EVENT_ID0); 
 }
 
 template <typename T>
