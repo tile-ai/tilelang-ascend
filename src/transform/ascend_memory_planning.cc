@@ -122,7 +122,7 @@ private:
           buffer_scopes_[buf] = scope;
           buffer_sizes_[buf] = CalculateBufferSize(op);
 
-          LOG(DEBUG) << "Found NPU memory allocation: " << op->buffer_var->name_hint
+          DLOG(DEBUG) << "Found NPU memory allocation: " << op->buffer_var->name_hint
                     << " scope=" << scope << " size=" << buffer_sizes_[buf] << " bytes";
         }
       }
@@ -142,7 +142,7 @@ private:
 
           if (first_use_.count(buf) == 0) {
             first_use_[buf] = linear_seq_.size();
-            LOG(DEBUG) << "First use of buffer " << buf->name_hint 
+            DLOG(DEBUG) << "First use of buffer " << buf->name_hint 
                       << " at statement index " << linear_seq_.size();
           }
         }
@@ -181,7 +181,7 @@ private:
 
           if (first_use_.count(buf) == 0) {
             first_use_[buf] = linear_seq_.size();
-            LOG(DEBUG) << "First use of buffer " << buf->name_hint 
+            DLOG(DEBUG) << "First use of buffer " << buf->name_hint 
                       << " at statement index " << linear_seq_.size();
           }
         }
@@ -196,7 +196,7 @@ private:
 
           if (first_use_.count(buf) == 0) {
             first_use_[buf] = linear_seq_.size();
-            LOG(DEBUG) << "First use of buffer " << buf->name_hint 
+            DLOG(DEBUG) << "First use of buffer " << buf->name_hint 
                       << " at statement index " << linear_seq_.size();
           }
         }
@@ -214,7 +214,7 @@ private:
             
             if (first_use_.count(buf) == 0) {
               first_use_[buf] = linear_seq_.size();
-              LOG(DEBUG) << "First use of buffer " << buf->name_hint 
+              DLOG(DEBUG) << "First use of buffer " << buf->name_hint 
                         << " at statement index " << linear_seq_.size();
             }
           }
@@ -261,9 +261,9 @@ private:
         scope_groups[kv.second].push_back(kv.first);
       }
 
-      LOG(DEBUG) << "Memory planning by scope groups:";
+      DLOG(DEBUG) << "Memory planning by scope groups:";
       for (const auto& kv : scope_groups) {
-        LOG(DEBUG) << "  Scope " << kv.first << ": " << kv.second.size() << " buffers";
+        DLOG(DEBUG) << "  Scope " << kv.first << ": " << kv.second.size() << " buffers";
       }
 
       for (const auto& scope_kv : scope_groups) {
@@ -294,7 +294,7 @@ private:
 
       ReorderKillPoints();
 
-      LOG(DEBUG) << "Liveness Analysis Results:";
+      DLOG(DEBUG) << "Liveness Analysis Results:";
       for (const auto& event_pair : event_map_) {
         const EventEntry& entry = event_pair.second;
         if (entry.gen.empty() && entry.kill.empty()) continue;
@@ -303,9 +303,9 @@ private:
         for (const VarNode* var : entry.gen) gen_ss << var->name_hint << " ";
         for (const VarNode* var : entry.kill) kill_ss << var->name_hint << " ";
         
-        LOG(DEBUG) << "  Statement: " << event_pair.first->GetTypeKey();
-        if (!entry.gen.empty()) LOG(DEBUG) << "    GEN: " << gen_ss.str();
-        if (!entry.kill.empty()) LOG(DEBUG) << "    KILL: " << kill_ss.str();
+        DLOG(DEBUG) << "  Statement: " << event_pair.first->GetTypeKey();
+        if (!entry.gen.empty()) DLOG(DEBUG) << "    GEN: " << gen_ss.str();
+        if (!entry.kill.empty()) DLOG(DEBUG) << "    KILL: " << kill_ss.str();
       }
     }
 
@@ -380,7 +380,7 @@ private:
     }
 
     void PlanMemoryForScope(const std::string& scope, const std::vector<const VarNode*>& buffers) {
-      LOG(DEBUG) << "Planning memory for scope: " << scope;
+      DLOG(DEBUG) << "Planning memory for scope: " << scope;
 
       std::vector<LiveInterval> intervals;
       for (const VarNode* buffer : buffers) {
@@ -417,7 +417,7 @@ private:
           
         if (start != -1 && end != -1) {
           intervals.emplace_back(buffer, start, end, buffer_sizes_[buffer]);
-          LOG(DEBUG) << "Buffer " << buffer->name_hint << ": [" << start << ", " << end 
+          DLOG(DEBUG) << "Buffer " << buffer->name_hint << ": [" << start << ", " << end 
                       << "], size=" << buffer_sizes_[buffer];
         }
       }
@@ -432,7 +432,7 @@ private:
       
       for (const auto& alloc : allocations) {
         address_map_[alloc.buffer] = alloc.offset;
-        LOG(DEBUG) << "Allocated buffer " << alloc.buffer->name_hint 
+        DLOG(DEBUG) << "Allocated buffer " << alloc.buffer->name_hint 
                     << " at offset " << alloc.offset << " (size=" << alloc.size << ")";
       }
       
@@ -441,11 +441,11 @@ private:
         total_used = std::max(total_used, alloc.offset + alloc.size);
       }
       
-      LOG(DEBUG) << "Scope " << scope << " memory usage: " << total_used 
+      DLOG(DEBUG) << "Scope " << scope << " memory usage: " << total_used 
                   << "/" << memory_limits_[scope] << " bytes ("
                   << (total_used * 100.0 / memory_limits_[scope]) << "%)";
       if (total_used > memory_limits_[scope]) {
-        LOG(WARNING) << "Memory limit exceeded for scope " << scope 
+        DLOG(WARNING) << "Memory limit exceeded for scope " << scope 
                       << ": " << total_used << " > " << memory_limits_[scope];
       }
     }
@@ -490,7 +490,7 @@ private:
         std::vector<std::pair<size_t, size_t>> free_blocks;
         
         for (auto& interval : intervals) {
-          LOG(DEBUG) << "Processing: " << interval.buffer->name_hint
+          DLOG(DEBUG) << "Processing: " << interval.buffer->name_hint
                         << " [" << interval.start << ", " << interval.end 
                         << "] size=" << interval.size;
           
@@ -505,7 +505,7 @@ private:
               free_blocks.emplace_back(it->offset, it->size);
               active_allocations.erase(it);
               
-              LOG(DEBUG) << "  Released for reuse: " << expired.buffer->name_hint
+              DLOG(DEBUG) << "  Released for reuse: " << expired.buffer->name_hint
                             << " at offset " << it->offset;
             }
             
@@ -521,14 +521,14 @@ private:
           if (new_memory_offset + interval.size <= memory_limit_) {
             allocated_offset = new_memory_offset;
             next_new_offset_ = new_memory_offset + interval.size;
-            LOG(DEBUG) << "  Allocated NEW memory at offset: " << allocated_offset;
+            DLOG(DEBUG) << "  Allocated NEW memory at offset: " << allocated_offset;
           } else {
             allocated_offset = findReusableBlock(interval.size, free_blocks);
             if (allocated_offset != static_cast<size_t>(-1)) {
                 is_reused = true;
-                LOG(DEBUG) << "  REUSED memory at offset: " << allocated_offset;
+                DLOG(DEBUG) << "  REUSED memory at offset: " << allocated_offset;
             } else {
-                LOG(ERROR) << "Memory allocation failed for: " 
+                DLOG(ERROR) << "Memory allocation failed for: " 
                             << interval.buffer->name_hint
                             << " required: " << interval.size
                             << ", new memory available: " << (memory_limit_ - next_new_offset_);
@@ -549,9 +549,9 @@ private:
           size_t total_used = next_new_offset_;
           size_t reused_count = std::count_if(allocations.begin(), allocations.end(),
                                               [](const Allocation& a) { return a.is_reused; });
-          LOG(DEBUG) << "Memory usage: " << total_used << "/" << memory_limit_
+          DLOG(DEBUG) << "Memory usage: " << total_used << "/" << memory_limit_
                     << " bytes (" << (total_used * 100.0 / memory_limit_) << "%)";
-          LOG(DEBUG) << "Reused buffers: " << reused_count << "/" << allocations.size();
+          DLOG(DEBUG) << "Reused buffers: " << reused_count << "/" << allocations.size();
           
           return allocations;
       }
