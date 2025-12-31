@@ -4,20 +4,26 @@ from .arch_base import TileDevice
 from .cuda import CUDA
 from .cpu import CPU
 from .cdna import CDNA
+from .ascend import Ascend, is_cube_supported_precision
 from typing import Union
 from tvm.target import Target
+import torch
 
 
 def get_arch(target: Union[str, Target] = "cuda") -> TileDevice:
     if isinstance(target, str):
-        target = Target(target)
+        target = Target("llvm -keys=ascend") if target == "ascend" else Target(target)
 
     if target.kind.name == "cuda":
         return CUDA(target)
     elif target.kind.name == "llvm":
+        if "ascend" in target.keys:
+            return Ascend(target)
         return CPU(target)
     elif target.kind.name == "hip":
         return CDNA(target)
+    elif target.kind.name == "ascend":
+        return Ascend(target)
     else:
         raise ValueError(f"Unsupported target: {target.kind.name}")
 
@@ -25,7 +31,14 @@ def get_arch(target: Union[str, Target] = "cuda") -> TileDevice:
 def auto_infer_current_arch() -> TileDevice:
     # TODO(lei): This is a temporary solution to infer the current architecture
     # Can be replaced by a more sophisticated method in the future
-    return get_arch("cuda")
+    if torch.version.hip is not None:
+        return get_arch("hip")
+    if hasattr(torch, 'npu') and torch.npu.is_available():
+        return get_arch("ascend")
+    if torch.cuda.is_available():
+        return get_arch("cuda")
+    else:
+        return get_arch("llvm")
 
 
 from .cpu import is_cpu_arch  # noqa: F401
