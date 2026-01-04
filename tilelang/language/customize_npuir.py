@@ -414,7 +414,7 @@ def npuir_cast(src, dst, size=[], round_mode="rint"):
     return tir.call_intrin("handle", tir.op.Op.get("tl.npuir_cast"), src, dst, round_mode)
 
 
-def npuir_reduce(src, dst, dims:Union[list, tuple], reduce_mode, size=[]):
+def npuir_reduce(src, dst, dims:Union[list, tuple], reduce_mode, size=[], clear: bool = True):
     """Reduce one or more axes of the source vector according to the reduction axes array, starting from an init value.
 
     Args:
@@ -446,7 +446,7 @@ def npuir_reduce(src, dst, dims:Union[list, tuple], reduce_mode, size=[]):
     dst = _to_region(dst, "w", dst_extent)
 
     reduce_dims = ','.join(str(dim) for dim in dims)
-    return tir.call_intrin("handle", tir.op.Op.get("tl.npuir_reduce"), src, dst, reduce_dims, reduce_mode)
+    return tir.call_intrin("handle", tir.op.Op.get("tl.npuir_reduce"), src, dst, reduce_dims, reduce_mode, clear)
 
 def npuir_gather(src, dst, indices:Union[list, tuple], size=[]):
     """Retrieve elements from a tensor/memref according to given indices, and store these elements in another tensor/memref. The gather axis is the last dimension.
@@ -918,3 +918,4 @@ def Scope(name):
     """
 
     return _ffi_api.Scope(name)
+
