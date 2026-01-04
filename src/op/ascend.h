@@ -257,6 +257,7 @@ public:
   std::vector<int64_t> reduce_dims;
 
   Array<Range> src_range, dst_range;
+  bool clear;
 };
 
 class NpuirSelect : public Operator {
@@ -463,3 +464,4 @@ public:
 } // namespace tvm
 
 #endif //  TVM_TL_OP_ELEM_H_
+
