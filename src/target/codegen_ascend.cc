@@ -1536,7 +1536,11 @@ void CodeGenTileLangAscend::PrintHostFunc(const PrimFunc &f, const std::string &
       os << ", ";
     }
     arg_names.push_back(v->name_hint);
-    os << "uint8_t* " << v->name_hint;
+    if (v.dtype().is_handle()) {
+      os << "uint8_t* " << v->name_hint;
+    } else {
+      os << getType(v.dtype()) << " " << v->name_hint;
+    }   
   }
   ProcessHostInput(os, arg_names, shape_vars);
   os << ", aclrtStream stream) {\n  ";
