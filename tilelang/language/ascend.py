@@ -258,7 +258,11 @@ def shmem_put_nbi(dst: Buffer, src: Buffer, nelems: PrimExpr, newPe: PrimExpr):
 
 def shmem_ub_put_nbi(ub: Buffer, dst: Buffer, nelems: PrimExpr, newPe: PrimExpr):
     return T.call_extern("handle", f"tl::ascend::shmem_ub_put_nbi<{_dtype(dst)}>", ub.access_ptr("r"), dst.access_ptr("w"),
-                         nelems, newPe)   
+                         nelems, newPe)
+
+def shmem_ub_put_nbi_new(ub: Buffer, dst: Buffer, nelems: PrimExpr, newPe: PrimExpr):
+    return T.call_extern("handle", f"tl::ascend::shmem_ub_put_nbi_new<{_dtype(dst)}>", ub.access_ptr("r"), dst.access_ptr("w"),
+                         nelems, newPe)  
 
 def shmem_get(dst: Buffer, src: Buffer, nelems: PrimExpr, newPe: PrimExpr):
     return T.call_extern("handle", f"tl::ascend::shmem_get<{_dtype(src)}>", dst.access_ptr("w"), src.access_ptr("r"),
