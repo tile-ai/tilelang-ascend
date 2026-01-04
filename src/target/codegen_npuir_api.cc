@@ -964,16 +964,139 @@ void CodeGenTileLangNPUIRAPI::VcastCodegen(const CallNode *op) {
       broadcastDimAttr);
 }
 
+static mlir::Value AllocLike(mlir::OpBuilder &builder,
+                             mlir::Location loc,
+                             mlir::Value dst) {
+  auto dstTy = dst.getType().dyn_cast<mlir::MemRefType>();
+  ICHECK(dstTy) << "dst must be memref";
+
+  llvm::SmallVector<mlir::Value, 4> dynSizes;
+  dynSizes.reserve(dstTy.getRank());
+  for (int i = 0; i < dstTy.getRank(); ++i) {
+    if (dstTy.isDynamicDim(i)) {
+      dynSizes.push_back(builder.create<mlir::memref::DimOp>(loc, dst, i));
+    }
+  }
+  return builder.create<mlir::memref::AllocOp>(loc, dstTy, dynSizes);
+}
+
+static void GetValueOfReduce(mlir::OpBuilder &builder,
+                                   mlir::Location loc,
+                                   mlir::Value dst,
+                                   mlir::Value oldDst,
+                                   mlir::hivm::ReduceOperation op) {
+
+  auto dstTy = dst.getType().dyn_cast<mlir::MemRefType>();
+  auto oldTy = oldDst.getType().dyn_cast<mlir::MemRefType>();
+  ICHECK(dstTy && oldTy);
+  ICHECK(dstTy == oldTy);
+
+  int rank = dstTy.getRank();
+  mlir::Type elemTy = dstTy.getElementType();
+
+  llvm::SmallVector<mlir::Value, 8> ivs;
+  ivs.reserve(rank);
+
+  std::function<void(int)> buildLoop = [&](int dim) {
+    if (dim == rank) {
+      mlir::Value a = builder.create<mlir::memref::LoadOp>(loc, dst, ivs);
+      mlir::Value b = builder.create<mlir::memref::LoadOp>(loc, oldDst, ivs);
+
+      mlir::Value c;
+      if (elemTy.isa<mlir::FloatType>()) {
+        switch (op) {
+        case mlir::hivm::ReduceOperation::sum:
+        case mlir::hivm::ReduceOperation::abs_sum:
+          c = builder.create<mlir::arith::AddFOp>(loc, a, b);
+          break;
+        case mlir::hivm::ReduceOperation::max:
+          c = builder.create<mlir::arith::MaxNumFOp>(loc, a, b);
+          break;
+        case mlir::hivm::ReduceOperation::min:
+          c = builder.create<mlir::arith::MinNumFOp>(loc, a, b);
+          break;
+        default:
+          ICHECK(0);
+        }
+      } else if (elemTy.isa<mlir::IntegerType>()) {
+        switch (op) {
+        case mlir::hivm::ReduceOperation::sum:
+        case mlir::hivm::ReduceOperation::abs_sum:
+          c = builder.create<mlir::arith::AddIOp>(loc, a, b);
+          break;
+        case mlir::hivm::ReduceOperation::max:
+          c = builder.create<mlir::arith::MaxSIOp>(loc, a, b);
+          break;
+        case mlir::hivm::ReduceOperation::min:
+          c = builder.create<mlir::arith::MinSIOp>(loc, a, b);
+          break;
+        default:
+          ICHECK(0);
+        }
+      } else {
+        ICHECK(0);
+      }
+
+      builder.create<mlir::memref::StoreOp>(loc, c, dst, ivs);
+      return;
+    }
+
+    mlir::Value lb =
+        builder.create<mlir::arith::ConstantIndexOp>(loc, 0);
+    mlir::Value ub;
+    if (dstTy.hasStaticShape() && !dstTy.isDynamicDim(dim)) {
+      ub = builder.create<mlir::arith::ConstantIndexOp>(
+          loc, dstTy.getShape()[dim]);
+    } else {
+      ub = builder.create<mlir::memref::DimOp>(loc, dst, dim);
+    }
+    mlir::Value step =
+        builder.create<mlir::arith::ConstantIndexOp>(loc, 1);
+
+    auto forOp =
+        builder.create<mlir::scf::ForOp>(loc, lb, ub, step);
+
+    mlir::Block *body = forOp.getBody();
+    if (auto *term = body->getTerminator())
+      term->erase();
+
+    {
+      mlir::OpBuilder::InsertionGuard g(builder);
+      builder.setInsertionPointToStart(body);
+
+      ivs.push_back(forOp.getInductionVar());
+      buildLoop(dim + 1);
+      ivs.pop_back();
+
+      builder.create<mlir::scf::YieldOp>(loc);
+    }
+  };
+
+  buildLoop(0);
+}
+
 void CodeGenTileLangNPUIRAPI::VreduceCodegen(const CallNode *op) {
   tvm::tl::NpuirReduce npuirop(op->args, this->vmap);
+  mlir::Location loc = builder.getUnknownLoc();
   Value src = GenSubviewFromRegion(npuirop.src, npuirop.src_range);
   Value dst = GenSubviewFromRegion(npuirop.dst, npuirop.dst_range);
   auto reduce_mode = npuirop.reduce_mode;
+  mlir::hivm::ReduceOperation operation = NPUIR_STR_REDUCEOP[reduce_mode];
   mlir::hivm::ReduceOpAttr mode =
-      mlir::hivm::ReduceOpAttr::get(&context, NPUIR_STR_REDUCEOP[reduce_mode]);
+      mlir::hivm::ReduceOpAttr::get(&context, operation);
+  // Copy and save dst.
+  mlir::Value oldDst;
+  if (!npuirop.clear) {
+    oldDst = AllocLike(builder, loc, dst);
+    builder.create<mlir::memref::CopyOp>(loc, dst, oldDst);
+  }
   builder.create<mlir::hivm::VReduceOp>(
-      builder.getUnknownLoc(), TypeRange{}, src, dst, mode,
+      loc, TypeRange{}, src, dst, mode,
       builder.getDenseI64ArrayAttr(npuirop.reduce_dims));
+  // Restore accumulate semantics for non-clear reduce.
+  if (!npuirop.clear) {
+    GetValueOfReduce(builder, loc, dst, oldDst, operation);
+  }
 }
 
 void CodeGenTileLangNPUIRAPI::VgatherCodegen(const CallNode *op) {
