@@ -20,7 +20,7 @@ M = args.m
 N = args.n
 K = args.k
 
-def get_config() -> list(dict):
+def get_config() -> list[dict]:
     arch = Ascend()
     carver_template = carver.MatmulTemplate(
         M = M,
