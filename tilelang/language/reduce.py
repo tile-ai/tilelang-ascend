@@ -5,6 +5,7 @@
 from tvm import tir
 from typing import Optional
 from tilelang.language import copy, macro, alloc_shared
+from .customize_npuir import _to_region
 
 
 def _legalize_dim(buffer: tir.Buffer, dim: int):
@@ -26,16 +27,19 @@ def reduce(buffer: tir.Buffer, out: tir.Buffer, reduce_type: str, dim: int, clea
     Returns:
         tir.Call: Handle to the reduction operation
     """
-    buffer = buffer.access_ptr("r")
-    out = out.access_ptr("w")
+    src_extent = buffer.shape
+    out_extent = out.shape
+    assert len(src_extent) == len(out_extent), "The input vector and output vector must have same rank."
+    src = _to_region(buffer, "r", src_extent)
+    dst = _to_region(out, "w", out_extent)
     return tir.call_intrin(
         "handle",
-        tir.op.Op.get("tl.reduce"),
-        buffer,
-        out,
+        tir.op.Op.get("tl.npuir_reduce"),
+        src,
+        dst,
+        str(dim),
         reduce_type,
-        dim,
-        clear,
+        clear
     )
 
 
