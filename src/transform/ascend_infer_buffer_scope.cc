@@ -67,20 +67,22 @@ private:
     std::unordered_map<const VarNode*, BufferUseInfo> buffer_use_info;
     std::unordered_map<const VarNode*, BufferAllocationInfo> alloc_info;
     std::unordered_map<const VarNode*, const AllocateNode*> handle_to_alloc;
-    
-    static bool IsGEMMFunction(const std::string& func_name) {
-      static const std::regex gemm_pattern(R"(gemm|mma|matmul)", std::regex::icase);
-      return std::regex_search(func_name, gemm_pattern);
+
+    static bool IsGEMMFunction(const std::string &func_name) {
+      return IsGEMMInternal(ToLower(func_name));
     }
-    
-    static bool IsVectorFunction(const std::string& func_name) {
-      if (IsGEMMFunction(func_name)) return false;
-      
-      static const std::regex copy_pattern(R"(copy|memcpy|dma)", std::regex::icase);
-      if (std::regex_search(func_name, copy_pattern)) return false;
-      return true;
+
+    static bool IsVectorFunction(const std::string &func_name) {
+      std::string lower_name = ToLower(func_name);
+
+      if (IsGEMMInternal(lower_name))
+        return false;
+
+      static const std::vector<std::string> kVectorKeywords = {"copy", "memcpy",
+                                                               "dma"};
+      return !ContainsAny(lower_name, kVectorKeywords);
     }
-    
+
     static std::string GetPtrStorageScope(Var buffer_var) {
       if (auto* ptr_type = buffer_var->type_annotation.as<PointerTypeNode>()) {
         return ptr_type->storage_scope;
@@ -286,6 +288,30 @@ private:
     BufferUseInfo* GetUseInfo(const VarNode* handle) {
       auto it = buffer_use_info.find(handle);
       return it != buffer_use_info.end() ? &it->second : nullptr;
+    }
+
+  private:
+    static std::string ToLower(std::string_view str) {
+      std::string lower_str(str);
+      std::transform(lower_str.begin(), lower_str.end(), lower_str.begin(),
+                     [](unsigned char c) { return std::tolower(c); });
+      return lower_str;
+    }
+
+    static bool ContainsAny(const std::string &str,
+                            const std::vector<std::string> &keywords) {
+      for (const auto &keyword : keywords) {
+        if (str.find(keyword) != std::string::npos) {
+          return true;
+        }
+      }
+      return false;
+    }
+
+    static bool IsGEMMInternal(const std::string &lower_name) {
+      static const std::vector<std::string> kGemmKeywords = {"gemm", "mma",
+                                                             "matmul"};
+      return ContainsAny(lower_name, kGemmKeywords);
     }
   };
 
