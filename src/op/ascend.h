@@ -247,6 +247,19 @@ public:
   Array<Range> src_range, dst_range;
 };
 
+class NpuirCumsum : public Operator {
+public:
+  NpuirCumsum(Array<PrimExpr> args, BufferMap vmap);
+
+  static const Op &Get();
+
+  Buffer src, dst;
+  bool reverse;
+  std::vector<int64_t> cum_dims;
+
+  Array<Range> src_range, dst_range;
+};
+
 class NpuirSelect : public Operator {
 public:
   NpuirSelect(Array<PrimExpr> args, BufferMap vmap);
@@ -428,3 +441,4 @@ public:
 } // namespace tvm
 
 #endif //  TVM_TL_OP_ELEM_H_
+
