@@ -257,6 +257,22 @@ CATLASS_DEVICE void shmem_put_nbi(const GlobalTensor<T> &output, const GlobalTen
 }
 
 template <typename T>
+CATLASS_DEVICE void shmem_put_nbi_new(const GlobalTensor<T> &output, const GlobalTensor<T> &input,
+                             size_t nelems, size_t newPe) 
+    if ASCEND_IS_AIC return;
+    AscendC::TPipe pipe;
+    uint32_t ub_size = UB_HALF_SIZE * 2 + 64;
+    AscendC::TBuf<AscendC::TPosition::VECIN> ub_buf;
+    pipe.InitBuffer(ub_buf, ub_size);
+    auto ub_tensor = ub_buf.Get<T>();
+    __gm__ T* outputPtr = const_cast<__gm__ T*>(output.GetPhyAddr());
+    __gm__ T* inputPtr = const_cast<__gm__ T*>(input.GetPhyAddr());
+    __ubuf__ T* buf = reinterpret_cast<__ubuf__ T*>(ub_tensor.GetPhyAddr());
+    // TODO:EVENT_ID0再确认下含义
+    aclshmemx_mte_put_mem_nbi(outputPtr, inputPtr, buf, ub_size, nelems, newPe, EVENT_ID0);                                                                                 
+}
+
+template <typename T>
 CATLASS_DEVICE void shmem_ub_put_nbi(const LocalTensor<T> &ubTensor, const GlobalTensor<T> &output, size_t nelems, int newPe) {
     if ASCEND_IS_AIC return;                                                                                    
     using ac_type = ReplaceVoidWithUint8<T>;
@@ -269,7 +285,7 @@ CATLASS_DEVICE void shmem_ub_put_nbi_new(const LocalTensor<T> &ubTensor, const G
     if ASCEND_IS_AIC return;                                                                                    
     using ac_type = ReplaceVoidWithUint8<T>;
     aclshmemx_mte_put_mem_nbi(const_cast<__gm__ ac_type*>(output.GetPhyAddr()),                                       
-        reinterpret_cast<__ubuf__ const ac_type*>(ubTensor.GetPhyAddr()), nelems, newPe, EVENT_ID0);                                                                     
+        reinterpret_cast<__ubuf__ ac_type*>(ubTensor.GetPhyAddr()), nelems, newPe, EVENT_ID0);                                                                     
 }
 
 template <typename T>
@@ -325,6 +341,15 @@ CATLASS_DEVICE void shmem_ub_get_nbi(const LocalTensor<T> &output, const GlobalT
     using ac_type = ReplaceVoidWithUint8<T>;
     aclshmemx_getmem_nbi(reinterpret_cast<__ubuf__ ac_type *>(output.GetPhyAddr()),
         reinterpret_cast<__gm__ const ac_type *>(input.GetPhyAddr()), nelems * sizeof(T), newPe);
+}
+
+template <typename T>
+CATLASS_DEVICE void shmem_ub_get_nbi_new(const LocalTensor<T> &output, const GlobalTensor<T> &input,
+                             size_t nelems, size_t newPe) {
+    if ASCEND_IS_AIC return;
+    using ac_type = ReplaceVoidWithUint8<T>;
+    aclshmemx_mte_get_mem_nbi(reinterpret_cast<__ubuf__ ac_type *>(output.GetPhyAddr()),
+        const_cast<__gm__ ac_type *>(input.GetPhyAddr()), nelems, newPe);
 }
 
 template <typename T, uint32_t Len, uint32_t op>
