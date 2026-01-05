@@ -15,8 +15,9 @@ import torch
 )
 def simple_gemv(
     N:int, K:int, block_N:int, block_K:int, 
-    dtype:str = "float16", accum_dtype:str = "float"
+    dtype:str = "float16", accum_dtype:str = "float32"
 ):
+    """ Vector core GEMV implementation"""
     VEC_NUM = 2
     TEMP_DTYPE = "uint8"
     CAST_MODE = "CAST_NONE"
@@ -25,6 +26,14 @@ def simple_gemv(
     k_num = T.ceildiv(K, block_K)
 
     kernel_num = T.ceildiv(n_num, VEC_NUM)
+
+    not_same_dtype = dtype != accum_dtype
+
+    def cast_or_copy(dst, src, mode, count):
+        if not_same_dtype:
+            return T.tile.cast_tl(dst, src, mode, count)
+        else:
+            return T.copy(src, dst)
 
     @T.prim_func
     def main(
@@ -50,14 +59,14 @@ def simple_gemv(
             for bk in T.serial(k_num):
                 T.copy(x[bk * block_K], x_ub)
                 T.copy(A[bn * block_N, bk * block_K], A_ub)
-                T.tile.cast_tl(x_32_ub, x_ub, CAST_MODE, block_K)  # cast to float for reduce_sum
-                T.tile.cast_tl(A_32_ub, A_ub, CAST_MODE, block_N * block_K)  # cast to float for reduce_sum
+                cast_or_copy(x_32_ub, x_ub, CAST_MODE, block_K)  # cast to float for reduce_sum
+                cast_or_copy(A_32_ub, A_ub, CAST_MODE, block_N * block_K)
                 for i in T.serial(block_N):
                     T.tile.mul(A_32_ub[i, :], A_32_ub[i, :], x_32_ub)
                 T.tile.reduce_sum(y_single_32_ub, A_32_ub, temp_ub, dim=-1)
                 T.tile.add(y_total_32_ub, y_total_32_ub, y_single_32_ub)
             
-            T.tile.cast_tl(y_ub, y_total_32_ub, CAST_MODE, block_N)  # cast back
+            cast_or_copy(y_ub, y_total_32_ub, CAST_MODE, block_N)  # cast back
             T.copy(y_ub, y[bn * block_N])
     return main
 
@@ -81,8 +90,8 @@ def check_case(N:int, K:int, block_N: int = 64, block_K: int = 128, dtype="float
 
 def main(custom_args=None):
     parser = argparse.ArgumentParser(description="GEMV Example")
-    parser.add_argument("--n", type=int, default=256, help="Matrix dimension N")
-    parser.add_argument("--k", type=int, default=256, help="Matrix dimension K")
+    parser.add_argument("--n", type=int, default=1024, help="Matrix dimension N")
+    parser.add_argument("--k", type=int, default=1024, help="Matrix dimension K")
     args, remains = parser.parse_known_args(custom_args)
     if remains:
         print(f"[{parser.description}]", "Unknown args:", remains)
@@ -91,10 +100,11 @@ def main(custom_args=None):
     torch.manual_seed(0)
 
     check_case(N, K, 128, 128)
-    check_case(N, K, 32, 32)
+    check_case(N, K, 128, 128, dtype="float32")
     check_case(64, 64, 16, 16)
 
-    print("Kernel Output Match!", "GEMV example passed!")
+    print("GEMV example passed!")
+    print("Kernel Output Match!")
 
 if __name__ == "__main__":
     main()

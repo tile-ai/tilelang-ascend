@@ -10,7 +10,8 @@ tilelang.disable_cache()
 pass_configs = {
     tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
     tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_SYNC: True,
-    tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
+    tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
 }
 
 @tilelang.jit(out_idx=[3], workspace_idx=[4,5,6,7,8], pass_configs=pass_configs)
@@ -116,35 +117,35 @@ def sparse_attention_fwd(
             acc_o_ub = T.alloc_ub([v_block, D], accum_dtype)
             acc_o_half = T.alloc_ub([v_block, D], dtype)
 
-            # Currently manually set the address.
-            T.annotate_address({
-                # L1 address
-                q_l1: 0,
-                q_tail_l1: 65536,
-                kv_l1: 73728,
-                kv_tail_l1: 139264,
-                acc_s_l1: 139264,
+            # Uncomment and set MEMORY_PLANNING false to annotate address manually
+            # T.annotate_address({
+            #     # L1 address
+            #     q_l1: 0,
+            #     q_tail_l1: 65536,
+            #     kv_l1: 73728,
+            #     kv_tail_l1: 139264,
+            #     acc_s_l1: 139264,
 
-                # L0C address
-                acc_s_l0c: 0,
-                acc_o_l0c: 0,
+            #     # L0C address
+            #     acc_s_l0c: 0,
+            #     acc_o_l0c: 0,
 
-                ## ub address
-                acc_o: 0,
-                sumexp: 65536,
-                m_i: 65664,
-                indices_ub_: 65792,
-                kv_ub: 66048,
-                kv_tail_ub: 67072,
-                acc_s_ub: 66048,
-                m_i_prev: 74240,
-                acc_s_ub_: 74368,
-                tmp_ub: 74368,
-                sumexp_i_ub: 98944,
-                acc_s_half: 98944,
-                acc_o_ub: 98944,
-                acc_o_half: 98944
-            })
+            #     ## ub address
+            #     acc_o: 0,
+            #     sumexp: 65536,
+            #     m_i: 65664,
+            #     indices_ub_: 65792,
+            #     kv_ub: 66048,
+            #     kv_tail_ub: 67072,
+            #     acc_s_ub: 66048,
+            #     m_i_prev: 74240,
+            #     acc_s_ub_: 74368,
+            #     tmp_ub: 74368,
+            #     sumexp_i_ub: 98944,
+            #     acc_s_half: 98944,
+            #     acc_o_ub: 98944,
+            #     acc_o_half: 98944
+            # })
 
             b_i = by
             g_i = bz

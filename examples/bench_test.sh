@@ -1,135 +1,90 @@
 #!/bin/bash
 
-echo "Starting unified test script execution..."
+# ================= 配置区 =================
+MAX_JOBS=8  # 同时并行执行的任务数，建议根据 NPU 负载调整
+# ==========================================
+
+echo "Starting parallel unified test execution (Live Output)..."
 echo "====================================="
 
 total_scripts=0
 passed_scripts=0
-failed_scripts=0
-failed_files=()
-
-# 收集所有要执行的脚本文件
 all_scripts=()
 
-# 添加普通Python文件（排除gemm_aot目录以及reference，golden代码）
-python_files=$(find . -maxdepth 2 -name "*.py" -not -path "./gemm_aot/*" -not -name "sfa_golden.py" | sort)
+# 1. 收集脚本逻辑 (保持原样)
+python_files=$(find . -maxdepth 2 -name "*.py" -not -path "./gemm_aot/*" -not -name "sfa_golden.py" -not -name "__init__.py" | sort)
 if [ -n "$python_files" ]; then
-    for file in $python_files; do
-        all_scripts+=("$file")
-    done
+    for file in $python_files; do all_scripts+=("$file"); done
 fi
-
-# 添加gemm_aot目录中的bash脚本
 if [ -d "./gemm_aot" ]; then
     bash_scripts=$(find ./gemm_aot -maxdepth 1 -name "run_example_gemm_aot.sh" | sort)
     if [ -n "$bash_scripts" ]; then
-        for script in $bash_scripts; do
-            all_scripts+=("$script")
-        done
+        for script in $bash_scripts; do all_scripts+=("$script"); done
     fi
 fi
 
-# 显示找到的所有脚本文件
 if [ ${#all_scripts[@]} -eq 0 ]; then
     echo "No test scripts found."
     exit 0
 fi
 
-echo "Found test scripts:"
-for script in "${all_scripts[@]}"; do
-    echo "  - $script"
-done
-echo
+# 2. 并行执行逻辑
+# 注意：我们通过文件描述符或子进程退出码来统计结果
+temp_dir=$(mktemp -d) # 创建临时目录仅用于存放结果标记文件，不存日志
 
-# 统一执行所有脚本
 for script in "${all_scripts[@]}"; do
-    echo "Executing: $script"
     total_scripts=$((total_scripts + 1))
-
-    # 获取脚本所在目录
-    script_dir=$(dirname "$script")
-    script_name=$(basename "$script")
-
-    # 保存当前目录
-    current_dir=$(pwd)
-
-    # 根据文件类型选择执行方式
-    if [[ "$script" == *.py ]]; then
-        # 切换到脚本目录执行Python脚本
-        cd "$script_dir" || exit
-        output=$(python "$script_name" 2>&1)
-        exit_code=$?
-        script_type="Python"
-    elif [[ "$script" == *.sh ]]; then
-        # 切换到脚本目录执行Bash脚本
-        cd "$script_dir" || exit
-        output=$(bash "$script_name" 2>&1)
-        exit_code=$?
-        script_type="Bash"
-    else
-        echo "  Status: SKIPPED (unknown file type)"
-        failed_scripts=$((failed_scripts + 1))
-        failed_files+=("$script")
-        echo
-        continue
-    fi
-
-    # 返回原目录
-    cd "$current_dir" || exit
-
-    # 获取最后一行输出
-    last_line=$(echo "$output" | tail -n 1)
-
-    # 检查最后一行是否包含通过关键词（不区分大小写）
-    if [[ "$last_line" =~ [Kk][Ee][Rr][Nn][Ee][Ll][[:space:]][Oo][Uu][Tt][Pp][Uu][Tt][[:space:]][Mm][Aa][Tt][Cc][Hh] ]] || [[ "$last_line" =~ [Tt][Ee][Ss][Tt][[:space:]][Pp][Aa][Ss][Ss][Ee][Dd][!] ]]; then
-        echo "  Status: PASSED ($script_type)"
-        echo "  Last line: $last_line"
-        passed_scripts=$((passed_scripts + 1))
-    else
-        echo "  Status: FAILED ($script_type)"
-        echo "  Exit code: $exit_code"
-        echo "  Last line: $last_line"
-        echo "  Full output (last 10 lines):"
-        echo "  ----------------------------------------"
-        echo "$output" | tail -n 10 | sed 's/^/  /'
-        echo "  ----------------------------------------"
+    
+    # 启动后台子进程
+    {
+        script_dir=$(dirname "$script")
+        script_name=$(basename "$script")
         
-        if [ $exit_code -eq 0 ]; then
-            echo "  Note: $script_type script executed successfully but didn't output expected pass phrase"
+        # 执行脚本并捕获输出到变量，不在磁盘生成日志文件
+        if [[ "$script" == *.py ]]; then
+            output=$(cd "$script_dir" && python "$script_name" 2>&1)
+            exit_code=$?
         else
-            echo "  Error: $script_type script execution failed with exit code $exit_code"
+            output=$(cd "$script_dir" && bash "$script_name" 2>&1)
+            exit_code=$?
         fi
-        failed_scripts=$((failed_scripts + 1))
-        failed_files+=("$script")
+
+        # 结果判定逻辑
+        last_line=$(echo "$output" | tail -n 1)
+        if [[ "$last_line" =~ [Kk][Ee][Rr][Nn][Ee][Ll][[:space:]][Oo][Uu][Tt][Pp][Uu][Tt][[:space:]][Mm][Aa][Tt][Cc][Hh] ]] || [[ "$last_line" =~ [Tt][Ee][Ss][Tt][[:space:]][Pp][Aa][Ss][Ss][Ee][Dd][!] ]]; then
+            echo "[PASSED] $script"
+            touch "$temp_dir/pass_$total_scripts"
+        else
+            echo "[FAILED] $script (Exit: $exit_code)"
+            echo "  Last line: $last_line"
+            # 失败时打印最后5行方便调试
+            echo "$output" | tail -n 5 | sed 's/^/  /'
+        fi
+    } &
+
+    # 并发控制
+    if [[ $(jobs -r -p | wc -l) -ge $MAX_JOBS ]]; then
+        wait -n
     fi
-    echo
 done
 
-echo "====================================="
-echo "Unified Execution Summary"
-echo "====================================="
-echo "Total scripts executed: $total_scripts"
-echo "Passed: $passed_scripts"
-echo "Failed: $failed_scripts"
-echo
+wait # 等待所有任务完成
 
-if [ $failed_scripts -gt 0 ]; then
-    echo "Failed scripts:"
-    for file in "${failed_files[@]}"; do
-        echo "  - $file"
-    done
-    echo
-fi
-# Calculate and display percentage
+# 3. 统计结果
+passed_scripts=$(ls "$temp_dir" | grep "pass_" | wc -l)
+failed_scripts=$((total_scripts - passed_scripts))
+rm -rf "$temp_dir" # 清理计数文件
+
+echo -e "\n====================================="
+echo "Execution Summary"
+echo "Total: $total_scripts | Passed: $passed_scripts | Failed: $failed_scripts"
 if [ $total_scripts -gt 0 ]; then
-    percentage=$((passed_scripts * 100 / total_scripts))
-    echo "Pass rate: $percentage% ($passed_scripts/$total_scripts)"
-else
-    echo "Pass rate: 0% (0/0)"
+    echo "Pass rate: $((passed_scripts * 100 / total_scripts))%"
 fi
-
 echo "====================================="
 
-echo "Executing pytest script: ..\\testing\\python\\language\\test_tilelang_ascend_language_parallel.py"
+# 4. 最后执行特定的 pytest (保持串行以确保环境稳定)
 python ../testing/python/language/test_tilelang_ascend_language_parallel.py
 python ../testing/python/language/test_tilelang_ascend_language_cast_on_copy.py
+python ../testing/python/language/test_tilelang_ascend_language_parallel_discrete.py
+python ../testing/python/language/test_tilelang_ascend_language_parallel_complex.py

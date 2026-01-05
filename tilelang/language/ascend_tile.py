@@ -162,9 +162,8 @@ def brcb(dst: Buffer, src: Buffer, repeat_times: PrimExpr, dst_blk_stride: PrimE
     return T.call_extern("handle", f"tl::ascend::brcb<{_dtype(src)}>", dst_ptr, src_ptr,
                          repeat_times, dst_blk_stride, dst_repeat_stride)
 
-
 def binary_op(dst: Union[Buffer, BufferRegion], src0: Union[Buffer, BufferRegion],
-              src1: Union[Buffer, BufferLoad, PrimExpr, float], op: str):
+              src1: Union[Buffer, BufferRegion, BufferLoad, PrimExpr, float], op: str):
 
     def _handle_buffer_region(br: BufferRegion, mask):
         bf = br.buffer
@@ -195,40 +194,45 @@ def binary_op(dst: Union[Buffer, BufferRegion], src0: Union[Buffer, BufferRegion
         return T.call_extern("handle", f"AscendC::{op}s", dst_ptr, src0_ptr,
                              buffer_1.access_ptr("r"), indices_1[0], size_0)
 
-    elif isinstance(src1, (PrimExpr, float)):
+    elif isinstance(src1, (PrimExpr, float, int)):
         return T.call_extern("handle", f"AscendC::{op}s", dst_ptr, src0_ptr, src1, size_0)
+    elif isinstance(src1, BufferRegion):
+        src1_ptr, src1_extent = _handle_buffer_region(src1, "r")
+        size_2 = math.prod(src1_extent)
+        assert size_0 == size_2, "size must be same"
+        return T.call_extern("handle", f"AscendC::{op}", dst_ptr, src0_ptr, src1_ptr, size_0)
     else:
         return T.call_extern("handle", f"AscendC::{op}", dst_ptr, src0_ptr, src1.access_ptr("r"),
                              size_0)
 
 
-def add(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferLoad, PrimExpr]):
+def add(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, BufferLoad, PrimExpr]):
     return binary_op(dst, src0, src1, "Add")
 
 
-def sub(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferLoad]):
+def sub(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, BufferLoad]):
     return binary_op(dst, src0, src1, "Sub")
 
 
-def mul(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferLoad, PrimExpr]):
+def mul(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, BufferLoad, PrimExpr]):
     return binary_op(dst, src0, src1, "Mul")
 
 
-def div(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferLoad]):
+def div(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, BufferLoad]):
     return binary_op(dst, src0, src1, "Div")
 
 
-def max(dst: Buffer, src0: Buffer, src1: Union[Buffer]):
+def max(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion]):
     return binary_op(dst, src0, src1, "Max")
 
 
-def min(dst: Buffer, src0: Buffer, src1: Union[Buffer]):
+def min(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion]):
     return binary_op(dst, src0, src1, "Min")
 
-def and_tl(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferLoad, PrimExpr]):
+def and_tl(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, BufferLoad, PrimExpr]):
     return binary_op(dst, src0, src1, "And")
 
-def or_tl(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferLoad, PrimExpr]):
+def or_tl(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, BufferLoad, PrimExpr]):
     return binary_op(dst, src0, src1, "Or")
 
 
@@ -309,6 +313,36 @@ def shiftright(dst: Buffer, src0: Buffer, scalarValue: PrimExpr):
 
     return T.call_extern("handle", f"AscendC::ShiftRight", dst.access_ptr("w"),
                          src0.access_ptr("r"), scalarValue, size_0)
+
+def bilinear_interpolation(dst: Buffer, src0: Buffer, src0_offset: Buffer, src1: Buffer, mask: PrimExpr,
+                           h_repeat: PrimExpr, repeat_mode: bool, dst_blk_stride: PrimExpr, v_r_offset: PrimExpr,
+                           v_repeat: PrimExpr, shared_tmp_buffer: Buffer):
+    return T.call_extern("handle", "AscendC::BilinearInterpolation", dst.access_ptr("w"), src0.access_ptr("r"),
+                         src0_offset.access_ptr("r"), src1.access_ptr("r"), mask, h_repeat, repeat_mode, dst_blk_stride, v_r_offset,
+                         v_repeat, shared_tmp_buffer.access_ptr("r"))
+
+
+def wholereducemax(dst: Buffer, src: Buffer, mask: PrimExpr, repeattimes: PrimExpr, dstrepstride: PrimExpr, srcblkstride: PrimExpr,
+                   srcrepstride: PrimExpr, ReduceOrder: str = "ORDER_VALUE_INDEX"):
+
+    return T.call_extern("handle", "AscendC::WholeReduceMax", dst.access_ptr("w"), src.access_ptr("r"), mask, repeattimes, dstrepstride,
+                         srcblkstride, srcrepstride, ReduceOrder)
+
+
+def wholereducemin(dst: Buffer, src: Buffer, mask: PrimExpr, repeattimes: PrimExpr, dstrepstride: PrimExpr, srcblkstride: PrimExpr,
+                   srcrepstride: PrimExpr, ReduceOrder: str = "ORDER_VALUE_INDEX"):
+
+    return T.call_extern("handle", "AscendC::WholeReduceMin", dst.access_ptr("w"), src.access_ptr("r"), mask, repeattimes, dstrepstride,
+                         srcblkstride, srcrepstride, ReduceOrder)
+
+
+def wholereducesum(dst: Buffer, src: Buffer, mask: PrimExpr, repeattimes: PrimExpr, dstrepstride: PrimExpr, srcblkstride: PrimExpr,
+                   srcrepstride: PrimExpr):
+
+    return T.call_extern("handle", "AscendC::WholeReduceSum", dst.access_ptr("w"), src.access_ptr("r"), mask, repeattimes, dstrepstride,
+                         srcblkstride, srcrepstride)
+
+
 def sort32(dst: Buffer, src0: Buffer, src1: Buffer):
     repeatTimes = math.prod(src0.shape) // 32
     return T.call_extern("handle", f"AscendC::Sort32", dst.access_ptr("w"),
@@ -367,7 +401,7 @@ def block_reduce_min(dst: Buffer, src: Buffer, repeat: PrimExpr, mask: PrimExpr,
 
 
 def block_reduce_sum(dst: Buffer, src: Buffer, repeat: PrimExpr, mask: PrimExpr, dstPepStride: PrimExpr, srcBlkStride: PrimExpr, srcRepStride: PrimExpr):
-    return T.call_extern("handle", "AscendC::BlockReduceSum", dst.access_ptr("w"), src.access_ptr("r"), repeat, mask, dstPepStride, srcBlkStride, srcRepStride)    
+    return T.call_extern("handle", "AscendC::BlockReduceSum", dst.access_ptr("w"), src.access_ptr("r"), repeat, mask, dstPepStride, srcBlkStride, srcRepStride)
 
 
 def compare(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferLoad, PrimExpr], mode: str):

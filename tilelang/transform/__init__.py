@@ -390,6 +390,17 @@ def CombineCV():
     return _ffi_api.CombineCV()  # type: ignore
 
 
+def CrossCorePipeline():
+    """CrossCorePipeline
+
+    Returns
+    -------
+    fpass : tvm.transform.Pass
+        The result pass
+    """
+    return _ffi_api.CrossCorePipeline()  # type: ignore
+
+
 def AscendLowerParallelToVector():
     """Lower parallel loops to vector instructions for Ascend.
 
@@ -400,3 +411,15 @@ def AscendLowerParallelToVector():
     ----
     """
     return _ffi_api.AscendLowerParallelToVector()  # type: ignore
+
+
+def AscendInferBufferScope():
+    """Infer Buffer Scope for Ascend.
+
+    Returns
+    -------
+    fpass : tvm.transform.Pass
+        The result pass
+    ----
+    """
+    return _ffi_api.InferAllocScope()  # type: ignore

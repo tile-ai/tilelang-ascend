@@ -257,4 +257,4 @@ class TestTileLangKernels:
     # int8 and float32 cannot be directly casted to each other
 
 if __name__ == "__main__":
-    pytest.main([__file__, "-v"])
+    pytest.main([__file__, "-v", "-n", "8"])

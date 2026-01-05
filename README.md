@@ -436,6 +436,41 @@ for b in range(B):
 # Call operator - output and workspaces are automatically allocated!
 output = func(q, kv, indices)
 ```
+### T.Pipelined
+We have supported [T.pipelined](https://github.com/tile-ai/tilelang-ascend/blob/ascendc_pto/docs/tutorials/t_pipelied.md), which enables automatic pipeline scheduling  to achieve intra-core computation and data movement overlap, as well as inter-core pipeline overlap between Cube and Vector units, thereby enhancing performance.
+
+Here is an intra-core example refers to [matmul_add_pipeline.py](https://github.com/tile-ai/tilelang-ascend/blob/ascendc_pto/examples/pipeline/matmul_add_pipeline.py):
+```python
+for k in T.Pipelined(loop_k, num_stages=2):
+    T.copy(A[bx * block_M, k * block_K], A_L1)
+    T.copy(B[k * block_K, by * block_N], B_L1)
+
+    T.barrier_all()
+    if k == 0:
+        T.gemm_v0(A_L1, B_L1, C_L0, init=True)
+    else:
+        T.gemm_v0(A_L1, B_L1, C_L0)
+
+    T.barrier_all()
+```
+
+An inter-core example refers to [flash_attn_bshd_pipeline.py](https://github.com/tile-ai/tilelang-ascend/blob/ascendc_pto/examples/pipeline/flash_attn_bshd_pipeline.py):
+```python
+for k in T.Pipelined(T.ceildiv(seq_len, block_N), num_stages=2):
+    T.copy(K[bz, by, k * block_N:(k + 1) * block_N, :], k_l1)
+    T.gemm_v0(q_l1, k_l1, acc_s_l0c, transpose_B=True, init=True)
+    T.copy(acc_s_l0c, workspace_1[cid, :, :])
+
+    T.tile.fill(acc_s_ub, 0.0)
+    T.copy(m_i, m_i_prev)
+    T.copy(
+        workspace_1[cid, vid * block_M // 2:vid * block_M // 2 + block_M // 2, :],
+        acc_s_ub_)
+    T.tile.add(acc_s_ub, acc_s_ub, acc_s_ub_)
+    T.tile.mul(acc_s_ub, acc_s_ub, sm_scale)
+    ...
+```
+
 ### Dive Deep into TileLang Beyond GEMM
 
 In addition to GEMM, we provide a variety of examples to showcase the versatility and power of TileLang-Ascend, including:
