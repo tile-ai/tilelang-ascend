@@ -542,6 +542,11 @@ TIR_REGISTER_TL_OP(NpuirReduce, npuir_reduce)
     .set_attr<TCallEffectKind>("TCallEffectKind",
                                Integer(CallEffectKind::kOpaque));
 
+TIR_REGISTER_TL_OP(NpuirCumsum, npuir_cumsum)
+    .set_num_inputs(4)
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
+
 TIR_REGISTER_TL_OP(NpuirSelect, npuir_select)
     .set_num_inputs(4)
     .set_attr<TCallEffectKind>("TCallEffectKind",
@@ -609,4 +614,5 @@ TIR_REGISTER_TL_OP(NpuirVCTanh, npuir_vtanh)
                            
 } // namespace tl
 } // namespace tvm
+
 
