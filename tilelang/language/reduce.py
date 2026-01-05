@@ -5,6 +5,7 @@
 from tvm import tir
 from typing import Optional
 from tilelang.language import copy, macro, alloc_shared
+from .customize_npuir import _to_region
 
 
 def _legalize_dim(buffer: tir.Buffer, dim: int):
