@@ -432,6 +432,27 @@ def npuir_reduce(src, dst, dims:Union[list, tuple], reduce_mode, size=[]):
     reduce_dims = ','.join(str(dim) for dim in dims)
     return tir.call_intrin("handle", tir.op.Op.get("tl.npuir_reduce"), src, dst, reduce_dims, reduce_mode)
 
+def npuir_cumsum(src, dst, dim: int, reverse: bool = False, size=[]):
+    """Perform cumulative sum operation
+    
+    Args:
+        src (Union[tir.Buffer, tir.BufferLoad, tir.BufferRegion]): Source vector
+        dst (Union[tir.Buffer, tir.BufferLoad]): Destination vector
+        dim: The accumulation dimension index
+        reverse: Whether to perform reverse cumulative sum
+        size: Optional size override for buffers
+    """
+    src_extent = _get_extent(src) if size == [] else size.copy()
+    dst_extent = _get_extent(dst) if size == [] else size.copy()
+    
+    assert len(src_extent) == len(dst_extent), "The input vector and output vector must have same rank."
+    assert dim < len(src_extent), f"dim={dim} out of range [0, {len(src_extent)-1}]"
+    
+    src = _to_region(src, "r", src_extent)
+    dst = _to_region(dst, "w", dst_extent)
+    
+    return tir.call_intrin("handle", tir.op.Op.get("tl.npuir_cumsum"), src, dst, dim, reverse)
+    
 def npuir_gather(src, dst, indices:Union[list, tuple], size=[]):
     """Retrieve elements from a tensor/memref according to given indices, and store these elements in another tensor/memref. The gather axis is the last dimension.
  
@@ -850,3 +871,4 @@ def Scope(name):
     """
 
     return _ffi_api.Scope(name)
+
