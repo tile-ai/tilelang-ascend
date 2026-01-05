@@ -192,6 +192,7 @@ static std::map<std::string, mlir::hivm::ReduceOperation> NPUIR_STR_REDUCEOP{
     {"all", mlir::hivm::ReduceOperation::all},
     {"xori", mlir::hivm::ReduceOperation::xori},
     {"ori", mlir::hivm::ReduceOperation::ori},
+    {"abs_sum", mlir::hivm::ReduceOperation::abs_sum},
     {"none", mlir::hivm::ReduceOperation::none},
 };
 
