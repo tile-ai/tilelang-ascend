@@ -49,6 +49,11 @@ def _to_region(data, access_type, extent):
     else:
         return buffer_load_to_tile_region(data, access_type, extent[-len(data.buffer.shape):])
 
+def _legalize_dim(buffer: tir.Buffer, dim: int):
+    if dim < 0:
+        dim = len(buffer.shape) + dim
+    return dim
+
 def npuir_copy(
     src: Union[tir.Buffer, tir.BufferLoad, tir.BufferRegion],
     dst: Union[tir.Buffer, tir.BufferLoad],
@@ -414,7 +419,7 @@ def npuir_cast(src, dst, size=[], round_mode="rint"):
     return tir.call_intrin("handle", tir.op.Op.get("tl.npuir_cast"), src, dst, round_mode)
 
 
-def npuir_reduce(src, dst, dims:Union[list, tuple], reduce_mode, size=[], clear: bool = True):
+def npuir_reduce(src, dst, dims:Union[list, tuple, int], reduce_mode, size=[], clear: bool = True):
     """Reduce one or more axes of the source vector according to the reduction axes array, starting from an init value.
 
     Args:
@@ -432,6 +437,8 @@ def npuir_reduce(src, dst, dims:Union[list, tuple], reduce_mode, size=[], clear:
         tir.Call: A handle to the npuir_reduce operation
     """
     valid_reduce_mode = {"sum", "prod", "max", "min", "max_with_index_left", "max_with_index_right", "min_with_index_left", "min_with_index_right", "any", "all", "xori", "ori", "none"}
+    if isinstance(dims, int):
+        dims = [dims]
     src_extent = _get_extent(src) if size == [] else size.copy()
     if size != []:
         for dim in dims:
@@ -447,6 +454,65 @@ def npuir_reduce(src, dst, dims:Union[list, tuple], reduce_mode, size=[], clear:
 
     reduce_dims = ','.join(str(dim) for dim in dims)
     return tir.call_intrin("handle", tir.op.Op.get("tl.npuir_reduce"), src, dst, reduce_dims, reduce_mode, clear)
+
+def reduce_max(buffer: tir.Buffer, out: tir.Buffer, dim: int = -1, clear: bool = True):
+    """Perform reduce max on input buffer, store the result to output buffer
+
+    Parameters
+    ----------
+    buffer : Buffer
+        The input buffer.
+    out : Buffer
+        The output buffer.
+    dim : int
+        The dimension to perform reduce on
+    clear : bool
+        If set to True, the output buffer will first be initialized to -inf.
+    Returns
+    -------
+    handle : PrimExpr
+    """
+    dim = _legalize_dim(buffer, dim)
+    return npuir_reduce(buffer, out, reduce_mode="max", dims=dim, clear=clear)
+
+def reduce_min(buffer: tir.Buffer, out: tir.Buffer, dim: int = -1, clear: bool = True):
+    """Perform reduce min on input buffer, store the result to output buffer.
+
+    Args:
+        buffer (tir.Buffer): The input buffer
+        out (tir.Buffer): The output buffer
+        dim (int): The dimension to perform reduce on
+        clear (bool, optional): If True, output buffer will be initialized to inf. Defaults to True.
+
+    Returns:
+        tir.Call: Handle to the reduction operation
+    """
+    dim = _legalize_dim(buffer, dim)
+    return npuir_reduce(buffer, out, reduce_mode="min", dims=dim, clear=clear)
+
+def reduce_sum(buffer: tir.Buffer, out: tir.Buffer, dim: int = -1, clear: bool = True):
+    """Perform reduce sum on input buffer, store the result to output buffer.
+
+    Args:
+        buffer (tir.Buffer): The input buffer
+        out (tir.Buffer): The output buffer
+        dim (int): The dimension to perform reduce on
+        clear (bool, optional): If True, output buffer will be cleared before reduction.
+                              If False, results will be accumulated on existing values.
+                              Defaults to True.
+    Note: When clear=True, reduce_sum will not compute directly on the output buffer. This is because 
+          during warp reduction, the same value would be accumulated multiple times (number of threads 
+          in the warp). Therefore, the implementation with clear=True follows these steps:
+        1. create a temp buffer with same shape and dtype as out
+        2. copy out to temp buffer
+        3. call reduce_sum with temp buffer and out
+        4. Add temp buffer to out
+
+    Returns:
+        tir.Call: Handle to the reduction operation
+    """
+    dim = _legalize_dim(buffer, dim)
+    return npuir_reduce(buffer, out, reduce_mode="sum", dims=dim, clear=clear)
 
 def npuir_gather(src, dst, indices:Union[list, tuple], size=[]):
     """Retrieve elements from a tensor/memref according to given indices, and store these elements in another tensor/memref. The gather axis is the last dimension.
@@ -918,4 +984,5 @@ def Scope(name):
     """
 
     return _ffi_api.Scope(name)
+
 
