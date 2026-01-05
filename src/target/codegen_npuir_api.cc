@@ -192,7 +192,6 @@ static std::map<std::string, mlir::hivm::ReduceOperation> NPUIR_STR_REDUCEOP{
     {"all", mlir::hivm::ReduceOperation::all},
     {"xori", mlir::hivm::ReduceOperation::xori},
     {"ori", mlir::hivm::ReduceOperation::ori},
-    {"abs_sum", mlir::hivm::ReduceOperation::abs_sum},
     {"none", mlir::hivm::ReduceOperation::none},
 };
 
@@ -1007,7 +1006,6 @@ static void GetValueOfReduce(mlir::OpBuilder &builder,
       if (elemTy.isa<mlir::FloatType>()) {
         switch (op) {
         case mlir::hivm::ReduceOperation::sum:
-        case mlir::hivm::ReduceOperation::abs_sum:
           c = builder.create<mlir::arith::AddFOp>(loc, a, b);
           break;
         case mlir::hivm::ReduceOperation::max:
@@ -1022,7 +1020,6 @@ static void GetValueOfReduce(mlir::OpBuilder &builder,
       } else if (elemTy.isa<mlir::IntegerType>()) {
         switch (op) {
         case mlir::hivm::ReduceOperation::sum:
-        case mlir::hivm::ReduceOperation::abs_sum:
           c = builder.create<mlir::arith::AddIOp>(loc, a, b);
           break;
         case mlir::hivm::ReduceOperation::max:
