@@ -60,6 +60,42 @@ static std::string getType(const DataType &dtype) {
   return "";
 }
 
+int8_t GetTypeLen(std::string type) {
+  int8_t typeSize = 1;
+  if (type == "float") {
+    typeSize = 4;
+  } else if (type == "half") {
+    typeSize = 2;
+  } else if (type == "int8_t") {
+    typeSize = 1;
+  } else if (type == "int16_t") {
+    typeSize = 2;
+  } else if (type == "int") {
+    typeSize = 4;
+  } else {
+    ICHECK(false) << "Unsupported datatype";
+  }
+  return typeSize;
+}
+
+std::string GetTypeLenString(std::string type) {
+  std::string typeSize = "1";
+  if (type == "float") {
+    typeSize = "4";
+  } else if (type == "half") {
+    typeSize = "2";
+  } else if (type == "int8_t") {
+    typeSize = "1";
+  } else if (type == "int16_t") {
+    typeSize = "2";
+  } else if (type == "int") {
+    typeSize = "4";
+  } else {
+    ICHECK(false) << "Unsupported datatype";
+  }
+  return typeSize;
+}
+
 CodeGenTileLangAscendPto::CodeGenTileLangAscendPto() {
   // restrict_keyword_ = "__gm__ uint8_t *";
 }
@@ -95,6 +131,7 @@ void CodeGenTileLangAscendPto::VisitStmt_(const tir::ForNode *op) {
       PrintExpr(arith::Analyzer().Simplify(op->extent + op->min));
   std::string vid = AllocVarID(op->loop_var.get());
   std::string start = PrintExpr(op->min);
+  for_num_map_[vid] = extent;
   stream << "\n  for (";
   PrintType(op->loop_var.dtype(), stream);
   stream << ' ' << vid << " = " << start << "; " << vid << " < " << extent
@@ -406,6 +443,50 @@ void CodeGenTileLangAscendPto::VisitExpr_(const BufferLoadNode *op,
                 << PrintExpr(op->indices.back()) << ")";
 }
 
+std::map<std::string, std::string> extractTemplateParams(const std::string& input) {
+    std::map<std::string, std::string> result;
+    size_t start = input.find('<');
+    size_t end = input.rfind('>');
+    
+    if (start == std::string::npos || end == std::string::npos || start >= end) {
+        return result;
+    }
+    std::string inner = input.substr(start + 1, end - start - 1);
+    std::vector<std::string> params;
+    std::stringstream ss(inner);
+    std::string param;
+    while (std::getline(ss, param, ',')) {
+        param.erase(0, param.find_first_not_of(" \t"));
+        param.erase(param.find_last_not_of(" \t") + 1);
+        params.push_back(param);
+    }
+    std::vector<std::string> paramNames = {
+        "data_type_input",  
+        "data_type_output",
+        "M",            
+        "N",
+        "K",
+        "transpose_A",
+        "transpose_B"
+    };
+    for (size_t i = 0; i < params.size() && i < paramNames.size(); ++i) {
+        result[paramNames[i]] = params[i];
+    }
+    for (size_t i = paramNames.size(); i < params.size(); ++i) {
+        result["extra_param_" + std::to_string(i - paramNames.size() + 1)] = params[i];
+    }
+    return result;
+}
+
+int GetValidShape(int shape, std::string& dtype) {
+  int dtype_len = GetTypeLen(dtype);
+  int shape_mod = shape  * GetTypeLen(dtype) % 32;
+  if (shape_mod == 0) {
+      return shape;
+  }
+  return shape + (32 - shape_mod) / dtype_len;
+}
+
 void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) {
   auto print_tile = [&](const CallNode *op) -> std::string {
     auto _var = op->args[1].as<VarNode>();
@@ -478,16 +559,24 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) 
           std::string tensor_template = "GlobalTensor<" + global_tensor_template[String(tensor_addr)].dtype + ", ";
           std::string shape_template = "Shape<", stride_template = "Stride<";
           size_t len = global_tensor_template[String(tensor_addr)].shape_list.size();
+          size_t shape_len = 2;
           size_t op_arg_len = op->args.size();
           size_t shape_size = 5;
           // Dynamic Shape and Static Shape
 
           // generate shape
+          std::vector<std::string> shape_nums(shape_len);
+          shape_nums[1] =  PrintExpr(op->args[op_arg_len - 1]);
+          if (op_arg_len == 5) {
+              shape_nums[0] =  "1";
+          } else {
+              shape_nums[0] =  PrintExpr(op->args[op_arg_len - 2]);
+          }
           for (size_t i = 0; i < shape_size; i++) {
-              if (i < shape_size - len) {
+              if (i < shape_size - shape_len) {
                   shape_template += "1";
               } else {
-                  shape_template += PrintExpr(op->args[op_arg_len - shape_size + i]);
+                  shape_template += shape_nums[i + shape_len - shape_size];
               }
               if (i < shape_size - 1) {
                   shape_template += ", ";
@@ -497,11 +586,12 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) 
           // generate stride
           for (size_t i = 0; i < 4; i++) {
             if (len > 3 - i) {
-              if (global_tensor_template[String(tensor_addr)].shape_type=="dynamic") stride_template += "-1, ";
+              std::string tensor_template = global_tensor_template[String(tensor_addr)].shape_list[len + i - 4];
+              if (tensor_template[0] < '1' || tensor_template[0] > '9')  stride_template += "-1, ";
               else {
                 std::string tmp_shape = "";
                 for(size_t j = 0; j < 4 - i; j++) {
-                  tmp_shape += global_tensor_template[String(tensor_addr)].shape_list[j];
+                  tmp_shape += global_tensor_template[String(tensor_addr)].shape_list[len - j - 1];
                   if (j < 3 - i) tmp_shape += "*";
                 }
                 stride_template = stride_template +  tmp_shape + ", ";
@@ -525,7 +615,7 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) 
             for(size_t i = 0; i < len; i++) {
               std::string tmp_shape_info = global_tensor_template[String(tensor_addr)].shape_list[i];
               if(tmp_shape_info[0]<'1' || tmp_shape_info[0]>'9') this->stream << tmp_shape_info;
-              if(i<len-1) this->stream << ", ";
+              if(i<len-3) this->stream << ", ";
             }
             this->stream << ")";
           }
@@ -538,12 +628,22 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) 
           size_t len = global_tensor_template[String(tensor_addr)].shape_list.size();
           size_t op_arg_len = op->args.size();
           size_t shape_size = 5;
+          size_t shape_len = 2;
+          // Dynamic Shape and Static Shape
+
           // generate shape
+          std::vector<std::string> shape_nums(shape_len);
+          shape_nums[1] =  PrintExpr(op->args[op_arg_len - 1]);
+          if (op_arg_len == 5) {
+              shape_nums[0] =  "1";
+          } else {
+              shape_nums[0] =  PrintExpr(op->args[op_arg_len - 2]);
+          }
           for (size_t i = 0; i < shape_size; i++) {
-              if (i < shape_size - len) {
+              if (i < shape_size - shape_len) {
                   shape_template += "1";
               } else {
-                  shape_template += PrintExpr(op->args[op_arg_len - shape_size + i]);
+                  shape_template += shape_nums[i + shape_len - shape_size];
               }
               if (i < shape_size - 1) {
                   shape_template += ", ";
@@ -553,11 +653,12 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) 
           // generate stride
           for (size_t i = 0; i < 4; i++) {
             if (len > 3 - i) {
-              if (global_tensor_template[String(tensor_addr)].shape_type=="dynamic") stride_template += "-1, ";
+              std::string tensor_template = global_tensor_template[String(tensor_addr)].shape_list[len + i - 4];
+              if (tensor_template[0] < '1' || tensor_template[0] > '9')  stride_template += "-1, ";
               else {
                 std::string tmp_shape = "";
                 for(size_t j = 0; j < 4 - i; j++) {
-                  tmp_shape += global_tensor_template[String(tensor_addr)].shape_list[j];
+                  tmp_shape += global_tensor_template[String(tensor_addr)].shape_list[len - j - 1];
                   if (j < 3 - i) tmp_shape += "*";
                 }
                 stride_template = stride_template +  tmp_shape + ", ";
@@ -580,7 +681,7 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) 
             for(size_t i = 0; i < len; i++) {
               std::string tmp_shape_info = global_tensor_template[String(tensor_addr)].shape_list[i];
               if(tmp_shape_info[0]<'1' || tmp_shape_info[0]>'9') this->stream << tmp_shape_info;
-              if(i<len-1) this->stream << ", ";
+              if(i<len-3) this->stream << ", ";
             }
             this->stream << ")";
           }
@@ -599,6 +700,8 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) 
         if (api_name == "TEXTRACT") {
         this->stream << ", " << row_index << ", "
           << col_index;
+        } else if (api_name == "TCVT"){
+            this->stream << ", " << "pto::RoundMode::CAST_ROUND";
         }
         this->stream << ");\n";
       } else {
@@ -625,9 +728,23 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) 
       auto src_type = op->args[1].as<CallNode>()->args[0].as<CallNode>()->dtype;
       auto dst_type = op->args[3].as<CallNode>()->args[0].as<CallNode>()->dtype;
 
-      for(size_t pos=0;(pos=op_name.find("tl::ascend",pos))!=std::string::npos;pos+=5) {op_name.replace(pos,10,"tl::pto");}
-      this->stream << op_name << "(" << a_name << ", " << b_name << ", " 
-      << c_name << ", " << PrintExpr(op->args[4]) << ");\n";
+      std::map<std::string, std::string> params = extractTemplateParams(op_name);
+      std::string data_type_input = params["data_type_input"];
+      this->stream << "tl::pto::gemm_v0" << "<" <<  params["data_type_input"] << ", " << params["data_type_output"] << ", " 
+      << GetValidShape(std::stoi(params["M"]), data_type_input) << ", " 
+      << GetValidShape(std::stoi(params["N"]), data_type_input) << ", "
+      << GetValidShape(std::stoi(params["K"]), data_type_input) << ", "
+      << params["M"] << ", " << params["N"] << ", " << params["K"] << ", "
+      << params["transpose_A"] << ", " << params["transpose_B"] << ">" 
+      << "(" << a_name << ", " << b_name << ", " << c_name << ", " << PrintExpr(op->args[4]) << ");\n";
+    } else if(op_name.find("wait_flag_dev") != std::string::npos) {
+      this->PrintIndent();
+      std::string wait_flag = PrintExpr(op->args[0]);
+      this->stream << wait_flag.substr(1, wait_flag.length() - 2) << "\n";
+    } else if(op_name.find("ffts_cross_core_sync") != std::string::npos) {
+      this->PrintIndent();
+      std::string set_flag = PrintExpr(op->args[0]);
+      this->stream << set_flag.substr(1, set_flag.length() - 2) << "\n";
     }
   } else if (op->op.same_as(tl::ascend_fill())) {
     this->PrintIndent();
@@ -681,22 +798,37 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) 
       }
       if (op->args[3].as<CallNode>()) {
         auto var_name = print_tile(op->args[3].as<CallNode>());
+       std::string ub_name = var_names[1];
         this->PrintIndent();
         this->stream << "pipe_barrier(PIPE_ALL);\n";
         this->PrintIndent();
-        this->stream << "auto " << var_name << "_scalar = " << var_name
-                     << ".GetValue(" << PrintExpr(op->args[op->args.size() - 1])
+        std::string index = PrintExpr(op->args[op->args.size() - 1]);
+        std::string scalar_name = var_name + "_scalar";
+        this->stream << "auto " << scalar_name <<  "= " << var_name
+                     << ".GetValue(" << index
                      << ");\n";
-        var_names.push_back(var_name + "_scalar");
+        std::vector<std::string> ub_data_vector = ub_data_map_[ub_name];
+        std::string var_name_temp = ub_name + "_temp";
+        std::string ub_data_type = ub_data_vector[0];
+        this->PrintIndent();
+        int32_t ub_data_temp_col = std::stoi(ub_data_vector[2]) * std::stoi(ub_data_vector[1]) / std::stoi(for_num_map_[index]);
+        this->stream << "tl::pto::TileUbDataND<" << ub_data_vector[0] << ", 1, " 
+        << ub_data_temp_col << "> " << var_name_temp << "(" << "1, " << ub_data_temp_col << ");\n";
+        this->PrintIndent();
+        this->stream << "TASSIGN(" << var_name_temp << ", " << ub_data_vector[3] << " + " <<
+        index << " * " << ub_data_temp_col << " * " << GetTypeLenString(ub_data_vector[0]) << ");\n";
+        this->PrintIndent();
+        this->stream << op->args[0].as<StringImmNode>()->value << "(";
+        this->stream << var_name_temp << ", " << var_name_temp << ", " << scalar_name;
       } else {
+        this->PrintIndent();
+        this->stream << op->args[0].as<StringImmNode>()->value << "(";
         var_names.push_back(PrintExpr(op->args[op->args.size() - 1]));
-      }
-      this->PrintIndent();
-      this->stream << op->args[0].as<StringImmNode>()->value << "(";
-      for (int i = 0; i < var_names.size(); i++) {
-        this->stream << var_names[i];
-        if (i != var_names.size() - 1) {
-          this->stream << ", ";
+        for (int i = 0; i < var_names.size(); i++) {
+          this->stream << var_names[i];
+          if (i != var_names.size() - 1) {
+            this->stream << ", ";
+          }
         }
       }
       this->stream << ");\n";
@@ -770,24 +902,6 @@ void UbShapeInputCheck(const AllocateNode *op) {
   }
 }
 
-int8_t GetTypeLen(std::string type) {
-  int8_t typeSize = 1;
-  if (type == "float") {
-    typeSize = 4;
-  } else if (type == "half") {
-    typeSize = 2;
-  } else if (type == "int8_t") {
-    typeSize = 1;
-  } else if (type == "int16_t") {
-    typeSize = 2;
-  } else if (type == "int") {
-    typeSize = 4;
-  } else {
-    ICHECK(false) << "Unsupported datatype";
-  }
-  return typeSize;
-}
-
 bool ValidLayoutEnabled(const AllocateNode *op) {
   bool valid = false;
   std::string type = getType(op->dtype);
@@ -809,6 +923,8 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
   
   /// Allocate PTO Tile Memory Address
   auto print_buffer = [&](const std::string &pos) {
+    std::vector<std::string> ub_data(4);
+    ub_data[0] = type;
     if (pos == "tl::pto::TileUbData") {
       UbShapeInputCheck(op);
     }
@@ -817,6 +933,8 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
     if (address_map_.find(op->buffer_var) != address_map_.end()) {
       if (pos == "tl::pto::TileUbData") {
         if (op->extents.size() == 2) {
+          ub_data[1] = PrintExpr(op->extents[0]);
+          ub_data[2] = PrintExpr(op->extents[1]);
           auto valid = ValidLayoutEnabled(op);
           if (!valid) {
             stream << pos << "ND<" << type;
@@ -839,10 +957,26 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
               }
           }
         } else if (op->extents.size() == 1) {
-          stream << pos << "DN<" << type << ", " << op->extents[0] << ", 1> " << vid << "(" << op->extents[0] << ", 1);\n";
+          ub_data[1] = "1";
+          ub_data[2] = PrintExpr(op->extents[0]);
+          stream << pos << "ND<" << type <<  ", 1, " <<  op->extents[0] << ">" << vid << "(" << "1, " <<  op->extents[0] << ");\n";
         }
       } else {
+        int dtype_bytes = op->dtype.bytes();
+        std::vector<PrimExpr> valid_shapes;
+        valid_shapes.reserve(op->extents.size());
         stream << pos << "<" << type;
+        int shape_value = op->extents[0].as<tvm::tir::IntImmNode>()->value;
+        if (shape_value * dtype_bytes % 32 == 0) {
+            valid_shapes.push_back(op->extents[0]);
+        } else {
+            valid_shapes.push_back(tvm::IntImm(op->extents[0].dtype(), 
+            shape_value + (32 - shape_value * dtype_bytes % 32) / dtype_bytes));
+        }
+        valid_shapes.push_back(op->extents[1]);
+        for (size_t i = 0; i < valid_shapes.size(); i++) {
+            stream << ", " << valid_shapes[i];
+        }
         for (size_t i = 0; i < op->extents.size(); i++) {
             stream << ", " << op->extents[i];
         }
@@ -858,6 +992,8 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
       }
       if (pos == "tl::pto::TileUbData") {
         if (op->extents.size() == 2) {
+          ub_data[1] = PrintExpr(op->extents[0]);
+          ub_data[2] = PrintExpr(op->extents[1]);
           auto valid = ValidLayoutEnabled(op);
           if (!valid) {
             stream << pos << "ND<" << type;
@@ -880,10 +1016,26 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
               }
           }
         } else if (op->extents.size() == 1) {
-          stream << pos << "DN<" << type << ", " << op->extents[0] << ", 1> " << vid << "(" << op->extents[0] << ", 1);\n";
+          ub_data[1] = "1";
+          ub_data[2] = PrintExpr(op->extents[0]);
+          stream << pos << "ND<" << type <<  ", 1, " <<  op->extents[0] << ">" << vid << "(" << "1, " <<  op->extents[0] << ");\n";
         }
       } else {
+        int dtype_bytes = op->dtype.bytes();
+        std::vector<PrimExpr> valid_shapes;
+        valid_shapes.reserve(op->extents.size());
         stream << pos << "<" << type;
+         int shape_value = op->extents[0].as<tvm::tir::IntImmNode>()->value;
+        if (shape_value * dtype_bytes % 32 == 0) {
+            valid_shapes.push_back(op->extents[0]);
+        } else {
+            valid_shapes.push_back(tvm::IntImm(op->extents[0].dtype(), 
+            shape_value + (32 - shape_value * dtype_bytes % 32) / dtype_bytes));
+        }
+        valid_shapes.push_back(op->extents[1]);
+        for (size_t i = 0; i < valid_shapes.size(); i++) {
+            stream << ", " << valid_shapes[i];
+        }
         for (size_t i = 0; i < op->extents.size(); i++) {
             stream << ", " << op->extents[i];
         }
@@ -891,6 +1043,8 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
       }
       // Allocate Start Address
       this->PrintIndent();
+      ub_data[3] = DEC_STR_TO_HEX_STR(PrintExpr(address_offset_[String(pos)]));
+      ub_data_map_[vid] = ub_data;
       stream << "TASSIGN(" << vid << ", " << DEC_STR_TO_HEX_STR(PrintExpr(address_offset_[String(pos)])) << ");\n";
       address_offset_.Set(
           String(pos),

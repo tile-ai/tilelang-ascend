@@ -21,7 +21,7 @@ def set_cross_flag(pipe: str, flag: int):
 
 
 def wait_cross_flag(flag: int):
-    return T.call_extern("handle", f"wait_intra_block(PIPE_FIX, {flag});")
+    return T.call_extern("handle", f"wait_flag_dev({flag});")
 
 
 def barrier_all():
@@ -243,9 +243,10 @@ def scalar_op(dst: Buffer, src0: Buffer, scalar_value: PrimExpr, op_name: str):
 def leaky_relu(dst: Buffer, src0: Buffer, scalar_value: PrimExpr):
     return scalar_op(dst, src0, scalar_value, "TLRELU")
 
-def reduce(out: Buffer, buffer: Buffer, reduce_type: str, dim: int):
+def reduce(out: Buffer, buffer: Buffer, tmp: Buffer, reduce_type: str, dim: int):
     dtype = _dtype(buffer)
     out_dtype = _dtype(out)
+    tmp = tmp.access_ptr("r")
     shape = f"{buffer.shape[0]}, {buffer.shape[1]}"
     assert len(buffer.shape) == 2, "current only support buffer as a 2D tensor"
     assert dtype == out_dtype, "src & dst dtype must be equal"
@@ -265,13 +266,13 @@ def reduce(out: Buffer, buffer: Buffer, reduce_type: str, dim: int):
             op_name = "TCOLSUM"
 
     return T.call_intrin("handle", tir.op.Op.get("tl.ascend_reduce"), op_name, out,
-                         buffer)
+                         buffer, tmp)
 
-def reduce_max(out: Buffer, buffer: Buffer, dim: int):
+def reduce_max(out: Buffer, buffer: Buffer, tmp: Buffer, dim: int):
 
-    return reduce(out, buffer, "max", dim)
+    return reduce(out, buffer, tmp, "max", dim)
 
 
-def reduce_sum(out: Buffer, buffer: Buffer, dim: int):
+def reduce_sum(out: Buffer, buffer: Buffer, tmp: Buffer, dim: int):
 
-    return reduce(out, buffer, "sum", dim)
+    return reduce(out, buffer, tmp, "sum", dim)
