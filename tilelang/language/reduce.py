@@ -169,11 +169,17 @@ def cumsum(src: tir.Buffer, dst: Optional[tir.Buffer] = None, dim: int = 0, reve
         dst = src
     if src.scope() == "local.fragment":
         return cumsum_fragment(src, dst, dim, reverse)
+    
+    src_extent = src.shape
+    out_extent = dst.shape
+    src_tmp = _to_region(src, "r", src_extent)
+    dst_tmp = _to_region(dst, "w", out_extent)
+
     return tir.call_intrin(
         "handle",
-        tir.op.Op.get("tl.cumsum"),
-        src.access_ptr("r"),
-        dst.access_ptr("w"),
-        dim,
+        tir.op.Op.get("tl.npuir_cumsum"),
+        src_tmp,
+        dst_tmp,
+        str(dim),
         reverse,
     )
