@@ -432,26 +432,41 @@ def npuir_reduce(src, dst, dims:Union[list, tuple], reduce_mode, size=[]):
     reduce_dims = ','.join(str(dim) for dim in dims)
     return tir.call_intrin("handle", tir.op.Op.get("tl.npuir_reduce"), src, dst, reduce_dims, reduce_mode)
 
-def npuir_cumsum(src, dst, dim: int, reverse: bool = False, size=[]):
-    """Perform cumulative sum operation
-    
+def npuir_cumsum(src: tir.Buffer, dst: Optional[tir.Buffer] = None, dim: int = 0, reverse: bool = False):
+    """Perform cumulative sum on input buffer, store the result to output buffer.
+
     Args:
-        src (Union[tir.Buffer, tir.BufferLoad, tir.BufferRegion]): Source vector
-        dst (Union[tir.Buffer, tir.BufferLoad]): Destination vector
-        dim: The accumulation dimension index
-        reverse: Whether to perform reverse cumulative sum
-        size: Optional size override for buffers
+        src (tir.Buffer): The input buffer
+        dst (tir.Buffer, optional): The output buffer. Defaults to None.
+        dim (int, optional): The dimension to perform cumulative sum on. Defaults to 0.
+        reverse (bool, optional): Whether to perform reverse cumulative sum. Defaults to False.
+
+    Returns:
+        tir.Call: Handle to the cumulative sum operation
     """
-    src_extent = _get_extent(src) if size == [] else size.copy()
-    dst_extent = _get_extent(dst) if size == [] else size.copy()
+
+    shape = src.shape
+    if dim >= len(shape) or dim <= -len(shape):
+        raise ValueError(f"Dimension {dim} is out of bounds for buffer with shape {shape}")
+    if dim < 0:
+        dim = len(shape) + dim
+
+    if dst is None:
+        dst = src
     
-    assert len(src_extent) == len(dst_extent), "The input vector and output vector must have same rank."
-    assert dim < len(src_extent), f"dim={dim} out of range [0, {len(src_extent)-1}]"
-    
-    src = _to_region(src, "r", src_extent)
-    dst = _to_region(dst, "w", dst_extent)
-    
-    return tir.call_intrin("handle", tir.op.Op.get("tl.npuir_cumsum"), src, dst, dim, reverse)
+    src_extent = src.shape
+    out_extent = dst.shape
+    src_tmp = _to_region(src, "r", src_extent)
+    dst_tmp = _to_region(dst, "w", out_extent)
+
+    return tir.call_intrin(
+        "handle",
+        tir.op.Op.get("tl.npuir_cumsum"),
+        src_tmp,
+        dst_tmp,
+        str(dim),
+        reverse,
+    )
     
 def npuir_gather(src, dst, indices:Union[list, tuple], size=[]):
     """Retrieve elements from a tensor/memref according to given indices, and store these elements in another tensor/memref. The gather axis is the last dimension.
@@ -871,4 +886,5 @@ def Scope(name):
     """
 
     return _ffi_api.Scope(name)
+
 
