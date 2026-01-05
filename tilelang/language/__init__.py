@@ -93,6 +93,7 @@ from .customize_npuir import (
     npuir_cast,
     npuir_reduce,
     npuir_cumsum,
+    npuir_cumsum as cumsum,
     npuir_relu,
     npuir_select,
     npuir_cmp,
