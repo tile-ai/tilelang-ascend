@@ -162,25 +162,27 @@ echo "export PYTHONPATH=${TILELANG_PATH}:\$PYTHONPATH" >> ~/.bashrc
 # compile and install aclshmem package
 if $USE_SHMEM; then
     echo "Starting installation aclshmem..."
-    cd 3rdparty/aclshmem-dev
-    bash scripts/build.sh --package --python_extension
+    cd 3rdparty/shmem
+    bash scripts/build.sh --python_extension
     ACLSHMEM_INSTALL_PATH=$(pwd)/install
     arch=$(uname -m)
-    cd package/$arch/
-    chmod +x ACLSHMEM*.run
-    ./ACLSHMEM*.run --check
-    ./ACLSHMEM*.run --install --install-path=$ACLSHMEM_INSTALL_PATH
+    cd ci/release/$arch/
+    chmod +x SHMEM*.run
+    ./SHMEM*.run --check
+    ./SHMEM*.run --install --install-path=$ACLSHMEM_INSTALL_PATH
     if [ $? -ne 0 ]; then
         echo "Error: ACLSHMEM C++ pkg install failed."
         exit 1
     else
         echo "ACLSHMEM C++ pkg install success in $ACLSHMEM_INSTALL_PATH."
     fi
-    cd ../../src/python/dist
-    python -m pip install aclshmem*.whl --force-reinstall
+    cd ../../../src/python
+    python setup.py bdist_wheel
+    cd dist
+    python -m pip install shmem*.whl --force-reinstall
     if [ $? -ne 0 ]; then
         echo "python -m pip install failed, try pip3 install ..."
-        pip3 install aclshmem*.whl --force-reinstall
+        pip3 install shmem*.whl --force-reinstall
         if [ $? -ne 0 ]; then
             echo "Error: aclshmem-xxx.whl install failed."
             exit 1
@@ -190,7 +192,7 @@ if $USE_SHMEM; then
     else
         echo "aclshmem-xxx.whl install success."
     fi
-    source ../../../install/aclshmem/latest/set_env.sh
+    source ../../../install/shmem/latest/set_env.sh
     if [ $? -ne 0 ]; then
         echo "Error: set aclshmem env failed."
         exit 1
