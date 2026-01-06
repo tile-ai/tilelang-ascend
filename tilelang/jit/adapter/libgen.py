@@ -48,6 +48,7 @@ class LibraryGenerator(object):
             f"-I{ASCEND_HOME_PATH}/pkg_inc/profiling",
             f"-I{TL_ROOT}/3rdparty/catlass/include",
             f"-I{TL_ROOT}/3rdparty/shmem/include",
+            f"-I{TL_ROOT}/3rdparty/shmem/src",
             "-I" + TILELANG_TEMPLATE_PATH,
             f"-L{ASCEND_HOME_PATH}/lib64",
             "-Wno-macro-redefined",

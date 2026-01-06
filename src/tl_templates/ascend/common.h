@@ -346,7 +346,7 @@ CATLASS_DEVICE void shmem_ub_get_nbi_new(const LocalTensor<T> &output, const Glo
     if ASCEND_IS_AIC return;
     using ac_type = ReplaceVoidWithUint8<T>;
     aclshmemx_mte_get_mem_nbi(reinterpret_cast<__ubuf__ ac_type *>(output.GetPhyAddr()),
-        const_cast<__gm__ ac_type *>(input.GetPhyAddr()), nelems, newPe);
+        const_cast<__gm__ ac_type *>(input.GetPhyAddr()), nelems, newPe, EVENT_ID0);
 }
 
 template <typename T, uint32_t Len, uint32_t op>
