@@ -103,6 +103,8 @@ from .customize_npuir import (
     npuir_cumsum as cumsum,
     npuir_atomic_add,
     npuir_relu,
+    npuir_sigmoid,
+    npuir_sigmoid as sigmoid,
     npuir_select,
     npuir_cmp,
     npuir_sqrt,
