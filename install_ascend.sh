@@ -163,7 +163,7 @@ echo "export PYTHONPATH=${TILELANG_PATH}:\$PYTHONPATH" >> ~/.bashrc
 if $USE_SHMEM; then
     echo "Starting installation aclshmem..."
     cd 3rdparty/shmem
-    bash scripts/build.sh --python_extension
+    bash scripts/build.sh -python_extension
     ACLSHMEM_INSTALL_PATH=$(pwd)/install
     arch=$(uname -m)
     cd ci/release/$arch/
