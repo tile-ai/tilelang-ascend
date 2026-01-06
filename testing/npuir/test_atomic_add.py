@@ -16,7 +16,7 @@ def vec_atomic_add_1d(N, block_size, dtype="float32"):
     n_blocks = N // block_size
     
     @T.prim_func
-    def main(
+    def vecAtomicAdd1D(
             A: T.Tensor((N,), dtype),
             B: T.Tensor((N,), dtype),
             shape: T.int32,
@@ -35,13 +35,13 @@ def vec_atomic_add_1d(N, block_size, dtype="float32"):
             
             # T.copy(A_VEC, B[start], [tail_size])
 
-    return main
+    return vecAtomicAdd1D
 
 def vec_atomic_add_2d(M, N, block_M, block_N, dtype="float32"):
     m_num = M // block_M
     n_num = N // block_N
     @T.prim_func
-    def main(
+    def vecAtomicAdd2D(
             A: T.Tensor((M, N), dtype),
             B: T.Tensor((M, N), dtype),
             shape_M: T.int32, shape_N: T.int32,
@@ -61,7 +61,7 @@ def vec_atomic_add_2d(M, N, block_M, block_N, dtype="float32"):
             T.copy(A[bx, by], A_VEC, [tile_size_M, tile_size_N]) 
             T.npuir_atomic_add(A_VEC, B[bx, by], [tile_size_M, tile_size_N])           
             
-    return main
+    return vecAtomicAdd2D
 
 def test_vec_atomic_add_1d():
     torch.npu.set_device(0)
@@ -104,5 +104,4 @@ def test_vec_atomic_add_2d():
     print(f"All elements equal to expected: {torch.allclose(B, expected)}")
 
 if __name__ == "__main__":
-    # test_vec_atomic_add_1d()
     test_vec_atomic_add_2d()
