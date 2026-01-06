@@ -9,6 +9,7 @@ from tvm.script.ir_builder.tir.frame import TIRFrame
 from tvm._ffi import register_object
 from tilelang import _ffi_api
 from .kernel import get_thread_bindings, get_thread_extents, FrameStack
+from tilelang.language import copy, macro, serial, alloc_shared
 import threading
 
 from tilelang.language.copy import buffer_region_to_tile_region, buffer_load_to_tile_region, region
@@ -1062,6 +1063,7 @@ def Scope(name):
     """
 
     return _ffi_api.Scope(name)
+
 
 
 
