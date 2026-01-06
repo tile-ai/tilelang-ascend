@@ -592,7 +592,7 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) 
                 std::string tmp_shape = "";
                 for(size_t j = 0; j < 4 - i; j++) {
                   tmp_shape += global_tensor_template[String(tensor_addr)].shape_list[len - j - 1];
-                  if (j < 3 - i) tmp_shape += "*";
+                  if (j < 3 - i) tmp_shape += " * ";
                 }
                 stride_template = stride_template +  tmp_shape + ", ";
               }
@@ -620,6 +620,8 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) 
             this->stream << ")";
           }
           this->stream << ");\n";
+        } else if (api_name == "TCVT") {
+          api_name = src_type == dst_type ? "TMOV":"TCVT";
         } else if (api_name == "TSTORE") {
           ICHECK((copy_base_addr_map_.find(String(dst_var_id)) != copy_base_addr_map_.end()));
           std::string tensor_addr = copy_base_addr_map_[String(dst_var_id)];
@@ -700,8 +702,8 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) 
         if (api_name == "TEXTRACT") {
         this->stream << ", " << row_index << ", "
           << col_index;
-        } else if (api_name == "TCVT"){
-            this->stream << ", " << "pto::RoundMode::CAST_ROUND";
+        } else if (api_name == "TCVT") {
+            this->stream << ", pto::RoundMode::CAST_NONE";
         }
         this->stream << ");\n";
       } else {
@@ -756,15 +758,32 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) 
         auto var_name = print_tile(op->args[i].as<CallNode>());
         var_names.push_back(var_name);
       }
+      std::string ub_name = var_names[0];
+      std::vector<std::string> ub_data_vector = ub_data_map_[ub_name];
+      std::string ub_data_type = ub_data_vector[0];
+      std::string row = ub_data_vector[2];
+      std::string col = ub_data_vector[1];
+      std::string ffts = ub_data_vector[3];
+      this->PrintIndent();
+      this->stream << "tl::pto::TileUbDataDN <" << ub_data_type << ", " << row << ", " << col << "> " << ub_name << "_DN(" << row << ", " << col << ");\n";
+      this->PrintIndent();
+      this->stream << "TASSIGN(" << ub_name << "_DN, " << ffts << ");\n";
       this->PrintIndent();
       this->stream << op->args[0].as<StringImmNode>()->value << "(";
       for (int i = 0; i < var_names.size(); i++) {
         this->stream << var_names[i];
+        if (i == 0) {
+          this->stream << "_DN";
+        }
         if (i != var_names.size() - 1) {
           this->stream << ", ";
         }
       }
       this->stream << ");\n";
+      this->PrintIndent();
+      this->stream << "pipe_barrier(PIPE_ALL);\n";
+      this->PrintIndent();
+      this->stream << "TRESHAPE(" << var_names[0] << ", " << var_names[0] << "_DN);\n";
   } else if (op->op.same_as(tl::ascend_scalar_op())) {
     this->PrintIndent();
     this->stream << op->args[0].as<StringImmNode>()->value << "(" << print_tile(op->args[1].as<CallNode>()) << ", "
@@ -800,8 +819,6 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) 
         auto var_name = print_tile(op->args[3].as<CallNode>());
        std::string ub_name = var_names[1];
         this->PrintIndent();
-        this->stream << "pipe_barrier(PIPE_ALL);\n";
-        this->PrintIndent();
         std::string index = PrintExpr(op->args[op->args.size() - 1]);
         std::string scalar_name = var_name + "_scalar";
         this->stream << "auto " << scalar_name <<  "= " << var_name
@@ -817,6 +834,8 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) 
         this->PrintIndent();
         this->stream << "TASSIGN(" << var_name_temp << ", " << ub_data_vector[3] << " + " <<
         index << " * " << ub_data_temp_col << " * " << GetTypeLenString(ub_data_vector[0]) << ");\n";
+        this->PrintIndent();
+        this->stream << "pipe_barrier(PIPE_ALL);\n";
         this->PrintIndent();
         this->stream << op->args[0].as<StringImmNode>()->value << "(";
         this->stream << var_name_temp << ", " << var_name_temp << ", " << scalar_name;
@@ -959,7 +978,7 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
         } else if (op->extents.size() == 1) {
           ub_data[1] = "1";
           ub_data[2] = PrintExpr(op->extents[0]);
-          stream << pos << "ND<" << type <<  ", 1, " <<  op->extents[0] << ">" << vid << "(" << "1, " <<  op->extents[0] << ");\n";
+          stream << pos << "ND<" << type << ", 1, " << op->extents[0] << "> " << vid << "(" << "1, " << op->extents[0] << ");\n";
         }
       } else {
         int dtype_bytes = op->dtype.bytes();
@@ -1018,7 +1037,7 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
         } else if (op->extents.size() == 1) {
           ub_data[1] = "1";
           ub_data[2] = PrintExpr(op->extents[0]);
-          stream << pos << "ND<" << type <<  ", 1, " <<  op->extents[0] << ">" << vid << "(" << "1, " <<  op->extents[0] << ");\n";
+          stream << pos << "ND<" << type << ", 1, " << op->extents[0] << "> " << vid << "(" << "1, " << op->extents[0] << ");\n";
         }
       } else {
         int dtype_bytes = op->dtype.bytes();
