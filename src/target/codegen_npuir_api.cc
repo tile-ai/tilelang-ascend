@@ -1121,6 +1121,11 @@ void CodeGenTileLangNPUIRAPI::VcumsumCodegen(const CallNode *op) {
 }
 
 void CodeGenTileLangNPUIRAPI::VAtomicAddCodegen(const CallNode *op) {
+  /// Generate hivm.hir.store for tl.npuir_atomic_add.
+  /// before:
+  ///   T.npuir_atomic(src, dst, size)
+  /// after:
+  ///   hivm.hir.store ins(src) outs(dst) atomic = <add>
   tvm::tl::NpuirAtomicAdd npuirop(op->args, this->vmap);
   Value src = GenSubviewFromRegion(npuirop.src, npuirop.src_range);
   Value dst = GenSubviewFromRegion(npuirop.dst, npuirop.dst_range);
