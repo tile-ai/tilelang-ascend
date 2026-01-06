@@ -964,6 +964,7 @@ void CodeGenTileLangNPUIRAPI::VcastCodegen(const CallNode *op) {
       broadcastDimAttr);
 }
 
+// Allocate a new memref with the same type and shape as `dst`.
 static mlir::Value AllocLike(mlir::OpBuilder &builder,
                              mlir::Location loc,
                              mlir::Value dst) {
@@ -980,6 +981,8 @@ static mlir::Value AllocLike(mlir::OpBuilder &builder,
   return builder.create<mlir::memref::AllocOp>(loc, dstTy, dynSizes);
 }
 
+// Elementwise reduce `dst` with `oldDst` in-place using the specified reduce operation.
+// Implements sum/max/min via nested scf.for loops over the memref shape.
 static void GetValueOfReduce(mlir::OpBuilder &builder,
                                    mlir::Location loc,
                                    mlir::Value dst,
