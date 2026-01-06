@@ -550,6 +550,48 @@ def npuir_cumsum(src: tir.Buffer, dst: Optional[tir.Buffer] = None, dim: int = 0
         reverse,
     )
     
+def npuir_clamp(src: tir.Buffer, dst: Optional[tir.Buffer], min_val: PrimExpr, max_val: PrimExpr):
+    """Clamps the input value dst between [min_val, max_val]
+    
+    Args:
+        dst: Input value to be clamped
+        min_val: Minimum value
+        max_val: Maximum value
+    
+    Returns:
+        Value clamped to the specified range
+    
+    """
+    src_extent = src.shape
+    src_tmp = _to_region(src, "rw", src_extent)
+
+    dst_extent = dst.shape
+    dst_tmp = _to_region(dst, "rw", dst_extent)
+
+    tmp_mem = alloc_shared(dst.shape, dst.dtype, "shared")
+    tmp_mem_tmp = _to_region(tmp_mem, "rw", dst_extent)
+
+    # Ensure value is not less than minimum
+    max_call = tir.call_intrin(
+        "handle",
+        tir.op.Op.get("tl.npuir_max"),
+        src_tmp,
+        min_val,
+        tmp_mem_tmp,
+    ) 
+
+    # Ensure value is not greater than maximum
+    min_call = tir.call_intrin(
+        "handle",
+        tir.op.Op.get("tl.npuir_min"),
+        tmp_mem_tmp,
+        max_val,
+        dst_tmp,
+    ) 
+
+    T.evaluate(max_call)
+    T.evaluate(min_call)
+    
 def npuir_gather(src, dst, indices:Union[list, tuple], size=[]):
     """Retrieve elements from a tensor/memref according to given indices, and store these elements in another tensor/memref. The gather axis is the last dimension.
  
@@ -1020,5 +1062,6 @@ def Scope(name):
     """
 
     return _ffi_api.Scope(name)
+
 
 
