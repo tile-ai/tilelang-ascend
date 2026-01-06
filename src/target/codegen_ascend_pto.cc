@@ -811,13 +811,14 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) 
                << print_tile(op->args[3].as<CallNode>()) << ");\n";
   } else if (op->op.same_as(tl::ascend_binary_ops())) {
       std::vector<std::string> var_names;
+      std::string operation = op->args[0].as<StringImmNode>()->value;
       for (int i = 1; i < op->args.size() - 1; i++) {
         auto var_name = print_tile(op->args[i].as<CallNode>());
         var_names.push_back(var_name);
       }
       if (op->args[3].as<CallNode>()) {
         auto var_name = print_tile(op->args[3].as<CallNode>());
-       std::string ub_name = var_names[1];
+        std::string ub_name = var_names[1];
         this->PrintIndent();
         std::string index = PrintExpr(op->args[op->args.size() - 1]);
         std::string scalar_name = var_name + "_scalar";
@@ -837,12 +838,17 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) 
         this->PrintIndent();
         this->stream << "pipe_barrier(PIPE_ALL);\n";
         this->PrintIndent();
-        this->stream << op->args[0].as<StringImmNode>()->value << "(";
+        if (operation == "TSUBS") {
+          operation = "TADDS";
+          scalar_name = "-" + scalar_name;
+        }
+        this->stream << operation << "(";
         this->stream << var_name_temp << ", " << var_name_temp << ", " << scalar_name;
       } else {
         this->PrintIndent();
-        this->stream << op->args[0].as<StringImmNode>()->value << "(";
-        var_names.push_back(PrintExpr(op->args[op->args.size() - 1]));
+        this->stream << operation << "(";
+        std::string scalar = PrintExpr(op->args[op->args.size() - 1]);
+        var_names.push_back(operation == "TSUBS" ? ("-" + scalar):scalar);
         for (int i = 0; i < var_names.size(); i++) {
           this->stream << var_names[i];
           if (i != var_names.size() - 1) {
