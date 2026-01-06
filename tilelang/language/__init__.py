@@ -87,6 +87,8 @@ from .customize_npuir import (
     npuir_dot,
     npuir_dot as gemm,
     npuir_ln,
+    npuir_exp2,
+    npuir_log2,
     npuir_load_nd2nz,
     npuir_store_nz2nd,
     npuir_store_fixpipe,

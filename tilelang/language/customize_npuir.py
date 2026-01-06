@@ -11,6 +11,7 @@ from tilelang import _ffi_api
 from .kernel import get_thread_bindings, get_thread_extents, FrameStack
 import threading
 import os
+import math
 
 from tilelang.language.copy import buffer_region_to_tile_region, buffer_load_to_tile_region, region
 
@@ -203,6 +204,48 @@ def npuir_rec(A, B):
 """npuir not at tile-level."""
 def npuir_not(A, B):
     return AscendUnaryOp("not", A, B).buildTirCall()
+
+def npuir_exp2(A, B, Tmp):
+    """
+    npuir exp2 at tile-level.
+    exp2(A) = exp(A * ln(2))
+
+    Args:
+        A (Union[tir.Buffer, tir.Var]): Input 
+        B (Union[tir.Buffer, tir.Var]): Output 
+        Tmp (Union[tir.Buffer, tir.Var]): Temp buffer
+    Returns:
+        tir.Stmt
+    """
+
+    ln2 = tir.const(math.log(2.0), A.dtype)
+    mul_call = AscendBinaryOp("mul", A, ln2, Tmp).buildTirCall()
+
+    exp_call = AscendUnaryOp("exp", Tmp, B).buildTirCall()
+
+    T.evaluate(mul_call)
+    T.evaluate(exp_call)
+
+def npuir_log2(A, B, Tmp):
+    """
+    npuir log2 at tile-level.
+    log2(A) = log(A) * (1 / ln(2))
+
+    Args:
+        A (Union[tir.Buffer, tir.Var]): Input 
+        B (Union[tir.Buffer, tir.Var]): Output 
+        Tmp (Union[tir.Buffer, tir.Var]): Temp buffer
+    Returns:
+        tir.Stmt
+    """
+
+    log_call = AscendUnaryOp("ln", A, Tmp).buildTirCall()
+
+    inv_ln2 = tir.const(1.0 / math.log(2.0), A.dtype)
+    mul_call = AscendBinaryOp("mul", Tmp, inv_ln2, B).buildTirCall()
+
+    T.evaluate(log_call)
+    T.evaluate(mul_call)
 
 def npuir_select(Cond, A, B, Out):
     """npuir select at tile-level.
