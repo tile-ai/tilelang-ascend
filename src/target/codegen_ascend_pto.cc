@@ -66,11 +66,11 @@ int8_t GetTypeLen(std::string type) {
     typeSize = 4;
   } else if (type == "half") {
     typeSize = 2;
-  } else if (type == "int8_t") {
+  } else if (type == "int8_t" || type == "uint8_t") {
     typeSize = 1;
-  } else if (type == "int16_t") {
+  } else if (type == "int16_t" || type == "uint16_t") {
     typeSize = 2;
-  } else if (type == "int") {
+  } else if (type == "int" || type == "uint") {
     typeSize = 4;
   } else {
     ICHECK(false) << "Unsupported datatype";
@@ -84,11 +84,11 @@ std::string GetTypeLenString(std::string type) {
     typeSize = "4";
   } else if (type == "half") {
     typeSize = "2";
-  } else if (type == "int8_t") {
+  } else if (type == "int8_t" || type == "uint8_t") {
     typeSize = "1";
-  } else if (type == "int16_t") {
+  } else if (type == "int16_t" || type == "uint16_t") {
     typeSize = "2";
-  } else if (type == "int") {
+  } else if (type == "int" || type == "uint") {
     typeSize = "4";
   } else {
     ICHECK(false) << "Unsupported datatype";
