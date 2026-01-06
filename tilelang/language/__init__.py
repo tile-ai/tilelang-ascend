@@ -99,6 +99,7 @@ from .customize_npuir import (
     reduce_sum,
     npuir_cumsum,
     npuir_cumsum as cumsum,
+    npuir_atomic_add,
     npuir_relu,
     npuir_select,
     npuir_cmp,
