@@ -99,6 +99,8 @@ from .customize_npuir import (
     reduce_sum,
     npuir_cumsum,
     npuir_cumsum as cumsum,
+    npuir_clamp,
+    npuir_clamp as clamp,
     npuir_relu,
     npuir_select,
     npuir_cmp,
