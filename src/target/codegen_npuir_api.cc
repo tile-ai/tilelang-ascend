@@ -1100,6 +1100,26 @@ void CodeGenTileLangNPUIRAPI::VreduceCodegen(const CallNode *op) {
   }
 }
 
+void CodeGenTileLangNPUIRAPI::VcumsumCodegen(const CallNode *op) {
+  /// Generate hivm.hir.cumsum for tl.npuir_cumsum.
+  /// before:
+  ///   T.npuir_cumsum(src, dst, dim, reverse)
+  /// after:
+  ///   hivm.hir.vcumsum ins(src) outs(dst) cum_dims = [0] for reverse = false
+  tvm::tl::NpuirCumsum npuirop(op->args, this->vmap);
+  mlir::Location loc = builder.getUnknownLoc();
+  Value src = GenSubviewFromRegion(npuirop.src, npuirop.src_range);
+  Value dst = GenSubviewFromRegion(npuirop.dst, npuirop.dst_range);
+  auto reverse_mode = npuirop.reverse;
+  if(reverse_mode == true){
+    ICHECK(false) <<"reverse=True is not yet supported\n";
+    return;
+  }
+  builder.create<mlir::hivm::VCumsumOp>(
+      loc, TypeRange{}, src, dst,
+      builder.getDenseI64ArrayAttr(npuirop.cum_dims));
+}
+
 void CodeGenTileLangNPUIRAPI::VgatherCodegen(const CallNode *op) {
   tvm::tl::NpuirGather npuirop(op->args, this->vmap);
   Value src = GenSubviewFromRegion(npuirop.src, npuirop.src_range);
@@ -1637,6 +1657,8 @@ mlir::Value CodeGenTileLangNPUIRAPI::VisitExpr_(const CallNode *op) {
     VcastCodegen(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_reduce"))) {
     VreduceCodegen(op);
+  } else if (op->op.same_as(Op::Get("tl.npuir_cumsum"))) {
+    VcumsumCodegen(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_gather"))) {
     VgatherCodegen(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_transpose"))) {

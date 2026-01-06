@@ -274,6 +274,29 @@ NpuirReduce::NpuirReduce(Array<PrimExpr> args, BufferMap vmap) {
   clear = args[4].as<Bool>().value();
 }
 
+NpuirCumsum::NpuirCumsum(Array<PrimExpr> args, BufferMap vmap) {
+  Array<Range> rgs[2];
+  Buffer bf[2];
+  for (int i = 0; i < 2; i++) {
+    auto expr = args[i];
+    auto call = expr.as<CallNode>();
+    ICHECK(call);
+    auto region = RegionOp(call->args, vmap);
+    rgs[i] = region.GetRanges();
+    bf[i] = region.GetBuffer();
+  }
+  std::tie(this->src, this->dst) = std::tie(bf[0], bf[1]);
+  std::tie(this->src_range, this->dst_range) = std::tie(rgs[0], rgs[1]);
+
+  std::string str_cum_dims = args[2].as<StringImmNode>()->value;
+  std::stringstream ss(str_cum_dims);
+  std::string dim;
+  while (std::getline(ss, dim, ',')) {
+    cum_dims.push_back(std::stoi(dim));
+  }
+  reverse = args[3].as<Bool>().value();
+}
+
 NpuirSelect::NpuirSelect(Array<PrimExpr> args, BufferMap vmap) {
   Array<Range> rgs[4];
   Buffer bf[4];
@@ -546,6 +569,11 @@ TIR_REGISTER_TL_OP(NpuirCast, npuir_cast)
 
 TIR_REGISTER_TL_OP(NpuirReduce, npuir_reduce)
     .set_num_inputs(5)
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
+
+TIR_REGISTER_TL_OP(NpuirCumsum, npuir_cumsum)
+    .set_num_inputs(4)
     .set_attr<TCallEffectKind>("TCallEffectKind",
                                Integer(CallEffectKind::kOpaque));
 

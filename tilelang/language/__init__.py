@@ -97,6 +97,8 @@ from .customize_npuir import (
     reduce_max,
     reduce_min,
     reduce_sum,
+    npuir_cumsum,
+    npuir_cumsum as cumsum,
     npuir_relu,
     npuir_select,
     npuir_cmp,
