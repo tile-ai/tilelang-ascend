@@ -104,4 +104,5 @@ def test_vec_atomic_add_2d():
     print(f"All elements equal to expected: {torch.allclose(B, expected)}")
 
 if __name__ == "__main__":
+    test_vec_atomic_add_1d()
     test_vec_atomic_add_2d()
