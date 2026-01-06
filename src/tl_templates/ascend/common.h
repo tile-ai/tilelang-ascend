@@ -255,7 +255,7 @@ CATLASS_DEVICE void elementwise_binary(LocalTensor<T> const &ubIn0,
 
 template <typename T>
 CATLASS_DEVICE void shmem_put_nbi_new(const GlobalTensor<T> &output, const GlobalTensor<T> &input,
-                             size_t nelems, size_t newPe) 
+                             size_t nelems, size_t newPe) {
     if ASCEND_IS_AIC return;
     AscendC::TPipe pipe;
     uint32_t ub_size = UB_HALF_SIZE * 2 + 64;
