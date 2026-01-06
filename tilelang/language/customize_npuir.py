@@ -550,6 +550,25 @@ def npuir_cumsum(src: tir.Buffer, dst: Optional[tir.Buffer] = None, dim: int = 0
         reverse,
     )
     
+def npuir_atomic_add(src, dst, size=[]):
+    """Perform atomic add operation on the NPU.
+
+    Args:
+        dst (Union[tir.Buffer, tir.BufferLoad, tir.BufferRegion]): Destination vector
+        src: The value to be added atomically
+        size (list, optional): Optional size override for dst
+
+    Returns:
+        tir.Call: A handle to the npuir_atomic_add operation
+    """
+    src_extent = _get_extent(src) if size == [] else size.copy()
+    dst_extent = _get_extent(dst) if size == [] else size.copy()
+
+    src = _to_region(src, "r", src_extent)
+    dst = _to_region(dst, "w", dst_extent)
+
+    return tir.call_intrin("handle", tir.op.Op.get("tl.npuir_atomic_add"), src, dst)    
+    
 def npuir_gather(src, dst, indices:Union[list, tuple], size=[]):
     """Retrieve elements from a tensor/memref according to given indices, and store these elements in another tensor/memref. The gather axis is the last dimension.
  
@@ -1020,5 +1039,6 @@ def Scope(name):
     """
 
     return _ffi_api.Scope(name)
+
 
 
