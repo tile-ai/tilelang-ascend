@@ -977,13 +977,18 @@ void CodeGenTileLangNPUIRAPI::VreduceCodegen(const CallNode *op) {
 }
 
 void CodeGenTileLangNPUIRAPI::VcumsumCodegen(const CallNode *op) {
+  /// Generate hivm.hir.cumsum for tl.npuir_cumsum.
+  /// before:
+  ///   T.npuir_cumsum(src, dst, dim, reverse)
+  /// after:
+  ///   hivm.hir.vcumsum ins(src) outs(dst) cum_dims = [0] for reverse = false
   tvm::tl::NpuirCumsum npuirop(op->args, this->vmap);
   mlir::Location loc = builder.getUnknownLoc();
   Value src = GenSubviewFromRegion(npuirop.src, npuirop.src_range);
   Value dst = GenSubviewFromRegion(npuirop.dst, npuirop.dst_range);
   auto reverse_mode = npuirop.reverse;
   if(reverse_mode == true){
-    std::cout<<"reverse=True is not yet supported\n";
+    ICHECK(false) <<"reverse=True is not yet supported\n";
     return;
   }
   builder.create<mlir::hivm::VCumsumOp>(
