@@ -582,7 +582,7 @@ TIR_REGISTER_TL_OP(NpuirCast, npuir_cast)
                                Integer(CallEffectKind::kOpaque));
 
 TIR_REGISTER_TL_OP(NpuirReduce, npuir_reduce)
-    .set_num_inputs(5)
+    .set_num_inputs(4)
     .set_attr<TCallEffectKind>("TCallEffectKind",
                                Integer(CallEffectKind::kOpaque));
 
@@ -668,6 +668,7 @@ TIR_REGISTER_TL_OP(NpuirBitcast, npuir_bitcast)
 
 } // namespace tl
 } // namespace tvm
+
 
 
 
