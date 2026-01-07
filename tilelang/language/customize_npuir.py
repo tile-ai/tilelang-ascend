@@ -419,14 +419,16 @@ def npuir_cast(src, dst, size=[], round_mode="rint"):
     return tir.call_intrin("handle", tir.op.Op.get("tl.npuir_cast"), src, dst, round_mode)
 
 
-def npuir_reduce(src, dst, dims:Union[list, tuple, int], reduce_mode, size=[], clear: bool = True):
+def npuir_reduce(src, dst, dims:Union[list, tuple, int], reduce_mode, size=[], clear: bool = True, tmp = None):
     """Reduce one or more axes of the source vector according to the reduction axes array, starting from an init value.
 
     Args:
         src (Union[tir.Buffer, tir.BufferLoad, tir.BufferRegion]): Source vector
         dst (Union[tir.Buffer, tir.BufferLoad]): Destination vector
         dims: The reduction indices array
-        reduce_mode: Reduce mode (sum/prod/max/min/max_with_index_left/max_with_index_right/min_with_index_left/min_with_index_right/any/all/xori/ori/none)
+        reduce_mode: Reduce mode (sum/prod/max/min/max_with_index_left/max_with_index_right/min_with_index_left/min_with_index_right/any/all/xori/ori/abssum/absmax/none)
+        clear (bool): Whether to initialize the output buffer before reduction
+            -tmp: Used to handle the clear=false case. tmp is mandatory in this mode.
 
     Raises:
         AssertionError: If input vector and output vector have different ranks.
@@ -436,7 +438,18 @@ def npuir_reduce(src, dst, dims:Union[list, tuple, int], reduce_mode, size=[], c
     Returns:
         tir.Call: A handle to the npuir_reduce operation
     """
-    valid_reduce_mode = {"sum", "prod", "max", "min", "max_with_index_left", "max_with_index_right", "min_with_index_left", "min_with_index_right", "any", "all", "xori", "ori", "none"}
+    valid_reduce_mode = {"sum", "prod", "max", "min", "max_with_index_left", "max_with_index_right", "min_with_index_left", "min_with_index_right", "any", "all", "xori", "ori", "abssum", "absmax", "none"}
+    valid_reduce_clear_false_mode = {"sum", "max", "min", "abssum", "absmax"}
+    valid_reduce_abs_mode = {"abssum", "absmax"}
+    reduce_abs_mode_map = {
+        "abssum": "sum",
+        "absmax": "max",
+    }
+    if reduce_mode in valid_reduce_abs_mode:
+        abs_call = AscendUnaryOp("abs", src, src).buildTirCall()
+        T.evaluate(abs_call)
+        reduce_mode = reduce_abs_mode_map[reduce_mode]
+
     if isinstance(dims, int):
         dims = [dims]
     src_extent = _get_extent(src) if size == [] else size.copy()
@@ -449,11 +462,27 @@ def npuir_reduce(src, dst, dims:Union[list, tuple, int], reduce_mode, size=[], c
     assert reduce_mode in valid_reduce_mode, "Reduce mode is invalid."
     assert len(dims) != 0, "The reduction indices array cannot be empty."
 
-    src = _to_region(src, "r", src_extent)
-    dst = _to_region(dst, "w", dst_extent)
-
+    src_region = _to_region(src, "r", src_extent)
+    dst_region = _to_region(dst, "w", dst_extent)
     reduce_dims = ','.join(str(dim) for dim in dims)
-    return tir.call_intrin("handle", tir.op.Op.get("tl.npuir_reduce"), src, dst, reduce_dims, reduce_mode, clear)
+    if clear == False:
+        redeuce_op_for_clear_map = {
+            "sum": "add",
+            "max": "max",
+            "min": "min",
+        }
+        assert tmp is not None, "tmp must be provided when clear is False."
+        assert len(dst_extent) == len(_get_extent(tmp)), "The out vector and tmp vector must have same rank."
+        assert reduce_mode in valid_reduce_clear_false_mode, "This mode is not supported when clear is false."
+        copy_call = npuir_copy(dst, tmp)
+        T.evaluate(copy_call)
+        reduce_call = tir.call_intrin("handle", tir.op.Op.get("tl.npuir_reduce"), src_region, dst_region, reduce_dims, reduce_mode, clear)
+        T.evaluate(reduce_call)
+        binary_call = AscendBinaryOp(redeuce_op_for_clear_map[reduce_mode], dst, tmp, dst).buildTirCall()
+        T.evaluate(binary_call)
+    else:
+        reduce_call = tir.call_intrin("handle", tir.op.Op.get("tl.npuir_reduce"), src_region, dst_region, reduce_dims, reduce_mode, clear)
+        T.evaluate(reduce_call)
 
 def reduce_max(buffer: tir.Buffer, out: tir.Buffer, dim: int = -1, clear: bool = True):
     """Perform reduce max on input buffer, store the result to output buffer
@@ -513,6 +542,34 @@ def reduce_sum(buffer: tir.Buffer, out: tir.Buffer, dim: int = -1, clear: bool =
     """
     dim = _legalize_dim(buffer, dim)
     return npuir_reduce(buffer, out, reduce_mode="sum", dims=dim, clear=clear)
+
+def reduce_abssum(buffer: tir.Buffer, out: tir.Buffer, dim: int = -1):
+    """Perform reduce absolute sum on input buffer, store the result to output buffer.
+
+    Args:
+        buffer (tir.Buffer): The input buffer
+        out (tir.Buffer): The output buffer
+        dim (int): The dimension to perform reduce on
+
+    Returns:
+        tir.Call: Handle to the reduction operation
+    """
+    dim = _legalize_dim(buffer, dim)
+    return npuir_reduce(buffer, out, reduce_mode="abssum", dims=dim, clear=True)
+
+def reduce_absmax(buffer: tir.Buffer, out: tir.Buffer, dim: int = -1, clear: bool = True):
+    """Perform reduce absolute max on input buffer, store the result to output buffer.
+
+    Args:
+        buffer (tir.Buffer): The input buffer
+        out (tir.Buffer): The output buffer
+        dim (int): The dimension to perform reduce on
+
+    Returns:
+        tir.Call: Handle to the reduction operation
+    """
+    dim = _legalize_dim(buffer, dim)
+    return npuir_reduce(buffer, out, reduce_mode="absmax", dims=dim, clear=clear)
 
 def npuir_cumsum(src: tir.Buffer, dst: Optional[tir.Buffer] = None, dim: int = 0, reverse: bool = False):
     """Perform cumulative sum on input buffer, store the result to output buffer.
@@ -1039,6 +1096,7 @@ def Scope(name):
     """
 
     return _ffi_api.Scope(name)
+
 
 
 
