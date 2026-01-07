@@ -18,6 +18,7 @@
 #include <sstream>
 #include <iomanip>
 
+#include "../op/ascend.h"
 #include "../op/builtin.h"
 
 #include "arith/pattern_match.h"
@@ -710,9 +711,6 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) 
         this->PrintIndent();
         this->stream << "not implemented yet\n";
       }
-    } else if(op_name.find("pipe_barrier") != std::string::npos) {
-      this->PrintIndent();
-      this->stream << op_name << "\n";
     } else if(op_name.find("gemm_v0") != std::string::npos) {
       this->PrintIndent();
       auto a_var = op->args[1].as<CallNode>()->args[1].as<VarNode>();
@@ -739,15 +737,39 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) 
       << params["M"] << ", " << params["N"] << ", " << params["K"] << ", "
       << params["transpose_A"] << ", " << params["transpose_B"] << ">" 
       << "(" << a_name << ", " << b_name << ", " << c_name << ", " << PrintExpr(op->args[4]) << ");\n";
-    } else if(op_name.find("wait_flag_dev") != std::string::npos) {
-      this->PrintIndent();
-      std::string wait_flag = PrintExpr(op->args[0]);
-      this->stream << wait_flag.substr(1, wait_flag.length() - 2) << "\n";
-    } else if(op_name.find("ffts_cross_core_sync") != std::string::npos) {
-      this->PrintIndent();
-      std::string set_flag = PrintExpr(op->args[0]);
-      this->stream << set_flag.substr(1, set_flag.length() - 2) << "\n";
     }
+  } else if (op->op.same_as(tl::ascend_pipe_barrier())) {
+      std::string pipe = Downcast<StringImm>(op->args[0])->value;
+      std::cout << "pipe: " << pipe << std::endl;
+      this->PrintIndent();
+      this->stream << "pipe_barrier(PIPE_" << pipe << ");\n";
+  } else if (op->op.same_as(tl::ascend_wait_flag())) {
+      std::string src = Downcast<StringImm>(op->args[0])->value;
+      std::string dst = Downcast<StringImm>(op->args[1])->value;
+      std::string event_id = PrintExpr(op->args[2]);
+      // wait_flag(PIPE_MTE2, PIPE_V, EVENT_ID0);
+      this->PrintIndent();
+      this->stream << "wait_flag(PIPE_" << src << ", " << "PIPE_" <<
+      dst << ", " << "EVENT_ID" << event_id << ");\n";
+  } else if (op->op.same_as(tl::ascend_set_flag())) {
+      std::string src = Downcast<StringImm>(op->args[0])->value;
+      std::string dst = Downcast<StringImm>(op->args[1])->value;
+      std::string event_id = PrintExpr(op->args[2]);
+      // set_flag(PIPE_MTE2, PIPE_V, EVENT_ID0);
+      this->PrintIndent();
+      this->stream << "set_flag(PIPE_" << src << ", " << "PIPE_" <<
+      dst << ", " << "EVENT_ID" << event_id << ");\n";
+  } else if (op->op.same_as(tl::ascend_set_cross_flag())) {
+    std::string pipe = Downcast<StringImm>(op->args[0])->value;
+    int flag = std::stoi(PrintExpr(op->args[1]));
+    int mode = 2;
+    int config = 1 | (mode << 4) | (flag << 8);
+    this->PrintIndent();
+    this->stream << "ffts_cross_core_sync" << "(" << "PIPE_" << pipe << ", " << config << ");\n";
+  } else if (op->op.same_as(tl::ascend_wait_cross_flag())) {
+    std::string flag = PrintExpr(op->args[0]);
+    this->PrintIndent();
+    this->stream << "wait_flag_dev" << "(" << flag << ");\n";
   } else if (op->op.same_as(tl::ascend_fill())) {
     this->PrintIndent();
     this->stream << op->args[0].as<StringImmNode>()->value << "(" << print_tile(op->args[1].as<CallNode>()) << ", "
@@ -1009,6 +1031,8 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
       }
       // Allocate Start Address
       this->PrintIndent();
+      ub_data[3] = DEC_STR_TO_HEX_STR(PrintExpr(address_map_[op->buffer_var]));
+      ub_data_map_[vid] = ub_data;
       stream << "TASSIGN(" << vid << ", " << DEC_STR_TO_HEX_STR(PrintExpr(address_map_[op->buffer_var])) << ");\n";
 
     } else {

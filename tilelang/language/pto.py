@@ -6,6 +6,8 @@ from tvm import tir
 import math
 
 
+_pipe = Literal["fix", "mte1", "mte2", "mte3", "m", "v"]
+
 def _dtype(buf):
     type_map = {"float16": "half", "float32": "float", "int32": "int", "uint32": "uint32_t", "bfloat16": "bfloat16_t", "uint16": "uint16_t", "uint8": "uint8_t",
                 "int8": "int8_t", "int16": "int16_t", "int64": "int64_t", "uint64": "uint64_t"}
@@ -13,19 +15,112 @@ def _dtype(buf):
         buf = buf.buffer
     return type_map[buf.dtype]
 
-
 def set_cross_flag(pipe: str, flag: int):
-    mode = 2
-    config = 1 | (mode << 4) | (flag << 8)
-    return T.call_extern("handle", f"ffts_cross_core_sync(PIPE_{pipe.upper()}, {config});")
+    """
+    Sets a cross-core synchronization flag.
 
+    This function emits an intrinsic to set a specific hardware event ID (flag)
+    for a given pipeline stage. It is used in conjunction with `wait_cross_flag`
+    to synchronize logical execution queues that are not standard producer-consumer pairs.
+
+    Args:
+        pipe (str): The pipeline stage issuing the set action (e.g., "MTE3", "V").
+        flag (int): The event ID index to set.
+
+    Returns:
+        tvm.tir.Call: A TIR intrinsic call node.
+    """
+    return tir.call_intrin(
+        "handle", tir.op.Op.get("tl.ascend_set_cross_flag"), pipe.upper(), flag
+    )
 
 def wait_cross_flag(flag: int):
-    return T.call_extern("handle", f"wait_flag_dev({flag});")
+    """
+    Waits for a cross-core synchronization flag.
+
+    This function blocks the current execution stream until the specified hardware
+    event ID (flag) is set by `set_cross_flag`.
+
+    Args:
+        flag (int): The event ID index to wait for.
+
+    Returns:
+        tvm.tir.Call: A TIR intrinsic call node.
+    """
+    return tir.call_intrin("handle", tir.op.Op.get("tl.ascend_wait_cross_flag"), flag)
 
 
 def barrier_all():
-    return T.call_extern("handle", "pipe_barrier(PIPE_ALL);")
+    """
+    Inserts a barrier for all pipeline stages.
+
+    This ensures that all instructions in all pipelines (Scalar, Vector, Cube, MTE, etc.)
+    issued before this barrier are completed before any subsequent instructions are executed.
+
+    Returns:
+        tvm.tir.Call: A TIR intrinsic call node.
+    """
+    return tir.call_intrin("handle", tir.op.Op.get("tl.ascend_pipe_barrier"), "ALL")
+
+
+def pipe_barrier(pipe: _pipe):
+    """
+    Inserts a barrier for a specific pipeline stage.
+
+    This ensures that all instructions in the specified pipeline issued before
+    this barrier are completed before proceeding.
+
+    Args:
+        pipe (_pipe): The specific pipeline stage to synchronize (e.g., "MTE3", "V").
+
+    Returns:
+        tvm.tir.Call: A TIR intrinsic call node.
+    """
+    return tir.call_intrin(
+        "handle", tir.op.Op.get("tl.ascend_pipe_barrier"), pipe.upper()
+    )
+
+def set_flag(src: _pipe, dst: _pipe, eventId: int):
+    """
+    Sets a synchronization flag from a source pipeline to a destination pipeline.
+
+    This is part of the standard pipeline synchronization mechanism (Set/Wait).
+    It indicates that the source pipeline has completed its task for a specific event.
+
+    Args:
+        src (_pipe): The source pipeline stage (producer).
+        dst (_pipe): The destination pipeline stage (consumer).
+        eventId (int): The event ID used for synchronization.
+
+    Returns:
+        tvm.tir.Call: A TIR intrinsic call node.
+    """
+    return tir.call_intrin(
+        "handle", tir.op.Op.get("tl.ascend_set_flag"), src.upper(), dst.upper(), eventId
+    )
+
+def wait_flag(src: _pipe, dst: _pipe, eventId: int):
+    """
+    Waits for a synchronization flag from a source pipeline.
+
+    This instruction blocks the destination pipeline until the source pipeline
+    issues the corresponding `set_flag` command for the given event ID.
+
+    Args:
+        src (_pipe): The source pipeline stage (producer) to wait for.
+        dst (_pipe): The destination pipeline stage (consumer) that is waiting.
+        eventId (int): The event ID used for synchronization.
+
+    Returns:
+        tvm.tir.Call: A TIR intrinsic call node.
+    """
+    return tir.call_intrin(
+        "handle",
+        tir.op.Op.get("tl.ascend_wait_flag"),
+        src.upper(),
+        dst.upper(),
+        eventId,
+    )
 
 
 def gemm_v0(A, B, C, transpose_A=False, transpose_B=False, init=False):
