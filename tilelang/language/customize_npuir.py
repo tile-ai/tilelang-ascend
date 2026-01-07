@@ -764,6 +764,64 @@ def npuir_cumsum(src: tir.Buffer, dst: Optional[tir.Buffer] = None, dim: int = 0
         reverse,
     )
     
+def npuir_clamp(src: tir.Buffer, dst: Optional[tir.Buffer], min_val: PrimExpr, max_val: PrimExpr):
+    """Clamps the input value dst between [min_val, max_val]
+    
+    Args:
+        dst: Input value to be clamped
+        min_val: Minimum value
+        max_val: Maximum value
+    
+    Returns:
+        Value clamped to the specified range
+    
+    """
+    src_extent = src.shape
+    src_tmp = _to_region(src, "rw", src_extent)
+
+    dst_extent = dst.shape
+    dst_tmp = _to_region(dst, "rw", dst_extent)
+
+    tmp_mem = alloc_shared(dst.shape, dst.dtype, "shared")
+    tmp_mem_tmp = _to_region(tmp_mem, "rw", dst_extent)
+
+     # --- Handle min_val ---
+    if isinstance(min_val, tir.Buffer):
+        min_ub_tmp = _to_region(min_val, "rw", min_val.shape)
+    else:
+        # Scalar
+        print("min_val is scalar")
+        min_ub_tmp = min_val
+
+    # Ensure value is not less than minimum
+    max_call = tir.call_intrin(
+        "handle",
+        tir.op.Op.get("tl.npuir_max"),
+        src_tmp,
+        min_ub_tmp,
+        tmp_mem_tmp
+    )
+
+    T.evaluate(max_call)
+
+    # --- Handle max_val ---
+    if isinstance(max_val, tir.Buffer):
+        max_ub_tmp = _to_region(max_val, "rw", max_val.shape)
+    else:
+        print("max_val is scalar")
+        max_ub_tmp = max_val
+
+    # Ensure value is not greater than maximum
+    min_call = tir.call_intrin(
+        "handle",
+        tir.op.Op.get("tl.npuir_min"),
+        tmp_mem_tmp,
+        max_ub_tmp,
+        dst_tmp
+    )
+
+    T.evaluate(min_call)
+    
 def npuir_atomic_add(src, dst, size=[]):
     """Perform atomic add operation on the NPU.
 
