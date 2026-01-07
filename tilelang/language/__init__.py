@@ -112,6 +112,8 @@ from .customize_npuir import (
     reduce_absmax,
     npuir_cumsum,
     npuir_cumsum as cumsum,
+    npuir_clamp,
+    npuir_clamp as clamp,
     npuir_atomic_add,
     npuir_atomic_addx4,
     npuir_relu,
