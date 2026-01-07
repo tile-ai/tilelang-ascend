@@ -3,13 +3,12 @@ import argparse
 import tilelang
 import tilelang.language as T
 
-# A[M, N] -> O[M], O[i] = sum_j A[i, j]
 torch.npu.set_device(0)
 tilelang.cache.clear_cache()
 
 parser = argparse.ArgumentParser(description="NPU Kernel Compilation")
-parser.add_argument("--M", type=int, default=2, help="")
-parser.add_argument("--N", type=int, default=2, help="")
+parser.add_argument("--M", type=int, default=16, help="")
+parser.add_argument("--N", type=int, default=16, help="")
 parser.add_argument("--block_M", type=int, default=32, help="")
 
 dtype = "float16"
@@ -20,19 +19,28 @@ def row_reduce_sum(M, N, block_M):
 
     @T.prim_func
     def main(A: T.Tensor((M, N), dtype),
+                B: T.Tensor((M, N), dtype),
                 O: T.Tensor((M,1), accum_dtype)):
         
         with T.Kernel(BLOCK_SIZE, is_npu=True) as (cid, _):
 
             x = T.alloc_ub((M,N), dtype)
+            y = T.alloc_ub((M,N), dtype)
             s = T.alloc_ub((M,1), accum_dtype)
+            tmp = T.alloc_ub((M,1), accum_dtype)
 
             T.copy(A, x)
+            T.copy(B, y)
 
             # T.reduce_max(x, s)
             # T.reduce_min(x, s)
             # T.reduce_sum(x, s)
-            T.reduce(x, s, dims=1, reduce_mode="sum")
+            # T.reduce(x, s, dims=1, reduce_mode="abssum")
+            # T.reduce(x, s, dims=1, reduce_mode="absmax")
+            # T.reduce_abssum(x, s, 1)
+            # T.reduce_absmax(x, s, 1)
+            T.reduce(x, s, dims=1, reduce_mode="sum", clear = True)
+            T.reduce(y, s, dims=1, reduce_mode="sum", clear = False, tmp = tmp)
 
             T.copy(s, O)
 
@@ -66,13 +74,20 @@ def main(main_args):
     shape = (main_args.M, main_args.N)
     shape2 = (main_args.M,1)
     A = generate_tensor(shape, dtype).npu()
+    B = generate_tensor(shape, dtype).npu()
     O = generate_tensor(shape2, accum_dtype, True).npu()
 
-    compiled_kernel(A, O)
-    # res = torch.max(A, dim=1, keepdim=True).values
+    compiled_kernel(A, B, O)
+    # res1 = torch.max(A, dim=1, keepdim=True).values
+    # res2 = torch.max(B, dim=1, keepdim=True).values
+    # res = torch.maximum(res1, res2)
     # res = torch.min(A, dim=1, keepdim=True).values
     res = torch.sum(A, dim=1, keepdim=True)
+    res += torch.sum(B, dim=1, keepdim=True)
+    # res = torch.sum(torch.abs(A), dim=1, keepdim=True)
+    # res = torch.max(torch.abs(A), dim=1, keepdim=True).values
     print(A)
+    print(B)
     print("Actual Result:")
     print(O)
     print("Expected Result:")
