@@ -419,7 +419,7 @@ def npuir_cast(src, dst, size=[], round_mode="rint"):
     return tir.call_intrin("handle", tir.op.Op.get("tl.npuir_cast"), src, dst, round_mode)
 
 
-def npuir_reduce(src, dst, dims:Union[list, tuple, int], reduce_mode, size=[], clear: bool = True, tmp = None):
+def npuir_reduce(src, dst, dims:Union[list, tuple, int], reduce_mode, size=[], clear: bool = True):
     """Reduce one or more axes of the source vector according to the reduction axes array, starting from an init value.
 
     Args:
@@ -428,7 +428,6 @@ def npuir_reduce(src, dst, dims:Union[list, tuple, int], reduce_mode, size=[], c
         dims: The reduction indices array
         reduce_mode: Reduce mode (sum/prod/max/min/max_with_index_left/max_with_index_right/min_with_index_left/min_with_index_right/any/all/xori/ori/abssum/absmax/none)
         clear (bool): Whether to initialize the output buffer before reduction
-            -tmp: Used to handle the clear=false case. tmp is mandatory in this mode.
 
     Raises:
         AssertionError: If input vector and output vector have different ranks.
@@ -471,17 +470,22 @@ def npuir_reduce(src, dst, dims:Union[list, tuple, int], reduce_mode, size=[], c
             "max": "max",
             "min": "min",
         }
-        assert tmp is not None, "tmp must be provided when clear is False."
-        assert len(dst_extent) == len(_get_extent(tmp)), "The out vector and tmp vector must have same rank."
+        if isinstance(dst, tir.Buffer):
+            tmp = T.alloc_shared(dst.shape, dst.dtype)
+        elif isinstance(dst, tir.BufferLoad):
+            tmp = T.alloc_shared(dst.buffer.shape, dst.dtype)
+        else:
+            raise TypeError(f"Unsupported dst type: {type(dst)}")
+        tmp_extent = _get_extent(tmp)
+        assert len(dst_extent) == len(tmp_extent), "The out vector and tmp vector must have same rank."
         assert reduce_mode in valid_reduce_clear_false_mode, "This mode is not supported when clear is false."
-        copy_call = npuir_copy(dst, tmp)
-        T.evaluate(copy_call)
-        reduce_call = tir.call_intrin("handle", tir.op.Op.get("tl.npuir_reduce"), src_region, dst_region, reduce_dims, reduce_mode, clear)
+        tmp_region = _to_region(tmp, "w", tmp_extent)
+        reduce_call = tir.call_intrin("handle", tir.op.Op.get("tl.npuir_reduce"), src_region, tmp_region, reduce_dims, reduce_mode)
         T.evaluate(reduce_call)
         binary_call = AscendBinaryOp(redeuce_op_for_clear_map[reduce_mode], dst, tmp, dst).buildTirCall()
         T.evaluate(binary_call)
     else:
-        reduce_call = tir.call_intrin("handle", tir.op.Op.get("tl.npuir_reduce"), src_region, dst_region, reduce_dims, reduce_mode, clear)
+        reduce_call = tir.call_intrin("handle", tir.op.Op.get("tl.npuir_reduce"), src_region, dst_region, reduce_dims, reduce_mode)
         T.evaluate(reduce_call)
 
 def reduce_max(buffer: tir.Buffer, out: tir.Buffer, dim: int = -1, clear: bool = True):
@@ -1096,6 +1100,7 @@ def Scope(name):
     """
 
     return _ffi_api.Scope(name)
+
 
 
 
