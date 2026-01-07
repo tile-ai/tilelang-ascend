@@ -24,23 +24,22 @@ def row_reduce_sum(M, N, block_M):
         
         with T.Kernel(BLOCK_SIZE, is_npu=True) as (cid, _):
 
-            x = T.alloc_ub((M,N), dtype)
-            y = T.alloc_ub((M,N), dtype)
-            s = T.alloc_ub((M,1), accum_dtype)
-            tmp = T.alloc_ub((M,1), accum_dtype)
+            x = T.alloc_shared((M,N), dtype)
+            y = T.alloc_shared((M,N), dtype)
+            s = T.alloc_shared((M,1), accum_dtype)
 
             T.copy(A, x)
             T.copy(B, y)
 
             # T.reduce_max(x, s)
+            # T.reduce(x, s, 1, "max")
+            # T.reduce_max(x, s)
+            # T.reduce_max(y, s, clear = False)
             # T.reduce_min(x, s)
-            # T.reduce_sum(x, s)
-            # T.reduce(x, s, dims=1, reduce_mode="abssum")
-            # T.reduce(x, s, dims=1, reduce_mode="absmax")
-            # T.reduce_abssum(x, s, 1)
-            # T.reduce_absmax(x, s, 1)
-            T.reduce(x, s, dims=1, reduce_mode="sum", clear = True)
-            T.reduce(y, s, dims=1, reduce_mode="sum", clear = False, tmp = tmp)
+            # T.reduce_sum(x, s, dim=1)
+            # T.reduce(y, s, dims=1, reduce_mode="sum", clear = False)
+            T.reduce(x, s, dims=1, reduce_mode="abssum")
+            T.reduce(y, s, dims=1, reduce_mode="abssum", clear = False)
 
             T.copy(s, O)
 
@@ -82,9 +81,10 @@ def main(main_args):
     # res2 = torch.max(B, dim=1, keepdim=True).values
     # res = torch.maximum(res1, res2)
     # res = torch.min(A, dim=1, keepdim=True).values
-    res = torch.sum(A, dim=1, keepdim=True)
-    res += torch.sum(B, dim=1, keepdim=True)
-    # res = torch.sum(torch.abs(A), dim=1, keepdim=True)
+    # res = torch.sum(A, dim=1, keepdim=True)
+    # res += torch.sum(B, dim=1, keepdim=True)
+    res = torch.sum(torch.abs(A), dim=1, keepdim=True)
+    res += torch.sum(torch.abs(B), dim=1, keepdim=True)
     # res = torch.max(torch.abs(A), dim=1, keepdim=True).values
     print(A)
     print(B)
