@@ -1689,6 +1689,8 @@ mlir::Value CodeGenTileLangNPUIRDEV::VisitExpr_(const CallNode *op) {
     VcastCodegen(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_reduce"))) {
     VreduceCodegen(op);
+  } else if (op->op.same_as(Op::Get("tl.npuir_cumsum"))) {
+    VcumsumCodegen(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_gather"))) {
     VgatherCodegen(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_transpose"))) {
