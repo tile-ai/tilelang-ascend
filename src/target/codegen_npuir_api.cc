@@ -171,6 +171,29 @@ getBroadcastDim(const Array<PrimExpr> &buffer_shape0,
   }
   return dims;
 }
+
+static llvm::SmallVector<int64_t>
+getBroadcastDim(const llvm::ArrayRef<long int> &buffer_shape0,
+                const llvm::ArrayRef<long int> &buffer_shape1) {
+  llvm::SmallVector<int64_t> dims;
+  if (buffer_shape0.empty() || buffer_shape1.empty()) {
+    return dims;
+  }
+  CHECK(buffer_shape0.size() == buffer_shape1.size());
+  for (int i = 0; i < buffer_shape0.size(); i++) {
+    if ((buffer_shape0[i]) == 1 &&
+        (buffer_shape1[i]) != 1) {
+      dims.emplace_back(i);
+    } else if ((buffer_shape0[i]) != 1 &&
+               (buffer_shape1[i]) == 1) {
+      dims.emplace_back(i);
+    } else {
+      CHECK((buffer_shape0[i]) == (buffer_shape1[i]));
+    }
+  }
+  return dims;
+}
+
 static std::map<std::string, mlir::hivm::RoundMode> NPUIR_STR_ROUNDMODE{
     {"round", mlir::hivm::RoundMode::ROUND},
     {"rint", mlir::hivm::RoundMode::RINT},
@@ -224,45 +247,30 @@ namespace {
   class InferFuncCoreType : public StmtExprVisitor {
     std::map<std::string, NPU_CORETYPE> scope_coretype_map{
         {"shared", NPU_CORETYPE::AIV},
-        {"shared.cube", NPU_CORETYPE::AIC},
+        {"shared.dyn", NPU_CORETYPE::AIC},
         {"wmma.accumulator", NPU_CORETYPE::AIC},
         {"wmma.matrix_a", NPU_CORETYPE::AIC},
         {"wmma.matrix_b", NPU_CORETYPE::AIC}};
-
+  
   public:
-    bool hasVector = false;
-    bool hasCube = false;
-    bool hasExpert = false;
     void VisitStmt(const Stmt &stmt) override {
       StmtExprVisitor::VisitStmt(stmt);
     }
     void VisitStmt_(const AttrStmtNode *op) final {
       // It is mixkernel iff there exists T.rs.
       if (op->attr_key == "resource_scope") {
-        if (const auto* int_imm = op->value.as<IntImmNode>()) {
-            if (int_imm->value == 1) {
-                func_coretype = NPU_CORETYPE::MIX;
-                hasExpert = true;
-                return;
-            }
-        }
+        func_coretype = NPU_CORETYPE::MIX;
+        return;
       }
       StmtExprVisitor::VisitStmt_(op);
     }
     void VisitExpr_(const CallNode *op) final {
-    
-      if (op->op.same_as(Op::Get("tl.npuir_dot")) || op->op.same_as(Op::Get("tl.npuir_load_nd2nz")) || op->op.same_as(Op::Get("tl.npuir_store_fixpipe"))) {
-        hasCube = true;
-      }
-      else if (op->op.as<OpNode>()) {
-        // Convert TVM String to std::string
-        auto op_node = op->op.as<OpNode>();
-        std::string op_name = op_node->name;
-        // Check if it is another operation starting with tl.npuir
-        if (op_name.find("tl.npuir") == 0) {
-            hasVector = true;
+      // It is cube kernel if there exists T.npuir_dot.
+      if (op->op.same_as(Op::Get("tl.npuir_dot"))) {
+        if (func_coretype != NPU_CORETYPE::MIX) {
+          func_coretype = NPU_CORETYPE::AIC;
         }
-    }
+      }
       StmtExprVisitor::VisitExpr_(op);
     }
     void VisitStmt_(const AllocateNode *op) final {
@@ -272,10 +280,9 @@ namespace {
       if (func_coretype != NPU_CORETYPE::MIX) {
         if (scope_coretype_map.count(scope) != 0) {
           func_coretype = scope_coretype_map[scope];
-          hasExpert = true;
         }
       }
-      StmtExprVisitor::VisitStmt_(op); 
+      StmtExprVisitor::VisitStmt_(op);
     }
     NPU_CORETYPE func_coretype{NPU_CORETYPE::AIV};
   };
@@ -319,7 +326,7 @@ CodeGenTileLangNPUIRAPI::GetHIVMAddressSpace(String address_space) {
     return mlir::hivm::AddressSpace::GM;
   else if (address_space == "shared")
     return mlir::hivm::AddressSpace::UB;
-  else if (address_space == "shared.cube")
+  else if (address_space == "shared.dyn")
     return mlir::hivm::AddressSpace::L1;
   else if (address_space == "wmma.accumulator")
     return mlir::hivm::AddressSpace::L0C;
@@ -956,7 +963,7 @@ void CodeGenTileLangNPUIRAPI::VcastCodegen(const CallNode *op) {
       llvm::dyn_cast<TypedValue<MemRefType>>(src).getType().getShape();
   auto outBufferShape =
       llvm::dyn_cast<TypedValue<MemRefType>>(dst).getType().getShape();
-  auto broadcastDim = getBroadcastDim(npuirop.src->shape, npuirop.dst->shape);
+  auto broadcastDim = getBroadcastDim(inBufferShape, outBufferShape);
   auto broadcastDimAttr = builder.getDenseI64ArrayAttr(broadcastDim);
   builder.create<mlir::hivm::VCastOp>(
       builder.getUnknownLoc(), TypeRange{}, src, dst,
@@ -1405,32 +1412,6 @@ void CodeGenTileLangNPUIRAPI::BitcastCodegen(const CallNode *op) {
   }
 }
 
-mlir::Value CodeGenTileLangNPUIRAPI::GenMemrefLoadFromRegion(const BufferLoadNode *op) {
-  auto buffer = op->buffer;
-  auto indices = op->indices;
-
-  // Check pre-conditions
-  if (op->dtype.lanes() != 1) {
-    LOG(FATAL) << "lanes not one";
-  }
-  if (op->dtype != buffer->dtype) {
-    LOG(FATAL) << "The load type and buffer element type do not match";
-  }
-
-  // Convert buffer from Buffer in TIR 2 memref in MLIR
-  auto mem = var_map_[buffer->data.get()];
-
-  // Convert index from PrimExpr in TIR 2 index type in MLIR
-  SmallVector<mlir::Value> convert_inds;
-  for (auto index : indices) {
-    mlir::Value indexVal = CreateIndexCastOp(MakeValue(index));
-    convert_inds.push_back(indexVal);
-  }
-
-  // Create memef.load op in MLIR
-  return builder.create<mlir::memref::LoadOp>(builder.getUnknownLoc(), mem, convert_inds);
-}
-
 template <typename T>
 void CodeGenTileLangNPUIRAPI::CreateHIVMBinaryVectorOp(const CallNode *op) {
   auto processImm = [&](mlir::Value &src, int arg_id,
@@ -1449,15 +1430,8 @@ void CodeGenTileLangNPUIRAPI::CreateHIVMBinaryVectorOp(const CallNode *op) {
     } else {
       // Vector case
       const CallNode *region_node = op->args[arg_id].as<CallNode>();
-      auto buffer_node = region_node->args[0].as<BufferLoadNode>();
-      buffer_shape = buffer_node->buffer->shape;
-      const IntImmNode* int_imm = region_node->args[2].as<IntImmNode>();
-      // If load only one element, do not use memref.subview, use memref.load as a scalar
-      if(int_imm && int_imm->value == 1) {
-        src = GenMemrefLoadFromRegion(buffer_node);
-      } else {
-        src = GenSubviewFromRegion(region_node);
-      }
+      buffer_shape = region_node->args[0].as<BufferLoadNode>()->buffer->shape;
+      src = GenSubviewFromRegion(region_node);
     }
   };
   // src0 src1
@@ -1793,25 +1767,9 @@ void CodeGenTileLangNPUIRAPI::VisitStmt_(const AllocateNode *op) {
   std::string scope = GetPtrStorageScope(op->buffer_var);
   std::map<std::string, NPU_CORETYPE> scope_coretype_map{
       {"shared", NPU_CORETYPE::AIV},
-      {"shared.cube", NPU_CORETYPE::AIC},
+      {"shared.dyn", NPU_CORETYPE::AIC},
       {"wmma.accumulator", NPU_CORETYPE::AIC}};
-  if (scope_coretype_map.count(scope) == 0) {
-    std::vector<long int> shape = GetShape(op->extents);
-    std::vector<int64_t> strides = GetStrideFromShapeAPI(op->extents);
-
-    auto layoutMap =
-        mlir::StridedLayoutAttr::get(builder.getContext(), 0, strides);
-
-    auto memrefType = mlir::MemRefType::get(shape, DTypetoMLIRType(op->dtype));
-
-    auto allocOp = builder.create<mlir::memref::AllocOp>(
-        builder.getUnknownLoc(), memrefType);
-
-    // Update var_map_ with the new variable
-    ICHECK(!var_map_.count(op->buffer_var.get()));
-    var_map_[op->buffer_var.get()] = allocOp.getResult();
-  }
-  else if (scope_coretype_map[scope] == this->current_coretype) {
+  if (scope_coretype_map[scope] == this->current_coretype) {
     std::vector<long int> shape = GetShape(op->extents);
     std::vector<int64_t> strides = GetStrideFromShapeAPI(op->extents);
 
@@ -2003,11 +1961,8 @@ void CodeGenTileLangNPUIRAPI::AddFunctionForCoreType(const GlobalVar &gvar,
   ICHECK(global_symbol.defined())
       << "CodeGenC: Expect PrimFunc to have the global_symbol attribute";
   this->current_function_name = static_cast<std::string>(global_symbol.value());
-  if (this->func_coretype == NPU_CORETYPE::MIX && this->current_coretype != NPU_CORETYPE::MIX) {
+  if (this->func_coretype == NPU_CORETYPE::MIX) {
     this->current_function_name = this->current_function_name + "_mix_" + NPU_CORETYPE_STR[this->current_coretype];
-  }
-  else {
-    this->current_function_name = this->current_function_name;
   }
 
   // Create function type
@@ -2109,53 +2064,27 @@ void CodeGenTileLangNPUIRAPI::InitFuncState() {
 
 void CodeGenTileLangNPUIRAPI::AddFunction(const GlobalVar& gvar, const PrimFunc& f)
 {
-    InferFuncCoreType infer;
-    infer.VisitStmt(f->body);
-    if (!infer.hasExpert) {
-        if (infer.hasVector && infer.hasCube) {
-            infer.func_coretype = NPU_CORETYPE::MIX;
-        }
-        if (infer.hasVector && !infer.hasCube) {
-            infer.func_coretype = NPU_CORETYPE::AIV;
-        }
-        if (!infer.hasVector && infer.hasCube) {
-            infer.func_coretype = NPU_CORETYPE::AIC;
-        }
-    }
+  InferFuncCoreType infer;
+  infer.VisitStmt(f->body);
 
-    this->func_coretype = infer.func_coretype;  // NPU_CORETYPE::MIX;
+  this->func_coretype = infer.func_coretype; // NPU_CORETYPE::MIX;
 
-    auto moduleCoreType =
-        mlir::hivm::TModuleCoreTypeAttr::get(&this->context, NPUIR_MODULECORETYPE_STR[this->func_coretype]);
-    this->module->getOperation()->setAttr(mlir::hivm::TModuleCoreTypeAttr::name, moduleCoreType);
+  auto moduleCoreType = mlir::hivm::TModuleCoreTypeAttr::get(
+      &this->context, NPUIR_MODULECORETYPE_STR[this->func_coretype]);
+  this->module->getOperation()->setAttr(mlir::hivm::TModuleCoreTypeAttr::name,
+                                        moduleCoreType);
 
-    switch (this->func_coretype) {
-        case NPU_CORETYPE::AIC:
-            this->current_coretype = NPU_CORETYPE::AIC;
-            AddFunctionForCoreType(gvar, f);
-            break;
+  if (this->func_coretype == NPU_CORETYPE::MIX ||
+      this->func_coretype == NPU_CORETYPE::AIC) {
+    this->current_coretype = NPU_CORETYPE::AIC;
+    AddFunctionForCoreType(gvar, f);
+  }
 
-        case NPU_CORETYPE::AIV:
-            this->current_coretype = NPU_CORETYPE::AIV;
-            AddFunctionForCoreType(gvar, f);
-            break;
-
-        case NPU_CORETYPE::MIX:
-            if (infer.hasExpert) {
-                this->current_coretype = NPU_CORETYPE::AIV;
-                AddFunctionForCoreType(gvar, f);
-
-                this->current_coretype = NPU_CORETYPE::AIC;
-                AddFunctionForCoreType(gvar, f);
-            } else {
-                this->current_coretype = NPU_CORETYPE::MIX;
-                AddFunctionForCoreType(gvar, f);
-            }
-            break;
-
-        default:
-            break;
-    }
+  if (this->func_coretype == NPU_CORETYPE::MIX ||
+      this->func_coretype == NPU_CORETYPE::AIV) {
+    this->current_coretype = NPU_CORETYPE::AIV;
+    AddFunctionForCoreType(gvar, f);
+  }
 }
 
 // New Expr functions after removing inheritance form CodeGenC class
