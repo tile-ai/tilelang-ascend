@@ -23,7 +23,6 @@ def matmul_add(M, N, K, block_M, block_N, block_K, dtype="float16", accum_dtype=
     n_num = N // block_N
 
     VEC_NUM = 2
-    vec_proc = 4
 
     @T.prim_func
     def main(
@@ -35,19 +34,18 @@ def matmul_add(M, N, K, block_M, block_N, block_K, dtype="float16", accum_dtype=
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
             by = cid % n_num
-            A_L1 = T.alloc_L1((block_M, block_K), dtype)
-            B_L1 = T.alloc_L1((block_K, block_N), dtype)
+            A_L1 = T.alloc_shared((block_M, block_K), dtype)
+            B_L1 = T.alloc_shared((block_K, block_N), dtype)
 
-            C_L0 = T.alloc_L0C((block_M, block_N), accum_dtype)
+            C_L0 = T.alloc_fragment((block_M, block_N), accum_dtype)
 
-            c_ub = T.alloc_ub((block_M // VEC_NUM, block_N // vec_proc), dtype)
-            d_ub = T.alloc_ub((block_M // VEC_NUM, block_N // vec_proc), dtype)
-            e_ub = T.alloc_ub((block_M // VEC_NUM, block_N // vec_proc), dtype)
+            d_ub = T.alloc_shared((block_M // VEC_NUM, block_N), dtype)
+            c_ub = T.alloc_shared((block_M // VEC_NUM, block_N), dtype)
 
             with T.Scope("C"):
 
                 loop_k = T.ceildiv(K, block_K)
-                for k in T.Pipelined(loop_k, num_stages=3):
+                for k in T.serial(loop_k):
                     T.copy(A[bx * block_M, k * block_K], A_L1)
                     T.copy(B[k * block_K, by * block_N], B_L1)
 
@@ -66,17 +64,14 @@ def matmul_add(M, N, K, block_M, block_N, block_K, dtype="float16", accum_dtype=
             with T.Scope("V"):
                 T.wait_cross_flag(0)
 
-                for i in T.Pipelined(vec_proc, num_stages=2):
-                    T.copy(C[bx * block_M + vid * block_M // VEC_NUM, by * block_N + i * block_N // vec_proc], c_ub)
-                    T.copy(D[bx * block_M + vid * block_M // VEC_NUM, by * block_N + i * block_N // vec_proc], d_ub)
+                T.copy(C[bx * block_M + vid * block_M // VEC_NUM, by * block_N], c_ub)
+                T.copy(D[bx * block_M + vid * block_M // VEC_NUM, by * block_N], d_ub)
 
-                    T.barrier_all()
-                    for (j, k) in T.Parallel(block_M // VEC_NUM, block_N // vec_proc):
-                        e_ub[j, k] = c_ub[j, k] + d_ub[j, k]
-                    T.barrier_all()
+                T.barrier_all()
+                T.tile.add(c_ub, c_ub, d_ub)
+                T.barrier_all()
 
-                    T.copy(e_ub, C[bx * block_M + vid * block_M // VEC_NUM, by * block_N + i * block_N // vec_proc])
-                    T.barrier_all()
+                T.copy(c_ub, C[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
 
     return main
 

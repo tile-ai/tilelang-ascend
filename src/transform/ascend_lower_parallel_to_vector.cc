@@ -20,12 +20,113 @@
 #include "../op/builtin.h"
 #include "./common/collector.h"
 
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
+#include <functional>
 
 namespace tvm {
 namespace tl {
 
 using namespace tir;
+
+namespace {
+
+
+// TIR unary operation to AscendC operation mapping
+const std::unordered_map<std::string, std::string> kTIRUnaryOpMap = {
+  {"tir.exp", "AscendC::Exp"},
+  {"tir.log", "AscendC::Ln"},
+  {"tir.sqrt", "AscendC::Sqrt"},
+  {"tir.rsqrt", "AscendC::Rsqrt"},
+  {"tir.fabs", "AscendC::Abs"}
+};
+
+// Binary operation matcher and extractor
+using BinaryMatcher = std::function<bool(const PrimExpr&)>;
+using BinaryExtractor = std::function<void(const PrimExpr&, PrimExpr*, PrimExpr*)>;
+
+struct BinaryOpInfo {
+  std::string op_name;
+  BinaryMatcher matcher;
+  BinaryExtractor extractor;
+};
+
+// Create binary operation table
+inline std::vector<BinaryOpInfo> CreateBinaryOpTable() {
+  std::vector<BinaryOpInfo> table;
+  
+  // Template for arithmetic operations
+  auto add_arith_op = [&table](const char* name, auto matcher_fn, auto cast_fn) {
+    table.push_back({
+      name,
+      [matcher_fn](const PrimExpr& e) { return matcher_fn(e) != nullptr; },
+      [cast_fn](const PrimExpr& e, PrimExpr* a, PrimExpr* b) {
+        auto node = cast_fn(e);
+        *a = node->a;
+        *b = node->b;
+      }
+    });
+  };
+  
+  add_arith_op("AscendC::Add", 
+    [](const PrimExpr& e) { return e.as<AddNode>(); },
+    [](const PrimExpr& e) { return e.as<AddNode>(); });
+  
+  add_arith_op("AscendC::Sub",
+    [](const PrimExpr& e) { return e.as<SubNode>(); },
+    [](const PrimExpr& e) { return e.as<SubNode>(); });
+  
+  add_arith_op("AscendC::Mul",
+    [](const PrimExpr& e) { return e.as<MulNode>(); },
+    [](const PrimExpr& e) { return e.as<MulNode>(); });
+  
+  add_arith_op("AscendC::Div",
+    [](const PrimExpr& e) { return e.as<DivNode>(); },
+    [](const PrimExpr& e) { return e.as<DivNode>(); });
+  
+  add_arith_op("AscendC::Min",
+    [](const PrimExpr& e) { return e.as<MinNode>(); },
+    [](const PrimExpr& e) { return e.as<MinNode>(); });
+  
+  add_arith_op("AscendC::Max",
+    [](const PrimExpr& e) { return e.as<MaxNode>(); },
+    [](const PrimExpr& e) { return e.as<MaxNode>(); });
+  
+  // Template for builtin call operations
+  auto add_builtin_op = [&table](const char* name,auto builtin_fn) {
+    table.push_back({
+      name,
+      [builtin_fn](const PrimExpr& e) {
+        auto call = e.as<CallNode>();
+        return call && call->op.same_as(builtin_fn());
+      },
+      [](const PrimExpr& e, PrimExpr* a, PrimExpr* b) {
+        auto call = e.as<CallNode>();
+        if (call && call->args.size() >= 2) {
+          *a = call->args[0];
+          *b = call->args[1];
+        }
+      }
+    });
+  };
+  
+  add_builtin_op("AscendC::And", builtin::bitwise_and);
+  add_builtin_op("AscendC::Or", builtin::bitwise_or);
+  add_builtin_op("AscendC::ShiftLeft", builtin::shift_left);
+  add_builtin_op("AscendC::ShiftRight", builtin::shift_right);
+  
+  return table;
+}
+
+static const std::vector<BinaryOpInfo> kBinaryOpTable = CreateBinaryOpTable();
+
+const std::unordered_set<std::string> kNoSuffixOps = {
+  "AscendC::ShiftLeft",
+  "AscendC::ShiftRight"
+};
+
+}  // namespace
 
 class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
  public:
@@ -41,6 +142,8 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
   using arith::IRMutatorWithAnalyzer::IRMutatorWithAnalyzer;
 
   const VarNode* vector_dim_var_ = nullptr;
+  const VarNode* outer_dim_var_ = nullptr;
+  bool is_2d_vectorizing_ = false;
   int temp_buffer_id_ = 0;
   std::vector<Buffer> temp_buffers_;
 
@@ -55,7 +158,7 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
         break;
       }
     }
-    
+  
     if (num_elements < 0) {
       LOG(FATAL) << "Cannot create temp buffer for non-constant shape.";
       return Buffer();
@@ -107,18 +210,20 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
       PrimExpr total_elements,
       const std::unordered_set<const VarNode*>& parallel_vars,
       bool has_outer_serial,
-      const VarNode* vector_dim
+      const VarNode* vector_dim,
+      const VarNode* outer_dim=nullptr
     ) -> Stmt {
       int64_t element_count = 0;
       if (!TryGetElementCount(total_elements, &element_count)) return Stmt();
-      // vector_dim_var_ is a single, fixed vector lane variable.
-      // No nested vectorization exists in this pass.
-      const VarNode* old = vector_dim_var_;
+      const VarNode* old_vector = vector_dim_var_;
+      const VarNode* old_outer = outer_dim_var_;
       vector_dim_var_ = vector_dim;
+      outer_dim_var_ = outer_dim;
 
       Stmt v = TryVectorizeBufferStoreSeq(stmt, element_count, parallel_vars, has_outer_serial);
 
-      vector_dim_var_ = old;
+      vector_dim_var_ = old_vector;
+      outer_dim_var_ = old_outer;
       return v;
     };
 
@@ -144,6 +249,12 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
         return arith::IRMutatorWithAnalyzer::VisitStmt_(op);
       }
 
+      const auto* third_for = inner_for->body.as<ForNode>();
+      if (third_for && third_for->kind == ForKind::kParallel) {
+        LOG(FATAL) << "Unsupported: 3D or higher dimensional parallel loops detected. "
+                  << "Only 1D and 2D parallel loops are supported for T.Parallel.";
+      }
+
       PrimExpr total_elements = inner_for->extent * op->extent;
       std::unordered_set<const VarNode*> parallel_vars = {
         op->loop_var.get(),
@@ -156,7 +267,8 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
           total_elements,
           parallel_vars,
           false,
-          inner_for->loop_var.get()
+          inner_for->loop_var.get(),
+          op->loop_var.get()
         );
         if (v.defined()) return v;
       }
@@ -190,7 +302,7 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
         return Stmt(op_copy);
       }
     }
-    
+  
     return arith::IRMutatorWithAnalyzer::VisitStmt_(op);
   }
 
@@ -199,11 +311,15 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
     auto saved_buffers = std::move(temp_buffers_);
     int saved_temp_id = temp_buffer_id_;
     const VarNode* saved_vector_dim = vector_dim_var_;
+    const VarNode* saved_outer_dim = outer_dim_var_;
+    bool saved_is_2d_vectorizing = is_2d_vectorizing_;
 
     // Reset block-local state
     temp_buffers_.clear();
     temp_buffer_id_ = 0;
     vector_dim_var_ = nullptr;
+    outer_dim_var_ = nullptr;
+    is_2d_vectorizing_ = false;
 
     // Visit body (vectorization happens here)
     Stmt new_body = VisitStmt(op->body);
@@ -218,6 +334,8 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
     temp_buffers_ = std::move(saved_buffers);
     temp_buffer_id_ = saved_temp_id;
     vector_dim_var_ = saved_vector_dim;
+    outer_dim_var_ = saved_outer_dim;
+    is_2d_vectorizing_ = saved_is_2d_vectorizing;
 
     if (allocs.same_as(op->alloc_buffers) && new_body.same_as(op->body)) {
       return GetRef<Stmt>(op);
@@ -239,6 +357,7 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
     int64_t inner_vec_len{0};
     int64_t outer_extent{0};
     const VarNode* outer_index_var{nullptr};
+    bool is_2d_vectorizable{false};
   };
 
   // Detect plan for vector, fill in the input plan
@@ -255,48 +374,122 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
       if (idx_var == nullptr) return false;
       if (idx_var != vector_dim_var_) return false;
       if (element_count <= 0) return false;
-      
+  
       plan->inner_vec_len = element_count;
       plan->outer_extent = 1;
       plan->outer_index_var = nullptr;
+      plan->is_2d_vectorizable = false;
       return true;
     }
 
     /*----- 2D case -----*/
-    if (!(output_buffer->shape.size() == 2 && store->indices.size() == 2)) {
-      return false;
-    }
     if (vector_dim_var_ == nullptr) return false;
 
-    const VarNode* outer_var = store->indices[0].as<VarNode>();
-    const VarNode* inner_var = store->indices[1].as<VarNode>();
-    if (outer_var == nullptr || inner_var == nullptr) return false;
-    if (inner_var != vector_dim_var_) return false;
-    const IntImmNode* inner_imm = output_buffer->shape[1].as<IntImmNode>();
-    if (inner_imm == nullptr) return false;
+    if (output_buffer->shape.size() == 2 && store->indices.size() == 2) {  
+      const VarNode* outer_var = store->indices[0].as<VarNode>();
+      const VarNode* inner_var = store->indices[1].as<VarNode>();
+      if (outer_var == nullptr || inner_var == nullptr) return false;
+      if (inner_var != vector_dim_var_) return false;
+      const IntImmNode* inner_imm = output_buffer->shape[1].as<IntImmNode>();
+      if (inner_imm == nullptr) return false;
 
-    int64_t inner_vec_len = inner_imm->value;
-    if (inner_vec_len <= 0) return false;
-    if (element_count % inner_vec_len != 0) return false;
+      int64_t inner_vec_len = inner_imm->value;
+      if (inner_vec_len <= 0) return false;
+      if (element_count % inner_vec_len != 0) return false;
 
-    plan->inner_vec_len = inner_vec_len;
-    plan->outer_extent = element_count / inner_vec_len;
-    plan->outer_index_var = outer_var;
+      plan->inner_vec_len = inner_vec_len;
+      plan->outer_extent = element_count / inner_vec_len;
+      plan->outer_index_var = outer_var;
+
+      plan->is_2d_vectorizable = (outer_dim_var_ != nullptr && outer_var == outer_dim_var_);
+      return true;
+    }
+
+    /*----- 3D db case -----*/
+    if (output_buffer->shape.size() == 3 && store->indices.size() == 3) {
+      const VarNode* outer_var = store->indices[1].as<VarNode>();
+      const VarNode* inner_var = store->indices[2].as<VarNode>();
+      if (outer_var == nullptr || inner_var == nullptr) return false;
+      if (inner_var != vector_dim_var_) return false;
+      const IntImmNode* inner_imm = output_buffer->shape[2].as<IntImmNode>();
+      if (inner_imm == nullptr) return false;
+
+      int64_t inner_vec_len = inner_imm->value;
+      if (inner_vec_len <= 0) return false;
+      if (element_count % inner_vec_len != 0) return false;
+
+      plan->inner_vec_len = inner_vec_len;
+      plan->outer_extent = element_count / inner_vec_len;
+      plan->outer_index_var = outer_var;
+      plan->is_2d_vectorizable = (outer_dim_var_ != nullptr && outer_var == outer_dim_var_);
+      return true;
+    }
+    return false;
+  }
+
+  bool CheckExpressionSupports2DVectorization(
+    const PrimExpr& expr,
+    const std::unordered_set<const VarNode*>& parallel_vars
+  ) {
+    if (vector_dim_var_ == nullptr || outer_dim_var_ == nullptr) {
+      return false;
+    }
+    class BufferLoadCollector : public StmtExprVisitor {
+    public:
+      std::vector<const BufferLoadNode*> loads;
+  
+      void VisitExpr_(const BufferLoadNode* op) override {
+        loads.push_back(op);
+        StmtExprVisitor::VisitExpr_(op);
+      }
+    };
+  
+    BufferLoadCollector collector;
+    collector(expr);
+  
+    for (const auto* load : collector.loads) {
+      bool uses_vector_dim = false;
+      bool uses_outer_dim = false;
+      for (const auto& idx : load->indices) {
+        if (auto var = idx.as<VarNode>()) {
+          if (var == vector_dim_var_) {
+            uses_vector_dim = true;
+          }
+          if (var == outer_dim_var_) {
+            uses_outer_dim = true;
+          }
+        }
+      }
+
+      if (!uses_vector_dim || !uses_outer_dim) {
+        return false;
+      }
+    }
+  
     return true;
   }
 
   Optional<Stmt> VectorizeStoreAsRowBody(
     const BufferStoreNode* store,
     int64_t inner_vec_len,
+    int64_t outer_extent,
+    bool is_2d,
     const std::unordered_set<const VarNode*>& parallel_vars
   ) {
     Buffer output_buffer = store->buffer;
+
+    bool saved_is_2d_vectorizing = is_2d_vectorizing_;
+    is_2d_vectorizing_ = is_2d;
+
     PrimExpr output_offset = CalculateBufferOffset(store->indices, output_buffer, parallel_vars);
 
     Array<Stmt> row_stmts;
-    bool success = DecomposeExpression( store->value, output_buffer,
-                                        output_offset, inner_vec_len,
-                                        parallel_vars, &row_stmts);
+    int64_t total_elements = is_2d ? (inner_vec_len * outer_extent) : inner_vec_len;
+    bool success = DecomposeExpression(store->value, output_buffer,
+                                        output_offset, total_elements,
+                                        parallel_vars, &row_stmts, is_2d);
+  
+    is_2d_vectorizing_ = saved_is_2d_vectorizing;
     if (!success || row_stmts.empty()) return NullOpt;
     if (row_stmts.size() == 1) return row_stmts[0];
     return SeqStmt::Flatten(row_stmts);
@@ -333,6 +526,17 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
       return Stmt();
     }
 
+    if (plan.is_2d_vectorizable) {
+      for (const Stmt& s : stores_to_process) {
+        if (auto st = s.as<BufferStoreNode>()) {
+          if (!CheckExpressionSupports2DVectorization(st->value, parallel_vars)) {
+            plan.is_2d_vectorizable = false;
+            break;
+          }
+        }
+      }
+    }
+
     Array<Stmt> bodies;
     for (const Stmt& s : stores_to_process) {
       if (auto st = s.as<BufferStoreNode>()) {
@@ -343,7 +547,13 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
               return Stmt();
         }
 
-        auto body_opt = VectorizeStoreAsRowBody(st, curr_plan.inner_vec_len, parallel_vars);
+        auto body_opt = VectorizeStoreAsRowBody(
+          st, 
+          curr_plan.inner_vec_len, 
+          curr_plan.outer_extent,
+          plan.is_2d_vectorizable,
+          parallel_vars
+        );
         if (!body_opt.defined()) return Stmt();
         bodies.push_back(body_opt.value());
       } else {
@@ -354,8 +564,10 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
     if (bodies.empty()) return Stmt();
 
     Stmt combined = (bodies.size() == 1) ? bodies[0] : SeqStmt::Flatten(bodies);
-    // Discrete: avoid generating outer loop if not necessary
-    if (has_outer_serial || plan.outer_extent == 1) return combined;
+  
+    if (plan.is_2d_vectorizable || has_outer_serial || plan.outer_extent == 1) {
+      return combined;
+    }
 
     Var outer_var("outer_broadcast_idx", DataType::Int(32));
     if (plan.outer_index_var != nullptr) {
@@ -377,7 +589,8 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
                            const PrimExpr& output_offset,
                            int64_t element_count,
                            const std::unordered_set<const VarNode*>& parallel_vars,
-                           Array<Stmt>* statements) {
+                           Array<Stmt>* statements,
+                           bool is_2d = false) {
     std::string unary_op_type;
     Optional<Buffer> unary_input_buffer;
     PrimExpr unary_input_offset;
@@ -386,7 +599,7 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
                         parallel_vars)) {
       auto stmt = GenerateUnaryVectorCall(unary_op_type, output_buffer, output_offset,
                                           unary_input_buffer.value(), unary_input_offset,
-                                          element_count);
+                                          element_count, is_2d);
       statements->push_back(stmt);
       return true;
     }
@@ -414,17 +627,17 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
 
     if (left_is_simple && right_is_simple) {
       return HandleSimpleCase(op_type, operands, output_buffer, output_offset,
-                              element_count, parallel_vars, statements);
+                              element_count, parallel_vars, statements, is_2d);
     }
 
     if (left_is_simple && right_is_complex) {
       return HandleLeftSimpleRightComplex(op_type, operands, output_buffer, output_offset,
-                                          element_count, parallel_vars, statements);
+                                          element_count, parallel_vars, statements, is_2d);
     }
 
     if (left_is_complex && right_is_simple) {
       return HandleLeftComplexRightSimple(op_type, operands, output_buffer, output_offset,
-                                          element_count, parallel_vars, statements);
+                                          element_count, parallel_vars, statements, is_2d);
     }
 
     if (left_is_complex && right_is_complex) {
@@ -434,18 +647,18 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
       PrimExpr rhs_tmp_offset = output_offset;
 
       if (!DecomposeExpression(operands[0], lhs_tmp, lhs_tmp_offset,
-                               element_count, parallel_vars, statements)) {
+                               element_count, parallel_vars, statements, is_2d)) {
         return false;
       }
 
       if (!DecomposeExpression(operands[1], rhs_tmp, rhs_tmp_offset,
-                               element_count, parallel_vars, statements)) {
+                               element_count, parallel_vars, statements, is_2d)) {
         return false;
       }
 
       auto stmt = GenerateBinaryVectorCall(op_type, output_buffer, output_offset,
                                            lhs_tmp, lhs_tmp_offset, rhs_tmp,
-                                           rhs_tmp_offset, element_count);
+                                           rhs_tmp_offset, element_count, is_2d);
       statements->push_back(stmt);
       return true;
     }
@@ -465,27 +678,14 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
         return false;
       }
 
-      std::string ascend_op;
-
-      if (op_name == "tir.exp") {
-        ascend_op = "AscendC::Exp";
-      } else if (op_name == "tir.log") {
-        ascend_op = "AscendC::Ln";
-      } else if (op_name == "tir.sqrt") {
-        ascend_op = "AscendC::Sqrt";
-      } else if (op_name == "tir.rsqrt") {
-        ascend_op = "AscendC::Rsqrt";
-      } else if (op_name == "tir.fabs") {
-        ascend_op = "AscendC::Abs";
+      auto it = kTIRUnaryOpMap.find(op_name);
+      if (it != kTIRUnaryOpMap.end()) {
+        if (op_type) *op_type = it->second;
+      } else if (call->op.same_as(builtin::bitwise_not())) {
+        if (op_type) *op_type = "AscendC::Not";
       } else {
-        if (call->op.same_as(builtin::bitwise_not())) {
-          ascend_op = "AscendC::Not";
-        } else {
-          return false;
-        }
+        return false;
       }
-
-      if (op_type) *op_type = ascend_op;
 
       if (call->args.size() >= 1) {
         if (auto load = call->args[0].as<BufferLoadNode>()) {
@@ -529,7 +729,8 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
                         const PrimExpr& output_offset,
                         int64_t element_count,
                         const std::unordered_set<const VarNode*>& parallel_vars,
-                        Array<Stmt>* statements) {
+                        Array<Stmt>* statements,
+                        bool is_2d = false) {
     Buffer left_buffer;
     PrimExpr left_offset;
 
@@ -547,7 +748,7 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
             CalculateBufferOffset(load->indices, load->buffer, parallel_vars);
         auto stmt = GenerateBufferScalarVectorCall(
             op_type, output_buffer, output_offset, left_buffer, left_offset,
-            load->buffer, scalar_offset, element_count);
+            load->buffer, scalar_offset, element_count, is_2d);
         statements->push_back(stmt);
         return true;
       } else {
@@ -555,7 +756,7 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
             CalculateBufferOffset(load->indices, load->buffer, parallel_vars);
         auto stmt = GenerateBinaryVectorCall(
             op_type, output_buffer, output_offset, left_buffer, left_offset,
-            load->buffer, right_offset, element_count);
+            load->buffer, right_offset, element_count, is_2d);
         statements->push_back(stmt);
         return true;
       }
@@ -563,7 +764,7 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
     } else if (IsScalar(operands[1])) {
       auto stmt = GenerateScalarVectorCall(op_type, output_buffer, output_offset,
                                            left_buffer, left_offset,
-                                           operands[1], element_count);
+                                           operands[1], element_count, is_2d);
       statements->push_back(stmt);
       return true;
     }
@@ -577,7 +778,8 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
                                     const PrimExpr& output_offset,
                                     int64_t element_count,
                                     const std::unordered_set<const VarNode*>& parallel_vars,
-                                    Array<Stmt>* statements) {
+                                    Array<Stmt>* statements,
+                                    bool is_2d = false) {
     Buffer left_buffer;
     PrimExpr left_offset;
 
@@ -593,13 +795,13 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
     PrimExpr tmp_offset = output_offset;
 
     if (!DecomposeExpression(operands[1], tmp, tmp_offset,
-                             element_count, parallel_vars, statements)) {
+                             element_count, parallel_vars, statements, is_2d)) {
       return false;
     }
 
     auto stmt = GenerateBinaryVectorCall(op_type, output_buffer, output_offset,
                                          left_buffer, left_offset, tmp,
-                                         tmp_offset, element_count);
+                                         tmp_offset, element_count, is_2d);
     statements->push_back(stmt);
     return true;
   }
@@ -610,12 +812,13 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
                                     const PrimExpr& output_offset,
                                     int64_t element_count,
                                     const std::unordered_set<const VarNode*>& parallel_vars,
-                                    Array<Stmt>* statements) {
+                                    Array<Stmt>* statements,
+                                    bool is_2d = false) {
     Buffer tmp = CreateTempBufferLike(output_buffer);
     PrimExpr tmp_offset = output_offset;
 
     if (!DecomposeExpression(operands[0], tmp, tmp_offset,
-                             element_count, parallel_vars, statements)) {
+                             element_count, parallel_vars, statements, is_2d)) {
       return false;
     }
 
@@ -625,7 +828,7 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
             CalculateBufferOffset(load->indices, load->buffer, parallel_vars);
         auto stmt = GenerateBufferScalarVectorCall(
             op_type, output_buffer, output_offset, tmp, tmp_offset,
-            load->buffer, scalar_offset, element_count);
+            load->buffer, scalar_offset, element_count, is_2d);
         statements->push_back(stmt);
         return true;
       } else {
@@ -633,7 +836,7 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
             CalculateBufferOffset(load->indices, load->buffer, parallel_vars);
         auto stmt = GenerateBinaryVectorCall(
             op_type, output_buffer, output_offset, tmp, tmp_offset,
-            load->buffer, right_offset, element_count);
+            load->buffer, right_offset, element_count, is_2d);
         statements->push_back(stmt);
         return true;
       }
@@ -641,7 +844,7 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
     } else if (IsScalar(operands[1])) {
       auto stmt = GenerateScalarVectorCall(op_type, output_buffer, output_offset,
                                            tmp, tmp_offset,
-                                           operands[1], element_count);
+                                           operands[1], element_count, is_2d);
       statements->push_back(stmt);
       return true;
     }
@@ -651,90 +854,21 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
 
   bool IsBinaryOp(const PrimExpr& expr, std::string* op_type,
                   Array<PrimExpr>* operands) {
-    if (auto node = expr.as<AddNode>()) {
-      if (op_type) *op_type = "AscendC::Add";
-      if (operands) {
-        operands->push_back(node->a);
-        operands->push_back(node->b);
-      }
-      return true;
-    }
-    if (auto node = expr.as<SubNode>()) {
-      if (op_type) *op_type = "AscendC::Sub";
-      if (operands) {
-        operands->push_back(node->a);
-        operands->push_back(node->b);
-      }
-      return true;
-    }
-    if (auto node = expr.as<MulNode>()) {
-      if (op_type) *op_type = "AscendC::Mul";
-      if (operands) {
-        operands->push_back(node->a);
-        operands->push_back(node->b);
-      }
-      return true;
-    }
-    if (auto node = expr.as<DivNode>()) {
-      if (op_type) *op_type = "AscendC::Div";
-      if (operands) {
-        operands->push_back(node->a);
-        operands->push_back(node->b);
-      }
-      return true;
-    }
-    if (auto node = expr.as<MinNode>()) {
-      if (op_type) *op_type = "AscendC::Min";
-      if (operands) {
-        operands->push_back(node->a);
-        operands->push_back(node->b);
-      }
-      return true;
-    }
-    if (auto node = expr.as<MaxNode>()) {
-      if (op_type) *op_type = "AscendC::Max";
-      if (operands) {
-        operands->push_back(node->a);
-        operands->push_back(node->b);
-      }
-      return true;
-    }
 
-    if (auto call = expr.as<CallNode>()) {
-      if (call->op.same_as(builtin::bitwise_and())) {
-        if (op_type) *op_type = "AscendC::And";
-        if (operands && call->args.size() == 2) {
-          operands->push_back(call->args[0]);
-          operands->push_back(call->args[1]);
+    for (const auto& op_info : kBinaryOpTable) {
+      if (op_info.matcher(expr)) {
+        if (op_type) {
+          *op_type = op_info.op_name;
         }
-        return true;
-      }
-      if (call->op.same_as(builtin::bitwise_or())) {
-        if (op_type) *op_type = "AscendC::Or";
-        if (operands && call->args.size() == 2) {
-          operands->push_back(call->args[0]);
-          operands->push_back(call->args[1]);
-        }
-        return true;
-      }
-      if (call->op.same_as(builtin::shift_left())) {
-        if (op_type) *op_type = "AscendC::ShiftLeft";
-        if (operands && call->args.size() == 2) {
-          operands->push_back(call->args[0]);
-          operands->push_back(call->args[1]);
-        }
-        return true;
-      }
-      if (call->op.same_as(builtin::shift_right())) {
-        if (op_type) *op_type = "AscendC::ShiftRight";
-        if (operands && call->args.size() == 2) {
-          operands->push_back(call->args[0]);
-          operands->push_back(call->args[1]);
+        if (operands) {
+          PrimExpr a, b;
+          op_info.extractor(expr, &a, &b);
+          operands->push_back(a);
+          operands->push_back(b);
         }
         return true;
       }
     }
-
     return false;
   }
 
@@ -743,7 +877,8 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
                                const PrimExpr& output_offset,
                                const Buffer& input_buffer,
                                const PrimExpr& input_offset,
-                               int64_t element_count) {
+                               int64_t element_count,
+                               bool is_2d = false) {
     DataType dtype = output_buffer->dtype;
     std::string dtype_str = DTypeToString(dtype);
 
@@ -766,7 +901,8 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
                                 const PrimExpr& input_offset1,
                                 const Buffer& input_buffer2,
                                 const PrimExpr& input_offset2,
-                                int64_t element_count) {
+                                int64_t element_count,
+                                bool is_2d = false) {
     DataType dtype = output_buffer->dtype;
     std::string dtype_str = DTypeToString(dtype);
 
@@ -791,16 +927,13 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
                                 const Buffer& input_buffer,
                                 const PrimExpr& input_offset,
                                 const PrimExpr& scalar_value,
-                                int64_t element_count) {
+                                int64_t element_count,
+                                bool is_2d = false) {
     DataType dtype = output_buffer->dtype;
     std::string dtype_str = DTypeToString(dtype);
 
-    static const std::unordered_set<std::string> no_suffix_ops = {
-        "AscendC::ShiftLeft",
-        "AscendC::ShiftRight"};
 
-    std::string scalar_op_type =
-        no_suffix_ops.count(op_type) > 0 ? op_type : op_type + "s";
+    std::string scalar_op_type = kNoSuffixOps.count(op_type) > 0 ? op_type : op_type + "s";
 
     Array<PrimExpr> call_args;
     call_args.push_back(StringImm(scalar_op_type));
@@ -823,16 +956,12 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
                                       const PrimExpr& input_offset,
                                       const Buffer& scalar_buffer,
                                       const PrimExpr& scalar_offset,
-                                      int64_t element_count) {
+                                      int64_t element_count,
+                                      bool is_2d = false) {
     DataType dtype = output_buffer->dtype;
     std::string dtype_str = DTypeToString(dtype);
 
-    static const std::unordered_set<std::string> no_suffix_ops = {
-        "AscendC::ShiftLeft",
-        "AscendC::ShiftRight"};
-
-    std::string scalar_op_type =
-        no_suffix_ops.count(op_type) > 0 ? op_type : op_type + "s";
+    std::string scalar_op_type = kNoSuffixOps.count(op_type) > 0 ? op_type : op_type + "s";
 
     int64_t scalar_extent = 1;
     if (scalar_buffer->shape.size() > 0) {
@@ -870,8 +999,8 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
   }
 
   PrimExpr CalculateBufferOffset(const Array<PrimExpr>& indices,
-                                 const Buffer& buffer,
-                                 const std::unordered_set<const VarNode*>& parallel_vars) {
+                               const Buffer& buffer,
+                               const std::unordered_set<const VarNode*>& parallel_vars) {
     if (indices.empty()) {
       return IntImm(DataType::Int(32), 0);
     }
@@ -879,12 +1008,35 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
     Array<PrimExpr> processed_indices;
     for (const auto& idx : indices) {
       if (auto var = idx.as<VarNode>()) {
+        // Set vectorization dim var to 0
         if (vector_dim_var_ != nullptr && var == vector_dim_var_) {
+          processed_indices.push_back(IntImm(DataType::Int(32), 0));
+          continue;
+        }
+        // Set outer dim var to 0 (2d vectorization)
+        if (is_2d_vectorizing_ && outer_dim_var_ != nullptr && var == outer_dim_var_) {
           processed_indices.push_back(IntImm(DataType::Int(32), 0));
           continue;
         }
       }
       processed_indices.push_back(idx);
+    }
+
+    bool all_zero = true;
+    for (const auto& idx : processed_indices) {
+      if (auto imm = idx.as<IntImmNode>()) {
+        if (imm->value != 0) {
+          all_zero = false;
+          break;
+        }
+      } else {
+        all_zero = false;
+        break;
+      }
+    }
+  
+    if (all_zero) {
+      return IntImm(DataType::Int(32), 0);
     }
 
     PrimExpr offset = processed_indices[0];

@@ -313,6 +313,36 @@ def shiftright(dst: Buffer, src0: Buffer, scalarValue: PrimExpr):
 
     return T.call_extern("handle", f"AscendC::ShiftRight", dst.access_ptr("w"),
                          src0.access_ptr("r"), scalarValue, size_0)
+
+def bilinear_interpolation(dst: Buffer, src0: Buffer, src0_offset: Buffer, src1: Buffer, mask: PrimExpr,
+                           h_repeat: PrimExpr, repeat_mode: bool, dst_blk_stride: PrimExpr, v_r_offset: PrimExpr,
+                           v_repeat: PrimExpr, shared_tmp_buffer: Buffer):
+    return T.call_extern("handle", "AscendC::BilinearInterpolation", dst.access_ptr("w"), src0.access_ptr("r"),
+                         src0_offset.access_ptr("r"), src1.access_ptr("r"), mask, h_repeat, repeat_mode, dst_blk_stride, v_r_offset,
+                         v_repeat, shared_tmp_buffer.access_ptr("r"))
+
+
+def wholereducemax(dst: Buffer, src: Buffer, mask: PrimExpr, repeattimes: PrimExpr, dstrepstride: PrimExpr, srcblkstride: PrimExpr,
+                   srcrepstride: PrimExpr, ReduceOrder: str = "ORDER_VALUE_INDEX"):
+
+    return T.call_extern("handle", "AscendC::WholeReduceMax", dst.access_ptr("w"), src.access_ptr("r"), mask, repeattimes, dstrepstride,
+                         srcblkstride, srcrepstride, ReduceOrder)
+
+
+def wholereducemin(dst: Buffer, src: Buffer, mask: PrimExpr, repeattimes: PrimExpr, dstrepstride: PrimExpr, srcblkstride: PrimExpr,
+                   srcrepstride: PrimExpr, ReduceOrder: str = "ORDER_VALUE_INDEX"):
+
+    return T.call_extern("handle", "AscendC::WholeReduceMin", dst.access_ptr("w"), src.access_ptr("r"), mask, repeattimes, dstrepstride,
+                         srcblkstride, srcrepstride, ReduceOrder)
+
+
+def wholereducesum(dst: Buffer, src: Buffer, mask: PrimExpr, repeattimes: PrimExpr, dstrepstride: PrimExpr, srcblkstride: PrimExpr,
+                   srcrepstride: PrimExpr):
+
+    return T.call_extern("handle", "AscendC::WholeReduceSum", dst.access_ptr("w"), src.access_ptr("r"), mask, repeattimes, dstrepstride,
+                         srcblkstride, srcrepstride)
+
+
 def sort32(dst: Buffer, src0: Buffer, src1: Buffer):
     repeatTimes = math.prod(src0.shape) // 32
     return T.call_extern("handle", f"AscendC::Sort32", dst.access_ptr("w"),

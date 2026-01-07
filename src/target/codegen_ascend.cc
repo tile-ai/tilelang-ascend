@@ -749,6 +749,73 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
         this->stream << ", " << PrintExpr(op->args[i]);
       }
       this->stream << ");\n";
+    } else if (op_name == "AscendC::BilinearInterpolation") {
+      this->PrintIndent();
+      auto var_name = print_buffer_offset(op->args[1].as<CallNode>());
+      auto var_name_1 = print_buffer_offset(op->args[2].as<CallNode>());
+      auto var_name_2 = print_buffer_offset(op->args[3].as<CallNode>());
+      auto var_name_3 = print_buffer_offset(op->args[4].as<CallNode>());
+      auto var_name_4 = print_buffer_offset(op->args[11].as<CallNode>());
+      this->stream << op_name << "(" << var_name << ", "
+                   << var_name_1 << ", " << var_name_2
+                   << ", " << var_name_3 << ", " << PrintExpr(op->args[5])
+                   << ", " << PrintExpr(op->args[6]) << ", " << PrintExpr(op->args[7])
+                   << ", " << PrintExpr(op->args[8]) << ", " << PrintExpr(op->args[9])
+                   << ", " << PrintExpr(op->args[10]) << ", " << var_name_4 << ");\n";
+    } else if (op_name == "AscendC::WholeReduceMax") {
+      std::vector<std::string> var_names;
+      for (int i = 1; i < 3; i++) {
+        auto var_name = print_buffer_offset(op->args[i].as<CallNode>());
+        var_names.push_back(var_name);
+      }
+      this->PrintIndent();
+      this->stream << op_name << "(";
+      for (int i = 0; i < var_names.size(); i++) {
+        this->stream << var_names[i];
+        if (i != var_names.size() - 1) {
+          this->stream << ", ";
+        }
+      }
+      for (int i = 3; i < op->args.size() - 1; i++) {
+        this->stream << ", " << PrintExpr(op->args[i]);
+      }
+      this->stream << ", " << "AscendC::ReduceOrder::" << Downcast<StringImm>(op->args[op->args.size() - 1])->value << ");\n";
+    } else if (op_name == "AscendC::WholeReduceMin") {
+      std::vector<std::string> var_names;
+      for (int i = 1; i < 3; i++) {
+        auto var_name = print_buffer_offset(op->args[i].as<CallNode>());
+        var_names.push_back(var_name);
+      }
+      this->PrintIndent();
+      this->stream << op_name << "(";
+      for (int i = 0; i < var_names.size(); i++) {
+        this->stream << var_names[i];
+        if (i != var_names.size() - 1) {
+          this->stream << ", ";
+        }
+      }
+      for (int i = 3; i < op->args.size() - 1; i++) {
+        this->stream << ", " << PrintExpr(op->args[i]);
+      }
+      this->stream << ", " << "AscendC::ReduceOrder::" << Downcast<StringImm>(op->args[op->args.size() - 1])->value << ");\n";
+    } else if (op_name == "AscendC::WholeReduceSum") {
+      std::vector<std::string> var_names;
+      for (int i = 1; i < 3; i++) {
+        auto var_name = print_buffer_offset(op->args[i].as<CallNode>());
+        var_names.push_back(var_name);
+      }
+      this->PrintIndent();
+      this->stream << op_name << "(";
+      for (int i = 0; i < var_names.size(); i++) {
+        this->stream << var_names[i];
+        if (i != var_names.size() - 1) {
+          this->stream << ", ";
+        }
+      }
+      for (int i = 3; i < op->args.size(); i++) {
+        this->stream << ", " << PrintExpr(op->args[i]);
+      }
+      this->stream << ");\n";
     } else if (op_name == "AscendC::Muls" || op_name == "AscendC::Adds") {
       std::vector<std::string> var_names;
       for (int i = 1; i < 3; i++) {
@@ -1347,7 +1414,7 @@ void CodeGenTileLangAscend::VisitExpr_(const FloatImmNode *op,
 void CodeGenTileLangAscend::PreFunctionBody(const PrimFunc &f) {
   int func_scope = this->BeginScope();
   this->PrintIndent();
-  stream << "KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_MIX_AIC_1_2)\n";
+  stream << "KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_MIX_AIC_1_2);\n";
   this->PrintIndent();
   stream << "AscendC::TPipe pipe;\n\n";
   ICHECK(this->para_.size() % 3 == 0)
@@ -1490,7 +1557,11 @@ void CodeGenTileLangAscend::PrintHostFunc(const PrimFunc &f, const std::string &
       os << ", ";
     }
     arg_names.push_back(v->name_hint);
-    os << "uint8_t* " << v->name_hint;
+    if (v.dtype().is_handle()) {
+      os << "uint8_t* " << v->name_hint;
+    } else {
+      os << getType(v.dtype()) << " " << v->name_hint;
+    }   
   }
   ProcessHostInput(os, arg_names, shape_vars);
   os << ", aclrtStream stream) {\n  ";
