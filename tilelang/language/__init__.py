@@ -97,6 +97,8 @@ from .customize_npuir import (
     reduce_max,
     reduce_min,
     reduce_sum,
+    reduce_abssum,
+    reduce_absmax,
     npuir_cumsum,
     npuir_cumsum as cumsum,
     npuir_atomic_add,
