@@ -121,6 +121,3 @@ if __name__ == "__main__":
     print("<<<<< Expert Mode >>>>>")
     os.environ['TILELANG_ASCEND_MODE'] = 'Expert'
     main_func(args)
-    print("<<<<< Developer Mode >>>>>")
-    os.environ['TILELANG_ASCEND_MODE'] = 'Developer'
-    main_func(args)

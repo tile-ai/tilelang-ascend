@@ -32,8 +32,8 @@ def clamp_kernel(M, N):
 
         with T.Kernel(BLOCK_SIZE, is_npu=True) as (cid, _):
             # Allocate UB (Unified Buffer) memory
-            src_ub = T.alloc_ub((M, N), dtype)
-            dst_ub = T.alloc_ub((M, N), accum_dtype)
+            src_ub = T.alloc_shared((M, N), dtype)
+            dst_ub = T.alloc_fragment((M, N), accum_dtype)
 
             # Copy from GM (Global Memory) to UB
             T.copy(src, src_ub)
@@ -99,6 +99,7 @@ def main_func(main_args):
 # -------------------------
 if __name__ == "__main__":
     args = parser.parse_args()
-    print("<<<<< Expert Mode >>>>>")
-    os.environ['TILELANG_ASCEND_MODE'] = 'Expert'
+    print("<<<<< Developer Mode >>>>>")
+    os.environ['TILELANG_ASCEND_MODE'] = 'Developer'
     main_func(args)
+
