@@ -577,7 +577,6 @@ def npuir_clamp(src: tir.Buffer, dst: Optional[tir.Buffer], min_val: PrimExpr, m
         min_ub_tmp = _to_region(min_val, "rw", min_val.shape)
     else:
         # Scalar
-        print("min_val is scalar")
         min_ub_tmp = min_val
 
     # Ensure value is not less than minimum
@@ -595,7 +594,6 @@ def npuir_clamp(src: tir.Buffer, dst: Optional[tir.Buffer], min_val: PrimExpr, m
     if isinstance(max_val, tir.Buffer):
         max_ub_tmp = _to_region(max_val, "rw", max_val.shape)
     else:
-        print("max_val is scalar")
         max_ub_tmp = max_val
 
     # Ensure value is not greater than maximum
@@ -1079,6 +1077,7 @@ def Scope(name):
     """
 
     return _ffi_api.Scope(name)
+
 
 
 
