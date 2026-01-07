@@ -572,25 +572,41 @@ def npuir_clamp(src: tir.Buffer, dst: Optional[tir.Buffer], min_val: PrimExpr, m
     tmp_mem = alloc_shared(dst.shape, dst.dtype, "shared")
     tmp_mem_tmp = _to_region(tmp_mem, "rw", dst_extent)
 
+     # --- Handle min_val ---
+    if isinstance(min_val, tir.Buffer):
+        min_ub_tmp = _to_region(min_val, "rw", min_val.shape)
+    else:
+        # Scalar
+        print("min_val is scalar")
+        min_ub_tmp = min_val
+
     # Ensure value is not less than minimum
     max_call = tir.call_intrin(
         "handle",
         tir.op.Op.get("tl.npuir_max"),
         src_tmp,
-        min_val,
-        tmp_mem_tmp,
-    ) 
+        min_ub_tmp,
+        tmp_mem_tmp
+    )
+
+    T.evaluate(max_call)
+
+    # --- Handle max_val ---
+    if isinstance(max_val, tir.Buffer):
+        max_ub_tmp = _to_region(max_val, "rw", max_val.shape)
+    else:
+        print("max_val is scalar")
+        max_ub_tmp = max_val
 
     # Ensure value is not greater than maximum
     min_call = tir.call_intrin(
         "handle",
         tir.op.Op.get("tl.npuir_min"),
         tmp_mem_tmp,
-        max_val,
-        dst_tmp,
-    ) 
+        max_ub_tmp,
+        dst_tmp
+    )
 
-    T.evaluate(max_call)
     T.evaluate(min_call)
     
 def npuir_gather(src, dst, indices:Union[list, tuple], size=[]):
@@ -1063,6 +1079,7 @@ def Scope(name):
     """
 
     return _ffi_api.Scope(name)
+
 
 
 
