@@ -3,6 +3,7 @@ import torch_npu
 import argparse
 import tilelang
 import tilelang.language as T
+import os
 
 # Set the NPU device
 torch.npu.set_device(0)
@@ -98,4 +99,7 @@ def main(main_args):
 
 if __name__ == "__main__":
     args = parser.parse_args()
+    os.environ['TILELANG_ASCEND_MODE'] = 'Expert'
+    main(args)
+    os.environ['TILELANG_ASCEND_MODE'] = 'Developer'
     main(args)
