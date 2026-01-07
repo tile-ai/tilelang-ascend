@@ -271,7 +271,6 @@ NpuirReduce::NpuirReduce(Array<PrimExpr> args, BufferMap vmap) {
   }
 
   reduce_mode = args[3].as<StringImmNode>()->value;
-  clear = args[4].as<Bool>().value();
 }
 
 NpuirCumsum::NpuirCumsum(Array<PrimExpr> args, BufferMap vmap) {
@@ -669,6 +668,7 @@ TIR_REGISTER_TL_OP(NpuirBitcast, npuir_bitcast)
 
 } // namespace tl
 } // namespace tvm
+
 
 
 
