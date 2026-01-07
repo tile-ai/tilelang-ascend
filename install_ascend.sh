@@ -176,13 +176,18 @@ if $USE_SHMEM; then
     else
         echo "ACLSHMEM C++ pkg install success in $ACLSHMEM_INSTALL_PATH."
     fi
+    pip show shmem >/dev/null 2>&1
+    if [[ $? -eq 0 ]]; then
+        echo "begin uninstall old shmem whl package"
+        pip uninstall --yes shmem
+    fi
     cd ../../../src/python
     python setup.py bdist_wheel
     cd dist
-    python -m pip install shmem*.whl --force-reinstall
+    python -m pip install shmem*.whl
     if [ $? -ne 0 ]; then
         echo "python -m pip install failed, try pip3 install ..."
-        pip3 install shmem*.whl --force-reinstall
+        pip3 install shmem*.whl
         if [ $? -ne 0 ]; then
             echo "Error: aclshmem-xxx.whl install failed."
             exit 1
