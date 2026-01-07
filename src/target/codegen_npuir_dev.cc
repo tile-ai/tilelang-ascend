@@ -1142,7 +1142,6 @@ void CodeGenTileLangNPUIRDEV::VcumsumCodegen(const CallNode *op) {
   ///   T.npuir_cumsum(src, dst, dim, reverse)
   /// after:
   ///   hivm.hir.vcumsum ins(src) outs(dst) cum_dims = [0] for reverse = false
-  std::cout<<"line 1109 VcumsumCodegen\n";
   tvm::tl::NpuirCumsum npuirop(op->args, this->vmap);
   mlir::Location loc = builder.getUnknownLoc();
   Value src = GetVarValue(npuirop.src);
