@@ -1136,6 +1136,29 @@ void CodeGenTileLangNPUIRDEV::VreduceCodegen(const CallNode *op) {
       builder.getDenseI64ArrayAttr(npuirop.reduce_dims));
 }
 
+void CodeGenTileLangNPUIRDEV::VcumsumCodegen(const CallNode *op) {
+  /// Generate hivm.hir.cumsum for tl.npuir_cumsum.
+  /// before:
+  ///   T.npuir_cumsum(src, dst, dim, reverse)
+  /// after:
+  ///   %.* = hivm.hir.vcumsum ins(src) outs(dst) cum_dims = [0] -> tensor<> for reverse = false
+  tvm::tl::NpuirCumsum npuirop(op->args, this->vmap);
+  mlir::Location loc = builder.getUnknownLoc();
+  Value src = GetVarValue(npuirop.src);
+  Value dst = GetVarValue(npuirop.dst);
+  mlir::Type dst_type = dst.getType();
+  mlir::TypeRange result_tensors(&dst_type, 1);
+  auto reverse_mode = npuirop.reverse;
+  if(reverse_mode == true){
+    ICHECK(false) <<"reverse=True is not yet supported\n";
+    return;
+  }
+  auto newCumsumOp = builder.create<mlir::hivm::VCumsumOp>(
+      loc, result_tensors, src, dst,
+      builder.getDenseI64ArrayAttr(npuirop.cum_dims));
+  SetVarValue(npuirop.dst, newCumsumOp->getResult(0));
+}
+
 void CodeGenTileLangNPUIRDEV::VgatherCodegen(const CallNode *op) {
   tvm::tl::NpuirGather npuirop(op->args, this->vmap);
   Value src = GenSubviewFromRegion(npuirop.src, npuirop.src_range);

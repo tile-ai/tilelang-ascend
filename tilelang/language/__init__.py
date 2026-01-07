@@ -101,6 +101,7 @@ from .customize_npuir import (
     npuir_cumsum as cumsum,
     npuir_clamp,
     npuir_clamp as clamp,
+    npuir_atomic_add,
     npuir_relu,
     npuir_select,
     npuir_cmp,
