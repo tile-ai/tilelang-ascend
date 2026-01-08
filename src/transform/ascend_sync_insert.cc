@@ -743,9 +743,13 @@ private:
             if (func_name_imm) {
               std::string func_name = func_name_imm->value;
               return ((func_name.find("AutoBarrier") != std::string::npos ||
-                      func_name.find("AutoSetFlag") != std::string::npos ||
-                      func_name.find("AutoWaitFlag") != std::string::npos));
+                       func_name.find("AutoSetFlag") != std::string::npos ||
+                       func_name.find("AutoWaitFlag") != std::string::npos));
             }
+          } else if (call->op.same_as(tl::ascend_auto_barrier())  ||
+                     call->op.same_as(tl::ascend_auto_set_flag()) ||
+                     call->op.same_as(tl::ascend_auto_wait_flag()) ) {
+            return true;
           }
         }
       }
@@ -826,8 +830,27 @@ private:
         //     }
         // }
 
-        // todo AutoBarrier
+        if (call1->op.same_as(tl::ascend_auto_barrier())) {
+          if (call1->args.size() >= 1 && call2->args.size() >= 1) {
+            auto pipeline1 = call1->args[0].as<StringImmNode>();
+            auto pipeline2 = call2->args[0].as<StringImmNode>();
+            if (pipeline1 && pipeline2) {
+              return pipeline1->value == pipeline2->value;
+            }
+          }
+          return false;
+        }
 
+        if (call1->op.same_as(tl::ascend_auto_set_flag()) || call1->op.same_as(tl::ascend_auto_wait_flag())) {
+          if (call1->args.size() >= 2 && call2->args.size() >= 2) {
+              auto event_type1 = call1->args[0].as<StringImmNode>();
+              auto event_type2 = call2->args[0].as<StringImmNode>();
+              if (event_type1 && event_type2) {
+                  return event_type1->value == event_type2->value;
+              }
+          }
+          return false;
+        }
         return StructuralEqual()(stmt1, stmt2);
       }
 
