@@ -69,10 +69,10 @@ def kkt_ker(B, H, L, DK, C, BK = None, dtype="float16", accum_dtype="float"):
 					tmp1 = g_v_ub[i * 4 + 1]
 					tmp2 = g_v_ub[i * 4 + 2]
 					tmp3 = g_v_ub[i * 4 + 3]
-					T.tile.sub(coeff_ub[i * 4], g_ub, tmp0)
-					T.tile.sub(coeff_ub[i * 4 + 1], g_ub, tmp1)
-					T.tile.sub(coeff_ub[i * 4 + 2], g_ub, tmp2)
-					T.tile.sub(coeff_ub[i * 4 + 3], g_ub, tmp3)
+					T.tile.sub(coeff_ub[i * 4, :], g_ub, tmp0)
+					T.tile.sub(coeff_ub[i * 4 + 1, :], g_ub, tmp1)
+					T.tile.sub(coeff_ub[i * 4 + 2, :], g_ub, tmp2)
+					T.tile.sub(coeff_ub[i * 4 + 3, :], g_ub, tmp3)
 				T.tile.sub(coeff_ub, a_ub, coeff_ub)
 				T.tile.exp(coeff_ub, coeff_ub)
 				T.copy(Msk[vid * C // VEC_NUM, 0], msk_ub)

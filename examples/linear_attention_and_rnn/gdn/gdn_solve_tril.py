@@ -32,7 +32,7 @@ def solve_tril_ker(B, H, L, C, dtype="float16", accum_dtype="float"):
 			i_ub = T.alloc_ub([C, C], accum_dtype)
 			mul_ub = T.alloc_ub([C, C], accum_dtype)
 			red_ub = T.alloc_ub([C,], accum_dtype)
-			o_ub_half = T.alloc_ub({C, C}, dtype)
+			o_ub_half = T.alloc_ub([C, C], dtype)
 			tmp_ub = T.alloc_ub([3 * DataType(accum_dtype).bits // 8 * C * C // VEC_NUM], "uint8")
 
 			with T.Scope("V"):
