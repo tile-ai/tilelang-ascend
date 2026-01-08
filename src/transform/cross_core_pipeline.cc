@@ -15,6 +15,7 @@
 #include <tvm/tir/transform.h>
 #include <tvm/tir/utils.h>
 
+#include "../op/ascend.h"
 #include "../op/builtin.h"
 #include "./common/collector.h"
 
@@ -249,7 +250,7 @@ public:
             } else {
                  normalized_name = call_node->op.as<OpNode>()->name;
             }
-            
+
             bool exists = std::find(IS_WRITE_GM.begin(), IS_WRITE_GM.end(), normalized_name) != IS_WRITE_GM.end();
             if (exists) {
                 WorkspaceWrite write;
@@ -462,7 +463,7 @@ private:
         public:
             VarReplacer(const Var& old_var, const Var& new_var)
                 : old_var_(old_var), new_var_(new_var) {}
-            
+
             PrimExpr VisitExpr_(const VarNode* op) override {
                 if (op->name_hint == old_var_->name_hint) {
                     return new_var_;
@@ -670,7 +671,7 @@ private:
         return this->VisitStmt(outer_loop);
     }
 
-    Block ExtendAllBuffers(const Block& block, int num_stages, 
+    Block ExtendAllBuffers(const Block& block, int num_stages,
                             const std::set<std::string>& shared_buffers) {
         ObjectPtr<BlockNode> new_block = make_object<BlockNode>(*block.get());
 
@@ -739,20 +740,13 @@ private:
                 if (const CallNode* call = op->value.as<CallNode>()) {
                     Array<PrimExpr> new_args = AdjustCallArgs(origin_map_, call->args, call);
                     if (new_args.size() > 0) {
-                        std::string func_str = "";
-                        if (call->op.same_as(builtin::call_extern())) {
-                          std::string func_str =
-                              call->args[0].as<StringImmNode>()->value;
-                        } else {
-                          func_str = call->op.as<OpNode>()->name;
-                        }
-                        if ((func_str == "AscendC::Muls") || (func_str == "AscendC::Adds")) {
-                            if (const CallNode* scalar_call = new_args[3].as<CallNode>()) {
+                        if (call->op.same_as(tl::ascend_muls()) || call->op.same_as(tl::ascend_adds())) {
+                            if (const CallNode* scalar_call = new_args[2].as<CallNode>()) {
                                 if (const VarNode* var = scalar_call->args[1].as<VarNode>()) {
                                     std::string buffer_name = var->name_hint;
                                     if (buffers_to_adjust_.find(buffer_name) != buffers_to_adjust_.end()) {
                                         PrimExpr scalar_offset = scalar_call->args[2];
-                                        new_args.Set(4, new_args[4] + scalar_offset);
+                                        new_args.Set(3, new_args[3] + scalar_offset);
                                     }
                                 }
                             }
