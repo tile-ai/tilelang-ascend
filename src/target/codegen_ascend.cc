@@ -467,25 +467,7 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
       }
     } else if (op_name == "npu.fill") {
       this->PrintIndent();
-    } else if (op_name.find("mma") != std::string::npos) {
-      auto a_var = op->args[1].as<CallNode>()->args[1].as<VarNode>();
-      auto b_var = op->args[2].as<CallNode>()->args[1].as<VarNode>();
-      auto c_var = op->args[3].as<CallNode>()->args[1].as<VarNode>();
-
-      auto a_offset = PrintExpr(op->args[1].as<CallNode>()->args[2]);
-      auto b_offset = PrintExpr(op->args[2].as<CallNode>()->args[2]);
-      auto c_offset = PrintExpr(op->args[3].as<CallNode>()->args[2]);
-
-      auto a_name = var_idmap_[a_var];
-      auto b_name = var_idmap_[b_var];
-      auto c_name = var_idmap_[c_var];
-
-      this->PrintIndent();
-      this->stream << op_name << "(" << a_name << "[" << a_offset << "],"
-                   << b_name << "[" << b_offset << "]," << c_name << "["
-                   << c_offset << "], " << PrintExpr(op->args[4]) << ", "
-                   << PrintExpr(op->args[5]) << ");\n";
-    } 
+    }  
   } else if (op->op.same_as(tl::loop_break())) {
     this->PrintIndent();
     this->stream << "break;\n";
@@ -638,6 +620,26 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
     std::string op_name = "tl::ascend::" + Downcast<StringImm>(op->args[0])->value;
     std::string expr = PrintExpr(op->args[1]);
     os << op_name << "(" << expr << ")";
+  } else if (op->op.same_as(tl::ascend_mma())) {
+    std::string op_name =
+        "tl::ascend::" + Downcast<StringImm>(op->args[0])->value;
+    auto a_var = op->args[1].as<CallNode>()->args[1].as<VarNode>();
+    auto b_var = op->args[2].as<CallNode>()->args[1].as<VarNode>();
+    auto c_var = op->args[3].as<CallNode>()->args[1].as<VarNode>();
+
+    auto a_offset = PrintExpr(op->args[1].as<CallNode>()->args[2]);
+    auto b_offset = PrintExpr(op->args[2].as<CallNode>()->args[2]);
+    auto c_offset = PrintExpr(op->args[3].as<CallNode>()->args[2]);
+
+    auto a_name = var_idmap_[a_var];
+    auto b_name = var_idmap_[b_var];
+    auto c_name = var_idmap_[c_var];
+
+    this->PrintIndent();
+    this->stream << op_name << "(" << a_name << "[" << a_offset << "],"
+                 << b_name << "[" << b_offset << "]," << c_name << "["
+                 << c_offset << "], " << PrintExpr(op->args[4]) << ", "
+                 << PrintExpr(op->args[5]) << ");\n";
   } else {
     tvm::Dump(op);
     CodeGenC::VisitExpr_(op, os);
