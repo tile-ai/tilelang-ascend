@@ -67,6 +67,8 @@ private:
 
   void BinaryVecOpsCodegen(const CallNode* op, const std::string& op_name);
 
+  std::string PrintBufferOffset(const CallNode *op);
+
   // Whether global barrier is needed.
   bool need_global_barrier_{false};
   // Global barrier state
