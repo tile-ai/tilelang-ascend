@@ -557,5 +557,9 @@ TIR_DEFINE_TL_BUILTIN(ascend_auto_wait_cross_flag)
 TIR_DEFINE_TL_BUILTIN(ascend_use_swizzle)
     .set_num_inputs(3)
     .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+
+TIR_DEFINE_TL_BUILTIN(ascend_mma)
+    .set_num_inputs(6)
+    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
 } // namespace tl
 } // namespace tvm

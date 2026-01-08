@@ -174,6 +174,8 @@ TVM_DLL const Op &ascend_auto_set_cross_flag();
 TVM_DLL const Op &ascend_auto_wait_cross_flag();
 
 TVM_DLL const Op &ascend_use_swizzle();
+
+TVM_DLL const Op &ascend_mma();
 } // namespace tl
 } // namespace tvm
 
