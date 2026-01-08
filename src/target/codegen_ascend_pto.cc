@@ -740,7 +740,6 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) 
     }
   } else if (op->op.same_as(tl::ascend_pipe_barrier())) {
       std::string pipe = Downcast<StringImm>(op->args[0])->value;
-      std::cout << "pipe: " << pipe << std::endl;
       this->PrintIndent();
       this->stream << "pipe_barrier(PIPE_" << pipe << ");\n";
   } else if (op->op.same_as(tl::ascend_wait_flag())) {
