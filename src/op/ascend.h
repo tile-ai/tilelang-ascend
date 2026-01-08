@@ -486,6 +486,3 @@ public:
 } // namespace tvm
 
 #endif //  TVM_TL_OP_ELEM_H_
-
-
-
