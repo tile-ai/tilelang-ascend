@@ -27,7 +27,7 @@
 #include <tvm/runtime/registry.h>
 #include <tvm/tir/expr.h>
 
-
+#include "../op/ascend.h"
 #include "../op/builtin.h"
 #include "./common/collector.h"
 
@@ -194,6 +194,9 @@ private:
       {"AscendC::WholeReduceMin", {{{0, "write"}, {1, "read"}, {2, "read"}, {3, "read"}, {4, "read"}, {5, "read"}, {6, "read"}}, "PIPE_V"}},
       {"AscendC::WholeReduceSum", {{{0, "write"}, {1, "read"}, {2, "read"}, {3, "read"}, {4, "read"}, {5, "read"}, {6, "read"}}, "PIPE_V"}},
 
+      {"tl.ascend_mma", {{{1, "read"}, {2, "read"}, {3, "write"}}, "PIPE_M"}},
+      {"tl.ascend_gemm_v0", {{{1, "read"}, {2, "read"}, {3, "write"}}, "PIPE_M"}},
+      {"tl.ascend_gemm_v1", {{{1, "read"}, {2, "read"}, {3, "write"}}, "PIPE_M"}},
       {"tl.ascend_add", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
       {"tl.ascend_adds", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
       {"tl.ascend_mul", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
@@ -743,9 +746,13 @@ private:
             if (func_name_imm) {
               std::string func_name = func_name_imm->value;
               return ((func_name.find("AutoBarrier") != std::string::npos ||
-                      func_name.find("AutoSetFlag") != std::string::npos ||
-                      func_name.find("AutoWaitFlag") != std::string::npos));
+                       func_name.find("AutoSetFlag") != std::string::npos ||
+                       func_name.find("AutoWaitFlag") != std::string::npos));
             }
+          } else if (call->op.same_as(tl::ascend_auto_barrier())  ||
+                     call->op.same_as(tl::ascend_auto_set_flag()) ||
+                     call->op.same_as(tl::ascend_auto_wait_flag()) ) {
+            return true;
           }
         }
       }
@@ -826,8 +833,27 @@ private:
         //     }
         // }
 
-        // todo AutoBarrier
+        if (call1->op.same_as(tl::ascend_auto_barrier())) {
+          if (call1->args.size() >= 1 && call2->args.size() >= 1) {
+            auto pipeline1 = call1->args[0].as<StringImmNode>();
+            auto pipeline2 = call2->args[0].as<StringImmNode>();
+            if (pipeline1 && pipeline2) {
+              return pipeline1->value == pipeline2->value;
+            }
+          }
+          return false;
+        }
 
+        if (call1->op.same_as(tl::ascend_auto_set_flag()) || call1->op.same_as(tl::ascend_auto_wait_flag())) {
+          if (call1->args.size() >= 2 && call2->args.size() >= 2) {
+              auto event_type1 = call1->args[0].as<StringImmNode>();
+              auto event_type2 = call2->args[0].as<StringImmNode>();
+              if (event_type1 && event_type2) {
+                  return event_type1->value == event_type2->value;
+              }
+          }
+          return false;
+        }
         return StructuralEqual()(stmt1, stmt2);
       }
 

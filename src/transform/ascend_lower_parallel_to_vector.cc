@@ -56,7 +56,7 @@ struct BinaryOpInfo {
 // Create binary operation table
 inline std::vector<BinaryOpInfo> CreateBinaryOpTable() {
   std::vector<BinaryOpInfo> table;
-  
+
   // Template for arithmetic operations
   auto add_arith_op = [&table](Op name, auto matcher_fn, auto cast_fn) {
     table.push_back({
@@ -69,31 +69,31 @@ inline std::vector<BinaryOpInfo> CreateBinaryOpTable() {
       }
     });
   };
-  
-  add_arith_op(tl::ascend_add(), 
+
+  add_arith_op(tl::ascend_add(),
     [](const PrimExpr& e) { return e.as<AddNode>(); },
     [](const PrimExpr& e) { return e.as<AddNode>(); });
-  
+
   add_arith_op(tl::ascend_sub(),
     [](const PrimExpr& e) { return e.as<SubNode>(); },
     [](const PrimExpr& e) { return e.as<SubNode>(); });
-  
+
   add_arith_op(tl::ascend_mul(),
     [](const PrimExpr& e) { return e.as<MulNode>(); },
     [](const PrimExpr& e) { return e.as<MulNode>(); });
-  
+
   add_arith_op(tl::ascend_div(),
     [](const PrimExpr& e) { return e.as<DivNode>(); },
     [](const PrimExpr& e) { return e.as<DivNode>(); });
-  
+
   add_arith_op(tl::ascend_min(),
     [](const PrimExpr& e) { return e.as<MinNode>(); },
     [](const PrimExpr& e) { return e.as<MinNode>(); });
-  
+
   add_arith_op(tl::ascend_max(),
     [](const PrimExpr& e) { return e.as<MaxNode>(); },
     [](const PrimExpr& e) { return e.as<MaxNode>(); });
-  
+
   // Template for builtin call operations
   auto add_builtin_op = [&table](Op name,auto builtin_fn) {
     table.push_back({
@@ -111,7 +111,7 @@ inline std::vector<BinaryOpInfo> CreateBinaryOpTable() {
       }
     });
   };
-  
+
   add_builtin_op(tl::ascend_bitwise_and(), builtin::bitwise_and);
   add_builtin_op(tl::ascend_bitwise_or(), builtin::bitwise_or);
   add_builtin_op(tl::ascend_bitwise_lshift(), builtin::shift_left);
@@ -125,10 +125,10 @@ inline std::vector<BinaryOpInfo> CreateBinaryOpTable() {
 
 static const std::vector<BinaryOpInfo> kBinaryOpTable = CreateBinaryOpTable();
 
-const std::unordered_set<std::string> kNoSuffixOps = {
-  "AscendC::ShiftLeft",
-  "AscendC::ShiftRight"
-};
+// const std::unordered_set<std::string> kNoSuffixOps = {
+//   "AscendC::ShiftLeft",
+//   "AscendC::ShiftRight"
+// };
 
 }  // namespace
 
@@ -162,7 +162,7 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
         break;
       }
     }
-  
+
     if (num_elements < 0) {
       LOG(FATAL) << "Cannot create temp buffer for non-constant shape.";
       return Buffer();
@@ -378,7 +378,7 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
       if (idx_var == nullptr) return false;
       if (idx_var != vector_dim_var_) return false;
       if (element_count <= 0) return false;
-  
+
       plan->inner_vec_len = element_count;
       plan->outer_extent = 1;
       plan->outer_index_var = nullptr;
@@ -389,7 +389,7 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
     /*----- 2D case -----*/
     if (vector_dim_var_ == nullptr) return false;
 
-    if (output_buffer->shape.size() == 2 && store->indices.size() == 2) {  
+    if (output_buffer->shape.size() == 2 && store->indices.size() == 2) {
       const VarNode* outer_var = store->indices[0].as<VarNode>();
       const VarNode* inner_var = store->indices[1].as<VarNode>();
       if (outer_var == nullptr || inner_var == nullptr) return false;
@@ -492,7 +492,7 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
         bool success = DecomposeExpression(store->value, output_buffer,
                                         output_offset, total_elements,
                                         parallel_vars, &row_stmts, is_2d);
-  
+
     is_2d_vectorizing_ = saved_is_2d_vectorizing;
     if (!success || row_stmts.empty()) return NullOpt;
     if (row_stmts.size() == 1) return row_stmts[0];
@@ -552,8 +552,8 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
         }
 
         auto body_opt = VectorizeStoreAsRowBody(
-          st, 
-          curr_plan.inner_vec_len, 
+          st,
+          curr_plan.inner_vec_len,
           curr_plan.outer_extent,
           plan.is_2d_vectorizable,
           parallel_vars
@@ -568,7 +568,7 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
     if (bodies.empty()) return Stmt();
 
     Stmt combined = (bodies.size() == 1) ? bodies[0] : SeqStmt::Flatten(bodies);
-  
+
     if (plan.is_2d_vectorizable || has_outer_serial || plan.outer_extent == 1) {
       return combined;
   }
@@ -1062,7 +1062,7 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
         break;
       }
     }
-  
+
     if (all_zero) {
       return IntImm(DataType::Int(32), 0);
     }
