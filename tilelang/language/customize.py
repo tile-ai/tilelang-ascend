@@ -5,6 +5,7 @@
 import tilelang.language as T
 from tvm.tir import PrimExpr, Buffer, BufferRegion, Var
 from typing import List, Union
+from tvm import tir
 
 
 def atomic_add(dst: Buffer, value: PrimExpr) -> PrimExpr:
@@ -192,8 +193,9 @@ def npu_gemm(A, B, C, init=False):
     Bptr = retrieve_ptr(B, "r")
     Cptr = retrieve_ptr(C, "rw")
 
-    return T.call_extern("handle", f"tl::ascend::mma<{_dtype(A)}, {_dtype(C)}, {M}, {N}>",
-                         Aptr, Bptr, Cptr, init, K)
+    return tir.call_intrin(
+        "handle", tir.op.Op.get("tl.ascend_mma"), f"mma<{_dtype(A)}, {_dtype(C)}, {M}, {N}>", Aptr, Bptr, Cptr, init, K
+    )
 
 def loop_break():
     """Break out of the innermost loop.
