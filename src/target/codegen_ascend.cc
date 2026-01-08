@@ -485,54 +485,7 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
                    << b_name << "[" << b_offset << "]," << c_name << "["
                    << c_offset << "], " << PrintExpr(op->args[4]) << ", "
                    << PrintExpr(op->args[5]) << ");\n";
-    } else if (op_name.find("thread_block_swizzle") != std::string::npos) {
-      std::string expr = PrintExpr(op->args[1]);
-      os << op_name << "(" << expr << ")";
-    }
-
-    if (op_name == "AscendC::AutoBarrier") {
-      this->PrintIndent();
-      std::string pipeline = "PIPE_ALL";
-      if (op->args.size() > 1) {
-        if (auto pipeline_imm = op->args[1].as<StringImmNode>()) {
-          pipeline = pipeline_imm->value;
-        }
-      }
-      this->stream << "AscendC::PipeBarrier<" << pipeline << ">();\n";
-      return;
-    } else if (op_name == "AscendC::AutoSetFlag") {
-      this->PrintIndent();
-      auto event_type = Downcast<StringImm>(op->args[1])->value;
-      auto event_id = PrintExpr(op->args[2]);
-      this->stream << "AscendC::SetFlag<AscendC::HardEvent::" << event_type
-                   << ">(" << event_id << ");\n";
-      return;
-    } else if (op_name == "AscendC::AutoWaitFlag") {
-      this->PrintIndent();
-      auto event_type = Downcast<StringImm>(op->args[1])->value;
-      auto event_id = PrintExpr(op->args[2]);
-      this->stream << "AscendC::WaitFlag<AscendC::HardEvent::" << event_type
-                   << ">(" << event_id << ");\n";
-      return;
-    }
-
-    // For AutoCrossCoreSetFlag and AutoCrossCoreWaitFlag, we use the op_name
-    // with adding "Auto" prefix.
-    if (op_name == "AscendC::AutoCrossCoreSetFlag") {
-      this->PrintIndent();
-      auto model_id = op->args[1].as<IntImmNode>()->value;
-      auto pipe = op->args[2].as<StringImmNode>()->value;
-      auto flag_id = op->args[3].as<IntImmNode>()->value;
-      this->stream << "AscendC::CrossCoreSetFlag<" << model_id << ", PIPE_"
-                   << pipe << ">(" << flag_id << ");\n";
-      return;
-    } else if (op_name == "AscendC::AutoCrossCoreWaitFlag") {
-      this->PrintIndent();
-      auto flag_id = op->args[1].as<IntImmNode>()->value;
-      this->stream << "AscendC::CrossCoreWaitFlag(" << flag_id << ");\n";
-      return;
-    }
-
+    } 
   } else if (op->op.same_as(tl::loop_break())) {
     this->PrintIndent();
     this->stream << "break;\n";
@@ -664,6 +617,27 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
     WholeReduceOpCodegen(op, "AscendC::WholeReduceMin");
   } else if (op->op.same_as(tl::ascend_wholereducesum())) {
     PrintOpCall(op, "AscendC::WholeReduceSum", {0, 2}, {2, op->args.size()});
+  } else if (op->op.same_as(tl::ascend_auto_barrier())) {
+    AutoBarrierCodegen(op);
+  } else if (op->op.same_as(tl::ascend_auto_set_flag())) {
+    AutoFlagOpCodegen(op, "SetFlag");
+  } else if (op->op.same_as(tl::ascend_auto_wait_flag())) {
+    AutoFlagOpCodegen(op, "WaitFlag");
+  } else if (op->op.same_as(tl::ascend_auto_set_cross_flag())) {
+    this->PrintIndent();
+    auto model_id = op->args[0].as<IntImmNode>()->value;
+    auto pipe = op->args[1].as<StringImmNode>()->value;
+    auto flag_id = op->args[2].as<IntImmNode>()->value;
+    this->stream << "AscendC::CrossCoreSetFlag<" << model_id << ", PIPE_"
+                 << pipe << ">(" << flag_id << ");\n";
+  } else if (op->op.same_as(tl::ascend_auto_wait_cross_flag())) {
+    this->PrintIndent();
+    auto flag_id = op->args[0].as<IntImmNode>()->value;
+    this->stream << "AscendC::CrossCoreWaitFlag(" << flag_id << ");\n";
+  } else if (op->op.same_as(tl::ascend_use_swizzle())) {
+    std::string op_name = "tl::ascend::" + Downcast<StringImm>(op->args[0])->value;
+    std::string expr = PrintExpr(op->args[1]);
+    os << op_name << "(" << expr << ")";
   } else {
     tvm::Dump(op);
     CodeGenC::VisitExpr_(op, os);
@@ -1798,6 +1772,27 @@ void CodeGenTileLangAscend::WholeReduceOpCodegen(const CallNode *op,
   }
   this->stream << ", " << "AscendC::ReduceOrder::"
                << Downcast<StringImm>(op->args[op->args.size() - 1])->value
+               << ");\n";
+}
+
+void CodeGenTileLangAscend::AutoBarrierCodegen(const CallNode *op) {
+  this->PrintIndent();
+  std::string pipeline = "PIPE_ALL";
+  if (op->args.size() >= 1) {
+    if (auto pipeline_imm = op->args[0].as<StringImmNode>()) {
+      pipeline = pipeline_imm->value;
+    }
+  }
+  this->stream << "AscendC::PipeBarrier<" << pipeline << ">();\n";
+}
+
+void CodeGenTileLangAscend::AutoFlagOpCodegen(const CallNode *op,
+                                              std::string op_name) {
+  this->PrintIndent();
+  auto event_type = Downcast<StringImm>(op->args[0])->value;
+  auto event_id = PrintExpr(op->args[1]);
+  this->stream << "AscendC::" << op_name
+               << "<AscendC::HardEvent::" << event_type << ">(" << event_id
                << ");\n";
 }
 

@@ -1534,21 +1534,21 @@ private:
     return event_id_counter_++;
   }
 
-  Stmt CreatePipeBarrier(const std::string& pipeline) {
-    Array<PrimExpr> args = {StringImm("AscendC::AutoBarrier"), StringImm(pipeline)};
-    return Evaluate(Call(DataType::Handle(), builtin::call_extern(), args));
+  Stmt CreatePipeBarrier(const std::string &pipeline) {
+    Array<PrimExpr> args = {StringImm(pipeline)};
+    return Evaluate(Call(DataType::Handle(), Op::Get("tl.ascend_auto_barrier"), args));
   }
 
-  Stmt CreateSetFlag(const std::string& event_type, int event_id) {
-    Array<PrimExpr> args = {StringImm("AscendC::AutoSetFlag"), StringImm(event_type),
-                           IntImm(DataType::Int(32), event_id)};
-    return Evaluate(Call(DataType::Handle(), builtin::call_extern(), args));
+  Stmt CreateSetFlag(const std::string &event_type, int event_id) {
+    Array<PrimExpr> args = {StringImm(event_type),
+                            IntImm(DataType::Int(32), event_id)};
+    return Evaluate(Call(DataType::Handle(), Op::Get("tl.ascend_auto_set_flag"), args));
   }
 
-  Stmt CreateWaitFlag(const std::string& event_type, int event_id) {
-    Array<PrimExpr> args = {StringImm("AscendC::AutoWaitFlag"), StringImm(event_type),
-                           IntImm(DataType::Int(32), event_id)};
-    return Evaluate(Call(DataType::Handle(), builtin::call_extern(), args));
+  Stmt CreateWaitFlag(const std::string &event_type, int event_id) {
+    Array<PrimExpr> args = {StringImm(event_type),
+                            IntImm(DataType::Int(32), event_id)};
+    return Evaluate(Call(DataType::Handle(), Op::Get("tl.ascend_auto_wait_flag"), args));
   }
 
 private:

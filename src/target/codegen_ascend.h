@@ -138,6 +138,10 @@ private:
 
   void WholeReduceOpCodegen(const CallNode *op, const std::string& op_name);
 
+  void AutoBarrierCodegen (const CallNode *op);
+
+  void AutoFlagOpCodegen (const CallNode *op, std::string op_name);
+
 private:
   // Whether scope such as "__shared__" or "__constant__"  is part of type.
   bool IsScopePartOfType() const final { return false; }
