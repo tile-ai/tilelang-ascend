@@ -667,4 +667,6 @@ TIR_REGISTER_TL_OP(NpuirBitcast, npuir_bitcast)
                                Integer(CallEffectKind::kOpaque));
 
 } // namespace tl
+
 } // namespace tvm
+
