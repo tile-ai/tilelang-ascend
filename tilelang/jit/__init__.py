@@ -23,7 +23,7 @@ from tvm.target import Target
 
 from tilelang.jit.kernel import JITKernel
 from tilelang.cache import cached
-from os import path, makedirs
+from os import path, makedirs, environ
 from logging import getLogger
 import functools
 import inspect
@@ -153,6 +153,8 @@ class _JitImplementation:
         self.signature = None
 
         # Corrected debug_root_path handling
+        if debug_root_path is None:
+            debug_root_path = environ.get("TL_DEBUG_ROOT_PATH")
         self.debug_root_path = debug_root_path
         if self.debug_root_path is not None and not path.isabs(self.debug_root_path):
             try:
