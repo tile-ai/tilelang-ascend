@@ -1116,9 +1116,3 @@ def Scope(name):
     """
 
     return _ffi_api.Scope(name)
-
-
-
-
-
-
