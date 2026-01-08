@@ -90,6 +90,7 @@ class LibraryGenerator(object):
                 f"-I{ASCEND_HOME_PATH}/pkg_inc/runtime",
                 f"-I{ASCEND_HOME_PATH}/pkg_inc/profiling",
                 f"-L{ASCEND_HOME_PATH}/lib64",
+                "-I" + TILELANG_TEMPLATE_PATH,
                 "-Wno-macro-redefined",
                 "-Wno-ignored-attributes",
                 "-lruntime",
