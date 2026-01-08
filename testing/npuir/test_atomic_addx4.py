@@ -25,7 +25,7 @@ def run_atomic_addx4(M, N, block_M, block_N, dtype="float32"):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, _):
             blockx = cid // n_num
             blocky = cid % n_num
-            A_VEC = T.alloc_ub((block_M, block_N), dtype)
+            A_VEC = T.alloc_ub((1, 4), dtype)
 
             for i, j in T.Parallel(block_M, block_N // 4):
                 bx = blockx * block_M + i
