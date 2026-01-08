@@ -392,82 +392,13 @@ void CodeGenTileLangAscend::VisitStmt_(const BufferStoreNode *op) {
 }
 
 void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
-  auto print_buffer_offset = [&](const CallNode *op,
-                                 bool has_offset = true) -> std::string {
-    auto _var = op->args[1].as<VarNode>();
-    auto _var_offset = PrintExpr(op->args[2]);
-    auto _var_name = var_idmap_[_var];
-    if (has_offset)
-      return _var_name + "[" + _var_offset + "]";
-    return _var_name;
-  };
-  auto add_decl_stream = [&](std::ostringstream &ss, const std::string &str) {
-    std::string content = ss.str();
-    if (content.find(str) == std::string::npos) {
-      ss << str;
-    }
-  };
-
   if (op->op.same_as(builtin::call_extern())) {
     std::string op_name = Downcast<StringImm>(op->args[0])->value;
     if (op_name.find("tl::ascend::copy") != std::string::npos) {
-
-      auto src_var = op->args[1].as<CallNode>()->args[1].as<VarNode>();
-      auto dst_var = op->args[2].as<CallNode>()->args[1].as<VarNode>();
-
-      auto src_var_id = var_idmap_[src_var];
-      auto dst_var_id = var_idmap_[dst_var];
-      if (src_var_id == "") {
-        src_var_id = src_var->name_hint;
-      }
-      if (dst_var_id == "") {
-        dst_var_id = dst_var->name_hint;
-      }
-
-      auto src_offset = PrintExpr(op->args[1].as<CallNode>()->args[2]);
-      auto dst_offset = PrintExpr(op->args[2].as<CallNode>()->args[2]);
-
-      auto src_type = op->args[1].as<CallNode>()->args[0].as<CallNode>()->dtype;
-      auto dst_type = op->args[2].as<CallNode>()->args[0].as<CallNode>()->dtype;
-
-      static const std::unordered_map<std::string, int> kCopyOpExtraArgs = {
-        {"copy_l0c_to_gm", 1},
-        {"copy_gm_to_l1", 1},
-        {"copy_l1_to_l0a", 2},
-        {"copy_l1_to_l0b", 2},
-        {"copy_gm_to_ub", 1},
-        {"copy_ub_to_gm", 1},
-        {"copy_ub_to_ub", 0}
-      };
-
-      bool found = false;
-      int extra_args = 0;
-
-      for (const auto &pair : kCopyOpExtraArgs) {
-        if (op_name.find(pair.first) != std::string::npos) {
-          found = true;
-          extra_args = pair.second;
-          break;
-        }
-      }
-
-      if (found) {
-        this->PrintIndent();
-        this->stream << op_name << "(" << dst_var_id << "[" << dst_offset
-                     << "], " << src_var_id << "[" << src_offset << "]";
-
-        for (int i = 0; i < extra_args; ++i) {
-          this->stream << ", " << PrintExpr(op->args[3 + i]);
-        }
-
-        this->stream << ");\n";
-      } else {
-        this->PrintIndent();
-        this->stream << "not implemented yet\n";
-      }
+      CopyCodegen(op);
     } else if (op_name == "npu.fill") {
       this->PrintIndent();
-    }  
+    }
   } else if (op->op.same_as(tl::loop_break())) {
     this->PrintIndent();
     this->stream << "break;\n";
@@ -606,40 +537,13 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
   } else if (op->op.same_as(tl::ascend_auto_wait_flag())) {
     AutoFlagOpCodegen(op, "WaitFlag");
   } else if (op->op.same_as(tl::ascend_auto_set_cross_flag())) {
-    this->PrintIndent();
-    auto model_id = op->args[0].as<IntImmNode>()->value;
-    auto pipe = op->args[1].as<StringImmNode>()->value;
-    auto flag_id = op->args[2].as<IntImmNode>()->value;
-    this->stream << "AscendC::CrossCoreSetFlag<" << model_id << ", PIPE_"
-                 << pipe << ">(" << flag_id << ");\n";
+    AutoSetCrossFlagCodegen(op);
   } else if (op->op.same_as(tl::ascend_auto_wait_cross_flag())) {
-    this->PrintIndent();
-    auto flag_id = op->args[0].as<IntImmNode>()->value;
-    this->stream << "AscendC::CrossCoreWaitFlag(" << flag_id << ");\n";
+    AutoWaitCrossFlagCodegen(op);
   } else if (op->op.same_as(tl::ascend_use_swizzle())) {
-    std::string op_name = "tl::ascend::" + Downcast<StringImm>(op->args[0])->value;
-    std::string expr = PrintExpr(op->args[1]);
-    os << op_name << "(" << expr << ")";
+    UseSwizzleCodegen(op, os);
   } else if (op->op.same_as(tl::ascend_mma())) {
-    std::string op_name =
-        "tl::ascend::" + Downcast<StringImm>(op->args[0])->value;
-    auto a_var = op->args[1].as<CallNode>()->args[1].as<VarNode>();
-    auto b_var = op->args[2].as<CallNode>()->args[1].as<VarNode>();
-    auto c_var = op->args[3].as<CallNode>()->args[1].as<VarNode>();
-
-    auto a_offset = PrintExpr(op->args[1].as<CallNode>()->args[2]);
-    auto b_offset = PrintExpr(op->args[2].as<CallNode>()->args[2]);
-    auto c_offset = PrintExpr(op->args[3].as<CallNode>()->args[2]);
-
-    auto a_name = var_idmap_[a_var];
-    auto b_name = var_idmap_[b_var];
-    auto c_name = var_idmap_[c_var];
-
-    this->PrintIndent();
-    this->stream << op_name << "(" << a_name << "[" << a_offset << "],"
-                 << b_name << "[" << b_offset << "]," << c_name << "["
-                 << c_offset << "], " << PrintExpr(op->args[4]) << ", "
-                 << PrintExpr(op->args[5]) << ");\n";
+    MmaCodegen(op);
   } else {
     tvm::Dump(op);
     CodeGenC::VisitExpr_(op, os);
@@ -1796,6 +1700,102 @@ void CodeGenTileLangAscend::AutoFlagOpCodegen(const CallNode *op,
   this->stream << "AscendC::" << op_name
                << "<AscendC::HardEvent::" << event_type << ">(" << event_id
                << ");\n";
+}
+
+void CodeGenTileLangAscend::AutoSetCrossFlagCodegen(const CallNode *op) {
+  this->PrintIndent();
+  auto model_id = op->args[0].as<IntImmNode>()->value;
+  auto pipe = op->args[1].as<StringImmNode>()->value;
+  auto flag_id = op->args[2].as<IntImmNode>()->value;
+  this->stream << "AscendC::CrossCoreSetFlag<" << model_id << ", PIPE_" << pipe
+               << ">(" << flag_id << ");\n";
+}
+
+void CodeGenTileLangAscend::AutoWaitCrossFlagCodegen(const CallNode *op) {
+  this->PrintIndent();
+  auto flag_id = op->args[0].as<IntImmNode>()->value;
+  this->stream << "AscendC::CrossCoreWaitFlag(" << flag_id << ");\n";
+}
+
+void CodeGenTileLangAscend::UseSwizzleCodegen(const CallNode *op, std::ostream &os) {
+  std::string op_name =
+      "tl::ascend::" + Downcast<StringImm>(op->args[0])->value;
+  std::string expr = PrintExpr(op->args[1]);
+  os << op_name << "(" << expr << ")";
+}
+
+void CodeGenTileLangAscend::MmaCodegen(const CallNode *op) {
+  std::string op_name =
+      "tl::ascend::" + Downcast<StringImm>(op->args[0])->value;
+  auto a_var = op->args[1].as<CallNode>()->args[1].as<VarNode>();
+  auto b_var = op->args[2].as<CallNode>()->args[1].as<VarNode>();
+  auto c_var = op->args[3].as<CallNode>()->args[1].as<VarNode>();
+
+  auto a_offset = PrintExpr(op->args[1].as<CallNode>()->args[2]);
+  auto b_offset = PrintExpr(op->args[2].as<CallNode>()->args[2]);
+  auto c_offset = PrintExpr(op->args[3].as<CallNode>()->args[2]);
+
+  auto a_name = var_idmap_[a_var];
+  auto b_name = var_idmap_[b_var];
+  auto c_name = var_idmap_[c_var];
+
+  this->PrintIndent();
+  this->stream << op_name << "(" << a_name << "[" << a_offset << "]," << b_name
+               << "[" << b_offset << "]," << c_name << "[" << c_offset << "], "
+               << PrintExpr(op->args[4]) << ", " << PrintExpr(op->args[5])
+               << ");\n";
+}
+
+void CodeGenTileLangAscend::CopyCodegen(const CallNode *op) {
+  std::string op_name = Downcast<StringImm>(op->args[0])->value;
+  auto src_var = op->args[1].as<CallNode>()->args[1].as<VarNode>();
+  auto dst_var = op->args[2].as<CallNode>()->args[1].as<VarNode>();
+
+  auto src_var_id = var_idmap_[src_var];
+  auto dst_var_id = var_idmap_[dst_var];
+  if (src_var_id == "") {
+    src_var_id = src_var->name_hint;
+  }
+  if (dst_var_id == "") {
+    dst_var_id = dst_var->name_hint;
+  }
+
+  auto src_offset = PrintExpr(op->args[1].as<CallNode>()->args[2]);
+  auto dst_offset = PrintExpr(op->args[2].as<CallNode>()->args[2]);
+
+  auto src_type = op->args[1].as<CallNode>()->args[0].as<CallNode>()->dtype;
+  auto dst_type = op->args[2].as<CallNode>()->args[0].as<CallNode>()->dtype;
+
+  static const std::unordered_map<std::string, int> kCopyOpExtraArgs = {
+      {"copy_l0c_to_gm", 1}, {"copy_gm_to_l1", 1}, {"copy_l1_to_l0a", 2},
+      {"copy_l1_to_l0b", 2}, {"copy_gm_to_ub", 1}, {"copy_ub_to_gm", 1},
+      {"copy_ub_to_ub", 0}};
+
+  bool found = false;
+  int extra_args = 0;
+
+  for (const auto &pair : kCopyOpExtraArgs) {
+    if (op_name.find(pair.first) != std::string::npos) {
+      found = true;
+      extra_args = pair.second;
+      break;
+    }
+  }
+
+  if (found) {
+    this->PrintIndent();
+    this->stream << op_name << "(" << dst_var_id << "[" << dst_offset << "], "
+                 << src_var_id << "[" << src_offset << "]";
+
+    for (int i = 0; i < extra_args; ++i) {
+      this->stream << ", " << PrintExpr(op->args[3 + i]);
+    }
+
+    this->stream << ");\n";
+  } else {
+    this->PrintIndent();
+    this->stream << "not implemented yet\n";
+  }
 }
 
 } // namespace codegen
