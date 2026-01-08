@@ -259,14 +259,6 @@ TVM_DLL const Op &tvm_rdna_wmma();
  */
 TVM_DLL const Op &tvm_rdna_wmma_store();
 
-/*!
- * \brief tvm intrinsic for loop continue
- *
- * loop_break()
- *
- */
-TVM_DLL const Op &loop_break();
-
 const Op &add();
 
 const Op &sub();
@@ -284,9 +276,6 @@ const Op &exp();
 /*!
  * \brief ascend pto intrinsic
  */
-const Op &ascend_fill();
-
-const Op &ascend_reduce();
 
 const Op &ascend_scalar_op();
 
