@@ -10,6 +10,7 @@ from tvm._ffi import register_object
 from tilelang import _ffi_api
 from .kernel import get_thread_bindings, get_thread_extents, FrameStack
 import threading
+import os
 
 from tilelang.language.copy import buffer_region_to_tile_region, buffer_load_to_tile_region, region
 
@@ -418,6 +419,21 @@ def npuir_cast(src, dst, size=[], round_mode="rint"):
     dst = _to_region(dst, "w", dst_extent)
     return tir.call_intrin("handle", tir.op.Op.get("tl.npuir_cast"), src, dst, round_mode)
 
+def _get_tmp_buffer_exp(data):
+    if isinstance(data, tir.Buffer):
+        return T.alloc_ub(data.shape, data.dtype)
+    elif isinstance(data, tir.BufferLoad):
+        return T.alloc_ub(data.buffer.shape, data.dtype)
+    else:
+        raise TypeError(f"Unsupported dst type: {type(data)}")
+
+def _get_tmp_buffer_dev(data):
+    if isinstance(data, tir.Buffer):
+        return T.alloc_shared(data.shape, data.dtype)
+    elif isinstance(data, tir.BufferLoad):
+        return T.alloc_shared(data.buffer.shape, data.dtype)
+    else:
+        raise TypeError(f"Unsupported dst type: {type(data)}")
 
 def npuir_reduce(src, dst, dims:Union[list, tuple, int], reduce_mode, size=[], clear: bool = True):
     """Reduce one or more axes of the source vector according to the reduction axes array, starting from an init value.
@@ -470,12 +486,12 @@ def npuir_reduce(src, dst, dims:Union[list, tuple, int], reduce_mode, size=[], c
             "max": "max",
             "min": "min",
         }
-        if isinstance(dst, tir.Buffer):
-            tmp = T.alloc_shared(dst.shape, dst.dtype)
-        elif isinstance(dst, tir.BufferLoad):
-            tmp = T.alloc_shared(dst.buffer.shape, dst.dtype)
+        TILELANG_ASCEND_MODE = os.environ.get('TILELANG_ASCEND_MODE')
+        if TILELANG_ASCEND_MODE is None or \
+            TILELANG_ASCEND_MODE.lower().strip() in ['expert', 'exp', 'e']:
+            tmp = _get_tmp_buffer_exp(dst)
         else:
-            raise TypeError(f"Unsupported dst type: {type(dst)}")
+            tmp = _get_tmp_buffer_dev(dst)
         tmp_extent = _get_extent(tmp)
         assert len(dst_extent) == len(tmp_extent), "The out vector and tmp vector must have same rank."
         assert reduce_mode in valid_reduce_clear_false_mode, "This mode is not supported when clear is false."
@@ -1100,6 +1116,7 @@ def Scope(name):
     """
 
     return _ffi_api.Scope(name)
+
 
 
 
