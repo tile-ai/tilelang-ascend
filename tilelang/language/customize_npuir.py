@@ -566,7 +566,6 @@ def npuir_atomic_add(src, dst, size=[]):
 
     src = _to_region(src, "r", src_extent)
     dst = _to_region(dst, "w", dst_extent)
-
     return tir.call_intrin("handle", tir.op.Op.get("tl.npuir_atomic_add"), src, dst)  
     
 def npuir_gather(src, dst, indices:Union[list, tuple], size=[]):
@@ -1039,6 +1038,7 @@ def Scope(name):
     """
 
     return _ffi_api.Scope(name)
+
 
 
 
