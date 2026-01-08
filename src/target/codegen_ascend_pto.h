@@ -60,6 +60,13 @@ private:
   friend void PrintConst(const FloatImmNode *op, std::ostream &os,
                          CodeGenTileLangAscendPto *p);
 
+  friend void PrintConst(const FloatImmNode *op, std::ostream &os,
+                         CodeGenTileLangAscendPto *p);
+  
+  void BinaryVecOpCodegen(const CallNode* op, const std::string& op_name);
+
+  void BinaryVecOpsCodegen(const CallNode* op, const std::string& op_name);
+
   // Whether global barrier is needed.
   bool need_global_barrier_{false};
   // Global barrier state

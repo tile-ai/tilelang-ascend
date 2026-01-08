@@ -711,33 +711,31 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) 
         this->PrintIndent();
         this->stream << "not implemented yet\n";
       }
-    } else if(op_name.find("gemm_v0") != std::string::npos) {
-      this->PrintIndent();
-      auto a_var = op->args[1].as<CallNode>()->args[1].as<VarNode>();
-      auto b_var = op->args[2].as<CallNode>()->args[1].as<VarNode>();
-      auto c_var = op->args[3].as<CallNode>()->args[1].as<VarNode>();
+    } 
+  } else if (op->op.same_as(tl::ascend_gemm_v0())) {
+    std::string op_name = Downcast<StringImm>(op->args[0])->value;
+    this->PrintIndent();
+    auto a_var = op->args[1].as<CallNode>()->args[1].as<VarNode>();
+    auto b_var = op->args[2].as<CallNode>()->args[1].as<VarNode>();
+    auto c_var = op->args[3].as<CallNode>()->args[1].as<VarNode>();
 
-      auto a_offset = PrintExpr(op->args[1].as<CallNode>()->args[2]);
-      auto b_offset = PrintExpr(op->args[2].as<CallNode>()->args[2]);
-      auto c_offset = PrintExpr(op->args[3].as<CallNode>()->args[2]);
+    auto a_offset = PrintExpr(op->args[1].as<CallNode>()->args[2]);
+    auto b_offset = PrintExpr(op->args[2].as<CallNode>()->args[2]);
+    auto c_offset = PrintExpr(op->args[3].as<CallNode>()->args[2]);
 
-      auto a_name = var_idmap_[a_var];
-      auto b_name = var_idmap_[b_var];
-      auto c_name = var_idmap_[c_var];
-      
-      auto src_type = op->args[1].as<CallNode>()->args[0].as<CallNode>()->dtype;
-      auto dst_type = op->args[3].as<CallNode>()->args[0].as<CallNode>()->dtype;
+    auto a_name = var_idmap_[a_var];
+    auto b_name = var_idmap_[b_var];
+    auto c_name = var_idmap_[c_var];
 
-      std::map<std::string, std::string> params = extractTemplateParams(op_name);
-      std::string data_type_input = params["data_type_input"];
-      this->stream << "tl::pto::gemm_v0" << "<" <<  params["data_type_input"] << ", " << params["data_type_output"] << ", " 
-      << GetValidShape(std::stoi(params["M"]), data_type_input) << ", " 
-      << GetValidShape(std::stoi(params["N"]), data_type_input) << ", "
-      << GetValidShape(std::stoi(params["K"]), data_type_input) << ", "
-      << params["M"] << ", " << params["N"] << ", " << params["K"] << ", "
-      << params["transpose_A"] << ", " << params["transpose_B"] << ">" 
-      << "(" << a_name << ", " << b_name << ", " << c_name << ", " << PrintExpr(op->args[4]) << ");\n";
-    }
+    std::map<std::string, std::string> params = extractTemplateParams(op_name);
+    std::string data_type_input = params["data_type_input"];
+    this->stream << "tl::pto::gemm_v0" << "<" <<  params["data_type_input"] << ", " << params["data_type_output"] << ", " 
+    << GetValidShape(std::stoi(params["M"]), data_type_input) << ", " 
+    << GetValidShape(std::stoi(params["N"]), data_type_input) << ", "
+    << GetValidShape(std::stoi(params["K"]), data_type_input) << ", "
+    << params["M"] << ", " << params["N"] << ", " << params["K"] << ", "
+    << params["transpose_A"] << ", " << params["transpose_B"] << ">" 
+    << "(" << a_name << ", " << b_name << ", " << c_name << ", " << PrintExpr(op->args[4]) << ");\n";
   } else if (op->op.same_as(tl::ascend_pipe_barrier())) {
       std::string pipe = Downcast<StringImm>(op->args[0])->value;
       this->PrintIndent();
@@ -771,7 +769,7 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) 
     this->stream << "wait_flag_dev" << "(" << flag << ");\n";
   } else if (op->op.same_as(tl::ascend_fill())) {
     this->PrintIndent();
-    this->stream << op->args[0].as<StringImmNode>()->value << "(" << print_tile(op->args[1].as<CallNode>()) << ", "
+    this->stream << "TEXPANDS" << "(" << print_tile(op->args[1].as<CallNode>()) << ", "
                << PrintExpr(op->args[2]) << ");\n";
   } else if (op->op.same_as(tl::ascend_reduce())) {
      std::vector<std::string> var_names;
@@ -825,60 +823,106 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) 
         }
       }
       this->stream << ");\n";
-  } else if (op->op.same_as(tl::ascend_binary_op())) {
-    this->PrintIndent();
-    this->stream << op->args[0].as<StringImmNode>()->value << "(" << print_tile(op->args[1].as<CallNode>()) << ", "
-               << print_tile(op->args[2].as<CallNode>()) << ", "
-               << print_tile(op->args[3].as<CallNode>()) << ");\n";
-  } else if (op->op.same_as(tl::ascend_binary_ops())) {
-      std::vector<std::string> var_names;
-      std::string operation = op->args[0].as<StringImmNode>()->value;
-      for (int i = 1; i < op->args.size() - 1; i++) {
-        auto var_name = print_tile(op->args[i].as<CallNode>());
-        var_names.push_back(var_name);
-      }
-      if (op->args[3].as<CallNode>()) {
-        auto var_name = print_tile(op->args[3].as<CallNode>());
-        std::string ub_name = var_names[1];
-        this->PrintIndent();
-        std::string index = PrintExpr(op->args[op->args.size() - 1]);
-        std::string scalar_name = var_name + "_scalar";
-        this->stream << "auto " << scalar_name <<  "= " << var_name
-                     << ".GetValue(" << index
-                     << ");\n";
-        std::vector<std::string> ub_data_vector = ub_data_map_[ub_name];
-        std::string var_name_temp = ub_name + "_temp";
-        std::string ub_data_type = ub_data_vector[0];
-        this->PrintIndent();
-        int32_t ub_data_temp_col = std::stoi(ub_data_vector[2]) * std::stoi(ub_data_vector[1]) / std::stoi(for_num_map_[index]);
-        this->stream << "tl::pto::TileUbDataND<" << ub_data_vector[0] << ", 1, " 
-        << ub_data_temp_col << "> " << var_name_temp << "(" << "1, " << ub_data_temp_col << ");\n";
-        this->PrintIndent();
-        this->stream << "TASSIGN(" << var_name_temp << ", " << ub_data_vector[3] << " + " <<
-        index << " * " << ub_data_temp_col << " * " << GetTypeLenString(ub_data_vector[0]) << ");\n";
-        this->PrintIndent();
-        this->stream << "pipe_barrier(PIPE_ALL);\n";
-        this->PrintIndent();
-        if (operation == "TSUBS") {
-          operation = "TADDS";
-          scalar_name = "-" + scalar_name;
-        }
-        this->stream << operation << "(";
-        this->stream << var_name_temp << ", " << var_name_temp << ", " << scalar_name;
-      } else {
-        this->PrintIndent();
-        this->stream << operation << "(";
-        std::string scalar = PrintExpr(op->args[op->args.size() - 1]);
-        var_names.push_back(operation == "TSUBS" ? ("-" + scalar):scalar);
-        for (int i = 0; i < var_names.size(); i++) {
-          this->stream << var_names[i];
-          if (i != var_names.size() - 1) {
-            this->stream << ", ";
-          }
-        }
-      }
-      this->stream << ");\n";
+  } else if (op->op.same_as(tl::ascend_add())) {
+    BinaryVecOpCodegen(op, "TADD");
+  } else if (op->op.same_as(tl::ascend_sub())) {
+    BinaryVecOpCodegen(op, "TSUB");
+  } else if (op->op.same_as(tl::ascend_mul())) {
+    BinaryVecOpCodegen(op, "TMUL");
+  } else if (op->op.same_as(tl::ascend_div())) {
+    BinaryVecOpCodegen(op, "TDIV");
+  } else if (op->op.same_as(tl::ascend_max())) {
+    BinaryVecOpCodegen(op, "TMAX");
+  } else if (op->op.same_as(tl::ascend_min())) {
+    BinaryVecOpCodegen(op, "TMIN");
+  } else if (op->op.same_as(tl::ascend_bitwise_and())) {
+    BinaryVecOpCodegen(op, "TAND");
+  } else if (op->op.same_as(tl::ascend_bitwise_or())) {
+    BinaryVecOpCodegen(op, "TOR");
+  } else if (op->op.same_as(tl::ascend_adds())) {
+    BinaryVecOpsCodegen(op, "TADDS");
+  } else if (op->op.same_as(tl::ascend_subs())) {
+    BinaryVecOpsCodegen(op, "TSUBS");
+  } else if (op->op.same_as(tl::ascend_muls())) {
+    BinaryVecOpsCodegen(op, "TMULS");
+  } else if (op->op.same_as(tl::ascend_divs())) {
+    BinaryVecOpsCodegen(op, "TDIVS");
   }
+}
+
+std::string CodeGenTileLangAscendPto::PrintBufferOffset(const CallNode *op) {
+    auto _var = op->args[1].as<VarNode>();
+    std::string _var_name = var_idmap_[_var];
+    return _var_name;
+}
+
+void CodeGenTileLangAscendPto::BinaryVecOpCodegen(const CallNode *op,
+                                               const std::string &op_name) {
+  std::vector<std::string> var_names;
+  for (int i = 0; i < op->args.size() - 1; i++) {
+    auto var_name = PrintBufferOffset(op->args[i].as<CallNode>());
+    var_names.push_back(var_name);
+  }
+  this->PrintIndent();
+  this->stream << op_name << "(";
+  for (int i = 0; i < var_names.size(); i++) {
+    this->stream << var_names[i];
+    if (i != var_names.size() - 1) {
+      this->stream << ", ";
+    }
+  }
+  this->stream << ");\n";
+}
+
+void CodeGenTileLangAscendPto::BinaryVecOpsCodegen(const CallNode *op,
+                                               const std::string &op_name) {
+  std::vector<std::string> var_names;
+  std::string operation = op_name;
+  for (int i = 0; i < op->args.size() - 2; i++) {
+    auto var_name = PrintBufferOffset(op->args[i].as<CallNode>());
+    var_names.push_back(var_name);
+  }
+  if (op->args[2].as<CallNode>()) {
+    auto var_name = PrintBufferOffset(op->args[2].as<CallNode>());
+    std::string ub_name = var_names[1];
+    this->PrintIndent();
+    std::string index = PrintExpr(op->args[op->args.size() - 2]);
+    std::string scalar_name = var_name + "_scalar";
+    this->stream << "auto " << scalar_name <<  "= " << var_name
+                << ".GetValue(" << index
+                << ");\n";
+    std::vector<std::string> ub_data_vector = ub_data_map_[ub_name];
+    std::string var_name_temp = ub_name + "_temp";
+    std::string ub_data_type = ub_data_vector[0];
+    this->PrintIndent();
+    int32_t ub_data_temp_col = std::stoi(ub_data_vector[2]) * std::stoi(ub_data_vector[1]) / std::stoi(for_num_map_[index]);
+    this->stream << "tl::pto::TileUbDataND<" << ub_data_vector[0] << ", 1, " 
+    << ub_data_temp_col << "> " << var_name_temp << "(" << "1, " << ub_data_temp_col << ");\n";
+    this->PrintIndent();
+    this->stream << "TASSIGN(" << var_name_temp << ", " << ub_data_vector[3] << " + " <<
+    index << " * " << ub_data_temp_col << " * " << GetTypeLenString(ub_data_vector[0]) << ");\n";
+    this->PrintIndent();
+    this->stream << "pipe_barrier(PIPE_ALL);\n";
+    this->PrintIndent();
+    if (operation == "TSUBS") {
+      operation = "TADDS";
+      scalar_name = "-" + scalar_name;
+    }
+    this->stream << operation << "(";
+    this->stream << var_name_temp << ", " << var_name_temp << ", " << scalar_name;
+  } else {
+    this->PrintIndent();
+    this->stream << operation << "(";
+    std::string scalar = PrintExpr(op->args[op->args.size() - 1]);
+    var_names.push_back(operation == "TSUBS" ? ("-" + scalar):scalar);
+    for (int i = 0; i < var_names.size(); i++) {
+      this->stream << var_names[i];
+      if (i != var_names.size() - 1) {
+        this->stream << ", ";
+      }
+    }
+  }
+  this->stream << ");\n";
 }
 
 void CodeGenTileLangAscendPto::VisitStmt_(const AttrStmtNode *op) {

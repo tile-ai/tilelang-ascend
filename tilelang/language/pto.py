@@ -122,106 +122,183 @@ def wait_flag(src: _pipe, dst: _pipe, eventId: int):
         eventId,
     )
 
+def _legalize_arguments(arg: Union[Buffer, Var]):
+    """Convert let-bound variables to their corresponding buffers.
+
+    Args:
+        arg (Union[tir.Buffer, tir.Var]): Input argument to legalize
+
+    Returns:
+        Union[tir.Buffer, tir.Var]: The legalized argument
+    """
+    if isinstance(arg, Var) and T.has_let_value(arg):
+        return T.get_let_value(arg).buffer
+    return arg
+
+def _retrieve_shape(object: Union[Buffer, BufferRegion]) -> List[int]:
+    """
+    Retrieves the shape of a Buffer or a BufferRegion.
+
+    If the input is a Buffer, it returns the buffer's shape directly.
+    If the input is a BufferRegion (a slice of a buffer), it calculates and returns
+    the shape based on the extents of the region's ranges.
+
+    Args:
+        object (Union[tir.Buffer, tir.BufferRegion]): The object to query for shape.
+
+    Returns:
+        List[int]: A list of integers (or PrimExprs) representing the shape of the object.
+
+    Raises:
+        ValueError: If the input object type is not supported.
+    """
+    if isinstance(object, Buffer):
+        return object.shape
+    elif isinstance(object, BufferRegion):
+        region = object.region
+        shape = []
+        for r in region:
+            shape.append(r.extent)
+        return shape
+    else:
+        raise ValueError(
+            f"Unsupported argument type: {type(object)} for buffer {object}"
+        )
+
+def _retrieve_ptr(
+    object: Union[Buffer, BufferRegion], access_type: str = "r"
+) -> PrimExpr:
+    """
+    Retrieves the access pointer (handle) for a Buffer or BufferRegion.
+
+    For a full Buffer, it returns the pointer to the beginning of the memory.
+    For a BufferRegion, it calculates the linear byte offset based on the region's
+    start indices and the underlying buffer's shape (assuming compact row-major layout),
+    and returns the pointer to the start of the sliced region.
+
+    Args:
+        object (Union[tir.Buffer, tir.BufferRegion]): The buffer object or slice.
+        access_type (str, optional): The access mask (e.g., "r" for read, "w" for write).
+            Defaults to "r".
+
+    Returns:
+        tir.PrimExpr: An expression representing the pointer to the data.
+
+    Raises:
+        ValueError: If the input object type is not supported.
+    """
+    if isinstance(object, Buffer):
+        return object.access_ptr(access_type)
+    elif isinstance(object, BufferRegion):
+        buffer, region = object.buffer, object.region
+        indices = []
+        for r in region:
+            indices.append(r.min)
+        strides = []
+        stride = 1
+        for s in reversed(buffer.shape):
+            strides.insert(0, stride)
+            stride *= s
+        offset = 0
+        for i in range(len(indices)):
+            offset += indices[i] * strides[i]
+        return buffer.access_ptr(access_mask=access_type, offset=offset)
+    else:
+        raise ValueError(
+            f"Unsupported argument type: {type(object)} for buffer {object}"
+        )
 
 def gemm_v0(A, B, C, transpose_A=False, transpose_B=False, init=False):
+    """
+    Performs a block-level General Matrix Multiplication (GEMM).
 
-    def legalize_arguments(arg: Union[Buffer, Var]):
-        """Convert let-bound variables to their corresponding buffers.
+    This function computes the matrix product $C = op(A) \\times op(B)$, where $op$ represents
+    an optional transpose operation. It calculates the M, N, and K dimensions based on the
+    shapes of the input buffers and generates the corresponding hardware intrinsic call.
 
-        Args:
-            arg (Union[tir.Buffer, tir.Var]): Input argument to legalize
+    Args:
+        A (Union[Buffer, BufferRegion]): The input matrix A. Can be a high-dimensional tensor,
+            but the last two dimensions are treated as the matrix dimensions.
+        B (Union[Buffer, BufferRegion]): The input matrix B. Can be a high-dimensional tensor,
+            but the last two dimensions are treated as the matrix dimensions.
+        C (Union[Buffer, BufferRegion]): The output matrix C. Must be a 2D tensor (M, N).
+        transpose_A (bool, optional): Whether to transpose matrix A. Defaults to False.
+        transpose_B (bool, optional): Whether to transpose matrix B. Defaults to False.
+        init (bool, optional): Whether to initialize the accumulator matrix C (typically to zero)
+            before computation. Defaults to False.
 
-        Returns:
-            Union[tir.Buffer, tir.Var]: The legalized argument
-        """
-        if isinstance(arg, Var) and T.has_let_value(arg):
-            return T.get_let_value(arg).buffer
-        return arg
+    Returns:
+        tvm.tir.Call: A TIR intrinsic call to `tl.ascend_gemm_v0`.
+    """
+    A = _legalize_arguments(A)
+    B = _legalize_arguments(B)
+    C = _legalize_arguments(C)
 
-    A = legalize_arguments(A)
-    B = legalize_arguments(B)
-    C = legalize_arguments(C)
-
-    def retrieve_shape(object: Union[Buffer, BufferRegion]) -> List[int]:
-        if isinstance(object, Buffer):
-            return object.shape
-        elif isinstance(object, BufferRegion):
-            region = object.region
-            shape = []
-            for r in region:
-                shape.append(r.extent)
-            return shape
-        else:
-            raise ValueError(f"Unsupported argument type: {type(object)} for buffer {object}")
-
-    A_shape = retrieve_shape(A)
-    B_shape = retrieve_shape(B)
-    C_shape = retrieve_shape(C)
+    A_shape = _retrieve_shape(A)
+    B_shape = _retrieve_shape(B)
+    C_shape = _retrieve_shape(C)
 
     assert len(C_shape) == 2, "current only support C as a 2D tensor"
     assert len(A_shape) >= 2, "current only support A as a 2D or higher-order tensor"
     assert len(B_shape) >= 2, "current only support B as a 2D or higher-order tensor"
     if len(A_shape) > 2:
         for i in range(len(A_shape) - 2):
-            assert A_shape[i] == 1, \
+            assert A_shape[i] == 1, (
                 "current only support A as a 2D or higher-order tensor with the last two dimensions being the matrix dimensions"
+            )
     if len(B_shape) > 2:
         for i in range(len(B_shape) - 2):
-            assert B_shape[i] == 1, \
+            assert B_shape[i] == 1, (
                 "current only support B as a 2D or higher-order tensor with the last two dimensions being the matrix dimensions"
+            )
 
     M, N = C_shape
     K = A_shape[-2] if transpose_A else A_shape[-1]
     K_B = B_shape[-1] if transpose_B else B_shape[-2]
     assert K == K_B, f"T.gemm K shape check failed: K_A = {K}, K_B = {K_B}"
 
-    # Transform to Buffer Pointer
-    def retrieve_ptr(object: Union[Buffer, BufferRegion], access_type: str = "r") -> PrimExpr:
-        if isinstance(object, Buffer):
-            return object.access_ptr(access_type)
-        elif isinstance(object, BufferRegion):
-            buffer, region = object.buffer, object.region
-            indices = []
-            for r in region:
-                indices.append(r.min)
-            strides = []
-            stride = 1
-            for s in reversed(buffer.shape):
-                strides.insert(0, stride)
-                stride *= s
-            offset = 0
-            for i in range(len(indices)):
-                offset += indices[i] * strides[i]
-            return buffer.access_ptr(access_mask=access_type, offset=offset)
-        else:
-            raise ValueError(f"Unsupported argument type: {type(object)} for buffer {object}")
+    Aptr = _retrieve_ptr(A, "r")
+    Bptr = _retrieve_ptr(B, "r")
+    Cptr = _retrieve_ptr(C, "rw")
 
-    Aptr = retrieve_ptr(A, "r")
-    Bptr = retrieve_ptr(B, "r")
-    Cptr = retrieve_ptr(C, "rw")
     # assert _dtype(A) == _dtype(B), f"gemm A and B dtype mismatch: {_dtype(A)} vs {_dtype(B)}"
-
-    return T.call_extern(
+    return T.call_intrin(
         "handle",
-        f"tl::pto::gemm_v0<{_dtype(A)}, {_dtype(C)}, {M}, {N}, {K}, {str(transpose_A).lower()}, {str(transpose_B).lower()}>",
-        Aptr, Bptr, Cptr, init)
+        tir.op.Op.get("tl.ascend_gemm_v0"),
+        f"gemm_v0<{_dtype(A)}, {_dtype(C)}, {M}, {N}, {K}, {str(transpose_A).lower()}, {str(transpose_B).lower()}>",
+        Aptr,
+        Bptr,
+        Cptr,
+        init,
+    )
 
 def fill(buffer: Buffer, value: PrimExpr):
     """Fill a buffer or buffer region with a specified value.
-    
+
     Args:
         buffer: Either a TVM buffer or buffer region to be filled
         value: The value to fill the buffer with
-    
+
     Returns:
         A TVM intrinsic call that performs the fill operation
     """
+    size = math.prod(buffer.shape)
 
-    return T.call_intrin("handle", tir.op.Op.get("tl.ascend_fill"), f"TEXPANDS", buffer.access_ptr("w"), value)
+    return tir.call_intrin(
+        "handle",
+        tir.op.Op.get("tl.ascend_fill"),
+        f"tl::ascend::Fill<{_dtype(buffer)}>",
+        buffer.access_ptr("w"),
+        value,
+        size,
+    )
 
-def binary_op(dst: Union[Buffer, BufferRegion], src0: Union[Buffer, BufferRegion],
-              src1: Union[Buffer, BufferLoad, PrimExpr, float], op: str):
-
+def binary_op(
+    dst: Union[Buffer, BufferRegion],
+    src0: Union[Buffer, BufferRegion],
+    src1: Union[Buffer, BufferRegion, BufferLoad, PrimExpr, float],
+    op: str,
+):
     def _handle_buffer_region(br: BufferRegion, mask):
         bf = br.buffer
         indices = [x.min for x in br.region]
@@ -247,43 +324,128 @@ def binary_op(dst: Union[Buffer, BufferRegion], src0: Union[Buffer, BufferRegion
     if isinstance(src1, BufferLoad):
         buffer_1 = src1.buffer
         indices_1 = src1.indices
-        # we only can pass the extra index
-        return T.call_intrin("handle", tir.op.Op.get("tl.ascend_binary_ops"), f"T{op.upper()}S", dst_ptr, src0_ptr,
-                             buffer_1.access_ptr("r"), indices_1[0])
+        return T.call_intrin(
+            "handle",
+            tir.op.Op.get(f"tl.ascend_{op}s"),
+            dst_ptr,
+            src0_ptr,
+            buffer_1.access_ptr("r"),
+            indices_1[0],
+            size_0,
+        )
 
-    elif isinstance(src1, (PrimExpr, float)):
-        return T.call_intrin("handle", tir.op.Op.get("tl.ascend_binary_ops"), f"T{op.upper()}S", dst_ptr, src0_ptr, src1)
+    elif isinstance(src1, (PrimExpr, float, int)):
+        return T.call_intrin(
+            "handle", tir.op.Op.get(f"tl.ascend_{op}s"), dst_ptr, src0_ptr, src1, size_0
+        )
+    elif isinstance(src1, BufferRegion):
+        src1_ptr, src1_extent = _handle_buffer_region(src1, "r")
+        size_2 = math.prod(src1_extent)
+        assert size_0 == size_2, "size must be same"
+
+        return T.call_intrin(
+            "handle",
+            tir.op.Op.get(f"tl.ascend_{op}"),
+            dst_ptr,
+            src0_ptr,
+            src1_ptr,
+            size_0,
+        )
     else:
-        return T.call_intrin("handle", tir.op.Op.get("tl.ascend_binary_op"), f"T{op.upper()}", dst_ptr, src0_ptr, src1.access_ptr("r"))
-
-def add(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferLoad, PrimExpr]):
-    return binary_op(dst, src0, src1, "Add")
-
-
-def sub(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferLoad]):
-    return binary_op(dst, src0, src1, "Sub")
-
-
-def mul(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferLoad, PrimExpr]):
-    return binary_op(dst, src0, src1, "Mul")
+        return T.call_intrin(
+            "handle",
+            tir.op.Op.get(f"tl.ascend_{op}"),
+            dst_ptr,
+            src0_ptr,
+            src1.access_ptr("r"),
+            size_0,
+        )
 
 
-def div(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferLoad]):
-    return binary_op(dst, src0, src1, "Div")
+def add(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, BufferLoad, PrimExpr]):
+    """Performs element-wise addition: dst = src0 + src1.
+
+    Args:
+        dst: The destination buffer.
+        src0: The first source buffer.
+        src1: The second source operand (Buffer, BufferLoad, or Scalar).
+    """
+    return binary_op(dst, src0, src1, "add")
 
 
-def max(dst: Buffer, src0: Buffer, src1: Union[Buffer]):
-    return binary_op(dst, src0, src1, "Max")
+def sub(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, BufferLoad]):
+    """Performs element-wise subtraction: dst = src0 - src1.
+
+    Args:
+        dst: The destination buffer.
+        src0: The first source buffer.
+        src1: The second source operand (Buffer or BufferLoad).
+    """
+    return binary_op(dst, src0, src1, "sub")
+
+def mul(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, BufferLoad, PrimExpr]):
+    """Performs element-wise multiplication: dst = src0 * src1.
+
+    Args:
+        dst: The destination buffer.
+        src0: The first source buffer.
+        src1: The second source operand (Buffer, BufferLoad, or Scalar).
+    """
+    return binary_op(dst, src0, src1, "mul")
+
+def div(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, BufferLoad]):
+    """Performs element-wise division: dst = src0 / src1.
+
+    Args:
+        dst: The destination buffer.
+        src0: The first source buffer.
+        src1: The second source operand (Buffer or BufferLoad).
+    """
+    return binary_op(dst, src0, src1, "div")
 
 
-def min(dst: Buffer, src0: Buffer, src1: Union[Buffer]):
-    return binary_op(dst, src0, src1, "Min")
+def max(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, BufferLoad, PrimExpr]):
+    """Performs element-wise maximum: dst = max(src0, src1).
 
-def and_tl(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferLoad, PrimExpr]):
-    return binary_op(dst, src0, src1, "And")
+    Args:
+        dst: The destination buffer.
+        src0: The first source buffer.
+        src1: The second source operand (Buffer, BufferLoad, or Scalar).
+    """
+    return binary_op(dst, src0, src1, "max")
 
-def or_tl(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferLoad, PrimExpr]):
-    return binary_op(dst, src0, src1, "Or")
+
+def min(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, BufferLoad, PrimExpr]):
+    """Performs element-wise minimum: dst = min(src0, src1).
+
+    Args:
+        dst: The destination buffer.
+        src0: The first source buffer.
+        src1: The second source operand (Buffer, BufferLoad, or Scalar).
+    """
+    return binary_op(dst, src0, src1, "min")
+
+
+def bitwise_and(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, BufferLoad, PrimExpr]):
+    """Performs element-wise bitwise AND: dst = src0 & src1.
+
+    Args:
+        dst: The destination buffer.
+        src0: The first source buffer.
+        src1: The second source operand (Buffer, BufferLoad, or Scalar).
+    """
+    return binary_op(dst, src0, src1, "bitwise_and")
+
+
+def bitwise_or(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, BufferLoad, PrimExpr]):
+    """Performs element-wise bitwise OR: dst = src0 | src1.
+
+    Args:
+        dst: The destination buffer.
+        src0: The first source buffer.
+        src1: The second source operand (Buffer, BufferLoad, or Scalar).
+    """
+    return binary_op(dst, src0, src1, "bitwise_or")
 
 
 def unary_op(dst: Buffer, src0: Buffer, op: str):
