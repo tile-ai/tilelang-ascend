@@ -668,8 +668,3 @@ TIR_REGISTER_TL_OP(NpuirBitcast, npuir_bitcast)
 
 } // namespace tl
 } // namespace tvm
-
-
-
-
-
