@@ -134,6 +134,34 @@ TVM_DLL const Op &ascend_pow();
 TVM_DLL const Op &ascend_bitwise_xor();
 
 TVM_DLL const Op &ascend_broadcast();
+
+TVM_DLL const Op &ascend_wait_cross_flag();
+
+TVM_DLL const Op &ascend_set_cross_flag();
+
+TVM_DLL const Op &ascend_set_flag();
+
+TVM_DLL const Op &ascend_wait_flag();
+
+TVM_DLL const Op &ascend_pipe_barrier();
+
+TVM_DLL const Op &ascend_sync_all();
+
+TVM_DLL const Op &ascend_gemm_v0();
+
+TVM_DLL const Op &ascend_gemm_v1();
+
+TVM_DLL const Op &ascend_printf();
+
+TVM_DLL const Op &ascend_dump_tensor();
+
+TVM_DLL const Op &ascend_bilinear_interpolation();
+
+TVM_DLL const Op &ascend_wholereducemax();
+
+TVM_DLL const Op &ascend_wholereducemin();
+
+TVM_DLL const Op &ascend_wholereducesum();
 } // namespace tl
 } // namespace tvm
 

@@ -247,6 +247,11 @@ private:
       {"tl.ascend_topk", {{{1, "write"}, {2, "read"}, {3, "read"}}, "PIPE_V"}},
       {"tl.ascend_gather_mask", {{{1, "write"}, {2, "read"}}, "PIPE_V"}},
       {"tl.ascend_init_sort_buf", {{{1, "write"}}, "PIPE_V"}},
+
+      {"tl.ascend_bilinear_interpolation", {{{0, "write"}, {1, "read"}, {2, "read"}, {3, "read"}, {10, "read"}}, "PIPE_V"}},
+      {"tl.ascend_wholereducemax", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
+      {"tl.ascend_wholereducemin", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
+      {"tl.ascend_wholereducesum", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
     };
   }
 

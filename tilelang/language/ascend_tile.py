@@ -432,6 +432,32 @@ def init_sort_buf(buffer: Buffer, num: PrimExpr, rsv: PrimExpr):
         num,
     )
 
+def brcb(dst: Buffer, src: Buffer, repeat_times: PrimExpr, dst_blk_stride: PrimExpr, dst_repeat_stride: PrimExpr):
+    """Broadcast repeat copy block intrinsic.
+
+    .. warning::
+        **NOT IMPLEMENTED**: The backend code generation (codegen) for this interface
+        has **NOT** been implemented yet. **DO NOT USE** this function, as it will
+        result in compilation or runtime errors.
+
+    Args:
+        dst (Buffer): The destination buffer.
+        src (Buffer): The source buffer.
+        repeat_times (PrimExpr): The number of times to repeat the operation.
+        dst_blk_stride (PrimExpr): The stride between blocks in the destination.
+        dst_repeat_stride (PrimExpr): The stride between repetitions in the destination.
+
+    Returns:
+        tvm.tir.Call: A TIR external call node representing the operation.
+    """
+
+    src_size = math.prod(src.shape)
+    assert src_size >= (repeat_times * 8), "src size must be not less then repeat_times * 8"
+
+    src_ptr = src.access_ptr("r")
+    dst_ptr = dst.access_ptr("w")
+
+    return T.call_extern("handle", f"tl::ascend::brcb<{_dtype(src)}>", dst_ptr, src_ptr, repeat_times, dst_blk_stride, dst_repeat_stride)
 
 def binary_op(
     dst: Union[Buffer, BufferRegion],
@@ -596,7 +622,7 @@ def unary_op(dst: Buffer, src0: Buffer, op: str):
 
     return tir.call_intrin(
         "handle",
-        tir.op.Op.get("tl.ascend_" + op),
+        tir.op.Op.get(f"tl.ascend_{op}"),
         dst.access_ptr("w"),
         src0.access_ptr("r"),
         size_0,
@@ -693,7 +719,7 @@ def scalar_op(
 
     return tir.call_intrin(
         "handle",
-        tir.op.Op.get("tl.ascend_" + op_tl),
+        tir.op.Op.get(f"tl.ascend_{op_tl}"),
         dst.access_ptr("w"),
         src0.access_ptr("r"),
         scalar_value,
@@ -774,34 +800,97 @@ def bitwise_rshift(dst: Buffer, src0: Buffer, scalarValue: PrimExpr):
     )
 
 
+def bilinear_interpolation(
+    dst: Buffer,
+    src0: Buffer,
+    src0_offset: Buffer,
+    src1: Buffer,
+    mask: PrimExpr,
+    h_repeat: PrimExpr,
+    repeat_mode: bool,
+    dst_blk_stride: PrimExpr,
+    v_r_offset: PrimExpr,
+    v_repeat: PrimExpr,
+    shared_tmp_buffer: Buffer,
+):
+    return tir.call_intrin(
+        "handle",
+        tir.op.Op.get("tl.ascend_bilinear_interpolation"),
+        dst.access_ptr("w"),
+        src0.access_ptr("r"),
+        src0_offset.access_ptr("r"),
+        src1.access_ptr("r"),
+        mask,
+        h_repeat,
+        repeat_mode,
+        dst_blk_stride,
+        v_r_offset,
+        v_repeat,
+        shared_tmp_buffer.access_ptr("r"),
+    )
 
-def bilinear_interpolation(dst: Buffer, src0: Buffer, src0_offset: Buffer, src1: Buffer, mask: PrimExpr,
-                           h_repeat: PrimExpr, repeat_mode: bool, dst_blk_stride: PrimExpr, v_r_offset: PrimExpr,
-                           v_repeat: PrimExpr, shared_tmp_buffer: Buffer):
-    return T.call_extern("handle", "AscendC::BilinearInterpolation", dst.access_ptr("w"), src0.access_ptr("r"),
-                         src0_offset.access_ptr("r"), src1.access_ptr("r"), mask, h_repeat, repeat_mode, dst_blk_stride, v_r_offset,
-                         v_repeat, shared_tmp_buffer.access_ptr("r"))
+
+def _wholereduce(
+    reduce_type: str,
+    dst: Buffer,
+    src: Buffer,
+    mask: PrimExpr,
+    repeattimes: PrimExpr,
+    dstrepstride: PrimExpr,
+    srcblkstride: PrimExpr,
+    srcrepstride: PrimExpr,
+    reduce_order: str = None,
+):
+    args = [
+        dst.access_ptr("w"),
+        src.access_ptr("r"),
+        mask,
+        repeattimes,
+        dstrepstride,
+        srcblkstride,
+        srcrepstride,
+    ]
+
+    if reduce_order is not None:
+        args.append(reduce_order)
+
+    return tir.call_intrin("handle", tir.op.Op.get(f"tl.ascend_wholereduce{reduce_type}"), *args)
 
 
-def wholereducemax(dst: Buffer, src: Buffer, mask: PrimExpr, repeattimes: PrimExpr, dstrepstride: PrimExpr, srcblkstride: PrimExpr,
-                   srcrepstride: PrimExpr, ReduceOrder: str = "ORDER_VALUE_INDEX"):
+def wholereducemax(
+    dst: Buffer,
+    src: Buffer,
+    mask: PrimExpr,
+    repeattimes: PrimExpr,
+    dstrepstride: PrimExpr,
+    srcblkstride: PrimExpr,
+    srcrepstride: PrimExpr,
+    ReduceOrder: str = "ORDER_VALUE_INDEX",
+):
+    return _wholereduce(
+        "max", dst, src, mask, repeattimes, dstrepstride, srcblkstride, srcrepstride, ReduceOrder
+    )
 
-    return T.call_extern("handle", "AscendC::WholeReduceMax", dst.access_ptr("w"), src.access_ptr("r"), mask, repeattimes, dstrepstride,
-                         srcblkstride, srcrepstride, ReduceOrder)
+
+def wholereducemin(
+    dst: Buffer,
+    src: Buffer,
+    mask: PrimExpr,
+    repeattimes: PrimExpr,
+    dstrepstride: PrimExpr,
+    srcblkstride: PrimExpr,
+    srcrepstride: PrimExpr,
+    ReduceOrder: str = "ORDER_VALUE_INDEX",
+):
+    return _wholereduce(
+        "min", dst, src, mask, repeattimes, dstrepstride, srcblkstride, srcrepstride, ReduceOrder
+    )
 
 
-def wholereducemin(dst: Buffer, src: Buffer, mask: PrimExpr, repeattimes: PrimExpr, dstrepstride: PrimExpr, srcblkstride: PrimExpr,
-                   srcrepstride: PrimExpr, ReduceOrder: str = "ORDER_VALUE_INDEX"):
-
-    return T.call_extern("handle", "AscendC::WholeReduceMin", dst.access_ptr("w"), src.access_ptr("r"), mask, repeattimes, dstrepstride,
-                         srcblkstride, srcrepstride, ReduceOrder)
-
-
-def wholereducesum(dst: Buffer, src: Buffer, mask: PrimExpr, repeattimes: PrimExpr, dstrepstride: PrimExpr, srcblkstride: PrimExpr,
-                   srcrepstride: PrimExpr):
-
-    return T.call_extern("handle", "AscendC::WholeReduceSum", dst.access_ptr("w"), src.access_ptr("r"), mask, repeattimes, dstrepstride,
-                         srcblkstride, srcrepstride)
+def wholereducesum(
+    dst: Buffer, src: Buffer, mask: PrimExpr, repeattimes: PrimExpr, dstrepstride: PrimExpr, srcblkstride: PrimExpr, srcrepstride: PrimExpr
+):
+    return _wholereduce("sum", dst, src, mask, repeattimes, dstrepstride, srcblkstride, srcrepstride)
 
 
 def sort32(dst: Buffer, src0: Buffer, src1: Buffer):
@@ -901,7 +990,7 @@ def reduce(out: Buffer, buffer: Buffer, tmp: Buffer, reduce_type: str, dim: int)
     return T.call_intrin(
         "handle",
         tir.op.Op.get("tl.ascend_reduce"),
-        f"tl::ascend::{reduce_type}<{dtype}, {shape}, {dim}>",
+        f"{reduce_type}<{dtype}, {shape}, {dim}>",
         out,
         buffer,
         tmp,
