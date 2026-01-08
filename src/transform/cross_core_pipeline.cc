@@ -241,8 +241,15 @@ public:
             if (auto workspace_name = FindWorkspaceName(call_node)) {
                 info.buffer_name = workspace_name.value();
             }
-            std::string func_name = call_node->args[0].as<StringImmNode>()->value;
-            std::string normalized_name = NormalizeFunctionName(func_name);
+
+            std::string normalized_name = "";
+            if (call_node->op.same_as(builtin::call_extern())) {
+                std::string func_name = call_node->args[0].as<StringImmNode>()->value;
+                normalized_name = NormalizeFunctionName(func_name);
+            } else {
+                 normalized_name = call_node->op.as<OpNode>()->name;
+            }
+            
             bool exists = std::find(IS_WRITE_GM.begin(), IS_WRITE_GM.end(), normalized_name) != IS_WRITE_GM.end();
             if (exists) {
                 WorkspaceWrite write;
@@ -732,8 +739,13 @@ private:
                 if (const CallNode* call = op->value.as<CallNode>()) {
                     Array<PrimExpr> new_args = AdjustCallArgs(origin_map_, call->args, call);
                     if (new_args.size() > 0) {
-                        const auto* func_name = call->args[0].as<StringImmNode>();
-                        std::string func_str = func_name->value;
+                        std::string func_str = "";
+                        if (call->op.same_as(builtin::call_extern())) {
+                          std::string func_str =
+                              call->args[0].as<StringImmNode>()->value;
+                        } else {
+                          func_str = call->op.as<OpNode>()->name;
+                        }
                         if ((func_str == "AscendC::Muls") || (func_str == "AscendC::Adds")) {
                             if (const CallNode* scalar_call = new_args[3].as<CallNode>()) {
                                 if (const VarNode* var = scalar_call->args[1].as<VarNode>()) {

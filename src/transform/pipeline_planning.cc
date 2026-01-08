@@ -233,8 +233,8 @@ private:
       conditonal_expr = cond;
       this->VisitExpr(then_expr);
       this->VisitExpr(else_expr);
-    } else if (const auto* func_name = op->args[0].as<StringImmNode>()) {
-      std::string func_str = func_name->value;
+    } else if (op->op.same_as(tir::builtin::call_extern())) {
+      std::string func_str = op->args[0].as<StringImmNode>()->value;
       std::string normalized_name = NormalizeFunctionName(func_str);
       auto config_it = operation_config_.find(normalized_name);
       if (config_it != operation_config_.end()) {

@@ -81,6 +81,11 @@ public:
   void VisitStmt_(const EvaluateNode *op) override {
     if (auto call_node = op->value.as<CallNode>()) {
       order_++;
+
+      if (!call_node->op.same_as(builtin::call_extern())) {
+        return;
+      }
+
       std::string func_name = call_node->args[0].as<StringImmNode>()->value;
 
       if (auto cfg_info = GetGMCopyCfgInfo(func_name)) {
@@ -277,23 +282,25 @@ private:
   /**
    * Generate CrossCoreSetFlag
    */
-  Stmt GenAutoCrossCoreSetFlagStmt(const CrossCoreSyncPoint& sp) {
-    return Evaluate(Call(DataType::Handle(), builtin::call_extern(), {
-      StringImm("AscendC::AutoCrossCoreSetFlag"),
-      Integer(DEFAUT_MODEL_ID),
-      StringImm(sp.pipe),
-      Integer(sp.sync_flag_id),
-    }));
+  Stmt GenAutoCrossCoreSetFlagStmt(const CrossCoreSyncPoint &sp) {
+    return Evaluate(Call(DataType::Handle(),
+                         Op::Get("tl.ascend_auto_set_cross_flag"),
+                         {
+                             Integer(DEFAUT_MODEL_ID),
+                             StringImm(sp.pipe),
+                             Integer(sp.sync_flag_id),
+                         }));
   }
 
   /**
    * Generate CrossCoreWaitFlag
    */
-  Stmt GenAutoCrossCoreWaitFlagStmt(const CrossCoreSyncPoint& sp) {
-    return Evaluate(Call(DataType::Handle(), builtin::call_extern(), {
-      StringImm("AscendC::AutoCrossCoreWaitFlag"),
-      Integer(sp.sync_flag_id),
-    }));
+  Stmt GenAutoCrossCoreWaitFlagStmt(const CrossCoreSyncPoint &sp) {
+    return Evaluate(Call(DataType::Handle(),
+                         Op::Get("tl.ascend_auto_wait_cross_flag"),
+                         {
+                             Integer(sp.sync_flag_id),
+                         }));
   }
 };
 

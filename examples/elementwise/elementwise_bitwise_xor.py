@@ -4,19 +4,9 @@ import tilelang
 import tilelang.language as T
 import torch
 
-tilelang.cache.clear_cache()
-
-parser = argparse.ArgumentParser(description="NPU Kernel Compilation")
-parser.add_argument("--m", type=int, default=1024, help="Matrix M dimension")
-parser.add_argument("--n", type=int, default=1024, help="Matrix N dimension")
-args = parser.parse_args()
-
-M = args.m
-N = args.n
-
 
 @tilelang.jit(out_idx=[-1])
-def bitwise_or(M, N, block_M, block_N, dtype="int16"):
+def bitwise_xor(M, N, block_M, block_N, dtype="int16"):
     m_num = M // block_M
     n_num = N // block_N
 
@@ -35,32 +25,43 @@ def bitwise_or(M, N, block_M, block_N, dtype="int16"):
             a_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
             b_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
             c_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
+
             with T.Scope("V"):
                 T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a_ub)
                 T.copy(B[bx * block_M + vid * block_M // VEC_NUM, by * block_N], b_ub)
 
                 T.barrier_all()
-                T.tile.bitwise_or(c_ub, a_ub, b_ub)
+                T.tile.bitwise_xor(c_ub, a_ub, b_ub)
                 T.barrier_all()
 
                 T.copy(c_ub, C[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
 
     return main
 
+if __name__ == "__main__":
+    tilelang.cache.clear_cache()
 
-func = bitwise_or(M, N, 128, 256)
+    parser = argparse.ArgumentParser(description="NPU Kernel Compilation")
+    parser.add_argument("--m", type=int, default=1024, help="Matrix M dimension")
+    parser.add_argument("--n", type=int, default=1024, help="Matrix N dimension")
+    args = parser.parse_args()
 
-torch.manual_seed(0)
+    M = args.m
+    N = args.n
 
-a = torch.randint(0, 10, (M, N), dtype=torch.int16).npu()
-b = torch.randint(0, 10, (M, N), dtype=torch.int16).npu()
+    func = bitwise_xor(M, N, 128, 256)
 
-torch.npu.synchronize()
-print("init successful!")
+    torch.manual_seed(0)
 
-c = func(a, b)
+    a = torch.randint(0, 10, (M, N), dtype=torch.int16).npu()
+    b = torch.randint(0, 10, (M, N), dtype=torch.int16).npu()
 
-ref_c = a | b
+    torch.npu.synchronize()
+    print("init successful!")
 
-torch.testing.assert_close(c, ref_c, rtol=1e-2, atol=1e-2)
-print("Kernel Output Match!")
+    c = func(a, b)
+
+    ref_c = torch.bitwise_xor(a, b)
+
+    torch.testing.assert_close(c, ref_c, rtol=1e-2, atol=1e-2)
+    print("Kernel Output Match!")

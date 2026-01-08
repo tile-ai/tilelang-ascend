@@ -24,6 +24,10 @@
 #include <tvm/tir/transform.h>
 #include <tvm/tir/utils.h>
 
+#include <tvm/runtime/registry.h>
+#include <tvm/tir/expr.h>
+
+
 #include "../op/builtin.h"
 #include "./common/collector.h"
 
@@ -37,15 +41,16 @@ static constexpr const char *kAscendAutoSync = "tl.ascend_auto_sync";
 
 TVM_REGISTER_PASS_CONFIG_OPTION(kAscendAutoSync, Bool);
 
+
 class AscendSyncInsert : public arith::IRMutatorWithAnalyzer {
 public:
   static PrimFunc Substitute(PrimFunc f, const std::string& config_path, PassContext ctx) {
     arith::Analyzer analyzer;
     AscendSyncInsert syncInserter(&analyzer);
-    
+
     auto address_map = f->GetAttr<Map<Var, PrimExpr>>("address_map").value_or(Map<Var, PrimExpr>());
     syncInserter.InitConfig(config_path, address_map);
-    
+
     PrimFuncNode* fptr = f.CopyOnWrite();
     auto fn_attr = fptr->attrs.CopyOnWrite();
 
@@ -53,13 +58,13 @@ public:
     if (!ascend_auto_sync) {
       return f;
     }
-    
+
     auto preprocessed = syncInserter.PreprocessUnrollForLoops(f->body);
-    
+
     Stmt processed_body = syncInserter(preprocessed.first);
 
     fptr->body = syncInserter.MergeAndRebuildForLoops(processed_body, preprocessed.second);
-    
+
     return f;
   }
 
@@ -74,7 +79,7 @@ private:
     Map<String, ObjectRef> annotations;
     std::string loop_id;
     int depth;
-    
+
     std::string toString() const {
       std::ostringstream oss;
       oss << "LoopInfo{";
@@ -171,7 +176,7 @@ private:
       {"AscendC::Or", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
       {"AscendC::Not", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
       {"reduce_max", {{{0, "read"}, {1, "write"}}, "PIPE_V"}},
-      {"reduce_max", {{{0, "read"}, {1, "write"}}, "PIPE_V"}},
+      {"reduce_min", {{{0, "read"}, {1, "write"}}, "PIPE_V"}},
       {"reduce_sum", {{{0, "read"}, {1, "write"}}, "PIPE_V"}},
       {"AscendC::Max", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
       {"AscendC::Min", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
@@ -183,11 +188,70 @@ private:
       {"AscendC::Sort", {{{0, "write"}, {1, "read"}, {2, "read"}, {3, "read"}}, "PIPE_V"}},
       {"AscendC::ArithProgression", {{{0, "write"}}, "PIPE_V"}},
       {"GatherMask", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
-      {"AscendC::BilinearInterpolation", {{{0, "write"}, {1, "read"}, {2, "read"}, {3, "read"}, {4, "read"}, 
+      {"AscendC::BilinearInterpolation", {{{0, "write"}, {1, "read"}, {2, "read"}, {3, "read"}, {4, "read"},
       {5, "read"}, {6, "read"}, {7, "read"}, {8, "read"}, {9, "read"}, {10, "read"}}, "PIPE_V"}},
       {"AscendC::WholeReduceMax", {{{0, "write"}, {1, "read"}, {2, "read"}, {3, "read"}, {4, "read"}, {5, "read"}, {6, "read"}}, "PIPE_V"}},
       {"AscendC::WholeReduceMin", {{{0, "write"}, {1, "read"}, {2, "read"}, {3, "read"}, {4, "read"}, {5, "read"}, {6, "read"}}, "PIPE_V"}},
-      {"AscendC::WholeReduceSum", {{{0, "write"}, {1, "read"}, {2, "read"}, {3, "read"}, {4, "read"}, {5, "read"}, {6, "read"}}, "PIPE_V"}}
+      {"AscendC::WholeReduceSum", {{{0, "write"}, {1, "read"}, {2, "read"}, {3, "read"}, {4, "read"}, {5, "read"}, {6, "read"}}, "PIPE_V"}},
+
+      {"tl.ascend_add", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
+      {"tl.ascend_adds", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
+      {"tl.ascend_mul", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
+      {"tl.ascend_muls", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
+      {"tl.ascend_sub", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
+      {"tl.ascend_subs", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
+      {"tl.ascend_div", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
+      {"tl.ascend_divs", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
+      {"tl.ascend_max", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
+      {"tl.ascend_min", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
+      {"tl.ascend_bitwise_and", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
+      {"tl.ascend_bitwise_or", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
+      {"tl.ascend_compare", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
+      {"tl.ascend_compare_scalar", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
+      {"tl.ascend_exp", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
+      {"tl.ascend_ln", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
+      {"tl.ascend_abs", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
+      {"tl.ascend_reciprocal", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
+      {"tl.ascend_sqrt", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
+      {"tl.ascend_rsqrt", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
+      {"tl.ascend_relu", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
+      {"tl.ascend_bitwise_not", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
+      {"tl.ascend_select", {{{0, "write"}, {1, "read"}, {2, "read"}, {4, "read"}}, "PIPE_V"}},
+      {"tl.ascend_leaky_relu", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
+      {"tl.ascend_axpy", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
+      {"tl.ascend_bitwise_lshift", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
+      {"tl.ascend_bitwise_rshift", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
+      {"tl.ascend_sort32", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
+      {"tl.ascend_createvecindex", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
+      {"tl.ascend_sin", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
+      {"tl.ascend_cos", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
+      {"tl.ascend_transpose", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
+      {"tl.ascend_gather", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
+      {"tl.ascend_reduce", {{{1, "write"}, {2, "read"}, {3, "read"}}, "PIPE_V"}},
+      {"tl.ascend_block_reduce_max", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
+      {"tl.ascend_block_reduce_min", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
+      {"tl.ascend_block_reduce_sum", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
+
+      {"tl.ascend_scalar", {{{0, "write"}, {1, "read"}}, "PIPE_S"}},
+      {"tl.ascend_gatherb", {{{1, "write"}, {2, "read"}, {3, "read"}}, "PIPE_V"}},
+      {"tl.ascend_duplicate", {{{0, "write"}}, "PIPE_V"}},
+      {"tl.ascend_cast", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
+
+      {"tl.ascend_pow", {{{0, "write"}, {1, "read"}, {2, "read"}, {3, "read"}}, "PIPE_V"}},
+      {"tl.ascend_bitwise_xor", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
+      {"tl.ascend_broadcast", {{{1, "write"}, {2, "read"}}, "PIPE_V"}},
+      {"tl.ascend_fill", {{{1, "write"}}, "PIPE_V"}},
+      {"tl.arith_progression", {{{1, "write"}}, "PIPE_V"}},
+      {"tl.ascend_sort", {{{1, "write"}, {2, "read"}, {3, "read"}, {4, "read"}}, "PIPE_V"}},
+      {"tl.ascend_merge_sort", {{{1, "write"}, {2, "read"}}, "PIPE_V"}},
+      {"tl.ascend_topk", {{{1, "write"}, {2, "read"}, {3, "read"}}, "PIPE_V"}},
+      {"tl.ascend_gather_mask", {{{1, "write"}, {2, "read"}}, "PIPE_V"}},
+      {"tl.ascend_init_sort_buf", {{{1, "write"}}, "PIPE_V"}},
+
+      {"tl.ascend_bilinear_interpolation", {{{0, "write"}, {1, "read"}, {2, "read"}, {3, "read"}, {10, "read"}}, "PIPE_V"}},
+      {"tl.ascend_wholereducemax", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
+      {"tl.ascend_wholereducemin", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
+      {"tl.ascend_wholereducesum", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
     };
   }
 
@@ -202,7 +266,7 @@ private:
     for (const Stmt& stmt : op->seq) {
       new_stmts.push_back(VisitStmt(stmt));
     }
-    
+
     if (new_stmts.empty()) {
       return Evaluate(0);
     } else if (new_stmts.size() == 1) {
@@ -220,8 +284,8 @@ private:
       if (current_access.is_sliced) {
         sync_requirements.push_back({"PipeBarrier_ALL", current_access.buffer_name});
       }
-      
-      std::vector<std::string> related_buffers = FindRelatedBuffers(current_access.buffer_name); 
+
+      std::vector<std::string> related_buffers = FindRelatedBuffers(current_access.buffer_name);
       for (const auto& buffer_name : related_buffers) {
         auto it = current_access_history_.find(buffer_name);
         if (it != current_access_history_.end()) {
@@ -237,18 +301,18 @@ private:
     }
 
     auto optimized_syncs = OptimizeSyncRequirements(sync_requirements);
-    
+
     std::vector<Stmt> stmts;
     for (const auto& sync_type : optimized_syncs) {
         InsertSynchronization(sync_type, stmts);
     }
-    
+
     UpdateSyncStatesAfterSync(optimized_syncs);
-    
+
     stmts.push_back(GetRef<Stmt>(op));
-    
+
     UpdateLatestAccessHistory(current_accesses);
-    
+
     if (stmts.size() == 1) {
         return stmts[0];
     } else {
@@ -259,13 +323,13 @@ private:
   Stmt VisitStmt_(const AttrStmtNode* op) override {
     if (op->attr_key == "resource_scope") {
       auto saved_access_history = current_access_history_;
-      
+
       current_access_history_.clear();
-      
+
       Stmt new_body = VisitStmt(op->body);
-      
+
       current_access_history_ = saved_access_history;
-      
+
       return AttrStmt(op->node, op->attr_key, op->value, new_body);
     } else if (op->attr_key == "unrolled_loop") {
       Stmt new_body = VisitStmt(op->body);
@@ -273,14 +337,14 @@ private:
     } else if (op->attr_key == "iteration_start" || op->attr_key == "iteration_end") {
       return GetRef<Stmt>(op);
     }
-    
+
     Stmt new_body = VisitStmt(op->body);
     return AttrStmt(op->node, op->attr_key, op->value, new_body);
   }
 
   Stmt VisitStmt_(const LetStmtNode* op) override {
     auto value_accesses = AnalyzeExprAccesses(op->value);
-    
+
     bool has_sliced_access = false;
     for (const auto& access : value_accesses) {
       if (access.is_sliced) {
@@ -288,16 +352,16 @@ private:
         break;
       }
     }
-    
+
     std::vector<Stmt> stmts_before_let;
     if (has_sliced_access) {
       InsertSynchronization("PipeBarrier_ALL", stmts_before_let);
     }
-    
+
     Stmt new_body = VisitStmt(op->body);
-    
+
     Stmt new_let = LetStmt(op->var, op->value, new_body);
-    
+
     if (!stmts_before_let.empty()) {
       stmts_before_let.push_back(new_let);
       if (stmts_before_let.size() == 1) {
@@ -352,45 +416,45 @@ private:
       info.extent = op->extent;
       info.kind = op->kind;
       info.annotations = op->annotations;
-      
+
       static int loop_counter = 0;
       info.loop_id = "loop_" + std::to_string(loop_counter++);
       info.depth = current_depth_;
       loop_infos_.push_back(info);
-      
+
       current_depth_++;
       Stmt processed_body = VisitStmt(op->body);
       current_depth_--;
-      
+
       std::string loop_id = info.loop_id;
       std::vector<Stmt> unrolled_stmts;
-      
-      unrolled_stmts.push_back(AttrStmt(make_zero(DataType::Int(32)), "iteration_start", 
+
+      unrolled_stmts.push_back(AttrStmt(make_zero(DataType::Int(32)), "iteration_start",
                                       StringImm(loop_id + "_iter1"), Evaluate(0)));
       unrolled_stmts.push_back(processed_body);
-      unrolled_stmts.push_back(AttrStmt(make_zero(DataType::Int(32)), "iteration_end", 
+      unrolled_stmts.push_back(AttrStmt(make_zero(DataType::Int(32)), "iteration_end",
                                       StringImm(loop_id + "_iter1"), Evaluate(0)));
-      
-      unrolled_stmts.push_back(AttrStmt(make_zero(DataType::Int(32)), "iteration_start", 
+
+      unrolled_stmts.push_back(AttrStmt(make_zero(DataType::Int(32)), "iteration_start",
                                       StringImm(loop_id + "_iter2"), Evaluate(0)));
       unrolled_stmts.push_back(processed_body);
-      unrolled_stmts.push_back(AttrStmt(make_zero(DataType::Int(32)), "iteration_end", 
+      unrolled_stmts.push_back(AttrStmt(make_zero(DataType::Int(32)), "iteration_end",
                                       StringImm(loop_id + "_iter2"), Evaluate(0)));
-      
+
       if (unrolled_stmts.empty()) {
         return Evaluate(0);
       }
-      
+
       Stmt unrolled_seq;
       if (unrolled_stmts.size() == 1) {
         unrolled_seq = unrolled_stmts[0];
       } else {
         unrolled_seq = SeqStmt(unrolled_stmts);
       }
-      
+
       return AttrStmt(make_zero(DataType::Int(32)), "unrolled_loop", StringImm(loop_id), unrolled_seq);
     }
-    
+
     Stmt VisitStmt_(const SeqStmtNode* op) override {
       std::vector<Stmt> new_stmts;
       for (const Stmt& stmt : op->seq) {
@@ -401,12 +465,12 @@ private:
       }
       return SeqStmt(new_stmts);
     }
-    
+
     Stmt VisitStmt_(const AttrStmtNode* op) override {
       Stmt new_body = VisitStmt(op->body);
       return AttrStmt(op->node, op->attr_key, op->value, new_body);
     }
-    
+
     Stmt VisitStmt_(const LetStmtNode* op) override {
       Stmt new_body = VisitStmt(op->body);
       return LetStmt(op->var, op->value, new_body);
@@ -420,7 +484,7 @@ private:
   class LoopRebuilder : public StmtMutator {
   public:
     LoopRebuilder(const std::vector<LoopInfo>& loop_infos) : loop_infos_(loop_infos) {}
-    
+
     Stmt operator()(const Stmt& stmt) {
       return VisitStmt(stmt);
     }
@@ -438,21 +502,21 @@ private:
               break;
             }
           }
-          
+
           if (target_info) {
             Stmt processed_body = VisitStmt(op->body);
-            
+
             Stmt merged_body = MergeIterations(processed_body, target_info->loop_id);
-            return For(target_info->loop_var, target_info->min, target_info->extent, 
+            return For(target_info->loop_var, target_info->min, target_info->extent,
                       target_info->kind, merged_body, NullOpt, target_info->annotations);
           }
         }
       }
-      
+
       Stmt new_body = VisitStmt(op->body);
       return AttrStmt(op->node, op->attr_key, op->value, new_body);
     }
-    
+
     Stmt VisitStmt_(const SeqStmtNode* op) override {
       std::vector<Stmt> new_stmts;
       for (const Stmt& stmt : op->seq) {
@@ -466,7 +530,7 @@ private:
 
     Stmt VisitStmt_(const IfThenElseNode* op) override {
       Stmt then_case = VisitStmt(op->then_case);
-      
+
       Optional<Stmt> else_case;
       if (op->else_case.defined()) {
         else_case = VisitStmt(op->else_case.value());
@@ -476,18 +540,18 @@ private:
 
   private:
     std::vector<LoopInfo> loop_infos_;
-    
+
     Stmt MergeIterations(const Stmt& unrolled_body, const std::string& loop_id) {
       std::vector<Stmt> all_stmts = FlattenStmts(unrolled_body);
       if (all_stmts.empty()) {
         return Evaluate(0);
       }
-      
+
       std::vector<Stmt> iter1_stmts, iter2_stmts;
       bool in_iter1 = false;
       bool in_iter2 = false;
       std::string current_iter;
-      
+
       for (const auto& stmt : all_stmts) {
         if (IsEmptyEvaluate(stmt)) {
           continue;
@@ -512,24 +576,24 @@ private:
           current_iter = "";
           continue;
         }
-        
+
         if (IsUnrolledLoopMarker(stmt)) {
           continue;
         }
-        
+
         if (in_iter1) {
           iter1_stmts.push_back(stmt);
         } else if (in_iter2) {
           iter2_stmts.push_back(stmt);
         }
       }
-      
+
       if (iter1_stmts.empty() && iter2_stmts.empty()) {
         return Evaluate(0);
       }
-      
+
       std::vector<Stmt> merged_stmts = MergeStatementSequences(iter1_stmts, iter2_stmts, loop_id);
-      
+
       if (merged_stmts.empty()) {
         return Evaluate(0);
       } else if (merged_stmts.size() == 1) {
@@ -550,7 +614,7 @@ private:
       }
       return false;
     }
-    
+
     bool IsEmptyEvaluate(const Stmt& stmt) {
       if (auto eval = stmt.as<EvaluateNode>()) {
         if (auto int_imm = eval->value.as<IntImmNode>()) {
@@ -661,16 +725,16 @@ private:
 
       return merged_stmts;
     }
-    
+
     bool IsMarkerStatement(const Stmt& stmt) {
       if (auto attr = stmt.as<AttrStmtNode>()) {
-        return (attr->attr_key == "iteration_start" || 
+        return (attr->attr_key == "iteration_start" ||
                 attr->attr_key == "iteration_end" ||
                 attr->attr_key == "unrolled_loop");
       }
       return false;
     }
-    
+
     bool IsSyncStatement(const Stmt& stmt) {
       if (auto eval = stmt.as<EvaluateNode>()) {
         if (auto call = eval->value.as<CallNode>()) {
@@ -687,7 +751,7 @@ private:
       }
       return false;
     }
-    
+
     bool ContainsSync(const std::vector<Stmt>& stmts, const Stmt& sync_stmt) {
       for (const auto& stmt : stmts) {
         if (IsSyncStatement(stmt) && IsSameSyncOperation(stmt, sync_stmt)) {
@@ -701,57 +765,75 @@ private:
       if (!IsSyncStatement(stmt1) || !IsSyncStatement(stmt2)) {
         return false;
       }
-      
+
       auto eval1 = stmt1.as<EvaluateNode>();
       auto eval2 = stmt2.as<EvaluateNode>();
       if (!eval1 || !eval2) {
         return false;
       }
-      
+
       auto call1 = eval1->value.as<CallNode>();
       auto call2 = eval2->value.as<CallNode>();
-      if (!call1 || !call2 || !call1->op.same_as(builtin::call_extern()) || !call2->op.same_as(builtin::call_extern())) {
+      if (!call1 || !call2 ) {
         return false;
       }
-      
-      auto func_name1 = call1->args[0].as<StringImmNode>();
-      auto func_name2 = call2->args[0].as<StringImmNode>();
-      if (!func_name1 || !func_name2) {
-        return false;
-      }
-      
-      std::string name1 = func_name1->value;
-      std::string name2 = func_name2->value;
-      
-      if (name1 != name2) {
-        return false;
-      }
-      
-      if (name1.find("AutoBarrier") != std::string::npos) {
-        if (call1->args.size() >= 2 && call2->args.size() >= 2) {
-          auto pipeline1 = call1->args[1].as<StringImmNode>();
-          auto pipeline2 = call2->args[1].as<StringImmNode>();
-          if (pipeline1 && pipeline2) {
-            return pipeline1->value == pipeline2->value;
-          }
+
+      if (call1->op.same_as(builtin::call_extern()) && call2->op.same_as(builtin::call_extern())) {
+        auto func_name1 = call1->args[0].as<StringImmNode>();
+        auto func_name2 = call2->args[0].as<StringImmNode>();
+        if (!func_name1 || !func_name2) {
+          return false;
         }
-        return false;
-      }
-      
-      if (name1.find("AutoSetFlag") != std::string::npos || name1.find("AutoWaitFlag") != std::string::npos) {
-        if (call1->args.size() >= 3 && call2->args.size() >= 3) {
-            auto event_type1 = call1->args[1].as<StringImmNode>();
-            auto event_type2 = call2->args[1].as<StringImmNode>();
-            if (event_type1 && event_type2) {
-                return event_type1->value == event_type2->value;
+
+        std::string name1 = func_name1->value;
+        std::string name2 = func_name2->value;
+
+        if (name1 != name2) {
+          return false;
+        }
+
+        if (name1.find("AutoBarrier") != std::string::npos) {
+          if (call1->args.size() >= 2 && call2->args.size() >= 2) {
+            auto pipeline1 = call1->args[1].as<StringImmNode>();
+            auto pipeline2 = call2->args[1].as<StringImmNode>();
+            if (pipeline1 && pipeline2) {
+              return pipeline1->value == pipeline2->value;
             }
+          }
+          return false;
         }
-        return false;
+
+        if (name1.find("AutoSetFlag") != std::string::npos || name1.find("AutoWaitFlag") != std::string::npos) {
+          if (call1->args.size() >= 3 && call2->args.size() >= 3) {
+              auto event_type1 = call1->args[1].as<StringImmNode>();
+              auto event_type2 = call2->args[1].as<StringImmNode>();
+              if (event_type1 && event_type2) {
+                  return event_type1->value == event_type2->value;
+              }
+          }
+          return false;
+        }
+
+        return StructuralEqual()(stmt1, stmt2);
+      } else if (call1->op.same_as(call2->op)) {
+        // call_intrin 判断
+        // std::string op_name;
+        // if (auto* op_ptr = call1->op.as<OpNode>()) {
+        //     op_name = op_ptr->name;
+        //     auto config_it = operation_config_.find(op_name);
+        //     if (config_it == operation_config_.end()){
+        //         return false;
+        //     }
+        // }
+
+        // todo AutoBarrier
+
+        return StructuralEqual()(stmt1, stmt2);
       }
-      
-      return StructuralEqual()(stmt1, stmt2);
+
+      return false;
     }
-    
+
     std::vector<Stmt> FlattenStmts(const Stmt& stmt) {
       std::vector<Stmt> result;
       StmtFlattener flattener(result);
@@ -762,13 +844,13 @@ private:
     class StmtFlattener : public StmtVisitor {
     public:
       StmtFlattener(std::vector<Stmt>& result) : result_(result) {}
-      
+
       void VisitStmt_(const SeqStmtNode* op) override {
         for (const Stmt& stmt : op->seq) {
           VisitStmt(stmt);
         }
       }
-      
+
       void VisitStmt_(const IfThenElseNode* op) override {
         result_.push_back(GetRef<Stmt>(op));
       }
@@ -776,9 +858,9 @@ private:
       void VisitStmt_(const EvaluateNode* op) override {
         result_.push_back(GetRef<Stmt>(op));
       }
-      
+
       void VisitStmt_(const AttrStmtNode* op) override {
-        if (op->attr_key == "iteration_start" || 
+        if (op->attr_key == "iteration_start" ||
             op->attr_key == "iteration_end") {
           result_.push_back(GetRef<Stmt>(op));
           VisitStmt(op->body);
@@ -791,20 +873,20 @@ private:
           VisitStmt(op->body);
         }
       }
-      
+
       void VisitStmt_(const LetStmtNode* op) override {
         result_.push_back(GetRef<Stmt>(op));
       }
-      
+
       void VisitStmt_(const ForNode* op) override {
         result_.push_back(GetRef<Stmt>(op));
       }
-      
+
       void VisitStmt_(const AllocateNode* op) override {
         result_.push_back(GetRef<Stmt>(op));
         VisitStmt(op->body);
       }
-      
+
     private:
       std::vector<Stmt>& result_;
     };
@@ -832,7 +914,7 @@ private:
       oss << "}}";
       return oss.str();
     }
-    
+
     void AddSync(const std::string& sync_type) {
       if (sync_type.find("EventPair_") == 0) {
         std::string event = sync_type.substr(10);
@@ -844,18 +926,18 @@ private:
         }
       }
     }
-    
+
     bool HasPath(const std::string& src, const std::string& dst) const {
       if (src == dst) return true;
-      
+
       std::unordered_set<std::string> visited;
       std::vector<std::string> queue = {src};
       visited.insert(src);
-      
+
       while (!queue.empty()) {
         std::string current = queue.back();
         queue.pop_back();
-        
+
         auto it = graph.find(current);
         if (it != graph.end()) {
           for (const auto& neighbor : it->second) {
@@ -867,10 +949,10 @@ private:
           }
         }
       }
-      
+
       return false;
     }
-    
+
     void Merge(const SyncGraph& other) {
       for (const auto& pair : other.graph) {
         const std::string& src = pair.first;
@@ -879,11 +961,11 @@ private:
         }
       }
     }
-    
+
     SyncGraph ComputeTransitiveClosure() const {
       SyncGraph closure;
       closure.graph = graph;
-      
+
       std::unordered_set<std::string> nodes;
       for (const auto& pair : graph) {
         nodes.insert(pair.first);
@@ -891,9 +973,9 @@ private:
           nodes.insert(dst);
         }
       }
-      
+
       std::vector<std::string> node_list(nodes.begin(), nodes.end());
-      
+
       for (const auto& k : node_list) {
         for (const auto& i : node_list) {
           for (const auto& j : node_list) {
@@ -903,7 +985,7 @@ private:
           }
         }
       }
-      
+
       return closure;
     }
   };
@@ -996,10 +1078,10 @@ private:
 
   std::vector<BufferAccess> AnalyzeExprAccesses(const PrimExpr& expr) {
       std::vector<BufferAccess> accesses;
-      
+
       ExprAccessAnalyzer analyzer;
       analyzer(expr);
-      
+
       for (const auto& buffer_name : analyzer.GetAccessedBuffers()) {
           BufferAccess access;
           access.buffer_name = buffer_name;
@@ -1010,10 +1092,10 @@ private:
           access.pipe_barriers = {};
           access.physical_address = GetPhysicalAddress(buffer_name);
           access.is_sliced = analyzer.IsBufferSliced(buffer_name);
-          
+
           accesses.push_back(access);
       }
-      
+
       return accesses;
   }
 
@@ -1025,7 +1107,7 @@ private:
                   if (auto var = op->args[1].as<VarNode>()) {
                       std::string buffer_name = var->name_hint;
                       accessed_buffers_.insert(buffer_name);
-                      
+
                       if (auto offset = op->args[2].as<IntImmNode>()) {
                           if (offset->value != 0) {
                               sliced_buffers_.insert(buffer_name);
@@ -1038,28 +1120,28 @@ private:
           }
           ExprVisitor::VisitExpr_(op);
       }
-      
+
       void VisitExpr_(const BufferLoadNode* op) override {
           std::string buffer_name = op->buffer->data->name_hint;
           accessed_buffers_.insert(buffer_name);
-          
+
           sliced_buffers_.insert(buffer_name);
-          
+
           for (const auto& index : op->indices) {
               VisitExpr(index);
           }
-          
+
           ExprVisitor::VisitExpr_(op);
       }
-      
+
       std::unordered_set<std::string> GetAccessedBuffers() const {
           return accessed_buffers_;
       }
-      
+
       bool IsBufferSliced(const std::string& buffer_name) const {
           return sliced_buffers_.count(buffer_name) > 0;
       }
-      
+
   private:
       std::unordered_set<std::string> accessed_buffers_;
       std::unordered_set<std::string> sliced_buffers_;
@@ -1107,7 +1189,7 @@ private:
 
   std::vector<BufferAccess> AnalyzeStmtAccesses(const Stmt& stmt) {
     std::vector<BufferAccess> accesses;
-    
+
     if (auto eval = stmt.as<EvaluateNode>()) {
       if (auto call = eval->value.as<CallNode>()) {
         if (call->op.same_as(builtin::call_extern())) {
@@ -1117,18 +1199,18 @@ private:
           auto config_it = operation_config_.find(normalized_name);
           if (config_it != operation_config_.end()) {
             const auto& config = config_it->second;
-            
+
             std::unordered_map<std::string, BufferAccess> buffer_access_map;
-            
+
             for (const auto& buffer_config : config.buffer_accesses) {
               size_t arg_index = buffer_config.first;
               const std::string& access_type = buffer_config.second;
-              
+
               if (arg_index + 1 < call->args.size()) {
                 auto buffer_info = ExtractBufferInfoFromAccessPtr(call->args[arg_index + 1]);
                 if (!buffer_info.buffer_name.empty()) {
                   bool is_write = (access_type == "write");
-                  
+
                   if (buffer_access_map.find(buffer_info.buffer_name) != buffer_access_map.end()) {
                     BufferAccess& existing_access = buffer_access_map[buffer_info.buffer_name];
                     if (is_write || (!existing_access.is_write && is_write)) {
@@ -1140,27 +1222,79 @@ private:
                     access.sync_graph = SyncGraph();
                     access.pipe_barriers = {};
                     access.physical_address = GetPhysicalAddress(buffer_info.buffer_name);
-                    
+
                     access.buffer_name = buffer_info.buffer_name;
                     access.is_write = is_write;
                     access.pipeline = config.default_pipeline;
                     access.operation = normalized_name;
                     access.is_sliced = buffer_info.is_sliced;
-                    
+
                     buffer_access_map[buffer_info.buffer_name] = access;
                   }
                 }
               }
             }
-            
+
             for (const auto& pair : buffer_access_map) {
               accesses.push_back(pair.second);
             }
           }
         }
+        else { //
+          std::string op_name;
+          if (auto* op_ptr = call->op.as<OpNode>()) {
+            op_name = op_ptr->name;
+
+            std::string normalized_name = op_name;
+
+            auto config_it = operation_config_.find(normalized_name);
+            if (config_it != operation_config_.end()) {
+              const auto& config = config_it->second;
+
+              std::unordered_map<std::string, BufferAccess> buffer_access_map;
+
+              for (const auto& buffer_config : config.buffer_accesses) {
+                size_t arg_index = buffer_config.first;
+                const std::string& access_type = buffer_config.second;
+
+                if (arg_index < call->args.size()) {
+                  auto buffer_info = ExtractBufferInfoFromAccessPtr(call->args[arg_index]);
+                  if (!buffer_info.buffer_name.empty()) {
+                    bool is_write = (access_type == "write");
+
+                    if (buffer_access_map.find(buffer_info.buffer_name) != buffer_access_map.end()) {
+                      BufferAccess& existing_access = buffer_access_map[buffer_info.buffer_name];
+                      if (is_write || (!existing_access.is_write && is_write)) {
+                        existing_access.is_write = true;
+                      }
+                      existing_access.is_sliced = existing_access.is_sliced || buffer_info.is_sliced;
+                    } else {
+                      BufferAccess access;
+                      access.sync_graph = SyncGraph();
+                      access.pipe_barriers = {};
+                      access.physical_address = GetPhysicalAddress(buffer_info.buffer_name);
+
+                      access.buffer_name = buffer_info.buffer_name;
+                      access.is_write = is_write;
+                      access.pipeline = config.default_pipeline;
+                      access.operation = normalized_name;
+                      access.is_sliced = buffer_info.is_sliced;
+
+                      buffer_access_map[buffer_info.buffer_name] = access;
+                    }
+                  }
+                }
+              }
+
+              for (const auto& pair : buffer_access_map) {
+                accesses.push_back(pair.second);
+              }
+            }
+          }
+        }
       }
     }
-    
+
     return accesses;
   }
 
@@ -1170,18 +1304,18 @@ private:
     if (template_pos != std::string::npos) {
       result = result.substr(0, template_pos);
     }
-    
+
     size_t ns_pos = result.find("tl::ascend::");
     if (ns_pos != std::string::npos) {
       result = result.substr(ns_pos + 12);
     }
-    
+
     return result;
   }
 
   BufferInfo ExtractBufferInfoFromAccessPtr(const PrimExpr& expr) {
     BufferInfo info = {"", false, false};
-    
+
     if (auto call = expr.as<CallNode>()) {
       if (call->op.same_as(builtin::tvm_access_ptr())) {
         if (call->args.size() >= 5) {
@@ -1213,12 +1347,12 @@ private:
         }
       }
     }
-    
+
     return info;
   }
 
   bool HasDataDependency(const BufferAccess& prev, const BufferAccess& curr) {
-    if (prev.physical_address != -1 && curr.physical_address != -1 && 
+    if (prev.physical_address != -1 && curr.physical_address != -1 &&
         prev.physical_address == curr.physical_address) {
       if ((prev.is_write && curr.is_write) ||      // WAW
           (prev.is_write && !curr.is_write) ||     // RAW
@@ -1226,7 +1360,7 @@ private:
         return true;
       }
     }
-    
+
     if (prev.buffer_name == curr.buffer_name) {
       if ((prev.is_write && curr.is_write) ||      // WAW
           (prev.is_write && !curr.is_write) ||     // RAW
@@ -1276,12 +1410,12 @@ private:
   std::vector<std::string> FindRelatedBuffers(const std::string& buffer_name) {
     std::vector<std::string> related;
     int64_t target_addr = GetPhysicalAddress(buffer_name);
-    
+
     if (target_addr == -1) {
       related.push_back(buffer_name);
       return related;
     }
-    
+
     for (const auto& pair : address_map_) {
       if (auto int_imm = pair.second.as<IntImmNode>()) {
         if (int_imm->value == target_addr) {
@@ -1296,42 +1430,42 @@ private:
     if (requirements.empty()) {
       return {};
     }
-    
+
     std::vector<std::string> all_required_syncs;
     for (const auto& req : requirements) {
       all_required_syncs.push_back(req.sync_type);
     }
-    
+
     std::sort(all_required_syncs.begin(), all_required_syncs.end());
     all_required_syncs.erase(std::unique(all_required_syncs.begin(), all_required_syncs.end()), all_required_syncs.end());
-    
+
     std::vector<std::string> final_syncs;
-    
+
     for (const auto& sync_type : all_required_syncs) {
       bool needed = false;
-      
+
       for (const auto& req : requirements) {
         if (req.sync_type == sync_type) {
           SyncGraph extended_graph = GetBufferSyncGraph(req.buffer_name);
-          
+
           for (const auto& other_sync : all_required_syncs) {
             if (other_sync != sync_type) {
               extended_graph.AddSync(other_sync);
             }
           }
-          
+
           if (!IsSyncSatisfiedByGraph(sync_type, extended_graph)) {
             needed = true;
             break;
           }
         }
       }
-      
+
       if (needed) {
         final_syncs.push_back(sync_type);
       }
     }
-    
+
     return final_syncs;
   }
 
@@ -1361,12 +1495,12 @@ private:
     for (const auto& sync_type : inserted_syncs) {
       inserted_graph.AddSync(sync_type);
     }
-    
+
     SyncGraph transitive_closure = inserted_graph.ComputeTransitiveClosure();
-    
+
     for (auto& pair : current_access_history_) {
       BufferAccess& access = pair.second;
-      
+
       for (const auto& sync_type : inserted_syncs) {
         if (sync_type.find("EventPair_") == 0) {
           access.sync_graph.AddSync(sync_type);
@@ -1377,7 +1511,7 @@ private:
           }
         }
       }
-      
+
       access.sync_graph.Merge(transitive_closure);
     }
   }
@@ -1400,21 +1534,21 @@ private:
     return event_id_counter_++;
   }
 
-  Stmt CreatePipeBarrier(const std::string& pipeline) {
-    Array<PrimExpr> args = {StringImm("AscendC::AutoBarrier"), StringImm(pipeline)};
-    return Evaluate(Call(DataType::Handle(), builtin::call_extern(), args));
+  Stmt CreatePipeBarrier(const std::string &pipeline) {
+    Array<PrimExpr> args = {StringImm(pipeline)};
+    return Evaluate(Call(DataType::Handle(), Op::Get("tl.ascend_auto_barrier"), args));
   }
 
-  Stmt CreateSetFlag(const std::string& event_type, int event_id) {
-    Array<PrimExpr> args = {StringImm("AscendC::AutoSetFlag"), StringImm(event_type), 
-                           IntImm(DataType::Int(32), event_id)};
-    return Evaluate(Call(DataType::Handle(), builtin::call_extern(), args));
+  Stmt CreateSetFlag(const std::string &event_type, int event_id) {
+    Array<PrimExpr> args = {StringImm(event_type),
+                            IntImm(DataType::Int(32), event_id)};
+    return Evaluate(Call(DataType::Handle(), Op::Get("tl.ascend_auto_set_flag"), args));
   }
 
-  Stmt CreateWaitFlag(const std::string& event_type, int event_id) {
-    Array<PrimExpr> args = {StringImm("AscendC::AutoWaitFlag"), StringImm(event_type), 
-                           IntImm(DataType::Int(32), event_id)};
-    return Evaluate(Call(DataType::Handle(), builtin::call_extern(), args));
+  Stmt CreateWaitFlag(const std::string &event_type, int event_id) {
+    Array<PrimExpr> args = {StringImm(event_type),
+                            IntImm(DataType::Int(32), event_id)};
+    return Evaluate(Call(DataType::Handle(), Op::Get("tl.ascend_auto_wait_flag"), args));
   }
 
 private:
