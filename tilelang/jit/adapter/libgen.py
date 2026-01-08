@@ -34,7 +34,7 @@ class LibraryGenerator(object):
         libpath = src.name.replace(".cpp", ".so")
         ASCEND_HOME_PATH = os.environ["ASCEND_HOME_PATH"]
         TL_ROOT = os.environ["TL_ROOT"]
-        if self.target == "ascendc":
+        if self.target == "ascendc" or self.target == "auto":
             command = [
                 "bisheng",
                 "--npu-arch=dav-2201",
