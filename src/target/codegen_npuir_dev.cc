@@ -959,35 +959,83 @@ void CodeGenTileLangNPUIRDEV::AscendCopyCodegen(const CallNode *op) {
     }
     return value;
   };
+  auto createCastIfTypeMismatch = [&](mlir::Value src_value, mlir::Value dst_value) -> mlir::Value {
+    auto src_type = src_value.getType();
+    auto dst_type = dst_value.getType();
+    
+    // Get src and dst ElementType
+    mlir::Type src_element_type, dst_element_type;
+    if (auto src_tensor_type = src_type.dyn_cast<mlir::TensorType>()) {
+      src_element_type = src_tensor_type.getElementType();
+    } else if (auto src_memref_type = src_type.dyn_cast<mlir::MemRefType>()) {
+      src_element_type = src_memref_type.getElementType();
+    } else {
+      return src_value;
+    }
+    if (auto dst_tensor_type = dst_type.dyn_cast<mlir::TensorType>()) {
+      dst_element_type = dst_tensor_type.getElementType();
+    } else if (auto dst_memref_type = dst_type.dyn_cast<mlir::MemRefType>()) {
+      dst_element_type = dst_memref_type.getElementType();
+    } else {
+      return src_value;
+    }
+    // No cast if ElementType are the same
+    if (src_element_type == dst_element_type) {
+      return src_value;
+    }
+    
+    // Get src tensor shape
+    llvm::ArrayRef<int64_t> src_shape;
+    if (auto src_tensor_type = src_type.dyn_cast<mlir::RankedTensorType>()) {
+      src_shape = src_tensor_type.getShape();
+    } else if (auto src_memref_type = src_type.dyn_cast<mlir::MemRefType>()) {
+      src_shape = src_memref_type.getShape();
+    } else {
+      return src_value;
+    }
+    
+    // Create VCastOp
+    auto castDstTensor = builder.create<mlir::tensor::EmptyOp>(
+        builder.getUnknownLoc(), src_shape, dst_element_type);
+    mlir::Type dst_type_ = castDstTensor.getType();
+    mlir::TypeRange result_tensors(&dst_type_, 1);
+    mlir::hivm::RoundMode mode = mlir::hivm::RoundMode::RINT;
+    auto newCastOp = builder.create<mlir::hivm::VCastOp>(
+        builder.getUnknownLoc(), result_tensors, src_value, 
+        castDstTensor.getResult(), mlir::hivm::RoundModeAttr::get(&context, mode),
+        nullptr);
+    return newCastOp->getResult(0);
+  };
   
   mlir::Value src_value = GetVarValue(npuirop.src);
   mlir::Value dst_value = GetVarValue(npuirop.dst);
   
-  /// TODO: Support for copy operations outside of load/store
   if (src_value.getType().isa<mlir::TensorType>() &&
       dst_value.getType().isa<mlir::TensorType>()) {
-    ICHECK(false) << "Unsupported copy operation: tensor to tensor";
+    src_value = createCastIfTypeMismatch(src_value, dst_value);
+    auto src_type = src_value.getType().cast<mlir::RankedTensorType>();
+    int rank = src_type.getRank();
+    auto shape = src_type.getShape();
+    SmallVector<OpFoldResult> offsets, sizes, strides;
+    for (int i = 0; i < rank; i++) {
+      offsets.push_back(builder.getIndexAttr(0));
+      sizes.push_back(builder.getIndexAttr(shape[i]));
+      strides.push_back(builder.getIndexAttr(1));
+    }
+    auto result = builder.create<mlir::tensor::InsertSliceOp>(
+        builder.getUnknownLoc(),
+        src_value,
+        dst_value,
+        offsets,
+        sizes,
+        strides
+    );
+    SetVarValue(npuirop.dst, result.getResult());
+    return;
   } else if (src_value.getType().isa<mlir::TensorType>() &&
              dst_value.getType().isa<mlir::MemRefType>()) {
-    // store
     dst_value = GenSubviewFromRegion(npuirop.dst, npuirop.dst_range);
-    // Check whether the element types of the source and target are consistent
-    auto src_tensor_type = src_value.getType().cast<mlir::TensorType>();
-    auto dst_memref_type = dst_value.getType().cast<mlir::MemRefType>();
-    if (src_tensor_type.getElementType() != dst_memref_type.getElementType()) {
-      auto src_shape = src_tensor_type.getShape();
-      auto dst_element_type = dst_memref_type.getElementType();
-      auto castDstTensor = builder.create<mlir::tensor::EmptyOp>(
-          builder.getUnknownLoc(), src_shape, dst_element_type);
-      mlir::Type dst_type = castDstTensor.getType();
-      mlir::TypeRange result_tensors(&dst_type, 1);
-      mlir::hivm::RoundMode mode = mlir::hivm::RoundMode::RINT;
-      auto newCastOp = builder.create<mlir::hivm::VCastOp>(
-          builder.getUnknownLoc(), result_tensors, src_value, 
-          castDstTensor.getResult(), mlir::hivm::RoundModeAttr::get(&context, mode),
-          nullptr);
-      src_value = newCastOp->getResult(0);
-    }
+    src_value = createCastIfTypeMismatch(src_value, dst_value);
     auto newStoreOp = builder.create<mlir::bufferization::MaterializeInDestinationOp>(
         builder.getUnknownLoc(), src_value, dst_value
     );
