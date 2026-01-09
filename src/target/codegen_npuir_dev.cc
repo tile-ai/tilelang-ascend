@@ -916,8 +916,9 @@ mlir::Value CodeGenTileLangNPUIRDEV::BinaryOpCodegen(const PrimExprNode *op,
   return mlirVal;
 }
 
-/// Generate memref.copy or bufferization.materialize_in_destination for tl.ascend_copy.
+/// Generate tensor.insert_slice, memref.copy or bufferization.materialize_in_destination for tl.ascend_copy.
 /// memref.copy for load and bufferization.materialize_in_destination for store
+/// tensor.insert_slice for copy from tensor to tensor
 /// before:
 ///   T.ascend_copy(T.region(A[bx, by], 1, 128, 256), T.region(A_VEC[0, 0], 2, 128, 256))
 /// after:
@@ -931,6 +932,10 @@ mlir::Value CodeGenTileLangNPUIRDEV::BinaryOpCodegen(const PrimExprNode *op,
 ///       dst: memref.reinterpret_cast;
 ///       dst_subview: memref.subview;
 ///       store: bufferization.materialize_in_destination;
+///   copy (tensor -> tensor):
+///       src: tensor;
+///       dst: tensor;
+///       operation: tensor.insert_slice
 void CodeGenTileLangNPUIRDEV::AscendCopyCodegen(const CallNode *op) {
   tvm::tl::AscendCopy npuirop(op->args, this->vmap);
   auto convertTensorToMemref = [&](mlir::Value value) -> mlir::Value {
@@ -1012,6 +1017,7 @@ void CodeGenTileLangNPUIRDEV::AscendCopyCodegen(const CallNode *op) {
   
   if (src_value.getType().isa<mlir::TensorType>() &&
       dst_value.getType().isa<mlir::TensorType>()) {
+    // copy (tensor -> tensor)
     src_value = createCastIfTypeMismatch(src_value, dst_value);
     auto src_type = src_value.getType().cast<mlir::RankedTensorType>();
     int rank = src_type.getRank();
@@ -1034,6 +1040,7 @@ void CodeGenTileLangNPUIRDEV::AscendCopyCodegen(const CallNode *op) {
     return;
   } else if (src_value.getType().isa<mlir::TensorType>() &&
              dst_value.getType().isa<mlir::MemRefType>()) {
+    // store
     dst_value = GenSubviewFromRegion(npuirop.dst, npuirop.dst_range);
     src_value = createCastIfTypeMismatch(src_value, dst_value);
     auto newStoreOp = builder.create<mlir::bufferization::MaterializeInDestinationOp>(
