@@ -40,7 +40,7 @@ def shmem_ub_put_nbi(M, N, nelems, newPe, dtype="int8"):
                     # T.set_flag("mte2", "mte3", 0x7)
                     # T.wait_flag("mte2", "mte3", 0x7)
                     T.barrier_all()
-                    # T.shmem_ub_put_nbi_new(ub_tensor, B, nelems, newPe)
+                    T.shmem_ub_put_nbi_new(ub_tensor, B, nelems, newPe)
                     # T.pipe_barrier("mte3")
                     T.barrier_all()
     return main
