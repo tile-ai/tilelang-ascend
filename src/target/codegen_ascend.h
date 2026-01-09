@@ -142,6 +142,16 @@ private:
 
   void AutoFlagOpCodegen (const CallNode *op, std::string op_name);
 
+  void AutoSetCrossFlagCodegen (const CallNode *op);
+
+  void AutoWaitCrossFlagCodegen (const CallNode *op);
+
+  void UseSwizzleCodegen (const CallNode *op, std::ostream &os);
+
+  void MmaCodegen (const CallNode *op);
+
+  void CopyCodegen (const CallNode *op);
+
 private:
   // Whether scope such as "__shared__" or "__constant__"  is part of type.
   bool IsScopePartOfType() const final { return false; }
