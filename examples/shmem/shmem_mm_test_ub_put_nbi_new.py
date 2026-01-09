@@ -37,10 +37,12 @@ def shmem_ub_put_nbi(M, N, nelems, newPe, dtype="int8"):
             with T.Scope("V"):
                 if vid == 0:
                     T.copy(A, ub_tensor)
-                    T.set_flag("mte2", "mte3", 0x7)
-                    T.wait_flag("mte2", "mte3", 0x7)
+                    # T.set_flag("mte2", "mte3", 0x7)
+                    # T.wait_flag("mte2", "mte3", 0x7)
+                    T.barrier_all()
                     T.shmem_ub_put_nbi_new(ub_tensor, B, nelems, newPe)
-                    T.pipe_barrier("mte3")
+                    # T.pipe_barrier("mte3")
+                    T.barrier_all()
     return main
 
 def worker(rank, barrier):
@@ -76,7 +78,7 @@ def worker(rank, barrier):
         func = shmem_ub_put_nbi(M, N, nelems, newPe)
         b = func(a)
         barrier.wait()
-        print("b after=", b)
+        # print("b after=", b)
         if torch.equal(a, b):
             print("Kernel Output Match!")
         else:
