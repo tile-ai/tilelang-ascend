@@ -21,7 +21,7 @@ M = args.m
 N = args.n
 g_ash_size = 1024 * 1024 * 1024
 g_malloc_size = 8 * 1024 * 1024
-G_IP_PORT = "tcp://127.0.0.1:8666"
+G_IP_PORT = "tcp://100.102.180.145:8666"
 
 num_processes = args.num_processes
 
@@ -65,9 +65,7 @@ def worker(rank, barrier):
         # 分配内存
         torch.manual_seed(0)
     
-        mem_type=aclshmem_module.MemType.DEVICE_SIDE
-        tensor = aclshmem_module.aclshmem_create_tensor([M, 2*N], dtype=torch.int8, 
-                                        mem_type=mem_type, device_id=rank)
+        tensor = aclshmem_module.aclshmem_create_tensor([M, 2*N], dtype=torch.int8, device_id=rank)
         a = tensor[0:1, 0:N].fill_(2)
         b = tensor[0:1, N:2*N].fill_(0)
         torch.npu.synchronize()
@@ -83,12 +81,12 @@ def worker(rank, barrier):
             print("Kernel Output Match!")
         else:
             print("[ERROR] Kernel Output Not Match!")
-        aclshmem_module.aclshmem_free_tensor(tensor, mem_type=mem_type)
+        aclshmem_module.aclshmem_free_tensor(tensor)
 
     else:
         print(f"Rank {rank}: Initialization failed with code {ret}")    
     # 清理
-    aclshmem_module.aclshmem_finalize()
+    aclshmem_module.aclshmem_finialize()
     print(f"Rank {rank}: Finalized")
 
 # 程序起始位置
