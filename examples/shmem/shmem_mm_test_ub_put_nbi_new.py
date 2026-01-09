@@ -40,7 +40,7 @@ def shmem_ub_put_nbi(M, N, nelems, newPe, dtype="int8"):
                     # T.set_flag("mte2", "mte3", 0x7)
                     # T.wait_flag("mte2", "mte3", 0x7)
                     T.barrier_all()
-                    T.shmem_ub_put_nbi_new(ub_tensor, B, nelems, newPe)
+                    # T.shmem_ub_put_nbi_new(ub_tensor, B, nelems, newPe)
                     # T.pipe_barrier("mte3")
                     T.barrier_all()
     return main
@@ -70,10 +70,10 @@ def worker(rank, barrier):
         tensor = aclshmem_module.aclshmem_create_tensor([M, 2*N], dtype=torch.int8, device_id=rank)
         a = tensor[0:1, 0:N].fill_(2)
         b = tensor[0:1, N:2*N].fill_(0)
-        print("a before=", a)
-        print("b before=", b)
-        print("rank", rank, "a address", a.data_ptr())
-        print("rank", rank, "b address", b.data_ptr())
+        # print("a before=", a)
+        # print("b before=", b)
+        # print("rank", rank, "a address", a.data_ptr())
+        # print("rank", rank, "b address", b.data_ptr())
         torch.npu.synchronize()
         nelems = M * N
         # 将本卡数据put到另一张卡上，这里设置为下一张卡
