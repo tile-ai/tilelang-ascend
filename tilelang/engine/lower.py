@@ -158,7 +158,13 @@ def host_codegen(host_mod: tvm.IRModule, target_host: Target) -> tvm.IRModule:
 def device_codegen(device_mod: tvm.IRModule, target: Target) -> tvm.IRModule:
     device_mod = tir.transform.Simplify()(device_mod)
 
-    device_mod = tvm._ffi.get_global_func("target.build.tilelang_ascend")(device_mod, target)
+    if target.model == "ascendc" or target.model == "auto":
+        device_mod = tvm._ffi.get_global_func("target.build.tilelang_ascend")(device_mod, target)
+    elif target.model == "pto":
+        device_mod = tvm._ffi.get_global_func("target.build.tilelang_ascend_pto")(device_mod, target)
+    else:
+        print(target.kind.name)
+        raise ValueError(f"Target {target.kind.name} is not supported")
 
     return device_mod
 
@@ -207,14 +213,10 @@ def lower(
         params = extrac_params(func) if not runtime_only else None
         mod = tvm.IRModule({func.attrs["global_symbol"]: func})
 
-    # Convert "auto" target to a specific target kind
-    if isinstance(target, str):
-        target = determine_target(target)
-
-    target_host = canon_target_host(None, target_host)
-
-    target_host = tvm.target.Target.canon_target(target_host)
-    target = tvm.target.Target(target, target_host)
+    target = tvm.target.Target({
+        "kind": "llvm",
+        "model": target
+    })
 
     # Phase 1: Lower and legalize the IR
     mod = LowerAndLegalize(mod, target)

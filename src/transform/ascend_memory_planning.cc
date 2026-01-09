@@ -56,7 +56,7 @@ public:
     Map<Var, PrimExpr> address_map_attr;
     for (const auto& kv : address_map) {
       Var buffer_var = GetRef<Var>(kv.first);
-      address_map_attr.Set(buffer_var, make_const(DataType::Int(64), kv.second));
+      address_map_attr.Set(buffer_var, Integer(kv.second));
     }
     fn_attr->dict.Set("address_map", address_map_attr);
     return f;

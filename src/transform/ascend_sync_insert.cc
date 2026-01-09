@@ -27,6 +27,10 @@
 #include <tvm/runtime/registry.h>
 #include <tvm/tir/expr.h>
 
+
+#include <tvm/runtime/registry.h>
+#include <tvm/tir/expr.h>
+
 #include "../op/ascend.h"
 #include "../op/builtin.h"
 #include "./common/collector.h"
