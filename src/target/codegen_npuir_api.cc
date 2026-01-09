@@ -1437,7 +1437,8 @@ template <typename T>
 void CodeGenTileLangNPUIRAPI::CreateHIVMBinaryVectorOp(const CallNode *op) {
   auto processImm = [&](mlir::Value &src, int arg_id,
                         Array<PrimExpr> &buffer_shape) {
-    if (op->args[arg_id].as<IntImm>() || op->args[arg_id].as<FloatImm>()) {
+    if (op->args[arg_id].as<IntImm>() || op->args[arg_id].as<FloatImm>() || 
+        op->args[arg_id].as<tir::VarNode>() || op->args[arg_id].as<tir::BufferLoadNode>()) {
       // Scalar case
       const CallNode *region_node = op->args[1 - arg_id].as<CallNode>();
       const BufferLoadNode *buffer_load_node =
