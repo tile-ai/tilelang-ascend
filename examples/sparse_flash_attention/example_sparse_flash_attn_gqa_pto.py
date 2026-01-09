@@ -7,7 +7,7 @@ torch.manual_seed(42)
 
 tilelang.disable_cache()
 
-# @tilelang.jit(out_idx=[3], target="pto")
+@tilelang.jit(out_idx=[3])
 def sparse_attention_fwd(
     heads,
     dim,
@@ -332,43 +332,40 @@ def ref_sparse_attention_fwd_interface_gqa(q,
     return o.to(torch.float16)
 
 
-# B, S, SKV, H_Q, H_KV, DIM, topk = 2, 273, 44444, 64, 4, 128, 2048
-# kv_group = H_Q // H_KV  # 8
-# dtype = torch.float16
+B, S, SKV, H_Q, H_KV, DIM, topk = 2, 273, 44444, 64, 4, 128, 2048
+kv_group = H_Q // H_KV  # 8
+dtype = torch.float16
 
-# KV_stride = 1
-# q_start_s_index = 4096 * 7
+KV_stride = 1
+q_start_s_index = 4096 * 7
 
-# # create input
-# q = torch.randn((B, S, H_Q, DIM), dtype=dtype)
-# kv = torch.zeros((B, SKV, H_KV, DIM), dtype=dtype)
-# # value for KV head i
-# for kv_head in range(H_KV):
-#     kv[:, :, kv_head, :] = torch.rand(DIM, dtype=torch.float16)
+# create input
+q = torch.randn((B, S, H_Q, DIM), dtype=dtype)
+kv = torch.zeros((B, SKV, H_KV, DIM), dtype=dtype)
+# value for KV head i
+for kv_head in range(H_KV):
+    kv[:, :, kv_head, :] = torch.rand(DIM, dtype=torch.float16)
 
-# # create indice
-# indices = torch.full((B, S, H_KV, topk), SKV, dtype=torch.int32)
-# for b in range(B):
-#     for t in range(S):
-#         for h in range(H_KV):
-#             i_i = torch.randperm(max(1, ((t + q_start_s_index) // KV_stride)))[:topk]
-#             indices[b, t, h, :len(i_i)] = i_i
+# create indice
+indices = torch.full((B, S, H_KV, topk), SKV, dtype=torch.int32)
+for b in range(B):
+    for t in range(S):
+        for h in range(H_KV):
+            i_i = torch.randperm(max(1, ((t + q_start_s_index) // KV_stride)))[:topk]
+            indices[b, t, h, :len(i_i)] = i_i
 
-# output = torch.empty((B, S, H_Q, DIM), dtype=dtype)
-# workspace_1 = torch.zeros((B*S*1*H_KV, 64, DIM), dtype=dtype)
-# workspace_2 = torch.zeros((B*S*1*H_KV, kv_group, 64), dtype=torch.float)
-# workspace_3 = torch.zeros((B*S*1*H_KV, kv_group, 64), dtype=dtype)
-# workspace_4 = torch.zeros((B*S*1*H_KV, kv_group, DIM), dtype=torch.float)
+output = torch.empty((B, S, H_Q, DIM), dtype=dtype)
+workspace_1 = torch.zeros((B*S*1*H_KV, 64, DIM), dtype=dtype)
+workspace_2 = torch.zeros((B*S*1*H_KV, kv_group, 64), dtype=torch.float)
+workspace_3 = torch.zeros((B*S*1*H_KV, kv_group, 64), dtype=dtype)
+workspace_4 = torch.zeros((B*S*1*H_KV, kv_group, DIM), dtype=torch.float)
 
-# torch.npu.synchronize()
+torch.npu.synchronize()
 
-# print("init successful!")
-# output = func(q, kv, indices, workspace_1, workspace_2, workspace_3, workspace_4)
-# torch.npu.synchronize()
-# ref_output = ref_sparse_attention_fwd_interface_gqa(q, kv, indices, q_start_s_index, KV_stride)
-# torch.npu.synchronize()
-# torch.testing.assert_close(ref_output, output, rtol=1e-2, atol=1e-2)
-# print("Test Passed!")
-
-kernel = tilelang.engine.lower(func, target="pto")
-print(kernel.kernel_source)
+print("init successful!")
+output = func(q, kv, indices, workspace_1, workspace_2, workspace_3, workspace_4)
+torch.npu.synchronize()
+ref_output = ref_sparse_attention_fwd_interface_gqa(q, kv, indices, q_start_s_index, KV_stride)
+torch.npu.synchronize()
+torch.testing.assert_close(ref_output, output, rtol=1e-2, atol=1e-2)
+print("Test Passed!")
