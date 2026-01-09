@@ -28,7 +28,7 @@ def fill(M, N, block_M, block_N, dtype="float"):
             by = cid % n_num
             a_ub = T.alloc_ub((block_M, block_N), dtype)
             with T.Scope("V"):
-                T.fill(a_ub, 10.0)
+                T.tile.fill(a_ub, 10.0)
                 T.barrier_all()
                 T.copy(a_ub, A[bx * block_M, by * block_N])
 

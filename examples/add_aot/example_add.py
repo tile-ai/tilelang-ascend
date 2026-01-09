@@ -36,7 +36,7 @@ def vec_add(M, N, block_M, block_N, dtype="float"):
                 T.copy(B[bx * block_M, by * block_N], b_ub)
 
                 T.barrier_all()
-                T.add(c_ub, a_ub, b_ub)
+                T.tile.add(c_ub, a_ub, b_ub)
                 T.barrier_all()
 
                 T.copy(c_ub, C[bx * block_M, by * block_N])

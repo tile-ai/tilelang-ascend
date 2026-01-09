@@ -15,7 +15,7 @@ M = args.m
 N = args.n
 
 @tilelang.jit(out_idx=-1, target="pto")
-def fill(M, N, block_M, block_N, dtype="float"):
+def exp(M, N, block_M, block_N, dtype="float"):
     m_num = M // block_M
     n_num = N // block_N
 
@@ -28,13 +28,13 @@ def fill(M, N, block_M, block_N, dtype="float"):
             by = cid % n_num
             a_ub = T.alloc_ub((block_M, block_N), dtype)
             with T.Scope("V"):
-                T.fill(a_ub, 10.0)
+                T.tile.exp(a_ub, 10.0)
                 T.barrier_all()
                 T.copy(a_ub, A[bx * block_M, by * block_N])
 
     return main
 
-func = fill(M, N, 64, 32)
+func = exp(M, N, 64, 32)
 
 torch.manual_seed(0)
 
