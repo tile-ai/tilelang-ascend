@@ -496,7 +496,7 @@ void CodeGenTileLangAscendPto::UnaryVecOpCodegen(const CallNode *op, const std::
   };
 
   std::vector<std::string> var_names;
-  for (int i = 0; i < op->args.size(); i++) {
+  for (int i = 0; i < op->args.size() - 1; i++) {
     auto var_name = print_tile(op->args[i].as<CallNode>());
     var_names.push_back(var_name);
   }

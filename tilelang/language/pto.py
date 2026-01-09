@@ -459,6 +459,7 @@ def unary_op(dst: Buffer, src0: Buffer, op: str):
         tir.op.Op.get(f"tl.ascend_{op}"), 
         dst.access_ptr("w"), 
         src0.access_ptr("r"),
+        size_0,
     )
 
 
