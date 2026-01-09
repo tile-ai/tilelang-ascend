@@ -964,6 +964,7 @@ void CodeGenTileLangNPUIRDEV::AscendCopyCodegen(const CallNode *op) {
     }
     return value;
   };
+  // Cast if src and dst type mismatch
   auto createCastIfTypeMismatch = [&](mlir::Value src_value, mlir::Value dst_value) -> mlir::Value {
     auto src_type = src_value.getType();
     auto dst_type = dst_value.getType();
