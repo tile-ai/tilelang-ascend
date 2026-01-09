@@ -78,7 +78,7 @@ def worker(rank, barrier):
         func = shmem_ub_put_nbi(M, N, nelems, newPe)
         b = func(a)
         barrier.wait()
-        # print("b after=", b)
+        print("b after=", b)
         if torch.equal(a, b):
             print("Kernel Output Match!")
         else:
