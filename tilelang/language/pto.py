@@ -454,11 +454,11 @@ def unary_op(dst: Buffer, src0: Buffer, op: str):
 
     assert size_0 == size_2, "size must be same"
 
-    return T.call_intrin(
+    return tir.call_intrin(
         "handle", 
         tir.op.Op.get(f"tl.ascend_{op}"), 
         dst.access_ptr("w"), 
-        src0.access_ptr("r")
+        src0.access_ptr("r"),
     )
 
 
@@ -493,14 +493,14 @@ def not_tl(dst: Buffer, src0: Buffer):
     return unary_op(dst, src0, "bitwise_not")
 
 def scalar_op(
-        dst: Buffer, src0: Buffer, scalar_value: PrimExpr, op_name: str
+        dst: Buffer, src0: Buffer, scalar_value: PrimExpr, op_tl: str
 ):
     size_0 = math.prod(src0.shape)
     size_2 = math.prod(dst.shape)
 
     assert size_0 == size_2, "size must be same"
 
-    return T.call_intrin(
+    return tir.call_intrin(
         "handle", 
         tir.op.Op.get(f"tl.ascend_{op_tl}"), 
         dst.access_ptr("w"), 
@@ -530,7 +530,7 @@ def reduce(out: Buffer, buffer: Buffer, tmp: Buffer, reduce_type: str, dim: int)
         f"{reduce_type}<{dtype}, {shape}, {dim}>", 
         out,
         buffer, 
-        tmp
+        tmp,
     )
 
 def reduce_max(out: Buffer, buffer: Buffer, tmp: Buffer, dim: int):
