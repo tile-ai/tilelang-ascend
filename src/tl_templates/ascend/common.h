@@ -266,7 +266,7 @@ CATLASS_DEVICE void shmem_put_nbi_new(const GlobalTensor<T> &output, const Globa
     __gm__ T* inputPtr = const_cast<__gm__ T*>(input.GetPhyAddr());
     __ubuf__ T* buf = reinterpret_cast<__ubuf__ T*>(ub_tensor.GetPhyAddr());
     // TODO:EVENT_ID0再确认下含义
-    aclshmemx_mte_put_mem_nbi(outputPtr, inputPtr, buf, ub_size, nelems, newPe, EVENT_ID0);                                                                                 
+    aclshmemx_mte_put_nbi(outputPtr, inputPtr, buf, ub_size, nelems, newPe, EVENT_ID0);                                                                                 
 }
 
 // template <typename T>
@@ -281,7 +281,7 @@ template <typename T>
 CATLASS_DEVICE void shmem_ub_put_nbi_new(const LocalTensor<T> &ubTensor, const GlobalTensor<T> &output, size_t nelems, int newPe) {
     if ASCEND_IS_AIC return;                                                                                    
     using ac_type = ReplaceVoidWithUint8<T>;
-    aclshmemx_mte_put_mem_nbi(const_cast<__gm__ ac_type*>(output.GetPhyAddr()),                                       
+    aclshmemx_mte_put_nbi(const_cast<__gm__ ac_type*>(output.GetPhyAddr()),                                       
         reinterpret_cast<__ubuf__ ac_type*>(ubTensor.GetPhyAddr()), nelems, newPe, EVENT_ID0);                                                                     
 }
 
@@ -328,7 +328,7 @@ CATLASS_DEVICE void shmem_get_nbi_new(const GlobalTensor<T> &output, const Globa
     __gm__ T* inputPtr = const_cast<__gm__ T*>(input.GetPhyAddr());
     __ubuf__ T* buf = reinterpret_cast<__ubuf__ T*>(ub_tensor.GetPhyAddr());
     // TODO:EVENT_ID0再确认下含义
-    aclshmemx_mte_get_mem_nbi(outputPtr, inputPtr, buf, ub_size, nelems, newPe, EVENT_ID0); 
+    aclshmemx_mte_get_nbi(outputPtr, inputPtr, buf, ub_size, nelems, newPe, EVENT_ID0); 
 }
 
 // template <typename T>
@@ -345,7 +345,7 @@ CATLASS_DEVICE void shmem_ub_get_nbi_new(const LocalTensor<T> &output, const Glo
                              size_t nelems, size_t newPe) {
     if ASCEND_IS_AIC return;
     using ac_type = ReplaceVoidWithUint8<T>;
-    aclshmemx_mte_get_mem_nbi(reinterpret_cast<__ubuf__ ac_type *>(output.GetPhyAddr()),
+    aclshmemx_mte_get_nbi(reinterpret_cast<__ubuf__ ac_type *>(output.GetPhyAddr()),
         const_cast<__gm__ ac_type *>(input.GetPhyAddr()), nelems, newPe, EVENT_ID0);
 }
 
