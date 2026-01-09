@@ -421,27 +421,29 @@ void CodeGenTileLangAscendPto::VisitExpr_(const FloorModNode *op,
 
 void CodeGenTileLangAscendPto::VisitExpr_(const BufferLoadNode *op,
                                        std::ostream &os) {
-  // std::string scope = GetPtrStorageScope(op->buffer->data);
-  // std::cout << "check buf load:" << op->buffer->data.get()->name_hint << "\n";
-  // if (scope == "wmma.matrix_a" || scope == "wmma.matrix_b" ||
-  //     scope == "wmma.accumulator" || scope == "shared.dyn" ||
-  //     scope == "shared") {
-  //   bool do_not_sup_get_from_tile = false;
-  //   ICHECK(do_not_sup_get_from_tile); // Currently not supported
-  // } else {
-  //   for (size_t i = 0; i < this->para_.size(); i += 3) {
-  //     std::cout << "check gm var:" << this->para_[i]
-  //     << this->para_[i + 1] << this->para_[i + 2] << "\n";
-  //     if (this->para_[i + 1] == op->buffer->data.get()->name_hint) {
-  //       os << "*(" << this->para_[i] << " + "
-  //                  << PrintExpr(op->indices.back()) << ")";
-  //       break;
-  //     }
-  //   }
-  // }
   auto var_name = var_idmap_[op->buffer->data.get()];
-  os << var_name << ".GetValue("
+  std::string scope = op->buffer.scope();
+  if (scope == "" || scope == "global") {
+    os << "*(" << var_name << "_handle + " << PrintExpr(op->indices.back()) << ")";
+  } else {
+    os << var_name << ".GetValue("
                 << PrintExpr(op->indices.back()) << ")";
+  }
+}
+
+void CodeGenTileLangAscendPto::VisitStmt_(const BufferStoreNode *op) {
+  auto var_name = var_idmap_[op->buffer->data.get()];
+  this->PrintIndent();
+  std::string scope = op->buffer.scope();
+
+  if (scope == "" || scope == "global") {
+    this->stream << "*(" << var_name << "_handle + "
+                 << PrintExpr(op->indices.back())
+                 << ") = " << PrintExpr(op->value) << ";\n";
+  } else {
+    this->stream << var_name << ".SetValue(" << PrintExpr(op->indices.back())
+                 << ", " << PrintExpr(op->value) << ");\n";
+  }
 }
 
 std::map<std::string, std::string> extractTemplateParams(const std::string& input) {
