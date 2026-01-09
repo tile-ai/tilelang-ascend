@@ -147,15 +147,15 @@ class FlashAttentionTemplate(BaseTemplate):
             dict: Dictionary containing template parameter values.
         """
         return {
-            "M": self.M,
-            "N": self.N,
-            "K": self.K,
-            "trans_A": self.trans_A,
-            "trans_B": self.trans_B,
+            "batch_size": self.batch_size,
+            "num_heads": self.num_heads,
+            "head_dim": self.head_dim,
+            "seq_length": self.seq_length,
+            "seq_kv_length": self.seq_kv_length,
+            "is_causal": self.is_causal,
             "in_dtype": self.in_dtype,
             "out_dtype": self.out_dtype,
             "accum_dtype": self.accum_dtype,
-            "with_bias": self.with_bias,
         }
 
     @property

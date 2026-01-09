@@ -2,6 +2,8 @@
 
 # ================= 配置区 =================
 MAX_JOBS=8  # 同时并行执行的任务数，建议根据 NPU 负载调整
+export TILELANG_AUTO_TUNING_CPU_COUNTS=4 # for autotuner
+export TILELANG_AUTO_TUNING_MAX_CPU_COUNT=4 # for autotuner
 # ==========================================
 
 echo "Starting parallel unified test execution (Live Output)..."
