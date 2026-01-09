@@ -14,7 +14,7 @@ tilelang.cache.clear_cache()
 parser = argparse.ArgumentParser(description="NPU Kernel Compilation")
 parser.add_argument("--m", type=int, default=1, help="Matrix M dimension")
 parser.add_argument("--n", type=int, default=352, help="Matrix N dimension")
-parser.add_argument("--num_processes", type=int, default=8, help="number of processes")
+parser.add_argument("--num_processes", type=int, default=2, help="number of processes")
 args = parser.parse_args()
 
 M = args.m
@@ -25,7 +25,7 @@ G_IP_PORT = "tcp://100.102.180.145:8666"
 
 num_processes = args.num_processes
 
-@tilelang.jit()
+@tilelang.jit(out_idx=[-1])
 def shmem_ub_put_nbi(M, N, nelems, newPe, dtype="int8"):
     @T.prim_func
     def main(
@@ -52,7 +52,7 @@ def worker(rank, barrier):
         raise ValueError("[ERROR] set_conf_store_tls failed")
     # 创建初始化属性对象
     attributes = aclshmem_module.InitAttr()
-    npu_num = 8
+    npu_num = 2
     attributes.my_rank = rank
     attributes.n_ranks = npu_num
     attributes.local_mem_size = g_ash_size
