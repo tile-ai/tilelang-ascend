@@ -50,6 +50,10 @@ public:
   void VisitStmt_(const AllocateNode *op) final;
   void VisitStmt_(const AttrStmtNode *op) final;
 
+  void UnaryVecOpCodegen(const CallNode *op, const std::string& op_name);
+  void ScalarOpCodegen(const CallNode *op, const std::string& op_name);
+  void ReduceOpCodegen(const CallNode *op);
+
   // Override this as a work around for __grid_constant__ parameter
   void AddFunction(const GlobalVar &gvar, const PrimFunc &f);
 

@@ -488,6 +488,91 @@ int GetValidShape(int shape, std::string& dtype) {
   return shape + (32 - shape_mod) / dtype_len;
 }
 
+void CodeGenTileLangAscendPto::UnaryVecOpCodegen(const CallNode *op, const std::string& op_name) {
+  auto print_tile = [&](const CallNode *op) -> std::string {
+    auto _var = op->args[1].as<VarNode>();
+    auto _var_name = var_idmap_[_var];
+    return _var_name;
+  };
+
+  std::vector<std::string> var_names;
+  for (int i = 0; i < op->args.size(); i++) {
+    auto var_name = print_tile(op->args[i].as<CallNode>());
+    var_names.push_back(var_name);
+  }
+  this->PrintIndent();
+  this->stream << op_name << "(";
+  for (int i = 0; i < var_names.size(); i++) {
+    this->stream << var_names[i];
+    if (i != var_names.size() - 1) {
+      this->stream << ", ";
+    }
+  }
+  this->stream << ");\n";
+}
+
+void CodeGenTileLangAscendPto::ScalarOpCodegen(const CallNode *op, const std::string& op_name) {
+  auto print_tile = [&](const CallNode *op) -> std::string {
+    auto _var = op->args[1].as<VarNode>();
+    auto _var_name = var_idmap_[_var];
+    return _var_name;
+  };
+
+    this->PrintIndent();
+    this->stream << op_name << "(" << print_tile(op->args[0].as<CallNode>()) << ", "
+                  << print_tile(op->args[1].as<CallNode>()) << ", "
+                  << PrintExpr(op->args[2]) << ");\n";
+}
+
+void CodeGenTileLangAscendPto::ReduceOpCodegen(const CallNode *op) {
+  std::string op_name = Downcast<StringImm>(op->args[0])->value;
+  if (op_name.find("reduce_sum") != std::string::npos) {
+    op_name = "TROWSUM";
+  } else if (op_name.find("reduce_max") != std::string::npos) {
+    op_name = "TROWMAX";
+  } else {
+    ICHECK(false) << "not support reduce type: " << op_name;
+  }
+
+  auto print_tile = [&](const CallNode *op) -> std::string {
+    auto _var = op->args[1].as<VarNode>();
+    auto _var_name = var_idmap_[_var];
+    return _var_name;
+  };
+
+  std::vector<std::string> var_names;
+  for (int i = 1; i < op->args.size(); i++) {
+    auto var_name = print_tile(op->args[i].as<CallNode>());
+    var_names.push_back(var_name);
+  }
+  std::string ub_name = var_names[0];
+  std::vector<std::string> ub_data_vector = ub_data_map_[ub_name];
+  std::string ub_data_type = ub_data_vector[0];
+  std::string row = ub_data_vector[2];
+  std::string col = ub_data_vector[1];
+  std::string ffts = ub_data_vector[3];
+  this->PrintIndent();
+  this->stream << "tl::pto::TileUbDataDN <" << ub_data_type << ", " << row << ", " << col << "> " << ub_name << "_DN(" << row << ", " << col << ");\n";
+  this->PrintIndent();
+  this->stream << "TASSIGN(" << ub_name << "_DN, " << ffts << ");\n";
+  this->PrintIndent();
+  this->stream << op_name << "(";
+  for (int i = 0; i < var_names.size(); i++) {
+    this->stream << var_names[i];
+    if (i == 0) {
+      this->stream << "_DN";
+    }
+    if (i != var_names.size() - 1) {
+      this->stream << ", ";
+    }
+  }
+  this->stream << ");\n";
+  this->PrintIndent();
+  this->stream << "pipe_barrier(PIPE_ALL);\n";
+  this->PrintIndent();
+  this->stream << "TRESHAPE(" << var_names[0] << ", " << var_names[0] << "_DN);\n";
+}
+
 void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) {
   auto print_tile = [&](const CallNode *op) -> std::string {
     auto _var = op->args[1].as<VarNode>();
@@ -771,58 +856,29 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) 
     this->PrintIndent();
     this->stream << "TEXPANDS" << "(" << print_tile(op->args[1].as<CallNode>()) << ", "
                << PrintExpr(op->args[2]) << ");\n";
+  } else if (op->op.same_as(tl::ascend_exp())) {
+    UnaryVecOpCodegen(op, "TEXP");
+  } else if (op->op.same_as(tl::ascend_ln())) {
+    UnaryVecOpCodegen(op, "TLOG");
+  } else if (op->op.same_as(tl::ascend_abs())) {
+    UnaryVecOpCodegen(op, "TABS");
+  } else if (op->op.same_as(tl::ascend_reciprocal())) {
+    UnaryVecOpCodegen(op, "TRECIP");
+  } else if (op->op.same_as(tl::ascend_sqrt())) {
+    UnaryVecOpCodegen(op, "TSQRT");
+  } else if (op->op.same_as(tl::ascend_rsqrt())) {
+    UnaryVecOpCodegen(op, "TRSQRT");
+  } else if (op->op.same_as(tl::ascend_relu())) {
+    UnaryVecOpCodegen(op, "TRELU");
+  } else if (op->op.same_as(tl::ascend_bitwise_not())) {
+    UnaryVecOpCodegen(op, "TNOT");
+  } else if (op->op.same_as(tl::ascend_leaky_relu())) {
+    ScalarOpCodegen(op, "TLRELU");
+  } else if (op->op.same_as(tl::ascend_axpy())) {
+    ICHECK(false) << "axpy not support in pto. use muls and add instead";
+    ScalarOpCodegen(op, "T");
   } else if (op->op.same_as(tl::ascend_reduce())) {
-     std::vector<std::string> var_names;
-      for (int i = 1; i < op->args.size(); i++) {
-        auto var_name = print_tile(op->args[i].as<CallNode>());
-        var_names.push_back(var_name);
-      }
-      std::string ub_name = var_names[0];
-      std::vector<std::string> ub_data_vector = ub_data_map_[ub_name];
-      std::string ub_data_type = ub_data_vector[0];
-      std::string row = ub_data_vector[2];
-      std::string col = ub_data_vector[1];
-      std::string ffts = ub_data_vector[3];
-      this->PrintIndent();
-      this->stream << "tl::pto::TileUbDataDN <" << ub_data_type << ", " << row << ", " << col << "> " << ub_name << "_DN(" << row << ", " << col << ");\n";
-      this->PrintIndent();
-      this->stream << "TASSIGN(" << ub_name << "_DN, " << ffts << ");\n";
-      this->PrintIndent();
-      this->stream << op->args[0].as<StringImmNode>()->value << "(";
-      for (int i = 0; i < var_names.size(); i++) {
-        this->stream << var_names[i];
-        if (i == 0) {
-          this->stream << "_DN";
-        }
-        if (i != var_names.size() - 1) {
-          this->stream << ", ";
-        }
-      }
-      this->stream << ");\n";
-      this->PrintIndent();
-      this->stream << "pipe_barrier(PIPE_ALL);\n";
-      this->PrintIndent();
-      this->stream << "TRESHAPE(" << var_names[0] << ", " << var_names[0] << "_DN);\n";
-  } else if (op->op.same_as(tl::ascend_scalar_op())) {
-    this->PrintIndent();
-    this->stream << op->args[0].as<StringImmNode>()->value << "(" << print_tile(op->args[1].as<CallNode>()) << ", "
-                  << print_tile(op->args[2].as<CallNode>()) << ", "
-                  << PrintExpr(op->args[3]) << ");\n";
-  } else if (op->op.same_as(tl::ascend_unary_op())) {
-      std::vector<std::string> var_names;
-      for (int i = 1; i < op->args.size(); i++) {
-        auto var_name = print_tile(op->args[i].as<CallNode>());
-        var_names.push_back(var_name);
-      }
-      this->PrintIndent();
-      this->stream << op->args[0].as<StringImmNode>()->value << "(";
-      for (int i = 0; i < var_names.size(); i++) {
-        this->stream << var_names[i];
-        if (i != var_names.size() - 1) {
-          this->stream << ", ";
-        }
-      }
-      this->stream << ");\n";
+    ReduceOpCodegen(op);
   } else if (op->op.same_as(tl::ascend_add())) {
     BinaryVecOpCodegen(op, "TADD");
   } else if (op->op.same_as(tl::ascend_sub())) {
