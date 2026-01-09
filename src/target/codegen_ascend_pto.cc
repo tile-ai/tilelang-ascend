@@ -903,6 +903,12 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) 
     BinaryVecOpsCodegen(op, "TMULS");
   } else if (op->op.same_as(tl::ascend_divs())) {
     BinaryVecOpsCodegen(op, "TDIVS");
+  } else if (op->op.same_as(tl::ascend_auto_barrier())) {
+    AutoBarrierCodegen(op);
+  } else if (op->op.same_as(tl::ascend_auto_set_flag())) {
+    AutoFlagOpCodegen(op, "set_flag");
+  } else if (op->op.same_as(tl::ascend_auto_wait_flag())) {
+    AutoFlagOpCodegen(op, "wait_flag");
   }
 }
 
@@ -1493,6 +1499,46 @@ void CodeGenTileLangAscendPto::AddFunction(const GlobalVar &gvar,
   PrintHostFunc(f, func_name, stream, this->core_num_, shape_vars);
   std::string content = stream.str();
 }
+
+
+
+void CodeGenTileLangAscendPto::AutoBarrierCodegen(const CallNode *op) {
+  this->PrintIndent();
+  std::string pipeline = "PIPE_ALL";
+  if (op->args.size() >= 1) {
+    if (auto pipeline_imm = op->args[0].as<StringImmNode>()) {
+      pipeline = pipeline_imm->value;
+    }
+  }
+  this->stream << "pipe_barrier(" << pipeline << ");\n";
+}
+
+void CodeGenTileLangAscendPto::AutoFlagOpCodegen(const CallNode *op,
+                                                 std::string op_name) {
+  this->PrintIndent();
+
+  std::string event_type;
+  if (auto pipeline_imm = op->args[0].as<StringImmNode>()) {
+      event_type = pipeline_imm->value;
+  } else {
+      LOG(FATAL) << "Expected StringImm for event_type";
+      return;
+  }
+
+  size_t pos = event_type.find('_');
+
+  if (pos == 0 || pos == event_type.length() - 1) {
+      LOG(FATAL) << "Invalid event_type format: " << event_type;
+      return;
+  }
+  std::string src = event_type.substr(0, pos);
+  std::string dst = event_type.substr(pos + 1);
+
+  auto event_id = PrintExpr(op->args[1]);
+  this->stream << op_name << "(PIPE_" << src << ", " << "PIPE_" <<
+      dst << ", " << "EVENT_ID" << event_id << ");\n";
+}
+
 
 } // namespace codegen
 } // namespace tvm
