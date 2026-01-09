@@ -31,6 +31,10 @@ class DefaultPolicy:
     def __init__(self, arch: TileDevice, tags: Optional[Dict] = None) -> None:
         if tags is None:
             tags = {}
+        
+        # Ensure arch is in tags for PrimFuncNode to access
+        if "arch" not in tags:
+            tags["arch"] = arch
 
         self.arch = arch
         self.tags = tags
@@ -53,7 +57,7 @@ class DefaultPolicy:
 
     def _init_with_prim_func(self,
                              func: tvm.tir.PrimFunc,
-                             name: str = "PrimFuncNode") -> "DefaultPolicy":
+                             name: str = "PrimFuncNode"):
         if func is not None and isinstance(func, tvm.tir.PrimFunc):
             self.func = func
             self.prim_func_node = PrimFuncNode(self.func, tags=self.tags, name=name)
