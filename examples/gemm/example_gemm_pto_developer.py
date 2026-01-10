@@ -21,7 +21,7 @@ pass_configs = {
     tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
     tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
 }
-@tilelang.jit(out_idx=[-1], target="pto")
+@tilelang.jit(out_idx=[-1], target="pto", pass_configs=pass_configs)
 def matmul(M, N, K, block_M, block_N, K_L1, dtype="float16", accum_dtype="float"):
     m_num = M // block_M
     n_num = N // block_N
