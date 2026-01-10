@@ -150,9 +150,10 @@ def sparse_attention_fwd(
 
             with T.Scope("V"):
 
-                T.fill(acc_o, 0.0)
-                T.fill(sumexp, 0.0)
-                T.fill(m_i, -2.0**30)
+                T.tile.fill(acc_o, 0.0)
+                T.tile.fill(sumexp, 0.0)
+                T.tile.fill(m_i, -2.0**30)
+
 
                 for i_i in range(NI):
                     T.copy(Indices[b_i, s_i, g_i, i_i * BI:i_i * BI + BI], indices_ub_)
@@ -163,7 +164,7 @@ def sparse_attention_fwd(
 
                     T.set_cross_flag("MTE3", 0)
 
-                    T.fill(acc_s_ub, 0.0)
+                    T.tile.fill(acc_s_ub, 0.0)
 
                     T.copy(m_i, m_i_prev)
 
@@ -172,31 +173,31 @@ def sparse_attention_fwd(
                         workspace_2[cid, vid * v_block:vid * v_block + v_block, :],
                         acc_s_ub_)
 
-                    T.add(acc_s_ub, acc_s_ub, acc_s_ub_)
+                    T.tile.add(acc_s_ub, acc_s_ub, acc_s_ub_)
 
-                    T.mul(acc_s_ub, acc_s_ub, sm_scale)
+                    T.tile.mul(acc_s_ub, acc_s_ub, sm_scale)
 
-                    T.reduce_max(m_i, acc_s_ub, tmp_ub, dim=-1)
+                    T.tile.reduce_max(m_i, acc_s_ub, tmp_ub, dim=-1)
 
-                    T.max(m_i, m_i, m_i_prev)
+                    T.tile.max(m_i, m_i, m_i_prev)
 
-                    T.sub(m_i_prev, m_i_prev, m_i)
+                    T.tile.sub(m_i_prev, m_i_prev, m_i)
 
-                    T.exp(m_i_prev, m_i_prev)
-
-                    for h_i in range(v_block):
-                        T.sub(acc_s_ub[h_i, :], acc_s_ub[h_i, :], m_i[h_i])  # -
-
-                    T.exp(acc_s_ub, acc_s_ub)
-
-                    T.reduce_sum(sumexp_i_ub, acc_s_ub, tmp_ub, dim=-1)
-
-                    T.mul(sumexp, sumexp, m_i_prev)  # check
-
-                    T.add(sumexp, sumexp, sumexp_i_ub)
+                    T.tile.exp(m_i_prev, m_i_prev)
 
                     for h_i in range(v_block):
-                        T.mul(acc_o[h_i, :], acc_o[h_i, :], m_i_prev[h_i])
+                        T.tile.sub(acc_s_ub[h_i, :], acc_s_ub[h_i, :], m_i[h_i])  # -
+
+                    T.tile.exp(acc_s_ub, acc_s_ub)
+
+                    T.tile.reduce_sum(sumexp_i_ub, acc_s_ub, tmp_ub, dim=-1)
+
+                    T.tile.mul(sumexp, sumexp, m_i_prev)  # check
+
+                    T.tile.add(sumexp, sumexp, sumexp_i_ub)
+
+                    for h_i in range(v_block):
+                        T.tile.mul(acc_o[h_i, :], acc_o[h_i, :], m_i_prev[h_i])
 
                     T.copy(acc_s_ub, acc_s_half)
 
@@ -212,12 +213,12 @@ def sparse_attention_fwd(
                         workspace_4[cid, vid * v_block:vid * v_block + v_block, :],
                         acc_o_ub)
 
-                    T.add(acc_o, acc_o, acc_o_ub)
+                    T.tile.add(acc_o, acc_o, acc_o_ub)
 
                     T.set_cross_flag("V", 4)
 
                 for h_i in range(v_block):
-                    T.div(acc_o[:, h_i], acc_o[:, h_i], sumexp[h_i])
+                    T.tile.div(acc_o[:, h_i], acc_o[:, h_i], sumexp[h_i])
 
                 T.copy(acc_o, acc_o_half)
                 T.copy(acc_o_half, Output[b_i, s_i, H0 + vid * v_block:H1 + vid * v_block, :])
@@ -329,6 +330,3 @@ ref_output = ref_sparse_attention_fwd_interface_gqa(q, kv, indices, q_start_s_in
 torch.npu.synchronize()
 torch.testing.assert_close(ref_output, output, rtol=1e-2, atol=1e-2)
 print("Test Passed!")
-
-# kernel = tilelang.engine.lower(func, target="pto")
-# print(kernel.kernel_source)

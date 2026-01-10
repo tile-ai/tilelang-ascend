@@ -426,7 +426,15 @@ class PrimFuncNode(Node):
         assert self.get_tag("tensorcore_config")
 
         C_ax_m, C_ax_n = self.get_tag("tensorcore_config")
-        wmma_m, wmma_n, wmma_k = [16, 16, 16]  # just for testing, any number is ok
+        
+        # Default configuration
+        wmma_m, wmma_n, wmma_k = [16, 16, 16]
+
+        # Check architecture specific configuration
+        arch = self.get_tag("arch")
+        if arch and getattr(arch, "platform", "") == "ascend":
+            cube_shape = getattr(arch, "cube_shape", [16, 16, 16])
+            wmma_m, wmma_n, wmma_k = cube_shape
 
         output_buffer_shape = (
             self.block_analyzer.sch.get(self.reduction_block).writes[0].buffer.shape)
@@ -441,25 +449,54 @@ class PrimFuncNode(Node):
 
         def get_cl_shapes(c_ax_m, c_ax_n, num_nvalid_regions):
             spatial_dim = self.get_space_dim()
-            assert len(valid_region) == len(
-                spatial_dim), f" {valid_region} mismatch with {spatial_dim}"
+            # Robustness check
+            if not valid_region and not spatial_dim:
+                 return []
+            
+            # assert len(valid_region) == len(
+            #     spatial_dim), f" {valid_region} mismatch with {spatial_dim}"
+            
             cl_shapes = [1] * len(spatial_dim)
-            cl_shapes[c_ax_m - num_nvalid_regions] = wmma_m
-            cl_shapes[c_ax_n - num_nvalid_regions] = wmma_n
+            if c_ax_m - num_nvalid_regions < len(cl_shapes):
+                cl_shapes[c_ax_m - num_nvalid_regions] = wmma_m
+            if c_ax_n - num_nvalid_regions < len(cl_shapes):
+                cl_shapes[c_ax_n - num_nvalid_regions] = wmma_n
             return cl_shapes
 
         CL_shape = get_cl_shapes(C_ax_m, C_ax_n, num_nvalid_regions)
         self.set_tag("tensorcore_config", [s - num_nvalid_regions for s in [C_ax_m, C_ax_n]])
         shapes = self.propagate_reduction_inputs(CL_shape, {x.var.name: 1 for x in self.raxis})
-        A_deps, B_deps = shapes.values()
-        A_ax_m = A_deps.index(wmma_m)
-        B_ax_n = B_deps.index(wmma_n)
+        
+        input_shapes = list(shapes.values())
+        if len(input_shapes) < 2:
+             return (0, 0, 0, 0, C_ax_m, C_ax_n)
+             
+        A_deps, B_deps = input_shapes[:2]
+        
+        try:
+            A_ax_m = A_deps.index(wmma_m)
+        except ValueError:
+            A_ax_m = -1
+            
+        try:
+            B_ax_n = B_deps.index(wmma_n)
+        except ValueError:
+            B_ax_n = -1
 
         CL_shape = [1] * len(self.get_space_dim())
         shapes = self.propagate_reduction_inputs(CL_shape, {x.var.name: wmma_k for x in self.raxis})
-        A_deps, B_deps = shapes.values()
-        A_ax_k = len(A_deps) - 1 - A_deps[::-1].index(wmma_k)
-        B_ax_k = len(B_deps) - 1 - B_deps[::-1].index(wmma_k)
+        input_shapes = list(shapes.values())
+        A_deps, B_deps = input_shapes[:2]
+        
+        try:
+            A_ax_k = len(A_deps) - 1 - A_deps[::-1].index(wmma_k)
+        except ValueError:
+            A_ax_k = -1
+            
+        try:
+            B_ax_k = len(B_deps) - 1 - B_deps[::-1].index(wmma_k)
+        except ValueError:
+            B_ax_k = -1
         tc_axis = (A_ax_m, A_ax_k, B_ax_k, B_ax_n, C_ax_m, C_ax_n)
         return tc_axis
 

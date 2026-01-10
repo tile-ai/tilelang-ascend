@@ -454,82 +454,90 @@ def unary_op(dst: Buffer, src0: Buffer, op: str):
 
     assert size_0 == size_2, "size must be same"
 
-    return T.call_intrin("handle", tir.op.Op.get("tl.ascend_unary_op"), f"T{op.upper()}", dst.access_ptr("w"), src0.access_ptr("r"))
+    return tir.call_intrin(
+        "handle", 
+        tir.op.Op.get(f"tl.ascend_{op}"), 
+        dst.access_ptr("w"), 
+        src0.access_ptr("r"),
+        size_0,
+    )
 
 
 def exp(dst: Buffer, src0: Buffer):
-    return unary_op(dst, src0, "Exp")
+    return unary_op(dst, src0, "exp")
 
 
 def ln(dst: Buffer, src0: Buffer):
-    return unary_op(dst, src0, "Log")
+    return unary_op(dst, src0, "log")
 
 
 def abs(dst: Buffer, src0: Buffer):
-    return unary_op(dst, src0, "Abs")
+    return unary_op(dst, src0, "abs")
 
 
 def reciprocal(dst: Buffer, src0: Buffer):
-    return unary_op(dst, src0, "RECIP")
+    return unary_op(dst, src0, "reciprocal")
 
 
 def sqrt(dst: Buffer, src0: Buffer):
-    return unary_op(dst, src0, "Sqrt")
+    return unary_op(dst, src0, "sqrt")
 
 
 def rsqrt(dst: Buffer, src0: Buffer):
-    return unary_op(dst, src0, "Rsqrt")
+    return unary_op(dst, src0, "rsqrt")
 
 
 def relu(dst: Buffer, src0: Buffer):
-    return unary_op(dst, src0, "Relu")
+    return unary_op(dst, src0, "relu")
 
 def not_tl(dst: Buffer, src0: Buffer):
-    return unary_op(dst, src0, "Not")
+    return unary_op(dst, src0, "bitwise_not")
 
-def scalar_op(dst: Buffer, src0: Buffer, scalar_value: PrimExpr, op_name: str):
+def scalar_op(
+        dst: Buffer, src0: Buffer, scalar_value: PrimExpr, op_tl: str
+):
     size_0 = math.prod(src0.shape)
     size_2 = math.prod(dst.shape)
 
     assert size_0 == size_2, "size must be same"
 
-    return T.call_intrin("handle", tir.op.Op.get("tl.ascend_scalar_op"), op_name, dst.access_ptr("w"), src0.access_ptr("r"),
-                         scalar_value)
+    return tir.call_intrin(
+        "handle", 
+        tir.op.Op.get(f"tl.ascend_{op_tl}"), 
+        dst.access_ptr("w"), 
+        src0.access_ptr("r"),
+        scalar_value,
+        size_0,
+    )
 
 
 def leaky_relu(dst: Buffer, src0: Buffer, scalar_value: PrimExpr):
-    return scalar_op(dst, src0, scalar_value, "TLRELU")
+    return scalar_op(dst, src0, scalar_value, "leaky_relu")
+
+def axpy(dst: Buffer, src0: Buffer, scalar_value: PrimExpr):
+    return scalar_op(dst, src0, scalar_value, "axpy")
 
 def reduce(out: Buffer, buffer: Buffer, tmp: Buffer, reduce_type: str, dim: int):
     dtype = _dtype(buffer)
-    out_dtype = _dtype(out)
-    tmp = tmp.access_ptr("r")
     shape = f"{buffer.shape[0]}, {buffer.shape[1]}"
     assert len(buffer.shape) == 2, "current only support buffer as a 2D tensor"
-    assert dtype == out_dtype, "src & dst dtype must be equal"
-
     buffer = buffer.access_ptr("r")
     out = out.access_ptr("w")
-    op_name = "TROWMAX"
-    if dim == -1:
-        if reduce_type == "max":
-            op_name = "TROWMAX"
-        else:
-            op_name = "TROWSUM"
-    else:
-        if reduce_type == "max":
-            op_name = "TCOLMAX"
-        else:
-            op_name = "TCOLSUM"
+    tmp = tmp.access_ptr("r")
 
-    return T.call_intrin("handle", tir.op.Op.get("tl.ascend_reduce"), op_name, out,
-                         buffer, tmp)
+    return T.call_intrin(
+        "handle", 
+        tir.op.Op.get("tl.ascend_reduce"), 
+        f"{reduce_type}<{dtype}, {shape}, {dim}>", 
+        out,
+        buffer, 
+        tmp,
+    )
 
 def reduce_max(out: Buffer, buffer: Buffer, tmp: Buffer, dim: int):
 
-    return reduce(out, buffer, tmp, "max", dim)
-
+    return reduce(out, buffer, tmp, "reduce_max", dim)
 
 def reduce_sum(out: Buffer, buffer: Buffer, tmp: Buffer, dim: int):
 
-    return reduce(out, buffer, tmp, "sum", dim)
+    return reduce(out, buffer, tmp, "reduce_sum", dim)

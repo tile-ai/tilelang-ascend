@@ -1561,7 +1561,8 @@ private:
   }
 
   int AllocateEventId() {
-    return event_id_counter_++;
+    event_id_counter_ = (event_id_counter_ + 1) % 8;
+    return event_id_counter_;
   }
 
   Stmt CreatePipeBarrier(const std::string &pipeline) {

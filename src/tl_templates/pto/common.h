@@ -48,6 +48,9 @@ AICORE PTO_INLINE void gemm_v0(
     TileRight<T1, K, N> l0b; // Zn
     TASSIGN(l0b, 0x0);
 
+    set_flag(PIPE_MTE2, PIPE_MTE1, EVENT_ID0);
+    wait_flag(PIPE_MTE2, PIPE_MTE1, EVENT_ID0);
+
     TEXTRACT(l0a, A, 0, 0);
     TEXTRACT(l0b, B, 0, 0);
 
@@ -76,6 +79,9 @@ AICORE PTO_INLINE void gemm_v0(
     TASSIGN(l0a, 0x0);
     TileRight<T1, K, N> l0b; // Zn
     TASSIGN(l0b, 0x0);
+
+    set_flag(PIPE_MTE2, PIPE_MTE1, EVENT_ID0);
+    wait_flag(PIPE_MTE2, PIPE_MTE1, EVENT_ID0);
 
     TileMatL1ZN<T1, K, N, validK, validN> B_t;
     TRESHAPE(B_t, B);
