@@ -636,7 +636,7 @@ void CodeGenTileLangAscendPto::CallExternCodegen(const CallNode *op) {
         ICHECK((copy_base_addr_map_.find(String(src_var_id)) != copy_base_addr_map_.end()));
         std::string tensor_addr = copy_base_addr_map_[String(src_var_id)];
         std::string tensor_template = "GlobalTensor<" + global_tensor_template[String(tensor_addr)].dtype + ", ";
-        std::string shape_template = "Shape<", stride_template = "Stride<";
+        std::string shape_template = "pto::Shape<", stride_template = "pto::Stride<";
         size_t len = global_tensor_template[String(tensor_addr)].shape_list.size();
         size_t shape_len = 2;
         size_t op_arg_len = op->args.size();
@@ -705,7 +705,7 @@ void CodeGenTileLangAscendPto::CallExternCodegen(const CallNode *op) {
         ICHECK((copy_base_addr_map_.find(String(dst_var_id)) != copy_base_addr_map_.end()));
         std::string tensor_addr = copy_base_addr_map_[String(dst_var_id)];
         std::string tensor_template = "GlobalTensor<" + global_tensor_template[String(tensor_addr)].dtype+ ", ";
-        std::string shape_template = "Shape<", stride_template = "Stride<";
+        std::string shape_template = "pto::Shape<", stride_template = "pto::Stride<";
         size_t len = global_tensor_template[String(tensor_addr)].shape_list.size();
         size_t op_arg_len = op->args.size();
         size_t shape_size = 5;
@@ -1331,7 +1331,7 @@ static void ProcessHostInput(std::ostream &os, std::vector<std::string> &arg_nam
 void CodeGenTileLangAscendPto::CallTilingInput(std::ostream &os, std::string func_name, std::vector<std::string> &tiling_args,
   std::vector<const tir::VarNode*> &shape_vars)
 {
-  
+
 }
 
 void CodeGenTileLangAscendPto::ProcessTilingInput(std::ostream &os, std::string func_name, std::vector<std::string> &tiling_args,
