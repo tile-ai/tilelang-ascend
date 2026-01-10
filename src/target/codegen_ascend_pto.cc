@@ -969,7 +969,7 @@ void CodeGenTileLangAscendPto::BinaryVecOpsCodegen(const CallNode *op,
   } else {
     this->PrintIndent();
     this->stream << operation << "(";
-    std::string scalar = PrintExpr(op->args[op->args.size() - 1]);
+    std::string scalar = PrintExpr(op->args[op->args.size() - 2]);
     var_names.push_back(operation == "TSUBS" ? ("-" + scalar):scalar);
     for (int i = 0; i < var_names.size(); i++) {
       this->stream << var_names[i];
