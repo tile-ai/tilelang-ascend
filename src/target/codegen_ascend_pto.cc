@@ -854,6 +854,17 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) 
     std::string flag = PrintExpr(op->args[0]);
     this->PrintIndent();
     this->stream << "wait_flag_dev" << "(" << flag << ");\n";
+  }else if (op->op.same_as(tl::ascend_auto_set_cross_flag())) {
+    auto mode = op->args[0].as<IntImmNode>()->value;
+    auto pipe = op->args[1].as<StringImmNode>()->value;
+    auto flag = op->args[2].as<IntImmNode>()->value;
+    int config = 1 | (mode << 4) | (flag << 8);
+    this->PrintIndent();
+    this->stream << "ffts_cross_core_sync" << "(" << "PIPE_" << pipe << ", " << config << ");\n";
+  } else if (op->op.same_as(tl::ascend_auto_wait_cross_flag())) {
+    std::string flag = PrintExpr(op->args[0]);
+    this->PrintIndent();
+    this->stream << "wait_flag_dev" << "(" << flag << ");\n";
   } else if (op->op.same_as(tl::ascend_fill())) {
     this->PrintIndent();
     this->stream << "TEXPANDS" << "(" << print_tile(op->args[1].as<CallNode>()) << ", "
