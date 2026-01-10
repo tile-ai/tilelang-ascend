@@ -213,8 +213,6 @@ func = sparse_attention_fwd(
     kv_group=4,
 )
 
-print(func.get_kernel_source())
-
 def ref_sparse_attention_fwd_interface_gqa(q,
                                            kv,
                                            indices,
