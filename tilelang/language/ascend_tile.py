@@ -488,3 +488,17 @@ def cos(dst: Buffer, src: Buffer, tmp: Buffer):
     return T.call_extern("handle", f"AscendC::Cos", dst.access_ptr("w"), src.access_ptr("r"),
                          tmp.access_ptr("r"), size_0)
 
+def clampMax(out: Buffer, buffer: Buffer, tmp: Buffer, scalar_value: PrimExpr, count: PrimExpr):
+
+    return T.call_extern("handle", f"AscendC::ClampMax<{_dtype(buffer)}>", out.access_ptr("w"), buffer.access_ptr("r"),
+                         tmp.access_ptr("r"), scalar_value, count)
+
+def clampMin(out: Buffer, buffer: Buffer, tmp: Buffer, scalar_value: PrimExpr, count: PrimExpr):
+
+    return T.call_extern("handle", f"AscendC::ClampMin<{_dtype(buffer)}>", out.access_ptr("w"), buffer.access_ptr("r"),
+                         tmp.access_ptr("r"), scalar_value, count)
+
+def round(out: Buffer, buffer: Buffer, tmp: Buffer, count: PrimExpr):
+
+    return T.call_extern("handle", f"AscendC::Round", out.access_ptr("w"), buffer.access_ptr("r"),
+                         tmp.access_ptr("r"), count)
