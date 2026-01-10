@@ -76,6 +76,22 @@ private:
 
   void BinaryVecOpsCodegen(const CallNode* op, const std::string& op_name);
 
+  void CallExternCodegen(const CallNode *op);
+
+  void GemmV0Codegen(const CallNode *op);
+
+  void PipeBarrierCodegen(const CallNode *op);
+
+  void SetAndWaitFlagCodegen(const CallNode *op, const std::string &op_name);
+
+  void SetCrossFlagCodegen(const CallNode *op);
+
+  void AutoSetCrossFlagCodegen(const CallNode *op);
+
+  void WaitCrossFlagCodegen(const CallNode *op);
+
+  void FillCodegen(const CallNode *op);
+
   std::string PrintBufferOffset(const CallNode *op);
 
   // Whether global barrier is needed.
