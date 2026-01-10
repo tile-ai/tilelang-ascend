@@ -11,6 +11,8 @@ tilelang.disable_cache()
 pass_configs = {
     tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
     tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_SYNC: True,
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
 }
 
 @tilelang.jit(out_idx=[3], target="pto", pass_configs=pass_configs)
@@ -106,7 +108,6 @@ def sparse_attention_fwd(
             acc_o_ub = T.alloc_ub([v_block, D], accum_dtype)
             acc_o_half = T.alloc_ub([v_block, D], dtype)
 
-
             b_i = by
             g_i = bz
 
@@ -125,106 +126,80 @@ def sparse_attention_fwd(
                 H0 = group_start + block_idx_in_group * H_per_block
                 H1 = T.if_then_else(H0 + H_per_block > group_end, group_end, H0 + H_per_block)
 
-            with T.Scope("C"):
-                T.copy(Q[b_i, s_i, H0:H1, :D], q_l1)
-                for _ in T.serial(NI):
-                    T.wait_cross_flag(0)
-                    T.copy(workspace_1[cid, 0:BI, 0:D], kv_l1)
+            T.copy(Q[b_i, s_i, H0:H1, :D], q_l1)
+            T.tile.fill(acc_o, 0.0)
+            T.tile.fill(sumexp, 0.0)
+            T.tile.fill(m_i, -2.0**30)
+            for i_i in T.serial(NI):
+                T.copy(workspace_1[cid, 0:BI, 0:D], kv_l1)
 
-                    T.gemm_v0(q_l1, kv_l1, acc_s_l0c, transpose_B=True, init=True)
+                T.gemm_v0(q_l1, kv_l1, acc_s_l0c, transpose_B=True, init=True)
 
-                    T.copy(acc_s_l0c, workspace_2[cid, 0:heads_per_group, 0:BI])
-                    T.set_cross_flag("FIX", 1)
+                T.copy(acc_s_l0c, workspace_2[cid, 0:heads_per_group, 0:BI])
 
-                    T.wait_cross_flag(2)
+                T.copy(workspace_3[cid, 0:H_per_block, 0:BI], acc_s_l1)
 
-                    T.copy(workspace_3[cid, 0:H_per_block, 0:BI], acc_s_l1)
+                T.gemm_v0(acc_s_l1, kv_l1, acc_o_l0c, init=True)
 
-                    T.gemm_v0(acc_s_l1, kv_l1, acc_o_l0c, init=True)
+                T.copy(acc_o_l0c, workspace_4[cid, 0:H_per_block, 0:D])
 
-                    T.copy(acc_o_l0c, workspace_4[cid, 0:H_per_block, 0:D])
+                T.copy(Indices[b_i, s_i, g_i, i_i * BI:i_i * BI + BI], indices_ub_)
 
-                    T.set_cross_flag("FIX", 3)
-                    T.wait_cross_flag(4)
-                T.wait_cross_flag(8)
+                for bi_i in range(BI // 2):
+                    T.copy(KV[b_i, indices_ub_[bi_i + vid * BI // 2], g_i, :D], kv_ub)
+                    T.copy(kv_ub, workspace_1[cid, bi_i + vid * BI // 2, :])
 
-            with T.Scope("V"):
+                T.tile.fill(acc_s_ub, 0.0)
 
-                T.tile.fill(acc_o, 0.0)
-                T.tile.fill(sumexp, 0.0)
-                T.tile.fill(m_i, -2.0**30)
+                T.copy(m_i, m_i_prev)
 
+                T.copy(
+                    workspace_2[cid, vid * v_block:vid * v_block + v_block, :],
+                    acc_s_ub_)
 
-                for i_i in range(NI):
-                    T.copy(Indices[b_i, s_i, g_i, i_i * BI:i_i * BI + BI], indices_ub_)
+                T.tile.add(acc_s_ub, acc_s_ub, acc_s_ub_)
 
-                    for bi_i in range(BI // 2):
-                        T.copy(KV[b_i, indices_ub_[bi_i + vid * BI // 2], g_i, :D], kv_ub)
-                        T.copy(kv_ub, workspace_1[cid, bi_i + vid * BI // 2, :])
+                T.tile.mul(acc_s_ub, acc_s_ub, sm_scale)
 
-                    T.set_cross_flag("MTE3", 0)
+                T.tile.reduce_max(m_i, acc_s_ub, tmp_ub, dim=-1)
 
-                    T.tile.fill(acc_s_ub, 0.0)
+                T.tile.max(m_i, m_i, m_i_prev)
 
-                    T.copy(m_i, m_i_prev)
+                T.tile.sub(m_i_prev, m_i_prev, m_i)
 
-                    T.wait_cross_flag(1)
-                    T.copy(
-                        workspace_2[cid, vid * v_block:vid * v_block + v_block, :],
-                        acc_s_ub_)
-
-                    T.tile.add(acc_s_ub, acc_s_ub, acc_s_ub_)
-
-                    T.tile.mul(acc_s_ub, acc_s_ub, sm_scale)
-
-                    T.tile.reduce_max(m_i, acc_s_ub, tmp_ub, dim=-1)
-
-                    T.tile.max(m_i, m_i, m_i_prev)
-
-                    T.tile.sub(m_i_prev, m_i_prev, m_i)
-
-                    T.tile.exp(m_i_prev, m_i_prev)
-
-                    for h_i in range(v_block):
-                        T.tile.sub(acc_s_ub[h_i, :], acc_s_ub[h_i, :], m_i[h_i])  # -
-
-                    T.tile.exp(acc_s_ub, acc_s_ub)
-
-                    T.tile.reduce_sum(sumexp_i_ub, acc_s_ub, tmp_ub, dim=-1)
-
-                    T.tile.mul(sumexp, sumexp, m_i_prev)  # check
-
-                    T.tile.add(sumexp, sumexp, sumexp_i_ub)
-
-                    for h_i in range(v_block):
-                        T.tile.mul(acc_o[h_i, :], acc_o[h_i, :], m_i_prev[h_i])
-
-                    T.copy(acc_s_ub, acc_s_half)
-
-                    T.copy(
-                        acc_s_half, workspace_3[cid,
-                                                vid * v_block:vid * v_block + v_block, :])
-
-                    T.set_cross_flag("MTE3", 2)
-
-                    T.wait_cross_flag(3)
-
-                    T.copy(
-                        workspace_4[cid, vid * v_block:vid * v_block + v_block, :],
-                        acc_o_ub)
-
-                    T.tile.add(acc_o, acc_o, acc_o_ub)
-
-                    T.set_cross_flag("V", 4)
+                T.tile.exp(m_i_prev, m_i_prev)
 
                 for h_i in range(v_block):
-                    T.tile.div(acc_o[:, h_i], acc_o[:, h_i], sumexp[h_i])
+                    T.tile.sub(acc_s_ub[h_i, :], acc_s_ub[h_i, :], m_i[h_i])  # -
 
-                T.copy(acc_o, acc_o_half)
-                T.copy(acc_o_half, Output[b_i, s_i, H0 + vid * v_block:H1 + vid * v_block, :])
+                T.tile.exp(acc_s_ub, acc_s_ub)
 
+                T.tile.reduce_sum(sumexp_i_ub, acc_s_ub, tmp_ub, dim=-1)
 
-                T.set_cross_flag("MTE3", 8)
+                T.tile.mul(sumexp, sumexp, m_i_prev)  # check
+
+                T.tile.add(sumexp, sumexp, sumexp_i_ub)
+
+                for h_i in range(v_block):
+                    T.tile.mul(acc_o[h_i, :], acc_o[h_i, :], m_i_prev[h_i])
+
+                T.copy(acc_s_ub, acc_s_half)
+
+                T.copy(
+                    acc_s_half, workspace_3[cid,
+                                            vid * v_block:vid * v_block + v_block, :])
+
+                T.copy(
+                    workspace_4[cid, vid * v_block:vid * v_block + v_block, :],
+                    acc_o_ub)
+
+                T.tile.add(acc_o, acc_o, acc_o_ub)
+
+            for h_i in range(v_block):
+                T.tile.div(acc_o[:, h_i], acc_o[:, h_i], sumexp[h_i])
+
+            T.copy(acc_o, acc_o_half)
+            T.copy(acc_o_half, Output[b_i, s_i, H0 + vid * v_block:H1 + vid * v_block, :])
 
     return main
 
@@ -238,6 +213,7 @@ func = sparse_attention_fwd(
     kv_group=4,
 )
 
+print(func.get_kernel_source())
 
 def ref_sparse_attention_fwd_interface_gqa(q,
                                            kv,
