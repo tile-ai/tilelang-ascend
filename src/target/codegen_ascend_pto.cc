@@ -498,7 +498,7 @@ void CodeGenTileLangAscendPto::UnaryVecOpCodegen(const CallNode *op, const std::
   };
 
   std::vector<std::string> var_names;
-  for (int i = 0; i < op->args.size(); i++) {
+  for (int i = 0; i < op->args.size() - 1; i++) {
     auto var_name = print_tile(op->args[i].as<CallNode>());
     var_names.push_back(var_name);
   }
@@ -977,7 +977,7 @@ void CodeGenTileLangAscendPto::BinaryVecOpsCodegen(const CallNode *op,
   } else {
     this->PrintIndent();
     this->stream << operation << "(";
-    std::string scalar = PrintExpr(op->args[op->args.size() - 1]);
+    std::string scalar = PrintExpr(op->args[op->args.size() - 2]);
     var_names.push_back(operation == "TSUBS" ? ("-" + scalar):scalar);
     for (int i = 0; i < var_names.size(); i++) {
       this->stream << var_names[i];

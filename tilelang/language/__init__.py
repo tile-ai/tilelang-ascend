@@ -79,7 +79,6 @@ from .memscope import *  # noqa: F401
 from .ascend import *
 from . import ascend_tile as tile
 
-
 def symbolic(name: str, dtype: str = "int32"):
     return tir.Var(name, dtype)
 
