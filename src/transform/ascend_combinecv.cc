@@ -450,6 +450,22 @@ public:
         return Evaluate(0);
     }
 
+    Stmt VisitStmt_(const BufferStoreNode *op) final {
+      auto buf_scope = op->buffer.scope();
+      if (is_aiv_) {
+        if (buf_scope == "shared") {
+          return StmtMutator::VisitStmt_(op);
+        } else {
+          return Evaluate(0);
+        }
+      } else {
+        if (buf_scope == "shared") {
+          return Evaluate(0);
+        } else {
+          return StmtMutator::VisitStmt_(op);
+        }
+      }
+    }
 
 
 private:
