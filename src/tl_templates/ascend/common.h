@@ -282,19 +282,22 @@ gemm_v0(LocalTensor<T1> const &A, LocalTensor<T1> const &B,
   bool initflag = false;
 
   // Defensive Programming: Ensure all previous operations are complete
-  SetFlag<HardEvent::MTE2_MTE1>(L0AB_EVENT);
-  WaitFlag<HardEvent::MTE2_MTE1>(L0AB_EVENT);
-  SetFlag<HardEvent::FIX_M>(L0AB_EVENT);
-  WaitFlag<HardEvent::FIX_M>(L0AB_EVENT);
+  // SetFlag<HardEvent::MTE2_MTE1>(L0AB_EVENT);
+  // WaitFlag<HardEvent::MTE2_MTE1>(L0AB_EVENT);
+  // SetFlag<HardEvent::FIX_M>(L0AB_EVENT);
+  // WaitFlag<HardEvent::FIX_M>(L0AB_EVENT);
+  AscendC::PipeBarrier<PIPE_ALL>();
 
-  SetFlag<HardEvent::M_MTE1>(L0AB_EVENT);
-  SetFlag<HardEvent::M_MTE1>(L0AB_EVENT + 1);
+  // SetFlag<HardEvent::M_MTE1>(L0AB_EVENT);
+  // SetFlag<HardEvent::M_MTE1>(L0AB_EVENT + 1);
+  AscendC::PipeBarrier<PIPE_ALL>();
   for (uint32_t kL0Idx = 0; kL0Idx < kL0split; kL0Idx++) {
     initflag = (clear && (kL0Idx == 0));
     if (kL0Idx == kL0split - 1) {
         kL0Size = kL0Tail;
     }
-    WaitFlag<HardEvent::M_MTE1>(L0AB_EVENT + kL0Idx % 2);
+    // WaitFlag<HardEvent::M_MTE1>(L0AB_EVENT + kL0Idx % 2);
+    AscendC::PipeBarrier<PIPE_ALL>();
     if constexpr (!transpose_A) {
       tl::ascend::copy_l1_to_l0a<T1, layout::zN, M, K>(
         l0a[(kL0Idx % 2) * (M * kL0Size)], A[kL0Idx * M * kL0Size], M, kL0Size);
@@ -309,20 +312,26 @@ gemm_v0(LocalTensor<T1> const &A, LocalTensor<T1> const &B,
       tl::ascend::copy_l1_to_l0b<T1, layout::nZ, K, N>(
         l0b[(kL0Idx % 2) * (N * kL0Size)], B[kL0Idx * N * kL0Size], kL0Size, N);
     }
-    SetFlag<HardEvent::MTE1_M>(L0AB_EVENT + kL0Idx % 2);
-    WaitFlag<HardEvent::MTE1_M>(L0AB_EVENT + kL0Idx % 2);
+    AscendC::PipeBarrier<PIPE_ALL>();
+    // SetFlag<HardEvent::MTE1_M>(L0AB_EVENT + kL0Idx % 2);
+    // WaitFlag<HardEvent::MTE1_M>(L0AB_EVENT + kL0Idx % 2);
+    AscendC::PipeBarrier<PIPE_ALL>();
     tl::ascend::mma<T1, T2, M, N>(
       l0a[(kL0Idx % 2) * (M * kL0Size)], l0b[(kL0Idx % 2) * (N * kL0Size)], C, initflag, kL0Size);
-    SetFlag<HardEvent::M_MTE1>(L0AB_EVENT + kL0Idx % 2);
+    // SetFlag<HardEvent::M_MTE1>(L0AB_EVENT + kL0Idx % 2);
+    AscendC::PipeBarrier<PIPE_ALL>();
   }
-  WaitFlag<HardEvent::M_MTE1>(L0AB_EVENT);
-  WaitFlag<HardEvent::M_MTE1>(L0AB_EVENT + 1);
+  AscendC::PipeBarrier<PIPE_ALL>();
+  // WaitFlag<HardEvent::M_MTE1>(L0AB_EVENT);
+  // WaitFlag<HardEvent::M_MTE1>(L0AB_EVENT + 1);
+  AscendC::PipeBarrier<PIPE_ALL>();
   
   // Defensive Programming: Reverse Sync
-  SetFlag<HardEvent::MTE1_MTE2>(L0AB_EVENT);
-  WaitFlag<HardEvent::MTE1_MTE2>(L0AB_EVENT);
-  SetFlag<HardEvent::M_FIX>(L0AB_EVENT);
-  WaitFlag<HardEvent::M_FIX>(L0AB_EVENT);
+  // SetFlag<HardEvent::MTE1_MTE2>(L0AB_EVENT);
+  // WaitFlag<HardEvent::MTE1_MTE2>(L0AB_EVENT);
+  // SetFlag<HardEvent::M_FIX>(L0AB_EVENT);
+  // WaitFlag<HardEvent::M_FIX>(L0AB_EVENT);
+  AscendC::PipeBarrier<PIPE_ALL>();
 }
 
 template <typename T>
