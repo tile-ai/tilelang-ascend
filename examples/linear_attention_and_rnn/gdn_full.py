@@ -6,19 +6,8 @@ from gdn.gdn_chunk_cumsum import chunk_cumsum, ref_chunk_cumsum
 from gdn.gdn_chunk_h import chunk_h, ref_chunk_h
 from gdn.gdn_chunk_o import chunk_o, ref_chunk_o
 from gdn.gdn_chunk_scaled_dot_kkt import kkt, ref_kkt
+from gdn.gdn_solve_tril import solve_tril, ref_solve_tril
 from gdn.gdn_wy_fast import wy_fast, ref_wy_fast
-
-def solve_tri(a):
-	B, H, L, C = a.shape
-	chunk_num = (L + C - 1) // C
-	I = torch.eye(C).npu().to(torch.float).view(1, 1, C, C)
-	o = torch.zeros((B, H, L, C)).npu().to(torch.float)
-	a = a.float()
-	for i in range(chunk_num):
-		a_c = a[:, :, i * C : (i + 1) * C, :]
-		o_c = torch.linalg.solve_triangular(a_c + I, I, upper = False, left = True)
-		o[:, :, i * C : (i + 1) * C, :] = o_c
-	return o.to(torch.float16)
 
 def ref_seq_gdn(q, k, v, g, beta):
 	g = torch.exp(g)
@@ -49,7 +38,7 @@ def ref_seq_gdn(q, k, v, g, beta):
 def ref_chunk_gdn(q, k, v, g, beta, C):
 	g = ref_chunk_cumsum(g, C)
 	a = ref_kkt(k, beta, g, C)
-	a = solve_tri(a)
+	a = ref_solve_tril(a)
 	w, u = ref_wy_fast(k, v, beta, g, a, C)
 	s, nv, fs = ref_chunk_h(k, w, u, g, C)
 	o = ref_chunk_o(q, k, nv, s, g, C)
@@ -58,7 +47,7 @@ def ref_chunk_gdn(q, k, v, g, beta, C):
 def kernel_chunk_gdn(q, k, v, g, beta, C, BK, BV):
 	g = chunk_cumsum(g, C)
 	a = kkt(k, beta, g, C, BK)
-	a = solve_tri(a)
+	a = solve_tril(a)
 	w, u = wy_fast(k, v, beta, g, a, C, BK, BV)
 	s, nv, fs = chunk_h(k, w, u, g, C, BK, BV)
 	o = chunk_o(q, k, nv, s, g, C, BK, BV)

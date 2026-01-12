@@ -127,7 +127,7 @@ void CodeGenTileLangAscend::PrintType(DataType t,
     case 16:
       enable_fp16_ = true;
       if (t.is_scalar()) {
-        os << "half_t";
+        os << "half";
       } else if (lanes <= 8) {
         // Emit CUDA code to access fp16 vector elements.
         //
@@ -1149,6 +1149,32 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
         this->stream << PrintExpr(op->args[i]);
       }
       this->stream << "});\n";
+    } else if (op_name == "ReinterpretCast") {
+      std::vector<std::string> var_names;
+      for (int i = 1; i < 3; i++) {
+        auto var_name = print_buffer_offset(op->args[i].as<CallNode>(), false);
+        var_names.push_back(var_name);
+      }
+      this->PrintIndent();
+      this->stream << "AscendC::LocalTensor" << "<" << Downcast<StringImm>(op->args[3])->value
+                  << "> " << var_names[0] << " = " << var_names[1] << "."
+                  << op_name << "<" << Downcast<StringImm>(op->args[3])->value << ">" << "();\n";
+    } else if (op_name.find("Clamp") != std::string::npos) {
+      this->PrintIndent();
+      auto var_name_1 = print_buffer_offset(op->args[1].as<CallNode>());
+      auto var_name_2 = print_buffer_offset(op->args[2].as<CallNode>());
+      auto var_name_3 = print_buffer_offset(op->args[3].as<CallNode>());
+
+      this->stream << op_name << "(" << var_name_1 << ", " << var_name_2 << ", " << var_name_3 << ", "
+                   << PrintExpr(op->args[4]) << ", " << PrintExpr(op->args[5]) << ");\n";
+    } else if (op_name.find("Round") != std::string::npos) {
+      this->PrintIndent();
+      auto var_name_1 = print_buffer_offset(op->args[1].as<CallNode>());
+      auto var_name_2 = print_buffer_offset(op->args[2].as<CallNode>());
+      auto var_name_3 = print_buffer_offset(op->args[3].as<CallNode>());
+
+      this->stream << op_name << "(" << var_name_1 << ", " << var_name_2 << ", " << var_name_3 << ", "
+                   << PrintExpr(op->args[4]) << ");\n";
     }
 
     if (op_name == "AscendC::AutoBarrier") {
@@ -1391,7 +1417,7 @@ inline void PrintConst(const FloatImmNode *op, std::ostream &os,
     break;
   }
   case 16: {
-    os << "half_t" << '(';
+    os << "half" << '(';
     FloatImm const_f32 = FloatImm(DataType::Float(32), op->value);
     PrintConst(const_f32.get(), os, p);
     os << ')';
