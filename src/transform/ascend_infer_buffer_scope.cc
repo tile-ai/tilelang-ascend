@@ -208,6 +208,18 @@ private:
             std::string second_name = second_buf_handle->name_hint;
             ascend_copy_buffer_pairs_.emplace_back(first_buf_handle, second_buf_handle);
           }
+
+          if (first_buf_handle) {
+            BufferUseInfo& info = buffer_use_info[first_buf_handle];
+            info.func_names.insert("tl.ascend_copy");
+            info.call_sites.push_back(op);
+          }
+          
+          if (second_buf_handle) {
+            BufferUseInfo& info = buffer_use_info[second_buf_handle];
+            info.func_names.insert("tl.ascend_copy");
+            info.call_sites.push_back(op);
+          }
         }
       }
 
@@ -342,7 +354,20 @@ private:
         }
       } else if (original_scope == "shared.dyn") {
         if (use_info) {
-          if (use_info->used_in_vector && !use_info->used_in_cube) {
+          bool only_in_ascend_copy = false;
+          if (!use_info->used_in_cube && !use_info->used_in_vector) {
+              only_in_ascend_copy = true;
+              for (const auto& func_name : use_info->func_names) {
+                  if (func_name != "tl.ascend_copy") {
+                      only_in_ascend_copy = false;
+                      break;
+                  }
+              }
+          }
+          
+          if (only_in_ascend_copy) {
+              corrected_scope = "shared";
+          } else if (use_info->used_in_vector && !use_info->used_in_cube) {
             corrected_scope = "shared";
           } else if (use_info->used_in_cube && !use_info->used_in_vector) {
             corrected_scope = "shared.dyn";
@@ -359,7 +384,7 @@ private:
           corrected_scope = original_scope;
         }
       }
-      
+      alloc_info->corrected_scope = corrected_scope;
       if (corrected_scope != original_scope) {
         alloc_info->corrected_scope = corrected_scope;
         
