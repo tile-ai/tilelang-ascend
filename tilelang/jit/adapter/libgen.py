@@ -49,6 +49,7 @@ class LibraryGenerator(object):
             f"-I{TL_ROOT}/3rdparty/catlass/include",
             f"-I{TL_ROOT}/3rdparty/shmem/include",
             f"-I{TL_ROOT}/3rdparty/shmem/src/device",
+            f"-DBACKEND_HYBM",
             "-I" + TILELANG_TEMPLATE_PATH,
             f"-L{ASCEND_HOME_PATH}/lib64",
             "-Wno-macro-redefined",
