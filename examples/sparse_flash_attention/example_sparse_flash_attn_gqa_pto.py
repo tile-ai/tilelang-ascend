@@ -7,12 +7,13 @@ torch.manual_seed(42)
 
 tilelang.disable_cache()
 
-@tilelang.jit(out_idx=[3], target="pto")
+@tilelang.jit(out_idx=[3], workspace_idx=[4, 5, 6, 7], target="pto")
 def sparse_attention_fwd(
     heads,
     dim,
     tail_dim,
     topk,
+    workspace_block_num,
     kv_stride,
     kv_group=8,
     sm_scale=None,
@@ -51,7 +52,6 @@ def sparse_attention_fwd(
     batch = T.symbolic("batch")
     seq_len = T.symbolic("seq_len")
     seq_len_kv = T.symbolic("seq_len_kv")
-    workspace_block_num = T.symbolic("workspace_block_num")
     q_shape = [batch, seq_len, heads, dim + tail_dim]
     kv_shape = [batch, seq_len_kv, kv_group, dim + tail_dim]
     o_shape = [batch, seq_len, heads, dim]
@@ -268,15 +268,6 @@ def sparse_attention_fwd(
     return main
 
 
-func = sparse_attention_fwd(
-    heads=64,
-    dim=128,
-    tail_dim=0,
-    topk=2048,
-    kv_stride=1,
-    kv_group=4,
-)
-
 
 def ref_sparse_attention_fwd_interface_gqa(q,
                                            kv,
@@ -354,16 +345,26 @@ for b in range(B):
             i_i = torch.randperm(max(1, ((t + q_start_s_index) // KV_stride)))[:topk]
             indices[b, t, h, :len(i_i)] = i_i
 
-output = torch.empty((B, S, H_Q, DIM), dtype=dtype)
-workspace_1 = torch.zeros((B*S*1*H_KV, 64, DIM), dtype=dtype)
-workspace_2 = torch.zeros((B*S*1*H_KV, kv_group, 64), dtype=torch.float)
-workspace_3 = torch.zeros((B*S*1*H_KV, kv_group, 64), dtype=dtype)
-workspace_4 = torch.zeros((B*S*1*H_KV, kv_group, DIM), dtype=torch.float)
+# output = torch.empty((B, S, H_Q, DIM), dtype=dtype)
+# workspace_1 = torch.zeros((B*S*1*H_KV, 64, DIM), dtype=dtype)
+# workspace_2 = torch.zeros((B*S*1*H_KV, kv_group, 64), dtype=torch.float)
+# workspace_3 = torch.zeros((B*S*1*H_KV, kv_group, 64), dtype=dtype)
+# workspace_4 = torch.zeros((B*S*1*H_KV, kv_group, DIM), dtype=torch.float)
+
+func = sparse_attention_fwd(
+    heads=64,
+    dim=128,
+    tail_dim=0,
+    topk=2048,
+    kv_stride=1,
+    kv_group=4,
+    workspace_block_num=B*S*1*H_KV
+)
 
 torch.npu.synchronize()
 
 print("init successful!")
-output = func(q, kv, indices, workspace_1, workspace_2, workspace_3, workspace_4)
+output = func(q, kv, indices)
 torch.npu.synchronize()
 ref_output = ref_sparse_attention_fwd_interface_gqa(q, kv, indices, q_start_s_index, KV_stride)
 torch.npu.synchronize()
