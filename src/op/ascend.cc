@@ -156,7 +156,7 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
 
       ss << "copy_ub_to_gm<";
       ss << get_dtype(dst) << ", ";
-      ss << src->shape[src->shape.size() - 1];
+      ss << src_extents[src->shape.size() - 1];
       if (src->shape.size() > 1) {
         ss << ", " << compute_blocklen(src, dst_extents);
       }
