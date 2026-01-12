@@ -54,6 +54,7 @@ class LibraryGenerator(object):
             f"-L{ASCEND_HOME_PATH}/lib64",
             "-Wno-macro-redefined",
             "-Wno-ignored-attributes",
+            "-Wno-non-c-typedef-for-linkage"
             "-lruntime",
             "-lascendcl",
             "-lm",
