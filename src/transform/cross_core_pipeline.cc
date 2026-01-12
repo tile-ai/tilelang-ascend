@@ -213,6 +213,7 @@ public:
     const std::vector<StmtInfo>& all_statements_V() const {return all_statements_V_;}
     const std::vector<WorkspaceWrite>& workspace_writes_C() const {return workspace_writes_C_;}
     const std::vector<WorkspaceWrite>& workspace_writes_V() const {return workspace_writes_V_;}
+    const Map<Var, String>& location_map() const {return location_map_;}
 
     void VisitStmt_(const SeqStmtNode* op) {
         for (const Stmt& stmt : op->seq) {
@@ -561,7 +562,10 @@ private:
         }
         for (const auto& [buffer, stage_indices] : buffer_stage_map) {
             if (stage_indices.size() > 1) {
-                shared_buffers_.insert(buffer);
+                auto buffer_scope = checkBufferScope(analyzer_.location_map(), Var(buffer, DataType::Handle()));
+                if (buffer_scope == VEC_SCOPE) {
+                  shared_buffers_.insert(buffer);
+                }
             }
         }
     }
