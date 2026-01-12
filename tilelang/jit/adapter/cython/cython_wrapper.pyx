@@ -8,6 +8,8 @@ import ctypes
 from libc.stdint cimport int64_t, uintptr_t
 from libc.stdlib cimport malloc, free
 from tvm import tir
+from tvm.tir import stmt_functor
+from tvm.arith import Analyzer
 from tilelang.utils.tensor import map_torch_type
 
 cdef class CythonKernelWrapper:
@@ -87,19 +89,39 @@ cdef class CythonKernelWrapper:
         cdef int ins_idx = 0
         cdef list tensor_list = []
 
+        analyzer = Analyzer()
+        sym_val_by_name = {}
+        for key, (ref_tensor_idx, ref_shape_idx) in self.dynamic_symbolic_map.items():?
+            val = int(inputs[ref_tensor_idx].shape[ref_shape_idx])
+            sym_val_by_name[key] = val
+
         # Prepare input and output tensors
         for i in range(len(self.params)):
             if i in self.result_idx or i in self.workspace_idx:
                 dtype = self.param_dtypes[i]
                 shape = []
                 # Now working with native Python list, no FFI calls needed
-                for dim_name in self.param_shapes[i]:
-                    if dim_name in self.dynamic_symbolic_map:
-                        # Dynamic dimension, will be filled later
-                        ref_tensor_idx, ref_shape_idx = self.dynamic_symbolic_map[dim_name]
-                        shape.append(inputs[ref_tensor_idx].shape[ref_shape_idx])
-                    else:  # Already converted to Python int during initialization
-                        shape.append(dim_name)
+                for s in self.param_shapes[i]:
+                    res = -1
+                    if isinstance(s, int):
+                        res = s
+                    elif isinstance(s, tir.IntImm):
+                        res = int(s.value)
+                    elif isinstance(s, tir.PrimExpr):
+                        vmap = {}
+                        for v in tir.analysis.undefined_vars(s):
+                            if v not in sym_val_by_name:
+                                raise KeyError(f"Unfounded symbolic var: {str(v)}")
+                            vmap[v] = tir.IntImm(v.dtype, sym_val_by_name[v])
+                        ss = stmt_functor.substitute(s, vmap)
+                        ss = analyzer.simplify(ss)
+                        if isinstance(ss, tir.IntImm):
+                            res = int(ss.value)
+                        else:
+                            raise ValueError(f"Shape not constant: {str(s)}")
+                    else:
+                        raise TypeError(f"Unsupported shape dim type: {type(s)} ({str(s)})")
+                    shape.append(res)
                 device = inputs[0].device if len(inputs) > 0 else torch.npu.current_device()
                 tensor = torch.empty(*shape, dtype=dtype, device=device)
             else:
