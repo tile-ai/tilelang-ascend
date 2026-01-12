@@ -271,7 +271,6 @@ NpuirReduce::NpuirReduce(Array<PrimExpr> args, BufferMap vmap) {
   }
 
   reduce_mode = args[3].as<StringImmNode>()->value;
-  clear = args[4].as<Bool>().value();
 }
 
 NpuirCumsum::NpuirCumsum(Array<PrimExpr> args, BufferMap vmap) {
@@ -583,7 +582,7 @@ TIR_REGISTER_TL_OP(NpuirCast, npuir_cast)
                                Integer(CallEffectKind::kOpaque));
 
 TIR_REGISTER_TL_OP(NpuirReduce, npuir_reduce)
-    .set_num_inputs(5)
+    .set_num_inputs(4)
     .set_attr<TCallEffectKind>("TCallEffectKind",
                                Integer(CallEffectKind::kOpaque));
 
