@@ -25,7 +25,7 @@ G_IP_PORT = "tcp://100.102.180.145:8666"
 
 num_processes = args.num_processes
 
-@tilelang.jit(out_idx=[-1])
+@tilelang.jit()
 def shmem_ub_put_nbi(M, N, nelems, newPe, dtype="int8"):
     @T.prim_func
     def main(
@@ -80,7 +80,7 @@ def worker(rank, barrier):
         newPe = (rank + 1) % npu_num
 
         func = shmem_ub_put_nbi(M, N, nelems, newPe)
-        b = func(a)
+        func(a, b)
         barrier.wait()
         print("b after=", b)
         if torch.equal(a, b):
