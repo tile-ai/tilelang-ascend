@@ -8,6 +8,7 @@
 
 #include "shmem.h"
 
+#define BACKEND_HYBM
 #define CUDART_INF_F 1.0f / 0.0f
 
 
@@ -279,7 +280,7 @@ CATLASS_DEVICE void shmem_put_nbi_new(const GlobalTensor<T> &output, const Globa
 
 template <typename T>
 CATLASS_DEVICE void shmem_ub_put_nbi_new(const LocalTensor<T> &ubTensor, const GlobalTensor<T> &output, size_t nelems, int newPe) {
-    // if ASCEND_IS_AIC return;                                                                                    
+    // if ASCEND_IS_AIC return;                                                                                   
     using ac_type = ReplaceVoidWithUint8<T>;
     aclshmemx_mte_put_nbi(const_cast<__gm__ ac_type*>(output.GetPhyAddr()),                                       
         reinterpret_cast<__ubuf__ ac_type*>(ubTensor.GetPhyAddr()), nelems, newPe, EVENT_ID0);                                                                     
