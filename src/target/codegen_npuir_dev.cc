@@ -1350,6 +1350,28 @@ void CodeGenTileLangNPUIRDEV::VcumsumCodegen(const CallNode *op) {
   SetVarValue(npuirop.dst, newCumsumOp->getResult(0));
 }
 
+void CodeGenTileLangNPUIRDEV::VAtomicAddCodegen(const CallNode *op) {
+  /// Generate hivm.hir.store for tl.npuir_atomic_add.
+  /// before:
+  ///   T.npuir_atomic_add(src, dst, size)
+  /// after:
+  ///   hivm.hir.store ins(src) outs(dst) atomic = <add>
+  tvm::tl::NpuirAtomicAdd npuirop(op->args, this->vmap);
+  Value src = GetVarValue(npuirop.src);
+  Value dst = GenSubviewFromRegion(npuirop.dst, npuirop.dst_range);
+
+  // create StoreOp   
+  auto newStoreOp = builder.create<hivm::StoreOp>(
+      builder.getUnknownLoc(),
+      TypeRange{},
+      src,
+      dst
+  );
+
+  hivm::AtomicKind hvAtomicKind = hivm::AtomicKind::ADD;
+  newStoreOp.setAtomicKind(hvAtomicKind);
+}
+
 void CodeGenTileLangNPUIRDEV::VgatherCodegen(const CallNode *op) {
   tvm::tl::NpuirGather npuirop(op->args, this->vmap);
   Value src = GenSubviewFromRegion(npuirop.src, npuirop.src_range);
@@ -1880,6 +1902,8 @@ mlir::Value CodeGenTileLangNPUIRDEV::VisitExpr_(const CallNode *op) {
     VcastCodegen(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_reduce"))) {
     VreduceCodegen(op);
+  } else if (op->op.same_as(Op::Get("tl.npuir_atomic_add"))) {
+    VAtomicAddCodegen(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_cumsum"))) {
     VcumsumCodegen(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_gather"))) {

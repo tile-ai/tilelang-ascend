@@ -238,6 +238,7 @@ private:
   void VcastCodegen(const CallNode *op);
   void VreduceCodegen(const CallNode *op);
   void VcumsumCodegen(const CallNode *op);
+  void VAtomicAddCodegen(const CallNode *op);
   void VgatherCodegen(const CallNode *op);
   void VtransposeCodegen(const CallNode *op);
   void VinterleaveCodegen(const CallNode *op);
