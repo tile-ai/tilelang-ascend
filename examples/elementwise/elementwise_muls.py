@@ -50,7 +50,7 @@ print("init successful!")
 
 b = func(a)
 
-ref_b = a + 2.0
+ref_b = a * 2.0
 
 torch.testing.assert_close(b, ref_b, rtol=1e-2, atol=1e-2)
 print("Kernel Output Match!")
