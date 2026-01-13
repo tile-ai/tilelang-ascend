@@ -1186,7 +1186,7 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
       this->PrintIndent();
       ub_data[3] = DEC_STR_TO_HEX_STR(PrintExpr(address_map_[op->buffer_var]));
       ub_data_map_[vid] = ub_data;
-      l_data_mape_[vid] = l_data;
+      l_data_map_[vid] = l_data;
       stream << "TASSIGN(" << vid << ", " << DEC_STR_TO_HEX_STR(PrintExpr(address_map_[op->buffer_var])) << ");\n";
 
     } else {
