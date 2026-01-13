@@ -93,6 +93,8 @@ def determine_target(target: Union[str, Target, Literal["auto"]] = "auto",
             return_var = "llvm --keys=ascend"
         else:
             raise ValueError("No CUDA, HIP, or NPU available on this system.")
+    elif target in ["ascendc", "pto"]:
+        return_var = "llvm --keys=ascend"
     else:
         # Validate the target if it's not "auto"
         assert isinstance(
