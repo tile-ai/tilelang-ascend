@@ -98,4 +98,95 @@ AICORE PTO_INLINE void gemm_v0(
         TMATMUL_ACC(C, C, l0a, l0b);
     }
 }
+template <typename T1, typename T2, int32_t shape1, int32_t shape2, int32_t shape3,
+        int32_t shape4, int32_t shape5, int32_t stride1, int32_t stride2, 
+        int32_t stride3, int32_t stride4, int32_t stride5, uint32_t valid1, uint32_t valid2>
+AICORE PTO_INLINE void copy_gm_to_l1_dynamic(
+            __gm__ T1 *handle,
+            const Shape<shape1, shape2, shape3, shape4, shape5>& shape,
+            const Stride<stride1, stride2, stride3, stride4, stride5>& stride,
+            TileMatL1<T2, shape4, shape5, valid1, valid2> &L1) {
+    GlobalTensor<T1, Shape<shape1, shape2, shape3, shape4, shape5>, 
+    Stride<stride1, stride2, stride3, stride4, stride5>> global_tensor(handle, shape, stride);
+    TLOAD(L1, global_tensor);
+}
+
+template <typename T1, typename T2, int32_t shape1, int32_t shape2, int32_t shape3,
+        int32_t shape4, int32_t shape5, int32_t stride1, int32_t stride2, 
+        int32_t stride3, int32_t stride4, int32_t stride5, uint32_t valid1, uint32_t valid2>
+AICORE PTO_INLINE void copy_l0c_to_gm_dynamic(
+            __gm__ T1 *handle,
+            const Shape<shape1, shape2, shape3, shape4, shape5>& shape, 
+            const Stride<stride1, stride2, stride3, stride4, stride5>& stride,
+            TileAcc<T2, shape4, shape5, valid1, valid2> &L0c) {
+    GlobalTensor<T1, Shape<shape1, shape2, shape3, shape4, shape5>, 
+    Stride<stride1, stride2, stride3, stride4, stride5>> global_tensor(handle, shape, stride);
+    TSTORE(global_tensor, L0c);
+}
+
+template <typename T1, typename T2, int32_t shape1, int32_t shape2, int32_t shape3,
+        int32_t shape4, int32_t shape5, int32_t stride1, int32_t stride2, 
+        int32_t stride3, int32_t stride4, int32_t stride5, uint32_t valid1, uint32_t valid2>
+AICORE PTO_INLINE void copy_gm_to_ub_dynamic(
+            __gm__ T1 *handle,
+            const Shape<shape1, shape2, shape3, shape4, shape5>& shape,
+            const Stride<stride1, stride2, stride3, stride4, stride5>& stride,
+            TileUbDataND<T2, shape4, shape5> &ub) {
+    GlobalTensor<T1, Shape<shape1, shape2, shape3, shape4, shape5>, 
+    Stride<stride1, stride2, stride3, stride4, stride5>> global_tensor(handle, shape, stride);
+    TLOAD(ub, global_tensor);
+}
+
+template <typename T1, typename T2, int32_t shape1, int32_t shape2, int32_t shape3,
+        int32_t shape4, int32_t shape5, int32_t stride1, int32_t stride2, 
+        int32_t stride3, int32_t stride4, int32_t stride5, uint32_t valid1, uint32_t valid2>
+AICORE PTO_INLINE void copy_ub_to_gm_dynamic(
+            __gm__ T1 *handle, 
+            const Shape<shape1, shape2, shape3, shape4, shape5>& shape, 
+            const Stride<stride1, stride2, stride3, stride4, stride5>& stride,
+            TileUbDataND<T2, shape4, shape5> &ub) {
+    GlobalTensor<T1, Shape<shape1, shape2, shape3, shape4, shape5>, 
+    Stride<stride1, stride2, stride3, stride4, stride5>> global_tensor(handle, shape, stride);
+    TSTORE(global_tensor, ub);
+}
+
+template <typename T1, typename T2, int32_t shape1, int32_t shape2, int32_t shape3,
+        int32_t shape4, int32_t shape5, int32_t stride1, int32_t stride2, 
+        int32_t stride3, int32_t stride4, int32_t stride5, uint32_t valid1, uint32_t valid2>
+AICORE PTO_INLINE void copy_gm_to_l1(__gm__ T1 *handle, TileMatL1<T2, shape4, shape5, valid1, valid2> &L1) {
+    GlobalTensor<T1, Shape<shape1, shape2, shape3, shape4, shape5>, 
+    Stride<stride1, stride2, stride3, stride4, stride5>> global_tensor(handle);
+    TLOAD(L1, global_tensor);
+}
+
+template <typename T1, typename T2, int32_t shape1, int32_t shape2, int32_t shape3,
+        int32_t shape4, int32_t shape5, int32_t stride1, int32_t stride2, 
+        int32_t stride3, int32_t stride4, int32_t stride5, uint32_t valid1, uint32_t valid2>
+AICORE PTO_INLINE void copy_l0c_to_gm(__gm__ T1 *handle, TileAcc<T2, shape4, shape5, valid1, valid2> &L0c) {
+    GlobalTensor<T1, Shape<shape1, shape2, shape3, shape4, shape5>, 
+    Stride<stride1, stride2, stride3, stride4, stride5>> global_tensor(handle);
+    TSTORE(global_tensor, L0c);
+}
+
+template <typename T1, typename T2, int32_t shape1, int32_t shape2, int32_t shape3,
+        int32_t shape4, int32_t shape5, int32_t stride1, int32_t stride2, 
+        int32_t stride3, int32_t stride4, int32_t stride5, uint32_t valid1, uint32_t valid2>
+AICORE PTO_INLINE void copy_gm_to_ub(
+            __gm__ T1 *handle,
+            TileUbDataND<T2, shape4, shape5> &ub) {
+    GlobalTensor<T1, Shape<shape1, shape2, shape3, shape4, shape5>, 
+    Stride<stride1, stride2, stride3, stride4, stride5>> global_tensor(handle);
+    TLOAD(ub, global_tensor);
+}
+
+template <typename T1, typename T2, int32_t shape1, int32_t shape2, int32_t shape3,
+        int32_t shape4, int32_t shape5, int32_t stride1, int32_t stride2, 
+        int32_t stride3, int32_t stride4, int32_t stride5, uint32_t valid1, uint32_t valid2>
+AICORE PTO_INLINE void copy_ub_to_gm(
+            __gm__ T1 *handle, 
+            TileUbDataND<T2, shape4, shape5> &ub) {
+    GlobalTensor<T1, Shape<shape1, shape2, shape3, shape4, shape5>, 
+    Stride<stride1, stride2, stride3, stride4, stride5>> global_tensor(handle);
+    TSTORE(global_tensor, ub);
+}
 }
