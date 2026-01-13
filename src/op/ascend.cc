@@ -119,11 +119,12 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
     bool needs_strideN = false;
     bool l0c2gm = false;
     bool gm2l1 = false;
-    bool l12l0 = false;
+    // bool l12l0 = false;
     bool print_gm_layout = false;
     bool print_src_layout = false;
     bool print_dst_layout = false;
     bool print_ub = false;
+    bool l0_dst_split = false;
     bool gm2ub = false;
     bool ub2gm = false;
   } config;
@@ -138,11 +139,13 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
   } else if (src.scope() == "shared.dyn" && dst.scope() == "wmma.matrix_a") {
     ss << "copy_l1_to_l0a";
     config.print_src_layout = true;
-    config.l12l0 = true;
+    // config.l12l0 = true;
+    config.l0_dst_split = true;
   } else if (src.scope() == "shared.dyn" && dst.scope() == "wmma.matrix_b") {
     ss << "copy_l1_to_l0b";
     config.print_src_layout = true;
-    config.l12l0 = true;
+    // config.l12l0 = true;
+    config.l0_dst_split = true;
   } else if (src.scope() == "wmma.accumulator" && dst.scope() == "global") {
     ss << "copy_l0c_to_gm";
     config.l0c2gm = true;
@@ -220,8 +223,9 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
     } else if (src.scope() == "global") {
       ss << dst->shape[dst_ndim - 2] << ", " << dst->shape[dst_ndim - 1] << ">";
     } else {
-      ss << src->shape[src_ndim - 2] << ", " << src->shape[src_ndim - 1] << ", "
-         << dst->shape[dst_ndim - 2] << ", " << dst->shape[dst_ndim - 1] << ">";
+      ss << src->shape[src_ndim - 2] << ", " << src->shape[src_ndim - 1] << ">";
+      // ss << src->shape[src_ndim - 2] << ", " << src->shape[src_ndim - 1] << ", "
+      //    << dst->shape[dst_ndim - 2] << ", " << dst->shape[dst_ndim - 1] << ">";
     }
   }
 
@@ -254,6 +258,12 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
     new_args.push_back(strideN);
   }
 
+  if (config.l0_dst_split) {
+    int dst_dim = dst->shape.size();
+    new_args.push_back(dst->shape[dst_dim - 2]);
+    new_args.push_back(dst->shape[dst_dim - 1]);
+  }
+
   if (config.l0c2gm) {
     new_args.push_back(compute_strideN(dst, dst_extents));
     new_args.push_back(src->shape[src->shape.size() - 2]);
@@ -280,27 +290,27 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
     new_args.push_back(src->shape[src->shape.size() - 1]);
   }
 
-  if (config.l12l0) {
-    ICHECK(src->shape.size() == dst->shape.size());
-    bool is_extract = false;
-    auto dst_shape_size = dst->shape.size();
-    auto src_shape_size = src->shape.size();
-    for (int i = dst_shape_size - 1; i >= dst_shape_size - 2; i--) {
-      if (i == -1) {
-          break;
-      }
-      // std::cout << "dst_shape_size -2 = " << dst_shape_size - 2  << ", i = " << i << ", dst->shape: " << dst->shape[i]
-      //   << "src->shape: " << src->shape[i] << "\n";
-      if (src->shape[i].as<IntImmNode>()->value != dst->shape[i].as<IntImmNode>()->value) {
-          is_extract = true;
-      }
-      new_args.push_back(src_indices[i]);
-    }
-    new_args.push_back(Bool(is_extract));
-    auto dst_var = dst_ptr.as<CallNode>()->args[1];
-    std::cout << "newargs in copy to l1: " << new_args << "\n";
-    std::cout << "src_indices: " << src_indices << "\n";
-  }
+  // if (config.l12l0) {
+  //   ICHECK(src->shape.size() == dst->shape.size());
+  //   bool is_extract = false;
+  //   auto dst_shape_size = dst->shape.size();
+  //   auto src_shape_size = src->shape.size();
+  //   for (int i = dst_shape_size - 1; i >= dst_shape_size - 2; i--) {
+  //     if (i == -1) {
+  //         break;
+  //     }
+  //     // std::cout << "dst_shape_size -2 = " << dst_shape_size - 2  << ", i = " << i << ", dst->shape: " << dst->shape[i]
+  //     //   << "src->shape: " << src->shape[i] << "\n";
+  //     if (src->shape[i].as<IntImmNode>()->value != dst->shape[i].as<IntImmNode>()->value) {
+  //         is_extract = true;
+  //     }
+  //     new_args.push_back(src_indices[i]);
+  //   }
+  //   new_args.push_back(Bool(is_extract));
+  //   auto dst_var = dst_ptr.as<CallNode>()->args[1];
+  //   std::cout << "newargs in copy to l1: " << new_args << "\n";
+  //   std::cout << "src_indices: " << src_indices << "\n";
+  // }
 
   auto new_call = Call(DataType::Handle(), builtin::call_extern(), new_args);
   return Evaluate(new_call);
