@@ -65,13 +65,13 @@ def worker(rank, barrier):
         a = tensor[0:1, 0:N].fill_(2)
         b = tensor[0:1, N:2*N].fill_(0)
         torch.npu.synchronize()
-        barrier.wait()
         nelems = M * N
         # 从一张新的卡上get数据到本pe，这里设成前一张卡
         newPe = (rank + npu_num - 1) % npu_num
 
         func = shmem_get_nbi(M, N, nelems, newPe)
         func(a, b)
+        barrier.wait()
         print("b after=", b)
         if torch.equal(a, b):
             print("Kernel Output Match!")
