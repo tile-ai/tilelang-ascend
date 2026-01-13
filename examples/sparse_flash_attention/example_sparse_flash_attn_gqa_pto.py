@@ -254,7 +254,7 @@ def sparse_attention_fwd(
 
                 for h_i in range(v_block):
                     T.barrier_all()
-                    T.tile.div(acc_o[:, h_i], acc_o[:, h_i], sumexp[h_i])
+                    T.tile.div(acc_o[h_i, :], acc_o[h_i, :], sumexp[h_i])
                     T.barrier_all()
 
                 T.copy(acc_o, acc_o_half)
