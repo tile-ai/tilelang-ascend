@@ -146,6 +146,8 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
   bool is_2d_vectorizing_ = false;
   int temp_buffer_id_ = 0;
   std::vector<Buffer> temp_buffers_;
+  int64_t vector_dim_extent_{0};  // Track the extent of the vector dimension loop
+  int64_t outer_dim_extent_{0};   // Track the extent of the outer dimension loop
 
   Buffer CreateTempBufferLike(const Buffer& ref) {
     DataType dtype = ref->dtype;
@@ -203,6 +205,33 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
     }
   };
 
+  // Substitute loop variables with constants in expressions
+  class SubstituteLoopVars : public ExprMutator {
+   public:
+    const VarNode* vector_dim_var_;
+    const VarNode* outer_dim_var_;
+    bool is_2d_vectorizing_;
+
+    explicit SubstituteLoopVars(const VarNode* vector_dim_var,
+                                const VarNode* outer_dim_var,
+                                bool is_2d_vectorizing)
+        : vector_dim_var_(vector_dim_var),
+          outer_dim_var_(outer_dim_var),
+          is_2d_vectorizing_(is_2d_vectorizing) {}
+
+    PrimExpr VisitExpr_(const VarNode* op) override {
+      // Replace vector dim var with 0
+      if (vector_dim_var_ != nullptr && op == vector_dim_var_) {
+        return IntImm(DataType::Int(32), 0);
+      }
+      // Replace outer dim var with 0 if 2d vectorizing
+      if (is_2d_vectorizing_ && outer_dim_var_ != nullptr && op == outer_dim_var_) {
+        return IntImm(DataType::Int(32), 0);
+      }
+      return GetRef<PrimExpr>(op);
+    }
+  };
+
   Stmt VisitStmt_(const ForNode* op) override {
     // Sequence of store statements (handles both single stores and sequences)
     auto TryVectorizeStoreSeq = [&](
@@ -232,6 +261,11 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
       // parallel -> (store | seq)
       {
         if (op->body.as<BufferStoreNode>() || op->body.as<SeqStmtNode>()) {
+          int64_t extent = 0;
+          if (TryGetElementCount(op->extent, &extent)) {
+            vector_dim_extent_ = extent;
+            outer_dim_extent_ = 1;
+          }
           Stmt v = TryVectorizeStoreSeq(
             op->body,
             op->extent,
@@ -239,6 +273,8 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
             false,
             op->loop_var.as<VarNode>()
           );
+          vector_dim_extent_ = 0;
+          outer_dim_extent_ = 0;
           if (v.defined()) return v;
         }
       }
@@ -262,6 +298,13 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
       };
 
       if (inner_for->body.as<BufferStoreNode>() || inner_for->body.as<SeqStmtNode>()) {
+        int64_t inner_extent = 0;
+        int64_t outer_extent = 0;
+        if (TryGetElementCount(inner_for->extent, &inner_extent) &&
+            TryGetElementCount(op->extent, &outer_extent)) {
+          vector_dim_extent_ = inner_extent;
+          outer_dim_extent_ = outer_extent;
+        }
         Stmt v = TryVectorizeStoreSeq(
           inner_for->body,
           total_elements,
@@ -270,6 +313,8 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
           inner_for->loop_var.get(),
           op->loop_var.get()
         );
+        vector_dim_extent_ = 0;
+        outer_dim_extent_ = 0;
         if (v.defined()) return v;
       }
 
@@ -289,6 +334,11 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
 
       // serial -> parallel -> (store | seq)
       if (inner_for->body.as<BufferStoreNode>() || inner_for->body.as<SeqStmtNode>()) {
+        int64_t inner_extent = 0;
+        if (TryGetElementCount(inner_for->extent, &inner_extent)) {
+          vector_dim_extent_ = inner_extent;
+          outer_dim_extent_ = 1;  // No outer parallel loop in this case
+        }
         Stmt v = TryVectorizeStoreSeq(
           inner_for->body,
           total_elements,
@@ -296,6 +346,8 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
           true,
           inner_for->loop_var.as<VarNode>()
         );
+        vector_dim_extent_ = 0;
+        outer_dim_extent_ = 0;
         if (!v.defined()) return arith::IRMutatorWithAnalyzer::VisitStmt_(op);
         auto op_copy = make_object<ForNode>(*op);
         op_copy->body = v;
@@ -385,15 +437,22 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
     /*----- 2D case -----*/
     if (vector_dim_var_ == nullptr) return false;
 
-    if (output_buffer->shape.size() == 2 && store->indices.size() == 2) {  
+    if (output_buffer->shape.size() == 2 && store->indices.size() == 2) {
       const VarNode* outer_var = store->indices[0].as<VarNode>();
       const VarNode* inner_var = store->indices[1].as<VarNode>();
       if (outer_var == nullptr || inner_var == nullptr) return false;
       if (inner_var != vector_dim_var_) return false;
-      const IntImmNode* inner_imm = output_buffer->shape[1].as<IntImmNode>();
-      if (inner_imm == nullptr) return false;
 
-      int64_t inner_vec_len = inner_imm->value;
+      int64_t inner_vec_len = 0;
+      // Use vector_dim_extent_ if available (actual loop extent), otherwise fall back to buffer shape
+      if (vector_dim_extent_ > 0) {
+        inner_vec_len = vector_dim_extent_;
+      } else {
+        const IntImmNode* inner_imm = output_buffer->shape[1].as<IntImmNode>();
+        if (inner_imm == nullptr) return false;
+        inner_vec_len = inner_imm->value;
+      }
+
       if (inner_vec_len <= 0) return false;
       if (element_count % inner_vec_len != 0) return false;
 
@@ -411,10 +470,17 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
       const VarNode* inner_var = store->indices[2].as<VarNode>();
       if (outer_var == nullptr || inner_var == nullptr) return false;
       if (inner_var != vector_dim_var_) return false;
-      const IntImmNode* inner_imm = output_buffer->shape[2].as<IntImmNode>();
-      if (inner_imm == nullptr) return false;
 
-      int64_t inner_vec_len = inner_imm->value;
+      int64_t inner_vec_len = 0;
+      // Use vector_dim_extent_ if available (actual loop extent), otherwise fall back to buffer shape
+      if (vector_dim_extent_ > 0) {
+        inner_vec_len = vector_dim_extent_;
+      } else {
+        const IntImmNode* inner_imm = output_buffer->shape[2].as<IntImmNode>();
+        if (inner_imm == nullptr) return false;
+        inner_vec_len = inner_imm->value;
+      }
+
       if (inner_vec_len <= 0) return false;
       if (element_count % inner_vec_len != 0) return false;
 
@@ -1005,21 +1071,11 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
       return IntImm(DataType::Int(32), 0);
     }
 
+    // Substitute loop variables with 0 in all indices
+    SubstituteLoopVars substitutor(vector_dim_var_, outer_dim_var_, is_2d_vectorizing_);
     Array<PrimExpr> processed_indices;
     for (const auto& idx : indices) {
-      if (auto var = idx.as<VarNode>()) {
-        // Set vectorization dim var to 0
-        if (vector_dim_var_ != nullptr && var == vector_dim_var_) {
-          processed_indices.push_back(IntImm(DataType::Int(32), 0));
-          continue;
-        }
-        // Set outer dim var to 0 (2d vectorization)
-        if (is_2d_vectorizing_ && outer_dim_var_ != nullptr && var == outer_dim_var_) {
-          processed_indices.push_back(IntImm(DataType::Int(32), 0));
-          continue;
-        }
-      }
-      processed_indices.push_back(idx);
+      processed_indices.push_back(substitutor(idx));
     }
 
     bool all_zero = true;
@@ -1034,7 +1090,7 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
         break;
       }
     }
-  
+
     if (all_zero) {
       return IntImm(DataType::Int(32), 0);
     }
@@ -1049,11 +1105,29 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
 
   bool IsScalarAccess(const Array<PrimExpr>& indices,
                       const std::unordered_set<const VarNode*>& parallel_vars) {
+    if (vector_dim_var_ == nullptr) return true;
+
+    // Check if any index contains the vector dimension variable
     for (const auto& idx : indices) {
-      if (auto var = idx.as<VarNode>()) {
-        if (vector_dim_var_ != nullptr && var == vector_dim_var_) {
-          return false;
+      class VectorDimChecker : public ExprVisitor {
+      public:
+        const VarNode* target_var_;
+        bool found_{false};
+
+        explicit VectorDimChecker(const VarNode* target_var) : target_var_(target_var) {}
+
+        void VisitExpr_(const VarNode* op) override {
+          if (op == target_var_) {
+            found_ = true;
+          }
+          ExprVisitor::VisitExpr_(op);
         }
+      };
+
+      VectorDimChecker checker(vector_dim_var_);
+      checker(idx);
+      if (checker.found_) {
+        return false;
       }
     }
     return true;
