@@ -17,8 +17,9 @@ class LibraryGenerator(object):
     libpath: Optional[str] = None
     lib_code: Optional[str] = None
 
-    def __init__(self, target: str):
+    def __init__(self, target: str, plantform: str):
         self.target = target
+        self.plantform = plantform
 
     def update_lib_code(self, lib_code: str):
         self.lib_code = lib_code
@@ -64,9 +65,10 @@ class LibraryGenerator(object):
                 src.name,
             ]
         elif self.target == "pto":
+            ccec = "dav-c310" if self.plantform == 'A5' else "dav-c220"
             command = [
                 "bisheng",
-                "--cce-aicore-arch=dav-c220",
+                f"--cce-aicore-arch={ccec}",
                 "-DMEMORY_BASE",
                 "-O2",
                 "-std=gnu++17",
