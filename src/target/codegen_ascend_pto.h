@@ -136,6 +136,7 @@ private:
   Map<String, String> copy_base_addr_map_;
   
   std::map<std::string, std::vector<std::string>> ub_data_map_;
+  std::map<std::string, std::vector<std::string>> l_data_map_;
   std::map<std::string, std::string> for_num_map_;
   
   struct global_tensor{
