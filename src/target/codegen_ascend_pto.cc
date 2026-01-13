@@ -490,374 +490,13 @@ int GetValidShape(int shape, std::string& dtype) {
   return shape + (32 - shape_mod) / dtype_len;
 }
 
-void CodeGenTileLangAscendPto::UnaryVecOpCodegen(const CallNode *op, const std::string& op_name) {
-  auto print_tile = [&](const CallNode *op) -> std::string {
-    auto _var = op->args[1].as<VarNode>();
-    auto _var_name = var_idmap_[_var];
-    return _var_name;
-  };
-
-  std::vector<std::string> var_names;
-  for (int i = 0; i < op->args.size() - 1; i++) {
-    auto var_name = print_tile(op->args[i].as<CallNode>());
-    var_names.push_back(var_name);
-  }
-  this->PrintIndent();
-  this->stream << op_name << "(";
-  for (int i = 0; i < var_names.size(); i++) {
-    this->stream << var_names[i];
-    if (i != var_names.size() - 1) {
-      this->stream << ", ";
-    }
-  }
-  this->stream << ");\n";
-}
-
-void CodeGenTileLangAscendPto::ScalarOpCodegen(const CallNode *op, const std::string& op_name) {
-  auto print_tile = [&](const CallNode *op) -> std::string {
-    auto _var = op->args[1].as<VarNode>();
-    auto _var_name = var_idmap_[_var];
-    return _var_name;
-  };
-
-    this->PrintIndent();
-    this->stream << op_name << "(" << print_tile(op->args[0].as<CallNode>()) << ", "
-                  << print_tile(op->args[1].as<CallNode>()) << ", "
-                  << PrintExpr(op->args[2]) << ");\n";
-}
-
-void CodeGenTileLangAscendPto::ReduceOpCodegen(const CallNode *op) {
-  std::string op_name = Downcast<StringImm>(op->args[0])->value;
-  if (op_name.find("reduce_sum") != std::string::npos) {
-    op_name = "TROWSUM";
-  } else if (op_name.find("reduce_max") != std::string::npos) {
-    op_name = "TROWMAX";
-  } else {
-    ICHECK(false) << "not support reduce type: " << op_name;
-  }
-
-  auto print_tile = [&](const CallNode *op) -> std::string {
-    auto _var = op->args[1].as<VarNode>();
-    auto _var_name = var_idmap_[_var];
-    return _var_name;
-  };
-
-  std::vector<std::string> var_names;
-  for (int i = 1; i < op->args.size(); i++) {
-    auto var_name = print_tile(op->args[i].as<CallNode>());
-    var_names.push_back(var_name);
-  }
-  std::string ub_name = var_names[0];
-  std::vector<std::string> ub_data_vector = ub_data_map_[ub_name];
-  std::string ub_data_type = ub_data_vector[0];
-  std::string row = ub_data_vector[2];
-  std::string col = ub_data_vector[1];
-  std::string ffts = ub_data_vector[3];
-  this->PrintIndent();
-  this->stream << "tl::pto::TileUbDataDN <" << ub_data_type << ", " << row << ", " << col << "> " << ub_name << "_DN(" << row << ", " << col << ");\n";
-  this->PrintIndent();
-  this->stream << "TASSIGN(" << ub_name << "_DN, " << ffts << ");\n";
-  this->PrintIndent();
-  this->stream << op_name << "(";
-  for (int i = 0; i < var_names.size(); i++) {
-    this->stream << var_names[i];
-    if (i == 0) {
-      this->stream << "_DN";
-    }
-    if (i != var_names.size() - 1) {
-      this->stream << ", ";
-    }
-  }
-  this->stream << ");\n";
-  this->PrintIndent();
-  this->stream << "pipe_barrier(PIPE_ALL);\n";
-  this->PrintIndent();
-  this->stream << "TRESHAPE(" << var_names[0] << ", " << var_names[0] << "_DN);\n";
-}
-
 void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) {
-  auto print_tile = [&](const CallNode *op) -> std::string {
-    auto _var = op->args[1].as<VarNode>();
-    auto _var_name = var_idmap_[_var];
-    return _var_name;
-  };
-
   if (op->op.same_as(builtin::call_extern())) {
-    std::string op_name = Downcast<StringImm>(op->args[0])->value;
-    if (op_name.find("tl::ascend::copy") != std::string::npos) {
-      auto src_var = op->args[1].as<CallNode>()->args[1].as<VarNode>();
-      auto dst_var = op->args[2].as<CallNode>()->args[1].as<VarNode>();
-
-      auto src_var_id = var_idmap_[src_var];
-      auto dst_var_id = var_idmap_[dst_var];
-      if (src_var_id == "") {
-        src_var_id = src_var->name_hint;
-      }
-      if (dst_var_id == "") {
-        dst_var_id = dst_var->name_hint;
-      }
-
-      auto src_offset = PrintExpr(op->args[1].as<CallNode>()->args[2]);
-      auto dst_offset = PrintExpr(op->args[2].as<CallNode>()->args[2]);
-
-      auto src_type = op->args[1].as<CallNode>()->args[0].as<CallNode>()->dtype;
-      auto dst_type = op->args[2].as<CallNode>()->args[0].as<CallNode>()->dtype;
-
-      static const std::unordered_map<std::string, int> kCopyOpExtraArgs = {
-        {"copy_l0c_to_gm", 1},
-        {"copy_gm_to_l1", 1},
-        {"copy_l1_to_l0a", 3},
-        {"copy_l1_to_l0b", 3},
-        {"copy_gm_to_ub", 1},
-        {"copy_ub_to_gm", 1},
-        {"copy_ub_to_ub", 0}
-      };
-
-      std::unordered_map<std::string, std::string> 
-        ptoCopyMap = {
-        {"copy_l0c_to_gm", "TSTORE"},
-        {"copy_gm_to_l1", "TLOAD"},
-        {"copy_l1_to_l0a", "TEXTRACT"},
-        {"copy_l1_to_l0b", "TEXTRACT"},
-        {"copy_gm_to_ub", "TLOAD"},
-        {"copy_ub_to_gm", "TSTORE"},
-        {"copy_ub_to_ub", "TCVT"}
-      };
-
-      bool found = false;
-      int extra_args = 0;
-      std::string real_name = "";
-
-      for (const auto& pair : kCopyOpExtraArgs) {
-        if (op_name.find(pair.first) != std::string::npos) {
-          real_name = pair.first;
-          found = true;
-          extra_args = pair.second;
-          break;
-        }
-      }
-
-      if (found) {
-        auto api_name = ptoCopyMap[real_name];
-        PrimExpr row_index;
-        PrimExpr col_index;
-        if (api_name == "TLOAD") {
-          ICHECK((copy_base_addr_map_.find(String(src_var_id)) != copy_base_addr_map_.end()));
-          std::string tensor_addr = copy_base_addr_map_[String(src_var_id)];
-          std::string tensor_template = "GlobalTensor<" + global_tensor_template[String(tensor_addr)].dtype + ", ";
-          std::string shape_template = "Shape<", stride_template = "Stride<";
-          size_t len = global_tensor_template[String(tensor_addr)].shape_list.size();
-          size_t shape_len = 2;
-          size_t op_arg_len = op->args.size();
-          size_t shape_size = 5;
-          // Dynamic Shape and Static Shape
-
-          // generate shape
-          std::vector<std::string> shape_nums(shape_len);
-          shape_nums[1] =  PrintExpr(op->args[op_arg_len - 1]);
-          if (op_arg_len == 5) {
-              shape_nums[0] =  "1";
-          } else {
-              shape_nums[0] =  PrintExpr(op->args[op_arg_len - 2]);
-          }
-          for (size_t i = 0; i < shape_size; i++) {
-              if (i < shape_size - shape_len) {
-                  shape_template += "1";
-              } else {
-                  shape_template += shape_nums[i + shape_len - shape_size];
-              }
-              if (i < shape_size - 1) {
-                  shape_template += ", ";
-              }
-          }
-          shape_template += ">";
-          // generate stride
-          for (size_t i = 0; i < 4; i++) {
-            if (len > 3 - i) {
-              std::string tensor_template = global_tensor_template[String(tensor_addr)].shape_list[len + i - 4];
-              if (tensor_template[0] < '1' || tensor_template[0] > '9')  stride_template += "-1, ";
-              else {
-                std::string tmp_shape = "";
-                for(size_t j = 0; j < 4 - i; j++) {
-                  tmp_shape += global_tensor_template[String(tensor_addr)].shape_list[len - j - 1];
-                  if (j < 3 - i) tmp_shape += " * ";
-                }
-                stride_template = stride_template +  tmp_shape + ", ";
-              }
-            } else {
-              stride_template += "1, ";
-            }
-          }
-          stride_template += "1>";
-
-          // get gm2l1 shape
-          if(op_name.find("copy_gm_to_l1") != std::string::npos
-          || op_name.find("copy_gm_to_ub") != std::string::npos) {
-            tensor_template = tensor_template + shape_template + ", " + stride_template + ">";
-          }
-          this->PrintIndent();
-          this->stream << tensor_template << " " << src_var_id
-          << "(" << tensor_addr << " + " << src_offset;
-          if(global_tensor_template[String(tensor_addr)].shape_type=="dynamic") {
-            this->stream << ", " << shape_template << "(), " << stride_template << "(";
-            for(size_t i = 0; i < len; i++) {
-              std::string tmp_shape_info = global_tensor_template[String(tensor_addr)].shape_list[i];
-              if(tmp_shape_info[0]<'1' || tmp_shape_info[0]>'9') this->stream << tmp_shape_info;
-              if(i<len-3) this->stream << ", ";
-            }
-            this->stream << ")";
-          }
-          this->stream << ");\n";
-        } else if (api_name == "TCVT") {
-          api_name = src_type == dst_type ? "TMOV":"TCVT";
-        } else if (api_name == "TSTORE") {
-          ICHECK((copy_base_addr_map_.find(String(dst_var_id)) != copy_base_addr_map_.end()));
-          std::string tensor_addr = copy_base_addr_map_[String(dst_var_id)];
-          std::string tensor_template = "GlobalTensor<" + global_tensor_template[String(tensor_addr)].dtype+ ", ";
-          std::string shape_template = "Shape<", stride_template = "Stride<";
-          size_t len = global_tensor_template[String(tensor_addr)].shape_list.size();
-          size_t op_arg_len = op->args.size();
-          size_t shape_size = 5;
-          size_t shape_len = 2;
-          // Dynamic Shape and Static Shape
-
-          // generate shape
-          std::vector<std::string> shape_nums(shape_len);
-          shape_nums[1] =  PrintExpr(op->args[op_arg_len - 1]);
-          if (op_arg_len == 5) {
-              shape_nums[0] =  "1";
-          } else {
-              shape_nums[0] =  PrintExpr(op->args[op_arg_len - 2]);
-          }
-          for (size_t i = 0; i < shape_size; i++) {
-              if (i < shape_size - shape_len) {
-                  shape_template += "1";
-              } else {
-                  shape_template += shape_nums[i + shape_len - shape_size];
-              }
-              if (i < shape_size - 1) {
-                  shape_template += ", ";
-              }
-          }
-          shape_template += ">";
-          // generate stride
-          for (size_t i = 0; i < 4; i++) {
-            if (len > 3 - i) {
-              std::string tensor_template = global_tensor_template[String(tensor_addr)].shape_list[len + i - 4];
-              if (tensor_template[0] < '1' || tensor_template[0] > '9')  stride_template += "-1, ";
-              else {
-                std::string tmp_shape = "";
-                for(size_t j = 0; j < 4 - i; j++) {
-                  tmp_shape += global_tensor_template[String(tensor_addr)].shape_list[len - j - 1];
-                  if (j < 3 - i) tmp_shape += "*";
-                }
-                stride_template = stride_template +  tmp_shape + ", ";
-              }
-            } else {
-              stride_template += "1, ";
-            }
-          }
-          stride_template += "1>";
-
-          if(op_name.find("copy_l0c_to_gm") != std::string::npos
-          || op_name.find("copy_ub_to_gm") != std::string::npos) {
-            tensor_template = tensor_template + shape_template + ", " + stride_template + ">";
-          }
-          this->PrintIndent();
-          this->stream << tensor_template << " " << dst_var_id
-          << "(" << tensor_addr << " + " << dst_offset;
-          if(global_tensor_template[String(tensor_addr)].shape_type=="dynamic") {
-            this->stream << ", " << shape_template << "(), " << stride_template << "(";
-            for(size_t i = 0; i < len; i++) {
-              std::string tmp_shape_info = global_tensor_template[String(tensor_addr)].shape_list[i];
-              if(tmp_shape_info[0]<'1' || tmp_shape_info[0]>'9') this->stream << tmp_shape_info;
-              if(i<len-3) this->stream << ", ";
-            }
-            this->stream << ")";
-          }
-          this->stream << ");\n";
-        } else if (api_name == "TEXTRACT") {
-          if (op->args.size() >= 3 && op->args[5].as<IntImmNode>()->value != 0) {
-              row_index = op->args[4];
-              col_index = op->args[3];
-          } else {
-              api_name = "TCVT";
-          }
-        }
-        this->PrintIndent();
-        this->stream << api_name << "(" << dst_var_id << ", "
-          << src_var_id;
-        if (api_name == "TEXTRACT") {
-        this->stream << ", " << row_index << ", "
-          << col_index;
-        } else if (api_name == "TCVT") {
-            this->stream << ", pto::RoundMode::CAST_NONE";
-        }
-        this->stream << ");\n";
-      } else {
-        this->PrintIndent();
-        this->stream << "not implemented yet\n";
-      }
-    } 
+    CallExternCodegen(op);
   } else if (op->op.same_as(tl::ascend_gemm_v0())) {
-    std::string op_name = Downcast<StringImm>(op->args[0])->value;
-    this->PrintIndent();
-    auto a_var = op->args[1].as<CallNode>()->args[1].as<VarNode>();
-    auto b_var = op->args[2].as<CallNode>()->args[1].as<VarNode>();
-    auto c_var = op->args[3].as<CallNode>()->args[1].as<VarNode>();
-
-    auto a_offset = PrintExpr(op->args[1].as<CallNode>()->args[2]);
-    auto b_offset = PrintExpr(op->args[2].as<CallNode>()->args[2]);
-    auto c_offset = PrintExpr(op->args[3].as<CallNode>()->args[2]);
-
-    auto a_name = var_idmap_[a_var];
-    auto b_name = var_idmap_[b_var];
-    auto c_name = var_idmap_[c_var];
-
-    std::map<std::string, std::string> params = extractTemplateParams(op_name);
-    std::string data_type_input = params["data_type_input"];
-    this->stream << "tl::pto::gemm_v0" << "<" <<  params["data_type_input"] << ", " << params["data_type_output"] << ", " 
-    << GetValidShape(std::stoi(params["M"]), data_type_input) << ", " 
-    << GetValidShape(std::stoi(params["N"]), data_type_input) << ", "
-    << GetValidShape(std::stoi(params["K"]), data_type_input) << ", "
-    << params["M"] << ", " << params["N"] << ", " << params["K"] << ", "
-    << params["transpose_A"] << ", " << params["transpose_B"] << ">" 
-    << "(" << a_name << ", " << b_name << ", " << c_name << ", " << PrintExpr(op->args[4]) << ");\n";
-  } else if (op->op.same_as(tl::ascend_pipe_barrier())) {
-      std::string pipe = Downcast<StringImm>(op->args[0])->value;
-      this->PrintIndent();
-      this->stream << "pipe_barrier(PIPE_" << pipe << ");\n";
-  } else if (op->op.same_as(tl::ascend_wait_flag())) {
-      std::string src = Downcast<StringImm>(op->args[0])->value;
-      std::string dst = Downcast<StringImm>(op->args[1])->value;
-      std::string event_id = PrintExpr(op->args[2]);
-      // wait_flag(PIPE_MTE2, PIPE_V, EVENT_ID0);
-      this->PrintIndent();
-      this->stream << "wait_flag(PIPE_" << src << ", " << "PIPE_" <<
-      dst << ", " << "EVENT_ID" << event_id << ");\n";
-  } else if (op->op.same_as(tl::ascend_set_flag())) {
-      std::string src = Downcast<StringImm>(op->args[0])->value;
-      std::string dst = Downcast<StringImm>(op->args[1])->value;
-      std::string event_id = PrintExpr(op->args[2]);
-      // set_flag(PIPE_MTE2, PIPE_V, EVENT_ID0);
-      this->PrintIndent();
-      this->stream << "set_flag(PIPE_" << src << ", " << "PIPE_" <<
-      dst << ", " << "EVENT_ID" << event_id << ");\n";
-  } else if (op->op.same_as(tl::ascend_set_cross_flag())) {
-    std::string pipe = Downcast<StringImm>(op->args[0])->value;
-    int flag = std::stoi(PrintExpr(op->args[1]));
-    int mode = 2;
-    int config = 1 | (mode << 4) | (flag << 8);
-    this->PrintIndent();
-    this->stream << "ffts_cross_core_sync" << "(" << "PIPE_" << pipe << ", " << config << ");\n";
-  } else if (op->op.same_as(tl::ascend_wait_cross_flag())) {
-    std::string flag = PrintExpr(op->args[0]);
-    this->PrintIndent();
-    this->stream << "wait_flag_dev" << "(" << flag << ");\n";
+    GemmV0Codegen(op);
   } else if (op->op.same_as(tl::ascend_fill())) {
-    this->PrintIndent();
-    this->stream << "TEXPANDS" << "(" << print_tile(op->args[1].as<CallNode>()) << ", "
-               << PrintExpr(op->args[2]) << ");\n";
+    FillCodegen(op);
   } else if (op->op.same_as(tl::ascend_exp())) {
     UnaryVecOpCodegen(op, "TEXP");
   } else if (op->op.same_as(tl::ascend_ln())) {
@@ -905,12 +544,26 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) 
     BinaryVecOpsCodegen(op, "TMULS");
   } else if (op->op.same_as(tl::ascend_divs())) {
     BinaryVecOpsCodegen(op, "TDIVS");
-  } else if (op->op.same_as(tl::ascend_auto_barrier())) {
-    AutoBarrierCodegen(op);
+  } else if (op->op.same_as(tl::ascend_pipe_barrier())) {
+    PipeBarrierCodegen(op);
+  } else if (op->op.same_as(tl::ascend_set_flag())) {
+    SetAndWaitFlagCodegen(op, "set_flag");
+  } else if (op->op.same_as(tl::ascend_wait_flag())) {
+    SetAndWaitFlagCodegen(op, "wait_flag");
+  } else if (op->op.same_as(tl::ascend_set_cross_flag())) {
+    SetCrossFlagCodegen(op);
+  } else if (op->op.same_as(tl::ascend_wait_cross_flag())) {
+    WaitCrossFlagCodegen(op);
   } else if (op->op.same_as(tl::ascend_auto_set_flag())) {
     AutoFlagOpCodegen(op, "set_flag");
   } else if (op->op.same_as(tl::ascend_auto_wait_flag())) {
     AutoFlagOpCodegen(op, "wait_flag");
+  } else if (op->op.same_as(tl::ascend_auto_set_cross_flag())) {
+    AutoSetCrossFlagCodegen(op);
+  } else if (op->op.same_as(tl::ascend_auto_wait_cross_flag())) {
+    WaitCrossFlagCodegen(op);
+  } else if (op->op.same_as(tl::ascend_auto_barrier())) {
+    AutoBarrierCodegen(op);
   }
 }
 
@@ -918,6 +571,296 @@ std::string CodeGenTileLangAscendPto::PrintBufferOffset(const CallNode *op) {
     auto _var = op->args[1].as<VarNode>();
     std::string _var_name = var_idmap_[_var];
     return _var_name;
+}
+
+void CodeGenTileLangAscendPto::CallExternCodegen(const CallNode *op) {
+  std::string op_name = Downcast<StringImm>(op->args[0])->value;
+  if (op_name.find("tl::ascend::copy") != std::string::npos) {
+    auto src_var = op->args[1].as<CallNode>()->args[1].as<VarNode>();
+    auto dst_var = op->args[2].as<CallNode>()->args[1].as<VarNode>();
+
+    auto src_var_id = var_idmap_[src_var];
+    auto dst_var_id = var_idmap_[dst_var];
+    if (src_var_id == "") {
+      src_var_id = src_var->name_hint;
+    }
+    if (dst_var_id == "") {
+      dst_var_id = dst_var->name_hint;
+    }
+
+    auto src_offset = PrintExpr(op->args[1].as<CallNode>()->args[2]);
+    auto dst_offset = PrintExpr(op->args[2].as<CallNode>()->args[2]);
+
+    auto src_type = op->args[1].as<CallNode>()->args[0].as<CallNode>()->dtype;
+    auto dst_type = op->args[2].as<CallNode>()->args[0].as<CallNode>()->dtype;
+
+    static const std::unordered_map<std::string, int> kCopyOpExtraArgs = {
+      {"copy_l0c_to_gm", 1},
+      {"copy_gm_to_l1", 1},
+      {"copy_l1_to_l0a", 3},
+      {"copy_l1_to_l0b", 3},
+      {"copy_gm_to_ub", 1},
+      {"copy_ub_to_gm", 1},
+      {"copy_ub_to_ub", 0}
+    };
+
+    std::unordered_map<std::string, std::string> 
+      ptoCopyMap = {
+      {"copy_l0c_to_gm", "TSTORE"},
+      {"copy_gm_to_l1", "TLOAD"},
+      {"copy_l1_to_l0a", "TEXTRACT"},
+      {"copy_l1_to_l0b", "TEXTRACT"},
+      {"copy_gm_to_ub", "TLOAD"},
+      {"copy_ub_to_gm", "TSTORE"},
+      {"copy_ub_to_ub", "TCVT"}
+    };
+
+    bool found = false;
+    int extra_args = 0;
+    std::string real_name = "";
+
+    for (const auto& pair : kCopyOpExtraArgs) {
+      if (op_name.find(pair.first) != std::string::npos) {
+        real_name = pair.first;
+        found = true;
+        extra_args = pair.second;
+        break;
+      }
+    }
+
+    if (found) {
+      auto api_name = ptoCopyMap[real_name];
+      PrimExpr row_index;
+      PrimExpr col_index;
+      if (api_name == "TLOAD") {
+        ICHECK((copy_base_addr_map_.find(String(src_var_id)) != copy_base_addr_map_.end()));
+        std::string tensor_addr = copy_base_addr_map_[String(src_var_id)];
+        std::string tensor_template = "GlobalTensor<" + global_tensor_template[String(tensor_addr)].dtype + ", ";
+        std::string shape_template = "pto::Shape<", stride_template = "pto::Stride<";
+        size_t len = global_tensor_template[String(tensor_addr)].shape_list.size();
+        size_t shape_len = 2;
+        size_t op_arg_len = op->args.size();
+        size_t shape_size = 5;
+        // Dynamic Shape and Static Shape
+
+        // generate shape
+        std::vector<std::string> shape_nums(shape_len);
+        shape_nums[1] =  PrintExpr(op->args[op_arg_len - 1]);
+        if (op_arg_len == 5) {
+            shape_nums[0] =  "1";
+        } else {
+            shape_nums[0] =  PrintExpr(op->args[op_arg_len - 2]);
+        }
+        for (size_t i = 0; i < shape_size; i++) {
+            if (i < shape_size - shape_len) {
+                shape_template += "1";
+            } else {
+                shape_template += shape_nums[i + shape_len - shape_size];
+            }
+            if (i < shape_size - 1) {
+                shape_template += ", ";
+            }
+        }
+        shape_template += ">";
+        // generate stride
+        for (size_t i = 0; i < 4; i++) {
+          if (len > 3 - i) {
+            std::string tensor_template = global_tensor_template[String(tensor_addr)].shape_list[len + i - 4];
+            if (tensor_template[0] < '1' || tensor_template[0] > '9')  stride_template += "-1, ";
+            else {
+              std::string tmp_shape = "";
+              for(size_t j = 0; j < 4 - i; j++) {
+                tmp_shape += global_tensor_template[String(tensor_addr)].shape_list[len - j - 1];
+                if (j < 3 - i) tmp_shape += " * ";
+              }
+              stride_template = stride_template +  tmp_shape + ", ";
+            }
+          } else {
+            stride_template += "1, ";
+          }
+        }
+        stride_template += "1>";
+
+        // get gm2l1 shape
+        if(op_name.find("copy_gm_to_l1") != std::string::npos
+        || op_name.find("copy_gm_to_ub") != std::string::npos) {
+          tensor_template = tensor_template + shape_template + ", " + stride_template + ">";
+        }
+        this->PrintIndent();
+        this->stream << tensor_template << " " << src_var_id
+        << "(" << tensor_addr << " + " << src_offset;
+        if(global_tensor_template[String(tensor_addr)].shape_type=="dynamic") {
+          this->stream << ", " << shape_template << "(), " << stride_template << "(";
+          for(size_t i = 0; i < len; i++) {
+            std::string tmp_shape_info = global_tensor_template[String(tensor_addr)].shape_list[i];
+            if(tmp_shape_info[0]<'1' || tmp_shape_info[0]>'9') this->stream << tmp_shape_info;
+            if(i<len-3) this->stream << ", ";
+          }
+          this->stream << ")";
+        }
+        this->stream << ");\n";
+      } else if (api_name == "TCVT") {
+        api_name = src_type == dst_type ? "TMOV":"TCVT";
+      } else if (api_name == "TSTORE") {
+        ICHECK((copy_base_addr_map_.find(String(dst_var_id)) != copy_base_addr_map_.end()));
+        std::string tensor_addr = copy_base_addr_map_[String(dst_var_id)];
+        std::string tensor_template = "GlobalTensor<" + global_tensor_template[String(tensor_addr)].dtype+ ", ";
+        std::string shape_template = "pto::Shape<", stride_template = "pto::Stride<";
+        size_t len = global_tensor_template[String(tensor_addr)].shape_list.size();
+        size_t op_arg_len = op->args.size();
+        size_t shape_size = 5;
+        size_t shape_len = 2;
+        // Dynamic Shape and Static Shape
+
+        // generate shape
+        std::vector<std::string> shape_nums(shape_len);
+        shape_nums[1] =  PrintExpr(op->args[op_arg_len - 1]);
+        if (op_arg_len == 5) {
+            shape_nums[0] =  "1";
+        } else {
+            shape_nums[0] =  PrintExpr(op->args[op_arg_len - 2]);
+        }
+        for (size_t i = 0; i < shape_size; i++) {
+            if (i < shape_size - shape_len) {
+                shape_template += "1";
+            } else {
+                shape_template += shape_nums[i + shape_len - shape_size];
+            }
+            if (i < shape_size - 1) {
+                shape_template += ", ";
+            }
+        }
+        shape_template += ">";
+        // generate stride
+        for (size_t i = 0; i < 4; i++) {
+          if (len > 3 - i) {
+            std::string tensor_template = global_tensor_template[String(tensor_addr)].shape_list[len + i - 4];
+            if (tensor_template[0] < '1' || tensor_template[0] > '9')  stride_template += "-1, ";
+            else {
+              std::string tmp_shape = "";
+              for(size_t j = 0; j < 4 - i; j++) {
+                tmp_shape += global_tensor_template[String(tensor_addr)].shape_list[len - j - 1];
+                if (j < 3 - i) tmp_shape += "*";
+              }
+              stride_template = stride_template +  tmp_shape + ", ";
+            }
+          } else {
+            stride_template += "1, ";
+          }
+        }
+        stride_template += "1>";
+
+        if(op_name.find("copy_l0c_to_gm") != std::string::npos
+        || op_name.find("copy_ub_to_gm") != std::string::npos) {
+          tensor_template = tensor_template + shape_template + ", " + stride_template + ">";
+        }
+        this->PrintIndent();
+        this->stream << tensor_template << " " << dst_var_id
+        << "(" << tensor_addr << " + " << dst_offset;
+        if(global_tensor_template[String(tensor_addr)].shape_type=="dynamic") {
+          this->stream << ", " << shape_template << "(), " << stride_template << "(";
+          for(size_t i = 0; i < len; i++) {
+            std::string tmp_shape_info = global_tensor_template[String(tensor_addr)].shape_list[i];
+            if(tmp_shape_info[0]<'1' || tmp_shape_info[0]>'9') this->stream << tmp_shape_info;
+            if(i<len-3) this->stream << ", ";
+          }
+          this->stream << ")";
+        }
+        this->stream << ");\n";
+      } else if (api_name == "TEXTRACT") {
+        if (op->args.size() >= 3 && op->args[5].as<IntImmNode>()->value != 0) {
+            row_index = op->args[4];
+            col_index = op->args[3];
+        } else {
+            api_name = "TCVT";
+        }
+      }
+      this->PrintIndent();
+      this->stream << api_name << "(" << dst_var_id << ", "
+        << src_var_id;
+      if (api_name == "TEXTRACT") {
+      this->stream << ", " << row_index << ", "
+        << col_index;
+      } else if (api_name == "TCVT") {
+          this->stream << ", pto::RoundMode::CAST_NONE";
+      }
+      this->stream << ");\n";
+    } else {
+      this->PrintIndent();
+      this->stream << "not implemented yet\n";
+    }
+  } 
+}
+
+void CodeGenTileLangAscendPto::GemmV0Codegen(const CallNode *op) {
+  std::string op_name = Downcast<StringImm>(op->args[0])->value;
+  this->PrintIndent();
+  auto a_var = op->args[1].as<CallNode>()->args[1].as<VarNode>();
+  auto b_var = op->args[2].as<CallNode>()->args[1].as<VarNode>();
+  auto c_var = op->args[3].as<CallNode>()->args[1].as<VarNode>();
+
+  auto a_offset = PrintExpr(op->args[1].as<CallNode>()->args[2]);
+  auto b_offset = PrintExpr(op->args[2].as<CallNode>()->args[2]);
+  auto c_offset = PrintExpr(op->args[3].as<CallNode>()->args[2]);
+
+  auto a_name = var_idmap_[a_var];
+  auto b_name = var_idmap_[b_var];
+  auto c_name = var_idmap_[c_var];
+
+  std::map<std::string, std::string> params = extractTemplateParams(op_name);
+  std::string data_type_input = params["data_type_input"];
+  this->stream << "tl::pto::gemm_v0" << "<" <<  params["data_type_input"] << ", " << params["data_type_output"] << ", " 
+  << GetValidShape(std::stoi(params["M"]), data_type_input) << ", " 
+  << GetValidShape(std::stoi(params["N"]), data_type_input) << ", "
+  << GetValidShape(std::stoi(params["K"]), data_type_input) << ", "
+  << params["M"] << ", " << params["N"] << ", " << params["K"] << ", "
+  << params["transpose_A"] << ", " << params["transpose_B"] << ">" 
+  << "(" << a_name << ", " << b_name << ", " << c_name << ", " << PrintExpr(op->args[4]) << ");\n";
+}
+
+void CodeGenTileLangAscendPto::PipeBarrierCodegen(const CallNode *op) {
+  std::string pipe = Downcast<StringImm>(op->args[0])->value;
+  this->PrintIndent();
+  this->stream << "pipe_barrier(PIPE_" << pipe << ");\n";
+}
+
+void CodeGenTileLangAscendPto::SetAndWaitFlagCodegen(const CallNode *op, const std::string &op_name) {
+  std::string src = Downcast<StringImm>(op->args[0])->value;
+  std::string dst = Downcast<StringImm>(op->args[1])->value;
+  std::string event_id = PrintExpr(op->args[2]);
+  this->PrintIndent();
+  this->stream << op_name << "(PIPE_" << src << ", " << "PIPE_" <<
+  dst << ", " << "EVENT_ID" << event_id << ");\n";
+}
+
+void CodeGenTileLangAscendPto::SetCrossFlagCodegen(const CallNode *op) {
+    std::string pipe = Downcast<StringImm>(op->args[0])->value;
+    int flag = std::stoi(PrintExpr(op->args[1]));
+    int mode = 2;
+    int config = 1 | (mode << 4) | (flag << 8);
+    this->PrintIndent();
+    this->stream << "ffts_cross_core_sync" << "(" << "PIPE_" << pipe << ", " << config << ");\n";
+}
+
+void CodeGenTileLangAscendPto::AutoSetCrossFlagCodegen(const CallNode *op) {
+    auto mode = op->args[0].as<IntImmNode>()->value;
+    auto pipe = op->args[1].as<StringImmNode>()->value;
+    auto flag = op->args[2].as<IntImmNode>()->value;
+    int config = 1 | (mode << 4) | (flag << 8);
+    this->PrintIndent();
+    this->stream << "ffts_cross_core_sync" << "(" << "PIPE_" << pipe << ", " << config << ");\n";
+}
+
+void CodeGenTileLangAscendPto::WaitCrossFlagCodegen(const CallNode *op) {
+  this->PrintIndent();
+  std::string flag = PrintExpr(op->args[0]);
+  this->stream << "wait_flag_dev" << "(" << flag << ");\n";
+}
+
+void CodeGenTileLangAscendPto::FillCodegen(const CallNode *op) {
+  this->PrintIndent();
+  this->stream << "TEXPANDS" << "(" << PrintBufferOffset(op->args[1].as<CallNode>()) << ", "
+              << PrintExpr(op->args[2]) << ");\n";
 }
 
 void CodeGenTileLangAscendPto::BinaryVecOpCodegen(const CallNode *op,
@@ -987,6 +930,73 @@ void CodeGenTileLangAscendPto::BinaryVecOpsCodegen(const CallNode *op,
     }
   }
   this->stream << ");\n";
+}
+
+void CodeGenTileLangAscendPto::UnaryVecOpCodegen(const CallNode *op, const std::string& op_name) {
+  std::vector<std::string> var_names;
+  for (int i = 0; i < op->args.size() - 1; i++) {
+    auto var_name = PrintBufferOffset(op->args[i].as<CallNode>());
+    var_names.push_back(var_name);
+  }
+  this->PrintIndent();
+  this->stream << op_name << "(";
+  for (int i = 0; i < var_names.size(); i++) {
+    this->stream << var_names[i];
+    if (i != var_names.size() - 1) {
+      this->stream << ", ";
+    }
+  }
+  this->stream << ");\n";
+}
+
+void CodeGenTileLangAscendPto::ScalarOpCodegen(const CallNode *op, const std::string& op_name) {
+    this->PrintIndent();
+    this->stream << op_name << "(" << PrintBufferOffset(op->args[0].as<CallNode>()) << ", "
+                  << PrintBufferOffset(op->args[1].as<CallNode>()) << ", "
+                  << PrintExpr(op->args[2]) << ");\n";
+}
+
+void CodeGenTileLangAscendPto::ReduceOpCodegen(const CallNode *op) {
+  std::string op_name = Downcast<StringImm>(op->args[0])->value;
+  if (op_name.find("reduce_sum") != std::string::npos) {
+    op_name = "TROWSUM";
+  } else if (op_name.find("reduce_max") != std::string::npos) {
+    op_name = "TROWMAX";
+  } else {
+    ICHECK(false) << "not support reduce type: " << op_name;
+  }
+
+  std::vector<std::string> var_names;
+  for (int i = 1; i < op->args.size(); i++) {
+    auto var_name = PrintBufferOffset(op->args[i].as<CallNode>());
+    var_names.push_back(var_name);
+  }
+  std::string ub_name = var_names[0];
+  std::vector<std::string> ub_data_vector = ub_data_map_[ub_name];
+  std::string ub_data_type = ub_data_vector[0];
+  std::string row = ub_data_vector[2];
+  std::string col = ub_data_vector[1];
+  std::string ffts = ub_data_vector[3];
+  this->PrintIndent();
+  this->stream << "tl::pto::TileUbDataDN <" << ub_data_type << ", " << row << ", " << col << "> " << ub_name << "_DN(" << row << ", " << col << ");\n";
+  this->PrintIndent();
+  this->stream << "TASSIGN(" << ub_name << "_DN, " << ffts << ");\n";
+  this->PrintIndent();
+  this->stream << op_name << "(";
+  for (int i = 0; i < var_names.size(); i++) {
+    this->stream << var_names[i];
+    if (i == 0) {
+      this->stream << "_DN";
+    }
+    if (i != var_names.size() - 1) {
+      this->stream << ", ";
+    }
+  }
+  this->stream << ");\n";
+  this->PrintIndent();
+  this->stream << "pipe_barrier(PIPE_ALL);\n";
+  this->PrintIndent();
+  this->stream << "TRESHAPE(" << var_names[0] << ", " << var_names[0] << "_DN);\n";
 }
 
 void CodeGenTileLangAscendPto::VisitStmt_(const AttrStmtNode *op) {
@@ -1321,6 +1331,7 @@ static void ProcessHostInput(std::ostream &os, std::vector<std::string> &arg_nam
 void CodeGenTileLangAscendPto::CallTilingInput(std::ostream &os, std::string func_name, std::vector<std::string> &tiling_args,
   std::vector<const tir::VarNode*> &shape_vars)
 {
+
 }
 
 void CodeGenTileLangAscendPto::ProcessTilingInput(std::ostream &os, std::string func_name, std::vector<std::string> &tiling_args,
@@ -1502,8 +1513,6 @@ void CodeGenTileLangAscendPto::AddFunction(const GlobalVar &gvar,
   std::string content = stream.str();
 }
 
-
-
 void CodeGenTileLangAscendPto::AutoBarrierCodegen(const CallNode *op) {
   this->PrintIndent();
   std::string pipeline = "PIPE_ALL";
@@ -1540,7 +1549,6 @@ void CodeGenTileLangAscendPto::AutoFlagOpCodegen(const CallNode *op,
   this->stream << op_name << "(PIPE_" << src << ", " << "PIPE_" <<
       dst << ", " << "EVENT_ID" << event_id << ");\n";
 }
-
 
 } // namespace codegen
 } // namespace tvm
