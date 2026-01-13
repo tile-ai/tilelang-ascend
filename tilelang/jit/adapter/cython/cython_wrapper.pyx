@@ -91,7 +91,7 @@ cdef class CythonKernelWrapper:
 
         analyzer = Analyzer()
         sym_val_by_name = {}
-        for key, (ref_tensor_idx, ref_shape_idx) in self.dynamic_symbolic_map.items():?
+        for key, (ref_tensor_idx, ref_shape_idx) in self.dynamic_symbolic_map.items():
             val = int(inputs[ref_tensor_idx].shape[ref_shape_idx])
             sym_val_by_name[key] = val
 
