@@ -2767,20 +2767,47 @@ void CodeGenTileLangNPUIRDEV::VisitStmt_(const DeclBufferNode *op) {
   VisitStmt(op->body);
 }
 
-void CodeGenTileLangNPUIRDEV::LoopCarriedVarCollector::VisitExpr_(const tir::CallNode* call) {
+void CodeGenTileLangNPUIRDEV::LoopCarriedVarCollector::VisitExpr_(
+    const tir::CallNode *call) {
+  auto check_var = [&](const tir::VarNode *var_node) {
+    if (var_node && outer_->GetVarValue(var_node) != mlir::Value{}) {
+      loop_carried_vars_.insert(var_node);
+    }
+  };
+  auto process_call_arg = [&](int arg_index) {
+    auto &arg = call->args[arg_index];
+    if (arg.as<IntImm>() || arg.as<FloatImm>()) {
+      // Immediate number type, no processing required
+    } else {
+      const CallNode *region_node = arg.as<CallNode>();
+      if (region_node) {
+        tvm::tl::RegionOp regionop(region_node->args, outer_->vmap);
+        check_var(regionop.GetBuffer()->data.get());
+      }
+    }
+  };
   if (call->op.same_as(Op::Get("tl.npuir_dot"))) {
     tvm::tl::NpuirDot npuirop(call->args, outer_->vmap);
-      auto check_var = [&](const tir::VarNode* var_node) {
-      if (var_node && outer_->GetVarValue(var_node) != mlir::Value{}) {
-        loop_carried_vars_.insert(var_node);
-      }
-    };
-    
     check_var(npuirop.src0->data.get());
     check_var(npuirop.src1->data.get());
     check_var(npuirop.dst->data.get());
+  } else if (call->op.same_as(Op::Get("tl.npuir_add")) ||
+             call->op.same_as(Op::Get("tl.npuir_sub")) ||
+             call->op.same_as(Op::Get("tl.npuir_mul")) ||
+             call->op.same_as(Op::Get("tl.npuir_div")) ||
+             call->op.same_as(Op::Get("tl.npuir_pow")) ||
+             call->op.same_as(Op::Get("tl.npuir_max")) ||
+             call->op.same_as(Op::Get("tl.npuir_min")) ||
+             call->op.same_as(Op::Get("tl.npuir_and")) ||
+             call->op.same_as(Op::Get("tl.npuir_shl")) ||
+             call->op.same_as(Op::Get("tl.npuir_shr")) ||
+             call->op.same_as(Op::Get("tl.npuir_cmp")) ||
+             call->op.same_as(Op::Get("tl.npuir_xor")) ||
+             call->op.same_as(Op::Get("tl.npuir_or"))) {
+    process_call_arg(0);
+    process_call_arg(1);
+    process_call_arg(2);
   }
-  
   tir::StmtExprVisitor::VisitExpr_(call);
 }
 
