@@ -14,7 +14,7 @@ tilelang.cache.clear_cache()
 parser = argparse.ArgumentParser(description="NPU Kernel Compilation")
 parser.add_argument("--m", type=int, default=1, help="Matrix M dimension")
 parser.add_argument("--n", type=int, default=352, help="Matrix N dimension")
-parser.add_argument("--num_processes", type=int, default=2, help="number of processes")
+parser.add_argument("--num_processes", type=int, default=8, help="number of processes")
 args = parser.parse_args()
 
 M = args.m
@@ -54,7 +54,7 @@ def worker(rank, barrier):
         raise ValueError("[ERROR] set_conf_store_tls failed")
     # 创建初始化属性对象
     attributes = aclshmem_module.InitAttr()
-    npu_num = 2
+    npu_num = 8
     attributes.my_rank = rank
     attributes.n_ranks = npu_num
     attributes.local_mem_size = g_ash_size
