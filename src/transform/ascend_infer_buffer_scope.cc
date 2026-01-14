@@ -221,7 +221,7 @@ private:
 
             first_info.is_first_in_at_least_one = true;
             first_info.first_second_pairs.emplace_back(first_buf_handle, second_buf_handle);
-            
+
             second_info.is_second_in_at_least_one = true;
             second_info.second_first_pairs.emplace_back(second_buf_handle, first_buf_handle);
           }
@@ -231,7 +231,7 @@ private:
             info.func_names.insert("tl.ascend_copy");
             info.call_sites.push_back(op);
           }
-          
+
           if (second_buf_handle) {
             BufferUseInfo& info = buffer_use_info[second_buf_handle];
             info.func_names.insert("tl.ascend_copy");
@@ -380,8 +380,6 @@ private:
         if (use_info) {
           bool only_in_ascend_copy = false;
           if (use_info->used_in_vector && !use_info->used_in_cube) {
-              corrected_scope = "shared";
-          } else if (use_info->used_in_vector && !use_info->used_in_cube) {
             corrected_scope = "shared";
           } else if (use_info->used_in_cube && !use_info->used_in_vector) {
             corrected_scope = "shared.dyn";
@@ -416,12 +414,12 @@ private:
         if (!alloc_info || alloc_info->original_scope != "shared.dyn") {
           continue;
     }
-        
+
         BufferUseInfo* use_info = collector_->GetUseInfo(handle);
         if (!use_info) {
           continue;
         }
-        
+
         bool only_in_ascend_copy = false;
         if (!use_info->used_in_cube && !use_info->used_in_vector) {
           only_in_ascend_copy = true;
@@ -432,7 +430,7 @@ private:
             }
           }
         }
-        
+
         if (!only_in_ascend_copy) {
           continue;
         }
@@ -440,23 +438,23 @@ private:
         if (pos_info_it == collector_->ascend_copy_position_info.end()) {
           continue;
         }
-        
+
         const AscendCopyPositionInfo& pos_info = pos_info_it->second;
 
         bool found_qualified_copy = false;
-        
+
         for (const auto& pair : pos_info.first_second_pairs) {
           const VarNode* second_handle = pair.second;
           BufferAllocationInfo* second_alloc = collector_->GetAllocInfo(second_handle);
           if (!second_alloc) {
             continue;
           }
-          
+
           std::string second_scope = second_alloc->corrected_scope;
           if (second_scope.empty()) {
             second_scope = second_alloc->original_scope;
           }
-          
+
           if (second_scope == "wmma.matrix_a" || second_scope == "wmma.matrix_b") {
             found_qualified_copy = true;
             break;
@@ -467,7 +465,7 @@ private:
         } else {
           alloc_info->corrected_scope = "shared";
         }
-        
+
         if (alloc_info->corrected_scope != alloc_info->original_scope) {
           if (alloc_info->alloc_node) {
             scope_corrections_[alloc_info->alloc_node] = alloc_info->corrected_scope;
