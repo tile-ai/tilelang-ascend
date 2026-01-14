@@ -17,8 +17,9 @@ class LibraryGenerator(object):
     libpath: Optional[str] = None
     lib_code: Optional[str] = None
 
-    def __init__(self, target: str):
+    def __init__(self, target: str, plantform: str):
         self.target = target
+        self.plantform = plantform
 
     def update_lib_code(self, lib_code: str):
         self.lib_code = lib_code
@@ -34,34 +35,81 @@ class LibraryGenerator(object):
         libpath = src.name.replace(".cpp", ".so")
         ASCEND_HOME_PATH = os.environ["ASCEND_HOME_PATH"]
         TL_ROOT = os.environ["TL_ROOT"]
-        command = [
-            "bisheng",
-            "--npu-arch=dav-2201",
-            "-O2",
-            "-std=c++17",
-            "-xasc",
-            f"-I{ASCEND_HOME_PATH}/include",
-            f"-I{ASCEND_HOME_PATH}/include/experiment/msprof",
-            f"-I{ASCEND_HOME_PATH}/include/experiment/runtime",
-            f"-I{ASCEND_HOME_PATH}/pkg_inc",
-            f"-I{ASCEND_HOME_PATH}/pkg_inc/runtime",
-            f"-I{ASCEND_HOME_PATH}/pkg_inc/profiling",
-            f"-I{TL_ROOT}/3rdparty/catlass/include",
-            "-I" + TILELANG_TEMPLATE_PATH,
-            f"-L{ASCEND_HOME_PATH}/lib64",
-            "-Wno-macro-redefined",
-            "-Wno-ignored-attributes",
-            "-lruntime",
-            "-lascendcl",
-            "-lm",
-            "-ltiling_api",
-            "-lplatform",
-            "-lc_sec",
-            "-ldl",
-            "-fPIC",
-            "--shared",
-            src.name,
-        ]
+        if self.target == "ascendc" or self.target == "auto":
+            command = [
+                "bisheng",
+                "--npu-arch=dav-2201",
+                "-O2",
+                "-std=c++17",
+                "-xasc",
+                f"-I{ASCEND_HOME_PATH}/include",
+                f"-I{ASCEND_HOME_PATH}/include/experiment/msprof",
+                f"-I{ASCEND_HOME_PATH}/include/experiment/runtime",
+                f"-I{ASCEND_HOME_PATH}/pkg_inc",
+                f"-I{ASCEND_HOME_PATH}/pkg_inc/runtime",
+                f"-I{ASCEND_HOME_PATH}/pkg_inc/profiling",
+                f"-I{TL_ROOT}/3rdparty/catlass/include",
+                "-I" + TILELANG_TEMPLATE_PATH,
+                f"-L{ASCEND_HOME_PATH}/lib64",
+                "-Wno-macro-redefined",
+                "-Wno-ignored-attributes",
+                "-lruntime",
+                "-lascendcl",
+                "-lm",
+                "-ltiling_api",
+                "-lplatform",
+                "-lc_sec",
+                "-ldl",
+                "-fPIC",
+                "--shared",
+                src.name,
+            ]
+        elif self.target == "pto":
+            ccec = "dav-c310" if self.plantform == 'A5' else "dav-c220"
+            memory = "REGISTER_BASE" if self.plantform == 'A5' else "MEMORY_BASE"
+            command = [
+                "bisheng",
+                f"--cce-aicore-arch={ccec}",
+                f"-D{memory}",
+                "-O2",
+                "-std=gnu++17",
+                "-xcce",
+                "-mllvm",
+                "-cce-aicore-stack-size=0x8000",
+                "-mllvm",
+                "-cce-aicore-function-stack-size=0x8000",
+                "-mllvm",
+                "-cce-aicore-record-overflow=true",
+                "-mllvm",
+                "-cce-aicore-addr-transform",
+                "-mllvm",
+                "-cce-aicore-dcci-insert-for-scalar=false",
+                "-DL2_CACHE_HINT",
+                "-I../../src/",
+                f"-I{ASCEND_HOME_PATH}/include",
+                f"-I{ASCEND_HOME_PATH}/include/experiment/msprof",
+                f"-I{ASCEND_HOME_PATH}/include/experiment/runtime",
+                f"-I/usr/local/Ascend/driver/kernel/inc",
+                f"-I{TL_ROOT}/3rdparty/pto-tile-lib/include",
+                f"-I{ASCEND_HOME_PATH}/pkg_inc",
+                f"-I{ASCEND_HOME_PATH}/pkg_inc/runtime",
+                f"-I{ASCEND_HOME_PATH}/pkg_inc/profiling",
+                f"-L{ASCEND_HOME_PATH}/lib64",
+                "-I" + TILELANG_TEMPLATE_PATH,
+                "-Wno-macro-redefined",
+                "-Wno-ignored-attributes",
+                "-lruntime",
+                "-lstdc++",
+                "-lascendcl",
+                "-lm",
+                "-ltiling_api",
+                "-lplatform",
+                "-lc_sec",
+                "-ldl",
+                "-fPIC",
+                "--shared",
+                src.name,
+            ]
         command += ["-o", libpath]
 
         src.write(self.lib_code)

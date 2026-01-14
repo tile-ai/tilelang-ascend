@@ -380,6 +380,8 @@ private:
         if (use_info) {
           bool only_in_ascend_copy = false;
           if (use_info->used_in_vector && !use_info->used_in_cube) {
+              corrected_scope = "shared";
+          } else if (use_info->used_in_vector && !use_info->used_in_cube) {
             corrected_scope = "shared";
           } else if (use_info->used_in_cube && !use_info->used_in_vector) {
             corrected_scope = "shared.dyn";
@@ -413,7 +415,7 @@ private:
         BufferAllocationInfo* alloc_info = collector_->GetAllocInfo(handle);
         if (!alloc_info || alloc_info->original_scope != "shared.dyn") {
           continue;
-        }
+    }
         
         BufferUseInfo* use_info = collector_->GetUseInfo(handle);
         if (!use_info) {

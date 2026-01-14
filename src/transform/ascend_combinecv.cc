@@ -44,7 +44,8 @@ struct CrossCoreSyncPoint {
   const std::string workspace_name;
   const std::string pipe;
   const EvaluateNode* node;
-  const std::optional<const ForNode*> target_for_node = std::nullopt;
+  std::optional<const ForNode*> target_for_node = std::nullopt;
+  const std::optional<std::vector<const ForNode*>> parent_for_nodes = std::nullopt;
 
   std::string ToString() const {
     std::ostringstream oss;
@@ -61,6 +62,11 @@ struct CrossCoreSyncPoint {
       oss << ", target_for_node=" << target_for_node.value()->loop_var->name_hint;
     } else {
       oss << ", target_for_node=None";
+    }
+    if (parent_for_nodes.has_value()) {
+      oss << ", parent_for_nodes.size()=" << parent_for_nodes.value().size();
+    } else {
+      oss << ", parent_for_nodes=None";
     }
     oss << ")";
     return oss.str();
@@ -104,6 +110,7 @@ public:
             pipe,
             op,
             GetVarUsedOuterMostForNode(call_node),
+            current_loops_,
           });
         }
       }
@@ -349,6 +356,14 @@ public:
                   cube_sp.is_same_depth = true;
                   vec_sp.is_same_depth = true;
                   break;
+              }
+
+              // Set target_for_node for non-same-depth sync points
+              if (cube_sp.is_write && cube_sp.parent_for_nodes.has_value()) {
+                cube_sp.target_for_node = cube_sp.parent_for_nodes.value().at(vec_sp.sync_loop_depth);
+              }
+              if (vec_sp.is_write && vec_sp.parent_for_nodes.has_value()) {
+                vec_sp.target_for_node = vec_sp.parent_for_nodes.value().at(cube_sp.sync_loop_depth);
               }
           }
       }

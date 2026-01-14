@@ -27,6 +27,10 @@
 #include <tvm/runtime/registry.h>
 #include <tvm/tir/expr.h>
 
+
+#include <tvm/runtime/registry.h>
+#include <tvm/tir/expr.h>
+
 #include "../op/ascend.h"
 #include "../op/builtin.h"
 #include "./common/collector.h"
@@ -1557,7 +1561,8 @@ private:
   }
 
   int AllocateEventId() {
-    return event_id_counter_++;
+    event_id_counter_ = (event_id_counter_ + 1) % 8;
+    return event_id_counter_;
   }
 
   Stmt CreatePipeBarrier(const std::string &pipeline) {

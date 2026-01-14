@@ -85,7 +85,8 @@ def OptimizeForTarget(mod: IRModule, target: Target) -> IRModule:
     mod = tir.transform.LowerOpaqueBlock()(mod)
     mod = tir.transform.NarrowDataType(32)(mod)
     mod = tilelang.transform.ConfigIndexBitwidth()(mod)
-    mod = tilelang.transform.FlattenBuffer()(mod)
+    if target.model != "pto":
+        mod = tilelang.transform.FlattenBuffer()(mod)
     mod = tir.transform.Simplify()(mod)
     mod = tilelang.transform.VectorizeLoop(enable_vectorize=allow_vectorize(pass_ctx=pass_ctx))(mod)
     mod = tir.transform.StorageRewrite()(mod)
