@@ -1119,8 +1119,8 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AttrStmtNode *op) {
 }
 
 void UbShapeInputCheck(const AllocateNode *op) {
-  if (op->extents.size() > 2 || op->extents.size() == 0){
-    // ICHECK(false) << "Unsupported ubsize which is expected to be 1 or 2";
+  if (op->extents.size() > 3 || op->extents.size() == 0){
+    ICHECK(false) << "Unsupported ubsize which is expected to be 1, 2 or 3";
   }
 }
 
@@ -1511,13 +1511,6 @@ void CodeGenTileLangAscendPto::PreFunctionBody(const PrimFunc &f) {
          "handle, dtype, shape0, shape1)";
 
 for (size_t i = 0; i < this->para_.size(); i += 3) {
-    // this->PrintIndent();
-    // std::string shape0 = this->para_[i + 3], shape1 = this->para_[i + 4];
-    // std::string copy_tmplte = "GlobalTensor<" + this->para_[i + 2] + ", Shape<1, 1, 1, " + 
-    // shape0 + ", " + shape1 + ">, Stride<" +  "1, 1, " + 
-    // shape0 + " * " + shape1 + ", " + shape1 + ", 1>>";
-    // stream << copy_tmplte << " " << this->para_[i + 1] << "(" << this->para_[i] << ");\n";
-    // this->PrintIndent();
     copy_base_addr_map_.Set(String(this->para_[i + 1]), String(this->para_[i]));
   }
 
