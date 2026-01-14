@@ -1281,8 +1281,14 @@ void CodeGenTileLangAscend::VisitStmt_(const AttrStmtNode *op) {
       this->stream << "if ASCEND_IS_AIV {\n";
       this->PrintIndent();
       this->PrintIndent();
-      this->stream << current_block_id << " = " << current_block_id
-                   << " / 2;\n";
+      if (kernel_C_V_1_1_) {
+        this->stream << current_block_id << " = " << current_block_id
+                     << " / 1;\n";
+      } else {
+        this->stream << current_block_id << " = " << current_block_id
+                     << " / 2;\n";
+                      
+      }
       this->PrintIndent();
       this->stream << "}\n";
 
@@ -1436,7 +1442,11 @@ void CodeGenTileLangAscend::VisitExpr_(const FloatImmNode *op,
 void CodeGenTileLangAscend::PreFunctionBody(const PrimFunc &f) {
   int func_scope = this->BeginScope();
   this->PrintIndent();
-  stream << "KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_MIX_AIC_1_2);\n";
+  if (kernel_C_V_1_1_) {
+    stream << "KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_MIX_AIC_1_1);\n";
+  } else {
+    stream << "KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_MIX_AIC_1_2);\n";
+  }
   this->PrintIndent();
   stream << "AscendC::TPipe pipe;\n\n";
   ICHECK(this->para_.size() % 3 == 0)
@@ -1634,6 +1644,7 @@ void CodeGenTileLangAscend::AddFunction(const GlobalVar &gvar,
   ICHECK(global_symbol.defined())
       << "CodeGenC: Expect PrimFunc to have the global_symbol attribute";
   bool no_alias = f->HasNonzeroAttr(tir::attr::kNoAlias);
+  kernel_C_V_1_1_ = f->HasNonzeroAttr("kernel_C_V_1_1");
 
   this->PrintFuncPrefix(stream);
   CodeGenC::PrintType(f->ret_type, stream);

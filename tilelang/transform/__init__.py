@@ -423,3 +423,15 @@ def AscendInferBufferScope():
     ----
     """
     return _ffi_api.InferAllocScope()  # type: ignore
+
+
+def AscendEraseWorkspace():
+    """Erase manual workspace allocations for virtual CV copy in Ascend.
+
+    Returns
+    -------
+    fpass : tvm.transform.Pass
+        The result pass
+    ----
+    """
+    return _ffi_api.AscendEraseWorkspace()  # type: ignore

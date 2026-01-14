@@ -63,6 +63,8 @@ def LowerAndLegalize(mod: IRModule, target: Target) -> IRModule:
     mod = tilelang.transform.LayoutInference()(mod)
     # Lower high-level tile operations to low-level operations
     mod = tilelang.transform.LowerTileOp()(mod)
+    # Erase manual workspace allocations for virtual CV copy in Ascend
+    mod = tilelang.transform.AscendEraseWorkspace()(mod)
     # Legalize vectorized loops to ensure they are valid
     mod = tilelang.transform.LegalizeVectorizedLoop()(mod)
     # Add safety checks for memory accesses

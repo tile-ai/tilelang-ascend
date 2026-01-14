@@ -69,6 +69,7 @@ class KernelCache:
         func: Callable,
         out_idx: List[int],
         workspace_idx: List[int],
+        auto_gm_idx: List[int],
         execution_backend: Literal["dlpack", "ctypes", "cython"] = "cython",
         args=None,
         target: Union[str, Target] = "auto",
@@ -81,7 +82,8 @@ class KernelCache:
         Args:
             func (Callable): The function to be compiled.
             out_idx (List[int]): Indices specifying which outputs to return.
-            workspace_idx (List[int]): Indices specifying auto-allocated workspace tensors.
+            workspace_idx (List[int]): Indices specifying workspace tensors in params.
+            auto_gm_idx (List[int]): Indices specifying workspace tensors which virtual channels(ub/l0c->l1/ub) need.
             execution_backend (Literal): Backend type for execution. Defaults to "cython".
             args: Arguments passed to the function.
             target (Union[str, Target]): Compilation target platform. Defaults to "auto".
@@ -96,6 +98,7 @@ class KernelCache:
             "func": sha256(func_binary).hexdigest(),  # Use SHA256 to generate hash key
             "out_idx": (tuple(out_idx) if isinstance(out_idx, (list, tuple)) else [out_idx]),
             "workspace_idx": (tuple(workspace_idx) if isinstance(workspace_idx, (list, tuple)) else [workspace_idx]),
+            "auto_gm_idx": (tuple(auto_gm_idx) if isinstance(auto_gm_idx, (list, tuple)) else [auto_gm_idx]),
             "args_repr": tuple(
                 repr(arg) for arg in args
             ),  # Use repr to serialize arguments, may need more robust serialization
@@ -112,6 +115,7 @@ class KernelCache:
         func: PrimFunc = None,
         out_idx: List[int] = None,
         workspace_idx: List[int] = None,
+        auto_gm_idx: List[int] = None,
         *args,
         target: Union[str, Target] = "auto",
         target_host: Union[str, Target] = None,
@@ -126,6 +130,7 @@ class KernelCache:
             func: Function to be compiled or a prepared PrimFunc
             out_idx: Indices specifying which outputs to return
             workspace_idx: Indices specifying auto-allocated workspace tensors
+            auto_gm_idx: Indices specifying workspace tensors which virtual channels(ub/l0c->l1/ub) need
             target: Compilation target platform
             target_host: Host target platform
             *args: Arguments passed to func
@@ -164,7 +169,7 @@ class KernelCache:
 
             # Then check disk cache
             kernel = self._load_kernel_from_disk(key, target, target_host, out_idx, workspace_idx,
-                                                 execution_backend, pass_configs, func)
+                                                 auto_gm_idx, execution_backend, pass_configs, func)
             if kernel is not None:
                 # Populate memory cache with disk result
                 self._memory_cache[key] = kernel
@@ -282,6 +287,7 @@ class KernelCache:
         target_host: Union[str, Target] = None,
         out_idx: List[int] = None,
         workspace_idx: List[int] = None,
+        auto_gm_idx: List[int] = None,
         execution_backend: Literal["dlpack", "ctypes", "cython"] = "cython",
         pass_configs: dict = None,
         func: Callable = None,
@@ -295,6 +301,7 @@ class KernelCache:
             target_host (Union[str, Target], optional): Host target platform.
             out_idx (List[int], optional): Indices specifying which outputs to return.
             workspace_idx (List[int], optional): Indices specifying auto-allocated workspace tensors.
+            auto_gm_idx (List[int], optional): Indices specifying workspace tensors which virtual channels(ub/l0c->l1/ub) need.
             execution_backend (Literal): Backend type for execution. Defaults to "cython".
             pass_configs (dict, optional): Configuration for compiler passes.
             func (Callable, optional): The original function.
@@ -336,6 +343,7 @@ class KernelCache:
                 target_host=target_host,
                 out_idx=out_idx,
                 workspace_idx=workspace_idx,
+                auto_gm_idx=auto_gm_idx,
                 execution_backend=execution_backend,
                 pass_configs=pass_configs,
             )
