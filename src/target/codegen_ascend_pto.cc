@@ -30,6 +30,7 @@
 
 namespace tvm {
 namespace codegen {
+  const std::string kAscendPtoScope = "tl::ascend_pto::";
 
 static std::string getType(const DataType &dtype) {
   if (dtype.is_float16()) {
@@ -726,10 +727,10 @@ void CodeGenTileLangAscendPto::CallExternCodegen(const CallNode *op) {
         }
         tensor_template = tensor_template + shape_template + ", " + stride_template + ", " + valid_template + ">";
         this->PrintIndent();
-        this->stream << "tl::pto::" << src_var << tensor_template << "(" << tensor_addr << " + " << src_offset;
+        this->stream << kAscendPtoScope << src_var << tensor_template << "(" << tensor_addr << " + " << src_offset;
         if(is_dynamic) {
-          std::string shape = "Shape<"  + shape_template + ">()";
-          this->stream << ", " << "Shape<"  << shape_template << ">" << "(), " << "Stride<" << stride_template << ">" << "(";
+          std::string shape = "pto::Shape<"  + shape_template + ">()";
+          this->stream << ", " << "pto::Shape<"  << shape_template << ">" << "(), " << "pto::Stride<" << stride_template << ">" << "(";
           for(size_t i = 0; i < len; i++) {
             std::string tmp_shape_info = global_tensor_template[String(tensor_addr)].shape_list[i];
             if(tmp_shape_info[0]<'1' || tmp_shape_info[0]>'9') this->stream << tmp_shape_info;
@@ -821,9 +822,9 @@ void CodeGenTileLangAscendPto::CallExternCodegen(const CallNode *op) {
         }
         tensor_template = tensor_template + shape_template + ", " + stride_template + "," + valid_template + ">";
         this->PrintIndent();
-        this->stream << "tl::pto::" << src_var << tensor_template << "(" << tensor_addr << " + " << dst_offset;
+        this->stream << kAscendPtoScope << src_var << tensor_template << "(" << tensor_addr << " + " << dst_offset;
         if(is_dynamic) {
-          this->stream << ", " << "Shape<"  << shape_template << ">" << "(), " << "Stride<" << stride_template << ">" << "(";
+          this->stream << ", " << "pto::Shape<"  << shape_template << ">" << "(), " << "pto::Stride<" << stride_template << ">" << "(";
           for(size_t i = 0; i < len; i++) {
             std::string tmp_shape_info = global_tensor_template[String(tensor_addr)].shape_list[i];
             if(tmp_shape_info[0]<'1' || tmp_shape_info[0]>'9') this->stream << tmp_shape_info;
@@ -864,7 +865,7 @@ void CodeGenTileLangAscendPto::GemmV0Codegen(const CallNode *op) {
 
     std::map<std::string, std::string> params = extractTemplateParams(op_name);
     std::string data_type_input = params["data_type_input"];
-    this->stream << "tl::pto::gemm_v0" << "<" <<  params["data_type_input"] << ", " << params["data_type_output"] << ", " 
+    this->stream << kAscendPtoScope << "gemm_v0" << "<" <<  params["data_type_input"] << ", " << params["data_type_output"] << ", " 
     << GetValidShape(std::stoi(params["M"]), data_type_input) << ", " 
     << GetValidShape(std::stoi(params["N"]), data_type_input) << ", "
     << GetValidShape(std::stoi(params["K"]), data_type_input) << ", "
@@ -874,7 +875,7 @@ void CodeGenTileLangAscendPto::GemmV0Codegen(const CallNode *op) {
   } else {
     std::map<std::string, std::string> params = extractTemplateParams(op_name);
     std::string data_type_input = params["data_type_input"];
-    this->stream << "tl::pto::gemm_v0" << "<" <<  params["data_type_input"] << ", " << params["data_type_output"] << ", " 
+    this->stream << kAscendPtoScope << "gemm_v0" << "<" <<  params["data_type_input"] << ", " << params["data_type_output"] << ", " 
     << GetValidShape(std::stoi(params["M"]), data_type_input) << ", " 
     << GetValidShape(std::stoi(params["N"]), data_type_input) << ", "
     << GetValidShape(std::stoi(params["K"]), data_type_input) << ", "
@@ -970,7 +971,7 @@ void CodeGenTileLangAscendPto::BinaryVecOpsCodegen(const CallNode *op,
     std::string ub_data_type = ub_data_vector[0];
     this->PrintIndent();
     int32_t ub_data_temp_col = std::stoi(ub_data_vector[2]) * std::stoi(ub_data_vector[1]) / std::stoi(for_num_map_[index]);
-    this->stream << "tl::pto::TileUbDataND<" << ub_data_vector[0] << ", 1, " 
+    this->stream << kAscendPtoScope << "TileUbDataND<" << ub_data_vector[0] << ", 1, " 
     << ub_data_temp_col << "> " << var_name_temp << "(" << "1, " << ub_data_temp_col << ");\n";
     this->PrintIndent();
     this->stream << "TASSIGN(" << var_name_temp << ", " << ub_data_vector[3] << " + " <<
@@ -1045,7 +1046,7 @@ void CodeGenTileLangAscendPto::ReduceOpCodegen(const CallNode *op) {
   std::string col = ub_data_vector[1];
   std::string ffts = ub_data_vector[3];
   this->PrintIndent();
-  this->stream << "tl::pto::TileUbDataDN <" << ub_data_type << ", " << row << ", " << col << "> " << ub_name << "_DN(" << row << ", " << col << ");\n";
+  this->stream << kAscendPtoScope << "TileUbDataDN <" << ub_data_type << ", " << row << ", " << col << "> " << ub_name << "_DN(" << row << ", " << col << ");\n";
   this->PrintIndent();
   this->stream << "TASSIGN(" << ub_name << "_DN, " << ffts << ");\n";
   this->PrintIndent();
@@ -1151,13 +1152,13 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
     std::vector<std::string> l_data(3);
     ub_data[0] = type;
     l_data[0] = type;
-    if (pos == "tl::pto::TileUbData") {
+    if (pos == kAscendPtoScope + "TileUbData") {
       UbShapeInputCheck(op);
     }
     this->PrintIndent();
     // Allocate buffer
     if (address_map_.find(op->buffer_var) != address_map_.end()) {
-      if (pos == "tl::pto::TileUbData") {
+      if (pos == kAscendPtoScope + "TileUbData") {
         if (op->extents.size() == 2) {
           ub_data[1] = PrintExpr(op->extents[0]);
           ub_data[2] = PrintExpr(op->extents[1]);
@@ -1228,7 +1229,7 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
           }
         }
       } else {
-        if (!(pos=="tl::pto::TileMatL1" && op->extents.size() == 3)) {
+        if (!(pos == kAscendPtoScope + "TileMatL1" && op->extents.size() == 3)) {
         int dtype_bytes = op->dtype.bytes();
         std::vector<PrimExpr> valid_shapes;
         valid_shapes.reserve(2);
@@ -1285,7 +1286,7 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
       if (address_offset_.find(String(pos)) == address_offset_.end()) {
         address_offset_.Set(String(pos), 0);
       }
-      if (pos == "tl::pto::TileUbData") {
+      if (pos == kAscendPtoScope + "TileUbData") {
         if (op->extents.size() == 2) {
           
           ub_data[1] = PrintExpr(op->extents[0]);
@@ -1369,7 +1370,7 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
           }
         }
       } else {
-        if (!(pos=="tl::pto::TileMatL1" && op->extents.size() == 3)) {
+        if (!(pos == kAscendPtoScope + "TileMatL1" && op->extents.size() == 3)) {
         int dtype_bytes = op->dtype.bytes();
         std::vector<PrimExpr> valid_shapes;
         valid_shapes.reserve(2);
@@ -1443,9 +1444,9 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
   } else if (scope == "wmma.accumulator") {
     print_buffer("TileAcc");
   } else if (scope == "shared.dyn") {
-    print_buffer("tl::pto::TileMatL1");
+    print_buffer(kAscendPtoScope + "TileMatL1");
   } else if (scope == "shared") {
-    print_buffer("tl::pto::TileUbData");
+    print_buffer(kAscendPtoScope + "TileUbData");
   }
   this->PrintStmt(op->body);
 }
