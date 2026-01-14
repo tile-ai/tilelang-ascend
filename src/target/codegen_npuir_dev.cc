@@ -1958,7 +1958,7 @@ void CodeGenTileLangNPUIRDEV::ReshapeCodegen(const CallNode *op) {
   auto shapeAttr =
       mlir::DenseIntElementsAttr::get(shapeTensorType, dstShape);
   Value shapeTensor =
-      builder.create<mlir::arith::ConstantOp>(loc, shapeAttr);
+      builder.create<mlir::arith::ConstantOp>(builder.getUnknownLoc(), shapeAttr);
 
   auto srcTensorTy = src.getType().cast<mlir::RankedTensorType>();
   auto resultTensorTy =
