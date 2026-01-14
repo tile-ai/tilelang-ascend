@@ -28,8 +28,8 @@ def cumsum_kernel(M, N, dim, reverse):
         
         with T.Kernel(BLOCK_SIZE, is_npu=True) as (cid, _):
             # Allocate UB memory
-            src_ub = T.alloc_ub((M, N), dtype)
-            dst_ub = T.alloc_ub((M, N), accum_dtype)
+            src_ub = T.alloc_shared((M, N), dtype)
+            dst_ub = T.alloc_fragment((M, N), accum_dtype)
             
             # Copy data from GM to UB
             T.copy(src, src_ub)
@@ -99,5 +99,5 @@ def main(main_args):
 
 if __name__ == "__main__":
     args = parser.parse_args()
-    os.environ['TILELANG_ASCEND_MODE'] = 'Expert'
+    os.environ['TILELANG_ASCEND_MODE'] = 'Developer'
     main(args)
