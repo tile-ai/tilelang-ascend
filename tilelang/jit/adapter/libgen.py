@@ -66,10 +66,11 @@ class LibraryGenerator(object):
             ]
         elif self.target == "pto":
             ccec = "dav-c310" if self.plantform == 'A5' else "dav-c220"
+            memory = "REGISTER_BASE" if self.plantform == 'A5' else "MEMORY_BASE"
             command = [
                 "bisheng",
                 f"--cce-aicore-arch={ccec}",
-                "-DMEMORY_BASE",
+                f"-D{memory}",
                 "-O2",
                 "-std=gnu++17",
                 "-xcce",
@@ -86,6 +87,8 @@ class LibraryGenerator(object):
                 "-DL2_CACHE_HINT",
                 "-I../../src/",
                 f"-I{ASCEND_HOME_PATH}/include",
+                f"-I{ASCEND_HOME_PATH}/include/experiment/msprof",
+                f"-I{ASCEND_HOME_PATH}/include/experiment/runtime",
                 f"-I/usr/local/Ascend/driver/kernel/inc",
                 f"-I{TL_ROOT}/3rdparty/pto-tile-lib/include",
                 f"-I{ASCEND_HOME_PATH}/pkg_inc",
