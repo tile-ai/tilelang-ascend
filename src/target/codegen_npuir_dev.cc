@@ -1948,6 +1948,32 @@ void CodeGenTileLangNPUIRDEV::DebugPrintCodegen(const CallNode *op) {
                                        mlir::hivm::TCoreTypeAttr{});
 }
 
+void CodeGenTileLangNPUIRDEV::ReshapeCodegen(const CallNode *op) {
+  tvm::tl::NpuirReshape npuirop(op->args, this->vmap);
+  Value src = GetVarValue(npuirop.src);
+  const auto &dstShape = npuirop.dst_shape;
+  int64_t rank = dstShape.size();
+  auto shapeTensorType =
+      mlir::RankedTensorType::get({rank}, builder.getIndexType());
+  auto shapeAttr =
+      mlir::DenseIntElementsAttr::get(shapeTensorType, dstShape);
+  Value shapeTensor =
+      builder.create<mlir::arith::ConstantOp>(loc, shapeAttr);
+
+  auto srcTensorTy = src.getType().cast<mlir::RankedTensorType>();
+  auto resultTensorTy =
+      mlir::RankedTensorType::get(dstShape,
+                                  srcTensorTy.getElementType());
+  Value reshaped =
+      builder.create<mlir::tensor::ReshapeOp>(
+          builder.getUnknownLoc(),
+          resultTensorTy,
+          src,
+          shapeTensor);
+
+  SetVarValue(npuirop.dst, reshaped);
+}
+
 void CodeGenTileLangNPUIRDEV::CallExternCodegen(const CallNode *op) {
   // Todo: Implementation pending
 }

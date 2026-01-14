@@ -129,6 +129,7 @@ from .customize_npuir import (
     sync_block_wait,
     Scope,
     npuir_print as print,
+    npuir_reshape as reshape,
 )
 from .logical import any_of, all_of  # noqa: F401
 from .builtin import *  # noqa: F401

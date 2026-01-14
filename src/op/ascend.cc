@@ -487,6 +487,28 @@ NpuirBitcast::NpuirBitcast(Array<PrimExpr> args, BufferMap vmap) {
   ;
 }
 
+NpuirReshape::NpuirReshape(Array<PrimExpr> args, BufferMap vmap) {
+  Buffer bf[4];
+  Array<Range> rgs[2];
+  for (int i = 0; i < 2; i++) {
+    auto expr = args[i];
+    auto call = expr.as<CallNode>();
+    ICHECK(call);
+    auto region = RegionOp(call->args, vmap);
+    bf[i] = region.GetBuffer();
+    rgs[i] = region.GetRanges();
+  }
+  std::tie(this->src, this->dst) = std::tie(bf[0], bf[1]);
+  std::tie(this->src_range, this->dst_range) = std::tie(rgs[0], rgs[1]);
+
+  // 从 dst_range 提取 reshape 目标 shape（静态）
+  for (const Range& r : this->dst_range) {
+    auto imm = r->extent.as<tvm::IntImmNode>();
+    ICHECK(imm) << "Dynamic reshape shape is not supported yet";
+    this->dst_shape.push_back(imm->value);
+  }
+}
+
 NpuirTranspose::NpuirTranspose(Array<PrimExpr> args, BufferMap vmap){
     NPUIR_SRC_DST_BUF NPUIR_LIST_PARAM(permutation, 2)}
 
@@ -662,6 +684,11 @@ TIR_REGISTER_TL_OP(NpuirFlip, npuir_flip)
                                Integer(CallEffectKind::kOpaque));
 
 TIR_REGISTER_TL_OP(NpuirBitcast, npuir_bitcast)
+    .set_num_inputs(2)
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
+
+TIR_REGISTER_TL_OP(NpuirReshape, npuir_reshape)
     .set_num_inputs(2)
     .set_attr<TCallEffectKind>("TCallEffectKind",
                                Integer(CallEffectKind::kOpaque));

@@ -986,6 +986,11 @@ def npuir_print(obj: Union[tir.PrimExpr, tir.Buffer], msg: str = "", hex: bool =
         raise ValueError(
             f"Unexpected type: {type(obj)}. Supported types are tir.Buffer, tir.BufferLoad, tir.BufferRegion and tir.PrimExpr.")
 
+def npuir_reshape(src, dst):
+    src = _to_region(src, "w", _get_extent(src))
+    dst = _to_region(dst, "r", _get_extent(dst))
+    return tir.call_intrin("handle", tir.op.Op.get("tl.npuir_reshape"), src, dst)
+
 _local = threading.local()
 
 def _get_current_stack() -> FrameStack:

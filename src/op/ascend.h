@@ -311,6 +311,16 @@ public:
   bool round;
 };
 
+class NpuirReshape : public Operator {
+public:
+  NpuirReshape(Array<PrimExpr> args, BufferMap vmap);
+  static const Op &Get();
+
+  Buffer src, dst;
+  Array<Range> src_range, dst_range;
+  std::vector<int64_t> dst_shape;
+};
+
 /// HIVM device print operation (print var info)
 /// Device-side print for debugging
 class NpuirDevicePrintVar : public Operator {
