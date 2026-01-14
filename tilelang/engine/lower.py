@@ -2,6 +2,8 @@
 # Licensed under the MIT License.
 """The compiler for TL programs."""
 
+from typing import Literal
+
 import os
 import os.path as osp
 from typing import Union, Optional, Callable, List
@@ -155,13 +157,13 @@ def host_codegen(host_mod: tvm.IRModule, target_host: Target) -> tvm.IRModule:
     return host_mod
 
 
-def device_codegen(device_mod: tvm.IRModule, target: Target) -> tvm.IRModule:
+def device_codegen(device_mod: tvm.IRModule, target: Target, plantform: str) -> tvm.IRModule:
     device_mod = tir.transform.Simplify()(device_mod)
 
     if target.model == "ascendc" or target.model == "auto":
         device_mod = tvm._ffi.get_global_func("target.build.tilelang_ascend")(device_mod, target)
     elif target.model == "pto":
-        device_mod = tvm._ffi.get_global_func("target.build.tilelang_ascend_pto")(device_mod, target)
+        device_mod = tvm._ffi.get_global_func("target.build.tilelang_ascend_pto")(device_mod, target, plantform)
     else:
         print(target.kind.name)
         raise ValueError(f"Target {target.kind.name} is not supported")
@@ -195,6 +197,7 @@ def lower(
     func_or_mod: Union[tir.PrimFunc, tvm.IRModule],
     target: Union[str, Target] = "auto",
     target_host: Optional[Union[str, Target]] = None,
+    plantform: Literal["A2", "A3", "A5"] = "A3",
     runtime_only=False,
     enable_host_codegen=False,
     enable_device_compile=False,
@@ -224,7 +227,7 @@ def lower(
     # Phase 2: Optimize the IR for the target
     mod = OptimizeForTarget(mod, target)
 
-    codegen_mod = device_codegen(mod, target)
+    codegen_mod = device_codegen(mod, target, plantform)
 
     func = mod.functions_items()[0][1]
     params = extrac_params(func)
