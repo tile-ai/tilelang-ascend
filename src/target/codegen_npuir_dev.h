@@ -271,6 +271,25 @@ private:
   void UpdatePrimExprMap(const PrimExprNode * key, mlir::Value val);
   void UpdateMLIRValueMap(const mlir::Value key,  mlir::Value val);
 
+  // Utility functions for AscendCopyCodegen
+  mlir::Value ConvertTensorToMemref(mlir::Value value);
+  mlir::Value CreateCastIfTypeMismatch(mlir::Value src_value, mlir::Value dst_value);
+  mlir::Value MaybeReshapeTensor(mlir::Value src_tensor, llvm::ArrayRef<int64_t> target_shape);
+  // generate slice/subview needed offsets, sizes, strides
+  std::tuple<SmallVector<mlir::OpFoldResult>, 
+             SmallVector<mlir::OpFoldResult>, 
+             SmallVector<mlir::OpFoldResult>> 
+  CreateOpFoldResultArray(const Array<Range>& range);
+  mlir::Value InsertSliceWithReshapeAndCast(
+      mlir::Value src_slice, 
+      mlir::Value dst_tensor, 
+      llvm::SmallVector<mlir::OpFoldResult>& dst_offsets,
+      llvm::SmallVector<mlir::OpFoldResult>& dst_sizes,
+      llvm::SmallVector<mlir::OpFoldResult>& dst_strides);
+  void SmartMemRefCopy(mlir::Value src, mlir::Value dst);
+  mlir::Value GetOrInsertMasterTensor(mlir::Value memref);
+  llvm::DenseMap<mlir::Operation*, mlir::Value> alloc_memo_;
+
   NPU_CORETYPE func_coretype;
 
   // For mix kernel, generate target functions twice. One is for aic while
