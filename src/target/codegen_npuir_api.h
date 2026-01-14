@@ -262,6 +262,7 @@ private:
   std::pair<bool, mlir::Value> CheckPrimExprMap(const PrimExprNode * op);
   void UpdatePrimExprMap(const PrimExprNode * key, mlir::Value val);
   void UpdateMLIRValueMap(const mlir::Value key,  mlir::Value val);
+  void SmartMemRefCopy(mlir::Value src, mlir::Value dst);
 
   // Whether global barrier is needed.
   bool need_global_barrier_{false};

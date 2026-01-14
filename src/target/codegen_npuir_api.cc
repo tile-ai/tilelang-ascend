@@ -296,6 +296,143 @@ CodeGenTileLangNPUIRAPI
 ******************************************************************************************
 ******************************************************************************************/
 
+void CodeGenTileLangNPUIRAPI::SmartMemRefCopy(mlir::Value src, mlir::Value dst) {
+  auto src_type = src.getType().cast<mlir::MemRefType>();
+  auto dst_type = dst.getType().cast<mlir::MemRefType>();
+  auto loc = builder.getUnknownLoc();
+
+  // Copy if shape match
+  if (src_type.getShape() == dst_type.getShape()) {
+    builder.create<mlir::memref::CopyOp>(loc, TypeRange{}, src, dst);
+    return;
+  }
+
+  // 2. Try Reinterpret Copy if shape not match but numElements match
+  if (src_type.getNumElements() == dst_type.getNumElements()) {
+      
+    // safety check: stride hack only when elementTypes match
+    if (src_type.getElementType() != dst_type.getElementType()) {
+      ICHECK(false) << "HandleMemRefReshapeCopy requires same element type.";
+      return;
+    }
+
+    // Get offset of src MemRef
+    auto extractOp = builder.create<mlir::memref::ExtractStridedMetadataOp>(loc, src);
+    mlir::Value offsetValue = extractOp.getOffset();
+
+    llvm::SmallVector<mlir::OpFoldResult> offsets;
+    offsets.push_back(offsetValue);
+
+    // 1. get sizes for dst value.
+    llvm::SmallVector<mlir::OpFoldResult> sizes;
+    llvm::SmallVector<mlir::Value> dim_values;
+
+    for (int i = 0; i < dst_type.getRank(); ++i) {
+      int64_t static_dim = dst_type.getDimSize(i);
+      
+      if (mlir::ShapedType::isDynamic(static_dim)) {
+        mlir::Value dim_val = builder.create<mlir::memref::DimOp>(loc, dst, i);
+        sizes.push_back(dim_val);
+        dim_values.push_back(dim_val);
+      } else {
+        sizes.push_back(builder.getIndexAttr(static_dim));
+        dim_values.push_back(builder.create<mlir::arith::ConstantIndexOp>(loc, static_dim));
+      }
+    }
+
+    // 2. Compute strides for StridedLayoutAttr
+    // Rule: Calculate from the last dimension to the first. When encountering a dynamic dimension,
+    // the current and all preceding strides become dynamic.
+    llvm::SmallVector<int64_t> layout_strides(dst_type.getRank(), mlir::ShapedType::kDynamic);
+    int64_t current_stride = 1;
+    bool all_static_so_far = true;
+
+    // Calculate from the lowest dimension (last dimension) to the highest
+    for (int i = dst_type.getRank() - 1; i >= 0; --i) {
+      int64_t dim_size = dst_type.getDimSize(i);
+      
+      // Set stride for the current dimension
+      if (i == dst_type.getRank() - 1) {
+        // The lowest dimension's stride is always 1
+        layout_strides[i] = 1;
+      } else {
+        // Normal case
+        layout_strides[i] = current_stride;
+      }
+      
+      // Update current_stride for the next dimension (higher dimension)
+      if (mlir::ShapedType::isDynamic(dim_size)) {
+        all_static_so_far = false;
+        break;
+      } else {
+        current_stride *= dim_size;
+      }
+    }
+
+    // 3. Prepare dynamic strides parameters for reinterpret_cast
+    llvm::SmallVector<mlir::OpFoldResult> strides;
+
+    if (all_static_so_far) {
+      // All static: use static stride values
+      for (int64_t stride : layout_strides) {
+        strides.push_back(builder.getIndexAttr(stride));
+      }
+    } else {
+      // Has dynamic dimensions: need to compute dynamic strides
+      // Create a vector to store computed strides (calculated from back to front)
+      llvm::SmallVector<mlir::Value> temp_strides(dst_type.getRank());
+      
+      // Calculate from back to front
+      mlir::Value current_dyn_stride = builder.create<mlir::arith::ConstantIndexOp>(loc, 1);
+      for (int i = dst_type.getRank() - 1; i >= 0; --i) {
+        // Store stride for current dimension
+        temp_strides[i] = current_dyn_stride;
+        
+        if (i > 0) {
+          // Update current_dyn_stride for the next dimension (higher dimension)
+          // current_dimension_stride * current_dimension_size
+          current_dyn_stride = builder.create<mlir::arith::MulIOp>(
+              loc, current_dyn_stride, dim_values[i]);
+        }
+      }
+      
+      // Convert temp_strides to OpFoldResult and add to strides in order
+      for (int i = 0; i < dst_type.getRank(); ++i) {
+        strides.push_back(temp_strides[i]);
+      }
+    }
+
+    // 4. Create StridedLayoutAttr
+    auto layout = mlir::StridedLayoutAttr::get(
+        &context, 
+        mlir::ShapedType::kDynamic,
+        layout_strides);
+
+    // 5. Create target type
+    mlir::MemRefType new_dst_type = mlir::MemRefType::get(
+        dst_type.getShape(),
+        dst_type.getElementType(),
+        layout,
+        src_type.getMemorySpace());
+
+    // 6. Create reinterpret_cast
+    mlir::Value reinterpreted_src = builder.create<mlir::memref::ReinterpretCastOp>(
+        loc,
+        new_dst_type,
+        src,
+        offsets,
+        sizes,
+        strides
+    );
+    
+    // 7. Copy
+    builder.create<mlir::memref::CopyOp>(loc, TypeRange{}, reinterpreted_src, dst);
+
+    return;
+  }
+  ICHECK(false) << "SmartMemRefCopy: Shape mismatch and cannot interpret cast. ";
+}
+
 mlir::Value CodeGenTileLangNPUIRAPI::ScalarConvertType(const PrimExpr &imm,
                                                        DataType targetDtype) {
   auto castNode = std::make_unique<tir::Cast>(targetDtype, imm);
@@ -873,8 +1010,7 @@ void CodeGenTileLangNPUIRAPI::AscendCopyCodegen(const CallNode *op) {
       GenSubviewFromRegion(npuirop.src, npuirop.src_range);
   mlir::Value dst_sub_view =
       GenSubviewFromRegion(npuirop.dst, npuirop.dst_range);
-  builder.create<mlir::memref::CopyOp>(builder.getUnknownLoc(), TypeRange{},
-                                        src_sub_view, dst_sub_view);
+  SmartMemRefCopy(src_sub_view, dst_sub_view);
 }
 
 template <typename T, typename U>
