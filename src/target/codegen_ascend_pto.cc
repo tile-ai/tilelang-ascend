@@ -658,6 +658,7 @@ void CodeGenTileLangAscendPto::CallExternCodegen(const CallNode *op) {
         ICHECK((copy_base_addr_map_.find(String(src_var_id)) != copy_base_addr_map_.end()));
         std::vector<std::string> l_valid_shapes = l_data_map_[dst_var_id];
         std::vector<std::string> ub_valid_shapes = ub_data_map_[dst_var_id];
+        std::vector<std::string> dynamic_names;
         std::string tensor_addr = copy_base_addr_map_[String(src_var_id)];
         std::string tensor_template = "<" + global_tensor_template[String(tensor_addr)].dtype;
         std::string shape_template = "", stride_template = "", valid_template = "";
@@ -690,7 +691,10 @@ void CodeGenTileLangAscendPto::CallExternCodegen(const CallNode *op) {
         for (size_t i = 0; i < 4; i++) {
           if (len > 3 - i) {
             std::string tensor_template = global_tensor_template[String(tensor_addr)].shape_list[len + i - 4];
-            if (tensor_template[0] < '1' || tensor_template[0] > '9')  stride_template += "-1, ";
+            if (tensor_template[0] < '1' || tensor_template[0] > '9')  {
+              stride_template += "-1, ";
+              dynamic_names.push_back(tensor_template);
+            }
             else {
               std::string tmp_shape = "";
               for(size_t j = 0; j < 4 - i; j++) {
@@ -729,10 +733,11 @@ void CodeGenTileLangAscendPto::CallExternCodegen(const CallNode *op) {
         if(is_dynamic) {
           std::string shape = "Shape<"  + shape_template + ">()";
           this->stream << ", " << "Shape<"  << shape_template << ">" << "(), " << "Stride<" << stride_template << ">" << "(";
-          for(size_t i = 0; i < len; i++) {
-            std::string tmp_shape_info = global_tensor_template[String(tensor_addr)].shape_list[i];
-            if(tmp_shape_info[0]<'1' || tmp_shape_info[0]>'9') this->stream << tmp_shape_info;
-            if(i<len-3) this->stream << ", ";
+          for(size_t i = 0; i < dynamic_names.size(); i++) {
+            this->stream << dynamic_names[i];
+            if (i != dynamic_names.size() - 1) {
+              this->stream << ", ";
+            }
           }
           this->stream << ")";
         }
@@ -754,6 +759,7 @@ void CodeGenTileLangAscendPto::CallExternCodegen(const CallNode *op) {
         ICHECK((copy_base_addr_map_.find(String(dst_var_id)) != copy_base_addr_map_.end()));
         std::vector<std::string> l_valid_shapes = l_data_map_[src_var_id];
         std::vector<std::string> ub_valid_shapes = ub_data_map_[src_var_id];
+        std::vector<std::string> dynamic_names;
         std::string tensor_addr = copy_base_addr_map_[String(dst_var_id)];
         std::string tensor_template = "<" + global_tensor_template[String(tensor_addr)].dtype;
         std::string shape_template = "", stride_template = "", valid_template = "";
@@ -785,7 +791,10 @@ void CodeGenTileLangAscendPto::CallExternCodegen(const CallNode *op) {
         for (size_t i = 0; i < 4; i++) {
           if (len > 3 - i) {
             std::string tensor_template = global_tensor_template[String(tensor_addr)].shape_list[len + i - 4];
-            if (tensor_template[0] < '1' || tensor_template[0] > '9')  stride_template += "-1, ";
+            if (tensor_template[0] < '1' || tensor_template[0] > '9')  {
+              stride_template += "-1, ";
+              dynamic_names.push_back(tensor_template);
+            }
             else {
               std::string tmp_shape = "";
               for(size_t j = 0; j < 4 - i; j++) {
@@ -823,10 +832,11 @@ void CodeGenTileLangAscendPto::CallExternCodegen(const CallNode *op) {
         this->stream << "tl::pto::" << src_var << tensor_template << "(" << tensor_addr << " + " << dst_offset;
         if(is_dynamic) {
           this->stream << ", " << "Shape<"  << shape_template << ">" << "(), " << "Stride<" << stride_template << ">" << "(";
-          for(size_t i = 0; i < len; i++) {
-            std::string tmp_shape_info = global_tensor_template[String(tensor_addr)].shape_list[i];
-            if(tmp_shape_info[0]<'1' || tmp_shape_info[0]>'9') this->stream << tmp_shape_info;
-            if(i<len-3) this->stream << ", ";
+          for(size_t i = 0; i < dynamic_names.size(); i++) {
+             this->stream << dynamic_names[i];
+            if (i != dynamic_names.size() - 1) {
+              this->stream << ", ";
+            }
           }
           this->stream << ")";
         }
