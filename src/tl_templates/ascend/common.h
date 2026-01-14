@@ -276,63 +276,59 @@ gemm_v0(LocalTensor<T1> const &A, LocalTensor<T1> const &B,
         AscendC::TBuf<AscendC::TPosition::B2> &l0b_, bool clear) {
   auto l0a = l0a_.Get<T1>();
   auto l0b = l0b_.Get<T1>();
-  uint32_t kL0Size = 128;
+  constexpr uint32_t kL0Size = 128;
   uint32_t kL0split = (K + kL0Size - 1) / kL0Size;
   uint32_t kL0Tail = K - (kL0split - 1) * kL0Size;
   bool initflag = false;
 
-  // Defensive Programming: Ensure all previous operations are complete
-  // SetFlag<HardEvent::MTE2_MTE1>(L0AB_EVENT);
-  // WaitFlag<HardEvent::MTE2_MTE1>(L0AB_EVENT);
-  // SetFlag<HardEvent::FIX_M>(L0AB_EVENT);
-  // WaitFlag<HardEvent::FIX_M>(L0AB_EVENT);
-  AscendC::PipeBarrier<PIPE_ALL>();
 
-  // SetFlag<HardEvent::M_MTE1>(L0AB_EVENT);
-  // SetFlag<HardEvent::M_MTE1>(L0AB_EVENT + 1);
-  AscendC::PipeBarrier<PIPE_ALL>();
+  SetFlag<HardEvent::MTE2_MTE1>(L0AB_EVENT);
+  WaitFlag<HardEvent::MTE2_MTE1>(L0AB_EVENT);
+  SetFlag<HardEvent::FIX_M>(L0AB_EVENT);
+  WaitFlag<HardEvent::FIX_M>(L0AB_EVENT);
+
+  SetFlag<HardEvent::M_MTE1>(L0AB_EVENT);
+  SetFlag<HardEvent::M_MTE1>(L0AB_EVENT + 1);
+
   for (uint32_t kL0Idx = 0; kL0Idx < kL0split; kL0Idx++) {
     initflag = (clear && (kL0Idx == 0));
-    if (kL0Idx == kL0split - 1) {
-        kL0Size = kL0Tail;
-    }
-    // WaitFlag<HardEvent::M_MTE1>(L0AB_EVENT + kL0Idx % 2);
-    AscendC::PipeBarrier<PIPE_ALL>();
+    uint32_t kSize = (kL0Idx == kL0split - 1) ? kL0Tail : kL0Size;
+    uint32_t pp = (kL0Idx & 1);
+
+    uint32_t l0a_base = pp * (M * kL0Size);
+    uint32_t l0b_base = pp * (N * kL0Size);
+
+    WaitFlag<HardEvent::M_MTE1>(L0AB_EVENT + pp);
     if constexpr (!transpose_A) {
       tl::ascend::copy_l1_to_l0a<T1, layout::zN, M, K>(
-        l0a[(kL0Idx % 2) * (M * kL0Size)], A[kL0Idx * M * kL0Size], M, kL0Size);
+        l0a[l0a_base], A[kL0Idx * M * kL0Size], M, kSize);
     } else {
       tl::ascend::copy_l1_to_l0a<T1, layout::nZ, M, K>(
-        l0a[(kL0Idx % 2) * (M * kL0Size)], A[kL0Idx * 16 * kL0Size], M, kL0Size);
+        l0a[l0a_base], A[kL0Idx * 16 * kL0Size], M, kSize);
     }
     if constexpr (!transpose_B) {
       tl::ascend::copy_l1_to_l0b<T1, layout::zN, K, N>(
-        l0b[(kL0Idx % 2) * (N * kL0Size)], B[kL0Idx * 16 * kL0Size], kL0Size, N);
+        l0b[l0b_base], B[kL0Idx * 16 * kL0Size], kSize, N);
     } else {
       tl::ascend::copy_l1_to_l0b<T1, layout::nZ, K, N>(
-        l0b[(kL0Idx % 2) * (N * kL0Size)], B[kL0Idx * N * kL0Size], kL0Size, N);
+        l0b[l0b_base], B[kL0Idx * N * kL0Size], kSize, N);
     }
-    AscendC::PipeBarrier<PIPE_ALL>();
-    // SetFlag<HardEvent::MTE1_M>(L0AB_EVENT + kL0Idx % 2);
-    // WaitFlag<HardEvent::MTE1_M>(L0AB_EVENT + kL0Idx % 2);
-    AscendC::PipeBarrier<PIPE_ALL>();
+    SetFlag<HardEvent::MTE1_M>(L0AB_EVENT + pp);
+    WaitFlag<HardEvent::MTE1_M>(L0AB_EVENT + pp);
+    PipeBarrier<PIPE_M>();
     tl::ascend::mma<T1, T2, M, N>(
-      l0a[(kL0Idx % 2) * (M * kL0Size)], l0b[(kL0Idx % 2) * (N * kL0Size)], C, initflag, kL0Size);
-    // SetFlag<HardEvent::M_MTE1>(L0AB_EVENT + kL0Idx % 2);
-    AscendC::PipeBarrier<PIPE_ALL>();
+      l0a[l0a_base], l0b[l0b_base], C, initflag, kSize);
+    SetFlag<HardEvent::M_MTE1>(L0AB_EVENT + pp);
   }
-  AscendC::PipeBarrier<PIPE_ALL>();
-  // WaitFlag<HardEvent::M_MTE1>(L0AB_EVENT);
-  // WaitFlag<HardEvent::M_MTE1>(L0AB_EVENT + 1);
-  AscendC::PipeBarrier<PIPE_ALL>();
-  
-  // Defensive Programming: Reverse Sync
-  // SetFlag<HardEvent::MTE1_MTE2>(L0AB_EVENT);
-  // WaitFlag<HardEvent::MTE1_MTE2>(L0AB_EVENT);
-  // SetFlag<HardEvent::M_FIX>(L0AB_EVENT);
-  // WaitFlag<HardEvent::M_FIX>(L0AB_EVENT);
-  AscendC::PipeBarrier<PIPE_ALL>();
+  WaitFlag<HardEvent::M_MTE1>(L0AB_EVENT);
+  WaitFlag<HardEvent::M_MTE1>(L0AB_EVENT + 1);
+
+  SetFlag<HardEvent::MTE1_MTE2>(L0AB_EVENT);
+  WaitFlag<HardEvent::MTE1_MTE2>(L0AB_EVENT);
+  SetFlag<HardEvent::M_FIX>(L0AB_EVENT);
+  WaitFlag<HardEvent::M_FIX>(L0AB_EVENT);
 }
+
 
 template <typename T>
 CATLASS_DEVICE void MergeSort(const LocalTensor<T> &dst,
