@@ -47,10 +47,10 @@ def matmul(M, N, K, block_M, block_N, block_K, dtype="float16", accum_dtype="flo
 
                 loop_k = T.ceildiv(K, block_K)
                 for k in T.Pipelined(loop_k, num_stages=3):
+                    T.barrier_all()
                     T.copy(A[bx * block_M, k * block_K], A_L1)
                     T.copy(B[k * block_K, by * block_N], B_L1)
 
-                    T.barrier_all()
                     if k == 0:
                         T.gemm_v0(A_L1, B_L1, C_L0, init=True)
                     else:
