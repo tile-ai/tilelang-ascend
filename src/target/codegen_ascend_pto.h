@@ -22,7 +22,7 @@ namespace codegen {
 
 class CodeGenTileLangAscendPto final : public CodeGenC {
 public:
-  CodeGenTileLangAscendPto();
+  CodeGenTileLangAscendPto(std::string plantform);
   std::string Finish();
   // override behavior
   void PrintFuncPrefix(std::ostream &os) final;
@@ -147,6 +147,8 @@ private:
   std::unordered_map<String, global_tensor> global_tensor_template;
 
   bool use_swizzle_{false};
+
+  std::string plantform_;
 };
 
 } // namespace codegen

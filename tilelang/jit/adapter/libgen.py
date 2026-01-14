@@ -66,10 +66,11 @@ class LibraryGenerator(object):
             ]
         elif self.target == "pto":
             ccec = "dav-c310" if self.plantform == 'A5' else "dav-c220"
+            memory = "DREGISTER_BASE" if self.plantform == 'A5' else "DMEMORY_BASE"
             command = [
                 "bisheng",
                 f"--cce-aicore-arch={ccec}",
-                "-DMEMORY_BASE",
+                f"-D{memory}",
                 "-O2",
                 "-std=gnu++17",
                 "-xcce",

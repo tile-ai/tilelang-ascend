@@ -224,6 +224,7 @@ class JITKernel(object):
                 tilelang_func,
                 target=target,
                 target_host=target_host,
+                plantform=self.plantform,
                 enable_host_codegen=enable_host_codegen,
                 enable_device_compile=enable_device_compile)
 

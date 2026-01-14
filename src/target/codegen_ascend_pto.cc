@@ -97,8 +97,9 @@ std::string GetTypeLenString(std::string type) {
   return typeSize;
 }
 
-CodeGenTileLangAscendPto::CodeGenTileLangAscendPto() {
+CodeGenTileLangAscendPto::CodeGenTileLangAscendPto(std::string plantform) {
   // restrict_keyword_ = "__gm__ uint8_t *";
+  plantform_ = plantform;
 }
 
 void CodeGenTileLangAscendPto::PrintFuncPrefix(std::ostream &os) {
@@ -1076,8 +1077,9 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AttrStmtNode *op) {
   } else if (op->attr_key == "resource_scope") { // other core
     auto resource_id = Downcast<IntImm>(op->value)->value;
     auto resource_name = resource_id == 0 ? "CUBE" : "VEC";
+    std::string arch_name = (this->plantform_ == "A5") ? "C310" : "C220";
 
-    stream << "#if defined(__DAV_C220_" << resource_name << "__)\n";
+    stream << "#if defined(__DAV_" << arch_name << "_" << resource_name << "__)\n";
     if (resource_name == "VEC") {
       this->PrintIndent();
       stream << "  set_mask_norm();\n";
