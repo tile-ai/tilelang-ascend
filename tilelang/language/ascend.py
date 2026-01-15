@@ -426,8 +426,8 @@ def dump_tensor(tensor: Buffer, desc: int, dump_size: int, shape_info: tuple = (
     """
     if not isinstance(desc, int) or desc < 0 or desc > 0xFFFFFFFF:
         raise ValueError(f"desc must be uint32, but your desc is {desc}")
-    if not isinstance(dump_size, int) or dump_size < 0 or dump_size > 0xFFFFFFFF:
-        raise ValueError(f"dump_size must be uint32, but your dump_size is {dump_size}")
+    # if not isinstance(dump_size, int) or dump_size < 0 or dump_size > 0xFFFFFFFF:
+    #     raise ValueError(f"dump_size must be uint32, but your dump_size is {dump_size}")
 
     tensor_ptr = tensor.access_ptr("r")
     return T.call_intrin(
@@ -439,6 +439,11 @@ def dump_tensor(tensor: Buffer, desc: int, dump_size: int, shape_info: tuple = (
         len(shape_info),
         *shape_info,
     )
+    
+def reinterpretcast(dst: Buffer, src: Buffer, casttype: str):
+    
+    return T.call_extern("handle", f"ReinterpretCast", dst.access_ptr("w"), src.access_ptr("r"), 
+                         casttype)
 
 
 def set_deq_scale(scale: PrimExpr):

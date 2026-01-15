@@ -706,6 +706,72 @@ class TestTileLangKernels:
             reference_func=reference_func
         )
 
+    @staticmethod
+    @tilelang.jit(out_idx=[-1], pass_configs=pass_configs)
+    def parallel_with_offset_expression_kernel(M, N, block_M, block_N, dtype="float"):
+        """Test parallel loops with offset expressions in indices (e.g., a[i, j + offset] * b[j + offset])"""
+        m_num = M // block_M
+        n_num = N // block_N
+        VEC_NUM = 2
+
+        @T.prim_func
+        def main(A: T.Tensor((M, N), dtype), B: T.Tensor((N,), dtype), C: T.Tensor((M, N), dtype)):
+            with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
+                bx = cid // n_num
+                by = cid % n_num
+
+                a_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
+                b_ub = T.alloc_ub((block_N,), dtype)
+                c_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
+                offset = by * block_N
+                half_offset = block_N // 2
+
+                with T.Scope("V"):
+                    T.copy(A[bx * block_M + vid * block_M // VEC_NUM, offset], a_ub)
+                    T.copy(B[offset], b_ub)
+
+                    T.tile.fill(c_ub, 0.0)
+                    # Process only the first half of each tile using offset expression
+                    # This tests that loop variables in expressions (j + half_offset) are properly
+                    # substituted with 0 during vectorization
+                    for i, j in T.Parallel(block_M // VEC_NUM, block_N // 2):
+                        c_ub[i, j] = a_ub[i, j + half_offset] * b_ub[j + half_offset]
+
+                    T.copy(c_ub, C[bx * block_M + vid * block_M // VEC_NUM, offset])
+
+        return main
+
+    def test_parallel_with_offset_expression(self, clear_cache, setup_random_seed):
+        """Test parallel loops with offset expressions in indices"""
+
+        def kernel_func(M, N, block_M, block_N):
+            return self.parallel_with_offset_expression_kernel(M, N, block_M, block_N)
+
+        def input_gen(M, N):
+            a = torch.randn(M, N).npu()
+            b = torch.randn(N).npu()
+            return a, b
+
+        def reference_func(a, b):
+            # Only the first half of each block is computed
+            c = torch.zeros_like(a)
+            M, N = a.shape
+            block_M = 128
+            block_N = 128
+            m_num = M // block_M
+            n_num = N // block_N
+            for bx in range(m_num):
+                for by in range(n_num):
+                    offset = by * block_N
+                    half_offset = block_N // 2
+                    # Process only the first half of each tile
+                    c[bx * block_M : (bx + 1) * block_M, offset : offset + half_offset] = a[
+                        bx * block_M : (bx + 1) * block_M, offset + half_offset : offset + block_N
+                    ] * b[offset + half_offset : offset + block_N].unsqueeze(0)
+            return c
+
+        KernelTestHelper.run_binary_kernel_test(kernel_func=kernel_func, input_generator=input_gen, reference_func=reference_func)
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "-n", "8"])
