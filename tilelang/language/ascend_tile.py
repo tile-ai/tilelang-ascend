@@ -387,10 +387,12 @@ def gather(dst: Buffer, src: Buffer, src_offset: Buffer, src_base_addr: PrimExpr
                           src_offset.access_ptr("r"), src_base_addr, count)
 
 
-def reduce(out: Buffer, buffer: Buffer, tmp: Buffer, reduce_type: str, dim: int, count: int = 0):
+def reduce(out: Buffer, buffer: Buffer, tmp: Buffer, reduce_type: str, dim: int, real_shape: list[int]=[0, 0]):
     dtype = _dtype(buffer)
-    shape = f"{buffer.shape[0]}, {buffer.shape[1]}"
     assert len(buffer.shape) == 2, "current only support buffer as a 2D tensor"
+    M = buffer.shape[0] if real_shape[0] == 0 else real_shape[0]
+    N = buffer.shape[1] if real_shape[1] == 0 else real_shape[1]
+    shape = f"{M}, {N}"
 
     buffer = buffer.access_ptr("r")
     out = out.access_ptr("w")
@@ -401,17 +403,17 @@ def reduce(out: Buffer, buffer: Buffer, tmp: Buffer, reduce_type: str, dim: int,
         pattern = "AscendC::Pattern::Reduce::RA"
 
     return T.call_extern("handle", f"tl::ascend::{reduce_type}<{dtype}, {shape}, {pattern}>", out,
-                         buffer, tmp, count)
+                         buffer, tmp)
 
 
-def reduce_max(out: Buffer, buffer: Buffer, tmp: Buffer, dim: int, count: int = 0):
+def reduce_max(out: Buffer, buffer: Buffer, tmp: Buffer, dim: int, real_shape: list[int]=[0, 0]):
 
-    return reduce(out, buffer, tmp, "reduce_max", dim, count)
+    return reduce(out, buffer, tmp, "reduce_max", dim, real_shape)
 
 
-def reduce_sum(out: Buffer, buffer: Buffer, tmp: Buffer, dim: int, count: int = 0):
+def reduce_sum(out: Buffer, buffer: Buffer, tmp: Buffer, dim: int, real_shape: list[int]=[0, 0]):
 
-    return reduce(out, buffer, tmp, "reduce_sum", dim, count)
+    return reduce(out, buffer, tmp, "reduce_sum", dim, real_shape)
 
 
 def block_reduce_max(dst: Buffer, src: Buffer, repeat: PrimExpr, mask: PrimExpr, dstPepStride: PrimExpr, srcBlkStride: PrimExpr, srcRepStride: PrimExpr):

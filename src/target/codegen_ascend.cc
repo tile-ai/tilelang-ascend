@@ -515,7 +515,7 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
       // this->stream << "{\n";
       // auto func_scope = this->BeginScope();
       std::vector<std::string> var_names;
-      for (int i = 1; i < op->args.size() - 1; i++) {
+      for (int i = 1; i < op->args.size(); i++) {
         auto var_name = print_buffer_offset(op->args[i].as<CallNode>());
         var_names.push_back(var_name);
         // this->PrintIndent();
@@ -529,8 +529,7 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
           this->stream << ", ";
         }
       }
-      this->stream << ", " << PrintExpr(op->args[op->args.size() - 1])
-                   << ");\n";
+      this->stream << ");\n";
       // this->EndScope(func_scope);
       // this->PrintIndent();
       // this->stream << "}\n";
