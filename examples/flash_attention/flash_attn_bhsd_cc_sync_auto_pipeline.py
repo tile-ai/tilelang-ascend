@@ -9,6 +9,7 @@ torch.manual_seed(0)
 tilelang.disable_cache()
 
 NUM_STAGES = 2
+L0_MAX_SIZE = 64 * 1024  # 64KB
 
 pass_configs = {
     tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
@@ -24,7 +25,7 @@ def flash_attention_fwd(
     heads,
     dim,
 ):
-    block_M, block_N = 64, 64
+    block_M, block_N = 64, 128
 
     batch = B
     seq_len = S
@@ -37,6 +38,11 @@ def flash_attention_fwd(
     shape = [batch, heads, seq_len, dim]
 
     block_num = seq_len // block_M * heads * batch
+
+    n_num = T.max(T.ceildiv(block_N * dim * DataType(dtype).bits // 8, L0_MAX_SIZE), 1)
+    block_K = T.ceildiv(block_N, n_num)
+    block_D = T.ceildiv(dim, n_num)
+    num_stages = T.min(T.ceildiv(seq_len, block_N), NUM_STAGES).value
 
     @T.prim_func
     def main(
@@ -54,13 +60,13 @@ def flash_attention_fwd(
             bz = cid // (seq_len // block_M) // heads % batch
 
             q_l1 = T.alloc_L1([block_M, dim], dtype)
-            k_l1 = T.alloc_L1([block_N, dim], dtype)
-            v_l1 = T.alloc_L1([block_N, dim], dtype)
+            k_l1 = T.alloc_L1([block_K, dim], dtype)
+            v_l1 = T.alloc_L1([block_N, block_D], dtype)
 
             acc_s_l1 = T.alloc_L1([block_M, block_N], dtype)
 
-            acc_s_l0c = T.alloc_L0C([block_M, block_N], accum_dtype)
-            acc_o_l0c = T.alloc_L0C([block_M, dim], accum_dtype)
+            acc_s_l0c = T.alloc_L0C([block_M, block_K], accum_dtype)
+            acc_o_l0c = T.alloc_L0C([block_M, block_D], accum_dtype)
 
             acc_o = T.alloc_ub([block_M // 2, dim], accum_dtype)
             sumexp = T.alloc_ub([block_M // 2], accum_dtype)
@@ -69,8 +75,7 @@ def flash_attention_fwd(
             acc_s_ub = T.alloc_ub([block_M // 2, block_N], accum_dtype)
             m_i_prev = T.alloc_ub([block_M // 2], accum_dtype)
             acc_s_ub_ = T.alloc_ub([block_M // 2, block_N], accum_dtype)
-            tmp_ub = T.alloc_ub([3 * DataType(accum_dtype).bits // 8 * block_M // 2 * block_N],
-                                "uint8")
+            tmp_ub = T.alloc_ub([3 * DataType(accum_dtype).bits // 8 * block_M // 2 * block_N], "uint8")
             sumexp_i_ub = T.alloc_ub([block_M // 2], accum_dtype)
             acc_s_half = T.alloc_ub([block_M // 2, block_N], dtype)
             acc_o_ub = T.alloc_ub([block_M // 2, dim], accum_dtype)
@@ -82,12 +87,11 @@ def flash_attention_fwd(
             T.tile.fill(m_i, -2**30)
             T.copy(Q[bz, by, bx * block_M:(bx + 1) * block_M, :], q_l1)
 
-            for k in T.Pipelined(T.ceildiv(seq_len, block_N), num_stages=NUM_STAGES):
-                T.copy(K[bz, by, k * block_N:(k + 1) * block_N, :], k_l1)
-                T.gemm_v0(q_l1, k_l1, acc_s_l0c, transpose_B=True, init=True)
-                T.copy(acc_s_l0c, workspace_1[cid, :, :])
-
-
+            for k in T.Pipelined(T.ceildiv(seq_len, block_N), num_stages=num_stages):
+                for n_i in T.serial(n_num):
+                  T.copy(K[bz, by, k * block_N + n_i * block_K : k * block_N + (n_i + 1) * block_K, :], k_l1)
+                  T.gemm_v0(q_l1, k_l1, acc_s_l0c, transpose_B=True, init=True)
+                  T.copy(acc_s_l0c, workspace_1[cid, :, n_i * block_K : (n_i + 1) * block_K])
 
                 T.tile.fill(acc_s_ub, 0.0)
                 T.copy(m_i, m_i_prev)
@@ -112,9 +116,10 @@ def flash_attention_fwd(
 
                 T.copy(workspace_2[cid, :, :], acc_s_l1)
 
-                T.copy(V[bz, by, k * block_N:(k + 1) * block_N, :], v_l1)
-                T.gemm_v0(acc_s_l1, v_l1, acc_o_l0c, init=True)
-                T.copy(acc_o_l0c, workspace_3[cid, :, :])
+                for n_i in T.serial(n_num):
+                  T.copy(V[bz, by, k * block_N : (k + 1) * block_N, n_i * block_D : (n_i + 1) * block_D], v_l1)
+                  T.gemm_v0(acc_s_l1, v_l1, acc_o_l0c, init=True)
+                  T.copy(acc_o_l0c, workspace_3[cid, :, n_i * block_D : (n_i + 1) * block_D])
 
                 for h_i in range(block_M // 2):
                     T.tile.mul(acc_o[h_i, :], acc_o[h_i, :], m_i_prev[h_i])
