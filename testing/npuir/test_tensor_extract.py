@@ -1,6 +1,5 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2025.
 import os
-import sys
 import argparse
 import torch
 

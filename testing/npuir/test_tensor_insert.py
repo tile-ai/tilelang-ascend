@@ -1,8 +1,5 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2025.
 import os
-import sys
-YOUR_TILELANG_PATH = "/host/zzy/tilelang-ascend-apis/tilelang-ascend/"
-sys.path.insert(0, os.path.abspath(YOUR_TILELANG_PATH))
 import argparse
 import torch
 
