@@ -16,7 +16,6 @@ def flash_attention_fwd(
     seq_len,
     heads,
     dim,
-    
 ):
     block_M, block_N = 64, 64
 
