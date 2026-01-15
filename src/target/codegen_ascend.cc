@@ -28,6 +28,8 @@ std::string getType(const DataType &dtype) {
     return "half";
   } else if (dtype.is_float()) {
     return "float";
+  } else if (dtype.is_int() && dtype.bits() == 4) {
+    return "AscendC::int4b_t";
   } else if (dtype.is_int() && dtype.bits() == 8) {
     return "int8_t";
   } else if (dtype.is_int() && dtype.bits() == 16) {
