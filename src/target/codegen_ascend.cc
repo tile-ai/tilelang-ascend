@@ -1044,8 +1044,7 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
         this->stream << ", " << PrintExpr(op->args[i]);
       }
       this->stream << ");\n";
-    } else if (op_name.find("shmem_get") != std::string::npos || op_name.find("shmem_get_nbi") != std::string::npos || 
-               op_name.find("shmem_put") != std::string::npos || op_name.find("shmem_put_nbi") != std::string::npos || 
+    } else if (op_name.find("shmem_put_nbi") != std::string::npos || op_name.find("shmem_get_nbi") != std::string::npos || 
                op_name.find("shmem_ub_put_nbi") != std::string::npos || op_name.find("shmem_ub_get_nbi") != std::string::npos) {
       std::vector<std::string> var_names;
       int exprStartIndex = 3;

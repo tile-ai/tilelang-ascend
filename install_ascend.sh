@@ -159,22 +159,22 @@ echo "TileLang path set to: $TILELANG_PATH"
 echo "Configuring environment variables for TVM..."
 echo "export PYTHONPATH=${TILELANG_PATH}:\$PYTHONPATH" >> ~/.bashrc
 
-# compile and install aclshmem package
+# compile and install shmem package
 if $USE_SHMEM; then
-    echo "Starting installation aclshmem..."
+    echo "Starting installation shmem..."
     cd 3rdparty/shmem
     bash scripts/build.sh -python_extension -mf
-    ACLSHMEM_INSTALL_PATH=$(pwd)/install
+    SHMEM_INSTALL_PATH=$(pwd)/install
     arch=$(uname -m)
     cd ci/release/$arch/
     chmod +x SHMEM*.run
     ./SHMEM*.run --check
-    ./SHMEM*.run --install --install-path=$ACLSHMEM_INSTALL_PATH
+    ./SHMEM*.run --install --install-path=$SHMEM_INSTALL_PATH
     if [ $? -ne 0 ]; then
-        echo "Error: ACLSHMEM C++ pkg install failed."
+        echo "Error: SHMEM C++ pkg install failed."
         exit 1
     else
-        echo "ACLSHMEM C++ pkg install success in $ACLSHMEM_INSTALL_PATH."
+        echo "SHMEM C++ pkg install success in $SHMEM_INSTALL_PATH."
     fi
     pip show shmem >/dev/null 2>&1
     if [[ $? -eq 0 ]]; then
@@ -189,22 +189,22 @@ if $USE_SHMEM; then
         echo "python -m pip install failed, try pip3 install ..."
         pip3 install shmem*.whl
         if [ $? -ne 0 ]; then
-            echo "Error: aclshmem-xxx.whl install failed."
+            echo "Error: shmem-xxx.whl install failed."
             exit 1
         else
-            echo "aclshmem-xxx.whl install success."
+            echo "shmem-xxx.whl install success."
         fi
     else
-        echo "aclshmem-xxx.whl install success."
+        echo "shmem-xxx.whl install success."
     fi
     source ../../../install/shmem/latest/set_env.sh
     if [ $? -ne 0 ]; then
-        echo "Error: set aclshmem env failed."
+        echo "Error: set shmem env failed."
         exit 1
     fi
     # back to path tilelang-ascend/
     cd ../../../../..
-    echo "Install aclshmem all success."
+    echo "Install shmem all success."
 fi
 
 # Step 12: Source .bashrc to apply changes

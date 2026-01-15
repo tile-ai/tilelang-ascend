@@ -26,6 +26,26 @@ def barrier_all():
     return T.call_extern("handle", "AscendC::PipeBarrier<PIPE_ALL>")
 
 
+def shmem_put_nbi_new(dst: Buffer, src: Buffer, nelems: PrimExpr, newPe: PrimExpr):
+    return T.call_extern("handle", f"tl::ascend::shmem_put_nbi_new<{_dtype(src)}>", dst.access_ptr("w"), src.access_ptr("r"),
+                         nelems, newPe)                                                  
+
+
+def shmem_ub_put_nbi_new(ub: Buffer, dst: Buffer, nelems: PrimExpr, newPe: PrimExpr):
+    return T.call_extern("handle", f"tl::ascend::shmem_ub_put_nbi_new<{_dtype(dst)}>", ub.access_ptr("r"), dst.access_ptr("w"),
+                         nelems, newPe)  
+
+
+def shmem_get_nbi_new(dst: Buffer, src: Buffer, nelems: PrimExpr, newPe: PrimExpr):
+    return T.call_extern("handle", f"tl::ascend::shmem_get_nbi_new<{_dtype(src)}>", dst.access_ptr("w"), src.access_ptr("r"),
+                         nelems, newPe)
+
+
+def shmem_ub_get_nbi_new(dst: Buffer, src: Buffer, nelems: PrimExpr, newPe: PrimExpr):
+    return T.call_extern("handle", f"tl::ascend::shmem_ub_get_nbi_new<{_dtype(src)}>", dst.access_ptr("w"), src.access_ptr("r"),
+                         nelems, newPe)
+
+
 def gemm_v0(A, B, C, transpose_A=False, transpose_B=False, init=False):
 
     def legalize_arguments(arg: Union[Buffer, Var]):
@@ -248,42 +268,3 @@ def dump_tensor(tensor: Buffer, desc: int, dump_size: int, shape_info: tuple=())
         return T.call_extern("handle", f"AscendC::DumpTensor", tensor_ptr, desc, dump_size)
     else:
         return T.call_extern("handle", f"tl::ascend::DumpTensor", tensor_ptr, desc, dump_size, len(shape_info), *shape_info)
-def shmem_put(dst: Buffer, src: Buffer, nelems: PrimExpr, newPe: PrimExpr):
-    return T.call_extern("handle", f"tl::ascend::shmem_put_nbi_new<{_dtype(src)}>", dst.access_ptr("w"), src.access_ptr("r"),
-                         nelems, newPe) 
-
-def shmem_put_nbi(dst: Buffer, src: Buffer, nelems: PrimExpr, newPe: PrimExpr):
-    return T.call_extern("handle", f"tl::ascend::shmem_put_nbi_new<{_dtype(src)}>", dst.access_ptr("w"), src.access_ptr("r"),
-                         nelems, newPe) 
-
-def shmem_put_nbi_new(dst: Buffer, src: Buffer, nelems: PrimExpr, newPe: PrimExpr):
-    return T.call_extern("handle", f"tl::ascend::shmem_put_nbi_new<{_dtype(src)}>", dst.access_ptr("w"), src.access_ptr("r"),
-                         nelems, newPe)                                                  
-
-def shmem_ub_put_nbi(ub: Buffer, dst: Buffer, nelems: PrimExpr, newPe: PrimExpr):
-    return T.call_extern("handle", f"tl::ascend::shmem_ub_put_nbi_new<{_dtype(dst)}>", ub.access_ptr("r"), dst.access_ptr("w"),
-                         nelems, newPe)
-
-def shmem_ub_put_nbi_new(ub: Buffer, dst: Buffer, nelems: PrimExpr, newPe: PrimExpr):
-    return T.call_extern("handle", f"tl::ascend::shmem_ub_put_nbi_new<{_dtype(dst)}>", ub.access_ptr("r"), dst.access_ptr("w"),
-                         nelems, newPe)  
-
-def shmem_get(dst: Buffer, src: Buffer, nelems: PrimExpr, newPe: PrimExpr):
-    return T.call_extern("handle", f"tl::ascend::shmem_get_nbi_new<{_dtype(src)}>", dst.access_ptr("w"), src.access_ptr("r"),
-                         nelems, newPe)
-
-def shmem_get_nbi(dst: Buffer, src: Buffer, nelems: PrimExpr, newPe: PrimExpr):
-    return T.call_extern("handle", f"tl::ascend::shmem_get_nbi_new<{_dtype(src)}>", dst.access_ptr("w"), src.access_ptr("r"),
-                         nelems, newPe)
-
-def shmem_get_nbi_new(dst: Buffer, src: Buffer, nelems: PrimExpr, newPe: PrimExpr):
-    return T.call_extern("handle", f"tl::ascend::shmem_get_nbi_new<{_dtype(src)}>", dst.access_ptr("w"), src.access_ptr("r"),
-                         nelems, newPe)
-
-def shmem_ub_get_nbi(dst: Buffer, src: Buffer, nelems: PrimExpr, newPe: PrimExpr):
-    return T.call_extern("handle", f"tl::ascend::shmem_ub_get_nbi_new<{_dtype(src)}>", dst.access_ptr("w"), src.access_ptr("r"),
-                         nelems, newPe)
-
-def shmem_ub_get_nbi_new(dst: Buffer, src: Buffer, nelems: PrimExpr, newPe: PrimExpr):
-    return T.call_extern("handle", f"tl::ascend::shmem_ub_get_nbi_new<{_dtype(src)}>", dst.access_ptr("w"), src.access_ptr("r"),
-                         nelems, newPe)
