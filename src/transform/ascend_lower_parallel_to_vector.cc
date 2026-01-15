@@ -9,7 +9,6 @@
 #include "arith/ir_mutator_with_analyzer.h"
 #include "tir/analysis/var_use_def_analysis.h"
 
-#include <tvm/runtime/logging.h>
 #include <tvm/tir/analysis.h>
 #include <tvm/tir/builtin.h>
 #include <tvm/tir/op.h>
