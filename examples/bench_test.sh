@@ -51,7 +51,7 @@ for script in "${all_scripts[@]}"; do
 
         # 结果判定逻辑
         last_line=$(echo "$output" | tail -n 1)
-        if [[ "$last_line" =~ [Kk][Ee][Rr][Nn][Ee][Ll][[:space:]][Oo][Uu][Tt][Pp][Uu][Tt][[:space:]][Mm][Aa][Tt][Cc][Hh] ]] || [[ "$last_line" =~ [Tt][Ee][Ss][Tt][[:space:]][Pp][Aa][Ss][Ss][Ee][Dd][!] ]]; then
+        if [[ "$output" =~ [Kk][Ee][Rr][Nn][Ee][Ll][[:space:]][Oo][Uu][Tt][Pp][Uu][Tt][[:space:]][Mm][Aa][Tt][Cc][Hh] ]] || [[ "$output" =~ [Tt][Ee][Ss][Tt][[:space:]][Pp][Aa][Ss][Ss][Ee][Dd][!] ]]; then
             echo "[PASSED] $script"
             touch "$temp_dir/pass_$total_scripts"
         else
@@ -83,8 +83,24 @@ if [ $total_scripts -gt 0 ]; then
 fi
 echo "====================================="
 
-# 4. 最后执行特定的 pytest (保持串行以确保环境稳定)
-python ../testing/python/language/test_tilelang_ascend_language_parallel.py
-python ../testing/python/language/test_tilelang_ascend_language_cast_on_copy.py
-python ../testing/python/language/test_tilelang_ascend_language_parallel_discrete.py
-python ../testing/python/language/test_tilelang_ascend_language_parallel_complex.py
+# 4. 最后执行 pytest 自动发现并运行所有测试
+echo -e "\n====================================="
+echo "Running pytest tests"
+echo "====================================="
+
+# 自动发现并运行 testing/python/ 目录下的所有测试文件（包括所有子目录）
+pytest ../testing/python/ -v -n $MAX_JOBS
+pytest_exit_code=$?
+
+# 统计 pytest 结果
+if [ $pytest_exit_code -eq 0 ]; then
+    echo -e "\n====================================="
+    echo "All pytest tests PASSED!"
+    echo "====================================="
+else
+    echo -e "\n====================================="
+    echo "Some pytest tests FAILED!"
+    echo "====================================="
+fi
+
+exit $pytest_exit_code

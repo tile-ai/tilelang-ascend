@@ -42,3 +42,55 @@ Our implementation of chunkwise parallelism resembles that of [Flash Linear Atte
   $$\mathbf O=\text{diag}(\exp(\gamma))\mathbf Q\mathbf S^T+(\Gamma\odot\mathbf M\odot\mathbf Q\mathbf K^T)(\mathbf U-\mathbf W\mathbf S^T),$$
 
   where $\mathbf M$ is the causal mask.
+
+---
+
+### Optimize Results
+
+- `chunk_cumsum`:
+
+  $(B,H,L,C)=(1,2,16384,64)$.
+
+  Running time (original): $58\text{ us}(\times 24\text{ cores})$
+  
+  Running time (optimized): $18\text{ us}(\times 24\text{ cores})$
+
+- `chunk_scaled_dot_kkt`:
+
+  $(B,H,L,DK,C)=(1,1,64,64,64)$.
+
+  Running time (original): $3.9\text{ us}$
+  
+  Running time (optimized): $2.1\text{ us}$
+
+- `solve_tril`:
+
+  $(B,H,L,C)=(1,2,64,64)$.
+
+  Running time (original): $133\text{ us}$
+  
+  Running time (optimized): $21\text{ us}(\times 2\text{ cores})$
+
+- `wy_fast`:
+
+  $(B,H,L,DK,DV,C)=(1,1,64,64,64,64)$.
+
+  Running time (original): $4.9\text{ us}$
+  
+  Running time (optimized): $3.0\text{ us}$
+
+- `chunk_h`:
+
+  $(B,H,L,DK,DV,C)=(1,1,128,64,64,64)$.
+
+  Running time (original): $7.5\text{ us}$
+  
+  Running time (optimized): $5.4\text{ us}$
+
+- `chunk_o`:
+
+  $(B,H,L,DK,DV,C)=(1,1,64,64,64,64)$.
+
+  Running time (original): $4.1\text{ us}$
+  
+  Running time (optimized): $3.2\text{ us}$

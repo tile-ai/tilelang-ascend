@@ -117,36 +117,6 @@ def sparse_attention_fwd(
             acc_o_ub = T.alloc_ub([v_block, D], accum_dtype)
             acc_o_half = T.alloc_ub([v_block, D], dtype)
 
-            # Uncomment and set MEMORY_PLANNING false to annotate address manually
-            # T.annotate_address({
-            #     # L1 address
-            #     q_l1: 0,
-            #     q_tail_l1: 65536,
-            #     kv_l1: 73728,
-            #     kv_tail_l1: 139264,
-            #     acc_s_l1: 139264,
-
-            #     # L0C address
-            #     acc_s_l0c: 0,
-            #     acc_o_l0c: 0,
-
-            #     ## ub address
-            #     acc_o: 0,
-            #     sumexp: 65536,
-            #     m_i: 65664,
-            #     indices_ub_: 65792,
-            #     kv_ub: 66048,
-            #     kv_tail_ub: 67072,
-            #     acc_s_ub: 66048,
-            #     m_i_prev: 74240,
-            #     acc_s_ub_: 74368,
-            #     tmp_ub: 74368,
-            #     sumexp_i_ub: 98944,
-            #     acc_s_half: 98944,
-            #     acc_o_ub: 98944,
-            #     acc_o_half: 98944
-            # })
-
             b_i = by
             g_i = bz
 
@@ -157,7 +127,10 @@ def sparse_attention_fwd(
 
             T.copy(Q[b_i, s_i, H0:H1, :D], q_l1)
             T.copy(Q[b_i, s_i, H0:H1, D:], q_tail_l1)
-            for _ in T.serial(NI):
+            T.tile.fill(acc_o, 0.0)
+            T.tile.fill(sumexp, 0.0)
+            T.tile.fill(m_i, -2.0**30)
+            for i_i in T.serial(NI):
                 T.copy(workspace_1[cid, 0:BI, 0:D], kv_l1)
                 T.copy(workspace_2[cid, 0:BI, 0:D_tail], kv_tail_l1)
 
@@ -171,11 +144,6 @@ def sparse_attention_fwd(
 
                 T.copy(acc_o_l0c, workspace_5[cid, 0:H_per_block, 0:D])
 
-            T.tile.fill(acc_o, 0.0)
-            T.tile.fill(sumexp, 0.0)
-            T.tile.fill(m_i, -2.0**30)
-
-            for i_i in range(NI):
                 T.copy(Indices[b_i, s_i, g_i, i_i * BI:i_i * BI + BI], indices_ub_)
 
                 for bi_i in range(BI // 2):
@@ -200,8 +168,6 @@ def sparse_attention_fwd(
 
                 for i in T.Parallel(v_block):
                     m_i[i] = T.max(m_i[i], m_i_prev[i])
-
-                # alpha_ub = m_i_prev
 
                 for i in T.Parallel(v_block):
                     m_i_prev[i] = m_i_prev[i] - m_i[i]
@@ -313,13 +279,6 @@ for b in range(B):
         for h in range(HKV):
             i_i = torch.randperm(max(1, ((t + q_start_s_index) // KV_stride)))[:topk]
             indices[b, t, h, :len(i_i)] = i_i
-
-# output = torch.empty((B, S, H, DV), dtype=dtype)
-# workspace_1 = torch.zeros((256, 64, 512), dtype=dtype)
-# workspace_2 = torch.zeros((256, 64, 64), dtype=dtype)
-# workspace_3 = torch.zeros((256, 64, 64), dtype=torch.float)
-# workspace_4 = torch.zeros((256, 64, 64), dtype=dtype)
-# workspace_5 = torch.zeros((256, 64, 512), dtype=torch.float)
 
 torch.npu.synchronize()
 print("init successful!")
