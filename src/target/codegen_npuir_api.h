@@ -259,6 +259,7 @@ private:
 
   friend void PrintConst(const FloatImmNode *op, CodeGenTileLangNPUIRAPI *p);
 
+  mlir::Value GenMemrefLoadFromRegion(const BufferLoadNode *op);
   mlir::Value GenSubviewFromRegion(const CallNode *region_node);
   mlir::Value GenSubviewFromRegion(Buffer buffer_data, Array<Range> range);
   mlir::Value CreateIndexCastOp(mlir::Value src);
