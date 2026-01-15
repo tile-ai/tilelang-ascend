@@ -1,3 +1,4 @@
+import argparse
 import tilelang
 from tilelang import DataType, language as T
 import torch
@@ -8,10 +9,6 @@ torch.manual_seed(0)
 tilelang.disable_cache()
 
 NUM_STAGES = 2
-
-# B, S, H, D = 8, 82048, 32, 512
-B, S, H, D = 4, 4096, 32, 512
-# B, S, H, D = 2, 8192, 32, 512
 
 pass_configs = {
     tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
@@ -132,35 +129,46 @@ def flash_attention_fwd(
     return main
 
 
-func = flash_attention_fwd(
-    heads=H,
-    dim=D,
-)
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--B", type=int, default=4, help="batch size")
+    parser.add_argument("--S", type=int, default=4096, help="seq len")
+    parser.add_argument("--H", type=int, default=32, help="attention head size")
+    parser.add_argument("--D", type=int, default=512, help="hidden dim")
+    args = parser.parse_args()
+    B, S, H, D = args.B, args.S, args.H, args.D
+
+    func = flash_attention_fwd(
+        batch=B,
+        seq_len=S,
+        heads=H,
+        dim=D,
+    )
 
 
-def ref_flash_attn(q, k, v):
-    q = q.float()
-    k = k.float()
-    v = v.float()
+    def ref_flash_attn(q, k, v):
+        q = q.float()
+        k = k.float()
+        v = v.float()
 
-    acc = torch.einsum("bhsd,bhkd->bhsk", q, k) * (1.0 / q.shape[-1])**0.5
-    acc = acc.softmax(dim=-1)
-    o = torch.einsum("bhsk,bhkd->bhsd", acc, v)
-    return o.to(torch.float16)
-
-
-q = torch.randn((B, H, S, D), dtype=torch.float16)
-k = torch.randn((B, H, S, D), dtype=torch.float16)
-v = torch.randn((B, H, S, D), dtype=torch.float16)
+        acc = torch.einsum("bhsd,bhkd->bhsk", q, k) * (1.0 / q.shape[-1])**0.5
+        acc = acc.softmax(dim=-1)
+        o = torch.einsum("bhsk,bhkd->bhsd", acc, v)
+        return o.to(torch.float16)
 
 
-torch.npu.synchronize()
-print("init successful!")
+    q = torch.randn((B, H, S, D), dtype=torch.float16)
+    k = torch.randn((B, H, S, D), dtype=torch.float16)
+    v = torch.randn((B, H, S, D), dtype=torch.float16)
 
-output = func(q, k, v)
-ref_output = ref_flash_attn(q, k, v)
-torch.npu.synchronize()
 
-torch.testing.assert_close(ref_output, output, rtol=1e-2, atol=1e-2)
+    torch.npu.synchronize()
+    print("init successful!")
 
-print("Test Passed!")
+    output = func(q, k, v)
+    ref_output = ref_flash_attn(q, k, v)
+    torch.npu.synchronize()
+
+    torch.testing.assert_close(ref_output, output, rtol=1e-2, atol=1e-2)
+
+    print("Test Passed!")

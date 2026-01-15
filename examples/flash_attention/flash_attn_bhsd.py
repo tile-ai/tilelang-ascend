@@ -1,5 +1,6 @@
 import tilelang
 from tilelang import DataType, language as T
+import argparse
 import torch
 
 torch.set_default_device('npu')
@@ -11,13 +12,13 @@ B, S, H, D = 1, 128, 1, 512
 
 @tilelang.jit(out_idx=[3], workspace_idx=[4,5,6])
 def flash_attention_fwd(
+    batch,
+    seq_len,
     heads,
     dim,
+    
 ):
     block_M, block_N = 64, 64
-
-    batch = B
-    seq_len = S
 
     dtype = "float16"
     accum_dtype = "float"
@@ -218,36 +219,46 @@ def flash_attention_fwd(
 
     return main
 
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--B", type=int, default=1, help="batch size")
+    parser.add_argument("--S", type=int, default=128, help="seq len")
+    parser.add_argument("--H", type=int, default=1, help="attention head size")
+    parser.add_argument("--D", type=int, default=512, help="hidden dim")
+    args = parser.parse_args()
+    B, S, H, D = args.B, args.S, args.H, args.D
 
-func = flash_attention_fwd(
-    heads=H,
-    dim=D,
-)
-
-
-def ref_flash_attn(q, k, v):
-    q = q.float()
-    k = k.float()
-    v = v.float()
-
-    acc = torch.einsum("bhsd,bhkd->bhsk", q, k) * (1.0 / q.shape[-1])**0.5
-    acc = acc.softmax(dim=-1)
-    o = torch.einsum("bhsk,bhkd->bhsd", acc, v)
-    return o.to(torch.float16)
-
-
-q = torch.randn((B, H, S, D), dtype=torch.float16)
-k = torch.randn((B, H, S, D), dtype=torch.float16)
-v = torch.randn((B, H, S, D), dtype=torch.float16)
+    func = flash_attention_fwd(
+        batch=B,
+        seq_len=S,
+        heads=H,
+        dim=D,
+    )
 
 
-torch.npu.synchronize()
-print("init successful!")
+    def ref_flash_attn(q, k, v):
+        q = q.float()
+        k = k.float()
+        v = v.float()
 
-output = func(q, k, v)
-ref_output = ref_flash_attn(q, k, v)
-torch.npu.synchronize()
+        acc = torch.einsum("bhsd,bhkd->bhsk", q, k) * (1.0 / q.shape[-1])**0.5
+        acc = acc.softmax(dim=-1)
+        o = torch.einsum("bhsk,bhkd->bhsd", acc, v)
+        return o.to(torch.float16)
 
-torch.testing.assert_close(ref_output, output, rtol=1e-2, atol=1e-2)
 
-print("Test Passed!")
+    q = torch.randn((B, H, S, D), dtype=torch.float16)
+    k = torch.randn((B, H, S, D), dtype=torch.float16)
+    v = torch.randn((B, H, S, D), dtype=torch.float16)
+
+
+    torch.npu.synchronize()
+    print("init successful!")
+
+    output = func(q, k, v)
+    ref_output = ref_flash_attn(q, k, v)
+    torch.npu.synchronize()
+
+    torch.testing.assert_close(ref_output, output, rtol=1e-2, atol=1e-2)
+
+    print("Test Passed!")
