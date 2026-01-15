@@ -242,12 +242,8 @@ CATLASS_DEVICE void fill(LocalTensor<T> const &ubOut, T value) {
 template <typename T, uint32_t M, uint32_t N, class pattern>
 CATLASS_DEVICE void reduce_sum(LocalTensor<T> const &dstTensor,
                                LocalTensor<T> const &srcTensor,
-                               LocalTensor<uint8_t> const &sharedTmpBuffer,
-                               uint32_t count) {
+                               LocalTensor<uint8_t> const &sharedTmpBuffer) {
   uint32_t shape[] = {M, N};
-  if (count > 0) {
-    shape[1] = count / M;
-  }
   AscendC::ReduceSum<T, pattern>(dstTensor, srcTensor, sharedTmpBuffer, shape,
                                  true);
 }
@@ -255,12 +251,8 @@ CATLASS_DEVICE void reduce_sum(LocalTensor<T> const &dstTensor,
 template <typename T, uint32_t M, uint32_t N, class pattern>
 CATLASS_DEVICE void reduce_max(LocalTensor<T> const &dstTensor,
                                LocalTensor<T> const &srcTensor,
-                               LocalTensor<uint8_t> const &sharedTmpBuffer,
-                               uint32_t count) {
+                               LocalTensor<uint8_t> const &sharedTmpBuffer) {
   uint32_t shape[] = {M, N};
-  if (count > 0) {
-    shape[1] = count / M;
-  }
   AscendC::ReduceMax<T, pattern>(dstTensor, srcTensor, sharedTmpBuffer, shape,
                                  true);
 }
