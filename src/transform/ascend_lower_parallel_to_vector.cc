@@ -151,7 +151,7 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
 
   Buffer CreateTempBufferLike(const Buffer& ref, int64_t num_elements, int64_t inner_vec_len = 0) {
     DataType dtype = ref->dtype;
-
+ 
     if (num_elements < 0) {
       LOG(FATAL) << "Cannot create temp buffer for non-constant shape.";
       return Buffer();
@@ -363,7 +363,7 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
         return Stmt(op_copy);
       }
     }
-
+  
     return arith::IRMutatorWithAnalyzer::VisitStmt_(op);
   }
 
@@ -455,7 +455,7 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
     if (output_buffer->shape.size() == 1 && store->indices.size() == 1) {
       if (!ContainsVar(store->indices[0], vector_dim_var_)) return false;
       if (element_count <= 0) return false;
-
+  
       plan->inner_vec_len = element_count;
       plan->outer_extent = 1;
       plan->outer_index_var = nullptr;
@@ -466,7 +466,7 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
     /*----- 2D case -----*/
     if (vector_dim_var_ == nullptr) return false;
 
-    if (output_buffer->shape.size() == 2 && store->indices.size() == 2) {
+    if (output_buffer->shape.size() == 2 && store->indices.size() == 2) { 
       // Check if inner index contains the vector dimension variable
       if (!ContainsVar(store->indices[1], vector_dim_var_)) return false;
 
@@ -496,7 +496,6 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
 
     /*----- 3D db case -----*/
     if (output_buffer->shape.size() == 3 && store->indices.size() == 3) {
-      // Check if inner index contains the vector dimension variable
       if (!ContainsVar(store->indices[2], vector_dim_var_)) return false;
 
       int64_t inner_vec_len = 0;
@@ -514,11 +513,7 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
 
       plan->inner_vec_len = inner_vec_len;
       plan->outer_extent = element_count / inner_vec_len;
-
-      // Try to extract outer variable from the outer index
       plan->outer_index_var = store->indices[1].as<VarNode>();
-
-      // Check if outer index contains the outer dimension variable (for 2D vectorization)
       plan->is_2d_vectorizable = (outer_dim_var_ != nullptr && ContainsVar(store->indices[1], outer_dim_var_));
       return true;
     }
@@ -600,7 +595,7 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
     bool success = DecomposeExpression(store->value, actual_output_buffer,
                                         actual_output_offset, total_elements,
                                         parallel_vars, &row_stmts, is_2d, inner_vec_len);
-
+  
     is_2d_vectorizing_ = saved_is_2d_vectorizing;
     if (!success || row_stmts.empty()) return NullOpt;
 
@@ -669,8 +664,8 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
         }
 
         auto body_opt = VectorizeStoreAsRowBody(
-          st,
-          curr_plan.inner_vec_len,
+          st, 
+          curr_plan.inner_vec_len, 
           curr_plan.outer_extent,
           plan.is_2d_vectorizable,
           parallel_vars
@@ -685,7 +680,7 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
     if (bodies.empty()) return Stmt();
 
     Stmt combined = (bodies.size() == 1) ? bodies[0] : SeqStmt::Flatten(bodies);
-
+  
     if (plan.is_2d_vectorizable || has_outer_serial || plan.outer_extent == 1) {
       return combined;
     }
@@ -763,7 +758,6 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
     }
 
     if (left_is_complex && right_is_complex) {
-      // Create temp buffers sized for the actual computation (loop extent), not the full buffer shape
       Buffer lhs_tmp = CreateTempBufferLike(output_buffer, element_count, inner_vec_len);
       Buffer rhs_tmp = CreateTempBufferLike(output_buffer, element_count, inner_vec_len);
       PrimExpr lhs_tmp_offset = IntImm(DataType::Int(32), 0);
@@ -915,7 +909,6 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
       return false;
     }
 
-    // Create temp buffer sized for the actual computation (loop extent), not the full buffer shape
     Buffer tmp = CreateTempBufferLike(output_buffer, element_count, inner_vec_len);
     PrimExpr tmp_offset = IntImm(DataType::Int(32), 0);
 
@@ -940,7 +933,6 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
                                     Array<Stmt>* statements,
                                     bool is_2d = false,
                                     int64_t inner_vec_len = 0) {
-    // Create temp buffer sized for the actual computation (loop extent), not the full buffer shape
     Buffer tmp = CreateTempBufferLike(output_buffer, element_count, inner_vec_len);
     PrimExpr tmp_offset = IntImm(DataType::Int(32), 0);
 
