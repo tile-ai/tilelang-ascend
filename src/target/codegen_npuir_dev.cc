@@ -2679,7 +2679,7 @@ mlir::Value CodeGenTileLangNPUIRDEV::VisitExpr_(const BufferLoadNode *op) {
     LOG(FATAL) << "The load type and buffer element type do not match";
   }
 
-  // Convert buffer from Buffer in TIR 2 memref in MLIR
+  // Convert buffer from Buffer in TIR 2 tensor in MLIR
   auto mem = GetVarValue(buffer->data.get());
 
   // Convert index from PrimExpr in TIR 2 index type in MLIR
@@ -2689,8 +2689,8 @@ mlir::Value CodeGenTileLangNPUIRDEV::VisitExpr_(const BufferLoadNode *op) {
     convert_inds.push_back(indexVal);
   }
 
-  // Create memef.load op in MLIR
-  return builder.create<mlir::memref::LoadOp>(builder.getUnknownLoc(), mem,
+  // Create tensor.extract op in MLIR
+  return builder.create<mlir::tensor::ExtractOp>(builder.getUnknownLoc(), mem,
                                                convert_inds);
 }
 
@@ -2731,8 +2731,9 @@ void CodeGenTileLangNPUIRDEV::VisitStmt_(const BufferStoreNode *op) {
     convert_inds.push_back(indexVal);
   }
 
-  builder.create<mlir::memref::StoreOp>(builder.getUnknownLoc(), mlir_value,
+  mlir::Value result = builder.create<mlir::tensor::InsertOp>(builder.getUnknownLoc(), mlir_value,
                                          mem, convert_inds);
+  SetVarValue(buffer, result);
 }
 
 void CodeGenTileLangNPUIRDEV::VisitStmt_(const WhileNode *op) {
@@ -2809,6 +2810,16 @@ void CodeGenTileLangNPUIRDEV::LoopCarriedVarCollector::VisitExpr_(
     process_call_arg(2);
   }
   tir::StmtExprVisitor::VisitExpr_(call);
+}
+
+void CodeGenTileLangNPUIRDEV::LoopCarriedVarCollector::VisitStmt_(const tir::BufferStoreNode* op) {
+  auto check_var = [&](const tir::VarNode* var_node) {
+    if (var_node && outer_->GetVarValue(var_node) != mlir::Value{}) {
+      loop_carried_vars_.insert(var_node);
+    }
+  };
+
+  check_var(op->buffer->data.get());
 }
 
 } // namespace codegen
