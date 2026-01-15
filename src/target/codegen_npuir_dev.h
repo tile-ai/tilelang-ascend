@@ -319,6 +319,8 @@ private:
     using tir::StmtExprVisitor::VisitExpr;
     
     void VisitExpr_(const tir::CallNode* call) override;
+    void VisitExpr_(const tir::BufferLoadNode* op) override;
+    void VisitStmt_(const tir::BufferStoreNode* op) override;
     
     void VisitStmt_(const tir::ForNode* for_node) override {
       VisitStmt(for_node->body);
