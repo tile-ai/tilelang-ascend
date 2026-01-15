@@ -554,10 +554,11 @@ private:
         }
         for (const auto& [buffer, stage_indices] : buffer_stage_map) {
             if (stage_indices.size() > 1) {
-                auto buffer_scope = checkBufferScope(analyzer_.location_map(), Var(buffer, DataType::Handle()));
-                if (buffer_scope == VEC_SCOPE) {
-                  shared_buffers_.insert(buffer);
-                }
+                // auto buffer_scope = checkBufferScope(analyzer_.location_map(), Var(buffer, DataType::Handle()));
+                // if (buffer_scope == VEC_SCOPE) {
+                //   shared_buffers_.insert(buffer);
+                // }
+                shared_buffers_.insert(buffer);
             }
         }
     }
