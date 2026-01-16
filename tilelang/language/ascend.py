@@ -41,7 +41,7 @@ def shmem_get_nbi(dst: Buffer, src: Buffer, nelems: PrimExpr, newPe: PrimExpr):
                          nelems, newPe)
 
 
-def shmem_ub_get_nbi_new(dst: Buffer, src: Buffer, nelems: PrimExpr, newPe: PrimExpr):
+def shmem_ub_get_nbi(dst: Buffer, src: Buffer, nelems: PrimExpr, newPe: PrimExpr):
     return T.call_extern("handle", f"tl::ascend::shmem_ub_get_nbi<{_dtype(src)}>", dst.access_ptr("w"), src.access_ptr("r"),
                          nelems, newPe)
 
