@@ -21,16 +21,16 @@ using TileMatL1ZN = Tile<TileType::Mat, T, Rows, Cols,
                        512, PadValue::Zero>;
 
 
-template <typename T, int Rows, int Cols>
+template <typename T, int Rows, int Cols, int RowValid = Rows, int ColValid = Cols>
 using TileUbDataND = Tile<TileType::Vec, T, Rows, Cols,
                        BLayout::RowMajor,
-                       -1, -1>;
+                       RowValid, ColValid>;
 
 
-template <typename T, int Rows, int Cols>
+template <typename T, int Rows, int Cols, int RowValid = Rows, int ColValid = Cols>
 using TileUbDataDN = Tile<TileType::Vec, T, Rows, Cols,
                        BLayout::ColMajor,
-                       -1, -1>;
+                       RowValid, ColValid>;
 
 
 // Valid
@@ -188,5 +188,35 @@ AICORE PTO_INLINE void copy_ub_to_gm(
     GlobalTensor<T1, pto::Shape<shape1, shape2, shape3, shape4, shape5>, 
     pto::Stride<stride1, stride2, stride3, stride4, stride5>> global_tensor(handle);
     TSTORE(global_tensor, ub);
+}
+
+template <typename T1, typename T2, typename T3, 
+        int32_t rows_src, int32_t cols_src, 
+        int32_t validRow_src, int32_t validCol_src, 
+        int32_t cols_dst, 
+        int32_t row_tmp, int32_t col_tmp>
+AICORE PTO_INLINE void TROWMAX_with_slice_buffer(
+        uint64_t handle_src, 
+        uint64_t handle_dst, 
+        TileUbDataDN<T2, cols_dst, 1, cols_dst, 1> ub_DN, 
+        TileUbDataND<T3, row_tmp, col_tmp> tmp_ub) {
+    tl::ascend_pto::TileUbDataND <T1, rows_src, cols_src, validRow_src, validCol_src> tileUbWithValid;
+    TASSIGN(tileUbWithValid, handle_src);
+    TROWMAX(ub_DN, tileUbWithValid, tmp_ub);
+}
+
+template <typename T1, typename T2, typename T3, 
+        int32_t rows_src, int32_t cols_src, 
+        int32_t validRow_src, int32_t validCol_src, 
+        int32_t cols_dst, 
+        int32_t row_tmp, int32_t col_tmp>
+AICORE PTO_INLINE void TROWSUM_with_slice_buffer(
+        uint64_t handle_src, 
+        uint64_t handle_dst, 
+        TileUbDataDN<T2, cols_dst, 1, cols_dst, 1> ub_DN, 
+        TileUbDataND<T3, row_tmp, col_tmp> tmp_ub) {
+    tl::ascend_pto::TileUbDataND <T1, rows_src, cols_src, validRow_src, validCol_src> tileUbWithValid;
+    TASSIGN(tileUbWithValid, handle_src);
+    TROWSUM(ub_DN, tileUbWithValid, tmp_ub);
 }
 }

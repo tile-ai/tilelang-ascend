@@ -948,15 +948,36 @@ void CodeGenTileLangAscendPto::BinaryVecOpCodegen(const CallNode *op,
     auto var_name = PrintBufferOffset(op->args[i].as<CallNode>());
     var_names.push_back(var_name);
   }
-  this->PrintIndent();
-  this->stream << op_name << "(";
-  for (int i = 0; i < var_names.size(); i++) {
-    this->stream << var_names[i];
-    if (i != var_names.size() - 1) {
-      this->stream << ", ";
+
+  if (prefetch_n_stages_map_[var_names[1]].first > 0) {
+    auto buffer_k = op->args[1].as<CallNode>()->args[2] / op->args[1].as<CallNode>()->args[3];
+    tvm::arith::Analyzer analyzer;
+    PrimExpr simplified_buffer_k = analyzer.Simplify(buffer_k);
+    this->PrintIndent();
+    this->stream << op_name << "(";
+    for (int i = 0; i < var_names.size(); i++) {
+      this->stream << var_names[i];
+      if (i != 0) {
+        this->stream << "[" << simplified_buffer_k << "]";
+      }
+      if (i != var_names.size() - 1) {
+        this->stream << ", ";
+      }
     }
+    this->stream << ");\n";
+  } else if (prefetch_n_stages_map_[var_names[1]].first == 0) {
+    this->PrintIndent();
+    this->stream << op_name << "(";
+    for (int i = 0; i < var_names.size(); i++) {
+      this->stream << var_names[i];
+      if (i != var_names.size() - 1) {
+        this->stream << ", ";
+      }
+    }
+    this->stream << ");\n";
+  } else {
+    ICHECK(false) << "BinaryVecOpCodegen Failed";
   }
-  this->stream << ");\n";
 }
 
 void CodeGenTileLangAscendPto::BinaryVecOpsCodegen(const CallNode *op,
@@ -982,7 +1003,7 @@ void CodeGenTileLangAscendPto::BinaryVecOpsCodegen(const CallNode *op,
     this->PrintIndent();
     int32_t ub_data_temp_col = std::stoi(ub_data_vector[2]) * std::stoi(ub_data_vector[1]) / std::stoi(for_num_map_[index]);
     this->stream << kAscendPtoScope << "TileUbDataND<" << ub_data_vector[0] << ", 1, " 
-    << ub_data_temp_col << "> " << var_name_temp << "(" << "1, " << ub_data_temp_col << ");\n";
+    << ub_data_temp_col << ", 1, " << ub_data_temp_col << "> " << var_name_temp << ";\n";
     this->PrintIndent();
     this->stream << "TASSIGN(" << var_name_temp << ", " << ub_data_vector[3] << " + " <<
     index << " * " << ub_data_temp_col << " * " << GetTypeLenString(ub_data_vector[0]) << ");\n";
@@ -1034,8 +1055,77 @@ void CodeGenTileLangAscendPto::ScalarOpCodegen(const CallNode *op, const std::st
                   << PrintExpr(op->args[2]) << ");\n";
 }
 
+std::tuple<int, int, bool> ExtractTemplateParams(const std::string& op_name) {
+    // 默认值
+    int second_param = 0;  // 第2个参数（8）
+    int third_param = 0;   // 第3个参数（64）
+    
+    // 找到尖括号内容
+    size_t left = op_name.find('<');
+    size_t right = op_name.find('>');
+    
+    if (left == std::string::npos || right == std::string::npos || left >= right) {
+        return std::make_tuple(second_param, third_param, false);
+    }
+    
+    // 提取并分割参数
+    std::string params_str = op_name.substr(left + 1, right - left - 1);
+    std::vector<std::string> params;
+    
+    size_t start = 0;
+    size_t comma = 0;
+    while ((comma = params_str.find(',', start)) != std::string::npos) {
+        std::string param = params_str.substr(start, comma - start);
+        // 去除空格
+        param.erase(0, param.find_first_not_of(" \t"));
+        param.erase(param.find_last_not_of(" \t") + 1);
+        params.push_back(param);
+        start = comma + 1;
+    }
+    
+    // 最后一个参数
+    std::string last_param = params_str.substr(start);
+    last_param.erase(0, last_param.find_first_not_of(" \t"));
+    last_param.erase(last_param.find_last_not_of(" \t") + 1);
+    params.push_back(last_param);
+    
+    // 检查参数数量并提取
+    if (params.size() >= 3) {  // 至少要有3个参数（float, 8, 64）
+        try {
+            // params[0] 是 "float"（类型）
+            // params[1] 是 "8"（第2个参数）
+            // params[2] 是 "64"（第3个参数）
+            // params[3] 是 "-1"（第4个参数，如果有的话）
+            
+            second_param = std::stoi(params[1]);  // 8
+            third_param = std::stoi(params[2]);   // 64
+            
+            return std::make_tuple(second_param, third_param, true);
+        } catch (const std::exception& e) {
+            // 转换失败
+            return std::make_tuple(second_param, third_param, false);
+        }
+    }
+    
+    return std::make_tuple(second_param, third_param, false);
+}
+
 void CodeGenTileLangAscendPto::ReduceOpCodegen(const CallNode *op) {
   std::string op_name = Downcast<StringImm>(op->args[0])->value;
+
+  //Determine whether the reduce operation needs to be sliced.
+  auto template_params = ExtractTemplateParams(op_name);
+  int param2_int = std::get<0>(template_params);
+  int param3_int = std::get<1>(template_params);
+  std::string param2 = std::to_string(param2_int);
+  std::string param3 = std::to_string(param3_int);
+  // std::cout<<param2<<std::endl;
+  // std::cout<<param3<<std::endl;
+  bool success = std::get<2>(template_params);
+  if (!success) {
+    ICHECK(false) << "ExtractTemplateParams failed";
+  }
+
   if (op_name.find("reduce_sum") != std::string::npos) {
     op_name = "TROWSUM";
   } else if (op_name.find("reduce_max") != std::string::npos) {
@@ -1055,30 +1145,56 @@ void CodeGenTileLangAscendPto::ReduceOpCodegen(const CallNode *op) {
   std::string row = ub_data_vector[2];
   std::string col = ub_data_vector[1];
   std::string ffts = ub_data_vector[3];
+
+  std::string ub_name_src = var_names[1];
+  std::vector<std::string> ub_data_vector_src = ub_data_map_[ub_name_src];
+  std::string ub_data_type_src = ub_data_vector_src[0];
+  std::string row_src = ub_data_vector_src[1];
+  std::string col_src = ub_data_vector_src[2];
+  std::string ffts_src = ub_data_vector_src[3];
+
+  std::string ub_name_tmp = var_names[2];
+  std::vector<std::string> ub_data_vector_tmp = ub_data_map_[ub_name_tmp];
+  std::string ub_data_type_tmp = ub_data_vector_tmp[0];
+  std::string row_tmp = ub_data_vector_tmp[1];
+  std::string col_tmp = ub_data_vector_tmp[2];
+  std::string ffts_tmp = ub_data_vector_tmp[3];
+
+  // Determine whether to request the TileUbData with DN arrangement.
   ICHECK(ub_data_vector.size() == 5) << "TileUbData needs 5 elements (type, row, col, ffts, applied DN or not), got " << ub_data_vector.size() << ".";
-  if (ub_data_vector[4] == "Unapplied for tileUbDataDN") {
+  if (ub_data_vector[4] == "Unapplied for tileUbDataDN") { //If not applied yet, prioritize applying for it.
     this->PrintIndent();
-    this->stream << kAscendPtoScope << "TileUbDataDN <" << ub_data_type << ", " << row << ", " << col << "> " << ub_name << "_DN(" << row << ", " << col << ");\n";
+    this->stream << kAscendPtoScope << "TileUbDataDN <" << ub_data_type << ", " << row << ", " << col << ", " << row << ", " << col << "> " << ub_name << "_DN;\n";
     this->PrintIndent();
     this->stream << "TASSIGN(" << ub_name << "_DN, " << ffts << ");\n";
-    this->PrintIndent();
-    this->stream << op_name << "(";
-    for (int i = 0; i < var_names.size(); i++) {
-      this->stream << var_names[i];
-      if (i == 0) {
-        this->stream << "_DN";
+    if (param2 == row_src && param3 == col_src) {
+      this->PrintIndent();
+      this->stream << op_name << "(";
+      for (int i = 0; i < var_names.size(); i++) {
+        this->stream << var_names[i];
+        if (i == 0) {
+          this->stream << "_DN";
+        }
+        if (i != var_names.size() - 1) {
+          this->stream << ", ";
+        }
       }
-      if (i != var_names.size() - 1) {
-        this->stream << ", ";
+      this->stream << ");\n";
+    } else {
+      if (op_name == "TROWMAX") {
+        this->PrintIndent();
+        this->stream << kAscendPtoScope << "TROWMAX_with_slice_buffer <" << ub_data_type_src << ", " << ub_data_type << ", " << ub_data_type_tmp << ", " << row_src << ", " << col_src << ", " << param2 << ", " << param3 << ", " << row << ", " << row_tmp << ", " << col_tmp << "> (" << ffts_src << ", " << ffts << ", " << ub_name << "_DN, " << ub_name_tmp <<");\n";
+      } else if (op_name == "TROWSUM") {
+        this->PrintIndent();
+        this->stream << kAscendPtoScope << "TROWSUM_with_slice_buffer <" << ub_data_type_src << ", " << ub_data_type << ", " << ub_data_type_tmp << ", " << row_src << ", " << col_src << ", " << param2 << ", " << param3 << ", " << row << ", " << row_tmp << ", " << col_tmp << "> (" << ffts_src << ", " << ffts << ", " << ub_name << "_DN, " << ub_name_tmp <<");\n";
       }
     }
-    this->stream << ");\n";
     this->PrintIndent();
     this->stream << "pipe_barrier(PIPE_ALL);\n";
     this->PrintIndent();
     this->stream << "TRESHAPE(" << var_names[0] << ", " << var_names[0] << "_DN);\n";
     ub_data_vector[4] = "Applied for tileUbDataDN";
-  } else if (ub_data_vector[4] == "Applied for tileUbDataDN") {
+  } else if (ub_data_vector[4] == "Applied for tileUbDataDN") { //If already applied, leverage the existing application.
     this->PrintIndent();
     this->stream << op_name << "(";
     for (int i = 0; i < var_names.size(); i++) {
@@ -1208,14 +1324,11 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
             stream << ", " << op->extents[0];
             stream << ", " << tvm::floordiv(op->extents[1] + NDBlockSize - 1, NDBlockSize) * NDBlockSize;
           }
-          stream << "> " << vid << "(";
+          // stream << "> " << vid << "(";
           for (size_t i = 0; i < op->extents.size(); i++) {
-              if (i < op->extents.size() - 1) {
-                  stream << op->extents[i] << ", ";
-              } else {
-                  stream << op->extents[i] << ");\n";
-              }
+            stream << ", " << op->extents[i];
           }
+          stream << "> " << vid << ";\n";
           ub_data[3] = DEC_STR_TO_HEX_STR(PrintExpr(address_map_[op->buffer_var]));
           ub_data[4] = "Unapplied for tileUbDataDN";
           ub_data_map_[vid] = ub_data;
@@ -1225,7 +1338,7 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
         } else if (op->extents.size() == 1) {
           ub_data[1] = "1";
           ub_data[2] = PrintExpr(op->extents[0]);
-          stream << pos << "ND<" << type << ", 1, " << op->extents[0] << "> " << vid << "(" << "1, " << op->extents[0] << ");\n";
+          stream << pos << "ND<" << type << ", 1, " << op->extents[0] << ", 1, " << op->extents[0]<< "> " << vid << ";\n";
           ub_data[3] = DEC_STR_TO_HEX_STR(PrintExpr(address_map_[op->buffer_var]));
           ub_data[4] = "Unapplied for tileUbDataDN";
           ub_data_map_[vid] = ub_data;
@@ -1250,14 +1363,10 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
             stream << ", " << op->extents[0];
             stream << ", " << tvm::floordiv(op->extents[1] + NDBlockSize - 1, NDBlockSize) * NDBlockSize;
           }
-          stream << "> " << vid << "[" << op->extents[0] << "](";
           for (size_t i = 1; i < op->extents.size(); i++) {
-              if (i < op->extents.size() - 1) {
-                  stream << op->extents[i] << ", ";
-              } else {
-                  stream << op->extents[i] << ");\n";
-              }
+            stream << ", " << op->extents[i];
           }
+          stream << "> " << vid << "[" << op->extents[0] << "];\n";
           for (size_t i = 0; i < bufferNum; i++) {
             this->PrintIndent();
             stream << "TASSIGN(" << vid << "[" << i << "], " << DEC_STR_TO_HEX_STR(PrintExpr(address_map_[op->buffer_var])) << ");\n";
@@ -1339,14 +1448,10 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
             stream << ", " << op->extents[0];
             stream << ", " << tvm::floordiv(op->extents[1] + NDBlockSize - 1, NDBlockSize) * NDBlockSize;
           }
-          stream << "> " << vid << "(";
           for (size_t i = 0; i < op->extents.size(); i++) {
-              if (i < op->extents.size() - 1) {
-                  stream << op->extents[i] << ", ";
-              } else {
-                  stream << op->extents[i] << ");\n";
-              }
+            stream << ", " << op->extents[i];
           }
+          stream << "> " << vid << ";\n";
           ub_data[3] = DEC_STR_TO_HEX_STR(PrintExpr(address_offset_[String(pos)]));
           ub_data[4] = "Unapplied for tileUbDataDN";
           ub_data_map_[vid] = ub_data;
@@ -1359,7 +1464,7 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
         } else if (op->extents.size() == 1) {
           ub_data[1] = "1";
           ub_data[2] = PrintExpr(op->extents[0]);
-          stream << pos << "ND<" << type << ", 1, " << op->extents[0] << "> " << vid << "(" << "1, " << op->extents[0] << ");\n";
+          stream << pos << "ND<" << type << ", 1, " << op->extents[0] << ", 1, " << op->extents[0]<< "> " << vid << ";\n";
           ub_data[3] = DEC_STR_TO_HEX_STR(PrintExpr(address_offset_[String(pos)]));
           ub_data[4] = "Unapplied for tileUbDataDN";
           ub_data_map_[vid] = ub_data;
@@ -1389,14 +1494,10 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
             stream << ", " << op->extents[0];
             stream << ", " << tvm::floordiv(op->extents[1] + NDBlockSize - 1, NDBlockSize) * NDBlockSize;
           }
-          stream << "> " << vid << "[" << op->extents[0] << "](";
           for (size_t i = 1; i < op->extents.size(); i++) {
-              if (i < op->extents.size() - 1) {
-                  stream << op->extents[i] << ", ";
-              } else {
-                  stream << op->extents[i] << ");\n";
-              }
+            stream << ", " << op->extents[i];
           }
+          stream << "> " << vid << "[" << op->extents[0] << "];\n";
           for (size_t j = 0; j < bufferNum; j++) {
             this->PrintIndent();
             stream << "TASSIGN(" << vid << "[" << j << "], " << DEC_STR_TO_HEX_STR(PrintExpr(address_offset_[String(pos)])) << ");\n";
@@ -1467,11 +1568,16 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
                 PrimExpr(int(op->ConstantAllocationSize() * op->dtype.bytes())) +
                     address_offset_[String(pos)]);
           }
+        }
+        l_data_map_[vid] = l_data;
       }
-      l_data_map_[vid] = l_data;
     }
-  }
-  
+
+    // std::cout<<"visitstmt:"<<std::endl;
+    for(auto c:ub_data){
+      // std::cout<<c<<", ";
+    }
+    // std::cout<<std::endl;
   };
 
   if (scope == "wmma.matrix_a") {
