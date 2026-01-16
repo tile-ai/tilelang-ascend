@@ -511,6 +511,20 @@ NpuirReshape::NpuirReshape(Array<PrimExpr> args, BufferMap vmap) {
   for (const auto& r : this->dst_range) {
     dst_shape.push_back(r->extent);
   }
+
+  // Validate that src and dst have the same number of elements.
+  int64_t src_numel = 1;
+  for (const Range& r : this->src_range) {
+    auto imm = r->extent.as<tvm::IntImmNode>();
+    ICHECK(imm)
+        << "Dynamic reshape source shape is not supported yet";
+    this->src_shape.push_back(imm->value);
+    src_numel *= imm->value;
+  }
+
+  ICHECK(src_numel == dst_numel)
+      << "Invalid reshape: source element count (" << src_numel
+      << ") does not match destination element count (" << dst_numel << ")";
 }
 
 NpuirTranspose::NpuirTranspose(Array<PrimExpr> args, BufferMap vmap){
