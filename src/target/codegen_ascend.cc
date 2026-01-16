@@ -882,7 +882,7 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
                      << ");\n";
         var_names.push_back(var_name + "_scalar");
       } else {
-        var_names.push_back(PrintExpr(op->args[op->args.size() - 2]));
+        var_names.push_back(" 1.0f / "PrintExpr(op->args[op->args.size() - 2]));
       }
       this->PrintIndent();
       this->stream << "AscendC::Muls"
