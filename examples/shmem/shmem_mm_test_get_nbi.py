@@ -20,33 +20,27 @@ args = parser.parse_args()
 M = args.m
 N = args.n
 g_ash_size = 1024 * 1024 * 1024
-g_malloc_size = 8 * 1024 * 1024
 G_IP_PORT = "tcp://100.102.180.145:8666"
 
 num_processes = args.num_processes
 
 @tilelang.jit()
-def shmem_ub_get_nbi(M, N, nelems, newPe, dtype="int8"):
+def shmem_get_nbi(M, N, nelems, newPe, dtype="int8"):
     @T.prim_func
     def main(
         A: T.Tensor((M, N), dtype),
         B: T.Tensor((M, N), dtype),
     ):
         with T.Kernel(1, is_npu=True) as (cid, vid):
-            ub_tensor = T.alloc_ub((1, nelems), dtype)
             with T.Scope("V"):
                 if vid == 0:
-                    T.shmem_ub_get_nbi_new(ub_tensor, A, nelems, newPe)
-                    T.set_flag("mte2", "mte3", 0x7)
-                    T.wait_flag("mte2", "mte3", 0x7)
-                    T.copy(ub_tensor, B)
+                    T.shmem_get_nbi(B, A, nelems, newPe)
                     T.pipe_barrier("mte3")
     return main
 
 def worker(rank, barrier):
     print(f"Rank {rank}: Setting device")
     torch.npu.set_device(rank)
-    # 1. test set tls info 是否需要？
     ret = aclshmem_module.set_conf_store_tls(False, "")
     if ret != 0:
         raise ValueError("[ERROR] set_conf_store_tls failed")
@@ -73,7 +67,7 @@ def worker(rank, barrier):
         # 从一张新的卡上get数据到本pe，这里设成前一张卡
         newPe = (rank + npu_num - 1) % npu_num
 
-        func = shmem_ub_get_nbi(M, N, nelems, newPe)
+        func = shmem_get_nbi(M, N, nelems, newPe)
         func(a, b)
         barrier.wait()
         print("b after=", b)

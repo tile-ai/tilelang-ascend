@@ -20,29 +20,33 @@ args = parser.parse_args()
 M = args.m
 N = args.n
 g_ash_size = 1024 * 1024 * 1024
-g_malloc_size = 8 * 1024 * 1024
 G_IP_PORT = "tcp://100.102.180.145:8666"
 
 num_processes = args.num_processes
 
 @tilelang.jit()
-def shmem_get_nbi(M, N, nelems, newPe, dtype="int8"):
+def shmem_ub_put_nbi(M, N, nelems, newPe, dtype="int8"):
     @T.prim_func
     def main(
         A: T.Tensor((M, N), dtype),
         B: T.Tensor((M, N), dtype),
     ):
         with T.Kernel(1, is_npu=True) as (cid, vid):
+            ub_tensor = T.alloc_ub((1, nelems), dtype)
             with T.Scope("V"):
                 if vid == 0:
-                    T.shmem_get_nbi_new(B, A, nelems, newPe)
-                    T.pipe_barrier("mte3")
+                    T.copy(A, ub_tensor)
+                    # T.set_flag("mte2", "mte3", 0x7)
+                    # T.wait_flag("mte2", "mte3", 0x7)
+                    T.barrier_all()
+                    T.shmem_ub_put_nbi(ub_tensor, B, nelems, newPe)
+                    # T.pipe_barrier("mte3")
+                    T.barrier_all()
     return main
 
 def worker(rank, barrier):
     print(f"Rank {rank}: Setting device")
     torch.npu.set_device(rank)
-    # 1. test set tls info 是否需要？
     ret = aclshmem_module.set_conf_store_tls(False, "")
     if ret != 0:
         raise ValueError("[ERROR] set_conf_store_tls failed")
@@ -64,12 +68,16 @@ def worker(rank, barrier):
         tensor = aclshmem_module.aclshmem_create_tensor([M, 2*N], dtype=torch.int8, device_id=rank)
         a = tensor[0:1, 0:N].fill_(2)
         b = tensor[0:1, N:2*N].fill_(0)
+        # print("a before=", a)
+        # print("b before=", b)
+        # print("rank", rank, "a address", a.data_ptr())
+        # print("rank", rank, "b address", b.data_ptr())
         torch.npu.synchronize()
         nelems = M * N
-        # 从一张新的卡上get数据到本pe，这里设成前一张卡
-        newPe = (rank + npu_num - 1) % npu_num
+        # 将本卡数据put到另一张卡上，这里设置为下一张卡
+        newPe = (rank + 1) % npu_num
 
-        func = shmem_get_nbi(M, N, nelems, newPe)
+        func = shmem_ub_put_nbi(M, N, nelems, newPe)
         func(a, b)
         barrier.wait()
         print("b after=", b)

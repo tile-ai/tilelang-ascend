@@ -20,7 +20,6 @@ args = parser.parse_args()
 M = args.m
 N = args.n
 g_ash_size = 1024 * 1024 * 1024
-g_malloc_size = 8 * 1024 * 1024
 G_IP_PORT = "tcp://100.102.180.145:8666"
 
 num_processes = args.num_processes
@@ -35,14 +34,13 @@ def shmem_put_nbi(M, N, nelems, newPe, dtype="int8"):
         with T.Kernel(1, is_npu=True) as (cid, vid):
             with T.Scope("V"):
                 if vid == 0:
-                    T.shmem_put_nbi_new(B, A, nelems, newPe)
+                    T.shmem_put_nbi(B, A, nelems, newPe)
                     T.pipe_barrier("mte3")
     return main
 
 def worker(rank, barrier):
     print(f"Rank {rank}: Setting device")
     torch.npu.set_device(rank)
-    # 1. test set tls info 是否需要？
     ret = aclshmem_module.set_conf_store_tls(False, "")
     if ret != 0:
         raise ValueError("[ERROR] set_conf_store_tls failed")
