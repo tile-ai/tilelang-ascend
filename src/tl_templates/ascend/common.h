@@ -259,8 +259,8 @@ CATLASS_DEVICE void shmem_get_nbi(const GlobalTensor<T> &output, const GlobalTen
 template <typename T>
 CATLASS_DEVICE void shmem_ub_get_nbi(const LocalTensor<T> &output, const GlobalTensor<T> &input,
                              size_t nelems, size_t newPe) {
-    aclshmemx_mte_get_nbi(reinterpret_cast<__ubuf__ T *>(output.GetPhyAddr()),
-        const_cast<__gm__ T *>(input.GetPhyAddr()), nelems, newPe, EVENT_ID0);
+    aclshmemx_mte_get_nbi(reinterpret_cast<__ubuf__ T*>(output.GetPhyAddr()),
+        const_cast<__gm__ T*>(input.GetPhyAddr()), nelems, newPe, EVENT_ID0);
 }
 
 template <typename T, uint32_t Len, uint32_t op>
