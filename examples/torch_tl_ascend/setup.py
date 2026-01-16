@@ -26,7 +26,10 @@ setup(
         CppExtension(
             "torch_tl_ascend._inner",
             [cpp_path.as_posix() for cpp_path in SRC.glob("*.cpp")],  # _inner.cpp
-            include_dirs=[(TORCH_NPU_PATH / "include").as_posix()],
+            include_dirs=[
+                PACKAGE_PATH.as_posix(),
+                (TORCH_NPU_PATH / "include").as_posix()
+            ],
             library_dirs=[(TORCH_NPU_PATH / "lib").as_posix()],
             libraries=["torch_npu"] + [
                 so_path.stem.removeprefix("lib") for so_path in PACKAGE_PATH.glob("*.so")
