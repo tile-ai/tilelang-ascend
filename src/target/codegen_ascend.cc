@@ -1755,19 +1755,21 @@ void CodeGenTileLangAscend::PrintConstArray(const CallNode *op, int start_idx,
 
 void CodeGenTileLangAscend::BroadcastOpCodegen(const CallNode *op) {
   std::string op_name = Downcast<StringImm>(op->args[0])->value;
-  int dim = op->args[3].as<IntImmNode>()->value;
+  int dim = op->args[4].as<IntImmNode>()->value;
 
   this->PrintIndent();
   this->stream << op_name << "(";
   // 1. Dst Buffer
-  this->stream << PrintBufferOffset(op->args[1].as<CallNode>()) << ",";
+  this->stream << PrintBufferOffset(op->args[1].as<CallNode>(), false) << ",";
   // 2. Src Buffer
-  this->stream << PrintBufferOffset(op->args[2].as<CallNode>()) << ",";
-  // 3. Dst Shape Array
-  PrintConstArray(op, 4, dim);
+  this->stream << PrintBufferOffset(op->args[2].as<CallNode>(), false) << ",";
+  // 3. Tmp Buffer
+  this->stream << PrintBufferOffset(op->args[3].as<CallNode>(), false) << ",";
+  // 4. Dst Shape Array
+  PrintConstArray(op, 5, dim);
   this->stream << ", ";
-  // 4. Src Shape Array
-  PrintConstArray(op, 4 + dim, dim);
+  // 5. Src Shape Array
+  PrintConstArray(op, 5 + dim, dim);
   this->stream << ");\n";
 }
 

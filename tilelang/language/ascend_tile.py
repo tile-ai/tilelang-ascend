@@ -506,7 +506,7 @@ def round(out: Buffer, buffer: Buffer, tmp: Buffer, count: PrimExpr):
     return T.call_extern("handle", f"AscendC::Round", out.access_ptr("w"), buffer.access_ptr("r"),
                          tmp.access_ptr("r"), count)
 
-def broadcast(dst: Buffer, src: Buffer):
+def broadcast(dst: Buffer, src: Buffer, tmp: Buffer):
     """Generates a TIR intrinsic call for the AscendC `Broadcast` operation.
 
     This function performs a broadcast copy from the source buffer (`src`) to the
@@ -518,6 +518,7 @@ def broadcast(dst: Buffer, src: Buffer):
             Unified Buffer (UB). Its shape determines the output size.
         src (tvm.tir.Buffer): The source buffer. Must be allocated in the
             Unified Buffer (UB). Its shape must be compatible with `dst` for broadcasting.
+        tmp (tvm.tir.Buffer): The temporary buffer.
 
     Returns:
         tvm.tir.Call: A TIR intrinsic call node that maps to the C++ `AscendC::Broadcast` API.
@@ -562,6 +563,7 @@ def broadcast(dst: Buffer, src: Buffer):
         f"tl::ascend::Broadcast<{template_args}>",
         dst.access_ptr("w"),
         src.access_ptr("r"),
+        tmp.access_ptr("r"),
         dim,
         *dst_shape,
         *src_shape,
