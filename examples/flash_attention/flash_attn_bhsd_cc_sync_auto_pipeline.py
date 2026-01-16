@@ -27,9 +27,6 @@ def flash_attention_fwd(
 ):
     block_M, block_N = 64, 128
 
-    batch = B
-    seq_len = S
-
     dtype = "float16"
     accum_dtype = "float"
 
