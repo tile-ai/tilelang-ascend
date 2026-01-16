@@ -238,6 +238,7 @@ private:
   void VcastCodegen(const CallNode *op);
   void VreduceCodegen(const CallNode *op);
   void VcumsumCodegen(const CallNode *op);
+  void VAtomicAddCodegen(const CallNode *op);
   void VgatherCodegen(const CallNode *op);
   void VtransposeCodegen(const CallNode *op);
   void VinterleaveCodegen(const CallNode *op);
@@ -318,6 +319,7 @@ private:
     using tir::StmtExprVisitor::VisitExpr;
     
     void VisitExpr_(const tir::CallNode* call) override;
+    void VisitStmt_(const tir::BufferStoreNode* op) override;
     
     void VisitStmt_(const tir::ForNode* for_node) override {
       VisitStmt(for_node->body);

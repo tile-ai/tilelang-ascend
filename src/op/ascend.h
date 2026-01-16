@@ -492,6 +492,66 @@ public:
   Array<Range> src_range;
 };
 
+/// HIVM vector cos operation
+/// Calculate the cos value of one tensor
+class NpuirVCos : public Operator {
+public:
+  NpuirVCos(Array<PrimExpr> args, BufferMap vmap);
+
+  static const Op &Get();
+
+  std::vector<Buffer> srcs;
+  Buffer dst;
+
+  std::vector<Array<Range>> srcs_range;
+  Array<Range> dst_range;
+};
+
+/// HIVM vector sin operation
+/// Calculate the sin value of one tensor
+class NpuirVSin : public Operator {
+public:
+  NpuirVSin(Array<PrimExpr> args, BufferMap vmap);
+
+  static const Op &Get();
+
+  std::vector<Buffer> srcs;
+  Buffer dst;
+
+  std::vector<Array<Range>> srcs_range;
+  Array<Range> dst_range;
+};
+
+/// HIVM vector erf operation
+/// Calculate the erf value of one tensor
+class NpuirVErf : public Operator {
+public:
+  NpuirVErf(Array<PrimExpr> args, BufferMap vmap);
+
+  static const Op &Get();
+
+  std::vector<Buffer> srcs;
+  Buffer dst;
+
+  std::vector<Array<Range>> srcs_range;
+  Array<Range> dst_range;
+};
+
+/// HIVM vector tanh operation
+/// Calculate the tanh value of one tensor
+class NpuirVTanh : public Operator {
+public:
+  NpuirVTanh(Array<PrimExpr> args, BufferMap vmap);
+
+  static const Op &Get();
+
+  std::vector<Buffer> srcs;
+  Buffer dst;
+
+  std::vector<Array<Range>> srcs_range;
+  Array<Range> dst_range;
+};
+
 } // namespace tl
 } // namespace tvm
 

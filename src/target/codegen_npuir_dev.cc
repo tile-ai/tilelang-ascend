@@ -1086,8 +1086,7 @@ void CodeGenTileLangNPUIRDEV::SmartMemRefCopy(mlir::Value src, mlir::Value dst) 
   }
 
   // 2. Try Reinterpret Copy if shape not match but numElements match
-  if (src_type.getNumElements() == dst_type.getNumElements() && 
-      src_type.getElementType() == dst_type.getElementType()) {
+  if (src_type.getNumElements() == dst_type.getNumElements()) {
       
     // safety check: stride hack only when elementTypes match
     if (src_type.getElementType() != dst_type.getElementType()) {
@@ -1095,54 +1094,113 @@ void CodeGenTileLangNPUIRDEV::SmartMemRefCopy(mlir::Value src, mlir::Value dst) 
       return;
     }
 
-    // 1. get offset of src MemRef
+    // Get offset of src MemRef
     auto extractOp = builder.create<mlir::memref::ExtractStridedMetadataOp>(loc, src);
     mlir::Value offsetValue = extractOp.getOffset();
 
     llvm::SmallVector<mlir::OpFoldResult> offsets;
     offsets.push_back(offsetValue);
 
-    // 2. compute strides (suppose continuous layout)
-    // don't consider dynamic shape, if it's dynamic shape, we will get -1
-    llvm::SmallVector<int64_t> dst_strides;
-    int64_t stride = 1;
+    // 1. get sizes for dst value.
+    llvm::SmallVector<mlir::OpFoldResult> sizes;
+    llvm::SmallVector<mlir::Value> dim_values;
+
+    for (int i = 0; i < dst_type.getRank(); ++i) {
+      int64_t static_dim = dst_type.getDimSize(i);
+      
+      if (mlir::ShapedType::isDynamic(static_dim)) {
+        mlir::Value dim_val = builder.create<mlir::memref::DimOp>(loc, dst, i);
+        sizes.push_back(dim_val);
+        dim_values.push_back(dim_val);
+      } else {
+        sizes.push_back(builder.getIndexAttr(static_dim));
+        dim_values.push_back(builder.create<mlir::arith::ConstantIndexOp>(loc, static_dim));
+      }
+    }
+
+    // 2. Compute strides for StridedLayoutAttr
+    // Rule: Calculate from the last dimension to the first. When encountering a dynamic dimension,
+    // the current and all preceding strides become dynamic.
+    llvm::SmallVector<int64_t> layout_strides(dst_type.getRank(), mlir::ShapedType::kDynamic);
+    int64_t current_stride = 1;
+    bool all_static_so_far = true;
+
+    // Calculate from the lowest dimension (last dimension) to the highest
     for (int i = dst_type.getRank() - 1; i >= 0; --i) {
-      dst_strides.insert(dst_strides.begin(), stride);
-      stride *= dst_type.getDimSize(i);
+      int64_t dim_size = dst_type.getDimSize(i);
+      
+      // Set stride for the current dimension
+      if (i == dst_type.getRank() - 1) {
+        // The lowest dimension's stride is always 1
+        layout_strides[i] = 1;
+      } else {
+        // Normal case
+        layout_strides[i] = current_stride;
+      }
+      
+      // Update current_stride for the next dimension (higher dimension)
+      if (mlir::ShapedType::isDynamic(dim_size)) {
+        all_static_so_far = false;
+        break;
+      } else {
+        current_stride *= dim_size;
+      }
     }
-    
-    // 3. build new Strided Layout
+
+    // 3. Prepare dynamic strides parameters for reinterpret_cast
+    llvm::SmallVector<mlir::OpFoldResult> strides;
+
+    if (all_static_so_far) {
+      // All static: use static stride values
+      for (int64_t stride : layout_strides) {
+        strides.push_back(builder.getIndexAttr(stride));
+      }
+    } else {
+      // Has dynamic dimensions: need to compute dynamic strides
+      // Create a vector to store computed strides (calculated from back to front)
+      llvm::SmallVector<mlir::Value> temp_strides(dst_type.getRank());
+      
+      // Calculate from back to front
+      mlir::Value current_dyn_stride = builder.create<mlir::arith::ConstantIndexOp>(loc, 1);
+      for (int i = dst_type.getRank() - 1; i >= 0; --i) {
+        // Store stride for current dimension
+        temp_strides[i] = current_dyn_stride;
+        
+        if (i > 0) {
+          // Update current_dyn_stride for the next dimension (higher dimension)
+          // current_dimension_stride * current_dimension_size
+          current_dyn_stride = builder.create<mlir::arith::MulIOp>(
+              loc, current_dyn_stride, dim_values[i]);
+        }
+      }
+      
+      // Convert temp_strides to OpFoldResult and add to strides in order
+      for (int i = 0; i < dst_type.getRank(); ++i) {
+        strides.push_back(temp_strides[i]);
+      }
+    }
+
+    // 4. Create StridedLayoutAttr
     auto layout = mlir::StridedLayoutAttr::get(
-      &context, 
-      mlir::ShapedType::kDynamic, // dynamic offset
-      dst_strides);
-    
-    // 4. build ReinterpretCast dst type
+        &context, 
+        mlir::ShapedType::kDynamic,
+        layout_strides);
+
+    // 5. Create target type
     mlir::MemRefType new_dst_type = mlir::MemRefType::get(
-      dst_type.getShape(),
-      dst_type.getElementType(),
-      layout, 
-      src_type.getMemorySpace() 
-    );
-    
-    // 5. prepare vars: sizes and strides
-    llvm::SmallVector<mlir::OpFoldResult, 4> sizes, strides;
-    for (int64_t dim : dst_type.getShape()) {
-      sizes.push_back(builder.getIndexAttr(dim));
-    }
-    for (int64_t stride_val : dst_strides) {
-      strides.push_back(builder.getIndexAttr(stride_val));
-    }
-    
-    // 6. ReinterpretCast
-    mlir::Value reinterpreted_src = 
-    builder.create<mlir::memref::ReinterpretCastOp>(
-      loc,
-      new_dst_type,
-      src,
-      offsets,
-      sizes,
-      strides
+        dst_type.getShape(),
+        dst_type.getElementType(),
+        layout,
+        src_type.getMemorySpace());
+
+    // 6. Create reinterpret_cast
+    mlir::Value reinterpreted_src = builder.create<mlir::memref::ReinterpretCastOp>(
+        loc,
+        new_dst_type,
+        src,
+        offsets,
+        sizes,
+        strides
     );
     
     // 7. Copy
@@ -1500,6 +1558,28 @@ void CodeGenTileLangNPUIRDEV::VcumsumCodegen(const CallNode *op) {
       loc, result_tensors, src, dst,
       builder.getDenseI64ArrayAttr(npuirop.cum_dims));
   SetVarValue(npuirop.dst, newCumsumOp->getResult(0));
+}
+
+void CodeGenTileLangNPUIRDEV::VAtomicAddCodegen(const CallNode *op) {
+  /// Generate hivm.hir.store for tl.npuir_atomic_add.
+  /// before:
+  ///   T.npuir_atomic_add(src, dst, size)
+  /// after:
+  ///   hivm.hir.store ins(src) outs(dst) atomic = <add>
+  tvm::tl::NpuirAtomicAdd npuirop(op->args, this->vmap);
+  Value src = GetVarValue(npuirop.src);
+  Value dst = GenSubviewFromRegion(npuirop.dst, npuirop.dst_range);
+
+  // create StoreOp   
+  auto newStoreOp = builder.create<hivm::StoreOp>(
+      builder.getUnknownLoc(),
+      TypeRange{},
+      src,
+      dst
+  );
+
+  hivm::AtomicKind hvAtomicKind = hivm::AtomicKind::ADD;
+  newStoreOp.setAtomicKind(hvAtomicKind);
 }
 
 void CodeGenTileLangNPUIRDEV::VgatherCodegen(const CallNode *op) {
@@ -2063,6 +2143,8 @@ mlir::Value CodeGenTileLangNPUIRDEV::VisitExpr_(const CallNode *op) {
     VcastCodegen(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_reduce"))) {
     VreduceCodegen(op);
+  } else if (op->op.same_as(Op::Get("tl.npuir_atomic_add"))) {
+    VAtomicAddCodegen(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_cumsum"))) {
     VcumsumCodegen(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_gather"))) {
@@ -2628,7 +2710,7 @@ mlir::Value CodeGenTileLangNPUIRDEV::VisitExpr_(const BufferLoadNode *op) {
     LOG(FATAL) << "The load type and buffer element type do not match";
   }
 
-  // Convert buffer from Buffer in TIR 2 memref in MLIR
+  // Convert buffer from Buffer in TIR 2 tensor in MLIR
   auto mem = GetVarValue(buffer->data.get());
 
   // Convert index from PrimExpr in TIR 2 index type in MLIR
@@ -2638,8 +2720,8 @@ mlir::Value CodeGenTileLangNPUIRDEV::VisitExpr_(const BufferLoadNode *op) {
     convert_inds.push_back(indexVal);
   }
 
-  // Create memef.load op in MLIR
-  return builder.create<mlir::memref::LoadOp>(builder.getUnknownLoc(), mem,
+  // Create tensor.extract op in MLIR
+  return builder.create<mlir::tensor::ExtractOp>(builder.getUnknownLoc(), mem,
                                                convert_inds);
 }
 
@@ -2680,8 +2762,9 @@ void CodeGenTileLangNPUIRDEV::VisitStmt_(const BufferStoreNode *op) {
     convert_inds.push_back(indexVal);
   }
 
-  builder.create<mlir::memref::StoreOp>(builder.getUnknownLoc(), mlir_value,
+  mlir::Value result = builder.create<mlir::tensor::InsertOp>(builder.getUnknownLoc(), mlir_value,
                                          mem, convert_inds);
+  SetVarValue(buffer, result);
 }
 
 void CodeGenTileLangNPUIRDEV::VisitStmt_(const WhileNode *op) {
@@ -2716,21 +2799,58 @@ void CodeGenTileLangNPUIRDEV::VisitStmt_(const DeclBufferNode *op) {
   VisitStmt(op->body);
 }
 
-void CodeGenTileLangNPUIRDEV::LoopCarriedVarCollector::VisitExpr_(const tir::CallNode* call) {
+void CodeGenTileLangNPUIRDEV::LoopCarriedVarCollector::VisitExpr_(
+    const tir::CallNode *call) {
+  auto check_var = [&](const tir::VarNode *var_node) {
+    if (var_node && outer_->GetVarValue(var_node) != mlir::Value{}) {
+      loop_carried_vars_.insert(var_node);
+    }
+  };
+  auto process_call_arg = [&](int arg_index) {
+    auto &arg = call->args[arg_index];
+    if (arg.as<IntImm>() || arg.as<FloatImm>()) {
+      // Immediate number type, no processing required
+    } else {
+      const CallNode *region_node = arg.as<CallNode>();
+      if (region_node) {
+        tvm::tl::RegionOp regionop(region_node->args, outer_->vmap);
+        check_var(regionop.GetBuffer()->data.get());
+      }
+    }
+  };
   if (call->op.same_as(Op::Get("tl.npuir_dot"))) {
     tvm::tl::NpuirDot npuirop(call->args, outer_->vmap);
-      auto check_var = [&](const tir::VarNode* var_node) {
-      if (var_node && outer_->GetVarValue(var_node) != mlir::Value{}) {
-        loop_carried_vars_.insert(var_node);
-      }
-    };
-    
     check_var(npuirop.src0->data.get());
     check_var(npuirop.src1->data.get());
     check_var(npuirop.dst->data.get());
+  } else if (call->op.same_as(Op::Get("tl.npuir_add")) ||
+             call->op.same_as(Op::Get("tl.npuir_sub")) ||
+             call->op.same_as(Op::Get("tl.npuir_mul")) ||
+             call->op.same_as(Op::Get("tl.npuir_div")) ||
+             call->op.same_as(Op::Get("tl.npuir_pow")) ||
+             call->op.same_as(Op::Get("tl.npuir_max")) ||
+             call->op.same_as(Op::Get("tl.npuir_min")) ||
+             call->op.same_as(Op::Get("tl.npuir_and")) ||
+             call->op.same_as(Op::Get("tl.npuir_shl")) ||
+             call->op.same_as(Op::Get("tl.npuir_shr")) ||
+             call->op.same_as(Op::Get("tl.npuir_cmp")) ||
+             call->op.same_as(Op::Get("tl.npuir_xor")) ||
+             call->op.same_as(Op::Get("tl.npuir_or"))) {
+    process_call_arg(0);
+    process_call_arg(1);
+    process_call_arg(2);
   }
-  
   tir::StmtExprVisitor::VisitExpr_(call);
+}
+
+void CodeGenTileLangNPUIRDEV::LoopCarriedVarCollector::VisitStmt_(const tir::BufferStoreNode* op) {
+  auto check_var = [&](const tir::VarNode* var_node) {
+    if (var_node && outer_->GetVarValue(var_node) != mlir::Value{}) {
+      loop_carried_vars_.insert(var_node);
+    }
+  };
+
+  check_var(op->buffer->data.get());
 }
 
 } // namespace codegen
