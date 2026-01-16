@@ -20,7 +20,7 @@ def update_package_files(force_compile=False):
     OP_PATH = EXAMPLE_ROOT / "flash_attention"  # examples/...
     sys.path.append(OP_PATH.as_posix())
 
-    from flash_attention.flash_attn_bhsd_cc_sync_auto_pipeline import flash_attention_fwd as op_func
+    from flash_attn_bhsd_cc_sync_auto_pipeline import flash_attention_fwd as op_func
 
     op_code_path = Path(inspect.getfile(op_func))
     print(f"Grabbing {op_code_path.suffix} of {op_func!r} ({op_code_path.as_posix()})")
