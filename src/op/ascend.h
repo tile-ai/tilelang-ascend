@@ -35,6 +35,8 @@ private:
   bool enRelu;
 };
 
+TVM_DLL const Op &ascend_broadcast();
+
 } // namespace tl
 } // namespace tvm
 

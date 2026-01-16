@@ -508,4 +508,11 @@ CATLASS_DEVICE void gemmL1(LocalTensor<T1> A, LocalTensor<T1> B,
     AscendC::PipeBarrier<PIPE_ALL>();
   }
 }
+
+template <typename T, int32_t dim, int32_t axis, bool isReuseSource = false>
+CATLASS_DEVICE void Broadcast(const LocalTensor<T> &dst, const LocalTensor<T> &src, 
+                              const uint32_t dstShape[dim], const uint32_t srcShape[dim]) {
+  AscendC::Broadcast<T, dim, axis, isReuseSource>(dst, src, dstShape, srcShape);
+}
+
 } // namespace tl::ascend

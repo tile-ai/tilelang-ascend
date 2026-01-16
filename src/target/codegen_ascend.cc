@@ -16,6 +16,7 @@
 #include <utility>
 #include <vector>
 
+#include "../op/ascend.h"
 #include "../op/builtin.h"
 
 #include "arith/pattern_match.h"
@@ -1252,6 +1253,8 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
   } else if (op->op.same_as(tl::loop_break())) {
     this->PrintIndent();
     this->stream << "break;\n";
+  } else if (op->op.same_as(tl::ascend_broadcast())) {
+    BroadcastOpCodegen(op);
   } else {
     tvm::Dump(op);
     CodeGenC::VisitExpr_(op, os);
@@ -1721,6 +1724,51 @@ void CodeGenTileLangAscend::AddFunction(const GlobalVar &gvar,
 
   PrintHostFunc(f, func_name, stream, this->core_num_, shape_vars);
   std::string content = stream.str();
+}
+
+std::string
+CodeGenTileLangAscend::PrintBufferOffset(const CallNode *call_arg_node,
+                                         bool has_offset) {
+  auto _var = call_arg_node->args[1].as<VarNode>();
+  auto _var_offset = PrintExpr(call_arg_node->args[2]);
+  auto _var_name = var_idmap_[_var];
+  if (_var_name == "") {
+    _var_name = _var->name_hint;
+  }
+  if (has_offset) {
+    return _var_name + "[" + _var_offset + "]";
+  }
+  return _var_name;
+}
+
+void CodeGenTileLangAscend::PrintConstArray(const CallNode *op, int start_idx,
+                                            int len, const std::string &dtype) {
+  this->stream << "(" << dtype << "[]){";
+  for (int i = 0; i < len; ++i) {
+    this->stream << PrintExpr(op->args[start_idx + i]);
+    if (i < len - 1) {
+      this->stream << ", ";
+    }
+  }
+  this->stream << "}";
+}
+
+void CodeGenTileLangAscend::BroadcastOpCodegen(const CallNode *op) {
+  std::string op_name = Downcast<StringImm>(op->args[0])->value;
+  int dim = op->args[3].as<IntImmNode>()->value;
+
+  this->PrintIndent();
+  this->stream << op_name << "(";
+  // 1. Dst Buffer
+  this->stream << PrintBufferOffset(op->args[1].as<CallNode>()) << ",";
+  // 2. Src Buffer
+  this->stream << PrintBufferOffset(op->args[2].as<CallNode>()) << ",";
+  // 3. Dst Shape Array
+  PrintConstArray(op, 4, dim);
+  this->stream << ", ";
+  // 4. Src Shape Array
+  PrintConstArray(op, 4 + dim, dim);
+  this->stream << ");\n";
 }
 
 } // namespace codegen
