@@ -518,9 +518,9 @@ CATLASS_DEVICE void gemmL1(LocalTensor<T1> A, LocalTensor<T1> B,
 }
 
 template <typename T, int32_t dim, int32_t axis, bool isReuseSource = false>
-CATLASS_DEVICE void Broadcast(const LocalTensor<T> &dst, const LocalTensor<T> &src, 
+CATLASS_DEVICE void Broadcast(const LocalTensor<T> &dst, const LocalTensor<T> &src, LocalTensor<uint8_t> &sharedTmpBuffer,
                               const uint32_t dstShape[dim], const uint32_t srcShape[dim]) {
-  AscendC::Broadcast<T, dim, axis, isReuseSource>(dst, src, dstShape, srcShape);
+  AscendC::Broadcast<T, dim, axis, isReuseSource>(dst, src, dstShape, srcShape, sharedTmpBuffer);
 }
 
 } // namespace tl::ascend

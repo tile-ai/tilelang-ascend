@@ -18,13 +18,15 @@ def broadcast(M, N, block_M, dtype="float"):
         with T.Kernel(m_num, is_npu=True) as (cid, vid):
             a_ub = T.alloc_ub((1, N), dtype)
             b_ub = T.alloc_ub((sub_block_M, N), dtype)
+            # Temporary buffer allocated as uint8
+            tmp = T.alloc_ub((2 * block_M, N), "uint8")
 
             row_base = cid * block_M + vid * sub_block_M
             with T.Scope("V"):
                 T.copy(A[0, :], a_ub)
 
                 T.barrier_all()
-                T.tile.broadcast(b_ub, a_ub)
+                T.tile.broadcast(b_ub, a_ub, tmp)
                 T.barrier_all()
 
                 T.copy(b_ub, B[row_base : row_base + sub_block_M, :])
