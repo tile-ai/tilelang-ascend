@@ -488,7 +488,7 @@ NpuirBitcast::NpuirBitcast(Array<PrimExpr> args, BufferMap vmap) {
 }
 
 NpuirReshape::NpuirReshape(Array<PrimExpr> args, BufferMap vmap) {
-  Buffer bf[4];
+  Buffer bf[2];
   Array<Range> rgs[2];
   for (int i = 0; i < 2; i++) {
     auto expr = args[i];
@@ -501,12 +501,28 @@ NpuirReshape::NpuirReshape(Array<PrimExpr> args, BufferMap vmap) {
   std::tie(this->src, this->dst) = std::tie(bf[0], bf[1]);
   std::tie(this->src_range, this->dst_range) = std::tie(rgs[0], rgs[1]);
 
-  // 从 dst_range 提取 reshape 目标 shape（静态）
+  // Extract the reshape target shape (static) from dst_range.
+  int64_t dst_numel = 1;
   for (const Range& r : this->dst_range) {
     auto imm = r->extent.as<tvm::IntImmNode>();
     ICHECK(imm) << "Dynamic reshape shape is not supported yet";
     this->dst_shape.push_back(imm->value);
+    dst_numel *= imm->value;
   }
+
+  // Validate that src and dst have the same number of elements.
+  int64_t src_numel = 1;
+  for (const Range& r : this->src_range) {
+    auto imm = r->extent.as<tvm::IntImmNode>();
+    ICHECK(imm)
+        << "Dynamic reshape source shape is not supported yet";
+    this->src_shape.push_back(imm->value);
+    src_numel *= imm->value;
+  }
+
+  ICHECK(src_numel == dst_numel)
+      << "Invalid reshape: source element count (" << src_numel
+      << ") does not match destination element count (" << dst_numel << ")";
 }
 
 NpuirTranspose::NpuirTranspose(Array<PrimExpr> args, BufferMap vmap){

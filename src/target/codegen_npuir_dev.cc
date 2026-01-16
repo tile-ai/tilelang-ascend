@@ -1459,7 +1459,7 @@ void CodeGenTileLangNPUIRDEV::VcastCodegen(const CallNode *op) {
   SetVarValue(npuirop.dst, newCastOp->getResult(0));
 }
 
-/// Generate hivm.hir.vreduce for tl.npuir_cast.
+/// Generate hivm.hir.vreduce for tl.npuir_reduce.
 /// before:
 ///    T.npuir_reduce(A, B, "rint")
 /// after:
@@ -1948,6 +1948,11 @@ void CodeGenTileLangNPUIRDEV::DebugPrintCodegen(const CallNode *op) {
                                        mlir::hivm::TCoreTypeAttr{});
 }
 
+/// Generate hivm.hir.vreduce for tl.npuir_reshape.
+/// before:
+///    T.npuir_reshape(A, B)
+/// after:
+///    %.* = tensor.reshape %a(%b) outs(%c) -> tensor<>
 void CodeGenTileLangNPUIRDEV::ReshapeCodegen(const CallNode *op) {
   tvm::tl::NpuirReshape npuirop(op->args, this->vmap);
   Value src = GetVarValue(npuirop.src);
