@@ -1760,9 +1760,9 @@ void CodeGenTileLangAscend::BroadcastOpCodegen(const CallNode *op) {
   this->PrintIndent();
   this->stream << op_name << "(";
   // 1. Dst Buffer
-  this->stream << PrintBufferOffset(op->args[1].as<CallNode>(), false) << ",";
+  this->stream << PrintBufferOffset(op->args[1].as<CallNode>()) << ",";
   // 2. Src Buffer
-  this->stream << PrintBufferOffset(op->args[2].as<CallNode>(), false) << ",";
+  this->stream << PrintBufferOffset(op->args[2].as<CallNode>()) << ",";
   // 3. Tmp Buffer
   this->stream << PrintBufferOffset(op->args[3].as<CallNode>(), false) << ",";
   // 4. Dst Shape Array
