@@ -780,34 +780,6 @@ TIR_REGISTER_TL_OP(NpuirReshape, npuir_reshape)
     .set_num_inputs(2)
     .set_attr<TCallEffectKind>("TCallEffectKind",
                                Integer(CallEffectKind::kOpaque));
-
-TIR_REGISTER_TL_OP(NpuirVCos, npuir_vcos)
-    .set_num_inputs(-1)
-    .set_attr<TCallEffectKind>("TCallEffectKind",
-                               Integer(CallEffectKind::kOpaque));
-
-TIR_REGISTER_TL_OP(NpuirVSin, npuir_vsin)
-    .set_num_inputs(-1)
-    .set_attr<TCallEffectKind>("TCallEffectKind",
-                               Integer(CallEffectKind::kOpaque));
-
-TIR_REGISTER_TL_OP(NpuirVErf, npuir_verf)
-    .set_num_inputs(-1)
-    .set_attr<TCallEffectKind>("TCallEffectKind",
-                               Integer(CallEffectKind::kOpaque));
-
-TIR_REGISTER_TL_OP(NpuirVTanh, npuir_vtanh)
-    .set_num_inputs(-1)
-    .set_attr<TCallEffectKind>("TCallEffectKind",
-                               Integer(CallEffectKind::kOpaque));    
-                               
-                               Integer(CallEffectKind::kOpaque));
-
-TIR_REGISTER_TL_OP(NpuirReshape, npuir_reshape)
-    .set_num_inputs(2)
-    .set_attr<TCallEffectKind>("TCallEffectKind",
-                               Integer(CallEffectKind::kOpaque));
-
 } // namespace tl
 } // namespace tvm
 
