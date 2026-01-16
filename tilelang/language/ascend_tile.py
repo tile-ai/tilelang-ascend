@@ -2,6 +2,7 @@ import tilelang.language as T
 from tvm.tir import PrimExpr, Buffer, BufferRegion, BufferLoad, Var
 from typing import List, Union, Literal
 import numpy as np
+from tvm import tir
 
 import math
 
@@ -502,3 +503,64 @@ def round(out: Buffer, buffer: Buffer, tmp: Buffer, count: PrimExpr):
 
     return T.call_extern("handle", f"AscendC::Round", out.access_ptr("w"), buffer.access_ptr("r"),
                          tmp.access_ptr("r"), count)
+
+def broadcast(dst: Buffer, src: Buffer):
+    """Generates a TIR intrinsic call for the AscendC `Broadcast` operation.
+
+    This function performs a broadcast copy from the source buffer (`src`) to the
+    destination buffer (`dst`). It automatically infers the broadcasting axis
+    based on the shapes of the input buffers.
+
+    Args:
+        dst (tvm.tir.Buffer): The destination buffer. Must be allocated in the
+            Unified Buffer (UB). Its shape determines the output size.
+        src (tvm.tir.Buffer): The source buffer. Must be allocated in the
+            Unified Buffer (UB). Its shape must be compatible with `dst` for broadcasting.
+
+    Returns:
+        tvm.tir.Call: A TIR intrinsic call node that maps to the C++ `AscendC::Broadcast` API.
+
+    Raises:
+        AssertionError: If the input shapes violate the dimension constraints.
+
+    Constraints:
+        1. **Rank Consistency**: The number of dimensions (rank) of `src` and `dst` must be identical.
+        2. **Supported Dimensions**: Only 1D and 2D tensors are supported. The rank must be 1 or 2.
+        3. **Broadcasting Logic**:
+            - **Axis 0 (Row Broadcast)**: Inferred if `src.shape[0] == 1` and `dst.shape[0] > 1`.
+              The source row is replicated `dst.shape[0]` times.
+            - **Axis 1 (Column Broadcast)**: Inferred if `src.shape[1] == 1` and `dst.shape[1] > 1`.
+              The source column is replicated `dst.shape[1]` times.
+            - **No Broadcast (Copy)**: If shapes are identical, the axis defaults to 0.
+    """
+    src_shape = src.shape
+    dst_shape = dst.shape
+
+    assert len(src_shape) == len(dst_shape), "Source and Dest dimension must match."
+    dim = len(dst_shape)
+    assert dim in [1, 2], "Ascend Broadcast only supports dim=1 or dim=2."
+
+    axis = 0
+    if dim == 2:
+        if src_shape[0] == 1 and dst_shape[0] != 1:
+            axis = 0
+        elif src_shape[1] == 1 and dst_shape[1] != 1:
+            axis = 1
+        else:
+            axis = 0
+    else:
+        axis = 0
+
+    op_name = "tl.ascend_broadcast"
+    template_args = f"{_dtype(src)}, {dim}, {axis}, false"
+
+    return tir.call_intrin(
+        "handle",
+        tir.op.Op.get(op_name),
+        f"tl::ascend::Broadcast<{template_args}>",
+        dst.access_ptr("w"),
+        src.access_ptr("r"),
+        dim,
+        *dst_shape,
+        *src_shape,
+    )
