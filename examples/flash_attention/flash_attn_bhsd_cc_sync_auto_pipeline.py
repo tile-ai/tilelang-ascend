@@ -69,14 +69,19 @@ def flash_attention_fwd(
             acc_o_l0c = T.alloc_L0C([block_M, block_D], accum_dtype)
 
             acc_o = T.alloc_ub([block_M // 2, dim], accum_dtype)
-            sumexp = T.alloc_ub([block_M // 2], accum_dtype)
-            m_i = T.alloc_ub([block_M // 2], accum_dtype)
+            sumexp = T.alloc_ub([block_M // 2, 1], accum_dtype)
+            sumexp_2d = T.alloc_ub([block_M // 2, dim], accum_dtype)
+            
+            m_i = T.alloc_ub([block_M // 2, 1], accum_dtype)
+            m_i_2d = T.alloc_ub([block_M // 2, block_N], accum_dtype)
 
             acc_s_ub = T.alloc_ub([block_M // 2, block_N], accum_dtype)
-            m_i_prev = T.alloc_ub([block_M // 2], accum_dtype)
+            m_i_prev = T.alloc_ub([block_M // 2, 1], accum_dtype)
+            m_i_prev_2d = T.alloc_ub([block_M // 2, dim], accum_dtype)
+            
             acc_s_ub_ = T.alloc_ub([block_M // 2, block_N], accum_dtype)
             tmp_ub = T.alloc_ub([3 * DataType(accum_dtype).bits // 8 * block_M // 2 * block_N], "uint8")
-            sumexp_i_ub = T.alloc_ub([block_M // 2], accum_dtype)
+            sumexp_i_ub = T.alloc_ub([block_M // 2, 1], accum_dtype)
             acc_s_half = T.alloc_ub([block_M // 2, block_N], dtype)
             acc_o_ub = T.alloc_ub([block_M // 2, dim], accum_dtype)
             acc_o_half = T.alloc_ub([block_M // 2, dim], dtype)
@@ -103,8 +108,8 @@ def flash_attention_fwd(
                 T.tile.sub(m_i_prev, m_i_prev, m_i)
                 T.tile.exp(m_i_prev, m_i_prev)
 
-                for h_i in range(block_M // 2):
-                    T.tile.sub(acc_s_ub[h_i, :], acc_s_ub[h_i, :], m_i[h_i])
+                T.tile.broadcast(m_i_2d, m_i, tmp_ub)
+                T.tile.sub(acc_s_ub, acc_s_ub, m_i_2d)
 
                 T.tile.exp(acc_s_ub, acc_s_ub)
                 T.tile.reduce_sum(sumexp_i_ub, acc_s_ub, tmp_ub, dim=-1)
@@ -121,14 +126,15 @@ def flash_attention_fwd(
                   T.gemm_v0(acc_s_l1, v_l1, acc_o_l0c, init=True)
                   T.copy(acc_o_l0c, workspace_3[cid, :, n_i * block_D : (n_i + 1) * block_D])
 
-                for h_i in range(block_M // 2):
-                    T.tile.mul(acc_o[h_i, :], acc_o[h_i, :], m_i_prev[h_i])
+                T.tile.broadcast(m_i_prev_2d, m_i_prev, tmp_ub)
+                T.tile.mul(acc_o, acc_o, m_i_prev_2d)
 
                 T.copy(workspace_3[cid, vid * block_M // 2:vid * block_M // 2 + block_M // 2, :], acc_o_ub)
                 T.tile.add(acc_o, acc_o, acc_o_ub)
 
-            for h_i in range(block_M // 2):
-                T.tile.div(acc_o[h_i, :], acc_o[h_i, :], sumexp[h_i])
+
+            T.tile.broadcast(sumexp_2d, sumexp, tmp_ub)
+            T.tile.div(acc_o, acc_o, sumexp_2d)
 
             T.copy(acc_o, acc_o_half)
             T.copy(acc_o_half, Output[bz, by, bx * block_M + vid * block_M // 2:bx * block_M + vid * block_M // 2 + block_M // 2, :])
@@ -140,8 +146,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--B", type=int, default=4, help="batch size")
     parser.add_argument("--S", type=int, default=4096, help="seq len")
-    parser.add_argument("--H", type=int, default=32, help="attention head size")
-    parser.add_argument("--D", type=int, default=512, help="hidden dim")
+    parser.add_argument("--H", type=int, default=16, help="attention head size")
+    parser.add_argument("--D", type=int, default=128, help="hidden dim")
     args = parser.parse_args()
     B, S, H, D = args.B, args.S, args.H, args.D
 
