@@ -689,8 +689,6 @@ void CodeGenTileLangAscendPto::CallExternCodegen(const CallNode *op) {
         std::vector src_ub_data = ub_data_map_[src_var_id];
         std::vector dst_ub_data = ub_data_map_[dst_var_id];
         int32_t a = GetTypeLen(src_ub_data[0]);
-        std::cout << "GetTypeLen(src_ub_data[0]): " << a  << std::endl;
-        std::cout << "src_ub_data[0]: " << src_ub_data[0]  << std::endl;
         std::vector shapes = extractShapeFromTemplate(op_name);
         if (shapes.size() == 1 && (src_offset != dst_offset || src_shape != dst_shape)) {
           this->stream << kAscendPtoScope << "mov_tile<" << src_ub_data[0] << ", " << std::stoi(shapes[0]) << ">("
