@@ -8,7 +8,7 @@ import torch_npu
 HERE = Path(__file__).parent
 SRC = HERE / "src"
 TORCH_NPU_PATH = Path(torch_npu.__file__).parent
-PACKAGE_PATH = HERE / "torch_tl_ascend"
+PACKAGE_PATH = SRC / "torch_tl_ascend"
 VERSION_FILE = PACKAGE_PATH / "VERSION"
 
 sys.path.append(HERE.as_posix())

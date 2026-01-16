@@ -15,14 +15,18 @@ SO_NAME = "libop.so"
 
 def update_package_files(force_compile=False):
     sys.path.append(HERE.as_posix())
-    from compile_tl_op.util import wrap_libgen  # ensure lib_generator.libpath exists
+    from compile_tl_op.util import wrap_libgen  # noqa: F401
+    # ensure lib_generator.libpath exists
 
     OP_PATH = EXAMPLE_ROOT / "flash_attention"  # examples/...
     sys.path.append(OP_PATH.as_posix())
 
     from flash_attn_bhsd_cc_sync_auto_pipeline import flash_attention_fwd as op_func
 
-    op_code_path = Path(inspect.getfile(op_func))
+    if not hasattr(op_func, "__jit_impl__"):
+        raise AttributeError(f"{op_func!r} is not decorated by @tilelang.jit")
+
+    op_code_path = Path(inspect.getfile(op_func.__wrapped__))  # the original function file
     print(f"Grabbing {op_code_path.suffix} of {op_func!r} ({op_code_path.as_posix()})")
     package_code_path = PACKAGE_ROOT / op_code_path.name
     shutil.copy(op_code_path, package_code_path)
@@ -30,8 +34,8 @@ def update_package_files(force_compile=False):
     if force_compile:
         tilelang.disable_cache()  # compile will be triggered without caching
 
-    print("Grabbing .so of", op_func)
     B, S, H, D = 4, 4096, 32, 512
+    print("Grabbing .so of", op_func, f"with B={B}, S={S}, H={H}, D={D}")
     kernel: JITKernel = op_func(B, S, H, D)
 
     adapter: CythonKernelAdapter = kernel.adapter
