@@ -6,7 +6,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
-from typing import Any, Dict, Optional, Tuple, Union
+from typing import Any, Dict, Optional, Tuple, Union, List
 import shutil
 import sys
 import sysconfig
@@ -18,6 +18,127 @@ from ..engine import lower
 
 from tvm import tir
 from tvm.tir import PrimFunc
+
+
+class LaunchThreadExtractor:
+    def __init__(self) -> None:
+        self.expressions = []
+
+    def visit_thread_extent(self, node):
+        if hasattr(node, "body"):
+            self.visit_thread_extent(node.body)
+        if hasattr(node, "then_case"):
+            self.visit_thread_extent(node.then_case)
+        if hasattr(node, "else_case"):
+            self.visit_thread_extent(node.else_case)
+        if hasattr(node, "block"):
+            self.visit_thread_extent(node.block)
+
+        if hasattr(node, "attr_key") and node.attr_key == "thread_extent":
+            if node.node.thread_tag == self.thread:
+                self.expressions.append(node.value)
+
+    def extract(self, node: PrimFunc, thread: str):
+        self.thread = thread
+        self.visit_thread_extent(node)
+        if self.expressions is None:
+            return None
+        return self.expressions[0]
+
+
+def replace_by_longest_key(calculate_str, replace_dict):
+    sorted_keys = sorted(replace_dict.keys(), key=lambda x: (-len(x), x))
+    result = calculate_str
+    for key in sorted_keys:
+        result = result.replace(key, str(replace_dict[key]))
+    return result
+
+
+def _transform_stmt(stmt, symbolic_var_names):
+    """Convert statements, remove symbolic variable definitions"""
+    if stmt is None:
+        return stmt
+
+    # Handling Block Nodes
+    if isinstance(stmt, tir.Block):
+        new_body = _transform_stmt(stmt.body, symbolic_var_names)
+        return tir.Block(
+            iter_vars=stmt.iter_vars,
+            reads=stmt.reads,
+            writes=stmt.writes,
+            name_hint=stmt.name_hint,
+            body=new_body,
+            init=stmt.init,
+            alloc_buffers=stmt.alloc_buffers,
+            annotations=stmt.annotations,
+            span=stmt.span,
+        )
+
+    # Process the SeqStmt node.
+    elif isinstance(stmt, tir.SeqStmt):
+        new_seqs = []
+        for seq_stmt in stmt.seq:
+            transformed = _transform_stmt(seq_stmt, symbolic_var_names)
+            if transformed is not None:
+                new_seqs.append(transformed)
+        return tir.SeqStmt(new_seqs, stmt.span) if new_seqs else None
+
+    # Processing LetStmt Node - Removing Symbol Variable Definitions
+    elif isinstance(stmt, tir.LetStmt):
+        if stmt.var.name in symbolic_var_names:
+            # Skip symbol variable definitions, only transform the body.
+            return _transform_stmt(stmt.body, symbolic_var_names)
+        else:
+            # Convert a regular LetStmt
+            new_body = _transform_stmt(stmt.body, symbolic_var_names)
+            return tir.LetStmt(
+                var=stmt.var, value=stmt.value, body=new_body, span=stmt.span
+            )
+
+    # Other types of statements remain unchanged.
+    else:
+        return stmt
+
+
+# Collect all variables used in the buffer shape
+def _process_dynamic_symbolic(func):
+    params = func.params
+    buffer_map = func.buffer_map
+    dynamic_symbolic_map = {}
+    for i, param in enumerate(params):
+        if param not in buffer_map:
+            continue
+        buffer = buffer_map[param]
+        for j, shape in enumerate(buffer.shape):
+            if isinstance(shape, tir.Var) and (shape not in dynamic_symbolic_map):
+                dynamic_symbolic_map[shape] = (i, j)
+    return dynamic_symbolic_map
+
+
+# Creating a Pass for Symbolic Variable Promotion
+def _symbolic_var_promoter_pass(func: PrimFunc):
+    dynamic_symbolic_map = _process_dynamic_symbolic(func)
+    symbolic_vars = list(dynamic_symbolic_map.keys())
+
+    if len(symbolic_vars) == 0:
+        return func, {}
+
+    # Create new parameter list: symbolic variables + original parameters
+    new_params = list(func.params) + symbolic_vars
+
+    # Transform function body, remove symbolic variable definitions
+    new_body = _transform_stmt(func.body, symbolic_vars)
+
+    # Create a new PrimFunc
+    new_primfunc = tir.PrimFunc(
+        params=new_params,
+        body=new_body,
+        ret_type=func.ret_type,
+        buffer_map=func.buffer_map,
+        attrs=func.attrs,
+        span=func.span,
+    )
+    return new_primfunc, dynamic_symbolic_map
 
 
 def _get_npucompiler_path() -> str:
@@ -839,7 +960,6 @@ class JitKernel_NPU:
         self.launch_stream = torch.npu.current_stream(
             torch.npu.current_device()
         ).npu_stream
-        self.launch_grid = metadata["grid"]
         self.launch_packedMetadata = {
             "kernel_name": f"{metadata['name']}",
             "tensor_kinds": metadata["tensor_kinds"],
@@ -847,6 +967,8 @@ class JitKernel_NPU:
         self.launch_metadata = {}
         self.launch_enter_hook = None
         self.launch_exit_hook = None
+        self.gridfunc = metadata["gridfunc"]
+        self.symbolic = metadata["symbolic"]
         self._launch()
 
     def _launch(self):
@@ -859,6 +981,55 @@ class JitKernel_NPU:
         spec.loader.exec_module(mod)
         self.launch_npu = getattr(mod, "launch")
 
+    def _calcu_grid(self, *args: Any):
+        dynamic_val = {}
+        extra_args = []
+        for key, pos in self.symbolic.items():
+            # Ensure that pos is a tuple with two elements.
+            if isinstance(pos, (tuple, list)) and len(pos) >= 2:
+                tensor_idx, dim_idx = pos[0], pos[1]
+                if tensor_idx < len(args) and hasattr(args[tensor_idx], "shape"):
+                    if dim_idx < len(args[tensor_idx].shape):
+                        value = args[tensor_idx].shape[dim_idx]
+                        dynamic_val[str(key)] = value
+                        extra_args.append(value)
+                    else:
+                        raise IndexError(
+                            f"Dimension index {dim_idx} out of range for tensor {tensor_idx}"
+                        )
+                else:
+                    raise IndexError(
+                        f"Tensor index {tensor_idx} out of range or tensor has no shape attribute"
+                    )
+            else:
+                raise ValueError(f"Invalid position format for key '{key}': {pos}")
+        self.extra_args = extra_args
+        result = replace_by_longest_key(self.gridfunc, dynamic_val)
+
+        try:
+            # If the result is a number, use it directly.
+            if isinstance(result, (int, float)):
+                grid_value = result
+            # If the result is a string, evaluate it safely.
+            elif isinstance(result, str):
+                # Only mathematical expressions are allowed to avoid security risks.
+                grid_value = eval(
+                    result,
+                    {"__builtins__": {}},
+                    {"math": __import__("math"), **dynamic_val},
+                )
+            else:
+                grid_value = result
+
+            # Ensure the result is an integer
+            if hasattr(grid_value, "__iter__"):
+                self.launch_grid = [int(x) for x in grid_value]
+            else:
+                self.launch_grid = [int(grid_value), 1, 1]
+
+        except Exception as e:
+            raise ValueError(f"Failed to evaluate grid expression '{result}': {e}")
+
     def __call__(self, *args: Any) -> Any:
         npu_utils = NPUUtils()
         t_module, t_function, t_n_regs, t_n_spills = npu_utils.load_binary(
@@ -868,6 +1039,7 @@ class JitKernel_NPU:
             self.utils_device,
             self.mix_mode,
         )
+        self._calcu_grid(*args)
         return self.launch_npu(
             self.launch_grid[0],
             self.launch_grid[1],
@@ -879,6 +1051,7 @@ class JitKernel_NPU:
             self.launch_enter_hook,
             self.launch_exit_hook,
             *args,
+            *self.extra_args
         )
 
 
@@ -888,7 +1061,7 @@ class compiler_npu:
 
     def compile(self, mod: PrimFunc) -> JitKernel_NPU:
         self.metadata = {}
-        self.mod = mod
+        self.mod, self.metadata["symbolic"] = _symbolic_var_promoter_pass(mod)
         # get grid message
         self._parse_grid()
         mlir_path = lower(self.mod)
@@ -930,10 +1103,9 @@ class compiler_npu:
         return JitKernel_NPU(metadata=self.metadata)
 
     def _parse_grid(self):
-        match = re.search(
-            r'T\.launch_thread\("blockIdx\.x",\s*(\d+)\)', str(str(self.mod))
-        )
-        self.metadata["grid"] = [int(match.group(1)), 1, 1]
+        launcher = LaunchThreadExtractor()
+        expr = launcher.extract(self.mod, "blockIdx.x")
+        self.metadata["gridfunc"] = str(expr)
 
     def _read_mlir_file(self, file_path) -> str:
         """
@@ -969,17 +1141,17 @@ class compiler_npu:
         # Example：hivm.module_core_type<MIX> -> MIX
         MIX_MODE_REGEX = r"#hivm\.module_core_type<([^>]+)>"
 
+        # Example: test_mix_aic -> test
+        MIX_SUFFIX_REGEX = r"_(mix_aic|mix_aiv)$"
+
         # Note: Compiled Kernel requires to estimate size of shared memory to occupy
         # Currently, NPU backend does not limit on shared memory
         self.metadata["shared"] = 1
         # the mix mode is also encoded into metadata['name'] for runtime to distinguish
         kernel_name = re.search(KERNEL_NAME_REGEX, self.mlir_content).group(1)
         self.metadata["kernel_name"] = kernel_name
-
-        if kernel_name and "_" in kernel_name:
-            self.metadata["name"] = kernel_name.split("_")[0]
-        else:
-            self.metadata["name"] = kernel_name
+        # matching the end of the _mix_aic or _mix_aiv
+        self.metadata["name"] = re.sub(MIX_SUFFIX_REGEX, "", kernel_name)
         self.metadata["tensor_kinds"] = []
         self.metadata["mix_mode"] = (
             re.search(MIX_MODE_REGEX, self.mlir_content).group(1).lower()

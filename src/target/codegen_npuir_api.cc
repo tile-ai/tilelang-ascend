@@ -42,6 +42,7 @@
 #include <llvm/ADT/ArrayRef.h>
 #include <llvm/ADT/SmallVector.h>
 #include <llvm/ADT/Twine.h>
+#include <llvm/ADT/STLExtras.h>
 #include <llvm/Support/Casting.h>
 #include <mlir/Conversion/Passes.h>
 #include <mlir/Dialect/Arith/IR/Arith.h>
@@ -68,13 +69,13 @@
 // // HIVM Dialect
 // //===----------------------------------------------------------------------===//
 
-// #include "bishengir/Dialect/HIVM/IR/HIVM.h"
+#include "bishengir/Dialect/HIVM/IR/HIVM.h"
 
 // //===----------------------------------------------------------------------===//
 // // HFusion Dialect
 // //===----------------------------------------------------------------------===//
 
-// #include "bishengir/Dialect/HFusion/IR/HFusion.h"
+#include "bishengir/Dialect/HFusion/IR/HFusion.h"
 
 //===----------------------------------------------------------------------===//
 // HACC Dialect
@@ -2290,13 +2291,31 @@ void CodeGenTileLangNPUIRAPI::AddFunctionForCoreType(const GlobalVar &gvar,
   for (auto recastInfo : recastNeedInsert) {
     tir::Var v = f->params[recastInfo.first];
     tir::Var real_v = f->buffer_map[v]->data;
+    Array<PrimExpr> shape = f->buffer_map[v]->shape;
     auto memrefType = llvm::dyn_cast<MemRefType>(recastInfo.second);
     auto strideLayout =
         llvm::dyn_cast<StridedLayoutAttr>(memrefType.getLayout());
+    SmallVector<OpFoldResult> shape_val;
+    for (PrimExpr s : shape) {
+      if (auto s_int = as_const_int(s)) {
+        shape_val.push_back(builder.getI64IntegerAttr(*s_int));
+      } else {
+        mlir::Value s_index = CreateIndexCastOp(MakeValue(s));
+        shape_val.push_back(s_index);
+      }
+    }
+    size_t dim = shape.size();
+    SmallVector<OpFoldResult> stride_val(dim);
+    tvm::PrimExpr tmp_stride = IntImm(shape[0].dtype(), 1);
+    for (int i = dim - 1; i >= 0; i--) {
+      mlir::Value s_index = CreateIndexCastOp(MakeValue(tmp_stride));
+      stride_val[i] = s_index;
+      tmp_stride = Mul(shape[i], tmp_stride);
+    }
+    OpFoldResult offset = builder.getI64IntegerAttr(strideLayout.getOffset());
     auto recastOp = builder.create<memref::ReinterpretCastOp>(
         builder.getUnknownLoc(), memrefType, var_map_[real_v.get()],
-        strideLayout.getOffset(), memrefType.getShape(),
-        strideLayout.getStrides());
+        offset, shape_val, stride_val);
     var_map_[real_v.get()] = recastOp;
   }
   mlir::hacc::KernelArgTypeAttr accArgAttr = hacc::KernelArgTypeAttr::get(
