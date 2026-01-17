@@ -1055,58 +1055,42 @@ void CodeGenTileLangAscendPto::ScalarOpCodegen(const CallNode *op, const std::st
                   << PrintExpr(op->args[2]) << ");\n";
 }
 
-std::tuple<int, int, bool> ExtractTemplateParams(const std::string& op_name) {
-    // 默认值
-    int second_param = 0;  // 第2个参数（8）
-    int third_param = 0;   // 第3个参数（64）
-    
-    // 找到尖括号内容
+std::tuple<int, int, bool> ExtractTemplateParamsForSliceBuffer(const std::string& op_name) {
+    int second_param = 0;
+    int third_param = 0;
     size_t left = op_name.find('<');
     size_t right = op_name.find('>');
     
     if (left == std::string::npos || right == std::string::npos || left >= right) {
         return std::make_tuple(second_param, third_param, false);
     }
-    
-    // 提取并分割参数
+
     std::string params_str = op_name.substr(left + 1, right - left - 1);
     std::vector<std::string> params;
-    
     size_t start = 0;
     size_t comma = 0;
     while ((comma = params_str.find(',', start)) != std::string::npos) {
         std::string param = params_str.substr(start, comma - start);
-        // 去除空格
         param.erase(0, param.find_first_not_of(" \t"));
         param.erase(param.find_last_not_of(" \t") + 1);
         params.push_back(param);
         start = comma + 1;
     }
-    
-    // 最后一个参数
+
     std::string last_param = params_str.substr(start);
     last_param.erase(0, last_param.find_first_not_of(" \t"));
     last_param.erase(last_param.find_last_not_of(" \t") + 1);
     params.push_back(last_param);
-    
-    // 检查参数数量并提取
-    if (params.size() >= 3) {  // 至少要有3个参数（float, 8, 64）
+
+    if (params.size() >= 3) {  
         try {
-            // params[0] 是 "float"（类型）
-            // params[1] 是 "8"（第2个参数）
-            // params[2] 是 "64"（第3个参数）
-            // params[3] 是 "-1"（第4个参数，如果有的话）
-            
-            second_param = std::stoi(params[1]);  // 8
-            third_param = std::stoi(params[2]);   // 64
-            
+            second_param = std::stoi(params[1]);
+            third_param = std::stoi(params[2]);
             return std::make_tuple(second_param, third_param, true);
         } catch (const std::exception& e) {
-            // 转换失败
             return std::make_tuple(second_param, third_param, false);
         }
     }
-    
     return std::make_tuple(second_param, third_param, false);
 }
 
@@ -1114,7 +1098,7 @@ void CodeGenTileLangAscendPto::ReduceOpCodegen(const CallNode *op) {
   std::string op_name = Downcast<StringImm>(op->args[0])->value;
 
   //Determine whether the reduce operation needs to be sliced.
-  auto template_params = ExtractTemplateParams(op_name);
+  auto template_params = ExtractTemplateParamsForSliceBuffer(op_name);
   int param2_int = std::get<0>(template_params);
   int param3_int = std::get<1>(template_params);
   std::string param2 = std::to_string(param2_int);
