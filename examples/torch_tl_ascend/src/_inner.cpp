@@ -16,7 +16,7 @@ extern "C" {
 
 at::Tensor flash_attention_wrapper(at::Tensor Q, at::Tensor K, at::Tensor V) {
     constexpr int64_t block_M = 64;
-    constexpr int64_t block_N = 128;
+    constexpr int64_t block_N = 64;
 
     auto dtype = at::kHalf;
     auto accum_dtype = at::kFloat;
