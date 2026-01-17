@@ -9,6 +9,7 @@ from tilelang.jit.adapter import CythonKernelAdapter
 
 HERE = Path(__file__).parent
 PACKAGE_ROOT = HERE.parent / "src" / "torch_tl_ascend"
+PACKAGE_SOURCE_ROOT = PACKAGE_ROOT / "op_source"
 EXAMPLE_ROOT = HERE.parent.parent
 
 SO_NAME = "libop.so"
@@ -26,10 +27,10 @@ def update_package_files(force_compile=False):
     if not hasattr(op_func, "__jit_impl__"):
         raise AttributeError(f"{op_func!r} is not decorated by @tilelang.jit")
 
-    op_code_path = Path(inspect.getfile(op_func.__wrapped__))  # the original function file
-    print(f"Grabbing {op_code_path.suffix} of {op_func!r} ({op_code_path.as_posix()})")
-    package_code_path = PACKAGE_ROOT / op_code_path.name
-    shutil.copy(op_code_path, package_code_path)
+    op_source_path = Path(inspect.getfile(op_func.__wrapped__))  # the original function file
+    print(f"Grabbing {op_source_path.suffix} of {op_func!r} ({op_source_path.as_posix()})")
+    package_source_path = PACKAGE_SOURCE_ROOT / op_source_path.name
+    shutil.copy(op_source_path, package_source_path)
 
     if force_compile:
         tilelang.disable_cache()  # compile will be triggered without caching
