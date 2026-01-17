@@ -21,7 +21,7 @@ def update_package_files(force_compile=False):
     OP_PATH = EXAMPLE_ROOT / "flash_attention"  # examples/...
     sys.path.append(OP_PATH.as_posix())
 
-    from flash_attn_bhsd_cc_sync_auto_pipeline import flash_attention_fwd as op_func
+    from flash_attn_bhsd_memory_planning import flash_attention_fwd as op_func
 
     if not hasattr(op_func, "__jit_impl__"):
         raise AttributeError(f"{op_func!r} is not decorated by @tilelang.jit")
