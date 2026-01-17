@@ -1,6 +1,6 @@
 import sys
 from pathlib import Path
-from setuptools import setup
+from setuptools import setup, find_packages
 from torch.utils.cpp_extension import BuildExtension, CppExtension
 
 import torch_npu
@@ -19,7 +19,7 @@ setup(
     name="torch_tl_ascend",
     version=VERSION_FILE.read_text(encoding="utf-8").strip(),
     description="Torch TL Ascend",
-    packages=[PACKAGE_PATH.name],  # torch_tl_ascend
+    packages=find_packages(where=SRC),  # torch_tl_ascend
     package_dir={"": SRC.as_posix()},  # src/**
     package_data={PACKAGE_PATH.name: ["*.so"]},  # libop.so
     ext_modules=[
