@@ -24,7 +24,11 @@ G_IP_PORT = "tcp://100.102.180.145:8666"
 
 num_processes = args.num_processes
 
-@tilelang.jit()
+pass_configs = {
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
+}
+
+@tilelang.jit(pass_configs=pass_configs)
 def shmem_put_nbi(M, N, nelems, newPe, dtype="int8"):
     @T.prim_func
     def main(
@@ -36,7 +40,6 @@ def shmem_put_nbi(M, N, nelems, newPe, dtype="int8"):
                 if vid == 0:
                     # Copy from the local GM to the newPe GM
                     T.shmem_put_nbi(B, A, nelems, newPe)
-                    T.pipe_barrier("mte3")
     return main
 
 def worker(rank, barrier):
@@ -69,6 +72,7 @@ def worker(rank, barrier):
 
         func = shmem_put_nbi(M, N, nelems, newPe)
         func(a, b)
+        print(func.get_kernel_source())
         barrier.wait()
         print("b after=", b)
         if torch.equal(a, b):
