@@ -20,6 +20,14 @@ namespace tl {
 
 using namespace tir;
 
+#define TIR_DEFINE_TL_BUILTIN(OpName)                                          \
+  const Op &OpName() {                                                         \
+    static const Op &op = Op::Get("tl." #OpName);                              \
+    return op;                                                                 \
+  }                                                                            \
+  TVM_REGISTER_OP("tl." #OpName)                                               \
+      .set_attr<TScriptPrinterName>("TScriptPrinterName", #OpName)
+
 AscendCopy::AscendCopy(Array<PrimExpr> args, BufferMap vmap) : args_(args) {
   Array<Range> rgs[2];
   Buffer bf[2];
@@ -272,5 +280,9 @@ TIR_REGISTER_TL_OP(AscendCopy, ascend_copy)
     .set_num_inputs(2)
     .set_attr<TCallEffectKind>("TCallEffectKind",
                                Integer(CallEffectKind::kOpaque));
+
+TIR_DEFINE_TL_BUILTIN(ascend_broadcast)
+    .set_num_inputs(-1)
+    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));                               
 } // namespace tl
 } // namespace tvm

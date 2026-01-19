@@ -55,6 +55,13 @@ public:
   void AddFunction(const GlobalVar &gvar, const PrimFunc &f);
 
 private:
+  std::string PrintBufferOffset(const CallNode* call_arg, bool has_offset = true);
+
+  void PrintConstArray(const CallNode* op, int start_idx, int len, const std::string& dtype = "uint32_t");
+
+  void BroadcastOpCodegen(const CallNode *op);
+
+private:
   // Whether scope such as "__shared__" or "__constant__"  is part of type.
   bool IsScopePartOfType() const final { return false; }
 
