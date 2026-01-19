@@ -978,9 +978,12 @@ def gather(dst: Buffer, src: Buffer, src_offset: Buffer, src_base_addr: PrimExpr
     )
 
 
-def reduce(out: Buffer, buffer: Buffer, tmp: Buffer, reduce_type: str, dim: int):
+def reduce(out: Buffer, buffer: Buffer, tmp: Buffer, reduce_type: str, dim: int, real_shape: list[int]=[0, 0]):
     dtype = _dtype(buffer)
-    shape = f"{buffer.shape[0]}, {buffer.shape[1]}"
+    M = buffer.shape[0] if real_shape[0] == 0 else real_shape[0]
+    N = buffer.shape[1] if real_shape[1] == 0 else real_shape[1]
+    shape = f"{M}, {N}"
+
     assert len(buffer.shape) == 2, "current only support buffer as a 2D tensor"
 
     buffer = buffer.access_ptr("r")
@@ -997,7 +1000,7 @@ def reduce(out: Buffer, buffer: Buffer, tmp: Buffer, reduce_type: str, dim: int)
     )
 
 
-def reduce_max(out: Buffer, buffer: Buffer, tmp: Buffer, dim: int):
+def reduce_max(out: Buffer, buffer: Buffer, tmp: Buffer, dim: int, real_shape: list[int]=[0, 0]):
     """Performs a reduction max operation.
 
     Args:
@@ -1006,10 +1009,10 @@ def reduce_max(out: Buffer, buffer: Buffer, tmp: Buffer, dim: int):
         tmp: The temporary buffer.
         dim: The dimension to reduce along (-1 for last dim).
     """
-    return reduce(out, buffer, tmp, "reduce_max", dim)
+    return reduce(out, buffer, tmp, "reduce_max", dim, real_shape)
 
 
-def reduce_min(out: Buffer, buffer: Buffer, tmp: Buffer, dim: int):
+def reduce_min(out: Buffer, buffer: Buffer, tmp: Buffer, dim: int, real_shape: list[int]=[0, 0]):
     """Performs a reduction min operation.
 
     Args:
@@ -1018,10 +1021,10 @@ def reduce_min(out: Buffer, buffer: Buffer, tmp: Buffer, dim: int):
         tmp: The temporary buffer.
         dim: The dimension to reduce along (-1 for last dim).
     """
-    return reduce(out, buffer, tmp, "reduce_min", dim)
+    return reduce(out, buffer, tmp, "reduce_min", dim, real_shape)
 
 
-def reduce_sum(out: Buffer, buffer: Buffer, tmp: Buffer, dim: int):
+def reduce_sum(out: Buffer, buffer: Buffer, tmp: Buffer, dim: int, real_shape: list[int]=[0, 0]):
     """Performs a reduction sum operation.
 
     Args:
@@ -1030,7 +1033,7 @@ def reduce_sum(out: Buffer, buffer: Buffer, tmp: Buffer, dim: int):
         tmp: The temporary buffer.
         dim: The dimension to reduce along (-1 for last dim).
     """
-    return reduce(out, buffer, tmp, "reduce_sum", dim)
+    return reduce(out, buffer, tmp, "reduce_sum", dim, real_shape)
 
 
 def block_reduce_max(
@@ -1312,6 +1315,40 @@ def cos(dst: Buffer, src: Buffer, tmp: Buffer):
         size_0,
     )
 
+def clampMax(dst: Buffer, src: Buffer, tmp: Buffer, scalar_value: PrimExpr, count: PrimExpr):
+
+    return tir.call_intrin(
+        "handle", 
+        tir.op.Op.get("tl.clamp_max"), 
+        dst.access_ptr("w"), 
+        src.access_ptr("r"),
+        tmp.access_ptr("r"), 
+        scalar_value, 
+        count
+    )
+
+def clampMin(dst: Buffer, src: Buffer, tmp: Buffer, scalar_value: PrimExpr, count: PrimExpr):
+
+    return tir.call_intrin(
+        "handle", 
+        tir.op.Op.get("tl.clamp_min"), 
+        dst.access_ptr("w"), 
+        src.access_ptr("r"),
+        tmp.access_ptr("r"), 
+        scalar_value, 
+        count
+    )
+
+def round(dst: Buffer, src: Buffer, tmp: Buffer, count: PrimExpr):
+
+    return tir.call_intrin(
+        "handle", 
+        tir.op.Op.get("tl.round"), 
+        dst.access_ptr("w"), 
+        src.access_ptr("r"),
+        tmp.access_ptr("r"), 
+        count
+    )
 
 def pow(dst: Buffer, src0: Buffer, src1: Buffer, tmp: Buffer):
     """Performs element-wise power calculation: dst = src0 ^ src1.
