@@ -25,7 +25,7 @@ def flash_attention_fwd(
     heads,
     dim,
 ):
-    block_M, block_N = 64, 128
+    block_M, block_N = 128, 128
 
     batch = B
     seq_len = S
@@ -71,28 +71,27 @@ def flash_attention_fwd(
             acc_o = T.alloc_ub([block_M // 2, dim], accum_dtype)
             sumexp = T.alloc_ub([block_M // 2, 1], accum_dtype)
             sumexp_2d = T.alloc_ub([block_M // 2, dim], accum_dtype)
-            
             m_i = T.alloc_ub([block_M // 2, 1], accum_dtype)
             m_i_2d = T.alloc_ub([block_M // 2, block_N], accum_dtype)
 
             acc_s_ub = T.alloc_ub([block_M // 2, block_N], accum_dtype)
             m_i_prev = T.alloc_ub([block_M // 2, 1], accum_dtype)
             m_i_prev_2d = T.alloc_ub([block_M // 2, dim], accum_dtype)
-            
             acc_s_ub_ = T.alloc_ub([block_M // 2, block_N], accum_dtype)
-            tmp_ub = T.alloc_ub([3 * DataType(accum_dtype).bits // 8 * block_M // 2 * block_N], "uint8")
+            tmp_ub = T.alloc_ub([1 * DataType(accum_dtype).bits // 8 * block_M // 2 * block_N], "uint8")
             sumexp_i_ub = T.alloc_ub([block_M // 2, 1], accum_dtype)
             acc_s_half = T.alloc_ub([block_M // 2, block_N], dtype)
             acc_o_ub = T.alloc_ub([block_M // 2, dim], accum_dtype)
             acc_o_half = T.alloc_ub([block_M // 2, dim], dtype)
 
-            # with T.Scope("C"):
+
             T.tile.fill(acc_o, 0.0)
             T.tile.fill(sumexp, 0.0)
             T.tile.fill(m_i, -2**30)
             T.copy(Q[bz, by, bx * block_M:(bx + 1) * block_M, :], q_l1)
 
             for k in T.Pipelined(T.ceildiv(seq_len, block_N), num_stages=num_stages):
+
                 for n_i in T.serial(n_num):
                   T.copy(K[bz, by, k * block_N + n_i * block_K : k * block_N + (n_i + 1) * block_K, :], k_l1)
                   T.gemm_v0(q_l1, k_l1, acc_s_l0c, transpose_B=True, init=True)
@@ -126,6 +125,7 @@ def flash_attention_fwd(
                   T.gemm_v0(acc_s_l1, v_l1, acc_o_l0c, init=True)
                   T.copy(acc_o_l0c, workspace_3[cid, :, n_i * block_D : (n_i + 1) * block_D])
 
+
                 T.tile.broadcast(m_i_prev_2d, m_i_prev, tmp_ub)
                 T.tile.mul(acc_o, acc_o, m_i_prev_2d)
 
@@ -157,7 +157,7 @@ if __name__ == "__main__":
         heads=H,
         dim=D,
     )
-
+    print(func.get_kernel_source())
 
     def ref_flash_attn(q, k, v):
         q = q.float()
@@ -185,3 +185,4 @@ if __name__ == "__main__":
     torch.testing.assert_close(ref_output, output, rtol=1e-2, atol=1e-2)
 
     print("Test Passed!")
+
