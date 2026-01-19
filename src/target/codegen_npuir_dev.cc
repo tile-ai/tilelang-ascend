@@ -1051,7 +1051,8 @@ CodeGenTileLangNPUIRDEV::ComputeReassociationIndices(
 }
 
 // Reshape the source MemRef to match the rank and shape defined by `target_sizes`.
-mlir::Value CodeGenTileLangNPUIRDEV::MayReshapeMemRef(mlir::Value src_memref, llvm::ArrayRef<mlir::OpFoldResult> target_sizes) {
+mlir::Value CodeGenTileLangNPUIRDEV::MayReshapeMemRef(
+  mlir::Value src_memref, llvm::ArrayRef<mlir::OpFoldResult> target_sizes) {
   auto loc = builder.getUnknownLoc();
   auto src_type = src_memref.getType().cast<mlir::MemRefType>();
   int64_t src_rank = src_type.getRank();
@@ -1080,54 +1081,54 @@ mlir::Value CodeGenTileLangNPUIRDEV::MayReshapeMemRef(mlir::Value src_memref, ll
         /*layout=*/nullptr, src_type.getMemorySpace());
 
     if (has_dynamic) {
-         return builder.create<mlir::memref::ExpandShapeOp>(
-            loc, resultType, src_memref, indices, target_sizes).getResult();
+      return builder.create<mlir::memref::ExpandShapeOp>(
+          loc, resultType, src_memref, indices, target_sizes).getResult();
     } else {
-         return builder.create<mlir::memref::ExpandShapeOp>(
-            loc, resultType, src_memref, indices).getResult();
+      return builder.create<mlir::memref::ExpandShapeOp>(
+          loc, resultType, src_memref, indices).getResult();
     }
   }
 
   // 2. Collapse (High Rank -> Low Rank).
   if (src_rank > dst_rank) {
-      // A. Retrieve original offset and strides.
-      auto extract = builder.create<mlir::memref::ExtractStridedMetadataOp>(loc, src_memref);
-      mlir::Value offset = extract.getOffset();
-      auto src_strides_values = extract.getStrides();
+    // A. Retrieve original offset and strides.
+    auto extract = builder.create<mlir::memref::ExtractStridedMetadataOp>(loc, src_memref);
+    mlir::Value offset = extract.getOffset();
+    auto src_strides_values = extract.getStrides();
 
-      // B. Compute Reassociation Indices to map Dst -> [Src...]
-      auto indices = ComputeReassociationIndices(src_rank, dst_rank, src_type, target_sizes);
+    // B. Compute Reassociation Indices to map Dst -> [Src...]
+    auto indices = ComputeReassociationIndices(src_rank, dst_rank, src_type, target_sizes);
 
-      // C. Compute Target Strides from Source Strides.
-      llvm::SmallVector<mlir::OpFoldResult> strides;
-      for (const auto& group : indices) {
-          int64_t last_src_dim = group.back();
-          strides.push_back(src_strides_values[last_src_dim]);
-      }
+    // C. Compute Target Strides from Source Strides.
+    llvm::SmallVector<mlir::OpFoldResult> strides;
+    for (const auto& group : indices) {
+      int64_t last_src_dim = group.back();
+      strides.push_back(src_strides_values[last_src_dim]);
+    }
 
-      // D. Construct target MemRef type.
-      llvm::SmallVector<int64_t> static_shape;
-      for(auto s : target_sizes) {
-        if (auto attr = s.dyn_cast<mlir::Attribute>()) 
-          static_shape.push_back(attr.cast<mlir::IntegerAttr>().getInt());
-        else 
-          static_shape.push_back(mlir::ShapedType::kDynamic);
-      }
+    // D. Construct target MemRef type.
+    llvm::SmallVector<int64_t> static_shape;
+    for(auto s : target_sizes) {
+      if (auto attr = s.dyn_cast<mlir::Attribute>()) 
+        static_shape.push_back(attr.cast<mlir::IntegerAttr>().getInt());
+      else 
+        static_shape.push_back(mlir::ShapedType::kDynamic);
+    }
 
-      // Use dynamic layout because strides are runtime values from ExtractStridedMetadataOp
-      auto layout = mlir::StridedLayoutAttr::get(&context, mlir::ShapedType::kDynamic, 
-                                                 llvm::SmallVector<int64_t>(dst_rank, mlir::ShapedType::kDynamic));
-      
-      auto resultType = mlir::MemRefType::get(
-          static_shape, src_type.getElementType(), 
-          layout, src_type.getMemorySpace());
+    // Use dynamic layout because strides are runtime values from ExtractStridedMetadataOp
+    auto layout = mlir::StridedLayoutAttr::get(&context, mlir::ShapedType::kDynamic,
+        llvm::SmallVector<int64_t>(dst_rank, mlir::ShapedType::kDynamic));
+    
+    auto resultType = mlir::MemRefType::get(
+        static_shape, src_type.getElementType(), 
+        layout, src_type.getMemorySpace());
 
-      // E. Create ReinterpretCastOp.
-      return builder.create<mlir::memref::ReinterpretCastOp>(
-          loc, resultType, src_memref, 
-          llvm::SmallVector<mlir::OpFoldResult>{offset}, 
-          target_sizes, 
-          strides).getResult();
+    // E. Create ReinterpretCastOp.
+    return builder.create<mlir::memref::ReinterpretCastOp>(
+        loc, resultType, src_memref, 
+        llvm::SmallVector<mlir::OpFoldResult>{offset}, 
+        target_sizes, 
+        strides).getResult();
   }
   
   return src_memref;
