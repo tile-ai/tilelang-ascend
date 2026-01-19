@@ -1589,6 +1589,59 @@ void CodeGenTileLangNPUIRAPI::DebugPrintCodegen(const CallNode *op) {
                                        mlir::hivm::TCoreTypeAttr{});
 }
 
+void CodeGenTileLangNPUIRAPI::ReshapeCodegen(const CallNode *op) {
+  tvm::tl::NpuirReshape npuirop(op->args, this->vmap);
+  Value src = GenSubviewFromRegion(npuirop.src, npuirop.src_range);
+  Value dst = GenSubviewFromRegion(npuirop.dst, npuirop.dst_range);
+
+  auto srcTy = src.getType().cast<mlir::MemRefType>();
+  auto elemTy = srcTy.getElementType();
+
+  ArrayRef<int64_t> dstShape = npuirop.dst_shape;
+  
+  SmallVector<int64_t> stridesVec;
+  int64_t stride = 1;
+  for (int i = dstShape.size() - 1; i >= 0; --i) {
+    stridesVec.push_back(stride);
+    stride *= dstShape[i];
+  }
+  std::reverse(stridesVec.begin(), stridesVec.end());
+  
+  auto stridedLayout = mlir::StridedLayoutAttr::get(
+      builder.getContext(),
+      /*offset=*/0,
+      stridesVec);
+  
+  auto dstMemRefTy = mlir::MemRefType::get(
+      dstShape,
+      elemTy,
+      stridedLayout,
+      srcTy.getMemorySpace());
+
+  SmallVector<mlir::OpFoldResult> offsets(dstShape.size(),
+      builder.getIndexAttr(0));
+
+  SmallVector<mlir::OpFoldResult> sizes;
+  for (auto s : dstShape) {
+    sizes.push_back(builder.getIndexAttr(s));
+  }
+
+  SmallVector<mlir::OpFoldResult> strides;
+  for (auto s : stridesVec) {
+    strides.push_back(builder.getIndexAttr(s));
+  }
+
+  Value reshaped = builder.create<memref::ReinterpretCastOp>(
+      builder.getUnknownLoc(),
+      dstMemRefTy,
+      src,
+      offsets,
+      sizes,
+      strides);
+  
+  var_map_[npuirop.dst->data.get()] = reshaped;
+}
+
 void CodeGenTileLangNPUIRAPI::CallExternCodegen(const CallNode *op) {
   // Todo: Implementation pending
 }
