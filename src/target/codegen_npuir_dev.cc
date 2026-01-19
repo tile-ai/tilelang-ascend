@@ -2165,6 +2165,8 @@ mlir::Value CodeGenTileLangNPUIRDEV::VisitExpr_(const CallNode *op) {
   } else if (op->op.same_as(Op::Get("tl.npuir_debug_print_var")) ||
              op->op.same_as(Op::Get("tl.npuir_debug_print_buffer_value"))) {
     DebugPrintCodegen(op);
+} else if (op->op.same_as(Op::Get("tl.npuir_reshape"))) {
+    ReshapeCodegen(op);
   } else {
     VisitExpr_(op);
   }

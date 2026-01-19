@@ -73,7 +73,7 @@ def main(main_args):
     print(res)
 
     torch.testing.assert_close(
-        c, res, rtol=1e-3, atol=1e-3
+        C, res, rtol=1e-3, atol=1e-3
     )
 
     print("\033[92mReshape demo passed!\033[0m")
