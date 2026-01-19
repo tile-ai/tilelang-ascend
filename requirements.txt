@@ -9,3 +9,5 @@ psutil
 torch
 pytest
 pytest-xdist
+pandas
+matplotlib
