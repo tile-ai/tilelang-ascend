@@ -52,7 +52,7 @@ def main(main_args):
     func = reshape_demo(M, N)
     kernel = tilelang.compile(func, target="npuir")
 
-    shape1 = (1,M * N)
+    shape1 = (M * N,)
     shape2 = (M, N)
     A = generate_tensor(shape1, dtype).npu()
     B = generate_tensor(shape2, dtype).npu()

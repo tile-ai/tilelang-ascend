@@ -2037,9 +2037,8 @@ void CodeGenTileLangNPUIRDEV::ReshapeCodegen(const CallNode *op) {
   tvm::tl::NpuirReshape npuirop(op->args, this->vmap);
   Value src = GetVarValue(npuirop.src);
   const auto &dstShape = npuirop.dst_shape;
-  int64_t rank = dstShape.size();
   auto shapeTensorType =
-      mlir::RankedTensorType::get({rank}, builder.getIndexType());
+      mlir::RankedTensorType::get({dstShape.size()}, builder.getIndexType());
   auto shapeAttr =
       mlir::DenseIntElementsAttr::get(shapeTensorType, dstShape);
   Value shapeTensor =
