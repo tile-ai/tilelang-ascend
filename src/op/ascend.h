@@ -318,7 +318,7 @@ public:
 
   Buffer src, dst;
   Array<Range> src_range, dst_range;
-  std::vector<int64_t> dst_shape;
+  std::vector<int64_t> src_range, dst_shape;
 };
 
 /// HIVM device print operation (print var info)
