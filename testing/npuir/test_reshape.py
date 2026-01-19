@@ -79,7 +79,7 @@ def main(main_args):
     res = A.reshape(N, M)
     res = torch.exp(res)
     torch.testing.assert_close(
-        B, res, rtol=1e-3, atol=1e-3
+        c, res, rtol=1e-3, atol=1e-3
     )
 
     print("\033[92mReshape demo passed!\033[0m")
