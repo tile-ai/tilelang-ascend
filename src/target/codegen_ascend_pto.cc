@@ -886,7 +886,8 @@ void CodeGenTileLangAscendPto::CallExternCodegen(const CallNode *op) {
         }
         // tensor_template = tensor_template + shape_template + ", " + stride_template + ", " + valid_template;
         if (op_name.find("copy_ub_to_gm") != std::string::npos) {
-          tensor_template = tensor_template + shape_template + ", " + stride_template  + ", " + shape_nums[0] + ", " + shape_nums[1] + ">";
+          tensor_template = tensor_template + shape_template + ", " + stride_template  + ", " + 
+          shape_nums[0] + ", " + shape_nums[1] + ", " + ub_valid_shapes[1] + ", " + ub_valid_shapes[2] + ">";
         } else {
           tensor_template = tensor_template + shape_template + ", " + stride_template + ", " + valid_template + ">";
         }
@@ -903,7 +904,7 @@ void CodeGenTileLangAscendPto::CallExternCodegen(const CallNode *op) {
           this->stream << ")";
         }
         if (op_name.find("copy_ub_to_gm") != std::string::npos) {
-          this->stream << ", " << ub_valid_shapes[3] << ", " << src_offset << ", " << ub_valid_shapes[1] << ", " << ub_valid_shapes[2] << ");\n";
+          this->stream << ", " << ub_valid_shapes[3] << ", " << src_offset << ");\n";
         } else {
           this->stream << ", " << src_var_id << ");\n";
         }
