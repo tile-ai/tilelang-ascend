@@ -24,7 +24,11 @@ G_IP_PORT = "tcp://100.102.180.145:8666"
 
 num_processes = args.num_processes
 
-@tilelang.jit()
+pass_configs = {
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
+}
+
+@tilelang.jit(pass_configs=pass_configs)
 def shmem_ub_get_nbi(M, N, nelems, newPe, dtype="int8"):
     @T.prim_func
     def main(
@@ -37,10 +41,7 @@ def shmem_ub_get_nbi(M, N, nelems, newPe, dtype="int8"):
                 if vid == 0:
                     # Copy from the newPe GM to the local UB
                     T.shmem_ub_get_nbi(ub_tensor, A, nelems, newPe)
-                    T.set_flag("mte2", "mte3", 0x7)
-                    T.wait_flag("mte2", "mte3", 0x7)
                     T.copy(ub_tensor, B)
-                    T.pipe_barrier("mte3")
     return main
 
 def worker(rank, barrier):
