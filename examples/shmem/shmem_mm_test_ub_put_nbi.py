@@ -76,7 +76,7 @@ def worker(rank, barrier):
         func(a, b)
         barrier.wait()
         if torch.equal(a, b):
-            print("Test passed!")
+            print(f"Rank {rank}: Test passed!")
         else:
             print("[ERROR] Kernel Output Not Match!")
         aclshmem_module.aclshmem_free_tensor(tensor)
