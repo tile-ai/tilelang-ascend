@@ -104,6 +104,10 @@ def run_and_analyze(cmd, output_path, kernel_name, desc):
 
         print(f"    [X] {desc} 执行失败! 错误: {error_info}")
 
+        print("-" * 30 + " 完整报错日志 " + "-" * 30)
+        print(full_output)
+        print("-" * 74)
+
     return exec_time, status, error_info
 
 def generate_test_cases(args):
@@ -151,7 +155,7 @@ def run_benchmark():
 
     # TileLang 脚本相关
     parser.add_argument("--tl", type=str, 
-                        default="./flash_attn_bhsd_cc_sync_auto_pipeline.py",
+                        default="./flash_attn_bhsd_cc_sync_auto_pipeline_h32_d512.py",
                         help="Path to TileLang python script")
     parser.add_argument("--kernel-tl", type=str, default="main_kernel", help="Kernel name for TileLang")
 
