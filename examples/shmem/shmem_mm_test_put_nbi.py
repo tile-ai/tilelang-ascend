@@ -72,9 +72,7 @@ def worker(rank, barrier):
 
         func = shmem_put_nbi(M, N, nelems, newPe)
         func(a, b)
-        print(func.get_kernel_source())
         barrier.wait()
-        print("b after=", b)
         if torch.equal(a, b):
             print("Test passed!")
         else:

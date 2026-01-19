@@ -67,10 +67,6 @@ def worker(rank, barrier):
         tensor = aclshmem_module.aclshmem_create_tensor([M, 2*N], dtype=torch.int8, device_id=rank)
         a = tensor[0:1, 0:N].fill_(2)
         b = tensor[0:1, N:2*N].fill_(0)
-        # print("a before=", a)
-        # print("b before=", b)
-        # print("rank", rank, "a address", a.data_ptr())
-        # print("rank", rank, "b address", b.data_ptr())
         torch.npu.synchronize()
         nelems = M * N
         # Put the data from this rank onto another rank; here it is set to the next rank.
@@ -78,9 +74,7 @@ def worker(rank, barrier):
 
         func = shmem_ub_put_nbi(M, N, nelems, newPe)
         func(a, b)
-        print(func.get_kernel_source()) 
         barrier.wait()
-        print("b after=", b)
         if torch.equal(a, b):
             print("Test passed!")
         else:
