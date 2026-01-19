@@ -4,7 +4,7 @@ import torch
 import tilelang
 import tilelang.language as T
 
-torch.npu.set_device(0)
+torch.npu.set_device(1)
 tilelang.cache.clear_cache()
 
 parser = argparse.ArgumentParser(description="NPU Kernel Compilation")
@@ -19,16 +19,21 @@ def reshape_demo(M, N):
 
     @T.prim_func
     def main(
-        A: T.Tensor((M*N), dtype),
-        B: T.Tensor((M, N), dtype)
+        A: T.Tensor((M, N), dtype),
+        B: T.Tensor((N, M), dtype),
+        C: T.Tensor((N, M), dtype)
     ):
         with T.Kernel(BLOCK_SIZE, is_npu=True) as (cid, _):
-            a = T.alloc_ub((M*N), dtype)
+            a = T.alloc_shared((M, N), dtype)
+            tmp = T.alloc_shared((N, M), dtype)
+            b = T.alloc_shared((N, M), dtype)
+            c = T.alloc_shared((N, M), dtype)
             T.copy(A, a)
+            T.copy(B, b)
 
-            b = T.alloc_ub((M, N), dtype)
-            T.npuir_reshape(a, b)
-            T.copy(b, B)
+            T.npuir_reshape(a, tmp)
+            T.npuir_add(b, tmp, c)
+            T.copy(c, C)
     return main
 
 def generate_tensor(shape, dtype, clear=False):
@@ -46,27 +51,29 @@ def generate_tensor(shape, dtype, clear=False):
     raise ValueError('Invalid parameter "dtype" is found : {}'.format(dtype))
 
 def main(main_args):
-    os.environ["TILELANG_ASCEND_MODE"] = "e"
+    os.environ["TILELANG_ASCEND_MODE"] = "dev"
     M = main_args.M
     N = main_args.N
     func = reshape_demo(M, N)
     kernel = tilelang.compile(func, target="npuir")
 
-    shape1 = (M * N,)
-    shape2 = (M, N)
+    shape1 = (M, N)
+    shape2 = (N, M)
     A = generate_tensor(shape1, dtype).npu()
     B = generate_tensor(shape2, dtype).npu()
+    C = generate_tensor(shape2, dtype).npu()
 
-    kernel(A, B)
+    kernel(A, B, C)
     print(A)
-    print(B)
+    print(C)
 
-    res = A.reshape(M,N)
+    res = A.reshape(N, M)
+    res += B
 
     print(res)
 
     torch.testing.assert_close(
-        B, res, rtol=1e-3, atol=1e-3
+        c, res, rtol=1e-3, atol=1e-3
     )
 
     print("\033[92mReshape demo passed!\033[0m")
