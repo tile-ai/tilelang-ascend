@@ -1616,33 +1616,12 @@ void CodeGenTileLangNPUIRDEV::VselectCodegen(const CallNode *op) {
   auto elemTy = srcTensorTy.getElementType();
   auto srcShape = srcTensorTy.getShape();
 
-  bool isFullRegion = true;
-
-  // offsets == 0
-  for (auto off : dst_offsets) {
-    auto attr = off.dyn_cast<mlir::Attribute>();
-    if (!attr || attr.cast<mlir::IntegerAttr>().getInt() != 0) {
-      isFullRegion = false;
-      break;
-    }
-  }
-
-  // strides == 1
-  for (auto st : dst_strides) {
-    auto attr = st.dyn_cast<mlir::Attribute>();
-    if (!attr || attr.cast<mlir::IntegerAttr>().getInt() != 1) {
-      isFullRegion = false;
-      break;
-    }
-  }
-
-  // dst shape (must be static)
   llvm::SmallVector<int64_t> dstShape;
   for (auto s : dst_sizes) {
     if (auto attr = s.dyn_cast<mlir::Attribute>()) {
       dstShape.push_back(attr.cast<mlir::IntegerAttr>().getInt());
     } else {
-      ICHECK(false) << "Vselect requires static dst_sizes";
+      ICHECK(false) << "Select op requires static dst_sizes";
     }
   }
 
@@ -1650,13 +1629,13 @@ void CodeGenTileLangNPUIRDEV::VselectCodegen(const CallNode *op) {
       (srcShape.size() == dstShape.size()) &&
       llvm::equal(srcShape, dstShape);
 
-  bool needReshapeOrSlice = !(sameShape && isFullRegion);
+  bool needInsertSlice = !(sameShape);
 
   std::vector<int64_t> srcShapeVec(srcShape.begin(), srcShape.end());
   auto broadcastDim =
       getBroadcastDim(npuirop.src0->shape, srcShapeVec);
 
-  if (!needReshapeOrSlice) {
+  if (!needInsertSlice) {
     auto selOp = builder.create<mlir::hivm::VSelOp>(
         builder.getUnknownLoc(),
         mlir::TypeRange{dst_data_name.getType()},
@@ -2151,24 +2130,6 @@ void CodeGenTileLangNPUIRDEV::CreateHIVMBinaryVectorOp(const CallNode *op) {
   auto elemTy = srcTensorTy.getElementType();
   auto srcShape = srcTensorTy.getShape();
 
-  bool isFullRegion = true;
-
-  for (auto off : dst_offsets) {
-    auto attr = off.dyn_cast<mlir::Attribute>();
-    if (!attr || attr.cast<mlir::IntegerAttr>().getInt() != 0) {
-      isFullRegion = false;
-      break;
-    }
-  }
-
-  for (auto st : dst_strides) {
-    auto attr = st.dyn_cast<mlir::Attribute>();
-    if (!attr || attr.cast<mlir::IntegerAttr>().getInt() != 1) {
-      isFullRegion = false;
-      break;
-    }
-  }
-
   llvm::SmallVector<int64_t> dstShape;
   for (auto s : dst_sizes) {
     if (auto attr = s.dyn_cast<mlir::Attribute>()) {
@@ -2182,10 +2143,9 @@ void CodeGenTileLangNPUIRDEV::CreateHIVMBinaryVectorOp(const CallNode *op) {
       (srcShape.size() == dstShape.size()) &&
       llvm::equal(srcShape, dstShape);
 
-  bool needInsertSlice = !(sameShape && isFullRegion);
+  bool needInsertSlice = !(sameShape);
 
-
-// transpose
+  // transpose
   mlir::DenseI64ArrayAttr transpose = builder.getDenseI64ArrayAttr({});
   // broadcast
   llvm::SmallVector<int64_t> dims =
