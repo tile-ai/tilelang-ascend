@@ -24,7 +24,12 @@ G_IP_PORT = "tcp://100.102.180.145:8666"
 
 num_processes = args.num_processes
 
-@tilelang.jit()
+pass_configs = {
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
+}
+
+@tilelang.jit(pass_configs=pass_configs)
 def shmem_ub_put_nbi(M, N, nelems, newPe, dtype="int8"):
     @T.prim_func
     def main(
@@ -33,15 +38,10 @@ def shmem_ub_put_nbi(M, N, nelems, newPe, dtype="int8"):
     ):
         with T.Kernel(1, is_npu=True) as (cid, vid):
             ub_tensor = T.alloc_ub((1, nelems), dtype)
-            with T.Scope("V"):
-                if vid == 0:
-                    T.copy(A, ub_tensor)
-                    # T.set_flag("mte2", "mte3", 0x7)
-                    # T.wait_flag("mte2", "mte3", 0x7)
-                    T.barrier_all()
-                    T.shmem_ub_put_nbi(ub_tensor, B, nelems, newPe)
-                    # T.pipe_barrier("mte3")
-                    T.barrier_all()
+            if vid == 0:
+                T.copy(A, ub_tensor)
+                # Copy from the local UB to the newPe GM
+                T.shmem_ub_put_nbi(ub_tensor, B, nelems, newPe)
     return main
 
 def worker(rank, barrier):
@@ -50,7 +50,7 @@ def worker(rank, barrier):
     ret = aclshmem_module.set_conf_store_tls(False, "")
     if ret != 0:
         raise ValueError("[ERROR] set_conf_store_tls failed")
-    # 创建初始化属性对象
+    # Create initialization attribute object
     attributes = aclshmem_module.InitAttr()
     npu_num = 8
     attributes.my_rank = rank
@@ -58,13 +58,12 @@ def worker(rank, barrier):
     attributes.local_mem_size = g_ash_size
     attributes.ip_port = G_IP_PORT
     attributes.option_attr.data_op_engine_type = aclshmem_module.OpEngineType.MTE
-    # 初始化aclshmem
+    # Initialize aclshmem
     ret = aclshmem_module.aclshmem_init(attributes)
     if ret == 0:
         print(f"Rank {rank}: Initialization successful")
-        # 分配内存
         torch.manual_seed(0)
-    
+        # Create shared memory tensor
         tensor = aclshmem_module.aclshmem_create_tensor([M, 2*N], dtype=torch.int8, device_id=rank)
         a = tensor[0:1, 0:N].fill_(2)
         b = tensor[0:1, N:2*N].fill_(0)
@@ -74,29 +73,30 @@ def worker(rank, barrier):
         # print("rank", rank, "b address", b.data_ptr())
         torch.npu.synchronize()
         nelems = M * N
-        # 将本卡数据put到另一张卡上，这里设置为下一张卡
+        # Put the data from this rank onto another rank; here it is set to the next rank.
         newPe = (rank + 1) % npu_num
 
         func = shmem_ub_put_nbi(M, N, nelems, newPe)
         func(a, b)
+        print(func.get_kernel_source()) 
         barrier.wait()
         print("b after=", b)
         if torch.equal(a, b):
-            print("Kernel Output Match!")
+            print("Test passed!")
         else:
             print("[ERROR] Kernel Output Not Match!")
         aclshmem_module.aclshmem_free_tensor(tensor)
 
     else:
         print(f"Rank {rank}: Initialization failed with code {ret}")    
-    # 清理
+    # Clean
     aclshmem_module.aclshmem_finialize()
     print(f"Rank {rank}: Finalized")
 
-# 程序起始位置
+# [Program Start Location]
 print(f"Number of processes: {num_processes}")
-
-barrier = Barrier(num_processes)  # 同步指定数量的进程
+# Synchronize a specified number of processes
+barrier = Barrier(num_processes)  
 processes = []
 
 for rank in range(num_processes):
@@ -107,4 +107,4 @@ for rank in range(num_processes):
 for p in processes:
     p.join()
 
-print("All processes completed")
+print("Kernel Output Match!")

@@ -35,6 +35,7 @@ def shmem_ub_get_nbi(M, N, nelems, newPe, dtype="int8"):
             ub_tensor = T.alloc_ub((1, nelems), dtype)
             with T.Scope("V"):
                 if vid == 0:
+                    # Copy from the newPe GM to the local UB
                     T.shmem_ub_get_nbi(ub_tensor, A, nelems, newPe)
                     T.set_flag("mte2", "mte3", 0x7)
                     T.wait_flag("mte2", "mte3", 0x7)
@@ -48,7 +49,7 @@ def worker(rank, barrier):
     ret = aclshmem_module.set_conf_store_tls(False, "")
     if ret != 0:
         raise ValueError("[ERROR] set_conf_store_tls failed")
-    # 创建初始化属性对象
+    # Create initialization attribute object
     attributes = aclshmem_module.InitAttr()
     npu_num = 8
     attributes.my_rank = rank
@@ -56,19 +57,18 @@ def worker(rank, barrier):
     attributes.local_mem_size = g_ash_size
     attributes.ip_port = G_IP_PORT
     attributes.option_attr.data_op_engine_type = aclshmem_module.OpEngineType.MTE
-    # 初始化aclshmem
+    # Initialize aclshmem
     ret = aclshmem_module.aclshmem_init(attributes)
     if ret == 0:
         print(f"Rank {rank}: Initialization successful")
-        # 分配内存
         torch.manual_seed(0)
-    
+        # Create shared memory tensor
         tensor = aclshmem_module.aclshmem_create_tensor([M, 2*N], dtype=torch.int8, device_id=rank)
         a = tensor[0:1, 0:N].fill_(2)
         b = tensor[0:1, N:2*N].fill_(0)
         torch.npu.synchronize()
         nelems = M * N
-        # 从一张新的卡上get数据到本pe，这里设成前一张卡
+        # Get data from a new card to this PE; here, it's set as the previous rank.
         newPe = (rank + npu_num - 1) % npu_num
 
         func = shmem_ub_get_nbi(M, N, nelems, newPe)
@@ -76,21 +76,21 @@ def worker(rank, barrier):
         barrier.wait()
         print("b after=", b)
         if torch.equal(a, b):
-            print("Kernel Output Match!")
+            print("Test passed!")
         else:
             print("[ERROR] Kernel Output Not Match!")
         aclshmem_module.aclshmem_free_tensor(tensor)
 
     else:
         print(f"Rank {rank}: Initialization failed with code {ret}")    
-    # 清理
+    # Clean
     aclshmem_module.aclshmem_finialize()
     print(f"Rank {rank}: Finalized")
 
-# 程序起始位置
+# [Program Start Location]
 print(f"Number of processes: {num_processes}")
-
-barrier = Barrier(num_processes)  # 同步指定数量的进程
+# Synchronize a specified number of processes
+barrier = Barrier(num_processes)
 processes = []
 
 for rank in range(num_processes):
@@ -101,4 +101,4 @@ for rank in range(num_processes):
 for p in processes:
     p.join()
 
-print("All processes completed")
+print("Kernel Output Match!")
