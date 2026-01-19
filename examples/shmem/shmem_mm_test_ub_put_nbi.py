@@ -26,7 +26,6 @@ num_processes = args.num_processes
 
 pass_configs = {
     tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
-    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
 }
 
 @tilelang.jit(pass_configs=pass_configs)
@@ -38,10 +37,11 @@ def shmem_ub_put_nbi(M, N, nelems, newPe, dtype="int8"):
     ):
         with T.Kernel(1, is_npu=True) as (cid, vid):
             ub_tensor = T.alloc_ub((1, nelems), dtype)
-            if vid == 0:
-                T.copy(A, ub_tensor)
-                # Copy from the local UB to the newPe GM
-                T.shmem_ub_put_nbi(ub_tensor, B, nelems, newPe)
+            with T.Scope("V"):
+                if vid == 0:
+                    T.copy(A, ub_tensor)
+                    # Copy from the local UB to the newPe GM
+                    T.shmem_ub_put_nbi(ub_tensor, B, nelems, newPe)
     return main
 
 def worker(rank, barrier):

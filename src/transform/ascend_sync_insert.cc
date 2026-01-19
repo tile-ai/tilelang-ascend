@@ -143,7 +143,7 @@ private:
       {"shmem_ub_get_nbi", {{{0, "write"}, {1, "read"}}, "PIPE_MTE2"}},
       {"shmem_get_nbi", {{{0, "write"}, {1, "read"}}, "PIPE_MTE3"}},
       {"shmem_put_nbi", {{{0, "write"}, {1, "read"}}, "PIPE_MTE3"}},
-      {"shmem_ub_put_nbi", {{{0, "read"}, {1, "read"}}, "PIPE_MTE3"}},
+      {"shmem_ub_put_nbi", {{{0, "read"}, {1, "write"}}, "PIPE_MTE3"}},
       {"copy_l0c_to_gm", {{{0, "read"}, {1, "write"}}, "PIPE_FIX"}},
       {"copy_l0c_to_l1", {{{0, "read"}, {1, "write"}}, "PIPE_FIX"}},
       {"copy_ub_to_ub", {{{0, "read"}, {1, "write"}}, "PIPE_V"}},
