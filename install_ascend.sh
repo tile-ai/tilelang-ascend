@@ -164,25 +164,12 @@ if $USE_SHMEM; then
     echo "Starting installation shmem..."
     cd 3rdparty/shmem
     bash scripts/build.sh -python_extension -mf
-    # SHMEM_INSTALL_PATH=$(pwd)/install
-    # arch=$(uname -m)
-    # cd ci/release/$arch/
-    # chmod +x SHMEM*.run
-    # ./SHMEM*.run --check
-    # ./SHMEM*.run --install --install-path=$SHMEM_INSTALL_PATH
-    # if [ $? -ne 0 ]; then
-    #     echo "Error: SHMEM C++ pkg install failed."
-    #     exit 1
-    # else
-    #     echo "SHMEM C++ pkg install success in $SHMEM_INSTALL_PATH."
-    # fi
     pip show shmem >/dev/null 2>&1
     if [[ $? -eq 0 ]]; then
         echo "begin uninstall old shmem whl package"
         pip uninstall --yes shmem
     fi
     cd src/python
-    # cd ../../../src/python
     python setup.py bdist_wheel
     cd dist
     python -m pip install shmem*.whl
@@ -198,7 +185,6 @@ if $USE_SHMEM; then
     else
         echo "shmem-xxx.whl install success."
     fi
-    # source ../../../install/shmem/latest/set_env.sh
     source ../../../install/set_env.sh
     if [ $? -ne 0 ]; then
         echo "Error: set shmem env failed."
