@@ -8,7 +8,7 @@ import math
 
 def _dtype(buf):
     type_map = {"float16": "half", "float32": "float", "int32": "int", "uint32": "uint32_t", "bfloat16": "bfloat16_t", "uint16": "uint16_t", "uint8": "uint8_t",
-                "int8": "int8_t", "int16": "int16_t", "int64": "int64_t", "uint64": "uint64_t"}
+                "int4": "int4b_t", "int8": "int8_t", "int16": "int16_t", "int64": "int64_t", "uint64": "uint64_t"}
     if isinstance(buf, BufferRegion):
         buf = buf.buffer
     return type_map[buf.dtype]
@@ -260,11 +260,16 @@ def printf(format_str: str, *args):
 def dump_tensor(tensor: Buffer, desc: int, dump_size: int, shape_info: tuple=()):
     if not isinstance(desc, int) or desc < 0 or desc > 0xFFFFFFFF:
         raise ValueError(f"desc must be uint32, but your desc is {desc}")
-    if not isinstance(dump_size, int) or dump_size < 0 or dump_size > 0xFFFFFFFF:
-        raise ValueError(f"dump_size must be uint32, but your dump_size is {dump_size}")
+    # if not isinstance(dump_size, int) or dump_size < 0 or dump_size > 0xFFFFFFFF:
+    #     raise ValueError(f"dump_size must be uint32, but your dump_size is {dump_size}")
 
     tensor_ptr = tensor.access_ptr("r")
     if (len(shape_info) == 0):
         return T.call_extern("handle", f"AscendC::DumpTensor", tensor_ptr, desc, dump_size)
     else:
         return T.call_extern("handle", f"tl::ascend::DumpTensor", tensor_ptr, desc, dump_size, len(shape_info), *shape_info)
+    
+def reinterpretcast(dst: Buffer, src: Buffer, casttype: str):
+    
+    return T.call_extern("handle", f"ReinterpretCast", dst.access_ptr("w"), src.access_ptr("r"), 
+                         casttype)

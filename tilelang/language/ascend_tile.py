@@ -8,7 +8,7 @@ import math
 
 def _dtype(buf):
     type_map = {"float16": "half", "float32": "float", "int32": "int", "uint32": "uint32_t", "bfloat16": "bfloat16_t", "uint16": "uint16_t", "uint8": "uint8_t",
-                "int8": "int8_t", "int16": "int16_t", "int64": "int64_t", "uint64": "uint64_t"}
+                "int4": "int4b_t", "int8": "int8_t", "int16": "int16_t", "int64": "int64_t", "uint64": "uint64_t"}
     if isinstance(buf, BufferRegion):
         buf = buf.buffer
     return type_map[buf.dtype]
@@ -237,18 +237,40 @@ def or_tl(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, BufferLoa
 
 
 def unary_op(dst: Buffer, src0: Buffer, op: str):
-    size_0 = math.prod(src0.shape)
-    size_2 = math.prod(dst.shape)
 
-    assert size_0 == size_2, "size must be same"
+    def _handle_buffer_region(br: BufferRegion, mask):
+        bf = br.buffer
+        indices = [x.min for x in br.region]
+        offset = bf.offset_of(indices)[0]
 
-    return T.call_extern("handle", f"AscendC::{op}", dst.access_ptr("w"), src0.access_ptr("r"),
-                         size_0)
+        extent = [x.extent for x in br.region]
+        return bf.access_ptr(mask, offset=offset), extent
+
+    if isinstance(dst, BufferRegion):
+        dst_ptr, dst_extent = _handle_buffer_region(dst, "w")
+    else:
+        dst_ptr = dst.access_ptr("w")
+        dst_extent = dst.shape
+    if isinstance(src0, BufferRegion):
+        src0_ptr, src0_extent = _handle_buffer_region(src0, "r")
+    else:
+        src0_ptr = src0.access_ptr("r")
+        src0_extent = src0.shape
+
+    size_0 = math.prod(dst_extent)
+    size_1 = math.prod(src0_extent)
+    assert size_0 == size_1, "size must be same"
+
+    return T.call_extern("handle", f"AscendC::{op}", dst_ptr, src0_ptr, size_0)
 
 
 def exp(dst: Buffer, src0: Buffer):
     return unary_op(dst, src0, "Exp")
 
+
+def sigmoid(dst: Buffer, src: Buffer, tmp: Buffer):
+    size = math.prod(dst.shape)
+    return T.call_extern("handle", f"AscendC::Sigmoid", dst.access_ptr("w"), src.access_ptr("r"), tmp.access_ptr("w"), size)
 
 def ln(dst: Buffer, src0: Buffer):
     return unary_op(dst, src0, "Ln")
@@ -365,10 +387,12 @@ def gather(dst: Buffer, src: Buffer, src_offset: Buffer, src_base_addr: PrimExpr
                           src_offset.access_ptr("r"), src_base_addr, count)
 
 
-def reduce(out: Buffer, buffer: Buffer, tmp: Buffer, reduce_type: str, dim: int):
+def reduce(out: Buffer, buffer: Buffer, tmp: Buffer, reduce_type: str, dim: int, real_shape: list[int]=[0, 0]):
     dtype = _dtype(buffer)
-    shape = f"{buffer.shape[0]}, {buffer.shape[1]}"
     assert len(buffer.shape) == 2, "current only support buffer as a 2D tensor"
+    M = buffer.shape[0] if real_shape[0] == 0 else real_shape[0]
+    N = buffer.shape[1] if real_shape[1] == 0 else real_shape[1]
+    shape = f"{M}, {N}"
 
     buffer = buffer.access_ptr("r")
     out = out.access_ptr("w")
@@ -382,14 +406,14 @@ def reduce(out: Buffer, buffer: Buffer, tmp: Buffer, reduce_type: str, dim: int)
                          buffer, tmp)
 
 
-def reduce_max(out: Buffer, buffer: Buffer, tmp: Buffer, dim: int):
+def reduce_max(out: Buffer, buffer: Buffer, tmp: Buffer, dim: int, real_shape: list[int]=[0, 0]):
 
-    return reduce(out, buffer, tmp, "reduce_max", dim)
+    return reduce(out, buffer, tmp, "reduce_max", dim, real_shape)
 
 
-def reduce_sum(out: Buffer, buffer: Buffer, tmp: Buffer, dim: int):
+def reduce_sum(out: Buffer, buffer: Buffer, tmp: Buffer, dim: int, real_shape: list[int]=[0, 0]):
 
-    return reduce(out, buffer, tmp, "reduce_sum", dim)
+    return reduce(out, buffer, tmp, "reduce_sum", dim, real_shape)
 
 
 def block_reduce_max(dst: Buffer, src: Buffer, repeat: PrimExpr, mask: PrimExpr, dstPepStride: PrimExpr, srcBlkStride: PrimExpr, srcRepStride: PrimExpr):
@@ -466,3 +490,17 @@ def cos(dst: Buffer, src: Buffer, tmp: Buffer):
     return T.call_extern("handle", f"AscendC::Cos", dst.access_ptr("w"), src.access_ptr("r"),
                          tmp.access_ptr("r"), size_0)
 
+def clampMax(out: Buffer, buffer: Buffer, tmp: Buffer, scalar_value: PrimExpr, count: PrimExpr):
+
+    return T.call_extern("handle", f"AscendC::ClampMax<{_dtype(buffer)}>", out.access_ptr("w"), buffer.access_ptr("r"),
+                         tmp.access_ptr("r"), scalar_value, count)
+
+def clampMin(out: Buffer, buffer: Buffer, tmp: Buffer, scalar_value: PrimExpr, count: PrimExpr):
+
+    return T.call_extern("handle", f"AscendC::ClampMin<{_dtype(buffer)}>", out.access_ptr("w"), buffer.access_ptr("r"),
+                         tmp.access_ptr("r"), scalar_value, count)
+
+def round(out: Buffer, buffer: Buffer, tmp: Buffer, count: PrimExpr):
+
+    return T.call_extern("handle", f"AscendC::Round", out.access_ptr("w"), buffer.access_ptr("r"),
+                         tmp.access_ptr("r"), count)
