@@ -14,7 +14,29 @@ parser.add_argument("--block_M", type=int, default=32, help="")
 
 dtype = "float16"
 
-def reshape_demo(M, N):
+def reshape_demo_exp(M, N):
+    BLOCK_SIZE = 1
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((M, N), dtype),
+        B: T.Tensor((N, M), dtype),
+        C: T.Tensor((N, M), dtype)
+    ):
+        with T.Kernel(BLOCK_SIZE, is_npu=True) as (cid, _):
+            a = T.alloc_ub((M, N), dtype)
+            tmp = T.alloc_ub((N, M), dtype)
+            b = T.alloc_ub((N, M), dtype)
+            c = T.alloc_ub((N, M), dtype)
+            T.copy(A, a)
+            T.copy(B, b)
+
+            T.npuir_reshape(a, tmp)
+            T.npuir_add(b, tmp, c)
+            T.copy(c, C)
+    return main
+
+def reshape_demo_dev(M, N):
     BLOCK_SIZE = 1
 
     @T.prim_func
@@ -51,10 +73,12 @@ def generate_tensor(shape, dtype, clear=False):
     raise ValueError('Invalid parameter "dtype" is found : {}'.format(dtype))
 
 def main(main_args):
-    os.environ["TILELANG_ASCEND_MODE"] = "dev"
     M = main_args.M
     N = main_args.N
-    func = reshape_demo(M, N)
+    if os.environ['TILELANG_ASCEND_MODE'] == 'Expert':
+        func = reshape_demo_exp(M, N)
+    else:
+        func = reshape_demo_dev(M, N)
     kernel = tilelang.compile(func, target="npuir")
 
     shape1 = (M, N)
@@ -80,4 +104,7 @@ def main(main_args):
 
 if __name__ == "__main__":
     args = parser.parse_args()
+    os.environ["TILELANG_ASCEND_MODE"] = "dev"
+    main(args)
+    os.environ["TILELANG_ASCEND_MODE"] = "Expert"
     main(args)
