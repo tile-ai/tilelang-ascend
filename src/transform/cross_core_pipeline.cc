@@ -545,6 +545,21 @@ private:
         return stages;
     }
 
+    int32_t checkBufferScope(const std::string& buffer) {
+        for (const auto& pair : analyzer_.location_map()) {
+            if (pair.first.get()->name_hint == buffer) {
+                if (callnodeMapPos_[pair.second] == "cube") {
+                    return CUBE_SCOPE;
+                } else if (callnodeMapPos_[pair.second] == "vec") {
+                    return VEC_SCOPE;
+                } else {
+                    return INVALID_SCOPE;
+                }
+            }
+        }
+        return INVALID_SCOPE;
+    }
+
     void AnalyzeSharedBuffers(const std::vector<StageInfo>& stages) {
         std::unordered_map<std::string, std::vector<int>> buffer_stage_map;
         for (size_t stage_idx = 0; stage_idx < stages.size(); ++stage_idx) {
@@ -554,7 +569,7 @@ private:
         }
         for (const auto& [buffer, stage_indices] : buffer_stage_map) {
             if (stage_indices.size() > 1) {
-                auto buffer_scope = checkBufferScope(analyzer_.location_map(), Var(buffer, DataType::Handle()));
+                auto buffer_scope = checkBufferScope(buffer);
                 if (buffer_scope == VEC_SCOPE) {
                   shared_buffers_.insert(buffer);
                 }
