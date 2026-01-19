@@ -181,7 +181,7 @@ if $USE_SHMEM; then
         echo "begin uninstall old shmem whl package"
         pip uninstall --yes shmem
     fi
-    cd /src/python
+    cd src/python
     # cd ../../../src/python
     python setup.py bdist_wheel
     cd dist
