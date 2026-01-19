@@ -9,24 +9,24 @@
 | `--H` | `[16]` | Number of Heads 列表 |
 | `--D` | `[128]` | Head Dimension 列表 |
 | `--iter-mode` | `zip` | 遍历模式：`zip` (按索引一一对应) 或 `product` (全排列组合) |
-| `--tl` | `./flash...pipeline.py` | TileLang 脚本路径 |
+| `--tl` | `./flash...pipeline...py` | TileLang 脚本路径 |
 | `--ascendc` | `./flash...ascendc.py` | AscendC 脚本路径 |
 | `--log` | `./log` | 日志输出目录 |
 
 ### 运行示例
 
 **1. 列表模式 (Zip, 默认)**
-按索引对应运行 3 组用例：`(1, 2048, 16, 128)`, `(2, 4096, 32, 128)`, `(4, 8192, 32, 256)`。
+按索引对应运行 3 组用例：`(2, 8192, 32, 512)`, `(4, 4096, 32, 512)`, `(8, 2048, 32, 512)`, `(16, 1024, 32, 512)`。
 
 ```bash
 python run.py \
     --iter-mode zip \
-    --B 1 2 4 \
-    --S 2048 4096 8192 \
-    --H 16 32 32 \
-    --D 128 128 256 \
+    --B 2 4 8 16 \
+    --S 8192 4096 2048 1024 \
+    --H 32 32 32 32 \
+    --D 512 512 512 512 \
     --log ./log \
-    --tl ./flash_attn_bhsd_cc_sync_auto_pipeline.py \
+    --tl ./flash_attn_bhsd_auto_pipeline_h32_d512.py \
     --ascendc ./flash_attn_bhsd_ascendc.py
 ```
 
@@ -41,6 +41,6 @@ python run.py \
     --H 16 \
     --D 128 \
     --log ./log \
-    --tl ./flash_attn_bhsd_cc_sync_auto_pipeline.py \
+    --tl ./flash_attn_bhsd_auto_pipeline_h16_d128.py \
     --ascendc ./flash_attn_bhsd_ascendc.py
 ```
