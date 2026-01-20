@@ -1595,11 +1595,32 @@ mlir::Value CodeGenTileLangNPUIRDEV::NeedGenInsertSlice(
     return GetVarValue(buffer_data);
   }
 
+  SmallVector<OpFoldResult> offsets;
+  SmallVector<OpFoldResult> shape_val;
+  SmallVector<OpFoldResult> strides_val;
+  for (Range r : range) {
+    // if size or offset is var, create IndexCastOp and push the mlir value into
+    // the parameter of SubViewOp.
+    if (auto s_int = as_const_int(r.get()->min)) {
+      offsets.push_back(builder.getI64IntegerAttr(*s_int));
+    } else {
+      mlir::Value indexVal = CreateIndexCastOp(MakeValue(r.get()->min));
+      offsets.push_back(indexVal);
+    }
+    if (auto s_int = as_const_int(r.get()->extent)) {
+      shape_val.push_back(builder.getI64IntegerAttr(*s_int));
+    } else {
+      mlir::Value s_index = CreateIndexCastOp(MakeValue(r.get()->extent));
+      shape_val.push_back(s_index);
+    }
+    strides_val.push_back(builder.getI64IntegerAttr(1));
+  }
+
   auto srcTensorTy = src.getType().cast<mlir::TensorType>();
   auto dstTensorTy = GetVarValue(buffer_data).getType().cast<mlir::TensorType>();
   auto elemTy = dstTensorTy.getElementType();
   auto srcShape = srcTensorTy.getShape();
-
+  
   auto emptyTensor = builder.create<mlir::tensor::EmptyOp>(
       builder.getUnknownLoc(),
       srcShape,
@@ -1660,7 +1681,6 @@ void CodeGenTileLangNPUIRDEV::VselectCodegen(const CallNode *op) {
   ///  Original/full shape:
   ///  %result = hivm.hir.vsel ins(%Cond_VEC, %A_VEC, %B_VEC : tensor<32xi1>, tensor<32xf16>, tensor<32xf16>) outs(%9 : tensor<32xf16>) -> tensor<32xf16>
 
-
   tvm::tl::NpuirSelect npuirop(op->args, this->vmap);
 
   mlir::Value cond_data_name = GetVarValue(npuirop.cond);
@@ -1673,7 +1693,6 @@ void CodeGenTileLangNPUIRDEV::VselectCodegen(const CallNode *op) {
   }
 
   auto srcTensorTy = src0_data_name.getType().cast<mlir::TensorType>();
-  auto elemTy = srcTensorTy.getElementType();
   auto srcShape = srcTensorTy.getShape();
 
   mlir::Value insertBase = NeedGenInsertSlice(npuirop.dst, npuirop.dst_range, src0_data_name);
@@ -1684,36 +1703,22 @@ void CodeGenTileLangNPUIRDEV::VselectCodegen(const CallNode *op) {
 
   mlir::Value selOutput;
 
-  if (!needInsertSlice) {
-    auto selOp = builder.create<mlir::hivm::VSelOp>(
-        builder.getUnknownLoc(),
-        mlir::TypeRange{dst_data_name.getType()},
-        mlir::ValueRange{cond_data_name, src0_data_name, src1_data_name},
-        mlir::ValueRange{dst_data_name},
-        mlir::Value());
-
-    selOp->setAttr("broadcast", builder.getDenseI64ArrayAttr(broadcastDim));
-    selOutput = selOp.getResult()[0];
-
-    SetVarValue(npuirop.dst, selOutput);
-    return;
-  }
-
   auto selOp = builder.create<mlir::hivm::VSelOp>(
       builder.getUnknownLoc(),
       mlir::TypeRange{insertBase.getType()},
       mlir::ValueRange{cond_data_name, src0_data_name, src1_data_name},
       mlir::ValueRange{insertBase},
       mlir::Value());
-
+  
   selOp->setAttr("broadcast", builder.getDenseI64ArrayAttr(broadcastDim));
   selOutput = selOp.getResult()[0];
+  
+  mlir::Value result = needInsertSlice
+    ? ReshapeCastAndInsertSlice(selOutput, dst_data_name, npuirop.dst_range)
+    : selOutput;
 
-  mlir::Value result = ReshapeCastAndInsertSlice(selOutput, dst_data_name, npuirop.dst_range);
   SetVarValue(npuirop.dst, result);
-
 }
-
 
 /// Generate hivm.hir.vbrc for tl.npuir_brc.
 /// before:
@@ -2145,7 +2150,6 @@ void CodeGenTileLangNPUIRDEV::CreateHIVMBinaryVectorOp(const CallNode *op) {
 
 
   auto srcTensorTy = src0.getType().cast<mlir::TensorType>();
-  auto elemTy = srcTensorTy.getElementType();
   auto srcShape = srcTensorTy.getShape();
 
   mlir::Value insertBase = NeedGenInsertSlice(region_dst_tmp.GetBuffer(), dst_range, src0);
@@ -2163,34 +2167,6 @@ void CodeGenTileLangNPUIRDEV::CreateHIVMBinaryVectorOp(const CallNode *op) {
   // Create hivm::op
   auto loc = builder.getUnknownLoc();
   mlir::Value newOpValue;
-
-  if (!needInsertSlice) {
-    if constexpr (std::is_same_v<T, mlir::hivm::VCmpOp>) {
-      mlir::hivm::CompareMode mode =
-          COMPARE_MODE[op->args[3].as<StringImm>().value()->value];
-      auto cmp_attr =
-          mlir::hivm::CompareModeAttr::get(builder.getContext(), mode);
-      auto newOp = builder.create<T>(loc, result_tensors, mlir::ValueRange{src0, src1},
-          mlir::ValueRange{dst}, cmp_attr, transpose, broadcast);
-      newOpValue = newOp->getResult(0);
-    } else if constexpr (std::is_same_v<T, mlir::hivm::VPowOp>) {
-      auto newOp = builder.create<T>(loc, dst.getType(), mlir::ValueRange{src0, src1},
-          mlir::ValueRange{dst}, mlir::Value(), transpose, broadcast);
-      newOpValue = newOp->getResult(0);
-    } else if constexpr (std::is_same_v<T, mlir::hivm::VShROp>) {
-      auto round_attr = mlir::BoolAttr::get(
-          builder.getContext(), op->args[3].as<Bool>().value());
-      auto newOp = builder.create<T>(loc, dst.getType(), mlir::ValueRange{src0, src1},
-          mlir::ValueRange{dst}, round_attr, transpose, broadcast);
-      newOpValue = newOp->getResult(0);
-    } else {
-      auto newOp = builder.create<T>(loc, dst.getType(), mlir::ValueRange{src0, src1},
-          mlir::ValueRange{dst}, transpose, broadcast);
-      newOpValue = newOp->getResult(0);
-    }
-    SetVarValue(region_node_dst, newOpValue);
-    return;
-  }
 
   llvm::SmallVector<int64_t> elemShape(srcShape.begin(), srcShape.end());
 
@@ -2218,9 +2194,11 @@ void CodeGenTileLangNPUIRDEV::CreateHIVMBinaryVectorOp(const CallNode *op) {
     newOpValue = newOp->getResult(0);
   }
 
-  mlir::Value result = ReshapeCastAndInsertSlice(newOpValue, dst, dst_range);
+  mlir::Value result = needInsertSlice
+    ? ReshapeCastAndInsertSlice(newOpValue, dst, dst_range)
+    : newOpValue;
+
   SetVarValue(region_node_dst, result);
-  return;
 }
 
 void CodeGenTileLangNPUIRDEV::BitcastCodegen(const CallNode *op) {

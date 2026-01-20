@@ -147,4 +147,5 @@ def main():
 
 if __name__ == "__main__":
     os.environ["TILELANG_ASCEND_MODE"] = "Developer"
+    print("Running in developer mode")
     main()
