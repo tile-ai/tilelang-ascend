@@ -281,10 +281,40 @@ template <typename T1, typename T2, typename T3,
 AICORE PTO_INLINE void TROWSUM_with_slice_buffer(
         uint64_t handle_src, 
         uint64_t handle_dst, 
-        TileUbDataDN<T2, cols_dst, 1, cols_dst, 1> ub_DN, 
+        TileUbDataDN<T2, cols_dst, 1, validRow_src, 1> ub_DN, 
         TileUbDataND<T3, row_tmp, col_tmp> tmp_ub) {
     tl::ascend_pto::TileUbDataND <T1, rows_src, cols_src, validRow_src, validCol_src> tileUbWithValid;
     TASSIGN(tileUbWithValid, handle_src);
     TROWSUM(ub_DN, tileUbWithValid, tmp_ub);
+}
+
+template <typename T1, typename T2, typename T3, 
+        int32_t rows_src, int32_t cols_src, 
+        int32_t validRow_src, int32_t validCol_src, 
+        int32_t cols_dst, 
+        int32_t row_tmp, int32_t col_tmp>
+AICORE PTO_INLINE void TCOLMAX_with_slice_buffer(
+        uint64_t handle_src, 
+        uint64_t handle_dst, 
+        TileUbDataND<T2, 1, cols_src, 1, validCol_src> ub, 
+        TileUbDataND<T3, row_tmp, col_tmp> tmp_ub) {
+    tl::ascend_pto::TileUbDataND <T1, rows_src, cols_src, validRow_src, validCol_src> tileUbWithValid;
+    TASSIGN(tileUbWithValid, handle_src);
+    TCOLMAX(ub, tileUbWithValid);
+}
+
+template <typename T1, typename T2, typename T3, 
+        int32_t rows_src, int32_t cols_src, 
+        int32_t validRow_src, int32_t validCol_src, 
+        int32_t cols_dst, 
+        int32_t row_tmp, int32_t col_tmp>
+AICORE PTO_INLINE void TCOLSUM_with_slice_buffer(
+        uint64_t handle_src, 
+        uint64_t handle_dst, 
+        TileUbDataND<T2, 1, cols_src, 1, validCol_src> ub, 
+        TileUbDataND<T3, row_tmp, col_tmp> tmp_ub) {
+    tl::ascend_pto::TileUbDataND <T1, rows_src, cols_src, validRow_src, validCol_src> tileUbWithValid;
+    TASSIGN(tileUbWithValid, handle_src);
+    TCOLSUM(ub, tileUbWithValid, tmp_ub, true);
 }
 }

@@ -1141,14 +1141,15 @@ void CodeGenTileLangAscendPto::ScalarOpCodegen(const CallNode *op, const std::st
                   << PrintExpr(op->args[2]) << ");\n";
 }
 
-std::tuple<int, int, bool> ExtractTemplateParamsForSliceBuffer(const std::string& op_name) {
+std::tuple<int, int, int, bool> ExtractTemplateParamsForSliceBuffer(const std::string& op_name) {
     int second_param = 0;
     int third_param = 0;
+    int forth_param = 0;
     size_t left = op_name.find('<');
     size_t right = op_name.find('>');
     
     if (left == std::string::npos || right == std::string::npos || left >= right) {
-        return std::make_tuple(second_param, third_param, false);
+        return std::make_tuple(second_param, third_param, forth_param, false);
     }
 
     std::string params_str = op_name.substr(left + 1, right - left - 1);
@@ -1168,16 +1169,19 @@ std::tuple<int, int, bool> ExtractTemplateParamsForSliceBuffer(const std::string
     last_param.erase(last_param.find_last_not_of(" \t") + 1);
     params.push_back(last_param);
 
-    if (params.size() >= 3) {  
+    if (params.size() >= 4) {  
         try {
             second_param = std::stoi(params[1]);
             third_param = std::stoi(params[2]);
-            return std::make_tuple(second_param, third_param, true);
+            forth_param = std::stoi(params[3]);
+            return std::make_tuple(second_param, third_param, forth_param, true);
         } catch (const std::exception& e) {
-            return std::make_tuple(second_param, third_param, false);
+            return std::make_tuple(second_param, third_param, forth_param, false);
         }
+    } else {
+      ICHECK(false) << "reduce params less than 4.";
     }
-    return std::make_tuple(second_param, third_param, false);
+    return std::make_tuple(second_param, third_param, forth_param, false);
 }
 
 void CodeGenTileLangAscendPto::ReduceOpCodegen(const CallNode *op) {
@@ -1187,17 +1191,27 @@ void CodeGenTileLangAscendPto::ReduceOpCodegen(const CallNode *op) {
   auto template_params = ExtractTemplateParamsForSliceBuffer(op_name);
   int param2_int = std::get<0>(template_params);
   int param3_int = std::get<1>(template_params);
+  int param4_int = std::get<2>(template_params);
   std::string param2 = std::to_string(param2_int);
   std::string param3 = std::to_string(param3_int);
-  bool success = std::get<2>(template_params);
+  std::string mode = "";
+  if (param4_int == -1) {
+    mode = "row";
+  } else if (param4_int == 0) {
+    mode = "col";
+  } else {
+    ICHECK(false) << "Only row-wise or column-wise reduce operations are supported. Row direction is denoted by -1, and column direction by 0.";
+  }
+  
+  bool success = std::get<3>(template_params);
   if (!success) {
     ICHECK(false) << "ExtractTemplateParams failed";
   }
 
   if (op_name.find("reduce_sum") != std::string::npos) {
-    op_name = "TROWSUM";
+    op_name = (mode == "row") ? "TROWSUM" : "TCOLSUM";
   } else if (op_name.find("reduce_max") != std::string::npos) {
-    op_name = "TROWMAX";
+    op_name = (mode == "row") ? "TROWMAX" : "TCOLMAX";
   } else {
     ICHECK(false) << "not support reduce type: " << op_name;
   }
@@ -1230,12 +1244,40 @@ void CodeGenTileLangAscendPto::ReduceOpCodegen(const CallNode *op) {
 
   // Determine whether to request the TileUbData with DN arrangement.
   ICHECK(ub_data_vector.size() == 5) << "TileUbData needs 5 elements (type, row, col, ffts, applied DN or not), got " << ub_data_vector.size() << ".";
-  if (ub_data_vector[4] == "Unapplied for tileUbDataDN") { //If not applied yet, prioritize applying for it.
-    this->PrintIndent();
-    this->stream << kAscendPtoScope << "TileUbDataDN <" << ub_data_type << ", " << row << ", " << col << ", " << row_src << ", " << col << "> " << ub_name << "_DN;\n";
-    this->PrintIndent();
-    this->stream << "TASSIGN(" << ub_name << "_DN, " << ffts << ");\n";
-    if (param2 == row_src && param3 == col_src) {
+  if (mode == "row") {
+    if (ub_data_vector[4] == "Unapplied for tileUbDataDN") { //If not applied yet, prioritize applying for it.
+      this->PrintIndent();
+      this->stream << kAscendPtoScope << "TileUbDataDN <" << ub_data_type << ", " << row << ", " << col << ", " << row_src << ", " << col << "> " << ub_name << "_DN;\n";
+      this->PrintIndent();
+      this->stream << "TASSIGN(" << ub_name << "_DN, " << ffts << ");\n";
+      if (param2 == row_src && param3 == col_src) {
+        this->PrintIndent();
+        this->stream << op_name << "(";
+        for (int i = 0; i < var_names.size(); i++) {
+          this->stream << var_names[i];
+          if (i == 0) {
+            this->stream << "_DN";
+          }
+          if (i != var_names.size() - 1) {
+            this->stream << ", ";
+          }
+        }
+        this->stream << ");\n";
+      } else {
+        if (op_name == "TROWMAX") {
+          this->PrintIndent();
+          this->stream << kAscendPtoScope << "TROWMAX_with_slice_buffer <" << ub_data_type_src << ", " << ub_data_type << ", " << ub_data_type_tmp << ", " << row_src << ", " << col_src << ", " << param2 << ", " << param3 << ", " << row << ", " << row_tmp << ", " << col_tmp << "> (" << ffts_src << ", " << ffts << ", " << ub_name << "_DN, " << ub_name_tmp <<");\n";
+        } else if (op_name == "TROWSUM") {
+          this->PrintIndent();
+          this->stream << kAscendPtoScope << "TROWSUM_with_slice_buffer <" << ub_data_type_src << ", " << ub_data_type << ", " << ub_data_type_tmp << ", " << row_src << ", " << col_src << ", " << param2 << ", " << param3 << ", " << row << ", " << row_tmp << ", " << col_tmp << "> (" << ffts_src << ", " << ffts << ", " << ub_name << "_DN, " << ub_name_tmp <<");\n";
+        }
+      }
+      this->PrintIndent();
+      this->stream << "pipe_barrier(PIPE_ALL);\n";
+      this->PrintIndent();
+      this->stream << "TRESHAPE(" << var_names[0] << ", " << var_names[0] << "_DN);\n";
+      ub_data_vector[4] = "Applied for tileUbDataDN";
+    } else if (ub_data_vector[4] == "Applied for tileUbDataDN") { //If already applied, leverage the existing application.
       this->PrintIndent();
       this->stream << op_name << "(";
       for (int i = 0; i < var_names.size(); i++) {
@@ -1248,39 +1290,30 @@ void CodeGenTileLangAscendPto::ReduceOpCodegen(const CallNode *op) {
         }
       }
       this->stream << ");\n";
+      this->PrintIndent();
+      this->stream << "pipe_barrier(PIPE_ALL);\n";
+      this->PrintIndent();
+      this->stream << "TRESHAPE(" << var_names[0] << ", " << var_names[0] << "_DN);\n";
     } else {
-      if (op_name == "TROWMAX") {
-        this->PrintIndent();
-        this->stream << kAscendPtoScope << "TROWMAX_with_slice_buffer <" << ub_data_type_src << ", " << ub_data_type << ", " << ub_data_type_tmp << ", " << row_src << ", " << col_src << ", " << param2 << ", " << param3 << ", " << row << ", " << row_tmp << ", " << col_tmp << "> (" << ffts_src << ", " << ffts << ", " << ub_name << "_DN, " << ub_name_tmp <<");\n";
-      } else if (op_name == "TROWSUM") {
-        this->PrintIndent();
-        this->stream << kAscendPtoScope << "TROWSUM_with_slice_buffer <" << ub_data_type_src << ", " << ub_data_type << ", " << ub_data_type_tmp << ", " << row_src << ", " << col_src << ", " << param2 << ", " << param3 << ", " << row << ", " << row_tmp << ", " << col_tmp << "> (" << ffts_src << ", " << ffts << ", " << ub_name << "_DN, " << ub_name_tmp <<");\n";
-      }
+      ICHECK(false) << "Error route in ReduceOpCodegen";
     }
-    this->PrintIndent();
-    this->stream << "pipe_barrier(PIPE_ALL);\n";
-    this->PrintIndent();
-    this->stream << "TRESHAPE(" << var_names[0] << ", " << var_names[0] << "_DN);\n";
-    ub_data_vector[4] = "Applied for tileUbDataDN";
-  } else if (ub_data_vector[4] == "Applied for tileUbDataDN") { //If already applied, leverage the existing application.
-    this->PrintIndent();
-    this->stream << op_name << "(";
-    for (int i = 0; i < var_names.size(); i++) {
-      this->stream << var_names[i];
-      if (i == 0) {
-        this->stream << "_DN";
-      }
-      if (i != var_names.size() - 1) {
-        this->stream << ", ";
-      }
-    }
-    this->stream << ");\n";
-    this->PrintIndent();
-    this->stream << "pipe_barrier(PIPE_ALL);\n";
-    this->PrintIndent();
-    this->stream << "TRESHAPE(" << var_names[0] << ", " << var_names[0] << "_DN);\n";
   } else {
-    ICHECK(false) << "Error route in ReduceOpCodegen";
+    this->PrintIndent();
+    if (param2 == row_src && param3 == col_src) {
+      this->stream << op_name << "(";
+      for (int i = 0; i < var_names.size() - 1; i++) {
+        this->stream << var_names[i];
+        if (i != var_names.size() - 2) {
+          this->stream << ", ";
+        }
+      }
+      if (op_name == "TCOLSUM") {
+        this->stream << ", " << ub_name_tmp << ", true";
+      }
+      this->stream << ");\n";
+    } else {
+      this->stream << kAscendPtoScope << op_name << "_with_slice_buffer <" << ub_data_type_src << ", " << ub_data_type << ", " << ub_data_type_tmp << ", " << row_src << ", " << col_src << ", " << param2 << ", " << param3 << ", " << row << ", " << row_tmp << ", " << col_tmp << "> (" << ffts_src << ", " << ffts << ", " << ub_name << ", " << ub_name_tmp <<");\n";
+    }
   }
 }
 
