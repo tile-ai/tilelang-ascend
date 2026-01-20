@@ -1634,10 +1634,8 @@ void CodeGenTileLangNPUIRAPI::DebugPrintCodegen(const CallNode *op) {
 void CodeGenTileLangNPUIRAPI::ReshapeCodegen(const CallNode *op) {
   tvm::tl::NpuirReshape npuirop(op->args, this->vmap);
   Value src = GenSubviewFromRegion(npuirop.src, npuirop.src_range);
-  Value dst = GenSubviewFromRegion(npuirop.dst, npuirop.dst_range);
 
   auto srcTy = src.getType().cast<mlir::MemRefType>();
-  auto elemTy = srcTy.getElementType();
 
   ArrayRef<int64_t> dstShape = npuirop.dst_shape;
   
@@ -1656,7 +1654,7 @@ void CodeGenTileLangNPUIRAPI::ReshapeCodegen(const CallNode *op) {
   
   auto dstMemRefTy = mlir::MemRefType::get(
       dstShape,
-      elemTy,
+      srcTy.getElementType(),
       stridedLayout,
       srcTy.getMemorySpace());
 

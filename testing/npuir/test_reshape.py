@@ -75,10 +75,10 @@ def generate_tensor(shape, dtype, clear=False):
 def main(main_args):
     M = main_args.M
     N = main_args.N
-    if os.environ['TILELANG_ASCEND_MODE'] == 'Expert':
-        func = reshape_demo_exp(M, N)
-    else:
+    if os.environ['TILELANG_ASCEND_MODE'] == 'Dev':
         func = reshape_demo_dev(M, N)
+    else:
+        func = reshape_demo_exp(M, N)
     kernel = tilelang.compile(func, target="npuir")
 
     shape1 = (M, N)
@@ -104,7 +104,7 @@ def main(main_args):
 
 if __name__ == "__main__":
     args = parser.parse_args()
-    os.environ["TILELANG_ASCEND_MODE"] = "dev"
+    os.environ["TILELANG_ASCEND_MODE"] = "Dev"
     main(args)
     os.environ["TILELANG_ASCEND_MODE"] = "Expert"
     main(args)
