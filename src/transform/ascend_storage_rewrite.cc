@@ -39,7 +39,7 @@
 #include "../../3rdparty/tvm/src/arith/int_operator.h"
 #include "../../3rdparty/tvm/src/runtime/thread_storage_scope.h"
 #include "../../3rdparty/tvm/src/tir/ir/buffer_common.h"
-#include "../../3rdparty/tvm/src/tir/transform/ir_utils.h"
+#include "../../3rdparty/tvm/src/tir/transforms/ir_utils.h"
 
 namespace tvm {
 namespace tir {
