@@ -33,14 +33,14 @@ using TileUbDataDN = Tile<TileType::Vec, T, Rows, Cols,
                        RowValid, ColValid>;
 
 template <typename T, int32_t shape>
-AICORE PTO_INLINE void pto_mov_tile(int32_t src_addr, 
+AICORE PTO_INLINE void mov_tile(int32_t src_addr, 
                 int32_t dst_addr, int32_t src_offset, int32_t dst_offset, int32_t len) {
     // TileUbDataND<float, 1, shape> src_temp_ub(1, shape);
     TileUbDataND<float, 1, shape, 1, shape> src_temp_ub;
     TASSIGN(src_temp_ub, src_addr + src_offset * len);
     TileUbDataND<float, 1, shape, 1, shape> dst_temp_ub;
     TASSIGN(dst_temp_ub, dst_addr + dst_offset * len);
-    TMOV(src_temp_ub, dst_temp_ub);
+    TMOV(dst_temp_ub, src_temp_ub);
 }
 
 // Valid
@@ -157,12 +157,13 @@ AICORE PTO_INLINE void copy_ub_to_gm_dynamic(
             const Shape<shape1, shape2, shape3, shape4, shape5>& shape, 
             const Stride<stride1, stride2, stride3, stride4, stride5>& stride,
             int32_t ub_shape_addr, 
-            int32_t ub_offset) {
+            int32_t ub_offset,
+            int32_t len) {
     GlobalTensor<T1, pto::Shape<shape1, shape2, shape3, shape4, shape5>, 
     pto::Stride<stride1, stride2, stride3, stride4, stride5>> global_tensor(handle, shape, stride);
     // TileUbDataND<T2, ub_shape1, ub_shape2> temp_ub(valid1, valid2);
     TileUbDataND<T2, ub_shape1, ub_shape2, valid1, valid2> temp_ub;
-    TASSIGN(temp_ub, ub_shape_addr);
+    TASSIGN(temp_ub, ub_shape_addr + ub_offset * len);
     TSTORE(global_tensor, temp_ub);
 }
 
@@ -201,13 +202,14 @@ template <typename T1, typename T2, int32_t shape1, int32_t shape2, int32_t shap
 AICORE PTO_INLINE void copy_ub_to_gm(
             __gm__ T1 *handle, 
             int32_t ub_shape_addr, 
-            int32_t ub_offset
+            int32_t ub_offset,
+            int32_t len
             ) {
     GlobalTensor<T1, pto::Shape<shape1, shape2, shape3, shape4, shape5>, 
     pto::Stride<stride1, stride2, stride3, stride4, stride5>> global_tensor(handle);
     // TileUbDataND<T2, ub_shape1, ub_shape2> temp_ub(valid1, valid2);
     TileUbDataND<T2, ub_shape1, ub_shape2, valid1, valid2> temp_ub;
-    TASSIGN(temp_ub, ub_shape_addr);
+    TASSIGN(temp_ub, ub_shape_addr + ub_offset * len);
     TSTORE(global_tensor, temp_ub);
 }
 
