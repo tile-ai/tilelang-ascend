@@ -33,14 +33,14 @@ using TileUbDataDN = Tile<TileType::Vec, T, Rows, Cols,
                        RowValid, ColValid>;
 
 template <typename T, int32_t shape>
-AICORE PTO_INLINE void pto_mov_tile(int32_t src_addr, 
+AICORE PTO_INLINE void mov_tile(int32_t src_addr, 
                 int32_t dst_addr, int32_t src_offset, int32_t dst_offset, int32_t len) {
     // TileUbDataND<float, 1, shape> src_temp_ub(1, shape);
     TileUbDataND<float, 1, shape, 1, shape> src_temp_ub;
     TASSIGN(src_temp_ub, src_addr + src_offset * len);
     TileUbDataND<float, 1, shape, 1, shape> dst_temp_ub;
     TASSIGN(dst_temp_ub, dst_addr + dst_offset * len);
-    TMOV(src_temp_ub, dst_temp_ub);
+    TMOV(dst_temp_ub, src_temp_ub);
 }
 
 // Valid
