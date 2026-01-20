@@ -423,3 +423,15 @@ def AscendInferBufferScope():
     ----
     """
     return _ffi_api.InferAllocScope()  # type: ignore
+
+
+def AscendStorageRewrite(is_npu: bool = False):
+    """StorageRewrite for Ascend.
+
+    Returns
+    -------
+    fpass : tvm.transform.Pass
+        The result pass
+    ----
+    """
+    return _ffi_api.AscendStorageRewrite(is_npu)  # type: ignore
