@@ -261,7 +261,8 @@ private:
   void VselectCodegen(const CallNode *op);
   template <typename T, typename U>
   mlir::Value BinaryOpCodegen(const PrimExprNode *op, U mode, mlir::Value lhs, mlir::Value rhs);
-
+  mlir::Value NeedGenInsertSlice(Buffer buffer_data, Array<Range> range, mlir::Value src);
+  mlir::Value ReshapeCastAndInsertSlice(mlir::Value tensor, mlir::Value dst, Array<Range> dst_range); 
   // returns HIVM address space against given address space
   mlir::hivm::AddressSpace GetHIVMAddressSpace(String address_space);
   std::vector<long int> GetShape(Array<PrimExpr> extents);
