@@ -904,7 +904,8 @@ void CodeGenTileLangAscendPto::CallExternCodegen(const CallNode *op) {
           this->stream << ")";
         }
         if (op_name.find("copy_ub_to_gm") != std::string::npos) {
-          this->stream << ", " << ub_valid_shapes[3] << ", " << src_offset << ");\n";
+          int32_t type_len = global_tensor_template[String(tensor_addr)].dtype;
+          this->stream << ", " << ub_valid_shapes[3] << ", " << src_offset << "," << type_len << ");\n";
         } else {
           this->stream << ", " << src_var_id << ");\n";
         }

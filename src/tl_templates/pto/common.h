@@ -157,12 +157,13 @@ AICORE PTO_INLINE void copy_ub_to_gm_dynamic(
             const Shape<shape1, shape2, shape3, shape4, shape5>& shape, 
             const Stride<stride1, stride2, stride3, stride4, stride5>& stride,
             int32_t ub_shape_addr, 
-            int32_t ub_offset) {
+            int32_t ub_offset,
+            int32_t len) {
     GlobalTensor<T1, pto::Shape<shape1, shape2, shape3, shape4, shape5>, 
     pto::Stride<stride1, stride2, stride3, stride4, stride5>> global_tensor(handle, shape, stride);
     // TileUbDataND<T2, ub_shape1, ub_shape2> temp_ub(valid1, valid2);
     TileUbDataND<T2, ub_shape1, ub_shape2, valid1, valid2> temp_ub;
-    TASSIGN(temp_ub, ub_shape_addr);
+    TASSIGN(temp_ub, ub_shape_addr + ub_offset * len);
     TSTORE(global_tensor, temp_ub);
 }
 
@@ -201,13 +202,14 @@ template <typename T1, typename T2, int32_t shape1, int32_t shape2, int32_t shap
 AICORE PTO_INLINE void copy_ub_to_gm(
             __gm__ T1 *handle, 
             int32_t ub_shape_addr, 
-            int32_t ub_offset
+            int32_t ub_offset,
+            int32_t len
             ) {
     GlobalTensor<T1, pto::Shape<shape1, shape2, shape3, shape4, shape5>, 
     pto::Stride<stride1, stride2, stride3, stride4, stride5>> global_tensor(handle);
     // TileUbDataND<T2, ub_shape1, ub_shape2> temp_ub(valid1, valid2);
     TileUbDataND<T2, ub_shape1, ub_shape2, valid1, valid2> temp_ub;
-    TASSIGN(temp_ub, ub_shape_addr);
+    TASSIGN(temp_ub, ub_shape_addr + ub_offset * len);
     TSTORE(global_tensor, temp_ub);
 }
 
