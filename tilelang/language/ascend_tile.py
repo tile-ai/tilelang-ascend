@@ -1317,38 +1317,15 @@ def cos(dst: Buffer, src: Buffer, tmp: Buffer):
 
 def clampMax(dst: Buffer, src: Buffer, tmp: Buffer, scalar_value: PrimExpr, count: PrimExpr):
 
-    return tir.call_intrin(
-        "handle", 
-        tir.op.Op.get("tl.clamp_max"), 
-        dst.access_ptr("w"), 
-        src.access_ptr("r"),
-        tmp.access_ptr("r"), 
-        scalar_value, 
-        count
-    )
+    return min(dst, src, scalar_value)
 
 def clampMin(dst: Buffer, src: Buffer, tmp: Buffer, scalar_value: PrimExpr, count: PrimExpr):
 
-    return tir.call_intrin(
-        "handle", 
-        tir.op.Op.get("tl.clamp_min"), 
-        dst.access_ptr("w"), 
-        src.access_ptr("r"),
-        tmp.access_ptr("r"), 
-        scalar_value, 
-        count
-    )
+    return max(dst, src, scalar_value)
 
 def round(dst: Buffer, src: Buffer, tmp: Buffer, count: PrimExpr):
 
-    return tir.call_intrin(
-        "handle", 
-        tir.op.Op.get("tl.round"), 
-        dst.access_ptr("w"), 
-        src.access_ptr("r"),
-        tmp.access_ptr("r"), 
-        count
-    )
+    return cast(dst, src, "CAST_ROUND", count)
 
 def pow(dst: Buffer, src0: Buffer, src1: Buffer, tmp: Buffer):
     """Performs element-wise power calculation: dst = src0 ^ src1.
