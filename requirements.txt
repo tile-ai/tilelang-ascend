@@ -10,3 +10,5 @@ torch
 pybind11
 pytest
 pytest-xdist
+pandas
+matplotlib
