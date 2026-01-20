@@ -1387,9 +1387,9 @@ void CodeGenTileLangNPUIRAPI::DotCodegen(const CallNode *op) {
 
   mlir::Location unknown_loc = builder.getUnknownLoc();
   mlir::IndexType idx_ty = builder.getIndexType();
-  mlir::Value a = GenSubviewFromRegion(npuirop.src0, npuirop.src0_range);
-  mlir::Value b = GenSubviewFromRegion(npuirop.src1, npuirop.src1_range);
-  mlir::Value c = GenSubviewFromRegion(npuirop.dst, npuirop.dst_range);
+  mlir::Value a = GetVarValue(npuirop.src0->data.get());
+  mlir::Value b = GetVarValue(npuirop.src1->data.get());
+  mlir::Value c = GetVarValue(npuirop.dst->data.get());
   mlir::TypeRange result_tensors = {};
   mlir::Value init_condition = MakeValue(npuirop.initC);
   mlir::Value real_m = CreateIndexCastOp(MakeValue(a_region_shape[0]));
