@@ -2,7 +2,7 @@
 
 This directory provides an example of intergrating TileLang-Ascend operators into PyTorch in the form of a Python C binding. Specifically, A python package named `torch_tl_ascend` is shipped inside.
 
-At present, the example operator in [`examples/flash_attention/flash_attn_bhsd_v2`](../flash_attention/flash_attn_bhsd_v2.py) is supported.
+At present, the example operator in [`examples/flash_attention/flash_attn_bhsd`](../flash_attention/flash_attn_bhsd.py) is supported.
 
 ## Build & Install
 
@@ -26,7 +26,7 @@ To test the PyTorch operator integration (i.e. `torch.ops.tl_ascend.flash_attent
 python test_torch.py
 ```
 
-To test the packaged source code of the integrated TileLang-Ascend operator (i.e. `torch_tl_ascend.op_source.flash_attn_bhsd_v2.flash_attention_fwd`):
+To test the packaged source code of the integrated TileLang-Ascend operator (i.e. `torch_tl_ascend.op_source.flash_attn_bhsd.flash_attention_fwd`):
 
 ```bash
 python test_source.py
@@ -46,7 +46,7 @@ output = torch.ops.tl_ascend.flash_attention(q, k, v)
 Source code of integrated operators are also packaged. To call them, please refer to [test_source.py](./test_source.py)
 
 ```python
-from torch_tl_ascend.op_source.flash_attn_bhsd_v2 import flash_attention_fwd
+from torch_tl_ascend.op_source.flash_attn_bhsd import flash_attention_fwd
 ...
 kernel = flash_attention_fwd(B, S, H, D)
 output = kernel(q, k, v)

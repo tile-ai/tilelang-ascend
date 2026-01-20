@@ -1,7 +1,7 @@
 import torch
 import torch_npu
 
-from torch_tl_ascend.op_source.flash_attn_bhsd_v2 import flash_attention_fwd
+from torch_tl_ascend.op_source.flash_attn_bhsd import flash_attention_fwd
 
 def ref_flash_attention(q, k, v):
     q = q.float()
