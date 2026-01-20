@@ -126,6 +126,7 @@ class JITKernel(object):
         target_host: Union[str, Target],
         out_idx: Union[List[int], int],
         workspace_idx: Union[List[int], int],
+        auto_gm_idx: Union[List[int], int],
         execution_backend: Literal["dlpack", "ctypes", "cython"],
         pass_configs: Optional[Dict[str, Any]] = None,
     ):
@@ -148,6 +149,7 @@ class JITKernel(object):
             params=params,
             result_idx=out_idx,
             workspace_idx=workspace_idx,
+            auto_gm_idx=auto_gm_idx,
             target=target,
             kernel_global_source=kernel_global_source,
             kernel_lib_path=kernel_lib_path,
@@ -222,6 +224,24 @@ class JITKernel(object):
 
         self.artifact = artifact
 
+        self.auto_gm_idx = None
+        target_prim_func = None
+        mod = artifact.device_mod
+
+        if mod is not None and isinstance(mod, tvm.ir.module.IRModule):
+            for global_symbol, prim_func in mod.functions_items():
+                if isinstance(prim_func, tvm.tir.PrimFunc):
+                    target_prim_func = prim_func
+                    break
+            if "auto_gm_indices" in target_prim_func.attrs and target_prim_func is not None:
+                self.auto_gm_idx = target_prim_func.attrs["auto_gm_indices"]
+                self.auto_gm_idx = [int(item.value) for item in self.auto_gm_idx]
+                # if self.auto_gm_idx is not None:
+                #     print(f"[Info] Auto GM indices detected: {self.auto_gm_idx}")
+                # else:
+                #     print("[Info] No Auto GM indices detected.")
+            
+
         # Create an adapter based on the specified execution backend.
         if execution_backend == "dlpack":
             # Use TorchDLPackKernelAdapter for interoperability with PyTorch via DLPack.
@@ -247,6 +267,7 @@ class JITKernel(object):
                 params=artifact.params,
                 result_idx=out_idx,
                 workspace_idx=workspace_idx,
+                auto_gm_idx=self.auto_gm_idx,
                 target=target,
                 func_or_mod=tilelang_func,
                 host_mod=artifact.host_mod,
@@ -266,6 +287,7 @@ class JITKernel(object):
         params: List[KernelParam],
         result_idx: Union[List[int], int],
         workspace_idx: Union[List[int], int],
+        auto_gm_idx: Union[List[int], int],
         target: Union[str, Target],
         func_or_mod: Union[PrimFunc, tvm.runtime.Module],
         kernel_global_source: str,
@@ -293,6 +315,7 @@ class JITKernel(object):
                 params=params,
                 result_idx=result_idx,
                 workspace_idx=workspace_idx,
+                auto_gm_idx=auto_gm_idx,
                 target=target,
                 func_or_mod=func_or_mod,
                 kernel_global_source=kernel_global_source,
@@ -416,6 +439,10 @@ class JITKernel(object):
     @property
     def workspace_idx(self) -> List[int]:
         return self.adapter.workspace_idx
+        
+    @property
+    def auto_gm_idx(self) -> List[int]:
+        return self.adapter.auto_gm_idx
 
     @property
     def params(self) -> List[KernelParam]:

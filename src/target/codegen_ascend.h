@@ -106,6 +106,8 @@ private:
   Map<String, PrimExpr> address_offset_;
 
   bool use_swizzle_{false};
+
+  bool kernel_C_V_1_1_{false};
 };
 
 } // namespace codegen
