@@ -25,7 +25,7 @@ at::Tensor flash_attention_wrapper(at::Tensor Q, at::Tensor K, at::Tensor V) {
     TORCH_CHECK(K.dim() == 4, "tl_ascend.flash_attention: K must be a 4-D tensor");
     TORCH_CHECK(V.dim() == 4, "tl_ascend.flash_attention: V must be a 4-D tensor");
 
-    // Q、K、V: [batch, heads, seq_len, dim]
+    // Q, K, V: [batch, heads, seq_len, dim]
     const int64_t batch = Q.size(0);
     const int64_t heads = Q.size(1);
     const int64_t seq_len = Q.size(2);
