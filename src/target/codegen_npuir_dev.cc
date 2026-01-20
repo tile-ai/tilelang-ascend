@@ -3352,6 +3352,57 @@ void CodeGenTileLangNPUIRDEV::LoopCarriedVarCollector::VisitExpr_(
     process_call_arg(0);
     process_call_arg(1);
     process_call_arg(2);
+  } else if (call->op.same_as(Op::Get("tl.npuir_reduce"))) {
+            tvm::tl::NpuirReduce npuirop(call->args, outer_->vmap);
+            check_var(npuirop.src->data.get());
+            check_var(npuirop.dst->data.get());
+  } else if (call->op.same_as(Op::Get("tl.npuir_exp"))) {
+            tvm::tl::NpuirExp npuirop(call->args, outer_->vmap);
+            check_var(npuirop.src->data.get());
+            check_var(npuirop.dst->data.get());
+  } else if (call->op.same_as(Op::Get("tl.npuir_ln"))) {
+            tvm::tl::NpuirLn npuirop(call->args, outer_->vmap);
+            check_var(npuirop.src->data.get());
+            check_var(npuirop.dst->data.get());
+  } else if (call->op.same_as(Op::Get("tl.npuir_sqrt"))) {
+            tvm::tl::NpuirSqrt npuirop(call->args, outer_->vmap);
+            check_var(npuirop.src->data.get());
+            check_var(npuirop.dst->data.get());
+  } else if (call->op.same_as(Op::Get("tl.npuir_rsqrt"))) {
+            tvm::tl::NpuirSqrt npuirop(call->args, outer_->vmap);
+            check_var(npuirop.src->data.get());
+            check_var(npuirop.dst->data.get());
+  } else if (call->op.same_as(Op::Get("tl.npuir_rec"))) {
+            tvm::tl::NpuirRec npuirop(call->args, outer_->vmap);
+            check_var(npuirop.src->data.get());
+            check_var(npuirop.dst->data.get());
+  } else if (call->op.same_as(Op::Get("tl.npuir_not"))) {
+            tvm::tl::NpuirNot npuirop(call->args, outer_->vmap);
+            check_var(npuirop.src->data.get());
+            check_var(npuirop.dst->data.get());
+  } else if (call->op.same_as(Op::Get("tl.npuir_abs"))) {
+            tvm::tl::NpuirAbs npuirop(call->args, outer_->vmap);
+            check_var(npuirop.src->data.get());
+            check_var(npuirop.dst->data.get());
+  } else if (call->op.same_as(Op::Get("tl.npuir_relu"))) {
+            tvm::tl::NpuirRelu npuirop(call->args, outer_->vmap);
+            check_var(npuirop.src->data.get());
+            check_var(npuirop.dst->data.get());
+  } else if (call->op.same_as(Op::Get("tl.ascend_copy"))) {
+      tvm::tl::AscendCopy npuirop(call->args, outer_->vmap);
+      if (!npuirop.dst.defined()) {
+        return;
+      }
+      mlir::Value dst = outer_->GetVarValue(npuirop.dst);
+      if (!dst) {
+        return;
+      }
+
+      const bool dst_is_tensor = dst.getType().isa<mlir::TensorType>();
+
+      if (dst_is_tensor) {
+        check_var(npuirop.dst->data.get());
+      }
   }
   tir::StmtExprVisitor::VisitExpr_(call);
 }
