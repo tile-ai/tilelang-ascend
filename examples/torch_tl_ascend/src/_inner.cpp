@@ -15,8 +15,8 @@ extern "C" {
 }
 
 at::Tensor flash_attention_wrapper(at::Tensor Q, at::Tensor K, at::Tensor V) {
-    constexpr int64_t block_M = 64;
-    constexpr int64_t block_N = 64;
+    constexpr int64_t block_M = 128;
+    constexpr int64_t block_N = 128;
 
     auto dtype = at::kHalf;
     auto accum_dtype = at::kFloat;
@@ -34,9 +34,10 @@ at::Tensor flash_attention_wrapper(at::Tensor Q, at::Tensor K, at::Tensor V) {
     const int64_t block_num = (seq_len / block_M) * heads * batch;
     
     at::Tensor Output = at::empty_like(Q);
-    at::Tensor workspace_1 = at::empty({block_num, block_M, block_N}, Q.options().dtype(accum_dtype));
-    at::Tensor workspace_2 = at::empty({block_num, block_M, block_N}, Q.options().dtype(dtype));
-    at::Tensor workspace_3 = at::empty({block_num, block_M, dim}, Q.options().dtype(accum_dtype));
+    // {2, ...} due to cross core pipeline
+    at::Tensor workspace_1 = at::empty({2, block_num, block_M, block_N}, Q.options().dtype(accum_dtype));
+    at::Tensor workspace_2 = at::empty({2, block_num, block_M, block_N}, Q.options().dtype(dtype));
+    at::Tensor workspace_3 = at::empty({2, block_num, block_M, dim}, Q.options().dtype(accum_dtype));
 
     aclrtStream stream = c10_npu::getCurrentNPUStream().stream(false);
 

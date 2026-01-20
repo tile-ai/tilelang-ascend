@@ -35,7 +35,7 @@ def update_package_files(force_compile=False):
     if force_compile:
         tilelang.disable_cache()  # compile will be triggered without caching
 
-    B, S, H, D = 4, 4096, 32, 512
+    B, S, H, D = 4, 4096, 16, 128
     print("Grabbing .so of", op_func, f"with B={B}, S={S}, H={H}, D={D}")
     kernel: JITKernel = op_func(B, S, H, D)
 

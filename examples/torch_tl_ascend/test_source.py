@@ -14,7 +14,7 @@ def ref_flash_attention(q, k, v):
     return o.to(torch.float16)
 
 if __name__ == "__main__":
-    B, S, H, D = 4, 4096, 32, 512
+    B, S, H, D = 4, 4096, 16, 128
 
     torch.set_default_device('npu')
     torch.manual_seed(0)
