@@ -62,6 +62,7 @@ def wy_fast_ker(B, H, L, DK, DV, C, BK = None, BV = None, dtype="float16", accum
 			u_l0 = T.alloc_L0C([C, BV], accum_dtype)
 
 			with T.Scope("V"):
+				# First calculate A1 = A * diag(exp(g) * Beta), A2 = A * diag(Beta)
 				T.copy(Beta[bz, by, bx * C], beta_ub_half)
 				T.set_flag("mte2", "v", 0)
 				T.wait_flag("mte2", "v", 0)
@@ -72,7 +73,7 @@ def wy_fast_ker(B, H, L, DK, DV, C, BK = None, BV = None, dtype="float16", accum
 				T.set_flag("mte2", "v", 0)
 				T.wait_flag("mte2", "v", 0)
 				T.copy(a1_ub_half, a1_ub)
-				T.tile.mul(a2_ub, a1_ub, beta_2d_ub)
+				T.tile.mul(a2_ub, a1_ub, beta_2d_ub) # A2 = A * diag(Beta)
 				T.copy(a2_ub, a2_ub_half)
 				T.set_flag("v", "mte3", 0)
 				T.wait_flag("v", "mte3", 0)
@@ -83,10 +84,10 @@ def wy_fast_ker(B, H, L, DK, DV, C, BK = None, BV = None, dtype="float16", accum
 				T.set_flag("mte2", "v", 0)
 				T.wait_flag("mte2", "v", 0)
 				T.tile.exp(g_ub, g_ub)
-				T.tile.mul(g_ub, g_ub, beta_ub)
+				T.tile.mul(g_ub, g_ub, beta_ub) # g_ub now stores exp(g) * Beta
 				T.copy(g_ub, g_r_ub[0, :])
 				T.tile.broadcast(g_2d_ub, g_r_ub, tmp_ub)
-				T.tile.mul(a1_ub, a1_ub, g_2d_ub)
+				T.tile.mul(a1_ub, a1_ub, g_2d_ub) # A1 = A * diag(exp(g) * Beta)
 				T.copy(a1_ub, a1_ub_half)
 				T.set_flag("v", "mte3", 0)
 				T.wait_flag("v", "mte3", 0)
@@ -97,6 +98,7 @@ def wy_fast_ker(B, H, L, DK, DV, C, BK = None, BV = None, dtype="float16", accum
 				T.copy(K[bz, by, bx * C, 0], k_l1)
 				T.copy(V[bz, by, bx * C, 0], v_l1)
 
+				# Then calculate U = A2 * V, W = A1 * K
 				T.wait_cross_flag(2)
 				T.copy(workspace_a2[bz, by, bx * C, 0], a2_l1)
 				T.gemm_v0(a2_l1, v_l1, u_l0, init = True)
