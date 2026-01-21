@@ -538,7 +538,7 @@ TIR_DEFINE_TL_BUILTIN(ascend_broadcast)
     .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_wait_cross_flag)
-    .set_num_inputs(1)
+    .set_num_inputs(2)
     .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_set_cross_flag)
@@ -610,7 +610,7 @@ TIR_DEFINE_TL_BUILTIN(ascend_auto_set_cross_flag)
     .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_auto_wait_cross_flag)
-    .set_num_inputs(1)
+    .set_num_inputs(2)
     .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_use_swizzle)
