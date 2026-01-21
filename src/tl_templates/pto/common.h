@@ -1,5 +1,7 @@
 #include <pto/pto-inst.hpp>
 
+#define CUDART_INF_F 1.0f / 0.0f
+
 namespace tl::ascend_pto {
 using namespace pto;
 
