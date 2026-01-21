@@ -66,6 +66,8 @@ int8_t GetTypeLen(std::string type) {
   int8_t typeSize = 1;
   if (type == "float") {
     typeSize = 4;
+  } else if (type == "bfloat16_t") {
+    typeSize = 2;
   } else if (type == "half") {
     typeSize = 2;
   } else if (type == "int8_t" || type == "uint8_t") {
@@ -84,6 +86,8 @@ std::string GetTypeLenString(std::string type) {
   std::string typeSize = "1";
   if (type == "float") {
     typeSize = "4";
+  } else if (type == "bfloat16_t") {
+    typeSize = "2";
   } else if (type == "half") {
     typeSize = "2";
   } else if (type == "int8_t" || type == "uint8_t") {
