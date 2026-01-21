@@ -659,7 +659,14 @@ def exp(dst: Buffer, src0: Buffer):
 
 def sigmoid(dst: Buffer, src: Buffer, tmp: Buffer):
     size = math.prod(dst.shape)
-    return T.call_extern("handle", f"AscendC::Sigmoid", dst.access_ptr("w"), src.access_ptr("r"), tmp.access_ptr("w"), size)
+    return tir.call_intrin(
+        "handle",
+        tir.op.Op.get(f"tl.ascend_sigmoid"),
+        dst.access_ptr("w"),
+        src.access_ptr("r"),
+        tmp.access_ptr("w"),
+        size,
+    )
 
 def ln(dst: Buffer, src0: Buffer):
     """Performs element-wise natural logarithm: dst = ln(src0).
@@ -1445,15 +1452,37 @@ def broadcast(dst: Buffer, src: Buffer):
 
 def clampMax(out: Buffer, buffer: Buffer, tmp: Buffer, scalar_value: PrimExpr, count: PrimExpr):
 
-    return T.call_extern("handle", f"AscendC::ClampMax<{_dtype(buffer)}>", out.access_ptr("w"), buffer.access_ptr("r"),
-                         tmp.access_ptr("r"), scalar_value, count)
+    return tir.call_intrin(
+        "handle",
+        tir.op.Op.get(f"tl.ascend_clamp_max"),
+        f"tl::ascend::ClampMax<{_dtype(buffer)}>",
+        out.access_ptr("w"),
+        buffer.access_ptr("r"),
+        tmp.access_ptr("r"),
+        scalar_value,
+        count
+    )
 
 def clampMin(out: Buffer, buffer: Buffer, tmp: Buffer, scalar_value: PrimExpr, count: PrimExpr):
 
-    return T.call_extern("handle", f"AscendC::ClampMin<{_dtype(buffer)}>", out.access_ptr("w"), buffer.access_ptr("r"),
-                         tmp.access_ptr("r"), scalar_value, count)
+    return tir.call_intrin(
+        "handle",
+        tir.op.Op.get(f"tl.ascend_clamp_min"),
+        f"tl::ascend::ClampMin<{_dtype(buffer)}>",
+        out.access_ptr("w"),
+        buffer.access_ptr("r"),
+        tmp.access_ptr("r"),
+        scalar_value,
+        count
+    )
 
 def round(out: Buffer, buffer: Buffer, tmp: Buffer, count: PrimExpr):
 
-    return T.call_extern("handle", f"AscendC::Round", out.access_ptr("w"), buffer.access_ptr("r"),
-                         tmp.access_ptr("r"), count)
+    return tir.call_intrin(
+        "handle",
+        tir.op.Op.get(f"tl.ascend_round"),
+        out.access_ptr("w"),
+        buffer.access_ptr("r"),
+        tmp.access_ptr("r"),
+        count
+    )

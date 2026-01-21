@@ -152,6 +152,12 @@ private:
 
   void CopyCodegen (const CallNode *op);
 
+  void SigmoidCodegen (const CallNode *op, const std::string& op_name);
+
+  void ClampCodegen (const CallNode *op);
+
+  void RoundCodegen (const CallNode *op, const std::string& op_name);
+
 private:
   // Whether scope such as "__shared__" or "__constant__"  is part of type.
   bool IsScopePartOfType() const final { return false; }
