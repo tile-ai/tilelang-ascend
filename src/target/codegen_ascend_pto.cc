@@ -911,28 +911,76 @@ void CodeGenTileLangAscendPto::SetAndWaitFlagCodegen(const CallNode *op, const s
   dst << ", " << "EVENT_ID" << event_id << ");\n";
 }
 
+void CodeGenTileLangAscendPto::HandleA5Flag(const std::string &op,
+                                            const std::string &pipe, int flag) {
+  if (this->current_resource_scope_ == "CUBE") {
+    this->PrintIndent();
+    this->stream << op << "(" << "PIPE_" << pipe << ", " << flag << ");\n";
+    this->PrintIndent();
+    this->stream << op << "(" << "PIPE_" << pipe << ", " << flag + 16 << ");\n";
+  } else if (this->current_resource_scope_ == "VEC") {
+    this->PrintIndent();
+    this->stream << op << "(" << "PIPE_" << pipe << ", " << flag << ");\n";
+  } else {
+    LOG(WARNING) << op << " called outside of known scope (CUBE/VEC)!";
+  }
+}
+
 void CodeGenTileLangAscendPto::SetCrossFlagCodegen(const CallNode *op) {
-    std::string pipe = Downcast<StringImm>(op->args[0])->value;
-    int flag = std::stoi(PrintExpr(op->args[1]));
+  std::string pipe = Downcast<StringImm>(op->args[0])->value;
+  int flag = std::stoi(PrintExpr(op->args[1]));
+
+  if (this->plantform_ == "A5") {
+    HandleA5Flag("set_intra_block", pipe, flag);
+  } else {
     int mode = 2;
     int config = 1 | (mode << 4) | (flag << 8);
     this->PrintIndent();
-    this->stream << "ffts_cross_core_sync" << "(" << "PIPE_" << pipe << ", " << config << ");\n";
+    this->stream << "ffts_cross_core_sync" << "(" << "PIPE_" << pipe << ", "
+                 << config << ");\n";
+  }
 }
 
 void CodeGenTileLangAscendPto::AutoSetCrossFlagCodegen(const CallNode *op) {
+  auto pipe = op->args[1].as<StringImmNode>()->value;
+  auto flag = op->args[2].as<IntImmNode>()->value;
+  if (this->plantform_ == "A5") {
+    HandleA5Flag("set_intra_block", pipe, flag);
+  } else {
     auto mode = op->args[0].as<IntImmNode>()->value;
-    auto pipe = op->args[1].as<StringImmNode>()->value;
-    auto flag = op->args[2].as<IntImmNode>()->value;
     int config = 1 | (mode << 4) | (flag << 8);
     this->PrintIndent();
-    this->stream << "ffts_cross_core_sync" << "(" << "PIPE_" << pipe << ", " << config << ");\n";
+    this->stream << "ffts_cross_core_sync" << "(" << "PIPE_" << pipe << ", "
+                 << config << ");\n";
+  }
 }
 
 void CodeGenTileLangAscendPto::WaitCrossFlagCodegen(const CallNode *op) {
-  this->PrintIndent();
-  std::string flag = PrintExpr(op->args[0]);
-  this->stream << "wait_flag_dev" << "(" << flag << ");\n";
+  auto flag = op->args[0].as<IntImmNode>()->value;
+  auto pipe = op->args[1].as<StringImmNode>()->value;
+
+  if (this->plantform_ == "A5") {
+    if (pipe.empty()) {
+      if (this->current_resource_scope_ == "CUBE") {
+        pipe = "MTE1";
+      } else if (this->current_resource_scope_ == "VEC") {
+        pipe = "V";
+      } else {
+        LOG(WARNING) << "Cannot infer default pipe for wait_intra_block in unknown scope";
+      }
+    }
+  } else {
+    if (!pipe.empty()) {
+      LOG(FATAL) << "Pipe argument for wait_cross_flag is only supported on A5 architecture.";
+    }
+  }
+
+  if (this->plantform_ == "A5") {
+    HandleA5Flag("wait_intra_block", pipe, flag);
+  } else {
+    this->PrintIndent();
+    this->stream << "wait_flag_dev" << "(" << flag << ");\n";
+  }
 }
 
 void CodeGenTileLangAscendPto::FillCodegen(const CallNode *op) {
@@ -1145,10 +1193,16 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AttrStmtNode *op) {
       this->PrintIndent();
       stream << "  set_vector_mask(-1, -1);\n";
     }
+    
+    std::string old_scope = this->current_resource_scope_;
+    this->current_resource_scope_ = resource_name;
+
     int func_scope = this->BeginScope();
     this->VisitStmt(op->body);
     this->EndScope(func_scope);
     stream << "#endif\n";
+
+    this->current_resource_scope_ = old_scope;
     return;
   }
   CodeGenC::VisitStmt_(op);

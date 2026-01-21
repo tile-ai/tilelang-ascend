@@ -84,6 +84,8 @@ private:
 
   void SetAndWaitFlagCodegen(const CallNode *op, const std::string &op_name);
 
+  void HandleA5Flag(const std::string &op, const std::string &pipe, int flag);
+
   void SetCrossFlagCodegen(const CallNode *op);
 
   void AutoSetCrossFlagCodegen(const CallNode *op);
@@ -150,6 +152,8 @@ private:
   bool use_swizzle_{false};
 
   std::string plantform_;
+
+  std::string current_resource_scope_ = ""; // 标识是CUBE还是VEC
 };
 
 } // namespace codegen
