@@ -29,7 +29,6 @@ def paged_flash_attention_fwd(
     INDICES_DTYPE = "int32"
     CAST_MODE = "CAST_NONE"
     VEC_NUM = 2
-    NUM_STAGES = 2
     L0AB_MAX_SIZE = 64 * 1024  # 64KB
 
     def bytes_of(dtype: str) -> int:
@@ -47,7 +46,6 @@ def paged_flash_attention_fwd(
     n_num = T.max(T.ceildiv(block_size * dim * bytes_of(DTYPE), L0AB_MAX_SIZE), 1)
     block_QK = T.ceildiv(block_size, n_num)
     block_DIM = T.ceildiv(dim, n_num)
-    num_stages = T.min(T.ceildiv(seq_len, block_size), NUM_STAGES).value
 
     @T.prim_func
     def main(
@@ -94,7 +92,7 @@ def paged_flash_attention_fwd(
             T.tile.fill(m_i, -T.infinity(ACCUM_DTYPE))
 
             T.copy(Q[bz, by, bx * block_M : (bx + 1) * block_M, :], q_l1)
-            for k in T.Pipelined(T.ceildiv(seq_len, block_size), num_stages=num_stages):
+            for k in T.serial(T.ceildiv(seq_len, block_size)):
                 bidx = block_table[bz, k]
                 for bqk in T.serial(n_num):
                     T.copy(KCache[bidx, bqk * block_QK : (bqk + 1) * block_QK, by, :], k_l1)
