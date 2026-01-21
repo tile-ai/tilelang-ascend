@@ -439,10 +439,12 @@ def dump_tensor(tensor: Buffer, desc: int, dump_size: int, shape_info: tuple = (
         len(shape_info),
         *shape_info,
     )
-    
+
 def reinterpretcast(dst: Buffer, src: Buffer, casttype: str):
-    
-    return T.call_extern("handle", f"ReinterpretCast", dst.access_ptr("w"), src.access_ptr("r"), 
+
+    # return T.call_extern("handle", f"ReinterpretCast", dst.access_ptr("w"), src.access_ptr("r"),
+    #                      casttype)
+    return T.call_intrin("handle", tir.op.Op.get("tl.ascend_reinterpretcast"), dst.access_ptr("w"), src.access_ptr("r"),
                          casttype)
 
 

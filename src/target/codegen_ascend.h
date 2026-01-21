@@ -61,7 +61,7 @@ private:
 
   void PrintOpCall(const CallNode* op, const std::string& op_name,
                   std::pair<int, int> buffer_range, std::pair<int, int> expr_range);
-  
+
   void PrintConstArray(const CallNode* op, int start_idx, int len, const std::string& dtype = "uint32_t");
 
   void BinaryVecOpCodegen(const CallNode* op, const std::string& op_name);
@@ -157,6 +157,8 @@ private:
   void ClampCodegen (const CallNode *op);
 
   void RoundCodegen (const CallNode *op, const std::string& op_name);
+
+  void ReinterpretCastCodegen (const CallNode *op);
 
 private:
   // Whether scope such as "__shared__" or "__constant__"  is part of type.

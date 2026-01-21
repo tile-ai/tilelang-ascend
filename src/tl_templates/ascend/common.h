@@ -36,7 +36,7 @@ CATLASS_DEVICE void copy_gm_to_l1(LocalTensor<T> dstTensor,
   auto dst = tla::MakeTensor<decltype(dstTensor), decltype(layoutInL1),
                              AscendC::TPosition::A1>(dstTensor, layoutInL1);
 
-  TileCopyTla<ArchTag, decltype(src), decltype(dst)> tileCopier; 
+  TileCopyTla<ArchTag, decltype(src), decltype(dst)> tileCopier;
   tileCopier(dst, src);
 }
 
@@ -105,7 +105,7 @@ template <typename T1, typename T2, typename LayoutGM, uint32_t srcM, uint32_t s
 CATLASS_DEVICE void copy_l0c_to_gm(GlobalTensor<T2> dstTensor,
                                    LocalTensor<T1> srcTensor,
                                    uint32_t realDstN = 1) {
-  auto layoutInL0C = tla::MakeLayoutL0C(srcM, srcN); 
+  auto layoutInL0C = tla::MakeLayoutL0C(srcM, srcN);
   auto src = tla::MakeTensor<decltype(srcTensor), decltype(layoutInL0C),
                              AscendC::TPosition::CO1>(srcTensor, layoutInL0C);
   LayoutGM gm{srcM, realDstN};
@@ -234,10 +234,10 @@ CATLASS_DEVICE void cast(LocalTensor<dst> const &ubOut,
   AscendC::Cast(ubOut, ubIn, round_mode, Len);
 }
 
-template <typename T, uint32_t Len>
-CATLASS_DEVICE void fill(LocalTensor<T> const &ubOut, T value) {
-  AscendC::Duplicate(ubOut, value, Len);
-}
+// template <typename T, uint32_t Len>
+// CATLASS_DEVICE void fill(LocalTensor<T> const &ubOut, T value) {
+//   AscendC::Duplicate(ubOut, value, Len);
+// }
 
 template <typename T, uint32_t M, uint32_t N, int32_t dim>
 CATLASS_DEVICE void reduce_sum(LocalTensor<T> const &dstTensor,
@@ -356,7 +356,7 @@ gemm_v0(LocalTensor<T1> const &A, LocalTensor<T1> const &B,
   }
   WaitFlag<HardEvent::M_MTE1>(L0AB_EVENT);
   WaitFlag<HardEvent::M_MTE1>(L0AB_EVENT + 1);
-  
+
   SetFlag<HardEvent::MTE1_MTE2>(L0AB_EVENT);
   WaitFlag<HardEvent::MTE1_MTE2>(L0AB_EVENT);
   SetFlag<HardEvent::M_FIX>(L0AB_EVENT);
@@ -472,6 +472,7 @@ CATLASS_DEVICE void InitSortBuf(const LocalTensor<T> &src, int64_t eleNum,
   }
   PipeBarrier<PIPE_V>();
 }
+
 template <typename T1, typename T2, uint32_t L1_block_M, uint32_t L1_block_N,
           uint32_t L1_block_K, uint32_t BLOCK_M, uint32_t BLOCK_N,
           uint32_t BLOCK_K, bool transpose_A = false, bool transpose_B = false>
@@ -570,9 +571,21 @@ CATLASS_DEVICE void Sort(const LocalTensor<T> &dst, const LocalTensor<T> &concat
 }
 
 template <typename T, int32_t dim, int32_t axis, bool isReuseSource = false>
-CATLASS_DEVICE void Broadcast(const LocalTensor<T> &dst, const LocalTensor<T> &src, 
+CATLASS_DEVICE void Broadcast(const LocalTensor<T> &dst, const LocalTensor<T> &src,
                               const uint32_t dstShape[dim], const uint32_t srcShape[dim]) {
   AscendC::Broadcast<T, dim, axis, isReuseSource>(dst, src, dstShape, srcShape);
+}
+
+template <typename T>
+CATLASS_DEVICE void ClampMax(const LocalTensor<T> &dst, const LocalTensor<T> &buffer, const LocalTensor<T> &tmp,
+                             const T scalarValue, const int32_t count) {
+  AscendC::ClampMax<T>(dst, buffer, tmp, scalarValue, count);
+}
+
+template <typename T>
+CATLASS_DEVICE void ClampMin(const LocalTensor<T> &dst, const LocalTensor<T> &buffer, const LocalTensor<T> &tmp,
+                             const T scalarValue, const int32_t count) {
+  AscendC::ClampMin<T>(dst, buffer, tmp, scalarValue, count);
 }
 
 } // namespace tl::ascend

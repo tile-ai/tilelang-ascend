@@ -1450,7 +1450,7 @@ def broadcast(dst: Buffer, src: Buffer):
     )
 
 
-def clampMax(out: Buffer, buffer: Buffer, tmp: Buffer, scalar_value: PrimExpr, count: PrimExpr):
+def clamp_max(out: Buffer, buffer: Buffer, tmp: Buffer, scalar_value: PrimExpr, count: PrimExpr):
 
     return tir.call_intrin(
         "handle",
@@ -1463,7 +1463,7 @@ def clampMax(out: Buffer, buffer: Buffer, tmp: Buffer, scalar_value: PrimExpr, c
         count
     )
 
-def clampMin(out: Buffer, buffer: Buffer, tmp: Buffer, scalar_value: PrimExpr, count: PrimExpr):
+def clamp_min(out: Buffer, buffer: Buffer, tmp: Buffer, scalar_value: PrimExpr, count: PrimExpr):
 
     return tir.call_intrin(
         "handle",

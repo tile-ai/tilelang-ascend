@@ -263,10 +263,10 @@ private:
       {"tl.ascend_wholereducemax", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
       {"tl.ascend_wholereducemin", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
       {"tl.ascend_wholereducesum", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
-      {"tl.ascend_Sigmoid", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
-      {"tl.ascend_ClampMax", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
-      {"tl.ascend_ClampMin", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
-      {"tl.ascend_Round", {{{0, "write"}, {1, "read"}}, "PIPE_V"}}
+      {"tl.ascend_sigmoid", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
+      {"tl.ascend_clamp_max", {{{1, "write"}, {2, "read"}}, "PIPE_V"}},
+      {"tl.ascend_clamp_min", {{{1, "write"}, {2, "read"}}, "PIPE_V"}},
+      {"tl.ascend_round", {{{0, "write"}, {1, "read"}}, "PIPE_V"}}
     };
   }
 
