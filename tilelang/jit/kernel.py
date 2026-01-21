@@ -49,7 +49,7 @@ class JITKernel(object):
         execution_backend: Literal["dlpack", "ctypes", "cython"] = "cython",
         target: Union[str, Target] = "auto",
         target_host: Union[str, Target] = None,
-        plantform: Literal["A2", "A3", "A5"] = "A3",
+        platform: Literal["A2", "A3", "A5"] = "A3",
         verbose: bool = False,
         pass_configs: Optional[Dict[str, Any]] = None,
         from_database: bool = False,
@@ -71,7 +71,7 @@ class JITKernel(object):
             Compilation target, either as a string or a TVM Target object (default: "auto").
         target_host : Union[str, Target], optional
             Target host for cross-compilation (default: None).
-        plantform : Literal
+        platform : Literal
             Specifies the target hardware platform generation. Defaults to "A3".
         verbose : bool, optional
             Whether to enable verbose output (default: False).
@@ -90,7 +90,7 @@ class JITKernel(object):
         self.target = target
         self.target_host = target_host
         self.verbose = verbose
-        self.plantform = plantform
+        self.platform = platform
 
         if pass_configs is None:
             pass_configs = {}
@@ -128,7 +128,7 @@ class JITKernel(object):
         params: List[KernelParam],
         target: Union[str, Target],
         target_host: Union[str, Target],
-        plantform: str,
+        platform: str,
         out_idx: Union[List[int], int],
         workspace_idx: Union[List[int], int],
         execution_backend: Literal["dlpack", "ctypes", "cython"],
@@ -144,7 +144,7 @@ class JITKernel(object):
             execution_backend=execution_backend,
             target=target,
             target_host=target_host,
-            plantform=plantform,
+            platform=platform,
             pass_configs=pass_configs,
             from_database=True,
         )
@@ -155,7 +155,7 @@ class JITKernel(object):
             result_idx=out_idx,
             workspace_idx=workspace_idx,
             target=target,
-            plantform=plantform,
+            platform=platform,
             kernel_global_source=kernel_global_source,
             kernel_lib_path=kernel_lib_path,
             pass_configs=pass_configs,
@@ -224,7 +224,7 @@ class JITKernel(object):
                 tilelang_func,
                 target=target,
                 target_host=target_host,
-                plantform=self.plantform,
+                platform=self.platform,
                 enable_host_codegen=enable_host_codegen,
                 enable_device_compile=enable_device_compile)
 
@@ -256,7 +256,7 @@ class JITKernel(object):
                 result_idx=out_idx,
                 workspace_idx=workspace_idx,
                 target=target,
-                plantform=self.plantform,
+                platform=self.platform,
                 func_or_mod=tilelang_func,
                 host_mod=artifact.host_mod,
                 device_mod=artifact.device_mod,
@@ -276,7 +276,7 @@ class JITKernel(object):
         result_idx: Union[List[int], int],
         workspace_idx: Union[List[int], int],
         target: Union[str, Target],
-        plantform: str,
+        platform: str,
         func_or_mod: Union[PrimFunc, tvm.runtime.Module],
         kernel_global_source: str,
         kernel_lib_path: str,
@@ -304,7 +304,7 @@ class JITKernel(object):
                 result_idx=result_idx,
                 workspace_idx=workspace_idx,
                 target=target,
-                plantform=plantform,
+                platform=platform,
                 func_or_mod=func_or_mod,
                 kernel_global_source=kernel_global_source,
                 kernel_lib_path=kernel_lib_path,

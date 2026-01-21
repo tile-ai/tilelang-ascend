@@ -73,7 +73,7 @@ class KernelCache:
         args=None,
         target: Union[str, Target] = "auto",
         target_host: Union[str, Target] = None,
-        plantform: Literal["A2", "A3", "A5"] = "A3",
+        platform: Literal["A2", "A3", "A5"] = "A3",
         pass_configs: dict = None,
     ) -> str:
         """
@@ -87,7 +87,7 @@ class KernelCache:
             args: Arguments passed to the function.
             target (Union[str, Target]): Compilation target platform. Defaults to "auto".
             target_host (Union[str, Target], optional): Host target platform.
-            plantform (Literal): Specifies the target hardware platform generation. Defaults to "A3".
+            platform (Literal): Specifies the target hardware platform generation. Defaults to "A3".
 
         Returns:
             str: SHA256 hash key for the kernel configuration.
@@ -103,7 +103,7 @@ class KernelCache:
             ),  # Use repr to serialize arguments, may need more robust serialization
             "target": str(target),
             "target_host": str(target_host) if target_host else None,
-            "plantform": str(plantform),
+            "platform": str(platform),
             "execution_backend": execution_backend,
             "pass_configs": pass_configs,
         }
@@ -118,7 +118,7 @@ class KernelCache:
         *args,
         target: Union[str, Target] = "auto",
         target_host: Union[str, Target] = None,
-        plantform: Literal["A2", "A3", "A5"] = "A3",
+        platform: Literal["A2", "A3", "A5"] = "A3",
         execution_backend: Literal["dlpack", "ctypes", "cython"] = "cython",
         verbose: bool = False,
         pass_configs: dict = None,
@@ -132,7 +132,7 @@ class KernelCache:
             workspace_idx: Indices specifying auto-allocated workspace tensors
             target: Compilation target platform
             target_host: Host target platform
-            plantform: Specifies the target hardware platform generation. Defaults to "A3".
+            platform: Specifies the target hardware platform generation. Defaults to "A3".
             *args: Arguments passed to func
 
         Returns:
@@ -146,7 +146,7 @@ class KernelCache:
                 execution_backend=execution_backend,
                 target=target,
                 target_host=target_host,
-                plantform=plantform,
+                platform=platform,
                 verbose=verbose,
                 pass_configs=pass_configs,
             )
@@ -159,7 +159,7 @@ class KernelCache:
             args=args,
             target=target,
             target_host=target_host,
-            plantform=plantform,
+            platform=platform,
             pass_configs=pass_configs,
         )
         with self._lock:
@@ -170,7 +170,7 @@ class KernelCache:
                 return self._memory_cache[key]
 
             # Then check disk cache
-            kernel = self._load_kernel_from_disk(key, target, target_host, plantform, out_idx, workspace_idx,
+            kernel = self._load_kernel_from_disk(key, target, target_host, platform, out_idx, workspace_idx,
                                                  execution_backend, pass_configs, func)
             if kernel is not None:
                 # Populate memory cache with disk result
@@ -185,7 +185,7 @@ class KernelCache:
             execution_backend=execution_backend,
             target=target,
             target_host=target_host,
-            plantform=plantform,
+            platform=platform,
             verbose=verbose,
             pass_configs=pass_configs,
         )
@@ -288,7 +288,7 @@ class KernelCache:
         key: str,
         target: Union[str, Target] = "auto",
         target_host: Union[str, Target] = None,
-        plantform: Literal["A2", "A3", "A5"] = "A3",
+        platform: Literal["A2", "A3", "A5"] = "A3",
         out_idx: List[int] = None,
         workspace_idx: List[int] = None,
         execution_backend: Literal["dlpack", "ctypes", "cython"] = "cython",
@@ -302,7 +302,7 @@ class KernelCache:
             key (str): The hash key identifying the kernel.
             target (Union[str, Target]): Compilation target platform. Defaults to "auto".
             target_host (Union[str, Target], optional): Host target platform.
-            plantform (Literal): Specifies the target hardware platform generation. Defaults to "A3".
+            platform (Literal): Specifies the target hardware platform generation. Defaults to "A3".
             out_idx (List[int], optional): Indices specifying which outputs to return.
             workspace_idx (List[int], optional): Indices specifying auto-allocated workspace tensors.
             execution_backend (Literal): Backend type for execution. Defaults to "cython".
@@ -344,7 +344,7 @@ class KernelCache:
                 params=kernel_params,
                 target=target,
                 target_host=target_host,
-                plantform=plantform,
+                platform=platform,
                 out_idx=out_idx,
                 workspace_idx=workspace_idx,
                 execution_backend=execution_backend,

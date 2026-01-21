@@ -503,7 +503,7 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
   } else if (op->op.same_as(tl::ascend_broadcast())) {
     BroadcastOpCodegen(op);
   } else if (op->op.same_as(tl::ascend_wait_cross_flag())) {
-    PrintOpCall(op, "AscendC::CrossCoreWaitFlag", {0, 0}, {0, op->args.size()});
+    PrintOpCall(op, "AscendC::CrossCoreWaitFlag", {0, 0}, {0, 1});
   } else if (op->op.same_as(tl::ascend_set_cross_flag())) {
     SetCrossFlagCodegen(op);
   } else if (op->op.same_as(tl::ascend_wait_flag())) {
