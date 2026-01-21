@@ -292,10 +292,6 @@ private:
   void SmartMemRefCopy(mlir::Value src, mlir::Value dst);
   mlir::Value GetOrInsertMasterTensor(mlir::Value memref);
   llvm::DenseMap<mlir::Operation*, mlir::Value> alloc_memo_;
-  mlir::Value MayReshapeMemRef(mlir::Value src_memref, llvm::ArrayRef<mlir::OpFoldResult> target_sizes);
-  llvm::SmallVector<mlir::ReassociationIndices> ComputeReassociationIndices(
-    int64_t src_rank, int64_t dst_rank, 
-    mlir::MemRefType src_type, llvm::ArrayRef<mlir::OpFoldResult> dst_sizes);
 
   NPU_CORETYPE func_coretype;
 

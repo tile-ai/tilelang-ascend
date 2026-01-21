@@ -1017,123 +1017,6 @@ mlir::Value CodeGenTileLangNPUIRDEV::MaybeReshapeTensor(mlir::Value src_tensor, 
   return reshapeOp.getResult();
 }
 
-// Helper: Compute reassociation indices for shape collapse/expansion.
-llvm::SmallVector<mlir::ReassociationIndices> 
-CodeGenTileLangNPUIRDEV::ComputeReassociationIndices(
-    int64_t src_rank, int64_t dst_rank, 
-    mlir::MemRefType src_type, llvm::ArrayRef<mlir::OpFoldResult> dst_sizes) {
-  
-  bool is_collapse = src_rank > dst_rank;
-  int64_t large_rank = is_collapse ? src_rank : dst_rank;
-  int64_t small_rank = is_collapse ? dst_rank : src_rank;
-  
-  // Use explicit mlir::ReassociationIndices type.
-  llvm::SmallVector<mlir::ReassociationIndices> reassociation(small_rank);
-  
-  int large_idx = large_rank - 1;
-  int small_idx = small_rank - 1;
-  
-  // Greedy back-to-front mapping.
-  while (large_idx >= 0 && small_idx >= 0) {
-    reassociation[small_idx].push_back(large_idx);
-    large_idx--;
-    
-    if (large_idx + 1 == small_idx) {
-      small_idx--;
-    } 
-  }
-  
-  for (auto &group : reassociation) {
-    std::reverse(group.begin(), group.end());
-  }
-  
-  return reassociation;
-}
-
-// Reshape the source MemRef to match the rank and shape defined by `target_sizes`.
-mlir::Value CodeGenTileLangNPUIRDEV::MayReshapeMemRef(
-  mlir::Value src_memref, llvm::ArrayRef<mlir::OpFoldResult> target_sizes) {
-  auto loc = builder.getUnknownLoc();
-  auto src_type = src_memref.getType().cast<mlir::MemRefType>();
-  int64_t src_rank = src_type.getRank();
-  int64_t dst_rank = target_sizes.size();
-
-  // 0. Optimization: Return early if ranks match.
-  if (src_rank == dst_rank) return src_memref;
-
-  // 1. Expand (Low Rank -> High Rank).
-  if (src_rank < dst_rank) {
-    auto indices = ComputeReassociationIndices(src_rank, dst_rank, src_type, target_sizes);
-    
-    llvm::SmallVector<int64_t> static_target_shape;
-    bool has_dynamic = false;
-    for (auto s : target_sizes) {
-      if (auto attr = s.dyn_cast<mlir::Attribute>()) 
-        static_target_shape.push_back(attr.cast<mlir::IntegerAttr>().getInt());
-      else {
-        static_target_shape.push_back(mlir::ShapedType::kDynamic);
-        has_dynamic = true;
-      }
-    }
-    
-    auto resultType = mlir::MemRefType::get(
-        static_target_shape, src_type.getElementType(), 
-        /*layout=*/nullptr, src_type.getMemorySpace());
-
-    if (has_dynamic) {
-      return builder.create<mlir::memref::ExpandShapeOp>(
-          loc, resultType, src_memref, indices, target_sizes).getResult();
-    } else {
-      return builder.create<mlir::memref::ExpandShapeOp>(
-          loc, resultType, src_memref, indices).getResult();
-    }
-  }
-
-  // 2. Collapse (High Rank -> Low Rank).
-  if (src_rank > dst_rank) {
-    // A. Retrieve original offset and strides.
-    auto extract = builder.create<mlir::memref::ExtractStridedMetadataOp>(loc, src_memref);
-    mlir::Value offset = extract.getOffset();
-    auto src_strides_values = extract.getStrides();
-
-    // B. Compute Reassociation Indices to map Dst -> [Src...]
-    auto indices = ComputeReassociationIndices(src_rank, dst_rank, src_type, target_sizes);
-
-    // C. Compute Target Strides from Source Strides.
-    llvm::SmallVector<mlir::OpFoldResult> strides;
-    for (const auto& group : indices) {
-      int64_t last_src_dim = group.back();
-      strides.push_back(src_strides_values[last_src_dim]);
-    }
-
-    // D. Construct target MemRef type.
-    llvm::SmallVector<int64_t> static_shape;
-    for(auto s : target_sizes) {
-      if (auto attr = s.dyn_cast<mlir::Attribute>()) 
-        static_shape.push_back(attr.cast<mlir::IntegerAttr>().getInt());
-      else 
-        static_shape.push_back(mlir::ShapedType::kDynamic);
-    }
-
-    // Use dynamic layout because strides are runtime values from ExtractStridedMetadataOp
-    auto layout = mlir::StridedLayoutAttr::get(&context, mlir::ShapedType::kDynamic,
-        llvm::SmallVector<int64_t>(dst_rank, mlir::ShapedType::kDynamic));
-    
-    auto resultType = mlir::MemRefType::get(
-        static_shape, src_type.getElementType(), 
-        layout, src_type.getMemorySpace());
-
-    // E. Create ReinterpretCastOp.
-    return builder.create<mlir::memref::ReinterpretCastOp>(
-        loc, resultType, src_memref, 
-        llvm::SmallVector<mlir::OpFoldResult>{offset}, 
-        target_sizes, 
-        strides).getResult();
-  }
-  
-  return src_memref;
-}
-
 // Convert TVM Range to MLIR OpFoldResult arrays
 std::tuple<SmallVector<mlir::OpFoldResult>, 
            SmallVector<mlir::OpFoldResult>, 
@@ -1458,7 +1341,7 @@ void CodeGenTileLangNPUIRDEV::AscendCopyCodegen(const CallNode *op) {
     return;
   }
 
-  // Case 2: Tensor -> MemRef (Store / Materialize)
+  // Case 3: Tensor -> MemRef (Store / Materialize)
   if (dst_is_memref_core) { 
     // 1. Extract Slice from SRC
     mlir::Value src_slice = builder.create<mlir::tensor::ExtractSliceOp>(
@@ -1469,12 +1352,12 @@ void CodeGenTileLangNPUIRDEV::AscendCopyCodegen(const CallNode *op) {
         loc, dst_memref_view, dst_offs, dst_sizes, dst_strides);
     
     // 3. Cast & Reshape
-    mlir::Value reshaped_dst_view = MayReshapeMemRef(dst_view, src_sizes);
-    src_slice = CreateCastIfTypeMismatch(src_slice, reshaped_dst_view);
+    src_slice = CreateCastIfTypeMismatch(src_slice, dst_view);
+    src_slice = MaybeReshapeTensor(src_slice, dst_view.getType().cast<mlir::MemRefType>().getShape());
 
     // 4. Materialize (Write to Buffer)
     auto store = builder.create<mlir::bufferization::MaterializeInDestinationOp>(
-      loc, src_slice, reshaped_dst_view);
+      loc, src_slice, dst_view);
     store.setWritable(true);
 
     // 5. State Sync
