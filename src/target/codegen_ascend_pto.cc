@@ -98,9 +98,9 @@ std::string GetTypeLenString(std::string type) {
   return typeSize;
 }
 
-CodeGenTileLangAscendPto::CodeGenTileLangAscendPto(std::string plantform) {
+CodeGenTileLangAscendPto::CodeGenTileLangAscendPto(std::string platform) {
   // restrict_keyword_ = "__gm__ uint8_t *";
-  plantform_ = plantform;
+  platform_ = platform;
 }
 
 void CodeGenTileLangAscendPto::PrintFuncPrefix(std::ostream &os) {
@@ -930,7 +930,7 @@ void CodeGenTileLangAscendPto::SetCrossFlagCodegen(const CallNode *op) {
   std::string pipe = Downcast<StringImm>(op->args[0])->value;
   int flag = std::stoi(PrintExpr(op->args[1]));
 
-  if (this->plantform_ == "A5") {
+  if (this->platform_ == "A5") {
     HandleA5Flag("set_intra_block", pipe, flag);
   } else {
     int mode = 2;
@@ -944,7 +944,7 @@ void CodeGenTileLangAscendPto::SetCrossFlagCodegen(const CallNode *op) {
 void CodeGenTileLangAscendPto::AutoSetCrossFlagCodegen(const CallNode *op) {
   auto pipe = op->args[1].as<StringImmNode>()->value;
   auto flag = op->args[2].as<IntImmNode>()->value;
-  if (this->plantform_ == "A5") {
+  if (this->platform_ == "A5") {
     HandleA5Flag("set_intra_block", pipe, flag);
   } else {
     auto mode = op->args[0].as<IntImmNode>()->value;
@@ -959,7 +959,7 @@ void CodeGenTileLangAscendPto::WaitCrossFlagCodegen(const CallNode *op) {
   auto flag = op->args[0].as<IntImmNode>()->value;
   auto pipe = op->args[1].as<StringImmNode>()->value;
 
-  if (this->plantform_ == "A5") {
+  if (this->platform_ == "A5") {
     if (pipe.empty()) {
       if (this->current_resource_scope_ == "CUBE") {
         pipe = "MTE1";
@@ -975,7 +975,7 @@ void CodeGenTileLangAscendPto::WaitCrossFlagCodegen(const CallNode *op) {
     }
   }
 
-  if (this->plantform_ == "A5") {
+  if (this->platform_ == "A5") {
     HandleA5Flag("wait_intra_block", pipe, flag);
   } else {
     this->PrintIndent();
@@ -1184,7 +1184,7 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AttrStmtNode *op) {
   } else if (op->attr_key == "resource_scope") { // other core
     auto resource_id = Downcast<IntImm>(op->value)->value;
     auto resource_name = resource_id == 0 ? "CUBE" : "VEC";
-    std::string arch_name = (this->plantform_ == "A5") ? "C310" : "C220";
+    std::string arch_name = (this->platform_ == "A5") ? "C310" : "C220";
 
     stream << "#if defined(__DAV_" << arch_name << "_" << resource_name << "__)\n";
     if (resource_name == "VEC") {

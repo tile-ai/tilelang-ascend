@@ -22,7 +22,7 @@ namespace codegen {
 
 class CodeGenTileLangAscendPto final : public CodeGenC {
 public:
-  CodeGenTileLangAscendPto(std::string plantform);
+  CodeGenTileLangAscendPto(std::string platform);
   std::string Finish();
   // override behavior
   void PrintFuncPrefix(std::ostream &os) final;
@@ -151,7 +151,7 @@ private:
 
   bool use_swizzle_{false};
 
-  std::string plantform_;
+  std::string platform_;
 
   std::string current_resource_scope_ = ""; // 标识是CUBE还是VEC
 };

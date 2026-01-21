@@ -211,7 +211,7 @@ class CythonKernelAdapter(BaseKernelAdapter):
                  result_idx: List[int],
                  workspace_idx: List[int],
                  target: Union[str, Target],
-                 plantform: str,
+                 platform: str,
                  func_or_mod: Union[tir.PrimFunc, tvm.IRModule],
                  host_mod: Optional[tvm.IRModule] = None,
                  device_mod: Optional[tvm.IRModule] = None,
@@ -225,7 +225,7 @@ class CythonKernelAdapter(BaseKernelAdapter):
             result_idx: Indices of output tensors
             workspace_idx: Indices of auto-allocated workspace tensors
             target: Target platform (e.g., 'cuda')
-            plantform: Specifies the target hardware platform generation. Defaults to "A3".
+            platform: Specifies the target hardware platform generation. Defaults to "A3".
             func_or_mod: TIR function or module to be compiled
             verbose: Enable verbose logging
         """
@@ -250,7 +250,7 @@ class CythonKernelAdapter(BaseKernelAdapter):
 
         self.verbose = verbose
         self.wrapper = TLWrapper("npu")
-        self.lib_generator = LibraryGenerator(target, plantform)
+        self.lib_generator = LibraryGenerator(target, platform)
 
         self.wrapper.assign_optimized_module(self.ir_module)
         self.wrapper.assign_pass_configs(pass_configs)
@@ -284,7 +284,7 @@ class CythonKernelAdapter(BaseKernelAdapter):
                       result_idx: List[int],
                       workspace_idx: List[int],
                       target: str,
-                      plantform: str,
+                      platform: str,
                       func_or_mod: Union[tir.PrimFunc, tvm.IRModule],
                       kernel_global_source: str,
                       kernel_lib_path: str,
@@ -313,7 +313,7 @@ class CythonKernelAdapter(BaseKernelAdapter):
         adapter.buffer_device_map = adapter._process_buffer_device()
 
         adapter.verbose = verbose
-        adapter.lib_generator = LibraryGenerator(target, plantform)
+        adapter.lib_generator = LibraryGenerator(target, platform)
         adapter.lib = adapter.lib_generator.load_lib(lib_path=kernel_lib_path)
 
         # adapter.lib.get_last_error.restype = ctypes.c_char_p
