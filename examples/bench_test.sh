@@ -34,6 +34,14 @@ if [ -d "./gemm_aot" ]; then
     fi
 fi
 
+# ===== add examples/torch_tl_ascend/test_example.sh =====
+if [ -d "./torch_tl_ascend" ]; then
+    bash_scripts=$(find ./torch_tl_ascend -maxdepth 1 -name "test_example.sh" | sort)
+    if [ -n "$bash_scripts" ]; then
+        for script in $bash_scripts; do all_scripts+=("$script"); done
+    fi
+fi
+
 if [ ${#all_scripts[@]} -eq 0 ]; then
     echo "No test scripts found."
     exit 0
