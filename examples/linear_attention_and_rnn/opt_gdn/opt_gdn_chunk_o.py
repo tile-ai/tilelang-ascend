@@ -9,6 +9,7 @@ Calculate output, given chunk-by-chunk hidden state
 '''
 
 pass_configs = {
+	tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
 	tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: False,
 }
 
@@ -52,13 +53,10 @@ def chunk_o_ker(B, H, L, DK, DV, C, BK = None, BV = None, dtype="float16", accum
 
 			qk_ub_half = T.alloc_ub([C // VEC_NUM, C], dtype)
 			qs_ub_half = T.alloc_ub([C // VEC_NUM, DV], dtype)
-			qkv_ub_half = T.alloc_ub([C // VEC_NUM, DV], dtype)
 			o_ub_half = T.alloc_ub([C // VEC_NUM, DV], dtype)
-			zero_ub = T.alloc_ub([C // VEC_NUM, C], accum_dtype)
 			qk_ub = T.alloc_ub([C // VEC_NUM, C], accum_dtype)
 			msk_ub = T.alloc_ub([C // VEC_NUM, C], accum_dtype)
 			qs_ub = T.alloc_ub([C // VEC_NUM, DV], accum_dtype)
-			qkv_ub = T.alloc_ub([C // VEC_NUM, DV], accum_dtype)
 			o_ub = T.alloc_ub([C // VEC_NUM, DV], accum_dtype)
 			coeff_ub = T.alloc_ub([C // VEC_NUM, C], accum_dtype)
 			g_ub = T.alloc_ub([C,], accum_dtype)
@@ -68,8 +66,10 @@ def chunk_o_ker(B, H, L, DK, DV, C, BK = None, BV = None, dtype="float16", accum
 				for i in T.serial(bk_num):
 					T.copy(Q[bz, by, bx * C, i * BK], q_l1)
 					T.copy(K[bz, by, bx * C, i * BK], k_l1)
-					T.copy(S[bz, by, bx, i * BK, 0], s_l1)
 					T.gemm_v0(q_l1, k_l1, qk_l0, transpose_B = True, init = (i == 0))
+				for i in T.serial(bk_num):
+					T.copy(Q[bz, by, bx * C, i * BK], q_l1)
+					T.copy(S[bz, by, bx, i * BK, 0], s_l1)
 					T.gemm_v0(q_l1, s_l1, qs_l0, init = (i == 0))
 				T.copy(qk_l0, workspace_1[cid, 0, 0])
 				T.copy(qs_l0, workspace_2[cid, 0, 0])
@@ -88,7 +88,7 @@ def chunk_o_ker(B, H, L, DK, DV, C, BK = None, BV = None, dtype="float16", accum
 				T.copy(Msk[vid * C // VEC_NUM, 0], msk_ub)
 				T.set_flag("mte2", "v", 0)
 				T.wait_flag("mte2", "v", 0)
-				T.tile.fill(zero_ub, 0.0)
+				T.tile.fill(qk_ub, 0.0)
 				T.copy(g_ub[vid * C // VEC_NUM : (vid + 1) * C // VEC_NUM], g_v_ub)
 				for i in range((C // VEC_NUM) // 4):
 					tmp0 = g_v_ub[i * 4]
@@ -99,7 +99,8 @@ def chunk_o_ker(B, H, L, DK, DV, C, BK = None, BV = None, dtype="float16", accum
 					T.tile.sub(coeff_ub[i * 4 + 1, :], g_ub, tmp1)
 					T.tile.sub(coeff_ub[i * 4 + 2, :], g_ub, tmp2)
 					T.tile.sub(coeff_ub[i * 4 + 3, :], g_ub, tmp3)
-				T.tile.sub(coeff_ub, zero_ub, coeff_ub)
+				T.tile.sub(coeff_ub, qk_ub, coeff_ub)
+				T.tile.mul(coeff_ub, coeff_ub, msk_ub)
 				T.tile.exp(coeff_ub, coeff_ub)
 				T.tile.exp(g_v_ub, g_v_ub)
 
@@ -133,12 +134,12 @@ def chunk_o_ker(B, H, L, DK, DV, C, BK = None, BV = None, dtype="float16", accum
 					T.tile.mul(qs_ub[i * 4 + 3, :], qs_ub[i * 4 + 3, :], tmp3)
 				
 				T.wait_cross_flag(2)
-				T.copy(workspace_2[cid, vid * C // VEC_NUM, 0], qkv_ub_half)
+				T.copy(workspace_2[cid, vid * C // VEC_NUM, 0], o_ub_half)
 				T.set_flag("mte2", "v", 0)
 				T.wait_flag("mte2", "v", 0)
-				T.copy(qkv_ub_half, qkv_ub)
+				T.copy(o_ub_half, o_ub)
 				for (i, j) in T.Parallel(C // VEC_NUM, DV):
-					o_ub[i, j] = qs_ub[i, j] + qkv_ub[i, j]
+					o_ub[i, j] = qs_ub[i, j] + o_ub[i, j]
 				T.copy(o_ub, o_ub_half)
 				T.set_flag("v", "mte3", 0)
 				T.wait_flag("v", "mte3", 0)
@@ -187,7 +188,7 @@ if __name__ == "__main__":
 	torch.set_printoptions(threshold = float('inf'), sci_mode = True)
 
 	test_configs = [
-		(1, 1, 64, 64, 64, 64),
+		(2, 16, 16384, 128, 128, 128),
 	]
 
 	for B, H, L, DK, DV, C in test_configs:
