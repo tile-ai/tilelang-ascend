@@ -575,6 +575,10 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) 
     BinaryVecOpsCodegen(op, "TMULS");
   } else if (op->op.same_as(tl::ascend_divs())) {
     BinaryVecOpsCodegen(op, "TDIVS");
+  } else if (op->op.same_as(tl::ascend_maxs())) {
+    BinaryVecOpsCodegen(op, "TMAXS");
+  } else if (op->op.same_as(tl::ascend_mins())) {
+    BinaryVecOpsCodegen(op, "TMINS");
   } else if (op->op.same_as(tl::ascend_pipe_barrier())) {
     PipeBarrierCodegen(op);
   } else if (op->op.same_as(tl::ascend_set_flag())) {
