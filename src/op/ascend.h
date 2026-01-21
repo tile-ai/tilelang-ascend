@@ -135,6 +135,16 @@ TVM_DLL const Op &ascend_bitwise_xor();
 
 TVM_DLL const Op &ascend_broadcast();
 
+TVM_DLL const Op &ascend_clampMax();
+
+TVM_DLL const Op &ascend_clampMin();
+
+TVM_DLL const Op &ascend_round();
+
+TVM_DLL const Op &ascend_sigmoid();
+
+TVM_DLL const Op &ascend_reinterpretcast();
+
 TVM_DLL const Op &ascend_wait_cross_flag();
 
 TVM_DLL const Op &ascend_set_cross_flag();

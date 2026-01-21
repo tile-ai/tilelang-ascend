@@ -1028,7 +1028,7 @@ def reduce_max(out: Buffer, buffer: Buffer, tmp: Buffer, dim: int, count: int = 
         buffer: The source buffer (2D).
         tmp: The temporary buffer.
         dim: The dimension to reduce along (-1 for last dim).
-        count: 
+        count:
     """
     return reduce(out, buffer, tmp, "reduce_max", dim, count)
 
@@ -1441,6 +1441,8 @@ def broadcast(dst: Buffer, src: Buffer):
         *dst_shape,
         *src_shape,
     )
+
+
 def clampMax(out: Buffer, buffer: Buffer, tmp: Buffer, scalar_value: PrimExpr, count: PrimExpr):
 
     return T.call_extern("handle", f"AscendC::ClampMax<{_dtype(buffer)}>", out.access_ptr("w"), buffer.access_ptr("r"),

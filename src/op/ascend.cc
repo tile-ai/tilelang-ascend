@@ -494,7 +494,7 @@ TIR_DEFINE_TL_BUILTIN(ascend_gather)
     .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_reduce)
-    .set_num_inputs(4)
+    .set_num_inputs(5)
     .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_block_reduce_max)
