@@ -95,6 +95,8 @@ private:
   void FillCodegen(const CallNode *op);
 
   std::string PrintBufferOffset(const CallNode *op);
+  void UbShapeInputCheck(const AllocateNode *op);
+  bool ValidLayoutEnabled(const AllocateNode *op);
 
   // Whether global barrier is needed.
   bool need_global_barrier_{false};
@@ -128,6 +130,7 @@ private:
   std::string vec_id_;
 
   Map<Var, PrimExpr> address_map_;
+  Map<Var, Array<PrimExpr>> buffer_shapess_;
 
   Map<Var, PrimExpr> tiling_map_;
   Array<Var> var_sequence_;

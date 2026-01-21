@@ -59,6 +59,10 @@ TVM_DLL const Op &ascend_muls();
 
 TVM_DLL const Op &ascend_divs();
 
+TVM_DLL const Op &ascend_maxs();
+
+TVM_DLL const Op &ascend_mins();
+
 TVM_DLL const Op &ascend_compare();
 
 TVM_DLL const Op &ascend_compare_scalar();
