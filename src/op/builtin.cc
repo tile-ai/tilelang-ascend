@@ -141,12 +141,6 @@ TIR_DEFINE_TL_BUILTIN(div).set_num_inputs(3).set_attr<TCallEffectKind>(
 TIR_DEFINE_TL_BUILTIN(adds).set_num_inputs(3).set_attr<TCallEffectKind>(
     "TCallEffectKind", Integer(CallEffectKind::kOpaque));
 
-TIR_DEFINE_TL_BUILTIN(maxs).set_num_inputs(3).set_attr<TCallEffectKind>(
-    "TCallEffectKind", Integer(CallEffectKind::kOpaque));
-
-TIR_DEFINE_TL_BUILTIN(mins).set_num_inputs(3).set_attr<TCallEffectKind>(
-    "TCallEffectKind", Integer(CallEffectKind::kOpaque));
-
 TIR_DEFINE_TL_BUILTIN(muls).set_num_inputs(3).set_attr<TCallEffectKind>(
     "TCallEffectKind", Integer(CallEffectKind::kOpaque));
 

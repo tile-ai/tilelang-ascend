@@ -277,10 +277,6 @@ const Op &div();
 
 const Op &adds();
 
-const Op &maxs();
-
-const Op &mins();
-
 const Op &muls();
 
 const Op &exp();
