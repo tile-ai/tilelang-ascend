@@ -230,7 +230,7 @@ CATLASS_DEVICE void shmem_put_nbi(const GlobalTensor<T> &output, const GlobalTen
     AscendC::TBuf<AscendC::TPosition::VECIN> ub_buf;
     pipe.InitBuffer(ub_buf, ub_size);
     auto ub_tensor = ub_buf.Get<T>();
-    pipe.Destory();
+    pipe.Destroy();
     __gm__ T* outputPtr = const_cast<__gm__ T*>(output.GetPhyAddr());
     __gm__ T* inputPtr = const_cast<__gm__ T*>(input.GetPhyAddr());
     __ubuf__ T* buf = reinterpret_cast<__ubuf__ T*>(ub_tensor.GetPhyAddr());
@@ -251,7 +251,7 @@ CATLASS_DEVICE void shmem_get_nbi(const GlobalTensor<T> &output, const GlobalTen
     AscendC::TBuf<AscendC::TPosition::VECIN> ub_buf;
     pipe.InitBuffer(ub_buf, ub_size);
     auto ub_tensor = ub_buf.Get<T>();
-    pipe.Destory();
+    pipe.Destroy();
     __gm__ T* outputPtr = const_cast<__gm__ T*>(output.GetPhyAddr());
     __gm__ T* inputPtr = const_cast<__gm__ T*>(input.GetPhyAddr());
     __ubuf__ T* buf = reinterpret_cast<__ubuf__ T*>(ub_tensor.GetPhyAddr());
