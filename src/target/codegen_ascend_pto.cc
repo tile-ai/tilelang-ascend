@@ -1080,9 +1080,11 @@ void CodeGenTileLangAscendPto::BinaryVecOpsCodegen(const CallNode *op,
     this->PrintIndent();
     std::string index = PrintExpr(op->args[op->args.size() - 2]);
     std::string scalar_name = var_name + "_scalar";
+    this->stream << "pipe_barrier(PIPE_ALL);\n";
     this->stream << "auto " << scalar_name <<  "= " << var_name
                 << ".GetValue(" << index
                 << ");\n";
+    this->stream << "pipe_barrier(PIPE_ALL);\n";
     std::vector<std::string> ub_data_vector = ub_data_map_[ub_name];
     std::string var_name_temp = ub_name + "_temp";
     std::string ub_data_type = ub_data_vector[0];
