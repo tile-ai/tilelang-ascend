@@ -43,31 +43,47 @@ AICORE PTO_INLINE void mov_tile(int32_t src_addr,
     TMOV(dst_temp_ub, src_temp_ub);
 }
 
-// Valid
+
 template <typename T1, typename T2, uint32_t M, uint32_t N, uint32_t K,
-          uint32_t validM=M, uint32_t validN=N, uint32_t validK=K,
+          uint32_t validM = M, uint32_t validN = N, uint32_t validK = K,
           bool transpose_A = false, bool transpose_B = false>
 AICORE PTO_INLINE void gemm_v0(
-            TileMatL1<T1, M, K, validM, validK> &A, // l1a
-            TileMatL1<T1, K, N, validK, validN> &B, // l1b
-            TileAcc<T2, M, N, validM, validN> &C,   // l0c
-            bool clear) {
-    // Allocate l0a/l0b
-    TileLeft<T1, M, K> l0a;  // Zz
+    std::conditional_t<transpose_A,
+        TileMatL1<T1, K, M, validK, validM>,
+        TileMatL1<T1, M, K, validM, validK>>& A,
+    std::conditional_t<transpose_B,
+        TileMatL1<T1, N, K, validN, validK>,
+        TileMatL1<T1, K, N, validK, validN>>& B,
+    TileAcc<T2, M, N, validM, validN>& C,
+    bool clear) {
+        
+    TileLeft<T1, M, K> l0a;
     TASSIGN(l0a, 0x0);
-    TileRight<T1, K, N> l0b; // Zn
+    TileRight<T1, K, N> l0b;
     TASSIGN(l0b, 0x0);
 
     set_flag(PIPE_MTE2, PIPE_MTE1, EVENT_ID0);
     wait_flag(PIPE_MTE2, PIPE_MTE1, EVENT_ID0);
 
-    TEXTRACT(l0a, A, 0, 0);
-    TEXTRACT(l0b, B, 0, 0);
+    if constexpr (!transpose_A) {
+        TEXTRACT(l0a, A, 0, 0);
+    } else {  // transpose A
+        TileMatL1ZN<T1, M, K, validM, validK> A_t;
+        TRESHAPE(A_t, A);
+        TEXTRACT(l0a, A_t, 0, 0);
+    }
+    if constexpr (!transpose_B) {
+        TEXTRACT(l0b, B, 0, 0);
+    } else {  // transpose B
+        TileMatL1ZN<T1, K, N, validK, validN> B_t;
+        TRESHAPE(B_t, B);
+        TEXTRACT(l0b, B_t, 0, 0);
+    }
 
     set_flag(PIPE_MTE1, PIPE_M, EVENT_ID0);
     wait_flag(PIPE_MTE1, PIPE_M, EVENT_ID0);
      
-    if(clear) {
+    if (clear) {
         TMATMUL(C, l0a, l0b);
     } else {
         TMATMUL_ACC(C, C, l0a, l0b);
@@ -75,39 +91,6 @@ AICORE PTO_INLINE void gemm_v0(
 }
 
 
-// Valid Transpose
-template <typename T1, typename T2, uint32_t M, uint32_t N, uint32_t K,
-          uint32_t validM=M, uint32_t validN=N, uint32_t validK=K,
-          bool transpose_A = false, bool transpose_B = false>
-AICORE PTO_INLINE void gemm_v0(
-            TileMatL1<T1, M, K, validM, validK> &A, // l1a
-            TileMatL1<T1, N, K, validN, validK> &B, // l1b
-            TileAcc<T2, M, N, validM, validN> &C,   // l0c
-            bool clear) {
-    // Allocate l0a/l0b
-    TileLeft<T1, M, K> l0a;  // Zz
-    TASSIGN(l0a, 0x0);
-    TileRight<T1, K, N> l0b; // Zn
-    TASSIGN(l0b, 0x0);
-
-    set_flag(PIPE_MTE2, PIPE_MTE1, EVENT_ID0);
-    wait_flag(PIPE_MTE2, PIPE_MTE1, EVENT_ID0);
-
-    TileMatL1ZN<T1, K, N, validK, validN> B_t;
-    TRESHAPE(B_t, B);
-
-    TEXTRACT(l0a, A, 0, 0);
-    TEXTRACT(l0b, B_t, 0, 0);
-
-    set_flag(PIPE_MTE1, PIPE_M, EVENT_ID0);
-    wait_flag(PIPE_MTE1, PIPE_M, EVENT_ID0);
-     
-    if(clear) {
-        TMATMUL(C, l0a, l0b);
-    } else {
-        TMATMUL_ACC(C, C, l0a, l0b);
-    }
-}
 template <typename T1, typename T2, int32_t shape1, int32_t shape2, int32_t shape3,
         int32_t shape4, int32_t shape5, int32_t stride1, int32_t stride2, 
         int32_t stride3, int32_t stride4, int32_t stride5, uint32_t valid1, uint32_t valid2>
