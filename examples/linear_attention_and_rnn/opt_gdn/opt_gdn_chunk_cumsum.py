@@ -27,19 +27,20 @@ def cumsum_ker(B, H, L, C, CC = 8, accum_dtype="float"):
 			bz = (cid // chunk_num) // (H // VEC_NUM)
 
 			g_ub = T.alloc_ub([C * CC,], accum_dtype)
-			s_ub = T.alloc_ub([C * CC,], accum_dtype)
+			s_ub = T.alloc_ub([C * CC,], accum_dtype) # Process CC chunks at a time
 
 			with T.Scope("V"):
 				T.tile.fill(s_ub, 0.0)
 				T.copy(G[bz, by, bx * C * CC], g_ub)
 				T.set_flag("mte2", "v", 0)
 				T.wait_flag("mte2", "v", 0)
-				for ii in range(CC):
+				for ii in range(CC): # For each chunk
 					ofs = ii * C
 					s_ub[ofs + 0] = g_ub[ofs + 0]
 					for i in range(1, C):
 						tmp2 = s_ub[ofs + i - 1] + g_ub[ofs + i]
-						s_ub[ofs + i] = tmp2
+						s_ub[ofs + i] = tmp2 # Calculate prefix sum
+						# Must use variable tmp2 due to some compiler issue
 				T.set_flag("v", "mte3", 0)
 				T.wait_flag("v", "mte3", 0)
 				T.copy(s_ub, S[bz, by, bx * C * CC])
@@ -70,7 +71,7 @@ if __name__ == "__main__":
 		(2, 16, 16384, 128),
 	]
 
-	for B, H, L, C in test_configs:
+	for B, H, L, C in test_configs: # Ensure that L % (C * CC) = 0
 		print(f"Testing cumsum with B={B}, H={H}, L={L}, C={C}")
 		g = torch.randn((B, H, L)).npu().to(torch.float)
 		g_sum = chunk_cumsum(g, C)

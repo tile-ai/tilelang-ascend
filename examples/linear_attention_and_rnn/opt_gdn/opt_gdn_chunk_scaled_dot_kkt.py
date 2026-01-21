@@ -54,6 +54,7 @@ def kkt_ker(B, H, L, DK, C, BK = None, dtype="float16", accum_dtype="float"):
 			a_l0 = T.alloc_L0C([C, C], accum_dtype)
 
 			with T.Scope("C"):
+				# First calculate K * K^T
 				for i in T.serial(bk_num):
 					T.copy(K[bz, by, bx * C, i * BK], k_l1)
 					T.gemm_v0(k_l1, k_l1, a_l0, transpose_B = True, init = (i == 0))
@@ -61,15 +62,17 @@ def kkt_ker(B, H, L, DK, C, BK = None, dtype="float16", accum_dtype="float"):
 				T.set_cross_flag("FIX", 0)
 
 			with T.Scope("V"):
-				T.copy(G[bz, by, bx * C], g_ub)
+				T.copy(G[bz, by, bx * C], g_ub) # The g value of the whole chunk
 				T.copy(Beta[bz, by, bx * C + vid * C // VEC_NUM], beta_ub_half)
 				T.set_flag("mte2", "v", 0)
 				T.wait_flag("mte2", "v", 0)
 				T.copy(beta_ub_half, beta_ub)
-				T.copy(g_ub[vid * C // VEC_NUM : (vid + 1) * C // VEC_NUM], g_v_ub)
+				T.copy(g_ub[vid * C // VEC_NUM : (vid + 1) * C // VEC_NUM], g_v_ub) # The g value of current vector core
 				T.tile.fill(a_ub, 0.0)
+
+				# beta_i * exp(g_i - g_j) = exp(ln(beta_i) + g_i - g_j)
 				T.tile.ln(beta_ub, beta_ub)
-				T.tile.add(g_v_ub, g_v_ub, beta_ub)
+				T.tile.add(g_v_ub, g_v_ub, beta_ub) # g_v_ub now stores ln(beta_i) + g_i
 				T.copy(g_v_ub, g_r_ub[:, 0])
 				T.copy(g_ub, g_c_ub[0, :])
 				T.set_flag("v", "mte2", 0)
@@ -77,18 +80,18 @@ def kkt_ker(B, H, L, DK, C, BK = None, dtype="float16", accum_dtype="float"):
 				T.copy(Msk[vid * C // VEC_NUM, 0], msk_ub)
 				T.tile.broadcast(g_r_2d_ub, g_r_ub, tmp_ub)
 				T.tile.broadcast(g_c_2d_ub, g_c_ub, tmp_ub)
-				T.tile.sub(coeff_ub, g_r_2d_ub, g_c_2d_ub)
-				T.tile.exp(coeff_ub, coeff_ub)
+				T.tile.sub(coeff_ub, g_r_2d_ub, g_c_2d_ub) # coeff_ub now stores ln(beta_i) + g_i - g_j
+				T.tile.exp(coeff_ub, coeff_ub) # coeff_ub now stores beta_i * exp(g_i - g_j)
 
 				T.set_flag("v", "mte2", 0)
 				T.wait_flag("v", "mte2", 0)
 				T.wait_cross_flag(0)
-				T.copy(workspace[bz, by, bx * C + vid * C // VEC_NUM, 0], a_ub_half)
+				T.copy(workspace[bz, by, bx * C + vid * C // VEC_NUM, 0], a_ub_half) # Load K * K^T block
 				T.set_flag("mte2", "v", 0)
 				T.wait_flag("mte2", "v", 0)
 				T.copy(a_ub_half, a_ub)
-				T.tile.mul(a_ub, a_ub, coeff_ub)
-				T.tile.mul(a_ub, a_ub, msk_ub)
+				T.tile.mul(a_ub, a_ub, coeff_ub) # Apply the coeff
+				T.tile.mul(a_ub, a_ub, msk_ub) # Apply the strictlower mask
 				T.copy(a_ub, a_ub_half)
 				T.set_flag("v", "mte3", 0)
 				T.wait_flag("v", "mte3", 0)

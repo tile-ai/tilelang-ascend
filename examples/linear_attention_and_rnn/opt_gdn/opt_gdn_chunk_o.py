@@ -6,6 +6,7 @@ import torch.nn.functional as F
 '''
 Functionality:
 Calculate output, given chunk-by-chunk hidden state
+(Refer to README.md for formula. In this file, we transpose S by default)
 '''
 
 pass_configs = {
@@ -66,30 +67,30 @@ def chunk_o_ker(B, H, L, DK, DV, C, BK = None, BV = None, dtype="float16", accum
 				for i in T.serial(bk_num):
 					T.copy(Q[bz, by, bx * C, i * BK], q_l1)
 					T.copy(K[bz, by, bx * C, i * BK], k_l1)
-					T.gemm_v0(q_l1, k_l1, qk_l0, transpose_B = True, init = (i == 0))
+					T.gemm_v0(q_l1, k_l1, qk_l0, transpose_B = True, init = (i == 0)) # Q * K^T
 				for i in T.serial(bk_num):
 					T.copy(Q[bz, by, bx * C, i * BK], q_l1)
 					T.copy(S[bz, by, bx, i * BK, 0], s_l1)
-					T.gemm_v0(q_l1, s_l1, qs_l0, init = (i == 0))
+					T.gemm_v0(q_l1, s_l1, qs_l0, init = (i == 0)) # Q * S
 				T.copy(qk_l0, workspace_1[cid, 0, 0])
 				T.copy(qs_l0, workspace_2[cid, 0, 0])
 				T.set_cross_flag("FIX", 0)
 
 				T.wait_cross_flag(1)
-				T.copy(workspace_3[cid, 0, 0], qk_l1)
+				T.copy(workspace_3[cid, 0, 0], qk_l1) # Gamma \odot Mask \odot (Q * K^T)
 				for i in T.serial(bv_num):
 					T.copy(V[bz, by, bx * C, i * BV], v_l1)
 					T.gemm_v0(qk_l1, v_l1, qkv_l0, init = True)
-					T.copy(qkv_l0, workspace_2[cid, 0, i * BV])
+					T.copy(qkv_l0, workspace_2[cid, 0, i * BV]) # Term 2 of the formula (intra-chunk)
 				T.set_cross_flag("FIX", 2)
 			
 			with T.Scope("V"):
-				T.copy(G[bz, by, bx * C], g_ub)
+				T.copy(G[bz, by, bx * C], g_ub) # The g value of the whole chunk
 				T.copy(Msk[vid * C // VEC_NUM, 0], msk_ub)
 				T.set_flag("mte2", "v", 0)
 				T.wait_flag("mte2", "v", 0)
-				T.tile.fill(qk_ub, 0.0)
-				T.copy(g_ub[vid * C // VEC_NUM : (vid + 1) * C // VEC_NUM], g_v_ub)
+				T.tile.fill(qk_ub, 0.0) # reuse qk_ub as zero buffer temporarily
+				T.copy(g_ub[vid * C // VEC_NUM : (vid + 1) * C // VEC_NUM], g_v_ub) # The g value of current vector core
 				for i in range((C // VEC_NUM) // 4):
 					tmp0 = g_v_ub[i * 4]
 					tmp1 = g_v_ub[i * 4 + 1]
@@ -100,8 +101,10 @@ def chunk_o_ker(B, H, L, DK, DV, C, BK = None, BV = None, dtype="float16", accum
 					T.tile.sub(coeff_ub[i * 4 + 2, :], g_ub, tmp2)
 					T.tile.sub(coeff_ub[i * 4 + 3, :], g_ub, tmp3)
 				T.tile.sub(coeff_ub, qk_ub, coeff_ub)
-				T.tile.mul(coeff_ub, coeff_ub, msk_ub)
+				T.tile.mul(coeff_ub, coeff_ub, msk_ub) # This doesn't effect the result theoretically (because we apply the causal mask again later), but avoids overflow in exp in the next line
 				T.tile.exp(coeff_ub, coeff_ub)
+				# coeff_ub_{i, j} now stores exp((g_i - g_j) * Mask_{i, j})
+
 				T.tile.exp(g_v_ub, g_v_ub)
 
 				T.wait_cross_flag(0)
@@ -112,17 +115,17 @@ def chunk_o_ker(B, H, L, DK, DV, C, BK = None, BV = None, dtype="float16", accum
 				T.set_flag("v", "mte2", 0)
 				T.wait_flag("v", "mte2", 0)
 				T.copy(workspace_2[cid, vid * C // VEC_NUM, 0], qs_ub_half)
-				T.tile.mul(qk_ub, qk_ub, coeff_ub)
-				T.tile.mul(qk_ub, qk_ub, msk_ub)
+				T.tile.mul(qk_ub, qk_ub, coeff_ub) # Apply the coeff
+				T.tile.mul(qk_ub, qk_ub, msk_ub) # Apply the causal mask
 				T.copy(qk_ub, qk_ub_half)
 				T.set_flag("v", "mte3", 0)
 				T.wait_flag("v", "mte3", 0)
-				T.copy(qk_ub_half, workspace_3[cid, vid * C // VEC_NUM, 0])
+				T.copy(qk_ub_half, workspace_3[cid, vid * C // VEC_NUM, 0]) # Gamma \odot Mask \odot (Q * K^T)
 				T.set_cross_flag("MTE3", 1)
 
 				T.set_flag("mte2", "v", 0)
 				T.wait_flag("mte2", "v", 0)
-				T.copy(qs_ub_half, qs_ub)
+				T.copy(qs_ub_half, qs_ub) # Q * S
 				for i in range((C // VEC_NUM) // 4):
 					tmp0 = g_v_ub[i * 4]
 					tmp1 = g_v_ub[i * 4 + 1]
@@ -132,6 +135,7 @@ def chunk_o_ker(B, H, L, DK, DV, C, BK = None, BV = None, dtype="float16", accum
 					T.tile.mul(qs_ub[i * 4 + 1, :], qs_ub[i * 4 + 1, :], tmp1)
 					T.tile.mul(qs_ub[i * 4 + 2, :], qs_ub[i * 4 + 2, :], tmp2)
 					T.tile.mul(qs_ub[i * 4 + 3, :], qs_ub[i * 4 + 3, :], tmp3)
+				# qs_ub now stores diag(exp(g)) * Q * S, i.e. Term 1 of the formula (inter-chunk)
 				
 				T.wait_cross_flag(2)
 				T.copy(workspace_2[cid, vid * C // VEC_NUM, 0], o_ub_half)
@@ -139,7 +143,7 @@ def chunk_o_ker(B, H, L, DK, DV, C, BK = None, BV = None, dtype="float16", accum
 				T.wait_flag("mte2", "v", 0)
 				T.copy(o_ub_half, o_ub)
 				for (i, j) in T.Parallel(C // VEC_NUM, DV):
-					o_ub[i, j] = qs_ub[i, j] + o_ub[i, j]
+					o_ub[i, j] = qs_ub[i, j] + o_ub[i, j] # O = Term 1 + Term 2
 				T.copy(o_ub, o_ub_half)
 				T.set_flag("v", "mte3", 0)
 				T.wait_flag("v", "mte3", 0)

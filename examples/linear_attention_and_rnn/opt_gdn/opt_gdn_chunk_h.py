@@ -6,6 +6,7 @@ import torch.nn.functional as F
 '''
 Functionality:
 Calculate the chunk-by-chunk hidden state
+(Refer to README.md for formula. In this file, we transpose S by default)
 '''
 
 pass_configs = {
@@ -63,18 +64,18 @@ def chunk_h_ker(B, H, L, DK, DV, C, BK = None, BV = None, dtype="float16", accum
 			u_ub_half = T.alloc_ub([C // VEC_NUM, BV], dtype)
 
 			with T.Scope("C"):
-				for i in T.serial(chunk_num):
-					T.copy(workspace_3[cid, 0, 0], s_l1)
+				for i in T.serial(chunk_num): # Calculate hidden state S chunk by chunk
+					T.copy(workspace_3[cid, 0, 0], s_l1) # Previous S
 					T.copy(W[bz, by, i * C, 0], w_l1)
 					T.gemm_v0(w_l1, s_l1, ws_l0, init = True)
-					T.copy(ws_l0, workspace_1[cid, 0, 0])
+					T.copy(ws_l0, workspace_1[cid, 0, 0]) # W * S
 					T.set_cross_flag("FIX", 0)
 
 					T.wait_cross_flag(1)
-					T.copy(workspace_2[cid, 0, 0], k_l1)
-					T.copy(V[bz, by, i * C, bx * BV], v_l1)
+					T.copy(workspace_2[cid, 0, 0], k_l1) # \tilde K
+					T.copy(V[bz, by, i * C, bx * BV], v_l1) # New_V = U - W * S
 					T.gemm_v0(k_l1, v_l1, kv_l0, transpose_A = True, init = True)
-					T.copy(kv_l0, workspace_4[cid, 0, 0])
+					T.copy(kv_l0, workspace_4[cid, 0, 0]) # \tilde K * New_V
 					T.set_cross_flag("FIX", 2)
 
 					T.wait_cross_flag(3)
@@ -82,14 +83,14 @@ def chunk_h_ker(B, H, L, DK, DV, C, BK = None, BV = None, dtype="float16", accum
 			with T.Scope("V"):
 				T.tile.fill(zero_ub, 0.0)
 				T.tile.fill(s_ub, 0.0)
-				T.copy(K[bz, by, vid * C // VEC_NUM, 0], k_ub_half)
-				T.copy(G[bz, by, 0], g_ub)
+				T.copy(K[bz, by, vid * C // VEC_NUM, 0], k_ub_half) # Preload K and g for the first chunk
+				T.copy(G[bz, by, 0], g_ub) # The g value of the whole chunk
 				T.set_flag("mte2", "v", 0)
 				T.wait_flag("mte2", "v", 0)
-				for i in T.serial(chunk_num):
+				for i in T.serial(chunk_num): # Calculate hidden state S chunk by chunk
 					T.copy(U[bz, by, i * C + vid * C // VEC_NUM, bx * BV], u_ub_half)
 					T.copy(k_ub_half, k_ub)
-					T.copy(g_ub[vid * C // VEC_NUM : (vid + 1) * C // VEC_NUM], g_v_ub)
+					T.copy(g_ub[vid * C // VEC_NUM : (vid + 1) * C // VEC_NUM], g_v_ub) # The g value of current vector core
 					tmp = g_ub[C - 1]
 					for i in T.Parallel(C // VEC_NUM):
 						coeff_ub[i] = g_v_ub[i] - tmp
@@ -97,11 +98,15 @@ def chunk_h_ker(B, H, L, DK, DV, C, BK = None, BV = None, dtype="float16", accum
 						coeff_ub[i] = zero_ub[i] - coeff_ub[i]
 					for i in T.Parallel(C // VEC_NUM):
 						coeff_ub[i] = T.exp(coeff_ub[i])
+					# coeff_ub now stores exp(g_last - g_i)
+					
 					for i in T.Parallel(C):
 						g_ub[i] = T.exp(g_ub[i])
 					T.set_flag("mte2", "v", 0)
 					T.wait_flag("mte2", "v", 0)
 					T.copy(u_ub_half, u_ub)
+
+					#\tilde K = K * exp(g_last - g_i)
 					for i in range((C // VEC_NUM) // 4):
 						tmp0 = coeff_ub[i * 4]
 						tmp1 = coeff_ub[i * 4 + 1]
@@ -118,7 +123,7 @@ def chunk_h_ker(B, H, L, DK, DV, C, BK = None, BV = None, dtype="float16", accum
 					T.wait_flag("mte2", "v", 0)
 					T.copy(u_ub_half, ws_ub)
 					for (i, j) in T.Parallel(C // VEC_NUM, BV):
-						u_ub[i, j] = u_ub[i, j] - ws_ub[i, j]
+						u_ub[i, j] = u_ub[i, j] - ws_ub[i, j] # New_V = U - W * S
 					T.copy(u_ub, u_ub_half)
 					T.copy(k_ub, k_ub_half)
 					T.set_flag("v", "mte3", 0)
@@ -129,11 +134,13 @@ def chunk_h_ker(B, H, L, DK, DV, C, BK = None, BV = None, dtype="float16", accum
 
 					tmp = g_ub[C - 1]
 					T.tile.mul(s_ub, s_ub, tmp)
+					# s_ub now stores S * exp(g_last)
+
 					T.set_flag("v", "mte2", 0)
 					T.wait_flag("v", "mte2", 0)
 					if i < chunk_num - 1:
-						T.copy(K[bz, by, (i + 1) * C + vid * C // VEC_NUM, 0], k_ub_half)
-						T.copy(G[bz, by, (i + 1) * C], g_ub)
+						T.copy(K[bz, by, (i + 1) * C + vid * C // VEC_NUM, 0], k_ub_half) # Preload K and g for the next chunk
+						T.copy(G[bz, by, (i + 1) * C], g_ub) # The g value of the whole chunk
 					
 					T.wait_cross_flag(2)
 					T.copy(workspace_4[cid, vid * DK // VEC_NUM, 0], s_ub_half)
@@ -142,18 +149,18 @@ def chunk_h_ker(B, H, L, DK, DV, C, BK = None, BV = None, dtype="float16", accum
 					T.copy(s_ub_half, kv_ub)
 					T.barrier_all()
 					for (i, j) in T.Parallel(DK // VEC_NUM, BV):
-						s_ub[i, j] = s_ub[i, j] + kv_ub[i, j]
+						s_ub[i, j] = s_ub[i, j] + kv_ub[i, j] # S_next = S * exp(g_last) + \tilde K * New_V
 					T.copy(s_ub, s_ub_half)
 					if i < chunk_num - 1:
 						T.set_flag("v", "mte3", 0)
 						T.wait_flag("v", "mte3", 0)
 						T.copy(s_ub_half, workspace_3[cid, vid * DK // VEC_NUM, 0])
-						T.copy(s_ub_half, S[bz, by, i + 1, vid * DK // VEC_NUM, bx * BV])
+						T.copy(s_ub_half, S[bz, by, i + 1, vid * DK // VEC_NUM, bx * BV]) # Store state S at the end of this chunk
 					T.set_cross_flag("MTE3", 3)
 				
 				T.set_flag("v", "mte3", 0)
 				T.wait_flag("v", "mte3", 0)
-				T.copy(s_ub_half, FS[bz, by, vid * DK // VEC_NUM, bx * BV])
+				T.copy(s_ub_half, FS[bz, by, vid * DK // VEC_NUM, bx * BV]) # Final state, will not be used to calculate output, just for verification
 
 	return main
 
