@@ -9,6 +9,7 @@ Calculate the chunk-by-chunk hidden state
 '''
 
 pass_configs = {
+	tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
 	tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: False,
 }
 
@@ -60,8 +61,6 @@ def chunk_h_ker(B, H, L, DK, DV, C, BK = None, BV = None, dtype="float16", accum
 			k_ub_half = T.alloc_ub([C // VEC_NUM, DK], dtype)
 			s_ub_half = T.alloc_ub([DK // VEC_NUM, BV], dtype)
 			u_ub_half = T.alloc_ub([C // VEC_NUM, BV], dtype)
-			kv_ub_half = T.alloc_ub([DK // VEC_NUM, BV], dtype)
-			ws_ub_half = T.alloc_ub([C // VEC_NUM, BV], dtype)
 
 			with T.Scope("C"):
 				for i in T.serial(chunk_num):
@@ -100,6 +99,9 @@ def chunk_h_ker(B, H, L, DK, DV, C, BK = None, BV = None, dtype="float16", accum
 						coeff_ub[i] = T.exp(coeff_ub[i])
 					for i in T.Parallel(C):
 						g_ub[i] = T.exp(g_ub[i])
+					T.set_flag("mte2", "v", 0)
+					T.wait_flag("mte2", "v", 0)
+					T.copy(u_ub_half, u_ub)
 					for i in range((C // VEC_NUM) // 4):
 						tmp0 = coeff_ub[i * 4]
 						tmp1 = coeff_ub[i * 4 + 1]
@@ -111,11 +113,10 @@ def chunk_h_ker(B, H, L, DK, DV, C, BK = None, BV = None, dtype="float16", accum
 						T.tile.mul(k_ub[i * 4 + 3, :], k_ub[i * 4 + 3, :], tmp3)
 
 					T.wait_cross_flag(0)
-					T.copy(workspace_1[cid, vid * C // VEC_NUM, 0], ws_ub_half)
+					T.copy(workspace_1[cid, vid * C // VEC_NUM, 0], u_ub_half)
 					T.set_flag("mte2", "v", 0)
 					T.wait_flag("mte2", "v", 0)
-					T.copy(ws_ub_half, ws_ub)
-					T.copy(u_ub_half, u_ub)
+					T.copy(u_ub_half, ws_ub)
 					for (i, j) in T.Parallel(C // VEC_NUM, BV):
 						u_ub[i, j] = u_ub[i, j] - ws_ub[i, j]
 					T.copy(u_ub, u_ub_half)
@@ -135,10 +136,11 @@ def chunk_h_ker(B, H, L, DK, DV, C, BK = None, BV = None, dtype="float16", accum
 						T.copy(G[bz, by, (i + 1) * C], g_ub)
 					
 					T.wait_cross_flag(2)
-					T.copy(workspace_4[cid, vid * DK // VEC_NUM, 0], kv_ub_half)
+					T.copy(workspace_4[cid, vid * DK // VEC_NUM, 0], s_ub_half)
 					T.set_flag("mte2", "v", 0)
 					T.wait_flag("mte2", "v", 0)
-					T.copy(kv_ub_half, kv_ub)
+					T.copy(s_ub_half, kv_ub)
+					T.barrier_all()
 					for (i, j) in T.Parallel(DK // VEC_NUM, BV):
 						s_ub[i, j] = s_ub[i, j] + kv_ub[i, j]
 					T.copy(s_ub, s_ub_half)
@@ -212,7 +214,7 @@ if __name__ == "__main__":
 	torch.set_printoptions(threshold = float('inf'), sci_mode = True)
 
 	test_configs = [
-		(1, 1, 128, 64, 64, 64),
+		(2, 16, 16384, 128, 128, 128),
 	]
 
 	for B, H, L, DK, DV, C in test_configs:

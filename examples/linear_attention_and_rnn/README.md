@@ -47,50 +47,15 @@ Our implementation of chunkwise parallelism resembles that of [Flash Linear Atte
 
 ### Optimize Results
 
-- `chunk_cumsum`:
+Shape: $(B,H,L,DK,DV,C)=(16,16,16384,128,128,128)$.
 
-  $(B,H,L,C)=(1,2,16384,64)$.
+|        Kernel        | Latency (ms) |    #ops (approx)     |  TFLOPS  |
+| :------------------: | :----------: | :------------------: | :------: |
+|     chunk_cumsum     |    $1.93$    |  $4.19\times 10^6$   | $0.0021$ |
+| chunk_scaled_dot_kkt |    $8.76$    | $6.87\times 10^{10}$ |  $7.84$  |
+|      solve_tril      |   $24.89$    | $2.29\times 10^{10}$ |  $0.92$  |
+|       wy_fast        |    $9.92$    | $1.37\times 10^{11}$ | $13.85$  |
+|       chunk_h        |    $9.38$    | $2.75\times 10^{11}$ | $29.30$  |
+|       chunk_o        |   $13.19$    | $3.44\times 10^{11}$ | $26.04$  |
+|        total         |   $68.07$    | $8.48\times 10^{11}$ | $12.45$  |
 
-  Running time (original): $58\text{ us}(\times 24\text{ cores})$
-  
-  Running time (optimized): $18\text{ us}(\times 24\text{ cores})$
-
-- `chunk_scaled_dot_kkt`:
-
-  $(B,H,L,DK,C)=(1,1,64,64,64)$.
-
-  Running time (original): $3.9\text{ us}$
-  
-  Running time (optimized): $2.1\text{ us}$
-
-- `solve_tril`:
-
-  $(B,H,L,C)=(1,2,64,64)$.
-
-  Running time (original): $133\text{ us}$
-  
-  Running time (optimized): $21\text{ us}(\times 2\text{ cores})$
-
-- `wy_fast`:
-
-  $(B,H,L,DK,DV,C)=(1,1,64,64,64,64)$.
-
-  Running time (original): $4.9\text{ us}$
-  
-  Running time (optimized): $3.0\text{ us}$
-
-- `chunk_h`:
-
-  $(B,H,L,DK,DV,C)=(1,1,128,64,64,64)$.
-
-  Running time (original): $7.5\text{ us}$
-  
-  Running time (optimized): $5.4\text{ us}$
-
-- `chunk_o`:
-
-  $(B,H,L,DK,DV,C)=(1,1,64,64,64,64)$.
-
-  Running time (original): $4.1\text{ us}$
-  
-  Running time (optimized): $3.2\text{ us}$

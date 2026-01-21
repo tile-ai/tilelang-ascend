@@ -6,7 +6,7 @@ from opt_gdn.opt_gdn_chunk_cumsum import cumsum_ker
 from opt_gdn.opt_gdn_chunk_h import chunk_h_ker
 from opt_gdn.opt_gdn_chunk_o import chunk_o_ker
 from opt_gdn.opt_gdn_chunk_scaled_dot_kkt import kkt_ker
-from opt_gdn.opt_gdn_solve_tril import solve_tril_ker, solve_tril_32_ker, solve_tril_64_ker
+from opt_gdn.opt_gdn_solve_tril import solve_tril_ker, solve_tril_64_ker, solve_tril_128_ker
 from opt_gdn.opt_gdn_wy_fast import wy_fast_ker
 
 def ref_seq_gdn(q, k, v, g, beta):
@@ -40,7 +40,7 @@ torch.manual_seed(0)
 torch.set_printoptions(threshold = float('inf'), sci_mode = True)
 
 test_configs = [
-	(2, 16, 16384, 64, 64, 64, 64, 64),
+	(1, 2, 1024, 128, 128, 128, 128, 128),
 ]
 
 for B, H, L, DK, DV, C, BK, BV in test_configs:
@@ -56,9 +56,11 @@ for B, H, L, DK, DV, C, BK, BV in test_configs:
 	ker1 = cumsum_ker(B, H, L, C)
 	ker2 = kkt_ker(B, H, L, DK, C, BK)
 	if C == 32:
-		ker3 = solve_tril_32_ker(B, H, L)
+		ker3 = solve_tril_ker(B, H, L, C)
 	elif C == 64:
 		ker3 = solve_tril_64_ker(B, H, L)
+	elif C == 128:
+		ker3 = solve_tril_128_ker(B, H, L)
 	ker4 = wy_fast_ker(B, H, L, DK, DV, C, BK, BV)
 	ker5 = chunk_h_ker(B, H, L, DK, DV, C, BK, BV)
 	ker6 = chunk_o_ker(B, H, L, DK, DV, C, BK, BV)

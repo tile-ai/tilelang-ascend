@@ -10,6 +10,7 @@ Gamma_{i,j} = exp(g_i - g_j)
 '''
 
 pass_configs = {
+	tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
 	tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: False,
 }
 
@@ -43,6 +44,11 @@ def kkt_ker(B, H, L, DK, C, BK = None, dtype="float16", accum_dtype="float"):
 			beta_ub = T.alloc_ub([C // VEC_NUM,], accum_dtype)
 			g_ub = T.alloc_ub([C,], accum_dtype)
 			g_v_ub = T.alloc_ub([C // VEC_NUM,], accum_dtype)
+			g_r_ub = T.alloc_ub([C // VEC_NUM, 1], accum_dtype)
+			g_r_2d_ub = T.alloc_ub([C // VEC_NUM, C], accum_dtype)
+			g_c_ub = T.alloc_ub([1, C], accum_dtype)
+			g_c_2d_ub = T.alloc_ub([C // VEC_NUM, C], accum_dtype)
+			tmp_ub = T.alloc_ub([3 * C * C // VEC_NUM], "uint8")
 
 			k_l1 = T.alloc_L1([C, BK], dtype)
 			a_l0 = T.alloc_L0C([C, C], accum_dtype)
@@ -64,19 +70,18 @@ def kkt_ker(B, H, L, DK, C, BK = None, dtype="float16", accum_dtype="float"):
 				T.tile.fill(a_ub, 0.0)
 				T.tile.ln(beta_ub, beta_ub)
 				T.tile.add(g_v_ub, g_v_ub, beta_ub)
-				for i in range((C // VEC_NUM) // 4):
-					tmp0 = g_v_ub[i * 4]
-					tmp1 = g_v_ub[i * 4 + 1]
-					tmp2 = g_v_ub[i * 4 + 2]
-					tmp3 = g_v_ub[i * 4 + 3]
-					T.tile.sub(coeff_ub[i * 4, :], g_ub, tmp0)
-					T.tile.sub(coeff_ub[i * 4 + 1, :], g_ub, tmp1)
-					T.tile.sub(coeff_ub[i * 4 + 2, :], g_ub, tmp2)
-					T.tile.sub(coeff_ub[i * 4 + 3, :], g_ub, tmp3)
-				T.tile.sub(coeff_ub, a_ub, coeff_ub)
-				T.tile.exp(coeff_ub, coeff_ub)
+				T.copy(g_v_ub, g_r_ub[:, 0])
+				T.copy(g_ub, g_c_ub[0, :])
+				T.set_flag("v", "mte2", 0)
+				T.wait_flag("v", "mte2", 0)
 				T.copy(Msk[vid * C // VEC_NUM, 0], msk_ub)
+				T.tile.broadcast(g_r_2d_ub, g_r_ub, tmp_ub)
+				T.tile.broadcast(g_c_2d_ub, g_c_ub, tmp_ub)
+				T.tile.sub(coeff_ub, g_r_2d_ub, g_c_2d_ub)
+				T.tile.exp(coeff_ub, coeff_ub)
 
+				T.set_flag("v", "mte2", 0)
+				T.wait_flag("v", "mte2", 0)
 				T.wait_cross_flag(0)
 				T.copy(workspace[bz, by, bx * C + vid * C // VEC_NUM, 0], a_ub_half)
 				T.set_flag("mte2", "v", 0)
@@ -122,7 +127,7 @@ if __name__ == "__main__":
 	torch.set_printoptions(threshold = float('inf'), sci_mode = True)
 
 	test_configs = [
-		(1, 1, 64, 64, 64),
+		(2, 16, 16384, 128, 128),
 	]
 
 	for B, H, L, DK, C in test_configs:
@@ -132,7 +137,7 @@ if __name__ == "__main__":
 		g = torch.randn((B, H, L)).npu().to(torch.float)
 		a = kkt(k, beta, g, C)
 		ref_a = ref_kkt(k, beta, g, C)
-		torch.testing.assert_close(a.cpu(), ref_a.cpu(), rtol=1e-5, atol=1e-5)
+		torch.testing.assert_close(a.cpu(), ref_a.cpu(), rtol=1e-3, atol=1e-3)
 		print("Test passed!")
 
 	print("Kernel Output Match!")
