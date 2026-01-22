@@ -549,9 +549,9 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
   } else if (op->op.same_as(tl::ascend_reinterpretcast())) {
     ReinterpretCastCodegen(op);
   } else if (op->op.same_as(tl::ascend_clamp_max())) {
-      ClampCodegen(op)
+      ClampCodegen(op);
   } else if (op->op.same_as(tl::ascend_clamp_min())) {
-      ClampCodegen(op)
+      ClampCodegen(op);
   } else if (op->op.same_as(tl::ascend_round())) {
       RoundCodegen(op, "AscendC::Round");
   } else {
