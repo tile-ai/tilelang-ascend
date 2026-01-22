@@ -22,7 +22,7 @@ namespace codegen {
 
 class CodeGenTileLangAscendPto final : public CodeGenC {
 public:
-  CodeGenTileLangAscendPto(std::string plantform);
+  CodeGenTileLangAscendPto(std::string platform);
   std::string Finish();
   // override behavior
   void PrintFuncPrefix(std::ostream &os) final;
@@ -84,6 +84,8 @@ private:
 
   void SetAndWaitFlagCodegen(const CallNode *op, const std::string &op_name);
 
+  void HandleA5Flag(const std::string &op, const std::string &pipe, int flag);
+
   void SetCrossFlagCodegen(const CallNode *op);
 
   void AutoSetCrossFlagCodegen(const CallNode *op);
@@ -93,6 +95,8 @@ private:
   void FillCodegen(const CallNode *op);
 
   std::string PrintBufferOffset(const CallNode *op);
+  void UbShapeInputCheck(const AllocateNode *op);
+  bool ValidLayoutEnabled(const AllocateNode *op);
 
   // Whether global barrier is needed.
   bool need_global_barrier_{false};
@@ -126,6 +130,7 @@ private:
   std::string vec_id_;
 
   Map<Var, PrimExpr> address_map_;
+  Map<Var, Array<PrimExpr>> buffer_shapess_;
 
   Map<Var, PrimExpr> tiling_map_;
   Array<Var> var_sequence_;
@@ -149,7 +154,9 @@ private:
 
   bool use_swizzle_{false};
 
-  std::string plantform_;
+  std::string platform_;
+
+  std::string current_resource_scope_ = ""; // 标识是CUBE还是VEC
 };
 
 } // namespace codegen

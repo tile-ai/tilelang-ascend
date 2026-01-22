@@ -307,6 +307,7 @@ private:
                          Op::Get("tl.ascend_auto_wait_cross_flag"),
                          {
                              Integer(sp.sync_flag_id),
+                             StringImm(""),
                          }));
   }
 };

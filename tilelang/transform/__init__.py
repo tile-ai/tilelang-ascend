@@ -423,3 +423,14 @@ def AscendInferBufferScope():
     ----
     """
     return _ffi_api.InferAllocScope()  # type: ignore
+
+def CollectBufferShapes():
+    """Infer Buffer Scope for Ascend.
+
+    Returns
+    -------
+    fpass : tvm.transform.Pass
+        The result pass
+    ----
+    """
+    return _ffi_api.CollectBufferShapes()  # type: ignore

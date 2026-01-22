@@ -414,12 +414,12 @@ private:
         if (!alloc_info || alloc_info->original_scope != "shared.dyn") {
           continue;
     }
-        
+
         BufferUseInfo* use_info = collector_->GetUseInfo(handle);
         if (!use_info) {
           continue;
         }
-        
+
         bool only_in_ascend_copy = false;
         if (!use_info->used_in_cube && !use_info->used_in_vector) {
           only_in_ascend_copy = true;
@@ -430,7 +430,7 @@ private:
             }
           }
         }
-        
+
         if (!only_in_ascend_copy) {
           continue;
         }
@@ -438,23 +438,23 @@ private:
         if (pos_info_it == collector_->ascend_copy_position_info.end()) {
           continue;
         }
-        
+
         const AscendCopyPositionInfo& pos_info = pos_info_it->second;
 
         bool found_qualified_copy = false;
-        
+
         for (const auto& pair : pos_info.first_second_pairs) {
           const VarNode* second_handle = pair.second;
           BufferAllocationInfo* second_alloc = collector_->GetAllocInfo(second_handle);
           if (!second_alloc) {
             continue;
           }
-          
+
           std::string second_scope = second_alloc->corrected_scope;
           if (second_scope.empty()) {
             second_scope = second_alloc->original_scope;
           }
-          
+
           if (second_scope == "wmma.matrix_a" || second_scope == "wmma.matrix_b") {
             found_qualified_copy = true;
             break;
@@ -465,7 +465,7 @@ private:
         } else {
           alloc_info->corrected_scope = "shared";
         }
-        
+
         if (alloc_info->corrected_scope != alloc_info->original_scope) {
           if (alloc_info->alloc_node) {
             scope_corrections_[alloc_info->alloc_node] = alloc_info->corrected_scope;

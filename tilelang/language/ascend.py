@@ -135,7 +135,7 @@ def set_cross_flag(pipe: str, flag: int):
     )
 
 
-def wait_cross_flag(flag: int):
+def wait_cross_flag(flag: int, pipe: _pipe | Literal[""] = ""):
     """
     Waits for a cross-core synchronization flag.
 
@@ -144,11 +144,15 @@ def wait_cross_flag(flag: int):
 
     Args:
         flag (int): The event ID index to wait for.
+        pipe (str, optional): The specific execution pipe to wait on (e.g., "mte1", "fix").
+            Defaults to "".
+            **Note:** This parameter is only supported on the **A5 platform**.
+            For other architectures, this must be left as an empty string.
 
     Returns:
         tvm.tir.Call: A TIR intrinsic call node.
     """
-    return tir.call_intrin("handle", tir.op.Op.get("tl.ascend_wait_cross_flag"), flag)
+    return tir.call_intrin("handle", tir.op.Op.get("tl.ascend_wait_cross_flag"), flag, pipe)
 
 
 def set_flag(src: _pipe, dst: _pipe, eventId: int):
