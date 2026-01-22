@@ -2786,9 +2786,16 @@ mlir::Value CodeGenTileLangNPUIRDEV::VisitExpr_(const BufferLoadNode *op) {
     convert_inds.push_back(indexVal);
   }
 
-  // Create tensor.extract op in MLIR
-  return builder.create<mlir::tensor::ExtractOp>(builder.getUnknownLoc(), mem,
-                                               convert_inds);
+  if (mem.getType().isa<mlir::MemRefType>()) {
+    // Create a memref.load op for the memref-typed buffer.
+    return builder.create<mlir::memref::LoadOp>(builder.getUnknownLoc(), mem, convert_inds);
+  } else if (mem.getType().isa<mlir::TensorType>()) {
+    // Create a tensor.extract op for the tensor-typed buffer.
+    return builder.create<mlir::tensor::ExtractOp>(builder.getUnknownLoc(), mem, convert_inds);
+  } else {
+    // Throw a fatal error for illegal types
+    LOG(FATAL) << "The buffer type in BufferLoadNode must be one of tensor or memref";
+  }
 }
 
 mlir::Value CodeGenTileLangNPUIRDEV::VisitExpr_(const RampNode *op) {
@@ -2828,9 +2835,19 @@ void CodeGenTileLangNPUIRDEV::VisitStmt_(const BufferStoreNode *op) {
     convert_inds.push_back(indexVal);
   }
 
-  mlir::Value result = builder.create<mlir::tensor::InsertOp>(builder.getUnknownLoc(), mlir_value,
-                                         mem, convert_inds);
-  SetVarValue(buffer, result);
+  if (mem.getType().isa<mlir::MemRefType>()) {
+    // Create a memref.store op for the memref-typed buffer.
+    builder.create<mlir::memref::StoreOp>(builder.getUnknownLoc(), mlir_value,
+                                          mem, convert_inds);
+  } else if (mem.getType().isa<mlir::TensorType>()) {
+    // Create a tensor.insert op for the tensor-typed buffer.
+    mlir::Value result = builder.create<mlir::tensor::InsertOp>(builder.getUnknownLoc(), mlir_value,
+                                                                mem, convert_inds);
+    SetVarValue(buffer, result);
+  } else {
+    // Throw a fatal error for illegal types
+    LOG(FATAL) << "The buffer type in BufferStoreNode must be one of tensor or memref";
+  }
 }
 
 void CodeGenTileLangNPUIRDEV::VisitStmt_(const WhileNode *op) {
