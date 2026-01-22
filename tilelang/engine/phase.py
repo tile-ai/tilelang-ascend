@@ -75,7 +75,7 @@ def LowerAndLegalize(mod: IRModule, target: Target) -> IRModule:
     return mod
 
 
-def OptimizeForTarget(mod: IRModule, target: Target) -> IRModule:
+def OptimizeForTarget(mod: IRModule, target: Target, platform: str) -> IRModule:
     from tilelang.utils.target import check_npu_availability
     pass_ctx = tilelang.transform.get_pass_context()
     mod = tir.transform.PlanAndUpdateBufferAllocationLocation()(mod)
@@ -98,6 +98,6 @@ def OptimizeForTarget(mod: IRModule, target: Target) -> IRModule:
     mod = tir.transform.RewriteUnsafeSelect()(mod)
     mod = tir.transform.HoistIfThenElse()(mod)
     mod = tilelang.transform.AscendMemoryPlanning()(mod)
-    mod = tilelang.transform.AscendSyncInsert()(mod)
+    mod = tilelang.transform.AscendSyncInsert(target, platform)(mod)
     # print(mod)
     return mod
