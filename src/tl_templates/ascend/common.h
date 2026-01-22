@@ -244,9 +244,6 @@ CATLASS_DEVICE void reduce_sum(LocalTensor<T> const &dstTensor,
                                LocalTensor<T> const &srcTensor,
                                LocalTensor<uint8_t> const &sharedTmpBuffer) {
   uint32_t shape[] = {M, N};
-  // if (count > 0) {
-  //   shape[1] = count / M;
-  // }
   if constexpr (dim == -1) {
     AscendC::ReduceSum<T, AscendC::Pattern::Reduce::AR>(
         dstTensor, srcTensor, sharedTmpBuffer, shape, true
@@ -263,9 +260,6 @@ CATLASS_DEVICE void reduce_max(LocalTensor<T> const &dstTensor,
                                LocalTensor<T> const &srcTensor,
                                LocalTensor<uint8_t> const &sharedTmpBuffer) {
   uint32_t shape[] = {M, N};
-  // if (count > 0) {
-  //   shape[1] = count / M;
-  // }
   if constexpr (dim == -1) {
     AscendC::ReduceMax<T, AscendC::Pattern::Reduce::AR>(
         dstTensor, srcTensor, sharedTmpBuffer, shape, true
@@ -549,6 +543,12 @@ CATLASS_DEVICE void gemmL1(LocalTensor<T1> A, LocalTensor<T1> B,
   }
 }
 
+template <typename T, int32_t dim, int32_t axis, bool isReuseSource = false>
+CATLASS_DEVICE void Broadcast(const LocalTensor<T> &dst, const LocalTensor<T> &src, LocalTensor<uint8_t> &sharedTmpBuffer,
+                              const uint32_t dstShape[dim], const uint32_t srcShape[dim]) {
+  AscendC::Broadcast<T, dim, axis, isReuseSource>(dst, src, dstShape, srcShape, sharedTmpBuffer);
+}
+
 template <typename T>
 CATLASS_DEVICE void Fill(const LocalTensor<T>& dst, const T& scalarValue, const int32_t& count) {
   AscendC::Duplicate<T>(dst, scalarValue, count);
@@ -567,11 +567,6 @@ CATLASS_DEVICE void Sort(const LocalTensor<T> &dst, const LocalTensor<T> &concat
   AscendC::Sort<T, isFullSort>(dst, concat, index, tmp, repeatTime);
 }
 
-template <typename T, int32_t dim, int32_t axis, bool isReuseSource = false>
-CATLASS_DEVICE void Broadcast(const LocalTensor<T> &dst, const LocalTensor<T> &src,
-                              const uint32_t dstShape[dim], const uint32_t srcShape[dim]) {
-  AscendC::Broadcast<T, dim, axis, isReuseSource>(dst, src, dstShape, srcShape);
-}
 
 template <typename T>
 CATLASS_DEVICE void ClampMax(const LocalTensor<T> &dst, const LocalTensor<T> &buffer, const LocalTensor<T> &tmp,

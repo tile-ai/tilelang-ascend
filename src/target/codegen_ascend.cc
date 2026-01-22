@@ -31,6 +31,8 @@ std::string getType(const DataType &dtype) {
     return "half";
   } else if (dtype.is_float()) {
     return "float";
+  } else if (dtype.is_int() && dtype.bits() == 4) {
+    return "AscendC::int4b_t";
   } else if (dtype.is_int() && dtype.bits() == 8) {
     return "int8_t";
   } else if (dtype.is_int() && dtype.bits() == 16) {
@@ -1030,8 +1032,7 @@ void CodeGenTileLangAscend::AddFunction(const GlobalVar &gvar,
   std::string content = stream.str();
 }
 
-std::string
-CodeGenTileLangAscend::PrintBufferOffset(const CallNode *call_arg_node,
+std::string CodeGenTileLangAscend::PrintBufferOffset(const CallNode *call_arg_node,
                                          bool has_offset) {
   auto _var = call_arg_node->args[1].as<VarNode>();
   auto _var_offset = PrintExpr(call_arg_node->args[2]);
@@ -1343,7 +1344,7 @@ void CodeGenTileLangAscend::DivsOpCodegen(const CallNode *op) {
                  << ");\n";
     var_names.push_back(var_name + "_scalar");
   } else {
-    var_names.push_back(PrintExpr(op->args[op->args.size() - 2]));
+    var_names.push_back("1.0f / " + PrintExpr(op->args[op->args.size() - 2]));
   }
   this->PrintIndent();
   this->stream << "AscendC::Muls"
@@ -1539,7 +1540,7 @@ void CodeGenTileLangAscend::PowerOpCodegen(const CallNode *op,
 
 void CodeGenTileLangAscend::BroadcastOpCodegen(const CallNode *op) {
   std::string op_name = Downcast<StringImm>(op->args[0])->value;
-  int dim = op->args[3].as<IntImmNode>()->value;
+  int dim = op->args[4].as<IntImmNode>()->value;
 
   this->PrintIndent();
   this->stream << op_name << "(";
@@ -1547,11 +1548,13 @@ void CodeGenTileLangAscend::BroadcastOpCodegen(const CallNode *op) {
   this->stream << PrintBufferOffset(op->args[1].as<CallNode>()) << ",";
   // 2. Src Buffer
   this->stream << PrintBufferOffset(op->args[2].as<CallNode>()) << ",";
-  // 3. Dst Shape Array
-  PrintConstArray(op, 4, dim);
+  // 3. Tmp Buffer
+  this->stream << PrintBufferOffset(op->args[3].as<CallNode>(), false) << ",";
+  // 4. Dst Shape Array
+  PrintConstArray(op, 5, dim);
   this->stream << ", ";
-  // 4. Src Shape Array
-  PrintConstArray(op, 4 + dim, dim);
+  // 5. Src Shape Array
+  PrintConstArray(op, 5 + dim, dim);
   this->stream << ");\n";
 }
 
@@ -1629,7 +1632,7 @@ void CodeGenTileLangAscend::DumpTensorCodegen(const CallNode *op) {
   this->PrintIndent();
   this->stream << "tl::ascend::DumpTensor" << "(";
 
-  // 0. Buffer鎸囬拡
+  // 0. Buffer指针
   this->stream << PrintBufferOffset(op->args[0].as<CallNode>()) << ",";
   // 1. desc
   this->stream << PrintExpr(op->args[1]) << ", ";
@@ -1638,7 +1641,7 @@ void CodeGenTileLangAscend::DumpTensorCodegen(const CallNode *op) {
   // 3. dim (len(shape_info))
   this->stream << PrintExpr(op->args[3]) << ", ";
 
-  // 4. shapeInfo鏁扮粍鎸囬拡
+  // 4. shapeInfo数组指针
   if (op->args.size() > 4) {
     this->stream << "(uint32_t[]){";
     for (int i = 4; i < op->args.size(); ++i) {

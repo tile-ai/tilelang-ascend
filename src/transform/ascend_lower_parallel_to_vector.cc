@@ -153,18 +153,9 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
   int64_t vector_dim_extent_{0};  // Track the extent of the vector dimension loop
   int64_t outer_dim_extent_{0};   // Track the extent of the outer dimension loop
 
-  Buffer CreateTempBufferLike(const Buffer& ref) {
+  Buffer CreateTempBufferLike(const Buffer& ref, int64_t num_elements, int64_t inner_vec_len = 0) {
     DataType dtype = ref->dtype;
-    int64_t num_elements = 1;
-    for (const auto& dim : ref->shape) {
-      if (auto imm = dim.as<IntImmNode>()) {
-        num_elements *= imm->value;
-      } else {
-        num_elements = -1;
-        break;
-      }
-    }
-
+ 
     if (num_elements < 0) {
       LOG(FATAL) << "Cannot create temp buffer for non-constant shape.";
       return Buffer();
@@ -175,10 +166,28 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
       PointerType(PrimType(dtype), "shared")
     );
 
+    // Determine the shape based on the actual computation size (loop extent)
+    Array<PrimExpr> shape;
+    if (ref->shape.size() == 1) {
+      // 1D case: just the total elements
+      shape.push_back(IntImm(DataType::Int(32), num_elements));
+    } else if (ref->shape.size() >= 2) {
+      // 2D or higher: use the computation dimensions
+      // If inner_vec_len is provided, use it to determine the shape
+      if (inner_vec_len > 0) {
+        int64_t outer_extent = num_elements / inner_vec_len;
+        shape.push_back(IntImm(DataType::Int(32), outer_extent));
+        shape.push_back(IntImm(DataType::Int(32), inner_vec_len));
+      } else {
+        // Fall back to 1D if we can't determine 2D shape
+        shape.push_back(IntImm(DataType::Int(32), num_elements));
+      }
+    }
+
     Buffer buf = Buffer(
       data,
       dtype,
-      {IntImm(DataType::Int(32), num_elements)},
+      shape,
       /*strides=*/{},
       /*elem_offset=*/PrimExpr(0),
       /*name=*/data->name_hint,
@@ -424,11 +433,31 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
   ) {
     Buffer output_buffer = store->buffer;
 
+    // Helper to check if an expression contains a specific variable
+    auto ContainsVar = [](const PrimExpr& expr, const VarNode* var) -> bool {
+      class VarChecker : public ExprVisitor {
+      public:
+        const VarNode* target_var_;
+        bool found_{false};
+
+        explicit VarChecker(const VarNode* target_var) : target_var_(target_var) {}
+
+        void VisitExpr_(const VarNode* op) override {
+          if (op == target_var_) {
+            found_ = true;
+          }
+          ExprVisitor::VisitExpr_(op);
+        }
+      };
+
+      VarChecker checker(var);
+      checker(expr);
+      return checker.found_;
+    };
+
     /*----- 1D case -----*/
     if (output_buffer->shape.size() == 1 && store->indices.size() == 1) {
-      const VarNode* idx_var = store->indices[0].as<VarNode>();
-      if (idx_var == nullptr) return false;
-      if (idx_var != vector_dim_var_) return false;
+      if (!ContainsVar(store->indices[0], vector_dim_var_)) return false;
       if (element_count <= 0) return false;
 
       plan->inner_vec_len = element_count;
@@ -442,10 +471,8 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
     if (vector_dim_var_ == nullptr) return false;
 
     if (output_buffer->shape.size() == 2 && store->indices.size() == 2) {
-      const VarNode* outer_var = store->indices[0].as<VarNode>();
-      const VarNode* inner_var = store->indices[1].as<VarNode>();
-      if (outer_var == nullptr || inner_var == nullptr) return false;
-      if (inner_var != vector_dim_var_) return false;
+      // Check if inner index contains the vector dimension variable
+      if (!ContainsVar(store->indices[1], vector_dim_var_)) return false;
 
       int64_t inner_vec_len = 0;
       // Use vector_dim_extent_ if available (actual loop extent), otherwise fall back to buffer shape
@@ -462,18 +489,18 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
 
       plan->inner_vec_len = inner_vec_len;
       plan->outer_extent = element_count / inner_vec_len;
-      plan->outer_index_var = outer_var;
 
-      plan->is_2d_vectorizable = (outer_dim_var_ != nullptr && outer_var == outer_dim_var_);
+      // Try to extract outer variable from the outer index
+      plan->outer_index_var = store->indices[0].as<VarNode>();
+
+      // Check if outer index contains the outer dimension variable (for 2D vectorization)
+      plan->is_2d_vectorizable = (outer_dim_var_ != nullptr && ContainsVar(store->indices[0], outer_dim_var_));
       return true;
     }
 
     /*----- 3D db case -----*/
     if (output_buffer->shape.size() == 3 && store->indices.size() == 3) {
-      const VarNode* outer_var = store->indices[1].as<VarNode>();
-      const VarNode* inner_var = store->indices[2].as<VarNode>();
-      if (outer_var == nullptr || inner_var == nullptr) return false;
-      if (inner_var != vector_dim_var_) return false;
+      if (!ContainsVar(store->indices[2], vector_dim_var_)) return false;
 
       int64_t inner_vec_len = 0;
       // Use vector_dim_extent_ if available (actual loop extent), otherwise fall back to buffer shape
@@ -490,8 +517,8 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
 
       plan->inner_vec_len = inner_vec_len;
       plan->outer_extent = element_count / inner_vec_len;
-      plan->outer_index_var = outer_var;
-      plan->is_2d_vectorizable = (outer_dim_var_ != nullptr && outer_var == outer_dim_var_);
+      plan->outer_index_var = store->indices[1].as<VarNode>();
+      plan->is_2d_vectorizable = (outer_dim_var_ != nullptr && ContainsVar(store->indices[1], outer_dim_var_));
       return true;
   }
     return false;
@@ -547,20 +574,43 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
     const std::unordered_set<const VarNode*>& parallel_vars
   ) {
     Buffer output_buffer = store->buffer;
+    bool is_global_output = IsGlobalMemoryBuffer(output_buffer);
 
     bool saved_is_2d_vectorizing = is_2d_vectorizing_;
     is_2d_vectorizing_ = is_2d;
 
     PrimExpr output_offset = CalculateBufferOffset(store->indices, output_buffer, parallel_vars);
 
+    // If output is in GM, create a temporary UB buffer sized for the computation block
+    Buffer actual_output_buffer = output_buffer;
+    PrimExpr actual_output_offset = output_offset;
+    Buffer temp_ub_buffer;
+
+    if (is_global_output) {
+      // Create a temporary UB buffer sized for the computation block (not the full GM buffer)
+      int64_t total_elements = inner_vec_len * outer_extent;
+      temp_ub_buffer = CreateTempBufferLike(output_buffer, total_elements, inner_vec_len);
+      actual_output_buffer = temp_ub_buffer;
+      actual_output_offset = IntImm(DataType::Int(32), 0);  // Start from beginning of temp buffer
+    }
+
         Array<Stmt> row_stmts;
     int64_t total_elements = is_2d ? (inner_vec_len * outer_extent) : inner_vec_len;
-        bool success = DecomposeExpression(store->value, output_buffer,
-                                        output_offset, total_elements,
-                                        parallel_vars, &row_stmts, is_2d);
+    bool success = DecomposeExpression(store->value, actual_output_buffer,
+                                        actual_output_offset, total_elements,
+                                        parallel_vars, &row_stmts, is_2d, inner_vec_len);
 
     is_2d_vectorizing_ = saved_is_2d_vectorizing;
     if (!success || row_stmts.empty()) return NullOpt;
+
+    // If output is in GM, add ascend_copy to copy from temp UB to GM
+    if (is_global_output) {
+      Stmt copy_stmt = GenerateAscendCopy(temp_ub_buffer, output_buffer,
+                                          actual_output_offset, output_offset,
+                                          total_elements, is_2d);
+      row_stmts.push_back(copy_stmt);
+    }
+
     if (row_stmts.size() == 1) return row_stmts[0];
     return SeqStmt::Flatten(row_stmts);
         }
@@ -660,7 +710,8 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
                            int64_t element_count,
                            const std::unordered_set<const VarNode*>& parallel_vars,
                            Array<Stmt>* statements,
-                           bool is_2d = false) {
+                           bool is_2d = false,
+                           int64_t inner_vec_len = 0) {
     Op unary_op_type;
 
     Optional<Buffer> unary_input_buffer;
@@ -703,27 +754,27 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
 
     if (left_is_simple && right_is_complex) {
       return HandleLeftSimpleRightComplex(op_type, operands, output_buffer, output_offset,
-                                          element_count, parallel_vars, statements, is_2d);
+                                          element_count, parallel_vars, statements, is_2d, inner_vec_len);
     }
 
     if (left_is_complex && right_is_simple) {
       return HandleLeftComplexRightSimple(op_type, operands, output_buffer, output_offset,
-                                          element_count, parallel_vars, statements, is_2d);
+                                          element_count, parallel_vars, statements, is_2d, inner_vec_len);
     }
 
     if (left_is_complex && right_is_complex) {
-      Buffer lhs_tmp = CreateTempBufferLike(output_buffer);
-      Buffer rhs_tmp = CreateTempBufferLike(output_buffer);
-      PrimExpr lhs_tmp_offset = output_offset;
-      PrimExpr rhs_tmp_offset = output_offset;
+      Buffer lhs_tmp = CreateTempBufferLike(output_buffer, element_count, inner_vec_len);
+      Buffer rhs_tmp = CreateTempBufferLike(output_buffer, element_count, inner_vec_len);
+      PrimExpr lhs_tmp_offset = IntImm(DataType::Int(32), 0);
+      PrimExpr rhs_tmp_offset = IntImm(DataType::Int(32), 0);
 
       if (!DecomposeExpression(operands[0], lhs_tmp, lhs_tmp_offset,
-                               element_count, parallel_vars, statements, is_2d)) {
+                               element_count, parallel_vars, statements, is_2d, inner_vec_len)) {
         return false;
     }
 
       if (!DecomposeExpression(operands[1], rhs_tmp, rhs_tmp_offset,
-                               element_count, parallel_vars, statements, is_2d)) {
+                               element_count, parallel_vars, statements, is_2d, inner_vec_len)) {
     return false;
   }
 
@@ -850,7 +901,8 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
                                     int64_t element_count,
                                     const std::unordered_set<const VarNode*>& parallel_vars,
                                     Array<Stmt>* statements,
-                                    bool is_2d = false) {
+                                    bool is_2d = false,
+                                    int64_t inner_vec_len = 0) {
     Buffer left_buffer;
     PrimExpr left_offset;
 
@@ -862,11 +914,11 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
       return false;
     }
 
-    Buffer tmp = CreateTempBufferLike(output_buffer);
-    PrimExpr tmp_offset = output_offset;
+    Buffer tmp = CreateTempBufferLike(output_buffer, element_count, inner_vec_len);
+    PrimExpr tmp_offset = IntImm(DataType::Int(32), 0);
 
     if (!DecomposeExpression(operands[1], tmp, tmp_offset,
-                             element_count, parallel_vars, statements, is_2d)) {
+                             element_count, parallel_vars, statements, is_2d, inner_vec_len)) {
       return false;
     }
 
@@ -884,12 +936,13 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
                                     int64_t element_count,
                                     const std::unordered_set<const VarNode*>& parallel_vars,
                                     Array<Stmt>* statements,
-                                    bool is_2d = false) {
-    Buffer tmp = CreateTempBufferLike(output_buffer);
-    PrimExpr tmp_offset = output_offset;
+                                    bool is_2d = false,
+                                    int64_t inner_vec_len = 0) {
+    Buffer tmp = CreateTempBufferLike(output_buffer, element_count, inner_vec_len);
+    PrimExpr tmp_offset = IntImm(DataType::Int(32), 0);
 
     if (!DecomposeExpression(operands[0], tmp, tmp_offset,
-                             element_count, parallel_vars, statements, is_2d)) {
+                             element_count, parallel_vars, statements, is_2d, inner_vec_len)) {
       return false;
     }
 
@@ -1211,6 +1264,95 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
       return imm->value == 0.0;
     }
     return false;
+  }
+
+  // Check if a buffer is in Global Memory (GM)
+  bool IsGlobalMemoryBuffer(const Buffer& buffer) {
+    if (auto* ptr_type = buffer->data->type_annotation.as<PointerTypeNode>()) {
+      return ptr_type->storage_scope == "global" || ptr_type->storage_scope.empty();
+    }
+    // If there's no PointerType annotation, it's global by default
+    return true;
+  }
+
+  // Generate ascend_copy call from UB to GM
+  Stmt GenerateAscendCopy(const Buffer& src_ub,
+                          const Buffer& dst_gm,
+                          const PrimExpr& src_offset,
+                          const PrimExpr& dst_offset,
+                          int64_t element_count,
+                          bool is_2d = false) {
+    // Create T.region expressions for ascend_copy
+    // The format is: T.region(buffer_load_with_indices, access_mask, extent0, extent1, ...)
+    // ascend_copy expects: tl.ascend_copy(src_region, dst_region, enable_relu)
+
+    // Create source region (UB) - start from [0, 0] with the temp buffer's shape
+    Array<PrimExpr> src_indices;
+    Array<PrimExpr> src_extents;
+
+    if (src_ub->shape.size() == 1) {
+      src_indices.push_back(IntImm(DataType::Int(32), 0));
+      src_extents.push_back(IntImm(DataType::Int(32), element_count));
+    } else if (src_ub->shape.size() == 2) {
+      // Temp buffer has shape [outer_extent, inner_vec_len]
+      src_indices.push_back(IntImm(DataType::Int(32), 0));
+      src_indices.push_back(IntImm(DataType::Int(32), 0));
+      src_extents.push_back(src_ub->shape[0]);  // outer_extent
+      src_extents.push_back(src_ub->shape[1]);  // inner_vec_len
+    }
+
+    // Create source BufferLoad
+    PrimExpr src_load = BufferLoad(src_ub, src_indices);
+
+    // Create destination region (GM) - use the computed offset
+    Array<PrimExpr> dst_indices;
+    Array<PrimExpr> dst_extents;
+
+    if (dst_gm->shape.size() == 1) {
+      dst_indices.push_back(dst_offset);
+      dst_extents.push_back(IntImm(DataType::Int(32), element_count));
+    } else if (dst_gm->shape.size() == 2) {
+      // Convert linear offset to 2D indices
+      PrimExpr row = floordiv(dst_offset, dst_gm->shape[1]);
+      PrimExpr col = truncmod(dst_offset, dst_gm->shape[1]);
+      dst_indices.push_back(row);
+      dst_indices.push_back(col);
+      // Use the same extents as the source buffer (the tile size)
+      dst_extents.push_back(src_ub->shape[0]);
+      dst_extents.push_back(src_ub->shape[1]);
+    }
+
+    // Create destination BufferLoad
+    PrimExpr dst_load = BufferLoad(dst_gm, dst_indices);
+
+    // Create T.region calls
+    // Format: T.region(buffer_load, access_mask, extent0, extent1, ...)
+    // access_mask: 1 for read, 2 for write
+
+    auto CreateRegionCall = [&](const PrimExpr& load, int access_mask,
+                                const Array<PrimExpr>& extents) -> PrimExpr {
+      Array<PrimExpr> args;
+      args.push_back(load);
+      args.push_back(IntImm(DataType::Int(32), access_mask));
+      for (const auto& ext : extents) {
+        args.push_back(ext);
+      }
+      return Call(DataType::Handle(), Op::Get("tl.region"), args);
+};
+
+    PrimExpr src_region = CreateRegionCall(src_load, 1, src_extents);  // 1 = read
+    PrimExpr dst_region = CreateRegionCall(dst_load, 2, dst_extents);  // 2 = write
+
+    // Create the ascend_copy call
+    // Format: tir.call_intrin("handle", tir.op.Op.get("tl.ascend_copy"), src, dst, enable_relu)
+    Array<PrimExpr> copy_args;
+    copy_args.push_back(src_region);
+    copy_args.push_back(dst_region);
+    copy_args.push_back(Bool(false));  // enable_relu = false
+
+    PrimExpr copy_call = Call(DataType::Handle(), Op::Get("tl.ascend_copy"), copy_args);
+
+    return Evaluate(copy_call);
   }
 };
 

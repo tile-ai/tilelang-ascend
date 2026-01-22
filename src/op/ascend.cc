@@ -57,6 +57,8 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
       return "half";
     } else if (dtype.is_float() && dtype.bits() == 32) {
       return "float";
+    } else if (dtype.is_int() && dtype.bits() == 4) {
+      return "AscendC::int4b_t";
     } else if (dtype.is_int() && dtype.bits() == 8) {
       return "int8_t";
     } else if (dtype.is_int() && dtype.bits() == 16) {

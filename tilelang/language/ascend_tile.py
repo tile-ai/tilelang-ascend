@@ -49,6 +49,7 @@ def _dtype(buf):
         "bfloat16": "bfloat16_t",
         "uint16": "uint16_t",
         "uint8": "uint8_t",
+		"int4": "AscendC::int4b_t",
         "int8": "int8_t",
         "int16": "int16_t",
         "int64": "int64_t",
@@ -1009,11 +1010,10 @@ def gather(dst: Buffer, src: Buffer, src_offset: Buffer, src_base_addr: PrimExpr
 
 def reduce(out: Buffer, buffer: Buffer, tmp: Buffer, reduce_type: str, dim: int, real_shape: list[int]=[0, 0]):
     dtype = _dtype(buffer)
+    assert len(buffer.shape) == 2, "current only support buffer as a 2D tensor"
     M = buffer.shape[0] if real_shape[0] == 0 else real_shape[0]
     N = buffer.shape[1] if real_shape[1] == 0 else real_shape[1]
     shape = f"{M}, {N}"
-
-    assert len(buffer.shape) == 2, "current only support buffer as a 2D tensor"
 
     buffer = buffer.access_ptr("r")
     out = out.access_ptr("w")
@@ -1398,7 +1398,44 @@ def bitwise_xor(dst: Buffer, src0: Buffer, src1: Buffer):
     )
 
 
-def broadcast(dst: Buffer, src: Buffer):
+def clamp_max(out: Buffer, buffer: Buffer, tmp: Buffer, scalar_value: PrimExpr, count: PrimExpr):
+
+    return tir.call_intrin(
+        "handle",
+        tir.op.Op.get(f"tl.ascend_clamp_max"),
+        f"tl::ascend::ClampMax<{_dtype(buffer)}>",
+        out.access_ptr("w"),
+        buffer.access_ptr("r"),
+        tmp.access_ptr("r"),
+        scalar_value,
+        count
+    )
+
+def clamp_min(out: Buffer, buffer: Buffer, tmp: Buffer, scalar_value: PrimExpr, count: PrimExpr):
+
+    return tir.call_intrin(
+        "handle",
+        tir.op.Op.get(f"tl.ascend_clamp_min"),
+        f"tl::ascend::ClampMin<{_dtype(buffer)}>",
+        out.access_ptr("w"),
+        buffer.access_ptr("r"),
+        tmp.access_ptr("r"),
+        scalar_value,
+        count
+    )
+
+def round(out: Buffer, buffer: Buffer, tmp: Buffer, count: PrimExpr):
+
+    return tir.call_intrin(
+        "handle",
+        tir.op.Op.get(f"tl.ascend_round"),
+        out.access_ptr("w"),
+        buffer.access_ptr("r"),
+        tmp.access_ptr("r"),
+        count
+    )
+
+def broadcast(dst: Buffer, src: Buffer, tmp: Buffer):
     """Generates a TIR intrinsic call for the AscendC `Broadcast` operation.
 
     This function performs a broadcast copy from the source buffer (`src`) to the
@@ -1410,6 +1447,7 @@ def broadcast(dst: Buffer, src: Buffer):
             Unified Buffer (UB). Its shape determines the output size.
         src (tvm.tir.Buffer): The source buffer. Must be allocated in the
             Unified Buffer (UB). Its shape must be compatible with `dst` for broadcasting.
+        tmp (tvm.tir.Buffer): The temporary buffer.
 
     Returns:
         tvm.tir.Call: A TIR intrinsic call node that maps to the C++ `AscendC::Broadcast` API.
@@ -1454,45 +1492,8 @@ def broadcast(dst: Buffer, src: Buffer):
         f"tl::ascend::Broadcast<{template_args}>",
         dst.access_ptr("w"),
         src.access_ptr("r"),
+        tmp.access_ptr("r"),
         dim,
         *dst_shape,
         *src_shape,
-    )
-
-
-def clamp_max(out: Buffer, buffer: Buffer, tmp: Buffer, scalar_value: PrimExpr, count: PrimExpr):
-
-    return tir.call_intrin(
-        "handle",
-        tir.op.Op.get(f"tl.ascend_clamp_max"),
-        f"tl::ascend::ClampMax<{_dtype(buffer)}>",
-        out.access_ptr("w"),
-        buffer.access_ptr("r"),
-        tmp.access_ptr("r"),
-        scalar_value,
-        count
-    )
-
-def clamp_min(out: Buffer, buffer: Buffer, tmp: Buffer, scalar_value: PrimExpr, count: PrimExpr):
-
-    return tir.call_intrin(
-        "handle",
-        tir.op.Op.get(f"tl.ascend_clamp_min"),
-        f"tl::ascend::ClampMin<{_dtype(buffer)}>",
-        out.access_ptr("w"),
-        buffer.access_ptr("r"),
-        tmp.access_ptr("r"),
-        scalar_value,
-        count
-    )
-
-def round(out: Buffer, buffer: Buffer, tmp: Buffer, count: PrimExpr):
-
-    return tir.call_intrin(
-        "handle",
-        tir.op.Op.get(f"tl.ascend_round"),
-        out.access_ptr("w"),
-        buffer.access_ptr("r"),
-        tmp.access_ptr("r"),
-        count
     )
