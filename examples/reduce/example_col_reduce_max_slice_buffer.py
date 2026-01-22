@@ -28,7 +28,7 @@ def reduce_max_slice_buffer():
 
             if vid == 0:
                 T.copy(Input, in_shared)
-                T.tile.reduce_max(out_shared, in_shared, reduce_tmp_shared, dim=0, real_shape=[3, 8])
+                T.reduce_max(in_shared, out_shared, reduce_tmp_shared, dim=0, real_shape=[3, 8])
                 T.copy(out_shared, Output)
 
     return main
