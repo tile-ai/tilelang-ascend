@@ -49,6 +49,7 @@ def _dtype(buf):
         "bfloat16": "bfloat16_t",
         "uint16": "uint16_t",
         "uint8": "uint8_t",
+		"int4": "AscendC::int4b_t",
         "int8": "int8_t",
         "int16": "int16_t",
         "int64": "int64_t",
@@ -615,19 +616,38 @@ def bitwise_or(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, Buff
 
 
 def unary_op(dst: Buffer, src0: Buffer, op: str):
-    size_0 = math.prod(src0.shape)
-    size_2 = math.prod(dst.shape)
 
-    assert size_0 == size_2, "size must be same"
+    def _handle_buffer_region(br: BufferRegion, mask):
+        bf = br.buffer
+        indices = [x.min for x in br.region]
+        offset = bf.offset_of(indices)[0]
 
+        extent = [x.extent for x in br.region]
+        return bf.access_ptr(mask, offset=offset), extent
+
+    if isinstance(dst, BufferRegion):
+        dst_ptr, dst_extent = _handle_buffer_region(dst, "w")
+    else:
+        dst_ptr = dst.access_ptr("w")
+        dst_extent = dst.shape
+    if isinstance(src0, BufferRegion):
+        src0_ptr, src0_extent = _handle_buffer_region(src0, "r")
+    else:
+        src0_ptr = src0.access_ptr("r")
+        src0_extent = src0.shape
+
+    size_0 = math.prod(dst_extent)
+    size_1 = math.prod(src0_extent)
+    assert size_0 == size_1, "size must be same"
+
+    # return T.call_extern("handle", f"AscendC::{op}", dst_ptr, src0_ptr, size_0)
     return tir.call_intrin(
         "handle",
         tir.op.Op.get(f"tl.ascend_{op}"),
-        dst.access_ptr("w"),
-        src0.access_ptr("r"),
+        dst_ptr,
+        src0_ptr,
         size_0,
     )
-
 
 def exp(dst: Buffer, src0: Buffer):
     """Performs element-wise exponential: dst = exp(src0).
@@ -638,6 +658,16 @@ def exp(dst: Buffer, src0: Buffer):
     """
     return unary_op(dst, src0, "exp")
 
+def sigmoid(dst: Buffer, src: Buffer, tmp: Buffer):
+    size = math.prod(dst.shape)
+    return tir.call_intrin(
+        "handle",
+        tir.op.Op.get(f"tl.ascend_sigmoid"),
+        dst.access_ptr("w"),
+        src.access_ptr("r"),
+        tmp.access_ptr("w"),
+        size,
+    )
 
 def ln(dst: Buffer, src0: Buffer):
     """Performs element-wise natural logarithm: dst = ln(src0).
@@ -980,11 +1010,10 @@ def gather(dst: Buffer, src: Buffer, src_offset: Buffer, src_base_addr: PrimExpr
 
 def reduce(out: Buffer, buffer: Buffer, tmp: Buffer, reduce_type: str, dim: int, real_shape: list[int]=[0, 0]):
     dtype = _dtype(buffer)
+    assert len(buffer.shape) == 2, "current only support buffer as a 2D tensor"
     M = buffer.shape[0] if real_shape[0] == 0 else real_shape[0]
     N = buffer.shape[1] if real_shape[1] == 0 else real_shape[1]
     shape = f"{M}, {N}"
-
-    assert len(buffer.shape) == 2, "current only support buffer as a 2D tensor"
 
     buffer = buffer.access_ptr("r")
     out = out.access_ptr("w")
@@ -1315,18 +1344,18 @@ def cos(dst: Buffer, src: Buffer, tmp: Buffer):
         size_0,
     )
 
-def clampMax(dst: Buffer, src: Buffer, tmp: Buffer, scalar_value: PrimExpr, count: PrimExpr):
-
-    return min(dst, src, scalar_value)
-
-def clampMin(dst: Buffer, src: Buffer, tmp: Buffer, scalar_value: PrimExpr, count: PrimExpr):
-
-    return max(dst, src, scalar_value)
-
-def round(dst: Buffer, src: Buffer, tmp: Buffer, count: PrimExpr):
-
-    return cast(dst, src, "CAST_ROUND", count)
-
+# def clampMax(dst: Buffer, src: Buffer, tmp: Buffer, scalar_value: PrimExpr, count: PrimExpr):
+#
+#     return min(dst, src, scalar_value)
+#
+# def clampMin(dst: Buffer, src: Buffer, tmp: Buffer, scalar_value: PrimExpr, count: PrimExpr):
+#
+#     return max(dst, src, scalar_value)
+#
+# def round(dst: Buffer, src: Buffer, tmp: Buffer, count: PrimExpr):
+#
+#     return cast(dst, src, "CAST_ROUND", count)
+#
 def pow(dst: Buffer, src0: Buffer, src1: Buffer, tmp: Buffer):
     """Performs element-wise power calculation: dst = src0 ^ src1.
 
@@ -1369,7 +1398,44 @@ def bitwise_xor(dst: Buffer, src0: Buffer, src1: Buffer):
     )
 
 
-def broadcast(dst: Buffer, src: Buffer):
+def clamp_max(out: Buffer, buffer: Buffer, tmp: Buffer, scalar_value: PrimExpr, count: PrimExpr):
+
+    return tir.call_intrin(
+        "handle",
+        tir.op.Op.get(f"tl.ascend_clamp_max"),
+        f"tl::ascend::ClampMax<{_dtype(buffer)}>",
+        out.access_ptr("w"),
+        buffer.access_ptr("r"),
+        tmp.access_ptr("r"),
+        scalar_value,
+        count
+    )
+
+def clamp_min(out: Buffer, buffer: Buffer, tmp: Buffer, scalar_value: PrimExpr, count: PrimExpr):
+
+    return tir.call_intrin(
+        "handle",
+        tir.op.Op.get(f"tl.ascend_clamp_min"),
+        f"tl::ascend::ClampMin<{_dtype(buffer)}>",
+        out.access_ptr("w"),
+        buffer.access_ptr("r"),
+        tmp.access_ptr("r"),
+        scalar_value,
+        count
+    )
+
+def round(out: Buffer, buffer: Buffer, tmp: Buffer, count: PrimExpr):
+
+    return tir.call_intrin(
+        "handle",
+        tir.op.Op.get(f"tl.ascend_round"),
+        out.access_ptr("w"),
+        buffer.access_ptr("r"),
+        tmp.access_ptr("r"),
+        count
+    )
+
+def broadcast(dst: Buffer, src: Buffer, tmp: Buffer):
     """Generates a TIR intrinsic call for the AscendC `Broadcast` operation.
 
     This function performs a broadcast copy from the source buffer (`src`) to the
@@ -1381,6 +1447,7 @@ def broadcast(dst: Buffer, src: Buffer):
             Unified Buffer (UB). Its shape determines the output size.
         src (tvm.tir.Buffer): The source buffer. Must be allocated in the
             Unified Buffer (UB). Its shape must be compatible with `dst` for broadcasting.
+        tmp (tvm.tir.Buffer): The temporary buffer.
 
     Returns:
         tvm.tir.Call: A TIR intrinsic call node that maps to the C++ `AscendC::Broadcast` API.
@@ -1425,6 +1492,7 @@ def broadcast(dst: Buffer, src: Buffer):
         f"tl::ascend::Broadcast<{template_args}>",
         dst.access_ptr("w"),
         src.access_ptr("r"),
+        tmp.access_ptr("r"),
         dim,
         *dst_shape,
         *src_shape,

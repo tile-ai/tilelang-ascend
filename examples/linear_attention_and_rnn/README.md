@@ -42,3 +42,20 @@ Our implementation of chunkwise parallelism resembles that of [Flash Linear Atte
   $$\mathbf O=\text{diag}(\exp(\gamma))\mathbf Q\mathbf S^T+(\Gamma\odot\mathbf M\odot\mathbf Q\mathbf K^T)(\mathbf U-\mathbf W\mathbf S^T),$$
 
   where $\mathbf M$ is the causal mask.
+
+---
+
+### Optimize Results
+
+Shape: $(B,H,L,DK,DV,C)=(16,16,16384,128,128,128)$.
+
+|        Kernel        | Latency (ms) |    #ops (approx)     |  TFLOPS  |
+| :------------------: | :----------: | :------------------: | :------: |
+|     chunk_cumsum     |    $1.93$    |  $4.19\times 10^6$   | $0.0021$ |
+| chunk_scaled_dot_kkt |    $8.76$    | $6.87\times 10^{10}$ |  $7.84$  |
+|      solve_tril      |   $24.89$    | $2.29\times 10^{10}$ |  $0.92$  |
+|       wy_fast        |    $9.92$    | $1.37\times 10^{11}$ | $13.85$  |
+|       chunk_h        |    $9.38$    | $2.75\times 10^{11}$ | $29.30$  |
+|       chunk_o        |   $13.19$    | $3.44\times 10^{11}$ | $26.04$  |
+|        total         |   $68.07$    | $8.48\times 10^{11}$ | $12.45$  |
+

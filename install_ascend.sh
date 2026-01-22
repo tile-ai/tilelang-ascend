@@ -147,22 +147,5 @@ fi
 
 cd ..
 
-# Step 11: Set environment variables
-TILELANG_PATH="$(pwd)"
-echo "TileLang path set to: $TILELANG_PATH"
-echo "Configuring environment variables for TVM..."
-echo "export PYTHONPATH=${TILELANG_PATH}:\$PYTHONPATH" >> ~/.bashrc
-
-# Step 12: Source .bashrc to apply changes
-echo "Applying environment changes by sourcing .bashrc..."
-source ~/.bashrc
-if [ $? -ne 0 ]; then
-    echo "Error: Failed to source .bashrc."
-    exit 1
-else
-    echo "Environment configured successfully."
-fi
-
 echo "Installation script completed successfully."
-exec bash
 

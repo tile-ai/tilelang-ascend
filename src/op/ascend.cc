@@ -57,6 +57,8 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
       return "half";
     } else if (dtype.is_float() && dtype.bits() == 32) {
       return "float";
+    } else if (dtype.is_int() && dtype.bits() == 4) {
+      return "AscendC::int4b_t";
     } else if (dtype.is_int() && dtype.bits() == 8) {
       return "int8_t";
     } else if (dtype.is_int() && dtype.bits() == 16) {
@@ -377,13 +379,13 @@ TIR_DEFINE_TL_BUILTIN(ascend_divs)
     .set_num_inputs(-1)
     .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
 
-TIR_DEFINE_TL_BUILTIN(ascend_maxs)
-    .set_num_inputs(-1)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+// TIR_DEFINE_TL_BUILTIN(ascend_maxs)
+//     .set_num_inputs(-1)
+//     .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
 
-TIR_DEFINE_TL_BUILTIN(ascend_mins)
-    .set_num_inputs(-1)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+// TIR_DEFINE_TL_BUILTIN(ascend_mins)
+//     .set_num_inputs(-1)
+//     .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_compare)
     .set_num_inputs(5)
@@ -526,7 +528,7 @@ TIR_DEFINE_TL_BUILTIN(ascend_set_deq_scale)
     .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_pow)
-    .set_num_inputs(3)
+    .set_num_inputs(4)
     .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_bitwise_xor)
@@ -620,5 +622,26 @@ TIR_DEFINE_TL_BUILTIN(ascend_use_swizzle)
 TIR_DEFINE_TL_BUILTIN(ascend_mma)
     .set_num_inputs(6)
     .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+
+TIR_DEFINE_TL_BUILTIN(ascend_sigmoid)
+    .set_num_inputs(4)
+    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+
+TIR_DEFINE_TL_BUILTIN(ascend_clamp_max)
+    .set_num_inputs(6)
+    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+
+TIR_DEFINE_TL_BUILTIN(ascend_clamp_min)
+    .set_num_inputs(6)
+    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+
+TIR_DEFINE_TL_BUILTIN(ascend_round)
+    .set_num_inputs(4)
+    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+
+TIR_DEFINE_TL_BUILTIN(ascend_reinterpretcast)
+    .set_num_inputs(3)
+    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+
 } // namespace tl
 } // namespace tvm

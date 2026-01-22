@@ -53,6 +53,8 @@ public:
 
   void UnaryVecOpCodegen(const CallNode *op, const std::string& op_name);
   void ScalarOpCodegen(const CallNode *op, const std::string& op_name);
+  void BinaryVecClampOpsCodegen(const CallNode *op, const std::string& op_name);
+  void CastCodegen(const CallNode *op, const std::string& op_type);
   void ReduceOpCodegen(const CallNode *op);
 
   // Override this as a work around for __grid_constant__ parameter

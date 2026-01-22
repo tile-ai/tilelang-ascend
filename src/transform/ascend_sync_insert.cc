@@ -182,14 +182,18 @@ private:
       {"AscendC::And", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
       {"AscendC::Or", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
       {"AscendC::Not", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
-      {"reduce_max", {{{0, "read"}, {1, "write"}}, "PIPE_V"}},
-      {"reduce_min", {{{0, "read"}, {1, "write"}}, "PIPE_V"}},
-      {"reduce_sum", {{{0, "read"}, {1, "write"}}, "PIPE_V"}},
+      {"reduce_max", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
+      {"reduce_min", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
+      {"AscendC::ClampMax", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
+      {"AscendC::ClampMin", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
+      {"AscendC::Round", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
+      {"reduce_sum", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
       {"AscendC::Max", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
       {"AscendC::Min", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
       {"AscendC::Sin", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
       {"AscendC::Cos", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
       {"AscendC::Cast", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
+      {"AscendC::Sigmoid", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
       {"AscendC::ShiftLeft", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
       {"AscendC::ShiftRight", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
       {"AscendC::Sort", {{{0, "write"}, {1, "read"}, {2, "read"}, {3, "read"}}, "PIPE_V"}},
@@ -262,6 +266,10 @@ private:
       {"tl.ascend_wholereducemax", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
       {"tl.ascend_wholereducemin", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
       {"tl.ascend_wholereducesum", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
+      {"tl.ascend_sigmoid", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
+      {"tl.ascend_clamp_max", {{{1, "write"}, {2, "read"}}, "PIPE_V"}},
+      {"tl.ascend_clamp_min", {{{1, "write"}, {2, "read"}}, "PIPE_V"}},
+      {"tl.ascend_round", {{{0, "write"}, {1, "read"}}, "PIPE_V"}}
     };
   }
 
