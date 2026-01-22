@@ -48,9 +48,9 @@ TVM_REGISTER_PASS_CONFIG_OPTION(kAscendAutoSync, Bool);
 
 class AscendSyncInsert : public arith::IRMutatorWithAnalyzer {
 public:
-  static PrimFunc Substitute(PrimFunc f, const std::string& config_path, PassContext ctx) {
+  static PrimFunc Substitute(PrimFunc f, const std::string& config_path, PassContext ctx, Target target, std::string platform) {
     arith::Analyzer analyzer;
-    AscendSyncInsert syncInserter(&analyzer);
+    AscendSyncInsert syncInserter(&analyzer, target, platform);
 
     auto address_map = f->GetAttr<Map<Var, PrimExpr>>("address_map").value_or(Map<Var, PrimExpr>());
     syncInserter.InitConfig(config_path, address_map);
@@ -71,6 +71,9 @@ public:
 
     return f;
   }
+
+  explicit AscendSyncInsert(arith::Analyzer* analyzer, Target target, std::string platform)
+      : arith::IRMutatorWithAnalyzer(analyzer), target_(target), platform_(platform) {}
 
 private:
   using arith::IRMutatorWithAnalyzer::IRMutatorWithAnalyzer;
@@ -1551,6 +1554,10 @@ private:
       stmts.push_back(CreatePipeBarrier("PIPE_ALL"));
     } else if (sync_type.find("PipeBarrier_") == 0) {
       std::string pipeline = sync_type.substr(12);
+      // A5 AIC dont need PIPE_V
+      if (pipeline == "PIPE_V" && this->platform_ == "A5") {
+        return;
+      }
       stmts.push_back(CreatePipeBarrier(pipeline));
     } else if (sync_type.find("EventPair_") == 0) {
       std::string event_type = sync_type.substr(10);
@@ -1588,11 +1595,13 @@ private:
   std::unordered_map<std::string, OperationConfig> operation_config_;
   std::unordered_map<std::string, BufferAccess> current_access_history_;
   Map<Var, PrimExpr> address_map_;
+  std::string platform_;
+  Target target_;
 };
 
-tvm::transform::Pass AscendSyncInsert() {
+tvm::transform::Pass AscendSyncInsert(Target target, std::string platform) {
   auto pass_func = [=](PrimFunc f, IRModule m, PassContext ctx) {
-    auto new_func = AscendSyncInsert::Substitute(std::move(f), "config_path", ctx);
+    auto new_func = AscendSyncInsert::Substitute(std::move(f), "config_path", ctx, target, platform);
     return new_func;
   };
   return CreatePrimFuncPass(pass_func, 0, "tl.AscendSyncInsert", {});

@@ -8,6 +8,7 @@ from .simplify import Simplify, simplify_prim_func  # noqa: F401
 from .pass_config import PassConfigKey  # noqa: F401
 from tilelang import tvm as tvm  # noqa: F401
 from tvm.ir.transform import PassContext  # noqa: F401
+from tvm.target import Target
 
 def HostProcesser():
     """HostProcesser
@@ -367,7 +368,7 @@ def AscendMemoryPlanning():
     return _ffi_api.AscendMemoryPlanning()  # type: ignore
 
 
-def AscendSyncInsert():
+def AscendSyncInsert(target: Target, platform: str):
     """Auto insert sync for Ascend.
 
     Returns
@@ -376,7 +377,7 @@ def AscendSyncInsert():
         The result pass
     ----
     """
-    return _ffi_api.AscendSyncInsert()  # type: ignore
+    return _ffi_api.AscendSyncInsert(target, platform)  # type: ignore
 
 
 def CombineCV():
