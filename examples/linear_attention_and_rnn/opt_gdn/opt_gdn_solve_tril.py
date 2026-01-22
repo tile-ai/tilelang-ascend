@@ -62,7 +62,7 @@ def solve_tril_ker(B, H, L, C, dtype="float16", accum_dtype="float"):
 					T.tile.broadcast(o_row_2d_ub, o_row_ub, tmp_ub)
 					T.tile.fill(red_ub, 0.0)
 					T.tile.mul(mul_ub, o_ub, o_row_2d_ub)
-					T.tile.reduce_sum(red_ub, mul_ub, tmp_ub, dim = 0)
+					T.reduce_sum(mul_ub, red_ub, tmp_ub, dim = 0)
 
 					T.tile.sub(o_ub[i, :], o_ub[i, :], red_ub) # A_i - (A_i * (-B_{0...i-1})) = -B_i
 				
@@ -133,7 +133,7 @@ def solve_tril_64_ker(B, H, L, dtype="float16", accum_dtype="float"):
 					T.tile.broadcast(o_row_2d_ub, o_row_ub, tmp_ub)
 					T.tile.fill(red_ub, 0.0)
 					T.tile.mul(mul_ub, o_ub, o_row_2d_ub)
-					T.tile.reduce_sum(red_ub, mul_ub, tmp_ub, dim = 0)
+					T.reduce_sum(mul_ub, red_ub, tmp_ub, dim = 0)
 					T.tile.sub(o_ub[i, :], o_ub[i, :], red_ub)
 				T.tile.sub(o_ub, i_ub, o_ub)
 				T.copy(o_ub, o_ub_half)
@@ -268,7 +268,7 @@ def solve_tril_128_ker(B, H, L, dtype="float16", accum_dtype="float"):
 						T.tile.broadcast(o_row_2d_ub, o_row_ub, tmp_ub)
 						T.tile.fill(red_ub, 0.0)
 						T.tile.mul(mul_ub, o_ub, o_row_2d_ub)
-						T.tile.reduce_sum(red_ub, mul_ub, tmp_ub, dim = 0)
+						T.reduce_sum(mul_ub, red_ub, tmp_ub, dim = 0)
 						T.tile.sub(o_ub[i, :], o_ub[i, :], red_ub)
 					T.set_flag("mte2", "v", 0)
 					T.wait_flag("mte2", "v", 0)
