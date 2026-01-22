@@ -605,6 +605,12 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) 
     WaitCrossFlagCodegen(op);
   } else if (op->op.same_as(tl::ascend_auto_barrier())) {
     AutoBarrierCodegen(op);
+  } else if (op->op.same_as(tl::ascend_clamp_max())) {
+    BinaryVecClampOpsCodegen(op, "TMINS");
+  } else if (op->op.same_as(tl::ascend_clamp_min())) {
+    BinaryVecClampOpsCodegen(op, "TMAXS");
+  } else if (op->op.same_as(tl::ascend_round())) {
+    CastCodegen(op, "RoundMode::CAST_ROUND");
   }
 }
 
@@ -1199,6 +1205,60 @@ void CodeGenTileLangAscendPto::ScalarOpCodegen(const CallNode *op, const std::st
     this->stream << op_name << "(" << PrintBufferOffset(op->args[0].as<CallNode>()) << ", "
                   << PrintBufferOffset(op->args[1].as<CallNode>()) << ", "
                   << PrintExpr(op->args[2]) << ");\n";
+}
+
+void CodeGenTileLangAscendPto::BinaryVecClampOpsCodegen(
+    const CallNode *op, const std::string &op_name) {
+  std::vector<std::string> var_names;
+  std::string operation = op_name;
+  for (int i = 1; i < op->args.size() - 3; i++) {
+    auto var_name = PrintBufferOffset(op->args[i].as<CallNode>());
+    var_names.push_back(var_name);
+  }
+  if (op->args[4].as<CallNode>()) {
+    auto var_name = PrintBufferOffset(op->args[4].as<CallNode>());
+    std::string ub_name_dst = var_names[1];
+    std::string ub_name_src = var_names[2];
+    this->PrintIndent();
+    std::string index = PrintExpr(op->args[op->args.size() - 2]);
+    std::string scalar_name = var_name + "_scalar";
+    // this->stream << "pipe_barrier(PIPE_ALL);\n";
+    this->stream << "auto " << scalar_name << "= " << var_name << ".GetValue("
+                 << index << ");\n";
+    this->stream << "pipe_barrier(PIPE_ALL);\n";
+    this->stream << operation << "(";
+    this->stream << ub_name_dst << ", " << ub_name_src << ", " << scalar_name;
+  } else {
+    this->PrintIndent();
+    this->stream << operation << "(";
+    std::string scalar = PrintExpr(op->args[op->args.size() - 2]);
+    var_names.push_back(scalar);
+    for (int i = 0; i < var_names.size(); i++) {
+      this->stream << var_names[i];
+      if (i != var_names.size() - 1) {
+        this->stream << ", ";
+      }
+    }
+  }
+  this->stream << ");\n";
+}
+
+void CodeGenTileLangAscendPto::CastCodegen(const CallNode *op, const std::string& op_type) {
+  std::vector<std::string> var_names;
+  for (int i = 0; i < op->args.size() - 2; i++) {
+    auto var_name = PrintBufferOffset(op->args[i].as<CallNode>());
+    var_names.push_back(var_name);
+  }
+  this->PrintIndent();
+  this->stream << "TCVT" << "(";
+  var_names.push_back(op_type);
+  for (int i = 0; i < var_names.size(); i++) {
+    this->stream << var_names[i];
+    if (i != var_names.size() - 1) {
+      this->stream << ", ";
+    }
+  }
+  this->stream << ");\n";
 }
 
 std::tuple<int, int, int, bool> ExtractTemplateParamsForSliceBuffer(const std::string& op_name) {
