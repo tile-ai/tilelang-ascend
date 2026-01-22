@@ -242,12 +242,11 @@ CATLASS_DEVICE void cast(LocalTensor<dst> const &ubOut,
 template <typename T, uint32_t M, uint32_t N, int32_t dim>
 CATLASS_DEVICE void reduce_sum(LocalTensor<T> const &dstTensor,
                                LocalTensor<T> const &srcTensor,
-                               LocalTensor<uint8_t> const &sharedTmpBuffer,
-                               uint32_t count) {
+                               LocalTensor<uint8_t> const &sharedTmpBuffer) {
   uint32_t shape[] = {M, N};
-  if (count > 0) {
-    shape[1] = count / M;
-  }
+  // if (count > 0) {
+  //   shape[1] = count / M;
+  // }
   if constexpr (dim == -1) {
     AscendC::ReduceSum<T, AscendC::Pattern::Reduce::AR>(
         dstTensor, srcTensor, sharedTmpBuffer, shape, true
@@ -262,12 +261,11 @@ CATLASS_DEVICE void reduce_sum(LocalTensor<T> const &dstTensor,
 template <typename T, uint32_t M, uint32_t N, int32_t dim>
 CATLASS_DEVICE void reduce_max(LocalTensor<T> const &dstTensor,
                                LocalTensor<T> const &srcTensor,
-                               LocalTensor<uint8_t> const &sharedTmpBuffer,
-                               uint32_t count) {
+                               LocalTensor<uint8_t> const &sharedTmpBuffer) {
   uint32_t shape[] = {M, N};
-  if (count > 0) {
-    shape[1] = count / M;
-  }
+  // if (count > 0) {
+  //   shape[1] = count / M;
+  // }
   if constexpr (dim == -1) {
     AscendC::ReduceMax<T, AscendC::Pattern::Reduce::AR>(
         dstTensor, srcTensor, sharedTmpBuffer, shape, true
@@ -282,12 +280,11 @@ CATLASS_DEVICE void reduce_max(LocalTensor<T> const &dstTensor,
 template <typename T, uint32_t M, uint32_t N, int32_t dim>
 CATLASS_DEVICE void reduce_min(LocalTensor<T> const &dstTensor,
                                LocalTensor<T> const &srcTensor,
-                               LocalTensor<uint8_t> const &sharedTmpBuffer,
-                               uint32_t count) {
+                               LocalTensor<uint8_t> const &sharedTmpBuffer) {
   uint32_t shape[] = {M, N};
-  if (count > 0) {
-    shape[1] = count / M;
-  }
+  // if (count > 0) {
+  //   shape[1] = count / M;
+  // }
   if constexpr (dim == -1) {
     AscendC::ReduceMin<T, AscendC::Pattern::Reduce::AR>(
         dstTensor, srcTensor, sharedTmpBuffer, shape, true

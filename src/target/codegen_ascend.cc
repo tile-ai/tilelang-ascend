@@ -1456,7 +1456,7 @@ void CodeGenTileLangAscend::ReduceOpCodegen(const CallNode *op) {
   std::string op_name = "tl::ascend::" + Downcast<StringImm>(op->args[0])->value;
 
   std::vector<std::string> var_names;
-  for (int i = 1; i < op->args.size() - 1; i++) {
+  for (int i = 1; i < op->args.size(); i++) {
     auto var_name = PrintBufferOffset(op->args[i].as<CallNode>());
     var_names.push_back(var_name);
   }
