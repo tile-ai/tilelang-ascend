@@ -978,64 +978,6 @@ def gather(dst: Buffer, src: Buffer, src_offset: Buffer, src_base_addr: PrimExpr
     )
 
 
-def reduce(out: Buffer, buffer: Buffer, tmp: Buffer, reduce_type: str, dim: int, real_shape: list[int]=[0, 0]):
-    dtype = _dtype(buffer)
-    M = buffer.shape[0] if real_shape[0] == 0 else real_shape[0]
-    N = buffer.shape[1] if real_shape[1] == 0 else real_shape[1]
-    shape = f"{M}, {N}"
-
-    assert len(buffer.shape) == 2, "current only support buffer as a 2D tensor"
-
-    buffer = buffer.access_ptr("r")
-    out = out.access_ptr("w")
-    tmp = tmp.access_ptr("r")
-
-    return T.call_intrin(
-        "handle",
-        tir.op.Op.get("tl.ascend_reduce"),
-        f"{reduce_type}<{dtype}, {shape}, {dim}>",
-        out,
-        buffer,
-        tmp,
-    )
-
-
-def reduce_max(out: Buffer, buffer: Buffer, tmp: Buffer, dim: int, real_shape: list[int]=[0, 0]):
-    """Performs a reduction max operation.
-
-    Args:
-        out: The destination buffer.
-        buffer: The source buffer (2D).
-        tmp: The temporary buffer.
-        dim: The dimension to reduce along (-1 for last dim).
-    """
-    return reduce(out, buffer, tmp, "reduce_max", dim, real_shape)
-
-
-def reduce_min(out: Buffer, buffer: Buffer, tmp: Buffer, dim: int, real_shape: list[int]=[0, 0]):
-    """Performs a reduction min operation.
-
-    Args:
-        out: The destination buffer.
-        buffer: The source buffer (2D).
-        tmp: The temporary buffer.
-        dim: The dimension to reduce along (-1 for last dim).
-    """
-    return reduce(out, buffer, tmp, "reduce_min", dim, real_shape)
-
-
-def reduce_sum(out: Buffer, buffer: Buffer, tmp: Buffer, dim: int, real_shape: list[int]=[0, 0]):
-    """Performs a reduction sum operation.
-
-    Args:
-        out: The destination buffer.
-        buffer: The source buffer (2D).
-        tmp: The temporary buffer.
-        dim: The dimension to reduce along (-1 for last dim).
-    """
-    return reduce(out, buffer, tmp, "reduce_sum", dim, real_shape)
-
-
 def block_reduce_max(
     dst: Buffer,
     src: Buffer,

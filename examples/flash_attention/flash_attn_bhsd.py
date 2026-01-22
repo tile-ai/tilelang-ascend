@@ -147,7 +147,7 @@ def flash_attention_fwd(
                     T.tile.mul(acc_s_ub, acc_s_ub, sm_scale)
                     T.barrier_all()
 
-                    T.tile.reduce_max(m_i, acc_s_ub, tmp_ub, dim=-1)
+                    T.reduce_max(acc_s_ub, m_i, tmp_ub, dim=-1)
                     T.barrier_all()
 
                     T.tile.max(m_i, m_i, m_i_prev)
@@ -167,7 +167,7 @@ def flash_attention_fwd(
                     T.tile.exp(acc_s_ub, acc_s_ub)
                     T.barrier_all()
 
-                    T.tile.reduce_sum(sumexp_i_ub, acc_s_ub, tmp_ub, dim=-1)
+                    T.reduce_sum(acc_s_ub, sumexp_i_ub, tmp_ub, dim=-1)
                     T.barrier_all()
 
                     T.tile.mul(sumexp, sumexp, m_i_prev)  # check

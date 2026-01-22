@@ -25,7 +25,7 @@ def reduce_min(M, N, block_M, dtype="float"):
                 T.copy(A[row_base : row_base + sub_block_M, :], a_ub)
 
                 T.barrier_all()
-                T.tile.reduce_min(b_ub, a_ub, tmp, dim=-1)
+                T.reduce_min(a_ub, b_ub, tmp, dim=-1)
                 T.barrier_all()
 
                 T.copy(b_ub, B[row_base : row_base + sub_block_M])
