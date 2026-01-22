@@ -225,7 +225,7 @@ def lower(
     mod = LowerAndLegalize(mod, target)
 
     # Phase 2: Optimize the IR for the target
-    mod = OptimizeForTarget(mod, target)
+    mod = OptimizeForTarget(mod, target, platform)
 
     codegen_mod = device_codegen(mod, target, platform)
 
