@@ -2349,26 +2349,68 @@ void CodeGenTileLangNPUIRDEV::DebugPrintCodegen(const CallNode *op) {
 ///    %.* = tensor.reshape %a(%b) outs(%c) -> tensor<>
 void CodeGenTileLangNPUIRDEV::ReshapeCodegen(const CallNode *op) {
   tvm::tl::NpuirReshape npuirop(op->args, this->vmap);
+  mlir::Location loc = builder.getUnknownLoc();
+  
   Value src = GetVarValue(npuirop.src);
   const auto &dstShape = npuirop.dst_shape;
-  auto shapeTensorType =
-      mlir::RankedTensorType::get({dstShape.size()}, builder.getIndexType());
-  auto shapeAttr =
-      mlir::DenseIntElementsAttr::get(shapeTensorType, dstShape);
-  Value shapeTensor =
-      builder.create<mlir::arith::ConstantOp>(builder.getUnknownLoc(), shapeAttr);
-
   auto srcTensorTy = src.getType().cast<mlir::RankedTensorType>();
-  auto resultTensorTy =
-      mlir::RankedTensorType::get(dstShape,
-                                  srcTensorTy.getElementType());
-  Value reshaped =
-      builder.create<mlir::tensor::ReshapeOp>(
-          builder.getUnknownLoc(),
-          resultTensorTy,
-          src,
-          shapeTensor);
-
+  
+  bool allStatic = std::all_of(dstShape.begin(), dstShape.end(),
+      [](const tvm::PrimExpr &e) { return e.as<tvm::IntImmNode>() != nullptr; });
+  
+  SmallVector<int64_t> dstShapeForType;
+  dstShapeForType.reserve(dstShape.size());
+  for (auto s : dstShape) {
+    if (auto imm = s.as<tvm::IntImmNode>()) {
+      dstShapeForType.push_back(static_cast<int64_t>(imm->value));
+    } else {
+      dstShapeForType.push_back(mlir::ShapedType::kDynamic);
+    }
+  }
+  
+  Value shapeTensor;
+  if (allStatic) {
+    auto shapeTensorType =
+        mlir::RankedTensorType::get({static_cast<int64_t>(dstShape.size())}, 
+                                     builder.getIndexType());
+    
+    SmallVector<int64_t> shapeValues;
+    shapeValues.reserve(dstShape.size());
+    for (auto s : dstShape) {
+      auto imm = s.as<tvm::IntImmNode>();
+      shapeValues.push_back(imm->value);
+    }
+    
+    auto shapeAttr = mlir::DenseIntElementsAttr::get(shapeTensorType, shapeValues);
+    shapeTensor = builder.create<mlir::arith::ConstantOp>(loc, shapeAttr);
+  } else {
+    auto toIndexValue = [&](const tvm::PrimExpr &e) -> mlir::Value {
+      mlir::Value v = MakeValue(e);
+      if (!v.getType().isIndex()) {
+        v = builder.create<mlir::arith::IndexCastOp>(loc, builder.getIndexType(), v);
+      }
+      return v;
+    };
+    
+    SmallVector<mlir::Value> shapeValues;
+    shapeValues.reserve(dstShape.size());
+    for (auto s : dstShape) {
+      shapeValues.push_back(toIndexValue(s));
+    }
+    
+    shapeTensor = builder.create<mlir::tensor::FromElementsOp>(loc, shapeValues);
+  }
+  
+  auto resultTensorTy = mlir::RankedTensorType::get(
+      dstShapeForType,
+      srcTensorTy.getElementType());
+  
+  Value reshaped = builder.create<mlir::tensor::ReshapeOp>(
+      loc,
+      resultTensorTy,
+      src,
+      shapeTensor);
+  
   SetVarValue(npuirop.dst, reshaped);
 }
 
