@@ -159,42 +159,6 @@ echo "TileLang path set to: $TILELANG_PATH"
 echo "Configuring environment variables for TVM..."
 echo "export PYTHONPATH=${TILELANG_PATH}:\$PYTHONPATH" >> ~/.bashrc
 
-# compile and install shmem package
-if $USE_SHMEM; then
-    echo "Starting installation shmem..."
-    cd 3rdparty/shmem
-    bash scripts/build.sh -python_extension -mf
-    pip show shmem >/dev/null 2>&1
-    if [[ $? -eq 0 ]]; then
-        echo "begin uninstall old shmem whl package"
-        pip uninstall --yes shmem
-    fi
-    cd src/python
-    python setup.py bdist_wheel
-    cd dist
-    python -m pip install shmem*.whl
-    if [ $? -ne 0 ]; then
-        echo "python -m pip install failed, try pip3 install ..."
-        pip3 install shmem*.whl
-        if [ $? -ne 0 ]; then
-            echo "Error: shmem-xxx.whl install failed."
-            exit 1
-        else
-            echo "shmem-xxx.whl install success."
-        fi
-    else
-        echo "shmem-xxx.whl install success."
-    fi
-    source ../../../install/set_env.sh
-    if [ $? -ne 0 ]; then
-        echo "Error: set shmem env failed."
-        exit 1
-    fi
-    # back to path tilelang-ascend/
-    cd ../../../../..
-    echo "Install shmem all success."
-fi
-
 # Step 12: Source .bashrc to apply changes
 echo "Applying environment changes by sourcing .bashrc..."
 source ~/.bashrc

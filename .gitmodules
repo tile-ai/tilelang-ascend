@@ -10,6 +10,3 @@
 [submodule "3rdparty/catlass"]
 	path = 3rdparty/catlass
 	url = https://gitee.com/ascend/catlass.git
-[submodule "3rdparty/shmem"]
-	path = 3rdparty/shmem
-	url = https://gitcode.com/cann/shmem
