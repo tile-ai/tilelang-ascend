@@ -10,6 +10,6 @@
 [submodule "3rdparty/catlass"]
 	path = 3rdparty/catlass
 	url = https://gitee.com/ascend/catlass.git
-[submodule "3rdparty/pto-tile-lib"]
-	path = 3rdparty/pto-tile-lib
-	url = https://gitcode.com/cann/pto-tile-lib-dev.git
+[submodule "3rdparty/pto-isa"]
+	path = 3rdparty/pto-isa
+	url = https://gitcode.com/cann/pto-isa.git
