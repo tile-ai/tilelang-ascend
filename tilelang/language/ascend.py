@@ -335,7 +335,7 @@ def shmem_ub_get_nbi(dst: Buffer, src: Buffer, nelems: PrimExpr, newPe: PrimExpr
     """
     return tir.call_intrin(
         "handle",
-        tir.op.Op.get("tl.ascend_shmem_get_nbi"),
+        tir.op.Op.get("tl.ascend_shmem_ub_get_nbi"),
         f"shmem_ub_get_nbi<{_dtype(src)}>",
         dst.access_ptr("w"),
         src.access_ptr("r"),
