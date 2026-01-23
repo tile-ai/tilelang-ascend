@@ -2,6 +2,8 @@
 
 # ================= 配置区 =================
 MAX_JOBS=8  # 同时并行执行的任务数，建议根据 NPU 负载调整
+export TILELANG_AUTO_TUNING_CPU_COUNTS=4 # for autotuner
+export TILELANG_AUTO_TUNING_MAX_CPU_COUNT=4 # for autotuner
 # ==========================================
 
 echo "Starting parallel unified test execution (Live Output)..."
@@ -29,6 +31,14 @@ fi
 
 if [ -d "./gemm_aot" ]; then
     bash_scripts=$(find ./gemm_aot -maxdepth 1 -name "run_example_gemm_aot.sh" | sort)
+    if [ -n "$bash_scripts" ]; then
+        for script in $bash_scripts; do all_scripts+=("$script"); done
+    fi
+fi
+
+# ===== add examples/torch_tl_ascend/test_example.sh =====
+if [ -d "./torch_tl_ascend" ]; then
+    bash_scripts=$(find ./torch_tl_ascend -maxdepth 1 -name "test_example.sh" | sort)
     if [ -n "$bash_scripts" ]; then
         for script in $bash_scripts; do all_scripts+=("$script"); done
     fi

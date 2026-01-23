@@ -16,7 +16,7 @@ N = args.n
 
 
 @tilelang.jit(out_idx=[-1])
-def not_tl(M, N, block_M, block_N, dtype="int16"):
+def bitwise_not(M, N, block_M, block_N, dtype="int16"):
     m_num = M // block_M
     n_num = N // block_N
 
@@ -38,7 +38,7 @@ def not_tl(M, N, block_M, block_N, dtype="int16"):
                 T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a_ub)
 
                 T.barrier_all()
-                T.tile.not_tl(b_ub, a_ub)
+                T.tile.bitwise_not(b_ub, a_ub)
                 T.barrier_all()
 
                 T.copy(b_ub, B[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
@@ -46,7 +46,7 @@ def not_tl(M, N, block_M, block_N, dtype="int16"):
     return main
 
 
-func = not_tl(M, N, 128, 256)
+func = bitwise_not(M, N, 128, 256)
 
 torch.manual_seed(0)
 

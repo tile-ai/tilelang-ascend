@@ -39,6 +39,7 @@ def compile(
     execution_backend: Literal["dlpack", "ctypes", "cython"] = "cython",
     target: Union[str, Target] = "auto",
     target_host: Union[str, Target] = None,
+    platform: Literal["A2", "A3", "A5"] = "A3",
     verbose: bool = False,
     pass_configs: Optional[Dict[str, Any]] = None,
 ) -> JITKernel:
@@ -58,6 +59,8 @@ def compile(
         Compilation target, either as a string or a TVM Target object (default: "auto").
     target_host : Union[str, Target], optional
         Target host for cross-compilation (default: None).
+    platform : Literal
+        Specifies the target hardware platform generation. Defaults to "A3".
     verbose : bool, optional
         Whether to enable verbose output (default: False).
     pass_configs : dict, optional
@@ -80,6 +83,7 @@ def compile(
         execution_backend=execution_backend,
         target=target,
         target_host=target_host,
+        platform=platform,
         verbose=verbose,
         pass_configs=pass_configs,
     )
@@ -91,6 +95,7 @@ class _JitImplementation:
     workspace_idx: Any
     target: Union[str, Target]
     target_host: Union[str, Target]
+    platform: str
     execution_backend: Literal["dlpack", "ctypes", "cython"]
     verbose: bool
     pass_configs: Optional[Dict[str, Any]]
@@ -104,6 +109,7 @@ class _JitImplementation:
                  workspace_idx: Any = None,
                  target: Union[str, Target] = "auto",
                  target_host: Union[str, Target] = None,
+                 platform: Literal["A2", "A3", "A5"] = "A3",
                  execution_backend: Literal["dlpack", "ctypes", "cython"] = "cython",
                  verbose: bool = False,
                  pass_configs: Optional[Dict[str, Any]] = None,
@@ -124,6 +130,8 @@ class _JitImplementation:
             (default: "auto").
         target_host : Union[str, Target], optional
             Target host for cross-compilation, similar to `target` (default: None).
+        platform : Literal
+            Specifies the target hardware platform generation. Defaults to "A3".
         execution_backend : Literal["dlpack", "ctypes", "cython"], optional
             The backend used for kernel execution and argument passing.
             "dlpack" is generally preferred for zero-copy tensor passing with compatible frameworks.
@@ -147,6 +155,7 @@ class _JitImplementation:
         self.execution_backend = execution_backend
         self.target = target
         self.target_host = target_host
+        self.platform = platform
         self.verbose = verbose
         self.pass_configs = pass_configs
         self.func = None
@@ -208,6 +217,7 @@ class _JitImplementation:
                     execution_backend=self.execution_backend,
                     target=self.target,
                     target_host=self.target_host,
+                    platform=self.platform,
                     verbose=self.verbose,
                     pass_configs=self.pass_configs,
                 )
@@ -241,6 +251,7 @@ def jit(  # This is the new public interface
         workspace_idx: Any = None,
         target: Union[str, Target] = "auto",
         target_host: Union[str, Target] = None,
+        platform: Literal["A2", "A3", "A5"] = "A3",
         execution_backend: Literal["dlpack", "ctypes", "cython"] = "cython",
         verbose: bool = False,
         pass_configs: Optional[Dict[str, Any]] = None,
@@ -263,6 +274,8 @@ def jit(  # This is the new public interface
         Compilation target for TVM (e.g., "cuda", "llvm"). Defaults to "auto".
     target_host : Union[str, Target], optional
         Target host for cross-compilation. Defaults to None.
+    platform : Literal
+        Specifies the target hardware platform generation. Defaults to "A3".
     execution_backend : Literal["dlpack", "ctypes", "cython"], optional
         Backend for kernel execution and argument passing. Defaults to "cython".
     verbose : bool, optional
@@ -286,6 +299,7 @@ def jit(  # This is the new public interface
             workspace_idx=workspace_idx,
             target=target,
             target_host=target_host,
+            platform=platform,
             execution_backend=execution_backend,
             verbose=verbose,
             pass_configs=pass_configs,
@@ -302,6 +316,7 @@ def jit(  # This is the new public interface
             workspace_idx=workspace_idx,
             target=target,
             target_host=target_host,
+            platform=platform,
             execution_backend=execution_backend,
             verbose=verbose,
             pass_configs=pass_configs,

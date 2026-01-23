@@ -158,7 +158,7 @@ def sparse_attention_fwd(
                     bx = pid % (seq_len * REPLICATE_H)
                     by = pid // (seq_len * REPLICATE_H) % batch
                     bz = pid // (seq_len * REPLICATE_H) // batch % kv_group
-                    
+
                     b_i = by
                     g_i = bz
 
@@ -224,7 +224,7 @@ def sparse_attention_fwd(
                                 T.tile.compare(mask_ub, indices_ub_float, T.float32(actual_len - act_q_len + s_i), "LE")
                                 T.tile.compare(mask_ub_2, indices_ub_float, T.float32(-1.0), "NE")
                                 T.barrier_all()
-                                T.tile.and_tl(mask_ub, mask_ub, mask_ub_2)
+                                T.tile.bitwise_and(mask_ub, mask_ub, mask_ub_2)
 
                                 for bi_i in range(BI // 2):
                                     index_i = indices_ub_[bi_i + vid * BI // 2]

@@ -3,11 +3,6 @@ from tilelang import DataType, language as T
 import argparse
 import torch
 
-torch.set_default_device('npu')
-torch.manual_seed(0)
-
-tilelang.disable_cache()
-
 B, S, H, D = 1, 128, 1, 512
 
 @tilelang.jit(out_idx=[3], workspace_idx=[4,5,6])
@@ -16,7 +11,6 @@ def flash_attention_fwd(
     seq_len,
     heads,
     dim,
-    
 ):
     block_M, block_N = 64, 64
 
@@ -31,13 +25,13 @@ def flash_attention_fwd(
 
     @T.prim_func
     def main(
-            Q: T.Tensor(shape, dtype),  # type: ignore
-            K: T.Tensor(shape, dtype),  # type: ignore
-            V: T.Tensor(shape, dtype),  # type: ignore
+            Q: T.Tensor(shape, dtype),       # type: ignore
+            K: T.Tensor(shape, dtype),       # type: ignore
+            V: T.Tensor(shape, dtype),       # type: ignore
             Output: T.Tensor(shape, dtype),  # type: ignore
-            workspace_1: T.Tensor([block_num, block_M, block_N], accum_dtype),
-            workspace_2: T.Tensor([block_num, block_M, block_N], dtype),
-            workspace_3: T.Tensor([block_num, block_M, dim], accum_dtype),
+            workspace_1: T.Tensor([block_num, block_M, block_N], accum_dtype),   # type: ignore
+            workspace_2: T.Tensor([block_num, block_M, block_N], dtype),         # type: ignore
+            workspace_3: T.Tensor([block_num, block_M, dim], accum_dtype),       # type: ignore
     ):
         with T.Kernel(block_num, is_npu=True) as (cid, vid):
             bx = cid % (seq_len // block_M)
@@ -227,6 +221,11 @@ if __name__ == "__main__":
     parser.add_argument("--D", type=int, default=512, help="hidden dim")
     args = parser.parse_args()
     B, S, H, D = args.B, args.S, args.H, args.D
+
+    torch.set_default_device('npu')
+    torch.manual_seed(0)
+
+    tilelang.disable_cache()
 
     func = flash_attention_fwd(
         batch=B,

@@ -40,7 +40,7 @@ def cross_entropy(
 
     def cast_or_copy(dst, src, mode, count):
         if not_same_dtype:
-            return T.tile.cast_tl(dst, src, mode, count)
+            return T.tile.cast(dst, src, mode, count)
         else:
             return T.copy(src, dst)
 
@@ -53,7 +53,7 @@ def cross_entropy(
     ):
         with T.Kernel(n_num, is_npu=True) as (cid, vid):
             bn = (cid * VEC_NUM + vid) % n_2_num
-            
+
             x_ub = T.alloc_ub([block_N_2, block_C], x_dtype)
             x_32 = T.alloc_ub([block_N_2, block_C], CAL_DTYPE)
             tile_max = T.alloc_ub([block_N_2], CAL_DTYPE)
@@ -87,7 +87,7 @@ def cross_entropy(
                     T.tile.reduce_sum(tile_sum, x_32, temp_reduce, dim=-1)
                     T.tile.add(prev_sum, tile_sum, temp_exp)
                     T.copy(tile_max, prev_max)
-                
+
                 T.copy(y[bn * block_N_2], y_ub)
                 T.tile.ln(prev_sum, prev_sum)  # log(sum e^{x_c - x_max})
                 # log(e^{x_c - x_max} / sum e^{x_c - x_max}) = x_c - x_max - log(sum e^{x_c - x_max})
@@ -97,10 +97,10 @@ def cross_entropy(
 
                     for n_idx in T.serial(block_N_2):
                         T.tile.sub(x_32[n_idx, :], x_32[n_idx, :], prev_max[n_idx] + prev_sum[n_idx])  # x_c - (x_max + log(sum e^{x_c - x_max}))
-                    
+
                     cast_or_copy(x_ub, x_32, CAST_MODE_HIGH2LOW, block_N_2 * block_C)
                     T.copy(x_ub, log_prob[bn * block_N_2, bc * block_C])
-                    
+
                     for n_idx in T.serial(block_N_2):
                         if 0 <= y_ub[n_idx] and y_ub[n_idx] < block_C:
                             l_n_32[n_idx] = -x_32[n_idx, y_ub[n_idx]]  # -(x_c - x_max - log(sum e^{x_c - x_max}))
@@ -110,7 +110,7 @@ def cross_entropy(
                 T.copy(l_n, loss[bn * block_N_2])
 
     return main
-        
+
 def ref_program(x, y):
     cross_entropy_loss = nn.CrossEntropyLoss(reduction="none")
     loss = cross_entropy_loss(x, y)

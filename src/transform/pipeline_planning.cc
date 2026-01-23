@@ -99,8 +99,12 @@ std::unordered_map<std::string, OperationConfig> operation_config_ = {
   {"AscendC::And", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
   {"AscendC::Or", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
   {"AscendC::Not", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
-  {"reduce_max", {{{0, "read"}, {1, "write"}}, "PIPE_V"}},
-  {"reduce_sum", {{{0, "read"}, {1, "write"}}, "PIPE_V"}},
+  {"reduce_max", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
+  {"reduce_min", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
+  {"AscendC::ClampMax", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
+  {"AscendC::ClampMin", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
+  {"AscendC::Round", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
+  {"reduce_sum", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
   {"AscendC::Max", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
   {"AscendC::Min", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
   {"AscendC::Sin", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
@@ -109,14 +113,80 @@ std::unordered_map<std::string, OperationConfig> operation_config_ = {
   {"AscendC::Sigmoid", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
   {"AscendC::ShiftLeft", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
   {"AscendC::ShiftRight", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
-  {"AscendC::BilinearInterpolation", {{{0, "write"}, {1, "read"}, {2, "read"}, {3, "read"}, {4, "read"}, 
+  {"AscendC::Sort", {{{0, "write"}, {1, "read"}, {2, "read"}, {3, "read"}}, "PIPE_V"}},
+  {"AscendC::ArithProgression", {{{0, "write"}}, "PIPE_V"}},
+  {"GatherMask", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
+  {"AscendC::BilinearInterpolation", {{{0, "write"}, {1, "read"}, {2, "read"}, {3, "read"}, {4, "read"},
   {5, "read"}, {6, "read"}, {7, "read"}, {8, "read"}, {9, "read"}, {10, "read"}}, "PIPE_V"}},
   {"AscendC::WholeReduceMax", {{{0, "write"}, {1, "read"}, {2, "read"}, {3, "read"}, {4, "read"}, {5, "read"}, {6, "read"}}, "PIPE_V"}},
   {"AscendC::WholeReduceMin", {{{0, "write"}, {1, "read"}, {2, "read"}, {3, "read"}, {4, "read"}, {5, "read"}, {6, "read"}}, "PIPE_V"}},
   {"AscendC::WholeReduceSum", {{{0, "write"}, {1, "read"}, {2, "read"}, {3, "read"}, {4, "read"}, {5, "read"}, {6, "read"}}, "PIPE_V"}},
-  {"AscendC::Sort", {{{0, "write"}, {1, "read"}, {2, "read"}, {3, "read"}}, "PIPE_V"}},
-  {"AscendC::ArithProgression", {{{0, "write"}}, "PIPE_V"}},
-  {"GatherMask", {{{0, "write"}, {1, "read"}}, "PIPE_V"}}
+
+  {"tl.ascend_mma", {{{1, "read"}, {2, "read"}, {3, "write"}}, "PIPE_M"}},
+  {"tl.ascend_gemm_v0", {{{1, "read"}, {2, "read"}, {3, "write"}}, "PIPE_M"}},
+  {"tl.ascend_gemm_v1", {{{1, "read"}, {2, "read"}, {3, "write"}}, "PIPE_M"}},
+  {"tl.ascend_add", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
+  {"tl.ascend_adds", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
+  {"tl.ascend_mul", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
+  {"tl.ascend_muls", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
+  {"tl.ascend_sub", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
+  {"tl.ascend_subs", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
+  {"tl.ascend_div", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
+  {"tl.ascend_divs", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
+  {"tl.ascend_max", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
+  {"tl.ascend_min", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
+  {"tl.ascend_bitwise_and", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
+  {"tl.ascend_bitwise_or", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
+  {"tl.ascend_compare", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
+  {"tl.ascend_compare_scalar", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
+  {"tl.ascend_exp", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
+  {"tl.ascend_ln", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
+  {"tl.ascend_abs", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
+  {"tl.ascend_reciprocal", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
+  {"tl.ascend_sqrt", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
+  {"tl.ascend_rsqrt", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
+  {"tl.ascend_relu", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
+  {"tl.ascend_bitwise_not", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
+  {"tl.ascend_select", {{{0, "write"}, {1, "read"}, {2, "read"}, {4, "read"}}, "PIPE_V"}},
+  {"tl.ascend_leaky_relu", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
+  {"tl.ascend_axpy", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
+  {"tl.ascend_bitwise_lshift", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
+  {"tl.ascend_bitwise_rshift", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
+  {"tl.ascend_sort32", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
+  {"tl.ascend_createvecindex", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
+  {"tl.ascend_sin", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
+  {"tl.ascend_cos", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
+  {"tl.ascend_transpose", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
+  {"tl.ascend_gather", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
+  {"tl.ascend_reduce", {{{1, "write"}, {2, "read"}, {3, "read"}}, "PIPE_V"}},
+  {"tl.ascend_block_reduce_max", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
+  {"tl.ascend_block_reduce_min", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
+  {"tl.ascend_block_reduce_sum", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
+
+  {"tl.ascend_scalar", {{{0, "write"}, {1, "read"}}, "PIPE_S"}},
+  {"tl.ascend_gatherb", {{{1, "write"}, {2, "read"}, {3, "read"}}, "PIPE_V"}},
+  {"tl.ascend_duplicate", {{{0, "write"}}, "PIPE_V"}},
+  {"tl.ascend_cast", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
+
+  {"tl.ascend_pow", {{{0, "write"}, {1, "read"}, {2, "read"}, {3, "read"}}, "PIPE_V"}},
+  {"tl.ascend_bitwise_xor", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
+  {"tl.ascend_broadcast", {{{1, "write"}, {2, "read"}}, "PIPE_V"}},
+  {"tl.ascend_fill", {{{1, "write"}}, "PIPE_V"}},
+  {"tl.arith_progression", {{{1, "write"}}, "PIPE_V"}},
+  {"tl.ascend_sort", {{{1, "write"}, {2, "read"}, {3, "read"}, {4, "read"}}, "PIPE_V"}},
+  {"tl.ascend_merge_sort", {{{1, "write"}, {2, "read"}}, "PIPE_V"}},
+  {"tl.ascend_topk", {{{1, "write"}, {2, "read"}, {3, "read"}}, "PIPE_V"}},
+  {"tl.ascend_gather_mask", {{{1, "write"}, {2, "read"}}, "PIPE_V"}},
+  {"tl.ascend_init_sort_buf", {{{1, "write"}}, "PIPE_V"}},
+
+  {"tl.ascend_bilinear_interpolation", {{{0, "write"}, {1, "read"}, {2, "read"}, {3, "read"}, {10, "read"}}, "PIPE_V"}},
+  {"tl.ascend_wholereducemax", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
+  {"tl.ascend_wholereducemin", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
+  {"tl.ascend_wholereducesum", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
+  {"tl.ascend_sigmoid", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
+  {"tl.ascend_clamp_max", {{{1, "write"}, {2, "read"}}, "PIPE_V"}},
+  {"tl.ascend_clamp_min", {{{1, "write"}, {2, "read"}}, "PIPE_V"}},
+  {"tl.ascend_round", {{{0, "write"}, {1, "read"}}, "PIPE_V"}}
 };
 
 /*!
@@ -165,12 +235,12 @@ private:
     if (template_pos != std::string::npos) {
       result = result.substr(0, template_pos);
     }
-    
+
     size_t ns_pos = result.find("tl::ascend::");
     if (ns_pos != std::string::npos) {
       result = result.substr(ns_pos + 12);
     }
-    
+
     return result;
   }
 
@@ -210,6 +280,18 @@ private:
     }
   }
 
+  bool is_func_in_operation_config(const CallNode *op){
+    bool result = false;
+    if (auto* op_ptr = op->op.as<OpNode>()){
+      std::string op_name = op_ptr->name;
+      auto config_it = operation_config_.find(op_name);
+      if (config_it != operation_config_.end()) {
+          result = true;
+      }
+    }
+    return result;
+  }
+
   void VisitExpr_(const CallNode *op) final {
     auto args = op->args;
     if (op->op.same_as(builtin::address_of())) {
@@ -238,8 +320,8 @@ private:
       conditonal_expr = cond;
       this->VisitExpr(then_expr);
       this->VisitExpr(else_expr);
-    } else if (const auto* func_name = op->args[0].as<StringImmNode>()) {
-      std::string func_str = func_name->value;
+    } else if (op->op.same_as(tir::builtin::call_extern())) {
+      std::string func_str = op->args[0].as<StringImmNode>()->value;
       std::string normalized_name = NormalizeFunctionName(func_str);
       auto config_it = operation_config_.find(normalized_name);
       if (config_it != operation_config_.end()) {
@@ -273,7 +355,42 @@ private:
           }
         }
       }
+    } else if (is_func_in_operation_config(op)) {
+      auto* op_ptr = op->op.as<OpNode>();
+      std::string op_name = op_ptr->name;
+      auto config_it = operation_config_.find(op_name);
+      const auto& config = config_it->second;
+      for (const auto& buffer_config: config.buffer_accesses) {
+        size_t arg_index = buffer_config.first;
+        const std::string& access_type = buffer_config.second;
+        if (const auto* access_ptr = op->args[arg_index].as<CallNode>()) {
+          if (access_ptr->op.same_as(builtin::tvm_access_ptr())) {
+            const VarNode* buffer_var = access_ptr->args[1].as<VarNode>();
+            if (buffer_var) {
+              auto it = buffer_data_to_buffer_.find(GetRef<Var>(buffer_var));
+              if (it != buffer_data_to_buffer_.end()) {
+                const Buffer& buffer = (*it).second;
+                const BufferRegion buffer_region = BufferRegion::FullRegion(buffer);
+                if (access_type == "read") {
+                  reads_.push_back(buffer_region);
+                  if (buffer.scope() == "global") {
+                    is_global_read_ = true;
+                  }
+                } else if (access_type == "write") {
+                  writes_.push_back(buffer_region);
+                  if (is_global_read_ && (buffer.scope() == "shared" ||
+                      buffer.scope() == "shared.dyn")) {
+                        is_global_copy_pattern_ = true;
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+
     } else {
+
       StmtExprVisitor::VisitExpr_(op);
     }
   }
