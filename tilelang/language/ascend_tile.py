@@ -75,7 +75,7 @@ def fill(buffer: Buffer, value: PrimExpr):
     return tir.call_intrin(
         "handle",
         tir.op.Op.get("tl.ascend_fill"),
-        f"tl::ascend::Fill<{_dtype(buffer)}>",
+        f"Fill<{_dtype(buffer)}>",
         buffer.access_ptr("w"),
         value,
         size,
@@ -99,7 +99,7 @@ def arith_progression(
     return tir.call_intrin(
         "handle",
         tir.op.Op.get("tl.ascend_arith_progression"),
-        f"tl::ascend::ArithProgression<{_dtype(buffer)}>",
+        f"ArithProgression<{_dtype(buffer)}>",
         buffer.access_ptr("w"),
         first_value,
         diff_value,
@@ -134,7 +134,7 @@ def sort(
     return tir.call_intrin(
         "handle",
         tir.op.Op.get("tl.ascend_sort"),
-        f"tl::ascend::Sort<{_dtype(dst)}, true>",
+        f"Sort<{_dtype(dst)}, true>",
         dst_ptr,
         src.access_ptr("r"),
         indices.access_ptr("r"),
@@ -169,7 +169,7 @@ def merge_sort(
     return tir.call_intrin(
         "handle",
         tir.op.Op.get("tl.ascend_merge_sort"),
-        f"tl::ascend::MergeSort<{_dtype(dst)}>",
+        f"MergeSort<{_dtype(dst)}>",
         dst.access_ptr("w"),
         src.access_ptr("r"),
         block_size,
@@ -196,7 +196,7 @@ def topk(dst: Buffer, src: Buffer, tmp: Buffer, block_size: PrimExpr):
     return tir.call_intrin(
         "handle",
         tir.op.Op.get("tl.ascend_topk"),
-        f"tl::ascend::TopK<{_dtype(dst)}>",
+        f"TopK<{_dtype(dst)}>",
         dst.access_ptr("w"),
         src.access_ptr("r"),
         tmp.access_ptr("r"),
@@ -221,7 +221,7 @@ def gather_mask(dst: Buffer, src: Buffer, num: PrimExpr):
     return tir.call_intrin(
         "handle",
         tir.op.Op.get("tl.ascend_gather_mask"),
-        f"tl::ascend::GatherMask<{_dtype(dst)}>",
+        f"GatherMask<{_dtype(dst)}>",
         dst.access_ptr("w"),
         src.access_ptr("r"),
         num,
@@ -256,7 +256,7 @@ def gatherb(
     return tir.call_intrin(
         "handle",
         tir.op.Op.get("tl.ascend_gatherb"),
-        f"tl::ascend::Gatherb<{_dtype(dst)}>",
+        f"Gatherb<{_dtype(dst)}>",
         dst.access_ptr("w"),
         src0.access_ptr("r"),
         offset.access_ptr("r"),
@@ -427,7 +427,7 @@ def init_sort_buf(buffer: Buffer, num: PrimExpr, rsv: PrimExpr):
     return tir.call_intrin(
         "handle",
         tir.op.Op.get("tl.ascend_init_sort_buf"),
-        f"tl::ascend::InitSortBuf<{_dtype(buffer)}>",
+        f"InitSortBuf<{_dtype(buffer)}>",
         buffer.access_ptr("w"),
         rsv,
         num,
@@ -1403,7 +1403,7 @@ def clamp_max(out: Buffer, buffer: Buffer, tmp: Buffer, scalar_value: PrimExpr, 
     return tir.call_intrin(
         "handle",
         tir.op.Op.get(f"tl.ascend_clamp_max"),
-        f"tl::ascend::ClampMax<{_dtype(buffer)}>",
+        f"ClampMax<{_dtype(buffer)}>",
         out.access_ptr("w"),
         buffer.access_ptr("r"),
         tmp.access_ptr("r"),
@@ -1416,7 +1416,7 @@ def clamp_min(out: Buffer, buffer: Buffer, tmp: Buffer, scalar_value: PrimExpr, 
     return tir.call_intrin(
         "handle",
         tir.op.Op.get(f"tl.ascend_clamp_min"),
-        f"tl::ascend::ClampMin<{_dtype(buffer)}>",
+        f"ClampMin<{_dtype(buffer)}>",
         out.access_ptr("w"),
         buffer.access_ptr("r"),
         tmp.access_ptr("r"),
@@ -1489,7 +1489,7 @@ def broadcast(dst: Buffer, src: Buffer, tmp: Buffer):
     return tir.call_intrin(
         "handle",
         tir.op.Op.get(op_name),
-        f"tl::ascend::Broadcast<{template_args}>",
+        f"Broadcast<{template_args}>",
         dst.access_ptr("w"),
         src.access_ptr("r"),
         tmp.access_ptr("r"),
