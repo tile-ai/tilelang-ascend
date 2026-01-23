@@ -57,9 +57,108 @@ public:
 private:
   std::string PrintBufferOffset(const CallNode* call_arg, bool has_offset = true);
 
+  void AddDeclStream(std::ostringstream &ss, const std::string &str);
+
+  void PrintOpCall(const CallNode* op, const std::string& op_name,
+                  std::pair<int, int> buffer_range, std::pair<int, int> expr_range);
+
   void PrintConstArray(const CallNode* op, int start_idx, int len, const std::string& dtype = "uint32_t");
 
+  void BinaryVecOpCodegen(const CallNode* op, const std::string& op_name);
+
+  void UnaryVecOpCodegen(const CallNode *op, const std::string& op_name);
+
+  void ScalarOpCodegen(const CallNode *op, const std::string& op_name);
+
+  void ShiftOpCodegen(const CallNode *op, const std::string& op_name);
+
+  void TrigOpCodegen(const CallNode *op, const std::string& op_name);
+
+  void TransposeCodegen(const CallNode *op, const std::string& op_name);
+
+  void CreateVecIndexCodegen(const CallNode *op, const std::string& op_name);
+
+  void FillCodegen(const CallNode *op);
+
+  void ArithProgressionCodegen(const CallNode *op);
+
+  void SortCodegen(const CallNode *op);
+
+  void MergeSortCodegen(const CallNode *op);
+
+  void TopKCodegen(const CallNode *op);
+
+  void GatherMaskCodegen(const CallNode *op);
+
+  void GatherbCodegen(const CallNode *op);
+
+  void SelectCodegen(const CallNode *op, const std::string& op_name);
+
+  void InitSortBufCodegen(const CallNode *op);
+
+  void AddsAndMulsOpCodegen(const CallNode *op, const std::string& op_name);
+
+  void SubsOpCodegen(const CallNode *op);
+
+  void DivsOpCodegen(const CallNode *op);
+
+  void CompareCodegen(const CallNode *op, const std::string& op_name);
+
+  void CompareScalarCodegen(const CallNode *op, const std::string& op_name);
+
+  void Sort32Codegen(const CallNode *op, const std::string& op_name);
+
+  void GatherCodegen(const CallNode *op, const std::string& op_name);
+
+  void ReduceOpCodegen(const CallNode *op);
+
+  void BlockReduceOpCodegen(const CallNode *op, const std::string& op_name);
+
+  void CastCodegen(const CallNode *op, const std::string& op_name);
+
+  void SetDeqScaleCodegen(const CallNode *op, const std::string& op_name);
+
+  void PowerOpCodegen(const CallNode *op, const std::string& op_name);
+
   void BroadcastOpCodegen(const CallNode *op);
+
+  void SetCrossFlagCodegen(const CallNode *op);
+
+  void FlagOpCodegen(const CallNode *op, std::string op_name);
+
+  void PipeBarrierCodegen (const CallNode *op);
+
+  void GemmOpCodegen(const CallNode *op);
+
+  void PrintfOpCodegen(const CallNode *op, const std::string& op_name);
+
+  void DumpTensorCodegen(const CallNode *op);
+
+  void BilinearInterpolationCodegen(const CallNode *op);
+
+  void WholeReduceOpCodegen(const CallNode *op, const std::string& op_name);
+
+  void AutoBarrierCodegen (const CallNode *op);
+
+  void AutoFlagOpCodegen (const CallNode *op, std::string op_name);
+
+  void AutoSetCrossFlagCodegen (const CallNode *op);
+
+  void AutoWaitCrossFlagCodegen (const CallNode *op);
+
+  void UseSwizzleCodegen (const CallNode *op, std::ostream &os);
+
+  void MmaCodegen (const CallNode *op);
+
+  void CopyCodegen (const CallNode *op);
+
+  void SigmoidCodegen (const CallNode *op, const std::string& op_name);
+
+  void ClampCodegen (const CallNode *op);
+
+  void RoundCodegen (const CallNode *op, const std::string& op_name);
+
+  void ReinterpretCastCodegen (const CallNode *op);
 
 private:
   // Whether scope such as "__shared__" or "__constant__"  is part of type.

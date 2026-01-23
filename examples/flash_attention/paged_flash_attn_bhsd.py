@@ -118,7 +118,7 @@ def paged_flash_attention_fwd(
                 T.tile.mul(sumexp, sumexp, m_i_prev)
                 T.tile.add(sumexp, sumexp, sumexp_i_ub)
 
-                T.tile.cast_tl(acc_s_half, acc_s_ub, CAST_MODE, block_M_2 * block_size)
+                T.tile.cast(acc_s_half, acc_s_ub, CAST_MODE, block_M_2 * block_size)
                 T.copy(acc_s_half, workspace_2[cid, vid * block_M_2 : (vid + 1) * block_M_2, :])
 
                 T.copy(workspace_2[cid, :, :], acc_s_l1)
@@ -136,7 +136,7 @@ def paged_flash_attention_fwd(
             T.tile.broadcast(sumexp_2d, sumexp, tmp_ub)
             T.tile.div(acc_o, acc_o, sumexp_2d)
 
-            T.tile.cast_tl(acc_o_half, acc_o, CAST_MODE, block_M_2 * dim)
+            T.tile.cast(acc_o_half, acc_o, CAST_MODE, block_M_2 * dim)
             T.copy(acc_o_half, Output[bz, by, bx * block_M + vid * block_M_2 : bx * block_M + (vid + 1) * block_M_2, :])
 
     return main

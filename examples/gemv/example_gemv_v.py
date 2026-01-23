@@ -14,7 +14,7 @@ import torch
     }
 )
 def simple_gemv(
-    N:int, K:int, block_N:int, block_K:int, 
+    N:int, K:int, block_N:int, block_K:int,
     dtype:str = "float16", accum_dtype:str = "float32"
 ):
     """ Vector core GEMV implementation"""
@@ -31,7 +31,7 @@ def simple_gemv(
 
     def cast_or_copy(dst, src, mode, count):
         if not_same_dtype:
-            return T.tile.cast_tl(dst, src, mode, count)
+            return T.tile.cast(dst, src, mode, count)
         else:
             return T.copy(src, dst)
 
@@ -65,7 +65,7 @@ def simple_gemv(
                     T.tile.mul(A_32_ub[i, :], A_32_ub[i, :], x_32_ub)
                 T.tile.reduce_sum(y_single_32_ub, A_32_ub, temp_ub, dim=-1)
                 T.tile.add(y_total_32_ub, y_total_32_ub, y_single_32_ub)
-            
+
             cast_or_copy(y_ub, y_total_32_ub, CAST_MODE, block_N)  # cast back
             T.copy(y_ub, y[bn * block_N])
     return main

@@ -18,7 +18,7 @@ scalarvalue = random.randint(1,32)
 
 
 @tilelang.jit(out_idx=[-1])
-def shiftright(M, N, block_M, block_N, scalarvalue, dtype="int32"):
+def bitwise_rshift(M, N, block_M, block_N, scalarvalue, dtype="int32"):
     m_num = M // block_M
     n_num = N // block_N
 
@@ -39,7 +39,7 @@ def shiftright(M, N, block_M, block_N, scalarvalue, dtype="int32"):
                 T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a_ub)
 
                 T.barrier_all()
-                T.tile.shiftright(b_ub, a_ub, scalarvalue)
+                T.tile.bitwise_rshift(b_ub, a_ub, scalarvalue)
                 T.barrier_all()
 
                 T.copy(b_ub, B[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
@@ -47,7 +47,7 @@ def shiftright(M, N, block_M, block_N, scalarvalue, dtype="int32"):
     return main
 
 
-func = shiftright(M, N, 128, 256, scalarvalue)
+func = bitwise_rshift(M, N, 128, 256, scalarvalue)
 
 torch.manual_seed(0)
 

@@ -79,7 +79,6 @@ from .memscope import *  # noqa: F401
 from .ascend import *
 from . import ascend_tile as tile
 
-
 def symbolic(name: str, dtype: str = "int32"):
     return tir.Var(name, dtype)
 
@@ -200,9 +199,10 @@ def npu_use_swizzle(cid, m, n, k, block_m, block_n, off=1, dir=0, in_loop=False)
     # Use to improve the L2 Cache Locality
     # device_func = ("rasterization2DRow" if order == "row" else "rasterization2DColumn")
     assert m % block_m == 0 and n % block_n == 0, "m and n must be divisible by block_m and block_n"
-    return call_extern(
+    return call_intrin(
         "int32",
-        f"tl::ascend::thread_block_swizzle<{m}, {n}, {k}, {block_m}, {block_n}, {off}, {dir}>",
+        tir.op.Op.get("tl.ascend_use_swizzle"),
+        f"thread_block_swizzle<{m}, {n}, {k}, {block_m}, {block_n}, {off}, {dir}>",
         cid,
         m // block_m * n // block_n,
     )

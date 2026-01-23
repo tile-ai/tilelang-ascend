@@ -36,7 +36,7 @@ CATLASS_DEVICE void copy_gm_to_l1(LocalTensor<T> dstTensor,
   auto dst = tla::MakeTensor<decltype(dstTensor), decltype(layoutInL1),
                              AscendC::TPosition::A1>(dstTensor, layoutInL1);
 
-  TileCopyTla<ArchTag, decltype(src), decltype(dst)> tileCopier; 
+  TileCopyTla<ArchTag, decltype(src), decltype(dst)> tileCopier;
   tileCopier(dst, src);
 }
 
@@ -105,7 +105,7 @@ template <typename T1, typename T2, typename LayoutGM, uint32_t srcM, uint32_t s
 CATLASS_DEVICE void copy_l0c_to_gm(GlobalTensor<T2> dstTensor,
                                    LocalTensor<T1> srcTensor,
                                    uint32_t realDstN = 1) {
-  auto layoutInL0C = tla::MakeLayoutL0C(srcM, srcN); 
+  auto layoutInL0C = tla::MakeLayoutL0C(srcM, srcN);
   auto src = tla::MakeTensor<decltype(srcTensor), decltype(layoutInL0C),
                              AscendC::TPosition::CO1>(srcTensor, layoutInL0C);
   LayoutGM gm{srcM, realDstN};
@@ -234,27 +234,60 @@ CATLASS_DEVICE void cast(LocalTensor<dst> const &ubOut,
   AscendC::Cast(ubOut, ubIn, round_mode, Len);
 }
 
-template <typename T, uint32_t Len>
-CATLASS_DEVICE void fill(LocalTensor<T> const &ubOut, T value) {
-  AscendC::Duplicate(ubOut, value, Len);
-}
+// template <typename T, uint32_t Len>
+// CATLASS_DEVICE void fill(LocalTensor<T> const &ubOut, T value) {
+//   AscendC::Duplicate(ubOut, value, Len);
+// }
 
-template <typename T, uint32_t M, uint32_t N, class pattern>
+template <typename T, uint32_t M, uint32_t N, int32_t dim>
 CATLASS_DEVICE void reduce_sum(LocalTensor<T> const &dstTensor,
                                LocalTensor<T> const &srcTensor,
                                LocalTensor<uint8_t> const &sharedTmpBuffer) {
   uint32_t shape[] = {M, N};
-  AscendC::ReduceSum<T, pattern>(dstTensor, srcTensor, sharedTmpBuffer, shape,
-                                 true);
+  if constexpr (dim == -1) {
+    AscendC::ReduceSum<T, AscendC::Pattern::Reduce::AR>(
+        dstTensor, srcTensor, sharedTmpBuffer, shape, true
+    );
+  } else {
+    AscendC::ReduceSum<T, AscendC::Pattern::Reduce::RA>(
+        dstTensor, srcTensor, sharedTmpBuffer, shape, true
+    );
+  }
 }
 
-template <typename T, uint32_t M, uint32_t N, class pattern>
+template <typename T, uint32_t M, uint32_t N, int32_t dim>
 CATLASS_DEVICE void reduce_max(LocalTensor<T> const &dstTensor,
                                LocalTensor<T> const &srcTensor,
                                LocalTensor<uint8_t> const &sharedTmpBuffer) {
   uint32_t shape[] = {M, N};
-  AscendC::ReduceMax<T, pattern>(dstTensor, srcTensor, sharedTmpBuffer, shape,
-                                 true);
+  if constexpr (dim == -1) {
+    AscendC::ReduceMax<T, AscendC::Pattern::Reduce::AR>(
+        dstTensor, srcTensor, sharedTmpBuffer, shape, true
+    );
+  } else {
+    AscendC::ReduceMax<T, AscendC::Pattern::Reduce::RA>(
+        dstTensor, srcTensor, sharedTmpBuffer, shape, true
+    );
+  }
+}
+
+template <typename T, uint32_t M, uint32_t N, int32_t dim>
+CATLASS_DEVICE void reduce_min(LocalTensor<T> const &dstTensor,
+                               LocalTensor<T> const &srcTensor,
+                               LocalTensor<uint8_t> const &sharedTmpBuffer) {
+  uint32_t shape[] = {M, N};
+  // if (count > 0) {
+  //   shape[1] = count / M;
+  // }
+  if constexpr (dim == -1) {
+    AscendC::ReduceMin<T, AscendC::Pattern::Reduce::AR>(
+        dstTensor, srcTensor, sharedTmpBuffer, shape, true
+    );
+  } else {
+    AscendC::ReduceMin<T, AscendC::Pattern::Reduce::RA>(
+        dstTensor, srcTensor, sharedTmpBuffer, shape, true
+    );
+  }
 }
 
 static constexpr uint32_t L0AB_EVENT = 0;
@@ -430,6 +463,7 @@ CATLASS_DEVICE void InitSortBuf(const LocalTensor<T> &src, int64_t eleNum,
   }
   PipeBarrier<PIPE_V>();
 }
+
 template <typename T1, typename T2, uint32_t L1_block_M, uint32_t L1_block_N,
           uint32_t L1_block_K, uint32_t BLOCK_M, uint32_t BLOCK_N,
           uint32_t BLOCK_K, bool transpose_A = false, bool transpose_B = false>
@@ -513,6 +547,37 @@ template <typename T, int32_t dim, int32_t axis, bool isReuseSource = false>
 CATLASS_DEVICE void Broadcast(const LocalTensor<T> &dst, const LocalTensor<T> &src, LocalTensor<uint8_t> &sharedTmpBuffer,
                               const uint32_t dstShape[dim], const uint32_t srcShape[dim]) {
   AscendC::Broadcast<T, dim, axis, isReuseSource>(dst, src, dstShape, srcShape, sharedTmpBuffer);
+}
+
+template <typename T>
+CATLASS_DEVICE void Fill(const LocalTensor<T>& dst, const T& scalarValue, const int32_t& count) {
+  AscendC::Duplicate<T>(dst, scalarValue, count);
+}
+
+template <typename T>
+CATLASS_DEVICE void ArithProgression(const LocalTensor<T> &dst, const T firstValue,
+                                      const T diffValue, const int32_t count) {
+  AscendC::ArithProgression<T>(dst, firstValue, diffValue, count);
+}
+
+template <typename T, bool isFullSort>
+CATLASS_DEVICE void Sort(const LocalTensor<T> &dst, const LocalTensor<T> &concat,
+                          const LocalTensor<uint32_t> &index, LocalTensor<T> &tmp,
+                          const int32_t repeatTime) {
+  AscendC::Sort<T, isFullSort>(dst, concat, index, tmp, repeatTime);
+}
+
+
+template <typename T>
+CATLASS_DEVICE void ClampMax(const LocalTensor<T> &dst, const LocalTensor<T> &buffer, const LocalTensor<T> &tmp,
+                             const T scalarValue, const int32_t count) {
+  AscendC::ClampMax<T>(dst, buffer, tmp, scalarValue, count);
+}
+
+template <typename T>
+CATLASS_DEVICE void ClampMin(const LocalTensor<T> &dst, const LocalTensor<T> &buffer, const LocalTensor<T> &tmp,
+                             const T scalarValue, const int32_t count) {
+  AscendC::ClampMin<T>(dst, buffer, tmp, scalarValue, count);
 }
 
 } // namespace tl::ascend

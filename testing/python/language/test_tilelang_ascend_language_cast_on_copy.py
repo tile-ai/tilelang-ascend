@@ -54,14 +54,14 @@ class TestTileLangKernels:
                 with T.Scope("V"):
                     T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a_ub)
                     T.barrier_all()
-                    
+
                     T.copy(a_ub, b_ub)
                     T.barrier_all()
 
                     T.copy(b_ub, B[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
 
         return main
-    
+
     @staticmethod
     @tilelang.jit(out_idx=[-1])
     def cast_scale_on_copy_kernel(M, N, block_M, block_N, a_dtype="int32", b_dtype="float16"):
@@ -85,9 +85,9 @@ class TestTileLangKernels:
                     T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a_ub)
                     T.barrier_all()
 
-                    T.tile.set_deq_scale(1.0)
+                    T.set_deq_scale(1.0)
                     T.barrier_all()
-                    
+
                     T.copy(a_ub, b_ub)
                     T.barrier_all()
 
@@ -126,7 +126,7 @@ class TestTileLangKernels:
             input_generator = input_gen,
             reference_func = ref_func,
         )
-    
+
     def test_float_to_int16(self, clear_cache, setup_random_seed):
         kernel_func = lambda M, N, block_M, block_N: self.cast_on_copy_kernel(
             M, N, block_M, block_N, "float32", "int16"
@@ -286,7 +286,7 @@ class TestTileLangKernels:
             input_generator = input_gen,
             reference_func = ref_func,
         )
-    
+
     # int8 and float32 cannot be directly casted to each other
 
 if __name__ == "__main__":
