@@ -1067,7 +1067,7 @@ void CodeGenTileLangNPUIRAPI::VbrcCodegen(const CallNode *op) {
   tvm::tl::NpuirBrc npuirop(op->args, this->vmap);
   mlir::Value src;
   llvm::ArrayRef<int64_t> inBufferShape;
-  if (npuirop.in.as<IntImm>() || npuirop.in.as<FloatImm>()) {
+  if (npuirop.in.as<tvm::tir::Var>()) {
     // Scalar case
     if (npuirop.in->dtype != npuirop.dst->dtype) {
       src = ScalarConvertType(npuirop.in, npuirop.dst->dtype);

@@ -453,30 +453,32 @@ def npuir_brc(src, dst):
     """Broadcast a vector or a scalar according to the broadcast axes array
 
     Args:
-        src (Union[tir.Buffer, tir.BufferLoad, tir.BufferRegion, tir.var]): Source vector or scalar
+        src (Union[tir.Buffer, tir.BufferLoad, tir.BufferRegion, tir.PrimExpr]): Source vector or scalar
         dst (Union[tir.Buffer, tir.BufferLoad]): Destination vector
-
-    Raises:
-        AssertionError: If input vector and output vector have different ranks.
-        AssertionError: If input and output shapes do not match for broadcast.
-
-    Returns:
-        tir.Call: A handle to the npuir_brc operation
     """
     src_extent = _get_extent(src)
     dst_extent = _get_extent(dst)
 
-    if not isinstance(src, (tir.Var, tir.PrimExpr)):
+    if not isinstance(src, tir.PrimExpr):
         assert len(src_extent) == len(
             dst_extent), "The input vector and output vector must have same rank."
-
-        for i in range(0, len(src_extent)):
+        for i in range(len(src_extent)):
             if src_extent[i] != 1:
-                assert src_extent[i] == dst_extent[
-                    i], "The input and output shapes do not match for broadcast."
-    src = _to_region(src, "r", src_extent)
-    dst = _to_region(dst, "w", dst_extent)
-    return tir.call_intrin("handle", tir.op.Op.get("tl.npuir_brc"), src, dst)
+                assert src_extent[i] == dst_extent[i], \
+                    "The input and output shapes do not match for broadcast."
+
+    if isinstance(src, (tir.PrimExpr, tir.BufferLoad)):
+        src_region = src
+    else:
+        src_region = _to_region(src, "r", src_extent)
+    dst_region = _to_region(dst, "w", dst_extent)
+
+    return tir.call_intrin(
+        "handle",
+        tir.op.Op.get("tl.npuir_brc"),
+        src_region,
+        dst_region
+    )
 
 def npuir_fill(buffer, value):
     """Fill a buffer or buffer region with a specified value.
