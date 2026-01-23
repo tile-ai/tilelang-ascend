@@ -1208,17 +1208,17 @@ void CodeGenTileLangAscend::CreateVecIndexCodegen(const CallNode *op,
 }
 
 void CodeGenTileLangAscend::FillCodegen(const CallNode *op) {
-  std::string op_name = Downcast<StringImm>(op->args[0])->value;
+  std::string op_name = "tl::ascend::" + Downcast<StringImm>(op->args[0])->value;
   PrintOpCall(op, op_name, {1, 2}, {2, 4});
 }
 
 void CodeGenTileLangAscend::ArithProgressionCodegen(const CallNode *op) {
-  std::string op_name = Downcast<StringImm>(op->args[0])->value;
+  std::string op_name = "tl::ascend::" + Downcast<StringImm>(op->args[0])->value;
   PrintOpCall(op, op_name, {1, 2}, {2, 5});
 }
 
 void CodeGenTileLangAscend::SortCodegen(const CallNode *op) {
-  std::string op_name = Downcast<StringImm>(op->args[0])->value;
+  std::string op_name = "tl::ascend::" + Downcast<StringImm>(op->args[0])->value;
   std::vector<std::string> var_names;
   for (int i = 1; i < op->args.size() - 2; i++) {
     auto var_name = PrintBufferOffset(op->args[i].as<CallNode>());
@@ -1242,13 +1242,13 @@ void CodeGenTileLangAscend::SortCodegen(const CallNode *op) {
 }
 
 void CodeGenTileLangAscend::MergeSortCodegen(const CallNode *op) {
-  std::string op_name = Downcast<StringImm>(op->args[0])->value;
+  std::string op_name = "tl::ascend::" + Downcast<StringImm>(op->args[0])->value;
   int len = op->args.size();
   PrintOpCall(op, op_name, {1, len - 3}, {len - 3, len});
 }
 
 void CodeGenTileLangAscend::TopKCodegen(const CallNode *op) {
-  std::string op_name = Downcast<StringImm>(op->args[0])->value;
+  std::string op_name = "tl::ascend::" + Downcast<StringImm>(op->args[0])->value;
   int len = op->args.size();
   PrintOpCall(op, op_name, {1, len - 1}, {len - 1, len});
 }
@@ -1260,18 +1260,18 @@ void CodeGenTileLangAscend::ShmemCodegen(const CallNode *op) {
 }
 
 void CodeGenTileLangAscend::GatherMaskCodegen(const CallNode *op) {
-  std::string op_name = Downcast<StringImm>(op->args[0])->value;
+  std::string op_name = "tl::ascend::" + Downcast<StringImm>(op->args[0])->value;
   int len = op->args.size();
   PrintOpCall(op, op_name, {1, len - 1}, {len - 1, len});
 }
 
 void CodeGenTileLangAscend::GatherbCodegen(const CallNode *op) {
-  std::string op_name = Downcast<StringImm>(op->args[0])->value;
+  std::string op_name = "tl::ascend::" + Downcast<StringImm>(op->args[0])->value;
   PrintOpCall(op, op_name, {1, 4}, {4, 7});
 }
 
 void CodeGenTileLangAscend::InitSortBufCodegen(const CallNode *op) {
-  std::string op_name = Downcast<StringImm>(op->args[0])->value;
+  std::string op_name = "tl::ascend::" + Downcast<StringImm>(op->args[0])->value;
   PrintOpCall(op, op_name, {1, 2}, {2, 3});
 }
 
@@ -1553,7 +1553,7 @@ void CodeGenTileLangAscend::PowerOpCodegen(const CallNode *op,
 }
 
 void CodeGenTileLangAscend::BroadcastOpCodegen(const CallNode *op) {
-  std::string op_name = Downcast<StringImm>(op->args[0])->value;
+  std::string op_name = "tl::ascend::" + Downcast<StringImm>(op->args[0])->value;
   int dim = op->args[4].as<IntImmNode>()->value;
 
   this->PrintIndent();
@@ -1646,7 +1646,7 @@ void CodeGenTileLangAscend::DumpTensorCodegen(const CallNode *op) {
   this->PrintIndent();
   this->stream << "tl::ascend::DumpTensor" << "(";
 
-  // 0. BufferÖ¸Õë
+  // 0. BufferÖ¸ï¿½ï¿½
   this->stream << PrintBufferOffset(op->args[0].as<CallNode>()) << ",";
   // 1. desc
   this->stream << PrintExpr(op->args[1]) << ", ";
@@ -1655,7 +1655,7 @@ void CodeGenTileLangAscend::DumpTensorCodegen(const CallNode *op) {
   // 3. dim (len(shape_info))
   this->stream << PrintExpr(op->args[3]) << ", ";
 
-  // 4. shapeInfoÊý×éÖ¸Õë
+  // 4. shapeInfoï¿½ï¿½ï¿½ï¿½Ö¸ï¿½ï¿½
   if (op->args.size() > 4) {
     this->stream << "(uint32_t[]){";
     for (int i = 4; i < op->args.size(); ++i) {
@@ -1860,7 +1860,7 @@ void CodeGenTileLangAscend::RoundCodegen(const CallNode *op,
 }
 
 void CodeGenTileLangAscend::ClampCodegen(const CallNode *op) {
-  std::string op_name = Downcast<StringImm>(op->args[0])->value;
+  std::string op_name = "tl::ascend::" + Downcast<StringImm>(op->args[0])->value;
   this->PrintIndent();
   auto var_name_1 = PrintBufferOffset(op->args[1].as<CallNode>());
   auto var_name_2 = PrintBufferOffset(op->args[2].as<CallNode>());
