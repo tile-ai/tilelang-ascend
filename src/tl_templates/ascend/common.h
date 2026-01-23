@@ -569,13 +569,13 @@ CATLASS_DEVICE void Sort(const LocalTensor<T> &dst, const LocalTensor<T> &concat
 
 
 template <typename T>
-CATLASS_DEVICE void ClampMax(const LocalTensor<T> &dst, const LocalTensor<T> &buffer, const LocalTensor<T> &tmp,
+CATLASS_DEVICE void ClampMax(const LocalTensor<T> &dst, const LocalTensor<T> &buffer, const LocalTensor<uint8_t> &tmp,
                              const T scalarValue, const int32_t count) {
   AscendC::ClampMax<T>(dst, buffer, tmp, scalarValue, count);
 }
 
 template <typename T>
-CATLASS_DEVICE void ClampMin(const LocalTensor<T> &dst, const LocalTensor<T> &buffer, const LocalTensor<T> &tmp,
+CATLASS_DEVICE void ClampMin(const LocalTensor<T> &dst, const LocalTensor<T> &buffer, const LocalTensor<uint8_t> &tmp,
                              const T scalarValue, const int32_t count) {
   AscendC::ClampMin<T>(dst, buffer, tmp, scalarValue, count);
 }
