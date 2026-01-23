@@ -13,3 +13,6 @@
 [submodule "3rdparty/pto-isa"]
 	path = 3rdparty/pto-isa
 	url = https://gitcode.com/cann/pto-isa.git
+[submodule "3rdparty/shmem"]
+	path = 3rdparty/shmem
+	url = https://gitcode.com/cann/shmem
