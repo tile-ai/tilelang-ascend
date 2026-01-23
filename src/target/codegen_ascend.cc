@@ -490,7 +490,15 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
     MergeSortCodegen(op);
   } else if (op->op.same_as(tl::ascend_topk())) {
     TopKCodegen(op);
-  } else if (op->op.same_as(tl::ascend_gather_mask())) {
+  } else if (op->op.same_as(tl::ascend_shmem_get_nbi())) {
+    ShmemCodegen(op);
+  } else if (op->op.same_as(tl::ascend_shmem_put_nbi())) {
+    ShmemCodegen(op);
+  } else if (op->op.same_as(tl::ascend_shmem_ub_get_nbi())) {
+    ShmemCodegen(op);
+  } else if (op->op.same_as(tl::ascend_shmem_ub_put_nbi())) {
+    ShmemCodegen(op);
+  }  else if (op->op.same_as(tl::ascend_gather_mask())) {
     GatherMaskCodegen(op);
   } else if (op->op.same_as(tl::ascend_gatherb())) {
     GatherbCodegen(op);
@@ -1243,6 +1251,12 @@ void CodeGenTileLangAscend::TopKCodegen(const CallNode *op) {
   std::string op_name = Downcast<StringImm>(op->args[0])->value;
   int len = op->args.size();
   PrintOpCall(op, op_name, {1, len - 1}, {len - 1, len});
+}
+
+void CodeGenTileLangAscend::ShmemCodegen(const CallNode *op) {
+  std::string op_name = Downcast<StringImm>(op->args[0])->value;
+  int len = op->args.size();
+  PrintOpCall(op, op_name, {1, 3}, {3, len});
 }
 
 void CodeGenTileLangAscend::GatherMaskCodegen(const CallNode *op) {
