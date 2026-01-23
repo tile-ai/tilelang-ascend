@@ -611,6 +611,23 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) 
     BinaryVecClampOpsCodegen(op, "TMAXS");
   } else if (op->op.same_as(tl::ascend_round())) {
     CastCodegen(op, "RoundMode::CAST_ROUND");
+  } else if (op->op.same_as(tl::ascend_cast())) {
+    std::string cast_type = op->args[2].as<StringImmNode>()->value;
+    if (cast_type == "CAST_NONE") {
+      CastCodegen(op, "RoundMode::CAST_NONE");
+    } else if (cast_type == "CAST_RINT") {
+      CastCodegen(op, "RoundMode::CAST_RINT");
+    } else if (cast_type == "CAST_FLOOR") {
+      CastCodegen(op, "RoundMode::CAST_FLOOR");
+    } else if (cast_type == "CAST_CEIL") {
+      CastCodegen(op, "RoundMode::CAST_CEIL");
+    } else if (cast_type == "CAST_ROUND") {
+      CastCodegen(op, "RoundMode::CAST_ROUND");
+    } else if (cast_type == "CAST_TRUNC") {
+      CastCodegen(op, "RoundMode::CAST_TRUNC");
+    } else if (cast_type == "CAST_ODD") {
+      CastCodegen(op, "RoundMode::CAST_ODD");
+    }
   }
 }
 
