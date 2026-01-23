@@ -90,7 +90,7 @@ class LibraryGenerator(object):
                 f"-I{ASCEND_HOME_PATH}/include/experiment/msprof",
                 f"-I{ASCEND_HOME_PATH}/include/experiment/runtime",
                 f"-I/usr/local/Ascend/driver/kernel/inc",
-                f"-I{TL_ROOT}/3rdparty/pto-tile-lib/include",
+                f"-I{TL_ROOT}/3rdparty/pto-isa/include",
                 f"-I{ASCEND_HOME_PATH}/pkg_inc",
                 f"-I{ASCEND_HOME_PATH}/pkg_inc/runtime",
                 f"-I{ASCEND_HOME_PATH}/pkg_inc/profiling",
