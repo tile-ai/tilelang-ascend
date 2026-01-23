@@ -261,7 +261,7 @@ def shmem_put_nbi(dst: Buffer, src: Buffer, nelems: PrimExpr, newPe: PrimExpr):
     return tir.call_intrin(
         "handle",
         tir.op.Op.get("tl.ascend_shmem_put_nbi"),
-        f"tl::ascend::shmem_put_nbi<{_dtype(src)}>",
+        f"shmem_put_nbi<{_dtype(src)}>",
         dst.access_ptr("w"),
         src.access_ptr("r"),
         nelems,
@@ -286,7 +286,7 @@ def shmem_ub_put_nbi(ub: Buffer, dst: Buffer, nelems: PrimExpr, newPe: PrimExpr)
     return tir.call_intrin(
         "handle",
         tir.op.Op.get("tl.ascend_shmem_ub_put_nbi"),
-        f"tl::ascend::shmem_ub_put_nbi<{_dtype(dst)}>",
+        f"shmem_ub_put_nbi<{_dtype(dst)}>",
         ub.access_ptr("r"),
         dst.access_ptr("w"),
         nelems,
@@ -311,7 +311,7 @@ def shmem_get_nbi(dst: Buffer, src: Buffer, nelems: PrimExpr, newPe: PrimExpr):
     return tir.call_intrin(
         "handle",
         tir.op.Op.get("tl.ascend_shmem_get_nbi"),
-        f"tl::ascend::shmem_get_nbi<{_dtype(src)}>",
+        f"shmem_get_nbi<{_dtype(src)}>",
         dst.access_ptr("w"),
         src.access_ptr("r"),
         nelems,
@@ -336,7 +336,7 @@ def shmem_ub_get_nbi(dst: Buffer, src: Buffer, nelems: PrimExpr, newPe: PrimExpr
     return tir.call_intrin(
         "handle",
         tir.op.Op.get("tl.ascend_shmem_get_nbi"),
-        f"tl::ascend::shmem_ub_get_nbi<{_dtype(src)}>",
+        f"shmem_ub_get_nbi<{_dtype(src)}>",
         dst.access_ptr("w"),
         src.access_ptr("r"),
         nelems,

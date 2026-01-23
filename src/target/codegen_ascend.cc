@@ -1254,7 +1254,7 @@ void CodeGenTileLangAscend::TopKCodegen(const CallNode *op) {
 }
 
 void CodeGenTileLangAscend::ShmemCodegen(const CallNode *op) {
-  std::string op_name = Downcast<StringImm>(op->args[0])->value;
+  std::string op_name = "tl::ascend::" + Downcast<StringImm>(op->args[0])->value;
   int len = op->args.size();
   PrintOpCall(op, op_name, {1, 3}, {3, len});
 }
