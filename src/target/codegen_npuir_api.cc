@@ -1633,52 +1633,105 @@ void CodeGenTileLangNPUIRAPI::DebugPrintCodegen(const CallNode *op) {
 
 void CodeGenTileLangNPUIRAPI::ReshapeCodegen(const CallNode *op) {
   tvm::tl::NpuirReshape npuirop(op->args, this->vmap);
-  Value src = GenSubviewFromRegion(npuirop.src, npuirop.src_range);
+  mlir::Location loc = builder.getUnknownLoc();
 
+  mlir::Value src = GenSubviewFromRegion(npuirop.src, npuirop.src_range);
   auto srcTy = src.getType().cast<mlir::MemRefType>();
+  auto elemTy = srcTy.getElementType();
+  auto memSpace = srcTy.getMemorySpace();
 
-  ArrayRef<int64_t> dstShape = npuirop.dst_shape;
-  
-  SmallVector<int64_t> stridesVec;
-  int64_t stride = 1;
-  for (int i = dstShape.size() - 1; i >= 0; --i) {
-    stridesVec.push_back(stride);
-    stride *= dstShape[i];
+  std::vector<tvm::PrimExpr> dstShape = npuirop.dst_shape;
+
+  SmallVector<tvm::PrimExpr> stridesVec;
+  stridesVec.reserve(dstShape.size());
+  tvm::PrimExpr strideExpr = tvm::Integer(1);
+  for (int i = static_cast<int>(dstShape.size()) - 1; i >= 0; --i) {
+    stridesVec.push_back(strideExpr);
+    strideExpr = strideExpr * dstShape[i];
   }
   std::reverse(stridesVec.begin(), stridesVec.end());
-  
-  auto stridedLayout = mlir::StridedLayoutAttr::get(
+
+  auto toIndexValue = [&](const tvm::PrimExpr &e) -> mlir::Value {
+    mlir::Value v = MakeValue(e);
+    if (!v.getType().isIndex()) {
+      v = builder.create<mlir::arith::IndexCastOp>(loc, builder.getIndexType(), v);
+    }
+    return v;
+  };
+
+  bool allStatic = std::all_of(dstShape.begin(), dstShape.end(),
+      [](const tvm::PrimExpr &e) { return e.as<tvm::IntImmNode>() != nullptr; });
+
+  SmallVector<int64_t> dstShapeForType;
+  dstShapeForType.reserve(dstShape.size());
+  for (auto s : dstShape) {
+    if (auto imm = s.as<tvm::IntImmNode>()) {
+      dstShapeForType.push_back(static_cast<int64_t>(imm->value));
+    } else {
+      dstShapeForType.push_back(mlir::ShapedType::kDynamic);
+    }
+  }
+
+  SmallVector<int64_t> stridesForType;
+  if (allStatic) {
+    stridesForType.reserve(dstShape.size());
+    int64_t stride = 1;
+    for (int i = static_cast<int>(dstShape.size()) - 1; i >= 0; --i) {
+      stridesForType.push_back(stride);
+      auto imm = dstShape[i].as<tvm::IntImmNode>();
+      stride *= imm->value;
+    }
+    std::reverse(stridesForType.begin(), stridesForType.end());
+  } else {
+    stridesForType.resize(dstShape.size(), mlir::ShapedType::kDynamic);
+  }
+
+  auto layoutAttr = mlir::StridedLayoutAttr::get(
       builder.getContext(),
       /*offset=*/0,
-      stridesVec);
-  
-  auto dstMemRefTy = mlir::MemRefType::get(
-      dstShape,
-      srcTy.getElementType(),
-      stridedLayout,
-      srcTy.getMemorySpace());
+      stridesForType);
 
-  SmallVector<mlir::OpFoldResult> offsets(dstShape.size(),
-      builder.getIndexAttr(0));
+  auto dstMemRefTy = mlir::MemRefType::get(
+      dstShapeForType,
+      elemTy,
+      layoutAttr,
+      memSpace);
+
+  SmallVector<mlir::OpFoldResult> offsets;
+  offsets.reserve(dstShape.size());
+  for (size_t i = 0; i < dstShape.size(); ++i) {
+    offsets.push_back(builder.getIndexAttr(0));
+  }
 
   SmallVector<mlir::OpFoldResult> sizes;
+  sizes.reserve(dstShape.size());
   for (auto s : dstShape) {
-    sizes.push_back(builder.getIndexAttr(s));
+    if (allStatic) {
+      auto imm = s.as<tvm::IntImmNode>();
+      sizes.push_back(builder.getIndexAttr(imm->value));
+    } else {
+      sizes.push_back(toIndexValue(s));
+    }
   }
 
   SmallVector<mlir::OpFoldResult> strides;
-  for (auto s : stridesVec) {
-    strides.push_back(builder.getIndexAttr(s));
+  strides.reserve(stridesVec.size());
+  for (size_t i = 0; i < stridesVec.size(); ++i) {
+    if (allStatic) {
+      strides.push_back(builder.getIndexAttr(stridesForType[i]));
+    } else {
+      strides.push_back(toIndexValue(stridesVec[i]));
+    }
   }
 
-  Value reshaped = builder.create<memref::ReinterpretCastOp>(
-      builder.getUnknownLoc(),
+  mlir::Value reshaped = builder.create<mlir::memref::ReinterpretCastOp>(
+      loc,
       dstMemRefTy,
       src,
       offsets,
       sizes,
       strides);
-  
+
   var_map_[npuirop.dst->data.get()] = reshaped;
 }
 
