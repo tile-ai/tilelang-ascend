@@ -933,36 +933,6 @@ mlir::Value CodeGenTileLangNPUIRDEV::CreateCastIfTypeMismatch(mlir::Value src, m
   return newCastOp->getResult(0);
 }
 
-// Convert TVM Range to MLIR OpFoldResult arrays
-std::tuple<SmallVector<mlir::OpFoldResult>, 
-           SmallVector<mlir::OpFoldResult>, 
-           SmallVector<mlir::OpFoldResult>> 
-CodeGenTileLangNPUIRDEV::CreateOpFoldResultArray(const Array<Range>& range) {
-  // TODO: support dynamic shape
-  SmallVector<mlir::OpFoldResult> offsets;
-  SmallVector<mlir::OpFoldResult> sizes;
-  SmallVector<mlir::OpFoldResult> strides;
-  for (const auto& r : range) {
-    // offset
-    if (auto offset_int = as_const_int(r->min)) {
-      offsets.push_back(builder.getI64IntegerAttr(*offset_int));
-    } else {
-      mlir::Value offsetVal = CreateIndexCastOp(MakeValue(r->min));
-      offsets.push_back(offsetVal);
-    }
-    // size
-    if (auto size_int = as_const_int(r->extent)) {
-      sizes.push_back(builder.getI64IntegerAttr(*size_int));
-    } else {
-      mlir::Value sizeVal = CreateIndexCastOp(MakeValue(r->extent));
-      sizes.push_back(sizeVal);
-    }
-    // stride (usually 1)
-    strides.push_back(builder.getI64IntegerAttr(1));
-  }
-  return {offsets, sizes, strides};
-}
-
 // Insert slice into tensor
 mlir::Value CodeGenTileLangNPUIRDEV::InsertSlice(
     mlir::Value src_slice, 
@@ -1065,16 +1035,37 @@ mlir::Value CodeGenTileLangNPUIRDEV::MaybeReshapeTensor(mlir::Value src, mlir::V
   return reshaped_tensor;
 }
 
-// Converts a TileLang range/region descriptor into a normalized {offs, sizes, strides} triple.
-// Wraps CreateOpFoldResultArray and returns an owning SliceRange with moved vectors.
+// Converts a TileLang range/region descriptor into {offs, sizes, strides}.
+// NOTE: This codegen currently assumes unit-stride slicing on every dim.
+// It supports ':' (contiguous) and point indexing (extent=1), e.g. [:, i, :, j].
 template <typename RangeT>
 CodeGenTileLangNPUIRDEV::SliceRange
 CodeGenTileLangNPUIRDEV::MakeSliceRange(const RangeT& range) {
-  auto [offs, sizes, strides] = CreateOpFoldResultArray(range);
   SliceRange r;
-  r.offs = std::move(offs);
-  r.sizes = std::move(sizes);
-  r.strides = std::move(strides);
+  r.offs.reserve(range.size());
+  r.sizes.reserve(range.size());
+  r.strides.reserve(range.size());
+
+  for (const auto& dim : range) {
+    // offset
+    if (auto off = as_const_int(dim->min)) {
+      r.offs.push_back(builder.getI64IntegerAttr(*off));
+    } else {
+      mlir::Value offVal = CreateIndexCastOp(MakeValue(dim->min));
+      r.offs.push_back(offVal);
+    }
+
+    // size (extent)
+    if (auto ext = as_const_int(dim->extent)) {
+      r.sizes.push_back(builder.getI64IntegerAttr(*ext));
+    } else {
+      mlir::Value extVal = CreateIndexCastOp(MakeValue(dim->extent));
+      r.sizes.push_back(extVal);
+    }
+
+    // stride (unit stride only)
+    r.strides.push_back(builder.getI64IntegerAttr(1));
+  }
   return r;
 }
 
