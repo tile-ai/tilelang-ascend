@@ -57,6 +57,9 @@ using namespace mlir;
 // For using MLIR APIs to support developer codegen here
 
 namespace tvm {
+namespace tl{
+struct AscendCopy;
+}
 namespace codegen {
 
 // All VisitExpr inherited from ExprFunctor take PrimExpr as an argument and
@@ -274,24 +277,73 @@ private:
   void UpdatePrimExprMap(const PrimExprNode * key, mlir::Value val);
   void UpdateMLIRValueMap(const mlir::Value key,  mlir::Value val);
 
-  // Utility functions for AscendCopyCodegen
-  mlir::Value ConvertTensorToMemref(mlir::Value value);
+  // === helpers for ascend_copy lowering (member-functionized) ===
   mlir::Value CreateCastIfTypeMismatch(mlir::Value src_value, mlir::Value dst_value);
-  mlir::Value MaybeReshapeTensor(mlir::Value src_tensor, llvm::ArrayRef<int64_t> target_shape);
-  // generate slice/subview needed offsets, sizes, strides
+  mlir::Value MaybeReshapeTensor(mlir::Value src_tensor, mlir::Value dst_tensor);
   std::tuple<SmallVector<mlir::OpFoldResult>, 
              SmallVector<mlir::OpFoldResult>, 
              SmallVector<mlir::OpFoldResult>> 
   CreateOpFoldResultArray(const Array<Range>& range);
-  mlir::Value InsertSliceWithReshapeAndCast(
+  mlir::Value InsertSlice(
       mlir::Value src_slice, 
       mlir::Value dst_tensor, 
       llvm::SmallVector<mlir::OpFoldResult>& dst_offsets,
       llvm::SmallVector<mlir::OpFoldResult>& dst_sizes,
       llvm::SmallVector<mlir::OpFoldResult>& dst_strides);
-  void SmartMemRefCopy(mlir::Value src, mlir::Value dst);
-  mlir::Value GetOrInsertMasterTensor(mlir::Value memref);
-  llvm::DenseMap<mlir::Operation*, mlir::Value> alloc_memo_;
+  struct SliceRange {
+    llvm::SmallVector<mlir::OpFoldResult> offs;
+    llvm::SmallVector<mlir::OpFoldResult> sizes;
+    llvm::SmallVector<mlir::OpFoldResult> strides;
+  };
+
+  struct CollapsedDims {
+    llvm::SmallVector<mlir::OpFoldResult> sizes;   // after dropping static-1 dims
+    llvm::SmallVector<int64_t> projected;          // same rank as sizes; kDynamic allowed
+    llvm::SmallVector<unsigned> keptIdx;           // kept indices from original rank
+  };
+
+  // Entry dispatch
+  void EmitCopyMemrefToTensor(const tvm::tl::AscendCopy& npuirop,
+                             mlir::Value src, mlir::Value dst,
+                             const SliceRange& srcR, const SliceRange& dstR,
+                             mlir::Location loc);
+
+  void EmitCopyTensorToMemref(const tvm::tl::AscendCopy& npuirop,
+                             mlir::Value src, mlir::Value dst,
+                             const SliceRange& srcR, const SliceRange& dstR,
+                             mlir::Location loc);
+
+  void EmitCopyTensorToTensor(const tvm::tl::AscendCopy& npuirop,
+                             mlir::Value src, mlir::Value dst,
+                             const SliceRange& srcR, const SliceRange& dstR,
+                             mlir::Location loc);
+
+  // Small utilities (logic identical to your "correct code")
+  template <typename RangeT>
+  SliceRange MakeSliceRange(const RangeT& range);
+
+  mlir::Value CreateStaticLocalUB(llvm::ArrayRef<int64_t> shape,
+                                 mlir::Type elem_type,
+                                 mlir::Location loc);
+
+  bool IsStaticOneOFR(mlir::OpFoldResult ofr) const;
+  CollapsedDims CollapseStaticOneDims(llvm::ArrayRef<mlir::OpFoldResult> fullSizes);
+
+  mlir::Value CreateRankReducedSubviewFromBaseRank(
+      mlir::Value base,
+      llvm::ArrayRef<mlir::OpFoldResult> fullOffsets,  // len == baseRank
+      llvm::ArrayRef<mlir::OpFoldResult> fullSizes,    // len == baseRank
+      llvm::ArrayRef<mlir::OpFoldResult> fullStrides,  // len == baseRank
+      llvm::ArrayRef<int64_t> projectedReducedShape,   // result rank
+      mlir::Location loc);
+
+  mlir::Value CreateSameRankDynamicSubview(
+      mlir::Value base,
+      llvm::ArrayRef<mlir::OpFoldResult> sizesSameRank,
+      mlir::Location loc);
+
+  llvm::SmallVector<int64_t> ComputeUBAllocShapeDropStaticOnes(
+      mlir::RankedTensorType dst_tensor_type_ori);
 
   NPU_CORETYPE func_coretype;
 

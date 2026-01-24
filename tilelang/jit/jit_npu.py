@@ -1267,21 +1267,21 @@ class compiler_npu:
             # Run --adapt-triton-kernel pass before running compilation pipeline
             # TODO: temporary fix, will be updated when bishengir-compile
             # and hivmc gets updated in CANN 8.5
-            npu_compiler_opt_path = _get_npucompiler_opt_path()
+            # npu_compiler_opt_path = _get_npucompiler_opt_path()
             
-            _opt_option_list = [
-               "--adapt-triton-kernel"
-            ]
+            # _opt_option_list = [
+            #    "--adapt-triton-kernel"
+            # ]
             
-            opt_cmd_list = (
-                [npu_compiler_opt_path, ttadapter_path]
-                + _opt_option_list
-                + ["-o", ttadapter_path]
-            )
-            ret = subprocess.run(
-                opt_cmd_list, capture_output=True, check=True, text=True
-            )
-            print("AscendNPU IR OPT success:", ret.stdout)
+            # opt_cmd_list = (
+            #     [npu_compiler_opt_path, ttadapter_path]
+            #     + _opt_option_list
+            #     + ["-o", ttadapter_path]
+            # )
+            # ret = subprocess.run(
+            #     opt_cmd_list, capture_output=True, check=True, text=True
+            # )
+            # print("AscendNPU IR OPT success:", ret.stdout)
             # Hot fix for CANN 8.5 ends here
 
             npu_compiler_path = _get_npucompiler_path()

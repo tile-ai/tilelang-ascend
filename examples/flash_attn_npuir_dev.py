@@ -86,7 +86,7 @@ def online_flash_attention(block_M, block_N, block_K, dtype="float16", accum_dty
             O_cast = T.alloc_shared([block_m, dim], dtype)
             T.vcast(acc_o, O_cast, round_mode="rint")
             real_m = T.min(block_m, seq_len - cid * block_m)
-            T.copy(O_cast, Output[cid * block_m : (cid+1) * block_m, :],size=[real_m, dim])
+            T.copy(O_cast, Output[cid * block_m : cid * block_m + real_m, :],size=[real_m, dim])
 
     return flash_attention
 
