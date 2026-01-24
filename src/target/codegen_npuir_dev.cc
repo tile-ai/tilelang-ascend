@@ -797,6 +797,12 @@ CodeGenTileLangNPUIRDEV::GenSubviewFromRegion(const CallNode *region_node) {
   return GenSubviewFromRegion(regionop.GetBuffer(), regionop.GetRanges());
 }
 
+mlir::Value
+CodeGenTileLangNPUIRDEV::GenExtractSliceFromRegion(const CallNode *region_node) {
+  tvm::tl::RegionOp regionop(region_node->args, this->vmap);
+  return GenExtractSliceFromRegion(regionop.GetBuffer(), regionop.GetRanges());
+}
+
 mlir::Value CodeGenTileLangNPUIRDEV::GenSubviewFromRegion(Buffer buffer_data,
                                                           Array<Range> range) {
   /*
@@ -844,6 +850,43 @@ mlir::Value CodeGenTileLangNPUIRDEV::GenSubviewFromRegion(Buffer buffer_data,
       );
   return subViewOp;
 }
+
+mlir::Value CodeGenTileLangNPUIRDEV::GenExtractSliceFromRegion(Buffer buffer_data,
+                                                               Array<Range> range) {
+  Array<PrimExpr> region_shape;
+  Array<PrimExpr> region_indices;
+  for (Range r: range) {
+    region_shape.push_back(r.get()->extent);
+    region_indices.push_back(r.get()->min);
+  }
+  mlir::Value v_value = GetVarValue(buffer_data);
+  if (IsEqual(buffer_data->shape, region_shape) && AllZero(region_indices)) {
+    return v_value;
+  }
+  SmallVector<OpFoldResult> offsets;
+  SmallVector<OpFoldResult> sizes;
+  SmallVector<OpFoldResult> strides;
+  for (Range r: range) {
+    if (auto s_int = as_const_int(r.get()->min)) {
+      offsets.push_back(builder.getI64IntegerAttr(*s_int));
+    } else {
+      mlir::Value indexVal = CreateIndexCastOp(MakeValue(r.get()->min));
+      offsets.push_back(indexVal);
+    }
+    if (auto s_int = as_const_int(r.get()->extent)) {
+      sizes.push_back(builder.getI64IntegerAttr(*s_int));
+    } else {
+      mlir::Value shapeVal = CreateIndexCastOp(MakeValue(r.get()->extent));
+      sizes.push_back(shapeVal);
+    }
+    strides.push_back(builder.getI64IntegerAttr(1));
+  }
+  auto extractSliceOp =
+      builder.create<mlir::tensor::ExtractSliceOp>(builder.getUnknownLoc(),
+          v_value, offsets, sizes, strides);
+  return extractSliceOp.getResult();
+}
+
 
 mlir::Value CodeGenTileLangNPUIRDEV::CreateIndexCastOp(mlir::Value src) {
   std::pair<bool, mlir::Value> result = CheckMLIRValueMap(src);
@@ -1524,36 +1567,15 @@ void CodeGenTileLangNPUIRDEV::VcastCodegen(const CallNode *op) {
 ///    %.* = hivm.hir.vreduce ins(A) outs(B) -> tensor<>
 void CodeGenTileLangNPUIRDEV::VreduceCodegen(const CallNode *op) {
   tvm::tl::NpuirReduce npuirop(op->args, this->vmap);
-  Value src = GetVarValue(npuirop.src);
+  Value src = GenExtractSliceFromRegion(npuirop.src, npuirop.src_range);
   Value dst = GetVarValue(npuirop.dst);
-  SmallVector<OpFoldResult> offsets, sizes, strides;
-  for (const auto& r : npuirop.src_range) {
-      if (auto* i = as_const_int(r->min)) {
-        offsets.push_back(builder.getI64IntegerAttr(*i));
-      } else {
-        offsets.push_back(CreateIndexCastOp(MakeValue(r->min)));
-      }
-      if (auto* i = as_const_int(r->extent)) {
-        sizes.push_back(builder.getI64IntegerAttr(*i));
-      } else {
-        sizes.push_back(CreateIndexCastOp(MakeValue(r->extent)));
-      }
-      strides.push_back(builder.getI64IntegerAttr(1));
-  }
-  Value sliced_src = builder.create<mlir::tensor::ExtractSliceOp>(
-      builder.getUnknownLoc(),
-      src,
-      offsets,
-      sizes,
-      strides
-  );
   auto reduce_mode = npuirop.reduce_mode;
   mlir::hivm::ReduceOpAttr mode =
       mlir::hivm::ReduceOpAttr::get(&context, NPUIR_STR_REDUCEOP[reduce_mode]);
   mlir::Type dst_type = dst.getType();
   mlir::TypeRange result_tensors(&dst_type, 1);
   auto reduceOp = builder.create<mlir::hivm::VReduceOp>(
-      builder.getUnknownLoc(), result_tensors, sliced_src, dst, mode,
+      builder.getUnknownLoc(), result_tensors, src, dst, mode,
       builder.getDenseI64ArrayAttr(npuirop.reduce_dims));
   SetVarValue(npuirop.dst, reduceOp->getResult(0));
 }

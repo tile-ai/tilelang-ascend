@@ -268,6 +268,8 @@ private:
   mlir::Value GenMemrefLoadFromRegion(const BufferLoadNode *op);
   mlir::Value GenSubviewFromRegion(const CallNode *region_node);
   mlir::Value GenSubviewFromRegion(Buffer buffer_data, Array<Range> range);
+  mlir::Value GenExtractSliceFromRegion(const CallNode *region_node);
+  mlir::Value GenExtractSliceFromRegion(Buffer buffer_data, Array<Range> range);
   mlir::Value CreateIndexCastOp(mlir::Value src);
   std::pair<bool, mlir::Value> CheckMLIRValueMap(mlir::Value val);
   std::pair<bool, mlir::Value> CheckPrimExprMap(const PrimExprNode * op);

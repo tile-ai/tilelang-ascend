@@ -641,7 +641,7 @@ def npuir_reduce(src, dst, dims:Union[list, tuple, int], reduce_mode, size=[], c
         reduce_call = tir.call_intrin("handle", tir.op.Op.get("tl.npuir_reduce"), src_region, dst_region, reduce_dims, reduce_mode)
         T.evaluate(reduce_call)
 
-def reduce_max(buffer: tir.Buffer, out: tir.Buffer, dim: int = -1, clear: bool = True):
+def reduce_max(buffer: tir.Buffer, out: tir.Buffer, dim: int = -1, size=[], clear: bool = True):
     """Perform reduce max on input buffer, store the result to output buffer
 
     Parameters
@@ -659,9 +659,9 @@ def reduce_max(buffer: tir.Buffer, out: tir.Buffer, dim: int = -1, clear: bool =
     handle : PrimExpr
     """
     dim = _legalize_dim(buffer, dim)
-    return npuir_reduce(buffer, out, reduce_mode="max", dims=dim, clear=clear)
+    return npuir_reduce(buffer, out, reduce_mode="max", dims=dim, size=size, clear=clear)
 
-def reduce_min(buffer: tir.Buffer, out: tir.Buffer, dim: int = -1, clear: bool = True):
+def reduce_min(buffer: tir.Buffer, out: tir.Buffer, dim: int = -1, size=[], clear: bool = True):
     """Perform reduce min on input buffer, store the result to output buffer.
 
     Args:
@@ -674,9 +674,9 @@ def reduce_min(buffer: tir.Buffer, out: tir.Buffer, dim: int = -1, clear: bool =
         tir.Call: Handle to the reduction operation
     """
     dim = _legalize_dim(buffer, dim)
-    return npuir_reduce(buffer, out, reduce_mode="min", dims=dim, clear=clear)
+    return npuir_reduce(buffer, out, reduce_mode="min", dims=dim, size=size, clear=clear)
 
-def reduce_sum(buffer: tir.Buffer, out: tir.Buffer, dim: int = -1, clear: bool = True):
+def reduce_sum(buffer: tir.Buffer, out: tir.Buffer, dim: int = -1, size=[], clear: bool = True):
     """Perform reduce sum on input buffer, store the result to output buffer.
 
     Args:
@@ -698,7 +698,7 @@ def reduce_sum(buffer: tir.Buffer, out: tir.Buffer, dim: int = -1, clear: bool =
         tir.Call: Handle to the reduction operation
     """
     dim = _legalize_dim(buffer, dim)
-    return npuir_reduce(buffer, out, reduce_mode="sum", dims=dim, clear=clear)
+    return npuir_reduce(buffer, out, reduce_mode="sum", dims=dim, size=size, clear=clear)
 
 def reduce_abssum(buffer: tir.Buffer, out: tir.Buffer, dim: int = -1):
     """Perform reduce absolute sum on input buffer, store the result to output buffer.
