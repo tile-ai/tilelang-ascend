@@ -84,6 +84,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "bishengir/Dialect/HACC/IR/HACC.h"
+#include "tvm/runtime/logging.h"
 
 using namespace mlir;
 
@@ -415,19 +416,12 @@ void CodeGenTileLangNPUIRDEV::VisitStmt_(const tir::ForNode *op) {
   std::set<const tir::VarNode*> loop_carried_vars;
   std::vector<mlir::Value> init_values;
 
-  // Any tensor degined outside should be passed as iter_args
-  for (const auto& layer : this->var_map_) {
-    for (const auto& entry : layer) {
-      const tir::VarNode* var = entry.first;
-      mlir::Value val = entry.second;
-      if (val && val.getType().isa<mlir::TensorType>()) {
-        loop_carried_vars.insert(var);
-      }
-    }
-  }
+  // Traverse the body of the for loop body, and generate
+  // region iter args
+  CollectVarsUsedInBodyButDefinedOutside(op, loop_carried_vars);
   for (const auto* var_node : loop_carried_vars) {
     auto it = GetVarValue(var_node);
-    ICHECK(it != mlir::Value{}) << "Loop carried var must have a value";
+    ICHECK(it != mlir::Value{});
     init_values.push_back(it);
   }
 
@@ -891,9 +885,6 @@ inline void CodeGenTileLangNPUIRDEV::UpdatePrimExprMap(const PrimExprNode * key,
   this->prim_expr_map[{GetRef<PrimExpr>(key), curr_block}] = val;
 }
 
-/// Helper functions for AscendCopyCodegen
-// -------------------------------------------------------------
-
 // Type casting for mismatched element types
 mlir::Value CodeGenTileLangNPUIRDEV::CreateCastIfTypeMismatch(mlir::Value src, mlir::Value dst) {
   // src is always a tensor, dst may be a tensor or a memref, the return value is always a tensor
@@ -959,8 +950,10 @@ mlir::Value CodeGenTileLangNPUIRDEV::InsertSlice(
 }
 
 // Reshape tensor
+// Note: src type must be a tensor
 mlir::Value CodeGenTileLangNPUIRDEV::MaybeReshapeTensor(mlir::Value src, mlir::Value dst) {
 
+  ICHECK(src.getType().isa<mlir::TensorType>()) << "src must be a tensor";
   auto src_tensor_type = src.getType().cast<mlir::TensorType>();
 
   // Build target shape values: handle dynamic dimensions
@@ -1073,9 +1066,7 @@ CodeGenTileLangNPUIRDEV::MakeSliceRange(const RangeT& range) {
 mlir::Value CodeGenTileLangNPUIRDEV::CreateStaticLocalUB(
     llvm::ArrayRef<int64_t> shape, mlir::Type elem_type, mlir::Location loc) {
   auto memrefType = mlir::MemRefType::get(shape, elem_type);
-  mlir::IntegerAttr alignmentAttr = builder.getI64IntegerAttr(64);
-  auto allocOp = builder.create<mlir::memref::AllocOp>(
-      loc, memrefType, mlir::ValueRange{}, mlir::ValueRange{}, alignmentAttr);
+  auto allocOp = builder.create<mlir::memref::AllocOp>(loc, memrefType);
   return allocOp.getResult();
 }
 
@@ -1171,7 +1162,6 @@ CodeGenTileLangNPUIRDEV::ComputeUBAllocShapeDropStaticOnes(
   return ub_alloc_shape;
 }
 
-// Emitters
 void CodeGenTileLangNPUIRDEV::EmitCopyMemrefToTensor(
     const tvm::tl::AscendCopy& npuirop,
     mlir::Value src, mlir::Value dst,
