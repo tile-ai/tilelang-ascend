@@ -1268,10 +1268,11 @@ void CodeGenTileLangNPUIRDEV::EmitCopyMemrefToTensor(
   mlir::Value casted_tensor = CreateCastIfTypeMismatch(reshaped_tensor, dst_slice);
 
   // 9) InsertSlice (keep your existing InsertSlice signature/behavior)
-  mlir::Value result = InsertSlice(casted_tensor, dst,
-                                  const_cast<llvm::SmallVector<mlir::OpFoldResult>&>(dstR.offs),
-                                  const_cast<llvm::SmallVector<mlir::OpFoldResult>&>(dstR.sizes),
-                                  const_cast<llvm::SmallVector<mlir::OpFoldResult>&>(dstR.strides));
+  mlir::Value result = InsertSlice(
+      casted_tensor, dst,
+      const_cast<llvm::SmallVector<mlir::OpFoldResult>&>(dstR.offs),
+      const_cast<llvm::SmallVector<mlir::OpFoldResult>&>(dstR.sizes),
+      const_cast<llvm::SmallVector<mlir::OpFoldResult>&>(dstR.strides));
 
   // 10) SetVarValue
   SetVarValue(npuirop.dst, result);
