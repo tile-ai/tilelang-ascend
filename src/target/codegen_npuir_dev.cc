@@ -1181,7 +1181,6 @@ CodeGenTileLangNPUIRDEV::ComputeUBAllocShapeDropStaticOnes(
 }
 
 // Emitters
-
 void CodeGenTileLangNPUIRDEV::EmitCopyMemrefToTensor(
     const tvm::tl::AscendCopy& npuirop,
     mlir::Value src, mlir::Value dst,
@@ -1329,14 +1328,14 @@ void CodeGenTileLangNPUIRDEV::EmitCopyTensorToTensor(
 
   mlir::Value casted_tensor = CreateCastIfTypeMismatch(reshaped_tensor, dst_slice);
 
-  mlir::Value result = InsertSlice(casted_tensor, dst,
-                                  const_cast<llvm::SmallVector<mlir::OpFoldResult>&>(dstR.offs),
-                                  const_cast<llvm::SmallVector<mlir::OpFoldResult>&>(dstR.sizes),
-                                  const_cast<llvm::SmallVector<mlir::OpFoldResult>&>(dstR.strides));
+  mlir::Value result = InsertSlice(
+      casted_tensor, dst,
+      const_cast<llvm::SmallVector<mlir::OpFoldResult>&>(dstR.offs),
+      const_cast<llvm::SmallVector<mlir::OpFoldResult>&>(dstR.sizes),
+      const_cast<llvm::SmallVector<mlir::OpFoldResult>&>(dstR.strides));
 
   SetVarValue(npuirop.dst, result);
 }
-
 
 /*!
  * \brief Generate MLIR for `tl.ascend_copy`, covering data movement between GM (Global Memory)
@@ -1424,7 +1423,6 @@ void CodeGenTileLangNPUIRDEV::AscendCopyCodegen(const CallNode* op) {
 
   ICHECK(false) << "Unsupported copy dispatch state";
 }
-
 
 /*
   T contains the type of binary operation

@@ -295,40 +295,36 @@ private:
     llvm::SmallVector<mlir::OpFoldResult> sizes;
     llvm::SmallVector<mlir::OpFoldResult> strides;
   };
-
   struct CollapsedDims {
     llvm::SmallVector<mlir::OpFoldResult> sizes;   // after dropping static-1 dims
     llvm::SmallVector<int64_t> projected;          // same rank as sizes; kDynamic allowed
     llvm::SmallVector<unsigned> keptIdx;           // kept indices from original rank
   };
-
   // Entry dispatch
-  void EmitCopyMemrefToTensor(const tvm::tl::AscendCopy& npuirop,
-                             mlir::Value src, mlir::Value dst,
-                             const SliceRange& srcR, const SliceRange& dstR,
-                             mlir::Location loc);
-
-  void EmitCopyTensorToMemref(const tvm::tl::AscendCopy& npuirop,
-                             mlir::Value src, mlir::Value dst,
-                             const SliceRange& srcR, const SliceRange& dstR,
-                             mlir::Location loc);
-
-  void EmitCopyTensorToTensor(const tvm::tl::AscendCopy& npuirop,
-                             mlir::Value src, mlir::Value dst,
-                             const SliceRange& srcR, const SliceRange& dstR,
-                             mlir::Location loc);
-
+  void EmitCopyMemrefToTensor(
+      const tvm::tl::AscendCopy& npuirop,
+      mlir::Value src, mlir::Value dst,
+      const SliceRange& srcR, const SliceRange& dstR,
+      mlir::Location loc);
+  void EmitCopyTensorToMemref(
+      const tvm::tl::AscendCopy& npuirop,
+      mlir::Value src, mlir::Value dst,
+      const SliceRange& srcR, const SliceRange& dstR,
+      mlir::Location loc);
+  void EmitCopyTensorToTensor(
+      const tvm::tl::AscendCopy& npuirop,
+      mlir::Value src, mlir::Value dst,
+      const SliceRange& srcR, const SliceRange& dstR,
+      mlir::Location loc);
   // Small utilities (logic identical to your "correct code")
   template <typename RangeT>
   SliceRange MakeSliceRange(const RangeT& range);
-
-  mlir::Value CreateStaticLocalUB(llvm::ArrayRef<int64_t> shape,
-                                 mlir::Type elem_type,
-                                 mlir::Location loc);
-
+  mlir::Value CreateStaticLocalUB(
+      llvm::ArrayRef<int64_t> shape,
+      mlir::Type elem_type,
+      mlir::Location loc);
   bool IsStaticOneOFR(mlir::OpFoldResult ofr) const;
   CollapsedDims CollapseStaticOneDims(llvm::ArrayRef<mlir::OpFoldResult> fullSizes);
-
   mlir::Value CreateRankReducedSubviewFromBaseRank(
       mlir::Value base,
       llvm::ArrayRef<mlir::OpFoldResult> fullOffsets,  // len == baseRank
@@ -336,15 +332,13 @@ private:
       llvm::ArrayRef<mlir::OpFoldResult> fullStrides,  // len == baseRank
       llvm::ArrayRef<int64_t> projectedReducedShape,   // result rank
       mlir::Location loc);
-
   mlir::Value CreateSameRankDynamicSubview(
       mlir::Value base,
       llvm::ArrayRef<mlir::OpFoldResult> sizesSameRank,
       mlir::Location loc);
-
   llvm::SmallVector<int64_t> ComputeUBAllocShapeDropStaticOnes(
       mlir::RankedTensorType dst_tensor_type_ori);
-
+  
   NPU_CORETYPE func_coretype;
 
   // For mix kernel, generate target functions twice. One is for aic while
