@@ -316,7 +316,7 @@ private:
       mlir::Value src, mlir::Value dst,
       const SliceRange& srcR, const SliceRange& dstR,
       mlir::Location loc);
-  // Small utilities (logic identical to your "correct code")
+  // Small utilities
   template <typename RangeT>
   SliceRange MakeSliceRange(const RangeT& range);
   mlir::Value CreateStaticLocalUB(
