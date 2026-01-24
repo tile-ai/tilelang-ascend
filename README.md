@@ -487,8 +487,8 @@ In addition to GEMM, we provide a variety of examples to showcase the versatilit
 Two switches need to be turned on:
 ```python
 pass_configs = {
-    "tl.ascend_auto_cv_combine": True,
-    "tl.ascend_auto_cross_core_sync": True,
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_SYNC: True,
 }
 ```
 
