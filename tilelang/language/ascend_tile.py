@@ -49,7 +49,7 @@ def _dtype(buf):
         "bfloat16": "bfloat16_t",
         "uint16": "uint16_t",
         "uint8": "uint8_t",
-		"int4": "AscendC::int4b_t",
+		"int4": "int4b_t",
         "int8": "int8_t",
         "int16": "int16_t",
         "int64": "int64_t",
