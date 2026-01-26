@@ -1187,17 +1187,8 @@ void CodeGenTileLangNPUIRDEV::EmitCopyMemrefToTensor(
   llvm::ArrayRef<int64_t> copy_projected = srcC.projected;
 
   // 2) Build src_view as rank-reduced subview to copy rank
-  ICHECK((int64_t)srcR.offs.size() == src_memref_type_ori.getRank());
-  ICHECK((int64_t)srcR.sizes.size() == src_memref_type_ori.getRank());
-  ICHECK((int64_t)srcR.strides.size() == src_memref_type_ori.getRank());
-
-  auto reduced_src_type =
-      mlir::memref::SubViewOp::inferRankReducedResultType(
-          copy_projected, src_memref_type_ori, srcR.offs, srcR.sizes, srcR.strides)
-          .cast<mlir::MemRefType>();
-
-  mlir::Value src_view = builder.create<mlir::memref::SubViewOp>(
-      loc, reduced_src_type, src, srcR.offs, srcR.sizes, srcR.strides);
+  mlir::Value src_view = CreateRankReducedSubviewFromBaseRank(
+    src, srcR.offs, srcR.sizes, srcR.strides, copy_projected, loc);
 
   // 3) Alloc UB: drop ALL static-1 dims from dst tensor type
   llvm::SmallVector<int64_t> ub_alloc_shape =
