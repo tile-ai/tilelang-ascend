@@ -1248,11 +1248,6 @@ void CodeGenTileLangNPUIRDEV::EmitCopyMemrefToTensor(
   auto dst_tensor_type_ori = dst.getType().cast<mlir::RankedTensorType>();
   auto src_memref_type_ori = src.getType().cast<mlir::MemRefType>();
 
-  // Always form dst_slice first
-  // mlir::Value dst_slice = builder.create<mlir::tensor::ExtractSliceOp>(
-  //     loc, dst, dstR.offs, dstR.sizes, dstR.strides);
-  // auto dst_slice_ty = dst_slice.getType().cast<mlir::RankedTensorType>();
-
   // 1) Canonicalize copy rank: drop static-1 dims using src_sizes
   CollapsedDims srcC = CollapseStaticOneDims(srcR.sizes);
   llvm::ArrayRef<mlir::OpFoldResult> copy_sizes = srcC.sizes;
@@ -1354,15 +1349,11 @@ void CodeGenTileLangNPUIRDEV::EmitCopyTensorToTensor(
   mlir::Value src_slice = builder.create<mlir::tensor::ExtractSliceOp>(
       loc, src, srcR.offs, srcR.sizes, srcR.strides);
 
-  mlir::Value dst_slice = builder.create<mlir::tensor::ExtractSliceOp>(
-      loc, dst, dstR.offs, dstR.sizes, dstR.strides);
-
   auto src_tensor_type = src_slice.getType().cast<mlir::RankedTensorType>();
-  auto dst_tensor_type = dst_slice.getType().cast<mlir::RankedTensorType>();
 
-  mlir::Value reshaped_tensor = MaybeReshapeTensor(src_slice, dst_slice);
+  mlir::Value reshaped_tensor = MaybeReshapeTensor(src_slice, dstR.sizes);
 
-  mlir::Value casted_tensor = CreateCastIfTypeMismatch(reshaped_tensor, dst_slice);
+  mlir::Value casted_tensor = CreateCastIfTypeMismatch(reshaped_tensor, dst);
 
   mlir::Value result = InsertSlice(
       casted_tensor, dst,
