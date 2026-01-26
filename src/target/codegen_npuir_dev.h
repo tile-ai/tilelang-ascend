@@ -280,6 +280,7 @@ private:
   // === helpers for ascend_copy lowering (member-functionized) ===
   mlir::Value CreateCastIfTypeMismatch(mlir::Value src_value, mlir::Value dst_value);
   mlir::Value MaybeReshapeTensor(mlir::Value src_tensor, mlir::Value dst_tensor);
+  mlir::Value MaybeReshapeTensorByDstSize(mlir::Value src, llvm::ArrayRef<mlir::OpFoldResult> sizes);
   mlir::Value InsertSlice(
       mlir::Value src_slice, 
       mlir::Value dst_tensor, 

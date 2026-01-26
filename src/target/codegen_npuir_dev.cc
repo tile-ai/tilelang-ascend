@@ -889,13 +889,13 @@ inline void CodeGenTileLangNPUIRDEV::UpdatePrimExprMap(const PrimExprNode * key,
 mlir::Value CodeGenTileLangNPUIRDEV::CreateCastIfTypeMismatch(mlir::Value src, mlir::Value dst) {
   // src is always a tensor, dst may be a tensor or a memref, the return value is always a tensor
 
-  auto srcTensorTy = src.getType().cast<mlir::TensorType>(); 
-  assert(srcTensorTy && "src must be a tensor");
+  auto srcTensorTy = src.getType().dyn_cast<mlir::TensorType>();
+  ICHECK(srcTensorTy) << "src must be a tensor";
 
-  mlir::Type srcElemTy  = mlir::getElementTypeOrSelf(src.getType());
-  mlir::Type dstElemTy  = mlir::getElementTypeOrSelf(dst.getType());
+  mlir::Type srcElemTy = mlir::getElementTypeOrSelf(src.getType());
+  mlir::Type dstElemTy = mlir::getElementTypeOrSelf(dst.getType());
 
-  if (srcElemTy  == dstElemTy ) {
+  if (srcElemTy == dstElemTy ) {
     return src;
   }
 
@@ -1032,6 +1032,78 @@ mlir::Value CodeGenTileLangNPUIRDEV::MaybeReshapeTensor(mlir::Value src, mlir::V
       shape_tensor);
   
   return reshaped_tensor;
+}
+
+mlir::Value CodeGenTileLangNPUIRDEV::MaybeReshapeTensorByDstSize(
+    mlir::Value src,
+    llvm::ArrayRef<mlir::OpFoldResult> sizes) {
+
+  ICHECK(src.getType().isa<mlir::TensorType>()) << "src must be a tensor";
+  auto srcTensorTy = src.getType().cast<mlir::TensorType>();
+  auto loc = builder.getUnknownLoc();
+
+  llvm::SmallVector<mlir::Value> targetShapeVals;     // runtime values
+  llvm::SmallVector<int64_t>     targetShapeStatic;   // static shape (kDynamic)
+
+  for (mlir::OpFoldResult ofr : sizes) {
+    if (auto attr = ofr.dyn_cast<mlir::Attribute>()) {
+      auto intAttr = attr.cast<mlir::IntegerAttr>();
+      int64_t dim = intAttr.getInt();
+
+      targetShapeStatic.push_back(dim);
+      targetShapeVals.push_back(
+          builder.create<mlir::arith::ConstantIndexOp>(loc, dim));
+
+    } else if (auto val = ofr.dyn_cast<mlir::Value>()) {
+      targetShapeStatic.push_back(mlir::ShapedType::kDynamic);
+      targetShapeVals.push_back(val);
+
+    } else {
+      llvm_unreachable("Invalid OpFoldResult in sizes");
+    }
+  }
+
+  if (auto rankedTy = srcTensorTy.dyn_cast<mlir::RankedTensorType>()) {
+    if (rankedTy.getRank() == (int64_t)targetShapeStatic.size()) {
+      bool same = true;
+      for (int i = 0; i < rankedTy.getRank(); ++i) {
+        int64_t s0 = rankedTy.getDimSize(i);
+        int64_t s1 = targetShapeStatic[i];
+        if (s0 != s1) {
+          if (mlir::ShapedType::isDynamic(s0) ||
+              mlir::ShapedType::isDynamic(s1)) {
+            same = false;
+            break;
+          }
+          same = false;
+          break;
+        }
+      }
+      if (same) return src;
+    }
+  }
+
+  auto targetTensorTy = mlir::RankedTensorType::get(
+      targetShapeStatic,
+      srcTensorTy.getElementType());
+
+  mlir::Value shapeTensor;
+  {
+    auto shapeTensorTy = mlir::RankedTensorType::get(
+        {static_cast<int64_t>(targetShapeVals.size())},
+        builder.getIndexType());
+
+    shapeTensor = builder.create<mlir::tensor::FromElementsOp>(
+        loc, shapeTensorTy, targetShapeVals);
+  }
+
+  auto reshaped = builder.create<mlir::tensor::ReshapeOp>(
+      loc,
+      targetTensorTy,
+      src,
+      shapeTensor);
+
+  return reshaped;
 }
 
 // Converts a TileLang range/region descriptor into {offs, sizes, strides}.
@@ -1177,9 +1249,9 @@ void CodeGenTileLangNPUIRDEV::EmitCopyMemrefToTensor(
   auto src_memref_type_ori = src.getType().cast<mlir::MemRefType>();
 
   // Always form dst_slice first
-  mlir::Value dst_slice = builder.create<mlir::tensor::ExtractSliceOp>(
-      loc, dst, dstR.offs, dstR.sizes, dstR.strides);
-  auto dst_slice_ty = dst_slice.getType().cast<mlir::RankedTensorType>();
+  // mlir::Value dst_slice = builder.create<mlir::tensor::ExtractSliceOp>(
+  //     loc, dst, dstR.offs, dstR.sizes, dstR.strides);
+  // auto dst_slice_ty = dst_slice.getType().cast<mlir::RankedTensorType>();
 
   // 1) Canonicalize copy rank: drop static-1 dims using src_sizes
   CollapsedDims srcC = CollapseStaticOneDims(srcR.sizes);
@@ -1234,10 +1306,11 @@ void CodeGenTileLangNPUIRDEV::EmitCopyMemrefToTensor(
       loc, ub_view, /*restrict=*/true, /*writable=*/false);
 
   // 7) Reshape to dst_slice if needed
-  mlir::Value reshaped_tensor = MaybeReshapeTensor(loaded_tensor, dst_slice);
+  // mlir::Value reshaped_tensor = MaybeReshapeTensor(loaded_tensor, dst_slice);
+  mlir::Value reshaped_tensor = MaybeReshapeTensorByDstSize(loaded_tensor, dstR.sizes);
 
   // 8) Type Cast
-  mlir::Value casted_tensor = CreateCastIfTypeMismatch(reshaped_tensor, dst_slice);
+  mlir::Value casted_tensor = CreateCastIfTypeMismatch(reshaped_tensor, dst);
 
   // 9) InsertSlice (keep your existing InsertSlice signature/behavior)
   mlir::Value result = InsertSlice(
