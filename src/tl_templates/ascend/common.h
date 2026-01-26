@@ -8,6 +8,7 @@
 
 #define CUDART_INF_F 1.0f / 0.0f
 
+typedef AscendC::int4b_t int4b_t;
 
 namespace tl::ascend {
 using namespace Catlass;
