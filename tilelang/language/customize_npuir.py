@@ -453,13 +453,20 @@ def npuir_brc(src, dst):
     """Broadcast a vector or a scalar according to the broadcast axes array
 
     Args:
-        src (Union[tir.Buffer, tir.BufferLoad, tir.BufferRegion, tir.PrimExpr]): Source vector or scalar
+        src (Union[tir.Buffer, tir.BufferLoad, tir.BufferRegion, tir.var]): Source vector or scalar
         dst (Union[tir.Buffer, tir.BufferLoad]): Destination vector
+
+    Raises:
+        AssertionError: If input vector and output vector have different ranks.
+        AssertionError: If input and output shapes do not match for broadcast.
+
+    Returns:
+        tir.Call: A handle to the npuir_brc operation
     """
     src_extent = _get_extent(src)
     dst_extent = _get_extent(dst)
 
-    if not isinstance(src, tir.PrimExpr):
+    if not isinstance(src, (tir.PrimExpr, tir.BufferLoad)):
         assert len(src_extent) == len(
             dst_extent), "The input vector and output vector must have same rank."
         for i in range(len(src_extent)):
@@ -495,8 +502,8 @@ def npuir_fill(buffer, value):
 
     if not isinstance(buffer, (tir.Buffer, tir.BufferRegion)):
         raise TypeError("buffer must be a tir.Buffer or tir.BufferRegion")
-    if not isinstance(value, tir.PrimExpr):
-        raise TypeError("value must be a tir.PrimExpr")
+    if not isinstance(value, (tir.PrimExpr, tir.BufferLoad)):
+        raise TypeError("value must be a tir.PrimExpr or tir.BufferLoad")
 
     fill_call = npuir_brc(value, buffer)
     return fill_call
