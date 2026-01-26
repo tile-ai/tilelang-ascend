@@ -34,21 +34,21 @@ def online_flash_attention(block_M, block_N, block_K, dtype="float16", accum_dty
             K_shared = T.alloc_shared([block_n, dim], dtype)
             V_shared = T.alloc_shared([block_n, dim], dtype)
             scores = T.alloc_fragment([block_m, block_n], accum_dtype)
-            scores_cast = T.alloc_fragment([block_m, block_n], "float16")
-            correction = T.alloc_fragment([block_m,1], "float32")
-            local_max = T.alloc_fragment([block_m,1], "float32")
-            local_sum = T.alloc_fragment([block_m,1], "float32")
-            acc_m = T.alloc_fragment([block_m, 1], "float32")
-            acc_l = T.alloc_fragment([block_m, 1], "float32")
-            acc_o = T.alloc_fragment([block_m, dim], "float32")
-            tmp = T.alloc_fragment([block_m, block_n], "float32")
-            tmp1 = T.alloc_fragment([block_m,1], "float32")
-            new_max = T.alloc_fragment([block_m,1], "float32")
-            scales = T.alloc_fragment([block_m, block_n], "float32")
+            scores_cast = T.alloc_fragment([block_m, block_n], dtype)
+            correction = T.alloc_fragment([block_m,1], accum_dtype)
+            local_max = T.alloc_fragment([block_m,1], accum_dtype)
+            local_sum = T.alloc_fragment([block_m,1], accum_dtype)
+            acc_m = T.alloc_fragment([block_m, 1], accum_dtype)
+            acc_l = T.alloc_fragment([block_m, 1], accum_dtype)
+            acc_o = T.alloc_fragment([block_m, dim], accum_dtype)
+            tmp = T.alloc_fragment([block_m, block_n], accum_dtype)
+            tmp1 = T.alloc_fragment([block_m,1], accum_dtype)
+            new_max = T.alloc_fragment([block_m,1], accum_dtype)
+            scales = T.alloc_fragment([block_m, block_n], accum_dtype)
 
             value_zero = 0
             scale = (1.0 / dim)**0.5
-            value_min = -T.infinity("float32")
+            value_min = -T.infinity(accum_dtype)
             T.vbrc(value_zero, acc_o)
             T.vbrc(value_zero, acc_l)
             T.vbrc(value_min, acc_m)
@@ -57,7 +57,7 @@ def online_flash_attention(block_M, block_N, block_K, dtype="float16", accum_dty
             for k in T.Pipelined(T.ceildiv(seq_len, block_n), num_stages=2):
 
                 # cube
-                T.copy(K[k * block_n, 0], K_shared)
+                T.copy(K[k * block_n, 0], K_shared, size=[block_n, dim])
                 T.gemm(Q_shared, K_shared, scores, initC=True, b_transpose=True)
 
                 # vec
@@ -79,14 +79,14 @@ def online_flash_attention(block_M, block_N, block_K, dtype="float16", accum_dty
                 T.vadd(tmp1, new_max, acc_m)
 
                 # cube
-                T.copy(V[k * block_n, 0], V_shared)
+                T.copy(V[k * block_n, 0], V_shared, size=[block_n, dim])
                 T.gemm(scores_cast, V_shared, acc_o, initC=False)
 
             T.vdiv(acc_o, acc_l, acc_o)
             O_cast = T.alloc_shared([block_m, dim], dtype)
             T.vcast(acc_o, O_cast, round_mode="rint")
             real_m = T.min(block_m, seq_len - cid * block_m)
-            T.copy(O_cast, Output[cid * block_m : (cid+1) * block_m, :],size=[real_m, dim])
+            T.copy(O_cast, Output[cid * block_m, 0], size=[real_m, dim])
 
     return flash_attention
 
