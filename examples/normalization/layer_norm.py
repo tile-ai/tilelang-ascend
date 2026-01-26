@@ -53,8 +53,8 @@ def layer_norm(M, N, block_M, block_N, eps=1e-5, dtype="float"):
                     T.barrier_all()
                 
                 # Reduce
-                T.tile.reduce_sum(sum_ub, sum_i, tmp_ub, dim=-1)
-                T.tile.reduce_sum(sum_square_ub, sum_square_i, tmp_ub, dim=-1)
+                T.reduce_sum(sum_i, sum_ub, tmp_ub, dim=-1)
+                T.reduce_sum(sum_square_i, sum_square_ub, tmp_ub, dim=-1)
                 T.barrier_all()
 
                 # Compute mean and variance

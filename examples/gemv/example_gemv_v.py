@@ -63,7 +63,7 @@ def simple_gemv(
                 cast_or_copy(A_32_ub, A_ub, CAST_MODE, block_N * block_K)
                 for i in T.serial(block_N):
                     T.tile.mul(A_32_ub[i, :], A_32_ub[i, :], x_32_ub)
-                T.tile.reduce_sum(y_single_32_ub, A_32_ub, temp_ub, dim=-1)
+                T.reduce_sum(A_32_ub, y_single_32_ub, temp_ub, dim=-1)
                 T.tile.add(y_total_32_ub, y_total_32_ub, y_single_32_ub)
 
             cast_or_copy(y_ub, y_total_32_ub, CAST_MODE, block_N)  # cast back
