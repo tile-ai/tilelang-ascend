@@ -498,7 +498,7 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
     ShmemCodegen(op);
   } else if (op->op.same_as(tl::ascend_shmem_ub_put_nbi())) {
     ShmemCodegen(op);
-  }  else if (op->op.same_as(tl::ascend_gather_mask())) {
+  } else if (op->op.same_as(tl::ascend_gather_mask())) {
     GatherMaskCodegen(op);
   } else if (op->op.same_as(tl::ascend_gatherb())) {
     GatherbCodegen(op);
