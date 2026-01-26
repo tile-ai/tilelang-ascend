@@ -1351,7 +1351,7 @@ void CodeGenTileLangNPUIRDEV::EmitCopyTensorToTensor(
 
   auto src_tensor_type = src_slice.getType().cast<mlir::RankedTensorType>();
 
-  mlir::Value reshaped_tensor = MaybeReshapeTensor(src_slice, dstR.sizes);
+  mlir::Value reshaped_tensor = MaybeReshapeTensorByDstSize(src_slice, dstR.sizes);
 
   mlir::Value casted_tensor = CreateCastIfTypeMismatch(reshaped_tensor, dst);
 
