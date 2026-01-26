@@ -983,7 +983,7 @@ mlir::Value CodeGenTileLangNPUIRDEV::MaybeReshapeTensor(mlir::Value src, mlir::V
     for (int i = 0; i < dst_type.getRank(); ++i) {
       int64_t dim = dst_type.getDimSize(i);
       if (mlir::ShapedType::isDynamic(dim)) {
-        // Dynamic dimension: get actual size at runtime using memref.dim
+        // Dynamic dimension: get actual size at runtime using tensor.dim
         mlir::Value dim_val = builder.create<mlir::tensor::DimOp>(builder.getUnknownLoc(), dst, i);
         target_shape_vals.push_back(dim_val);
         target_shape_static.push_back(mlir::ShapedType::kDynamic);
