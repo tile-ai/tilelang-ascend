@@ -1344,10 +1344,10 @@ void CodeGenTileLangNPUIRDEV::EmitCopyMemrefToTensor(
       loc, ub_view, /*restrict=*/true, /*writable=*/false);
 
   // 7) Reshape to dst_slice if needed
-  mlir::Value reshaped_tensor = MaybeReshapeTensorByDstSize(loaded_tensor, dstR.sizes);
+  // mlir::Value reshaped_tensor = MaybeReshapeTensorByDstSize(loaded_tensor, dstR.sizes);
 
   // 8) Type Cast
-  mlir::Value casted_tensor = CreateCastIfTypeMismatch(reshaped_tensor, dst);
+  mlir::Value casted_tensor = CreateCastIfTypeMismatch(loaded_tensor, dst);
 
   // 9) InsertSlice (keep your existing InsertSlice signature/behavior)
   mlir::Value result = InsertSlice(
