@@ -961,6 +961,9 @@ mlir::Value CodeGenTileLangNPUIRDEV::MaybeReshapeTensor(mlir::Value src, mlir::V
   llvm::SmallVector<int64_t> target_shape_static;
   if (dst.getType().isa<mlir::MemRefType>()) {
     auto dst_type = dst.getType().cast<mlir::MemRefType>();
+    if (src_tensor_type.getShape() == dst_type.getShape()) {
+      return src;
+    }
     // Iterate through destination memref dimensions
     for (int i = 0; i < dst_type.getRank(); ++i) {
       int64_t dim = dst_type.getDimSize(i);
@@ -979,6 +982,9 @@ mlir::Value CodeGenTileLangNPUIRDEV::MaybeReshapeTensor(mlir::Value src, mlir::V
     }
   } else if (dst.getType().isa<mlir::RankedTensorType>()) {
     auto dst_type = dst.getType().cast<mlir::RankedTensorType>();
+    if (src_tensor_type.getShape() == dst_type.getShape()) {
+      return src;
+    }
     // Iterate through destination memref dimensions
     for (int i = 0; i < dst_type.getRank(); ++i) {
       int64_t dim = dst_type.getDimSize(i);
@@ -1237,13 +1243,7 @@ void CodeGenTileLangNPUIRDEV::EmitCopyMemrefToTensor(
       loc, ub_view, /*restrict=*/true, /*writable=*/false);
 
   // 7) Reshape to dst_slice if needed
-  mlir::Value reshaped_tensor;
-  auto loaded_ty = loaded_tensor.getType().cast<mlir::RankedTensorType>();
-  if (loaded_ty.getShape() != dst_slice_ty.getShape()) {
-    reshaped_tensor = MaybeReshapeTensor(loaded_tensor, dst_slice);
-  } else {
-    reshaped_tensor = loaded_tensor;
-  }
+  mlir::Value reshaped_tensor = MaybeReshapeTensor(loaded_tensor, dst_slice);
 
   // 8) Type Cast
   mlir::Value casted_tensor = CreateCastIfTypeMismatch(reshaped_tensor, dst_slice);
@@ -1273,12 +1273,7 @@ void CodeGenTileLangNPUIRDEV::EmitCopyTensorToMemref(
   auto src_tensor_type = src_slice.getType().cast<mlir::RankedTensorType>();
   auto dst_memref_type = dst_view.getType().cast<mlir::MemRefType>();
 
-  mlir::Value reshaped_tensor;
-  if (src_tensor_type.getShape() != dst_memref_type.getShape()) {
-    reshaped_tensor = MaybeReshapeTensor(src_slice, dst_view);
-  } else {
-    reshaped_tensor = src_slice;
-  }
+  mlir::Value reshaped_tensor = MaybeReshapeTensor(src_slice, dst_view);
 
   mlir::Value casted_tensor = CreateCastIfTypeMismatch(reshaped_tensor, dst_view);
 
@@ -1301,12 +1296,7 @@ void CodeGenTileLangNPUIRDEV::EmitCopyTensorToTensor(
   auto src_tensor_type = src_slice.getType().cast<mlir::RankedTensorType>();
   auto dst_tensor_type = dst_slice.getType().cast<mlir::RankedTensorType>();
 
-  mlir::Value reshaped_tensor;
-  if (src_tensor_type.getShape() != dst_tensor_type.getShape()) {
-    reshaped_tensor = MaybeReshapeTensor(src_slice, dst_slice);
-  } else {
-    reshaped_tensor = src_slice;
-  }
+  mlir::Value reshaped_tensor = MaybeReshapeTensor(src_slice, dst_slice);
 
   mlir::Value casted_tensor = CreateCastIfTypeMismatch(reshaped_tensor, dst_slice);
 
