@@ -37,7 +37,7 @@ def minicv(M, N, K, block_M, block_N):
             T.copy(B[0, by], B_BUF, [K, block_N])
 
             T.gemm(A_BUF, B_BUF, C_BUF, [block_M, K, block_N], initC = True)
-            T.exp(C_BUF, D_BUF)
+            T.vexp(C_BUF, D_BUF)
 
             T.copy(C_BUF, C[bx, by], [block_M, block_N])
             T.copy(D_BUF, D[bx, by], [block_M, block_N])

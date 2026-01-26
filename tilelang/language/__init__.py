@@ -88,7 +88,6 @@ from .customize_npuir import (
     npuir_shl,
     npuir_shr,
     npuir_exp,
-    npuir_exp as exp,
     npuir_exp as vexp,
     npuir_dot,
     npuir_dot as gemm,

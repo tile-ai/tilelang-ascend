@@ -65,7 +65,7 @@ def online_flash_attention(block_M, block_N, block_K, dtype="float16", accum_dty
                 T.reduce_max(scores, local_max, dim=1)
                 T.vmax(acc_m, local_max, new_max)
                 T.vsub(acc_m, new_max ,tmp1)
-                T.exp(tmp1, correction)
+                T.vexp(tmp1, correction)
                 #scores for current loop
                 T.vsub(scores, new_max, tmp)
                 T.vexp(tmp, scores)
