@@ -1865,38 +1865,6 @@ void CodeGenTileLangNPUIRDEV::DotCodegen(const CallNode *op) {
   SetVarValue(npuirop.dst, newMmadL1OpValue);
 }
 
-mlir::Value CodeGenTileLangNPUIRDEV::GenMemrefLoadFromRegion(const BufferLoadNode *op) {
-  auto buffer = op->buffer;
-  auto indices = op->indices;
-
-  // Check pre-conditions
-  if (op->dtype.lanes() != 1) {
-    LOG(FATAL) << "lanes not one";
-  }
-  if (op->dtype != buffer->dtype) {
-    LOG(FATAL) << "The load type and buffer element type do not match";
-  }
-
-  // Convert buffer from Buffer in TIR 2 memref in MLIR
-  auto mem = GetVarValue(buffer->data.get());
-  if (auto tensor = mem.getType().dyn_cast<TensorType>()) {
-    MemRefType memref_type = MemRefType::get(tensor.getShape(), tensor.getElementType());
-    mem = builder.create<bufferization::ToMemrefOp>(
-      builder.getUnknownLoc(), memref_type, mem
-    );
-  }
-
-  // Convert index from PrimExpr in TIR 2 index type in MLIR
-  SmallVector<mlir::Value> convert_inds;
-  for (auto index : indices) {
-    mlir::Value indexVal = CreateIndexCastOp(MakeValue(index));
-    convert_inds.push_back(indexVal);
-  }
-
-  // Create memef.load op in MLIR
-  return builder.create<mlir::memref::LoadOp>(builder.getUnknownLoc(), mem, convert_inds);
-}
-
 /// Generate hivm.hir.vadd for tl.npuir_add.
 /// Generate hivm.hir.vcmp for tl.npuir_cmp.
 /// Generate hivm.hir.vdiv for tl.npuir_div.
@@ -1930,9 +1898,9 @@ void CodeGenTileLangNPUIRDEV::CreateHIVMBinaryVectorOp(const CallNode *op) {
       // Vector case
       const CallNode *region_node = op->args[arg_id].as<CallNode>();
       auto buffer_node = region_node->args[0].as<BufferLoadNode>();
-      buffer_shape = buffer_node->buffer->shape;
+      Array<PrimExpr> tmp_buffer_shape = buffer_node->buffer->shape;
       bool is_scalar_load = true;
-      for (int i = 0; i < buffer_shape.size(); i++) {
+      for (int i = 0; i < tmp_buffer_shape.size(); i++) {
         const IntImmNode* int_imm = region_node->args[2 + i].as<IntImmNode>();
         if (!int_imm || int_imm->value != 1) {
           is_scalar_load = false;
@@ -1942,9 +1910,10 @@ void CodeGenTileLangNPUIRDEV::CreateHIVMBinaryVectorOp(const CallNode *op) {
       const IntImmNode* int_imm = region_node->args[2].as<IntImmNode>();
       // If load only one element, do not use memref.subview, use memref.load as a scalar
       if(is_scalar_load) {
-        src = GenMemrefLoadFromRegion(buffer_node);
+        src = VisitExpr_(buffer_node);
       } else {
         src = GetVarValue(region_node);
+        buffer_shape = tmp_buffer_shape;
       }
     }
   };

@@ -109,14 +109,27 @@ private:
                             const BufferAccessInfo& buffer_a,
                             const BufferAccessInfo& buffer_b,
                             const BufferAccessInfo& buffer_c,
-                            int offset, int size) {
-    PrimExpr offset_expr = {make_const(DataType::Int(32), offset)};
+                            int size) {
     PrimExpr region_a = BuildRegionCall(buffer_a, 1, 1);
     PrimExpr region_b = BuildRegionCall(buffer_b, 1, 1);
     PrimExpr region_c = BuildRegionCall(buffer_c, 2, 1);
     auto op_type = Op::Get(TirOps2NpuirOps[op_name]);
 
     Array<PrimExpr> args = {region_a, region_b, region_c};
+    PrimExpr call = Call(DataType::Void(), op_type, args);
+    return Evaluate(call);
+  }
+
+  Stmt BuildNPUIRBinaryCall(std::string op_name,
+                            const BufferAccessInfo& buffer_a,
+                            const PrimExpr& scalar_b,
+                            const BufferAccessInfo& buffer_c,
+                            int size) {
+    PrimExpr region_a = BuildRegionCall(buffer_a, 1, 1);
+    PrimExpr region_c = BuildRegionCall(buffer_c, 2, 1);
+    auto op_type = Op::Get(TirOps2NpuirOps[op_name]);
+
+    Array<PrimExpr> args = {region_a, scalar_b, region_c};
     PrimExpr call = Call(DataType::Void(), op_type, args);
     return Evaluate(call);
   }
@@ -355,15 +368,23 @@ private:
       return HandleSimpleExpression(op_type, operands, output_buffer, size, loop_vars, statements);
     } else if (!left_is_simple && right_is_simple) {
       if (DecomposeExpression(operands[0], output_buffer, size, loop_vars, statements)) {
-        int offset = 0;
-        Stmt statement = BuildNPUIRBinaryCall(op_type, output_buffer, ExtractBufferAccessInfo(operands[1]), output_buffer, offset, size);
+        Stmt statement;
+        if (IsScalar(operands[1])) {
+          statement = BuildNPUIRBinaryCall(op_type, output_buffer, operands[1], output_buffer, size);
+        } else {
+          statement = BuildNPUIRBinaryCall(op_type, output_buffer, ExtractBufferAccessInfo(operands[1]), output_buffer, size);
+        }
         statements->push_back(statement);
         return true;
       }
     } else if (left_is_simple && !right_is_simple) {
       if (DecomposeExpression(operands[1], output_buffer, size, loop_vars, statements)) {
-        int offset = 0;
-        Stmt statement = BuildNPUIRBinaryCall(op_type, ExtractBufferAccessInfo(operands[0]), output_buffer, output_buffer, offset, size);
+        Stmt statement;
+        if (IsScalar(operands[0])) {
+          statement = BuildNPUIRBinaryCall(op_type, output_buffer, operands[0], output_buffer, size);
+        } else {
+          statement = BuildNPUIRBinaryCall(op_type, ExtractBufferAccessInfo(operands[0]), output_buffer, output_buffer, size);
+        }
         statements->push_back(statement);
         return true;
       }
