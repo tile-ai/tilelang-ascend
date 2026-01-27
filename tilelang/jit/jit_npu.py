@@ -1268,6 +1268,7 @@ class compiler_npu:
             # TODO: temporary fix, will be updated when bishengir-compile
             # and hivmc gets updated in CANN 8.5
             npu_compiler_opt_path = _get_npucompiler_opt_path()
+            ttadapter_opt_path = os.path.join(tmpdir, "kernel-opt.npuir")
             
             _opt_option_list = [
                "--adapt-triton-kernel"
@@ -1276,11 +1277,17 @@ class compiler_npu:
             opt_cmd_list = (
                 [npu_compiler_opt_path, ttadapter_path]
                 + _opt_option_list
-                + ["-o", ttadapter_path]
+                + ["-o", ttadapter_opt_path]
             )
             ret = subprocess.run(
                 opt_cmd_list, capture_output=True, check=True, text=True
             )
+            # 1. Read ttadapter_opt_path
+            with open(ttadapter_opt_path, 'r') as f:
+                npuir_opt = f.read()
+            # 2. Replace ttadapter_path contents with ttadapter_opt_path contents
+            with open(ttadapter_path, 'w') as f:
+                f.write(npuir_opt)
             print("AscendNPU IR OPT success:", ret.stdout)
             # Hot fix for CANN 8.5 ends here
 
