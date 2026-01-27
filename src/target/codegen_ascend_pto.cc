@@ -1237,6 +1237,28 @@ void CodeGenTileLangAscendPto::BinaryVecOpCodegen(const CallNode *op,
   }
 }
 
+std::string findValueIfKeyContains(const std::map<std::string, std::string>& myMap, 
+                                   const std::string& inputKey) {
+    auto it = std::find_if(myMap.begin(), myMap.end(),
+        [&inputKey](const auto& pair) {
+            return inputKey.find(pair.first) != std::string::npos;
+        });
+    if (it != myMap.end()) {
+        return it->second;
+    }
+    return "";
+}
+
+std::string getValueOrProcess(const std::map<std::string, std::string>& myMap,
+                             const std::string& key) {
+    auto it = myMap.find(key);
+    if (it != myMap.end()) {
+        return it->second;
+    } else {
+        return findValueIfKeyContains(myMap, key);
+    }
+}
+
 void CodeGenTileLangAscendPto::BinaryVecOpsCodegen(const CallNode *op,
                                                const std::string &op_name) {
   std::vector<std::string> var_names;
@@ -1250,6 +1272,7 @@ void CodeGenTileLangAscendPto::BinaryVecOpsCodegen(const CallNode *op,
     std::string ub_name = var_names[1];
     this->PrintIndent();
     std::string index = PrintExpr(op->args[op->args.size() - 2]);
+    std::string offset = PrintExpr(op->args[0].as<CallNode>()->args[2]);
     std::string scalar_name = var_name + "_scalar";
     this->stream << "pipe_barrier(PIPE_ALL);\n";
     this->stream << "auto " << scalar_name <<  "= " << var_name
@@ -1260,12 +1283,13 @@ void CodeGenTileLangAscendPto::BinaryVecOpsCodegen(const CallNode *op,
     std::string var_name_temp = ub_name + "_temp";
     std::string ub_data_type = ub_data_vector[0];
     this->PrintIndent();
-    int32_t ub_data_temp_col = std::stoi(ub_data_vector[2]) * std::stoi(ub_data_vector[1]) / std::stoi(for_num_map_[index]);
+    std::string loop_num = getValueOrProcess(for_num_map_, index);
+    int32_t ub_data_temp_col = std::stoi(ub_data_vector[2]) * std::stoi(ub_data_vector[1]) / std::stoi(loop_num);
     this->stream << kAscendPtoScope << "TileUbDataND<" << ub_data_vector[0] << ", 1, "
     << ub_data_temp_col << ", 1, " << ub_data_temp_col << "> " << var_name_temp << ";\n";
     this->PrintIndent();
     this->stream << "TASSIGN(" << var_name_temp << ", " << ub_data_vector[3] << " + " <<
-    index << " * " << ub_data_temp_col << " * " << GetTypeLenString(ub_data_vector[0]) << ");\n";
+    offset << " * " << GetTypeLenString(ub_data_vector[0]) << ");\n";
     this->PrintIndent();
     this->stream << "pipe_barrier(PIPE_ALL);\n";
     this->PrintIndent();
@@ -1647,9 +1671,21 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
     if (pos == kAscendPtoScope + "TileUbData") {
       UbShapeInputCheck(op);
     }
+    PrimExpr target_expr;
+    bool found_by_name = false;
+    std::string target_var_name = op->buffer_var->name_hint;
+
+    for (const auto& pair : address_map_) {
+      Var var_key = pair.first;
+      if (var_key->name_hint == target_var_name) {
+        target_expr = pair.second;
+        found_by_name = true;
+        break;
+      }
+    }
     this->PrintIndent();
     // Allocate buffer
-    if (address_map_.find(op->buffer_var) != address_map_.end()) {
+    if (found_by_name) {
       if (pos == kAscendPtoScope + "TileUbData") {
         if (shape.size() == 2) {
           ub_data[1] = PrintExpr(shape[0]);
@@ -1672,21 +1708,21 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
             stream << ", " << shape[i];
           }
           stream << "> " << vid << ";\n";
-          ub_data[3] = DEC_STR_TO_HEX_STR(PrintExpr(address_map_[op->buffer_var]));
+          ub_data[3] = PrintExpr(target_expr);
           ub_data[4] = "Unapplied for tileUbDataDN";
           ub_data_map_[vid] = ub_data;
 
           this->PrintIndent();
-          stream << "TASSIGN(" << vid << ", " << DEC_STR_TO_HEX_STR(PrintExpr(address_map_[op->buffer_var])) << ");\n";
+          stream << "TASSIGN(" << vid << ", " << PrintExpr(target_expr) << ");\n";
         } else if (shape.size() == 1) {
           ub_data[1] = "1";
           ub_data[2] = PrintExpr(shape[0]);
           stream << pos << "ND<" << type << ", 1, " << shape[0] << ", 1, " << shape[0]<< "> " << vid << ";\n";
-          ub_data[3] = DEC_STR_TO_HEX_STR(PrintExpr(address_map_[op->buffer_var]));
+          ub_data[3] = PrintExpr(target_expr);
           ub_data[4] = "Unapplied for tileUbDataDN";
           ub_data_map_[vid] = ub_data;
           this->PrintIndent();
-          stream << "TASSIGN(" << vid << ", " << DEC_STR_TO_HEX_STR(PrintExpr(address_map_[op->buffer_var])) << ");\n";
+          stream << "TASSIGN(" << vid << ", " << PrintExpr(target_expr) << ");\n";
         } else if (shape.size() == 3) {
           ub_data[1] = PrintExpr(shape[1]);
           ub_data[2] = PrintExpr(shape[2]);
@@ -1712,7 +1748,7 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
           stream << "> " << vid << "[" << shape[0] << "];\n";
           for (size_t i = 0; i < bufferNum; i++) {
             this->PrintIndent();
-            stream << "TASSIGN(" << vid << "[" << i << "], " << DEC_STR_TO_HEX_STR(PrintExpr(address_map_[op->buffer_var])) << ");\n";
+            stream << "TASSIGN(" << vid << "[" << i << "], " << PrintExpr(target_expr) << ");\n";
           }
         }
       } else {
@@ -1738,7 +1774,7 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
         }
         stream << "> " << vid << ";\n";
          this->PrintIndent();
-          stream << "TASSIGN(" << vid << ", " << DEC_STR_TO_HEX_STR(PrintExpr(address_map_[op->buffer_var])) << ");\n";
+          stream << "TASSIGN(" << vid << ", " << PrintExpr(target_expr) << ");\n";
         } else {
           int8_t bufferNum = shape[0].as<IntImmNode>()->value;
           prefetch_n_stages_map_[vid] = std::pair<int, int> {bufferNum, 0};
@@ -1764,7 +1800,7 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
           stream << "> " << vid << "[" << shape[0] << "];\n";
           for (size_t j = 0; j < bufferNum; j++) {
             this->PrintIndent();
-            stream << "TASSIGN(" << vid << "[" << j << "], " << DEC_STR_TO_HEX_STR(PrintExpr(address_map_[op->buffer_var])) << ");\n";
+            stream << "TASSIGN(" << vid << "[" << j << "], " << PrintExpr(target_expr) << ");\n";
           }
         }
       }

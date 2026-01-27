@@ -302,6 +302,9 @@ AICORE PTO_INLINE void TCOLSUM_with_slice_buffer(
     pto::TCOLSUM(ub, tileUbWithValid, tmp_ub, true);
 }
 
+template<typename TileType, typename DataType>
+void TCI(TileType& tile, DataType firstValue);
+
 template <typename T, int32_t row, int32_t col>
 AICORE PTO_INLINE void tci(int32_t ub_addr, int32_t ub_offset, int32_t len, T firstValue) {
     using TileData = TileUbDataND<T, row, col, row, col>;
