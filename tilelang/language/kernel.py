@@ -260,7 +260,7 @@ def Kernel(
                 assert threads[0] in [1, 2], f"NPU kernel threads must be 1 or 2, but got {threads[0]}"
             else:
                 raise TypeError(f"threads must be int, list or tuple, but got {type(threads)}")
-            attrs["tilelang.is_npu_kernel_frame"] = True
+            attrs["tilelang.is_npu_kernel_frame_dev_mode"] = True
         return _ffi_api.KernelLaunch(blocks, threads, attrs)
 
     if not is_cpu and threads is None:
