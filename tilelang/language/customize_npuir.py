@@ -1088,7 +1088,7 @@ def npuir_pad(src, dst, pad_value, low: Union[list, tuple], high: Union[list, tu
  
     return _tir_call_intrin(src, dst, pad_value, pad_dim, s_low_str, s_high_str, num_dynamic_low, *dynamic)
 
-def npuir_flip(src, dst, size=[]):
+def npuir_flip(src, dst, axis: int, size=[]):
     """Flips a tensor along the last dimension.
  
     Args:
@@ -1104,7 +1104,7 @@ def npuir_flip(src, dst, size=[]):
     src = _to_region(src, "r", src_extent)
     dst = _to_region(dst, "w", dst_extent)
  
-    return tir.call_intrin("handle", tir.op.Op.get("tl.npuir_flip"), src, dst)
+    return tir.call_intrin("handle", tir.op.Op.get("tl.npuir_flip"), src, dst, axis)
 
 def npuir_bitcast(src, dtype, size = []):
     """Reinterprets the bits of a shaped value without changing data.

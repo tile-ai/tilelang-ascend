@@ -477,7 +477,11 @@ NpuirPad::NpuirPad(Array<PrimExpr> args, BufferMap vmap) {
   }
 }
 
-NpuirFlip::NpuirFlip(Array<PrimExpr> args, BufferMap vmap){NPUIR_SRC_DST_BUF}
+NpuirFlip::NpuirFlip(Array<PrimExpr> args, BufferMap vmap){
+  NPUIR_SRC_DST_BUF
+
+  this->axis = args[2].as<IntImm>().value()->value;
+}
 
 NpuirBitcast::NpuirBitcast(Array<PrimExpr> args, BufferMap vmap) {
   NPUIR_GEN_BUF(args[0])
@@ -747,7 +751,7 @@ TIR_REGISTER_TL_OP(NpuirPad, npuir_pad)
                                Integer(CallEffectKind::kOpaque));
 
 TIR_REGISTER_TL_OP(NpuirFlip, npuir_flip)
-    .set_num_inputs(2)
+    .set_num_inputs(3)
     .set_attr<TCallEffectKind>("TCallEffectKind",
                                Integer(CallEffectKind::kOpaque));
 

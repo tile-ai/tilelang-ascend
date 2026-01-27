@@ -1828,7 +1828,7 @@ void CodeGenTileLangNPUIRDEV::VflipCodegen(const CallNode *op) {
   Value src = GenSubviewFromRegion(npuirop.src, npuirop.src_range);
   Value dst = GenSubviewFromRegion(npuirop.dst, npuirop.dst_range);
   builder.create<mlir::hivm::VFlipOp>(builder.getUnknownLoc(), TypeRange{}, src,
-                                      dst);
+                                      dst, npuirop.axis);
 }
 
 void CodeGenTileLangNPUIRDEV::Nd2NzCodegen(const CallNode *op) {
