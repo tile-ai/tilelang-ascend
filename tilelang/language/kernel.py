@@ -95,11 +95,14 @@ class KernelLaunchFrame(TIRFrame):
 
         maybe_cpu = last_block_frame.annotations.get("tilelang.is_cpu_kernel_frame", False)
         maybe_npu = last_block_frame.annotations.get("tilelang.is_npu_kernel_frame", False)
+        maybe_npu_dev_mode = last_block_frame.annotations.get("tilelang.is_npu_kernel_frame_dev_mode", False)
         if maybe_cpu:
             # CPU kernel frame, return a list of for frame items.
             return [frame.vars[0] for frame in self.frames[0:-1]]
         elif maybe_npu:
             return [self.frames[i].iter_var.var for i in range(2)]
+        elif maybe_npu_dev_mode:
+            return self.frames[0].iter_var.var
         else:
             # Otherwise, return a list of iter_var.var objects (excluding the last 4 frames).
             # As 4 frames for threadIdx.x, threadIdx.y, threadIdx.z and block frame with attributes
@@ -244,7 +247,20 @@ def Kernel(
     attrs: dict = {}
     if is_npu:
         assert len(blocks) == 1, "NPU kernel must have exactly one block dimension"
-        attrs["tilelang.is_npu_kernel_frame"] = True
+        if threads is None:
+            attrs["tilelang.is_npu_kernel_frame"] = True
+        else:
+            if isinstance(threads, int):
+                assert threads in [1, 2], f"NPU kernel threads must be 1 or 2, but got {threads}"
+                threads = [threads]
+
+            elif isinstance(threads, (list, tuple)):
+                threads = list(threads)
+                assert len(threads) == 1, "NPU kernel must have exactly one thread dimension"
+                assert threads[0] in [1, 2], f"NPU kernel threads must be 1 or 2, but got {threads[0]}"
+            else:
+                raise TypeError(f"threads must be int, list or tuple, but got {type(threads)}")
+            attrs["tilelang.is_npu_kernel_frame"] = True
         return _ffi_api.KernelLaunch(blocks, threads, attrs)
 
     if not is_cpu and threads is None:

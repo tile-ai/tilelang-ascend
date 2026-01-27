@@ -230,6 +230,8 @@ KernelLaunchFrame KernelLaunch(Array<PrimExpr> grid_size,
       attrs.defined() && attrs.count(tilelang_is_cpu_kernel_frame);
   bool is_npu_kernel_frame =
       attrs.defined() && attrs.count(tilelang_is_npu_kernel_frame);
+  bool is_npu_kernel_frame_dev_mode = 
+      attrs.defined() && attrs.count(tilelang_is_npu_kernel_frame_dev_frame);
 
   if (is_cpu_kernel_frame) {
     // Launch CPU Kernel
@@ -248,11 +250,28 @@ KernelLaunchFrame KernelLaunch(Array<PrimExpr> grid_size,
     // Note: corresponding relationship ->
     // blockIdx.x => cube idx in ascend
     // blockIdx.y => vec idx in ascend
-    n->frames.push_back(
-        LaunchThread(CreateEnvThread("cid", "blockIdx.x", grid_size[0].dtype()),
-                     grid_size[0]));
-    n->frames.push_back(LaunchThread(
-        CreateEnvThread("vid", "blockIdx.y", grid_size[0].dtype()), 2));
+    n->frames.push_back(LaunchThread(CreateEnvThread("cid", "blockIdx.x", grid_size[0].dtype()),grid_size[0]));
+    n->frames.push_back(LaunchThread(CreateEnvThread("vid", "blockIdx.y", grid_size[0].dtype()), 2));
+  } else if (is_npu_kernel_frame_dev_mode) {
+    // Launch NPU Kernel In Developer Mode
+    ICHECK(grid_size.size() == 1) << "NPU kernel only supports 1D grid size";
+    ICHECK(block_size.size() == 1) << "Vid(Threads) only supports at 1D block size in developer mode";
+    // develop mode without vid
+    n->frames.push_back(LaunchThread(CreateEnvThread("cid", "blockIdx.x", grid_size[0].dtype()), grid_size[0]));
+    n->frames.push_back(LaunchThread(CreateEnvThread("vid", "threadIdx.x", block_size[0].dtype()), block_size[0]));
+
+    using namespace tvm::script::ir_builder;
+    Optional<PrimFuncFrame> opt_prim_func_frame = IRBuilder::Current()->FindFrame<PrimFuncFrame>();
+    ICHECK(opt_prim_func_frame.defined()) << "KernelLaunch must be inside PrimFunc";
+    PrimFuncFrame prim_func_frame = opt_prim_func_frame.value();
+    const IntImmNode* vid_value_node = block_size[0].as<IntImmNode>();
+    ICHECK(vid_value_node != nullptr) << "block_size[0] must be compile-time constant";
+    int vid_value = vid_value_node->value;
+    if (vid_value == 1) {
+      prim_func_frame->attrs.Set("npu_cv_ratio", StringImm(cv_1_1));
+    } else {
+      prim_func_frame->attrs.Set("npu_cv_ratio", StringImm(cv_1_2));
+    } 
   } else {
     // Launch GPU Kernel
     ICHECK(grid_size.size() <= 3);

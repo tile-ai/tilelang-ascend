@@ -20,6 +20,10 @@
 namespace tvm {
 namespace codegen {
 
+constexpr const char* cv_1_1 = "cv_1_1";
+
+constexpr const char* cv_1_2 = "cv_1_2"; 
+
 class CodeGenTileLangAscend final : public CodeGenC {
 public:
   CodeGenTileLangAscend();
@@ -106,6 +110,8 @@ private:
   Map<String, PrimExpr> address_offset_;
 
   bool use_swizzle_{false};
+
+  std::string cv_ratio_;
 };
 
 } // namespace codegen
