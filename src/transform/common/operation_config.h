@@ -155,6 +155,10 @@ namespace tl {
       {"tl.ascend_block_reduce_max", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
       {"tl.ascend_block_reduce_min", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
       {"tl.ascend_block_reduce_sum", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
+      {"tl.ascend_shmem_ub_get_nbi", {{{1, "write"}, {2, "read"}}, "PIPE_MTE2"}},
+      {"tl.ascend_shmem_get_nbi", {{{1, "write"}, {2, "read"}}, "PIPE_MTE3"}},
+      {"tl.ascend_shmem_put_nbi", {{{1, "write"}, {2, "read"}}, "PIPE_MTE3"}},
+      {"tl.ascend_shmem_ub_put_nbi", {{{1, "read"}, {2, "write"}}, "PIPE_MTE3"}},
 
       {"tl.ascend_scalar", {{{0, "write"}, {1, "read"}}, "PIPE_S"}},
       {"tl.ascend_gatherb", {{{1, "write"}, {2, "read"}, {3, "read"}}, "PIPE_V"}},
