@@ -244,6 +244,106 @@ def sync_all():
     return tir.call_intrin("handle", tir.op.Op.get("tl.ascend_sync_all"))
 
 
+def shmem_put_nbi(dst: Buffer, src: Buffer, nelems: PrimExpr, newPe: PrimExpr):
+    """Performs a shmem put nbi operation.
+
+    This intrinsic invokes the underlying implementation to copy from the local GM to the newPe GM
+
+    Args:
+        dst: The newPe GM.
+        src: The local GM.
+        nelems: Number of elements.
+        newPe: The rank of dst pe.
+
+    Returns:
+        A TVM intrinsic call that performs the shmem put nbi operation.
+    """
+    return tir.call_intrin(
+        "handle",
+        tir.op.Op.get("tl.ascend_shmem_put_nbi"),
+        f"shmem_put_nbi<{_dtype(src)}>",
+        dst.access_ptr("w"),
+        src.access_ptr("r"),
+        nelems,
+        newPe,
+    )                                                  
+
+
+def shmem_ub_put_nbi(ub: Buffer, dst: Buffer, nelems: PrimExpr, newPe: PrimExpr):
+    """Performs a shmem ub put nbi operation.
+
+    This intrinsic invokes the underlying implementation to copy from the local UB to the newPe GM
+
+    Args:
+        ub: The local UB.
+        dst: The newPe GM.
+        nelems: Number of elements.
+        newPe: The rank of dst pe.
+
+    Returns:
+        A TVM intrinsic call that performs the shmem ub put nbi operation.
+    """
+    return tir.call_intrin(
+        "handle",
+        tir.op.Op.get("tl.ascend_shmem_ub_put_nbi"),
+        f"shmem_ub_put_nbi<{_dtype(dst)}>",
+        ub.access_ptr("r"),
+        dst.access_ptr("w"),
+        nelems,
+        newPe,
+    )                                  
+
+
+def shmem_get_nbi(dst: Buffer, src: Buffer, nelems: PrimExpr, newPe: PrimExpr):
+    """Performs a shmem get nbi operation.
+
+    This intrinsic invokes the underlying implementation to copy from the newPe GM to the local GM
+
+    Args:
+        dst: The local GM.
+        src: The newPe GM.
+        nelems: Number of elements.
+        newPe: The rank of dst pe.
+
+    Returns:
+        A TVM intrinsic call that performs the shmem get nbi operation.
+    """
+    return tir.call_intrin(
+        "handle",
+        tir.op.Op.get("tl.ascend_shmem_get_nbi"),
+        f"shmem_get_nbi<{_dtype(src)}>",
+        dst.access_ptr("w"),
+        src.access_ptr("r"),
+        nelems,
+        newPe,
+    )                         
+
+
+def shmem_ub_get_nbi(dst: Buffer, src: Buffer, nelems: PrimExpr, newPe: PrimExpr):
+    """Performs a shmem ub get nbi operation.
+
+    This intrinsic invokes the underlying implementation to copy from the newPe GM to the local UB
+
+    Args:
+        dst: The local UB.
+        src: The newPe GM.
+        nelems: Number of elements.
+        newPe: The rank of dst pe.
+
+    Returns:
+        A TVM intrinsic call that performs the shmem ub get nbi operation.
+    """
+    return tir.call_intrin(
+        "handle",
+        tir.op.Op.get("tl.ascend_shmem_ub_get_nbi"),
+        f"shmem_ub_get_nbi<{_dtype(src)}>",
+        dst.access_ptr("w"),
+        src.access_ptr("r"),
+        nelems,
+        newPe,
+    )                             
+
+
 def gemm_v0(A, B, C, transpose_A=False, transpose_B=False, init=False):
     """
     Performs a block-level General Matrix Multiplication (GEMM).

@@ -6,6 +6,8 @@
 #include "catlass/gemm/tile/tile_copy.hpp"
 #include "catlass/layout/layout.hpp"
 
+#include "shmem.h"
+
 #define CUDART_INF_F 1.0f / 0.0f
 
 typedef AscendC::int4b_t int4b_t;
@@ -23,6 +25,8 @@ using LayoutGM = layout::RowMajor;
 using LayoutL0A = layout::zZ;
 using LayoutL0B = layout::nZ;
 using LayoutL1 = layout::zN;
+
+constexpr int64_t UB_HALF_SIZE = 64;
 
 template <typename T, uint32_t dstM, uint32_t dstN>
 CATLASS_DEVICE void copy_gm_to_l1(LocalTensor<T> dstTensor,
@@ -217,6 +221,49 @@ CATLASS_DEVICE void elementwise_binary(LocalTensor<T> const &ubIn0,
   } else if constexpr (op == 3) {
     AscendC::Div(ubOut, ubIn0, ubIn1, Len);
   }
+}
+
+template <typename T>
+CATLASS_DEVICE void shmem_put_nbi(const GlobalTensor<T> &output, const GlobalTensor<T> &input,
+                             size_t nelems, size_t newPe) {
+    AscendC::TPipe pipe;
+    uint32_t ub_size = UB_HALF_SIZE * 2 + 64;
+    AscendC::TBuf<AscendC::TPosition::VECIN> ub_buf;
+    pipe.InitBuffer(ub_buf, ub_size);
+    auto ub_tensor = ub_buf.Get<T>();
+    pipe.Destroy();
+    __gm__ T* outputPtr = const_cast<__gm__ T*>(output.GetPhyAddr());
+    __gm__ T* inputPtr = const_cast<__gm__ T*>(input.GetPhyAddr());
+    __ubuf__ T* buf = reinterpret_cast<__ubuf__ T*>(ub_tensor.GetPhyAddr());
+    aclshmemx_mte_put_nbi(outputPtr, inputPtr, buf, ub_size, nelems, newPe, EVENT_ID0);                                                                                 
+}
+
+template <typename T>
+CATLASS_DEVICE void shmem_ub_put_nbi(const LocalTensor<T> &ubTensor, const GlobalTensor<T> &output, size_t nelems, int newPe) {                                                                                  
+    aclshmemx_mte_put_nbi(const_cast<__gm__ T*>(output.GetPhyAddr()),                                       
+        reinterpret_cast<__ubuf__ T*>(ubTensor.GetPhyAddr()), nelems, newPe, EVENT_ID0);                                                                     
+}
+
+template <typename T>
+CATLASS_DEVICE void shmem_get_nbi(const GlobalTensor<T> &output, const GlobalTensor<T> &input,
+                                size_t nelems, size_t newPe) {
+    AscendC::TPipe pipe;
+    uint32_t ub_size = UB_HALF_SIZE * 2 + 64;
+    AscendC::TBuf<AscendC::TPosition::VECIN> ub_buf;
+    pipe.InitBuffer(ub_buf, ub_size);
+    auto ub_tensor = ub_buf.Get<T>();
+    pipe.Destroy();
+    __gm__ T* outputPtr = const_cast<__gm__ T*>(output.GetPhyAddr());
+    __gm__ T* inputPtr = const_cast<__gm__ T*>(input.GetPhyAddr());
+    __ubuf__ T* buf = reinterpret_cast<__ubuf__ T*>(ub_tensor.GetPhyAddr());
+    aclshmemx_mte_get_nbi(outputPtr, inputPtr, buf, ub_size, nelems, newPe, EVENT_ID0); 
+}
+
+template <typename T>
+CATLASS_DEVICE void shmem_ub_get_nbi(const LocalTensor<T> &output, const GlobalTensor<T> &input,
+                             size_t nelems, size_t newPe) {
+    aclshmemx_mte_get_nbi(reinterpret_cast<__ubuf__ T*>(output.GetPhyAddr()),
+        const_cast<__gm__ T*>(input.GetPhyAddr()), nelems, newPe, EVENT_ID0);
 }
 
 template <typename T, uint32_t Len, uint32_t op>

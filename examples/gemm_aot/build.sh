@@ -14,7 +14,10 @@ bisheng --cce-aicore-arch=dav-c220 \
     -I${ASCEND_HOME_PATH}/include \
     -I${ASCEND_HOME_PATH}/include/experiment/msprof \
     -I../../3rdparty/catlass/include \
+    -I../../3rdparty/shmem/include \
+    -I../../3rdparty/shmem/src/device \
+    -DBACKEND_HYBM \
     -I../../src/ \
-    -L${ASCEND_HOME_PATH}/lib64 -Wno-macro-redefined -Wno-ignored-attributes \
+    -L${ASCEND_HOME_PATH}/lib64 -Wno-non-c-typedef-for-linkage -Wno-macro-redefined -Wno-ignored-attributes \
     -lruntime -lstdc++ -lascendcl -lm -ltiling_api -lplatform -lc_sec -ldl \
     -fPIC --shared $1 -o kernel_lib.so
