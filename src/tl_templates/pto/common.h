@@ -301,4 +301,23 @@ AICORE PTO_INLINE void TCOLSUM_with_slice_buffer(
     pto::TASSIGN(tileUbWithValid, handle_src);
     pto::TCOLSUM(ub, tileUbWithValid, tmp_ub, true);
 }
+
+template <typename T, int32_t row, int32_t col>
+AICORE PTO_INLINE void tci(int32_t ub_addr, int32_t ub_offset, int32_t len, T firstValue) {
+    using TileData = TileUbDataND<T, row, col, row, col>;
+    TileData temp_ub;
+    TASSIGN(temp_ub, ub_addr + ub_offset * len);
+    TCI<TileData, T, 0>(temp_ub, firstValue);
+}
+
+template <typename T, int32_t row, int32_t col>
+AICORE PTO_INLINE void pow(
+    TileUbDataND<T, row, col, row, col> &dst,
+    TileUbDataND<T, row, col, row, col> &src0,
+    TileUbDataND<T, row, col, row, col> &src1
+    ) {
+    TLOG(src0, src0);
+    TMUL(dst, src0, src1);
+    TEXP(dst, dst);
+}
 }

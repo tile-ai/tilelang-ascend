@@ -96,6 +96,22 @@ private:
 
   void FillCodegen(const CallNode *op);
 
+  void CreateVecIndexCodegen(const CallNode *op, const std::string &op_name);
+
+  void GatherbCodegen(const CallNode *op, const std::string &op_name);
+
+  void PowCodegen(const CallNode *op);
+
+  void Sort32Codegen(const CallNode *op, const std::string &op_name);
+
+  void TransposeCodegen(const CallNode *op, const std::string &op_name);
+
+  void XorCodegen(const CallNode *op, const std::string &op_name);
+
+  void CompareCodegen(const CallNode *op, const std::string &op_name);
+
+  void CompareScalarCodegen(const CallNode *op, const std::string &op_name);
+
   std::string PrintBufferOffset(const CallNode *op);
   void UbShapeInputCheck(const AllocateNode *op);
   bool ValidLayoutEnabled(const AllocateNode *op);
