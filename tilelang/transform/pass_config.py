@@ -38,6 +38,9 @@ class PassConfigKey(str, Enum):
     TL_ASCEND_MEMORY_PLANNING = "tl.ascend_memory_planning"
     """Enable/disable TileLang AscendMemoryPlanning pass. Default: False"""
 
+    TL_ASCEND_VID_REDUCTION = "tl.ascend_vid_reduction"
+    """Enable/disable TileLang vid reduction pass. Default: False"""
+
     TL_ASCEND_AUTO_CV_COMBINE = "tl.ascend_auto_cv_combine"
     """Enable/disable TileLang CombineCV pass. Default: False"""
 
