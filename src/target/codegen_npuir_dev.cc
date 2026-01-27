@@ -1670,16 +1670,13 @@ mlir::Value CodeGenTileLangNPUIRDEV::ReshapeCastAndInsertSlice(
 
     mlir::Value casted = CreateCastIfTypeMismatch(reshaped, dst);
 
-    auto insertSliceOp = builder.create<mlir::tensor::InsertSliceOp>(
-        builder.getUnknownLoc(),
-        casted,
-        dst,
-        offsets,
-        sizes,
-        strides
-    );
+    mlir::Value result = InsertSlice(
+      casted, dst,
+      const_cast<llvm::SmallVector<mlir::OpFoldResult>&>(offsets),
+      const_cast<llvm::SmallVector<mlir::OpFoldResult>&>(sizes),
+      const_cast<llvm::SmallVector<mlir::OpFoldResult>&>(strides));
 
-    return insertSliceOp.getResult();
+    return result;
 }
 
 
