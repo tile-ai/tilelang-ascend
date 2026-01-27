@@ -1629,25 +1629,44 @@ mlir::Value CodeGenTileLangNPUIRDEV::NeedGenInsertSlice(
   return emptyTensor.getResult();
 }
 
+// Convert TVM Range to MLIR OpFoldResult arrays
+std::tuple<SmallVector<mlir::OpFoldResult>, 
+           SmallVector<mlir::OpFoldResult>, 
+           SmallVector<mlir::OpFoldResult>> 
+CodeGenTileLangNPUIRDEV::CreateOpFoldResultArray(const Array<Range>& range) {
+  // TODO: support dynamic shape
+  SmallVector<mlir::OpFoldResult> offsets;
+  SmallVector<mlir::OpFoldResult> sizes;
+  SmallVector<mlir::OpFoldResult> strides;
+  for (const auto& r : range) {
+    // offset
+    if (auto offset_int = as_const_int(r->min)) {
+      offsets.push_back(builder.getI64IntegerAttr(*offset_int));
+    } else {
+      mlir::Value offsetVal = CreateIndexCastOp(MakeValue(r->min));
+      offsets.push_back(offsetVal);
+    }
+    // size
+    if (auto size_int = as_const_int(r->extent)) {
+      sizes.push_back(builder.getI64IntegerAttr(*size_int));
+    } else {
+      mlir::Value sizeVal = CreateIndexCastOp(MakeValue(r->extent));
+      sizes.push_back(sizeVal);
+    }
+    // stride (usually 1)
+    strides.push_back(builder.getI64IntegerAttr(1));
+  }
+  return {offsets, sizes, strides};
+}
+
 mlir::Value CodeGenTileLangNPUIRDEV::ReshapeCastAndInsertSlice(
     mlir::Value tensor, 
     mlir::Value dst,   
     Array<Range> dst_range) 
 {
     auto [offsets, sizes, strides] = CreateOpFoldResultArray(dst_range);
-    
-    auto dstTensorTy = dst.getType().dyn_cast<mlir::TensorType>();
-    ICHECK(dstTensorTy) << "dst must be a tensor type";
-    llvm::SmallVector<int64_t> dstShape;
-    for (auto s : sizes) {
-      if (auto attr = s.dyn_cast<mlir::Attribute>()) {
-        dstShape.push_back(attr.cast<mlir::IntegerAttr>().getInt());
-      } else {
-        ICHECK(false) << "Select op requires static dst_sizes";
-      }
-    }
 
-    mlir::Value reshaped = MaybeReshapeTensor(tensor, dstShape);
+    mlir::Value reshaped = MaybeReshapeTensorByDstSize(tensor, sizes);
 
     mlir::Value casted = CreateCastIfTypeMismatch(reshaped, dst);
 

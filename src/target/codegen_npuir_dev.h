@@ -284,6 +284,10 @@ private:
   mlir::Value CreateCastIfTypeMismatch(mlir::Value src_value, mlir::Value dst_value);
   mlir::Value MaybeReshapeTensor(mlir::Value src_tensor, mlir::Value dst_tensor);
   mlir::Value MaybeReshapeTensorByDstSize(mlir::Value src, llvm::ArrayRef<mlir::OpFoldResult> sizes);
+  std::tuple<SmallVector<mlir::OpFoldResult>, 
+             SmallVector<mlir::OpFoldResult>, 
+             SmallVector<mlir::OpFoldResult>> 
+  CreateOpFoldResultArray(const Array<Range>& range);
   mlir::Value InsertSlice(
       mlir::Value src_slice, 
       mlir::Value dst_tensor, 
