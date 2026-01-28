@@ -263,7 +263,7 @@ public:
         pipeline_info_(pipeline_info),
         predicate_condition_(predicate_condition) {}
 
-  Stmt BuildPipeline() {
+  std::pair<Stmt, Map<Var, PrimExpr>> BuildPipeline() {
     // Step 1: Analyze accesses to the buffers in the pipeline and compute the
     // number of versions need to maintain for each buffer.
     std::unordered_map<Buffer, BufferAccessInfo, ObjectPtrHash, ObjectPtrEqual>
@@ -337,13 +337,36 @@ public:
     // Step 3: Make a new block that contains new buffer allocations after
     // pipeline rewriting.
     Array<Buffer> alloc_buffers;
+    Map<Var, PrimExpr> buffer_versions;
     for (const auto &alloc : pipeline_allocs_) {
+      int num_versions = 1;
+      if (buffer_remap_.count(alloc)) {
+        if (auto it = infos.find(alloc); it != infos.end()) {
+          num_versions = ComputeBufferVersions(alloc, it->second);
+        }
+      }
+      buffer_versions.Set(alloc->data, Integer(num_versions));
+
       alloc_buffers.push_back(buffer_remap_.Get(alloc).value_or(alloc));
       buffer_data_to_buffer_.erase(alloc->data);
     }
     Block block = MakeBlock(stmt, buffer_data_to_buffer_);
     block.CopyOnWrite()->alloc_buffers = std::move(alloc_buffers);
-    return BlockRealize({}, Bool(true), block);
+
+    //todo:
+    // // === 新增：将版本信息添加到block属性中 ===
+    // auto block_ptr = block.CopyOnWrite();
+    // // 获取现有annotations或创建新的
+    // auto annotations =
+    //     block_ptr->annotations.defined()
+    //         ? Downcast<Map<String, ObjectRef>>(block_ptr->annotations)
+    //         : Map<String, ObjectRef>();
+    // // 添加版本信息
+    // annotations.Set("pipeline_buffer_versions", buffer_versions);
+    // block_ptr->annotations = annotations;
+
+    // return BlockRealize({}, Bool(true), block);
+    return {BlockRealize({}, Bool(true), block), buffer_versions};
   }
 
 private:
@@ -808,16 +831,24 @@ void BuildDependencyGraph(const Array<Block> &blocks,
 
 class PipelineInjector : private StmtExprMutator {
 public:
-  static Stmt Inject(const PrimFunc &func) {
+  static Stmt Inject(PrimFunc &func) {
     auto global_symbol = func->GetAttr<String>(tvm::attr::kGlobalSymbol);
     PipelineInjector injector(global_symbol);
     for (const auto &kv : func->buffer_map) {
       const Buffer &buffer = kv.second;
       injector.buffer_data_to_buffer_.Set(buffer->data, buffer);
     }
-    return injector(func->body);
-  }
+    Stmt result = injector(func->body);
 
+    if (!injector.collected_buffer_versions_.empty()) {
+      PrimFuncNode* fptr = func.CopyOnWrite();
+      auto fn_attr = fptr->attrs.CopyOnWrite();
+      fn_attr->dict.Set("buffer_versions", injector.collected_buffer_versions_);
+    }
+
+    return result;
+  }
+  
 private:
   explicit PipelineInjector(Optional<String> global_symbol)
       : global_symbol_(global_symbol) {}
@@ -973,10 +1004,14 @@ private:
     ValidatePipelineBody(pipeline_info, original_order);
 
     // Step 4: Rewrite the pipeline body.
-    Stmt pipeline =
+    auto [pipeline_stmt, buffer_versions] = 
+    // Stmt pipeline =
         PipelineRewriter(buffer_data_to_buffer_, pipeline_allocs,
                          GetRef<For>(op), pipeline_info, predicate_condition)
             .BuildPipeline();
+    for (const auto &[buffer, version] : buffer_versions) {
+      collected_buffer_versions_.Set(buffer, version);
+    }
 
     if (const auto *realize = op->body.as<BlockRealizeNode>()) {
       const auto &block = realize->block;
@@ -984,7 +1019,7 @@ private:
         buffer_data_to_buffer_.erase(buffer->data);
       }
     }
-    return pipeline;
+    return pipeline_stmt;
   }
 
   Stmt VisitStmt_(const BlockNode *op) final {
@@ -1021,6 +1056,7 @@ private:
 
   Map<Var, Buffer> buffer_data_to_buffer_;
   Optional<String> global_symbol_;
+  Map<Var, PrimExpr> collected_buffer_versions_;
 };
 
 /*!
