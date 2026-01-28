@@ -28,11 +28,11 @@ static constexpr const char *ascendVidReduction = "tl.ascend_vid_reduction";
 
 TVM_REGISTER_PASS_CONFIG_OPTION(ascendVidReduction, Bool);
 
-class VidReduction : public arith::IRMutatorWithAnalyzer {
+class AscendVidReduction : public arith::IRMutatorWithAnalyzer {
 public:
   static PrimFunc Substitute(PrimFunc f, PassContext ctx) {
     arith::Analyzer analyzer;
-    VidReduction substituter(&analyzer);
+    AscendVidReduction substituter(&analyzer);
     return f;
   }
 
@@ -41,17 +41,17 @@ private:
 };
 
 
-tvm::transform::Pass VidReduction() {
+tvm::transform::Pass AscendVidReduction() {
   auto pass_func = [=](PrimFunc f, IRModule m, PassContext ctx) {
-    auto new_func = VidReduction::Substitute(std::move(f), ctx);
+    auto new_func = AscendVidReduction::Substitute(std::move(f), ctx);
     return new_func;
   };
-  return CreatePrimFuncPass(pass_func, 0, "tl.VidReduction", {});
+  return CreatePrimFuncPass(pass_func, 0, "tl.AscendVidReduction", {});
 }
 
 // regist host path
-TVM_REGISTER_GLOBAL("tl.transform.VidReduction")
-    .set_body_typed(VidReduction);
+TVM_REGISTER_GLOBAL("tl.transform.AscendVidReduction")
+    .set_body_typed(AscendVidReduction);
 
 }
 }
