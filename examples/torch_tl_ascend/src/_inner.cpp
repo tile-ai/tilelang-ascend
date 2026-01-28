@@ -14,7 +14,7 @@ extern "C" {
     );
 }
 
-at::Tensor flash_attention_wrapper(at::Tensor Q, at::Tensor K, at::Tensor V) {
+at::Tensor flash_attention_wrapper(const at::Tensor& Q, const at::Tensor& K, const at::Tensor& V) {
     constexpr int64_t block_M = 64;
     constexpr int64_t block_N = 64;
 
