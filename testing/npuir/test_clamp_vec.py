@@ -46,7 +46,7 @@ def clamp_kernel(M, N, min_tensor, max_tensor):
             
             T.copy(min_val, min_ub)
             T.copy(max_val, max_ub)
-            T.clamp(src_ub, dst_ub, min_ub, max_ub)
+            T.vclamp(src_ub, dst_ub, min_ub, max_ub)
         
 
             # Copy back from UB to GM

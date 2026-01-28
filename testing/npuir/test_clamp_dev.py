@@ -39,7 +39,7 @@ def clamp_kernel(M, N):
             T.copy(src, src_ub)
 
             # Clamp operation
-            T.clamp(src_ub, dst_ub, CLAMP_MIN, CLAMP_MAX)
+            T.vclamp(src_ub, dst_ub, CLAMP_MIN, CLAMP_MAX)
 
             # Copy back from UB to GM
             T.copy(dst_ub, dst)
