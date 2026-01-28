@@ -231,7 +231,7 @@ KernelLaunchFrame KernelLaunch(Array<PrimExpr> grid_size,
   bool is_npu_kernel_frame =
       attrs.defined() && attrs.count(tilelang_is_npu_kernel_frame);
   bool is_npu_kernel_frame_dev_mode = 
-      attrs.defined() && attrs.count(tilelang_is_npu_kernel_frame_dev_frame);
+      attrs.defined() && attrs.count(tilelang_is_npu_kernel_frame_dev_mode);
 
   if (is_cpu_kernel_frame) {
     // Launch CPU Kernel
