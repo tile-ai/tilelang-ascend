@@ -765,7 +765,7 @@ def npuir_cumsum(src: tir.Buffer, dst: Optional[tir.Buffer] = None, dim: int = 0
     )
     
 def npuir_clamp(src: tir.Buffer, dst: Optional[tir.Buffer], min_val: PrimExpr, max_val: PrimExpr):
-    """Clamps the input value dst between [min_val, max_val]
+    """Clamps the input value dst between [min_val, max_val], implemented by min and max
     
     Args:
         dst: Input value to be clamped
@@ -774,8 +774,6 @@ def npuir_clamp(src: tir.Buffer, dst: Optional[tir.Buffer], min_val: PrimExpr, m
     
     Returns:
         Value clamped to the specified range
-        implemented by min and max
-    
     """
     src_extent = src.shape
     src_tmp = _to_region(src, "rw", src_extent)
