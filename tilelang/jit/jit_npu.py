@@ -1279,16 +1279,29 @@ class compiler_npu:
                 + _opt_option_list
                 + ["-o", ttadapter_opt_path]
             )
-            ret = subprocess.run(
-                opt_cmd_list, capture_output=True, check=True, text=True
-            )
+            try:
+                ret = subprocess.run(
+                    opt_cmd_list, capture_output=True, check=True, text=True
+                )
+                print("AscendNPU IR OPT success")
+            except subprocess.CalledProcessError as e:
+                # print ir
+                print("AscendNPU IR:\n")
+                print(self.mlir_content)
+                # print error info
+                print("err cmd:", " ".join(opt_cmd_list))
+                print(f"err code: {e.returncode}")
+                print("err info:", e.stderr)
+                sys.exit(1)
+            except Exception as e:
+                print(f"error: {str(e)}")
+                sys.exit(1)
             # 1. Read ttadapter_opt_path
             with open(ttadapter_opt_path, 'r') as f:
                 npuir_opt = f.read()
             # 2. Replace ttadapter_path contents with ttadapter_opt_path contents
             with open(ttadapter_path, 'w') as f:
                 f.write(npuir_opt)
-            print("AscendNPU IR OPT success:", ret.stdout)
             # Hot fix for CANN 8.5 ends here
 
             npu_compiler_path = _get_npucompiler_path()
