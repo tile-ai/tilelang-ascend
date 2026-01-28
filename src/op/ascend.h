@@ -12,6 +12,7 @@
 
 #include "op.h"
 #include "tvm/ir/expr.h"
+#include <sys/types.h>
 
 namespace tvm {
 namespace tl {
@@ -472,6 +473,7 @@ public:
 
   Buffer src;
   Buffer dst;
+  u_int64_t axis;
 
   Array<Range> src_range;
   Array<Range> dst_range;
