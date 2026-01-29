@@ -1,0 +1,50 @@
+import tilelang
+from tilelang import language as T
+import torch
+
+torch.set_default_device('npu')
+torch.manual_seed(42)
+
+tilelang.disable_cache()
+
+pass_config = {
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
+    tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
+}
+
+@tilelang.jit(out_idx=[1], target="pto", pass_configs=pass_config)
+def sigmoidv2():
+    dtype = "float"
+    
+    @T.prim_func
+    def main(input: T.Tensor([4, 8], dtype),
+             output: T.Tensor([4, 8], dtype),
+    ):
+        with T.Kernel(1, is_npu=True) as (cid, vid):
+            input_shared = T.alloc_ub((4, 8), dtype)
+            tmp_shared = T.alloc_ub((4, 8), "uint8")
+            
+            T.copy(input, input_shared)
+            T.tile.mul(input_shared, input_shared, -1.0)
+            T.tile.exp(input_shared, input_shared)
+            T.tile.add(input_shared, input_shared, 1.0)
+            T.tile.reciprocal(input_shared, input_shared)
+            T.tile.sigmoid(input_shared, input_shared, tmp_shared)
+            T.copy(input_shared, output)
+            
+    return main
+
+
+func = sigmoidv2()
+print("init successful!")
+
+output = func(input)
+
+torch.npu.synchronize()
+
+input = torch.randn((4, 8), torch.float)
+ref_output = torch.sigmoid(input)
+
+torch.testing.assert_close(ref_output, output, rtol=1e-2, atol=1e-2)
+print("Kernel Output Match!")
