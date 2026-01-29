@@ -7,7 +7,7 @@ torch.manual_seed(42)
 
 tilelang.disable_cache()
 
-@tilelang.jit(out_idx=[3], workspace_idx=[4, 5, 6, 7], target="pto")
+@tilelang.jit(out_idx=[3], workspace_idx=[4, 5, 6, 7], target="pto", platform="A5")
 def sparse_attention_fwd(
     heads,
     dim,
@@ -189,44 +189,30 @@ def sparse_attention_fwd(
                     T.barrier_all()
 
                     T.tile.add(acc_s_ub, acc_s_ub, acc_s_ub_)
-                    T.barrier_all()
 
                     T.tile.mul(acc_s_ub, acc_s_ub, sm_scale)
-                    T.barrier_all()
 
                     T.reduce_max(acc_s_ub, m_i, tmp_ub, dim=-1)
-                    T.barrier_all()
 
                     T.tile.max(m_i, m_i, m_i_prev)
-                    T.barrier_all()
 
                     T.tile.sub(m_i_prev, m_i_prev, m_i)
-                    T.barrier_all()
 
                     T.tile.exp(m_i_prev, m_i_prev)
-                    T.barrier_all()
 
                     for h_i in range(v_block):
-                        T.barrier_all()
                         T.tile.sub(acc_s_ub[h_i, :], acc_s_ub[h_i, :], m_i[h_i])  # -
-                        T.barrier_all()
 
                     T.tile.exp(acc_s_ub, acc_s_ub)
-                    T.barrier_all()
 
                     T.reduce_sum(acc_s_ub, sumexp_i_ub, tmp_ub, dim=-1)
-                    T.barrier_all()
 
                     T.tile.mul(sumexp, sumexp, m_i_prev)  # check
-                    T.barrier_all()
 
                     T.tile.add(sumexp, sumexp, sumexp_i_ub)
-                    T.barrier_all()
 
                     for h_i in range(v_block):
-                        T.barrier_all()
                         T.tile.mul(acc_o[h_i, :], acc_o[h_i, :], m_i_prev[h_i])
-                        T.barrier_all()
 
                     T.copy(acc_s_ub, acc_s_half)
                     T.barrier_all()
