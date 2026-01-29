@@ -6,5 +6,8 @@ sys.path.append(HERE.parent.as_posix())  # add parent to path for importing comp
 
 from compile_tl_op import flash_attention
 
-flash_attention.update_so()
+LIB = HERE / "lib"
+LIB.mkdir(exist_ok=True)
+
+flash_attention.update_so(LIB / flash_attention.SO_NAME)
 

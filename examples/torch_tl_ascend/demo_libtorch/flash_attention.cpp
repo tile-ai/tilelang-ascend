@@ -79,7 +79,7 @@ private:
 template<typename FuncType>
 class OpLib {
 public:
-    bool load(const std::vector<std::string>& paths = {"./libop.so", "../libop.so", "./lib/libop.so"}) {
+    bool load(const std::vector<std::string>& paths = {"./libop.so", "../libop.so", "./lib/libop.so", "../lib/libop.so"}) {
         if (!lib_.load(paths)) {
             return false;
         }
