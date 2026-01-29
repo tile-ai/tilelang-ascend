@@ -627,7 +627,7 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) 
       CastCodegen(op, "RoundMode::CAST_TRUNC");
     } else if (cast_type == "CAST_ODD") {
       CastCodegen(op, "RoundMode::CAST_ODD");
-    } 
+    }
   } else if (op->op.same_as(tl::ascend_createvecindex())) {
     CreateVecIndexCodegen(op, "TCI");
   } else if (op->op.same_as(tl::ascend_gatherb())) {
@@ -1115,7 +1115,7 @@ void CodeGenTileLangAscendPto::CreateVecIndexCodegen(const CallNode *op,
   std::string first_value = PrintExpr(op->args[1]);
   std::vector<std::string> ub_data = ub_data_map_[dst_name];
   int32_t len = GetTypeLen(ub_data[0]);
-  this->stream << kAscendPtoScope << "tci" << "<" << ub_data[0] << ", " << ub_data[1] << ", " 
+  this->stream << kAscendPtoScope << "tci" << "<" << ub_data[0] << ", " << ub_data[1] << ", "
   << ub_data[2] << ">" << "(" << ub_data[3] << ", " << dst_offset << ", " << len << ", " << first_value << ");\n";
 }
 
@@ -1167,7 +1167,7 @@ void CodeGenTileLangAscendPto::CompareCodegen(const CallNode *op, const std::str
   std::string src0_name = PrintExpr(op->args[1].as<CallNode>()->args[1]);
   std::string src1_name = PrintExpr(op->args[2].as<CallNode>()->args[1]);
   std::string mode = Downcast<StringImm>(op->args[3])->value;
-  this->stream << op_name << "(" << dst_name << ", " << src0_name << ", " << 
+  this->stream << op_name << "(" << dst_name << ", " << src0_name << ", " <<
   src1_name << ", " << "CmpMode::" << mode << ");\n";
 }
 
@@ -1177,7 +1177,7 @@ void CodeGenTileLangAscendPto::CompareScalarCodegen(const CallNode *op, const st
   std::string src0_name = PrintExpr(op->args[1].as<CallNode>()->args[1]);
   std::string src1_name = PrintExpr(op->args[2]);
   std::string mode = Downcast<StringImm>(op->args[3])->value;
-  this->stream << op_name << "(" << dst_name << ", " << src0_name << ", " << 
+  this->stream << op_name << "(" << dst_name << ", " << src0_name << ", " <<
   src1_name << ", " << "CmpMode::" << mode << ");\n";
 }
 
@@ -1240,7 +1240,7 @@ void CodeGenTileLangAscendPto::BinaryVecOpCodegen(const CallNode *op,
   }
 }
 
-std::string findValueIfKeyContains(const std::map<std::string, std::string>& myMap, 
+std::string findValueIfKeyContains(const std::map<std::string, std::string>& myMap,
                                    const std::string& inputKey) {
     auto it = std::find_if(myMap.begin(), myMap.end(),
         [&inputKey](const auto& pair) {
@@ -1466,6 +1466,8 @@ void CodeGenTileLangAscendPto::ReduceOpCodegen(const CallNode *op) {
     op_name = (mode == "row") ? "TROWSUM" : "TCOLSUM";
   } else if (op_name.find("reduce_max") != std::string::npos) {
     op_name = (mode == "row") ? "TROWMAX" : "TCOLMAX";
+  } else if (op_name.find("reduce_min") != std::string::npos) {
+    op_name = (mode == "row") ? "TROWMIN" : "TCOLMIN";
   } else {
     ICHECK(false) << "not support reduce type: " << op_name;
   }
@@ -1524,6 +1526,9 @@ void CodeGenTileLangAscendPto::ReduceOpCodegen(const CallNode *op) {
         } else if (op_name == "TROWSUM") {
           this->PrintIndent();
           this->stream << kAscendPtoScope << "TROWSUM_with_slice_buffer <" << ub_data_type_src << ", " << ub_data_type << ", " << ub_data_type_tmp << ", " << row_src << ", " << col_src << ", " << param2 << ", " << param3 << ", " << row << ", " << row_tmp << ", " << col_tmp << "> (" << ffts_src << ", " << ffts << ", " << ub_name << "_DN, " << ub_name_tmp <<");\n";
+        } else if (op_name == "TROWMIN") {
+          this->PrintIndent();
+          this->stream << kAscendPtoScope << "TROWMAX_with_slice_buffer <" << ub_data_type_src << ", " << ub_data_type << ", " << ub_data_type_tmp << ", " << row_src << ", " << col_src << ", " << param2 << ", " << param3 << ", " << row << ", " << row_tmp << ", " << col_tmp << "> (" << ffts_src << ", " << ffts << ", " << ub_name << "_DN, " << ub_name_tmp <<");\n";
         }
       }
       this->PrintIndent();
