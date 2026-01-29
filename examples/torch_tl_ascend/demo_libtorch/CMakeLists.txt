@@ -18,7 +18,6 @@ target_include_directories(flash_attention_demo PRIVATE ${TORCH_NPU_SOURCE_DIR})
 target_link_libraries(flash_attention_demo PUBLIC "${TORCH_LIBRARIES}" "${TORCH_NPU_LIBRARIES}")
 target_link_libraries(flash_attention_demo PRIVATE dl)  # support dlopen 
 
-# Modern CMake: set properties in one call
 set_target_properties(flash_attention_demo PROPERTIES
     CXX_STANDARD 17
     BUILD_RPATH "$ORIGIN;$ORIGIN/.."
