@@ -16,6 +16,10 @@ while [[ $# -gt 0 ]]; do
             USE_SHMEM=true
             shift
             ;;
+        --llvm-config)
+            LLVM_CONFIG_PATH="$2"
+            shift 2
+            ;;
         *)
             echo "Unknown option: $1"
             echo "Usage: $0 [--enable-llvm] [--enable-shmem]"
@@ -48,6 +52,8 @@ if [ $? -ne 0 ]; then
 else
     echo "Python requirements installed successfully."
 fi
+
+CMAKE_OPTIONS=""
 
 # Step 2: Define LLVM version and architecture
 if $USE_LLVM; then
@@ -113,6 +119,11 @@ if $USE_LLVM; then
     echo "LLVM config path determined as: $LLVM_CONFIG_PATH"
 fi
 
+if $LLVM_CONFIG_PATH; then
+    CMAKE_OPTIONS+=" -DUSE_LLVM=${LLVM_CONFIG_PATH} "
+    echo "CMake options updated with LLVM config path: $CMAKE_OPTIONS"
+fi
+
 # Step 9: Clone and build TVM
 echo "Cloning TVM repository and initializing submodules..."
 # clone and build tvm
@@ -129,7 +140,7 @@ cd build
 echo "set(USE_ASCEND ON)" >> config.cmake
 
 echo "Running CMake for TileLang..."
-cmake ..
+cmake .. -DUSE_PTOAS=ON $CMAKE_OPTIONS
 if [ $? -ne 0 ]; then
     echo "Error: CMake configuration failed."
     exit 1

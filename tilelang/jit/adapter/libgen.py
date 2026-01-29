@@ -114,6 +114,52 @@ class LibraryGenerator(object):
                 "--shared",
                 src.name,
             ]
+        elif self.target == "ptoas":
+            ccec = "dav-c310" if self.platform == 'A5' else "dav-c220"
+            memory = "REGISTER_BASE" if self.platform == 'A5' else "MEMORY_BASE"
+            command = [
+                "bisheng",
+                f"--cce-aicore-arch={ccec}",
+                f"-D{memory}",
+                "-O2",
+                "-std=gnu++17",
+                "-xcce",
+                "-mllvm",
+                "-cce-aicore-stack-size=0x8000",
+                "-mllvm",
+                "-cce-aicore-function-stack-size=0x8000",
+                "-mllvm",
+                "-cce-aicore-record-overflow=true",
+                "-mllvm",
+                "-cce-aicore-addr-transform",
+                "-mllvm",
+                "-cce-aicore-dcci-insert-for-scalar=false",
+                "-DL2_CACHE_HINT",
+                "-I../../src/",
+                f"-I{ASCEND_HOME_PATH}/include",
+                f"-I{ASCEND_HOME_PATH}/include/experiment/msprof",
+                f"-I{ASCEND_HOME_PATH}/include/experiment/runtime",
+                f"-I/usr/local/Ascend/driver/kernel/inc",
+                f"-I{TL_ROOT}/3rdparty/pto-isa/include",
+                f"-I{ASCEND_HOME_PATH}/pkg_inc",
+                f"-I{ASCEND_HOME_PATH}/pkg_inc/runtime",
+                f"-I{ASCEND_HOME_PATH}/pkg_inc/profiling",
+                f"-L{ASCEND_HOME_PATH}/lib64",
+                "-I" + TILELANG_TEMPLATE_PATH,
+                "-Wno-macro-redefined",
+                "-Wno-ignored-attributes",
+                "-lruntime",
+                "-lstdc++",
+                "-lascendcl",
+                "-lm",
+                "-ltiling_api",
+                "-lplatform",
+                "-lc_sec",
+                "-ldl",
+                "-fPIC",
+                "--shared",
+                src.name,
+            ]
         command += ["-o", libpath]
 
         src.write(self.lib_code)

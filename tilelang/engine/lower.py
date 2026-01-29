@@ -164,6 +164,8 @@ def device_codegen(device_mod: tvm.IRModule, target: Target, platform: str) -> t
         device_mod = tvm._ffi.get_global_func("target.build.tilelang_ascend")(device_mod, target)
     elif target.model == "pto":
         device_mod = tvm._ffi.get_global_func("target.build.tilelang_ascend_pto")(device_mod, target, platform)
+    elif target.model == "ptoas":
+        device_mod = tvm._ffi.get_global_func("target.build.tilelang_ptoas")(device_mod, target, platform)
     else:
         print(target.kind.name)
         raise ValueError(f"Target {target.kind.name} is not supported")
@@ -232,4 +234,4 @@ def lower(
     func = mod.functions_items()[0][1]
     params = extrac_params(func)
 
-    return CompiledArtifact(None, None, params, codegen_mod.get_source())
+    return CompiledArtifact(None, mod, params, codegen_mod.get_source())

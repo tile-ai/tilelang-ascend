@@ -134,6 +134,13 @@ if(USE_ASCEND)
   list(APPEND TILE_LANG_SRCS ${TILE_LANG_ASCEND_SRCS})
 endif()
 
+if(USE_PTOAS)
+  tilelang_file_glob(GLOB TILE_LANG_PTOAS_SRCS
+    src/target/codegen_ptoas.cc
+    src/target/rt_mod_ptoas.cc)
+  list(APPEND TILE_LANG_SRCS ${TILE_LANG_PTOAS_SRCS})
+endif()
+
 # Include ROCm source files if ROCm is enabled
 if(USE_ROCM)
   tilelang_file_glob(GLOB TILE_LANG_HIP_SRCS
