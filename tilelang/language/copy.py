@@ -59,7 +59,13 @@ def buffer_load_to_tile_region(load: tir.BufferLoad, access_type: str, extents: 
             new_extents.append(extent)
         extents = new_extents
     assert len(indices) == len(extents), f"indices = {indices}, extents = {extents}"
-    return region(load, access_type, *extents)
+    indices_head = []
+    for idx in load.indices:
+        if isinstance(idx, tir.expr.Ramp):
+            indices_head.append(idx.base)
+        else:
+            indices_head.append(idx)
+    return region(T.BufferLoad(load.buffer, indices_head), access_type, *extents)
 
 
 def buffer_region_to_tile_region(buffer_region: tir.BufferRegion, access_type: str,

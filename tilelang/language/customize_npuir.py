@@ -24,6 +24,13 @@ def _get_extent(data):
         result = data.shape
     elif isinstance(data, tir.BufferRegion):
         result = [x.extent for x in data.region]
+    elif isinstance(data, tir.BufferLoad):
+        indices = data.indices
+        for idx in indices:
+            if isinstance(idx, tir.expr.Var):
+                result.append(tir.IntImm("int32", 1))
+            elif isinstance(idx, tir.expr.Ramp):
+                result.append(idx.lanes)
     return result
 
 def _buffer_to_tile_region_with_extent(buffer: tir.Buffer, access_type: str, extent:[]):
@@ -108,8 +115,8 @@ class AscendBinaryOp(object):
         self.__src1 = src1
         self.__dst = dst
     def buildTirCall(self):
-        src0 = self.__src0 if isinstance(self.__src0, tir.BufferLoad) else _to_region(self.__src0, "r", _get_extent(self.__src0))
-        src1 = self.__src1 if isinstance(self.__src1, tir.BufferLoad) else _to_region(self.__src1, "r", _get_extent(self.__src1))
+        src0 = _to_region(self.__src0, "r", _get_extent(self.__src0))
+        src1 = _to_region(self.__src1, "r", _get_extent(self.__src1))
         dst = _to_region(self.__dst, "w", _get_extent(self.__dst))
         return tir.call_intrin("handle", tir.op.Op.get("tl.npuir_" + self.__opName), src0, src1, dst)
 
