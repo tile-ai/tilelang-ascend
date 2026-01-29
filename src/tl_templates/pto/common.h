@@ -243,18 +243,18 @@ AICORE PTO_INLINE void binary_tile(int32_t dst_addr, int32_t src0_addr,
 }
 
 template <typename T, int32_t row, int32_t col>
-AICORE PTO_INLINE vold TSIGMOID(
-    TileUbDataND<T, row, col, row, col> &dts_addr,
+AICORE PTO_INLINE void TSIGMOID(
+    TileUbDataND<T, row, col, row, col> &dst_addr,
     TileUbDataND<T, row, col, row, col> &src0_addr,
     // TileUbDataND<T, row, col, row, col> &tmp_addr,
     int32_t len
 ){
     TMULS(src0_addr, src0_addr, -1);
-    pip_buffer(PIPE_V);
+    pipe_barrier(PIPE_V);
     TEXP(dst_addr, src0_addr);
-    pip_buffer(PIPE_V);
+    pipe_barrier(PIPE_V);
     TADDS(dst_addr, dst_addr, 1);
-    pip_buffer(PIPE_V);
+    pipe_barrier(PIPE_V);
     TRECIP(dst_addr, dst_addr);
 }
 
