@@ -2170,8 +2170,6 @@ void CodeGenTileLangNPUIRDEV::CreateHIVMBinaryVectorOp(const CallNode *op) {
   processImm(src1, 1, buffer_shape1);
   // dst
   const CallNode *region_node_dst = op->args[2].as<CallNode>();
-  // Result will always be a vector. No need to add scalar check.
-  // mlir::Value dst = GenExtractSliceFromRegion(region_node_dst);
 
   tvm::tl::RegionOp region_dst_tmp(region_node_dst->args, vmap);
   Array<Range> dst_range = region_dst_tmp.GetRanges();
@@ -2189,9 +2187,7 @@ void CodeGenTileLangNPUIRDEV::CreateHIVMBinaryVectorOp(const CallNode *op) {
   llvm::SmallVector<int64_t> dims =
       getBroadcastDim(buffer_shape0, buffer_shape1);
   mlir::DenseI64ArrayAttr broadcast = builder.getDenseI64ArrayAttr(dims);
-  // typerange
-  // mlir::Type dst_type = dst.getType();
-  // mlir::TypeRange result_tensors(&dst_type, 1);
+
   // Create hivm::op
   auto loc = builder.getUnknownLoc();
   mlir::Value newOpValue;
@@ -2220,8 +2216,6 @@ void CodeGenTileLangNPUIRDEV::CreateHIVMBinaryVectorOp(const CallNode *op) {
     auto newOp = builder.create<T>(loc, insertBase.getType(), mlir::ValueRange{src0, src1},
         mlir::ValueRange{insertBase}, transpose, broadcast);
     newOpValue = newOp->getResult(0);
-    std::cout<<"newOp: \n";
-    newOp.dump();
   }
 
   mlir::Value result = needInsertSlice

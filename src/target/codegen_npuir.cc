@@ -103,8 +103,15 @@ String GetAddressSpace(String address_space) {
 bool IsEqual(Array<PrimExpr> a, Array<PrimExpr> b) {
   if (a.size() != b.size())
     return false;
+
   for (int i = 0; i < a.size(); i++) {
-    if (!(a[i].same_as(b[i])))
+    const auto* ai = a[i].as<IntImmNode>();
+    const auto* bi = b[i].as<IntImmNode>();
+
+    if (!ai || !bi)
+      return false;
+
+    if (ai->value != bi->value)
       return false;
   }
   return true;
