@@ -2350,14 +2350,17 @@ void CodeGenTileLangNPUIRDEV::DebugPrintCodegen(const CallNode *op) {
 void CodeGenTileLangNPUIRDEV::ReshapeCodegen(const CallNode *op) {
   tvm::tl::NpuirReshape npuirop(op->args, this->vmap);
   mlir::Location loc = builder.getUnknownLoc();
-  
-  Value src = GetVarValue(npuirop.src);
+
+  mlir::Value src = GetVarValue(npuirop.src);
   const auto &dstShape = npuirop.dst_shape;
+
   auto srcTensorTy = src.getType().cast<mlir::RankedTensorType>();
-  
-  bool allStatic = std::all_of(dstShape.begin(), dstShape.end(),
+  int64_t srcRank = srcTensorTy.getRank();
+
+  bool allStatic = std::all_of(
+      dstShape.begin(), dstShape.end(),
       [](const tvm::PrimExpr &e) { return e.as<tvm::IntImmNode>() != nullptr; });
-  
+
   SmallVector<int64_t> dstShapeForType;
   dstShapeForType.reserve(dstShape.size());
   for (auto s : dstShape) {
@@ -2367,50 +2370,80 @@ void CodeGenTileLangNPUIRDEV::ReshapeCodegen(const CallNode *op) {
       dstShapeForType.push_back(mlir::ShapedType::kDynamic);
     }
   }
-  
-  Value shapeTensor;
+
+  auto resultTensorTy = mlir::RankedTensorType::get(
+      dstShapeForType, srcTensorTy.getElementType());
+
+  bool canCollapseExpand = allStatic && srcTensorTy.hasStaticShape();
+  if (canCollapseExpand) {
+    int64_t numel = 1;
+    for (int64_t d : srcTensorTy.getShape()) numel *= d;
+
+    auto flatTensorTy = mlir::RankedTensorType::get(
+        {numel}, srcTensorTy.getElementType());
+
+    SmallVector<mlir::ReassociationIndices> collapseMap;
+    mlir::ReassociationIndices allDims;
+    allDims.reserve(srcRank);
+    for (int64_t i = 0; i < srcRank; ++i) allDims.push_back(i);
+    collapseMap.push_back(allDims);
+
+    mlir::Value flat = builder.create<mlir::tensor::CollapseShapeOp>(
+        loc, flatTensorTy, src, collapseMap);
+
+    SmallVector<mlir::ReassociationIndices> expandMap;
+    mlir::ReassociationIndices group;
+    group.reserve(dstShapeForType.size());
+    for (int64_t i = 0; i < static_cast<int64_t>(dstShapeForType.size()); ++i) {
+      group.push_back(i);
+    }
+    expandMap.push_back(group);
+
+    mlir::Value reshaped = builder.create<mlir::tensor::ExpandShapeOp>(
+        loc, resultTensorTy, flat, expandMap);
+
+    SetVarValue(npuirop.dst, reshaped);
+    return;
+  }
+
+  mlir::Value shapeTensor;
   if (allStatic) {
-    auto shapeTensorType =
-        mlir::RankedTensorType::get({static_cast<int64_t>(dstShape.size())}, 
-                                     builder.getIndexType());
-    
+    auto shapeTensorType = mlir::RankedTensorType::get(
+        {static_cast<int64_t>(dstShape.size())}, builder.getIndexType());
+
     SmallVector<int64_t> shapeValues;
     shapeValues.reserve(dstShape.size());
     for (auto s : dstShape) {
       auto imm = s.as<tvm::IntImmNode>();
-      shapeValues.push_back(imm->value);
+      shapeValues.push_back(static_cast<int64_t>(imm->value));
     }
-    
-    auto shapeAttr = mlir::DenseIntElementsAttr::get(shapeTensorType, shapeValues);
+
+    auto shapeAttr =
+        mlir::DenseIntElementsAttr::get(shapeTensorType, shapeValues);
     shapeTensor = builder.create<mlir::arith::ConstantOp>(loc, shapeAttr);
   } else {
     auto toIndexValue = [&](const tvm::PrimExpr &e) -> mlir::Value {
       mlir::Value v = MakeValue(e);
       if (!v.getType().isIndex()) {
-        v = builder.create<mlir::arith::IndexCastOp>(loc, builder.getIndexType(), v);
+        v = builder.create<mlir::arith::IndexCastOp>(
+            loc, builder.getIndexType(), v);
       }
       return v;
     };
-    
+
     SmallVector<mlir::Value> shapeValues;
     shapeValues.reserve(dstShape.size());
     for (auto s : dstShape) {
       shapeValues.push_back(toIndexValue(s));
     }
-    
-    shapeTensor = builder.create<mlir::tensor::FromElementsOp>(loc, shapeValues);
+
+    shapeTensor = builder.create<mlir::tensor::FromElementsOp>(
+        loc, shapeValues);
   }
-  
-  auto resultTensorTy = mlir::RankedTensorType::get(
-      dstShapeForType,
-      srcTensorTy.getElementType());
-  
-  Value reshaped = builder.create<mlir::tensor::ReshapeOp>(
-      loc,
-      resultTensorTy,
-      src,
-      shapeTensor);
-  
+
+  mlir::Value reshaped = builder.create<mlir::tensor::ReshapeOp>(
+      loc, resultTensorTy, src, shapeTensor);
+
   SetVarValue(npuirop.dst, reshaped);
 }
 
