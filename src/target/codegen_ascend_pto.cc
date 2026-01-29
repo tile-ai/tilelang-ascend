@@ -838,12 +838,15 @@ void CodeGenTileLangAscendPto::CallExternCodegen(const CallNode *op) {
           }
           this->stream << ")";
         }
-        if (api_name == "TLOAD" && prefetch_n_stages_map_.count(dst_var_id) && prefetch_n_stages_map_[dst_var_id].first > 0) {
+        if (api_name == "TLOAD" && prefetch_n_stages_map_.count(dst_var_id) &&
+            prefetch_n_stages_map_[dst_var_id].first > 0) {
 
-		  auto buffer_k = op->args[2].as<CallNode>()->args[2] / op->args[2].as<CallNode>()->args[3];
+          auto buffer_k = op->args[2].as<CallNode>()->args[2] /
+                          op->args[2].as<CallNode>()->args[3];
           tvm::arith::Analyzer analyzer;
           PrimExpr simplified_k = analyzer.Simplify(buffer_k);
-		  this->stream << ", " << dst_var_id << "[" << simplified_k << "]" << ");\n";
+          this->stream << ", " << dst_var_id << "[" << simplified_k << "]"
+                       << ");\n";
 
           prefetch_n_stages_map_[dst_var_id].second++;
         } else {
@@ -1552,7 +1555,7 @@ void CodeGenTileLangAscendPto::ReduceOpCodegen(const CallNode *op) {
   std::string ffts_tmp = ub_data_vector_tmp[3];
 
   // Determine whether to request the TileUbData with DN arrangement.
-  ICHECK(ub_data_vector.size() == 5) << "TileUbData needs 5 elements (type, row, col, ffts, applied DN or not), got " << ub_data_vector.size() << ".";
+  ICHECK(ub_data_vector.size() == 7) << "TileUbData needs 7 elements (type, row, col, ffts, applied DN or not, validrow, validcol), got " << ub_data_vector.size() << ".";
   if (mode == "row") {
     if (ub_data_vector[4] == "Unapplied for tileUbDataDN") { //If not applied yet, prioritize applying for it.
       this->PrintIndent();
@@ -1698,10 +1701,32 @@ bool CodeGenTileLangAscendPto::ValidLayoutEnabled(const AllocateNode *op) {
   bool valid = false;
   std::string type = getType(op->dtype);
   int8_t typeSize = GetTypeLen(type);
-  if (tvm::tir::is_zero(tvm::truncmod(shape[1] * typeSize, 32))) {
-    valid = false;
+  if (shape.size() == 2 && !buffer_versions_.count(op->buffer_var)) {
+    if (tvm::tir::is_zero(tvm::truncmod(shape[1] * typeSize, 32))) {
+      valid = false;
+    } else {
+      valid = true;
+    }
+  } else if (shape.size() == 2 && buffer_versions_.count(op->buffer_var)) {
+    if (tvm::tir::is_zero(tvm::truncmod(shape[0] * typeSize, 32))) {
+      valid = false;
+    } else {
+      valid = true;
+    }
+  } else if (shape.size() == 3 && buffer_versions_.count(op->buffer_var)) {
+    if (tvm::tir::is_zero(tvm::truncmod(shape[2] * typeSize, 32))) {
+      valid = false;
+    } else {
+      valid = true;
+    }
+  } else if (shape.size() == 1 && !buffer_versions_.count(op->buffer_var)) {
+    if (tvm::tir::is_zero(tvm::truncmod(shape[0] * typeSize, 32))) {
+      valid = false;
+    } else {
+      valid = true;
+    }
   } else {
-    valid = true;
+    ICHECK(false) << "ValidLayoutEnabled Error";
   }
   return valid;
 }
@@ -1713,16 +1738,13 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
   std::string type = getType(op->dtype);
   const VarNode *buffer = op->buffer_var.as<VarNode>();
 
-  if (buffer_shapess_.count(op->buffer_var)) {
-    auto shape = buffer_shapess_[op->buffer_var];
-  } else {
-    ICHECK(false) << "Buffer_shape not found.";
-  }
-
   /// Allocate PTO Tile Memory Address
   auto print_buffer = [&](const std::string &pos) {
+    if (!buffer_shapess_.count(op->buffer_var)) {
+      ICHECK(false) << "Buffer_shape not found.";
+    }
     auto shape = buffer_shapess_[op->buffer_var];
-    std::vector<std::string> ub_data(5);
+    std::vector<std::string> ub_data(7);
     std::vector<std::string> l_data(3);
     ub_data[0] = type;
     l_data[0] = type;
@@ -1745,120 +1767,140 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
     // Allocate buffer
     if (found_by_name) {
       if (pos == kAscendPtoScope + "TileUbData") {
-        if (shape.size() == 2) {
-          ub_data[1] = PrintExpr(shape[0]);
-          ub_data[2] = PrintExpr(shape[1]);
-          auto valid = ValidLayoutEnabled(op);
-          if (!valid) {
-            stream << pos << "ND<" << type;
-            for (size_t i = 0; i < shape.size(); i++) {
-                stream << ", " << shape[i];
-            }
+        // Log Unified Buffer (UB) information.
+        if (shape.size() == 1) {
+          ub_data[1] = "1";
+          ub_data[2] = PrintExpr(shape[0]);
+          ub_data[4] = "Unapplied for tileUbDataDN";
+          ub_data[5] = "1";
+          ub_data[6] = PrintExpr(shape[0]);
+        } else if (shape.size() == 2) {
+          if (shape[1].as<IntImmNode>()->value != 1) {
+            ub_data[1] = PrintExpr(shape[0]);
+            ub_data[2] = PrintExpr(shape[1]);
+            ub_data[4] = "Unapplied for tileUbDataDN";
+            ub_data[5] = PrintExpr(shape[0]);
+            ub_data[6] = PrintExpr(shape[1]);
           } else {
-            int8_t typeSize = GetTypeLen(type);
-            int8_t NDBlockSize = 32 / typeSize;
-            stream << pos << "ND<" << type;
-            stream << ", " << shape[0];
-            stream << ", " << tvm::floordiv(shape[1] + NDBlockSize - 1, NDBlockSize) * NDBlockSize;
+            ub_data[1] = "1";
+            ub_data[2] = PrintExpr(shape[0]);
+            ub_data[4] = "Unapplied for tileUbDataDN";
+            ub_data[5] = "1";
+            ub_data[6] = PrintExpr(shape[0]);
+            shape.pop_back();
           }
-          // stream << "> " << vid << "(";
+        } else if (shape.size() == 3) {
+          ub_data[1] = PrintExpr(shape[1]);
+          ub_data[2] = PrintExpr(shape[2]);
+          ub_data[4] = "Unapplied for tileUbDataDN";
+          ub_data[5] = PrintExpr(shape[1]);
+          ub_data[6] = PrintExpr(shape[2]);
+        }
+
+        // Check if padding is needed at the time of request.
+        auto valid = ValidLayoutEnabled(op);
+        if (valid) {
+          int8_t typeSize = GetTypeLen(type);
+          int8_t NDBlockSize = 32 / typeSize;
+          int shape2_val = std::stoi(ub_data[2]);
+          PrimExpr shape2_expr = IntImm(DataType::Int(32), shape2_val);
+          PrimExpr padded_shape2 =
+              tvm::floordiv(shape2_expr + NDBlockSize - 1, NDBlockSize) *
+              NDBlockSize;
+          ub_data[2] = PrintExpr(padded_shape2);
+        }
+
+        if (buffer_versions_.count(op->buffer_var)) {
+          // Recording the count of buffer allocations in the pipeline.
+          int8_t bufferNum =
+              Downcast<Integer>(buffer_versions_[op->buffer_var])->value;
+          prefetch_n_stages_map_[vid] = std::pair<int, int>{bufferNum, 0};
+
+          // Output the valid shape.
+          stream << pos << "ND<" << type << ", " << ub_data[1] << ", "
+                 << ub_data[2] << ", " << ub_data[5] << ", " << ub_data[6];
+          stream << "> " << vid << "[" << bufferNum << "];\n";
+
+          // Batch allocate addresses.
+          for (size_t i = 0; i < bufferNum; i++) {
+            this->PrintIndent();
+            stream << "TASSIGN(" << vid << "[" << i << "], "
+                   << DEC_STR_TO_HEX_STR(
+                          PrintExpr(address_map_[op->buffer_var]))
+                   << ");\n";
+          }
+        } else {
+          stream << pos << "ND<" << type << ", " << ub_data[1] << ", "
+                 << ub_data[2] << ", " << ub_data[5] << ", " << ub_data[6];
+          stream << "> " << vid << ";\n";
+          this->PrintIndent();
+          stream << "TASSIGN(" << vid << ", "
+                 << DEC_STR_TO_HEX_STR(PrintExpr(address_map_[op->buffer_var]))
+                 << ");\n";
+        }
+        ub_data[3] =
+            DEC_STR_TO_HEX_STR(PrintExpr(address_map_[op->buffer_var]));
+        ub_data_map_[vid] = ub_data;
+
+      } else {
+        if (!(pos == kAscendPtoScope + "TileMatL1" && shape.size() == 3)) {
+          int dtype_bytes = op->dtype.bytes();
+          std::vector<PrimExpr> valid_shapes;
+          valid_shapes.reserve(2);
+          stream << pos << "<" << type;
+          int shape_value = shape[0].as<tvm::tir::IntImmNode>()->value;
+          if (shape_value * dtype_bytes % 32 == 0) {
+            valid_shapes.push_back(shape[0]);
+          } else {
+            valid_shapes.push_back(tvm::IntImm(
+                shape[0].dtype(),
+                shape_value +
+                    (32 - shape_value * dtype_bytes % 32) / dtype_bytes));
+          }
+          valid_shapes.push_back(shape[1]);
+          for (size_t i = 0; i < valid_shapes.size(); i++) {
+            l_data[i + 1] = PrintExpr(valid_shapes[i]);
+            stream << ", " << valid_shapes[i];
+          }
           for (size_t i = 0; i < shape.size(); i++) {
             stream << ", " << shape[i];
           }
           stream << "> " << vid << ";\n";
-          ub_data[3] = PrintExpr(target_expr);
-          ub_data[4] = "Unapplied for tileUbDataDN";
-          ub_data_map_[vid] = ub_data;
-
           this->PrintIndent();
-          stream << "TASSIGN(" << vid << ", " << PrintExpr(target_expr) << ");\n";
-        } else if (shape.size() == 1) {
-          ub_data[1] = "1";
-          ub_data[2] = PrintExpr(shape[0]);
-          stream << pos << "ND<" << type << ", 1, " << shape[0] << ", 1, " << shape[0]<< "> " << vid << ";\n";
-          ub_data[3] = PrintExpr(target_expr);
-          ub_data[4] = "Unapplied for tileUbDataDN";
-          ub_data_map_[vid] = ub_data;
-          this->PrintIndent();
-          stream << "TASSIGN(" << vid << ", " << PrintExpr(target_expr) << ");\n";
-        } else if (shape.size() == 3) {
-          ub_data[1] = PrintExpr(shape[1]);
-          ub_data[2] = PrintExpr(shape[2]);
-          ub_data_map_[vid] = ub_data;
-          int8_t bufferNum = shape[0].as<IntImmNode>()->value;
-          prefetch_n_stages_map_[vid] = std::pair<int, int> {bufferNum, 0};
-          auto valid = ValidLayoutEnabled(op);
-          if (!valid) {
-            stream << pos << "ND<" << type;
-            for (size_t i = 1; i < shape.size(); i++) {
-                stream << ", " << shape[i];
-            }
-          } else {
-            int8_t typeSize = GetTypeLen(type);
-            int8_t NDBlockSize = 32 / typeSize;
-            stream << pos << "ND<" << type;
-            stream << ", " << shape[0];
-            stream << ", " << tvm::floordiv(shape[1] + NDBlockSize - 1, NDBlockSize) * NDBlockSize;
-          }
-          for (size_t i = 1; i < shape.size(); i++) {
-            stream << ", " << shape[i];
-          }
-          stream << "> " << vid << "[" << shape[0] << "];\n";
-          for (size_t i = 0; i < bufferNum; i++) {
-            this->PrintIndent();
-            stream << "TASSIGN(" << vid << "[" << i << "], " << PrintExpr(target_expr) << ");\n";
-          }
-        }
-      } else {
-        if (!(pos == kAscendPtoScope + "TileMatL1" && shape.size() == 3)) {
-        int dtype_bytes = op->dtype.bytes();
-        std::vector<PrimExpr> valid_shapes;
-        valid_shapes.reserve(2);
-        stream << pos << "<" << type;
-        int shape_value = shape[0].as<tvm::tir::IntImmNode>()->value;
-        if (shape_value * dtype_bytes % 32 == 0) {
-            valid_shapes.push_back(shape[0]);
-        } else {
-            valid_shapes.push_back(tvm::IntImm(shape[0].dtype(),
-            shape_value + (32 - shape_value * dtype_bytes % 32) / dtype_bytes));
-        }
-        valid_shapes.push_back(shape[1]);
-        for (size_t i = 0; i < valid_shapes.size(); i++) {
-            l_data[i + 1] = PrintExpr(valid_shapes[i]);
-            stream << ", " << valid_shapes[i];
-        }
-        for (size_t i = 0; i < shape.size(); i++) {
-            stream << ", " << shape[i];
-        }
-        stream << "> " << vid << ";\n";
-         this->PrintIndent();
-          stream << "TASSIGN(" << vid << ", " << PrintExpr(target_expr) << ");\n";
+          stream << "TASSIGN(" << vid << ", "
+                 << DEC_STR_TO_HEX_STR(PrintExpr(address_map_[op->buffer_var]))
+                 << ");\n";
         } else {
           int8_t bufferNum = shape[0].as<IntImmNode>()->value;
-          prefetch_n_stages_map_[vid] = std::pair<int, int> {bufferNum, 0};
+          prefetch_n_stages_map_[vid] = std::pair<int, int>{bufferNum, 0};
           int dtype_bytes = op->dtype.bytes();
           std::vector<PrimExpr> valid_shapes;
-          valid_shapes.reserve(shape.size()-1);
+          valid_shapes.reserve(shape.size() - 1);
           stream << pos << "<" << type;
           int shape_value = shape[1].as<tvm::tir::IntImmNode>()->value;
           if (shape_value * dtype_bytes % 32 == 0) {
-              valid_shapes.push_back(shape[1]);
+            valid_shapes.push_back(shape[1]);
           } else {
-              valid_shapes.push_back(tvm::IntImm(shape[1].dtype(),
-              shape_value + (32 - shape_value * dtype_bytes % 32) / dtype_bytes));
+            valid_shapes.push_back(tvm::IntImm(
+                shape[1].dtype(),
+                shape_value +
+                    (32 - shape_value * dtype_bytes % 32) / dtype_bytes));
           }
           valid_shapes.push_back(shape[2]);
           for (size_t i = 0; i < valid_shapes.size(); i++) {
-              l_data[i + 1] = PrintExpr(valid_shapes[i]);
-              stream << ", " << valid_shapes[i];
+            l_data[i + 1] = PrintExpr(valid_shapes[i]);
+            stream << ", " << valid_shapes[i];
           }
           for (size_t i = 1; i < shape.size(); i++) {
-              stream << ", " << shape[i];
+            stream << ", " << shape[i];
           }
           stream << "> " << vid << "[" << shape[0] << "];\n";
           for (size_t j = 0; j < bufferNum; j++) {
             this->PrintIndent();
-            stream << "TASSIGN(" << vid << "[" << j << "], " << PrintExpr(target_expr) << ");\n";
+            stream << "TASSIGN(" << vid << "[" << j << "], "
+                   << DEC_STR_TO_HEX_STR(
+                          PrintExpr(address_map_[op->buffer_var]))
+                   << ");\n";
           }
         }
       }
@@ -1868,68 +1910,138 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
         address_offset_.Set(String(pos), 0);
       }
       if (pos == kAscendPtoScope + "TileUbData") {
-        if (shape.size() == 2) {
 
-          ub_data[1] = PrintExpr(shape[0]);
-          ub_data[2] = PrintExpr(shape[1]);
-          auto valid = ValidLayoutEnabled(op);
-          if (!valid) {
-            stream << pos << "ND<" << type;
-            for (size_t i = 0; i < shape.size(); i++) {
-                stream << ", " << shape[i];
-            }
+        // Log Unified Buffer (UB) information.
+        if (shape.size() == 1) {
+          ub_data[1] = "1";
+          ub_data[2] = PrintExpr(shape[0]);
+          ub_data[4] = "Unapplied for tileUbDataDN";
+          ub_data[5] = "1";
+          ub_data[6] = PrintExpr(shape[0]);
+        } else if (shape.size() == 2) {
+          if (shape[1].as<IntImmNode>()->value != 1) {
+            ub_data[1] = PrintExpr(shape[0]);
+            ub_data[2] = PrintExpr(shape[1]);
+            ub_data[4] = "Unapplied for tileUbDataDN";
+            ub_data[5] = PrintExpr(shape[0]);
+            ub_data[6] = PrintExpr(shape[1]);
           } else {
-            int8_t typeSize = GetTypeLen(type);
-            int8_t NDBlockSize = 32 / typeSize;
-            stream << pos << "ND<" << type;
-            stream << ", " << shape[0];
-            stream << ", " << tvm::floordiv(shape[1] + NDBlockSize - 1, NDBlockSize) * NDBlockSize;
+            ub_data[1] = "1";
+            ub_data[2] = PrintExpr(shape[0]);
+            ub_data[4] = "Unapplied for tileUbDataDN";
+            ub_data[5] = "1";
+            ub_data[6] = PrintExpr(shape[0]);
+            shape.pop_back();
+          }
+        } else if (shape.size() == 3) {
+          ub_data[1] = PrintExpr(shape[1]);
+          ub_data[2] = PrintExpr(shape[2]);
+          ub_data[4] = "Unapplied for tileUbDataDN";
+          ub_data[5] = PrintExpr(shape[1]);
+          ub_data[6] = PrintExpr(shape[2]);
+        }
+
+        // Check if padding is needed at the time of request.
+        auto valid = ValidLayoutEnabled(op);
+        if (valid) {
+          int8_t typeSize = GetTypeLen(type);
+          int8_t NDBlockSize = 32 / typeSize;
+          int shape2_val = std::stoi(ub_data[2]);
+          PrimExpr shape2_expr = IntImm(DataType::Int(32), shape2_val);
+          PrimExpr padded_shape2 =
+              tvm::floordiv(shape2_expr + NDBlockSize - 1, NDBlockSize) *
+              NDBlockSize;
+          ub_data[2] = PrintExpr(padded_shape2);
+        }
+
+        if (buffer_versions_.count(op->buffer_var)) {
+          // Recording the count of buffer allocations in the pipeline.
+          int8_t bufferNum =
+              Downcast<Integer>(buffer_versions_[op->buffer_var])->value;
+          prefetch_n_stages_map_[vid] = std::pair<int, int>{bufferNum, 0};
+
+          // Output the valid shape.
+          stream << pos << "ND<" << type << ", " << ub_data[1] << ", "
+                 << ub_data[2] << ", " << ub_data[5] << ", " << ub_data[6];
+          stream << "> " << vid << "[" << bufferNum << "];\n";
+
+          // Batch allocate addresses.
+          for (size_t i = 0; i < bufferNum; i++) {
+            this->PrintIndent();
+            stream << "TASSIGN(" << vid << "[" << i << "], "
+                   << DEC_STR_TO_HEX_STR(
+                          PrintExpr(address_offset_[String(pos)]))
+                   << ");\n";
+          }
+        } else {
+          stream << pos << "ND<" << type << ", " << ub_data[1] << ", "
+                 << ub_data[2] << ", " << ub_data[5] << ", " << ub_data[6];
+          stream << "> " << vid << ";\n";
+          this->PrintIndent();
+          stream << "TASSIGN(" << vid << ", "
+                 << DEC_STR_TO_HEX_STR(PrintExpr(address_offset_[String(pos)]))
+                 << ");\n";
+        }
+        ub_data[3] =
+            DEC_STR_TO_HEX_STR(PrintExpr(address_offset_[String(pos)]));
+        ub_data_map_[vid] = ub_data;
+        address_offset_.Set(
+            String(pos),
+            PrimExpr(int(op->ConstantAllocationSize() * op->dtype.bytes())) +
+                address_offset_[String(pos)]);
+
+      } else {
+        if (!(pos == kAscendPtoScope + "TileMatL1" && shape.size() == 3)) {
+          int dtype_bytes = op->dtype.bytes();
+          std::vector<PrimExpr> valid_shapes;
+          valid_shapes.reserve(2);
+          stream << pos << "<" << type;
+          int shape_value = shape[0].as<tvm::tir::IntImmNode>()->value;
+          if (shape_value * dtype_bytes % 32 == 0) {
+            valid_shapes.push_back(shape[0]);
+          } else {
+            valid_shapes.push_back(tvm::IntImm(
+                shape[0].dtype(),
+                shape_value +
+                    (32 - shape_value * dtype_bytes % 32) / dtype_bytes));
+          }
+          valid_shapes.push_back(shape[1]);
+          for (size_t i = 0; i < valid_shapes.size(); i++) {
+            l_data[i + 1] = PrintExpr(valid_shapes[i]);
+            stream << ", " << valid_shapes[i];
           }
           for (size_t i = 0; i < shape.size(); i++) {
             stream << ", " << shape[i];
           }
           stream << "> " << vid << ";\n";
-          ub_data[3] = DEC_STR_TO_HEX_STR(PrintExpr(address_offset_[String(pos)]));
-          ub_data[4] = "Unapplied for tileUbDataDN";
-          ub_data_map_[vid] = ub_data;
           this->PrintIndent();
-          stream << "TASSIGN(" << vid << ", " << DEC_STR_TO_HEX_STR(PrintExpr(address_offset_[String(pos)])) << ");\n";
-          address_offset_.Set(
-          String(pos),
-          PrimExpr(int(op->ConstantAllocationSize() * op->dtype.bytes())) +
-          address_offset_[String(pos)]);
-        } else if (shape.size() == 1) {
-          ub_data[1] = "1";
-          ub_data[2] = PrintExpr(shape[0]);
-          stream << pos << "ND<" << type << ", 1, " << shape[0] << ", 1, " << shape[0]<< "> " << vid << ";\n";
-          ub_data[3] = DEC_STR_TO_HEX_STR(PrintExpr(address_offset_[String(pos)]));
-          ub_data[4] = "Unapplied for tileUbDataDN";
-          ub_data_map_[vid] = ub_data;
-          this->PrintIndent();
-          stream << "TASSIGN(" << vid << ", " << DEC_STR_TO_HEX_STR(PrintExpr(address_offset_[String(pos)])) << ");\n";
+          stream << "TASSIGN(" << vid << ", "
+                 << DEC_STR_TO_HEX_STR(PrintExpr(address_offset_[String(pos)]))
+                 << ");\n";
           address_offset_.Set(
               String(pos),
               PrimExpr(int(op->ConstantAllocationSize() * op->dtype.bytes())) +
                   address_offset_[String(pos)]);
-        } else if (shape.size() == 3) {
-          ub_data[1] = PrintExpr(shape[1]);
-          ub_data[2] = PrintExpr(shape[2]);
-          ub_data_map_[vid] = ub_data;
+        } else {
           int8_t bufferNum = shape[0].as<IntImmNode>()->value;
-          prefetch_n_stages_map_[vid] = std::pair<int, int> {bufferNum, 0};
-          // if (j !=0 ) {this->PrintIndent();}
-          auto valid = ValidLayoutEnabled(op);
-          if (!valid) {
-            stream << pos << "ND<" << type;
-            for (size_t i = 1; i < shape.size(); i++) {
-                stream << ", " << shape[i];
-            }
+          prefetch_n_stages_map_[vid] = std::pair<int, int>{bufferNum, 0};
+          int dtype_bytes = op->dtype.bytes();
+          std::vector<PrimExpr> valid_shapes;
+          valid_shapes.reserve(shape.size() - 1);
+          stream << pos << "<" << type;
+          int shape_value = shape[1].as<tvm::tir::IntImmNode>()->value;
+          if (shape_value * dtype_bytes % 32 == 0) {
+            valid_shapes.push_back(shape[1]);
           } else {
-            int8_t typeSize = GetTypeLen(type);
-            int8_t NDBlockSize = 32 / typeSize;
-            stream << pos << "ND<" << type;
-            stream << ", " << shape[0];
-            stream << ", " << tvm::floordiv(shape[1] + NDBlockSize - 1, NDBlockSize) * NDBlockSize;
+            valid_shapes.push_back(tvm::IntImm(
+                shape[1].dtype(),
+                shape_value +
+                    (32 - shape_value * dtype_bytes % 32) / dtype_bytes));
+          }
+          valid_shapes.push_back(shape[2]);
+          for (size_t i = 0; i < valid_shapes.size(); i++) {
+            l_data[i + 1] = PrintExpr(valid_shapes[i]);
+            stream << ", " << valid_shapes[i];
           }
           for (size_t i = 1; i < shape.size(); i++) {
             stream << ", " << shape[i];
@@ -1937,71 +2049,14 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
           stream << "> " << vid << "[" << shape[0] << "];\n";
           for (size_t j = 0; j < bufferNum; j++) {
             this->PrintIndent();
-            stream << "TASSIGN(" << vid << "[" << j << "], " << DEC_STR_TO_HEX_STR(PrintExpr(address_offset_[String(pos)])) << ");\n";
-            address_offset_.Set(
-                String(pos),
-                PrimExpr(int(op->ConstantAllocationSize() * op->dtype.bytes())) +
-                    address_offset_[String(pos)]);
-          }
-        }
-      } else {
-        if (!(pos == kAscendPtoScope + "TileMatL1" && shape.size() == 3)) {
-        int dtype_bytes = op->dtype.bytes();
-        std::vector<PrimExpr> valid_shapes;
-        valid_shapes.reserve(2);
-        stream << pos << "<" << type;
-        int shape_value = shape[0].as<tvm::tir::IntImmNode>()->value;
-        if (shape_value * dtype_bytes % 32 == 0) {
-            valid_shapes.push_back(shape[0]);
-        } else {
-            valid_shapes.push_back(tvm::IntImm(shape[0].dtype(),
-            shape_value + (32 - shape_value * dtype_bytes % 32) / dtype_bytes));
-        }
-        valid_shapes.push_back(shape[1]);
-        for (size_t i = 0; i < valid_shapes.size(); i++) {
-            l_data[i + 1] = PrintExpr(valid_shapes[i]);
-            stream << ", " << valid_shapes[i];
-        }
-        for (size_t i = 0; i < shape.size(); i++) {
-            stream << ", " << shape[i];
-        }
-        stream << "> " << vid << ";\n";
-         this->PrintIndent();
-          stream << "TASSIGN(" << vid << ", " << DEC_STR_TO_HEX_STR(PrintExpr(address_offset_[String(pos)])) << ");\n";
-          address_offset_.Set(
-              String(pos),
-              PrimExpr(int(op->ConstantAllocationSize() * op->dtype.bytes())) +
-                  address_offset_[String(pos)]);
-        } else {
-          int8_t bufferNum = shape[0].as<IntImmNode>()->value;
-          prefetch_n_stages_map_[vid] = std::pair<int, int> {bufferNum, 0};
-          int dtype_bytes = op->dtype.bytes();
-          std::vector<PrimExpr> valid_shapes;
-          valid_shapes.reserve(shape.size()-1);
-          stream << pos << "<" << type;
-          int shape_value = shape[1].as<tvm::tir::IntImmNode>()->value;
-          if (shape_value * dtype_bytes % 32 == 0) {
-              valid_shapes.push_back(shape[1]);
-          } else {
-              valid_shapes.push_back(tvm::IntImm(shape[1].dtype(),
-              shape_value + (32 - shape_value * dtype_bytes % 32) / dtype_bytes));
-          }
-          valid_shapes.push_back(shape[2]);
-          for (size_t i = 0; i < valid_shapes.size(); i++) {
-            l_data[i + 1] = PrintExpr(valid_shapes[i]);
-              stream << ", " << valid_shapes[i];
-          }
-          for (size_t i = 1; i < shape.size(); i++) {
-              stream << ", " << shape[i];
-          }
-          stream << "> " << vid << "[" << shape[0] << "];\n";
-          for (size_t j = 0; j < bufferNum; j++) {
-                        this->PrintIndent();
-            stream << "TASSIGN(" << vid << "[" << j << "], " << DEC_STR_TO_HEX_STR(PrintExpr(address_offset_[String(pos)])) << ");\n";
-            address_offset_.Set(
-                String(pos),
-                PrimExpr(int(op->ConstantAllocationSize() * op->dtype.bytes())) +
-                    address_offset_[String(pos)]);
+            stream << "TASSIGN(" << vid << "[" << j << "], "
+                   << DEC_STR_TO_HEX_STR(
+                          PrintExpr(address_offset_[String(pos)]))
+                   << ");\n";
+            address_offset_.Set(String(pos),
+                                PrimExpr(int(op->ConstantAllocationSize() *
+                                             op->dtype.bytes())) +
+                                    address_offset_[String(pos)]);
           }
         }
         l_data_map_[vid] = l_data;
@@ -2209,6 +2264,7 @@ void CodeGenTileLangAscendPto::AddFunction(const GlobalVar &gvar,
   use_swizzle_ = f->GetAttr<Bool>("use_swizzle").value_or(Bool(false));
   // tiling_map_ = f->GetAttr<Map<Var, PrimExpr>>("tiling_map").value_or(Map<Var, PrimExpr>());
   buffer_shapess_ = f->GetAttr<Map<Var, Array<PrimExpr>>>("buffer_shapess").value_or(Map<Var, Array<PrimExpr>>());
+  buffer_versions_ = f->GetAttr<Map<Var, PrimExpr>>("buffer_versions").value_or(Map<Var, PrimExpr>());
   var_sequence_ = f->GetAttr<Array<Var>>("var_sequence").value_or(Array<Var>());
   ICHECK(global_symbol.defined())
       << "CodeGenC: Expect PrimFunc to have the global_symbol attribute";

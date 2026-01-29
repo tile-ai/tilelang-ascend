@@ -151,6 +151,7 @@ private:
 
   Map<Var, PrimExpr> address_map_;
   Map<Var, Array<PrimExpr>> buffer_shapess_;
+  Map<Var, PrimExpr> buffer_versions_;
 
   Map<Var, PrimExpr> tiling_map_;
   Array<Var> var_sequence_;

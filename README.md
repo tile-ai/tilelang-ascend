@@ -27,6 +27,9 @@ https://github.com/tile-ai/tilelang-ascend/pull/74)!
 - 10/28/2025 🚀: Enhanced the performance of tl_templates and completed a high-performance [GEMM kernel](https://github.com/tile-ai/tilelang-ascend/blob/ascendc_pto/examples/gemm/example_gemm_intrinsic.py).
 - 09/29/2025 🚀: We are excited to announce that tilelang-ascend, a dsl for high performance AI workloads on Ascend NPUs, is now open source and available to the public!
 
+## Programming Guide
+For more instructions and tips on using TileLang-Ascend, please refer to the [TileLang-Ascend Programming Guide](./docs/TileLang-Ascend%20Programming%20Guide.md).
+
 ## Tested Devices
 Although tilelang-ascend aims to be portable across a range of Ascend devices, it has been specifically tested and validated on the following NPUs: A2 and A3.
 
