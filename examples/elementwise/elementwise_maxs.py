@@ -15,7 +15,7 @@ M = args.m
 N = args.n
 
 
-@tilelang.jit(out_idx=[-1])
+@tilelang.jit(out_idx=[-1], target="pto")
 def vec_maxs(M, N, block_M, block_N, scalar, dtype="float"):
     m_num = M // block_M
     n_num = N // block_N
@@ -39,18 +39,20 @@ def vec_maxs(M, N, block_M, block_N, scalar, dtype="float"):
                 T.copy(b_ub, B[bx * block_M, by * block_N])
     return main
 
-func = vec_maxs(M, N, 64, 32, 2.0)
+scalar = 2.0
+func = vec_maxs(M, N, 64, 32, scalar)
 
 torch.manual_seed(0)
 
 a = torch.randn(M, N).float().npu()
+a = a * 50
 
 torch.npu.synchronize()
 print("init successful!")
 
 b = func(a)
 
-ref_b = a + 2.0
+ref_b = torch.clamp_min(a, scalar)
 
 torch.testing.assert_close(b, ref_b, rtol=1e-2, atol=1e-2)
 print("Kernel Output Match!")
