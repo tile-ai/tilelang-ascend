@@ -36,14 +36,13 @@ def sigmoidv2():
     return main
 
 
+input = torch.randn((4, 8), torch.float)
 func = sigmoidv2()
 print("init successful!")
-
 output = func(input)
 
 torch.npu.synchronize()
 
-input = torch.randn((4, 8), torch.float)
 ref_output = torch.sigmoid(input)
 
 torch.testing.assert_close(ref_output, output, rtol=1e-2, atol=1e-2)
