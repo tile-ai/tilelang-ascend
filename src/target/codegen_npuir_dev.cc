@@ -2076,8 +2076,8 @@ void CodeGenTileLangNPUIRDEV::DotCodegen(const CallNode *op) {
 
   mlir::Location unknown_loc = builder.getUnknownLoc();
   mlir::IndexType idx_ty = builder.getIndexType();
-  mlir::Value a = GetVarValue(npuirop.src0);
-  mlir::Value b = GetVarValue(npuirop.src1);
+  mlir::Value a = GenExtractSliceFromRegion(op->args[0].as<CallNode>());
+  mlir::Value b = GenExtractSliceFromRegion(op->args[1].as<CallNode>());
   mlir::Value c = GetVarValue(npuirop.dst);
   mlir::Type c_type = c.getType();
   mlir::TypeRange result_tensors(&c_type, 1);
