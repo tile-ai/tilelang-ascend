@@ -64,3 +64,17 @@ def update_package_files(force_compile=False):
 
     shutil.copy(lib_so_path, package_so_path)
     print("Got", package_so_path.name)
+
+def update_so(force_compile=False):
+    _ensure_lib_path()
+    op_func = get_jit_op_func()
+
+    B, S, H, D = 4, 4096, 16, 128
+    print("Grabbing .so of", op_func, f"with B={B}, S={S}, H={H}, D={D}")
+    kernel = get_kernel(op_func, B, S, H, D, force_compile=force_compile)
+    
+    lib_so_path = so_path_of(kernel)
+    dst_so_path = Path.cwd() / SO_NAME
+
+    shutil.copy(lib_so_path, dst_so_path)
+    print("Got", dst_so_path.name)
