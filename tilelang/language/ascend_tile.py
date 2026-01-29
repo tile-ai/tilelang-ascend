@@ -1342,7 +1342,10 @@ def bitwise_xor(dst: Buffer, src0: Buffer, src1: Buffer):
 
 
 def clamp_max(out: Buffer, buffer: Buffer, tmp: Buffer, scalar_value: PrimExpr, count: PrimExpr):
-
+    """
+    Clip tensor elements to no more than max, replace elements larger than max with max, 
+    keep original values for elements less than or equal to max
+    """
     return tir.call_intrin(
         "handle",
         tir.op.Op.get(f"tl.ascend_clamp_max"),
@@ -1355,7 +1358,10 @@ def clamp_max(out: Buffer, buffer: Buffer, tmp: Buffer, scalar_value: PrimExpr, 
     )
 
 def clamp_min(out: Buffer, buffer: Buffer, tmp: Buffer, scalar_value: PrimExpr, count: PrimExpr):
-
+    """
+    Clip tensor elements to no less than min, replace elements smaller than min with min, 
+    keep original values for elements greater than or equal to min
+    """
     return tir.call_intrin(
         "handle",
         tir.op.Op.get(f"tl.ascend_clamp_min"),
@@ -1368,7 +1374,9 @@ def clamp_min(out: Buffer, buffer: Buffer, tmp: Buffer, scalar_value: PrimExpr, 
     )
 
 def clamp(out: Buffer, buffer: Buffer, tmp: Buffer, min_scalar: PrimExpr, max_scalar: PrimExpr, count: PrimExpr):
-    
+    """
+    Clip tensor elements to [min, max] range, replace out-of-bounds values with boundary values
+    """
     return tir.call_intrin(
         "handle",
         tir.op.Op.get(f"tl.ascend_clamp"),
