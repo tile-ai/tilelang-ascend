@@ -1802,7 +1802,8 @@ void CodeGenTileLangNPUIRDEV::VcastCodegen(const CallNode *op) {
 void CodeGenTileLangNPUIRDEV::VreduceCodegen(const CallNode *op) {
   tvm::tl::NpuirReduce npuirop(op->args, this->vmap);
   Value src = GenExtractSliceFromRegion(npuirop.src, npuirop.src_range);
-  Value dst = GetVarValue(npuirop.dst);
+  Value dst_ori = GetVarValue(npuirop.dst);
+  Value dst = GenExtractSliceFromRegion(npuirop.dst, npuirop.dst_range);
   auto reduce_mode = npuirop.reduce_mode;
   mlir::hivm::ReduceOpAttr mode =
       mlir::hivm::ReduceOpAttr::get(&context, NPUIR_STR_REDUCEOP[reduce_mode]);
@@ -1811,7 +1812,8 @@ void CodeGenTileLangNPUIRDEV::VreduceCodegen(const CallNode *op) {
   auto reduceOp = builder.create<mlir::hivm::VReduceOp>(
       builder.getUnknownLoc(), result_tensors, src, dst, mode,
       builder.getDenseI64ArrayAttr(npuirop.reduce_dims));
-  SetVarValue(npuirop.dst, reduceOp->getResult(0));
+  auto insertSliceOp = ReshapeCastAndInsertSlice(reduceOp.getResult()[0], dst_ori, npuirop.dst_range);
+  SetVarValue(npuirop.dst, insertSliceOp);
 }
 
 void CodeGenTileLangNPUIRDEV::VcumsumCodegen(const CallNode *op) {
