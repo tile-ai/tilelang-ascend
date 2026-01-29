@@ -57,6 +57,8 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
       return "half";
     } else if (dtype.is_float() && dtype.bits() == 32) {
       return "float";
+    } else if (dtype.is_int() && dtype.bits() == 4) {
+      return "AscendC::int4b_t";
     } else if (dtype.is_int() && dtype.bits() == 8) {
       return "int8_t";
     } else if (dtype.is_int() && dtype.bits() == 16) {
@@ -119,11 +121,14 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
     bool needs_strideN = false;
     bool l0c2gm = false;
     bool gm2l1 = false;
+    // bool l12l0 = false;
     bool print_gm_layout = false;
     bool print_src_layout = false;
     bool print_dst_layout = false;
     bool print_ub = false;
     bool l0_dst_split = false;
+    bool gm2ub = false;
+    bool ub2gm = false;
   } config;
 
   std::stringstream ss;
@@ -136,10 +141,12 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
   } else if (src.scope() == "shared.dyn" && dst.scope() == "wmma.matrix_a") {
     ss << "copy_l1_to_l0a";
     config.print_src_layout = true;
+    // config.l12l0 = true;
     config.l0_dst_split = true;
   } else if (src.scope() == "shared.dyn" && dst.scope() == "wmma.matrix_b") {
     ss << "copy_l1_to_l0b";
     config.print_src_layout = true;
+    // config.l12l0 = true;
     config.l0_dst_split = true;
   } else if (src.scope() == "wmma.accumulator" && dst.scope() == "global") {
     ss << "copy_l0c_to_gm";
@@ -149,23 +156,27 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
     config.print_ub = true;
 
     if (src.scope() == "global") {
+      config.gm2ub = true;
       strideN = compute_strideN(src, src_extents);
       config.needs_strideN = true;
 
       ss << "copy_gm_to_ub<";
       ss << get_dtype(src) << ", ";
-      ss << dst->shape[dst->shape.size() - 1];
+      ss << dst_extents[dst->shape.size() - 1];
+      // ss << dst->shape[dst->shape.size() - 1];
       if (dst->shape.size() > 1) {
         ss << ", " << compute_blocklen(dst, src_extents);
       }
       ss << ">";
     } else if (dst.scope() == "global") {
+      config.ub2gm = true;
       strideN = compute_strideN(dst, dst_extents);
       config.needs_strideN = true;
 
       ss << "copy_ub_to_gm<";
       ss << get_dtype(dst) << ", ";
-      ss << src->shape[src->shape.size() - 1];
+      ss << src_extents[src->shape.size() - 1];
+      // ss << src->shape[src->shape.size() - 1];
       if (src->shape.size() > 1) {
         ss << ", " << compute_blocklen(src, dst_extents);
       }
@@ -217,6 +228,8 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
       ss << dst->shape[dst_ndim - 2] << ", " << dst->shape[dst_ndim - 1] << ">";
     } else {
       ss << src->shape[src_ndim - 2] << ", " << src->shape[src_ndim - 1] << ">";
+      // ss << src->shape[src_ndim - 2] << ", " << src->shape[src_ndim - 1] << ", "
+      //    << dst->shape[dst_ndim - 2] << ", " << dst->shape[dst_ndim - 1] << ">";
     }
   }
 
@@ -257,11 +270,51 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
 
   if (config.l0c2gm) {
     new_args.push_back(compute_strideN(dst, dst_extents));
+    new_args.push_back(src->shape[src->shape.size() - 2]);
+    new_args.push_back(src->shape[src->shape.size() - 1]);
   }
 
   if (config.gm2l1) {
     new_args.push_back(compute_strideN(src, src_extents));
+    new_args.push_back(dst->shape[dst->shape.size() - 2]);
+    new_args.push_back(dst->shape[dst->shape.size() - 1]);
   }
+
+  if (config.gm2ub) {
+    if (dst->shape.size() > 1) {
+      new_args.push_back(dst->shape[dst->shape.size() - 2]);
+    }
+    new_args.push_back(dst->shape[dst->shape.size() - 1]);
+  }
+
+  if (config.ub2gm) {
+    if (src->shape.size() > 1) {
+      new_args.push_back(src->shape[src->shape.size() - 2]);
+    }
+    new_args.push_back(src->shape[src->shape.size() - 1]);
+  }
+
+  // if (config.l12l0) {
+  //   ICHECK(src->shape.size() == dst->shape.size());
+  //   bool is_extract = false;
+  //   auto dst_shape_size = dst->shape.size();
+  //   auto src_shape_size = src->shape.size();
+  //   for (int i = dst_shape_size - 1; i >= dst_shape_size - 2; i--) {
+  //     if (i == -1) {
+  //         break;
+  //     }
+  //     // std::cout << "dst_shape_size -2 = " << dst_shape_size - 2  << ", i = " << i << ", dst->shape: " << dst->shape[i]
+  //     //   << "src->shape: " << src->shape[i] << "\n";
+  //     if (src->shape[i].as<IntImmNode>()->value != dst->shape[i].as<IntImmNode>()->value) {
+  //         is_extract = true;
+  //     }
+  //     new_args.push_back(src_indices[i]);
+  //   }
+  //   new_args.push_back(Bool(is_extract));
+  //   auto dst_var = dst_ptr.as<CallNode>()->args[1];
+  //   std::cout << "newargs in copy to l1: " << new_args << "\n";
+  //   std::cout << "src_indices: " << src_indices << "\n";
+  // }
 
   auto new_call = Call(DataType::Handle(), builtin::call_extern(), new_args);
   return Evaluate(new_call);
@@ -325,6 +378,14 @@ TIR_DEFINE_TL_BUILTIN(ascend_muls)
 TIR_DEFINE_TL_BUILTIN(ascend_divs)
     .set_num_inputs(-1)
     .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+
+// TIR_DEFINE_TL_BUILTIN(ascend_maxs)
+//     .set_num_inputs(-1)
+//     .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+
+// TIR_DEFINE_TL_BUILTIN(ascend_mins)
+//     .set_num_inputs(-1)
+//     .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_compare)
     .set_num_inputs(5)
@@ -422,6 +483,22 @@ TIR_DEFINE_TL_BUILTIN(ascend_topk)
     .set_num_inputs(5)
     .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
 
+TIR_DEFINE_TL_BUILTIN(ascend_shmem_put_nbi)
+    .set_num_inputs(5)
+    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+
+TIR_DEFINE_TL_BUILTIN(ascend_shmem_get_nbi)
+    .set_num_inputs(5)
+    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+
+TIR_DEFINE_TL_BUILTIN(ascend_shmem_ub_put_nbi)
+    .set_num_inputs(5)
+    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+
+TIR_DEFINE_TL_BUILTIN(ascend_shmem_ub_get_nbi)
+    .set_num_inputs(5)
+    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));        
+
 TIR_DEFINE_TL_BUILTIN(ascend_gather_mask)
     .set_num_inputs(4)
     .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
@@ -467,7 +544,7 @@ TIR_DEFINE_TL_BUILTIN(ascend_set_deq_scale)
     .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_pow)
-    .set_num_inputs(3)
+    .set_num_inputs(4)
     .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_bitwise_xor)
@@ -479,7 +556,7 @@ TIR_DEFINE_TL_BUILTIN(ascend_broadcast)
     .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_wait_cross_flag)
-    .set_num_inputs(1)
+    .set_num_inputs(2)
     .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_set_cross_flag)
@@ -551,7 +628,7 @@ TIR_DEFINE_TL_BUILTIN(ascend_auto_set_cross_flag)
     .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_auto_wait_cross_flag)
-    .set_num_inputs(1)
+    .set_num_inputs(2)
     .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_use_swizzle)
@@ -561,5 +638,26 @@ TIR_DEFINE_TL_BUILTIN(ascend_use_swizzle)
 TIR_DEFINE_TL_BUILTIN(ascend_mma)
     .set_num_inputs(6)
     .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+
+TIR_DEFINE_TL_BUILTIN(ascend_sigmoid)
+    .set_num_inputs(4)
+    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+
+TIR_DEFINE_TL_BUILTIN(ascend_clamp_max)
+    .set_num_inputs(6)
+    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+
+TIR_DEFINE_TL_BUILTIN(ascend_clamp_min)
+    .set_num_inputs(6)
+    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+
+TIR_DEFINE_TL_BUILTIN(ascend_round)
+    .set_num_inputs(4)
+    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+
+TIR_DEFINE_TL_BUILTIN(ascend_reinterpretcast)
+    .set_num_inputs(3)
+    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+
 } // namespace tl
 } // namespace tvm

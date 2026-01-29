@@ -59,6 +59,10 @@ TVM_DLL const Op &ascend_muls();
 
 TVM_DLL const Op &ascend_divs();
 
+// TVM_DLL const Op &ascend_maxs();
+
+// TVM_DLL const Op &ascend_mins();
+
 TVM_DLL const Op &ascend_compare();
 
 TVM_DLL const Op &ascend_compare_scalar();
@@ -107,6 +111,14 @@ TVM_DLL const Op &ascend_merge_sort();
 
 TVM_DLL const Op &ascend_topk();
 
+TVM_DLL const Op &ascend_shmem_put_nbi();
+
+TVM_DLL const Op &ascend_shmem_get_nbi();
+
+TVM_DLL const Op &ascend_shmem_ub_put_nbi();
+
+TVM_DLL const Op &ascend_shmem_ub_get_nbi();
+
 TVM_DLL const Op &ascend_gather_mask();
 
 TVM_DLL const Op &ascend_gatherb();
@@ -134,6 +146,8 @@ TVM_DLL const Op &ascend_pow();
 TVM_DLL const Op &ascend_bitwise_xor();
 
 TVM_DLL const Op &ascend_broadcast();
+
+TVM_DLL const Op &ascend_reinterpretcast();
 
 TVM_DLL const Op &ascend_wait_cross_flag();
 
@@ -176,6 +190,14 @@ TVM_DLL const Op &ascend_auto_wait_cross_flag();
 TVM_DLL const Op &ascend_use_swizzle();
 
 TVM_DLL const Op &ascend_mma();
+
+TVM_DLL const Op &ascend_sigmoid();
+
+TVM_DLL const Op &ascend_clamp_max();
+
+TVM_DLL const Op &ascend_clamp_min();
+
+TVM_DLL const Op &ascend_round();
 } // namespace tl
 } // namespace tvm
 

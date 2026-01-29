@@ -56,7 +56,7 @@ def linear_attention_ker1(B, H, L, D, block_L, block_D, dtype="float16", accum_d
 				for i in T.serial(lb_num):
 					T.copy(K[bz, by, i * block_L, bx * block_D + vid * block_D // VEC_NUM], k_half_ub)
 					T.copy(k_half_ub, k_ub)
-					T.tile.reduce_sum(sumk_ub, k_ub, tmp_ub, dim = 0)
+					T.reduce_sum(k_ub, sumk_ub, tmp_ub, dim = 0)
 					T.tile.add(acc_ub, acc_ub, sumk_ub)
 				
 				T.copy(acc_ub, acc_half_ub)
@@ -116,7 +116,7 @@ def linear_attention_ker2(B, H, L, D, block_L, block_D, dtype="float16", accum_d
 				for h_i in range(block_L // VEC_NUM):
 					T.tile.mul(q_ub[h_i, :], q_ub[h_i, :], acc_ub)
 				
-				T.tile.reduce_sum(denom_ub, q_ub, tmp_ub, dim = -1)
+				T.reduce_sum(q_ub, denom_ub, tmp_ub, dim = -1)
 				T.wait_cross_flag(0)
 				T.copy(workspace[cid, vid * block_L // VEC_NUM, 0], qkv_ub)
 

@@ -7,5 +7,8 @@ cloudpickle
 ml_dtypes
 psutil
 torch
+pybind11
 pytest
 pytest-xdist
+pandas
+matplotlib

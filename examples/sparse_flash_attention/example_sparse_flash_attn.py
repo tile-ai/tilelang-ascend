@@ -196,7 +196,7 @@ def sparse_attention_fwd(
                 for (i, j) in T.Parallel(v_block, BI):
                     acc_s_ub[i, j] = acc_s_ub[i, j] * sm_scale
 
-                T.tile.reduce_max(m_i, acc_s_ub, tmp_ub, dim=-1)
+                T.reduce_max(acc_s_ub, m_i, tmp_ub, dim=-1)
 
                 for i in T.Parallel(v_block):
                     m_i[i] = T.max(m_i[i], m_i_prev[i])
@@ -209,13 +209,13 @@ def sparse_attention_fwd(
                 for i in T.Parallel(v_block):
                     m_i_prev[i] = T.exp(m_i_prev[i])
 
-                for (h_i, j) in T.Parallel(v_block, D):
+                for (h_i, j) in T.Parallel(v_block, BI):
                     acc_s_ub[h_i, j] = acc_s_ub[h_i, j] - m_i[h_i]
 
                 for (i, j) in T.Parallel(v_block, BI):
                     acc_s_ub[i, j] = T.exp(acc_s_ub[i, j])
 
-                T.tile.reduce_sum(sumexp_i_ub, acc_s_ub, tmp_ub, dim=-1)
+                T.reduce_sum(acc_s_ub, sumexp_i_ub, tmp_ub, dim=-1)
 
                 for i in T.Parallel(v_block):
                     sumexp[i] *= m_i_prev[i]

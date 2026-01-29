@@ -16,6 +16,7 @@ def _dtype(buf):
         "bfloat16": "bfloat16_t",
         "uint16": "uint16_t",
         "uint8": "uint8_t",
+        "int4": "int4b_t",
         "int8": "int8_t",
         "int16": "int16_t",
         "int64": "int64_t",
@@ -135,7 +136,7 @@ def set_cross_flag(pipe: str, flag: int):
     )
 
 
-def wait_cross_flag(flag: int):
+def wait_cross_flag(flag: int, pipe: _pipe | Literal[""] = ""):
     """
     Waits for a cross-core synchronization flag.
 
@@ -144,11 +145,15 @@ def wait_cross_flag(flag: int):
 
     Args:
         flag (int): The event ID index to wait for.
+        pipe (str, optional): The specific execution pipe to wait on (e.g., "mte1", "fix").
+            Defaults to "".
+            **Note:** This parameter is only supported on the **A5 platform**.
+            For other architectures, this must be left as an empty string.
 
     Returns:
         tvm.tir.Call: A TIR intrinsic call node.
     """
-    return tir.call_intrin("handle", tir.op.Op.get("tl.ascend_wait_cross_flag"), flag)
+    return tir.call_intrin("handle", tir.op.Op.get("tl.ascend_wait_cross_flag"), flag, pipe)
 
 
 def set_flag(src: _pipe, dst: _pipe, eventId: int):
@@ -237,6 +242,106 @@ def sync_all():
         tvm.tir.Call: A TIR intrinsic call node.
     """
     return tir.call_intrin("handle", tir.op.Op.get("tl.ascend_sync_all"))
+
+
+def shmem_put_nbi(dst: Buffer, src: Buffer, nelems: PrimExpr, newPe: PrimExpr):
+    """Performs a shmem put nbi operation.
+
+    This intrinsic invokes the underlying implementation to copy from the local GM to the newPe GM
+
+    Args:
+        dst: The newPe GM.
+        src: The local GM.
+        nelems: Number of elements.
+        newPe: The rank of dst pe.
+
+    Returns:
+        A TVM intrinsic call that performs the shmem put nbi operation.
+    """
+    return tir.call_intrin(
+        "handle",
+        tir.op.Op.get("tl.ascend_shmem_put_nbi"),
+        f"shmem_put_nbi<{_dtype(src)}>",
+        dst.access_ptr("w"),
+        src.access_ptr("r"),
+        nelems,
+        newPe,
+    )                                                  
+
+
+def shmem_ub_put_nbi(ub: Buffer, dst: Buffer, nelems: PrimExpr, newPe: PrimExpr):
+    """Performs a shmem ub put nbi operation.
+
+    This intrinsic invokes the underlying implementation to copy from the local UB to the newPe GM
+
+    Args:
+        ub: The local UB.
+        dst: The newPe GM.
+        nelems: Number of elements.
+        newPe: The rank of dst pe.
+
+    Returns:
+        A TVM intrinsic call that performs the shmem ub put nbi operation.
+    """
+    return tir.call_intrin(
+        "handle",
+        tir.op.Op.get("tl.ascend_shmem_ub_put_nbi"),
+        f"shmem_ub_put_nbi<{_dtype(dst)}>",
+        ub.access_ptr("r"),
+        dst.access_ptr("w"),
+        nelems,
+        newPe,
+    )                                  
+
+
+def shmem_get_nbi(dst: Buffer, src: Buffer, nelems: PrimExpr, newPe: PrimExpr):
+    """Performs a shmem get nbi operation.
+
+    This intrinsic invokes the underlying implementation to copy from the newPe GM to the local GM
+
+    Args:
+        dst: The local GM.
+        src: The newPe GM.
+        nelems: Number of elements.
+        newPe: The rank of dst pe.
+
+    Returns:
+        A TVM intrinsic call that performs the shmem get nbi operation.
+    """
+    return tir.call_intrin(
+        "handle",
+        tir.op.Op.get("tl.ascend_shmem_get_nbi"),
+        f"shmem_get_nbi<{_dtype(src)}>",
+        dst.access_ptr("w"),
+        src.access_ptr("r"),
+        nelems,
+        newPe,
+    )                         
+
+
+def shmem_ub_get_nbi(dst: Buffer, src: Buffer, nelems: PrimExpr, newPe: PrimExpr):
+    """Performs a shmem ub get nbi operation.
+
+    This intrinsic invokes the underlying implementation to copy from the newPe GM to the local UB
+
+    Args:
+        dst: The local UB.
+        src: The newPe GM.
+        nelems: Number of elements.
+        newPe: The rank of dst pe.
+
+    Returns:
+        A TVM intrinsic call that performs the shmem ub get nbi operation.
+    """
+    return tir.call_intrin(
+        "handle",
+        tir.op.Op.get("tl.ascend_shmem_ub_get_nbi"),
+        f"shmem_ub_get_nbi<{_dtype(src)}>",
+        dst.access_ptr("w"),
+        src.access_ptr("r"),
+        nelems,
+        newPe,
+    )                             
 
 
 def gemm_v0(A, B, C, transpose_A=False, transpose_B=False, init=False):
@@ -426,8 +531,8 @@ def dump_tensor(tensor: Buffer, desc: int, dump_size: int, shape_info: tuple = (
     """
     if not isinstance(desc, int) or desc < 0 or desc > 0xFFFFFFFF:
         raise ValueError(f"desc must be uint32, but your desc is {desc}")
-    if not isinstance(dump_size, int) or dump_size < 0 or dump_size > 0xFFFFFFFF:
-        raise ValueError(f"dump_size must be uint32, but your dump_size is {dump_size}")
+    # if not isinstance(dump_size, int) or dump_size < 0 or dump_size > 0xFFFFFFFF:
+    #     raise ValueError(f"dump_size must be uint32, but your dump_size is {dump_size}")
 
     tensor_ptr = tensor.access_ptr("r")
     return T.call_intrin(
@@ -439,6 +544,13 @@ def dump_tensor(tensor: Buffer, desc: int, dump_size: int, shape_info: tuple = (
         len(shape_info),
         *shape_info,
     )
+
+def reinterpretcast(dst: Buffer, src: Buffer, casttype: str):
+
+    # return T.call_extern("handle", f"ReinterpretCast", dst.access_ptr("w"), src.access_ptr("r"),
+    #                      casttype)
+    return T.call_intrin("handle", tir.op.Op.get("tl.ascend_reinterpretcast"), dst.access_ptr("w"), src.access_ptr("r"),
+                         casttype)
 
 
 def set_deq_scale(scale: PrimExpr):
@@ -456,3 +568,62 @@ def set_deq_scale(scale: PrimExpr):
         tvm.tir.Call: A TIR intrinsic call to `tl.ascend_set_deq_scale`.
     """
     return T.call_intrin("handle", tir.op.Op.get("tl.ascend_set_deq_scale"), scale)
+
+
+def reduce(buffer: Buffer, out: Buffer, tmp: Buffer, reduce_type: str, dim: int, real_shape: list[int]=[0, 0]):
+    dtype = _dtype(buffer)
+
+    assert len(buffer.shape) == 2, "current only support buffer as a 2D tensor"
+
+    M = buffer.shape[0] if real_shape[0] == 0 else real_shape[0]
+    N = buffer.shape[1] if real_shape[1] == 0 else real_shape[1]
+    shape = f"{M}, {N}"
+
+    buffer = buffer.access_ptr("r")
+    out = out.access_ptr("w")
+    tmp = tmp.access_ptr("r")
+
+    return T.call_intrin(
+        "handle",
+        tir.op.Op.get("tl.ascend_reduce"),
+        f"{reduce_type}<{dtype}, {shape}, {dim}>",
+        out,
+        buffer,
+        tmp,
+    )
+
+
+def reduce_max(buffer: Buffer, out: Buffer, tmp: Buffer, dim: int, real_shape: list[int]=[0, 0]):
+    """Performs a reduction max operation.
+
+    Args:
+        buffer: The source buffer (2D).
+        out: The destination buffer.
+        tmp: The temporary buffer.
+        dim: The dimension to reduce along (-1 for last dim).
+    """
+    return reduce(buffer, out, tmp, "reduce_max", dim, real_shape)
+
+
+def reduce_min(buffer: Buffer, out: Buffer, tmp: Buffer, dim: int, real_shape: list[int]=[0, 0]):
+    """Performs a reduction min operation.
+
+    Args:
+        buffer: The source buffer (2D).
+        out: The destination buffer.
+        tmp: The temporary buffer.
+        dim: The dimension to reduce along (-1 for last dim).
+    """
+    return reduce(buffer, out, tmp, "reduce_min", dim, real_shape)
+
+
+def reduce_sum(buffer: Buffer, out: Buffer, tmp: Buffer, dim: int, real_shape: list[int]=[0, 0]):
+    """Performs a reduction sum operation.
+
+    Args:
+        buffer: The source buffer (2D).
+        out: The destination buffer.
+        tmp: The temporary buffer.
+        dim: The dimension to reduce along (-1 for last dim).
+    """
+    return reduce(buffer, out, tmp, "reduce_sum", dim, real_shape)

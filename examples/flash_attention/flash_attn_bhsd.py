@@ -1,23 +1,18 @@
 import tilelang
 from tilelang import DataType, language as T
+import argparse
 import torch
-
-torch.set_default_device('npu')
-torch.manual_seed(0)
-
-tilelang.disable_cache()
 
 B, S, H, D = 1, 128, 1, 512
 
 @tilelang.jit(out_idx=[3], workspace_idx=[4,5,6])
 def flash_attention_fwd(
+    batch,
+    seq_len,
     heads,
     dim,
 ):
     block_M, block_N = 64, 64
-
-    batch = B
-    seq_len = S
 
     dtype = "float16"
     accum_dtype = "float"
@@ -30,13 +25,13 @@ def flash_attention_fwd(
 
     @T.prim_func
     def main(
-            Q: T.Tensor(shape, dtype),  # type: ignore
-            K: T.Tensor(shape, dtype),  # type: ignore
-            V: T.Tensor(shape, dtype),  # type: ignore
+            Q: T.Tensor(shape, dtype),       # type: ignore
+            K: T.Tensor(shape, dtype),       # type: ignore
+            V: T.Tensor(shape, dtype),       # type: ignore
             Output: T.Tensor(shape, dtype),  # type: ignore
-            workspace_1: T.Tensor([block_num, block_M, block_N], accum_dtype),
-            workspace_2: T.Tensor([block_num, block_M, block_N], dtype),
-            workspace_3: T.Tensor([block_num, block_M, dim], accum_dtype),
+            workspace_1: T.Tensor([block_num, block_M, block_N], accum_dtype),   # type: ignore
+            workspace_2: T.Tensor([block_num, block_M, block_N], dtype),         # type: ignore
+            workspace_3: T.Tensor([block_num, block_M, dim], accum_dtype),       # type: ignore
     ):
         with T.Kernel(block_num, is_npu=True) as (cid, vid):
             bx = cid % (seq_len // block_M)
@@ -147,7 +142,7 @@ def flash_attention_fwd(
                     T.tile.mul(acc_s_ub, acc_s_ub, sm_scale)
                     T.barrier_all()
 
-                    T.tile.reduce_max(m_i, acc_s_ub, tmp_ub, dim=-1)
+                    T.reduce_max(acc_s_ub, m_i, tmp_ub, dim=-1)
                     T.barrier_all()
 
                     T.tile.max(m_i, m_i, m_i_prev)
@@ -167,7 +162,7 @@ def flash_attention_fwd(
                     T.tile.exp(acc_s_ub, acc_s_ub)
                     T.barrier_all()
 
-                    T.tile.reduce_sum(sumexp_i_ub, acc_s_ub, tmp_ub, dim=-1)
+                    T.reduce_sum(acc_s_ub, sumexp_i_ub, tmp_ub, dim=-1)
                     T.barrier_all()
 
                     T.tile.mul(sumexp, sumexp, m_i_prev)  # check
@@ -218,36 +213,51 @@ def flash_attention_fwd(
 
     return main
 
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--B", type=int, default=1, help="batch size")
+    parser.add_argument("--S", type=int, default=128, help="seq len")
+    parser.add_argument("--H", type=int, default=1, help="attention head size")
+    parser.add_argument("--D", type=int, default=512, help="hidden dim")
+    args = parser.parse_args()
+    B, S, H, D = args.B, args.S, args.H, args.D
 
-func = flash_attention_fwd(
-    heads=H,
-    dim=D,
-)
+    torch.set_default_device('npu')
+    torch.manual_seed(0)
+
+    tilelang.disable_cache()
+
+    func = flash_attention_fwd(
+        batch=B,
+        seq_len=S,
+        heads=H,
+        dim=D,
+    )
 
 
-def ref_flash_attn(q, k, v):
-    q = q.float()
-    k = k.float()
-    v = v.float()
+    def ref_flash_attn(q, k, v):
+        q = q.float()
+        k = k.float()
+        v = v.float()
 
-    acc = torch.einsum("bhsd,bhkd->bhsk", q, k) * (1.0 / q.shape[-1])**0.5
-    acc = acc.softmax(dim=-1)
-    o = torch.einsum("bhsk,bhkd->bhsd", acc, v)
-    return o.to(torch.float16)
-
-
-q = torch.randn((B, H, S, D), dtype=torch.float16)
-k = torch.randn((B, H, S, D), dtype=torch.float16)
-v = torch.randn((B, H, S, D), dtype=torch.float16)
+        acc = torch.einsum("bhsd,bhkd->bhsk", q, k) * (1.0 / q.shape[-1])**0.5
+        acc = acc.softmax(dim=-1)
+        o = torch.einsum("bhsk,bhkd->bhsd", acc, v)
+        return o.to(torch.float16)
 
 
-torch.npu.synchronize()
-print("init successful!")
+    q = torch.randn((B, H, S, D), dtype=torch.float16)
+    k = torch.randn((B, H, S, D), dtype=torch.float16)
+    v = torch.randn((B, H, S, D), dtype=torch.float16)
 
-output = func(q, k, v)
-ref_output = ref_flash_attn(q, k, v)
-torch.npu.synchronize()
 
-torch.testing.assert_close(ref_output, output, rtol=1e-2, atol=1e-2)
+    torch.npu.synchronize()
+    print("init successful!")
 
-print("Test Passed!")
+    output = func(q, k, v)
+    ref_output = ref_flash_attn(q, k, v)
+    torch.npu.synchronize()
+
+    torch.testing.assert_close(ref_output, output, rtol=1e-2, atol=1e-2)
+
+    print("Test Passed!")

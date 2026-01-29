@@ -137,7 +137,7 @@ def indexer(N2,
                         # topK
                         merge_sort_times = TOP_K // VECTOR_BASEN
                         T.barrier_all()
-                        T.tile.reduce_sum(reduce_g_ub, reduce_tmp_ub, mm_res_ub_uint8, 0)
+                        T.reduce_sum(reduce_tmp_ub, reduce_g_ub, mm_res_ub_uint8, 0)
                         T.barrier_all()
                         T.tile.add(sort_indice_tmp_ub, topk_indices_tmp_ub,
                               T.int32(s2_id * VECTOR_BASEN))
