@@ -35,8 +35,8 @@ def sigmoidv2():
             
     return main
 
-
-input = torch.randn((4, 8), torch.float)
+dtype = torch.float
+input = torch.randn([4, 8], dtype=dtype)
 func = sigmoidv2()
 print("init successful!")
 output = func(input)
