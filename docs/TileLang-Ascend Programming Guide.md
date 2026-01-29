@@ -1,4 +1,4 @@
-# TileLang Programming Guide（For Ascend）
+# TileLang-Ascend Programming Guide
 
 ## 1. TileLang介绍
 
@@ -388,7 +388,7 @@ Developer编程模式主要是基于TileLang定义的Tile Library接口以及原
 
 TileLang中可以显示指定存储的分配层级，并且对存储层级进行了抽象，分为Global、shared和fragment级别，这里的内存分配主要关注片上存储。
 
-![image-tilelang_ascend_memory](.\images\image-tilelang_ascend_memory.png)
+![image-tilelang_ascend_memory](./images/image-tilelang_ascend_memory.png)
 
 其中，shared层级对应的存储位于片上的高速存储，该层级的存储常用于缓存计算过程中的临时中间数据，因为它的访问速度要远高于Global Memory（HBM）。例如，在矩阵计算时，经过切分的tile粒度的小数据块可以被首先加载到shared层级的内存，后续的操作都直接访问shared内存，从而减少频繁的从Global Memory加载和存储带来的性能开销。
 
@@ -434,7 +434,7 @@ fragment层级的存储对应偏上的寄存器级别的存储单元，一般用
 
 在Ascend平台中，shared层级的存储对应到L1 Buffer 和 Unified Buffer，前者用于Cube计算，后者对应到Vector计算。但用户无需关心指定的存储是L1 Buffer还是Unified Buffer，TileLang的编译器会通过程序上下文自动分析和识别。fragment层级的存储对应到L0A/L0B/L0C Buffer，同样，用户无需显示指定是分配的是哪种，TileLang编译器会根据程序上下文自动分析和识别。
 
-![image-tilelang_ascend_arch](.\images\image-tilelang_ascend_arch.png)
+![image-tilelang_ascend_arch](./images/image-tilelang_ascend_arch.png)
 
 #### 4.1.2 数据搬运原语
 
@@ -530,11 +530,11 @@ fragment层级的存储对应偏上的寄存器级别的存储单元，一般用
 
   按第一个维度计算示例：
 
-  ![image-tilelang_ascend_reducesum_1](.\images\image-tilelang_ascend_reducesum_1.png)
+  ![image-tilelang_ascend_reducesum_1](./images/image-tilelang_ascend_reducesum_1.png)
 
   按最后一个维度计算示例：
 
-  ![image-tilelang_ascend_reducesum_2](.\images\image-tilelang_ascend_reducesum_2.png)
+  ![image-tilelang_ascend_reducesum_2](./images/image-tilelang_ascend_reducesum_2.png)
 
   **注意**：
 
@@ -566,11 +566,11 @@ fragment层级的存储对应偏上的寄存器级别的存储单元，一般用
 
   按第一个维度计算示例：
 
-  ![image-tilelang_ascend_reducemax_1](.\images\image-tilelang_ascend_reducemax_1.png)
+  ![image-tilelang_ascend_reducemax_1](./images/image-tilelang_ascend_reducemax_1.png)
 
   按最后一个维度计算示例：
 
-  ![image-tilelang_ascend_reducemax_2](.\images\image-tilelang_ascend_reducemax_2.png)
+  ![image-tilelang_ascend_reducemax_2](./images/image-tilelang_ascend_reducemax_2.png)
 
   **注意**：
 
@@ -602,11 +602,11 @@ fragment层级的存储对应偏上的寄存器级别的存储单元，一般用
 
   按第一个维度计算示例：
 
-  ![image-tilelang_ascend_reducemin_1](.\images\image-tilelang_ascend_reducemin_1.png)
+  ![image-tilelang_ascend_reducemin_1](./images/image-tilelang_ascend_reducemin_1.png)
 
   按最后一个维度计算示例:
 
-  ![image-tilelang_ascend_reducemin_2](.\images\image-tilelang_ascend_reducemin_2.png)
+  ![image-tilelang_ascend_reducemin_2](./images/image-tilelang_ascend_reducemin_2.png)
 
   **注意**：
 
@@ -960,11 +960,11 @@ with T.Kernel(m_num * n_num, is_npu=True) as (cid, _):
 
 Expert模式编程的含义是可以像专家那样去写算子，可以调用很多平台相关的硬件接口和能力，例如同步的缓存控制、寄存器控制、同步插入的精确控制等，这通常是为了追求极致的性能。通常情况下，会是Developer和Expert两种方式结合的混合编程方式。
 
-#### 4.1.1 内存分配原语
+#### 4.2.1 内存分配原语
 
 在Ascend平台中，有多种内存层级的Buffer，在专家模式编程中为每一种内存层级的buffer有单独的分配原语。
 
-![image-20260122153026329](.\images\image-20260122153026329.png)
+![image-tilelang_ascend_memory](./images/image-tilelang_ascend_memory.png)
 
 - `T.alloc_ub(shape, dtype)`:
 
