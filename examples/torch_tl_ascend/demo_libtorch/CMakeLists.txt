@@ -15,11 +15,8 @@ add_executable(flash_attention_demo flash_attention.cpp)
 
 target_include_directories(flash_attention_demo PRIVATE ${TORCH_NPU_SOURCE_DIR})
 
-# Modern CMake: target-specific library search path
-target_link_directories(flash_attention_demo PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-
 target_link_libraries(flash_attention_demo PUBLIC "${TORCH_LIBRARIES}" "${TORCH_NPU_LIBRARIES}")
-target_link_libraries(flash_attention_demo PRIVATE op)
+target_link_libraries(flash_attention_demo PRIVATE dl)  # support dlopen 
 
 # Modern CMake: set properties in one call
 set_target_properties(flash_attention_demo PROPERTIES
