@@ -251,11 +251,11 @@ AICORE PTO_INLINE void TSIGMOID(
 ){
     TMULS(src0_addr, src0_addr, -1);
     pipe_barrier(PIPE_V);
-    TEXP(dst_addr, src0_addr);
+    TEXP(src0_addr, src0_addr);
     pipe_barrier(PIPE_V);
-    TADDS(dst_addr, dst_addr, 1);
+    TADDS(src0_addr, src0_addr, 1);
     pipe_barrier(PIPE_V);
-    TRECIP(dst_addr, dst_addr);
+    TRECIP(dst_addr, src0_addr);
 }
 
 template <typename T1, typename T2, typename T3, 
