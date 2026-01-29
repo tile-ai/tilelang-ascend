@@ -55,9 +55,9 @@ input_data = (torch.rand([size]) - 0.5) * 2 * thresh
 input_data = input_data.half().npu()
 
 output_data = func(input_data)
-clip_data = torch.clamp(input_data, min_v, max_v)
+ref_output_data = torch.clamp(input_data, min_v, max_v)
 
-result = (output_data == clip_data).all()
-print(f"output_data == input_data all is : {result}")
+result = (output_data == ref_output_data).all()
+print(f"output_data == ref_output_data all is : {result}")
 if result:
     print("Kernel Output Match!")
