@@ -7,13 +7,13 @@ torch.manual_seed(42)
 
 tilelang.disable_cache()
 
-pass_config = {
+pass_configs = {
     tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
     tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
     tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
 }
 
-@tilelang.jit(out_idx=[1], target="pto", pass_configs=pass_config)
+@tilelang.jit(out_idx=[1], target="pto", pass_configs=pass_configs)
 def sigmoidv2():
     dtype = "float"
     
@@ -26,10 +26,10 @@ def sigmoidv2():
             tmp_shared = T.alloc_ub((4, 8), "uint8")
             
             T.copy(input, input_shared)
-            T.tile.mul(input_shared, input_shared, -1.0)
-            T.tile.exp(input_shared, input_shared)
-            T.tile.add(input_shared, input_shared, 1.0)
-            T.tile.reciprocal(input_shared, input_shared)
+            # T.tile.mul(input_shared, input_shared, -1.0)
+            # T.tile.exp(input_shared, input_shared)
+            # T.tile.add(input_shared, input_shared, 1.0)
+            # T.tile.reciprocal(input_shared, input_shared)
             T.tile.sigmoid(input_shared, input_shared, tmp_shared)
             T.copy(input_shared, output)
             

@@ -1410,23 +1410,23 @@ void CodeGenTileLangAscendPto::BinaryVecClampOpsCodegen(
       this->stream << ", ";
     }
   }
-  this->stream << ", " << scalar_min << ");\n";
+  this->stream << ", " << scalar_max << ");\n";
 }
 
 void CodeGenTileLangAscendPto::SigmoidCodegen(const CallNode *op, const std::string& op_name) {
   std::vector<std::string> var_names;
   for (int i = 0; i < op->args.size() - 2; i++) {
-    auto var_name = PrintBufferPffset(op->args[i].as<CallNode>());
+    auto var_name = PrintBufferOffset(op->args[i].as<CallNode>());
     var_names.push_back(var_name);
   }
   std::string dst_name = PrintExpr(op->args[0].as<CallNode>()->args[1]);
-  std::vector<str::string> ub_data = ub_data_map_[dst_name];
+  std::vector<std::string> ub_data = ub_data_map_[dst_name];
   this->PrintIndent();
   this->stream << kAscendPtoScope << op_name << "<" << ub_data[0] << ", " << ub_data[1] << ", " << ub_data[2] << ">" << "(";
   for (int i = 0; i < var_names.size(); i++) {
     this->stream << var_names[i];
     if (i != var_names.size() - 1) {
-      this->stream << ", "
+      this->stream << ", ";
     }
   }
   this->stream << ", " << PrintExpr(op->args[op->args.size() - 1]) << ");\n";

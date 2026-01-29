@@ -3,14 +3,14 @@ from tilelang import language as T
 import torch
 import random
 
-pass_config = {
+pass_configs = {
     tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
     tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
     tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
 }
 
-@tilelang.jit(out_idx=[-1], target="pto", pass_configs=pass_config)
-def clamp_kernel(size, max_vval, min_vval, dtype="float16"):
+@tilelang.jit(out_idx=[-1], target="pto", pass_configs=pass_configs)
+def clamp_kernel(size, max_val, min_val, dtype="float16"):
     block_size = 64 * 1024
     loop_num = (size + block_size - 1) // block_size
     
@@ -24,16 +24,16 @@ def clamp_kernel(size, max_vval, min_vval, dtype="float16"):
         with T.Kernel(loop_num, is_npu=True) as (cid, vid):
             idx = cid
             
-            in_ub = T.alloc_ub([block_size // VEC_NUM], dtype)
-            tmp_ub = T.alloc_ub([block_size // VEC_NUM], dtype)
+            in_ub = T.alloc_ub((block_size // VEC_NUM), dtype)
+            tmp_ub = T.alloc_ub((block_size // VEC_NUM), "uint8")
             
             with T.Scope("V"):
                 T.copy(input[idx * block_size // VEC_NUM], in_ub)
                 for i in range(size):
                     T.barrier_all()
-                    # T.tile.clamp_min(in_ub, in_ub, tmp_ub, min_vval, block_size // VEC_NUM)
-                    # T.tile.clamp_max(in_ub, in_ub, tmp_ub, max_vval, block_size // VEC_NUM)
-                    T.tile.clamp(in_ub, in_ub, tmp_ub, min_vval, max_vval, block_size // VEC_NUM)
+                    # T.tile.clamp_min(in_ub, in_ub, tmp_ub, min_val, block_size // VEC_NUM)
+                    # T.tile.clamp_max(in_ub, in_ub, tmp_ub, max_val, block_size // VEC_NUM)
+                    T.tile.clamp(in_ub, in_ub, tmp_ub, min_val, max_val, block_size // VEC_NUM)
                     T.barrier_all()
                     
                 T.copy(in_ub, output[idx * block_size // VEC_NUM])
