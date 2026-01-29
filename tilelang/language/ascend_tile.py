@@ -1367,6 +1367,21 @@ def clamp_min(out: Buffer, buffer: Buffer, tmp: Buffer, scalar_value: PrimExpr, 
         count
     )
 
+def clamp(out: Buffer, buffer: Buffer, tmp: Buffer, min_scalar: PrimExpr, max_scalar: PrimExpr, count: PrimExpr):
+    
+    return tir.call_intrin(
+        "handle",
+        tir.op.Op.get(f"tl.ascend_clamp"),
+        f"Clamp<{_dtype(buffer)}>",
+        out.access_ptr("w"),
+        buffer.access_ptr("r"),
+        tmp.access_ptr("r"),
+        min_scalar,
+        max_scalar,
+        count
+    )
+    
+
 def round(out: Buffer, buffer: Buffer, tmp: Buffer, count: PrimExpr):
 
     return tir.call_intrin(
