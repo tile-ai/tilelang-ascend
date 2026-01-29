@@ -2164,7 +2164,7 @@ void CodeGenTileLangNPUIRDEV::CreateHIVMBinaryVectorOp(const CallNode *op) {
   // dst
   const CallNode *region_node_dst = op->args[2].as<CallNode>();
   // Result will always be a vector. No need to add scalar check.
-  mlir::Value dst = GetVarValue(region_node_dst);
+  mlir::Value dst = GenExtractSliceFromRegion(region_node_dst);
 
   tvm::tl::RegionOp region_dst_tmp(region_node_dst->args, vmap);
   Array<Range> dst_range = region_dst_tmp.GetRanges();
