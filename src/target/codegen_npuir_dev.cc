@@ -1675,7 +1675,6 @@ mlir::Value CodeGenTileLangNPUIRDEV::ReshapeCastAndInsertSlice(
       const_cast<llvm::SmallVector<mlir::OpFoldResult>&>(offsets),
       const_cast<llvm::SmallVector<mlir::OpFoldResult>&>(sizes),
       const_cast<llvm::SmallVector<mlir::OpFoldResult>&>(strides));
-
     return result;
 }
 
@@ -2146,8 +2145,21 @@ void CodeGenTileLangNPUIRDEV::CreateHIVMBinaryVectorOp(const CallNode *op) {
       if(is_scalar_load) {
         src = VisitExpr_(buffer_node);
       } else {
-        src = GetVarValue(region_node);
-        buffer_shape = tmp_buffer_shape;
+        src = GenExtractSliceFromRegion(region_node);
+
+        auto tensorType = src.getType().dyn_cast<mlir::TensorType>();
+        
+        buffer_shape.clear();
+
+        for (int64_t dim : tensorType.getShape()) {
+          if (dim >= 0) {
+            buffer_shape.push_back(
+                tir::make_const(DataType::Int(64), dim));
+          } else {
+            ICHECK(false)
+                << "dynamic tensor shape not supported yet";
+          }
+        }
       }
     }
   };
@@ -2159,7 +2171,7 @@ void CodeGenTileLangNPUIRDEV::CreateHIVMBinaryVectorOp(const CallNode *op) {
   // dst
   const CallNode *region_node_dst = op->args[2].as<CallNode>();
   // Result will always be a vector. No need to add scalar check.
-  mlir::Value dst = GenExtractSliceFromRegion(region_node_dst);
+  // mlir::Value dst = GenExtractSliceFromRegion(region_node_dst);
 
   tvm::tl::RegionOp region_dst_tmp(region_node_dst->args, vmap);
   Array<Range> dst_range = region_dst_tmp.GetRanges();
@@ -2178,8 +2190,8 @@ void CodeGenTileLangNPUIRDEV::CreateHIVMBinaryVectorOp(const CallNode *op) {
       getBroadcastDim(buffer_shape0, buffer_shape1);
   mlir::DenseI64ArrayAttr broadcast = builder.getDenseI64ArrayAttr(dims);
   // typerange
-  mlir::Type dst_type = dst.getType();
-  mlir::TypeRange result_tensors(&dst_type, 1);
+  // mlir::Type dst_type = dst.getType();
+  // mlir::TypeRange result_tensors(&dst_type, 1);
   // Create hivm::op
   auto loc = builder.getUnknownLoc();
   mlir::Value newOpValue;
@@ -2208,10 +2220,12 @@ void CodeGenTileLangNPUIRDEV::CreateHIVMBinaryVectorOp(const CallNode *op) {
     auto newOp = builder.create<T>(loc, insertBase.getType(), mlir::ValueRange{src0, src1},
         mlir::ValueRange{insertBase}, transpose, broadcast);
     newOpValue = newOp->getResult(0);
+    std::cout<<"newOp: \n";
+    newOp.dump();
   }
 
   mlir::Value result = needInsertSlice
-    ? ReshapeCastAndInsertSlice(newOpValue, dst, dst_range)
+    ? ReshapeCastAndInsertSlice(newOpValue, GetVarValue(region_node_dst), dst_range)
     : newOpValue;
 
   SetVarValue(region_node_dst, result);
