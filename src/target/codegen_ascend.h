@@ -88,6 +88,8 @@ private:
 
   void TopKCodegen(const CallNode *op);
 
+  void ShmemCodegen(const CallNode *op);
+
   void GatherMaskCodegen(const CallNode *op);
 
   void GatherbCodegen(const CallNode *op);

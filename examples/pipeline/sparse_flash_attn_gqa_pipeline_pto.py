@@ -163,7 +163,7 @@ def sparse_attention_fwd(
 
                 T.tile.mul(acc_s_ub, acc_s_ub, sm_scale)
 
-                T.tile.reduce_max(m_i, acc_s_ub, tmp_ub, dim=-1)
+                T.reduce_max(acc_s_ub, m_i, tmp_ub, dim=-1)
 
                 T.tile.max(m_i, m_i, m_i_prev)
 
@@ -176,7 +176,7 @@ def sparse_attention_fwd(
 
                 T.tile.exp(acc_s_ub, acc_s_ub)
 
-                T.tile.reduce_sum(sumexp_i_ub, acc_s_ub, tmp_ub, dim=-1)
+                T.reduce_sum(acc_s_ub, sumexp_i_ub, tmp_ub, dim=-1)
 
                 T.tile.mul(sumexp, sumexp, m_i_prev)  # check
 
@@ -198,7 +198,7 @@ def sparse_attention_fwd(
                 T.tile.add(acc_o, acc_o, acc_o_ub)
 
             for h_i in range(v_block):
-                T.tile.div(acc_o[:, h_i], acc_o[:, h_i], sumexp[h_i])
+                T.tile.div(acc_o[h_i, :], acc_o[h_i, :], sumexp[h_i])
 
             T.copy(acc_o, acc_o_half)
             T.copy(acc_o_half, Output[b_i, s_i, H0 + vid * v_block:H1 + vid * v_block, :])

@@ -105,7 +105,7 @@ def paged_flash_attention_fwd(
                 T.copy(workspace_1[cid, vid * block_M_2 : (vid + 1) * block_M_2, :], acc_s_ub_)
                 T.tile.add(acc_s_ub, acc_s_ub, acc_s_ub_)
                 T.tile.mul(acc_s_ub, acc_s_ub, sm_scale)
-                T.tile.reduce_max(m_i, acc_s_ub, tmp_ub, dim=-1)
+                T.reduce_max(acc_s_ub, m_i, tmp_ub, dim=-1)
                 T.tile.max(m_i, m_i, m_i_prev)
                 T.tile.sub(m_i_prev, m_i_prev, m_i)
                 T.tile.exp(m_i_prev, m_i_prev)
@@ -114,7 +114,7 @@ def paged_flash_attention_fwd(
                 T.tile.sub(acc_s_ub, acc_s_ub, m_i_2d)
 
                 T.tile.exp(acc_s_ub, acc_s_ub)
-                T.tile.reduce_sum(sumexp_i_ub, acc_s_ub, tmp_ub, dim=-1)
+                T.reduce_sum(acc_s_ub, sumexp_i_ub, tmp_ub, dim=-1)
                 T.tile.mul(sumexp, sumexp, m_i_prev)
                 T.tile.add(sumexp, sumexp, sumexp_i_ub)
 
