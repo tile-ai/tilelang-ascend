@@ -162,6 +162,22 @@ private:
 
   void ReinterpretCastCodegen (const CallNode *op);
 
+  void CreateSubMoeCodegen(const CallNode *op, const std::string& op_name);
+
+  void CreateAbsMoeCodegen(const CallNode *op, const std::string& op_name);
+
+  void CreateMinsMoeCodegen(const CallNode *op, const std::string& op_name);
+
+  void CreateReduceSumMoeCodegen(const CallNode *op, const std::string& op_name);
+
+  void GatherMaskMoeCodegen(const CallNode *op);
+
+  void FillMoeCodegen(const CallNode *op);
+
+  void SumMoeCodegen(const CallNode *op);
+
+  void CreateDatacacheMoeCodegen(const CallNode *op);
+
 private:
   // Whether scope such as "__shared__" or "__constant__"  is part of type.
   bool IsScopePartOfType() const final { return false; }

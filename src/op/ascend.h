@@ -198,6 +198,24 @@ TVM_DLL const Op &ascend_clamp_max();
 TVM_DLL const Op &ascend_clamp_min();
 
 TVM_DLL const Op &ascend_round();
+
+TVM_DLL const Op &ascend_sub_moe();
+
+TVM_DLL const Op &ascend_abs_moe();
+
+TVM_DLL const Op &ascend_mins_moe();
+
+TVM_DLL const Op &ascend_reducesum_moe();
+
+TVM_DLL const Op &ascend_reducesum_mask_moe();
+
+TVM_DLL const Op &ascend_gather_mask_moe();
+
+TVM_DLL const Op &ascend_fill_moe();
+
+TVM_DLL const Op &ascend_sum_moe();
+
+TVM_DLL const Op &ascend_datacachecleanandinvalid_moe();
 } // namespace tl
 } // namespace tvm
 

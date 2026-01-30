@@ -564,6 +564,24 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
       ClampCodegen(op);
   } else if (op->op.same_as(tl::ascend_round())) {
       RoundCodegen(op, "AscendC::Round");
+  } else if (op->op.same_as(tl::ascend_sub_moe())) {
+    CreateSubMoeCodegen(op, "AscendC::Sub");
+  } else if (op->op.same_as(tl::ascend_abs_moe())) {
+    CreateAbsMoeCodegen(op, "AscendC::Abs");
+  } else if (op->op.same_as(tl::ascend_mins_moe())) {
+    CreateMinsMoeCodegen(op, "AscendC::Mins");
+  } else if (op->op.same_as(tl::ascend_reducesum_moe())) {
+    CreateReduceSumMoeCodegen(op, "AscendC::ReduceSum");
+  } else if (op->op.same_as(tl::ascend_reducesum_mask_moe())) {
+    CreateReduceSumMoeCodegen(op, "AscendC::ReduceSum");
+  } else if (op->op.same_as(tl::ascend_gather_mask_moe())) {
+    GatherMaskMoeCodegen(op);
+  } else if (op->op.same_as(tl::ascend_fill_moe())) {
+    FillMoeCodegen(op);
+  } else if (op->op.same_as(tl::ascend_sum_moe())) {
+    SumMoeCodegen(op);
+  } else if (op->op.same_as(tl::ascend_datacachecleanandinvalid_moe())) {
+    CreateDatacacheMoeCodegen(op);
   } else {
     tvm::Dump(op);
     CodeGenC::VisitExpr_(op, os);
@@ -1882,6 +1900,48 @@ void CodeGenTileLangAscend::ReinterpretCastCodegen(const CallNode *op) {
               << "ReinterpretCast" << "<" << Downcast<StringImm>(op->args[2])->value << ">" << "();\n";
 }
 
+void CodeGenTileLangAscend::CreateSubMoeCodegen(const CallNode *op,
+                                                  const std::string &op_name) {
+  PrintOpCall(op, op_name, {0, 3}, {3, op->args.size()});
+}
+
+void CodeGenTileLangAscend::CreateAbsMoeCodegen(const CallNode *op,
+                                                  const std::string &op_name) {
+  PrintOpCall(op, op_name, {0, 2}, {2, op->args.size()});
+}
+
+void CodeGenTileLangAscend::CreateMinsMoeCodegen(const CallNode *op,
+                                                  const std::string &op_name) {
+  PrintOpCall(op, op_name, {0, 2}, {2, op->args.size()});
+}
+
+void CodeGenTileLangAscend::CreateReduceSumMoeCodegen(const CallNode *op,
+                                                  const std::string &op_name) {
+  PrintOpCall(op, op_name, {0, 3}, {3, op->args.size()});
+}
+
+void CodeGenTileLangAscend::GatherMaskMoeCodegen(const CallNode *op) {
+  std::string op_name = "tl::ascend::" + Downcast<StringImm>(op->args[0])->value;
+  PrintOpCall(op, op_name, {1, 4}, {4, op->args.size()});
+}
+
+void CodeGenTileLangAscend::FillMoeCodegen(const CallNode *op) {
+  std::string op_name = "tl::ascend::" + Downcast<StringImm>(op->args[0])->value;
+  PrintOpCall(op, op_name, {1, 2}, {2, op->args.size()});
+}
+
+void CodeGenTileLangAscend::SumMoeCodegen(const CallNode *op) {
+  std::string op_name = "tl::ascend::" + Downcast<StringImm>(op->args[0])->value;
+  PrintOpCall(op, op_name, {1, 3}, {3, op->args.size()});
+}
+
+void CodeGenTileLangAscend::CreateDatacacheMoeCodegen(const CallNode *op) {
+  std::string op_name = Downcast<StringImm>(op->args[0])->value;
+  this->PrintIndent();                                                  
+  this->stream << op_name << "(";
+  this->stream << PrintBufferOffset(op->args[1].as<CallNode>());
+  this->stream << ");\n";
+}
 
 } // namespace codegen
 } // namespace tvm
