@@ -9,7 +9,7 @@ pass_configs = {
     tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
 }
 
-@tilelang.jit(out_idx=[-1], target="pto", pass_configs=pass_configs)
+@tilelang.jit(out_idx=[-1], pass_configs=pass_configs)
 def clamp_kernel(size, max_val, min_val, dtype="float16"):
     block_size = 64 * 1024
     loop_num = (size + block_size - 1) // block_size

@@ -15,7 +15,7 @@ M = args.m
 N = args.n
 
 
-@tilelang.jit(out_idx=[-1], target="pto")
+@tilelang.jit(out_idx=[-1])
 def vec_maxs(M, N, block_M, block_N, scalar, dtype="float"):
     m_num = M // block_M
     n_num = N // block_N

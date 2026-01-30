@@ -13,7 +13,7 @@ pass_configs = {
     tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
 }
 
-@tilelang.jit(out_idx=[1], target="pto", pass_configs=pass_configs)
+@tilelang.jit(out_idx=[1], pass_configs=pass_configs)
 def sigmoidv2():
     dtype = "float"
     
