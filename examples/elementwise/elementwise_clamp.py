@@ -31,8 +31,6 @@ def clamp_kernel(size, max_val, min_val, dtype="float16"):
                 T.copy(input[idx * block_size // VEC_NUM], in_ub)
                 for i in range(size):
                     T.barrier_all()
-                    # T.tile.clamp_min(in_ub, in_ub, tmp_ub, min_val, block_size // VEC_NUM)
-                    # T.tile.clamp_max(in_ub, in_ub, tmp_ub, max_val, block_size // VEC_NUM)
                     T.tile.clamp(in_ub, in_ub, tmp_ub, min_val, max_val, block_size // VEC_NUM)
                     T.barrier_all()
                     

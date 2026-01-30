@@ -27,10 +27,6 @@ def sigmoidv2():
             tmp_shared = T.alloc_ub((4, 8), "uint8")
             
             T.copy(input, input_shared)
-            # T.tile.mul(input_shared, input_shared, -1.0)
-            # T.tile.exp(input_shared, input_shared)
-            # T.tile.add(input_shared, input_shared, 1.0)
-            # T.tile.reciprocal(output_shared, input_shared)
             T.tile.sigmoid(output_shared, input_shared, tmp_shared)
             T.copy(output_shared, output)
             
