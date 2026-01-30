@@ -566,8 +566,26 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
       ClampCodegen(op);
   } else if (op->op.same_as(tl::ascend_round())) {
       RoundCodegen(op, "AscendC::Round");
+  } else if (op->op.same_as(tl::ascend_sub_experiment())) {
+    CreateSubExperimentCodegen(op, "AscendC::Sub");
+  } else if (op->op.same_as(tl::ascend_abs_experiment())) {
+    CreateAbsExperimentCodegen(op, "AscendC::Abs");
+  } else if (op->op.same_as(tl::ascend_mins_experiment())) {
+    CreateMinsExperimentCodegen(op, "AscendC::Mins");
+  } else if (op->op.same_as(tl::ascend_reducesum_experiment())) {
+    CreateReduceSumExperimentCodegen(op, "AscendC::ReduceSum");
+  } else if (op->op.same_as(tl::ascend_reducesum_mask_experiment())) {
+    CreateReduceSumExperimentCodegen(op, "AscendC::ReduceSum");
+  } else if (op->op.same_as(tl::ascend_gather_mask_experiment())) {
+    GatherMaskExperimentCodegen(op);
+  } else if (op->op.same_as(tl::ascend_fill_experiment())) {
+    FillExperimentCodegen(op);
+  } else if (op->op.same_as(tl::ascend_sum_experiment())) {
+    SumExperimentCodegen(op);
+  } else if (op->op.same_as(tl::ascend_datacachecleanandinvalid_experiment())) {
+    CreateDatacacheExperimentCodegen(op);
   } else {
-    tvm::Dump(op);
+    // tvm::Dump(op);
     CodeGenC::VisitExpr_(op, os);
   }
 }
@@ -1895,6 +1913,48 @@ void CodeGenTileLangAscend::ReinterpretCastCodegen(const CallNode *op) {
               << "ReinterpretCast" << "<" << Downcast<StringImm>(op->args[2])->value << ">" << "();\n";
 }
 
+void CodeGenTileLangAscend::CreateSubExperimentCodegen(const CallNode *op,
+                                                  const std::string &op_name) {
+  PrintOpCall(op, op_name, {0, 3}, {3, op->args.size()});
+}
+
+void CodeGenTileLangAscend::CreateAbsExperimentCodegen(const CallNode *op,
+                                                  const std::string &op_name) {
+  PrintOpCall(op, op_name, {0, 2}, {2, op->args.size()});
+}
+
+void CodeGenTileLangAscend::CreateMinsExperimentCodegen(const CallNode *op,
+                                                  const std::string &op_name) {
+  PrintOpCall(op, op_name, {0, 2}, {2, op->args.size()});
+}
+
+void CodeGenTileLangAscend::CreateReduceSumExperimentCodegen(const CallNode *op,
+                                                  const std::string &op_name) {
+  PrintOpCall(op, op_name, {0, 3}, {3, op->args.size()});
+}
+
+void CodeGenTileLangAscend::GatherMaskExperimentCodegen(const CallNode *op) {
+  std::string op_name = "tl::ascend::" + Downcast<StringImm>(op->args[0])->value;
+  PrintOpCall(op, op_name, {1, 4}, {4, op->args.size()});
+}
+
+void CodeGenTileLangAscend::FillExperimentCodegen(const CallNode *op) {
+  std::string op_name = "tl::ascend::" + Downcast<StringImm>(op->args[0])->value;
+  PrintOpCall(op, op_name, {1, 2}, {2, op->args.size()});
+}
+
+void CodeGenTileLangAscend::SumExperimentCodegen(const CallNode *op) {
+  std::string op_name = "tl::ascend::" + Downcast<StringImm>(op->args[0])->value;
+  PrintOpCall(op, op_name, {1, 3}, {3, op->args.size()});
+}
+
+void CodeGenTileLangAscend::CreateDatacacheExperimentCodegen(const CallNode *op) {
+  std::string op_name = Downcast<StringImm>(op->args[0])->value;
+  this->PrintIndent();                                                  
+  this->stream << op_name << "(";
+  this->stream << PrintBufferOffset(op->args[1].as<CallNode>());
+  this->stream << ");\n";
+}
 
 } // namespace codegen
 } // namespace tvm

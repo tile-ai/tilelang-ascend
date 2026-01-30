@@ -239,8 +239,8 @@ CATLASS_DEVICE void shmem_put_nbi(const GlobalTensor<T> &output, const GlobalTen
 }
 
 template <typename T>
-CATLASS_DEVICE void shmem_ub_put_nbi(const LocalTensor<T> &ubTensor, const GlobalTensor<T> &output, size_t nelems, int newPe) {                                                                                  
-    aclshmemx_mte_put_nbi(const_cast<__gm__ T*>(output.GetPhyAddr()),                                       
+CATLASS_DEVICE void shmem_ub_put_nbi(const LocalTensor<T> &ubTensor, const GlobalTensor<T> &output, size_t nelems, int newPe, int strelem) {                                                                                  
+    aclshmemx_mte_put_nbi(const_cast<__gm__ T*>(output.GetPhyAddr() + strelem),                                       
         reinterpret_cast<__ubuf__ T*>(ubTensor.GetPhyAddr()), nelems, newPe, EVENT_ID0);                                                                     
 }
 
@@ -633,6 +633,42 @@ CATLASS_DEVICE void Clamp(const LocalTensor<T> &dst, const LocalTensor<T> &buffe
                              const T minScalarValue, const T maxScalarValue, const int32_t count) {
   AscendC::ClampMin<T>(dst, buffer, tmp, minScalarValue, count);
   AscendC::ClampMax<T>(dst, buffer, tmp, maxScalarValue, count);
+}
+
+template <typename T, typename U>
+CATLASS_DEVICE void GatherMask_experiment(const LocalTensor<T> &dst,
+                               const LocalTensor<T> &src0,
+                               const LocalTensor<U> &src1Pattern, const bool reduceMode,
+                               const uint32_t mask, const uint32_t src0BlockStride,
+                               const uint32_t repeatTimes, uint32_t src0RepeatStride,
+                               const uint32_t src1RepeatStride, uint64_t rsvdCnt) {
+  GatherMaskParams gatherMaskParams;
+  gatherMaskParams.repeatTimes = repeatTimes;
+  gatherMaskParams.src0BlockStride = src0BlockStride;
+  gatherMaskParams.src0RepeatStride = src0RepeatStride;
+  gatherMaskParams.src1RepeatStride = src1RepeatStride;
+  GatherMask(dst.template ReinterpretCast<uint32_t>(),
+             src0.template ReinterpretCast<uint32_t>(), src1Pattern,
+             reduceMode, mask, gatherMaskParams, rsvdCnt);
+}
+
+template <typename T>
+CATLASS_DEVICE void Fill_experiment(const LocalTensor<T> &dst,
+                               const T &scalarValue, uint64_t mask0,
+                               const uint8_t repeatTime, const uint16_t dstBlockStride,
+                               const uint8_t dstRepeatStride) {
+  uint64_t mask[1] = {mask0};
+  AscendC::Duplicate(dst, scalarValue, mask, repeatTime, dstBlockStride, dstRepeatStride);
+}
+
+template <typename T>
+CATLASS_DEVICE void Sum_experiment(const LocalTensor<T> &dst, const LocalTensor<T> &src,
+                               const uint32_t outter, const uint32_t inner, const uint32_t n) {
+  SumParams sumParams;
+  sumParams.outter = outter;
+  sumParams.inner = inner;
+  sumParams.n = n;
+  AscendC::Sum(dst, src, sumParams);
 }
 
 } // namespace tl::ascend

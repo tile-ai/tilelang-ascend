@@ -167,7 +167,17 @@ namespace tl {
       {"tl.ascend_sigmoid", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
       {"tl.ascend_clamp_max", {{{1, "write"}, {2, "read"}}, "PIPE_V"}},
       {"tl.ascend_clamp_min", {{{1, "write"}, {2, "read"}}, "PIPE_V"}},
-      {"tl.ascend_round", {{{0, "write"}, {1, "read"}}, "PIPE_V"}}
+      {"tl.ascend_round", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
+
+      {"tl.ascend_sub_experiment", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
+      {"tl.ascend_abs_experiment", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
+      {"tl.ascend_mins_experiment", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
+      {"tl.ascend_reducesum_experiment", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
+      {"tl.ascend_reducesum_mask_experiment", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
+      {"tl.ascend_gather_mask_experiment", {{{1, "write"}, {2, "read"}, {3, "read"}}, "PIPE_V"}},
+      {"tl.ascend_fill_experiment", {{{1, "write"}}, "PIPE_V"}},
+      {"tl.ascend_sum_experiment", {{{1, "write"}, {2, "read"}}, "PIPE_V"}},
+      {"tl.ascend_datacachecleanandinvalid_experiment", {{{1, "write"}}, "PIPE_V"}},
     };
     
     return operation_config_;
