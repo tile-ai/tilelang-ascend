@@ -114,6 +114,8 @@ private:
 
   void CompareScalarCodegen(const CallNode *op, const std::string &op_name);
 
+  void TshCodegen(const CallNode *op, const std::string &op_name);
+
   std::string PrintBufferOffset(const CallNode *op);
   void UbShapeInputCheck(const AllocateNode *op);
   bool ValidLayoutEnabled(const AllocateNode *op);
