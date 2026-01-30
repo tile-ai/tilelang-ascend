@@ -196,7 +196,7 @@ def sparse_attention_fwd(
                 T.tile.add(acc_o, acc_o, acc_o_ub)
 
             for h_i in range(v_block):
-                T.tile.div(acc_o[:, h_i], acc_o[:, h_i], sumexp[h_i])
+                T.tile.div(acc_o[h_i, :], acc_o[h_i, :], sumexp[h_i])
 
             T.copy(acc_o, acc_o_half)
             T.copy(acc_o_half, Output[b_i, s_i, H0 + vid * v_block:H1 + vid * v_block, :])

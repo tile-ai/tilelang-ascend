@@ -242,6 +242,22 @@ AICORE PTO_INLINE void binary_tile(int32_t dst_addr, int32_t src0_addr,
     }
 }
 
+template <typename T, int32_t row, int32_t col>
+AICORE PTO_INLINE void TSIGMOID(
+    TileUbDataND<T, row, col, row, col> &dst_addr,
+    TileUbDataND<T, row, col, row, col> &src0_addr,
+    // TileUbDataND<T, row, col, row, col> &tmp_addr,
+    int32_t len
+){
+    TMULS(src0_addr, src0_addr, -1);
+    pipe_barrier(PIPE_V);
+    TEXP(src0_addr, src0_addr);
+    pipe_barrier(PIPE_V);
+    TADDS(src0_addr, src0_addr, 1);
+    pipe_barrier(PIPE_V);
+    TRECIP(dst_addr, src0_addr);
+}
+
 template <typename T1, typename T2, typename T3, 
         int32_t rows_src, int32_t cols_src, 
         int32_t validRow_src, int32_t validCol_src, 
@@ -300,5 +316,27 @@ AICORE PTO_INLINE void TCOLSUM_with_slice_buffer(
     tl::ascend_pto::TileUbDataND <T1, rows_src, cols_src, validRow_src, validCol_src> tileUbWithValid;
     pto::TASSIGN(tileUbWithValid, handle_src);
     pto::TCOLSUM(ub, tileUbWithValid, tmp_ub, true);
+}
+
+template<typename TileType, typename DataType>
+void TCI(TileType& tile, DataType firstValue);
+
+template <typename T, int32_t row, int32_t col>
+AICORE PTO_INLINE void tci(int32_t ub_addr, int32_t ub_offset, int32_t len, T firstValue) {
+    using TileData = TileUbDataND<T, row, col, row, col>;
+    TileData temp_ub;
+    TASSIGN(temp_ub, ub_addr + ub_offset * len);
+    TCI<TileData, T, 0>(temp_ub, firstValue);
+}
+
+template <typename T, int32_t row, int32_t col>
+AICORE PTO_INLINE void pow(
+    TileUbDataND<T, row, col, row, col> &dst,
+    TileUbDataND<T, row, col, row, col> &src0,
+    TileUbDataND<T, row, col, row, col> &src1
+    ) {
+    TLOG(src0, src0);
+    TMUL(dst, src0, src1);
+    TEXP(dst, dst);
 }
 }

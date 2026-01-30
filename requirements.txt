@@ -12,3 +12,10 @@ pytest
 pytest-xdist
 pandas
 matplotlib
+PyYAML
+decorator 
+absl-py 
+attrs 
+scipy 
+tornado
+torch-npu

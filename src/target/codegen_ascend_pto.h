@@ -53,7 +53,9 @@ public:
 
   void UnaryVecOpCodegen(const CallNode *op, const std::string& op_name);
   void ScalarOpCodegen(const CallNode *op, const std::string& op_name);
+  void BinaryVecClampMaxMinOpsCodegen(const CallNode *op, const std::string& op_name);
   void BinaryVecClampOpsCodegen(const CallNode *op, const std::string& op_name);
+  void SigmoidCodegen(const CallNode *op, const std::string& op_type);
   void CastCodegen(const CallNode *op, const std::string& op_type);
   void ReduceOpCodegen(const CallNode *op);
 
@@ -96,6 +98,22 @@ private:
 
   void FillCodegen(const CallNode *op);
 
+  void CreateVecIndexCodegen(const CallNode *op, const std::string &op_name);
+
+  void GatherbCodegen(const CallNode *op, const std::string &op_name);
+
+  void PowCodegen(const CallNode *op);
+
+  void Sort32Codegen(const CallNode *op, const std::string &op_name);
+
+  void TransposeCodegen(const CallNode *op, const std::string &op_name);
+
+  void XorCodegen(const CallNode *op, const std::string &op_name);
+
+  void CompareCodegen(const CallNode *op, const std::string &op_name);
+
+  void CompareScalarCodegen(const CallNode *op, const std::string &op_name);
+
   std::string PrintBufferOffset(const CallNode *op);
   void UbShapeInputCheck(const AllocateNode *op);
   bool ValidLayoutEnabled(const AllocateNode *op);
@@ -133,6 +151,7 @@ private:
 
   Map<Var, PrimExpr> address_map_;
   Map<Var, Array<PrimExpr>> buffer_shapess_;
+  Map<Var, PrimExpr> buffer_versions_;
 
   Map<Var, PrimExpr> tiling_map_;
   Array<Var> var_sequence_;
