@@ -1801,7 +1801,8 @@ void CodeGenTileLangNPUIRDEV::VcastCodegen(const CallNode *op) {
 void CodeGenTileLangNPUIRDEV::VreduceCodegen(const CallNode *op) {
   tvm::tl::NpuirReduce npuirop(op->args, this->vmap);
   Value src = GenExtractSliceFromRegion(npuirop.src, npuirop.src_range);
-  Value dst = GetVarValue(npuirop.dst);
+  Value dst_ori = GetVarValue(npuirop.dst);
+  Value dst = GenExtractSliceFromRegion(npuirop.dst, npuirop.dst_range);
   auto reduce_mode = npuirop.reduce_mode;
   mlir::hivm::ReduceOpAttr mode =
       mlir::hivm::ReduceOpAttr::get(&context, NPUIR_STR_REDUCEOP[reduce_mode]);
@@ -1810,7 +1811,8 @@ void CodeGenTileLangNPUIRDEV::VreduceCodegen(const CallNode *op) {
   auto reduceOp = builder.create<mlir::hivm::VReduceOp>(
       builder.getUnknownLoc(), result_tensors, src, dst, mode,
       builder.getDenseI64ArrayAttr(npuirop.reduce_dims));
-  SetVarValue(npuirop.dst, reduceOp->getResult(0));
+  auto insertSliceOp = ReshapeCastAndInsertSlice(reduceOp.getResult()[0], dst_ori, npuirop.dst_range);
+  SetVarValue(npuirop.dst, insertSliceOp);
 }
 
 void CodeGenTileLangNPUIRDEV::VcumsumCodegen(const CallNode *op) {
@@ -1980,7 +1982,7 @@ void CodeGenTileLangNPUIRDEV::VflipCodegen(const CallNode *op) {
   Value src = GenSubviewFromRegion(npuirop.src, npuirop.src_range);
   Value dst = GenSubviewFromRegion(npuirop.dst, npuirop.dst_range);
   builder.create<mlir::hivm::VFlipOp>(builder.getUnknownLoc(), TypeRange{}, src,
-                                      dst);
+                                      dst, npuirop.axis);
 }
 
 void CodeGenTileLangNPUIRDEV::Nd2NzCodegen(const CallNode *op) {
@@ -2075,8 +2077,8 @@ void CodeGenTileLangNPUIRDEV::DotCodegen(const CallNode *op) {
 
   mlir::Location unknown_loc = builder.getUnknownLoc();
   mlir::IndexType idx_ty = builder.getIndexType();
-  mlir::Value a = GetVarValue(npuirop.src0);
-  mlir::Value b = GetVarValue(npuirop.src1);
+  mlir::Value a = GenExtractSliceFromRegion(op->args[0].as<CallNode>());
+  mlir::Value b = GenExtractSliceFromRegion(op->args[1].as<CallNode>());
   mlir::Value c = GetVarValue(npuirop.dst);
   mlir::Type c_type = c.getType();
   mlir::TypeRange result_tensors(&c_type, 1);
