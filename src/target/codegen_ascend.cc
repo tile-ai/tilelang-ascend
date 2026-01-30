@@ -414,8 +414,12 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
     BinaryVecOpCodegen(op, "AscendC::Div");
   } else if (op->op.same_as(tl::ascend_max())) {
     BinaryVecOpCodegen(op, "AscendC::Max");
+  } else if (op->op.same_as(tl::ascend_maxs())) {
+    AddsAndMulsOpCodegen(op, "AscendC::Maxs");
   } else if (op->op.same_as(tl::ascend_min())) {
     BinaryVecOpCodegen(op, "AscendC::Min");
+  } else if (op->op.same_as(tl::ascend_mins())) {
+    AddsAndMulsOpCodegen(op, "AscendC::Mins");
   } else if (op->op.same_as(tl::ascend_bitwise_and())) {
     BinaryVecOpCodegen(op, "AscendC::And");
   } else if (op->op.same_as(tl::ascend_bitwise_or())) {
@@ -559,8 +563,10 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
   } else if (op->op.same_as(tl::ascend_reinterpretcast())) {
     ReinterpretCastCodegen(op);
   } else if (op->op.same_as(tl::ascend_clamp_max())) {
-      ClampCodegen(op);
+      ClampMaxMinCodegen(op);
   } else if (op->op.same_as(tl::ascend_clamp_min())) {
+      ClampMaxMinCodegen(op);
+  } else if (op->op.same_as(tl::ascend_clamp())) {
       ClampCodegen(op);
   } else if (op->op.same_as(tl::ascend_round())) {
       RoundCodegen(op, "AscendC::Round");
@@ -1859,7 +1865,7 @@ void CodeGenTileLangAscend::RoundCodegen(const CallNode *op,
                << PrintExpr(op->args[3]) << ");\n";
 }
 
-void CodeGenTileLangAscend::ClampCodegen(const CallNode *op) {
+void CodeGenTileLangAscend::ClampMaxMinCodegen(const CallNode *op) {
   std::string op_name = "tl::ascend::" + Downcast<StringImm>(op->args[0])->value;
   this->PrintIndent();
   auto var_name_1 = PrintBufferOffset(op->args[1].as<CallNode>());
@@ -1868,6 +1874,17 @@ void CodeGenTileLangAscend::ClampCodegen(const CallNode *op) {
 
   this->stream << op_name << "(" << var_name_1 << ", " << var_name_2 << ", " << var_name_3 << ", "
                << PrintExpr(op->args[4]) << ", " << PrintExpr(op->args[5]) << ");\n";
+}
+
+void CodeGenTileLangAscend::ClampCodegen(const CallNode *op) {
+  std::string op_name = "tl::ascend::" + Downcast<StringImm>(op->args[0])->value;
+  this->PrintIndent();
+  auto var_name_1 = PrintBufferOffset(op->args[1].as<CallNode>());
+  auto var_name_2 = PrintBufferOffset(op->args[2].as<CallNode>());
+  auto var_name_3 = PrintBufferOffset(op->args[3].as<CallNode>());
+
+  this->stream << op_name << "(" << var_name_1 << ", " << var_name_2 << ", " << var_name_3 << ", "
+               << PrintExpr(op->args[4]) << ", " << PrintExpr(op->args[5]) << ", " << PrintExpr(op->args[6]) << ");\n";
 }
 
 void CodeGenTileLangAscend::ReinterpretCastCodegen(const CallNode *op) {

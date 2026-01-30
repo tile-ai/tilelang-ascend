@@ -59,9 +59,9 @@ TVM_DLL const Op &ascend_muls();
 
 TVM_DLL const Op &ascend_divs();
 
-// TVM_DLL const Op &ascend_maxs();
+TVM_DLL const Op &ascend_maxs();
 
-// TVM_DLL const Op &ascend_mins();
+TVM_DLL const Op &ascend_mins();
 
 TVM_DLL const Op &ascend_compare();
 
@@ -196,6 +196,8 @@ TVM_DLL const Op &ascend_sigmoid();
 TVM_DLL const Op &ascend_clamp_max();
 
 TVM_DLL const Op &ascend_clamp_min();
+
+TVM_DLL const Op &ascend_clamp();
 
 TVM_DLL const Op &ascend_round();
 } // namespace tl

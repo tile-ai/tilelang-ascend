@@ -580,11 +580,11 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) 
   } else if (op->op.same_as(tl::ascend_divs())) {
     BinaryVecOpsCodegen(op, "TDIVS");
   }
-  // else if (op->op.same_as(tl::ascend_maxs())) {
-  //   BinaryVecOpsCodegen(op, "TMAXS");
-  // } else if (op->op.same_as(tl::ascend_mins())) {
-  //   BinaryVecOpsCodegen(op, "TMINS");
-  // }
+  else if (op->op.same_as(tl::ascend_maxs())) {
+    BinaryVecOpsCodegen(op, "TMAXS");
+  } else if (op->op.same_as(tl::ascend_mins())) {
+    BinaryVecOpsCodegen(op, "TMINS");
+  }
     else if (op->op.same_as(tl::ascend_pipe_barrier())) {
     PipeBarrierCodegen(op);
   } else if (op->op.same_as(tl::ascend_set_flag())) {
@@ -606,9 +606,13 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) 
   } else if (op->op.same_as(tl::ascend_auto_barrier())) {
     AutoBarrierCodegen(op);
   } else if (op->op.same_as(tl::ascend_clamp_max())) {
-    BinaryVecClampOpsCodegen(op, "TMINS");
+    BinaryVecClampMaxMinOpsCodegen(op, "TMINS");
   } else if (op->op.same_as(tl::ascend_clamp_min())) {
-    BinaryVecClampOpsCodegen(op, "TMAXS");
+    BinaryVecClampMaxMinOpsCodegen(op, "TMAXS");
+  } else if (op->op.same_as(tl::ascend_clamp())) {
+    BinaryVecClampOpsCodegen(op, "TCLAMP");
+  } else if (op->op.same_as(tl::ascend_sigmoid())) {
+    SigmoidCodegen(op, "TSIGMOID");
   } else if (op->op.same_as(tl::ascend_round())) {
     CastCodegen(op, "RoundMode::CAST_ROUND");
   } else if (op->op.same_as(tl::ascend_cast())) {
@@ -1304,7 +1308,11 @@ void CodeGenTileLangAscendPto::BinaryVecOpsCodegen(const CallNode *op,
     this->stream << var_name_temp << ", " << var_name_temp << ", " << scalar_name;
   } else {
     this->PrintIndent();
-    this->stream << operation << "(";
+    if (operation == "TSUBS") {
+        this->stream << "TADDS" << "(";
+    } else {
+        this->stream << operation << "(";  
+    } 
     std::string scalar = PrintExpr(op->args[op->args.size() - 2]);
     var_names.push_back(operation == "TSUBS" ? ("-" + scalar):scalar);
     for (int i = 0; i < var_names.size(); i++) {
@@ -1341,7 +1349,7 @@ void CodeGenTileLangAscendPto::ScalarOpCodegen(const CallNode *op, const std::st
                   << PrintExpr(op->args[2]) << ");\n";
 }
 
-void CodeGenTileLangAscendPto::BinaryVecClampOpsCodegen(
+void CodeGenTileLangAscendPto::BinaryVecClampMaxMinOpsCodegen(
     const CallNode *op, const std::string &op_name) {
   std::vector<std::string> var_names;
   std::string operation = op_name;
@@ -1375,6 +1383,60 @@ void CodeGenTileLangAscendPto::BinaryVecClampOpsCodegen(
     }
   }
   this->stream << ");\n";
+}
+
+void CodeGenTileLangAscendPto::BinaryVecClampOpsCodegen(
+    const CallNode *op, const std::string &op_name) {
+  std::vector<std::string> var_names;
+  std::string operation = op_name;
+  std::string scalar_min = PrintExpr(op->args[op->args.size() - 3]);
+  std::string scalar_max = PrintExpr(op->args[op->args.size() - 2]);
+  for (int i = 1; i < op->args.size() - 4; i++) {
+    auto var_name = PrintBufferOffset(op->args[i].as<CallNode>());
+    var_names.push_back(var_name);
+  }
+  this->PrintIndent();
+
+  // clamp_min: achieve with TMAXS
+  this->stream << "TMAXS" << "(";
+
+  for (int i = 0; i < var_names.size(); i++) {
+    this->stream << var_names[i];
+    if (i != var_names.size() - 1) {
+      this->stream << ", ";
+    }
+  }
+  this->stream << ", " << scalar_min << ");\n";
+
+  // clamp_max: achieve with TMINS
+  this->stream << "TMINS" << "(";
+
+  for (int i = 0; i < var_names.size(); i++) {
+    this->stream << var_names[i];
+    if (i != var_names.size() - 1) {
+      this->stream << ", ";
+    }
+  }
+  this->stream << ", " << scalar_max << ");\n";
+}
+
+void CodeGenTileLangAscendPto::SigmoidCodegen(const CallNode *op, const std::string& op_name) {
+  std::vector<std::string> var_names;
+  for (int i = 0; i < op->args.size() - 2; i++) {
+    auto var_name = PrintBufferOffset(op->args[i].as<CallNode>());
+    var_names.push_back(var_name);
+  }
+  std::string dst_name = PrintExpr(op->args[0].as<CallNode>()->args[1]);
+  std::vector<std::string> ub_data = ub_data_map_[dst_name];
+  this->PrintIndent();
+  this->stream << kAscendPtoScope << op_name << "<" << ub_data[0] << ", " << ub_data[1] << ", " << ub_data[2] << ">" << "(";
+  for (int i = 0; i < var_names.size(); i++) {
+    this->stream << var_names[i];
+    if (i != var_names.size() - 1) {
+      this->stream << ", ";
+    }
+  }
+  this->stream << ", " << PrintExpr(op->args[op->args.size() - 1]) << ");\n";
 }
 
 void CodeGenTileLangAscendPto::CastCodegen(const CallNode *op, const std::string& op_type) {
@@ -2141,7 +2203,11 @@ void CodeGenTileLangAscendPto::PrintHostFunc(const PrimFunc &f, const std::strin
       os << ", ";
     }
     arg_names.push_back(v->name_hint);
-    os << "__gm__ uint8_t *" << v->name_hint;
+    if (v.dtype() == DataType::Handle()) {
+        os << "__gm__ uint8_t *" << v->name_hint;
+    } else {
+        os << getType(v.dtype()) << " " << v->name_hint;
+    }
   }
   ProcessHostInput(os, arg_names, shape_vars);
   int func_scope = this->BeginScope();
@@ -2152,13 +2218,17 @@ void CodeGenTileLangAscendPto::PrintHostFunc(const PrimFunc &f, const std::strin
   for (size_t i = 0; i < f->params.size(); ++i) { // params
     auto v = f->params[i];
     if (i != 0) {os << ",\n     ";}
-    os << "reinterpret_cast<__gm__ " << global_tensor_template[String(v->name_hint)].dtype
-    << " *>(" << v->name_hint << ")";
+    if (v.dtype() == DataType::Handle()) {
+        os << "reinterpret_cast<__gm__ " << global_tensor_template[String(v->name_hint)].dtype
+            << " *>(" << v->name_hint << ")";
+    } else {
+        os << v->name_hint;
+    } 
   }
   for (auto shape_var : shape_vars) {
     os << ", " << shape_var->name_hint;
   }
-  os << ", fftsAddr);\n}\n\n";
+  os << ",\n     reinterpret_cast<uint64_t>(fftsAddr));\n}\n\n";
 
 
   // call kernel
@@ -2168,8 +2238,11 @@ void CodeGenTileLangAscendPto::PrintHostFunc(const PrimFunc &f, const std::strin
     if (i != 0) {
       os << ", ";
     }
-    // arg_names.push_back(v->name_hint);
-    os << "uint8_t *" << v->name_hint;
+    if (v.dtype() == DataType::Handle()) {
+        os << "uint8_t *" << v->name_hint;
+    } else {
+        os << getType(v.dtype()) << " " << v->name_hint;
+    }
   }
   ProcessHostInput(os, arg_names, shape_vars, false);
   os << ", void *stream)\n{\n  ";
@@ -2270,11 +2343,13 @@ void CodeGenTileLangAscendPto::AddFunction(const GlobalVar &gvar,
           RegisterHandleType(v.get(), prim->dtype);
         }
       }
-
     } else {
       CodeGenC::PrintType(GetType(v), stream);
+      stream << " " << vid;
     }
-    stream <<  "__gm__ " << getType(f->buffer_map[v]->dtype) << " *" << vid;
+    if (v.dtype() == DataType::Handle()) {
+        stream <<  "__gm__ " << getType(f->buffer_map[v]->dtype) << " *" << vid;
+    }
   }
   size_t index = 0;
   if (shape_vars.size() != 0 && f->params.size() != 0) {
