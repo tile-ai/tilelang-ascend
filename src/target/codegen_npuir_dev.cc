@@ -1014,161 +1014,211 @@ mlir::Value CodeGenTileLangNPUIRDEV::InsertSlice(
   return insertOp.getResult();
 }
 
-// Reshape tensor
-// Note: src type must be a tensor
-mlir::Value CodeGenTileLangNPUIRDEV::MaybeReshapeTensor(mlir::Value src, mlir::Value dst) {
+// Smart reshape tensor using expand_shape or collapse_shape when possible,
+// falling back to collapse_shape + expand_shape only when necessary.
+// 
+// Core implementation of tensor reshape.
+// Common cases in copy operations:
+// - [M, N] -> [1, 1, M, N]: use expand_shape only
+// - [1, 1, M, N] -> [M, N]: use collapse_shape only
+// - [M, N] -> [N, M]: use collapse + expand (incompatible)
+mlir::Value CodeGenTileLangNPUIRDEV::ReshapeTensorImpl(
+    mlir::Value src,
+    llvm::ArrayRef<int64_t> dstShapeStatic,
+    llvm::ArrayRef<mlir::OpFoldResult> dstShapeOFR) {
 
   ICHECK(src.getType().isa<mlir::TensorType>()) << "src must be a tensor";
-  auto src_tensor_type = src.getType().cast<mlir::TensorType>();
+  auto srcTensorTy = src.getType().cast<mlir::RankedTensorType>();
+  auto loc = builder.getUnknownLoc();
+  auto srcShape = srcTensorTy.getShape();
+  int64_t srcRank = srcTensorTy.getRank();
+  int64_t dstRank = (int64_t)dstShapeStatic.size();
 
-  // Build target shape values: handle dynamic dimensions
-  llvm::SmallVector<mlir::Value> target_shape_vals;
-  llvm::SmallVector<int64_t> target_shape_static;
-  if (dst.getType().isa<mlir::MemRefType>()) {
-    auto dst_type = dst.getType().cast<mlir::MemRefType>();
-    if (src_tensor_type.getShape() == dst_type.getShape()) {
-      return src;
-    }
-    // Iterate through destination memref dimensions
-    for (int i = 0; i < dst_type.getRank(); ++i) {
-      int64_t dim = dst_type.getDimSize(i);
-      
-      if (mlir::ShapedType::isDynamic(dim)) {
-        // Dynamic dimension: get actual size at runtime using memref.dim
-        mlir::Value dim_val = builder.create<mlir::memref::DimOp>(builder.getUnknownLoc(), dst, i);
-        target_shape_vals.push_back(dim_val);
-        target_shape_static.push_back(mlir::ShapedType::kDynamic);
-      } else {
-        // Static dimension: create constant index value 
-        mlir::Value dim_val = builder.create<mlir::arith::ConstantIndexOp>(builder.getUnknownLoc(), dim);
-        target_shape_vals.push_back(dim_val);
-        target_shape_static.push_back(dim);
-      }
-    }
-  } else if (dst.getType().isa<mlir::RankedTensorType>()) {
-    auto dst_type = dst.getType().cast<mlir::RankedTensorType>();
-    if (src_tensor_type.getShape() == dst_type.getShape()) {
-      return src;
-    }
-    // Iterate through destination memref dimensions
-    for (int i = 0; i < dst_type.getRank(); ++i) {
-      int64_t dim = dst_type.getDimSize(i);
-      if (mlir::ShapedType::isDynamic(dim)) {
-        // Dynamic dimension: get actual size at runtime using tensor.dim
-        mlir::Value dim_val = builder.create<mlir::tensor::DimOp>(builder.getUnknownLoc(), dst, i);
-        target_shape_vals.push_back(dim_val);
-        target_shape_static.push_back(mlir::ShapedType::kDynamic);
-      } else {
-        // Static dimension: create constant index value 
-        mlir::Value dim_val = builder.create<mlir::arith::ConstantIndexOp>(builder.getUnknownLoc(), dim);
-        target_shape_vals.push_back(dim_val);
-        target_shape_static.push_back(dim);
-      }
-    }    
-
+  // Check if shapes are already the same
+  if (srcShape == llvm::ArrayRef<int64_t>(dstShapeStatic)) {
+    return src;
   }
 
-  // Create target shape type for the reshape operation
-  auto target_shape_type = mlir::RankedTensorType::get(
-      target_shape_static,  // Shape with dynamic dimension markers
-      src_tensor_type.getElementType());
+  auto dstTensorTy = mlir::RankedTensorType::get(
+      dstShapeStatic, srcTensorTy.getElementType());
+
+  // Try to build reassociation for direct expand or collapse
+  // Strategy: match dimensions from the end (trailing dimensions usually match)
+  // and group leading 1-dimensions together
   
-  // Create shape tensor (1D tensor containing all dimension sizes)
-  mlir::Value shape_tensor;
-  
-  if (target_shape_vals.size() == 1) {
-    // For 1D case, create tensor directly
-    shape_tensor = builder.create<mlir::tensor::FromElementsOp>(
-        builder.getUnknownLoc(), target_shape_vals);
-  } else {
-    // For multi-dimensional case, create 1D tensor of indices
-    auto shape_tensor_type = mlir::RankedTensorType::get(
-        {static_cast<int64_t>(target_shape_vals.size())},
-        builder.getIndexType());
-    shape_tensor = builder.create<mlir::tensor::FromElementsOp>(
-        builder.getUnknownLoc(), shape_tensor_type, target_shape_vals);
+  if (srcRank < dstRank) {
+    // Try expand_shape: [M, N] -> [1, 1, M, N]
+    // Reassociation maps each src dim to a group of dst dims
+    llvm::SmallVector<mlir::ReassociationIndices> reassoc;
+    int64_t extraDims = dstRank - srcRank;
+    
+    for (int64_t srcIdx = 0; srcIdx < srcRank; ++srcIdx) {
+      mlir::ReassociationIndices group;
+      if (srcIdx == 0) {
+        // First src dimension gets all the leading extra dimensions
+        for (int64_t i = 0; i <= extraDims; ++i) {
+          group.push_back(i);
+        }
+      } else {
+        // Other dimensions map 1-to-1
+        group.push_back(extraDims + srcIdx);
+      }
+      reassoc.push_back(group);
+    }
+    
+    return builder.create<mlir::tensor::ExpandShapeOp>(
+        loc, dstTensorTy, src, reassoc, dstShapeOFR);
   }
   
-  // Create tensor.reshape operation to match destination shape
-  mlir::Value reshaped_tensor = builder.create<mlir::tensor::ReshapeOp>(
-      builder.getUnknownLoc(),
-      target_shape_type,
-      src,
-      shape_tensor);
+  if (srcRank > dstRank) {
+    // Try collapse_shape: [1, 1, M, N] -> [M, N]
+    // Reassociation maps each dst dim to a group of src dims
+    llvm::SmallVector<mlir::ReassociationIndices> reassoc;
+    int64_t extraDims = srcRank - dstRank;
+    
+    for (int64_t dstIdx = 0; dstIdx < dstRank; ++dstIdx) {
+      mlir::ReassociationIndices group;
+      if (dstIdx == 0) {
+        // First dst dimension absorbs all the leading extra dimensions
+        for (int64_t i = 0; i <= extraDims; ++i) {
+          group.push_back(i);
+        }
+      } else {
+        // Other dimensions map 1-to-1
+        group.push_back(extraDims + dstIdx);
+      }
+      reassoc.push_back(group);
+    }
+    
+    return builder.create<mlir::tensor::CollapseShapeOp>(
+        loc, dstTensorTy, src, reassoc);
+  }
   
-  return reshaped_tensor;
+  // srcRank == dstRank but shapes differ: fallback to collapse + expand
+  // Step 1: Collapse to 1D
+  llvm::SmallVector<mlir::ReassociationIndices> collapseReassoc;
+  if (srcRank > 0) {
+    mlir::ReassociationIndices allDims;
+    for (int64_t i = 0; i < srcRank; ++i) {
+      allDims.push_back(i);
+    }
+    collapseReassoc.push_back(allDims);
+  }
+
+  int64_t totalStaticSize = 1;
+  bool hasDynamic = false;
+  for (int64_t dim : srcShape) {
+    if (mlir::ShapedType::isDynamic(dim)) {
+      hasDynamic = true;
+      break;
+    }
+    totalStaticSize *= dim;
+  }
+
+  int64_t collapsed1DSize = hasDynamic ? mlir::ShapedType::kDynamic : totalStaticSize;
+  auto collapsed1DTy = mlir::RankedTensorType::get(
+      {collapsed1DSize}, srcTensorTy.getElementType());
+
+  mlir::Value collapsed = builder.create<mlir::tensor::CollapseShapeOp>(
+      loc, collapsed1DTy, src, collapseReassoc);
+
+  // Step 2: Expand to target shape
+  llvm::SmallVector<mlir::ReassociationIndices> expandReassoc;
+  if (dstRank > 0) {
+    mlir::ReassociationIndices allDims;
+    for (int64_t i = 0; i < dstRank; ++i) {
+      allDims.push_back(i);
+    }
+    expandReassoc.push_back(allDims);
+  }
+
+  return builder.create<mlir::tensor::ExpandShapeOp>(
+      loc, dstTensorTy, collapsed, expandReassoc, dstShapeOFR);
 }
 
+// Reshape tensor based on destination sizes (OpFoldResult array).
 mlir::Value CodeGenTileLangNPUIRDEV::MaybeReshapeTensorByDstSize(
     mlir::Value src,
     llvm::ArrayRef<mlir::OpFoldResult> sizes) {
 
-  ICHECK(src.getType().isa<mlir::TensorType>()) << "src must be a tensor";
-  auto srcTensorTy = src.getType().cast<mlir::TensorType>();
-  auto loc = builder.getUnknownLoc();
-
-  llvm::SmallVector<mlir::Value> targetShapeVals;     // runtime values
-  llvm::SmallVector<int64_t>     targetShapeStatic;   // static shape (kDynamic)
+  llvm::SmallVector<mlir::OpFoldResult> dstShapeOFR;
+  llvm::SmallVector<int64_t> dstShapeStatic;
 
   for (mlir::OpFoldResult ofr : sizes) {
     if (auto attr = ofr.dyn_cast<mlir::Attribute>()) {
       auto intAttr = attr.cast<mlir::IntegerAttr>();
       int64_t dim = intAttr.getInt();
-
-      targetShapeStatic.push_back(dim);
-      targetShapeVals.push_back(
-          builder.create<mlir::arith::ConstantIndexOp>(loc, dim));
-
+      dstShapeStatic.push_back(dim);
+      dstShapeOFR.push_back(builder.getIndexAttr(dim));
     } else if (auto val = ofr.dyn_cast<mlir::Value>()) {
-      targetShapeStatic.push_back(mlir::ShapedType::kDynamic);
-      targetShapeVals.push_back(val);
-
+      dstShapeStatic.push_back(mlir::ShapedType::kDynamic);
+      dstShapeOFR.push_back(val);
     } else {
       llvm_unreachable("Invalid OpFoldResult in sizes");
     }
   }
 
-  if (auto rankedTy = srcTensorTy.dyn_cast<mlir::RankedTensorType>()) {
-    if (rankedTy.getRank() == (int64_t)targetShapeStatic.size()) {
-      bool same = true;
-      for (int i = 0; i < rankedTy.getRank(); ++i) {
-        int64_t s0 = rankedTy.getDimSize(i);
-        int64_t s1 = targetShapeStatic[i];
-        if (s0 != s1) {
-          if (mlir::ShapedType::isDynamic(s0) ||
-              mlir::ShapedType::isDynamic(s1)) {
-            same = false;
-            break;
-          }
-          same = false;
-          break;
-        }
-      }
-      if (same) return src;
+  return ReshapeTensorImpl(src, dstShapeStatic, dstShapeOFR);
+}
+
+// Reshape tensor using tensor.reshape (not expand_shape/collapse_shape).
+// This avoids bufferization issues with strided memrefs.
+mlir::Value CodeGenTileLangNPUIRDEV::ReshapeTensorWithTensorReshape(
+    mlir::Value src,
+    llvm::ArrayRef<mlir::OpFoldResult> dstSizes) {
+  
+  ICHECK(src.getType().isa<mlir::TensorType>()) << "src must be a tensor";
+  auto srcTensorTy = src.getType().cast<mlir::RankedTensorType>();
+  auto loc = builder.getUnknownLoc();
+  auto srcShape = srcTensorTy.getShape();
+  
+  // Build destination shape (static parts)
+  llvm::SmallVector<int64_t> dstShapeStatic;
+  for (mlir::OpFoldResult ofr : dstSizes) {
+    if (auto attr = ofr.dyn_cast<mlir::Attribute>()) {
+      dstShapeStatic.push_back(attr.cast<mlir::IntegerAttr>().getInt());
+    } else {
+      dstShapeStatic.push_back(mlir::ShapedType::kDynamic);
     }
   }
-
-  auto targetTensorTy = mlir::RankedTensorType::get(
-      targetShapeStatic,
-      srcTensorTy.getElementType());
-
-  mlir::Value shapeTensor;
-  {
-    auto shapeTensorTy = mlir::RankedTensorType::get(
-        {static_cast<int64_t>(targetShapeVals.size())},
-        builder.getIndexType());
-
-    shapeTensor = builder.create<mlir::tensor::FromElementsOp>(
-        loc, shapeTensorTy, targetShapeVals);
+  
+  // Check if shapes are already the same
+  if (srcShape == llvm::ArrayRef<int64_t>(dstShapeStatic)) {
+    return src;
   }
-
-  auto reshaped = builder.create<mlir::tensor::ReshapeOp>(
-      loc,
-      targetTensorTy,
-      src,
-      shapeTensor);
-
-  return reshaped;
+  
+  // Build shape tensor using tensor.from_elements
+  llvm::SmallVector<mlir::Value> shapeValues;
+  for (mlir::OpFoldResult ofr : dstSizes) {
+    if (auto attr = ofr.dyn_cast<mlir::Attribute>()) {
+      int64_t dim = attr.cast<mlir::IntegerAttr>().getInt();
+      shapeValues.push_back(
+          builder.create<mlir::arith::ConstantIndexOp>(loc, dim));
+    } else {
+      // It's already a Value
+      mlir::Value val = ofr.get<mlir::Value>();
+      // Ensure it's index type
+      if (!val.getType().isIndex()) {
+        val = builder.create<mlir::arith::IndexCastOp>(
+            loc, builder.getIndexType(), val);
+      }
+      shapeValues.push_back(val);
+    }
+  }
+  
+  // Create shape tensor: tensor<Nxindex>
+  auto shapeTensorType = mlir::RankedTensorType::get(
+      {static_cast<int64_t>(dstSizes.size())}, builder.getIndexType());
+  mlir::Value shapeTensor = builder.create<mlir::tensor::FromElementsOp>(
+      loc, shapeTensorType, shapeValues);
+  
+  // Create result tensor type
+  auto dstTensorTy = mlir::RankedTensorType::get(
+      dstShapeStatic, srcTensorTy.getElementType());
+  
+  // Create tensor.reshape
+  return builder.create<mlir::tensor::ReshapeOp>(
+      loc, dstTensorTy, src, shapeTensor);
 }
 
 // Converts a TileLang range/region descriptor into {offs, sizes, strides}.
@@ -1277,6 +1327,27 @@ mlir::Value CodeGenTileLangNPUIRDEV::CreateRankReducedSubviewFromBaseRank(
       loc, reducedTy, base, fullOffsets, fullSizes, fullStrides);
 }
 
+// Creates a rank-reduced tensor.extract_slice from a base tensor using full-rank offset/size/stride arrays.
+// The resulting tensor rank is determined by projectedReducedShape.
+mlir::Value CodeGenTileLangNPUIRDEV::CreateRankReducedExtractSlice(
+    mlir::Value base,
+    llvm::ArrayRef<mlir::OpFoldResult> fullOffsets,
+    llvm::ArrayRef<mlir::OpFoldResult> fullSizes,
+    llvm::ArrayRef<mlir::OpFoldResult> fullStrides,
+    llvm::ArrayRef<int64_t> projectedReducedShape,
+    mlir::Location loc) {
+  auto baseTy = base.getType().cast<mlir::RankedTensorType>();
+  ICHECK((int64_t)fullOffsets.size() == baseTy.getRank());
+  ICHECK((int64_t)fullSizes.size() == baseTy.getRank());
+  ICHECK((int64_t)fullStrides.size() == baseTy.getRank());
+
+  auto reducedTy = mlir::RankedTensorType::get(
+      projectedReducedShape, baseTy.getElementType());
+
+  return builder.create<mlir::tensor::ExtractSliceOp>(
+      loc, reducedTy, base, fullOffsets, fullSizes, fullStrides);
+}
+
 // Creates a same-rank memref.subview with zero offsets and unit strides, using the provided sizes.
 // Used when the UB base memref already matches the canonical copy rank.
 mlir::Value CodeGenTileLangNPUIRDEV::CreateSameRankDynamicSubview(
@@ -1365,20 +1436,19 @@ void CodeGenTileLangNPUIRDEV::EmitCopyMemrefToTensor(
   mlir::Value loaded_tensor = builder.create<mlir::bufferization::ToTensorOp>(
       loc, ub_view, /*restrict=*/true, /*writable=*/false);
 
-  // 7) Reshape to dst_slice if needed
-  // mlir::Value reshaped_tensor = MaybeReshapeTensorByDstSize(loaded_tensor, dstR.sizes);
-
-  // 8) Type Cast
+  // 7) Type Cast (skip reshape - let InsertSlice handle rank difference to avoid
+  //    expand_shape failures on strided memrefs from subview)
   mlir::Value casted_tensor = CreateCastIfTypeMismatch(loaded_tensor, dst);
 
-  // 9) InsertSlice (keep your existing InsertSlice signature/behavior)
+  // 8) InsertSlice - tensor.insert_slice can handle source rank < dest rank,
+  //    using dstR.sizes to specify the slice shape in the destination.
   mlir::Value result = InsertSlice(
       casted_tensor, dst,
       const_cast<llvm::SmallVector<mlir::OpFoldResult>&>(dstR.offs),
       const_cast<llvm::SmallVector<mlir::OpFoldResult>&>(dstR.sizes),
       const_cast<llvm::SmallVector<mlir::OpFoldResult>&>(dstR.strides));
 
-  // 10) SetVarValue
+  // 9) SetVarValue
   SetVarValue(npuirop.dst, result);
 }
 
@@ -1387,19 +1457,24 @@ void CodeGenTileLangNPUIRDEV::EmitCopyTensorToMemref(
     mlir::Value src, mlir::Value dst,
     const SliceRange& srcR, const SliceRange& dstR,
     mlir::Location loc) {
-  mlir::Value src_slice = builder.create<mlir::tensor::ExtractSliceOp>(
-      loc, src, srcR.offs, srcR.sizes, srcR.strides);
+  
+  // 1) Canonicalize copy rank: drop static-1 dims
+  CollapsedDims srcC = CollapseStaticOneDims(srcR.sizes);
+  llvm::ArrayRef<mlir::OpFoldResult> copy_sizes = srcC.sizes;
+  llvm::ArrayRef<int64_t> copy_projected = srcC.projected;
 
-  mlir::Value dst_view = builder.create<mlir::memref::SubViewOp>(
-      loc, dst, dstR.offs, dstR.sizes, dstR.strides);
+  // 2) Create rank-reduced tensor.extract_slice
+  mlir::Value src_slice = CreateRankReducedExtractSlice(
+      src, srcR.offs, srcR.sizes, srcR.strides, copy_projected, loc);
 
-  auto src_tensor_type = src_slice.getType().cast<mlir::RankedTensorType>();
-  auto dst_memref_type = dst_view.getType().cast<mlir::MemRefType>();
+  // 3) Create rank-reduced memref.subview
+  mlir::Value dst_view = CreateRankReducedSubviewFromBaseRank(
+      dst, dstR.offs, dstR.sizes, dstR.strides, copy_projected, loc);
 
-  mlir::Value reshaped_tensor = MaybeReshapeTensor(src_slice, dst_view);
+  // 4) Type cast if element types differ
+  mlir::Value casted_tensor = CreateCastIfTypeMismatch(src_slice, dst_view);
 
-  mlir::Value casted_tensor = CreateCastIfTypeMismatch(reshaped_tensor, dst_view);
-
+  // 5) Materialize directly (no reshape needed - shapes match!)
   auto matOp = builder.create<mlir::bufferization::MaterializeInDestinationOp>(
       loc, casted_tensor, dst_view);
   matOp.setWritable(true);
@@ -1413,9 +1488,9 @@ void CodeGenTileLangNPUIRDEV::EmitCopyTensorToTensor(
   mlir::Value src_slice = builder.create<mlir::tensor::ExtractSliceOp>(
       loc, src, srcR.offs, srcR.sizes, srcR.strides);
 
-  auto src_tensor_type = src_slice.getType().cast<mlir::RankedTensorType>();
-
-  mlir::Value reshaped_tensor = MaybeReshapeTensorByDstSize(src_slice, dstR.sizes);
+  // Use tensor.reshape instead of expand_shape/collapse_shape to avoid
+  // bufferization failures on tensors derived from strided memrefs.
+  mlir::Value reshaped_tensor = ReshapeTensorWithTensorReshape(src_slice, dstR.sizes);
 
   mlir::Value casted_tensor = CreateCastIfTypeMismatch(reshaped_tensor, dst);
 
@@ -1450,8 +1525,8 @@ void CodeGenTileLangNPUIRDEV::EmitCopyTensorToTensor(
  *        d) Create an UB `memref.subview` matching the canonical copy rank.
  *        e) `memref.copy` from the GM view to the UB view.
  *        f) Convert UB to tensor via `bufferization.to_tensor`.
- *        g) Reshape and/or cast to match the destination slice type, then `tensor.insert_slice`
- *           into the destination tensor and update the corresponding var binding.
+ *        g) Cast element type if needed, then directly use `tensor.insert_slice` with dstR.sizes
+ *           to handle rank differences (avoiding expand_shape on strided memrefs).
  *
  * 2) Store (Tensor -> MemRef)
  *    - Concept:
@@ -2078,8 +2153,8 @@ void CodeGenTileLangNPUIRDEV::DotCodegen(const CallNode *op) {
 
   mlir::Location unknown_loc = builder.getUnknownLoc();
   mlir::IndexType idx_ty = builder.getIndexType();
-  mlir::Value a = GetVarValue(npuirop.src0);
-  mlir::Value b = GetVarValue(npuirop.src1);
+  mlir::Value a = GenExtractSliceFromRegion(op->args[0].as<CallNode>());
+  mlir::Value b = GenExtractSliceFromRegion(op->args[1].as<CallNode>());
   mlir::Value c = GetVarValue(npuirop.dst);
   mlir::Type c_type = c.getType();
   mlir::TypeRange result_tensors(&c_type, 1);

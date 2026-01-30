@@ -282,8 +282,11 @@ private:
 
   // === helpers for ascend_copy lowering (member-functionized) ===
   mlir::Value CreateCastIfTypeMismatch(mlir::Value src_value, mlir::Value dst_value);
-  mlir::Value MaybeReshapeTensor(mlir::Value src_tensor, mlir::Value dst_tensor);
+  mlir::Value ReshapeTensorImpl(mlir::Value src,
+                                llvm::ArrayRef<int64_t> dstShapeStatic,
+                                llvm::ArrayRef<mlir::OpFoldResult> dstShapeOFR);
   mlir::Value MaybeReshapeTensorByDstSize(mlir::Value src, llvm::ArrayRef<mlir::OpFoldResult> sizes);
+  mlir::Value ReshapeTensorWithTensorReshape(mlir::Value src, llvm::ArrayRef<mlir::OpFoldResult> dstSizes);
   std::tuple<SmallVector<mlir::OpFoldResult>, 
              SmallVector<mlir::OpFoldResult>, 
              SmallVector<mlir::OpFoldResult>> 
@@ -335,6 +338,13 @@ private:
       llvm::ArrayRef<mlir::OpFoldResult> fullSizes,    // len == baseRank
       llvm::ArrayRef<mlir::OpFoldResult> fullStrides,  // len == baseRank
       llvm::ArrayRef<int64_t> projectedReducedShape,   // result rank
+      mlir::Location loc);
+  mlir::Value CreateRankReducedExtractSlice(
+      mlir::Value base,
+      llvm::ArrayRef<mlir::OpFoldResult> fullOffsets,
+      llvm::ArrayRef<mlir::OpFoldResult> fullSizes,
+      llvm::ArrayRef<mlir::OpFoldResult> fullStrides,
+      llvm::ArrayRef<int64_t> projectedReducedShape,
       mlir::Location loc);
   mlir::Value CreateSameRankDynamicSubview(
       mlir::Value base,
