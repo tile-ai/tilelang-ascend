@@ -1,12 +1,12 @@
-# Example of intergrating TileLang-Ascend operators in PyTorch (as a Python C binding)
+# Example of integrating TileLang-Ascend operators in PyTorch (as a Python C binding)
 
-This directory provides an example of intergrating TileLang-Ascend operators into PyTorch in the form of a Python C binding. Specifically, A python package named `torch_tl_ascend` is shipped inside.
+This directory provides an example of integrating TileLang-Ascend operators into PyTorch in the form of a Python C binding. Specifically, A python package named `torch_tl_ascend` is shipped inside.
 
 At present, the example operator in [`examples/flash_attention/flash_attn_bhsd`](../flash_attention/flash_attn_bhsd.py) is supported.
 
 ## Build & Install
 
-With [tilelang-ascend installed](../../README.md#tilelang-ascend-installation), the `torch_tl_ascend` python package can be built and installed with:
+With [TileLang-Ascend installed](../../README.md#tilelang-ascend-installation), the `torch_tl_ascend` python package can be built and installed with:
 
 ```bash
 python setup.py install
@@ -52,11 +52,18 @@ kernel = flash_attention_fwd(B, S, H, D)
 output = kernel(q, k, v)
 ```
 
+## Additional Example: C++ Integration (libtorch)
+
+The `demo_libtorch` subdirectory provides an example of integrating TileLang-Ascend operators into a C++ application using libtorch and libtorch_npu.
+
+See [demo_libtorch/README.md](./demo_libtorch/README.md) for details on building and running this example.
+
 ## Directory Structure
 
 ```
 torch_tl_ascend/
 ├── compile_tl_op        # Utilities for compiling TileLang-Ascend operators and assembling the package
+├── demo_libtorch        # A separate C++ example using libtorch and libtorch_npu
 ├── src
 │   ├── torch_tl_ascend  # The torch_tl_ascend package
 │   └── _inner.cpp       # The Python C module of the package for wrapping operators and registering to PyTorch
