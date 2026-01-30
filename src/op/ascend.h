@@ -197,6 +197,8 @@ TVM_DLL const Op &ascend_clamp_max();
 
 TVM_DLL const Op &ascend_clamp_min();
 
+TVM_DLL const Op &ascend_clamp();
+
 TVM_DLL const Op &ascend_round();
 
 TVM_DLL const Op &ascend_sub_experiment();
