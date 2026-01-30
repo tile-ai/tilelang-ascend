@@ -104,7 +104,7 @@ def main(main_args):
 
 if __name__ == "__main__":
     args = parser.parse_args()
-    os.environ["TILELANG_ASCEND_MODE"] = "Dev"
-    main(args)
+    # os.environ["TILELANG_ASCEND_MODE"] = "Dev"
+    # main(args)
     os.environ["TILELANG_ASCEND_MODE"] = "Expert"
     main(args)
