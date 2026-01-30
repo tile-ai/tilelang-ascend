@@ -4,8 +4,8 @@ set -x
 python prepare.py || { echo "Failed to prepare libop.so"; exit 1; }  # compile tilelang operator and get libop.so
 
 CMAKE_PREFIX_TORCH=$(python -c 'import torch;print(torch.utils.cmake_prefix_path)')
-CMAKE_PREFIX_TORCH_NPU="/mnt/workspace/torch_npu/libtorch_npu"  # root path to compiled libtorch_npu
-TORCH_NPU_SOURCE_DIR="${TORCH_NPU_SOURCE_DIR:-/mnt/workspace/torch_npu}"  # source path to torch_npu (where "third_party" locates), default /mnt/workspace/torch_npu
+CMAKE_PREFIX_TORCH_NPU="path/to/pytorch/libtorch_npu"  # root path to compiled libtorch_npu
+TORCH_NPU_SOURCE_DIR="path/to/pytorch"  # path to torch_npu source code (where "third_party" locates)
 
 mkdir -p build && cd build
 
