@@ -2404,21 +2404,18 @@ void CodeGenTileLangNPUIRDEV::CreateHIVMBinaryVectorOp(const CallNode *op) {
       // Vector case
       const CallNode *region_node = op->args[arg_id].as<CallNode>();
       auto buffer_node = region_node->args[0].as<BufferLoadNode>();
-      size_t ndim = buffer_node->buffer->shape.size();
-      Array<PrimExpr> region_extent;
-      for (size_t i = 0; i < ndim; i++) {
-        region_extent.push_back(region_node->args[2 + i]);
-      }
+      Array<PrimExpr> tmp_buffer_shape = buffer_node->buffer->shape;
       bool is_scalar_load = true;
-      for (size_t i = 0; i < ndim; i++) {
+      for (int i = 0; i < tmp_buffer_shape.size(); i++) {
         const IntImmNode* int_imm = region_node->args[2 + i].as<IntImmNode>();
         if (!int_imm || int_imm->value != 1) {
           is_scalar_load = false;
           break;
         }
       }
+      const IntImmNode* int_imm = region_node->args[2].as<IntImmNode>();
       // If load only one element, do not use memref.subview, use memref.load as a scalar
-      if (is_scalar_load) {
+      if(is_scalar_load) {
         src = VisitExpr_(buffer_node);
       } else {
         src = GenExtractSliceFromRegion(region_node);
