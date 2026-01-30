@@ -2347,6 +2347,7 @@ void CodeGenTileLangNPUIRDEV::DebugPrintCodegen(const CallNode *op) {
 ///    T.npuir_reshape(A, B)
 /// after:
 ///    %.* = tensor.reshape %a(%b) outs(%c) -> tensor<>
+void CodeGenTileLangNPUIRDEV::ReshapeCodegen(const CallNode *op) {}
 
 void CodeGenTileLangNPUIRDEV::CallExternCodegen(const CallNode *op) {
   // Todo: Implementation pending
