@@ -63,8 +63,8 @@
 
    ```
    vim tilelang-ascend/examples/dispatch_combine/dispatch_combine_shmem.py 
-   # G_IP_PORT设置为本机IP(100.102.280.145改为本机IP) 
-   G_IP_PORT = "tcp://100.102.180.145:8666" 
+   # G_IP_PORT设置为本机IP(xxx.xxx.xxx.xxx改为本机IP) 
+   G_IP_PORT = "tcp://xxx.xxx.xxx.xxx:xxxx" 
    ```
 
 2. 运行代码
