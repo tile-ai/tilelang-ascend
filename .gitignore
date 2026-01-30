@@ -96,3 +96,4 @@ tilelang/jit/adapter/cython/.cycache
 examples/torch_tl_ascend/src/torch_tl_ascend/*.so
 examples/torch_tl_ascend/src/torch_tl_ascend/op_source/*.py
 !examples/torch_tl_ascend/src/torch_tl_ascend/op_source/__init__.py
+examples/torch_tl_ascend/demo_libtorch/lib/*.so
