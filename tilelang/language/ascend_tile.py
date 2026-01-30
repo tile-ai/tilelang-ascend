@@ -1441,7 +1441,7 @@ def broadcast(dst: Buffer, src: Buffer, tmp: Buffer):
         *src_shape,
     )
 
-def sub_moe(dst: Buffer, src0: Buffer, src1: Buffer, count: PrimExpr):
+def sub_experiment(dst: Buffer, src0: Buffer, src1: Buffer, count: PrimExpr):
     """Performs element-wise subtraction(with count function): dst = src0 - src1.
 
     Args:
@@ -1458,14 +1458,14 @@ def sub_moe(dst: Buffer, src0: Buffer, src1: Buffer, count: PrimExpr):
 
     return T.call_intrin(
         "handle",
-        tir.op.Op.get(f"tl.ascend_sub_moe"),
+        tir.op.Op.get(f"tl.ascend_sub_experiment"),
         dst.access_ptr("w"),
         src0.access_ptr("r"),
         src1.access_ptr("r"),
         count,
     )
 
-def abs_moe(dst: Buffer, src: Buffer, count: PrimExpr):
+def abs_experiment(dst: Buffer, src: Buffer, count: PrimExpr):
     """Performs element-wise absolute value(with count function): dst = abs(src0).
 
     Args:
@@ -1480,13 +1480,13 @@ def abs_moe(dst: Buffer, src: Buffer, count: PrimExpr):
 
     return T.call_intrin(
         "handle",
-        tir.op.Op.get(f"tl.ascend_abs_moe"),
+        tir.op.Op.get(f"tl.ascend_abs_experiment"),
         dst.access_ptr("w"),
         src.access_ptr("r"),
         count,
     )
 
-def mins_moe(dst: Buffer, src: Buffer, scalarValue: PrimExpr, count: PrimExpr):
+def mins_experiment(dst: Buffer, src: Buffer, scalarValue: PrimExpr, count: PrimExpr):
     """Performs comparison of each element in the tensor with a scalar.
 
     Args:
@@ -1501,14 +1501,14 @@ def mins_moe(dst: Buffer, src: Buffer, scalarValue: PrimExpr, count: PrimExpr):
 
     return T.call_intrin(
         "handle",
-        tir.op.Op.get(f"tl.ascend_mins_moe"),
+        tir.op.Op.get(f"tl.ascend_mins_experiment"),
         dst.access_ptr("w"),
         src.access_ptr("r"),
         scalarValue,
         count,
     )
 
-def reduce_sum_moe(dst: Buffer, src: Buffer, sharedtmp: Buffer, count: PrimExpr):
+def reduce_sum_experiment(dst: Buffer, src: Buffer, sharedtmp: Buffer, count: PrimExpr):
     """Performs summation of all input data.
 
     Args:
@@ -1520,14 +1520,14 @@ def reduce_sum_moe(dst: Buffer, src: Buffer, sharedtmp: Buffer, count: PrimExpr)
 
     return T.call_intrin(
         "handle",
-        tir.op.Op.get(f"tl.ascend_reducesum_moe"),
+        tir.op.Op.get(f"tl.ascend_reducesum_experiment"),
         dst.access_ptr("w"),
         src.access_ptr("r"),
         sharedtmp.access_ptr("r"),
         count,
     )
 
-def reduce_sum_mask_moe(
+def reduce_sum_mask_experiment(
     dst: Buffer, src: Buffer, sharedtmp: Buffer, mask: PrimExpr, repeatTime: PrimExpr, srcRepStride: PrimExpr
     ):
     """Performs summation of all input data(High-dimensional tensor slicing and computation).
@@ -1543,7 +1543,7 @@ def reduce_sum_mask_moe(
 
     return T.call_intrin(
         "handle",
-        tir.op.Op.get(f"tl.ascend_reducesum_mask_moe"),
+        tir.op.Op.get(f"tl.ascend_reducesum_mask_experiment"),
         dst.access_ptr("w"),
         src.access_ptr("r"),
         sharedtmp.access_ptr("r"),
@@ -1552,7 +1552,7 @@ def reduce_sum_mask_moe(
         srcRepStride,
     )
 
-def gathermask_moe(
+def gathermask_experiment(
     dst: Buffer, src0: Buffer, src1Pattern: Buffer, reduceMode: bool, mask: PrimExpr, GatherMaskParams: List[int], rsvdCnt: PrimExpr
     ):
     """Performs a gather mask operation(User-defined mode).
@@ -1583,8 +1583,8 @@ def gathermask_moe(
     scr1RepeatStride = GatherMaskParams[3]
     return T.call_intrin(
         "handle",
-        tir.op.Op.get(f"tl.ascend_gather_mask_moe"),
-        f"GatherMask_moe<{_dtype(dst)}>",
+        tir.op.Op.get(f"tl.ascend_gather_mask_experiment"),
+        f"GatherMask_experiment<{_dtype(dst)}>",
         dst.access_ptr("w"),
         src0.access_ptr("r"),
         src1Pattern.access_ptr("r"),
@@ -1597,7 +1597,7 @@ def gathermask_moe(
         rsvdCnt,
     )
 
-def fill_moe(
+def fill_experiment(
     dst: Buffer, value: PrimExpr, mask: List[int], repeatTimes: PrimExpr, dstBlockStride: PrimExpr, dstRepeatStride: PrimExpr
     ):
     """Fill a buffer or buffer region with a specified value(High-dimensional tensor slicing and computation).
@@ -1614,8 +1614,8 @@ def fill_moe(
     mask0 = mask[0]
     return tir.call_intrin(
         "handle",
-        tir.op.Op.get("tl.ascend_fill_moe"),
-        f"Fill_moe<{_dtype(dst)}>",
+        tir.op.Op.get("tl.ascend_fill_experiment"),
+        f"Fill_experiment<{_dtype(dst)}>",
         dst.access_ptr("w"),
         value,
         mask0,
@@ -1624,7 +1624,7 @@ def fill_moe(
         dstRepeatStride,
     )
 
-def sum_moe(dst: Buffer, src: Buffer, sumParams: List[int]):
+def sum_experiment(dst: Buffer, src: Buffer, sumParams: List[int]):
     """Sum elements along the last dimension (high-level API).
 
     Args:
@@ -1641,8 +1641,8 @@ def sum_moe(dst: Buffer, src: Buffer, sumParams: List[int]):
     n = sumParams[2]
     return tir.call_intrin(
         "handle",
-        tir.op.Op.get("tl.ascend_sum_moe"),
-        f"Sum_moe<{_dtype(dst)}>",
+        tir.op.Op.get("tl.ascend_sum_experiment"),
+        f"Sum_experiment<{_dtype(dst)}>",
         dst.access_ptr("w"),
         src.access_ptr("r"),
         outter,
@@ -1650,11 +1650,11 @@ def sum_moe(dst: Buffer, src: Buffer, sumParams: List[int]):
         n,
     )
 
-def datacachecleanandinvalid_moe(dst: Buffer, CacheLine: str, DcciDst: str):
+def datacachecleanandinvalid_experiment(dst: Buffer, CacheLine: str, DcciDst: str):
 
     return T.call_intrin(
             "handle",
-            tir.op.Op.get(f"tl.ascend_datacachecleanandinvalid_moe"),
+            tir.op.Op.get(f"tl.ascend_datacachecleanandinvalid_experiment"),
             f"AscendC::DataCacheCleanAndInvalid<{_dtype(dst)}, AscendC::CacheLine::{CacheLine}, AscendC::DcciDst::{DcciDst}>",
             dst.access_ptr("w"),
         )        
