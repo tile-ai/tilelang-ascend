@@ -435,7 +435,7 @@ void CodeGenTileLangNPUIRDEV::VisitStmt_(const tir::ForNode *op) {
 
   // Collect all variables defined in the loop body,
   // which may need to be carried as loop values
-  std::set<const tir::VarNode*> loop_carried_vars;
+  std::vector<const tir::VarNode*> loop_carried_vars;
   std::vector<mlir::Value> init_values;
 
   // Traverse the body of the for loop body, and generate
@@ -527,7 +527,7 @@ void CodeGenTileLangNPUIRDEV::VisitStmt_(const tir::IfThenElseNode *op) {
 
 void CodeGenTileLangNPUIRDEV::CollectVarsUsedInBodyButDefinedOutside(
     const tir::ForNode *op, 
-    std::set<const VarNode*>& loop_carried_vars) {
+    std::vector<const VarNode*>& loop_carried_vars) {
   LoopCarriedVarCollector collector(this, loop_carried_vars);
   collector.VisitStmt(op->body);
 }
@@ -3162,8 +3162,10 @@ void CodeGenTileLangNPUIRDEV::VisitStmt_(const DeclBufferNode *op) {
 void CodeGenTileLangNPUIRDEV::LoopCarriedVarCollector::VisitExpr_(
     const tir::CallNode *call) {
   auto check_var = [&](const tir::VarNode *var_node) {
-    if (var_node && outer_->GetVarValue(var_node) != mlir::Value{}) {
-      loop_carried_vars_.insert(var_node);
+    if (var_node && outer_->GetVarValue(var_node) != mlir::Value{} &&
+        vars_set_.find(var_node) == vars_set_.end()) {
+      vars_set_.insert(var_node);
+      loop_carried_vars_.push_back(var_node);
     }
   };
   auto process_call_arg = [&](int arg_index) {
@@ -3204,9 +3206,11 @@ void CodeGenTileLangNPUIRDEV::LoopCarriedVarCollector::VisitExpr_(
 }
 
 void CodeGenTileLangNPUIRDEV::LoopCarriedVarCollector::VisitStmt_(const tir::BufferStoreNode* op) {
-  auto check_var = [&](const tir::VarNode* var_node) {
-    if (var_node && outer_->GetVarValue(var_node) != mlir::Value{}) {
-      loop_carried_vars_.insert(var_node);
+  auto check_var = [&](const tir::VarNode *var_node) {
+    if (var_node && outer_->GetVarValue(var_node) != mlir::Value{} &&
+        vars_set_.find(var_node) == vars_set_.end()) {
+      vars_set_.insert(var_node);
+      loop_carried_vars_.push_back(var_node);
     }
   };
 

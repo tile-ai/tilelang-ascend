@@ -225,7 +225,7 @@ protected:
   std::vector<int64_t> GetStrideFromShapeAPI(Array<tvm::PrimExpr> shape);
   // Collect all variables defined outside the loop body
   void CollectVarsUsedInBodyButDefinedOutside(const ForNode *op, 
-      std::set<const VarNode*>& loop_carried_vars);
+      std::vector<const VarNode*>& loop_carried_vars);
 
 private:
   mlir::Value GetEventID(PrimExpr id);
@@ -360,11 +360,12 @@ private:
       : public tir::StmtExprVisitor {
   private:
     CodeGenTileLangNPUIRDEV* outer_;
-    std::set<const VarNode*>& loop_carried_vars_;
+    std::vector<const VarNode*>& loop_carried_vars_;
+    std::unordered_set<const VarNode *> vars_set_;
     
   public:
     LoopCarriedVarCollector(CodeGenTileLangNPUIRDEV* outer, 
-                            std::set<const VarNode*>& loop_carried_vars)
+                            std::vector<const VarNode*>& loop_carried_vars)
         : outer_(outer), loop_carried_vars_(loop_carried_vars) {}
     
     using tir::StmtExprVisitor::VisitStmt;
