@@ -9,7 +9,7 @@ pass_configs = {
     tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
 }
 
-@tilelang.jit(out_idx=[-1], target="pto", pass_configs=pass_configs)
+@tilelang.jit(out_idx=[-1], pass_configs=pass_configs)
 def clamp_kernel(size, max_val, min_val, dtype="float16"):
     block_size = 64 * 1024
     loop_num = (size + block_size - 1) // block_size
@@ -31,8 +31,6 @@ def clamp_kernel(size, max_val, min_val, dtype="float16"):
                 T.copy(input[idx * block_size // VEC_NUM], in_ub)
                 for i in range(size):
                     T.barrier_all()
-                    # T.tile.clamp_min(in_ub, in_ub, tmp_ub, min_val, block_size // VEC_NUM)
-                    # T.tile.clamp_max(in_ub, in_ub, tmp_ub, max_val, block_size // VEC_NUM)
                     T.tile.clamp(in_ub, in_ub, tmp_ub, min_val, max_val, block_size // VEC_NUM)
                     T.barrier_all()
                     
@@ -55,9 +53,9 @@ input_data = (torch.rand([size]) - 0.5) * 2 * thresh
 input_data = input_data.half().npu()
 
 output_data = func(input_data)
-clip_data = torch.clamp(input_data, min_v, max_v)
+ref_output_data = torch.clamp(input_data, min_v, max_v)
 
-result = (output_data == clip_data).all()
-print(f"output_data == input_data all is : {result}")
+result = (output_data == ref_output_data).all()
+print(f"output_data == ref_output_data all is : {result}")
 if result:
     print("Kernel Output Match!")

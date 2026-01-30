@@ -1342,7 +1342,19 @@ def bitwise_xor(dst: Buffer, src0: Buffer, src1: Buffer):
 
 
 def clamp_max(out: Buffer, buffer: Buffer, tmp: Buffer, scalar_value: PrimExpr, count: PrimExpr):
+    """_summary_
+    Clip tensor elements to no more than scalar_value, replace elements larger than scalar_value with scalar_value, 
+    keep original values for elements less than or equal to scalar_value
+    Args:
+        out: The destination buffer where the result will be stored.
+        buffer: The first source operand buffer.
+        tmp: The second source operand buffer.
+        scalar_value: The max scalar value
+        count: The size of tensor out
 
+    Returns:
+        A TVM intrinsic call that performs the clamp_max operation.
+    """
     return tir.call_intrin(
         "handle",
         tir.op.Op.get(f"tl.ascend_clamp_max"),
@@ -1355,7 +1367,19 @@ def clamp_max(out: Buffer, buffer: Buffer, tmp: Buffer, scalar_value: PrimExpr, 
     )
 
 def clamp_min(out: Buffer, buffer: Buffer, tmp: Buffer, scalar_value: PrimExpr, count: PrimExpr):
+    """
+    Clip tensor elements to no less than v, replace elements smaller than scalar_value with scalar_value, 
+    keep original values for elements greater than or equal to scalar_value
+    Args:
+        out: The destination buffer where the result will be stored.
+        buffer: The first source operand buffer.
+        tmp: The second source operand buffer.
+        scalar_value: The min scalar value
+        count: The size of tensor out
 
+    Returns:
+        A TVM intrinsic call that performs the clamp_min operation.
+    """
     return tir.call_intrin(
         "handle",
         tir.op.Op.get(f"tl.ascend_clamp_min"),
@@ -1368,7 +1392,19 @@ def clamp_min(out: Buffer, buffer: Buffer, tmp: Buffer, scalar_value: PrimExpr, 
     )
 
 def clamp(out: Buffer, buffer: Buffer, tmp: Buffer, min_scalar: PrimExpr, max_scalar: PrimExpr, count: PrimExpr):
-    
+    """
+    Clip tensor elements to [min_scalar, max_scalar] range, replace out-of-bounds values with boundary values
+    Args:
+        out: The destination buffer where the result will be stored.
+        buffer: The first source operand buffer.
+        tmp: The second source operand buffer.
+        min_scalar: The min scalar value
+        max_scalar: The max scalar value
+        count: The size of tensor out
+
+    Returns:
+        A TVM intrinsic call that performs the clamp operation.
+    """
     return tir.call_intrin(
         "handle",
         tir.op.Op.get(f"tl.ascend_clamp"),
