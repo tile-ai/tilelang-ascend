@@ -269,7 +269,7 @@ def shmem_put_nbi(dst: Buffer, src: Buffer, nelems: PrimExpr, newPe: PrimExpr):
     )                                                  
 
 
-def shmem_ub_put_nbi(ub: Buffer, dst: Buffer, nelems: PrimExpr, newPe: PrimExpr):
+def shmem_ub_put_nbi(ub: Buffer, dst: Buffer, nelems: PrimExpr, newPe: PrimExpr, strelem: PrimExpr = 0):
     """Performs a shmem ub put nbi operation.
 
     This intrinsic invokes the underlying implementation to copy from the local UB to the newPe GM
@@ -291,6 +291,7 @@ def shmem_ub_put_nbi(ub: Buffer, dst: Buffer, nelems: PrimExpr, newPe: PrimExpr)
         dst.access_ptr("w"),
         nelems,
         newPe,
+        strelem,
     )                                  
 
 
