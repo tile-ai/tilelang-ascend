@@ -258,6 +258,18 @@ AICORE PTO_INLINE void TSIGMOID(
     TRECIP(dst_addr, src0_addr);
 }
 
+template <typename T, int32_t row, int32_t col>
+AICORE PTO_INLINE void axpy(
+    TileUbDataND<T, row, col, row, col> &dst,
+    TileUbDataND<T, row, col, row, col> &src0,
+    T scalar_value
+){
+    tl::ascend_pto::TileUbDataND <T, row, col, row, col> axpy_ub_temp;
+    TMULS(axpy_ub_temp, src0, scalar_value);
+    pipe_barrier(PIPE_V);
+    TADD(dst, dst, axpy_ub_temp);
+}
+
 template <typename T1, typename T2, typename T3,
         int32_t rows_src, int32_t cols_src,
         int32_t validRow_src, int32_t validCol_src,

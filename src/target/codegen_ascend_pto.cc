@@ -579,13 +579,13 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) 
     BinaryVecOpsCodegen(op, "TMULS");
   } else if (op->op.same_as(tl::ascend_divs())) {
     BinaryVecOpsCodegen(op, "TDIVS");
-  }
-  else if (op->op.same_as(tl::ascend_maxs())) {
+  } else if (op->op.same_as(tl::ascend_maxs())) {
     BinaryVecOpsCodegen(op, "TMAXS");
   } else if (op->op.same_as(tl::ascend_mins())) {
     BinaryVecOpsCodegen(op, "TMINS");
-  }
-    else if (op->op.same_as(tl::ascend_pipe_barrier())) {
+  } else if (op->op.same_as(tl::ascend_axpy())) {
+    AxpyCodegen(op);
+  } else if (op->op.same_as(tl::ascend_pipe_barrier())) {
     PipeBarrierCodegen(op);
   } else if (op->op.same_as(tl::ascend_set_flag())) {
     SetAndWaitFlagCodegen(op, "set_flag");
@@ -1311,8 +1311,8 @@ void CodeGenTileLangAscendPto::BinaryVecOpsCodegen(const CallNode *op,
     if (operation == "TSUBS") {
         this->stream << "TADDS" << "(";
     } else {
-        this->stream << operation << "(";  
-    } 
+        this->stream << operation << "(";
+    }
     std::string scalar = PrintExpr(op->args[op->args.size() - 2]);
     var_names.push_back(operation == "TSUBS" ? ("-" + scalar):scalar);
     for (int i = 0; i < var_names.size(); i++) {
@@ -1347,6 +1347,19 @@ void CodeGenTileLangAscendPto::ScalarOpCodegen(const CallNode *op, const std::st
     this->stream << op_name << "(" << PrintBufferOffset(op->args[0].as<CallNode>()) << ", "
                   << PrintBufferOffset(op->args[1].as<CallNode>()) << ", "
                   << PrintExpr(op->args[2]) << ");\n";
+}
+
+void CodeGenTileLangAscendPto::AxpyCodegen(const CallNode *op) {
+
+  std::string dst_name = PrintBufferOffset(op->args[0].as<CallNode>());
+  std::string src0_name = PrintBufferOffset(op->args[1].as<CallNode>());
+  std::string scalar = PrintExpr(op->args[2]);
+
+  std::vector<std::string> ub_data = ub_data_map_[dst_name];
+  this->PrintIndent();
+  this->stream << kAscendPtoScope << "axpy" << "<" << ub_data[0] << ", " << ub_data[1] << ", " << ub_data[2] << ">"
+   << "(" << dst_name << ", " << src0_name << ", " << scalar << ");\n";
+
 }
 
 void CodeGenTileLangAscendPto::BinaryVecClampMaxMinOpsCodegen(
@@ -2223,7 +2236,7 @@ void CodeGenTileLangAscendPto::PrintHostFunc(const PrimFunc &f, const std::strin
             << " *>(" << v->name_hint << ")";
     } else {
         os << v->name_hint;
-    } 
+    }
   }
   for (auto shape_var : shape_vars) {
     os << ", " << shape_var->name_hint;
