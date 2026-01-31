@@ -69,7 +69,7 @@ AICORE PTO_INLINE void gemm_v0(
     /**
      * Added synchronization logic: Write-After-Read (WAR) protection
      * Objective: Prevent MTE1 (data transfer) from overwriting L0 before M (Cube) completes processing the previous round of data
-     * Support Ping-Pong buffer.
+     * TODO: Support Ping-Pong buffer.
     */
     auto war_event_id = (event_t)((int)EVENT_ID0 + 1);
     set_flag(PIPE_M, PIPE_MTE1, war_event_id);
