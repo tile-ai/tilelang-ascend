@@ -226,6 +226,9 @@ protected:
   // Collect all variables defined outside the loop body
   void CollectVarsUsedInBodyButDefinedOutside(const ForNode *op, 
       std::vector<const VarNode*>& loop_carried_vars);
+  // Collect all variables defined outside the if block
+  void CollectVarsUsedInBodyButDefinedOutside(const IfThenElseNode* op,
+      std::vector<const VarNode*>& if_carried_vars);
 
 private:
   mlir::Value GetEventID(PrimExpr id);
