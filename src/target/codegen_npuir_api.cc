@@ -1464,7 +1464,7 @@ void CodeGenTileLangNPUIRAPI::CreateHIVMBinaryVectorOp(const CallNode *op) {
   auto processImm = [&](mlir::Value &src, int arg_id,
                         Array<PrimExpr> &buffer_shape) {
     if (op->args[arg_id].as<IntImm>() || op->args[arg_id].as<FloatImm>() || 
-        op->args[arg_id].as<tir::VarNode>() || op->args[arg_id].as<tir::BufferLoadNode>()) {
+        op->args[arg_id].as<tir::VarNode>()) {
       // Scalar case
       const CallNode *region_node = op->args[1 - arg_id].as<CallNode>();
       const BufferLoadNode *buffer_load_node =
@@ -1490,8 +1490,10 @@ void CodeGenTileLangNPUIRAPI::CreateHIVMBinaryVectorOp(const CallNode *op) {
       }
       const IntImmNode* int_imm = region_node->args[2].as<IntImmNode>();
       // If load only one element, do not use memref.subview, use memref.load as a scalar
-      if(is_scalar_load) {
+      if(is_scalar_load && arg_id == 1) {
         src = GenMemrefLoadFromRegion(buffer_node);
+        // clear buffer_shape to unable broadcast
+        buffer_shape.clear();
       } else {
         src = GenSubviewFromRegion(region_node);
       }

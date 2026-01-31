@@ -116,72 +116,64 @@ class AscendBinaryOp(object):
         self.__dst = dst
     def buildTirCall(self):
         src0 = _to_region(self.__src0, "r", _get_extent(self.__src0))
-        src1 = _to_region(self.__src1, "r", _get_extent(self.__src1))
+        src1 = tir.const(self.__src1, self.__dst.dtype) if isinstance(self.__src1,(int,float)) else _to_region(self.__src1, "r", _get_extent(self.__src1))
         dst = _to_region(self.__dst, "w", _get_extent(self.__dst))
         return tir.call_intrin("handle", tir.op.Op.get("tl.npuir_" + self.__opName), src0, src1, dst)
 
 """npuir add at tile-level."""
 def npuir_add(A, B, C):
     """Element-wise addition: C = A + B.
-    
+
     Args:
         A: First input tensor
         B: Second input tensor or scalar value
         C: Output tensor
-    
+
     Returns:
         tir.Call: The TIR call for the addition operation
     """
-    if isinstance(B,(int,float)):
-        B = tir.const(B, C.dtype)
     return AscendBinaryOp("add", A, B, C).buildTirCall()
 
 """npuir sub at tile-level."""
 def npuir_sub(A, B, C):
     """Element-wise subtraction: C = A - B.
-    
+
     Args:
         A: First input tensor
         B: Second input tensor or scalar value
         C: Output tensor
-    
+
     Returns:
         tir.Call: The TIR call for the subtraction operation
     """
-    if isinstance(B,(int,float)):
-        B = tir.const(B, C.dtype)
     return AscendBinaryOp("sub", A, B, C).buildTirCall()
 
 """npuir mul at tile-level."""
 def npuir_mul(A, B, C):
     """Element-wise multiplication: C = A * B.
-    
+
     Args:
         A: First input tensor
         B: Second input tensor or scalar value
         C: Output tensor
-    
+
     Returns:
         tir.Call: The TIR call for the multiplication operation
     """
-    if isinstance(B,(int,float)):
-        B = tir.const(B, C.dtype)
     return AscendBinaryOp("mul", A, B, C).buildTirCall()
 
 """npuir div at tile-level."""
 def npuir_div(A, B, C):
     """Element-wise division: C = A / B.
-    
+
     Args:
         A: First input tensor
         B: Second input tensor or scalar value
         C: Output tensor
-    
+
     Returns:
         tir.Call: The TIR call for the division operation
     """
-    if isinstance(B,(int,float)):
-        B = tir.const(B, C.dtype)
     return AscendBinaryOp("div", A, B, C).buildTirCall()
 
 """npuir max at tile-level."""
