@@ -576,6 +576,8 @@ def _get_tmp_buffer_dev(data):
         return T.alloc_shared(data.shape, data.dtype)
     elif isinstance(data, tir.BufferLoad):
         return T.alloc_shared(data.buffer.shape, data.dtype)
+    elif isinstance(data, tir.BufferRegion):
+        return T.alloc_shared(data.buffer.shape, data.buffer.dtype)
     else:
         raise TypeError(f"Unsupported dst type: {type(data)}")
 
