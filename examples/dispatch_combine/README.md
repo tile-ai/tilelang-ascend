@@ -1,73 +1,76 @@
-# 概述 
+# overview 
 
-本文档介绍如何运行 Tilelang 里的 Dispatch 算子和 Combine 算子。 
+This document describes how to run the Dispatch operator and the Combine operator in Tilelang.
 
-# 环境准备 ## 
+# Environment Preparation ## 
 
-## 硬件要求 
+## Hardware Requirements 
 
-- 产品型号：Atlas系列：800I A2/A3、800T A2/A3
-- 操作系统：Linux ARM
+- Product Model: Atlas Series: 800I A2/A3、800T A2/A3
+- Operating System: Linux ARM
 
-## 软件依赖 
+## Software Dependencies 
 
-- 驱动固件：Ascend HDK 25.0.RC1.1。下载链接：[驱动固件资源](https://www.hiascend.com/hardware/firmware-drivers/community?product=1&model=30&cann=All&driver=Ascend+HDK+25.0.RC1) 
+- Driver and Firmware: Ascend HDK 25.0.RC1.1。Download Link: [Driver and Firmware Resources](https://www.hiascend.com/hardware/firmware-drivers/community?product=1&model=30&cann=All&driver=Ascend+HDK+25.0.RC1) 
 
-- CANN版本（根据功能选择其一）：
-  - 8.2.RC1.alpha003 及以上（社区版）支持 D2D 功能。下载链接：[社区版资源](https://www.hiascend.com/developer/download/community/result?module=cann) 
-  - 8.5.0 及以上（尝鲜版）支持 D2D、D2H、H2D 功能。下载链接：[尝鲜版链接](https://ascend.devcloud.huaweicloud.com/cann/run/software/)
-- 工具链：
+- CANN Version (Select one according to the function):
+  - 8.2.RC1.alpha003 and above (Community Edition) support the D2D function. Download Link: [Community Edition Resources](https://www.hiascend.com/developer/download/community/result?module=cann) 
+  - 8.5.0 and above (Early Access Edition) support D2D, D2H and H2D functions. Download Link: [Early Access Edition Link](https://ascend.devcloud.huaweicloud.com/cann/run/software/)
+- Toolchain:
   - cmake ≥ 3.19  
   - GLIBC ≥ 2.28
 
-## 软件包安装
+## Software Package Installation
 
-1. 安装驱动与固件，安装 CANN toolkit 包，安装 CANN ops 包。（用户可自定义安装路径，也可采用默认安装路径）
+1. Install the driver and firmware, install the CANN toolkit package, and install the CANN ops package. (Users can customize the installation paths or use the default ones.)
 
    ```
-   # 安装驱动包（先安装firmware包，再安装driver包）
+   # Install the driver and firmware packages 
+   # Install the firmware package first, then the driver package
    bash Atlas-A3-hdk-npu-firmware_7.7.0.3.228.run --upgrade
    bash Atlas-A3-hdk-npu-driver_25.0.rc1.3_linux-aarch64.run --upgrade
-   # 重启
+   # Restart
    reboot
-   # 安装CANN包
+   # Install the CANN package
    ./Ascend-cann-A3-ops_8.5.0_linux-aarch64.run --install --install-path=${install_path}  ./Ascend-cann-toolkit_8.5.0_linux-aarch64.run --install --install-path=${install_path}
    ```
 
-2. 获取 Tielalng源码
+2. Obtain the Tielang source code
 
    ```
    git clone --recursive https://github.com/tile-ai/tilelang-ascend.git
    ```
 
-## 设置环境变量
+## Set the environment variables
 
-1. 设置 CANN 包的环境变量
+1. Set the environment variables for the CANN packages
 
    ```
-   # 用户自定义安装路径   
+   # User-defined installation path  
    source ${install_path}/ascend-toolkit/latest/bin/setenv.bash
    ```
 
-2. 设置 tilelang 的环境变量
+2. Set the environment variables for TileLang and Shmem
 
    ```
    cd tilelang-ascend   
    bash install_ascend.sh --enable-shmem   
    source set_env.sh
+   source 3rdparty/shmem/install/set_env.sh
    ```
 
-# 运行算子
+# Run the operator
 
-1. 配置IP
+1. Configure the IP
 
    ```
    vim tilelang-ascend/examples/dispatch_combine/dispatch_combine_shmem.py 
-   # G_IP_PORT设置为本机IP(xxx.xxx.xxx.xxx改为本机IP) 
+   # Set G_IP_PORT to the local IP address
+   # Replace xxx.xxx.xxx.xxx with the local IP address and xxxx with the port number 
    G_IP_PORT = "tcp://xxx.xxx.xxx.xxx:xxxx" 
    ```
 
-2. 运行代码
+2. Run the code
 
    ```
    python tilelang-ascend/examples/dispatch_combine/dispatch_combine_shmem.py
