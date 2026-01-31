@@ -70,10 +70,8 @@ from tilelang import jit
 import torch
 
 pass_configs = {
-    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
     tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
     tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
-    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_SYNC: True,
 }
 
 M = 1024
@@ -191,7 +189,7 @@ TileLang还支持JIT（Just-in-time，即时编译）。JIT是一种动态编译
 - NPU硬件约束下的AscendC语法修正。JIT在运行时可检测当前NPU硬件的资源配置，严格遵守硬件资源限制，指导CodeGen生成符合性能约束的AscendC代码。
 - 算子运行时的即时编译与动态优化。算子运行过程中，JIT会在编译过程中结合NPU当前的硬件状态优化指令分配，根据AI Core的利用率和内存占用情况动态调整编译策略。
 
-在TileLang kernel开发中，通过** @jit **装饰器来触发调用时的即时编译。
+在TileLang kernel开发中，通过 **@jit** 装饰器来触发调用时的即时编译。
 
 ## 3. TileLang语法基础
 
@@ -199,7 +197,7 @@ TileLang还支持JIT（Just-in-time，即时编译）。JIT是一种动态编译
 
 ### 3.1 kernel定义
 
-TileLang kernel是基于TIR（TVM IR）生成的函数，用**@T.prim_func**来修饰。参数类型为**T.Tensor**或**T.Buffer**，包含了shape和dtype信息。
+TileLang kernel是基于TIR（TVM IR）生成的函数，用`@T.prim_func`来修饰。参数类型为`T.Tensor`或`T.Buffer`，包含了shape和dtype信息。
 
 ```
 @T.prim_func
@@ -211,11 +209,7 @@ def add_kernel(
     ...  # kernel body
 ```
 
-dtype支持的数据类型有：
-
-
-
-另外，shape除了可以是整形常量外，还可以是符号变量的形式表示，以支持动态信息传递。在TileLang中，支持两种符号变量的形式：
+shape除了可以是整形常量外，还可以是符号变量的形式表示，以支持动态信息传递。在TileLang中，支持两种符号变量的形式：
 
 - **T.dyn[...]**
 
@@ -248,7 +242,7 @@ dtype支持的数据类型有：
 
 注意：
 
-- T.symbolic(name, dtype)` 是 `T.dynamic的一个已弃用的别名；建议使用T.dynamic。
+- T.symbolic(name, dtype) 是T.dynamic的一个已弃用的别名；建议使用T.dynamic。
 - 在 `@jit`中, 具体的尺寸来自第一次调用时传入的实际张量参数.
 - 注解中的符号不需要作为单独的kernel参数；TileLang 会从参数形状中绑定它们。
 
@@ -264,7 +258,7 @@ float16, float32, bfloat16, int8, int16, int32, int64, uint8, uint16, uint32, ui
 
 ### 3.3 kernel launch
 
-**with T.Kernel(...)**声明一个kernel运行上下文，并且创建数据tile block与逻辑核的绑定关系。对于Ascend NPU来说，对于每个block，返回一个（cid，vid)的元组。cid的范围为 [0,block_num), vid的范围为0或1。因为A2/A3的CV核配比可以为1:2或1:1, 可以通过vid指定当前vector的索引。
+**with T.Kernel(...)** 声明一个kernel运行上下文，并且创建数据tile block与逻辑核的绑定关系。对于Ascend NPU来说，对于每个block，返回一个（cid，vid)的元组。cid的范围为 [0,block_num), vid的范围为0或1。因为A2/A3的CV核配比可以为1:2或1:1, 可以通过vid指定当前vector的索引。
 
 下面的代码片段对于(M, N)大小的数据块，切分为（block_M，block_N）大小的基本tile block，tile block的数量为m_num * n_num个，代码逻辑可以理解为多个并发的执行单元，每个单元处理一个tile block（针对每个tile block，又可以根据vector数量切分为1个或2个vector单元并发处理）。
 
@@ -327,11 +321,25 @@ for k in T.unroll(K_TILE):
 
 - **Parallel**（element-wise）
 
-**T.Parallel**(ext0, ext1, ...)构建嵌套循环，这些循环能够很好地映射到逐元素操作。循环体通过一个for头接收所有索引：
+**T.Parallel**(ext0, ext1, ...)构建嵌套循环，这些循环能够很好地将Tile运算映射到逐元素操作。循环体通过一个for头接收所有索引：
 
+- **运算操作**：
+```python
+# 一维运算场景
+for i in T.Parallel(v_block):
+    m_i[i] = T.max(m_i[i], m_i_prev[i])
 ```
-for i, j in T.Parallel(M, N):
-    C[i, j] = A[i, j] + B[i, j]
+```python
+# 二维运算场景
+for (i, j) in T.Parallel(v_block, d):
+	acc_o_ub[i, j] /= T.exp(attn_sink_ub[i] - scores_max[i])
+```
+- **拷贝操作**：
+
+``` python
+# GM -> UB 拷贝&计算场景
+for i, j in T.Parallel(block_M // VEC_NUM, block_N):
+	C[bx * block_M + vid * block_M // VEC_NUM + i, by * block_N + j] = T.exp(a_ub[i, j])
 ```
 
 Developer模式调度原语章节会有详细介绍。
@@ -342,9 +350,18 @@ Developer模式调度原语章节会有详细介绍。
 
 ```
 for ko in T.Pipelined(T.ceildiv(K, BK), num_stages=3):
-    T.copy(A[by * BM, ko * BK], A_s)  # stage: copy A tile
-    T.copy(B[ko * BK, bx * BN], B_s)  # stage: copy B tile
-    T.gemm_v0(A_s, B_s, C_f)             # stage: compute
+    T.copy(A[by * BM, ko * BK], A_s)   # stage: copy A tile
+    T.copy(B[ko * BK, bx * BN], B_s)   # stage: copy B tile
+    T.gemm_v0(A_s, B_s, C_f)           # stage: compute
+```
+三段式流水并行排布示意：
+```
+------------------------------------->
+  stage1  |     stage2     |  stage3 
+--------------------------------------
+copy copy | copy copy copy | ---- ----
+---- ---- | gemm gemm gemm | gemm gemm
+--------------------------------------
 ```
 
 Developer模式调度原语章节会有详细介绍。
