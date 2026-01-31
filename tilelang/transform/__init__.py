@@ -354,3 +354,13 @@ def NpuLoopVectorize():
         The result pass
     """
     return _ffi_api.NpuLoopVectorize()  # type: ignore
+
+def PlanAndUpdateBufferAllocationLocation():
+    """PlanAndUpdateBufferAllocationLocation
+
+    Returns
+    -------
+    fpass : tvm.transform.Pass
+        The result pass
+    """
+    return _ffi_api.PlanAndUpdateBufferAllocationLocation()  # type: ignore

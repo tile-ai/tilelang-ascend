@@ -95,7 +95,7 @@ def OptimizeForTarget(mod: IRModule, target: Target) -> IRModule:
         mod = tilelang.transform.RewriteWgmmaSync()(mod)
         mod = tilelang.transform.InjectFenceProxy()(mod)
     elif target.kind.name == "npuir":
-        mod = tir.transform.PlanAndUpdateBufferAllocationLocation()(mod)
+        mod = tilelang.transform.PlanAndUpdateBufferAllocationLocation()(mod)
         mod = tir.transform.LowerOpaqueBlock()(mod)
         mod = tir.transform.RemoveNoOp()(mod)
         mod = tilelang.transform.NpuLoopVectorize()(mod)
