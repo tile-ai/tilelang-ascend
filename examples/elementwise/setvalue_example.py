@@ -34,7 +34,7 @@ def getvalue(M, N, block_M, block_N, dtype="int32"):
             by = cid % n_num
 
             a_ub = T.alloc_ub((1, block_v), dtype)
-            b_ub = T.alloc_ub((1,), dtype)
+            b_ub = T.alloc_ub((8,), dtype)
             with T.Scope("V"):
                 T.copy(A[(cid * VEC_NUM + vid) * block_v], a_ub)
 
