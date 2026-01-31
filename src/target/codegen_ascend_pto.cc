@@ -551,8 +551,7 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) 
   } else if (op->op.same_as(tl::ascend_leaky_relu())) {
     ScalarOpCodegen(op, "TLRELU");
   } else if (op->op.same_as(tl::ascend_axpy())) {
-    ICHECK(false) << "axpy not support in pto. use muls and add instead";
-    ScalarOpCodegen(op, "T");
+    AxpyCodegen(op);
   } else if (op->op.same_as(tl::ascend_reduce())) {
     ReduceOpCodegen(op);
   } else if (op->op.same_as(tl::ascend_add())) {
@@ -583,8 +582,6 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) 
     BinaryVecOpsCodegen(op, "TMAXS");
   } else if (op->op.same_as(tl::ascend_mins())) {
     BinaryVecOpsCodegen(op, "TMINS");
-  } else if (op->op.same_as(tl::ascend_axpy())) {
-    AxpyCodegen(op);
   } else if (op->op.same_as(tl::ascend_pipe_barrier())) {
     PipeBarrierCodegen(op);
   } else if (op->op.same_as(tl::ascend_set_flag())) {
