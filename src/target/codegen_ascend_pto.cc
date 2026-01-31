@@ -1340,19 +1340,40 @@ void CodeGenTileLangAscendPto::BinaryVecOpsCodegen(const CallNode *op,
 
 void CodeGenTileLangAscendPto::UnaryVecOpCodegen(const CallNode *op, const std::string& op_name) {
   std::vector<std::string> var_names;
+
+  std::string src_name = PrintExpr(op->args[1].as<CallNode>()->args[1]);
+  std::string dst_name = PrintExpr(op->args[0].as<CallNode>()->args[1]);
+
+  std::string src_offset = PrintExpr(op->args[1].as<CallNode>()->args[2]);
+  std::string dst_offset = PrintExpr(op->args[0].as<CallNode>()->args[2]);
+
+  std::string src_addr = ub_data_map_[src_name][3];
+  std::string dst_addr = ub_data_map_[dst_name][3];
+
+  std::string shape = PrintExpr(op->args[2]);
+  std::string ub_type = ub_data_map_[dst_name][0];
+  int32_t type_len = GetTypeLen(ub_type);
   for (int i = 0; i < op->args.size() - 1; i++) {
     auto var_name = PrintBufferOffset(op->args[i].as<CallNode>());
     var_names.push_back(var_name);
   }
-  this->PrintIndent();
-  this->stream << op_name << "(";
-  for (int i = 0; i < var_names.size(); i++) {
-    this->stream << var_names[i];
-    if (i != var_names.size() - 1) {
-      this->stream << ", ";
+
+  if (src_offset != "0" || dst_offset != "0") {
+    this->PrintIndent();
+    this->stream << kAscendPtoScope << "unary_tile" << "<" << kAscendPtoScope << "UnaryOp::" << op_name << ", " << ub_type << ", " << shape << ">" << "("
+    << dst_addr << ", " << src_addr << ", " << dst_offset
+    << ", " << src_offset << ", "  << type_len << ");\n";
+  } else {
+    this->PrintIndent();
+    this->stream << op_name << "(";
+    for (int i = 0; i < var_names.size(); i++) {
+      this->stream << var_names[i];
+      if (i != var_names.size() - 1) {
+        this->stream << ", ";
+      }
     }
-  }
-  this->stream << ");\n";
+    this->stream << ");\n";
+  } 
 }
 
 void CodeGenTileLangAscendPto::ScalarOpCodegen(const CallNode *op, const std::string& op_name) {
@@ -1842,9 +1863,7 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
           for (size_t i = 0; i < bufferNum; i++) {
             this->PrintIndent();
             stream << "TASSIGN(" << vid << "[" << i << "], "
-                   << DEC_STR_TO_HEX_STR(
-                          PrintExpr(address_map_[op->buffer_var]))
-                   << ");\n";
+                   << PrintExpr(target_expr) << ");\n";
           }
         } else {
           stream << pos << "ND<" << type << ", " << ub_data[1] << ", "
@@ -1852,11 +1871,9 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
           stream << "> " << vid << ";\n";
           this->PrintIndent();
           stream << "TASSIGN(" << vid << ", "
-                 << DEC_STR_TO_HEX_STR(PrintExpr(address_map_[op->buffer_var]))
-                 << ");\n";
+                 << PrintExpr(target_expr) << ");\n";
         }
-        ub_data[3] =
-            DEC_STR_TO_HEX_STR(PrintExpr(address_map_[op->buffer_var]));
+        ub_data[3] = PrintExpr(target_expr);
         ub_data_map_[vid] = ub_data;
 
       } else {
@@ -1885,8 +1902,7 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
           stream << "> " << vid << ";\n";
           this->PrintIndent();
           stream << "TASSIGN(" << vid << ", "
-                 << DEC_STR_TO_HEX_STR(PrintExpr(address_map_[op->buffer_var]))
-                 << ");\n";
+                 << PrintExpr(target_expr) << ");\n";
         } else {
           int8_t bufferNum = shape[0].as<IntImmNode>()->value;
           prefetch_n_stages_map_[vid] = std::pair<int, int>{bufferNum, 0};
@@ -1915,9 +1931,7 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
           for (size_t j = 0; j < bufferNum; j++) {
             this->PrintIndent();
             stream << "TASSIGN(" << vid << "[" << j << "], "
-                   << DEC_STR_TO_HEX_STR(
-                          PrintExpr(address_map_[op->buffer_var]))
-                   << ");\n";
+                   << PrintExpr(target_expr) << ");\n";
           }
         }
       }
@@ -1986,8 +2000,7 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
           for (size_t i = 0; i < bufferNum; i++) {
             this->PrintIndent();
             stream << "TASSIGN(" << vid << "[" << i << "], "
-                   << DEC_STR_TO_HEX_STR(
-                          PrintExpr(address_offset_[String(pos)]))
+                   << PrintExpr(address_offset_[String(pos)])
                    << ");\n";
           }
         } else {
@@ -1996,11 +2009,10 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
           stream << "> " << vid << ";\n";
           this->PrintIndent();
           stream << "TASSIGN(" << vid << ", "
-                 << DEC_STR_TO_HEX_STR(PrintExpr(address_offset_[String(pos)]))
+                 << PrintExpr(address_offset_[String(pos)])
                  << ");\n";
         }
-        ub_data[3] =
-            DEC_STR_TO_HEX_STR(PrintExpr(address_offset_[String(pos)]));
+        ub_data[3] = PrintExpr(address_offset_[String(pos)]);
         ub_data_map_[vid] = ub_data;
         address_offset_.Set(
             String(pos),
@@ -2033,7 +2045,7 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
           stream << "> " << vid << ";\n";
           this->PrintIndent();
           stream << "TASSIGN(" << vid << ", "
-                 << DEC_STR_TO_HEX_STR(PrintExpr(address_offset_[String(pos)]))
+                 << PrintExpr(address_offset_[String(pos)])
                  << ");\n";
           address_offset_.Set(
               String(pos),
@@ -2067,8 +2079,7 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
           for (size_t j = 0; j < bufferNum; j++) {
             this->PrintIndent();
             stream << "TASSIGN(" << vid << "[" << j << "], "
-                   << DEC_STR_TO_HEX_STR(
-                          PrintExpr(address_offset_[String(pos)]))
+                   << PrintExpr(address_offset_[String(pos)])
                    << ");\n";
             address_offset_.Set(String(pos),
                                 PrimExpr(int(op->ConstantAllocationSize() *

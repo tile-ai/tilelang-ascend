@@ -66,6 +66,15 @@ AICORE PTO_INLINE void gemm_v0(
     set_flag(PIPE_MTE2, PIPE_MTE1, EVENT_ID0);
     wait_flag(PIPE_MTE2, PIPE_MTE1, EVENT_ID0);
 
+    /**
+     * Added synchronization logic: Write-After-Read (WAR) protection
+     * Objective: Prevent MTE1 (data transfer) from overwriting L0 before M (Cube) completes processing the previous round of data
+     * Support Ping-Pong buffer.
+    */
+    auto war_event_id = (event_t)((int)EVENT_ID0 + 1);
+    set_flag(PIPE_M, PIPE_MTE1, war_event_id);
+    wait_flag(PIPE_M, PIPE_MTE1, war_event_id);
+
     if constexpr (!transpose_A) {
         pto::TEXTRACT(l0a, A, 0, 0);
     } else {  // transpose A
@@ -239,6 +248,44 @@ AICORE PTO_INLINE void binary_tile(int32_t dst_addr, int32_t src0_addr,
         pto::TAND(dst_temp_ub, src0_temp_ub, src1_temp_ub);
     } else if constexpr (Op == BinaryOp::TOR) {
         pto::TOR(dst_temp_ub, src0_temp_ub, src1_temp_ub);
+    }
+}
+
+enum class UnaryOp {
+    TEXP,
+    TLOG,
+    TABS,
+    TRECIP,
+    TSQRT,
+    TRSQRT,
+    TRELU,
+    TNOT
+};
+
+template <UnaryOp Op, typename T, int32_t shape>
+AICORE PTO_INLINE void unary_tile(int32_t dst_addr, int32_t src_addr, int32_t dst_offset, int32_t src_offset, int32_t len) {
+    TileUbDataND<T, 1, shape, 1, shape> src_temp_ub;
+    pto::TASSIGN(src_temp_ub, src_addr + src_offset * len);
+
+    TileUbDataND<T, 1, shape, 1, shape> dst_temp_ub;
+    pto::TASSIGN(dst_temp_ub, dst_addr + dst_offset * len);
+
+    if constexpr (Op == UnaryOp::TEXP) {
+        pto::TEXP(dst_temp_ub, src_temp_ub);
+    } else if constexpr (Op == UnaryOp::TLOG) {
+        pto::TLOG(dst_temp_ub, src_temp_ub);
+    } else if constexpr (Op == UnaryOp::TABS) {
+        pto::TABS(dst_temp_ub, src_temp_ub);
+    } else if constexpr (Op == UnaryOp::TRECIP) {
+        pto::TRECIP(dst_temp_ub, src_temp_ub);
+    } else if constexpr (Op == UnaryOp::TSQRT) {
+        pto::TSQRT(dst_temp_ub, src_temp_ub);
+    } else if constexpr (Op == UnaryOp::TRSQRT) {
+        pto::TRSQRT(dst_temp_ub, src_temp_ub);
+    } else if constexpr (Op == UnaryOp::TRELU) {
+        pto::TRELU(dst_temp_ub, src_temp_ub);
+    } else if constexpr (Op == UnaryOp::TNOT) {
+        pto::TNOT(dst_temp_ub, src_temp_ub);
     }
 }
 
