@@ -648,6 +648,10 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) 
     CompareCodegen(op, "TCMP");
   } else if (op->op.same_as(tl::ascend_compare_scalar())) {
     CompareScalarCodegen(op, "TCMPS");
+  } else if (op->op.same_as(tl::ascend_bitwise_lshift())) {
+    TshCodegen(op, "TSHLS");
+  } else if (op->op.same_as(tl::ascend_bitwise_rshift())) {
+    TshCodegen(op, "TSHRS");
   }
 }
 
@@ -1183,6 +1187,15 @@ void CodeGenTileLangAscendPto::CompareScalarCodegen(const CallNode *op, const st
   std::string mode = Downcast<StringImm>(op->args[3])->value;
   this->stream << op_name << "(" << dst_name << ", " << src0_name << ", " << 
   src1_name << ", " << "CmpMode::" << mode << ");\n";
+}
+
+void CodeGenTileLangAscendPto::TshCodegen(const CallNode *op,
+                                                     const std::string &op_name) {
+  this->PrintIndent();
+  std::string dst_name = PrintExpr(op->args[0].as<CallNode>()->args[1]);
+  std::string src0_name = PrintExpr(op->args[1].as<CallNode>()->args[1]);
+  auto src1_name = op->args[2].as<IntImmNode>()->value;
+  this->stream << op_name << "(" << dst_name << ", " << src0_name << ", " << src1_name << ");\n";
 }
 
 void CodeGenTileLangAscendPto::BinaryVecOpCodegen(const CallNode *op,
