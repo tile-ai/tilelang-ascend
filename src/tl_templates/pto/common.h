@@ -264,10 +264,12 @@ AICORE PTO_INLINE void axpy(
     TileUbDataND<T, row, col, row, col> &src0,
     T scalar_value
 ){
-    tl::ascend_pto::TileUbDataND <T, row, col, row, col> axpy_ub_temp;
-    TMULS(axpy_ub_temp, src0, scalar_value);
+    // tl::ascend_pto::TileUbDataND <T, row, col, row, col> axpy_ub_temp;
+    TMULS(src0, src0, scalar_value);
     pipe_barrier(PIPE_V);
-    TADD(dst, dst, axpy_ub_temp);
+    TADD(dst, dst, src0);
+    pipe_barrier(PIPE_V);
+    TDIVS(src0, src0, scalar_value);
 }
 
 template <typename T1, typename T2, typename T3,
