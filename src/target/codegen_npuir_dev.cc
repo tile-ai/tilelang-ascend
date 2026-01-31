@@ -505,24 +505,88 @@ void CodeGenTileLangNPUIRDEV::VisitStmt_(const tir::IfThenElseNode *op) {
     elseRegionFlag = true;
   }
 
+  // Collect all variables defined out the if
+  // which may need to be carried as if values
+  std::vector<const tir::VarNode*> if_carried_vars;
+  std::vector<mlir::Value> init_values;
+  llvm::SmallVector<mlir::Type> resultTypes;
+
+  // Traverse the then_case and else_case of the IrThenElseNode
+  // and generate region iter args
+  CollectVarsUsedInBodyButDefinedOutside(op, if_carried_vars);
+  for (const auto* var_node : if_carried_vars) {
+    auto it = GetVarValue(var_node);
+    ICHECK(it != mlir::Value{});
+    init_values.push_back(it);
+    resultTypes.push_back(it.getType());
+  }
+
   mlir::Location unknown_loc = builder.getUnknownLoc();
   // Create the SCF If operation
   mlir::scf::IfOp ifOp = builder.create<mlir::scf::IfOp>(
-      unknown_loc, mlir::TypeRange{}, conditionValue, true, elseRegionFlag);
+      unknown_loc, resultTypes, conditionValue, true,
+      elseRegionFlag || !if_carried_vars.empty());
+  
+  // Add a new layer to var_map_
+  AddVarLayer();
+  for (const auto* var_node : if_carried_vars) {
+    SetVarValue(var_node, GetVarValue(var_node));
+  }
+
   // Set the insertion point to the true region
   mlir::Block *thenBlock = &ifOp.getThenRegion().getBlocks().front();
   builder.setInsertionPointToEnd(thenBlock);
   this->VisitStmt(op->then_case);
-  builder.create<mlir::scf::YieldOp>(unknown_loc);
+
+  // Collect the last updated value in the thenBlock as output yield
+  std::vector<mlir::Value> yield_values;
+  for (const auto* var_node : if_carried_vars) {
+    auto it = GetVarValue(var_node);
+    ICHECK(it != mlir::Value{});
+    yield_values.push_back(it);
+  }
+  if (yield_values.empty()) {
+    builder.create<mlir::scf::YieldOp>(unknown_loc);
+  } else {
+    builder.create<mlir::scf::YieldOp>(unknown_loc, yield_values);
+  }
 
   if (op->else_case) {
+    // Remove the last layer of var_map_
+    DeleteVarLayer();
+    AddVarLayer();
+    for (const auto* var_node : if_carried_vars) {
+      SetVarValue(var_node, GetVarValue(var_node));
+    }
     // Set the insertion point to the false region
     mlir::Block *elseBlock = &ifOp.getElseRegion().getBlocks().front();
     builder.setInsertionPointToEnd(elseBlock);
     this->VisitStmt(op->else_case.value());
-    builder.create<mlir::scf::YieldOp>(unknown_loc);
+
+    yield_values.clear();
+    for (const auto* var_node : if_carried_vars) {
+      auto it = GetVarValue((var_node));
+      ICHECK(it != mlir::Value{});
+      yield_values.push_back(it);
+    }
+    if (yield_values.empty()) {
+      builder.create<mlir::scf::YieldOp>(unknown_loc);
+    } else {
+      builder.create<mlir::scf::YieldOp>(unknown_loc, yield_values);
+    }
+  } else if (!if_carried_vars.empty()) {
+    mlir::Block *elseBlock = &ifOp.getElseRegion().getBlocks().front();
+    builder.setInsertionPointToEnd(elseBlock);
+    builder.create<mlir::scf::YieldOp>(unknown_loc, init_values);
   }
   builder.setInsertionPointAfter(ifOp);
+
+  // Remove the last layer of var_map_
+  DeleteVarLayer();
+  int iter = 0;
+  for (const auto* var_node : if_carried_vars) {
+    SetVarValue(var_node, ifOp.getResult(iter++));
+  }
 }
 
 void CodeGenTileLangNPUIRDEV::CollectVarsUsedInBodyButDefinedOutside(
@@ -530,6 +594,16 @@ void CodeGenTileLangNPUIRDEV::CollectVarsUsedInBodyButDefinedOutside(
     std::vector<const VarNode*>& loop_carried_vars) {
   LoopCarriedVarCollector collector(this, loop_carried_vars);
   collector.VisitStmt(op->body);
+}
+
+void CodeGenTileLangNPUIRDEV::CollectVarsUsedInBodyButDefinedOutside(
+    const IfThenElseNode*op, 
+    std::vector<const VarNode*>& if_carried_vars) {
+  LoopCarriedVarCollector collector(this, if_carried_vars);
+  collector.VisitStmt(op->then_case);
+  if (op->else_case) {
+    collector.VisitStmt(op->else_case.value());
+  }
 }
 
 mlir::Type CodeGenTileLangNPUIRDEV::DTypetoMLIRType(DataType t) { // NOLINT(*)
