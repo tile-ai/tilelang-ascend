@@ -415,7 +415,7 @@ def worker(rank, barrier, x, expert_ids, aiv_num, ep_world_size, local_expert_nu
     # golden
     x_ref = x
     torch.testing.assert_close(x_out, x_ref, rtol=1e-2, atol=1e-2)
-    print("Kernel Output Mathc!")
+    print("Kernel Output Match!")
 
 # Construct input
 def init_input(rank, Bs, H, K, ep_world_size, local_expert_num):
