@@ -91,22 +91,22 @@ private:
     for (size_t i=0; i < extents.size(); i++) {
       if (i == 0) {
         PrimExpr first_extent = analyzer.Simplify(extents[i]);
-        if (const auto* int_imm = first_extent.as<IntImmNode>()) {
+        if (const IntImmNode* int_imm = first_extent.as<IntImmNode>()) {
           int64_t new_value = int_imm->value / 2;
           if (new_value < 1) {
             new_value = 1;
-            new_extents.push_back(IntImm(first_extent.dtype(), new_value));
           }
+          new_extents.push_back(IntImm(first_extent.dtype(), new_value));
           // TODO:非小于1不需要处理？
-        } else if (const auto* cast_node = first_extent.as<CastNode>()) {
-          if (const auto* int_imm = cast_node->value.as<IntImmNode>()) {
+        } else if (const CastNode* cast_node = first_extent.as<CastNode>()) {
+          if (const IntImmNode* int_imm = cast_node->value.as<IntImmNode>()) {
             int64_t new_value = int_imm->value / 2;
             if (new_value < 1) {
               new_value = 1;
-              new_extents.push_back(IntImm(cast_node->dtype, new_value));
-            } else {
-              new_extents.push_back(floordiv(first_extent, 2));
             }
+            new_extents.push_back(IntImm(cast_node->dtype, new_value));
+          } else {
+            new_extents.push_back(floordiv(first_extent, 2));
           }
         } else {
           new_extents.push_back(floordiv(first_extent, 2));
