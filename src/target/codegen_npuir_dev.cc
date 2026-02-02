@@ -417,12 +417,12 @@ mlir::Type CodeGenTileLangNPUIRDEV::GetMLIRType(const Buffer &buffer) {
   auto elementType = DTypetoMLIRType(buffer->dtype);
   auto offset = 0;
   String scope = GetPtrStorageScope(buffer->data);
-  auto addressSpace = GetHIVMAddressSpace(scope);
-  auto addressSpaceAttr =
-      mlir::hivm::AddressSpaceAttr::get(builder.getContext(), addressSpace);
+  // auto addressSpace = GetHIVMAddressSpace(scope);
+  // auto addressSpaceAttr =
+  //     mlir::hivm::AddressSpaceAttr::get(builder.getContext(), addressSpace);
   auto strideLayout =
       StridedLayoutAttr::get(builder.getContext(), offset, stride);
-  return MemRefType::get(shape, elementType, strideLayout, addressSpaceAttr);
+  return MemRefType::get(shape, elementType, strideLayout);
 }
 
 void CodeGenTileLangNPUIRDEV::VisitStmt_(const tir::ForNode *op) {
@@ -2313,9 +2313,9 @@ void CodeGenTileLangNPUIRDEV::BitcastCodegen(const CallNode *op) {
   if (auto memref_type = mlir::dyn_cast<MemRefType>(src_type)) {
     auto src_shape = memref_type.getShape();
     auto src_layout = memref_type.getLayout();
-    auto src_memspace = memref_type.getMemorySpace();
+    // auto src_memspace = memref_type.getMemorySpace();
     auto res_type = mlir::MemRefType::get(src_shape, DTypetoMLIRType(tir_dtype),
-                                          src_layout, src_memspace);
+                                          src_layout);
     builder.create<mlir::hivm::BitcastOp>(builder.getUnknownLoc(), res_type,
                                           src);
   } else if (auto tensor_type = mlir::dyn_cast<RankedTensorType>(src_type)) {
@@ -2863,9 +2863,9 @@ void CodeGenTileLangNPUIRDEV::AddFunctionForCoreType(const GlobalVar &gvar,
       auto argType = GetMLIRType(f->buffer_map[v]);
       recastNeedInsert[i] = argType;
       funcArgs.emplace_back(MemRefType::get(
-          {ShapedType::kDynamic}, DTypetoMLIRType(f->buffer_map[v]->dtype),
-          StridedLayoutAttr{},
-          llvm::dyn_cast<MemRefType>(argType).getMemorySpace()));
+          {ShapedType::kDynamic}, DTypetoMLIRType(f->buffer_map[v]->dtype)));
+          // StridedLayoutAttr{},
+          // llvm::dyn_cast<MemRefType>(argType).getMemorySpace()));
     } else {
       funcArgs.emplace_back(DTypetoMLIRType(v.dtype()));
     }
