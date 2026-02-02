@@ -118,7 +118,7 @@ def copy(
     assert src_extent or dst_extent, "Can't deduce copy extents from args"
     src_extent = list(src_extent) if src_extent else [1] * len(dst_extent)
     dst_extent = list(dst_extent) if dst_extent else [1] * len(src_extent)
-    extent = max(src_extent, dst_extent)
+    extent = [tir.max(src_extent[i], dst_extent[i]) for i in range(len(src_extent))]
 
     def _to_region(data, access_type):
         if isinstance(data, tir.Var) and T.has_let_value(data):
@@ -213,7 +213,7 @@ def npu_copy_v2(src: Union[tir.Buffer, tir.BufferLoad, tir.BufferRegion],
     assert src_extent or dst_extent, "Can't deduce copy extents from args"
     src_extent = list(src_extent) if src_extent else [1] * len(dst_extent)
     dst_extent = list(dst_extent) if dst_extent else [1] * len(src_extent)
-    extent = max(src_extent, dst_extent)
+    extent = [tir.max(src_extent[i], dst_extent[i]) for i in range(len(src_extent))]
 
     def _to_region(data, access_type):
         if isinstance(data, tir.Var) and T.has_let_value(data):
