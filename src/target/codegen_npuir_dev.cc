@@ -1436,6 +1436,22 @@ mlir::Value CodeGenTileLangNPUIRDEV::CreateSameRankDynamicSubview(
   return builder.create<mlir::memref::SubViewOp>(loc, base, offsets, sizesSameRank, strides);
 }
 
+// Returns true iff sizes are all static and equal to staticShape (same as
+// GenSubviewFromRegion's "shape consistent" check for the alloc-subview case).
+static bool OpFoldResultsEqualStaticShape(
+    llvm::ArrayRef<mlir::OpFoldResult> sizes,
+    llvm::ArrayRef<int64_t> staticShape) {
+  if (sizes.size() != staticShape.size()) return false;
+  for (size_t i = 0; i < sizes.size(); ++i) {
+    auto attr = sizes[i].dyn_cast<mlir::Attribute>();
+    if (!attr) return false;
+    auto intAttr = attr.dyn_cast<mlir::IntegerAttr>();
+    if (!intAttr) return false;
+    if (intAttr.getInt() != staticShape[i]) return false;
+  }
+  return true;
+}
+
 llvm::SmallVector<int64_t>
 CodeGenTileLangNPUIRDEV::ComputeUBAllocShapeDropStaticOnes(
     mlir::RankedTensorType dst_tensor_type_ori) {
@@ -1479,7 +1495,13 @@ void CodeGenTileLangNPUIRDEV::EmitCopyMemrefToTensor(
   auto ubTy = base_ub.getType().cast<mlir::MemRefType>();
 
   if ((int64_t)copy_sizes.size() == ubTy.getRank()) {
-    ub_view = CreateSameRankDynamicSubview(base_ub, copy_sizes, loc);
+    // When shape is static and matches alloc shape (offsets are 0), skip subview
+    // like GenSubviewFromRegion.
+    if (OpFoldResultsEqualStaticShape(copy_sizes, ub_alloc_shape)) {
+      ub_view = base_ub;
+    } else {
+      ub_view = CreateSameRankDynamicSubview(base_ub, copy_sizes, loc);
+    }
   } else {
     CollapsedDims dstC = CollapseStaticOneDims(dstR.sizes);
 
