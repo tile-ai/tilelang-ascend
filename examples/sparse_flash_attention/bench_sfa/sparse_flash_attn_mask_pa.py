@@ -8,10 +8,11 @@ sys.path.append(parent_dir)
 import sfa_golden as ref
 import numpy as np
 
-torch.set_default_device('npu')
-torch.manual_seed(0)
+def init_test():
+    torch.set_default_device('npu')
+    torch.manual_seed(0)
 
-tilelang.disable_cache()
+    tilelang.disable_cache()
 
 pass_configs = {
     tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
@@ -420,6 +421,8 @@ def ref_sparse_attention_fwd_interface(q,
 
 
 if __name__ == "__main__":
+    init_test()
+
     B, S, SKV, H, HKV, DQK, DV, topk = 1, 1, 2560, 128, 1, 576, 512, 2048
     dtype = torch.bfloat16
 

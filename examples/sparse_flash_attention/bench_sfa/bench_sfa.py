@@ -6,7 +6,7 @@ import custom_ops
 
 DEVICE = "npu"
 
-from example_sparse_flash_attn_mask_pa import sparse_attn_tilelang
+from sparse_flash_attn_mask_pa import sparse_attn_tilelang, init_test
 
 def test_op(T, B, KV_S, Q_N, KV_N, D, D_rope,
             sparse_size, scale_value,
@@ -146,6 +146,8 @@ def test_op(T, B, KV_S, Q_N, KV_N, D, D_rope,
     print("[PASSED]")
 
 if __name__ == "__main__":
+    init_test()
+
     print(torch_npu.__version__)
     print("Test Real Case in DS-v3.2-Exp")
     test_op(T = 1, B = 1, KV_S = 2560, Q_N = 128, KV_N = 1, D = 512, D_rope = 64,
