@@ -36,7 +36,7 @@ def run_atomic_addx4(M, N, block_M, block_N, dtype="float32"):
                 t0 = shape_N - by
                 tile_size_N = T.min(block_N, t0)   
                 T.copy(A[bx, by], A_VEC, [1, 4])
-                T.npuir_atomic_addx4(A_VEC, B[bx, by], [1, 4])            
+                T.npuir_atomic_addx4(B[bx, by], A_VEC, [1, 4])            
             
     return atomicAddx4Program
 

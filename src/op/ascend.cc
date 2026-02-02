@@ -307,8 +307,8 @@ NpuirAtomicAdd::NpuirAtomicAdd(Array<PrimExpr> args, BufferMap vmap) {
     rgs[i] = region.GetRanges();
     bf[i] = region.GetBuffer();
   }
-  std::tie(this->src, this->dst) = std::tie(bf[0], bf[1]);
-  std::tie(this->src_range, this->dst_range) = std::tie(rgs[0], rgs[1]);
+  std::tie(this->dst, this->src) = std::tie(bf[0], bf[1]);
+  std::tie(this->dst_range, this->src_range) = std::tie(rgs[0], rgs[1]);
 }
 
 NpuirSelect::NpuirSelect(Array<PrimExpr> args, BufferMap vmap) {

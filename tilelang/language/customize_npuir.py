@@ -817,7 +817,7 @@ def npuir_clamp(src: tir.Buffer, dst: Optional[tir.Buffer], min_val: PrimExpr, m
 
     T.evaluate(min_call)
     
-def npuir_atomic_add(src, dst, size=[]):
+def npuir_atomic_add(dst, src, size=[]):
     """Perform atomic add operation on the NPU.
 
     Args:
@@ -834,9 +834,9 @@ def npuir_atomic_add(src, dst, size=[]):
     src = _to_region(src, "r", src_extent)
     dst = _to_region(dst, "w", dst_extent)
 
-    return tir.call_intrin("handle", tir.op.Op.get("tl.npuir_atomic_add"), src, dst)    
+    return tir.call_intrin("handle", tir.op.Op.get("tl.npuir_atomic_add"), dst, src)    
 
-def npuir_atomic_addx4(src, dst, size=[]):
+def npuir_atomic_addx4(dst, src, size=[]):
     """Perform atomic add operation with quad-width operands on the NPU.
 
     Args:
@@ -853,7 +853,7 @@ def npuir_atomic_addx4(src, dst, size=[]):
     src = _to_region(src, "r", src_extent)
     dst = _to_region(dst, "w", dst_extent)
 
-    return tir.call_intrin("handle", tir.op.Op.get("tl.npuir_atomic_add"), src, dst)
+    return tir.call_intrin("handle", tir.op.Op.get("tl.npuir_atomic_add"), dst, src)
     
 def npuir_gather(src, dst, indices:Union[list, tuple], size=[]):
     """Retrieve elements from a tensor/memref according to given indices, and store these elements in another tensor/memref. The gather axis is the last dimension.

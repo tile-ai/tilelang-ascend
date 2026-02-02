@@ -279,8 +279,8 @@ public:
 
   static const Op &Get();
 
-  Buffer src, dst;
-  Array<Range> src_range, dst_range;
+  Buffer dst, src;
+  Array<Range> dst_range, src_range;
 };
 
 class NpuirSelect : public Operator {
