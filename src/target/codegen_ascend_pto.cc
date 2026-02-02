@@ -1975,6 +1975,7 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
           ub_data[5] = "1";
           ub_data[6] = PrintExpr(shape[0]);
           // when ub_data[6] * sizeof(dtype) < 32, do this
+          int num1 = std::stoi(ub_data[6]);
           if (ub_data[0] == "int" && num1 < 8) {
             ub_data[6] = "8";
           } else if (ub_data[0] == "float" && num1 < 8) {
