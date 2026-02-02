@@ -1,5 +1,7 @@
 import torch
 import numpy as np
+
+
 def pa_to_bsnd(pa_in, block_table, actual_seq_lengths):
     block_num, block_size, n, d = pa_in.shape
     b = len(actual_seq_lengths)
@@ -9,6 +11,57 @@ def pa_to_bsnd(pa_in, block_table, actual_seq_lengths):
             output[i, j * block_size: (j + 1) * block_size, 0, :] = \
                 pa_in[block_table[i][j], :, 0, :].reshape(block_size, d)
     return output
+
+
+def trans_tnd_to_bsnd(tensor, shape, act_seq):
+    t = shape[0]
+    n = shape[1]
+    d = shape[2]
+    b = len(act_seq)
+    s = max(act_seq)
+    output = np.zeros((b, s, n, d), dtype=tensor.dtype)
+    t_start = 0
+    for b_idx in range(b):
+        act_s = act_seq[b_idx]
+        t_end = t_start + act_s
+        if act_s == 0:
+            continue
+        for n_idx in range(n):
+            output[b_idx, 0:act_s, n_idx, :] = tensor[t_start:t_end, n_idx, :]
+        t_start += act_s
+    return output
+
+
+def trans_bnsd_to_tnd(tensor, shape, act_seq):
+    t = sum(act_seq)
+    b = tensor.shape[0]
+    n = tensor.shape[1]
+    d = tensor.shape[3]
+    output = torch.full(size=(t, n, d), fill_value=-1, dtype=tensor.dtype)
+    t_start = 0
+    for b_idx in range(b):
+        act_s = act_seq[b_idx]
+        t_end = t_start + act_s
+        if act_s == 0:
+            continue
+        for n_idx in range(n):
+            output[t_start:t_end, n_idx, :] = tensor[b_idx, n_idx, :act_s, :]
+        t_start += act_s
+    return output
+
+
+def trans_tnd_actseq(seq):
+    list_len = len(seq)
+    output = []
+    output.append(seq[0])
+    for i in range(list_len - 1):
+        new_item = seq[i + 1] - seq[i]
+        if new_item >= 0:
+            output.append(new_item)
+        else:
+            print(f"[ERROR]trans_tnd_actseq: Wrong input actseq:{seq}, in loop {i}, item {new_item} < 0")
+    return output
+
 
 def gather_kv(k_tensor, v_tensor, sparse_indices, sparse_block_size, sparse_count, batch, n2_idx, s1_idx,
              cur_actual_seq_lengths_kv):
