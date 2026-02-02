@@ -177,7 +177,7 @@ void CodeGenTileLangAscendPto::PrintType(DataType t,
     case 16:
       enable_fp16_ = true;
       if (t.is_scalar()) {
-        os << "half_t";
+        os << "half";
       } else if (lanes <= 8) {
         // Emit CUDA code to access fp16 vector elements.
         //
