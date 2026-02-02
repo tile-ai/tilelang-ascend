@@ -950,7 +950,7 @@ void CodeGenTileLangAscendPto::CallExternCodegen(const CallNode *op) {
             shape_nums[1] = "8";
           } else if (shape_num_dtype == "float" && num1 < 8) {
             shape_nums[1] = "8";
-          }else if (shape_num_dtype == "half" && num1 < 16) {
+          } else if (shape_num_dtype == "half" && num1 < 16) {
             shape_nums[1] = "16";
           }
           tensor_template = tensor_template + shape_template + ", " + stride_template  + ", " +
@@ -1974,7 +1974,7 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
           ub_data[4] = "Unapplied for tileUbDataDN";
           ub_data[5] = "1";
           ub_data[6] = PrintExpr(shape[0]);
-          // when shape_nums[1] * sizeof(dtype) < 32, do this
+          // when ub_data[6] * sizeof(dtype) < 32, do this
           if (ub_data[0] == "int" && num1 < 8) {
             ub_data[6] = "8";
           } else if (ub_data[0] == "float" && num1 < 8) {
