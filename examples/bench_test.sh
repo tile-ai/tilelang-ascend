@@ -14,7 +14,7 @@ passed_scripts=0
 all_scripts=()
 
 # 1. 收集脚本逻辑 (保持原样)
-python_files=$(find . -maxdepth 2 -name "*.py" -not -path "./gemm_aot/*" -not -path "./shmem/*" -not -path "./torch_tl_ascend/*" -not -name "sfa_golden.py" -not -name "__init__.py" | sort)
+python_files=$(find . -maxdepth 2 -name "*.py" -not -path "./gemm_aot/*" -not -path "./dispatch_combine/*" -not -path "./shmem/*" -not -path "./torch_tl_ascend/*" -not -name "sfa_golden.py" -not -name "__init__.py" | sort)
 if [ -n "$python_files" ]; then
     for file in $python_files; do all_scripts+=("$file"); done
 fi

@@ -53,6 +53,7 @@ public:
 
   void UnaryVecOpCodegen(const CallNode *op, const std::string& op_name);
   void ScalarOpCodegen(const CallNode *op, const std::string& op_name);
+  void AxpyCodegen(const CallNode *op);
   void BinaryVecClampMaxMinOpsCodegen(const CallNode *op, const std::string& op_name);
   void BinaryVecClampOpsCodegen(const CallNode *op, const std::string& op_name);
   void SigmoidCodegen(const CallNode *op, const std::string& op_type);
@@ -75,7 +76,7 @@ private:
 
   friend void PrintConst(const FloatImmNode *op, std::ostream &os,
                          CodeGenTileLangAscendPto *p);
-  
+
   void BinaryVecOpCodegen(const CallNode* op, const std::string& op_name);
 
   void BinaryVecOpsCodegen(const CallNode* op, const std::string& op_name);
@@ -162,12 +163,12 @@ private:
 
   Map<String, String> copy_tmplte_map_;
   Map<String, String> copy_base_addr_map_;
-  
+
   std::map<std::string, std::vector<std::string>> ub_data_map_;
   std::map<std::string, std::vector<std::string>> l_data_map_;
   std::map<std::string, std::string> for_num_map_;
   std::map<std::string, std::pair<int, int>> prefetch_n_stages_map_;
-  
+
   struct global_tensor{
     String shape_type;
     String dtype;
