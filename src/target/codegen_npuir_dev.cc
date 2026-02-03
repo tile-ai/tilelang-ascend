@@ -1378,6 +1378,34 @@ CodeGenTileLangNPUIRDEV::CollapseStaticOneDims(
   return out;
 }
 
+// Returns true iff all OpFoldResults are static and equal to 0 (same as
+// GenSubviewFromRegion's AllZero check for offsets).
+static bool OpFoldResultsAllZero(llvm::ArrayRef<mlir::OpFoldResult> ofrs) {
+  for (const auto& ofr : ofrs) {
+    auto attr = ofr.dyn_cast<mlir::Attribute>();
+    if (!attr) return false;
+    auto intAttr = attr.dyn_cast<mlir::IntegerAttr>();
+    if (!intAttr || intAttr.getInt() != 0) return false;
+  }
+  return true;
+}
+
+// Returns true iff sizes are all static and equal to staticShape (same as
+// GenSubviewFromRegion's "shape consistent" check for the alloc-subview case).
+static bool OpFoldResultsEqualStaticShape(
+    llvm::ArrayRef<mlir::OpFoldResult> sizes,
+    llvm::ArrayRef<int64_t> staticShape) {
+  if (sizes.size() != staticShape.size()) return false;
+  for (size_t i = 0; i < sizes.size(); ++i) {
+    auto attr = sizes[i].dyn_cast<mlir::Attribute>();
+    if (!attr) return false;
+    auto intAttr = attr.dyn_cast<mlir::IntegerAttr>();
+    if (!intAttr) return false;
+    if (intAttr.getInt() != staticShape[i]) return false;
+  }
+  return true;
+}
+
 // Creates a rank-reduced memref.subview from a base memref using full-rank offset/size/stride arrays.
 // The resulting memref rank is determined by projectedReducedShape via inferRankReducedResultType.
 mlir::Value CodeGenTileLangNPUIRDEV::CreateRankReducedSubviewFromBaseRank(
@@ -1391,6 +1419,12 @@ mlir::Value CodeGenTileLangNPUIRDEV::CreateRankReducedSubviewFromBaseRank(
   ICHECK((int64_t)fullOffsets.size() == baseTy.getRank());
   ICHECK((int64_t)fullSizes.size() == baseTy.getRank());
   ICHECK((int64_t)fullStrides.size() == baseTy.getRank());
+
+  if (baseTy.getRank() == (int64_t)projectedReducedShape.size() &&
+      OpFoldResultsAllZero(fullOffsets) &&
+      OpFoldResultsEqualStaticShape(fullSizes, baseTy.getShape())) {
+    return base;
+  }
 
   auto reducedTy =
       mlir::memref::SubViewOp::inferRankReducedResultType(
@@ -1415,6 +1449,12 @@ mlir::Value CodeGenTileLangNPUIRDEV::CreateRankReducedExtractSlice(
   ICHECK((int64_t)fullSizes.size() == baseTy.getRank());
   ICHECK((int64_t)fullStrides.size() == baseTy.getRank());
 
+  if (baseTy.getRank() == (int64_t)projectedReducedShape.size() &&
+      OpFoldResultsAllZero(fullOffsets) &&
+      OpFoldResultsEqualStaticShape(fullSizes, baseTy.getShape())) {
+    return base;
+  }
+
   auto reducedTy = mlir::RankedTensorType::get(
       projectedReducedShape, baseTy.getElementType());
 
@@ -1434,22 +1474,6 @@ mlir::Value CodeGenTileLangNPUIRDEV::CreateSameRankDynamicSubview(
   llvm::SmallVector<mlir::OpFoldResult> offsets(r, builder.getIndexAttr(0));
   llvm::SmallVector<mlir::OpFoldResult> strides(r, builder.getIndexAttr(1));
   return builder.create<mlir::memref::SubViewOp>(loc, base, offsets, sizesSameRank, strides);
-}
-
-// Returns true iff sizes are all static and equal to staticShape (same as
-// GenSubviewFromRegion's "shape consistent" check for the alloc-subview case).
-static bool OpFoldResultsEqualStaticShape(
-    llvm::ArrayRef<mlir::OpFoldResult> sizes,
-    llvm::ArrayRef<int64_t> staticShape) {
-  if (sizes.size() != staticShape.size()) return false;
-  for (size_t i = 0; i < sizes.size(); ++i) {
-    auto attr = sizes[i].dyn_cast<mlir::Attribute>();
-    if (!attr) return false;
-    auto intAttr = attr.dyn_cast<mlir::IntegerAttr>();
-    if (!intAttr) return false;
-    if (intAttr.getInt() != staticShape[i]) return false;
-  }
-  return true;
 }
 
 llvm::SmallVector<int64_t>
@@ -1618,8 +1642,15 @@ void CodeGenTileLangNPUIRDEV::EmitCopyTensorToTensor(
     mlir::Value src, mlir::Value dst,
     const SliceRange& srcR, const SliceRange& dstR,
     mlir::Location loc) {
-  mlir::Value src_slice = builder.create<mlir::tensor::ExtractSliceOp>(
-      loc, src, srcR.offs, srcR.sizes, srcR.strides);
+  mlir::Value src_slice;
+  auto srcTy = src.getType().cast<mlir::RankedTensorType>();
+  if (OpFoldResultsAllZero(srcR.offs) &&
+      OpFoldResultsEqualStaticShape(srcR.sizes, srcTy.getShape())) {
+    src_slice = src;
+  } else {
+    src_slice = builder.create<mlir::tensor::ExtractSliceOp>(
+        loc, src, srcR.offs, srcR.sizes, srcR.strides).getResult();
+  }
 
   // Use tensor.reshape instead of expand_shape/collapse_shape to avoid
   // bufferization failures on tensors derived from strided memrefs.
