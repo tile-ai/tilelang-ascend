@@ -301,16 +301,13 @@ def test_4d():
     print("4D Test Passed!")
 
 # ==========================================
-# 4D Strided Kernel & Test
+# 4D Strided Kernel & Test (FIXED)
 # Pattern: [Scalar, Slice, Scalar, Slice]
-# Example: K_cache[batch, seq_chunk, head, head_dim_chunk]
 # ==========================================
 @tilelang.jit(out_idx=[-1], target="npuir")
 def test_strided_copy_4d_kernel(
-    B, S, H, D,        # Shape
-    S_blk, D_blk,      # Slice Sizes
-    idx_b, idx_h,      # Fixed Scalars
-    off_s, off_d,      # Offsets
+    B, S, H, D,        # Shape (Constants)
+    S_blk, D_blk,      # Block Sizes (Constants)
     dtype="float16"
 ):
     @T.prim_func
@@ -318,13 +315,15 @@ def test_strided_copy_4d_kernel(
         In: T.Tensor((B, S, H, D), dtype),
         Out: T.Tensor((B, S, H, D), dtype),
         Debug_Frag: T.Tensor((S_blk, D_blk), dtype),
+        idx_b: T.int32,
+        idx_h: T.int32,
+        off_s: T.int32,
+        off_d: T.int32,
     ):
         with T.Kernel(1, is_npu=True) as (idx_, _):
-            # Fragment matches the sliced dimensions only
             frag = T.alloc_fragment((S_blk, D_blk), dtype)
             
             # 1. Strided Read (GM -> UB)
-            # Pattern: In[i, :, j, :] -> UB[:, :]
             T.copy(
                 In[
                     idx_b,
@@ -335,11 +334,10 @@ def test_strided_copy_4d_kernel(
                 frag
             )
             
-            # 2. Dump fragment to check Read correctness
+            # 2. Dump
             T.copy(frag, Debug_Frag)
             
             # 3. Strided Write (UB -> GM)
-            # Pattern: UB[:, :] -> Out[i, :, j, :]
             T.copy(
                 frag,
                 Out[
@@ -359,22 +357,20 @@ def test_4d_strided():
     idx_b, idx_h = 1, 3
     off_s, off_d = 16, 32
     
-    kernel = test_strided_copy_4d_kernel(B, S, H, D, S_blk, D_blk, idx_b, idx_h, off_s, off_d)
+    kernel = test_strided_copy_4d_kernel(B, S, H, D, S_blk, D_blk)
     
     # Data
     inp = torch.randn(B, S, H, D).npu().half()
     out = torch.zeros(B, S, H, D).npu().half()
     debug = torch.zeros(S_blk, D_blk).npu().half()
     
-    kernel(inp, out, debug)
+    kernel(inp, out, debug, idx_b, idx_h, off_s, off_d)
     
     # Verification
     expected_slice = inp[idx_b, off_s:off_s+S_blk, idx_h, off_d:off_d+D_blk]
     
-    # Check Read
     torch.testing.assert_close(debug, expected_slice, rtol=1e-5, atol=1e-5)
     
-    # Check Write
     expected_out = torch.zeros_like(out)
     expected_out[idx_b, off_s:off_s+S_blk, idx_h, off_d:off_d+D_blk] = expected_slice
     torch.testing.assert_close(out, expected_out, rtol=1e-5, atol=1e-5)
@@ -382,16 +378,13 @@ def test_4d_strided():
     print(">> 4D Strided Test Passed!")
 
 # ==========================================
-# 5D Interleaved Kernel & Test
+# 5D Interleaved Kernel & Test (FIXED)
 # Pattern: [Scalar, Scalar, Slice, Scalar, Slice]
-# Example: O[i_k, i_b, chunk_slice, i_h, vec_slice]
 # ==========================================
 @tilelang.jit(out_idx=[-1], target="npuir")
 def test_strided_copy_5d_kernel(
     D0, D1, D2, D3, D4, # Shape
-    Blk_2, Blk_4,       # Slice sizes for dim 2 and 4
-    idx_0, idx_1, idx_3,# Fixed Scalars
-    off_2, off_4,       # Offsets
+    Blk_2, Blk_4,       # Block Sizes
     dtype="float16"
 ):
     @T.prim_func
@@ -399,12 +392,16 @@ def test_strided_copy_5d_kernel(
         In: T.Tensor((D0, D1, D2, D3, D4), dtype),
         Out: T.Tensor((D0, D1, D2, D3, D4), dtype),
         Debug_Frag: T.Tensor((Blk_2, Blk_4), dtype),
+        idx_0: T.int32,
+        idx_1: T.int32,
+        idx_3: T.int32,
+        off_2: T.int32,
+        off_4: T.int32,
     ):
         with T.Kernel(1, is_npu=True) as (idx_, _):
             frag = T.alloc_fragment((Blk_2, Blk_4), dtype)
             
             # 1. Deep Interleaved Read
-            # Pattern: In[s, s, Slice, s, Slice] -> UB[:, :]
             T.copy(
                 In[
                     idx_0,
@@ -416,11 +413,10 @@ def test_strided_copy_5d_kernel(
                 frag
             )
             
-            # 2. Check Read
+            # 2. Check
             T.copy(frag, Debug_Frag)
             
-            # 3. Deep Interleaved Write
-            # Pattern: UB[:, :] -> Out[s, s, Slice, s, Slice]
+            # 3. Write
             T.copy(
                 frag,
                 Out[
@@ -435,25 +431,22 @@ def test_strided_copy_5d_kernel(
 
 def test_5d_strided():
     print("\n" + "="*30 + " Running 5D Interleaved Test " + "="*30)
-    # Params: [D0, D1, D2(Sliced), D3, D4(Sliced)]
     dims = (2, 2, 64, 4, 128)
-    idx_0, idx_1, idx_3 = 1, 0, 2
     blk_2, blk_4 = 16, 32
+    
+    idx_0, idx_1, idx_3 = 1, 0, 2
     off_2, off_4 = 32, 64
     
-    kernel = test_strided_copy_5d_kernel(
-        *dims, blk_2, blk_4, idx_0, idx_1, idx_3, off_2, off_4
-    )
+    kernel = test_strided_copy_5d_kernel(*dims, blk_2, blk_4)
     
-    # Data
     inp = torch.randn(*dims).npu().half()
     out = torch.zeros(*dims).npu().half()
     debug = torch.zeros(blk_2, blk_4).npu().half()
     
-    kernel(inp, out, debug)
+    # Pass scalars explicitly
+    kernel(inp, out, debug, idx_0, idx_1, idx_3, off_2, off_4)
     
     # Verification
-    # PyTorch Equivalent: inp[1, 0, 32:48, 2, 64:96]
     expected_slice = inp[idx_0, idx_1, off_2:off_2+blk_2, idx_3, off_4:off_4+blk_4]
     
     torch.testing.assert_close(debug, expected_slice, rtol=1e-5, atol=1e-5)
