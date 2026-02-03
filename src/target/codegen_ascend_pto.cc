@@ -1168,7 +1168,8 @@ void CodeGenTileLangAscendPto::XorCodegen(const CallNode *op, const std::string 
   std::string dst_name = PrintExpr(op->args[0].as<CallNode>()->args[1]);
   std::string src0_name = PrintExpr(op->args[1].as<CallNode>()->args[1]);
   std::string src1_name = PrintExpr(op->args[2].as<CallNode>()->args[1]);
-  this->stream << op_name << "(" << dst_name << ", " << src0_name << ", " << src1_name << ", " << src1_name << ");\n";
+  std::string tmp_name = PrintExpr(op->args[3].as<CallNode>()->args[1]);
+  this->stream << op_name << "(" << dst_name << ", " << src0_name << ", " << src1_name << ", " << tmp_name << ");\n";
 }
 
 void CodeGenTileLangAscendPto::CompareCodegen(const CallNode *op, const std::string &op_name) {
