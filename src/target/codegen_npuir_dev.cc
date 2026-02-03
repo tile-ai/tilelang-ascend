@@ -1667,8 +1667,11 @@ void CodeGenTileLangNPUIRDEV::EmitCopyTensorToTensor(
  *    - Rank/Shape Handling:
  *        a) Canonicalize the copy rank by dropping static-1 dims from the source range.
  *        b) Create a rank-reduced `memref.subview` of the source GM matching the canonical rank.
- *        c) Allocate a static local UB memref using the destination tensor shape with static-1s removed.
- *        d) Create an UB `memref.subview` matching the canonical copy rank.
+ *        c) Allocate a static local UB memref using the dst_range shape with static-1s removed;
+ *           when a dst_range dim is dynamic, use the corresponding dst tensor dim as static upper
+ *           bound (fallback to full dst shape only when dst has a dynamic dim).
+ *        d) Create an UB view matching the canonical copy rank; skip subview when alloc shape
+ *           already matches copy shape (same as GenSubviewFromRegion).
  *        e) `memref.copy` from the GM view to the UB view.
  *        f) Convert UB to tensor via `bufferization.to_tensor`.
  *        g) Cast element type if needed, then directly use `tensor.insert_slice` with dstR.sizes
@@ -1678,8 +1681,10 @@ void CodeGenTileLangNPUIRDEV::EmitCopyTensorToTensor(
  *    - Concept:
  *        Store a tensor slice back to GM.
  *    - Logic:
- *        a) Extract a slice from the source tensor (`tensor.extract_slice`).
- *        b) Create a destination GM subview (`memref.subview`).
+ *        a) Extract a slice from the source tensor (`tensor.extract_slice`); skip when src range
+ *           is full and zero-offset.
+ *        b) Create a destination GM subview (`memref.subview`); skip when dst range is full
+ *           and zero-offset.
  *        c) Resolve potential rank/shape mismatches via reshape, and type mismatches via cast.
  *        d) Write using `bufferization.materialize_in_destination` (writable).
  *
@@ -1687,7 +1692,8 @@ void CodeGenTileLangNPUIRDEV::EmitCopyTensorToTensor(
  *    - Concept:
  *        Tensor-to-tensor movement / layout manipulation through slice extraction and insertion.
  *    - Logic:
- *        a) Extract slices from source and destination tensors.
+ *        a) Extract slice from source (skip when src range is full and zero-offset); destination
+ *           is used via insert_slice.
  *        b) Reshape/cast the source slice to match the destination slice type.
  *        c) Insert into destination using `tensor.insert_slice` and update the var binding.
  *
@@ -1695,7 +1701,7 @@ void CodeGenTileLangNPUIRDEV::EmitCopyTensorToTensor(
  *   Input:  tl.ascend_copy(src_gm[...], dst_tensor[...])
  *   Output:
  *     %src_view = memref.subview %src_gm [...]  : (rank-reduced)
- *     %ub       = memref.alloc()               : (local UB)
+ *     %ub       = memref.alloc()               : (local UB; shape from dst_range; subview may be omitted)
  *     memref.copy %src_view, %ub
  *     %val      = bufferization.to_tensor %ub
  *     %result   = tensor.insert_slice %val into %dst_tensor [...]
