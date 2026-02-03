@@ -1957,12 +1957,49 @@ func = vec_add(M, N, 128, 256)
 print(f"{func.get_kernel_source()}")
 ```
 
+## 6. 性能调优
+
+### 6.1 msProf
+
+TileLang Ascend 支持CANN提供的msProf算子调优工具，msProf工具提供上板和仿真的性能数据采集方式，并通过MindStudio Insight进行可视化呈现，方便开发者快速定位采集算子性能数据、分析算子性能瓶颈。基本算子调优步骤如下，详情请见：[算子调优-msProf](https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/850/devaids/optool/atlasopdev_16_0082.html)。
+
+### 6.2 算子调优基本方法
+msProf工具包含msprof op和msprof op simulator两种使用方式，协助用户定位算子内存、算子代码以及算子指令的异常，实现全方位的算子调优。
+
+#### 6.2.1 msprof op
+msProf提供的上板验证功能，适用于实际运行环境中的性能分析，可协助用户定位算子内存和性能瓶颈。
+
+- 使用方式：直接分析运行中的算子，无需额外配置，适合在板环境中快速定位算子性能问题。展示的图形有：
+
+  - 计算内存热力图
+  - Roofline瓶颈分析图
+  - Cache热力图
+  - 通算流水图
+  - 算子代码热点图
+- 工具用法
+  ```bash
+  msprof op --kernel-name="your_kernel_func_name" python your_kernel_script.py
+  ```
+#### 6.2.2 msprof op simulator
+msProf提供的仿真验证功能，适用于开发阶段和调试阶段，进行详细仿真调优，可协助用户分析算子指令和代码热点问题。
+
+- 配置环境变量（如LD_LIBRARY_PATH）和编译选项（如添加-g省工程调试信息），适合在仿真环境中详细分析算子行为，详见[工具使用](https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/850/devaids/optool/atlasopdev_16_00851.html)。其可展示的图形有：
+
+  - 指令流水图
+  - 算子代码热点图
+  - 内存通路吞吐率波形图
+
+- 工具用法
+  ```bash
+  msprof op simulator --soc-version=<ascend_version> --kernel-name="your_kernel_func_name" python your_kernel_script.py
+  ```
+
 ## 6. 修改记录
 
 | 日期      | 修改内容        | 修改人      |
 | --------- | --------------- | ----------- |
 | 2026.1.22 | Initial release | Chaoyang Ji |
-|           |                 |             |
+| 2026.2.03 | MsProf update   | Yuhan Zhang |
 |           |                 |             |
 
 
