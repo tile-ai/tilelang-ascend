@@ -2347,7 +2347,84 @@ void CodeGenTileLangNPUIRDEV::DebugPrintCodegen(const CallNode *op) {
 ///    T.npuir_reshape(A, B)
 /// after:
 ///    %.* = tensor.reshape %a(%b) outs(%c) -> tensor<>
-void CodeGenTileLangNPUIRDEV::ReshapeCodegen(const CallNode *op) {}
+void CodeGenTileLangNPUIRDEV::ReshapeCodegen(const CallNode *op) {
+  tvm::tl::NpuirReshape npuirop(op->args, this->vmap);
+  mlir::Location loc = builder.getUnknownLoc();
+
+  mlir::Value src = GetVarValue(npuirop.src);
+  const auto &dstShape = npuirop.dst_shape;
+
+  auto srcTensorTy = src.getType().cast<mlir::RankedTensorType>();
+  int64_t srcRank = srcTensorTy.getRank();
+  int64_t dstRank = static_cast<int64_t>(dstShape.size());
+
+  // Helpers
+  auto toIndexValue = [&](const tvm::PrimExpr &e) -> mlir::Value {
+    mlir::Value v = MakeValue(e);
+    if (!v.getType().isIndex()) {
+      v = builder.create<mlir::arith::IndexCastOp>(loc, builder.getIndexType(), v);
+    }
+    return v;
+  };
+
+  llvm::SmallVector<int64_t, 8> dstShapeForType;
+  dstShapeForType.reserve(dstShape.size());
+  for (auto s : dstShape) {
+    if (auto imm = s.as<tvm::IntImmNode>()) {
+      dstShapeForType.push_back(static_cast<int64_t>(imm->value));
+    } else {
+      dstShapeForType.push_back(mlir::ShapedType::kDynamic);
+    }
+  }
+
+  auto resultTensorTy =
+      mlir::RankedTensorType::get(dstShapeForType, srcTensorTy.getElementType());
+
+  llvm::SmallVector<mlir::ReassociationIndices, 2> collapseMap;
+  {
+    mlir::ReassociationIndices allDims;
+    allDims.reserve(srcRank);
+    for (int64_t i = 0; i < srcRank; ++i) allDims.push_back(i);
+    collapseMap.push_back(allDims);
+  }
+
+  mlir::RankedTensorType flatTensorTy;
+  if (srcTensorTy.hasStaticShape()) {
+    int64_t numel = 1;
+    for (int64_t d : srcTensorTy.getShape()) numel *= d;
+    flatTensorTy = mlir::RankedTensorType::get({numel}, srcTensorTy.getElementType());
+  } else {
+    flatTensorTy = mlir::RankedTensorType::get({mlir::ShapedType::kDynamic},
+                                               srcTensorTy.getElementType());
+  }
+
+  mlir::Value flat = builder.create<mlir::tensor::CollapseShapeOp>(
+      loc, flatTensorTy, src, collapseMap);
+
+  llvm::SmallVector<mlir::ReassociationIndices, 2> expandMap;
+  {
+    mlir::ReassociationIndices group;
+    group.reserve(dstRank);
+    for (int64_t i = 0; i < dstRank; ++i) group.push_back(i);
+    expandMap.push_back(group);
+  }
+
+  llvm::SmallVector<mlir::OpFoldResult, 8> outputShape;
+  outputShape.reserve(dstRank);
+  for (int64_t i = 0; i < dstRank; ++i) {
+    const tvm::PrimExpr &dimExpr = dstShape[i];
+    if (auto imm = dimExpr.as<tvm::IntImmNode>()) {
+      outputShape.push_back(builder.getIndexAttr(static_cast<int64_t>(imm->value)));
+    } else {
+      outputShape.push_back(toIndexValue(dimExpr));
+    }
+  }
+
+  mlir::Value reshaped = builder.create<mlir::tensor::ExpandShapeOp>(
+      loc, resultTensorTy, flat, expandMap, outputShape);
+
+  SetVarValue(npuirop.dst, reshaped);
+}
 
 void CodeGenTileLangNPUIRDEV::CallExternCodegen(const CallNode *op) {
   // Todo: Implementation pending
