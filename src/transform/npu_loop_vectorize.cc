@@ -101,6 +101,7 @@ private:
     static int tmp_id = 0;
     Buffer ref = output_buffer.buffer;
     DataType dtype = ref->dtype;
+    auto scope = ref.scope();
     int64_t size = 1;
     for (const auto& dim : ref->shape) {
       if (auto imm = dim.as<IntImmNode>()) {
@@ -114,7 +115,7 @@ private:
 
     std::string name = "tmp_" + std::to_string(tmp_id++) + "_buf";
     Buffer buf = Buffer(
-      Var(name, PointerType(PrimType(dtype), "shared")),
+      Var(name, PointerType(PrimType(dtype), scope)),
       dtype, ref->shape, {}, PrimExpr(0), name, 0, 0, kDefault
     );
 
@@ -399,6 +400,8 @@ private:
     auto* call = expr.as<CallNode>();
     auto* op_ptr = call->op.as<OpNode>();
     std::string op_name = op_ptr->name;
+    BufferAccessInfo output = output_buffer;
+
     if (auto load = call->args[0].as<BufferLoadNode>()) {
       if (!ValidBufferIndices(load->indices)) {
         depth = 0;
@@ -406,15 +409,23 @@ private:
       }
       // If indices are consistent with loop vars, it means the address offset of the buffer is 0
       int offset = 0;
-      Stmt statement = BuildNPUIRUnaryCall(op_name, ExtractBufferAccessInfo(call->args[0]), output_buffer, offset);
+      if (depth > 1) {
+        output = CreateTempBuffer(output_buffer);
+        tmp_bufs->push_back(output);
+      }
+      Stmt statement = BuildNPUIRUnaryCall(op_name, ExtractBufferAccessInfo(call->args[0]), output, offset);
       statements->push_back(statement);
       depth--;
       return true;
     } else {
       if (DecomposeExpression(call->args[0], output_buffer, tmp_bufs, loop_vars, statements)) {
         int offset = 0;
-        // For an unary op, its input and output can share the same buffer.
-        Stmt statement = BuildNPUIRUnaryCall(op_name, tmp_bufs->back(), output_buffer, offset);
+        auto last_buf = tmp_bufs->back();
+        if (depth > 1) {
+          output = CreateTempBuffer(last_buf);
+          tmp_bufs->push_back(output);
+        }
+        Stmt statement = BuildNPUIRUnaryCall(op_name, last_buf, output, offset);
         statements->push_back(statement);
         depth--;
         return true;
