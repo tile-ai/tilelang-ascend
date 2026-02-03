@@ -199,6 +199,31 @@ getBroadcastDim(const Array<PrimExpr> &buffer_shape0,
   return dims;
 }
 
+static llvm::SmallVector<int64_t>
+getBroadcastDim(const llvm::ArrayRef<int64_t> buffer_shape0,
+                const Array<PrimExpr> &buffer_shape1) {
+  llvm::SmallVector<int64_t> dims;
+  if (buffer_shape0.empty() || buffer_shape1.empty()) {
+    return dims;
+  }
+  CHECK(buffer_shape0.size() == buffer_shape1.size());
+  for (int i = 0; i < buffer_shape0.size(); i++) {
+    auto *b1 = as_const_int(buffer_shape1[i]);
+    CHECK(b1) << "buffer_shape1[" << i << "] is not a const int";
+
+    if (buffer_shape0[i] == 1 &&
+        *b1 != 1) {
+      dims.emplace_back(i);
+    } else if (buffer_shape0[i] != 1 &&
+               *b1 == 1) {
+      dims.emplace_back(i);
+    } else {
+      CHECK(buffer_shape0[i] == *b1);
+    }
+  }
+  return dims;
+}
+
 static std::map<std::string, mlir::hivm::RoundMode> NPUIR_STR_ROUNDMODE{
     {"round", mlir::hivm::RoundMode::ROUND},
     {"rint", mlir::hivm::RoundMode::RINT},
@@ -1983,7 +2008,8 @@ void CodeGenTileLangNPUIRDEV::VbrcCodegen(const CallNode *op) {
       src = MakeValue(npuirop.in);
     }
   } else {
-    src = GetVarValue(npuirop.src);
+    const CallNode *src_tmp = npuirop.in.as<CallNode>();
+    src = GenExtractSliceFromRegion(src_tmp);
     auto srcTensor = llvm::dyn_cast<TypedValue<RankedTensorType>>(src);
     inBufferShape = srcTensor.getType().getShape();
   }
@@ -1992,7 +2018,7 @@ void CodeGenTileLangNPUIRDEV::VbrcCodegen(const CallNode *op) {
   if (!inBufferShape.empty()) {
     auto outTensor = llvm::dyn_cast<TypedValue<RankedTensorType>>(dst);
     auto outBufferShape = outTensor.getType().getShape();
-    auto broadcastDim = getBroadcastDim(npuirop.src->shape, npuirop.dst->shape);
+    auto broadcastDim = getBroadcastDim(inBufferShape, npuirop.dst->shape);
     broadcastDimAttr = builder.getDenseI64ArrayAttr(broadcastDim);
   }
   mlir::Type dst_type = dst.getType();
