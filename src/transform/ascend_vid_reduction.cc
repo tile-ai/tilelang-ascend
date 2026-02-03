@@ -73,10 +73,6 @@ private:
     ObjectPtr<BufferNode> new_buffer = make_object<BufferNode>(*buffer.get());
 
     new_buffer->shape = ModifyExtents(buffer->shape);
-
-    new_buffer->strides.clear();
-    new_buffer->elem_offset = PrimExpr();
-
     return Buffer(new_buffer);
 
   }
@@ -116,6 +112,22 @@ private:
       }
     }
     return new_extents;
+  }
+
+  PrimExpr VisitExpr_(const BufferLoadNode* op) final {
+    auto it = buffer_map_.find(op->buffer);
+    if (it != buffer_map_.end()) {
+      return BufferLoad(it->second, op->indices);
+    }
+    return IRMutatorWithAnalyzer::VisitExpr_(op);
+  }
+
+  Stmt VisitStmt_(const BufferStoreNode* op) final {
+    auto it = buffer_map_.find(op->buffer);
+    if (it != buffer_map_.end()) {
+      return BufferStoreNode(it->second, op->value, op->indices);
+    }
+    return IRMutatorWithAnalyzer::VisitStmt_(op);
   }
 
   Stmt VisitStmt_(const BlockNode* op) override {
