@@ -1328,6 +1328,7 @@ def bitwise_xor(dst: Buffer, src0: Buffer, src1: Buffer, tmp: Buffer):
         dst: The destination buffer where the result will be stored.
         src0: The first source operand buffer.
         src1: The second source operand buffer.
+        tmp: A temporary buffer used for intermediate calculations.
 
     Returns:
         A TVM intrinsic call that performs the bitwise XOR operation.
