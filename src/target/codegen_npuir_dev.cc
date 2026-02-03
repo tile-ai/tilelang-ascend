@@ -1475,20 +1475,6 @@ mlir::Value CodeGenTileLangNPUIRDEV::CreateSameRankDynamicSubview(
 }
 
 llvm::SmallVector<int64_t>
-CodeGenTileLangNPUIRDEV::ComputeUBAllocShapeDropStaticOnes(
-    mlir::RankedTensorType dst_tensor_type_ori) {
-  llvm::SmallVector<int64_t> ub_alloc_shape;
-  ub_alloc_shape.reserve(dst_tensor_type_ori.getRank());
-
-  for (int64_t d : dst_tensor_type_ori.getShape()) {
-    if (d == 1) continue;  // drop static 1 as in original
-    ub_alloc_shape.push_back(d);
-  }
-  if (ub_alloc_shape.empty()) ub_alloc_shape.push_back(1);
-  return ub_alloc_shape;
-}
-
-llvm::SmallVector<int64_t>
 CodeGenTileLangNPUIRDEV::ComputeUBAllocShapeFromDstRange(
     mlir::RankedTensorType dst_tensor_type_ori,
     llvm::ArrayRef<mlir::OpFoldResult> dstR_sizes) {
