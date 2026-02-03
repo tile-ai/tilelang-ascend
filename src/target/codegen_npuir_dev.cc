@@ -1378,8 +1378,7 @@ CodeGenTileLangNPUIRDEV::CollapseStaticOneDims(
   return out;
 }
 
-// Returns true iff all OpFoldResults are static and equal to 0 (same as
-// GenSubviewFromRegion's AllZero check for offsets).
+// Returns true iff all OpFoldResults are static and equal to 0
 static bool OpFoldResultsAllZero(llvm::ArrayRef<mlir::OpFoldResult> ofrs) {
   for (const auto& ofr : ofrs) {
     auto attr = ofr.dyn_cast<mlir::Attribute>();
@@ -1390,8 +1389,7 @@ static bool OpFoldResultsAllZero(llvm::ArrayRef<mlir::OpFoldResult> ofrs) {
   return true;
 }
 
-// Returns true iff sizes are all static and equal to staticShape (same as
-// GenSubviewFromRegion's "shape consistent" check for the alloc-subview case).
+// Returns true iff sizes are all static and equal to staticShape
 static bool OpFoldResultsEqualStaticShape(
     llvm::ArrayRef<mlir::OpFoldResult> sizes,
     llvm::ArrayRef<int64_t> staticShape) {
@@ -1534,7 +1532,8 @@ void CodeGenTileLangNPUIRDEV::EmitCopyMemrefToTensor(
   mlir::Value src_view = CreateRankReducedSubviewFromBaseRank(
     src, srcR.offs, srcR.sizes, srcR.strides, copy_projected, loc);
 
-  // 3) Alloc UB: use dst_range shape (with static upper bound from dst when dynamic)
+  // 3) Alloc UB from dst_range. kDynamic appears only when dst type has a dynamic dim;
+  //    dst_range dynamic + dst static => static alloc (dst dim as bound), dynamic subview.
   llvm::SmallVector<int64_t> ub_alloc_shape =
       ComputeUBAllocShapeFromDstRange(dst_tensor_type_ori, dstR.sizes);
   bool has_dynamic = false;
@@ -1544,9 +1543,7 @@ void CodeGenTileLangNPUIRDEV::EmitCopyMemrefToTensor(
       break;
     }
   }
-  if (has_dynamic) {
-    ub_alloc_shape = ComputeUBAllocShapeDropStaticOnes(dst_tensor_type_ori);
-  }
+  ICHECK(!has_dynamic) << "dst with dynamic dimension(s) not supported for UB alloc";
 
   mlir::Value base_ub = CreateStaticLocalUB(
       ub_alloc_shape, dst_tensor_type_ori.getElementType(), loc);
@@ -1557,7 +1554,6 @@ void CodeGenTileLangNPUIRDEV::EmitCopyMemrefToTensor(
 
   if ((int64_t)copy_sizes.size() == ubTy.getRank()) {
     // When shape is static and matches alloc shape (offsets are 0), skip subview
-    // like GenSubviewFromRegion.
     if (OpFoldResultsEqualStaticShape(copy_sizes, ub_alloc_shape)) {
       ub_view = base_ub;
     } else {
