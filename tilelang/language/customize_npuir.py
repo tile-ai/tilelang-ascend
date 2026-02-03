@@ -456,9 +456,7 @@ def npuir_brc(src, dst):
         src (Union[tir.Buffer, tir.BufferLoad, tir.BufferRegion, tir.PrimExpr]): Source vector or scalar
         dst (Union[tir.Buffer, tir.BufferLoad]): Destination vector
     """
-    print("type: ", type(src))
     src_extent = _get_extent(src)
-    print("src_extent: ", src_extent)
     dst_extent = _get_extent(dst)
 
     if not isinstance(src, tir.PrimExpr):
