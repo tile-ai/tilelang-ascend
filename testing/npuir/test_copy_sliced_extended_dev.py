@@ -85,13 +85,14 @@ def test_4d_strided():
     print(">> 4D Strided Test Passed!")
 
 # ==========================================
-# 5D Interleaved Kernel & Test (FIXED)
+# 5D Interleaved Kernel & Test (FIXED: Arg Merging)
 # Pattern: [Scalar, Scalar, Slice, Scalar, Slice]
+# Optimization: Merge idx_0 and idx_1 to avoid 16-arg limit
 # ==========================================
 @tilelang.jit(out_idx=[-1], target="npuir")
 def test_strided_copy_5d_kernel(
-    D0, D1, D2, D3, D4, # Shape
-    Blk_2, Blk_4,       # Block Sizes
+    D0, D1, D2, D3, D4, # Shape (Constants)
+    Blk_2, Blk_4,       # Block Sizes (Constants)
     dtype="float16"
 ):
     @T.prim_func
@@ -99,8 +100,8 @@ def test_strided_copy_5d_kernel(
         In: T.Tensor((D0, D1, D2, D3, D4), dtype),
         Out: T.Tensor((D0, D1, D2, D3, D4), dtype),
         Debug_Frag: T.Tensor((Blk_2, Blk_4), dtype),
-        idx_0: T.int32,
-        idx_1: T.int32,
+        # Merged Index to save argument slots (Max args ~16)
+        idx_01: T.int32,  # Encodes idx_0 * D1 + idx_1
         idx_3: T.int32,
         off_2: T.int32,
         off_4: T.int32,
@@ -108,11 +109,18 @@ def test_strided_copy_5d_kernel(
         with T.Kernel(1, is_npu=True) as (idx_, _):
             frag = T.alloc_fragment((Blk_2, Blk_4), dtype)
             
+            # Unpack merged index
+            # idx_0 = idx_01 // D1
+            # idx_1 = idx_01 % D1
+            # Since D1 is constant, this is efficient
+            r_idx_0 = idx_01 // D1
+            r_idx_1 = idx_01 % D1
+            
             # 1. Deep Interleaved Read
             T.copy(
                 In[
-                    idx_0,
-                    idx_1,
+                    r_idx_0,
+                    r_idx_1,
                     off_2 : off_2 + Blk_2,
                     idx_3,
                     off_4 : off_4 + Blk_4
@@ -127,8 +135,8 @@ def test_strided_copy_5d_kernel(
             T.copy(
                 frag,
                 Out[
-                    idx_0,
-                    idx_1,
+                    r_idx_0,
+                    r_idx_1,
                     off_2 : off_2 + Blk_2,
                     idx_3,
                     off_4 : off_4 + Blk_4
@@ -138,11 +146,15 @@ def test_strided_copy_5d_kernel(
 
 def test_5d_strided():
     print("\n" + "="*30 + " Running 5D Interleaved Test " + "="*30)
-    dims = (2, 2, 64, 4, 128)
+    dims = (2, 2, 64, 4, 128) # D0, D1, ...
+    D1 = dims[1]
     blk_2, blk_4 = 16, 32
     
     idx_0, idx_1, idx_3 = 1, 0, 2
     off_2, off_4 = 32, 64
+    
+    # Pre-calculate merged index
+    idx_01_merged = idx_0 * D1 + idx_1
     
     kernel = test_strided_copy_5d_kernel(*dims, blk_2, blk_4)
     
@@ -150,8 +162,8 @@ def test_5d_strided():
     out = torch.zeros(*dims).npu().half()
     debug = torch.zeros(blk_2, blk_4).npu().half()
     
-    # Pass scalars explicitly
-    kernel(inp, out, debug, idx_0, idx_1, idx_3, off_2, off_4)
+    # Pass merged index: 3 Tensors + 4 Scalars = 16 Args (Safe!)
+    kernel(inp, out, debug, idx_01_merged, idx_3, off_2, off_4)
     
     # Verification
     expected_slice = inp[idx_0, idx_1, off_2:off_2+blk_2, idx_3, off_4:off_4+blk_4]
