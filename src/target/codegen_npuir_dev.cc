@@ -1466,6 +1466,33 @@ CodeGenTileLangNPUIRDEV::ComputeUBAllocShapeDropStaticOnes(
   return ub_alloc_shape;
 }
 
+llvm::SmallVector<int64_t>
+CodeGenTileLangNPUIRDEV::ComputeUBAllocShapeFromDstRange(
+    mlir::RankedTensorType dst_tensor_type_ori,
+    llvm::ArrayRef<mlir::OpFoldResult> dstR_sizes) {
+  int64_t rank = dst_tensor_type_ori.getRank();
+  ICHECK((int64_t)dstR_sizes.size() == rank);
+
+  llvm::SmallVector<int64_t> full_shape;
+  full_shape.reserve(rank);
+  for (int64_t i = 0; i < rank; ++i) {
+    if (auto attr = dstR_sizes[i].dyn_cast<mlir::Attribute>()) {
+      full_shape.push_back(attr.cast<mlir::IntegerAttr>().getInt());
+    } else {
+      full_shape.push_back(dst_tensor_type_ori.getDimSize(i));
+    }
+  }
+
+  llvm::SmallVector<int64_t> ub_alloc_shape;
+  ub_alloc_shape.reserve(rank);
+  for (int64_t d : full_shape) {
+    if (d == 1) continue;  // drop static 1 as in original
+    ub_alloc_shape.push_back(d);
+  }
+  if (ub_alloc_shape.empty()) ub_alloc_shape.push_back(1);
+  return ub_alloc_shape;
+}
+
 void CodeGenTileLangNPUIRDEV::EmitCopyMemrefToTensor(
     const tvm::tl::AscendCopy& npuirop,
     mlir::Value src, mlir::Value dst,
@@ -1483,9 +1510,19 @@ void CodeGenTileLangNPUIRDEV::EmitCopyMemrefToTensor(
   mlir::Value src_view = CreateRankReducedSubviewFromBaseRank(
     src, srcR.offs, srcR.sizes, srcR.strides, copy_projected, loc);
 
-  // 3) Alloc UB: drop ALL static-1 dims from dst tensor type
+  // 3) Alloc UB: use dst_range shape (with static upper bound from dst when dynamic)
   llvm::SmallVector<int64_t> ub_alloc_shape =
-      ComputeUBAllocShapeDropStaticOnes(dst_tensor_type_ori);
+      ComputeUBAllocShapeFromDstRange(dst_tensor_type_ori, dstR.sizes);
+  bool has_dynamic = false;
+  for (int64_t d : ub_alloc_shape) {
+    if (mlir::ShapedType::isDynamic(d)) {
+      has_dynamic = true;
+      break;
+    }
+  }
+  if (has_dynamic) {
+    ub_alloc_shape = ComputeUBAllocShapeDropStaticOnes(dst_tensor_type_ori);
+  }
 
   mlir::Value base_ub = CreateStaticLocalUB(
       ub_alloc_shape, dst_tensor_type_ori.getElementType(), loc);
