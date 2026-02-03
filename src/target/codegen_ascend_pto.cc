@@ -652,6 +652,8 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) 
     TshCodegen(op, "TSHLS");
   } else if (op->op.same_as(tl::ascend_bitwise_rshift())) {
     TshCodegen(op, "TSHRS");
+  } else if (op->op.same_as(tl::ascend_broadcast())) {
+    BroadcastOpCodegen(op);
   }
 }
 
@@ -1254,6 +1256,60 @@ void CodeGenTileLangAscendPto::BinaryVecOpCodegen(const CallNode *op,
     this->stream << ");\n";
   } else {
     ICHECK(false) << "BinaryVecOpCodegen Failed";
+  }
+}
+
+std::string extractBroadCastAxis(const std::string& input) {
+    std::string axis;
+    size_t start = input.find('<');
+    if (start == std::string::npos) {
+        return axis;
+    }
+    size_t end = input.find('>', start);
+    if (end == std::string::npos) {
+        return axis;
+    }
+    std::string templatePart = input.substr(start + 1, end - start - 1);
+    templatePart.erase(std::remove(templatePart.begin(), templatePart.end(), ' '),
+                       templatePart.end());
+    std::vector<std::string> parts;
+    std::stringstream ss(templatePart);
+    std::string token;
+    while (std::getline(ss, token, ',')) {
+        parts.push_back(token);
+    }
+    return parts[2];
+}
+
+void CodeGenTileLangAscendPto::BroadcastOpCodegen(const CallNode *op) {
+  std::string template_args = PrintExpr(op->args[0]);
+  std::string src_name = PrintExpr(op->args[2].as<CallNode>()->args[1]);
+  std::string dst_name = PrintExpr(op->args[1].as<CallNode>()->args[1]);
+
+  std::vector<std::string> ub_data_vector = ub_data_map_[src_name];
+  std::string ub_data_type = ub_data_vector[0];
+  std::string row = ub_data_vector[2];
+  std::string col = ub_data_vector[1];
+  std::string address = ub_data_vector[3];
+
+  std::string axis = extractBroadCastAxis(template_args);
+  if (axis == "1") {
+    this->PrintIndent();
+    this->stream << kAscendPtoScope << "TileUbDataDN <" << ub_data_type << ", " << row << ", " << col << ", " 
+    << row << ", " << col << "> " << src_name << "_DN_ROWEXPAND;\n";
+    this->PrintIndent();
+    this->stream << "TASSIGN(" << src_name << "_DN_ROWEXPAND, " << address << ");\n";
+    this->PrintIndent();
+    this->stream << "pipe_barrier(PIPE_V);\n";
+    this->PrintIndent();
+    this->stream << "TROWEXPAND" << "(" << dst_name << ", " << src_name << "_DN_ROWEXPAND" << ");\n";
+    this->PrintIndent();
+    this->stream << "pipe_barrier(PIPE_V);\n";
+    this->PrintIndent();
+    this->stream << "TRESHAPE(" << src_name << ", " << src_name << "_DN_ROWEXPAND);\n";
+  } else {
+    this->PrintIndent();
+    this->stream << "TCOLEXPAND" << "(" << dst_name << ", " << src_name << ");\n";
   }
 }
 
