@@ -1,0 +1,22 @@
+name: AscendNPU-IR CI
+
+on:
+  pull_request:
+    branches:
+      - npuir
+
+jobs:
+
+  build-test:
+    runs-on: self-hosted
+    steps:
+      - name: Build tilelang
+        run: |
+          bash install_npuir.sh
+  
+      - name: Run tests
+        run: |
+          cd unittests/npuir/
+          mkdir output
+          export TILELANG_CLEAR_CACHE=1
+          python -m pytest
