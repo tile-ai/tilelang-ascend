@@ -11,7 +11,7 @@ torch.npu.set_device(0)
 tilelang.cache.clear_cache()
 
 M = 4
-N = 10
+N = 1024
 num = 4
 
 @tilelang.jit(target="npuir")
