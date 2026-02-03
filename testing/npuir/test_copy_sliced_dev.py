@@ -300,11 +300,177 @@ def test_4d():
 
     print("4D Test Passed!")
 
+# ==========================================
+# 4D Strided Kernel & Test
+# Pattern: [Scalar, Slice, Scalar, Slice]
+# Example: K_cache[batch, seq_chunk, head, head_dim_chunk]
+# ==========================================
+@tilelang.jit(out_idx=[-1], target="npuir")
+def test_strided_copy_4d_kernel(
+    B, S, H, D,        # Shape
+    S_blk, D_blk,      # Slice Sizes
+    idx_b, idx_h,      # Fixed Scalars
+    off_s, off_d,      # Offsets
+    dtype="float16"
+):
+    @T.prim_func
+    def main(
+        In: T.Tensor((B, S, H, D), dtype),
+        Out: T.Tensor((B, S, H, D), dtype),
+        Debug_Frag: T.Tensor((S_blk, D_blk), dtype),
+    ):
+        with T.Kernel(1, is_npu=True) as (idx_, _):
+            # Fragment matches the sliced dimensions only
+            frag = T.alloc_fragment((S_blk, D_blk), dtype)
+            
+            # 1. Strided Read (GM -> UB)
+            # Pattern: In[i, :, j, :] -> UB[:, :]
+            T.copy(
+                In[
+                    idx_b,
+                    off_s : off_s + S_blk,
+                    idx_h,
+                    off_d : off_d + D_blk
+                ],
+                frag
+            )
+            
+            # 2. Dump fragment to check Read correctness
+            T.copy(frag, Debug_Frag)
+            
+            # 3. Strided Write (UB -> GM)
+            # Pattern: UB[:, :] -> Out[i, :, j, :]
+            T.copy(
+                frag,
+                Out[
+                    idx_b,
+                    off_s : off_s + S_blk,
+                    idx_h,
+                    off_d : off_d + D_blk
+                ]
+            )
+    return main
+
+def test_4d_strided():
+    print("\n" + "="*30 + " Running 4D Strided Test (Middle Scalar) " + "="*30)
+    # Params
+    B, S, H, D = 2, 64, 8, 128
+    S_blk, D_blk = 32, 64
+    idx_b, idx_h = 1, 3
+    off_s, off_d = 16, 32
+    
+    kernel = test_strided_copy_4d_kernel(B, S, H, D, S_blk, D_blk, idx_b, idx_h, off_s, off_d)
+    
+    # Data
+    inp = torch.randn(B, S, H, D).npu().half()
+    out = torch.zeros(B, S, H, D).npu().half()
+    debug = torch.zeros(S_blk, D_blk).npu().half()
+    
+    kernel(inp, out, debug)
+    
+    # Verification
+    expected_slice = inp[idx_b, off_s:off_s+S_blk, idx_h, off_d:off_d+D_blk]
+    
+    # Check Read
+    torch.testing.assert_close(debug, expected_slice, rtol=1e-5, atol=1e-5)
+    
+    # Check Write
+    expected_out = torch.zeros_like(out)
+    expected_out[idx_b, off_s:off_s+S_blk, idx_h, off_d:off_d+D_blk] = expected_slice
+    torch.testing.assert_close(out, expected_out, rtol=1e-5, atol=1e-5)
+    
+    print(">> 4D Strided Test Passed!")
+
+# ==========================================
+# 5D Interleaved Kernel & Test
+# Pattern: [Scalar, Scalar, Slice, Scalar, Slice]
+# Example: O[i_k, i_b, chunk_slice, i_h, vec_slice]
+# ==========================================
+@tilelang.jit(out_idx=[-1], target="npuir")
+def test_strided_copy_5d_kernel(
+    D0, D1, D2, D3, D4, # Shape
+    Blk_2, Blk_4,       # Slice sizes for dim 2 and 4
+    idx_0, idx_1, idx_3,# Fixed Scalars
+    off_2, off_4,       # Offsets
+    dtype="float16"
+):
+    @T.prim_func
+    def main(
+        In: T.Tensor((D0, D1, D2, D3, D4), dtype),
+        Out: T.Tensor((D0, D1, D2, D3, D4), dtype),
+        Debug_Frag: T.Tensor((Blk_2, Blk_4), dtype),
+    ):
+        with T.Kernel(1, is_npu=True) as (idx_, _):
+            frag = T.alloc_fragment((Blk_2, Blk_4), dtype)
+            
+            # 1. Deep Interleaved Read
+            # Pattern: In[s, s, Slice, s, Slice] -> UB[:, :]
+            T.copy(
+                In[
+                    idx_0,
+                    idx_1,
+                    off_2 : off_2 + Blk_2,
+                    idx_3,
+                    off_4 : off_4 + Blk_4
+                ],
+                frag
+            )
+            
+            # 2. Check Read
+            T.copy(frag, Debug_Frag)
+            
+            # 3. Deep Interleaved Write
+            # Pattern: UB[:, :] -> Out[s, s, Slice, s, Slice]
+            T.copy(
+                frag,
+                Out[
+                    idx_0,
+                    idx_1,
+                    off_2 : off_2 + Blk_2,
+                    idx_3,
+                    off_4 : off_4 + Blk_4
+                ]
+            )
+    return main
+
+def test_5d_strided():
+    print("\n" + "="*30 + " Running 5D Interleaved Test " + "="*30)
+    # Params: [D0, D1, D2(Sliced), D3, D4(Sliced)]
+    dims = (2, 2, 64, 4, 128)
+    idx_0, idx_1, idx_3 = 1, 0, 2
+    blk_2, blk_4 = 16, 32
+    off_2, off_4 = 32, 64
+    
+    kernel = test_strided_copy_5d_kernel(
+        *dims, blk_2, blk_4, idx_0, idx_1, idx_3, off_2, off_4
+    )
+    
+    # Data
+    inp = torch.randn(*dims).npu().half()
+    out = torch.zeros(*dims).npu().half()
+    debug = torch.zeros(blk_2, blk_4).npu().half()
+    
+    kernel(inp, out, debug)
+    
+    # Verification
+    # PyTorch Equivalent: inp[1, 0, 32:48, 2, 64:96]
+    expected_slice = inp[idx_0, idx_1, off_2:off_2+blk_2, idx_3, off_4:off_4+blk_4]
+    
+    torch.testing.assert_close(debug, expected_slice, rtol=1e-5, atol=1e-5)
+    
+    expected_out = torch.zeros_like(out)
+    expected_out[idx_0, idx_1, off_2:off_2+blk_2, idx_3, off_4:off_4+blk_4] = expected_slice
+    torch.testing.assert_close(out, expected_out, rtol=1e-5, atol=1e-5)
+    
+    print(">> 5D Interleaved Test Passed!")
+
 def main():
     os.environ['TILELANG_ASCEND_MODE'] = 'Developer'
     test_2d()
     test_3d()
     test_4d()
+    test_4d_strided()
+    test_5d_strided()
 
 if __name__ == "__main__":
     main()
