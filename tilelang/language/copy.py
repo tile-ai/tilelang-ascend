@@ -118,7 +118,26 @@ def copy(
     assert src_extent or dst_extent, "Can't deduce copy extents from args"
     src_extent = list(src_extent) if src_extent else [1] * len(dst_extent)
     dst_extent = list(dst_extent) if dst_extent else [1] * len(src_extent)
-    extent = max(src_extent, dst_extent)
+    if len(src_extent) != len(dst_extent):
+        max_len = max(len(src_extent), len(dst_extent))
+        if len(src_extent) < max_len:
+            src_extent = src_extent + [1] * (max_len - len(src_extent))
+        if len(dst_extent) < max_len:
+            dst_extent = dst_extent + [1] * (max_len - len(dst_extent))
+    
+    extent = []
+    for i in range(len(src_extent)):
+        src_val = src_extent[i]
+        dst_val = dst_extent[i]
+        
+        if isinstance(src_val, (int, float)) and isinstance(dst_val, (int, float)):
+            extent.append(max(src_val, dst_val))
+        else:
+            if not isinstance(src_val, tir.PrimExpr):
+                src_val = tir.IntImm("int32", int(src_val))
+            if not isinstance(dst_val, tir.PrimExpr):
+                dst_val = tir.IntImm("int32", int(dst_val))
+            extent.append(tir.max(src_val, dst_val))
 
     def _to_region(data, access_type):
         if isinstance(data, tir.Var) and T.has_let_value(data):
@@ -213,7 +232,27 @@ def npu_copy_v2(src: Union[tir.Buffer, tir.BufferLoad, tir.BufferRegion],
     assert src_extent or dst_extent, "Can't deduce copy extents from args"
     src_extent = list(src_extent) if src_extent else [1] * len(dst_extent)
     dst_extent = list(dst_extent) if dst_extent else [1] * len(src_extent)
-    extent = max(src_extent, dst_extent)
+
+    if len(src_extent) != len(dst_extent):
+        max_len = max(len(src_extent), len(dst_extent))
+        if len(src_extent) < max_len:
+            src_extent = src_extent + [1] * (max_len - len(src_extent))
+        if len(dst_extent) < max_len:
+            dst_extent = dst_extent + [1] * (max_len - len(dst_extent))
+    
+    extent = []
+    for i in range(len(src_extent)):
+        src_val = src_extent[i]
+        dst_val = dst_extent[i]
+        
+        if isinstance(src_val, (int, float)) and isinstance(dst_val, (int, float)):
+            extent.append(max(src_val, dst_val))
+        else:
+            if not isinstance(src_val, tir.PrimExpr):
+                src_val = tir.IntImm("int32", int(src_val))
+            if not isinstance(dst_val, tir.PrimExpr):
+                dst_val = tir.IntImm("int32", int(dst_val))
+            extent.append(tir.max(src_val, dst_val))
 
     def _to_region(data, access_type):
         if isinstance(data, tir.Var) and T.has_let_value(data):
