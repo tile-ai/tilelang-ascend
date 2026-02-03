@@ -1069,7 +1069,8 @@ void CodeGenTileLangNPUIRAPI::VbrcCodegen(const CallNode *op) {
   llvm::ArrayRef<int64_t> inBufferShape;
   bool isScalar =
       !npuirop.in.as<tvm::tir::Buffer>() &&
-      !npuirop.in.as<tvm::tir::BufferRegion>();
+      !npuirop.in.as<tvm::tir::BufferRegion>() &&
+      !npuirop.in.as<tvm::tir::CallNode>();
   if (isScalar) {
     // Scalar case
     if (npuirop.in->dtype != npuirop.dst->dtype) {
