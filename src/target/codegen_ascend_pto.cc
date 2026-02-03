@@ -528,6 +528,9 @@ int GetValidShape(int shape, std::string& dtype) {
 void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) {
   if (op->op.same_as(builtin::call_extern())) {
     CallExternCodegen(op);
+  } else if (op->op.same_as(tl::loop_break())) {
+    this->PrintIndent();
+    this->stream << "break;\n";
   } else if (op->op.same_as(tl::ascend_gemm_v0())) {
     GemmV0Codegen(op);
   } else if (op->op.same_as(tl::ascend_fill())) {
