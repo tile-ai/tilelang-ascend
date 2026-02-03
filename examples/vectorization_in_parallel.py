@@ -135,7 +135,7 @@ def binary_compound_elementwise(N, block_N, dtype="float32"):
             T.copy(B[start_idx], B_VEC, [tail_size])
 
             for i in T.Parallel(block_N):
-                C_VEC[i] = A_VEC[i] * B_VEC[i] + A_VEC[i]
+                C_VEC[i] = T.exp(A_VEC[i] * B_VEC[i] + A_VEC[i] * B_VEC[0])
 
             # Write the result back from on-chip buffer (C_VEC) to global memory (C)
             T.copy(C_VEC, C[start_idx], [tail_size])
@@ -156,12 +156,8 @@ def test_binary_simple(v1, v2, v3):
     # Launch the compiled TileLang kernel
     compiled_kernel(v1, v2, v3, seq_len)
 
-    # Print both results for visual comparison (should be nearly identical)
-    print("Reference result (PyTorch):")
-    print(y_ref)
-    print("TileLang kernel result:")
-    print(v3)
-
+    torch.testing.assert_close(y_ref, v3, rtol=1e-3, atol=1e-2)
+    print("\033[92mAll check passed!\033[0m")
 
 def test_binary_compound(v1, v2, v3):
     # Instantiate the vector addition kernel for the full sequence length (single block)
@@ -176,12 +172,8 @@ def test_binary_compound(v1, v2, v3):
     # Launch the compiled TileLang kernel
     compiled_kernel(v1, v2, v3, seq_len)
 
-    # Print both results for visual comparison (should be nearly identical)
-    print("Reference result (PyTorch):")
-    print(y_ref)
-    print("TileLang kernel result:")
-    print(v3)
-
+    torch.testing.assert_close(y_ref, v3, rtol=1e-3, atol=1e-2)
+    print("\033[92mAll check passed!\033[0m")
 
 def test_binary_compound_loop_invariant(v1, v2, v3):
     # Instantiate the vector addition kernel for the full sequence length (single block)
@@ -196,12 +188,8 @@ def test_binary_compound_loop_invariant(v1, v2, v3):
     # Launch the compiled TileLang kernel
     compiled_kernel(v1, v2, v3, seq_len)
 
-    # Print both results for visual comparison (should be nearly identical)
-    print("Reference result (PyTorch):")
-    print(y_ref)
-    print("TileLang kernel result:")
-    print(v3)
-
+    torch.testing.assert_close(y_ref, v3, rtol=1e-3, atol=1e-2)
+    print("\033[92mAll check passed!\033[0m")
 
 def test_binary_compound_elementwise(v1, v2, v3):
     # Instantiate the vector addition kernel for the full sequence length (single block)
@@ -211,20 +199,17 @@ def test_binary_compound_elementwise(v1, v2, v3):
     compiled_kernel = tilelang.compile(func, target="npuir")
 
     # Compute reference result using PyTorch's native addition (on NPU)
-    y_ref = v1 * v2 + v1
+    y_ref = torch.exp(v1 * v2 + v1 * v2[0])
 
     # Launch the compiled TileLang kernel
     compiled_kernel(v1, v2, v3, seq_len)
 
-    # Print both results for visual comparison (should be nearly identical)
-    print("Reference result (PyTorch):")
-    print(y_ref)
-    print("TileLang kernel result:")
-    print(v3)
-
+    torch.testing.assert_close(y_ref, v3, rtol=1e-3, atol=1e-2)
+    print("\033[92mAll check passed!\033[0m")
 
 if __name__ == "__main__":
     torch.npu.set_device(6)
+
     # Create random input tensors on the NPU
     v1 = torch.randn(size=[seq_len], dtype=eval("torch." + dtype)).npu()
     v2 = torch.randn(size=[seq_len], dtype=eval("torch." + dtype)).npu()
