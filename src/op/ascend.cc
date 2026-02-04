@@ -436,9 +436,14 @@ NpuirArange::NpuirArange(Array<PrimExpr> args, BufferMap vmap) {
   this->dst = bf;
   this->dst_range = rg;
 
-  NPUIR_LIST_PARAM(strides, 1)
+  int stride_num = args.size() - 2;
+  strides.reserve(stride_num);
 
-  this->offset = args[2].as<IntImm>().value()->value;
+  for (int i = 0; i < stride_num; ++i) {
+    strides.push_back(args[1 + i]);
+  }
+
+  this->offset = args.back();
 }
 
 NpuirConcat::NpuirConcat(Array<PrimExpr> args, BufferMap vmap) {

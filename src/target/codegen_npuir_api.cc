@@ -1227,16 +1227,16 @@ void CodeGenTileLangNPUIRAPI::VarangeCodegen(const CallNode *op) {
   tvm::tl::NpuirArange npuirop(op->args, this->vmap);
   Value dst = GenSubviewFromRegion(npuirop.dst, npuirop.dst_range);
 
-  auto offsetValue = builder.create<mlir::arith::ConstantOp>(
-      builder.getUnknownLoc(), builder.getI64Type(),
-      builder.getI64IntegerAttr(npuirop.offset));
-  mlir::Value offset = CreateIndexCastOp(offsetValue);
+  Value offsetVal = MakeValue(npuirop.offset);
+  Value offset = offsetVal.getType().isIndex()
+    ? offsetVal
+    : CreateIndexCastOp(offsetVal);
   llvm::SmallVector<Value> strides;
   for (auto st : npuirop.strides) {
-    auto stValue = builder.create<mlir::arith::ConstantOp>(
-        builder.getUnknownLoc(), builder.getI64Type(),
-        builder.getI64IntegerAttr(st));
-    mlir::Value stride = CreateIndexCastOp(stValue);
+    Value stride = MakeValue(st);
+    if(!stride.getType().isIndex()) {
+      stride = CreateIndexCastOp(stride);
+    }
     strides.push_back(stride);
   }
 

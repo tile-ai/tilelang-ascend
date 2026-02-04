@@ -1033,9 +1033,8 @@ def npuir_arange(dst, strides: Union[list, tuple], offset=0, size=[]):
     """
     dst_extent = _get_extent(dst) if size == [] else size.copy()
     dst = _to_region(dst, "w", dst_extent)
-    strides_str = ','.join(str(stride) for stride in strides)
 
-    return tir.call_intrin("handle", tir.op.Op.get("tl.npuir_arange"), dst, strides_str, offset)
+    return tir.call_intrin("handle", tir.op.Op.get("tl.npuir_arange"), dst, *strides, offset)
 
 def npuir_concat(*args, size=[]):
     """The concat operation constructs a tensor out of a variadic list of input
