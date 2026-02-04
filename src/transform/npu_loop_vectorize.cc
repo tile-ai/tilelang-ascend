@@ -53,6 +53,7 @@ private:
   inline static std::unordered_map<std::string, std::string> TirOps2NpuirOps = {
     {"tir.exp", "tl.npuir_exp"},
     {"tir.fabs", "tl.npuir_abs"},
+    {"tir.sigmoid", "tl.npuir_sigmoid"},
     {"Add", "tl.npuir_add"},
     {"Mul", "tl.npuir_mul"},
     {"Sub", "tl.npuir_sub"},
@@ -214,7 +215,7 @@ private:
 
       if (auto* op_ptr = call->op.as<OpNode>()) {
         op_name = op_ptr->name;
-        if (op_name == "tir.exp" || op_name == "tir.fabs") {
+        if (op_name == "tir.exp" || op_name == "tir.fabs" || op_name == "tir.sigmoid") {
           return true;
         }
       }
@@ -567,6 +568,7 @@ private:
     "tl.npuir_mul",
     "tl.npuir_sub",
     "tl.npuir_div",
+    "tl.npuir_sigmoid",
   };
 
   bool IsScalar(const PrimExpr& expr) {

@@ -2065,6 +2065,40 @@ void CodeGenTileLangNPUIRDEV::VcumsumCodegen(const CallNode *op) {
   SetVarValue(npuirop.dst, newCumsumOp->getResult(0));
 }
 
+void CodeGenTileLangNPUIRDEV::VsigmoidCodegen(const tvm::tir::CallNode* op) {
+  tvm::tl::NpuirSigmoid npuirop(op->args, this->vmap);
+  Value src = GetVarValue(npuirop.src);
+  Value dst = GetVarValue(npuirop.dst);
+  auto dst_type = dst.getType().cast<mlir::RankedTensorType>();
+  auto elem_type = dst_type.getElementType();
+  mlir::Location loc = builder.getUnknownLoc();
+  mlir::TypeRange result_tensors(&dst_type, 1);
+  // mlir::DenseI64ArrayAttr transpose = builder.getDenseI64ArrayAttr({});
+  // mlir::DenseI64ArrayAttr broadcast = builder.getDenseI64ArrayAttr({});
+  auto zero = builder.create<mlir::arith::ConstantOp>(
+      loc, mlir::FloatAttr::get(elem_type, 0.0)).getResult();
+  auto one = builder.create<mlir::arith::ConstantOp>(
+      loc, mlir::FloatAttr::get(elem_type, 1.0)).getResult();
+
+  // Step 1 src = 0 - src
+  auto subOp = builder.create<mlir::hivm::VSubOp>(loc, result_tensors, 
+      mlir::ValueRange{zero, src}, mlir::ValueRange{dst});
+  mlir::Value subOpValue = subOp->getResult(0);
+  // Step 2: src = exp(src)
+  auto expOp = builder.create<mlir::hivm::VExpOp>(loc, result_tensors,
+      mlir::ValueRange{subOpValue}, mlir::ValueRange{dst});
+  mlir::Value expOpValue = expOp->getResult(0);
+  // Step 3: src = src + 1
+  auto onePlusOp = builder.create<mlir::hivm::VAddOp>(loc, result_tensors, 
+      mlir::ValueRange{expOpValue, one}, mlir::ValueRange{dst});
+  mlir::Value onePlusOpValue = onePlusOp->getResult(0);
+  // Step 4: dst = 1 / src
+  auto divOp = builder.create<mlir::hivm::VDivOp>(loc, result_tensors, 
+      mlir::ValueRange{one, onePlusOpValue}, mlir::ValueRange{dst});
+  mlir::Value divOpValue = divOp->getResult(0);
+  SetVarValue(npuirop.dst, divOpValue);
+}
+
 void CodeGenTileLangNPUIRDEV::VAtomicAddCodegen(const CallNode *op) {
   /// Generate hivm.hir.store for tl.npuir_atomic_add.
   /// before:
@@ -2692,6 +2726,8 @@ mlir::Value CodeGenTileLangNPUIRDEV::VisitExpr_(const CallNode *op) {
     VcastCodegen(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_reduce"))) {
     VreduceCodegen(op);
+  } else if (op->op.same_as(Op::Get("tl.npuir_sigmoid"))) {
+    VsigmoidCodegen(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_atomic_add"))) {
     VAtomicAddCodegen(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_cumsum"))) {
