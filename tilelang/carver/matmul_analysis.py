@@ -18,8 +18,9 @@ from .analysis import (
 )
 from tvm.target.target import Target
 from tvm.tir.stmt_functor import pre_order_visit
-from .arch import get_arch, is_tensorcore_supported_precision
+from .arch import get_arch, is_tensorcore_supported_precision, is_cube_supported_precision
 import logging
+import torch, torch_npu
 
 logger = logging.getLogger(__name__)
 
@@ -236,7 +237,7 @@ def make_iter_fusion_index_map(
     return tir.IndexMap(input_iters, final_indices, None)
 
 
-def detect_iter_traits(block: tir.Block) -> Optional[Tuple[List[IterTrait]]]:
+def detect_iter_traits(block: tir.Block) -> Optional[Tuple[List[IterTrait], List[IterTrait], List[IterTrait], List[IterTrait]]]:
     """Detect iter traits based on the pattern C[S, I, J] += A[S, I, K] * B[S, J, K]
 
     Parameters
@@ -246,8 +247,8 @@ def detect_iter_traits(block: tir.Block) -> Optional[Tuple[List[IterTrait]]]:
 
     Returns
     -------
-    traits : Optional[Tuple[List[IterTrait]]]
-        The detected iter traits for axes in A, B and C. None if the block
+    traits : Optional[Tuple[List[IterTrait], List[IterTrait], List[IterTrait], List[IterTrait]]]
+        The detected iter traits for axes in A, B, C, and block. None if the block
         does not match the pattern.
 
     """
@@ -307,7 +308,7 @@ def detect_iter_traits(block: tir.Block) -> Optional[Tuple[List[IterTrait]]]:
     B_traits = [traits[iter_var.var] for iter_var in block.iter_vars if iter_var.var in B_axes]
     C_traits = [traits[iter_var.var] for iter_var in block.iter_vars if iter_var.var in C_axes]
     block_traits = [traits[i.var] for i in block.iter_vars]
-    return A_traits, B_traits, C_traits, block_traits
+    return (A_traits, B_traits, C_traits, block_traits)
 
 
 def get_index_map(block: tir.Block,
@@ -562,9 +563,11 @@ def get_tensorized_func_and_tags(
         tags: Dict[str, Union[List[int], int]] = {}
         block_stmt = sch.get(block)
 
+        is_ascend = target.kind.name == "ascend" or (target.kind.name == "llvm" and "ascend" in target.keys)
+
         # Nvidia Only Support Tensor Core for
         # devices greater than 70.
-        if check_sm_version(target.arch) < 70:
+        if not is_ascend and check_sm_version(target.arch) < 70:
             return False
         # analysis tensorcore axis
         # todo(lei): maybe we can remove this in the future
@@ -577,6 +580,8 @@ def get_tensorized_func_and_tags(
         tags["pipeline_stage"] = 1
         if target.kind.name == "cuda" and check_sm_version(target.arch) in {80, 90}:
             # enable pipeline stage only for sm_80 devices
+            tags["pipeline_stage"] = 2
+        elif is_ascend:
             tags["pipeline_stage"] = 2
 
         # analysis async copy
@@ -646,14 +651,23 @@ def get_tensorized_func_and_tags(
         return func, None
 
     block_stmt = sch.get(main_block)
-    if target.kind.name == "cuda" and check_sm_version(target.arch) >= 70:
+    is_ascend = target.kind.name == "ascend" or (target.kind.name == "llvm" and "ascend" in target.keys)
+    cuda_with_tensorcore = target.kind.name == "cuda" and check_sm_version(target.arch) >= 70
+    if is_ascend or cuda_with_tensorcore:
         in_dtype, out_dtype = get_in_out_dtypes(block_stmt)
-        if not is_tensorcore_supported_precision(in_dtype, out_dtype, arch=get_arch(target)):
-            logger.debug(
-                f"The input and output dtype ({in_dtype}, {out_dtype})is not supported by tensorcore"
-            )
-            return func, None
-
+        if cuda_with_tensorcore:
+            if not is_tensorcore_supported_precision(in_dtype, out_dtype, arch=get_arch(target)):
+                logger.debug(
+                    f"The input and output dtype ({in_dtype}, {out_dtype})is not supported by tensorcore"
+                )
+                return func, None
+        else:
+            # Ascend only support float16 tensorcore for now
+            if not is_cube_supported_precision(in_dtype, out_dtype, arch=get_arch(target)):
+                logger.debug(
+                    f"The input and output dtype ({in_dtype}, {out_dtype})is not supported by Ascend tensorcore"
+                )
+                return func, None
         # reindex and transform functions
         # Normalize tensor functions to C[S, I, J] += A[S, I, K] * B[S, J, K]
         # or C[S, I, J] += A[S, I, K] * B[S, K, J]
@@ -666,8 +680,14 @@ def get_tensorized_func_and_tags(
         block_stmt = sch.get(main_block)
 
         # 16 for 16 bits tensor core while 32 for 8bits tensorcore.
-        minimal_tensorize_spatial_threshold = 16
-        minimal_tensorize_reduce_threshold = 16 if in_dtype in ["bfloat16", "float16"] else 32
+        if is_ascend:
+            arch = get_arch(target)
+            cube_shape = arch.cube_shape
+            minimal_tensorize_spatial_threshold = cube_shape[0]
+            minimal_tensorize_reduce_threshold = cube_shape[2]
+        else:
+            minimal_tensorize_spatial_threshold = 16
+            minimal_tensorize_reduce_threshold = 16 if in_dtype in ["bfloat16", "float16"] else 32
         # the batch dimension is not taken into consideration.
         for item_var in block_stmt.iter_vars[1:]:
             extent = item_var.dom.extent

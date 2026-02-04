@@ -14,6 +14,7 @@ pass_configs = {
 
 @tilelang.jit(out_idx=[-2, -1], workspace_idx=[-4, -3], pass_configs=pass_configs)
 def wy_fast_ker(B, H, L, DK, DV, C, BK = None, BV = None, dtype="float16", accum_dtype="float"):
+	# BK, BV are deprecated
 	if BK == None:
 		BK = DK
 	if BV == None:
@@ -42,11 +43,16 @@ def wy_fast_ker(B, H, L, DK, DV, C, BK = None, BV = None, dtype="float16", accum
 
 			a1_ub = T.alloc_ub([C // VEC_NUM, C], accum_dtype)
 			a2_ub = T.alloc_ub([C // VEC_NUM, C], accum_dtype)
+			beta_r_ub = T.alloc_ub([1, C], accum_dtype)
+			beta_2d_ub = T.alloc_ub([C // VEC_NUM, C], accum_dtype)
+			g_r_ub = T.alloc_ub([1, C], accum_dtype)
+			g_2d_ub = T.alloc_ub([C // VEC_NUM, C], accum_dtype)
 			beta_ub = T.alloc_ub([C,], accum_dtype)
 			g_ub = T.alloc_ub([C,], accum_dtype)
 			a1_ub_half = T.alloc_ub([C // VEC_NUM, C], dtype)
 			a2_ub_half = T.alloc_ub([C // VEC_NUM, C], dtype)
 			beta_ub_half = T.alloc_ub([C,], dtype)
+			tmp_ub = T.alloc_ub([3 * C * C // VEC_NUM], "uint8")
 
 			k_l1 = T.alloc_L1([C, BK], dtype)
 			v_l1 = T.alloc_L1([C, BV], dtype)
@@ -56,38 +62,52 @@ def wy_fast_ker(B, H, L, DK, DV, C, BK = None, BV = None, dtype="float16", accum
 			u_l0 = T.alloc_L0C([C, BV], accum_dtype)
 
 			with T.Scope("V"):
-				T.copy(A[bz, by, bx * C + vid * C // VEC_NUM, 0], a1_ub_half)
+				# First calculate A1 = A * diag(exp(g) * Beta), A2 = A * diag(Beta)
 				T.copy(Beta[bz, by, bx * C], beta_ub_half)
-				T.copy(G[bz, by, bx * C], g_ub)
+				T.set_flag("mte2", "v", 0)
+				T.wait_flag("mte2", "v", 0)
+				T.copy(A[bz, by, bx * C + vid * C // VEC_NUM, 0], a1_ub_half)
+				T.copy(beta_ub_half, beta_ub)
+				T.copy(beta_ub, beta_r_ub[0, :])
+				T.tile.broadcast(beta_2d_ub, beta_r_ub, tmp_ub)
 				T.set_flag("mte2", "v", 0)
 				T.wait_flag("mte2", "v", 0)
 				T.copy(a1_ub_half, a1_ub)
-				T.copy(beta_ub_half, beta_ub)
-				T.tile.exp(g_ub, g_ub)
-				T.tile.mul(g_ub, g_ub, beta_ub)
-				for i in T.serial(C // VEC_NUM):
-					T.tile.mul(a2_ub[i, :], a1_ub[i, :], beta_ub)
-					T.tile.mul(a1_ub[i, :], a1_ub[i, :], g_ub)
-				T.copy(a1_ub, a1_ub_half)
+				T.tile.mul(a2_ub, a1_ub, beta_2d_ub) # A2 = A * diag(Beta)
 				T.copy(a2_ub, a2_ub_half)
 				T.set_flag("v", "mte3", 0)
 				T.wait_flag("v", "mte3", 0)
-				T.copy(a1_ub_half, workspace_a1[bz, by, bx * C + vid * C // VEC_NUM, 0])
 				T.copy(a2_ub_half, workspace_a2[bz, by, bx * C + vid * C // VEC_NUM, 0])
+				T.set_cross_flag("MTE3", 2)
+
+				T.copy(G[bz, by, bx * C], g_ub)
+				T.set_flag("mte2", "v", 0)
+				T.wait_flag("mte2", "v", 0)
+				T.tile.exp(g_ub, g_ub)
+				T.tile.mul(g_ub, g_ub, beta_ub) # g_ub now stores exp(g) * Beta
+				T.copy(g_ub, g_r_ub[0, :])
+				T.tile.broadcast(g_2d_ub, g_r_ub, tmp_ub)
+				T.tile.mul(a1_ub, a1_ub, g_2d_ub) # A1 = A * diag(exp(g) * Beta)
+				T.copy(a1_ub, a1_ub_half)
+				T.set_flag("v", "mte3", 0)
+				T.wait_flag("v", "mte3", 0)
+				T.copy(a1_ub_half, workspace_a1[bz, by, bx * C + vid * C // VEC_NUM, 0])
 				T.set_cross_flag("MTE3", 1)
 			
 			with T.Scope("C"):
+				T.copy(K[bz, by, bx * C, 0], k_l1)
+				T.copy(V[bz, by, bx * C, 0], v_l1)
+
+				# Then calculate U = A2 * V, W = A1 * K
+				T.wait_cross_flag(2)
+				T.copy(workspace_a2[bz, by, bx * C, 0], a2_l1)
+				T.gemm_v0(a2_l1, v_l1, u_l0, init = True)
+				T.copy(u_l0, U[bz, by, bx * C, 0])
+
 				T.wait_cross_flag(1)
 				T.copy(workspace_a1[bz, by, bx * C, 0], a1_l1)
-				for i in T.serial(bk_num):
-					T.copy(K[bz, by, bx * C, i * BK], k_l1)
-					T.gemm_v0(a1_l1, k_l1, w_l0, init = True)
-					T.copy(w_l0, W[bz, by, bx * C, i * BK])
-				T.copy(workspace_a2[bz, by, bx * C, 0], a2_l1)
-				for i in T.serial(bv_num):
-					T.copy(V[bz, by, bx * C, i * BV], v_l1)
-					T.gemm_v0(a2_l1, v_l1, u_l0, init = True)
-					T.copy(u_l0, U[bz, by, bx * C, i * BV])
+				T.gemm_v0(a1_l1, k_l1, w_l0, init = True)
+				T.copy(w_l0, W[bz, by, bx * C, 0])
 
 	return main
 
@@ -127,7 +147,7 @@ if __name__ == "__main__":
 	torch.set_printoptions(threshold = float('inf'), sci_mode = True)
 
 	test_configs = [
-		(1, 1, 64, 64, 64, 64),
+		(2, 16, 16384, 128, 128, 128),
 	]
 
 	for B, H, L, DK, DV, C in test_configs:

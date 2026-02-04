@@ -44,7 +44,7 @@ def solve_tril_ker(B, H, L, C, dtype="float16", accum_dtype="float"):
 					T.tile.fill(red_ub, 0.0)
 					for j, k in T.Parallel(C, C):
 						mul_ub[j, k] = o_ub[j, k] * o_ub[i, j]
-					T.tile.reduce_sum(red_ub, mul_ub, tmp_ub, dim = 0)
+					T.reduce_sum(mul_ub, red_ub, tmp_ub, dim = 0)
 					for j in T.Parallel(C):
 						o_ub[i, j] = o_ub[i, j] - red_ub[j]
 				for i, j in T.Parallel(C, C):

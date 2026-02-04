@@ -29,91 +29,13 @@
 #include <tvm/tir/transform.h>
 
 #include "../target/utils.h"
+#include "./common/operation_config.h"
 
 namespace tvm {
 namespace tl {
 
 using namespace tir;
 
-struct OperationConfig {
-  std::vector<std::pair<size_t, std::string>> buffer_accesses;
-  std::string default_pipeline;
-
-  std::string toString() const {
-    std::ostringstream oss;
-    oss << "OperationConfig{";
-    oss << "buffer_accesses: [";
-    bool first_access = true;
-    for (const auto& access : buffer_accesses) {
-      if (!first_access) oss << ", ";
-      oss << "(" << access.first << ", '" << access.second << "')";
-      first_access = false;
-    }
-    oss << "], ";
-    oss << "default_pipeline: '" << default_pipeline << "'";
-    oss << "}";
-    return oss.str();
-  }
-};
-
-std::unordered_map<std::string, OperationConfig> operation_config_ = {
-  {"copy_gm_to_l1", {{{0, "read"}, {1, "write"}}, "PIPE_MTE2"}},
-  {"copy_gm_to_l0a", {{{0, "read"}, {1, "write"}}, "PIPE_MTE2"}},
-  {"copy_gm_to_l0b", {{{0, "read"}, {1, "write"}}, "PIPE_MTE2"}},
-  {"copy_gm_to_ub", {{{0, "read"}, {1, "write"}}, "PIPE_MTE2"}},
-  {"copy_l1_to_l0a", {{{0, "read"}, {1, "write"}}, "PIPE_MTE1"}},
-  {"copy_l1_to_l0b", {{{0, "read"}, {1, "write"}}, "PIPE_MTE1"}},
-  {"copy_ub_to_gm", {{{0, "read"}, {1, "write"}}, "PIPE_MTE3"}},
-  {"copy_ub_to_l1", {{{0, "read"}, {1, "write"}}, "PIPE_MTE3"}},
-  {"copy_l0c_to_gm", {{{0, "read"}, {1, "write"}}, "PIPE_FIX"}},
-  {"copy_l0c_to_l1", {{{0, "read"}, {1, "write"}}, "PIPE_FIX"}},
-  {"copy_ub_to_ub", {{{0, "read"}, {1, "write"}}, "PIPE_V"}},
-  {"mma", {{{0, "read"}, {1, "read"}, {2, "write"}}, "PIPE_M"}},
-  {"gemm_v0", {{{0, "read"}, {1, "read"}, {2, "write"}}, "PIPE_M"}},
-  {"gemm_v1", {{{0, "read"}, {1, "read"}, {2, "write"}}, "PIPE_M"}},
-  {"AscendC::Add", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
-  {"AscendC::Adds", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
-  {"AscendC::Mul", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
-  {"AscendC::Sub", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
-  {"AscendC::Subs", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
-  {"AscendC::Div", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
-  {"AscendC::Divs", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
-  {"AscendC::Reduce", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
-  {"AscendC::Scalar", {{{0, "write"}, {1, "read"}}, "PIPE_S"}},
-  {"AscendC::Exp", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
-  {"AscendC::Ln", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
-  {"AscendC::Sqrt", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
-  {"AscendC::Rsqrt", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
-  {"AscendC::Relu", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
-  {"AscendC::Axpy", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
-  {"AscendC::Select", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
-  {"AscendC::Abs", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
-  {"Gatherb", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
-  {"AscendC::CompareScalar", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
-  {"AscendC::Duplicate", {{{0, "write"}}, "PIPE_V"}},
-  {"AscendC::Muls", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
-  {"AscendC::And", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
-  {"AscendC::Or", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
-  {"AscendC::Not", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
-  {"reduce_max", {{{0, "read"}, {1, "write"}}, "PIPE_V"}},
-  {"reduce_sum", {{{0, "read"}, {1, "write"}}, "PIPE_V"}},
-  {"AscendC::Max", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
-  {"AscendC::Min", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
-  {"AscendC::Sin", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
-  {"AscendC::Cos", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
-  {"AscendC::Cast", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
-  {"AscendC::Sigmoid", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
-  {"AscendC::ShiftLeft", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
-  {"AscendC::ShiftRight", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
-  {"AscendC::BilinearInterpolation", {{{0, "write"}, {1, "read"}, {2, "read"}, {3, "read"}, {4, "read"}, 
-  {5, "read"}, {6, "read"}, {7, "read"}, {8, "read"}, {9, "read"}, {10, "read"}}, "PIPE_V"}},
-  {"AscendC::WholeReduceMax", {{{0, "write"}, {1, "read"}, {2, "read"}, {3, "read"}, {4, "read"}, {5, "read"}, {6, "read"}}, "PIPE_V"}},
-  {"AscendC::WholeReduceMin", {{{0, "write"}, {1, "read"}, {2, "read"}, {3, "read"}, {4, "read"}, {5, "read"}, {6, "read"}}, "PIPE_V"}},
-  {"AscendC::WholeReduceSum", {{{0, "write"}, {1, "read"}, {2, "read"}, {3, "read"}, {4, "read"}, {5, "read"}, {6, "read"}}, "PIPE_V"}},
-  {"AscendC::Sort", {{{0, "write"}, {1, "read"}, {2, "read"}, {3, "read"}}, "PIPE_V"}},
-  {"AscendC::ArithProgression", {{{0, "write"}}, "PIPE_V"}},
-  {"GatherMask", {{{0, "write"}, {1, "read"}}, "PIPE_V"}}
-};
 
 /*!
  * \brief Check whether two regions have intersections.
@@ -161,12 +83,12 @@ private:
     if (template_pos != std::string::npos) {
       result = result.substr(0, template_pos);
     }
-    
+
     size_t ns_pos = result.find("tl::ascend::");
     if (ns_pos != std::string::npos) {
       result = result.substr(ns_pos + 12);
     }
-    
+
     return result;
   }
 
@@ -206,6 +128,18 @@ private:
     }
   }
 
+  bool is_func_in_operation_config(const CallNode *op){
+    bool result = false;
+    if (auto* op_ptr = op->op.as<OpNode>()){
+      std::string op_name = op_ptr->name;
+      auto config_it = GetOperationConfig().find(op_name);
+      if (config_it != GetOperationConfig().end()) {
+          result = true;
+      }
+    }
+    return result;
+  }
+
   void VisitExpr_(const CallNode *op) final {
     auto args = op->args;
     if (op->op.same_as(builtin::address_of())) {
@@ -234,11 +168,11 @@ private:
       conditonal_expr = cond;
       this->VisitExpr(then_expr);
       this->VisitExpr(else_expr);
-    } else if (const auto* func_name = op->args[0].as<StringImmNode>()) {
-      std::string func_str = func_name->value;
+    } else if (op->op.same_as(tir::builtin::call_extern())) {
+      std::string func_str = op->args[0].as<StringImmNode>()->value;
       std::string normalized_name = NormalizeFunctionName(func_str);
-      auto config_it = operation_config_.find(normalized_name);
-      if (config_it != operation_config_.end()) {
+      auto config_it = GetOperationConfig().find(normalized_name);
+      if (config_it != GetOperationConfig().end()) {
         const auto& config = config_it->second;
         for (const auto& buffer_config: config.buffer_accesses) {
           size_t arg_index = buffer_config.first;
@@ -269,7 +203,42 @@ private:
           }
         }
       }
+    } else if (is_func_in_operation_config(op)) {
+      auto* op_ptr = op->op.as<OpNode>();
+      std::string op_name = op_ptr->name;
+      auto config_it = GetOperationConfig().find(op_name);
+      const auto& config = config_it->second;
+      for (const auto& buffer_config: config.buffer_accesses) {
+        size_t arg_index = buffer_config.first;
+        const std::string& access_type = buffer_config.second;
+        if (const auto* access_ptr = op->args[arg_index].as<CallNode>()) {
+          if (access_ptr->op.same_as(builtin::tvm_access_ptr())) {
+            const VarNode* buffer_var = access_ptr->args[1].as<VarNode>();
+            if (buffer_var) {
+              auto it = buffer_data_to_buffer_.find(GetRef<Var>(buffer_var));
+              if (it != buffer_data_to_buffer_.end()) {
+                const Buffer& buffer = (*it).second;
+                const BufferRegion buffer_region = BufferRegion::FullRegion(buffer);
+                if (access_type == "read") {
+                  reads_.push_back(buffer_region);
+                  if (buffer.scope() == "global") {
+                    is_global_read_ = true;
+                  }
+                } else if (access_type == "write") {
+                  writes_.push_back(buffer_region);
+                  if (is_global_read_ && (buffer.scope() == "shared" ||
+                      buffer.scope() == "shared.dyn")) {
+                        is_global_copy_pattern_ = true;
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+
     } else {
+
       StmtExprVisitor::VisitExpr_(op);
     }
   }

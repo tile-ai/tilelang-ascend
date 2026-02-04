@@ -141,7 +141,7 @@ class AutoTuner:
 
     def set_compile_args(self,
                          out_idx: list[int] | int | None = None,
-                         target: Literal['auto', 'cuda', 'hip'] = 'auto',
+                         target: Literal['auto', 'cuda', 'hip', 'ascendc', 'pto'] = 'auto',
                          execution_backend: Literal["dlpack", "ctypes", "cython"] = "cython",
                          target_host: str | Target = None,
                          verbose: bool = False,

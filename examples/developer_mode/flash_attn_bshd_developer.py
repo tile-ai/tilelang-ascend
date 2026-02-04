@@ -80,6 +80,7 @@ def flash_attention_fwd(
             T.copy(Q[bz, by, bx * block_M:(bx + 1) * block_M, :], q_l1)
 
             for k in T.Pipelined(T.ceildiv(seq_len, block_N), num_stages=2):
+                # acc_s_l0c = Q @ K^T
                 T.copy(K[bz, by, k * block_N:(k + 1) * block_N, :], k_l1)
                 T.gemm_v0(q_l1, k_l1, acc_s_l0c, transpose_B=True, init=True)
                 T.copy(acc_s_l0c, workspace_1[cid, :, :])
@@ -90,17 +91,24 @@ def flash_attention_fwd(
                     workspace_1[cid, vid * block_M // 2:vid * block_M // 2 + block_M // 2, :],
                     acc_s_ub_)
                 T.tile.add(acc_s_ub, acc_s_ub, acc_s_ub_)
+                # scale
                 T.tile.mul(acc_s_ub, acc_s_ub, sm_scale)
-                T.tile.reduce_max(m_i, acc_s_ub, tmp_ub, dim=-1)
+                # Update maximum
+                T.reduce_max(acc_s_ub, m_i, tmp_ub, dim=-1)
                 T.tile.max(m_i, m_i, m_i_prev)
                 T.tile.sub(m_i_prev, m_i_prev, m_i)
                 T.tile.exp(m_i_prev, m_i_prev)
+                
+                # current sumexp
                 for h_i in range(block_M // 2):
                     T.tile.sub(acc_s_ub[h_i, :], acc_s_ub[h_i, :], m_i[h_i])
                 T.tile.exp(acc_s_ub, acc_s_ub)
-                T.tile.reduce_sum(sumexp_i_ub, acc_s_ub, tmp_ub, dim=-1)
+                # update history sumexp
+                T.reduce_sum(acc_s_ub, sumexp_i_ub, tmp_ub, dim=-1)
                 T.tile.mul(sumexp, sumexp, m_i_prev)
                 T.tile.add(sumexp, sumexp, sumexp_i_ub)
+                
+                # softmax(S_scaled) @ V
                 T.copy(acc_s_ub, acc_s_half)
                 T.copy(
                     acc_s_half,
@@ -111,6 +119,7 @@ def flash_attention_fwd(
                 T.gemm_v0(acc_s_l1, v_l1, acc_o_l0c, init=True)
                 T.copy(acc_o_l0c, workspace_3[cid, :, :])
 
+                # update history acc_o
                 for h_i in range(block_M // 2):
                     T.tile.mul(acc_o[h_i, :], acc_o[h_i, :], m_i_prev[h_i])
                 T.copy(
@@ -118,6 +127,7 @@ def flash_attention_fwd(
                     acc_o_ub)
                 T.tile.add(acc_o, acc_o, acc_o_ub)
 
+            # normalization
             for h_i in range(block_M // 2):
                 T.tile.div(acc_o[h_i, :], acc_o[h_i, :], sumexp[h_i])
 

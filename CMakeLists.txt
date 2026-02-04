@@ -127,7 +127,9 @@ endif()
 if(USE_ASCEND)
   tilelang_file_glob(GLOB TILE_LANG_ASCEND_SRCS
     src/target/codegen_ascend.cc
+    src/target/codegen_ascend_pto.cc
     src/target/rt_mod_ascend.cc
+    src/target/rt_mod_ascend_pto.cc
   )
   list(APPEND TILE_LANG_SRCS ${TILE_LANG_ASCEND_SRCS})
 endif()

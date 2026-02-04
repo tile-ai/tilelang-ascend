@@ -16,17 +16,17 @@ import torch
 )
 def simple_quant_batch_matmul(
     Batch:int, M:int, N:int, K:int, scale_size:Literal["1", "N"],
-    block_M:int, block_N:int, block_K:int, 
-    in_dtype: Literal["int8"] = "int8", out_dtype: Literal["float16", "bfloat16"] = "float16", 
+    block_M:int, block_N:int, block_K:int,
+    in_dtype: Literal["int8"] = "int8", out_dtype: Literal["float16", "bfloat16"] = "float16",
     accum_dtype: Literal["int32"] = "int32", scale_dtype: Literal["float32"] = "float32"
 ):
     """Simple QuantMatmul implementation with per-tensor / per-channel quantization scale"""
-    
+
     VEC_NUM = 2
     CAST_MODE = "CAST_RINT"
 
     N_scale = N if scale_size == "N" else 1
-    
+
     m_num = T.ceildiv(M, block_M)
     n_num = T.ceildiv(N, block_N)
     k_num = T.ceildiv(K, block_K)
@@ -54,7 +54,7 @@ def simple_quant_batch_matmul(
             c_ub = T.alloc_ub([block_M_2, block_N], accum_dtype)
             c_scale = T.alloc_ub([block_M_2, block_N], scale_dtype)
             c_out = T.alloc_ub([block_M_2, block_N], out_dtype)
-            
+
             scale_ub = T.alloc_ub([block_N], scale_dtype)
 
             for bk in T.serial(k_num):
@@ -64,7 +64,7 @@ def simple_quant_batch_matmul(
                 T.gemm_v0(A_L1, B_L1, C_L0, init=(bk == 0))
 
             T.copy(C_L0, workspace_1[bb, bm * block_M, bn * block_N])
-            
+
             T.copy(workspace_1[bb, bm * block_M + vid * block_M_2, bn * block_N], c_ub)
 
             if scale_size == "N":
@@ -72,9 +72,9 @@ def simple_quant_batch_matmul(
             else:
                 T.copy(scale[0], scale_ub)
                 T.tile.fill(scale_ub, scale_ub[0])  # scale_ub (1,) => (block_N,)
-            
+
             if accum_dtype != scale_dtype:
-                T.tile.cast_tl(c_scale, c_ub, mode=CAST_MODE, count=block_M_2 * block_N)
+                T.tile.cast(c_scale, c_ub, mode=CAST_MODE, count=block_M_2 * block_N)
             else:
                 T.copy(c_ub, c_scale)
 
@@ -82,7 +82,7 @@ def simple_quant_batch_matmul(
                 c_scale[bm_v, bn_v] *= scale_ub[bn_v]
 
             if out_dtype != scale_dtype:
-                T.tile.cast_tl(c_out, c_scale, mode=CAST_MODE, count=block_M_2 * block_N)
+                T.tile.cast(c_out, c_scale, mode=CAST_MODE, count=block_M_2 * block_N)
             else:
                 T.copy(c_scale, c_out)
 
@@ -96,8 +96,8 @@ def ref_program(A, B, scale, out_dtype, accum_dtype):
 
 def check_case(
     Batch:int, M:int, N:int, K:int, scale_size:Literal["1", "N"],
-    block_M:int, block_N:int, block_K:int, 
-    in_dtype: Literal["int8"] = "int8", out_dtype: Literal["float16", "bfloat16"] = "float16", 
+    block_M:int, block_N:int, block_K:int,
+    in_dtype: Literal["int8"] = "int8", out_dtype: Literal["float16", "bfloat16"] = "float16",
     accum_dtype: Literal["int32"] = "int32", scale_dtype: Literal["float32"] = "float32"
 ):
     torch_dtype_map = {

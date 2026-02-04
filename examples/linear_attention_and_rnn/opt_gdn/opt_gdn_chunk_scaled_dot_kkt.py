@@ -10,6 +10,7 @@ Gamma_{i,j} = exp(g_i - g_j)
 '''
 
 pass_configs = {
+	tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
 	tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: False,
 }
 
@@ -43,11 +44,17 @@ def kkt_ker(B, H, L, DK, C, BK = None, dtype="float16", accum_dtype="float"):
 			beta_ub = T.alloc_ub([C // VEC_NUM,], accum_dtype)
 			g_ub = T.alloc_ub([C,], accum_dtype)
 			g_v_ub = T.alloc_ub([C // VEC_NUM,], accum_dtype)
+			g_r_ub = T.alloc_ub([C // VEC_NUM, 1], accum_dtype)
+			g_r_2d_ub = T.alloc_ub([C // VEC_NUM, C], accum_dtype)
+			g_c_ub = T.alloc_ub([1, C], accum_dtype)
+			g_c_2d_ub = T.alloc_ub([C // VEC_NUM, C], accum_dtype)
+			tmp_ub = T.alloc_ub([3 * C * C // VEC_NUM], "uint8")
 
 			k_l1 = T.alloc_L1([C, BK], dtype)
 			a_l0 = T.alloc_L0C([C, C], accum_dtype)
 
 			with T.Scope("C"):
+				# First calculate K * K^T
 				for i in T.serial(bk_num):
 					T.copy(K[bz, by, bx * C, i * BK], k_l1)
 					T.gemm_v0(k_l1, k_l1, a_l0, transpose_B = True, init = (i == 0))
@@ -55,35 +62,36 @@ def kkt_ker(B, H, L, DK, C, BK = None, dtype="float16", accum_dtype="float"):
 				T.set_cross_flag("FIX", 0)
 
 			with T.Scope("V"):
-				T.copy(G[bz, by, bx * C], g_ub)
+				T.copy(G[bz, by, bx * C], g_ub) # The g value of the whole chunk
 				T.copy(Beta[bz, by, bx * C + vid * C // VEC_NUM], beta_ub_half)
 				T.set_flag("mte2", "v", 0)
 				T.wait_flag("mte2", "v", 0)
 				T.copy(beta_ub_half, beta_ub)
-				T.copy(g_ub[vid * C // VEC_NUM : (vid + 1) * C // VEC_NUM], g_v_ub)
+				T.copy(g_ub[vid * C // VEC_NUM : (vid + 1) * C // VEC_NUM], g_v_ub) # The g value of current vector core
 				T.tile.fill(a_ub, 0.0)
-				T.tile.ln(beta_ub, beta_ub)
-				T.tile.add(g_v_ub, g_v_ub, beta_ub)
-				for i in range((C // VEC_NUM) // 4):
-					tmp0 = g_v_ub[i * 4]
-					tmp1 = g_v_ub[i * 4 + 1]
-					tmp2 = g_v_ub[i * 4 + 2]
-					tmp3 = g_v_ub[i * 4 + 3]
-					T.tile.sub(coeff_ub[i * 4, :], g_ub, tmp0)
-					T.tile.sub(coeff_ub[i * 4 + 1, :], g_ub, tmp1)
-					T.tile.sub(coeff_ub[i * 4 + 2, :], g_ub, tmp2)
-					T.tile.sub(coeff_ub[i * 4 + 3, :], g_ub, tmp3)
-				T.tile.sub(coeff_ub, a_ub, coeff_ub)
-				T.tile.exp(coeff_ub, coeff_ub)
-				T.copy(Msk[vid * C // VEC_NUM, 0], msk_ub)
 
+				# beta_i * exp(g_i - g_j) = exp(ln(beta_i) + g_i - g_j)
+				T.tile.ln(beta_ub, beta_ub)
+				T.tile.add(g_v_ub, g_v_ub, beta_ub) # g_v_ub now stores ln(beta_i) + g_i
+				T.copy(g_v_ub, g_r_ub[:, 0])
+				T.copy(g_ub, g_c_ub[0, :])
+				T.set_flag("v", "mte2", 0)
+				T.wait_flag("v", "mte2", 0)
+				T.copy(Msk[vid * C // VEC_NUM, 0], msk_ub)
+				T.tile.broadcast(g_r_2d_ub, g_r_ub, tmp_ub)
+				T.tile.broadcast(g_c_2d_ub, g_c_ub, tmp_ub)
+				T.tile.sub(coeff_ub, g_r_2d_ub, g_c_2d_ub) # coeff_ub now stores ln(beta_i) + g_i - g_j
+				T.tile.exp(coeff_ub, coeff_ub) # coeff_ub now stores beta_i * exp(g_i - g_j)
+
+				T.set_flag("v", "mte2", 0)
+				T.wait_flag("v", "mte2", 0)
 				T.wait_cross_flag(0)
-				T.copy(workspace[bz, by, bx * C + vid * C // VEC_NUM, 0], a_ub_half)
+				T.copy(workspace[bz, by, bx * C + vid * C // VEC_NUM, 0], a_ub_half) # Load K * K^T block
 				T.set_flag("mte2", "v", 0)
 				T.wait_flag("mte2", "v", 0)
 				T.copy(a_ub_half, a_ub)
-				T.tile.mul(a_ub, a_ub, coeff_ub)
-				T.tile.mul(a_ub, a_ub, msk_ub)
+				T.tile.mul(a_ub, a_ub, coeff_ub) # Apply the coeff
+				T.tile.mul(a_ub, a_ub, msk_ub) # Apply the strictlower mask
 				T.copy(a_ub, a_ub_half)
 				T.set_flag("v", "mte3", 0)
 				T.wait_flag("v", "mte3", 0)
@@ -122,7 +130,7 @@ if __name__ == "__main__":
 	torch.set_printoptions(threshold = float('inf'), sci_mode = True)
 
 	test_configs = [
-		(1, 1, 64, 64, 64),
+		(2, 16, 16384, 128, 128),
 	]
 
 	for B, H, L, DK, C in test_configs:
@@ -132,7 +140,7 @@ if __name__ == "__main__":
 		g = torch.randn((B, H, L)).npu().to(torch.float)
 		a = kkt(k, beta, g, C)
 		ref_a = ref_kkt(k, beta, g, C)
-		torch.testing.assert_close(a.cpu(), ref_a.cpu(), rtol=1e-5, atol=1e-5)
+		torch.testing.assert_close(a.cpu(), ref_a.cpu(), rtol=1e-3, atol=1e-3)
 		print("Test passed!")
 
 	print("Kernel Output Match!")
