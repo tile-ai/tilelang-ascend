@@ -117,7 +117,7 @@ from .customize_npuir import (
     npuir_atomic_add,
     npuir_atomic_addx4,
     npuir_relu,
-    npuir_vsigmoid as vsigmoid,
+    npuir_sigmoid as vsigmoid,
     npuir_sigmoid,
     npuir_select,
     npuir_cmp,

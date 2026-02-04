@@ -956,44 +956,6 @@ def npuir_deinterleave(*args, channel_nums: int = 2, index_mode: str = "ALL_CHAN
  
     return _tir_call_intrin(channel_nums, index_mode, src, *dsts_arr)
 
-def npuir_vsigmoid(src: tir.Buffer, dst: Optional[tir.Buffer] = None):
-    """Apply sigmoid activation function element-wise on input buffer.
-    
-    Sigmoid(x) = 1 / (1 + exp(-x))
-    
-    Args:
-        src (tir.Buffer): The input buffer
-        dst (tir.Buffer, optional): The output buffer. Defaults to None.
-    
-    Returns:
-        tir.Stmt: Sequence of operations implementing sigmoid
-    """
-    
-    shape = src.shape
-    dtype = src.dtype
-    
-    if dst is None:
-        dst = src
-    
-    TILELANG_ASCEND_MODE = os.environ.get('TILELANG_ASCEND_MODE')
-    if TILELANG_ASCEND_MODE is None or \
-        TILELANG_ASCEND_MODE.lower().strip() in ['expert', 'exp', 'e']:
-        tmp = _get_tmp_buffer_exp(dst)
-    else:
-        tmp = _get_tmp_buffer_dev(dst)
-
-    zero = tir.const(0.0, dtype)
-    sub_call = AscendBinaryOp("sub", zero, src, tmp).buildTirCall()
-    exp_call = AscendUnaryOp("exp", tmp, tmp).buildTirCall() 
-    one = tir.const(1.0, dtype)
-    add_call = AscendBinaryOp("add", tmp, one, tmp).buildTirCall() 
-    div_call = AscendUnaryOp("rec", one, tmp, dst).buildTirCall()
-    
-    T.evaluate(sub_call)
-    T.evaluate(exp_call)
-    T.evaluate(add_call)
-    T.evaluate(div_call)
-
 def npuir_transpose(src, dst, permutation = Union[list, tuple], size=[]):
     """Permutes the dimensions of src according to the given permutation. In other words: dim(dst, i) = dim(src, permutation[i]).
  
