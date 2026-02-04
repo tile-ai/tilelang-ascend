@@ -177,7 +177,7 @@ void CodeGenTileLangAscendPto::PrintType(DataType t,
     case 16:
       enable_fp16_ = true;
       if (t.is_scalar()) {
-        os << "half_t";
+        os << "half";
       } else if (lanes <= 8) {
         // Emit CUDA code to access fp16 vector elements.
         //
@@ -950,6 +950,16 @@ void CodeGenTileLangAscendPto::CallExternCodegen(const CallNode *op) {
         }
         // tensor_template = tensor_template + shape_template + ", " + stride_template + ", " + valid_template;
         if (op_name.find("copy_ub_to_gm") != std::string::npos) {
+          std::string shape_num_dtype = global_tensor_template[String(tensor_addr)].dtype;
+          int num1 = std::stoi(shape_nums[1]);
+          // when shape_nums[1] * sizeof(dtype) < 32, do this
+          if (shape_num_dtype == "int" && num1 < 8) {
+            shape_nums[1] = "8";
+          } else if (shape_num_dtype == "float" && num1 < 8) {
+            shape_nums[1] = "8";
+          } else if (shape_num_dtype == "half" && num1 < 16) {
+            shape_nums[1] = "16";
+          }
           tensor_template = tensor_template + shape_template + ", " + stride_template  + ", " +
           shape_nums[0] + ", " + shape_nums[1] + ", " + ub_valid_shapes[1] + ", " + ub_valid_shapes[2] + ">";
         } else {
@@ -2026,6 +2036,15 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
           ub_data[4] = "Unapplied for tileUbDataDN";
           ub_data[5] = "1";
           ub_data[6] = PrintExpr(shape[0]);
+          // when ub_data[6] * sizeof(dtype) < 32, do this
+          int num1 = std::stoi(ub_data[6]);
+          if (ub_data[0] == "int" && num1 < 8) {
+            ub_data[6] = "8";
+          } else if (ub_data[0] == "float" && num1 < 8) {
+            ub_data[6] = "8";
+          }else if (ub_data[0] == "half" && num1 < 16) {
+            ub_data[6] = "16";
+          }
         } else if (shape.size() == 2) {
           if (shape[1].as<IntImmNode>()->value != 1) {
             ub_data[1] = PrintExpr(shape[0]);
