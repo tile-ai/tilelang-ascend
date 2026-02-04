@@ -125,7 +125,7 @@ private:
   Stmt VisitStmt_(const BufferStoreNode* op) final {
     auto it = buffer_map_.find(op->buffer);
     if (it != buffer_map_.end()) {
-      return BufferStoreNode(it->second, op->value, op->indices);
+      return BufferStore(it->second, op->value, op->indices);
     }
     return IRMutatorWithAnalyzer::VisitStmt_(op);
   }
