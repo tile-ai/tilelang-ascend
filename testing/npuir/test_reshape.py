@@ -4,58 +4,47 @@ import torch
 import tilelang
 import tilelang.language as T
 
-torch.npu.set_device(1)
+torch.npu.set_device(4)
 tilelang.cache.clear_cache()
 
 parser = argparse.ArgumentParser(description="NPU Kernel Compilation")
-parser.add_argument("--M", type=int, default=3, help="")
-parser.add_argument("--N", type=int, default=4, help="")
-parser.add_argument("--block_M", type=int, default=32, help="")
+# parser.add_argument("--M", type=int, default=8, help="")
+# parser.add_argument("--N", type=int, default=16, help="")
 
 dtype = "float16"
 
-def reshape_demo_exp(M, N):
+def reshape_dev(M, N):
     BLOCK_SIZE = 1
 
     @T.prim_func
     def main(
         A: T.Tensor((M, N), dtype),
-        B: T.Tensor((N, M), dtype),
-        C: T.Tensor((N, M), dtype)
-    ):
-        with T.Kernel(BLOCK_SIZE, is_npu=True) as (cid, _):
-            a = T.alloc_ub((M, N), dtype)
-            tmp = T.alloc_ub((N, M), dtype)
-            b = T.alloc_ub((N, M), dtype)
-            c = T.alloc_ub((N, M), dtype)
-            T.copy(A, a)
-            T.copy(B, b)
-
-            T.npuir_reshape(a, tmp)
-            T.npuir_add(b, tmp, c)
-            T.copy(c, C)
-    return main
-
-def reshape_demo_dev(M, N):
-    BLOCK_SIZE = 1
-
-    @T.prim_func
-    def main(
-        A: T.Tensor((M, N), dtype),
-        B: T.Tensor((N, M), dtype),
-        C: T.Tensor((N, M), dtype)
+        B: T.Tensor((N, M), dtype)
     ):
         with T.Kernel(BLOCK_SIZE, is_npu=True) as (cid, _):
             a = T.alloc_shared((M, N), dtype)
-            tmp = T.alloc_shared((N, M), dtype)
             b = T.alloc_shared((N, M), dtype)
-            c = T.alloc_shared((N, M), dtype)
-            T.copy(A, a)
-            T.copy(B, b)
+            T.copy(A,a)
+            T.npuir_reshape(a,b)
+            T.npuir_exp(b,b)
+            T.copy(b,B)
+    return main
 
-            T.npuir_reshape(a, tmp)
-            T.npuir_add(b, tmp, c)
-            T.copy(c, C)
+def reshape_exp(M, N):
+    BLOCK_SIZE = 1
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((M, N), dtype),
+        B: T.Tensor((N, M), dtype)
+    ):
+        with T.Kernel(BLOCK_SIZE, is_npu=True) as (cid, _):
+            a = T.alloc_ub((M, N), dtype)
+            b = T.alloc_ub((N, M), dtype)
+            T.copy(A,a)
+            T.npuir_reshape(a,b)
+            T.npuir_exp(b,b)
+            T.copy(b,B)
     return main
 
 def generate_tensor(shape, dtype, clear=False):
@@ -73,38 +62,32 @@ def generate_tensor(shape, dtype, clear=False):
     raise ValueError('Invalid parameter "dtype" is found : {}'.format(dtype))
 
 def main(main_args):
-    M = main_args.M
-    N = main_args.N
-    if os.environ['TILELANG_ASCEND_MODE'] == 'Dev':
-        func = reshape_demo_dev(M, N)
+    M = torch.randint(0, 64, (1,)).item()
+    N = torch.randint(0, 64, (1,)).item()
+    if os.environ["TILELANG_ASCEND_MODE"] == "Dev":
+        func = reshape_dev(M, N)
     else:
-        func = reshape_demo_exp(M, N)
+        func = reshape_exp(M, N)
     kernel = tilelang.compile(func, target="npuir")
 
     shape1 = (M, N)
     shape2 = (N, M)
     A = generate_tensor(shape1, dtype).npu()
     B = generate_tensor(shape2, dtype).npu()
-    C = generate_tensor(shape2, dtype).npu()
-
-    kernel(A, B, C)
-    print(A)
-    print(C)
+    kernel(A, B)
 
     res = A.reshape(N, M)
-    res += B
-
-    print(res)
-
+    res = torch.exp(res)
     torch.testing.assert_close(
-        C, res, rtol=1e-3, atol=1e-3
+        B, res, rtol=1e-3, atol=1e-3
     )
 
     print("\033[92mReshape demo passed!\033[0m")
 
+
 if __name__ == "__main__":
     args = parser.parse_args()
-    # os.environ["TILELANG_ASCEND_MODE"] = "Dev"
-    # main(args)
+    os.environ["TILELANG_ASCEND_MODE"] = "Dev"
+    main(args)
     os.environ["TILELANG_ASCEND_MODE"] = "Expert"
     main(args)
