@@ -232,7 +232,7 @@ def npuir_relu(A, B):
 
 """npuir sigmoid at tile-level."""
 def npuir_sigmoid(A, B):
-    return AscendUnaryOp("relu", A, B).buildTirCall()
+    return AscendUnaryOp("sigmoid", A, B).buildTirCall()
 
 """npuir ln at tile-level."""
 def npuir_ln(A, B):
