@@ -161,7 +161,7 @@ def device_codegen(device_mod: tvm.IRModule, target: Target, platform: str) -> t
     device_mod = tir.transform.Simplify()(device_mod)
 
     if target.model == "ascendc" or target.model == "auto":
-        device_mod = tvm._ffi.get_global_func("target.build.tilelang_ascend")(device_mod, target)
+        device_mod = tvm._ffi.get_global_func("target.build.tilelang_ascend")(device_mod, target, platform)
     elif target.model == "pto":
         device_mod = tvm._ffi.get_global_func("target.build.tilelang_ascend_pto")(device_mod, target, platform)
     else:
