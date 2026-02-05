@@ -70,7 +70,7 @@ private:
       memory_limits_ = {
         {"shared.dyn", 524032},
         {"wmma.matrix_a", 65536},
-        {"wmma.matrix_b", 131072},  
+        {"wmma.matrix_b", 65536},  
         {"wmma.accumulator", 131072},
         {"shared", 196352}
       };

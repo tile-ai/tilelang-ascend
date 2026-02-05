@@ -26,6 +26,19 @@
 namespace tvm {
 namespace codegen {
 
+
+#define ASCEND_A2A3_L0A_SIZE (65536)
+#define ASCEND_A2A3_L0B_SIZE (65536)
+#define ASCEND_A2A3_L1_SIZE  (524032)
+#define ASCEND_A2A3_L0C_SIZE (131072)
+#define ASCEND_A2A3_UB_SIZE  (196352)
+
+#define ASCEND_A5_L0A_SIZE (ASCEND_A2A3_L0A_SIZE)
+#define ASCEND_A5_L0B_SIZE (ASCEND_A2A3_L0B_SIZE)
+#define ASCEND_A5_L1_SIZE  (ASCEND_A2A3_L1_SIZE)
+#define ASCEND_A5_L0C_SIZE (262144)
+#define ASCEND_A5_UB_SIZE  (262144)
+
 std::string getType(const DataType &dtype) {
   if (dtype.is_float16()) {
     return "half";
@@ -56,8 +69,9 @@ std::string getType(const DataType &dtype) {
   return "";
 }
 
-CodeGenTileLangAscend::CodeGenTileLangAscend() {
+CodeGenTileLangAscend::CodeGenTileLangAscend(std::string platform) {
   restrict_keyword_ = "GM_ADDR";
+  platform_ = platform;
 }
 
 void CodeGenTileLangAscend::PrintFuncPrefix(std::ostream &os) {
@@ -776,6 +790,7 @@ void CodeGenTileLangAscend::PreFunctionBody(const PrimFunc &f) {
   stream << "KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_MIX_AIC_1_2);\n";
   this->PrintIndent();
   stream << "AscendC::TPipe pipe;\n\n";
+
   ICHECK(this->para_.size() % 3 == 0)
       << "CodeGenTileLangAscend: parameters should be in pairs of (var, "
          "handle, dtype)";
@@ -789,28 +804,44 @@ void CodeGenTileLangAscend::PreFunctionBody(const PrimFunc &f) {
   }
   stream << "\n";
 
+  int l0a_size = 0, l0b_size = 0, l1_size = 0, l0c_size = 0, ub_size = 0;
+
+  if (this->platform_ == "A5") {
+    l0a_size = ASCEND_A5_L0A_SIZE;
+    l0b_size = ASCEND_A5_L0B_SIZE;
+    l1_size  = ASCEND_A5_L1_SIZE;
+    l0c_size = ASCEND_A5_L0C_SIZE;
+    ub_size  = ASCEND_A5_UB_SIZE;
+  } else {
+    // A2 / A3
+    l0a_size = ASCEND_A2A3_L0A_SIZE;
+    l0b_size = ASCEND_A2A3_L0B_SIZE;
+    l1_size  = ASCEND_A2A3_L1_SIZE;
+    l0c_size = ASCEND_A2A3_L0C_SIZE;
+    ub_size  = ASCEND_A2A3_UB_SIZE;
+  }
+
   this->PrintIndent();
   stream << "AscendC::TBuf<AscendC::TPosition::A2> ascend_l0a;\n";
   this->PrintIndent();
-  stream << "pipe.InitBuffer(ascend_l0a, 65536);\n";
+  stream << "pipe.InitBuffer(ascend_l0a, " << l0a_size << ");\n";
   this->PrintIndent();
   stream << "AscendC::TBuf<AscendC::TPosition::B2> ascend_l0b;\n";
   this->PrintIndent();
-  stream << "pipe.InitBuffer(ascend_l0b, 131072);\n";
+  stream << "pipe.InitBuffer(ascend_l0b, " << l0b_size << ");\n";
 
   this->PrintIndent();
   stream << "AscendC::TBuf<AscendC::TPosition::A1> ascend_l1; "
-            "pipe.InitBuffer(ascend_l1, 524032);\n";
+            "pipe.InitBuffer(ascend_l1, " << l1_size << ");\n";
   this->PrintIndent();
   stream << "AscendC::TBuf<AscendC::TPosition::CO1> ascend_l0c; "
-            "pipe.InitBuffer(ascend_l0c, 131072);\n";
+            "pipe.InitBuffer(ascend_l0c, " << l0c_size << ");\n";
   this->PrintIndent();
   stream << "AscendC::TBuf<AscendC::TPosition::VECCALC> ascend_ub; "
-            "pipe.InitBuffer(ascend_ub, 196352);\n";
+            "pipe.InitBuffer(ascend_ub, " << ub_size << ");\n";
 
   this->PrintIndent();
   stream << "pipe.Destroy();\n";
-
   this->EndScope(func_scope);
 }
 

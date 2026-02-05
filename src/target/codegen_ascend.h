@@ -22,7 +22,7 @@ namespace codegen {
 
 class CodeGenTileLangAscend final : public CodeGenC {
 public:
-  CodeGenTileLangAscend();
+  CodeGenTileLangAscend(std::string platform);
   std::string Finish();
   // override behavior
   void PrintFuncPrefix(std::ostream &os) final;
@@ -225,6 +225,8 @@ private:
   Map<String, PrimExpr> address_offset_;
 
   bool use_swizzle_{false};
+
+  std::string platform_;
 };
 
 } // namespace codegen
