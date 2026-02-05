@@ -119,6 +119,8 @@ private:
 
   void BroadcastOpCodegen(const CallNode *op);
 
+  void SelectCodegen(const CallNode *op);
+
   std::string PrintBufferOffset(const CallNode *op);
   void UbShapeInputCheck(const AllocateNode *op);
   bool ValidLayoutEnabled(const AllocateNode *op);

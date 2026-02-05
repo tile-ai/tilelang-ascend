@@ -177,7 +177,7 @@ void CodeGenTileLangAscendPto::PrintType(DataType t,
     case 16:
       enable_fp16_ = true;
       if (t.is_scalar()) {
-        os << "half_t";
+        os << "half";
       } else if (lanes <= 8) {
         // Emit CUDA code to access fp16 vector elements.
         //
@@ -654,6 +654,8 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) 
     TshCodegen(op, "TSHRS");
   } else if (op->op.same_as(tl::ascend_broadcast())) {
     BroadcastOpCodegen(op);
+  } else if (op->op.same_as(tl::ascend_select())) {
+    SelectCodegen(op);
   }
 }
 
@@ -948,6 +950,16 @@ void CodeGenTileLangAscendPto::CallExternCodegen(const CallNode *op) {
         }
         // tensor_template = tensor_template + shape_template + ", " + stride_template + ", " + valid_template;
         if (op_name.find("copy_ub_to_gm") != std::string::npos) {
+          std::string shape_num_dtype = global_tensor_template[String(tensor_addr)].dtype;
+          int num1 = std::stoi(shape_nums[1]);
+          // when shape_nums[1] * sizeof(dtype) < 32, do this
+          if (shape_num_dtype == "int" && num1 < 8) {
+            shape_nums[1] = "8";
+          } else if (shape_num_dtype == "float" && num1 < 8) {
+            shape_nums[1] = "8";
+          } else if (shape_num_dtype == "half" && num1 < 16) {
+            shape_nums[1] = "16";
+          }
           tensor_template = tensor_template + shape_template + ", " + stride_template  + ", " +
           shape_nums[0] + ", " + shape_nums[1] + ", " + ub_valid_shapes[1] + ", " + ub_valid_shapes[2] + ">";
         } else {
@@ -2024,6 +2036,15 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
           ub_data[4] = "Unapplied for tileUbDataDN";
           ub_data[5] = "1";
           ub_data[6] = PrintExpr(shape[0]);
+          // when ub_data[6] * sizeof(dtype) < 32, do this
+          int num1 = std::stoi(ub_data[6]);
+          if (ub_data[0] == "int" && num1 < 8) {
+            ub_data[6] = "8";
+          } else if (ub_data[0] == "float" && num1 < 8) {
+            ub_data[6] = "8";
+          }else if (ub_data[0] == "half" && num1 < 16) {
+            ub_data[6] = "16";
+          }
         } else if (shape.size() == 2) {
           if (shape[1].as<IntImmNode>()->value != 1) {
             ub_data[1] = PrintExpr(shape[0]);
@@ -2504,6 +2525,37 @@ void CodeGenTileLangAscendPto::AutoFlagOpCodegen(const CallNode *op,
   auto event_id = PrintExpr(op->args[1]);
   this->stream << op_name << "(PIPE_" << src << ", " << "PIPE_" <<
       dst << ", " << "EVENT_ID" << event_id << ");\n";
+}
+
+// mod0: unsupport
+// mod1: unsupport
+// mod2: TSEL(dst, mask, src0, src1)
+void CodeGenTileLangAscendPto::SelectCodegen(const CallNode *op) {
+  this->PrintIndent();
+
+  std::string dst_name = PrintBufferOffset(op->args[0].as<CallNode>());
+  std::string mask_name = PrintBufferOffset(op->args[1].as<CallNode>());
+  std::string src0_name = PrintBufferOffset(op->args[2].as<CallNode>());
+  std::string src1_name;
+
+  // src1_type
+  int src1_type = std::stoi(PrintExpr(op->args[3]));
+  if (src1_type == 2) {
+    src1_name = PrintBufferOffset(op->args[4].as<CallNode>());
+  } else {
+    LOG(FATAL) << "CodeGenAscendPto: Select currently only supports "
+                  "src1_type=2 (Tensor-Tensor mode). "
+               << "Got type=" << src1_type;
+  }
+
+  const auto &ub_data = ub_data_map_.at(dst_name);
+  const std::string &dtype = ub_data[0];
+  const std::string &shape_m = ub_data[1];
+  const std::string &shape_n = ub_data[2];
+  int32_t mask_col = std::stoi(shape_n) / 8;
+
+  this->stream << "TSEL" << "(" << dst_name << ", " << mask_name << ", "
+               << src0_name << ", " << src1_name << ");\n";
 }
 
 } // namespace codegen
