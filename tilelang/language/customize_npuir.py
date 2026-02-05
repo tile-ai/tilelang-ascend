@@ -1018,7 +1018,7 @@ def npuir_transpose(src, dst, permutation = Union[list, tuple], size=[]):
  
     return tir.call_intrin("handle", tir.op.Op.get("tl.npuir_transpose"), src, dst, permutation_str)
 
-def npuir_arange(dst, strides: Union[list, tuple], offset=0, size=[]):
+def npuir_arange(dst, strides: Union[list, tuple], offset=0):
     """Fill a vector with range 0,1,2... based on strides and offset.
     e.g. offset = 1, strides = [1, 2], tensor/memref shape = [2x4xi32],
     the result is [[1, 3, 5, 7,
@@ -1031,7 +1031,7 @@ def npuir_arange(dst, strides: Union[list, tuple], offset=0, size=[]):
     Returns:
         tir.Call: A handle to the npuir_arange operation
     """
-    dst_extent = _get_extent(dst) if size == [] else size.copy()
+    dst_extent = _get_extent(dst)
     dst = _to_region(dst, "w", dst_extent)
 
     return tir.call_intrin("handle", tir.op.Op.get("tl.npuir_arange"), dst, *strides, offset)
