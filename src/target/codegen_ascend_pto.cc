@@ -1225,9 +1225,7 @@ void CodeGenTileLangAscendPto::ArithProgressionCodegen(const CallNode *op,
   std::string dtype = template_str.substr(start + 1, end - start -1);
   std::string first_value = PrintExpr(op->args[2]);
   std::string diff_value = PrintExpr(op->args[3]);
-
   int descending = 0;
-
   if (const auto* diff_int = op->args[3].as<IntImmNode>()) {
     if (diff_int->value < 0) {
       descending = 1;
