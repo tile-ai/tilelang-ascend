@@ -649,7 +649,8 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) 
     TshCodegen(op, "TSHLS");
   } else if (op->op.same_as(tl::ascend_bitwise_rshift())) {
     TshCodegen(op, "TSHRS");
-  }
+  } else if (op->op.same_as(tl::ascend_arith_progression())) {
+    ArithProgressionCodegen(op, "TCI");
 }
 
 std::string CodeGenTileLangAscendPto::PrintBufferOffset(const CallNode *op) {
@@ -1194,6 +1195,29 @@ void CodeGenTileLangAscendPto::TshCodegen(const CallNode *op,
   auto src1_name = op->args[2].as<IntImmNode>()->value;
   this->stream << op_name << "(" << dst_name << ", " << src0_name << ", " << src1_name << ");\n";
 }
+
+void CodeGenTileLangAscendPto::ArithProgressionCodegen(const CallNode *op,
+                                               const std::string &op_name) {
+  this->PrintIndent(); 
+  std::string buffer_name = PrintExpr(op->args[1].as<CallNode>()->args[1]);
+  std::string template_str = Downcast<StringImm>(op->args[0])->value;
+  size_t start = template_str.find('<');
+  size_t end = template_str.find('>');
+  std::string dtype = template_str.substr(start + 1, end - start -1);
+  std::string first_value = PrintExpr(op->args[2]);
+  std::string diff_value = PrintExpr(op->args[3]);
+
+  int descending = 0;
+
+  if (const auto* diff_int = op->args[3].as<IntImmNode>()) {
+    if (diff_int->value < 0) {
+      descending = 1;
+    }
+  }
+  this->stream << "TCI<decltype(" << buffer_name << "), " << dtype
+               << ", /*descending=*/" << descending << ">("
+               << buffer_name << ", " << first_value << ");\n";
+}                                            
 
 void CodeGenTileLangAscendPto::BinaryVecOpCodegen(const CallNode *op,
                                                const std::string &op_name) {
