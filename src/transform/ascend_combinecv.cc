@@ -431,6 +431,9 @@ public:
 
     Stmt VisitStmt_(const EvaluateNode *op) final {
         auto call_node_ = op->value.as<CallNode>();
+        if (!call_node_) {
+          return StmtMutator::VisitStmt_(op);
+        }
         std::string api_name = "";
         if (call_node_ && call_node_->args[0].as<StringImmNode>()) {
             api_name = call_node_->args[0].as<StringImmNode>()->value;

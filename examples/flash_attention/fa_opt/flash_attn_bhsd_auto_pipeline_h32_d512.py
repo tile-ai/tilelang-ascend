@@ -78,7 +78,7 @@ def flash_attention_fwd(
             m_i_prev = T.alloc_ub([block_M // 2, 1], accum_dtype)
             
             acc_s_ub_ = T.alloc_ub([block_M // 2, block_N], accum_dtype)
-            tmp_ub = T.alloc_ub([3 * DataType(accum_dtype).bits // 8 * block_M // 2 * block_N], "uint8")
+            tmp_ub = T.alloc_ub([block_M // 2, block_N], "uint8")
             sumexp_i_ub = T.alloc_ub([block_M // 2, 1], accum_dtype)
             acc_s_half = T.alloc_ub([block_M // 2, block_N], dtype)
             acc_o_ub = T.alloc_ub([block_M // 2, dim], accum_dtype)

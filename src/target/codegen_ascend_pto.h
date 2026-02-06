@@ -118,6 +118,9 @@ private:
   void TshCodegen(const CallNode *op, const std::string &op_name);
 
   void ArithProgressionCodegen(const CallNode *op, const std::string &op_name);
+  void BroadcastOpCodegen(const CallNode *op);
+
+  void SelectCodegen(const CallNode *op);
 
   std::string PrintBufferOffset(const CallNode *op);
   void UbShapeInputCheck(const AllocateNode *op);
