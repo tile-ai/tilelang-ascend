@@ -487,6 +487,44 @@ std::map<std::string, std::string> extractTemplateParams(const std::string& inpu
     return result;
 }
 
+std::map<std::string, std::string> extractTemplateParams1(const std::string& input) {
+  std::map<std::string, std::string> result;
+  size_t start = input.find('<');
+  size_t end = input.rfind('>');
+
+  if (start == std::string::npos || end == std::string::npos || start >= end) {
+      return result;
+  }
+  std::string inner = input.substr(start + 1, end - start - 1);
+  std::vector<std::string> params;
+  std::stringstream ss(inner);
+  std::string param;
+  while (std::getline(ss, param, ',')) {
+      param.erase(0, param.find_first_not_of(" \t"));
+      param.erase(param.find_last_not_of(" \t") + 1);
+      params.push_back(param);
+  }
+  std::vector<std::string> paramNames = {
+      "data_type_input",
+      "data_type_output",
+      "L1_BLOCK_M",
+      "L1_BLOCK_N",
+      "L1_BLOCK_K",
+      "BLOCK_M",
+      "BLOCK_N",
+      "L1_BLOCK_K",
+      "transpose_A",
+      "transpose_B"
+  };
+  for (size_t i = 0; i < params.size() && i < paramNames.size(); ++i) {
+      result[paramNames[i]] = params[i];
+  }
+  for (size_t i = paramNames.size(); i < params.size(); ++i) {
+      result["extra_param_" + std::to_string(i - paramNames.size() + 1)] = params[i];
+  }
+  return result;
+}
+
 std::vector<std::string> extractShapeFromTemplate(const std::string& input) {
     std::vector<std::string> numbers;
     size_t start = input.find('<');
@@ -533,6 +571,8 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) 
     this->stream << "break;\n";
   } else if (op->op.same_as(tl::ascend_gemm_v0())) {
     GemmV0Codegen(op);
+  } else if (op->op.same_as(tl::ascend_gemm_v1())) {
+    GemmV1Codegen(op);
   } else if (op->op.same_as(tl::ascend_fill())) {
     FillCodegen(op);
   } else if (op->op.same_as(tl::ascend_exp())) {
@@ -1045,6 +1085,60 @@ void CodeGenTileLangAscendPto::GemmV0Codegen(const CallNode *op) {
     << "(" << a_name << ", " << b_name << ", " << c_name << ", " << PrintExpr(op->args[4]) << ");\n";
   }
 
+}
+
+void CodeGenTileLangAscendPto::GemmV1Codegen(const CallNode *op) {
+  std::string op_name = Downcast<StringImm>(op->args[0])->value;
+  this->PrintIndent();
+  auto a_var = op->args[1].as<CallNode>()->args[1].as<VarNode>();
+  auto b_var = op->args[2].as<CallNode>()->args[1].as<VarNode>();
+  auto c_var = op->args[3].as<CallNode>()->args[1].as<VarNode>();
+  
+  auto a_offset = PrintExpr(op->args[1].as<CallNode>()->args[2]);
+  auto b_offset = PrintExpr(op->args[2].as<CallNode>()->args[2]);
+  auto c_offset = PrintExpr(op->args[3].as<CallNode>()->args[2]);
+  
+  auto a_name = var_idmap_[a_var];
+  auto b_name = var_idmap_[b_var];
+  auto c_name = var_idmap_[c_var];
+
+  std::map<std::string, std::string> params = extractTemplateParams1(op_name);
+  if (prefetch_n_stages_map_[a_name].first > 0) {
+    auto a_k = op->args[1].as<CallNode>()->args[2] / op->args[1].as<CallNode>()->args[3];
+    tvm::arith::Analyzer analyzer;
+    PrimExpr simplified_a_k = analyzer.Simplify(a_k);
+    auto b_k = op->args[2].as<CallNode>()->args[2] / op->args[2].as<CallNode>()->args[3];
+    PrimExpr simplified_b_k = analyzer.Simplify(b_k);    
+    std::string data_type_input = params["data_type_input"];
+    this->stream << kAscendPtoScope << "gemm_v1" << "<" 
+      << params["data_type_input"] << ", " << params["data_type_output"] << ", "
+      << GetValidShape(std::stoi(params["L1_BLOCK_M"]), data_type_input) << ", "
+      << GetValidShape(std::stoi(params["L1_BLOCK_N"]), data_type_input) << ", "
+      << GetValidShape(std::stoi(params["L1_BLOCK_K"]), data_type_input) << ", "
+      << GetValidShape(std::stoi(params["BLOCK_M"]), data_type_input) << ", "
+      << GetValidShape(std::stoi(params["BLOCK_N"]), data_type_input) << ", "
+      << GetValidShape(std::stoi(params["L1_BLOCK_K"]), data_type_input) << ", "
+      << params["L1_BLOCK_M"] << ", " << params["L1_BLOCK_N"] << ", " << params["L1_BLOCK_K"] << ", "
+      << params["BLOCK_M"] << ", " << params["BLOCK_N"] << ", " << params["L1_BLOCK_K"] << ", "
+      << params["transpose_A"] << ", " << params["transpose_B"] << ">"
+      << "(" << a_name << "[" << simplified_a_k << "], " 
+      << b_name << "[" << simplified_a_k << "], " 
+      << c_name << ", " << PrintExpr(op->args[4]) << ");\n";
+  } else {
+    std::string data_type_input = params["data_type_input"];
+    this->stream << kAscendPtoScope << "gemm_v1" << "<" 
+      << params["data_type_input"] << ", " << params["data_type_output"] << ", "
+      << GetValidShape(std::stoi(params["L1_BLOCK_M"]), data_type_input) << ", "
+      << GetValidShape(std::stoi(params["L1_BLOCK_N"]), data_type_input) << ", "
+      << GetValidShape(std::stoi(params["L1_BLOCK_K"]), data_type_input) << ", "
+      << GetValidShape(std::stoi(params["BLOCK_M"]), data_type_input) << ", "
+      << GetValidShape(std::stoi(params["BLOCK_N"]), data_type_input) << ", "
+      << GetValidShape(std::stoi(params["L1_BLOCK_K"]), data_type_input) << ", "
+      << params["L1_BLOCK_M"] << ", " << params["L1_BLOCK_N"] << ", " << params["L1_BLOCK_K"] << ", "
+      << params["BLOCK_M"] << ", " << params["BLOCK_N"] << ", " << params["L1_BLOCK_K"] << ", "
+      << params["transpose_A"] << ", " << params["transpose_B"] << ">"
+      << "(" << a_name << ", " << b_name << ", " << c_name << ", " << PrintExpr(op->args[4]) << ");\n";
+  }
 }
 
 void CodeGenTileLangAscendPto::PipeBarrierCodegen(const CallNode *op) {
