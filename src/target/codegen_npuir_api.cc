@@ -1148,6 +1148,30 @@ void CodeGenTileLangNPUIRAPI::VcumsumCodegen(const CallNode *op) {
       builder.getDenseI64ArrayAttr(npuirop.cum_dims));
 }
 
+void CodeGenTileLangNPUIRAPI::VsigmoidCodegen(const tvm::tir::CallNode* op) {
+  tvm::tl::NpuirSigmoid npuirop(op->args, this->vmap);
+  Value src = GenSubviewFromRegion(npuirop.src, npuirop.src_range);
+  Value dst = GenSubviewFromRegion(npuirop.dst, npuirop.dst_range);
+  auto dst_type = dst.getType().cast<mlir::RankedTensorType>();
+  auto elem_type = dst_type.getElementType();
+  mlir::Location loc = builder.getUnknownLoc();
+  Value tmp = mlir::utils::createTmpBufferOrTensorWithTargetType(builder, loc, src, elem_type);
+  Value zero = builder.create<mlir::arith::ConstantOp>(loc, builder.getFloatAttr(elem_type, 0.0f));
+  Value one = builder.create<mlir::arith::ConstantOp>(loc, builder.getFloatAttr(elem_type, 1.0f));
+
+  // Step 1 src = 0 - src
+  builder.create<mlir::hivm::VSubOp>(loc, TypeRange{}, ValueRange{zero, src}, ValueRange{tmp});
+  // Step 2: src = exp(src)
+  builder.create<mlir::hivm::VExpOp>(loc, mlir::TypeRange{},
+      mlir::ValueRange{tmp}, mlir::ValueRange{tmp});
+  // Step 3: src = src + 1
+  builder.create<mlir::hivm::VAddOp>(loc, mlir::TypeRange{},
+      mlir::ValueRange{tmp, one}, mlir::ValueRange{tmp});
+  // Step 4: dst = 1 / src
+  builder.create<mlir::hivm::VDivOp>(loc, mlir::TypeRange{},
+      mlir::ValueRange{one, tmp}, mlir::ValueRange{dst});
+}
+
 void CodeGenTileLangNPUIRAPI::VAtomicAddCodegen(const CallNode *op) {
   /// Generate hivm.hir.store for tl.npuir_atomic_add.
   /// before:
@@ -1964,6 +1988,8 @@ mlir::Value CodeGenTileLangNPUIRAPI::VisitExpr_(const CallNode *op) {
     VcastCodegen(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_reduce"))) {
     VreduceCodegen(op);
+  } else if (op->op.same_as(Op::Get("tl.npuir_sigmoid"))) {
+    VsigmoidCodegen(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_cumsum"))) {
     VcumsumCodegen(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_atomic_add"))) {
