@@ -62,16 +62,15 @@ AICORE PTO_INLINE void gemm_v0(
     pto::TASSIGN(l0a, 0x0);
     pto::TileRight<T1, K, N> l0b;
     pto::TASSIGN(l0b, 0x0);
-
-    set_flag(PIPE_MTE2, PIPE_MTE1, EVENT_ID0);
-    wait_flag(PIPE_MTE2, PIPE_MTE1, EVENT_ID0);
+    auto war_event_id = (event_t)(((int)EVENT_ID0 + 1) % 8);
+    set_flag(PIPE_MTE2, PIPE_MTE1, war_event_id);
+    wait_flag(PIPE_MTE2, PIPE_MTE1, war_event_id);
 
     /**
      * Added synchronization logic: Write-After-Read (WAR) protection
      * Objective: Prevent MTE1 (data transfer) from overwriting L0 before M (Cube) completes processing the previous round of data
      * TODO: Support Ping-Pong buffer.
     */
-    auto war_event_id = (event_t)((int)EVENT_ID0 + 1);
     set_flag(PIPE_M, PIPE_MTE1, war_event_id);
     wait_flag(PIPE_M, PIPE_MTE1, war_event_id);
 
@@ -98,6 +97,9 @@ AICORE PTO_INLINE void gemm_v0(
     } else {
         pto::TMATMUL_ACC(C, C, l0a, l0b);
     }
+
+    set_flag(PIPE_MTE1, PIPE_MTE2, war_event_id);
+    wait_flag(PIPE_MTE1, PIPE_MTE2, war_event_id);
 }
 
 

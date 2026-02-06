@@ -177,7 +177,7 @@ void CodeGenTileLangAscendPto::PrintType(DataType t,
     case 16:
       enable_fp16_ = true;
       if (t.is_scalar()) {
-        os << "half_t";
+        os << "half";
       } else if (lanes <= 8) {
         // Emit CUDA code to access fp16 vector elements.
         //
@@ -528,6 +528,9 @@ int GetValidShape(int shape, std::string& dtype) {
 void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) {
   if (op->op.same_as(builtin::call_extern())) {
     CallExternCodegen(op);
+  } else if (op->op.same_as(tl::loop_break())) {
+    this->PrintIndent();
+    this->stream << "break;\n";
   } else if (op->op.same_as(tl::ascend_gemm_v0())) {
     GemmV0Codegen(op);
   } else if (op->op.same_as(tl::ascend_fill())) {
@@ -649,6 +652,10 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) 
     TshCodegen(op, "TSHLS");
   } else if (op->op.same_as(tl::ascend_bitwise_rshift())) {
     TshCodegen(op, "TSHRS");
+  } else if (op->op.same_as(tl::ascend_broadcast())) {
+    BroadcastOpCodegen(op);
+  } else if (op->op.same_as(tl::ascend_select())) {
+    SelectCodegen(op);
   }
 }
 
@@ -943,6 +950,16 @@ void CodeGenTileLangAscendPto::CallExternCodegen(const CallNode *op) {
         }
         // tensor_template = tensor_template + shape_template + ", " + stride_template + ", " + valid_template;
         if (op_name.find("copy_ub_to_gm") != std::string::npos) {
+          std::string shape_num_dtype = global_tensor_template[String(tensor_addr)].dtype;
+          int num1 = std::stoi(shape_nums[1]);
+          // when shape_nums[1] * sizeof(dtype) < 32, do this
+          if (shape_num_dtype == "int" && num1 < 8) {
+            shape_nums[1] = "8";
+          } else if (shape_num_dtype == "float" && num1 < 8) {
+            shape_nums[1] = "8";
+          } else if (shape_num_dtype == "half" && num1 < 16) {
+            shape_nums[1] = "16";
+          }
           tensor_template = tensor_template + shape_template + ", " + stride_template  + ", " +
           shape_nums[0] + ", " + shape_nums[1] + ", " + ub_valid_shapes[1] + ", " + ub_valid_shapes[2] + ">";
         } else {
@@ -1163,7 +1180,8 @@ void CodeGenTileLangAscendPto::XorCodegen(const CallNode *op, const std::string 
   std::string dst_name = PrintExpr(op->args[0].as<CallNode>()->args[1]);
   std::string src0_name = PrintExpr(op->args[1].as<CallNode>()->args[1]);
   std::string src1_name = PrintExpr(op->args[2].as<CallNode>()->args[1]);
-  this->stream << op_name << "(" << dst_name << ", " << src0_name << ", " << src1_name << ", " << src1_name << ");\n";
+  std::string tmp_name = PrintExpr(op->args[3].as<CallNode>()->args[1]);
+  this->stream << op_name << "(" << dst_name << ", " << src0_name << ", " << src1_name << ", " << tmp_name << ");\n";
 }
 
 void CodeGenTileLangAscendPto::CompareCodegen(const CallNode *op, const std::string &op_name) {
@@ -1251,6 +1269,60 @@ void CodeGenTileLangAscendPto::BinaryVecOpCodegen(const CallNode *op,
     this->stream << ");\n";
   } else {
     ICHECK(false) << "BinaryVecOpCodegen Failed";
+  }
+}
+
+std::string extractBroadCastAxis(const std::string& input) {
+    std::string axis;
+    size_t start = input.find('<');
+    if (start == std::string::npos) {
+        return axis;
+    }
+    size_t end = input.find('>', start);
+    if (end == std::string::npos) {
+        return axis;
+    }
+    std::string templatePart = input.substr(start + 1, end - start - 1);
+    templatePart.erase(std::remove(templatePart.begin(), templatePart.end(), ' '),
+                       templatePart.end());
+    std::vector<std::string> parts;
+    std::stringstream ss(templatePart);
+    std::string token;
+    while (std::getline(ss, token, ',')) {
+        parts.push_back(token);
+    }
+    return parts[2];
+}
+
+void CodeGenTileLangAscendPto::BroadcastOpCodegen(const CallNode *op) {
+  std::string template_args = PrintExpr(op->args[0]);
+  std::string src_name = PrintExpr(op->args[2].as<CallNode>()->args[1]);
+  std::string dst_name = PrintExpr(op->args[1].as<CallNode>()->args[1]);
+
+  std::vector<std::string> ub_data_vector = ub_data_map_[src_name];
+  std::string ub_data_type = ub_data_vector[0];
+  std::string row = ub_data_vector[2];
+  std::string col = ub_data_vector[1];
+  std::string address = ub_data_vector[3];
+
+  std::string axis = extractBroadCastAxis(template_args);
+  if (axis == "1") {
+    this->PrintIndent();
+    this->stream << kAscendPtoScope << "TileUbDataDN <" << ub_data_type << ", " << row << ", " << col << ", " 
+    << row << ", " << col << "> " << src_name << "_DN_ROWEXPAND;\n";
+    this->PrintIndent();
+    this->stream << "TASSIGN(" << src_name << "_DN_ROWEXPAND, " << address << ");\n";
+    this->PrintIndent();
+    this->stream << "pipe_barrier(PIPE_V);\n";
+    this->PrintIndent();
+    this->stream << "TROWEXPAND" << "(" << dst_name << ", " << src_name << "_DN_ROWEXPAND" << ");\n";
+    this->PrintIndent();
+    this->stream << "pipe_barrier(PIPE_V);\n";
+    this->PrintIndent();
+    this->stream << "TRESHAPE(" << src_name << ", " << src_name << "_DN_ROWEXPAND);\n";
+  } else {
+    this->PrintIndent();
+    this->stream << "TCOLEXPAND" << "(" << dst_name << ", " << src_name << ");\n";
   }
 }
 
@@ -1964,6 +2036,15 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
           ub_data[4] = "Unapplied for tileUbDataDN";
           ub_data[5] = "1";
           ub_data[6] = PrintExpr(shape[0]);
+          // when ub_data[6] * sizeof(dtype) < 32, do this
+          int num1 = std::stoi(ub_data[6]);
+          if (ub_data[0] == "int" && num1 < 8) {
+            ub_data[6] = "8";
+          } else if (ub_data[0] == "float" && num1 < 8) {
+            ub_data[6] = "8";
+          }else if (ub_data[0] == "half" && num1 < 16) {
+            ub_data[6] = "16";
+          }
         } else if (shape.size() == 2) {
           if (shape[1].as<IntImmNode>()->value != 1) {
             ub_data[1] = PrintExpr(shape[0]);
@@ -2444,6 +2525,37 @@ void CodeGenTileLangAscendPto::AutoFlagOpCodegen(const CallNode *op,
   auto event_id = PrintExpr(op->args[1]);
   this->stream << op_name << "(PIPE_" << src << ", " << "PIPE_" <<
       dst << ", " << "EVENT_ID" << event_id << ");\n";
+}
+
+// mod0: unsupport
+// mod1: unsupport
+// mod2: TSEL(dst, mask, src0, src1)
+void CodeGenTileLangAscendPto::SelectCodegen(const CallNode *op) {
+  this->PrintIndent();
+
+  std::string dst_name = PrintBufferOffset(op->args[0].as<CallNode>());
+  std::string mask_name = PrintBufferOffset(op->args[1].as<CallNode>());
+  std::string src0_name = PrintBufferOffset(op->args[2].as<CallNode>());
+  std::string src1_name;
+
+  // src1_type
+  int src1_type = std::stoi(PrintExpr(op->args[3]));
+  if (src1_type == 2) {
+    src1_name = PrintBufferOffset(op->args[4].as<CallNode>());
+  } else {
+    LOG(FATAL) << "CodeGenAscendPto: Select currently only supports "
+                  "src1_type=2 (Tensor-Tensor mode). "
+               << "Got type=" << src1_type;
+  }
+
+  const auto &ub_data = ub_data_map_.at(dst_name);
+  const std::string &dtype = ub_data[0];
+  const std::string &shape_m = ub_data[1];
+  const std::string &shape_n = ub_data[2];
+  int32_t mask_col = std::stoi(shape_n) / 8;
+
+  this->stream << "TSEL" << "(" << dst_name << ", " << mask_name << ", "
+               << src0_name << ", " << src1_name << ");\n";
 }
 
 } // namespace codegen
