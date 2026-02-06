@@ -196,31 +196,6 @@ getBroadcastDim(const llvm::ArrayRef<long int> &buffer_shape0,
   return dims;
 }
 
-static llvm::SmallVector<int64_t>
-getBroadcastDim(const llvm::ArrayRef<int64_t> buffer_shape0,
-                const Array<PrimExpr> &buffer_shape1) {
-  llvm::SmallVector<int64_t> dims;
-  if (buffer_shape0.empty() || buffer_shape1.empty()) {
-    return dims;
-  }
-  CHECK(buffer_shape0.size() == buffer_shape1.size());
-  for (int i = 0; i < buffer_shape0.size(); i++) {
-    auto *b1 = as_const_int(buffer_shape1[i]);
-    CHECK(b1) << "buffer_shape1[" << i << "] is not a const int";
-
-    if (buffer_shape0[i] == 1 &&
-        *b1 != 1) {
-      dims.emplace_back(i);
-    } else if (buffer_shape0[i] != 1 &&
-               *b1 == 1) {
-      dims.emplace_back(i);
-    } else {
-      CHECK(buffer_shape0[i] == *b1);
-    }
-  }
-  return dims;
-}
-
 static std::map<std::string, mlir::hivm::RoundMode> NPUIR_STR_ROUNDMODE{
     {"round", mlir::hivm::RoundMode::ROUND},
     {"rint", mlir::hivm::RoundMode::RINT},
@@ -1113,7 +1088,7 @@ void CodeGenTileLangNPUIRAPI::VbrcCodegen(const CallNode *op) {
   if (!inBufferShape.empty()) {
     auto outMemref = llvm::dyn_cast<TypedValue<MemRefType>>(dst);
     auto outBufferShape = outMemref.getType().getShape();
-    auto broadcastDim = getBroadcastDim(inBufferShape, npuirop.dst->shape);
+    auto broadcastDim = getBroadcastDim(inBufferShape, outBufferShape);
     broadcastDimAttr = builder.getDenseI64ArrayAttr(broadcastDim);
   }
   builder.create<mlir::hivm::VBrcOp>(builder.getUnknownLoc(), TypeRange{},
