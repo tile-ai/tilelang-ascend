@@ -1339,47 +1339,6 @@ class compiler_npu:
             Path(ttadapter_path).write_text(linalg)
             bin_file = os.path.join(tmpdir, "kernel")
             bin_path = os.path.join(tmpdir, "kernel.o")
-            
-            # Hot fix for CANN 8.5
-            # Run --adapt-triton-kernel pass before running compilation pipeline
-            # TODO: temporary fix, will be updated when bishengir-compile
-            # and hivmc gets updated in CANN 8.5
-            npu_compiler_opt_path = get_npucompiler_opt_path()
-            ttadapter_opt_path = os.path.join(tmpdir, "kernel-opt.npuir")
-            
-            _opt_option_list = [
-               "--adapt-triton-kernel"
-            ]
-            
-            opt_cmd_list = (
-                [npu_compiler_opt_path, ttadapter_path]
-                + _opt_option_list
-                + ["-o", ttadapter_opt_path]
-            )
-            try:
-                ret = subprocess.run(
-                    opt_cmd_list, capture_output=True, check=True, text=True
-                )
-                print("AscendNPU IR OPT success")
-            except subprocess.CalledProcessError as e:
-                # print ir
-                print("AscendNPU IR:\n")
-                print(self.mlir_content)
-                # print error info
-                print("err cmd:", " ".join(opt_cmd_list))
-                print(f"err code: {e.returncode}")
-                print("err info:", e.stderr)
-                sys.exit(1)
-            except Exception as e:
-                print(f"error: {str(e)}")
-                sys.exit(1)
-            # 1. Read ttadapter_opt_path
-            with open(ttadapter_opt_path, 'r') as f:
-                npuir_opt = f.read()
-            # 2. Replace ttadapter_path contents with ttadapter_opt_path contents
-            with open(ttadapter_path, 'w') as f:
-                f.write(npuir_opt)
-            # Hot fix for CANN 8.5 ends here
 
             npu_compiler_path = get_npucompiler_path()
             # TileLang Ascend JIT Runtime now follows Triton JIT style.

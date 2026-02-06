@@ -63,7 +63,7 @@ jobs:
       uses: actions/cache/restore@v4
       with:
         path: ${{ env.NPUIR_INSTALL_DIR }}
-        key: npuir-prebuild-${{ matrix.arch }}-${{ needs.prebuild-npuir.outputs.npuir-commit }}
+        key: npuir-prebuild-rtti-${{ matrix.arch }}-${{ needs.prebuild-npuir.outputs.npuir-commit }}
         fail-on-cache-miss: true
 
     - name: Restore TVM prebuild from cache
@@ -83,7 +83,7 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y --no-install-recommends \
           cmake make libzstd-dev zlib1g-dev patchelf
-        pip install setuptools wheel packaging
+        pip install -r requirements-build.txt
 
     - name: Build tilelang (cmake)
       run: |
@@ -98,7 +98,7 @@ jobs:
         echo "set(USE_LLVM OFF)" >> build/config.cmake
         echo "set(HIDE_PRIVATE_SYMBOLS ON)" >> build/config.cmake
         echo "set(USE_KALLOC_ALIGNMENT 64)" >> build/config.cmake
-        cmake -B build -DTVM_PREBUILD_PATH=${TVM_PATH} -DTVM_SOURCE_DIR=${{ github.workspace }}/3rdparty/tvm
+        cmake -B build -DTVM_PREBUILD_PATH=${TVM_PATH} -DTVM_SOURCE_DIR=${{ github.workspace }}/3rdparty/tvm -DPython3_EXECUTABLE=$(which python3)
         cmake --build build --config Release -j$(nproc)
 
     - name: Package wheel

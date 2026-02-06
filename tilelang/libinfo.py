@@ -26,6 +26,7 @@ def get_dll_directories():
         curr_dir,
         os.path.join(source_dir, "build"),  # local build
         os.path.join(source_dir, "build", "Release"),
+        os.path.join(source_dir, "build", "tilelangir"),  # tilelangir .so (NPUIR)
         os.path.join(curr_dir, "lib"),  # pypi build
     ]
     if TILELANG_LIBRARY_PATH:
