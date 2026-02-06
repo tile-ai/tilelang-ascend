@@ -116,22 +116,27 @@ def generate_test_cases(args):
     """
     b_list, s_list, h_list, d_list = args.B, args.S, args.H, args.D
 
+    q_heads_list = args.q_heads or h_list
+    kv_heads_list = args.kv_heads or h_list
+
     cases = []
 
     if args.iter_mode == 'product':
         # 全排列组合 (Cartesian Product)
-        cases = list(itertools.product(b_list, s_list, h_list, d_list))
-        print(f">>> 模式: Product (组合数量: {len(b_list)}x{len(s_list)}x{len(h_list)}x{len(d_list)} = {len(cases)})")
+        if args.q_heads is None and args.kv_heads is None:
+            cases = [(b, s, h, h, d) for b, s, h, d in itertools.product(b_list, s_list, args.H, d_list)]
+        else:
+            cases = list(itertools.product(b_list, s_list, q_heads_list, kv_heads_list, d_list))
+        print(f">>> 模式: Product (组合数量: {len(cases)})")
     else:
         # 索引对应 (Zip)，默认模式
-        # 检查长度是否一致
-        lengths = [len(b_list), len(s_list), len(h_list), len(d_list)]
+        lengths = [len(b_list), len(s_list), len(q_heads_list), len(kv_heads_list), len(d_list)]
         if len(set(lengths)) != 1:
-            print("[错误] Zip 模式下，B/S/H/D 参数列表长度必须一致。")
-            print(f"当前长度: B={len(b_list)}, S={len(s_list)}, H={len(h_list)}, D={len(d_list)}")
+            print("[错误] Zip 模式下，B/S/Q_H/KV_H/D 参数列表长度必须一致。")
+            print(f"当前长度: B={len(b_list)}, S={len(s_list)}, Q_H={len(q_heads_list)}, KV_H={len(kv_heads_list)}, D={len(d_list)}")
             sys.exit(1)
 
-        cases = list(zip(b_list, s_list, h_list, d_list))
+        cases = list(zip(b_list, s_list, q_heads_list, kv_heads_list, d_list))
         print(f">>> 模式: Zip (测试用例数量: {len(cases)})")
 
     return cases
@@ -143,6 +148,8 @@ def run_benchmark():
     parser.add_argument("--B", type=int, nargs='+', default=[4], help="Batch sizes list (e.g. --B 1 2 4)")
     parser.add_argument("--S", type=int, nargs='+', default=[4096], help="Sequence lengths list")
     parser.add_argument("--H", type=int, nargs='+', default=[16], help="Num heads list")
+    parser.add_argument("--q-heads", type=int, nargs='+', default=None, help="Num Q heads list")
+    parser.add_argument("--kv-heads", type=int, nargs='+', default=None, help="Num KV heads list")
     parser.add_argument("--D", type=int, nargs='+', default=[128], help="Head dim list")
 
     # === 遍历模式 ===
@@ -181,7 +188,7 @@ def run_benchmark():
     summary_file = os.path.join(session_dir, f"comparison_report_{timestamp}.csv")
 
     headers = [
-        'B', 'S', 'H', 'D', 'Mode', 
+        'B', 'S', 'Q_H', 'KV_H', 'D', 'Mode', 
         'AC_Time(us)', 'TL_Time(us)', 'Ratio(AC/TL %)', 'Result_Status'
     ]
 
@@ -190,15 +197,15 @@ def run_benchmark():
     print(">>> 对比评测启动！")
     print(f">>> 会话目录: {session_dir}")
 
-    for b, s, h, d in test_cases:
-        combo_name = f"B{b}_S{s}_H{h}_D{d}"
+    for b, s, q_h, kv_h, d in test_cases:
+        combo_name = f"B{b}_S{s}_Q{q_h}_KV{kv_h}_D{d}"
         combo_dir = os.path.join(session_dir, combo_name)
         print(f"\n[测试组合] {combo_name}")
 
         # --- 1. 运行 TileLang ---
         path_tl = os.path.join(combo_dir, "tilelang")
         os.makedirs(path_tl, exist_ok=True)
-        app_cmd_tl = f"python {args.tl} --B {b} --S {s} --H {h} --D {d}"
+        app_cmd_tl = f"python {args.tl} --B {b} --S {s} --q-heads {q_h} --kv-heads {kv_h} --D {d}"
 
         if args.sim:
             cmd_tl = f'msprof op simulator --soc-version={args.soc_version} --kernel-name="{args.kernel_tl}" --output={path_tl} --application="{app_cmd_tl}"'
@@ -210,7 +217,7 @@ def run_benchmark():
         # --- 2. 运行 AscendC ---
         path_ac = os.path.join(combo_dir, "ascendc")
         os.makedirs(path_ac, exist_ok=True)
-        app_cmd_ac = f"python {args.ascendc} --B {b} --S {s} --H {h} --D {d}"
+        app_cmd_ac = f"python {args.ascendc} --B {b} --S {s} --q-heads {q_h} --kv-heads {kv_h} --D {d} --no-check"
 
         if args.sim:
             cmd_ac = f'msprof op simulator --soc-version={args.soc_version} --kernel-name="{args.kernel_ascendc}" --output={path_ac} --application="{app_cmd_ac}"'
@@ -235,7 +242,7 @@ def run_benchmark():
             final_status = "Both_Fail"
 
         rows_to_write.append([
-            b, s, h, d, mode_str,
+            b, s, q_h, kv_h, d, mode_str,
             ac_time if ac_time else "N/A", 
             tl_time if tl_time else "N/A", 
             ratio_str,

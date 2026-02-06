@@ -1,6 +1,7 @@
 import argparse
 import tilelang
 from tilelang import DataType, language as T
+
 import torch
 
 torch.set_default_device('npu')
@@ -22,22 +23,22 @@ pass_configs = {
 def flash_attention_fwd(
     batch,
     seq_len,
-    heads,
+    heads_q,
+    heads_kv,
     dim,
 ):
+    assert heads_q % heads_kv == 0, "heads_q must be a multiple of heads_kv"
     block_M, block_N = 128, 128
-
-    batch = B
-    seq_len = S
 
     dtype = "float16"
     accum_dtype = "float"
 
     sm_scale = (1.0 / dim)**0.5
 
-    shape = [batch, heads, seq_len, dim]
+    shape_q = [batch, heads_q, seq_len, dim]
+    shape_kv = [batch, heads_kv, seq_len, dim]
 
-    block_num = seq_len // block_M * heads * batch
+    block_num = seq_len // block_M * heads_q * batch
 
     n_num = T.max(T.ceildiv(block_N * dim * DataType(dtype).bits // 8, L0_MAX_SIZE), 1)
     block_K = T.ceildiv(block_N, n_num)
@@ -46,18 +47,20 @@ def flash_attention_fwd(
 
     @T.prim_func
     def main(
-            Q: T.Tensor(shape, dtype),  # type: ignore
-            K: T.Tensor(shape, dtype),  # type: ignore
-            V: T.Tensor(shape, dtype),  # type: ignore
-            Output: T.Tensor(shape, dtype),  # type: ignore
+            Q: T.Tensor(shape_q, dtype),  # type: ignore
+            K: T.Tensor(shape_kv, dtype),  # type: ignore
+            V: T.Tensor(shape_kv, dtype),  # type: ignore
+            Output: T.Tensor(shape_q, dtype),  # type: ignore
             workspace_1: T.Tensor([block_num, block_M, block_N], accum_dtype),
             workspace_2: T.Tensor([block_num, block_M, block_N], dtype),
             workspace_3: T.Tensor([block_num, block_M, dim], accum_dtype),
     ):
         with T.Kernel(block_num, is_npu=True) as (cid, vid):
             bx = cid % (seq_len // block_M)
-            by = cid // (seq_len // block_M) % heads
-            bz = cid // (seq_len // block_M) // heads % batch
+            by = cid // (seq_len // block_M) % heads_q
+            bz = cid // (seq_len // block_M) // heads_q % batch
+
+            kv_by = by // (heads_q // heads_kv)
 
             q_l1 = T.alloc_L1([block_M, dim], dtype)
             k_l1 = T.alloc_L1([block_K, dim], dtype)
@@ -93,7 +96,7 @@ def flash_attention_fwd(
             for k in T.Pipelined(T.ceildiv(seq_len, block_N), num_stages=num_stages):
 
                 for n_i in T.serial(n_num):
-                  T.copy(K[bz, by, k * block_N + n_i * block_K : k * block_N + (n_i + 1) * block_K, :], k_l1)
+                  T.copy(K[bz, kv_by, k * block_N + n_i * block_K : k * block_N + (n_i + 1) * block_K, :], k_l1)
                   T.gemm_v0(q_l1, k_l1, acc_s_l0c, transpose_B=True, init=True)
                   T.copy(acc_s_l0c, workspace_1[cid, :, n_i * block_K : (n_i + 1) * block_K])
 
@@ -121,7 +124,7 @@ def flash_attention_fwd(
                 T.copy(workspace_2[cid, :, :], acc_s_l1)
 
                 for n_i in T.serial(n_num):
-                  T.copy(V[bz, by, k * block_N : (k + 1) * block_N, n_i * block_D : (n_i + 1) * block_D], v_l1)
+                  T.copy(V[bz, kv_by, k * block_N : (k + 1) * block_N, n_i * block_D : (n_i + 1) * block_D], v_l1)
                   T.gemm_v0(acc_s_l1, v_l1, acc_o_l0c, init=True)
                   T.copy(acc_o_l0c, workspace_3[cid, :, n_i * block_D : (n_i + 1) * block_D])
 
@@ -147,42 +150,58 @@ if __name__ == "__main__":
     parser.add_argument("--B", type=int, default=4, help="batch size")
     parser.add_argument("--S", type=int, default=4096, help="seq len")
     parser.add_argument("--H", type=int, default=16, help="attention head size")
+    parser.add_argument("--q-heads", type=int, default=None, help="query head size")
+    parser.add_argument("--kv-heads", type=int, default=None, help="kv head size")
     parser.add_argument("--D", type=int, default=128, help="hidden dim")
+    parser.add_argument("--no-check", action="store_true", help="disable reference check")
     args = parser.parse_args()
     B, S, H, D = args.B, args.S, args.H, args.D
+    Q_H = args.q_heads or H
+    KV_H = args.kv_heads or H
 
     func = flash_attention_fwd(
         batch=B,
         seq_len=S,
-        heads=H,
+        heads_q=Q_H,
+        heads_kv=KV_H,
         dim=D,
     )
     print(func.get_kernel_source())
 
     def ref_flash_attn(q, k, v):
+        # GQA/MQA support: torch.einsum does not support MQA/GQA broadcasting, so we must manually repeat k/v heads
+        if k.shape[1] != q.shape[1]:
+            n_rep = q.shape[1] // k.shape[1]
+            k = k.repeat_interleave(n_rep, dim=1)
+            v = v.repeat_interleave(n_rep, dim=1)
+
         q = q.float()
         k = k.float()
         v = v.float()
 
-        acc = torch.einsum("bhsd,bhkd->bhsk", q, k) * (1.0 / q.shape[-1])**0.5
-        acc = acc.softmax(dim=-1)
-        o = torch.einsum("bhsk,bhkd->bhsd", acc, v)
-        return o.to(torch.float16)
+        output = torch.nn.functional.scaled_dot_product_attention(
+            q, k, v,
+            attn_mask=None,
+            dropout_p=0.0,
+            is_causal=False
+        )
+        return output.to(torch.float16)
 
-
-    q = torch.randn((B, H, S, D), dtype=torch.float16)
-    k = torch.randn((B, H, S, D), dtype=torch.float16)
-    v = torch.randn((B, H, S, D), dtype=torch.float16)
-
+    q = torch.randn((B, Q_H, S, D), dtype=torch.float16)
+    k = torch.randn((B, KV_H, S, D), dtype=torch.float16)
+    v = torch.randn((B, KV_H, S, D), dtype=torch.float16)
 
     torch.npu.synchronize()
     print("init successful!")
 
     output = func(q, k, v)
-    ref_output = ref_flash_attn(q, k, v)
     torch.npu.synchronize()
 
-    torch.testing.assert_close(ref_output, output, rtol=1e-2, atol=1e-2)
-
-    print("Test Passed!")
+    if not args.no_check:
+        ref_output = ref_flash_attn(q, k, v)
+        torch.npu.synchronize()
+        torch.testing.assert_close(ref_output, output, rtol=1e-2, atol=1e-2)
+        print("Test Passed!")
+    else:
+        print("Reference check skipped.")
 
