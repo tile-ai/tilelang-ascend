@@ -321,79 +321,63 @@ private:
   bool HandleSimpleExpression(const std::string& op_name, const Array<PrimExpr>& operands,
                               const BufferAccessInfo& output_buffer, std::vector<BufferAccessInfo>* tmp_bufs,
                               const std::vector<const VarNode*>& loop_vars, Array<Stmt>* statements) {
-    auto load_a = operands[0].as<BufferLoadNode>();
-    auto load_b = operands[1].as<BufferLoadNode>();
-    // vector OP const-scalar
-    if ((load_a && IsScalar(operands[1])) || (load_b && IsScalar(operands[0]))) {
-      if (load_a && !ValidBufferIndices(load_a->indices)) {
-        depth = 0;
-        return false;
-      }
-      if (load_b && !ValidBufferIndices(load_b->indices)) {
-        depth = 0;
-        return false;
-      }
-      int buffer_idx = 0;
-      int scalar_idx = 1;
-      if (load_b && IsScalar(operands[0])) {
-        scalar_idx = 0;
-        buffer_idx = 1;
-      }
+    bool a_is_scalar = IsScalar(operands[0]);
+    bool b_is_scalar = IsScalar(operands[1]);
+    bool a_is_buffer = operands[0]->IsInstance<BufferLoadNode>();
+    bool b_is_buffer = operands[1]->IsInstance<BufferLoadNode>();
 
-      BufferAccessInfo output = output_buffer;
-      if(depth > 1) {
-        auto load_node = operands[buffer_idx].as<BufferLoadNode>();
-        BufferAccessInfo info {load_node->buffer, load_node->indices};
-        output = CreateTempBuffer(info);
-        tmp_bufs->push_back(output);
-      }
+    PrimExpr region_a;
+    PrimExpr region_b;
+    PrimExpr region_c;
 
-      PrimExpr region_a = BuildRegionCall(ExtractBufferAccessInfo(operands[buffer_idx]), 1, 1);
-      PrimExpr region_c = BuildRegionCall(output, 2, 1);
-      auto stmt = BuildNpuirBinaryCall(op_name, region_a, operands[scalar_idx], region_c);
-      statements->push_back(stmt);
-      depth--;
-      return true;
+    auto processOperand = [&](const PrimExpr& operand, bool is_scalar, bool is_buffer)
+      -> std::optional<PrimExpr> {
+      if (is_scalar) {
+        return operand;
+      } else if (is_buffer) {
+        auto load = operand.as<BufferLoadNode>();
+        if (ValidBufferIndices(load->indices)) {
+          return BuildRegionCall(ExtractBufferAccessInfo(operand), 1, 1);
+        }
+        depth = 0;
+        return std::nullopt;
+      } else {
+        depth = 0;
+        return std::nullopt;
+      }
+    };
+
+    if (auto result = processOperand(operands[0], a_is_scalar, a_is_buffer)) {
+        region_a = *result;
+    } else {
+        return false;
+    }
+    if (auto result = processOperand(operands[1], b_is_scalar, b_is_buffer)) {
+      region_b = *result;
+    } else {
+      return false;
     }
 
-    if (load_a && load_b) {
-      // lis means loop invariant scalar
-      bool vector_lis = !IsLoopInvariant(load_a->indices, loop_vars) && IsLoopInvariant(load_b->indices, loop_vars);
-      bool lis_vector = IsLoopInvariant(load_a->indices, loop_vars) && !IsLoopInvariant(load_b->indices, loop_vars);
-      bool vector_vector = !IsLoopInvariant(load_a->indices, loop_vars) && !IsLoopInvariant(load_b->indices, loop_vars);
-      auto op_type = Op::Get(TirOps2NpuirOps[op_name]);
-      int offset = 0;
-      auto buffer_a = ExtractBufferAccessInfo(operands[0]);
-      auto buffer_b = ExtractBufferAccessInfo(operands[1]);
-
-      BufferAccessInfo output = output_buffer;
-      if(depth > 1) {
-        auto load_node = operands[0].as<BufferLoadNode>();
-        BufferAccessInfo info {load_node->buffer, load_node->indices};
-        output = CreateTempBuffer(info);
-        tmp_bufs->push_back(output);
-      }
-
-      if (lis_vector) {
-        buffer_a = ExtractBufferAccessInfo(operands[1]);
-        buffer_b = ExtractBufferAccessInfo(operands[0]);
-      }
-
-      if (vector_lis || lis_vector || vector_vector) {
-        PrimExpr offset_expr = {make_const(DataType::Int(32), offset)};
-        PrimExpr region_a = BuildRegionCall(buffer_a, 1, 1);
-        PrimExpr region_b = BuildRegionCall(buffer_b, 1, 1);
-        PrimExpr region_c = BuildRegionCall(output, 2, 1);
-        Array<PrimExpr> args = {region_a, region_b, region_c};
-        PrimExpr call = Call(DataType::Void(), op_type, args);
-        auto stmt = Evaluate(call);
-        statements->push_back(stmt);
-        depth--;
-        return true;
-      }
+    BufferAccessInfo output = output_buffer;
+    if(depth > 1) {
+      auto load_node = a_is_buffer ? operands[0].as<BufferLoadNode>() : operands[1].as<BufferLoadNode>();
+      BufferAccessInfo info {load_node->buffer, load_node->indices};
+      output = CreateTempBuffer(info);
+      tmp_bufs->push_back(output);
     }
-    depth = 0;
-    return false;
+    region_c = BuildRegionCall(output, 2, 1);
+
+    Stmt stmt;
+    // For hivm.add or hivm.mul, it's operand at index 0 must be vector
+    if (a_is_scalar && (op_name == "Add" || op_name == "Mul")) {
+      stmt = BuildNpuirBinaryCall(op_name, region_b, region_a, region_c);
+    } else {
+      stmt = BuildNpuirBinaryCall(op_name, region_a, region_b, region_c);
+    }
+
+    statements->push_back(stmt);
+    depth--;
+    return true;
   }
 
   bool HandleUnaryExpression(const PrimExpr& expr, const BufferAccessInfo& output_buffer, std::vector<BufferAccessInfo>* tmp_bufs,

@@ -73,7 +73,7 @@ def binary_compound(N, block_N, dtype="float32"):
             T.copy(B[start_idx], B_VEC, [tail_size])
 
             for i in T.Parallel(block_N):
-                C_VEC[i] = A_VEC[i] + B_VEC[i] * 3.14
+                C_VEC[i] = 2.78 - A_VEC[i] + 3.14 * B_VEC[i]
 
             # Write the result back from on-chip buffer (C_VEC) to global memory (C)
             T.copy(C_VEC, C[start_idx], [tail_size])
@@ -167,7 +167,7 @@ def test_binary_compound(v1, v2, v3):
     compiled_kernel = tilelang.compile(func, target="npuir")
 
     # Compute reference result using PyTorch's native addition (on NPU)
-    y_ref = v1 + v2 * 3.14
+    y_ref = 2.78 - v1 + v2 * 3.14
 
     # Launch the compiled TileLang kernel
     compiled_kernel(v1, v2, v3, seq_len)
