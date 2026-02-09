@@ -447,7 +447,6 @@ AICORE PTO_INLINE void binarys_tile(int32_t addr,
                 int32_t offset, int32_t len, T scalar_value) {
     TileUbDataND<T, 1, shape, 1, shape> temp_ub;
     pto::TASSIGN(temp_ub, addr + offset * len);
-    pipe_barrier(PIPE_ALL);
     if constexpr (Op == BinaryOps::TADDS) {
         pto::TADDS(temp_ub, temp_ub, scalar_value);
     } else if constexpr (Op == BinaryOps::TSUBS) {
