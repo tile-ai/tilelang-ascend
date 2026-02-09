@@ -156,7 +156,7 @@ def main(custom_args=None):
     check_case(N, C, 128, 128)
     check_case(N, C, 128, 128, x_dtype="float32")
     check_case(N, C, 128, 128, x_dtype="bfloat16")
-    check_case(64, 64, 16, 16)
+    check_case(64, 64, 32, 16)
 
     print("cross_entropy_loss example passed!")
     print("Kernel Output Match!")
