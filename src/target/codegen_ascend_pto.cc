@@ -1372,8 +1372,6 @@ std::string getValueOrProcess(const std::map<std::string, std::string>& myMap,
 }
 
 bool IsComplexExpression(const PrimExpr& expr) {
-  // Check if it's an arithmetic operation (Add/Sub/Mul/Div/Mod/etc.)
-  // Note: Use tir:: prefix for arithmetic nodes as they're in the tir namespace
   if (expr.as<tir::AddNode>()) {
       return true;
   }
@@ -1412,36 +1410,29 @@ void CodeGenTileLangAscendPto::BinaryVecOpsCodegen(const CallNode *op,
     std::string ub_name = var_names[1];
     auto& ub_metadata = ub_data_map_[ub_name];
  
-    // 1. 统一处理标量获取逻辑
-    // 如果是 CallNode，从 UB 中 GetValue；如果是复杂表达式，直接使用 index 字符串
     bool is_call = (op->args[2].as<CallNode>() != nullptr);
     std::string scalar_expr = is_call ? (PrintBufferOffset(op->args[2].as<CallNode>()) + ".GetValue(" + index + ")") : index;
     std::string scalar_name = is_call ? (PrintBufferOffset(op->args[2].as<CallNode>()) + "_scalar") : "scalar";
  
-    // 这里的 final_scalar 逻辑已经在外部预处理，我们直接定义生成的变量名
     this->stream << "pipe_barrier(PIPE_ALL);\n";
     this->PrintIndent();
     this->stream << "auto " << scalar_name << " = " << scalar_expr << ";\n";
     this->stream << "pipe_barrier(PIPE_ALL);\n";
  
-    // 2. 统一计算处理的列数（防止 TASSIGN 越界或不满足 32 字节对齐）
     std::string loop_num = getValueOrProcess(for_num_map_, index);
     int32_t total_elements = std::stoi(ub_metadata[1]) * std::stoi(ub_metadata[2]);
     int32_t ub_data_temp_col = total_elements / std::stoi(loop_num);
  
-    // 3. 处理符号转换 (TSUBS -> TADDS)
     std::string final_op_name = operation;
     std::string applied_scalar = (op_name == "TSUBS") ? ("-" + scalar_name) : scalar_name;
  
     this->PrintIndent();
     if (is_call) {
-      // 分支 A: 使用 binarys_tile 模板接口
       this->stream << kAscendPtoScope << "binarys_tile<" << kAscendPtoScope << "BinaryOps::" << final_op_name 
       << ", " << ub_metadata[0] << ", " << ub_data_temp_col << ">("
       << ub_metadata[3] << ", " << offset << ", " << GetTypeLenString(ub_metadata[0]) 
       << ", " << applied_scalar << ");\n";
     } else {
-      // 分支 B: 手动 TASSIGN 临时变量
       std::string var_name_temp = ub_name + "_temp";
       this->stream << kAscendPtoScope << "TileUbDataND<" << ub_metadata[0] << ", 1, "
       << ub_data_temp_col << ", 1, " << ub_data_temp_col << "> " << var_name_temp << ";\n";
