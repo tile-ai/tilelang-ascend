@@ -696,7 +696,7 @@ private:
     // }
 
     auto it = original_to_corrected_.find(buffer);
-    if (it != original_to_corrected_,end()) {
+    if (it != original_to_corrected_.end()) {
       return BufferLoad(it->second, op->indices);
     }
     
