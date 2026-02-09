@@ -117,6 +117,8 @@ private:
 
   void TshCodegen(const CallNode *op, const std::string &op_name);
 
+  void ArithProgressionCodegen(const CallNode *op, const std::string &op_name);
+  
   void BroadcastOpCodegen(const CallNode *op);
 
   void SelectCodegen(const CallNode *op);
@@ -173,6 +175,19 @@ private:
   std::map<std::string, std::string> for_num_map_;
   std::map<std::string, std::pair<int, int>> prefetch_n_stages_map_;
 
+  std::unordered_map<std::string, std::string> dtype_map = {
+        {"int8", "char"},
+        {"int32", "int"},
+        {"int8x4", "int32_t"},
+        {"int32x4", "int32x4"},
+        {"float16", "half"},
+        {"float32", "float"},
+        {"float64", "double"},
+        {"float16x4", "float16x4"},
+        {"bfloat16x4", "bfloat16x4"},
+        {"float32x4", "float32x4"},
+        {"float32x16", "float32x16"}};
+  
   struct global_tensor{
     String shape_type;
     String dtype;
