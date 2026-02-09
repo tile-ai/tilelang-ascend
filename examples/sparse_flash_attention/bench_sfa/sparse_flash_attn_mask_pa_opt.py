@@ -83,7 +83,7 @@ def sparse_attention_fwd(
     kv_shape = [block_num, block_size, 1, D + D_tail]
 
     @T.prim_func
-    def main(
+    def main_opt(
             Q: T.Tensor(q_shape, dtype),  # type: ignore
             KV: T.Tensor(kv_shape, dtype),  # type: ignore
             Indices: T.Tensor(indices_shape, indices_dtype),  # type: ignore
@@ -262,7 +262,7 @@ def sparse_attention_fwd(
                     
                         T.copy(acc_o_half, Output[b_i, s_i, H0 + vid * v_block:H1 + vid * v_block, :])
 
-    return main
+    return main_opt
 
 
 
