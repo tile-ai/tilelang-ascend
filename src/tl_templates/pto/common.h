@@ -432,4 +432,35 @@ AICORE PTO_INLINE void pow(
     TMUL(dst, src0, src1);
     TEXP(dst, dst);
 }
+
+enum class BinaryOps {
+    TADDS,
+    TSUBS,
+    TMULS,
+    TDIVS,
+    TMAXS,
+    TMINS
+};
+
+template <BinaryOps Op, typename T, int32_t shape>
+AICORE PTO_INLINE void binarys_tile(int32_t addr,
+                int32_t offset, int32_t len, T scalar_value) {
+    TileUbDataND<T, 1, shape, 1, shape> temp_ub;
+    pto::TASSIGN(temp_ub, addr + offset * len);
+    pipe_barrier(PIPE_ALL);
+    if constexpr (Op == BinaryOps::TADDS) {
+        pto::TADDS(temp_ub, temp_ub, scalar_value);
+    } else if constexpr (Op == BinaryOps::TSUBS) {
+        pto::TSUBS(temp_ub, temp_ub, scalar_value);
+    } else if constexpr (Op == BinaryOps::TMULS) {
+        pto::TMULS(temp_ub, temp_ub, scalar_value);
+    } else if constexpr (Op == BinaryOps::TDIVS) {
+        pto::TDIVS(temp_ub, temp_ub, scalar_value);
+    } else if constexpr (Op == BinaryOps::TMAXS) {
+        pto::TMAXS(temp_ub, temp_ub, scalar_value);
+    } else if constexpr (Op == BinaryOps::TMINS) {
+        pto::TMINS(temp_ub, temp_ub, scalar_value);
+    }
+    pipe_barrier(PIPE_ALL);
+}
 }

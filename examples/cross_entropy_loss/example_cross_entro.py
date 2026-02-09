@@ -9,6 +9,8 @@ from tilelang import DataType
 import torch
 from torch import nn
 
+tl.cache.clear_cache()
+
 @tl.jit(
     out_idx=[-2, -1],
     pass_configs={
