@@ -244,7 +244,7 @@ private:
     BufferLoad target_load = src_is_ub ? dst_load : src_load; 
     Buffer ub_buf = src_is_ub ? src_buf : dst_buf;
     int ub_dims = ub_buf->shape.size();
-    std::cout << "[info]<callnode>: ub_dims is " << ub_dims << std::endl;
+    // std::cout << "[info]<callnode>: ub_dims is " << ub_dims << std::endl;
     BufferLoad modified_load = ModifyBufferLoadIndices(target_load, ub_dims, ub_buf);
 
     // Step 7：重构目标region（替换修改后的BufferLoad）
