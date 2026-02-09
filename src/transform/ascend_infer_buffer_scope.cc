@@ -565,6 +565,7 @@ private:
     }
   }
 
+  std::unordered_map<Buffer, Buffer, ObjectPtrHash, ObjectPtrEqual> original_to_corrected_;
   std::unordered_map<const AllocateNode*, std::string> scope_corrections_;
   std::unordered_map<const VarNode*, std::string> handle_scope_corrections_;
   std::unordered_map<const VarNode*, Var> var_replacements_;
@@ -636,6 +637,7 @@ private:
 
         new_alloc_buffers.push_back(new_buffer);
         buffer_replacements[handle] = new_buffer;
+        original_to_corrected_[buffer] = new_buffer;
       } else {
         new_alloc_buffers.push_back(buffer);
       }
@@ -676,23 +678,28 @@ private:
   PrimExpr VisitExpr_(const BufferLoadNode* op) override {
     auto buffer = op->buffer;
 
-    auto it = handle_scope_corrections_.find(buffer->data.get());
-    if (it != handle_scope_corrections_.end()) {
-      Var new_data = CreateVarWithCorrectScope(buffer->data, it->second);
-      auto new_buffer = Buffer(new_data, buffer->dtype, buffer->shape,
-                               buffer->strides, buffer->elem_offset,
-                               buffer->name, buffer->data_alignment,
-                               buffer->offset_factor, buffer->buffer_type);
+    // auto it = handle_scope_corrections_.find(buffer->data.get());
+    // if (it != handle_scope_corrections_.end()) {
+    //   Var new_data = CreateVarWithCorrectScope(buffer->data, it->second);
+    //   auto new_buffer = Buffer(new_data, buffer->dtype, buffer->shape,
+    //                            buffer->strides, buffer->elem_offset,
+    //                            buffer->name, buffer->data_alignment,
+    //                            buffer->offset_factor, buffer->buffer_type);
 
-      Array<PrimExpr> indices;
-      indices.reserve(op->indices.size());
-      for (const auto& index : op->indices) {
-        indices.push_back(VisitExpr(index));
-      }
+    //   Array<PrimExpr> indices;
+    //   indices.reserve(op->indices.size());
+    //   for (const auto& index : op->indices) {
+    //     indices.push_back(VisitExpr(index));
+    //   }
 
-      return BufferLoad(new_buffer, indices);
+    //   return BufferLoad(new_buffer, indices);
+    // }
+
+    auto it = original_to_corrected_.find(buffer);
+    if (it != original_to_corrected_,end()) {
+      return BufferLoad(it->second, op->indices);
     }
-
+    
     return StmtExprMutator::VisitExpr_(op);
   }
 

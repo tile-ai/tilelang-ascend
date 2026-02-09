@@ -9,7 +9,7 @@ pass_configs = {
     tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
     tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
     # TODO:临时形式，后续改为读thread_cnt
-    tilelang.PassConfigKey.TL_ASCEND_VID_REDUCTION: True,
+    # tilelang.PassConfigKey.TL_ASCEND_VID_REDUCTION: True,
 }
 
 @tilelang.jit(out_idx=[1], pass_configs=pass_configs)
@@ -27,7 +27,7 @@ def gelu_mul(M, N, block_M, block_N, dtype="float"):
             A: T.Tensor((M, N), dtype),
             B: T.Tensor((M, N // 2), dtype)
     ):
-        with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
+        with T.Kernel(m_num * n_num, threads=2, is_npu=True) as (cid):
             bx = cid // n_num
             by = cid % n_num
             a1_ub = T.alloc_ub((block_M, block_N), dtype)
@@ -37,9 +37,9 @@ def gelu_mul(M, N, block_M, block_N, dtype="float"):
 
             ## [In vector]
             # The left half is cached using a1_ub
-            T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a1_ub)
+            T.copy(A[bx * block_M, by * block_N], a1_ub)
             # The right half is cached using a2_ub
-            T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N + N // 2], a2_ub)
+            T.copy(A[bx * block_M, by * block_N + N // 2], a2_ub)
             # Calculation formula:x^2
             T.tile.mul(temp_ub, a1_ub, a1_ub)
             # Calculation formula:x^3
@@ -58,7 +58,7 @@ def gelu_mul(M, N, block_M, block_N, dtype="float"):
             T.tile.div(temp_ub, a1_ub, temp_ub)
             # Multiply the result of the left half by the right half
             T.tile.mul(b_ub, temp_ub, a2_ub)
-            T.copy(b_ub, B[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
+            T.copy(b_ub, B[bx * block_M, by * block_N])
 
     return main
 
