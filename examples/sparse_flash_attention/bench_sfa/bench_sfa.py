@@ -144,12 +144,12 @@ def test_op(T, B, KV_S, Q_N, KV_N, D, D_rope,
 
 if __name__ == "__main__":
     from sparse_flash_attn_mask_pa import sparse_attn_tilelang, init_test
-    from sparse_flash_attn_mask_pa_broadcast import sparse_attn_tilelang as sparse_attn_tilelang_broadcast
+    from sparse_flash_attn_mask_pa_opt import sparse_attn_tilelang as sparse_attn_tilelang_opt
     init_test()
 
     print(torch_npu.__version__)
     print("Test Real Case in DS-v3.2-Exp")
-    tl_ops = [torch_npu.npu_sparse_flash_attention, sparse_attn_tilelang, sparse_attn_tilelang_broadcast]
+    tl_ops = [torch_npu.npu_sparse_flash_attention, sparse_attn_tilelang, sparse_attn_tilelang_opt]
     test_op(T = 1, B = 1, KV_S = 2560, Q_N = 128, KV_N = 1, D = 512, D_rope = 64,
             sparse_size = 2048, scale_value = 0.5, sparse_block_size = 1, sparse_mode = 0,
             block_size = 128, act_kv_s = 2560, tl_ops = tl_ops)
