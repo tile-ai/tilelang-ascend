@@ -433,6 +433,35 @@ AICORE PTO_INLINE void pow(
     TEXP(dst, dst);
 }
 
+enum class BinaryOps {
+    TADDS,
+    TSUBS,
+    TMULS,
+    TDIVS,
+    TMAXS,
+    TMINS
+};
+
+template <BinaryOps Op, typename T, int32_t shape>
+AICORE PTO_INLINE void binarys_tile(int32_t addr,
+                int32_t offset, int32_t len, T scalar_value) {
+    TileUbDataND<T, 1, shape, 1, shape> temp_ub;
+    pto::TASSIGN(temp_ub, addr + offset * len);
+    if constexpr (Op == BinaryOps::TADDS) {
+        pto::TADDS(temp_ub, temp_ub, scalar_value);
+    } else if constexpr (Op == BinaryOps::TSUBS) {
+        pto::TSUBS(temp_ub, temp_ub, scalar_value);
+    } else if constexpr (Op == BinaryOps::TMULS) {
+        pto::TMULS(temp_ub, temp_ub, scalar_value);
+    } else if constexpr (Op == BinaryOps::TDIVS) {
+        pto::TDIVS(temp_ub, temp_ub, scalar_value);
+    } else if constexpr (Op == BinaryOps::TMAXS) {
+        pto::TMAXS(temp_ub, temp_ub, scalar_value);
+    } else if constexpr (Op == BinaryOps::TMINS) {
+        pto::TMINS(temp_ub, temp_ub, scalar_value);
+    }
+}
+
 template<pipe_t pipe, pipe_t tpipe> AICORE PTO_INLINE void set_flag_pipeline(int32_t pipeID) {
     switch (pipeID) {
         case 0: set_flag(pipe, tpipe, EVENT_ID0); break;
