@@ -150,6 +150,7 @@ from .customize_npuir import (
     Scope,
     npuir_print as print,
     npuir_reshape,
+    npuir_clear as clear,
 )
 from .logical import any_of, all_of  # noqa: F401
 from .builtin import *  # noqa: F401
