@@ -461,7 +461,6 @@ AICORE PTO_INLINE void binarys_tile(int32_t addr,
     } else if constexpr (Op == BinaryOps::TMINS) {
         pto::TMINS(temp_ub, temp_ub, scalar_value);
     }
-    pipe_barrier(PIPE_ALL);
 }
 
 template<pipe_t pipe, pipe_t tpipe> AICORE PTO_INLINE void set_flag_pipeline(int32_t pipeID) {
