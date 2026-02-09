@@ -26,44 +26,45 @@ def test_slice_copy_2d(block_M, block_N, idx, idx2, dtype="float16"):
         Out8: T.Tensor((block_M, block_N), dtype),
     ):
         with T.Kernel(1, is_npu=True) as (idx_, _):
-            A_frag = T.alloc_ub((block_M, block_N), dtype)
-            B_frag = T.alloc_ub((block_M, block_N), dtype)
-            C_frag = T.alloc_ub((block_M, block_N), dtype)
-            D_frag = T.alloc_ub((block_M, block_N), dtype)
+            A_frag = T.alloc_L1((block_M, block_N), dtype)
+            B_frag = T.alloc_L1((block_M, block_N), dtype)
+            C_frag = T.alloc_L1((block_M, block_N), dtype)
+            D_frag = T.alloc_L1((block_M, block_N), dtype)
 
-            A_slice = T.alloc_ub(block_N, dtype)
-            B_slice = T.alloc_ub(block_N, dtype)
-            
-            # 1. Initialize
-            T.copy(In_ones, A_frag)
-            T.copy(In_zeros, B_frag)
-            T.copy(In_zeros, C_frag)
-            T.copy(In_zeros, D_frag)
-            
-            # 2. Test Local Slice Copy (Frag -> Frag Slice)
-            # T.copy(A_frag[idx] -> A_slice -> B_frag[idx])
-            T.copy(A_frag[idx, :], A_slice)
-            T.copy(A_slice, B_frag[idx, :])
+            A_slice = T.alloc_L1(block_N, dtype)
+            B_slice = T.alloc_L1(block_N, dtype)
 
-            # 3. Test Global Slice Copy
-            T.copy(In_ones[idx, :], B_slice)
-            T.copy(B_slice, Out5[idx, :])
-            
-            # 4. Test Cross-Location Copy (GM -> UB -> GM)
-            T.copy(In_ones[idx, :], C_frag[idx2, :])
-            T.copy(C_frag[idx2, :], Out6[idx, :])
+            with T.Scope("Cube"):
+                # 1. Initialize
+                T.copy(In_ones, A_frag)
+                T.copy(In_zeros, B_frag)
+                T.copy(In_zeros, C_frag)
+                T.copy(In_zeros, D_frag)
+                
+                # 2. Test Local Slice Copy (Frag -> Frag Slice)
+                # T.copy(A_frag[idx] -> A_slice -> B_frag[idx])
+                T.copy(A_frag[idx, :], A_slice)
+                T.copy(A_slice, B_frag[idx, :])
 
-            # 5. Test Direct Fragment to Fragment Slice Copy with Offset
-            T.copy(A_frag[idx, :], D_frag[idx2, :])
+                # 3. Test Global Slice Copy
+                T.copy(In_ones[idx, :], B_slice)
+                T.copy(B_slice, Out5[idx, :])
+                
+                # 4. Test Cross-Location Copy (GM -> UB -> GM)
+                T.copy(In_ones[idx, :], C_frag[idx2, :])
+                T.copy(C_frag[idx2, :], Out6[idx, :])
 
-            # Outputs
-            T.copy(C_frag, Out7)  # Dump C_frag
-            T.copy(D_frag, Out8)  # Dump D_frag (Verify Frag->Frag copy)
+                # 5. Test Direct Fragment to Fragment Slice Copy with Offset
+                T.copy(A_frag[idx, :], D_frag[idx2, :])
 
-            T.copy(A_frag, Out1)
-            T.copy(B_frag, Out2)
-            T.copy(A_slice, Out3)
-            T.copy(B_slice, Out4)
+                # Outputs
+                T.copy(C_frag, Out7)  # Dump C_frag
+                T.copy(D_frag, Out8)  # Dump D_frag (Verify Frag->Frag copy)
+
+                T.copy(A_frag, Out1)
+                T.copy(B_frag, Out2)
+                T.copy(A_slice, Out3)
+                T.copy(B_slice, Out4)
     return main
 
 def test_2d():
@@ -132,39 +133,40 @@ def test_slice_copy_3d(B, M, N, idx, idx2, dtype="float16"):
         Out8: T.Tensor((B, M, N), dtype),
     ):
         with T.Kernel(1, is_npu=True) as (idx_, _):
-            A_frag = T.alloc_ub((B, M, N), dtype)
-            B_frag = T.alloc_ub((B, M, N), dtype)
-            C_frag = T.alloc_ub((B, M, N), dtype)
-            D_frag = T.alloc_ub((B, M, N), dtype)
+            A_frag = T.alloc_L1((B, M, N), dtype)
+            B_frag = T.alloc_L1((B, M, N), dtype)
+            C_frag = T.alloc_L1((B, M, N), dtype)
+            D_frag = T.alloc_L1((B, M, N), dtype)
 
-            A_slice = T.alloc_ub((M, N), dtype)
-            B_slice = T.alloc_ub((M, N), dtype)
+            A_slice = T.alloc_L1((M, N), dtype)
+            B_slice = T.alloc_L1((M, N), dtype)
             
-            # Initialize
-            T.copy(In_ones, A_frag)
-            T.copy(In_zeros, B_frag)
-            T.copy(In_zeros, C_frag)
-            T.copy(In_zeros, D_frag)
-            
-            # Normal Slice Tests
-            T.copy(A_frag[idx, :, :], A_slice)
-            T.copy(A_slice, B_frag[idx, :, :])
-            T.copy(In_ones[idx, :, :], B_slice)
-            T.copy(B_slice, Out5[idx, :, :])
-            T.copy(In_ones[idx, :, :], C_frag[idx2, :, :])
-            T.copy(C_frag[idx2, :, :], Out6[idx, :, :])
-            
-            # Frag to Frag Slice Copy with Offset
-            # A_frag[idx] -> D_frag[idx2]
-            T.copy(A_frag[idx, :, :], D_frag[idx2, :, :])
+            with T.Scope("Cube"):
+                # Initialize
+                T.copy(In_ones, A_frag)
+                T.copy(In_zeros, B_frag)
+                T.copy(In_zeros, C_frag)
+                T.copy(In_zeros, D_frag)
+                
+                # Normal Slice Tests
+                T.copy(A_frag[idx, :, :], A_slice)
+                T.copy(A_slice, B_frag[idx, :, :])
+                T.copy(In_ones[idx, :, :], B_slice)
+                T.copy(B_slice, Out5[idx, :, :])
+                T.copy(In_ones[idx, :, :], C_frag[idx2, :, :])
+                T.copy(C_frag[idx2, :, :], Out6[idx, :, :])
+                
+                # Frag to Frag Slice Copy with Offset
+                # A_frag[idx] -> D_frag[idx2]
+                T.copy(A_frag[idx, :, :], D_frag[idx2, :, :])
 
-            T.copy(C_frag, Out7)
-            T.copy(D_frag, Out8)
+                T.copy(C_frag, Out7)
+                T.copy(D_frag, Out8)
 
-            T.copy(A_frag, Out1)
-            T.copy(B_frag, Out2)
-            T.copy(A_slice, Out3)
-            T.copy(B_slice, Out4)
+                T.copy(A_frag, Out1)
+                T.copy(B_frag, Out2)
+                T.copy(A_slice, Out3)
+                T.copy(B_slice, Out4)
     return main
 
 def test_3d():
@@ -227,38 +229,39 @@ def test_slice_copy_4d(B, H, M, N, idx_b, idx_h, idx_b2, idx_h2, dtype="float16"
         Out8: T.Tensor((B, H, M, N), dtype),
     ):
         with T.Kernel(1, is_npu=True) as (idx_, _):
-            A_frag = T.alloc_ub((B, H, M, N), dtype)
-            B_frag = T.alloc_ub((B, H, M, N), dtype)
-            C_frag = T.alloc_ub((B, H, M, N), dtype)
-            D_frag = T.alloc_ub((B, H, M, N), dtype)
+            A_frag = T.alloc_L1((B, H, M, N), dtype)
+            B_frag = T.alloc_L1((B, H, M, N), dtype)
+            C_frag = T.alloc_L1((B, H, M, N), dtype)
+            D_frag = T.alloc_L1((B, H, M, N), dtype)
 
-            A_slice = T.alloc_ub((M, N), dtype)
-            B_slice = T.alloc_ub((M, N), dtype)
+            A_slice = T.alloc_L1((M, N), dtype)
+            B_slice = T.alloc_L1((M, N), dtype)
             
-            T.copy(In_ones, A_frag)
-            T.copy(In_zeros, B_frag)
-            T.copy(In_zeros, C_frag) 
-            T.copy(In_zeros, D_frag)
-            
-            # Normal Tests
-            T.copy(A_frag[idx_b, idx_h, :, :], A_slice)
-            T.copy(A_slice, B_frag[idx_b, idx_h, :, :])
-            T.copy(In_ones[idx_b, idx_h, :, :], B_slice)
-            T.copy(B_slice, Out5[idx_b, idx_h, :, :])
-            T.copy(In_ones[idx_b, idx_h, :, :], C_frag[idx_b2, idx_h2, :, :])
-            T.copy(C_frag[idx_b2, idx_h2, :, :], Out6[idx_b, idx_h, :, :])
-            
-            # Frag to Frag Slice Copy with Offset (4D)
-            # A_frag[b, h] -> D_frag[b2, h2]
-            T.copy(A_frag[idx_b, idx_h, :, :], D_frag[idx_b2, idx_h2, :, :])
+            with T.Scope("Cube"):
+                T.copy(In_ones, A_frag)
+                T.copy(In_zeros, B_frag)
+                T.copy(In_zeros, C_frag) 
+                T.copy(In_zeros, D_frag)
+                
+                # Normal Tests
+                T.copy(A_frag[idx_b, idx_h, :, :], A_slice)
+                T.copy(A_slice, B_frag[idx_b, idx_h, :, :])
+                T.copy(In_ones[idx_b, idx_h, :, :], B_slice)
+                T.copy(B_slice, Out5[idx_b, idx_h, :, :])
+                T.copy(In_ones[idx_b, idx_h, :, :], C_frag[idx_b2, idx_h2, :, :])
+                T.copy(C_frag[idx_b2, idx_h2, :, :], Out6[idx_b, idx_h, :, :])
+                
+                # Frag to Frag Slice Copy with Offset (4D)
+                # A_frag[b, h] -> D_frag[b2, h2]
+                T.copy(A_frag[idx_b, idx_h, :, :], D_frag[idx_b2, idx_h2, :, :])
 
-            T.copy(C_frag, Out7)
-            T.copy(D_frag, Out8)
+                T.copy(C_frag, Out7)
+                T.copy(D_frag, Out8)
 
-            T.copy(A_frag, Out1)
-            T.copy(B_frag, Out2)
-            T.copy(A_slice, Out3)
-            T.copy(B_slice, Out4)
+                T.copy(A_frag, Out1)
+                T.copy(B_frag, Out2)
+                T.copy(A_slice, Out3)
+                T.copy(B_slice, Out4)
     return main
 
 def test_4d():
