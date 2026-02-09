@@ -432,4 +432,48 @@ AICORE PTO_INLINE void pow(
     TMUL(dst, src0, src1);
     TEXP(dst, dst);
 }
+
+template<pipe_t pipe, pipe_t tpipe> AICORE PTO_INLINE void set_flag_pipeline(int32_t pipeID) {
+    switch (pipeID) {
+        case 0: set_flag(pipe, tpipe, EVENT_ID0); break;
+        case 1: set_flag(pipe, tpipe, EVENT_ID1); break;
+        case 2: set_flag(pipe, tpipe, EVENT_ID2); break;
+        case 3: set_flag(pipe, tpipe, EVENT_ID3); break;
+        case 4: set_flag(pipe, tpipe, EVENT_ID4); break;
+        case 5: set_flag(pipe, tpipe, EVENT_ID5); break;
+        case 6: set_flag(pipe, tpipe, EVENT_ID6); break;
+        case 7: set_flag(pipe, tpipe, EVENT_ID7); break;
+        default:break;
+    }
+}
+
+template<pipe_t pipe, pipe_t tpipe> AICORE PTO_INLINE void wait_flag_pipeline(int32_t pipeID) {
+    switch (pipeID) {
+        case 0: wait_flag(pipe, tpipe, EVENT_ID0); break;
+        case 1: wait_flag(pipe, tpipe, EVENT_ID1); break;
+        case 2: wait_flag(pipe, tpipe, EVENT_ID2); break;
+        case 3: wait_flag(pipe, tpipe, EVENT_ID3); break;
+        case 4: wait_flag(pipe, tpipe, EVENT_ID4); break;
+        case 5: wait_flag(pipe, tpipe, EVENT_ID5); break;
+        case 6: wait_flag(pipe, tpipe, EVENT_ID6); break;
+        case 7: wait_flag(pipe, tpipe, EVENT_ID7); break;
+        default:break;
+    }
+}
+
+template <typename dstT, int32_t dstRow, int32_t dstCol, 
+          int32_t dstRowValid, int32_t dstColValid, 
+          typename srcT, int32_t srcRow, int32_t srcCol,
+          int32_t srcRowValid, int32_t srcColValid,
+          int32_t src_element_count>
+AICORE PTO_INLINE void TROWEXPAND_with_slice_buffer(
+    TileUbDataND<dstT, dstRow, dstCol, dstRow, dstCol> dst,
+    TileUbDataDN<srcT, srcRow, srcCol, srcRow, srcCol> src,
+    int32_t src_addr, int32_t src_offset) {
+  TileUbDataDN<srcT, src_element_count, srcCol, src_element_count, srcColValid>
+      src_temp_ub;
+  pto::TASSIGN(src_temp_ub, src_addr + src_offset);
+
+  pto::TROWEXPAND(dst, src_temp_ub);
+}
 }
