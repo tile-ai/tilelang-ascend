@@ -70,13 +70,14 @@ def sparse_attention_fwd(
     D = dim
     D_tail = tail_dim
 
-    if head_kv > 64:
-        assert head_kv % 64 == 0, 'head_kv should be a multiple of 64'
-        REPLICATE_H = head_kv // 64
+    block_H = 16
+    if head_kv > block_H:
+        assert head_kv % block_H == 0, 'head_kv should be a multiple of {block_H}'
+        REPLICATE_H = head_kv // block_H
     else:
         REPLICATE_H = 1
 
-    H_per_block = padded_H if REPLICATE_H == 1 else 64
+    H_per_block = padded_H if REPLICATE_H == 1 else block_H
 
     v_block = H_per_block // 2
 
@@ -147,10 +148,10 @@ def sparse_attention_fwd(
                     s_i = (bx // REPLICATE_H)
                     h_i = (bx % REPLICATE_H)
 
-                    H0 = g_i * padded_H + (0 if REPLICATE_H == 1 else (bx % REPLICATE_H) * 64)
+                    H0 = g_i * padded_H + (0 if REPLICATE_H == 1 else (bx % REPLICATE_H) * block_H)
                     H1 = H0 + H_per_block
                     act_q_len = actual_q_len[b_i]
-
+                    actual_len = actual_kv_len[b_i]
 
                     if s_i < act_q_len:
                         T.copy(Q[b_i, s_i, H0:H1, :D], q_l1)
@@ -179,7 +180,6 @@ def sparse_attention_fwd(
                         
                             T.copy(indices_ub_, indices_ub_float)
                         
-                            actual_len = actual_kv_len[b_i]
                         
                             T.tile.compare(mask_ub, indices_ub_float, T.float32(actual_len - act_q_len + s_i), "LE")
 
@@ -238,8 +238,7 @@ def sparse_attention_fwd(
 
                             T.tile.add(sumexp, sumexp, sumexp_i_ub)
                         
-                            T.tile.broadcast(m_i_prev_broadcast, m_i_prev, tmp_ub)
-                            T.tile.mul(acc_o, acc_o, m_i_prev_broadcast)                            
+                           
 
                             T.copy(acc_s_ub, acc_s_half)
 
@@ -251,7 +250,8 @@ def sparse_attention_fwd(
                                 workspace_5[cid, vid * v_block:vid * v_block + v_block, :],
                                 acc_o_ub)
                         
-
+                            T.tile.broadcast(m_i_prev_broadcast, m_i_prev, tmp_ub)
+                            T.tile.mul(acc_o, acc_o, m_i_prev_broadcast) 
                             T.tile.add(acc_o, acc_o, acc_o_ub)
 
                         
