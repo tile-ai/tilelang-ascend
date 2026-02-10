@@ -1513,7 +1513,6 @@ bool IsComplexExpression(const PrimExpr& expr) {
 
 void CodeGenTileLangAscendPto::BinaryVecOpsCodegen(const CallNode *op,
   const std::string &op_name) {
-  std::cout << "BinaryVecOpsCodegen" << std::endl;
   std::vector<std::string> var_names;
   std::string operation = (op_name == "TSUBS") ? "TADDS" : op_name;
   for (int i = 0; i < op->args.size() - 2; i++) {
