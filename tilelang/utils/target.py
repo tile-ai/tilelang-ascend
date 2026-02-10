@@ -146,4 +146,4 @@ def determine_platform(platform: str = "auto") -> str:
         pass
 
     # Default fallback if detection fails
-    return "A2"
+    return "A3"

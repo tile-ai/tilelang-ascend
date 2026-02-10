@@ -18,6 +18,7 @@ import logging
 
 from tilelang.env import TILELANG_CACHE_DIR, is_cache_enabled
 from tilelang.version import __version__
+from tilelang.utils.target import determine_platform
 
 KERNEL_PATH = "kernel.cu"
 WRAPPED_KERNEL_PATH = "wrapped_kernel.cu"
@@ -92,7 +93,6 @@ class KernelCache:
         Returns:
             str: SHA256 hash key for the kernel configuration.
         """
-        from tilelang.utils.target import determine_platform
         platform = determine_platform(platform)
 
         func_binary = cloudpickle.dumps(func.script())
@@ -141,7 +141,6 @@ class KernelCache:
         Returns:
             JITKernel: The compiled kernel, either freshly compiled or from cache
         """
-        from tilelang.utils.target import determine_platform
         platform = determine_platform(platform)
 
         if not is_cache_enabled():
@@ -318,7 +317,6 @@ class KernelCache:
         Returns:
             JITKernel: The loaded kernel if found, None otherwise.
         """
-        from tilelang.utils.target import determine_platform
         platform = determine_platform(platform)
 
         cache_path = self._get_cache_path(key)
