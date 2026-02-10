@@ -1136,6 +1136,10 @@ void CodeGenTileLangAscendPto::WaitCrossFlagCodegen(const CallNode *op) {
 
 void CodeGenTileLangAscendPto::FillCodegen(const CallNode *op) {
   this->PrintIndent();
+  this->stream << "set_flag(PIPE_V, PIPE_S, EVENT_ID0);\n";
+  this->PrintIndent();
+  this->stream << "wait_flag(PIPE_V, PIPE_S, EVENT_ID0);\n";
+  this->PrintIndent();
   this->stream << "TEXPANDS" << "(" << PrintBufferOffset(op->args[1].as<CallNode>()) << ", "
               << PrintExpr(op->args[2]) << ");\n";
 }
