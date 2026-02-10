@@ -73,7 +73,7 @@ class KernelCache:
         args=None,
         target: Union[str, Target] = "auto",
         target_host: Union[str, Target] = None,
-        platform: Literal["A2", "A3", "A5"] = "A3",
+        platform: str = "auto",
         pass_configs: dict = None,
     ) -> str:
         """
@@ -92,6 +92,9 @@ class KernelCache:
         Returns:
             str: SHA256 hash key for the kernel configuration.
         """
+        from tilelang.utils.target import determine_platform
+        platform = determine_platform(platform)
+
         func_binary = cloudpickle.dumps(func.script())
         key_data = {
             "version": __version__,
@@ -118,7 +121,7 @@ class KernelCache:
         *args,
         target: Union[str, Target] = "auto",
         target_host: Union[str, Target] = None,
-        platform: Literal["A2", "A3", "A5"] = "A3",
+        platform: str = "auto",
         execution_backend: Literal["dlpack", "ctypes", "cython"] = "cython",
         verbose: bool = False,
         pass_configs: dict = None,
@@ -138,6 +141,9 @@ class KernelCache:
         Returns:
             JITKernel: The compiled kernel, either freshly compiled or from cache
         """
+        from tilelang.utils.target import determine_platform
+        platform = determine_platform(platform)
+
         if not is_cache_enabled():
             return JITKernel(
                 func,
@@ -288,7 +294,7 @@ class KernelCache:
         key: str,
         target: Union[str, Target] = "auto",
         target_host: Union[str, Target] = None,
-        platform: Literal["A2", "A3", "A5"] = "A3",
+        platform: str = "auto",
         out_idx: List[int] = None,
         workspace_idx: List[int] = None,
         execution_backend: Literal["dlpack", "ctypes", "cython"] = "cython",
@@ -312,6 +318,9 @@ class KernelCache:
         Returns:
             JITKernel: The loaded kernel if found, None otherwise.
         """
+        from tilelang.utils.target import determine_platform
+        platform = determine_platform(platform)
+
         cache_path = self._get_cache_path(key)
         if not os.path.exists(cache_path):
             return None

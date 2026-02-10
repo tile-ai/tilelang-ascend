@@ -39,7 +39,7 @@ def compile(
     execution_backend: Literal["dlpack", "ctypes", "cython"] = "cython",
     target: Union[str, Target] = "auto",
     target_host: Union[str, Target] = None,
-    platform: Literal["A2", "A3", "A5"] = "A3",
+    platform: str = "auto",
     verbose: bool = False,
     pass_configs: Optional[Dict[str, Any]] = None,
 ) -> JITKernel:
@@ -76,6 +76,9 @@ def compile(
             "tl.ascend_auto_sync": bool, default: False
             "tl.ascend_memory_planning": bool, default: False
     """
+    from tilelang.utils.target import determine_platform
+    platform = determine_platform(platform)
+
     return cached(
         func=func,
         out_idx=out_idx,
@@ -109,7 +112,7 @@ class _JitImplementation:
                  workspace_idx: Any = None,
                  target: Union[str, Target] = "auto",
                  target_host: Union[str, Target] = None,
-                 platform: Literal["A2", "A3", "A5"] = "A3",
+                 platform: str = "auto",
                  execution_backend: Literal["dlpack", "ctypes", "cython"] = "cython",
                  verbose: bool = False,
                  pass_configs: Optional[Dict[str, Any]] = None,
@@ -150,6 +153,9 @@ class _JitImplementation:
             If a relative path is given, it's made absolute relative to the project root
             or current working directory.
         """
+        from tilelang.utils.target import determine_platform
+        platform = determine_platform(platform)
+
         self.out_idx = out_idx
         self.workspace_idx = workspace_idx
         self.execution_backend = execution_backend
@@ -251,7 +257,7 @@ def jit(  # This is the new public interface
         workspace_idx: Any = None,
         target: Union[str, Target] = "auto",
         target_host: Union[str, Target] = None,
-        platform: Literal["A2", "A3", "A5"] = "A3",
+        platform: str = "auto",
         execution_backend: Literal["dlpack", "ctypes", "cython"] = "cython",
         verbose: bool = False,
         pass_configs: Optional[Dict[str, Any]] = None,

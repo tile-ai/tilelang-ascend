@@ -197,7 +197,7 @@ def lower(
     func_or_mod: Union[tir.PrimFunc, tvm.IRModule],
     target: Union[str, Target] = "auto",
     target_host: Optional[Union[str, Target]] = None,
-    platform: Union[Literal["A2", "A3", "A5"], str] = "auto",
+    platform: str = "auto",
     runtime_only=False,
     enable_host_codegen=False,
     enable_device_compile=False,

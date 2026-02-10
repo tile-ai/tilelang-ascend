@@ -132,6 +132,8 @@ def determine_platform(platform: str = "auto") -> str:
                 return "A2"
             elif "910_93" in name:
                 return "A3"
+            elif "910C" in name:
+                return "A3"
             elif "950" in name:
                 return "A5"
             elif "910_95" in name:
