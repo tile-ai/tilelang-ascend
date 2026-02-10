@@ -21,7 +21,7 @@ def cached(
     *args,
     target: Union[str, Target] = "auto",
     target_host: Union[str, Target] = None,
-    platform: Literal["A2", "A3", "A5"] = "A3",
+    platform: str = "auto",
     execution_backend: Optional[Literal["dlpack", "ctypes", "cython"]] = "cython",
     verbose: Optional[bool] = False,
     pass_configs: Optional[dict] = None,
@@ -29,6 +29,9 @@ def cached(
     """
     Caches and reuses compiled kerne(ls (using KernelCache class).
     """
+    from tilelang.utils.target import determine_platform
+    platform = determine_platform(platform)
+
     return _kernel_cache_instance.cached(
         func,
         out_idx,
