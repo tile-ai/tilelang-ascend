@@ -442,23 +442,25 @@ enum class BinaryOps {
     TMINS
 };
 
-template <BinaryOps Op, typename T, int32_t shape>
-AICORE PTO_INLINE void binarys_tile(int32_t addr,
-                int32_t offset, int32_t len, T scalar_value) {
-    TileUbDataND<T, 1, shape, 1, shape> temp_ub;
-    pto::TASSIGN(temp_ub, addr + offset * len);
+template <BinaryOps Op, typename T, int32_t dst_shape, int32_t src_shape>
+AICORE PTO_INLINE void binarys_tile(int32_t dst_addr, int32_t src_addr,
+                int32_t dst_offset, int32_t src_offset, int32_t len, T scalar_value) {
+    TileUbDataND<T, 1, dst_shape, 1, dst_shape> dst_temp_ub;
+    pto::TASSIGN(dst_temp_ub, dst_addr + dst_offset * len);
+    TileUbDataND<T, 1, src_shape, 1, src_shape> src_temp_ub;
+    pto::TASSIGN(src_temp_ub, src_addr + src_offset * len);
     if constexpr (Op == BinaryOps::TADDS) {
-        pto::TADDS(temp_ub, temp_ub, scalar_value);
+        pto::TADDS(dst_temp_ub, src_temp_ub, scalar_value);
     } else if constexpr (Op == BinaryOps::TSUBS) {
-        pto::TSUBS(temp_ub, temp_ub, scalar_value);
+        pto::TSUBS(dst_temp_ub, src_temp_ub, scalar_value);
     } else if constexpr (Op == BinaryOps::TMULS) {
-        pto::TMULS(temp_ub, temp_ub, scalar_value);
+        pto::TMULS(dst_temp_ub, src_temp_ub, scalar_value);
     } else if constexpr (Op == BinaryOps::TDIVS) {
-        pto::TDIVS(temp_ub, temp_ub, scalar_value);
+        pto::TDIVS(dst_temp_ub, src_temp_ub, scalar_value);
     } else if constexpr (Op == BinaryOps::TMAXS) {
-        pto::TMAXS(temp_ub, temp_ub, scalar_value);
+        pto::TMAXS(dst_temp_ub, src_temp_ub, scalar_value);
     } else if constexpr (Op == BinaryOps::TMINS) {
-        pto::TMINS(temp_ub, temp_ub, scalar_value);
+        pto::TMINS(dst_temp_ub, src_temp_ub, scalar_value);
     }
 }
 
