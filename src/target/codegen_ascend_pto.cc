@@ -660,7 +660,6 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) 
     SelectCodegen(op);
   } else if (op->op.same_as(builtin::if_then_else())) {
       // conditional that skips eval if cond evals to false
-      // std::cout<<"here"<<std::endl;
       std::string result = name_supply_->FreshName("condval");
       std::string cond = PrintExpr(op->args[0]);
       this->PrintIndent();
