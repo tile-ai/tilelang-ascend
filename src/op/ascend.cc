@@ -183,7 +183,7 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
       ss << ">";
     } else {
       PrimExpr len = 1;
-      for (auto &shape : src->shape) {
+      for (auto &shape : dst_extents) {
         len *= shape;
       }
       ss << "copy_ub_to_ub<" << get_dtype(dst) << ", "
