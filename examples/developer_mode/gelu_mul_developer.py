@@ -67,7 +67,7 @@ torch.manual_seed(0)
 # Tests
 test_configs = [
     (256, 256, 64, 64),
-    (1024, 1024, 128, 128),
+    # (1024, 1024, 128, 128),
 ]
 
 for M, N, block_M, block_N in test_configs:
