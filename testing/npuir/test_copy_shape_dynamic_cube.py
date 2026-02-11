@@ -230,10 +230,6 @@ def cube_copy_shape_3d_4d(M, N, block_M, block_N):
 
 
 def test_cube_copy_shape_1d_2d():
-    # In the future, Developer mode and Expert Mode will transition smoothly
-    # without requiring explicit declarations.
-    torch.npu.set_device(0)
-
     M = 8
     N = 8
     v1 = torch.randn(size=[M, N], dtype=eval("torch." + dtype)).npu()
@@ -254,10 +250,6 @@ def test_cube_copy_shape_1d_2d():
 
 
 def test_cube_copy_shape_2d_3d():
-    # In the future, Developer mode and Expert Mode will transition smoothly
-    # without requiring explicit declarations.
-    torch.npu.set_device(0)
-
     M = 8
     N = 8
     func = cube_copy_shape_2d_3d(M, N, block_M=3, block_N=3)
@@ -278,10 +270,6 @@ def test_cube_copy_shape_2d_3d():
 
 
 def test_cube_copy_shape_3d_4d():
-    # In the future, Developer mode and Expert Mode will transition smoothly
-    # without requiring explicit declarations.
-    torch.npu.set_device(0)
-
     M = 8
     N = 8
     func = cube_copy_shape_3d_4d(M, N, block_M=3, block_N=3)
@@ -302,6 +290,7 @@ def test_cube_copy_shape_3d_4d():
 
 
 if __name__ == "__main__":
+    torch.npu.set_device(0)
     test_cube_copy_shape_1d_2d()
     test_cube_copy_shape_2d_3d()
     test_cube_copy_shape_3d_4d()

@@ -1457,13 +1457,8 @@ void CodeGenTileLangNPUIRAPI::Nz2NdCodegen(const CallNode *op) {
   // Generate hivm.hir.nz2nd for tl.npuir_store_nz2nd.
   tvm::tl::NpuirNz2nd npuirop(op->args, this->vmap);
   // gen memref.subview
-  // src is cc: no min_rank needed.
-  mlir::Value src =
-      GenRankReducedSubviewFromRegion(npuirop.src, npuirop.src_range);
-  // dst is GM: ensure min_rank=2 to maintain consistent GM rank across all
-  // nz2nd calls in the same function, preventing callee signature mismatches.
-  mlir::Value dst =
-      GenRankReducedSubviewFromRegion(npuirop.dst, npuirop.dst_range, /*min_rank=*/2);
+  mlir::Value src = GenSubviewFromRegion(npuirop.src, npuirop.src_range);
+  mlir::Value dst = GenSubviewFromRegion(npuirop.dst, npuirop.dst_range);
 
   // gen hivm.hir.nz2nd
   builder.create<mlir::hivm::NZ2NDOp>(builder.getUnknownLoc(),
