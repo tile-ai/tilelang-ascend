@@ -216,7 +216,7 @@ func = sparse_attention_fwd(
     tail_dim=0,
     topk=2048,
     kv_stride=1,
-    kv_group=8,
+    kv_group=4,
 )
 
 
@@ -274,7 +274,7 @@ def ref_sparse_attention_fwd_interface_gqa(q,
     return o.to(torch.float16)
 
 
-B, S, SKV, H_Q, H_KV, DIM, topk = 2, 273, 44444, 64, 8, 128, 2048
+B, S, SKV, H_Q, H_KV, DIM, topk = 2, 273, 44444, 64, 4, 128, 2048
 kv_group = H_Q // H_KV
 dtype = torch.float16
 

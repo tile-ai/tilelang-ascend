@@ -6,10 +6,10 @@
 namespace tvm {
 namespace codegen {
 
-runtime::Module BuildTileLangAscend(IRModule mod, Target target) {
+runtime::Module BuildTileLangAscend(IRModule mod, Target target, std::string platform) {
   using tvm::runtime::Registry;
   bool output_ssa = false;
-  CodeGenTileLangAscend cg;
+  CodeGenTileLangAscend cg(platform);
   cg.Init(output_ssa);
 
   Array<String> function_names;
