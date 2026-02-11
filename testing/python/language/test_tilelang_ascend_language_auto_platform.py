@@ -52,8 +52,8 @@ class TestAutoPlatform(unittest.TestCase):
 
         torch.npu.is_available.return_value = False
 
-        # When NPU is not available, it should fallback to A2
-        self.assertEqual(determine_platform("auto"), "A2")
+        # When NPU is not available, it should fallback to A3
+        self.assertEqual(determine_platform("auto"), "A3")
 
 
 if __name__ == "__main__":
