@@ -2492,8 +2492,6 @@ void CodeGenTileLangNPUIRDEV::CreateHIVMBinaryVectorOp(const CallNode *op) {
   auto loc = builder.getUnknownLoc();
   mlir::Value newOpValue;
 
-  llvm::SmallVector<int64_t> elemShape(srcShape.begin(), srcShape.end());
-
   if constexpr (std::is_same_v<T, mlir::hivm::VCmpOp>) {
     mlir::hivm::CompareMode mode =
           COMPARE_MODE[op->args[3].as<StringImm>().value()->value];
