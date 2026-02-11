@@ -1,0 +1,14 @@
+# Target labels
+ project_libbacktrace
+# Source files and their labels
+/home/runner/work/tilelang-ascend/tilelang-ascend/_codeql_build_dir/tvm/CMakeFiles/project_libbacktrace
+/home/runner/work/tilelang-ascend/tilelang-ascend/_codeql_build_dir/tvm/CMakeFiles/project_libbacktrace.rule
+/home/runner/work/tilelang-ascend/tilelang-ascend/_codeql_build_dir/tvm/CMakeFiles/project_libbacktrace-complete.rule
+/home/runner/work/tilelang-ascend/tilelang-ascend/_codeql_build_dir/tvm/libbacktrace/src/project_libbacktrace-stamp/project_libbacktrace-build.rule
+/home/runner/work/tilelang-ascend/tilelang-ascend/_codeql_build_dir/tvm/libbacktrace/src/project_libbacktrace-stamp/project_libbacktrace-checkout.rule
+/home/runner/work/tilelang-ascend/tilelang-ascend/_codeql_build_dir/tvm/libbacktrace/src/project_libbacktrace-stamp/project_libbacktrace-configure.rule
+/home/runner/work/tilelang-ascend/tilelang-ascend/_codeql_build_dir/tvm/libbacktrace/src/project_libbacktrace-stamp/project_libbacktrace-download.rule
+/home/runner/work/tilelang-ascend/tilelang-ascend/_codeql_build_dir/tvm/libbacktrace/src/project_libbacktrace-stamp/project_libbacktrace-install.rule
+/home/runner/work/tilelang-ascend/tilelang-ascend/_codeql_build_dir/tvm/libbacktrace/src/project_libbacktrace-stamp/project_libbacktrace-mkdir.rule
+/home/runner/work/tilelang-ascend/tilelang-ascend/_codeql_build_dir/tvm/libbacktrace/src/project_libbacktrace-stamp/project_libbacktrace-patch.rule
+/home/runner/work/tilelang-ascend/tilelang-ascend/_codeql_build_dir/tvm/libbacktrace/src/project_libbacktrace-stamp/project_libbacktrace-update.rule

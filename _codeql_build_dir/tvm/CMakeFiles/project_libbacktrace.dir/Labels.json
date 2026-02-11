@@ -1,0 +1,46 @@
+{
+	"sources" : 
+	[
+		{
+			"file" : "/home/runner/work/tilelang-ascend/tilelang-ascend/_codeql_build_dir/tvm/CMakeFiles/project_libbacktrace"
+		},
+		{
+			"file" : "/home/runner/work/tilelang-ascend/tilelang-ascend/_codeql_build_dir/tvm/CMakeFiles/project_libbacktrace.rule"
+		},
+		{
+			"file" : "/home/runner/work/tilelang-ascend/tilelang-ascend/_codeql_build_dir/tvm/CMakeFiles/project_libbacktrace-complete.rule"
+		},
+		{
+			"file" : "/home/runner/work/tilelang-ascend/tilelang-ascend/_codeql_build_dir/tvm/libbacktrace/src/project_libbacktrace-stamp/project_libbacktrace-build.rule"
+		},
+		{
+			"file" : "/home/runner/work/tilelang-ascend/tilelang-ascend/_codeql_build_dir/tvm/libbacktrace/src/project_libbacktrace-stamp/project_libbacktrace-checkout.rule"
+		},
+		{
+			"file" : "/home/runner/work/tilelang-ascend/tilelang-ascend/_codeql_build_dir/tvm/libbacktrace/src/project_libbacktrace-stamp/project_libbacktrace-configure.rule"
+		},
+		{
+			"file" : "/home/runner/work/tilelang-ascend/tilelang-ascend/_codeql_build_dir/tvm/libbacktrace/src/project_libbacktrace-stamp/project_libbacktrace-download.rule"
+		},
+		{
+			"file" : "/home/runner/work/tilelang-ascend/tilelang-ascend/_codeql_build_dir/tvm/libbacktrace/src/project_libbacktrace-stamp/project_libbacktrace-install.rule"
+		},
+		{
+			"file" : "/home/runner/work/tilelang-ascend/tilelang-ascend/_codeql_build_dir/tvm/libbacktrace/src/project_libbacktrace-stamp/project_libbacktrace-mkdir.rule"
+		},
+		{
+			"file" : "/home/runner/work/tilelang-ascend/tilelang-ascend/_codeql_build_dir/tvm/libbacktrace/src/project_libbacktrace-stamp/project_libbacktrace-patch.rule"
+		},
+		{
+			"file" : "/home/runner/work/tilelang-ascend/tilelang-ascend/_codeql_build_dir/tvm/libbacktrace/src/project_libbacktrace-stamp/project_libbacktrace-update.rule"
+		}
+	],
+	"target" : 
+	{
+		"labels" : 
+		[
+			"project_libbacktrace"
+		],
+		"name" : "project_libbacktrace"
+	}
+}
