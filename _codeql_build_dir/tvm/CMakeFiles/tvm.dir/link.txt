@@ -1,1 +1,0 @@
-/home/runner/work/tilelang-ascend/.codeql-scratch/dbs/cpp/working/autobuild/bin/c++ -fPIC -std=c++17 -faligned-new -O2 -Wall -fPIC  -O3 -DNDEBUG -Wl,--no-undefined -Wl,--dependency-file=CMakeFiles/tvm.dir/link.d -shared -Wl,-soname,libtvm.so -o libtvm.so @CMakeFiles/tvm.dir/objects1.rsp  libbacktrace/lib/libbacktrace.a -ldl
