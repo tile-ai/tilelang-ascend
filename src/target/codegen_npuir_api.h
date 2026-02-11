@@ -265,11 +265,7 @@ private:
   mlir::Value GenSubviewFromRegion(const CallNode *region_node);
   mlir::Value GenSubviewFromRegion(Buffer buffer_data, Array<Range> range);
   // Similar to GenSubviewFromRegion but performs rank reduction by dropping
-  // static-1 dimensions from the slice sizes (Region extents). This is used to
-  // align src/dst ranks for Cube nd2nz/fixpipe/nz2nd codegen, where Region
-  // slices like 1xMxN conceptually map to 2D Cube tiles MxN.
-  // min_rank: minimum rank to preserve (default 0). When min_rank > 0, keeps
-  // leading static-1 dims as needed to satisfy the minimum rank requirement.
+  // static-1 dimensions from the slice sizes (Region extents).
   mlir::Value GenRankReducedSubviewFromRegion(Buffer buffer_data,
                                               Array<Range> range,
                                               int min_rank = 0);

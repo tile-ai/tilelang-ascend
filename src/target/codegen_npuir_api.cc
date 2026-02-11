@@ -892,8 +892,7 @@ static bool IsStaticIntOFR(mlir::OpFoldResult ofr, int64_t value) {
 }
 
 // Generate a rank-reduced memref.subview from a Buffer+Region, by dropping
-// static-1 dimensions from the Region extents. This mirrors the developer-mode
-// rank-reduction used by AscendCopy, and is needed so that 3D Region slices
+// static-1 dimensions from the Region extents, so that 3D Region slices
 // like 1xMxN can be safely consumed by 2D Cube nd2nz/fixpipe kernels.
 mlir::Value CodeGenTileLangNPUIRAPI::GenRankReducedSubviewFromRegion(
     Buffer buffer_data, Array<Range> range, int min_rank) {
@@ -944,8 +943,7 @@ mlir::Value CodeGenTileLangNPUIRAPI::GenRankReducedSubviewFromRegion(
   // Build projected reduced shape by dropping static-1 dims from slice sizes.
   // When min_rank > 0, keep leading static-1 dims as needed to satisfy the
   // minimum rank requirement. This ensures GM operands for Cube nd2nz/fixpipe
-  // maintain consistent rank (at least 2D) across all calls in the same function,
-  // preventing callee signature mismatches in convert-hivm-to-std.
+  // maintain consistent rank (2D) across all calls in the same function.
   
   // 1. Count non-static-1 dims
   int numNonStatic1 = 0;
