@@ -768,6 +768,11 @@ private:
         VisitStmt(op->body);
       }
 
+      void VisitStmt_(const BufferStoreNode* op) override {
+        result_.push_back(Evaluate(Call(DataType::Handle(), Op::Get("tl.ascend_auto_barrier"), {StringImm("PIPE_ALL")})));
+        result_.push_back(GetRef<Stmt>(op));
+      }
+
     private:
       std::vector<Stmt>& result_;
     };
