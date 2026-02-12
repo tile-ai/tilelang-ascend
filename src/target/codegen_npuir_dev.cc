@@ -1619,6 +1619,22 @@ void CodeGenTileLangNPUIRDEV::EmitCopyTensorToMemref(
     const SliceRange& srcR, const SliceRange& dstR,
     mlir::Location loc) {
   
+  auto srcTy = src.getType().cast<mlir::RankedTensorType>();
+  auto dstTy = dst.getType().cast<mlir::MemRefType>();
+
+  // Fast path: full-range on both sides with same shape, skip all slicing
+  if (OpFoldResultsAllZero(srcR.offs) &&
+      OpFoldResultsEqualStaticShape(srcR.sizes, srcTy.getShape()) &&
+      OpFoldResultsAllZero(dstR.offs) &&
+      OpFoldResultsEqualStaticShape(dstR.sizes, dstTy.getShape()) &&
+      srcTy.getShape() == dstTy.getShape()) {
+    mlir::Value casted = CreateCastIfTypeMismatch(src, dst);
+    auto matOp = builder.create<mlir::bufferization::MaterializeInDestinationOp>(
+        loc, casted, dst);
+    matOp.setWritable(true);
+    return;
+  }
+
   // 1) Canonicalize copy rank: drop static-1 dims
   CollapsedDims srcC = CollapseStaticOneDims(srcR.sizes);
   llvm::ArrayRef<mlir::OpFoldResult> copy_sizes = srcC.sizes;
@@ -1646,21 +1662,27 @@ void CodeGenTileLangNPUIRDEV::EmitCopyTensorToTensor(
     mlir::Value src, mlir::Value dst,
     const SliceRange& srcR, const SliceRange& dstR,
     mlir::Location loc) {
-  mlir::Value src_slice;
   auto srcTy = src.getType().cast<mlir::RankedTensorType>();
+  auto dstTy = dst.getType().cast<mlir::RankedTensorType>();
+
+  // Fast path: full-range on both sides with same shape
   if (OpFoldResultsAllZero(srcR.offs) &&
-      OpFoldResultsEqualStaticShape(srcR.sizes, srcTy.getShape())) {
-    src_slice = src;
-  } else {
-    src_slice = builder.create<mlir::tensor::ExtractSliceOp>(
-        loc, src, srcR.offs, srcR.sizes, srcR.strides).getResult();
+      OpFoldResultsEqualStaticShape(srcR.sizes, srcTy.getShape()) &&
+      OpFoldResultsAllZero(dstR.offs) &&
+      OpFoldResultsEqualStaticShape(dstR.sizes, dstTy.getShape()) &&
+      srcTy.getShape() == dstTy.getShape()) {
+    mlir::Value casted = CreateCastIfTypeMismatch(src, dst);
+    SetVarValue(npuirop.dst, casted);
+    return;
   }
 
-  // Use tensor.reshape instead of expand_shape/collapse_shape to avoid
-  // bufferization failures on tensors derived from strided memrefs.
-  mlir::Value reshaped_tensor = ReshapeTensorWithTensorReshape(src_slice, dstR.sizes);
+  // General path: rank-reducing extract_slice + insert_slice (no reshape needed)
+  // MLIR's extract_slice supports rank reduction, and insert_slice supports source rank < dest rank
+  CollapsedDims srcC = CollapseStaticOneDims(srcR.sizes);
+  mlir::Value src_slice = CreateRankReducedExtractSlice(
+      src, srcR.offs, srcR.sizes, srcR.strides, srcC.projected, loc);
 
-  mlir::Value casted_tensor = CreateCastIfTypeMismatch(reshaped_tensor, dst);
+  mlir::Value casted_tensor = CreateCastIfTypeMismatch(src_slice, dst);
 
   mlir::Value result = InsertSlice(
       casted_tensor, dst,
