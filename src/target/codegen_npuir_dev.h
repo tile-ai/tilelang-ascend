@@ -336,7 +336,7 @@ private:
       mlir::Location loc);
   bool IsStaticOneOFR(mlir::OpFoldResult ofr) const;
   // Collapse static-1 dims with an optional rank limit. When maxRank < 0,
-  // behaves like the original implementation that removes all static-1 dims.
+  // removes all static-1 dims.
   CollapsedDims CollapseStaticOneDims(
       llvm::ArrayRef<mlir::OpFoldResult> fullSizes,
       int64_t maxRank = -1);

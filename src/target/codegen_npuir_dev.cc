@@ -1384,7 +1384,7 @@ CodeGenTileLangNPUIRDEV::CollapseStaticOneDims(
   int64_t rank = static_cast<int64_t>(fullSizes.size());
   if (rank == 0) return out;
 
-  // Legacy behavior: remove all static-1 dims.
+  // Remove all static-1 dims.
   if (maxRank < 0) {
     for (unsigned i = 0; i < fullSizes.size(); ++i) {
       if (IsStaticOneOFR(fullSizes[i])) continue;
