@@ -1380,8 +1380,16 @@ CodeGenTileLangNPUIRDEV::CollapseStaticOneDims(
   out.projected.reserve(fullSizes.size());
   out.keptIdx.reserve(fullSizes.size());
 
+  // Only drop **leading** static-1 dims to avoid collapsing meaningful
+  // trailing unit dimensions (e.g. [64, 1] / [512, 1]).
+  bool stillLeading = true;
   for (unsigned i = 0; i < fullSizes.size(); ++i) {
-    if (IsStaticOneOFR(fullSizes[i])) continue;  // drop static 1
+    bool isOne = IsStaticOneOFR(fullSizes[i]);
+    if (stillLeading && isOne) {
+      // Skip leading static-1 dim
+      continue;
+    }
+    stillLeading = false;
     out.keptIdx.push_back(i);
     out.sizes.push_back(fullSizes[i]);
     if (auto attr = fullSizes[i].dyn_cast<mlir::Attribute>()) {
