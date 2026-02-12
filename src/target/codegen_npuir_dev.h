@@ -335,7 +335,11 @@ private:
       mlir::Type elem_type,
       mlir::Location loc);
   bool IsStaticOneOFR(mlir::OpFoldResult ofr) const;
-  CollapsedDims CollapseStaticOneDims(llvm::ArrayRef<mlir::OpFoldResult> fullSizes);
+  // Collapse static-1 dims with an optional rank limit. When maxRank < 0,
+  // behaves like the original implementation that removes all static-1 dims.
+  CollapsedDims CollapseStaticOneDims(
+      llvm::ArrayRef<mlir::OpFoldResult> fullSizes,
+      int64_t maxRank = -1);
   mlir::Value CreateRankReducedSubviewFromBaseRank(
       mlir::Value base,
       llvm::ArrayRef<mlir::OpFoldResult> fullOffsets,  // len == baseRank
