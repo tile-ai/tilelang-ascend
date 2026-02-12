@@ -528,7 +528,7 @@ private:
                 is_reused = true;
                 DLOG(DEBUG) << "  REUSED memory at offset: " << allocated_offset;
             } else {
-                DLOG(ERROR) << "Memory allocation failed for: " 
+                LOG(FATAL) << "Memory allocation failed for: " 
                             << interval.buffer->name_hint
                             << " required: " << interval.size
                             << ", new memory available: " << (memory_limit_ - next_new_offset_);
