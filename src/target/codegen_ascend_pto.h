@@ -85,6 +85,8 @@ private:
 
   void GemmV0Codegen(const CallNode *op);
 
+  void GemmV1Codegen(const CallNode *op);
+
   void PipeBarrierCodegen(const CallNode *op);
 
   void SetAndWaitFlagCodegen(const CallNode *op, const std::string &op_name);

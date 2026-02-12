@@ -487,6 +487,44 @@ std::map<std::string, std::string> extractTemplateParams(const std::string& inpu
     return result;
 }
 
+std::map<std::string, std::string> extractTemplateParams1(const std::string& input) {
+  std::map<std::string, std::string> result;
+  size_t start = input.find('<');
+  size_t end = input.rfind('>');
+
+  if (start == std::string::npos || end == std::string::npos || start >= end) {
+      return result;
+  }
+  std::string inner = input.substr(start + 1, end - start - 1);
+  std::vector<std::string> params;
+  std::stringstream ss(inner);
+  std::string param;
+  while (std::getline(ss, param, ',')) {
+      param.erase(0, param.find_first_not_of(" \t"));
+      param.erase(param.find_last_not_of(" \t") + 1);
+      params.push_back(param);
+  }
+  std::vector<std::string> paramNames = {
+      "data_type_input",
+      "data_type_output",
+      "L1_BLOCK_M",
+      "L1_BLOCK_N",
+      "L1_BLOCK_K",
+      "BLOCK_M",
+      "BLOCK_N",
+      "L1_BLOCK_K",
+      "transpose_A",
+      "transpose_B"
+  };
+  for (size_t i = 0; i < params.size() && i < paramNames.size(); ++i) {
+      result[paramNames[i]] = params[i];
+  }
+  for (size_t i = paramNames.size(); i < params.size(); ++i) {
+      result["extra_param_" + std::to_string(i - paramNames.size() + 1)] = params[i];
+  }
+  return result;
+}
+
 std::vector<std::string> extractShapeFromTemplate(const std::string& input) {
     std::vector<std::string> numbers;
     size_t start = input.find('<');
@@ -533,6 +571,8 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) 
     this->stream << "break;\n";
   } else if (op->op.same_as(tl::ascend_gemm_v0())) {
     GemmV0Codegen(op);
+  } else if (op->op.same_as(tl::ascend_gemm_v1())) {
+    GemmV1Codegen(op);
   } else if (op->op.same_as(tl::ascend_fill())) {
     FillCodegen(op);
   } else if (op->op.same_as(tl::ascend_exp())) {
@@ -658,7 +698,35 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) 
     BroadcastOpCodegen(op);
   } else if (op->op.same_as(tl::ascend_select())) {
     SelectCodegen(op);
-  }
+  } else if (op->op.same_as(builtin::if_then_else())) {
+      // conditional that skips eval if cond evals to false
+      std::string result = name_supply_->FreshName("condval");
+      std::string cond = PrintExpr(op->args[0]);
+      this->PrintIndent();
+      PrintType(op->dtype, this->stream);
+      this->stream << " " << result << ";\n";
+      this->PrintIndent();
+      this->stream << "if (" << cond << ") {\n";
+      {
+        int then_scope = this->BeginScope();
+        std::string true_val = PrintExpr(op->args[1]);
+        this->PrintIndent();
+        this->stream << result << " = " << true_val << ";\n";
+        this->EndScope(then_scope);
+        this->PrintIndent();
+        this->stream << "} else {\n";
+      }
+      {
+        int else_scope = this->BeginScope();
+        std::string false_val = PrintExpr(op->args[2]);
+        this->PrintIndent();
+        this->stream << result << " = " << false_val << ";\n";
+        this->EndScope(else_scope);
+        this->PrintIndent();
+        this->stream << "}\n";
+      }
+      os << result;
+    }
 }
 
 std::string CodeGenTileLangAscendPto::PrintBufferOffset(const CallNode *op) {
@@ -1045,6 +1113,60 @@ void CodeGenTileLangAscendPto::GemmV0Codegen(const CallNode *op) {
     << "(" << a_name << ", " << b_name << ", " << c_name << ", " << PrintExpr(op->args[4]) << ");\n";
   }
 
+}
+
+void CodeGenTileLangAscendPto::GemmV1Codegen(const CallNode *op) {
+  std::string op_name = Downcast<StringImm>(op->args[0])->value;
+  this->PrintIndent();
+  auto a_var = op->args[1].as<CallNode>()->args[1].as<VarNode>();
+  auto b_var = op->args[2].as<CallNode>()->args[1].as<VarNode>();
+  auto c_var = op->args[3].as<CallNode>()->args[1].as<VarNode>();
+  
+  auto a_offset = PrintExpr(op->args[1].as<CallNode>()->args[2]);
+  auto b_offset = PrintExpr(op->args[2].as<CallNode>()->args[2]);
+  auto c_offset = PrintExpr(op->args[3].as<CallNode>()->args[2]);
+  
+  auto a_name = var_idmap_[a_var];
+  auto b_name = var_idmap_[b_var];
+  auto c_name = var_idmap_[c_var];
+
+  std::map<std::string, std::string> params = extractTemplateParams1(op_name);
+  if (prefetch_n_stages_map_[a_name].first > 0) {
+    auto a_k = op->args[1].as<CallNode>()->args[2] / op->args[1].as<CallNode>()->args[3];
+    tvm::arith::Analyzer analyzer;
+    PrimExpr simplified_a_k = analyzer.Simplify(a_k);
+    auto b_k = op->args[2].as<CallNode>()->args[2] / op->args[2].as<CallNode>()->args[3];
+    PrimExpr simplified_b_k = analyzer.Simplify(b_k);    
+    std::string data_type_input = params["data_type_input"];
+    this->stream << kAscendPtoScope << "gemm_v1" << "<" 
+      << params["data_type_input"] << ", " << params["data_type_output"] << ", "
+      << GetValidShape(std::stoi(params["L1_BLOCK_M"]), data_type_input) << ", "
+      << GetValidShape(std::stoi(params["L1_BLOCK_N"]), data_type_input) << ", "
+      << GetValidShape(std::stoi(params["L1_BLOCK_K"]), data_type_input) << ", "
+      << GetValidShape(std::stoi(params["BLOCK_M"]), data_type_input) << ", "
+      << GetValidShape(std::stoi(params["BLOCK_N"]), data_type_input) << ", "
+      << GetValidShape(std::stoi(params["L1_BLOCK_K"]), data_type_input) << ", "
+      << params["L1_BLOCK_M"] << ", " << params["L1_BLOCK_N"] << ", " << params["L1_BLOCK_K"] << ", "
+      << params["BLOCK_M"] << ", " << params["BLOCK_N"] << ", " << params["L1_BLOCK_K"] << ", "
+      << params["transpose_A"] << ", " << params["transpose_B"] << ">"
+      << "(" << a_name << "[" << simplified_a_k << "], " 
+      << b_name << "[" << simplified_a_k << "], " 
+      << c_name << ", " << PrintExpr(op->args[4]) << ");\n";
+  } else {
+    std::string data_type_input = params["data_type_input"];
+    this->stream << kAscendPtoScope << "gemm_v1" << "<" 
+      << params["data_type_input"] << ", " << params["data_type_output"] << ", "
+      << GetValidShape(std::stoi(params["L1_BLOCK_M"]), data_type_input) << ", "
+      << GetValidShape(std::stoi(params["L1_BLOCK_N"]), data_type_input) << ", "
+      << GetValidShape(std::stoi(params["L1_BLOCK_K"]), data_type_input) << ", "
+      << GetValidShape(std::stoi(params["BLOCK_M"]), data_type_input) << ", "
+      << GetValidShape(std::stoi(params["BLOCK_N"]), data_type_input) << ", "
+      << GetValidShape(std::stoi(params["L1_BLOCK_K"]), data_type_input) << ", "
+      << params["L1_BLOCK_M"] << ", " << params["L1_BLOCK_N"] << ", " << params["L1_BLOCK_K"] << ", "
+      << params["BLOCK_M"] << ", " << params["BLOCK_N"] << ", " << params["L1_BLOCK_K"] << ", "
+      << params["transpose_A"] << ", " << params["transpose_B"] << ">"
+      << "(" << a_name << ", " << b_name << ", " << c_name << ", " << PrintExpr(op->args[4]) << ");\n";
+  }
 }
 
 void CodeGenTileLangAscendPto::PipeBarrierCodegen(const CallNode *op) {
@@ -1473,25 +1595,24 @@ void CodeGenTileLangAscendPto::BroadcastOpCodegen(const CallNode *op) {
   }
 }
 
-std::string findValueIfKeyContains(const std::map<std::string, std::string>& myMap,
-                                   const std::string& inputKey) {
-    auto it = std::find_if(myMap.begin(), myMap.end(),
-        [&inputKey](const auto& pair) {
-            return inputKey.find(pair.first) != std::string::npos;
-        });
-    if (it != myMap.end()) {
-        return it->second;
-    }
-    return "";
-}
-
 std::string getValueOrProcess(const std::map<std::string, std::string>& myMap,
                              const std::string& key) {
     auto it = myMap.find(key);
     if (it != myMap.end()) {
         return it->second;
     } else {
-        return findValueIfKeyContains(myMap, key);
+        std::string bestMatchValue = "";
+        size_t bestMatchLength = 0;
+        for (const auto& pair : myMap) {
+        size_t pos = key.find(pair.first);
+        if (pos != std::string::npos) {
+            if (pair.first.length() > bestMatchLength) {
+                bestMatchLength = pair.first.length();
+                bestMatchValue = pair.second;
+            }
+        }
+    }
+      return bestMatchValue;
     }
 }
 
@@ -1530,46 +1651,74 @@ void CodeGenTileLangAscendPto::BinaryVecOpsCodegen(const CallNode *op,
   bool is_call = op->args[2].as<CallNode>() != nullptr;
   if (op->args[2].as<CallNode>() || IsComplexExpression(op->args[2])) {
     std::string index = PrintExpr(op->args[op->args.size() - 2]);
-    std::string offset = PrintExpr(op->args[0].as<CallNode>()->args[2]);
-    std::string ub_name = var_names[1];
-    auto& ub_metadata = ub_data_map_[ub_name];
  
     bool is_call = (op->args[2].as<CallNode>() != nullptr);
     std::string scalar_expr = is_call ? (PrintBufferOffset(op->args[2].as<CallNode>()) + ".GetValue(" + index + ")") : index;
     std::string scalar_name = is_call ? (PrintBufferOffset(op->args[2].as<CallNode>()) + "_scalar") : "scalar";
- 
+    this->PrintIndent();
     this->stream << "pipe_barrier(PIPE_ALL);\n";
     this->PrintIndent();
     this->stream << "auto " << scalar_name << " = " << scalar_expr << ";\n";
+    this->PrintIndent();
     this->stream << "pipe_barrier(PIPE_ALL);\n";
+
+    std::string dst_ub_name = var_names[0];
+    std::string src_ub_name = var_names[1];
+
+    std::vector<std::string> dst_vector = ub_data_map_[dst_ub_name];
+    std::vector<std::string> src_vector = ub_data_map_[src_ub_name];
+
+    std::string dst_offset = PrintExpr(op->args[0].as<CallNode>()->args[2]);
+    std::string src_offset = PrintExpr(op->args[1].as<CallNode>()->args[2]);
  
+    std::string var_name_temp_dst = dst_ub_name + "_temp";
+    std::string var_name_temp_src = src_ub_name + "_temp";
+ 
+    std::string dst_addr = dst_vector[3];
+    std::string src_addr = src_vector[3];
+ 
+    std::string ub_data_type = dst_vector[0];
     std::string loop_num = getValueOrProcess(for_num_map_, index);
-    int32_t total_elements = std::stoi(ub_metadata[1]) * std::stoi(ub_metadata[2]);
-    int32_t ub_data_temp_col = total_elements / std::stoi(loop_num);
  
     std::string final_op_name = operation;
     std::string applied_scalar = (op_name == "TSUBS") ? ("-" + scalar_name) : scalar_name;
  
     this->PrintIndent();
-    if (is_call) {
-      this->stream << kAscendPtoScope << "binarys_tile<" << kAscendPtoScope << "BinaryOps::" << final_op_name 
-      << ", " << ub_metadata[0] << ", " << ub_data_temp_col << ">("
-      << ub_metadata[3] << ", " << offset << ", " << GetTypeLenString(ub_metadata[0]) 
-      << ", " << applied_scalar << ");\n";
+    if (loop_num >= "0" && loop_num <= "9") {
+      int32_t ub_data_temp_col_dst = std::stoi(dst_vector[2]);
+      int32_t ub_data_temp_col_src = std::stoi(src_vector[2]);
+      if (dst_offset != "0") {
+          ub_data_temp_col_dst = std::stoi(dst_vector[2]) * std::stoi(dst_vector[1]) / std::stoi(loop_num);
+      }
+      if (src_offset != "0") {
+          ub_data_temp_col_src = std::stoi(src_vector[2]) * std::stoi(src_vector[1]) / std::stoi(loop_num);
+      }
+      if (is_call) {
+        this->stream << kAscendPtoScope << "binarys_tile<" << kAscendPtoScope << "BinaryOps::" << final_op_name 
+        << ", " << ub_data_type << ", " << ub_data_temp_col_dst << ", " << ub_data_temp_col_src << ">("
+        << dst_addr << ", " << src_addr << ", " << dst_offset << ", " << src_offset << ", " << GetTypeLenString(ub_data_type) 
+        << ", " << applied_scalar << ");\n";
+      } else {
+        this->PrintIndent();
+        this->stream << kAscendPtoScope << "TileUbDataND<" << ub_data_type << ", 1, "
+        << ub_data_temp_col_dst << ", 1, " << ub_data_temp_col_dst << "> " << var_name_temp_dst << ";\n";
+        this->PrintIndent();
+        this->stream << "TASSIGN(" << var_name_temp_dst << ", " << dst_addr << " + " <<
+        dst_offset << " * " << GetTypeLenString(ub_data_type) << ");\n";
+        if (dst_ub_name != src_ub_name) {
+          this->PrintIndent();
+          this->stream << kAscendPtoScope << "TileUbDataND<" << ub_data_type << ", 1, "
+          << ub_data_temp_col_src << ", 1, " << ub_data_temp_col_src << "> " << var_name_temp_src << ";\n";
+          this->PrintIndent();
+          this->stream << "TASSIGN(" << var_name_temp_src << ", " << src_addr << " + " <<
+          src_offset << " * " << GetTypeLenString(ub_data_type) << ");\n";
+        }
+        this->stream << final_op_name << "(" << var_name_temp_dst << ", " << var_name_temp_src << ", " << applied_scalar << ");\n";
+      } 
     } else {
-      std::string var_name_temp = ub_name + "_temp";
-      this->stream << kAscendPtoScope << "TileUbDataND<" << ub_metadata[0] << ", 1, "
-      << ub_data_temp_col << ", 1, " << ub_data_temp_col << "> " << var_name_temp << ";\n";
-      this->PrintIndent();
-      this->stream << "TASSIGN(" << var_name_temp << ", " << ub_metadata[3] << " + " 
-      << offset << " * " << GetTypeLenString(ub_metadata[0]) << ");\n";
-      this->PrintIndent();
-      this->stream << "pipe_barrier(PIPE_ALL);\n";
-      this->PrintIndent();
-      this->stream << final_op_name << "(" << var_name_temp << ", " << var_name_temp << ", " << applied_scalar << ");\n";
+        this->stream << operation << "(" << var_names[0] << ", " << var_names[1] << ", " << applied_scalar << ");\n";
     }
-  }
-  else {
+  } else {
     this->PrintIndent();
     this->stream << operation << "(";
     for (size_t i = 0; i < var_names.size(); ++i) {
