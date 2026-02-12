@@ -34,7 +34,7 @@ def matmul(M, N, K, block_M, block_N, K_L1, dtype="float16", accum_dtype="float"
             B: T.Tensor((K, N), dtype),
             C: T.Tensor((M, N), dtype),
     ):
-        with T.Kernel(m_num * n_num, is_npu=True) as (cid, _):
+        with T.Kernel(m_num * n_num, threads=2, is_npu=True) as (cid):
             bx = cid // n_num
             by = cid % n_num
 

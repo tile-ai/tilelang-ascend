@@ -147,7 +147,7 @@ def sparse_attention_fwd(
                 T.copy(Indices[b_i, s_i, g_i, i_i * BI:i_i * BI + BI], indices_ub_)
 
                 for bi_i in range(BI // 2):
-                    T.copy(KV[b_i, indices_ub_[bi_i + vid * BI // 2], g_i, :], kv_ub)
+                    T.copy(KV[b_i, indices_ub_[bi_i + vid * BI // 2], g_i, :D], kv_ub)
                     T.copy(KV[b_i, indices_ub_[bi_i + vid * BI // 2], g_i, D:], kv_tail_ub)
                     T.copy(kv_ub, workspace_1[cid, bi_i + vid * BI // 2, :])
                     T.copy(kv_tail_ub, workspace_2[cid, bi_i + vid * BI // 2, :])
