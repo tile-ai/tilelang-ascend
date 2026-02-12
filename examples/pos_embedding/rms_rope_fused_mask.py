@@ -32,6 +32,8 @@ def rms_rope_fused(
         x: T.Tensor((M, head_dim), dtype),  # type: ignore
         sin: T.Tensor([batch_size, rope_dim], dtype),  # type: ignore
         cos: T.Tensor([batch_size, rope_dim], dtype),  # type: ignore
+        mask: T.Tensor([row_per_vec, rope_dim], MASK_DTYPE),  # type: ignore
+        sin_mask: T.Tensor([rope_dim], ACC_DTYPE),  # type: ignore
         out: T.Tensor((M, head_dim), dtype),  # type: ignore
     ):
         with T.Kernel(m_num, is_npu=True) as (cid, vid):
@@ -53,6 +55,8 @@ def rms_rope_fused(
             cos_block_ub = T.alloc_shared([row_per_vec, rope_dim], ACC_DTYPE)
             sin_cos_half_ub = T.alloc_shared([1, rope_dim], dtype)
 
+            mask_ub = T.alloc_shared([row_per_vec, rope_dim], MASK_DTYPE)
+            sin_mask_ub = T.alloc_shared(rope_dim, ACC_DTYPE)
             tmp_ub2 = T.alloc_shared(row_per_vec * rope_dim, TMP_DTYPE)
 
             rope_rotate_ub = T.alloc_shared([row_per_vec, rope_dim], ACC_DTYPE)
@@ -83,19 +87,9 @@ def rms_rope_fused(
             T.copy(cos[row_sin_cos, :], sin_cos_half_ub[0, :])
             T.copy(sin_cos_half_ub, cos_ub)
 
-            ## set mask: gm -> ub
-            mask_ub = T.alloc_ub([row_per_vec, rope_dim], MASK_DTYPE)
-            for i in T.serial(row_per_vec):
-                for j in T.serial(rope_dim // 2):
-                    offset_base = i * rope_dim
-                    mask_ub[i, 2 * j] = 4 * (offset_base + (2 * j + 1))
-                    mask_ub[i, 2 * j + 1] = 4 * (offset_base + 2 * j)
-                    
-            sin_mask_ub = T.alloc_ub(rope_dim, ACC_DTYPE)
-            T.tile.fill(sin_mask_ub, 1.0)
-            for i in T.serial(0, rope_dim):
-                if i % 2 == 0:
-                    sin_mask_ub[i] = -1.0
+            ## copy mask: gm -> ub
+            T.copy(mask, mask_ub)
+            T.copy(sin_mask, sin_mask_ub)
             T.tile.mul(sin_ub[0, :], sin_ub[0, :], sin_mask_ub)
 
             ## broadcast sin/cos: [1, rope_dim] -> [row_per_vec, rope_dim]
@@ -134,14 +128,26 @@ def tilelang_rms_rope_fused(q, sin, cos, eps):
     total_batch = batch_size * head_num
     block_M = 16
 
+    # generate mask
+    idx = torch.arange(rope_dim * (block_M // 2), dtype=torch.int64, device="cpu")
+    mask = torch.empty(rope_dim * (block_M // 2), dtype=torch.uint32, device="cpu")
+    mask[0::2] = idx[1::2].to(torch.uint32)
+    mask[1::2] = idx[0::2].to(torch.uint32)
+    mask = mask * 4
+
+    # generate sin_mask
+    sin_mask = torch.ones(rope_dim, dtype=torch.float32, device=device)
+    sin_mask[0::2] = -1
+
     q = q.to(device)
     sin = sin.to(device)
     cos = cos.to(device)
+    mask = mask.to(device)
 
     kernel = rms_rope_fused(
         total_batch, block_M, batch_size, head_dim, rope_dim, head_num, eps
     )
-    q_out = kernel(q, sin, cos)
+    q_out = kernel(q, sin, cos, mask, sin_mask)
 
     return q_out.view(org_shape)
 
