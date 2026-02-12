@@ -220,6 +220,8 @@ private:
   std::vector<std::string> para_;
 
   std::string block_id_;
+  // cv ratio in vid reduce mode
+  std::string cv_ratio_;
 
   Map<Var, PrimExpr> address_map_;
 
@@ -229,8 +231,6 @@ private:
   Map<String, PrimExpr> address_offset_;
 
   bool use_swizzle_{false};
-
-  std::string cv_ratio_;
 };
 
 } // namespace codegen

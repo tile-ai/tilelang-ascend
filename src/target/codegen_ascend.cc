@@ -781,8 +781,6 @@ void CodeGenTileLangAscend::PreFunctionBody(const PrimFunc &f) {
   this->PrintIndent();
   if (cv_ratio_ == cv_1_1) {
     stream << "KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_MIX_AIC_1_1);\n";
-  } else if (cv_ratio_ == cv_1_2) {
-    stream << "KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_MIX_AIC_1_2);\n";
   } else {
     stream << "KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_MIX_AIC_1_2);\n";
   }
