@@ -129,7 +129,7 @@ def tilelang_apply_rope_partial_in_place(x, sin, cos):
     return x.view(org_shape)
 
 
-def torch_rope_ref(x, cos, sin):
+def torch_rope_ref(x, sin, cos):
     # x: [batch, head, dim]
     # cos, sin: [batch, dim] (broadcast over head)
 
@@ -184,7 +184,7 @@ if __name__ == "__main__":
     x_ref = x.clone()
     x_part = x_ref[..., dim_start:]
     x_part_out = torch_rope_ref(
-        x_part.to(torch.float32), cos.to(torch.float32), sin.to(torch.float32)
+        x_part.to(torch.float32), sin.to(torch.float32), cos.to(torch.float32)
     )
     x_ref[..., dim_start:] = x_part_out
 
