@@ -1609,57 +1609,12 @@ CodeGenTileLangNPUIRDEV::ComputeUBAllocShapeFromDstRange(
     }
   }
 
-  // Mirror the rank-aware collapse policy at the int64_t level:
-  // drop up to (rank - maxRank) static-1 dims according to the same
-  // leading/middle/trailing priority. For UB alloc we typically want
-  // to keep the canonical rank as small as possible but at least 1.
-  int64_t maxRank = rank;
-  if (maxRank < 1) maxRank = 1;
-  int64_t numToRemove = rank - maxRank;
-
-  llvm::SmallVector<bool> isOne(rank, false);
-  int64_t nonOneCount = 0;
-  int64_t firstNonOne = -1, lastNonOne = -1;
-  for (int64_t i = 0; i < rank; ++i) {
-    bool is1 = (full_shape[i] == 1);
-    isOne[i] = is1;
-    if (!is1) {
-      if (firstNonOne < 0) firstNonOne = i;
-      lastNonOne = i;
-      ++nonOneCount;
-    }
-  }
-
-  llvm::SmallVector<bool> removeFlags(rank, false);
-  auto removeByRange = [&](int64_t start, int64_t end, int64_t& remaining) {
-    for (int64_t i = start; i <= end && remaining > 0; ++i) {
-      if (i < 0 || i >= rank) continue;
-      if (!isOne[i]) continue;
-      removeFlags[i] = true;
-      --remaining;
-    }
-  };
-
-  int64_t remaining = numToRemove;
-  if (remaining > 0 && firstNonOne > 0) {
-    // Leading 1s
-    removeByRange(0, firstNonOne - 1, remaining);
-  }
-  if (remaining > 0 && firstNonOne >= 0 && lastNonOne >= 0 &&
-      lastNonOne - firstNonOne > 1) {
-    // Middle 1s
-    removeByRange(firstNonOne + 1, lastNonOne - 1, remaining);
-  }
-  if (remaining > 0 && lastNonOne >= 0 && lastNonOne < rank - 1) {
-    // Trailing 1s
-    removeByRange(lastNonOne + 1, rank - 1, remaining);
-  }
-
   llvm::SmallVector<int64_t> ub_alloc_shape;
   ub_alloc_shape.reserve(rank);
-  for (int64_t i = 0; i < rank; ++i) {
-    if (removeFlags[i]) continue;
-    ub_alloc_shape.push_back(full_shape[i]);
+  // UB alloc should be compact: drop ALL static-1 dims.
+  for (int64_t d : full_shape) {
+    if (d == 1) continue;
+    ub_alloc_shape.push_back(d);
   }
   if (ub_alloc_shape.empty()) ub_alloc_shape.push_back(1);
   return ub_alloc_shape;
