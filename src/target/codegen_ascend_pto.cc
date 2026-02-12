@@ -727,11 +727,6 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) 
       }
       os << result;
     }
-  } else if (op->op.same_as(tl::ascend_dump_tensor())) {
-    DumpTensorCodegen(op, "TPRINT");
-  } else if (op->op.same_as(tl::ascend_printf())) {
-    PrintfOpCodegen(op, "cce::printf");
-  }
 }
 
 std::string CodeGenTileLangAscendPto::PrintBufferOffset(const CallNode *op) {
@@ -1374,27 +1369,7 @@ void CodeGenTileLangAscendPto::ArithProgressionCodegen(const CallNode *op,
   this->stream << "TCI<decltype(" << buffer_name << "), " << dtype
                << ", /*descending=*/" << descending << ">("
                << buffer_name << ", " << first_value << ");\n";
-}
-
-void CodeGenTileLangAscendPto::PrintfOpCodegen(const CallNode *op,
-                                            const std::string &op_name) {
-  this->PrintIndent();
-  this->stream << op_name << "(";
-  for (size_t i = 0; i < op->args.size(); ++i) {
-    if (i > 0) {
-      this->stream << ", ";
-    }
-      this->stream << PrintExpr(op->args[i]);
-  }
-  this->stream << ");\n";
-}
-
-void CodeGenTileLangAscendPto::DumpTensorCodegen(const CallNode *op, const std::string &op_name) {
-  this->PrintIndent();
-  this->stream << "TPRINT" << "(";
-  this->stream << PrintBufferOffset(op->args[0].as<CallNode>());
-  this->stream << ");\n";
-}
+}                                            
 
 void CodeGenTileLangAscendPto::BinaryVecOpCodegen(const CallNode *op,
                                                const std::string &op_name) {
