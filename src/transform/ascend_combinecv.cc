@@ -457,7 +457,7 @@ public:
         }
         // judgement 2
         int32_t judge2 = -1;
-        for (int i = 1; i < call_node_->args.size(); i++) {
+        for (int i = 0; i < call_node_->args.size(); i++) {
             if (auto inter_node = call_node_->args[i].as<CallNode>()) {
                 auto buf_name = Downcast<Var>(inter_node->args[1]);
                 judge2 = checkBufferScope(buf_name);

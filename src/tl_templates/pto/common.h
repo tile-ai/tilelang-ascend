@@ -102,6 +102,61 @@ AICORE PTO_INLINE void gemm_v0(
     wait_flag(PIPE_MTE1, PIPE_MTE2, war_event_id);
 }
 
+template <typename T1, typename T2, uint32_t L1_BLOCK_M, uint32_t L1_BLOCK_N, uint32_t L1_BLOCK_K, uint32_t BLOCK_M, uint32_t BLOCK_N, uint32_t BLOCK_K,
+          uint32_t validL1_BM = L1_BLOCK_M, uint32_t validL1_BN = L1_BLOCK_N, uint32_t validL1_BK = L1_BLOCK_K,
+          uint32_t validBM = BLOCK_M, uint32_t validBN = BLOCK_N, uint32_t validBK = BLOCK_K,
+          bool transpose_A = false, bool transpose_B = false>
+AICORE PTO_INLINE void gemm_v1(
+    std::conditional_t<transpose_A,
+        TileMatL1<T1, L1_BLOCK_K, L1_BLOCK_M, validL1_BK, validL1_BM>,
+        TileMatL1<T1, L1_BLOCK_M, L1_BLOCK_K, validL1_BM, validL1_BK>>& A,
+    std::conditional_t<transpose_B,
+        TileMatL1<T1, BLOCK_N, L1_BLOCK_K, validBN, validL1_BK>,
+        TileMatL1<T1, L1_BLOCK_K, BLOCK_N, validL1_BK, validBN>>& B,
+    pto::TileAcc<T2, BLOCK_M, BLOCK_N, validBM, validBN>& C,
+    bool clear) {
+
+    pto::TileLeft<T1, L1_BLOCK_M, L1_BLOCK_K> l0a;
+    pto::TASSIGN(l0a, 0x0);
+    pto::TileRight<T1, L1_BLOCK_K, BLOCK_N> l0b;
+    pto::TASSIGN(l0b, 0x0);
+
+    set_flag(PIPE_MTE2, PIPE_MTE1, EVENT_ID0);
+    wait_flag(PIPE_MTE2, PIPE_MTE1, EVENT_ID0);
+
+    /**
+     * Added synchronization logic: Write-After-Read (WAR) protection
+     * Objective: Prevent MTE1 (data transfer) from overwriting L0 before M (Cube) completes processing the previous round of data
+     * TODO: Support Ping-Pong buffer.
+    */
+    auto war_event_id = (event_t)((int)EVENT_ID0 + 1);
+    set_flag(PIPE_M, PIPE_MTE1, war_event_id);
+    wait_flag(PIPE_M, PIPE_MTE1, war_event_id);
+
+    if constexpr (!transpose_A) {
+        pto::TEXTRACT(l0a, A, 0, 0);
+    } else {  // transpose A
+        TileMatL1ZN<T1, L1_BLOCK_M, L1_BLOCK_K, validL1_BM, validL1_BK> A_t;
+        pto::TRESHAPE(A_t, A);
+        pto::TEXTRACT(l0a, A_t, 0, 0);
+    }
+    if constexpr (!transpose_B) {
+        pto::TEXTRACT(l0b, B, 0, 0);
+    } else {  // transpose B
+        TileMatL1ZN<T1, L1_BLOCK_K, BLOCK_N, validL1_BK, validBN> B_t;
+        pto::TRESHAPE(B_t, B);
+        pto::TEXTRACT(l0b, B_t, 0, 0);
+    }
+
+    set_flag(PIPE_MTE1, PIPE_M, EVENT_ID0);
+    wait_flag(PIPE_MTE1, PIPE_M, EVENT_ID0);
+
+    if (clear) {
+        pto::TMATMUL(C, l0a, l0b);
+    } else {
+        pto::TMATMUL_ACC(C, C, l0a, l0b);
+    }
+}
 
 template <typename T1, typename T2, int32_t shape1, int32_t shape2, int32_t shape3,
         int32_t shape4, int32_t shape5, int32_t stride1, int32_t stride2,
@@ -442,23 +497,25 @@ enum class BinaryOps {
     TMINS
 };
 
-template <BinaryOps Op, typename T, int32_t shape>
-AICORE PTO_INLINE void binarys_tile(int32_t addr,
-                int32_t offset, int32_t len, T scalar_value) {
-    TileUbDataND<T, 1, shape, 1, shape> temp_ub;
-    pto::TASSIGN(temp_ub, addr + offset * len);
+template <BinaryOps Op, typename T, int32_t dst_shape, int32_t src_shape>
+AICORE PTO_INLINE void binarys_tile(int32_t dst_addr, int32_t src_addr,
+                int32_t dst_offset, int32_t src_offset, int32_t len, T scalar_value) {
+    TileUbDataND<T, 1, dst_shape, 1, dst_shape> dst_temp_ub;
+    pto::TASSIGN(dst_temp_ub, dst_addr + dst_offset * len);
+    TileUbDataND<T, 1, src_shape, 1, src_shape> src_temp_ub;
+    pto::TASSIGN(src_temp_ub, src_addr + src_offset * len);
     if constexpr (Op == BinaryOps::TADDS) {
-        pto::TADDS(temp_ub, temp_ub, scalar_value);
+        pto::TADDS(dst_temp_ub, src_temp_ub, scalar_value);
     } else if constexpr (Op == BinaryOps::TSUBS) {
-        pto::TSUBS(temp_ub, temp_ub, scalar_value);
+        pto::TSUBS(dst_temp_ub, src_temp_ub, scalar_value);
     } else if constexpr (Op == BinaryOps::TMULS) {
-        pto::TMULS(temp_ub, temp_ub, scalar_value);
+        pto::TMULS(dst_temp_ub, src_temp_ub, scalar_value);
     } else if constexpr (Op == BinaryOps::TDIVS) {
-        pto::TDIVS(temp_ub, temp_ub, scalar_value);
+        pto::TDIVS(dst_temp_ub, src_temp_ub, scalar_value);
     } else if constexpr (Op == BinaryOps::TMAXS) {
-        pto::TMAXS(temp_ub, temp_ub, scalar_value);
+        pto::TMAXS(dst_temp_ub, src_temp_ub, scalar_value);
     } else if constexpr (Op == BinaryOps::TMINS) {
-        pto::TMINS(temp_ub, temp_ub, scalar_value);
+        pto::TMINS(dst_temp_ub, src_temp_ub, scalar_value);
     }
 }
 
