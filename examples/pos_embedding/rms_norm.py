@@ -59,35 +59,51 @@ def rms_norm(M, head_dim, block_M, eps, dtype="float16"):
     return main
 
 
-def rms_norm_reference(q, head_dim, eps):
+def tilelang_q_rms(
+    q,  # bs, 64, 512
+    variance_epsilon,
+):
+    bs, head_num, dim = q.shape
+    total_batch = bs * head_num
+    q = q.view(total_batch, dim)
+
+    block_M = 16
+
+    func = rms_norm(total_batch, dim, block_M, variance_epsilon)
+    q_out = func(q)
+
+    return q_out.view(bs, head_num, dim)
+
+
+def rms_norm_reference(q, variance_epsilon):
+
+    bs, head_num, dim = q.shape
+    total_batch = bs * head_num
+    q = q.view(total_batch, dim)
+
     q_fp32 = q.float()
+
     sum_squares = torch.sum(q_fp32 * q_fp32, dim=-1, keepdim=True)
-    mean_square = sum_squares / float(head_dim)
-    rstd = torch.sqrt(mean_square + eps)
+
+    mean_square = sum_squares / float(dim)
+
+    rstd = torch.sqrt(mean_square + variance_epsilon)
+
     q_fp32_reload = q.float()
+
     q_normalized_fp32 = q_fp32_reload / rstd
-    return q_normalized_fp32.half()
+
+    return q_normalized_fp32.half().view(bs, head_num, dim)
 
 
 if __name__ == "__main__":
     torch.manual_seed(0)
-    eps = 1e-6
-    block_M = 16
+    variance_epsilon = 1e-6
 
-    q_original = torch.randn(16, 64, 512, dtype=torch.float16).npu()
-    if q_original.dim() == 2:
-        batch_size, head_dim = q_original.shape
-        head_num = 1
-    elif q_original.dim() == 3:
-        batch_size, head_num, head_dim = q_original.shape
-        q = q_original.view(-1, head_dim)
+    q = torch.randn(16, 64, 512, dtype=torch.float16).npu()  # bs, head_num, dim
 
-    total_batch = batch_size * head_num
-
-    func = rms_norm(total_batch, head_dim, block_M, eps)
-    q_out = func(q)
-
-    ref_q = rms_norm_reference(q, head_dim, eps)
+    q_out = tilelang_q_rms(q, variance_epsilon)
+    ref_q = rms_norm_reference(q, variance_epsilon)
 
     torch.testing.assert_close(q_out.cpu(), ref_q.cpu(), rtol=1e-2, atol=1e-2)
     print("Kernel Output Match!")
