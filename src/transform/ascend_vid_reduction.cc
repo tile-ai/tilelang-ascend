@@ -39,10 +39,13 @@ private:
 
   Var vid_;
 
+  // The vector number takes the value 2 when cid:vid = 1:2 in vid elimination mode
   int threads_cnt_ = 1;
 
+  // Store the original map and the modified map
   std::unordered_map<Buffer, Buffer, ObjectPtrHash, ObjectPtrEqual> origin_to_new_buffer_;
 
+  // Determine if it is a ub buffer
   bool IsUbBuffer(const Buffer& buffer) const {
     if (buffer->data->type_annotation.defined()) {
       if (const auto* ptr_type = buffer->data->type_annotation.as<PointerTypeNode>()) {
@@ -52,6 +55,7 @@ private:
     return false;
   }
 
+  // Modify buffer shape
   Buffer ModifyBufferShape(const Buffer& buffer) {
     if (buffer->shape.empty()) {
       return buffer;
@@ -69,29 +73,23 @@ private:
     }
     Array<PrimExpr> new_extents;
 
-    for (size_t i=0; i < extents.size(); i++) {
+    for (size_t i = 0; i < extents.size(); i++) {
       if (i == 0) {
+        // First dimension divided by 2
         PrimExpr first_extent = analyzer_->Simplify(extents[i]);
         if (const IntImmNode* int_imm = first_extent.as<IntImmNode>()) {
+          // Handle constants
           int64_t new_value = int_imm->value / 2;
           if (new_value < 1) {
             new_value = 1;
           }
           new_extents.push_back(IntImm(first_extent.dtype(), new_value));
-        } else if (const CastNode* cast_node = first_extent.as<CastNode>()) {
-          if (const IntImmNode* int_imm = cast_node->value.as<IntImmNode>()) {
-            int64_t new_value = int_imm->value / 2;
-            if (new_value < 1) {
-              new_value = 1;
-            }
-            new_extents.push_back(IntImm(cast_node->dtype, new_value));
-          } else {
-            new_extents.push_back(indexdiv(first_extent, 2));
-          }
         } else {
+          // Complex expression processing
           new_extents.push_back(indexdiv(first_extent, 2));
         }
       } else {
+        // Other dimensions remain unchanged
         new_extents.push_back(VisitExpr(extents[i]));
       }
     }
@@ -102,7 +100,7 @@ private:
     if (op->name_hint == "root") {
       return IRMutatorWithAnalyzer::VisitStmt_(op);
     }
-
+    // Non-vid reduce mode and vid number is 2, no custom processing required
     if (threads_cnt_ != 2) {
       return IRMutatorWithAnalyzer::VisitStmt_(op);
     }
