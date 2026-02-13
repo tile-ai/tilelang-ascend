@@ -495,6 +495,15 @@ pass_configs = {
 Here is an example:
 - [FlashAttention](./examples/flash_attention/flash_attn_bhsd_cc_sync.py): Implementations of FlashAttention without inserting synchronization flags manually.
 
+### Vid reduction & Auto CV Ratio
+
+The parameter `threads` needs to be set. (Only 1 or 2 are allowed)：
+```python
+with T.Kernel(m_num * n_num, threads=2, is_npu=True) as (cid):
+```
+
+Here is an example:
+- [MatmulAddDeveloper](./examples/developer_mode/matmul_add_developer.py)
 
 ## Upcoming Features
 
