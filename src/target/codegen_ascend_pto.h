@@ -86,6 +86,8 @@ private:
   void GemmV0Codegen(const CallNode *op);
 
   void GemmV1Codegen(const CallNode *op);
+  
+  void SyncAllCodegen(const CallNode *op);
 
   void PipeBarrierCodegen(const CallNode *op);
 
@@ -120,6 +122,10 @@ private:
   void TshCodegen(const CallNode *op, const std::string &op_name);
 
   void ArithProgressionCodegen(const CallNode *op, const std::string &op_name);
+
+  void PrintfOpCodegen(const CallNode *op, const std::string& op_name);
+
+  void DumpTensorCodegen(const CallNode *op, const std::string &op_name);
   
   void BroadcastOpCodegen(const CallNode *op);
 

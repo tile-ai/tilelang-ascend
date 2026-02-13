@@ -625,6 +625,8 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) 
     BinaryVecOpsCodegen(op, "TMAXS");
   } else if (op->op.same_as(tl::ascend_mins())) {
     BinaryVecOpsCodegen(op, "TMINS");
+  } else if (op->op.same_as(tl::ascend_sync_all())) {
+    SyncAllCodegen(op);
   } else if (op->op.same_as(tl::ascend_pipe_barrier())) {
     PipeBarrierCodegen(op);
   } else if (op->op.same_as(tl::ascend_set_flag())) {
@@ -698,35 +700,13 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) 
     BroadcastOpCodegen(op);
   } else if (op->op.same_as(tl::ascend_select())) {
     SelectCodegen(op);
-  } else if (op->op.same_as(builtin::if_then_else())) {
-      // conditional that skips eval if cond evals to false
-      std::string result = name_supply_->FreshName("condval");
-      std::string cond = PrintExpr(op->args[0]);
-      this->PrintIndent();
-      PrintType(op->dtype, this->stream);
-      this->stream << " " << result << ";\n";
-      this->PrintIndent();
-      this->stream << "if (" << cond << ") {\n";
-      {
-        int then_scope = this->BeginScope();
-        std::string true_val = PrintExpr(op->args[1]);
-        this->PrintIndent();
-        this->stream << result << " = " << true_val << ";\n";
-        this->EndScope(then_scope);
-        this->PrintIndent();
-        this->stream << "} else {\n";
-      }
-      {
-        int else_scope = this->BeginScope();
-        std::string false_val = PrintExpr(op->args[2]);
-        this->PrintIndent();
-        this->stream << result << " = " << false_val << ";\n";
-        this->EndScope(else_scope);
-        this->PrintIndent();
-        this->stream << "}\n";
-      }
-      os << result;
-    }
+  } else if (op->op.same_as(tl::ascend_dump_tensor())) {
+    DumpTensorCodegen(op, "TPRINT");
+  } else if (op->op.same_as(tl::ascend_printf())) {
+    PrintfOpCodegen(op, "cce::printf");
+  } else {
+    CodeGenC::VisitExpr_(op, os);
+  }
 }
 
 std::string CodeGenTileLangAscendPto::PrintBufferOffset(const CallNode *op) {
@@ -1168,6 +1148,9 @@ void CodeGenTileLangAscendPto::GemmV1Codegen(const CallNode *op) {
       << "(" << a_name << ", " << b_name << ", " << c_name << ", " << PrintExpr(op->args[4]) << ");\n";
   }
 }
+void CodeGenTileLangAscendPto::SyncAllCodegen(const CallNode *op) {
+  LOG(FATAL) << "Unsupport SyncAll in pto backend.";
+}
 
 void CodeGenTileLangAscendPto::PipeBarrierCodegen(const CallNode *op) {
   std::string pipe = Downcast<StringImm>(op->args[0])->value;
@@ -1369,7 +1352,27 @@ void CodeGenTileLangAscendPto::ArithProgressionCodegen(const CallNode *op,
   this->stream << "TCI<decltype(" << buffer_name << "), " << dtype
                << ", /*descending=*/" << descending << ">("
                << buffer_name << ", " << first_value << ");\n";
-}                                            
+}
+
+void CodeGenTileLangAscendPto::PrintfOpCodegen(const CallNode *op,
+                                            const std::string &op_name) {
+  this->PrintIndent();
+  this->stream << op_name << "(";
+  for (size_t i = 0; i < op->args.size(); ++i) {
+    if (i > 0) {
+      this->stream << ", ";
+    }
+      this->stream << PrintExpr(op->args[i]);
+  }
+  this->stream << ");\n";
+}
+
+void CodeGenTileLangAscendPto::DumpTensorCodegen(const CallNode *op, const std::string &op_name) {
+  this->PrintIndent();
+  this->stream << "TPRINT" << "(";
+  this->stream << PrintBufferOffset(op->args[0].as<CallNode>());
+  this->stream << ");\n";
+}
 
 void CodeGenTileLangAscendPto::BinaryVecOpCodegen(const CallNode *op,
                                                const std::string &op_name) {
