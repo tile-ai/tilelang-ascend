@@ -24,29 +24,12 @@ namespace tl {
 using namespace tir;
 using namespace tir::transform;
 
-// static constexpr const char *ascendVidReduction = "tl.ascend_vid_reduction";
-
-// TVM_REGISTER_PASS_CONFIG_OPTION(ascendVidReduction, Bool);
-
 class AscendVidReduction : public arith::IRMutatorWithAnalyzer {
 public:
   static PrimFunc Substitute(PrimFunc f, PassContext ctx) {
     arith::Analyzer analyzer;
     AscendVidReduction substituter(&analyzer);
     PrimFuncNode *fptr = f.CopyOnWrite();
-    // // TODO:访问buffer是否这样实现？
-    // tir::PostOrderVisit(f->body, [&](const ObjectRef& obj) {
-    //     if (const auto* realize = obj.as<tir::BlockRealizeNode>()) {
-    //         for (auto buf : realize->block->alloc_buffers) {
-    //             ModifyBufferShape(buf);
-    //         }
-    //     }
-    // });
-    // // TODO:影响及作用？
-    // bool ascend_vid_reduction = ctx->GetConfig<Bool>(ascendVidReduction, Bool(false)).value();
-    // if (!ascend_vid_reduction) {
-    //   return f;
-    // }
     fptr->body = substituter.VisitStmt(f->body);
     return f;
   }
@@ -58,10 +41,11 @@ private:
 
   int threads_cnt_ = 1;
 
+  // 存储原始map和修改过的map
   std::unordered_map<Buffer, Buffer, ObjectPtrHash, ObjectPtrEqual> buffer_map_;
 
+  // 判断是否是ub buffer
   bool IsUbBuffer(const Buffer& buffer) const {
-    // TODO:buffer不是指指针为啥->data取内容
     if (buffer->data->type_annotation.defined()) {
       if (const auto* ptr_type = buffer->data->type_annotation.as<PointerTypeNode>()) {
         return ptr_type->storage_scope == "shared";
@@ -70,6 +54,7 @@ private:
     return false;
   }
 
+  // 修改buffer shape
   Buffer ModifyBufferShape(const Buffer& buffer) {
     if (buffer->shape.empty()) {
       return buffer;
@@ -91,6 +76,7 @@ private:
       if (i == 0) {
         PrimExpr first_extent = analyzer_.Simplify(extents[i]);
         if (const IntImmNode* int_imm = first_extent.as<IntImmNode>()) {
+          // 常量处理
           int64_t new_value = int_imm->value / 2;
           if (new_value < 1) {
             new_value = 1;
@@ -128,6 +114,7 @@ private:
     if (op->alloc_buffers.defined()) {
       for (const auto& buffer : op->alloc_buffers) {
         if (IsUbBuffer(buffer)) {
+          // 修改buffer shape
           Buffer new_buffer = ModifyBufferShape(buffer);
           buffer_map_[buffer] = new_buffer;
         }
@@ -135,7 +122,7 @@ private:
     }
 
     Stmt new_body = this->VisitStmt(op->body);
-
+    // 使用修改后的buffer创建新的alloc buffer数组
     Array<Buffer> new_alloc_buffers;
     if (op->alloc_buffers.defined()) {
       for (const auto& buffer : op->alloc_buffers) {
@@ -147,6 +134,7 @@ private:
         }
       }
     }
+    // 创建新的block节点
     ObjectPtr<BlockNode> new_block = make_object<BlockNode>(*op);
     new_block->body = new_body;
     new_block->alloc_buffers = new_alloc_buffers;

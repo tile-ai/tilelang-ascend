@@ -8,8 +8,6 @@ tilelang.cache.clear_cache()
 pass_configs = {
     tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
     tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
-    # TODO:临时形式，后续改为读thread_cnt
-    # tilelang.PassConfigKey.TL_ASCEND_VID_REDUCTION: True,
 }
 
 @tilelang.jit(out_idx=[1], pass_configs=pass_configs)

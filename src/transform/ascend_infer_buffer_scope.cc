@@ -677,24 +677,6 @@ private:
 
   PrimExpr VisitExpr_(const BufferLoadNode* op) override {
     auto buffer = op->buffer;
-
-    // auto it = handle_scope_corrections_.find(buffer->data.get());
-    // if (it != handle_scope_corrections_.end()) {
-    //   Var new_data = CreateVarWithCorrectScope(buffer->data, it->second);
-    //   auto new_buffer = Buffer(new_data, buffer->dtype, buffer->shape,
-    //                            buffer->strides, buffer->elem_offset,
-    //                            buffer->name, buffer->data_alignment,
-    //                            buffer->offset_factor, buffer->buffer_type);
-
-    //   Array<PrimExpr> indices;
-    //   indices.reserve(op->indices.size());
-    //   for (const auto& index : op->indices) {
-    //     indices.push_back(VisitExpr(index));
-    //   }
-
-    //   return BufferLoad(new_buffer, indices);
-    // }
-
     auto it = original_to_corrected_.find(buffer);
     if (it != original_to_corrected_.end()) {
       return BufferLoad(it->second, op->indices);
