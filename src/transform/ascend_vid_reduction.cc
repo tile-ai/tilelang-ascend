@@ -74,7 +74,7 @@ private:
 
     for (size_t i=0; i < extents.size(); i++) {
       if (i == 0) {
-        PrimExpr first_extent = analyzer_.Simplify(extents[i]);
+        PrimExpr first_extent = analyzer_->Simplify(extents[i]);
         if (const IntImmNode* int_imm = first_extent.as<IntImmNode>()) {
           // 常量处理
           int64_t new_value = int_imm->value / 2;
