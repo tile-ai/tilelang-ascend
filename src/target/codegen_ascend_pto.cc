@@ -726,7 +726,6 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) 
         this->stream << "}\n";
       }
       os << result;
-    }
   } else if (op->op.same_as(tl::ascend_dump_tensor())) {
     DumpTensorCodegen(op, "TPRINT");
   } else if (op->op.same_as(tl::ascend_printf())) {
