@@ -1,5 +1,20 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2025.
-import os
+"""
+Cube core sliced-copy tests (nd2nz → dot → fixpipe) with static shapes.
+
+For each rank (2D / 3D / 4D):
+  1. Construct A with only one row-slice non-zero.
+  2. Construct an N×N identity matrix B.
+  3. The Cube pipeline loads the slice, multiplies by identity, and stores back.
+  4. Verify only the target slice is written; all others remain zero.
+
+Edge cases covered via pytest parametrize:
+  - First / last row index
+  - M = 1 (single row)
+  - Leading dimensions = 1 (rank-reduction boundary)
+  - Consecutive leading 1s (e.g. B=1, H=1, M=1 for 4D)
+"""
+import pytest
 import torch
 import tilelang
 import tilelang.language as T
@@ -7,27 +22,9 @@ import tilelang.language as T
 torch.npu.set_device(0)
 tilelang.cache.clear_cache()
 
-"""
-This file focuses on testing the Cube core sliced path:
-    GM (one row slice) --npuir_load_nd2nz--> L1
-    L1 × L1 (via npuir_dot) --> L0C
-    L0C --npuir_store_fixpipe--> GM (same row position)
-
-Idea for 2D: construct A with shape [M, N], only row `idx` is non-zero;
-construct B with shape [N, N] as an identity matrix.
-In Cube scope we use:
-    T.npuir_load_nd2nz(A[idx, 0], l1_a, [1, N])
-    T.npuir_load_nd2nz(B[0, 0],   l1_b, [N, N])
-    T.npuir_dot(l1_a, l1_b, l0_c, ..., b_transpose=True, size=[1, N, N])
-    T.npuir_store_fixpipe(l0_c, Out[idx, 0], size=[1, N], enable_nz2nd=True)
-Then the `idx`-th row of `Out` should equal the `idx`-th row of `A`, and all
-other rows should remain zero.
-
-We extend this pattern to:
-- 3D: 3D GM (B, M, N) -> 2D L1 / 2D L0C -> 3D GM
-- 4D: 4D GM (B, H, M, N) <-> 2D L1 / 2D L0C
-"""
-
+# ---------------------------------------------------------------------------
+# Kernel builders
+# ---------------------------------------------------------------------------
 
 @tilelang.jit(out_idx=[-1], target="npuir")
 def cube_sliced_copy_2d(M, N, idx, dtype="float16", accum_dtype="float32"):
@@ -38,7 +35,6 @@ def cube_sliced_copy_2d(M, N, idx, dtype="float16", accum_dtype="float32"):
         Out: T.Tensor((M, N), dtype),
     ):
         with T.Kernel(1, is_npu=True) as (cid, subid):
-            # Only one row slice is involved, so L1/L0C shapes are [1, N] or [N, N].
             l1_a = T.alloc_L1([1, N], dtype)
             l1_b = T.alloc_L1([N, N], dtype)
             l0_c = T.alloc_L0C([1, N], accum_dtype)
@@ -48,72 +44,26 @@ def cube_sliced_copy_2d(M, N, idx, dtype="float16", accum_dtype="float32"):
                 tail_n = N
                 tail_k = N
 
-                # GM -> L1: load the `idx`-th row of A and the full B (identity).
-                T.npuir_load_nd2nz(A_in[idx, 0], l1_a, [tail_m, tail_k])
-                T.npuir_load_nd2nz(B_in[0, 0], l1_b, [tail_n, tail_k])
+                T.npuir_load_nd2nz(A_in[idx:idx+tail_m, 0:tail_k], l1_a)
+                T.npuir_load_nd2nz(B_in[0:tail_n, 0:tail_k], l1_b)
 
-                # L1 × L1 -> L0C: run through Cube dot to L0C.
                 T.npuir_dot(
-                    l1_a,
-                    l1_b,
-                    l0_c,
-                    initC=True,
-                    b_transpose=True,
+                    l1_a, l1_b, l0_c,
+                    initC=True, b_transpose=True,
                     size=[tail_m, tail_k, tail_n],
                 )
 
-                # L0C -> GM: use fixpipe to store back to the same row in GM.
                 with T.rs("PIPE_FIX"):
                     T.npuir_store_fixpipe(
-                        l0_c,
-                        Out[idx, 0],
-                        size=[tail_m, tail_n],
+                        l0_c, Out[idx:idx+tail_m, 0:tail_n],
                         enable_nz2nd=True,
                     )
 
     return main
 
 
-def test_cube_sliced_copy_2d():
-    print("=" * 30 + " Running Cube Sliced Copy 2D Test " + "=" * 30)
-
-    M, N = 16, 32
-    idx = 5
-
-    kernel = cube_sliced_copy_2d(M, N, idx)
-
-    # A: only row `idx` is non-zero, others are zeros.
-    A = torch.zeros(M, N).npu().half()
-    row = torch.arange(1, N + 1, dtype=torch.float16).npu()
-    A[idx] = row
-
-    # B: identity matrix, so A[idx] @ B^T == A[idx].
-    B = torch.eye(N, dtype=torch.float16).npu()
-
-    Out = torch.zeros(M, N).npu().half()
-
-    # Run kernel: the Cube pipeline should write back only the `idx`-th row.
-    kernel(A, B, Out)
-
-    expected = torch.zeros(M, N).npu().half()
-    expected[idx] = row
-
-    torch.testing.assert_close(Out, expected, rtol=1e-5, atol=1e-5)
-
-    print("Cube Sliced Copy 2D Test Passed!")
-
-
 @tilelang.jit(out_idx=[-1], target="npuir")
 def cube_sliced_copy_3d(B, M, N, b_idx, m_idx, dtype="float16", accum_dtype="float32"):
-    """
-    3D GM -> 2D L1 / 2D L0C -> 3D GM on Cube.
-
-    A_in: [B, M, N], only slice (b_idx, m_idx, :) is non-zero.
-    B_in: [N, N] identity.
-    We load A_in[b_idx, m_idx, :] to [1, N] L1, run dot with identity,
-    and store the result back to Out[b_idx, m_idx, :].
-    """
-
     @T.prim_func
     def main(
         A_in: T.Tensor((B, M, N), dtype),
@@ -130,71 +80,26 @@ def cube_sliced_copy_3d(B, M, N, b_idx, m_idx, dtype="float16", accum_dtype="flo
                 tail_n = N
                 tail_k = N
 
-                # GM -> L1: 3D slice (b_idx, m_idx, :) to 2D L1.
-                T.npuir_load_nd2nz(A_in[b_idx, m_idx, 0], l1_a, [tail_m, tail_k])
-                T.npuir_load_nd2nz(B_in[0, 0], l1_b, [tail_n, tail_k])
+                T.npuir_load_nd2nz(A_in[b_idx:b_idx+1, m_idx:m_idx+tail_m, 0:tail_k], l1_a)
+                T.npuir_load_nd2nz(B_in[0:tail_n, 0:tail_k], l1_b)
 
-                # L1 × L1 -> L0C.
                 T.npuir_dot(
-                    l1_a,
-                    l1_b,
-                    l0_c,
-                    initC=True,
-                    b_transpose=True,
+                    l1_a, l1_b, l0_c,
+                    initC=True, b_transpose=True,
                     size=[tail_m, tail_k, tail_n],
                 )
 
-                # L0C -> GM: back to the same (b_idx, m_idx, :) slice in 3D GM.
                 with T.rs("PIPE_FIX"):
                     T.npuir_store_fixpipe(
-                        l0_c,
-                        Out[b_idx, m_idx, 0],
-                        size=[tail_m, tail_n],
+                        l0_c, Out[b_idx:b_idx+1, m_idx:m_idx+tail_m, 0:tail_n],
                         enable_nz2nd=True,
                     )
 
     return main
 
 
-def test_cube_sliced_copy_3d():
-    print("\n" + "=" * 30 + " Running Cube Sliced Copy 3D Test " + "=" * 30)
-
-    B_dim, M, N = 4, 16, 32
-    b_idx, m_idx = 1, 7
-
-    kernel = cube_sliced_copy_3d(B_dim, M, N, b_idx, m_idx)
-
-    # A: only slice (b_idx, m_idx, :) is non-zero.
-    A = torch.zeros(B_dim, M, N).npu().half()
-    row = torch.arange(1, N + 1, dtype=torch.float16).npu()
-    A[b_idx, m_idx] = row
-
-    # B: identity matrix on the last dimension.
-    B = torch.eye(N, dtype=torch.float16).npu()
-
-    Out = torch.zeros(B_dim, M, N).npu().half()
-
-    kernel(A, B, Out)
-
-    expected = torch.zeros(B_dim, M, N).npu().half()
-    expected[b_idx, m_idx] = row
-
-    torch.testing.assert_close(Out, expected, rtol=1e-5, atol=1e-5)
-
-    print("Cube Sliced Copy 3D Test Passed!")
-
-
 @tilelang.jit(out_idx=[-1], target="npuir")
 def cube_sliced_copy_4d(B, H, M, N, b_idx, h_idx, m_idx, dtype="float16", accum_dtype="float32"):
-    """
-    4D GM <-> 2D L1 / 2D L0C on Cube.
-
-    A_in: [B, H, M, N], only slice (b_idx, h_idx, m_idx, :) is non-zero.
-    B_in: [N, N] identity.
-    The selected 1×N slice is moved to 2D L1, computed in 2D L0C, and
-    stored back into the same 4D GM position.
-    """
-
     @T.prim_func
     def main(
         A_in: T.Tensor((B, H, M, N), dtype),
@@ -211,65 +116,126 @@ def cube_sliced_copy_4d(B, H, M, N, b_idx, h_idx, m_idx, dtype="float16", accum_
                 tail_n = N
                 tail_k = N
 
-                # GM -> L1: 4D slice (b_idx, h_idx, m_idx, :) to 2D L1.
-                T.npuir_load_nd2nz(A_in[b_idx, h_idx, m_idx, 0], l1_a, [tail_m, tail_k])
-                T.npuir_load_nd2nz(B_in[0, 0], l1_b, [tail_n, tail_k])
+                T.npuir_load_nd2nz(A_in[b_idx:b_idx+1, h_idx:h_idx+1, m_idx:m_idx+tail_m, 0:tail_k], l1_a)
+                T.npuir_load_nd2nz(B_in[0:tail_n, 0:tail_k], l1_b)
 
-                # L1 × L1 -> L0C.
                 T.npuir_dot(
-                    l1_a,
-                    l1_b,
-                    l0_c,
-                    initC=True,
-                    b_transpose=True,
+                    l1_a, l1_b, l0_c,
+                    initC=True, b_transpose=True,
                     size=[tail_m, tail_k, tail_n],
                 )
 
-                # L0C -> GM: back to the same (b_idx, h_idx, m_idx, :) slice in 4D GM.
                 with T.rs("PIPE_FIX"):
                     T.npuir_store_fixpipe(
-                        l0_c,
-                        Out[b_idx, h_idx, m_idx, 0],
-                        size=[tail_m, tail_n],
+                        l0_c, Out[b_idx:b_idx+1, h_idx:h_idx+1, m_idx:m_idx+tail_m, 0:tail_n],
                         enable_nz2nd=True,
                     )
 
     return main
 
 
-def test_cube_sliced_copy_4d():
-    print("\n" + "=" * 30 + " Running Cube Sliced Copy 4D Test " + "=" * 30)
+# ---------------------------------------------------------------------------
+# 2D parametrized tests  —  A: [M, N]
+# ---------------------------------------------------------------------------
 
-    B_dim, H, M, N = 2, 4, 16, 32
-    b_idx, h_idx, m_idx = 1, 2, 5
+SLICED_2D_CASES = [
+    # (M,  N,  idx)
+    (16, 32, 5),         # base case
+    (16, 32, 0),         # first row
+    (16, 32, 15),        # last row
+    (1,  32, 0),         # M=1: single-row tensor
+    (32, 16, 16),        # M > N, higher index
+    (16,  8, 5),         # small N=8
+    (1,   8, 0),         # small N=8, M=1
+]
 
-    kernel = cube_sliced_copy_4d(B_dim, H, M, N, b_idx, h_idx, m_idx)
+@pytest.mark.parametrize("M, N, idx", SLICED_2D_CASES)
+def test_cube_sliced_copy_2d(M, N, idx):
+    kernel = cube_sliced_copy_2d(M, N, idx)
 
-    # A: only slice (b_idx, h_idx, m_idx, :) is non-zero.
-    A = torch.zeros(B_dim, H, M, N).npu().half()
+    A = torch.zeros(M, N, dtype=torch.float16).npu()
     row = torch.arange(1, N + 1, dtype=torch.float16).npu()
-    A[b_idx, h_idx, m_idx] = row
+    A[idx] = row
 
-    # B: identity matrix on the last dimension.
     B = torch.eye(N, dtype=torch.float16).npu()
-
-    Out = torch.zeros(B_dim, H, M, N).npu().half()
+    Out = torch.zeros(M, N, dtype=torch.float16).npu()
 
     kernel(A, B, Out)
 
-    expected = torch.zeros(B_dim, H, M, N).npu().half()
-    expected[b_idx, h_idx, m_idx] = row
-
+    expected = torch.zeros(M, N, dtype=torch.float16).npu()
+    expected[idx] = row
     torch.testing.assert_close(Out, expected, rtol=1e-5, atol=1e-5)
 
-    print("Cube Sliced Copy 4D Test Passed!")
+
+# ---------------------------------------------------------------------------
+# 3D parametrized tests  —  A: [B, M, N]
+# ---------------------------------------------------------------------------
+
+SLICED_3D_CASES = [
+    # (B,  M,  N,  b_idx, m_idx)
+    (4,  16, 32, 1, 7),       # base case
+    (1,  16, 32, 0, 7),       # B=1  (leading-1 rank reduction)
+    (4,  1,  32, 2, 0),       # M=1
+    (1,  1,  32, 0, 0),       # B=1, M=1  (consecutive leading 1s)
+    (4,  16, 32, 3, 15),      # boundary indices (last B, last M)
+    (4,  16, 32, 0, 0),       # all-zero indices
+    (4,  16,  8, 1, 7),       # small N=8
+    (1,  1,   8, 0, 0),       # small N=8, B=1, M=1
+]
+
+@pytest.mark.parametrize("B_dim, M, N, b_idx, m_idx", SLICED_3D_CASES)
+def test_cube_sliced_copy_3d(B_dim, M, N, b_idx, m_idx):
+    kernel = cube_sliced_copy_3d(B_dim, M, N, b_idx, m_idx)
+
+    A = torch.zeros(B_dim, M, N, dtype=torch.float16).npu()
+    row = torch.arange(1, N + 1, dtype=torch.float16).npu()
+    A[b_idx, m_idx] = row
+
+    B = torch.eye(N, dtype=torch.float16).npu()
+    Out = torch.zeros(B_dim, M, N, dtype=torch.float16).npu()
+
+    kernel(A, B, Out)
+
+    expected = torch.zeros(B_dim, M, N, dtype=torch.float16).npu()
+    expected[b_idx, m_idx] = row
+    torch.testing.assert_close(Out, expected, rtol=1e-5, atol=1e-5)
 
 
-def main():
-    test_cube_sliced_copy_2d()
-    test_cube_sliced_copy_3d()
-    test_cube_sliced_copy_4d()
+# ---------------------------------------------------------------------------
+# 4D parametrized tests  —  A: [B, H, M, N]
+# ---------------------------------------------------------------------------
+
+SLICED_4D_CASES = [
+    # (B,  H,  M,  N,  b_idx, h_idx, m_idx)
+    (2,  4,  16, 32, 1, 2, 5),       # base case
+    (1,  4,  16, 32, 0, 2, 5),       # B=1
+    (2,  1,  16, 32, 1, 0, 5),       # H=1
+    (1,  1,  16, 32, 0, 0, 5),       # B=1, H=1  (two consecutive leading 1s)
+    (1,  1,  1,  32, 0, 0, 0),       # B=1, H=1, M=1  (three consecutive 1s)
+    (2,  4,  16, 32, 0, 0, 0),       # all-zero indices
+    (2,  4,  16, 32, 1, 3, 15),      # boundary indices (last valid)
+    (2,  4,  16,  8, 1, 2, 5),       # small N=8
+    (1,  1,  1,   8, 0, 0, 0),       # small N=8, all leading 1s
+]
+
+@pytest.mark.parametrize("B_dim, H, M, N, b_idx, h_idx, m_idx", SLICED_4D_CASES)
+def test_cube_sliced_copy_4d(B_dim, H, M, N, b_idx, h_idx, m_idx):
+    kernel = cube_sliced_copy_4d(B_dim, H, M, N, b_idx, h_idx, m_idx)
+
+    A = torch.zeros(B_dim, H, M, N, dtype=torch.float16).npu()
+    row = torch.arange(1, N + 1, dtype=torch.float16).npu()
+    A[b_idx, h_idx, m_idx] = row
+
+    B = torch.eye(N, dtype=torch.float16).npu()
+    Out = torch.zeros(B_dim, H, M, N, dtype=torch.float16).npu()
+
+    kernel(A, B, Out)
+
+    expected = torch.zeros(B_dim, H, M, N, dtype=torch.float16).npu()
+    expected[b_idx, h_idx, m_idx] = row
+    torch.testing.assert_close(Out, expected, rtol=1e-5, atol=1e-5)
 
 
+# ---------------------------------------------------------------------------
 if __name__ == "__main__":
-    main()
+    pytest.main([__file__, "-v"])

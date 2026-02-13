@@ -1,26 +1,39 @@
-import os
+# Copyright (c) Huawei Technologies Co., Ltd. 2025.
+"""
+Cube core dynamic-tail-block copy tests (nd2nz → dot → fixpipe).
+
+For each rank (2D / 3D / 4D):
+  1. Tile the M×N region with block_M × block_N tiles.
+  2. The last tile in each dimension uses a dynamic tail:
+       tile_size_N = min(block_N, shape_N - by)
+  3. Each tile goes through: GM → nd2nz → L1 → dot(identity) → L0C → fixpipe → GM
+  4. Verify the output matches the input (identity copy).
+
+Edge cases covered via pytest parametrize:
+  - Exact division (no tail block)
+  - Single tile (block == dim)
+  - Oversized block (block > dim)
+  - M = 1  (single row)
+  - Tail of 1 in M / N / both  (e.g. 7 % 3 = 1)
+  - Larger irregular shapes
+  - Leading dimensions = 1  (3D: [1,M,N], 4D: [1,1,M,N])
+"""
+import pytest
 import torch
 import tilelang
 import tilelang.language as T
 
-
+torch.npu.set_device(0)
 tilelang.cache.clear_cache()
+
 dtype = "float16"
 
+# ---------------------------------------------------------------------------
+# Kernel builders
+# ---------------------------------------------------------------------------
 
 def cube_copy_shape_1d_2d(M, N, block_M, block_N):
-    """
-    Dynamic tail block copy on Cube core (2D GM -> 2D GM).
-
-    Layout:
-        A: [M, N], B: [M, N], Id: [N, N]
-    We copy row-by-row in tiles of size `block_N`, but the last tile in
-    each row uses a dynamic `tile_size_N = min(block_N, shape_N - by)`.
-    For each tile, we:
-        GM (1 × tile_size_N) -> L1 -> L0C -> GM
-    using:
-        npuir_load_nd2nz + npuir_dot (with identity) + npuir_store_fixpipe.
-    """
+    """Dynamic tail block copy: 2D GM [M, N] → 2D GM [M, N]."""
 
     @T.prim_func
     def copyShapeCube(
@@ -37,7 +50,6 @@ def cube_copy_shape_1d_2d(M, N, block_M, block_N):
             blocky = cid % T.ceildiv(N, block_N)
             by = blocky * block_N
 
-            # L1/L0C buffers for a single row tile.
             l1_a = T.alloc_L1((1, block_N), dtype)
             l1_b = T.alloc_L1((block_N, block_N), dtype)
             l0_c = T.alloc_L0C((1, block_N), "float32")
@@ -45,40 +57,21 @@ def cube_copy_shape_1d_2d(M, N, block_M, block_N):
             with T.Scope("Cube"):
                 for i in T.Parallel(block_M):
                     bx = blockx * block_M + i
-                    # Dynamic tail size for N dimension.
                     t0 = shape_N - by
                     tile_size_N = T.min(block_N, t0)
 
-                    # GM -> L1: load a 1 × tile_size_N slice.
-                    T.npuir_load_nd2nz(
-                        A[bx, by],
-                        l1_a,
-                        size=[1, tile_size_N],
-                    )
+                    T.npuir_load_nd2nz(A[bx:bx+1, by:by+tile_size_N], l1_a)
+                    T.npuir_load_nd2nz(Id[0:tile_size_N, 0:tile_size_N], l1_b)
 
-                    # GM -> L1: load top-left tile_size_N × tile_size_N part of Id.
-                    T.npuir_load_nd2nz(
-                        Id[0, 0],
-                        l1_b,
-                        size=[tile_size_N, tile_size_N],
-                    )
-
-                    # L1 × L1 -> L0C: multiply by identity, effectively copying.
                     T.npuir_dot(
-                        l1_a,
-                        l1_b,
-                        l0_c,
-                        initC=True,
-                        b_transpose=True,
+                        l1_a, l1_b, l0_c,
+                        initC=True, b_transpose=True,
                         size=[1, tile_size_N, tile_size_N],
                     )
 
-                    # L0C -> GM: write back to B with dynamic tail size.
                     with T.rs("PIPE_FIX"):
                         T.npuir_store_fixpipe(
-                            l0_c,
-                            B[bx, by],
-                            size=[1, tile_size_N],
+                            l0_c, B[bx:bx+1, by:by+tile_size_N],
                             enable_nz2nd=True,
                         )
 
@@ -86,15 +79,7 @@ def cube_copy_shape_1d_2d(M, N, block_M, block_N):
 
 
 def cube_copy_shape_2d_3d(M, N, block_M, block_N):
-    """
-    Dynamic tail block copy on Cube core (3D GM -> 3D GM).
-
-    Layout:
-        A: [1, M, N], B: [1, M, N], Id: [N, N]
-    Similar to `cube_copy_shape_1d_2d`, but with an extra leading batch
-    dimension kept at size 1. We still copy 1 × tile_size_N slices via
-    the Cube pipeline.
-    """
+    """Dynamic tail block copy: 3D GM [1, M, N] → 3D GM [1, M, N]."""
 
     @T.prim_func
     def copyShapeCube2D3D(
@@ -121,36 +106,18 @@ def cube_copy_shape_2d_3d(M, N, block_M, block_N):
                     t0 = shape_N - by
                     tile_size_N = T.min(block_N, t0)
 
-                    # GM -> L1: load slice [0, bx, by:by+tile_size_N].
-                    T.npuir_load_nd2nz(
-                        A[0, bx, by],
-                        l1_a,
-                        size=[1, tile_size_N],
-                    )
+                    T.npuir_load_nd2nz(A[0:1, bx:bx+1, by:by+tile_size_N], l1_a)
+                    T.npuir_load_nd2nz(Id[0:tile_size_N, 0:tile_size_N], l1_b)
 
-                    # GM -> L1: identity tile for N dimension.
-                    T.npuir_load_nd2nz(
-                        Id[0, 0],
-                        l1_b,
-                        size=[tile_size_N, tile_size_N],
-                    )
-
-                    # L1 × L1 -> L0C.
                     T.npuir_dot(
-                        l1_a,
-                        l1_b,
-                        l0_c,
-                        initC=True,
-                        b_transpose=True,
+                        l1_a, l1_b, l0_c,
+                        initC=True, b_transpose=True,
                         size=[1, tile_size_N, tile_size_N],
                     )
 
-                    # L0C -> GM.
                     with T.rs("PIPE_FIX"):
                         T.npuir_store_fixpipe(
-                            l0_c,
-                            B[0, bx, by],
-                            size=[1, tile_size_N],
+                            l0_c, B[0:1, bx:bx+1, by:by+tile_size_N],
                             enable_nz2nd=True,
                         )
 
@@ -158,15 +125,7 @@ def cube_copy_shape_2d_3d(M, N, block_M, block_N):
 
 
 def cube_copy_shape_3d_4d(M, N, block_M, block_N):
-    """
-    Dynamic tail block copy on Cube core (4D GM -> 4D GM).
-
-    Layout:
-        A: [1, 1, M, N], B: [1, 1, M, N], Id: [N, N]
-    This further extends `cube_copy_shape_2d_3d` by adding another leading
-    batch dimension kept at size 1. We still copy 1 × tile_size_N slices via
-    the Cube pipeline.
-    """
+    """Dynamic tail block copy: 4D GM [1, 1, M, N] → 4D GM [1, 1, M, N]."""
 
     @T.prim_func
     def copyShapeCube3D4D(
@@ -193,105 +152,98 @@ def cube_copy_shape_3d_4d(M, N, block_M, block_N):
                     t0 = shape_N - by
                     tile_size_N = T.min(block_N, t0)
 
-                    # GM -> L1: load slice [0, 0, bx, by:by+tile_size_N].
-                    T.npuir_load_nd2nz(
-                        A[0, 0, bx, by],
-                        l1_a,
-                        size=[1, tile_size_N],
-                    )
+                    T.npuir_load_nd2nz(A[0:1, 0:1, bx:bx+1, by:by+tile_size_N], l1_a)
+                    T.npuir_load_nd2nz(Id[0:tile_size_N, 0:tile_size_N], l1_b)
 
-                    # GM -> L1: identity tile for N dimension.
-                    T.npuir_load_nd2nz(
-                        Id[0, 0],
-                        l1_b,
-                        size=[tile_size_N, tile_size_N],
-                    )
-
-                    # L1 × L1 -> L0C.
                     T.npuir_dot(
-                        l1_a,
-                        l1_b,
-                        l0_c,
-                        initC=True,
-                        b_transpose=True,
+                        l1_a, l1_b, l0_c,
+                        initC=True, b_transpose=True,
                         size=[1, tile_size_N, tile_size_N],
                     )
 
-                    # L0C -> GM.
                     with T.rs("PIPE_FIX"):
                         T.npuir_store_fixpipe(
-                            l0_c,
-                            B[0, 0, bx, by],
-                            size=[1, tile_size_N],
+                            l0_c, B[0:1, 0:1, bx:bx+1, by:by+tile_size_N],
                             enable_nz2nd=True,
                         )
 
     return copyShapeCube3D4D
 
 
-def test_cube_copy_shape_1d_2d():
-    M = 8
-    N = 8
-    v1 = torch.randn(size=[M, N], dtype=eval("torch." + dtype)).npu()
-    v2 = torch.zeros(size=[M, N], dtype=eval("torch." + dtype)).npu()
-    v_ref = v1.clone()
+# ---------------------------------------------------------------------------
+# Test shape configurations
+# ---------------------------------------------------------------------------
 
-    func = cube_copy_shape_1d_2d(M, N, block_M=3, block_N=3)
+DYNAMIC_CASES = [
+    # (M,  N,  block_M, block_N)   — description
+    (8,  8,  3, 3),                 # base: tail in both dims (8%3=2)
+    (6,  6,  3, 3),                 # exact divide, no tail
+    (8,  8,  8, 8),                 # single tile (block == dim)
+    (4,  4,  8, 8),                 # oversized block (block > dim)
+    (1,  8,  1, 3),                 # M=1, single row
+    (16, 32, 5, 7),                 # larger, irregular tiling
+    (7,  8,  3, 3),                 # M tail = 1  (7%3 = 1)
+    (8,  7,  3, 3),                 # N tail = 1  (7%3 = 1)
+    (7,  7,  3, 3),                 # both dims tail = 1
+    (8,  8,  3, 8),                 # block_N == N, only M has tail
+    (8,  8,  8, 3),                 # block_M == M, only N has tail
+]
+
+
+# ---------------------------------------------------------------------------
+# 2D tests  —  A: [M, N]
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("M, N, block_M, block_N", DYNAMIC_CASES)
+def test_cube_copy_shape_2d(M, N, block_M, block_N):
+    func = cube_copy_shape_1d_2d(M, N, block_M, block_N)
     compiled_kernel = tilelang.compile(func, target="npuir")
 
-    # Identity matrix for Cube dot.
-    Id = torch.eye(N, dtype=eval("torch." + dtype)).npu()
+    v1 = torch.randn(M, N, dtype=torch.float16).npu()
+    v2 = torch.zeros(M, N, dtype=torch.float16).npu()
+    v_ref = v1.clone()
+    Id = torch.eye(N, dtype=torch.float16).npu()
 
     compiled_kernel(v1, v2, Id, M, N)
-    print(v_ref)
-    print(v2)
     torch.testing.assert_close(v2, v_ref, rtol=1e-2, atol=1e-2)
-    print("\033[92mAll Cube 2D dynamic-shape checks passed!\033[0m")
 
 
-def test_cube_copy_shape_2d_3d():
-    M = 8
-    N = 8
-    func = cube_copy_shape_2d_3d(M, N, block_M=3, block_N=3)
+# ---------------------------------------------------------------------------
+# 3D tests  —  A: [1, M, N]
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("M, N, block_M, block_N", DYNAMIC_CASES)
+def test_cube_copy_shape_3d(M, N, block_M, block_N):
+    func = cube_copy_shape_2d_3d(M, N, block_M, block_N)
     compiled_kernel = tilelang.compile(func, target="npuir")
 
-    v1 = torch.randn(size=[1, M, N], dtype=eval("torch." + dtype)).npu()
-    v2 = torch.zeros(size=[1, M, N], dtype=eval("torch." + dtype)).npu()
+    v1 = torch.randn(1, M, N, dtype=torch.float16).npu()
+    v2 = torch.zeros(1, M, N, dtype=torch.float16).npu()
     v_ref = v1.clone()
-
-    Id = torch.eye(N, dtype=eval("torch." + dtype)).npu()
+    Id = torch.eye(N, dtype=torch.float16).npu()
 
     compiled_kernel(v1, v2, Id, M, N)
-
-    print(v_ref)
-    print(v2)
     torch.testing.assert_close(v2, v_ref, rtol=1e-2, atol=1e-2)
-    print("\033[92mAll Cube 3D dynamic-shape checks passed!\033[0m")
 
 
-def test_cube_copy_shape_3d_4d():
-    M = 8
-    N = 8
-    func = cube_copy_shape_3d_4d(M, N, block_M=3, block_N=3)
+# ---------------------------------------------------------------------------
+# 4D tests  —  A: [1, 1, M, N]
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("M, N, block_M, block_N", DYNAMIC_CASES)
+def test_cube_copy_shape_4d(M, N, block_M, block_N):
+    func = cube_copy_shape_3d_4d(M, N, block_M, block_N)
     compiled_kernel = tilelang.compile(func, target="npuir")
 
-    v1 = torch.randn(size=[1, 1, M, N], dtype=eval("torch." + dtype)).npu()
-    v2 = torch.zeros(size=[1, 1, M, N], dtype=eval("torch." + dtype)).npu()
+    v1 = torch.randn(1, 1, M, N, dtype=torch.float16).npu()
+    v2 = torch.zeros(1, 1, M, N, dtype=torch.float16).npu()
     v_ref = v1.clone()
-
-    Id = torch.eye(N, dtype=eval("torch." + dtype)).npu()
+    Id = torch.eye(N, dtype=torch.float16).npu()
 
     compiled_kernel(v1, v2, Id, M, N)
-
-    print(v_ref)
-    print(v2)
     torch.testing.assert_close(v2, v_ref, rtol=1e-2, atol=1e-2)
-    print("\033[92mAll Cube 4D dynamic-shape checks passed!\033[0m")
 
 
+# ---------------------------------------------------------------------------
 if __name__ == "__main__":
-    torch.npu.set_device(0)
-    test_cube_copy_shape_1d_2d()
-    test_cube_copy_shape_2d_3d()
-    test_cube_copy_shape_3d_4d()
-
+    pytest.main([__file__, "-v"])
