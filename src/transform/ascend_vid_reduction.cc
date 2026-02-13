@@ -143,9 +143,9 @@ private:
 
   // 辅助函数：从tl.region CallNode中提取BufferLoad
   BufferLoad ExtractBufferLoadFromRegion(const Call& region_call) const {
-    ICHECK(region_call->args.size() >= 1) << "tl.region must have at least 1 arg (BufferLoad)";
+    ICHECK(region_call->args.size() >= 1) << "[Error]<ascend_vid_reduction.cc>: tl.region must have at least 1 arg (BufferLoad)";
     const BufferLoadNode* load_node = region_call->args[0].as<BufferLoadNode>();
-    ICHECK(load_node != nullptr) << "tl.region args[0] must be BufferLoad";
+    ICHECK(load_node != nullptr) << "[Error]<ascend_vid_reduction.cc>: BufferLoadNode is nullptr";
     return GetRef<BufferLoad>(load_node);
   }
 
@@ -157,29 +157,35 @@ private:
         new_indices.push_back(VisitExpr(idx));
     }
 
-    // std::cout << "[info]<ModifyBufferLoadIndices>: indices: " << new_indices[target_dim] << std::endl;
-
     // 2. 自定义修改：第 size - dims 维度添加vid
-    ICHECK(new_indices.size() >= ub_dims) << "[Error]<erase_vid>: ub dims must not be more than gm dims!";
+    ICHECK(new_indices.size() >= ub_dims) << "[Error]<ascend_vid_reduction.cc>: ub dims may not be more than gm dims!";
     int target_dim = new_indices.size() - ub_dims;
     Buffer modified_ub_buf = buffer_map_[ub_buf];
     new_indices.Set(
         target_dim, 
         new_indices[target_dim] + vid_ * modified_ub_buf->shape[0]// 核心修改：加vid
     );
-    
-    // std::cout << "[info]<ModifyBufferLo adIndices>: modified indices: " << new_indices[target_dim] << std::endl;
-
-
 
     // 3. 重构BufferLoad
     return BufferLoad(load->buffer, new_indices);
   }
 
+  // 辅助函数：判断extent是否为1 
+  bool ExtentIsEqualOne(const PrimExpr& extent) {
+    PrimExpr simplified_extent = analyzer_->Simplify(extent);
+    ICHECK(simplified_extent.defined()) 
+      << "[Error]<ascend_vid_reduction.cc>: Fail to simplify the extent."
+      << "Extent: " << extent;
+    const IntImmNode* imm = simplified_extent.as<IntImmNode>();
+    ICHECK(imm != nullptr) 
+      << "[Error]<ascend_vid_reduction.cc>: Extent is not IntImm after simplify."
+      << "Extent: " << extent
+      << " Simplified extent: " << simplified_extent;
+    return imm->value == 1;
+  }
 
   PrimExpr VisitExpr_(const CallNode* op) final {
     // Step 0：判断v核数是否为2
-    // std::cout << "[info]<callnode>: threads_cnt_ = " << threads_cnt_ << '\n';
     if (threads_cnt_ != 2) {
       return IRMutatorWithAnalyzer::VisitExpr_(op);
     }
@@ -191,7 +197,6 @@ private:
       return IRMutatorWithAnalyzer::VisitExpr_(op);
     }
     std::string op_name = call_op->name;
-    // std::cout << "[info]<callnode>: op_name is " << op_name << '\n';
     if (op_name != "tl.ascend_copy") {
       return IRMutatorWithAnalyzer::VisitExpr_(op);
     }
@@ -227,24 +232,36 @@ private:
 
     // Step 7：重构目标region（替换修改后的BufferLoad）
     Array<PrimExpr> new_region_args = target_region->args;
-    new_region_args.Set(0, modified_load);  // 替换args[0]为新的BufferLoad
+    new_region_args.Set(0, VisitExpr(modified_load));  // 替换args[0]为新的BufferLoad
     // 递归处理region的其他参数（access_type/extents） 其中extents 对应维度要减半
     for (size_t i = 1; i < new_region_args.size(); ++i) {
       if (i != new_region_args.size() - ub_dims) {
         new_region_args.Set(i, VisitExpr(new_region_args[i]));
       } else {
-        new_region_args.Set(i, indexdiv(new_region_args[i], threads_cnt_));
+        if (ExtentIsEqualOne(new_region_args[i])) {
+          new_region_args.Set(i, VisitExpr(new_region_args[i]));
+        } else {
+          new_region_args.Set(i, VisitExpr(indexdiv(new_region_args[i], threads_cnt_)));
+        }
       }
     }
     Call modified_region = Call(target_region->dtype, target_region->op, new_region_args, target_region->span);
-
-    // Step 8: 修改ub region的extents
     Call ub_region = src_is_ub ? src_region : dst_region;
 
     Array<PrimExpr> ub_region_args = ub_region->args;
 
-    size_t idx = ub_region_args.size() - ub_dims;
-    ub_region_args.Set(idx, indexdiv(ub_region_args[idx], threads_cnt_)); // extent的第一维 减半
+    size_t target_idx = ub_region_args.size() - ub_dims;
+    for (size_t i = 0; i < ub_region_args.size(); i++) {
+      if (i != target_idx) {
+        ub_region_args.Set(i, VisitExpr(ub_region_args[i]));
+      } else {
+        if (ExtentIsEqualOne(ub_region_args[i])) {
+          ub_region_args.Set(i, VisitExpr(ub_region_args[i]));
+        } else {
+          ub_region_args.Set(i, VisitExpr(indexdiv(ub_region_args[i], threads_cnt_))); // extent的第一维 减半
+        }
+      }
+    }
 
     Call modified_ub_region = Call(ub_region->dtype, ub_region->op, ub_region_args, ub_region->span);
 
@@ -268,14 +285,8 @@ private:
   }
  
   PrimExpr VisitExpr_(const BufferLoadNode* op) final {
-    // std::cout << "[info]<bufferloadnode>: op->buffer : " << op->buffer->name << '\n';
-    // std::cout << "[info]<bufferloadnode>: op->indices \n";
-    // for (auto const &i : op->indices) {
-    //   std::cout << "  " << i << '\n';
-    // }  
     auto it = buffer_map_.find(op->buffer);
     if (it != buffer_map_.end()) {
-      // std::cout << "[info]<bufferloadnode>: modefied op->buffer " << op->buffer->name << '\n';
       return BufferLoad(it->second, op->indices);
     }
     return IRMutatorWithAnalyzer::VisitExpr_(op);
@@ -293,15 +304,12 @@ private:
     if (op->attr_key == tvm::tir::attr::thread_extent) {
       if (const IterVarNode* iter_var_node = op->node.as<IterVarNode>()) {
         IterVar iter_var = GetRef<IterVar>(iter_var_node);
-        // std::cout << "[info]<cc>: iter_var->thread_tag = " << iter_var->thread_tag << std::endl;
         if (iter_var->thread_tag == "threadIdx.x") {
           vid_ = iter_var->var;
           threads_cnt_ = Downcast<IntImm>(op->value)->value;
-          // std::cout << "[info]<pass.cc>: visit attrs vid_: " << vid_ << " threads_cnt_: " << threads_cnt_ << std::endl;
         }
       }
     }
-    // copy(A_ub[cid * 1024 + Var(vid) * sizeof(A_ub)], )
     return IRMutatorWithAnalyzer::VisitStmt_(op);
   }
 };

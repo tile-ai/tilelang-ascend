@@ -679,31 +679,28 @@ private:
     auto buffer = op->buffer;
     auto it = original_to_corrected_.find(buffer);
     if (it != original_to_corrected_.end()) {
+      Array<PrimExpr> indices;
+      indices.reserve(op->indices.size());
+      for (const auto& index : op->indices) {
+        indices.push_back(VisitExpr(index));
+      }
       return BufferLoad(it->second, op->indices);
     }
-    
+      
     return StmtExprMutator::VisitExpr_(op);
   }
-
+    
   Stmt VisitStmt_(const BufferStoreNode* op) override {
     auto buffer = op->buffer;
-
-    auto it = handle_scope_corrections_.find(buffer->data.get());
-    if (it != handle_scope_corrections_.end()) {
-      Var new_data = CreateVarWithCorrectScope(buffer->data, it->second);
-      auto new_buffer = Buffer(new_data, buffer->dtype, buffer->shape,
-                               buffer->strides, buffer->elem_offset,
-                               buffer->name, buffer->data_alignment,
-                               buffer->offset_factor, buffer->buffer_type);
-
+    auto it = original_to_corrected_.find(buffer);
+    if (it != original_to_corrected_.end()) {
       auto value = VisitExpr(op->value);
       Array<PrimExpr> indices;
       indices.reserve(op->indices.size());
       for (const auto& index : op->indices) {
         indices.push_back(VisitExpr(index));
       }
-
-      return BufferStore(new_buffer, value, indices);
+      return BufferStore(it->second, value, indices);
     }
 
     return StmtExprMutator::VisitStmt_(op);
