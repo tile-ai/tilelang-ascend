@@ -625,6 +625,8 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) 
     BinaryVecOpsCodegen(op, "TMAXS");
   } else if (op->op.same_as(tl::ascend_mins())) {
     BinaryVecOpsCodegen(op, "TMINS");
+  } else if (op->op.same_as(tl::ascend_sync_all())) {
+    SyncAllCodegen(op);
   } else if (op->op.same_as(tl::ascend_pipe_barrier())) {
     PipeBarrierCodegen(op);
   } else if (op->op.same_as(tl::ascend_set_flag())) {
@@ -1171,6 +1173,9 @@ void CodeGenTileLangAscendPto::GemmV1Codegen(const CallNode *op) {
       << params["transpose_A"] << ", " << params["transpose_B"] << ">"
       << "(" << a_name << ", " << b_name << ", " << c_name << ", " << PrintExpr(op->args[4]) << ");\n";
   }
+}
+void CodeGenTileLangAscendPto::SyncAllCodegen(const CallNode *op) {
+  LOG(FATAL) << "Unsupport SyncAll in pto backend.";
 }
 
 void CodeGenTileLangAscendPto::PipeBarrierCodegen(const CallNode *op) {
