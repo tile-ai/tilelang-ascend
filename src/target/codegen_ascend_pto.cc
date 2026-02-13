@@ -704,6 +704,8 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) 
     DumpTensorCodegen(op, "TPRINT");
   } else if (op->op.same_as(tl::ascend_printf())) {
     PrintfOpCodegen(op, "cce::printf");
+  } else {
+    CodeGenC::VisitExpr_(op, os);
   }
 }
 
