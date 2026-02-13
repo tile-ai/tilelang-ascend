@@ -54,8 +54,6 @@ public:
 private:
   using arith::IRMutatorWithAnalyzer::IRMutatorWithAnalyzer;
 
-  bool dev_mode_{false};
-
   Var vid_;
 
   int threads_cnt_ = 1;
@@ -88,18 +86,16 @@ private:
       return extents;
     }
     Array<PrimExpr> new_extents;
-    arith::Analyzer analyzer;
 
     for (size_t i=0; i < extents.size(); i++) {
       if (i == 0) {
-        PrimExpr first_extent = analyzer.Simplify(extents[i]);
+        PrimExpr first_extent = analyzer_.Simplify(extents[i]);
         if (const IntImmNode* int_imm = first_extent.as<IntImmNode>()) {
           int64_t new_value = int_imm->value / 2;
           if (new_value < 1) {
             new_value = 1;
           }
           new_extents.push_back(IntImm(first_extent.dtype(), new_value));
-          // TODO:非小于1不需要处理？
         } else if (const CastNode* cast_node = first_extent.as<CastNode>()) {
           if (const IntImmNode* int_imm = cast_node->value.as<IntImmNode>()) {
             int64_t new_value = int_imm->value / 2;
@@ -108,20 +104,19 @@ private:
             }
             new_extents.push_back(IntImm(cast_node->dtype, new_value));
           } else {
-            new_extents.push_back(floordiv(first_extent, 2));
+            new_extents.push_back(indexdiv(first_extent, 2));
           }
         } else {
-          new_extents.push_back(floordiv(first_extent, 2));
+          new_extents.push_back(indexdiv(first_extent, 2));
         }
       } else {
-        new_extents.push_back(extents[i]);
+        new_extents.push_back(VisitExpr(extents[i]));
       }
     }
     return new_extents;
   }
 
   Stmt VisitStmt_(const BlockNode* op) override {
-    // std::cout << "[info]<pass.cc>: visit block ["<< op->name_hint << "] threads_cnt_: " << threads_cnt_ << std::endl;
     if (op->name_hint == "root") {
       return IRMutatorWithAnalyzer::VisitStmt_(op);
     }
@@ -138,11 +133,6 @@ private:
         }
       }
     }
-
-    // for (const auto& [buffer, new_buffer] : buffer_map_) {
-    //   std::cout << "buffer: " << buffer->name << ", shape: " << buffer->shape << '\n';
-    //   std::cout << "new buffer: " << new_buffer->name << ", shape: " << new_buffer->shape << '\n';
-    // }
 
     Stmt new_body = this->VisitStmt(op->body);
 
@@ -317,7 +307,6 @@ private:
         IterVar iter_var = GetRef<IterVar>(iter_var_node);
         // std::cout << "[info]<cc>: iter_var->thread_tag = " << iter_var->thread_tag << std::endl;
         if (iter_var->thread_tag == "threadIdx.x") {
-          dev_mode_ = true;
           vid_ = iter_var->var;
           threads_cnt_ = Downcast<IntImm>(op->value)->value;
           // std::cout << "[info]<pass.cc>: visit attrs vid_: " << vid_ << " threads_cnt_: " << threads_cnt_ << std::endl;
