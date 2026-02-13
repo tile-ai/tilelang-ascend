@@ -246,7 +246,7 @@ private:
         if (ExtentIsEqualOne(ub_region_args[i])) {
           ub_region_args.Set(i, VisitExpr(ub_region_args[i]));
         } else {
-          ub_region_args.Set(i, VisitExpr(indexdiv(ub_region_args[i], threads_cnt_))); // extent的第一维 减半
+          ub_region_args.Set(i, VisitExpr(indexdiv(ub_region_args[i], threads_cnt_)));
         }
       }
     }
@@ -256,11 +256,11 @@ private:
     // Refactor tl.ascend_copy
     Array<PrimExpr> new_copy_args = ascend_copy->args;
     if (src_is_ub) {
-      new_copy_args.Set(0, VisitExpr(modified_ub_region)); // 替换 ub region
-      new_copy_args.Set(1, VisitExpr(modified_region));  // 替换 gm region
+      new_copy_args.Set(0, VisitExpr(modified_ub_region)); // replace ub region
+      new_copy_args.Set(1, VisitExpr(modified_region));  // replace gm region
     } else {
-      new_copy_args.Set(0, VisitExpr(modified_region));  // 替换 gm region
-      new_copy_args.Set(1, VisitExpr(modified_ub_region)); // 替换 ub region
+      new_copy_args.Set(0, VisitExpr(modified_region));  // replace gm region
+      new_copy_args.Set(1, VisitExpr(modified_ub_region)); // replace ub region
     }
     
     for (size_t i = 2; i < new_copy_args.size(); ++i) {
