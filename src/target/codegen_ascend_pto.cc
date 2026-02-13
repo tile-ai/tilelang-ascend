@@ -700,34 +700,6 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) 
     BroadcastOpCodegen(op);
   } else if (op->op.same_as(tl::ascend_select())) {
     SelectCodegen(op);
-  } else if (op->op.same_as(builtin::if_then_else())) {
-      // conditional that skips eval if cond evals to false
-      std::string result = name_supply_->FreshName("condval");
-      std::string cond = PrintExpr(op->args[0]);
-      this->PrintIndent();
-      PrintType(op->dtype, this->stream);
-      this->stream << " " << result << ";\n";
-      this->PrintIndent();
-      this->stream << "if (" << cond << ") {\n";
-      {
-        int then_scope = this->BeginScope();
-        std::string true_val = PrintExpr(op->args[1]);
-        this->PrintIndent();
-        this->stream << result << " = " << true_val << ";\n";
-        this->EndScope(then_scope);
-        this->PrintIndent();
-        this->stream << "} else {\n";
-      }
-      {
-        int else_scope = this->BeginScope();
-        std::string false_val = PrintExpr(op->args[2]);
-        this->PrintIndent();
-        this->stream << result << " = " << false_val << ";\n";
-        this->EndScope(else_scope);
-        this->PrintIndent();
-        this->stream << "}\n";
-      }
-      os << result;
   } else if (op->op.same_as(tl::ascend_dump_tensor())) {
     DumpTensorCodegen(op, "TPRINT");
   } else if (op->op.same_as(tl::ascend_printf())) {
