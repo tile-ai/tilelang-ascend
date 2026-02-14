@@ -1735,7 +1735,7 @@ void CodeGenTileLangAscendPto::BinaryVecOpsCodegen(const CallNode *op,
           ub_data_temp_col_dst = PrintExpr(op->args[4]);
         }
         if (src_offset != "0") {
-        ub_data_temp_col_dst = PrintExpr(op->args[4]);
+          ub_data_temp_col_src = PrintExpr(op->args[4]);
       }
       if (is_call) {
         this->stream << kAscendPtoScope << "binarys_tile<" << kAscendPtoScope << "BinaryOps::" << final_op_name 
