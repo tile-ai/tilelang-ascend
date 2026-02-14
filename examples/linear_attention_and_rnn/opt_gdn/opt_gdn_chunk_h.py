@@ -11,7 +11,7 @@ Calculate the chunk-by-chunk hidden state
 
 pass_configs = {
 	tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
-	tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: False,
+	tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
 }
 
 @tilelang.jit(out_idx=[-2, -1], workspace_idx=[-7, -6, -4], pass_configs=pass_configs)
@@ -108,14 +108,10 @@ def chunk_h_ker(B, H, L, DK, DV, C, BK = None, BV = None, dtype="float16", accum
 
 					#\tilde K = K * exp(g_last - g_i)
 					for i in range((C // VEC_NUM) // 4):
-						tmp0 = coeff_ub[i * 4]
-						tmp1 = coeff_ub[i * 4 + 1]
-						tmp2 = coeff_ub[i * 4 + 2]
-						tmp3 = coeff_ub[i * 4 + 3]
-						T.tile.mul(k_ub[i * 4, :], k_ub[i * 4, :], tmp0)
-						T.tile.mul(k_ub[i * 4 + 1, :], k_ub[i * 4 + 1, :], tmp1)
-						T.tile.mul(k_ub[i * 4 + 2, :], k_ub[i * 4 + 2, :], tmp2)
-						T.tile.mul(k_ub[i * 4 + 3, :], k_ub[i * 4 + 3, :], tmp3)
+						T.tile.mul(k_ub[i * 4, :], k_ub[i * 4, :], coeff_ub[i * 4])
+						T.tile.mul(k_ub[i * 4 + 1, :], k_ub[i * 4 + 1, :], coeff_ub[i * 4 + 1])
+						T.tile.mul(k_ub[i * 4 + 2, :], k_ub[i * 4 + 2, :], coeff_ub[i * 4 + 2])
+						T.tile.mul(k_ub[i * 4 + 3, :], k_ub[i * 4 + 3, :], coeff_ub[i * 4 + 3])
 
 					T.wait_cross_flag(0)
 					T.copy(workspace_1[cid, vid * C // VEC_NUM, 0], u_ub_half)

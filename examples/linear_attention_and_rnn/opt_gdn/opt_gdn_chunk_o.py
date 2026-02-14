@@ -11,7 +11,7 @@ Calculate output, given chunk-by-chunk hidden state
 
 pass_configs = {
 	tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
-	tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: False,
+	tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
 }
 
 @tilelang.jit(out_idx=[-1], workspace_idx=[-4, -3, -2], pass_configs=pass_configs)
@@ -92,14 +92,10 @@ def chunk_o_ker(B, H, L, DK, DV, C, BK = None, BV = None, dtype="float16", accum
 				T.tile.fill(qk_ub, 0.0) # reuse qk_ub as zero buffer temporarily
 				T.copy(g_ub[vid * C // VEC_NUM : (vid + 1) * C // VEC_NUM], g_v_ub) # The g value of current vector core
 				for i in range((C // VEC_NUM) // 4):
-					tmp0 = g_v_ub[i * 4]
-					tmp1 = g_v_ub[i * 4 + 1]
-					tmp2 = g_v_ub[i * 4 + 2]
-					tmp3 = g_v_ub[i * 4 + 3]
-					T.tile.sub(coeff_ub[i * 4, :], g_ub, tmp0)
-					T.tile.sub(coeff_ub[i * 4 + 1, :], g_ub, tmp1)
-					T.tile.sub(coeff_ub[i * 4 + 2, :], g_ub, tmp2)
-					T.tile.sub(coeff_ub[i * 4 + 3, :], g_ub, tmp3)
+					T.tile.sub(coeff_ub[i * 4, :], g_ub, g_v_ub[i * 4])
+					T.tile.sub(coeff_ub[i * 4 + 1, :], g_ub, g_v_ub[i * 4 + 1])
+					T.tile.sub(coeff_ub[i * 4 + 2, :], g_ub, g_v_ub[i * 4 + 2])
+					T.tile.sub(coeff_ub[i * 4 + 3, :], g_ub, g_v_ub[i * 4 + 3])
 				T.tile.sub(coeff_ub, qk_ub, coeff_ub)
 				T.tile.mul(coeff_ub, coeff_ub, msk_ub) # This doesn't effect the result theoretically (because we apply the causal mask again later), but avoids overflow in exp in the next line
 				T.tile.exp(coeff_ub, coeff_ub)
@@ -127,14 +123,10 @@ def chunk_o_ker(B, H, L, DK, DV, C, BK = None, BV = None, dtype="float16", accum
 				T.wait_flag("mte2", "v", 0)
 				T.copy(qs_ub_half, qs_ub) # Q * S
 				for i in range((C // VEC_NUM) // 4):
-					tmp0 = g_v_ub[i * 4]
-					tmp1 = g_v_ub[i * 4 + 1]
-					tmp2 = g_v_ub[i * 4 + 2]
-					tmp3 = g_v_ub[i * 4 + 3]
-					T.tile.mul(qs_ub[i * 4, :], qs_ub[i * 4, :], tmp0)
-					T.tile.mul(qs_ub[i * 4 + 1, :], qs_ub[i * 4 + 1, :], tmp1)
-					T.tile.mul(qs_ub[i * 4 + 2, :], qs_ub[i * 4 + 2, :], tmp2)
-					T.tile.mul(qs_ub[i * 4 + 3, :], qs_ub[i * 4 + 3, :], tmp3)
+					T.tile.mul(qs_ub[i * 4, :], qs_ub[i * 4, :], g_v_ub[i * 4])
+					T.tile.mul(qs_ub[i * 4 + 1, :], qs_ub[i * 4 + 1, :], g_v_ub[i * 4 + 1])
+					T.tile.mul(qs_ub[i * 4 + 2, :], qs_ub[i * 4 + 2, :], g_v_ub[i * 4 + 2])
+					T.tile.mul(qs_ub[i * 4 + 3, :], qs_ub[i * 4 + 3, :], g_v_ub[i * 4 + 3])
 				# qs_ub now stores diag(exp(g)) * Q * S, i.e. Term 1 of the formula (inter-chunk)
 				
 				T.wait_cross_flag(2)

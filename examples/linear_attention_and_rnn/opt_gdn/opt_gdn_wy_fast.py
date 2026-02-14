@@ -9,7 +9,7 @@ W = A * diag(exp(g) * Beta) * K
 '''
 
 pass_configs = {
-	tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: False,
+	tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
 }
 
 @tilelang.jit(out_idx=[-2, -1], workspace_idx=[-4, -3], pass_configs=pass_configs)
