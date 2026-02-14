@@ -4,9 +4,9 @@
 由于晟腾架构中存在cube和vector数量比1:1, 1:2的情况，所以TileLang前端需要显式地用vid来做vector上的数据切分，这样带来的问题是前段表达上暴露了架构细节。为此，本特性旨在实现CV自动配比，从而将前端表达中的vid消除，使用户不再感知，达到屏蔽硬件细节，简化编程的目的。
 
 ## 2. Usage Guide
-非常简单，您只需要通过参数threads=VECNUM来控制您是要启动一个V核还是两个V核即可，其中VEC_NUM取值为1或2，分别对应C:V=1:1, C:V=1:2. 详见例子[matmul_add_developer.py](../../examples/developer_mode/matmul_add_developer.py).
+非常简单，您只需要通过参数threads=VECNUM来控制您是要启动一个V核还是两个V核即可，其中VEC_NUM取值为1或2，分别对应C:V=1:1, C:V=1:2。 threads参数设置时，返回值将只有cid无vid。详见例子[matmul_add_developer.py](../../examples/developer_mode/matmul_add_developer.py).
 ```python
-    # 通过threads参数指定CV配比，仅支持1和2.
+    # 通过threads参数指定CV配比，仅支持1和2
     with T.Kernel(m_num * n_num, threads=2, is_npu=True) as (cid):
         bx = cid // n_num
         by = cid % n_num
@@ -14,7 +14,7 @@
         B_L1 = T.alloc_shared((block_K, block_N), dtype)
 
         C_L0 = T.alloc_fragment((block_M, block_N), accum_dtype)
-
+        # 申请ub内存时，block_M无需除以2来分配到两个vid核，编译pass将会进行除以2操作
         d_ub = T.alloc_shared((block_M, block_N), dtype)
         c_ub = T.alloc_shared((block_M, block_N), dtype)
 
@@ -29,15 +29,19 @@
                 T.gemm_v0(A_L1, B_L1, C_L0)
 
         T.copy(C_L0, workspace[bx * block_M, by * block_N])
-
+        # gm拷贝到ub时，gm中参数无需通过加vid * block_M // VEC_NUM实现切分，编译paas将会进行相关操作
         T.copy(workspace[bx * block_M, by * block_N], c_ub)
         T.copy(D[bx * block_M, by * block_N], d_ub)
 
         T.tile.add(c_ub, c_ub, d_ub)
-
+        # ub拷贝到gm时，gm中参数无需通过加vid * block_M // VEC_NUM实现切分，编译pass将会进行相关操作
         T.copy(c_ub, C[bx * block_M, by * block_N])
 ```
 
 ## 3. Important Limitations
-目前，该特性基于静态维度规则，适用于GM与完整ub_buffer的数据传输
+目前，该特性基于静态维度规则，适用于GM与完整ub_buffer的数据传输。消除是对数据做分块处理，若多vid核本身具备不同职责，比如索引数组搬运等。那不适应于本套消除模式
+
+自动消除的范围：
+- UB分配处理：只对UB做处理
+- UB搬运处理：适用于gm拷贝到ub，ub拷贝到gm，对gm中的参数做起始位置做参数偏移处理，支持gm切片、多维等情况，ub需要是完整buffer
 
