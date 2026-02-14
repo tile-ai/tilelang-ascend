@@ -3636,15 +3636,17 @@ void CodeGenTileLangNPUIRDEV::VisitStmt_(const DeclBufferNode *op) {
   VisitStmt(op->body);
 }
 
+void CodeGenTileLangNPUIRDEV::LoopCarriedVarCollector::CheckVar(
+    const tir::VarNode *var_node) {
+  if (var_node && outer_->GetVarValue(var_node) != mlir::Value{} &&
+      vars_set_.find(var_node) == vars_set_.end()) {
+    vars_set_.insert(var_node);
+    loop_carried_vars_.push_back(var_node);
+  }
+}
+
 void CodeGenTileLangNPUIRDEV::LoopCarriedVarCollector::VisitExpr_(
     const tir::CallNode *call) {
-  auto check_var = [&](const tir::VarNode *var_node) {
-    if (var_node && outer_->GetVarValue(var_node) != mlir::Value{} &&
-        vars_set_.find(var_node) == vars_set_.end()) {
-      vars_set_.insert(var_node);
-      loop_carried_vars_.push_back(var_node);
-    }
-  };
   auto process_call_arg = [&](int arg_index) {
     auto &arg = call->args[arg_index];
     if (arg.as<IntImm>() || arg.as<FloatImm>()) {
@@ -3653,15 +3655,15 @@ void CodeGenTileLangNPUIRDEV::LoopCarriedVarCollector::VisitExpr_(
       const CallNode *region_node = arg.as<CallNode>();
       if (region_node) {
         tvm::tl::RegionOp regionop(region_node->args, outer_->vmap);
-        check_var(regionop.GetBuffer()->data.get());
+        CheckVar(regionop.GetBuffer()->data.get());
       }
     }
   };
   if (call->op.same_as(Op::Get("tl.npuir_dot"))) {
     tvm::tl::NpuirDot npuirop(call->args, outer_->vmap);
-    check_var(npuirop.src0->data.get());
-    check_var(npuirop.src1->data.get());
-    check_var(npuirop.dst->data.get());
+    CheckVar(npuirop.src0->data.get());
+    CheckVar(npuirop.src1->data.get());
+    CheckVar(npuirop.dst->data.get());
   } else if (call->op.same_as(Op::Get("tl.npuir_add")) ||
              call->op.same_as(Op::Get("tl.npuir_sub")) ||
              call->op.same_as(Op::Get("tl.npuir_mul")) ||
@@ -3680,46 +3682,46 @@ void CodeGenTileLangNPUIRDEV::LoopCarriedVarCollector::VisitExpr_(
     process_call_arg(2);
   } else if (call->op.same_as(Op::Get("tl.npuir_reduce"))) {
     tvm::tl::NpuirReduce npuirop(call->args, outer_->vmap);
-    check_var(npuirop.src->data.get());
-    check_var(npuirop.dst->data.get());
+    CheckVar(npuirop.src->data.get());
+    CheckVar(npuirop.dst->data.get());
   } else if (call->op.same_as(Op::Get("tl.npuir_exp"))) {
     tvm::tl::NpuirExp npuirop(call->args, outer_->vmap);
-    check_var(npuirop.src->data.get());
-    check_var(npuirop.dst->data.get());
+    CheckVar(npuirop.src->data.get());
+    CheckVar(npuirop.dst->data.get());
   } else if (call->op.same_as(Op::Get("tl.npuir_ln"))) {
     tvm::tl::NpuirLn npuirop(call->args, outer_->vmap);
-    check_var(npuirop.src->data.get());
-    check_var(npuirop.dst->data.get());
+    CheckVar(npuirop.src->data.get());
+    CheckVar(npuirop.dst->data.get());
   } else if (call->op.same_as(Op::Get("tl.npuir_sqrt"))) {
     tvm::tl::NpuirSqrt npuirop(call->args, outer_->vmap);
-    check_var(npuirop.src->data.get());
-    check_var(npuirop.dst->data.get());
+    CheckVar(npuirop.src->data.get());
+    CheckVar(npuirop.dst->data.get());
   } else if (call->op.same_as(Op::Get("tl.npuir_rsqrt"))) {
     tvm::tl::NpuirSqrt npuirop(call->args, outer_->vmap);
-    check_var(npuirop.src->data.get());
-    check_var(npuirop.dst->data.get());
+    CheckVar(npuirop.src->data.get());
+    CheckVar(npuirop.dst->data.get());
   } else if (call->op.same_as(Op::Get("tl.npuir_rec"))) {
     tvm::tl::NpuirRec npuirop(call->args, outer_->vmap);
-    check_var(npuirop.src->data.get());
-    check_var(npuirop.dst->data.get());
+    CheckVar(npuirop.src->data.get());
+    CheckVar(npuirop.dst->data.get());
   } else if (call->op.same_as(Op::Get("tl.npuir_not"))) {
     tvm::tl::NpuirNot npuirop(call->args, outer_->vmap);
-    check_var(npuirop.src->data.get());
-    check_var(npuirop.dst->data.get());
+    CheckVar(npuirop.src->data.get());
+    CheckVar(npuirop.dst->data.get());
   } else if (call->op.same_as(Op::Get("tl.npuir_abs"))) {
     tvm::tl::NpuirAbs npuirop(call->args, outer_->vmap);
-    check_var(npuirop.src->data.get());
-    check_var(npuirop.dst->data.get());
+    CheckVar(npuirop.src->data.get());
+    CheckVar(npuirop.dst->data.get());
   } else if (call->op.same_as(Op::Get("tl.npuir_relu"))) {
     tvm::tl::NpuirRelu npuirop(call->args, outer_->vmap);
-    check_var(npuirop.src->data.get());
-    check_var(npuirop.dst->data.get());
+    CheckVar(npuirop.src->data.get());
+    CheckVar(npuirop.dst->data.get());
   } else if (call->op.same_as(Op::Get("tl.ascend_copy"))) {
     tvm::tl::AscendCopy npuirop(call->args, outer_->vmap);
     mlir::Value dst = outer_->GetVarValue(npuirop.dst);
     if (dst != mlir::Value{}) {
       if (dst.getType().isa<mlir::TensorType>()) {
-        check_var(npuirop.dst->data.get());
+        CheckVar(npuirop.dst->data.get());
       }
     }
   }
@@ -3727,15 +3729,9 @@ void CodeGenTileLangNPUIRDEV::LoopCarriedVarCollector::VisitExpr_(
 }
 
 void CodeGenTileLangNPUIRDEV::LoopCarriedVarCollector::VisitStmt_(const tir::BufferStoreNode* op) {
-  auto check_var = [&](const tir::VarNode *var_node) {
-    if (var_node && outer_->GetVarValue(var_node) != mlir::Value{} &&
-        vars_set_.find(var_node) == vars_set_.end()) {
-      vars_set_.insert(var_node);
-      loop_carried_vars_.push_back(var_node);
-    }
-  };
-
-  check_var(op->buffer->data.get());
+  mlir::Value dst = outer_->GetVarValue(op->buffer);
+  if (dst != mlir::Value{} && dst.getType().isa<mlir::TensorType>())
+    CheckVar(op->buffer->data.get());
 }
 
 } // namespace codegen

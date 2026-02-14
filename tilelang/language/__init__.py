@@ -47,8 +47,6 @@ from .allocate import (
     alloc_ub,  # noqa: F401
 )
 from .copy import copy, c2d_im2col  # noqa: F401, F811
-# from .gemm import GemmWarpPolicy, gemm  # noqa: F401
-from .fill import fill, clear  # noqa: F401
 from .reduce import (
     reduce,  # noqa: F401
     reduce_max,  # noqa: F401
@@ -99,7 +97,8 @@ from .customize_npuir import (
     npuir_store_fixpipe,
     npuir_brc,
     npuir_brc as vbrc,
-    npuir_fill, 
+    npuir_fill,
+    npuir_fill as fill,
     npuir_clear,
     npuir_cast,
     npuir_cast as vcast,

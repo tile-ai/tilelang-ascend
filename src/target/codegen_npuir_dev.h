@@ -381,6 +381,8 @@ private:
     CodeGenTileLangNPUIRDEV* outer_;
     std::vector<const VarNode*>& loop_carried_vars_;
     std::unordered_set<const VarNode *> vars_set_;
+
+    void CheckVar(const tir::VarNode* var_node);
     
   public:
     LoopCarriedVarCollector(CodeGenTileLangNPUIRDEV* outer, 
