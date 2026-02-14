@@ -686,10 +686,10 @@ private:
       }
       return BufferLoad(it->second, op->indices);
     }
-      
+ 
     return StmtExprMutator::VisitExpr_(op);
   }
-    
+
   Stmt VisitStmt_(const BufferStoreNode* op) override {
     auto buffer = op->buffer;
     auto it = original_to_corrected_.find(buffer);
