@@ -131,6 +131,8 @@ private:
 
   void SelectCodegen(const CallNode *op);
 
+  std::vector<std::string> GetGlobalTensorShapes(const CallNode *op, std::string tensor_addr);
+
   std::string PrintBufferOffset(const CallNode *op);
   void UbShapeInputCheck(const AllocateNode *op);
   bool ValidLayoutEnabled(const AllocateNode *op);

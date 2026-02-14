@@ -715,6 +715,38 @@ std::string CodeGenTileLangAscendPto::PrintBufferOffset(const CallNode *op) {
     return _var_name;
 }
 
+std::vector<std::string> CodeGenTileLangAscendPto::GetGlobalTensorShapes(const CallNode *op, std::string tensor_addr) {
+  auto srcN = PrintExpr(op->args[3]);
+  int count = 0;
+  auto srcN_tmp = 0;
+  if (srcN[0] >= '1' && srcN[0] <= '9') {
+    srcN_tmp = std::stoi(srcN);
+    for (int i = global_tensor_template[String(tensor_addr)].shape_list.size() - 1; i >= 0; i --) {
+      count ++;
+      srcN_tmp = srcN_tmp / std::stoi(global_tensor_template[String(tensor_addr)].shape_list[i]);
+      if (srcN_tmp == 1) {
+        break;
+      }
+    }
+  }
+  std::vector<std::string> global_tensor_shapes;
+  auto size = global_tensor_template[String(tensor_addr)].shape_list.size();
+  for (int i = 0; i < size; i++) {
+      global_tensor_shapes.push_back(global_tensor_template[String(tensor_addr)].shape_list[i]);
+  }
+  if (count == 2) {
+      global_tensor_shapes.pop_back();
+      global_tensor_shapes.pop_back();
+      global_tensor_shapes.push_back(srcN);
+  } else if (count == 3) {
+      global_tensor_shapes.pop_back();
+      global_tensor_shapes.pop_back();
+      global_tensor_shapes.pop_back();
+      global_tensor_shapes.push_back(srcN);
+  }
+  return global_tensor_shapes;
+}
+
 void CodeGenTileLangAscendPto::CallExternCodegen(const CallNode *op) {
   std::string op_name = Downcast<StringImm>(op->args[0])->value;
   if (op_name.find("tl::ascend::copy") != std::string::npos) {
@@ -841,11 +873,11 @@ void CodeGenTileLangAscendPto::CallExternCodegen(const CallNode *op) {
               shape_template += ", ";
             }
         }
-        // shape_template += ">";
-        // generate stride
+        std::vector<std::string> global_tensor_shapes = GetGlobalTensorShapes(op, tensor_addr);
+        size_t len = global_tensor_shapes.size();
         for (size_t i = 0; i < 4; i++) {
           if (len > 3 - i) {
-            std::string tensor_template = global_tensor_template[String(tensor_addr)].shape_list[len + i - 4];
+            std::string tensor_template = global_tensor_shapes[len + i - 4];
             if (tensor_template[0] < '1' || tensor_template[0] > '9')  {
               stride_template += "-1, ";
               dynamic_names.push_back(tensor_template);
@@ -853,7 +885,7 @@ void CodeGenTileLangAscendPto::CallExternCodegen(const CallNode *op) {
             else {
               std::string tmp_shape = "";
               for(size_t j = 0; j < 4 - i; j++) {
-                tmp_shape += global_tensor_template[String(tensor_addr)].shape_list[len - j - 1];
+                tmp_shape += global_tensor_shapes[len - j - 1];
                 if (j < 3 - i) tmp_shape += " * ";
               }
               stride_template = stride_template +  tmp_shape + ", ";
@@ -1065,6 +1097,12 @@ void CodeGenTileLangAscendPto::GemmV0Codegen(const CallNode *op) {
   auto b_name = var_idmap_[b_var];
   auto c_name = var_idmap_[c_var];
 
+  std::map<std::string, std::string> params = extractTemplateParams(op_name);
+  uint32_t K = std::stoi(params["K"]);
+  uint32_t kL0Size = 128;          // L0切片大小，适配64K内存限制
+  uint32_t kL0split = (K + kL0Size - 1) / kL0Size;  // 切片数量
+  uint32_t kL0Tail = K - (kL0split - 1) * kL0Size;  // 最后一块大小
+
   if (prefetch_n_stages_map_[a_name].first > 0) {
     auto a_k = op->args[1].as<CallNode>()->args[2] / op->args[1].as<CallNode>()->args[3];
     tvm::arith::Analyzer analyzer;
@@ -1078,7 +1116,7 @@ void CodeGenTileLangAscendPto::GemmV0Codegen(const CallNode *op) {
     << GetValidShape(std::stoi(params["M"]), data_type_input) << ", "
     << GetValidShape(std::stoi(params["N"]), data_type_input) << ", "
     << GetValidShape(std::stoi(params["K"]), data_type_input) << ", "
-    << params["M"] << ", " << params["N"] << ", " << params["K"] << ", "
+    << params["M"] << ", " << params["N"] << ", " << params["K"] << ", " << kL0Tail << ", "
     << params["transpose_A"] << ", " << params["transpose_B"] << ">"
     << "(" << a_name << "[" << simplified_a_k << "], " << b_name << "[" << simplified_a_k << "], " << c_name << ", " << PrintExpr(op->args[4]) << ");\n";
   } else {
@@ -1088,11 +1126,10 @@ void CodeGenTileLangAscendPto::GemmV0Codegen(const CallNode *op) {
     << GetValidShape(std::stoi(params["M"]), data_type_input) << ", "
     << GetValidShape(std::stoi(params["N"]), data_type_input) << ", "
     << GetValidShape(std::stoi(params["K"]), data_type_input) << ", "
-    << params["M"] << ", " << params["N"] << ", " << params["K"] << ", "
+    << params["M"] << ", " << params["N"] << ", " << params["K"] << ", "  << kL0Tail << ", "
     << params["transpose_A"] << ", " << params["transpose_B"] << ">"
     << "(" << a_name << ", " << b_name << ", " << c_name << ", " << PrintExpr(op->args[4]) << ");\n";
   }
-
 }
 
 void CodeGenTileLangAscendPto::GemmV1Codegen(const CallNode *op) {
