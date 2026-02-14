@@ -686,7 +686,7 @@ private:
       }
       return BufferLoad(it->second, op->indices);
     }
- 
+
     return StmtExprMutator::VisitExpr_(op);
   }
 
