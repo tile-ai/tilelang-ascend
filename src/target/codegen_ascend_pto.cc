@@ -849,7 +849,6 @@ void CodeGenTileLangAscendPto::CallExternCodegen(const CallNode *op) {
         std::string tensor_addr = copy_base_addr_map_[String(src_var_id)];
         std::string tensor_template = "<" + global_tensor_template[String(tensor_addr)].dtype;
         std::string shape_template = "", stride_template = "", valid_template = "";
-        size_t len = global_tensor_template[String(tensor_addr)].shape_list.size();
         size_t shape_len = 2;
         size_t op_arg_len = op->args.size();
         size_t shape_size = 5;
