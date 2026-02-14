@@ -177,6 +177,87 @@ getBroadcastDim(const Array<PrimExpr> &buffer_shape0,
   return dims;
 }
 
+// Merge consecutive leading size-1 dimensions into one.
+static Array<PrimExpr> MergeLeadingOnes(const Array<PrimExpr> &shape) {
+  if (shape.empty()) return shape;
+  size_t i = 0;
+  while (i < shape.size()) {
+    const int64_t *v = as_const_int(shape[i]);
+    if (!v || *v != 1) break;
+    i++;
+  }
+  if (i == 0) return shape;
+  Array<PrimExpr> out;
+  out.push_back(IntImm(DataType::Int(32), 1));
+  for (size_t j = i; j < shape.size(); j++) out.push_back(shape[j]);
+  return out;
+}
+
+// Align two shapes to same rank by prepending 1 to the shorter.
+static void AlignShapesForBroadcast(Array<PrimExpr> &buffer_shape0,
+                                    Array<PrimExpr> &buffer_shape1) {
+  auto prepend_one = [](Array<PrimExpr> shape) {
+    Array<PrimExpr> out;
+    out.push_back(IntImm(DataType::Int(32), 1));
+    for (size_t i = 0; i < shape.size(); i++) {
+      out.push_back(shape[i]);
+    }
+    return out;
+  };
+  while (buffer_shape0.size() < buffer_shape1.size()) {
+    buffer_shape0 = prepend_one(buffer_shape0);
+  }
+  while (buffer_shape1.size() < buffer_shape0.size()) {
+    buffer_shape1 = prepend_one(buffer_shape1);
+  }
+}
+
+// After merging leading 1s and aligning rank, compute broadcast dims for vadd-like binary vector ops.
+static llvm::SmallVector<int64_t> MergeAndAlignForBinaryBroadcast(
+    Array<PrimExpr> shape0, Array<PrimExpr> shape1) {
+  if (shape0.empty() || shape1.empty()) return {};
+  shape0 = MergeLeadingOnes(shape0);
+  shape1 = MergeLeadingOnes(shape1);
+  AlignShapesForBroadcast(shape0, shape1);
+  return getBroadcastDim(shape0, shape1);
+}
+
+// Collapse leading size-1 dims of tensor to reduce rank to target_rank for HIVM binary op same-rank requirement.
+static mlir::Value SqueezeLeadingOneDimsTensor(mlir::OpBuilder &builder,
+                                               mlir::Value tensor, int target_rank) {
+  auto ty = tensor.getType().cast<mlir::RankedTensorType>();
+  int rank = ty.getRank();
+  if (rank <= target_rank) return tensor;
+  int leading_ones = rank - target_rank;
+  llvm::SmallVector<mlir::ReassociationIndices> reassoc;
+  {
+    mlir::ReassociationIndices first;
+    for (int i = 0; i <= leading_ones; i++) first.push_back(i);
+    reassoc.push_back(first);
+  }
+  for (int i = leading_ones + 1; i < rank; i++) {
+    reassoc.push_back({i});
+  }
+  llvm::SmallVector<int64_t> result_shape;
+  int64_t first_size = 1;
+  auto shape = ty.getShape();
+  for (int i = 0; i <= leading_ones; i++) {
+    int64_t d = shape[i];
+    if (mlir::ShapedType::isDynamic(d)) {
+      first_size = mlir::ShapedType::kDynamic;
+      break;
+    }
+    first_size *= d;
+  }
+  result_shape.push_back(first_size);
+  for (int i = leading_ones + 1; i < rank; i++) {
+    result_shape.push_back(shape[i]);
+  }
+  auto result_ty = mlir::RankedTensorType::get(result_shape, ty.getElementType());
+  return builder.create<mlir::tensor::CollapseShapeOp>(
+      builder.getUnknownLoc(), result_ty, tensor, reassoc);
+}
+
 static llvm::SmallVector<int64_t>
 getBroadcastDim(const Array<PrimExpr> &buffer_shape0,
                 const std::vector<int64_t> &buffer_shape1) {
@@ -2593,6 +2674,16 @@ void CodeGenTileLangNPUIRDEV::CreateHIVMBinaryVectorOp(const CallNode *op) {
   Array<PrimExpr> buffer_shape0, buffer_shape1;
   processImm(src0, 0, buffer_shape0);
   processImm(src1, 1, buffer_shape1);
+  // HIVM binary vector ops require same rank; squeeze leading 1-dims if needed.
+  if (src0.getType().isa<mlir::TensorType>() && src1.getType().isa<mlir::TensorType>()) {
+    int r0 = src0.getType().cast<mlir::TensorType>().getRank();
+    int r1 = src1.getType().cast<mlir::TensorType>().getRank();
+    if (r0 != r1) {
+      int target_rank = std::min(r0, r1);
+      if (r0 > target_rank) src0 = SqueezeLeadingOneDimsTensor(builder, src0, target_rank);
+      if (r1 > target_rank) src1 = SqueezeLeadingOneDimsTensor(builder, src1, target_rank);
+    }
+  }
   // dst
   const CallNode *region_node_dst = op->args[2].as<CallNode>();
 
@@ -2610,7 +2701,7 @@ void CodeGenTileLangNPUIRDEV::CreateHIVMBinaryVectorOp(const CallNode *op) {
   mlir::DenseI64ArrayAttr transpose = builder.getDenseI64ArrayAttr({});
   // broadcast
   llvm::SmallVector<int64_t> dims =
-      getBroadcastDim(buffer_shape0, buffer_shape1);
+      MergeAndAlignForBinaryBroadcast(buffer_shape0, buffer_shape1);
   mlir::DenseI64ArrayAttr broadcast = builder.getDenseI64ArrayAttr(dims);
 
   // Create hivm::op
