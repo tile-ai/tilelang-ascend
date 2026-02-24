@@ -954,7 +954,9 @@ class NPUUtils(object):
         return self.get_device_properties("npu")["num_vectorcore"]
 
 class JitKernel_NPU:
-    def __init__(self, metadata: dict) -> None:
+    def __init__(self, metadata: dict, out_idx=None) -> None:
+        self.out_idx = out_idx  
+        self.param_info = metadata.get('param_info', [])
         # 1 launch path
         self.so_launcher_path = f"{metadata['kernel_name']}.so"
         self.utils_name = f"{metadata['name']}"
@@ -1039,6 +1041,84 @@ class JitKernel_NPU:
             raise ValueError(f"Failed to evaluate grid expression '{result}': {e}")
 
     def __call__(self, *args: Any) -> Any:
+        # calculate the input params：total_params - out_params
+        total_params = len(self.param_info)
+        num_inputs = total_params - (len(self.out_idx) if self.out_idx is not None else 0)
+        
+        if len(args) != num_inputs:
+            raise ValueError(f"Expected {num_inputs} input tensors (total_params={total_params}, out_idx={self.out_idx}), got {len(args)}")
+        
+        self._calcu_grid(*args)
+        
+        # build the mapping from original inputs to the args position
+        orig_to_input = {}
+        input_pos = 0
+        for i, info in enumerate(self.param_info):
+            if not info['is_output']:
+                orig_to_input[i] = input_pos
+                input_pos += 1
+        
+        # build the symbolic var names to extra_args indices
+        sym_name_to_extra_idx = {}
+        if hasattr(self, 'symbolic') and self.symbolic:
+            for idx, sym_var in enumerate(self.symbolic.keys()):
+                sym_name_to_extra_idx[sym_var.name] = idx
+        
+        full_args = [None] * total_params
+        input_ptr = 0
+        output_created = []
+        
+        for i, info in enumerate(self.param_info):
+            if info['is_output']:
+                # create output tensor
+                dtype = info['dtype']
+                
+                # analyze the shape, replace the symbolic variables with actual values
+                shape = []
+                for dim in info['shape']:
+                    if isinstance(dim, tir.Var):
+                        var_name = dim.name
+                        
+                        # try to get the shape from input tensors
+                        if var_name in self.symbolic:
+                            tensor_idx, dim_idx = self.symbolic[var_name]
+                            if tensor_idx in orig_to_input:
+                                input_arg = args[orig_to_input[tensor_idx]]
+                                actual_dim = input_arg.shape[dim_idx]
+                                shape.append(actual_dim)
+                                continue
+                        
+                        # get the shape from extra_args
+                        if var_name in sym_name_to_extra_idx:
+                            extra_idx = sym_name_to_extra_idx[var_name]
+                            if extra_idx < len(self.extra_args):
+                                shape.append(self.extra_args[extra_idx])
+                            else:
+                                raise ValueError(f"Symbolic variable {var_name} not found in extra_args")
+                        else:
+                            raise ValueError(f"Unknown symbolic variable {var_name}")
+                    else:
+                        shape.append(int(dim))
+                
+                # create a 1D tensor if shape is none
+                if not shape:
+                    shape = [1]
+                
+                device = args[0].device if args else torch.device('cpu')
+                
+                # create the output tensor
+                tensor = torch.empty(shape, dtype=dtype, device=device)
+                output_created.append(tensor)
+                full_args[i] = tensor
+            else:
+                # input tensor
+                full_args[i] = args[input_ptr]
+                input_ptr += 1
+        
+        # append extra_args to full_args
+        full_args.extend(self.extra_args)
+        
+        # run kernel
         npu_utils = NPUUtils()
         t_module, t_function, t_n_regs, t_n_spills = npu_utils.load_binary(
             self.utils_name,
@@ -1047,8 +1127,7 @@ class JitKernel_NPU:
             self.utils_device,
             self.mix_mode,
         )
-        self._calcu_grid(*args)
-        return self.launch_npu(
+        self.launch_npu(
             self.launch_grid[0],
             self.launch_grid[1],
             self.launch_grid[2],
@@ -1058,17 +1137,32 @@ class JitKernel_NPU:
             self.launch_metadata,
             self.launch_enter_hook,
             self.launch_exit_hook,
-            *args,
-            *self.extra_args
+            *full_args  
         )
+        
+        if self.out_idx is None:
+            return None
+        if len(self.out_idx) == 1:
+            return full_args[self.out_idx[0]]
+        else:
+            return [full_args[i] for i in self.out_idx]
 
 
 class compiler_npu:
     def __init__(self) -> None:
         pass
 
-    def compile(self, mod: PrimFunc) -> JitKernel_NPU:
+    def compile(self, mod: PrimFunc, out_idx=None) -> JitKernel_NPU:
+        self.original_mod = mod
+        # extract_param_info
+        param_info = self._extract_param_info(mod, out_idx)
+        # process negative out_idx
+        if out_idx is not None:
+            total_params = len(param_info)
+            out_idx = [i if i >= 0 else total_params + i for i in out_idx]
         self.metadata = {}
+        self.metadata["out_idx"] = out_idx
+        self.metadata["param_info"] = param_info
         self.mod, self.metadata["symbolic"] = _symbolic_var_promoter_pass(mod)
         # get grid message
         self._parse_grid()
@@ -1108,7 +1202,64 @@ class compiler_npu:
         self.so_launcher_path = self.make_npu_launcher_stub(
             self.metadata["kernel_name"], self.wrapper_src
         )
-        return JitKernel_NPU(metadata=self.metadata)
+        
+        return JitKernel_NPU(metadata=self.metadata, out_idx=out_idx)
+
+    def _extract_param_info(self, func: PrimFunc, out_idx):
+        """
+        Extract parameter information from PrimFunc.
+        
+        Returns a list of dicts, each containing:
+            - dtype: torch.dtype of the parameter
+            - shape: list of dimensions (may contain tir.Var for dynamic shapes)
+            - is_output: bool indicating if this parameter is an output tensor
+        """
+        buffer_map = func.buffer_map
+        params = func.params
+        info_list = []
+
+        # Convert out_idx to positive indices
+        total_params = len(params)
+        pos_out_idx = None
+        if out_idx is not None:
+            pos_out_idx = {i if i >= 0 else total_params + i for i in out_idx}
+        for i, param in enumerate(params):
+            if param in buffer_map:
+                # Tensor parameter (has buffer)
+                buffer = buffer_map[param]
+                dtype_str = str(buffer.dtype)
+                torch_dtype = self._tvm_dtype_to_torch(dtype_str)
+                shape_expr = list(buffer.shape)
+                is_output = (pos_out_idx is not None and i in pos_out_idx)
+                info_list.append({
+                    'dtype': torch_dtype,
+                    'shape': shape_expr,
+                    'is_output': is_output
+                })
+            else:
+                # scalar param
+                torch_dtype = torch.float32  
+                if hasattr(self, 'signature') and i in self.signature:
+                    dtype_str = self.signature[i]
+                    torch_dtype = self._tvm_dtype_to_torch(dtype_str)
+                    info_list.append({
+                        'dtype': torch_dtype,
+                        'shape': [],
+                        'is_output': False
+                    })
+        return info_list
+
+    def _tvm_dtype_to_torch(self, dtype_str):
+        mapping = {
+            'float16': torch.float16,
+            'float32': torch.float32,
+            'int8': torch.int8,
+            'int16': torch.int16,
+            'int32': torch.int32,
+            'int64': torch.int64,
+            'bool': torch.bool,
+        }
+        return mapping.get(dtype_str, torch.float32)
 
     def _parse_grid(self):
         launcher = LaunchThreadExtractor()
