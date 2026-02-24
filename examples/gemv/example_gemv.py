@@ -49,7 +49,7 @@ def naive_gemv_high_perf(
     accum_dtype: str = "float32"
 ):
     @T.prim_func
-    def main(
+    def naive_gemv_hp(
         A: T.Tensor((K,), dtype),
         B: T.Tensor((N, K), dtype),
         C: T.Tensor((N,), dtype),
@@ -62,10 +62,10 @@ def naive_gemv_high_perf(
             for bk in T.serial(T.ceildiv(K, BLOCK_K)):
                 T.copy(A[bk * BLOCK_K:(bk + 1)*BLOCK_K], A_shared[:, 0])
                 T.copy(B[cid*BLOCK_N, bk*BLOCK_K], B_shared)
-                T.npuir_dot(B_shared, A_shared, C_shared,initC=False)
+                T.npuir_dot(B_shared, A_shared, C_shared, initC=False)
             T.copy(C_shared[:,0], C[cid*BLOCK_N:(cid+1)*BLOCK_N])
 
-    return main
+    return naive_gemv_hp
 
 @tl.jit(target="npuir")
 def naive_splitk_gemv(
@@ -106,7 +106,7 @@ def naive_splitk_gemv_high_perf(
     accum_dtype: str = "float32"
 ):
     @T.prim_func
-    def main(
+    def naive_splitk_gemv_hp(
         A: T.Tensor((K,), dtype),
         B: T.Tensor((N, K), dtype),
         C: T.Tensor((N,), dtype),
@@ -122,7 +122,7 @@ def naive_splitk_gemv_high_perf(
                     T.copy(B[cid*BLOCK_N + tn, bk*BLOCK_K:(bk+1)*BLOCK_K], B_shared)
                     T.npuir_dot(B_shared, A_shared, C_accum, initC=False)
                 T.copy(C_accum[0,0], C[cid*BLOCK_N + tn:(cid)*BLOCK_N + tn + 1])
-    return main
+    return naive_splitk_gemv_hp
 
 def main():
     parser = argparse.ArgumentParser(description="GEMV Example")
@@ -131,17 +131,21 @@ def main():
     args, _ = parser.parse_known_args()
     N, K = args.n, args.k
     # kernel = naive_gemv(N, K, 128, 128)
-    # kernel = naive_gemv_high_perf(N, K, 128, 128)
+    kernel1 = naive_gemv_high_perf(N, K, 128, 128)
     # kernel = naive_splitk_gemv(N, K, 128, 128)
-    kernel = naive_splitk_gemv_high_perf(N, K, 128, 128)
+    kernel2 = naive_splitk_gemv_high_perf(N, K, 128, 128)
 
     A = torch.randn((K,), dtype=torch.float16).npu()
     B = torch.randn((N, K), dtype=torch.float16).npu()
     C = torch.randn((N,), dtype=torch.float16).npu()
-    kernel(A, B, C)
+    kernel1(A, B, C)
     print(C)
     res = torch.matmul(B,A)
     print(res)
+    torch.testing.assert_close(C, res, rtol=1e-2, atol=1e-2)
+
+    kernel2(A, B, C)
+    print(C)
     torch.testing.assert_close(C, res, rtol=1e-2, atol=1e-2)
     print("\033[92mAll check passed!\033[0m")
 
