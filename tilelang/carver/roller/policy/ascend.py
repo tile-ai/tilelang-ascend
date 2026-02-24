@@ -171,6 +171,24 @@ class AscendDefaultPolicy(DefaultPolicy):
         
         return ((size + alignment - 1) // alignment) * alignment
 
+    def calc_numel_threshold(self, steps):
+        dtype_bytes = (self.output_nodes[0].get_dtype().bits + 7) // 8
+        print(dtype_bytes)
+        self.max_numel_threshold = self.ub_capacity // dtype_bytes
+
+        self.max_total_numel = 1
+        for _steps in steps:
+            self.max_total_numel *= _steps[len(steps) - 1]
+
+        self.tiny_kernel = self.max_total_numel < 128 * 1024
+        self.stop_numel = min(1024 // dtype_bytes, self.max_total_numel // (self.num_ai_cores * 2)) if self.tiny_kernel else 1024 // dtype_bytes
+
+    def calculate_tile_numel(self, hint):
+        tile_numel = 1
+        for axis in range(len(hint.block)):
+            tile_numel *= hint.block[axis]
+
+        return tile_numel
     # ==================== Tile Search (adapted for SIMD) ====================
     
     def dfs_smem_tile(self, init_tile, rstep_map) -> Iterable[TileDict]:
@@ -185,6 +203,8 @@ class AscendDefaultPolicy(DefaultPolicy):
         _steps = [get_all_factors(n) for n in self.output_nodes[0].get_space_dim()]
         steps = [step[step.index(t):] for step, t in zip(_steps, init_tile)]
         logger.debug(f"Initial steps: {steps}")
+
+        self.calc_numel_threshold(steps)
         
         # Add SIMD-friendly tile sizes (multiples of common SIMD widths)
         simd_friendly_sizes = [16, 32, 64, 128, 256]
@@ -551,8 +571,8 @@ class AscendCubePolicy(AscendDefaultPolicy):
     def cube_k(self) -> int:
         return self.cube_dim
 
-    def _init_with_prim_func(self, func: tvm.tir.PrimFunc, name: str = "PrimFuncNode"):
-        super()._init_with_prim_func(func, name)
+    def _init_with_prim_func(self, func: tvm.tir.PrimFunc, name: str = "PrimFuncNode", custom_mem_mul: float = 1):
+        super()._init_with_prim_func(func, name, custom_mem_mul)
         self._legalize_cube_info()
         return self
 

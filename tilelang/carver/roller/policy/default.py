@@ -41,8 +41,9 @@ class DefaultPolicy:
                        func: tvm.tir.PrimFunc,
                        arch: TileDevice,
                        tags: Optional[Dict] = None,
-                       name: str = "PrimFuncNode"):
-        return cls(arch, tags)._init_with_prim_func(func, name)
+                       name: str = "PrimFuncNode",
+                       custom_mem_mul: float = 1):
+        return cls(arch, tags)._init_with_prim_func(func, name, custom_mem_mul)
 
     @classmethod
     def from_output_nodes(cls,
@@ -53,12 +54,14 @@ class DefaultPolicy:
 
     def _init_with_prim_func(self,
                              func: tvm.tir.PrimFunc,
-                             name: str = "PrimFuncNode") -> "DefaultPolicy":
+                             name: str = "PrimFuncNode",
+                             custom_mem_mul: float = 1) -> "DefaultPolicy":
         if func is not None and isinstance(func, tvm.tir.PrimFunc):
             self.func = func
             self.prim_func_node = PrimFuncNode(self.func, tags=self.tags, name=name)
         else:
             raise NotImplementedError("Only support PrimFunc for now")
+        self.custom_mem_mul = custom_mem_mul
         output_nodes = [OutputNode(self.prim_func_node)]
         self._init_with_output_nodes(output_nodes)
         return self
@@ -102,7 +105,18 @@ class DefaultPolicy:
                     break
             if len(results) >= topk:
                 break
-        return results
+
+        verified_results = []
+        for result in results:
+            tile_numel = self.calculate_tile_numel(result)
+            stop_numel_threshold = 0 if len(verified_results) < 10 or self.tiny_kernel else self.stop_numel + 100
+            if (
+                tile_numel <= self.max_numel_threshold
+                and tile_numel >= stop_numel_threshold
+            ):
+                verified_results.append(result)
+
+        return verified_results
 
     def dfs_smem_tile(self, init_tile, rstep_map) -> Iterable[TileDict]:
         _steps = [get_all_factors(n) for n in self.output_nodes[0].get_space_dim()]
@@ -513,8 +527,10 @@ class DefaultPolicy:
                     output_elem = stride.compute_elements_from_shape(td.get_tile(node))
                     block_map[(node, edge.src_id)] = allocator.malloc(output_elem * dtype_bytes)
 
+        custom_mem_limit = allocator.limit * self.custom_mem_mul 
+
         assert len(block_map) == 0
-        return allocator.limit, cached_tensors_map
+        return custom_mem_limit, cached_tensors_map
 
     def compute_node_stride_map(self, node: PrimFuncNode, td: TileDict):
         """

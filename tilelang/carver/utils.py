@@ -157,7 +157,8 @@ def get_roller_hints_from_func(func_or_module: Union[tir.PrimFunc, IRModule],
                                arch: TileDevice,
                                topk: int = 10,
                                tensorcore_only: bool = False,
-                               allow_gemv: bool = False) -> Optional[List[Hint]]:
+                               allow_gemv: bool = False,
+                               custom_mem_mul: float = 1) -> Optional[List[Hint]]:
     func = None
     if isinstance(func_or_module, tir.PrimFunc):
         func = func_or_module
@@ -192,11 +193,11 @@ def get_roller_hints_from_func(func_or_module: Union[tir.PrimFunc, IRModule],
         
         if tags and tensorized_func:
             # Use AscendPolicy for CUBE optimization
-            policy = AscendCubePolicy.from_prim_func(func=tensorized_func, arch=arch, tags=tags)
+            policy = AscendCubePolicy.from_prim_func(func=tensorized_func, arch=arch, tags=tags, custom_mem_mul = custom_mem_mul)
             roller_hints = policy.emit_config(topk)
         else:
             # Fallback to AscendDefaultPolicy for non-CUBE operations
-            policy = AscendDefaultPolicy.from_prim_func(func=func, arch=arch)
+            policy = AscendDefaultPolicy.from_prim_func(func=func, arch=arch, custom_mem_mul = custom_mem_mul)
             roller_hints = policy.emit_config(topk)
         return roller_hints
 

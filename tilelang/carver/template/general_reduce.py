@@ -17,10 +17,11 @@ class GeneralReductionTemplate(BaseTemplate):
     structure: Union[str, List[str]] = None
     shape: List[int] = None
     dtype: str = "float16"
+    custom_mem_mul : float = 1
 
     def get_hardware_aware_configs(self, arch: TileDevice = None, topk: int = 10) -> List[Hint]:
         roller_hints = get_roller_hints_from_func(
-            self._func, arch=arch, topk=topk, allow_gemv=False)
+            self._func, arch=arch, topk=topk, allow_gemv=False, custom_mem_mul=self.custom_mem_mul)
         return roller_hints
 
     def initialize_function(self) -> None:
