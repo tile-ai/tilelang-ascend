@@ -130,11 +130,10 @@ def main():
     parser.add_argument("--k", type=int, default=1024, help="Matrix dimension K")
     args, _ = parser.parse_known_args()
     N, K = args.n, args.k
+
+    # case 1
     # kernel = naive_gemv(N, K, 128, 128)
     kernel1 = naive_gemv_high_perf(N, K, 128, 128)
-    # kernel = naive_splitk_gemv(N, K, 128, 128)
-    kernel2 = naive_splitk_gemv_high_perf(N, K, 128, 128)
-
     A = torch.randn((K,), dtype=torch.float16).npu()
     B = torch.randn((N, K), dtype=torch.float16).npu()
     C = torch.randn((N,), dtype=torch.float16).npu()
@@ -144,8 +143,16 @@ def main():
     print(res)
     torch.testing.assert_close(C, res, rtol=1e-2, atol=1e-2)
 
+    # case 2
+    # kernel = naive_splitk_gemv(N, K, 128, 128)
+    kernel2 = naive_splitk_gemv_high_perf(N, K, 128, 128)
+    A = torch.randn((K,), dtype=torch.float16).npu()
+    B = torch.randn((N, K), dtype=torch.float16).npu()
+    C = torch.randn((N,), dtype=torch.float16).npu()
     kernel2(A, B, C)
     print(C)
+    res = torch.matmul(B,A)
+    print(res)
     torch.testing.assert_close(C, res, rtol=1e-2, atol=1e-2)
     print("\033[92mAll check passed!\033[0m")
 
