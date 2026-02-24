@@ -67,6 +67,62 @@ def naive_gemv_high_perf(
 
     return main
 
+@tl.jit(target="npuir")
+def naive_splitk_gemv(
+    N: int,
+    K: int,
+    BLOCK_N: int,
+    BLOCK_K: int,
+    dtype: str = "float16",
+    accum_dtype: str = "float32"
+):
+    @T.prim_func
+    def main(
+        A: T.Tensor((K,), dtype),
+        B: T.Tensor((N, K), dtype),
+        C: T.Tensor((N,), dtype),
+    ):
+        with T.Kernel(T.ceildiv(N, BLOCK_N), is_npu=True) as (cid, _):
+            A_local = T.alloc_local((1,), dtype)
+            B_local = T.alloc_local((1,), dtype)
+            C_accum = T.alloc_local((1,), accum_dtype)
+            for tn in T.serial(BLOCK_N):
+                T.clear(C_accum)
+                for bk in T.serial(T.ceildiv(K, BLOCK_K)):
+                    for tk in T.serial(BLOCK_K):
+                        A_local[0] = A[bk*BLOCK_K + tk]
+                        B_local[0] = B[cid*BLOCK_N + tn, bk*BLOCK_K + tk]
+                        C_accum[0] += (A_local[0].astype(accum_dtype) * B_local[0].astype(accum_dtype))
+                C[cid*BLOCK_N + tn] = C_accum[0]
+    return main
+
+@tl.jit(target="npuir")
+def naive_splitk_gemv_high_perf(
+    N: int,
+    K: int,
+    BLOCK_N: int,
+    BLOCK_K: int,
+    dtype: str = "float16",
+    accum_dtype: str = "float32"
+):
+    @T.prim_func
+    def main(
+        A: T.Tensor((K,), dtype),
+        B: T.Tensor((N, K), dtype),
+        C: T.Tensor((N,), dtype),
+    ):
+        with T.Kernel(T.ceildiv(N, BLOCK_N), is_npu=True) as (cid, _):
+            A_shared = T.alloc_shared((BLOCK_K,1), dtype)
+            B_shared = T.alloc_shared((1,BLOCK_K), dtype)
+            C_accum = T.alloc_shared((1,1), accum_dtype)
+            for tn in T.serial(BLOCK_N):
+                T.clear(C_accum)
+                for bk in T.serial(T.ceildiv(K, BLOCK_K)):
+                    T.copy(A[bk * BLOCK_K:(bk + 1)*BLOCK_K], A_shared[:, 0])
+                    T.copy(B[cid*BLOCK_N + tn, bk*BLOCK_K:(bk+1)*BLOCK_K], B_shared)
+                    T.npuir_dot(B_shared, A_shared, C_accum, initC=False)
+                T.copy(C_accum[0,0], C[cid*BLOCK_N + tn:(cid)*BLOCK_N + tn + 1])
+    return main
 
 def main():
     parser = argparse.ArgumentParser(description="GEMV Example")
@@ -75,7 +131,9 @@ def main():
     args, _ = parser.parse_known_args()
     N, K = args.n, args.k
     # kernel = naive_gemv(N, K, 128, 128)
-    kernel = naive_gemv_high_perf(N, K, 128, 128)
+    # kernel = naive_gemv_high_perf(N, K, 128, 128)
+    # kernel = naive_splitk_gemv(N, K, 128, 128)
+    kernel = naive_splitk_gemv_high_perf(N, K, 128, 128)
 
     A = torch.randn((K,), dtype=torch.float16).npu()
     B = torch.randn((N, K), dtype=torch.float16).npu()
