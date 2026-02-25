@@ -1184,6 +1184,7 @@ void CodeGenTileLangAscendPto::GemmV1Codegen(const CallNode *op) {
       << "(" << a_name << ", " << b_name << ", " << c_name << ", " << PrintExpr(op->args[4]) << ");\n";
   }
 }
+
 void CodeGenTileLangAscendPto::SyncAllCodegen(const CallNode *op) {
   LOG(FATAL) << "Unsupport SyncAll in pto backend.";
 }
@@ -1607,8 +1608,6 @@ void CodeGenTileLangAscendPto::BroadcastOpCodegen(const CallNode *op) {
     this->PrintIndent();
     this->stream << "TASSIGN(" << src_name << "_DN_ROWEXPAND, " << address << ");\n";
     this->PrintIndent();
-    this->stream << "pipe_barrier(PIPE_V);\n";
-    this->PrintIndent();
     if (!is_slice) {
       this->stream << "TROWEXPAND" << "(" << dst_name << ", " << src_name
                    << "_DN_ROWEXPAND" << ");\n";
@@ -1624,8 +1623,6 @@ void CodeGenTileLangAscendPto::BroadcastOpCodegen(const CallNode *op) {
                    << "_DN_ROWEXPAND, " << address << ", (" << src_offset
                    << ") * " << src_type_len << ");\n";
     }
-    this->PrintIndent();
-    this->stream << "pipe_barrier(PIPE_V);\n";
     this->PrintIndent();
     this->stream << "TRESHAPE(" << src_name << ", " << src_name << "_DN_ROWEXPAND);\n";
   } else {
@@ -1695,11 +1692,11 @@ void CodeGenTileLangAscendPto::BinaryVecOpsCodegen(const CallNode *op,
     std::string scalar_expr = is_call ? (PrintBufferOffset(op->args[2].as<CallNode>()) + ".GetValue(" + index + ")") : index;
     std::string scalar_name = is_call ? (PrintBufferOffset(op->args[2].as<CallNode>()) + "_scalar") : "scalar";
     this->PrintIndent();
-    this->stream << "pipe_barrier(PIPE_ALL);\n";
+    this->stream << "set_flag(PIPE_V, PIPE_S, EVENT_ID0);\n";     
+    this->PrintIndent();
+    this->stream << "wait_flag(PIPE_V, PIPE_S, EVENT_ID0);\n";
     this->PrintIndent();
     this->stream << "auto " << scalar_name << " = " << scalar_expr << ";\n";
-    this->PrintIndent();
-    this->stream << "pipe_barrier(PIPE_ALL);\n";
 
     std::string dst_ub_name = var_names[0];
     std::string src_ub_name = var_names[1];
@@ -1840,10 +1837,8 @@ void CodeGenTileLangAscendPto::BinaryVecClampMaxMinOpsCodegen(
     this->PrintIndent();
     std::string index = PrintExpr(op->args[op->args.size() - 2]);
     std::string scalar_name = var_name + "_scalar";
-    // this->stream << "pipe_barrier(PIPE_ALL);\n";
     this->stream << "auto " << scalar_name << "= " << var_name << ".GetValue("
                  << index << ");\n";
-    this->stream << "pipe_barrier(PIPE_ALL);\n";
     this->stream << operation << "(";
     this->stream << ub_name_dst << ", " << ub_name_src << ", " << scalar_name;
   } else {
@@ -2070,8 +2065,6 @@ void CodeGenTileLangAscendPto::ReduceOpCodegen(const CallNode *op) {
         }
       }
       this->PrintIndent();
-      this->stream << "pipe_barrier(PIPE_ALL);\n";
-      this->PrintIndent();
       this->stream << "TRESHAPE(" << var_names[0] << ", " << var_names[0] << "_DN);\n";
       ub_data_vector[4] = "Applied for tileUbDataDN";
     } else if (ub_data_vector[4] == "Applied for tileUbDataDN") { //If already applied, leverage the existing application.
@@ -2087,8 +2080,6 @@ void CodeGenTileLangAscendPto::ReduceOpCodegen(const CallNode *op) {
         }
       }
       this->stream << ");\n";
-      this->PrintIndent();
-      this->stream << "pipe_barrier(PIPE_ALL);\n";
       this->PrintIndent();
       this->stream << "TRESHAPE(" << var_names[0] << ", " << var_names[0] << "_DN);\n";
     } else {
