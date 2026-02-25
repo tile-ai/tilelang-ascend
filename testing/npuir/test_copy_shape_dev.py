@@ -23,10 +23,10 @@ def copy_shape_1d_2d(M, N, block_M, block_N):
 
             A_BUF = T.alloc_shared((block_N), dtype)
 
-            for i in T.Parallel(block_M):
+            for i in T.serial(block_M):
                 bx = blockx * block_M + i
-                T.copy(A[bx, by], A_BUF) 
-                T.copy(A_BUF, B[bx, by])
+                T.copy(A[bx, by:by+block_N], A_BUF)
+                T.copy(A_BUF, B[bx, by:by+block_N])
 
     return copyShape
 
@@ -46,10 +46,10 @@ def copy_shape_2d_3d(M, N, block_M, block_N):
 
             A_BUF = T.alloc_shared((1, block_N), dtype)
 
-            for i in T.Parallel(block_M):
+            for i in T.serial(block_M):
                 bx = blockx * block_M + i  
-                T.copy(A[0, bx, by], A_BUF)  
-                T.copy(A_BUF, B[0, bx, by])       
+                T.copy(A[0, bx, by:by+block_N], A_BUF)
+                T.copy(A_BUF, B[0, bx, by:by+block_N])
                 
     return copyShape2D3D
 
