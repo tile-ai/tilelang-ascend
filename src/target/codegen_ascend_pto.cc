@@ -1219,18 +1219,27 @@ void CodeGenTileLangAscendPto::HandleA5Flag(const std::string &op,
   }
 }
 
+
 void CodeGenTileLangAscendPto::SetCrossFlagCodegen(const CallNode *op) {
   std::string pipe = Downcast<StringImm>(op->args[0])->value;
-  int flag = std::stoi(PrintExpr(op->args[1]));
+  std::string flag = PrintExpr(op->args[1]);
 
   if (this->platform_ == "A5") {
-    HandleA5Flag("set_intra_block", pipe, flag);
+    if (this->current_resource_scope_ == "CUBE") {
+      this->PrintIndent();
+      this->stream << kAscendPtoScope << "set_intra_block_cube<PIPE_" << pipe << ">(" 
+                  << flag << ");\n";
+    } else if (this->current_resource_scope_ == "VEC") {
+      this->PrintIndent();
+      this->stream << kAscendPtoScope << "set_intra_block_vec<PIPE_" << pipe << ">(" 
+                  << flag << ");\n";
+    } else {
+      LOG(WARNING) << "set_cross_flag called outside of known scope (CUBE/VEC)!";
+    }
   } else {
-    int mode = 2;
-    int config = 1 | (mode << 4) | (flag << 8);
     this->PrintIndent();
-    this->stream << "ffts_cross_core_sync" << "(" << "PIPE_" << pipe << ", "
-                 << config << ");\n";
+    this->stream << kAscendPtoScope << "set_cross_flag<PIPE_" << pipe << ">(" 
+                << flag << ");\n";
   }
 }
 
