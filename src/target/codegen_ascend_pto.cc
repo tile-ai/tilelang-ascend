@@ -704,6 +704,8 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) 
     DumpTensorCodegen(op, "TPRINT");
   } else if (op->op.same_as(tl::ascend_printf())) {
     PrintfOpCodegen(op, "cce::printf");
+  } else if (op->op.same_as(tl::ascend_set_deq_scale())) {
+    SetDeqScaleCodegen(op);
   } else {
     CodeGenC::VisitExpr_(op, os);
   }
@@ -1409,6 +1411,13 @@ void CodeGenTileLangAscendPto::DumpTensorCodegen(const CallNode *op, const std::
   this->stream << "TPRINT" << "(";
   this->stream << PrintBufferOffset(op->args[0].as<CallNode>());
   this->stream << ");\n";
+}
+
+void CodeGenTileLangAscendPto::SetDeqScaleCodegen(const CallNode *op) {
+  this->PrintIndent();
+  this->stream << "set_deqscale(static_cast<half>(";
+  this->stream << PrintExpr(op->args[0]);
+  this->stream << "));\n";
 }
 
 void CodeGenTileLangAscendPto::BinaryVecOpCodegen(const CallNode *op,
