@@ -1727,10 +1727,10 @@ void CodeGenTileLangAscendPto::BinaryVecOpsCodegen(const CallNode *op,
       auto ub_data_temp_col_dst = std::stoi(dst_vector[2]);
       auto ub_data_temp_col_src = std::stoi(src_vector[2]);
       if (dst_offset != "0") {
-          ub_data_temp_col_dst = std::stoi(PrintExpr(op->args[op->args.size()-1)]);
+          ub_data_temp_col_dst = std::stoi(PrintExpr(op->args[op->args.size()-1]));
         }
         if (src_offset != "0") {
-          ub_data_temp_col_src = std::stoi(PrintExpr(op->args[op->args.size()-1)]);
+          ub_data_temp_col_src = std::stoi(PrintExpr(op->args[op->args.size()-1]));
       }
       if (is_call) {
         this->stream << kAscendPtoScope << "binarys_tile<" << kAscendPtoScope << "BinaryOps::" << final_op_name 
