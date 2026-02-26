@@ -99,9 +99,8 @@ def main():
     q = torch.randn((seq_len, dim), dtype=torch.float16).npu()
     k = torch.randn((seq_len, dim), dtype=torch.float16).npu()
     v = torch.randn((seq_len, dim), dtype=torch.float16).npu()
-    output = torch.randn((seq_len, dim), dtype=torch.float16).npu()
 
-    kernel(q, k, v, output)
+    output = kernel(q, k, v)
 
     scale = (1.0 / dim)**0.5
     ref_output = torch.nn.functional.softmax(
