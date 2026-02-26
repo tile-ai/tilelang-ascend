@@ -1446,7 +1446,7 @@ def round(out: Buffer, buffer: Buffer, tmp: Buffer, count: PrimExpr):
         count
     )
 
-def broadcast(dst: Buffer, src: Buffer, tmp: Buffer):
+def broadcast(dst: Union[Buffer, BufferRegion], src: Union[Buffer, BufferRegion], tmp: Buffer):
     """Generates a TIR intrinsic call for the AscendC `Broadcast` operation.
 
     This function performs a broadcast copy from the source buffer (`src`) to the
@@ -1454,10 +1454,12 @@ def broadcast(dst: Buffer, src: Buffer, tmp: Buffer):
     based on the shapes of the input buffers.
 
     Args:
-        dst (tvm.tir.Buffer): The destination buffer. Must be allocated in the
-            Unified Buffer (UB). Its shape determines the output size.
-        src (tvm.tir.Buffer): The source buffer. Must be allocated in the
-            Unified Buffer (UB). Its shape must be compatible with `dst` for broadcasting.
+        dst (Union[tvm.tir.Buffer, tvm.tir.BufferRegion]): The destination buffer
+            or buffer region. Must be allocated in the Unified Buffer (UB).
+            Its shape determines the output size.
+        src (Union[tvm.tir.Buffer, tvm.tir.BufferRegion]): The source buffer
+            or buffer region. Must be allocated in the Unified Buffer (UB).
+            Its shape must be compatible with `dst` for broadcasting.
         tmp (tvm.tir.Buffer): The temporary buffer.
 
     Returns:
@@ -1467,7 +1469,8 @@ def broadcast(dst: Buffer, src: Buffer, tmp: Buffer):
         AssertionError: If the input shapes violate the dimension constraints.
 
     Constraints:
-        1. **Rank Consistency**: The number of dimensions (rank) of `src` and `dst` must be identical.
+        1. **Rank Consistency**: The effective number of dimensions (rank) of `src` and `dst`
+           must be identical after squeezing leading singleton dimensions.
         2. **Supported Dimensions**: Only 1D and 2D tensors are supported. The rank must be 1 or 2.
         3. **Broadcasting Logic**:
             - **Axis 0 (Row Broadcast)**: Inferred if `src.shape[0] == 1` and `dst.shape[0] > 1`.
@@ -1476,8 +1479,37 @@ def broadcast(dst: Buffer, src: Buffer, tmp: Buffer):
               The source column is replicated `dst.shape[1]` times.
             - **No Broadcast (Copy)**: If shapes are identical, the axis defaults to 0.
     """
-    src_shape = src.shape
-    dst_shape = dst.shape
+
+    def _get_shape(buf):
+        if isinstance(buf, Buffer):
+            return list(buf.shape)
+        elif isinstance(buf, BufferRegion):
+            return [r.extent for r in buf.region]
+        else:
+            raise ValueError(f"Unsupported argument type: {type(buf)} for buffer {buf}")
+
+    def _get_access_ptr(buf, access_type):
+        if isinstance(buf, Buffer):
+            return buf.access_ptr(access_type)
+        elif isinstance(buf, BufferRegion):
+            buffer = buf.buffer
+            indices = [r.min for r in buf.region]
+            offset = buffer.offset_of(indices)[0]
+            return buffer.access_ptr(access_type, offset=offset)
+        else:
+            raise ValueError(f"Unsupported argument type: {type(buf)} for buffer {buf}")
+
+    src_shape = _get_shape(src)
+    dst_shape = _get_shape(dst)
+
+    # Compute effective shapes by squeezing leading singleton dimensions to handle
+    # scalar-indexed BufferRegion (e.g., r_factors[i, :, :] on a 3D buffer produces
+    # region shape [1, M, K] which should be treated as effective shape [M, K]).
+    # These effective shapes are used for axis inference and passed to the intrinsic call.
+    while len(src_shape) > len(dst_shape) and src_shape[0] == 1:
+        src_shape = src_shape[1:]
+    while len(dst_shape) > len(src_shape) and dst_shape[0] == 1:
+        dst_shape = dst_shape[1:]
 
     assert len(src_shape) == len(dst_shape), "Source and Dest dimension must match."
     dim = len(dst_shape)
@@ -1501,8 +1533,8 @@ def broadcast(dst: Buffer, src: Buffer, tmp: Buffer):
         "handle",
         tir.op.Op.get(op_name),
         f"Broadcast<{template_args}>",
-        dst.access_ptr("w"),
-        src.access_ptr("r"),
+        _get_access_ptr(dst, "w"),
+        _get_access_ptr(src, "r"),
         tmp.access_ptr("r"),
         dim,
         *dst_shape,
