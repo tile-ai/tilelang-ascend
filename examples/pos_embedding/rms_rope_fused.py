@@ -84,18 +84,27 @@ def rms_rope_fused(
             T.copy(sin_cos_half_ub, cos_ub)
 
             ## set mask: gm -> ub
-            mask_ub = T.alloc_ub([row_per_vec, rope_dim], MASK_DTYPE)
-            for i in T.serial(row_per_vec):
-                for j in T.serial(rope_dim // 2):
-                    offset_base = i * rope_dim
-                    mask_ub[i, 2 * j] = 4 * (offset_base + (2 * j + 1))
-                    mask_ub[i, 2 * j + 1] = 4 * (offset_base + 2 * j)
+            mask_ub_i16 = T.alloc_shared([row_per_vec, rope_dim], "int16")
+            mask_ub_f32 = T.alloc_shared([row_per_vec, rope_dim], "float32")
+            mask_ub_i32 = T.alloc_shared([row_per_vec, rope_dim], "int32")
+            mask_ub = T.alloc_shared([row_per_vec, rope_dim], MASK_DTYPE)
+            idx_ub = T.alloc_shared([row_per_vec, rope_dim], "int32")
+            tmp_ub_i16 = T.alloc_shared([row_per_vec, rope_dim], "int16")
+            ones_mask_ub = T.alloc_shared([row_per_vec, rope_dim], "int16")
+            xor_tmp_ub = T.alloc_shared([row_per_vec, rope_dim], "int16")
+            T.tile.createvecindex(idx_ub, 0)
+            T.copy(idx_ub, tmp_ub_i16)
+            T.tile.fill(ones_mask_ub, 1)
+            T.tile.bitwise_xor(mask_ub_i16, tmp_ub_i16, ones_mask_ub, xor_tmp_ub)
+            T.copy(mask_ub_i16, mask_ub_f32)
+            T.copy(mask_ub_f32, mask_ub_i32)
+            T.tile.mul(mask_ub_i32, mask_ub_i32, 4)
+            T.reinterpretcast(mask_ub, mask_ub_i32, "uint32_t")
                     
             sin_mask_ub = T.alloc_ub(rope_dim, ACC_DTYPE)
-            T.tile.fill(sin_mask_ub, 1.0)
-            for i in T.serial(0, rope_dim):
-                if i % 2 == 0:
-                    sin_mask_ub[i] = -1.0
+            T.tile.fill(sin_mask_ub, -1.0)
+            for i in T.serial(0, rope_dim // 2):
+                sin_mask_ub[2 * i + 1] = 1.0
             T.tile.mul(sin_ub[0, :], sin_ub[0, :], sin_mask_ub)
 
             ## broadcast sin/cos: [1, rope_dim] -> [row_per_vec, rope_dim]
