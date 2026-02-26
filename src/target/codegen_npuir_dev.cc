@@ -350,7 +350,8 @@ CodeGenTileLangNPUIRDEV::CodeGenTileLangNPUIRDEV() : builder(&context) {
                    mlir::linalg::LinalgDialect, mlir::scf::SCFDialect,
                    mlir::memref::MemRefDialect, mlir::hivm::HIVMDialect,
                    mlir::hfusion::HFusionDialect,
-                   mlir::bufferization::BufferizationDialect>();
+                   mlir::bufferization::BufferizationDialect,
+                   bishengir::memref_ext::MemRefExtDialect>();
   // Create MLIR module
   this->module = ModuleOp::create(UnknownLoc::get(&this->context));
 }
@@ -3513,6 +3514,38 @@ mlir::Value CodeGenTileLangNPUIRDEV::GetAndCastIndexOp(const IterVar iv) {
 void CodeGenTileLangNPUIRDEV::VisitStmt_(const AllocateNode *op) {
   ICHECK(!is_zero(op->condition));
   std::string scope = GetPtrStorageScope(op->buffer_var);
+  // Workspace buffers are lowered to memref_ext.alloc_workspace and represented
+  // as memrefs in dev mode so that tl.ascend_copy can treat them as memrefs.
+  if (scope == "workspace" || scope == "global.workspace") {
+    // For now we only support static workspace shapes, consistent with
+    // AllocWorkspaceOp utilities in AscendNPU-IR.
+    Array<PrimExpr> extents = op->extents;
+    llvm::SmallVector<int64_t> shape;
+    shape.reserve(extents.size());
+    for (const PrimExpr& e : extents) {
+      if (const auto* imm = e.as<IntImmNode>()) {
+        shape.push_back(static_cast<int64_t>(imm->value));
+      } else {
+        LOG(FATAL) << "workspace allocation currently only supports static shapes";
+      }
+    }
+
+    auto elemTy = DTypetoMLIRType(op->dtype);
+    auto memrefType = mlir::MemRefType::get(shape, elemTy);
+
+    auto allocOp = builder.create<bishengir::memref_ext::AllocWorkspaceOp>(
+        builder.getUnknownLoc(), memrefType,
+        /*workspaceArg=*/mlir::Value(),
+        /*dynamicSize=*/mlir::ValueRange{},
+        /*offset=*/mlir::ValueRange{});
+
+    ICHECK(GetVarValue(op->buffer_var.get()) == mlir::Value{});
+    SetVarValue(op->buffer_var.get(), allocOp.getMemref());
+
+    this->VisitStmt(op->body);
+    return;
+  }
+
   std::map<std::string, NPU_CORETYPE> scope_coretype_map{
       {"shared", NPU_CORETYPE::AIV},
       {"shared.cube", NPU_CORETYPE::AIC},
