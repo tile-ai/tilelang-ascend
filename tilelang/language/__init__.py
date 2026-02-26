@@ -122,7 +122,7 @@ from .customize_npuir import (
     npuir_cmp,
     npuir_sqrt,
     npuir_rsqrt,
-    npuir_abs,
+    npuir_abs as vabs,
     npuir_rec,
     npuir_not,
     npuir_gather,
