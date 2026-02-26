@@ -22,6 +22,10 @@ def simple_gemv(
     TEMP_DTYPE = "uint8"
     CAST_MODE = "CAST_NONE"
 
+    def current_jit_target(jit_func):
+        """ Get current jit target of jit_func. e.g. 'auto', 'pto' """
+        return jit_func.__jit_impl__.target
+
     n_num = T.ceildiv(N, block_N)
     k_num = T.ceildiv(K, block_K)
 
@@ -35,6 +39,13 @@ def simple_gemv(
         else:
             return T.copy(src, dst)
 
+    is_pto = current_jit_target(simple_gemv) == "pto"
+    def alloc_temp():
+        if is_pto:
+            return T.alloc_ub((block_N, block_K // 2), accum_dtype)
+        else:
+            return T.alloc_ub((block_N, block_K), TEMP_DTYPE)
+
     @T.prim_func
     def main(
         x: T.Tensor((K,), dtype),   # type: ignore
@@ -47,7 +58,7 @@ def simple_gemv(
             x_ub = T.alloc_ub((1, block_K), dtype)
             x_32_ub = T.alloc_ub((1, block_K), accum_dtype)
             A_ub = T.alloc_ub((block_N, block_K), dtype)
-            temp_ub = T.alloc_ub((block_N, block_K), TEMP_DTYPE)  # for reduce_sum
+            temp_ub = alloc_temp()  # for reduce_sum    TODO: Remove temp buffer of T.reduce_xxx
             A_32_ub = T.alloc_ub((block_N, block_K), accum_dtype)
             y_single_32_ub = T.alloc_ub((block_N,), accum_dtype)
             y_total_32_ub = T.alloc_ub((block_N,), accum_dtype)

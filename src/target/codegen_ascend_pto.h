@@ -85,6 +85,10 @@ private:
 
   void GemmV0Codegen(const CallNode *op);
 
+  void GemmV1Codegen(const CallNode *op);
+  
+  void SyncAllCodegen(const CallNode *op);
+
   void PipeBarrierCodegen(const CallNode *op);
 
   void SetAndWaitFlagCodegen(const CallNode *op, const std::string &op_name);
@@ -118,10 +122,18 @@ private:
   void TshCodegen(const CallNode *op, const std::string &op_name);
 
   void ArithProgressionCodegen(const CallNode *op, const std::string &op_name);
+
+  void PrintfOpCodegen(const CallNode *op, const std::string& op_name);
+
+  void DumpTensorCodegen(const CallNode *op, const std::string &op_name);
   
   void BroadcastOpCodegen(const CallNode *op);
 
   void SelectCodegen(const CallNode *op);
+
+  void SetDeqScaleCodegen(const CallNode *op);
+
+  std::vector<std::string> GetGlobalTensorShapes(const CallNode *op, std::string tensor_addr);
 
   std::string PrintBufferOffset(const CallNode *op);
   void UbShapeInputCheck(const AllocateNode *op);

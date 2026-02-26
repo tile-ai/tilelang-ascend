@@ -897,6 +897,9 @@ def wholereducemax(
     srcrepstride: PrimExpr,
     ReduceOrder: str = "ORDER_VALUE_INDEX",
 ):
+    """
+    Warning:Currently, this implementation does not support pto target
+    """
     return _wholereduce(
         "max", dst, src, mask, repeattimes, dstrepstride, srcblkstride, srcrepstride, ReduceOrder
     )
@@ -912,6 +915,9 @@ def wholereducemin(
     srcrepstride: PrimExpr,
     ReduceOrder: str = "ORDER_VALUE_INDEX",
 ):
+    """
+    Warning:Currently, this implementation does not support pto target
+    """
     return _wholereduce(
         "min", dst, src, mask, repeattimes, dstrepstride, srcblkstride, srcrepstride, ReduceOrder
     )
@@ -920,6 +926,9 @@ def wholereducemin(
 def wholereducesum(
     dst: Buffer, src: Buffer, mask: PrimExpr, repeattimes: PrimExpr, dstrepstride: PrimExpr, srcblkstride: PrimExpr, srcrepstride: PrimExpr
 ):
+    """
+    Warning:Currently, this implementation does not support pto target
+    """
     return _wholereduce("sum", dst, src, mask, repeattimes, dstrepstride, srcblkstride, srcrepstride)
 
 
@@ -1022,6 +1031,8 @@ def block_reduce_max(
     This intrinsic invokes the underlying implementation to find the maximum
     value within data blocks from the source buffer.
 
+    Warning:Currently, this implementation does not support pto target
+
     Args:
         dst: The destination buffer where the results will be stored.
         src: The source buffer containing the data to be reduced.
@@ -1061,6 +1072,8 @@ def block_reduce_min(
     This intrinsic invokes the underlying implementation to find the minimum
     value within data blocks from the source buffer.
 
+    Warning:Currently,this implementation does not support pto target
+
     Args:
         dst: The destination buffer where the results will be stored.
         src: The source buffer containing the data to be reduced.
@@ -1099,6 +1112,8 @@ def block_reduce_sum(
 
     This intrinsic invokes the underlying implementation to calculate the sum
     of elements within data blocks from the source buffer.
+
+    Warning:Currently,this implementation does not support pto target
 
     Args:
         dst: The destination buffer where the results will be stored.
