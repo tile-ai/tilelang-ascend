@@ -33,6 +33,8 @@ def rope_kernel_in_place(
         x: T.Tensor([M, hidden_size], dtype),  # type: ignore
         sin: T.Tensor([batch_size, rope_dim], dtype),  # type: ignore
         cos: T.Tensor([batch_size, rope_dim], dtype),  # type: ignore
+        mask: T.Tensor([row_per_vec, rope_dim], MASK_DTYPE),  # type: ignore
+        sin_mask: T.Tensor([rope_dim], ACC_DTYPE),  # type: ignore
     ):
         with T.Kernel(m_num, is_npu=True) as (cid, vid):
             row_x = cid * block_M + vid * row_per_vec
@@ -40,11 +42,10 @@ def rope_kernel_in_place(
             # 1. copy x: gm -> ub
             x_half_ub = T.alloc_shared([row_per_vec, rope_dim], dtype)
             x_ub = T.alloc_shared([row_per_vec, rope_dim], ACC_DTYPE)
-
             for i in T.serial(0, row_per_vec):
                 T.copy(x[row_x + i, dim_start:], x_half_ub[i, :])
             T.copy(x_half_ub, x_ub)  # cast float16 -> float32
-            
+
             # 2. copy sin/cos: gm -> ub
             sin_ub = T.alloc_shared([1, rope_dim], ACC_DTYPE)
             sin_half_ub = T.alloc_shared([1, rope_dim], dtype)
@@ -54,38 +55,23 @@ def rope_kernel_in_place(
             T.copy(sin_half_ub, sin_ub)
             T.copy(cos[row_sin_cos, :], cos_half_ub[0, :])
             T.copy(cos_half_ub, cos_ub)
-            
-            # 3. set mask: gm -> ub
-            mask_ub_i16 = T.alloc_shared([row_per_vec, rope_dim], "int16")
-            mask_ub_f32 = T.alloc_shared([row_per_vec, rope_dim], "float32")
-            mask_ub_i32 = T.alloc_shared([row_per_vec, rope_dim], "int32")
-            mask_ub = T.alloc_shared([row_per_vec, rope_dim], MASK_DTYPE)
-            idx_ub = T.alloc_shared([row_per_vec, rope_dim], "int32")
-            tmp_ub_i16 = T.alloc_shared([row_per_vec, rope_dim], "int16")
-            ones_mask_ub = T.alloc_shared([row_per_vec, rope_dim], "int16")
-            xor_tmp_ub = T.alloc_shared([row_per_vec, rope_dim], "int16")
-            T.tile.createvecindex(idx_ub, 0)
-            T.copy(idx_ub, tmp_ub_i16)
-            T.tile.fill(ones_mask_ub, 1)
-            T.tile.bitwise_xor(mask_ub_i16, tmp_ub_i16, ones_mask_ub, xor_tmp_ub)
-            T.copy(mask_ub_i16, mask_ub_f32)
-            T.copy(mask_ub_f32, mask_ub_i32)
-            T.tile.mul(mask_ub_i32, mask_ub_i32, 4)
-            T.reinterpretcast(mask_ub, mask_ub_i32, "uint32_t")
 
-            sin_mask_ub = T.alloc_ub(rope_dim, ACC_DTYPE)
-            T.tile.fill(sin_mask_ub, -1.0)
-            for i in T.serial(0, rope_dim // 2):
-                sin_mask_ub[2 * i + 1] = 1.0
+            # 3. copy mask: gm -> ub
+            mask_ub = T.alloc_shared([row_per_vec, rope_dim], MASK_DTYPE)
+            T.copy(mask, mask_ub)
+
+            sin_mask_ub = T.alloc_shared(rope_dim, ACC_DTYPE)
+            T.copy(sin_mask, sin_mask_ub)
             T.tile.mul(sin_ub[0, :], sin_ub[0, :], sin_mask_ub)
 
             # 4. broadcast sin/cos: [1, rope_dim] -> [row_per_vec, rope_dim]
             tmp_ub = T.alloc_shared(row_per_vec * rope_dim, TMP_DTYPE)
             sin_block_ub = T.alloc_shared([row_per_vec, rope_dim], ACC_DTYPE)
             T.tile.broadcast(sin_block_ub, sin_ub, tmp_ub)
+
             cos_block_ub = T.alloc_shared([row_per_vec, rope_dim], ACC_DTYPE)
             T.tile.broadcast(cos_block_ub, cos_ub, tmp_ub)
-            
+
             # 5. rotate x
             x_rotate_ub = T.alloc_shared([row_per_vec, rope_dim], ACC_DTYPE)
             T.tile.gather(x_rotate_ub, x_ub, mask_ub, 0)
@@ -100,7 +86,7 @@ def rope_kernel_in_place(
             T.copy(out_ub, x_half_ub)  # cast float32 -> float16
             for i in T.serial(0, row_per_vec):
                 T.copy(x_half_ub[i, :], x[row_x + i, dim_start:])
-                    
+
     return kernel
 
 
@@ -117,16 +103,28 @@ def tilelang_apply_rope_partial_in_place(x, sin, cos):
         raise NotImplementedError(f"x_shape={x.shape} not supported")
 
     total_rows = bsz * head_num
-    block_M = 32
+    block_M = max(head_num, 2)
+
+    # generate mask
+    idx = torch.arange(rope_dim * (block_M // 2), dtype=torch.int64, device="cpu")
+    mask = torch.empty(rope_dim * (block_M // 2), dtype=torch.uint32, device="cpu")
+    mask[0::2] = idx[1::2].to(torch.uint32)
+    mask[1::2] = idx[0::2].to(torch.uint32)
+    mask = mask * 4
+
+    # generate sin_mask
+    sin_mask = torch.ones(rope_dim, dtype=torch.float32, device=device)
+    sin_mask[0::2] = -1
 
     x = x.to(device)
     sin = sin.to(device)
     cos = cos.to(device)
+    mask = mask.to(device)
 
     kernel = rope_kernel_in_place(
         total_rows, block_M, bsz, hidden_size, rope_dim, head_num
     )
-    kernel(x, sin, cos)
+    kernel(x, sin, cos, mask, sin_mask)
 
     return x.view(org_shape)
 
