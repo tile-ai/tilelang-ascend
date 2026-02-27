@@ -375,9 +375,14 @@ def gemm_v0(A, B, C, transpose_A=False, transpose_B=False, init=False):
     B_shape = _retrieve_shape(B)
     C_shape = _retrieve_shape(C)
 
-    assert len(C_shape) == 2, "current only support C as a 2D tensor"
+    assert len(C_shape) >= 2, "current only support C as a 2D or higher-order tensor"
     assert len(A_shape) >= 2, "current only support A as a 2D or higher-order tensor"
     assert len(B_shape) >= 2, "current only support B as a 2D or higher-order tensor"
+    if len(C_shape) > 2:
+        for i in range(len(C_shape) - 2):
+            assert C_shape[i] == 1, (
+                "current only support C as a 2D or higher-order tensor with the last two dimensions being the matrix dimensions"
+            )
     if len(A_shape) > 2:
         for i in range(len(A_shape) - 2):
             assert A_shape[i] == 1, (
@@ -389,7 +394,7 @@ def gemm_v0(A, B, C, transpose_A=False, transpose_B=False, init=False):
                 "current only support B as a 2D or higher-order tensor with the last two dimensions being the matrix dimensions"
             )
 
-    M, N = C_shape
+    M, N = C_shape[-2], C_shape[-1]
     K = A_shape[-2] if transpose_A else A_shape[-1]
     K_B = B_shape[-1] if transpose_B else B_shape[-2]
     assert K == K_B, f"T.gemm K shape check failed: K_A = {K}, K_B = {K_B}"
@@ -439,9 +444,14 @@ def gemm_v1(A, B, C, transpose_A=False, transpose_B=False, init=False):
     B_shape = _retrieve_shape(B)
     C_shape = _retrieve_shape(C)
 
-    assert len(C_shape) == 2, "current only support C as a 2D tensor"
+    assert len(C_shape) >= 2, "current only support C as a 2D or higher-order tensor"
     assert len(A_shape) >= 2, "current only support A as a 2D or higher-order tensor"
     assert len(B_shape) >= 2, "current only support B as a 2D or higher-order tensor"
+    if len(C_shape) > 2:
+        for i in range(len(C_shape) - 2):
+            assert C_shape[i] == 1, (
+                "current only support C as a 2D or higher-order tensor with the last two dimensions being the matrix dimensions"
+            )
     if len(A_shape) > 2:
         for i in range(len(A_shape) - 2):
             assert A_shape[i] == 1, (
@@ -453,11 +463,11 @@ def gemm_v1(A, B, C, transpose_A=False, transpose_B=False, init=False):
                 "current only support B as a 2D or higher-order tensor with the last two dimensions being the matrix dimensions"
             )
 
-    BLOCK_M, BLOCK_N = C_shape
+    BLOCK_M, BLOCK_N = C_shape[-2], C_shape[-1]
     if not transpose_A:
-        L1_BLOCK_M, L1_BLOCK_K = A_shape
+        L1_BLOCK_M, L1_BLOCK_K = A_shape[-2], A_shape[-1]
     else:
-        L1_BLOCK_K, L1_BLOCK_M = A_shape
+        L1_BLOCK_K, L1_BLOCK_M = A_shape[-2], A_shape[-1]
     L1_BLOCK_N = A_shape[-2] if transpose_B else B_shape[-2]
 
     K = A_shape[-2] if transpose_A else A_shape[-1]

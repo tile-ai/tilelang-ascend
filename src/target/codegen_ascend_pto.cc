@@ -1586,7 +1586,14 @@ void CodeGenTileLangAscendPto::BroadcastOpCodegen(const CallNode *op) {
     return false;
   };
 
-  if (src_shape.size() > 2 || src_shape.size() == 0) {
+  // For 3D+ pipeline buffers (e.g. [num_stages, rows, cols]),
+  // normalize to the last 2 dimensions.
+  if (src_shape.size() > 2) {
+    size_t n = src_shape.size();
+    src_shape = Array<PrimExpr>({src_shape[n - 2], src_shape[n - 1]});
+  }
+
+  if (src_shape.size() == 0) {
     ICHECK(false) << "check src_shape in broadcast.";
   } else if (src_shape.size() == 2) {
     tvm::arith::Analyzer analyzer;
