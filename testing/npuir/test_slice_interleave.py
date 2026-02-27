@@ -11,7 +11,7 @@ import tilelang.language as T
 
 tilelang.cache.clear_cache()
 
-torch.npu.set_device(6)
+torch.npu.set_device(0)
 
 
 def vec_interleave(block_M, block_N, dtype="float16"):
