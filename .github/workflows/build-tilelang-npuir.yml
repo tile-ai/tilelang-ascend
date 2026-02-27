@@ -1,0 +1,174 @@
+name: Build TileLang-Ascend (NPUIR)
+
+on:
+  pull_request:
+    branches: [npuir]
+  issue_comment:
+    types: [created]
+
+permissions:
+  pull-requests: write
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.11"
+  NPUIR_INSTALL_DIR: npuir-prebuild
+
+jobs:
+  check-trigger:
+    if: >-
+      github.event_name == 'pull_request' ||
+      (github.event_name == 'issue_comment' &&
+       github.event.issue.pull_request &&
+       contains(github.event.comment.body, 'BuildTilelang'))
+    runs-on: ubuntu-22.04
+    outputs:
+      pr-number: ${{ steps.pr-info.outputs.number }}
+      pr-sha: ${{ steps.pr-info.outputs.sha }}
+      target-branch: ${{ steps.pr-info.outputs.target_branch }}
+    steps:
+    - name: Get PR info
+      id: pr-info
+      uses: actions/github-script@v7
+      with:
+        script: |
+          let pr;
+          if (context.eventName === 'pull_request') {
+            pr = context.payload.pull_request;
+          } else {
+            const { data } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.payload.issue.number,
+            });
+            pr = data;
+          }
+          core.setOutput('number', pr.number);
+          core.setOutput('sha', pr.head.sha);
+          core.setOutput('target_branch', pr.base.ref);
+
+    - name: Validate target branch
+      if: steps.pr-info.outputs.target_branch != 'npuir'
+      run: |
+        echo "::error::PR target branch is '${{ steps.pr-info.outputs.target_branch }}', expected 'npuir'. Skipping."
+        exit 1
+
+  prebuild-npuir:
+    needs: check-trigger
+    uses: ./.github/workflows/build-npuir.yml
+    with:
+      checkout-ref: refs/pull/${{ needs.check-trigger.outputs.pr-number }}/merge
+
+  build-wheel:
+    needs: [check-trigger, prebuild-npuir]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-22.04
+          - arch: arm64
+            runner: ubuntu-22.04-arm
+    steps:
+    - name: Checkout PR
+      uses: actions/checkout@v4
+      with:
+        ref: refs/pull/${{ needs.check-trigger.outputs.pr-number }}/merge
+        fetch-depth: 1
+        submodules: false
+
+    - name: Initialize submodules
+      run: |
+        git submodule update --init --recursive 3rdparty/tvm
+        mkdir -p 3rdparty/composable_kernel/include
+        mkdir -p 3rdparty/composable_kernel/library
+
+    - name: Restore NPUIR prebuild from cache
+      uses: actions/cache/restore@v4
+      with:
+        path: ${{ env.NPUIR_INSTALL_DIR }}
+        key: npuir-prebuild-${{ matrix.arch }}-${{ needs.prebuild-npuir.outputs.npuir-commit }}
+        fail-on-cache-miss: true
+
+    - name: Set up Python ${{ env.PYTHON_VERSION }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+
+    - name: Install build dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends \
+          cmake make libzstd-dev zlib1g-dev patchelf
+        pip install setuptools wheel packaging
+
+    - name: Build tilelang (cmake)
+      run: |
+        BISHENGIR_PATH="${{ github.workspace }}/${{ env.NPUIR_INSTALL_DIR }}"
+        mkdir -p build
+        cp 3rdparty/tvm/cmake/config.cmake build/
+        echo "set(USE_NPUIR ON)" >> build/config.cmake
+        echo "set(BISHENGIR_ROOT_PATH ${BISHENGIR_PATH})" >> build/config.cmake
+        cmake -B build
+        cmake --build build --config Release -j$(nproc)
+
+    - name: Package wheel
+      env:
+        TILELANG_SKIP_BUILD: "1"
+        USE_NPUIR: "true"
+        BISHENGIR_PATH: ${{ github.workspace }}/npuir-prebuild
+      run: python setup.py bdist_wheel
+
+    - name: Upload wheel artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: tilelang-npuir-py${{ env.PYTHON_VERSION }}-${{ matrix.arch }}-${{ needs.check-trigger.outputs.pr-sha }}
+        path: dist/*.whl
+        retention-days: 30
+
+  report:
+    needs: [check-trigger, build-wheel]
+    if: always() && needs.check-trigger.result == 'success'
+    runs-on: ubuntu-22.04
+    permissions:
+      pull-requests: write
+    steps:
+    - name: Post result to PR
+      uses: actions/github-script@v7
+      env:
+        PR_NUMBER: ${{ needs.check-trigger.outputs.pr-number }}
+        PR_SHA: ${{ needs.check-trigger.outputs.pr-sha }}
+        BUILD_RESULT: ${{ needs.build-wheel.result }}
+        RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      with:
+        script: |
+          const prNumber = parseInt(process.env.PR_NUMBER);
+          if (!prNumber) return;
+
+          const sha = process.env.PR_SHA.substring(0, 8);
+          const result = process.env.BUILD_RESULT;
+          const runUrl = process.env.RUN_URL;
+
+          let body;
+          if (result === 'success') {
+            body = [
+              `### Build TileLang-Ascend (NPUIR) — \`${sha}\``,
+              '',
+              `Build **succeeded**. [Download artifacts / View CI logs](${runUrl})`,
+            ].join('\n');
+          } else {
+            body = [
+              `### Build TileLang-Ascend (NPUIR) — \`${sha}\``,
+              '',
+              `Build **failed**. [View logs](${runUrl})`,
+            ].join('\n');
+          }
+
+          await github.rest.issues.createComment({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            issue_number: prNumber,
+            body: body,
+          });
