@@ -1275,7 +1275,7 @@ void CodeGenTileLangAscendPto::WaitCrossFlagCodegen(const CallNode *op) {
     }
   } else {
     this->PrintIndent();
-    this->stream << kAscendPtoScope << "wait_cross_flag<PIPE_" << pipe << ">(" 
+    this->stream << kAscendPtoScope << "wait_cross_flag" << "(" 
                 << flag << ");\n";
   }
 }
