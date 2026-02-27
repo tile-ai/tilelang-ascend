@@ -2277,12 +2277,15 @@ void CodeGenTileLangNPUIRDEV::VAtomicAddCodegen(const CallNode *op) {
 
 void CodeGenTileLangNPUIRDEV::VgatherCodegen(const CallNode *op) {
   tvm::tl::NpuirGather npuirop(op->args, this->vmap);
-  Value src = GenSubviewFromRegion(npuirop.src, npuirop.src_range);
-  Value dst = GenSubviewFromRegion(npuirop.dst, npuirop.dst_range);
+  Value src = GetVarValue(npuirop.src);
+  Value dst = GetVarValue(npuirop.dst);
   Value indices = GenSubviewFromRegion(npuirop.indices, npuirop.indices_range);
+  mlir::Type dst_type = dst.getType();
+  mlir::TypeRange result_tensors(&dst_type, 1);
 
-  builder.create<mlir::hivm::VGatherOp>(builder.getUnknownLoc(), TypeRange{},
-                                        src, indices, dst);
+  auto gatherOp = builder.create<mlir::hivm::VGatherOp>(builder.getUnknownLoc(),
+                                                      result_tensors, src, indices, dst);
+  SetVarValue(npuirop.dst, gatherOp->getResult(0));
 }
 
 void CodeGenTileLangNPUIRDEV::VtransposeCodegen(const CallNode *op) {

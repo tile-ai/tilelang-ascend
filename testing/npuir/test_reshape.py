@@ -25,7 +25,7 @@ def reshape_dev(M, N):
             a = T.alloc_shared((M, N), dtype)
             b = T.alloc_shared((N, M), dtype)
             T.copy(A,a)
-            T.npuir_reshape(a,b)
+            T.reshape(a,b)
             T.npuir_exp(b,b)
             T.copy(b,B)
     return main
@@ -42,7 +42,7 @@ def reshape_exp(M, N):
             a = T.alloc_ub((M, N), dtype)
             b = T.alloc_ub((N, M), dtype)
             T.copy(A,a)
-            T.npuir_reshape(a,b)
+            T.reshape(a,b)
             T.npuir_exp(b,b)
             T.copy(b,B)
     return main
@@ -79,7 +79,7 @@ def main(main_args):
     res = A.reshape(N, M)
     res = torch.exp(res)
     torch.testing.assert_close(
-        C, res, rtol=1e-3, atol=1e-3
+        B, res, rtol=1e-3, atol=1e-3
     )
 
     print("\033[92mReshape demo passed!\033[0m")

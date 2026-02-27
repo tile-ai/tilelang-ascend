@@ -125,7 +125,7 @@ from .customize_npuir import (
     npuir_abs as vabs,
     npuir_rec,
     npuir_not,
-    npuir_gather,
+    npuir_gather as gather,
     npuir_interleave,
     npuir_deinterleave,
     npuir_transpose,
@@ -148,7 +148,7 @@ from .customize_npuir import (
     sync_block_wait,
     Scope,
     npuir_print as print,
-    npuir_reshape,
+    npuir_reshape as reshape,
     npuir_clear as clear,
 )
 from .logical import any_of, all_of  # noqa: F401
