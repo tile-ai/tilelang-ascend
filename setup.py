@@ -8,6 +8,7 @@ from setuptools import setup, find_packages, Extension
 from setuptools.command.build_py import build_py
 from setuptools.command.sdist import sdist
 from setuptools.command.develop import develop
+from setuptools.command.bdist_wheel import bdist_wheel  
 import distutils.dir_util
 from typing import List
 import re
@@ -40,6 +41,8 @@ ROOT_DIR = os.path.dirname(__file__)
 USE_LLVM = os.environ.get("USE_LLVM", "False").lower() == "true"
 # Add ROCM control environment variable
 USE_ROCM = os.environ.get("USE_ROCM", "False").lower() == "true"
+# Add NPUIR control environment variable
+USE_NPUIR = os.environ.get("USE_NPUIR", "False").lower() == "true"
 
 
 def load_module_from_path(module_name, path):
@@ -55,20 +58,16 @@ envs = load_module_from_path('env', os.path.join(ROOT_DIR, PACKAGE_NAME, 'env.py
 CUDA_HOME = envs.CUDA_HOME
 ROCM_HOME = envs.ROCM_HOME
 
-# Check if both CUDA and ROCM are enabled
-if USE_ROCM and not ROCM_HOME:
+# If USE_NPUIR, skip CUDA/ROCM
+if USE_NPUIR:
+    logger.info("NPUIR support is enabled. CUDA/ROCM detection may be skipped.")
+elif USE_ROCM and not ROCM_HOME:
     raise ValueError(
         "ROCM support is enabled (USE_ROCM=True) but ROCM_HOME is not set or detected.")
 
-if not USE_ROCM and not CUDA_HOME:
+if not USE_ROCM and not CUDA_HOME and not USE_NPUIR:
     raise ValueError(
-        "CUDA support is enabled by default (USE_ROCM=False) but CUDA_HOME is not set or detected.")
-
-# Ensure one of CUDA or ROCM is available
-if not (CUDA_HOME or ROCM_HOME):
-    raise ValueError(
-        "Failed to automatically detect CUDA or ROCM installation. Please set the CUDA_HOME or ROCM_HOME environment variable manually (e.g., export CUDA_HOME=/usr/local/cuda or export ROCM_HOME=/opt/rocm)."
-    )
+        "Failed to automatically detect CUDA or ROCM installation and NPUIR is not enabled.")
 
 # TileLang only supports Linux platform
 assert sys.platform.startswith("linux"), "TileLang only supports Linux platform (including WSL)."
@@ -139,7 +138,9 @@ def get_tilelang_version(with_cuda=True, with_system_info=True, with_commit_id=F
     if with_system_info:
         local_version_parts.append(get_system_info().replace("-", "."))
 
-    if with_cuda:
+    if USE_NPUIR:
+        local_version_parts.append("npuir")
+    else:
         if USE_ROCM:
             if ROCM_HOME:
                 rocm_version = str(get_rocm_version())
@@ -150,7 +151,7 @@ def get_tilelang_version(with_cuda=True, with_system_info=True, with_commit_id=F
                 cuda_version = str(get_nvcc_cuda_version())
                 cuda_version_str = cuda_version.replace(".", "")[:3]
                 local_version_parts.append(f"cu{cuda_version_str}")
-
+    
     if local_version_parts:
         version += f"+{'.'.join(local_version_parts)}"
 
@@ -352,9 +353,6 @@ class TileLangBuilPydCommand(build_py):
                 if not os.path.exists(target_dir):
                     os.makedirs(target_dir)
                 if not os.path.exists(os.path.join(target_dir, os.path.basename(source_dir))):
-                    # if not exists, copy the file
-                    # as tox will copy the file to the build
-                    # directory based on manifest file
                     shutil.copy2(source_dir, target_dir)
 
         # copy the tl_templates
@@ -385,6 +383,7 @@ class TileLangBuilPydCommand(build_py):
             self.build_lib,
             build_temp_dir,
             os.path.join(ROOT_DIR, "build"),
+            os.path.join(ROOT_DIR, "build/tvm"),
         ]
 
         for item in TVM_PREBUILD_ITEMS:
@@ -405,7 +404,6 @@ class TileLangBuilPydCommand(build_py):
                 logger.info(f"Copied {source_lib_file} to {target_dir_release}")
                 shutil.copy2(source_lib_file, target_dir_develop)
                 logger.info(f"Copied {source_lib_file} to {target_dir_develop}")
-                os.remove(source_lib_file)
             else:
                 logger.info(f"WARNING: {item} not found in any expected directories!")
 
@@ -414,7 +412,6 @@ class TileLangBuilPydCommand(build_py):
         ]
         for item in TVM_CONFIG_ITEMS:
             source_dir = os.path.join(ROOT_DIR, item)
-            # only copy the file
             file_name = os.path.basename(item)
             target_dir = os.path.join(self.build_lib, PACKAGE_NAME, file_name)
             target_dir = os.path.dirname(target_dir)
@@ -451,22 +448,24 @@ class TileLangBuilPydCommand(build_py):
                 shutil.copy2(source_dir, target_dir)
 
         # Copy CUTLASS to the package directory
-        CUTLASS_PREBUILD_ITEMS = [
-            "3rdparty/cutlass/include",
-            "3rdparty/cutlass/tools",
-        ]
-        for item in CUTLASS_PREBUILD_ITEMS:
-            source_dir = os.path.join(ROOT_DIR, item)
-            target_dir = os.path.join(self.build_lib, PACKAGE_NAME, item)
-            if os.path.isdir(source_dir):
-                self.mkpath(target_dir)
-                distutils.dir_util.copy_tree(source_dir, target_dir)
-            else:
-                target_dir = os.path.dirname(target_dir)
-                if not os.path.exists(target_dir):
-                    os.makedirs(target_dir)
-                shutil.copy2(source_dir, target_dir)
-        # copy compoable kernel to the package directory
+        if CUDA_HOME:
+            CUTLASS_PREBUILD_ITEMS = [
+                "3rdparty/cutlass/include",
+                "3rdparty/cutlass/tools",
+            ]
+            for item in CUTLASS_PREBUILD_ITEMS:
+                source_dir = os.path.join(ROOT_DIR, item)
+                target_dir = os.path.join(self.build_lib, PACKAGE_NAME, item)
+                if os.path.isdir(source_dir):
+                    self.mkpath(target_dir)
+                    distutils.dir_util.copy_tree(source_dir, target_dir)
+                else:
+                    target_dir = os.path.dirname(target_dir)
+                    if not os.path.exists(target_dir):
+                        os.makedirs(target_dir)
+                    shutil.copy2(source_dir, target_dir)
+        
+        # copy composable kernel to the package directory
         CK_PREBUILD_ITEMS = [
             "3rdparty/composable_kernel/include",
             "3rdparty/composable_kernel/library",
@@ -483,12 +482,11 @@ class TileLangBuilPydCommand(build_py):
                     os.makedirs(target_dir)
                 shutil.copy2(source_dir, target_dir)
 
-        # copy compoable kernel to the package directory
+        # copy config files to the package directory
         TL_CONFIG_ITEMS = ["CMakeLists.txt", "VERSION", "README.md", "LICENSE"]
         for item in TL_CONFIG_ITEMS:
             source_dir = os.path.join(ROOT_DIR, item)
             target_dir = os.path.join(self.build_lib, PACKAGE_NAME, item)
-            # if is VERSION file, replace the content with the new version with commit id
             if not PYPI_BUILD and item == "VERSION":
                 version = get_tilelang_version(
                     with_cuda=False, with_system_info=False, with_commit_id=True)
@@ -509,6 +507,101 @@ class TileLangBuilPydCommand(build_py):
                     os.makedirs(target_dir)
                 shutil.copy2(source_dir, target_dir)
 
+        self.remove_unwanted_dirs()
+        # ===== Critical fixes: Patch TVM and __init__.py =====
+        # Apply patches after all files are copied
+        self.patch_tvm_base_py()
+        self.patch_init_py()
+
+    def remove_unwanted_dirs(self):
+        """Force remove test/unused directories from build_lib"""
+        unwanted_dirs = [
+            "testing",
+            "unittest",
+            "examples", 
+            "benchmark",
+            "docs",
+        ]
+        
+        for dir_name in unwanted_dirs:
+            dir_path = os.path.join(self.build_lib, PACKAGE_NAME, dir_name)
+            if os.path.exists(dir_path):
+                shutil.rmtree(dir_path)
+                logger.info(f"Removed {dir_path}")
+
+    def patch_tvm_base_py(self):
+        """Patch TVM's base.py to use the bundled libtvm.so"""
+        base_py_path = os.path.join(
+            self.build_lib, 
+            PACKAGE_NAME, 
+            "3rdparty", "tvm", "python", "tvm", "_ffi", "base.py"
+        )
+        
+        if not os.path.exists(base_py_path):
+            logger.warning(f"base.py not found at {base_py_path}, skipping patch")
+            return
+        
+        with open(base_py_path, "r") as f:
+            content = f.read()
+        
+        if "# --- Patched by TileLang: Force use bundled libtvm.so ---" in content:
+            logger.info("base.py already patched, skipping")
+            return
+        
+        patch = '''\
+# --- Patched by TileLang: Force use bundled libtvm.so ---
+import os, sys, ctypes
+_current_dir = os.path.dirname(os.path.abspath(__file__))
+_tilelang_root = os.path.abspath(os.path.join(_current_dir, *['..'] * 4))
+_lib_path = os.path.join(_tilelang_root, 'lib', 'libtvm.so')
+if os.path.exists(_lib_path):
+    try:
+        _lib = ctypes.CDLL(_lib_path, ctypes.RTLD_GLOBAL)
+        os.environ['TVM_LIBRARY_PATH'] = os.path.dirname(_lib_path)
+        _LIB = _lib
+    except Exception as e:
+        print(f"[TileLang] Failed to load bundled TVM library: {e}")
+# --------------------------------------------------------
+'''
+        
+        with open(base_py_path, "w") as f:
+            f.write(patch + content)
+        logger.info(f" Patched {base_py_path} to use bundled libtvm.so")
+
+    def patch_init_py(self):
+        """Patch tilelang/__init__.py to set up TVM paths properly"""
+        target_init = os.path.join(self.build_lib, PACKAGE_NAME, "__init__.py")
+        if not os.path.exists(target_init):
+            logger.warning(f"__init__.py not found at {target_init}, skipping patch")
+            return
+        
+        with open(target_init, "r") as f:
+            content = f.read()
+        
+        # check the patch 
+        if "# --- Built-in TVM support ---" in content:
+            logger.info("__init__.py already patched, skipping")
+            return
+        
+        patch = '''\
+# --- Built-in TVM support ---
+import sys, os
+_tvm_python_path = os.path.join(os.path.dirname(__file__), '3rdparty', 'tvm', 'python')
+if os.path.exists(_tvm_python_path) and _tvm_python_path not in sys.path:
+    sys.path.insert(0, _tvm_python_path)
+_lib_path = os.path.join(os.path.dirname(__file__), 'lib')
+if os.path.exists(_lib_path):
+    os.environ['TVM_LIBRARY_PATH'] = _lib_path
+try:
+    import tvm
+except ImportError as e:
+    pass
+# -----------------------------
+'''
+
+        with open(target_init, "w") as f:
+            f.write(patch + content)
+        logger.info("Patched __init__.py for built-in TVM")
 
 class TileLangSdistCommand(sdist):
     """Customized setuptools sdist command - includes the pyproject.toml file."""
@@ -568,6 +661,19 @@ class TileLangDevelopCommand(develop):
                 logger.info(f"INFO: {source_lib_file} does not exist.")
 
 
+# ------------------------------------------------------------------------
+# NEW: Add a custom 'bdist_wheel' command for wheel building.
+# ------------------------------------------------------------------------
+class TileLangBdistWheel(bdist_wheel):
+    def get_tag(self):
+        python, abi, plat = super().get_tag()
+        return python, abi, plat
+    
+    def run(self):
+        self.run_command('build_py')
+        self.run_command('build_ext') 
+        super().run()
+
 class CMakeExtension(Extension):
     """
     A specialized setuptools Extension class for building a CMake project.
@@ -596,6 +702,11 @@ class CMakeBuild(build_ext):
     """
 
     def run(self):
+        # skip cmake if TILELANG_SKIP_BUILD=1
+        skip_build = os.environ.get("TILELANG_SKIP_BUILD", "0").lower() in ("1", "true", "yes", "on")
+        if skip_build:
+            print("CMake build skipped, using pre-built libraries from build/")
+            return
         # Check if CMake is installed and accessible by attempting to run 'cmake --version'.
         try:
             subprocess.check_output(["cmake", "--version"])
@@ -658,12 +769,23 @@ class CMakeBuild(build_ext):
         # Append some configuration variables to 'config.cmake'
         with open(dst_config_cmake, "a") as config_file:
             config_file.write(f"set(USE_LLVM {llvm_config_path})\n")
-            if USE_ROCM:
-                config_file.write(f"set(USE_ROCM {ROCM_HOME})\n")
+            
+            # Add NPUIR
+            if USE_NPUIR:
+                config_file.write("set(USE_NPUIR ON)\n")
+                # Check for BISHENGIR_PATH environment variable
+                bishengir_path = os.environ.get("BISHENGIR_PATH")
+                if bishengir_path:
+                    config_file.write(f"set(BISHENGIR_ROOT_PATH {bishengir_path})\n")
                 config_file.write("set(USE_CUDA OFF)\n")
-            else:
-                config_file.write(f"set(USE_CUDA {CUDA_HOME})\n")
                 config_file.write("set(USE_ROCM OFF)\n")
+            else:
+                if USE_ROCM:
+                    config_file.write(f"set(USE_ROCM {ROCM_HOME})\n")
+                    config_file.write("set(USE_CUDA OFF)\n")
+                else:
+                    config_file.write(f"set(USE_CUDA {CUDA_HOME})\n")
+                    config_file.write("set(USE_ROCM OFF)\n")
 
         # Run CMake to configure the project with the given arguments.
         subprocess.check_call(["cmake", ext.sourcedir] + cmake_args, cwd=build_temp)
@@ -677,19 +799,20 @@ setup(
     name=PACKAGE_NAME,
     version=(get_tilelang_version(with_cuda=False, with_system_info=False)
              if PYPI_BUILD else get_tilelang_version()),
-    packages=find_packages(where="."),
+    packages=[p for p in find_packages(where=".") 
+              if not p.startswith(('testing', 'unittest', 'examples', 'benchmark', 'docs'))],
     package_dir={"": "."},
     author="Microsoft Research",
     description="A tile level programming language to generate high performance code.",
     long_description=read_readme(),
     long_description_content_type="text/markdown",
     platforms=[
-        "Environment :: GPU :: NVIDIA CUDA" if not USE_ROCM else "Environment :: GPU :: AMD ROCm",
         "Operating System :: POSIX :: Linux",
+        "Hardware :: Ascend NPU",
     ],
     license="MIT",
-    keywords="BLAS, CUDA, HIP, Code Generation, TVM",
-    url="https://github.com/tile-ai/tilelang",
+    keywords="NPU, ASCENDNPUIR, HIP, Code Generation, TVM",
+    url="https://github.com/tile-ai/tilelang-ascend",
     classifiers=[
         "Programming Language :: Python :: 3.8",
         "License :: OSI Approved :: MIT License",
@@ -698,7 +821,6 @@ setup(
         "Intended Audience :: Science/Research",
     ],
     python_requires=">=3.8",
-    install_requires=get_requirements(),
     package_data=package_data,
     include_package_data=False,
     ext_modules=[CMakeExtension("TileLangCXX", sourcedir=".")],
@@ -707,5 +829,6 @@ setup(
         "sdist": TileLangSdistCommand,
         "build_ext": CMakeBuild,
         "develop": TileLangDevelopCommand,
+        "bdist_wheel": TileLangBdistWheel, 
     },
 )

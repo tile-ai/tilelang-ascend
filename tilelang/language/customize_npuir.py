@@ -29,6 +29,8 @@ def _get_extent(data):
         for idx in indices:
             if isinstance(idx, tir.expr.Var):
                 result.append(tir.IntImm("int32", 1))
+            elif isinstance(idx, tir.IntImm):
+                result.append(tir.IntImm("int32", 1))
             elif isinstance(idx, tir.expr.Ramp):
                 result.append(idx.lanes)
     return result
@@ -115,6 +117,7 @@ class AscendBinaryOp(object):
         self.__src1 = src1
         self.__dst = dst
     def buildTirCall(self):
+        
         src0 = _to_region(self.__src0, "r", _get_extent(self.__src0))
         src1 = tir.const(self.__src1, self.__dst.dtype) if isinstance(self.__src1,(int,float)) else _to_region(self.__src1, "r", _get_extent(self.__src1))
         dst = _to_region(self.__dst, "w", _get_extent(self.__dst))
@@ -229,6 +232,10 @@ def npuir_exp(A, B):
 """npuir relu at tile-level."""
 def npuir_relu(A, B):
     return AscendUnaryOp("relu", A, B).buildTirCall()
+
+"""npuir sigmoid at tile-level."""
+def npuir_sigmoid(A, B):
+    return AscendUnaryOp("sigmoid", A, B).buildTirCall()
 
 """npuir ln at tile-level."""
 def npuir_ln(A, B):
@@ -449,30 +456,32 @@ def npuir_brc(src, dst):
     """Broadcast a vector or a scalar according to the broadcast axes array
 
     Args:
-        src (Union[tir.Buffer, tir.BufferLoad, tir.BufferRegion, tir.var]): Source vector or scalar
+        src (Union[tir.Buffer, tir.BufferLoad, tir.BufferRegion, tir.PrimExpr]): Source vector or scalar
         dst (Union[tir.Buffer, tir.BufferLoad]): Destination vector
-
-    Raises:
-        AssertionError: If input vector and output vector have different ranks.
-        AssertionError: If input and output shapes do not match for broadcast.
-
-    Returns:
-        tir.Call: A handle to the npuir_brc operation
     """
     src_extent = _get_extent(src)
     dst_extent = _get_extent(dst)
 
-    if not isinstance(src, (tir.Var, tir.PrimExpr)):
+    if not isinstance(src, tir.PrimExpr):
         assert len(src_extent) == len(
             dst_extent), "The input vector and output vector must have same rank."
-
-        for i in range(0, len(src_extent)):
+        for i in range(len(src_extent)):
             if src_extent[i] != 1:
-                assert src_extent[i] == dst_extent[
-                    i], "The input and output shapes do not match for broadcast."
-    src = _to_region(src, "r", src_extent)
-    dst = _to_region(dst, "w", dst_extent)
-    return tir.call_intrin("handle", tir.op.Op.get("tl.npuir_brc"), src, dst)
+                assert src_extent[i] == dst_extent[i], \
+                    "The input and output shapes do not match for broadcast."
+
+    if not src_extent:
+        src_region = src
+    else:
+        src_region = _to_region(src, "r", src_extent)
+    dst_region = _to_region(dst, "w", dst_extent)
+
+    return tir.call_intrin(
+        "handle",
+        tir.op.Op.get("tl.npuir_brc"),
+        src_region,
+        dst_region
+    )
 
 def npuir_fill(buffer, value):
     """Fill a buffer or buffer region with a specified value.
@@ -489,8 +498,8 @@ def npuir_fill(buffer, value):
 
     if not isinstance(buffer, (tir.Buffer, tir.BufferRegion)):
         raise TypeError("buffer must be a tir.Buffer or tir.BufferRegion")
-    if not isinstance(value, tir.PrimExpr):
-        raise TypeError("value must be a tir.PrimExpr")
+    if not isinstance(value, (tir.PrimExpr, tir.BufferLoad)):
+        raise TypeError("value must be a tir.PrimExpr or tir.BufferLoad")
 
     fill_call = npuir_brc(value, buffer)
     return fill_call
@@ -952,44 +961,6 @@ def npuir_deinterleave(*args, channel_nums: int = 2, index_mode: str = "ALL_CHAN
  
     return _tir_call_intrin(channel_nums, index_mode, src, *dsts_arr)
 
-def npuir_sigmoid(src: tir.Buffer, dst: Optional[tir.Buffer] = None):
-    """Apply sigmoid activation function element-wise on input buffer.
-    
-    Sigmoid(x) = 1 / (1 + exp(-x))
-    
-    Args:
-        src (tir.Buffer): The input buffer
-        dst (tir.Buffer, optional): The output buffer. Defaults to None.
-    
-    Returns:
-        tir.Stmt: Sequence of operations implementing sigmoid
-    """
-    
-    shape = src.shape
-    dtype = src.dtype
-    
-    if dst is None:
-        dst = src
-    
-    TILELANG_ASCEND_MODE = os.environ.get('TILELANG_ASCEND_MODE')
-    if TILELANG_ASCEND_MODE is None or \
-        TILELANG_ASCEND_MODE.lower().strip() in ['expert', 'exp', 'e']:
-        tmp = _get_tmp_buffer_exp(dst)
-    else:
-        tmp = _get_tmp_buffer_dev(dst)
-
-    neg_one = tir.const(-1.0, dtype)
-    mul_call = AscendBinaryOp("mul", src, neg_one, tmp).buildTirCall()
-    exp_call = AscendUnaryOp("exp", tmp, tmp).buildTirCall() 
-    one = tir.const(1.0, dtype)
-    add_call = AscendBinaryOp("add", tmp, one, tmp).buildTirCall() 
-    rec_call = AscendUnaryOp("rec", tmp, dst).buildTirCall()
-    
-    T.evaluate(mul_call)
-    T.evaluate(exp_call)
-    T.evaluate(add_call)
-    T.evaluate(rec_call)
-
 def npuir_transpose(src, dst, permutation = Union[list, tuple], size=[]):
     """Permutes the dimensions of src according to the given permutation. In other words: dim(dst, i) = dim(src, permutation[i]).
  
@@ -1018,7 +989,7 @@ def npuir_transpose(src, dst, permutation = Union[list, tuple], size=[]):
  
     return tir.call_intrin("handle", tir.op.Op.get("tl.npuir_transpose"), src, dst, permutation_str)
 
-def npuir_arange(dst, strides: Union[list, tuple], offset=0, size=[]):
+def npuir_arange(dst, strides: Union[list, tuple], offset=0):
     """Fill a vector with range 0,1,2... based on strides and offset.
     e.g. offset = 1, strides = [1, 2], tensor/memref shape = [2x4xi32],
     the result is [[1, 3, 5, 7,
@@ -1031,11 +1002,10 @@ def npuir_arange(dst, strides: Union[list, tuple], offset=0, size=[]):
     Returns:
         tir.Call: A handle to the npuir_arange operation
     """
-    dst_extent = _get_extent(dst) if size == [] else size.copy()
+    dst_extent = _get_extent(dst)
     dst = _to_region(dst, "w", dst_extent)
-    strides_str = ','.join(str(stride) for stride in strides)
 
-    return tir.call_intrin("handle", tir.op.Op.get("tl.npuir_arange"), dst, strides_str, offset)
+    return tir.call_intrin("handle", tir.op.Op.get("tl.npuir_arange"), dst, *strides, offset)
 
 def npuir_concat(*args, size=[]):
     """The concat operation constructs a tensor out of a variadic list of input
@@ -1172,7 +1142,7 @@ def npuir_bitcast(src, dtype, size = []):
     Returns:
         tir.Call: A handle to the npuir_bitcast operation
     """
-    src_dtype = runtime.DataType(src.dtype)
+    src_dtype = runtime.DataType(src.dtype if isinstance(src, tir.Buffer) else src.buffer.dtype)
     src_extent = _get_extent(src) if size == [] else size.copy()
     src = _to_region(src, "rw", src_extent)
 

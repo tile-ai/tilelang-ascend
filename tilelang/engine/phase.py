@@ -52,6 +52,7 @@ def LowerAndLegalize(mod: IRModule, target: Target) -> IRModule:
     # Bind the target device information to the module
     mod = tir.transform.BindTarget(target)(mod)
     if target.kind.name == "npuir":
+        mod = tir.transform.Simplify()(mod)
         return mod
 
     # Legalize the frontend IR to make it compatible with TVM

@@ -228,6 +228,7 @@ private:
   void VbrcCodegen(const CallNode *op);
   void VcastCodegen(const CallNode *op);
   void VreduceCodegen(const CallNode *op);
+  void VsigmoidCodegen(const CallNode *op);
   void VcumsumCodegen(const CallNode *op);
   void VAtomicAddCodegen(const CallNode *op);
   void VgatherCodegen(const CallNode *op);
@@ -246,6 +247,7 @@ private:
   void VerfCodegen(const CallNode *op);
   void VtanhCodegen(const CallNode *op);
   void DebugPrintCodegen(const CallNode *op);
+  void ReshapeCodegen(const CallNode *op);
   template <typename T> void CreateHIVMBinaryVectorOp(const CallNode *op);
   template <typename T, typename U> void UnaryVecOpCodegen(const CallNode *op);
   void BarrierCodegen(const CallNode *op);
@@ -262,6 +264,11 @@ private:
   mlir::Value GenMemrefLoadFromRegion(const BufferLoadNode *op);
   mlir::Value GenSubviewFromRegion(const CallNode *region_node);
   mlir::Value GenSubviewFromRegion(Buffer buffer_data, Array<Range> range);
+  // Similar to GenSubviewFromRegion but performs rank reduction by dropping
+  // static-1 dimensions from the slice sizes (Region extents).
+  mlir::Value GenRankReducedSubviewFromRegion(Buffer buffer_data,
+                                              Array<Range> range,
+                                              int min_rank = 0);
   mlir::Value CreateIndexCastOp(mlir::Value src);
   std::pair<bool, mlir::Value> CheckMLIRValueMap(mlir::Value val);
   std::pair<bool, mlir::Value> CheckPrimExprMap(const PrimExprNode * op);
