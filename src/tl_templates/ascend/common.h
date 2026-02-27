@@ -171,7 +171,8 @@ CATLASS_DEVICE void copy_ub_to_ub(LocalTensor<T1> dstTensor,
   } else {
     if constexpr ((std::is_same_v<T1, float> && std::is_same_v<T2, half>) ||
                   (std::is_same_v<T1, float> && std::is_same_v<T2, int16_t>) ||
-                  (std::is_same_v<T1, half> && std::is_same_v<T2, int8_t>)) {
+                  (std::is_same_v<T1, half> && std::is_same_v<T2, int8_t>) ||
+                  (std::is_same_v<T1, int16_t> && std::is_same_v<T2, int32_t>)) {
       AscendC::Cast(dstTensor, srcTensor, AscendC::RoundMode::CAST_NONE, len);
     } else {
       AscendC::Cast(dstTensor, srcTensor, AscendC::RoundMode::CAST_RINT, len);
