@@ -1258,8 +1258,8 @@ void CodeGenTileLangAscendPto::AutoSetCrossFlagCodegen(const CallNode *op) {
 }
 
 void CodeGenTileLangAscendPto::WaitCrossFlagCodegen(const CallNode *op) {
-  std::string pipe = Downcast<StringImm>(op->args[0])->value;
-  std::string flag = PrintExpr(op->args[1]);
+  std::string pipe = Downcast<StringImm>(op->args[1])->value;
+  std::string flag = PrintExpr(op->args[0]);
 
   if (this->platform_ == "A5") {
     if (this->current_resource_scope_ == "CUBE") {
