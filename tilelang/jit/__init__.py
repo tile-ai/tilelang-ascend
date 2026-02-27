@@ -77,7 +77,6 @@ def compile(
             "tl.ascend_auto_sync": bool, default: False
             "tl.ascend_memory_planning": bool, default: False
     """
-    platform = determine_platform(platform)
 
     return cached(
         func=func,
@@ -153,7 +152,6 @@ class _JitImplementation:
             If a relative path is given, it's made absolute relative to the project root
             or current working directory.
         """
-        platform = determine_platform(platform)
 
         self.out_idx = out_idx
         self.workspace_idx = workspace_idx
@@ -296,7 +294,6 @@ def jit(  # This is the new public interface
         Either a JIT-compiled wrapper around the input function, or a configured decorator
         instance that can then be applied to a function.
     """
-    platform = determine_platform(platform)
     if callable(func):
         # Case 1: Used as @jit (func_or_out_idx is the function, others are defaults)
         # Create a default _JitImplementation instance and apply it to the function.
