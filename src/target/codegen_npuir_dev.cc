@@ -2637,7 +2637,7 @@ void CodeGenTileLangNPUIRDEV::DebugPrintCodegen(const CallNode *op) {
     hex = npuirop.hex;
   } else {
     tvm::tl::NpuirDevicePrintBuf npuirop(op->args, this->vmap);
-    arg = GenSubviewFromRegion(npuirop.src, npuirop.src_range);
+    arg = GenExtractSliceFromRegion(npuirop.src, npuirop.src_range);
     prefix = npuirop.prefix;
     hex = npuirop.hex;
   }

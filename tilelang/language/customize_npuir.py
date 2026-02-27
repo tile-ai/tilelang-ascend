@@ -29,6 +29,8 @@ def _get_extent(data):
         for idx in indices:
             if isinstance(idx, tir.expr.Var):
                 result.append(tir.IntImm("int32", 1))
+            elif isinstance(idx, tir.IntImm):
+                result.append(tir.IntImm("int32", 1))
             elif isinstance(idx, tir.expr.Ramp):
                 result.append(idx.lanes)
     return result
@@ -115,6 +117,7 @@ class AscendBinaryOp(object):
         self.__src1 = src1
         self.__dst = dst
     def buildTirCall(self):
+        
         src0 = _to_region(self.__src0, "r", _get_extent(self.__src0))
         src1 = tir.const(self.__src1, self.__dst.dtype) if isinstance(self.__src1,(int,float)) else _to_region(self.__src1, "r", _get_extent(self.__src1))
         dst = _to_region(self.__dst, "w", _get_extent(self.__dst))
@@ -1139,7 +1142,7 @@ def npuir_bitcast(src, dtype, size = []):
     Returns:
         tir.Call: A handle to the npuir_bitcast operation
     """
-    src_dtype = runtime.DataType(src.dtype)
+    src_dtype = runtime.DataType(src.dtype if isinstance(src, tir.Buffer) else src.buffer.dtype)
     src_extent = _get_extent(src) if size == [] else size.copy()
     src = _to_region(src, "rw", src_extent)
 

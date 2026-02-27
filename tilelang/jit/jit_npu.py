@@ -516,6 +516,7 @@ extern "C" {
 #include <vector>
 #define PY_SSIZE_T_CLEAN
 #include <Python.h>
+#define __CCE_ENABLE_PRINT__
 {'#include <torch_npu/csrc/framework/OpCommand.h>' if enable_taskqueue else ''}
 #include "runtime/runtime/rt.h"
 {extract_device_print_code_from_cann()}
