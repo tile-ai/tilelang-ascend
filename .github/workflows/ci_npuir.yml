@@ -10,6 +10,8 @@ jobs:
   build-test:
     runs-on: self-hosted
     steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
       - name: Build tilelang
         run: |
           bash install_npuir.sh
