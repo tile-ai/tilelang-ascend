@@ -30,8 +30,8 @@ def layer_norm(M, N, block_M, block_N, eps=1e-5, dtype="float"):
             sum_square_i = T.alloc_ub([block_M // VEC_NUM, block_N], dtype)
             sum_ub = T.alloc_ub([block_M // VEC_NUM], dtype)
             sum_square_ub = T.alloc_ub([block_M // VEC_NUM], dtype)
-            mean_ub = T.alloc_ub([block_M // VEC_NUM], dtype)
-            mean_square_ub = T.alloc_ub([block_M // VEC_NUM], dtype)
+            mean_ub = T.alloc_ub([block_M // VEC_NUM, 1], dtype)
+            mean_square_ub = T.alloc_ub([block_M // VEC_NUM, 1], dtype)
             tmp_ub = T.alloc_ub([3 * DataType(dtype).bits // 8 * block_M // VEC_NUM * block_N], "uint8")
 
             with T.Scope("V"):
