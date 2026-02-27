@@ -81,7 +81,6 @@ def linear_attention_ker2(B, H, L, D, block_L, block_D, dtype="float16", accum_d
 	lb_num = T.ceildiv(L, block_L)
 	db_num = T.ceildiv(D, block_D)
 	VEC_NUM = 2
-
     is_pto = current_jit_target(linear_attention_ker2) == "pto"
     def alloc_temp():
         if is_pto:
