@@ -1258,30 +1258,25 @@ void CodeGenTileLangAscendPto::AutoSetCrossFlagCodegen(const CallNode *op) {
 }
 
 void CodeGenTileLangAscendPto::WaitCrossFlagCodegen(const CallNode *op) {
-  auto flag = op->args[0].as<IntImmNode>()->value;
-  auto pipe = op->args[1].as<StringImmNode>()->value;
+  std::string pipe = Downcast<StringImm>(op->args[0])->value;
+  std::string flag = PrintExpr(op->args[1]);
 
   if (this->platform_ == "A5") {
-    if (pipe.empty()) {
-      if (this->current_resource_scope_ == "CUBE") {
-        pipe = "MTE1";
-      } else if (this->current_resource_scope_ == "VEC") {
-        pipe = "V";
-      } else {
-        LOG(WARNING) << "Cannot infer default pipe for wait_intra_block in unknown scope";
-      }
+    if (this->current_resource_scope_ == "CUBE") {
+      this->PrintIndent();
+      this->stream << kAscendPtoScope << "wait_intra_block_cube<PIPE_" << pipe << ">(" 
+                  << flag << ");\n";
+    } else if (this->current_resource_scope_ == "VEC") {
+      this->PrintIndent();
+      this->stream << kAscendPtoScope << "wait_intra_block_vec<PIPE_" << pipe << ">(" 
+                  << flag << ");\n";
+    } else {
+      LOG(WARNING) << "wait_cross_flag called outside of known scope (CUBE/VEC)!";
     }
-  } else {
-    if (!pipe.empty()) {
-      LOG(FATAL) << "Pipe argument for wait_cross_flag is only supported on A5 architecture.";
-    }
-  }
-
-  if (this->platform_ == "A5") {
-    HandleA5Flag("wait_intra_block", pipe, flag);
   } else {
     this->PrintIndent();
-    this->stream << "wait_flag_dev" << "(" << flag << ");\n";
+    this->stream << kAscendPtoScope << "wait_cross_flag<PIPE_" << pipe << ">(" 
+                << flag << ");\n";
   }
 }
 
