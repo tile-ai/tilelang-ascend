@@ -30,7 +30,7 @@ def vec_reduce(M, N, block_M, block_N, dtype="float16"):
             B_VEC = T.alloc_ub((block_M, 1), dtype)
             T.copy(A[bx, by], A_VEC)
             T.npuir_reduce(A_VEC, B_VEC, [1], "max", [128, 128])
-            T.copy(B_VEC, B[bx, 0], [128, 1])
+            T.copy(B_VEC[0:128, 0:1], B[bx : bx + 128, 0 : 1])
 
     return main
 

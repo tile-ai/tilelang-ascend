@@ -34,8 +34,8 @@ def arange_demo_dev(M, N, block_M, block_N):
                     bx = block_id_m * block_M
                     by = block_id_n * block_N
                     T.npuir_arange(a, [bx,by], bx)
-                    T.copy(a, A[bx,by], size=[block_M, block_N])
-            
+                    T.copy(a, A[bx : bx + block_M, by : by + block_N])
+
     return main
 
 def arange_demo_exp(M, N, block_M, block_N):
@@ -57,8 +57,8 @@ def arange_demo_exp(M, N, block_M, block_N):
                     bx = block_id_m * block_M
                     by = block_id_n * block_N
                     T.npuir_arange(a, [bx,by], bx)
-                    T.copy(a, A[bx,by], size=[block_M, block_N])
-            
+                    T.copy(a, A[bx : bx + block_M, by : by + block_N])
+
     return main
 
 def generate_tensor(shape, dtype, clear=False):

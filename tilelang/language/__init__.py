@@ -67,7 +67,6 @@ from .customize import (
     view,  # noqa: F401
 )
 from .customize_npuir import (
-    npuir_copy as copy,
     npuir_add,
     npuir_add as vadd,
     npuir_sub,

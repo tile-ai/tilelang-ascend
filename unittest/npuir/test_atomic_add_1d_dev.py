@@ -27,7 +27,7 @@ def vec_atomic_add_1d(N, block_size, dtype="float32"):
             start = bid * block_size
             t0 = shape - start 
             tail_size = T.min(block_size, t0)
-            T.copy(A[start], A_VEC, [tail_size])
+            T.copy(A[start : start + tail_size], A_VEC[0:tail_size])
     
             T.npuir_atomic_add(A_VEC, B[start], [tail_size])
 

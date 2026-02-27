@@ -34,9 +34,9 @@ def if_have_yield(M, block_N, dtype="float16", indexType="int32"):
                 remain_n = T.min(N - offset_n, block_N)
                 for i in T.serial(M):
                     if idx[i] == 1:
-                        T.copy(Input[i, offset_n], src, size=[1, remain_n])
+                        T.copy(Input[i : i + 1, offset_n : offset_n + remain_n], src)
                         T.npuir_add(src, dst, dst)
-                T.copy(dst, Output[0, offset_n], size=[1, remain_n])
+                T.copy(dst, Output[0 : 1, offset_n : offset_n + remain_n])
                 
     return if_have_yield_
 

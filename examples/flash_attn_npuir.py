@@ -167,9 +167,8 @@ def flashattn(dtype, accum_dtype, seq_len, dim, block_m, block_n, block_k):
                     with T.rs("PIPE_MTE2"):
                         T.sync_block_wait(i)
                         T.copy(
-                            workspace_1[bx, i * block_n],
-                            cross_kernel_f16_N,
-                            size=[real_m, tail_size_n])
+                            workspace_1[bx : bx + real_m, i * block_n : i * block_n + tail_size_n],
+                            cross_kernel_f16_N[0:real_m, 0:tail_size_n])
                         T.npuir_cast(cross_kernel_f16_N, cross_kernel_f32_N, round_mode="rint")
 
                     T.npuir_mul(cross_kernel_f32_N, acc_c_scale, cross_kernel_f32_N)
@@ -179,7 +178,7 @@ def flashattn(dtype, accum_dtype, seq_len, dim, block_m, block_n, block_k):
                         T.npuir_sub(scores_max_prev, scores_max, scores_scale)
                         T.npuir_exp(scores_scale, scores_scale)
 
-                        T.copy(scores_scale, scales[i * block_m_half, 0], size=[block_m_half, 1])
+                        T.copy(scores_scale, scales[i * block_m_half : i * block_m_half + block_m_half, 0 : 1])
 
                     T.npuir_sub(cross_kernel_f32_N, scores_max, cross_kernel_f32_N)
                     T.npuir_exp(cross_kernel_f32_N, cross_kernel_f32_N)
@@ -187,9 +186,8 @@ def flashattn(dtype, accum_dtype, seq_len, dim, block_m, block_n, block_k):
 
                     with T.rs("PIPE_MTE3"):
                         T.copy(
-                            cross_kernel_f16_N,
-                            workspace_2[bx, i * block_n],
-                            size=[real_m, tail_size_n])
+                            cross_kernel_f16_N[0:real_m, 0:tail_size_n],
+                            workspace_2[bx : bx + real_m, i * block_n : i * block_n + tail_size_n])
                         T.sync_block_set(i)
 
                     T.npuir_reduce(cross_kernel_f32_N, scores_sum, dims=[1], reduce_mode="sum")
@@ -200,16 +198,16 @@ def flashattn(dtype, accum_dtype, seq_len, dim, block_m, block_n, block_k):
                 for i in T.serial(T.ceildiv(seq_len, block_n)):
                     with T.rs("PIPE_MTE2"):
                         T.sync_block_wait(i)
-                        T.copy(workspace_3[bx, i * dim], cross_kernel_f16_dim, size=[real_m, dim])
+                        T.copy(workspace_3[bx : bx + real_m, i * dim : i * dim + dim], cross_kernel_f16_dim[0:real_m, 0:dim])
                     T.npuir_cast(cross_kernel_f16_dim, cross_kernel_f32_dim, round_mode="rint")
                     if i != 0:
-                        T.copy(scales[i*block_m_half, 0], scores_scale, size=[block_m_half, 1])
+                        T.copy(scales[i*block_m_half : i*block_m_half + block_m_half, 0 : 1], scores_scale)
                     T.npuir_mul(acc_o, scores_scale, acc_o)
                     T.npuir_add(acc_o, cross_kernel_f32_dim, acc_o)
 
                 T.npuir_div(acc_o, logsum, acc_o)
                 T.npuir_cast(acc_o, cross_kernel_f16_dim, round_mode="rint")
-                T.copy(cross_kernel_f16_dim, Output[bx, 0], size=[real_m, dim])
+                T.copy(cross_kernel_f16_dim[0:real_m, 0:dim], Output[bx : bx + real_m, 0 : dim])
 
     return main
 

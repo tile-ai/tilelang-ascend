@@ -273,16 +273,16 @@ def sparse_attention_mla(
                                     if tail_size_i_half > 0:
                                         offset = batch_id * top_k_mul_kv_group_mul_seq_len + seq_id * top_k_mul_kv_group
                                         offset = offset + block_i_offset
-                                        T.copy(Indices[offset], ub_indices, size=[block_I_half])
+                                        T.copy(Indices[offset : offset + block_I_half], ub_indices)
                                         for idx_id in T.serial(block_I_half):
                                             current_index = ub_indices[idx_id]
                                             offset = batch_id * kv_group_mul_seq_len_kv + ub_indices[idx_id]
                                             if ub_indices[idx_id] < seq_len_kv:
-                                                T.copy(KV[offset, 0], ub_kv_sparse[idx_id, 0], size=[1, full_dim])
+                                                T.copy(KV[offset : offset + 1, 0 : full_dim], ub_kv_sparse[idx_id : idx_id + 1, 0 : full_dim])
 
                                     # Store gathered KV values to workspace
                                     offset = kernel_id * top_k + block_i_offset
-                                    T.copy(ub_kv_sparse, workspace_kv[offset, 0], size=[block_I_half, full_dim])
+                                    T.copy(ub_kv_sparse, workspace_kv[offset : offset + block_I_half, 0 : full_dim])
 
                                     with T.rs("PIPE_MTE3"):
                                         T.sync_block_set(0)
@@ -296,7 +296,7 @@ def sparse_attention_mla(
                                 # Softmax computation
                                 if tail_size_i > 0:
                                     # Load attention scores
-                                    T.copy(workspace_1[offset, 0], ub_cross_kernel_16, size=[block_H_half, block_I])
+                                    T.copy(workspace_1[offset : offset + block_H_half, 0 : block_I], ub_cross_kernel_16)
                                     # Cast to accumulation dtype
                                     T.npuir_cast(ub_cross_kernel_16, ub_cross_kernel_32, round_mode="rint",
                                                  size=[block_H_half, block_I])
@@ -323,7 +323,7 @@ def sparse_attention_mla(
 
                                 # Store softmax results and synchronize
                                 with T.rs("PIPE_MTE3"):
-                                    T.copy(ub_cross_kernel_16, workspace_1[offset, 0], size=[block_H_half, block_I])
+                                    T.copy(ub_cross_kernel_16, workspace_1[offset : offset + block_H_half, 0 : block_I])
                                     T.sync_block_set(0)
 
                                 # Accumulate softmax statistics
@@ -341,11 +341,13 @@ def sparse_attention_mla(
                                         block_k_offset = block_k_id * block_K
                                         tail_size_k = T.min(dim - block_k_id * block_K, block_K)
 
-                                        T.copy(workspace_2[offset, block_k_offset], ub_cross_kernel_16,
-                                               size=[block_H_half, tail_size_k])
+                                        T.copy(
+                                            workspace_2[offset : offset + block_H_half, block_k_offset : block_k_offset + tail_size_k],
+                                            ub_cross_kernel_16[0:block_H_half, 0:tail_size_k])
                                         T.npuir_cast(ub_cross_kernel_16, ub_cross_kernel_32, round_mode="rint")
-                                        T.copy(ub_cross_kernel_32, ub_acc_o_new[0, block_k_offset],
-                                               size=[block_H_half, tail_size_k])
+                                        T.copy(
+                                            ub_cross_kernel_32[0:block_H_half, 0:tail_size_k],
+                                            ub_acc_o_new[0:block_H_half, block_k_offset : block_k_offset + tail_size_k])
 
                                 T.npuir_add(ub_acc_o, ub_acc_o_new, ub_acc_o)
                                 T.npuir_cast(ub_acc_o, ub_acc_o_16, round_mode="rint",
@@ -365,8 +367,9 @@ def sparse_attention_mla(
                                              size=[block_H_half, tail_size_k])
 
                                 offset = batch_id * heads_mul_seq_len + seq_id * heads + block_h_offset
-                                T.copy(ub_cross_kernel_16, Output[offset, block_k_offset],
-                                       size=[block_H_half, tail_size_k])
+                                T.copy(
+                                    ub_cross_kernel_16[0:block_H_half, 0:tail_size_k],
+                                    Output[offset : offset + block_H_half, block_k_offset : block_k_offset + tail_size_k])
 
     return main
 

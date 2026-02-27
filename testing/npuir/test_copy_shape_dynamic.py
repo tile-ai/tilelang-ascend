@@ -27,8 +27,8 @@ def copy_shape_1d_2d(M, N, block_M, block_N):
                 bx = blockx * block_M + i 
                 t0 = shape_N - by
                 tile_size_N = T.min(block_N, t0) 
-                T.copy(A[bx, by], A_BUF, [tile_size_N])  
-                T.copy(A_BUF, B[bx, by], [tile_size_N])       
+                T.copy(A[bx, by : by + tile_size_N], A_BUF[0:tile_size_N])  
+                T.copy(A_BUF[0:tile_size_N], B[bx, by : by + tile_size_N])       
 
     return copyShape
 
@@ -53,8 +53,8 @@ def copy_shape_2d_3d(M, N, block_M, block_N):
                 bx = blockx * block_M + i
                 t0 = shape_N - by
                 tile_size_N = T.min(block_N, t0) 
-                T.copy(A[0, bx, by], A_BUF, [1, tile_size_N])  
-                T.copy(A_BUF, B[0, bx, by], [1, tile_size_N])       
+                T.copy(A[0, bx, by : by + tile_size_N], A_BUF[0, 0:tile_size_N])  
+                T.copy(A_BUF[0, 0:tile_size_N], B[0, bx, by : by + tile_size_N])       
                 
     return copyShape2D3D
 

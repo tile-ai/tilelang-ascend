@@ -29,7 +29,7 @@ def slice_reduce(block_M, block_N, dtype = "float16"):
                 for j in T.serial(T.ceildiv(M, block_M)):
                     offset_m = j * block_M
                     remain_m = T.min(block_M, M - offset_m)
-                    T.copy(Input[offset_m, offset_n], src, size=[remain_m, remain_n]) # support size specification form
+                    T.copy(Input[offset_m : offset_m + remain_m, offset_n : offset_n + remain_n], src)
                     # support both size spec and slice form
                     T.npuir_reduce(src[:remain_m, :], dst, dims=0, reduce_mode="abssum", clear=False)
                 T.copy(dst[0, :remain_n], Output[0, offset_n:offset_n + remain_n]) # support slice form

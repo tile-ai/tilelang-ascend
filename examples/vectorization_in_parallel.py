@@ -37,14 +37,14 @@ def binary_simple(N, block_N, dtype="float32"):
             tail_size = T.min(block_N, remaining)
 
             # Copy data from global memory (A, B) into on-chip buffers (A_VEC, B_VEC)
-            T.copy(A[start_idx], A_VEC, [tail_size])
-            T.copy(B[start_idx], B_VEC, [tail_size])
+            T.copy(A[start_idx : start_idx + tail_size], A_VEC[0:tail_size])
+            T.copy(B[start_idx : start_idx + tail_size], B_VEC[0:tail_size])
 
             for i in T.Parallel(block_N):
                 C_VEC[i] = A_VEC[i] + B_VEC[i]
 
             # Write the result back from on-chip buffer (C_VEC) to global memory (C)
-            T.copy(C_VEC, C[start_idx], [tail_size])
+            T.copy(C_VEC[0:tail_size], C[start_idx : start_idx + tail_size])
 
     return binarySimple
 
@@ -69,14 +69,14 @@ def binary_compound(N, block_N, dtype="float32"):
             tail_size = T.min(block_N, remaining)
 
             # Copy data from global memory (A, B) into on-chip buffers (A_VEC, B_VEC)
-            T.copy(A[start_idx], A_VEC, [tail_size])
-            T.copy(B[start_idx], B_VEC, [tail_size])
+            T.copy(A[start_idx : start_idx + tail_size], A_VEC[0:tail_size])
+            T.copy(B[start_idx : start_idx + tail_size], B_VEC[0:tail_size])
 
             for i in T.Parallel(block_N):
                 C_VEC[i] = 2.78 - A_VEC[i] + 3.14 * B_VEC[i]
 
             # Write the result back from on-chip buffer (C_VEC) to global memory (C)
-            T.copy(C_VEC, C[start_idx], [tail_size])
+            T.copy(C_VEC[0:tail_size], C[start_idx : start_idx + tail_size])
 
     return binaryCompound
 
@@ -100,14 +100,14 @@ def binary_compound_loop_invariant(N, block_N, dtype="float32"):
             tail_size = T.min(block_N, remaining)
 
             # Copy data from global memory (A, B) into on-chip buffers (A_VEC, B_VEC)
-            T.copy(A[start_idx], A_VEC, [tail_size])
-            T.copy(B[start_idx], B_VEC, [tail_size])
+            T.copy(A[start_idx : start_idx + tail_size], A_VEC[0:tail_size])
+            T.copy(B[start_idx : start_idx + tail_size], B_VEC[0:tail_size])
 
             for i in T.Parallel(block_N):
                 C_VEC[i] = A_VEC[i] * B_VEC[2] + B_VEC[i]
 
             # Write the result back from on-chip buffer (C_VEC) to global memory (C)
-            T.copy(C_VEC, C[start_idx], [tail_size])
+            T.copy(C_VEC[0:tail_size], C[start_idx : start_idx + tail_size])
 
     return binaryCompoundLoopInvariant
 
@@ -131,14 +131,14 @@ def binary_compound_elementwise(N, block_N, dtype="float32"):
             tail_size = T.min(block_N, remaining)
 
             # Copy data from global memory (A, B) into on-chip buffers (A_VEC, B_VEC)
-            T.copy(A[start_idx], A_VEC, [tail_size])
-            T.copy(B[start_idx], B_VEC, [tail_size])
+            T.copy(A[start_idx : start_idx + tail_size], A_VEC[0:tail_size])
+            T.copy(B[start_idx : start_idx + tail_size], B_VEC[0:tail_size])
 
             for i in T.Parallel(block_N):
                 C_VEC[i] = T.exp(A_VEC[i] * B_VEC[i] + A_VEC[i] * B_VEC[0])
 
             # Write the result back from on-chip buffer (C_VEC) to global memory (C)
-            T.copy(C_VEC, C[start_idx], [tail_size])
+            T.copy(C_VEC[0:tail_size], C[start_idx : start_idx + tail_size])
 
     return binaryCompoundElementwise
 

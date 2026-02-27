@@ -2876,7 +2876,7 @@ mlir::Value CodeGenTileLangNPUIRDEV::VisitExpr_(const CallNode *op) {
   } else if (op->op.same_as(Op::Get("tl.npuir_sync_block_wait"))) {
     tvm::tl::NpuirSyncBlockWait sync_op(op->args, this->vmap);
     SyncBlockCodegen(sync_op);
-  } else if (op->op.same_as(Op::Get("tl.ascend_copy"))) {
+  } else if (op->op.same_as(Op::Get("tl.copy"))) {
     AscendCopyCodegen(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_add"))) {
     CreateHIVMBinaryVectorOp<mlir::hivm::VAddOp>(op);
@@ -3716,7 +3716,7 @@ void CodeGenTileLangNPUIRDEV::LoopCarriedVarCollector::VisitExpr_(
     tvm::tl::NpuirRelu npuirop(call->args, outer_->vmap);
     CheckVar(npuirop.src->data.get());
     CheckVar(npuirop.dst->data.get());
-  } else if (call->op.same_as(Op::Get("tl.ascend_copy"))) {
+  } else if (call->op.same_as(Op::Get("tl.copy"))) {
     tvm::tl::AscendCopy npuirop(call->args, outer_->vmap);
     mlir::Value dst = outer_->GetVarValue(npuirop.dst);
     if (dst != mlir::Value{}) {

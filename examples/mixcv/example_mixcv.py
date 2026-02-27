@@ -33,14 +33,14 @@ def minicv(M, N, K, block_M, block_N):
             C_BUF = T.alloc_fragment((block_M, block_N), inner_dtype)
             D_BUF = T.alloc_fragment((block_M, block_N), inner_dtype)
 
-            T.copy(A[bx, 0], A_BUF, [block_M, K])
-            T.copy(B[0, by], B_BUF, [K, block_N])
+            T.copy(A[bx : bx + block_M, 0 : K], A_BUF[0:block_M, 0:K])
+            T.copy(B[0 : K, by : by + block_N], B_BUF[0:K, 0:block_N])
 
             T.gemm(A_BUF, B_BUF, C_BUF, [block_M, K, block_N], initC = True)
             T.vexp(C_BUF, D_BUF)
 
-            T.copy(C_BUF, C[bx, by], [block_M, block_N])
-            T.copy(D_BUF, D[bx, by], [block_M, block_N])
+            T.copy(C_BUF[0:block_M, 0:block_N], C[bx : bx + block_M, by : by + block_N])
+            T.copy(D_BUF[0:block_M, 0:block_N], D[bx : bx + block_M, by : by + block_N])
 
     return minicv
 

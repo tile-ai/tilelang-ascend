@@ -190,14 +190,14 @@ def vec_add(N, block_N, dtype="float32"):
             tail_size = T.min(block_N, remaining)
 
             # Copy data from global memory (A, B) into on-chip buffers (A_VEC, B_VEC)
-            T.copy(A[start_idx], A_VEC, [tail_size])
-            T.copy(B[start_idx], B_VEC, [tail_size])
+            T.copy(A[start_idx : start_idx + tail_size], A_VEC[0:tail_size])
+            T.copy(B[start_idx : start_idx + tail_size], B_VEC[0:tail_size])
 
             # Perform vector addition on the NPU using low-level NPU IR instruction
             T.npuir_add(A_VEC, B_VEC, C_VEC)
 
             # Write the result back from on-chip buffer (C_VEC) to global memory (C)
-            T.copy(C_VEC, C[start_idx], [tail_size])
+            T.copy(C_VEC[0:tail_size], C[start_idx : start_idx + tail_size])
 
     return main
 

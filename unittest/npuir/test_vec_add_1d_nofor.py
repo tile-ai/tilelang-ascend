@@ -28,11 +28,11 @@ def vec_add_1d(N, block_N, dtype="float32"):
             t0 = cid * block_N
             t0 = shape - t0
             tail_size = T.min(block_N, t0)
-            T.copy(A[cid * block_N], A_VEC, [tail_size])
-            T.copy(B[cid * block_N], B_VEC, [tail_size])
+            T.copy(A[cid * block_N : cid * block_N + tail_size], A_VEC[0:tail_size])
+            T.copy(B[cid * block_N : cid * block_N + tail_size], B_VEC[0:tail_size])
 
             T.npuir_add(A_VEC, B_VEC, C_VEC)
-            T.copy(C_VEC, C[cid * block_N], [tail_size])
+            T.copy(C_VEC[0:tail_size], C[cid * block_N : cid * block_N + tail_size])
 
     return main
 

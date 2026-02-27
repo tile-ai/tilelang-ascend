@@ -40,7 +40,6 @@ def main(M=256, N=256, use_autotune=False):
     os.environ["TILELANG_ASCEND_MODE"] = "Developer"
     a = torch.randn(M, N, dtype=torch.float32, device="npu")
     b = torch.randn(M, N, dtype=torch.float32, device="npu")
-    c = torch.zeros(M, N, dtype=torch.float32, device="npu")
 
     if use_autotune:
         kernel = elementwise_add(M, N, in_dtype="float32", out_dtype="float32")
@@ -49,7 +48,7 @@ def main(M=256, N=256, use_autotune=False):
         config = {"block_M": 64, "block_N": 64}
         kernel = elementwise_add(M, N, **config, in_dtype="float32", out_dtype="float32")
 
-    kernel(a, b, c)
+    c = kernel(a, b)
     torch.testing.assert_close(c, ref_program(a, b), rtol=1e-2, atol=1e-2)
 
 

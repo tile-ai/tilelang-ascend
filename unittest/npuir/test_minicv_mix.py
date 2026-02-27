@@ -82,11 +82,11 @@ def minicv(M, N, K, block_M, block_N, dtype="float16", inner_dtype="float32"):
 
                 with T.rs("PIPE_MTE2"):
                     T.sync_block_wait(0)
-                    T.copy(C[bx, by], C_VEC, [tile_size_M, tile_size_N])
+                    T.copy(C[bx : bx + tile_size_M, by : by + tile_size_N], C_VEC[0:tile_size_M, 0:tile_size_N])
                     T.sync_block_set(1)
 
                 T.npuir_exp(C_VEC, D_VEC)
-                T.copy(D_VEC, D[bx, by], [tile_size_M, tile_size_N])
+                T.copy(D_VEC[0:tile_size_M, 0:tile_size_N], D[bx : bx + tile_size_M, by : by + tile_size_N])
 
     return main
 

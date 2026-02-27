@@ -67,40 +67,6 @@ def _legalize_dim(buffer: tir.Buffer, dim: int):
         dim = len(buffer.shape) + dim
     return dim
 
-def npuir_copy(
-    src: Union[tir.Buffer, tir.BufferLoad, tir.BufferRegion],
-    dst: Union[tir.Buffer, tir.BufferLoad],
-    size: [] = []
-):
-    """Copy data between memory regions.
-
-    Args:
-        src (Union[tir.Buffer, tir.BufferLoad, tir.BufferRegion]): Source memory region
-        dst (Union[tir.Buffer, tir.BufferLoad]): Destination memory region
-        size ([]): buffer extent
-
-    Raises:
-        TypeError: If copy extents cannot be deduced from arguments
-
-    Returns:
-        tir.Call: A handle to the copy operation
-    """
-    if isinstance(src, tir.Buffer) and isinstance(dst, tir.Buffer):
-        ir.assert_structural_equal(src.shape, dst.shape)
-
-    if size == []:
-        src_extent = _get_extent(src)
-        dst_extent = _get_extent(dst)
-        assert src_extent or dst_extent, "Can't deduce copy extents from args"
-        src_extent = list(src_extent) if src_extent else [1] * len(dst_extent)
-        dst_extent = list(dst_extent) if dst_extent else [1] * len(src_extent)
-        extent = max(src_extent, dst_extent)
-    else:
-        extent = size
-    src = _to_region(src, "r", extent)
-    dst = _to_region(dst, "w", extent)
-
-    return tir.call_intrin("handle", tir.op.Op.get("tl.ascend_copy"), src, dst)
 
 class AscendBinaryOp(object):
     """

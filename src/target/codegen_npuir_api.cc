@@ -433,6 +433,50 @@ void CodeGenTileLangNPUIRAPI::SmartMemRefCopy(mlir::Value src, mlir::Value dst) 
 
     return;
   }
+
+  // 3. Copy with shape mismatch: use the smaller extent to avoid overflow.
+  //    - src dynamic (remain_M, remain_N), dst static (32, 32): subview dst to
+  //      src's sizes, copy src -> dst_sub.
+  //    - src static (32, 32), dst dynamic (remain_M, remain_N): subview src to
+  //      dst's sizes, copy src_sub -> dst.
+  if (src_type.getRank() == dst_type.getRank() &&
+      src_type.getElementType() == dst_type.getElementType()) {
+    llvm::SmallVector<mlir::OpFoldResult> zeros(dst_type.getRank(),
+                                                builder.getIndexAttr(0));
+    llvm::SmallVector<mlir::OpFoldResult> strides(dst_type.getRank(),
+                                                  builder.getIndexAttr(1));
+    llvm::SmallVector<mlir::OpFoldResult> sizes;
+    bool use_src_sizes = false;  // true => subview dst to copy src in; else subview src
+    for (int i = 0; i < src_type.getRank(); ++i) {
+      bool src_dyn = mlir::ShapedType::isDynamic(src_type.getDimSize(i));
+      bool dst_dyn = mlir::ShapedType::isDynamic(dst_type.getDimSize(i));
+      if (src_dyn && !dst_dyn) {
+        use_src_sizes = true;
+        sizes.push_back(
+            builder.create<mlir::memref::DimOp>(loc, src, i).getResult());
+      } else if (!src_dyn && dst_dyn) {
+        sizes.push_back(
+            builder.create<mlir::memref::DimOp>(loc, dst, i).getResult());
+      } else if (src_dyn && dst_dyn) {
+        use_src_sizes = true;
+        sizes.push_back(
+            builder.create<mlir::memref::DimOp>(loc, src, i).getResult());
+      } else {
+        // Both static: use dst sizes so we subview src and never overflow dst
+        sizes.push_back(builder.getIndexAttr(dst_type.getDimSize(i)));
+      }
+    }
+    if (use_src_sizes) {
+      mlir::Value dst_sub = builder.create<mlir::memref::SubViewOp>(
+          loc, dst, zeros, sizes, strides);
+      builder.create<mlir::memref::CopyOp>(loc, TypeRange{}, src, dst_sub);
+    } else {
+      mlir::Value src_sub = builder.create<mlir::memref::SubViewOp>(
+          loc, src, zeros, sizes, strides);
+      builder.create<mlir::memref::CopyOp>(loc, TypeRange{}, src_sub, dst);
+    }
+    return;
+  }
   ICHECK(false) << "SmartMemRefCopy: Shape mismatch and cannot interpret cast. ";
 }
 
@@ -1107,9 +1151,9 @@ mlir::Value CodeGenTileLangNPUIRAPI::BinaryOpCodegen(const PrimExprNode *op,
   return mlirVal;
 }
 
-/// Generate hivm.hir.load or hivm.hir.store for tl.ascend_copy.
+/// Generate hivm.hir.load or hivm.hir.store for tl.copy.
 /// before:
-///   T.ascend_copy(T.region(A[bx, by], 1, 128, 256), T.region(A_VEC[0, 0],
+///   T.copy(T.region(A[bx, by], 1, 128, 256), T.region(A_VEC[0, 0],
 ///   2, 128, 256))
 /// after:
 ///   memref.reinterpret_cast; memref.subview; memref.subview;
@@ -2152,7 +2196,7 @@ mlir::Value CodeGenTileLangNPUIRAPI::VisitExpr_(const CallNode *op) {
   } else if (op->op.same_as(Op::Get("tl.npuir_sync_block_wait"))) {
     tvm::tl::NpuirSyncBlockWait sync_op(op->args, this->vmap);
     SyncBlockCodegen(sync_op);
-  } else if (op->op.same_as(Op::Get("tl.ascend_copy"))) {
+  } else if (op->op.same_as(Op::Get("tl.copy"))) {
     AscendCopyCodegen(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_add"))) {
     CreateHIVMBinaryVectorOp<mlir::hivm::VAddOp>(op);

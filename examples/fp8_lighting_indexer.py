@@ -115,13 +115,13 @@ def fp8_lighting_indexer(B,
 
                                 T.sync_block_wait(0)
                                 offset = (bi * M + mi) * H
-                                T.copy(workspace[offset, offset_n], ub_relu, size=[H, BLOCK_SIZE_N])
+                                T.copy(workspace[offset : offset + H, offset_n : offset_n + BLOCK_SIZE_N], ub_relu)
                                 T.npuir_cast(ub_relu, ub_relu_32, round_mode="rint")
 
-                                T.copy(q_s_ptr[mi*H, 0], q_s, size=[H, 1])
+                                T.copy(q_s_ptr[mi*H : (mi+1)*H, 0 : 1], q_s)
                                 T.npuir_cast(q_s, q_s_32, round_mode="rint")
 
-                                T.copy(k_s_ptr[0, offset_n], k_s, size=[1, BLOCK_SIZE_N])
+                                T.copy(k_s_ptr[0 : 1, offset_n : offset_n + BLOCK_SIZE_N], k_s)
                                 T.npuir_cast(k_s, k_s_32, round_mode="rint")
 
                                 T.npuir_mul(ub_relu_32, q_s_32, temp)
@@ -136,13 +136,13 @@ def fp8_lighting_indexer(B,
                                     T.sync_block_set(0)
 
                             offset = bi * M + mi
-                            T.copy(mask[offset, offset_n], msk, size=[1, BLOCK_SIZE_N])
+                            T.copy(mask[offset : offset + 1, offset_n : offset_n + BLOCK_SIZE_N], msk)
 
                             T.npuir_cast(msk, msk_32, round_mode="rint")
                             T.npuir_add(msk_32, o_temp, logits_32)
 
                             T.npuir_cast(logits_32, logits, round_mode="rint")
-                            T.copy(logits, o_ptr[offset, offset_n], size=[1, BLOCK_SIZE_N])
+                            T.copy(logits, o_ptr[offset : offset + 1, offset_n : offset_n + BLOCK_SIZE_N])
 
 
     return main

@@ -297,23 +297,23 @@ C = C + A × B
 
 ## Memory Ops
 
-### `npuir_copy`
+### `copy` (T.copy)
 
-*This operation performs data copy between different memory regions.*
+*This operation performs data copy between different memory regions. Use `T.copy(src, dst)` with Buffer or BufferRegion (slice) to specify the copy range; extent is derived from the arguments or inferred by the compiler. The legacy `npuir_copy` API is deprecated; use `T.copy` instead.*
 
 **TileLang API:**
 
 ```
-tilelang.language.npuir_copy(src, dst[, size])
+tilelang.language.copy(src, dst[, coalesced_width])
 ```
 
 **Operands:**
 
 |  Operand | Description  |
 | ------------ | ------------ |
-| `src`  |Buffer|
-| `dst`  |Buffer|
-| `size`(Optional)  |List (default: empty), manually specify the buffer size|
+| `src`  |Buffer, BufferRegion, or BufferLoad (source region; use slice e.g. `A[lo:hi, ...]` for partial copy)|
+| `dst`  |Buffer, BufferRegion, or BufferLoad (destination region)|
+| `coalesced_width`(Optional)  |Int (default: None), width for coalesced memory access|
 
 ### `npuir_load_nd2nz`
 

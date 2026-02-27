@@ -29,7 +29,7 @@ def online_flash_attention(block_M, block_N, block_K, dtype="float16", accum_dty
         with T.Kernel(T.ceildiv(seq_len, block_m), is_npu=True) as (cid, _):
             offset = cid * block_m
             Q_shared = T.alloc_shared([block_m, dim], dtype)
-            T.copy(Q[offset, 0], Q_shared, size=[block_m, dim])
+            T.copy(Q[offset : offset + block_m, 0 : dim], Q_shared)
 
             K_shared = T.alloc_shared([block_n, dim], dtype)
             V_shared = T.alloc_shared([block_n, dim], dtype)
@@ -57,7 +57,7 @@ def online_flash_attention(block_M, block_N, block_K, dtype="float16", accum_dty
             for k in T.Pipelined(T.ceildiv(seq_len, block_n), num_stages=2):
 
                 # cube
-                T.copy(K[k * block_n, 0], K_shared, size=[block_n, dim])
+                T.copy(K[k * block_n : (k + 1) * block_n, 0 : dim], K_shared)
                 T.gemm(Q_shared, K_shared, scores, initC=True, b_transpose=True)
 
                 # vec
@@ -79,14 +79,14 @@ def online_flash_attention(block_M, block_N, block_K, dtype="float16", accum_dty
                 T.vadd(tmp1, new_max, acc_m)
 
                 # cube
-                T.copy(V[k * block_n, 0], V_shared, size=[block_n, dim])
+                T.copy(V[k * block_n : (k + 1) * block_n, 0 : dim], V_shared)
                 T.gemm(scores_cast, V_shared, acc_o, initC=False)
 
             T.vdiv(acc_o, acc_l, acc_o)
             O_cast = T.alloc_shared([block_m, dim], dtype)
             T.vcast(acc_o, O_cast, round_mode="rint")
             real_m = T.min(block_m, seq_len - cid * block_m)
-            T.copy(O_cast, Output[cid * block_m, 0], size=[real_m, dim])
+            T.copy(O_cast, Output[cid * block_m : cid * block_m + real_m, 0 : dim])
 
     return flash_attention
 

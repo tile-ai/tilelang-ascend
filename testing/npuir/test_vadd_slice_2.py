@@ -29,10 +29,10 @@ def slice_add(block_M, block_N, dtype = "float16"):
                 for j in T.serial(T.ceildiv(M, block_M)):
                     offset_m = j * block_M
                     remain_m = T.min(block_M, M - offset_m)
-                    T.copy(Input[offset_m, offset_n], src, size=[remain_m, remain_n])
+                    T.copy(Input[offset_m : offset_m + remain_m, offset_n : offset_n + remain_n], src)
                     for k in T.serial(remain_m):
                         T.npuir_add(src[k:k+1, :], dst, dst)
-                T.copy(dst, Output[0, offset_n], size=[1, remain_n])
+                T.copy(dst, Output[0 : 1, offset_n : offset_n + remain_n])
 
     return sliceAdd
 

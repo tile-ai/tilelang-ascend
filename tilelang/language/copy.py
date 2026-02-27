@@ -92,6 +92,7 @@ def copy(
     src: Union[tir.Buffer, tir.BufferLoad, tir.BufferRegion],
     dst: Union[tir.Buffer, tir.BufferLoad],
     coalesced_width: Optional[int] = None,
+    size: Optional[List] = None,
 ):
     """Copy data between memory regions.
 
@@ -99,6 +100,8 @@ def copy(
         src (Union[tir.Buffer, tir.BufferLoad, tir.BufferRegion]): Source memory region
         dst (Union[tir.Buffer, tir.BufferLoad]): Destination memory region
         coalesced_width (Optional[int], optional): Width for coalesced memory access. Defaults to None.
+        size (Optional[list], optional): Explicit extent for copy region. Legacy API compatibility.
+
 
     Raises:
         TypeError: If copy extents cannot be deduced from arguments
@@ -113,18 +116,49 @@ def copy(
         if isinstance(data, tir.Var) and T.has_let_value(data):
             data = T.get_let_value(data)
         if isinstance(data, tir.Buffer):
-            return data.shape
+            return list(data.shape)
         elif isinstance(data, tir.BufferRegion):
             return [x.extent for x in data.region]
+        elif isinstance(data, tir.BufferLoad):
+            # BufferLoad (e.g. B[bx, by]) cannot infer extent from indices alone.
+            # Return None so caller uses the other side's extent for block copy.
+            return None
         else:
             return None
 
+    def _is_slice(data):
+        if isinstance(data, tir.Var) and T.has_let_value(data):
+            data = T.get_let_value(data)
+        return isinstance(data, tir.BufferRegion)
+
     src_extent = get_extent(src)
     dst_extent = get_extent(dst)
-    assert src_extent or dst_extent, "Can't deduce copy extents from args"
-    src_extent = list(src_extent) if src_extent else [1] * len(dst_extent)
-    dst_extent = list(dst_extent) if dst_extent else [1] * len(src_extent)
-    extent = max(src_extent, dst_extent)
+
+    has_explicit_size = size is not None and len(size) > 0
+    if has_explicit_size and (_is_slice(src) or _is_slice(dst)):
+        raise ValueError(
+            "T.copy: cannot use both slice syntax and the size parameter. "
+        )
+
+    if has_explicit_size:
+        extent = list(size)
+    else:
+        assert src_extent or dst_extent, "Can't deduce copy extents from args"
+        # When one side is BufferLoad (extent=None), use the other side's extent
+        # for block copy.
+        if src_extent is None and dst_extent is not None:
+            extent = list(dst_extent)
+        elif dst_extent is None and src_extent is not None:
+            extent = list(src_extent)
+        else:
+            extent = []
+            for se, de in zip(src_extent, dst_extent):
+                if isinstance(se, tir.IntImm) and isinstance(de, tir.IntImm):
+                    extent.append(se if se.value >= de.value else de)
+                elif isinstance(se, tir.IntImm):
+                    extent.append(de)
+                else:
+                    extent.append(se)
 
     def _to_region(data, access_type):
         if isinstance(data, tir.Var) and T.has_let_value(data):

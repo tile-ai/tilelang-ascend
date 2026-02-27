@@ -42,9 +42,9 @@ def discrete_copy_tiled(total_h, width, stride=2, block_h=32):
 
                 for i in T.serial(block_h):
                     row_in = in_block_offset + i * stride
-                    T.copy(In[row_in, 0], ub_frag[i, 0], size=[1, width])
-                
-                T.copy(ub_frag, Out[out_block_offset, 0], size=[block_h, width])
+                    T.copy(In[row_in : row_in + 1, 0 : width], ub_frag[i : i + 1, 0 : width])
+
+                T.copy(ub_frag[0 : block_h, 0 : width], Out[out_block_offset : out_block_offset + block_h, 0 : width])
 
     return main
 

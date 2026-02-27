@@ -39,9 +39,8 @@ def main():
 
     a = torch.randn(1024, 1024).npu().half()
     b = torch.randn(1024, 1024).npu().half()
-    c = torch.randn(1024, 1024).npu().half()
 
-    kernel(a, b, c)
+    c = kernel(a, b)
 
     ref_c = a @ b
 
