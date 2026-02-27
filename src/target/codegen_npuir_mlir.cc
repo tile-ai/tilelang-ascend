@@ -5,7 +5,7 @@
  * \file target/codegen.cc
  */
 
-#include "codegen_npuir_api.h"
+#include "codegen_npuir_mlir.h"
 #include "../op/ascend.h"
 #include "../op/builtin.h"
 #include "arith/pattern_match.h"
@@ -227,7 +227,7 @@ static std::map<std::string, mlir::hivm::DeinterleaveMode>
         {"ALL_CHANNELS", mlir::hivm::DeinterleaveMode::ALL_CHANNELS},
     };
 
-std::vector<int64_t> GetStrideFromShapeAPI(Array<tvm::PrimExpr> shape) {
+static std::vector<int64_t> GetStrideFromShapeAPI(Array<tvm::PrimExpr> shape) {
   std::vector<int64_t> strides;
   int64_t total_size = 1;
   std::vector<int> shape_int;
