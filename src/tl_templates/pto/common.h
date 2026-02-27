@@ -64,6 +64,7 @@ AICORE PTO_INLINE void mov_tile(int32_t src_addr,
     pto::TMOV(dst_temp_ub, src_temp_ub);
 }
 
+
 template <typename T1, typename T2, int32_t shape>
 AICORE PTO_INLINE void cvt_tile(int32_t src_addr,
                 int32_t dst_addr, int32_t src_offset, int32_t dst_offset, int32_t src_len, int32_t dst_len, pto::RoundMode rmode) {
@@ -96,6 +97,18 @@ AICORE PTO_INLINE void copy_l1_to_l0b(
     uint32_t indexRow, uint32_t indexCol
 ) {
     pto::TEXTRACT(l0b, B, indexRow, indexCol);
+}
+
+template <typename T1, typename T2, int M, int N, int K, int validM = M,
+          int validN = N>
+AICORE PTO_INLINE void mma(TileMatL0A<T1, M, K> l0a, TileMatL0B<T1, K, N> l0b,
+                           pto::TileAcc<T2, M, N, validM, validN> &C,
+                           bool init) {
+  if (init) {
+    pto::TMATMUL(C, l0a, l0b);
+  } else {
+    pto::TMATMUL_ACC(C, C, l0a, l0b);
+  }
 }
 
 template <typename T1, typename T2, uint32_t M, uint32_t N, uint32_t K,

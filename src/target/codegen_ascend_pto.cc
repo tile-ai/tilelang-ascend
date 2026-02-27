@@ -807,6 +807,8 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op,
     PrintfOpCodegen(op, "cce::printf");
   } else if (op->op.same_as(tl::ascend_set_deq_scale())) {
     SetDeqScaleCodegen(op);
+  } else if (op->op.same_as(tl::ascend_mma())) {
+    MmaCodegen(op);
   } else {
     CodeGenC::VisitExpr_(op, os);
   }
@@ -3666,6 +3668,31 @@ void CodeGenTileLangAscendPto::SelectCodegen(const CallNode *op) {
                  << mask_name << ", " << src0_shape_info.ub_name << ", "
                  << src1_name << ");\n";
   }
+}
+
+void CodeGenTileLangAscendPto::MmaCodegen(const CallNode *op) {
+  auto k = PrintExpr(op->args[5]);
+
+  // mma<..., M, N> -> mma<..., M, N, K>
+  std::string s = Downcast<StringImm>(op->args[0])->value;
+  auto pos = s.rfind('>');
+  if (pos != std::string::npos) {
+    s.insert(pos, ", " + k);
+  }
+
+  std::string op_name = kAscendPtoScope + s;
+
+  auto a_var = op->args[1].as<CallNode>()->args[1].as<VarNode>();
+  auto b_var = op->args[2].as<CallNode>()->args[1].as<VarNode>();
+  auto c_var = op->args[3].as<CallNode>()->args[1].as<VarNode>();
+
+  auto a_name = var_idmap_[a_var];
+  auto b_name = var_idmap_[b_var];
+  auto c_name = var_idmap_[c_var];
+
+  this->PrintIndent();
+  this->stream << op_name << "(" << a_name << ", " << b_name << ", " << c_name
+               << ", " << PrintExpr(op->args[4]) << ");\n";
 }
 
 } // namespace codegen
