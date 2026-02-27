@@ -69,6 +69,7 @@ NPUIR_BINARY_OP_CLASS(Shl)
 NPUIR_UNARY_OP_CLASS(Exp)
 NPUIR_UNARY_OP_CLASS(Ln)
 NPUIR_UNARY_OP_CLASS(Relu)
+NPUIR_UNARY_OP_CLASS(Sigmoid)
 NPUIR_UNARY_OP_CLASS(Sqrt)
 NPUIR_UNARY_OP_CLASS(Rsqrt)
 NPUIR_UNARY_OP_CLASS(Abs)
@@ -279,8 +280,8 @@ public:
 
   static const Op &Get();
 
-  Buffer src, dst;
-  Array<Range> src_range, dst_range;
+  Buffer dst, src;
+  Array<Range> dst_range, src_range;
 };
 
 class NpuirSelect : public Operator {
@@ -319,7 +320,8 @@ public:
 
   Buffer src, dst;
   Array<Range> src_range, dst_range;
-  std::vector<int64_t> src_shape, dst_shape;
+
+  std::vector<tvm::PrimExpr> src_shape, dst_shape;
 };
 
 /// HIVM device print operation (print var info)
@@ -419,8 +421,8 @@ public:
   static const Op &Get();
 
   Buffer dst;
-  std::vector<int64_t> strides;
-  int64_t offset;
+  std::vector<PrimExpr> strides;
+  PrimExpr offset;
 
   Array<Range> dst_range;
 };

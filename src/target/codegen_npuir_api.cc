@@ -9,6 +9,7 @@
 #include "../op/ascend.h"
 #include "../op/builtin.h"
 #include "arith/pattern_match.h"
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstddef>
@@ -880,6 +881,113 @@ CodeGenTileLangNPUIRAPI::GenSubviewFromRegion(const CallNode *region_node) {
   return GenSubviewFromRegion(regionop.GetBuffer(), regionop.GetRanges());
 }
 
+// Helper to check if an OpFoldResult is a static integer equal to `value`.
+static bool IsStaticIntOFR(mlir::OpFoldResult ofr, int64_t value) {
+  if (auto attr = ofr.dyn_cast<mlir::Attribute>()) {
+    if (auto intAttr = attr.dyn_cast<mlir::IntegerAttr>()) {
+      return intAttr.getInt() == value;
+    }
+  }
+  return false;
+}
+
+// Generate a rank-reduced memref.subview from a Buffer+Region, by dropping
+// static-1 dimensions from the Region extents, so that 3D Region slices
+// like 1xMxN can be safely consumed by 2D Cube nd2nz/fixpipe kernels.
+mlir::Value CodeGenTileLangNPUIRAPI::GenRankReducedSubviewFromRegion(
+    Buffer buffer_data, Array<Range> range, int min_rank) {
+  /*
+  range stores region details
+    extent stores the shape or size of region
+    min stores the offset of the region
+  */
+  Array<PrimExpr> region_shape, region_indices;
+  for (Range r : range) {
+    region_shape.push_back(r.get()->extent);
+    region_indices.push_back(r.get()->min);
+  }
+  const VarNode *v = buffer_data->data.get();
+  mlir::Value v_value = GetVarValue(v);
+
+  // Fast path: when Region exactly matches the buffer with zero offsets we can
+  // return the original memref directly (no subview).
+  if (IsEqual(buffer_data->shape, region_shape) && AllZero(region_indices)) {
+    return v_value;
+  }
+
+  SmallVector<OpFoldResult> offsets;
+  SmallVector<OpFoldResult> sizes;
+  SmallVector<OpFoldResult> strides;
+
+  for (Range r : range) {
+    // Offsets
+    if (auto s_int = as_const_int(r.get()->min)) {
+      offsets.push_back(builder.getI64IntegerAttr(*s_int));
+    } else {
+      mlir::Value indexVal = CreateIndexCastOp(MakeValue(r.get()->min));
+      offsets.push_back(indexVal);
+    }
+    // Sizes
+    if (auto s_int = as_const_int(r.get()->extent)) {
+      sizes.push_back(builder.getI64IntegerAttr(*s_int));
+    } else {
+      mlir::Value s_index = CreateIndexCastOp(MakeValue(r.get()->extent));
+      sizes.push_back(s_index);
+    }
+    // Strides (always 1)
+    strides.push_back(builder.getI64IntegerAttr(1));
+  }
+
+  auto baseTy = v_value.getType().cast<mlir::MemRefType>();
+
+  // Build projected reduced shape by dropping static-1 dims from slice sizes.
+  // When min_rank > 0, keep leading static-1 dims as needed to satisfy the
+  // minimum rank requirement. This ensures GM operands for Cube nd2nz/fixpipe
+  // maintain consistent rank (2D) across all calls in the same function.
+  
+  // 1. Count non-static-1 dims
+  int numNonStatic1 = 0;
+  for (auto ofr : sizes) {
+    if (!IsStaticIntOFR(ofr, 1)) numNonStatic1++;
+  }
+  // 2. How many static-1 dims must we keep to satisfy min_rank?
+  int static1ToKeep = std::max(0, min_rank - numNonStatic1);
+
+  // 3. Build projected shape, keeping leading static-1 dims as needed
+  llvm::SmallVector<int64_t> projectedReducedShape;
+  projectedReducedShape.reserve(sizes.size());
+  int static1Kept = 0;
+  for (auto ofr : sizes) {
+    if (IsStaticIntOFR(ofr, 1)) {
+      if (static1Kept < static1ToKeep) {
+        projectedReducedShape.push_back(1);
+        static1Kept++;
+      }
+      continue;  // drop this static-1 dim
+    }
+    // non-static-1 dim: always keep
+    if (auto attr = ofr.dyn_cast<mlir::Attribute>()) {
+      projectedReducedShape.push_back(
+          attr.cast<mlir::IntegerAttr>().getInt());
+    } else {
+      projectedReducedShape.push_back(mlir::ShapedType::kDynamic);
+    }
+  }
+  // Fallback: if all dims are static-1 and min_rank <= 1, keep one dim=1
+  if (projectedReducedShape.empty()) {
+    projectedReducedShape.push_back(1);
+  }
+
+  // Infer the rank-reduced memref type and create the SubViewOp.
+  auto reducedTy =
+      mlir::memref::SubViewOp::inferRankReducedResultType(
+          projectedReducedShape, baseTy, offsets, sizes, strides)
+          .cast<mlir::MemRefType>();
+
+  return builder.create<mlir::memref::SubViewOp>(
+      builder.getUnknownLoc(), reducedTy, v_value, offsets, sizes, strides);
+}
+
 mlir::Value CodeGenTileLangNPUIRAPI::GenSubviewFromRegion(Buffer buffer_data,
                                                           Array<Range> range) {
   /*
@@ -1067,7 +1175,11 @@ void CodeGenTileLangNPUIRAPI::VbrcCodegen(const CallNode *op) {
   tvm::tl::NpuirBrc npuirop(op->args, this->vmap);
   mlir::Value src;
   llvm::ArrayRef<int64_t> inBufferShape;
-  if (npuirop.in.as<IntImm>() || npuirop.in.as<FloatImm>()) {
+  bool isScalar =
+      !npuirop.in.as<tvm::tir::Buffer>() &&
+      !npuirop.in.as<tvm::tir::BufferRegion>() &&
+      !npuirop.in.as<tvm::tir::CallNode>();
+  if (isScalar) {
     // Scalar case
     if (npuirop.in->dtype != npuirop.dst->dtype) {
       src = ScalarConvertType(npuirop.in, npuirop.dst->dtype);
@@ -1084,7 +1196,7 @@ void CodeGenTileLangNPUIRAPI::VbrcCodegen(const CallNode *op) {
   if (!inBufferShape.empty()) {
     auto outMemref = llvm::dyn_cast<TypedValue<MemRefType>>(dst);
     auto outBufferShape = outMemref.getType().getShape();
-    auto broadcastDim = getBroadcastDim(npuirop.src->shape, npuirop.dst->shape);
+    auto broadcastDim = getBroadcastDim(inBufferShape, outBufferShape);
     broadcastDimAttr = builder.getDenseI64ArrayAttr(broadcastDim);
   }
   builder.create<mlir::hivm::VBrcOp>(builder.getUnknownLoc(), TypeRange{},
@@ -1146,6 +1258,30 @@ void CodeGenTileLangNPUIRAPI::VcumsumCodegen(const CallNode *op) {
   builder.create<mlir::hivm::VCumsumOp>(
       loc, TypeRange{}, src, dst,
       builder.getDenseI64ArrayAttr(npuirop.cum_dims));
+}
+
+void CodeGenTileLangNPUIRAPI::VsigmoidCodegen(const tvm::tir::CallNode* op) {
+  tvm::tl::NpuirSigmoid npuirop(op->args, this->vmap);
+  Value src = GenSubviewFromRegion(npuirop.src, npuirop.src_range);
+  Value dst = GenSubviewFromRegion(npuirop.dst, npuirop.dst_range);
+  auto dst_type = dst.getType().cast<mlir::RankedTensorType>();
+  auto elem_type = dst_type.getElementType();
+  mlir::Location loc = builder.getUnknownLoc();
+  Value tmp = mlir::utils::createTmpBufferOrTensorWithTargetType(builder, loc, src, elem_type);
+  Value zero = builder.create<mlir::arith::ConstantOp>(loc, builder.getFloatAttr(elem_type, 0.0f));
+  Value one = builder.create<mlir::arith::ConstantOp>(loc, builder.getFloatAttr(elem_type, 1.0f));
+
+  // Step 1 src = 0 - src
+  builder.create<mlir::hivm::VSubOp>(loc, TypeRange{}, ValueRange{zero, src}, ValueRange{tmp});
+  // Step 2: src = exp(src)
+  builder.create<mlir::hivm::VExpOp>(loc, mlir::TypeRange{},
+      mlir::ValueRange{tmp}, mlir::ValueRange{tmp});
+  // Step 3: src = src + 1
+  builder.create<mlir::hivm::VAddOp>(loc, mlir::TypeRange{},
+      mlir::ValueRange{tmp, one}, mlir::ValueRange{tmp});
+  // Step 4: dst = 1 / src
+  builder.create<mlir::hivm::VDivOp>(loc, mlir::TypeRange{},
+      mlir::ValueRange{one, tmp}, mlir::ValueRange{dst});
 }
 
 void CodeGenTileLangNPUIRAPI::VAtomicAddCodegen(const CallNode *op) {
@@ -1227,16 +1363,16 @@ void CodeGenTileLangNPUIRAPI::VarangeCodegen(const CallNode *op) {
   tvm::tl::NpuirArange npuirop(op->args, this->vmap);
   Value dst = GenSubviewFromRegion(npuirop.dst, npuirop.dst_range);
 
-  auto offsetValue = builder.create<mlir::arith::ConstantOp>(
-      builder.getUnknownLoc(), builder.getI64Type(),
-      builder.getI64IntegerAttr(npuirop.offset));
-  mlir::Value offset = CreateIndexCastOp(offsetValue);
+  Value offsetVal = MakeValue(npuirop.offset);
+  Value offset = offsetVal.getType().isIndex()
+    ? offsetVal
+    : CreateIndexCastOp(offsetVal);
   llvm::SmallVector<Value> strides;
   for (auto st : npuirop.strides) {
-    auto stValue = builder.create<mlir::arith::ConstantOp>(
-        builder.getUnknownLoc(), builder.getI64Type(),
-        builder.getI64IntegerAttr(st));
-    mlir::Value stride = CreateIndexCastOp(stValue);
+    Value stride = MakeValue(st);
+    if(!stride.getType().isIndex()) {
+      stride = CreateIndexCastOp(stride);
+    }
     strides.push_back(stride);
   }
 
@@ -1298,8 +1434,13 @@ void CodeGenTileLangNPUIRAPI::Nd2NzCodegen(const CallNode *op) {
   // Generate hivm.hir.nd2nz for tl.npuir_load_nd2nz.
   tvm::tl::NpuirNd2nz npuirop(op->args, this->vmap);
   // gen memref.subview
-  mlir::Value src = GenSubviewFromRegion(npuirop.src, npuirop.src_range);
-  mlir::Value dst = GenSubviewFromRegion(npuirop.dst, npuirop.dst_range);
+  // src is GM: ensure min_rank=2 to maintain consistent GM rank across all
+  // nd2nz calls in the same function, preventing callee signature mismatches.
+  mlir::Value src =
+      GenRankReducedSubviewFromRegion(npuirop.src, npuirop.src_range, /*min_rank=*/2);
+  // dst is cbuf: downstream will cast to 4D, so no min_rank needed.
+  mlir::Value dst =
+      GenRankReducedSubviewFromRegion(npuirop.dst, npuirop.dst_range);
 
   // gen hivm.hir.nd2nz
   mlir::Location unknown_loc = builder.getUnknownLoc();
@@ -1326,8 +1467,13 @@ void CodeGenTileLangNPUIRAPI::FixpipeCodegen(const CallNode *op) {
   // Generate hivm.hir.fixpipe for tl.npuir_store_fixpipe.
   tvm::tl::NpuirFixpipe npuirop(op->args, this->vmap);
   // gen memref.subview
-  mlir::Value src = GenSubviewFromRegion(npuirop.src, npuirop.src_range);
-  mlir::Value dst = GenSubviewFromRegion(npuirop.dst, npuirop.dst_range);
+  // src is cc: no min_rank needed.
+  mlir::Value src =
+      GenRankReducedSubviewFromRegion(npuirop.src, npuirop.src_range);
+  // dst is GM: ensure min_rank=2 to maintain consistent GM rank across all
+  // fixpipe calls in the same function, preventing callee signature mismatches.
+  mlir::Value dst =
+      GenRankReducedSubviewFromRegion(npuirop.dst, npuirop.dst_range, /*min_rank=*/2);
 
   // gen hivm.hir.fixpipe
   mlir::Location unknown_loc = builder.getUnknownLoc();
@@ -1464,7 +1610,7 @@ void CodeGenTileLangNPUIRAPI::CreateHIVMBinaryVectorOp(const CallNode *op) {
   auto processImm = [&](mlir::Value &src, int arg_id,
                         Array<PrimExpr> &buffer_shape) {
     if (op->args[arg_id].as<IntImm>() || op->args[arg_id].as<FloatImm>() || 
-        op->args[arg_id].as<tir::VarNode>() || op->args[arg_id].as<tir::BufferLoadNode>()) {
+        op->args[arg_id].as<tir::VarNode>()) {
       // Scalar case
       const CallNode *region_node = op->args[1 - arg_id].as<CallNode>();
       const BufferLoadNode *buffer_load_node =
@@ -1490,8 +1636,10 @@ void CodeGenTileLangNPUIRAPI::CreateHIVMBinaryVectorOp(const CallNode *op) {
       }
       const IntImmNode* int_imm = region_node->args[2].as<IntImmNode>();
       // If load only one element, do not use memref.subview, use memref.load as a scalar
-      if(is_scalar_load) {
+      if(is_scalar_load && arg_id == 1) {
         src = GenMemrefLoadFromRegion(buffer_node);
+        // clear buffer_shape to unable broadcast
+        buffer_shape.clear();
       } else {
         src = GenSubviewFromRegion(region_node);
       }
@@ -1629,6 +1777,110 @@ void CodeGenTileLangNPUIRAPI::DebugPrintCodegen(const CallNode *op) {
   mlir::Location unknown_loc = builder.getUnknownLoc();
   builder.create<mlir::hivm::DebugOp>(unknown_loc, "print", prefix, hex, arg,
                                        mlir::hivm::TCoreTypeAttr{});
+}
+
+void CodeGenTileLangNPUIRAPI::ReshapeCodegen(const CallNode *op) {
+  tvm::tl::NpuirReshape npuirop(op->args, this->vmap);
+  mlir::Location loc = builder.getUnknownLoc();
+
+  mlir::Value src = GenSubviewFromRegion(npuirop.src, npuirop.src_range);
+  auto srcTy = src.getType().cast<mlir::MemRefType>();
+  auto elemTy = srcTy.getElementType();
+  auto memSpace = srcTy.getMemorySpace();
+
+  std::vector<tvm::PrimExpr> dstShape = npuirop.dst_shape;
+
+  SmallVector<tvm::PrimExpr> stridesVec;
+  stridesVec.reserve(dstShape.size());
+  tvm::PrimExpr strideExpr = tvm::Integer(1);
+  for (int i = static_cast<int>(dstShape.size()) - 1; i >= 0; --i) {
+    stridesVec.push_back(strideExpr);
+    strideExpr = strideExpr * dstShape[i];
+  }
+  std::reverse(stridesVec.begin(), stridesVec.end());
+
+  auto toIndexValue = [&](const tvm::PrimExpr &e) -> mlir::Value {
+    mlir::Value v = MakeValue(e);
+    if (!v.getType().isIndex()) {
+      v = builder.create<mlir::arith::IndexCastOp>(loc, builder.getIndexType(), v);
+    }
+    return v;
+  };
+
+  bool allStatic = std::all_of(dstShape.begin(), dstShape.end(),
+      [](const tvm::PrimExpr &e) { return e.as<tvm::IntImmNode>() != nullptr; });
+
+  SmallVector<int64_t> dstShapeForType;
+  dstShapeForType.reserve(dstShape.size());
+  for (auto s : dstShape) {
+    if (auto imm = s.as<tvm::IntImmNode>()) {
+      dstShapeForType.push_back(static_cast<int64_t>(imm->value));
+    } else {
+      dstShapeForType.push_back(mlir::ShapedType::kDynamic);
+    }
+  }
+
+  SmallVector<int64_t> stridesForType;
+  if (allStatic) {
+    stridesForType.reserve(dstShape.size());
+    int64_t stride = 1;
+    for (int i = static_cast<int>(dstShape.size()) - 1; i >= 0; --i) {
+      stridesForType.push_back(stride);
+      auto imm = dstShape[i].as<tvm::IntImmNode>();
+      stride *= imm->value;
+    }
+    std::reverse(stridesForType.begin(), stridesForType.end());
+  } else {
+    stridesForType.resize(dstShape.size(), mlir::ShapedType::kDynamic);
+  }
+
+  auto layoutAttr = mlir::StridedLayoutAttr::get(
+      builder.getContext(),
+      /*offset=*/0,
+      stridesForType);
+
+  auto dstMemRefTy = mlir::MemRefType::get(
+      dstShapeForType,
+      elemTy,
+      layoutAttr,
+      memSpace);
+
+  SmallVector<mlir::OpFoldResult> offsets;
+  offsets.reserve(dstShape.size());
+  for (size_t i = 0; i < dstShape.size(); ++i) {
+    offsets.push_back(builder.getIndexAttr(0));
+  }
+
+  SmallVector<mlir::OpFoldResult> sizes;
+  sizes.reserve(dstShape.size());
+  for (auto s : dstShape) {
+    if (allStatic) {
+      auto imm = s.as<tvm::IntImmNode>();
+      sizes.push_back(builder.getIndexAttr(imm->value));
+    } else {
+      sizes.push_back(toIndexValue(s));
+    }
+  }
+
+  SmallVector<mlir::OpFoldResult> strides;
+  strides.reserve(stridesVec.size());
+  for (size_t i = 0; i < stridesVec.size(); ++i) {
+    if (allStatic) {
+      strides.push_back(builder.getIndexAttr(stridesForType[i]));
+    } else {
+      strides.push_back(toIndexValue(stridesVec[i]));
+    }
+  }
+
+  mlir::Value reshaped = builder.create<mlir::memref::ReinterpretCastOp>(
+      loc,
+      dstMemRefTy,
+      src,
+      offsets,
+      sizes,
+      strides);
+
+  var_map_[npuirop.dst->data.get()] = reshaped;
 }
 
 void CodeGenTileLangNPUIRAPI::CallExternCodegen(const CallNode *op) {
@@ -1962,6 +2214,8 @@ mlir::Value CodeGenTileLangNPUIRAPI::VisitExpr_(const CallNode *op) {
     VcastCodegen(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_reduce"))) {
     VreduceCodegen(op);
+  } else if (op->op.same_as(Op::Get("tl.npuir_sigmoid"))) {
+    VsigmoidCodegen(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_cumsum"))) {
     VcumsumCodegen(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_atomic_add"))) {
@@ -1993,6 +2247,8 @@ mlir::Value CodeGenTileLangNPUIRAPI::VisitExpr_(const CallNode *op) {
   } else if (op->op.same_as(Op::Get("tl.npuir_debug_print_var")) ||
              op->op.same_as(Op::Get("tl.npuir_debug_print_buffer_value"))) {
     DebugPrintCodegen(op);
+  } else if (op->op.same_as(Op::Get("tl.npuir_reshape"))) {
+    ReshapeCodegen(op);
   } else {
     VisitExpr_(op);
   }

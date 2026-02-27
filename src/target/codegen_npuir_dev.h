@@ -226,6 +226,9 @@ protected:
   // Collect all variables defined outside the loop body
   void CollectVarsUsedInBodyButDefinedOutside(const ForNode *op, 
       std::vector<const VarNode*>& loop_carried_vars);
+  // Collect all variables defined outside the if block
+  void CollectVarsUsedInBodyButDefinedOutside(const IfThenElseNode* op,
+      std::vector<const VarNode*>& if_carried_vars);
 
 private:
   mlir::Value GetEventID(PrimExpr id);
@@ -242,6 +245,7 @@ private:
   void VreduceCodegen(const CallNode *op);
   void VcumsumCodegen(const CallNode *op);
   void VAtomicAddCodegen(const CallNode *op);
+  void VsigmoidCodegen(const CallNode *op);
   void VgatherCodegen(const CallNode *op);
   void VtransposeCodegen(const CallNode *op);
   void VinterleaveCodegen(const CallNode *op);
@@ -331,7 +335,11 @@ private:
       mlir::Type elem_type,
       mlir::Location loc);
   bool IsStaticOneOFR(mlir::OpFoldResult ofr) const;
-  CollapsedDims CollapseStaticOneDims(llvm::ArrayRef<mlir::OpFoldResult> fullSizes);
+  // Collapse static-1 dims with an optional rank limit. When maxRank < 0,
+  // removes all static-1 dims.
+  CollapsedDims CollapseStaticOneDims(
+      llvm::ArrayRef<mlir::OpFoldResult> fullSizes,
+      int64_t maxRank = -1);
   mlir::Value CreateRankReducedSubviewFromBaseRank(
       mlir::Value base,
       llvm::ArrayRef<mlir::OpFoldResult> fullOffsets,  // len == baseRank
@@ -350,9 +358,10 @@ private:
       mlir::Value base,
       llvm::ArrayRef<mlir::OpFoldResult> sizesSameRank,
       mlir::Location loc);
-  llvm::SmallVector<int64_t> ComputeUBAllocShapeDropStaticOnes(
-      mlir::RankedTensorType dst_tensor_type_ori);
-  
+  llvm::SmallVector<int64_t> ComputeUBAllocShapeFromDstRange(
+      mlir::RankedTensorType dst_tensor_type_ori,
+      llvm::ArrayRef<mlir::OpFoldResult> dstR_sizes);
+
   NPU_CORETYPE func_coretype;
 
   // For mix kernel, generate target functions twice. One is for aic while
@@ -372,6 +381,8 @@ private:
     CodeGenTileLangNPUIRDEV* outer_;
     std::vector<const VarNode*>& loop_carried_vars_;
     std::unordered_set<const VarNode *> vars_set_;
+
+    void CheckVar(const tir::VarNode* var_node);
     
   public:
     LoopCarriedVarCollector(CodeGenTileLangNPUIRDEV* outer, 

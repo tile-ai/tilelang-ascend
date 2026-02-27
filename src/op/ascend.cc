@@ -94,6 +94,7 @@ NPUIR_BINARY_OP_CTOR(Shl, shl)
 NPUIR_UNARY_OP_CTOR(Exp, exp)
 NPUIR_UNARY_OP_CTOR(Ln, ln)
 NPUIR_UNARY_OP_CTOR(Relu, relu)
+NPUIR_UNARY_OP_CTOR(Sigmoid, sigmoid)
 NPUIR_UNARY_OP_CTOR(Sqrt, sqrt)
 NPUIR_UNARY_OP_CTOR(Rsqrt, rsqrt)
 NPUIR_UNARY_OP_CTOR(Abs, abs)
@@ -307,8 +308,8 @@ NpuirAtomicAdd::NpuirAtomicAdd(Array<PrimExpr> args, BufferMap vmap) {
     rgs[i] = region.GetRanges();
     bf[i] = region.GetBuffer();
   }
-  std::tie(this->src, this->dst) = std::tie(bf[0], bf[1]);
-  std::tie(this->src_range, this->dst_range) = std::tie(rgs[0], rgs[1]);
+  std::tie(this->dst, this->src) = std::tie(bf[0], bf[1]);
+  std::tie(this->dst_range, this->src_range) = std::tie(rgs[0], rgs[1]);
 }
 
 NpuirSelect::NpuirSelect(Array<PrimExpr> args, BufferMap vmap) {
@@ -436,9 +437,14 @@ NpuirArange::NpuirArange(Array<PrimExpr> args, BufferMap vmap) {
   this->dst = bf;
   this->dst_range = rg;
 
-  NPUIR_LIST_PARAM(strides, 1)
+  int stride_num = args.size() - 2;
+  strides.reserve(stride_num);
 
-  this->offset = args[2].as<IntImm>().value()->value;
+  for (int i = 0; i < stride_num; ++i) {
+    strides.push_back(args[1 + i]);
+  }
+
+  this->offset = args.back();
 }
 
 NpuirConcat::NpuirConcat(Array<PrimExpr> args, BufferMap vmap) {
@@ -505,28 +511,13 @@ NpuirReshape::NpuirReshape(Array<PrimExpr> args, BufferMap vmap) {
   std::tie(this->src, this->dst) = std::tie(bf[0], bf[1]);
   std::tie(this->src_range, this->dst_range) = std::tie(rgs[0], rgs[1]);
 
-  // Extract the reshape target shape (static) from dst_range.
-  int64_t dst_numel = 1;
-  for (const Range& r : this->dst_range) {
-    auto imm = r->extent.as<tvm::IntImmNode>();
-    ICHECK(imm) << "Dynamic reshape shape is not supported yet";
-    this->dst_shape.push_back(imm->value);
-    dst_numel *= imm->value;
+  for (const auto& r : this->src_range) {
+    src_shape.push_back(r->extent);
+  }
+  for (const auto& r : this->dst_range) {
+    dst_shape.push_back(r->extent);
   }
 
-  // Validate that src and dst have the same number of elements.
-  int64_t src_numel = 1;
-  for (const Range& r : this->src_range) {
-    auto imm = r->extent.as<tvm::IntImmNode>();
-    ICHECK(imm)
-        << "Dynamic reshape source shape is not supported yet";
-    this->src_shape.push_back(imm->value);
-    src_numel *= imm->value;
-  }
-
-  ICHECK(src_numel == dst_numel)
-      << "Invalid reshape: source element count (" << src_numel
-      << ") does not match destination element count (" << dst_numel << ")";
 }
 
 NpuirTranspose::NpuirTranspose(Array<PrimExpr> args, BufferMap vmap){

@@ -52,6 +52,7 @@ def LowerAndLegalize(mod: IRModule, target: Target) -> IRModule:
     # Bind the target device information to the module
     mod = tir.transform.BindTarget(target)(mod)
     if target.kind.name == "npuir":
+        mod = tir.transform.Simplify()(mod)
         return mod
 
     # Legalize the frontend IR to make it compatible with TVM
@@ -96,9 +97,13 @@ def OptimizeForTarget(mod: IRModule, target: Target) -> IRModule:
         mod = tilelang.transform.InjectFenceProxy()(mod)
     elif target.kind.name == "npuir":
         mod = tilelang.transform.PlanAndUpdateBufferAllocationLocation()(mod)
+        # The position of NpuLoopVectorize pass has two requirements:
+        # 1. must be before LowerOpaqueBlock pass, otherwise the temporary buffer created cannot correctly become T.decl_buffer
+        # 2. better to be before PlanAndUpdateBufferAllocationLocation, reuse its ability of Memory reusing
+        mod = tilelang.transform.NpuLoopVectorize()(mod)
+        mod = tir.transform.PlanAndUpdateBufferAllocationLocation()(mod)
         mod = tir.transform.LowerOpaqueBlock()(mod)
         mod = tir.transform.RemoveNoOp()(mod)
-        mod = tilelang.transform.NpuLoopVectorize()(mod)
         return mod
     else:
         mod = tilelang.transform.IfStmtBinding()(mod)

@@ -23,7 +23,7 @@ def copy_shape_1d_2d(M, N, block_M, block_N):
 
             A_BUF = T.alloc_shared((block_N), dtype)
 
-            for i in T.Parallel(block_M):
+            for i in T.serial(block_M):
                 bx = blockx * block_M + i 
                 t0 = shape_N - by
                 tile_size_N = T.min(block_N, t0) 
@@ -49,7 +49,7 @@ def copy_shape_2d_3d(M, N, block_M, block_N):
 
             A_BUF = T.alloc_shared((1, block_N), dtype)
 
-            for i in T.Parallel(block_M):
+            for i in T.serial(block_M):
                 bx = blockx * block_M + i
                 t0 = shape_N - by
                 tile_size_N = T.min(block_N, t0) 
