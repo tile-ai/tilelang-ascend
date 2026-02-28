@@ -569,6 +569,7 @@ private:
   std::unordered_map<const VarNode*, std::string> handle_scope_corrections_;
   std::unordered_map<const VarNode*, Var> var_replacements_;
   std::unique_ptr<BufferUseCollector> collector_;
+  std::unordered_map<const VarNode*, Buffer> buffer_replacements_;
 
   static std::string GetPtrStorageScope(Var buffer_var) {
     if (auto* ptr_type = buffer_var->type_annotation.as<PointerTypeNode>()) {
@@ -597,6 +598,31 @@ private:
     return new_var;
   }
 
+  bool TryGetRewrittenBuffer(const Buffer &old_buffer, Buffer *new_buffer) {
+    const auto *key = old_buffer->data.get();
+
+    // Check whether this buffer's data Var needs a scope correction.
+    auto scope_it = handle_scope_corrections_.find(key);
+    if (scope_it == handle_scope_corrections_.end())
+      return false;
+
+    // If we already created a replacement Buffer for this Var, reuse it.
+    auto repl_it = buffer_replacements_.find(key);
+    if (repl_it != buffer_replacements_.end()) {
+      *new_buffer = repl_it->second;
+      return true;
+    }
+
+    // Construct the new buffer 
+    Var new_data =
+        CreateVarWithCorrectScope(old_buffer->data, scope_it->second);
+    *new_buffer = Buffer(new_data, old_buffer->dtype, old_buffer->shape,
+                         old_buffer->strides, old_buffer->elem_offset,
+                         old_buffer->name, old_buffer->data_alignment,
+                         old_buffer->offset_factor, old_buffer->buffer_type);
+    return true;
+  }
+
   Stmt VisitStmt_(const AllocateNode* op) override {
     auto it = scope_corrections_.find(op);
     if (it != scope_corrections_.end()) {
@@ -617,7 +643,6 @@ private:
 
   Stmt VisitStmt_(const BlockNode* op) override {
     Array<Buffer> new_alloc_buffers;
-    std::unordered_map<const VarNode*, Buffer> buffer_replacements;
 
     for (const Buffer& buffer : op->alloc_buffers) {
       const VarNode* handle = buffer->data.get();
@@ -635,7 +660,7 @@ private:
                                 buffer->offset_factor, buffer->buffer_type);
 
         new_alloc_buffers.push_back(new_buffer);
-        buffer_replacements[handle] = new_buffer;
+        buffer_replacements_[handle] = new_buffer;
       } else {
         new_alloc_buffers.push_back(buffer);
       }
@@ -673,51 +698,36 @@ private:
     return GetRef<PrimExpr>(op);
   }
 
-  PrimExpr VisitExpr_(const BufferLoadNode* op) override {
-    auto buffer = op->buffer;
-
-    auto it = handle_scope_corrections_.find(buffer->data.get());
-    if (it != handle_scope_corrections_.end()) {
-      Var new_data = CreateVarWithCorrectScope(buffer->data, it->second);
-      auto new_buffer = Buffer(new_data, buffer->dtype, buffer->shape,
-                               buffer->strides, buffer->elem_offset,
-                               buffer->name, buffer->data_alignment,
-                               buffer->offset_factor, buffer->buffer_type);
-
-      Array<PrimExpr> indices;
-      indices.reserve(op->indices.size());
-      for (const auto& index : op->indices) {
-        indices.push_back(VisitExpr(index));
-      }
-
-      return BufferLoad(new_buffer, indices);
+  PrimExpr VisitExpr_(const BufferLoadNode *op) override {
+    Buffer new_buffer;
+    if (!TryGetRewrittenBuffer(op->buffer, &new_buffer)) {
+      return StmtExprMutator::VisitExpr_(op);
     }
 
-    return StmtExprMutator::VisitExpr_(op);
+    Array<PrimExpr> indices;
+    indices.reserve(op->indices.size());
+    for (const auto &index : op->indices) {
+      indices.push_back(VisitExpr(index));
+    }
+
+    return BufferLoad(new_buffer, indices);
   }
 
-  Stmt VisitStmt_(const BufferStoreNode* op) override {
-    auto buffer = op->buffer;
-
-    auto it = handle_scope_corrections_.find(buffer->data.get());
-    if (it != handle_scope_corrections_.end()) {
-      Var new_data = CreateVarWithCorrectScope(buffer->data, it->second);
-      auto new_buffer = Buffer(new_data, buffer->dtype, buffer->shape,
-                               buffer->strides, buffer->elem_offset,
-                               buffer->name, buffer->data_alignment,
-                               buffer->offset_factor, buffer->buffer_type);
-
-      auto value = VisitExpr(op->value);
-      Array<PrimExpr> indices;
-      indices.reserve(op->indices.size());
-      for (const auto& index : op->indices) {
-        indices.push_back(VisitExpr(index));
-      }
-
-      return BufferStore(new_buffer, value, indices);
+  Stmt VisitStmt_(const BufferStoreNode *op) override {
+    Buffer new_buffer;
+    if (!TryGetRewrittenBuffer(op->buffer, &new_buffer)) {
+      return StmtExprMutator::VisitStmt_(op);
     }
 
-    return StmtExprMutator::VisitStmt_(op);
+    PrimExpr value = VisitExpr(op->value);
+
+    Array<PrimExpr> indices;
+    indices.reserve(op->indices.size());
+    for (const PrimExpr &index : op->indices) {
+      indices.push_back(VisitExpr(index));
+    }
+
+    return BufferStore(new_buffer, value, indices);
   }
 
   PrimExpr VisitExpr_(const CallNode* op) override {
