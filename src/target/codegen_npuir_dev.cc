@@ -1849,7 +1849,7 @@ void CodeGenTileLangNPUIRDEV::EmitCopyTensorToTensor(
 
     if (OpFoldResultsAllZero(dstR.offs) &&
         OpFoldResultsEqualStaticShape(dstR.sizes, dstTy.getShape()) &&
-        srcTy.getShape() == dstTy.getShape()) {
+        loaded_tensor.getType() == dst.getType()) {
       SetVarValue(npuirop.dst, loaded_tensor);
       return;
     }
