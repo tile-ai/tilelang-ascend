@@ -992,28 +992,35 @@ class JitKernel_NPU:
         spec.loader.exec_module(mod)
         self.launch_npu = getattr(mod, "launch")
 
-    def _calcu_grid(self, *args: Any):
+    def _calcu_grid(self, orig_to_input, *args: Any):
+        """
+        Calculate grid dimensions based on symbolic variables and input tensors.
+        
+        Args:
+            tensor_args: List of input tensor arguments
+            orig_to_tensor_pos: Mapping from original parameter indices to tensor_args positions
+            
+        Returns:
+            Dictionary of dynamic values extracted from tensors
+        """
         dynamic_val = {}
         extra_args = []
         for key, pos in self.symbolic.items():
             # Ensure that pos is a tuple with two elements.
             if isinstance(pos, (tuple, list)) and len(pos) >= 2:
                 tensor_idx, dim_idx = pos[0], pos[1]
-                if tensor_idx < len(args) and hasattr(args[tensor_idx], "shape"):
-                    if dim_idx < len(args[tensor_idx].shape):
-                        value = args[tensor_idx].shape[dim_idx]
+                if tensor_idx in orig_to_input:
+                    pos = orig_to_input[tensor_idx]
+                    arg = args[pos]
+                    if isinstance(arg, torch.Tensor) and dim_idx < len(arg.shape):
+                        value = arg.shape[dim_idx]
                         dynamic_val[str(key)] = value
                         extra_args.append(value)
                     else:
-                        raise IndexError(
-                            f"Dimension index {dim_idx} out of range for tensor {tensor_idx}"
-                        )
+                        raise ValueError(f"Cannot resolve symbolic {key}")
                 else:
-                    raise IndexError(
-                        f"Tensor index {tensor_idx} out of range or tensor has no shape attribute"
-                    )
-            else:
-                raise ValueError(f"Invalid position format for key '{key}': {pos}")
+                    raise ValueError(f"Symbolic {key} depends on output")
+
         self.extra_args = extra_args
         result = replace_by_longest_key(self.gridfunc, dynamic_val)
 
@@ -1041,85 +1048,56 @@ class JitKernel_NPU:
         except Exception as e:
             raise ValueError(f"Failed to evaluate grid expression '{result}': {e}")
 
+        return dynamic_val 
+
     def __call__(self, *args: Any) -> Any:
-        # calculate the input params：total_params - out_params
+        # Calculate the input params：total_params - out_params
         total_params = len(self.param_info)
         num_inputs = total_params - (len(self.out_idx) if self.out_idx is not None else 0)
         
         if len(args) != num_inputs:
-            raise ValueError(f"Expected {num_inputs} input tensors (total_params={total_params}, out_idx={self.out_idx}), got {len(args)}")
+            raise ValueError(f"Expected {num_inputs} inputs, got {len(args)}")
         
-        self._calcu_grid(*args)
-        
-        # build the mapping from original inputs to the args position
+        # Build the mapping from original inputs to the args position
         orig_to_input = {}
         input_pos = 0
         for i, info in enumerate(self.param_info):
-            if not info['is_output']:
+            if not info['is_output']: 
                 orig_to_input[i] = input_pos
                 input_pos += 1
         
-        # build the symbolic var names to extra_args indices
-        sym_name_to_extra_idx = {}
-        if hasattr(self, 'symbolic') and self.symbolic:
-            for idx, sym_var in enumerate(self.symbolic.keys()):
-                sym_name_to_extra_idx[sym_var.name] = idx
+        # Calculate grid and get dynamic values
+        dynamic_val = self._calcu_grid(orig_to_input, *args)
         
+        # Build full argument list
         full_args = [None] * total_params
         input_ptr = 0
-        output_created = []
         
         for i, info in enumerate(self.param_info):
-            if info['is_output']:
-                # create output tensor
+            if info['is_output']:  # Output parameter (must be tensor)
                 dtype = info['dtype']
-                
-                # analyze the shape, replace the symbolic variables with actual values
                 shape = []
                 for dim in info['shape']:
                     if isinstance(dim, tir.Var):
-                        var_name = dim.name
-                        
-                        # try to get the shape from input tensors
-                        if var_name in self.symbolic:
-                            tensor_idx, dim_idx = self.symbolic[var_name]
-                            if tensor_idx in orig_to_input:
-                                input_arg = args[orig_to_input[tensor_idx]]
-                                actual_dim = input_arg.shape[dim_idx]
-                                shape.append(actual_dim)
-                                continue
-                        
-                        # get the shape from extra_args
-                        if var_name in sym_name_to_extra_idx:
-                            extra_idx = sym_name_to_extra_idx[var_name]
-                            if extra_idx < len(self.extra_args):
-                                shape.append(self.extra_args[extra_idx])
-                            else:
-                                raise ValueError(f"Symbolic variable {var_name} not found in extra_args")
-                        else:
-                            raise ValueError(f"Unknown symbolic variable {var_name}")
+                        val = dynamic_val.get(str(dim))
+                        if val is None:
+                            raise ValueError(f"Missing value for {dim}")
+                        shape.append(val)
                     else:
                         shape.append(int(dim))
                 
-                # create a 1D tensor if shape is none
-                if not shape:
-                    shape = [1]
-                
+                # Shape should not be empty (validated in _extract_param_info)
                 device = args[0].device if args else torch.device('cpu')
-                
-                # create the output tensor
-                tensor = torch.empty(shape, dtype=dtype, device=device)
-                output_created.append(tensor)
-                full_args[i] = tensor
+                full_args[i] = torch.empty(shape, dtype=dtype, device=device)
             else:
-                # input tensor
+                # Input parameter (tensor or scalar)
                 full_args[i] = args[input_ptr]
                 input_ptr += 1
         
-        # append extra_args to full_args
+        # Append extra_args
         full_args.extend(self.extra_args)
         
-        # run kernel
+        # Run kernel
         npu_utils = NPUUtils()
         t_module, t_function, t_n_regs, t_n_spills = npu_utils.load_binary(
             self.utils_name,
@@ -1138,9 +1116,10 @@ class JitKernel_NPU:
             self.launch_metadata,
             self.launch_enter_hook,
             self.launch_exit_hook,
-            *full_args  
+            *full_args
         )
         
+        # Return outputs
         if self.out_idx is None:
             return None
         if len(self.out_idx) == 1:
@@ -1218,36 +1197,51 @@ class compiler_npu:
         buffer_map = func.buffer_map
         params = func.params
         info_list = []
-
-        # Convert out_idx to positive indices
+        
+        # Convert out_idx to positive indices and validate
         total_params = len(params)
         pos_out_idx = None
         if out_idx is not None:
             pos_out_idx = {i if i >= 0 else total_params + i for i in out_idx}
+
         for i, param in enumerate(params):
+            is_output = (pos_out_idx is not None and i in pos_out_idx)
             if param in buffer_map:
                 # Tensor parameter (has buffer)
                 buffer = buffer_map[param]
                 dtype_str = str(buffer.dtype)
                 torch_dtype = self._tvm_dtype_to_torch(dtype_str)
                 shape_expr = list(buffer.shape)
-                is_output = (pos_out_idx is not None and i in pos_out_idx)
+                # Check for zero-dimensional tensor (not supported as output)
+                if is_output and len(shape_expr) == 0:
+                    raise ValueError(
+                        f"Output parameter at index {i} has zero-dimensional shape. "
+                        f"TileLang does not support scalar outputs. "
+                        f"Please use 1D tensor with shape (1,) instead."
+                    )
                 info_list.append({
                     'dtype': torch_dtype,
                     'shape': shape_expr,
-                    'is_output': is_output
+                    'is_output': is_output,
                 })
             else:
-                # scalar param
-                torch_dtype = torch.float32  
-                if hasattr(self, 'signature') and i in self.signature:
-                    dtype_str = self.signature[i]
-                    torch_dtype = self._tvm_dtype_to_torch(dtype_str)
-                    info_list.append({
-                        'dtype': torch_dtype,
-                        'shape': [],
-                        'is_output': False
-                    })
+                # Scalar parameter - cannot be output
+                if is_output:
+                    raise ValueError(
+                        f"Parameter at index {i} is a scalar (T.{param.dtype}) but marked as output. "
+                        f"TileLang does not support scalar outputs. "
+                        f"Please use 1D tensor with shape (1,) instead."
+                    )
+                
+                # Get dtype from param
+                dtype_str = str(param.dtype)
+                torch_dtype = self._tvm_dtype_to_torch(dtype_str)
+                info_list.append({
+                    'dtype': torch_dtype,
+                    'shape': [],  # scalar has empty shape
+                    'is_output': False,
+                })
+        
         return info_list
 
     def _tvm_dtype_to_torch(self, dtype_str):
