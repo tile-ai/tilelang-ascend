@@ -10,6 +10,7 @@ torch
 pybind11
 pytest
 pytest-xdist
+pytest-forked
 pandas
 matplotlib
 PyYAML

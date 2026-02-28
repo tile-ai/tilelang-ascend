@@ -1,3 +1,4 @@
+import os
 import random
 
 import pytest
@@ -2969,4 +2970,6 @@ def test_generate_arithmetic_progression(target, shape):
 
 
 if __name__ == "__main__":
-    pytest.main()
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    elementwise_test_path = os.path.join(current_dir, "test_tilelang_ascend_language_elementwise.py")
+    pytest.main(["--forked", elementwise_test_path])
