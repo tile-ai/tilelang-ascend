@@ -221,6 +221,11 @@ static bool IsWorkspaceScope(const std::string& scope) {
   return scope == "workspace" || scope == "global.workspace";
 }
 
+static bool IsMmadL1ResultValue(mlir::Value value) {
+  auto* def = value.getDefiningOp();
+  return def && mlir::isa<mlir::hivm::MmadL1Op>(def);
+}
+
 static std::map<std::string, mlir::hivm::RoundMode> NPUIR_STR_ROUNDMODE{
     {"round", mlir::hivm::RoundMode::ROUND},
     {"rint", mlir::hivm::RoundMode::RINT},
@@ -1922,7 +1927,7 @@ void CodeGenTileLangNPUIRDEV::AscendCopyCodegen(const CallNode *op) {
       src_is_workspace && src_is_memref && dst_is_tensor;
   const bool use_hivm_fixpipe =
       dst_is_workspace && src_is_tensor && dst_is_memref &&
-      src_scope == "wmma.accumulator";
+      IsMmadL1ResultValue(src);
   const bool use_hivm_store =
       dst_is_workspace && src_is_tensor && dst_is_memref && !use_hivm_fixpipe;
 
