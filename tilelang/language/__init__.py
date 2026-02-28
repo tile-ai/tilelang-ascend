@@ -124,7 +124,9 @@ from .customize_npuir import (
     npuir_rsqrt,
     npuir_abs as vabs,
     npuir_rec,
+    npuir_not,
     npuir_not as vnot,
+    npuir_gather,
     npuir_gather as gather,
     npuir_interleave,
     npuir_deinterleave,
@@ -148,6 +150,7 @@ from .customize_npuir import (
     sync_block_wait,
     Scope,
     npuir_print as print,
+    npuir_reshape,
     npuir_reshape as reshape,
     npuir_clear as clear,
 )

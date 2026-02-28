@@ -26,7 +26,7 @@ def gather_dev(M, N):
             value_one = 1
             T.npuir_brc(value_one, indices)
             T.copy(A, A_VEC)
-            T.vgather(A_VEC, B_VEC, indices)
+            T.gather(A_VEC, B_VEC, indices)
             T.copy(B_VEC, B)
 
     return main
@@ -47,7 +47,7 @@ def gather_exp(M, N, dtype="float16"):
             value_one = 1
             T.npuir_brc(value_one, indices)
             T.copy(A, A_VEC)
-            T.vgather(A_VEC, B_VEC, indices)
+            T.gather(A_VEC, B_VEC, indices)
             T.copy(B_VEC, B)
 
     return main
