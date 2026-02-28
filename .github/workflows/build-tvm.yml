@@ -1,0 +1,113 @@
+name: Build TVM
+
+on:
+  push:
+    branches: [npuir]
+  workflow_call:
+    inputs:
+      checkout-ref:
+        description: "Git ref to checkout"
+        type: string
+        default: ''
+    outputs:
+      tvm-commit:
+        description: "TVM submodule commit hash"
+        value: ${{ jobs.build-tvm.outputs.tvm-commit }}
+  workflow_dispatch:
+
+env:
+  TVM_INSTALL_DIR: tvm-prebuild
+
+jobs:
+  build-tvm:
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-22.04
+          - arch: arm64
+            runner: ubuntu-22.04-arm
+    outputs:
+      tvm-commit: ${{ steps.tvm-version.outputs.commit }}
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        ref: ${{ inputs.checkout-ref || '' }}
+        fetch-depth: 1
+
+    - name: Get TVM commit ID
+      id: tvm-version
+      run: |
+        TVM_COMMIT=$(git rev-parse HEAD:3rdparty/tvm)
+        echo "commit=${TVM_COMMIT}" >> "$GITHUB_OUTPUT"
+        echo "TVM commit: ${TVM_COMMIT}"
+
+    - name: Compute cache key
+      id: cache-key
+      run: echo "key=tvm-prebuild-${{ matrix.arch }}-${{ steps.tvm-version.outputs.commit }}" >> "$GITHUB_OUTPUT"
+
+    - name: Restore TVM prebuild from cache
+      id: cache
+      uses: actions/cache@v4
+      with:
+        path: ${{ env.TVM_INSTALL_DIR }}
+        key: ${{ steps.cache-key.outputs.key }}
+
+    - name: Initialize TVM submodule
+      if: steps.cache.outputs.cache-hit != 'true'
+      run: git submodule update --init --recursive 3rdparty/tvm
+
+    - name: Install build dependencies
+      if: steps.cache.outputs.cache-hit != 'true'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends cmake make
+
+    - name: Build TVM
+      if: steps.cache.outputs.cache-hit != 'true'
+      working-directory: 3rdparty/tvm
+      run: |
+        mkdir -p build
+        cp cmake/config.cmake build/
+        echo "set(USE_CUDA OFF)" >> build/config.cmake
+        echo "set(USE_NCCL OFF)" >> build/config.cmake
+        echo "set(USE_ROCM OFF)" >> build/config.cmake
+        echo "set(USE_RCCL OFF)" >> build/config.cmake
+        echo "set(USE_OPENCL OFF)" >> build/config.cmake
+        echo "set(USE_METAL OFF)" >> build/config.cmake
+        echo "set(USE_VULKAN OFF)" >> build/config.cmake
+        echo "set(USE_LLVM OFF)" >> build/config.cmake
+        echo "set(USE_MLIR OFF)" >> build/config.cmake
+        echo "set(USE_RPC ON)" >> build/config.cmake
+        echo "set(USE_CPP_RPC OFF)" >> build/config.cmake
+        echo "set(USE_CPP_RTVM OFF)" >> build/config.cmake
+        echo "set(USE_GRAPH_EXECUTOR ON)" >> build/config.cmake
+        echo "set(USE_GRAPH_EXECUTOR_CUDA_GRAPH OFF)" >> build/config.cmake
+        echo "set(USE_PIPELINE_EXECUTOR OFF)" >> build/config.cmake
+        echo "set(USE_PROFILER ON)" >> build/config.cmake
+        echo "set(USE_MICRO OFF)" >> build/config.cmake
+        echo "set(USE_STACKVM_RUNTIME OFF)" >> build/config.cmake
+        echo "set(USE_MICRO_STANDALONE_RUNTIME OFF)" >> build/config.cmake
+        echo "set(USE_BLAS none)" >> build/config.cmake
+        echo "set(USE_MKL OFF)" >> build/config.cmake
+        echo "set(USE_DNNL OFF)" >> build/config.cmake
+        echo "set(USE_OPENMP none)" >> build/config.cmake
+        echo "set(USE_RANDOM ON)" >> build/config.cmake
+        echo "set(USE_NNPACK OFF)" >> build/config.cmake
+        echo "set(USE_SORT ON)" >> build/config.cmake
+        echo "set(HIDE_PRIVATE_SYMBOLS ON)" >> build/config.cmake
+        echo "set(USE_LIBBACKTRACE AUTO)" >> build/config.cmake
+        echo "set(USE_KALLOC_ALIGNMENT 64)" >> build/config.cmake
+        cmake -B build -DCMAKE_BUILD_TYPE=Release
+        cmake --build build -j$(nproc)
+
+    - name: Populate cache directory
+      if: steps.cache.outputs.cache-hit != 'true'
+      run: |
+        mkdir -p ${{ env.TVM_INSTALL_DIR }}
+        cp 3rdparty/tvm/build/libtvm.so ${{ env.TVM_INSTALL_DIR }}/
+        cp 3rdparty/tvm/build/libtvm_runtime.so ${{ env.TVM_INSTALL_DIR }}/

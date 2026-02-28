@@ -24,20 +24,13 @@ else()
 endif()
 
 # Handle TVM prebuild path or use default configuration
-if(DEFINED TVM_PREBUILD_PATH)
-  message(STATUS "TVM_PREBUILD_PATH: ${TVM_PREBUILD_PATH}")
+if(EXISTS ${CMAKE_BINARY_DIR}/config.cmake)
+  include(${CMAKE_BINARY_DIR}/config.cmake)
+elseif(EXISTS ${CMAKE_SOURCE_DIR}/config.cmake)
+  include(${CMAKE_SOURCE_DIR}/config.cmake)
+endif()
 
-  if(EXISTS ${TVM_PREBUILD_PATH}/config.cmake)
-    include(${TVM_PREBUILD_PATH}/config.cmake)
-  endif()
-else()
-  if(EXISTS ${CMAKE_BINARY_DIR}/config.cmake)
-    include(${CMAKE_BINARY_DIR}/config.cmake)
-  elseif(EXISTS ${CMAKE_SOURCE_DIR}/config.cmake)
-    include(${CMAKE_SOURCE_DIR}/config.cmake)
-  endif()
-
-  # Set default build type to RelWithDebInfo if not provided
+if(NOT DEFINED TVM_PREBUILD_PATH)
   if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING "Build type" FORCE)
     message(STATUS "Setting default build type to ${CMAKE_BUILD_TYPE}")
@@ -116,12 +109,10 @@ if(DEFINED TVM_PREBUILD_PATH)
   add_library(tvm SHARED IMPORTED)
   set_target_properties(tvm PROPERTIES
     IMPORTED_LOCATION "${TVM_PREBUILD_PATH}/libtvm.so"
-    INTERFACE_INCLUDE_DIRECTORIES "${TVM_PREBUILD_PATH}/../include"
   )
   add_library(tvm_runtime SHARED IMPORTED)
   set_target_properties(tvm_runtime PROPERTIES
     IMPORTED_LOCATION "${TVM_PREBUILD_PATH}/libtvm_runtime.so"
-    INTERFACE_INCLUDE_DIRECTORIES "${TVM_PREBUILD_PATH}/../include"
   )
 else()
   message(STATUS "Building TVM from source at ${TVM_SOURCE_DIR}")

@@ -7,12 +7,12 @@ on:
     types: [created]
 
 permissions:
-  pull-requests: write
   contents: read
 
 env:
   PYTHON_VERSION: "3.11"
   NPUIR_INSTALL_DIR: npuir-prebuild
+  TVM_INSTALL_DIR: tvm-prebuild
 
 jobs:
   check-trigger:
@@ -59,8 +59,14 @@ jobs:
     with:
       checkout-ref: refs/pull/${{ needs.check-trigger.outputs.pr-number }}/merge
 
+  prebuild-tvm:
+    needs: check-trigger
+    uses: ./.github/workflows/build-tvm.yml
+    with:
+      checkout-ref: refs/pull/${{ needs.check-trigger.outputs.pr-number }}/merge
+
   build-wheel:
-    needs: [check-trigger, prebuild-npuir]
+    needs: [check-trigger, prebuild-npuir, prebuild-tvm]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
     strategy:
@@ -92,6 +98,13 @@ jobs:
         key: npuir-prebuild-${{ matrix.arch }}-${{ needs.prebuild-npuir.outputs.npuir-commit }}
         fail-on-cache-miss: true
 
+    - name: Restore TVM prebuild from cache
+      uses: actions/cache/restore@v4
+      with:
+        path: ${{ env.TVM_INSTALL_DIR }}
+        key: tvm-prebuild-${{ matrix.arch }}-${{ needs.prebuild-tvm.outputs.tvm-commit }}
+        fail-on-cache-miss: true
+
     - name: Set up Python ${{ env.PYTHON_VERSION }}
       uses: actions/setup-python@v5
       with:
@@ -107,11 +120,17 @@ jobs:
     - name: Build tilelang (cmake)
       run: |
         BISHENGIR_PATH="${{ github.workspace }}/${{ env.NPUIR_INSTALL_DIR }}"
+        TVM_PATH="${{ github.workspace }}/${{ env.TVM_INSTALL_DIR }}"
         mkdir -p build
         cp 3rdparty/tvm/cmake/config.cmake build/
         echo "set(USE_NPUIR ON)" >> build/config.cmake
         echo "set(BISHENGIR_ROOT_PATH ${BISHENGIR_PATH})" >> build/config.cmake
-        cmake -B build
+        echo "set(USE_CUDA OFF)" >> build/config.cmake
+        echo "set(USE_ROCM OFF)" >> build/config.cmake
+        echo "set(USE_LLVM OFF)" >> build/config.cmake
+        echo "set(HIDE_PRIVATE_SYMBOLS ON)" >> build/config.cmake
+        echo "set(USE_KALLOC_ALIGNMENT 64)" >> build/config.cmake
+        cmake -B build -DTVM_PREBUILD_PATH=${TVM_PATH} -DTVM_SOURCE_DIR=${{ github.workspace }}/3rdparty/tvm
         cmake --build build --config Release -j$(nproc)
 
     - name: Package wheel
@@ -119,6 +138,7 @@ jobs:
         TILELANG_SKIP_BUILD: "1"
         USE_NPUIR: "true"
         BISHENGIR_PATH: ${{ github.workspace }}/npuir-prebuild
+        TVM_PREBUILD_PATH: ${{ github.workspace }}/tvm-prebuild
       run: python setup.py bdist_wheel
 
     - name: Upload wheel artifact
@@ -127,48 +147,3 @@ jobs:
         name: tilelang-npuir-py${{ env.PYTHON_VERSION }}-${{ matrix.arch }}-${{ needs.check-trigger.outputs.pr-sha }}
         path: dist/*.whl
         retention-days: 30
-
-  report:
-    needs: [check-trigger, build-wheel]
-    if: always() && needs.check-trigger.result == 'success'
-    runs-on: ubuntu-22.04
-    permissions:
-      pull-requests: write
-    steps:
-    - name: Post result to PR
-      uses: actions/github-script@v7
-      env:
-        PR_NUMBER: ${{ needs.check-trigger.outputs.pr-number }}
-        PR_SHA: ${{ needs.check-trigger.outputs.pr-sha }}
-        BUILD_RESULT: ${{ needs.build-wheel.result }}
-        RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-      with:
-        script: |
-          const prNumber = parseInt(process.env.PR_NUMBER);
-          if (!prNumber) return;
-
-          const sha = process.env.PR_SHA.substring(0, 8);
-          const result = process.env.BUILD_RESULT;
-          const runUrl = process.env.RUN_URL;
-
-          let body;
-          if (result === 'success') {
-            body = [
-              `### Build TileLang-Ascend (NPUIR) — \`${sha}\``,
-              '',
-              `Build **succeeded**. [Download artifacts / View CI logs](${runUrl})`,
-            ].join('\n');
-          } else {
-            body = [
-              `### Build TileLang-Ascend (NPUIR) — \`${sha}\``,
-              '',
-              `Build **failed**. [View logs](${runUrl})`,
-            ].join('\n');
-          }
-
-          await github.rest.issues.createComment({
-            owner: context.repo.owner,
-            repo: context.repo.repo,
-            issue_number: prNumber,
-            body: body,
-          });

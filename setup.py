@@ -386,6 +386,10 @@ class TileLangBuilPydCommand(build_py):
             os.path.join(ROOT_DIR, "build/tvm"),
         ]
 
+        tvm_prebuild_path = os.environ.get("TVM_PREBUILD_PATH")
+        if tvm_prebuild_path:
+            potential_dirs.insert(0, os.path.abspath(tvm_prebuild_path))
+
         for item in TVM_PREBUILD_ITEMS:
             source_lib_file = None
             for dir in potential_dirs:
@@ -750,12 +754,16 @@ class CMakeBuild(build_ext):
         extdir = os.path.abspath(os.path.dirname(self.get_ext_fullpath(ext.name)))
 
         # Prepare arguments for the CMake configuration step.
-        # -DCMAKE_LIBRARY_OUTPUT_DIRECTORY sets where built libraries go
-        # -DPYTHON_EXECUTABLE ensures that the correct Python is used
         cmake_args = [
             f"-DCMAKE_LIBRARY_OUTPUT_DIRECTORY={extdir}",
             f"-DPYTHON_EXECUTABLE={sys.executable}",
         ]
+
+        tvm_prebuild_path = os.environ.get("TVM_PREBUILD_PATH")
+        if tvm_prebuild_path:
+            tvm_prebuild_path = os.path.abspath(tvm_prebuild_path)
+            cmake_args.append(f"-DTVM_PREBUILD_PATH={tvm_prebuild_path}")
+            logger.info(f"Using prebuilt TVM from {tvm_prebuild_path}")
 
         # Create the temporary build directory (if it doesn't exist).
         build_temp = os.path.abspath(self.build_temp)

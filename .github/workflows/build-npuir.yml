@@ -1,6 +1,8 @@
 name: Build AscendNPU-IR
 
 on:
+  push:
+    branches: [npuir]
   workflow_call:
     inputs:
       checkout-ref:
