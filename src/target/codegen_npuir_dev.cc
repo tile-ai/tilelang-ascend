@@ -217,6 +217,10 @@ getBroadcastDim(const llvm::ArrayRef<long int> &buffer_shape0,
   return dims;
 }
 
+static bool IsWorkspaceScope(const std::string& scope) {
+  return scope == "workspace" || scope == "global.workspace";
+}
+
 static std::map<std::string, mlir::hivm::RoundMode> NPUIR_STR_ROUNDMODE{
     {"round", mlir::hivm::RoundMode::ROUND},
     {"rint", mlir::hivm::RoundMode::RINT},
@@ -1621,10 +1625,12 @@ CodeGenTileLangNPUIRDEV::ComputeUBAllocShapeFromDstRange(
 }
 
 void CodeGenTileLangNPUIRDEV::EmitCopyMemrefToTensor(
-    const tvm::tl::AscendCopy &npuirop, mlir::Value src, mlir::Value dst,
-    const SliceRange &srcR, const SliceRange &dstR, mlir::Location loc) {
+    const tvm::tl::AscendCopy& npuirop,
+    mlir::Value src, mlir::Value dst,
+    const SliceRange& srcR, const SliceRange& dstR,
+    mlir::Location loc,
+    bool use_hivm_load) {
   auto dst_tensor_type_ori = dst.getType().cast<mlir::RankedTensorType>();
-  auto src_memref_type_ori = src.getType().cast<mlir::MemRefType>();
 
   // 1) Canonicalize copy rank: drop static-1 dims using src_sizes
   llvm::SmallVector<int64_t> ub_alloc_shape =
@@ -1696,8 +1702,12 @@ void CodeGenTileLangNPUIRDEV::EmitCopyMemrefToTensor(
         base_ub, fullOffsets, fullSizes, fullStrides, copy_projected, loc);
   }
 
-  // 5) Copy
-  builder.create<mlir::memref::CopyOp>(loc, src_view, ub_view);
+  // 5) Copy / Load
+  if (use_hivm_load) {
+    builder.create<mlir::hivm::LoadOp>(loc, mlir::TypeRange{}, src_view, ub_view);
+  } else {
+    builder.create<mlir::memref::CopyOp>(loc, src_view, ub_view);
+  }
 
   // 6) ToTensor
   mlir::Value loaded_tensor = builder.create<mlir::bufferization::ToTensorOp>(
@@ -1721,8 +1731,40 @@ void CodeGenTileLangNPUIRDEV::EmitCopyMemrefToTensor(
 }
 
 void CodeGenTileLangNPUIRDEV::EmitCopyTensorToMemref(
-    const tvm::tl::AscendCopy & /*npuirop*/, mlir::Value src, mlir::Value dst,
-    const SliceRange &srcR, const SliceRange &dstR, mlir::Location loc) {
+    const tvm::tl::AscendCopy& /*npuirop*/,
+    mlir::Value src, mlir::Value dst,
+    const SliceRange& srcR, const SliceRange& dstR,
+    mlir::Location loc,
+    bool use_hivm_store,
+    bool use_hivm_fixpipe) {
+
+  auto emit_writeback = [&](mlir::Value src_tensor, mlir::Value dst_memref) {
+    if (use_hivm_fixpipe || use_hivm_store) {
+      mlir::Value dst_tensor = builder.create<mlir::bufferization::ToTensorOp>(
+          loc, dst_memref, /*restrict=*/true, /*writable=*/true);
+      mlir::Type dst_tensor_type = dst_tensor.getType();
+      mlir::TypeRange result_tensors(&dst_tensor_type, 1);
+
+      if (use_hivm_fixpipe) {
+        mlir::UnitAttr enable_nz2nd = builder.getUnitAttr();
+        auto pre_quant = mlir::hivm::FixpipePreQuantModeAttr::get(
+            builder.getContext(), mlir::hivm::FixpipePreQuantMode::NO_QUANT);
+        auto pre_relu = mlir::hivm::FixpipePreReluModeAttr::get(
+            builder.getContext(), mlir::hivm::FixpipePreReluMode::NO_RELU);
+        mlir::BoolAttr channel_split = builder.getBoolAttr(false);
+        builder.create<mlir::hivm::FixpipeOp>(
+            loc, result_tensors, src_tensor, dst_tensor, enable_nz2nd,
+            pre_quant, pre_relu, channel_split);
+      } else {
+        builder.create<mlir::hivm::StoreOp>(loc, result_tensors, src_tensor, dst_tensor);
+      }
+      return;
+    }
+
+    auto matOp = builder.create<mlir::bufferization::MaterializeInDestinationOp>(
+        loc, src_tensor, dst_memref);
+    matOp.setWritable(true);
+  };
 
   auto srcTy = src.getType().cast<mlir::RankedTensorType>();
   auto dstTy = dst.getType().cast<mlir::MemRefType>();
@@ -1734,10 +1776,7 @@ void CodeGenTileLangNPUIRDEV::EmitCopyTensorToMemref(
       OpFoldResultsEqualStaticShape(dstR.sizes, dstTy.getShape()) &&
       srcTy.getShape() == dstTy.getShape()) {
     mlir::Value casted = CreateCastIfTypeMismatch(src, dst);
-    auto matOp =
-        builder.create<mlir::bufferization::MaterializeInDestinationOp>(
-            loc, casted, dst);
-    matOp.setWritable(true);
+    emit_writeback(casted, dst);
     return;
   }
 
@@ -1758,10 +1797,8 @@ void CodeGenTileLangNPUIRDEV::EmitCopyTensorToMemref(
   // 4) Type cast if element types differ
   mlir::Value casted_tensor = CreateCastIfTypeMismatch(src_slice, dst_view);
 
-  // 5) Materialize directly (no reshape needed - shapes match!)
-  auto matOp = builder.create<mlir::bufferization::MaterializeInDestinationOp>(
-      loc, casted_tensor, dst_view);
-  matOp.setWritable(true);
+  // 5) Write back directly (no reshape needed - shapes match!)
+  emit_writeback(casted_tensor, dst_view);
 }
 
 void CodeGenTileLangNPUIRDEV::EmitCopyTensorToTensor(
@@ -1876,12 +1913,26 @@ void CodeGenTileLangNPUIRDEV::AscendCopyCodegen(const CallNode *op) {
   const bool src_is_tensor = src.getType().isa<mlir::TensorType>();
   const bool dst_is_tensor = dst.getType().isa<mlir::TensorType>();
 
+  const std::string src_scope = GetPtrStorageScope(npuirop.src->data);
+  const std::string dst_scope = GetPtrStorageScope(npuirop.dst->data);
+  const bool src_is_workspace = IsWorkspaceScope(src_scope);
+  const bool dst_is_workspace = IsWorkspaceScope(dst_scope);
+
+  const bool use_hivm_load =
+      src_is_workspace && src_is_memref && dst_is_tensor;
+  const bool use_hivm_fixpipe =
+      dst_is_workspace && src_is_tensor && dst_is_memref &&
+      src_scope == "wmma.accumulator";
+  const bool use_hivm_store =
+      dst_is_workspace && src_is_tensor && dst_is_memref && !use_hivm_fixpipe;
+
   if (src_is_memref && dst_is_tensor) {
-    EmitCopyMemrefToTensor(npuirop, src, dst, srcR, dstR, loc);
+    EmitCopyMemrefToTensor(npuirop, src, dst, srcR, dstR, loc, use_hivm_load);
     return;
   }
   if (src_is_tensor && dst_is_memref) {
-    EmitCopyTensorToMemref(npuirop, src, dst, srcR, dstR, loc);
+    EmitCopyTensorToMemref(
+        npuirop, src, dst, srcR, dstR, loc, use_hivm_store, use_hivm_fixpipe);
     return;
   }
   if (src_is_tensor && dst_is_tensor) {

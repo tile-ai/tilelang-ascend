@@ -326,12 +326,15 @@ private:
       const tvm::tl::AscendCopy& npuirop,
       mlir::Value src, mlir::Value dst,
       const SliceRange& srcR, const SliceRange& dstR,
-      mlir::Location loc);
+      mlir::Location loc,
+      bool use_hivm_load = false);
   void EmitCopyTensorToMemref(
       const tvm::tl::AscendCopy& npuirop,
       mlir::Value src, mlir::Value dst,
       const SliceRange& srcR, const SliceRange& dstR,
-      mlir::Location loc);
+      mlir::Location loc,
+      bool use_hivm_store = false,
+      bool use_hivm_fixpipe = false);
   void EmitCopyTensorToTensor(
       const tvm::tl::AscendCopy& npuirop,
       mlir::Value src, mlir::Value dst,
