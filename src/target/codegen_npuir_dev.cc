@@ -1736,12 +1736,19 @@ void CodeGenTileLangNPUIRDEV::EmitCopyMemrefToTensor(
 }
 
 void CodeGenTileLangNPUIRDEV::EmitCopyTensorToMemref(
-    const tvm::tl::AscendCopy& /*npuirop*/,
+    const tvm::tl::AscendCopy& npuirop,
     mlir::Value src, mlir::Value dst,
     const SliceRange& srcR, const SliceRange& dstR,
     mlir::Location loc,
     bool use_hivm_store,
     bool use_hivm_fixpipe) {
+
+  const bool is_workspace_dst =
+      IsWorkspaceScope(GetPtrStorageScope(npuirop.dst->data));
+  const bool workspace_full_write =
+      OpFoldResultsAllZero(dstR.offs) &&
+      OpFoldResultsEqualStaticShape(
+          dstR.sizes, dst.getType().cast<mlir::MemRefType>().getShape());
 
   auto emit_writeback = [&](mlir::Value src_tensor, mlir::Value dst_memref) {
     if (use_hivm_fixpipe || use_hivm_store) {
@@ -1757,11 +1764,22 @@ void CodeGenTileLangNPUIRDEV::EmitCopyTensorToMemref(
         auto pre_relu = mlir::hivm::FixpipePreReluModeAttr::get(
             builder.getContext(), mlir::hivm::FixpipePreReluMode::NO_RELU);
         mlir::BoolAttr channel_split = builder.getBoolAttr(false);
-        builder.create<mlir::hivm::FixpipeOp>(
+        auto fixpipeOp = builder.create<mlir::hivm::FixpipeOp>(
             loc, result_tensors, src_tensor, dst_tensor, enable_nz2nd,
             pre_quant, pre_relu, channel_split);
+        if (is_workspace_dst && workspace_full_write && dst_memref == dst) {
+          workspace_tensor_map_[npuirop.dst->data.get()] = fixpipeOp->getResult(0);
+        } else if (is_workspace_dst) {
+          workspace_tensor_map_.erase(npuirop.dst->data.get());
+        }
       } else {
-        builder.create<mlir::hivm::StoreOp>(loc, result_tensors, src_tensor, dst_tensor);
+        auto storeOp = builder.create<mlir::hivm::StoreOp>(
+            loc, result_tensors, src_tensor, dst_tensor);
+        if (is_workspace_dst && workspace_full_write && dst_memref == dst) {
+          workspace_tensor_map_[npuirop.dst->data.get()] = storeOp->getResult(0);
+        } else if (is_workspace_dst) {
+          workspace_tensor_map_.erase(npuirop.dst->data.get());
+        }
       }
       return;
     }
@@ -1807,10 +1825,43 @@ void CodeGenTileLangNPUIRDEV::EmitCopyTensorToMemref(
 }
 
 void CodeGenTileLangNPUIRDEV::EmitCopyTensorToTensor(
-    const tvm::tl::AscendCopy &npuirop, mlir::Value src, mlir::Value dst,
-    const SliceRange &srcR, const SliceRange &dstR, mlir::Location loc) {
+    const tvm::tl::AscendCopy& npuirop,
+    mlir::Value src, mlir::Value dst,
+    const SliceRange& srcR, const SliceRange& dstR,
+    mlir::Location loc,
+    bool use_hivm_load) {
   auto srcTy = src.getType().cast<mlir::RankedTensorType>();
   auto dstTy = dst.getType().cast<mlir::RankedTensorType>();
+
+  if (use_hivm_load) {
+    int64_t maxRankTT = std::min<int64_t>(srcTy.getRank(), dstTy.getRank());
+    CollapsedDims srcC = CollapseStaticOneDims(srcR.sizes, maxRankTT);
+    mlir::Value src_slice = CreateRankReducedExtractSlice(
+        src, srcR.offs, srcR.sizes, srcR.strides, srcC.projected, loc);
+    mlir::Value dst_slice = CreateRankReducedExtractSlice(
+        dst, dstR.offs, dstR.sizes, dstR.strides, srcC.projected, loc);
+
+    mlir::Type dst_slice_type = dst_slice.getType();
+    mlir::TypeRange result_tensors(&dst_slice_type, 1);
+    auto loadOp = builder.create<mlir::hivm::LoadOp>(
+        loc, result_tensors, src_slice, dst_slice);
+    mlir::Value loaded_tensor = loadOp->getResult(0);
+
+    if (OpFoldResultsAllZero(dstR.offs) &&
+        OpFoldResultsEqualStaticShape(dstR.sizes, dstTy.getShape()) &&
+        srcTy.getShape() == dstTy.getShape()) {
+      SetVarValue(npuirop.dst, loaded_tensor);
+      return;
+    }
+
+    mlir::Value result = InsertSlice(
+        loaded_tensor, dst,
+        const_cast<llvm::SmallVector<mlir::OpFoldResult>&>(dstR.offs),
+        const_cast<llvm::SmallVector<mlir::OpFoldResult>&>(dstR.sizes),
+        const_cast<llvm::SmallVector<mlir::OpFoldResult>&>(dstR.strides));
+    SetVarValue(npuirop.dst, result);
+    return;
+  }
 
   // Fast path: full-range on both sides with same shape
   if (OpFoldResultsAllZero(srcR.offs) &&
@@ -1905,26 +1956,34 @@ void CodeGenTileLangNPUIRDEV::EmitCopyTensorToTensor(
 void CodeGenTileLangNPUIRDEV::AscendCopyCodegen(const CallNode *op) {
   tvm::tl::AscendCopy npuirop(op->args, this->vmap);
 
-  mlir::Value src = GetVarValue(npuirop.src);
-  mlir::Value dst = GetVarValue(npuirop.dst);
-
   SliceRange srcR = MakeSliceRange(npuirop.src_range);
   SliceRange dstR = MakeSliceRange(npuirop.dst_range);
 
   mlir::Location loc = builder.getUnknownLoc();
-
-  const bool src_is_memref = src.getType().isa<mlir::MemRefType>();
-  const bool dst_is_memref = dst.getType().isa<mlir::MemRefType>();
-  const bool src_is_tensor = src.getType().isa<mlir::TensorType>();
-  const bool dst_is_tensor = dst.getType().isa<mlir::TensorType>();
 
   const std::string src_scope = GetPtrStorageScope(npuirop.src->data);
   const std::string dst_scope = GetPtrStorageScope(npuirop.dst->data);
   const bool src_is_workspace = IsWorkspaceScope(src_scope);
   const bool dst_is_workspace = IsWorkspaceScope(dst_scope);
 
+  mlir::Value src = GetVarValue(npuirop.src);
+  if (src_is_workspace) {
+    auto it = workspace_tensor_map_.find(npuirop.src->data.get());
+    if (it != workspace_tensor_map_.end()) {
+      src = it->second;
+    }
+  }
+  mlir::Value dst = GetVarValue(npuirop.dst);
+
+  const bool src_is_memref = src.getType().isa<mlir::MemRefType>();
+  const bool dst_is_memref = dst.getType().isa<mlir::MemRefType>();
+  const bool src_is_tensor = src.getType().isa<mlir::TensorType>();
+  const bool dst_is_tensor = dst.getType().isa<mlir::TensorType>();
+
   const bool use_hivm_load =
       src_is_workspace && src_is_memref && dst_is_tensor;
+  const bool use_hivm_tensor_load =
+      src_is_workspace && src_is_tensor && dst_is_tensor;
   const bool use_hivm_fixpipe =
       dst_is_workspace && src_is_tensor && dst_is_memref &&
       IsMmadL1ResultValue(src);
@@ -1941,7 +2000,8 @@ void CodeGenTileLangNPUIRDEV::AscendCopyCodegen(const CallNode *op) {
     return;
   }
   if (src_is_tensor && dst_is_tensor) {
-    EmitCopyTensorToTensor(npuirop, src, dst, srcR, dstR, loc);
+    EmitCopyTensorToTensor(
+        npuirop, src, dst, srcR, dstR, loc, use_hivm_tensor_load);
     return;
   }
   if (src_is_memref && dst_is_memref) {
@@ -3597,6 +3657,7 @@ void CodeGenTileLangNPUIRDEV::VisitStmt_(const AllocateNode *op) {
 
     ICHECK(GetVarValue(op->buffer_var.get()) == mlir::Value{});
     SetVarValue(op->buffer_var.get(), allocOp.getMemref());
+    workspace_tensor_map_.erase(op->buffer_var.get());
 
     this->VisitStmt(op->body);
     return;
@@ -3904,6 +3965,7 @@ void CodeGenTileLangNPUIRDEV::AddFunctionForCoreType(const GlobalVar &gvar,
 
 void CodeGenTileLangNPUIRDEV::InitFuncState() {
   var_map_.clear();
+  workspace_tensor_map_.clear();
   AddVarLayer();
   alias_var_set_.clear();
   analyzer_.reset(new arith::Analyzer());

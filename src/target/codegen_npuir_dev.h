@@ -207,6 +207,9 @@ protected:
   // Variable shadowing and scoping is not a problem in TileLang
   // Each variable assignment gets a unique name in TIR
   std::vector<std::unordered_map<const VarNode *, mlir::Value>> var_map_;
+  // Latest tensor value produced for workspace buffers (e.g. fixpipe/store),
+  // keyed by workspace buffer var.
+  std::unordered_map<const VarNode *, mlir::Value> workspace_tensor_map_;
   // Whether current function is restricted
   bool is_restricted_{true};
   // The analyzer information
@@ -339,7 +342,8 @@ private:
       const tvm::tl::AscendCopy& npuirop,
       mlir::Value src, mlir::Value dst,
       const SliceRange& srcR, const SliceRange& dstR,
-      mlir::Location loc);
+      mlir::Location loc,
+      bool use_hivm_load = false);
   // Small utilities
   template <typename RangeT>
   SliceRange MakeSliceRange(const RangeT& range);
