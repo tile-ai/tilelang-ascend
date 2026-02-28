@@ -13,6 +13,9 @@ pass_configs = {
 	tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True
 }
 
+def current_jit_target(jit_func):
+    return jit_func.__jit_impl__.target
+
 # Calculate K^T*V and 1^T*K
 @tilelang.jit(out_idx=[-1], pass_configs=pass_configs)
 def linear_attention_ker1(B, H, L, D, block_L, block_D, dtype="float16", accum_dtype="float"):
@@ -20,6 +23,12 @@ def linear_attention_ker1(B, H, L, D, block_L, block_D, dtype="float16", accum_d
 	lb_num = T.ceildiv(L, block_L)
 	db_num = T.ceildiv(D, block_D)
 	VEC_NUM = 2
+	is_pto = current_jit_target(linear_attention_ker1) == "pto"
+	def alloc_temp():
+		if is_pto:
+			return T.alloc_ub([block_L // VEC_NUM, D], accum_dtype)
+		else:
+			return T.alloc_ub([3 * DataType(accum_dtype).bits // 8 * block_L * block_D // VEC_NUM], "uint8")
 
 	@T.prim_func
 	def main(
@@ -41,7 +50,7 @@ def linear_attention_ker1(B, H, L, D, block_L, block_D, dtype="float16", accum_d
 			sumk_ub = T.alloc_ub([block_D // VEC_NUM,], accum_dtype)
 			acc_half_ub = T.alloc_ub([block_D // VEC_NUM,], dtype)
 			acc_ub = T.alloc_ub([block_D // VEC_NUM,], accum_dtype)
-			tmp_ub = T.alloc_ub([3 * DataType(accum_dtype).bits // 8 * block_L * block_D // VEC_NUM], "uint8")
+			tmp_ub = alloc_temp()
 
 			with T.Scope("C"):
 				for i in T.serial(lb_num):
@@ -71,6 +80,12 @@ def linear_attention_ker2(B, H, L, D, block_L, block_D, dtype="float16", accum_d
 	lb_num = T.ceildiv(L, block_L)
 	db_num = T.ceildiv(D, block_D)
 	VEC_NUM = 2
+	is_pto = current_jit_target(linear_attention_ker2) == "pto"
+	def alloc_temp():
+		if is_pto:
+			return T.alloc_ub([block_L // VEC_NUM, D], accum_dtype)
+		else:
+			return T.alloc_ub([3 * DataType(accum_dtype).bits // 8 * block_L * block_D // VEC_NUM], "uint8")
 
 	@T.prim_func
 	def main(
@@ -96,7 +111,7 @@ def linear_attention_ker2(B, H, L, D, block_L, block_D, dtype="float16", accum_d
 			denom_ub = T.alloc_ub([block_L // VEC_NUM,], accum_dtype)
 			o_half_ub = T.alloc_ub([block_L // VEC_NUM, D], dtype)
 			o_ub = T.alloc_ub([block_L // VEC_NUM, D], accum_dtype)
-			tmp_ub = T.alloc_ub([3 * DataType(accum_dtype).bits // 8 * block_L * D // VEC_NUM], "uint8")
+			tmp_ub = alloc_temp()
 
 			with T.Scope("C"):
 				for i in T.serial(db_num):

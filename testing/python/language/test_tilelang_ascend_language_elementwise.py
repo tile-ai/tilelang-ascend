@@ -1,3 +1,4 @@
+import os
 import random
 
 import pytest
@@ -14,11 +15,25 @@ All test cases are written and executed at the Developer Level.
 """
 
 pass_configs = {
-        tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
-        tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_SYNC: True,
-        tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
-        tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
-    }
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_SYNC: True,
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
+    tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
+}
+
+
+@pytest.fixture(scope="session", autouse=True)
+def clear_cache():
+    """Clear tilelang cache before tests"""
+    tilelang.cache.clear_cache()
+    yield
+
+
+@pytest.fixture
+def setup_random_seed():
+    """Set random seed for reproducibility"""
+    torch.manual_seed(0)
+    yield
 
 
 def vec_abs(M, N, block_M, block_N, dtype="float"):
@@ -51,7 +66,6 @@ def vec_abs(M, N, block_M, block_N, dtype="float"):
 def run_test_abs(M, N, block_M, block_N, target):
     func = vec_abs(M, N, block_M, block_N)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
-    torch.manual_seed(0)
 
     a = torch.randn(M, N).npu()
 
@@ -99,7 +113,6 @@ def vec_add_auto_copy(M, N, block_M, block_N, dtype="float"):
 def run_test_add_auto_copy(M, N, block_M, block_N, target):
     func = vec_add_auto_copy(M, N, block_M, block_N)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
-    torch.manual_seed(0)
 
     a = torch.randn(M, N).float().npu()
     b = torch.randn(M, N).float().npu()
@@ -152,7 +165,6 @@ def run_test_add_developer(M, N, block_M, block_N, target):
     func = vec_add_developer(M, N, block_M, block_N)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
 
-    torch.manual_seed(0)
     a = torch.randn(M, N).float().npu()
     b = torch.randn(M, N).float().npu()
     torch.npu.synchronize()
@@ -194,7 +206,6 @@ def adds(M, N, block_M, block_N, scalar, dtype="float"):
 def run_test_adds(M, N, block_M, block_N, scalar, target):
     func = adds(M, N, block_M, block_N, scalar)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
-    torch.manual_seed(0)
 
     a = torch.randn(M, N).float().npu()
     b = func(a)
@@ -240,7 +251,6 @@ def run_test_bitwise_and(M, N, block_M, block_N, target):
     func = bitwise_and(M, N, block_M, block_N)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
 
-    torch.manual_seed(0)
     a = torch.randint(0, 10, (M, N), dtype=torch.int16).npu()
     b = torch.randint(0, 10, (M, N), dtype=torch.int16).npu()
 
@@ -289,7 +299,6 @@ def axpy(M, N, block_M, block_N, dtype="float"):
 def run_test_axpy(M, N, block_M, block_N, target):
     func = axpy(M, N, block_M, block_N)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
-    torch.manual_seed(0)
 
     a = torch.randn(M, N).npu()
 
@@ -390,8 +399,6 @@ def run_test_bilinear_interpolation(target):
                                   src0offset, src1)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
 
-    torch.manual_seed(0)
-
     torch.npu.synchronize()
 
     c = func(src0, src0offset, src1)
@@ -453,8 +460,6 @@ def run_test_bitwise_lshift(M, N, block_M, block_N, scalarvalue, target):
     func = bitwise_lshift(M, N, block_M, block_N, scalarvalue)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
 
-    torch.manual_seed(0)
-
     a = torch.randint(low=1, high=101, size=(M, N), dtype=torch.int32).npu()
 
     torch.npu.synchronize()
@@ -504,8 +509,6 @@ def run_test_bitwise_not(M, N, block_M, block_N, target):
     func = bitwise_not(M, N, block_M, block_N)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
 
-    torch.manual_seed(0)
-
     a = torch.randint(0, 10, (M, N), dtype=torch.int16).npu()
 
     torch.npu.synchronize()
@@ -554,8 +557,6 @@ def bitwise_rshift(M, N, block_M, block_N, scalarvalue, dtype="int32"):
 def run_test_bitwise_rshift(M, N, block_M, block_N, scalarvalue, target):
     func = bitwise_rshift(M, N, block_M, block_N, scalarvalue)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
-
-    torch.manual_seed(0)
 
     a = torch.randint(low=1, high=101, size=(M, N), dtype=torch.int32).npu()
 
@@ -611,8 +612,6 @@ def run_test_bitwise_xor(M, N, block_M, block_N, target):
     func = bitwise_xor(M, N, block_M, block_N)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
 
-    torch.manual_seed(0)
-
     a = torch.randint(0, 10, (M, N), dtype=torch.int16).npu()
     b = torch.randint(0, 10, (M, N), dtype=torch.int16).npu()
 
@@ -663,8 +662,6 @@ def run_test_block_reduce_max(M, N, block_M, block_N, repeat, mask, dstRepStride
     func = block_reduce_max(M, N, block_M, block_N, repeat, mask, dstRepStride, srcBlkStride, srcRepStride,
                             dataBlockNum)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
-
-    torch.manual_seed(0)
 
     a = torch.randn(M, N, dtype=torch.float16).npu()
 
@@ -736,8 +733,6 @@ def run_test_block_reduce_min(M, N, block_M, block_N, repeat, mask, dstRepStride
                             dataBlockNum)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
 
-    torch.manual_seed(0)
-
     a = torch.randn(M, N, dtype=torch.float16).npu()
 
     torch.npu.synchronize()
@@ -808,7 +803,6 @@ def run_test_block_reduce_sum(M, N, block_M, block_N, repeat, mask, dstRepStride
     func = block_reduce_sum(M, N, block_M, block_N, repeat, mask, dstRepStride, srcBlkStride, srcRepStride,
                             dataBlockNum)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
-    torch.manual_seed(0)
 
     a = torch.randn(M, N, dtype=torch.float16).npu()
 
@@ -878,8 +872,6 @@ def run_test_cast(M, N, block_M, block_N, mode, count, target):
     func = cast(M, N, block_M, block_N, mode, count)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
 
-    torch.manual_seed(0)
-
     # without setdeqscale
     a = torch.full((M, N), 0.5, dtype=torch.float).npu()
 
@@ -931,8 +923,6 @@ def cast_scale(M, N, block_M, block_N, mode, count, scale):
 def run_test_cast_scale(M, N, block_M, block_N, mode, count, scale, target):
     func = cast_scale(M, N, block_M, block_N, mode, count, scale)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
-
-    torch.manual_seed(0)
 
     # should setdeqscale
     a = torch.full((M, N), 1, dtype=torch.int32).npu()
@@ -1219,7 +1209,6 @@ def cos(M, N, block_M, block_N, dtype="float"):
 
 
 def run_test_cos(target):
-    torch.manual_seed(0)
     test_configs = [
         (1024, 1024, 128, 128),
     ]
@@ -1264,8 +1253,6 @@ def createvecindex(M, N, block_M, block_N, firstValue, dtype="int32"):
 def run_test_createvecindex(M, N, block_M, block_N, firstValue, target):
     func = createvecindex(M, N, block_M, block_N, firstValue)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
-
-    torch.manual_seed(0)
 
     torch.npu.synchronize()
 
@@ -1321,8 +1308,6 @@ def run_test_vec_div(M, N, block_M, block_N, target):
     func = vec_div(M, N, block_M, block_N)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
 
-    torch.manual_seed(0)
-
     a = torch.randn(M, N).npu()
     b = torch.randn(M, N).npu()
 
@@ -1373,8 +1358,6 @@ def run_test_exp(M, N, block_M, block_N, target):
     func = exp(M, N, block_M, block_N)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
 
-    torch.manual_seed(0)
-
     a = torch.randn(M, N).npu()
 
     torch.npu.synchronize()
@@ -1415,8 +1398,6 @@ def fill(M, N, block_M, block_N, dtype="float"):
 def run_test_fill(M, N, block_M, block_N, target):
     func = fill(M, N, block_M, block_N)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
-
-    torch.manual_seed(0)
 
     torch.npu.synchronize()
 
@@ -1479,8 +1460,6 @@ def generate_golden_gather(a, b):
 def run_test_gather(M, N, block_M, block_N, target):
     func = gather(M, N, block_M, block_N)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
-
-    torch.manual_seed(0)
 
     a = torch.arange(N, dtype=torch.int32).unsqueeze(0).expand(M, -1).npu()
     all_multiples = torch.arange(0, 4 * N, 4)  # 4: sizeof(int)
@@ -1551,8 +1530,6 @@ def run_test_gatherb(M, N, block_M, block_N, b_len, repeat_time, target):
     func = gatherb(M, N, block_M, block_N, b_len, repeat_time)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
 
-    torch.manual_seed(0)
-
     a = torch.arange(N, dtype=torch.int16).to(torch.uint16).unsqueeze(0).expand(M, -1).npu()
     tmp_tensor = torch.zeros(1, b_len, dtype=torch.uint32)
     for i in range(b_len):
@@ -1609,7 +1586,6 @@ def leaky_relu(M, N, block_M, block_N, dtype="float"):
 def run_test_leaky_relu(M, N, block_M, block_N, target):
     func = leaky_relu(M, N, block_M, block_N)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
-    torch.manual_seed(0)
 
     a = torch.randn(M, N).npu()
 
@@ -1662,7 +1638,6 @@ def ln(M, N, block_M, block_N, dtype="float"):
 def run_test_ln(M, N, block_M, block_N, target):
     func = ln(M, N, block_M, block_N)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
-    torch.manual_seed(0)
 
     a = abs(torch.randn(M, N).npu())
 
@@ -1718,8 +1693,6 @@ def run_test_vec_max(M, N, block_M, block_N, target):
     func = vec_max(M, N, block_M, block_N)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
 
-    torch.manual_seed(0)
-
     a = torch.randn(M, N).npu()
     b = torch.randn(M, N).npu()
 
@@ -1765,8 +1738,6 @@ def vec_maxs(M, N, block_M, block_N, scalar, dtype="float"):
 def run_test_vec_maxs(M, N, block_M, block_N, scalar, target):
     func = vec_maxs(M, N, block_M, block_N, scalar)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
-
-    torch.manual_seed(0)
 
     a = torch.randn(M, N).float().npu()
     a = a * 50
@@ -1822,8 +1793,6 @@ def run_test_vec_min(M, N, block_M, block_N, target):
     func = vec_min(M, N, block_M, block_N)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
 
-    torch.manual_seed(0)
-
     a = torch.randn(M, N).npu()
     b = torch.randn(M, N).npu()
 
@@ -1869,8 +1838,6 @@ def vec_mins(M, N, block_M, block_N, scalar, dtype="float"):
 def run_test_vec_mins(M, N, block_M, block_N, scalar, target):
     func = vec_mins(M, N, block_M, block_N, scalar)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
-
-    torch.manual_seed(0)
 
     a = torch.randn(M, N).float().npu()
     a = a * 50
@@ -1926,8 +1893,6 @@ def run_test_vec_mul(M, N, block_M, block_N, target):
     func = vec_mul(M, N, block_M, block_N)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
 
-    torch.manual_seed(0)
-
     a = torch.randn(M, N).npu()
     b = torch.randn(M, N).npu()
 
@@ -1972,8 +1937,6 @@ def vec_muls(M, N, block_M, block_N, scalar, dtype="float"):
 def run_test_vec_muls(M, N, block_M, block_N, scalar, target):
     func = vec_muls(M, N, block_M, block_N, scalar)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
-
-    torch.manual_seed(0)
 
     a = torch.randn(M, N).float().npu()
 
@@ -2027,8 +1990,6 @@ def bitwise_or(M, N, block_M, block_N, dtype="int16"):
 def run_test_bitwise_or(M, N, block_M, block_N, target):
     func = bitwise_or(M, N, block_M, block_N)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
-
-    torch.manual_seed(0)
 
     a = torch.randint(0, 10, (M, N), dtype=torch.int16).npu()
     b = torch.randint(0, 10, (M, N), dtype=torch.int16).npu()
@@ -2085,8 +2046,6 @@ def run_test_pow(M, N, block_M, block_N, target):
     func = vec_pow(M, N, block_M, block_N)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
 
-    torch.manual_seed(0)
-
     a = torch.rand(M, N).npu() + 0.5  # Base must be positive for pow()
     b = torch.rand(M, N).npu()
 
@@ -2136,7 +2095,6 @@ def reciprocal(M, N, block_M, block_N, dtype="float"):
 def run_test_reciprocal(M, N, block_M, block_N, target):
     func = reciprocal(M, N, block_M, block_N)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
-    torch.manual_seed(0)
 
     a = torch.rand(M, N).npu() * 0.9 + 0.1
 
@@ -2186,7 +2144,6 @@ def relu(M, N, block_M, block_N, dtype="float"):
 def run_test_relu(M, N, block_M, block_N, target):
     func = relu(M, N, block_M, block_N)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
-    torch.manual_seed(0)
 
     a = torch.randn(M, N).npu()
 
@@ -2236,7 +2193,6 @@ def rsqrt(M, N, block_M, block_N, dtype="float"):
 def run_test_rsqrt(M, N, block_M, block_N, target):
     func = rsqrt(M, N, block_M, block_N)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
-    torch.manual_seed(0)
 
     a = torch.randn(M, N).npu()
 
@@ -2479,7 +2435,6 @@ def sin(M, N, block_M, block_N, dtype="float"):
 
 
 def run_test_sin(target):
-    torch.manual_seed(0)
     test_configs = [
         (1024, 1024, 128, 128),
     ]
@@ -2531,8 +2486,6 @@ def sort32(M, N, block_M, block_N):
 def run_test_sort32(M, N, block_M, block_N, target):
     func = sort32(M, N, block_M, block_N)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
-
-    torch.manual_seed(0)
 
     a = torch.randint(low=1, high=101, size=(M, N), dtype=torch.float).npu()
     b = torch.zeros((M, N), dtype=torch.uint32).npu()
@@ -2609,8 +2562,6 @@ def run_test_sqrt(M, N, block_M, block_N, target):
     func = sqrt(M, N, block_M, block_N)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
 
-    torch.manual_seed(0)
-
     a = torch.rand(M, N).npu()
 
     torch.npu.synchronize()
@@ -2663,8 +2614,6 @@ def run_test_vec_sub(M, N, block_M, block_N, target):
     func = vec_sub(M, N, block_M, block_N)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
 
-    torch.manual_seed(0)
-
     a = torch.randn(M, N).npu()
     b = torch.randn(M, N).npu()
 
@@ -2714,7 +2663,6 @@ def vec_subs(M, N, block_M, block_N, dtype="float"):
 def run_test_vec_subs(M, N, block_M, block_N, target):
     func = vec_subs(M, N, block_M, block_N)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
-    torch.manual_seed(0)
 
     a = torch.randn(M, N).npu()
 
@@ -2756,8 +2704,6 @@ def transpose(M, N, block_M, block_N, dtype="int16"):
 def run_test_transpose(M, N, block_M, block_N, target):
     func = transpose(M, N, block_M, block_N)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
-
-    torch.manual_seed(0)
 
     a = torch.randn(M, N).npu().to(torch.int16)
 
@@ -2807,7 +2753,6 @@ def run_test_wholereducemax(M, N, block_M, block_N, mask, repeatTimes, dstRepStr
                             target):
     func = wholereducemax(M, N, block_M, block_N, mask, repeatTimes, dstRepStride, srcBlkStride, srcRepStride)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
-    torch.manual_seed(0)
 
     a = torch.randn(M, N, dtype=torch.float16).npu()
 
@@ -2878,8 +2823,6 @@ def run_test_wholereducemin(M, N, block_M, block_N, mask, repeatTimes, dstRepStr
     func = wholereducemin(M, N, block_M, block_N, mask, repeatTimes, dstRepStride, srcBlkStride, srcRepStride)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
 
-    torch.manual_seed(0)
-
     a = torch.randn(M, N, dtype=torch.float16).npu()
 
     torch.npu.synchronize()
@@ -2948,8 +2891,6 @@ def run_test_wholereducesum(M, N, block_M, block_N, mask, repeatTimes, dstRepStr
                             target):
     func = wholereducesum(M, N, block_M, block_N, mask, repeatTimes, dstRepStride, srcBlkStride, srcRepStride)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
-
-    torch.manual_seed(0)
 
     a = torch.randn(M, N, dtype=torch.float16).npu()
 
@@ -3029,4 +2970,6 @@ def test_generate_arithmetic_progression(target, shape):
 
 
 if __name__ == "__main__":
-    pytest.main()
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    elementwise_test_path = os.path.join(current_dir, "test_tilelang_ascend_language_elementwise.py")
+    pytest.main(["--forked", elementwise_test_path])

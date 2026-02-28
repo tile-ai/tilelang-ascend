@@ -93,7 +93,6 @@ class KernelCache:
         Returns:
             str: SHA256 hash key for the kernel configuration.
         """
-        platform = determine_platform(platform)
 
         func_binary = cloudpickle.dumps(func.script())
         key_data = {
@@ -317,7 +316,6 @@ class KernelCache:
         Returns:
             JITKernel: The loaded kernel if found, None otherwise.
         """
-        platform = determine_platform(platform)
 
         cache_path = self._get_cache_path(key)
         if not os.path.exists(cache_path):
