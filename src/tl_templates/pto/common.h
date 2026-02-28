@@ -633,7 +633,6 @@ AICORE PTO_INLINE void set_intra_block_vec(int32_t flag) {
     set_intra_block(pipe, flag);
 }
 
-template<pipe_t pipe> 
 AICORE PTO_INLINE void wait_cross_flag(int32_t flag) {
     int mode = 2;
     int config = 1 | (mode << 4) | (flag << 8);
