@@ -2,7 +2,7 @@ name: Build AscendNPU-IR
 
 on:
   push:
-    branches: [npuir]
+    branches: [npuir-ci-dev]
   workflow_call:
     inputs:
       checkout-ref:

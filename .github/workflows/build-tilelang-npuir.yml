@@ -1,10 +1,18 @@
 name: Build TileLang-Ascend (NPUIR)
 
 on:
-  pull_request:
-    branches: [npuir]
-  issue_comment:
-    types: [created]
+  workflow_call:
+    inputs:
+      checkout-ref:
+        description: "Git ref to checkout"
+        type: string
+        required: true
+  workflow_dispatch:
+    inputs:
+      checkout-ref:
+        description: "Git ref to checkout (leave empty for default)"
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -15,58 +23,18 @@ env:
   TVM_INSTALL_DIR: tvm-prebuild
 
 jobs:
-  check-trigger:
-    if: >-
-      github.event_name == 'pull_request' ||
-      (github.event_name == 'issue_comment' &&
-       github.event.issue.pull_request &&
-       contains(github.event.comment.body, 'BuildTilelang'))
-    runs-on: ubuntu-22.04
-    outputs:
-      pr-number: ${{ steps.pr-info.outputs.number }}
-      pr-sha: ${{ steps.pr-info.outputs.sha }}
-      target-branch: ${{ steps.pr-info.outputs.target_branch }}
-    steps:
-    - name: Get PR info
-      id: pr-info
-      uses: actions/github-script@v7
-      with:
-        script: |
-          let pr;
-          if (context.eventName === 'pull_request') {
-            pr = context.payload.pull_request;
-          } else {
-            const { data } = await github.rest.pulls.get({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: context.payload.issue.number,
-            });
-            pr = data;
-          }
-          core.setOutput('number', pr.number);
-          core.setOutput('sha', pr.head.sha);
-          core.setOutput('target_branch', pr.base.ref);
-
-    - name: Validate target branch
-      if: steps.pr-info.outputs.target_branch != 'npuir'
-      run: |
-        echo "::error::PR target branch is '${{ steps.pr-info.outputs.target_branch }}', expected 'npuir'. Skipping."
-        exit 1
-
   prebuild-npuir:
-    needs: check-trigger
     uses: ./.github/workflows/build-npuir.yml
     with:
-      checkout-ref: refs/pull/${{ needs.check-trigger.outputs.pr-number }}/merge
+      checkout-ref: ${{ inputs.checkout-ref }}
 
   prebuild-tvm:
-    needs: check-trigger
     uses: ./.github/workflows/build-tvm.yml
     with:
-      checkout-ref: refs/pull/${{ needs.check-trigger.outputs.pr-number }}/merge
+      checkout-ref: ${{ inputs.checkout-ref }}
 
   build-wheel:
-    needs: [check-trigger, prebuild-npuir, prebuild-tvm]
+    needs: [prebuild-npuir, prebuild-tvm]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
     strategy:
@@ -78,10 +46,10 @@ jobs:
           - arch: arm64
             runner: ubuntu-22.04-arm
     steps:
-    - name: Checkout PR
+    - name: Checkout
       uses: actions/checkout@v4
       with:
-        ref: refs/pull/${{ needs.check-trigger.outputs.pr-number }}/merge
+        ref: ${{ inputs.checkout-ref || '' }}
         fetch-depth: 1
         submodules: false
 
@@ -144,6 +112,6 @@ jobs:
     - name: Upload wheel artifact
       uses: actions/upload-artifact@v4
       with:
-        name: tilelang-npuir-py${{ env.PYTHON_VERSION }}-${{ matrix.arch }}-${{ needs.check-trigger.outputs.pr-sha }}
+        name: tilelang-npuir-py${{ env.PYTHON_VERSION }}-${{ matrix.arch }}
         path: dist/*.whl
         retention-days: 30
