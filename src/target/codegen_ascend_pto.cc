@@ -595,6 +595,10 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) 
     ScalarOpCodegen(op, "TLRELU");
   } else if (op->op.same_as(tl::ascend_axpy())) {
     AxpyCodegen(op);
+  } else if (op->op.same_as(tl::ascend_fused_mul_add())) {
+    FusedMulAddCodegen(op);
+  } else if (op->op.same_as(tl::ascend_mul_add_dst())) {
+    MulAddDstCodegen(op);
   } else if (op->op.same_as(tl::ascend_reduce())) {
     ReduceOpCodegen(op);
   } else if (op->op.same_as(tl::ascend_add())) {
@@ -1836,6 +1840,28 @@ void CodeGenTileLangAscendPto::AxpyCodegen(const CallNode *op) {
   this->stream << kAscendPtoScope << "axpy" << "<" << ub_data[0] << ", " << ub_data[1] << ", " << ub_data[2] << ">"
    << "(" << dst_name << ", " << src0_name << ", " << scalar << ");\n";
 
+}
+
+void CodeGenTileLangAscendPto::FusedMulAddCodegen(const CallNode *op) {
+  std::string dst_name = PrintBufferOffset(op->args[0].as<CallNode>());
+  std::string src0_name = PrintBufferOffset(op->args[1].as<CallNode>());
+  std::string src1_name = PrintBufferOffset(op->args[2].as<CallNode>());
+
+  std::vector<std::string> ub_data = ub_data_map_[dst_name];
+  this->PrintIndent();
+  this->stream << kAscendPtoScope << "fused_mul_add" << "<" << ub_data[0] << ", " << ub_data[1] << ", " << ub_data[2] << ">"
+   << "(" << dst_name << ", " << src0_name << ", " << src1_name << ");\n";
+}
+
+void CodeGenTileLangAscendPto::MulAddDstCodegen(const CallNode *op) {
+  std::string dst_name = PrintBufferOffset(op->args[0].as<CallNode>());
+  std::string src0_name = PrintBufferOffset(op->args[1].as<CallNode>());
+  std::string src1_name = PrintBufferOffset(op->args[2].as<CallNode>());
+
+  std::vector<std::string> ub_data = ub_data_map_[dst_name];
+  this->PrintIndent();
+  this->stream << kAscendPtoScope << "mul_add_dst" << "<" << ub_data[0] << ", " << ub_data[1] << ", " << ub_data[2] << ">"
+   << "(" << dst_name << ", " << src0_name << ", " << src1_name << ");\n";
 }
 
 void CodeGenTileLangAscendPto::BinaryVecClampMaxMinOpsCodegen(

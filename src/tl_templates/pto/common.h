@@ -429,6 +429,32 @@ AICORE PTO_INLINE void axpy(
     TDIVS(src0, src0, scalar_value);
 }
 
+template <typename T, int32_t row, int32_t col>
+AICORE PTO_INLINE void fused_mul_add(
+    TileUbDataND<T, row, col, row, col> &dst,
+    TileUbDataND<T, row, col, row, col> &src0,
+    TileUbDataND<T, row, col, row, col> &src1
+){
+    // dst = src0 * dst + src1
+    TMUL(dst, src0, dst);
+    pipe_barrier(PIPE_V);
+    TADD(dst, dst, src1);
+}
+
+template <typename T, int32_t row, int32_t col>
+AICORE PTO_INLINE void mul_add_dst(
+    TileUbDataND<T, row, col, row, col> &dst,
+    TileUbDataND<T, row, col, row, col> &src0,
+    TileUbDataND<T, row, col, row, col> &src1
+){
+    // dst = src0 * src1 + dst
+    TMUL(src0, src0, src1);
+    pipe_barrier(PIPE_V);
+    TADD(dst, dst, src0);
+    pipe_barrier(PIPE_V);
+    TDIV(src0, src0, src1);  // restore src0
+}
+
 template <typename T1, typename T2, typename T3,
         int32_t rows_src, int32_t cols_src,
         int32_t validRow_src, int32_t validCol_src,

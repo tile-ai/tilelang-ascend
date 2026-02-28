@@ -517,6 +517,23 @@ def leaky_relu(dst: Buffer, src0: Buffer, scalar_value: PrimExpr):
 def axpy(dst: Buffer, src0: Buffer, scalar_value: PrimExpr):
     return scalar_op(dst, src0, scalar_value, "axpy")
 
+def fused_mul_add(
+    dst: Union[Buffer, BufferRegion],
+    src0: Union[Buffer, BufferRegion],
+    src1: Union[Buffer, BufferRegion],
+):
+    """Performs fused multiply-add: dst = src0 * dst + src1 (in-place)."""
+    return binary_op(dst, src0, src1, "fused_mul_add")
+
+
+def mul_add_dst(
+    dst: Union[Buffer, BufferRegion],
+    src0: Union[Buffer, BufferRegion],
+    src1: Union[Buffer, BufferRegion],
+):
+    """Performs multiply-add into dst: dst = src0 * src1 + dst (in-place)."""
+    return binary_op(dst, src0, src1, "mul_add_dst")
+
 def reduce(out: Union[Buffer, BufferRegion], buffer: Union[Buffer, BufferRegion], tmp: Union[Buffer, BufferRegion], reduce_type: str, dim: int):
     dtype = _dtype(buffer)
     buffer_shape = _retrieve_shape(buffer)

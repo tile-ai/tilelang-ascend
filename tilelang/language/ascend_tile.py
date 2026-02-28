@@ -784,6 +784,38 @@ def axpy(dst: Buffer, src0: Buffer, scalar_value: PrimExpr):
     return scalar_op(dst, src0, scalar_value, "axpy")
 
 
+def fused_mul_add(
+    dst: Union[Buffer, BufferRegion],
+    src0: Union[Buffer, BufferRegion],
+    src1: Union[Buffer, BufferRegion],
+):
+    """Performs fused multiply-add: dst = src0 * dst + src1 (in-place).
+
+    Args:
+        dst: The destination buffer (acts as both multiplicand and output).
+        src0: The multiplier buffer.
+        src1: The addend buffer.
+    """
+    return binary_op(dst, src0, src1, "fused_mul_add")
+
+
+def mul_add_dst(
+    dst: Union[Buffer, BufferRegion],
+    src0: Union[Buffer, BufferRegion],
+    src1: Union[Buffer, BufferRegion],
+):
+    """Performs multiply-add into dst: dst = src0 * src1 + dst (in-place).
+
+    Supports mixed precision (e.g., src half, dst float) on AscendC backend.
+
+    Args:
+        dst: The destination buffer (acts as both addend and output).
+        src0: The first multiplier buffer.
+        src1: The second multiplier buffer.
+    """
+    return binary_op(dst, src0, src1, "mul_add_dst")
+
+
 def bitwise_lshift(dst: Buffer, src0: Buffer, scalarValue: PrimExpr):
     """Performs element-wise bitwise left shift: dst = src0 << scalarValue.
 
