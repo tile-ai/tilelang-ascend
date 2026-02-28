@@ -67,6 +67,11 @@ AICORE PTO_INLINE void gemm_v0(
 
     auto war_event_id = (event_t)(((int)EVENT_ID0 + 1) % 8);
 
+    set_flag(PIPE_MTE2, PIPE_MTE1, war_event_id);
+    wait_flag(PIPE_MTE2, PIPE_MTE1, war_event_id);
+    set_flag(PIPE_FIX, PIPE_M, war_event_id);
+    wait_flag(PIPE_FIX, PIPE_M, war_event_id);
+
     for (uint32_t kL0Idx = 0; kL0Idx < kL0split; kL0Idx++) {
         initflag = (clear && (kL0Idx == 0));
         const bool is_tail_block = (kL0Idx == kL0split - 1); // Determine whether it is a tail block
@@ -101,8 +106,8 @@ AICORE PTO_INLINE void gemm_v0(
                 pto::TEXTRACT(l0b, B_t, kL0Idx * K_tail, 0);
             }
 
-            set_flag(PIPE_MTE1, PIPE_M, EVENT_ID0);
-            wait_flag(PIPE_MTE1, PIPE_M, EVENT_ID0);
+            set_flag(PIPE_MTE1, PIPE_M, war_event_id);
+            wait_flag(PIPE_MTE1, PIPE_M, war_event_id);
 
             if (initflag) {
                 pto::TMATMUL(C, l0a, l0b);
@@ -138,8 +143,8 @@ AICORE PTO_INLINE void gemm_v0(
                 pto::TEXTRACT(l0b, B_t, kL0Idx * kL0Size, 0);
             }
 
-            set_flag(PIPE_MTE1, PIPE_M, EVENT_ID0);
-            wait_flag(PIPE_MTE1, PIPE_M, EVENT_ID0);
+            set_flag(PIPE_MTE1, PIPE_M, war_event_id);
+            wait_flag(PIPE_MTE1, PIPE_M, war_event_id);
 
             if (initflag) {
                 pto::TMATMUL(C, l0a, l0b);
@@ -151,8 +156,14 @@ AICORE PTO_INLINE void gemm_v0(
             wait_flag(PIPE_MTE1, PIPE_MTE2, war_event_id);
         }
     }
+    set_flag(PIPE_M, PIPE_MTE1, war_event_id);
+    wait_flag(PIPE_M, PIPE_MTE1, war_event_id);
+
     set_flag(PIPE_MTE1, PIPE_MTE2, war_event_id);
     wait_flag(PIPE_MTE1, PIPE_MTE2, war_event_id);
+
+    set_flag(PIPE_FIX, PIPE_M, war_event_id);
+    wait_flag(PIPE_FIX, PIPE_M, war_event_id);
 }
 
 template <typename T1, typename T2, uint32_t L1_BLOCK_M, uint32_t L1_BLOCK_N, uint32_t L1_BLOCK_K, uint32_t BLOCK_M, uint32_t BLOCK_N, uint32_t BLOCK_K,
@@ -201,8 +212,8 @@ AICORE PTO_INLINE void gemm_v1(
         pto::TEXTRACT(l0b, B_t, 0, 0);
     }
 
-    set_flag(PIPE_MTE1, PIPE_M, EVENT_ID0);
-    wait_flag(PIPE_MTE1, PIPE_M, EVENT_ID0);
+            set_flag(PIPE_MTE1, PIPE_M, war_event_id);
+            wait_flag(PIPE_MTE1, PIPE_M, war_event_id);
 
     if (clear) {
         pto::TMATMUL(C, l0a, l0b);
