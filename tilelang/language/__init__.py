@@ -124,7 +124,7 @@ from .customize_npuir import (
     npuir_rsqrt,
     npuir_abs as vabs,
     npuir_rec,
-    npuir_not,
+    npuir_not as vnot,
     npuir_gather as gather,
     npuir_interleave,
     npuir_deinterleave,
