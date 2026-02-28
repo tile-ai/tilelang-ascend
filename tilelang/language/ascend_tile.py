@@ -529,93 +529,93 @@ def binary_op(
         )
 
 
-def add(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, BufferLoad, PrimExpr]):
+def add(dst: Union[Buffer, BufferRegion], src0: Union[Buffer, BufferRegion], src1: Union[Buffer, BufferRegion, BufferLoad, PrimExpr]):
     """Performs element-wise addition: dst = src0 + src1.
 
     Args:
-        dst: The destination buffer.
-        src0: The first source buffer.
-        src1: The second source operand (Buffer, BufferLoad, or Scalar).
+        dst: The destination buffer or buffer region.
+        src0: The first source buffer or buffer region.
+        src1: The second source operand (Buffer, BufferRegion, BufferLoad, or Scalar).
     """
     return binary_op(dst, src0, src1, "add")
 
 
-def sub(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, BufferLoad]):
+def sub(dst: Union[Buffer, BufferRegion], src0: Union[Buffer, BufferRegion], src1: Union[Buffer, BufferRegion, BufferLoad, PrimExpr]):
     """Performs element-wise subtraction: dst = src0 - src1.
 
     Args:
-        dst: The destination buffer.
-        src0: The first source buffer.
-        src1: The second source operand (Buffer or BufferLoad).
+        dst: The destination buffer or buffer region.
+        src0: The first source buffer or buffer region.
+        src1: The second source operand (Buffer, BufferRegion, BufferLoad, or Scalar).
     """
     return binary_op(dst, src0, src1, "sub")
 
-def mul(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, BufferLoad, PrimExpr]):
+def mul(dst: Union[Buffer, BufferRegion], src0: Union[Buffer, BufferRegion], src1: Union[Buffer, BufferRegion, BufferLoad, PrimExpr]):
     """Performs element-wise multiplication: dst = src0 * src1.
 
     Args:
-        dst: The destination buffer.
-        src0: The first source buffer.
-        src1: The second source operand (Buffer, BufferLoad, or Scalar).
+        dst: The destination buffer or buffer region.
+        src0: The first source buffer or buffer region.
+        src1: The second source operand (Buffer, BufferRegion, BufferLoad, or Scalar).
     """
     return binary_op(dst, src0, src1, "mul")
 
-def div(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, BufferLoad]):
+def div(dst: Union[Buffer, BufferRegion], src0: Union[Buffer, BufferRegion], src1: Union[Buffer, BufferRegion, BufferLoad, PrimExpr]):
     """Performs element-wise division: dst = src0 / src1.
 
     Args:
-        dst: The destination buffer.
-        src0: The first source buffer.
-        src1: The second source operand (Buffer or BufferLoad).
+        dst: The destination buffer or buffer region.
+        src0: The first source buffer or buffer region.
+        src1: The second source operand (Buffer, BufferRegion, BufferLoad, or Scalar).
     """
     return binary_op(dst, src0, src1, "div")
 
 
-def max(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, BufferLoad, PrimExpr]):
+def max(dst: Union[Buffer, BufferRegion], src0: Union[Buffer, BufferRegion], src1: Union[Buffer, BufferRegion, BufferLoad, PrimExpr]):
     """Performs element-wise maximum: dst = max(src0, src1).
 
     Args:
-        dst: The destination buffer.
-        src0: The first source buffer.
-        src1: The second source operand (Buffer, BufferLoad, or Scalar).
+        dst: The destination buffer or buffer region.
+        src0: The first source buffer or buffer region.
+        src1: The second source operand (Buffer, BufferRegion, BufferLoad, or Scalar).
     """
     return binary_op(dst, src0, src1, "max")
 
 
-def min(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, BufferLoad, PrimExpr]):
+def min(dst: Union[Buffer, BufferRegion], src0: Union[Buffer, BufferRegion], src1: Union[Buffer, BufferRegion, BufferLoad, PrimExpr]):
     """Performs element-wise minimum: dst = min(src0, src1).
 
     Args:
-        dst: The destination buffer.
-        src0: The first source buffer.
-        src1: The second source operand (Buffer, BufferLoad, or Scalar).
+        dst: The destination buffer or buffer region.
+        src0: The first source buffer or buffer region.
+        src1: The second source operand (Buffer, BufferRegion, BufferLoad, or Scalar).
     """
     return binary_op(dst, src0, src1, "min")
 
 
-def bitwise_and(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, BufferLoad, PrimExpr]):
+def bitwise_and(dst: Union[Buffer, BufferRegion], src0: Union[Buffer, BufferRegion], src1: Union[Buffer, BufferRegion, BufferLoad, PrimExpr]):
     """Performs element-wise bitwise AND: dst = src0 & src1.
 
     Args:
-        dst: The destination buffer.
-        src0: The first source buffer.
-        src1: The second source operand (Buffer, BufferLoad, or Scalar).
+        dst: The destination buffer or buffer region.
+        src0: The first source buffer or buffer region.
+        src1: The second source operand (Buffer, BufferRegion, BufferLoad, or Scalar).
     """
     return binary_op(dst, src0, src1, "bitwise_and")
 
 
-def bitwise_or(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, BufferLoad, PrimExpr]):
+def bitwise_or(dst: Union[Buffer, BufferRegion], src0: Union[Buffer, BufferRegion], src1: Union[Buffer, BufferRegion, BufferLoad, PrimExpr]):
     """Performs element-wise bitwise OR: dst = src0 | src1.
 
     Args:
-        dst: The destination buffer.
-        src0: The first source buffer.
-        src1: The second source operand (Buffer, BufferLoad, or Scalar).
+        dst: The destination buffer or buffer region.
+        src0: The first source buffer or buffer region.
+        src1: The second source operand (Buffer, BufferRegion, BufferLoad, or Scalar).
     """
     return binary_op(dst, src0, src1, "bitwise_or")
 
 
-def unary_op(dst: Buffer, src0: Buffer, op: str):
+def unary_op(dst: Union[Buffer, BufferRegion], src0: Union[Buffer, BufferRegion], op: str):
 
     def _handle_buffer_region(br: BufferRegion, mask):
         bf = br.buffer
@@ -649,12 +649,12 @@ def unary_op(dst: Buffer, src0: Buffer, op: str):
         size_0,
     )
 
-def exp(dst: Buffer, src0: Buffer):
+def exp(dst: Union[Buffer, BufferRegion], src0: Union[Buffer, BufferRegion]):
     """Performs element-wise exponential: dst = exp(src0).
 
     Args:
-        dst: The destination buffer.
-        src0: The source buffer.
+        dst: The destination buffer or buffer region.
+        src0: The source buffer or buffer region.
     """
     return unary_op(dst, src0, "exp")
 
@@ -1446,7 +1446,7 @@ def round(out: Buffer, buffer: Buffer, tmp: Buffer, count: PrimExpr):
         count
     )
 
-def broadcast(dst: Union[Buffer, BufferRegion], src: Union[Buffer, BufferRegion], tmp: Buffer):
+def broadcast(dst: Union[Buffer, BufferRegion], src: Union[Buffer, BufferRegion], tmp: Union[Buffer, BufferRegion]):
     """Generates a TIR intrinsic call for the AscendC `Broadcast` operation.
 
     This function performs a broadcast copy from the source buffer (`src`) to the
@@ -1460,7 +1460,8 @@ def broadcast(dst: Union[Buffer, BufferRegion], src: Union[Buffer, BufferRegion]
         src (Union[tvm.tir.Buffer, tvm.tir.BufferRegion]): The source buffer
             or buffer region. Must be allocated in the Unified Buffer (UB).
             Its shape must be compatible with `dst` for broadcasting.
-        tmp (tvm.tir.Buffer): The temporary buffer.
+        tmp (Union[tvm.tir.Buffer, tvm.tir.BufferRegion]): The temporary buffer
+            or buffer region.
 
     Returns:
         tvm.tir.Call: A TIR intrinsic call node that maps to the C++ `AscendC::Broadcast` API.
@@ -1535,7 +1536,7 @@ def broadcast(dst: Union[Buffer, BufferRegion], src: Union[Buffer, BufferRegion]
         f"Broadcast<{template_args}>",
         _get_access_ptr(dst, "w"),
         _get_access_ptr(src, "r"),
-        tmp.access_ptr("r"),
+        _get_access_ptr(tmp, "r"),
         dim,
         *dst_shape,
         *src_shape,

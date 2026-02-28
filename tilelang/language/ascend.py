@@ -581,30 +581,31 @@ def set_deq_scale(scale: PrimExpr):
     return T.call_intrin("handle", tir.op.Op.get("tl.ascend_set_deq_scale"), scale)
 
 
-def reduce(buffer: Buffer, out: Buffer, tmp: Buffer, reduce_type: str, dim: int, real_shape: list[int]=[0, 0]):
+def reduce(buffer: Union[Buffer, BufferRegion], out: Union[Buffer, BufferRegion], tmp: Union[Buffer, BufferRegion], reduce_type: str, dim: int, real_shape: list[int]=[0, 0]):
     dtype = _dtype(buffer)
 
-    assert len(buffer.shape) == 2, "current only support buffer as a 2D tensor"
+    buffer_shape = _retrieve_shape(buffer)
+    assert len(buffer_shape) == 2, "current only support buffer as a 2D tensor"
 
-    M = buffer.shape[0] if real_shape[0] == 0 else real_shape[0]
-    N = buffer.shape[1] if real_shape[1] == 0 else real_shape[1]
+    M = buffer_shape[0] if real_shape[0] == 0 else real_shape[0]
+    N = buffer_shape[1] if real_shape[1] == 0 else real_shape[1]
     shape = f"{M}, {N}"
 
-    buffer = buffer.access_ptr("r")
-    out = out.access_ptr("w")
-    tmp = tmp.access_ptr("r")
+    buffer_ptr = _retrieve_ptr(buffer, "r")
+    out_ptr = _retrieve_ptr(out, "w")
+    tmp_ptr = _retrieve_ptr(tmp, "r")
 
     return T.call_intrin(
         "handle",
         tir.op.Op.get("tl.ascend_reduce"),
         f"{reduce_type}<{dtype}, {shape}, {dim}>",
-        out,
-        buffer,
-        tmp,
+        out_ptr,
+        buffer_ptr,
+        tmp_ptr,
     )
 
 
-def reduce_max(buffer: Buffer, out: Buffer, tmp: Buffer, dim: int, real_shape: list[int]=[0, 0]):
+def reduce_max(buffer: Union[Buffer, BufferRegion], out: Union[Buffer, BufferRegion], tmp: Union[Buffer, BufferRegion], dim: int, real_shape: list[int]=[0, 0]):
     """Performs a reduction max operation.
 
     Args:
@@ -616,7 +617,7 @@ def reduce_max(buffer: Buffer, out: Buffer, tmp: Buffer, dim: int, real_shape: l
     return reduce(buffer, out, tmp, "reduce_max", dim, real_shape)
 
 
-def reduce_min(buffer: Buffer, out: Buffer, tmp: Buffer, dim: int, real_shape: list[int]=[0, 0]):
+def reduce_min(buffer: Union[Buffer, BufferRegion], out: Union[Buffer, BufferRegion], tmp: Union[Buffer, BufferRegion], dim: int, real_shape: list[int]=[0, 0]):
     """Performs a reduction min operation.
 
     Args:
@@ -628,7 +629,7 @@ def reduce_min(buffer: Buffer, out: Buffer, tmp: Buffer, dim: int, real_shape: l
     return reduce(buffer, out, tmp, "reduce_min", dim, real_shape)
 
 
-def reduce_sum(buffer: Buffer, out: Buffer, tmp: Buffer, dim: int, real_shape: list[int]=[0, 0]):
+def reduce_sum(buffer: Union[Buffer, BufferRegion], out: Union[Buffer, BufferRegion], tmp: Union[Buffer, BufferRegion], dim: int, real_shape: list[int]=[0, 0]):
     """Performs a reduction sum operation.
 
     Args:

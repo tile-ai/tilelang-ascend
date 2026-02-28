@@ -517,27 +517,28 @@ def leaky_relu(dst: Buffer, src0: Buffer, scalar_value: PrimExpr):
 def axpy(dst: Buffer, src0: Buffer, scalar_value: PrimExpr):
     return scalar_op(dst, src0, scalar_value, "axpy")
 
-def reduce(out: Buffer, buffer: Buffer, tmp: Buffer, reduce_type: str, dim: int):
+def reduce(out: Union[Buffer, BufferRegion], buffer: Union[Buffer, BufferRegion], tmp: Union[Buffer, BufferRegion], reduce_type: str, dim: int):
     dtype = _dtype(buffer)
-    shape = f"{buffer.shape[0]}, {buffer.shape[1]}"
-    assert len(buffer.shape) == 2, "current only support buffer as a 2D tensor"
-    buffer = buffer.access_ptr("r")
-    out = out.access_ptr("w")
-    tmp = tmp.access_ptr("r")
+    buffer_shape = _retrieve_shape(buffer)
+    shape = f"{buffer_shape[0]}, {buffer_shape[1]}"
+    assert len(buffer_shape) == 2, "current only support buffer as a 2D tensor"
+    buffer_ptr = _retrieve_ptr(buffer, "r")
+    out_ptr = _retrieve_ptr(out, "w")
+    tmp_ptr = _retrieve_ptr(tmp, "r")
 
     return T.call_intrin(
         "handle", 
         tir.op.Op.get("tl.ascend_reduce"), 
         f"{reduce_type}<{dtype}, {shape}, {dim}>", 
-        out,
-        buffer, 
-        tmp,
+        out_ptr,
+        buffer_ptr, 
+        tmp_ptr,
     )
 
-def reduce_max(out: Buffer, buffer: Buffer, tmp: Buffer, dim: int):
+def reduce_max(out: Union[Buffer, BufferRegion], buffer: Union[Buffer, BufferRegion], tmp: Union[Buffer, BufferRegion], dim: int):
 
     return reduce(out, buffer, tmp, "reduce_max", dim)
 
-def reduce_sum(out: Buffer, buffer: Buffer, tmp: Buffer, dim: int):
+def reduce_sum(out: Union[Buffer, BufferRegion], buffer: Union[Buffer, BufferRegion], tmp: Union[Buffer, BufferRegion], dim: int):
 
     return reduce(out, buffer, tmp, "reduce_sum", dim)
