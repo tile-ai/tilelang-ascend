@@ -69,8 +69,6 @@ AICORE PTO_INLINE void gemm_v0(
 
     set_flag(PIPE_MTE2, PIPE_MTE1, war_event_id);
     wait_flag(PIPE_MTE2, PIPE_MTE1, war_event_id);
-    set_flag(PIPE_FIX, PIPE_M, war_event_id);
-    wait_flag(PIPE_FIX, PIPE_M, war_event_id);
 
     for (uint32_t kL0Idx = 0; kL0Idx < kL0split; kL0Idx++) {
         initflag = (clear && (kL0Idx == 0));
@@ -156,14 +154,12 @@ AICORE PTO_INLINE void gemm_v0(
             wait_flag(PIPE_MTE1, PIPE_MTE2, war_event_id);
         }
     }
-    set_flag(PIPE_M, PIPE_MTE1, war_event_id);
-    wait_flag(PIPE_M, PIPE_MTE1, war_event_id);
 
     set_flag(PIPE_MTE1, PIPE_MTE2, war_event_id);
     wait_flag(PIPE_MTE1, PIPE_MTE2, war_event_id);
 
-    set_flag(PIPE_FIX, PIPE_M, war_event_id);
-    wait_flag(PIPE_FIX, PIPE_M, war_event_id);
+    set_flag(PIPE_M, PIPE_FIX, war_event_id);
+    wait_flag(PIPE_M, PIPE_FIX, war_event_id);
 }
 
 template <typename T1, typename T2, uint32_t L1_BLOCK_M, uint32_t L1_BLOCK_N, uint32_t L1_BLOCK_K, uint32_t BLOCK_M, uint32_t BLOCK_N, uint32_t BLOCK_K,
