@@ -207,9 +207,15 @@ protected:
   // Variable shadowing and scoping is not a problem in TileLang
   // Each variable assignment gets a unique name in TIR
   std::vector<std::unordered_map<const VarNode *, mlir::Value>> var_map_;
-  // Latest tensor value produced for workspace buffers (e.g. fixpipe/store),
-  // keyed by workspace buffer var.
-  std::unordered_map<const VarNode *, mlir::Value> workspace_tensor_map_;
+  struct WorkspaceTensorRecord {
+    mlir::Value tensor;
+    llvm::SmallVector<mlir::OpFoldResult> offs;
+    llvm::SmallVector<mlir::OpFoldResult> sizes;
+    llvm::SmallVector<mlir::OpFoldResult> strides;
+  };
+  // Latest tensor value produced for workspace buffers (e.g. fixpipe/store)
+  // with its source workspace region.
+  std::unordered_map<const VarNode *, WorkspaceTensorRecord> workspace_tensor_map_;
   // Whether current function is restricted
   bool is_restricted_{true};
   // The analyzer information

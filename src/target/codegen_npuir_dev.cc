@@ -1529,6 +1529,26 @@ OpFoldResultsEqualStaticShape(llvm::ArrayRef<mlir::OpFoldResult> sizes,
   return true;
 }
 
+static bool OpFoldResultEqual(mlir::OpFoldResult lhs, mlir::OpFoldResult rhs) {
+  auto lhsAttr = lhs.dyn_cast<mlir::Attribute>();
+  auto rhsAttr = rhs.dyn_cast<mlir::Attribute>();
+  if (lhsAttr && rhsAttr) {
+    auto lhsInt = lhsAttr.dyn_cast<mlir::IntegerAttr>();
+    auto rhsInt = rhsAttr.dyn_cast<mlir::IntegerAttr>();
+    return lhsInt && rhsInt && lhsInt.getInt() == rhsInt.getInt();
+  }
+  auto lhsVal = lhs.dyn_cast<mlir::Value>();
+  auto rhsVal = rhs.dyn_cast<mlir::Value>();
+  return lhsVal && rhsVal && lhsVal == rhsVal;
+}
+
+static bool OpFoldResultIsInt(mlir::OpFoldResult ofr, int64_t v) {
+  auto attr = ofr.dyn_cast<mlir::Attribute>();
+  if (!attr) return false;
+  auto intAttr = attr.dyn_cast<mlir::IntegerAttr>();
+  return intAttr && intAttr.getInt() == v;
+}
+
 // Creates a rank-reduced memref.subview from a base memref using full-rank
 // offset/size/stride arrays. The resulting memref rank is determined by
 // projectedReducedShape via inferRankReducedResultType.
@@ -1643,11 +1663,102 @@ void CodeGenTileLangNPUIRDEV::EmitCopyMemrefToTensor(
     auto src_memref_ty = src.getType().cast<mlir::MemRefType>();
     int64_t maxRank = std::min<int64_t>(src_memref_ty.getRank(), dst_tensor_type_ori.getRank());
     CollapsedDims srcC = CollapseStaticOneDims(srcR.sizes, maxRank);
+    mlir::Value src_tensor;
 
-    mlir::Value src_view = CreateRankReducedSubviewFromBaseRank(
-        src, srcR.offs, srcR.sizes, srcR.strides, srcC.projected, loc);
-    mlir::Value src_tensor = builder.create<mlir::bufferization::ToTensorOp>(
-        loc, src_view, /*restrict=*/true, /*writable=*/false);
+    auto it = workspace_tensor_map_.find(npuirop.src->data.get());
+    if (it != workspace_tensor_map_.end()) {
+      const auto& rec = it->second;
+      if (rec.tensor && rec.tensor.getType().isa<mlir::RankedTensorType>() &&
+          rec.offs.size() == srcR.offs.size() &&
+          rec.sizes.size() == srcR.sizes.size() &&
+          rec.strides.size() == srcR.strides.size()) {
+        auto recTy = rec.tensor.getType().cast<mlir::RankedTensorType>();
+        CollapsedDims recC = CollapseStaticOneDims(rec.sizes, recTy.getRank());
+        if ((int64_t)recC.keptIdx.size() == recTy.getRank()) {
+          llvm::SmallVector<char> isKept(rec.sizes.size(), 0);
+          for (unsigned idx : recC.keptIdx) {
+            if (idx < isKept.size()) isKept[idx] = 1;
+          }
+
+          bool compatible = true;
+          for (size_t i = 0; i < rec.sizes.size(); ++i) {
+            if (isKept[i]) continue;
+            if (!OpFoldResultEqual(srcR.offs[i], rec.offs[i]) ||
+                !OpFoldResultEqual(srcR.sizes[i], rec.sizes[i]) ||
+                !OpFoldResultEqual(srcR.strides[i], rec.strides[i])) {
+              compatible = false;
+              break;
+            }
+          }
+
+          llvm::SmallVector<mlir::OpFoldResult> relOffs;
+          llvm::SmallVector<mlir::OpFoldResult> relSizes;
+          llvm::SmallVector<mlir::OpFoldResult> relStrides;
+          if (compatible) {
+            relOffs.reserve(recC.keptIdx.size());
+            relSizes.reserve(recC.keptIdx.size());
+            relStrides.reserve(recC.keptIdx.size());
+            for (unsigned idx : recC.keptIdx) {
+              mlir::OpFoldResult reqOff = srcR.offs[idx];
+              mlir::OpFoldResult baseOff = rec.offs[idx];
+
+              if (OpFoldResultEqual(reqOff, baseOff)) {
+                relOffs.push_back(builder.getIndexAttr(0));
+              } else if (OpFoldResultIsInt(baseOff, 0)) {
+                relOffs.push_back(reqOff);
+              } else {
+                auto reqAttr = reqOff.dyn_cast<mlir::Attribute>();
+                auto baseAttr = baseOff.dyn_cast<mlir::Attribute>();
+                if (reqAttr && baseAttr) {
+                  int64_t v = reqAttr.cast<mlir::IntegerAttr>().getInt() -
+                              baseAttr.cast<mlir::IntegerAttr>().getInt();
+                  relOffs.push_back(builder.getIndexAttr(v));
+                } else {
+                  auto reqVal = reqOff.dyn_cast<mlir::Value>();
+                  auto baseVal = baseOff.dyn_cast<mlir::Value>();
+                  if (reqVal && baseVal) {
+                    relOffs.push_back(builder.create<mlir::arith::SubIOp>(loc, reqVal, baseVal).getResult());
+                  } else {
+                    compatible = false;
+                    break;
+                  }
+                }
+              }
+              auto relAttr = relOffs.back().dyn_cast<mlir::Attribute>();
+              auto reqSizeAttr = srcR.sizes[idx].dyn_cast<mlir::Attribute>();
+              auto baseSizeAttr = rec.sizes[idx].dyn_cast<mlir::Attribute>();
+              if (relAttr && reqSizeAttr && baseSizeAttr) {
+                int64_t rel = relAttr.cast<mlir::IntegerAttr>().getInt();
+                int64_t reqSize = reqSizeAttr.cast<mlir::IntegerAttr>().getInt();
+                int64_t baseSize = baseSizeAttr.cast<mlir::IntegerAttr>().getInt();
+                if (rel < 0 || rel + reqSize > baseSize) {
+                  compatible = false;
+                  break;
+                }
+              }
+              relSizes.push_back(srcR.sizes[idx]);
+              relStrides.push_back(srcR.strides[idx]);
+            }
+          }
+
+          if (compatible) {
+            bool fullRange = OpFoldResultsAllZero(relOffs) &&
+                             OpFoldResultsEqualStaticShape(relSizes, recTy.getShape());
+            src_tensor = fullRange
+                ? rec.tensor
+                : builder.create<mlir::tensor::ExtractSliceOp>(
+                      loc, rec.tensor, relOffs, relSizes, relStrides).getResult();
+          }
+        }
+      }
+    }
+
+    if (!src_tensor) {
+      mlir::Value src_view = CreateRankReducedSubviewFromBaseRank(
+          src, srcR.offs, srcR.sizes, srcR.strides, srcC.projected, loc);
+      src_tensor = builder.create<mlir::bufferization::ToTensorOp>(
+          loc, src_view, /*restrict=*/true, /*writable=*/false);
+    }
 
     mlir::Value dst_slice = CreateRankReducedExtractSlice(
         dst, dstR.offs, dstR.sizes, dstR.strides, srcC.projected, loc);
@@ -1778,10 +1889,6 @@ void CodeGenTileLangNPUIRDEV::EmitCopyTensorToMemref(
 
   const bool is_workspace_dst =
       IsWorkspaceScope(GetPtrStorageScope(npuirop.dst->data));
-  const bool workspace_full_write =
-      OpFoldResultsAllZero(dstR.offs) &&
-      OpFoldResultsEqualStaticShape(
-          dstR.sizes, dst.getType().cast<mlir::MemRefType>().getShape());
 
   auto emit_writeback = [&](mlir::Value src_tensor, mlir::Value dst_memref) {
     if (use_hivm_fixpipe || use_hivm_store) {
@@ -1800,18 +1907,16 @@ void CodeGenTileLangNPUIRDEV::EmitCopyTensorToMemref(
         auto fixpipeOp = builder.create<mlir::hivm::FixpipeOp>(
             loc, result_tensors, src_tensor, dst_tensor, enable_nz2nd,
             pre_quant, pre_relu, channel_split);
-        if (is_workspace_dst && workspace_full_write && dst_memref == dst) {
-          workspace_tensor_map_[npuirop.dst->data.get()] = fixpipeOp->getResult(0);
-        } else if (is_workspace_dst) {
-          workspace_tensor_map_.erase(npuirop.dst->data.get());
+        if (is_workspace_dst) {
+          workspace_tensor_map_[npuirop.dst->data.get()] = WorkspaceTensorRecord{
+              fixpipeOp->getResult(0), dstR.offs, dstR.sizes, dstR.strides};
         }
       } else {
         auto storeOp = builder.create<mlir::hivm::StoreOp>(
             loc, result_tensors, src_tensor, dst_tensor);
-        if (is_workspace_dst && workspace_full_write && dst_memref == dst) {
-          workspace_tensor_map_[npuirop.dst->data.get()] = storeOp->getResult(0);
-        } else if (is_workspace_dst) {
-          workspace_tensor_map_.erase(npuirop.dst->data.get());
+        if (is_workspace_dst) {
+          workspace_tensor_map_[npuirop.dst->data.get()] = WorkspaceTensorRecord{
+              storeOp->getResult(0), dstR.offs, dstR.sizes, dstR.strides};
         }
       }
       return;
@@ -1820,6 +1925,9 @@ void CodeGenTileLangNPUIRDEV::EmitCopyTensorToMemref(
     auto matOp = builder.create<mlir::bufferization::MaterializeInDestinationOp>(
         loc, src_tensor, dst_memref);
     matOp.setWritable(true);
+    if (is_workspace_dst) {
+      workspace_tensor_map_.erase(npuirop.dst->data.get());
+    }
   };
 
   auto srcTy = src.getType().cast<mlir::RankedTensorType>();
@@ -2000,12 +2108,6 @@ void CodeGenTileLangNPUIRDEV::AscendCopyCodegen(const CallNode *op) {
   const bool dst_is_workspace = IsWorkspaceScope(dst_scope);
 
   mlir::Value src = GetVarValue(npuirop.src);
-  if (src_is_workspace) {
-    auto it = workspace_tensor_map_.find(npuirop.src->data.get());
-    if (it != workspace_tensor_map_.end()) {
-      src = it->second;
-    }
-  }
   mlir::Value dst = GetVarValue(npuirop.dst);
 
   const bool src_is_memref = src.getType().isa<mlir::MemRefType>();
