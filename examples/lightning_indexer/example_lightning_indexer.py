@@ -155,7 +155,7 @@ def indexer(B,
                                        VECTOR_BASEN * merge_sort_times)
                         T.barrier_all()
                     T.barrier_all()
-                    T.tile.gather_mask(topk_global_ub1, topk_global_ub2, TOP_K)
+                    T.tile.gather_mask(topk_global_ub1, topk_global_ub2, 2)
                     T.barrier_all()
                     T.copy(topk_global_ub1_flat, OUT[cid, n2_id, s1_id, 0:TOP_K])
                     T.barrier_all()

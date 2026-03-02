@@ -1689,7 +1689,7 @@ def run_test_gathermask(M, N, block_M, block_N, target):
     func = gathermask(M, N, block_M, block_N)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
 
-    a = torch.arange(1, M * N + 1).reshape(M, N).npu()
+    a = torch.arange(1, M * N + 1, dtype=torch.int32).reshape(M, N).npu()
 
     torch.npu.synchronize()
 
