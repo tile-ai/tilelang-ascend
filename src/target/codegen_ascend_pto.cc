@@ -655,6 +655,8 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op, std::ostream &os) 
     BinaryVecClampOpsCodegen(op, "TCLAMP");
   } else if (op->op.same_as(tl::ascend_sigmoid())) {
     SigmoidCodegen(op, "TSIGMOID");
+  } else if (op->op.same_as(tl::ascend_gather_mask())) {
+    GatherMaskCodegen(op, "TGATHER");
   } else if (op->op.same_as(tl::ascend_round())) {
     CastCodegen(op, "RoundMode::CAST_ROUND");
   } else if (op->op.same_as(tl::ascend_cast())) {
@@ -1307,6 +1309,54 @@ void CodeGenTileLangAscendPto::GatherbCodegen(const CallNode *op,
   std::string src_name = PrintExpr(op->args[2].as<CallNode>()->args[1]);
   std::string idx_name = PrintExpr(op->args[3].as<CallNode>()->args[1]);
   this->stream << op_name << "(" << dst_name << ", " << src_name << ", " << idx_name << ");\n";
+}
+
+void CodeGenTileLangAscendPto::GatherMaskCodegen(const CallNode *op,
+                                                 const std::string &op_name) {
+  if (op->args[3].as<CallNode>()) {
+    this->PrintIndent();
+    std::string dst_name = PrintExpr(op->args[1].as<CallNode>()->args[1]);
+    std::string src_name = PrintExpr(op->args[2].as<CallNode>()->args[1]);
+    std::string idx_name = PrintExpr(op->args[3].as<CallNode>()->args[1]);
+    this->stream << op_name << "(" << dst_name << ", " << src_name << ", " << idx_name << ");\n";
+  } else {
+    int32_t src1Pattern = Downcast<IntImm>(op->args[3])->value;
+    std::string Pattern;
+    if (src1Pattern == 1) {
+    Pattern = "MaskPattern::P0101";
+    } else if (src1Pattern == 2) {
+    Pattern = "MaskPattern::P1010";
+    } else if (src1Pattern == 3) {
+    Pattern = "MaskPattern::P0001";
+    } else if (src1Pattern == 4) {
+    Pattern = "MaskPattern::P0010";
+    } else if (src1Pattern == 5) {
+    Pattern = "MaskPattern::P0100";
+    } else if (src1Pattern == 6) {
+    Pattern = "MaskPattern::P1000";
+    } else if (src1Pattern == 7) {
+    Pattern = "MaskPattern::P1111";
+    } 
+    this->PrintIndent();
+    std::string dst_name = PrintExpr(op->args[1].as<CallNode>()->args[1]);
+    std::string src_name = PrintExpr(op->args[2].as<CallNode>()->args[1]);
+    std::string DstT_type = ub_data_map_[dst_name][0];
+    std::string DstT_row = ub_data_map_[dst_name][1];
+    std::string DstT_col = ub_data_map_[dst_name][2];
+    std::string DstT_rowValid = ub_data_map_[dst_name][5];
+    std::string DstT_colValid = ub_data_map_[dst_name][6];
+    std::string SrcT_type = ub_data_map_[src_name][0];
+    std::string SrcT_row = ub_data_map_[src_name][1];
+    std::string SrcT_col = ub_data_map_[src_name][2];
+    std::string SrcT_rowValid = ub_data_map_[dst_name][5];
+    std::string SrcT_colValid = ub_data_map_[dst_name][6];
+
+    this->stream << op_name << "<" << kAscendPtoScope << "TileUbDataND<" << DstT_type << ", " << DstT_row
+    << ", " << DstT_col << ", " << DstT_rowValid << ", " << DstT_colValid << ">, " 
+    << kAscendPtoScope << "TileUbDataND<" << SrcT_type << ", " << SrcT_row << ", " << SrcT_col << ", " 
+    << SrcT_rowValid << ", " << SrcT_colValid << ">, " << Pattern << ">(" << dst_name
+    << ", " << src_name << ");\n";
+  }
 }
 
 void CodeGenTileLangAscendPto::PowCodegen(const CallNode *op) {

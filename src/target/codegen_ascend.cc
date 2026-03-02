@@ -1317,7 +1317,11 @@ void CodeGenTileLangAscend::ShmemCodegen(const CallNode *op) {
 void CodeGenTileLangAscend::GatherMaskCodegen(const CallNode *op) {
   std::string op_name = "tl::ascend::" + Downcast<StringImm>(op->args[0])->value;
   int len = op->args.size();
-  PrintOpCall(op, op_name, {1, len - 1}, {len - 1, len});
+  if (op->args[len - 1].as<CallNode>()) {
+    PrintOpCall(op, op_name, {1, len}, {0, 0});
+  } else {
+    PrintOpCall(op, op_name, {1, len - 1}, {len - 1, len});
+  }
 }
 
 void CodeGenTileLangAscend::GatherbCodegen(const CallNode *op) {

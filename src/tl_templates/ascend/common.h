@@ -454,18 +454,34 @@ CATLASS_DEVICE void TopK(const LocalTensor<T> &dst, const LocalTensor<T> &src,
 template <typename T>
 CATLASS_DEVICE void GatherMask(const LocalTensor<T> &dst,
                                const LocalTensor<T> &sortedTensor,
-                               int64_t extractNum) {
+                               uint8_t src1Pattern) {
+  uint32_t eleNum = sortedTensor.GetSize();
   GatherMaskParams gatherMaskParams;
-  gatherMaskParams.repeatTimes = Ceil(extractNum * sizeof(float) * 2, 256);
+  gatherMaskParams.repeatTimes = Ceil(eleNum * sizeof(T), 256);
   gatherMaskParams.src0BlockStride = 1;
   gatherMaskParams.src0RepeatStride = 8;
   gatherMaskParams.src1RepeatStride = 0;
   uint64_t rsvdCnt = 0;    // 用于保存筛选后保留下来的元素个数
-  uint8_t src1Pattern = 2; // 内置固定模式
   GatherMask(dst.template ReinterpretCast<uint32_t>(),
              sortedTensor.template ReinterpretCast<uint32_t>(), src1Pattern,
              false, static_cast<uint32_t>(0), gatherMaskParams, rsvdCnt);
   PipeBarrier<PIPE_V>();
+}
+
+template <typename T, typename U>
+CATLASS_DEVICE void GatherMask(const LocalTensor<T> &dst,
+                               const LocalTensor<T> &sortedTensor,
+                               const LocalTensor<U> &src1Pattern) {
+  uint32_t eleNum = sortedTensor.GetSize();
+  GatherMaskParams gatherMaskParams;
+  gatherMaskParams.repeatTimes = Ceil(eleNum * sizeof(T), 256);
+  gatherMaskParams.src0BlockStride = 1;
+  gatherMaskParams.src0RepeatStride = 8;
+  gatherMaskParams.src1RepeatStride = 0;
+  uint64_t rsvdCnt = 0;    // 用于保存筛选后保留下来的元素个数
+  GatherMask(dst.template ReinterpretCast<uint32_t>(),
+             sortedTensor.template ReinterpretCast<uint32_t>(), src1Pattern,
+             false, static_cast<uint32_t>(0), gatherMaskParams, rsvdCnt);
 }
 
 template <typename T>

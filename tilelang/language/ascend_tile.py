@@ -204,7 +204,7 @@ def topk(dst: Buffer, src: Buffer, tmp: Buffer, block_size: PrimExpr):
     )
 
 
-def gather_mask(dst: Buffer, src: Buffer, num: PrimExpr):
+def gather_mask(dst: Buffer, src: Buffer, src1Pattern: Union[PrimExpr, Buffer]):
     """Performs a gather mask operation.
 
     This intrinsic invokes the underlying implementation to perform a gather mask
@@ -218,14 +218,25 @@ def gather_mask(dst: Buffer, src: Buffer, num: PrimExpr):
     Returns:
         A TVM intrinsic call that performs the gather mask operation.
     """
-    return tir.call_intrin(
-        "handle",
-        tir.op.Op.get("tl.ascend_gather_mask"),
-        f"GatherMask<{_dtype(dst)}>",
-        dst.access_ptr("w"),
-        src.access_ptr("r"),
-        num,
-    )
+
+    if isinstance(src1Pattern, Buffer):
+        return tir.call_intrin(
+            "handle",
+            tir.op.Op.get("tl.ascend_gather_mask"),
+            f"GatherMask<{_dtype(dst)}>",
+            dst.access_ptr("w"),
+            src.access_ptr("r"),
+            src1Pattern.access_ptr("r"),
+        )
+    else:
+        return tir.call_intrin(
+            "handle",
+            tir.op.Op.get("tl.ascend_gather_mask"),
+            f"GatherMask<{_dtype(dst)}>",
+            dst.access_ptr("w"),
+            src.access_ptr("r"),
+            src1Pattern,
+        )
 
 
 def gatherb(
