@@ -1,4 +1,5 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2025.
+import ctypes
 import os
 import re
 import subprocess
