@@ -1319,24 +1319,8 @@ void CodeGenTileLangAscendPto::GatherMaskCodegen(const CallNode *op,
     std::string src_name = PrintExpr(op->args[2].as<CallNode>()->args[1]);
     std::string idx_name = PrintExpr(op->args[3].as<CallNode>()->args[1]);
     this->stream << op_name << "(" << dst_name << ", " << src_name << ", " << idx_name << ");\n";
-  } else {
-    int32_t src1Pattern = Downcast<IntImm>(op->args[3])->value;
-    std::string Pattern;
-    if (src1Pattern == 1) {
-    Pattern = "MaskPattern::P0101";
-    } else if (src1Pattern == 2) {
-    Pattern = "MaskPattern::P1010";
-    } else if (src1Pattern == 3) {
-    Pattern = "MaskPattern::P0001";
-    } else if (src1Pattern == 4) {
-    Pattern = "MaskPattern::P0010";
-    } else if (src1Pattern == 5) {
-    Pattern = "MaskPattern::P0100";
-    } else if (src1Pattern == 6) {
-    Pattern = "MaskPattern::P1000";
-    } else if (src1Pattern == 7) {
-    Pattern = "MaskPattern::P1111";
-    } 
+  } else { 
+    std::string src1Pattern = Downcast<StringImm>(op->args[3])->value;
     this->PrintIndent();
     std::string dst_name = PrintExpr(op->args[1].as<CallNode>()->args[1]);
     std::string src_name = PrintExpr(op->args[2].as<CallNode>()->args[1]);
@@ -1354,7 +1338,7 @@ void CodeGenTileLangAscendPto::GatherMaskCodegen(const CallNode *op,
     this->stream << op_name << "<" << kAscendPtoScope << "TileUbDataND<" << DstT_type << ", " << DstT_row
     << ", " << DstT_col << ", " << DstT_rowValid << ", " << DstT_colValid << ">, " 
     << kAscendPtoScope << "TileUbDataND<" << SrcT_type << ", " << SrcT_row << ", " << SrcT_col << ", " 
-    << SrcT_rowValid << ", " << SrcT_colValid << ">, " << Pattern << ">(" << dst_name
+    << SrcT_rowValid << ", " << SrcT_colValid << ">, " << "MaskPattern::" << src1Pattern << ">(" << dst_name
     << ", " << src_name << ");\n";
   }
 }

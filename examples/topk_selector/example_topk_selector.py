@@ -89,7 +89,7 @@ def simple_topk_selector(B:int, N:int, top_k:int, block_N:int, dtype: Literal["f
                 
                 T.tile.add(sort_indices, sort_indices, T.int32(block_N))  # (0..block_N-1) + bn * block_N
 
-            T.tile.gather_mask(sort_result, topk_global, 2)  # [value, idx] => [idx]
+            T.tile.gather_mask(sort_result, topk_global, "P1010")  # [value, idx] => [idx]
             
             T.copy(sort_result_index, indices[row_id, :top_k])
     

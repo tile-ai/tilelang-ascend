@@ -1679,7 +1679,7 @@ def gathermask(M, N, block_M, block_N, dtype="int32"):
             
             T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a_ub)
 
-            T.tile.gather_mask(b_ub, a_ub, 1)
+            T.tile.gather_mask(b_ub, a_ub, "P0101")
 
             T.copy(b_ub, B[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
 

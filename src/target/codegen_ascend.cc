@@ -1320,7 +1320,37 @@ void CodeGenTileLangAscend::GatherMaskCodegen(const CallNode *op) {
   if (op->args[len - 1].as<CallNode>()) {
     PrintOpCall(op, op_name, {1, len}, {0, 0});
   } else {
-    PrintOpCall(op, op_name, {1, len - 1}, {len - 1, len});
+    std::string src1Pattern = Downcast<StringImm>(op->args[len - 1])->value;
+    int pattern;
+    if (src1Pattern == "P0101") {
+      pattern = 1;
+    } else if (src1Pattern == "P1010") {
+      pattern = 2;
+    } else if (src1Pattern == "P0001") {
+      pattern = 3;
+    } else if (src1Pattern == "P0010") {
+      pattern = 4;
+    } else if (src1Pattern == "P0100") {
+      pattern = 5;
+    } else if (src1Pattern == "P1000") {
+      pattern = 6;
+    } else if (src1Pattern == "P1111") {
+      pattern = 7;
+    }
+    std::vector<std::string> args;
+    for (int i = 1; i < len - 1; ++i) {
+      args.push_back(PrintBufferOffset(op->args[i].as<CallNode>(), true));
+    }
+
+    this->PrintIndent();
+    this->stream << op_name << "(";
+    for (size_t i = 0; i < args.size(); ++i) {
+      this->stream << args[i];
+      if (i != args.size() - 1) {
+        this->stream << ", ";
+      }
+    }
+    this->stream <<", " <<  pattern << ");\n";
   }
 }
 
