@@ -447,6 +447,10 @@ void CodeGenTileLangAscendPto::VisitStmt_(const BufferStoreNode *op) {
                  << PrintExpr(op->indices.back())
                  << ") = " << PrintExpr(op->value) << ";\n";
   } else {
+    this->stream << kAscendPtoScope << ".set_flag_pipeline<PIPE_V, PIPE_S> (0);\n";
+    this->PrintIndent();
+    this->stream << kAscendPtoScope << ".wait_flag_pipeline<PIPE_V, PIPE_S> (0);\n";
+    this->PrintIndent();
     this->stream << var_name << ".SetValue(" << PrintExpr(op->indices.back())
                  << ", " << PrintExpr(op->value) << ");\n";
   }
