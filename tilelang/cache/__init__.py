@@ -29,8 +29,6 @@ def cached(
     """
     Caches and reuses compiled kerne(ls (using KernelCache class).
     """
-    from tilelang.utils.target import determine_platform
-    platform = determine_platform(platform)
 
     return _kernel_cache_instance.cached(
         func,

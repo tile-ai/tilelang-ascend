@@ -1180,6 +1180,7 @@ void CodeGenTileLangAscend::UnaryVecOpCodegen(const CallNode *op,
 
 void CodeGenTileLangAscend::SelectCodegen(const CallNode *op,
                                           const std::string &op_name) {
+  std::string op_name_temp = op_name;
   std::vector<std::string> var_names;
   int para_idx = 0;
   // For para0:dst, para1:selMask, para2:src0
@@ -1207,8 +1208,13 @@ void CodeGenTileLangAscend::SelectCodegen(const CallNode *op,
     auto var_name6 = PrintExpr(op->args[6]);
     var_names.push_back(var_name6);
   } else if (src1_type == 1) {
+    auto src0_dtype = Downcast<StringImm>(op->args[7])->value;
+    auto mask_dtype = Downcast<StringImm>(op->args[8])->value;
+
+    op_name_temp += "<" + src0_dtype + ", " + mask_dtype + ">";
+    
     auto var_name4 = PrintExpr(op->args[4]);
-    var_names.push_back(var_name4);
+    var_names.push_back("static_cast<" + src0_dtype + ">(" + var_name4 + ")");
 
     auto var_name5 = Downcast<StringImm>(op->args[5])->value;
     var_names.push_back("AscendC::SELMODE::" + var_name5);
@@ -1226,7 +1232,7 @@ void CodeGenTileLangAscend::SelectCodegen(const CallNode *op,
     var_names.push_back(var_name6);
   }
 
-  this->stream << op_name << "(";
+  this->stream << op_name_temp << "(";
   for (int i = 0; i < var_names.size(); i++) {
     this->stream << var_names[i];
     if (i != var_names.size() - 1) {

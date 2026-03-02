@@ -387,6 +387,8 @@ def select(
             src1,
             selMode,
             size_0,
+            _dtype(src0),
+            _dtype(selMask),
         )
     else:
         assert selMode in ["VSEL_CMPMASK_SPR", "VSEL_TENSOR_TENSOR_MODE"], (
