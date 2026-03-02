@@ -142,11 +142,18 @@ class BufferAllocationLocator : public StmtExprMutator {
   struct GemmBufferInfo {
     bool is_gemm_buffer = false;
     bool without_init = true;
+    int gemm_depth = -1; 
   };
   
   void AnalyzeGemmCalls(Stmt stmt) {
     class GemmCallAnalyzer : public StmtExprVisitor {
     public:
+      void VisitStmt_(const ForNode* op) final {
+          current_depth++;
+          StmtExprVisitor::VisitStmt_(op);
+          current_depth--;
+      }
+
       void VisitExpr_(const CallNode* op) final {
         if (op->op.defined()) {
           std::string op_name;
@@ -202,6 +209,7 @@ class BufferAllocationLocator : public StmtExprMutator {
                   GemmBufferInfo info;
                   info.is_gemm_buffer = true;
                   info.without_init = without_init;
+                  info.gemm_depth = current_depth - 1;
                   buffer_gemm_info[buffer_var] = info;
                 } else {
                   ICHECK(false) << "Could not extract buffer var from gemm arg";
@@ -214,6 +222,7 @@ class BufferAllocationLocator : public StmtExprMutator {
         }
         StmtExprVisitor::VisitExpr_(op);
       }
+      int current_depth = 0;
       // Map buffer variables to their gemm information
       std::unordered_map<const VarNode*, GemmBufferInfo> buffer_gemm_info;
     };
@@ -243,17 +252,24 @@ class BufferAllocationLocator : public StmtExprMutator {
     for (const Buffer& buf : it->second) {
       if (managed_allocations_.count(buf->data.get())) {
         bool is_gemm_without_init = false;
+        int gemm_depth = -1;
         auto gemm_it = buffer_gemm_info_.find(buf->data.get());
         if (gemm_it != buffer_gemm_info_.end() && 
             gemm_it->second.is_gemm_buffer && 
             gemm_it->second.without_init) {
           is_gemm_without_init = true;
+          gemm_depth = gemm_it->second.gemm_depth;
         }
         if (is_gemm_without_init) {
-          need_extract = true;
-          outer_buffers.push_back(buf);
-          if (!multi_for_loop) {
-            alloc_buffers.push_back(buf);
+          if (current_for_depth == gemm_depth - 1) {
+            buffer_data_to_buffer_.erase(buf->data);
+            new_block_alloc_bufs.push_back(buf);
+          } else {
+            need_extract = true;
+            outer_buffers.push_back(buf);
+            if (!multi_for_loop) {
+              alloc_buffers.push_back(buf);
+            }
           }
         } else {
           if (current_for_depth == (for_depth - 2 - merge_depth) && multi_for_loop) {
@@ -264,6 +280,7 @@ class BufferAllocationLocator : public StmtExprMutator {
         }
       }
     }
+
     if (need_extract) {
       // If it's the innermost loop, just rewrite the alloc buffer that we need.
       if (new_block_alloc_bufs.size() && current_for_depth == for_depth - 1 - merge_depth && for_depth != 1) {
@@ -285,7 +302,6 @@ class BufferAllocationLocator : public StmtExprMutator {
         node.CopyOnWrite()->body = InjectOpaqueBlock(node->body, new_block_alloc_bufs);
       }       
     }
-    
     return std::move(node);
   }
 
