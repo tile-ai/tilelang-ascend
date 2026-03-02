@@ -1153,6 +1153,44 @@ class compiler_npu:
     def __init__(self) -> None:
         pass
 
+    def _get_workspace_size(self, lib_path, suffix, default=32768):
+        #Try to get the infer_workspace_shape_function in the kernel, then use the return value as workspace_size
+        #Use default to avoid except
+        #If you have set the os env "TILELANG_ASCEND_WORKSPACE_SIZE", "TILELANG_ASCEND_WORKSPACE_SIZE" has a higher priority
+        if not os.path.exists(lib64):
+            return default
+        symbols=[]
+        #Try to get the kernel symbol table and match function name "***_infer_workspace_shape_function"
+        try:
+            result = subprocess.run(['nm', '-D', lib_path],
+                                capture_output = True, text = True, timeout = 2)
+            if result.returncode == 0:
+                for line in result.stdout.split('\n'):
+                    parts = line.strip().split()
+                    if len(parts) >= 3:
+                        sym_name = parts[2]
+                        if sym_name.endswith(suffix):
+                            symbols.append(sym_name)
+        except:
+            pass
+
+        if not symbols:
+            return default
+        #Load the lib
+        try:
+            lib = ctypes.CDLL(lib_path)
+        except:
+            return default
+        #Get the return value
+        for func_name in symbols:
+            try:
+                func = getattr(lib, func_name)
+                func.restype = ctypes.c_int
+                return func()
+            except:
+                continue
+        return default
+
     def compile(self, mod: PrimFunc, out_idx=None) -> JitKernel_NPU:
         self.original_mod = mod
         # extract_param_info
@@ -1175,19 +1213,17 @@ class compiler_npu:
         self.constants = {}
         # get signature information
         self.signature = self._parse_signature()
-        # TODO: Will be implemented as automatic derivation in the future
-        self.workspace_size = 32768
+        self.lock_num = -1
+        self.lock_ini_val = 0
+        self._parse_npuir_metadata()
+        self.metadata["kernel_src"] = self._npuir_to_bin_enable_npu_compile()
         TILELANG_ASCEND_WORKSPACE_SIZE = os.environ.get('TILELANG_ASCEND_WORKSPACE_SIZE')
         if not TILELANG_ASCEND_WORKSPACE_SIZE is None:
           try:
               self.workspace_size = int(TILELANG_ASCEND_WORKSPACE_SIZE)
           except ValueError:
               print(f"Warning: TILELANG_ASCEND_WORKSPACE_SIZE must be integer, \
-                    got '{TILELANG_ASCEND_WORKSPACE_SIZE}', using default 32768")
-        self.lock_num = -1
-        self.lock_ini_val = 0
-        self._parse_npuir_metadata()
-        self.metadata["kernel_src"] = self._npuir_to_bin_enable_npu_compile()
+                    got '{TILELANG_ASCEND_WORKSPACE_SIZE}', using compiler auto infer workspace size '{self.workspace_size}'")
         self.wrapper_utiles = generate_npu_utils_src()
         self.so_utils_path = self.make_npu_launcher_stub(
             "npu_utils", self.wrapper_utiles
@@ -1493,6 +1529,8 @@ class compiler_npu:
             except Exception as e:
                 print(f"error: {str(e)}")
                 sys.exit(1)
+            result = self._get_workspace_size(so_path, "_infer_workspace_shape_function")
+            self.workspace_size = result
             return Path(bin_path).read_bytes()
 
     def make_npu_launcher_stub(self, name: str, source: str, debug=False):
