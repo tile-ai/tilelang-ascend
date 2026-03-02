@@ -1344,6 +1344,8 @@ void CodeGenTileLangAscend::AddsAndMulsOpCodegen(const CallNode *op,
     var_names.push_back(var_name);
   }
 
+  this->PrintIndent();
+  this->stream << "{\n";
   if (op->args[2].as<CallNode>()) {
     auto var_name = PrintBufferOffset(op->args[2].as<CallNode>(), false);
     this->PrintIndent();
@@ -1366,6 +1368,8 @@ void CodeGenTileLangAscend::AddsAndMulsOpCodegen(const CallNode *op,
   }
 
   this->stream << ", " << PrintExpr(op->args[op->args.size() - 1]) << ");\n";
+  this->PrintIndent();
+  this->stream << "}\n";
 }
 
 void CodeGenTileLangAscend::SubsOpCodegen(const CallNode *op) {
@@ -1375,6 +1379,8 @@ void CodeGenTileLangAscend::SubsOpCodegen(const CallNode *op) {
     var_names.push_back(var_name);
   }
 
+  this->PrintIndent();
+  this->stream << "{\n";
   if (op->args[2].as<CallNode>()) {
     auto var_name = PrintBufferOffset(op->args[2].as<CallNode>(), false);
 
@@ -1399,6 +1405,8 @@ void CodeGenTileLangAscend::SubsOpCodegen(const CallNode *op) {
       }
 
   this->stream << ", " << PrintExpr(op->args[op->args.size() - 1]) << ");\n";
+  this->PrintIndent();
+  this->stream << "}\n";
 }
 
 void CodeGenTileLangAscend::DivsOpCodegen(const CallNode *op) {
