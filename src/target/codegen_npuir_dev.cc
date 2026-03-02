@@ -1663,6 +1663,8 @@ void CodeGenTileLangNPUIRDEV::EmitCopyMemrefToTensor(
     auto src_memref_ty = src.getType().cast<mlir::MemRefType>();
     int64_t maxRank = std::min<int64_t>(src_memref_ty.getRank(), dst_tensor_type_ori.getRank());
     CollapsedDims srcC = CollapseStaticOneDims(srcR.sizes, maxRank);
+    mlir::Value dst_slice = CreateRankReducedExtractSlice(
+        dst, dstR.offs, dstR.sizes, dstR.strides, srcC.projected, loc);
     mlir::Value src_tensor;
 
     auto it = workspace_tensor_map_.find(npuirop.src->data.get());
@@ -1691,63 +1693,159 @@ void CodeGenTileLangNPUIRDEV::EmitCopyMemrefToTensor(
             }
           }
 
-          llvm::SmallVector<mlir::OpFoldResult> relOffs;
-          llvm::SmallVector<mlir::OpFoldResult> relSizes;
-          llvm::SmallVector<mlir::OpFoldResult> relStrides;
           if (compatible) {
-            relOffs.reserve(recC.keptIdx.size());
-            relSizes.reserve(recC.keptIdx.size());
-            relStrides.reserve(recC.keptIdx.size());
+            auto toStaticInt = [](mlir::OpFoldResult ofr, int64_t* out) {
+              auto attr = ofr.dyn_cast<mlir::Attribute>();
+              if (!attr) return false;
+              auto intAttr = attr.dyn_cast<mlir::IntegerAttr>();
+              if (!intAttr) return false;
+              *out = intAttr.getInt();
+              return true;
+            };
+            llvm::SmallVector<int64_t> reqOffVals;
+            llvm::SmallVector<int64_t> reqSizeVals;
+            llvm::SmallVector<int64_t> recOffVals;
+            llvm::SmallVector<int64_t> recSizeVals;
+            reqOffVals.reserve(recC.keptIdx.size());
+            reqSizeVals.reserve(recC.keptIdx.size());
+            recOffVals.reserve(recC.keptIdx.size());
+            recSizeVals.reserve(recC.keptIdx.size());
             for (unsigned idx : recC.keptIdx) {
-              mlir::OpFoldResult reqOff = srcR.offs[idx];
-              mlir::OpFoldResult baseOff = rec.offs[idx];
-
-              if (OpFoldResultEqual(reqOff, baseOff)) {
-                relOffs.push_back(builder.getIndexAttr(0));
-              } else if (OpFoldResultIsInt(baseOff, 0)) {
-                relOffs.push_back(reqOff);
-              } else {
-                auto reqAttr = reqOff.dyn_cast<mlir::Attribute>();
-                auto baseAttr = baseOff.dyn_cast<mlir::Attribute>();
-                if (reqAttr && baseAttr) {
-                  int64_t v = reqAttr.cast<mlir::IntegerAttr>().getInt() -
-                              baseAttr.cast<mlir::IntegerAttr>().getInt();
-                  relOffs.push_back(builder.getIndexAttr(v));
-                } else {
-                  auto reqVal = reqOff.dyn_cast<mlir::Value>();
-                  auto baseVal = baseOff.dyn_cast<mlir::Value>();
-                  if (reqVal && baseVal) {
-                    relOffs.push_back(builder.create<mlir::arith::SubIOp>(loc, reqVal, baseVal).getResult());
-                  } else {
-                    compatible = false;
-                    break;
-                  }
-                }
+              int64_t reqOff = 0, reqSize = 0, recOff = 0, recSize = 0;
+              if (!toStaticInt(srcR.offs[idx], &reqOff) ||
+                  !toStaticInt(srcR.sizes[idx], &reqSize) ||
+                  !toStaticInt(rec.offs[idx], &recOff) ||
+                  !toStaticInt(rec.sizes[idx], &recSize) ||
+                  !OpFoldResultEqual(srcR.strides[idx], rec.strides[idx])) {
+                compatible = false;
+                break;
               }
-              auto relAttr = relOffs.back().dyn_cast<mlir::Attribute>();
-              auto reqSizeAttr = srcR.sizes[idx].dyn_cast<mlir::Attribute>();
-              auto baseSizeAttr = rec.sizes[idx].dyn_cast<mlir::Attribute>();
-              if (relAttr && reqSizeAttr && baseSizeAttr) {
-                int64_t rel = relAttr.cast<mlir::IntegerAttr>().getInt();
-                int64_t reqSize = reqSizeAttr.cast<mlir::IntegerAttr>().getInt();
-                int64_t baseSize = baseSizeAttr.cast<mlir::IntegerAttr>().getInt();
-                if (rel < 0 || rel + reqSize > baseSize) {
+              reqOffVals.push_back(reqOff);
+              reqSizeVals.push_back(reqSize);
+              recOffVals.push_back(recOff);
+              recSizeVals.push_back(recSize);
+            }
+            if (compatible) {
+              llvm::SmallVector<mlir::OpFoldResult> overlapOffsInRec;
+              llvm::SmallVector<mlir::OpFoldResult> overlapInsertOffs;
+              llvm::SmallVector<mlir::OpFoldResult> overlapSizes;
+              llvm::SmallVector<mlir::OpFoldResult> ones;
+              overlapOffsInRec.reserve(recC.keptIdx.size());
+              overlapInsertOffs.reserve(recC.keptIdx.size());
+              overlapSizes.reserve(recC.keptIdx.size());
+              ones.reserve(recC.keptIdx.size());
+
+              bool fullRecord = true;
+              bool fullRequest = true;
+              for (size_t i = 0; i < reqOffVals.size(); ++i) {
+                int64_t reqBegin = reqOffVals[i];
+                int64_t reqEnd = reqOffVals[i] + reqSizeVals[i];
+                int64_t recBegin = recOffVals[i];
+                int64_t recEnd = recOffVals[i] + recSizeVals[i];
+                int64_t ovBegin = std::max(reqBegin, recBegin);
+                int64_t ovEnd = std::min(reqEnd, recEnd);
+                if (ovEnd <= ovBegin) {
                   compatible = false;
                   break;
                 }
+                int64_t offInRec = ovBegin - recBegin;
+                int64_t offInReq = ovBegin - reqBegin;
+                int64_t ovSize = ovEnd - ovBegin;
+
+                fullRecord = fullRecord && (offInRec == 0) && (ovSize == recSizeVals[i]);
+                fullRequest = fullRequest && (offInReq == 0) && (ovSize == reqSizeVals[i]);
+
+                overlapOffsInRec.push_back(builder.getIndexAttr(offInRec));
+                overlapInsertOffs.push_back(builder.getIndexAttr(offInReq));
+                overlapSizes.push_back(builder.getIndexAttr(ovSize));
+                ones.push_back(builder.getIndexAttr(1));
               }
-              relSizes.push_back(srcR.sizes[idx]);
-              relStrides.push_back(srcR.strides[idx]);
+
+              if (compatible) {
+                mlir::Value overlapTensor = fullRecord
+                    ? rec.tensor
+                    : builder.create<mlir::tensor::ExtractSliceOp>(
+                          loc, rec.tensor, overlapOffsInRec, overlapSizes, ones).getResult();
+                overlapTensor = CreateCastIfTypeMismatch(overlapTensor, dst_slice);
+
+                if (fullRequest && overlapTensor.getType() == dst_slice.getType()) {
+                  src_tensor = overlapTensor;
+                } else if (overlapTensor.getType().isa<mlir::RankedTensorType>()) {
+                  src_tensor = builder.create<mlir::tensor::InsertSliceOp>(
+                      loc, overlapTensor, dst_slice, overlapInsertOffs, overlapSizes, ones).getResult();
+                }
+              }
             }
           }
 
-          if (compatible) {
-            bool fullRange = OpFoldResultsAllZero(relOffs) &&
-                             OpFoldResultsEqualStaticShape(relSizes, recTy.getShape());
-            src_tensor = fullRange
-                ? rec.tensor
-                : builder.create<mlir::tensor::ExtractSliceOp>(
-                      loc, rec.tensor, relOffs, relSizes, relStrides).getResult();
+          if (!src_tensor) {
+            llvm::SmallVector<mlir::OpFoldResult> stitchOffs;
+            llvm::SmallVector<mlir::OpFoldResult> stitchSizes;
+            llvm::SmallVector<mlir::OpFoldResult> stitchStrides;
+            stitchOffs.reserve(recC.keptIdx.size());
+            stitchSizes.reserve(recC.keptIdx.size());
+            stitchStrides.reserve(recC.keptIdx.size());
+
+            bool canStitch = true;
+            for (unsigned idx : recC.keptIdx) {
+              mlir::OpFoldResult reqOff = srcR.offs[idx];
+              mlir::OpFoldResult recOff = rec.offs[idx];
+              mlir::OpFoldResult relOff;
+
+              if (OpFoldResultEqual(reqOff, recOff)) {
+                relOff = builder.getIndexAttr(0);
+              } else {
+                auto reqAttr = reqOff.dyn_cast<mlir::Attribute>();
+                auto recAttr = recOff.dyn_cast<mlir::Attribute>();
+                auto reqVal = reqOff.dyn_cast<mlir::Value>();
+                auto recVal = recOff.dyn_cast<mlir::Value>();
+                if (reqAttr && recAttr) {
+                  int64_t v = recAttr.cast<mlir::IntegerAttr>().getInt() -
+                              reqAttr.cast<mlir::IntegerAttr>().getInt();
+                  relOff = builder.getIndexAttr(v);
+                } else if (recVal && reqVal) {
+                  relOff = builder.create<mlir::arith::SubIOp>(loc, recVal, reqVal).getResult();
+                } else if (recVal && reqAttr) {
+                  int64_t reqC = reqAttr.cast<mlir::IntegerAttr>().getInt();
+                  auto reqCVal = builder.create<mlir::arith::ConstantIndexOp>(loc, reqC).getResult();
+                  relOff = builder.create<mlir::arith::SubIOp>(loc, recVal, reqCVal).getResult();
+                } else if (recAttr && reqVal) {
+                  int64_t recC = recAttr.cast<mlir::IntegerAttr>().getInt();
+                  auto recCVal = builder.create<mlir::arith::ConstantIndexOp>(loc, recC).getResult();
+                  relOff = builder.create<mlir::arith::SubIOp>(loc, recCVal, reqVal).getResult();
+                } else {
+                  canStitch = false;
+                  break;
+                }
+              }
+
+              auto relAttr = relOff.dyn_cast<mlir::Attribute>();
+              auto recSizeAttr = rec.sizes[idx].dyn_cast<mlir::Attribute>();
+              auto reqSizeAttr = srcR.sizes[idx].dyn_cast<mlir::Attribute>();
+              if (relAttr && recSizeAttr && reqSizeAttr) {
+                int64_t rel = relAttr.cast<mlir::IntegerAttr>().getInt();
+                int64_t recSz = recSizeAttr.cast<mlir::IntegerAttr>().getInt();
+                int64_t reqSz = reqSizeAttr.cast<mlir::IntegerAttr>().getInt();
+                if (rel < 0 || rel + recSz > reqSz) {
+                  canStitch = false;
+                  break;
+                }
+              }
+
+              stitchOffs.push_back(relOff);
+              stitchSizes.push_back(rec.sizes[idx]);
+              stitchStrides.push_back(rec.strides[idx]);
+            }
+
+            if (canStitch) {
+              mlir::Value stitchedPart = CreateCastIfTypeMismatch(rec.tensor, dst_slice);
+              auto stitchedTy = stitchedPart.getType().dyn_cast<mlir::RankedTensorType>();
+              auto dstSliceTy = dst_slice.getType().cast<mlir::RankedTensorType>();
+              if (stitchedTy && stitchedTy.getRank() == dstSliceTy.getRank()) {
+                src_tensor = builder.create<mlir::tensor::InsertSliceOp>(
+                    loc, stitchedPart, dst_slice, stitchOffs, stitchSizes, stitchStrides).getResult();
+              }
+            }
           }
         }
       }
@@ -1760,8 +1858,6 @@ void CodeGenTileLangNPUIRDEV::EmitCopyMemrefToTensor(
           loc, src_view, /*restrict=*/true, /*writable=*/false);
     }
 
-    mlir::Value dst_slice = CreateRankReducedExtractSlice(
-        dst, dstR.offs, dstR.sizes, dstR.strides, srcC.projected, loc);
     mlir::Type dst_slice_type = dst_slice.getType();
     mlir::TypeRange result_tensors(&dst_slice_type, 1);
     auto loadOp = builder.create<mlir::hivm::LoadOp>(
