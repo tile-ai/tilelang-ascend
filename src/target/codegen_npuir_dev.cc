@@ -1637,6 +1637,43 @@ void CodeGenTileLangNPUIRDEV::EmitCopyMemrefToTensor(
     bool use_hivm_load) {
   auto dst_tensor_type_ori = dst.getType().cast<mlir::RankedTensorType>();
 
+  // Workspace GM -> tensor: prefer tensor-form hivm.hir.load so both
+  // ins/outs operands are tensors.
+  if (use_hivm_load) {
+    auto src_memref_ty = src.getType().cast<mlir::MemRefType>();
+    int64_t maxRank = std::min<int64_t>(src_memref_ty.getRank(), dst_tensor_type_ori.getRank());
+    CollapsedDims srcC = CollapseStaticOneDims(srcR.sizes, maxRank);
+
+    mlir::Value src_view = CreateRankReducedSubviewFromBaseRank(
+        src, srcR.offs, srcR.sizes, srcR.strides, srcC.projected, loc);
+    mlir::Value src_tensor = builder.create<mlir::bufferization::ToTensorOp>(
+        loc, src_view, /*restrict=*/true, /*writable=*/false);
+
+    mlir::Value dst_slice = CreateRankReducedExtractSlice(
+        dst, dstR.offs, dstR.sizes, dstR.strides, srcC.projected, loc);
+    mlir::Type dst_slice_type = dst_slice.getType();
+    mlir::TypeRange result_tensors(&dst_slice_type, 1);
+    auto loadOp = builder.create<mlir::hivm::LoadOp>(
+        loc, result_tensors, src_tensor, dst_slice);
+    mlir::Value loaded_tensor = loadOp->getResult(0);
+
+    mlir::Value casted_tensor = CreateCastIfTypeMismatch(loaded_tensor, dst);
+    if (OpFoldResultsAllZero(dstR.offs) &&
+        OpFoldResultsEqualStaticShape(dstR.sizes, dst_tensor_type_ori.getShape()) &&
+        casted_tensor.getType() == dst.getType()) {
+      SetVarValue(npuirop.dst, casted_tensor);
+      return;
+    }
+
+    mlir::Value result = InsertSlice(
+        casted_tensor, dst,
+        const_cast<llvm::SmallVector<mlir::OpFoldResult>&>(dstR.offs),
+        const_cast<llvm::SmallVector<mlir::OpFoldResult>&>(dstR.sizes),
+        const_cast<llvm::SmallVector<mlir::OpFoldResult>&>(dstR.strides));
+    SetVarValue(npuirop.dst, result);
+    return;
+  }
+
   // 1) Canonicalize copy rank: drop static-1 dims using src_sizes
   llvm::SmallVector<int64_t> ub_alloc_shape =
       ComputeUBAllocShapeFromDstRange(dst_tensor_type_ori, dstR.sizes);
@@ -1707,12 +1744,8 @@ void CodeGenTileLangNPUIRDEV::EmitCopyMemrefToTensor(
         base_ub, fullOffsets, fullSizes, fullStrides, copy_projected, loc);
   }
 
-  // 5) Copy / Load
-  if (use_hivm_load) {
-    builder.create<mlir::hivm::LoadOp>(loc, mlir::TypeRange{}, src_view, ub_view);
-  } else {
-    builder.create<mlir::memref::CopyOp>(loc, src_view, ub_view);
-  }
+  // 5) Copy
+  builder.create<mlir::memref::CopyOp>(loc, src_view, ub_view);
 
   // 6) ToTensor
   mlir::Value loaded_tensor = builder.create<mlir::bufferization::ToTensorOp>(
