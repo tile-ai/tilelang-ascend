@@ -191,8 +191,8 @@ def sparse_attention_fwd(
                                 idx = bi_i % vec0_copy_out_size
                                 task_id = inner_block_id % 2
 
-                                # if bi_i>(2*vec0_copy_out_size) and (bi_i + 1) % vec0_copy_out_size == 0:
-                                #     T.wait_flag("mte3", "mte2", task_id)
+                                if bi_i > (2 * vec0_copy_out_size - 1) and bi_i % vec0_copy_out_size == 0:
+                                    T.wait_flag("mte3", "mte2", task_id)
 
                                 # 从topk中取出一个index索引
                                 index_i = indices_ub_[bi_i + vid * n_base_size_v]
@@ -216,25 +216,8 @@ def sparse_attention_fwd(
                                            inner_block_id * vec0_copy_out_size + vid * n_base_size_v:
                                            (inner_block_id + 1) * vec0_copy_out_size + vid * n_base_size_v, :])
 
-                                    # T.set_flag("mte3", "mte2", task_id)
-
-                            # for bi_i in range(n_base_size // 2):
-                            #     index_i = indices_ub_[bi_i + vid * n_base_size // 2]
-                            #
-                            #     block_idx = index_i // block_size
-                            #     block_i = block_table[b_i, block_idx]
-                            #     block_inter = index_i % block_size
-                            #
-                            #     T.copy(KV[block_i, block_inter, 0, :dim], kv_ub_gather[bi_i, :])
-                            #     T.copy(KV[block_i, block_inter, 0, dim:], kv_rope_ub_gather[bi_i, :])
-                            #
-                            # T.set_flag("mte2", "mte3", 6)
-                            # T.wait_flag("mte2", "mte3", 6)
-                            # T.dump_tensor(kv_ub_gather, 1111, 128)
-                            # T.copy(kv_ub_gather,
-                            #        workspace_1[cid, vid * n_base_size // 2: (vid + 1) * n_base_size // 2, :])
-                            # T.copy(kv_rope_ub_gather,
-                            #        workspace_2[cid, vid * n_base_size // 2: (vid + 1) * n_base_size // 2, :])
+                                    if bi_i < n_base_size_v - 2 * vec0_copy_out_size:
+                                        T.set_flag("mte3", "mte2", task_id)
 
                             # ******************** BMM1(Q*K) ********************
                             T.copy(workspace_1[cid, :, 0:dim], kv_l1)
