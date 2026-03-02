@@ -713,163 +713,6 @@ PyMODINIT_FUNC PyInit___tilelang_launcher(void) {{
 """
 
 
-def generate_npu_utils_src():
-    return """
-#define PY_SSIZE_T_CLEAN
-#include <Python.h>
-
-#include <memory>
-#include <string>
-#include <tuple>
-#include <unordered_map>
-
-#include "runtime/runtime/rt.h"
-
-// Use map to differentiate same name functions from different binary
-static std::unordered_map<std::string, size_t> registered_names;
-static std::unordered_map<std::string, std::unique_ptr<size_t>> func_stubs;
-
-static std::tuple<void *, void *>
-registerKernel(const char *name, const void *data, size_t data_size, int shared,
-               int device, const char *kernel_mode_str) {
-  // name: Kernel Name
-  // data: Pointer to the kernel binary
-  // data_size: The size of binary data
-  // shared: Unused
-  // device: Target Device ID
-  // kernel mod str: Kernel mode string (aiv or others)
-  rtError_t rtRet;
-
-  // Create a binary data structure
-  rtDevBinary_t devbin;
-  devbin.data = data;
-  devbin.length = data_size;
-
-  // Set the modulus according to the kernel mode.
-  const std::string kernel_mode{kernel_mode_str};
-  if (kernel_mode == "aiv")
-    devbin.magic = RT_DEV_BINARY_MAGIC_ELF_AIVEC;
-  else
-    devbin.magic = RT_DEV_BINARY_MAGIC_ELF;
-
-  // Set version number
-  devbin.version = 0;
-
-  rtRet = rtSetDevice(device);
-  if (rtRet != RT_ERROR_NONE) {
-    printf("rtSetDevice failed, 0x%x\\n", rtRet);
-    return {NULL, NULL};
-  }
-
-  // Register binary data, obtain handle
-  void *devbinHandle = NULL;
-  rtRet = rtDevBinaryRegister(&devbin, &devbinHandle);
-  if (rtRet != RT_ERROR_NONE) {
-    printf("rtDevBinaryRegister failed, 0x%x\\n", rtRet);
-    return {NULL, NULL};
-  }
-
-  // Create a unique stub name (avoid naming conflicts)
-  std::string stubName = name;
-  stubName += "_" + std::to_string(registered_names[name]);
-  registered_names[name]++;
-
-  // Perform global mapping and create storage stubs
-  auto registered = func_stubs.emplace(stubName, std::make_unique<size_t>(0));
-  void *func_stub_handle = registered.first->second.get();
-
-  // Register function to associate binary handle with stub
-  rtRet = rtFunctionRegister(devbinHandle, func_stub_handle, stubName.c_str(),
-                             (void *)name, 0);
-  if (rtRet != RT_ERROR_NONE) {
-    printf("rtFunctionRegister failed(stubName = %s), 0x%x\\n", stubName.c_str(),
-           rtRet);
-    return {NULL, NULL};
-  }
-
-  return std::make_tuple(devbinHandle, func_stub_handle);
-}
-
-static PyObject *loadKernelBinary(PyObject *self, PyObject *args) {
-  const char *name;        // kernel name
-  const char *data;        // binary pointer
-  Py_ssize_t data_size;    // binary size
-  int shared;              // shared_memory(meaningless now)
-  int device;              // device ID
-  const char *kernel_mode; // kernel mode
-
-  if (!PyArg_ParseTuple(args, "ss#iis", &name, &data, &data_size, &shared,
-                        &device, &kernel_mode)) {
-    return NULL;
-  }
-
-  auto [module_handle, func_handle] =
-      registerKernel(name, data, data_size, shared, device, kernel_mode);
-
-  uint64_t mod = reinterpret_cast<uint64_t>(module_handle);
-  uint64_t func = reinterpret_cast<uint64_t>(func_handle);
-  if (PyErr_Occurred()) {
-    return NULL;
-  }
-
-  return Py_BuildValue("(KKii)", mod, func, 0, 0);
-}
-
-static PyObject *getArch(PyObject *self, PyObject *args) {
-  char name[64] = {'\\0'};
-
-  rtError_t rtRet = rtGetSocVersion(name, 64);
-
-  if (rtRet != RT_ERROR_NONE) {
-    printf("rtGetSocVersion failed, 0x%x", rtRet);
-    return NULL;
-  }
-  if (PyErr_Occurred()) {
-    return NULL;
-  }
-  return Py_BuildValue("s", name);
-}
-
-static PyObject *getAiCoreNum(PyObject *self, PyObject *args) {
-  uint32_t aiCoreCnt;
-
-  rtError_t rtRet = rtGetAiCoreCount(&aiCoreCnt);
-
-  if (rtRet != RT_ERROR_NONE) {
-    printf("rtGetAiCoreCount failed, 0x%x", rtRet);
-    return NULL;
-  }
-  if (PyErr_Occurred()) {
-    return NULL;
-  }
-  return Py_BuildValue("I", aiCoreCnt);
-}
-
-static PyMethodDef NpuUtilsMethods[] = {
-    {"load_kernel_binary", loadKernelBinary, METH_VARARGS,
-     "Load NPU kernel binary into NPU driver"},
-    {"get_arch", getArch, METH_VARARGS, "Get soc version of NPU"},
-    // sentinel
-    {"get_aicore_num", getAiCoreNum, METH_VARARGS, "Get the number of AI core"},
-    {NULL, NULL, 0, NULL}};
-
-static PyModuleDef ModuleDef = {
-    PyModuleDef_HEAD_INIT, "npu_utils",
-    "Utilities for fetching NPU device info and preparing kernel binary", -1,
-    NpuUtilsMethods};
-
-PyMODINIT_FUNC PyInit_npu_utils(void) {
-  PyObject *m = PyModule_Create(&ModuleDef);
-  if (m == NULL) {
-    return NULL;
-  }
-
-  PyModule_AddFunctions(m, NpuUtilsMethods);
-  return m;
-}
-"""
-
-
 def read_binary_file(file_path, mode="rb", chunk_size=None, return_type="bytes"):
     """
     Function to read a binary file
@@ -1167,10 +1010,16 @@ class compiler_npu:
         self.lock_ini_val = 0
         self._parse_npuir_metadata()
         self.metadata["kernel_src"] = self._npuir_to_bin_enable_npu_compile()
-        self.wrapper_utiles = generate_npu_utils_src()
-        self.so_utils_path = self.make_npu_launcher_stub(
-            "npu_utils", self.wrapper_utiles
-        )
+        # Obtain the npu_utils.so file required for loading the kernel
+        self.so_utils_path = os.path.join(os.getcwd(), "npu_utils.so")
+        if not os.path.isfile(self.so_utils_path):
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            rel_path = "../../src/runtime/npu_utils.cpp"
+            abs_path = os.path.abspath(os.path.join(script_dir, rel_path))
+            self.wrapper_utiles_path = abs_path
+            self.so_utils_path = self.make_npu_launcher_stub(
+                "npu_utils", self.wrapper_utiles_path
+            )
         self.wrapper_src = generate_npu_wrapper_src(
             self.constants,
             self.signature,
@@ -1489,15 +1338,18 @@ class compiler_npu:
                 sys.exit(1)
             return Path(bin_path).read_bytes()
 
-    def make_npu_launcher_stub(self, name: str, source: str, debug=False):
+    def make_npu_launcher_stub(self, name: str, source: Union[str, os.PathLike], debug=False):
         """
         Generate the launcher stub to launch the kernel
         """
         with tempfile.TemporaryDirectory() as tmpdir:
-            src_path = os.path.join(tmpdir, f"{name}.cxx")
-            with open(src_path, "w") as f:
-                f.write(source)
-            so = self._build_npu_ext(name, src_path, tmpdir, kernel_launcher="torch")
+            dst_path = os.path.join(tmpdir, f"{name}.cxx")
+            if os.path.exists(source):
+                shutil.copy(source, dst_path)
+            else:
+                with open(dst_path, 'w') as f:
+                    f.write(source)
+            so = self._build_npu_ext(name, dst_path, tmpdir, kernel_launcher="torch")
             return so
 
     def _get_ascend_path(self):
