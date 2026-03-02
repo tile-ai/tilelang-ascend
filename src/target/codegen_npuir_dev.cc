@@ -1859,9 +1859,19 @@ void CodeGenTileLangNPUIRDEV::EmitCopyMemrefToTensor(
     }
 
     mlir::Type dst_slice_type = dst_slice.getType();
+    auto dst_slice_tensor_ty = dst_slice_type.cast<mlir::RankedTensorType>();
+    llvm::SmallVector<mlir::Value> load_out_dyn_dims;
+    for (int64_t i = 0; i < dst_slice_tensor_ty.getRank(); ++i) {
+      if (dst_slice_tensor_ty.isDynamicDim(i)) {
+        load_out_dyn_dims.push_back(builder.create<mlir::tensor::DimOp>(loc, dst_slice, i));
+      }
+    }
+    mlir::Value load_out_init = builder.create<mlir::tensor::EmptyOp>(
+        loc, dst_slice_tensor_ty.getShape(), dst_slice_tensor_ty.getElementType(),
+        load_out_dyn_dims);
     mlir::TypeRange result_tensors(&dst_slice_type, 1);
     auto loadOp = builder.create<mlir::hivm::LoadOp>(
-        loc, result_tensors, src_tensor, dst_slice);
+        loc, result_tensors, src_tensor, load_out_init);
     mlir::Value loaded_tensor = loadOp->getResult(0);
 
     mlir::Value casted_tensor = CreateCastIfTypeMismatch(loaded_tensor, dst);
@@ -2079,9 +2089,19 @@ void CodeGenTileLangNPUIRDEV::EmitCopyTensorToTensor(
         dst, dstR.offs, dstR.sizes, dstR.strides, srcC.projected, loc);
 
     mlir::Type dst_slice_type = dst_slice.getType();
+    auto dst_slice_tensor_ty = dst_slice_type.cast<mlir::RankedTensorType>();
+    llvm::SmallVector<mlir::Value> load_out_dyn_dims;
+    for (int64_t i = 0; i < dst_slice_tensor_ty.getRank(); ++i) {
+      if (dst_slice_tensor_ty.isDynamicDim(i)) {
+        load_out_dyn_dims.push_back(builder.create<mlir::tensor::DimOp>(loc, dst_slice, i));
+      }
+    }
+    mlir::Value load_out_init = builder.create<mlir::tensor::EmptyOp>(
+        loc, dst_slice_tensor_ty.getShape(), dst_slice_tensor_ty.getElementType(),
+        load_out_dyn_dims);
     mlir::TypeRange result_tensors(&dst_slice_type, 1);
     auto loadOp = builder.create<mlir::hivm::LoadOp>(
-        loc, result_tensors, src_slice, dst_slice);
+        loc, result_tensors, src_slice, load_out_init);
     mlir::Value loaded_tensor = loadOp->getResult(0);
 
     if (OpFoldResultsAllZero(dstR.offs) &&
