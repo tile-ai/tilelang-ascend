@@ -435,8 +435,14 @@ public:
           return StmtMutator::VisitStmt_(op);
         }
         std::string api_name = "";
-        if (call_node_ && call_node_->args[0].as<StringImmNode>()) {
-            api_name = call_node_->args[0].as<StringImmNode>()->value;
+        if (call_node_) {
+            if (const auto* str_imm = call_node_->args[0].as<StringImmNode>()) {
+                api_name = str_imm->value;
+            }
+            if (const auto* op_node = call_node_->op.as<OpNode>();
+                op_node && IsRetainedInBothScopes(op_node->name)) {
+                return GetRef<Stmt>(op);
+            }
         }
         auto found = isSubstringInMap(callnodeMapPos_, api_name);
         // judgement 1
@@ -493,6 +499,19 @@ public:
       }
     }
 
+    bool IsRetainedInBothScopes(const std::string& api_name) {
+        // APIs that do not belong to cube or vec scope,
+        // and should be retained in both generated code paths (e.g. printf).
+        static const std::vector<std::string> kBothScopesApis = {
+            "tl.ascend_printf",
+        };
+        for (const auto& target_api : kBothScopesApis) {
+            if (api_name.find(target_api) != std::string::npos) {
+                return true;
+            }
+        }
+        return false;
+    }
 
 private:
     const bool is_aiv_;
