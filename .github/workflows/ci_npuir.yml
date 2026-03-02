@@ -3,7 +3,7 @@ name: AscendNPU-IR CI
 on:
   pull_request:
     branches:
-      - npuir
+      - npuir-ci-dev
 
 jobs:
 

@@ -2,7 +2,7 @@ name: Build TileLang-Ascend (NPUIR)
 
 on:
   pull_request:
-    branches: [npuir]
+    branches: [npuir-ci-dev]
   issue_comment:
     types: [created]
 
@@ -48,9 +48,9 @@ jobs:
           core.setOutput('target_branch', pr.base.ref);
 
     - name: Validate target branch
-      if: steps.pr-info.outputs.target_branch != 'npuir'
+      if: steps.pr-info.outputs.target_branch != 'npuir-ci-dev'
       run: |
-        echo "::error::PR target branch is '${{ steps.pr-info.outputs.target_branch }}', expected 'npuir'. Skipping."
+        echo "::error::PR target branch is '${{ steps.pr-info.outputs.target_branch }}', expected 'npuir-ci-dev'. Skipping."
         exit 1
 
   prebuild-npuir:
