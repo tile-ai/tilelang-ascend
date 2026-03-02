@@ -87,11 +87,12 @@ def chunk_h_ker(B, H, L, DK, DV, C, BK = None, BV = None, dtype="float16", accum
 				T.copy(G[bz, by, 0], g_ub) # The g value of the whole chunk
 				T.set_flag("mte2", "v", 0)
 				T.wait_flag("mte2", "v", 0)
+				T.set_flag("v", "s", 0)
+				T.wait_flag("v", "s", 0)
 				for i in T.serial(chunk_num): # Calculate hidden state S chunk by chunk
 					T.copy(U[bz, by, i * C + vid * C // VEC_NUM, bx * BV], u_ub_half)
 					T.copy(k_ub_half, k_ub)
 					T.copy(g_ub[vid * C // VEC_NUM : (vid + 1) * C // VEC_NUM], g_v_ub) # The g value of current vector core
-					T.barrier_all()
 					tmp = g_ub[C - 1]
 					for i in T.Parallel(C // VEC_NUM):
 						coeff_ub[i] = g_v_ub[i] - tmp
@@ -131,7 +132,8 @@ def chunk_h_ker(B, H, L, DK, DV, C, BK = None, BV = None, dtype="float16", accum
 					T.copy(k_ub_half, workspace_2[cid, vid * C // VEC_NUM, 0])
 					T.set_cross_flag("MTE3", 1)
 
-					T.barrier_all()
+					T.set_flag("mte3", "s", 0)
+					T.wait_flag("mte3", "s", 0)
 					tmp = g_ub[C - 1]
 					T.tile.mul(s_ub, s_ub, tmp)
 					# s_ub now stores S * exp(g_last)
