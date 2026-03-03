@@ -214,6 +214,10 @@ private:
   std::string platform_;
 
   std::string current_resource_scope_ = ""; // 标识是CUBE还是VEC
+
+  int32_t select_num = 0;
+
+  int32_t reduce_num = 0;
 };
 
 } // namespace codegen
