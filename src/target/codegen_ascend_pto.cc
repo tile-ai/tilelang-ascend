@@ -1769,6 +1769,8 @@ void CodeGenTileLangAscendPto::BinaryVecOpsCodegen(const CallNode *op,
     this->PrintIndent();
     this->stream << "wait_flag(PIPE_V, PIPE_S, EVENT_ID0);\n";
     this->PrintIndent();
+    this->stream << "{\n";
+    this->PrintIndent();
     this->stream << "auto " << scalar_name << " = " << scalar_expr << ";\n";
 
     std::string dst_ub_name = var_names[0];
