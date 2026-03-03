@@ -284,9 +284,9 @@ class BufferAllocationLocator : public StmtExprMutator {
     if (need_extract) {
       // If it's the innermost loop, just rewrite the alloc buffer that we need.
       if (new_block_alloc_bufs.size() && current_for_depth == for_depth - 1 - merge_depth && for_depth != 1) {
-        multi_for_loop = true;
         node.CopyOnWrite()->body = InjectOpaqueBlock(node->body, new_block_alloc_bufs);
       } else if (outer_buffers.size() && current_for_depth == (for_depth - 2 - merge_depth) && multi_for_loop) {
+        multi_for_loop = true;
         // Rewrite the gemm-without-init-related alloc_buffer out one loop level
         node.CopyOnWrite()->body = InjectOpaqueBlock(node->body, outer_buffers);
       } else if (new_block_alloc_bufs.size() && current_for_depth == 0 && !multi_for_loop) {
