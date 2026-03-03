@@ -29,7 +29,7 @@ def elementwise_add(M, N, block_M, block_N, in_dtype="float32", out_dtype="float
 
             T.copy(A[by * block_M, bx * block_N], A_shared)
             T.copy(B[0, bx * block_N], B_shared)
-            T.npuir_add(A_shared[:, :], B_shared[0, :], C_local[:, :])
+            T.vadd(A_shared[:, :], B_shared[0, :], C_local[:, :])
             T.copy(C_local, C_shared)
             T.copy(C_shared, C[by * block_M, bx * block_N])
 

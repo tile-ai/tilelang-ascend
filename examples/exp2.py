@@ -39,7 +39,7 @@ def kernel_exp2(M, N, block_M, block_N, dtype="float16"):
                     by = block_id_n * block_N
 
                     T.copy(A[bx, by], A_VEC)
-                    T.npuir_exp2(A_VEC, B_VEC, Tmp)
+                    T.vexp2(A_VEC, B_VEC, Tmp)
                     T.copy(B_VEC, B[bx, by])
     return main
 

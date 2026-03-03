@@ -38,7 +38,7 @@ def vec_add(block_M, block_N, dtype = "float16"):
                     remain_block_N = T.min(N - by, block_N)
                     T.copy(A[bx : bx + remain_block_M, by : by + remain_block_N], A_VEC)
                     T.copy(B[bx : bx + remain_block_M, by : by + remain_block_N], B_VEC)
-                    T.npuir_add(A_VEC, B_VEC, C_VEC)
+                    T.vadd(A_VEC, B_VEC, C_VEC)
                     T.copy(C_VEC, C[bx : bx + remain_block_M, by : by + remain_block_N])
 
     return main

@@ -43,7 +43,7 @@ def vec_add(M, N, K, block_M, block_N):
                     by = block_id_n * block_N
                     T.copy(A[bx, by], A_VEC)
                     T.copy(B[bx, by], B_VEC)
-                    T.npuir_add(A_VEC, B_VEC, C_VEC)
+                    T.vadd(A_VEC, B_VEC, C_VEC)
                     T.copy(C_VEC, C[bx, by])
 
     return main

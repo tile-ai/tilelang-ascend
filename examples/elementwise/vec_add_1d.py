@@ -34,7 +34,7 @@ def vec_add(N, block_N, dtype="float32"):
             T.copy(A[cid * block_N : cid * block_N + tail_size], A_VEC[0:tail_size])
             T.copy(B[cid * block_N : cid * block_N + tail_size], B_VEC[0:tail_size])
 
-            T.npuir_add(A_VEC, B_VEC, C_VEC)
+            T.vadd(A_VEC, B_VEC, C_VEC)
             T.copy(C_VEC[0:tail_size], C[cid * block_N : cid * block_N + tail_size])
 
     return main

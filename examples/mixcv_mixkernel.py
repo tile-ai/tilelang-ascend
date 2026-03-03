@@ -47,15 +47,15 @@ def minicv(M, N, K, block_M, block_N, dtype="float16", inner_dtype="float32"):
                 t0 = shape_N - by
                 tile_size_N = T.min(block_N, t0)
 
-                T.npuir_load_nd2nz(A[bx, 0], A_BUF, [tile_size_M, K])
-                T.npuir_load_nd2nz(B[0, by], B_BUF, [K, tile_size_N])
+                T.load_nd2nz(A[bx, 0], A_BUF, [tile_size_M, K])
+                T.load_nd2nz(B[0, by], B_BUF, [K, tile_size_N])
 
                 C_BUF = T.alloc_L0C((block_M, block_N), inner_dtype)
-                T.npuir_dot(A_BUF, B_BUF, C_BUF, [tile_size_M, K, tile_size_N], initC = True)
+                T.gemm(A_BUF, B_BUF, C_BUF, [tile_size_M, K, tile_size_N], initC = True)
 
                 with T.rs("PIPE_FIX"):
                     T.sync_block_wait(1)
-                    T.npuir_store_fixpipe(C_BUF, C[bx, by], [tile_size_M, tile_size_N], enable_nz2nd = True)
+                    T.store_fixpipe(C_BUF, C[bx, by], [tile_size_M, tile_size_N], enable_nz2nd = True)
                     T.sync_block_set(0)
 
                 with T.rs("PIPE_FIX"):
@@ -91,7 +91,7 @@ def minicv(M, N, K, block_M, block_N, dtype="float16", inner_dtype="float32"):
                     T.copy(C[bx : bx + tile_size_M, by : by + tile_size_N], C_VEC[0:tile_size_M, 0:tile_size_N])
                     T.sync_block_set(1)
 
-                T.npuir_exp(C_VEC, D_VEC)
+                T.vexp(C_VEC, D_VEC)
                 T.copy(D_VEC[0:tile_size_M, 0:tile_size_N], D[bx : bx + tile_size_M, by : by + tile_size_N])
 
     return main
