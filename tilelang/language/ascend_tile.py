@@ -204,7 +204,7 @@ def topk(dst: Buffer, src: Buffer, tmp: Buffer, block_size: PrimExpr):
     )
 
 
-def gather_mask(dst: Buffer, src: Buffer, num: PrimExpr):
+def gather_mask(dst: Buffer, src: Buffer, src1Pattern: Union[str, Buffer]):
     """Performs a gather mask operation.
 
     This intrinsic invokes the underlying implementation to perform a gather mask
@@ -213,19 +213,40 @@ def gather_mask(dst: Buffer, src: Buffer, num: PrimExpr):
     Args:
         dst: The destination buffer where the result will be stored.
         src: The source buffer containing the input data.
-        num: The parameter specifying the mask count or threshold.
+        src1Pattern: The data collection mask has two modes: built‑in fixed mode and user‑defined mode. 
+                     Currently, only fixed mode is supported.
+        When the built-in fixed mode is enabled, the data type is str, including the following 7 modes:
+            - "P0101": Extract elements at even indices.
+            - "P1010": Extract elements at odd indices.
+            - "P0001": Extract the first element from every four elements.
+            - "P0010": Extract the second element from every four elements.
+            - "P0100": Extract the third element from every four elements.
+            - "P1000": Extract the fourth element from every four elements.
+            - "P1111": Extract all elements.
+        When the built-in fixed mode is enabled, the data type is Buffer.
 
     Returns:
         A TVM intrinsic call that performs the gather mask operation.
     """
-    return tir.call_intrin(
-        "handle",
-        tir.op.Op.get("tl.ascend_gather_mask"),
-        f"GatherMask<{_dtype(dst)}>",
-        dst.access_ptr("w"),
-        src.access_ptr("r"),
-        num,
-    )
+
+    if isinstance(src1Pattern, Buffer):
+        return tir.call_intrin(
+            "handle",
+            tir.op.Op.get("tl.ascend_gather_mask"),
+            f"GatherMask<{_dtype(dst)}>",
+            dst.access_ptr("w"),
+            src.access_ptr("r"),
+            src1Pattern.access_ptr("r"),
+        )
+    else:
+        return tir.call_intrin(
+            "handle",
+            tir.op.Op.get("tl.ascend_gather_mask"),
+            f"GatherMask<{_dtype(dst)}>",
+            dst.access_ptr("w"),
+            src.access_ptr("r"),
+            src1Pattern,
+        )
 
 
 def gatherb(
@@ -387,6 +408,8 @@ def select(
             src1,
             selMode,
             size_0,
+            _dtype(src0),
+            _dtype(selMask),
         )
     else:
         assert selMode in ["VSEL_CMPMASK_SPR", "VSEL_TENSOR_TENSOR_MODE"], (

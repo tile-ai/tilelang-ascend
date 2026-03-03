@@ -72,7 +72,9 @@ def kkt_ker(B, H, L, DK, C, BK = None, dtype="float16", accum_dtype="float"):
 
 				# beta_i * exp(g_i - g_j) = exp(ln(beta_i) + g_i - g_j)
 				T.tile.ln(beta_ub, beta_ub)
+				T.pipe_barrier("v")
 				T.tile.add(g_v_ub, g_v_ub, beta_ub) # g_v_ub now stores ln(beta_i) + g_i
+				T.pipe_barrier("v")
 				T.copy(g_v_ub, g_r_ub[:, 0])
 				T.copy(g_ub, g_c_ub[0, :])
 				T.set_flag("v", "mte2", 0)
