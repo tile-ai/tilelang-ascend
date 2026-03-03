@@ -1156,10 +1156,75 @@ mlir::Value CodeGenTileLangNPUIRAPI::BinaryOpCodegen(const PrimExprNode *op,
 ///   T.copy(T.region(A[bx, by], 1, 128, 256), T.region(A_VEC[0, 0],
 ///   2, 128, 256))
 /// after:
-///   memref.reinterpret_cast; memref.subview; memref.subview;
+///   (default) memref.reinterpret_cast; memref.subview; memref.subview;
 ///   memref.copy
+///   (expert cube path)
+///     - GM -> L1  : hivm.hir.nd2nz
+///     - L0C -> GM : hivm.hir.fixpipe (enable_nz2nd=true)
 void CodeGenTileLangNPUIRAPI::AscendCopyCodegen(const CallNode *op) {
   tvm::tl::AscendCopy npuirop(op->args, this->vmap);
+
+  const std::string src_scope = GetPtrStorageScope(npuirop.src->data);
+  const std::string dst_scope = GetPtrStorageScope(npuirop.dst->data);
+
+  // Expert mode extension:
+  //   T.copy(GM, L1) => nd2nz
+  // Keep GM min_rank=2 to maintain consistent GM rank across calls.
+  if (src_scope == "global" && dst_scope == "shared.dyn") {
+    mlir::Value src = GenRankReducedSubviewFromRegion(
+        npuirop.src, npuirop.src_range, /*min_rank=*/2);
+    mlir::Value dst =
+        GenRankReducedSubviewFromRegion(npuirop.dst, npuirop.dst_range);
+    mlir::UnitAttr dst_continuous = builder.getUnitAttr();
+    builder.create<mlir::hivm::ND2NZOp>(builder.getUnknownLoc(),
+                                        mlir::TypeRange{}, src, dst,
+                                        dst_continuous);
+    return;
+  }
+
+  // Expert mode extension:
+  //   T.copy(L0C, GM) => fixpipe
+  // Defaults match migration intent from explicit npuir_store_fixpipe:
+  //   enable_nz2nd=true, channel_split=false, pre_relu_mode=no_relu.
+  // Keep GM min_rank=2 to maintain consistent GM rank across calls.
+  if (src_scope == "wmma.accumulator" && dst_scope == "global") {
+    mlir::Value src =
+        GenRankReducedSubviewFromRegion(npuirop.src, npuirop.src_range);
+    mlir::Value dst = GenRankReducedSubviewFromRegion(
+        npuirop.dst, npuirop.dst_range, /*min_rank=*/2);
+
+    mlir::UnitAttr enable_nz2nd = builder.getUnitAttr();
+    mlir::hivm::FixpipePreReluMode pre_relu_mode = fixpipe_pre_relu_mode[0];
+    auto src_dtype = npuirop.src->dtype;
+    auto dst_dtype = npuirop.dst->dtype;
+    mlir::hivm::FixpipePreQuantMode pre_quant_mode =
+        mlir::hivm::FixpipePreQuantMode::NO_QUANT;
+    if (src_dtype != dst_dtype) {
+      if (src_dtype == DataType::Float(32) && dst_dtype == DataType::Float(16)) {
+        pre_quant_mode = mlir::hivm::FixpipePreQuantMode::F322F16;
+      } else if (src_dtype == DataType::Float(32) &&
+                 dst_dtype == DataType::BFloat(16)) {
+        pre_quant_mode = mlir::hivm::FixpipePreQuantMode::F322BF16;
+      } else if (src_dtype == DataType::Int(32) &&
+                 dst_dtype == DataType::Int(8)) {
+        pre_quant_mode = mlir::hivm::FixpipePreQuantMode::S322I8;
+      } else {
+        LOG(FATAL) << "Unexpected pre-quant mode in T.copy(L0C, GM).";
+      }
+    }
+    mlir::hivm::FixpipePreQuantModeAttr pre_quant =
+        mlir::hivm::FixpipePreQuantModeAttr::get(builder.getContext(),
+                                                 pre_quant_mode);
+    mlir::hivm::FixpipePreReluModeAttr pre_relu =
+        mlir::hivm::FixpipePreReluModeAttr::get(builder.getContext(),
+                                                pre_relu_mode);
+    mlir::BoolAttr channel_split = builder.getBoolAttr(false);
+    builder.create<mlir::hivm::FixpipeOp>(
+        builder.getUnknownLoc(), mlir::TypeRange{}, src, dst, enable_nz2nd,
+        pre_quant, pre_relu, channel_split);
+    return;
+  }
+
   mlir::Value src_sub_view =
       GenSubviewFromRegion(npuirop.src, npuirop.src_range);
   mlir::Value dst_sub_view =
