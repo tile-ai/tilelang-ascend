@@ -55,7 +55,7 @@ def cube_copy_shape_1d_2d(M, N, block_M, block_N):
             l0_c = T.alloc_L0C((1, block_N), "float32")
 
             with T.Scope("Cube"):
-                for i in T.Parallel(block_M):
+                for i in T.serial(block_M):
                     bx = blockx * block_M + i
                     t0 = shape_N - by
                     tile_size_N = T.min(block_N, t0)
@@ -99,7 +99,7 @@ def cube_copy_shape_2d_3d(M, N, block_M, block_N):
             l0_c = T.alloc_L0C((1, block_N), "float32")
 
             with T.Scope("Cube"):
-                for i in T.Parallel(block_M):
+                for i in T.serial(block_M):
                     bx = blockx * block_M + i
                     t0 = shape_N - by
                     tile_size_N = T.min(block_N, t0)
@@ -143,7 +143,7 @@ def cube_copy_shape_3d_4d(M, N, block_M, block_N):
             l0_c = T.alloc_L0C((1, block_N), "float32")
 
             with T.Scope("Cube"):
-                for i in T.Parallel(block_M):
+                for i in T.serial(block_M):
                     bx = blockx * block_M + i
                     t0 = shape_N - by
                     tile_size_N = T.min(block_N, t0)
