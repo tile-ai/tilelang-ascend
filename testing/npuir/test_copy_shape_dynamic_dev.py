@@ -58,6 +58,23 @@ def copy_shape_2d_3d(M, N, block_M, block_N):
                 
     return copyShape2D3D
 
+
+def copy_dynamic_insert_slice_2d(M, K, block_M):
+    @T.prim_func
+    def copyDynamicInsertSlice2d(
+            A: T.Tensor((M, K), dtype),
+            B: T.Tensor((M, K), dtype),
+            shape_N: T.int32,
+    ):
+        with T.Kernel(T.ceildiv(M, block_M), is_npu=True) as (cid, _):
+            buf = T.alloc_shared((block_M, K), dtype)
+            BLOCK = T.min(block_M, shape_N - cid * block_M)
+            T.copy(A[cid * block_M, 0], buf, size=[BLOCK, K])
+            T.copy(buf, B[cid * block_M, 0], size=[BLOCK, K])
+
+    return copyDynamicInsertSlice2d
+
+
 def test_copy_shape_1d_2d():
     # In the futrue, Developer mode and Expert Mode will transition smoothly without
     # requiring explicit declarations.
@@ -95,10 +112,25 @@ def test_copy_shape_2d_3d():
     torch.testing.assert_close(v2, v_ref, rtol=1e-2, atol=1e-2)
     print("\033[92mAll check passed!\033[0m")
 
+
+def test_copy_dynamic_insert_slice_2d():
+    M, K, block_M = 32, 4, 16
+    shape_n = 27
+    v1 = torch.randn(size=[M, K], dtype=eval("torch." + dtype)).npu()
+    v2 = torch.zeros(size=[M, K], dtype=eval("torch." + dtype)).npu()
+    v_ref = v1.clone()
+    func = copy_dynamic_insert_slice_2d(M, K, block_M)
+    compiled_kernel = tilelang.compile(func, target="npuir")
+    compiled_kernel(v1, v2, shape_n)
+    torch.testing.assert_close(v2[:shape_n, :], v_ref[:shape_n, :], rtol=1e-2, atol=1e-2)
+    print("\033[92mcopy_dynamic_insert_slice_2d check passed!\033[0m")
+
+
 if __name__ == "__main__":
 
     os.environ['TILELANG_ASCEND_MODE'] = 'Developer'
 
     test_copy_shape_1d_2d()
     test_copy_shape_2d_3d()
+    test_copy_dynamic_insert_slice_2d()
 

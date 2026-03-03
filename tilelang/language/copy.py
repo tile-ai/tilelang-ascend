@@ -144,31 +144,37 @@ def copy(
         extent = list(size)
     else:
         assert src_extent or dst_extent, "Can't deduce copy extents from args"
-        # When one side is BufferLoad (extent=None), use the other side's extent
-        # for block copy.
-        if src_extent is None and dst_extent is not None:
-            extent = list(dst_extent)
-        elif dst_extent is None and src_extent is not None:
-            extent = list(src_extent)
-        else:
-            extent = []
-            for se, de in zip(src_extent, dst_extent):
-                if isinstance(se, tir.IntImm) and isinstance(de, tir.IntImm):
-                    extent.append(se if se.value >= de.value else de)
-                elif isinstance(se, tir.IntImm):
-                    extent.append(de)
-                else:
-                    extent.append(se)
+        max_len = max(len(src_extent or []), len(dst_extent or []))
+        src_extent = [1] * (max_len - len(src_extent)) + list(src_extent) if src_extent else [1] * max_len
+        dst_extent = [1] * (max_len - len(dst_extent)) + list(dst_extent) if dst_extent else [1] * max_len
+        extent = []
+        for se, de in zip(src_extent, dst_extent):
+            sv = getattr(se, "value", se)
+            dv = getattr(de, "value", de)
+            if isinstance(sv, int) and isinstance(dv, int):
+                extent.append(se if sv >= dv else de)
+            elif isinstance(sv, int) and sv == 1:
+                extent.append(de)
+            elif isinstance(dv, int) and dv == 1:
+                extent.append(se)
+            else:
+                extent.append(se)
 
     def _to_region(data, access_type):
         if isinstance(data, tir.Var) and T.has_let_value(data):
             data = T.get_let_value(data)
         if isinstance(data, tir.Buffer):
-            return buffer_to_tile_region(data, access_type)
+            ndim = len(data.shape)
+            trailing = extent[-ndim:] if len(extent) >= ndim else extent
+            return buffer_load_to_tile_region(
+                T.BufferLoad(data, [0] * ndim), access_type, trailing)
         elif isinstance(data, tir.BufferRegion):
-            return buffer_region_to_tile_region(data, access_type, extent)
+            return buffer_region_to_tile_region(
+                data, access_type, [x.extent for x in data.region])
         else:
-            return buffer_load_to_tile_region(data, access_type, extent)
+            ndim = len(data.buffer.shape)
+            trailing = extent[-ndim:] if len(extent) >= ndim else extent
+            return buffer_load_to_tile_region(data, access_type, trailing)
 
     src = _to_region(src, "r")
     dst = _to_region(dst, "w")
