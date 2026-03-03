@@ -26,7 +26,7 @@ tilelang.cache.clear_cache()
 # Kernel builders
 # ---------------------------------------------------------------------------
 
-@tilelang.jit(out_idx=[-1], target="npuir")
+@tilelang.jit(target="npuir")
 def cube_sliced_copy_2d(M, N, idx, dtype="float16", accum_dtype="float32"):
     @T.prim_func
     def main(
@@ -59,7 +59,7 @@ def cube_sliced_copy_2d(M, N, idx, dtype="float16", accum_dtype="float32"):
     return main
 
 
-@tilelang.jit(out_idx=[-1], target="npuir")
+@tilelang.jit(target="npuir")
 def cube_sliced_copy_3d(B, M, N, b_idx, m_idx, dtype="float16", accum_dtype="float32"):
     @T.prim_func
     def main(
@@ -92,7 +92,7 @@ def cube_sliced_copy_3d(B, M, N, b_idx, m_idx, dtype="float16", accum_dtype="flo
     return main
 
 
-@tilelang.jit(out_idx=[-1], target="npuir")
+@tilelang.jit(target="npuir")
 def cube_sliced_copy_4d(B, H, M, N, b_idx, h_idx, m_idx, dtype="float16", accum_dtype="float32"):
     @T.prim_func
     def main(

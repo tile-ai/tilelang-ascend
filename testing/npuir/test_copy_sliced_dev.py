@@ -10,7 +10,7 @@ tilelang.cache.clear_cache()
 # ==========================================
 # 2D Kernel & Test
 # ==========================================
-@tilelang.jit(out_idx=[-1], target="npuir")
+@tilelang.jit(target="npuir")
 def test_slice_copy_2d(block_M, block_N, idx, idx2, dtype="float16"):
     @T.prim_func
     def main(
@@ -116,7 +116,7 @@ def test_2d():
 # ==========================================
 # 3D Kernel & Test
 # ==========================================
-@tilelang.jit(out_idx=[-1], target="npuir")
+@tilelang.jit(target="npuir")
 def test_slice_copy_3d(B, M, N, idx, idx2, dtype="float16"):
     @T.prim_func
     def main(
@@ -211,7 +211,7 @@ def test_3d():
 # ==========================================
 # 4D Kernel & Test
 # ==========================================
-@tilelang.jit(out_idx=[-1], target="npuir")
+@tilelang.jit(target="npuir")
 def test_slice_copy_4d(B, H, M, N, idx_b, idx_h, idx_b2, idx_h2, dtype="float16"):
     @T.prim_func
     def main(

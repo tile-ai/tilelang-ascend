@@ -11,7 +11,7 @@ tilelang.cache.clear_cache()
 # 4D Strided Kernel & Test (FIXED)
 # Pattern: [Scalar, Slice, Scalar, Slice]
 # ==========================================
-@tilelang.jit(out_idx=[-1], target="npuir")
+@tilelang.jit(target="npuir")
 def test_strided_copy_4d_kernel(
     B, S, H, D,        # Shape (Constants)
     S_blk, D_blk,      # Block Sizes (Constants)
@@ -89,7 +89,7 @@ def test_4d_strided():
 # Pattern: [Scalar, Scalar, Slice, Scalar, Slice]
 # Optimization: Merge idx_0 and idx_1 to avoid 16-arg limit
 # ==========================================
-@tilelang.jit(out_idx=[-1], target="npuir")
+@tilelang.jit(target="npuir")
 def test_strided_copy_5d_kernel(
     D0, D1, D2, D3, D4, # Shape (Constants)
     Blk_2, Blk_4,       # Block Sizes (Constants)
