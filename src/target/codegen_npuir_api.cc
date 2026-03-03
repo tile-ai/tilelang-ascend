@@ -952,12 +952,9 @@ mlir::Value CodeGenTileLangNPUIRAPI::GenRankReducedSubviewFromRegion(
   }
   const VarNode *v = buffer_data->data.get();
   mlir::Value v_value = GetVarValue(v);
-
-  // Fast path: when Region exactly matches the buffer with zero offsets we can
-  // return the original memref directly (no subview).
-  if (IsEqual(buffer_data->shape, region_shape) && AllZero(region_indices)) {
-    return v_value;
-  }
+  // Full-region marker used for fast path after rank-reduction shape is known.
+  const bool is_full_region =
+      IsEqual(buffer_data->shape, region_shape) && AllZero(region_indices);
 
   SmallVector<OpFoldResult> offsets;
   SmallVector<OpFoldResult> sizes;
@@ -1020,6 +1017,14 @@ mlir::Value CodeGenTileLangNPUIRAPI::GenRankReducedSubviewFromRegion(
   // Fallback: if all dims are static-1 and min_rank <= 1, keep one dim=1
   if (projectedReducedShape.empty()) {
     projectedReducedShape.push_back(1);
+  }
+
+  // Fast path: only reuse the original memref when no rank reduction is needed.
+  // For full-region slices like [1, 1, 32], we must still build a rank-reduced
+  // subview (e.g. 1x32) so Cube nd2nz/fixpipe keep the expected operand rank.
+  if (is_full_region &&
+      static_cast<int64_t>(projectedReducedShape.size()) == baseTy.getRank()) {
+    return v_value;
   }
 
   // Infer the rank-reduced memref type and create the SubViewOp.
