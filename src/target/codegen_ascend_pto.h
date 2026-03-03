@@ -107,6 +107,8 @@ private:
 
   void GatherbCodegen(const CallNode *op, const std::string &op_name);
 
+  void GatherMaskCodegen(const CallNode *op, const std::string &op_name);
+
   void PowCodegen(const CallNode *op);
 
   void Sort32Codegen(const CallNode *op, const std::string &op_name);
