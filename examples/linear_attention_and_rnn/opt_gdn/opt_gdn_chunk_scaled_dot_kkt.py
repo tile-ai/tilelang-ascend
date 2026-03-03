@@ -11,7 +11,7 @@ Gamma_{i,j} = exp(g_i - g_j)
 
 pass_configs = {
 	tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
-	tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
+	tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: False,
 }
 
 @tilelang.jit(out_idx=[-1], workspace_idx=[-2], pass_configs=pass_configs)

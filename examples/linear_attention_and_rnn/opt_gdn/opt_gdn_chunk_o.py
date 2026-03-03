@@ -11,7 +11,7 @@ Calculate output, given chunk-by-chunk hidden state
 
 pass_configs = {
 	tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
-	tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
+	tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: False,
 }
 
 @tilelang.jit(out_idx=[-1], workspace_idx=[-4, -3, -2], pass_configs=pass_configs)
