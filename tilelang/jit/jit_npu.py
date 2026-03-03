@@ -1301,6 +1301,19 @@ class compiler_npu:
             except Exception as e:
                 print(f"error: {str(e)}")
                 sys.exit(1)
+
+            if not Path(bin_path).exists():
+                err_lines = [
+                    "AscendNPU IR compile reported success but output object was not generated.",
+                    f"Expected output: {bin_path}",
+                    f"cmd: {' '.join(cmd_list)}",
+                ]
+                if ret.stdout:
+                    err_lines.append(f"stdout:\n{ret.stdout}")
+                if ret.stderr:
+                    err_lines.append(f"stderr:\n{ret.stderr}")
+                raise RuntimeError("\n".join(err_lines))
+
             return Path(bin_path).read_bytes()
 
     def make_npu_launcher_stub(self, name: str, source: Union[str, os.PathLike], debug=False):
