@@ -1451,6 +1451,7 @@ class compiler_npu:
             Path(ttadapter_path).write_text(linalg)
             bin_file = os.path.join(tmpdir, "kernel")
             bin_path = os.path.join(tmpdir, "kernel.o")
+            so_path = os.path.join(tmpdir, "libkernel.so")
             
             # Hot fix for CANN 8.5
             # Run --adapt-triton-kernel pass before running compilation pipeline
