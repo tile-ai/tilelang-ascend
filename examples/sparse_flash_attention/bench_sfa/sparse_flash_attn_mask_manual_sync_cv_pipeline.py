@@ -4,6 +4,8 @@ import torch
 import os
 import sys
 
+from tilelang.intrinsics import make_zn_layout
+
 parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.append(parent_dir)
 
@@ -77,6 +79,9 @@ def sparse_attention_fwd(
     n_base_size_v = n_base_size // 2
     vec0_copy_out_size = 16
 
+    n_num = 2
+    block_k = T.ceildiv(n_base_size, n_num)
+
     @T.prim_func
     def main_pipelined(
             Q: T.Tensor(q_shape, dtype),  # type: ignore
@@ -100,8 +105,9 @@ def sparse_attention_fwd(
             kv_tail_l1 = T.alloc_L1([n_base_size, rope_dim], dtype)
             acc_s_l1 = T.alloc_L1([m_base_size, n_base_size], dtype)
 
-            acc_s_l0c = T.alloc_L0C([m_base_size, n_base_size], accum_dtype)
             acc_o_l0c = T.alloc_L0C([m_base_size, dim], accum_dtype)
+
+            acc_s_l0c = T.alloc_L0C([m_base_size, n_base_size], accum_dtype)
 
             ## 2. Vector
             acc_o = T.alloc_ub([m_base_size_v, dim], accum_dtype)
@@ -113,9 +119,6 @@ def sparse_attention_fwd(
 
             kv_ub_gather = T.alloc_ub([2, vec0_copy_out_size, dim], dtype)
             kv_rope_ub_gather = T.alloc_ub([2, vec0_copy_out_size, rope_dim], dtype)
-
-            # kv_ub_gather = T.alloc_ub([n_base_size, dim], dtype)
-            # kv_rope_ub_gather = T.alloc_ub( [n_base_size, rope_dim], dtype)
 
             acc_s_ub = T.alloc_ub([m_base_size_v, n_base_size], accum_dtype)
             m_i_prev = T.alloc_ub([m_base_size_v, 1], accum_dtype)
@@ -160,7 +163,6 @@ def sparse_attention_fwd(
                     H1 = H0 + m_base_size
                     act_q_len = actual_q_len[b_i]
                     actual_len = actual_kv_len[b_i]
-                    # T.printf("act_q_len=%ld \n", act_q_len)
 
                     if s_i < act_q_len:
                         # 初始化操作
@@ -171,12 +173,9 @@ def sparse_attention_fwd(
                         T.tile.fill(sumexp, 0.0)
                         T.tile.fill(m_i, -2.0 ** 30)
 
-                        # T.set_flag("mte3", "mte2", 0)
-                        # T.set_flag("mte3", "mte2", 1)
-
                         # s2轴切分
-                        for i_i in T.serial(n_block_num):
-                            # for i_i in T.Pipelined(n_block_num, num_stages=2):
+                        # for i_i in T.serial(n_block_num):
+                        for i_i in T.Pipelined(n_block_num, num_stages=2):
                             # ******************** V0(处理topk) ********************
                             T.copy(Indices[s_i, g_i, i_i * n_base_size:i_i * n_base_size + n_base_size], indices_ub_)
                             T.set_flag("mte2", "v", 5)
@@ -236,12 +235,12 @@ def sparse_attention_fwd(
 
                             # ******************** V1 ********************
                             T.tile.fill(acc_s_ub_, 0.0)
-
                             for i in T.serial(m_base_size_v):
                                 T.tile.select(acc_s_ub[i, :], mask_ub, acc_s_ub_[i, :], -T.infinity(accum_dtype),
                                               "VSEL_TENSOR_SCALAR_MODE")
-
                             T.copy(m_i, m_i_prev)
+
+                            # T.barrier_all()  # 需优化
 
                             T.copy(
                                 workspace_3[cid, vid * m_base_size_v:vid * m_base_size_v + m_base_size_v, :],
@@ -249,7 +248,6 @@ def sparse_attention_fwd(
 
                             T.set_flag("mte2", "v", 0)
                             T.wait_flag("mte2", "v", 0)
-
                             T.tile.add(acc_s_ub, acc_s_ub, acc_s_ub_)
                             T.pipe_barrier("v")
 
@@ -287,8 +285,12 @@ def sparse_attention_fwd(
                             T.pipe_barrier("v")
 
                             T.copy(acc_s_ub, acc_s_half)
+                            T.pipe_barrier("v")
+
                             T.set_flag("v", "mte3", 1)
                             T.wait_flag("v", "mte3", 1)
+
+                            # T.dump_tensor(acc_s_half, 111, 513)
 
                             T.copy(
                                 acc_s_half, workspace_4[cid,
@@ -307,6 +309,7 @@ def sparse_attention_fwd(
                             T.copy(
                                 workspace_5[cid, vid * m_base_size_v:vid * m_base_size_v + m_base_size_v, :],
                                 acc_o_ub)
+
                             T.tile.broadcast(m_i_prev_broadcast, m_i_prev, tmp_ub)
                             T.pipe_barrier("v")
 
@@ -330,9 +333,6 @@ def sparse_attention_fwd(
                         T.wait_flag("v", "mte3", 9)
                         T.copy(acc_o_half, Output[b_i, s_i, H0 + vid * m_base_size_v:H1 + vid * m_base_size_v, :])
 
-                        # T.wait_flag("mte3", "mte2", 0)
-                        # T.wait_flag("mte3", "mte2", 1)
-
     return main_pipelined
 
 
@@ -346,9 +346,10 @@ def sparse_attn_tilelang(
         query, key, value, sparse_indices, scale_value, sparse_block_size,
         actual_seq_lengths_query, actual_seq_lengths_kv,
         query_rope=None, key_rope=None,
-        layout_query='BSND', layout_kv='BSND', sparse_mode=3, block_table=None):
+        layout_query='BSND', layout_kv='BSND', sparse_mode=3, block_table=None, attention_mode=None):
     query = query.unsqueeze(0)
     query_rope = query_rope.unsqueeze(0)
+    print(query.shape)
     block_num, block_size, num_head_kv, dim = key.size()
     # print("query_rope.shape=",query_rope.shape)
     # print("key_rope.shape=",key_rope.shape)
