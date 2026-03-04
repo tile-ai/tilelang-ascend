@@ -631,5 +631,37 @@ AICORE PTO_INLINE void TROWEXPAND_with_slice_buffer(
 
   pto::TROWEXPAND(dst, src_temp_ub);
 }
+template<pipe_t pipe> 
+AICORE PTO_INLINE void set_cross_flag(int32_t flag) {
+    int mode = 2;
+    int config = 1 | (mode << 4) | (flag << 8);
+    ffts_cross_core_sync(pipe, config);
+}
+
+template<pipe_t pipe> 
+AICORE PTO_INLINE void set_intra_block_cube(int32_t flag) {
+    set_intra_block(pipe, flag);
+    set_intra_block(pipe, flag + 16);
+}
+
+template<pipe_t pipe> 
+AICORE PTO_INLINE void set_intra_block_vec(int32_t flag) {
+    set_intra_block(pipe, flag);
+}
+
+AICORE PTO_INLINE void wait_cross_flag(int32_t flag) {
+    wait_flag_dev(flag);
+}
+
+template<pipe_t pipe> 
+AICORE PTO_INLINE void wait_intra_block_cube(int32_t flag) {
+    wait_intra_block(pipe, flag);
+    wait_intra_block(pipe, flag + 16);
+}
+
+template<pipe_t pipe> 
+AICORE PTO_INLINE void wait_intra_block_vec(int32_t flag) {
+    wait_intra_block(pipe, flag);
+}
 }
 #endif
