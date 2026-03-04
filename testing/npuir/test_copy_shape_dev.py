@@ -1,20 +1,24 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2025.
-import os
+import pytest
 import torch
+import torch_npu  # noqa: F401
+
 import tilelang
 import tilelang.language as T
 
+from testcommon import ascend_mode, assert_close, gen_tensor
 
-tilelang.cache.clear_cache()
-dtype="float16"
+
+dtype = "float16"
+
 
 def copy_shape_1d_2d(M, N, block_M, block_N):
-
     @T.prim_func
     def copyShape(
-            A: T.Tensor((M, N), dtype),
-            B: T.Tensor((M, N), dtype),
-            shape_M: T.int32, shape_N: T.int32,
+        A: T.Tensor((M, N), dtype),
+        B: T.Tensor((M, N), dtype),
+        shape_M: T.int32,
+        shape_N: T.int32,
     ):
         with T.Kernel(T.ceildiv(M, block_M) * T.ceildiv(N, block_N), is_npu=True) as (cid, _):
             blockx = cid // T.ceildiv(N, block_N)
@@ -25,19 +29,17 @@ def copy_shape_1d_2d(M, N, block_M, block_N):
 
             for i in T.serial(block_M):
                 bx = blockx * block_M + i
-                T.copy(A[bx, by:by+block_N], A_BUF)
-                T.copy(A_BUF, B[bx, by:by+block_N])
+                T.copy(A[bx, by:by + block_N], A_BUF)
+                T.copy(A_BUF, B[bx, by:by + block_N])
 
     return copyShape
 
-def copy_shape_2d_3d(M, N, block_M, block_N):
-    m_num = M // block_M
-    n_num = N // block_N
 
+def copy_shape_2d_3d(M, N, block_M, block_N):
     @T.prim_func
     def copyShape2D3D(
-            A: T.Tensor((1, M, N), dtype),
-            B: T.Tensor((1, M, N), dtype),
+        A: T.Tensor((1, M, N), dtype),
+        B: T.Tensor((1, M, N), dtype),
     ):
         with T.Kernel(T.ceildiv(M, block_M) * T.ceildiv(N, block_N), is_npu=True) as (cid, _):
             blockx = cid // T.ceildiv(N, block_N)
@@ -47,52 +49,47 @@ def copy_shape_2d_3d(M, N, block_M, block_N):
             A_BUF = T.alloc_shared((1, block_N), dtype)
 
             for i in T.serial(block_M):
-                bx = blockx * block_M + i  
-                T.copy(A[0, bx, by:by+block_N], A_BUF)
-                T.copy(A_BUF, B[0, bx, by:by+block_N])
-                
+                bx = blockx * block_M + i
+                T.copy(A[0, bx, by:by + block_N], A_BUF)
+                T.copy(A_BUF, B[0, bx, by:by + block_N])
+
     return copyShape2D3D
 
-def test_copy_shape_1d_2d():
-    # In the futrue, Developer mode and Expert Mode will transition smoothly without
-    # requiring explicit declarations.
-    torch.npu.set_device(0)
+
+@pytest.mark.copy
+@pytest.mark.op("copy_shape")
+@pytest.mark.dtype("float16")
+@pytest.mark.mode("Developer")
+def test_copy_shape_1d_2d_dev():
     M = 256
     N = 1024
-    v1 = torch.randn(size=[M, N], dtype=eval("torch." + dtype)).npu()
-    v2 = torch.zeros(size=[M, N], dtype=eval("torch." + dtype)).npu()
+    v1 = gen_tensor((M, N), dtype, kind="randn")
+    v2 = gen_tensor((M, N), dtype, kind="zeros")
     v_ref = v1.clone()
-    func = copy_shape_1d_2d(M, N, block_M=32, block_N=32)
-    compiled_kernel = tilelang.compile(func, target="npuir")
-    
-    compiled_kernel(v1, v2, M, N)
-    print(v_ref)
-    print(v2)
-    torch.testing.assert_close(v2, v_ref, rtol=1e-2, atol=1e-2)
-    print("\033[92mAll check passed!\033[0m")
 
-def test_copy_shape_2d_3d():
-    # In the futrue, Developer mode and Expert Mode will transition smoothly without
-    # requiring explicit declarations.
+    with ascend_mode("Developer"):
+        func = copy_shape_1d_2d(M, N, block_M=32, block_N=32)
+        compiled_kernel = tilelang.compile(func, target="npuir")
+        compiled_kernel(v1, v2, M, N)
+
+    assert_close(v2.cpu(), v_ref.cpu(), dtype=dtype, rtol=1e-2, atol=1e-2)
+
+
+@pytest.mark.copy
+@pytest.mark.op("copy_shape")
+@pytest.mark.dtype("float16")
+@pytest.mark.mode("Developer")
+def test_copy_shape_2d_3d_dev():
     M = 256
     N = 1024
-    # In the futrue, it will be optimized to automatically derive the workspace size.
-    func = copy_shape_2d_3d(M, N, 32, 32)
-    compiled_kernel = tilelang.compile(func, target="npuir")
 
-    v1 = torch.randn(size=[1, M, N], dtype=eval("torch." + dtype)).npu()
-    v2 = torch.randn(size=[1, M, N], dtype=eval("torch." + dtype)).npu()
-    v_ref = v1.clone()
-    compiled_kernel(v1, v2)
+    with ascend_mode("Developer"):
+        func = copy_shape_2d_3d(M, N, 32, 32)
+        compiled_kernel = tilelang.compile(func, target="npuir")
 
-    print(v_ref)
-    print(v2)
-    torch.testing.assert_close(v2, v_ref, rtol=1e-2, atol=1e-2)
-    print("\033[92mAll check passed!\033[0m")
+        v1 = gen_tensor((1, M, N), dtype, kind="randn")
+        v2 = gen_tensor((1, M, N), dtype, kind="randn")
+        v_ref = v1.clone()
+        compiled_kernel(v1, v2)
 
-if __name__ == "__main__":
-
-    os.environ['TILELANG_ASCEND_MODE'] = 'Developer'
-
-    test_copy_shape_1d_2d()
-    test_copy_shape_2d_3d()
+    assert_close(v2.cpu(), v_ref.cpu(), dtype=dtype, rtol=1e-2, atol=1e-2)
