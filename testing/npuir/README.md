@@ -65,11 +65,11 @@ pytest testing/npuir --seed=123
 Filter by `@pytest.mark.op("...")` values (comma-separated):
 
 ```bash
-pytest testing/npuir --op=copy_simple
-pytest testing/npuir --op=copy_sliced,copy_strided
+pytest testing/npuir --op=copy
+pytest testing/npuir --op=copy,sigmoid
 ```
 
-If a test has no `op` marker, fallback matching uses `nodeid` substring.
+If a test has no `op` marker, fallback infers op from test name pattern `test_*_...` (the `*` part).
 
 ### `--dtype`
 
@@ -93,7 +93,7 @@ pytest testing/npuir --mode=Expert
 All filters are combined with logical AND:
 
 ```bash
-pytest testing/npuir --op=copy_sliced --dtype=float16 --mode=Developer --npu-device=0
+pytest testing/npuir --op=copy --dtype=float16 --mode=Developer --npu-device=0
 ```
 
 ## Marker Usage In Tests
@@ -101,7 +101,7 @@ pytest testing/npuir --op=copy_sliced --dtype=float16 --mode=Developer --npu-dev
 Recommended markers per test:
 
 - `@pytest.mark.copy` (category marker)
-- `@pytest.mark.op("copy_xxx")` (op identity)
+- `@pytest.mark.op("copy")` (op identity for all `test_copy_*`)
 - `@pytest.mark.dtype("float16")` (dtype identity)
 - `@pytest.mark.mode("Developer")` (when mode-specific)
 
@@ -110,13 +110,7 @@ Recommended markers per test:
 Current `test_copy_*` files already support this infra and can be filtered directly, e.g.:
 
 ```bash
-pytest testing/npuir --op=copy_shape_dynamic
-pytest testing/npuir --op=copy_shape_dynamic_cube
-pytest testing/npuir --op=copy_simple
-pytest testing/npuir --op=copy_sliced
-pytest testing/npuir --op=copy_sliced_cube
-pytest testing/npuir --op=copy_sliced_extended
-pytest testing/npuir --op=copy_strided
+pytest testing/npuir --op=copy
 ```
 
 ## Practical CI Examples
@@ -130,11 +124,11 @@ pytest testing/npuir -k "copy_" --npu-device=0 --seed=42
 Mode-specific smoke:
 
 ```bash
-pytest testing/npuir --op=copy_simple,copy_sliced --mode=Developer --npu-device=0
+pytest testing/npuir --op=copy --mode=Developer --npu-device=0
 ```
 
 Generate JUnit XML:
 
 ```bash
-pytest testing/npuir --op=copy_sliced --junitxml=report-copy-sliced.xml
+pytest testing/npuir --op=copy --junitxml=report-copy.xml
 ```
