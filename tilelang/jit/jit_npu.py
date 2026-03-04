@@ -264,7 +264,7 @@ def extract_device_print_code_from_cann():
     ])
 
 
-def generate_npu_wrapper_src(constants, signature, workspace_size, mix_mode, lock_num, lock_ini_val):
+def generate_npu_wrapper_src(constants, signature, workspace_size, mix_mode, lock_num, lock_ini_val, need_debug):
     def _ty_to_cpp(ty):
         if ty[0] == "*":
             return "void*"
@@ -516,7 +516,7 @@ extern "C" {
 #include <vector>
 #define PY_SSIZE_T_CLEAN
 #include <Python.h>
-#define __CCE_ENABLE_PRINT__
+{'#define __CCE_ENABLE_PRINT__' if need_debug else ''}
 {'#include <torch_npu/csrc/framework/OpCommand.h>' if enable_taskqueue else ''}
 #include "runtime/runtime/rt.h"
 {extract_device_print_code_from_cann()}
@@ -987,6 +987,7 @@ class compiler_npu:
         self.metadata["out_idx"] = out_idx
         self.metadata["param_info"] = param_info
         self.mod, self.metadata["symbolic"] = _symbolic_var_promoter_pass(mod)
+        self.need_debug = self.check_debug_op(self.mod)
         # get grid message
         self._parse_grid()
         mlir_path = lower(self.mod)
@@ -1027,6 +1028,7 @@ class compiler_npu:
             self.metadata["mix_mode"],
             self.lock_num,
             self.lock_ini_val,
+            self.need_debug,
         )
         self.so_launcher_path = self.make_npu_launcher_stub(
             self.metadata["kernel_name"], self.wrapper_src
@@ -1426,3 +1428,20 @@ class compiler_npu:
             return so_path
         else:
             raise RuntimeError("Failed to compile " + src_path)
+
+    def check_debug_op(self, func) -> bool:
+        """
+        Check if there are debug operations in the func, we only need to print debug info
+        in the device side when there are debug operations in the func, otherwise it may cause performance loss.
+        """
+        assert isinstance(func, PrimFunc), "Expected func to be a PrimFunc"
+
+        found = False
+
+        def visit(node):
+            nonlocal found
+            if isinstance(node, tir.Call) and 'debug' in node.op.name:
+                found = True
+
+        tir.stmt_functor.post_order_visit(func.body, visit)
+        return found
