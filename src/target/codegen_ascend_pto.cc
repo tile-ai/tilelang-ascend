@@ -1126,33 +1126,86 @@ void CodeGenTileLangAscendPto::GemmV0Codegen(const CallNode *op) {
   uint32_t kL0split = (K + kL0Size - 1) / kL0Size;  // 切片数量
   uint32_t kL0Tail = K - (kL0split - 1) * kL0Size;  // 最后一块大小
 
-  if (prefetch_n_stages_map_[a_name].first > 0) {
-    auto a_k = op->args[1].as<CallNode>()->args[2] / op->args[1].as<CallNode>()->args[3];
+  auto a_shape = buffer_shapess_[GetRef<tir::Var>(a_var)];
+  auto b_shape = buffer_shapess_[GetRef<tir::Var>(b_var)];
+  auto c_shape = buffer_shapess_[GetRef<tir::Var>(c_var)];
+
+  bool a_buffer_in_pipeline = false;
+  if (buffer_versions_.count(GetRef<tir::Var>(a_var))) {
+    if (!is_one(buffer_versions_[GetRef<tir::Var>(a_var)])) {
+      a_buffer_in_pipeline = true;
+    }
+  } else if (a_shape.size() == 3) {
+    a_buffer_in_pipeline = true;
+  }
+
+  bool b_buffer_in_pipeline = false;
+  if (buffer_versions_.count(GetRef<tir::Var>(b_var))) {
+    if (!is_one(buffer_versions_[GetRef<tir::Var>(b_var)])) {
+      b_buffer_in_pipeline = true;
+    }
+  } else if (b_shape.size() == 3) {
+    b_buffer_in_pipeline = true;
+  }
+
+  bool c_buffer_in_pipeline = false;
+  if (buffer_versions_.count(GetRef<tir::Var>(c_var))) {
+    if (!is_one(buffer_versions_[GetRef<tir::Var>(c_var)])) {
+      c_buffer_in_pipeline = true;
+    }
+  } else if (c_shape.size() == 3) {
+    c_buffer_in_pipeline = true;
+  }
+
+  // std::map<std::string, std::string> params = extractTemplateParams(op_name);
+  std::string data_type_input = params["data_type_input"];
+  this->stream << kAscendPtoScope << "gemm_v0" << "<"
+               << params["data_type_input"] << ", "
+               << params["data_type_output"] << ", "
+               << GetValidShape(std::stoi(params["M"]), data_type_input) << ", "
+               << GetValidShape(std::stoi(params["N"]), data_type_input) << ", "
+               << GetValidShape(std::stoi(params["K"]), data_type_input) << ", "
+               << params["M"] << ", " << params["N"] << ", " << params["K"]
+               << ", " << kL0Tail << ", " << params["transpose_A"] << ", "
+               << params["transpose_B"] << ">" << "(";
+
+  if (a_buffer_in_pipeline) {
+    auto a_k = op->args[2].as<CallNode>()->args[2] /
+               op->args[2].as<CallNode>()->args[3];
     tvm::arith::Analyzer analyzer;
     PrimExpr simplified_a_k = analyzer.Simplify(a_k);
-    auto b_k = op->args[2].as<CallNode>()->args[2] / op->args[2].as<CallNode>()->args[3];
-    PrimExpr simplified_b_k = analyzer.Simplify(b_k);
+    auto buffer_name = a_name + "[" + PrintExpr(simplified_a_k) + "]";
 
-    std::map<std::string, std::string> params = extractTemplateParams(op_name);
-    std::string data_type_input = params["data_type_input"];
-    this->stream << kAscendPtoScope << "gemm_v0" << "<" <<  params["data_type_input"] << ", " << params["data_type_output"] << ", "
-    << GetValidShape(std::stoi(params["M"]), data_type_input) << ", "
-    << GetValidShape(std::stoi(params["N"]), data_type_input) << ", "
-    << GetValidShape(std::stoi(params["K"]), data_type_input) << ", "
-    << params["M"] << ", " << params["N"] << ", " << params["K"] << ", " << kL0Tail << ", "
-    << params["transpose_A"] << ", " << params["transpose_B"] << ">"
-    << "(" << a_name << "[" << simplified_a_k << "], " << b_name << "[" << simplified_a_k << "], " << c_name << ", " << PrintExpr(op->args[4]) << ");\n";
+    this->stream << buffer_name << ", ";
   } else {
-    std::map<std::string, std::string> params = extractTemplateParams(op_name);
-    std::string data_type_input = params["data_type_input"];
-    this->stream << kAscendPtoScope << "gemm_v0" << "<" <<  params["data_type_input"] << ", " << params["data_type_output"] << ", "
-    << GetValidShape(std::stoi(params["M"]), data_type_input) << ", "
-    << GetValidShape(std::stoi(params["N"]), data_type_input) << ", "
-    << GetValidShape(std::stoi(params["K"]), data_type_input) << ", "
-    << params["M"] << ", " << params["N"] << ", " << params["K"] << ", "  << kL0Tail << ", "
-    << params["transpose_A"] << ", " << params["transpose_B"] << ">"
-    << "(" << a_name << ", " << b_name << ", " << c_name << ", " << PrintExpr(op->args[4]) << ");\n";
+    this->stream << a_name << ", ";
   }
+
+  if (b_buffer_in_pipeline) {
+    auto b_k = op->args[2].as<CallNode>()->args[2] /
+               op->args[2].as<CallNode>()->args[3];
+    tvm::arith::Analyzer analyzer;
+    PrimExpr simplified_b_k = analyzer.Simplify(b_k);
+    auto buffer_name = b_name + "[" + PrintExpr(simplified_b_k) + "]";
+
+    this->stream << buffer_name << ", ";
+  } else {
+    this->stream << b_name << ", ";
+  }
+
+  if (c_buffer_in_pipeline) {
+    auto c_k = op->args[2].as<CallNode>()->args[2] /
+               op->args[2].as<CallNode>()->args[3];
+    tvm::arith::Analyzer analyzer;
+    PrimExpr simplified_c_k = analyzer.Simplify(c_k);
+    auto buffer_name = c_name + "[" + PrintExpr(simplified_c_k) + "]";
+
+    this->stream << buffer_name << ", ";
+  } else {
+    this->stream << c_name << ", ";
+  }
+
+  this->stream << PrintExpr(op->args[4]) << ");\n";
 }
 
 void CodeGenTileLangAscendPto::GemmV1Codegen(const CallNode *op) {
@@ -1757,13 +1810,43 @@ void CodeGenTileLangAscendPto::BinaryVecOpsCodegen(const CallNode *op,
     auto var_name = PrintBufferOffset(op->args[i].as<CallNode>());
     var_names.push_back(var_name);
   }
-  bool is_call = op->args[2].as<CallNode>() != nullptr;
-  if (op->args[2].as<CallNode>() || IsComplexExpression(op->args[2])) {
+  auto selected_elements_buffer = op->args[2].as<CallNode>();
+  bool is_call = selected_elements_buffer != nullptr;
+  if (selected_elements_buffer || IsComplexExpression(op->args[2])) {
     std::string index = PrintExpr(op->args[op->args.size() - 2]);
- 
-    bool is_call = (op->args[2].as<CallNode>() != nullptr);
-    std::string scalar_expr = is_call ? (PrintBufferOffset(op->args[2].as<CallNode>()) + ".GetValue(" + index + ")") : index;
-    std::string scalar_name = is_call ? (PrintBufferOffset(op->args[2].as<CallNode>()) + "_scalar") : "scalar";
+
+    auto selected_elements_buffer_shape = buffer_shapess_[GetRef<tir::Var>(
+        selected_elements_buffer->args[1].as<tir::VarNode>())];
+    bool selected_elements_buffer_in_pipeline = false;
+    if (buffer_versions_.count(GetRef<tir::Var>(
+            selected_elements_buffer->args[1].as<tir::VarNode>()))) {
+      if (!is_one(buffer_versions_[GetRef<tir::Var>(
+              selected_elements_buffer->args[1].as<tir::VarNode>())])) {
+        selected_elements_buffer_in_pipeline = true;
+      }
+    } else if (selected_elements_buffer_shape.size() == 3) {
+      selected_elements_buffer_in_pipeline = true;
+    }
+
+    bool is_call = (selected_elements_buffer != nullptr);
+    std::string scalar_expr;
+    if (!selected_elements_buffer_in_pipeline) {
+      scalar_expr = is_call ? (PrintBufferOffset(selected_elements_buffer) +
+                               ".GetValue(" + index + ")")
+                            : index;
+    } else {
+      auto a_k =
+          selected_elements_buffer->args[2] / selected_elements_buffer->args[3];
+      tvm::arith::Analyzer analyzer;
+      PrimExpr simplified_buffer_k = analyzer.Simplify(a_k);
+      scalar_expr = is_call ? (PrintBufferOffset(selected_elements_buffer) +
+                               "[" + PrintExpr(simplified_buffer_k) + "]" +
+                               ".GetValue(" + index + ")")
+                            : index;
+    }
+    std::string scalar_name =
+        is_call ? (PrintBufferOffset(selected_elements_buffer) + "_scalar")
+                : "scalar";
     this->PrintIndent();
     this->stream << "set_flag(PIPE_V, PIPE_S, EVENT_ID0);\n";     
     this->PrintIndent();
@@ -2373,11 +2456,19 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
           ub_data[6] = PrintExpr(shape[0]);
         } else if (shape.size() == 2) {
           if (shape[1].as<IntImmNode>()->value != 1) {
-            ub_data[1] = PrintExpr(shape[0]);
-            ub_data[2] = PrintExpr(shape[1]);
-            ub_data[4] = "Unapplied for tileUbDataDN";
-            ub_data[5] = PrintExpr(shape[0]);
-            ub_data[6] = PrintExpr(shape[1]);
+            if (!buffer_in_pipeline) {
+              ub_data[1] = PrintExpr(shape[0]);
+              ub_data[2] = PrintExpr(shape[1]);
+              ub_data[4] = "Unapplied for tileUbDataDN";
+              ub_data[5] = PrintExpr(shape[0]);
+              ub_data[6] = PrintExpr(shape[1]);
+            } else {
+              ub_data[1] = "1";
+              ub_data[2] = PrintExpr(shape[1]);
+              ub_data[4] = "Unapplied for tileUbDataDN";
+              ub_data[5] = "1";
+              ub_data[6] = PrintExpr(shape[1]);
+            }
           } else {
             ub_data[1] = "1";
             ub_data[2] = PrintExpr(shape[0]);
@@ -2408,7 +2499,8 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
         }
 
         if (buffer_in_pipeline) {
-          // // Recording the count of buffer allocations in the pipeline.
+          int8_t typeSize = GetTypeLen(type);
+          // Recording the count of buffer allocations in the pipeline.
           auto bufferNum = prefetch_n_stages_map_[vid].first;
           // prefetch_n_stages_map_[vid] = std::pair<int, int>{bufferNum, 0};
 
@@ -2421,7 +2513,9 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
           for (size_t i = 0; i < bufferNum; i++) {
             this->PrintIndent();
             stream << "TASSIGN(" << vid << "[" << i << "], "
-                   << PrintExpr(target_expr) << ");\n";
+                   << PrintExpr(target_expr) << " + " << i << " * "
+                   << static_cast<int>(typeSize) << " * " << ub_data[1] << " * "
+                   << ub_data[2] << ");\n";
           }
         } else {
           stream << pos << "ND<" << type << ", " << ub_data[1] << ", "
@@ -2489,7 +2583,9 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
           for (size_t j = 0; j < bufferNum; j++) {
             this->PrintIndent();
             stream << "TASSIGN(" << vid << "[" << j << "], "
-                   << PrintExpr(target_expr) << ");\n";
+                   << PrintExpr(target_expr) << " + " << j << " * "
+                   << dtype_bytes << " * " << valid_shapes[0] << " * "
+                   << valid_shapes[1] << ");\n";
           }
         }
       }
@@ -2518,11 +2614,19 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
           }
         } else if (shape.size() == 2) {
           if (shape[1].as<IntImmNode>()->value != 1) {
-            ub_data[1] = PrintExpr(shape[0]);
-            ub_data[2] = PrintExpr(shape[1]);
-            ub_data[4] = "Unapplied for tileUbDataDN";
-            ub_data[5] = PrintExpr(shape[0]);
-            ub_data[6] = PrintExpr(shape[1]);
+            if (!buffer_in_pipeline) {
+              ub_data[1] = PrintExpr(shape[0]);
+              ub_data[2] = PrintExpr(shape[1]);
+              ub_data[4] = "Unapplied for tileUbDataDN";
+              ub_data[5] = PrintExpr(shape[0]);
+              ub_data[6] = PrintExpr(shape[1]);
+            } else {
+              ub_data[1] = "1";
+              ub_data[2] = PrintExpr(shape[1]);
+              ub_data[4] = "Unapplied for tileUbDataDN";
+              ub_data[5] = "1";
+              ub_data[6] = PrintExpr(shape[1]);
+            }
           } else {
             ub_data[1] = "1";
             ub_data[2] = PrintExpr(shape[0]);
