@@ -20,13 +20,14 @@ Edge cases covered via pytest parametrize:
 """
 import pytest
 import torch
+import torch_npu  # noqa: F401
 import tilelang
 import tilelang.language as T
 
-torch.npu.set_device(0)
-tilelang.cache.clear_cache()
+from testcommon import assert_close, gen_tensor
 
 dtype = "float16"
+pytestmark = [pytest.mark.copy, pytest.mark.op("copy_shape_dynamic_cube"), pytest.mark.dtype("float16")]
 
 # ---------------------------------------------------------------------------
 # Kernel builders
@@ -194,13 +195,13 @@ def test_cube_copy_shape_2d(M, N, block_M, block_N):
     func = cube_copy_shape_1d_2d(M, N, block_M, block_N)
     compiled_kernel = tilelang.compile(func, target="npuir")
 
-    v1 = torch.randn(M, N, dtype=torch.float16).npu()
-    v2 = torch.zeros(M, N, dtype=torch.float16).npu()
+    v1 = gen_tensor((M, N), "float16", kind="randn")
+    v2 = gen_tensor((M, N), "float16", kind="zeros")
     v_ref = v1.clone()
     Id = torch.eye(N, dtype=torch.float16).npu()
 
     compiled_kernel(v1, v2, Id, M, N)
-    torch.testing.assert_close(v2, v_ref, rtol=1e-2, atol=1e-2)
+    assert_close(v2.cpu(), v_ref.cpu(), dtype="float16", rtol=1e-2, atol=1e-2)
 
 
 # ---------------------------------------------------------------------------
@@ -212,13 +213,13 @@ def test_cube_copy_shape_3d(M, N, block_M, block_N):
     func = cube_copy_shape_2d_3d(M, N, block_M, block_N)
     compiled_kernel = tilelang.compile(func, target="npuir")
 
-    v1 = torch.randn(1, M, N, dtype=torch.float16).npu()
-    v2 = torch.zeros(1, M, N, dtype=torch.float16).npu()
+    v1 = gen_tensor((1, M, N), "float16", kind="randn")
+    v2 = gen_tensor((1, M, N), "float16", kind="zeros")
     v_ref = v1.clone()
     Id = torch.eye(N, dtype=torch.float16).npu()
 
     compiled_kernel(v1, v2, Id, M, N)
-    torch.testing.assert_close(v2, v_ref, rtol=1e-2, atol=1e-2)
+    assert_close(v2.cpu(), v_ref.cpu(), dtype="float16", rtol=1e-2, atol=1e-2)
 
 
 # ---------------------------------------------------------------------------
@@ -230,15 +231,10 @@ def test_cube_copy_shape_4d(M, N, block_M, block_N):
     func = cube_copy_shape_3d_4d(M, N, block_M, block_N)
     compiled_kernel = tilelang.compile(func, target="npuir")
 
-    v1 = torch.randn(1, 1, M, N, dtype=torch.float16).npu()
-    v2 = torch.zeros(1, 1, M, N, dtype=torch.float16).npu()
+    v1 = gen_tensor((1, 1, M, N), "float16", kind="randn")
+    v2 = gen_tensor((1, 1, M, N), "float16", kind="zeros")
     v_ref = v1.clone()
     Id = torch.eye(N, dtype=torch.float16).npu()
 
     compiled_kernel(v1, v2, Id, M, N)
-    torch.testing.assert_close(v2, v_ref, rtol=1e-2, atol=1e-2)
-
-
-# ---------------------------------------------------------------------------
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])
+    assert_close(v2.cpu(), v_ref.cpu(), dtype="float16", rtol=1e-2, atol=1e-2)

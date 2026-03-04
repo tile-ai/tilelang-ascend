@@ -16,11 +16,13 @@ Edge cases covered via pytest parametrize:
 """
 import pytest
 import torch
+import torch_npu  # noqa: F401
 import tilelang
 import tilelang.language as T
 
-torch.npu.set_device(0)
-tilelang.cache.clear_cache()
+from testcommon import assert_close, gen_tensor
+
+pytestmark = [pytest.mark.copy, pytest.mark.op("copy_sliced_cube"), pytest.mark.dtype("float16")]
 
 # ---------------------------------------------------------------------------
 # Kernel builders
@@ -145,18 +147,18 @@ SLICED_2D_CASES = [
 def test_cube_sliced_copy_2d(M, N, idx):
     kernel = cube_sliced_copy_2d(M, N, idx)
 
-    A = torch.zeros(M, N, dtype=torch.float16).npu()
+    A = gen_tensor((M, N), "float16", kind="zeros")
     row = torch.arange(1, N + 1, dtype=torch.float16).npu()
     A[idx] = row
 
     B = torch.eye(N, dtype=torch.float16).npu()
-    Out = torch.zeros(M, N, dtype=torch.float16).npu()
+    Out = gen_tensor((M, N), "float16", kind="zeros")
 
     kernel(A, B, Out)
 
-    expected = torch.zeros(M, N, dtype=torch.float16).npu()
+    expected = gen_tensor((M, N), "float16", kind="zeros")
     expected[idx] = row
-    torch.testing.assert_close(Out, expected, rtol=1e-5, atol=1e-5)
+    assert_close(Out.cpu(), expected.cpu(), dtype="float16", rtol=1e-5, atol=1e-5)
 
 
 # ---------------------------------------------------------------------------
@@ -179,18 +181,18 @@ SLICED_3D_CASES = [
 def test_cube_sliced_copy_3d(B_dim, M, N, b_idx, m_idx):
     kernel = cube_sliced_copy_3d(B_dim, M, N, b_idx, m_idx)
 
-    A = torch.zeros(B_dim, M, N, dtype=torch.float16).npu()
+    A = gen_tensor((B_dim, M, N), "float16", kind="zeros")
     row = torch.arange(1, N + 1, dtype=torch.float16).npu()
     A[b_idx, m_idx] = row
 
     B = torch.eye(N, dtype=torch.float16).npu()
-    Out = torch.zeros(B_dim, M, N, dtype=torch.float16).npu()
+    Out = gen_tensor((B_dim, M, N), "float16", kind="zeros")
 
     kernel(A, B, Out)
 
-    expected = torch.zeros(B_dim, M, N, dtype=torch.float16).npu()
+    expected = gen_tensor((B_dim, M, N), "float16", kind="zeros")
     expected[b_idx, m_idx] = row
-    torch.testing.assert_close(Out, expected, rtol=1e-5, atol=1e-5)
+    assert_close(Out.cpu(), expected.cpu(), dtype="float16", rtol=1e-5, atol=1e-5)
 
 
 # ---------------------------------------------------------------------------
@@ -214,20 +216,15 @@ SLICED_4D_CASES = [
 def test_cube_sliced_copy_4d(B_dim, H, M, N, b_idx, h_idx, m_idx):
     kernel = cube_sliced_copy_4d(B_dim, H, M, N, b_idx, h_idx, m_idx)
 
-    A = torch.zeros(B_dim, H, M, N, dtype=torch.float16).npu()
+    A = gen_tensor((B_dim, H, M, N), "float16", kind="zeros")
     row = torch.arange(1, N + 1, dtype=torch.float16).npu()
     A[b_idx, h_idx, m_idx] = row
 
     B = torch.eye(N, dtype=torch.float16).npu()
-    Out = torch.zeros(B_dim, H, M, N, dtype=torch.float16).npu()
+    Out = gen_tensor((B_dim, H, M, N), "float16", kind="zeros")
 
     kernel(A, B, Out)
 
-    expected = torch.zeros(B_dim, H, M, N, dtype=torch.float16).npu()
+    expected = gen_tensor((B_dim, H, M, N), "float16", kind="zeros")
     expected[b_idx, h_idx, m_idx] = row
-    torch.testing.assert_close(Out, expected, rtol=1e-5, atol=1e-5)
-
-
-# ---------------------------------------------------------------------------
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])
+    assert_close(Out.cpu(), expected.cpu(), dtype="float16", rtol=1e-5, atol=1e-5)
