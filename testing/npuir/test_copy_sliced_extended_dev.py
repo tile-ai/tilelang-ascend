@@ -80,7 +80,7 @@ def strided_copy_5d_kernel(
 
 
 @pytest.mark.copy
-@pytest.mark.op("copy_sliced_extended")
+@pytest.mark.op("copy")
 @pytest.mark.dtype("float16")
 @pytest.mark.mode("Developer")
 def test_copy_sliced_extended_4d_dev():
@@ -107,7 +107,7 @@ def test_copy_sliced_extended_4d_dev():
 
 
 @pytest.mark.copy
-@pytest.mark.op("copy_sliced_extended")
+@pytest.mark.op("copy")
 @pytest.mark.dtype("float16")
 @pytest.mark.mode("Developer")
 def test_copy_sliced_extended_5d_dev():

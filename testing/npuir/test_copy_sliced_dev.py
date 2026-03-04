@@ -159,7 +159,7 @@ def slice_copy_4d_kernel(B, H, M, N, idx_b, idx_h, idx_b2, idx_h2, dtype="float1
 
 
 @pytest.mark.copy
-@pytest.mark.op("copy_sliced")
+@pytest.mark.op("copy")
 @pytest.mark.dtype("float16")
 @pytest.mark.mode("Developer")
 def test_copy_sliced_2d_dev():
@@ -204,7 +204,7 @@ def test_copy_sliced_2d_dev():
 
 
 @pytest.mark.copy
-@pytest.mark.op("copy_sliced")
+@pytest.mark.op("copy")
 @pytest.mark.dtype("float16")
 @pytest.mark.mode("Developer")
 def test_copy_sliced_3d_dev():
@@ -249,7 +249,7 @@ def test_copy_sliced_3d_dev():
 
 
 @pytest.mark.copy
-@pytest.mark.op("copy_sliced")
+@pytest.mark.op("copy")
 @pytest.mark.dtype("float16")
 @pytest.mark.mode("Developer")
 def test_copy_sliced_4d_dev():

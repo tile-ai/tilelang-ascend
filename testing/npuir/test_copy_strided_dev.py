@@ -43,7 +43,7 @@ def discrete_copy_tiled(total_h, width, stride=2, block_h=32):
 
 
 @pytest.mark.copy
-@pytest.mark.op("copy_strided")
+@pytest.mark.op("copy")
 @pytest.mark.dtype("float16")
 @pytest.mark.mode("Developer")
 def test_copy_strided_tiled_dev():

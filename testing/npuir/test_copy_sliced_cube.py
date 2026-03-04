@@ -22,7 +22,7 @@ import tilelang.language as T
 
 from testcommon import assert_close, gen_tensor
 
-pytestmark = [pytest.mark.copy, pytest.mark.op("copy_sliced_cube"), pytest.mark.dtype("float16")]
+pytestmark = [pytest.mark.copy, pytest.mark.op("copy"), pytest.mark.dtype("float16")]
 
 # ---------------------------------------------------------------------------
 # Kernel builders

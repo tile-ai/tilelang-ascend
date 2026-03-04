@@ -104,7 +104,7 @@ def simple_copy_3d(M, N, K, block_M, block_N, block_K, dtype="float16", accum_dt
 
 
 @pytest.mark.copy
-@pytest.mark.op("copy_simple")
+@pytest.mark.op("copy")
 @pytest.mark.dtype("float16")
 @pytest.mark.mode("Developer")
 def test_copy_simple_1d_dev():
@@ -124,7 +124,7 @@ def test_copy_simple_1d_dev():
 
 
 @pytest.mark.copy
-@pytest.mark.op("copy_simple")
+@pytest.mark.op("copy")
 @pytest.mark.dtype("float16")
 @pytest.mark.mode("Developer")
 def test_copy_simple_2d_dev():
@@ -144,7 +144,7 @@ def test_copy_simple_2d_dev():
 
 
 @pytest.mark.copy
-@pytest.mark.op("copy_simple")
+@pytest.mark.op("copy")
 @pytest.mark.dtype("float16")
 @pytest.mark.mode("Developer")
 def test_copy_simple_3d_dev():

@@ -63,7 +63,7 @@ def copy_shape_2d_3d(M, N, block_M, block_N):
 
 
 @pytest.mark.copy
-@pytest.mark.op("copy_shape_dynamic")
+@pytest.mark.op("copy")
 @pytest.mark.dtype("float16")
 @pytest.mark.mode("Developer")
 def test_copy_shape_1d_2d_dynamic_dev():
@@ -82,7 +82,7 @@ def test_copy_shape_1d_2d_dynamic_dev():
 
 
 @pytest.mark.copy
-@pytest.mark.op("copy_shape_dynamic")
+@pytest.mark.op("copy")
 @pytest.mark.dtype("float16")
 @pytest.mark.mode("Developer")
 def test_copy_shape_2d_3d_dynamic_dev():
