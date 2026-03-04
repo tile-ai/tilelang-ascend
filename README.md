@@ -501,5 +501,20 @@ Here is an example:
 Check our [tilelang-ascend development plan](https://github.com/tile-ai/tilelang-ascend/issues/3) for upcoming features.
 
 
+## Lessons
+
+Welcome to the TileLang-Ascend video course series. You can access all the lessons via the links below:
+
+| Lesson | Topic | Video Link |
+| :---: | :--- | :---: |
+| **01** | Introduction to TileLang-Ascend Development Environment | [📺 Start learning](https://www.bilibili.com/video/BV1EdFVzpEbg/) |
+| **02** | TileLang-Ascend Programming Fundamentals | [📺 Start learning](https://www.bilibili.com/video/BV1uvFLzyEZ3/) |
+| **03** | TileLang-Ascend Developer Programming Model Deep Dive | [📺 Start learning](https://www.bilibili.com/video/BV1DoFzz2EHB/) |
+| **04** | Getting Started with TileLang-Ascend Performance Tuning and Debugging Tools | [📺 Start learning](https://www.bilibili.com/video/BV1QdFzz7E5W/) |
+| **05** | TileLang-Ascend Engineering Practice: Compilation, Integration, and Deployment | [📺 Start learning](https://www.bilibili.com/video/BV1bmFkzHEb6/) |
+
+
+
+
 ## Acknowledgements
 We gratefully acknowledge the valuable support provided by Huawei's HiSilicon, ICT, Compiler and Programming Language Lab and the Peking University Kunpeng & Ascend Center for Excellence in Science, Education, and Innovation.
