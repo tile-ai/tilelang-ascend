@@ -216,7 +216,15 @@ class CtypesKernelAdapter(BaseKernelAdapter):
                         shape.append(ins[ref_tensor_idx].shape[ref_shape_idx])
                     else:  # Already converted to Python int during initialization
                         shape.append(s)
-                device = ins[0].device if len(ins) > 0 else torch.cuda.current_device()
+                # device = ins[0].device if len(ins) > 0 else torch.cuda.current_device()
+                if len(ins) > 0:
+                    device = ins[0].device
+                elif hasattr(torch, 'npu') and torch.npu.is_available():
+                    device = torch.npu.current_device()
+                elif torch.cuda.is_available():
+                    device = torch.cuda.current_device()
+                else:
+                    device = torch.device("cpu")
                 tensor = torch.empty(*shape, dtype=dtype, device=device)
             else:
                 tensor = ins[ins_idx]

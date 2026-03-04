@@ -41,25 +41,25 @@ def do_bench(
     """
     assert return_mode in ["min", "max", "mean", "median"]
     fn()
-    torch.cuda.synchronize()
+    torch.npu.synchronize()
 
     # We maintain a buffer of 256 MB that we clear
     # before each kernel call to make sure that the L2
     # doesn't contain any input data before the run
     if fast_flush:
-        cache = torch.empty(int(256e6 // 4), dtype=torch.int, device="cuda")
+        cache = torch.empty(int(256e6 // 4), dtype=torch.int, device="npu")
     else:
-        cache = torch.empty(int(256e6), dtype=torch.int8, device="cuda")
+        cache = torch.empty(int(256e6), dtype=torch.int8, device="npu")
 
     # Estimate the runtime of the function
-    start_event = torch.cuda.Event(enable_timing=True)
-    end_event = torch.cuda.Event(enable_timing=True)
+    start_event = torch.npu.Event(enable_timing=True)
+    end_event = torch.npu.Event(enable_timing=True)
     start_event.record()
     for _ in range(5):
         cache.zero_()
         fn()
     end_event.record()
-    torch.cuda.synchronize()
+    torch.npu.synchronize()
     estimate_ms = start_event.elapsed_time(end_event) / 5
 
     # compute number of warmup and repeat
@@ -69,8 +69,8 @@ def do_bench(
         n_warmup = _n_warmup
     if _n_repeat > 0:
         n_repeat = _n_repeat
-    start_event = [torch.cuda.Event(enable_timing=True) for i in range(n_repeat)]
-    end_event = [torch.cuda.Event(enable_timing=True) for i in range(n_repeat)]
+    start_event = [torch.npu.Event(enable_timing=True) for i in range(n_repeat)]
+    end_event = [torch.npu.Event(enable_timing=True) for i in range(n_repeat)]
     # Warm-up
     for _ in range(n_warmup):
         fn()
@@ -89,7 +89,7 @@ def do_bench(
         fn()
         end_event[i].record()
     # Record clocks
-    torch.cuda.synchronize()
+    torch.npu.synchronize()
     times = torch.tensor(
         [s.elapsed_time(e) for s, e in zip(start_event, end_event)],
         dtype=torch.float,
@@ -100,3 +100,118 @@ def do_bench(
             ret = ret[0]
         return ret
     return getattr(torch, return_mode)(times).item()
+
+
+import builtins
+import multiprocessing
+import os
+from datetime import datetime, timezone
+
+import triton.runtime as runtime
+from pathlib import Path
+from tilelang import env
+
+def do_bench_npu(fn: Callable, 
+    warmup: float = 25,
+    rep=30, 
+    prof_dir=None, 
+    keep_res=False):
+    import torch_npu
+
+    fn()
+    torch.npu.synchronize()
+
+    experimental_config = torch_npu.profiler._ExperimentalConfig(
+        aic_metrics=torch_npu.profiler.AiCMetrics.PipeUtilization,
+        profiler_level=torch_npu.profiler.ProfilerLevel.Level1,
+        data_simplification=False,
+    )
+
+    if prof_dir is not None:
+        torch_path = prof_dir
+    else:
+        torch_path = os.path.join(os.environ.get('TILELANG_CACHE_DIR'), 'autotuner_tmp')
+
+
+    total = warmup + rep
+    with torch_npu.profiler.profile(
+        activities=[torch_npu.profiler.ProfilerActivity.NPU],
+        on_trace_ready=torch_npu.profiler.tensorboard_trace_handler(torch_path),
+        record_shapes=False,
+        profile_memory=False,
+        with_stack=False,
+        with_flops=False,
+        with_modules=False,
+        experimental_config=experimental_config,
+    ) as prof:
+        
+        for _ in builtins.range(total):
+            fn()
+       
+    funcs = [fn]
+    time_cost = _collect_prof_result(torch_path, funcs, warmup, rep)
+    _rm_dic(keep_res, torch_path)
+    return time_cost
+
+
+def _rm_dic(keep_res, torch_path):
+    if keep_res:
+        return
+    import shutil
+
+    if os.path.exists(torch_path):
+        shutil.rmtree(torch_path)
+
+
+def _collect_prof_result(base_dir: str, funcs, num_warmup: int, num_active: int, key: str = None):
+    """
+    Collect kernel performance from kernel_details.csv, returned in millisecond.
+    The first `num_warmup` rows of each function are warmup data and will be ignored, the next `num_active` rows will be averaged.
+
+    :param base_dir: the profiler path
+    :type base_dir: str
+    :param funcs: a list of Callable being profiled
+    :type funcs: List[Callable]
+    :param num_warmup: warmup count in kernel_details.csv of each fn
+    :type num_warmup: int
+    :param num_active: active count in kernel_details.csv of each fn
+    :type num_active: int
+    :param key: filter key for kernel name
+    :type key: str
+    """
+
+    import numpy as np
+    import pandas as pd
+
+    kernel_details_file = None
+    for root, _, files in os.walk(base_dir):
+        for file in files:
+            if file == "kernel_details.csv":
+                kernel_details_file = os.path.join(root, file)
+                break
+    num_funcs = len(funcs)
+    if kernel_details_file is None:
+        if num_funcs == 1:
+            return float("inf")
+        else:
+            return [float("inf")] * num_funcs
+
+    df = pd.read_csv(kernel_details_file)
+    # filter out l2 cache clearing operation
+    filter_cond = ~df["Type"].str.contains(r"^ReduceSum$", case=False, na=False)
+    filter_df = df[filter_cond]
+    if key is not None:
+        key_rows = filter_df[filter_df["Name"].str.contains(key, na=False)]
+    else:
+        key_rows = filter_df
+    time_cost = [0] * num_funcs
+    for func_idx in np.arange(0, num_funcs):
+        for active_index in np.arange(0, num_active):
+            row_index = func_idx * (num_warmup + num_active) + num_warmup + active_index
+            time_cost[func_idx] += key_rows.iloc[row_index]["Duration(us)"]
+    time_cost = [x / num_active / 1e3 for x in time_cost]
+
+    if num_funcs == 1:
+        return time_cost[0]
+    else:
+        return time_cost

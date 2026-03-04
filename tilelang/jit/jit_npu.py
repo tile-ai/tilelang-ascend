@@ -20,6 +20,8 @@ from ..utils import NPUUtils
 from tvm import tir
 from tvm.tir import PrimFunc
 
+from tilelang.profiler import Profiler, TensorSupplyType
+
 
 class LaunchThreadExtractor:
     def __init__(self) -> None:
@@ -762,16 +764,20 @@ def read_binary_file(file_path, mode="rb", chunk_size=None, return_type="bytes")
 
 class JitKernel_NPU:
     def __init__(self, metadata: dict, out_idx=None) -> None:
+        self.params = metadata["params"]
+        self.signature = metadata.get("signature", {})
         self.out_idx = out_idx  
         self.param_info = metadata.get('param_info', [])
         # 1 launch path
         self.so_launcher_path = f"{metadata['kernel_name']}.so"
+        self.so_utils_path = "npu_utils.so"
         self.utils_name = f"{metadata['name']}"
         # 2 kernel path
         self.utils_kernel_src = metadata["kernel_src"]
         self.utils_shared = metadata[
             "shared"
         ]  # Retain the interface, temporarily not in effect.
+        self.mlir_content = metadata["mlir_content"]
         self.mix_mode = metadata["mix_mode"]
         self.utils_device = torch.npu.current_device()
         self.launch_stream = torch.npu.current_stream(
@@ -781,12 +787,37 @@ class JitKernel_NPU:
             "kernel_name": f"{metadata['name']}",
             "tensor_kinds": metadata["tensor_kinds"],
         }
+        self.kernel_name = f"{metadata['name']}"
+        self.tensor_kinds = metadata["tensor_kinds"]
         self.launch_metadata = {}
         self.launch_enter_hook = None
         self.launch_exit_hook = None
         self.gridfunc = metadata["gridfunc"]
         self.symbolic = metadata["symbolic"]
+        self.prim_func = metadata["primfunc"]
+        self.out_idx = metadata["out_idx"]
         self._launch()
+
+    @classmethod
+    def from_database(
+        cls,
+        mod: PrimFunc,
+        kernel_source: str,           # 可能是 MLIR 源码
+        kernel_launcher_path: str,    # 可能是 wrapper 源码
+        kernel_utils_path: str,
+        metadata: str,
+        out_idx: Union[List[int], int],
+    ):
+        """
+        从数据库/缓存重建 NPU 内核的替代构造函数。
+        """
+        if isinstance(out_idx, int):
+            out_idx = [out_idx]
+
+        instance = cls(metadata)
+        instance.so_launcher_path = kernel_launcher_path
+        instance.so_utils_path = kernel_utils_path
+        return instance
 
     def _launch(self):
         import importlib.util
@@ -932,7 +963,94 @@ class JitKernel_NPU:
             return full_args[self.out_idx[0]]
         else:
             return [full_args[i] for i in self.out_idx]
+        # return args[idx]
+        
+    def get_profiler(self,
+                     tensor_supply_type: TensorSupplyType = TensorSupplyType.Auto) -> Profiler:
+        """
+        Creates a profiler to benchmark the compiled runtime module.
 
+        Parameters
+        ----------
+        tensor_supply_type : TensorSupplyType, optional
+            The type of input tensors to supply for profiling (default: TensorSupplyType.Auto).
+
+        Returns
+        -------
+        Profiler
+            A Profiler instance for benchmarking the runtime module.
+        """
+        return Profiler(self.params, self.out_idx[0], tensor_supply_type).with_direct_func(self)
+    def benchmark(self, 
+                  warmup: int = 25,
+                  rep: int = 100,
+                  n_warmup: int = 1,
+                  n_repeat: int = 1) -> float:
+        """便捷的benchmark方法"""
+        profiler = self.get_profiler()
+        return profiler.do_bench(
+            func=self,
+            warmup=warmup,
+            rep=rep,
+            n_warmup=n_warmup,
+            n_repeat=n_repeat
+        )
+    def update_tuner_result(self, latency: float, config: Dict[str, Any],
+                            ref_latency: float) -> "JitKernel_NPU":
+        """
+        Updates the tuning results for this kernel.
+
+        Parameters
+        ----------
+        latency : float
+            The measured latency of this kernel configuration.
+        config : Dict[str, Any]
+            The configuration parameters used for this kernel.
+        ref_latency : float
+            The reference latency to compare against.
+
+        Returns
+        -------
+        None
+        """
+        self.latency = latency
+        self.config = config
+        self.ref_latency = ref_latency
+
+        return self
+
+    def get_kernel_source(self) -> str:
+        """
+        Returns the source code of the compiled kernel function.
+
+        Returns
+        -------
+        str
+            The source code of the compiled kernel function.
+        """
+
+        return self.utils_kernel_src
+
+    def get_tuner_result(self) -> Dict[str, Any]:
+        """
+        Gets the tuning results for this kernel.
+
+        Returns
+        -------
+        Dict[str, Any]
+            A dictionary containing:
+            - latency: The measured latency of this kernel
+            - config: The configuration parameters used
+            - ref_latency: The reference latency for comparison
+        """
+        if self.latency is None:
+            raise ValueError("Tuning results are not available. Please tune the kernel first.")
+
+        return {
+            "latency": self.latency,
+            "config": self.config,
+            "ref_latency": self.ref_latency,
+        }
 
 class compiler_npu:
     def __init__(self) -> None:
@@ -953,6 +1071,10 @@ class compiler_npu:
         self.need_debug = self.check_debug_op(self.mod)
         # get grid message
         self._parse_grid()
+        self.metadata["params"] = self.mod.params
+        self.out_idx = out_idx
+        self.metadata["out_idx"] = self.out_idx
+
         mlir_path = lower(self.mod)
         if mlir_path.endswith(".mlir"):
             self.mlir_content = self._read_mlir_file(mlir_path)
@@ -961,6 +1083,10 @@ class compiler_npu:
         self.constants = {}
         # get signature information
         self.signature = self._parse_signature()
+
+        self.metadata["signature"] = self.signature
+        self.metadata["primfunc"] = self.mod
+        self.metadata["mlir_content"] = self.mlir_content
         # TODO: Will be implemented as automatic derivation in the future
         self.workspace_size = 32768
         TILELANG_ASCEND_WORKSPACE_SIZE = os.environ.get('TILELANG_ASCEND_WORKSPACE_SIZE')

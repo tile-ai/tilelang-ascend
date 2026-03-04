@@ -50,7 +50,7 @@ class GEMVTemplate(BaseTemplate):
         the matrix-vector multiplication using TVM's compute API, 
         and optionally applies bias and type casting.
         """
-        M: int = 1  # Fixed M value, representing a single batch dimension
+        M: int = 16  # Fixed M value, representing a single batch dimension
         N, K = self.N, self.K
 
         # Ensure M, N, K are valid positive integers

@@ -55,8 +55,13 @@ def get_tensor_supply(supply_type: TensorSupplyType = TensorSupplyType.Integer):
 
     def get_tensor(param: KernelParam) -> torch.Tensor:
         dtype: torch.dtype = param.dtype
-        device: torch.device = torch.cuda.current_device()
-
+        # device: torch.device = torch.cuda.current_device()
+        if hasattr(torch, 'npu') and torch.npu.is_available():
+            device = torch.npu.current_device()
+        elif torch.cuda.is_available():
+            device = torch.cuda.current_device()
+        else:
+            device = torch.device("cpu")
         if hasattr(param, "shape") and not param.shape:
             raise ValueError(
                 f"TensorType must have a shape, but got {type(param)}, "
