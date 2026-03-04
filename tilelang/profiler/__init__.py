@@ -323,7 +323,7 @@ class Profiler:
         elif self.adapter is not None:
             return self.adapter
         else:
-            raise ValueError("没有可用的执行函数")
+            raise ValueError("No available execution function")
 
     def __call__(self, *args: Any, **kwds: Any) -> Any:
         return self.func(*args, **kwds)

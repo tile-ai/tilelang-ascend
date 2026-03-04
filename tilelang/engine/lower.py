@@ -258,10 +258,7 @@ def lower(
         device_mod, target) if enable_device_compile else device_codegen_without_compile(
             device_mod, target)
 
-    print("line 261 @ lowering")
-    print("params:", params)
     if enable_host_codegen:
-        print("line 263 @ enable_host_codegen")
         host_mod = host_codegen(host_mod, target_host)
         host_mod.import_module(codegen_mod)
         return CompiledArtifact(

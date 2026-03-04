@@ -13,7 +13,7 @@ from tilelang.jit.adapter import (
     CtypesKernelAdapter,
     CythonKernelAdapter,
 )
-from tilelang.utils.target import determine_target, AVALIABLE_TARGETS
+
 from tilelang.profiler import Profiler, TensorSupplyType
 from tilelang.engine.param import KernelParam, CompiledArtifact
 
@@ -45,9 +45,11 @@ class JITKernel(object):
         self,
         func: PrimFunc = None,
         out_idx: Union[List[int], int] = None,
+        workspace_idx: Union[List[int], int] = None,
         execution_backend: Literal["dlpack", "ctypes", "cython"] = "cython",
         target: Union[str, Target] = "auto",
         target_host: Union[str, Target] = None,
+        platform: Literal["A2", "A3", "A5"] = "A3",
         verbose: bool = False,
         pass_configs: Optional[Dict[str, Any]] = None,
         from_database: bool = False,
@@ -61,12 +63,16 @@ class JITKernel(object):
             The TileLang TIR function to compile and wrap.
         out_idx : Union[List[int], int], optional
             Index(es) of the output tensors to return (default: None).
+        workspace_idx : Union[List[int], int], optional
+            Index(es) of the workspace tensors to auto-allocate (default: None).
         execution_backend : Literal["dlpack", "ctypes"], optional
             Execution backend to use for kernel execution (default: "dlpack").
         target : Union[str, Target], optional
             Compilation target, either as a string or a TVM Target object (default: "auto").
         target_host : Union[str, Target], optional
             Target host for cross-compilation (default: None).
+        platform : Literal
+            Specifies the target hardware platform generation. Defaults to "A3".
         verbose : bool, optional
             Whether to enable verbose output (default: False).
         pass_configs : dict, optional
@@ -84,18 +90,11 @@ class JITKernel(object):
         self.target = target
         self.target_host = target_host
         self.verbose = verbose
+        self.platform = platform
 
         if pass_configs is None:
             pass_configs = {}
         self.pass_configs = pass_configs
-
-        # If the target is specified as a string, validate it and convert it to a TVM Target.
-        if isinstance(target, str):
-            assert target in AVALIABLE_TARGETS, f"Invalid target: {target}"
-            target = determine_target(target)
-
-        # Ensure the target is always a TVM Target object.
-        target = Target(target)
 
         # Validate the execution backend.
         assert execution_backend in [
@@ -114,7 +113,7 @@ class JITKernel(object):
             return
 
         # Compile the TileLang function and create a kernel adapter for execution.
-        adapter = self._compile_and_create_adapter(func, out_idx)
+        adapter = self._compile_and_create_adapter(func, out_idx, workspace_idx)
 
         # The adapter's function is assigned as the callable function for this instance.
         self.adapter = adapter
@@ -129,7 +128,9 @@ class JITKernel(object):
         params: List[KernelParam],
         target: Union[str, Target],
         target_host: Union[str, Target],
+        platform: str,
         out_idx: Union[List[int], int],
+        workspace_idx: Union[List[int], int],
         execution_backend: Literal["dlpack", "ctypes", "cython"],
         pass_configs: Optional[Dict[str, Any]] = None,
     ):
@@ -139,9 +140,11 @@ class JITKernel(object):
         instance = cls(
             func=func,
             out_idx=out_idx,
+            workspace_idx=workspace_idx,
             execution_backend=execution_backend,
             target=target,
             target_host=target_host,
+            platform=platform,
             pass_configs=pass_configs,
             from_database=True,
         )
@@ -150,7 +153,9 @@ class JITKernel(object):
             func_or_mod=func,
             params=params,
             result_idx=out_idx,
+            workspace_idx=workspace_idx,
             target=target,
+            platform=platform,
             kernel_global_source=kernel_global_source,
             kernel_lib_path=kernel_lib_path,
             pass_configs=pass_configs,
@@ -158,7 +163,19 @@ class JITKernel(object):
         instance.torch_function = instance.adapter.func
         return instance
 
+    def _generate_extra_args(self, *args):
+        modify_args = ()
+        # process input tensor
+        for item in args:
+            modify_args += (item,)
+
+        for _k, v in self.adapter.dynamic_symbolic_map.items():
+            modify_args = modify_args + (args[v[0]].shape[v[1]],)
+
+        return modify_args
+
     def __call__(self, *args: Any, **kwds: Any) -> Any:
+        modify_args = self._generate_extra_args(*args)
         """
         Invokes the compiled function with the given arguments.
 
@@ -174,10 +191,11 @@ class JITKernel(object):
         Any
             The result of the function execution.
         """
-        return self.torch_function(*args, **kwds)
+        return self.torch_function(*modify_args, **kwds)
 
     def _compile_and_create_adapter(self, tilelang_func: PrimFunc,
-                                    out_idx: List[int]) -> BaseKernelAdapter:
+                                    out_idx: List[int],
+                                    workspace_idx: List[int]) -> BaseKernelAdapter:
         """
         Compiles the given TileLang PrimFunc using TVM and creates a kernel adapter.
 
@@ -206,6 +224,7 @@ class JITKernel(object):
                 tilelang_func,
                 target=target,
                 target_host=target_host,
+                # platform=self.platform,
                 enable_host_codegen=enable_host_codegen,
                 enable_device_compile=enable_device_compile)
 
@@ -235,7 +254,9 @@ class JITKernel(object):
             adapter = CythonKernelAdapter(
                 params=artifact.params,
                 result_idx=out_idx,
+                workspace_idx=workspace_idx,
                 target=target,
+                platform=self.platform,
                 func_or_mod=tilelang_func,
                 host_mod=artifact.host_mod,
                 device_mod=artifact.device_mod,
@@ -253,7 +274,9 @@ class JITKernel(object):
         self,
         params: List[KernelParam],
         result_idx: Union[List[int], int],
+        workspace_idx: Union[List[int], int],
         target: Union[str, Target],
+        platform: str,
         func_or_mod: Union[PrimFunc, tvm.runtime.Module],
         kernel_global_source: str,
         kernel_lib_path: str,
@@ -279,7 +302,9 @@ class JITKernel(object):
             adapter = CythonKernelAdapter.from_database(
                 params=params,
                 result_idx=result_idx,
+                workspace_idx=workspace_idx,
                 target=target,
+                platform=platform,
                 func_or_mod=func_or_mod,
                 kernel_global_source=kernel_global_source,
                 kernel_lib_path=kernel_lib_path,
@@ -325,7 +350,7 @@ class JITKernel(object):
         Profiler
             A Profiler instance for benchmarking the runtime module.
         """
-        return Profiler(self.params, self.out_idx,
+        return Profiler(self.params, self.out_idx, self.workspace_idx,
                         tensor_supply_type).with_default_adapter(self.adapter)
 
     def get_kernel_source(self) -> str:
@@ -398,6 +423,10 @@ class JITKernel(object):
     @property
     def out_idx(self) -> List[int]:
         return self.adapter.result_idx
+    
+    @property
+    def workspace_idx(self) -> List[int]:
+        return self.adapter.workspace_idx
 
     @property
     def params(self) -> List[KernelParam]:

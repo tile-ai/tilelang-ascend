@@ -1,0 +1,129 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2025.
+import argparse
+import itertools
+
+import tilelang
+import tilelang.language as T
+import torch
+import os
+
+tilelang.cache.clear_cache()
+
+os.environ['TILELANG_ASCEND_MODE'] = 'Developer'
+parser = argparse.ArgumentParser(description="NPU Kernel Compilation")
+parser.add_argument("--S", type=int, default=512)
+parser.add_argument("--D", type=int, default=128)
+args = parser.parse_args()
+
+seq_len, dim = args.S, args.D
+def get_config():
+    return [
+        {"block_M": 64, "block_N": 32, "block_K": 32},
+        {"block_M": 32, "block_N": 32, "block_K": 32},
+        {"block_M": 32, "block_N": 64, "block_K": 32},
+    ]
+
+def ref_prog(q, k, v):
+    scale = (1.0 / dim)**0.5
+    return torch.nn.functional.softmax(
+        (q @ k.T).to(torch.float32) * scale, dim=-1).to(torch.float16) @ v
+
+def supply_prog(params):
+    torch.manual_seed(0)
+    return [
+        torch.randn(seq_len, dim).half().npu(),
+        torch.randn(seq_len, dim).half().npu(),
+        torch.randn(seq_len, dim).half().npu(),
+    ]
+
+@tilelang.autotune(
+    configs=get_config(),
+    ref_prog=ref_prog,
+    supply_prog=supply_prog,
+    atol=1e-2,
+    rtol=1e-2,
+)
+@tilelang.jit(out_idx=[-1], target="npuir")
+def online_flash_attention(block_M, block_N, block_K, dtype="float16", accum_dtype="float32"):
+    shape_q = [seq_len, dim]
+    shape_k = [seq_len, dim]
+    shape_v = [seq_len, dim]
+    shape_o = [seq_len, dim]
+    shape_work = [seq_len, seq_len]
+    block_m = block_M
+    block_n = block_N
+    @T.prim_func
+    def flash_attention(
+        Q: T.Tensor(shape_q, dtype),
+        K: T.Tensor(shape_k, dtype),
+        V: T.Tensor(shape_v, dtype),
+        Output: T.Tensor(shape_o, dtype),
+    ):
+        with T.Kernel(T.ceildiv(seq_len, block_m), is_npu=True) as (cid, _):
+            offset = cid * block_m
+            Q_shared = T.alloc_shared([block_m, dim], dtype)
+            T.copy(Q[offset, 0], Q_shared, size=[block_m, dim])
+
+            K_shared = T.alloc_shared([block_n, dim], dtype)
+            V_shared = T.alloc_shared([block_n, dim], dtype)
+            scores = T.alloc_fragment([block_m, block_n], accum_dtype)
+            scores_cast = T.alloc_fragment([block_m, block_n], dtype)
+            correction = T.alloc_fragment([block_m,1], accum_dtype)
+            local_max = T.alloc_fragment([block_m,1], accum_dtype)
+            local_sum = T.alloc_fragment([block_m,1], accum_dtype)
+            acc_m = T.alloc_fragment([block_m, 1], accum_dtype)
+            acc_l = T.alloc_fragment([block_m, 1], accum_dtype)
+            acc_o = T.alloc_fragment([block_m, dim], accum_dtype)
+            tmp = T.alloc_fragment([block_m, block_n], accum_dtype)
+            tmp1 = T.alloc_fragment([block_m,1], accum_dtype)
+            new_max = T.alloc_fragment([block_m,1], accum_dtype)
+            scales = T.alloc_fragment([block_m, block_n], accum_dtype)
+
+            value_zero = 0
+            scale = (1.0 / dim)**0.5
+            value_min = -T.infinity(accum_dtype)
+            T.vbrc(value_zero, acc_o)
+            T.vbrc(value_zero, acc_l)
+            T.vbrc(value_min, acc_m)
+            T.vbrc(scale, scales)
+
+            for k in T.Pipelined(T.ceildiv(seq_len, block_n), num_stages=2):
+
+                # cube
+                T.copy(K[k * block_n, 0], K_shared, size=[block_n, dim])
+                T.gemm(Q_shared, K_shared, scores, initC=True, b_transpose=True)
+
+                # vec
+                T.vmul(scores, scales, scores)
+                T.reduce_max(scores, local_max, dim=1)
+                T.vmax(acc_m, local_max, new_max)
+                T.vsub(acc_m, new_max ,tmp1)
+                T.vexp(tmp1, correction)
+                #scores for current loop
+                T.vsub(scores, new_max, tmp)
+                T.vexp(tmp, scores)
+                T.reduce_sum(scores, local_sum, dim=1)
+                T.vmul(acc_l, correction, acc_l)
+                T.vadd(acc_l, local_sum, acc_l)
+                T.vmul(acc_o, correction, acc_o)
+                T.vcast(scores, scores_cast, round_mode="rint")
+                #copy new_max to acc_m
+                T.vbrc(value_zero, tmp1)
+                T.vadd(tmp1, new_max, acc_m)
+
+                # cube
+                T.copy(V[k * block_n, 0], V_shared, size=[block_n, dim])
+                T.gemm(scores_cast, V_shared, acc_o, initC=False)
+
+            T.vdiv(acc_o, acc_l, acc_o)
+            O_cast = T.alloc_shared([block_m, dim], dtype)
+            T.vcast(acc_o, O_cast, round_mode="rint")
+            real_m = T.min(block_m, seq_len - cid * block_m)
+            T.copy(O_cast, Output[cid * block_m, 0], size=[real_m, dim])
+
+    return flash_attention
+
+func = online_flash_attention()
+
+print("Best Config:", func.get_tuner_result())
+print("Test Passed!")

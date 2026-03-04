@@ -802,8 +802,8 @@ class JitKernel_NPU:
     def from_database(
         cls,
         mod: PrimFunc,
-        kernel_source: str,           # 可能是 MLIR 源码
-        kernel_launcher_path: str,    # 可能是 wrapper 源码
+        kernel_source: str,
+        kernel_launcher_path: str,
         kernel_utils_path: str,
         metadata: str,
         out_idx: Union[List[int], int],

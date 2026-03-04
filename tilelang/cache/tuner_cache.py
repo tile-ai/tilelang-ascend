@@ -143,16 +143,16 @@ class AutoTunerCache:
                 pass_configs=pass_configs,
             )
 
-        # key = self._generate_key(
-        #     func=func,
-        #     out_idx=out_idx,
-        #     execution_backend=execution_backend,
-        #     args=args,
-        #     target=target,
-        #     target_host=target_host,
-        #     pass_configs=pass_configs,
-        # )
-        key = "c3dadd98530857852ec8c3a1c024f9ed873e3905779ca8f6ab68941d63070e6c"
+        key = self._generate_key(
+            func=func,
+            out_idx=out_idx,
+            execution_backend=execution_backend,
+            args=args,
+            target=target,
+            target_host=target_host,
+            pass_configs=pass_configs,
+        )
+        
         with self._lock:
             # First check in-memory cache
             if key in self._memory_cache:

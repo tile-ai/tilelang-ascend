@@ -222,7 +222,6 @@ class AutotuneResult:
             metadata_path = os.path.join(cache_path, "metadata.pkl")
             if verbose:
                 logger.debug(f"Saving metadata to file: {metadata_path}")
-            # 构建一个可JSON序列化的metadata字典
             metadata_to_save = {
                 "symbolic": kernel.symbolic,
                 "params": kernel.params,
