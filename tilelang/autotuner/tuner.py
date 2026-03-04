@@ -290,6 +290,8 @@ class AutoTuner:
         Returns:
             AutotuneResult: Results of the auto-tuning process.
         """
+        import time
+        start_time = time.time()
         _init_logger_handlers()
 
         sig = inspect.signature(self.fn)
@@ -587,7 +589,8 @@ class AutoTuner:
                     self._save_result_to_disk(key, autotuner_result)
 
         self._memory_cache[key] = autotuner_result
-
+        end_time = time.time()
+        logger.info(f"Auto-tuning total time: {end_time - start_time:.2f} seconds")
         return autotuner_result
 
     def __call__(self) -> Any:
