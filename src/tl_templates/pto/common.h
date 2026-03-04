@@ -1,5 +1,6 @@
 #include <pto/pto-inst.hpp>
 
+#ifdef __CCE_AICORE__
 #define CUDART_INF_F 1.0f / 0.0f
 
 namespace tl::ascend_pto {
@@ -246,15 +247,19 @@ AICORE PTO_INLINE void copy_l0c_to_gm_dynamic(
 
 template <typename T1, typename T2, int32_t shape1, int32_t shape2, int32_t shape3,
         int32_t shape4, int32_t shape5, int32_t stride1, int32_t stride2,
-        int32_t stride3, int32_t stride4, int32_t stride5, uint32_t valid1, uint32_t valid2>
+        int32_t stride3, int32_t stride4, int32_t stride5, uint32_t ub_shape1, uint32_t ub_shape2, uint32_t valid1, uint32_t valid2>
 AICORE PTO_INLINE void copy_gm_to_ub_dynamic(
             __gm__ T1 *handle,
             const pto::Shape<shape1, shape2, shape3, shape4, shape5>& shape,
             const pto::Stride<stride1, stride2, stride3, stride4, stride5>& stride,
-            TileUbDataND<T2, shape4, shape5> &ub) {
+            int32_t ub_shape_addr,
+            int32_t ub_offset,
+            int32_t len) {
     pto::GlobalTensor<T1, pto::Shape<shape1, shape2, shape3, shape4, shape5>,
     pto::Stride<stride1, stride2, stride3, stride4, stride5>> global_tensor(handle, shape, stride);
-    pto::TLOAD(ub, global_tensor);
+    TileUbDataND<T2, ub_shape1, ub_shape2, valid1, valid2> temp_ub;
+    pto::TASSIGN(temp_ub, ub_shape_addr + ub_offset * len);
+    pto::TLOAD(temp_ub, global_tensor);
 }
 
 template <typename T1, typename T2, int32_t shape1, int32_t shape2, int32_t shape3,
@@ -297,13 +302,17 @@ AICORE PTO_INLINE void copy_l0c_to_gm(__gm__ T1 *handle, pto::TileAcc<T2, shape4
 
 template <typename T1, typename T2, int32_t shape1, int32_t shape2, int32_t shape3,
         int32_t shape4, int32_t shape5, int32_t stride1, int32_t stride2,
-        int32_t stride3, int32_t stride4, int32_t stride5, uint32_t valid1, uint32_t valid2>
+        int32_t stride3, int32_t stride4, int32_t stride5, uint32_t ub_shape1, uint32_t ub_shape2, uint32_t valid1, uint32_t valid2>
 AICORE PTO_INLINE void copy_gm_to_ub(
             __gm__ T1 *handle,
-            TileUbDataND<T2, shape4, shape5, valid1, valid2> &ub) {
+             int32_t ub_shape_addr,
+            int32_t ub_offset,
+            int32_t len) {
     pto::GlobalTensor<T1, pto::Shape<shape1, shape2, shape3, shape4, shape5>,
     pto::Stride<stride1, stride2, stride3, stride4, stride5>> global_tensor(handle);
-    pto::TLOAD(ub, global_tensor);
+    TileUbDataND<T2, ub_shape1, ub_shape2, valid1, valid2> temp_ub;
+    pto::TASSIGN(temp_ub, ub_shape_addr + ub_offset * len);
+    pto::TLOAD(temp_ub, global_tensor);
 }
 
 template <typename T1, typename T2, int32_t shape1, int32_t shape2, int32_t shape3,
@@ -655,3 +664,4 @@ AICORE PTO_INLINE void wait_intra_block_vec(int32_t flag) {
     wait_intra_block(pipe, flag);
 }
 }
+#endif
