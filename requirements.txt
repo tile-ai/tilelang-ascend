@@ -1,5 +1,4 @@
 # runtime requirements
---extra-index-url https://download.pytorch.org/whl/cpu
 Cython
 numpy>=1.23.5
 tqdm>=4.62.3
@@ -9,5 +8,3 @@ ml_dtypes
 psutil
 pyyaml
 pybind11
-torch==2.7.1+cpu
-torch-npu==2.7.1
