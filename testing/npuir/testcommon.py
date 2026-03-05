@@ -1,5 +1,6 @@
 import contextlib
 import os
+from itertools import product
 from typing import Iterable, Optional, Sequence, Tuple, Union
 
 import torch
@@ -122,6 +123,46 @@ def assert_close(
     )
 
 
+def build_dtype_param_combos(
+    *dtype_lists: Sequence[str],
+    names: Optional[Sequence[str]] = None,
+    accum_dtypes: Optional[Sequence[str]] = None,
+):
+    import pytest
+
+    if accum_dtypes is not None:
+        dtype_lists = (*dtype_lists, accum_dtypes)
+
+    if not dtype_lists:
+        raise ValueError("build_dtype_param_combos requires at least one dtype list.")
+
+    for i, dtype_list in enumerate(dtype_lists):
+        if len(dtype_list) == 0:
+            raise ValueError(f"dtype list at index {i} must not be empty.")
+
+    if names is None:
+        default_names = ["in", "out", "acc"]
+        names = [default_names[i] if i < len(default_names) else f"arg{i}" for i in range(len(dtype_lists))]
+    else:
+        names = list(names)
+        if len(names) != len(dtype_lists):
+            raise ValueError("names length must match the number of dtype lists.")
+
+    combos = []
+    for item in product(*dtype_lists):
+        seen_dtypes = set()
+        marks = []
+        for dtype in item:
+            if dtype not in seen_dtypes:
+                marks.append(pytest.mark.dtype(dtype))
+                seen_dtypes.add(dtype)
+
+        param_id = "_".join(f"{name}_{dtype}" for name, dtype in zip(names, item))
+        combos.append(pytest.param(*item, marks=marks, id=param_id))
+
+    return combos
+
+
 @contextlib.contextmanager
 def ascend_mode(mode: str):
     prev = os.environ.get("TILELANG_ASCEND_MODE")
@@ -133,4 +174,3 @@ def ascend_mode(mode: str):
             os.environ.pop("TILELANG_ASCEND_MODE", None)
         else:
             os.environ["TILELANG_ASCEND_MODE"] = prev
-
