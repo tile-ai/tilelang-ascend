@@ -9,6 +9,7 @@
 #include "../op/ascend.h"
 #include "../op/builtin.h"
 #include "arith/pattern_match.h"
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstddef>
@@ -392,6 +393,19 @@ CodeGenTileLangNPUIRDEV::GetShape(Array<PrimExpr> shape_in) {
     } else {
       // Dynamic dimension "?x";
       shape.push_back(-1);
+    }
+  }
+  return shape;
+}
+
+inline Array<PrimExpr>
+CodeGenTileLangNPUIRDEV::GetShape(const Array<Range> &ranges) {
+  Array<PrimExpr> shape;
+  for (const auto &range : ranges) {
+    if (as_const_int(range->extent)) {
+      shape.push_back(range->extent);
+    } else {
+      shape.push_back(1);
     }
   }
   return shape;
@@ -2019,20 +2033,51 @@ mlir::Value CodeGenTileLangNPUIRDEV::BinaryOpCodegen(const PrimExprNode *op,
 template <typename T, typename U>
 void CodeGenTileLangNPUIRDEV::UnaryVecOpCodegen(const CallNode *op) {
   T npuirop(op->args, this->vmap);
-  auto in_data_name = GetVarValue(npuirop.src);
-  auto out_data_name = GetVarValue(npuirop.dst);
-  auto dims = getBroadcastDim(npuirop.src->shape, npuirop.dst->shape);
-  mlir::Type dst_type = out_data_name.getType();
-  mlir::TypeRange result_tensors(&dst_type, 1);
+  bool is_dynamic =
+      std::any_of(npuirop.src_range.begin(), npuirop.src_range.end(),
+                  [](const Range &r) { return !as_const_int(r->extent); });
+  if (is_dynamic) {
+    auto srcVal = GetVarValue(npuirop.src);
+    auto dstVal = GetVarValue(npuirop.dst);
+    auto dims = getBroadcastDim(npuirop.src->shape, npuirop.dst->shape);
+    mlir::Type dst_type = dstVal.getType();
+    mlir::TypeRange dst_tensors(&dst_type, 1);
+    // Create HIVM Op
+    auto newOp =
+        builder.create<U>(builder.getUnknownLoc(),
+                          dst_tensors,                       // result type
+                          srcVal,                            // in
+                          dstVal,                            // out
+                          builder.getDenseI64ArrayAttr({}),  // transpose
+                          builder.getDenseI64ArrayAttr(dims) // broadcast
+        );
+    SetVarValue(npuirop.dst, newOp->getResult(0));
+    return;
+  }
+  // src process
+  mlir::Value src = GenExtractSliceFromRegion(npuirop.src, npuirop.src_range);
+  // dst process
+  const auto &dst_range = npuirop.dst_range;
+  mlir::Value insertBase = NeedGenInsertSlice(npuirop.dst, dst_range, src);
+  bool needInsertSlice = (insertBase != GetVarValue(npuirop.dst));
+  // Create broadcast dim
+  Array<PrimExpr> src_shape = GetShape(npuirop.src_range);
+  Array<PrimExpr> dst_shape = GetShape(npuirop.dst_range);
+  llvm::SmallVector<int64_t> dims = getBroadcastDim(src_shape, dst_shape);
   // Create HIVM Op
   auto newOp = builder.create<U>(builder.getUnknownLoc(),
-                                 result_tensors, // result type
-                                 in_data_name,   // in
-                                 out_data_name,  // out
+                                 insertBase.getType(), // result type
+                                 src,                  // in
+                                 insertBase,           // out
                                  builder.getDenseI64ArrayAttr({}),  // transpose
                                  builder.getDenseI64ArrayAttr(dims) // broadcast
   );
-  SetVarValue(npuirop.dst, newOp->getResult(0));
+  mlir::Value newOpValue = newOp->getResult(0);
+  mlir::Value result =
+      needInsertSlice ? ReshapeCastAndInsertSlice(
+                            newOpValue, GetVarValue(npuirop.dst), dst_range)
+                      : newOpValue;
+  SetVarValue(npuirop.dst, result);
 }
 
 void CodeGenTileLangNPUIRDEV::BarrierCodegen(const CallNode *op) {
@@ -2078,14 +2123,13 @@ mlir::Value CodeGenTileLangNPUIRDEV::NeedGenInsertSlice(Buffer buffer_data,
     strides_val.push_back(builder.getI64IntegerAttr(1));
   }
 
-  auto srcTensorTy = src.getType().cast<mlir::TensorType>();
-  auto dstTensorTy =
-      GetVarValue(buffer_data).getType().cast<mlir::TensorType>();
-  auto elemTy = dstTensorTy.getElementType();
-  auto srcShape = srcTensorTy.getShape();
+  auto srcType = src.getType().cast<mlir::TensorType>();
+  auto dstType = GetVarValue(buffer_data).getType().cast<mlir::TensorType>();
+  auto elemType = dstType.getElementType();
+  auto srcShape = srcType.getShape();
 
   auto emptyTensor = builder.create<mlir::tensor::EmptyOp>(
-      builder.getUnknownLoc(), srcShape, elemTy);
+      builder.getUnknownLoc(), srcShape, elemType);
 
   return emptyTensor.getResult();
 }

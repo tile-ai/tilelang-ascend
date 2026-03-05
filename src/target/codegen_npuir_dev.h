@@ -279,6 +279,7 @@ private:
   // returns HIVM address space against given address space
   mlir::hivm::AddressSpace GetHIVMAddressSpace(String address_space);
   std::vector<long int> GetShape(Array<PrimExpr> extents);
+  Array<PrimExpr> GetShape(const Array<Range> &ranges);
 
   friend void PrintConst(const FloatImmNode *op, CodeGenTileLangNPUIRDEV *p);
 
