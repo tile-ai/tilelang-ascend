@@ -38,11 +38,21 @@ template <typename T, int32_t shape>
 AICORE PTO_INLINE void mov_tile(int32_t src_addr,
                 int32_t dst_addr, int32_t src_offset, int32_t dst_offset, int32_t len) {
     // TileUbDataND<float, 1, shape> src_temp_ub(1, shape);
-    TileUbDataND<float, 1, shape, 1, shape> src_temp_ub;
+    TileUbDataND<T, 1, shape, 1, shape> src_temp_ub;
     pto::TASSIGN(src_temp_ub, src_addr + src_offset * len);
-    TileUbDataND<float, 1, shape, 1, shape> dst_temp_ub;
+    TileUbDataND<T, 1, shape, 1, shape> dst_temp_ub;
     pto::TASSIGN(dst_temp_ub, dst_addr + dst_offset * len);
     pto::TMOV(dst_temp_ub, src_temp_ub);
+}
+
+template <typename T1, typename T2, int32_t shape>
+AICORE PTO_INLINE void cvt_tile(int32_t src_addr,
+                int32_t dst_addr, int32_t src_offset, int32_t dst_offset, int32_t src_len, int32_t dst_len, pto::RoundMode rmode) {
+    TileUbDataND<T1, 1, shape, 1, shape> src_temp_ub;
+    pto::TASSIGN(src_temp_ub, src_addr + src_offset * src_len);
+    TileUbDataND<T2, 1, shape, 1, shape> dst_temp_ub;
+    pto::TASSIGN(dst_temp_ub, dst_addr + dst_offset * dst_len);
+    pto::TCVT(dst_temp_ub, src_temp_ub, rmode);
 }
 
 template <typename T1, typename T2, uint32_t M, uint32_t N, uint32_t K,
