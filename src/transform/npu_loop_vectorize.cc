@@ -26,6 +26,7 @@
 #include "tir/analysis/var_use_def_analysis.h"
 
 #include <tvm/arith/analyzer.h>
+#include <tvm/arith/pattern.h>
 #include <tvm/tir/analysis.h>
 #include <tvm/tir/builtin.h>
 #include <tvm/tir/stmt_functor.h>
@@ -65,11 +66,12 @@ private:
     {"LE", "tl.npuir_cmp"},
     {"GE", "tl.npuir_cmp"},
     {"GT", "tl.npuir_cmp"},
+    {"Copy", "tl.copy"},
     {"Broadcast", "tl.npuir_brc"},
   };
 
   bool IsCmpOps(const std::string& op_name) {
-    return op_name == "EQ" || 
+    return op_name == "EQ" ||
            op_name == "NE" ||
            op_name == "LT" ||
            op_name == "GT" ||
@@ -288,6 +290,13 @@ private:
     return Evaluate(call);
   }
 
+  bool IsCopyOp(const PrimExpr &expr, const std::vector<const VarNode *> &loop_vars) {
+    if (IsScalarLike(expr, loop_vars) || expr.as<BufferLoadNode>()) {
+      return true;
+    }
+    return false;
+  }
+
   bool IsUnaryOp(const PrimExpr& expr) {
     if (auto call = expr.as<CallNode>()) {
       std::string op_name;
@@ -463,6 +472,24 @@ private:
     statements->push_back(stmt);
     depth--;
     return true;
+  }
+
+  bool HandleCopyExpression(const PrimExpr &expr, const BufferAccessInfo &output_buffer,
+                            const std::vector<const VarNode *> &loop_vars, Array<Stmt> *statements) {
+    if (IsScalarLike(expr, loop_vars)) {
+      // Copy a constant or a loop invariant var into output buffer
+      Stmt statement = BuildNPUIRUnaryCall("Broadcast", expr, output_buffer, 0);
+      statements->push_back(statement);
+      --depth;
+      return true;
+    } else if (expr.as<BufferLoadNode>()) {
+      // Copy from input buffer into output buffer
+      Stmt statement = BuildNPUIRUnaryCall("Copy", ExtractBufferAccessInfo(expr), output_buffer, 0);
+      statements->push_back(statement);
+      --depth;
+      return true;
+    }
+    return false;
   }
 
   bool HandleUnaryExpression(const PrimExpr& expr, const BufferAccessInfo& output_buffer, std::vector<BufferAccessInfo>* tmp_bufs,
@@ -649,6 +676,12 @@ private:
 
   bool DecomposeExpression(const PrimExpr& expr, const BufferAccessInfo& output_buffer, std::vector<BufferAccessInfo>* tmp_bufs,
                            const std::vector<const VarNode*>& loop_vars, Array<Stmt>* statements) {
+    if (IsCopyOp(expr, loop_vars)){
+      // Case of copy without computation
+      ++depth;
+      return HandleCopyExpression(expr, output_buffer, loop_vars, statements);
+    }
+
     if (IsUnaryOp(expr)) {
       depth++;
       return HandleUnaryExpression(expr, output_buffer, tmp_bufs, loop_vars, statements);
@@ -713,6 +746,7 @@ private:
 class LoopVectorize : public StmtMutator {
 private:
   inline static std::unordered_set<std::string> CandidateVectorizationOps = {
+    "tl.copy",
     "tl.npuir_exp",
     "tl.npuir_abs",
     "tl.npuir_add",
@@ -778,37 +812,67 @@ private:
 
  /**
   * Find the index of the offset containing the loop variable.
-  * Returns -1 if not found, -2 if found in multiple offsets.
+  * Returns -1 if not found, -2 if found in multiple offsets or indirect mem access.
   */
   int FindLoopVarInOffsets(const Array<PrimExpr>& offsets, const VarNode* loop_var) {
     int found_dim = -1;
     arith::Analyzer analyzer;
 
     for (int i = 0; i < static_cast<int>(offsets.size()); ++i) {
+      bool indirect_found = false;
+
       class LoopVarVisitor : public ExprVisitor {
       public:
         const VarNode* target_var;
-        bool found = false;
+        bool found = false;               // Whether appeared directly
+        bool& indirect_found;              // Whether appeared indirectly
+        bool indirect_scope = false;       // Status flag: whether the visitor is in a BufferLoad
 
-        explicit LoopVarVisitor(const VarNode* var) : target_var(var) {}
+        LoopVarVisitor(const VarNode* var, bool& indirect_flag)
+            : target_var(var), indirect_found(indirect_flag) {}
 
         void VisitExpr_(const VarNode* op) override {
-          if (op == target_var) found = true;
+          if (op == target_var) {
+            if (indirect_scope) {
+              indirect_found = true;
+            } else {
+              found = true;
+            }
+          }
           ExprVisitor::VisitExpr_(op);
         }
-      } visitor(loop_var);
 
+        void VisitExpr_(const BufferLoadNode* op) override {
+          // Visit a BufferLoad, set the status flag - indirect_scope
+          bool saved_scope = indirect_scope;
+          indirect_scope = true;
+          for (const auto& index : op->indices) {
+            VisitExpr(index);
+          }
+          // Reset the status flag
+          indirect_scope = saved_scope;
+        }
+      } visitor(loop_var, indirect_found);
+
+      // Check each offset
       visitor(offsets[i]);
+
+      if (indirect_found) {
+        // Indirect mem access detected.
+        return -2;
+      }
 
       if (visitor.found) {
         if (found_dim == -1) {
+          // Record the first found
           found_dim = i;
         } else {
+          // Found multiple offsets associated with the loop var
           return -2;
         }
       }
     }
-
+    // Returns the unique offset associated with the loop var
     return found_dim;
   }
 
