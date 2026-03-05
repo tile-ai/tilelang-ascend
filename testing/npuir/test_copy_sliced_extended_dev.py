@@ -20,7 +20,7 @@ def strided_copy_4d_kernel(
     dtype="float16",
 ):
     @T.prim_func
-    def main(
+    def strided_copy_4d_kernel(
         In: T.Tensor((B, S, H, D), dtype),
         Out: T.Tensor((B, S, H, D), dtype),
         Debug_Frag: T.Tensor((S_blk, D_blk), dtype),
@@ -36,7 +36,7 @@ def strided_copy_4d_kernel(
             T.copy(frag, Debug_Frag)
             T.copy(frag, Out[idx_b, off_s:off_s + S_blk, idx_h, off_d:off_d + D_blk])
 
-    return main
+    return strided_copy_4d_kernel
 
 
 @tilelang.jit(target="npuir")
@@ -51,7 +51,7 @@ def strided_copy_5d_kernel(
     dtype="float16",
 ):
     @T.prim_func
-    def main(
+    def strided_copy_5d_kernel(
         In: T.Tensor((D0, D1, D2, D3, D4), dtype),
         Out: T.Tensor((D0, D1, D2, D3, D4), dtype),
         Debug_Frag: T.Tensor((Blk_2, Blk_4), dtype),
@@ -76,7 +76,7 @@ def strided_copy_5d_kernel(
                 Out[r_idx_0, r_idx_1, off_2:off_2 + Blk_2, idx_3, off_4:off_4 + Blk_4],
             )
 
-    return main
+    return strided_copy_5d_kernel
 
 
 @pytest.mark.copy

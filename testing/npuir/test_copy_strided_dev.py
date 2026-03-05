@@ -22,7 +22,7 @@ def discrete_copy_tiled(total_h, width, stride=2, block_h=32):
     num_blocks = out_h // block_h
 
     @T.prim_func
-    def main(
+    def discrete_copy_tiled(
         In: T.Tensor(shape_in, dtype),
         Out: T.Tensor(shape_out, dtype),
     ):
@@ -39,7 +39,7 @@ def discrete_copy_tiled(total_h, width, stride=2, block_h=32):
 
                 T.copy(ub_frag[0:block_h, 0:width], Out[out_block_offset:out_block_offset + block_h, 0:width])
 
-    return main
+    return discrete_copy_tiled
 
 
 @pytest.mark.copy

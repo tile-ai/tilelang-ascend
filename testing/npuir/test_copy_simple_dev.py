@@ -12,7 +12,7 @@ from testcommon import ascend_mode, assert_close, gen_tensor
 @tilelang.jit(target="npuir")
 def simple_copy_1d(L, block_L, dtype="float16", accum_dtype="float32"):
     @T.prim_func
-    def main(
+    def simple_copy_1d(
         In: T.Tensor((L,), dtype),
         A: T.Tensor((L,), dtype),
         B: T.Tensor((L,), dtype),
@@ -34,13 +34,13 @@ def simple_copy_1d(L, block_L, dtype="float16", accum_dtype="float32"):
             T.copy(B_frag, B[start_idx])
             T.copy(C_frag, C[start_idx])
 
-    return main
+    return simple_copy_1d
 
 
 @tilelang.jit(target="npuir")
 def simple_copy_2d(M, N, block_M, block_N, dtype="float16", accum_dtype="float32"):
     @T.prim_func
-    def main(
+    def simple_copy_2d(
         In: T.Tensor((M, N), dtype),
         A: T.Tensor((M, N), dtype),
         B: T.Tensor((M, N), dtype),
@@ -63,13 +63,13 @@ def simple_copy_2d(M, N, block_M, block_N, dtype="float16", accum_dtype="float32
             T.copy(B_frag, B[by * block_M, bx * block_N])
             T.copy(C_frag, C[by * block_M, bx * block_N])
 
-    return main
+    return simple_copy_2d
 
 
 @tilelang.jit(target="npuir")
 def simple_copy_3d(M, N, K, block_M, block_N, block_K, dtype="float16", accum_dtype="float32"):
     @T.prim_func
-    def main(
+    def simple_copy_3d(
         In: T.Tensor((M, N, K), dtype),
         A: T.Tensor((M, N, K), dtype),
         B: T.Tensor((M, N, K), dtype),
@@ -100,7 +100,7 @@ def simple_copy_3d(M, N, K, block_M, block_N, block_K, dtype="float16", accum_dt
             T.copy(B_frag, B[start_m, start_n, start_k])
             T.copy(C_frag, C[start_m, start_n, start_k])
 
-    return main
+    return simple_copy_3d
 
 
 @pytest.mark.copy
