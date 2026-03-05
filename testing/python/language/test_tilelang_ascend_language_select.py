@@ -174,7 +174,7 @@ def test_select_tensor_op(target, shape):
     run_test_mod2(M, N, 128, 256, target=target)
 
 
-@pytest.mark.parametrize("target", ["ascendc"])
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("shape", [(1024, 1024), (512, 256)])
 def test_select_scalar_op(target, shape):
     M, N = shape

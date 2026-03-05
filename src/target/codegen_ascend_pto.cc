@@ -828,9 +828,20 @@ void CodeGenTileLangAscendPto::CallExternCodegen(const CallNode *op) {
         this->stream << api_name << "(" << dst_var_id << ", "
         << src_var_id << ", " << row_index << ", " << col_index << ");\n";
       } else if (api_name == "TCVT") {
+        std::vector src_ub_data = ub_data_map_[src_var_id];
+        std::vector dst_ub_data = ub_data_map_[dst_var_id];
+        int32_t src_len = GetTypeLen(src_ub_data[0]);
+        int32_t dst_len = GetTypeLen(dst_ub_data[0]);
+        std::vector shapes = extractShapeFromTemplate(op_name);
         this->PrintIndent();
-        this->stream << api_name << "(" << dst_var_id << ", "
-        << src_var_id << ", pto::RoundMode::CAST_NONE" << ");\n";
+        if (src_offset != "0" || dst_offset != "0") {
+          this->stream << kAscendPtoScope << "cvt_tile<" << src_ub_data[0] << ", " << dst_ub_data[0] << ", " << shapes[0] << ">("
+          << src_ub_data[3] << ", " << dst_ub_data[3]
+          << ", " << src_offset << ", " << dst_offset << ", " << src_len << ", " << dst_len << ", pto::RoundMode::CAST_NONE" << ");\n";
+        } else {
+          this->stream << api_name << "(" << dst_var_id << ", "
+          << src_var_id << ", pto::RoundMode::CAST_NONE" << ");\n";
+        }
       } else if (api_name == "TMOV") {
         this->PrintIndent();
         std::vector src_ub_data = ub_data_map_[src_var_id];
@@ -946,8 +957,9 @@ void CodeGenTileLangAscendPto::CallExternCodegen(const CallNode *op) {
           }
           this->stream << ")";
         }
+        // for the pipeline scenario of l1
         if (api_name == "TLOAD" && prefetch_n_stages_map_.count(dst_var_id) &&
-            prefetch_n_stages_map_[dst_var_id].first > 0) {
+            prefetch_n_stages_map_[dst_var_id].first > 0 && op_name.find("copy_gm_to_l1") != std::string::npos) {
           PrimExpr element_count;
           auto shape = buffer_shapess_[GetRef<tir::Var>(dst_var)];
           if (shape.size() == 3) {
@@ -2103,16 +2115,35 @@ void CodeGenTileLangAscendPto::CastCodegen(const CallNode *op, const std::string
     auto var_name = PrintBufferOffset(op->args[i].as<CallNode>());
     var_names.push_back(var_name);
   }
+  
+  auto src_var = PrintExpr(op->args[0].as<CallNode>()->args[1]);
+  auto dst_var = PrintExpr(op->args[1].as<CallNode>()->args[1]);
+  
+  auto src_offset = PrintExpr(op->args[0].as<CallNode>()->args[2]);
+  auto dst_offset = PrintExpr(op->args[1].as<CallNode>()->args[2]);
+
+  std::vector<std::string> src_ub_data = ub_data_map_[src_var];
+  std::vector<std::string> dst_ub_data = ub_data_map_[dst_var];
+  int32_t src_len = GetTypeLen(src_ub_data[0]);
+  int32_t dst_len = GetTypeLen(dst_ub_data[0]);
+  std::string shapes = PrintExpr(op->args[3]);
+  std::string rmode = PrintExpr(op->args[3]);
   this->PrintIndent();
-  this->stream << "TCVT" << "(";
-  var_names.push_back(op_type);
-  for (int i = 0; i < var_names.size(); i++) {
-    this->stream << var_names[i];
-    if (i != var_names.size() - 1) {
-      this->stream << ", ";
+  if (src_offset != "0" || dst_offset != "0") {
+    this->stream << kAscendPtoScope << "cvt_tile<" << src_ub_data[0] << ", " << dst_ub_data[0] << ", " << shapes[0] << ">("
+    << src_ub_data[3] << ", " << dst_ub_data[3]
+    << ", " << src_offset << ", " << dst_offset << ", " << src_len << ", " << dst_len << ", pto::RoundMode::" << rmode << ");\n";
+  } else {
+    this->stream << "TCVT" << "(";
+    var_names.push_back(op_type);
+    for (int i = 0; i < var_names.size(); i++) {
+      this->stream << var_names[i];
+      if (i != var_names.size() - 1) {
+        this->stream << ", ";
+      }
     }
+    this->stream << ");\n";
   }
-  this->stream << ");\n";
 }
 
 std::tuple<int, int, int, bool> ExtractTemplateParamsForSliceBuffer(const std::string& op_name) {
@@ -2533,9 +2564,16 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
           for (size_t i = 0; i < bufferNum; i++) {
             this->PrintIndent();
             stream << "TASSIGN(" << vid << "[" << i << "], "
-                   << PrintExpr(target_expr) << " + " << i << " * "
-                   << static_cast<int>(typeSize) << " * " << ub_data[1] << " * "
-                   << ub_data[2] << ");\n";
+                   << PrintExpr(address_offset_[String(pos)])
+                   << ");\n";
+            if (ub_data[3].empty()) {
+                ub_data[3] = PrintExpr(address_offset_[String(pos)]);
+            }
+            ub_data_map_[vid] = ub_data;
+            address_offset_.Set(String(pos),
+                                PrimExpr(int(op->ConstantAllocationSize() *
+                                             op->dtype.bytes() / 2)) +
+                                    address_offset_[String(pos)]);
           }
         } else {
           stream << pos << "ND<" << type << ", " << ub_data[1] << ", "
@@ -2687,16 +2725,18 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
           stream << "> " << vid << "[" << bufferNum << "];\n";
 
           // Batch allocate addresses.
-          for (size_t i = 0; i < bufferNum; i++) {
+           for (size_t i = 0; i < bufferNum; i++) {
             this->PrintIndent();
             stream << "TASSIGN(" << vid << "[" << i << "], "
                    << PrintExpr(address_offset_[String(pos)])
                    << ");\n";
-            ub_data[3] = PrintExpr(address_offset_[String(pos)]);
+            if (ub_data[3].empty()) {
+                ub_data[3] = PrintExpr(address_offset_[String(pos)]);
+            }
             ub_data_map_[vid] = ub_data;
             address_offset_.Set(String(pos),
                                 PrimExpr(int(op->ConstantAllocationSize() *
-                                             op->dtype.bytes())) +
+                                             op->dtype.bytes() / 2)) +
                                     address_offset_[String(pos)]);
           }
         } else {
