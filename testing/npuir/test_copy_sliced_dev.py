@@ -12,7 +12,7 @@ from testcommon import ascend_mode, assert_close, gen_tensor
 @tilelang.jit(target="npuir")
 def slice_copy_2d_kernel(block_M, block_N, idx, idx2, dtype="float16"):
     @T.prim_func
-    def main(
+    def slice_copy_2d_kernel(
         In_ones: T.Tensor((block_M, block_N), dtype),
         In_zeros: T.Tensor((block_M, block_N), dtype),
         Out1: T.Tensor((block_M, block_N), dtype),
@@ -57,13 +57,13 @@ def slice_copy_2d_kernel(block_M, block_N, idx, idx2, dtype="float16"):
             T.copy(A_slice, Out3)
             T.copy(B_slice, Out4)
 
-    return main
+    return slice_copy_2d_kernel
 
 
 @tilelang.jit(target="npuir")
 def slice_copy_3d_kernel(B, M, N, idx, idx2, dtype="float16"):
     @T.prim_func
-    def main(
+    def slice_copy_3d_kernel(
         In_ones: T.Tensor((B, M, N), dtype),
         In_zeros: T.Tensor((B, M, N), dtype),
         Out1: T.Tensor((B, M, N), dtype),
@@ -106,13 +106,13 @@ def slice_copy_3d_kernel(B, M, N, idx, idx2, dtype="float16"):
             T.copy(A_slice, Out3)
             T.copy(B_slice, Out4)
 
-    return main
+    return slice_copy_3d_kernel
 
 
 @tilelang.jit(target="npuir")
 def slice_copy_4d_kernel(B, H, M, N, idx_b, idx_h, idx_b2, idx_h2, dtype="float16"):
     @T.prim_func
-    def main(
+    def slice_copy_4d_kernel(
         In_ones: T.Tensor((B, H, M, N), dtype),
         In_zeros: T.Tensor((B, H, M, N), dtype),
         Out1: T.Tensor((B, H, M, N), dtype),
@@ -155,7 +155,7 @@ def slice_copy_4d_kernel(B, H, M, N, idx_b, idx_h, idx_b2, idx_h2, dtype="float1
             T.copy(A_slice, Out3)
             T.copy(B_slice, Out4)
 
-    return main
+    return slice_copy_4d_kernel
 
 
 @pytest.mark.copy

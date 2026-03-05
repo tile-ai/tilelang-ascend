@@ -31,7 +31,7 @@ pytestmark = [pytest.mark.copy, pytest.mark.op("copy"), pytest.mark.dtype("float
 @tilelang.jit(target="npuir")
 def cube_sliced_copy_2d(M, N, idx, dtype="float16", accum_dtype="float32"):
     @T.prim_func
-    def main(
+    def cube_sliced_copy_2d(
         A_in: T.Tensor((M, N), dtype),
         B_in: T.Tensor((N, N), dtype),
         Out: T.Tensor((M, N), dtype),
@@ -58,13 +58,13 @@ def cube_sliced_copy_2d(M, N, idx, dtype="float16", accum_dtype="float32"):
                 with T.rs("PIPE_FIX"):
                     T.copy(l0_c[0:tail_m, 0:tail_n], Out[idx:idx + tail_m, 0:tail_n])
 
-    return main
+    return cube_sliced_copy_2d
 
 
 @tilelang.jit(target="npuir")
 def cube_sliced_copy_3d(B, M, N, b_idx, m_idx, dtype="float16", accum_dtype="float32"):
     @T.prim_func
-    def main(
+    def cube_sliced_copy_3d(
         A_in: T.Tensor((B, M, N), dtype),
         B_in: T.Tensor((N, N), dtype),
         Out: T.Tensor((B, M, N), dtype),
@@ -91,13 +91,13 @@ def cube_sliced_copy_3d(B, M, N, b_idx, m_idx, dtype="float16", accum_dtype="flo
                 with T.rs("PIPE_FIX"):
                     T.copy(l0_c[0:tail_m, 0:tail_n], Out[b_idx, m_idx:m_idx + tail_m, 0:tail_n])
 
-    return main
+    return cube_sliced_copy_3d
 
 
 @tilelang.jit(target="npuir")
 def cube_sliced_copy_4d(B, H, M, N, b_idx, h_idx, m_idx, dtype="float16", accum_dtype="float32"):
     @T.prim_func
-    def main(
+    def cube_sliced_copy_4d(
         A_in: T.Tensor((B, H, M, N), dtype),
         B_in: T.Tensor((N, N), dtype),
         Out: T.Tensor((B, H, M, N), dtype),
@@ -125,7 +125,7 @@ def cube_sliced_copy_4d(B, H, M, N, b_idx, h_idx, m_idx, dtype="float16", accum_
                     T.copy(l0_c[0:tail_m, 0:tail_n],
                            Out[b_idx, h_idx, m_idx:m_idx + tail_m, 0:tail_n])
 
-    return main
+    return cube_sliced_copy_4d
 
 
 # ---------------------------------------------------------------------------
