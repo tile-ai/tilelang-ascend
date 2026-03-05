@@ -2725,16 +2725,18 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
           stream << "> " << vid << "[" << bufferNum << "];\n";
 
           // Batch allocate addresses.
-          for (size_t i = 0; i < bufferNum; i++) {
+           for (size_t i = 0; i < bufferNum; i++) {
             this->PrintIndent();
             stream << "TASSIGN(" << vid << "[" << i << "], "
                    << PrintExpr(address_offset_[String(pos)])
                    << ");\n";
-            ub_data[3] = PrintExpr(address_offset_[String(pos)]);
+            if (ub_data[3].empty()) {
+                ub_data[3] = PrintExpr(address_offset_[String(pos)]);
+            }
             ub_data_map_[vid] = ub_data;
             address_offset_.Set(String(pos),
                                 PrimExpr(int(op->ConstantAllocationSize() *
-                                             op->dtype.bytes())) +
+                                             op->dtype.bytes() / 2)) +
                                     address_offset_[String(pos)]);
           }
         } else {
