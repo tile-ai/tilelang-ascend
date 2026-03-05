@@ -283,10 +283,26 @@ static PyObject* copyMemory(PyObject* self, PyObject* args) {
   return Py_None;
 }
 
+static PyObject *getDeviceNum(PyObject *self, PyObject *args) {
+  int32_t deviceCount;
+
+  rtError_t rtRet = rtGetDeviceCount(&deviceCount);
+
+  if (rtRet != RT_ERROR_NONE) {
+    printf("rtGetDeviceCount failed, 0x%x", rtRet);
+    return NULL;
+  }
+  if (PyErr_Occurred()) {
+    return NULL;
+  }
+  return Py_BuildValue("I", deviceCount);
+}
+
 static PyMethodDef NpuUtilsMethods[] = {
     {"load_kernel_binary", loadKernelBinary, METH_VARARGS, "Load NPU kernel binary into NPU driver"},
     {"get_arch", getArch, METH_VARARGS, "Get soc version of NPU"},
     {"get_aicore_num", getAiCoreNum, METH_VARARGS, "Get the number of AI core"},
+    {"get_device_num", getDeviceNum, METH_VARARGS, "Get the number of Ascend device"},
     {"create_stream", createStream, METH_VARARGS, "Create a stream"},
     {"read_data_from_file", readDataFromBinaryFileWrapper, METH_VARARGS, "Read binary file into the array already allocated"},
     {"write_data_to_file", writeDataToBinaryFileWrapper, METH_VARARGS, "Write an array to a binary file"},

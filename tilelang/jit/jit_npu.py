@@ -15,6 +15,7 @@ import torch
 import torch_npu
 import functools
 from ..engine import lower
+from ..utils import NPUUtils
 
 from tvm import tir
 from tvm.tir import PrimFunc
@@ -758,44 +759,6 @@ def read_binary_file(file_path, mode="rb", chunk_size=None, return_type="bytes")
     except IOError as e:
         raise IOError(f"Error occurred while reading the file: {e}")
 
-
-class NPUUtils(object):
-    def __new__(cls):
-        if not hasattr(cls, "instance"):
-            cls.instance = super(NPUUtils, cls).__new__(cls)
-        return cls.instance
-
-    def __init__(self):
-        cache_path = "npu_utils.so"
-        import importlib.util
-
-        spec = importlib.util.spec_from_file_location("npu_utils", cache_path)
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        self.npu_utils_mod = mod
-
-    def load_binary(self, name, kernel, shared, device, mix_mode):
-        return self.npu_utils_mod.load_kernel_binary(
-            name, kernel, shared, device, mix_mode
-        )
-
-    @functools.lru_cache()
-    def get_device_properties(self, device):
-        num_aic = self.get_aicore_num()
-        num_aiv = num_aic * 2
-        return {"num_aicore": num_aic, "num_vectorcore": num_aiv}
-
-    @functools.lru_cache()
-    def get_arch(self):
-        return self.npu_utils_mod.get_arch()
-
-    @functools.lru_cache()
-    def get_aicore_num(self):
-        return self.npu_utils_mod.get_aicore_num()
-
-    @functools.lru_cache()
-    def get_aivector_core_num(self):
-        return self.get_device_properties("npu")["num_vectorcore"]
 
 class JitKernel_NPU:
     def __init__(self, metadata: dict, out_idx=None) -> None:
