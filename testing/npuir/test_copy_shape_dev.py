@@ -14,7 +14,7 @@ dtype = "float16"
 
 def copy_shape_1d_2d(M, N, block_M, block_N):
     @T.prim_func
-    def copyShape(
+    def copyShapeDev1D2D(
         A: T.Tensor((M, N), dtype),
         B: T.Tensor((M, N), dtype),
         shape_M: T.int32,
@@ -32,12 +32,12 @@ def copy_shape_1d_2d(M, N, block_M, block_N):
                 T.copy(A[bx, by:by + block_N], A_BUF)
                 T.copy(A_BUF, B[bx, by:by + block_N])
 
-    return copyShape
+    return copyShapeDev1D2D
 
 
 def copy_shape_2d_3d(M, N, block_M, block_N):
     @T.prim_func
-    def copyShape2D3D(
+    def copyShapeDev2D3D(
         A: T.Tensor((1, M, N), dtype),
         B: T.Tensor((1, M, N), dtype),
     ):
@@ -53,7 +53,7 @@ def copy_shape_2d_3d(M, N, block_M, block_N):
                 T.copy(A[0, bx, by:by + block_N], A_BUF)
                 T.copy(A_BUF, B[0, bx, by:by + block_N])
 
-    return copyShape2D3D
+    return copyShapeDev2D3D
 
 
 @pytest.mark.copy
