@@ -594,7 +594,6 @@ def reduce(buffer: Union[Buffer, BufferRegion],
     if isinstance(buffer, BufferRegion):
         buffer_ptr, buffer_extent = _handle_buffer_region(buffer, "r")
     else:
-        print(buffer)
         buffer_ptr = buffer.access_ptr("r")
         buffer_extent = buffer.shape
         
@@ -615,7 +614,6 @@ def reduce(buffer: Union[Buffer, BufferRegion],
         M = buffer_extent[1] 
         N = buffer_extent[2] 
     shape = f"{M}, {N}"
-    print(shape)
     
     return T.call_intrin(
         "handle",
