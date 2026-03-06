@@ -26,7 +26,7 @@ tilelang.cache.clear_cache()
 # Kernel builders
 # ---------------------------------------------------------------------------
 
-@tilelang.jit(out_idx=[-1], target="npuir")
+@tilelang.jit(target="npuir")
 def cube_sliced_copy_2d(M, N, idx, dtype="float16", accum_dtype="float32"):
     @T.prim_func
     def main(
@@ -44,8 +44,8 @@ def cube_sliced_copy_2d(M, N, idx, dtype="float16", accum_dtype="float32"):
                 tail_n = N
                 tail_k = N
 
-                T.npuir_load_nd2nz(A_in[idx, 0], l1_a, size=[tail_m, tail_k])
-                T.npuir_load_nd2nz(B_in[0, 0], l1_b, size=[tail_n, tail_k])
+                T.copy(A_in[idx:idx + tail_m, 0:tail_k], l1_a[0:tail_m, 0:tail_k])
+                T.copy(B_in[0:tail_n, 0:tail_k], l1_b[0:tail_n, 0:tail_k])
 
                 T.npuir_dot(
                     l1_a, l1_b, l0_c,
@@ -54,16 +54,12 @@ def cube_sliced_copy_2d(M, N, idx, dtype="float16", accum_dtype="float32"):
                 )
 
                 with T.rs("PIPE_FIX"):
-                    T.npuir_store_fixpipe(
-                        l0_c, Out[idx, 0],
-                        size=[tail_m, tail_n],
-                        enable_nz2nd=True,
-                    )
+                    T.copy(l0_c[0:tail_m, 0:tail_n], Out[idx:idx + tail_m, 0:tail_n])
 
     return main
 
 
-@tilelang.jit(out_idx=[-1], target="npuir")
+@tilelang.jit(target="npuir")
 def cube_sliced_copy_3d(B, M, N, b_idx, m_idx, dtype="float16", accum_dtype="float32"):
     @T.prim_func
     def main(
@@ -81,8 +77,8 @@ def cube_sliced_copy_3d(B, M, N, b_idx, m_idx, dtype="float16", accum_dtype="flo
                 tail_n = N
                 tail_k = N
 
-                T.npuir_load_nd2nz(A_in[b_idx, m_idx, 0], l1_a, size=[1, tail_m, tail_k])
-                T.npuir_load_nd2nz(B_in[0, 0], l1_b, size=[tail_n, tail_k])
+                T.copy(A_in[b_idx, m_idx:m_idx + tail_m, 0:tail_k], l1_a[0:tail_m, 0:tail_k])
+                T.copy(B_in[0:tail_n, 0:tail_k], l1_b[0:tail_n, 0:tail_k])
 
                 T.npuir_dot(
                     l1_a, l1_b, l0_c,
@@ -91,16 +87,12 @@ def cube_sliced_copy_3d(B, M, N, b_idx, m_idx, dtype="float16", accum_dtype="flo
                 )
 
                 with T.rs("PIPE_FIX"):
-                    T.npuir_store_fixpipe(
-                        l0_c, Out[b_idx, m_idx, 0],
-                        size=[1, tail_m, tail_n],
-                        enable_nz2nd=True,
-                    )
+                    T.copy(l0_c[0:tail_m, 0:tail_n], Out[b_idx, m_idx:m_idx + tail_m, 0:tail_n])
 
     return main
 
 
-@tilelang.jit(out_idx=[-1], target="npuir")
+@tilelang.jit(target="npuir")
 def cube_sliced_copy_4d(B, H, M, N, b_idx, h_idx, m_idx, dtype="float16", accum_dtype="float32"):
     @T.prim_func
     def main(
@@ -118,8 +110,8 @@ def cube_sliced_copy_4d(B, H, M, N, b_idx, h_idx, m_idx, dtype="float16", accum_
                 tail_n = N
                 tail_k = N
 
-                T.npuir_load_nd2nz(A_in[b_idx, h_idx, m_idx, 0], l1_a, size=[1, 1, tail_m, tail_k])
-                T.npuir_load_nd2nz(B_in[0, 0], l1_b, size=[tail_n, tail_k])
+                T.copy(A_in[b_idx, h_idx, m_idx:m_idx + tail_m, 0:tail_k], l1_a[0:tail_m, 0:tail_k])
+                T.copy(B_in[0:tail_n, 0:tail_k], l1_b[0:tail_n, 0:tail_k])
 
                 T.npuir_dot(
                     l1_a, l1_b, l0_c,
@@ -128,11 +120,8 @@ def cube_sliced_copy_4d(B, H, M, N, b_idx, h_idx, m_idx, dtype="float16", accum_
                 )
 
                 with T.rs("PIPE_FIX"):
-                    T.npuir_store_fixpipe(
-                        l0_c, Out[b_idx, h_idx, m_idx, 0],
-                        size=[1, 1, tail_m, tail_n],
-                        enable_nz2nd=True,
-                    )
+                    T.copy(l0_c[0:tail_m, 0:tail_n],
+                           Out[b_idx, h_idx, m_idx:m_idx + tail_m, 0:tail_n])
 
     return main
 

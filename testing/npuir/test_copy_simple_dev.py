@@ -7,7 +7,7 @@ import tilelang.language as T
 torch.npu.set_device(0)
 tilelang.cache.clear_cache()
 
-@tilelang.jit(out_idx=[-1], target="npuir")
+@tilelang.jit(target="npuir")
 def simple_copy_1d(L, block_L, dtype="float16", accum_dtype="float32"):
     @T.prim_func
     def main(
@@ -35,7 +35,7 @@ def simple_copy_1d(L, block_L, dtype="float16", accum_dtype="float32"):
 
     return main
 
-@tilelang.jit(out_idx=[-1], target="npuir")
+@tilelang.jit(target="npuir")
 def simple_copy_2d(M, N, block_M, block_N, dtype="float16", accum_dtype="float32"):
     @T.prim_func
     def main(
@@ -63,7 +63,7 @@ def simple_copy_2d(M, N, block_M, block_N, dtype="float16", accum_dtype="float32
 
     return main
 
-@tilelang.jit(out_idx=[-1], target="npuir")
+@tilelang.jit(target="npuir")
 def simple_copy_3d(M, N, K, block_M, block_N, block_K, dtype="float16", accum_dtype="float32"):
     @T.prim_func
     def main(

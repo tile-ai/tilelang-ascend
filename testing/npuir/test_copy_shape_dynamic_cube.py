@@ -55,13 +55,14 @@ def cube_copy_shape_1d_2d(M, N, block_M, block_N):
             l0_c = T.alloc_L0C((1, block_N), "float32")
 
             with T.Scope("Cube"):
-                for i in T.Parallel(block_M):
+                for i in T.serial(block_M):
                     bx = blockx * block_M + i
                     t0 = shape_N - by
                     tile_size_N = T.min(block_N, t0)
 
-                    T.npuir_load_nd2nz(A[bx, by], l1_a, size=[1, tile_size_N])
-                    T.npuir_load_nd2nz(Id[0, 0], l1_b, size=[tile_size_N, tile_size_N])
+                    T.copy(A[bx:bx + 1, by:by + tile_size_N], l1_a[0:1, 0:tile_size_N])
+                    T.copy(Id[0:tile_size_N, 0:tile_size_N],
+                           l1_b[0:tile_size_N, 0:tile_size_N])
 
                     T.npuir_dot(
                         l1_a, l1_b, l0_c,
@@ -70,11 +71,7 @@ def cube_copy_shape_1d_2d(M, N, block_M, block_N):
                     )
 
                     with T.rs("PIPE_FIX"):
-                        T.npuir_store_fixpipe(
-                            l0_c, B[bx, by],
-                            size=[1, tile_size_N],
-                            enable_nz2nd=True,
-                        )
+                        T.copy(l0_c[0:1, 0:tile_size_N], B[bx:bx + 1, by:by + tile_size_N])
 
     return copyShapeCube
 
@@ -102,13 +99,14 @@ def cube_copy_shape_2d_3d(M, N, block_M, block_N):
             l0_c = T.alloc_L0C((1, block_N), "float32")
 
             with T.Scope("Cube"):
-                for i in T.Parallel(block_M):
+                for i in T.serial(block_M):
                     bx = blockx * block_M + i
                     t0 = shape_N - by
                     tile_size_N = T.min(block_N, t0)
 
-                    T.npuir_load_nd2nz(A[0, bx, by], l1_a, size=[1, 1, tile_size_N])
-                    T.npuir_load_nd2nz(Id[0, 0], l1_b, size=[tile_size_N, tile_size_N])
+                    T.copy(A[0, bx:bx + 1, by:by + tile_size_N], l1_a[0:1, 0:tile_size_N])
+                    T.copy(Id[0:tile_size_N, 0:tile_size_N],
+                           l1_b[0:tile_size_N, 0:tile_size_N])
 
                     T.npuir_dot(
                         l1_a, l1_b, l0_c,
@@ -117,11 +115,7 @@ def cube_copy_shape_2d_3d(M, N, block_M, block_N):
                     )
 
                     with T.rs("PIPE_FIX"):
-                        T.npuir_store_fixpipe(
-                            l0_c, B[0, bx, by],
-                            size=[1, 1, tile_size_N],
-                            enable_nz2nd=True,
-                        )
+                        T.copy(l0_c[0:1, 0:tile_size_N], B[0, bx:bx + 1, by:by + tile_size_N])
 
     return copyShapeCube2D3D
 
@@ -149,13 +143,14 @@ def cube_copy_shape_3d_4d(M, N, block_M, block_N):
             l0_c = T.alloc_L0C((1, block_N), "float32")
 
             with T.Scope("Cube"):
-                for i in T.Parallel(block_M):
+                for i in T.serial(block_M):
                     bx = blockx * block_M + i
                     t0 = shape_N - by
                     tile_size_N = T.min(block_N, t0)
 
-                    T.npuir_load_nd2nz(A[0, 0, bx, by], l1_a, size=[1, 1, 1, tile_size_N])
-                    T.npuir_load_nd2nz(Id[0, 0], l1_b, size=[tile_size_N, tile_size_N])
+                    T.copy(A[0, 0, bx:bx + 1, by:by + tile_size_N], l1_a[0:1, 0:tile_size_N])
+                    T.copy(Id[0:tile_size_N, 0:tile_size_N],
+                           l1_b[0:tile_size_N, 0:tile_size_N])
 
                     T.npuir_dot(
                         l1_a, l1_b, l0_c,
@@ -164,11 +159,8 @@ def cube_copy_shape_3d_4d(M, N, block_M, block_N):
                     )
 
                     with T.rs("PIPE_FIX"):
-                        T.npuir_store_fixpipe(
-                            l0_c, B[0, 0, bx, by],
-                            size=[1, 1, 1, tile_size_N],
-                            enable_nz2nd=True,
-                        )
+                        T.copy(l0_c[0:1, 0:tile_size_N],
+                               B[0, 0, bx:bx + 1, by:by + tile_size_N])
 
     return copyShapeCube3D4D
 
