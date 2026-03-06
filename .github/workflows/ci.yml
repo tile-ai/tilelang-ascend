@@ -30,7 +30,7 @@ jobs:
       run: git submodule update --init --recursive
 
     - name: Fetch base branch
-      run: git fetch origin npuir-ci-dev
+      run: git fetch origin npuir
 
     - name: Run format check
       run: |

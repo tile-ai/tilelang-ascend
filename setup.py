@@ -362,6 +362,7 @@ class TileLangBuilPydCommand(build_py):
         # copy the tl_templates
         TILELANG_SRC = [
             "src/tl_templates",
+            "src/runtime",
         ]
         for item in TILELANG_SRC:
             source_dir = os.path.join(ROOT_DIR, item)

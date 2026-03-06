@@ -2,7 +2,7 @@ name: Build TVM
 
 on:
   push:
-    branches: [npuir-ci-dev]
+    branches: [npuir]
   workflow_call:
     inputs:
       checkout-ref:

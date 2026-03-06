@@ -1076,13 +1076,15 @@ class compiler_npu:
         # Obtain the npu_utils.so file required for loading the kernel
         self.so_utils_path = os.path.join(os.getcwd(), "npu_utils.so")
         if not os.path.isfile(self.so_utils_path):
-            script_dir = os.path.dirname(os.path.abspath(__file__))
-            rel_path = "../../src/runtime/npu_utils.cpp"
-            abs_path = os.path.abspath(os.path.join(script_dir, rel_path))
-            self.wrapper_utiles_path = abs_path
-            self.so_utils_path = self.make_npu_launcher_stub(
-                "npu_utils", self.wrapper_utiles_path
-            )
+            # tilelang/jit/jit_npu.py -> tilelang/ -> tilelang/src/runtime/npu_utils.cpp
+            pkg_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            npu_utils_cpp = os.path.join(pkg_root, "src", "runtime", "npu_utils.cpp")
+            if not os.path.isfile(npu_utils_cpp):
+                raise FileNotFoundError(
+                    f"npu_utils.cpp not found at {npu_utils_cpp}. "
+                    "Ensure tilelang package includes src/runtime (check setup.py TILELANG_SRC)."
+                )
+            self.so_utils_path = self.make_npu_launcher_stub("npu_utils", npu_utils_cpp)
         self.wrapper_src = generate_npu_wrapper_src(
             self.constants,
             self.signature,
