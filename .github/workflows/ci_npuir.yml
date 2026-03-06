@@ -93,4 +93,5 @@ jobs:
         TILELANG_CLEAR_CACHE: "1"
       run: |
         mkdir -p testing/npuir/output
+        mv tilelang _tilelang_src
         python -m pytest -v testing/npuir
