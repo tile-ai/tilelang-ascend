@@ -600,9 +600,6 @@ def reduce(buffer: Union[Buffer, BufferRegion],
         
     if isinstance(out, BufferRegion):
         out_ptr, _ = _handle_buffer_region(out, "w")
-    elif isinstance(out, BufferLoad):
-        out_buffer = out.buffer
-        out_ptr = out_buffer.access_ptr("w")
     else:
         out_ptr = out.access_ptr("w")
     
