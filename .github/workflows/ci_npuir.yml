@@ -75,6 +75,10 @@ jobs:
         name: tilelang-npuir-py3.11-arm64
         path: dist/
 
+    - name: Install clang
+      run: |
+        apt-get update && apt-get install -y clang
+
     - name: Install tilelang and test dependencies
       env:
         TORCH_CACHE_URL: "http://cache-service.nginx-pypi-cache.svc.cluster.local/whl/cpu"
@@ -86,7 +90,7 @@ jobs:
         pip install torch==2.7.1+cpu -i ${TORCH_CACHE_URL} --extra-index-url ${PYPI_CACHE_URL}
         pip install torch-npu==2.7.1
         pip install dist/*.whl
-        pip install pytest numpy
+        pip install pytest pytest-forked numpy
 
     - name: Run npuir tests
       env:
@@ -94,16 +98,4 @@ jobs:
       run: |
         mkdir -p testing/npuir/output
         mv tilelang _tilelang_src
-        python -m pytest -v testing/npuir/memory_ops
-        # failed=""
-        # for dir in testing/npuir/*_ops; do
-        #   echo "::group::pytest ${dir}"
-        #   if ! python -m pytest -v "$dir"; then
-        #     failed="$failed $dir"
-        #   fi
-        #   echo "::endgroup::"
-        # done
-        # if [ -n "$failed" ]; then
-        #   echo "::error::Failed test groups:$failed"
-        #   exit 1
-        # fi
+        python -m pytest -v --forked testing/npuir
