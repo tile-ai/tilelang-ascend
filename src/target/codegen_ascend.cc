@@ -1677,9 +1677,15 @@ void CodeGenTileLangAscend::BroadcastOpCodegen(const CallNode *op) {
 
 void CodeGenTileLangAscend::SetCrossFlagCodegen(const CallNode *op) {
   std::string pipe = Downcast<StringImm>(op->args[0])->value;
-  std::string op_name = "AscendC::CrossCoreSetFlag<0x2, PIPE_" + pipe + ">";
+  int flagId = op->args[1].as<IntImmNode>()->value;
+  int mode = op->args[2].as<IntImmNode>()->value;
+  std::string op_name = "AscendC::CrossCoreSetFlag<0x";
+  op_name.append(std::to_string(mode));
+  op_name.append(", PIPE_");
+  op_name.append(pipe);
+  op_name.append(">");
 
-  PrintOpCall(op, op_name, {0, 0}, {1, op->args.size()});
+  PrintOpCall(op, op_name, {0, 0}, {1, op->args.size()-1});
 }
 
 void CodeGenTileLangAscend::FlagOpCodegen(const CallNode *op,

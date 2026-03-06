@@ -642,8 +642,7 @@ AICORE PTO_INLINE void TROWEXPAND_with_slice_buffer(
   pto::TROWEXPAND(dst, src_temp_ub);
 }
 template<pipe_t pipe> 
-AICORE PTO_INLINE void set_cross_flag(int32_t flag) {
-    int mode = 2;
+AICORE PTO_INLINE void set_cross_flag(int32_t flag, int32_t mode) {
     int config = 1 | (mode << 4) | (flag << 8);
     ffts_cross_core_sync(pipe, config);
 }
