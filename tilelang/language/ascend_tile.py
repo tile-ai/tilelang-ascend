@@ -1512,7 +1512,7 @@ def broadcast(dst: Union[Buffer, BufferRegion],
               The source column is replicated `dst.shape[1]` times.
             - **No Broadcast (Copy)**: If shapes are identical, the axis defaults to 0.
     """
-     def _handle_buffer_region(br: BufferRegion, mask):
+    def _handle_buffer_region(br: BufferRegion, mask):
         bf = br.buffer
         indices = [x.min for x in br.region]
         offset = bf.offset_of(indices)[0]
