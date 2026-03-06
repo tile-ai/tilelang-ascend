@@ -4,7 +4,6 @@ import torch
 import tilelang
 import tilelang.language as T
 
-torch.npu.set_device(4)
 tilelang.cache.clear_cache()
 
 parser = argparse.ArgumentParser(description="NPU Kernel Compilation")
