@@ -5,7 +5,6 @@
 import torch
 from typing import Callable, List, Literal, Optional, Union
 
-
 def do_bench(
     fn: Callable,
     warmup: float = 25,
@@ -101,7 +100,6 @@ def do_bench(
         return ret
     return getattr(torch, return_mode)(times).item()
 
-
 import builtins
 import multiprocessing
 import os
@@ -161,7 +159,6 @@ def _rm_dic(keep_res, torch_path):
 
     if os.path.exists(torch_path):
         shutil.rmtree(torch_path)
-
 
 def _collect_prof_result(base_dir: str, funcs, num_warmup: int, num_active: int, key: str = None):
     """

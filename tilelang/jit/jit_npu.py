@@ -808,9 +808,6 @@ class JitKernel_NPU:
         metadata: str,
         out_idx: Union[List[int], int],
     ):
-        """
-        从数据库/缓存重建 NPU 内核的替代构造函数。
-        """
         if isinstance(out_idx, int):
             out_idx = [out_idx]
 
@@ -981,12 +978,12 @@ class JitKernel_NPU:
             A Profiler instance for benchmarking the runtime module.
         """
         return Profiler(self.params, self.out_idx[0], tensor_supply_type).with_direct_func(self)
+                         
     def benchmark(self, 
                   warmup: int = 25,
                   rep: int = 100,
                   n_warmup: int = 1,
                   n_repeat: int = 1) -> float:
-        """便捷的benchmark方法"""
         profiler = self.get_profiler()
         return profiler.do_bench(
             func=self,
@@ -995,6 +992,7 @@ class JitKernel_NPU:
             n_warmup=n_warmup,
             n_repeat=n_repeat
         )
+                      
     def update_tuner_result(self, latency: float, config: Dict[str, Any],
                             ref_latency: float) -> "JitKernel_NPU":
         """

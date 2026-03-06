@@ -16,7 +16,6 @@ from tilelang.profiler.bench import do_bench as npu_do_bench
 from tilelang.profiler.bench import do_bench_npu as npu_do_bench_msprof
 import os
 
-
 @dataclass
 class Profiler:
     """A profiler class for benchmarking and validating kernel implementations.
@@ -33,7 +32,7 @@ class Profiler:
     result_idx: List[int]
     supply_type: TensorSupplyType
     adapter: Optional[BaseKernelAdapter] = None
-    direct_func: Optional[Callable] = None  # 添加direct_func支持
+    direct_func: Optional[Callable] = None
 
     def __post_init__(self):
         """Initialize tensor supply after dataclass initialization"""
