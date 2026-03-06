@@ -20,26 +20,30 @@ Edge cases covered via pytest parametrize:
 """
 import pytest
 import torch
+import torch_npu  # noqa: F401
 import tilelang
 import tilelang.language as T
 
-torch.npu.set_device(0)
-tilelang.cache.clear_cache()
+from testcommon import assert_close, build_dtype_param_combos, gen_tensor
 
-dtype = "float16"
+pytestmark = [pytest.mark.copy, pytest.mark.op("copy")]
+
+IN_DTYPES = ["float16", "float32"]
+OUT_DTYPES = ["float16", "float32"]
+DTYPE_COMBOS = build_dtype_param_combos(IN_DTYPES, OUT_DTYPES)
 
 # ---------------------------------------------------------------------------
 # Kernel builders
 # ---------------------------------------------------------------------------
 
-def cube_copy_shape_1d_2d(M, N, block_M, block_N):
+def cube_copy_shape_1d_2d(M, N, block_M, block_N, in_dtype, out_dtype):
     """Dynamic tail block copy: 2D GM [M, N] → 2D GM [M, N]."""
 
     @T.prim_func
     def copyShapeCube(
-        A: T.Tensor((M, N), dtype),
-        B: T.Tensor((M, N), dtype),
-        Id: T.Tensor((N, N), dtype),
+        A: T.Tensor((M, N), in_dtype),
+        B: T.Tensor((M, N), out_dtype),
+        Id: T.Tensor((N, N), in_dtype),
         shape_M: T.int32,
         shape_N: T.int32,
     ):
@@ -50,8 +54,8 @@ def cube_copy_shape_1d_2d(M, N, block_M, block_N):
             blocky = cid % T.ceildiv(N, block_N)
             by = blocky * block_N
 
-            l1_a = T.alloc_L1((1, block_N), dtype)
-            l1_b = T.alloc_L1((block_N, block_N), dtype)
+            l1_a = T.alloc_L1((1, block_N), in_dtype)
+            l1_b = T.alloc_L1((block_N, block_N), in_dtype)
             l0_c = T.alloc_L0C((1, block_N), "float32")
 
             with T.Scope("Cube"):
@@ -76,14 +80,14 @@ def cube_copy_shape_1d_2d(M, N, block_M, block_N):
     return copyShapeCube
 
 
-def cube_copy_shape_2d_3d(M, N, block_M, block_N):
+def cube_copy_shape_2d_3d(M, N, block_M, block_N, in_dtype, out_dtype):
     """Dynamic tail block copy: 3D GM [1, M, N] → 3D GM [1, M, N]."""
 
     @T.prim_func
     def copyShapeCube2D3D(
-        A: T.Tensor((1, M, N), dtype),
-        B: T.Tensor((1, M, N), dtype),
-        Id: T.Tensor((N, N), dtype),
+        A: T.Tensor((1, M, N), in_dtype),
+        B: T.Tensor((1, M, N), out_dtype),
+        Id: T.Tensor((N, N), in_dtype),
         shape_M: T.int32,
         shape_N: T.int32,
     ):
@@ -94,8 +98,8 @@ def cube_copy_shape_2d_3d(M, N, block_M, block_N):
             blocky = cid % T.ceildiv(N, block_N)
             by = blocky * block_N
 
-            l1_a = T.alloc_L1((1, block_N), dtype)
-            l1_b = T.alloc_L1((block_N, block_N), dtype)
+            l1_a = T.alloc_L1((1, block_N), in_dtype)
+            l1_b = T.alloc_L1((block_N, block_N), in_dtype)
             l0_c = T.alloc_L0C((1, block_N), "float32")
 
             with T.Scope("Cube"):
@@ -120,14 +124,14 @@ def cube_copy_shape_2d_3d(M, N, block_M, block_N):
     return copyShapeCube2D3D
 
 
-def cube_copy_shape_3d_4d(M, N, block_M, block_N):
+def cube_copy_shape_3d_4d(M, N, block_M, block_N, in_dtype, out_dtype):
     """Dynamic tail block copy: 4D GM [1, 1, M, N] → 4D GM [1, 1, M, N]."""
 
     @T.prim_func
     def copyShapeCube3D4D(
-        A: T.Tensor((1, 1, M, N), dtype),
-        B: T.Tensor((1, 1, M, N), dtype),
-        Id: T.Tensor((N, N), dtype),
+        A: T.Tensor((1, 1, M, N), in_dtype),
+        B: T.Tensor((1, 1, M, N), out_dtype),
+        Id: T.Tensor((N, N), in_dtype),
         shape_M: T.int32,
         shape_N: T.int32,
     ):
@@ -138,8 +142,8 @@ def cube_copy_shape_3d_4d(M, N, block_M, block_N):
             blocky = cid % T.ceildiv(N, block_N)
             by = blocky * block_N
 
-            l1_a = T.alloc_L1((1, block_N), dtype)
-            l1_b = T.alloc_L1((block_N, block_N), dtype)
+            l1_a = T.alloc_L1((1, block_N), in_dtype)
+            l1_b = T.alloc_L1((block_N, block_N), in_dtype)
             l0_c = T.alloc_L0C((1, block_N), "float32")
 
             with T.Scope("Cube"):
@@ -189,56 +193,54 @@ DYNAMIC_CASES = [
 # 2D tests  —  A: [M, N]
 # ---------------------------------------------------------------------------
 
+@pytest.mark.parametrize("in_dtype, out_dtype", DTYPE_COMBOS)
 @pytest.mark.parametrize("M, N, block_M, block_N", DYNAMIC_CASES)
-def test_cube_copy_shape_2d(M, N, block_M, block_N):
-    func = cube_copy_shape_1d_2d(M, N, block_M, block_N)
+def test_cube_copy_shape_2d(M, N, block_M, block_N, in_dtype, out_dtype):
+    func = cube_copy_shape_1d_2d(M, N, block_M, block_N, in_dtype, out_dtype)
     compiled_kernel = tilelang.compile(func, target="npuir")
 
-    v1 = torch.randn(M, N, dtype=torch.float16).npu()
-    v2 = torch.zeros(M, N, dtype=torch.float16).npu()
-    v_ref = v1.clone()
-    Id = torch.eye(N, dtype=torch.float16).npu()
+    v1 = gen_tensor((M, N), in_dtype, kind="randn")
+    v2 = gen_tensor((M, N), out_dtype, kind="zeros")
+    v_ref = v1.to(dtype=v2.dtype)
+    Id = torch.eye(N, dtype=v1.dtype).npu()
 
     compiled_kernel(v1, v2, Id, M, N)
-    torch.testing.assert_close(v2, v_ref, rtol=1e-2, atol=1e-2)
+    assert_close(v2.cpu(), v_ref.cpu(), dtype=out_dtype, rtol=1e-2, atol=1e-2)
 
 
 # ---------------------------------------------------------------------------
 # 3D tests  —  A: [1, M, N]
 # ---------------------------------------------------------------------------
 
+@pytest.mark.parametrize("in_dtype, out_dtype", DTYPE_COMBOS)
 @pytest.mark.parametrize("M, N, block_M, block_N", DYNAMIC_CASES)
-def test_cube_copy_shape_3d(M, N, block_M, block_N):
-    func = cube_copy_shape_2d_3d(M, N, block_M, block_N)
+def test_cube_copy_shape_3d(M, N, block_M, block_N, in_dtype, out_dtype):
+    func = cube_copy_shape_2d_3d(M, N, block_M, block_N, in_dtype, out_dtype)
     compiled_kernel = tilelang.compile(func, target="npuir")
 
-    v1 = torch.randn(1, M, N, dtype=torch.float16).npu()
-    v2 = torch.zeros(1, M, N, dtype=torch.float16).npu()
-    v_ref = v1.clone()
-    Id = torch.eye(N, dtype=torch.float16).npu()
+    v1 = gen_tensor((1, M, N), in_dtype, kind="randn")
+    v2 = gen_tensor((1, M, N), out_dtype, kind="zeros")
+    v_ref = v1.to(dtype=v2.dtype)
+    Id = torch.eye(N, dtype=v1.dtype).npu()
 
     compiled_kernel(v1, v2, Id, M, N)
-    torch.testing.assert_close(v2, v_ref, rtol=1e-2, atol=1e-2)
+    assert_close(v2.cpu(), v_ref.cpu(), dtype=out_dtype, rtol=1e-2, atol=1e-2)
 
 
 # ---------------------------------------------------------------------------
 # 4D tests  —  A: [1, 1, M, N]
 # ---------------------------------------------------------------------------
 
+@pytest.mark.parametrize("in_dtype, out_dtype", DTYPE_COMBOS)
 @pytest.mark.parametrize("M, N, block_M, block_N", DYNAMIC_CASES)
-def test_cube_copy_shape_4d(M, N, block_M, block_N):
-    func = cube_copy_shape_3d_4d(M, N, block_M, block_N)
+def test_cube_copy_shape_4d(M, N, block_M, block_N, in_dtype, out_dtype):
+    func = cube_copy_shape_3d_4d(M, N, block_M, block_N, in_dtype, out_dtype)
     compiled_kernel = tilelang.compile(func, target="npuir")
 
-    v1 = torch.randn(1, 1, M, N, dtype=torch.float16).npu()
-    v2 = torch.zeros(1, 1, M, N, dtype=torch.float16).npu()
-    v_ref = v1.clone()
-    Id = torch.eye(N, dtype=torch.float16).npu()
+    v1 = gen_tensor((1, 1, M, N), in_dtype, kind="randn")
+    v2 = gen_tensor((1, 1, M, N), out_dtype, kind="zeros")
+    v_ref = v1.to(dtype=v2.dtype)
+    Id = torch.eye(N, dtype=v1.dtype).npu()
 
     compiled_kernel(v1, v2, Id, M, N)
-    torch.testing.assert_close(v2, v_ref, rtol=1e-2, atol=1e-2)
-
-
-# ---------------------------------------------------------------------------
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])
+    assert_close(v2.cpu(), v_ref.cpu(), dtype=out_dtype, rtol=1e-2, atol=1e-2)
