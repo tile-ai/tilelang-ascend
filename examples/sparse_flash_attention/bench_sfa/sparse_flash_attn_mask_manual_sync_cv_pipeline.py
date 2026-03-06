@@ -36,7 +36,6 @@ def sparse_attention_fwd(
         n_base_size=64,
         m_base_size=16,
         dtype="bfloat16",
-        block_num=516,
         block_size=128,
         core_num=24,
 ):
@@ -54,9 +53,11 @@ def sparse_attention_fwd(
     seq_len = T.symbolic("seq_len")
 
     block_table_len = T.symbolic("block_table_len")
+    block_num = T.symbolic("block_num")
 
     g = q_heads // kv_heads  # GQA G
     q_shape = [batch, seq_len, q_heads, dim + rope_dim]
+
 
     o_shape = [batch, seq_len, q_heads, dim]
     indices_shape = [seq_len, kv_heads, topk]
@@ -77,9 +78,6 @@ def sparse_attention_fwd(
     m_base_size_v = m_base_size // 2
     n_base_size_v = n_base_size // 2
     vec0_copy_out_size = 16
-
-    n_num = 2
-    block_k = T.ceildiv(n_base_size, n_num)
 
     @T.prim_func
     def main_pipelined(
@@ -118,6 +116,8 @@ def sparse_attention_fwd(
 
             kv_ub_gather = T.alloc_ub([2, vec0_copy_out_size, dim], dtype)
             kv_rope_ub_gather = T.alloc_ub([2, vec0_copy_out_size, rope_dim], dtype)
+            # kv_ub_gather = T.alloc_ub([n_base_size_v, dim], dtype)
+            # kv_rope_ub_gather = T.alloc_ub([n_base_size_v, rope_dim], dtype)
 
             acc_s_ub = T.alloc_ub([m_base_size_v, n_base_size], accum_dtype)
             m_i_prev = T.alloc_ub([m_base_size_v, 1], accum_dtype)
@@ -143,7 +143,6 @@ def sparse_attention_fwd(
 
             if cid < used_core_num:
                 for block_idx in T.serial(start_idx, end_idx):
-
                     # bz = block_idx % kv_heads  # h轴方向
                     # bx = block_idx // kv_heads % (g_block_num * seq_len)  # s1g方向
                     # by = block_idx // kv_heads // (g_block_num * seq_len) % batch  # batch方向
@@ -171,7 +170,6 @@ def sparse_attention_fwd(
                         T.tile.fill(acc_o, 0.0)
                         T.tile.fill(sumexp, 0.0)
                         T.tile.fill(m_i, -2.0 ** 30)
-
                         # s2轴切分
                         # for i_i in T.serial(n_block_num):
                         for i_i in T.Pipelined(n_block_num, num_stages=2):
@@ -187,14 +185,13 @@ def sparse_attention_fwd(
                             for bi_i in range(n_base_size_v):
                                 inner_block_id = T.floordiv(bi_i, vec0_copy_out_size)  # 当前任务
                                 idx = bi_i % vec0_copy_out_size
-                                task_id = inner_block_id % 2
-
-                                if bi_i > (2 * vec0_copy_out_size - 1) and bi_i % vec0_copy_out_size == 0:
+                                g_copy_out_time = i_i * T.floordiv(n_base_size_v, vec0_copy_out_size) + inner_block_id
+                                task_id = g_copy_out_time % 2
+                                if g_copy_out_time > 1 and bi_i % vec0_copy_out_size == 0:
                                     T.wait_flag("mte3", "mte2", task_id)
 
                                 # 从topk中取出一个index索引
                                 index_i = indices_ub_[bi_i + vid * n_base_size_v]
-                                T.pipe_barrier("v")
                                 block_idx = index_i // block_size
                                 block_i = block_table[b_i, block_idx]
                                 block_inter = index_i % block_size
@@ -205,6 +202,7 @@ def sparse_attention_fwd(
                                 if (bi_i + 1) % vec0_copy_out_size == 0:
                                     T.set_flag("mte2", "mte3", task_id)
                                     T.wait_flag("mte2", "mte3", task_id)
+
                                     T.copy(kv_ub_gather[task_id, :, :],
                                            workspace_1[cid,
                                            inner_block_id * vec0_copy_out_size + vid * n_base_size_v
@@ -213,13 +211,13 @@ def sparse_attention_fwd(
                                            workspace_2[cid,
                                            inner_block_id * vec0_copy_out_size + vid * n_base_size_v:
                                            (inner_block_id + 1) * vec0_copy_out_size + vid * n_base_size_v, :])
-
-                                    if bi_i < n_base_size_v - 2 * vec0_copy_out_size:
+                                    if g_copy_out_time < n_block_num * T.floordiv(n_base_size_v,
+                                                                                  vec0_copy_out_size) - 2:
                                         T.set_flag("mte3", "mte2", task_id)
 
                             # ******************** BMM1(Q*K) ********************
-                            T.copy(workspace_1[cid, :, 0:dim], kv_l1)
-                            T.copy(workspace_2[cid, :, 0:rope_dim], kv_tail_l1)
+                            T.copy(workspace_1[cid, :, :], kv_l1)
+                            T.copy(workspace_2[cid, :, :], kv_tail_l1)
 
                             T.set_flag("mte2", "mte1", 1)
                             T.wait_flag("mte2", "mte1", 1)
@@ -234,12 +232,16 @@ def sparse_attention_fwd(
 
                             # ******************** V1 ********************
                             T.tile.fill(acc_s_ub_, 0.0)
+                            T.pipe_barrier("v")
+
                             for i in T.serial(m_base_size_v):
                                 T.tile.select(acc_s_ub[i, :], mask_ub, acc_s_ub_[i, :], -T.infinity(accum_dtype),
                                               "VSEL_TENSOR_SCALAR_MODE")
+
                             T.copy(m_i, m_i_prev)
 
-                            # T.barrier_all()  # 需优化
+                            T.set_flag("v", "mte2", 0)
+                            T.wait_flag("v", "mte2", 0)
 
                             T.copy(
                                 workspace_3[cid, vid * m_base_size_v:vid * m_base_size_v + m_base_size_v, :],
@@ -247,6 +249,7 @@ def sparse_attention_fwd(
 
                             T.set_flag("mte2", "v", 0)
                             T.wait_flag("mte2", "v", 0)
+
                             T.tile.add(acc_s_ub, acc_s_ub, acc_s_ub_)
                             T.pipe_barrier("v")
 
@@ -288,8 +291,6 @@ def sparse_attention_fwd(
 
                             T.set_flag("v", "mte3", 1)
                             T.wait_flag("v", "mte3", 1)
-
-                            # T.dump_tensor(acc_s_half, 111, 513)
 
                             T.copy(
                                 acc_s_half, workspace_4[cid,
@@ -365,13 +366,15 @@ def sparse_attn_tilelang(
         q_heads=128,
         dim=512,
         rope_dim=64,
-        topk=2048,
+        topk=5120,
         scale=scale_value,
         core_num=24,
         block_num=block_num,
         block_size=block_size
     )
     print(kernel.get_kernel_source())
-    output = kernel(query, key_value, sparse_indices, actual_seq_lengths_query, actual_seq_lengths_kv, block_table)
+    for i in range(10):
+        output = kernel(query, key_value, sparse_indices, actual_seq_lengths_query, actual_seq_lengths_kv, block_table)
     output = output.squeeze(0)
+    print(type(output))
     return output
