@@ -16,27 +16,33 @@ Edge cases covered via pytest parametrize:
 """
 import pytest
 import torch
+import torch_npu  # noqa: F401
 import tilelang
 import tilelang.language as T
 
-torch.npu.set_device(0)
-tilelang.cache.clear_cache()
+from testcommon import assert_close, build_dtype_param_combos, gen_tensor
+
+pytestmark = [pytest.mark.copy, pytest.mark.op("copy")]
+
+IN_DTYPES = ["float16", "float32"]
+OUT_DTYPES = ["float16", "float32"]
+DTYPE_COMBOS = build_dtype_param_combos(IN_DTYPES, OUT_DTYPES)
 
 # ---------------------------------------------------------------------------
 # Kernel builders
 # ---------------------------------------------------------------------------
 
 @tilelang.jit(target="npuir")
-def cube_sliced_copy_2d(M, N, idx, dtype="float16", accum_dtype="float32"):
+def cube_sliced_copy_2d(M, N, idx, in_dtype="float16", out_dtype="float16", accum_dtype="float32"):
     @T.prim_func
-    def main(
-        A_in: T.Tensor((M, N), dtype),
-        B_in: T.Tensor((N, N), dtype),
-        Out: T.Tensor((M, N), dtype),
+    def cube_sliced_copy_2d(
+        A_in: T.Tensor((M, N), in_dtype),
+        B_in: T.Tensor((N, N), in_dtype),
+        Out: T.Tensor((M, N), out_dtype),
     ):
         with T.Kernel(1, is_npu=True) as (cid, subid):
-            l1_a = T.alloc_L1([1, N], dtype)
-            l1_b = T.alloc_L1([N, N], dtype)
+            l1_a = T.alloc_L1([1, N], in_dtype)
+            l1_b = T.alloc_L1([N, N], in_dtype)
             l0_c = T.alloc_L0C([1, N], accum_dtype)
 
             with T.Scope("Cube"):
@@ -56,20 +62,20 @@ def cube_sliced_copy_2d(M, N, idx, dtype="float16", accum_dtype="float32"):
                 with T.rs("PIPE_FIX"):
                     T.copy(l0_c[0:tail_m, 0:tail_n], Out[idx:idx + tail_m, 0:tail_n])
 
-    return main
+    return cube_sliced_copy_2d
 
 
 @tilelang.jit(target="npuir")
-def cube_sliced_copy_3d(B, M, N, b_idx, m_idx, dtype="float16", accum_dtype="float32"):
+def cube_sliced_copy_3d(B, M, N, b_idx, m_idx, in_dtype="float16", out_dtype="float16", accum_dtype="float32"):
     @T.prim_func
-    def main(
-        A_in: T.Tensor((B, M, N), dtype),
-        B_in: T.Tensor((N, N), dtype),
-        Out: T.Tensor((B, M, N), dtype),
+    def cube_sliced_copy_3d(
+        A_in: T.Tensor((B, M, N), in_dtype),
+        B_in: T.Tensor((N, N), in_dtype),
+        Out: T.Tensor((B, M, N), out_dtype),
     ):
         with T.Kernel(1, is_npu=True) as (cid, subid):
-            l1_a = T.alloc_L1([1, N], dtype)
-            l1_b = T.alloc_L1([N, N], dtype)
+            l1_a = T.alloc_L1([1, N], in_dtype)
+            l1_b = T.alloc_L1([N, N], in_dtype)
             l0_c = T.alloc_L0C([1, N], accum_dtype)
 
             with T.Scope("Cube"):
@@ -89,20 +95,22 @@ def cube_sliced_copy_3d(B, M, N, b_idx, m_idx, dtype="float16", accum_dtype="flo
                 with T.rs("PIPE_FIX"):
                     T.copy(l0_c[0:tail_m, 0:tail_n], Out[b_idx, m_idx:m_idx + tail_m, 0:tail_n])
 
-    return main
+    return cube_sliced_copy_3d
 
 
 @tilelang.jit(target="npuir")
-def cube_sliced_copy_4d(B, H, M, N, b_idx, h_idx, m_idx, dtype="float16", accum_dtype="float32"):
+def cube_sliced_copy_4d(
+    B, H, M, N, b_idx, h_idx, m_idx, in_dtype="float16", out_dtype="float16", accum_dtype="float32"
+):
     @T.prim_func
-    def main(
-        A_in: T.Tensor((B, H, M, N), dtype),
-        B_in: T.Tensor((N, N), dtype),
-        Out: T.Tensor((B, H, M, N), dtype),
+    def cube_sliced_copy_4d(
+        A_in: T.Tensor((B, H, M, N), in_dtype),
+        B_in: T.Tensor((N, N), in_dtype),
+        Out: T.Tensor((B, H, M, N), out_dtype),
     ):
         with T.Kernel(1, is_npu=True) as (cid, subid):
-            l1_a = T.alloc_L1([1, N], dtype)
-            l1_b = T.alloc_L1([N, N], dtype)
+            l1_a = T.alloc_L1([1, N], in_dtype)
+            l1_b = T.alloc_L1([N, N], in_dtype)
             l0_c = T.alloc_L0C([1, N], accum_dtype)
 
             with T.Scope("Cube"):
@@ -123,7 +131,7 @@ def cube_sliced_copy_4d(B, H, M, N, b_idx, h_idx, m_idx, dtype="float16", accum_
                     T.copy(l0_c[0:tail_m, 0:tail_n],
                            Out[b_idx, h_idx, m_idx:m_idx + tail_m, 0:tail_n])
 
-    return main
+    return cube_sliced_copy_4d
 
 
 # ---------------------------------------------------------------------------
@@ -141,22 +149,23 @@ SLICED_2D_CASES = [
     (1,   8, 0),         # small N=8, M=1
 ]
 
+@pytest.mark.parametrize("in_dtype, out_dtype", DTYPE_COMBOS)
 @pytest.mark.parametrize("M, N, idx", SLICED_2D_CASES)
-def test_cube_sliced_copy_2d(M, N, idx):
-    kernel = cube_sliced_copy_2d(M, N, idx)
+def test_cube_sliced_copy_2d(M, N, idx, in_dtype, out_dtype):
+    kernel = cube_sliced_copy_2d(M, N, idx, in_dtype, out_dtype)
 
-    A = torch.zeros(M, N, dtype=torch.float16).npu()
-    row = torch.arange(1, N + 1, dtype=torch.float16).npu()
+    A = gen_tensor((M, N), in_dtype, kind="zeros")
+    row = torch.arange(1, N + 1, dtype=A.dtype).npu()
     A[idx] = row
 
-    B = torch.eye(N, dtype=torch.float16).npu()
-    Out = torch.zeros(M, N, dtype=torch.float16).npu()
+    B = torch.eye(N, dtype=A.dtype).npu()
+    Out = gen_tensor((M, N), out_dtype, kind="zeros")
 
     kernel(A, B, Out)
 
-    expected = torch.zeros(M, N, dtype=torch.float16).npu()
-    expected[idx] = row
-    torch.testing.assert_close(Out, expected, rtol=1e-5, atol=1e-5)
+    expected = gen_tensor((M, N), out_dtype, kind="zeros")
+    expected[idx] = row.to(dtype=Out.dtype)
+    assert_close(Out.cpu(), expected.cpu(), dtype=out_dtype, rtol=1e-5, atol=1e-5)
 
 
 # ---------------------------------------------------------------------------
@@ -175,22 +184,23 @@ SLICED_3D_CASES = [
     (1,  1,   8, 0, 0),       # small N=8, B=1, M=1
 ]
 
+@pytest.mark.parametrize("in_dtype, out_dtype", DTYPE_COMBOS)
 @pytest.mark.parametrize("B_dim, M, N, b_idx, m_idx", SLICED_3D_CASES)
-def test_cube_sliced_copy_3d(B_dim, M, N, b_idx, m_idx):
-    kernel = cube_sliced_copy_3d(B_dim, M, N, b_idx, m_idx)
+def test_cube_sliced_copy_3d(B_dim, M, N, b_idx, m_idx, in_dtype, out_dtype):
+    kernel = cube_sliced_copy_3d(B_dim, M, N, b_idx, m_idx, in_dtype, out_dtype)
 
-    A = torch.zeros(B_dim, M, N, dtype=torch.float16).npu()
-    row = torch.arange(1, N + 1, dtype=torch.float16).npu()
+    A = gen_tensor((B_dim, M, N), in_dtype, kind="zeros")
+    row = torch.arange(1, N + 1, dtype=A.dtype).npu()
     A[b_idx, m_idx] = row
 
-    B = torch.eye(N, dtype=torch.float16).npu()
-    Out = torch.zeros(B_dim, M, N, dtype=torch.float16).npu()
+    B = torch.eye(N, dtype=A.dtype).npu()
+    Out = gen_tensor((B_dim, M, N), out_dtype, kind="zeros")
 
     kernel(A, B, Out)
 
-    expected = torch.zeros(B_dim, M, N, dtype=torch.float16).npu()
-    expected[b_idx, m_idx] = row
-    torch.testing.assert_close(Out, expected, rtol=1e-5, atol=1e-5)
+    expected = gen_tensor((B_dim, M, N), out_dtype, kind="zeros")
+    expected[b_idx, m_idx] = row.to(dtype=Out.dtype)
+    assert_close(Out.cpu(), expected.cpu(), dtype=out_dtype, rtol=1e-5, atol=1e-5)
 
 
 # ---------------------------------------------------------------------------
@@ -210,24 +220,20 @@ SLICED_4D_CASES = [
     (1,  1,  1,   8, 0, 0, 0),       # small N=8, all leading 1s
 ]
 
+@pytest.mark.parametrize("in_dtype, out_dtype", DTYPE_COMBOS)
 @pytest.mark.parametrize("B_dim, H, M, N, b_idx, h_idx, m_idx", SLICED_4D_CASES)
-def test_cube_sliced_copy_4d(B_dim, H, M, N, b_idx, h_idx, m_idx):
-    kernel = cube_sliced_copy_4d(B_dim, H, M, N, b_idx, h_idx, m_idx)
+def test_cube_sliced_copy_4d(B_dim, H, M, N, b_idx, h_idx, m_idx, in_dtype, out_dtype):
+    kernel = cube_sliced_copy_4d(B_dim, H, M, N, b_idx, h_idx, m_idx, in_dtype, out_dtype)
 
-    A = torch.zeros(B_dim, H, M, N, dtype=torch.float16).npu()
-    row = torch.arange(1, N + 1, dtype=torch.float16).npu()
+    A = gen_tensor((B_dim, H, M, N), in_dtype, kind="zeros")
+    row = torch.arange(1, N + 1, dtype=A.dtype).npu()
     A[b_idx, h_idx, m_idx] = row
 
-    B = torch.eye(N, dtype=torch.float16).npu()
-    Out = torch.zeros(B_dim, H, M, N, dtype=torch.float16).npu()
+    B = torch.eye(N, dtype=A.dtype).npu()
+    Out = gen_tensor((B_dim, H, M, N), out_dtype, kind="zeros")
 
     kernel(A, B, Out)
 
-    expected = torch.zeros(B_dim, H, M, N, dtype=torch.float16).npu()
-    expected[b_idx, h_idx, m_idx] = row
-    torch.testing.assert_close(Out, expected, rtol=1e-5, atol=1e-5)
-
-
-# ---------------------------------------------------------------------------
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])
+    expected = gen_tensor((B_dim, H, M, N), out_dtype, kind="zeros")
+    expected[b_idx, h_idx, m_idx] = row.to(dtype=Out.dtype)
+    assert_close(Out.cpu(), expected.cpu(), dtype=out_dtype, rtol=1e-5, atol=1e-5)
