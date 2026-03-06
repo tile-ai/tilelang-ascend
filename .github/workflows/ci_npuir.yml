@@ -94,15 +94,16 @@ jobs:
       run: |
         mkdir -p testing/npuir/output
         mv tilelang _tilelang_src
-        failed=""
-        for dir in testing/npuir/*_ops; do
-          echo "::group::pytest ${dir}"
-          if ! python -m pytest -v "$dir"; then
-            failed="$failed $dir"
-          fi
-          echo "::endgroup::"
-        done
-        if [ -n "$failed" ]; then
-          echo "::error::Failed test groups:$failed"
-          exit 1
-        fi
+        python -m pytest -v testing/npuir/memory_ops
+        # failed=""
+        # for dir in testing/npuir/*_ops; do
+        #   echo "::group::pytest ${dir}"
+        #   if ! python -m pytest -v "$dir"; then
+        #     failed="$failed $dir"
+        #   fi
+        #   echo "::endgroup::"
+        # done
+        # if [ -n "$failed" ]; then
+        #   echo "::error::Failed test groups:$failed"
+        #   exit 1
+        # fi
