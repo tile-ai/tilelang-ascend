@@ -366,10 +366,9 @@ def sparse_attn_tilelang(
         q_heads=128,
         dim=512,
         rope_dim=64,
-        topk=5120,
+        topk=2048,
         scale=scale_value,
         core_num=24,
-        block_num=block_num,
         block_size=block_size
     )
     print(kernel.get_kernel_source())
