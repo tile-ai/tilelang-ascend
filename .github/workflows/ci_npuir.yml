@@ -90,7 +90,7 @@ jobs:
         pip install torch==2.7.1+cpu -i ${TORCH_CACHE_URL} --extra-index-url ${PYPI_CACHE_URL}
         pip install torch-npu==2.7.1
         pip install dist/*.whl
-        pip install pytest pytest-forked numpy
+        pip install pytest numpy
 
     - name: Run npuir tests
       env:
@@ -98,4 +98,15 @@ jobs:
       run: |
         mkdir -p testing/npuir/output
         mv tilelang _tilelang_src
-        python -m pytest -v --forked testing/npuir
+        failed=""
+        for dir in testing/npuir/*_ops; do
+          echo "::group::pytest ${dir}"
+          if ! python -m pytest -v "$dir"; then
+            failed="$failed $dir"
+          fi
+          echo "::endgroup::"
+        done
+        if [ -n "$failed" ]; then
+          echo "::error::Failed test groups:$failed"
+          exit 1
+        fi
