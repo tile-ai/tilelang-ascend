@@ -2770,6 +2770,257 @@ void CodeGenTileLangNPUIRDEV::DebugPrintCodegen(const CallNode *op) {
                                        mlir::hivm::TCoreTypeAttr{});
 }
 
+//Generate vector cosine approximation using polynomial expansion in codegen.
+//
+//before(Tilelang/TIR semantic):
+//  Y = tl.npuir_vcos
+//  where cos(x) is approximated as:
+//    cos(x) ≈ 1 - 1/2*x^2 + 1/24*x^4 - 1/720*x^6
+//
+//after(MLIR Lowering):
+//  - materialize scalar constants (1,-1/2,1/24,-1/720)
+//  - compute x^2 x^4 x^6 via hivm::Vmul
+//  - scale each term with corresponding constant
+//  - accumulate terms using hivm::Vadd
+//  - store the final result into destination vector
+//  - all intermediate results are lowered to tensor operations
+void CodeGenTileLangNPUIRDEV::VcosCodegen(const CallNode *op) {
+  tvm::tl::NpuirVCos npuirop(op->args, this->vmap);
+  auto loc = builder.getUnknownLoc();
+
+  llvm::SmallVector<Value> srcs;
+  size_t n_srcs = npuirop.srcs.size();
+  for (size_t i = 0; i < n_srcs; i++) {
+    Value src = GenExtractSliceFromRegion(npuirop.srcs[i], npuirop.srcs_range[i]);
+    srcs.push_back(src);
+  }
+  Value dstVal = GetVarValue(npuirop.dst);
+  mlir::Type tensorType = dstVal.getType();
+  mlir::TypeRange resultType(&tensorType, 1);
+
+  auto srcTensorType = srcs[0].getType().cast<mlir::RankedTensorType>();
+  mlir::Type elementType = srcTensorType.getElementType();
+  Value one = builder.create<mlir::arith::ConstantOp>(loc, builder.getFloatAttr(elementType, 1.0f));
+  Value minusHalf = builder.create<mlir::arith::ConstantOp>(loc, builder.getFloatAttr(elementType, -0.5f));
+  Value twentyFour = builder.create<mlir::arith::ConstantOp>(loc, builder.getFloatAttr(elementType, 24.0f));
+  Value sevenTwenty = builder.create<mlir::arith::ConstantOp>(loc, builder.getFloatAttr(elementType, 720.0f));
+  Value minusOne = builder.create<mlir::arith::ConstantOp>(loc, builder.getFloatAttr(elementType, -1.0f));
+  Value oneOver24 = builder.create<mlir::arith::DivFOp>(loc, one, twentyFour);
+  Value minusOneOver720 = builder.create<mlir::arith::DivFOp>(loc, minusOne, sevenTwenty);
+
+  for (size_t i = 0; i < n_srcs; i++) {
+    Value src = srcs[i];
+    Value x2 = mlir::utils::createTmpBufferOrTensorWithTargetType(builder, loc, src, elementType);
+    Value x4 = mlir::utils::createTmpBufferOrTensorWithTargetType(builder, loc, src, elementType);
+    Value x6 = mlir::utils::createTmpBufferOrTensorWithTargetType(builder, loc, src, elementType);
+    Value tmp = mlir::utils::createTmpBufferOrTensorWithTargetType(builder, loc, src, elementType);
+
+    x2 = builder.create<mlir::hivm::VMulOp>(loc, src.getType(), ValueRange{src, src}, ValueRange{x2})->getResult(0);
+    x4 = builder.create<mlir::hivm::VMulOp>(loc, x2.getType(), ValueRange{x2, x2}, ValueRange{x4})->getResult(0);
+    x6 = builder.create<mlir::hivm::VMulOp>(loc, x2.getType(), ValueRange{x2, x4}, ValueRange{x6})->getResult(0);
+
+    x2 = builder.create<mlir::hivm::VMulOp>(loc, x2.getType(), ValueRange{x2, minusHalf}, ValueRange{x2})->getResult(0);
+    x4 = builder.create<mlir::hivm::VMulOp>(loc, x4.getType(), ValueRange{x4, oneOver24}, ValueRange{x4})->getResult(0);
+    x6 = builder.create<mlir::hivm::VMulOp>(loc, x6.getType(), ValueRange{x6, minusOneOver720}, ValueRange{x6})->getResult(0);
+
+    tmp = builder.create<mlir::hivm::VAddOp>(loc, x2.getType(), ValueRange{x2, one}, ValueRange{tmp})->getResult(0);
+    tmp = builder.create<mlir::hivm::VAddOp>(loc, tmp.getType(), ValueRange{x4, tmp}, ValueRange{tmp})->getResult(0);
+    Value result = builder.create<mlir::hivm::VAddOp>(loc, dstVal.getType(), ValueRange{x6, tmp}, ValueRange{dstVal})->getResult(0);
+    SetVarValue(npuirop.dst, result);
+  }
+}
+
+// Generate vector sine approximation using polynomial expansion in codegen.
+//
+// before(TileLang/TIR semantic):
+//   Y = tl.npuir_vsin
+//   where sin(x) is approximated as:
+//     sin(x) ≈ x - 1/6*x^3 + 1/120*x^5 - 1/5040*x^7
+//
+// after(MLIR Lowering):
+//   - materialize scalar constants (1, -1, 6, 120, 5040) and compute coefficients
+//   - compute x^2, x^3, x^5, x^7 via hivm::VMul
+//   - scale each term with corresponding coefficient (-1/6, 1/120, -1/5040)
+//   - accumulate terms using hivm::VAdd
+//   - store the final result into destination vector
+//   - all intermediate results are lowered to tensor operations
+void CodeGenTileLangNPUIRDEV::VsinCodegen(const CallNode *op) {
+  tvm::tl::NpuirVSin npuirop(op->args, this->vmap);
+  auto loc = builder.getUnknownLoc();
+
+  llvm::SmallVector<Value> srcs;
+  size_t n_srcs = npuirop.srcs.size();
+  for (size_t i = 0; i < n_srcs; i++) {
+    Value src = GenExtractSliceFromRegion(npuirop.srcs[i], npuirop.srcs_range[i]);
+    srcs.push_back(src);
+  }
+  Value dstVal = GetVarValue(npuirop.dst);
+
+  auto srcTensorType = srcs[0].getType().cast<mlir::RankedTensorType>();
+  mlir::Type elementType = srcTensorType.getElementType();
+  Value one = builder.create<mlir::arith::ConstantOp>(loc, builder.getFloatAttr(elementType, 1.0f));
+  Value minusOne = builder.create<mlir::arith::ConstantOp>(loc, builder.getFloatAttr(elementType, -1.0f));
+  Value six = builder.create<mlir::arith::ConstantOp>(loc, builder.getFloatAttr(elementType, 6.0f));
+  Value oneTwenty = builder.create<mlir::arith::ConstantOp>(loc, builder.getFloatAttr(elementType, 120.0f));
+  Value fiveThousandForty = builder.create<mlir::arith::ConstantOp>(loc, builder.getFloatAttr(elementType, 5040.0f));
+  Value minusOneOver6 = builder.create<mlir::arith::DivFOp>(loc, minusOne, six);
+  Value oneOver120 = builder.create<mlir::arith::DivFOp>(loc, one, oneTwenty);
+  Value minusOneOver5040 = builder.create<mlir::arith::DivFOp>(loc, minusOne, fiveThousandForty);
+
+  for (size_t i = 0; i < n_srcs; i++) {
+    Value src = srcs[i];
+    Value x2 = mlir::utils::createTmpBufferOrTensorWithTargetType(builder, loc, src, elementType);
+    Value x3 = mlir::utils::createTmpBufferOrTensorWithTargetType(builder, loc, src, elementType);
+    Value x5 = mlir::utils::createTmpBufferOrTensorWithTargetType(builder, loc, src, elementType);
+    Value x7 = mlir::utils::createTmpBufferOrTensorWithTargetType(builder, loc, src, elementType);
+    Value tmp = mlir::utils::createTmpBufferOrTensorWithTargetType(builder, loc, src, elementType);
+
+    x2 = builder.create<mlir::hivm::VMulOp>(loc, src.getType(), ValueRange{src, src}, ValueRange{x2})->getResult(0);
+    x3 = builder.create<mlir::hivm::VMulOp>(loc, x2.getType(), ValueRange{x2, src}, ValueRange{x3})->getResult(0);
+    x5 = builder.create<mlir::hivm::VMulOp>(loc, x3.getType(), ValueRange{x3, x2}, ValueRange{x5})->getResult(0);
+    x7 = builder.create<mlir::hivm::VMulOp>(loc, x5.getType(), ValueRange{x5, x2}, ValueRange{x7})->getResult(0);
+
+    x3 = builder.create<mlir::hivm::VMulOp>(loc, x3.getType(), ValueRange{x3, minusOneOver6}, ValueRange{x3})->getResult(0);
+    x5 = builder.create<mlir::hivm::VMulOp>(loc, x5.getType(), ValueRange{x5, oneOver120}, ValueRange{x5})->getResult(0);
+    x7 = builder.create<mlir::hivm::VMulOp>(loc, x7.getType(), ValueRange{x7, minusOneOver5040}, ValueRange{x7})->getResult(0);
+
+    tmp = builder.create<mlir::hivm::VAddOp>(loc, src.getType(), ValueRange{src, x3}, ValueRange{tmp})->getResult(0);
+    tmp = builder.create<mlir::hivm::VAddOp>(loc, tmp.getType(), ValueRange{x5, tmp}, ValueRange{tmp})->getResult(0);
+    Value result = builder.create<mlir::hivm::VAddOp>(loc, dstVal.getType(), ValueRange{x7, tmp}, ValueRange{dstVal})->getResult(0);
+    SetVarValue(npuirop.dst, result);
+  }
+}
+
+// Generate vector error function approximation using polynomial expansion in codegen.
+//
+// before(TileLang/TIR semantic):
+//   Y = tl.npuir_verf
+//   where erf(x) is approximated as:
+//     erf(x) ≈ (2/√π) * (x - x³/3 + x⁵/10 - x⁷/42)
+//
+// after(MLIR Lowering):
+//   - materialize scalar constants (2, √π, -1, 3, 1, 10, 42) and compute coefficients
+//   - compute x^2, x^3, x^5, x^7 via hivm::VMul
+//   - scale each term with corresponding coefficient (-1/3, 1/10, -1/42)
+//   - accumulate terms using hivm::VAdd
+//   - multiply the result by (2/√π)
+//   - store the final result into destination vector
+//   - all intermediate results are lowered to vector operations on memref subviews
+void CodeGenTileLangNPUIRDEV::VerfCodegen(const CallNode *op) {
+  tvm::tl::NpuirVErf npuirop(op->args, this->vmap);
+  auto loc = builder.getUnknownLoc();
+
+  llvm::SmallVector<Value> srcs;
+  size_t n_srcs = npuirop.srcs.size();
+  for (size_t i=0; i < n_srcs; i++) {
+    Value src = GenExtractSliceFromRegion(npuirop.srcs[i], npuirop.srcs_range[i]);
+    srcs.push_back(src);
+  }
+  mlir::ValueRange srcs_vr(srcs);
+  Value dstVal = GetVarValue(npuirop.dst);
+
+  auto srcTensorType = srcs_vr[0].getType().cast<RankedTensorType>();
+  mlir::Type elementType = srcTensorType.getElementType();
+  Value two = builder.create<mlir::arith::ConstantOp>(loc, builder.getFloatAttr(elementType, 2.0f));
+  Value sqrtPi = builder.create<mlir::arith::ConstantOp>(loc, builder.getFloatAttr(elementType, 1.7724538509055160f));
+  Value minusOne = builder.create<mlir::arith::ConstantOp>(loc, builder.getFloatAttr(elementType, -1.0f));
+  Value three = builder.create<mlir::arith::ConstantOp>(loc, builder.getFloatAttr(elementType, 3.0f));
+  Value one = builder.create<mlir::arith::ConstantOp>(loc, builder.getFloatAttr(elementType, 1.0f));
+  Value ten = builder.create<mlir::arith::ConstantOp>(loc, builder.getFloatAttr(elementType, 10.0f));
+  Value fortyTwo = builder.create<mlir::arith::ConstantOp>(loc, builder.getFloatAttr(elementType, 42.0f));
+  Value twoOverSqrtPi = builder.create<mlir::arith::DivFOp>(loc, two, sqrtPi);
+  Value minusOneOver3 = builder.create<mlir::arith::DivFOp>(loc, minusOne, three);
+  Value oneOver10 = builder.create<mlir::arith::DivFOp>(loc, one, ten);
+  Value minusOneOver42 = builder.create<mlir::arith::DivFOp>(loc, minusOne, fortyTwo);
+
+  for (size_t i = 0; i < n_srcs; i++) {
+    Value src = srcs[i];
+    Value x2 = mlir::utils::createTmpBufferOrTensorWithTargetType(builder, loc, src, elementType);
+    Value x3 = mlir::utils::createTmpBufferOrTensorWithTargetType(builder, loc, src, elementType);
+    Value x5 = mlir::utils::createTmpBufferOrTensorWithTargetType(builder, loc, src, elementType);
+    Value x7 = mlir::utils::createTmpBufferOrTensorWithTargetType(builder, loc, src, elementType);    
+    Value tmp = mlir::utils::createTmpBufferOrTensorWithTargetType(builder, loc, src, elementType);
+
+    x2 = builder.create<mlir::hivm::VMulOp>(loc, src.getType(), ValueRange{src, src}, ValueRange{x2})->getResult(0);
+    x3 = builder.create<mlir::hivm::VMulOp>(loc, x2.getType(), ValueRange{x2, src}, ValueRange{x3})->getResult(0);
+    x5 = builder.create<mlir::hivm::VMulOp>(loc, x3.getType(), ValueRange{x3, x2}, ValueRange{x5})->getResult(0);
+    x7 = builder.create<mlir::hivm::VMulOp>(loc, x5.getType(), ValueRange{x5, x2}, ValueRange{x7})->getResult(0);
+
+    x3 = builder.create<mlir::hivm::VMulOp>(loc, x3.getType(), ValueRange{x3, minusOneOver3}, ValueRange{x3})->getResult(0);
+    x5 = builder.create<mlir::hivm::VMulOp>(loc, x5.getType(), ValueRange{x5, oneOver10}, ValueRange{x5})->getResult(0);
+    x7 = builder.create<mlir::hivm::VMulOp>(loc, x7.getType(), ValueRange{x7, minusOneOver42}, ValueRange{x7})->getResult(0);
+
+    tmp = builder.create<mlir::hivm::VAddOp>(loc, src.getType(), ValueRange{src, x3}, ValueRange{tmp})->getResult(0);
+    tmp = builder.create<mlir::hivm::VAddOp>(loc, tmp.getType(), ValueRange{x5, tmp}, ValueRange{tmp})->getResult(0);
+    tmp = builder.create<mlir::hivm::VAddOp>(loc, tmp.getType(), ValueRange{x7, tmp}, ValueRange{tmp})->getResult(0);
+    Value result = builder.create<mlir::hivm::VMulOp>(loc, dstVal.getType(), ValueRange{tmp, twoOverSqrtPi}, ValueRange{dstVal})->getResult(0);
+    SetVarValue(npuirop.dst, result);
+  }
+}
+
+// Generate vector hyperbolic tangent approximation using polynomial expansion in codegen.
+//
+// before(TileLang/TIR semantic):
+//   Y = tl.npuir_vtanh
+//   where tanh(x) is approximated as:
+//     tanh(x) ≈ x - x³/3 + 2x⁵/15 - 17x⁷/315
+//
+// after(MLIR Lowering):
+//   - materialize scalar constants (2, -1, -17, 3, 15, 315) and compute coefficients
+//   - compute x^2, x^3, x^5, x^7 via hivm::VMul
+//   - scale each term with corresponding coefficient (-1/3, 2/15, -17/315)
+//   - accumulate terms using hivm::VAdd
+//   - store the final result into destination vector
+//   - all intermediate results are lowered to vector operations on memref subviews
+void CodeGenTileLangNPUIRDEV::VtanhCodegen(const CallNode *op) {
+  tvm::tl::NpuirVTanh npuirop(op->args, this->vmap);
+  auto loc = builder.getUnknownLoc();
+
+  llvm::SmallVector<Value> srcs;
+  size_t n_srcs = npuirop.srcs.size();
+  for (size_t i=0; i < n_srcs; i++) {
+    Value src = GenExtractSliceFromRegion(npuirop.srcs[i], npuirop.srcs_range[i]);
+    srcs.push_back(src);
+  }
+  mlir::ValueRange srcs_vr(srcs);
+  Value dstVal = GetVarValue(npuirop.dst);
+
+  auto srcTensorType = srcs_vr[0].getType().cast<RankedTensorType>();
+  mlir::Type elementType = srcTensorType.getElementType();
+  Value two = builder.create<mlir::arith::ConstantOp>(loc, builder.getFloatAttr(elementType, 2.0f));
+  Value minusOne = builder.create<mlir::arith::ConstantOp>(loc, builder.getFloatAttr(elementType, -1.0f));
+  Value minus17 = builder.create<mlir::arith::ConstantOp>(loc, builder.getFloatAttr(elementType, -17.0f));
+  Value three = builder.create<mlir::arith::ConstantOp>(loc, builder.getFloatAttr(elementType, 3.0f));
+  Value fifteen = builder.create<mlir::arith::ConstantOp>(loc, builder.getFloatAttr(elementType, 15.0f));
+  Value threeHundredFifteen = builder.create<mlir::arith::ConstantOp>(loc, builder.getFloatAttr(elementType, 315.0f));
+  Value minusOneOver3 = builder.create<mlir::arith::DivFOp>(loc, minusOne, three);
+  Value twoOver15 = builder.create<mlir::arith::DivFOp>(loc, two, fifteen);
+  Value minusSeventeenOver315 = builder.create<mlir::arith::DivFOp>(loc, minus17, threeHundredFifteen);
+
+  for (size_t i = 0; i < n_srcs; i++) {
+    Value src = srcs[i];
+    Value x2 = mlir::utils::createTmpBufferOrTensorWithTargetType(builder, loc, src, elementType);
+    Value x3 = mlir::utils::createTmpBufferOrTensorWithTargetType(builder, loc, src, elementType);
+    Value x5 = mlir::utils::createTmpBufferOrTensorWithTargetType(builder, loc, src, elementType);
+    Value x7 = mlir::utils::createTmpBufferOrTensorWithTargetType(builder, loc, src, elementType);    
+    Value tmp = mlir::utils::createTmpBufferOrTensorWithTargetType(builder, loc, src, elementType);
+
+    x2 = builder.create<mlir::hivm::VMulOp>(loc, src.getType(), ValueRange{src, src}, ValueRange{x2})->getResult(0);
+    x3 = builder.create<mlir::hivm::VMulOp>(loc, x2.getType(), ValueRange{x2, src}, ValueRange{x3})->getResult(0);
+    x5 = builder.create<mlir::hivm::VMulOp>(loc, x3.getType(), ValueRange{x3, x2}, ValueRange{x5})->getResult(0);
+    x7 = builder.create<mlir::hivm::VMulOp>(loc, x5.getType(), ValueRange{x5, x2}, ValueRange{x7})->getResult(0);
+
+    x3 = builder.create<mlir::hivm::VMulOp>(loc, x3.getType(), ValueRange{x3, minusOneOver3}, ValueRange{x3})->getResult(0);
+    x5 = builder.create<mlir::hivm::VMulOp>(loc, x5.getType(), ValueRange{x5, twoOver15}, ValueRange{x5})->getResult(0);
+    x7 = builder.create<mlir::hivm::VMulOp>(loc, x7.getType(), ValueRange{x7, minusSeventeenOver315}, ValueRange{x7})->getResult(0);
+
+    tmp = builder.create<mlir::hivm::VAddOp>(loc, src.getType(), ValueRange{src, x3}, ValueRange{tmp})->getResult(0);
+    tmp = builder.create<mlir::hivm::VAddOp>(loc, tmp.getType(), ValueRange{x5, tmp}, ValueRange{tmp})->getResult(0);
+    Value result = builder.create<mlir::hivm::VAddOp>(loc, dstVal.getType(), ValueRange{x7, tmp}, ValueRange{dstVal})->getResult(0);
+    SetVarValue(npuirop.dst, result);
+  }
+}
+
 /// Generate hivm.hir.vreduce for tl.npuir_reshape.
 /// before:
 ///    T.npuir_reshape(A, B)
@@ -2960,6 +3211,14 @@ mlir::Value CodeGenTileLangNPUIRDEV::VisitExpr_(const CallNode *op) {
     VpadCodegen(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_flip"))) {
     VflipCodegen(op);
+  } else if (op->op.same_as(Op::Get("tl.npuir_vcos"))) {
+    VcosCodegen(op);
+  } else if (op->op.same_as(Op::Get("tl.npuir_vsin"))) {
+    VsinCodegen(op);
+  } else if (op->op.same_as(Op::Get("tl.npuir_verf"))) {
+    VerfCodegen(op);
+  } else if (op->op.same_as(Op::Get("tl.npuir_vtanh"))) {
+    VtanhCodegen(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_debug_print_var")) ||
              op->op.same_as(Op::Get("tl.npuir_debug_print_buffer_value"))) {
     DebugPrintCodegen(op);
