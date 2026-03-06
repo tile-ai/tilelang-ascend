@@ -86,7 +86,7 @@ jobs:
         pip install torch==2.7.1+cpu -i ${TORCH_CACHE_URL} --extra-index-url ${PYPI_CACHE_URL}
         pip install torch-npu==2.7.1
         pip install dist/*.whl
-        pip install pytest pytest-forked numpy
+        pip install pytest pytest-xdist numpy
 
     - name: Run npuir tests
       env:
@@ -94,4 +94,4 @@ jobs:
       run: |
         mkdir -p testing/npuir/output
         mv tilelang _tilelang_src
-        python -m pytest -v --forked testing/npuir
+        python -m pytest -v -n 1 --max-worker-restart=5 testing/npuir
