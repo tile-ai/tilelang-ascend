@@ -116,7 +116,7 @@ def _retrieve_ptr(
         )
 
 
-def set_cross_flag(pipe: str, flag: int):
+def set_cross_flag(pipe: str, flag: int, mode: int=2):
     """
     Sets a cross-core synchronization flag.
 
@@ -127,12 +127,16 @@ def set_cross_flag(pipe: str, flag: int):
     Args:
         pipe (str): The pipeline stage issuing the set action (e.g., "MTE3", "V").
         flag (int): The event ID index to set.
+        mode: hard synchronization modes.
+            - 0: among all AICs or all AIVs
+            - 1: among all AIVs within the same group.
+            - 2: between AICs and AIVs within the same group.
 
     Returns:
         tvm.tir.Call: A TIR intrinsic call node.
     """
     return tir.call_intrin(
-        "handle", tir.op.Op.get("tl.ascend_set_cross_flag"), pipe.upper(), flag
+        "handle", tir.op.Op.get("tl.ascend_set_cross_flag"), pipe.upper(), flag, mode
     )
 
 

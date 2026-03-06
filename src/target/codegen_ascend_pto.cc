@@ -1312,6 +1312,7 @@ void CodeGenTileLangAscendPto::HandleA5Flag(const std::string &op,
 void CodeGenTileLangAscendPto::SetCrossFlagCodegen(const CallNode *op) {
   std::string pipe = Downcast<StringImm>(op->args[0])->value;
   std::string flag = PrintExpr(op->args[1]);
+  std::string mode = PrintExpr(op->args[2]);
 
   if (this->platform_ == "A5") {
     if (this->current_resource_scope_ == "CUBE") {
@@ -1328,7 +1329,7 @@ void CodeGenTileLangAscendPto::SetCrossFlagCodegen(const CallNode *op) {
   } else {
     this->PrintIndent();
     this->stream << kAscendPtoScope << "set_cross_flag<PIPE_" << pipe << ">(" 
-                << flag << ");\n";
+                << flag << ", " << mode << ");\n";
   }
 }
 
