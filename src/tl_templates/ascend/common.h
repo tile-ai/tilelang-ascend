@@ -485,6 +485,19 @@ CATLASS_DEVICE void GatherMask(const LocalTensor<T> &dst,
 }
 
 template <typename T>
+CATLASS_DEVICE void Gather(const LocalTensor<T> &dst,
+                           const LocalTensor<T> &sortedTensor,
+                           const LocalTensor<uint32_t> &src1Pattern) {
+  
+  int32_t count = src1Pattern.GetSize();
+  int32_t scalarValue = sizeof(T);
+  LocalTensor<int32_t> offset = const_cast<LocalTensor<uint32_t>&>(src1Pattern).template ReinterpretCast<int32_t>();
+  AscendC::Muls(offset, offset, scalarValue, count);
+  AscendC::Gather(dst, sortedTensor, offset.template ReinterpretCast<uint32_t>(),
+                  static_cast<uint32_t>(0), static_cast<uint32_t>(count));
+}
+
+template <typename T>
 CATLASS_DEVICE void Gatherb(const LocalTensor<T> &dst,
                             const LocalTensor<T> &src0,
                             const LocalTensor<uint32_t> &offset,
