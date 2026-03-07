@@ -13,4 +13,11 @@ from .language import (
     array_reduce,  # noqa: F401
 )
 from .deprecated import deprecated  # noqa: F401
-from .ascend_npu import NPUUtils  # noqa: F401
+from .ascend_npu import (
+    NPUUtils,
+    get_ascend_path,
+    get_cxx,
+    get_npucompiler_path,
+    get_npucompiler_opt_path,
+    get_bisheng_path
+)  # noqa: F401

@@ -15,7 +15,14 @@ import torch
 import torch_npu
 import functools
 from ..engine import lower
-from ..utils import NPUUtils
+from ..utils import (
+    NPUUtils,
+    get_ascend_path,
+    get_cxx,
+    get_npucompiler_path,
+    get_npucompiler_opt_path,
+    get_bisheng_path
+)
 
 from tvm import tir
 from tvm.tir import PrimFunc
@@ -142,27 +149,6 @@ def _symbolic_var_promoter_pass(func: PrimFunc):
     return new_primfunc, dynamic_symbolic_map
 
 
-def _get_npucompiler_path() -> str:
-    # Get bishengir-compile from PATH
-    npu_compiler_path = shutil.which("bishengir-compile")
-    if npu_compiler_path is None:
-        npu_compiler_root = os.getenv("TRITON_NPU_COMPILER_PATH", "")
-        if npu_compiler_root is None:
-            raise EnvironmentError(
-                "Couldn't find executable bishengir-compile or TRITON_NPU_COMPILER_PATH."
-            )
-        npu_compiler_path = os.path.join(npu_compiler_root, "npuc")
-    return npu_compiler_path
-
-def _get_npucompiler_opt_path() -> str:
-    npu_compiler_opt_path = shutil.which("bishengir-opt")
-    if npu_compiler_opt_path is None:
-        raise EnvironmentError(
-            "Couldn't find executable bishengir-opt."
-        )
-    return npu_compiler_opt_path
-
-
 def convert_sigtype_to_int(sigty: str):
     MAP_SIGTYPE_TO_INT = {
         # Boolean
@@ -186,20 +172,9 @@ def convert_sigtype_to_int(sigty: str):
 
     return MAP_SIGTYPE_TO_INT[sigty]
 
-def _get_bisheng_path() -> str:
-    bisheng_path = shutil.which("bisheng")
-    if bisheng_path is None:
-        npu_compiler_root = os.getenv("TILELANG_NPU_COMPILER_PATH", "")
-        if npu_compiler_root is None:
-            raise EnvironmentError(
-                "Couldn't find executable bisheng or TILELANG_NPU_COMPILER_PATH"
-            )
-        bisheng_path = os.path.join(npu_compiler_root, "ccec")
-    return bisheng_path
 
 def extract_device_print_code_from_cann():
-    #from triton.backends.ascend.utils import _get_bisheng_path
-    ccec_compiler_bin_folder, _ = os.path.split(os.path.realpath(_get_bisheng_path()))
+    ccec_compiler_bin_folder, _ = os.path.split(os.path.realpath(get_bisheng_path()))
     ccec_compiler_folder, _ = os.path.split(ccec_compiler_bin_folder)
     clang_version = os.listdir(os.path.join(ccec_compiler_folder, "lib/clang/"))[0]
     ccelib_path = os.path.join(ccec_compiler_folder, f"lib/clang/{clang_version}/include/ccelib")
@@ -1227,7 +1202,7 @@ class compiler_npu:
             # Run --adapt-triton-kernel pass before running compilation pipeline
             # TODO: temporary fix, will be updated when bishengir-compile
             # and hivmc gets updated in CANN 8.5
-            npu_compiler_opt_path = _get_npucompiler_opt_path()
+            npu_compiler_opt_path = get_npucompiler_opt_path()
             ttadapter_opt_path = os.path.join(tmpdir, "kernel-opt.npuir")
             
             _opt_option_list = [
@@ -1264,7 +1239,7 @@ class compiler_npu:
                 f.write(npuir_opt)
             # Hot fix for CANN 8.5 ends here
 
-            npu_compiler_path = _get_npucompiler_path()
+            npu_compiler_path = get_npucompiler_path()
             # TileLang Ascend JIT Runtime now follows Triton JIT style.
             # bishengir-compile --enable-triton-kernel-compile=true make sure the way.
             _compile_option_list = [
@@ -1330,9 +1305,6 @@ class compiler_npu:
             so = self._build_npu_ext(name, dst_path, tmpdir, kernel_launcher="torch")
             return so
 
-    def _get_ascend_path(self):
-        return os.environ.get("ASCEND_HOME_PATH")
-
     def _check_cxx11_abi(self):
         import torch
         return 1 if torch._C._GLIBCXX_USE_CXX11_ABI else 0
@@ -1341,13 +1313,7 @@ class compiler_npu:
         self, obj_name: str, src_path, src_dir, *, kernel_launcher=None
     ) -> str:
         so_path = f"{obj_name}.so"
-        cxx = os.environ.get("CC")
-        if cxx is None:
-            clangxx = shutil.which("clang++")
-            gxx = shutil.which("g++")
-            cxx = clangxx if clangxx is not None else gxx
-            if cxx is None:
-                raise RuntimeError("Failed to find C++ compiler")
+        cxx = get_cxx()
         cc_cmd = [cxx, src_path]
         # disable all warnings
         cc_cmd += [f"-w"]
@@ -1365,7 +1331,7 @@ class compiler_npu:
         # device_print.h
         cc_cmd += [f"-I{os.path.dirname(os.path.realpath(__file__))}"]
         # find the ascend library
-        asc_path = self._get_ascend_path()
+        asc_path = get_ascend_path()
 
         rt_path = os.path.join(asc_path, "include/experiment/runtime/runtime/rt.h")
         if not os.path.exists(rt_path):
