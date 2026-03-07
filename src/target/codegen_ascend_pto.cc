@@ -1726,8 +1726,20 @@ void CodeGenTileLangAscendPto::BroadcastOpCodegen(const CallNode *op) {
     return false;
   };
 
-  if (src_shape.size() > 2 || src_shape.size() == 0) {
-    ICHECK(false) << "check src_shape in broadcast.";
+  bool src_buffer_in_pipeline = buffer_versions_.count(
+      GetRef<tir::Var>(op->args[2].as<CallNode>()->args[1].as<VarNode>()));
+
+  // Check whether slicing is required.
+  if (src_shape.size() == 3 && src_buffer_in_pipeline) {
+    tvm::arith::Analyzer analyzer;
+    PrimExpr cond0 = (src_shape[1] != 1);
+    PrimExpr cond1 = (src_shape[2] != 1);
+    PrimExpr both_cond = analyzer.Simplify(cond0 && cond1);
+    auto imm = both_cond.as<tir::IntImmNode>();
+     if (imm->value != 0) {
+      ICHECK(false) << "check src_shape in broadcast.";
+    }
+    is_slice = !check_equal(src_element_count, src_shape[1] * src_shape[2]);
   } else if (src_shape.size() == 2) {
     tvm::arith::Analyzer analyzer;
     PrimExpr cond0 = (src_shape[0] != 1);
@@ -1740,6 +1752,8 @@ void CodeGenTileLangAscendPto::BroadcastOpCodegen(const CallNode *op) {
     is_slice = !check_equal(src_element_count, src_shape[0] * src_shape[1]);
   } else if (src_shape.size() == 1) {
     is_slice = !check_equal(src_element_count, src_shape[0]);
+  } else {
+    ICHECK(false) << "check src_shape in broadcast.";
   }
 
   std::vector<std::string> ub_data_vector = ub_data_map_[src_name];
@@ -1750,12 +1764,34 @@ void CodeGenTileLangAscendPto::BroadcastOpCodegen(const CallNode *op) {
 
   std::string axis = extractBroadCastAxis(template_args);
   if (axis == "1") {
+    // Handle pipeline logic
+    PrimExpr simplified_src_k;
+    int8_t typeSize = GetTypeLen(ub_data_type);
+    if (src_buffer_in_pipeline) {
+      auto src_k = op->args[2].as<CallNode>()->args[2] /
+                   op->args[2].as<CallNode>()->args[3];
+      tvm::arith::Analyzer analyzer;
+      simplified_src_k = analyzer.Simplify(src_k);
+      // src_name = src_name + "[" + PrintExpr(simplified_src_k) + "]";
+    }
+
+    // To match the PTO interface parameters, allocate a temporary tile in DN format.
     this->PrintIndent();
     this->stream << kAscendPtoScope << "TileUbDataDN <" << ub_data_type << ", "
                  << row << ", " << col << ", " << row << ", " << col << "> "
                  << src_name << "_DN_ROWEXPAND;\n";
     this->PrintIndent();
-    this->stream << "TASSIGN(" << src_name << "_DN_ROWEXPAND, " << address << ");\n";
+    if (src_buffer_in_pipeline) {
+      this->stream << "TASSIGN(" << src_name << "_DN_ROWEXPAND, " << address
+                   << " + " << PrintExpr(simplified_src_k) << " * "
+                   << static_cast<int>(typeSize) << " * " << col << " * "
+                   << row << ");\n";
+    } else {
+      this->stream << "TASSIGN(" << src_name << "_DN_ROWEXPAND, " << address
+                   << ");\n";
+    }
+
+    // Handle slice logic
     this->PrintIndent();
     if (!is_slice) {
       this->stream << "TROWEXPAND" << "(" << dst_name << ", " << src_name
@@ -1772,9 +1808,26 @@ void CodeGenTileLangAscendPto::BroadcastOpCodegen(const CallNode *op) {
                    << "_DN_ROWEXPAND, " << address << ", (" << src_offset
                    << ") * " << src_type_len << ");\n";
     }
+
     this->PrintIndent();
-    this->stream << "TRESHAPE(" << src_name << ", " << src_name << "_DN_ROWEXPAND);\n";
+    if (src_buffer_in_pipeline) {
+      this->stream << "TRESHAPE(" << src_name << "["
+                   << PrintExpr(simplified_src_k) << "], " << src_name
+                   << "_DN_ROWEXPAND);\n";
+    } else {
+      this->stream << "TRESHAPE(" << src_name << ", " << src_name
+                   << "_DN_ROWEXPAND);\n";
+    }
   } else {
+    // Handle pipeline logic
+    if (src_buffer_in_pipeline) {
+      auto src_k = op->args[2].as<CallNode>()->args[2] /
+                   op->args[2].as<CallNode>()->args[3];
+      tvm::arith::Analyzer analyzer;
+      PrimExpr simplified_src_k = analyzer.Simplify(src_k);
+      src_name = src_name + "[" + PrintExpr(simplified_src_k) + "]";
+    }
+
     this->PrintIndent();
     this->stream << "TCOLEXPAND" << "(" << dst_name << ", " << src_name << ");\n";
   }
@@ -1868,13 +1921,15 @@ void CodeGenTileLangAscendPto::BinaryVecOpsCodegen(const CallNode *op,
                                ".GetValue(" + index + ")")
                             : index;
     } else {
+      std::string index_pipeline = PrintExpr(op->args[op->args.size() - 2] -
+                                             selected_elements_buffer->args[2]);
       auto a_k =
           selected_elements_buffer->args[2] / selected_elements_buffer->args[3];
       tvm::arith::Analyzer analyzer;
       PrimExpr simplified_buffer_k = analyzer.Simplify(a_k);
       scalar_expr = is_call ? (PrintBufferOffset(selected_elements_buffer) +
                                "[" + PrintExpr(simplified_buffer_k) + "]" +
-                               ".GetValue(" + index + ")")
+                               ".GetValue(" + index_pipeline + ")")
                             : index;
     }
     std::string scalar_name =
@@ -2530,11 +2585,24 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
             shape.pop_back();
           }
         } else if (shape.size() == 3) {
-          ub_data[1] = PrintExpr(shape[1]);
-          ub_data[2] = PrintExpr(shape[2]);
-          ub_data[4] = "Unapplied for tileUbDataDN";
-          ub_data[5] = PrintExpr(shape[1]);
-          ub_data[6] = PrintExpr(shape[2]);
+          if (buffer_in_pipeline) {
+            if (shape[2].as<IntImmNode>()->value != 1) {
+              ub_data[1] = PrintExpr(shape[1]);
+              ub_data[2] = PrintExpr(shape[2]);
+              ub_data[4] = "Unapplied for tileUbDataDN";
+              ub_data[5] = PrintExpr(shape[1]);
+              ub_data[6] = PrintExpr(shape[2]);
+            } else {
+              ub_data[1] = "1";
+              ub_data[2] = PrintExpr(shape[1]);
+              ub_data[4] = "Unapplied for tileUbDataDN";
+              ub_data[5] = "1";
+              ub_data[6] = PrintExpr(shape[1]);
+            }
+          } else {
+            ICHECK(false) << "Check for cases where the shape size is 3 but is "
+                             "not part of the pipeline.";
+          }
         }
 
         // Check if padding is needed at the time of request.
@@ -2565,16 +2633,17 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
           for (size_t i = 0; i < bufferNum; i++) {
             this->PrintIndent();
             stream << "TASSIGN(" << vid << "[" << i << "], "
-                   << PrintExpr(address_offset_[String(pos)])
-                   << ");\n";
-            if (ub_data[3].empty()) {
-                ub_data[3] = PrintExpr(address_offset_[String(pos)]);
-            }
-            ub_data_map_[vid] = ub_data;
-            address_offset_.Set(String(pos),
-                                PrimExpr(int(op->ConstantAllocationSize() *
-                                             op->dtype.bytes() / 2)) +
-                                    address_offset_[String(pos)]);
+                   << PrintExpr(target_expr) << " + " << i << " * "
+                   << static_cast<int>(typeSize) << " * " << ub_data[1] << " * "
+                   << ub_data[2] << ");\n";
+            // if (ub_data[3].empty()) {
+            //     ub_data[3] = PrintExpr(address_offset_[String(pos)]);
+            // }
+            // ub_data_map_[vid] = ub_data;
+            // address_offset_.Set(String(pos),
+            //                     PrimExpr(int(op->ConstantAllocationSize() *
+            //                                  op->dtype.bytes() / 2)) +
+            //                         address_offset_[String(pos)]);
           }
         } else {
           stream << pos << "ND<" << type << ", " << ub_data[1] << ", "
@@ -2716,7 +2785,7 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
         }
 
         if (buffer_in_pipeline) {
-          // // Recording the count of buffer allocations in the pipeline.
+          // Recording the count of buffer allocations in the pipeline.
           auto bufferNum = prefetch_n_stages_map_[vid].first;
           // prefetch_n_stages_map_[vid] = std::pair<int, int>{bufferNum, 0};
 
