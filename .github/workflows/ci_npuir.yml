@@ -90,7 +90,7 @@ jobs:
         pip install torch==2.7.1+cpu -i ${TORCH_CACHE_URL} --extra-index-url ${PYPI_CACHE_URL}
         pip install torch-npu==2.7.1
         pip install dist/*.whl
-        pip install pytest numpy
+        pip install pytest numpy triton
 
     - name: Run npuir tests
       env:
