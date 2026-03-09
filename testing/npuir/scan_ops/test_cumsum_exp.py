@@ -10,7 +10,7 @@ from testcommon import assert_close, gen_tensor
 
 pytestmark = [
     pytest.mark.op("cumsum"),
-    pytest.mark.mode("Developer"),
+    pytest.mark.mode("Expert"),
 ]
 
 DTYPES = ["float16"]
@@ -21,22 +21,22 @@ def cumsum_kernel(M, N, dim, reverse, dtype, accum_dtype):
     BLOCK_SIZE = 1
 
     @T.prim_func
-    def cumsumDev(
+    def cumsumExp(
         src: T.Tensor((M, N), dtype),
         dst: T.Tensor((M, N), accum_dtype),
     ):
         with T.Kernel(BLOCK_SIZE, is_npu=True) as (cid, _):
-            src_ub = T.alloc_shared((M, N), dtype)
-            dst_ub = T.alloc_fragment((M, N), accum_dtype)
+            src_ub = T.alloc_ub((M, N), dtype)
+            dst_ub = T.alloc_ub((M, N), accum_dtype)
             T.copy(src, src_ub)
             T.cumsum(src_ub, dst_ub, dim=dim, reverse=reverse)
             T.copy(dst_ub, dst)
 
-    return cumsumDev
+    return cumsumExp
 
 
 @pytest.mark.parametrize("dtype,accum_dtype", list(zip(DTYPES, ACCUM_DTYPES)))
-def test_cumsum_dev(dtype, accum_dtype):
+def test_cumsum_exp(dtype, accum_dtype):
     M, N, dim, reverse = 4, 4, 0, False
     src = gen_tensor((M, N), dtype, kind="randn")
     dst = gen_tensor((M, N), accum_dtype, kind="zeros")

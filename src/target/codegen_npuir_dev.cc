@@ -2288,11 +2288,12 @@ void CodeGenTileLangNPUIRDEV::VgatherCodegen(const CallNode *op) {
 
 void CodeGenTileLangNPUIRDEV::VtransposeCodegen(const CallNode *op) {
   tvm::tl::NpuirTranspose npuirop(op->args, this->vmap);
-  Value src = GenSubviewFromRegion(npuirop.src, npuirop.src_range);
-  Value dst = GenSubviewFromRegion(npuirop.dst, npuirop.dst_range);
+  Value src = GenExtractSliceFromRegion(npuirop.src, npuirop.src_range);
+  Value dst = GenExtractSliceFromRegion(npuirop.dst, npuirop.dst_range);
   auto permutation = builder.getDenseI64ArrayAttr(npuirop.permutation);
-  builder.create<mlir::hivm::VTransposeOp>(builder.getUnknownLoc(), TypeRange{},
-                                           src, dst, permutation);
+  mlir::Type dstType = dst.getType();
+  auto transposeOp = builder.create<mlir::hivm::VTransposeOp>(
+      builder.getUnknownLoc(), mlir::TypeRange{dstType}, src, dst, permutation);
 }
 
 void CodeGenTileLangNPUIRDEV::VinterleaveCodegen(const CallNode *op) {
