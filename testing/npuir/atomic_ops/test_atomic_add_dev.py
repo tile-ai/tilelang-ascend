@@ -1,45 +1,52 @@
 # Copyright (c) Tile-AI Corporation.
 # Licensed under the MIT License.
-import os
+import pytest
+import torch_npu  # noqa: F401
 
 import tilelang
 import tilelang.language as T
 
-import torch
-import torch_npu
+from testcommon import ascend_mode, assert_close, gen_tensor
 
-tilelang.cache.clear_cache()
+pytestmark = [
+    pytest.mark.op("atomic_add"),
+]
 
-dtype = "float32"
+DTYPES = ["float32"]
+ATOMIC_ADD_1D_CASES = [(64, 32)]
+ATOMIC_ADD_2D_CASES = [(256, 256, 16, 16)]
+
 
 def vec_atomic_add_1d(N, block_size, dtype="float32"):
     n_blocks = N // block_size
 
     @T.prim_func
     def vecAtomicAdd1D(
-            A: T.Tensor((N,), dtype),
-            B: T.Tensor((N,), dtype),
-            shape: T.int32,
+        A: T.Tensor((N,), dtype),
+        B: T.Tensor((N,), dtype),
+        shape: T.int32,
     ):
         with T.Kernel(n_blocks, is_npu=True) as (bid, _):
             A_VEC = T.alloc_shared((block_size,), dtype)
             start = bid * block_size
-            t0 = shape - start 
+            t0 = shape - start
             tail_size = T.min(block_size, t0)
-            T.copy(A[start : start + tail_size], A_VEC[0:tail_size])
-    
+            T.copy(A[start:start + tail_size], A_VEC[0:tail_size])
             T.npuir_atomic_add(B[start], A_VEC, [tail_size])
 
     return vecAtomicAdd1D
 
+
 def vec_atomic_add_2d(M, N, block_M, block_N, dtype="float32"):
     m_num = M // block_M
     n_num = N // block_N
+
     @T.prim_func
     def vecAtomicAdd2D(
-            A: T.Tensor((M, N), dtype),
-            B: T.Tensor((M, N), dtype),
-            shape_M: T.int32, shape_N: T.int32,
+        A: T.Tensor((M, N), dtype),
+        B: T.Tensor((M, N), dtype),
+        shape_M: T.int32,
+        shape_N: T.int32,
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, _):
             blockx = cid // n_num
@@ -49,57 +56,46 @@ def vec_atomic_add_2d(M, N, block_M, block_N, dtype="float32"):
             A_VEC = T.alloc_shared((block_M, block_N), dtype)
 
             t0 = shape_M - bx
-            tile_size_M = T.min(block_M, t0)        
+            tile_size_M = T.min(block_M, t0)
 
             t0 = shape_N - by
-            tile_size_N = T.min(block_N, t0)   
-            T.copy(A[bx : bx + tile_size_M, by : by + tile_size_N], A_VEC[0:tile_size_M, 0:tile_size_N]) 
-            T.npuir_atomic_add(B[bx, by], A_VEC, [tile_size_M, tile_size_N])           
-
+            tile_size_N = T.min(block_N, t0)
+            T.copy(
+                A[bx:bx + tile_size_M, by:by + tile_size_N],
+                A_VEC[0:tile_size_M, 0:tile_size_N],
+            )
+            T.npuir_atomic_add(B[bx, by], A_VEC, [tile_size_M, tile_size_N])
 
     return vecAtomicAdd2D
 
-def test_vec_atomic_add_1d():
-    torch.npu.set_device(0)
-    vec_size = 64
 
-    A = torch.randn(size=[vec_size], dtype=eval("torch." + dtype)).npu()
-    B = torch.randn(size=[vec_size], dtype=eval("torch." + dtype)).npu()
-    expected = A + B
+@pytest.mark.parametrize("dtype", DTYPES)
+@pytest.mark.parametrize("N, block_size", ATOMIC_ADD_1D_CASES)
+@pytest.mark.mode("Developer")
+def test_vec_atomic_add_1d_dev(dtype, N, block_size):
+    with ascend_mode("Developer"):
+        A = gen_tensor((N,), dtype, kind="randn")
+        B = gen_tensor((N,), dtype, kind="randn")
+        expected = A + B
 
-    func = vec_atomic_add_1d(vec_size, block_size=32)
-    compiled_kernel = tilelang.compile(func, target="npuir")
+        func = vec_atomic_add_1d(N, block_size=block_size, dtype=dtype)
+        compiled_kernel = tilelang.compile(func, target="npuir")
+        compiled_kernel(A, B, N)
 
-    print("Running 1D atomic add...")
-    compiled_kernel(A, B, vec_size)
+    assert_close(B.cpu(), expected.cpu(), dtype=dtype, rtol=1e-5, atol=1e-8)
 
-    print("1D Verification:")
-    print(f"Expected: First few elements: {expected[0:64]}")
-    print(f"Actual: First few elements of B: {B[0:64]}")
-    print(f"All elements equal to expected: {torch.allclose(B, expected)}")
 
-def test_vec_atomic_add_2d():
-    torch.npu.set_device(0)
+@pytest.mark.parametrize("dtype", DTYPES)
+@pytest.mark.parametrize("M, N, block_M, block_N", ATOMIC_ADD_2D_CASES)
+@pytest.mark.mode("Developer")
+def test_vec_atomic_add_2d_dev(dtype, M, N, block_M, block_N):
+    with ascend_mode("Developer"):
+        A = gen_tensor((M, N), dtype, kind="randn")
+        B = gen_tensor((M, N), dtype, kind="randn")
+        expected = A + B
 
-    M, N = 256, 256
+        func = vec_atomic_add_2d(M, N, block_M=block_M, block_N=block_N, dtype=dtype)
+        compiled_kernel = tilelang.compile(func, target="npuir")
+        compiled_kernel(A, B, M, N)
 
-    A = torch.randn(size=[M, N], dtype=eval("torch." + dtype)).npu()
-    B = torch.randn(size=[M, N], dtype=eval("torch." + dtype)).npu()
-    expected = A + B
-
-    func = vec_atomic_add_2d(M, N, block_M=16, block_N=16)
-    compiled_kernel = tilelang.compile(func, target="npuir")
-
-    print("\nRunning 2D atomic add...")
-    compiled_kernel(A, B, M, N)
-
-    print("2D Verification:")
-
-    print(f"Expected: First row elements: {expected[0:8, 0:8]}")
-    print(f"Actual: First row elements of B: {B[0:8, 0:8]}")
-    print(f"All elements equal to expected: {torch.allclose(B, expected)}")
-
-if __name__ == "__main__":
-    os.environ['TILELANG_ASCEND_MODE'] = 'Developer'
-    test_vec_atomic_add_1d()
-    test_vec_atomic_add_2d()
+    assert_close(B.cpu(), expected.cpu(), dtype=dtype, rtol=1e-5, atol=1e-8)
