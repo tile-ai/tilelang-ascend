@@ -1,10 +1,14 @@
 import contextlib
 import os
+import subprocess
+import tempfile
 from itertools import product
+from pathlib import Path
 from typing import Iterable, Optional, Sequence, Tuple, Union
 
 import torch
 import tilelang
+from tilelang.engine import lower
 
 
 TorchDTypeLike = Union[str, torch.dtype]
@@ -54,7 +58,11 @@ def set_seed(seed: int) -> None:
 
 
 def set_npu_device(device_id: int) -> None:
-    torch.npu.set_device(device_id)
+    """设置 NPU 设备；无 torch_npu 时静默跳过（无卡环境）。"""
+    try:
+        torch.npu.set_device(device_id)
+    except (AttributeError, RuntimeError):
+        pass
 
 
 def clear_tilelang_cache() -> None:
@@ -174,3 +182,66 @@ def ascend_mode(mode: str):
             os.environ.pop("TILELANG_ASCEND_MODE", None)
         else:
             os.environ["TILELANG_ASCEND_MODE"] = prev
+
+
+def codegen_lower(func, mode: str = "Developer"):
+    """
+    无卡环境下对 PrimFunc 执行 lower，返回 NPU IR (MLIR) 字符串。
+    不依赖 torch_npu，不需要 NPU 硬件。
+    可通过 TILELANG_DUMP_IR=TRUE 查看中间 TVM IR 和 MLIR。
+    """
+    with ascend_mode(mode):
+        result = lower(func, target="npuir")
+    assert isinstance(result, str), "lower(..., target='npuir') 应返回 str"
+    assert len(result) > 0, "NPU IR 输出不应为空"
+    return result
+
+
+def compile_to_kernel_o_if_available(mlir_content: str) -> Optional[bytes]:
+    """
+    如果 bishengir-compile 可用，将 NPU IR 编译为 kernel.o 的二进制内容；
+    否则返回 None。用于无卡环境下的可选编译验证。
+    """
+    npu_compiler = _find_bishengir_compile()
+    if npu_compiler is None:
+        return None
+    with tempfile.TemporaryDirectory() as tmpdir:
+        npuir_path = Path(tmpdir) / "kernel.npuir"
+        npuir_path.write_text(mlir_content)
+        out_path = Path(tmpdir) / "kernel"
+        cmd = [
+            npu_compiler,
+            str(npuir_path),
+            "--enable-auto-multi-buffer=true",
+            "--enable-triton-kernel-compile=true",
+            "--enable-hivm-compile=true",
+            "-o",
+            str(out_path),
+        ]
+        mode = os.environ.get("TILELANG_ASCEND_MODE")
+        if mode is None or str(mode).lower().strip() in ("expert", "exp", "e"):
+            cmd.insert(-2, "--disable-hivm-tensor-compile=true")
+        try:
+            subprocess.run(cmd, capture_output=True, check=True, text=True, cwd=tmpdir)
+            for name in ("kernel.o", "kernel"):
+                o_path = Path(tmpdir) / name
+                if o_path.exists():
+                    return o_path.read_bytes()
+        except (subprocess.CalledProcessError, FileNotFoundError, OSError):
+            pass
+    return None
+
+
+def _find_bishengir_compile() -> Optional[str]:
+    """返回 bishengir-compile 可执行路径，若未找到则返回 None。"""
+    import shutil
+
+    path = shutil.which("bishengir-compile")
+    if path:
+        return path
+    root = os.getenv("TRITON_NPU_COMPILER_PATH", "")
+    if root:
+        p = os.path.join(root, "npuc")
+        if os.path.isfile(p) and os.access(p, os.X_OK):
+            return p
+    return None
