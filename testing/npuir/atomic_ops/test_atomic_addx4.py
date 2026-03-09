@@ -27,16 +27,17 @@ def run_atomic_addx4(M, N, block_M, block_N, dtype="float32"):
             blocky = cid % n_num
             A_VEC = T.alloc_ub((1, 4), dtype)
 
-            for i, j in T.Parallel(block_M, block_N // 4):
-                bx = blockx * block_M + i
-                by = blocky * block_N + j * 4
-                t0 = shape_M - bx
-                tile_size_M = T.min(block_M, t0)        
+            for i in T.serial(block_M):
+                for j in T.serial(block_N // 4):
+                    bx = blockx * block_M + i
+                    by = blocky * block_N + j * 4
+                    t0 = shape_M - bx
+                    tile_size_M = T.min(block_M, t0)        
 
-                t0 = shape_N - by
-                tile_size_N = T.min(block_N, t0)   
-                T.copy(A[bx : bx + 1, by : by + 4], A_VEC[0:1, 0:4])
-                T.npuir_atomic_addx4(B[bx, by], A_VEC, [1, 4])            
+                    t0 = shape_N - by
+                    tile_size_N = T.min(block_N, t0)   
+                    T.copy(A[bx : bx + 1, by : by + 4], A_VEC[0:1, 0:4])
+                    T.npuir_atomic_addx4(B[bx, by], A_VEC, [1, 4])            
             
     return atomicAddx4Program
 
