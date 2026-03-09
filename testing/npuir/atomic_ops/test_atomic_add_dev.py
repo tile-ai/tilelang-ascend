@@ -6,10 +6,11 @@ import torch_npu  # noqa: F401
 import tilelang
 import tilelang.language as T
 
-from testcommon import ascend_mode, assert_close, gen_tensor
+from testcommon import assert_close, gen_tensor
 
 pytestmark = [
     pytest.mark.op("atomic_add"),
+    pytest.mark.mode("Developer"),
 ]
 
 DTYPES = ["float32"]
@@ -71,31 +72,27 @@ def vec_atomic_add_2d(M, N, block_M, block_N, dtype="float32"):
 
 @pytest.mark.parametrize("dtype", DTYPES)
 @pytest.mark.parametrize("N, block_size", ATOMIC_ADD_1D_CASES)
-@pytest.mark.mode("Developer")
 def test_vec_atomic_add_1d_dev(dtype, N, block_size):
-    with ascend_mode("Developer"):
-        A = gen_tensor((N,), dtype, kind="randn")
-        B = gen_tensor((N,), dtype, kind="randn")
-        expected = A + B
+    A = gen_tensor((N,), dtype, kind="randn")
+    B = gen_tensor((N,), dtype, kind="randn")
+    expected = A + B
 
-        func = vec_atomic_add_1d(N, block_size=block_size, dtype=dtype)
-        compiled_kernel = tilelang.compile(func, target="npuir")
-        compiled_kernel(A, B, N)
+    func = vec_atomic_add_1d(N, block_size=block_size, dtype=dtype)
+    compiled_kernel = tilelang.compile(func, target="npuir")
+    compiled_kernel(A, B, N)
 
     assert_close(B.cpu(), expected.cpu(), dtype=dtype, rtol=1e-5, atol=1e-8)
 
 
 @pytest.mark.parametrize("dtype", DTYPES)
 @pytest.mark.parametrize("M, N, block_M, block_N", ATOMIC_ADD_2D_CASES)
-@pytest.mark.mode("Developer")
 def test_vec_atomic_add_2d_dev(dtype, M, N, block_M, block_N):
-    with ascend_mode("Developer"):
-        A = gen_tensor((M, N), dtype, kind="randn")
-        B = gen_tensor((M, N), dtype, kind="randn")
-        expected = A + B
+    A = gen_tensor((M, N), dtype, kind="randn")
+    B = gen_tensor((M, N), dtype, kind="randn")
+    expected = A + B
 
-        func = vec_atomic_add_2d(M, N, block_M=block_M, block_N=block_N, dtype=dtype)
-        compiled_kernel = tilelang.compile(func, target="npuir")
-        compiled_kernel(A, B, M, N)
+    func = vec_atomic_add_2d(M, N, block_M=block_M, block_N=block_N, dtype=dtype)
+    compiled_kernel = tilelang.compile(func, target="npuir")
+    compiled_kernel(A, B, M, N)
 
     assert_close(B.cpu(), expected.cpu(), dtype=dtype, rtol=1e-5, atol=1e-8)

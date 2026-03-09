@@ -4,10 +4,11 @@ import torch_npu  # noqa: F401
 import tilelang
 import tilelang.language as T
 
-from testcommon import ascend_mode, assert_close, gen_tensor
+from testcommon import assert_close, gen_tensor
 
 pytestmark = [
     pytest.mark.op("atomic_add"),
+    pytest.mark.mode("Developer"),
 ]
 
 DTYPES = ["float32"]
@@ -34,15 +35,13 @@ def simple_4d_atomic_add_kernel(B, S, H, D, dtype="float32"):
 
 @pytest.mark.parametrize("dtype", DTYPES)
 @pytest.mark.parametrize("B, S, H, D", ATOMIC_ADD_4D_CASES)
-@pytest.mark.mode("Developer")
 def test_atomic_add_with_slice_reshape_dev(dtype, B, S, H, D):
-    with ascend_mode("Developer"):
-        A = gen_tensor((B, S, H, D), dtype, kind="randn")
-        B_tensor = gen_tensor((B, S, H, D), dtype, kind="randn")
-        expected = A + B_tensor
+    A = gen_tensor((B, S, H, D), dtype, kind="randn")
+    B_tensor = gen_tensor((B, S, H, D), dtype, kind="randn")
+    expected = A + B_tensor
 
-        func = simple_4d_atomic_add_kernel(B, S, H, D, dtype=dtype)
-        compiled_kernel = tilelang.compile(func, target="npuir")
-        compiled_kernel(A, B_tensor, B, H)
+    func = simple_4d_atomic_add_kernel(B, S, H, D, dtype=dtype)
+    compiled_kernel = tilelang.compile(func, target="npuir")
+    compiled_kernel(A, B_tensor, B, H)
 
     assert_close(B_tensor.cpu(), expected.cpu(), dtype=dtype, rtol=1e-5, atol=1e-8)
