@@ -2259,10 +2259,10 @@ void CodeGenTileLangNPUIRDEV::VAtomicAddCodegen(const CallNode *op) {
   /// after:
   ///   hivm.hir.store ins(src) outs(dst) atomic = <add>
   tvm::tl::NpuirAtomicAdd npuirop(op->args, this->vmap);
-  Value src = GetVarValue(npuirop.src);
+  Value src = GenExtractSliceFromRegion(npuirop.src, npuirop.src_range);
   Value dst = GenSubviewFromRegion(npuirop.dst, npuirop.dst_range);
   SliceRange dstR = MakeSliceRange(npuirop.dst_range);
-  mlir::Value reshaped_src = ReshapeTensorWithTensorReshape(src, dstR.sizes);
+  mlir::Value reshaped_src = MaybeReshapeTensorByDstSize(src, dstR.sizes);
 
   // create StoreOp   
   auto newStoreOp = builder.create<hivm::StoreOp>(
