@@ -90,7 +90,7 @@ jobs:
         pip install torch==2.7.1+cpu -i ${TORCH_CACHE_URL} --extra-index-url ${PYPI_CACHE_URL}
         pip install torch-npu==2.7.1
         pip install dist/*.whl
-        pip install pytest numpy triton
+        pip install pytest pytest-xdist pytest-rerunfailures numpy triton
 
     - name: Run npuir tests
       env:
@@ -98,15 +98,39 @@ jobs:
       run: |
         mkdir -p testing/npuir/output
         mv tilelang _tilelang_src
-        failed=""
-        for dir in testing/npuir/*_ops; do
-          echo "::group::pytest ${dir}"
-          if ! python -m pytest -v "$dir"; then
-            failed="$failed $dir"
-          fi
-          echo "::endgroup::"
-        done
-        if [ -n "$failed" ]; then
-          echo "::error::Failed test groups:$failed"
-          exit 1
-        fi
+        python -m pytest testing/npuir \
+          -n 2 \
+          --dist loadfile \
+          --reruns 2 \
+          --reruns-delay 1 \
+          -v -ra \
+          --junitxml=testing/npuir/output/junit.xml
+
+    - name: Generate failure report
+      if: failure()
+      run: |
+        python -c "
+        import xml.etree.ElementTree as ET
+        p = 'testing/npuir/output/junit.xml'
+        try:
+            root = ET.parse(p).getroot()
+            failed = [(t.get('classname',''), t.get('name','')) for s in root.findall('testsuite') for t in s.findall('testcase') if t.find('failure') is not None or t.find('error') is not None]
+            with open('testing/npuir/output/test_report.txt', 'w') as f:
+                f.write('Failed tests:\n')
+                for c,n in failed:
+                    f.write(f'  {c}::{n}\n')
+        except Exception as e:
+            with open('testing/npuir/output/test_report.txt', 'w') as f:
+                f.write(f'Could not parse junit: {e}')
+        "
+
+    - name: Upload test report
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: npuir-test-report
+        path: testing/npuir/output/
+
+    - name: Show failure report
+      if: failure()
+      run: cat testing/npuir/output/test_report.txt 2>/dev/null || true

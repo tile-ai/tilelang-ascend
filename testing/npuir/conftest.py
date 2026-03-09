@@ -1,9 +1,18 @@
+import os
 import re
 from typing import List, Sequence
 
 import pytest
 
 from testcommon import clear_tilelang_cache, set_npu_device, set_seed
+
+
+def _get_npu_device_id(config: pytest.Config) -> int:
+    """Device 0 for xdist gw0, 1 for gw1; else use --npu-device."""
+    worker = os.environ.get("PYTEST_XDIST_WORKER")
+    if worker and worker.startswith("gw"):
+        return int(worker[2:])
+    return config.getoption("--npu-device")
 
 
 def pytest_addoption(parser):
@@ -81,7 +90,8 @@ def pytest_collection_modifyitems(config: pytest.Config, items: List[pytest.Item
 @pytest.fixture(scope="session", autouse=True)
 def _setup_npu_session(pytestconfig: pytest.Config):
     seed = pytestconfig.getoption("--seed")
-    device_id = pytestconfig.getoption("--npu-device")
+    device_id = _get_npu_device_id(pytestconfig)
+    os.environ["ASCEND_RT_VISIBLE_DEVICES"] = str(device_id)
     set_seed(seed)
     set_npu_device(device_id)
     clear_tilelang_cache()
