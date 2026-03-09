@@ -84,6 +84,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "bishengir/Dialect/HACC/IR/HACC.h"
+#include "bishengir/Dialect/Utils/Util.h"
 #include "tvm/runtime/logging.h"
 
 using namespace mlir;
