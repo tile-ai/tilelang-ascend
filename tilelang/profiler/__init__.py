@@ -262,10 +262,6 @@ class Profiler:
      
             bench_func = partial(func, *ins)
             
-            use_profiling = os.getenv("TILELANG_BENCH_METHOD", "default").lower() == "npu"
-            if use_profiling:
-                return  npu_do_bench_msprof(bench_func, warmup=warmup, rep=rep)
-            
             return npu_do_bench(
                 bench_func,
                 warmup=warmup,
