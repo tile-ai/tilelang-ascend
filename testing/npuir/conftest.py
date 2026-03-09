@@ -91,7 +91,6 @@ def pytest_collection_modifyitems(config: pytest.Config, items: List[pytest.Item
 def _setup_npu_session(pytestconfig: pytest.Config):
     seed = pytestconfig.getoption("--seed")
     device_id = _get_npu_device_id(pytestconfig)
-    os.environ["ASCEND_RT_VISIBLE_DEVICES"] = str(device_id)
     set_seed(seed)
     set_npu_device(device_id)
     clear_tilelang_cache()
