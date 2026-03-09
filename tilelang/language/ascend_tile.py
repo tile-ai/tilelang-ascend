@@ -60,7 +60,7 @@ def _dtype(buf):
     return type_map[buf.dtype]
 
 
-def fill(buffer: Buffer, value: PrimExpr):
+def fill(buffer: Union[Buffer, BufferRegion], value: PrimExpr):
     """Fill a buffer or buffer region with a specified value.
 
     Args:
@@ -70,13 +70,24 @@ def fill(buffer: Buffer, value: PrimExpr):
     Returns:
         A TVM intrinsic call that performs the fill operation
     """
-    size = math.prod(buffer.shape)
-
+    def _handle_buffer_region(br: BufferRegion, mask):
+        bf = br.buffer
+        indices = [x.min for x in br.region]
+        offset = bf.offset_of(indices)[0]
+        extent = [x.extent for x in br.region]
+        return bf.access_ptr(mask, offset=offset), extent
+    if isinstance(buffer, BufferRegion):
+        buffer_ptr, buffer_extent = _handle_buffer_region(buffer, "w")
+        size = math.prod(buffer_extent)
+    else: 
+        buffer_ptr = buffer.access_ptr("w")
+        size = math.prod(buffer.shape)
+        
     return tir.call_intrin(
         "handle",
         tir.op.Op.get("tl.ascend_fill"),
         f"Fill<{_dtype(buffer)}>",
-        buffer.access_ptr("w"),
+        buffer_ptr,
         value,
         size,
     )
@@ -638,7 +649,7 @@ def bitwise_or(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, Buff
     return binary_op(dst, src0, src1, "bitwise_or")
 
 
-def unary_op(dst: Buffer, src0: Buffer, op: str):
+def unary_op(dst: Union[Buffer, BufferRegion], src0: Union[Buffer, BufferRegion], op: str):
 
     def _handle_buffer_region(br: BufferRegion, mask):
         bf = br.buffer
@@ -1469,7 +1480,9 @@ def round(out: Buffer, buffer: Buffer, tmp: Buffer, count: PrimExpr):
         count
     )
 
-def broadcast(dst: Buffer, src: Buffer, tmp: Buffer):
+def broadcast(dst: Union[Buffer, BufferRegion], 
+              src: Union[Buffer, BufferRegion], 
+              tmp: Union[Buffer, BufferRegion]):
     """Generates a TIR intrinsic call for the AscendC `Broadcast` operation.
 
     This function performs a broadcast copy from the source buffer (`src`) to the
@@ -1499,37 +1512,64 @@ def broadcast(dst: Buffer, src: Buffer, tmp: Buffer):
               The source column is replicated `dst.shape[1]` times.
             - **No Broadcast (Copy)**: If shapes are identical, the axis defaults to 0.
     """
-    src_shape = src.shape
-    dst_shape = dst.shape
-
-    assert len(src_shape) == len(dst_shape), "Source and Dest dimension must match."
-    dim = len(dst_shape)
+    def _handle_buffer_region(br: BufferRegion, mask):
+        bf = br.buffer
+        indices = [x.min for x in br.region]
+        offset = bf.offset_of(indices)[0]
+        extent = [x.extent for x in br.region]
+        return bf.access_ptr(mask, offset=offset), extent
+    
+    if isinstance(dst, BufferRegion):
+        dst_ptr, dst_extent = _handle_buffer_region(dst, "w")
+    else:
+        dst_ptr = dst.access_ptr("w")
+        dst_extent = dst.shape
+    
+    if isinstance(src, BufferRegion):
+        src_ptr, src_extent = _handle_buffer_region(src, "r")
+    else:
+        src_ptr = src.access_ptr("r")
+        src_extent = src.shape
+    
+    if isinstance(tmp, BufferRegion):
+        tmp_ptr, _ = _handle_buffer_region(tmp, "r")
+    else:
+        tmp_ptr = tmp.access_ptr("r")
+    
+    dtype = _dtype(src)
+    
+    dim = len(dst_extent)
+    if dim == 3:
+        dst_extent = [dst_extent[1], dst_extent[2]]
+        src_extent = [src_extent[1], src_extent[2]]
+        dim = 2
     assert dim in [1, 2], "Ascend Broadcast only supports dim=1 or dim=2."
-
+    assert len(src_extent) == dim, "Source and Dest dimension must match."
+    
     axis = 0
     if dim == 2:
-        if src_shape[0] == 1 and dst_shape[0] != 1:
+        if src_extent[0] == 1 and dst_extent[0] != 1:
             axis = 0
-        elif src_shape[1] == 1 and dst_shape[1] != 1:
+        elif src_extent[1] == 1 and dst_extent[1] != 1:
             axis = 1
         else:
             axis = 0
-    else:
+    else:  # dim == 1
         axis = 0
-
+    
     op_name = "tl.ascend_broadcast"
-    template_args = f"{_dtype(src)}, {dim}, {axis}, false"
-
+    template_args = f"{dtype}, {dim}, {axis}, false"
+    
     return tir.call_intrin(
         "handle",
         tir.op.Op.get(op_name),
         f"Broadcast<{template_args}>",
-        dst.access_ptr("w"),
-        src.access_ptr("r"),
-        tmp.access_ptr("r"),
+        dst_ptr,
+        src_ptr,
+        tmp_ptr,
         dim,
-        *dst_shape,
-        *src_shape,
+        *dst_extent,
+        *src_extent,
     )
 
 def sub_experiment(dst: Buffer, src0: Buffer, src1: Buffer, count: PrimExpr):
