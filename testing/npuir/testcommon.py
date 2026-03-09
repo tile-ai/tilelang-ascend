@@ -150,15 +150,8 @@ def build_dtype_param_combos(
 
     combos = []
     for item in product(*dtype_lists):
-        seen_dtypes = set()
-        marks = []
-        for dtype in item:
-            if dtype not in seen_dtypes:
-                marks.append(pytest.mark.dtype(dtype))
-                seen_dtypes.add(dtype)
-
         param_id = "_".join(f"{name}_{dtype}" for name, dtype in zip(names, item))
-        combos.append(pytest.param(*item, marks=marks, id=param_id))
+        combos.append(pytest.param(*item, id=param_id))
 
     return combos
 
