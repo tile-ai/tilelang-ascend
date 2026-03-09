@@ -40,6 +40,7 @@ from tilelang import env
 from tilelang.autotuner.param import CompileArgs, ProfileArgs, AutotuneResult
 from tilelang.autotuner.capture import get_autotune_inputs
 from tilelang.utils.target import determine_target
+import time
 
 
 class TimeoutException(Exception):
@@ -279,7 +280,7 @@ class AutoTuner:
         result = AutotuneResult.load_from_disk(self.cache_dir / key, self.compile_args)
         return result
 
-    def run(self, warmup: int = 25, rep: int = 100, timeout: int = 30):
+    def run(self, warmup: int = 5, rep: int = 30, timeout: int = 30):
         """Run the auto-tuning process.
 
         Args:
@@ -404,13 +405,14 @@ class AutoTuner:
                         rtol=rtol,
                         atol=atol,
                         max_mismatched_ratio=max_mismatched_ratio)
+                    
             latency = profiler.do_bench(
-                warmup=warmup, rep=rep, input_tensors=self.jit_input_tensors)
+                warmup=5, rep=30, input_tensors=self.jit_input_tensors)
 
             if self.ref_latency_cache is None and ref_prog is not None:
                 self.ref_input_tensors = ref_input_tensors_supply()
                 self.ref_latency_cache = profiler.do_bench(
-                    ref_prog, n_warmup=warmup, n_repeat=rep, input_tensors=self.ref_input_tensors)
+                    ref_prog, n_warmup=5, n_repeat=30, input_tensors=self.ref_input_tensors)
 
             return latency, self.ref_latency_cache
 
@@ -497,7 +499,7 @@ class AutoTuner:
                 return func(**config_arg)
             
             return inner
-
+    
         for i, config_arg in enumerate(config_args):
             compile_func = self.jit_compile
 
@@ -530,35 +532,78 @@ class AutoTuner:
                 logger.debug(
                     f"Compilation failed for config {config} at index {idx} with error: {e}")
                 continue
+
         ref_latency = None
         progress_bar = tqdm(range(len(results_with_configs)), desc="Bench configurations")
-        for i in progress_bar:
-            jit_kernel, config = results_with_configs[i]
+        use_profiling = os.getenv("TILELANG_BENCH_METHOD", "default").lower() == "npu"
+        if use_profiling:
+            funcs = []
+            configs = []
+            jit_kernels = []
+
+            for i in progress_bar:
+                jit_kernel, config = results_with_configs[i]
+                profile_args = self.profile_args
+                supply_type = profile_args.supply_type
+                profiler = jit_kernel.get_profiler(tensor_supply_type=supply_type)
+
+                
+                if profile_args.supply_prog is not None:
+                    input_tensors = profile_args.supply_prog(profiler._get_params(with_output=False))
+                else:
+                    input_tensors = profiler._get_inputs(with_output=False)
+                    
+                ins = self._get_inputs() if input_tensors is None else input_tensors
+                bench_func = partial(jit_kernel, *ins)
+                funcs.append(bench_func)   # jit_kernel 本身就是 callable
+                configs.append(config)
+                jit_kernels.append(jit_kernel)
+
             try:
-                # Cannot ThreadPoolExecutor to enforce timeout on target_fn execution
-                # Because tma init may behave strangely with one thread
-                # latency, ref_latency = target_fn(jit_kernel)
-                latency, ref_latency = run_with_timeout(target_fn, timeout, jit_kernel)
-            except TimeoutException:
-                logger.warning(
-                    f"A timeout occurred while testing config {config}, checkout autotuner.log for more details"
+                from ..profiler.bench import do_bench_npu
+                latencies = do_bench_npu(
+                    funcs,
                 )
-                continue
             except Exception:
                 logger.warning(
-                    f"An error occurred while testing config {config}, checkout autotuner.log for more details"
+                    "An error occurred while benchmarking configs, checkout autotuner.log for more details"
                 )
                 logger.debug(f"Error: {traceback.format_exc()}")
-                continue
+                latencies = [float("inf")] * len(funcs)
 
-            if latency < best_latency:
-                best_latency = latency
-                best_config = config
-                best_kernel = jit_kernel
+            for latency, config, kernel in zip(latencies, configs, jit_kernels):
+                tqdm.write(f"Tuned Latency {latency} with config {config} at index {idx}")
+                if latency < best_latency:
+                    best_latency = latency
+                    best_config = config
+                    best_kernel = kernel
+        else:
+            for i in progress_bar:
+                jit_kernel, config = results_with_configs[i]
+                try:
+                    # Cannot ThreadPoolExecutor to enforce timeout on target_fn execution
+                    # Because tma init may behave strangely with one thread
+                    # latency, ref_latency = target_fn(jit_kernel)
+                    latency, ref_latency = run_with_timeout(target_fn, timeout, jit_kernel)
+                except TimeoutException:
+                    logger.warning(
+                        f"A timeout occurred while testing config {config}, checkout autotuner.log for more details"
+                    )
+                    continue
+                except Exception:
+                    logger.warning(
+                        f"An error occurred while testing config {config}, checkout autotuner.log for more details"
+                    )
+                    logger.debug(f"Error: {traceback.format_exc()}")
+                    continue
+
+                if latency < best_latency:
+                    best_latency = latency
+                    best_config = config
+                    best_kernel = jit_kernel
 
             progress_bar.set_postfix({"best_latency": best_latency})
             tqdm.write(f"Tuned Latency {latency} with config {config} at index {i}")
-
         pool.shutdown()
 
         if best_kernel is None:
