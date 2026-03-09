@@ -103,22 +103,23 @@ def do_bench(
 import builtins
 import os
 
-def do_bench_npu(fn: Callable, 
-    warmup: float = 25,
+def do_bench_npu(funcs, 
+    warmup: float = 5,
     rep=30, 
     prof_dir=None, 
     keep_res=False):
     import torch_npu
 
-    fn()
-    torch.npu.synchronize()
+    for fn in funcs:
+        fn()
+        torch.npu.synchronize()
 
     experimental_config = torch_npu.profiler._ExperimentalConfig(
         aic_metrics=torch_npu.profiler.AiCMetrics.PipeUtilization,
         profiler_level=torch_npu.profiler.ProfilerLevel.Level1,
         data_simplification=False,
     )
-
+    
     if prof_dir is not None:
         torch_path = prof_dir
     else:
@@ -137,10 +138,10 @@ def do_bench_npu(fn: Callable,
         experimental_config=experimental_config,
     ) as prof:
         
-        for _ in builtins.range(total):
-            fn()
-       
-    funcs = [fn]
+        for fn in funcs:
+            for _ in builtins.range(total):
+                fn()
+
     time_cost = _collect_prof_result(torch_path, funcs, warmup, rep)
     _rm_dic(keep_res, torch_path)
     return time_cost
