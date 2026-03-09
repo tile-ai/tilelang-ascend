@@ -101,13 +101,7 @@ def do_bench(
     return getattr(torch, return_mode)(times).item()
 
 import builtins
-import multiprocessing
 import os
-from datetime import datetime, timezone
-
-import triton.runtime as runtime
-from pathlib import Path
-from tilelang import env
 
 def do_bench_npu(fn: Callable, 
     warmup: float = 25,
