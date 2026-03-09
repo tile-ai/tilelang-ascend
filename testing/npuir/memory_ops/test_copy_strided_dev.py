@@ -6,15 +6,21 @@ import torch_npu  # noqa: F401
 import tilelang
 from tilelang import language as T
 
-from testcommon import ascend_mode, assert_close, gen_tensor
+from testcommon import assert_close, gen_tensor
+
+pytestmark = [
+    pytest.mark.op("copy"),
+    pytest.mark.mode("Developer"),
+]
+
+DTYPES = ["float16"]
+STRIDED_COPY_CASES = [(1024, 256, 2, 32)]
 
 
-def discrete_copy_tiled(total_h, width, stride=2, block_h=32):
+def discrete_copy_tiled(total_h, width, stride=2, block_h=32, dtype="float16"):
     assert total_h % stride == 0
     out_h = total_h // stride
     assert out_h % block_h == 0, "Output height must be divisible by block_h"
-
-    dtype = "float16"
 
     shape_in = [total_h, width]
     shape_out = [out_h, width]
@@ -42,24 +48,16 @@ def discrete_copy_tiled(total_h, width, stride=2, block_h=32):
     return discrete_copy_tiled
 
 
-@pytest.mark.copy
-@pytest.mark.op("copy")
-@pytest.mark.dtype("float16")
-@pytest.mark.mode("Developer")
-def test_copy_strided_tiled_dev():
-    H = 1024
-    W = 256
-    STRIDE = 2
-    BLOCK_H = 32
+@pytest.mark.parametrize("dtype", DTYPES)
+@pytest.mark.parametrize("H, W, stride, block_h", STRIDED_COPY_CASES)
+def test_copy_strided_tiled_dev(dtype, H, W, stride, block_h):
+    func = discrete_copy_tiled(H, W, stride, block_h, dtype=dtype)
+    compiled_kernel = tilelang.compile(func, target="npuir")
 
-    with ascend_mode("Developer"):
-        func = discrete_copy_tiled(H, W, STRIDE, BLOCK_H)
-        compiled_kernel = tilelang.compile(func, target="npuir")
+    inp = gen_tensor((H, W), dtype, kind="randn")
+    out = gen_tensor((H // stride, W), dtype, kind="zeros")
 
-        inp = gen_tensor((H, W), "float16", kind="randn")
-        out = gen_tensor((H // STRIDE, W), "float16", kind="zeros")
+    compiled_kernel(inp, out)
 
-        compiled_kernel(inp, out)
-
-    ref_out = inp[::STRIDE, :].contiguous()
-    assert_close(out.cpu(), ref_out.cpu(), dtype="float16", rtol=1e-3, atol=1e-3)
+    ref_out = inp[::stride, :].contiguous()
+    assert_close(out.cpu(), ref_out.cpu(), dtype=dtype, rtol=1e-3, atol=1e-3)

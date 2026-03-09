@@ -6,7 +6,17 @@ import torch_npu  # noqa: F401
 import tilelang
 import tilelang.language as T
 
-from testcommon import ascend_mode, assert_close, gen_tensor
+from testcommon import assert_close, gen_tensor
+
+pytestmark = [
+    pytest.mark.op("copy"),
+    pytest.mark.mode("Developer"),
+]
+
+DTYPES = ["float16"]
+COPY_1D_CASES = [(1024, 256)]
+COPY_2D_CASES = [(1024, 1024, 128, 128)]
+COPY_3D_CASES = [(64, 128, 256, 16, 32, 32)]
 
 
 @tilelang.jit(target="npuir")
@@ -103,68 +113,56 @@ def simple_copy_3d(M, N, K, block_M, block_N, block_K, dtype="float16", accum_dt
     return simple_copy_3d
 
 
-@pytest.mark.copy
-@pytest.mark.op("copy")
-@pytest.mark.dtype("float16")
-@pytest.mark.mode("Developer")
-def test_copy_simple_1d_dev():
-    with ascend_mode("Developer"):
-        kernel = simple_copy_1d(1024, 256)
+@pytest.mark.parametrize("dtype", DTYPES)
+@pytest.mark.parametrize("L, block_L", COPY_1D_CASES)
+def test_copy_simple_1d_dev(dtype, L, block_L):
+    kernel = simple_copy_1d(L, block_L, dtype=dtype)
 
-        input_tensor = gen_tensor((1024,), "float16", kind="ones")
-        a = gen_tensor((1024,), "float16", kind="zeros")
-        b = gen_tensor((1024,), "float16", kind="zeros")
-        c = gen_tensor((1024,), "float32", kind="zeros")
+    input_tensor = gen_tensor((L,), dtype, kind="ones")
+    a = gen_tensor((L,), dtype, kind="zeros")
+    b = gen_tensor((L,), dtype, kind="zeros")
+    c = gen_tensor((L,), "float32", kind="zeros")
 
-        kernel(input_tensor, a, b, c)
+    kernel(input_tensor, a, b, c)
 
-    assert_close(a.cpu(), input_tensor.cpu(), dtype="float16", rtol=1e-5, atol=1e-5)
-    assert_close(b.cpu(), (a * 2).cpu(), dtype="float16", rtol=1e-5, atol=1e-5)
+    assert_close(a.cpu(), input_tensor.cpu(), dtype=dtype, rtol=1e-5, atol=1e-5)
+    assert_close(b.cpu(), (a * 2).cpu(), dtype=dtype, rtol=1e-5, atol=1e-5)
     assert_close(c.cpu(), b.to(torch.float32).cpu(), dtype="float32", rtol=1e-5, atol=1e-5)
 
 
-@pytest.mark.copy
-@pytest.mark.op("copy")
-@pytest.mark.dtype("float16")
-@pytest.mark.mode("Developer")
-def test_copy_simple_2d_dev():
-    with ascend_mode("Developer"):
-        kernel = simple_copy_2d(1024, 1024, 128, 128)
+@pytest.mark.parametrize("dtype", DTYPES)
+@pytest.mark.parametrize("M, N, block_M, block_N", COPY_2D_CASES)
+def test_copy_simple_2d_dev(dtype, M, N, block_M, block_N):
+    kernel = simple_copy_2d(M, N, block_M, block_N, dtype=dtype)
 
-        input_tensor = gen_tensor((1024, 1024), "float16", kind="randn")
-        a = gen_tensor((1024, 1024), "float16", kind="zeros")
-        b = gen_tensor((1024, 1024), "float16", kind="zeros")
-        c = gen_tensor((1024, 1024), "float32", kind="zeros")
+    input_tensor = gen_tensor((M, N), dtype, kind="randn")
+    a = gen_tensor((M, N), dtype, kind="zeros")
+    b = gen_tensor((M, N), dtype, kind="zeros")
+    c = gen_tensor((M, N), "float32", kind="zeros")
 
-        kernel(input_tensor, a, b, c)
+    kernel(input_tensor, a, b, c)
 
-    assert_close(a.cpu(), input_tensor.cpu(), dtype="float16", rtol=1e-5, atol=1e-5)
-    assert_close(b.cpu(), (a * 2).cpu(), dtype="float16", rtol=1e-5, atol=1e-5)
+    assert_close(a.cpu(), input_tensor.cpu(), dtype=dtype, rtol=1e-5, atol=1e-5)
+    assert_close(b.cpu(), (a * 2).cpu(), dtype=dtype, rtol=1e-5, atol=1e-5)
     assert_close(c.cpu(), b.to(torch.float32).cpu(), dtype="float32", rtol=1e-5, atol=1e-5)
 
 
-@pytest.mark.copy
-@pytest.mark.op("copy")
-@pytest.mark.dtype("float16")
-@pytest.mark.mode("Developer")
-def test_copy_simple_3d_dev():
-    M, N, K = 64, 128, 256
-    block_M, block_N, block_K = 16, 32, 32
-
+@pytest.mark.parametrize("dtype", DTYPES)
+@pytest.mark.parametrize("M, N, K, block_M, block_N, block_K", COPY_3D_CASES)
+def test_copy_simple_3d_dev(dtype, M, N, K, block_M, block_N, block_K):
     assert M % block_M == 0, f"M({M}) must be divisible by block_M({block_M})"
     assert N % block_N == 0, f"N({N}) must be divisible by block_N({block_N})"
     assert K % block_K == 0, f"K({K}) must be divisible by block_K({block_K})"
 
-    with ascend_mode("Developer"):
-        kernel = simple_copy_3d(M, N, K, block_M, block_N, block_K)
+    kernel = simple_copy_3d(M, N, K, block_M, block_N, block_K, dtype=dtype)
 
-        input_tensor = gen_tensor((M, N, K), "float16", kind="randn")
-        a = gen_tensor((M, N, K), "float16", kind="zeros")
-        b = gen_tensor((M, N, K), "float16", kind="zeros")
-        c = gen_tensor((M, N, K), "float32", kind="zeros")
+    input_tensor = gen_tensor((M, N, K), dtype, kind="randn")
+    a = gen_tensor((M, N, K), dtype, kind="zeros")
+    b = gen_tensor((M, N, K), dtype, kind="zeros")
+    c = gen_tensor((M, N, K), "float32", kind="zeros")
 
-        kernel(input_tensor, a, b, c)
+    kernel(input_tensor, a, b, c)
 
-    assert_close(a.cpu(), input_tensor.cpu(), dtype="float16", rtol=1e-5, atol=1e-5)
-    assert_close(b.cpu(), (a * 2).cpu(), dtype="float16", rtol=1e-5, atol=1e-5)
+    assert_close(a.cpu(), input_tensor.cpu(), dtype=dtype, rtol=1e-5, atol=1e-5)
+    assert_close(b.cpu(), (a * 2).cpu(), dtype=dtype, rtol=1e-5, atol=1e-5)
     assert_close(c.cpu(), b.to(torch.float32).cpu(), dtype="float32", rtol=1e-5, atol=1e-5)

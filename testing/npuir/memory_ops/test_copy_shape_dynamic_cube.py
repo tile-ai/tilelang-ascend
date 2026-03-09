@@ -21,16 +21,17 @@ Edge cases covered via pytest parametrize:
 import pytest
 import torch
 import torch_npu  # noqa: F401
+from itertools import product
 import tilelang
 import tilelang.language as T
 
-from testcommon import assert_close, build_dtype_param_combos, gen_tensor
+from testcommon import assert_close, gen_tensor
 
-pytestmark = [pytest.mark.copy, pytest.mark.op("copy")]
+pytestmark = [pytest.mark.op("copy")]
 
 IN_DTYPES = ["float16", "float32"]
 OUT_DTYPES = ["float16", "float32"]
-DTYPE_COMBOS = build_dtype_param_combos(IN_DTYPES, OUT_DTYPES)
+DTYPE_CASES = list(product(IN_DTYPES, OUT_DTYPES))
 
 # ---------------------------------------------------------------------------
 # Kernel builders
@@ -193,7 +194,7 @@ DYNAMIC_CASES = [
 # 2D tests  —  A: [M, N]
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("in_dtype, out_dtype", DTYPE_COMBOS)
+@pytest.mark.parametrize("in_dtype, out_dtype", DTYPE_CASES)
 @pytest.mark.parametrize("M, N, block_M, block_N", DYNAMIC_CASES)
 def test_cube_copy_shape_2d(M, N, block_M, block_N, in_dtype, out_dtype):
     func = cube_copy_shape_1d_2d(M, N, block_M, block_N, in_dtype, out_dtype)
@@ -212,7 +213,7 @@ def test_cube_copy_shape_2d(M, N, block_M, block_N, in_dtype, out_dtype):
 # 3D tests  —  A: [1, M, N]
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("in_dtype, out_dtype", DTYPE_COMBOS)
+@pytest.mark.parametrize("in_dtype, out_dtype", DTYPE_CASES)
 @pytest.mark.parametrize("M, N, block_M, block_N", DYNAMIC_CASES)
 def test_cube_copy_shape_3d(M, N, block_M, block_N, in_dtype, out_dtype):
     func = cube_copy_shape_2d_3d(M, N, block_M, block_N, in_dtype, out_dtype)
@@ -231,7 +232,7 @@ def test_cube_copy_shape_3d(M, N, block_M, block_N, in_dtype, out_dtype):
 # 4D tests  —  A: [1, 1, M, N]
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("in_dtype, out_dtype", DTYPE_COMBOS)
+@pytest.mark.parametrize("in_dtype, out_dtype", DTYPE_CASES)
 @pytest.mark.parametrize("M, N, block_M, block_N", DYNAMIC_CASES)
 def test_cube_copy_shape_4d(M, N, block_M, block_N, in_dtype, out_dtype):
     func = cube_copy_shape_3d_4d(M, N, block_M, block_N, in_dtype, out_dtype)

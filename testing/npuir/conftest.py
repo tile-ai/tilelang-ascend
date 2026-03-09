@@ -1,19 +1,21 @@
-import re
-from typing import List, Sequence
+import os
+from typing import List, Optional, Sequence
 
 import pytest
 
-from testcommon import clear_tilelang_cache, set_npu_device, set_seed
+from testcommon import ascend_mode, clear_tilelang_cache, set_npu_device, set_seed
+
+
+def _get_npu_device_id(config: pytest.Config) -> int:
+    """Device 0 for xdist gw0, 1 for gw1; else use --npu-device."""
+    worker = os.environ.get("PYTEST_XDIST_WORKER")
+    if worker and worker.startswith("gw"):
+        return int(worker[2:])
+    return config.getoption("--npu-device")
 
 
 def pytest_addoption(parser):
     parser.addoption("--op", action="store", default="", help="Run only tests for specific op(s), comma-separated.")
-    parser.addoption(
-        "--dtype",
-        action="store",
-        default="",
-        help="Run only tests for specific dtype(s), comma-separated.",
-    )
     parser.addoption(
         "--mode",
         action="store",
@@ -28,35 +30,33 @@ def _parse_csv(text: str) -> List[str]:
     return [item.strip() for item in text.split(",") if item.strip()]
 
 
-def _marker_values(item: pytest.Item, marker_name: str) -> List[str]:
-    values: List[str] = []
-    for marker in item.iter_markers(marker_name):
-        values.extend(str(arg) for arg in marker.args)
-        values.extend(str(val) for val in marker.kwargs.values())
-    return values
+def _marker_value(item: pytest.Item, marker_name: str) -> Optional[str]:
+    marker = item.get_closest_marker(marker_name)
+    if marker is None:
+        return None
+
+    values = [str(arg) for arg in marker.args]
+    values.extend(str(val) for val in marker.kwargs.values())
+
+    if len(values) != 1:
+        raise pytest.UsageError(
+            f"{item.nodeid}: @{marker_name} must define exactly one value."
+        )
+    return values[0]
 
 
 def _matches_filter(item: pytest.Item, marker_name: str, selected: Sequence[str]) -> bool:
     if not selected:
         return True
-    marker_values = set(_marker_values(item, marker_name))
-    if marker_values:
-        return any(v in marker_values for v in selected)
-    if marker_name == "op":
-        test_name = item.name.split("[", 1)[0]
-        match = re.match(r"^test_([^_]+)_", test_name)
-        if match:
-            inferred_op = match.group(1)
-            return inferred_op in selected
-    return any(v in item.nodeid for v in selected)
+    marker_value = _marker_value(item, marker_name)
+    return marker_value in selected if marker_value is not None else False
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: List[pytest.Item]) -> None:
     selected_ops = _parse_csv(config.getoption("--op"))
-    selected_dtypes = _parse_csv(config.getoption("--dtype"))
     selected_modes = _parse_csv(config.getoption("--mode"))
 
-    if not (selected_ops or selected_dtypes or selected_modes):
+    if not (selected_ops or selected_modes):
         return
 
     selected_items: List[pytest.Item] = []
@@ -65,7 +65,6 @@ def pytest_collection_modifyitems(config: pytest.Config, items: List[pytest.Item
     for item in items:
         keep = (
             _matches_filter(item, "op", selected_ops)
-            and _matches_filter(item, "dtype", selected_dtypes)
             and _matches_filter(item, "mode", selected_modes)
         )
         if keep:
@@ -81,7 +80,18 @@ def pytest_collection_modifyitems(config: pytest.Config, items: List[pytest.Item
 @pytest.fixture(scope="session", autouse=True)
 def _setup_npu_session(pytestconfig: pytest.Config):
     seed = pytestconfig.getoption("--seed")
-    device_id = pytestconfig.getoption("--npu-device")
+    device_id = _get_npu_device_id(pytestconfig)
     set_seed(seed)
     set_npu_device(device_id)
     clear_tilelang_cache()
+
+
+@pytest.fixture(autouse=True)
+def _apply_mode_marker(request: pytest.FixtureRequest):
+    mode = _marker_value(request.node, "mode")
+    if mode is None:
+        yield
+        return
+
+    with ascend_mode(mode):
+        yield

@@ -1,127 +1,165 @@
-# NPUIR Pytest Manual
+# NPUIR Pytest Conventions
 
-This directory uses shared pytest infra from:
+This directory uses a narrow pytest contract on purpose. The goal is to keep test
+selection predictable for contributors and keep execution behavior derived from a
+single source of truth.
 
-- `conftest.py`: CLI filters and session setup
-- `testcommon.py`: tensor/assert/mode helpers
-- `pytest.ini`: marker registration and default options
+## Design
 
-## Quick Start
+The test model is split into three layers:
 
-```bash
-# all npuir tests
-pytest testing/npuir
+- Marker metadata: `op` and `mode`
+- Runtime controls: `--op`, `--mode`, `--npu-device`
+- Test matrix: `dtype`, shapes, and other case dimensions via `@pytest.mark.parametrize(...)`
 
-# one op folder
-pytest testing/npuir/copy
+That split is intentional:
 
-# one file
-pytest testing/npuir/copy/test_copy_simple_dev.py
+- `op` and `mode` are the only custom markers. They define what a test is.
+- CLI options only choose which tests to run and which NPU device to use.
+- Data-oriented coverage stays inside the test matrix instead of growing more CLI flags.
 
-# one test
-pytest testing/npuir/copy/test_copy_simple_dev.py::test_copy_simple_2d_dev
-```
+## Marker Rules
 
-## CLI Filters
+Only two custom markers are valid:
 
-```bash
-# by op
-pytest testing/npuir --op=copy
-pytest testing/npuir --op=copy,sigmoid
+- `@pytest.mark.op("<real-op>")`
+- `@pytest.mark.mode("<mode>")`
 
-# by dtype
-pytest testing/npuir --dtype=float16
-pytest testing/npuir --dtype=float16,float32
-
-# by mode
-pytest testing/npuir --mode=Developer
-
-# device/seed
-pytest testing/npuir --npu-device=0 --seed=42
-
-# combined (AND)
-pytest testing/npuir --op=copy --dtype=float16 --mode=Developer --npu-device=0
-```
-
-Filter behavior:
-
-- `--op`: first matches `@pytest.mark.op("...")`; if missing, infers from test name `test_*_...`.
-- `--dtype`: keeps tests with at least one matching `@pytest.mark.dtype(...)`.
-- `--mode`: matches `@pytest.mark.mode("...")`.
-
-## Marker Patterns
-
-Function-level:
-
-```python
-import pytest
-
-@pytest.mark.copy
-@pytest.mark.op("copy")
-@pytest.mark.dtype("float16")
-@pytest.mark.mode("Developer")
-def test_copy_simple_2d_dev():
-    ...
-```
-
-Module-level (`pytestmark`):
+Use file-level `pytestmark` when a whole file shares the same metadata:
 
 ```python
 import pytest
 
 pytestmark = [
-    pytest.mark.copy,
     pytest.mark.op("copy"),
+    pytest.mark.mode("Developer"),
 ]
 ```
 
-Param-level dtype:
+Use test-level markers only when a file intentionally mixes different ops or modes:
 
 ```python
 import pytest
 
-@pytest.mark.parametrize(
-    "dtype",
-    [
-        pytest.param("float16", marks=pytest.mark.dtype("float16")),
-        pytest.param("float32", marks=pytest.mark.dtype("float32")),
-    ],
-)
-def test_copy_dtype(dtype):
+@pytest.mark.op("copy")
+@pytest.mark.mode("Developer")
+def test_copy_dev():
+    ...
+
+@pytest.mark.op("copy")
+@pytest.mark.mode("Expert")
+def test_copy_release():
     ...
 ```
 
-## DType Combo Helper (Recommended)
+The closest marker wins. In practice that means a test-level marker overrides a
+file-level marker of the same kind.
 
-Use `build_dtype_param_combos` from `testcommon.py` to avoid manual enumeration.
+## Runtime Rules
+
+`--npu-device` is the only supported device selector in this pytest layer. The
+session hook sets the current device once before tests run.
+
+`mode` is marker-driven. Contributors should not manually wrap tests with
+`with ascend_mode(...)`. The pytest runtime reads the closest `mode` marker and
+applies `ascend_mode(mode)` automatically around the test body.
+
+## Test Matrix Rules
+
+Use `@pytest.mark.parametrize(...)` for case dimensions such as:
+
+- input/output dtype
+- shapes and block sizes
+- index selections
+- other data-dependent coverage dimensions
+
+Example:
 
 ```python
 import pytest
-from testcommon import build_dtype_param_combos
 
-IN_DTYPES = ["float16", "float32"]
-OUT_DTYPES = ["float16", "float32"]
-ACCUM_DTYPES = ["float32"]
+pytestmark = [pytest.mark.op("copy")]
 
-# 2 lists
-IO_COMBOS = build_dtype_param_combos(IN_DTYPES, OUT_DTYPES)
+DTYPE_CASES = [
+    ("float16", "float16"),
+    ("float16", "float32"),
+    ("float32", "float32"),
+]
 
-# 3 lists (or more)
-IOA_COMBOS = build_dtype_param_combos(IN_DTYPES, OUT_DTYPES, ACCUM_DTYPES)
+SHAPE_CASES = [
+    (256, 1024, 32, 32),
+    (512, 512, 64, 64),
+]
 
-# optional custom id prefixes
-IOA_COMBOS_NAMED = build_dtype_param_combos(
-    IN_DTYPES, OUT_DTYPES, ACCUM_DTYPES, names=["input", "output", "accum"]
-)
-
-@pytest.mark.parametrize("in_dtype, out_dtype", IO_COMBOS)
-def test_io(in_dtype, out_dtype):
+@pytest.mark.parametrize("in_dtype, out_dtype", DTYPE_CASES)
+@pytest.mark.parametrize("M, N, block_M, block_N", SHAPE_CASES)
+def test_copy_shape(M, N, block_M, block_N, in_dtype, out_dtype):
     ...
 ```
 
-## Minimal Conventions
+## Contributor Rules
 
-- File name: `test_*.py`
-- Prefer test name pattern: `test_<op>_<case>`
-- Add `@pytest.mark.op("<op>")` for reliable `--op` filtering
-- Keep device selection centralized via `--npu-device` (avoid hardcoded device ids in tests)
+- Do not add custom markers beyond `op` and `mode`.
+- Do not add `@pytest.mark.dtype(...)`.
+- Do not add folder-category markers such as `@pytest.mark.memory`.
+- Do not call `torch.npu.set_device(...)` inside tests.
+- Prefer file-level `pytestmark` for shared `op` / `mode`.
+- Use test-level markers only when a file intentionally needs overrides.
+- Keep compile and execution work inside test functions, not at module import time.
+
+The directory name remains the category signal for humans. For example,
+`memory_ops/` tells readers the family of tests, while `@pytest.mark.op("copy")`
+identifies the real operation used by CLI filtering.
+
+## CLI
+
+```bash
+# all NPUIR tests
+pytest testing/npuir
+
+# one folder
+pytest testing/npuir/memory_ops
+
+# one file
+pytest testing/npuir/memory_ops/test_copy_shape_dev.py
+
+# filtered by op
+pytest testing/npuir --op=copy
+
+# filtered by mode
+pytest testing/npuir --mode=Developer
+
+# combined selection
+pytest testing/npuir --op=copy --mode=Developer --npu-device=0
+```
+
+`--op` and `--mode` accept comma-separated values.
+
+## How Filtering Works
+
+- `--op` matches the closest `@pytest.mark.op(...)`
+- `--mode` matches the closest `@pytest.mark.mode(...)`
+- `--npu-device` sets the session device before tests execute
+
+Tests without a matching marker are excluded when that selector is provided.
+
+## Minimal Template
+
+```python
+import pytest
+
+pytestmark = [
+    pytest.mark.op("copy"),
+    pytest.mark.mode("Developer"),
+]
+
+DTYPES = ["float16", "float32"]
+CASES = [
+    (256, 1024, 32, 32),
+]
+
+@pytest.mark.parametrize("dtype", DTYPES)
+@pytest.mark.parametrize("M, N, block_M, block_N", CASES)
+def test_copy_shape_dev(M, N, block_M, block_N, dtype):
+    ...
+```

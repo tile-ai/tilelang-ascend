@@ -17,16 +17,17 @@ Edge cases covered via pytest parametrize:
 import pytest
 import torch
 import torch_npu  # noqa: F401
+from itertools import product
 import tilelang
 import tilelang.language as T
 
-from testcommon import assert_close, build_dtype_param_combos, gen_tensor
+from testcommon import assert_close, gen_tensor
 
-pytestmark = [pytest.mark.copy, pytest.mark.op("copy")]
+pytestmark = [pytest.mark.op("copy")]
 
 IN_DTYPES = ["float16", "float32"]
 OUT_DTYPES = ["float16", "float32"]
-DTYPE_COMBOS = build_dtype_param_combos(IN_DTYPES, OUT_DTYPES)
+DTYPE_CASES = list(product(IN_DTYPES, OUT_DTYPES))
 
 # ---------------------------------------------------------------------------
 # Kernel builders
@@ -149,7 +150,7 @@ SLICED_2D_CASES = [
     (1,   8, 0),         # small N=8, M=1
 ]
 
-@pytest.mark.parametrize("in_dtype, out_dtype", DTYPE_COMBOS)
+@pytest.mark.parametrize("in_dtype, out_dtype", DTYPE_CASES)
 @pytest.mark.parametrize("M, N, idx", SLICED_2D_CASES)
 def test_cube_sliced_copy_2d(M, N, idx, in_dtype, out_dtype):
     kernel = cube_sliced_copy_2d(M, N, idx, in_dtype, out_dtype)
@@ -184,7 +185,7 @@ SLICED_3D_CASES = [
     (1,  1,   8, 0, 0),       # small N=8, B=1, M=1
 ]
 
-@pytest.mark.parametrize("in_dtype, out_dtype", DTYPE_COMBOS)
+@pytest.mark.parametrize("in_dtype, out_dtype", DTYPE_CASES)
 @pytest.mark.parametrize("B_dim, M, N, b_idx, m_idx", SLICED_3D_CASES)
 def test_cube_sliced_copy_3d(B_dim, M, N, b_idx, m_idx, in_dtype, out_dtype):
     kernel = cube_sliced_copy_3d(B_dim, M, N, b_idx, m_idx, in_dtype, out_dtype)
@@ -220,7 +221,7 @@ SLICED_4D_CASES = [
     (1,  1,  1,   8, 0, 0, 0),       # small N=8, all leading 1s
 ]
 
-@pytest.mark.parametrize("in_dtype, out_dtype", DTYPE_COMBOS)
+@pytest.mark.parametrize("in_dtype, out_dtype", DTYPE_CASES)
 @pytest.mark.parametrize("B_dim, H, M, N, b_idx, h_idx, m_idx", SLICED_4D_CASES)
 def test_cube_sliced_copy_4d(B_dim, H, M, N, b_idx, h_idx, m_idx, in_dtype, out_dtype):
     kernel = cube_sliced_copy_4d(B_dim, H, M, N, b_idx, h_idx, m_idx, in_dtype, out_dtype)

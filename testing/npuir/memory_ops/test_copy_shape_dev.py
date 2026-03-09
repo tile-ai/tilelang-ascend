@@ -6,13 +6,19 @@ import torch_npu  # noqa: F401
 import tilelang
 import tilelang.language as T
 
-from testcommon import ascend_mode, assert_close, gen_tensor
+from testcommon import assert_close, gen_tensor
+
+pytestmark = [
+    pytest.mark.op("copy"),
+    pytest.mark.mode("Developer"),
+]
+
+DTYPES = ["float16", "float32"]
+COPY_SHAPE_2D_CASES = [(256, 1024, 32, 32)]
+COPY_SHAPE_3D_CASES = [(256, 1024, 32, 32)]
 
 
-dtype = "float16"
-
-
-def copy_shape_1d_2d(M, N, block_M, block_N):
+def copy_shape_1d_2d(M, N, block_M, block_N, dtype):
     @T.prim_func
     def copyShapeDev1D2D(
         A: T.Tensor((M, N), dtype),
@@ -35,7 +41,7 @@ def copy_shape_1d_2d(M, N, block_M, block_N):
     return copyShapeDev1D2D
 
 
-def copy_shape_2d_3d(M, N, block_M, block_N):
+def copy_shape_2d_3d(M, N, block_M, block_N, dtype):
     @T.prim_func
     def copyShapeDev2D3D(
         A: T.Tensor((1, M, N), dtype),
@@ -56,40 +62,29 @@ def copy_shape_2d_3d(M, N, block_M, block_N):
     return copyShapeDev2D3D
 
 
-@pytest.mark.copy
-@pytest.mark.op("copy")
-@pytest.mark.dtype("float16")
-@pytest.mark.mode("Developer")
-def test_copy_shape_1d_2d_dev():
-    M = 256
-    N = 1024
+@pytest.mark.parametrize("dtype", DTYPES)
+@pytest.mark.parametrize("M, N, block_M, block_N", COPY_SHAPE_2D_CASES)
+def test_copy_shape_1d_2d_dev(dtype, M, N, block_M, block_N):
     v1 = gen_tensor((M, N), dtype, kind="randn")
     v2 = gen_tensor((M, N), dtype, kind="zeros")
     v_ref = v1.clone()
 
-    with ascend_mode("Developer"):
-        func = copy_shape_1d_2d(M, N, block_M=32, block_N=32)
-        compiled_kernel = tilelang.compile(func, target="npuir")
-        compiled_kernel(v1, v2, M, N)
+    func = copy_shape_1d_2d(M, N, block_M=block_M, block_N=block_N, dtype=dtype)
+    compiled_kernel = tilelang.compile(func, target="npuir")
+    compiled_kernel(v1, v2, M, N)
 
     assert_close(v2.cpu(), v_ref.cpu(), dtype=dtype, rtol=1e-2, atol=1e-2)
 
 
-@pytest.mark.copy
-@pytest.mark.op("copy")
-@pytest.mark.dtype("float16")
-@pytest.mark.mode("Developer")
-def test_copy_shape_2d_3d_dev():
-    M = 256
-    N = 1024
+@pytest.mark.parametrize("dtype", DTYPES)
+@pytest.mark.parametrize("M, N, block_M, block_N", COPY_SHAPE_3D_CASES)
+def test_copy_shape_2d_3d_dev(dtype, M, N, block_M, block_N):
+    func = copy_shape_2d_3d(M, N, block_M, block_N, dtype)
+    compiled_kernel = tilelang.compile(func, target="npuir")
 
-    with ascend_mode("Developer"):
-        func = copy_shape_2d_3d(M, N, 32, 32)
-        compiled_kernel = tilelang.compile(func, target="npuir")
-
-        v1 = gen_tensor((1, M, N), dtype, kind="randn")
-        v2 = gen_tensor((1, M, N), dtype, kind="randn")
-        v_ref = v1.clone()
-        compiled_kernel(v1, v2)
+    v1 = gen_tensor((1, M, N), dtype, kind="randn")
+    v2 = gen_tensor((1, M, N), dtype, kind="randn")
+    v_ref = v1.clone()
+    compiled_kernel(v1, v2)
 
     assert_close(v2.cpu(), v_ref.cpu(), dtype=dtype, rtol=1e-2, atol=1e-2)

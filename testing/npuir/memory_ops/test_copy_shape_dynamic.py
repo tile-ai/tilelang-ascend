@@ -8,11 +8,14 @@ import tilelang.language as T
 
 from testcommon import assert_close, gen_tensor
 
+pytestmark = [pytest.mark.op("copy")]
 
-dtype = "float16"
+DTYPES = ["float16"]
+COPY_SHAPE_2D_CASES = [(8, 8, 3, 3)]
+COPY_SHAPE_3D_CASES = [(8, 8, 3, 3)]
 
 
-def copy_shape_1d_2d(M, N, block_M, block_N):
+def copy_shape_1d_2d(M, N, block_M, block_N, dtype):
     @T.prim_func
     def copyShapeDynamic1D2D(
         A: T.Tensor((M, N), dtype),
@@ -37,7 +40,7 @@ def copy_shape_1d_2d(M, N, block_M, block_N):
     return copyShapeDynamic1D2D
 
 
-def copy_shape_2d_3d(M, N, block_M, block_N):
+def copy_shape_2d_3d(M, N, block_M, block_N, dtype):
     @T.prim_func
     def copyShapeDynamic2D3D(
         A: T.Tensor((1, M, N), dtype),
@@ -62,31 +65,24 @@ def copy_shape_2d_3d(M, N, block_M, block_N):
     return copyShapeDynamic2D3D
 
 
-@pytest.mark.copy
-@pytest.mark.op("copy")
-@pytest.mark.dtype("float16")
-def test_copy_shape_1d_2d_dynamic():
-    M = 8
-    N = 8
+@pytest.mark.parametrize("dtype", DTYPES)
+@pytest.mark.parametrize("M, N, block_M, block_N", COPY_SHAPE_2D_CASES)
+def test_copy_shape_1d_2d_dynamic(dtype, M, N, block_M, block_N):
     v1 = gen_tensor((M, N), dtype, kind="randn")
     v2 = gen_tensor((M, N), dtype, kind="zeros")
     v_ref = v1.clone()
 
-    func = copy_shape_1d_2d(M, N, block_M=3, block_N=3)
+    func = copy_shape_1d_2d(M, N, block_M=block_M, block_N=block_N, dtype=dtype)
     compiled_kernel = tilelang.compile(func, target="npuir")
     compiled_kernel(v1, v2, M, N)
 
     assert_close(v2.cpu(), v_ref.cpu(), dtype=dtype, rtol=1e-2, atol=1e-2)
 
 
-@pytest.mark.copy
-@pytest.mark.op("copy")
-@pytest.mark.dtype("float16")
-def test_copy_shape_2d_3d_dynamic():
-    M = 8
-    N = 8
-
-    func = copy_shape_2d_3d(M, N, 3, 3)
+@pytest.mark.parametrize("dtype", DTYPES)
+@pytest.mark.parametrize("M, N, block_M, block_N", COPY_SHAPE_3D_CASES)
+def test_copy_shape_2d_3d_dynamic(dtype, M, N, block_M, block_N):
+    func = copy_shape_2d_3d(M, N, block_M, block_N, dtype)
     compiled_kernel = tilelang.compile(func, target="npuir")
 
     v1 = gen_tensor((1, M, N), dtype, kind="randn")

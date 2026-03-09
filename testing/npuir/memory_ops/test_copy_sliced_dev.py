@@ -6,7 +6,17 @@ import torch_npu  # noqa: F401
 import tilelang
 import tilelang.language as T
 
-from testcommon import ascend_mode, assert_close, gen_tensor
+from testcommon import assert_close, gen_tensor
+
+pytestmark = [
+    pytest.mark.op("copy"),
+    pytest.mark.mode("Developer"),
+]
+
+DTYPES = ["float16"]
+SLICED_2D_CASES = [(32, 128, 8, 16)]
+SLICED_3D_CASES = [(4, 32, 128, 1, 3)]
+SLICED_4D_CASES = [(2, 4, 32, 64, 0, 1, 1, 3)]
 
 
 @tilelang.jit(target="npuir")
@@ -158,137 +168,118 @@ def slice_copy_4d_kernel(B, H, M, N, idx_b, idx_h, idx_b2, idx_h2, dtype="float1
     return slice_copy_4d_kernel
 
 
-@pytest.mark.copy
-@pytest.mark.op("copy")
-@pytest.mark.dtype("float16")
-@pytest.mark.mode("Developer")
-def test_copy_sliced_2d_dev():
-    block_M, block_N = 32, 128
-    idx, idx2 = 8, 16
+@pytest.mark.parametrize("dtype", DTYPES)
+@pytest.mark.parametrize("block_M, block_N, idx, idx2", SLICED_2D_CASES)
+def test_copy_sliced_2d_dev(dtype, block_M, block_N, idx, idx2):
+    kernel = slice_copy_2d_kernel(block_M, block_N, idx, idx2, dtype=dtype)
 
-    with ascend_mode("Developer"):
-        kernel = slice_copy_2d_kernel(block_M, block_N, idx, idx2)
+    input_ones = gen_tensor((block_M, block_N), dtype, kind="ones")
+    input_zeros = gen_tensor((block_M, block_N), dtype, kind="zeros")
 
-        input_ones = gen_tensor((block_M, block_N), "float16", kind="ones")
-        input_zeros = gen_tensor((block_M, block_N), "float16", kind="zeros")
+    outs = [gen_tensor((block_M, block_N), dtype, kind="zeros") for _ in range(6)]
+    out3 = gen_tensor((block_N,), dtype, kind="zeros")
+    out4 = gen_tensor((block_N,), dtype, kind="zeros")
 
-        outs = [gen_tensor((block_M, block_N), "float16", kind="zeros") for _ in range(6)]
-        out3 = gen_tensor((block_N,), "float16", kind="zeros")
-        out4 = gen_tensor((block_N,), "float16", kind="zeros")
+    kernel(input_ones, input_zeros, outs[0], outs[1], out3, out4, outs[2], outs[3], outs[4], outs[5])
 
-        kernel(input_ones, input_zeros, outs[0], outs[1], out3, out4, outs[2], outs[3], outs[4], outs[5])
+    expected_full = gen_tensor((block_M, block_N), dtype, kind="ones")
+    expected_row = gen_tensor((block_N,), dtype, kind="ones")
 
-    expected_full = gen_tensor((block_M, block_N), "float16", kind="ones")
-    expected_row = gen_tensor((block_N,), "float16", kind="ones")
-
-    assert_close(outs[0].cpu(), expected_full.cpu(), dtype="float16", rtol=1e-5, atol=1e-5)
+    assert_close(outs[0].cpu(), expected_full.cpu(), dtype=dtype, rtol=1e-5, atol=1e-5)
     for out in [outs[1], outs[2]]:
-        assert_close(out[idx].cpu(), expected_row.cpu(), dtype="float16", rtol=1e-5, atol=1e-5)
+        assert_close(out[idx].cpu(), expected_row.cpu(), dtype=dtype, rtol=1e-5, atol=1e-5)
         out[idx] = 0
-        assert_close(out.cpu(), torch.zeros_like(out).cpu(), dtype="float16", rtol=1e-5, atol=1e-5)
+        assert_close(out.cpu(), torch.zeros_like(out).cpu(), dtype=dtype, rtol=1e-5, atol=1e-5)
 
-    assert_close(out3.cpu(), expected_row.cpu(), dtype="float16", rtol=1e-5, atol=1e-5)
-    assert_close(out4.cpu(), expected_row.cpu(), dtype="float16", rtol=1e-5, atol=1e-5)
+    assert_close(out3.cpu(), expected_row.cpu(), dtype=dtype, rtol=1e-5, atol=1e-5)
+    assert_close(out4.cpu(), expected_row.cpu(), dtype=dtype, rtol=1e-5, atol=1e-5)
 
-    assert_close(outs[3][idx].cpu(), expected_row.cpu(), dtype="float16", rtol=1e-5, atol=1e-5)
+    assert_close(outs[3][idx].cpu(), expected_row.cpu(), dtype=dtype, rtol=1e-5, atol=1e-5)
     outs[3][idx] = 0
-    assert_close(outs[3].cpu(), torch.zeros_like(outs[3]).cpu(), dtype="float16", rtol=1e-5, atol=1e-5)
+    assert_close(outs[3].cpu(), torch.zeros_like(outs[3]).cpu(), dtype=dtype, rtol=1e-5, atol=1e-5)
 
-    assert_close(outs[4][idx2].cpu(), expected_row.cpu(), dtype="float16", rtol=1e-5, atol=1e-5)
+    assert_close(outs[4][idx2].cpu(), expected_row.cpu(), dtype=dtype, rtol=1e-5, atol=1e-5)
     outs[4][idx2] = 0
-    assert_close(outs[4].cpu(), torch.zeros_like(outs[4]).cpu(), dtype="float16", rtol=1e-5, atol=1e-5)
+    assert_close(outs[4].cpu(), torch.zeros_like(outs[4]).cpu(), dtype=dtype, rtol=1e-5, atol=1e-5)
 
-    assert_close(outs[5][idx2].cpu(), expected_row.cpu(), dtype="float16", rtol=1e-5, atol=1e-5)
+    assert_close(outs[5][idx2].cpu(), expected_row.cpu(), dtype=dtype, rtol=1e-5, atol=1e-5)
     outs[5][idx2] = 0
-    assert_close(outs[5].cpu(), torch.zeros_like(outs[5]).cpu(), dtype="float16", rtol=1e-5, atol=1e-5)
+    assert_close(outs[5].cpu(), torch.zeros_like(outs[5]).cpu(), dtype=dtype, rtol=1e-5, atol=1e-5)
 
 
-@pytest.mark.copy
-@pytest.mark.op("copy")
-@pytest.mark.dtype("float16")
-@pytest.mark.mode("Developer")
-def test_copy_sliced_3d_dev():
-    B, M, N = 4, 32, 128
-    idx, idx2 = 1, 3
+@pytest.mark.parametrize("dtype", DTYPES)
+@pytest.mark.parametrize("B, M, N, idx, idx2", SLICED_3D_CASES)
+def test_copy_sliced_3d_dev(dtype, B, M, N, idx, idx2):
+    kernel = slice_copy_3d_kernel(B, M, N, idx, idx2, dtype=dtype)
 
-    with ascend_mode("Developer"):
-        kernel = slice_copy_3d_kernel(B, M, N, idx, idx2)
+    input_ones = gen_tensor((B, M, N), dtype, kind="ones")
+    input_zeros = gen_tensor((B, M, N), dtype, kind="zeros")
 
-        input_ones = gen_tensor((B, M, N), "float16", kind="ones")
-        input_zeros = gen_tensor((B, M, N), "float16", kind="zeros")
+    outs = [gen_tensor((B, M, N), dtype, kind="zeros") for _ in range(6)]
+    out3 = gen_tensor((M, N), dtype, kind="zeros")
+    out4 = gen_tensor((M, N), dtype, kind="zeros")
 
-        outs = [gen_tensor((B, M, N), "float16", kind="zeros") for _ in range(6)]
-        out3 = gen_tensor((M, N), "float16", kind="zeros")
-        out4 = gen_tensor((M, N), "float16", kind="zeros")
+    kernel(input_ones, input_zeros, outs[0], outs[1], out3, out4, outs[2], outs[3], outs[4], outs[5])
 
-        kernel(input_ones, input_zeros, outs[0], outs[1], out3, out4, outs[2], outs[3], outs[4], outs[5])
+    expected_full = gen_tensor((B, M, N), dtype, kind="ones")
+    expected_slice = gen_tensor((M, N), dtype, kind="ones")
 
-    expected_full = gen_tensor((B, M, N), "float16", kind="ones")
-    expected_slice = gen_tensor((M, N), "float16", kind="ones")
-
-    assert_close(outs[0].cpu(), expected_full.cpu(), dtype="float16", rtol=1e-5, atol=1e-5)
+    assert_close(outs[0].cpu(), expected_full.cpu(), dtype=dtype, rtol=1e-5, atol=1e-5)
     for out in [outs[1], outs[2]]:
-        assert_close(out[idx].cpu(), expected_slice.cpu(), dtype="float16", rtol=1e-5, atol=1e-5)
+        assert_close(out[idx].cpu(), expected_slice.cpu(), dtype=dtype, rtol=1e-5, atol=1e-5)
         out[idx] = 0
-        assert_close(out.cpu(), torch.zeros_like(out).cpu(), dtype="float16", rtol=1e-5, atol=1e-5)
+        assert_close(out.cpu(), torch.zeros_like(out).cpu(), dtype=dtype, rtol=1e-5, atol=1e-5)
 
-    assert_close(out3.cpu(), expected_slice.cpu(), dtype="float16", rtol=1e-5, atol=1e-5)
-    assert_close(out4.cpu(), expected_slice.cpu(), dtype="float16", rtol=1e-5, atol=1e-5)
+    assert_close(out3.cpu(), expected_slice.cpu(), dtype=dtype, rtol=1e-5, atol=1e-5)
+    assert_close(out4.cpu(), expected_slice.cpu(), dtype=dtype, rtol=1e-5, atol=1e-5)
 
-    assert_close(outs[3][idx].cpu(), expected_slice.cpu(), dtype="float16", rtol=1e-5, atol=1e-5)
+    assert_close(outs[3][idx].cpu(), expected_slice.cpu(), dtype=dtype, rtol=1e-5, atol=1e-5)
     outs[3][idx] = 0
-    assert_close(outs[3].cpu(), torch.zeros_like(outs[3]).cpu(), dtype="float16", rtol=1e-5, atol=1e-5)
+    assert_close(outs[3].cpu(), torch.zeros_like(outs[3]).cpu(), dtype=dtype, rtol=1e-5, atol=1e-5)
 
-    assert_close(outs[4][idx2].cpu(), expected_slice.cpu(), dtype="float16", rtol=1e-5, atol=1e-5)
+    assert_close(outs[4][idx2].cpu(), expected_slice.cpu(), dtype=dtype, rtol=1e-5, atol=1e-5)
     outs[4][idx2] = 0
-    assert_close(outs[4].cpu(), torch.zeros_like(outs[4]).cpu(), dtype="float16", rtol=1e-5, atol=1e-5)
+    assert_close(outs[4].cpu(), torch.zeros_like(outs[4]).cpu(), dtype=dtype, rtol=1e-5, atol=1e-5)
 
-    assert_close(outs[5][idx2].cpu(), expected_slice.cpu(), dtype="float16", rtol=1e-5, atol=1e-5)
+    assert_close(outs[5][idx2].cpu(), expected_slice.cpu(), dtype=dtype, rtol=1e-5, atol=1e-5)
     outs[5][idx2] = 0
-    assert_close(outs[5].cpu(), torch.zeros_like(outs[5]).cpu(), dtype="float16", rtol=1e-5, atol=1e-5)
+    assert_close(outs[5].cpu(), torch.zeros_like(outs[5]).cpu(), dtype=dtype, rtol=1e-5, atol=1e-5)
 
 
-@pytest.mark.copy
-@pytest.mark.op("copy")
-@pytest.mark.dtype("float16")
-@pytest.mark.mode("Developer")
-def test_copy_sliced_4d_dev():
-    B, H, M, N = 2, 4, 32, 64
-    idx_b, idx_h = 0, 1
-    idx_b2, idx_h2 = 1, 3
+@pytest.mark.parametrize("dtype", DTYPES)
+@pytest.mark.parametrize("B, H, M, N, idx_b, idx_h, idx_b2, idx_h2", SLICED_4D_CASES)
+def test_copy_sliced_4d_dev(dtype, B, H, M, N, idx_b, idx_h, idx_b2, idx_h2):
+    kernel = slice_copy_4d_kernel(B, H, M, N, idx_b, idx_h, idx_b2, idx_h2, dtype=dtype)
 
-    with ascend_mode("Developer"):
-        kernel = slice_copy_4d_kernel(B, H, M, N, idx_b, idx_h, idx_b2, idx_h2)
+    input_ones = gen_tensor((B, H, M, N), dtype, kind="ones")
+    input_zeros = gen_tensor((B, H, M, N), dtype, kind="zeros")
 
-        input_ones = gen_tensor((B, H, M, N), "float16", kind="ones")
-        input_zeros = gen_tensor((B, H, M, N), "float16", kind="zeros")
+    outs = [gen_tensor((B, H, M, N), dtype, kind="zeros") for _ in range(6)]
+    out3 = gen_tensor((M, N), dtype, kind="zeros")
+    out4 = gen_tensor((M, N), dtype, kind="zeros")
 
-        outs = [gen_tensor((B, H, M, N), "float16", kind="zeros") for _ in range(6)]
-        out3 = gen_tensor((M, N), "float16", kind="zeros")
-        out4 = gen_tensor((M, N), "float16", kind="zeros")
+    kernel(input_ones, input_zeros, outs[0], outs[1], out3, out4, outs[2], outs[3], outs[4], outs[5])
 
-        kernel(input_ones, input_zeros, outs[0], outs[1], out3, out4, outs[2], outs[3], outs[4], outs[5])
+    expected_full = gen_tensor((B, H, M, N), dtype, kind="ones")
+    expected_slice = gen_tensor((M, N), dtype, kind="ones")
 
-    expected_full = gen_tensor((B, H, M, N), "float16", kind="ones")
-    expected_slice = gen_tensor((M, N), "float16", kind="ones")
-
-    assert_close(outs[0].cpu(), expected_full.cpu(), dtype="float16", rtol=1e-5, atol=1e-5)
+    assert_close(outs[0].cpu(), expected_full.cpu(), dtype=dtype, rtol=1e-5, atol=1e-5)
     for out in [outs[1], outs[2]]:
-        assert_close(out[idx_b, idx_h].cpu(), expected_slice.cpu(), dtype="float16", rtol=1e-5, atol=1e-5)
+        assert_close(out[idx_b, idx_h].cpu(), expected_slice.cpu(), dtype=dtype, rtol=1e-5, atol=1e-5)
         out[idx_b, idx_h] = 0
-        assert_close(out.cpu(), torch.zeros_like(out).cpu(), dtype="float16", rtol=1e-5, atol=1e-5)
+        assert_close(out.cpu(), torch.zeros_like(out).cpu(), dtype=dtype, rtol=1e-5, atol=1e-5)
 
-    assert_close(out3.cpu(), expected_slice.cpu(), dtype="float16", rtol=1e-5, atol=1e-5)
-    assert_close(out4.cpu(), expected_slice.cpu(), dtype="float16", rtol=1e-5, atol=1e-5)
+    assert_close(out3.cpu(), expected_slice.cpu(), dtype=dtype, rtol=1e-5, atol=1e-5)
+    assert_close(out4.cpu(), expected_slice.cpu(), dtype=dtype, rtol=1e-5, atol=1e-5)
 
-    assert_close(outs[3][idx_b, idx_h].cpu(), expected_slice.cpu(), dtype="float16", rtol=1e-5, atol=1e-5)
+    assert_close(outs[3][idx_b, idx_h].cpu(), expected_slice.cpu(), dtype=dtype, rtol=1e-5, atol=1e-5)
     outs[3][idx_b, idx_h] = 0
-    assert_close(outs[3].cpu(), torch.zeros_like(outs[3]).cpu(), dtype="float16", rtol=1e-5, atol=1e-5)
+    assert_close(outs[3].cpu(), torch.zeros_like(outs[3]).cpu(), dtype=dtype, rtol=1e-5, atol=1e-5)
 
-    assert_close(outs[4][idx_b2, idx_h2].cpu(), expected_slice.cpu(), dtype="float16", rtol=1e-5, atol=1e-5)
+    assert_close(outs[4][idx_b2, idx_h2].cpu(), expected_slice.cpu(), dtype=dtype, rtol=1e-5, atol=1e-5)
     outs[4][idx_b2, idx_h2] = 0
-    assert_close(outs[4].cpu(), torch.zeros_like(outs[4]).cpu(), dtype="float16", rtol=1e-5, atol=1e-5)
+    assert_close(outs[4].cpu(), torch.zeros_like(outs[4]).cpu(), dtype=dtype, rtol=1e-5, atol=1e-5)
 
-    assert_close(outs[5][idx_b2, idx_h2].cpu(), expected_slice.cpu(), dtype="float16", rtol=1e-5, atol=1e-5)
+    assert_close(outs[5][idx_b2, idx_h2].cpu(), expected_slice.cpu(), dtype=dtype, rtol=1e-5, atol=1e-5)
     outs[5][idx_b2, idx_h2] = 0
-    assert_close(outs[5].cpu(), torch.zeros_like(outs[5]).cpu(), dtype="float16", rtol=1e-5, atol=1e-5)
+    assert_close(outs[5].cpu(), torch.zeros_like(outs[5]).cpu(), dtype=dtype, rtol=1e-5, atol=1e-5)
