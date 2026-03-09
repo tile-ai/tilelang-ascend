@@ -407,12 +407,12 @@ class AutoTuner:
                         max_mismatched_ratio=max_mismatched_ratio)
                     
             latency = profiler.do_bench(
-                warmup=5, rep=30, input_tensors=self.jit_input_tensors)
+                warmup=warmup, rep=rep, input_tensors=self.jit_input_tensors)
 
             if self.ref_latency_cache is None and ref_prog is not None:
                 self.ref_input_tensors = ref_input_tensors_supply()
                 self.ref_latency_cache = profiler.do_bench(
-                    ref_prog, n_warmup=5, n_repeat=30, input_tensors=self.ref_input_tensors)
+                    ref_prog, n_warmup=warmup, n_repeat=rep, input_tensors=self.ref_input_tensors)
 
             return latency, self.ref_latency_cache
 
@@ -572,7 +572,7 @@ class AutoTuner:
                 latencies = [float("inf")] * len(funcs)
 
             for latency, config, kernel in zip(latencies, configs, jit_kernels):
-                tqdm.write(f"Tuned Latency {latency} with config {config} at index {idx}")
+                tqdm.write(f"Tuned Latency {latency} with config {config}")
                 if latency < best_latency:
                     best_latency = latency
                     best_config = config
