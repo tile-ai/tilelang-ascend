@@ -4,5 +4,5 @@
 
 from tilelang.tladapter.utils import pass_fn
 
-cv_split = pass_fn("tilelangir-cv-split")
+cv_split = pass_fn("tilelangir-cv-split", "func.func")
 vectorize = pass_fn("tilelangir-vectorize")
