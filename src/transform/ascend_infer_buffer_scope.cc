@@ -11,6 +11,8 @@
 #include <tvm/tir/builtin.h>
 #include <tvm/tir/op.h>
 
+#include "../layout/layout.h"
+
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -666,6 +668,10 @@ private:
       }
     }
 
+    // 为 L1 Buffer 注入默认物理布局
+    Map<String, ObjectRef> new_annotations =
+        InjectDefaultLayoutMap(new_alloc_buffers, op->annotations);
+
     auto new_body = VisitStmt(op->body);
     auto new_block = Block(op->iter_vars,
                           op->reads,
@@ -675,9 +681,69 @@ private:
                           op->init,
                           new_alloc_buffers,
                           op->match_buffers,
-                          op->annotations);
+                          new_annotations);
 
     return new_block;
+  }
+
+  /*!
+   * \brief 确保所有 L1 层级 (shared.dyn) 的 Buffer 都具有物理内存布局描述。
+   *
+   * \note
+   * 如果前端用户没有显式通过 T.annotate_layout 声明布局，后端在 LowerTileOp 时
+   * 将无法计算出正确的 1D 物理地址偏移。因此，编译器必须在这里进行防御性兜底，
+   * 为缺失 Layout 的 L1 Buffer 注入默认的 zN Layout。
+   */
+  Map<String, ObjectRef>
+  InjectDefaultLayoutMap(const Array<Buffer> &alloc_buffers,
+                         Map<String, ObjectRef> annotations) {
+    Map<Var, tl::Layout> layout_map;
+
+    // 提取现有的 layout_map，尊重用户在前端的显式定义
+    if (annotations.count(tl::attr::kLayoutMap)) {
+      layout_map =
+          Downcast<Map<Var, tl::Layout>>(annotations.Get(tl::attr::kLayoutMap));
+    }
+
+    bool layout_map_changed = false;
+
+    for (const Buffer &buf : alloc_buffers) {
+      std::string scope = "";
+      if (auto *ptr_type = buf->data->type_annotation.as<PointerTypeNode>()) {
+        scope = ptr_type->storage_scope;
+      }
+
+      // 只有进入 L1 Buffer 的数据才需要参与 Cube 运算，才需要分形布局转换。
+      if (scope == "shared.dyn") {
+        // 避免覆盖用户已经定义好的布局 (例如用户故意指定了 nZ 而不是 zN)。
+        if (layout_map.count(buf->data) == 0) {
+          tl::Layout default_zn_layout = CreateDefaultZnLayout(buf);
+          layout_map.Set(buf->data, default_zn_layout);
+          layout_map_changed = true;
+        }
+      }
+    }
+
+    // 仅在发生实质性修改时更新 Annotations 节点，避免不必要的 IR 拷贝开销
+    if (layout_map_changed) {
+      annotations.Set(tl::attr::kLayoutMap, layout_map);
+    }
+
+    return annotations;
+  }
+
+  tl::Layout CreateDefaultZnLayout(const Buffer &buf) {
+    // 布局的仿射变换逻辑在 Python 端 (make_zn_layout) 已经完善且易于调试。
+    // 通过 FFI 动态回调 Python 逻辑，避免在 C++ 侧硬编码复杂的 AST 表达式树。
+    const tvm::runtime::PackedFunc *make_zn_func =
+        tvm::runtime::Registry::Get("tl.ascend.make_zn_layout");
+
+    ICHECK(make_zn_func != nullptr)
+        << "Cannot find global function 'tl.ascend.make_zn_layout'. "
+        << "Please make sure it is registered in Python.";
+
+    tvm::runtime::TVMRetValue ret = (*make_zn_func)(buf);
+    return ret.operator tl::Layout();
   }
 
   PrimExpr VisitExpr_(const VarNode* op) override {

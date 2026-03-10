@@ -1,6 +1,7 @@
 # Copyright (c) Tile-AI Corporation.
 # Licensed under the MIT License.
 
+import tvm
 from tvm import arith, DataType
 import tilelang.language as T
 from enum import Enum
@@ -28,7 +29,7 @@ def round_up(a, b):
     """Round up a to the nearest multiple of b."""
     return ceil_div(a, b) * b
 
-
+@tvm.register_func("tl.ascend.make_zn_layout")
 def make_zn_layout(buf):
     ana = arith.Analyzer()
     dtype = buf.dtype
