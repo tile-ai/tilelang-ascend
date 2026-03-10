@@ -270,7 +270,7 @@ def npu_copy_v2(src: Union[tir.Buffer, tir.BufferLoad, tir.BufferRegion],
     src = _to_region(src, "r")
     dst = _to_region(dst, "w")
 
-    if transpose is not False:
+    if transpose is True:
             return tir.call_intrin("handle", tir.op.Op.get("tl.ascend_copy"), src, dst, enable_relu, transpose)
     else:
         return tir.call_intrin("handle", tir.op.Op.get("tl.ascend_copy"), src, dst, enable_relu)
