@@ -1076,14 +1076,30 @@ class compiler_npu:
         # Obtain the npu_utils.so file required for loading the kernel
         self.so_utils_path = os.path.join(os.getcwd(), "npu_utils.so")
         if not os.path.isfile(self.so_utils_path):
-            # tilelang/jit/jit_npu.py -> tilelang/ -> tilelang/src/runtime/npu_utils.cpp
+            # Preferred package layout:
+            #   tilelang/jit/jit_npu.py -> tilelang/ -> tilelang/src/runtime/npu_utils.cpp
             pkg_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            npu_utils_cpp = os.path.join(pkg_root, "src", "runtime", "npu_utils.cpp")
-            if not os.path.isfile(npu_utils_cpp):
+            pkg_runtime_cpp = os.path.join(pkg_root, "src", "runtime", "npu_utils.cpp")
+
+            # Fallback for source-tree/PYTHONPATH workflow:
+            #   repo_root/src/runtime/npu_utils.cpp
+            # where repo_root is the parent of pkg_root (i.e. contains setup.py).
+            repo_root = os.path.dirname(pkg_root)
+            repo_runtime_cpp = os.path.join(repo_root, "src", "runtime", "npu_utils.cpp")
+
+            candidate_paths = [pkg_runtime_cpp]
+            if os.path.isfile(os.path.join(repo_root, "setup.py")):
+                candidate_paths.append(repo_runtime_cpp)
+
+            npu_utils_cpp = next((path for path in candidate_paths if os.path.isfile(path)), None)
+            if npu_utils_cpp is None:
+                searched = ", ".join(candidate_paths)
                 raise FileNotFoundError(
-                    f"npu_utils.cpp not found at {npu_utils_cpp}. "
-                    "Ensure tilelang package includes src/runtime (check setup.py TILELANG_SRC)."
+                    "npu_utils.cpp not found. "
+                    f"Tried: {searched}. "
+                    "Ensure tilelang package includes src/runtime or run from a valid source tree."
                 )
+
             self.so_utils_path = self.make_npu_launcher_stub("npu_utils", npu_utils_cpp)
         self.wrapper_src = generate_npu_wrapper_src(
             self.constants,
