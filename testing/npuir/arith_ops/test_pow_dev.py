@@ -4,24 +4,25 @@ import tilelang
 import tilelang.language as T
 import os
 
-os.environ["TILELANG_ASCEND_MODE"] = "Developer"
-torch.npu.set_device(0)
-tilelang.cache.clear_cache()
+import pytest
+import testcommon as tc
 
-def pow_int_kernel(M, N, block_M):
+DTYPE_CASES = ["int32"]
+
+def pow_int_kernel(M, N, block_M, dtype):
     grid_M = (M + block_M - 1) // block_M
 
     @T.prim_func
     def vecPowDev(
-        A: T.Tensor((N,), "int32"),   # base: int32
-        B: T.Tensor((N,), "int32"),   # exponent: int32
-        Out: T.Tensor((M, N), "int32"),
+        A: T.Tensor((N,), dtype),   # base: int32
+        B: T.Tensor((N,), dtype),   # exponent: int32
+        Out: T.Tensor((M, N), dtype),
     ):
         with T.Kernel(grid_M, is_npu=True) as (bx, _):
             # UB buffers
-            acc_A  = T.alloc_shared((N,), "int32")
-            acc_B  = T.alloc_shared((N,), "int32")
-            out_ub = T.alloc_shared((M, N), "int32")
+            acc_A  = T.alloc_shared((N,), dtype)
+            acc_B  = T.alloc_shared((N,), dtype)
+            out_ub = T.alloc_shared((M, N), dtype)
 
             # GM -> UB
             T.copy(A, acc_A)
@@ -41,47 +42,29 @@ def reference(A, B, M):
     ref = torch.pow(A, B)[None, :].expand(M, -1)
     return ref
 
-
-def main():
+@pytest.mark.mode("Developer")
+@pytest.mark.op("vpow_dev")
+@pytest.mark.parametrize("dtype", DTYPE_CASES)
+def test_pow_dev(dtype):
+    dataType = tc.resolve_dtype(dtype)
     M, N = 4, 32
     block_M = 4
 
     A = torch.randint(
-        low=0, high=5, size=(N,), dtype=torch.int32
+        low=0, high=5, size=(N,), dtype=dataType
     ).npu()
 
     B = torch.randint(
-        low=0, high=4, size=(N,), dtype=torch.int32
+        low=0, high=4, size=(N,), dtype=dataType
     ).npu()
 
-    print("A (base):")
-    print(A.cpu())
-    print("\nB (exp):")
-    print(B.cpu())
+    Out = torch.zeros((M, N), dtype=dataType).npu()
 
-    Out = torch.zeros((M, N), dtype=torch.int32).npu()
-
-    func = pow_int_kernel(M, N, block_M)
+    func = pow_int_kernel(M, N, block_M, dtype)
     compiled = tilelang.compile(func, target="npuir")
 
     compiled(A, B, Out)
 
     ref = reference(A.cpu(), B.cpu(), M)
+    tc.assert_close(Out.cpu(), ref, atol=0, rtol=0)
 
-    ok = torch.equal(Out.cpu(), ref)
-
-    print("\n================================")
-    if ok:
-        print("pow(int32, int32): PASS")
-    else:
-        print("pow(int32, int32): FAIL")
-        print("Out:")
-        print(Out.cpu())
-        print("Ref:")
-        print(ref)
-    print("================================")
-
-
-if __name__ == "__main__":
-    print("Running in developer mode")
-    main()

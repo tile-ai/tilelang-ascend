@@ -6,15 +6,15 @@ import torch
 import tilelang
 import tilelang.language as T
 
-torch.npu.set_device(0)
-tilelang.cache.clear_cache()
+import pytest
+import testcommon as tc
 
-def vec_add(block_M, block_N):
-    M = T.symbolic("M")
-    N = T.symbolic("N")
+pytestmark = [pytest.mark.mode("Expert")]
+DATATYPE_CASES = ["float16", "float32"]
+
+def vec_add(M, N, block_M, block_N, dtype):
     m_num = M // block_M
     n_num = N // block_N
-    dtype = "float16"
     BLOCK_SIZE = 20
 
     @T.prim_func
@@ -41,12 +41,9 @@ def vec_add(block_M, block_N):
 
     return vecAdd2dScalarInput
 
-def vec_add_2(block_M, block_N):
-    M = T.symbolic("M")
-    N = T.symbolic("N")
+def vec_add_2(M, N, block_M, block_N, dtype):
     m_num = M // block_M
     n_num = N // block_N
-    dtype = "float16"
     BLOCK_SIZE = 20
 
     @T.prim_func
@@ -73,11 +70,9 @@ def vec_add_2(block_M, block_N):
 
     return vecAdd2dScalarTensor
 
-def vec_add_3(block_M, N):
-    M = T.symbolic("M")
+def vec_add_3(M, N, block_M, dtype):
     m_num = M // block_M
     n_num = 1
-    dtype = "float16"
     BLOCK_SIZE = 20
 
     @T.prim_func
@@ -100,68 +95,48 @@ def vec_add_3(block_M, N):
 
     return vecAdd2dScalarTensorRev
 
-def run_test():
+# case 1: VEC_A + VEC_B[0]
+@pytest.mark.op("vadd_scalar_1_exp")
+@pytest.mark.parametrize("dtype", DATATYPE_CASES)
+def test_vadd_scalar_1(dtype):
+    datatype = tc.resolve_dtype(dtype)
     M, N = 128, 256
-
-    # case 1 VEC_A + VEC_B[0]
-    func = vec_add(32, 32)
+    func = vec_add(M, N, 32, 32, dtype)
     compiled_kernel = tilelang.compile(func, target='npuir')
-
-    a = torch.randn(M, N).half().npu()
-    b = torch.randn(N).half().npu()
-    c = torch.randn(M, N).half().npu()
-
-    torch.manual_seed(88888888)  
-    dtype = "float16"
-
+    a = torch.randn(M, N, dtype=datatype).npu()
+    b = torch.randn(N, dtype=datatype).npu()
+    c = torch.randn(M, N, dtype=datatype).npu()
     ref_output = a + b[0]
     compiled_kernel(a, b, c)
-    print("Actual Result:")
-    print(c)
-    print("Expected Result:")
-    print(ref_output)
-    torch.testing.assert_close(c, ref_output, rtol=1e-3, atol=1e-3)
-    print("\033[92mAll check passed!\033[0m")
+    tc.assert_close(c, ref_output, rtol=1e-3, atol=1e-3)
 
-    # case 2 VEC_A + VEC_B[0, 0]
-    func = vec_add_2(32, N)
+# case 2: VEC_A + VEC_B[0, 0]
+@pytest.mark.op("vadd_scalar_2_exp")
+@pytest.mark.parametrize("dtype", DATATYPE_CASES)
+def test_vadd_scalar_2(dtype):
+    datatype = tc.resolve_dtype(dtype)
+    M, N = 128, 256
+    func = vec_add_2(M, N, 32, 32, dtype)
     compiled_kernel = tilelang.compile(func, target='npuir')
-
-    a = torch.randn(M, N).half().npu()
-    b = torch.randn(M, N).half().npu()
-    c = torch.randn(M, N).half().npu()
-
-    torch.manual_seed(88888888)  
-    dtype = "float16"
-
+    a = torch.randn(M, N, dtype=datatype).npu()
+    b = torch.randn(M, N, dtype=datatype).npu()
+    c = torch.randn(M, N, dtype=datatype).npu()
     ref_output = a + b[0, 0]
     compiled_kernel(a, b, c)
-    print("Actual Result:")
-    print(c)
-    print("Expected Result:")
-    print(ref_output)
-    torch.testing.assert_close(c, ref_output, rtol=1e-3, atol=1e-3)
-    print("\033[92mAll check passed!\033[0m")
+    tc.assert_close(c, ref_output, rtol=1e-3, atol=1e-3)
 
-    # case 3 VEC_A[i, j] + VEC_B[i, j]
-    func = vec_add_3(32, 32)
+# case 3: VEC_A[i, j] + VEC_B[i, j]
+@pytest.mark.op("vadd_scalar_3_exp")
+@pytest.mark.parametrize("dtype", DATATYPE_CASES)
+def test_vadd_scalar_3(dtype):
+    datatype = tc.resolve_dtype(dtype)
+    M, N = 128, 32
+    func = vec_add_3(M, N, 32, dtype)
     compiled_kernel = tilelang.compile(func, target='npuir')
-
-    a = torch.randn(M, N).half().npu()
-    b = torch.randn(M, N).half().npu()
-    c = torch.randn(M, N).half().npu()
+    a = torch.randn(M, N, dtype=datatype).npu()
+    b = torch.randn(M, N, dtype=datatype).npu()
+    c = torch.randn(M, N, dtype=datatype).npu()
     ref_output = c.clone()
-    torch.manual_seed(88888888)  
-    dtype = "float16"
-
     ref_output[:, 0:1] = a[:, 0:1] + b[:, 0:1]
     compiled_kernel(a, b, c)
-    print("Actual Result:")
-    print(c)
-    print("Expected Result:")
-    print(ref_output)
-    torch.testing.assert_close(c, ref_output, rtol=1e-3, atol=1e-3)
-    print("\033[92mAll check passed!\033[0m")
-
-if __name__ == "__main__":
-    run_test()
+    tc.assert_close(c, ref_output, rtol=1e-3, atol=1e-3)

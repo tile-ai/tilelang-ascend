@@ -5,25 +5,24 @@ import tilelang
 import tilelang.language as T
 import os
 
+import pytest
+import testcommon as tc
+
 # -------------------------
 # NPU Configuration
 # -------------------------
-torch.npu.set_device(0)
-tilelang.cache.clear_cache()
-
-parser = argparse.ArgumentParser(description="TileLang Clamp Kernel Test")
-parser.add_argument("--M", type=int, default=4, help="Size of dimension M")
-parser.add_argument("--N", type=int, default=4, help="Size of dimension N")
-
-dtype = "float16"
-accum_dtype = "float16"
+M, N = 4, 4
 CLAMP_MIN = 0.0
 CLAMP_MAX = 100.0
+DTYPE_CASES = [
+    ("float16", "float16"),
+    ("float32", "float32"),
+]
 
 # -------------------------
 # TileLang clamp kernel
 # -------------------------
-def clamp_kernel(M, N):
+def clamp_kernel(M, N, dtype, accum_dtype):
     BLOCK_SIZE = 1
 
     @T.prim_func
@@ -58,47 +57,17 @@ def generate_tensor(shape, dtype, clear=False):
         return (torch.rand(size=shape, dtype=eval("torch." + dtype)) * 200.0) - 50.0
     raise ValueError(f'Unsupported dtype: {dtype}')
 
-# -------------------------
-# Main function
-# -------------------------
-def main_func(main_args):
-    # Compile the kernel
-    func = clamp_kernel(main_args.M, main_args.N)
+@pytest.mark.mode("Developer")
+@pytest.mark.op("vclamp_dev")
+@pytest.mark.parametrize("intype, accumtype", DTYPE_CASES)
+def test_clamp_dev(intype, accumtype):
+    func = clamp_kernel(M, N, intype, accumtype)
     compiled_kernel = tilelang.compile(func, target='npuir')
 
-    # Create input and output tensors
-    shape = (main_args.M, main_args.N)
-    src = generate_tensor(shape, dtype).npu()
-    dst = generate_tensor(shape, accum_dtype, clear=True).npu()
+    shape = (M, N)
+    src = generate_tensor(shape, intype).npu()
+    dst = generate_tensor(shape, accumtype, clear=True).npu()
 
-    print("Input tensor:")
-    print(src.cpu())
-
-    # Execute the kernel
     compiled_kernel(src, dst)
-
-    print("\nNPU clamp result:")
-    print(dst.cpu())
-
-    # PyTorch reference result
     ref = torch.clamp(src.cpu(), min=CLAMP_MIN, max=CLAMP_MAX)
-    print("\nPyTorch reference result:")
-    print(ref)
-
-    # Verification
-    if torch.allclose(dst.cpu(), ref, rtol=1e-3, atol=1e-3):
-        print("\n\033[92mResults match!\033[0m")
-    else:
-        print("\n\033[91mResults do not match!\033[0m")
-        diff = torch.abs(dst.cpu() - ref)
-        print(f"Max difference: {diff.max().item()}")
-        print(f"Mean difference: {diff.mean().item()}")
-
-# -------------------------
-# Entry point
-# -------------------------
-if __name__ == "__main__":
-    args = parser.parse_args()
-    print("<<<<< Developer Mode >>>>>")
-    os.environ['TILELANG_ASCEND_MODE'] = 'Developer'
-    main_func(args)
+    tc.assert_close(dst.cpu(), ref, rtol=1e-3, atol=1e-3, equal_nan=True)

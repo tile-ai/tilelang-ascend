@@ -6,18 +6,16 @@ import torch
 import tilelang
 import tilelang.language as T
 
-torch.npu.set_device(0)
-tilelang.cache.clear_cache()
+import pytest
+import testcommon as tc
 
-parser = argparse.ArgumentParser(description="NPU Kernel Compilation")
-parser.add_argument("--M", type=int, default=4, help="")
-parser.add_argument("--N", type=int, default=4, help="")
-parser.add_argument("--a", type=int, default=1, help="")
-parser.add_argument("--b", type=int, default=16, help="")
+M, N = 4, 4
+a, b = 1, 16
+DATATYPE_CASES = ["float16", "float32"]
+pytestmark = [pytest.mark.mode("Developer")]
 
 
-def vec_insert(M, N, a, b):
-    dtype = "float32"
+def vec_insert(M, N, a, b, dtype):
 
     @T.prim_func
     def insert(
@@ -53,36 +51,16 @@ def generate_tensor(shape, dtype, clear=False):
     raise ValueError('Invalid parameter "dtype" is found : {}'.format(dtype))
 
 
-def run_test_insert(main_args):
-    func = vec_insert(
-        main_args.M,
-        main_args.N,
-        main_args.a,
-        main_args.b,
-
-    )
+@pytest.mark.op("insert_dev")
+@pytest.mark.parametrize("dtype", DATATYPE_CASES)
+def test_insert(dtype):
+    func = vec_insert(M, N, a, b, dtype)
     compiled_kernel = tilelang.compile(func, target='npuir')
-
-    shape = [main_args.M, main_args.N]
-    shape2 = [main_args.a, main_args.b]
-
-    torch.manual_seed(88888888)  # set the random seed for torch
-    dtype = "float32"
-
+    shape = [M, N]
+    shape2 = [a, b]
     output = generate_tensor(shape, dtype).npu()
     intput = generate_tensor(shape2, dtype).npu()
 
-    ref_output = intput.reshape(main_args.M, main_args.N)
+    ref_output = intput.reshape(M, N)
     compiled_kernel(output, intput)
-    print("Actual Result:")
-    print(output)
-    print("Expected Result:")
-    print(ref_output)
-    torch.testing.assert_close(output, ref_output, rtol=1e-2, atol=1e-2)
-    print("\033[92mAll check passed!\033[0m")
-
-
-if __name__ == "__main__":
-    os.environ['TILELANG_ASCEND_MODE'] = 'Developer'
-    args = parser.parse_args()
-    run_test_insert(args)
+    tc.assert_close(output, ref_output, rtol=1e-2, atol=1e-2)

@@ -2,13 +2,19 @@ import torch
 import torch_npu
 import tilelang
 import tilelang.language as T
+import pytest
 import os
 
-os.environ["TILELANG_ASCEND_MODE"] = "Developer"
-torch.npu.set_device(0)
+import testcommon as tc
+
 tilelang.cache.clear_cache()
 
-dtype = "float16"
+pytestmark = pytest.mark.mode("Developer")
+
+DTYPE_CASES = ["float16", "float32"]
+
+M, N = 4, 64
+block_M = 4
 
 def binary_kernel(M, N, block_M, op, dtype="float16"):
     grid_M = (M + block_M - 1) // block_M
@@ -98,81 +104,119 @@ def reference(A, B, M, op):
         raise ValueError(op)
     return ref
 
-def main():
-    M, N = 4, 64
-    block_M = 4
+@pytest.mark.op("vadd")
+@pytest.mark.parametrize("dtype", DTYPE_CASES)
+def test_vadd(dtype):
+    datatype = tc.DTYPE_MAP[dtype]
+    A = torch.randn(N, dtype=datatype).npu()
+    B = torch.randn(N, dtype=datatype).npu()
+    Out = torch.zeros((N,), dtype=datatype).npu()
 
-    A = torch.randn(N, dtype=torch.float16).npu()
-    B = torch.randn(N, dtype=torch.float16).npu()
+    func = binary_kernel(M, N, block_M, "add", dtype)
+    compiled = tilelang.compile(func, target="npuir")
 
-    print("================================")
-    print("Input A:")
-    print(A.cpu())
-    print("\nInput B:")
-    print(B.cpu())
-    print("================================")
+    compiled(A, B, Out)
+    ref = A + B
+    tc.assert_close(Out.cpu(), ref.cpu(), rtol=1e-2, atol=1e-2, equal_nan=True)
 
-    all_pass = True
+@pytest.mark.op("vsub")
+@pytest.mark.parametrize("dtype", DTYPE_CASES)
+def test_vsub(dtype):
+    datatype = tc.DTYPE_MAP[dtype]
+    A = torch.randn(N, dtype=datatype).npu()
+    B = torch.randn(N, dtype=datatype).npu()
+    Out = torch.zeros((N,), dtype=datatype).npu()
+    func = binary_kernel(M, N, block_M, "sub", dtype)
+    compiled = tilelang.compile(func, target="npuir")
+    compiled(A, B, Out)
+    ref = A - B
+    tc.assert_close(Out.cpu(), ref.cpu(), rtol=1e-2, atol=1e-2, equal_nan=True)
 
-    for op in ["add", "sub", "mul", "div"]:
-        print("\n################################")
-        print(f"Testing op: {op}")
-        print("################################")
+@pytest.mark.op("vmul")
+@pytest.mark.parametrize("dtype", DTYPE_CASES)
+def test_vmul(dtype):
+    datatype = tc.DTYPE_MAP[dtype]
+    A = torch.randn(N, dtype=datatype).npu()
+    B = torch.randn(N, dtype=datatype).npu()
+    Out = torch.zeros((N,), dtype=datatype).npu()
+    func = binary_kernel(M, N, block_M, "mul", dtype)
+    compiled = tilelang.compile(func, target="npuir")
+    compiled(A, B, Out)
+    ref = A * B
+    tc.assert_close(Out.cpu(), ref.cpu(), rtol=1e-2, atol=1e-2, equal_nan=True)
 
-        print("\n--- Full Kernel ---")
+@pytest.mark.op("vdiv")
+@pytest.mark.parametrize("dtype", DTYPE_CASES)
+def test_vdiv(dtype):
+    datatype = tc.DTYPE_MAP[dtype]
+    A = torch.randn(N, dtype=datatype).npu()
+    B = torch.randn(N, dtype=datatype).npu()
+    Out = torch.zeros((N,), dtype=datatype).npu()
+    func = binary_kernel(M, N, block_M, "div", dtype)
+    compiled = tilelang.compile(func, target="npuir")
+    compiled(A, B, Out)
+    ref = A / B
+    tc.assert_close(Out.cpu(), ref.cpu(), rtol=1e-2, atol=1e-2, equal_nan=True)
 
-        Out_full = torch.zeros((N,), dtype=torch.float16).npu()
+# Partial binary op tests
 
-        func_full = binary_kernel(M, N, block_M, op, dtype)
-        compiled_full = tilelang.compile(func_full, target="npuir")
+@pytest.mark.op("vadd_partial")
+@pytest.mark.parametrize("dtype", DTYPE_CASES)
+def test_vadd_partial(dtype):
+    datatype = tc.DTYPE_MAP[dtype]
+    A = torch.randn(N, dtype=datatype).npu()
+    B = torch.randn(N, dtype=datatype).npu()
+    Out = torch.zeros((M, N), dtype=datatype).npu()
 
-        compiled_full(A, B, Out_full)
+    func = binary_partial_kernel(M, N, block_M, "add", dtype)
+    compiled = tilelang.compile(func, target="npuir")
 
-        ref_full = getattr(torch, op)(A.cpu(), B.cpu())
+    compiled(A, B, Out)
+    ref = reference(A.cpu(), B.cpu(), M, "add")
+    tc.assert_close(Out.cpu(), ref.cpu(), rtol=1e-2, atol=1e-2, equal_nan=True)
 
-        print("NPU Out (full):")
-        print(Out_full.cpu())
-        print("\nReference (full):")
-        print(ref_full)
+@pytest.mark.op("vsub_partial")
+@pytest.mark.parametrize("dtype", DTYPE_CASES)
+def test_vsub_partial(dtype):
+    datatype = tc.DTYPE_MAP[dtype]
+    A = torch.randn(N, dtype=datatype).npu()
+    B = torch.randn(N, dtype=datatype).npu()
+    Out = torch.zeros((M, N), dtype=datatype).npu()
 
-        ok_full = torch.allclose(
-            Out_full.cpu(), ref_full, rtol=1e-3, atol=1e-3, equal_nan=True
-        )
+    func = binary_partial_kernel(M, N, block_M, "sub", dtype)
+    compiled = tilelang.compile(func, target="npuir")
 
-        print(f"Full kernel result: {'PASS' if ok_full else 'FAIL'}")
+    compiled(A, B, Out)
+    ref = reference(A.cpu(), B.cpu(), M, "sub")
+    tc.assert_close(Out.cpu(), ref.cpu(), rtol=1e-2, atol=1e-2, equal_nan=True)
 
-        print("\n--- Partial Kernel ---")
+@pytest.mark.op("vmul_partial")
+@pytest.mark.parametrize("dtype", DTYPE_CASES)
+def test_vmul_partial(dtype):
+    datatype = tc.DTYPE_MAP[dtype]
+    A = torch.randn(N, dtype=datatype).npu()
+    B = torch.randn(N, dtype=datatype).npu()
+    Out = torch.zeros((M, N), dtype=datatype).npu()
 
-        Out_partial = torch.zeros((M, N), dtype=torch.float16).npu()
+    func = binary_partial_kernel(M, N, block_M, "mul", dtype)
+    compiled = tilelang.compile(func, target="npuir")
 
-        func_partial = binary_partial_kernel(M, N, block_M, op, dtype)
-        compiled_partial = tilelang.compile(func_partial, target="npuir")
+    compiled(A, B, Out)
+    ref = reference(A.cpu(), B.cpu(), M, "mul")
+    tc.assert_close(Out.cpu(), ref.cpu(), rtol=1e-2, atol=1e-2, equal_nan=True)
 
-        compiled_partial(A, B, Out_partial)
+@pytest.mark.op("vdiv_partial")
+@pytest.mark.parametrize("dtype", DTYPE_CASES)
+def test_vdiv_partial(dtype):   
+    datatype = tc.DTYPE_MAP[dtype]
+    A = torch.randn(N, dtype=datatype).npu()
+    B = torch.randn(N, dtype=datatype).npu()
+    Out = torch.zeros((M, N), dtype=datatype).npu()
 
-        ref_partial = reference(A.cpu(), B.cpu(), M, op)
+    func = binary_partial_kernel(M, N, block_M, "div", dtype)
+    compiled = tilelang.compile(func, target="npuir")
 
-        print("NPU Out (partial):")
-        print(Out_partial.cpu())
-        print("\nReference (partial):")
-        print(ref_partial)
+    compiled(A, B, Out)
+    ref = reference(A.cpu(), B.cpu(), M, "div")
+    tc.assert_close(Out.cpu(), ref.cpu(), rtol=1e-2, atol=1e-2, equal_nan=True)
 
-        ok_partial = torch.allclose(
-            Out_partial.cpu(), ref_partial, rtol=1e-3, atol=1e-3, equal_nan=True
-        )
-
-        print(f"Partial kernel result: {'PASS' if ok_partial else 'FAIL'}")
-
-        if not (ok_full and ok_partial):
-            all_pass = False
-
-    print("\n================================")
-    if all_pass:
-        print("\033[92mALL OPS (FULL + PARTIAL) PASS ✔\033[0m")
-    else:
-        print("\033[91mSOME OPS FAILED ✘\033[0m")
-    print("================================")
-
-if __name__ == "__main__":
-    print("Running in developer mode")
-    main()

@@ -5,26 +5,25 @@ import torch
 import tilelang
 import tilelang.language as T
 
-torch.manual_seed(1234)
-torch.npu.set_device(0)
-tilelang.cache.clear_cache()
+import pytest
+import testcommon as tc
 
 M = 16
 N = 16
 BLOCK_M = 16
 BLOCK_N = 16
-DTYPE = "float16"
+DTYPE_CASES = ["float16", "float32"]
 
 def generate_tensor_new(shape, dtype, data_range):
     return torch.empty(shape, dtype = dtype).uniform_(data_range[0], data_range[1])
 
-def vec_tanh(M, N, block_M, block_N, dtype="float16"):
+def vec_cos(M, N, block_M, block_N, dtype="float16"):
     m_num = M // block_M
     n_num = N // block_N
     BLOCK_SIZE = 8
 
     @T.prim_func
-    def vecTanhExp(
+    def vecCosExp(
             A: T.Tensor((M, N), dtype),
             B: T.Tensor((M, N), dtype),
     ):
@@ -41,30 +40,32 @@ def vec_tanh(M, N, block_M, block_N, dtype="float16"):
                     by = block_id_n * block_N
 
                     T.copy(A[bx, by], A_VEC)
-                    T.npuir_vtanh(A_VEC, B_VEC)
+                    T.npuir_vcos(A_VEC, B_VEC)
                     T.copy(B_VEC, B[bx, by])
-    return vecTanhExp
+    return vecCosExp
 
 
-def test_vec_tanh():
-    func = vec_tanh(M, N, BLOCK_M, BLOCK_N, DTYPE)
+
+@pytest.mark.op("vec_cos_exp")
+@pytest.mark.mode("Expert")
+@pytest.mark.parametrize("dtype", DTYPE_CASES)
+def test_vec_cos(dtype):
+    func = vec_cos(M, N, BLOCK_M, BLOCK_N, dtype)
     compiled_kernel = tilelang.compile(func, target="npuir")
 
+    dataType = tc.resolve_dtype(dtype)
     A = generate_tensor_new(
         shape = (M, N),
-        dtype = torch.float16,
+        dtype = dataType,
         data_range = (-1.0, 1.0),
     ).npu()
-    B = torch.zeros((M, N), dtype = torch.float16).npu()
+    B = torch.zeros((M, N), dtype = dataType).npu()
 
     compiled_kernel(A, B)
 
     A_cpu = A.cpu()
     B_cpu = B.cpu()
-    ref_cpu = torch.tanh(A_cpu)
-    
-    torch.testing.assert_close(B.cpu(), ref_cpu, rtol=1e-2, atol=1e-2)
-    print("\033[92mTanh kernel accuracy check passed!\033[0m")
+    ref_cpu = torch.cos(A_cpu)
 
-if __name__ == "__main__":
-    test_vec_tanh()
+    tc.assert_close(B.cpu(), ref_cpu, rtol=1e-3, atol=1e-3)
+

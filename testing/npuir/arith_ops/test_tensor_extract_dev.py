@@ -6,17 +6,16 @@ import torch
 import tilelang
 import tilelang.language as T
 
-torch.npu.set_device(0)
-tilelang.cache.clear_cache()
+import pytest
+import testcommon as tc
 
-parser = argparse.ArgumentParser(description="NPU Kernel Compilation")
-parser.add_argument("--M", type=int, default=4, help="")
-parser.add_argument("--N", type=int, default=4, help="")
-parser.add_argument("--n", type=int, default=32, help="")
+M, N = 4, 4
+n = 32
+DATATYPE_CASES = ["float16", "float32"]
+pytestmark = [pytest.mark.mode("Developer")]
 
 
-def vec_add(M, N, n):
-    dtype = "float32"
+def vec_add(M, N, n, dtype):
 
     @T.prim_func
     def add(
@@ -39,8 +38,7 @@ def vec_add(M, N, n):
 
     return add
 
-def vec_mul(M, N, n):
-    dtype = "float32"
+def vec_mul(M, N, n, dtype):
 
     @T.prim_func
     def mul(
@@ -63,8 +61,7 @@ def vec_mul(M, N, n):
 
     return mul
 
-def vec_sub(M, N, n):
-    dtype = "float32"
+def vec_sub(M, N, n, dtype):
 
     @T.prim_func
     def sub(
@@ -87,8 +84,7 @@ def vec_sub(M, N, n):
 
     return sub
 
-def vec_div(M, N, n):
-    dtype = "float32"
+def vec_div(M, N, n, dtype):
 
     @T.prim_func
     def div(
@@ -126,22 +122,15 @@ def generate_tensor(shape, dtype, clear=False):
         return torch.randint(low=0, high=2, size=shape).bool()
     raise ValueError('Invalid parameter "dtype" is found : {}'.format(dtype))
 
-
-def run_test_add(main_args):
-    func = vec_add(
-        main_args.M,
-        main_args.N,
-        main_args.n,
-
-    )
+@pytest.mark.op("vadd_extract")
+@pytest.mark.parametrize("dtype", DATATYPE_CASES)
+def test_add_extract(dtype):
+    func = vec_add(M, N, n, dtype)
     compiled_kernel = tilelang.compile(func, target='npuir')
 
-    shape = [main_args.M, main_args.N]
+    shape = [M, N]
     shape2 = [3]
-    shape3 = [main_args.M, main_args.N]
-
-    torch.manual_seed(88888888)  # set the random seed for torch
-    dtype = "float32"
+    shape3 = [M, N]
 
     a = generate_tensor(shape, dtype).npu()
     b = generate_tensor(shape2, dtype).npu()
@@ -149,28 +138,17 @@ def run_test_add(main_args):
 
     ref_output = a + b[0]
     compiled_kernel(a, b, c)
-    print("Actual Result:")
-    print(c)
-    print("Expected Result:")
-    print(ref_output)
-    torch.testing.assert_close(c, ref_output, rtol=1e-2, atol=1e-2)
-    print("\033[92mAll check passed!\033[0m")
+    tc.assert_close(c.cpu(), ref_output.cpu(), rtol=1e-2, atol=1e-2)
 
-def run_test_mul(main_args):
-    func = vec_mul(
-        main_args.M,
-        main_args.N,
-        main_args.n,
-
-    )
+@pytest.mark.op("vmul_extract")
+@pytest.mark.parametrize("dtype", DATATYPE_CASES)
+def test_mul_extract(dtype):
+    func = vec_mul(M, N, n, dtype)
     compiled_kernel = tilelang.compile(func, target='npuir')
 
-    shape = [main_args.M, main_args.N]
+    shape = [M, N]
     shape2 = [3]
-    shape3 = [main_args.M, main_args.N]
-
-    torch.manual_seed(88888888)  # set the random seed for torch
-    dtype = "float32"
+    shape3 = [M, N]
 
     a = generate_tensor(shape, dtype).npu()
     b = generate_tensor(shape2, dtype).npu()
@@ -178,29 +156,17 @@ def run_test_mul(main_args):
 
     ref_output = a * b[0]
     compiled_kernel(a, b, c)
-    print("Actual Result:")
-    print(c)
-    print("Expected Result:")
-    print(ref_output)
-    torch.testing.assert_close(c, ref_output, rtol=1e-2, atol=1e-2)
-    print("\033[92mAll check passed!\033[0m")
+    tc.assert_close(c.cpu(), ref_output.cpu(), rtol=1e-2, atol=1e-2)
 
-
-def run_test_sub(main_args):
-    func = vec_sub(
-        main_args.M,
-        main_args.N,
-        main_args.n,
-
-    )
+@pytest.mark.op("vsub_extract")
+@pytest.mark.parametrize("dtype", DATATYPE_CASES)
+def test_sub_extract(dtype):
+    func = vec_sub(M, N, n, dtype)
     compiled_kernel = tilelang.compile(func, target='npuir')
 
-    shape = [main_args.M, main_args.N]
+    shape = [M, N]
     shape2 = [3]
-    shape3 = [main_args.M, main_args.N]
-
-    torch.manual_seed(88888888)  # set the random seed for torch
-    dtype = "float32"
+    shape3 = [M, N]
 
     a = generate_tensor(shape, dtype).npu()
     b = generate_tensor(shape2, dtype).npu()
@@ -208,28 +174,17 @@ def run_test_sub(main_args):
 
     ref_output = a - b[0]
     compiled_kernel(a, b, c)
-    print("Actual Result:")
-    print(c)
-    print("Expected Result:")
-    print(ref_output)
-    torch.testing.assert_close(c, ref_output, rtol=1e-2, atol=1e-2)
-    print("\033[92mAll check passed!\033[0m")
+    tc.assert_close(c.cpu(), ref_output.cpu(), rtol=1e-2, atol=1e-2)
 
-def run_test_div(main_args):
-    func = vec_div(
-        main_args.M,
-        main_args.N,
-        main_args.n,
-
-    )
+@pytest.mark.op("vdiv_extract")
+@pytest.mark.parametrize("dtype", DATATYPE_CASES)
+def test_div_extract(dtype):
+    func = vec_div(M, N, n, dtype)
     compiled_kernel = tilelang.compile(func, target='npuir')
 
-    shape = [main_args.M, main_args.N]
+    shape = [M, N]
     shape2 = [3]
-    shape3 = [main_args.M, main_args.N]
-
-    torch.manual_seed(88888888)  # set the random seed for torch
-    dtype = "float32"
+    shape3 = [M, N]
 
     a = generate_tensor(shape, dtype).npu()
     b = generate_tensor(shape2, dtype).npu()
@@ -237,17 +192,4 @@ def run_test_div(main_args):
 
     ref_output = a / b[0]
     compiled_kernel(a, b, c)
-    print("Actual Result:")
-    print(c)
-    print("Expected Result:")
-    print(ref_output)
-    torch.testing.assert_close(c, ref_output, rtol=1e-2, atol=1e-2)
-    print("\033[92mAll check passed!\033[0m")
-
-if __name__ == "__main__":
-    os.environ['TILELANG_ASCEND_MODE'] = 'Developer'
-    args = parser.parse_args()
-    run_test_add(args)
-    run_test_mul(args)
-    run_test_sub(args)
-    run_test_div(args)
+    tc.assert_close(c.cpu(), ref_output.cpu(), rtol=1e-2, atol=1e-2)

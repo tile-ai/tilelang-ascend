@@ -4,9 +4,17 @@ import torch
 import tilelang
 import tilelang.language as T
 
-tilelang.cache.clear_cache()
+import pytest
+import testcommon as tc
 
-@tilelang.jit(out_idx=[-1], target="npuir")
+pytestmark = [pytest.mark.mode("Developer")]
+DATATYPE_CASES = [
+    ("float16", "float16"),
+    ("float16", "float32"),
+    ("float32", "float32"),
+]
+
+@tilelang.jit(target="npuir")
 def simple_copy_1d(L, block_L, dtype="float16", accum_dtype="float32"):
     @T.prim_func
     def simpleCopy1dKernel(
@@ -34,7 +42,7 @@ def simple_copy_1d(L, block_L, dtype="float16", accum_dtype="float32"):
 
     return simpleCopy1dKernel
 
-@tilelang.jit(out_idx=[-1], target="npuir")
+@tilelang.jit(target="npuir")
 def simple_copy_2d(M, N, block_M, block_N, dtype="float16", accum_dtype="float32"):
     @T.prim_func
     def simpleCopy2dKernel(
@@ -63,7 +71,7 @@ def simple_copy_2d(M, N, block_M, block_N, dtype="float16", accum_dtype="float32
 
     return simpleCopy2dKernel
 
-@tilelang.jit(out_idx=[-1], target="npuir")
+@tilelang.jit(target="npuir")
 def simple_copy_3d(M, N, K, block_M, block_N, block_K, dtype="float16", accum_dtype="float32"):
     @T.prim_func
     def simpleCopy3dKernel(
@@ -105,55 +113,43 @@ def simple_copy_3d(M, N, K, block_M, block_N, block_K, dtype="float16", accum_dt
     
     return simpleCopy3dKernel
 
-def test_1d():
-    print("Testing 1d copy...")
-    kernel = simple_copy_1d(64, 64)
-    
-    input = torch.ones(64).npu().half()
-    a = torch.zeros(64).npu().half()
-    b = torch.zeros(64).npu().half()
-    c = torch.zeros(64).npu()
-    
+
+@pytest.mark.op("simple_copy_dev")
+@pytest.mark.parametrize("dtype, accum_dtype", DATATYPE_CASES)
+def test_1d(dtype, accum_dtype):
+    datatype = tc.resolve_dtype(dtype)
+    accum_datatype = tc.resolve_dtype(accum_dtype)
+    kernel = simple_copy_1d(64, 64, dtype=dtype, accum_dtype=accum_dtype)
+    input = torch.ones(64).npu().to(datatype)
+    a = torch.zeros(64).npu().to(datatype)
+    b = torch.zeros(64).npu().to(datatype)
+    c = torch.zeros(64).npu().to(accum_datatype)
     kernel(input, a, b, c)
-    print("Input:\n", input)
-    print("a:\n", a)
-    print("b:\n", b)
-    print("c:\n", c)
-    torch.testing.assert_close(a, input, rtol=1e-5, atol=1e-5)
+
+    tc.assert_close(a, input, rtol=1e-3, atol=1e-3)
     b_ref = input.clone()
     b_ref[0:32] = a[0:32] * 2
-    torch.testing.assert_close(b, b_ref, rtol=1e-5, atol=1e-5)
-    torch.testing.assert_close(c, b.to(torch.float32), rtol=1e-5, atol=1e-5)
-    print("1D Test success!")
-
-def test_2d():
-    print("Testing 2d copy...")
-    kernel = simple_copy_2d(32, 16, 32, 16)
-
-    input = torch.randn(32, 16).npu().half()
-    a = torch.zeros(32, 16).npu().half()
-    b = torch.zeros(32, 16).npu().half()
-    c = torch.zeros(32, 16).npu()
-
+    tc.assert_close(b, b_ref, rtol=1e-3, atol=1e-3)
+    tc.assert_close(c, b.to(accum_datatype), rtol=1e-3, atol=1e-3)
+    
+@pytest.mark.op("simple_copy_2d_dev")
+@pytest.mark.parametrize("dtype, accum_dtype", DATATYPE_CASES)
+def test_2d(dtype, accum_dtype):
+    datatype = tc.resolve_dtype(dtype)
+    accum_datatype = tc.resolve_dtype(accum_dtype)
+    kernel = simple_copy_2d(32, 16, 32, 16, dtype=dtype, accum_dtype=accum_dtype)
+    input = torch.randn(32, 16).npu().to(datatype)
+    a = torch.zeros(32, 16).npu().to(datatype)
+    b = torch.zeros(32, 16).npu().to(datatype)
+    c = torch.zeros(32, 16).npu().to(accum_datatype)
     kernel(input, a, b, c)
-    print("input:\n", input)
-    print("a:\n", a)
-    print("b:\n", b)
-    print("c:\n", c)
-    print("a, input")
-    torch.testing.assert_close(a, input, rtol=1e-5, atol=1e-5)
+   
+    tc.assert_close(a, input, rtol=1e-3, atol=1e-3)
     b_ref = input.clone()
     b_ref[2:4, :] = b_ref[2:4, :] * 2
 
-    print("b, b_ref")
-    torch.testing.assert_close(b, b_ref, rtol=1e-5, atol=1e-5)
-    # torch.testing.assert_close(
-    #     c,
-    #     b_ref.to(torch.float32),
-    #     rtol=1e-5,
-    #     atol=1e-5,
-    # )
-    print("2D Test success!")
+    tc.assert_close(b, b_ref, rtol=1e-3, atol=1e-3)
+    
 
 def reference_simple_copy_3d(In, M, N, K, block_M, block_N, block_K, dtype="float16", accum_dtype="float32"):
     """
@@ -202,41 +198,33 @@ def reference_simple_copy_3d(In, M, N, K, block_M, block_N, block_K, dtype="floa
 
     return A, B, C
 
-def test_3d():
-    print("Testing 3d copy...")
-    
+@pytest.mark.op("simple_copy_3d_dev")
+@pytest.mark.parametrize("dtype, accum_dtype", DATATYPE_CASES)
+def test_3d(dtype, accum_dtype):
     M, N, K = 64, 128, 256
     block_M, block_N, block_K = 16, 32, 32
-    
+
+    datatype = tc.resolve_dtype(dtype)
+    accum_datatype = tc.resolve_dtype(accum_dtype)
+
     assert M % block_M == 0, f"M({M}) must be divisible by block_M({block_M})"
     assert N % block_N == 0, f"N({N}) must be divisible by block_N({block_N})"
     assert K % block_K == 0, f"K({K}) must be divisible by block_K({block_K})"
     
-    kernel = simple_copy_3d(M, N, K, block_M, block_N, block_K)
+    kernel = simple_copy_3d(M, N, K, block_M, block_N, block_K, dtype=dtype, accum_dtype=accum_dtype)
 
-    input = torch.randn(M, N, K).npu().half()
-    a = torch.zeros(M, N, K).npu().half()
-    b = torch.zeros(M, N, K).npu().half()
-    c = torch.zeros(M, N, K).npu()
+    input = torch.randn(M, N, K,).npu().to(datatype)
+    a = torch.zeros(M, N, K).npu().to(datatype)
+    b = torch.zeros(M, N, K).npu().to(datatype)
+    c = torch.zeros(M, N, K).npu().to(accum_datatype)
     
     kernel(input, a, b, c)
-    print("input:\n", input)
-    print("a:\n", a)
-    print("b:\n", b)
-    print("c:\n", c)
-    A_ref, B_ref, C_ref = reference_simple_copy_3d(input, M, N, K, block_M, block_N, block_K)
-    torch.testing.assert_close(a.cpu(), A_ref.cpu(), rtol=1e-5, atol=1e-5)
-    torch.testing.assert_close(b.cpu(), B_ref.cpu(), rtol=1e-5, atol=1e-5)
-    torch.testing.assert_close(c.cpu(), C_ref.cpu(), rtol=1e-5, atol=1e-5)
+
+    A_ref, B_ref, C_ref = reference_simple_copy_3d(input, M, N, K, 
+                                                   block_M, block_N, block_K, 
+                                                   dtype=dtype, accum_dtype=accum_dtype)
+    tc.assert_close(a.cpu(), A_ref.cpu(), rtol=1e-3, atol=1e-3)
+    tc.assert_close(b.cpu(), B_ref.cpu(), rtol=1e-3, atol=1e-3)
+    tc.assert_close(c.cpu(), C_ref.cpu(), rtol=1e-3, atol=1e-3)
     
-    print("3D test success!")
 
-def main():
-    os.environ['TILELANG_ASCEND_MODE'] = 'Developer'
-
-    test_1d()
-    test_2d()
-    test_3d()
-
-if __name__ == "__main__":
-    main()

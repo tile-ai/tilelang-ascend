@@ -5,25 +5,22 @@ import tilelang
 import tilelang.language as T
 import os
 
+import pytest
+import testcommon as tc
 # -------------------------
 # NPU Configuration
 # -------------------------
-torch.npu.set_device(0)
-tilelang.cache.clear_cache()
-
-parser = argparse.ArgumentParser(description="TileLang Clamp Kernel Test")
-parser.add_argument("--M", type=int, default=4, help="Size of dimension M")
-parser.add_argument("--N", type=int, default=4, help="Size of dimension N")
-
-dtype = "float16"
-accum_dtype = "float16"
+M, N = 4, 4
 CLAMP_MIN = 0.0
 CLAMP_MAX = 100.0
-
+DTYPE_CASES = [
+    ("float16", "float16"),
+    ("float32", "float32"),
+]
 # -------------------------
 # TileLang clamp kernel (support min/max as tensors)
 # -------------------------
-def clamp_kernel(M, N, min_tensor, max_tensor):
+def clamp_kernel(M, N, min_tensor, max_tensor, dtype, accum_dtype):
     BLOCK_SIZE = 1
 
     @T.prim_func
@@ -66,59 +63,23 @@ def generate_tensor(shape, dtype, clear=False):
         return (torch.rand(size=shape, dtype=eval("torch." + dtype)) * 200.0) - 50.0
     raise ValueError(f'Unsupported dtype: {dtype}')
 
-# -------------------------
-# Main function
-# -------------------------
-def main_func(main_args):
-    shape = (main_args.M, main_args.N)
-    
-    # Create input tensor
-    src = generate_tensor(shape, dtype).npu()
-    dst = generate_tensor(shape, accum_dtype, clear=True).npu()
-    
-    # Generate min_tensor and max_tensor such that min < max
-    min_tensor = generate_tensor(shape, dtype).npu()
-    # Ensure max_tensor > min_tensor by adding a positive offset
+@pytest.mark.mode("Developer")
+@pytest.mark.op("vclamp_vec_dev")
+@pytest.mark.parametrize("intype, accumtype", DTYPE_CASES)
+def test_clamp_vec_dev(intype, accumtype):
+    shape = (M, N)
+    src = generate_tensor(shape, intype).npu()
+    dst = generate_tensor(shape, accumtype, clear=True).npu()
+    min_tensor = generate_tensor(shape, intype).npu()
     positive_offset = torch.rand(shape, dtype=min_tensor.cpu().dtype) * 50.0 + 1.0
     max_tensor = (min_tensor.cpu() + positive_offset).npu()
 
-    print("Input tensor:")
-    print(src.cpu())
-    print("Min tensor:")
-    print(min_tensor.cpu())
-    print("Max tensor:")
-    print(max_tensor.cpu())
-
-    # Compile kernel
-    func = clamp_kernel(main_args.M, main_args.N, min_tensor=min_tensor, max_tensor=max_tensor)
+    func = clamp_kernel(M, N, 
+                        min_tensor=min_tensor, 
+                        max_tensor=max_tensor,
+                        dtype=intype,
+                        accum_dtype=accumtype)
     compiled_kernel = tilelang.compile(func, target='npuir')
-
-    # Execute kernel
     compiled_kernel(src, dst, min_tensor, max_tensor)
-
-    print("\nNPU clamp result:")
-    print(dst.cpu())
-
-    # PyTorch reference
     ref = torch.clamp(src.cpu(), min=min_tensor.cpu(), max=max_tensor.cpu())
-    print("\nPyTorch reference result:")
-    print(ref)
-
-    # Verification
-    if torch.allclose(dst.cpu(), ref, rtol=1e-3, atol=1e-3):
-        print("\n\033[92mResults match!\033[0m")
-    else:
-        print("\n\033[91mResults do not match!\033[0m")
-        diff = torch.abs(dst.cpu() - ref)
-        print(f"Max difference: {diff.max().item()}")
-        print(f"Mean difference: {diff.mean().item()}")
-
-# -------------------------
-# Entry point
-# -------------------------
-if __name__ == "__main__":
-    args = parser.parse_args()
-
-    print("<<<<< Developer Mode >>>>>")
-    os.environ['TILELANG_ASCEND_MODE'] = 'Developer'
-    main_func(args)
+    tc.assert_close(dst.cpu(), ref, rtol=1e-3, atol=1e-3, equal_nan=True)

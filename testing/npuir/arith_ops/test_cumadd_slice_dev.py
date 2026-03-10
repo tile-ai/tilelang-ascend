@@ -4,7 +4,11 @@ import os
 import tilelang
 import tilelang.language as T
 
-tilelang.cache.clear_cache()
+import pytest
+import testcommon as tc
+
+DATATYPE_CASES = ["float16", "float32"]
+pytestmark = [pytest.mark.mode("Developer")]
 
 @tilelang.jit(target="npuir")
 def slice_add(block_M, block_N, dtype = "float16"):
@@ -35,49 +39,28 @@ def slice_add(block_M, block_N, dtype = "float16"):
 
     return sliceAdd
 
-def test_slice_add():
-    kernel = slice_add(32, 32)
+
+@pytest.mark.op("slice_add_dev")
+@pytest.mark.parametrize("dtype", DATATYPE_CASES)
+def test_slice_add(dtype):
+    kernel = slice_add(32, 32, dtype)
+
+    datatype = tc.resolve_dtype(dtype)
 
     # case 1
     M, N = 17, 256
-    input = torch.randn([M, N], dtype=torch.float16).npu()
-    output = torch.randn([1, N], dtype=torch.float16).npu()
+    input = torch.randn([M, N], dtype=datatype).npu()
+    output = torch.randn([1, N], dtype=datatype).npu()
     kernel(input, output)
     ref_output = torch.sum(input, dim=0, keepdim=True)
 
-    print("output")
-    print(output)
-    print("ref_output")
-    print(ref_output)
-    torch.testing.assert_close(output, ref_output, rtol=1e-2, atol=1e-2)
+    tc.assert_close(output, ref_output, rtol=1e-2, atol=1e-2)
 
     # case 2
     M, N = 39, 466
-    input = torch.randn([M, N], dtype=torch.float16).npu()
-    output = torch.randn([1, N], dtype=torch.float16).npu()
+    input = torch.randn([M, N], dtype=datatype).npu()
+    output = torch.randn([1, N], dtype=datatype).npu()
     kernel(input, output)
     ref_output = torch.sum(input, dim=0, keepdim=True)
 
-    print("output")
-    print(output)
-    print("ref_output")
-    print(ref_output)
-    torch.testing.assert_close(output, ref_output, rtol=1e-2, atol=1e-2)
-
-    # case 2
-    M, N = 77, 283
-    input = torch.randn([M, N], dtype=torch.float16).npu()
-    output = torch.randn([1, N], dtype=torch.float16).npu()
-    kernel(input, output)
-    ref_output = torch.sum(input, dim=0, keepdim=True)
-
-    print("output")
-    print(output)
-    print("ref_output")
-    print(ref_output)
-    torch.testing.assert_close(output, ref_output, rtol=1e-2, atol=1e-2)
-    print("\033[92mAll check passed!\033[0m")
-
-if __name__ == "__main__":
-    os.environ['TILELANG_ASCEND_MODE'] = 'Developer'
-    test_slice_add()
+    tc.assert_close(output, ref_output, rtol=1e-2, atol=1e-2)

@@ -6,16 +6,14 @@ import tilelang
 import tilelang.language as T
 import os
 
-os.environ["TILELANG_ASCEND_MODE"] = "Developer"
-torch.manual_seed(1234)
-torch.npu.set_device(0)
-tilelang.cache.clear_cache()
+import pytest
+import testcommon as tc
 
 M = 16
 N = 16
 BLOCK_M = 16
 BLOCK_N = 16
-DTYPE = "float16"
+DTYPE_CASES = ["float16", "float32"]
 
 def generate_tensor_new(shape, dtype, data_range):
     return torch.empty(shape, dtype = dtype).uniform_(data_range[0], data_range[1])
@@ -48,16 +46,20 @@ def vec_cos(M, N, block_M, block_N, dtype="float16"):
     return vecCosDev
 
 
-def test_vec_cos():
-    func = vec_cos(M, N, BLOCK_M, BLOCK_N, DTYPE)
+@pytest.mark.op("vec_cos_dev")
+@pytest.mark.mode("Developer")
+@pytest.mark.parametrize("dtype", DTYPE_CASES)
+def test_vec_cos(dtype):
+    datatype = tc.resolve_dtype(dtype)
+    func = vec_cos(M, N, BLOCK_M, BLOCK_N, dtype)
     compiled_kernel = tilelang.compile(func, target="npuir")
 
     A = generate_tensor_new(
         shape = (M, N),
-        dtype = torch.float16,
+        dtype = datatype,
         data_range = (-1.0, 1.0),
     ).npu()
-    B = torch.zeros((M, N), dtype = torch.float16).npu()
+    B = torch.zeros((M, N), dtype = datatype).npu()
 
     compiled_kernel(A, B)
 
@@ -65,9 +67,5 @@ def test_vec_cos():
     B_cpu = B.cpu()
     ref_cpu = torch.cos(A_cpu)
     
-    torch.testing.assert_close(B.cpu(), ref_cpu, rtol=1e-3, atol=1e-3)
-    print("\033[92mCos kernel accuracy check passed!\033[0m")
+    tc.assert_close(B_cpu, ref_cpu, rtol=1e-3, atol=1e-3)
 
-if __name__ == "__main__":
-    print("Running in developer mode")
-    test_vec_cos()
