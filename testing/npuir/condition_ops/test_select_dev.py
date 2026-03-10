@@ -1,13 +1,21 @@
+import pytest
 import torch
-import torch_npu
+import torch_npu  # noqa: F401
+
 import tilelang
 import tilelang.language as T
-import os
 
-torch.npu.set_device(0)
-tilelang.cache.clear_cache()
+from testcommon import assert_close, gen_tensor
 
-dtype = "float16"
+
+pytestmark = [
+    pytest.mark.op("select"),
+    pytest.mark.mode("Developer"),
+]
+
+DTYPES = ["float16"]
+SELECT_CASES = [(8, 32, 8)]
+
 
 def select_kernel(M, N, block_M, dtype="float16"):
     grid_M = (M + block_M - 1) // block_M
@@ -19,31 +27,28 @@ def select_kernel(M, N, block_M, dtype="float16"):
         Out: T.Tensor((N,), dtype),
     ):
         with T.Kernel(grid_M, is_npu=True) as (bx, _):
-            # UB buffers
-            cond_ub = T.alloc_shared((N,), "bool")     
+            cond_ub = T.alloc_shared((N,), "bool")
             acc_A = T.alloc_shared((N,), dtype)
             acc_B = T.alloc_shared((N,), dtype)
             out_ub = T.alloc_shared((N,), dtype)
 
-            # GM -> UB
             T.copy(A, acc_A)
             T.copy(B, acc_B)
 
-            # cond_ub = (A >= B)
             T.npuir_cmp(acc_A, acc_B, cond_ub, "ge")
 
-            # npuir_select
             for i in T.serial(block_M):
                 T.npuir_select(
-                    cond_ub,       
-                    acc_A,         
-                    acc_B,        
-                    out_ub   
+                    cond_ub,
+                    acc_A,
+                    acc_B,
+                    out_ub,
                 )
 
                 T.copy(out_ub, Out)
 
     return main
+
 
 def select_partial_kernel(M, N, block_M, dtype="float16"):
     grid_M = (M + block_M - 1) // block_M
@@ -55,26 +60,22 @@ def select_partial_kernel(M, N, block_M, dtype="float16"):
         Out: T.Tensor((M, N), dtype),
     ):
         with T.Kernel(grid_M, is_npu=True) as (bx, _):
-            # UB buffers
-            cond_ub = T.alloc_shared((N,), "bool")     
+            cond_ub = T.alloc_shared((N,), "bool")
             acc_A = T.alloc_shared((N,), dtype)
             acc_B = T.alloc_shared((N,), dtype)
             out_ub = T.alloc_shared((M, N), dtype)
 
-            # GM -> UB
             T.copy(A, acc_A)
             T.copy(B, acc_B)
 
-            # cond_ub = (A >= B)
             T.npuir_cmp(acc_A, acc_B, cond_ub, "ge")
 
-            # npuir_select
             for i in T.serial(block_M):
                 T.npuir_select(
-                    cond_ub,       
-                    acc_A,         
-                    acc_B,        
-                    out_ub[i, :]   
+                    cond_ub,
+                    acc_A,
+                    acc_B,
+                    out_ub[i, :],
                 )
 
                 T.copy(out_ub, Out)
@@ -82,70 +83,25 @@ def select_partial_kernel(M, N, block_M, dtype="float16"):
     return main
 
 
-def main():
-    M, N = 8, 32
-    block_M = 8
+@pytest.mark.parametrize("dtype", DTYPES)
+@pytest.mark.parametrize("M, N, block_M", SELECT_CASES)
+def test_select_dev(dtype, M, N, block_M):
+    full_kernel = tilelang.compile(select_kernel(M, N, block_M, dtype), target="npuir")
+    partial_kernel = tilelang.compile(select_partial_kernel(M, N, block_M, dtype), target="npuir")
 
-    func1 = select_kernel(M, N, block_M, dtype)
-    func2 = select_partial_kernel(M, N, block_M, dtype)
+    a = gen_tensor((N,), dtype, kind="randn")
+    b = gen_tensor((N,), dtype, kind="randn")
 
-    compiled1 = tilelang.compile(func1, target="npuir")
-    compiled2 = tilelang.compile(func2, target="npuir")
+    out_full = gen_tensor((N,), dtype, kind="zeros")
+    full_kernel(a, b, out_full)
+    ref_full = torch.where(a.cpu() >= b.cpu(), a.cpu(), b.cpu())
+    assert_close(out_full.cpu(), ref_full, dtype=dtype, rtol=1e-3, atol=1e-3)
 
-    A = torch.randn(N, dtype=torch.float16).npu()
-    B = torch.randn(N, dtype=torch.float16).npu()
-
-    print("A (true values):")
-    print(A.cpu())
-    print("\nB (false values):")
-    print(B.cpu())
-
-    print("\n================ func1: full shape =================\n")
-
-    Out1 = torch.zeros((N,), dtype=torch.float16).npu()
-    compiled1(A, B, Out1)
-
-    print("NPU Out (func1):")
-    print(Out1.cpu())
-
-    ref1 = torch.where(
-        A.cpu() >= B.cpu(),
-        A.cpu(),
-        B.cpu()
-    )
-    print("\nReference (func1):")
-    print(ref1)
-
-    if torch.allclose(Out1.cpu(), ref1, rtol=1e-3, atol=1e-3, equal_nan=True):
-        print("\033[92mfunc1 PASSED\033[0m")
-    else:
-        print("\033[91mfunc1 FAILED\033[0m")
-
-    print("\n============== func2: partial / fast-path ==============\n")
-
-    Out2 = torch.zeros((M, N), dtype=torch.float16).npu()
-    compiled2(A, B, Out2)
-
-    print("NPU Out (func2):")
-    print(Out2.cpu())
-
-    ref2 = torch.where(
-        (A.cpu() >= B.cpu())[None, :],
-        A.cpu()[None, :],
-        B.cpu()[None, :]
-    )
-
-    print("\nReference (func2):")
-    print(ref2)
-
-    if torch.allclose(Out2.cpu(), ref2, rtol=1e-3, atol=1e-3, equal_nan=True):
-        print("\033[92mfunc2 PASSED\033[0m")
-    else:
-        print("\033[91mfunc2 FAILED\033[0m")
-
-
-
-if __name__ == "__main__":
-    os.environ["TILELANG_ASCEND_MODE"] = "Developer"
-    print("Running in developer mode")
-    main()
+    out_partial = gen_tensor((M, N), dtype, kind="zeros")
+    partial_kernel(a, b, out_partial)
+    ref_partial = torch.where(
+        (a.cpu() >= b.cpu())[None, :],
+        a.cpu()[None, :],
+        b.cpu()[None, :],
+    ).expand(M, -1)
+    assert_close(out_partial.cpu(), ref_partial, dtype=dtype, rtol=1e-3, atol=1e-3)
