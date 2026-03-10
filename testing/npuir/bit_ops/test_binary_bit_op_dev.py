@@ -1,19 +1,19 @@
+import pytest
 import torch
-import torch_npu
+import torch_npu  # noqa: F401
+
 import tilelang
 import tilelang.language as T
-import os
 
-# ------------------------------------------------------------
-# Environment setup
-# ------------------------------------------------------------
-os.environ["TILELANG_ASCEND_MODE"] = "Developer"
-torch.npu.set_device(0)
-tilelang.cache.clear_cache()
+from testcommon import assert_close, gen_tensor
 
-# ------------------------------------------------------------
-# Generic binary kernel
-# ------------------------------------------------------------
+
+pytestmark = [pytest.mark.mode("Developer")]
+
+DTYPES = ["int32"]
+BINARY_CASES = [(4, 32, 4)]
+
+
 def binary_kernel(M, N, block_M, op_name):
     grid_M = (M + block_M - 1) // block_M
 
@@ -24,16 +24,13 @@ def binary_kernel(M, N, block_M, op_name):
         Out: T.Tensor((N,), "int32"),
     ):
         with T.Kernel(grid_M, is_npu=True) as (bx, _):
-            # UB buffers
-            acc_A  = T.alloc_shared((N,), "int32")
-            acc_B  = T.alloc_shared((N,), "int32")
+            acc_A = T.alloc_shared((N,), "int32")
+            acc_B = T.alloc_shared((N,), "int32")
             out_ub = T.alloc_shared((N,), "int32")
 
-            # GM -> UB
             T.copy(A, acc_A)
             T.copy(B, acc_B)
 
-            # Elementwise binary op per row
             for i in T.serial(block_M):
                 if op_name == "max":
                     T.npuir_max(acc_A, acc_B, out_ub)
@@ -52,10 +49,10 @@ def binary_kernel(M, N, block_M, op_name):
                 else:
                     raise ValueError(f"Unsupported op: {op_name}")
 
-            # UB -> GM
             T.copy(out_ub, Out)
 
     return main
+
 
 def binary_partial_kernel(M, N, block_M, op_name):
     grid_M = (M + block_M - 1) // block_M
@@ -67,16 +64,13 @@ def binary_partial_kernel(M, N, block_M, op_name):
         Out: T.Tensor((M, N), "int32"),
     ):
         with T.Kernel(grid_M, is_npu=True) as (bx, _):
-            # UB buffers
-            acc_A  = T.alloc_shared((N,), "int32")
-            acc_B  = T.alloc_shared((N,), "int32")
+            acc_A = T.alloc_shared((N,), "int32")
+            acc_B = T.alloc_shared((N,), "int32")
             out_ub = T.alloc_shared((M, N), "int32")
 
-            # GM -> UB
             T.copy(A, acc_A)
             T.copy(B, acc_B)
 
-            # Elementwise binary op per row
             for i in T.serial(block_M):
                 if op_name == "max":
                     T.npuir_max(acc_A, acc_B, out_ub[i, :])
@@ -95,103 +89,92 @@ def binary_partial_kernel(M, N, block_M, op_name):
                 else:
                     raise ValueError(f"Unsupported op: {op_name}")
 
-            # UB -> GM
             T.copy(out_ub, Out)
 
     return main
 
-# ------------------------------------------------------------
-# CPU reference
-# ------------------------------------------------------------
-def reference(A, B, M, op_name):
+
+def compute_expected(A, B, op_name):
     if op_name == "max":
-        ref = torch.max(A, B)[None, :].expand(M, -1)
-    elif op_name == "min":
-        ref = torch.min(A, B)[None, :].expand(M, -1)
-    elif op_name == "and":
-        ref = (A & B)[None, :].expand(M, -1)
-    elif op_name == "or":
-        ref = (A | B)[None, :].expand(M, -1)
-    elif op_name == "xor":
-        ref = (A ^ B)[None, :].expand(M, -1)
-    elif op_name == "shl":
-        ref = (A << B)[None, :].expand(M, -1)
-    elif op_name == "shr":
-        ref = (A >> B)[None, :].expand(M, -1)
-    else:
-        raise ValueError(f"Unsupported op: {op_name}")
-    return ref
+        return torch.max(A, B)
+    if op_name == "min":
+        return torch.min(A, B)
+    if op_name == "and":
+        return A & B
+    if op_name == "or":
+        return A | B
+    if op_name == "xor":
+        return A ^ B
+    if op_name == "shl":
+        return A << B
+    if op_name == "shr":
+        return A >> B
+    raise ValueError(f"Unsupported op: {op_name}")
 
-def main():
-    M, N = 4, 32
-    block_M = 4
-    all_pass = True
 
-    A = torch.randint(0, 10, (N,), dtype=torch.int32).npu()
-    B = torch.randint(0, 10, (N,), dtype=torch.int32).npu()
-    
+def run_binary_case(M, N, block_M, dtype, op_name):
+    A = gen_tensor((N,), dtype, kind="randint", low=0, high=10)
+    B = gen_tensor((N,), dtype, kind="randint", low=0, high=10)
 
-    ops = ["max", "min", "and", "or", "xor", "shl", "shr"]
+    out_full = gen_tensor((N,), dtype, kind="zeros")
+    full_kernel = tilelang.compile(binary_kernel(M, N, block_M, op_name), target="npuir")
+    full_kernel(A, B, out_full)
 
-    for op in ops:
-        print("\n################################")
-        print(f"Testing op: {op}")
-        print("################################")
+    expected_full = compute_expected(A.cpu(), B.cpu(), op_name)
+    assert_close(out_full.cpu(), expected_full.cpu(), dtype=dtype)
 
-        print("\n--- Full Kernel ---")
+    out_partial = gen_tensor((M, N), dtype, kind="zeros")
+    partial_kernel = tilelang.compile(binary_partial_kernel(M, N, block_M, op_name), target="npuir")
+    partial_kernel(A, B, out_partial)
 
-        Out_full = torch.zeros((N,), dtype=torch.int32).npu()
-        func_full = binary_kernel(M, N, block_M, op)
-        compiled_full = tilelang.compile(func_full, target="npuir")
+    expected_partial = expected_full[None, :].expand(M, -1)
+    assert_close(out_partial.cpu(), expected_partial.cpu(), dtype=dtype)
 
-        compiled_full(A, B, Out_full)
 
-        ref_full = reference(A.cpu(), B.cpu(), M, op)
+@pytest.mark.op("max")
+@pytest.mark.parametrize("dtype", DTYPES)
+@pytest.mark.parametrize("M, N, block_M", BINARY_CASES)
+def test_binary_max_dev(M, N, block_M, dtype):
+    run_binary_case(M, N, block_M, dtype, "max")
 
-        print("NPU Out (full):")
-        print(Out_full.cpu())
-        print("\nReference (full):")
-        print(ref_full)
 
-        ok_full = torch.allclose(
-            Out_full.cpu(), ref_full, rtol=1e-3, atol=1e-3, equal_nan=True
-        )
+@pytest.mark.op("min")
+@pytest.mark.parametrize("dtype", DTYPES)
+@pytest.mark.parametrize("M, N, block_M", BINARY_CASES)
+def test_binary_min_dev(M, N, block_M, dtype):
+    run_binary_case(M, N, block_M, dtype, "min")
 
-        print(f"Full kernel result: {'PASS' if ok_full else 'FAIL'}")
-            
 
-        print("\n--- Partial Kernel ---")
+@pytest.mark.op("and")
+@pytest.mark.parametrize("dtype", DTYPES)
+@pytest.mark.parametrize("M, N, block_M", BINARY_CASES)
+def test_binary_and_dev(M, N, block_M, dtype):
+    run_binary_case(M, N, block_M, dtype, "and")
 
-        Out_partial = torch.zeros((M, N), dtype=torch.int32).npu()
 
-        func_partial = binary_partial_kernel(M, N, block_M, op)
-        compiled_partial = tilelang.compile(func_partial, target="npuir")
+@pytest.mark.op("or")
+@pytest.mark.parametrize("dtype", DTYPES)
+@pytest.mark.parametrize("M, N, block_M", BINARY_CASES)
+def test_binary_or_dev(M, N, block_M, dtype):
+    run_binary_case(M, N, block_M, dtype, "or")
 
-        compiled_partial(A, B, Out_partial)
 
-        ref_partial = reference(A.cpu(), B.cpu(), M, op)
+@pytest.mark.op("xor")
+@pytest.mark.parametrize("dtype", DTYPES)
+@pytest.mark.parametrize("M, N, block_M", BINARY_CASES)
+def test_binary_xor_dev(M, N, block_M, dtype):
+    run_binary_case(M, N, block_M, dtype, "xor")
 
-        print("NPU Out (partial):")
-        print(Out_partial.cpu())
-        print("\nReference (partial):")
-        print(ref_partial)
 
-        ok_partial = torch.allclose(
-            Out_partial.cpu(), ref_partial, rtol=1e-3, atol=1e-3, equal_nan=True
-        )
+@pytest.mark.op("shl")
+@pytest.mark.parametrize("dtype", DTYPES)
+@pytest.mark.parametrize("M, N, block_M", BINARY_CASES)
+def test_binary_shl_dev(M, N, block_M, dtype):
+    run_binary_case(M, N, block_M, dtype, "shl")
 
-        print(f"Partial kernel result: {'PASS' if ok_partial else 'FAIL'}")
 
-        if not (ok_full and ok_partial):
-            all_pass = False
-    
-    print("\n================================")
-    if all_pass:
-        print("\033[92mALL OPS (FULL + PARTIAL) PASS ✔\033[0m")
-    else:
-        print("\033[91mSOME OPS FAILED ✘\033[0m")
-    print("================================")
-
-if __name__ == "__main__":
-    print("Running in developer mode")
-    main()
+@pytest.mark.op("shr")
+@pytest.mark.parametrize("dtype", DTYPES)
+@pytest.mark.parametrize("M, N, block_M", BINARY_CASES)
+def test_binary_shr_dev(M, N, block_M, dtype):
+    run_binary_case(M, N, block_M, dtype, "shr")
