@@ -45,6 +45,9 @@ AscendCopy::AscendCopy(Array<PrimExpr> args, BufferMap vmap) : args_(args) {
   if (args.size() >= 2) {
     enRelu = args[2].as<Bool>().value();
   }
+  if (args.size() >= 4) {
+    transposeL1 = args[3].as<Bool>().value();
+  }
   std::tie(this->src, this->dst) = std::tie(bf[0], bf[1]);
   std::tie(this->src_range, this->dst_range) = std::tie(rgs[0], rgs[1]);
   std::tie(this->src_extents, this->dst_extents) = std::tie(ets[0], ets[1]);
@@ -121,7 +124,7 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
     bool needs_strideN = false;
     bool l0c2gm = false;
     bool gm2l1 = false;
-    // bool l12l0 = false;
+    bool l12l0 = false;
     bool print_gm_layout = false;
     bool print_src_layout = false;
     bool print_dst_layout = false;
@@ -140,13 +143,13 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
     config.gm2l1 = true;
   } else if (src.scope() == "shared.dyn" && dst.scope() == "wmma.matrix_a") {
     ss << "copy_l1_to_l0a";
-    config.print_src_layout = true;
-    // config.l12l0 = true;
+    // config.print_src_layout = true;
+    config.l12l0 = true;
     config.l0_dst_split = true;
   } else if (src.scope() == "shared.dyn" && dst.scope() == "wmma.matrix_b") {
     ss << "copy_l1_to_l0b";
-    config.print_src_layout = true;
-    // config.l12l0 = true;
+    // config.print_src_layout = true;
+    config.l12l0 = true;
     config.l0_dst_split = true;
   } else if (src.scope() == "wmma.accumulator" && dst.scope() == "global") {
     ss << "copy_l0c_to_gm";
@@ -227,7 +230,10 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
     } else if (src.scope() == "global") {
       ss << dst->shape[dst_ndim - 2] << ", " << dst->shape[dst_ndim - 1] << ">";
     } else {
-      ss << src->shape[src_ndim - 2] << ", " << src->shape[src_ndim - 1] << ">";
+      ss << src->shape[src_ndim - 2] << ", " << src->shape[src_ndim - 1];
+      if (config.l12l0) {
+        transposeL1 == 0 ? ss << ", false" << ">" : ss << ", true" << ">";
+      }
       // ss << src->shape[src_ndim - 2] << ", " << src->shape[src_ndim - 1] << ", "
       //    << dst->shape[dst_ndim - 2] << ", " << dst->shape[dst_ndim - 1] << ">";
     }
