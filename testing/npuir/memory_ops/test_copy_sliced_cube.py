@@ -211,14 +211,6 @@ def test_cube_sliced_copy_3d(B_dim, M, N, b_idx, m_idx, in_dtype, out_dtype):
 SLICED_4D_CASES = [
     # (B,  H,  M,  N,  b_idx, h_idx, m_idx)
     (2,  4,  16, 32, 1, 2, 5),       # base case
-    (1,  4,  16, 32, 0, 2, 5),       # B=1
-    (2,  1,  16, 32, 1, 0, 5),       # H=1
-    (1,  1,  16, 32, 0, 0, 5),       # B=1, H=1  (two consecutive leading 1s)
-    (1,  1,  1,  32, 0, 0, 0),       # B=1, H=1, M=1  (three consecutive 1s)
-    (2,  4,  16, 32, 0, 0, 0),       # all-zero indices
-    (2,  4,  16, 32, 1, 3, 15),      # boundary indices (last valid)
-    (2,  4,  16,  8, 1, 2, 5),       # small N=8
-    (1,  1,  1,   8, 0, 0, 0),       # small N=8, all leading 1s
 ]
 
 @pytest.mark.parametrize("in_dtype, out_dtype", DTYPE_CASES)

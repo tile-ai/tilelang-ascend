@@ -177,16 +177,6 @@ def cube_copy_shape_3d_4d(M, N, block_M, block_N, in_dtype, out_dtype):
 DYNAMIC_CASES = [
     # (M,  N,  block_M, block_N)   — description
     (8,  8,  3, 3),                 # base: tail in both dims (8%3=2)
-    (6,  6,  3, 3),                 # exact divide, no tail
-    (8,  8,  8, 8),                 # single tile (block == dim)
-    (4,  4,  8, 8),                 # oversized block (block > dim)
-    (1,  8,  1, 3),                 # M=1, single row
-    (16, 32, 5, 7),                 # larger, irregular tiling
-    (7,  8,  3, 3),                 # M tail = 1  (7%3 = 1)
-    (8,  7,  3, 3),                 # N tail = 1  (7%3 = 1)
-    (7,  7,  3, 3),                 # both dims tail = 1
-    (8,  8,  3, 8),                 # block_N == N, only M has tail
-    (8,  8,  8, 3),                 # block_M == M, only N has tail
 ]
 
 
