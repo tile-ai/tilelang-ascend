@@ -1,28 +1,30 @@
-# Copyright (c) Huawei Technologies Co., Ltd. 2025.
-import sys
-import os
-import argparse
+import pytest
 import torch
+import torch_npu  # noqa: F401
 
 import tilelang
 import tilelang.language as T
 
-torch.npu.set_device(0)
-tilelang.cache.clear_cache()
+from testcommon import assert_close, gen_tensor
+
+
+pytestmark = [pytest.mark.mode("Developer")]
 
 M = 4
 N = 1024
-num = 4
+NUM = 4
+
 
 @tilelang.jit(target="npuir")
-def vec_for_add(dtype = "float16"):
-    BLOCK_SIZE = 1
+def vec_for_add(dtype="float16"):
+    block_size = 1
+
     @T.prim_func
     def vecForAdd(
-            Input: T.Tensor((M, N), dtype),
-            Output: T.Tensor((1, N), dtype)
+        Input: T.Tensor((M, N), dtype),
+        Output: T.Tensor((1, N), dtype),
     ):
-        with T.Kernel(BLOCK_SIZE, is_npu=True) as (cid, _):
+        with T.Kernel(block_size, is_npu=True) as (cid, _):
             Add_result = T.alloc_shared([1, N], dtype=dtype)
             src = T.alloc_shared([1, N], dtype=dtype)
 
@@ -36,32 +38,17 @@ def vec_for_add(dtype = "float16"):
 
     return vecForAdd
 
-def test_for_add():
-    input = torch.randn([M, N], dtype=torch.float16).npu()
-    output = torch.randn([1, N], dtype=torch.float16).npu()
-    vecForAdd = vec_for_add()
-    vecForAdd(input, output)
-    ref_output = torch.sum(input, dim=0, keepdim=True)
-
-    print("output")
-    print(output)
-
-    print("ref_output")
-    print(ref_output)
-
-    torch.testing.assert_close(output, ref_output, rtol=1e-2, atol=1e-2)
-    print("\033[92mAll check passed!\033[0m")
-
 
 @tilelang.jit(target="npuir")
-def vec_for_sub(dtype = "float16"):
-    BLOCK_SIZE = 1
+def vec_for_sub(dtype="float16"):
+    block_size = 1
+
     @T.prim_func
     def vecForSub(
-            Input: T.Tensor((M, N), dtype),
-            Output: T.Tensor((1, N), dtype)
+        Input: T.Tensor((M, N), dtype),
+        Output: T.Tensor((1, N), dtype),
     ):
-        with T.Kernel(BLOCK_SIZE, is_npu=True) as (cid, _):
+        with T.Kernel(block_size, is_npu=True) as (cid, _):
             Sub_result = T.alloc_shared([1, N], dtype=dtype)
             src = T.alloc_shared([1, N], dtype=dtype)
 
@@ -76,32 +63,16 @@ def vec_for_sub(dtype = "float16"):
     return vecForSub
 
 
-def test_for_sub():
-    input = torch.randn([M, N], dtype=torch.float16).npu()
-    output = torch.randn([1, N], dtype=torch.float16).npu()
-    vecForSub = vec_for_sub()
-    vecForSub(input, output)
-    ref_output = -torch.sum(input, dim=0, keepdim=True)
-
-    print("output")
-    print(output)
-
-    print("ref_output")
-    print(ref_output)
-
-    torch.testing.assert_close(output, ref_output, rtol=1e-2, atol=1e-2)
-    print("\033[92mAll check passed!\033[0m")
-
-
 @tilelang.jit(target="npuir")
-def vec_for_mul(dtype = "float16"):
-    BLOCK_SIZE = 1
+def vec_for_mul(dtype="float16"):
+    block_size = 1
+
     @T.prim_func
     def vecForMul(
-            Input: T.Tensor((M, N), dtype),
-            Output: T.Tensor((1, N), dtype)
+        Input: T.Tensor((M, N), dtype),
+        Output: T.Tensor((1, N), dtype),
     ):
-        with T.Kernel(BLOCK_SIZE, is_npu=True) as (cid, _):
+        with T.Kernel(block_size, is_npu=True) as (cid, _):
             Mul_result = T.alloc_shared([1, N], dtype=dtype)
             src = T.alloc_shared([1, N], dtype=dtype)
 
@@ -116,32 +87,16 @@ def vec_for_mul(dtype = "float16"):
     return vecForMul
 
 
-def test_for_mul():
-    input = torch.randn([M, N], dtype=torch.float16).npu()
-    output = torch.randn([1, N], dtype=torch.float16).npu()
-    vecForSub = vec_for_mul()
-    vecForSub(input, output)
-    ref_output = torch.prod(input, dim=0, keepdim=True)
-
-    print("output")
-    print(output)
-
-    print("ref_output")
-    print(ref_output)
-
-    torch.testing.assert_close(output, ref_output, rtol=1e-2, atol=1e-2)
-    print("\033[92mAll check passed!\033[0m")
-
-
 @tilelang.jit(target="npuir")
-def vec_for_div(dtype = "float16"):
-    BLOCK_SIZE = 1
+def vec_for_div(dtype="float16"):
+    block_size = 1
+
     @T.prim_func
     def vecForDiv(
-            Input: T.Tensor((M, N), dtype),
-            Output: T.Tensor((1, N), dtype)
+        Input: T.Tensor((M, N), dtype),
+        Output: T.Tensor((1, N), dtype),
     ):
-        with T.Kernel(BLOCK_SIZE, is_npu=True) as (cid, _):
+        with T.Kernel(block_size, is_npu=True) as (cid, _):
             Div_result = T.alloc_shared([1, N], dtype=dtype)
             src = T.alloc_shared([1, N], dtype=dtype)
 
@@ -156,32 +111,16 @@ def vec_for_div(dtype = "float16"):
     return vecForDiv
 
 
-def test_for_div():
-    input = (torch.rand([M, N], dtype=torch.float16) * 1.0 + 1.0).npu()
-    output = torch.randn([1, N], dtype=torch.float16).npu()
-    vecForSub = vec_for_div()
-    vecForSub(input, output)
-    ref_output = 1 / torch.prod(input, dim=0, keepdim=True)
-
-    print("output")
-    print(output)
-
-    print("ref_output")
-    print(ref_output)
-
-    torch.testing.assert_close(output, ref_output, rtol=1e-2, atol=1e-2)
-    print("\033[92mAll check passed!\033[0m")
-
-
 @tilelang.jit(target="npuir")
-def vec_for_exp(dtype = "float16"):
-    BLOCK_SIZE = 1
+def vec_for_exp(dtype="float16"):
+    block_size = 1
+
     @T.prim_func
     def vecForExp(
-            Input: T.Tensor((1, N), dtype),
-            Output: T.Tensor((1, N), dtype)
+        Input: T.Tensor((1, N), dtype),
+        Output: T.Tensor((1, N), dtype),
     ):
-        with T.Kernel(BLOCK_SIZE, is_npu=True) as (cid, _):
+        with T.Kernel(block_size, is_npu=True) as (cid, _):
             src = T.alloc_shared([1, N], dtype=dtype)
             T.copy(Input, src)
             for i in T.Pipelined(4):
@@ -191,33 +130,16 @@ def vec_for_exp(dtype = "float16"):
     return vecForExp
 
 
-def test_for_exp():
-    input = torch.randn([1, N], dtype=torch.float16).npu()
-    output = torch.randn([1, N], dtype=torch.float16).npu()
-    vecForExp = vec_for_exp()
-    vecForExp(input, output)
-    for _ in range(4):
-        input.exp_()
-
-    print("output")
-    print(output)
-
-    print("ref_output")
-    print(input)
-
-    torch.testing.assert_close(output, input, rtol=1e-2, atol=1e-2)
-    print("\033[92mAll check passed!\033[0m")
-
-
 @tilelang.jit(target="npuir")
-def vec_for_ln(dtype = "float16"):
-    BLOCK_SIZE = 1
+def vec_for_ln(dtype="float16"):
+    block_size = 1
+
     @T.prim_func
     def vecForLn(
-            Input: T.Tensor((1, N), dtype),
-            Output: T.Tensor((1, N), dtype)
+        Input: T.Tensor((1, N), dtype),
+        Output: T.Tensor((1, N), dtype),
     ):
-        with T.Kernel(BLOCK_SIZE, is_npu=True) as (cid, _):
+        with T.Kernel(block_size, is_npu=True) as (cid, _):
             src = T.alloc_shared([1, N], dtype=dtype)
             T.copy(Input, src)
             for i in T.Pipelined(2):
@@ -227,35 +149,16 @@ def vec_for_ln(dtype = "float16"):
     return vecForLn
 
 
-def test_for_ln():
-    r = torch.randn([1, N], dtype=torch.float16) + 3
-    r = torch.clamp(r, min=1.0)
-    input = torch.exp(r).npu()
-    output = torch.randn([1, N], dtype=torch.float16).npu()
-    vecForLn = vec_for_ln()
-    vecForLn(input, output)
-    for _ in range(2):
-        input.log_()
-
-    print("output")
-    print(output)
-
-    print("ref_output")
-    print(input)
-
-    torch.testing.assert_close(output, input, rtol=1e-2, atol=1e-2)
-    print("\033[92mAll check passed!\033[0m")
-
-
 @tilelang.jit(target="npuir")
-def vec_for_sqrt(dtype = "float16"):
-    BLOCK_SIZE = 1
+def vec_for_sqrt(dtype="float16"):
+    block_size = 1
+
     @T.prim_func
     def vecForSqrt(
-            Input: T.Tensor((1, N), dtype),
-            Output: T.Tensor((1, N), dtype)
+        Input: T.Tensor((1, N), dtype),
+        Output: T.Tensor((1, N), dtype),
     ):
-        with T.Kernel(BLOCK_SIZE, is_npu=True) as (cid, _):
+        with T.Kernel(block_size, is_npu=True) as (cid, _):
             src = T.alloc_shared([1, N], dtype=dtype)
             T.copy(Input, src)
             for i in T.Pipelined(4):
@@ -265,33 +168,16 @@ def vec_for_sqrt(dtype = "float16"):
     return vecForSqrt
 
 
-def test_for_sqrt():
-    input = torch.exp(torch.randn([1, N], dtype=torch.float16)).npu()
-    output = torch.randn([1, N], dtype=torch.float16).npu()
-    vecForSqrt = vec_for_sqrt()
-    vecForSqrt(input, output)
-    for _ in range(4):
-        input.sqrt_()
-
-    print("output")
-    print(output)
-
-    print("ref_output")
-    print(input)
-
-    torch.testing.assert_close(output, input, rtol=1e-2, atol=1e-2)
-    print("\033[92mAll check passed!\033[0m")
-
-
 @tilelang.jit(target="npuir")
-def vec_for_rsqrt(dtype = "float16"):
-    BLOCK_SIZE = 1
+def vec_for_rsqrt(dtype="float16"):
+    block_size = 1
+
     @T.prim_func
     def vecForRsqrt(
-            Input: T.Tensor((1, N), dtype),
-            Output: T.Tensor((1, N), dtype)
+        Input: T.Tensor((1, N), dtype),
+        Output: T.Tensor((1, N), dtype),
     ):
-        with T.Kernel(BLOCK_SIZE, is_npu=True) as (cid, _):
+        with T.Kernel(block_size, is_npu=True) as (cid, _):
             src = T.alloc_shared([1, N], dtype=dtype)
             T.copy(Input, src)
             for i in T.Pipelined(4):
@@ -301,33 +187,16 @@ def vec_for_rsqrt(dtype = "float16"):
     return vecForRsqrt
 
 
-def test_for_rsqrt():
-    input = torch.exp(torch.randn([1, N], dtype=torch.float16)).npu()
-    output = torch.randn([1, N], dtype=torch.float16).npu()
-    vecForRsqrt = vec_for_rsqrt()
-    vecForRsqrt(input, output)
-    for _ in range(4):
-        input.rsqrt_()
-
-    print("output")
-    print(output)
-
-    print("ref_output")
-    print(input)
-
-    torch.testing.assert_close(output, input, rtol=1e-2, atol=1e-2)
-    print("\033[92mAll check passed!\033[0m")
-
-
 @tilelang.jit(target="npuir")
-def vec_for_rec(dtype = "float16"):
-    BLOCK_SIZE = 1
+def vec_for_rec(dtype="float16"):
+    block_size = 1
+
     @T.prim_func
     def vecForRec(
-            Input: T.Tensor((1, N), dtype),
-            Output: T.Tensor((1, N), dtype)
+        Input: T.Tensor((1, N), dtype),
+        Output: T.Tensor((1, N), dtype),
     ):
-        with T.Kernel(BLOCK_SIZE, is_npu=True) as (cid, _):
+        with T.Kernel(block_size, is_npu=True) as (cid, _):
             src = T.alloc_shared([1, N], dtype=dtype)
             T.copy(Input, src)
             for i in T.Pipelined(5):
@@ -337,40 +206,22 @@ def vec_for_rec(dtype = "float16"):
     return vecForRec
 
 
-def test_for_rec():
-    input = torch.randn([1, N], dtype=torch.float16).npu()
-    output = torch.randn([1, N], dtype=torch.float16).npu()
-    vecForRec = vec_for_rec()
-    vecForRec(input, output)
-    for _ in range(5):
-        input.reciprocal_()
-
-    print("output")
-    print(output)
-
-    print("ref_output")
-    print(input)
-
-    torch.testing.assert_close(output, input, rtol=1e-2, atol=1e-2)
-    print("\033[92mAll check passed!\033[0m")
-
-
 def npuir_not_float16(x):
     x_int16 = x.view(torch.int16)
     x_int16_not = torch.bitwise_not(x_int16)
-    x_not = x_int16_not.view(torch.float16)
-    return x_not
+    return x_int16_not.view(torch.float16)
 
 
 @tilelang.jit(target="npuir")
-def vec_for_not(dtype = "float16"):
-    BLOCK_SIZE = 1
+def vec_for_not(dtype="float16"):
+    block_size = 1
+
     @T.prim_func
     def vecForNot(
-            Input: T.Tensor((1, N), dtype),
-            Output: T.Tensor((1, N), dtype)
+        Input: T.Tensor((1, N), dtype),
+        Output: T.Tensor((1, N), dtype),
     ):
-        with T.Kernel(BLOCK_SIZE, is_npu=True) as (cid, _):
+        with T.Kernel(block_size, is_npu=True) as (cid, _):
             src = T.alloc_shared([1, N], dtype=dtype)
             T.copy(Input, src)
             for i in T.Pipelined(5):
@@ -379,74 +230,41 @@ def vec_for_not(dtype = "float16"):
 
     return vecForNot
 
-def test_for_not():
-    input = torch.randn([1, N], dtype=torch.float16).npu()
-    output = torch.randn([1, N], dtype=torch.float16).npu()
-    vecForNot = vec_for_not()
-    vecForNot(input, output)
-    for _ in range(5):
-        input = npuir_not_float16(input)
-
-    print("output")
-    print(output)
-
-    print("ref_output")
-    print(input)
-
-    torch.testing.assert_close(output, input, rtol=1e-2, atol=1e-2)
-    print("\033[92mAll check passed!\033[0m")
-
 
 @tilelang.jit(target="npuir")
-def vec_for_reduce(dtype = "float32"):
-    BLOCK_SIZE = 1
+def vec_for_reduce(dtype="float32"):
+    block_size = 1
+
     @T.prim_func
     def vecForReduce(
-            Input: T.Tensor((num, M, N), dtype),
-            Output: T.Tensor((M, 1), dtype)
+        Input: T.Tensor((NUM, M, N), dtype),
+        Output: T.Tensor((M, 1), dtype),
     ):
-        with T.Kernel(BLOCK_SIZE, is_npu=True) as (cid, _):
+        with T.Kernel(block_size, is_npu=True) as (cid, _):
             reduce_result = T.alloc_shared([M, 1], dtype=dtype)
             src = T.alloc_shared([M, N], dtype=dtype)
 
             value_zero = 0
             T.npuir_brc(value_zero, reduce_result)
-            for i in T.Pipelined(num):
+            for i in T.Pipelined(NUM):
                 T.copy(Input[i, :, :], src)
-                T.npuir_reduce(src, reduce_result, 1, "sum", clear = False)
+                T.npuir_reduce(src, reduce_result, 1, "sum", clear=False)
 
             T.copy(reduce_result, Output)
 
     return vecForReduce
 
 
-def test_for_reduce():
-    input = torch.randn([num, M, N], dtype=torch.float32).npu()
-    output = torch.randn([M, 1], dtype=torch.float32).npu()
-    vecForReduce = vec_for_reduce()
-    vecForReduce(input, output)
-
-    ref_output = torch.sum(input, dim=2, keepdim=True).sum(dim=0)
-
-    print("output")
-    print(output)
-
-    print("ref_output")
-    print(ref_output)
-
-    torch.testing.assert_close(output, ref_output, rtol=1e-2, atol=1e-2)
-    print("\033[92mAll check passed!\033[0m")
-
-
 @tilelang.jit(target="npuir")
-def vec_for_abs(dtype = "float16"):
-    BLOCK_SIZE = 1
+def vec_for_abs(dtype="float16"):
+    block_size = 1
+
     @T.prim_func
     def vecForAbs(
-            Input: T.Tensor((1, N), dtype),
-            Output: T.Tensor((1, N), dtype)
+        Input: T.Tensor((1, N), dtype),
+        Output: T.Tensor((1, N), dtype),
     ):
-        with T.Kernel(BLOCK_SIZE, is_npu=True) as (cid, _):
+        with T.Kernel(block_size, is_npu=True) as (cid, _):
             src = T.alloc_shared([1, N], dtype=dtype)
             T.copy(Input, src)
             for i in T.Pipelined(5):
@@ -456,33 +274,16 @@ def vec_for_abs(dtype = "float16"):
     return vecForAbs
 
 
-def test_for_abs():
-    input = torch.randn([1, N], dtype=torch.float16).npu()
-    output = torch.randn([1, N], dtype=torch.float16).npu()
-    vecForAbs = vec_for_abs()
-    vecForAbs(input, output)
-    for _ in range(5):
-        input.abs_()
-
-    print("output")
-    print(output)
-
-    print("ref_output")
-    print(input)
-
-    torch.testing.assert_close(output, input, rtol=1e-2, atol=1e-2)
-    print("\033[92mAll check passed!\033[0m")
-
-
 @tilelang.jit(target="npuir")
-def vec_for_relu(dtype = "float16"):
-    BLOCK_SIZE = 1
+def vec_for_relu(dtype="float16"):
+    block_size = 1
+
     @T.prim_func
     def vecForRelu(
-            Input: T.Tensor((1, N), dtype),
-            Output: T.Tensor((1, N), dtype)
+        Input: T.Tensor((1, N), dtype),
+        Output: T.Tensor((1, N), dtype),
     ):
-        with T.Kernel(BLOCK_SIZE, is_npu=True) as (cid, _):
+        with T.Kernel(block_size, is_npu=True) as (cid, _):
             src = T.alloc_shared([1, N], dtype=dtype)
             T.copy(Input, src)
             for i in T.Pipelined(5):
@@ -492,63 +293,162 @@ def vec_for_relu(dtype = "float16"):
     return vecForRelu
 
 
-def test_for_relu():
-    input = torch.randn([1, N], dtype=torch.float16).npu()
-    output = torch.randn([1, N], dtype=torch.float16).npu()
-    vecForRelu = vec_for_relu()
-    vecForRelu(input, output)
+@pytest.mark.op("add")
+@pytest.mark.parametrize("dtype", ["float16"])
+def test_for_add(dtype):
+    input_tensor = gen_tensor((M, N), dtype, kind="randn")
+    output_tensor = gen_tensor((1, N), dtype, kind="randn")
+    vecForAdd = vec_for_add(dtype)
+    vecForAdd(input_tensor, output_tensor)
+    ref_output = torch.sum(input_tensor, dim=0, keepdim=True)
+    assert_close(output_tensor.cpu(), ref_output.cpu(), dtype=dtype, rtol=1e-2, atol=1e-2)
+
+
+@pytest.mark.op("sub")
+@pytest.mark.parametrize("dtype", ["float16"])
+def test_for_sub(dtype):
+    input_tensor = gen_tensor((M, N), dtype, kind="randn")
+    output_tensor = gen_tensor((1, N), dtype, kind="randn")
+    vecForSub = vec_for_sub(dtype)
+    vecForSub(input_tensor, output_tensor)
+    ref_output = -torch.sum(input_tensor, dim=0, keepdim=True)
+    assert_close(output_tensor.cpu(), ref_output.cpu(), dtype=dtype, rtol=1e-2, atol=1e-2)
+
+
+@pytest.mark.op("mul")
+@pytest.mark.parametrize("dtype", ["float16"])
+def test_for_mul(dtype):
+    input_tensor = gen_tensor((M, N), dtype, kind="randn")
+    output_tensor = gen_tensor((1, N), dtype, kind="randn")
+    vecForMul = vec_for_mul(dtype)
+    vecForMul(input_tensor, output_tensor)
+    ref_output = torch.prod(input_tensor, dim=0, keepdim=True)
+    assert_close(output_tensor.cpu(), ref_output.cpu(), dtype=dtype, rtol=1e-2, atol=1e-2)
+
+
+@pytest.mark.op("div")
+@pytest.mark.parametrize("dtype", ["float16"])
+def test_for_div(dtype):
+    input_tensor = gen_tensor((M, N), dtype, kind="rand") * 1.0 + 1.0
+    output_tensor = gen_tensor((1, N), dtype, kind="randn")
+    vecForDiv = vec_for_div(dtype)
+    vecForDiv(input_tensor, output_tensor)
+    ref_output = 1 / torch.prod(input_tensor, dim=0, keepdim=True)
+    assert_close(output_tensor.cpu(), ref_output.cpu(), dtype=dtype, rtol=1e-2, atol=1e-2)
+
+
+@pytest.mark.op("exp")
+@pytest.mark.parametrize("dtype", ["float16"])
+def test_for_exp(dtype):
+    input_tensor = gen_tensor((1, N), dtype, kind="randn")
+    output_tensor = gen_tensor((1, N), dtype, kind="randn")
+    vecForExp = vec_for_exp(dtype)
+    vecForExp(input_tensor, output_tensor)
+    ref_output = input_tensor.clone()
+    for _ in range(4):
+        ref_output.exp_()
+    assert_close(output_tensor.cpu(), ref_output.cpu(), dtype=dtype, rtol=1e-2, atol=1e-2)
+
+
+@pytest.mark.op("ln")
+@pytest.mark.parametrize("dtype", ["float16"])
+def test_for_ln(dtype):
+    base_tensor = gen_tensor((1, N), dtype, kind="randn") + 3
+    base_tensor = torch.clamp(base_tensor, min=1.0)
+    input_tensor = torch.exp(base_tensor).npu()
+    output_tensor = gen_tensor((1, N), dtype, kind="randn")
+    vecForLn = vec_for_ln(dtype)
+    vecForLn(input_tensor, output_tensor)
+    ref_output = input_tensor.clone()
+    for _ in range(2):
+        ref_output.log_()
+    assert_close(output_tensor.cpu(), ref_output.cpu(), dtype=dtype, rtol=1e-2, atol=1e-2)
+
+
+@pytest.mark.op("sqrt")
+@pytest.mark.parametrize("dtype", ["float16"])
+def test_for_sqrt(dtype):
+    input_tensor = torch.exp(gen_tensor((1, N), dtype, kind="randn")).npu()
+    output_tensor = gen_tensor((1, N), dtype, kind="randn")
+    vecForSqrt = vec_for_sqrt(dtype)
+    vecForSqrt(input_tensor, output_tensor)
+    ref_output = input_tensor.clone()
+    for _ in range(4):
+        ref_output.sqrt_()
+    assert_close(output_tensor.cpu(), ref_output.cpu(), dtype=dtype, rtol=1e-2, atol=1e-2)
+
+
+@pytest.mark.op("rsqrt")
+@pytest.mark.parametrize("dtype", ["float16"])
+def test_for_rsqrt(dtype):
+    input_tensor = torch.exp(gen_tensor((1, N), dtype, kind="randn")).npu()
+    output_tensor = gen_tensor((1, N), dtype, kind="randn")
+    vecForRsqrt = vec_for_rsqrt(dtype)
+    vecForRsqrt(input_tensor, output_tensor)
+    ref_output = input_tensor.clone()
+    for _ in range(4):
+        ref_output.rsqrt_()
+    assert_close(output_tensor.cpu(), ref_output.cpu(), dtype=dtype, rtol=1e-2, atol=1e-2)
+
+
+@pytest.mark.op("rec")
+@pytest.mark.parametrize("dtype", ["float16"])
+def test_for_rec(dtype):
+    input_tensor = gen_tensor((1, N), dtype, kind="randn")
+    output_tensor = gen_tensor((1, N), dtype, kind="randn")
+    vecForRec = vec_for_rec(dtype)
+    vecForRec(input_tensor, output_tensor)
+    ref_output = input_tensor.clone()
     for _ in range(5):
-        input.relu_()
-
-    print("output")
-    print(output)
-
-    print("ref_output")
-    print(input)
-
-    torch.testing.assert_close(output, input, rtol=1e-2, atol=1e-2)
-    print("\033[92mAll check passed!\033[0m")
+        ref_output.reciprocal_()
+    assert_close(output_tensor.cpu(), ref_output.cpu(), dtype=dtype, rtol=1e-2, atol=1e-2)
 
 
-if __name__ == "__main__":
-    os.environ['TILELANG_ASCEND_MODE'] = 'Developer'
-    print("Running in developer mode")
-    print(">>>>>> Test add in T.pipelined <<<<<<")
-    test_for_add()
-    print()
-    print(">>>>>> Test sub in T.pipelined <<<<<<")
-    test_for_sub()
-    print()
-    print(">>>>>> Test mul in T.pipelined <<<<<<")
-    test_for_mul()
-    print()
-    print(">>>>>> Test div in T.pipelined <<<<<<")
-    test_for_div()
-    print()
-    print(">>>>>> Test exp in T.pipelined <<<<<<")
-    test_for_exp()
-    print()
-    print(">>>>>> Test ln in T.pipelined <<<<<<")
-    test_for_ln()
-    print()
-    print(">>>>>> Test sqrt in T.pipelined <<<<<<")
-    test_for_sqrt()
-    print()
-    print(">>>>>> Test rsqrt in T.pipelined <<<<<<")
-    test_for_rsqrt()
-    print()
-    print(">>>>>> Test rec in T.pipelined <<<<<<")
-    test_for_rec()
-    print()
-    print(">>>>>> Test not in T.pipelined <<<<<<")
-    test_for_not()
-    print()
-    print(">>>>>> Test reduce in T.pipelined <<<<<<")
-    test_for_reduce()
-    print()
-    print(">>>>>> Test abs in T.pipelined <<<<<<")
-    test_for_abs()
-    print()
-    print(">>>>>> Test relu in T.pipelined <<<<<<")
-    test_for_relu()
-    print()
+@pytest.mark.op("not")
+@pytest.mark.parametrize("dtype", ["float16"])
+def test_for_not(dtype):
+    input_tensor = gen_tensor((1, N), dtype, kind="randn")
+    output_tensor = gen_tensor((1, N), dtype, kind="randn")
+    vecForNot = vec_for_not(dtype)
+    vecForNot(input_tensor, output_tensor)
+    ref_output = input_tensor.clone()
+    for _ in range(5):
+        ref_output = npuir_not_float16(ref_output)
+    assert_close(output_tensor.cpu(), ref_output.cpu(), dtype=dtype, rtol=1e-2, atol=1e-2)
+
+
+@pytest.mark.op("reduce")
+@pytest.mark.parametrize("dtype", ["float32"])
+def test_for_reduce(dtype):
+    input_tensor = gen_tensor((NUM, M, N), dtype, kind="randn")
+    output_tensor = gen_tensor((M, 1), dtype, kind="randn")
+    vecForReduce = vec_for_reduce(dtype)
+    vecForReduce(input_tensor, output_tensor)
+    ref_output = torch.sum(input_tensor, dim=2, keepdim=True).sum(dim=0)
+    assert_close(output_tensor.cpu(), ref_output.cpu(), dtype=dtype, rtol=1e-2, atol=1e-2)
+
+
+@pytest.mark.op("abs")
+@pytest.mark.parametrize("dtype", ["float16"])
+def test_for_abs(dtype):
+    input_tensor = gen_tensor((1, N), dtype, kind="randn")
+    output_tensor = gen_tensor((1, N), dtype, kind="randn")
+    vecForAbs = vec_for_abs(dtype)
+    vecForAbs(input_tensor, output_tensor)
+    ref_output = input_tensor.clone()
+    for _ in range(5):
+        ref_output.abs_()
+    assert_close(output_tensor.cpu(), ref_output.cpu(), dtype=dtype, rtol=1e-2, atol=1e-2)
+
+
+@pytest.mark.op("relu")
+@pytest.mark.parametrize("dtype", ["float16"])
+def test_for_relu(dtype):
+    input_tensor = gen_tensor((1, N), dtype, kind="randn")
+    output_tensor = gen_tensor((1, N), dtype, kind="randn")
+    vecForRelu = vec_for_relu(dtype)
+    vecForRelu(input_tensor, output_tensor)
+    ref_output = input_tensor.clone()
+    for _ in range(5):
+        ref_output.relu_()
+    assert_close(output_tensor.cpu(), ref_output.cpu(), dtype=dtype, rtol=1e-2, atol=1e-2)

@@ -1,11 +1,19 @@
-# Copyright (c) Huawei Technologies Co., Ltd. 2025.
-import os
+import pytest
 import torch
+import torch_npu  # noqa: F401
+
 import tilelang
 import tilelang.language as T
 
-torch.npu.set_device(0)
-tilelang.cache.clear_cache()
+from testcommon import assert_close, gen_tensor
+
+
+MATMUL_CASES = [
+    (1024, 512, 2048),
+    (512, 1024, 512),
+]
+MINICV_CASES = [(1024, 1024, 512, 128, 256)]
+
 
 @tilelang.jit(out_idx=[-1], target="npuir")
 def matmul(block_M, block_N, K_L1, dtype="float16", accum_dtype="float32"):
@@ -17,7 +25,7 @@ def matmul(block_M, block_N, K_L1, dtype="float16", accum_dtype="float32"):
     def main(
         A: T.Tensor((M, K), dtype),
         B: T.Tensor((K, N), dtype),
-        C: T.Tensor((M, N), dtype)
+        C: T.Tensor((M, N), dtype),
     ):
         with T.Kernel(T.ceildiv(M, block_M) * T.ceildiv(N, block_N), is_npu=True) as (cid, _):
             with T.Scope("Cube"):
@@ -36,43 +44,33 @@ def matmul(block_M, block_N, K_L1, dtype="float16", accum_dtype="float32"):
                     T.npuir_load_nd2nz(B[i * K_L1, by], B_BUF, [remain_K, remain_N])
 
                     if i == 0:
-                        T.npuir_dot(A_BUF, B_BUF, C_BUF, initC=True, b_transpose=False,
-                            size=[remain_M, remain_K, remain_N])
+                        T.npuir_dot(
+                            A_BUF,
+                            B_BUF,
+                            C_BUF,
+                            initC=True,
+                            b_transpose=False,
+                            size=[remain_M, remain_K, remain_N],
+                        )
                     else:
-                        T.npuir_dot(A_BUF, B_BUF, C_BUF, initC=False, b_transpose=False,
-                            size=[remain_M, remain_K, remain_N])
+                        T.npuir_dot(
+                            A_BUF,
+                            B_BUF,
+                            C_BUF,
+                            initC=False,
+                            b_transpose=False,
+                            size=[remain_M, remain_K, remain_N],
+                        )
 
-                    T.npuir_store_fixpipe(C_BUF, C[bx, by],
-                        size=[remain_M, remain_N], enable_nz2nd=True)
+                    T.npuir_store_fixpipe(
+                        C_BUF,
+                        C[bx, by],
+                        size=[remain_M, remain_N],
+                        enable_nz2nd=True,
+                    )
 
     return main
 
-
-def test_mat_mul():
-    
-    func = matmul(128, 256, 16)
-    # shape 1
-    M, N, K = 1024, 512, 2048
-    a = torch.randn(M, K).half().npu()
-    b = torch.randn(K, N).half().npu()
-    
-    c = func(a, b)
-    print(c)
-    ref_c = a @ b
-    print(ref_c)
-    torch.testing.assert_close(c, ref_c, rtol=1e-2, atol=1e-2)
-
-    # shape 2
-    M, N, K = 512, 1024, 512
-    a = torch.randn(M, K).half().npu()
-    b = torch.randn(K, N).half().npu()
-    
-    c = func(a, b)
-    print(c)
-    ref_c = a @ b
-    print(ref_c)
-    torch.testing.assert_close(c, ref_c, rtol=1e-2, atol=1e-2)
-    print("\033[92mAll check passed!\033[0m")
 
 @tilelang.jit(out_idx=[-2, -1], target="npuir")
 def minicv(M, N, K, block_M, block_N, dtype="float16", inner_dtype="float32"):
@@ -80,11 +78,11 @@ def minicv(M, N, K, block_M, block_N, dtype="float16", inner_dtype="float32"):
     n_num = N // block_N
 
     @T.prim_func
-    def minicv(
-            A: T.Tensor((M, K), dtype),
-            B: T.Tensor((K, N), dtype),
-            C: T.Tensor((M, N), inner_dtype),
-            D: T.Tensor((M, N), inner_dtype),
+    def main(
+        A: T.Tensor((M, K), dtype),
+        B: T.Tensor((K, N), dtype),
+        C: T.Tensor((M, N), inner_dtype),
+        D: T.Tensor((M, N), inner_dtype),
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, _):
             blockx = cid // n_num
@@ -97,43 +95,43 @@ def minicv(M, N, K, block_M, block_N, dtype="float16", inner_dtype="float32"):
             C_BUF = T.alloc_fragment((block_M, block_N), inner_dtype)
             D_BUF = T.alloc_fragment((block_M, block_N), inner_dtype)
 
-            T.copy(A[bx, 0], A_BUF, [block_M, K])
-            T.copy(B[0, by], B_BUF, [K, block_N])
+            T.copy(A[bx:bx + block_M, 0:K], A_BUF)
+            T.copy(B[0:K, by:by + block_N], B_BUF)
 
-            T.gemm(A_BUF, B_BUF, C_BUF, [block_M, K, block_N], initC = True)
+            T.gemm(A_BUF, B_BUF, C_BUF, [block_M, K, block_N], initC=True)
             T.vexp(C_BUF, D_BUF)
 
-            T.copy(C_BUF, C[bx, by], [block_M, block_N])
-            T.copy(D_BUF, D[bx, by], [block_M, block_N])
+            T.copy(C_BUF, C[bx:bx + block_M, by:by + block_N])
+            T.copy(D_BUF, D[bx:bx + block_M, by:by + block_N])
 
-    return minicv
+    return main
 
-def test_minicv():
-    M = 1024
-    N = 1024
-    K = 512
-    dtype="float16"
-    inner_dtype="float32"
 
-    os.environ['TILELANG_ASCEND_WORKSPACE_SIZE'] = str(M * N)
-    func = minicv(M, N, K, 128, 256)
+@pytest.mark.op("matmul")
+@pytest.mark.mode("Expert")
+@pytest.mark.parametrize("M, N, K", MATMUL_CASES)
+def test_mat_mul(M, N, K):
+    func = matmul(128, 256, 16)
+    a = gen_tensor((M, K), "float16", kind="randn")
+    b = gen_tensor((K, N), "float16", kind="randn")
 
-    v1 = torch.randn(size=[M, K], dtype=eval("torch." + dtype)).npu()
-    v2 = torch.randn(size=[K, N], dtype=eval("torch." + dtype)).npu()
+    c = func(a, b)
+    ref_c = a @ b
+
+    assert_close(c.cpu(), ref_c.cpu(), dtype="float16", rtol=1e-2, atol=1e-2)
+
+
+@pytest.mark.op("exp")
+@pytest.mark.mode("Developer")
+@pytest.mark.parametrize("M, N, K, block_M, block_N", MINICV_CASES)
+def test_minicv(monkeypatch, M, N, K, block_M, block_N):
+    monkeypatch.setenv("TILELANG_ASCEND_WORKSPACE_SIZE", str(M * N))
+    func = minicv(M, N, K, block_M, block_N)
+
+    v1 = gen_tensor((M, K), "float16", kind="randn")
+    v2 = gen_tensor((K, N), "float16", kind="randn")
 
     y_ref = torch.exp(v1.to(torch.float32) @ v2.to(torch.float32))
-    v3, v4 = func(v1, v2)
+    _, v4 = func(v1, v2)
 
-    print(y_ref)
-    print(v4)
-    torch.testing.assert_close(v4, y_ref, rtol=1e-2, atol=1e-2)
-    print("\033[92mAll check passed!\033[0m")
-
-if __name__ == "__main__":
-    # test dynamic shape
-    os.environ['TILELANG_ASCEND_MODE'] = 'Expert'
-    test_mat_mul()
-    # test multi out_idxs
-    os.environ['TILELANG_ASCEND_MODE'] = 'Developer'
-    test_minicv()
- 
+    assert_close(v4.cpu(), y_ref.cpu(), dtype="float32", rtol=1e-2, atol=1e-2)
