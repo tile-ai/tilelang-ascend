@@ -60,7 +60,7 @@ jobs:
     runs-on: linux-aarch64-a3-2
     container:
       image: swr.cn-southwest-2.myhuaweicloud.com/base_image/ascend-ci/cann:8.5.0-a3-ubuntu22.04-py3.11
-    timeout-minutes: 60
+    timeout-minutes: 120
     steps:
 
     - name: Checkout repository
@@ -90,7 +90,7 @@ jobs:
         pip install torch==2.7.1+cpu -i ${TORCH_CACHE_URL} --extra-index-url ${PYPI_CACHE_URL}
         pip install torch-npu==2.7.1
         pip install dist/*.whl
-        pip install pytest numpy triton
+        pip install pytest pytest-xdist pytest-html numpy
 
     - name: Run npuir tests
       env:
@@ -98,15 +98,14 @@ jobs:
       run: |
         mkdir -p testing/npuir/output
         mv tilelang _tilelang_src
-        failed=""
-        for dir in testing/npuir/*_ops; do
-          echo "::group::pytest ${dir}"
-          if ! python -m pytest -v "$dir"; then
-            failed="$failed $dir"
-          fi
-          echo "::endgroup::"
-        done
-        if [ -n "$failed" ]; then
-          echo "::error::Failed test groups:$failed"
-          exit 1
-        fi
+        python -m pytest -v testing/npuir/*_ops \
+          -n 2 \
+          --html=testing/npuir/output/report.html --self-contained-html \
+          --junitxml=testing/npuir/output/junit.xml
+
+    - name: Upload test report
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: npuir-test-report
+        path: testing/npuir/output/
