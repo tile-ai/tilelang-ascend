@@ -245,7 +245,8 @@ public:
         info.type = "Evaluate";
         info.stmt = GetRef<Stmt>(op);
         if (auto call_node = op->value.as<CallNode>()) {
-            for (int idx = 1; idx < call_node->args.size(); idx++) {
+            int arg_start = call_node->op.same_as(builtin::call_extern()) ? 1 : 0;
+            for (int idx = arg_start; idx < call_node->args.size(); idx++) {
                 if (auto inter_node = call_node->args[idx].as<CallNode>()) {
                     auto buf_name = Downcast<Var>(inter_node->args[1]);
                     core_scope_ = checkBufferScope(location_map_, buf_name);
@@ -380,7 +381,8 @@ private:
                                    std::set<std::string>& used_buffers,
                                    std::vector<AccessInfo>& accesses) {
         auto args = call_node->args;
-        for (int i = 1; i < args.size(); ++i) {
+        int start = call_node->op.same_as(builtin::call_extern()) ? 1 : 0;
+        for (int i = start; i < args.size(); ++i) {
             if (auto inner_call_node = args[i].as<CallNode>()) {
                 if (inner_call_node->op.same_as(builtin::tvm_access_ptr()) &&
                     inner_call_node->args.size() >= 5) {
@@ -419,7 +421,8 @@ private:
 
     std::optional<std::string> FindWorkspaceName(const CallNode* call_node) {
         auto args = call_node->args;
-        for (int i = 1; i < args.size(); ++i) {
+        int start = call_node->op.same_as(builtin::call_extern()) ? 1 : 0;
+        for (int i = start; i < args.size(); ++i) {
             if (auto inner_call_node = args[i].as<CallNode>()) {
                 std::string buf_name = Downcast<Var>(inner_call_node->args[1])->name_hint;
                 if (buf_name.find("workspace") != std::string::npos) {
