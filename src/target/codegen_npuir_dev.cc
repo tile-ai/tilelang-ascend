@@ -9,6 +9,7 @@
 #include "../op/ascend.h"
 #include "../op/builtin.h"
 #include "arith/pattern_match.h"
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstddef>
@@ -462,15 +463,46 @@ void CodeGenTileLangNPUIRDEV::VisitStmt_(const tir::ForNode *op) {
   // Collect all variables defined in the loop body,
   // which may need to be carried as loop values
   std::vector<const tir::VarNode *> loop_carried_vars;
+  std::vector<const tir::VarNode*> touched_workspace_vars;
+  std::vector<const tir::VarNode*> carried_workspace_vars;
+  std::vector<WorkspaceTensorRecord> carried_workspace_records;
   std::vector<mlir::Value> init_values;
 
   // Traverse the body of the for loop body, and generate
   // region iter args
-  CollectVarsUsedInBodyButDefinedOutside(op, loop_carried_vars);
+  for (const auto *var_node : loop_carried_vars) {
+  CollectVarsUsedInBodyButDefinedOutside(
+      op, loop_carried_vars, &touched_workspace_vars);
   for (const auto *var_node : loop_carried_vars) {
     auto it = GetVarValue(var_node);
     ICHECK(it != mlir::Value{});
     init_values.push_back(it);
+  }
+
+  auto can_carry_workspace_record = [](const WorkspaceTensorRecord& record) {
+    if (!record.tensor || !record.tensor.getType().isa<mlir::RankedTensorType>()) {
+      return false;
+    }
+    auto all_static = [](const llvm::SmallVector<mlir::OpFoldResult>& ofrs) {
+      return std::all_of(ofrs.begin(), ofrs.end(), [](mlir::OpFoldResult ofr) {
+        return ofr.is<mlir::Attribute>();
+      });
+    };
+    return all_static(record.offs) && all_static(record.sizes) &&
+           all_static(record.strides);
+  };
+
+  for (const auto* var_node : touched_workspace_vars) {
+    auto it = workspace_tensor_map_.find(var_node);
+    if (it == workspace_tensor_map_.end()) {
+      continue;
+    }
+    if (!can_carry_workspace_record(it->second)) {
+      continue;
+    }
+    carried_workspace_vars.push_back(var_node);
+    carried_workspace_records.push_back(it->second);
+    init_values.push_back(it->second.tensor);
   }
 
   // Create the loop
@@ -493,6 +525,12 @@ void CodeGenTileLangNPUIRDEV::VisitStmt_(const tir::ForNode *op) {
   for (const auto *var_node : loop_carried_vars) {
     SetVarValue(var_node, forOp.getRegionIterArg(iter++));
   }
+  int workspace_iter_begin = iter;
+  for (size_t i = 0; i < carried_workspace_vars.size(); ++i) {
+    auto record = carried_workspace_records[i];
+    record.tensor = forOp.getRegionIterArg(iter++);
+    workspace_tensor_map_[carried_workspace_vars[i]] = record;
+  }
 
   // Traverse the body of the for loop
   this->VisitStmt(op->body);
@@ -503,6 +541,14 @@ void CodeGenTileLangNPUIRDEV::VisitStmt_(const tir::ForNode *op) {
     auto it = GetVarValue(var_node);
     ICHECK(it != mlir::Value{});
     yield_values.push_back(it);
+  }
+  for (size_t i = 0; i < carried_workspace_vars.size(); ++i) {
+    auto map_it = workspace_tensor_map_.find(carried_workspace_vars[i]);
+    if (map_it != workspace_tensor_map_.end() && map_it->second.tensor) {
+      yield_values.push_back(map_it->second.tensor);
+    } else {
+      yield_values.push_back(forOp.getRegionIterArg(workspace_iter_begin + i));
+    }
   }
 
   if (!yield_values.empty()) {
@@ -515,6 +561,22 @@ void CodeGenTileLangNPUIRDEV::VisitStmt_(const tir::ForNode *op) {
   iter = 0;
   for (const auto *var_node : loop_carried_vars) {
     SetVarValue(var_node, forOp.getResult(iter++));
+  }
+
+  std::unordered_set<const tir::VarNode*> carried_workspace_set(
+      carried_workspace_vars.begin(), carried_workspace_vars.end());
+  for (const auto* var_node : touched_workspace_vars) {
+    if (carried_workspace_set.count(var_node) == 0) {
+      workspace_tensor_map_.erase(var_node);
+    }
+  }
+  for (const auto* var_node : carried_workspace_vars) {
+    mlir::Value carried_tensor = forOp.getResult(iter++);
+    auto map_it = workspace_tensor_map_.find(var_node);
+    if (map_it == workspace_tensor_map_.end()) {
+      continue;
+    }
+    map_it->second.tensor = carried_tensor;
   }
 }
 
@@ -612,14 +674,20 @@ void CodeGenTileLangNPUIRDEV::VisitStmt_(const tir::IfThenElseNode *op) {
 }
 
 void CodeGenTileLangNPUIRDEV::CollectVarsUsedInBodyButDefinedOutside(
-    const tir::ForNode *op, std::vector<const VarNode *> &loop_carried_vars) {
-  LoopCarriedVarCollector collector(this, loop_carried_vars);
+    const tir::ForNode *op,
+    std::vector<const VarNode *> &loop_carried_vars,
+    std::vector<const VarNode*>* workspace_touched_vars) {
+  LoopCarriedVarCollector collector(
+      this, loop_carried_vars, workspace_touched_vars);
   collector.VisitStmt(op->body);
 }
 
 void CodeGenTileLangNPUIRDEV::CollectVarsUsedInBodyButDefinedOutside(
-    const IfThenElseNode *op, std::vector<const VarNode *> &if_carried_vars) {
-  LoopCarriedVarCollector collector(this, if_carried_vars);
+    const IfThenElseNode *op,
+    std::vector<const VarNode *> &if_carried_vars,
+    std::vector<const VarNode*>* workspace_touched_vars) {
+  LoopCarriedVarCollector collector(
+      this, if_carried_vars, workspace_touched_vars);
   collector.VisitStmt(op->then_case);
   if (op->else_case) {
     collector.VisitStmt(op->else_case.value());
@@ -4452,6 +4520,22 @@ void CodeGenTileLangNPUIRDEV::LoopCarriedVarCollector::CheckVar(
   }
 }
 
+void CodeGenTileLangNPUIRDEV::LoopCarriedVarCollector::CheckWorkspaceVar(
+    const tir::VarNode *var_node) {
+  if (!workspace_touched_vars_ || !var_node) {
+    return;
+  }
+  if (!IsWorkspaceScope(GetPtrStorageScope(GetRef<tir::Var>(var_node)))) {
+    return;
+  }
+  if (outer_->GetVarValue(var_node) == mlir::Value{} ||
+      workspace_vars_set_.find(var_node) != workspace_vars_set_.end()) {
+    return;
+  }
+  workspace_vars_set_.insert(var_node);
+  workspace_touched_vars_->push_back(var_node);
+}
+
 void CodeGenTileLangNPUIRDEV::LoopCarriedVarCollector::VisitExpr_(
     const tir::CallNode *call) {
   auto process_call_arg = [&](int arg_index) {
@@ -4525,12 +4609,16 @@ void CodeGenTileLangNPUIRDEV::LoopCarriedVarCollector::VisitExpr_(
     CheckVar(npuirop.dst->data.get());
   } else if (call->op.same_as(Op::Get("tl.copy"))) {
     tvm::tl::AscendCopy npuirop(call->args, outer_->vmap);
+    CheckWorkspaceVar(npuirop.dst->data.get());
     mlir::Value dst = outer_->GetVarValue(npuirop.dst);
     if (dst != mlir::Value{}) {
       if (dst.getType().isa<mlir::TensorType>()) {
         CheckVar(npuirop.dst->data.get());
       }
     }
+  } else if (call->op.same_as(Op::Get("tl.npuir_store_fixpipe"))) {
+    tvm::tl::NpuirFixpipe npuirop(call->args, outer_->vmap);
+    CheckWorkspaceVar(npuirop.dst->data.get());
   }
   tir::StmtExprVisitor::VisitExpr_(call);
 }
