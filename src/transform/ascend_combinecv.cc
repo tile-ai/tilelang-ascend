@@ -18,6 +18,10 @@
 #include "../op/builtin.h"
 #include "./common/collector.h"
 
+#include <algorithm>
+#include <deque>
+#include <map>
+
 namespace tvm {
 namespace tl {
 
@@ -315,7 +319,6 @@ private:
 class AutoInsertCrossCoreSync {
 public:
   static void AutoInsert(Stmt& cube_code, Stmt& vec_code) {
-      // Collect sync points
       std::vector<CrossCoreSyncPoint> cube_sync_points;
       std::vector<CrossCoreSyncPoint> vec_sync_points;
 
@@ -325,51 +328,76 @@ public:
       cube_collector(cube_code);
       vec_collector(vec_code);
 
-      // Check sync points consistency
-      if (cube_sync_points.size() != vec_sync_points.size()) {
-          LOG(FATAL) << "Mismatch in sync points between cube and vec: "
-                      << "cube has " << cube_sync_points.size() << ", "
-                      << "vec has " << vec_sync_points.size();
-      }
+      // Pair sync points by workspace name: write on one side matches the
+      // earliest unmatched read of the same workspace on the other side.
+      struct SyncPair {
+          CrossCoreSyncPoint* writer;
+          CrossCoreSyncPoint* reader;
+      };
+      std::vector<SyncPair> pairs;
 
-      for (size_t i = 0; i < cube_sync_points.size(); ++i) {
-          const auto& cube_sp = cube_sync_points[i];
-          const auto& vec_sp = vec_sync_points[i];
-          if (cube_sp.is_write == vec_sp.is_write) {
-              LOG(FATAL) << "Inconsistent read/write operations at sync point " << i << ": "
-                          << "cube is_write=" << cube_sp.is_write << ", "
-                          << "vec is_write=" << vec_sp.is_write;
-          }
-          if (cube_sp.workspace_name != vec_sp.workspace_name) {
-              LOG(FATAL) << "Inconsistent workspace names at sync point " << i << ": "
-                          << "cube workspace=" << cube_sp.workspace_name << ", "
-                          << "vec workspace=" << vec_sp.workspace_name;
-          }
-      }
+      struct TaggedSP {
+          CrossCoreSyncPoint* sp;
+          bool is_cube;
+      };
+      std::vector<TaggedSP> timeline;
+      for (auto& sp : cube_sync_points) timeline.push_back({&sp, true});
+      for (auto& sp : vec_sync_points) timeline.push_back({&sp, false});
+      std::sort(timeline.begin(), timeline.end(),
+                [](const TaggedSP& a, const TaggedSP& b) { return a.sp->order < b.sp->order; });
 
-      // Update the same depth marker
-      for (auto& cube_sp : cube_sync_points) {
-          for (auto& vec_sp : vec_sync_points) {
-              if (cube_sp.sync_flag_id != vec_sp.sync_flag_id) {
-                  continue;
-              }
-              if (cube_sp.sync_loop_depth == vec_sp.sync_loop_depth) {
-                  cube_sp.is_same_depth = true;
-                  vec_sp.is_same_depth = true;
-                  break;
-              }
+      std::map<std::string, std::deque<CrossCoreSyncPoint*>> cube_writes, vec_writes;
+      std::map<std::string, std::deque<CrossCoreSyncPoint*>> cube_reads, vec_reads;
 
-              // Set target_for_node for non-same-depth sync points
-              if (cube_sp.is_write && cube_sp.parent_for_nodes.has_value()) {
-                cube_sp.target_for_node = cube_sp.parent_for_nodes.value().at(vec_sp.sync_loop_depth);
-              }
-              if (vec_sp.is_write && vec_sp.parent_for_nodes.has_value()) {
-                vec_sp.target_for_node = vec_sp.parent_for_nodes.value().at(cube_sp.sync_loop_depth);
-              }
+      for (auto& t : timeline) {
+          const std::string& ws = t.sp->workspace_name;
+          if (t.is_cube) {
+              if (t.sp->is_write) cube_writes[ws].push_back(t.sp);
+              else                cube_reads[ws].push_back(t.sp);
+          } else {
+              if (t.sp->is_write) vec_writes[ws].push_back(t.sp);
+              else                vec_reads[ws].push_back(t.sp);
           }
       }
 
-      // Insert sync statements
+      for (auto& [ws, writers] : cube_writes) {
+          auto& readers = vec_reads[ws];
+          while (!writers.empty() && !readers.empty()) {
+              pairs.push_back({writers.front(), readers.front()});
+              writers.pop_front();
+              readers.pop_front();
+          }
+      }
+      for (auto& [ws, writers] : vec_writes) {
+          auto& readers = cube_reads[ws];
+          while (!writers.empty() && !readers.empty()) {
+              pairs.push_back({writers.front(), readers.front()});
+              writers.pop_front();
+              readers.pop_front();
+          }
+      }
+
+      for (int i = 0; i < static_cast<int>(pairs.size()); ++i) {
+          pairs[i].writer->sync_flag_id = i;
+          pairs[i].reader->sync_flag_id = i;
+      }
+
+      for (auto& pair : pairs) {
+          auto* w = pair.writer;
+          auto* r = pair.reader;
+          if (w->sync_loop_depth == r->sync_loop_depth) {
+              w->is_same_depth = true;
+              r->is_same_depth = true;
+          } else {
+              if (w->is_write && w->parent_for_nodes.has_value()) {
+                  w->target_for_node = w->parent_for_nodes.value().at(r->sync_loop_depth);
+              }
+              if (r->is_write && r->parent_for_nodes.has_value()) {
+                  r->target_for_node = r->parent_for_nodes.value().at(w->sync_loop_depth);
+              }
+          }
+      }
+
       CrossCoreSyncInserter cube_sync_inserter(cube_sync_points);
       CrossCoreSyncInserter vec_sync_inserter(vec_sync_points);
 
