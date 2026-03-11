@@ -5,6 +5,8 @@ on:
     branches: [npuir]
   issue_comment:
     types: [created]
+  release:
+    types: [published]
 
 permissions:
   contents: read
@@ -109,3 +111,29 @@ jobs:
       with:
         name: npuir-test-report
         path: testing/npuir/output/
+
+  build-release:
+    if: github.event_name == 'release' && github.event.action == 'published'
+    uses: ./.github/workflows/build-tilelang-npuir.yml
+    with:
+      checkout-ref: refs/tags/${{ github.event.release.tag_name }}
+    secrets: inherit
+
+  upload-release-assets:
+    if: github.event_name == 'release' && github.event.action == 'published'
+    needs: build-release
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download wheel artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-wheels
+          merge-multiple: true
+      - name: Upload to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release-wheels/*.whl
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
