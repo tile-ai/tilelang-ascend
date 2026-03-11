@@ -10,6 +10,8 @@
 #include "tir/analysis/var_use_def_analysis.h"
 #include "tir/transforms/ir_utils.h"
 
+#include <tvm/arith/analyzer.h>
+#include <tvm/arith/int_set.h>
 #include <tvm/tir/builtin.h>
 #include <tvm/tir/stmt_functor.h>
 #include <tvm/tir/transform.h>
@@ -179,12 +181,25 @@ private:
 
 class LoopAnalyzer : public StmtVisitor {
 public:
+    /*!
+     * \brief A single buffer access extracted from tvm_access_ptr(dtype, buf, offset, extent, rw_mask).
+     */
+    struct AccessInfo {
+        std::string buffer_name;
+        PrimExpr offset;
+        PrimExpr extent;
+        bool is_read;
+        bool is_write;
+        int order;
+    };
+
     struct StmtInfo {
         int idx;
         std::string type;
         std::string buffer_name;
         Stmt stmt;
         std::set<std::string> used_buffers;
+        std::vector<AccessInfo> accesses;
     };
 
     struct WorkspaceWrite {
@@ -265,7 +280,7 @@ public:
                     workspace_writes_V_.push_back(write);
                 }
             }
-            CollectBuffers(call_node, info.used_buffers);
+            CollectBuffersAndAccesses(call_node, info.used_buffers, info.accesses);
         }
         if (core_scope_ == CUBE_SCOPE) {
             all_statements_C_.push_back(info);
@@ -309,25 +324,57 @@ private:
         }
 
         std::set<std::string> for_node_buffers;
+        std::vector<AccessInfo> for_node_accesses;
         for (int i = for_info.idx; i < all_statements.size(); i++) {
             auto buffers = all_statements[i].used_buffers;
             for (auto it = buffers.begin(); it != buffers.end(); ++it) {
                 for_node_buffers.insert(*it);
             }
+            for (const auto& access : all_statements[i].accesses) {
+                for_node_accesses.push_back(access);
+            }
         }
         all_statements = saved_statements;
         all_statements.push_back(for_info);
         all_statements.back().used_buffers = for_node_buffers;
+        all_statements.back().accesses = for_node_accesses;
     }
 
-    void CollectBuffers(const CallNode* call_node, std::set<std::string>& used_buffers) {
+    void CollectBuffersAndAccesses(const CallNode* call_node,
+                                   std::set<std::string>& used_buffers,
+                                   std::vector<AccessInfo>& accesses) {
         auto args = call_node->args;
         for (int i = 1; i < args.size(); ++i) {
             if (auto inner_call_node = args[i].as<CallNode>()) {
-                auto buf_name = Downcast<Var>(inner_call_node->args[1]);
-                if (location_map_.find(buf_name) != location_map_.end()) {
-                    if (callnodeMapPos_.find(location_map_[buf_name]) != callnodeMapPos_.end()) {
-                        used_buffers.insert(buf_name->name_hint);
+                if (inner_call_node->op.same_as(builtin::tvm_access_ptr()) &&
+                    inner_call_node->args.size() >= 5) {
+                    auto buf_var = Downcast<Var>(inner_call_node->args[1]);
+                    std::string buf_name = buf_var->name_hint;
+                    PrimExpr offset = inner_call_node->args[2];
+                    PrimExpr extent = inner_call_node->args[3];
+                    const IntImmNode* flag = inner_call_node->args[4].as<IntImmNode>();
+                    int rw_mask = flag ? static_cast<int>(flag->value) : 3;
+
+                    if (location_map_.find(buf_var) != location_map_.end()) {
+                        if (callnodeMapPos_.find(location_map_[buf_var]) != callnodeMapPos_.end()) {
+                            used_buffers.insert(buf_name);
+                        }
+                    }
+
+                    AccessInfo access;
+                    access.buffer_name = buf_name;
+                    access.offset = offset;
+                    access.extent = extent;
+                    access.is_read = (rw_mask & 1) != 0;
+                    access.is_write = (rw_mask & 2) != 0;
+                    access.order = static_cast<int>(accesses.size());
+                    accesses.push_back(access);
+                } else {
+                    auto buf_name = Downcast<Var>(inner_call_node->args[1]);
+                    if (location_map_.find(buf_name) != location_map_.end()) {
+                        if (callnodeMapPos_.find(location_map_[buf_name]) != callnodeMapPos_.end()) {
+                            used_buffers.insert(buf_name->name_hint);
+                        }
                     }
                 }
             }
@@ -568,6 +615,11 @@ private:
         return INVALID_SCOPE;
     }
 
+    struct RegionInfo {
+        PrimExpr offset;
+        PrimExpr extent;
+    };
+
     void AnalyzeSharedBuffers(const std::vector<StageInfo>& stages) {
         std::unordered_map<std::string, std::vector<int>> buffer_stage_map;
         for (size_t stage_idx = 0; stage_idx < stages.size(); ++stage_idx) {
@@ -575,14 +627,135 @@ private:
                 buffer_stage_map[buffer].push_back(stage_idx);
             }
         }
+
         for (const auto& [buffer, stage_indices] : buffer_stage_map) {
-            if (stage_indices.size() > 1) {
-                auto buffer_scope = checkBufferScope(buffer);
-                if (buffer_scope == VEC_SCOPE) {
-                  shared_buffers_.insert(buffer);
+            if (stage_indices.size() <= 1) continue;
+            auto buffer_scope = checkBufferScope(buffer);
+            if (buffer_scope != VEC_SCOPE) continue;
+
+            if (BufferNeedsRingBuffer(buffer, stages, stage_indices)) {
+                shared_buffers_.insert(buffer);
+            }
+        }
+    }
+
+    /*!
+     * \brief Scanline analysis: determine if a buffer truly needs ring-buffering.
+     *
+     * For each read to buffer B in stage S:
+     *   1. Check if the read region is fully covered by preceding writes to B within S.
+     *   2. If not covered, check if the uncovered read overlaps with writes from other stages.
+     *   3. If overlap exists with other stages' writes, buffer needs ring-buffering.
+     *
+     * Conservative fallback: if symbolic analysis cannot prove coverage or disjointness,
+     * assume ring-buffering is needed.
+     */
+    bool BufferNeedsRingBuffer(const std::string& buffer_name,
+                               const std::vector<StageInfo>& stages,
+                               const std::vector<int>& stage_indices) {
+        arith::Analyzer analyzer;
+
+        std::unordered_map<int, std::vector<RegionInfo>> write_regions_per_stage;
+        std::unordered_map<int, std::vector<RegionInfo>> read_regions_per_stage;
+
+        for (int si : stage_indices) {
+            const auto& stage = stages[si];
+            std::vector<RegionInfo> writes;
+            std::vector<RegionInfo> reads;
+            for (const auto& stmt_info : stage.statements) {
+                for (const auto& access : stmt_info.accesses) {
+                    if (access.buffer_name != buffer_name) continue;
+                    if (access.is_write) {
+                        writes.push_back({access.offset, access.extent});
+                    }
+                    if (access.is_read) {
+                        reads.push_back({access.offset, access.extent});
+                    }
+                }
+            }
+            write_regions_per_stage[si] = std::move(writes);
+            read_regions_per_stage[si] = std::move(reads);
+        }
+
+        bool any_stage_writes = false;
+        for (const auto& [si, writes] : write_regions_per_stage) {
+            if (!writes.empty()) { any_stage_writes = true; break; }
+        }
+        if (!any_stage_writes) return false;
+
+        for (int si : stage_indices) {
+            const auto& stage = stages[si];
+            const auto& reads = read_regions_per_stage[si];
+            if (reads.empty()) continue;
+
+            std::vector<RegionInfo> preceding_writes;
+            for (const auto& stmt_info : stage.statements) {
+                for (const auto& access : stmt_info.accesses) {
+                    if (access.buffer_name != buffer_name) continue;
+
+                    if (access.is_read) {
+                        PrimExpr r_off = access.offset;
+                        PrimExpr r_ext = access.extent;
+
+                        bool covered = IsReadCoveredByWrites(analyzer, r_off, r_ext, preceding_writes);
+
+                        if (!covered) {
+                            if (HasOverlapWithOtherStages(analyzer, r_off, r_ext,
+                                                          write_regions_per_stage, si)) {
+                                return true;
+                            }
+                        }
+                    }
+
+                    if (access.is_write) {
+                        preceding_writes.push_back({access.offset, access.extent});
+                    }
                 }
             }
         }
+
+        return false;
+    }
+
+    bool IsReadCoveredByWrites(arith::Analyzer& analyzer,
+                               const PrimExpr& read_offset,
+                               const PrimExpr& read_extent,
+                               const std::vector<RegionInfo>& preceding_writes) {
+        if (preceding_writes.empty()) return false;
+
+        PrimExpr read_end = read_offset + read_extent;
+
+        for (const auto& w : preceding_writes) {
+            PrimExpr w_end = w.offset + w.extent;
+            if (analyzer.CanProve(w.offset <= read_offset) &&
+                analyzer.CanProve(read_end <= w_end)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    bool HasOverlapWithOtherStages(arith::Analyzer& analyzer,
+                                   const PrimExpr& read_offset,
+                                   const PrimExpr& read_extent,
+                                   const std::unordered_map<int, std::vector<RegionInfo>>& write_regions_per_stage,
+                                   int current_stage) {
+        auto read_set = arith::IntSet::FromRange(
+            Range::FromMinExtent(read_offset, read_extent));
+
+        for (const auto& [si, writes] : write_regions_per_stage) {
+            if (si == current_stage) continue;
+            for (const auto& w : writes) {
+                auto write_set = arith::IntSet::FromRange(
+                    Range::FromMinExtent(w.offset, w.extent));
+                if (!arith::Intersect({read_set, write_set}).IsNothing()) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
 private:
