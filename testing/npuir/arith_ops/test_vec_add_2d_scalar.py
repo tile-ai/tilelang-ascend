@@ -18,7 +18,7 @@ def vec_add(block_M, block_N):
     BLOCK_SIZE = 20
 
     @T.prim_func
-    def main(
+    def vecAdd2dScalarInput(
             A: T.Tensor((M, N), dtype),
             B: T.Tensor((N), dtype),
             C: T.Tensor((M, N), dtype),
@@ -39,7 +39,7 @@ def vec_add(block_M, block_N):
                     T.npuir_add(A_VEC, B_VEC[0], C_VEC)
                     T.copy(C_VEC, C[bx, by])
 
-    return main
+    return vecAdd2dScalarInput
 
 def vec_add_2(block_M, block_N):
     M = T.symbolic("M")
@@ -50,7 +50,7 @@ def vec_add_2(block_M, block_N):
     BLOCK_SIZE = 20
 
     @T.prim_func
-    def main(
+    def vecAdd2dScalarTensor(
             A: T.Tensor((M, N), dtype),
             B: T.Tensor((M, N), dtype),
             C: T.Tensor((M, N), dtype),
@@ -71,7 +71,7 @@ def vec_add_2(block_M, block_N):
                     T.npuir_add(A_VEC, B_VEC[0, 0], C_VEC)
                     T.copy(C_VEC, C[bx, by])
 
-    return main
+    return vecAdd2dScalarTensor
 
 def vec_add_3(block_M, N):
     M = T.symbolic("M")
@@ -81,7 +81,7 @@ def vec_add_3(block_M, N):
     BLOCK_SIZE = 20
 
     @T.prim_func
-    def main(
+    def vecAdd2dScalarTensorRev(
             A: T.Tensor((M, N), dtype),
             B: T.Tensor((M, N), dtype),
             C: T.Tensor((M, N), dtype),
@@ -98,7 +98,7 @@ def vec_add_3(block_M, N):
                 T.npuir_add(A_VEC[i, j], B_VEC[i, j], C_VEC[i, j])
             T.copy(C_VEC[:, 0], C[bx, 0])
 
-    return main
+    return vecAdd2dScalarTensorRev
 
 def run_test():
     M, N = 128, 256

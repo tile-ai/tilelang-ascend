@@ -18,7 +18,7 @@ def binary_kernel(M, N, block_M, op_name):
     grid_M = (M + block_M - 1) // block_M
 
     @T.prim_func
-    def main(
+    def bitBinaryFullDev(
         A: T.Tensor((N,), "int32"),
         B: T.Tensor((N,), "int32"),
         Out: T.Tensor((N,), "int32"),
@@ -51,14 +51,14 @@ def binary_kernel(M, N, block_M, op_name):
 
             T.copy(out_ub, Out)
 
-    return main
+    return bitBinaryFullDev
 
 
 def binary_partial_kernel(M, N, block_M, op_name):
     grid_M = (M + block_M - 1) // block_M
 
     @T.prim_func
-    def main(
+    def bitBinaryPartialDev(
         A: T.Tensor((N,), "int32"),
         B: T.Tensor((N,), "int32"),
         Out: T.Tensor((M, N), "int32"),
@@ -91,7 +91,7 @@ def binary_partial_kernel(M, N, block_M, op_name):
 
             T.copy(out_ub, Out)
 
-    return main
+    return bitBinaryPartialDev
 
 
 def compute_expected(A, B, op_name):

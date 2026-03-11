@@ -21,7 +21,7 @@ def select_kernel(M, N, block_M, dtype="float16"):
     grid_M = (M + block_M - 1) // block_M
 
     @T.prim_func
-    def main(
+    def selectFullKernel(
         A: T.Tensor((N,), dtype),
         B: T.Tensor((N,), dtype),
         Out: T.Tensor((N,), dtype),
@@ -47,14 +47,14 @@ def select_kernel(M, N, block_M, dtype="float16"):
 
                 T.copy(out_ub, Out)
 
-    return main
+    return selectFullKernel
 
 
 def select_partial_kernel(M, N, block_M, dtype="float16"):
     grid_M = (M + block_M - 1) // block_M
 
     @T.prim_func
-    def main(
+    def selectPartialKernel(
         A: T.Tensor((N,), dtype),
         B: T.Tensor((N,), dtype),
         Out: T.Tensor((M, N), dtype),
@@ -80,7 +80,7 @@ def select_partial_kernel(M, N, block_M, dtype="float16"):
 
                 T.copy(out_ub, Out)
 
-    return main
+    return selectPartialKernel
 
 
 @pytest.mark.parametrize("dtype", DTYPES)

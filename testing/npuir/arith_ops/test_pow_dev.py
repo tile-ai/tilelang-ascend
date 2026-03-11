@@ -12,7 +12,7 @@ def pow_int_kernel(M, N, block_M):
     grid_M = (M + block_M - 1) // block_M
 
     @T.prim_func
-    def main(
+    def vecPowDev(
         A: T.Tensor((N,), "int32"),   # base: int32
         B: T.Tensor((N,), "int32"),   # exponent: int32
         Out: T.Tensor((M, N), "int32"),
@@ -34,7 +34,7 @@ def pow_int_kernel(M, N, block_M):
             # UB -> GM
             T.copy(out_ub, Out)
 
-    return main
+    return vecPowDev
 
 
 def reference(A, B, M):

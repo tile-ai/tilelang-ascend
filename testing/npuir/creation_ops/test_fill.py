@@ -23,7 +23,7 @@ def vec_fill(M, N, K, block_M, block_N, dtype="float16"):
     block_size = 20
 
     @T.prim_func
-    def main(
+    def vecFillCreation(
         A: T.Tensor((M, K), dtype),
     ):
         with T.Kernel(block_size, is_npu=True) as (cid, _):
@@ -40,7 +40,7 @@ def vec_fill(M, N, K, block_M, block_N, dtype="float16"):
                     T.npuir_fill(A_VEC, fill_value)
                     T.copy(A_VEC, A[bx, by])
 
-    return main
+    return vecFillCreation
 
 
 @pytest.mark.parametrize("dtype", DTYPES)

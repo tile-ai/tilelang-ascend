@@ -27,7 +27,7 @@ def clamp_kernel(M, N, min_tensor, max_tensor):
     BLOCK_SIZE = 1
 
     @T.prim_func
-    def main(src: T.Tensor((M, N), dtype),
+    def clampVecExpKernel(src: T.Tensor((M, N), dtype),
              dst: T.Tensor((M, N), accum_dtype),
              min_val: T.Tensor((M, N), dtype),
              max_val: T.Tensor((M, N), dtype)):
@@ -52,7 +52,7 @@ def clamp_kernel(M, N, min_tensor, max_tensor):
             # Copy back from UB to GM
             T.copy(dst_ub, dst)
 
-    return main
+    return clampVecExpKernel
 
 
 

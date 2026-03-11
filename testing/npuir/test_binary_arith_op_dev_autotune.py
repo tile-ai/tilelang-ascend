@@ -56,9 +56,9 @@ def supply_prog(N):
 )
 @tilelang.jit(out_idx=[-1])
 def binary_add(N, block_M, dtype="float16"):
-    # ⚠️ 不要 return main，这样 JITKernel 才会生成
+    # ⚠️ 不要依赖默认 main 名称，这样容易和其他测试撞 kernel 缓存
     @T.prim_func
-    def main(
+    def binaryAddAutotuneKernel(
         A: T.Tensor((N,), dtype),
         B: T.Tensor((N,), dtype),
         Out: T.Tensor((N,), dtype),
@@ -77,7 +77,7 @@ def binary_add(N, block_M, dtype="float16"):
 
             # UB -> GM
             T.copy(Out_ub, Out)
-    return main
+    return binaryAddAutotuneKernel
 
 # --------------------------------------------------
 # 5. trigger autotune

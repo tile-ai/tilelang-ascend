@@ -27,7 +27,7 @@ def clamp_kernel(M, N):
     BLOCK_SIZE = 1
 
     @T.prim_func
-    def main(src: T.Tensor((M, N), dtype),
+    def clampExpKernel(src: T.Tensor((M, N), dtype),
              dst: T.Tensor((M, N), accum_dtype)):
 
         with T.Kernel(BLOCK_SIZE, is_npu=True) as (cid, _):
@@ -44,7 +44,7 @@ def clamp_kernel(M, N):
             # Copy back from UB to GM
             T.copy(dst_ub, dst)
 
-    return main
+    return clampExpKernel
 
 # -------------------------
 # Generate test data

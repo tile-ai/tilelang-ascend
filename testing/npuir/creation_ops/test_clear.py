@@ -23,7 +23,7 @@ def vec_clear(M, N, K, block_M, block_N, dtype="float16"):
     block_size = 20
 
     @T.prim_func
-    def main(
+    def vecClearCreation(
         A: T.Tensor((M, K), dtype),
     ):
         with T.Kernel(block_size, is_npu=True) as (cid, _):
@@ -39,7 +39,7 @@ def vec_clear(M, N, K, block_M, block_N, dtype="float16"):
                     T.npuir_clear(A_VEC)
                     T.copy(A_VEC, A[bx, by])
 
-    return main
+    return vecClearCreation
 
 
 @pytest.mark.parametrize("dtype", DTYPES)

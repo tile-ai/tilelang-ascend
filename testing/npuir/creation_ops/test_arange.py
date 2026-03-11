@@ -20,7 +20,7 @@ def arange_demo_dev(M, N, block_M, block_N, dtype="float16"):
     n_num = N // block_N
 
     @T.prim_func
-    def main(
+    def arangeDemoDev(
         A: T.Tensor((M, N), dtype),
     ):
         with T.Kernel(block_size, is_npu=True) as (cid, _):
@@ -35,7 +35,7 @@ def arange_demo_dev(M, N, block_M, block_N, dtype="float16"):
                     T.npuir_arange(a, [bx, by], bx)
                     T.copy(a, A[bx:bx + block_M, by:by + block_N])
 
-    return main
+    return arangeDemoDev
 
 
 def arange_demo_exp(M, N, block_M, block_N, dtype="float16"):
@@ -44,7 +44,7 @@ def arange_demo_exp(M, N, block_M, block_N, dtype="float16"):
     n_num = N // block_N
 
     @T.prim_func
-    def main(
+    def arangeDemoExpert(
         A: T.Tensor((M, N), dtype),
     ):
         with T.Kernel(block_size, is_npu=True) as (cid, _):
@@ -59,7 +59,7 @@ def arange_demo_exp(M, N, block_M, block_N, dtype="float16"):
                     T.npuir_arange(a, [bx, by], bx)
                     T.copy(a, A[bx:bx + block_M, by:by + block_N])
 
-    return main
+    return arangeDemoExpert
 
 
 def tile_arange(A, block_M, block_N):

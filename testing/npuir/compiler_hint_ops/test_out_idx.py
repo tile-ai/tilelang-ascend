@@ -22,7 +22,7 @@ def matmul(block_M, block_N, K_L1, dtype="float16", accum_dtype="float32"):
     K = T.symbolic("K")
 
     @T.prim_func
-    def main(
+    def outIdxMatmul(
         A: T.Tensor((M, K), dtype),
         B: T.Tensor((K, N), dtype),
         C: T.Tensor((M, N), dtype),
@@ -69,7 +69,7 @@ def matmul(block_M, block_N, K_L1, dtype="float16", accum_dtype="float32"):
                         enable_nz2nd=True,
                     )
 
-    return main
+    return outIdxMatmul
 
 
 @tilelang.jit(out_idx=[-2, -1], target="npuir")
@@ -78,7 +78,7 @@ def minicv(M, N, K, block_M, block_N, dtype="float16", inner_dtype="float32"):
     n_num = N // block_N
 
     @T.prim_func
-    def main(
+    def outIdxMinicv(
         A: T.Tensor((M, K), dtype),
         B: T.Tensor((K, N), dtype),
         C: T.Tensor((M, N), inner_dtype),
@@ -104,7 +104,7 @@ def minicv(M, N, K, block_M, block_N, dtype="float16", inner_dtype="float32"):
             T.copy(C_BUF, C[bx:bx + block_M, by:by + block_N])
             T.copy(D_BUF, D[bx:bx + block_M, by:by + block_N])
 
-    return main
+    return outIdxMinicv
 
 
 @pytest.mark.op("matmul")

@@ -14,7 +14,7 @@ def binary_kernel(M, N, block_M, op, dtype="float16"):
     grid_M = (M + block_M - 1) // block_M
 
     @T.prim_func
-    def main(
+    def binaryArithFullDev(
         A: T.Tensor((N,), dtype),
         B: T.Tensor((N,), dtype),
         Out: T.Tensor((N,), dtype),
@@ -45,13 +45,13 @@ def binary_kernel(M, N, block_M, op, dtype="float16"):
             # UB -> GM
             T.copy(out_ub, Out)
 
-    return main
+    return binaryArithFullDev
 
 def binary_partial_kernel(M, N, block_M, op, dtype="float16"):
     grid_M = (M + block_M - 1) // block_M
 
     @T.prim_func
-    def main(
+    def binaryArithPartialDev(
         A: T.Tensor((N,), dtype),
         B: T.Tensor((N,), dtype),
         Out: T.Tensor((M, N), dtype),
@@ -82,7 +82,7 @@ def binary_partial_kernel(M, N, block_M, op, dtype="float16"):
             # UB -> GM
             T.copy(out_ub, Out)
 
-    return main
+    return binaryArithPartialDev
 
 
 def reference(A, B, M, op):

@@ -9,7 +9,7 @@ tilelang.cache.clear_cache()
 @tilelang.jit(out_idx=[-1], target="npuir")
 def simple_copy_1d(L, block_L, dtype="float16", accum_dtype="float32"):
     @T.prim_func
-    def main(
+    def simpleCopy1dKernel(
         In: T.Tensor((L,), dtype),
         A: T.Tensor((L,), dtype),
         B: T.Tensor((L,), dtype),
@@ -32,12 +32,12 @@ def simple_copy_1d(L, block_L, dtype="float16", accum_dtype="float32"):
             T.copy(B_frag, B[start_idx])
             T.copy(C_frag, C[start_idx])
 
-    return main
+    return simpleCopy1dKernel
 
 @tilelang.jit(out_idx=[-1], target="npuir")
 def simple_copy_2d(M, N, block_M, block_N, dtype="float16", accum_dtype="float32"):
     @T.prim_func
-    def main(
+    def simpleCopy2dKernel(
         In: T.Tensor((M, N), dtype),
         A: T.Tensor((M, N), dtype),
         B: T.Tensor((M, N), dtype),
@@ -61,12 +61,12 @@ def simple_copy_2d(M, N, block_M, block_N, dtype="float16", accum_dtype="float32
             T.copy(B_frag, B[by * block_M, bx * block_N])
             T.copy(C_frag, C[by * block_M, bx * block_N])
 
-    return main
+    return simpleCopy2dKernel
 
 @tilelang.jit(out_idx=[-1], target="npuir")
 def simple_copy_3d(M, N, K, block_M, block_N, block_K, dtype="float16", accum_dtype="float32"):
     @T.prim_func
-    def main(
+    def simpleCopy3dKernel(
         In: T.Tensor((M, N, K), dtype),
         A: T.Tensor((M, N, K), dtype),
         B: T.Tensor((M, N, K), dtype),
@@ -103,7 +103,7 @@ def simple_copy_3d(M, N, K, block_M, block_N, block_K, dtype="float16", accum_dt
             T.copy(B_frag, B[start_m, start_n, start_k])
             T.copy(C_frag, C[start_m, start_n, start_k])
     
-    return main
+    return simpleCopy3dKernel
 
 def test_1d():
     print("Testing 1d copy...")

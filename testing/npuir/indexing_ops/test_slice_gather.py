@@ -22,7 +22,7 @@ def vec_gather(block_M, block_N, dim, dtype="float16"):
     itype = "int32"
 
     @T.prim_func
-    def main(
+    def sliceGatherKernel(
         A: T.Tensor((block_M, block_N), dtype),
         B: T.Tensor((block_M, block_N), itype),
         C: T.Tensor((block_M, block_N), dtype),
@@ -41,7 +41,7 @@ def vec_gather(block_M, block_N, dim, dtype="float16"):
             )
             T.copy(C_VEC, C)
 
-    return main
+    return sliceGatherKernel
 
 
 @pytest.mark.parametrize("dtype", DTYPES)

@@ -17,7 +17,7 @@ def sigmoid_kernel(M, N, dtype):
     BLOCK_SIZE = 1
 
     @T.prim_func
-    def main(src: T.Tensor((M, N), dtype),
+    def sigmoidKernel(src: T.Tensor((M, N), dtype),
              dst: T.Tensor((M, N), dtype)):
         
         with T.Kernel(BLOCK_SIZE, is_npu=True) as (cid, _):
@@ -29,7 +29,7 @@ def sigmoid_kernel(M, N, dtype):
             T.npuir_sigmoid(src_ub, dst_ub)
             T.copy(dst_ub, dst)
     
-    return main
+    return sigmoidKernel
 
 def generate_tensor(shape, dtype, clear=False):
     """generate tensor"""

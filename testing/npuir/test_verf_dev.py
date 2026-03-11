@@ -26,7 +26,7 @@ def vec_erf(M, N, block_M, block_N, dtype="float16"):
     BLOCK_SIZE = 8
 
     @T.prim_func
-    def main(
+    def vecErfDev(
             A: T.Tensor((M, N), dtype),
             B: T.Tensor((M, N), dtype),
     ):
@@ -45,7 +45,7 @@ def vec_erf(M, N, block_M, block_N, dtype="float16"):
                     T.copy(A[bx, by], A_VEC)
                     T.npuir_verf(A_VEC, B_VEC)
                     T.copy(B_VEC, B[bx, by])
-    return main
+    return vecErfDev
 
 
 def test_vec_erf():
