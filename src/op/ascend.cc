@@ -256,11 +256,13 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
   }
 
   auto src_ptr = src_new_buffer.access_ptr(
-      1, DataType::Handle(), src_total_extent,
-      src_new_buffer.OffsetOf(src_new_indices).back());
+      1, DataType::Handle(), 1,
+      src_new_buffer.OffsetOf(src_new_indices).back(),
+      src_total_extent);
   auto dst_ptr = dst_new_buffer.access_ptr(
-      2, DataType::Handle(), dst_total_extent,
-      dst_new_buffer.OffsetOf(dst_new_indices).back());
+      2, DataType::Handle(), 1,
+      dst_new_buffer.OffsetOf(dst_new_indices).back(),
+      dst_total_extent);
 
   Array<PrimExpr> new_args;
   new_args.push_back(StringImm(ss.str()));
