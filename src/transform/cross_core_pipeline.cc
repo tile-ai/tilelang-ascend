@@ -200,6 +200,7 @@ public:
         Stmt stmt;
         std::set<std::string> used_buffers;
         std::vector<AccessInfo> accesses;
+        int32_t scope{INVALID_SCOPE};
     };
 
     struct WorkspaceWrite {
@@ -216,16 +217,19 @@ public:
     void Analyze() {
         all_statements_C_.clear();
         all_statements_V_.clear();
+        all_statements_.clear();
         workspace_writes_C_.clear();
         workspace_writes_V_.clear();
         current_idx_C_ = 0;
         current_idx_V_ = 0;
+        current_idx_ = 0;
         core_scope_ = INVALID_SCOPE;
         this->VisitStmt(pipeline_loop_->body);
     }
 
     const std::vector<StmtInfo>& all_statements_C() const {return all_statements_C_;}
     const std::vector<StmtInfo>& all_statements_V() const {return all_statements_V_;}
+    const std::vector<StmtInfo>& all_statements() const {return all_statements_;}
     const std::vector<WorkspaceWrite>& workspace_writes_C() const {return workspace_writes_C_;}
     const std::vector<WorkspaceWrite>& workspace_writes_V() const {return workspace_writes_V_;}
     const Map<Var, String>& location_map() const {return location_map_;}
@@ -287,6 +291,11 @@ public:
         } else if (core_scope_ == VEC_SCOPE) {
             all_statements_V_.push_back(info);
         }
+        if (core_scope_ != INVALID_SCOPE) {
+            info.idx = current_idx_++;
+            info.scope = core_scope_;
+            all_statements_.push_back(info);
+        }
     }
 
     void VisitStmt_(const ForNode* op) override {
@@ -296,8 +305,10 @@ public:
 
         std::vector<StmtInfo> saved_statements_C = all_statements_C_;
         std::vector<StmtInfo> saved_statements_V = all_statements_V_;
+        std::vector<StmtInfo> saved_statements = all_statements_;
         int saved_idx_C = current_idx_C_;
         int saved_idx_V = current_idx_V_;
+        int saved_idx = current_idx_;
 
         this->VisitStmt(op->body);
 
@@ -305,6 +316,11 @@ public:
             ProcessInfo(workspace_writes_V_, all_statements_V_, saved_statements_V, saved_idx_V, for_info);
         } else if (core_scope_ == CUBE_SCOPE) {
             ProcessInfo(workspace_writes_C_, all_statements_C_, saved_statements_C, saved_idx_C, for_info);
+        }
+        if (core_scope_ != INVALID_SCOPE) {
+            StmtInfo unified_for_info = for_info;
+            unified_for_info.scope = core_scope_;
+            ProcessInfoUnified(all_statements_, saved_statements, saved_idx, unified_for_info);
         }
     }
 
@@ -329,6 +345,26 @@ private:
             auto buffers = all_statements[i].used_buffers;
             for (auto it = buffers.begin(); it != buffers.end(); ++it) {
                 for_node_buffers.insert(*it);
+            }
+            for (const auto& access : all_statements[i].accesses) {
+                for_node_accesses.push_back(access);
+            }
+        }
+        all_statements = saved_statements;
+        all_statements.push_back(for_info);
+        all_statements.back().used_buffers = for_node_buffers;
+        all_statements.back().accesses = for_node_accesses;
+    }
+
+    void ProcessInfoUnified(std::vector<StmtInfo>& all_statements,
+                            std::vector<StmtInfo>& saved_statements, int saved_idx, StmtInfo for_info) {
+        for_info.idx = saved_idx++;
+
+        std::set<std::string> for_node_buffers;
+        std::vector<AccessInfo> for_node_accesses;
+        for (size_t i = for_info.idx; i < all_statements.size(); i++) {
+            for (const auto& buf : all_statements[i].used_buffers) {
+                for_node_buffers.insert(buf);
             }
             for (const auto& access : all_statements[i].accesses) {
                 for_node_accesses.push_back(access);
@@ -414,10 +450,12 @@ private:
     Map<Var, String> location_map_;
     std::vector<StmtInfo> all_statements_C_;
     std::vector<StmtInfo> all_statements_V_;
+    std::vector<StmtInfo> all_statements_;
     std::vector<WorkspaceWrite> workspace_writes_C_;
     std::vector<WorkspaceWrite> workspace_writes_V_;
     int current_idx_C_{0};
     int current_idx_V_{0};
+    int current_idx_{0};
     int32_t core_scope_{INVALID_SCOPE};
 };
 
@@ -431,10 +469,9 @@ public:
     LoopRewriter(const LoopAnalyzer& analyzer, const ForNode* original_loop, int num_stages)
         : analyzer_(analyzer),
           original_loop_(original_loop),
+          all_statements_(analyzer.all_statements()),
           all_statements_C_(analyzer.all_statements_C()),
           all_statements_V_(analyzer.all_statements_V()),
-          workspace_writes_C_(analyzer.workspace_writes_C()),
-          workspace_writes_V_(analyzer.workspace_writes_V()),
           num_stages_(num_stages) {
             original_loop_var_ = original_loop->loop_var;
             std::string outer_var_name = original_loop_var_->name_hint + "_outer";
@@ -443,7 +480,7 @@ public:
           }
 
     Stmt Rewrite() {
-        std::vector<StageInfo> stages = SplitIntoStages(workspace_writes_C_, workspace_writes_V_);
+        std::vector<StageInfo> stages = SplitIntoStages();
         AnalyzeSharedBuffers(stages);
         return CreateStagedLoops(stages);
     }
@@ -456,13 +493,7 @@ public:
 
     std::set<std::string> GetAllBuffersToAdjust() const {
         std::set<std::string> all_buffers = shared_buffers_;
-        for (const auto& stmt_info : all_statements_C_) {
-            if (!stmt_info.buffer_name.empty() &&
-                stmt_info.buffer_name.find("workspace") != std::string::npos) {
-                all_buffers.insert(stmt_info.buffer_name);
-            }
-        }
-        for (const auto& stmt_info : all_statements_V_) {
+        for (const auto& stmt_info : all_statements_) {
             if (!stmt_info.buffer_name.empty() &&
                 stmt_info.buffer_name.find("workspace") != std::string::npos) {
                 all_buffers.insert(stmt_info.buffer_name);
@@ -546,51 +577,24 @@ private:
                    original_loop_->span);
     }
 
-    std::vector<int> ExtractSplitPoints(const std::vector<LoopAnalyzer::WorkspaceWrite> workspace_writes) {
-        std::vector<int> split_points;
-        split_points.reserve(workspace_writes.size());
-        for (const auto& write : workspace_writes) {
-            split_points.push_back(write.stmt_idx);
-        }
-
-        std::sort(split_points.begin(), split_points.end());
-        split_points.erase(std::unique(split_points.begin(), split_points.end()),
-                                       split_points.end());
-        return split_points;
-    }
-
-    std::vector<StageInfo> SplitIntoStages(const std::vector<LoopAnalyzer::WorkspaceWrite> workspace_writes_C,
-                                           const std::vector<LoopAnalyzer::WorkspaceWrite> workspace_writes_V) {
-        std::vector<int> split_points_C = ExtractSplitPoints(workspace_writes_C);
-        std::vector<int> split_points_V = ExtractSplitPoints(workspace_writes_V);
-
+    std::vector<StageInfo> SplitIntoStages() {
         std::vector<StageInfo> stages;
+        if (all_statements_.empty()) return stages;
+
         StageInfo current_stage;
-        std::unordered_set<int> split_indices_C(split_points_C.begin(), split_points_C.end());
-        std::unordered_set<int> split_indices_V(split_points_V.begin(), split_points_V.end());
+        int32_t current_scope = all_statements_[0].scope;
 
-        for (const auto& stmt_info : all_statements_C_) {
+        for (const auto& stmt_info : all_statements_) {
+            if (stmt_info.scope != current_scope) {
+                if (!current_stage.statements.empty()) {
+                    stages.push_back(current_stage);
+                    current_stage = StageInfo();
+                }
+                current_scope = stmt_info.scope;
+            }
             current_stage.statements.push_back(stmt_info);
             for (const auto& buffer : stmt_info.used_buffers) {
                 current_stage.used_buffers.insert(buffer);
-            }
-            if (split_indices_C.find(stmt_info.idx) != split_indices_C.end()) {
-                stages.push_back(current_stage);
-                current_stage = StageInfo();
-            }
-        }
-        if (!current_stage.statements.empty()) {
-            stages.push_back(current_stage);
-        }
-
-        for (const auto& stmt_info : all_statements_V_) {
-            current_stage.statements.push_back(stmt_info);
-            for (const auto& buffer : stmt_info.used_buffers) {
-                current_stage.used_buffers.insert(buffer);
-            }
-            if (split_indices_V.find(stmt_info.idx) != split_indices_V.end()) {
-                stages.push_back(current_stage);
-                current_stage = StageInfo();
             }
         }
         if (!current_stage.statements.empty()) {
@@ -717,15 +721,31 @@ private:
         return false;
     }
 
+    /*! \brief Check if a PrimExpr is a compile-time integer constant. */
+    static bool IsConstantExpr(const PrimExpr& e) {
+        return e.as<IntImmNode>() != nullptr;
+    }
+
     bool IsReadCoveredByWrites(arith::Analyzer& analyzer,
                                const PrimExpr& read_offset,
                                const PrimExpr& read_extent,
                                const std::vector<RegionInfo>& preceding_writes) {
         if (preceding_writes.empty()) return false;
 
+        // Conservative: if read region is non-constant, we cannot prove coverage.
+        // Treat as reading the entire tensor — no finite write set can be guaranteed to cover it.
+        if (!IsConstantExpr(read_offset) || !IsConstantExpr(read_extent)) {
+            return false;
+        }
+
         PrimExpr read_end = read_offset + read_extent;
 
         for (const auto& w : preceding_writes) {
+            // Conservative: if a preceding write has non-constant offset/extent,
+            // treat it as covering nothing (skip it).
+            if (!IsConstantExpr(w.offset) || !IsConstantExpr(w.extent)) {
+                continue;
+            }
             PrimExpr w_end = w.offset + w.extent;
             if (analyzer.CanProve(w.offset <= read_offset) &&
                 analyzer.CanProve(read_end <= w_end)) {
@@ -741,12 +761,18 @@ private:
                                    const PrimExpr& read_extent,
                                    const std::unordered_map<int, std::vector<RegionInfo>>& write_regions_per_stage,
                                    int current_stage) {
-        auto read_set = arith::IntSet::FromRange(
-            Range::FromMinExtent(read_offset, read_extent));
+        // Conservative: if read region is non-constant, assume it overlaps with everything.
+        bool read_is_symbolic = !IsConstantExpr(read_offset) || !IsConstantExpr(read_extent);
 
         for (const auto& [si, writes] : write_regions_per_stage) {
             if (si == current_stage) continue;
             for (const auto& w : writes) {
+                // Conservative: if either side is non-constant, assume overlap.
+                if (read_is_symbolic || !IsConstantExpr(w.offset) || !IsConstantExpr(w.extent)) {
+                    return true;
+                }
+                auto read_set = arith::IntSet::FromRange(
+                    Range::FromMinExtent(read_offset, read_extent));
                 auto write_set = arith::IntSet::FromRange(
                     Range::FromMinExtent(w.offset, w.extent));
                 if (!arith::Intersect({read_set, write_set}).IsNothing()) {
@@ -761,10 +787,9 @@ private:
 private:
     const LoopAnalyzer& analyzer_;
     const ForNode* original_loop_;
+    const std::vector<LoopAnalyzer::StmtInfo>& all_statements_;
     const std::vector<LoopAnalyzer::StmtInfo>& all_statements_C_;
     const std::vector<LoopAnalyzer::StmtInfo>& all_statements_V_;
-    const std::vector<LoopAnalyzer::WorkspaceWrite>& workspace_writes_C_;
-    const std::vector<LoopAnalyzer::WorkspaceWrite>& workspace_writes_V_;
     std::set<std::string> shared_buffers_;
     int num_stages_;
     Var original_loop_var_;

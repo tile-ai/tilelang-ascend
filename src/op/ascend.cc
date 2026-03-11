@@ -246,11 +246,20 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
   auto src_new_buffer = T.buffer_remap.count(src) ? T.buffer_remap[src] : src;
   auto dst_new_buffer = T.buffer_remap.count(dst) ? T.buffer_remap[dst] : dst;
 
+  PrimExpr src_total_extent = IntImm(DataType::Int(32), 1);
+  for (const auto& e : src_extents) {
+    src_total_extent = src_total_extent * e;
+  }
+  PrimExpr dst_total_extent = IntImm(DataType::Int(32), 1);
+  for (const auto& e : dst_extents) {
+    dst_total_extent = dst_total_extent * e;
+  }
+
   auto src_ptr = src_new_buffer.access_ptr(
-      1, DataType::Handle(), 1,
+      1, DataType::Handle(), src_total_extent,
       src_new_buffer.OffsetOf(src_new_indices).back());
   auto dst_ptr = dst_new_buffer.access_ptr(
-      2, DataType::Handle(), 1,
+      2, DataType::Handle(), dst_total_extent,
       dst_new_buffer.OffsetOf(dst_new_indices).back());
 
   Array<PrimExpr> new_args;
