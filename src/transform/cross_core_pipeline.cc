@@ -1010,22 +1010,16 @@ private:
                                             PrimExpr new_offset = original_offset;
 
                                             if (stage_var_.defined()) {
-                                                if (is_shared_buffer && !is_workspace_buffer) {
-                                                    PrimExpr block_size = 1;
-                                                    if (inner_call->args.size() >= 4) {
-                                                        block_size = inner_call->args[3];
-                                                    }
-                                                    new_offset = original_offset + i_value * block_size;
-                                                } else if (is_shared_buffer && is_workspace_buffer) {
+                                                if (is_shared_buffer || is_workspace_buffer) {
                                                     for (auto& kv : origin_map) {
-                                                        Var var = kv.first;
                                                         Buffer buffer = kv.second;
                                                         if (buffer->name == buffer_name) {
-                                                            PrimExpr offset = 1;
-                                                            for (int i = 0; i < buffer->shape.size(); ++i) {
-                                                                offset = offset * buffer->shape[i];
+                                                            PrimExpr total_size = 1;
+                                                            for (int i = 0; i < static_cast<int>(buffer->shape.size()); ++i) {
+                                                                total_size = total_size * buffer->shape[i];
                                                             }
-                                                            new_offset = original_offset + i_value * offset;
+                                                            new_offset = original_offset + i_value * total_size;
+                                                            break;
                                                         }
                                                     }
                                                 }
