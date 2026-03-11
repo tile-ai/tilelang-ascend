@@ -34,8 +34,8 @@ def _load_tilelangir_passes_so():
 _load_tilelangir_passes_so()
 
 import importlib
-utils = importlib.import_module("tilelang.tilelangir.utils")
-transforms = importlib.import_module("tilelang.tilelangir.transforms")
-conversion = importlib.import_module("tilelang.tilelangir.conversion")
+utils = importlib.import_module("tilelang.tladapter.utils")
+transforms = importlib.import_module("tilelang.tladapter.transforms")
+conversion = importlib.import_module("tilelang.tladapter.conversion")
 
 __all__ = ["utils", "transforms", "conversion"]

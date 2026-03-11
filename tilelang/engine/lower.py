@@ -17,7 +17,7 @@ from tilelang.engine.phase import (
     LowerAndLegalize,
     OptimizeForTarget,
 )
-from tilelang.tilelangir import transforms,conversion
+from tilelang.tladapter import transforms, conversion
 
 
 def is_cpu_device_backend(target: Target):
@@ -252,11 +252,11 @@ def lower(
         if dump_ir:
             print("====== npuir ======")
             print(mlir_str)
-        tilelangir_passes = [
+        tladapter_passes = [
             transforms.mlir.canonicalize(top_down=True),
             transforms.bishengir.adapt_triton_kernel,
         ]
-        for i, p in enumerate(tilelangir_passes):
+        for i, p in enumerate(tladapter_passes):
             mlir_str = p(mlir_str)
             if dump_ir:
                 name = getattr(p, "pass_name", None) or f"pass-{i}"

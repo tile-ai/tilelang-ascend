@@ -25,20 +25,20 @@ def _pass_spec(pass_name: str, **options) -> str:
 
 def create_pass_runner(pass_name: str, **options):
     """
-    Create a pass runner via tilelangir native. The returned callable has
+    Create a pass runner via tladapter native (libtilelangir). The returned callable has
     pass_name attached (from pybind) for dump/debug. Accepts only str input.
     """
     try:
-        import tilelang.tilelangir as _tilelangir
+        import tilelang.tladapter as _tladapter
     except ImportError as e:
         raise ImportError(
-            "TileLangIR passes require tilelangir native module (libtilelangir). "
+            "TileLang adapter passes require native module (libtilelangir). "
             "Build with USE_NPUIR and set PYTHONPATH to tilelangir build dir."
         ) from e
-    _native = getattr(_tilelangir, "_native", None)
+    _native = getattr(_tladapter, "_native", None)
     if _native is None or not hasattr(_native, "create_pass_runner"):
         raise RuntimeError(
-            "tilelangir native module or create_pass_runner not found; rebuild tilelangir."
+            "tladapter native module or create_pass_runner not found; rebuild tilelangir."
         )
     spec = _pass_spec(pass_name, **options)
     return _native.create_pass_runner(pass_name, spec)

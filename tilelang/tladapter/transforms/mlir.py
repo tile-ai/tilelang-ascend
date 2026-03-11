@@ -2,7 +2,7 @@
 # Licensed under the MIT License.
 """MLIR builtin/built-in transformation passes."""
 
-from tilelang.tilelangir.utils import pass_fn
+from tilelang.tladapter.utils import pass_fn
 
 canonicalize = pass_fn("canonicalize")
 cse = pass_fn("cse")
