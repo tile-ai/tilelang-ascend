@@ -55,6 +55,6 @@ class TestAutoPlatform(unittest.TestCase):
         # When NPU is not available, it should fallback to A3
         self.assertEqual(determine_platform("auto"), "A3")
 
-
+# test main
 if __name__ == "__main__":
     unittest.main()

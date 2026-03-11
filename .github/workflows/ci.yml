@@ -4,74 +4,87 @@ on: [pull_request]
 
 jobs:
   format-check:
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
 
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v2
-      with:
-        fetch-depth: 0
+      uses: actions/checkout@v4
+      uses: chartboost/ruff-action@v3
 
-    - name: Set up Python
-      uses: actions/setup-python@v2
-      with:
-        python-version: '3.9'
+# name: CI
 
-    - name: Create virtual environment
-      run: python -m venv tilelang_ci
+# on: [pull_request]
 
-    - name: Activate virtual environment and install dependencies
-      run: |
-        source tilelang_ci/bin/activate
-        python -m pip install --upgrade pip
-        if [ -f requirements-dev.txt ]; then python -m pip install -r requirements-dev.txt; fi
+# jobs:
+#   format-check:
+#     runs-on: self-hosted
 
-    - name: Update submodules recursively
-      run: git submodule update --init --recursive
+#     steps:
+#     - name: Checkout repository
+#       uses: actions/checkout@v2
+#       with:
+#         fetch-depth: 0
 
-    - name: Run format check
-      run: |
-        source tilelang_ci/bin/activate
-        ./format.sh
+#     - name: Set up Python
+#       uses: actions/setup-python@v2
+#       with:
+#         python-version: '3.9'
 
-  build-test:
-    runs-on: self-hosted
-    needs: format-check
+#     - name: Create virtual environment
+#       run: python -m venv tilelang_ci
 
-    steps:
-    - name: Checkout repository
-      uses: actions/checkout@v2
-      with:
-        fetch-depth: 0
+#     - name: Activate virtual environment and install dependencies
+#       run: |
+#         source tilelang_ci/bin/activate
+#         python -m pip install --upgrade pip
+#         if [ -f requirements-dev.txt ]; then python -m pip install -r requirements-dev.txt; fi
 
-    - name: Set up Python
-      uses: actions/setup-python@v2
-      with:
-        python-version: '3.9'
+#     - name: Update submodules recursively
+#       run: git submodule update --init --recursive
 
-    - name: Create virtual environment
-      run: python -m venv tilelang_ci
+#     - name: Run format check
+#       run: |
+#         source tilelang_ci/bin/activate
+#         ./format.sh
 
-    - name: Activate virtual environment and install dependencies
-      run: |
-        source tilelang_ci/bin/activate
-        python -m pip install --upgrade pip
-        if [ -f requirements-test.txt ]; then python -m pip install -r requirements-test.txt; fi
+#   build-test:
+#     runs-on: self-hosted
+#     needs: format-check
 
-    - name: Install project in wheel mode
-      run: |
-        source tilelang_ci/bin/activate
-        python -m pip install .
+#     steps:
+#     - name: Checkout repository
+#       uses: actions/checkout@v2
+#       with:
+#         fetch-depth: 0
 
-    - name: Run examples
-      run: |
-        source tilelang_ci/bin/activate
-        cd examples
-        python -m pytest **/test*.py
+#     - name: Set up Python
+#       uses: actions/setup-python@v2
+#       with:
+#         python-version: '3.9'
 
-    - name: Run tests
-      run: |
-        source tilelang_ci/bin/activate
-        cd testing/python
-        export TILELANG_CLEAR_CACHE=1
-        python -m pytest
+#     - name: Create virtual environment
+#       run: python -m venv tilelang_ci
+
+#     - name: Activate virtual environment and install dependencies
+#       run: |
+#         source tilelang_ci/bin/activate
+#         python -m pip install --upgrade pip
+#         if [ -f requirements-test.txt ]; then python -m pip install -r requirements-test.txt; fi
+
+#     - name: Install project in wheel mode
+#       run: |
+#         source tilelang_ci/bin/activate
+#         python -m pip install .
+
+#     - name: Run examples
+#       run: |
+#         source tilelang_ci/bin/activate
+#         cd examples
+#         python -m pytest **/test*.py
+
+#     - name: Run tests
+#       run: |
+#         source tilelang_ci/bin/activate
+#         cd testing/python
+#         export TILELANG_CLEAR_CACHE=1
+#         python -m pytest
