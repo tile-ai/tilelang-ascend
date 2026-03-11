@@ -1,17 +1,21 @@
-# Copyright (c) Tile-AI Corporation.
-# Licensed under the MIT License.
-import os
+import pytest
+import torch
+import torch_npu  # noqa: F401
 
 import tilelang
 import tilelang.language as T
 
-import torch
-import torch_npu
+from testcommon import assert_close, gen_tensor
 
-torch.npu.set_device(0)
-tilelang.cache.clear_cache()
 
-dtype = "float32"
+pytestmark = [
+    pytest.mark.op("print"),
+    pytest.mark.mode("Developer"),
+]
+
+DTYPES = ["float32"]
+PRINT_CASES = [(256, 256, 32, 32)]
+
 
 @tilelang.jit(target="npuir")
 def vec_add_2d(block_M, block_N, dtype="float32"):
@@ -20,9 +24,9 @@ def vec_add_2d(block_M, block_N, dtype="float32"):
 
     @T.prim_func
     def vecAdd2D(
-            A: T.Tensor((M, N), dtype),
-            B: T.Tensor((M, N), dtype),
-            C: T.Tensor((M, N), dtype)
+        A: T.Tensor((M, N), dtype),
+        B: T.Tensor((M, N), dtype),
+        C: T.Tensor((M, N), dtype),
     ):
         with T.Kernel(T.ceildiv(N, block_N) * T.ceildiv(M, block_M), is_npu=True) as (cid, _):
             blockx = cid % T.ceildiv(N, block_N)
@@ -41,32 +45,21 @@ def vec_add_2d(block_M, block_N, dtype="float32"):
             T.copy(A[bx:bx + tile_size_M, by:by + tile_size_N], A_VEC[:tile_size_M, :tile_size_N])
             T.copy(B[bx:bx + tile_size_M, by:by + tile_size_N], B_VEC[:tile_size_M, :tile_size_N])
             T.npuir_add(A_VEC, B_VEC, C_VEC)
-            T.print(C_VEC[:4,:4])
+            T.print(C_VEC[:4, :4])
             T.copy(C_VEC[:tile_size_M, :tile_size_N], C[bx:bx + tile_size_M, by:by + tile_size_N])
 
     return vecAdd2D
 
 
-def test_vec_add_2d():
+@pytest.mark.parametrize("dtype", DTYPES)
+@pytest.mark.parametrize("M, N, block_M, block_N", PRINT_CASES)
+def test_vec_add_2d(dtype, M, N, block_M, block_N):
+    a = gen_tensor((M, N), dtype, kind="ones")
+    b = gen_tensor((M, N), dtype, kind="ones")
+    c = gen_tensor((M, N), dtype, kind="zeros")
+    expected = a + b
 
-    M, N = 256, 256
+    func = vec_add_2d(block_M, block_N, dtype)
+    func(a, b, c)
 
-    A = torch.ones(size=[M, N], dtype=eval("torch." + dtype)).npu()
-    B = torch.ones(size=[M, N], dtype=eval("torch." + dtype)).npu()
-    C = torch.zeros(size=[M, N], dtype=eval("torch." + dtype)).npu()
-    expected = A + B
-
-    func = vec_add_2d(32, 32)
-
-    print("\nRunning vadd with sliced npuir_print")
-    func(A, B, C)
-
-    print(f"All elements equal to expected: {torch.allclose(C, expected)}")
-    print("test npuir_print with sliced buffer success")
-
-
-if __name__ == "__main__":
-    os.environ['TILELANG_ASCEND_MODE'] = 'Developer'
-    torch.manual_seed(42)
-    test_vec_add_2d()
-    
+    assert_close(c.cpu(), expected.cpu(), dtype=dtype)
