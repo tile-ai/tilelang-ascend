@@ -56,5 +56,6 @@ class TestAutoPlatform(unittest.TestCase):
         self.assertEqual(determine_platform("auto"), "A3")
 
 # test main #####################################
+# 你好
 if __name__ == "__main__":
     unittest.main()
