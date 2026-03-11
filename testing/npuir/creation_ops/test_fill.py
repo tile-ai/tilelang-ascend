@@ -1,37 +1,35 @@
-# Copyright (c) Huawei Technologies Co., Ltd. 2025.
-import sys
-import os
-import argparse
+import pytest
 import torch
+import torch_npu  # noqa: F401
 
 import tilelang
 import tilelang.language as T
 
-torch.npu.set_device(0)
-tilelang.cache.clear_cache()
-
-parser = argparse.ArgumentParser(description="NPU Kernel Compilation")
-parser.add_argument("--M", type=int, default=512, help="")
-parser.add_argument("--N", type=int, default=512, help="")
-parser.add_argument("--K", type=int, default=512, help="")
-parser.add_argument("--block_M", type=int, default=128, help="")
-parser.add_argument("--block_N", type=int, default=256, help="")
+from testcommon import assert_close, gen_tensor
 
 
-def vec_fill(M, N, K, block_M, block_N):
+pytestmark = [
+    pytest.mark.op("fill"),
+    pytest.mark.mode("Expert"),
+]
+
+DTYPES = ["float16"]
+FILL_CASES = [(512, 512, 512, 128, 256)]
+
+
+def vec_fill(M, N, K, block_M, block_N, dtype="float16"):
     m_num = M // block_M
     n_num = N // block_N
-    dtype = "float16"
-    BLOCK_SIZE = 20
+    block_size = 20
 
     @T.prim_func
     def main(
-            A: T.Tensor((M, K), dtype)
+        A: T.Tensor((M, K), dtype),
     ):
-        with T.Kernel(BLOCK_SIZE, is_npu=True) as (cid, _):
+        with T.Kernel(block_size, is_npu=True) as (cid, _):
             A_VEC = T.alloc_ub((block_M, block_N), dtype)
-            for i in T.serial(T.ceildiv(m_num*n_num, BLOCK_SIZE)):
-                block_id = i * BLOCK_SIZE + cid
+            for i in T.serial(T.ceildiv(m_num * n_num, block_size)):
+                block_id = i * block_size + cid
                 if block_id < m_num * n_num:
                     block_id_m = block_id // n_num
                     block_id_n = block_id % n_num
@@ -45,46 +43,13 @@ def vec_fill(M, N, K, block_M, block_N):
     return main
 
 
-def generate_tensor(shape, dtype, clear=False):
-    """generate tensor"""
-    if clear:
-        return torch.zeros(shape, dtype=eval("torch." + dtype))
-    if dtype in ("float32", "float16", "bfloat16"):
-        return torch.randn(size=shape, dtype=eval("torch." + dtype))
-    if dtype in ("int32", "int64", "int16"):
-        return torch.randint(low=0, high=2000, size=shape, dtype=eval("torch." + dtype))
-    if dtype == "int8":
-        return torch.randint(low=0, high=127, size=shape, dtype=eval("torch." + dtype))
-    if dtype == "bool":
-        return torch.randint(low=0, high=2, size=shape).bool()
-    raise ValueError('Invalid parameter "dtype" is found : {}'.format(dtype))
+@pytest.mark.parametrize("dtype", DTYPES)
+@pytest.mark.parametrize("M, N, K, block_M, block_N", FILL_CASES)
+def test_fill(dtype, M, N, K, block_M, block_N):
+    kernel = tilelang.compile(vec_fill(M, N, K, block_M, block_N, dtype), target="npuir")
 
+    a = gen_tensor((M, K), dtype, kind="randn")
+    ref_output = torch.full((M, K), fill_value=3, dtype=torch.float16, device=a.device)
 
-def run_test(main_args):
-    func = vec_fill(
-        main_args.M,
-        main_args.N,
-        main_args.K,
-        main_args.block_M,
-        main_args.block_N,
-    )
-    compiled_kernel = tilelang.compile(func, target='npuir')
-
-    shape = [main_args.M, main_args.K]
-    torch.manual_seed(88888888)  # set the random seed for torch
-    dtype = "float16"
-
-    a = generate_tensor(shape, dtype).npu()
-
-    ref_output = torch.full(tuple(shape), fill_value=3, dtype=torch.float16, device='npu')
-    compiled_kernel(a)
-    print("Actual Result:")
-    print(a)
-    print("Expected Result:")
-    print(ref_output)
-    torch.testing.assert_close(a, ref_output, rtol=1e-2, atol=1e-2)
-    print("\033[92mAll check passed!\033[0m")
-
-if __name__ == "__main__":
-    args = parser.parse_args()
-    run_test(args)
+    kernel(a)
+    assert_close(a.cpu(), ref_output.cpu(), dtype=dtype, rtol=1e-2, atol=1e-2)
