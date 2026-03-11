@@ -30,6 +30,9 @@ elseif(EXISTS ${CMAKE_SOURCE_DIR}/config.cmake)
   include(${CMAKE_SOURCE_DIR}/config.cmake)
 endif()
 
+# Enforce C++ standard
+set(CMAKE_CXX_STANDARD 17)
+
 if(NOT DEFINED TVM_PREBUILD_PATH)
   if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING "Build type" FORCE)
@@ -89,8 +92,6 @@ if(USE_ROCM)
   set(CMAKE_CXX_FLAGS "-D__HIP_PLATFORM_AMD__ ${CMAKE_CXX_FLAGS}")
 endif()
 
-# Enforce C++ standard
-set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 # Locate TVM prebuild path
