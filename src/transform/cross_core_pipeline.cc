@@ -875,7 +875,16 @@ private:
         Stmt outer_loop = ModifyOuterLoop(pipeline, staged_loops, num_stages, outer_loop_var);
         std::set<std::string> buffers_to_adjust = rewriter.GetAllBuffersToAdjust();
         if (!buffers_to_adjust.empty()) {
-            outer_loop = AdjustBuffersAndAccess(origin_map_, outer_loop, buffers_to_adjust, num_stages);
+            // Build a combined buffer map that includes both function params (origin_map_)
+            // and locally allocated buffers (alloc_buffers), so AdjustBuffersAndAccess can
+            // look up shapes for on-chip buffers like r_factors, sumexp_is, etc.
+            Map<Var, Buffer> combined_map(origin_map_);
+            if (const BlockRealizeNode* realize = pipeline->body.as<BlockRealizeNode>()) {
+                for (const auto& buf : realize->block->alloc_buffers) {
+                    combined_map.Set(buf->data, buf);
+                }
+            }
+            outer_loop = AdjustBuffersAndAccess(combined_map, outer_loop, buffers_to_adjust, num_stages);
         }
 
         if(const BlockRealizeNode* original_realize = pipeline->body.as<BlockRealizeNode>()) {
