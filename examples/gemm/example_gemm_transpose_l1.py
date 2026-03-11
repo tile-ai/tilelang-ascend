@@ -39,9 +39,10 @@ def matmul(M, N, K, block_M, block_N, K_L1, dtype="float16", accum_dtype="float"
             T.annotate_layout(
                 {
                     A_L1: make_zn_layout(A_L1),
-                    B_L1: make_nz_layout(B_L1),  # Zn
+                    B_L1: make_zn_layout(B_L1),
                 }
             )
+            
             A_L0 = T.alloc_L0A((block_M, K_L1), dtype)
             B_L0 = T.alloc_L0B((K_L1, block_N), dtype)
             C_L0 = T.alloc_L0C((block_M, block_N), accum_dtype)
@@ -54,10 +55,10 @@ def matmul(M, N, K, block_M, block_N, K_L1, dtype="float16", accum_dtype="float"
                     T.copy(B[by * block_N : (by + 1) * block_N,
                     k * K_L1 : (k + 1) * K_L1], B_L1)
 
-
                     T.barrier_all()
 
                     # T.gemm_v0(A_L1, B_L1, C_L0, init=(k == 0), transpose_B=True)
+                    
                     # copy L1
                     T.copy(A_L1, A_L0)
                     T.copy(B_L1, B_L0, transpose=True)
@@ -74,7 +75,7 @@ def matmul(M, N, K, block_M, block_N, K_L1, dtype="float16", accum_dtype="float"
 
 func = matmul(M, N, K, 256, 128, 64)
 
-torch.manual_seed(0)
+torch.manual_seed(42)
 
 a = torch.randn(M, K).half().npu()
 b = torch.randn(N, K).half().npu()
