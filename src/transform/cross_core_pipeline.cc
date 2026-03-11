@@ -694,6 +694,10 @@ private:
 
             std::vector<RegionInfo> preceding_writes;
             for (const auto& stmt_info : stage.statements) {
+                // Collect writes from this statement separately so that
+                // intra-statement writes do not cover intra-statement reads
+                // (e.g. T.tile.exp(buf, buf) where dst=write comes before src=read in args).
+                std::vector<RegionInfo> deferred_writes;
                 for (const auto& access : stmt_info.accesses) {
                     if (access.buffer_name != buffer_name) continue;
 
@@ -712,8 +716,11 @@ private:
                     }
 
                     if (access.is_write) {
-                        preceding_writes.push_back({access.offset, access.extent});
+                        deferred_writes.push_back({access.offset, access.extent});
                     }
+                }
+                for (const auto& w : deferred_writes) {
+                    preceding_writes.push_back(w);
                 }
             }
         }
