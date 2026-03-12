@@ -240,16 +240,30 @@ def lower(
     mod = OptimizeForTarget(mod, target)
 
     TILELANG_DUMP_IR = os.environ.get('TILELANG_DUMP_IR', '').lower()
-    if TILELANG_DUMP_IR in ('true', '1', 'yes', 'on'):
-        print("====== TVM IR ======")
-        print(mod)
-        print()
+    TILELANG_DUMP_DIR = os.environ.get('TILELANG_DUMP_DIR', '.')
+    enable_dump = TILELANG_DUMP_IR in ('true', '1', 'yes', 'on')
+
+    if enable_dump:
+        os.makedirs(TILELANG_DUMP_DIR, exist_ok=True)
+        try:
+            tvmir_text = mod.script()
+        except Exception:
+            tvmir_text = str(mod)
+        tvmir_path = os.path.join(TILELANG_DUMP_DIR, "tvmir.log")
+        with open(tvmir_path, "w", encoding="utf-8") as f:
+            f.write(tvmir_text)
+        print(f"[INFO] Saved TVM IR to {os.path.abspath(tvmir_path)}")
+
     if target.kind.name == "npuir":
         codegen_mod = device_codegen(mod, target)
-        if TILELANG_DUMP_IR in ('true', '1', 'yes', 'on'):
-            print("====== npuir ======")
-            print(codegen_mod.get_source())
-        return codegen_mod.get_source()
+        npuir_text = codegen_mod.get_source()
+
+        if enable_dump:
+            tilelangir_path = os.path.join(TILELANG_DUMP_DIR, "tilelangir.log")
+            with open(tilelangir_path, "w", encoding="utf-8") as f:
+                f.write(npuir_text)
+            print(f"[INFO] Saved TileLang IR to {os.path.abspath(tilelangir_path)}")
+        return npuir_text
 
     host_mod = tir.transform.Filter(_is_host_call)(mod)
     device_mod = tir.transform.Filter(_is_device_call)(mod)
