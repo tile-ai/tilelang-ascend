@@ -9,7 +9,21 @@ jobs:
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Get changed Python files
+      id: changed-files
+      run: |
+        CHANGED_FILES=$(git diff --name-only --diff-filter=AM origin/${{ github.base_ref }}...HEAD | grep '\.py$' || true)
+        echo "files=$CHANGED_FILES" >> $GITHUB_OUTPUT
+        echo "Changed files: $CHANGED_FILES"
+
+    - name: Ruff check
+      if: steps.changed-files.outputs.files != ''
       uses: chartboost/ruff-action@v3
+      with:
+        src: ${{ steps.changed-files.outputs.files }}
 
 # name: CI
 
