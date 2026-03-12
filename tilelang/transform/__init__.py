@@ -235,6 +235,28 @@ def LegalizeSafeMemoryAccess():
     return _ffi_api.LegalizeSafeMemoryAccess()  # type: ignore
 
 
+def LegalizeNpuirBF16():
+    """Legalize unsupported BF16 NPUIR ops into fp32 compute plus casts.
+
+    Returns
+    -------
+    fpass : tvm.transform.Pass
+        The result pass
+    """
+    return _ffi_api.LegalizeNpuirBF16()  # type: ignore
+
+
+def LowerNpuirBlock():
+    """Lower remaining Block/BlockRealize nodes for NPUIR codegen.
+
+    Returns
+    -------
+    fpass : tvm.transform.Pass
+        The result pass
+    """
+    return _ffi_api.LowerNpuirBlock()  # type: ignore
+
+
 def MakePackedAPI():
     """MakePackedAPI
 

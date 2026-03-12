@@ -1,5 +1,6 @@
 # Copyright (c) Tile-AI Organization.
 # Licensed under the MIT License.
+import os
 from tvm import tir, IRModule
 from tvm.target import Target
 import tilelang
@@ -50,6 +51,27 @@ def allow_vectorize(pass_ctx: Optional[PassContext] = None) -> bool:
         pass_ctx = tilelang.transform.get_pass_context()
     disable_vectorize = pass_ctx.config.get("tir.disable_vectorize", False)
     return not disable_vectorize
+
+
+def get_ascend_device_name() -> str:
+    for env_name in ("TILELANG_ASCEND_DEVICE_NAME", "ASCEND_DEVICE_NAME", "DEVICE_NAME"):
+        device_name = os.environ.get(env_name)
+        if device_name:
+            return device_name.strip()
+    return ""
+
+
+def supports_native_bf16_npuir_add(device_name: str) -> bool:
+    # Placeholder for future device capability table keyed by device_name.
+    _ = device_name
+    return False
+
+
+def need_npuir_bf16_legalize(target: Optional[Target] = None) -> bool:
+    if target is None or target.kind.name != "npuir":
+        return False
+
+    return not supports_native_bf16_npuir_add(get_ascend_device_name())
 
 
 def LowerAndLegalize(mod: IRModule, target: Target) -> IRModule:
@@ -105,8 +127,11 @@ def OptimizeForTarget(mod: IRModule, target: Target) -> IRModule:
         # 1. must be before LowerOpaqueBlock pass, otherwise the temporary buffer created cannot correctly become T.decl_buffer
         # 2. better to be before PlanAndUpdateBufferAllocationLocation, reuse its ability of Memory reusing
         mod = tilelang.transform.NpuLoopVectorize()(mod)
+        if need_npuir_bf16_legalize(target=target):
+            mod = tilelang.transform.LegalizeNpuirBF16()(mod)
         mod = tilelang.transform.PlanAndUpdateBufferAllocationLocation()(mod)
         mod = tir.transform.LowerOpaqueBlock()(mod)
+        mod = tilelang.transform.LowerNpuirBlock()(mod)
         mod = tir.transform.RemoveNoOp()(mod)
         return mod
     else:
