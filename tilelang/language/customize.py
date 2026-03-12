@@ -111,7 +111,20 @@ def view(src: Buffer,
 
 
 def _dtype(buf):
-    type_map = {"float16": "half", "float32": "float"}
+    type_map = {
+        "float16": "half",
+        "float32": "float",
+        "int32": "int",
+        "uint32": "uint32_t",
+        "bfloat16": "bfloat16_t",
+        "uint16": "uint16_t",
+        "uint8": "uint8_t",
+		"int4": "int4b_t",
+        "int8": "int8_t",
+        "int16": "int16_t",
+        "int64": "int64_t",
+        "uint64": "uint64_t",
+    }
     if isinstance(buf, BufferRegion):
         buf = buf.buffer
     return type_map[buf.dtype]
