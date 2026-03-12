@@ -1,12 +1,10 @@
 name: AscendNPU-IR CI
 
 on:
-  pull_request:
-    branches: [npuir]
   issue_comment:
     types: [created]
   release:
-    types: [published]
+    types: [published,prereleased]
 
 permissions:
   contents: read
@@ -14,10 +12,9 @@ permissions:
 jobs:
   check-trigger:
     if: >-
-      github.event_name == 'pull_request' ||
-      (github.event_name == 'issue_comment' &&
-       github.event.issue.pull_request &&
-       contains(github.event.comment.body, 'BuildTilelang'))
+      github.event_name == 'issue_comment' &&
+      github.event.issue.pull_request &&
+      contains(github.event.comment.body, 'TilelangFullTest')
     runs-on: ubuntu-22.04
     outputs:
       pr-number: ${{ steps.pr-info.outputs.number }}
@@ -113,14 +110,18 @@ jobs:
         path: testing/npuir/output/
 
   build-release:
-    if: github.event_name == 'release' && github.event.action == 'published'
+    if: >-
+      github.event_name == 'release' &&
+      github.event.release.target_commitish == 'npuir'
     uses: ./.github/workflows/build-tilelang-npuir.yml
     with:
       checkout-ref: refs/tags/${{ github.event.release.tag_name }}
     secrets: inherit
 
   upload-release-assets:
-    if: github.event_name == 'release' && github.event.action == 'published'
+    if: >-
+      github.event_name == 'release' &&
+      github.event.release.target_commitish == 'npuir'
     needs: build-release
     runs-on: ubuntu-22.04
     permissions:

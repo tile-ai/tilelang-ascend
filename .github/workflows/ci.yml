@@ -1,13 +1,12 @@
 name: CI
 
-# Temporarily disabled: no auto-run on PR
 on:
-  workflow_dispatch:
-  # pull_request:  # Uncomment and remove workflow_dispatch to re-enable
+  pull_request:
+    branches: [npuir]
 
 jobs:
   format-check:
-    runs-on: self-hosted
+    runs-on: ubuntu-22.04
 
     steps:
     - name: Checkout repository
@@ -29,9 +28,6 @@ jobs:
         python -m pip install --upgrade pip
         if [ -f requirements-dev.txt ]; then python -m pip install -r requirements-dev.txt; fi
 
-    - name: Update submodules recursively
-      run: git submodule update --init --recursive
-
     - name: Fetch base branch
       run: git fetch origin npuir
 
@@ -40,44 +36,3 @@ jobs:
         source tilelang_ci/bin/activate
         ./format.sh
 
-  build-test:
-    runs-on: self-hosted
-    needs: format-check
-
-    steps:
-    - name: Checkout repository
-      uses: actions/checkout@v2
-      with:
-        fetch-depth: 0
-
-    - name: Set up Python
-      uses: actions/setup-python@v2
-      with:
-        python-version: '3.9'
-
-    - name: Create virtual environment
-      run: python -m venv tilelang_ci
-
-    - name: Activate virtual environment and install dependencies
-      run: |
-        source tilelang_ci/bin/activate
-        python -m pip install --upgrade pip
-        if [ -f requirements-test.txt ]; then python -m pip install -r requirements-test.txt; fi
-
-    - name: Install project in wheel mode
-      run: |
-        source tilelang_ci/bin/activate
-        python -m pip install .
-
-    - name: Run examples
-      run: |
-        source tilelang_ci/bin/activate
-        cd examples
-        python -m pytest **/test*.py
-
-    - name: Run tests
-      run: |
-        source tilelang_ci/bin/activate
-        cd testing/python
-        export TILELANG_CLEAR_CACHE=1
-        python -m pytest
