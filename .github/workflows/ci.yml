@@ -21,7 +21,7 @@ jobs:
 
     - name: Ruff check
       if: steps.changed-files.outputs.files != ''
-      uses: chartboost/ruff-action@v2
+      uses: chartboost/ruff-action@v1
       with:
         src: ${{ steps.changed-files.outputs.files }}
 
