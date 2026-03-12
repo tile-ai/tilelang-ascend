@@ -6,6 +6,8 @@ import tilelang.language as T
 from tvm.tir import PrimExpr, Buffer, BufferRegion, Var
 from typing import List, Union
 from tvm import tir
+from tilelang.language.ascend import _dtype
+
 
 
 def atomic_add(dst: Buffer, value: PrimExpr) -> PrimExpr:
@@ -108,26 +110,6 @@ def view(src: Buffer,
     if dtype is None:
         dtype = src.dtype
     return T.Buffer(shape, dtype, src.data)
-
-
-def _dtype(buf):
-    type_map = {
-        "float16": "half",
-        "float32": "float",
-        "int32": "int",
-        "uint32": "uint32_t",
-        "bfloat16": "bfloat16_t",
-        "uint16": "uint16_t",
-        "uint8": "uint8_t",
-		"int4": "int4b_t",
-        "int8": "int8_t",
-        "int16": "int16_t",
-        "int64": "int64_t",
-        "uint64": "uint64_t",
-    }
-    if isinstance(buf, BufferRegion):
-        buf = buf.buffer
-    return type_map[buf.dtype]
 
 
 def npu_gemm(A, B, C, init=False):
