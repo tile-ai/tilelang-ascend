@@ -3,6 +3,16 @@
 # Copyright (c) Tile-AI Organization.
 # Licensed under the MIT License.
 
+PYTHON="$(command -v python3 2>/dev/null)" || PYTHON="$(command -v python 2>/dev/null)"
+if [ -z "$PYTHON" ] || [ ! -x "$PYTHON" ]; then
+    echo "Error: No python3/python found in PATH. Activate your venv/conda and re-run." >&2
+    exit 1
+fi
+PYTHON_DIR="$(dirname "$PYTHON")"
+export PATH="${PYTHON_DIR}:$PATH"
+echo "Using Python (current env): $PYTHON"
+$PYTHON --version
+
 # Add command line option parsing
 USE_LLVM=false
 BISHENGIR_PATH=""
@@ -27,7 +37,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         *)
             echo "Unknown option: $1"
-            echo "Usage: $0 [--enable-llvm]"
+            echo "Usage: $0 [--enable-llvm] [--bishengir-path=DIR]"
             exit 1
             ;;
     esac
@@ -38,8 +48,8 @@ echo "LLVM enabled: $USE_LLVM"
 
 # Step 1: Install Python requirements
 echo "Installing Python requirements from requirements.txt..."
-pip install -r requirements-build.txt
-pip install -r requirements.txt
+"$PYTHON" -m pip install -r requirements-build.txt
+"$PYTHON" -m pip install -r requirements.txt
 if [ $? -ne 0 ]; then
     echo "Error: Failed to install Python requirements."
     exit 1
@@ -124,8 +134,8 @@ if [ -z "$BISHENGIR_PATH" ]; then
     pushd 3rdparty/AscendNPU-IR
     bash ./build-tools/apply_patches.sh
     rm -rf ./build
-    ./build-tools/build.sh -o ./build --build-torch-mlir --c-compiler=clang --cxx-compiler=clang++ \
-    --add-cmake-options="-DCMAKE_LINKER=lld -DLLVM_ENABLE_LLD=ON" --apply-patches --bishengir-publish=off
+    ./build-tools/build.sh -o ./build --python-binding --c-compiler=clang --cxx-compiler=clang++ \
+    --add-cmake-options="-DCMAKE_LINKER=lld -DLLVM_ENABLE_LLD=ON -DLLVM_ENABLE_RTTI=ON" --apply-patches --bishengir-publish=off
     BISHENGIR_PATH="./3rdparty/AscendNPU-IR/build/install"
     popd
 fi
@@ -142,7 +152,7 @@ echo "set(USE_NPUIR ON)" >> config.cmake
 echo "set(BISHENGIR_ROOT_PATH $BISHENGIR_PATH)" >> config.cmake
 
 echo "Running CMake for TileLang..."
-cmake -DCMAKE_EXPORT_COMPILE_COMMANDS=ON ..
+cmake -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DPython3_EXECUTABLE="$PYTHON" ..
 if [ $? -ne 0 ]; then
     echo "Error: CMake configuration failed."
     exit 1
@@ -177,6 +187,26 @@ if ! grep -Fxq "$TILELANG_EXPORT_COMMAND" ~/.bashrc; then
     echo "$TILELANG_EXPORT_COMMAND updated in ~/.bashrc"
 else
     echo "$TILELANG_EXPORT_COMMAND already exists in ~/.bashrc"
+fi
+
+# NPUIR runtime: require AscendNPU-IR python_packages (mlir_core + bishengir) and add to PYTHONPATH.
+BISHENGIR_ABS="$(cd "$(dirname "$BISHENGIR_PATH")" 2>/dev/null && pwd)/$(basename "$BISHENGIR_PATH")"
+if [ ! -d "$BISHENGIR_ABS" ]; then
+    BISHENGIR_ABS="$(realpath "$BISHENGIR_PATH" 2>/dev/null)" || BISHENGIR_ABS="$BISHENGIR_PATH"
+fi
+BISHENGIR_PY_PKGS="${BISHENGIR_ABS}/python_packages"
+if [ ! -d "${BISHENGIR_PY_PKGS}/mlir_core" ]; then
+    echo "Error: NPUIR requires python_packages/mlir_core; not found under ${BISHENGIR_ABS}" >&2
+    exit 1
+fi
+if [ ! -d "${BISHENGIR_PY_PKGS}/bishengir" ]; then
+    echo "Error: NPUIR requires python_packages/bishengir; not found under ${BISHENGIR_ABS}" >&2
+    exit 1
+fi
+BISHENGIR_PYTHON="${BISHENGIR_PY_PKGS}/mlir_core:${BISHENGIR_PY_PKGS}/bishengir"
+if ! grep -Fq "${BISHENGIR_PY_PKGS}/mlir_core" ~/.bashrc; then
+    echo "export PYTHONPATH=${BISHENGIR_PYTHON}:\$PYTHONPATH" >> ~/.bashrc
+    echo "Added AscendNPU-IR python_packages (mlir_core + bishengir) to PYTHONPATH for NPUIR."
 fi
 
 # Step 12: Source .bashrc to apply changes

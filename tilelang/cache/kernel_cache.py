@@ -68,10 +68,12 @@ class KernelCache:
         self,
         func: Callable,
         out_idx: List[int],
+        workspace_idx: List[int],
         execution_backend: Literal["dlpack", "ctypes", "cython"] = "cython",
         args=None,
         target: Union[str, Target] = "auto",
         target_host: Union[str, Target] = None,
+        platform: Literal["A2", "A3", "A5"] = "A3",
         pass_configs: dict = None,
     ) -> str:
         """
@@ -80,10 +82,12 @@ class KernelCache:
         Args:
             func (Callable): The function to be compiled.
             out_idx (List[int]): Indices specifying which outputs to return.
+            workspace_idx (List[int]): Indices specifying auto-allocated workspace tensors.
             execution_backend (Literal): Backend type for execution. Defaults to "cython".
             args: Arguments passed to the function.
             target (Union[str, Target]): Compilation target platform. Defaults to "auto".
             target_host (Union[str, Target], optional): Host target platform.
+            platform (Literal): Specifies the target hardware platform generation. Defaults to "A3".
 
         Returns:
             str: SHA256 hash key for the kernel configuration.
@@ -93,11 +97,13 @@ class KernelCache:
             "version": __version__,
             "func": sha256(func_binary).hexdigest(),  # Use SHA256 to generate hash key
             "out_idx": (tuple(out_idx) if isinstance(out_idx, (list, tuple)) else [out_idx]),
+            "workspace_idx": (tuple(workspace_idx) if isinstance(workspace_idx, (list, tuple)) else [workspace_idx]),
             "args_repr": tuple(
                 repr(arg) for arg in args
             ),  # Use repr to serialize arguments, may need more robust serialization
             "target": str(target),
             "target_host": str(target_host) if target_host else None,
+            "platform": str(platform),
             "execution_backend": execution_backend,
             "pass_configs": pass_configs,
         }
@@ -108,9 +114,11 @@ class KernelCache:
         self,
         func: PrimFunc = None,
         out_idx: List[int] = None,
+        workspace_idx: List[int] = None,
         *args,
         target: Union[str, Target] = "auto",
         target_host: Union[str, Target] = None,
+        platform: Literal["A2", "A3", "A5"] = "A3",
         execution_backend: Literal["dlpack", "ctypes", "cython"] = "cython",
         verbose: bool = False,
         pass_configs: dict = None,
@@ -121,8 +129,10 @@ class KernelCache:
         Args:
             func: Function to be compiled or a prepared PrimFunc
             out_idx: Indices specifying which outputs to return
+            workspace_idx: Indices specifying auto-allocated workspace tensors
             target: Compilation target platform
             target_host: Host target platform
+            platform: Specifies the target hardware platform generation. Defaults to "A3".
             *args: Arguments passed to func
 
         Returns:
@@ -132,9 +142,11 @@ class KernelCache:
             return JITKernel(
                 func,
                 out_idx=out_idx,
+                workspace_idx=workspace_idx,
                 execution_backend=execution_backend,
                 target=target,
                 target_host=target_host,
+                platform=platform,
                 verbose=verbose,
                 pass_configs=pass_configs,
             )
@@ -142,10 +154,12 @@ class KernelCache:
         key = self._generate_key(
             func=func,
             out_idx=out_idx,
+            workspace_idx=workspace_idx,
             execution_backend=execution_backend,
             args=args,
             target=target,
             target_host=target_host,
+            platform=platform,
             pass_configs=pass_configs,
         )
         with self._lock:
@@ -156,7 +170,7 @@ class KernelCache:
                 return self._memory_cache[key]
 
             # Then check disk cache
-            kernel = self._load_kernel_from_disk(key, target, target_host, out_idx,
+            kernel = self._load_kernel_from_disk(key, target, target_host, platform, out_idx, workspace_idx,
                                                  execution_backend, pass_configs, func)
             if kernel is not None:
                 # Populate memory cache with disk result
@@ -167,9 +181,11 @@ class KernelCache:
         kernel = JITKernel(
             func,
             out_idx=out_idx,
+            workspace_idx=workspace_idx,
             execution_backend=execution_backend,
             target=target,
             target_host=target_host,
+            platform=platform,
             verbose=verbose,
             pass_configs=pass_configs,
         )
@@ -272,7 +288,9 @@ class KernelCache:
         key: str,
         target: Union[str, Target] = "auto",
         target_host: Union[str, Target] = None,
+        platform: Literal["A2", "A3", "A5"] = "A3",
         out_idx: List[int] = None,
+        workspace_idx: List[int] = None,
         execution_backend: Literal["dlpack", "ctypes", "cython"] = "cython",
         pass_configs: dict = None,
         func: Callable = None,
@@ -284,7 +302,9 @@ class KernelCache:
             key (str): The hash key identifying the kernel.
             target (Union[str, Target]): Compilation target platform. Defaults to "auto".
             target_host (Union[str, Target], optional): Host target platform.
+            platform (Literal): Specifies the target hardware platform generation. Defaults to "A3".
             out_idx (List[int], optional): Indices specifying which outputs to return.
+            workspace_idx (List[int], optional): Indices specifying auto-allocated workspace tensors.
             execution_backend (Literal): Backend type for execution. Defaults to "cython".
             pass_configs (dict, optional): Configuration for compiler passes.
             func (Callable, optional): The original function.
@@ -324,7 +344,9 @@ class KernelCache:
                 params=kernel_params,
                 target=target,
                 target_host=target_host,
+                platform=platform,
                 out_idx=out_idx,
+                workspace_idx=workspace_idx,
                 execution_backend=execution_backend,
                 pass_configs=pass_configs,
             )

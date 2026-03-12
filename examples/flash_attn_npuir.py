@@ -89,12 +89,12 @@ def flashattn(dtype, accum_dtype, seq_len, dim, block_m, block_n, block_k):
                     tail_size_n = T.min(block_n, seq_len - i * block_n)
                     for k in T.serial(T.ceildiv(dim, block_k)):
                         tail_size_k = T.min(block_k, dim - k * block_k)
-                        T.npuir_load_nd2nz(Q[cid * block_m, k * block_k], l1_a,
+                        T.load_nd2nz(Q[cid * block_m, k * block_k], l1_a,
                                            [tail_size_m, tail_size_k])
-                        T.npuir_load_nd2nz(K[i * block_n, k * block_k], l1_b,
+                        T.load_nd2nz(K[i * block_n, k * block_k], l1_b,
                                            [tail_size_n, tail_size_k])
                         if k == 0:
-                            T.npuir_dot(
+                            T.gemm(
                                 l1_a,
                                 l1_b,
                                 l0_c,
@@ -102,7 +102,7 @@ def flashattn(dtype, accum_dtype, seq_len, dim, block_m, block_n, block_k):
                                 b_transpose=True,
                                 size=[tail_size_m, tail_size_k, tail_size_n])
                         else:
-                            T.npuir_dot(
+                            T.gemm(
                                 l1_a,
                                 l1_b,
                                 l0_c,
@@ -111,7 +111,7 @@ def flashattn(dtype, accum_dtype, seq_len, dim, block_m, block_n, block_k):
                                 size=[tail_size_m, tail_size_k, tail_size_n])
 
                     with T.rs("PIPE_FIX"):
-                        T.npuir_store_fixpipe(
+                        T.store_fixpipe(
                             l0_c,
                             workspace_1[cid * block_m, i * block_n],
                             size=[tail_size_m, tail_size_n],
@@ -122,7 +122,7 @@ def flashattn(dtype, accum_dtype, seq_len, dim, block_m, block_n, block_k):
                     tail_size_n = T.min(block_n, seq_len - i * block_n)
                     with T.rs("PIPE_MTE2"):
                         T.sync_block_wait(i)
-                        T.npuir_load_nd2nz(
+                        T.load_nd2nz(
                             workspace_2[cid * block_m, i * block_n],
                             l1_a,
                             size=[tail_size_m, tail_size_n])
@@ -131,15 +131,15 @@ def flashattn(dtype, accum_dtype, seq_len, dim, block_m, block_n, block_k):
                         tail_size_k = T.min(block_k, dim - k * block_k)
                         by1 = i * dim
                         by2 = k * block_k
-                        T.npuir_load_nd2nz(V[i * block_n, k * block_k], l1_b,
+                        T.load_nd2nz(V[i * block_n, k * block_k], l1_b,
                                            [tail_size_n, tail_size_k])
-                        T.npuir_dot(
+                        T.gemm(
                             l1_a,
                             l1_b,
                             l0_c,
                             initC=True,
                             size=[tail_size_m, tail_size_n, tail_size_k])
-                        T.npuir_store_fixpipe(
+                        T.store_fixpipe(
                             l0_c,
                             workspace_3[cid * block_m, by1 + by2],
                             size=[tail_size_m, tail_size_k],
@@ -151,11 +151,11 @@ def flashattn(dtype, accum_dtype, seq_len, dim, block_m, block_n, block_k):
             with T.Scope("Vector"):
                 value_zero = 0
                 value_min = -T.infinity("float32")
-                T.npuir_brc(value_zero, logsum)
-                T.npuir_brc(value_zero, acc_o)
-                T.npuir_brc(value_zero, scores_scale)
-                T.npuir_brc(value_zero, scales)
-                T.npuir_brc(value_min, scores_max)
+                T.vbrc(value_zero, logsum)
+                T.vbrc(value_zero, acc_o)
+                T.vbrc(value_zero, scores_scale)
+                T.vbrc(value_zero, scales)
+                T.vbrc(value_min, scores_max)
 
                 real_m = (tail_size_m + 1) // 2
                 bx = cid * block_m + subid * real_m
@@ -169,20 +169,20 @@ def flashattn(dtype, accum_dtype, seq_len, dim, block_m, block_n, block_k):
                         T.copy(
                             workspace_1[bx : bx + real_m, i * block_n : i * block_n + tail_size_n],
                             cross_kernel_f16_N[0:real_m, 0:tail_size_n])
-                        T.npuir_cast(cross_kernel_f16_N, cross_kernel_f32_N, round_mode="rint")
+                        T.vcast(cross_kernel_f16_N, cross_kernel_f32_N, round_mode="rint")
 
-                    T.npuir_mul(cross_kernel_f32_N, acc_c_scale, cross_kernel_f32_N)
-                    T.npuir_reduce(cross_kernel_f32_N, scores_max, dims=[1], reduce_mode="max")
+                    T.vmul(cross_kernel_f32_N, acc_c_scale, cross_kernel_f32_N)
+                    T.reduce(cross_kernel_f32_N, scores_max, dims=[1], reduce_mode="max")
                     if i != 0:
-                        T.npuir_max(scores_max_prev, scores_max, scores_max)
-                        T.npuir_sub(scores_max_prev, scores_max, scores_scale)
-                        T.npuir_exp(scores_scale, scores_scale)
+                        T.vmax(scores_max_prev, scores_max, scores_max)
+                        T.vsub(scores_max_prev, scores_max, scores_scale)
+                        T.vexp(scores_scale, scores_scale)
 
                         T.copy(scores_scale, scales[i * block_m_half : i * block_m_half + block_m_half, 0 : 1])
 
-                    T.npuir_sub(cross_kernel_f32_N, scores_max, cross_kernel_f32_N)
-                    T.npuir_exp(cross_kernel_f32_N, cross_kernel_f32_N)
-                    T.npuir_cast(cross_kernel_f32_N, cross_kernel_f16_N, round_mode="rint")
+                    T.vsub(cross_kernel_f32_N, scores_max, cross_kernel_f32_N)
+                    T.vexp(cross_kernel_f32_N, cross_kernel_f32_N)
+                    T.vcast(cross_kernel_f32_N, cross_kernel_f16_N, round_mode="rint")
 
                     with T.rs("PIPE_MTE3"):
                         T.copy(
@@ -190,23 +190,23 @@ def flashattn(dtype, accum_dtype, seq_len, dim, block_m, block_n, block_k):
                             workspace_2[bx : bx + real_m, i * block_n : i * block_n + tail_size_n])
                         T.sync_block_set(i)
 
-                    T.npuir_reduce(cross_kernel_f32_N, scores_sum, dims=[1], reduce_mode="sum")
-                    T.npuir_mul(logsum, scores_scale, logsum)
-                    T.npuir_add(logsum, scores_sum, logsum)
+                    T.reduce(cross_kernel_f32_N, scores_sum, dims=[1], reduce_mode="sum")
+                    T.vmul(logsum, scores_scale, logsum)
+                    T.vadd(logsum, scores_sum, logsum)
 
 
                 for i in T.serial(T.ceildiv(seq_len, block_n)):
                     with T.rs("PIPE_MTE2"):
                         T.sync_block_wait(i)
                         T.copy(workspace_3[bx : bx + real_m, i * dim : i * dim + dim], cross_kernel_f16_dim[0:real_m, 0:dim])
-                    T.npuir_cast(cross_kernel_f16_dim, cross_kernel_f32_dim, round_mode="rint")
+                    T.vcast(cross_kernel_f16_dim, cross_kernel_f32_dim, round_mode="rint")
                     if i != 0:
                         T.copy(scales[i*block_m_half : i*block_m_half + block_m_half, 0 : 1], scores_scale)
-                    T.npuir_mul(acc_o, scores_scale, acc_o)
-                    T.npuir_add(acc_o, cross_kernel_f32_dim, acc_o)
+                    T.vmul(acc_o, scores_scale, acc_o)
+                    T.vadd(acc_o, cross_kernel_f32_dim, acc_o)
 
-                T.npuir_div(acc_o, logsum, acc_o)
-                T.npuir_cast(acc_o, cross_kernel_f16_dim, round_mode="rint")
+                T.vdiv(acc_o, logsum, acc_o)
+                T.vcast(acc_o, cross_kernel_f16_dim, round_mode="rint")
                 T.copy(cross_kernel_f16_dim[0:real_m, 0:dim], Output[bx : bx + real_m, 0 : dim])
 
     return main

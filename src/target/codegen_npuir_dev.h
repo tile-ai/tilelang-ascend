@@ -257,6 +257,10 @@ private:
   void FixpipeCodegen(const CallNode *op);
   void DotCodegen(const CallNode *op);
   void BitcastCodegen(const CallNode *op);
+  void VcosCodegen(const CallNode *op);
+  void VsinCodegen(const CallNode *op);
+  void VerfCodegen(const CallNode *op);
+  void VtanhCodegen(const CallNode *op);
   void DebugPrintCodegen(const CallNode *op);
   void ReshapeCodegen(const CallNode *op);
   template <typename T> void CreateHIVMBinaryVectorOp(const CallNode *op);

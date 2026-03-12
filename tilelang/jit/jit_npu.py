@@ -16,9 +16,19 @@ import torch
 import torch_npu
 import functools
 from ..engine import lower
+from ..utils import (
+    NPUUtils,
+    get_ascend_path,
+    get_cxx,
+    get_npucompiler_path,
+    get_npucompiler_opt_path,
+    get_bisheng_path
+)
 
 from tvm import tir
 from tvm.tir import PrimFunc
+
+from tilelang.profiler import Profiler, TensorSupplyType
 
 
 class LaunchThreadExtractor:
@@ -142,27 +152,6 @@ def _symbolic_var_promoter_pass(func: PrimFunc):
     return new_primfunc, dynamic_symbolic_map
 
 
-def _get_npucompiler_path() -> str:
-    # Get bishengir-compile from PATH
-    npu_compiler_path = shutil.which("bishengir-compile")
-    if npu_compiler_path is None:
-        npu_compiler_root = os.getenv("TRITON_NPU_COMPILER_PATH", "")
-        if npu_compiler_root is None:
-            raise EnvironmentError(
-                "Couldn't find executable bishengir-compile or TRITON_NPU_COMPILER_PATH."
-            )
-        npu_compiler_path = os.path.join(npu_compiler_root, "npuc")
-    return npu_compiler_path
-
-def _get_npucompiler_opt_path() -> str:
-    npu_compiler_opt_path = shutil.which("bishengir-opt")
-    if npu_compiler_opt_path is None:
-        raise EnvironmentError(
-            "Couldn't find executable bishengir-opt."
-        )
-    return npu_compiler_opt_path
-
-
 def convert_sigtype_to_int(sigty: str):
     MAP_SIGTYPE_TO_INT = {
         # Boolean
@@ -186,20 +175,9 @@ def convert_sigtype_to_int(sigty: str):
 
     return MAP_SIGTYPE_TO_INT[sigty]
 
-def _get_bisheng_path() -> str:
-    bisheng_path = shutil.which("bisheng")
-    if bisheng_path is None:
-        npu_compiler_root = os.getenv("TILELANG_NPU_COMPILER_PATH", "")
-        if npu_compiler_root is None:
-            raise EnvironmentError(
-                "Couldn't find executable bisheng or TILELANG_NPU_COMPILER_PATH"
-            )
-        bisheng_path = os.path.join(npu_compiler_root, "ccec")
-    return bisheng_path
 
 def extract_device_print_code_from_cann():
-    #from triton.backends.ascend.utils import _get_bisheng_path
-    ccec_compiler_bin_folder, _ = os.path.split(os.path.realpath(_get_bisheng_path()))
+    ccec_compiler_bin_folder, _ = os.path.split(os.path.realpath(get_bisheng_path()))
     ccec_compiler_folder, _ = os.path.split(ccec_compiler_bin_folder)
     clang_version = os.listdir(os.path.join(ccec_compiler_folder, "lib/clang/"))[0]
     ccelib_path = os.path.join(ccec_compiler_folder, f"lib/clang/{clang_version}/include/ccelib")
@@ -265,7 +243,7 @@ def extract_device_print_code_from_cann():
     ])
 
 
-def generate_npu_wrapper_src(constants, signature, workspace_size, mix_mode, lock_num, lock_ini_val):
+def generate_npu_wrapper_src(constants, signature, workspace_size, mix_mode, lock_num, lock_ini_val, need_debug):
     def _ty_to_cpp(ty):
         if ty[0] == "*":
             return "void*"
@@ -517,7 +495,7 @@ extern "C" {
 #include <vector>
 #define PY_SSIZE_T_CLEAN
 #include <Python.h>
-#define __CCE_ENABLE_PRINT__
+{'#define __CCE_ENABLE_PRINT__' if need_debug else ''}
 {'#include <torch_npu/csrc/framework/OpCommand.h>' if enable_taskqueue else ''}
 #include "runtime/runtime/rt.h"
 {extract_device_print_code_from_cann()}
@@ -714,163 +692,6 @@ PyMODINIT_FUNC PyInit___tilelang_launcher(void) {{
 """
 
 
-def generate_npu_utils_src():
-    return """
-#define PY_SSIZE_T_CLEAN
-#include <Python.h>
-
-#include <memory>
-#include <string>
-#include <tuple>
-#include <unordered_map>
-
-#include "runtime/runtime/rt.h"
-
-// Use map to differentiate same name functions from different binary
-static std::unordered_map<std::string, size_t> registered_names;
-static std::unordered_map<std::string, std::unique_ptr<size_t>> func_stubs;
-
-static std::tuple<void *, void *>
-registerKernel(const char *name, const void *data, size_t data_size, int shared,
-               int device, const char *kernel_mode_str) {
-  // name: Kernel Name
-  // data: Pointer to the kernel binary
-  // data_size: The size of binary data
-  // shared: Unused
-  // device: Target Device ID
-  // kernel mod str: Kernel mode string (aiv or others)
-  rtError_t rtRet;
-
-  // Create a binary data structure
-  rtDevBinary_t devbin;
-  devbin.data = data;
-  devbin.length = data_size;
-
-  // Set the modulus according to the kernel mode.
-  const std::string kernel_mode{kernel_mode_str};
-  if (kernel_mode == "aiv")
-    devbin.magic = RT_DEV_BINARY_MAGIC_ELF_AIVEC;
-  else
-    devbin.magic = RT_DEV_BINARY_MAGIC_ELF;
-
-  // Set version number
-  devbin.version = 0;
-
-  rtRet = rtSetDevice(device);
-  if (rtRet != RT_ERROR_NONE) {
-    printf("rtSetDevice failed, 0x%x\\n", rtRet);
-    return {NULL, NULL};
-  }
-
-  // Register binary data, obtain handle
-  void *devbinHandle = NULL;
-  rtRet = rtDevBinaryRegister(&devbin, &devbinHandle);
-  if (rtRet != RT_ERROR_NONE) {
-    printf("rtDevBinaryRegister failed, 0x%x\\n", rtRet);
-    return {NULL, NULL};
-  }
-
-  // Create a unique stub name (avoid naming conflicts)
-  std::string stubName = name;
-  stubName += "_" + std::to_string(registered_names[name]);
-  registered_names[name]++;
-
-  // Perform global mapping and create storage stubs
-  auto registered = func_stubs.emplace(stubName, std::make_unique<size_t>(0));
-  void *func_stub_handle = registered.first->second.get();
-
-  // Register function to associate binary handle with stub
-  rtRet = rtFunctionRegister(devbinHandle, func_stub_handle, stubName.c_str(),
-                             (void *)name, 0);
-  if (rtRet != RT_ERROR_NONE) {
-    printf("rtFunctionRegister failed(stubName = %s), 0x%x\\n", stubName.c_str(),
-           rtRet);
-    return {NULL, NULL};
-  }
-
-  return std::make_tuple(devbinHandle, func_stub_handle);
-}
-
-static PyObject *loadKernelBinary(PyObject *self, PyObject *args) {
-  const char *name;        // kernel name
-  const char *data;        // binary pointer
-  Py_ssize_t data_size;    // binary size
-  int shared;              // shared_memory(meaningless now)
-  int device;              // device ID
-  const char *kernel_mode; // kernel mode
-
-  if (!PyArg_ParseTuple(args, "ss#iis", &name, &data, &data_size, &shared,
-                        &device, &kernel_mode)) {
-    return NULL;
-  }
-
-  auto [module_handle, func_handle] =
-      registerKernel(name, data, data_size, shared, device, kernel_mode);
-
-  uint64_t mod = reinterpret_cast<uint64_t>(module_handle);
-  uint64_t func = reinterpret_cast<uint64_t>(func_handle);
-  if (PyErr_Occurred()) {
-    return NULL;
-  }
-
-  return Py_BuildValue("(KKii)", mod, func, 0, 0);
-}
-
-static PyObject *getArch(PyObject *self, PyObject *args) {
-  char name[64] = {'\\0'};
-
-  rtError_t rtRet = rtGetSocVersion(name, 64);
-
-  if (rtRet != RT_ERROR_NONE) {
-    printf("rtGetSocVersion failed, 0x%x", rtRet);
-    return NULL;
-  }
-  if (PyErr_Occurred()) {
-    return NULL;
-  }
-  return Py_BuildValue("s", name);
-}
-
-static PyObject *getAiCoreNum(PyObject *self, PyObject *args) {
-  uint32_t aiCoreCnt;
-
-  rtError_t rtRet = rtGetAiCoreCount(&aiCoreCnt);
-
-  if (rtRet != RT_ERROR_NONE) {
-    printf("rtGetAiCoreCount failed, 0x%x", rtRet);
-    return NULL;
-  }
-  if (PyErr_Occurred()) {
-    return NULL;
-  }
-  return Py_BuildValue("I", aiCoreCnt);
-}
-
-static PyMethodDef NpuUtilsMethods[] = {
-    {"load_kernel_binary", loadKernelBinary, METH_VARARGS,
-     "Load NPU kernel binary into NPU driver"},
-    {"get_arch", getArch, METH_VARARGS, "Get soc version of NPU"},
-    // sentinel
-    {"get_aicore_num", getAiCoreNum, METH_VARARGS, "Get the number of AI core"},
-    {NULL, NULL, 0, NULL}};
-
-static PyModuleDef ModuleDef = {
-    PyModuleDef_HEAD_INIT, "npu_utils",
-    "Utilities for fetching NPU device info and preparing kernel binary", -1,
-    NpuUtilsMethods};
-
-PyMODINIT_FUNC PyInit_npu_utils(void) {
-  PyObject *m = PyModule_Create(&ModuleDef);
-  if (m == NULL) {
-    return NULL;
-  }
-
-  PyModule_AddFunctions(m, NpuUtilsMethods);
-  return m;
-}
-"""
-
-
 def read_binary_file(file_path, mode="rb", chunk_size=None, return_type="bytes"):
     """
     Function to read a binary file
@@ -917,56 +738,22 @@ def read_binary_file(file_path, mode="rb", chunk_size=None, return_type="bytes")
         raise IOError(f"Error occurred while reading the file: {e}")
 
 
-class NPUUtils(object):
-    def __new__(cls):
-        if not hasattr(cls, "instance"):
-            cls.instance = super(NPUUtils, cls).__new__(cls)
-        return cls.instance
-
-    def __init__(self):
-        cache_path = "npu_utils.so"
-        import importlib.util
-
-        spec = importlib.util.spec_from_file_location("npu_utils", cache_path)
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        self.npu_utils_mod = mod
-
-    def load_binary(self, name, kernel, shared, device, mix_mode):
-        return self.npu_utils_mod.load_kernel_binary(
-            name, kernel, shared, device, mix_mode
-        )
-
-    @functools.lru_cache()
-    def get_device_properties(self, device):
-        num_aic = self.get_aicore_num()
-        num_aiv = num_aic * 2
-        return {"num_aicore": num_aic, "num_vectorcore": num_aiv}
-
-    @functools.lru_cache()
-    def get_arch(self):
-        return self.npu_utils_mod.get_arch()
-
-    @functools.lru_cache()
-    def get_aicore_num(self):
-        return self.npu_utils_mod.get_aicore_num()
-
-    @functools.lru_cache()
-    def get_aivector_core_num(self):
-        return self.get_device_properties("npu")["num_vectorcore"]
-
 class JitKernel_NPU:
     def __init__(self, metadata: dict, out_idx=None) -> None:
+        self.params = metadata["params"]
+        self.signature = metadata.get("signature", {})
         self.out_idx = out_idx  
         self.param_info = metadata.get('param_info', [])
         # 1 launch path
         self.so_launcher_path = f"{metadata['kernel_name']}.so"
+        self.so_utils_path = "npu_utils.so"
         self.utils_name = f"{metadata['name']}"
         # 2 kernel path
         self.utils_kernel_src = metadata["kernel_src"]
         self.utils_shared = metadata[
             "shared"
         ]  # Retain the interface, temporarily not in effect.
+        self.mlir_content = metadata["mlir_content"]
         self.mix_mode = metadata["mix_mode"]
         self.utils_device = torch.npu.current_device()
         self.launch_stream = torch.npu.current_stream(
@@ -976,12 +763,34 @@ class JitKernel_NPU:
             "kernel_name": f"{metadata['name']}",
             "tensor_kinds": metadata["tensor_kinds"],
         }
+        self.kernel_name = f"{metadata['name']}"
+        self.tensor_kinds = metadata["tensor_kinds"]
         self.launch_metadata = {}
         self.launch_enter_hook = None
         self.launch_exit_hook = None
         self.gridfunc = metadata["gridfunc"]
         self.symbolic = metadata["symbolic"]
+        self.prim_func = metadata["primfunc"]
+        self.out_idx = metadata["out_idx"]
         self._launch()
+
+    @classmethod
+    def from_database(
+        cls,
+        mod: PrimFunc,
+        kernel_source: str,
+        kernel_launcher_path: str,
+        kernel_utils_path: str,
+        metadata: str,
+        out_idx: Union[List[int], int],
+    ):
+        if isinstance(out_idx, int):
+            out_idx = [out_idx]
+
+        instance = cls(metadata)
+        instance.so_launcher_path = kernel_launcher_path
+        instance.so_utils_path = kernel_utils_path
+        return instance
 
     def _launch(self):
         import importlib.util
@@ -993,28 +802,35 @@ class JitKernel_NPU:
         spec.loader.exec_module(mod)
         self.launch_npu = getattr(mod, "launch")
 
-    def _calcu_grid(self, *args: Any):
+    def _calcu_grid(self, orig_to_input, *args: Any):
+        """
+        Calculate grid dimensions based on symbolic variables and input tensors.
+        
+        Args:
+            tensor_args: List of input tensor arguments
+            orig_to_tensor_pos: Mapping from original parameter indices to tensor_args positions
+            
+        Returns:
+            Dictionary of dynamic values extracted from tensors
+        """
         dynamic_val = {}
         extra_args = []
         for key, pos in self.symbolic.items():
             # Ensure that pos is a tuple with two elements.
             if isinstance(pos, (tuple, list)) and len(pos) >= 2:
                 tensor_idx, dim_idx = pos[0], pos[1]
-                if tensor_idx < len(args) and hasattr(args[tensor_idx], "shape"):
-                    if dim_idx < len(args[tensor_idx].shape):
-                        value = args[tensor_idx].shape[dim_idx]
+                if tensor_idx in orig_to_input:
+                    pos = orig_to_input[tensor_idx]
+                    arg = args[pos]
+                    if isinstance(arg, torch.Tensor) and dim_idx < len(arg.shape):
+                        value = arg.shape[dim_idx]
                         dynamic_val[str(key)] = value
                         extra_args.append(value)
                     else:
-                        raise IndexError(
-                            f"Dimension index {dim_idx} out of range for tensor {tensor_idx}"
-                        )
+                        raise ValueError(f"Cannot resolve symbolic {key}")
                 else:
-                    raise IndexError(
-                        f"Tensor index {tensor_idx} out of range or tensor has no shape attribute"
-                    )
-            else:
-                raise ValueError(f"Invalid position format for key '{key}': {pos}")
+                    raise ValueError(f"Symbolic {key} depends on output")
+
         self.extra_args = extra_args
         result = replace_by_longest_key(self.gridfunc, dynamic_val)
 
@@ -1042,85 +858,56 @@ class JitKernel_NPU:
         except Exception as e:
             raise ValueError(f"Failed to evaluate grid expression '{result}': {e}")
 
+        return dynamic_val 
+
     def __call__(self, *args: Any) -> Any:
-        # calculate the input params：total_params - out_params
+        # Calculate the input params：total_params - out_params
         total_params = len(self.param_info)
         num_inputs = total_params - (len(self.out_idx) if self.out_idx is not None else 0)
         
         if len(args) != num_inputs:
-            raise ValueError(f"Expected {num_inputs} input tensors (total_params={total_params}, out_idx={self.out_idx}), got {len(args)}")
+            raise ValueError(f"Expected {num_inputs} inputs, got {len(args)}")
         
-        self._calcu_grid(*args)
-        
-        # build the mapping from original inputs to the args position
+        # Build the mapping from original inputs to the args position
         orig_to_input = {}
         input_pos = 0
         for i, info in enumerate(self.param_info):
-            if not info['is_output']:
+            if not info['is_output']: 
                 orig_to_input[i] = input_pos
                 input_pos += 1
         
-        # build the symbolic var names to extra_args indices
-        sym_name_to_extra_idx = {}
-        if hasattr(self, 'symbolic') and self.symbolic:
-            for idx, sym_var in enumerate(self.symbolic.keys()):
-                sym_name_to_extra_idx[sym_var.name] = idx
+        # Calculate grid and get dynamic values
+        dynamic_val = self._calcu_grid(orig_to_input, *args)
         
+        # Build full argument list
         full_args = [None] * total_params
         input_ptr = 0
-        output_created = []
         
         for i, info in enumerate(self.param_info):
-            if info['is_output']:
-                # create output tensor
+            if info['is_output']:  # Output parameter (must be tensor)
                 dtype = info['dtype']
-                
-                # analyze the shape, replace the symbolic variables with actual values
                 shape = []
                 for dim in info['shape']:
                     if isinstance(dim, tir.Var):
-                        var_name = dim.name
-                        
-                        # try to get the shape from input tensors
-                        if var_name in self.symbolic:
-                            tensor_idx, dim_idx = self.symbolic[var_name]
-                            if tensor_idx in orig_to_input:
-                                input_arg = args[orig_to_input[tensor_idx]]
-                                actual_dim = input_arg.shape[dim_idx]
-                                shape.append(actual_dim)
-                                continue
-                        
-                        # get the shape from extra_args
-                        if var_name in sym_name_to_extra_idx:
-                            extra_idx = sym_name_to_extra_idx[var_name]
-                            if extra_idx < len(self.extra_args):
-                                shape.append(self.extra_args[extra_idx])
-                            else:
-                                raise ValueError(f"Symbolic variable {var_name} not found in extra_args")
-                        else:
-                            raise ValueError(f"Unknown symbolic variable {var_name}")
+                        val = dynamic_val.get(str(dim))
+                        if val is None:
+                            raise ValueError(f"Missing value for {dim}")
+                        shape.append(val)
                     else:
                         shape.append(int(dim))
                 
-                # create a 1D tensor if shape is none
-                if not shape:
-                    shape = [1]
-                
+                # Shape should not be empty (validated in _extract_param_info)
                 device = args[0].device if args else torch.device('cpu')
-                
-                # create the output tensor
-                tensor = torch.empty(shape, dtype=dtype, device=device)
-                output_created.append(tensor)
-                full_args[i] = tensor
+                full_args[i] = torch.empty(shape, dtype=dtype, device=device)
             else:
-                # input tensor
+                # Input parameter (tensor or scalar)
                 full_args[i] = args[input_ptr]
                 input_ptr += 1
         
-        # append extra_args to full_args
+        # Append extra_args
         full_args.extend(self.extra_args)
         
-        # run kernel
+        # Run kernel
         npu_utils = NPUUtils()
         t_module, t_function, t_n_regs, t_n_spills = npu_utils.load_binary(
             self.utils_name,
@@ -1139,16 +926,105 @@ class JitKernel_NPU:
             self.launch_metadata,
             self.launch_enter_hook,
             self.launch_exit_hook,
-            *full_args  
+            *full_args
         )
         
+        # Return outputs
         if self.out_idx is None:
             return None
         if len(self.out_idx) == 1:
             return full_args[self.out_idx[0]]
         else:
             return [full_args[i] for i in self.out_idx]
+        # return args[idx]
+        
+    def get_profiler(self,
+                     tensor_supply_type: TensorSupplyType = TensorSupplyType.Auto) -> Profiler:
+        """
+        Creates a profiler to benchmark the compiled runtime module.
 
+        Parameters
+        ----------
+        tensor_supply_type : TensorSupplyType, optional
+            The type of input tensors to supply for profiling (default: TensorSupplyType.Auto).
+
+        Returns
+        -------
+        Profiler
+            A Profiler instance for benchmarking the runtime module.
+        """
+        return Profiler(self.params, self.out_idx[0], tensor_supply_type).with_direct_func(self)
+                         
+    def benchmark(self, 
+                  warmup: int = 25,
+                  rep: int = 100,
+                  n_warmup: int = 1,
+                  n_repeat: int = 1) -> float:
+        profiler = self.get_profiler()
+        return profiler.do_bench(
+            func=self,
+            warmup=warmup,
+            rep=rep,
+            n_warmup=n_warmup,
+            n_repeat=n_repeat
+        )
+                      
+    def update_tuner_result(self, latency: float, config: Dict[str, Any],
+                            ref_latency: float) -> "JitKernel_NPU":
+        """
+        Updates the tuning results for this kernel.
+
+        Parameters
+        ----------
+        latency : float
+            The measured latency of this kernel configuration.
+        config : Dict[str, Any]
+            The configuration parameters used for this kernel.
+        ref_latency : float
+            The reference latency to compare against.
+
+        Returns
+        -------
+        None
+        """
+        self.latency = latency
+        self.config = config
+        self.ref_latency = ref_latency
+
+        return self
+
+    def get_kernel_source(self) -> str:
+        """
+        Returns the source code of the compiled kernel function.
+
+        Returns
+        -------
+        str
+            The source code of the compiled kernel function.
+        """
+
+        return self.utils_kernel_src
+
+    def get_tuner_result(self) -> Dict[str, Any]:
+        """
+        Gets the tuning results for this kernel.
+
+        Returns
+        -------
+        Dict[str, Any]
+            A dictionary containing:
+            - latency: The measured latency of this kernel
+            - config: The configuration parameters used
+            - ref_latency: The reference latency for comparison
+        """
+        if self.latency is None:
+            raise ValueError("Tuning results are not available. Please tune the kernel first.")
+
+        return {
+            "latency": self.latency,
+            "config": self.config,
+            "ref_latency": self.ref_latency,
+        }
 
 class compiler_npu:
     def __init__(self) -> None:
@@ -1204,8 +1080,13 @@ class compiler_npu:
         self.metadata["out_idx"] = out_idx
         self.metadata["param_info"] = param_info
         self.mod, self.metadata["symbolic"] = _symbolic_var_promoter_pass(mod)
+        self.need_debug = self.check_debug_op(self.mod)
         # get grid message
         self._parse_grid()
+        self.metadata["params"] = self.mod.params
+        self.out_idx = out_idx
+        self.metadata["out_idx"] = self.out_idx
+
         mlir_path = lower(self.mod)
         if mlir_path.endswith(".mlir"):
             self.mlir_content = self._read_mlir_file(mlir_path)
@@ -1214,21 +1095,43 @@ class compiler_npu:
         self.constants = {}
         # get signature information
         self.signature = self._parse_signature()
+        
+        self.metadata["signature"] = self.signature
+        self.metadata["primfunc"] = self.mod
+        self.metadata["mlir_content"] = self.mlir_content
+        
         self.lock_num = -1
         self.lock_ini_val = 0
         self._parse_npuir_metadata()
         self.metadata["kernel_src"] = self._npuir_to_bin_enable_npu_compile()
-        TILELANG_ASCEND_WORKSPACE_SIZE = os.environ.get('TILELANG_ASCEND_WORKSPACE_SIZE')
-        if not TILELANG_ASCEND_WORKSPACE_SIZE is None:
-          try:
-              self.workspace_size = int(TILELANG_ASCEND_WORKSPACE_SIZE)
-          except ValueError:
-              print(f"Warning: TILELANG_ASCEND_WORKSPACE_SIZE must be integer, \
-                    got '{TILELANG_ASCEND_WORKSPACE_SIZE}', using compiler auto infer workspace size '{self.workspace_size}'")
-        self.wrapper_utiles = generate_npu_utils_src()
-        self.so_utils_path = self.make_npu_launcher_stub(
-            "npu_utils", self.wrapper_utiles
-        )
+        # Obtain the npu_utils.so file required for loading the kernel
+        self.so_utils_path = os.path.join(os.getcwd(), "npu_utils.so")
+        if not os.path.isfile(self.so_utils_path):
+            # Preferred package layout:
+            #   tilelang/jit/jit_npu.py -> tilelang/ -> tilelang/src/runtime/npu_utils.cpp
+            pkg_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            pkg_runtime_cpp = os.path.join(pkg_root, "src", "runtime", "npu_utils.cpp")
+
+            # Fallback for source-tree/PYTHONPATH workflow:
+            #   repo_root/src/runtime/npu_utils.cpp
+            # where repo_root is the parent of pkg_root (i.e. contains setup.py).
+            repo_root = os.path.dirname(pkg_root)
+            repo_runtime_cpp = os.path.join(repo_root, "src", "runtime", "npu_utils.cpp")
+
+            candidate_paths = [pkg_runtime_cpp]
+            if os.path.isfile(os.path.join(repo_root, "setup.py")):
+                candidate_paths.append(repo_runtime_cpp)
+
+            npu_utils_cpp = next((path for path in candidate_paths if os.path.isfile(path)), None)
+            if npu_utils_cpp is None:
+                searched = ", ".join(candidate_paths)
+                raise FileNotFoundError(
+                    "npu_utils.cpp not found. "
+                    f"Tried: {searched}. "
+                    "Ensure tilelang package includes src/runtime or run from a valid source tree."
+                )
+
+            self.so_utils_path = self.make_npu_launcher_stub("npu_utils", npu_utils_cpp)
         self.wrapper_src = generate_npu_wrapper_src(
             self.constants,
             self.signature,
@@ -1236,12 +1139,21 @@ class compiler_npu:
             self.metadata["mix_mode"],
             self.lock_num,
             self.lock_ini_val,
+            self.need_debug,
         )
         self.so_launcher_path = self.make_npu_launcher_stub(
             self.metadata["kernel_name"], self.wrapper_src
         )
+        TILELANG_ASCEND_WORKSPACE_SIZE = os.environ.get('TILELANG_ASCEND_WORKSPACE_SIZE')
+        if not TILELANG_ASCEND_WORKSPACE_SIZE is None:
+          try:
+              self.workspace_size = int(TILELANG_ASCEND_WORKSPACE_SIZE)
+          except ValueError:
+              print(f"Warning: TILELANG_ASCEND_WORKSPACE_SIZE must be integer, \
+                    got '{TILELANG_ASCEND_WORKSPACE_SIZE}', using default 32768")
         
         return JitKernel_NPU(metadata=self.metadata, out_idx=out_idx)
+      
 
     def _extract_param_info(self, func: PrimFunc, out_idx):
         """
@@ -1255,36 +1167,51 @@ class compiler_npu:
         buffer_map = func.buffer_map
         params = func.params
         info_list = []
-
-        # Convert out_idx to positive indices
+        
+        # Convert out_idx to positive indices and validate
         total_params = len(params)
         pos_out_idx = None
         if out_idx is not None:
             pos_out_idx = {i if i >= 0 else total_params + i for i in out_idx}
+
         for i, param in enumerate(params):
+            is_output = (pos_out_idx is not None and i in pos_out_idx)
             if param in buffer_map:
                 # Tensor parameter (has buffer)
                 buffer = buffer_map[param]
                 dtype_str = str(buffer.dtype)
                 torch_dtype = self._tvm_dtype_to_torch(dtype_str)
                 shape_expr = list(buffer.shape)
-                is_output = (pos_out_idx is not None and i in pos_out_idx)
+                # Check for zero-dimensional tensor (not supported as output)
+                if is_output and len(shape_expr) == 0:
+                    raise ValueError(
+                        f"Output parameter at index {i} has zero-dimensional shape. "
+                        f"TileLang does not support scalar outputs. "
+                        f"Please use 1D tensor with shape (1,) instead."
+                    )
                 info_list.append({
                     'dtype': torch_dtype,
                     'shape': shape_expr,
-                    'is_output': is_output
+                    'is_output': is_output,
                 })
             else:
-                # scalar param
-                torch_dtype = torch.float32  
-                if hasattr(self, 'signature') and i in self.signature:
-                    dtype_str = self.signature[i]
-                    torch_dtype = self._tvm_dtype_to_torch(dtype_str)
-                    info_list.append({
-                        'dtype': torch_dtype,
-                        'shape': [],
-                        'is_output': False
-                    })
+                # Scalar parameter - cannot be output
+                if is_output:
+                    raise ValueError(
+                        f"Parameter at index {i} is a scalar (T.{param.dtype}) but marked as output. "
+                        f"TileLang does not support scalar outputs. "
+                        f"Please use 1D tensor with shape (1,) instead."
+                    )
+                
+                # Get dtype from param
+                dtype_str = str(param.dtype)
+                torch_dtype = self._tvm_dtype_to_torch(dtype_str)
+                info_list.append({
+                    'dtype': torch_dtype,
+                    'shape': [],  # scalar has empty shape
+                    'is_output': False,
+                })
+        
         return info_list
 
     def _tvm_dtype_to_torch(self, dtype_str):
@@ -1452,49 +1379,8 @@ class compiler_npu:
             bin_file = os.path.join(tmpdir, "kernel")
             bin_path = os.path.join(tmpdir, "kernel.o")
             so_path = os.path.join(tmpdir, "libkernel.so")
-            
-            # Hot fix for CANN 8.5
-            # Run --adapt-triton-kernel pass before running compilation pipeline
-            # TODO: temporary fix, will be updated when bishengir-compile
-            # and hivmc gets updated in CANN 8.5
-            npu_compiler_opt_path = _get_npucompiler_opt_path()
-            ttadapter_opt_path = os.path.join(tmpdir, "kernel-opt.npuir")
-            
-            _opt_option_list = [
-               "--adapt-triton-kernel"
-            ]
-            
-            opt_cmd_list = (
-                [npu_compiler_opt_path, ttadapter_path]
-                + _opt_option_list
-                + ["-o", ttadapter_opt_path]
-            )
-            try:
-                ret = subprocess.run(
-                    opt_cmd_list, capture_output=True, check=True, text=True
-                )
-                print("AscendNPU IR OPT success")
-            except subprocess.CalledProcessError as e:
-                # print ir
-                print("AscendNPU IR:\n")
-                print(self.mlir_content)
-                # print error info
-                print("err cmd:", " ".join(opt_cmd_list))
-                print(f"err code: {e.returncode}")
-                print("err info:", e.stderr)
-                sys.exit(1)
-            except Exception as e:
-                print(f"error: {str(e)}")
-                sys.exit(1)
-            # 1. Read ttadapter_opt_path
-            with open(ttadapter_opt_path, 'r') as f:
-                npuir_opt = f.read()
-            # 2. Replace ttadapter_path contents with ttadapter_opt_path contents
-            with open(ttadapter_path, 'w') as f:
-                f.write(npuir_opt)
-            # Hot fix for CANN 8.5 ends here
 
-            npu_compiler_path = _get_npucompiler_path()
+            npu_compiler_path = get_npucompiler_path()
             # TileLang Ascend JIT Runtime now follows Triton JIT style.
             # bishengir-compile --enable-triton-kernel-compile=true make sure the way.
             _compile_option_list = [
@@ -1533,21 +1419,34 @@ class compiler_npu:
                 sys.exit(1)
             result = self._get_workspace_size(so_path, "_infer_workspace_shape_function")
             self.workspace_size = result
+
+            if not Path(bin_path).exists():
+                err_lines = [
+                    "AscendNPU IR compile reported success but output object was not generated.",
+                    f"Expected output: {bin_path}",
+                    f"cmd: {' '.join(cmd_list)}",
+                ]
+                if ret.stdout:
+                    err_lines.append(f"stdout:\n{ret.stdout}")
+                if ret.stderr:
+                    err_lines.append(f"stderr:\n{ret.stderr}")
+                raise RuntimeError("\n".join(err_lines))
+
             return Path(bin_path).read_bytes()
 
-    def make_npu_launcher_stub(self, name: str, source: str, debug=False):
+    def make_npu_launcher_stub(self, name: str, source: Union[str, os.PathLike], debug=False):
         """
         Generate the launcher stub to launch the kernel
         """
         with tempfile.TemporaryDirectory() as tmpdir:
-            src_path = os.path.join(tmpdir, f"{name}.cxx")
-            with open(src_path, "w") as f:
-                f.write(source)
-            so = self._build_npu_ext(name, src_path, tmpdir, kernel_launcher="torch")
+            dst_path = os.path.join(tmpdir, f"{name}.cxx")
+            if os.path.exists(source):
+                shutil.copy(source, dst_path)
+            else:
+                with open(dst_path, 'w') as f:
+                    f.write(source)
+            so = self._build_npu_ext(name, dst_path, tmpdir, kernel_launcher="torch")
             return so
-
-    def _get_ascend_path(self):
-        return os.environ.get("ASCEND_HOME_PATH")
 
     def _check_cxx11_abi(self):
         import torch
@@ -1557,13 +1456,7 @@ class compiler_npu:
         self, obj_name: str, src_path, src_dir, *, kernel_launcher=None
     ) -> str:
         so_path = f"{obj_name}.so"
-        cxx = os.environ.get("CC")
-        if cxx is None:
-            clangxx = shutil.which("clang++")
-            gxx = shutil.which("g++")
-            cxx = clangxx if clangxx is not None else gxx
-            if cxx is None:
-                raise RuntimeError("Failed to find C++ compiler")
+        cxx = get_cxx()
         cc_cmd = [cxx, src_path]
         # disable all warnings
         cc_cmd += [f"-w"]
@@ -1581,7 +1474,7 @@ class compiler_npu:
         # device_print.h
         cc_cmd += [f"-I{os.path.dirname(os.path.realpath(__file__))}"]
         # find the ascend library
-        asc_path = self._get_ascend_path()
+        asc_path = get_ascend_path()
 
         rt_path = os.path.join(asc_path, "include/experiment/runtime/runtime/rt.h")
         if not os.path.exists(rt_path):
@@ -1620,3 +1513,20 @@ class compiler_npu:
             return so_path
         else:
             raise RuntimeError("Failed to compile " + src_path)
+
+    def check_debug_op(self, func) -> bool:
+        """
+        Check if there are debug operations in the func, we only need to print debug info
+        in the device side when there are debug operations in the func, otherwise it may cause performance loss.
+        """
+        assert isinstance(func, PrimFunc), "Expected func to be a PrimFunc"
+
+        found = False
+
+        def visit(node):
+            nonlocal found
+            if isinstance(node, tir.Call) and 'debug' in node.op.name:
+                found = True
+
+        tir.stmt_functor.post_order_visit(func.body, visit)
+        return found

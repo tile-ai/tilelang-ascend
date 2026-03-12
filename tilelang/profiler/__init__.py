@@ -1,7 +1,3 @@
-# Copyright (c) Tile-AI Corporation.
-# Licensed under the MIT License.
-"""The profiler and convert to torch utils"""
-
 from typing import List, Optional, Callable, Any
 from functools import partial
 import torch
@@ -16,8 +12,9 @@ from tilelang.utils.tensor import (
 )
 from tilelang.engine.param import KernelParam
 from tilelang.jit.adapter import BaseKernelAdapter
-from tilelang.profiler.bench import do_bench
-
+from tilelang.profiler.bench import do_bench as npu_do_bench
+from tilelang.profiler.bench import do_bench_npu as npu_do_bench_msprof
+import os
 
 @dataclass
 class Profiler:
@@ -28,12 +25,14 @@ class Profiler:
         result_idx: Indices indicating which parameters are output tensors
         supply_type: Type of tensor supply to use (e.g., random, zeros, etc.)
         adapter: Optional kernel adapter for interfacing with different backends
+        direct_func: Optional direct callable function (bypasses adapter)
     """
 
     params: List[KernelParam]
     result_idx: List[int]
     supply_type: TensorSupplyType
     adapter: Optional[BaseKernelAdapter] = None
+    direct_func: Optional[Callable] = None
 
     def __post_init__(self):
         """Initialize tensor supply after dataclass initialization"""
@@ -54,11 +53,14 @@ class Profiler:
             result_idx = [result_idx]
         elif not isinstance(result_idx, list):
             raise ValueError("result_idx should be a list of integers")
-
         return result_idx
 
     def with_default_adapter(self, adapter: BaseKernelAdapter) -> "Profiler":
         self.adapter = adapter
+        return self
+    
+    def with_direct_func(self, func: Callable) -> "Profiler":
+        self.direct_func = func
         return self
 
     def _get_inputs(self, with_output=False):
@@ -69,10 +71,12 @@ class Profiler:
         return ins
 
     def _get_params(self, with_output=False):
+        
         params = []
         for i in range(len(self.params)):
             if with_output or i not in self.result_idx:
                 params.append(self.params[i])
+                
         return params
 
     def assert_allclose(
@@ -94,9 +98,15 @@ class Profiler:
         """
         ins = self._get_inputs() if input_tensors is None else input_tensors
         ref_outs = reference_program(*ins)
-        torch.cuda.synchronize()
+        if hasattr(torch, 'npu') and torch.npu.is_available():
+            torch.npu.synchronize()
+        elif torch.cuda.is_available():
+            torch.cuda.synchronize()
         lib_outs = self.func(*ins)
-        torch.cuda.synchronize()
+        if hasattr(torch, 'npu') and torch.npu.is_available():
+            torch.npu.synchronize()
+        elif torch.cuda.is_available():
+            torch.cuda.synchronize()
 
         if isinstance(lib_outs, torch.Tensor):
             lib_outs = [lib_outs]
@@ -113,14 +123,9 @@ class Profiler:
 
         assert len(lib_tensors) == len(
             ref_tensors), "len(lib_tensors) not equals to len(ref_tensors) !"
-        # torch.set_printoptions(edgeitems=torch.inf)
+
         for lhs, rhs in zip(lib_tensors, ref_tensors):
-            # close_mask = torch.isclose(lhs, rhs, rtol=rtol, atol=atol)
-            # total_elements = lhs.numel()
-            # num_not_close = (~close_mask).sum().item()
-            # percentage_not_close = (num_not_close / total_elements) * 100
-            # print(f"{percentage_not_close:.2f}% of the elements are not close.")
-            # print(f"Total elements: {total_elements}, Not close elements: {num_not_close}")
+
             torch_assert_close(
                 lhs,
                 rhs,
@@ -148,9 +153,15 @@ class Profiler:
         """
         ins = self._get_inputs() if input_tensors is None else input_tensors
         ref_outs = reference_program(*ins)
-        torch.cuda.synchronize()
+        if hasattr(torch, 'npu') and torch.npu.is_available():
+            torch.npu.synchronize()
+        elif torch.cuda.is_available():
+            torch.cuda.synchronize()
         lib_outs = self.func(*ins)
-        torch.cuda.synchronize()
+        if hasattr(torch, 'npu') and torch.npu.is_available():
+            torch.npu.synchronize()
+        elif torch.cuda.is_available():
+            torch.cuda.synchronize()
 
         if isinstance(lib_outs, torch.Tensor):
             lib_outs = [lib_outs]
@@ -195,12 +206,25 @@ class Profiler:
             profiler: Explicitly specified profiler type or "auto" for automatic detection
         
         Returns:
-            str: The determined profiler type ("torch" or "tvm")
+            str: The determined profiler type ("torch", "tvm", or "npu")
         """
-        if isinstance(func, tvm.runtime.Module):
-            return "tvm"
+        if func is not None:
+            if hasattr(func, '__class__') and func.__class__.__name__ == 'JitKernel_NPU':
+                return "npu"
+            elif isinstance(func, tvm.runtime.Module):
+                return "tvm"
+            else:
+                return "torch"
         else:
-            return "torch"
+            if self.direct_func is not None:
+                if hasattr(self.direct_func, '__class__') and self.direct_func.__class__.__name__ == 'JitKernel_NPU':
+                    return "npu"
+                else:
+                    return "torch"
+            elif self.adapter is not None:
+                return "torch"
+            else:
+                raise ValueError("No function or adapter provided")
 
     def do_bench(
         self,
@@ -214,31 +238,61 @@ class Profiler:
         """Benchmarks the execution time of a given function.
         
         Args:
-            func: Function to benchmark (uses adapter if None)
+            func: Function to benchmark (uses direct_func or adapter if None)
             warmup: Warmup time in milliseconds
             rep: Number of repetitions for timing
             n_warmup: Number of warmup iterations
             n_repeat: Number of timing iterations
-            profiler: Which profiling backend to use
             input_tensors: Optional pre-generated input tensors
             
         Returns:
             float: Average execution time in milliseconds
         """
         profiler = self.determine_profiler(func)
-        if profiler == "torch":
+        
+        if profiler == "npu":
+           
             if func is None:
-                assert self.adapter is not None, "benchmarking function should be provided"
-                func = self.adapter
+                if self.direct_func is not None:
+                    func = self.direct_func
+                else:
+                    raise ValueError("No function provided for benchmarking")
+            
             ins = self._get_inputs() if input_tensors is None else input_tensors
+     
             bench_func = partial(func, *ins)
-            return do_bench(
+            
+            use_profiling = os.getenv("TILELANG_BENCH_METHOD", "default").lower() == "npu"
+            if use_profiling:
+                return  npu_do_bench_msprof(bench_func, warmup=warmup, rep=rep)
+            
+            return npu_do_bench(
                 bench_func,
                 warmup=warmup,
                 rep=rep,
                 _n_warmup=n_warmup,
                 _n_repeat=n_repeat,
             )
+        
+        elif profiler == "torch":
+            if func is None:
+                if self.direct_func is not None:
+                    func = self.direct_func
+                elif self.adapter is not None:
+                    func = self.adapter
+                else:
+                    raise ValueError("No function provided for benchmarking")
+            
+            ins = self._get_inputs() if input_tensors is None else input_tensors
+            bench_func = partial(func, *ins)
+            return npu_do_bench(
+                bench_func,
+                warmup=warmup,
+                rep=rep,
+                _n_warmup=n_warmup,
+                _n_repeat=n_repeat,
+            )
+        
         elif profiler == "tvm":
             assert func is not None, "func should not be None"
             assert isinstance(
@@ -263,8 +317,12 @@ class Profiler:
 
     @property
     def func(self):
-        assert self.adapter is not None, "adapter should be provided"
-        return self.adapter
+        if self.direct_func is not None:
+            return self.direct_func
+        elif self.adapter is not None:
+            return self.adapter
+        else:
+            raise ValueError("No available execution function")
 
     def __call__(self, *args: Any, **kwds: Any) -> Any:
         return self.func(*args, **kwds)

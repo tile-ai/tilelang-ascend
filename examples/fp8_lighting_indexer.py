@@ -68,15 +68,15 @@ def fp8_lighting_indexer(B,
                             l0_c = T.alloc_L0C((H, BLOCK_SIZE_N), accum_dtype)
 
                             offset = (bi * M + mi) * H
-                            T.npuir_load_nd2nz(q_ptr[offset, 0], q, [H, K])
+                            T.load_nd2nz(q_ptr[offset, 0], q, [H, K])
 
                             offset = bi * N+ offset_n
-                            T.npuir_load_nd2nz(k_ptr[offset, 0], k, [BLOCK_SIZE_N, K])
-                            T.npuir_dot(q, k, l0_c, initC=True, b_transpose=True,size=[H, K, BLOCK_SIZE_N])
+                            T.load_nd2nz(k_ptr[offset, 0], k, [BLOCK_SIZE_N, K])
+                            T.gemm(q, k, l0_c, initC=True, b_transpose=True,size=[H, K, BLOCK_SIZE_N])
 
                             with T.rs("PIPE_FIX"):
                                 offset = (bi * M + mi) * H
-                                T.npuir_store_fixpipe(l0_c, workspace[offset, offset_n],size=[H, BLOCK_SIZE_N], enable_nz2nd=True, pre_relu_mode="relu") 
+                                T.store_fixpipe(l0_c, workspace[offset, offset_n],size=[H, BLOCK_SIZE_N], enable_nz2nd=True, pre_relu_mode="relu")
                                 T.sync_block_set(0)
 
                             flag = (task_id * B + bi) % FFTS_FLAG_THRESHOLD
@@ -116,18 +116,18 @@ def fp8_lighting_indexer(B,
                                 T.sync_block_wait(0)
                                 offset = (bi * M + mi) * H
                                 T.copy(workspace[offset : offset + H, offset_n : offset_n + BLOCK_SIZE_N], ub_relu)
-                                T.npuir_cast(ub_relu, ub_relu_32, round_mode="rint")
+                                T.vcast(ub_relu, ub_relu_32, round_mode="rint")
 
                                 T.copy(q_s_ptr[mi*H : (mi+1)*H, 0 : 1], q_s)
-                                T.npuir_cast(q_s, q_s_32, round_mode="rint")
+                                T.vcast(q_s, q_s_32, round_mode="rint")
 
                                 T.copy(k_s_ptr[0 : 1, offset_n : offset_n + BLOCK_SIZE_N], k_s)
-                                T.npuir_cast(k_s, k_s_32, round_mode="rint")
+                                T.vcast(k_s, k_s_32, round_mode="rint")
 
-                                T.npuir_mul(ub_relu_32, q_s_32, temp)
+                                T.vmul(ub_relu_32, q_s_32, temp)
 
-                                T.npuir_reduce(temp, scores_sum, dims=[0], reduce_mode="sum")
-                                T.npuir_mul(scores_sum, k_s_32, o_temp)
+                                T.reduce(temp, scores_sum, dims=[0], reduce_mode="sum")
+                                T.vmul(scores_sum, k_s_32, o_temp)
 
                             flag = (task_id * B + bi) % FFTS_FLAG_THRESHOLD
                             temp = FFTS_FLAG_THRESHOLD - 1
@@ -138,10 +138,10 @@ def fp8_lighting_indexer(B,
                             offset = bi * M + mi
                             T.copy(mask[offset : offset + 1, offset_n : offset_n + BLOCK_SIZE_N], msk)
 
-                            T.npuir_cast(msk, msk_32, round_mode="rint")
-                            T.npuir_add(msk_32, o_temp, logits_32)
+                            T.vcast(msk, msk_32, round_mode="rint")
+                            T.vadd(msk_32, o_temp, logits_32)
 
-                            T.npuir_cast(logits_32, logits, round_mode="rint")
+                            T.vcast(logits_32, logits, round_mode="rint")
                             T.copy(logits, o_ptr[offset : offset + 1, offset_n : offset_n + BLOCK_SIZE_N])
 
 

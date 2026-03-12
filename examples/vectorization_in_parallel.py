@@ -222,14 +222,14 @@ def ternary_simple(N, block_N, dtype="float32"):
             remaining = shape - start_idx
             tail_size = T.min(block_N, remaining)
 
-            T.copy(A[start_idx], A_VEC, [tail_size])
-            T.copy(B[start_idx], B_VEC, [tail_size])
-            T.copy(C[start_idx], C_VEC, [tail_size])
+            T.copy(A[start_idx:start_idx + tail_size], A_VEC[0:tail_size])
+            T.copy(B[start_idx:start_idx + tail_size], B_VEC[0:tail_size])
+            T.copy(C[start_idx:start_idx + tail_size], C_VEC[0:tail_size])
 
             for i in T.Parallel(block_N):
                 C_VEC[i] = T.if_then_else(A_VEC[i] + B_VEC[i] > 1.0, -2.78, B_VEC[i] + 3.14 * A_VEC[i])
 
-            T.copy(C_VEC, C[start_idx], [tail_size])
+            T.copy(C_VEC[0:tail_size], C[start_idx:start_idx + tail_size])
 
     return ternarySimple
 

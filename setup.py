@@ -81,6 +81,10 @@ def get_requirements(file_path: str = "requirements.txt") -> List[str]:
     """Get Python package dependencies from requirements.txt."""
     with open(get_path(file_path)) as f:
         requirements = f.read().strip().split("\n")
+    requirements = [
+        r.strip() for r in requirements
+        if r.strip() and not r.strip().startswith("#") and not r.strip().startswith("--")
+    ]
     return requirements
 
 
@@ -358,6 +362,7 @@ class TileLangBuilPydCommand(build_py):
         # copy the tl_templates
         TILELANG_SRC = [
             "src/tl_templates",
+            "src/runtime",
         ]
         for item in TILELANG_SRC:
             source_dir = os.path.join(ROOT_DIR, item)
@@ -376,6 +381,7 @@ class TileLangBuilPydCommand(build_py):
             "libtvm.so",
             "libtilelang.so",
             "libtilelang_module.so",
+            "libtilelangir.so",
         ]
 
         potential_dirs = [
@@ -384,6 +390,7 @@ class TileLangBuilPydCommand(build_py):
             build_temp_dir,
             os.path.join(ROOT_DIR, "build"),
             os.path.join(ROOT_DIR, "build/tvm"),
+            os.path.join(ROOT_DIR, "build", "tilelangir"),
         ]
 
         tvm_prebuild_path = os.environ.get("TVM_PREBUILD_PATH")
@@ -408,8 +415,32 @@ class TileLangBuilPydCommand(build_py):
                 logger.info(f"Copied {source_lib_file} to {target_dir_release}")
                 shutil.copy2(source_lib_file, target_dir_develop)
                 logger.info(f"Copied {source_lib_file} to {target_dir_develop}")
+                os.remove(source_lib_file)
             else:
                 logger.info(f"WARNING: {item} not found in any expected directories!")
+
+        # Bundle MLIR Python (mlir_core + bishengir) for NPUIR when source has both. Required when present.
+        npuir_python_base = os.path.join(self.build_lib, PACKAGE_NAME, "lib", "npuir_python")
+        bundle_src = None
+        if os.path.isdir(os.path.join(ROOT_DIR, "build", "tilelangir", "mlir_core")):
+            bundle_src = os.path.join(ROOT_DIR, "build", "tilelangir")
+        elif os.environ.get("BISHENGIR_ROOT_PATH"):
+            pp = os.path.join(os.environ["BISHENGIR_ROOT_PATH"], "python_packages")
+            if os.path.isdir(os.path.join(pp, "mlir_core")):
+                bundle_src = pp
+        if bundle_src:
+            for sub in ("mlir_core", "bishengir"):
+                src = os.path.join(bundle_src, sub)
+                if not os.path.isdir(src):
+                    raise SystemExit(
+                        f"NPUIR bundle requires both mlir_core and bishengir; missing {sub} under {bundle_src}"
+                    )
+            for sub in ("mlir_core", "bishengir"):
+                src = os.path.join(bundle_src, sub)
+                dst = os.path.join(npuir_python_base, sub)
+                self.mkpath(dst)
+                distutils.dir_util.copy_tree(src, dst)
+                logger.info(f"Bundled NPUIR Python: {src} -> {dst}")
 
         TVM_CONFIG_ITEMS = [
             f"{build_temp_dir}/config.cmake",
@@ -646,6 +677,7 @@ class TileLangDevelopCommand(develop):
             f"{ext_output_dir}/libtvm.so",
             f"{ext_output_dir}/libtilelang.so",
             f"{ext_output_dir}/libtilelang_module.so",
+            f"{ext_output_dir}/libtilelangir.so",
         ]
         for item in TVM_PREBUILD_ITEMS:
             source_lib_file = os.path.join(ROOT_DIR, item)
@@ -659,10 +691,19 @@ class TileLangDevelopCommand(develop):
             if os.path.exists(source_lib_file):
                 patch_libs(source_lib_file)
                 shutil.copy2(source_lib_file, target_dir)
-                # remove the original file
-                os.remove(source_lib_file)
+                # remove the original file (only when under ext_output_dir, not source tree)
+                if os.path.abspath(source_lib_file).startswith(os.path.abspath(ext_output_dir)):
+                    os.remove(source_lib_file)
             else:
-                logger.info(f"INFO: {source_lib_file} does not exist.")
+                # Develop: libtilelangir.so may be in build/tilelangir (built by CMake, not setuptools)
+                if file_name == "libtilelangir.so":
+                    fallback = os.path.join(ROOT_DIR, "build", "tilelangir", file_name)
+                    if os.path.isfile(fallback):
+                        patch_libs(fallback)
+                        shutil.copy2(fallback, target_dir)
+                        logger.info(f"Copied {fallback} to {target_dir}")
+                else:
+                    logger.info(f"INFO: {source_lib_file} does not exist.")
 
 
 # ------------------------------------------------------------------------
@@ -828,6 +869,7 @@ setup(
         "Intended Audience :: Developers",
         "Intended Audience :: Science/Research",
     ],
+    install_requires=get_requirements(),
     python_requires=">=3.8",
     package_data=package_data,
     include_package_data=False,

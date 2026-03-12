@@ -31,17 +31,17 @@ def matmul(block_M, block_N, K_L1, dtype="float16", accum_dtype="float32"):
 
                 for i in T.serial(T.ceildiv(K, K_L1)):
                     remain_K = T.min(K - i * K_L1, K_L1)
-                    T.npuir_load_nd2nz(A[bx, i * K_L1], A_BUF, [remain_M, remain_K])
-                    T.npuir_load_nd2nz(B[i * K_L1, by], B_BUF, [remain_K, remain_N])
+                    T.load_nd2nz(A[bx, i * K_L1], A_BUF, [remain_M, remain_K])
+                    T.load_nd2nz(B[i * K_L1, by], B_BUF, [remain_K, remain_N])
 
                     if i == 0:
-                        T.npuir_dot(A_BUF, B_BUF, C_BUF, initC=True, b_transpose=False,
+                        T.gemm(A_BUF, B_BUF, C_BUF, initC=True, b_transpose=False,
                             size=[remain_M, remain_K, remain_N])
                     else:
-                        T.npuir_dot(A_BUF, B_BUF, C_BUF, initC=False, b_transpose=False,
+                        T.gemm(A_BUF, B_BUF, C_BUF, initC=False, b_transpose=False,
                             size=[remain_M, remain_K, remain_N])
 
-                    T.npuir_store_fixpipe(C_BUF, C[bx, by],
+                    T.store_fixpipe(C_BUF, C[bx, by],
                         size=[remain_M, remain_N], enable_nz2nd=True)
 
     return main

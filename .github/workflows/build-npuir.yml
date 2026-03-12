@@ -48,7 +48,7 @@ jobs:
 
     - name: Compute cache key
       id: cache-key
-      run: echo "key=npuir-prebuild-${{ matrix.arch }}-${{ steps.npuir-version.outputs.commit }}" >> "$GITHUB_OUTPUT"
+      run: echo "key=npuir-prebuild-rtti-${{ matrix.arch }}-${{ steps.npuir-version.outputs.commit }}" >> "$GITHUB_OUTPUT"
 
     - name: Restore NPUIR prebuild from cache
       id: cache
@@ -64,6 +64,12 @@ jobs:
         cd 3rdparty/AscendNPU-IR
         git submodule update --init
 
+    - name: Set up Python 3.11
+      if: steps.cache.outputs.cache-hit != 'true'
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.11"
+
     - name: Install build dependencies
       if: steps.cache.outputs.cache-hit != 'true'
       run: |
@@ -76,6 +82,7 @@ jobs:
           libzstd-dev \
           zlib1g-dev \
           patch
+        pip install numpy pybind11==3.0.1
 
     - name: Apply patches
       if: steps.cache.outputs.cache-hit != 'true'
@@ -95,9 +102,11 @@ jobs:
           -DLLVM_EXTERNAL_PROJECTS="bishengir" \
           -DLLVM_EXTERNAL_BISHENGIR_SOURCE_DIR="${NPUIR_ROOT}" \
           -DLLVM_TARGETS_TO_BUILD="host" \
+          -DLLVM_ENABLE_RTTI=ON \
           -DLLVM_ENABLE_ASSERTIONS=OFF \
-          -DMLIR_ENABLE_BINDINGS_PYTHON=OFF \
+          -DMLIR_ENABLE_BINDINGS_PYTHON=ON \
           -DLLVM_INSTALL_UTILS=ON \
+          -DPython3_EXECUTABLE=$(which python3) \
           -DCMAKE_INSTALL_PREFIX="${NPUIR_ROOT}/build/install" \
           -DBSPUB_DAVINCI_BISHENGIR=ON \
           -DBISHENGIR_PUBLISH=OFF \
@@ -107,7 +116,13 @@ jobs:
     - name: Build AscendNPU-IR
       if: steps.cache.outputs.cache-hit != 'true'
       working-directory: 3rdparty/AscendNPU-IR
-      run: cmake --build build -j$(nproc)
+      run: |
+        # Build MLIRPythonModules first to generate all tablegen Python
+        # sources. BiShengIRPythonModules reuses MLIRPythonSources but
+        # can't see the tablegen custom commands (CMake directory scoping),
+        # causing "No rule to make target" errors under parallel builds.
+        cmake --build build --target MLIRPythonModules -j$(nproc)
+        cmake --build build -j$(nproc)
 
     - name: Install AscendNPU-IR
       if: steps.cache.outputs.cache-hit != 'true'

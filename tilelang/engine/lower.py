@@ -17,6 +17,7 @@ from tilelang.engine.phase import (
     LowerAndLegalize,
     OptimizeForTarget,
 )
+from tilelang.tladapter import transforms, conversion
 
 
 def is_cpu_device_backend(target: Target):
@@ -240,16 +241,28 @@ def lower(
     mod = OptimizeForTarget(mod, target)
 
     TILELANG_DUMP_IR = os.environ.get('TILELANG_DUMP_IR', '').lower()
-    if TILELANG_DUMP_IR in ('true', '1', 'yes', 'on'):
+    dump_ir = TILELANG_DUMP_IR in ('true', '1', 'yes', 'on')
+    if dump_ir:
         print("====== TVM IR ======")
         print(mod)
         print()
     if target.kind.name == "npuir":
         codegen_mod = device_codegen(mod, target)
-        if TILELANG_DUMP_IR in ('true', '1', 'yes', 'on'):
+        mlir_str = codegen_mod.get_source()
+        if dump_ir:
             print("====== npuir ======")
-            print(codegen_mod.get_source())
-        return codegen_mod.get_source()
+            print(mlir_str)
+        tladapter_passes = [
+            transforms.mlir.canonicalize(top_down=True),
+            transforms.bishengir.adapt_triton_kernel,
+        ]
+        for i, p in enumerate(tladapter_passes):
+            mlir_str = p(mlir_str)
+            if dump_ir:
+                name = getattr(p, "pass_name", None) or f"pass-{i}"
+                print(f"====== after {name} ======")
+                print(mlir_str)
+        return mlir_str
 
     host_mod = tir.transform.Filter(_is_host_call)(mod)
     device_mod = tir.transform.Filter(_is_device_call)(mod)

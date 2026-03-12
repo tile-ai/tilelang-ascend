@@ -2,8 +2,8 @@
 build
 cmake>=3.26
 packaging
+pybind11==3.0.1
 setuptools>=61
-torch
 wheel
 tox
 auditwheel

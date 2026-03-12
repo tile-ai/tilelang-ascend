@@ -79,7 +79,7 @@ def sparse_attn_kernel(
 
         if block_i_id == 0:
             # Load query data to L1
-            T.npuir_load_nd2nz(Q[batch_id, seq_id, 0, 0], l1_q, size=[heads, full_dim])
+            T.load_nd2nz(Q[batch_id, seq_id, 0, 0], l1_q, size=[heads, full_dim])
 
         block_i_offset = block_i_id * block
 
@@ -88,16 +88,16 @@ def sparse_attn_kernel(
             T.sync_block_wait(0)
 
         # Load sparse KV data to L1
-        T.npuir_load_nd2nz(workspace_kv[kernel_id, block_i_offset, 0],
+        T.load_nd2nz(workspace_kv[kernel_id, block_i_offset, 0],
                            l1_kv_sparse, size=[block, full_dim])
 
         # Perform matrix multiplication (Q @ K^T)
-        T.npuir_dot(l1_q, l1_kv_sparse, l0_c, initC=True, b_transpose=True,
+        T.gemm(l1_q, l1_kv_sparse, l0_c, initC=True, b_transpose=True,
                     size=[heads, full_dim, block])
 
         # Store intermediate results and synchronize
         with T.rs("PIPE_FIX"):
-            T.npuir_store_fixpipe(l0_c, workspace_s[kernel_id, 0, 0, 0], size=[heads, block],
+            T.store_fixpipe(l0_c, workspace_s[kernel_id, 0, 0, 0], size=[heads, block],
                                   enable_nz2nd=True)
             T.sync_block_set(0)
 
@@ -113,13 +113,13 @@ def sparse_attn_kernel(
         # Load intermediate results for softmax
         with T.rs("PIPE_MTE2"):
             T.sync_block_wait(0)
-            T.npuir_load_nd2nz(workspace_p[kernel_id, 0, 0, 0], l1_p, size=[heads, block])
+            T.load_nd2nz(workspace_p[kernel_id, 0, 0, 0], l1_p, size=[heads, block])
 
         # Perform matrix multiplication (P @ V)
-        T.npuir_dot(l1_p, l1_kv_sparse, l0_c, initC=True,
+        T.gemm(l1_p, l1_kv_sparse, l0_c, initC=True,
                     size=[heads, block, dim])
 
-        T.npuir_store_fixpipe(l0_c, workspace_o[kernel_id, 0, 0, 0],
+        T.store_fixpipe(l0_c, workspace_o[kernel_id, 0, 0, 0],
                               size=[heads, dim], enable_nz2nd=True)
 
         # Synchronize after output computation
@@ -147,8 +147,8 @@ def sparse_attn_kernel(
 
         if block_i_id == 0:
             # Initialize softmax variables
-            T.npuir_brc(value_zero, ub_var_logsum)
-            T.npuir_brc(value_zero, ub_acc_o)
+            T.vbrc(value_zero, ub_var_logsum)
+            T.vbrc(value_zero, ub_acc_o)
 
         tail_size_i = T.min(top_k - block_i_id * block, block)
         tail_size_i_half = (tail_size_i + 1) // 2
@@ -160,7 +160,7 @@ def sparse_attn_kernel(
         # Load indices and gather sparse KV data (only for first head block)
         T.copy(Indices[batch_id, seq_id, block_i_offset], ub_indices, size=[1, block])
         if tail_size_i_half > 0:
-            T.npuir_brc(value_zero, ub_kv_sparse)
+            T.vbrc(value_zero, ub_kv_sparse)
             for idx_id in T.serial(tail_size_i_half):
                 current_index = ub_indices[0, block_i_sub_offset + idx_id]
                 if current_index >= 0 and current_index < seq_len_kv:
@@ -207,32 +207,32 @@ def sparse_attn_kernel(
                    ub_cross_kernel_32, size=[heads_half, block])
 
         # Apply softmax scaling and compute max
-        T.npuir_mul(ub_cross_kernel_32, acc_s_scale, ub_cross_kernel_32)
-        T.npuir_reduce(ub_cross_kernel_32, ub_var_scores_max, dims=[1], reduce_mode="max")
+        T.vmul(ub_cross_kernel_32, acc_s_scale, ub_cross_kernel_32)
+        T.reduce(ub_cross_kernel_32, ub_var_scores_max, dims=[1], reduce_mode="max")
 
         # Update max scores and compute scaling factors
         if block_i_id != 0:
-            T.npuir_max(ub_var_scores_max_prev, ub_var_scores_max, ub_var_scores_max)
-            T.npuir_sub(ub_var_scores_max_prev, ub_var_scores_max, ub_var_scores_scale)
-            T.npuir_exp(ub_var_scores_scale, ub_var_scores_scale)
+            T.vmax(ub_var_scores_max_prev, ub_var_scores_max, ub_var_scores_max)
+            T.vsub(ub_var_scores_max_prev, ub_var_scores_max, ub_var_scores_scale)
+            T.vexp(ub_var_scores_scale, ub_var_scores_scale)
         else:
-            T.npuir_brc(value_zero, ub_var_scores_scale)
+            T.vbrc(value_zero, ub_var_scores_scale)
 
         # Apply softmax stabilization and compute exponentials
-        T.npuir_sub(ub_cross_kernel_32, ub_var_scores_max, ub_cross_kernel_32)
-        T.npuir_exp(ub_cross_kernel_32, ub_cross_kernel_32)
+        T.vsub(ub_cross_kernel_32, ub_var_scores_max, ub_cross_kernel_32)
+        T.vexp(ub_cross_kernel_32, ub_cross_kernel_32)
 
         # Create valid mask for incomplete blocks
-        T.npuir_cmp(ub_indices, value_ignore_index, ub_var_valid_indices, "ne")
+        T.vcmp(ub_indices, value_ignore_index, ub_var_valid_indices, "ne")
         if tail_size_i < block:
             tail_size_i = tail_size_i
-            T.npuir_cmp(ub_arrange_mask, tail_size_i, ub_var_valid_mask, "lt")
-            T.npuir_and(ub_var_valid_indices, ub_var_valid_mask, ub_var_valid_indices)
+            T.vcmp(ub_arrange_mask, tail_size_i, ub_var_valid_mask, "lt")
+            T.vand(ub_var_valid_indices, ub_var_valid_mask, ub_var_valid_indices)
 
         # Apply valid mask
-        T.npuir_cast(ub_var_valid_indices, ub_var_valid_indices_32)
-        T.npuir_mul(ub_cross_kernel_32, ub_var_valid_indices_32, ub_cross_kernel_32)
-        T.npuir_cast(ub_cross_kernel_32, ub_cross_kernel_16, round_mode="rint",
+        T.vcast(ub_var_valid_indices, ub_var_valid_indices_32)
+        T.vmul(ub_cross_kernel_32, ub_var_valid_indices_32, ub_cross_kernel_32)
+        T.vcast(ub_cross_kernel_32, ub_cross_kernel_16, round_mode="rint",
                      size=[heads_half, block])
 
         # Store softmax results and synchronize
@@ -242,11 +242,11 @@ def sparse_attn_kernel(
             T.sync_block_set(0)
 
         # Compute sum of exponential for softmax denominator
-        T.npuir_reduce(ub_cross_kernel_32, ub_var_scores_sum, dims=[1], reduce_mode="sum")
+        T.reduce(ub_cross_kernel_32, ub_var_scores_sum, dims=[1], reduce_mode="sum")
 
         # Update logsum and accumulate output
-        T.npuir_mul(ub_var_logsum, ub_var_scores_scale, ub_var_logsum)
-        T.npuir_add(ub_var_logsum, ub_var_scores_sum, ub_var_logsum)
+        T.vmul(ub_var_logsum, ub_var_scores_scale, ub_var_logsum)
+        T.vadd(ub_var_logsum, ub_var_scores_sum, ub_var_logsum)
 
     @T.macro
     def VectorAccAndNormOutput(
@@ -267,7 +267,7 @@ def sparse_attn_kernel(
         ub_cross_kernel_16 = T.alloc_ub([heads_half, block], dtype)
         ub_acc_o_new = T.alloc_ub([heads_half, dim], accum_dtype)
 
-        T.npuir_mul(ub_acc_o, ub_var_scores_scale, ub_acc_o)
+        T.vmul(ub_acc_o, ub_var_scores_scale, ub_acc_o)
 
         # Load and accumulate output values
         with T.rs("PIPE_MTE2"):
@@ -275,12 +275,12 @@ def sparse_attn_kernel(
             T.copy(workspace_o[kernel_id, 0, subid * heads_half, 0], ub_acc_o_new,
                    size=[heads_half, dim])
 
-        T.npuir_add(ub_acc_o, ub_acc_o_new, ub_acc_o)
+        T.vadd(ub_acc_o, ub_acc_o_new, ub_acc_o)
 
         if block_i_id == num_top_k_blocks - 1:
             # Normalize output by softmax denominator
-            T.npuir_add(ub_var_logsum, eps, ub_var_logsum)
-            T.npuir_div(ub_acc_o, ub_var_logsum, ub_acc_o)
+            T.vadd(ub_var_logsum, eps, ub_var_logsum)
+            T.vdiv(ub_acc_o, ub_var_logsum, ub_acc_o)
 
             # Cast & store final output results
             for block_k_id in T.serial(T.ceildiv(dim, block)):
@@ -288,7 +288,7 @@ def sparse_attn_kernel(
                 tail_size_k = dim - block_k_offset
                 tail_size_k = T.min(tail_size_k, block)
 
-                T.npuir_cast(ub_acc_o[0, block_k_offset], ub_cross_kernel_16, round_mode="rint",
+                T.vcast(ub_acc_o[0, block_k_offset], ub_cross_kernel_16, round_mode="rint",
                              size=[heads_half, tail_size_k])
 
                 T.copy(ub_cross_kernel_16, Output[batch_id, seq_id, subid * heads_half, block_k_offset],
@@ -321,7 +321,7 @@ def sparse_attn_kernel(
                 num_top_k_blocks = T.ceildiv(top_k, block)
 
                 # Add some operations to stop TVM from moving alloc into the inner loop
-                T.npuir_reshape(l1_q, l1_q)
+                T.reshape(l1_q, l1_q)
 
                 for task_id in T.serial(num_local_logic_kernels * num_top_k_blocks):
                     CubeQKMatmul(Q, workspace_kv, workspace_s,
@@ -344,15 +344,15 @@ def sparse_attn_kernel(
                 ub_var_scores_scale = T.alloc_ub([heads_half, 1], accum_dtype)
 
                 ub_arrange_mask = T.alloc_ub([1, block], "int16")
-                T.npuir_arange(ub_arrange_mask, [0, 1], 0)
+                T.arange(ub_arrange_mask, [0, 1], 0)
 
                 num_local_logic_kernels = T.ceildiv(num_logic_kernels - kernel_id, num_kernels)
                 num_top_k_blocks = T.ceildiv(top_k, block)
 
                 # Add some operations to stop TVM from moving alloc into the inner loop
-                T.npuir_reshape(ub_var_logsum, ub_var_logsum)
-                T.npuir_reshape(ub_acc_o, ub_acc_o)
-                T.npuir_reshape(ub_var_scores_max, ub_var_scores_max)
+                T.reshape(ub_var_logsum, ub_var_logsum)
+                T.reshape(ub_acc_o, ub_acc_o)
+                T.reshape(ub_var_scores_max, ub_var_scores_max)
 
                 for task_id in T.serial(num_local_logic_kernels * num_top_k_blocks):
                     VectorGatherSparseKV(

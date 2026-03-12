@@ -8,7 +8,6 @@ import ctypes
 import logging
 from tqdm import tqdm
 
-
 class TqdmLoggingHandler(logging.Handler):
     """Custom logging handler that directs log output to tqdm progress bar to avoid interference."""
 
@@ -94,6 +93,8 @@ from .layout import (
     Layout,  # noqa: F401
     Fragment,  # noqa: F401
 )
+from .version import __version__  # noqa: F401
+
 from . import (
     transform,  # noqa: F401
     language,  # noqa: F401
@@ -103,7 +104,5 @@ from .autotuner import autotune  # noqa: F401
 from .transform import PassConfigKey  # noqa: F401
 
 from .engine import lower, register_cuda_postproc, register_hip_postproc  # noqa: F401
-
-from .version import __version__  # noqa: F401
 
 from .math import *  # noqa: F403

@@ -11,6 +11,7 @@ from typing import Callable, List, Literal, Union, Optional
 from tvm.target import Target
 from tvm.tir import PrimFunc
 from tilelang.jit import JITKernel
+from tilelang.jit.jit_npu import JitKernel_NPU
 from tilelang.engine.param import KernelParam
 import threading
 import cloudpickle
@@ -19,10 +20,13 @@ import logging
 from tilelang.env import TILELANG_CACHE_DIR, is_cache_enabled
 from tilelang.version import __version__
 
-KERNEL_PATH = "kernel.cu"
-WRAPPED_KERNEL_PATH = "wrapped_kernel.cu"
+KERNEL_PATH = "kernel.mlir"
+WRAPPED_KERNEL_PATH = "wrapped_kernel.o"
 KERNEL_LIB_PATH = "kernel_lib.so"
 PARAMS_PATH = "params.pkl"
+SO_UTILS_PATH = "npu_utils.so"
+SO_LAUNCHER_PATH = "main.so"
+METADATA_PATH = "metadata.pkl"
 
 
 class AutoTunerCache:
@@ -148,6 +152,7 @@ class AutoTunerCache:
             target_host=target_host,
             pass_configs=pass_configs,
         )
+        
         with self._lock:
             # First check in-memory cache
             if key in self._memory_cache:
@@ -164,7 +169,7 @@ class AutoTunerCache:
                 return kernel
 
         # Compile kernel if cache miss; leave critical section
-        kernel = JITKernel(
+        kernel = compile(
             func,
             out_idx=out_idx,
             execution_backend=execution_backend,
@@ -309,13 +314,22 @@ class AutoTunerCache:
         kernel_params: Optional[List[KernelParam]] = None
 
         try:
+            kernel_path = os.path.join(cache_path, KERNEL_PATH)
+            with open(kernel_path, "r") as f:
+                kernel_source = f.read()
+        except Exception as e:
+            self.logger.error(f"Error saving kernel source code to disk: {e}")
+
+        try:
             wrapped_kernel_path = os.path.join(cache_path, WRAPPED_KERNEL_PATH)
-            with open(wrapped_kernel_path, "r") as f:
+            with open(wrapped_kernel_path, "rb") as f:
                 kernel_global_source = f.read()
         except Exception as e:
             self.logger.error(f"Error loading wrapped kernel source code from disk: {e}")
 
-        kernel_lib_path = os.path.join(cache_path, KERNEL_LIB_PATH)
+        so_utils_path = os.path.join(cache_path, SO_UTILS_PATH)
+
+        so_launcher_path = os.path.join(cache_path, SO_LAUNCHER_PATH)
 
         # Load kernel parameters
         try:
@@ -325,17 +339,22 @@ class AutoTunerCache:
         except Exception as e:
             self.logger.error(f"Error loading kernel parameters from disk: {e}")
 
+        try:
+            metadata_path = os.path.join(cache_path, METADATA_PATH)
+            with open(metadata_path, "rb") as f:
+                metadata = cloudpickle.load(f)
+        except Exception as e:
+            self.logger.error(f"Error loading metadata from disk: {e}")
+
         if kernel_global_source and kernel_params:
-            return JITKernel.from_database(
-                func=func,
-                kernel_global_source=kernel_global_source,
-                kernel_lib_path=kernel_lib_path,
-                params=kernel_params,
-                target=target,
-                target_host=target_host,
+            return JitKernel_NPU.from_database(
+                mod=func,
+                kernel_source=kernel_source,
+                kernel_launcher_path=so_launcher_path,
+                kernel_utils_path=so_utils_path,
+                metadata=metadata,
+                # params=kernel_params,
                 out_idx=out_idx,
-                execution_backend=execution_backend,
-                pass_configs=pass_configs,
             )
         else:
             return None

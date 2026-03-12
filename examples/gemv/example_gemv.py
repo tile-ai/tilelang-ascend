@@ -62,7 +62,7 @@ def naive_gemv_high_perf(
             for bk in T.serial(T.ceildiv(K, BLOCK_K)):
                 T.copy(A[bk * BLOCK_K:(bk + 1)*BLOCK_K], A_shared[:, 0])
                 T.copy(B[cid*BLOCK_N, bk*BLOCK_K], B_shared)
-                T.npuir_dot(B_shared, A_shared, C_shared, initC=False)
+                T.gemm(B_shared, A_shared, C_shared, initC=False)
             T.copy(C_shared[:,0], C[cid*BLOCK_N:(cid+1)*BLOCK_N])
 
     return naive_gemv_hp
@@ -120,7 +120,7 @@ def naive_splitk_gemv_high_perf(
                 for bk in T.serial(T.ceildiv(K, BLOCK_K)):
                     T.copy(A[bk * BLOCK_K:(bk + 1)*BLOCK_K], A_shared[:, 0])
                     T.copy(B[cid*BLOCK_N + tn, bk*BLOCK_K:(bk+1)*BLOCK_K], B_shared)
-                    T.npuir_dot(B_shared, A_shared, C_accum, initC=False)
+                    T.gemm(B_shared, A_shared, C_accum, initC=False)
                 T.copy(C_accum[0,0], C[cid*BLOCK_N + tn:(cid)*BLOCK_N + tn + 1])
     return naive_splitk_gemv_hp
 

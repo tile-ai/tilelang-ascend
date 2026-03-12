@@ -30,7 +30,7 @@ def atomic_add_1d_dev(N, block_size, dtype="float32"):
             tail_size = T.min(block_size, remaining)
 
             T.copy(A[start : start + tail_size], A_shared[0:tail_size])
-            T.npuir_atomic_add(B[start], A_shared, [tail_size])
+            T.atomic_add(B[start], A_shared, [tail_size])
 
     return main
 
@@ -59,7 +59,7 @@ def atomic_add_2d_dev(M, N, block_M, block_N, dtype="float32"):
                 A[bx : bx + tile_M, by : by + tile_N],
                 A_shared[0:tile_M, 0:tile_N],
             )
-            T.npuir_atomic_add(B[bx, by], A_shared, [tile_M, tile_N])
+            T.atomic_add(B[bx, by], A_shared, [tile_M, tile_N])
 
     return main
 

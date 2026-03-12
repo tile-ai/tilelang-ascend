@@ -39,7 +39,7 @@ def kernel_log2(M, N, block_M, block_N, dtype="float16"):
                     by = block_id_n * block_N
 
                     T.copy(A[bx, by], A_VEC)
-                    T.npuir_log2(A_VEC, B_VEC, Tmp)
+                    T.vlog2(A_VEC, B_VEC, Tmp)
                     T.copy(B_VEC, B[bx, by])
     return main
 

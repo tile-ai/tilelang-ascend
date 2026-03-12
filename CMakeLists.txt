@@ -30,6 +30,9 @@ elseif(EXISTS ${CMAKE_SOURCE_DIR}/config.cmake)
   include(${CMAKE_SOURCE_DIR}/config.cmake)
 endif()
 
+# Enforce C++ standard
+set(CMAKE_CXX_STANDARD 17)
+
 if(NOT DEFINED TVM_PREBUILD_PATH)
   if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING "Build type" FORCE)
@@ -54,11 +57,19 @@ if(USE_NPUIR)
     set(BISHENGIR_INCLUDE_DIRS ${BISHENGIR_ROOT_PATH}/include)
     set(BISHENGIR_LIBRARY_DIRS ${BISHENGIR_ROOT_PATH}/lib)
     file(GLOB NPUIR_LIBS "${BISHENGIR_ROOT_PATH}/lib/*.a")
+    list(INSERT CMAKE_PREFIX_PATH 0 ${BISHENGIR_ROOT_PATH})
+    find_package(MLIR REQUIRED CONFIG)
+    list(APPEND CMAKE_MODULE_PATH "${MLIR_CMAKE_DIR}" "${LLVM_CMAKE_DIR}")
   endif()
   message(STATUS "BISHENGIR_INCLUDE_DIRS: ${BISHENGIR_INCLUDE_DIRS}")
   message(STATUS "BISHENGIR_LIBRARY_DIRS: ${BISHENGIR_LIBRARY_DIRS}")
   include_directories(${BISHENGIR_INCLUDE_DIRS})
   link_directories(${BISHENGIR_LIBRARY_DIRS})
+  if(DEFINED CACHE{Python3_EXECUTABLE})
+    set(Python3_EXECUTABLE "${Python3_EXECUTABLE}" CACHE FILEPATH "Python for tilelangir (from -DPython3_EXECUTABLE)" FORCE)
+    message(STATUS "NPUIR/tilelangir Python: ${Python3_EXECUTABLE}")
+  endif()
+  add_subdirectory(${PROJECT_SOURCE_DIR}/tilelangir tilelangir)
 endif()
 
 # include cmake modules
@@ -81,8 +92,6 @@ if(USE_ROCM)
   set(CMAKE_CXX_FLAGS "-D__HIP_PLATFORM_AMD__ ${CMAKE_CXX_FLAGS}")
 endif()
 
-# Enforce C++ standard
-set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 # Locate TVM prebuild path
@@ -250,6 +259,10 @@ target_link_libraries(
   ${NPUIR_LIBS}
   -Wl,--end-group
 )
+if(USE_NPUIR)
+  # TODO: Use Tilelangir Dialect in tilelang_module
+  # target_include_directories(tilelang_objs PRIVATE ${PROJECT_SOURCE_DIR}/tilelangir/include)
+endif()
 
 # Install targets
 if(TILE_LANG_INSTALL_STATIC_LIB)

@@ -161,26 +161,26 @@ def sparse_attention_mla(
 
                                     # Load sparse KV values to local memory
                                     offset = kernel_id * top_k + block_i_offset
-                                    T.npuir_load_nd2nz(workspace_kv[offset, block_k_offset], l1_kv_sparse,
+                                    T.load_nd2nz(workspace_kv[offset, block_k_offset], l1_kv_sparse,
                                                        size=[block_I, tail_size_k])
 
                                     # Load query values to local memory
                                     offset = (batch_id * seq_len + seq_id) * heads + block_h_offset
-                                    T.npuir_load_nd2nz(Q[offset, block_k_offset], l1_q,
+                                    T.load_nd2nz(Q[offset, block_k_offset], l1_q,
                                                        size=[block_H, tail_size_k])
 
                                     # Matrix multiplication: Q * K^T
                                     if block_k_id == 0:
-                                        T.npuir_dot(l1_q, l1_kv_sparse, l0_c, initC=True, b_transpose=True,
+                                        T.gemm(l1_q, l1_kv_sparse, l0_c, initC=True, b_transpose=True,
                                                     size=[block_H, tail_size_k, block_I])
                                     else:
-                                        T.npuir_dot(l1_q, l1_kv_sparse, l0_c, initC=False, b_transpose=True,
+                                        T.gemm(l1_q, l1_kv_sparse, l0_c, initC=False, b_transpose=True,
                                                     size=[block_H, tail_size_k, block_I])
 
                                 # Store intermediate results and synchronize
                                 with T.rs("PIPE_FIX"):
                                     offset = kernel_id * block_H
-                                    T.npuir_store_fixpipe(l0_c, workspace_1[offset, 0], size=[block_H, block_I],
+                                    T.store_fixpipe(l0_c, workspace_1[offset, 0], size=[block_H, block_I],
                                                           enable_nz2nd=True)
                                     T.sync_block_set(0)
 
@@ -188,7 +188,7 @@ def sparse_attention_mla(
                                 with T.rs("PIPE_MTE2"):
                                     T.sync_block_wait(0)
                                     offset = kernel_id * block_H
-                                    T.npuir_load_nd2nz(workspace_1[offset, 0], l1_p, size=[block_H, block_I])
+                                    T.load_nd2nz(workspace_1[offset, 0], l1_p, size=[block_H, block_I])
 
                                 # Matrix multiplication: P * V
                                 for block_k_id in T.serial(T.ceildiv(dim, block_K)):
@@ -196,13 +196,13 @@ def sparse_attention_mla(
                                     tail_size_k = T.min(dim - block_k_id * block_K, block_K)
 
                                     offset = kernel_id * top_k + block_i_offset
-                                    T.npuir_load_nd2nz(workspace_kv[offset, block_k_offset], l1_kv_sparse,
+                                    T.load_nd2nz(workspace_kv[offset, block_k_offset], l1_kv_sparse,
                                                        size=[block_I, tail_size_k])
 
-                                    T.npuir_dot(l1_p, l1_kv_sparse, l0_c, initC=True,
+                                    T.gemm(l1_p, l1_kv_sparse, l0_c, initC=True,
                                                 size=[block_H, block_I, tail_size_k])
                                     offset = kernel_id * block_H
-                                    T.npuir_store_fixpipe(l0_c, workspace_2[offset, block_k_offset],
+                                    T.store_fixpipe(l0_c, workspace_2[offset, block_k_offset],
                                                           size=[block_H, tail_size_k], enable_nz2nd=True)
 
                                 with T.rs("PIPE_FIX"):
@@ -245,7 +245,7 @@ def sparse_attention_mla(
 
                         # Create valid mask for incomplete blocks
                         valid_mod = real_top_k % block_I
-                        T.npuir_brc(value_zero, ub_var_valid_mask)
+                        T.vbrc(value_zero, ub_var_valid_mask)
                         for idx in T.serial(valid_mod):
                             ub_var_valid_mask[0, idx] = 1.0
 
@@ -254,10 +254,10 @@ def sparse_attention_mla(
                             block_h_offset = block_h_id * block_H + subid * block_H_half
 
                             # Initialize accumulation buffers
-                            T.npuir_brc(value_zero, ub_var_logsum)
-                            T.npuir_brc(value_zero, ub_acc_o)
-                            T.npuir_brc(value_zero, ub_var_scores_scale)
-                            T.npuir_brc(value_minimum, ub_var_scores_max)
+                            T.vbrc(value_zero, ub_var_logsum)
+                            T.vbrc(value_zero, ub_acc_o)
+                            T.vbrc(value_zero, ub_var_scores_scale)
+                            T.vbrc(value_minimum, ub_var_scores_max)
 
                             # Process top-k blocks for softmax computation
                             for block_i_id in T.serial(T.ceildiv(top_k, block_I)):
@@ -269,7 +269,7 @@ def sparse_attention_mla(
 
                                 # Gather sparse KV values using indices
                                 if block_h_id == 0:
-                                    T.npuir_brc(value_zero, ub_kv_sparse)
+                                    T.vbrc(value_zero, ub_kv_sparse)
                                     if tail_size_i_half > 0:
                                         offset = batch_id * top_k_mul_kv_group_mul_seq_len + seq_id * top_k_mul_kv_group
                                         offset = offset + block_i_offset
@@ -298,28 +298,28 @@ def sparse_attention_mla(
                                     # Load attention scores
                                     T.copy(workspace_1[offset : offset + block_H_half, 0 : block_I], ub_cross_kernel_16)
                                     # Cast to accumulation dtype
-                                    T.npuir_cast(ub_cross_kernel_16, ub_cross_kernel_32, round_mode="rint",
+                                    T.vcast(ub_cross_kernel_16, ub_cross_kernel_32, round_mode="rint",
                                                  size=[block_H_half, block_I])
                                     # Apply softmax scale
-                                    T.npuir_mul(ub_cross_kernel_32, acc_s_scale, ub_cross_kernel_32)
+                                    T.vmul(ub_cross_kernel_32, acc_s_scale, ub_cross_kernel_32)
                                     # Compute max for numerical stability
-                                    T.npuir_reduce(ub_cross_kernel_32, ub_var_scores_max, dims=[1], reduce_mode="max")
+                                    T.reduce(ub_cross_kernel_32, ub_var_scores_max, dims=[1], reduce_mode="max")
                                     # Update max and compute scale factor
                                     if block_i_id != 0:
-                                        T.npuir_max(ub_var_scores_max_prev, ub_var_scores_max, ub_var_scores_max)
-                                        T.npuir_sub(ub_var_scores_max_prev, ub_var_scores_max, ub_var_scores_scale)
-                                        T.npuir_exp(ub_var_scores_scale, ub_var_scores_scale)
+                                        T.vmax(ub_var_scores_max_prev, ub_var_scores_max, ub_var_scores_max)
+                                        T.vsub(ub_var_scores_max_prev, ub_var_scores_max, ub_var_scores_scale)
+                                        T.vexp(ub_var_scores_scale, ub_var_scores_scale)
                                     # Subtract max and compute exp
-                                    T.npuir_sub(ub_cross_kernel_32, ub_var_scores_max, ub_cross_kernel_32)
-                                    T.npuir_exp(ub_cross_kernel_32, ub_cross_kernel_32)
+                                    T.vsub(ub_cross_kernel_32, ub_var_scores_max, ub_cross_kernel_32)
+                                    T.vexp(ub_cross_kernel_32, ub_cross_kernel_32)
                                     # Apply valid mask
                                     if tail_size_i < block_I:
-                                        T.npuir_mul(ub_cross_kernel_32, ub_var_valid_mask, ub_cross_kernel_32)
+                                        T.vmul(ub_cross_kernel_32, ub_var_valid_mask, ub_cross_kernel_32)
                                     # Cast back to original dtype
-                                    T.npuir_cast(ub_cross_kernel_32, ub_cross_kernel_16, round_mode="rint",
+                                    T.vcast(ub_cross_kernel_32, ub_cross_kernel_16, round_mode="rint",
                                                  size=[block_H_half, block_I])
                                 else:
-                                    T.npuir_brc(value_zero, ub_cross_kernel_16)
+                                    T.vbrc(value_zero, ub_cross_kernel_16)
 
                                 # Store softmax results and synchronize
                                 with T.rs("PIPE_MTE3"):
@@ -328,11 +328,11 @@ def sparse_attention_mla(
 
                                 # Accumulate softmax statistics
                                 if tail_size_i > 0:
-                                    T.npuir_reduce(ub_cross_kernel_32, ub_var_scores_sum, dims=[1], reduce_mode="sum")
+                                    T.reduce(ub_cross_kernel_32, ub_var_scores_sum, dims=[1], reduce_mode="sum")
 
-                                    T.npuir_mul(ub_var_logsum, ub_var_scores_scale, ub_var_logsum)
-                                    T.npuir_add(ub_var_logsum, ub_var_scores_sum, ub_var_logsum)
-                                    T.npuir_mul(ub_acc_o, ub_var_scores_scale, ub_acc_o)
+                                    T.vmul(ub_var_logsum, ub_var_scores_scale, ub_var_logsum)
+                                    T.vadd(ub_var_logsum, ub_var_scores_sum, ub_var_logsum)
+                                    T.vmul(ub_acc_o, ub_var_scores_scale, ub_acc_o)
 
                                 # Accumulate output values
                                 with T.rs("PIPE_MTE2"):
@@ -344,26 +344,26 @@ def sparse_attention_mla(
                                         T.copy(
                                             workspace_2[offset : offset + block_H_half, block_k_offset : block_k_offset + tail_size_k],
                                             ub_cross_kernel_16[0:block_H_half, 0:tail_size_k])
-                                        T.npuir_cast(ub_cross_kernel_16, ub_cross_kernel_32, round_mode="rint")
+                                        T.vcast(ub_cross_kernel_16, ub_cross_kernel_32, round_mode="rint")
                                         T.copy(
                                             ub_cross_kernel_32[0:block_H_half, 0:tail_size_k],
                                             ub_acc_o_new[0:block_H_half, block_k_offset : block_k_offset + tail_size_k])
 
-                                T.npuir_add(ub_acc_o, ub_acc_o_new, ub_acc_o)
-                                T.npuir_cast(ub_acc_o, ub_acc_o_16, round_mode="rint",
+                                T.vadd(ub_acc_o, ub_acc_o_new, ub_acc_o)
+                                T.vcast(ub_acc_o, ub_acc_o_16, round_mode="rint",
                                              size=[block_H_half, dim])
 
                             # Normalize output by softmax denominator
-                            T.npuir_brc(value_eps, ub_var_scores_sum)
-                            T.npuir_max(ub_var_logsum, ub_var_scores_sum, ub_var_logsum)
-                            T.npuir_div(ub_acc_o, ub_var_logsum, ub_acc_o)
+                            T.vbrc(value_eps, ub_var_scores_sum)
+                            T.vmax(ub_var_logsum, ub_var_scores_sum, ub_var_logsum)
+                            T.vdiv(ub_acc_o, ub_var_logsum, ub_acc_o)
 
                             # Write final output
                             for block_k_id in T.serial(T.ceildiv(dim, block_K)):
                                 block_k_offset = block_k_id * block_K
                                 tail_size_k = T.min(dim - block_k_id * block_K, block_K)
 
-                                T.npuir_cast(ub_acc_o[0, block_k_offset], ub_cross_kernel_16, round_mode="rint",
+                                T.vcast(ub_acc_o[0, block_k_offset], ub_cross_kernel_16, round_mode="rint",
                                              size=[block_H_half, tail_size_k])
 
                                 offset = batch_id * heads_mul_seq_len + seq_id * heads + block_h_offset

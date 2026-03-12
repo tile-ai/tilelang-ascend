@@ -26,6 +26,7 @@
 #include "tir/analysis/var_use_def_analysis.h"
 
 #include <tvm/arith/analyzer.h>
+#include <tvm/arith/pattern.h>
 #include <tvm/tir/analysis.h>
 #include <tvm/tir/builtin.h>
 #include <tvm/tir/stmt_functor.h>
@@ -65,11 +66,12 @@ private:
     {"LE", "tl.npuir_cmp"},
     {"GE", "tl.npuir_cmp"},
     {"GT", "tl.npuir_cmp"},
+    {"Copy", "tl.copy"},
     {"Broadcast", "tl.npuir_brc"},
   };
 
   bool IsCmpOps(const std::string& op_name) {
-    return op_name == "EQ" || 
+    return op_name == "EQ" ||
            op_name == "NE" ||
            op_name == "LT" ||
            op_name == "GT" ||
@@ -288,6 +290,13 @@ private:
     return Evaluate(call);
   }
 
+  bool IsCopyOp(const PrimExpr &expr, const std::vector<const VarNode *> &loop_vars) {
+    if (IsScalarLike(expr, loop_vars) || expr.as<BufferLoadNode>()) {
+      return true;
+    }
+    return false;
+  }
+
   bool IsUnaryOp(const PrimExpr& expr) {
     if (auto call = expr.as<CallNode>()) {
       std::string op_name;
@@ -346,13 +355,15 @@ private:
   bool IsLoopInvariant(const Array<PrimExpr>& indices,
                        const std::vector<const VarNode*>& loop_vars) {
     for (const auto& idx : indices) {
-      if (auto var = idx.as<VarNode>()) {
-        for (auto it = loop_vars.begin(); it != loop_vars.end(); ++it) {
-          if (*it == var) {
-            return false;
+      bool found = false;
+      PostOrderVisit(idx, [&](const ObjectRef& node) {
+        if (const VarNode* v = node.as<VarNode>()) {
+          if (std::find(loop_vars.begin(), loop_vars.end(), v) != loop_vars.end()) {
+            found = true;
           }
         }
-      }
+      });
+      if (found) return false;
     }
     return true;
   }
@@ -463,6 +474,24 @@ private:
     statements->push_back(stmt);
     depth--;
     return true;
+  }
+
+  bool HandleCopyExpression(const PrimExpr &expr, const BufferAccessInfo &output_buffer,
+                            const std::vector<const VarNode *> &loop_vars, Array<Stmt> *statements) {
+    if (IsScalarLike(expr, loop_vars)) {
+      // Copy a constant or a loop invariant var into output buffer
+      Stmt statement = BuildNPUIRUnaryCall("Broadcast", expr, output_buffer, 0);
+      statements->push_back(statement);
+      --depth;
+      return true;
+    } else if (expr.as<BufferLoadNode>()) {
+      // Copy from input buffer into output buffer
+      Stmt statement = BuildNPUIRUnaryCall("Copy", ExtractBufferAccessInfo(expr), output_buffer, 0);
+      statements->push_back(statement);
+      --depth;
+      return true;
+    }
+    return false;
   }
 
   bool HandleUnaryExpression(const PrimExpr& expr, const BufferAccessInfo& output_buffer, std::vector<BufferAccessInfo>* tmp_bufs,
@@ -649,6 +678,12 @@ private:
 
   bool DecomposeExpression(const PrimExpr& expr, const BufferAccessInfo& output_buffer, std::vector<BufferAccessInfo>* tmp_bufs,
                            const std::vector<const VarNode*>& loop_vars, Array<Stmt>* statements) {
+    if (IsCopyOp(expr, loop_vars)){
+      // Case of copy without computation
+      ++depth;
+      return HandleCopyExpression(expr, output_buffer, loop_vars, statements);
+    }
+
     if (IsUnaryOp(expr)) {
       depth++;
       return HandleUnaryExpression(expr, output_buffer, tmp_bufs, loop_vars, statements);
@@ -713,6 +748,7 @@ private:
 class LoopVectorize : public StmtMutator {
 private:
   inline static std::unordered_set<std::string> CandidateVectorizationOps = {
+    "tl.copy",
     "tl.npuir_exp",
     "tl.npuir_abs",
     "tl.npuir_add",
@@ -778,96 +814,67 @@ private:
 
  /**
   * Find the index of the offset containing the loop variable.
-  * Returns -1 if not found, -2 if found in multiple offsets.
+  * Returns -1 if not found, -2 if found in multiple offsets or indirect mem access.
   */
-  int FindLoopVarInOffsets(const Array<PrimExpr>& offsets, const VarNode* loop_var) {
+  int FindLoopVarInOffsets(const std::vector<PrimExpr>& offsets, const VarNode* loop_var) {
     int found_dim = -1;
-    arith::Analyzer analyzer;
 
     for (int i = 0; i < static_cast<int>(offsets.size()); ++i) {
+      bool indirect_found = false;
+
       class LoopVarVisitor : public ExprVisitor {
       public:
         const VarNode* target_var;
-        bool found = false;
+        bool found = false;               // Whether appeared directly
+        bool& indirect_found;              // Whether appeared indirectly
+        bool indirect_scope = false;       // Status flag: whether the visitor is in a BufferLoad
 
-        explicit LoopVarVisitor(const VarNode* var) : target_var(var) {}
+        LoopVarVisitor(const VarNode* var, bool& indirect_flag)
+            : target_var(var), indirect_found(indirect_flag) {}
 
         void VisitExpr_(const VarNode* op) override {
-          if (op == target_var) found = true;
+          if (op == target_var) {
+            if (indirect_scope) {
+              indirect_found = true;
+            } else {
+              found = true;
+            }
+          }
           ExprVisitor::VisitExpr_(op);
         }
-      } visitor(loop_var);
 
+        void VisitExpr_(const BufferLoadNode* op) override {
+          // Visit a BufferLoad, set the status flag - indirect_scope
+          bool saved_scope = indirect_scope;
+          indirect_scope = true;
+          for (const auto& index : op->indices) {
+            VisitExpr(index);
+          }
+          // Reset the status flag
+          indirect_scope = saved_scope;
+        }
+      } visitor(loop_var, indirect_found);
+
+      // Check each offset
       visitor(offsets[i]);
+
+      if (indirect_found) {
+        // Indirect mem access detected.
+        return -2;
+      }
 
       if (visitor.found) {
         if (found_dim == -1) {
+          // Record the first found
           found_dim = i;
         } else {
+          // Found multiple offsets associated with the loop var
           return -2;
         }
       }
     }
-
+    // Returns the unique offset associated with the loop var
     return found_dim;
-  }
-
-  bool RegionInLoopEnableVectorize(const PrimExpr& expr, const VarNode* loop_var) {
-    // 1. must be a CallNode
-    const auto* call = expr.as<CallNode>();
-    if (!call) return false;
-
-    // 2. must be tl.region
-    const auto* op_node = call->op.as<tvm::OpNode>();
-    if (!op_node) return false;
-    tvm::Op op = tvm::GetRef<tvm::Op>(op_node);
-
-    static const auto* region_op = Op::Get("tl.region").as<OpNode>();
-    if (op.get() != region_op) return false;
-
-    // 3. check the number of args and extract attributes
-    if (call->args.size() < 3) return false;
-
-    const auto* buffer_load = call->args[0].as<BufferLoadNode>();
-    if (!buffer_load) return false;
-
-    Buffer buffer = buffer_load->buffer;
-    Array<PrimExpr> offsets = buffer_load->indices;
-
-    // 4. check the shapes
-    int d = buffer->shape.size();
-    if (offsets.size() != d) return false;
-    if (call->args.size() != d + 2) return false;
-
-    // 5. check the loop var
-    int loop_var_dim = FindLoopVarInOffsets(offsets, loop_var);
-    arith::Analyzer analyzer;
-
-    if (loop_var_dim == -1) {  // -1 -> not found -> invariant -> enable to vectorize
-      return true;
-    } else if (loop_var_dim == -2) {  // -2 -> multiple found -> dispersed mem access -> disable to vectorize
-      return false;
-    }
-
-    // check the sizes to ensure the continuity of mem access
-    for (int i = 0; i < d; ++i) {
-      const PrimExpr& size = call->args[i + 2];
-
-      if (i <= loop_var_dim) {
-        if (!analyzer.CanProveEqual(size, 1)) {
-          return false;
-        }
-      } else {
-        if (!analyzer.CanProveEqual(size, buffer->shape[i])) {
-          return false;
-        }
-
-        if (!analyzer.CanProveEqual(offsets[i], 0)) {
-          return false;
-        }
-      }
-    }
-    return true;
   }
 
   Stmt SplitStmtToIndependentForNode(const ForNode* forNode, const Stmt& stmt){
@@ -890,35 +897,139 @@ private:
                forNode->span);
   }
 
-  // Vectorize a region which belongs to a call statement
-  PrimExpr VectorizeRegionInLoop(const PrimExpr& expr, const VarNode* loop_var, size_t start, size_t loop_count) {
-    const auto* call = expr.as<CallNode>();
-    const auto* buffer_load = call->args[0].as<BufferLoadNode>();
+  struct RegionInfo {
+    Buffer buffer;
+    std::vector<PrimExpr> offsets;
+    int regionId;
+    std::vector<size_t> sizes;
+  };
+
+  std::optional<RegionInfo> ParseRegionCall(const PrimExpr &expr, arith::Analyzer *analyzer = nullptr) {
+    // 1. must be a CallNode
+    const auto *call = expr.as<CallNode>();
+    if (!call) return std::nullopt;
+
+    // 2. must be tl.region
+    const auto *op_node = call->op.as<OpNode>();
+    if (!op_node) return std::nullopt;
+    static const auto *region_op = Op::Get("tl.region").as<OpNode>();
+    if (op_node != region_op) return std::nullopt;
+
+    // 3. check the number of args and extract attributes
+    if (call->args.size() < 3) return std::nullopt;
+
+    const auto *buffer_load = call->args[0].as<BufferLoadNode>();
+    if (!buffer_load) return std::nullopt;
 
     Buffer buffer = buffer_load->buffer;
     Array<PrimExpr> offsets = buffer_load->indices;
-    std::vector<PrimExpr> offsets_vec;
-    for (const auto& offset : offsets) {
-      offsets_vec.push_back(offset);
+    int d = buffer->shape.size();
+
+    // 4. check the shapes
+    if (offsets.size() != d) return std::nullopt;
+    if (call->args.size() != d + 2) return std::nullopt;
+
+    // 5. try to extract region id & sizes
+    auto regionId_val = TryGetConstIntValue(call->args[1], analyzer);
+    if (!regionId_val) return std::nullopt;
+    int regionId = static_cast<int>(*regionId_val);
+
+    std::vector<size_t> sizes;
+    for (int i = 2; i < d + 2; ++i) {
+      auto size_val = TryGetConstIntValue(call->args[i], analyzer);
+      if (!size_val) return std::nullopt;
+      sizes.push_back(static_cast<size_t>(*size_val));
     }
 
-    int regionId = static_cast<int>(*TryGetConstIntValue(call->args[1]));
-    int dim = buffer->shape.size();
-    std::vector<size_t> size_vec;
-    for (int i = 2; i < dim + 2; ++i) {
-      size_vec.push_back(static_cast<size_t>(*TryGetConstIntValue(call->args[i])));
+    // post-processing: convert offsets into vector
+    std::vector<PrimExpr> offsets_vec(offsets.begin(), offsets.end());
+
+    return RegionInfo{std::move(buffer), std::move(offsets_vec), regionId, std::move(sizes)};
+  }
+
+  bool CheckContinuity(const Buffer &buffer,
+                       const std::vector<PrimExpr> &offsets,
+                       const std::vector<size_t> &sizes,
+                       int loop_var_dim,
+                       arith::Analyzer *analyzer = nullptr) {
+    arith::Analyzer local_analyzer;
+    arith::Analyzer *used_analyzer = analyzer ? analyzer : &local_analyzer;
+
+    // 1. check the sizes to ensure the continuity of mem access
+    int d = buffer->shape.size();
+    for (int i = 0; i < d; ++i) {
+      const PrimExpr &size_expr = make_const(DataType::Int(32), sizes[i]);
+      if (i <= loop_var_dim) {
+        // size of current and higher dimension should be 1; otherwise, something wrong happened
+        if (!used_analyzer->CanProveEqual(size_expr, 1)) return false;
+      } else {
+        // lower dimensions must participate in the operation completely; otherwise, the current dimension cannot be vectorized.
+        // The first condition: The size is equal to the size of the corresponding dimension.
+        if (!used_analyzer->CanProveEqual(size_expr, buffer->shape[i])) return false;
+        // The second condition: offset equals zero
+        if (!used_analyzer->CanProveEqual(offsets[i], 0)) return false;
+      }
     }
 
-    int loop_var_dim = FindLoopVarInOffsets(offsets, loop_var);
-    if (loop_var_dim >= 0) {
-      offsets_vec[loop_var_dim] = make_const(DataType::Int(32), start);
-      size_vec[loop_var_dim] = loop_count;
+    return true;
+  }
+
+  std::optional<PrimExpr> AnalyzeNewOffset(const std::vector<PrimExpr> &offsets,
+                                           const VarNode* loop_var,
+                                           int loop_var_dim, int start,
+                                           arith::Analyzer *analyzer = nullptr) {
+    arith::Analyzer local_analyzer;
+    arith::Analyzer *used_analyzer = analyzer ? analyzer : &local_analyzer;
+
+    // check the expression about loop var to ensure the continuity of mem access
+    Array<PrimExpr> res = arith::DetectLinearEquation(offsets[loop_var_dim], {GetRef<Var>(loop_var)});
+    if (res.empty() || !used_analyzer->CanProveEqual(res[0], 1)) {
+      // Not a linear expression or the coefficient of the first term is not 1 -> disable to vectorize
+      return std::nullopt;
     }
 
-    return BuildRegionCall(buffer, offsets_vec, regionId, size_vec);
+    PrimExpr new_offset = res[1] + make_const(res[1].dtype(), start);
+
+    return used_analyzer->Simplify(new_offset);
+  }
+
+  std::optional<PrimExpr> TryVectorizeRegionInLoop(const PrimExpr& expr, const VarNode* loop_var, size_t start, size_t loop_count,
+                                                   arith::Analyzer *analyzer = nullptr){
+    arith::Analyzer local_analyzer;
+    arith::Analyzer *used_analyzer = analyzer ? analyzer : &local_analyzer;
+
+    // Step 1: try to extract region info
+    auto info = ParseRegionCall(expr, used_analyzer);
+    if (!info) return std::nullopt;
+
+    // Step 2: check the loop var
+    int loop_var_dim = FindLoopVarInOffsets(info->offsets, loop_var);
+    // -2 -> multiple or indirect found -> dispersed mem access -> disable to vectorize
+    if (loop_var_dim == -2) return std::nullopt;
+    // -1 -> not found -> invariant -> enable to vectorize but no need change
+    if (loop_var_dim == -1) {
+      return BuildRegionCall(info->buffer, info->offsets, info->regionId, info->sizes);
+    }
+
+    // Step 3: check the continuity of mem access
+    if (!CheckContinuity(info->buffer, info->offsets, info->sizes, loop_var_dim, used_analyzer)) {
+      return std::nullopt;
+    }
+
+    // Step 4: try to analyze the offset after vectorization
+    auto new_offset = AnalyzeNewOffset(info->offsets, loop_var, loop_var_dim, start, used_analyzer);
+    if (!new_offset) return std::nullopt;
+
+    // Step 5: build and return vectorized region
+    info->offsets[loop_var_dim] = *new_offset;
+    info->sizes[loop_var_dim] = loop_count;
+
+    return BuildRegionCall(info->buffer, info->offsets, info->regionId, info->sizes);
   }
 
   Stmt VectorizeForBody(const ForNode* forNode, const Stmt& stmt) {
+    arith::Analyzer analyzer;
+
     if (const auto* alloc=stmt.as<AllocateNode>()){
       return stmt;
     }
@@ -939,33 +1050,26 @@ private:
     }
     if (!flag_op_supported) return SplitStmtToIndependentForNode(forNode, stmt);
 
-    // Enable vectorization only when regions satisfy specific conditions
-    bool flag_region_vectorizable = true;
-    auto loop_var_node_ptr = forNode->loop_var.get();
-    for (const auto& region : call->args) {
-      if (IsScalar(region)) continue;
-      if (region.as<StringImmNode>()) continue;
-      if (!RegionInLoopEnableVectorize(region, loop_var_node_ptr)) {
-        flag_region_vectorizable = false;
-      }
-    }
-    if (!flag_region_vectorizable) return SplitStmtToIndependentForNode(forNode, stmt);
-
     // min_value & loop_extent_value must exist
-    auto loop_min_value = TryGetConstIntValue(forNode->min);
-    auto loop_extent_value = TryGetConstIntValue(forNode->extent);
+    auto loop_min_value = TryGetConstIntValue(forNode->min, &analyzer);
+    auto loop_extent_value = TryGetConstIntValue(forNode->extent, &analyzer);
     if (!loop_min_value || !loop_extent_value) {
       return SplitStmtToIndependentForNode(forNode, stmt);
     }
 
-    // All conditions satisfied, start vectorization
+    // Enable vectorization only when regions satisfy specific conditions
+    auto loop_var_node_ptr = forNode->loop_var.get();
     std::vector<PrimExpr> new_regions;
     for (const auto& region : call->args) {
       if (IsScalar(region) || region.as<StringImmNode>()) {
         new_regions.push_back(region);
         continue;
       }
-      new_regions.push_back(VectorizeRegionInLoop(region, loop_var_node_ptr, *loop_min_value, *loop_extent_value));
+      auto new_region = TryVectorizeRegionInLoop(region, loop_var_node_ptr, *loop_min_value, *loop_extent_value, &analyzer);
+      if (!new_region) {
+        return SplitStmtToIndependentForNode(forNode, stmt);
+      }
+      new_regions.push_back(*new_region);
     }
 
     Array<PrimExpr> args(new_regions);

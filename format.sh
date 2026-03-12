@@ -67,16 +67,16 @@ format_changed() {
     # exist on both branches.
     UPSTREAM_REPO="https://github.com/tile-ai/tilelang"
     
-    if git ls-remote --exit-code "$UPSTREAM_REPO" main &>/dev/null; then
+    if git ls-remote --exit-code "$UPSTREAM_REPO" npuir &>/dev/null; then
         # First try to use the upstream repository directly
-        MERGEBASE="$(git fetch "$UPSTREAM_REPO" main &>/dev/null && git merge-base FETCH_HEAD HEAD)"
-    elif git show-ref --verify --quiet refs/remotes/origin/main; then
-        # Fall back to origin/main if available
-        BASE_BRANCH="origin/main"
+        MERGEBASE="$(git fetch "$UPSTREAM_REPO" npuir &>/dev/null && git merge-base FETCH_HEAD HEAD)"
+    elif git show-ref --verify --quiet refs/remotes/origin/npuir; then
+        # Fall back to origin/npuir if available
+        BASE_BRANCH="origin/npuir"
         MERGEBASE="$(git merge-base $BASE_BRANCH HEAD)"
     else
-        # Last resort, use local main
-        BASE_BRANCH="main"
+        # Last resort, use local npuir
+        BASE_BRANCH="npuir"
         MERGEBASE="$(git merge-base $BASE_BRANCH HEAD)"
     fi
 
@@ -123,10 +123,10 @@ spell_check_changed() {
     #
     # `diff-filter=ACM` and $MERGEBASE is to ensure we only lint files that
     # exist on both branches.
-    if git show-ref --verify --quiet refs/remotes/origin/main; then
-        BASE_BRANCH="origin/main"
+    if git show-ref --verify --quiet refs/remotes/origin/npuir; then
+        BASE_BRANCH="origin/npuir"
     else
-        BASE_BRANCH="main"
+        BASE_BRANCH="npuir"
     fi
 
     MERGEBASE="$(git merge-base $BASE_BRANCH HEAD)"
@@ -167,10 +167,10 @@ lint_changed() {
     #
     # `diff-filter=ACM` and $MERGEBASE is to ensure we only lint files that
     # exist on both branches.
-    if git show-ref --verify --quiet refs/remotes/origin/main; then
-        BASE_BRANCH="origin/main"
+    if git show-ref --verify --quiet refs/remotes/origin/npuir; then
+        BASE_BRANCH="origin/npuir"
     else
-        BASE_BRANCH="main"
+        BASE_BRANCH="npuir"
     fi
 
     MERGEBASE="$(git merge-base $BASE_BRANCH HEAD)"
@@ -221,10 +221,10 @@ if command -v clang-format &>/dev/null; then
 
     # Format changed C/C++ files relative to main
     clang_format_changed() {
-        if git show-ref --verify --quiet refs/remotes/origin/main; then
-            BASE_BRANCH="origin/main"
+        if git show-ref --verify --quiet refs/remotes/origin/npuir; then
+            BASE_BRANCH="origin/npuir"
         else
-            BASE_BRANCH="main"
+            BASE_BRANCH="npuir"
         fi
 
         MERGEBASE="$(git merge-base $BASE_BRANCH HEAD)"
