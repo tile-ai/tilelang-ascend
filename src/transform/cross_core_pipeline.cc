@@ -714,6 +714,8 @@ private:
                       extended_buffer->shape = new_shape;
                     }
 
+                    this->collected_buffer_versions_.Set(extended_buffer->data, PrimExpr(num_stages));
+
                     new_alloc_buffers.push_back(Buffer(extended_buffer));
                 } else {
                     new_alloc_buffers.push_back(buffer);
