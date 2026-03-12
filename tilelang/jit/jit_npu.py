@@ -1034,7 +1034,7 @@ class compiler_npu:
         #Try to get the infer_workspace_shape_function in the kernel, then use the return value as workspace_size
         #Use default to avoid except
         #If you have set the os env "TILELANG_ASCEND_WORKSPACE_SIZE", "TILELANG_ASCEND_WORKSPACE_SIZE" has a higher priority
-        if not os.path.exists(lib64):
+        if not os.path.exists(lib_path):
             return default
         symbols=[]
         #Try to get the kernel symbol table and match function name "***_infer_workspace_shape_function"
