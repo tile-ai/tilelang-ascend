@@ -1659,7 +1659,7 @@ def test_ln(target, shape):
     run_test_ln(M, N, block_M, block_N, target)
 
 
-def gathermask(M, N, block_M, block_N, dtype="int32"):
+def gathermask_fixed_mode(M, N, block_M, block_N, dtype="int32"):
     m_num = M // block_M
     n_num = N // block_N
 
@@ -1685,8 +1685,8 @@ def gathermask(M, N, block_M, block_N, dtype="int32"):
 
     return main
 
-def run_test_gathermask(M, N, block_M, block_N, target):
-    func = gathermask(M, N, block_M, block_N)
+def run_test_gathermask_fixed_mode(M, N, block_M, block_N, target):
+    func = gathermask_fixed_mode(M, N, block_M, block_N)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
 
     a = torch.arange(1, M * N + 1, dtype=torch.int32).reshape(M, N).npu()
@@ -1702,9 +1702,61 @@ def run_test_gathermask(M, N, block_M, block_N, target):
 
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("shape", [(4, 256)])
-def test_gathermask(target, shape):
+def test_gathermask_fixed_mode(target, shape):
     M, N = shape
-    run_test_gathermask(M, N, 2, 256, target=target)
+    run_test_gathermask_fixed_mode(M, N, 2, 256, target=target)
+
+
+def gathermask_custom_mode(M, N, block_M, block_N, dtype="int32"):
+    m_num = M // block_M
+    n_num = N // block_N
+
+    VEC_NUM = 2
+
+    @T.prim_func
+    def main(
+            A: T.Tensor((M, N), dtype),
+            idx: T.Tensor((1, 8), "uint32"),
+            B: T.Tensor((M, 8), dtype),
+    ):
+        with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
+            bx = cid // n_num
+            by = cid % n_num
+
+            a_ub = T.alloc_shared((block_M // VEC_NUM, block_N), dtype)
+            idx_ub = T.alloc_shared((1, 8), "uint32")
+            b_ub = T.alloc_shared((block_M //VEC_NUM, 8), dtype)
+            
+            T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a_ub)
+            T.copy(idx, idx_ub)
+
+            T.tile.gather_mask(b_ub, a_ub, idx_ub)
+
+            T.copy(b_ub, B[bx * block_M + vid * block_M // VEC_NUM, by * 8])
+
+    return main
+
+def run_test_gathermask_custom_mode(M, N, block_M, block_N, target):
+    func = gathermask_custom_mode(M, N, block_M, block_N)
+    func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
+
+    a = torch.arange(1, M * N + 1, dtype=torch.int32).reshape(M, N).npu()
+    idx = torch.tensor([[1, 2, 2, 5, 4, 6, 7, 8]], dtype=torch.uint32).npu()
+    torch.npu.synchronize()
+
+    b = func(a, idx)
+
+    idx_cpu = idx.cpu().expand(M, -1).long()
+    a_cpu = a.cpu()
+    ref_b = a_cpu[torch.arange(M).unsqueeze(1), idx_cpu].npu()
+
+    torch.testing.assert_close(b, ref_b, rtol=1e-2, atol=1e-2)
+
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@pytest.mark.parametrize("shape", [(4, 256)])
+def test_gathermask_custom_mode(target, shape):
+    M, N = shape
+    run_test_gathermask_custom_mode(M, N, 2, 256, target=target)
 
 
 def vec_max(M, N, block_M, block_N, dtype="float"):

@@ -1324,6 +1324,7 @@ void CodeGenTileLangAscend::GatherMaskCodegen(const CallNode *op) {
   std::string op_name = "tl::ascend::" + Downcast<StringImm>(op->args[0])->value;
   int len = op->args.size();
   if (op->args[len - 1].as<CallNode>()) {
+    std::string op_name = "tl::ascend::Gather";  // The custom mode of GatherMask is actually implemented using Gather at the underlying level.
     PrintOpCall(op, op_name, {1, len}, {0, 0});
   } else {
     std::string src1Pattern = Downcast<StringImm>(op->args[len - 1])->value;
