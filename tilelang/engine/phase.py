@@ -54,7 +54,11 @@ def allow_vectorize(pass_ctx: Optional[PassContext] = None) -> bool:
 
 
 def get_ascend_device_name() -> str:
-    for env_name in ("TILELANG_ASCEND_DEVICE_NAME", "ASCEND_DEVICE_NAME", "DEVICE_NAME"):
+    for env_name in (
+        "TILELANG_ASCEND_DEVICE_NAME",
+        "ASCEND_DEVICE_NAME",
+        "DEVICE_NAME",
+    ):
         device_name = os.environ.get(env_name)
         if device_name:
             return device_name.strip()

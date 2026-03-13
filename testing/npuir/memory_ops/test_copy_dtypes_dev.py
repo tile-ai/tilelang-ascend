@@ -74,6 +74,7 @@ def copy_1d_bf16(L, block_L, dtype="bfloat16"):
 
     return simple_copy_1d
 
+
 @pytest.mark.parametrize("dtype", DTYPES)
 @pytest.mark.parametrize("L, block_L", COPY_1D_CASES)
 def test_copy_1d_demo(dtype, L, block_L):
@@ -93,6 +94,7 @@ def test_copy_1d_demo(dtype, L, block_L):
     assert_close(a.cpu(), expected_a.cpu(), dtype=dtype)
     assert_close(b.cpu(), expected_b.cpu(), dtype=dtype)
     assert_close(c.cpu(), expected_c.cpu(), dtype="float32")
+
 
 @pytest.mark.parametrize("dtype", DTYPES)
 @pytest.mark.parametrize("L, block_L", COPY_1D_CASES)
