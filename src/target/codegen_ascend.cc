@@ -744,12 +744,11 @@ void CodeGenTileLangAscend::VisitStmt_(const AllocateNode *op) {
       PrimExpr user_init = Downcast<PrimExpr>((*init_it).second);
       if (user_init.dtype().is_bool()) {
         init_type = "bool";
-        init = user_init;
       } else if (!user_init.dtype().is_void() && user_init.dtype() != op->dtype) {
         user_init = tir::Cast(op->dtype, user_init);
         init_type = getType(user_init.dtype());
-        init = user_init;
       }
+      init = user_init;
     }
     this->PrintIndent();
     stream << init_type + " " << vid << " = " << PrintExpr(init) << ";\n";
