@@ -31,10 +31,12 @@
 #include <tvm/tir/expr.h>
 #include <tvm/tir/stmt_functor.h>
 #include <tvm/tir/transform.h>
-
+#include <tvm/ir/attrs.h>
 #include <map>
 #include <unordered_map>
 #include <unordered_set>
+
+#include "../op/builtin.h"
 
 #include "../../3rdparty/tvm/src/arith/int_operator.h"
 #include "../../3rdparty/tvm/src/runtime/thread_storage_scope.h"
@@ -42,10 +44,11 @@
 #include "../../3rdparty/tvm/src/tir/transforms/ir_utils.h"
 
 namespace tvm {
-namespace tir {
+namespace tl {
 
 using runtime::StorageRank;
 using runtime::StorageScope;
+using namespace tir;
 
 /*!
  * \brief collect the mapping from the buffer var to its allocate
@@ -223,13 +226,13 @@ class LinearAccessPatternFinder final : public StmtExprVisitor {
 
   void VisitStmt_(const AttrStmtNode* op) final {
     // Only record the outer most thread extent.
-    if (op->attr_key == attr::thread_extent && !in_thread_env_) {
+    if (op->attr_key == tir::attr::thread_extent && !in_thread_env_) {
       in_thread_env_ = true;
       VisitNewScope(op);
       in_thread_env_ = false;
-    } else if (op->attr_key == attr::extern_scope) {
+    } else if (op->attr_key == tir::attr::extern_scope) {
       VisitNewScope(op);
-    } else if (op->attr_key == attr::virtual_thread) {
+    } else if (op->attr_key == tir::attr::virtual_thread) {
       VisitNewScope(op);
     } else {
       StmtExprVisitor::VisitStmt_(op);
@@ -345,7 +348,7 @@ class InplaceOpVerifier : public StmtExprVisitor {
 
   void VisitStmt_(const AttrStmtNode* op) final {
     // always reject extern code
-    if (op->attr_key == attr::extern_scope || op->attr_key == attr::volatile_scope) {
+    if (op->attr_key == tir::attr::extern_scope || op->attr_key == tir::attr::volatile_scope) {
       result_ = false;
       return;
     }
@@ -412,8 +415,10 @@ class StoragePlanRewriter : public StmtExprMutator {
   using AllocEntry = LinearAccessPatternFinder::AllocEntry;
 
   Stmt Rewrite(Stmt stmt, bool detect_inplace, bool enable_reuse,
-               bool reuse_require_exact_matched_dtype) {
+               bool reuse_require_exact_matched_dtype,
+               Map<Var, PrimExpr> local_var_init_map = {}) {
     detect_inplace_ = detect_inplace;
+    local_var_init_map_ = std::move(local_var_init_map);
     // plan the rewrite
     LinearAccessPatternFinder finder;
     finder(stmt);
@@ -510,8 +515,8 @@ class StoragePlanRewriter : public StmtExprMutator {
   }
 
   Stmt VisitStmt_(const AttrStmtNode* op) final {
-    if (op->attr_key == attr::thread_extent || op->attr_key == attr::virtual_thread ||
-        attr::IsPragmaKey(op->attr_key)) {
+    if (op->attr_key == tir::attr::thread_extent || op->attr_key == tir::attr::virtual_thread ||
+        tir::attr::IsPragmaKey(op->attr_key)) {
       // remake all the allocation at the attach scope.
       if (attach_map_.count(op)) {
         auto& svec = attach_map_[op];
@@ -521,7 +526,7 @@ class StoragePlanRewriter : public StmtExprMutator {
       } else {
         return StmtExprMutator::VisitStmt_(op);
       }
-    } else if (op->attr_key == attr::volatile_scope) {
+    } else if (op->attr_key == tir::attr::volatile_scope) {
       Stmt stmt = StmtExprMutator::VisitStmt_(op);
       op = stmt.as<AttrStmtNode>();
       auto it = alloc_map_.find(op->node.as<VarNode>());
@@ -623,6 +628,19 @@ class StoragePlanRewriter : public StmtExprMutator {
     }
     return body;
   }
+
+  Map<String, ObjectRef> MakeAllocateAnnotations(const Var &buffer_var) const {
+    Map<String, ObjectRef> annotations;
+    if (local_var_init_map_.defined()) {
+      auto it = local_var_init_map_.find(buffer_var);
+      if (it != local_var_init_map_.end()) {
+        const PrimExpr &init = (*it).second;
+        annotations.Set(tl::attr::kLocalVarInit, init);
+      }
+    }
+    return annotations;
+  }
+
   // Remap the index
   PrimExpr RemapIndex(DataType dtype, PrimExpr index, StorageEntry* e) {
     if (e->bits_offset == 0) return index;
@@ -636,7 +654,7 @@ class StoragePlanRewriter : public StmtExprMutator {
       StorageEntry* e = alloc_vec_[i].get();
       attach_map_[e->attach_scope_].push_back(e);
     }
-    // find allocation via attach map.
+    // find allocation via attach map.      
     for (auto& kv : attach_map_) {
       // find the element with the most amount of bytes.
       std::vector<StorageEntry*>& vec = kv.second;
@@ -688,11 +706,14 @@ class StoragePlanRewriter : public StmtExprMutator {
               }
               return true;
             });
-
         if (all_allocs_identical) {
           // simply use the original allocation.
-          e->alloc_nest.push_back(Allocate(e->alloc_var, alloc_type, e->allocs[0]->extents,
-                                           e->allocs[0]->condition, Evaluate(0)));
+          Map<String, ObjectRef> annotations =
+              MakeAllocateAnnotations(e->alloc_var);
+          e->alloc_nest.push_back(Allocate(
+              e->alloc_var, alloc_type, e->allocs[0]->extents,
+              e->allocs[0]->condition, Evaluate(0), std::move(annotations)));
+
           if (auto ptr = e->allocs[0]->body.as<DeclBufferNode>()) {
             e->alloc_nest.push_back(
                 DeclBuffer(RemapBuffer(ptr->buffer, e->alloc_var), Evaluate(0)));
@@ -744,8 +765,11 @@ class StoragePlanRewriter : public StmtExprMutator {
             combo_size = combo_size + make_const(DataType::Int(32), 1);
           }
           combo_size = analyzer_.Simplify(combo_size);
+          Map<String, ObjectRef> annotations =
+              MakeAllocateAnnotations(e->alloc_var);
           e->alloc_nest.push_back(
-              Allocate(e->alloc_var, alloc_type, {combo_size}, const_true(), Evaluate(0)));
+              Allocate(e->alloc_var, alloc_type, {combo_size}, const_true(),
+                       Evaluate(0), std::move(annotations)));
           if (IsSpecialTaggedMemory(e->scope)) {
             MemoryInfo info = GetMemoryInfo(e->scope.to_string());
             if (info.defined()) {
@@ -763,34 +787,43 @@ class StoragePlanRewriter : public StmtExprMutator {
     ICHECK_NE(e->scope.tag.length(), 0U);
     // allocate with element type.
     ICHECK_NE(e->const_nbits, 0U);
-    MemoryInfo info = GetMemoryInfo(e->scope.to_string());
+    MemoryInfo info;
+    if (e->scope.tag != ".var") {
+      info = GetMemoryInfo(e->scope.to_string());
+    }
     uint64_t total_bits = e->const_nbits;
     // By default, align to 32 bits.
     size_t align = 32;
     if (info.defined()) {
       align = info->max_simd_bits;
     }
+
     // Always align to max_simd_bits
     // so we can remap types by keeping this property
-    if (total_bits % align != 0) {
+    bool is_var_tag = (e->scope.tag == ".var");
+    if (!is_var_tag && (total_bits % align != 0)) {
       total_bits += align - (total_bits % align);
     }
+
     e->alloc_var = e->allocs[0]->buffer_var;
-    for (StorageEntry* child : e->merged_children) {
-      ICHECK_NE(child->const_nbits, 0U);
-      ICHECK_NE(total_bits, 0U);
-      child->bits_offset = total_bits;
-      child->alloc_var = e->alloc_var;
-      total_bits += child->const_nbits;
-      if (total_bits % align != 0) {
-        total_bits += align - (total_bits % align);
+    if (!is_var_tag) {
+      for (StorageEntry* child : e->merged_children) {
+        ICHECK_NE(child->const_nbits, 0U);
+        ICHECK_NE(total_bits, 0U);
+        child->bits_offset = total_bits;
+        child->alloc_var = e->alloc_var;
+        total_bits += child->const_nbits;
+        if (total_bits % align != 0) {
+          total_bits += align - (total_bits % align);
+        }
       }
     }
     uint64_t type_bits = e->elem_type.bits() * e->elem_type.lanes();
     PrimExpr alloc_size =
         make_const(e->allocs[0]->extents[0].dtype(), (total_bits + type_bits - 1) / type_bits);
+    Map<String, ObjectRef> annotations = MakeAllocateAnnotations(e->alloc_var);
     e->alloc_nest.push_back(
-        Allocate(e->alloc_var, e->elem_type, {alloc_size}, const_true(), Evaluate(0)));
+        Allocate(e->alloc_var, e->elem_type, {alloc_size}, const_true(), Evaluate(0), std::move(annotations)));
     if (info.defined()) {
       ICHECK_LE(total_bits, info->max_num_bits)
           << "Allocation exceed bound of memory tag " << e->scope.to_string();
@@ -908,11 +941,11 @@ class StoragePlanRewriter : public StmtExprMutator {
       // enter/exit new scope
       if (s.stmt->IsInstance<AttrStmtNode>()) {
         const auto* op = static_cast<const AttrStmtNode*>(s.stmt);
-        if (op->attr_key == attr::thread_extent || op->attr_key == attr::virtual_thread ||
-            attr::IsPragmaKey(op->attr_key)) {
+        if (op->attr_key == tir::attr::thread_extent || op->attr_key == tir::attr::virtual_thread ||
+            tir::attr::IsPragmaKey(op->attr_key)) {
           PlanNewScope(op);
         } else {
-          ICHECK(op->attr_key == attr::extern_scope);
+          ICHECK(op->attr_key == tir::attr::extern_scope);
         }
       } else if (s.stmt->IsInstance<ForNode>()) {
         const auto* op = static_cast<const ForNode*>(s.stmt);
@@ -1071,6 +1104,8 @@ class StoragePlanRewriter : public StmtExprMutator {
   // Any buffers that is accessed at some point.  DeclBuffer instances
   // that do not appear in this list may be removed.
   std::unordered_set<const BufferNode*> all_buffers_accessed_;
+  // Initial values for local variable buffers.
+  Map<Var, PrimExpr> local_var_init_map_;
   // analyzer
   arith::Analyzer analyzer_;
 };
@@ -1544,12 +1579,13 @@ class VectorTypeRewriter : public StmtExprMutator {
     if (node.same_as(modified)) {
       return std::move(node);
     } else {
-      auto writer = modified.CopyOnWrite();
-      writer->LegalizeDType();
+      // auto writer = modified.CopyOnWrite();
+      // writer->LegalizeDType();
+      BufferLoad legalized_modified(modified->buffer, modified->indices, modified->span);
       if (shuffle_index >= 0) {
-        return Shuffle::ExtractElement(std::move(modified), shuffle_index);
+        return Shuffle::ExtractElement(std::move(legalized_modified), shuffle_index);
       }
-      return std::move(modified);
+      return std::move(legalized_modified);
     }
   }
 
@@ -1645,7 +1681,7 @@ class VectorTypeRewriter : public StmtExprMutator {
     Array<PrimExpr> extents = op->extents;
     PrimExpr last_extent = extents[extents.size() - 1];
     extents.Set(extents.size() - 1, last_extent / make_const(last_extent.dtype(), info.factor()));
-    return Allocate(new_buffer_var, info.new_element_dtype, extents, op->condition, op->body);
+    return Allocate(new_buffer_var, info.new_element_dtype, extents, op->condition, op->body, op->annotations);
   }
 
   Stmt VisitStmt_(const AllocateConstNode* op) final {
@@ -1747,7 +1783,6 @@ PrimFunc PointerValueTypeRewrite(PrimFunc f, bool allow_untyped_pointers = false
   VectorTypeAccessChecker checker(f->params, f->buffer_map, allow_untyped_pointers,
                                   rewrite_scalar_read_to_vector_shuffle);
   checker(f->body);
-
   VectorTypeRewriter rewriter(checker.info_map_, rewrite_params, rewrite_buffer_map,
                               rewrite_allocate_node, rewrite_indices, rewrite_let_node,
                               rewrite_allocate_const_node, rewrite_scalar_read_to_vector_shuffle);
@@ -1759,7 +1794,7 @@ PrimFunc PointerValueTypeRewrite(PrimFunc f, bool allow_untyped_pointers = false
 }
 
 namespace transform {
-
+using namespace tir::transform;
 Pass AscendStorageRewrite(bool is_npu = false) {
   auto pass_func = [=](PrimFunc f, IRModule m, PassContext ctx) {
     bool enable_reuse = true;
@@ -1785,21 +1820,33 @@ Pass AscendStorageRewrite(bool is_npu = false) {
       // Require exactly same-dtype matching in smem reuse for Vulkan and WebGPU
       reuse_require_exact_matched_dtype = true;
     }
+
     if (is_npu) {
       // For NPU target, we disable the smem reuse to avoid potential issues.
       enable_reuse = false;
     }
+
+    Map<Var, PrimExpr> local_var_init_map;
+    if (auto init_map =
+            f->attrs.GetAttr<Map<Var, PrimExpr>>(tl::attr::kLocalVarInit)) {
+      local_var_init_map = init_map.value();
+    }
+
     auto* n = f.CopyOnWrite();
-    n->body = StoragePlanRewriter().Rewrite(std::move(n->body), true, enable_reuse,
-                                            reuse_require_exact_matched_dtype);
+
+    StoragePlanRewriter plan_rewriter;
+    n->body = plan_rewriter.Rewrite(
+        std::move(n->body), true, enable_reuse,
+        reuse_require_exact_matched_dtype, std::move(local_var_init_map));
     // Parameters may not be rewritten, but internal allocations may.
     // Vectorization of AllocateConst is currently disabled, as it has
     // indexing issues for types that include padding (e.g. int8x3
     // padded out to 32 bits) would require either rewriting
     // AllocateConst::data, or would require the code generators to
     // handle vectorized constants.
-    return PointerValueTypeRewrite(std::move(f), true, false, false, false, true, true, false,
+    PrimFunc result = PointerValueTypeRewrite(std::move(f), true, false, false, false, true, true, false,
                                    false);
+    return result;
   };
   return CreatePrimFuncPass(pass_func, 0, "tl.AscendStorageRewrite", {});
 }

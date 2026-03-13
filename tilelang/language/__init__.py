@@ -9,6 +9,7 @@ from typing import Optional
 # TODO(lei): remove this import once the
 # upstream tir script is fully compatible
 from tvm.script.parser.tir import *
+from . import overrides as _overrides
 from .tir import (
     prim_func,  # noqa: F401
 )

@@ -446,3 +446,14 @@ def AscendStorageRewrite(is_npu: bool = False):
     ----
     """
     return _ffi_api.AscendStorageRewrite(is_npu)  # type: ignore
+
+def AscendLowerOpaqueBlock(): 
+    """LowerOpaqueBlock for Ascend.
+
+    Returns
+    -------
+    fpass : tvm.transform.Pass
+        The result pass
+    ----
+    """
+    return _ffi_api.AscendLowerOpaqueBlock() # type: ignore

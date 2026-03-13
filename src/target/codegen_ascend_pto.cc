@@ -431,6 +431,8 @@ void CodeGenTileLangAscendPto::VisitExpr_(const BufferLoadNode *op,
   std::string scope = op->buffer.scope();
   if (scope == "" || scope == "global") {
     os << "*(" << var_name << "_handle + " << PrintExpr(op->indices.back()) << ")";
+  } else if (scope == "local.var") {
+    os << var_name;
   } else {
     os << var_name << ".GetValue("
                 << PrintExpr(op->indices.back()) << ")";
@@ -446,6 +448,8 @@ void CodeGenTileLangAscendPto::VisitStmt_(const BufferStoreNode *op) {
     this->stream << "*(" << var_name << "_handle + "
                  << PrintExpr(op->indices.back())
                  << ") = " << PrintExpr(op->value) << ";\n";
+  } else if (scope == "local.var") {
+    this->stream << var_name << " = " << PrintExpr(op->value) << ";\n";
   } else {
     this->stream << var_name << ".SetValue(" << PrintExpr(op->indices.back())
                  << ", " << PrintExpr(op->value) << ");\n";
@@ -2908,6 +2912,23 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
     print_buffer(kAscendPtoScope + "TileMatL1");
   } else if (scope == "shared") {
     print_buffer(kAscendPtoScope + "TileUbData");
+  } else if (scope == "local.var") {
+    PrimExpr init = tir::make_const(op->dtype, 0);
+    std::string init_type = type;
+    auto init_it = op->annotations.find(tl::attr::kLocalVarInit);
+    if (init_it != op->annotations.end()) {
+      PrimExpr user_init = Downcast<PrimExpr>((*init_it).second);
+      if (user_init.dtype().is_bool()) {
+        init_type = "bool";
+        init = user_init;
+      } else if (!user_init.dtype().is_void() && user_init.dtype() != op->dtype) {
+        user_init = tir::Cast(op->dtype, user_init);
+        init_type = getType(user_init.dtype());
+        init = user_init;
+      }
+    }
+    this->PrintIndent();
+    stream << init_type + " " << vid << " = " << PrintExpr(init) << ";\n";
   }
   this->PrintStmt(op->body);
 }

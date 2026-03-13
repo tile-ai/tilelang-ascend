@@ -83,7 +83,7 @@ def OptimizeForTarget(mod: IRModule, target: Target, platform: str) -> IRModule:
     mod = tilelang.transform.CombineCV()(mod)
     mod = tilelang.transform.PipelinePlanning()(mod)
     mod = tilelang.transform.InjectSoftwarePipeline()(mod)
-    mod = tir.transform.LowerOpaqueBlock()(mod)
+    mod = tilelang.transform.AscendLowerOpaqueBlock()(mod)
     mod = tir.transform.NarrowDataType(32)(mod)
     mod = tilelang.transform.ConfigIndexBitwidth()(mod)
     mod = tilelang.transform.CollectBufferShapes()(mod)
