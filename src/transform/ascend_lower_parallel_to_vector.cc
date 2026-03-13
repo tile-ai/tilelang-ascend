@@ -472,7 +472,8 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
 
     if (output_buffer->shape.size() == 2 && store->indices.size() == 2) {
       // Check if inner index contains the vector dimension variable
-      if (!ContainsVar(store->indices[1], vector_dim_var_)) return false;
+      bool is_l1_output = IsL1Buffer(output_buffer);
+      if (!ContainsVar(store->indices[1], vector_dim_var_) && !is_l1_output) return false;
 
       int64_t inner_vec_len = 0;
       // Use vector_dim_extent_ if available (actual loop extent), otherwise fall back to buffer shape
@@ -1338,6 +1339,14 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
     return false;
   }
   
+  // Check if a buffer is L1
+  bool IsL1Buffer(const Buffer& buffer) {
+    if (auto* ptr_type = buffer->data->type_annotation.as<PointerTypeNode>()) {
+      return ptr_type->storage_scope == "shared.dyn";
+    }
+    return false;
+  }
+
   // Check if a buffer is L0C
   bool IsL0CBuffer(const Buffer& buffer) {
     if (auto* ptr_type = buffer->data->type_annotation.as<PointerTypeNode>()) {
