@@ -198,7 +198,9 @@ def c2d_im2col(
 
 def npu_copy_v2(src: Union[tir.Buffer, tir.BufferLoad, tir.BufferRegion],
                 dst: Union[tir.Buffer, tir.BufferLoad],
-                enable_relu: bool = False):
+                enable_relu: bool = False,
+                transpose: Optional[bool] = False,  # for copy_l1_to_l0 param: tranpose l1
+                ):
     """Copy data between memory regions.
 
     Args:
@@ -213,7 +215,8 @@ def npu_copy_v2(src: Union[tir.Buffer, tir.BufferLoad, tir.BufferRegion],
         tir.Call: A handle to the copy operation
     """
     if isinstance(src, tir.Buffer) and isinstance(dst, tir.Buffer):
-        ir.assert_structural_equal(src.shape, dst.shape)
+            if not transpose:
+                ir.assert_structural_equal(src.shape, dst.shape)
 
     src_shape = src.shape if isinstance(src, tir.Buffer) else src.buffer.shape
 
@@ -267,4 +270,7 @@ def npu_copy_v2(src: Union[tir.Buffer, tir.BufferLoad, tir.BufferRegion],
     src = _to_region(src, "r")
     dst = _to_region(dst, "w")
 
-    return tir.call_intrin("handle", tir.op.Op.get("tl.ascend_copy"), src, dst, enable_relu)
+    if transpose:
+            return tir.call_intrin("handle", tir.op.Op.get("tl.ascend_copy"), src, dst, enable_relu, transpose)
+    else:
+        return tir.call_intrin("handle", tir.op.Op.get("tl.ascend_copy"), src, dst, enable_relu)

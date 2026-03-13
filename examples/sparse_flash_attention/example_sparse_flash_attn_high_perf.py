@@ -121,7 +121,17 @@ def sparse_attention_fwd(
                             T.copy(pre_ub[loop % db, 0, 0], workspace_1[b_idx, s_idx, g_idx, topk_start_idx : topk_start_idx + pre_loop_size, :])
                             T.copy(pre_rope_ub[loop % db, 0, 0], workspace_2[b_idx, s_idx, g_idx, topk_start_idx : topk_start_idx + pre_loop_size, :])
  
-            T.sync_all()
+            # T.sync_all()
+            T.barrier_all()
+            with T.Scope("C"):
+                T.wait_cross_flag(10)
+                T.set_cross_flag("FIX", 11, 0)
+                T.wait_cross_flag(11)
+                T.set_cross_flag("MTE3", 12, 2)
+            with T.Scope("V"):
+                T.set_cross_flag("MTE3", 10, 2)
+                T.wait_cross_flag(12)
+
             q_l1 = T.alloc_L1([H_per_block, D], dtype)
             q_tail_l1 = T.alloc_L1([H_per_block, D_tail], dtype)
             kv_l1 = T.alloc_L1([BI, D], dtype)

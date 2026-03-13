@@ -116,7 +116,7 @@ def _retrieve_ptr(
         )
 
 
-def set_cross_flag(pipe: str, flag: int):
+def set_cross_flag(pipe: str, flag: int, mode: int=2):
     """
     Sets a cross-core synchronization flag.
 
@@ -127,12 +127,16 @@ def set_cross_flag(pipe: str, flag: int):
     Args:
         pipe (str): The pipeline stage issuing the set action (e.g., "MTE3", "V").
         flag (int): The event ID index to set.
+        mode: hard synchronization modes.
+            - 0: among all AICs or all AIVs
+            - 1: among all AIVs within the same group.
+            - 2: between AICs and AIVs within the same group.
 
     Returns:
         tvm.tir.Call: A TIR intrinsic call node.
     """
     return tir.call_intrin(
-        "handle", tir.op.Op.get("tl.ascend_set_cross_flag"), pipe.upper(), flag
+        "handle", tir.op.Op.get("tl.ascend_set_cross_flag"), pipe.upper(), flag, mode
     )
 
 
@@ -571,26 +575,53 @@ def set_deq_scale(scale: PrimExpr):
     return T.call_intrin("handle", tir.op.Op.get("tl.ascend_set_deq_scale"), scale)
 
 
-def reduce(buffer: Buffer, out: Buffer, tmp: Buffer, reduce_type: str, dim: int, real_shape: list[int]=[0, 0]):
+def reduce(buffer: Union[Buffer, BufferRegion], 
+           out: Union[Buffer, BufferRegion], 
+           tmp: Union[Buffer, BufferRegion], 
+           reduce_type: str, 
+           dim: int, 
+           real_shape: list[int] = None):
+    """Reduce operation supporting both Buffer and BufferRegion."""
     dtype = _dtype(buffer)
-
-    assert len(buffer.shape) == 2, "current only support buffer as a 2D tensor"
-
-    M = buffer.shape[0] if real_shape[0] == 0 else real_shape[0]
-    N = buffer.shape[1] if real_shape[1] == 0 else real_shape[1]
+    
+    def _handle_buffer_region(br: BufferRegion, mask):
+        bf = br.buffer
+        indices = [x.min for x in br.region]
+        offset = bf.offset_of(indices)[0]
+        extent = [x.extent for x in br.region]
+        return bf.access_ptr(mask, offset=offset), extent
+    
+    if isinstance(buffer, BufferRegion):
+        buffer_ptr, buffer_extent = _handle_buffer_region(buffer, "r")
+    else:
+        buffer_ptr = buffer.access_ptr("r")
+        buffer_extent = buffer.shape
+        
+    if isinstance(out, BufferRegion):
+        out_ptr, _ = _handle_buffer_region(out, "w")
+    else:
+        out_ptr = out.access_ptr("w")
+    
+    if isinstance(tmp, BufferRegion):
+        tmp_ptr, _ = _handle_buffer_region(tmp, "r")
+    else:
+        tmp_ptr = tmp.access_ptr("r")
+    
+    if len(buffer_extent) == 2:
+        M = buffer_extent[0] if real_shape[0] == 0 else real_shape[0]
+        N = buffer_extent[1] if real_shape[1] == 0 else real_shape[1]
+    elif len(buffer_extent) == 3:
+        M = buffer_extent[1] 
+        N = buffer_extent[2] 
     shape = f"{M}, {N}"
-
-    buffer = buffer.access_ptr("r")
-    out = out.access_ptr("w")
-    tmp = tmp.access_ptr("r")
-
+    
     return T.call_intrin(
         "handle",
         tir.op.Op.get("tl.ascend_reduce"),
         f"{reduce_type}<{dtype}, {shape}, {dim}>",
-        out,
-        buffer,
-        tmp,
+        out_ptr,
+        buffer_ptr,
+        tmp_ptr,
     )
 
 

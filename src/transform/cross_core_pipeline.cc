@@ -288,8 +288,10 @@ public:
 
         if (core_scope_ == VEC_SCOPE) {
             ProcessInfo(workspace_writes_V_, all_statements_V_, saved_statements_V, saved_idx_V, for_info);
+            current_idx_V_ = all_statements_V_.size();
         } else if (core_scope_ == CUBE_SCOPE) {
             ProcessInfo(workspace_writes_C_, all_statements_C_, saved_statements_C, saved_idx_C, for_info);
+            current_idx_C_ = all_statements_C_.size();
         }
     }
 
@@ -578,9 +580,7 @@ private:
         for (const auto& [buffer, stage_indices] : buffer_stage_map) {
             if (stage_indices.size() > 1) {
                 auto buffer_scope = checkBufferScope(buffer);
-                if (buffer_scope == VEC_SCOPE) {
-                  shared_buffers_.insert(buffer);
-                }
+                shared_buffers_.insert(buffer);
             }
         }
     }
@@ -638,6 +638,9 @@ public:
         auto buffer_result = buffer_transformer.TransformBufferMap(fptr->buffer_map);
         fptr->buffer_map = buffer_result;
         fptr->body = this->VisitStmt(fptr->body);
+
+        auto fn_attr = fptr->attrs.CopyOnWrite();
+        fn_attr->dict.Set("buffer_versions", collected_buffer_versions_);
 
         return f;
     }
@@ -706,19 +709,12 @@ private:
                     ObjectPtr<BufferNode> extended_buffer = make_object<BufferNode>(*buffer.get());
 
                     if(!extended_buffer->shape.empty()) {
-                        if (is_workspace) {
-                            Array<PrimExpr> new_shape = extended_buffer->shape;
-                            new_shape.insert(new_shape.begin(), PrimExpr(num_stages));
-                            extended_buffer->shape = new_shape;
-                        } else {
-                            PrimExpr original_size = extended_buffer->shape[0];
-                            PrimExpr extended_size = original_size * num_stages;
-
-                            Array<PrimExpr> new_shape = extended_buffer->shape;
-                            new_shape.Set(0, extended_size);
-                            extended_buffer->shape = new_shape;
-                        }
+                      Array<PrimExpr> new_shape = extended_buffer->shape;
+                      new_shape.insert(new_shape.begin(), PrimExpr(num_stages));
+                      extended_buffer->shape = new_shape;
                     }
+
+                    this->collected_buffer_versions_.Set(extended_buffer->data, PrimExpr(num_stages));
 
                     new_alloc_buffers.push_back(Buffer(extended_buffer));
                 } else {
@@ -876,6 +872,7 @@ private:
     Map<Var, String> location_map_;
     Map<Var, Buffer> origin_map_;
     std::vector<PipelineInfo> cross_core_pipelines_;
+    Map<Var, PrimExpr> collected_buffer_versions_;
 };
 
 tvm::transform::Pass CrossCorePipeline() {

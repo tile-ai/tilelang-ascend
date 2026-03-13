@@ -107,6 +107,8 @@ private:
 
   void GatherbCodegen(const CallNode *op, const std::string &op_name);
 
+  void GatherMaskCodegen(const CallNode *op, const std::string &op_name);
+
   void PowCodegen(const CallNode *op);
 
   void Sort32Codegen(const CallNode *op, const std::string &op_name);
@@ -212,6 +214,10 @@ private:
   std::string platform_;
 
   std::string current_resource_scope_ = ""; // 标识是CUBE还是VEC
+
+  int32_t select_num = 0;
+
+  int32_t reduce_num = 0;
 };
 
 } // namespace codegen

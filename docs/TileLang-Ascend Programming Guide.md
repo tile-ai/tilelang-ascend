@@ -1568,6 +1568,34 @@ Expert编程模式可以复用Developer模式的Reduce类计算原语。
   T.tile.select(c_ub, selmask_ub, a_ub, 1.0, "VSEL_TENSOR_SCALAR_MODE")
   ```
 
+- `T.tile.gather_mask(dst, src, src1Pattern):`
+
+  **参数**：
+
+  - dst：计算结果存放目的buffer
+  - src：源操作数，数据类型为buffer类型
+  - src1Pattern: 数据收集的掩码，分为两种模式，固定模式和自定义模式
+    当固定模式时，src1Pattern为字符串类型，可以输入如下配置:
+    - "P0101": 按偶数索引元素
+    - "P1010": 按奇数索引元素
+    - "P0001": 每四个元素取第一个元素
+    - "P0010": 每四个元素取第二个元素
+    - "P0100": 每四个元素取第三个元素
+    - "P1000": 每四个元素取第四个元素
+    - "P1111": 取全部元素
+    当自定义模式时，src1Pattern为buffer类型，根据索引选取元素
+
+  **功能**：给定一个源操作数，根据src1Pattern的不同配置（固定模式或自定义模式）选取元素，得到目的操作数dst。
+
+  **举例**：
+  ```
+  # 基于src1Pattern固定模式，从a_ub中按偶数索引选择元素，结果存放到b_ub
+  T.tile.gather_mask(b_ub, a_ub, "P0101")
+  # 基于src1Pattern自定义模式，从a_ub中按idx中索引号选择元素，结果存放到b_ub
+  idx = [0, 1, 3, 4, 5, 7, 8, 9]
+  T.tile.gather_mask(b_ub, a_ub, idx)
+  ```
+
 ###### 4.1.3.2.4 精度转换
 
 - `T.tile.cast(dst, src, mode, count)：`
