@@ -2,6 +2,7 @@ import tilelang.language as T
 from tvm.tir import PrimExpr, Buffer, BufferRegion, BufferLoad, Call
 from typing import List, Union, Tuple
 from tvm import tir
+from tilelang.language.ascend import _dtype
 
 import math
 
@@ -38,26 +39,6 @@ def _get_buffer_info(
         return ptr, size
     else:
         raise TypeError(f"Unsupported type: {type(br)}")
-
-
-def _dtype(buf):
-    type_map = {
-        "float16": "half",
-        "float32": "float",
-        "int32": "int",
-        "uint32": "uint32_t",
-        "bfloat16": "bfloat16_t",
-        "uint16": "uint16_t",
-        "uint8": "uint8_t",
-		"int4": "int4b_t",
-        "int8": "int8_t",
-        "int16": "int16_t",
-        "int64": "int64_t",
-        "uint64": "uint64_t",
-    }
-    if isinstance(buf, BufferRegion):
-        buf = buf.buffer
-    return type_map[buf.dtype]
 
 
 def fill(buffer: Union[Buffer, BufferRegion], value: PrimExpr):
@@ -226,7 +207,7 @@ def gather_mask(dst: Buffer, src: Buffer, src1Pattern: Union[str, Buffer]):
         src: The source buffer containing the input data.
         src1Pattern: The data collection mask has two modes: built‑in fixed mode and user‑defined mode. 
                      Currently, only fixed mode is supported.
-        When the built-in fixed mode is enabled, the data type is str, including the following 7 modes:
+        When the built-in fixed mode is enabled, the data type of src1Pattern is str, including the following 7 modes:
             - "P0101": Extract elements at even indices.
             - "P1010": Extract elements at odd indices.
             - "P0001": Extract the first element from every four elements.
@@ -234,13 +215,15 @@ def gather_mask(dst: Buffer, src: Buffer, src1Pattern: Union[str, Buffer]):
             - "P0100": Extract the third element from every four elements.
             - "P1000": Extract the fourth element from every four elements.
             - "P1111": Extract all elements.
-        When the built-in fixed mode is enabled, the data type is Buffer.
+        When the custom mode is enabled, the data type of src1Pattern is Buffer.
 
     Returns:
         A TVM intrinsic call that performs the gather mask operation.
     """
 
     if isinstance(src1Pattern, Buffer):
+        assert src1Pattern.dtype == "uint32", f"src1Pattern dtype must be uint32, got {src1Pattern.dtype}"
+        
         return tir.call_intrin(
             "handle",
             tir.op.Op.get("tl.ascend_gather_mask"),

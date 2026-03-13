@@ -33,6 +33,7 @@ AscendCopy::AscendCopy(Array<PrimExpr> args, BufferMap vmap) : args_(args) {
   Array<Range> rgs[2];
   Buffer bf[2];
   Array<PrimExpr> ets[2];
+  transposeL1 = 0;
   for (int i = 0; i < 2; i++) {
     auto expr = args[i];
     auto call = expr.as<CallNode>();
