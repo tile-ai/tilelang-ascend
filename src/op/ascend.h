@@ -138,6 +138,12 @@ TVM_DLL const Op &ascend_block_reduce_min();
 
 TVM_DLL const Op &ascend_block_reduce_sum();
 
+TVM_DLL const Op &ascend_reduce_max();
+
+TVM_DLL const Op &ascend_reduce_min();
+
+TVM_DLL const Op &ascend_reduce_sum();
+
 TVM_DLL const Op &ascend_cast();
 
 TVM_DLL const Op &ascend_set_deq_scale();

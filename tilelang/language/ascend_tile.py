@@ -1156,6 +1156,57 @@ def block_reduce_sum(
         srcRepStride,
     )
 
+def reduce_max_mask(dst: tir.Buffer, src: tir.Buffer, sharedMem: Buffer, count: int, calIndex: int=0):
+    """
+    The first <count> numbers of the matrix participate in the calculation.
+    Args:
+        dst: The destination buffer where the reduce results will be stored.
+        src: The source buffer.
+        count: first N
+        calIndex: whether to obtain the index of the max value.
+    """
+    return tir.call_intrin(
+        "handle",
+        tir.op.Op.get("tl.ascend_reduce_max"),
+        dst.access_ptr("w"),
+        src.access_ptr("r"),
+        sharedMem.access_ptr("w"),
+        count,
+        calIndex)
+
+def reduce_min_mask(dst: tir.Buffer, src: tir.Buffer, sharedMem: Buffer, count: int, calIndex: int=0):
+    """
+    The first <count> numbers of the matrix participate in the calculation.
+    Args:
+        dst: The destination buffer where the reduce results will be stored.
+        src: The source buffer.
+        count: first N
+        calIndex: whether to obtain the index of the min value.
+    """
+    return tir.call_intrin(
+        "handle",
+        tir.op.Op.get("tl.ascend_reduce_min"),
+        dst.access_ptr("w"),
+        src.access_ptr("r"),
+        sharedMem.access_ptr("w"),
+        count,
+        calIndex)
+
+def reduce_sum_mask(dst: tir.Buffer, src: tir.Buffer, sharedMem: Buffer, count: int):
+    """
+    The first <count> numbers of the matrix participate in the calculation.
+    Args:
+        dst: The destination buffer where the reduce results will be stored.
+        src: The source buffer.
+        count: first N
+    """
+    return tir.call_intrin(
+        "handle",
+        tir.op.Op.get("tl.ascend_reduce_sum"),
+        dst.access_ptr("w"),
+        src.access_ptr("r"),
+        sharedMem.access_ptr("w"),
+        count)
 
 def compare(
     dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferLoad, PrimExpr], mode: str

@@ -116,6 +116,8 @@ private:
 
   void BlockReduceOpCodegen(const CallNode *op, const std::string& op_name);
 
+  void ReduceMaskOpCodegen(const CallNode *op, const std::string& op_name);
+
   void CastCodegen(const CallNode *op, const std::string& op_name);
 
   void SetDeqScaleCodegen(const CallNode *op, const std::string& op_name);

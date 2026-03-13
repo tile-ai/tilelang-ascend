@@ -462,6 +462,12 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
     BlockReduceOpCodegen(op, "AscendC::BlockReduceMin");
   } else if (op->op.same_as(tl::ascend_block_reduce_sum())) {
     BlockReduceOpCodegen(op, "AscendC::BlockReduceSum");
+  } else if (op->op.same_as(tl::ascend_reduce_max())) {
+    ReduceMaskOpCodegen(op, "AscendC::ReduceMax");
+  } else if (op->op.same_as(tl::ascend_reduce_min())) {
+    ReduceMaskOpCodegen(op, "AscendC::ReduceMin");
+  } else if (op->op.same_as(tl::ascend_reduce_sum())) {
+    ReduceMaskOpCodegen(op, "AscendC::ReduceSum");
   } else if (op->op.same_as(tl::ascend_cast())) {
     CastCodegen(op, "AscendC::Cast");
   } else if (op->op.same_as(tl::ascend_set_deq_scale())) {
@@ -1614,6 +1620,38 @@ void CodeGenTileLangAscend::BlockReduceOpCodegen(const CallNode *op,
     this->stream << ", " << PrintExpr(op->args[i]);
   }
   this->stream << ");\n";
+}
+
+void CodeGenTileLangAscend::ReduceMaskOpCodegen(const CallNode *op,
+                                                 const std::string &op_name) {
+  std::vector<std::string> var_names;
+  int exprStartIndex = 3;
+  for (int i = 0; i < exprStartIndex; i++) {
+    auto var_name = PrintBufferOffset(op->args[i].as<CallNode>());
+    var_names.push_back(var_name);
+  }
+  std::string type = getType(op->args[1].as<CallNode>()->args[0].as<CallNode>()->dtype);
+  this->PrintIndent();
+  this->stream << op_name << "<" << type << ">(";
+  for (int i = 0; i < var_names.size(); i++) {
+    this->stream << var_names[i];
+    if (i != var_names.size() - 1) {
+      this->stream << ", ";
+    }
+  }
+  if(op_name == "AscendC::ReduceSum") {
+    for (int i = exprStartIndex; i < op->args.size(); i++) {
+      this->stream << ", " << PrintExpr(op->args[i]);
+    }
+    this->stream << ");\n";
+  } else {
+    for (int i = exprStartIndex; i < op->args.size()-1; i++) {
+      this->stream << ", " << PrintExpr(op->args[i]);
+    }
+    int lastId = op->args.size()-1;
+    std::string calIndex = PrintExpr(op->args[lastId]) == "0" ? "false" : "true";
+    this->stream << ", " << calIndex << ");\n";
+  }
 }
 
 void CodeGenTileLangAscend::CastCodegen(const CallNode *op,
