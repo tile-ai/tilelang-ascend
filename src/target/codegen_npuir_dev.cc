@@ -1919,9 +1919,11 @@ mlir::Value CodeGenTileLangNPUIRDEV::BinaryOpCodegen(const PrimExprNode *op,
     // create binary arithmetic operations
     mlirVal = builder.create<T>(builder.getUnknownLoc(), lhs, rhs);
   } else {
-    // create binary comparison operations
-    assert(mode != nullptr && "Mode must not be nullptr!");
-    mlirVal = builder.create<T>(builder.getUnknownLoc(), mode, lhs, rhs);
+      // create binary comparison operations
+      if constexpr (std::is_pointer_v<U>) {
+        ICHECK(mode != nullptr && "Mode must not be nullptr!");
+      }
+      mlirVal = builder.create<T>(builder.getUnknownLoc(), mode, lhs, rhs);
   }
   UpdatePrimExprMap(op, mlirVal);
   return mlirVal;

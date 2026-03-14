@@ -9,8 +9,10 @@ project(TILE_LANG C CXX)
 # Suppress all warnings
 add_definitions(-w)
 
-# Set default build type to Release if not provided
-set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+if(NOT CMAKE_BUILD_TYPE)
+  set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type")
+  message(STATUS "Build type not set, defaulting to ${CMAKE_BUILD_TYPE}")
+endif()
 
 # Define a custom macro for globbing files with conditional CONFIGURE_DEPENDS
 if(${CMAKE_VERSION} VERSION_GREATER_EQUAL "3.12.0")
