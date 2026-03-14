@@ -17,7 +17,7 @@ jobs:
     - name: Set up Python
       uses: actions/setup-python@v2
       with:
-        python-version: '3.9'
+        python-version: '3.11'
 
     - name: Create virtual environment
       run: python -m venv tilelang_ci
@@ -35,4 +35,3 @@ jobs:
       run: |
         source tilelang_ci/bin/activate
         ./format.sh
-
