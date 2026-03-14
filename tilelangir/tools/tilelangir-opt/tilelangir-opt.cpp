@@ -18,7 +18,17 @@
 #include "mlir/InitAllExtensions.h"
 #include "mlir/Tools/mlir-opt/MlirOptMain.h"
 
+#include "llvm/Support/CommandLine.h"
+#include "llvm/Support/Debug.h"
 #include "llvm/Support/InitLLVM.h"
+
+namespace {
+static llvm::cl::opt<bool, true> DebugOpt(
+    "debug",
+    llvm::cl::desc("Enable debug output (e.g. LLVM_DEBUG in passes)"),
+    llvm::cl::Hidden,
+    llvm::cl::location(llvm::DebugFlag));
+}  // namespace
 
 int main(int argc, char **argv) {
   llvm::InitLLVM y(argc, argv);
