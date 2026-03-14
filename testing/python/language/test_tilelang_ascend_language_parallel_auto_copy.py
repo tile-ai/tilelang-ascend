@@ -593,11 +593,49 @@ def test_matmul():
     torch.testing.assert_close(c, ref_c, rtol=1e-2, atol=1e-2)
 
 
+@tilelang.jit(out_idx=[-1], pass_configs=pass_configs)
+def matmul_k_1(M, N, K, block_M, block_N, K_L1, dtype="float16", accum_dtype="float"):
+    m_num = M // block_M
+    n_num = N // block_N
+
+    @T.prim_func
+    def main(
+            A: T.Tensor((M, K), dtype),
+            B: T.Tensor((K, N), dtype),
+            C: T.Tensor((M, N), dtype),
+    ):
+        with T.Kernel(m_num * n_num, is_npu=True) as (cid, _):
+            bx = cid // n_num
+            by = cid % n_num
+
+            A_L1 = T.alloc_L1((block_M, K_L1), dtype)
+            B_L1 = T.alloc_L1((K_L1, block_N), dtype)
+
+            C_L0 = T.alloc_L0C((block_M, block_N), accum_dtype)
+
+            with T.Scope("C"):
+                loop_k = T.ceildiv(K, K_L1)
+                for k in T.serial(loop_k):
+                    for i in T.Parallel(block_M):
+                        A_L1[i, 0] = A[bx * block_M + i, 0]
+                    for j in T.Parallel(block_N):
+                        B_L1[0, j] = B[0, by * block_N + j]
+                    
+                    T.barrier_all()
+                    T.gemm_v0(A_L1, B_L1, C_L0, init=(k == 0))
+                    T.barrier_all()
+
+                for i, j in T.Parallel(block_M, block_N):
+                    C[bx * block_M + i, by * block_N + j] = C_L0[i, j]
+
+    return main
+
+
 def test_matmul_k_1():
     M, N, K = 1024, 1024, 1
     block_M, block_N, K_L1 = 128, 256, 64
     
-    func = matmul(M, N, K, block_M, block_N, K_L1)
+    func = matmul_k_1(M, N, K, block_M, block_N, K_L1)
     
     a = torch.randn(M, K).half().npu()
     b = torch.randn(K, N).half().npu()
