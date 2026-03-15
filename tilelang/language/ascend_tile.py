@@ -675,13 +675,25 @@ def exp(dst: Buffer, src0: Buffer):
     """
     return unary_op(dst, src0, "exp")
 
-def sigmoid(dst: Buffer, src: Buffer, tmp: Buffer):
-    size = math.prod(dst.shape)
+def sigmoid(dst: Union[Buffer, BufferRegion], src: Union[Buffer, BufferRegion], tmp: Buffer):
+    if isinstance(dst, BufferRegion):
+        print("test1")
+        dst_ptr, buffer_extent = _handle_buffer_region(dst, "w")
+        size = math.prod(buffer_extent)
+        print("test2")
+    else: 
+        dst_ptr = dst.access_ptr("w")
+        size = math.prod(dst.shape)
+
+    if isinstance(src, BufferRegion):
+        src_ptr, _ = _handle_buffer_region(src, "r")
+    else: 
+        src_ptr = src.access_ptr("r")
     return tir.call_intrin(
         "handle",
         tir.op.Op.get(f"tl.ascend_sigmoid"),
-        dst.access_ptr("w"),
-        src.access_ptr("r"),
+        dst_ptr,
+        src_ptr,
         tmp.access_ptr("w"),
         size,
     )
@@ -757,21 +769,32 @@ def bitwise_not(dst: Buffer, src0: Buffer):
 
 
 def scalar_op(
-    dst: Buffer, src0: Buffer, scalar_value: PrimExpr, op_tl: str
+    dst: Union[Buffer, BufferRegion], src0: Union[Buffer, BufferRegion], scalar_value: PrimExpr, op_tl: str
 ):
-    size_0 = math.prod(src0.shape)
-    size_2 = math.prod(dst.shape)
+    if isinstance(dst, BufferRegion):
+        dst_ptr, dst_extent = _handle_buffer_region(dst, "w")
+        size_2 = math.prod(dst_extent)
+    else: 
+        dst_ptr = dst.access_ptr("w")
+        size_2 = math.prod(dst.shape)
 
+    if isinstance(src0, BufferRegion):
+        src0_ptr, src0_extent = _handle_buffer_region(src0, "r")
+        size_0 = math.prod(src0_extent)
+    else: 
+        src0_ptr = src0.access_ptr("r")
+        size_0 = math.prod(src0.shape)
+    
     assert size_0 == size_2, "size must be same"
 
     return tir.call_intrin(
         "handle",
         tir.op.Op.get(f"tl.ascend_{op_tl}"),
-        dst.access_ptr("w"),
-        src0.access_ptr("r"),
+        dst_ptr,
+        src0_ptr,
         scalar_value,
         size_0,
-    )
+)
 
 
 def leaky_relu(dst: Buffer, src0: Buffer, scalar_value: PrimExpr):
