@@ -32,6 +32,8 @@ namespace tvm {
 namespace codegen {
   const std::string kAscendPtoScope = "tl::ascend_pto::";
 
+  using ShapeInfo = CodeGenTileLangAscendPto::ShapeInfo;
+
 static std::string getType(const DataType &dtype) {
   if (dtype.is_float16()) {
     return "half";

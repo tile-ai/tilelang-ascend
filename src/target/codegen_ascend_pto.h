@@ -151,7 +151,7 @@ private:
   std::string PrintBufferOffset(const CallNode *op);
   void UbShapeInputCheck(const AllocateNode *op);
   bool ValidLayoutEnabled(const AllocateNode *op);
-  
+
   std::string GetTempVarName(const std::string& temp_name);
   void CreateUbVariable(const std::string& temp_name, const ShapeInfo& shape_info);
   ShapeInfo GetSliceInfo(const CallNode *op);
@@ -223,6 +223,8 @@ private:
     Array<String> shape_list;
   };
   std::unordered_map<String, global_tensor> global_tensor_template;
+
+  std::unordered_map<std::string, int32_t> counters_;
 
   bool use_swizzle_{false};
 
