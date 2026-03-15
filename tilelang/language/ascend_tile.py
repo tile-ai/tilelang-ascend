@@ -40,6 +40,14 @@ def _get_buffer_info(
     else:
         raise TypeError(f"Unsupported type: {type(br)}")
 
+def _handle_buffer_region(br: BufferRegion, mask):
+    bf = br.buffer
+    indices = [x.min for x in br.region]
+    offset = bf.offset_of(indices)[0]
+    extent = [x.extent for x in br.region]
+    size_extent = math.prod(extent)
+    return bf.access_ptr(mask, offset=offset, extent = size_extent), extent
+
 
 def fill(buffer: Union[Buffer, BufferRegion], value: PrimExpr):
     """Fill a buffer or buffer region with a specified value.
@@ -51,12 +59,6 @@ def fill(buffer: Union[Buffer, BufferRegion], value: PrimExpr):
     Returns:
         A TVM intrinsic call that performs the fill operation
     """
-    def _handle_buffer_region(br: BufferRegion, mask):
-        bf = br.buffer
-        indices = [x.min for x in br.region]
-        offset = bf.offset_of(indices)[0]
-        extent = [x.extent for x in br.region]
-        return bf.access_ptr(mask, offset=offset), extent
     if isinstance(buffer, BufferRegion):
         buffer_ptr, buffer_extent = _handle_buffer_region(buffer, "w")
         size = math.prod(buffer_extent)
@@ -483,13 +485,6 @@ def binary_op(
     src1: Union[Buffer, BufferRegion, BufferLoad, PrimExpr, float],
     op: str,
 ):
-    def _handle_buffer_region(br: BufferRegion, mask):
-        bf = br.buffer
-        indices = [x.min for x in br.region]
-        offset = bf.offset_of(indices)[0]
-
-        extent = [x.extent for x in br.region]
-        return bf.access_ptr(mask, offset=offset), extent
 
     if isinstance(dst, BufferRegion):
         dst_ptr, dst_extent = _handle_buffer_region(dst, "w")
@@ -633,14 +628,6 @@ def bitwise_or(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, Buff
 
 
 def unary_op(dst: Union[Buffer, BufferRegion], src0: Union[Buffer, BufferRegion], op: str):
-
-    def _handle_buffer_region(br: BufferRegion, mask):
-        bf = br.buffer
-        indices = [x.min for x in br.region]
-        offset = bf.offset_of(indices)[0]
-
-        extent = [x.extent for x in br.region]
-        return bf.access_ptr(mask, offset=offset), extent
 
     if isinstance(dst, BufferRegion):
         dst_ptr, dst_extent = _handle_buffer_region(dst, "w")
@@ -1518,12 +1505,6 @@ def broadcast(dst: Union[Buffer, BufferRegion],
               The source column is replicated `dst.shape[1]` times.
             - **No Broadcast (Copy)**: If shapes are identical, the axis defaults to 0.
     """
-    def _handle_buffer_region(br: BufferRegion, mask):
-        bf = br.buffer
-        indices = [x.min for x in br.region]
-        offset = bf.offset_of(indices)[0]
-        extent = [x.extent for x in br.region]
-        return bf.access_ptr(mask, offset=offset), extent
     
     if isinstance(dst, BufferRegion):
         dst_ptr, dst_extent = _handle_buffer_region(dst, "w")
