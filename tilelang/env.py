@@ -55,9 +55,6 @@ def _find_ascend_home() -> str:
     if ascend_home is None:
         potential_paths = [
             "/usr/local/Ascend/ascend-toolkit/latest",
-            "/usr/local/Ascend",
-            "/home/Ascend/ascend-toolkit/latest",
-            "/home/Ascend",
         ]
         for path in potential_paths:
             if os.path.exists(path):
