@@ -17,7 +17,7 @@ from tilelang.engine.phase import (
     LowerAndLegalize,
     OptimizeForTarget,
 )
-from tilelang.tladapter import transforms, conversion
+from tilelang.tladapter import transforms
 
 
 def is_cpu_device_backend(target: Target):
@@ -255,6 +255,8 @@ def lower(
         tladapter_passes = [
             transforms.mlir.canonicalize(top_down=True),
             transforms.bishengir.adapt_triton_kernel,
+            transforms.bishengir.canonicalize_module,
+            transforms.bishengir.append_device_spec(target="Ascend910B1"),
         ]
         for i, p in enumerate(tladapter_passes):
             mlir_str = p(mlir_str)

@@ -93,6 +93,28 @@ def get_npucompiler_path():
 
 
 @functools.lru_cache()
+def get_hivmc_path():
+    """Get hivmc (HIVM binary compiler). Used when lower() returns HIVM-optimized IR."""
+    hivmc_path = shutil.which("hivmc")
+    if hivmc_path is not None:
+        return hivmc_path
+    npu_compiler_path = get_npucompiler_path()
+    if npu_compiler_path is not None:
+        install_dir = os.path.dirname(npu_compiler_path)
+        candidate = os.path.join(install_dir, "hivmc")
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    bisheng_install = os.getenv("BISHENG_INSTALL_PATH", "")
+    if bisheng_install:
+        candidate = os.path.join(bisheng_install, "hivmc")
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    raise EnvironmentError(
+        "Couldn't find executable hivmc (check PATH, bishengir-compile dir, or BISHENG_INSTALL_PATH)."
+    )
+
+
+@functools.lru_cache()
 def get_npucompiler_opt_path():
     """Get bishengir-opt"""
     npu_compiler_opt_path = shutil.which("bishengir-opt")

@@ -19,5 +19,6 @@ from .ascend_npu import (
     get_cxx,
     get_npucompiler_path,
     get_npucompiler_opt_path,
-    get_bisheng_path
+    get_bisheng_path,
+    get_hivmc_path,
 )  # noqa: F401

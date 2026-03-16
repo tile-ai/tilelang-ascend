@@ -9,4 +9,6 @@ Add lowering passes: name = pass_fn("pass-name").
 
 from tilelang.tladapter.utils import pass_fn
 
-# Conversion passes - add lowering passes here
+# HIVM pipelines (migrated from bishengir-compile PassPipeline.cpp)
+convert_to_hivm_pipeline = pass_fn("convert-to-hivm-pipeline")
+optimize_hivm_pipeline = pass_fn("optimize-hivm-pipeline")

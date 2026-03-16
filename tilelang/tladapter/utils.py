@@ -17,7 +17,7 @@ def _pass_spec(pass_name: str, **options) -> str:
     """Build pipeline spec: builtin.module(pass-name) or builtin.module(pass-name{k=v,...})."""
     if not options:
         return f"builtin.module({pass_name})"
-    opts = ",".join(
+    opts = " ".join(
         f"{k.replace('_', '-')}={_format_pass_option_value(v)}" for k, v in options.items()
     )
     return f"builtin.module({pass_name}{{{opts}}})"
