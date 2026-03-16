@@ -22,7 +22,8 @@ from ..utils import (
     get_cxx,
     get_npucompiler_path,
     get_npucompiler_opt_path,
-    get_bisheng_path
+    get_bisheng_path,
+    get_hivmc_path,
 )
 
 from tvm import tir
@@ -1371,45 +1372,25 @@ class compiler_npu:
         return result
 
     def _npuir_to_bin_enable_npu_compile(self):
-        linalg = self.mlir_content
+        hivm_ir = self.mlir_content
         metadata = self.metadata
         with tempfile.TemporaryDirectory() as tmpdir:
-            ttadapter_path = os.path.join(tmpdir, "kernel.npuir")
-            Path(ttadapter_path).write_text(linalg)
+            hivm_path = os.path.join(tmpdir, "kernel.mlir")
+            Path(hivm_path).write_text(hivm_ir)
             bin_file = os.path.join(tmpdir, "kernel")
             bin_path = os.path.join(tmpdir, "kernel.o")
             so_path = os.path.join(tmpdir, "libkernel.so")
 
-            npu_compiler_path = get_npucompiler_path()
-            # TileLang Ascend JIT Runtime now follows Triton JIT style.
-            # bishengir-compile --enable-triton-kernel-compile=true make sure the way.
-            _compile_option_list = [
-                "--enable-auto-multi-buffer=true",
-                "--enable-triton-kernel-compile=true",
-                "--enable-hivm-compile=true"
-            ]
-
-            TILELANG_ASCEND_MODE = os.environ.get('TILELANG_ASCEND_MODE')
-            if TILELANG_ASCEND_MODE is None:
-                _compile_option_list.append("--disable-hivm-tensor-compile=true")
-            elif TILELANG_ASCEND_MODE.lower().strip() in ['expert', 'exp', 'e']:
-                _compile_option_list.append("--disable-hivm-tensor-compile=true")
-
-            cmd_list = (
-                [npu_compiler_path, ttadapter_path]
-                + _compile_option_list
-                + ["-o", bin_file]
-            )
+            hivmc_path = get_hivmc_path()
+            cmd_list = [hivmc_path, hivm_path, "-o", bin_file]
             try:
                 ret = subprocess.run(
                     cmd_list, capture_output=True, check=True, text=True
                 )
-                print("AscendNPU IR compile success:", ret.stdout)
+                print("hivmc compile success:", ret.stdout)
             except subprocess.CalledProcessError as e:
-                # print ir
-                print("AscendNPU IR:\n")
+                print("HIVM IR:\n")
                 print(self.mlir_content)
-                # print error info
                 print("err cmd:", " ".join(cmd_list))
                 print(f"err code: {e.returncode}")
                 print("err info:", e.stderr)
@@ -1422,7 +1403,7 @@ class compiler_npu:
 
             if not Path(bin_path).exists():
                 err_lines = [
-                    "AscendNPU IR compile reported success but output object was not generated.",
+                    "hivmc compile reported success but output object was not generated.",
                     f"Expected output: {bin_path}",
                     f"cmd: {' '.join(cmd_list)}",
                 ]

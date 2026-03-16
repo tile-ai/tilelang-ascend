@@ -17,6 +17,7 @@
 #include "mlir/InitAllPasses.h"
 #include "mlir/Parser/Parser.h"
 #include "mlir/Pass/PassManager.h"
+#include "mlir/Pass/PassRegistry.h"
 
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/raw_ostream.h"
@@ -35,6 +36,38 @@ static bool tryBuiltinModuleRoot(llvm::StringRef pipelineStr, llvm::StringRef* i
     return false;
   *inner = pipelineStr.trim();
   return true;
+}
+
+// Directly resolve a pass or pipeline by name and add it to `pm`, bypassing
+// mlir::parsePassPipeline.  parsePassPipeline temporarily forces Explicit
+// nesting (PassRegistry.cpp), which causes report_fatal_error when a pipeline
+// callback (e.g. buildConvertToHIVMPipeline) adds func-level passes to a
+// module-level pm.  By using PassPipelineInfo/PassInfo::lookup + addToPipeline
+// we keep the Implicit nesting we set on the pm.
+static mlir::LogicalResult directAddPipelineOrPass(llvm::StringRef spec,
+                                                   mlir::OpPassManager &pm) {
+  spec = spec.trim();
+  llvm::StringRef name = spec, options;
+  size_t braceStart = spec.find('{');
+  if (braceStart != llvm::StringRef::npos && spec.ends_with("}")) {
+    name = spec.take_front(braceStart).trim();
+    options = spec.slice(braceStart + 1, spec.size() - 1);
+  }
+
+  auto errorHandler = [](const llvm::Twine &msg) -> mlir::LogicalResult {
+    llvm::errs() << msg << "\n";
+    return mlir::failure();
+  };
+
+  if (const auto *info = mlir::PassPipelineInfo::lookup(name))
+    return info->addToPipeline(pm, options, errorHandler);
+
+  if (const auto *info = mlir::PassInfo::lookup(name))
+    return info->addToPipeline(pm, options, errorHandler);
+
+  llvm::errs() << "'" << name
+               << "' is not a registered pass or pipeline\n";
+  return mlir::failure();
 }
 
 // Returns (true, result_mlir_str) on success, (false, error_message) on failure.
@@ -60,17 +93,18 @@ static std::pair<bool, std::string> runPassPipeline(llvm::StringRef mlirStr,
   llvm::StringRef innerPipeline;
   if (tryBuiltinModuleRoot(pipelineStr, &innerPipeline)) {
     mlir::PassManager pm(&context, "builtin.module");
-    if (failed(mlir::parsePassPipeline(innerPipeline, pm, llvm::errs()))) {
-      return {false, "Failed to parse inner pass pipeline: " + innerPipeline.str()};
+    pm.setNesting(mlir::OpPassManager::Nesting::Implicit);
+    if (failed(directAddPipelineOrPass(innerPipeline, pm))) {
+      return {false, "Failed to add pass/pipeline: " + innerPipeline.str()};
     }
     if (failed(pm.run(*module))) {
       return {false, "Pass pipeline run failed"};
     }
   } else {
-    mlir::PassManager pm(&context);
-    if (failed(mlir::parsePassPipeline(pipelineStr, pm, llvm::errs()))) {
-      return {false, "Failed to parse pass pipeline: " + pipelineStr.str() +
-                         " (pass may not be registered; check .so and registerAllPasses)"};
+    mlir::PassManager pm(&context, mlir::OpPassManager::getAnyOpAnchorName());
+    pm.setNesting(mlir::OpPassManager::Nesting::Implicit);
+    if (failed(directAddPipelineOrPass(pipelineStr, pm))) {
+      return {false, "Failed to add pass/pipeline: " + pipelineStr.str()};
     }
     if (failed(pm.run(*module))) {
       return {false, "Pass pipeline run failed"};

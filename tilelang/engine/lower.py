@@ -252,9 +252,24 @@ def lower(
         if dump_ir:
             print("====== npuir ======")
             print(mlir_str)
+        TILELANG_ASCEND_MODE = os.environ.get("TILELANG_ASCEND_MODE")
+        disable_tensor = (
+            TILELANG_ASCEND_MODE is None
+            or TILELANG_ASCEND_MODE.lower().strip() in ["expert", "exp", "e"]
+        )
+
         tladapter_passes = [
             transforms.mlir.canonicalize(top_down=True),
             transforms.bishengir.adapt_triton_kernel,
+            transforms.bishengir.canonicalize_module,
+            transforms.bishengir.append_device_spec(target="Ascend910B1"),
+            conversion.convert_to_hivm_pipeline(
+                enable_triton_kernel_compile=True,
+            ),
+            conversion.optimize_hivm_pipeline(
+                enable_auto_multi_buffer=True,
+                disable_hivm_tensor_compile=disable_tensor,
+            ),
         ]
         for i, p in enumerate(tladapter_passes):
             mlir_str = p(mlir_str)
