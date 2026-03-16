@@ -308,7 +308,7 @@ public:
   }
 
 private:
-  static int GetLoopIterTimes(const ForNode* for_node) {
+  static int64_t GetLoopIterTimes(const ForNode* for_node) {
     const int64_t* extent_ptr = as_const_int(for_node->extent);
     ICHECK(extent_ptr) << "AutoInsertCrossCoreSync::GetLoopIterTimes only works with constant loop sizes, but got " 
                        << for_node->extent;
@@ -334,8 +334,8 @@ private:
     }
 
     // total loop times of sync points
-    int cube_loop_times = 1;
-    int vec_loop_times = 1;
+    int64_t cube_loop_times = 1;
+    int64_t vec_loop_times = 1;
     // current index of CrossCoreSyncPoint.parent_for_nodes
     int cube_loop_idx = 0;
     int vec_loop_idx = 0;
