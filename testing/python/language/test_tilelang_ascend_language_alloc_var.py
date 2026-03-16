@@ -1,11 +1,13 @@
-import argparse
+import os
+import random
+
+import pytest
+
+import torch
+import torch.nn as nn
 
 import tilelang
 import tilelang.language as T
-import torch
-
-tilelang.cache.clear_cache()
-torch.set_default_device('npu')
 
 pass_configs = {
     tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
@@ -13,12 +15,21 @@ pass_configs = {
     tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
     tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_SYNC: True,
 }
+@pytest.fixture(scope="session")
+def clear_cache():
+    """Clear tilelang cache before tests"""
+    tilelang.cache.clear_cache()
+    yield
 
-parser = argparse.ArgumentParser(description="NPU Kernel Compilation")
-parser.add_argument("--n", type=int, default=8192, help="Matrix N dimension")
-args = parser.parse_args()
+@pytest.fixture
+def setup_random_seed():
+    """Set random seed for reproducibility"""
+    torch.manual_seed(0)
+    yield
 
-@tilelang.jit(out_idx=[-1])
+tilelang.cache.clear_cache()
+torch.set_default_device('npu')
+
 def alloc_var(N, block_N, dtype="int32"):
     VEC_NUM = 2
     @T.prim_func
@@ -50,22 +61,30 @@ def alloc_var(N, block_N, dtype="int32"):
             T.copy(a_ub, A[cid * block_N + vid * block_N // VEC_NUM])
     return main
 
+def run_alloc_var(N, block_N, target):
+    func = alloc_var(N, block_N)
+    func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
+    code = func.get_kernel_source()
+
+    torch.manual_seed(0)
+    torch.npu.synchronize()
+
+    print("init successful!")
+    a = func()
+    torch.set_printoptions(threshold=torch.inf)
+    print(f"b:{a}")
+    # print(code)
+    if "flag =" in code and "a =" in code and "b =" in code:
+        print("Kernel Output Match!")
+    else:
+        print("T.alloc_var failed")
+
 N = 32
 block_N = 16
-func = alloc_var(N, block_N)
-code = func.get_kernel_source()
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+def test_alloc_var(target):
+    run_alloc_var(32, 16, target=target)
 
 
-torch.manual_seed(0)
-
-
-torch.npu.synchronize()
-print("init successful!")
-a = func()
-torch.set_printoptions(threshold=torch.inf)
-print(f"b:{a}")
-# print(code)
-if "flag =" in code and "a =" in code and "b =" in code:
-    print("Kernel Output Match!")
-else:
-    print("T.alloc_var failed")
+if __name__ == "__main__":
+    pytest.main([__file__, "-v", "-n", "8"])
