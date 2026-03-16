@@ -160,15 +160,6 @@ private:
     }
     return std::nullopt;
   }
-
-  bool IsVarUsedInForNode(const std::unordered_set<std::string>& var_names, const ForNode* for_node) {
-    for (const std::string var_name : var_names) {
-      if (for_node->loop_var->name_hint == var_name) {
-        return true;
-      }
-    }
-    return false;
-  }
 };
 
 class CrossCoreSyncInserter : public StmtMutator {
