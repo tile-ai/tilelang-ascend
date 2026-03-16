@@ -1247,6 +1247,23 @@ class compiler_npu:
             print(f"Error occurred while reading the file: {e}")
             return None
 
+    @staticmethod
+    def _find_device_func_line(mlir_text: str) -> str:
+        """Return the first ``func.func`` declaration line that is NOT a HOST helper.
+
+        After the HIVM pipeline, the module may contain generated HOST functions
+        (e.g. ``@main_infer_task_type_function``) *before* the real DEVICE kernel.
+        This helper skips those so downstream regex-based parsers always operate
+        on the device entry function.
+        """
+        for line in mlir_text.splitlines():
+            if "func.func" not in line:
+                continue
+            if "function_kind<HOST>" in line:
+                continue
+            return line
+        return ""
+
     def _parse_npuir_metadata(self) -> None:
         """
         Parse NPU IR to extract metadata required for NPU compilation.
@@ -1259,23 +1276,16 @@ class compiler_npu:
 
         Additionally, removes the mix_mode attribute from the IR.
         """
-        # --- Regular expressions and examples ---
-        # Example: func.func @gather_sorted_kernel(%arg0: ...) -> gather_sorted_kernel
         KERNEL_NAME_REGEX = r"func\.func\s+@(\w+)"
-
-        # Example：hivm.module_core_type<MIX> -> MIX
         MIX_MODE_REGEX = r"#hivm\.module_core_type<([^>]+)>"
-
-        # Example: test_mix_aic -> test
         MIX_SUFFIX_REGEX = r"_(mix_aic|mix_aiv)$"
 
-        # Note: Compiled Kernel requires to estimate size of shared memory to occupy
-        # Currently, NPU backend does not limit on shared memory
         self.metadata["shared"] = 1
-        # the mix mode is also encoded into metadata['name'] for runtime to distinguish
-        kernel_name = re.search(KERNEL_NAME_REGEX, self.mlir_content).group(1)
+
+        device_line = self._find_device_func_line(self.mlir_content)
+        kernel_match = re.search(KERNEL_NAME_REGEX, device_line or self.mlir_content)
+        kernel_name = kernel_match.group(1)
         self.metadata["kernel_name"] = kernel_name
-        # matching the end of the _mix_aic or _mix_aiv
         self.metadata["name"] = re.sub(MIX_SUFFIX_REGEX, "", kernel_name)
         self.metadata["tensor_kinds"] = []
         self.metadata["mix_mode"] = (
@@ -1303,9 +1313,9 @@ class compiler_npu:
             "f16",
         }
 
-        # Extract the function signature part (the content within the parentheses)
+        device_line = self._find_device_func_line(self.mlir_content)
         pattern = r"func\.func\s*@[^(]*\(([^)]*)\)"
-        match = re.search(pattern, self.mlir_content)
+        match = re.search(pattern, device_line or self.mlir_content)
 
         if not match:
             return {}

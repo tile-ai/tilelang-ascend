@@ -269,6 +269,7 @@ def lower(
             conversion.optimize_hivm_pipeline(
                 enable_auto_multi_buffer=True,
                 disable_hivm_tensor_compile=disable_tensor,
+                enable_triton_kernel_compile=True,
             ),
         ]
         for i, p in enumerate(tladapter_passes):
