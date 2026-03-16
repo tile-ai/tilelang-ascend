@@ -135,13 +135,13 @@ def get_rocm_version():
 
 
 def get_ascend_version():
-    """Get the Ascend version from version.cfg."""
+    """Get the Ascend version from version.info."""
     ascend_home = os.environ.get("ASCEND_HOME_PATH") or os.environ.get("ASCEND_HOME", "/usr/local/Ascend/ascend-toolkit/latest")
-    ascend_version_file = os.path.join(ascend_home, "version.cfg")
+    ascend_version_file = os.path.join(ascend_home, "opp", "version.info")
     if os.path.exists(ascend_version_file):
         with open(ascend_version_file, "r") as f:
             content = f.read()
-            match = re.search(r"Version:\s*(\d+\.\d+\.\d+)", content)
+            match = re.search(r"Version=(\d+\.\d+\.\d+)", content)
             if match:
                 return LooseVersion(match.group(1))
     # return a default
