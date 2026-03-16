@@ -18,9 +18,16 @@
  */
 
 /*!
- * \file storage_rewrite.cc
+ * \file ascend_storage_rewrite.cc
  * \brief Memory access pattern analysis and optimization.
  *  Re-write data access to enable memory sharing when possible.
+ * \todo Pass AscendStorageRewrite migrated from TVM commit c2921fd,
+ *  remove it when updating TVM submodule to latest version
+ */
+
+ /*!
+ * \file ascend_lower_opaque_block.cc
+
  */
 #include <tvm/arith/analyzer.h>
 #include <tvm/ir/type.h>

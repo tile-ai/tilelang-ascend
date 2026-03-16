@@ -24,7 +24,6 @@ def alloc_var(N, block_N, dtype="int32"):
     @T.prim_func
     def main(
         A: T.Tensor((N,), dtype),
-        B: T.Tensor((N,), dtype),
     ):
         with T.Kernel(N // block_N, is_npu=True) as (cid, vid):
             a_ub = T.alloc_shared(block_N // VEC_NUM, dtype)
@@ -32,7 +31,8 @@ def alloc_var(N, block_N, dtype="int32"):
             flag = T.alloc_var("bool", init=False)
             a = T.alloc_var(dtype, init=1)
             b = T.alloc_var(dtype, init=a)
-            
+
+            T.tile.fill(a_ub, 0.0)
             a_ub[0] = b
             flag = True
             if flag:
@@ -46,9 +46,8 @@ def alloc_var(N, block_N, dtype="int32"):
                 a_ub[2] = a
             else:
                 a += 1
-                a_ub[2] = 3
-            T.copy(A[cid * block_N + vid * block_N // VEC_NUM], a_ub)
-            T.copy(a_ub, B[cid * block_N + vid * block_N // VEC_NUM])
+                a_ub[2] = a
+            T.copy(a_ub, A[cid * block_N + vid * block_N // VEC_NUM])
     return main
 
 N = 32
@@ -59,13 +58,12 @@ code = func.get_kernel_source()
 
 torch.manual_seed(0)
 
-a = torch.zeros(2, dtype=torch.int32)
 
 torch.npu.synchronize()
 print("init successful!")
-b = func(a)
+a = func()
 torch.set_printoptions(threshold=torch.inf)
-print(f"b:{b[0:3]}")
+print(f"b:{a}")
 # print(code)
 if "flag =" in code and "a =" in code and "b =" in code:
     print("Kernel Output Match!")

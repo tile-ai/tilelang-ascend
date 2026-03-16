@@ -18,7 +18,9 @@
  */
 
 /*!
- * \file lower_opaque_block.cc
+ * \file ascend_lower_opaque_block.cc
+ * \todo Pass AscendLowerOpaqueBlock migrated from TVM commit c2921fd,
+ * remove it when updating TVM submodule to latest version
  */
 
 #include <tvm/tir/stmt_functor.h>

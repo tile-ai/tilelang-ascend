@@ -16,7 +16,7 @@ import tvm
 from functools import partial
 
 # Original implementation located at
-# 3rdparty/tvm/python/tvm/script/parser/tir/parser.py (tilelang_bind_assign_value).
+# 3rdparty/tvm/python/tvm/script/parser/tir/parser.py (bind_assign_value).
 def tilelang_bind_assign_value(self: Parser, node: doc.expr, var_name: str, value: Any) -> Any:
     if isinstance(value, T.meta_var):
         return value.value
