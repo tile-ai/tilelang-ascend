@@ -164,6 +164,8 @@ def device_codegen(device_mod: tvm.IRModule, target: Target) -> tvm.IRModule:
             device_mod = tvm._ffi.get_global_func("target.build.tilelang_npuir_apis")(device_mod, target)
         elif TILELANG_ASCEND_MODE.lower().strip() in ['expert', 'exp', 'e']:
             device_mod = tvm._ffi.get_global_func("target.build.tilelang_npuir_apis")(device_mod, target)
+        elif TILELANG_ASCEND_MODE.lower().strip() in ['mlir']:
+            device_mod = tvm._ffi.get_global_func("target.build.tilelang_npuir_mlir")(device_mod, target)
         else:
             device_mod = tvm._ffi.get_global_func("target.build.tilelang_npuir_dev")(device_mod, target)
         return device_mod
