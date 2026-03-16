@@ -29,7 +29,7 @@ def tilelang_bind_assign_value(self: Parser, node: doc.expr, var_name: str, valu
         res = value.__enter__()
         IRBuilder.name(var_name, res)
         return res
-    # 核心：local.var Buffer 绑定为 BufferLoad
+    # bind local.var Buffer to BufferLoad
     elif isinstance(value, Buffer) and value.scope() == "local.var":
         IRBuilder.name(var_name, value)
         return BufferLoad(value, indices=[0])

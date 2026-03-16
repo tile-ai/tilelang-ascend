@@ -1579,8 +1579,6 @@ class VectorTypeRewriter : public StmtExprMutator {
     if (node.same_as(modified)) {
       return std::move(node);
     } else {
-      // auto writer = modified.CopyOnWrite();
-      // writer->LegalizeDType();
       BufferLoad legalized_modified(modified->buffer, modified->indices, modified->span);
       if (shuffle_index >= 0) {
         return Shuffle::ExtractElement(std::move(legalized_modified), shuffle_index);
