@@ -344,7 +344,7 @@ private:
     int vec_max_pair_depth = 0;
     // handle corner case: vec has loops with 1 iter and can't catch up cube
     // loop times
-    int last_pair_loop_times = 1;
+    int64_t last_pair_loop_times = 1;
 
     // iterate through both cube_sp.parent_for_nodes and vec_sp.parent_for_nodes
     // once
