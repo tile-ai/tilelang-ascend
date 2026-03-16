@@ -42,10 +42,10 @@ def alloc_var(N, block_N, dtype="int32"):
             flag = True
             if flag:
                 a = 2
-                a_ub[1] = a 
+                a_ub[1] = a
             else:
                 a_ub[1] = a
-                        
+
             flag = False
             if flag:
                 a_ub[2] = a
@@ -81,4 +81,3 @@ def test_alloc_var(target):
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "-n", "8"])
-    
