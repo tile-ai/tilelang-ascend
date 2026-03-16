@@ -103,11 +103,14 @@ def _hivm_pre_bufferization_passes(expert: bool) -> list:
         H.bind_workspace_arg,
     ]
     passes.append(H.infer_func_core_type)
-    passes.append(H.auto_blockify_parallel_loop)
+    # auto_blockify_parallel_loop only runs when enableAutoBlockifyLoop=true
+    # (default false), so it is NOT added here.
     passes.append(H.mark_multi_buffer(enable_auto=True))
     passes.append(B.extended_canonicalizer)
     passes.append(H.inline_otf_broadcast)
-    passes.append(H.cv_pipelining(enable_auto_balance=True))
+    passes.append(H.cv_pipelining())
+    # PlanMemory with GLOBAL_WORKSPACE_PLAN to assign offsets to workspace allocs
+    passes.append(H.plan_memory(mem_plan_mode="global-work-space-plan"))
     passes += _hivm_cross_core_sync_passes()
     passes.append(H.insert_infer_workspace_size_func)
     passes.append(M.lower_memref_ext)
