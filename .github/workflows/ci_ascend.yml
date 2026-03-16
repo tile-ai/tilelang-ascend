@@ -1,0 +1,45 @@
+name: CI
+
+on: [pull_request]
+
+jobs:
+  format-check:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Get changed Python files
+      id: changed-files
+      run: |
+        CHANGED_FILES=$(git diff --name-only --diff-filter=AM origin/${{ github.base_ref }}...HEAD | grep '\.py$' | tr '\n' ' ' || true)
+        echo "files=$CHANGED_FILES" >> $GITHUB_OUTPUT
+        echo "Changed files: $CHANGED_FILES"
+
+    - name: Ruff check
+      if: steps.changed-files.outputs.files != ''
+      uses: astral-sh/ruff-action@v3
+      with:
+        src: ${{ steps.changed-files.outputs.files }}
+
+    - name: Get changed C++ files
+      if: ${{ always() }}
+      id: changed-cpp-files
+      run: |
+        CHANGED_CPP_FILES=$(git diff --name-only --diff-filter=AM origin/${{ github.base_ref }}...HEAD \
+          | grep -E '\.(cpp|cc|cxx|h|hpp|hh|icc)$' \
+          | paste -sd " " -)
+        echo "files=$CHANGED_CPP_FILES" >> $GITHUB_OUTPUT
+        echo "Changed C++ files: $CHANGED_CPP_FILES"
+
+    - name: clang-format check
+      if: ${{ always() && steps.changed-cpp-files.outputs.files != '' }}
+      uses: DoozyX/clang-format-lint-action@v0.18
+      with:
+        source: ${{ steps.changed-cpp-files.outputs.files }}
+        extensions: 'cpp,cc,cxx,h,hpp,hh,icc'
+        clangFormatVersion: 18
+        style: file
