@@ -51,14 +51,14 @@ jobs:
         echo "::error::PR target branch is '${{ steps.pr-info.outputs.target_branch }}', expected 'npuir'. Skipping."
         exit 1
 
-  build:
+  wheel-build:
     needs: check-trigger
     uses: ./.github/workflows/build-tilelang-npuir.yml
     with:
       checkout-ref: refs/pull/${{ needs.check-trigger.outputs.pr-number }}/merge
 
-  test-npuir:
-    needs: [check-trigger, build]
+  run-tests:
+    needs: [check-trigger, wheel-build]
     runs-on: linux-aarch64-a3-2
     container:
       image: swr.cn-southwest-2.myhuaweicloud.com/base_image/ascend-ci/cann:8.5.0-a3-ubuntu22.04-py3.11
@@ -94,23 +94,26 @@ jobs:
         pip install dist/*.whl
         pip install pytest pytest-xdist pytest-html numpy
 
-    - name: Run npuir tests
+    - name: Run Compile tests
+      run: |
+        mv tilelang _tilelang_src
+        pytest -v testing/compile/*_mode
+
+    - name: Run ops tests
       env:
         TILELANG_CLEAR_CACHE: "1"
       run: |
-        mkdir -p testing/npuir/output
-        mv tilelang _tilelang_src
-        python -m pytest -v testing/npuir/*_ops \
+        python -m pytest -v testing/ops/*_ops \
           -n 2 \
-          --html=testing/npuir/output/report.html --self-contained-html \
-          --junitxml=testing/npuir/output/junit.xml
+          --html=testing/ops/output/report.html --self-contained-html \
+          --junitxml=testing/ops/output/junit.xml
 
     - name: Upload test report
       if: always()
       uses: actions/upload-artifact@v4
       with:
         name: npuir-test-report
-        path: testing/npuir/output/
+        path: testing/ops/output/
 
   build-release:
     if: github.event_name == 'release'
