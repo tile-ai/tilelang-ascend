@@ -7,9 +7,33 @@ import os
 import tempfile
 import subprocess
 import logging
-from tilelang.env import TILELANG_TEMPLATE_PATH
+from tilelang.env import TILELANG_TEMPLATE_PATH, TILELANG_PACKAGE_PATH
 
 logger = logging.getLogger(__name__)
+
+
+def _get_tl_root() -> str:
+    """Get TL_ROOT path, fallback to package path if not set."""
+    tl_root = os.environ.get("TL_ROOT")
+    if tl_root is None:
+        tl_root = str(TILELANG_PACKAGE_PATH)
+    return tl_root
+
+
+def _get_ascend_home_path() -> str:
+    """Get Ascend home path, with fallback options."""
+    ascend_home = os.environ.get("ASCEND_HOME_PATH") or os.environ.get("ASCEND_HOME")
+    if ascend_home is None:
+        potential_paths = [
+            "/usr/local/Ascend/ascend-toolkit/latest",
+        ]
+        for path in potential_paths:
+            if os.path.exists(path):
+                ascend_home = path
+                break
+    if ascend_home is None:
+        raise ValueError("ASCEND_HOME_PATH or ASCEND_HOME is not set. Please set the environment variable.")
+    return ascend_home
 
 
 class LibraryGenerator(object):
@@ -33,8 +57,8 @@ class LibraryGenerator(object):
     def compile_lib(self, timeout: float = None):
         src = tempfile.NamedTemporaryFile(mode="w", suffix=".cpp", delete=False)
         libpath = src.name.replace(".cpp", ".so")
-        ASCEND_HOME_PATH = os.environ["ASCEND_HOME_PATH"]
-        TL_ROOT = os.environ["TL_ROOT"]
+        ASCEND_HOME_PATH = _get_ascend_home_path()
+        TL_ROOT = _get_tl_root()
         if self.target == "ascendc" or self.target == "auto":
             command = [
                 "bisheng",
@@ -69,8 +93,8 @@ class LibraryGenerator(object):
                 src.name,
             ]
         elif self.target == "pto":
-            ccec = "dav-c310" if self.platform == 'A5' else "dav-c220"
-            memory = "REGISTER_BASE" if self.platform == 'A5' else "MEMORY_BASE"
+            ccec = "dav-c310" if self.platform == "A5" else "dav-c220"
+            memory = "REGISTER_BASE" if self.platform == "A5" else "MEMORY_BASE"
             command = [
                 "bisheng",
                 f"--cce-aicore-arch={ccec}",
