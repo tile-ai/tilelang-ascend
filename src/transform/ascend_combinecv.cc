@@ -38,7 +38,7 @@ static constexpr const int DEFAUT_MODEL_ID = 2;
 
 struct CrossCoreSyncPoint {
   int scope;        // 0: cube, 1: vec
-  int order;        // excute order
+  int order;        // execute order
   int sync_flag_id; // cross core sync flag id
   bool is_write;    // whether write to workspace or not
   const std::string workspace_name;
