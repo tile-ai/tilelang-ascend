@@ -421,13 +421,16 @@ private:
         }
 
         bool only_in_ascend_copy = false;
-        if (!use_info->used_in_cube && !use_info->used_in_vector) {
-          only_in_ascend_copy = true;
+        if (!use_info->used_in_cube) {
+          bool only_valid_funcs = true;
           for (const auto& func_name : use_info->func_names) {
-            if (func_name != "tl.ascend_copy") {
-              only_in_ascend_copy = false;
+            if (func_name != "tl.ascend_copy" && func_name != "tl.ascend_dump_tensor") {
+              only_valid_funcs = false;
               break;
             }
+          }
+          if (only_valid_funcs) {
+            only_in_ascend_copy = true;
           }
         }
 
@@ -465,8 +468,25 @@ private:
         } else {
           alloc_info->corrected_scope = "shared";
         }
+        
+        bool has_dump_tensor = false;
+        if (use_info) {
+          for (const auto& func : use_info->func_names) {
+            if (func == "tl.ascend_dump_tensor" || func == "tl.dump_tensor") {
+              has_dump_tensor = true;
+              break;
+            }
+          }
+        }
 
-        if (alloc_info->corrected_scope != alloc_info->original_scope) {
+        bool should_apply = false;
+        if (has_dump_tensor && alloc_info->corrected_scope == "shared.dyn") {
+          should_apply = true;
+        } else if (alloc_info->corrected_scope != alloc_info->original_scope) {
+          should_apply = true;
+        }
+
+        if (should_apply) {        
           if (alloc_info->alloc_node) {
             scope_corrections_[alloc_info->alloc_node] = alloc_info->corrected_scope;
           }

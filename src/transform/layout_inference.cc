@@ -481,12 +481,28 @@ private:
     if (op->annotations.count(attr::kLayoutMap)) {
       auto map =
           op->annotations.Get(attr::kLayoutMap).as<Map<Var, Layout>>().value();
-      for (const auto &[var, layout] : map) {
-        ICHECK(buffer_data_to_buffer_.count(var))
-            << "buffer " << var << " is not found in the block";
-        auto buffer = buffer_data_to_buffer_[var];
-        ICHECK(StructuralEqual()(layout->InputShape(), buffer->shape));
-        annotated_layout_map_.Set(buffer, layout);
+      for (auto it : map) {
+          Var target_var = it.first;
+          Layout target_layout = it.second;
+          Buffer found_buffer;
+          if (buffer_data_to_buffer_.count(target_var)) {
+              found_buffer = buffer_data_to_buffer_[target_var];
+          } else {
+              for (auto const& kv : buffer_data_to_buffer_) {
+                  Var current_var = kv.first;
+                  Buffer current_buf = kv.second;
+                  if (current_var->name_hint == target_var->name_hint &&
+                      StructuralEqual()(current_buf->shape, target_layout->InputShape()) &&
+                      current_var->dtype == target_var->dtype) {
+                      found_buffer = current_buf;
+                      break;
+                  }
+              }
+          }
+          if (!found_buffer.defined()) {
+              ICHECK(false) << "Buffer " << target_var->name_hint << " has no matching definition in this scope.";
+          }
+          annotated_layout_map_.Set(found_buffer, target_layout);
       }
     }
     IRVisitorWithAnalyzer::VisitStmt_(op);
