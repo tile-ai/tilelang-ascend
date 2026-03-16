@@ -1,9 +1,6 @@
-import os
 import pytest
-import sys
 import argparse
 import torch
-import torch_npu
 import tilelang
 
 from testcommon import npuir_compile_to_bin
@@ -17,34 +14,39 @@ tilelang.cache.clear_cache()
 parser = argparse.ArgumentParser(description="NPU Kernel Compilation")
 parser.add_argument("--M", type=int, default=4, help="Size of dimension M")
 parser.add_argument("--N", type=int, default=4, help="Size of dimension N")
-parser.add_argument("--dim", type=int, default=0, help="Dimension to perform cumulative sum on")
-parser.add_argument("--reverse", action="store_true", help="Perform reverse cumulative sum")
+parser.add_argument(
+    "--dim", type=int, default=0, help="Dimension to perform cumulative sum on"
+)
+parser.add_argument(
+    "--reverse", action="store_true", help="Perform reverse cumulative sum"
+)
 
 dtype = "float16"
 accum_dtype = "float16"
+
 
 def cumsum_kernel(M, N, dim, reverse):
     BLOCK_SIZE = 1
 
     @T.prim_func
-    def main(src: T.Tensor((M, N), dtype),
-             dst: T.Tensor((M, N), accum_dtype)):
-        
+    def main(src: T.Tensor((M, N), dtype), dst: T.Tensor((M, N), accum_dtype)):
+
         with T.Kernel(BLOCK_SIZE, is_npu=True) as (cid, _):
             # Allocate UB memory
             src_ub = T.alloc_ub((M, N), dtype)
             dst_ub = T.alloc_ub((M, N), accum_dtype)
-            
+
             # Copy data from GM to UB
             T.copy(src, src_ub)
-            
+
             # Perform cumulative sum
             T.cumsum(src_ub, dst_ub, dim=dim, reverse=reverse)
-            
+
             # Copy results back to GM
             T.copy(dst_ub, dst)
-    
+
     return main
+
 
 def generate_tensor(shape, dtype, clear=False):
     """Generate a tensor"""
@@ -58,20 +60,19 @@ def generate_tensor(shape, dtype, clear=False):
         return torch.randint(low=0, high=127, size=shape, dtype=eval("torch." + dtype))
     if dtype == "bool":
         return torch.randint(low=0, high=2, size=shape).bool()
-    raise ValueError(f'Invalid dtype parameter: {dtype}')
+    raise ValueError(f"Invalid dtype parameter: {dtype}")
+
 
 def test_vec_cumsum():
     main_args = parser.parse_args([])
     # Compile the cumsum kernel
-    func = cumsum_kernel(
-        main_args.M,
-        main_args.N,
-        main_args.dim,
-        main_args.reverse
-    )
-    kernel = tilelang.engine.lower(func, target='npuir')
+    func = cumsum_kernel(main_args.M, main_args.N, main_args.dim, main_args.reverse)
+    kernel = tilelang.engine.lower(func, target="npuir")
     result = npuir_compile_to_bin(kernel)
-    assert result is not None and len(result) > 0, "npuir compile failed or returned empty"
+    assert result is not None and len(result) > 0, (
+        "npuir compile failed or returned empty"
+    )
+
 
 if __name__ == "__main__":
     test_vec_cumsum()

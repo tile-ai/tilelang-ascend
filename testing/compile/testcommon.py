@@ -4,6 +4,7 @@
 Common utilities for testing/compile. npuir_compile_to_bin compiles npuir/mlir
 via tilelang JIT. ascend_mode sets TILELANG_ASCEND_MODE for the duration of a test.
 """
+
 import contextlib
 import os
 

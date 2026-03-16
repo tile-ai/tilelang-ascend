@@ -1,6 +1,5 @@
 # Copyright (c) Tile-AI Corporation.
 # Licensed under the MIT License.
-import os
 import pytest
 
 import tilelang
@@ -16,17 +15,19 @@ K = 512
 
 FFTS_FLAG_THRESHOLD = 15
 
+
 def minicv(M, N, K, block_M, block_N, dtype="float16", inner_dtype="float32"):
     m_num = M // block_M
     n_num = N // block_N
 
     @T.prim_func
     def main(
-            A: T.Tensor((M, K), dtype),
-            B: T.Tensor((K, N), dtype),
-            C: T.Tensor((M, N), dtype),
-            D: T.Tensor((M, N), dtype),
-            shape_M: T.int32, shape_N: T.int32,
+        A: T.Tensor((M, K), dtype),
+        B: T.Tensor((K, N), dtype),
+        C: T.Tensor((M, N), dtype),
+        D: T.Tensor((M, N), dtype),
+        shape_M: T.int32,
+        shape_N: T.int32,
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, subid):
             with T.Scope("Cube"):
@@ -49,11 +50,15 @@ def minicv(M, N, K, block_M, block_N, dtype="float16", inner_dtype="float32"):
                 T.npuir_load_nd2nz(B[0, by], B_BUF, [K, tile_size_N])
 
                 C_BUF = T.alloc_L0C((block_M, block_N), inner_dtype)
-                T.npuir_dot(A_BUF, B_BUF, C_BUF, [tile_size_M, K, tile_size_N], initC = True)
+                T.npuir_dot(
+                    A_BUF, B_BUF, C_BUF, [tile_size_M, K, tile_size_N], initC=True
+                )
 
                 with T.rs("PIPE_FIX"):
                     T.sync_block_wait(1)
-                    T.npuir_store_fixpipe(C_BUF, C[bx, by], [tile_size_M, tile_size_N], enable_nz2nd = True)
+                    T.npuir_store_fixpipe(
+                        C_BUF, C[bx, by], [tile_size_M, tile_size_N], enable_nz2nd=True
+                    )
                     T.sync_block_set(0)
 
                 with T.rs("PIPE_FIX"):
@@ -79,20 +84,27 @@ def minicv(M, N, K, block_M, block_N, dtype="float16", inner_dtype="float32"):
 
                 # min(subblock_M, shape_M - cid * block_M - subblock_M)
                 t0 = shape_M - bx
-                tile_size_M = T.min(block_M//2, t0)
+                tile_size_M = T.min(block_M // 2, t0)
                 # min(block_N, shape_N - cid * block_N)
                 t0 = shape_N - by
                 tile_size_N = T.min(block_N, t0)
 
                 with T.rs("PIPE_MTE2"):
                     T.sync_block_wait(0)
-                    T.copy(C[bx : bx + tile_size_M, by : by + tile_size_N], C_VEC[0:tile_size_M, 0:tile_size_N])
+                    T.copy(
+                        C[bx : bx + tile_size_M, by : by + tile_size_N],
+                        C_VEC[0:tile_size_M, 0:tile_size_N],
+                    )
                     T.sync_block_set(1)
 
                 T.npuir_exp(C_VEC, D_VEC)
-                T.copy(D_VEC[0:tile_size_M, 0:tile_size_N], D[bx : bx + tile_size_M, by : by + tile_size_N])
+                T.copy(
+                    D_VEC[0:tile_size_M, 0:tile_size_N],
+                    D[bx : bx + tile_size_M, by : by + tile_size_N],
+                )
 
     return main
+
 
 def test_minicv():
     func = minicv(M, N, K, 128, 256)
@@ -100,7 +112,10 @@ def test_minicv():
     # print(kernel)
 
     result = npuir_compile_to_bin(kernel)
-    assert result is not None and len(result) > 0, "npuir compile failed or returned empty"
+    assert result is not None and len(result) > 0, (
+        "npuir compile failed or returned empty"
+    )
+
 
 if __name__ == "__main__":
     test_minicv()

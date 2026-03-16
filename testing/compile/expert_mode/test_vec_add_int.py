@@ -1,6 +1,5 @@
 # Copyright (c) Tile-AI Corporation.
 # Licensed under the MIT License.
-import os
 import pytest
 
 import tilelang
@@ -14,15 +13,16 @@ tilelang.cache.clear_cache()
 
 N = 1024
 
+
 def vec_add_int(N, block_N, dtype="int32"):
     n_num = N // block_N
 
     @T.prim_func
     def main(
-            A: T.Tensor((N), dtype),
-            B: T.Tensor((N), dtype),
-            C: T.Tensor((N), dtype),
-            shape: T.int32,
+        A: T.Tensor((N), dtype),
+        B: T.Tensor((N), dtype),
+        C: T.Tensor((N), dtype),
+        shape: T.int32,
     ):
         with T.Kernel(n_num, is_npu=True) as (cid, _):
             A_VEC = T.alloc_ub((block_N), dtype)
@@ -40,13 +40,17 @@ def vec_add_int(N, block_N, dtype="int32"):
 
     return main
 
+
 def test_vec_add_int():
     func = vec_add_int(N, 1024)
     kernel = tilelang.engine.lower(func)
     # print(kernel)
 
     result = npuir_compile_to_bin(kernel)
-    assert result is not None and len(result) > 0, "npuir compile failed or returned empty"
+    assert result is not None and len(result) > 0, (
+        "npuir compile failed or returned empty"
+    )
+
 
 if __name__ == "__main__":
     test_vec_add_int()

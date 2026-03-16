@@ -1,6 +1,4 @@
-import os
 import pytest
-import sys
 import argparse
 import torch
 import tilelang
@@ -20,67 +18,74 @@ parser.add_argument("--block_M", type=int, default=32, help="")
 dtype = "float16"
 accum_dtype = "float16"
 
+
 def row_reduce_sum_exp(M, N, block_M):
     BLOCK_SIZE = 1
 
     @T.prim_func
-    def main(A: T.Tensor((M, N), dtype),
-                B: T.Tensor((M, N), dtype),
-                C: T.Tensor((M, N), dtype),
-                D: T.Tensor((M, N), dtype),
-                O: T.Tensor((M,1), accum_dtype)):
-        
+    def main(
+        A: T.Tensor((M, N), dtype),
+        B: T.Tensor((M, N), dtype),
+        C: T.Tensor((M, N), dtype),
+        D: T.Tensor((M, N), dtype),
+        O: T.Tensor((M, 1), accum_dtype),
+    ):
+
         with T.Kernel(BLOCK_SIZE, is_npu=True) as (cid, _):
-            a = T.alloc_ub((M,N), dtype)
-            b = T.alloc_ub((M,N), dtype)
-            c = T.alloc_ub((M,N), dtype)
-            d = T.alloc_ub((M,N), dtype)
-            s = T.alloc_ub((M,1), accum_dtype)
+            a = T.alloc_ub((M, N), dtype)
+            b = T.alloc_ub((M, N), dtype)
+            c = T.alloc_ub((M, N), dtype)
+            d = T.alloc_ub((M, N), dtype)
+            s = T.alloc_ub((M, 1), accum_dtype)
 
             T.copy(A, a)
             T.copy(B, b)
             T.copy(C, c)
             T.copy(D, d)
-            
+
             T.reduce_abssum(a, s)
-            T.reduce_max(b, s, clear = False)
-            T.reduce_min(c, s, clear = False)
-            T.reduce(d, s, dims=1, reduce_mode="sum", clear = False)
+            T.reduce_max(b, s, clear=False)
+            T.reduce_min(c, s, clear=False)
+            T.reduce(d, s, dims=1, reduce_mode="sum", clear=False)
 
             T.copy(s, O)
 
     return main
+
 
 def row_reduce_sum_dev(M, N, block_M):
     BLOCK_SIZE = 1
 
     @T.prim_func
-    def main(A: T.Tensor((M, N), dtype),
-                B: T.Tensor((M, N), dtype),
-                C: T.Tensor((M, N), dtype),
-                D: T.Tensor((M, N), dtype),
-                O: T.Tensor((M,1), accum_dtype)):
-        
+    def main(
+        A: T.Tensor((M, N), dtype),
+        B: T.Tensor((M, N), dtype),
+        C: T.Tensor((M, N), dtype),
+        D: T.Tensor((M, N), dtype),
+        O: T.Tensor((M, 1), accum_dtype),
+    ):
+
         with T.Kernel(BLOCK_SIZE, is_npu=True) as (cid, _):
-            a = T.alloc_shared((M,N), dtype)
-            b = T.alloc_shared((M,N), dtype)
-            c = T.alloc_shared((M,N), dtype)
-            d = T.alloc_shared((M,N), dtype)
-            s = T.alloc_shared((M,1), accum_dtype)
+            a = T.alloc_shared((M, N), dtype)
+            b = T.alloc_shared((M, N), dtype)
+            c = T.alloc_shared((M, N), dtype)
+            d = T.alloc_shared((M, N), dtype)
+            s = T.alloc_shared((M, 1), accum_dtype)
 
             T.copy(A, a)
             T.copy(B, b)
             T.copy(C, c)
             T.copy(D, d)
-            
+
             T.reduce_abssum(a, s)
-            T.reduce_max(b, s, clear = False)
-            T.reduce_min(c, s, clear = False)
-            T.reduce(d, s, dims=1, reduce_mode="sum", clear = False)
+            T.reduce_max(b, s, clear=False)
+            T.reduce_min(c, s, clear=False)
+            T.reduce(d, s, dims=1, reduce_mode="sum", clear=False)
 
             T.copy(s, O)
 
     return main
+
 
 def generate_tensor(shape, dtype, clear=False):
     """generate tensor"""
@@ -96,16 +101,16 @@ def generate_tensor(shape, dtype, clear=False):
         return torch.randint(low=0, high=2, size=shape).bool()
     raise ValueError('Invalid parameter "dtype" is found : {}'.format(dtype))
 
+
 def test_reduce():
     main_args = parser.parse_args([])
-    func = row_reduce_sum_dev(
-        main_args.M,
-        main_args.N,
-        main_args.block_M
-    )
-    kernel = tilelang.engine.lower(func, target='npuir')
+    func = row_reduce_sum_dev(main_args.M, main_args.N, main_args.block_M)
+    kernel = tilelang.engine.lower(func, target="npuir")
     result = npuir_compile_to_bin(kernel)
-    assert result is not None and len(result) > 0, "npuir compile failed or returned empty"
+    assert result is not None and len(result) > 0, (
+        "npuir compile failed or returned empty"
+    )
+
 
 if __name__ == "__main__":
     test_reduce()

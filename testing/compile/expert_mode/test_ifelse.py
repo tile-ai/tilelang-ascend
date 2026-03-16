@@ -1,6 +1,5 @@
 # Copyright (c) Tile-AI Corporation.
 # Licensed under the MIT License.
-import os
 import pytest
 
 import tilelang
@@ -25,24 +24,24 @@ def if_else(M, N, block_M, block_N, dtype="float16"):
 
     @T.prim_func
     def main(
-            A: T.Tensor((M, N), dtype),
-            B: T.Tensor((M, N), dtype),
-            C: T.Tensor((M, N), dtype),
-            D: T.Tensor((M, N), dtype),
+        A: T.Tensor((M, N), dtype),
+        B: T.Tensor((M, N), dtype),
+        C: T.Tensor((M, N), dtype),
+        D: T.Tensor((M, N), dtype),
     ):
         with T.Kernel(BLOCK_SIZE, is_npu=True) as (cid, _):
             bx_ = cid // n_num
             bx = bx_ * block_M
             by_ = cid % n_num
-            by = by_* block_N
+            by = by_ * block_N
             A_VEC = T.alloc_ub((block_M, block_N), dtype)
             B_VEC = T.alloc_ub((block_M, block_N), dtype)
             C_VEC = T.alloc_ub((block_M, block_N), dtype)
-            for i in T.serial(T.ceildiv(m_num*n_num, step_core_num)):
+            for i in T.serial(T.ceildiv(m_num * n_num, step_core_num)):
                 block_id_base = i * step_core_num
                 cid_in_step = cid % step_core_num
                 block_id = block_id_base + cid_in_step
-                if block_id < m_num*n_num:
+                if block_id < m_num * n_num:
                     block_id_m = block_id // n_num
                     block_id_n = block_id % n_num
                     bx = block_id_m * block_M
@@ -60,13 +59,17 @@ def if_else(M, N, block_M, block_N, dtype="float16"):
 
     return main
 
+
 def test_if_else():
     func = if_else(M, N, 64, 256)
     kernel = tilelang.engine.lower(func)
     print(kernel)
 
     result = npuir_compile_to_bin(kernel)
-    assert result is not None and len(result) > 0, "npuir compile failed or returned empty"
+    assert result is not None and len(result) > 0, (
+        "npuir compile failed or returned empty"
+    )
+
 
 if __name__ == "__main__":
     test_if_else()

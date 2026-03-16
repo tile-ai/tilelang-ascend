@@ -1,5 +1,4 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2025.
-import os
 import pytest
 import argparse
 import torch
@@ -25,8 +24,8 @@ def vec_insert(M, N, a, b):
 
     @T.prim_func
     def insert(
-            A: T.Tensor((M, N), dtype),
-            B: T.Tensor((a, b), dtype),
+        A: T.Tensor((M, N), dtype),
+        B: T.Tensor((a, b), dtype),
     ):
         with T.Kernel(M, is_npu=True) as (cid, _):
             A_ub = T.alloc_shared((4, 4), dtype)
@@ -64,13 +63,14 @@ def test_tensor_insert():
         main_args.N,
         main_args.a,
         main_args.b,
-
     )
-    kernel = tilelang.engine.lower(func, target='npuir')
+    kernel = tilelang.engine.lower(func, target="npuir")
     # print(kernel)
 
     result = npuir_compile_to_bin(kernel)
-    assert result is not None and len(result) > 0, "npuir compile failed or returned empty"
+    assert result is not None and len(result) > 0, (
+        "npuir compile failed or returned empty"
+    )
 
 
 if __name__ == "__main__":

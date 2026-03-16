@@ -1,7 +1,5 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2025.
-import sys
 import pytest
-import os
 import argparse
 import torch
 
@@ -29,12 +27,10 @@ def vec_brc(M, N, K, block_M, block_N):
     BLOCK_SIZE = 20
 
     @T.prim_func
-    def main(
-            A: T.Tensor((M, K), dtype)
-    ):
+    def main(A: T.Tensor((M, K), dtype)):
         with T.Kernel(BLOCK_SIZE, is_npu=True) as (cid, _):
             A_VEC = T.alloc_ub((block_M, block_N), dtype)
-            for i in T.serial(T.ceildiv(m_num*n_num, BLOCK_SIZE)):
+            for i in T.serial(T.ceildiv(m_num * n_num, BLOCK_SIZE)):
                 block_id = i * BLOCK_SIZE + cid
                 if block_id < m_num * n_num:
                     block_id_m = block_id // n_num
@@ -73,9 +69,12 @@ def test_vec_brc():
         main_args.block_M,
         main_args.block_N,
     )
-    kernel = tilelang.engine.lower(func, target='npuir')
+    kernel = tilelang.engine.lower(func, target="npuir")
     result = npuir_compile_to_bin(kernel)
-    assert result is not None and len(result) > 0, "npuir compile failed or returned empty"
+    assert result is not None and len(result) > 0, (
+        "npuir compile failed or returned empty"
+    )
+
 
 if __name__ == "__main__":
     test_vec_brc()
