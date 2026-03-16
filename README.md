@@ -17,6 +17,7 @@ Tile Language Ascend (**tilelang-ascend**) is a specialized variant of the tile-
 </p>
 
 ## Latest News
+- 03/16/2026 🚀: Added [wheel package installation support](https://github.com/tile-ai/tilelang-ascend?tab=readme-ov-file#installation), enabling easy installation via pip!
 - 12/08/2025 ✨: Added [T.Parallel](https://github.com/tile-ai/tilelang-ascend?tab=readme-ov-file#tparallel) support, check out [Pull Request#113](
 https://github.com/tile-ai/tilelang-ascend/pull/113) for details.
 - 11/25/2025 ✨: [Automatic buffer reuse](https://github.com/tile-ai/tilelang-ascend?tab=readme-ov-file#automatic-buffer-reuse) support, see [Pull Request#101](
