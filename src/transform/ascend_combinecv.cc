@@ -177,7 +177,7 @@ public:
           continue;
         }
 
-        // ForNode target, skip here, handled in ForNode visitor
+        // ForNode target, skip here; will be handled in ForNode visitor
         if (sp.target_for_node.has_value()) {
           continue;
         }
