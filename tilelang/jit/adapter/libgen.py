@@ -24,7 +24,7 @@ def _get_ascend_home_path() -> str:
     """Get Ascend home path, with fallback options."""
     ascend_home = os.environ.get("ASCEND_HOME_PATH") or os.environ.get("ASCEND_HOME")
     if ascend_home is None:
-potential_paths = [
+        potential_paths = [
             "/usr/local/Ascend/ascend-toolkit/latest",
         ]
         for path in potential_paths:
