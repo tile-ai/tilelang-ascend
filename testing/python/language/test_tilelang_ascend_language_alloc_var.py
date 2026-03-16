@@ -27,8 +27,6 @@ def setup_random_seed():
     torch.manual_seed(0)
     yield
 
-tilelang.cache.clear_cache()
-torch.set_default_device('npu')
 
 def alloc_var(N, block_N, dtype="int32"):
     VEC_NUM = 2
@@ -79,8 +77,7 @@ def run_alloc_var(N, block_N, target):
     else:
         print("T.alloc_var failed")
 
-N = 32
-block_N = 16
+
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 def test_alloc_var(target):
     run_alloc_var(32, 16, target=target)
