@@ -8,8 +8,9 @@ from tilelang.contrib.nvcc import have_tma
 from typing import Optional
 
 
-def allow_warp_specialized(pass_ctx: Optional[PassContext] = None,
-                           target: Optional[Target] = None) -> bool:
+def allow_warp_specialized(
+    pass_ctx: Optional[PassContext] = None, target: Optional[Target] = None
+) -> bool:
     # avoid circular import
     from tilelang.jit.adapter.utils import is_cuda_target
 
@@ -21,8 +22,9 @@ def allow_warp_specialized(pass_ctx: Optional[PassContext] = None,
     return not disable_warp_specialized
 
 
-def allow_tma_and_warp_specialized(pass_ctx: Optional[PassContext] = None,
-                                   target: Optional[Target] = None) -> bool:
+def allow_tma_and_warp_specialized(
+    pass_ctx: Optional[PassContext] = None, target: Optional[Target] = None
+) -> bool:
     # avoid circular import
     from tilelang.jit.adapter.utils import is_cuda_target
 
@@ -31,7 +33,9 @@ def allow_tma_and_warp_specialized(pass_ctx: Optional[PassContext] = None,
     if not is_cuda_target(target) or not have_tma(target):
         return False
     disable_tma_lower = pass_ctx.config.get("tl.disable_tma_lower", False)
-    return not disable_tma_lower and allow_warp_specialized(pass_ctx=pass_ctx, target=target)
+    return not disable_tma_lower and allow_warp_specialized(
+        pass_ctx=pass_ctx, target=target
+    )
 
 
 def allow_fence_proxy(target: Optional[Target] = None) -> bool:
@@ -53,6 +57,7 @@ def LowerAndLegalize(mod: IRModule, target: Target) -> IRModule:
     mod = tir.transform.BindTarget(target)(mod)
     if target.kind.name == "npuir":
         mod = tir.transform.Simplify()(mod)
+        mod = tir.transform.RemoveNoOp()(mod)
         return mod
 
     # Legalize the frontend IR to make it compatible with TVM
@@ -122,7 +127,9 @@ def OptimizeForTarget(mod: IRModule, target: Target) -> IRModule:
 
     mod = tilelang.transform.FlattenBuffer()(mod)
     mod = tir.transform.Simplify()(mod)
-    mod = tilelang.transform.VectorizeLoop(enable_vectorize=allow_vectorize(pass_ctx=pass_ctx))(mod)
+    mod = tilelang.transform.VectorizeLoop(
+        enable_vectorize=allow_vectorize(pass_ctx=pass_ctx)
+    )(mod)
 
     mod = tir.transform.StorageRewrite()(mod)
 
