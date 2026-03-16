@@ -1,0 +1,55 @@
+# Copyright (c) Tile-AI Corporation.
+# Licensed under the MIT License.
+import os
+import pytest
+
+import tilelang
+
+from testcommon import npuir_compile_to_bin
+
+pytestmark = [pytest.mark.mode("Developer")]
+import tilelang.language as T
+
+tilelang.cache.clear_cache()
+
+N = 1024
+
+def impl(N, block_N, dtype="float32"):
+    n_num = N // block_N
+
+    @T.prim_func
+    def main(
+            A: T.Tensor((N), dtype),
+            B: T.Tensor((N), "int32"),
+    ):
+        with T.Kernel(n_num, is_npu=True) as (cid, _):
+            a = 100.1
+            b = 200.2
+            c = a + b
+            d = a - b
+            e = (c + d) * (d - c)
+            f = (c + d) / (d - c)
+            g = e + f + 7.77
+            A[cid * block_N] = g
+
+            a = 100
+            b = 200
+            c = a + b
+            d = a - b
+            e = (c + d) * (d - c)
+            f = (c + d) // (d - c)
+            g = T.ceildiv(e, f)
+            B[cid * block_N] = g
+
+    return main
+
+def test_scalar_binaryop():
+    func = impl(N, 1024)
+    kernel = tilelang.engine.lower(func)
+    # print(kernel)
+
+    result = npuir_compile_to_bin(kernel)
+    assert result is not None and len(result) > 0, "npuir compile failed or returned empty"
+
+if __name__ == "__main__":
+    test_scalar_binaryop()
