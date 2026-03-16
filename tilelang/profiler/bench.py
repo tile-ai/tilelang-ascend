@@ -141,6 +141,7 @@ def do_bench_npu(funcs,
         for fn in funcs:
             for _ in builtins.range(total):
                 fn()
+            torch.npu.synchronize()
 
     time_cost = _collect_prof_result(torch_path, funcs, warmup, rep)
     _rm_dic(keep_res, torch_path)
