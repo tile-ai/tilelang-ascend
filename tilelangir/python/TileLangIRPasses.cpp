@@ -47,8 +47,22 @@ static bool tryBuiltinModuleRoot(llvm::StringRef pipelineStr, llvm::StringRef* i
 static mlir::LogicalResult directAddPipelineOrPass(llvm::StringRef spec,
                                                    mlir::OpPassManager &pm) {
   spec = spec.trim();
-  llvm::StringRef name = spec, options;
+
+  // Handle nesting: "func.func(inner-pass{opts})" → nest into func.func,
+  // then recurse on inner-pass{opts}.
+  size_t parenStart = spec.find('(');
   size_t braceStart = spec.find('{');
+  if (parenStart != llvm::StringRef::npos &&
+      (braceStart == llvm::StringRef::npos || parenStart < braceStart) &&
+      spec.ends_with(")")) {
+    llvm::StringRef opName = spec.take_front(parenStart).trim();
+    llvm::StringRef inner =
+        spec.slice(parenStart + 1, spec.size() - 1).trim();
+    auto &nested = pm.nest(opName);
+    return directAddPipelineOrPass(inner, nested);
+  }
+
+  llvm::StringRef name = spec, options;
   if (braceStart != llvm::StringRef::npos && spec.ends_with("}")) {
     name = spec.take_front(braceStart).trim();
     options = spec.slice(braceStart + 1, spec.size() - 1);

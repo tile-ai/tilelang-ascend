@@ -22,7 +22,8 @@ from ..utils import (
     get_cxx,
     get_npucompiler_path,
     get_npucompiler_opt_path,
-    get_bisheng_path
+    get_bisheng_path,
+    get_hivmc_path,
 )
 
 from tvm import tir
@@ -1103,7 +1104,10 @@ class compiler_npu:
         self.lock_num = -1
         self.lock_ini_val = 0
         self._parse_npuir_metadata()
-        self.metadata["kernel_src"] = self._npuir_to_bin_enable_npu_compile()
+        kernel_src, kernel_name = self._npuir_to_bin_enable_npu_compile()
+        self.metadata["kernel_src"] = kernel_src
+        self.metadata["kernel_name"] = kernel_name
+        self.metadata["name"] = re.sub(r"_(mix_aic|mix_aiv)$", "", kernel_name)
         # Obtain the npu_utils.so file required for loading the kernel
         self.so_utils_path = os.path.join(os.getcwd(), "npu_utils.so")
         if not os.path.isfile(self.so_utils_path):
@@ -1246,170 +1250,127 @@ class compiler_npu:
             print(f"Error occurred while reading the file: {e}")
             return None
 
+    _HOST_FUNC_SUFFIXES = [
+        "_infer_task_type_function",
+        "_infer_workspace_shape_function",
+        "_infer_sync_block_lock_num_function",
+        "_infer_sync_block_lock_init_function",
+        "_infer_output_shape_function",
+        "_tiling_function",
+        "_get_tiling_struct_size_function",
+    ]
+
+    @staticmethod
+    def _extract_kernel_name_from_so(so_path: str) -> str:
+        """Extract the device kernel entry name from a compiled shared library.
+
+        The HIVM pipeline generates host helper functions with known suffixes
+        (e.g. ``main_infer_task_type_function``).  We strip the suffix to
+        recover the kernel entry name.
+        """
+        try:
+            result = subprocess.run(
+                ["nm", "-D", "-g", so_path],
+                capture_output=True, text=True, timeout=5,
+            )
+        except Exception:
+            return "main"
+
+        func_syms: list[str] = []
+        for line in result.stdout.splitlines():
+            parts = line.strip().split()
+            if len(parts) >= 3 and parts[1] in ("T", "t"):
+                func_syms.append(parts[2])
+
+        for sym in func_syms:
+            for suffix in compiler_npu._HOST_FUNC_SUFFIXES:
+                if sym.endswith(suffix):
+                    return sym[: -len(suffix)]
+        return "main"
+
     def _parse_npuir_metadata(self) -> None:
-        """
-        Parse NPU IR to extract metadata required for NPU compilation.
-        Extracts and updates the following fields in metadata:
-          - mix_mode
-          - kernel_name
-          - tensor_kinds (currently hardcoded)
-          - shared (currently hardcoded)
-          - name (combined kernel_name and mix_mode)
+        """Extract module-level metadata from the MLIR text.
 
-        Additionally, removes the mix_mode attribute from the IR.
+        Only ``mix_mode`` is read from the IR.  ``kernel_name`` is populated
+        later from the compiled shared library — see
+        ``_extract_kernel_name_from_so``.
         """
-        # --- Regular expressions and examples ---
-        # Example: func.func @gather_sorted_kernel(%arg0: ...) -> gather_sorted_kernel
-        KERNEL_NAME_REGEX = r"func\.func\s+@(\w+)"
-
-        # Example：hivm.module_core_type<MIX> -> MIX
         MIX_MODE_REGEX = r"#hivm\.module_core_type<([^>]+)>"
-
-        # Example: test_mix_aic -> test
-        MIX_SUFFIX_REGEX = r"_(mix_aic|mix_aiv)$"
-
-        # Note: Compiled Kernel requires to estimate size of shared memory to occupy
-        # Currently, NPU backend does not limit on shared memory
         self.metadata["shared"] = 1
-        # the mix mode is also encoded into metadata['name'] for runtime to distinguish
-        kernel_name = re.search(KERNEL_NAME_REGEX, self.mlir_content).group(1)
-        self.metadata["kernel_name"] = kernel_name
-        # matching the end of the _mix_aic or _mix_aiv
-        self.metadata["name"] = re.sub(MIX_SUFFIX_REGEX, "", kernel_name)
         self.metadata["tensor_kinds"] = []
         self.metadata["mix_mode"] = (
             re.search(MIX_MODE_REGEX, self.mlir_content).group(1).lower()
         )
 
+    _TORCH_DTYPE_TO_SIG = {
+        torch.float16: "fp16",
+        torch.bfloat16: "bf16",
+        torch.float32: "fp32",
+        torch.float64: "fp64",
+        torch.int8: "i8",
+        torch.int16: "i16",
+        torch.int32: "i32",
+        torch.int64: "i64",
+        torch.bool: "i1",
+    }
+
     def _parse_signature(self) -> dict:
+        """Derive the kernel signature from ``param_info`` (TVM PrimFunc metadata).
+
+        Returns a dict ``{index: type_str}`` where ``type_str`` is
+        ``"*fp16"`` for buffer parameters and ``"i32"`` for scalars, etc.
         """
-        Parse parameter types from MLIR text and return a dictionary.
-        """
-        # Define the data types of concern
-        target_types = {
-            "i1",
-            "i8",
-            "i16",
-            "i32",
-            "i64",
-            "u32",
-            "u64",
-            "fp16",
-            "bf16",
-            "fp32",
-            "f32",
-            "fp64",
-            "f16",
-        }
-
-        # Extract the function signature part (the content within the parentheses)
-        pattern = r"func\.func\s*@[^(]*\(([^)]*)\)"
-        match = re.search(pattern, self.mlir_content)
-
-        if not match:
-            return {}
-
-        params_str = match.group(1)
-
-        # Segmentation parameters
-        params = []
-        current_param = ""
-        brace_count = 0
-        angle_count = 0
-
-        for char in params_str:
-            if char == "," and brace_count == 0 and angle_count == 0:
-                params.append(current_param.strip())
-                current_param = ""
-            else:
-                current_param += char
-                if char == "{":
-                    brace_count += 1
-                elif char == "}":
-                    brace_count -= 1
-                elif char == "<":
-                    angle_count += 1
-                elif char == ">":
-                    angle_count -= 1
-
-        if current_param:
-            params.append(current_param.strip())
-
-        result = {}
-        index = 0
-
-        # Skip parameters insert by compiler
-        for param in params[3: -6]:
-            # Check if the type includes the target type
-            found_type = None
-            for t_type in target_types:
-                # Check for types with an x prefix (e.g., xf16)
-                x_pattern = r"\bx" + t_type + r"\b"
-                if re.search(x_pattern, param):
-                    found_type = "*" + t_type
-                    break
-                # Check the common type (such as i32)
-                elif re.search(r"\b" + t_type + r"\b", param):
-                    found_type = t_type
-                    break
-
-            if found_type:
-                # Special handling: f16 should be mapped to fp16,
-                # and f32 should be mapped to fp32.
-                if found_type == "f16":
-                    found_type = "fp16"
-                elif found_type == "*f16":
-                    found_type = "*fp16"
-                elif found_type == "f32":
-                    found_type = "fp32"
-                elif found_type == "*f32":
-                    found_type = "*fp32"
-
-                result[index] = found_type
-                index += 1
-
+        param_info = self.metadata.get("param_info", [])
+        result: dict[int, str] = {}
+        for i, info in enumerate(param_info):
+            sig_ty = self._TORCH_DTYPE_TO_SIG.get(info["dtype"])
+            if sig_ty is None:
+                continue
+            if info["shape"]:
+                sig_ty = "*" + sig_ty
+            result[i] = sig_ty
         return result
 
+    @staticmethod
+    def _build_hivmc_args():
+        """Build hivmc arguments matching the options listed by ``hivmc --help``.
+
+        hivmc only accepts a small subset of the options that
+        bishengir-compile collects internally.  Passing unsupported
+        flags would cause hivmc to reject the command line.
+        """
+        return [
+            "--enable-bin-relocation",
+            "--enable-static-bare-ptr",
+        ]
+
     def _npuir_to_bin_enable_npu_compile(self):
-        linalg = self.mlir_content
-        metadata = self.metadata
+        """Run hivmc on the fully-optimized HIVM IR produced by lower().
+
+        lower() now executes the entire MLIR pass pipeline (convert-to-hivm
+        + optimize-hivm) so the IR is ready for binary code generation.
+
+        Returns:
+            tuple[bytes, str]: (kernel object bytes, kernel entry name)
+        """
+        hivm_ir = self.mlir_content
         with tempfile.TemporaryDirectory() as tmpdir:
-            ttadapter_path = os.path.join(tmpdir, "kernel.npuir")
-            Path(ttadapter_path).write_text(linalg)
+            ir_path = os.path.join(tmpdir, "kernel.mlir")
+            Path(ir_path).write_text(hivm_ir)
             bin_file = os.path.join(tmpdir, "kernel")
             bin_path = os.path.join(tmpdir, "kernel.o")
             so_path = os.path.join(tmpdir, "libkernel.so")
 
-            npu_compiler_path = get_npucompiler_path()
-            # TileLang Ascend JIT Runtime now follows Triton JIT style.
-            # bishengir-compile --enable-triton-kernel-compile=true make sure the way.
-            _compile_option_list = [
-                "--enable-auto-multi-buffer=true",
-                "--enable-triton-kernel-compile=true",
-                "--enable-hivm-compile=true"
-            ]
-
-            TILELANG_ASCEND_MODE = os.environ.get('TILELANG_ASCEND_MODE')
-            if TILELANG_ASCEND_MODE is None:
-                _compile_option_list.append("--disable-hivm-tensor-compile=true")
-            elif TILELANG_ASCEND_MODE.lower().strip() in ['expert', 'exp', 'e']:
-                _compile_option_list.append("--disable-hivm-tensor-compile=true")
-
-            cmd_list = (
-                [npu_compiler_path, ttadapter_path]
-                + _compile_option_list
-                + ["-o", bin_file]
-            )
+            hivmc_path = get_hivmc_path()
+            cmd_list = [hivmc_path, ir_path] + self._build_hivmc_args() + ["-o", bin_file]
             try:
                 ret = subprocess.run(
                     cmd_list, capture_output=True, check=True, text=True
                 )
-                print("AscendNPU IR compile success:", ret.stdout)
+                print("hivmc compile success:", ret.stdout)
             except subprocess.CalledProcessError as e:
-                # print ir
-                print("AscendNPU IR:\n")
+                print("HIVM IR:\n")
                 print(self.mlir_content)
-                # print error info
                 print("err cmd:", " ".join(cmd_list))
                 print(f"err code: {e.returncode}")
                 print("err info:", e.stderr)
@@ -1417,12 +1378,14 @@ class compiler_npu:
             except Exception as e:
                 print(f"error: {str(e)}")
                 sys.exit(1)
-            result = self._get_workspace_size(so_path, "_infer_workspace_shape_function")
-            self.workspace_size = result
+
+            self.workspace_size = self._get_workspace_size(
+                so_path, "_infer_workspace_shape_function"
+            )
 
             if not Path(bin_path).exists():
                 err_lines = [
-                    "AscendNPU IR compile reported success but output object was not generated.",
+                    "hivmc compile reported success but output object was not generated.",
                     f"Expected output: {bin_path}",
                     f"cmd: {' '.join(cmd_list)}",
                 ]
@@ -1432,7 +1395,8 @@ class compiler_npu:
                     err_lines.append(f"stderr:\n{ret.stderr}")
                 raise RuntimeError("\n".join(err_lines))
 
-            return Path(bin_path).read_bytes()
+            kernel_name = self._extract_kernel_name_from_so(so_path)
+            return Path(bin_path).read_bytes(), kernel_name
 
     def make_npu_launcher_stub(self, name: str, source: Union[str, os.PathLike], debug=False):
         """

@@ -13,17 +13,26 @@ def _format_pass_option_value(value) -> str:
     return str(value)
 
 
-def _pass_spec(pass_name: str, **options) -> str:
-    """Build pipeline spec: builtin.module(pass-name) or builtin.module(pass-name{k=v,...})."""
+def _pass_spec(pass_name: str, *, op: str | None = None, **options) -> str:
+    """Build pipeline spec with optional op-level nesting.
+
+    ``op=None``  → ``builtin.module(pass-name{opts})``
+    ``op="func.func"`` → ``builtin.module(func.func(pass-name{opts}))``
+    """
     if not options:
-        return f"builtin.module({pass_name})"
-    opts = " ".join(
-        f"{k.replace('_', '-')}={_format_pass_option_value(v)}" for k, v in options.items()
-    )
-    return f"builtin.module({pass_name}{{{opts}}})"
+        inner = pass_name
+    else:
+        opts = " ".join(
+            f"{k.replace('_', '-')}={_format_pass_option_value(v)}"
+            for k, v in options.items()
+        )
+        inner = f"{pass_name}{{{opts}}}"
+    if op:
+        return f"builtin.module({op}({inner}))"
+    return f"builtin.module({inner})"
 
 
-def create_pass_runner(pass_name: str, **options):
+def create_pass_runner(pass_name: str, *, op: str | None = None, **options):
     """
     Create a pass runner via tladapter native (libtilelangir). The returned callable has
     pass_name attached (from pybind) for dump/debug. Accepts only str input.
@@ -40,13 +49,13 @@ def create_pass_runner(pass_name: str, **options):
         raise RuntimeError(
             "tladapter native module or create_pass_runner not found; rebuild tilelangir."
         )
-    spec = _pass_spec(pass_name, **options)
+    spec = _pass_spec(pass_name, op=op, **options)
     return _native.create_pass_runner(pass_name, spec)
 
 
-def run_pass(x, pass_name: str, **options):
+def run_pass(x, pass_name: str, *, op: str | None = None, **options):
     """Run pass using create_pass_runner. Handles str and Module."""
-    runner = create_pass_runner(pass_name, **options)
+    runner = create_pass_runner(pass_name, op=op, **options)
     if isinstance(x, str):
         return runner(x)
     s = runner(str(x))
@@ -63,8 +72,9 @@ def run_pass(x, pass_name: str, **options):
 class _PassWithNameFromPybind:
     """Callable with pass_name from pybind. Created via pass_fn()."""
 
-    def __init__(self, pass_name, **default_options):
+    def __init__(self, pass_name, *, op=None, **default_options):
         self._pass_name = pass_name
+        self._op = op
         self._default_options = default_options
         self._cached_runner = None
 
@@ -72,17 +82,24 @@ class _PassWithNameFromPybind:
     def pass_name(self):
         if self._cached_runner is None:
             self._cached_runner = create_pass_runner(
-                self._pass_name, **self._default_options
+                self._pass_name, op=self._op, **self._default_options
             )
         return self._cached_runner.pass_name
 
     def __call__(self, *args, **options):
         if not args:
-            return create_pass_runner(self._pass_name, **{**self._default_options, **options})
+            return create_pass_runner(
+                self._pass_name, op=self._op,
+                **{**self._default_options, **options},
+            )
         merged = {**self._default_options, **options}
-        return run_pass(args[0], self._pass_name, **merged)
+        return run_pass(args[0], self._pass_name, op=self._op, **merged)
 
 
-def pass_fn(pass_name: str, **options):
-    """Create a pass function with pass_name from pybind. One line per pass."""
-    return _PassWithNameFromPybind(pass_name, **options)
+def pass_fn(pass_name: str, *, op: str | None = None, **options):
+    """Create a pass function with pass_name from pybind.
+
+    ``op=None`` for module-level passes, ``op="func.func"`` for
+    function-level passes.
+    """
+    return _PassWithNameFromPybind(pass_name, op=op, **options)

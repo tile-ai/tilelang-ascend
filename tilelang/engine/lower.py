@@ -17,7 +17,222 @@ from tilelang.engine.phase import (
     LowerAndLegalize,
     OptimizeForTarget,
 )
-from tilelang.tladapter import transforms
+from tilelang.tladapter import transforms, conversion
+from tilelang.tladapter.transforms import hivm as H, mlir as M, bishengir as B
+
+
+def _build_npuir_pass_pipeline() -> list:
+    """Build the full NPUIR pass pipeline (decomposed from bishengir-compile).
+
+    The pipeline mirrors the C++ implementation in PassPipeline.cpp,
+    ConvertToHIVMPipeline.cpp and HIVMPipelines.cpp, fully decomposed into
+    individual passes so that each step is independently observable.
+    """
+    TILELANG_ASCEND_MODE = os.environ.get("TILELANG_ASCEND_MODE")
+    expert = (
+        TILELANG_ASCEND_MODE is None
+        or TILELANG_ASCEND_MODE.lower().strip() in ["expert", "exp", "e"]
+    )
+    disable_tensor = expert
+
+    passes: list = []
+
+    # ── buildBiShengHIRPipeline: front-end passes ──────────────────────
+    passes += [
+        M.canonicalize(top_down=True),
+        B.adapt_triton_kernel,
+        B.canonicalize_module,
+        B.append_device_spec(target="Ascend910B1"),
+    ]
+
+    # ── convert-to-hivm-pipeline (decomposed) ──────────────────────────
+    passes += [
+        conversion.hfusion_to_hivm(mm_map_mode="macro_instr"),
+        conversion.triton_global_kernel_args_to_hivm_op,
+        conversion.tensor_to_hivm,
+        conversion.to_hivm_op,
+    ]
+
+    # ── optimize-hivm-pipeline (decomposed) ────────────────────────────
+    passes.append(H.init_entry_kernel)
+
+    if not disable_tensor:
+        passes += _hivm_pre_bufferization_passes(expert)
+        passes += _hivm_bufferization_passes()
+
+    passes += _hivm_post_bufferization_passes(expert)
+    passes.append(M.inline_scope(force_inline=True))
+    return passes
+
+
+def _canonicalization_hivm():
+    """canonicalizationHIVMPipeline from HIVMPipelines.cpp."""
+    return [
+        B.arith_to_affine,
+        M.scf_canonicalize_iter_arg,
+        B.extended_canonicalizer,
+        M.scf_for_loop_canonicalization,
+        M.cse,
+        B.extended_canonicalizer,      # nested func.func in C++, but module-level is safe
+        H.opt_single_point,
+        B.extended_canonicalizer,
+        M.memref_dse,
+    ]
+
+
+def _hivm_pre_bufferization_passes(expert: bool) -> list:
+    """hivmPreBufferizationOptimizationPipeline from HIVMPipelines.cpp."""
+    passes: list = []
+    passes += [
+        H.normalize_matmul,                                     # propagate-reshape first
+        M.propagate_reshape(for_hivm=True),
+        M.scf_remove_redundant_loop_init,
+        H.normalize_matmul,
+        H.inline_fixpipe,
+        H.tile_batchmm_into_loop,
+        H.insert_load_store_for_mix_cv,
+    ]
+    passes += [
+        H.normalize_matmul,
+        H.insert_nz2nd_for_debug,
+        H.inline_fixpipe,
+    ]
+    passes += [
+        H.insert_load_store_for_mix_cv,
+        H.insert_workspace_for_mix_cv,
+        H.bind_workspace_arg,
+    ]
+    passes.append(H.infer_func_core_type)
+    passes.append(H.auto_blockify_parallel_loop)
+    passes.append(H.mark_multi_buffer(enable_auto=True))
+    passes.append(B.extended_canonicalizer)
+    passes.append(H.inline_otf_broadcast)
+    passes.append(H.cv_pipelining(enable_auto_balance=True))
+    passes += _hivm_cross_core_sync_passes()
+    passes.append(H.insert_infer_workspace_size_func)
+    passes.append(M.lower_memref_ext)
+    passes.append(H.insert_infer_task_type_func)
+    passes.append(H.split_mix_kernel)
+    passes.append(M.inline_scope())
+    if not expert:
+        passes.append(H.tile_and_bind_sub_block)
+    passes.append(M.fold_tensor_empty)
+    passes += _canonicalization_hivm()
+    passes += [
+        M.loop_invariant_code_motion,
+        M.loop_invariant_subset_hoisting,
+    ]
+    passes += [
+        H.clone_tensor_empty,
+        H.hivm_inline_otf_load_store,
+    ]
+    return passes
+
+
+def _hivm_bufferization_passes() -> list:
+    """bufferizationPipeline from HIVMPipelines.cpp (triton path)."""
+    passes: list = []
+    passes += [
+        M.optimize_dps_op_with_yielded_insert_slice,
+        H.clone_tensor_empty,
+    ]
+    passes.append(M.one_shot_bufferize(
+        bufferize_function_boundaries=True,
+        function_boundary_type_conversion="identity-layout-map",
+        allow_return_allocs_from_loops=True,
+        allow_unknown_ops=True,
+    ))
+    passes += _canonicalization_hivm()
+    passes.append(conversion.to_hivm_op)
+    passes.append(M.drop_equivalent_buffer_results)
+    passes += _canonicalization_hivm()
+    passes.append(M.drop_equivalent_buffer_results)
+    return passes
+
+
+def _hivm_cross_core_sync_passes() -> list:
+    """hivmCrossCoreSyncPipeline from HIVMPipelines.cpp."""
+    return [
+        H.mark_real_core_type(),
+        H.inject_block_sync(),
+        H.mark_real_core_type(remove_core_type_attrs=True),
+    ]
+
+
+def _hivm_post_bufferization_passes(expert: bool) -> list:
+    """hivmPostBufferizationOptimizationPipeline from HIVMPipelines.cpp."""
+    passes: list = []
+    passes += [
+        H.lift_zero_rank,
+        M.map_for_to_forall,
+        H.hivm_map_forall_to_blocks,
+        H.hivm_decompose_op,
+        H.sync_block_hoisting,
+        H.bind_sync_block_lock_arg,
+        H.insert_infer_sync_block_lock_num_and_init_func,
+        H.sync_block_lock_lowering,
+        H.non_contiguous_reshape_to_copy,
+        H.infer_hivm_mem_scope,
+        H.hivm_decompose_op,
+    ]
+    passes.append(H.hivm_aggregated_decompose_op(
+        decompose_phase="before-hivm-align"))
+    passes.append(H.hivm_recognize_deinterleave_op)
+    passes.append(H.hivm_aggregated_decompose_op(
+        decompose_phase="after-hivm-recognize-deinterleave"))
+    passes.append(H.hivm_aggregated_decompose_op(
+        decompose_phase="after-hivm-recognize-broadcast"))
+
+    # alignStoragePipeline
+    passes += [
+        H.align_alloc_size,
+        H.mark_stride_align,
+        M.fold_alloc_reshape,
+        H.enable_stride_align,
+    ]
+
+    passes.append(H.hivm_aggregated_decompose_op(
+        decompose_phase="after-hivm-align"))
+    passes.append(H.infer_hivm_data_layout)
+    passes.append(H.hivm_aggregated_decompose_op(
+        decompose_phase="after-infer-hivm-data-layout"))
+
+    passes += [
+        B.extended_canonicalizer,
+        H.auto_infer_buffer_size,
+        B.arith_to_affine,
+        H.constantize_buffer_size,
+        H.set_buffer_size,
+        H.flatten_ops,
+    ]
+    passes.append(H.hivm_aggregated_decompose_op(
+        decompose_phase="after-hivm-flatten-ops"))
+    passes += [
+        H.reduce_rank_subview,
+        H.lift_lowest_stride,
+        H.alloc_extra_buffer,
+        H.infer_hivm_mem_scope,
+    ]
+    passes += _canonicalization_hivm()
+    passes.append(H.inline_load_copy)
+
+    passes.append(H.mark_multi_buffer(
+        enable_auto=True,
+        limit_auto_multi_buffer_only_for_local_buffer=True,
+    ))
+    passes.append(H.plan_memory())
+
+    passes += [
+        H.hivm_lower_to_loops,
+        H.hivm_decompose_op,
+    ]
+    passes += [
+        H.inject_sync(),
+        H.add_ffts_to_sync_block_set_op,
+        H.enable_multi_buffer,
+        H.lift_lowest_stride,
+    ]
+    return passes
 
 
 def is_cpu_device_backend(target: Target):
@@ -252,12 +467,7 @@ def lower(
         if dump_ir:
             print("====== npuir ======")
             print(mlir_str)
-        tladapter_passes = [
-            transforms.mlir.canonicalize(top_down=True),
-            transforms.bishengir.adapt_triton_kernel,
-            transforms.bishengir.canonicalize_module,
-            transforms.bishengir.append_device_spec(target="Ascend910B1"),
-        ]
+        tladapter_passes = _build_npuir_pass_pipeline()
         for i, p in enumerate(tladapter_passes):
             mlir_str = p(mlir_str)
             if dump_ir:
