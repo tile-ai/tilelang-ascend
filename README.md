@@ -68,17 +68,51 @@ We assume you already have an ascend environment with CANN (at least [8.3.RC1](h
 
 ### TileLang-Ascend Installation
 
-Here we use the method of compiling from source code for installation.
+Here we provide two installation methods: installing from wheel package and compiling from source code.
 
-#### a) Download
+#### Method 1: Install from Wheel Package (Recommended)
+
+Download the pre-built wheel package and install it directly:
+
+```bash
+# Set Ascend environment variable
+export ASCEND_HOME_PATH=/usr/local/Ascend/ascend-toolkit/latest
+
+# Install the wheel package
+pip install tilelang-*.whl
+```
+
+#### Method 2: Build Wheel Package from Source
+
+If you need to build the wheel package from source:
+
+```bash
+# Clone the repository
+git clone --recursive https://github.com/tile-ai/tilelang-ascend.git
+cd tilelang-ascend
+
+# Set Ascend environment variable
+export ASCEND_HOME_PATH=/usr/local/Ascend/ascend-toolkit/latest
+
+# Build and install wheel package
+./build_wheel_ascend.sh [--enable-llvm]
+
+# Install the built wheel package
+pip install dist/tilelang-*.whl
+```
+
+#### Method 3: Compile and Install from Source
+
+a) Download
 
     git clone --recursive https://github.com/tile-ai/tilelang-ascend.git
     cd tilelang-ascend
 
-#### b) Compile and Install
+b) Compile and Install
+
     bash install_ascend.sh
 
-#### c) Environment Variable Setup
+c) Environment Variable Setup
 
     source set_env.sh
 

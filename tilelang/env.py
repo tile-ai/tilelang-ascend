@@ -17,7 +17,7 @@ def _find_cuda_home() -> str:
     Adapted from https://github.com/pytorch/pytorch/blob/main/torch/utils/cpp_extension.py
     """
     # Guess #1
-    cuda_home = os.environ.get('CUDA_HOME') or os.environ.get('CUDA_PATH')
+    cuda_home = os.environ.get("CUDA_HOME") or os.environ.get("CUDA_PATH")
     if cuda_home is None:
         # Guess #2
         nvcc_path = shutil.which("nvcc")
@@ -25,11 +25,11 @@ def _find_cuda_home() -> str:
             cuda_home = os.path.dirname(os.path.dirname(nvcc_path))
         else:
             # Guess #3
-            if sys.platform == 'win32':
-                cuda_homes = glob.glob('C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v*.*')
-                cuda_home = '' if len(cuda_homes) == 0 else cuda_homes[0]
+            if sys.platform == "win32":
+                cuda_homes = glob.glob("C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v*.*")
+                cuda_home = "" if len(cuda_homes) == 0 else cuda_homes[0]
             else:
-                cuda_home = '/usr/local/cuda'
+                cuda_home = "/usr/local/cuda"
             if not os.path.exists(cuda_home):
                 cuda_home = None
     return cuda_home if cuda_home is not None else ""
@@ -37,20 +37,38 @@ def _find_cuda_home() -> str:
 
 def _find_rocm_home() -> str:
     """Find the ROCM install path."""
-    rocm_home = os.environ.get('ROCM_PATH') or os.environ.get('ROCM_HOME')
+    rocm_home = os.environ.get("ROCM_PATH") or os.environ.get("ROCM_HOME")
     if rocm_home is None:
         rocmcc_path = shutil.which("hipcc")
         if rocmcc_path is not None:
             rocm_home = os.path.dirname(os.path.dirname(rocmcc_path))
         else:
-            rocm_home = '/opt/rocm'
+            rocm_home = "/opt/rocm"
             if not os.path.exists(rocm_home):
                 rocm_home = None
     return rocm_home if rocm_home is not None else ""
 
 
+def _find_ascend_home() -> str:
+    """Find the Ascend install path."""
+    ascend_home = os.environ.get("ASCEND_HOME_PATH") or os.environ.get("ASCEND_HOME")
+    if ascend_home is None:
+        potential_paths = [
+            "/usr/local/Ascend/ascend-toolkit/latest",
+            "/usr/local/Ascend",
+            "/home/Ascend/ascend-toolkit/latest",
+            "/home/Ascend",
+        ]
+        for path in potential_paths:
+            if os.path.exists(path):
+                ascend_home = path
+                break
+    return ascend_home if ascend_home is not None else ""
+
+
 CUDA_HOME = _find_cuda_home()
 ROCM_HOME = _find_rocm_home()
+ASCEND_HOME = _find_ascend_home()
 
 CUTLASS_INCLUDE_DIR: str | None = os.environ.get("TL_CUTLASS_PATH", None)
 COMPOSABLE_KERNEL_INCLUDE_DIR: str | None = os.environ.get("TL_COMPOSABLE_KERNEL_PATH", None)
@@ -59,8 +77,7 @@ TVM_LIBRARY_PATH: str | None = os.environ.get("TVM_LIBRARY_PATH", None)
 TILELANG_TEMPLATE_PATH: str | None = os.environ.get("TL_TEMPLATE_PATH", None)
 TILELANG_PACKAGE_PATH: str = pathlib.Path(__file__).resolve().parents[0]
 
-TILELANG_CACHE_DIR: str = os.environ.get("TILELANG_CACHE_DIR",
-                                         os.path.expanduser("~/.tilelang/cache"))
+TILELANG_CACHE_DIR: str = os.environ.get("TILELANG_CACHE_DIR", os.path.expanduser("~/.tilelang/cache"))
 
 # Auto-clear cache if environment variable is set
 TILELANG_CLEAR_CACHE = os.environ.get("TILELANG_CLEAR_CACHE", "0")
@@ -68,8 +85,9 @@ TILELANG_CLEAR_CACHE = os.environ.get("TILELANG_CLEAR_CACHE", "0")
 # Auto-tuning related environment variables (used by autotuner.tuner)
 # CPU utilization ratio when TILELANG_AUTO_TUNING_CPU_COUNTS is not set (>0)
 _DEFAULT_CPU_UTILS = "0.9"
-_DEFAULT_CPU_COUNTS = "-1"   # 0 means use utilization ratio
-_DEFAULT_CPU_MAX = "-1"      # 0 means no hard cap
+_DEFAULT_CPU_COUNTS = "-1"  # 0 means use utilization ratio
+_DEFAULT_CPU_MAX = "-1"  # 0 means no hard cap
+
 
 def _get_env_number(name: str, default: str) -> str:
     val = os.environ.get(name, default)
@@ -81,22 +99,19 @@ def _get_env_number(name: str, default: str) -> str:
         val = default
     return val
 
-TILELANG_AUTO_TUNING_CPU_UTILITIES: str = _get_env_number(
-    "TILELANG_AUTO_TUNING_CPU_UTILITIES", _DEFAULT_CPU_UTILS)
-TILELANG_AUTO_TUNING_CPU_COUNTS: str = _get_env_number(
-    "TILELANG_AUTO_TUNING_CPU_COUNTS", _DEFAULT_CPU_COUNTS)
-TILELANG_AUTO_TUNING_MAX_CPU_COUNT: str = _get_env_number(
-    "TILELANG_AUTO_TUNING_MAX_CPU_COUNT", _DEFAULT_CPU_MAX)
+
+TILELANG_AUTO_TUNING_CPU_UTILITIES: str = _get_env_number("TILELANG_AUTO_TUNING_CPU_UTILITIES", _DEFAULT_CPU_UTILS)
+TILELANG_AUTO_TUNING_CPU_COUNTS: str = _get_env_number("TILELANG_AUTO_TUNING_CPU_COUNTS", _DEFAULT_CPU_COUNTS)
+TILELANG_AUTO_TUNING_MAX_CPU_COUNT: str = _get_env_number("TILELANG_AUTO_TUNING_MAX_CPU_COUNT", _DEFAULT_CPU_MAX)
 
 # SETUP ENVIRONMENT VARIABLES
-CUTLASS_NOT_FOUND_MESSAGE = ("CUTLASS is not installed or found in the expected path")
+CUTLASS_NOT_FOUND_MESSAGE = "CUTLASS is not installed or found in the expected path"
 ", which may lead to compilation bugs when utilize tilelang backend."
-COMPOSABLE_KERNEL_NOT_FOUND_MESSAGE = (
-    "Composable Kernel is not installed or found in the expected path")
+COMPOSABLE_KERNEL_NOT_FOUND_MESSAGE = "Composable Kernel is not installed or found in the expected path"
 ", which may lead to compilation bugs when utilize tilelang backend."
-TL_TEMPLATE_NOT_FOUND_MESSAGE = ("TileLang is not installed or found in the expected path")
+TL_TEMPLATE_NOT_FOUND_MESSAGE = "TileLang is not installed or found in the expected path"
 ", which may lead to compilation bugs when utilize tilelang backend."
-TVM_LIBRARY_NOT_FOUND_MESSAGE = ("TVM is not installed or found in the expected path")
+TVM_LIBRARY_NOT_FOUND_MESSAGE = "TVM is not installed or found in the expected path"
 
 SKIP_LOADING_TILELANG_SO = os.environ.get("SKIP_LOADING_TILELANG_SO", "0")
 
@@ -109,21 +124,17 @@ if TVM_IMPORT_PYTHON_PATH is not None:
 else:
     install_tvm_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "3rdparty", "tvm")
     if os.path.exists(install_tvm_path) and install_tvm_path not in sys.path:
-        os.environ["PYTHONPATH"] = (
-            install_tvm_path + "/python:" + os.environ.get("PYTHONPATH", ""))
+        os.environ["PYTHONPATH"] = install_tvm_path + "/python:" + os.environ.get("PYTHONPATH", "")
         sys.path.insert(0, install_tvm_path + "/python")
         TVM_IMPORT_PYTHON_PATH = install_tvm_path + "/python"
 
-    develop_tvm_path = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), "..", "3rdparty", "tvm")
+    develop_tvm_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "3rdparty", "tvm")
     if os.path.exists(develop_tvm_path) and develop_tvm_path not in sys.path:
-        os.environ["PYTHONPATH"] = (
-            develop_tvm_path + "/python:" + os.environ.get("PYTHONPATH", ""))
+        os.environ["PYTHONPATH"] = develop_tvm_path + "/python:" + os.environ.get("PYTHONPATH", "")
         sys.path.insert(0, develop_tvm_path + "/python")
         TVM_IMPORT_PYTHON_PATH = develop_tvm_path + "/python"
 
-    develop_tvm_library_path = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), "..", "build", "tvm")
+    develop_tvm_library_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "build", "tvm")
     install_tvm_library_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib")
     if os.environ.get("TVM_LIBRARY_PATH") is None:
         if os.path.exists(develop_tvm_library_path):
@@ -142,28 +153,24 @@ else:
         TVM_LIBRARY_PATH = os.environ.get("TVM_LIBRARY_PATH", None)
 
 if os.environ.get("TL_CUTLASS_PATH", None) is None:
-    install_cutlass_path = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), "3rdparty", "cutlass")
-    develop_cutlass_path = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), "..", "3rdparty", "cutlass")
+    install_cutlass_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "3rdparty", "cutlass")
+    develop_cutlass_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "3rdparty", "cutlass")
     if os.path.exists(install_cutlass_path):
         os.environ["TL_CUTLASS_PATH"] = install_cutlass_path + "/include"
         CUTLASS_INCLUDE_DIR = install_cutlass_path + "/include"
-    elif (os.path.exists(develop_cutlass_path) and develop_cutlass_path not in sys.path):
+    elif os.path.exists(develop_cutlass_path) and develop_cutlass_path not in sys.path:
         os.environ["TL_CUTLASS_PATH"] = develop_cutlass_path + "/include"
         CUTLASS_INCLUDE_DIR = develop_cutlass_path + "/include"
     else:
         logger.warning(CUTLASS_NOT_FOUND_MESSAGE)
 
 if os.environ.get("TL_COMPOSABLE_KERNEL_PATH", None) is None:
-    install_ck_path = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), "3rdparty", "composable_kernel")
-    develop_ck_path = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), "..", "3rdparty", "composable_kernel")
+    install_ck_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "3rdparty", "composable_kernel")
+    develop_ck_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "3rdparty", "composable_kernel")
     if os.path.exists(install_ck_path):
         os.environ["TL_COMPOSABLE_KERNEL_PATH"] = install_ck_path + "/include"
         COMPOSABLE_KERNEL_INCLUDE_DIR = install_ck_path + "/include"
-    elif (os.path.exists(develop_ck_path) and develop_ck_path not in sys.path):
+    elif os.path.exists(develop_ck_path) and develop_ck_path not in sys.path:
         os.environ["TL_COMPOSABLE_KERNEL_PATH"] = develop_ck_path + "/include"
         COMPOSABLE_KERNEL_INCLUDE_DIR = develop_ck_path + "/include"
     else:
@@ -175,7 +182,7 @@ if os.environ.get("TL_TEMPLATE_PATH", None) is None:
     if os.path.exists(install_tl_template_path):
         os.environ["TL_TEMPLATE_PATH"] = install_tl_template_path
         TILELANG_TEMPLATE_PATH = install_tl_template_path
-    elif (os.path.exists(develop_tl_template_path) and develop_tl_template_path not in sys.path):
+    elif os.path.exists(develop_tl_template_path) and develop_tl_template_path not in sys.path:
         os.environ["TL_TEMPLATE_PATH"] = develop_tl_template_path
         TILELANG_TEMPLATE_PATH = develop_tl_template_path
     else:
@@ -185,6 +192,7 @@ if os.environ.get("TL_TEMPLATE_PATH", None) is None:
 # Cache control
 class CacheState:
     """Class to manage global kernel caching state."""
+
     _enabled = True
 
     @classmethod
@@ -216,6 +224,7 @@ __all__ = [
     "TILELANG_TEMPLATE_PATH",
     "CUDA_HOME",
     "ROCM_HOME",
+    "ASCEND_HOME",
     "TILELANG_CACHE_DIR",
     "TILELANG_AUTO_TUNING_CPU_UTILITIES",
     "TILELANG_AUTO_TUNING_CPU_COUNTS",
