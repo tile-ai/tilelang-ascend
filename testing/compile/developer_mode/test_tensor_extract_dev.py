@@ -1,5 +1,4 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2025.
-import os
 import pytest
 import argparse
 import torch
@@ -18,14 +17,15 @@ parser.add_argument("--M", type=int, default=4, help="")
 parser.add_argument("--N", type=int, default=4, help="")
 parser.add_argument("--n", type=int, default=32, help="")
 
+
 def vec_add(M, N, n):
     dtype = "float32"
 
     @T.prim_func
     def add(
-            A: T.Tensor((M, N), dtype),
-            B: T.Tensor((3,), dtype),
-            C: T.Tensor((M, N), dtype),
+        A: T.Tensor((M, N), dtype),
+        B: T.Tensor((3,), dtype),
+        C: T.Tensor((M, N), dtype),
     ):
         with T.Kernel(n, is_npu=True) as (cid, _):
             i = cid
@@ -41,6 +41,7 @@ def vec_add(M, N, n):
             T.copy(C_ub, C[i, :])
 
     return add
+
 
 def generate_tensor(shape, dtype, clear=False):
     """generate tensor"""
@@ -63,13 +64,15 @@ def test_tensor_extract():
         main_args.M,
         main_args.N,
         main_args.n,
-
     )
-    kernel = tilelang.engine.lower(func, target='npuir')
+    kernel = tilelang.engine.lower(func, target="npuir")
     # print(kernel)
 
     result = npuir_compile_to_bin(kernel)
-    assert result is not None and len(result) > 0, "npuir compile failed or returned empty"
+    assert result is not None and len(result) > 0, (
+        "npuir compile failed or returned empty"
+    )
+
 
 if __name__ == "__main__":
     test_tensor_extract()

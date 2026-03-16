@@ -1,6 +1,5 @@
 # Copyright (c) Tile-AI Corporation.
 # Licensed under the MIT License.
-import os
 import pytest
 
 import tilelang
@@ -15,13 +14,14 @@ tilelang.cache.clear_cache()
 M = 512
 N = 512
 
+
 def vec_bitcast(M, N, block_M, block_N, src_dtype="float16"):
     m_num = M // block_M
     n_num = N // block_N
 
     @T.prim_func
     def main(
-            A: T.Tensor((M, N), src_dtype),
+        A: T.Tensor((M, N), src_dtype),
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, _):
             bx_ = cid // n_num
@@ -35,13 +35,17 @@ def vec_bitcast(M, N, block_M, block_N, src_dtype="float16"):
 
     return main
 
+
 def test_vec_bitcast():
     func = vec_bitcast(M, N, 128, 256)
     kernel = tilelang.engine.lower(func)
     # print(kernel)
 
     result = npuir_compile_to_bin(kernel)
-    assert result is not None and len(result) > 0, "npuir compile failed or returned empty"
+    assert result is not None and len(result) > 0, (
+        "npuir compile failed or returned empty"
+    )
+
 
 if __name__ == "__main__":
     test_vec_bitcast()

@@ -13,15 +13,16 @@ tilelang.cache.clear_cache()
 
 N = 1024
 
+
 def impl(N, block_N, dtype="float32"):
     n_num = N // block_N
 
     @T.prim_func
     def main(
-            A: T.Tensor((N), dtype),
-            B: T.Tensor((N), dtype),
-            C: T.Tensor((N), dtype),
-            shape: T.int32,
+        A: T.Tensor((N), dtype),
+        B: T.Tensor((N), dtype),
+        C: T.Tensor((N), dtype),
+        shape: T.int32,
     ):
         with T.Kernel(n_num, is_npu=True) as (cid, _):
             a = A[cid * block_N]
@@ -31,13 +32,17 @@ def impl(N, block_N, dtype="float32"):
 
     return main
 
+
 def test_scalar_load():
     func = impl(N, 1024)
     kernel = tilelang.engine.lower(func)
     # print(kernel)
 
     result = npuir_compile_to_bin(kernel)
-    assert result is not None and len(result) > 0, "npuir compile failed or returned empty"
+    assert result is not None and len(result) > 0, (
+        "npuir compile failed or returned empty"
+    )
+
 
 if __name__ == "__main__":
     test_scalar_load()

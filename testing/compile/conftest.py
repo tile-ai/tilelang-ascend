@@ -40,7 +40,9 @@ def _marker_value(item: pytest.Item, marker_name: str) -> Optional[str]:
     return values[0]
 
 
-def _matches_filter(item: pytest.Item, marker_name: str, selected: Sequence[str]) -> bool:
+def _matches_filter(
+    item: pytest.Item, marker_name: str, selected: Sequence[str]
+) -> bool:
     if not selected:
         return True
     marker_value = _marker_value(item, marker_name)
@@ -56,7 +58,9 @@ def pytest_addoption(parser):
     )
 
 
-def pytest_collection_modifyitems(config: pytest.Config, items: List[pytest.Item]) -> None:
+def pytest_collection_modifyitems(
+    config: pytest.Config, items: List[pytest.Item]
+) -> None:
     selected_modes = _parse_csv(config.getoption("--mode"))
     if not selected_modes:
         return
