@@ -348,7 +348,9 @@ def select(
             offset = 0
             for i in range(len(indices)):
                 offset += indices[i] * strides[i]
-            return buffer.access_ptr(access_mask=access_type, offset=offset)
+            extent = [x.extent for x in object.region]
+            size_extent = math.prod(extent)
+            return buffer.access_ptr(access_mask=access_type, offset=offset, extent=size_extent)
         else:
             raise ValueError(
                 f"Unsupported argument type: {type(object)} for buffer {object}"

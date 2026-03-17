@@ -73,6 +73,7 @@ public:
     std::string offset;
     std::string type;
     bool is_slice;
+    std::string ub_name;
   };
 private:
   void AutoBarrierCodegen (const CallNode *op);
@@ -153,7 +154,8 @@ private:
   bool ValidLayoutEnabled(const AllocateNode *op);
 
   std::string GetTempVarName(const std::string& temp_name);
-  void CreateUbVariable(const std::string& temp_name, const ShapeInfo& shape_info);
+  void CreateUbVariableND(const std::string& temp_name, const ShapeInfo& shape_info);
+  void CreateUbVariableDN(const std::string& temp_name, const ShapeInfo& shape_info);
   ShapeInfo GetSliceInfo(const CallNode *op);
 
   // Whether global barrier is needed.
@@ -232,9 +234,7 @@ private:
 
   std::string current_resource_scope_ = ""; // 标识是CUBE还是VEC
 
-  int32_t select_num = 0; 
-
-  int32_t reduce_num = 0;
+  int32_t select_num = 0;
 };
 
 } // namespace codegen
