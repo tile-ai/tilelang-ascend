@@ -27,11 +27,11 @@ using namespace tir;
   }                                                                            \
   TVM_REGISTER_OP("tl." #OpName)                                               \
       .set_attr<TScriptPrinterName>("TScriptPrinterName", #OpName)
-
+ 
 
 AscendCopy::AscendCopy(Array<PrimExpr> args, BufferMap vmap) : args_(args) {
   Array<Range> rgs[2];
-  Buffer bf[2];
+   Buffer bf[2];
   Array<PrimExpr> ets[2];
   transposeL1 = 0;
   for (int i = 0; i < 2; i++) {
