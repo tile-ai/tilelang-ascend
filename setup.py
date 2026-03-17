@@ -134,12 +134,12 @@ def get_rocm_version():
     return LooseVersion("5.0.0")
 
 
-def get_ascend_version():
+def get_cann_version():
     """Get the Ascend version from version.info."""
     ascend_home = os.environ.get("ASCEND_HOME_PATH") or os.environ.get("ASCEND_HOME", "/usr/local/Ascend/ascend-toolkit/latest")
-    ascend_version_file = os.path.join(ascend_home, "opp", "version.info")
-    if os.path.exists(ascend_version_file):
-        with open(ascend_version_file, "r") as f:
+    cann_version_file = os.path.join(ascend_home, "opp", "version.info")
+    if os.path.exists(cann_version_file):
+        with open(cann_version_file, "r") as f:
             content = f.read()
             match = re.search(r"Version=(\d+\.\d+\.\d+)", content)
             if match:
@@ -157,9 +157,9 @@ def get_tilelang_version(with_cuda=True, with_system_info=True, with_commit_id=F
     if with_cuda:
         if USE_ASCEND:
             if ASCEND_HOME:
-                ascend_version = str(get_ascend_version())
-                ascend_version_str = ascend_version.replace(".", "")[:3]
-                local_version_parts.append(f"ascend{ascend_version_str}")
+                cann_version = str(get_cann_version())
+                cann_version_str = cann_version.replace(".", "")[:3]
+                local_version_parts.append(f"cann{cann_version_str}")
         elif USE_ROCM:
             if ROCM_HOME:
                 rocm_version = str(get_rocm_version())
