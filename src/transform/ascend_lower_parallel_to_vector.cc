@@ -707,7 +707,7 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
       }
     };
 
-    Class UseDimChecker : public StmtExprVisitor {
+    class UseDimChecker : public StmtExprVisitor {
     public:
       bool container_2d_dim = false;
 
