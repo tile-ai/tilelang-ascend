@@ -1,4 +1,4 @@
-name: Ascend-PTO CI
+name: AscendC-PTO CI
 
 on: [pull_request]
 
