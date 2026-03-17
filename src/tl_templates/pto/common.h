@@ -56,7 +56,7 @@ AICORE PTO_INLINE void cvt_tile(int32_t src_addr,
 }
 
 template <typename T1, typename T2, uint32_t M, uint32_t N, uint32_t K,
-          uint32_t validM = M, uint32_t validN = N, uint32_t validK = K, uint32_t K_tail, 
+          uint32_t validM = M, uint32_t validN = N, uint32_t validK = K, uint32_t K_tail,
           bool transpose_A = false, bool transpose_B = false>
 AICORE PTO_INLINE void gemm_v0(
     std::conditional_t<transpose_A,
@@ -87,7 +87,7 @@ AICORE PTO_INLINE void gemm_v0(
 
         // Dynamically define the L0 cache size based on whether the tile is an end tile.
         if (is_tail_block) {
-            pto::TileLeft<T1, M, K_tail> l0a;  
+            pto::TileLeft<T1, M, K_tail> l0a;
             pto::TileRight<T1, K_tail, N> l0b;
             pto::TASSIGN(l0a, 0x0);
             pto::TASSIGN(l0b, 0x0);
@@ -123,10 +123,10 @@ AICORE PTO_INLINE void gemm_v0(
             } else {
                 pto::TMATMUL_ACC(C, C, l0a, l0b);
             }
-           
+
         } else {
             // Non-tail block: The L0 cache is defined at the standard size (current_kSize = kL0Size=128).
-            pto::TileLeft<T1, M, kL0Size> l0a; 
+            pto::TileLeft<T1, M, kL0Size> l0a;
             pto::TileRight<T1, kL0Size, N> l0b;
             pto::TASSIGN(l0a, 0x0);
             pto::TASSIGN(l0b, 0x0);
@@ -452,7 +452,7 @@ AICORE PTO_INLINE void axpy(
     pipe_barrier(PIPE_V);
     TADD(dst, dst, src0);
     pipe_barrier(PIPE_V);
-    TDIVS(src0, src0, scalar_value);
+    TMULS(src0, src0, 1.0f/scalar_value);
 }
 
 template <typename T1, typename T2, typename T3,
@@ -626,8 +626,8 @@ template<pipe_t pipe, pipe_t tpipe> AICORE PTO_INLINE void wait_flag_pipeline(in
     }
 }
 
-template <typename dstT, int32_t dstRow, int32_t dstCol, 
-          int32_t dstRowValid, int32_t dstColValid, 
+template <typename dstT, int32_t dstRow, int32_t dstCol,
+          int32_t dstRowValid, int32_t dstColValid,
           typename srcT, int32_t srcRow, int32_t srcCol,
           int32_t srcRowValid, int32_t srcColValid,
           int32_t src_element_count>
@@ -641,19 +641,19 @@ AICORE PTO_INLINE void TROWEXPAND_with_slice_buffer(
 
   pto::TROWEXPAND(dst, src_temp_ub);
 }
-template<pipe_t pipe> 
+template<pipe_t pipe>
 AICORE PTO_INLINE void set_cross_flag(int32_t flag, int32_t mode) {
     int config = 1 | (mode << 4) | (flag << 8);
     ffts_cross_core_sync(pipe, config);
 }
 
-template<pipe_t pipe> 
+template<pipe_t pipe>
 AICORE PTO_INLINE void set_intra_block_cube(int32_t flag) {
     set_intra_block(pipe, flag);
     set_intra_block(pipe, flag + 16);
 }
 
-template<pipe_t pipe> 
+template<pipe_t pipe>
 AICORE PTO_INLINE void set_intra_block_vec(int32_t flag) {
     set_intra_block(pipe, flag);
 }
@@ -662,13 +662,13 @@ AICORE PTO_INLINE void wait_cross_flag(int32_t flag) {
     wait_flag_dev(flag);
 }
 
-template<pipe_t pipe> 
+template<pipe_t pipe>
 AICORE PTO_INLINE void wait_intra_block_cube(int32_t flag) {
     wait_intra_block(pipe, flag);
     wait_intra_block(pipe, flag + 16);
 }
 
-template<pipe_t pipe> 
+template<pipe_t pipe>
 AICORE PTO_INLINE void wait_intra_block_vec(int32_t flag) {
     wait_intra_block(pipe, flag);
 }

@@ -32,12 +32,12 @@ def gelu_grad(M, N, block_M, block_N, dtype="float"):
             bx = cid // n_num
             by = cid % n_num
 
-            cmp_ub = T.alloc_ub((block_M // VEC_NUM, block_N), "uint8")
-            x_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
-            xsqr_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
-            px_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
-            res0_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
-            div_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
+            cmp_ub = T.alloc_shared((block_M // VEC_NUM, block_N), "uint8")
+            x_ub = T.alloc_shared((block_M // VEC_NUM, block_N), dtype)
+            xsqr_ub = T.alloc_shared((block_M // VEC_NUM, block_N), dtype)
+            px_ub = T.alloc_shared((block_M // VEC_NUM, block_N), dtype)
+            res0_ub = T.alloc_shared((block_M // VEC_NUM, block_N), dtype)
+            div_ub = T.alloc_shared((block_M // VEC_NUM, block_N), dtype)
 
             T.copy(x[bx * block_M + vid * block_M // VEC_NUM, by * block_N], x_ub)
             T.tile.mul(xsqr_ub, x_ub, x_ub)
