@@ -447,7 +447,7 @@ def AscendStorageRewrite(is_npu: bool = False):
     """
     return _ffi_api.AscendStorageRewrite(is_npu)  # type: ignore
 
-def AscendLowerOpaqueBlock(): 
+def AscendLowerOpaqueBlock():
     """LowerOpaqueBlock for Ascend.
 
     Returns

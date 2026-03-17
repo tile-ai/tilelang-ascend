@@ -47,7 +47,7 @@ public:
     arith::Analyzer ana;
     auto pass = BufferFlattener(&ana);
     if (auto init_map =
-      func->attrs.GetAttr<Map<Var, PrimExpr>>(tl::attr::kLocalVarInit)) {
+            func->attrs.GetAttr<Map<Var, PrimExpr>>(tl::attr::kLocalVarInit)) {
       pass.local_var_init_map_ = init_map.value();
     }
     auto writer = func.CopyOnWrite();

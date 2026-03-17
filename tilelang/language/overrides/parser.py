@@ -8,12 +8,10 @@ from tvm.script.ir_builder import tir as T
 from tvm.script.ir_builder.base import IRBuilder
 from tvm.script.ir_builder.base import IRBuilderFrame as Frame
 from tvm.script.parser._core import dispatch, doc, Parser
-from tvm.tir import Buffer,BufferLoad, Var, IterVar, PrimExpr
+from tvm.tir import Buffer,BufferLoad, Var, IterVar
 
-from tvm.script.parser.tir import parser as tvm_tir_parser
 
 import tvm
-from functools import partial
 
 # Original implementation located at
 # 3rdparty/tvm/python/tvm/script/parser/tir/parser.py (bind_assign_value).

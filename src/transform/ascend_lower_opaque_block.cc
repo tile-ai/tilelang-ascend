@@ -23,14 +23,14 @@
  * remove it when updating TVM submodule to latest version
  */
 
+#include <tvm/ir/attrs.h>
 #include <tvm/tir/stmt_functor.h>
 #include <tvm/tir/transform.h>
-#include <tvm/ir/attrs.h>
 
 #include <string>
 
-#include "../op/builtin.h"
 #include "../../3rdparty/tvm/src/tir/transforms/ir_utils.h"
+#include "../op/builtin.h"
 
 namespace tvm {
 namespace tl {
@@ -41,7 +41,7 @@ using namespace tir;
  * \brief Remove Block to ensure that the TIR can not be scheduled again.
  */
 class OpaqueBlockLower : public StmtExprMutator {
- public:
+public:
   static PrimFunc Rewrite(PrimFunc f) {
     auto fptr = f.CopyOnWrite();
     OpaqueBlockLower lower;
@@ -58,11 +58,12 @@ class OpaqueBlockLower : public StmtExprMutator {
     return f;
   }
 
- private:
-  Stmt VisitStmt_(const BlockRealizeNode* op) final {
+private:
+  Stmt VisitStmt_(const BlockRealizeNode *op) final {
     // We have convert blocks into opaque blocks in previous passes.
-    ICHECK(op->iter_values.empty()) << "Non-opaque blocks are not allowed in FlattenBuffer. Please "
-                                       "call pass ConvertBlocksToOpaque before.";
+    ICHECK(op->iter_values.empty())
+        << "Non-opaque blocks are not allowed in FlattenBuffer. Please "
+           "call pass ConvertBlocksToOpaque before.";
     // Step 1. Visit the body
     Block new_block = Downcast<Block>(this->VisitStmt(op->block));
     PrimExpr predicate = this->VisitExpr(op->predicate);
@@ -79,7 +80,7 @@ class OpaqueBlockLower : public StmtExprMutator {
 
     // Step 4. Handle allocations in reverse order
     for (size_t i = new_block->alloc_buffers.size(); i > 0; --i) {
-      const Buffer& buffer = new_block->alloc_buffers[i - 1];
+      const Buffer &buffer = new_block->alloc_buffers[i - 1];
       Array<PrimExpr> allocation_shape = GetBufferAllocationShape(buffer);
       body = DeclBuffer(buffer, std::move(body));
       Map<String, ObjectRef> allocate_annotations;
@@ -93,14 +94,14 @@ class OpaqueBlockLower : public StmtExprMutator {
         }
         allocate_annotations.Set(tir::attr::buffer_dim_align, allocate_aligns);
       }
-      
+
       auto init_it = local_var_init_map_.find(buffer->data);
       if (init_it != local_var_init_map_.end()) {
         const PrimExpr &init = (*init_it).second;
         allocate_annotations.Set(tl::attr::kLocalVarInit, init);
       }
-      body = Allocate(buffer->data, buffer->dtype, allocation_shape, const_true(), std::move(body),
-                      allocate_annotations);
+      body = Allocate(buffer->data, buffer->dtype, allocation_shape,
+                      const_true(), std::move(body), allocate_annotations);
     }
     // Step 5. Insert attribute statements converted from pragmas
     for (auto it = pragma_attrs.rbegin(); it != pragma_attrs.rend(); ++it) {
@@ -109,7 +110,7 @@ class OpaqueBlockLower : public StmtExprMutator {
     return body;
   }
 
-  Stmt VisitStmt_(const BlockNode* op) final {
+  Stmt VisitStmt_(const BlockNode *op) final {
     Block block = Downcast<Block>(StmtExprMutator::VisitStmt_(op));
     if (block->annotations.count("stmt_group")) {
       return block->body;
@@ -117,7 +118,7 @@ class OpaqueBlockLower : public StmtExprMutator {
     return block;
   }
 
-  Stmt VisitStmt_(const ForNode* op) final {
+  Stmt VisitStmt_(const ForNode *op) final {
     // Step 1. Update unit loop info.
     PrimExpr min = this->VisitExpr(op->min);
     PrimExpr extent = this->VisitExpr(op->extent);
@@ -142,8 +143,8 @@ class OpaqueBlockLower : public StmtExprMutator {
       return body;
     } else {
       // Case 3. An ordinary loop
-      body = For(op->loop_var, std::move(min), std::move(extent), op->kind, std::move(body),
-                 NullOpt, new_annotations);
+      body = For(op->loop_var, std::move(min), std::move(extent), op->kind,
+                 std::move(body), NullOpt, new_annotations);
     }
     // Step 5. Insert nested attrs
     for (auto it = pragma_attrs.rbegin(); it != pragma_attrs.rend(); ++it) {
@@ -152,7 +153,7 @@ class OpaqueBlockLower : public StmtExprMutator {
     return body;
   }
 
-  PrimExpr VisitExpr_(const VarNode* op) final {
+  PrimExpr VisitExpr_(const VarNode *op) final {
     Var var = GetRef<Var>(op);
     auto it = unit_loop_vars_.find(var);
     if (it == unit_loop_vars_.end()) {
@@ -166,8 +167,8 @@ class OpaqueBlockLower : public StmtExprMutator {
     }
   }
 
-  static Stmt MakeLaunchThread(PrimExpr min, PrimExpr extent, Var var, String thread_tag,
-                               Stmt body) {
+  static Stmt MakeLaunchThread(PrimExpr min, PrimExpr extent, Var var,
+                               String thread_tag, Stmt body) {
     IterVar iter_var(/*dom=*/Range::FromMinExtent(min, extent),
                      /*var=*/std::move(var),
                      /*iter_type=*/IterVarType::kThreadIndex,
@@ -183,7 +184,7 @@ class OpaqueBlockLower : public StmtExprMutator {
   }
 
   /*! \brief Convert attr value from annotation map into PrimExpr. */
-  PrimExpr ConvertAttrValue(const String& key, const ObjectRef& obj) {
+  PrimExpr ConvertAttrValue(const String &key, const ObjectRef &obj) {
     if (!obj.defined()) {
       return PrimExpr();
     } else if (auto expr = obj.as<PrimExpr>()) {
@@ -191,8 +192,8 @@ class OpaqueBlockLower : public StmtExprMutator {
     } else if (auto str = obj.as<String>()) {
       return std::move(StringImm(str.value()));
     } else {
-      LOG(FATAL) << "Illegal attribute of key " << key << ", value type " << obj->GetTypeKey()
-                 << " not supported";
+      LOG(FATAL) << "Illegal attribute of key " << key << ", value type "
+                 << obj->GetTypeKey() << " not supported";
       return PrimExpr();
     }
   }
@@ -203,21 +204,22 @@ class OpaqueBlockLower : public StmtExprMutator {
    * are lowered to `AttrStmt` by legacy TE schedule convention.
    * (2) the non-pragma loop annotations are preserved
    * (3) the non-pragma block annotations are dropped
-   * \return New annotation dict with preserved keys. Also update pragma attr pairs ordered by key.
+   * \return New annotation dict with preserved keys. Also update pragma attr
+   * pairs ordered by key.
    */
-  Map<String, ObjectRef> HandleAnnotations(
-      const Map<String, ObjectRef>& annotations, 
-      std::vector<std::pair<std::string, PrimExpr>>* pragma_attrs, 
-      bool is_block,
-      const Array<Buffer> &alloc_buffers = Array<Buffer>()) {
+  Map<String, ObjectRef>
+  HandleAnnotations(const Map<String, ObjectRef> &annotations,
+                    std::vector<std::pair<std::string, PrimExpr>> *pragma_attrs,
+                    bool is_block,
+                    const Array<Buffer> &alloc_buffers = Array<Buffer>()) {
     Map<String, ObjectRef> preserved_annotations;
     pragma_attrs->clear();
-    for (const auto& kv : annotations) {
-      const String& key = kv.first;
+    for (const auto &kv : annotations) {
+      const String &key = kv.first;
       if (tir::attr::IsPragmaKey(key)) {
         pragma_attrs->emplace_back(key, ConvertAttrValue(key, kv.second));
       } else if (key == tl::attr::kLocalVarInit) {
-        if (auto local_init_map = kv.second.as<Map<Var, PrimExpr>>()) { 
+        if (auto local_init_map = kv.second.as<Map<Var, PrimExpr>>()) {
 
           for (const auto &pair : local_init_map.value()) {
             local_var_init_map_.Set(pair.first, pair.second);
@@ -242,8 +244,9 @@ class OpaqueBlockLower : public StmtExprMutator {
         preserved_annotations.Set(key, kv.second);
       }
     }
-    std::sort(pragma_attrs->begin(), pragma_attrs->end(),
-              [](const auto& p1, const auto& p2) { return p1.first < p2.first; });
+    std::sort(
+        pragma_attrs->begin(), pragma_attrs->end(),
+        [](const auto &p1, const auto &p2) { return p1.first < p2.first; });
     return preserved_annotations;
   }
 
@@ -260,14 +263,17 @@ class OpaqueBlockLower : public StmtExprMutator {
     return Buffer();
   }
 
-  /*! \brief Record the loop_var and loop start value of unit loops, whose extent is one. */
-  std::unordered_map<Var, PrimExpr, ObjectPtrHash, ObjectPtrEqual> unit_loop_vars_;
+  /*! \brief Record the loop_var and loop start value of unit loops, whose
+   * extent is one. */
+  std::unordered_map<Var, PrimExpr, ObjectPtrHash, ObjectPtrEqual>
+      unit_loop_vars_;
 
   /*! \brief Attr keys to preserve into loop annotations. */
   std::unordered_set<std::string> preserved_annotations_;
 
   /*! \brief The map from buffer var to its storage alignment information. */
-  std::unordered_map<Var, StorageAlignAnnotation, ObjectPtrHash, ObjectPtrEqual> storage_align_;
+  std::unordered_map<Var, StorageAlignAnnotation, ObjectPtrHash, ObjectPtrEqual>
+      storage_align_;
 
   /*! \brief Local var initializers collected from block annotations. */
   Map<Var, PrimExpr> local_var_init_map_;
@@ -294,8 +300,9 @@ Pass AscendLowerOpaqueBlock() {
   return CreatePrimFuncPass(pass_func, 0, "tl.AscendLowerOpaqueBlock", {});
 }
 
-TVM_REGISTER_GLOBAL("tl.transform.AscendLowerOpaqueBlock").set_body_typed(AscendLowerOpaqueBlock);
-}  // namespace transform
+TVM_REGISTER_GLOBAL("tl.transform.AscendLowerOpaqueBlock")
+    .set_body_typed(AscendLowerOpaqueBlock);
+} // namespace transform
 
-}  // namespace tir
-}  // namespace tvm
+} // namespace tl
+} // namespace tvm
