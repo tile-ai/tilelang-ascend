@@ -59,7 +59,9 @@ def resolve_npu_device_id(device_id: int) -> Tuple[int, Optional[str]]:
 
     device_count = torch.npu.device_count()
     if device_count <= 0:
-        raise RuntimeError("No NPU devices are available from torch.npu.device_count().")
+        raise RuntimeError(
+            "No NPU devices are available from torch.npu.device_count()."
+        )
 
     resolved_device_id = device_id % device_count
     if resolved_device_id == device_id:
@@ -108,7 +110,9 @@ def gen_tensor(
         else:
             int_low = 0 if low is None else int(low)
             int_high = 10 if high is None else int(high)
-            out = torch.randint(low=int_low, high=int_high, size=tuple(shape), dtype=torch_dtype)
+            out = torch.randint(
+                low=int_low, high=int_high, size=tuple(shape), dtype=torch_dtype
+            )
     else:
         raise ValueError(f"Unsupported tensor kind: {kind}")
 
@@ -162,7 +166,10 @@ def build_dtype_param_combos(
 
     if names is None:
         default_names = ["in", "out", "acc"]
-        names = [default_names[i] if i < len(default_names) else f"arg{i}" for i in range(len(dtype_lists))]
+        names = [
+            default_names[i] if i < len(default_names) else f"arg{i}"
+            for i in range(len(dtype_lists))
+        ]
     else:
         names = list(names)
         if len(names) != len(dtype_lists):
@@ -170,7 +177,9 @@ def build_dtype_param_combos(
 
     combos = []
     for item in product(*dtype_lists):
-        param_id = "_".join(f"{name}_{dtype}" for name, dtype in zip(names, item))
+        param_id = "_".join(
+            f"{name}_{dtype}" for name, dtype in zip(names, item, strict=False)
+        )
         combos.append(pytest.param(*item, id=param_id))
 
     return combos
