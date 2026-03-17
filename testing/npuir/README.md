@@ -58,7 +58,12 @@ file-level marker of the same kind.
 ## Runtime Rules
 
 `--npu-device` is the only supported device selector in this pytest layer. The
-session hook sets the current device once before tests run.
+session hook checks `torch.npu.device_count()` once before tests run and sets
+the current device once for the whole session.
+
+If the requested device id is outside the visible range, pytest does not fail.
+It falls back to `requested_device % torch.npu.device_count()` and emits a
+warning so the remapping is visible in the test output.
 
 `mode` is marker-driven. Contributors should not manually wrap tests with
 `with ascend_mode(...)`. The pytest runtime reads the closest `mode` marker and
@@ -140,6 +145,7 @@ pytest testing/npuir --op=copy --mode=Developer --npu-device=0
 - `--op` matches the closest `@pytest.mark.op(...)`
 - `--mode` matches the closest `@pytest.mark.mode(...)`
 - `--npu-device` sets the session device before tests execute
+- out-of-range `--npu-device` values are remapped with modulo and reported as warnings
 
 Tests without a matching marker are excluded when that selector is provided.
 

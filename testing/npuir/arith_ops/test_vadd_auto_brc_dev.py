@@ -1,16 +1,25 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2025.
-import os
-import argparse
 import torch
+import pytest
 import tilelang
 import tilelang.language as T
 
+import testcommon as tc
+
+
+pytestmark = [pytest.mark.mode("Developer")]
+
+M = 256
+N = 256
+BLOCK_M = 64
+BLOCK_N = 64
+
 
 def ref_program(x, y):
-    return x + y[0, :]
+    block_row_indices = torch.arange(x.shape[0], device=x.device) // BLOCK_M * BLOCK_M
+    return x + y.index_select(0, block_row_indices)
 
 
-@tilelang.jit(out_idx=[-1], target="npuir")
 def elementwise_add(M, N, block_M, block_N, in_dtype="float32", out_dtype="float32"):
     @T.prim_func
     def elemAdd(
@@ -36,28 +45,15 @@ def elementwise_add(M, N, block_M, block_N, in_dtype="float32", out_dtype="float
     return elemAdd
 
 
-def main(M=256, N=256, use_autotune=False):
-    os.environ["TILELANG_ASCEND_MODE"] = "Developer"
+@pytest.mark.op("vadd_auto_brc_dev")
+def test_vadd_auto_brc():
     a = torch.randn(M, N, dtype=torch.float32, device="npu")
     b = torch.randn(M, N, dtype=torch.float32, device="npu")
     c = torch.zeros(M, N, dtype=torch.float32, device="npu")
 
-    if use_autotune:
-        kernel = elementwise_add(M, N, in_dtype="float32", out_dtype="float32")
-    else:
-        # Default config
-        config = {"block_M": 64, "block_N": 64}
-        kernel = elementwise_add(M, N, **config, in_dtype="float32", out_dtype="float32")
+    func = elementwise_add(M, N, BLOCK_M, BLOCK_N, in_dtype="float32", out_dtype="float32")
+    kernel = tilelang.compile(func, target="npuir")
 
     kernel(a, b, c)
-    torch.testing.assert_close(c, ref_program(a, b), rtol=1e-2, atol=1e-2)
 
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--m", type=int, default=256)
-    parser.add_argument("--n", type=int, default=256)
-    args, _ = parser.parse_known_args()
-    main(args.m, args.n)
-    print("\033[92mAll check passed!\033[0m")
-
+    tc.assert_close(c.cpu(), ref_program(a, b).cpu(), rtol=1e-2, atol=1e-2)

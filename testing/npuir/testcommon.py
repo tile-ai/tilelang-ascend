@@ -53,6 +53,26 @@ def set_seed(seed: int) -> None:
     torch.manual_seed(seed)
 
 
+def resolve_npu_device_id(device_id: int) -> Tuple[int, Optional[str]]:
+    if device_id < 0:
+        raise ValueError(f"NPU device id must be non-negative, got {device_id}.")
+
+    device_count = torch.npu.device_count()
+    if device_count <= 0:
+        raise RuntimeError("No NPU devices are available from torch.npu.device_count().")
+
+    resolved_device_id = device_id % device_count
+    if resolved_device_id == device_id:
+        return resolved_device_id, None
+
+    return (
+        resolved_device_id,
+        "Requested NPU device "
+        f"{device_id} exceeds the visible range [0, {device_count - 1}]. "
+        f"Falling back to device {resolved_device_id} via modulo with torch.npu.device_count().",
+    )
+
+
 def set_npu_device(device_id: int) -> None:
     torch.npu.set_device(device_id)
 

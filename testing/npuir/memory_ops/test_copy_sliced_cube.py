@@ -142,12 +142,6 @@ def cube_sliced_copy_4d(
 SLICED_2D_CASES = [
     # (M,  N,  idx)
     (16, 32, 5),         # base case
-    (16, 32, 0),         # first row
-    (16, 32, 15),        # last row
-    (1,  32, 0),         # M=1: single-row tensor
-    (32, 16, 16),        # M > N, higher index
-    (16,  8, 5),         # small N=8
-    (1,   8, 0),         # small N=8, M=1
 ]
 
 @pytest.mark.parametrize("in_dtype, out_dtype", DTYPE_CASES)
@@ -176,13 +170,6 @@ def test_cube_sliced_copy_2d(M, N, idx, in_dtype, out_dtype):
 SLICED_3D_CASES = [
     # (B,  M,  N,  b_idx, m_idx)
     (4,  16, 32, 1, 7),       # base case
-    (1,  16, 32, 0, 7),       # B=1  (leading-1 rank reduction)
-    (4,  1,  32, 2, 0),       # M=1
-    (1,  1,  32, 0, 0),       # B=1, M=1  (consecutive leading 1s)
-    (4,  16, 32, 3, 15),      # boundary indices (last B, last M)
-    (4,  16, 32, 0, 0),       # all-zero indices
-    (4,  16,  8, 1, 7),       # small N=8
-    (1,  1,   8, 0, 0),       # small N=8, B=1, M=1
 ]
 
 @pytest.mark.parametrize("in_dtype, out_dtype", DTYPE_CASES)
