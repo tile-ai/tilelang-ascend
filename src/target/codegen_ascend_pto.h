@@ -63,6 +63,17 @@ public:
   // Override this as a work around for __grid_constant__ parameter
   void AddFunction(const GlobalVar &gvar, const PrimFunc &f);
 
+  struct ShapeInfo{
+    int32_t row;
+    int32_t col;
+    int32_t slice_row;
+    int32_t slice_col;
+    int32_t extent;
+    std::string first_addr;
+    std::string offset;
+    std::string type;
+    bool is_slice;
+  };
 private:
   void AutoBarrierCodegen (const CallNode *op);
   void AutoFlagOpCodegen (const CallNode *op, std::string op_name);
@@ -141,6 +152,10 @@ private:
   void UbShapeInputCheck(const AllocateNode *op);
   bool ValidLayoutEnabled(const AllocateNode *op);
 
+  std::string GetTempVarName(const std::string& temp_name);
+  void CreateUbVariable(const std::string& temp_name, const ShapeInfo& shape_info);
+  ShapeInfo GetSliceInfo(const CallNode *op);
+
   // Whether global barrier is needed.
   bool need_global_barrier_{false};
   // Global barrier state
@@ -209,13 +224,15 @@ private:
   };
   std::unordered_map<String, global_tensor> global_tensor_template;
 
+  std::unordered_map<std::string, int32_t> counters_;
+
   bool use_swizzle_{false};
 
   std::string platform_;
 
   std::string current_resource_scope_ = ""; // 标识是CUBE还是VEC
 
-  int32_t select_num = 0;
+  int32_t select_num = 0; 
 
   int32_t reduce_num = 0;
 };

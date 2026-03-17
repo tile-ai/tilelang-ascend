@@ -449,6 +449,68 @@ fragment层级的存储对应偏上的寄存器级别的存储单元，一般用
   C_L0 = T.alloc_fragment((block_M, block_N), accum_dtype)
   ```
 
+- `T.alloc_var(dtype, init, scope='local.var')`:
+
+  **参数**：
+
+  - **dtype** (*str*) – 变量的数据类型（例如：'float32', 'int32', 'bool'）
+
+  - **init** (*可选*) – 初始值，可以是常量值、表达式或其他变量
+
+  - **scope** (*str, 可选*) – 内存作用域，默认为 "local.var"
+
+  **功能说明**：
+
+  分配变量用于存储标量数据。适用于条件判断的标志位、循环计数器、临时标量变量等场景。支持灵活的初始化方式，可以指定初始值或从其他变量初始化。
+
+  **举例**：
+
+  基础用法：
+  ```
+  # 分配布尔类型标志位，初始化为False
+  flag = T.alloc_var("bool", init=False)
+  
+  # 分配整数变量，初始化为1
+  counter = T.alloc_var("int32", init=1)
+  
+  # 分配浮点数变量，初始化为0.0
+  value = T.alloc_var("float32", init=0.0)
+  ```
+
+  变量间初始化：
+  ```
+  # 用另一个变量的值初始化
+  a = T.alloc_var("int32", init=1)
+  b = T.alloc_var("int32", init=a)  # b的初始值为a的值
+  ```
+
+  在条件逻辑中使用：
+  ```
+  flag = T.alloc_var("bool", init=False)
+  a = T.alloc_var("int32", init=1)
+  
+  flag = True
+  if flag:
+      a = 2
+  else:
+      a = a + 1
+  ```
+
+  指定内存作用域：
+  ```
+  # 使用默认作用域
+  var1 = T.alloc_var("int32", init=1)
+  
+  # 显式指定作用域
+  var2 = T.alloc_var("int32", "local.var", init=1)
+  var3 = T.alloc_var("int32", init=1, scope="local.var")
+  ```
+
+  **注意**：
+
+  - 初始化值会直接写入变量，而不是默认的零值
+  - 支持的初始化值类型包括常量、表达式和其他变量
+  
 在Ascend平台中，shared层级的存储对应到L1 Buffer 和 Unified Buffer，前者用于Cube计算，后者对应到Vector计算。但用户无需关心指定的存储是L1 Buffer还是Unified Buffer，TileLang的编译器会通过程序上下文自动分析和识别。fragment层级的存储对应到L0A/L0B/L0C Buffer，同样，用户无需显示指定是分配的是哪种，TileLang编译器会根据程序上下文自动分析和识别。
 
 ![image-tilelang_ascend_arch](./images/image-tilelang_ascend_arch.png)
