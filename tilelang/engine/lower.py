@@ -85,7 +85,6 @@ def _hivm_pre_bufferization_passes(expert: bool) -> list:
     """hivmPreBufferizationOptimizationPipeline from HIVMPipelines.cpp."""
     passes: list = []
     passes += [
-        H.normalize_matmul,                                     # propagate-reshape first
         M.propagate_reshape(for_hivm=True),
         M.scf_remove_redundant_loop_init,
         H.normalize_matmul,
