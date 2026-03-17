@@ -72,8 +72,8 @@ public:
     std::string first_addr;
     std::string offset;
     std::string type;
-    bool is_slice;
     std::string ub_name;
+    bool is_slice;
   };
 private:
   void AutoBarrierCodegen (const CallNode *op);
@@ -234,7 +234,7 @@ private:
 
   std::string current_resource_scope_ = ""; // 标识是CUBE还是VEC
 
-  int32_t select_num = 0;
+  int32_t reduce_num = 0;
 };
 
 } // namespace codegen

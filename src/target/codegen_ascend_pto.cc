@@ -1905,11 +1905,12 @@ void CodeGenTileLangAscendPto::BroadcastOpCodegen(const CallNode *op) {
   auto dst_element_count = op->args[1].as<CallNode>()->args[3];
 
   bool is_slice = false;
+  auto src_shape = buffer_shapess_[GetRef<tir::Var>(
+      op->args[2].as<CallNode>()->args[1].as<VarNode>())];
+  auto dst_shape = buffer_shapess_[GetRef<tir::Var>(
+      op->args[1].as<CallNode>()->args[1].as<VarNode>())];
   ShapeInfo src_shape_info = GetSliceInfo(op->args[2].as<CallNode>());
   ShapeInfo dst_shape_info = GetSliceInfo(op->args[1].as<CallNode>());
-
-  auto dst_type = ub_data_map_[dst_name][0];
-  auto src_type = ub_data_map_[src_name][0];
 
   auto check_equal = [&](const PrimExpr &a, const PrimExpr &b) -> bool {
     tvm::arith::Analyzer analyzer;
@@ -2149,8 +2150,6 @@ void CodeGenTileLangAscendPto::BinaryVecOpsCodegen(const CallNode *op,
     } else {
       applied_scalar = scalar_name;
     }
-
-    this->PrintIndent();
     if (loop_num >= "0" && loop_num <= "9") {
       std::string src_temp_name = GetTempVarName(src_shape_info.ub_name);
       std::string dst_temp_name = GetTempVarName(dst_shape_info.ub_name);
@@ -2160,8 +2159,8 @@ void CodeGenTileLangAscendPto::BinaryVecOpsCodegen(const CallNode *op,
       this->stream << final_op_name << "(" << dst_temp_name << ", "
                    << src_temp_name << ", " << applied_scalar << ");\n";
     } else {
-      this->stream << operation << "(" << var_names[0] << ", " << var_names[1]
-                   << ", " << applied_scalar << ");\n";
+      this->PrintIndent();
+      this->stream << operation << "(" << var_names[0] << ", " << var_names[1] << ", " << applied_scalar << ");\n";
     }
   } else {
     this->PrintIndent();
@@ -2190,10 +2189,10 @@ void CodeGenTileLangAscendPto::UnaryVecOpCodegen(const CallNode *op,
       dst_shape_info.extent != dst_shape_info.row * dst_shape_info.col;
 
   if (src_shape_info.is_slice || dst_shape_info.is_slice) {
-    std::string src_temp_name = GetTempVarName("src_unary_temp");
-    std::string dst_temp_name = GetTempVarName("dst_unary_temp");
-    CreateUbVariable(src_temp_name, src_shape_info);
-    CreateUbVariable(dst_temp_name, dst_shape_info);
+    std::string src_temp_name = GetTempVarName(src_shape_info.ub_name);
+    std::string dst_temp_name = GetTempVarName(dst_shape_info.ub_name);
+    CreateUbVariableND(src_temp_name, src_shape_info);
+    CreateUbVariableND(dst_temp_name, dst_shape_info);
     this->PrintIndent();
     this->stream << op_name << "(" << dst_temp_name << ", " << src_temp_name
                  << ");\n";
