@@ -1,6 +1,6 @@
 import tilelang.language as T
 from tvm.tir import PrimExpr, Buffer, BufferRegion, BufferLoad, Call
-from typing import List, Union, Tuple
+from typing import Union  # noqa: UP035
 from tvm import tir
 from tilelang.language.ascend import _dtype
 
@@ -8,8 +8,8 @@ import math
 
 
 def _get_buffer_info(
-    br: Union[Buffer, BufferRegion], mask: str
-) -> Tuple[Call, PrimExpr]:
+    br: Union[Buffer, BufferRegion], mask: str  # noqa: FA100
+) -> tuple[Call, PrimExpr]:
     """
     Unified handling of Buffer and BufferRegion to retrieve the underlying access pointer and total data size.
 
@@ -49,7 +49,7 @@ def _handle_buffer_region(br: BufferRegion, mask):
     return bf.access_ptr(mask, offset=offset, extent = size_extent), extent
 
 
-def fill(buffer: Union[Buffer, BufferRegion], value: PrimExpr):
+def fill(buffer: Union[Buffer, BufferRegion], value: PrimExpr):  # noqa: FA100
     """Fill a buffer or buffer region with a specified value.
 
     Args:
@@ -62,10 +62,10 @@ def fill(buffer: Union[Buffer, BufferRegion], value: PrimExpr):
     if isinstance(buffer, BufferRegion):
         buffer_ptr, buffer_extent = _handle_buffer_region(buffer, "w")
         size = math.prod(buffer_extent)
-    else: 
+    else:
         buffer_ptr = buffer.access_ptr("w")
         size = math.prod(buffer.shape)
-        
+
     return tir.call_intrin(
         "handle",
         tir.op.Op.get("tl.ascend_fill"),
@@ -102,7 +102,7 @@ def arith_progression(
 
 
 def sort(
-    dst: Union[Buffer, BufferRegion],
+    dst: Union[Buffer, BufferRegion],  # noqa: FA100
     src: Buffer,
     indices: Buffer,
     tmp_buffer: Buffer,
@@ -198,7 +198,7 @@ def topk(dst: Buffer, src: Buffer, tmp: Buffer, block_size: PrimExpr):
     )
 
 
-def gather_mask(dst: Buffer, src: Buffer, src1Pattern: Union[str, Buffer]):
+def gather_mask(dst: Buffer, src: Buffer, src1Pattern: Union[str, Buffer]):  # noqa: FA100
     """Performs a gather mask operation.
 
     This intrinsic invokes the underlying implementation to perform a gather mask
@@ -207,7 +207,7 @@ def gather_mask(dst: Buffer, src: Buffer, src1Pattern: Union[str, Buffer]):
     Args:
         dst: The destination buffer where the result will be stored.
         src: The source buffer containing the input data.
-        src1Pattern: The data collection mask has two modes: built‑in fixed mode and user‑defined mode. 
+        src1Pattern: The data collection mask has two modes: built‑in fixed mode and user‑defined mode.
                      Currently, only fixed mode is supported.
         When the built-in fixed mode is enabled, the data type of src1Pattern is str, including the following 7 modes:
             - "P0101": Extract elements at even indices.
@@ -225,7 +225,7 @@ def gather_mask(dst: Buffer, src: Buffer, src1Pattern: Union[str, Buffer]):
 
     if isinstance(src1Pattern, Buffer):
         assert src1Pattern.dtype == "uint32", f"src1Pattern dtype must be uint32, got {src1Pattern.dtype}"
-        
+
         return tir.call_intrin(
             "handle",
             tir.op.Op.get("tl.ascend_gather_mask"),
@@ -284,10 +284,10 @@ def gatherb(
 
 
 def select(
-    dst: Union[Buffer, BufferRegion],
+    dst: Union[Buffer, BufferRegion],  # noqa: FA100
     selMask: Buffer,
-    src0: Union[Buffer, BufferRegion],
-    src1: Union[Buffer, BufferLoad, PrimExpr],
+    src0: Union[Buffer, BufferRegion],  # noqa: FA100
+    src1: Union[Buffer, BufferLoad, PrimExpr],  # noqa: FA100
     selMode: str,
 ):
     """Performs an element-wise Select operation based on a mask.
@@ -311,7 +311,7 @@ def select(
         A TVM intrinsic call that performs the Select operation.
     """
 
-    def retrieve_shape(object: Union[Buffer, BufferRegion]) -> List[int]:
+    def retrieve_shape(object: Union[Buffer, BufferRegion]) -> list[int]:  # noqa: FA100
         if isinstance(object, Buffer):
             return list(object.shape)
         elif isinstance(object, BufferRegion):
@@ -331,7 +331,7 @@ def select(
     assert dst_shape == src0_shape, "dst and src0 must have the same shape"
 
     def retrieve_ptr(
-        object: Union[Buffer, BufferRegion], access_type: str = "r"
+        object: Union[Buffer, BufferRegion], access_type: str = "r"  # noqa: FA100
     ) -> PrimExpr:
         if isinstance(object, Buffer):
             return object.access_ptr(access_type)
@@ -482,9 +482,9 @@ def brcb(dst: Buffer, src: Buffer, repeat_times: PrimExpr, dst_blk_stride: PrimE
     return T.call_extern("handle", f"tl::ascend::brcb<{_dtype(src)}>", dst_ptr, src_ptr, repeat_times, dst_blk_stride, dst_repeat_stride)
 
 def binary_op(
-    dst: Union[Buffer, BufferRegion],
-    src0: Union[Buffer, BufferRegion],
-    src1: Union[Buffer, BufferRegion, BufferLoad, PrimExpr, float],
+    dst: Union[Buffer, BufferRegion],  # noqa: FA100
+    src0: Union[Buffer, BufferRegion],  # noqa: FA100
+    src1: Union[Buffer, BufferRegion, BufferLoad, PrimExpr, float],  # noqa: FA100
     op: str,
 ):
 
@@ -543,7 +543,7 @@ def binary_op(
         )
 
 
-def add(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, BufferLoad, PrimExpr]):
+def add(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, BufferLoad, PrimExpr]):  # noqa: FA100
     """Performs element-wise addition: dst = src0 + src1.
 
     Args:
@@ -554,7 +554,7 @@ def add(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, BufferLoad,
     return binary_op(dst, src0, src1, "add")
 
 
-def sub(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, BufferLoad]):
+def sub(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, BufferLoad]):  # noqa: FA100
     """Performs element-wise subtraction: dst = src0 - src1.
 
     Args:
@@ -564,7 +564,7 @@ def sub(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, BufferLoad]
     """
     return binary_op(dst, src0, src1, "sub")
 
-def mul(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, BufferLoad, PrimExpr]):
+def mul(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, BufferLoad, PrimExpr]):  # noqa: FA100
     """Performs element-wise multiplication: dst = src0 * src1.
 
     Args:
@@ -574,7 +574,7 @@ def mul(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, BufferLoad,
     """
     return binary_op(dst, src0, src1, "mul")
 
-def div(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, BufferLoad]):
+def div(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, BufferLoad]):  # noqa: FA100
     """Performs element-wise division: dst = src0 / src1.
 
     Args:
@@ -585,7 +585,7 @@ def div(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, BufferLoad]
     return binary_op(dst, src0, src1, "div")
 
 
-def max(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, BufferLoad, PrimExpr]):
+def max(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, BufferLoad, PrimExpr]):  # noqa: FA100
     """Performs element-wise maximum: dst = max(src0, src1).
 
     Args:
@@ -596,7 +596,7 @@ def max(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, BufferLoad,
     return binary_op(dst, src0, src1, "max")
 
 
-def min(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, BufferLoad, PrimExpr]):
+def min(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, BufferLoad, PrimExpr]):  # noqa: FA100
     """Performs element-wise minimum: dst = min(src0, src1).
 
     Args:
@@ -607,7 +607,7 @@ def min(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, BufferLoad,
     return binary_op(dst, src0, src1, "min")
 
 
-def bitwise_and(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, BufferLoad, PrimExpr]):
+def bitwise_and(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, BufferLoad, PrimExpr]):  # noqa: FA100
     """Performs element-wise bitwise AND: dst = src0 & src1.
 
     Args:
@@ -618,7 +618,7 @@ def bitwise_and(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, Buf
     return binary_op(dst, src0, src1, "bitwise_and")
 
 
-def bitwise_or(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, BufferLoad, PrimExpr]):
+def bitwise_or(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, BufferLoad, PrimExpr]):  # noqa: FA100
     """Performs element-wise bitwise OR: dst = src0 | src1.
 
     Args:
@@ -629,7 +629,7 @@ def bitwise_or(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, Buff
     return binary_op(dst, src0, src1, "bitwise_or")
 
 
-def unary_op(dst: Union[Buffer, BufferRegion], src0: Union[Buffer, BufferRegion], op: str):
+def unary_op(dst: Union[Buffer, BufferRegion], src0: Union[Buffer, BufferRegion], op: str):  # noqa: FA100
 
     if isinstance(dst, BufferRegion):
         dst_ptr, dst_extent = _handle_buffer_region(dst, "w")
@@ -664,23 +664,23 @@ def exp(dst: Buffer, src0: Buffer):
     """
     return unary_op(dst, src0, "exp")
 
-def sigmoid(dst: Union[Buffer, BufferRegion], src: Union[Buffer, BufferRegion], tmp: Buffer):
+def sigmoid(dst: Union[Buffer, BufferRegion], src: Union[Buffer, BufferRegion], tmp: Buffer):  # noqa: FA100
     if isinstance(dst, BufferRegion):
         print("test1")
         dst_ptr, buffer_extent = _handle_buffer_region(dst, "w")
         size = math.prod(buffer_extent)
         print("test2")
-    else: 
+    else:
         dst_ptr = dst.access_ptr("w")
         size = math.prod(dst.shape)
 
     if isinstance(src, BufferRegion):
         src_ptr, _ = _handle_buffer_region(src, "r")
-    else: 
+    else:
         src_ptr = src.access_ptr("r")
     return tir.call_intrin(
         "handle",
-        tir.op.Op.get(f"tl.ascend_sigmoid"),
+        tir.op.Op.get("tl.ascend_sigmoid"),
         dst_ptr,
         src_ptr,
         tmp.access_ptr("w"),
@@ -758,22 +758,22 @@ def bitwise_not(dst: Buffer, src0: Buffer):
 
 
 def scalar_op(
-    dst: Union[Buffer, BufferRegion], src0: Union[Buffer, BufferRegion], scalar_value: PrimExpr, op_tl: str
+    dst: Union[Buffer, BufferRegion], src0: Union[Buffer, BufferRegion], scalar_value: PrimExpr, op_tl: str  # noqa: FA100
 ):
     if isinstance(dst, BufferRegion):
         dst_ptr, dst_extent = _handle_buffer_region(dst, "w")
         size_2 = math.prod(dst_extent)
-    else: 
+    else:
         dst_ptr = dst.access_ptr("w")
         size_2 = math.prod(dst.shape)
 
     if isinstance(src0, BufferRegion):
         src0_ptr, src0_extent = _handle_buffer_region(src0, "r")
         size_0 = math.prod(src0_extent)
-    else: 
+    else:
         src0_ptr = src0.access_ptr("r")
         size_0 = math.prod(src0.shape)
-    
+
     assert size_0 == size_2, "size must be same"
 
     return tir.call_intrin(
@@ -1170,7 +1170,7 @@ def block_reduce_sum(
 
 
 def compare(
-    dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferLoad, PrimExpr], mode: str
+    dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferLoad, PrimExpr], mode: str  # noqa: FA100
 ):
     """Generic dispatch function for element-wise comparison operations.
 
@@ -1389,7 +1389,7 @@ def bitwise_xor(dst: Buffer, src0: Buffer, src1: Buffer, tmp: Buffer):
 
 def clamp_max(out: Buffer, buffer: Buffer, tmp: Buffer, scalar_value: PrimExpr, count: PrimExpr):
     """_summary_
-    Clip tensor elements to no more than scalar_value, replace elements larger than scalar_value with scalar_value, 
+    Clip tensor elements to no more than scalar_value, replace elements larger than scalar_value with scalar_value,
     keep original values for elements less than or equal to scalar_value
     Args:
         out: The destination buffer where the result will be stored.
@@ -1403,7 +1403,7 @@ def clamp_max(out: Buffer, buffer: Buffer, tmp: Buffer, scalar_value: PrimExpr, 
     """
     return tir.call_intrin(
         "handle",
-        tir.op.Op.get(f"tl.ascend_clamp_max"),
+        tir.op.Op.get("tl.ascend_clamp_max"),
         f"ClampMax<{_dtype(buffer)}>",
         out.access_ptr("w"),
         buffer.access_ptr("r"),
@@ -1414,7 +1414,7 @@ def clamp_max(out: Buffer, buffer: Buffer, tmp: Buffer, scalar_value: PrimExpr, 
 
 def clamp_min(out: Buffer, buffer: Buffer, tmp: Buffer, scalar_value: PrimExpr, count: PrimExpr):
     """
-    Clip tensor elements to no less than v, replace elements smaller than scalar_value with scalar_value, 
+    Clip tensor elements to no less than v, replace elements smaller than scalar_value with scalar_value,
     keep original values for elements greater than or equal to scalar_value
     Args:
         out: The destination buffer where the result will be stored.
@@ -1428,7 +1428,7 @@ def clamp_min(out: Buffer, buffer: Buffer, tmp: Buffer, scalar_value: PrimExpr, 
     """
     return tir.call_intrin(
         "handle",
-        tir.op.Op.get(f"tl.ascend_clamp_min"),
+        tir.op.Op.get("tl.ascend_clamp_min"),
         f"ClampMin<{_dtype(buffer)}>",
         out.access_ptr("w"),
         buffer.access_ptr("r"),
@@ -1453,7 +1453,7 @@ def clamp(out: Buffer, buffer: Buffer, tmp: Buffer, min_scalar: PrimExpr, max_sc
     """
     return tir.call_intrin(
         "handle",
-        tir.op.Op.get(f"tl.ascend_clamp"),
+        tir.op.Op.get("tl.ascend_clamp"),
         f"Clamp<{_dtype(buffer)}>",
         out.access_ptr("w"),
         buffer.access_ptr("r"),
@@ -1462,22 +1462,22 @@ def clamp(out: Buffer, buffer: Buffer, tmp: Buffer, min_scalar: PrimExpr, max_sc
         max_scalar,
         count
     )
-    
+
 
 def round(out: Buffer, buffer: Buffer, tmp: Buffer, count: PrimExpr):
 
     return tir.call_intrin(
         "handle",
-        tir.op.Op.get(f"tl.ascend_round"),
+        tir.op.Op.get("tl.ascend_round"),
         out.access_ptr("w"),
         buffer.access_ptr("r"),
         tmp.access_ptr("r"),
         count
     )
 
-def broadcast(dst: Union[Buffer, BufferRegion], 
-              src: Union[Buffer, BufferRegion], 
-              tmp: Union[Buffer, BufferRegion]):
+def broadcast(dst: Union[Buffer, BufferRegion],  # noqa: FA100
+              src: Union[Buffer, BufferRegion],  # noqa: FA100
+              tmp: Union[Buffer, BufferRegion]):  # noqa: FA100
     """Generates a TIR intrinsic call for the AscendC `Broadcast` operation.
 
     This function performs a broadcast copy from the source buffer (`src`) to the
@@ -1507,26 +1507,26 @@ def broadcast(dst: Union[Buffer, BufferRegion],
               The source column is replicated `dst.shape[1]` times.
             - **No Broadcast (Copy)**: If shapes are identical, the axis defaults to 0.
     """
-    
+
     if isinstance(dst, BufferRegion):
         dst_ptr, dst_extent = _handle_buffer_region(dst, "w")
     else:
         dst_ptr = dst.access_ptr("w")
         dst_extent = dst.shape
-    
+
     if isinstance(src, BufferRegion):
         src_ptr, src_extent = _handle_buffer_region(src, "r")
     else:
         src_ptr = src.access_ptr("r")
         src_extent = src.shape
-    
+
     if isinstance(tmp, BufferRegion):
         tmp_ptr, _ = _handle_buffer_region(tmp, "r")
     else:
         tmp_ptr = tmp.access_ptr("r")
-    
+
     dtype = _dtype(src)
-    
+
     dim = len(dst_extent)
     if dim == 3:
         dst_extent = [dst_extent[1], dst_extent[2]]
@@ -1534,7 +1534,7 @@ def broadcast(dst: Union[Buffer, BufferRegion],
         dim = 2
     assert dim in [1, 2], "Ascend Broadcast only supports dim=1 or dim=2."
     assert len(src_extent) == dim, "Source and Dest dimension must match."
-    
+
     axis = 0
     if dim == 2:
         if src_extent[0] == 1 and dst_extent[0] != 1:
@@ -1545,10 +1545,10 @@ def broadcast(dst: Union[Buffer, BufferRegion],
             axis = 0
     else:  # dim == 1
         axis = 0
-    
+
     op_name = "tl.ascend_broadcast"
     template_args = f"{dtype}, {dim}, {axis}, false"
-    
+
     return tir.call_intrin(
         "handle",
         tir.op.Op.get(op_name),
@@ -1578,7 +1578,7 @@ def sub_experiment(dst: Buffer, src0: Buffer, src1: Buffer, count: PrimExpr):
 
     return T.call_intrin(
         "handle",
-        tir.op.Op.get(f"tl.ascend_sub_experiment"),
+        tir.op.Op.get("tl.ascend_sub_experiment"),
         dst.access_ptr("w"),
         src0.access_ptr("r"),
         src1.access_ptr("r"),
@@ -1600,7 +1600,7 @@ def abs_experiment(dst: Buffer, src: Buffer, count: PrimExpr):
 
     return T.call_intrin(
         "handle",
-        tir.op.Op.get(f"tl.ascend_abs_experiment"),
+        tir.op.Op.get("tl.ascend_abs_experiment"),
         dst.access_ptr("w"),
         src.access_ptr("r"),
         count,
@@ -1621,7 +1621,7 @@ def mins_experiment(dst: Buffer, src: Buffer, scalarValue: PrimExpr, count: Prim
 
     return T.call_intrin(
         "handle",
-        tir.op.Op.get(f"tl.ascend_mins_experiment"),
+        tir.op.Op.get("tl.ascend_mins_experiment"),
         dst.access_ptr("w"),
         src.access_ptr("r"),
         scalarValue,
@@ -1640,7 +1640,7 @@ def reduce_sum_experiment(dst: Buffer, src: Buffer, sharedtmp: Buffer, count: Pr
 
     return T.call_intrin(
         "handle",
-        tir.op.Op.get(f"tl.ascend_reducesum_experiment"),
+        tir.op.Op.get("tl.ascend_reducesum_experiment"),
         dst.access_ptr("w"),
         src.access_ptr("r"),
         sharedtmp.access_ptr("r"),
@@ -1663,7 +1663,7 @@ def reduce_sum_mask_experiment(
 
     return T.call_intrin(
         "handle",
-        tir.op.Op.get(f"tl.ascend_reducesum_mask_experiment"),
+        tir.op.Op.get("tl.ascend_reducesum_mask_experiment"),
         dst.access_ptr("w"),
         src.access_ptr("r"),
         sharedtmp.access_ptr("r"),
@@ -1673,7 +1673,7 @@ def reduce_sum_mask_experiment(
     )
 
 def gathermask_experiment(
-    dst: Buffer, src0: Buffer, src1Pattern: Buffer, reduceMode: bool, mask: PrimExpr, GatherMaskParams: List[int], rsvdCnt: PrimExpr
+    dst: Buffer, src0: Buffer, src1Pattern: Buffer, reduceMode: bool, mask: PrimExpr, GatherMaskParams: list[int], rsvdCnt: PrimExpr
     ):
     """Performs a gather mask operation(User-defined mode).
 
@@ -1703,7 +1703,7 @@ def gathermask_experiment(
     scr1RepeatStride = GatherMaskParams[3]
     return T.call_intrin(
         "handle",
-        tir.op.Op.get(f"tl.ascend_gather_mask_experiment"),
+        tir.op.Op.get("tl.ascend_gather_mask_experiment"),
         f"GatherMask_experiment<{_dtype(dst)}>",
         dst.access_ptr("w"),
         src0.access_ptr("r"),
@@ -1718,7 +1718,7 @@ def gathermask_experiment(
     )
 
 def fill_experiment(
-    dst: Buffer, value: PrimExpr, mask: List[int], repeatTimes: PrimExpr, dstBlockStride: PrimExpr, dstRepeatStride: PrimExpr
+    dst: Buffer, value: PrimExpr, mask: list[int], repeatTimes: PrimExpr, dstBlockStride: PrimExpr, dstRepeatStride: PrimExpr
     ):
     """Fill a buffer or buffer region with a specified value(High-dimensional tensor slicing and computation).
 
@@ -1744,7 +1744,7 @@ def fill_experiment(
         dstRepeatStride,
     )
 
-def sum_experiment(dst: Buffer, src: Buffer, sumParams: List[int]):
+def sum_experiment(dst: Buffer, src: Buffer, sumParams: list[int]):
     """Sum elements along the last dimension (high-level API).
 
     Args:
@@ -1755,7 +1755,7 @@ def sum_experiment(dst: Buffer, src: Buffer, sumParams: List[int]):
                inner * sizeof(T) must be an integer multiple of 32 bytes.
         n: Represents the actual number of elements along the inner axis of the input data.
     """
-    
+
     outter = sumParams[0]
     inner = sumParams[1]
     n = sumParams[2]
@@ -1774,7 +1774,7 @@ def datacachecleanandinvalid_experiment(dst: Buffer, CacheLine: str, DcciDst: st
 
     return T.call_intrin(
             "handle",
-            tir.op.Op.get(f"tl.ascend_datacachecleanandinvalid_experiment"),
+            tir.op.Op.get("tl.ascend_datacachecleanandinvalid_experiment"),
             f"AscendC::DataCacheCleanAndInvalid<{_dtype(dst)}, AscendC::CacheLine::{CacheLine}, AscendC::DcciDst::{DcciDst}>",
             dst.access_ptr("w"),
-        )  
+        )

@@ -32,13 +32,15 @@ public:
   void PrintStorageScope(const std::string &scope,
                          std::ostream &os) final;     // NOLINT(*)
   void PrintType(DataType t, std::ostream &os) final; // NOLINT(*)
-  void ProcessTilingInput(std::ostream &os, std::string func_name, std::vector<std::string> &arg_names,
-    std::vector<const tir::VarNode*> &shape_vars);
-  void CallTilingInput(std::ostream &os, std::string func_name, std::vector<std::string> &tiling_args,
-    std::vector<const tir::VarNode*> &shape_vars);
-  void PrintHostFunc(const PrimFunc &f, const std::string &name, std::ostringstream &os,
-                     std::string &core,
-                     std::vector<const tir::VarNode*> &shape_vars);
+  void ProcessTilingInput(std::ostream &os, std::string func_name,
+                          std::vector<std::string> &arg_names,
+                          std::vector<const tir::VarNode *> &shape_vars);
+  void CallTilingInput(std::ostream &os, std::string func_name,
+                       std::vector<std::string> &tiling_args,
+                       std::vector<const tir::VarNode *> &shape_vars);
+  void PrintHostFunc(const PrimFunc &f, const std::string &name,
+                     std::ostringstream &os, std::string &core,
+                     std::vector<const tir::VarNode *> &shape_vars);
 
   // overload visitor
   void VisitExpr_(const FloatImmNode *op, std::ostream &os) final;
@@ -51,19 +53,20 @@ public:
   void VisitStmt_(const AllocateNode *op) final;
   void VisitStmt_(const AttrStmtNode *op) final;
 
-  void UnaryVecOpCodegen(const CallNode *op, const std::string& op_name);
-  void ScalarOpCodegen(const CallNode *op, const std::string& op_name);
+  void UnaryVecOpCodegen(const CallNode *op, const std::string &op_name);
+  void ScalarOpCodegen(const CallNode *op, const std::string &op_name);
   void AxpyCodegen(const CallNode *op);
-  void BinaryVecClampMaxMinOpsCodegen(const CallNode *op, const std::string& op_name);
-  void BinaryVecClampOpsCodegen(const CallNode *op, const std::string& op_name);
-  void SigmoidCodegen(const CallNode *op, const std::string& op_type);
-  void CastCodegen(const CallNode *op, const std::string& op_type);
+  void BinaryVecClampMaxMinOpsCodegen(const CallNode *op,
+                                      const std::string &op_name);
+  void BinaryVecClampOpsCodegen(const CallNode *op, const std::string &op_name);
+  void SigmoidCodegen(const CallNode *op, const std::string &op_type);
+  void CastCodegen(const CallNode *op, const std::string &op_type);
   void ReduceOpCodegen(const CallNode *op);
 
   // Override this as a work around for __grid_constant__ parameter
   void AddFunction(const GlobalVar &gvar, const PrimFunc &f);
 
-  struct ShapeInfo{
+  struct ShapeInfo {
     int32_t row;
     int32_t col;
     int32_t slice_row;
@@ -75,9 +78,10 @@ public:
     std::string ub_name;
     bool is_slice;
   };
+
 private:
-  void AutoBarrierCodegen (const CallNode *op);
-  void AutoFlagOpCodegen (const CallNode *op, std::string op_name);
+  void AutoBarrierCodegen(const CallNode *op);
+  void AutoFlagOpCodegen(const CallNode *op, std::string op_name);
 
 private:
   // Whether scope such as "__shared__" or "__constant__"  is part of type.
@@ -89,16 +93,16 @@ private:
   friend void PrintConst(const FloatImmNode *op, std::ostream &os,
                          CodeGenTileLangAscendPto *p);
 
-  void BinaryVecOpCodegen(const CallNode* op, const std::string& op_name);
+  void BinaryVecOpCodegen(const CallNode *op, const std::string &op_name);
 
-  void BinaryVecOpsCodegen(const CallNode* op, const std::string& op_name);
+  void BinaryVecOpsCodegen(const CallNode *op, const std::string &op_name);
 
   void CallExternCodegen(const CallNode *op);
 
   void GemmV0Codegen(const CallNode *op);
 
   void GemmV1Codegen(const CallNode *op);
-  
+
   void SyncAllCodegen(const CallNode *op);
 
   void PipeBarrierCodegen(const CallNode *op);
@@ -137,25 +141,28 @@ private:
 
   void ArithProgressionCodegen(const CallNode *op, const std::string &op_name);
 
-  void PrintfOpCodegen(const CallNode *op, const std::string& op_name);
+  void PrintfOpCodegen(const CallNode *op, const std::string &op_name);
 
   void DumpTensorCodegen(const CallNode *op, const std::string &op_name);
-  
+
   void BroadcastOpCodegen(const CallNode *op);
 
   void SelectCodegen(const CallNode *op);
 
   void SetDeqScaleCodegen(const CallNode *op);
 
-  std::vector<std::string> GetGlobalTensorShapes(const CallNode *op, std::string tensor_addr);
+  std::vector<std::string> GetGlobalTensorShapes(const CallNode *op,
+                                                 std::string tensor_addr);
 
   std::string PrintBufferOffset(const CallNode *op);
   void UbShapeInputCheck(const AllocateNode *op);
   bool ValidLayoutEnabled(const AllocateNode *op);
 
-  std::string GetTempVarName(const std::string& temp_name);
-  void CreateUbVariableND(const std::string& temp_name, const ShapeInfo& shape_info);
-  void CreateUbVariableDN(const std::string& temp_name, const ShapeInfo& shape_info);
+  std::string GetTempVarName(const std::string &temp_name);
+  void CreateUbVariableND(const std::string &temp_name,
+                          const ShapeInfo &shape_info);
+  void CreateUbVariableDN(const std::string &temp_name,
+                          const ShapeInfo &shape_info);
   ShapeInfo GetSliceInfo(const CallNode *op);
 
   // Whether global barrier is needed.
@@ -207,19 +214,19 @@ private:
   std::map<std::string, std::pair<int, int>> prefetch_n_stages_map_;
 
   std::unordered_map<std::string, std::string> dtype_map = {
-        {"int8", "char"},
-        {"int32", "int"},
-        {"int8x4", "int32_t"},
-        {"int32x4", "int32x4"},
-        {"float16", "half"},
-        {"float32", "float"},
-        {"float64", "double"},
-        {"float16x4", "float16x4"},
-        {"bfloat16x4", "bfloat16x4"},
-        {"float32x4", "float32x4"},
-        {"float32x16", "float32x16"}};
-  
-  struct global_tensor{
+      {"int8", "char"},
+      {"int32", "int"},
+      {"int8x4", "int32_t"},
+      {"int32x4", "int32x4"},
+      {"float16", "half"},
+      {"float32", "float"},
+      {"float64", "double"},
+      {"float16x4", "float16x4"},
+      {"bfloat16x4", "bfloat16x4"},
+      {"float32x4", "float32x4"},
+      {"float32x16", "float32x16"}};
+
+  struct global_tensor {
     String shape_type;
     String dtype;
     Array<String> shape_list;
