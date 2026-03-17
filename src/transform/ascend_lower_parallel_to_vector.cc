@@ -578,6 +578,12 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
 
     BufferLoadCollector collector;
     collector(expr);
+    bool container_2d_dim = false;
+    for (const auto* load : collector.loads) {
+      if (load->buffer->shape.size() == 2) {
+          container_2d_dim = true;
+      }
+    }
 
     for (const auto* load : collector.loads) {
       // Check for discrete access patterns (e.g., a[idx[i], j])
@@ -602,6 +608,9 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
       // If the buffer uses both dimensions, it's fine
       // If the buffer uses only one dimension, check if it can be broadcast
       if (!uses_vector_dim || !uses_outer_dim) {
+        if (container_2d_dim) {
+          return false;
+        }
         int64_t broadcast_dim = 0;
         if (!CanBroadcast(load, parallel_vars, &broadcast_dim)) {
           return false;
@@ -619,6 +628,7 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
     bool is_2d,
     const std::unordered_set<const VarNode*>& parallel_vars
   ) {
+    // 进入这里的都是单条语句
     Buffer output_buffer = store->buffer;
     bool is_global_output = IsGlobalMemoryBuffer(output_buffer);
 
@@ -697,9 +707,26 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
       }
     };
 
+    Class UseDimChecker : public StmtExprVisitor {
+    public:
+      bool container_2d_dim = false;
+
+      void VisitExpr_(const BufferLoadNode* op) override {
+        // Check if any index is not a simple variable or IntImm
+        if (op->buffer->shape.size() == 2) {
+          container_2d_dim = true;
+        }
+        StmtExprVisitor::VisitExpr_(op);
+      }
+    };
+    
+    UseDimChecker dim_checker;
+    dim_checker(store->value);
+    std::cout << "dim_checker.container_2d_dim" << dim_checker.container_2d_dim << std::endl;
+
     BroadcastableBufferCollector collector(parallel_vars, inner_vec_len, outer_extent, this);
     // Only collect broadcast buffers if there's no discrete access in the expression
-    if (!discrete_checker.has_discrete_access_) {
+    if (!discrete_checker.has_discrete_access_ && !dim_checker.container_2d_dim) {
       collector(store->value);
     }
 
@@ -1405,34 +1432,34 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
                       const Buffer& buffer = Buffer()) {
     if (vector_dim_var_ == nullptr) return true;
 
-    // If the buffer is 2D, treat it as vector access even with constant indices
-    // (e.g., broadcast buffers accessed with [0, 0])
-    if (buffer.defined() && buffer->shape.size() >= 2) {
-      return false;
-    }
+    // // If the buffer is 2D, treat it as vector access even with constant indices
+    // // (e.g., broadcast buffers accessed with [0, 0])
+    // if (buffer.defined() && buffer->shape.size() >= 2) {
+    //   return false;
+    // }
 
-    // Special case: 1D buffer accessed with only outer dimension variable in 2D context
-    // This should be treated as scalar (broadcasted across inner dimension)
-    if (buffer.defined() && buffer->shape.size() == 1 &&
-        outer_dim_var_ != nullptr && indices.size() == 1) {
-      // Check if the index is the outer dimension variable
-      if (auto var = indices[0].as<VarNode>()) {
-        if (var == outer_dim_var_) {
-          // This is a row vector like b[i] in a 2D context, treat as scalar
-          return true;
-        }
-      }
-    }
+    // // Special case: 1D buffer accessed with only outer dimension variable in 2D context
+    // // This should be treated as scalar (broadcasted across inner dimension)
+    // if (buffer.defined() && buffer->shape.size() == 1 &&
+    //     outer_dim_var_ != nullptr && indices.size() == 1) {
+    //   // Check if the index is the outer dimension variable
+    //   if (auto var = indices[0].as<VarNode>()) {
+    //     if (var == outer_dim_var_) {
+    //       // This is a row vector like b[i] in a 2D context, treat as scalar
+    //       return true;
+    //     }
+    //   }
+    // }
 
-    // If the buffer is 1D and has multiple elements, treat it as vector access
-    // (e.g., broadcast buffers accessed with [0])
-    if (buffer.defined() && buffer->shape.size() == 1) {
-      if (auto imm = buffer->shape[0].as<IntImmNode>()) {
-        if (imm->value > 1) {
-          return false;
-        }
-      }
-    }
+    // // If the buffer is 1D and has multiple elements, treat it as vector access
+    // // (e.g., broadcast buffers accessed with [0])
+    // if (buffer.defined() && buffer->shape.size() == 1) {
+    //   if (auto imm = buffer->shape[0].as<IntImmNode>()) {
+    //     if (imm->value > 1) {
+    //       return false;
+    //     }
+    //   }
+    // }
 
     // Check if any index contains the vector dimension variable
     for (const auto& idx : indices) {
