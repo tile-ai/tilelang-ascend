@@ -1,4 +1,3 @@
-import argparse
 import os
 import torch
 import tilelang as tl
@@ -10,14 +9,7 @@ accum_dtype = "float32"
 
 
 @tl.jit(target="npuir")
-def preprocess(
-    B,
-    S,
-    H,
-    D,
-    block_ND=32,
-    num_stages=5
-):
+def preprocess(B, S, H, D, block_ND=32, num_stages=5):
     shape = [B, S, H, D]
 
     @T.prim_func
@@ -42,33 +34,36 @@ def preprocess(
             T.clear(acc)
             for k in T.Pipelined(T.ceildiv(D, block_ND), num_stages=num_stages):
                 T.copy(
-                    O[bz, by * block_ND:(by + 1) * block_ND, bx, k * block_ND:(k + 1) * block_ND],
-                    o_tmp
+                    O[
+                        bz,
+                        by * block_ND : (by + 1) * block_ND,
+                        bx,
+                        k * block_ND : (k + 1) * block_ND,
+                    ],
+                    o_tmp,
                 )
                 T.vcast(o_tmp, o)
                 T.copy(
-                    dO[bz, by * block_ND:(by + 1) * block_ND, bx, k * block_ND:(k + 1) * block_ND],
-                    do_tmp
+                    dO[
+                        bz,
+                        by * block_ND : (by + 1) * block_ND,
+                        bx,
+                        k * block_ND : (k + 1) * block_ND,
+                    ],
+                    do_tmp,
                 )
                 T.vcast(do_tmp, do)
                 for i, j in T.Parallel(block_ND, block_ND):
                     acc[i, j] += o[i, j] * do[i, j]
 
             T.reduce_sum(acc, delta, dim=1)
-            T.copy(delta[:, 0],Delta[bz,by * block_ND : (by + 1) * block_ND,bx])
+            T.copy(delta[:, 0], Delta[bz, by * block_ND : (by + 1) * block_ND, bx])
 
     return preprocess_kernel
 
 
 @tl.jit(target="npuir")
-def postprocess(
-    B,
-    S_kv,
-    D,
-    D_tail,
-    kv_group=1,
-    block_N=64
-):
+def postprocess(B, S_kv, D, D_tail, kv_group=1, block_N=64):
     dkv_shape = [B, S_kv, kv_group, D + D_tail]
 
     @T.prim_func
@@ -86,8 +81,8 @@ def postprocess(
 
             buf = T.alloc_shared([block_N, D + D_tail], accum_dtype)
 
-            T.copy(dKV[bz, bx * block_N:(bx + 1) * block_N, by, :], buf)
-            T.copy(buf, dKV_out[bz, bx * block_N:(bx + 1) * block_N, by, :])
+            T.copy(dKV[bz, bx * block_N : (bx + 1) * block_N, by, :], buf)
+            T.copy(buf, dKV_out[bz, bx * block_N : (bx + 1) * block_N, by, :])
 
     return postprocess_kernel
 
@@ -111,10 +106,13 @@ def bwd(
     block_size = max(block_size, 16)
     block_size = (block_size + 15) // 16 * 16
 
-    assert topk % block_size == 0, \
+    assert topk % block_size == 0, (
         f"topk({topk}) must be divisible by block_size({block_size})"
+    )
     assert is_causal is True, "non-casual is not supported now"
-    assert topk % block_size == 0, "otherwise will load some index=0 thus causing wrong kv to be loaded"
+    assert topk % block_size == 0, (
+        "otherwise will load some index=0 thus causing wrong kv to be loaded"
+    )
 
     if sm_scale is None:
         sm_scale = (D + D_tail) ** (-0.5)
@@ -137,7 +135,7 @@ def bwd(
     NS = tl.cdiv(topk, block_size)
 
     split_store = 2
-    if BS < split_store or BS % split_store != 0:
+    if split_store > BS or BS % split_store != 0:
         split_store = 1
 
     @T.prim_func
@@ -176,13 +174,15 @@ def bwd(
             acc_dkv = T.alloc_shared([BS, D], accum_dtype)
             acc_dkv_tail = T.alloc_shared([BS, D_tail], accum_dtype)
             acc_dkv_shared = T.alloc_shared([BS // split_store, D], accum_dtype)
-            acc_dkv_tail_shared = T.alloc_shared([BS // split_store, D_tail], accum_dtype)
+            acc_dkv_tail_shared = T.alloc_shared(
+                [BS // split_store, D_tail], accum_dtype
+            )
 
             max_kv_i = s_i
 
-            T.copy(Q[by, s_i, bz * block_H:(bz + 1) * block_H, :D], Q_shared)
-            T.copy(Q[by, s_i, bz * block_H:(bz + 1) * block_H, D:], Q_tail_shared)
-            T.copy(dO[by, s_i, bz * block_H:(bz + 1) * block_H, :D], dO_shared)
+            T.copy(Q[by, s_i, bz * block_H : (bz + 1) * block_H, :D], Q_shared)
+            T.copy(Q[by, s_i, bz * block_H : (bz + 1) * block_H, D:], Q_tail_shared)
+            T.copy(dO[by, s_i, bz * block_H : (bz + 1) * block_H, :D], dO_shared)
 
             T.clear(acc_dq)
             T.clear(acc_dq_tail)
@@ -199,7 +199,6 @@ def bwd(
 
             # Process each block of indices
             for i_i in T.Pipelined(NS, num_stages=num_stages):
-
                 # Compute attention scores
                 for h_i, bi_i in T.Parallel(block_H, BS):
                     if Indices[by, s_i, bz // NH, i_i * BS + bi_i] <= max_kv_i:
@@ -209,12 +208,19 @@ def bwd(
 
                 # Load KV for this block of indices
                 for bi_i, d_i in T.Parallel(BS, D):
-                    KV_shared[bi_i, d_i] = KV[by, Indices[by, s_i, bz // NH, i_i * BS + bi_i], bz // NH, d_i]
+                    KV_shared[bi_i, d_i] = KV[
+                        by, Indices[by, s_i, bz // NH, i_i * BS + bi_i], bz // NH, d_i
+                    ]
 
                 T.gemm(Q_shared, KV_shared, acc_p, b_transpose=True)
 
                 for bi_i, d_i in T.Parallel(BS, D_tail):
-                    KV_tail_shared[bi_i, d_i] = KV[by, Indices[by, s_i, bz // NH, i_i * BS + bi_i], bz // NH, D + d_i]
+                    KV_tail_shared[bi_i, d_i] = KV[
+                        by,
+                        Indices[by, s_i, bz // NH, i_i * BS + bi_i],
+                        bz // NH,
+                        D + d_i,
+                    ]
                 T.gemm(Q_tail_shared, KV_tail_shared, acc_p, b_transpose=True)
 
                 T.reshape(acc_p, acc_p_reshape)
@@ -237,7 +243,10 @@ def bwd(
                 for h_i, bi_i in T.Parallel(block_H, BS):
                     acc_dp_reshape[0, 0, h_i, bi_i] = (
                         acc_p_reshape[0, 0, h_i, bi_i]
-                        * (acc_dp_reshape[0, 0, h_i, bi_i] - Delta_reshape[by, s_i, bz * block_H + h_i, 0])
+                        * (
+                            acc_dp_reshape[0, 0, h_i, bi_i]
+                            - Delta_reshape[by, s_i, bz * block_H + h_i, 0]
+                        )
                         * sm_scale
                     )
                 T.reshape(acc_dp_reshape, acc_dp)
@@ -254,45 +263,75 @@ def bwd(
 
                 for s in range(split_store):
                     T.copy(
-                        acc_dkv[s * (BS // split_store):(s + 1) * (BS // split_store), :],
-                        acc_dkv_shared
+                        acc_dkv[
+                            s * (BS // split_store) : (s + 1) * (BS // split_store), :
+                        ],
+                        acc_dkv_shared,
                     )
                     T.copy(
-                        acc_dkv_tail[s * (BS // split_store):(s + 1) * (BS // split_store), :],
-                        acc_dkv_tail_shared
+                        acc_dkv_tail[
+                            s * (BS // split_store) : (s + 1) * (BS // split_store), :
+                        ],
+                        acc_dkv_tail_shared,
                     )
 
                     for bi_i, d_i in T.Parallel(BS // split_store, D // 4):
-                        if Indices[by, s_i, bz // NH, i_i * BS + bi_i + s * (BS // split_store)] <= max_kv_i:
+                        if (
+                            Indices[
+                                by,
+                                s_i,
+                                bz // NH,
+                                i_i * BS + bi_i + s * (BS // split_store),
+                            ]
+                            <= max_kv_i
+                        ):
                             T.atomic_addx4(
                                 dKV[
                                     by,
-                                    Indices[by, s_i, bz // NH, i_i * BS + bi_i + s * (BS // split_store)],
+                                    Indices[
+                                        by,
+                                        s_i,
+                                        bz // NH,
+                                        i_i * BS + bi_i + s * (BS // split_store),
+                                    ],
                                     bz // NH,
-                                    d_i * 4
+                                    d_i * 4,
                                 ],
                                 acc_dkv_shared[bi_i, d_i * 4],
-                                [1, 4]
+                                [1, 4],
                             )
 
                     for bi_i, d_i in T.Parallel(BS // split_store, D_tail // 4):
-                        if Indices[by, s_i, bz // NH, i_i * BS + bi_i + s * (BS // split_store)] <= max_kv_i:
+                        if (
+                            Indices[
+                                by,
+                                s_i,
+                                bz // NH,
+                                i_i * BS + bi_i + s * (BS // split_store),
+                            ]
+                            <= max_kv_i
+                        ):
                             T.atomic_addx4(
                                 dKV[
                                     by,
-                                    Indices[by, s_i, bz // NH, i_i * BS + bi_i + s * (BS // split_store)],
+                                    Indices[
+                                        by,
+                                        s_i,
+                                        bz // NH,
+                                        i_i * BS + bi_i + s * (BS // split_store),
+                                    ],
                                     bz // NH,
-                                    D + d_i * 4
+                                    D + d_i * 4,
                                 ],
                                 acc_dkv_tail_shared[bi_i, d_i * 4],
-                                [1, 4]
+                                [1, 4],
                             )
 
             T.copy(acc_dq, dQ_shared)
             T.copy(acc_dq_tail, dQ_tail_shared)
 
-            T.copy(dQ_shared, dQ[by, s_i, bz * block_H:(bz + 1) * block_H, :D])
-            T.copy(dQ_tail_shared, dQ[by, s_i, bz * block_H:(bz + 1) * block_H, D:])
+            T.copy(dQ_shared, dQ[by, s_i, bz * block_H : (bz + 1) * block_H, :D])
+            T.copy(dQ_tail_shared, dQ[by, s_i, bz * block_H : (bz + 1) * block_H, D:])
 
     return sparse_mla_bwd_kernel
 
@@ -303,7 +342,9 @@ def generate_tensor(shape, dtype, clear=False):
     if dtype in ("float32", "float16", "bfloat16"):
         return torch.randn(size=shape, dtype=eval("torch." + dtype))
     if dtype in ("int32", "int64", "int16"):
-        return torch.randint(low=0, high=10000, size=shape, dtype=eval("torch." + dtype))
+        return torch.randint(
+            low=0, high=10000, size=shape, dtype=eval("torch." + dtype)
+        )
     if dtype == "int8":
         return torch.randint(low=0, high=127, size=shape, dtype=eval("torch." + dtype))
     if dtype == "bool":
@@ -339,6 +380,7 @@ def build_indices_no_conflict(B, S, kv_group, topk, mode="diag", S_kv=None):
 def ref_delta_torch(o, do):
     # delta[b, s, h] = sum_d o * do
     return (o.float() * do.float()).sum(dim=-1)
+
 
 def ref_sparse_mla_bwd_torch(
     Q,
@@ -385,10 +427,10 @@ def ref_sparse_mla_bwd_torch(
             for h in range(H):
                 g = h // H_kv
 
-                q_full = Qf[b, s, h, :]          # [D + D_tail]
-                q_main = q_full[:D]              # [D]
-                q_tail = q_full[D:]              # [D_tail]
-                do_main = dOf[b, s, h, :]        # [D]
+                q_full = Qf[b, s, h, :]  # [D + D_tail]
+                q_main = q_full[:D]  # [D]
+                q_tail = q_full[D:]  # [D_tail]
+                do_main = dOf[b, s, h, :]  # [D]
 
                 lse_val = Lsef[b, s, h]
                 delta_val = Deltaf[b, s, h]
@@ -397,7 +439,7 @@ def ref_sparse_mla_bwd_torch(
                     idx = int(Indices[b, s, g, t].item())
                     if idx > s:
                         continue
-                    kv_full = KVf[b, idx, g, :]   # [D + D_tail]
+                    kv_full = KVf[b, idx, g, :]  # [D + D_tail]
                     kv_main = kv_full[:D]
                     kv_tail = kv_full[D:]
 
@@ -452,18 +494,28 @@ def sparse_mla_bwd(
     if D is None:
         D = o.shape[-1]
 
-    assert D <= dim_plus_tail_dim, f"D({D}) cannot be larger than q.shape[-1]({dim_plus_tail_dim})"
+    assert dim_plus_tail_dim >= D, (
+        f"D({D}) cannot be larger than q.shape[-1]({dim_plus_tail_dim})"
+    )
     D_tail = dim_plus_tail_dim - D
 
     if block_size is None:
         block_size = topk
 
-    assert topk % block_size == 0, f"topk({topk}) must be divisible by block_size({block_size})"
+    assert topk % block_size == 0, (
+        f"topk({topk}) must be divisible by block_size({block_size})"
+    )
 
     # compile kernels
     preprocess_kernel = preprocess(B, S, H, D)
     bwd_kernel = bwd(
-        B, S, S_kv, H, D, D_tail, topk,
+        B,
+        S,
+        S_kv,
+        H,
+        D,
+        D_tail,
+        topk,
         kv_group=kv_group,
         sm_scale=sm_scale,
         is_causal=is_causal,
@@ -472,7 +524,10 @@ def sparse_mla_bwd(
         indices_dtype="int32",
     )
     postprocess_kernel = postprocess(
-        B, S_kv, D, D_tail,
+        B,
+        S_kv,
+        D,
+        D_tail,
         kv_group=kv_group,
     )
 
@@ -486,7 +541,9 @@ def sparse_mla_bwd(
 
     # bwd
     dq = torch.zeros_like(q, dtype=q.dtype)
-    dkv_fp32 = torch.zeros((B, S_kv, kv_group, D + D_tail), dtype=torch.float32, device=kv.device)
+    dkv_fp32 = torch.zeros(
+        (B, S_kv, kv_group, D + D_tail), dtype=torch.float32, device=kv.device
+    )
 
     bwd_kernel(q, kv, do, indices, lse, delta, dq, dkv_fp32)
 
@@ -514,20 +571,31 @@ def run_test():
     q_shape = [B, S, H, D + D_tail]
     kv_shape = [B, S_kv, kv_group, D + D_tail]
     o_shape = [B, S, H, D]
-    indices_shape = [B, S, kv_group, topk]
     lse_shape = [B, S, H]
 
     Q = generate_tensor(q_shape, dtype).npu().contiguous()
     KV = generate_tensor(kv_shape, dtype).npu().contiguous()
     dO = generate_tensor(o_shape, dtype).npu().contiguous()
-    Indices_cpu = build_indices_no_conflict(B, S, kv_group, topk, mode="no_conflict", S_kv=S_kv)
+    Indices_cpu = build_indices_no_conflict(
+        B, S, kv_group, topk, mode="no_conflict", S_kv=S_kv
+    )
     Indices = Indices_cpu.npu().contiguous()
 
     O = generate_tensor(o_shape, dtype).npu().contiguous()
     Lse = generate_tensor(lse_shape, accum_dtype).npu().contiguous()
 
     sparse_mla_fwd_kernel = sparse_mla_fwd(
-        B, S, S_kv, H, D, D_tail, topk, kv_group, None, block_size, 2,
+        B,
+        S,
+        S_kv,
+        H,
+        D,
+        D_tail,
+        topk,
+        kv_group,
+        None,
+        block_size,
+        2,
     )
     sparse_mla_fwd_kernel(Q, KV, Indices, O, Lse)
 
@@ -588,14 +656,8 @@ def run_test():
     dQ_ref_cpu = dQ_ref.detach().float().cpu()
     dKV_ref_cpu = dKV_ref_cast.detach().float().cpu()
 
-    torch.testing.assert_close(
-        dQ_cpu, dQ_ref_cpu,
-        atol=1e-2, rtol=1e-2
-    )
-    torch.testing.assert_close(
-        dKV_cpu, dKV_ref_cpu,
-        atol=1e-2, rtol=1e-2
-    )
+    torch.testing.assert_close(dQ_cpu, dQ_ref_cpu, atol=1e-2, rtol=1e-2)
+    torch.testing.assert_close(dKV_cpu, dKV_ref_cpu, atol=1e-2, rtol=1e-2)
 
     print("\033[92mCheck passed!\033[0m")
 

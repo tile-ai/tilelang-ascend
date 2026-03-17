@@ -3,11 +3,14 @@ import math
 import tilelang as tl
 import tilelang.language as T
 import os
+
 torch.npu.set_device(6)
 
 dtype = "float16"
 accum_dtype = "float32"
-indices_dtype="int32"
+indices_dtype = "int32"
+
+
 @tl.jit(target="npuir")
 def sparse_mla_fwd(
     batch,
@@ -61,7 +64,10 @@ def sparse_mla_fwd(
         Output: T.Tensor(o_shape, dtype),  # type: ignore
         Lse: T.Tensor(lse_shape, accum_dtype),  # type: ignore
     ):
-        with T.Kernel(seq_len * REPLICATE_H * batch * kv_group, is_npu=True) as (cid, _):
+        with T.Kernel(seq_len * REPLICATE_H * batch * kv_group, is_npu=True) as (
+            cid,
+            _,
+        ):
             tmp = cid
             bx = tmp % (seq_len * REPLICATE_H)
             tmp = tmp // (seq_len * REPLICATE_H)
@@ -77,13 +83,13 @@ def sparse_mla_fwd(
             acc_s = T.alloc_shared([H_per_block, BI], accum_dtype)
             acc_s_tmp = T.alloc_shared([H_per_block, BI], accum_dtype)
             S_shared = T.alloc_shared([H_per_block, BI], dtype)
-            sumexp = T.alloc_shared([H_per_block,1], accum_dtype)
-            sumexp_tmp = T.alloc_shared([H_per_block,1], accum_dtype)
-            sumexp_i = T.alloc_shared([H_per_block,1], accum_dtype)
-            alpha = T.alloc_shared([H_per_block,1], accum_dtype)
-            alpha_tmp = T.alloc_shared([H_per_block,1], accum_dtype)
-            m_i = T.alloc_shared([H_per_block,1], accum_dtype)
-            m_i_prev = T.alloc_shared([H_per_block,1], accum_dtype)
+            sumexp = T.alloc_shared([H_per_block, 1], accum_dtype)
+            sumexp_tmp = T.alloc_shared([H_per_block, 1], accum_dtype)
+            sumexp_i = T.alloc_shared([H_per_block, 1], accum_dtype)
+            alpha = T.alloc_shared([H_per_block, 1], accum_dtype)
+            alpha_tmp = T.alloc_shared([H_per_block, 1], accum_dtype)
+            m_i = T.alloc_shared([H_per_block, 1], accum_dtype)
+            m_i_prev = T.alloc_shared([H_per_block, 1], accum_dtype)
 
             T.clear(acc_o)
             T.clear(sumexp)
@@ -103,9 +109,13 @@ def sparse_mla_fwd(
 
             for i_i in T.Pipelined(NI, num_stages=num_stages):
                 for bi_i, d_i in T.Parallel(BI, D):
-                    KV_shared[bi_i, d_i] = KV[b_i, Indices[b_i, s_i, g_i, i_i * BI + bi_i], g_i, d_i]
+                    KV_shared[bi_i, d_i] = KV[
+                        b_i, Indices[b_i, s_i, g_i, i_i * BI + bi_i], g_i, d_i
+                    ]
                 for bi_i, d_i in T.Parallel(BI, D_tail):
-                    K_tail_shared[bi_i, d_i] = KV[b_i, Indices[b_i, s_i, g_i, i_i * BI + bi_i], g_i, D + d_i]
+                    K_tail_shared[bi_i, d_i] = KV[
+                        b_i, Indices[b_i, s_i, g_i, i_i * BI + bi_i], g_i, D + d_i
+                    ]
 
                 for h_i, bi_i in T.Parallel(H_per_block, BI):
                     if Indices[b_i, s_i, g_i, i_i * BI + bi_i] <= max_kv_i:
@@ -117,13 +127,15 @@ def sparse_mla_fwd(
                 T.gemm(Q_tail_shared, K_tail_shared, acc_s, b_transpose=True)
                 T.copy(m_i, m_i_prev)
                 T.reduce_max(acc_s, m_i, dim=1, clear=False)
-                T.vmax(m_i,m_i_prev,m_i)
+                T.vmax(m_i, m_i_prev, m_i)
                 for h_i in T.Parallel(H_per_block):
-                    alpha[h_i, 0] = (m_i_prev[h_i, 0] - m_i[h_i, 0])
-                T.vexp2(alpha,alpha,alpha_tmp)
+                    alpha[h_i, 0] = m_i_prev[h_i, 0] - m_i[h_i, 0]
+                T.vexp2(alpha, alpha, alpha_tmp)
                 for h_i, bi_i in T.Parallel(H_per_block, BI):
-                    acc_s[h_i, bi_i] = acc_s[h_i, bi_i] * sm_scale - m_i[h_i, 0] * sm_scale
-                T.vexp2(acc_s,acc_s,acc_s_tmp)
+                    acc_s[h_i, bi_i] = (
+                        acc_s[h_i, bi_i] * sm_scale - m_i[h_i, 0] * sm_scale
+                    )
+                T.vexp2(acc_s, acc_s, acc_s_tmp)
                 T.reduce_sum(acc_s, sumexp_i, dim=1)  # is this a accumulate operator?
                 for h_i in T.Parallel(H_per_block):
                     sumexp[h_i, 0] = sumexp[h_i, 0] * alpha[h_i, 0] + sumexp_i[h_i, 0]
@@ -135,17 +147,20 @@ def sparse_mla_fwd(
 
             # Rescale
             for h_i, d_i in T.Parallel(H_per_block, D):
-                acc_o[h_i, d_i] /= sumexp[h_i,0]
-            T.vlog2(sumexp,sumexp,sumexp_tmp)
+                acc_o[h_i, d_i] /= sumexp[h_i, 0]
+            T.vlog2(sumexp, sumexp, sumexp_tmp)
             for h_i in T.Parallel(H_per_block):
                 sumexp[h_i, 0] = sumexp[h_i, 0] + m_i[h_i, 0] * sm_scale
 
             T.copy(acc_o, Output[b_i, s_i, H0:H1, :])
-            T.copy(sumexp, Lse[b_i, s_i, H0], size=[1,H_per_block])
+            T.copy(sumexp, Lse[b_i, s_i, H0], size=[1, H_per_block])
 
     return main
 
-def sparse_mla_fwd_interface(q, kv, indices, out, lse, sm_scale=None, d_v=512, block_I=64, num_stages=2):
+
+def sparse_mla_fwd_interface(
+    q, kv, indices, out, lse, sm_scale=None, d_v=512, block_I=64, num_stages=2
+):
     batch, seq_len, heads, dim_plus_tail_dim = q.shape
     _, seq_len_kv, kv_group, _ = kv.shape
 
@@ -154,7 +169,18 @@ def sparse_mla_fwd_interface(q, kv, indices, out, lse, sm_scale=None, d_v=512, b
     tail_dim = dim_plus_tail_dim - dim
     _, _, _, topk = indices.shape
     kernel = sparse_mla_fwd(
-        batch, seq_len, seq_len_kv, heads, dim, tail_dim, topk, kv_group, sm_scale, block_I=block_I, num_stages=num_stages)
+        batch,
+        seq_len,
+        seq_len_kv,
+        heads,
+        dim,
+        tail_dim,
+        topk,
+        kv_group,
+        sm_scale,
+        block_I=block_I,
+        num_stages=num_stages,
+    )
     kernel(q, kv, indices, out, lse)
     return out, lse
 
@@ -174,7 +200,7 @@ def sparse_mla_fwd_torch(
 
     assert total_dim == dim + tail_dim
     assert H % kv_group == 0
-    assert G == kv_group
+    assert kv_group == G
 
     head_kv = H // kv_group
 
@@ -219,15 +245,12 @@ def sparse_mla_fwd_torch(
 
                 logits_e = logits * scale_e
 
-                probs = torch.softmax(logits_e, dim=-1)   # [Hg, topk]
+                probs = torch.softmax(logits_e, dim=-1)  # [Hg, topk]
 
                 probs_cast = probs.to(q_dtype)
                 v_cast = v.to(q_dtype)
 
-                out = torch.matmul(
-                    probs_cast.to(acc_dtype),
-                    v_cast.to(acc_dtype)
-                )
+                out = torch.matmul(probs_cast.to(acc_dtype), v_cast.to(acc_dtype))
 
                 lse = torch.logsumexp(logits_e, dim=-1) / math.log(2.0)
 
@@ -235,6 +258,8 @@ def sparse_mla_fwd_torch(
                 Lse[b, s, h0:h1] = lse
 
     return O, Lse
+
+
 def generate_tensor(shape, dtype, clear=False):
     """Generate tensor with specified shape and data type"""
     if clear:
@@ -242,34 +267,37 @@ def generate_tensor(shape, dtype, clear=False):
     if dtype in ("float32", "float16", "bfloat16"):
         return torch.randn(size=shape, dtype=eval("torch." + dtype))
     if dtype in ("int32", "int64", "int16"):
-        return torch.randint(low=0, high=10000, size=shape, dtype=eval("torch." + dtype))
+        return torch.randint(
+            low=0, high=10000, size=shape, dtype=eval("torch." + dtype)
+        )
     if dtype == "int8":
         return torch.randint(low=0, high=127, size=shape, dtype=eval("torch." + dtype))
     if dtype == "bool":
         return torch.randint(low=0, high=2, size=shape).bool()
     raise ValueError('Invalid parameter "dtype" is found : {}'.format(dtype))
 
+
 def run_test():
     compiled_kernel = sparse_mla_fwd(
-        1,    # batch
-        32,   # seq_len
-        32,   # seq_len_kv
-        16,   # heads
+        1,  # batch
+        32,  # seq_len
+        32,  # seq_len_kv
+        16,  # heads
         128,  # dim
-        64,   # tail_dim
-        16,   # topk
-        1,    # kv_group
-        None, # sm_scale
-        16,   # block_I
-        2,    # num_stages
+        64,  # tail_dim
+        16,  # topk
+        1,  # kv_group
+        None,  # sm_scale
+        16,  # block_I
+        2,  # num_stages
     )
     print("compile finished!")
 
-    Q_shape       = [1, 32, 16, 192]
-    KV_shape      = [1, 32, 1, 192]
+    Q_shape = [1, 32, 16, 192]
+    KV_shape = [1, 32, 1, 192]
     Indices_shape = [1, 32, 1, 16]
-    Output_shape  = [1, 32, 16, 128]
-    Lse_shape     = [1, 32, 16]
+    Output_shape = [1, 32, 16, 128]
+    Lse_shape = [1, 32, 16]
 
     Q = generate_tensor(Q_shape, dtype).npu()
     KV = generate_tensor(KV_shape, dtype).npu()
@@ -301,6 +329,8 @@ def run_test():
     torch.testing.assert_close(Lse, Lse_ref, rtol=1e-2, atol=1e-2)
 
     print("\033[92mDemo check passed!\033[0m")
+
+
 if __name__ == "__main__":
     os.environ["TILELANG_ASCEND_MODE"] = "Dev"
     run_test()
