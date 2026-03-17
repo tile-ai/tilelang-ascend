@@ -207,11 +207,11 @@ class AscendDefaultPolicy(DefaultPolicy):
         self.calc_numel_threshold(steps)
         
         # Add SIMD-friendly tile sizes (multiples of common SIMD widths)
-        simd_friendly_sizes = [16, 32, 64, 128, 256]
+        simd_friendly_sizes = [16, 32, 64, 128, 256, 512]
         for i in range(len(steps)):
             added = list(
                 filter(
-                    lambda s: s < steps[i][-1] and s > steps[i][0] and s not in steps[i],
+                    lambda s: s < steps[i][-1] * 2 and s > steps[i][0] and s not in steps[i],
                     simd_friendly_sizes,
                 ))
             steps[i].extend(added)

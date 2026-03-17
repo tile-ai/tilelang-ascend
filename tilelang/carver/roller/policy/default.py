@@ -288,7 +288,7 @@ class DefaultPolicy:
             all_factors = get_all_factors(int(k_iter.dom.extent))
             if len(all_factors) == 2 and int(k_iter.dom.extent) > 64:
                 all_factors = [1]
-                while all_factors[-1] * 2 < int(k_iter.dom.extent):
+                while all_factors[-1] < int(k_iter.dom.extent):
                     all_factors.append(all_factors[-1] * 2)
             results[k_iter.var.name] = all_factors
         return results
