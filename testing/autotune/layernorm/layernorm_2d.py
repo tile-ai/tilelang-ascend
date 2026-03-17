@@ -11,7 +11,7 @@ import tilelang.language as T
 from tilelang import carver
 from tilelang.carver.arch.ascend import Ascend
 
-
+torch.npu.set_device(10)
 os.environ["TILELANG_ASCEND_MODE"] = "Developer"
 
 # 你给的所有 shape
@@ -63,13 +63,13 @@ def run_single_shape(shape, log_dir: Path):
                 # -----------------------------
                 # reference
                 # -----------------------------
-                def ref_prog(x, gamma, beta):
+                def ref_prog(x, w, b, m, r):
 
                     return torch.nn.functional.layer_norm(
                         x,
                         normalized_shape=(N,),
-                        weight=gamma,
-                        bias=beta,
+                        weight=w,
+                        bias=b,
                         eps=eps,
                     )
 
@@ -82,7 +82,7 @@ def run_single_shape(shape, log_dir: Path):
 
                     carver_template = carver.ElementwiseFixTemplate(
                         shape=[M, N],
-                        dtype="float16",
+                        dtype="float32",
                     ).with_arch(arch)
 
                     hints = carver_template.recommend_hints(topk=20)
@@ -107,11 +107,13 @@ def run_single_shape(shape, log_dir: Path):
 
                     torch.manual_seed(0)
 
-                    x = torch.randn(M, N, dtype=torch.float16).npu()
-                    gamma = torch.randn(N, dtype=torch.float16).npu()
-                    beta = torch.randn(N, dtype=torch.float16).npu()
+                    x = torch.randn(M, N, dtype=torch.float32).npu()
+                    w = torch.randn(N, dtype=torch.float32).npu()
+                    b = torch.randn(N, dtype=torch.float32).npu()
+                    m = torch.randn(M, dtype=torch.float32).npu()
+                    r = torch.randn(M, dtype=torch.float32).npu()
 
-                    return [x, gamma, beta]
+                    return [x, w, b, m, r]
 
                 # -----------------------------
                 # kernel
@@ -123,114 +125,103 @@ def run_single_shape(shape, log_dir: Path):
                     atol=1e-2,
                     rtol=1e-2,
                 )
-                @tilelang.jit(out_idx=[-1], target="npuir")
-                def layernorm(M, N, block_M, block_N):
-
+                @tilelang.jit(out_idx=[1], target="npuir")
+                def layer_norm_fwd(M, N, block_M, block_N):
                     @T.prim_func
-                    def layernorm_kernel(
-                        A: T.Tensor((M, N), "float16"),
-                        Gamma: T.Tensor((N,), "float16"),
-                        Beta: T.Tensor((N,), "float16"),
-                        C: T.Tensor((M, N), "float16"),
+                    def layer_norm_fwd_kernel(
+                        X: T.Tensor((M, N), "float32"),
+                        Y: T.Tensor((M, N), "float32"),
+                        W: T.Tensor((N,), "float32"),
+                        B: T.Tensor((N,), "float32"),
+                        Mean: T.Tensor((M,), "float32"),
+                        Rstd: T.Tensor((M,), "float32"),
                     ):
+                        eps = 1e-5
+                        with T.Kernel(T.ceildiv(M, block_M), is_npu=True) as (bx, _):
+                            X_shared = T.alloc_shared((block_M, block_N), "float32")
+                            W_shared = T.alloc_shared((block_N,), "float32")
+                            W_reshape = T.alloc_shared((1, block_N), "float32")
 
-                        with T.Kernel(
-                            T.ceildiv(N, block_N) * T.ceildiv(M, block_M),
-                            is_npu=True,
-                        ) as (cid, _):
+                            B_shared = T.alloc_shared((block_N,), "float32")
+                            B_reshape = T.alloc_shared((1, block_N), "float32")
 
-                            by = cid // T.ceildiv(N, block_N)
-                            bx = cid % T.ceildiv(N, block_N)
+                            local_reduce = T.alloc_shared((block_M, 1), "float32")
+                            row_mean = T.alloc_shared((block_M, 1), "float32")
+                            row_var = T.alloc_shared((block_M, 1), "float32")
+                            row_rstd = T.alloc_shared((block_M, 1), "float32")
 
-                            A_shared = T.alloc_shared((block_M, block_N), "float16")
+                            T.clear(row_mean)
+                            T.clear(row_var)
 
-                            local_x = T.alloc_fragment((block_M, block_N), "float16")
+                            for ko in T.serial(T.ceildiv(N, block_N)):
+                                col_base = ko * block_N
 
-                            row_mean = T.alloc_fragment((block_M, 1), "float16")
-                            row_var = T.alloc_fragment((block_M, 1), "float16")
+                                T.copy(X[bx * block_M, col_base], X_shared)
 
-                            tmp = T.alloc_fragment((block_M, block_N), "float16")
+                                T.reduce(X_shared, local_reduce, dims=1, reduce_mode="sum")
 
-                            gamma = T.alloc_fragment((1, block_N), "float16")
-                            beta = T.alloc_fragment((1, block_N), "float16")
+                                for i in T.serial(block_M):
+                                    row = bx * block_M + i
+                                    if row < M:
+                                        row_mean[i, 0] = row_mean[i, 0] + local_reduce[i, 0]
 
-                            eps_buf = T.alloc_fragment((block_M, 1), "float16")
+                            for i in T.serial(block_M):
+                                row = bx * block_M + i
+                                if row < M:
+                                    row_mean[i, 0] = row_mean[i, 0] / N
 
-                            # load
-                            T.copy(A[by * block_M, bx * block_N], A_shared)
-                            T.copy(A_shared, local_x)
+                            for ko in T.serial(T.ceildiv(N, block_N)):
+                                col_base = ko * block_N
 
-                            T.copy(Gamma[bx * block_N], gamma)
-                            T.copy(Beta[bx * block_N], beta)
+                                T.copy(X[bx * block_M, col_base], X_shared)
 
-                            # ------------------
-                            # mean
-                            # ------------------
-                            T.reduce(local_x, row_mean, dims=1, reduce_mode="sum")
+                                T.vsub(X_shared, row_mean, X_shared)
+                                T.vmul(X_shared, X_shared, X_shared)
 
-                            inv_n = 1.0 / N
-                            T.vmul(row_mean, inv_n, row_mean)
+                                T.reduce(X_shared, local_reduce, dims=1, reduce_mode="sum")
 
-                            # ------------------
-                            # x - mean
-                            # ------------------
-                            T.vsub(local_x, row_mean, tmp)
+                                for i in T.serial(block_M):
+                                    row_var[i, 0] = row_var[i, 0] - (-local_reduce[i, 0])
 
-                            # ------------------
-                            # variance
-                            # ------------------
-                            T.vmul(tmp, tmp, tmp)
+                            for i in T.serial(block_M):
+                                row = bx * block_M + i
+                                if row < M:
+                                    row_var[i, 0] = row_var[i, 0] - row_var[i, 0] * (1.0 - 1.0 / N)
+                                    row_var[i, 0] = row_var[i, 0] + eps
+                                    T.vrsqrt(row_var[i, 0], row_rstd[i, 0])
 
-                            T.reduce(tmp, row_var, dims=1, reduce_mode="sum")
+                            for i in T.serial(block_M):
+                                row = bx * block_M + i
+                                if row < M:
+                                    Mean[row] = row_mean[i, 0]
+                                    Rstd[row] = row_rstd[i, 0]
 
-                            T.vmul(row_var, inv_n, row_var)
+                            for ko in T.serial(T.ceildiv(N, block_N)):
+                                col_base = ko * block_N
 
-                            # ------------------
-                            # std
-                            # ------------------
+                                T.copy(X[bx * block_M, col_base], X_shared)
+                                T.copy(W[col_base], W_shared)
+                                T.copy(B[col_base], B_shared)
+                                T.reshape(W_shared, W_reshape)
+                                T.reshape(B_shared, B_reshape)
 
+                                T.vsub(X_shared, row_mean, X_shared)
+                                T.vmul(X_shared, row_rstd, X_shared)
+                                T.vmul(X_shared, W_reshape, X_shared)
+                                T.vadd(X_shared, B_reshape, X_shared)
 
-                            T.vadd(row_var, eps, row_var)
+                                T.copy(X_shared, Y[bx * block_M, col_base])
 
-                            T.vsqrt(row_var, row_var)
-
-                            # ------------------
-                            # normalize
-                            # ------------------
-                            T.vsub(local_x, row_mean, local_x)
-
-                            T.vdiv(local_x, row_var, local_x)
-
-                            # ------------------
-                            # gamma * x + beta
-                            # ------------------
-                            T.vmul(local_x, gamma, local_x)
-
-                            T.vadd(local_x, beta, local_x)
-
-                            # store
-                            T.copy(local_x, C[by * block_M, bx * block_N])
-
-                    return layernorm_kernel
-
+                    return layer_norm_fwd_kernel
                 # -----------------------------
                 # compile
                 # -----------------------------
-                func = layernorm(M, N)
-
-                # trigger autotune
-                x = torch.randn(M, N, dtype=torch.float16).npu()
-                gamma = torch.randn(N, dtype=torch.float16).npu()
-                beta = torch.randn(N, dtype=torch.float16).npu()
-
-                y = func(x, gamma, beta)
+                func = layer_norm_fwd(M, N)
 
                 torch.npu.synchronize()
 
                 print("\nBest Config:")
                 print(func.get_tuner_result())
-
-                print("\nOutput shape:", y.shape)
 
                 print("\nTest passed!")
 
@@ -242,7 +233,7 @@ def run_single_shape(shape, log_dir: Path):
 
 
 def main():
-    root_log_dir = Path("./shape_logs_2d_f16")
+    root_log_dir = Path("./shape_logs_2d_f32")
     root_log_dir.mkdir(exist_ok=True)
 
     for shape in SHAPES:

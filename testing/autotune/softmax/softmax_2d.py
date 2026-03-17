@@ -11,10 +11,9 @@ import tilelang.language as T
 from tilelang import carver
 from tilelang.carver.arch.ascend import Ascend
 
-
+torch.npu.set_device(10)
 os.environ["TILELANG_ASCEND_MODE"] = "Developer"
 
-# 你给的所有 shape
 SHAPES = [
     (8,256),
     (8,768),
@@ -64,7 +63,7 @@ def run_single_shape(shape, log_dir: Path):
                     arch = Ascend()
                     carver_template = carver.ElementwiseFixTemplate(
                         shape=[M, N],
-                        dtype="float16",
+                        dtype="float32",
                     ).with_arch(arch)
 
                     hints = carver_template.recommend_hints(topk=20)
@@ -72,6 +71,7 @@ def run_single_shape(shape, log_dir: Path):
 
                     for hint in hints:
                         print("Hint:", hint)
+
                         configs.append({
                             "block_M": hint.block[0],
                             "block_N": hint.block[1],
@@ -82,7 +82,7 @@ def run_single_shape(shape, log_dir: Path):
                 def supply_prog(params):
                     torch.manual_seed(0)
                     return [
-                        torch.randn(M, N, dtype=torch.float16).npu(),
+                        torch.randn(M, N, dtype=torch.float32).npu(),
                     ]
 
                 @tilelang.autotune(
@@ -94,62 +94,60 @@ def run_single_shape(shape, log_dir: Path):
                 )
                 @tilelang.jit(out_idx=[-1], target="npuir")
                 def softmax(M, N, block_M, block_N):
-                    
                     @T.prim_func
                     def softmax_kernel(
-                        A: T.Tensor((M, N), "float16"),
-                        C: T.Tensor((M, N), "float16"),
+                        A: T.Tensor((M, N), "float32"),
+                        C: T.Tensor((M, N), "float32"),
                     ):
-                        with T.Kernel(
-                            T.ceildiv(N, block_N) * T.ceildiv(M, block_M),
-                            is_npu=True,
-                        ) as (cid, _):
+                        with T.Kernel(T.ceildiv(M, block_M), is_npu=True) as (bx, _):
 
-                            by = cid // T.ceildiv(N, block_N)
-                            bx = cid % T.ceildiv(N, block_N)
+                            A_shared = T.alloc_shared((block_M, block_N), "float32")
+                            local_reduce = T.alloc_shared((block_M, 1), "float32")
 
-                            A_shared = T.alloc_shared((block_M, block_N), "float16")
+                            row_max = T.alloc_shared((block_M, 1), "float32")
+                            row_sum = T.alloc_shared((block_M, 1), "float32")
 
-                            # fragment buffers
-                            local_scores = T.alloc_fragment((block_M, block_N), "float16")
-                            row_max = T.alloc_fragment((block_M,1), "float16")
-                            row_sum = T.alloc_fragment((block_M,1), "float16")
+                            min_val = -1e30
+                            zero_val = 0.0
+                            T.fill(row_max, min_val)
+                            T.fill(row_sum, zero_val)
 
-                            # load
-                            T.copy(A[by * block_M, bx * block_N], A_shared)
-                            T.copy(A_shared, local_scores)
+                            for ko in T.serial(T.ceildiv(N, block_N)):
+                                col_base = ko * block_N
 
-                            # --------------------------
-                            # step1: reduce max per row
-                            # --------------------------
-                            T.reduce(local_scores, row_max, dims=1, reduce_mode="max")
+                                T.copy(A[bx * block_M, col_base], A_shared)
 
-                            # --------------------------
-                            # step2: subtract max
-                            # --------------------------
-                            T.vsub(local_scores, row_max, local_scores)
+                                T.reduce(A_shared, local_reduce, dims=1, reduce_mode="max")
 
-                            # --------------------------
-                            # step3: exp
-                            # --------------------------
-                            T.vexp(local_scores, local_scores)
+                                for i in T.serial(block_M):
+                                    if row_max[i, 0] < local_reduce[i, 0]:
+                                        row_max[i, 0] = local_reduce[i, 0]
 
-                            # --------------------------
-                            # step4: sum
-                            # --------------------------
-                            T.reduce(local_scores, row_sum, dims=1, reduce_mode="sum")
+                            for ko in T.serial(T.ceildiv(N, block_N)):
+                                col_base = ko * block_N
+                                T.copy(A[bx * block_M, col_base], A_shared)
 
-                            # --------------------------
-                            # step5: normalize
-                            # --------------------------
-                            T.vdiv(local_scores, row_sum, local_scores)
+                                T.vsub(A_shared, row_max, A_shared)
 
-                            # store
-                            T.copy(local_scores, C[by * block_M, bx * block_N])
+                                T.vexp(A_shared, A_shared)
+
+                                T.reduce(A_shared, local_reduce, dims=1, reduce_mode="sum")
+
+                                for i in T.serial(block_M):
+                                    row_sum[i, 0] = row_sum[i, 0] + local_reduce[i, 0]
+
+                            for ko in T.serial(T.ceildiv(N, block_N)):
+                                col_base = ko * block_N
+
+                                T.copy(A[bx * block_M, col_base], A_shared)
+
+                                T.vsub(A_shared, row_max, A_shared)
+                                T.vexp(A_shared, A_shared)
+                                T.vdiv(A_shared, row_sum, A_shared)
+
+                                T.copy(A_shared, C[bx * block_M, col_base])
 
                     return softmax_kernel
-
-                    return siluAndMul
 
                 func = softmax(M, N)
 
@@ -165,11 +163,10 @@ def run_single_shape(shape, log_dir: Path):
 
 
 def main():
-    root_log_dir = Path("./shape_logs_2d_f16")
+    root_log_dir = Path("./shape_logs_2d_f161")
     root_log_dir.mkdir(exist_ok=True)
 
     for shape in SHAPES:
-        # 为每个shape创建目录名
         shape_str = "x".join(map(str, shape))
         log_dir = root_log_dir / shape_str
 
