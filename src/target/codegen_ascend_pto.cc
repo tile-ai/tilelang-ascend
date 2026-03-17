@@ -34,7 +34,7 @@ namespace tvm {
 namespace codegen {
 const std::string kAscendPtoScope = "tl::ascend_pto::";
 
-  using ShapeInfo = CodeGenTileLangAscendPto::ShapeInfo;
+using ShapeInfo = CodeGenTileLangAscendPto::ShapeInfo;
 
 static std::string getType(const DataType &dtype) {
   if (dtype.is_float16()) {
@@ -106,18 +106,23 @@ std::string GetTypeLenString(std::string type) {
   return typeSize;
 }
 
-std::string CodeGenTileLangAscendPto::GetTempVarName(const std::string& temp_name) {
+std::string
+CodeGenTileLangAscendPto::GetTempVarName(const std::string &temp_name) {
   return temp_name + "_" + std::to_string(counters_[temp_name]++);
 }
 
-void CodeGenTileLangAscendPto::CreateUbVariable(const std::string& temp_name, const ShapeInfo& shape_info) {
+void CodeGenTileLangAscendPto::CreateUbVariable(const std::string &temp_name,
+                                                const ShapeInfo &shape_info) {
   this->PrintIndent();
-  this->stream << kAscendPtoScope << "TileUbDataND<" << shape_info.type << ", " << shape_info.slice_row << ", " 
-  << shape_info.slice_col  << ", "<< shape_info.slice_row << ", " << shape_info.slice_col << "> " << temp_name << ";\n";
+  this->stream << kAscendPtoScope << "TileUbDataND<" << shape_info.type << ", "
+               << shape_info.slice_row << ", " << shape_info.slice_col << ", "
+               << shape_info.slice_row << ", " << shape_info.slice_col << "> "
+               << temp_name << ";\n";
 
   this->PrintIndent();
-  this->stream << "TASSIGN(" << temp_name << ", " << shape_info.first_addr << " + " 
-  << shape_info.offset << " * " << GetTypeLen(shape_info.type) << ");\n";
+  this->stream << "TASSIGN(" << temp_name << ", " << shape_info.first_addr
+               << " + " << shape_info.offset << " * "
+               << GetTypeLen(shape_info.type) << ");\n";
 }
 
 ShapeInfo CodeGenTileLangAscendPto::GetSliceInfo(const CallNode *op) {
@@ -142,7 +147,8 @@ ShapeInfo CodeGenTileLangAscendPto::GetSliceInfo(const CallNode *op) {
   } else {
     is_slice = extent != row * col;
   }
-  return ShapeInfo{row, col, slice_row, slice_col, extent, src_addr, offset, type, is_slice};
+  return ShapeInfo{row,      col,    slice_row, slice_col, extent,
+                   src_addr, offset, type,      is_slice};
 }
 
 CodeGenTileLangAscendPto::CodeGenTileLangAscendPto(std::string platform) {
@@ -1180,7 +1186,8 @@ void CodeGenTileLangAscendPto::CallExternCodegen(const CallNode *op) {
           this->stream << ")";
         }
         if (op_name.find("copy_ub_to_gm") != std::string::npos) {
-          this->stream << ", " << ub_valid_shapes[3] << ", " << src_offset << ");\n";
+          this->stream << ", " << ub_valid_shapes[3] << ", " << src_offset
+                       << ");\n";
         } else {
           this->stream << ", " << src_var_id << ");\n";
         }
@@ -1672,8 +1679,8 @@ void CodeGenTileLangAscendPto::SetDeqScaleCodegen(const CallNode *op) {
 }
 
 void CodeGenTileLangAscendPto::BinaryVecOpCodegen(const CallNode *op,
-                                               const std::string &op_name) {
-  
+                                                  const std::string &op_name) {
+
   ShapeInfo src0_shape_info = GetSliceInfo(op->args[1].as<CallNode>());
   ShapeInfo src1_shape_info = GetSliceInfo(op->args[2].as<CallNode>());
   ShapeInfo dst_shape_info = GetSliceInfo(op->args[0].as<CallNode>());
@@ -1691,7 +1698,8 @@ void CodeGenTileLangAscendPto::BinaryVecOpCodegen(const CallNode *op,
     auto var_name = PrintBufferOffset(op->args[i].as<CallNode>());
     var_names.push_back(var_name);
   }
-  if (!(src0_shape_info.is_slice || src1_shape_info.is_slice || dst_shape_info.is_slice)) {
+  if (!(src0_shape_info.is_slice || src1_shape_info.is_slice ||
+        dst_shape_info.is_slice)) {
     this->PrintIndent();
     this->stream << op_name << "(";
 
@@ -1714,7 +1722,8 @@ void CodeGenTileLangAscendPto::BinaryVecOpCodegen(const CallNode *op,
           op->args[0].as<CallNode>()->args[2] / element_count_dst;
       tvm::arith::Analyzer analyzer;
       PrimExpr simplified_buffer_k_dst = analyzer.Simplify(buffer_k_dst);
-      this->stream << var_names[0] << "[" << (PrintExpr(simplified_buffer_k_dst)) << "], ";
+      this->stream << var_names[0] << "["
+                   << (PrintExpr(simplified_buffer_k_dst)) << "], ";
     } else {
       this->stream << var_names[0] << ", ";
     }
@@ -1738,7 +1747,8 @@ void CodeGenTileLangAscendPto::BinaryVecOpCodegen(const CallNode *op,
           op->args[1].as<CallNode>()->args[2] / element_count_src0;
       tvm::arith::Analyzer analyzer;
       PrimExpr simplified_buffer_k_src0 = analyzer.Simplify(buffer_k_src0);
-      this->stream << var_names[1] << "[" << PrintExpr(simplified_buffer_k_src0) << "], ";
+      this->stream << var_names[1] << "[" << PrintExpr(simplified_buffer_k_src0)
+                   << "], ";
     } else {
       this->stream << var_names[1] << ", ";
     }
@@ -1763,12 +1773,14 @@ void CodeGenTileLangAscendPto::BinaryVecOpCodegen(const CallNode *op,
           op->args[2].as<CallNode>()->args[2] / element_count_src1;
       tvm::arith::Analyzer analyzer;
       PrimExpr simplified_buffer_k_src1 = analyzer.Simplify(buffer_k_src1);
-      this->stream << var_names[2] << "[" << PrintExpr(simplified_buffer_k_src1) << "]);\n";
+      this->stream << var_names[2] << "[" << PrintExpr(simplified_buffer_k_src1)
+                   << "]);\n";
     } else {
       this->stream << var_names[2] << ");\n";
     }
 
-  } else if (src0_shape_info.is_slice || src1_shape_info.is_slice || dst_shape_info.is_slice) {
+  } else if (src0_shape_info.is_slice || src1_shape_info.is_slice ||
+             dst_shape_info.is_slice) {
     std::string src0_temp_name = GetTempVarName("src0_binary_temp");
     std::string src1_temp_name = GetTempVarName("src1_binary_temp");
     std::string dst_temp_name = GetTempVarName("dst_binary_temp");
@@ -1776,7 +1788,8 @@ void CodeGenTileLangAscendPto::BinaryVecOpCodegen(const CallNode *op,
     CreateUbVariable(src1_temp_name, src1_shape_info);
     CreateUbVariable(dst_temp_name, dst_shape_info);
     this->PrintIndent();
-    this->stream << op_name << "(" << dst_temp_name << ", " << src0_temp_name << ", " << src1_temp_name << ");\n";
+    this->stream << op_name << "(" << dst_temp_name << ", " << src0_temp_name
+                 << ", " << src1_temp_name << ");\n";
   } else if (prefetch_n_stages_map_[var_names[1]].first == 0) {
     this->PrintIndent();
     this->stream << op_name << "(";
@@ -2054,7 +2067,8 @@ void CodeGenTileLangAscendPto::BinaryVecOpsCodegen(const CallNode *op,
                             : index;
     }
     std::string scalar_name =
-        is_call ? GetTempVarName(PrintBufferOffset(selected_elements_buffer) + "_scalar")
+        is_call ? GetTempVarName(PrintBufferOffset(selected_elements_buffer) +
+                                 "_scalar")
                 : GetTempVarName("scalar");
     this->PrintIndent();
     this->stream << "set_flag(PIPE_V, PIPE_S, EVENT_ID0);\n";
@@ -2086,7 +2100,8 @@ void CodeGenTileLangAscendPto::BinaryVecOpsCodegen(const CallNode *op,
       CreateUbVariable(src_temp_name, src_shape_info);
       CreateUbVariable(dst_temp_name, dst_shape_info);
       this->PrintIndent();
-      this->stream << final_op_name << "(" << dst_temp_name << ", " << src_temp_name << ", " << applied_scalar << ");\n";
+      this->stream << final_op_name << "(" << dst_temp_name << ", "
+                   << src_temp_name << ", " << applied_scalar << ");\n";
     } else {
       this->stream << operation << "(" << var_names[0] << ", " << var_names[1]
                    << ", " << applied_scalar << ");\n";
@@ -2112,8 +2127,10 @@ void CodeGenTileLangAscendPto::UnaryVecOpCodegen(const CallNode *op,
   ShapeInfo src_shape_info = GetSliceInfo(op->args[1].as<CallNode>());
   ShapeInfo dst_shape_info = GetSliceInfo(op->args[0].as<CallNode>());
 
-  bool is_src_slice = src_shape_info.extent != src_shape_info.row * src_shape_info.col;
-  bool is_dst_slice = dst_shape_info.extent != dst_shape_info.row * dst_shape_info.col;
+  bool is_src_slice =
+      src_shape_info.extent != src_shape_info.row * src_shape_info.col;
+  bool is_dst_slice =
+      dst_shape_info.extent != dst_shape_info.row * dst_shape_info.col;
 
   if (src_shape_info.is_slice || dst_shape_info.is_slice) {
     std::string src_temp_name = GetTempVarName("src_unary_temp");
@@ -2121,7 +2138,8 @@ void CodeGenTileLangAscendPto::UnaryVecOpCodegen(const CallNode *op,
     CreateUbVariable(src_temp_name, src_shape_info);
     CreateUbVariable(dst_temp_name, dst_shape_info);
     this->PrintIndent();
-    this->stream << op_name << "(" << dst_temp_name << ", " << src_temp_name << ");\n";
+    this->stream << op_name << "(" << dst_temp_name << ", " << src_temp_name
+                 << ");\n";
   } else {
     this->PrintIndent();
     this->stream << op_name << "(";
@@ -2139,13 +2157,14 @@ void CodeGenTileLangAscendPto::UnaryVecOpCodegen(const CallNode *op,
       } else {
         ICHECK(false)
             << "An error occurred. Please check prefetch_n_stages_map_, "
-                "buffer_shapes_, and buffer_versions_.";
+               "buffer_shapes_, and buffer_versions_.";
       }
       auto buffer_k_dst =
           op->args[0].as<CallNode>()->args[2] / element_count_dst;
       tvm::arith::Analyzer analyzer;
       PrimExpr simplified_buffer_k_dst = analyzer.Simplify(buffer_k_dst);
-      this->stream << var_names[0] << "[" << (PrintExpr(simplified_buffer_k_dst)) << "], ";
+      this->stream << var_names[0] << "["
+                   << (PrintExpr(simplified_buffer_k_dst)) << "], ";
     } else {
       this->stream << var_names[0] << ", ";
     }
@@ -2163,13 +2182,14 @@ void CodeGenTileLangAscendPto::UnaryVecOpCodegen(const CallNode *op,
       } else {
         ICHECK(false)
             << "An error occurred. Please check prefetch_n_stages_map_, "
-                "buffer_shapes_, and buffer_versions_.";
+               "buffer_shapes_, and buffer_versions_.";
       }
       auto buffer_k_src0 =
           op->args[1].as<CallNode>()->args[2] / element_count_src0;
       tvm::arith::Analyzer analyzer;
       PrimExpr simplified_buffer_k_src0 = analyzer.Simplify(buffer_k_src0);
-      this->stream << var_names[1] << "[" << PrintExpr(simplified_buffer_k_src0) << "]);\n";
+      this->stream << var_names[1] << "[" << PrintExpr(simplified_buffer_k_src0)
+                   << "]);\n";
     } else {
       this->stream << var_names[1] << ");\n";
     }
