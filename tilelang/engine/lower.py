@@ -19,6 +19,7 @@ from tilelang.engine.phase import (
 )
 from tilelang.tladapter import transforms, conversion
 from tilelang.tladapter.transforms import hivm as H, mlir as M, bishengir as B
+from tilelang.utils.ascend_npu import detect_npu_target
 
 
 def _build_npuir_pass_pipeline() -> list:
@@ -42,7 +43,7 @@ def _build_npuir_pass_pipeline() -> list:
         M.canonicalize(top_down=True),
         B.adapt_triton_kernel,
         B.canonicalize_module,
-        B.append_device_spec(target="Ascend910B1"),
+        B.append_device_spec(target=detect_npu_target()),
     ]
 
     # ── convert-to-hivm-pipeline (decomposed) ──────────────────────────

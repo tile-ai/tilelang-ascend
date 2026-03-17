@@ -2,9 +2,28 @@
 # Licensed under the MIT License.
 # Copied from bitblas
 import functools
+import logging
 import os
 import shutil
+import subprocess
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+_VALID_NPU_TARGETS = frozenset({
+    "Ascend910B1", "Ascend910B2", "Ascend910B3", "Ascend910B4",
+    "Ascend910B4-1", "Ascend910B2C",
+    "Ascend910_9362", "Ascend910_9372",
+    "Ascend910_9381", "Ascend910_9382",
+    "Ascend910_9391", "Ascend910_9392",
+    "Ascend910_950z", "Ascend910_9579",
+    "Ascend910_957b", "Ascend910_957d",
+    "Ascend910_9581", "Ascend910_9589",
+    "Ascend910_958a", "Ascend910_958b",
+    "Ascend910_9599",
+})
+
+_DEFAULT_NPU_TARGET = "Ascend910B1"
 
 class NPUUtils(object):
     def __new__(cls):
@@ -50,6 +69,97 @@ class NPUUtils(object):
     def get_device_num(self):
         # Return Ascend device number
         return self.npu_utils_mod.get_device_num()
+
+
+def _try_detect_npu_target_from_cann_rt() -> "str | None":
+    """Detect SOC version via CANN runtime ``rtGetSocVersion`` (ctypes).
+
+    This mirrors triton-ascend's primary detection approach and returns the
+    exact SOC variant string (e.g. "Ascend910B3") without depending on
+    ``npu_utils.so`` or ``torch_npu``.
+    """
+    try:
+        import ctypes
+        ascend_home = os.environ.get("ASCEND_HOME_PATH", "")
+        search_names = ["libruntime.so"]
+        if ascend_home:
+            search_names.insert(0, os.path.join(ascend_home, "lib64", "libruntime.so"))
+        librt = None
+        for name in search_names:
+            try:
+                librt = ctypes.CDLL(name)
+                break
+            except OSError:
+                continue
+        if librt is None:
+            return None
+        buf = ctypes.create_string_buffer(64)
+        ret = librt.rtGetSocVersion(buf, ctypes.c_uint32(64))
+        if ret != 0:
+            return None
+        soc = buf.value.decode("utf-8").strip()
+        if soc and soc in _VALID_NPU_TARGETS:
+            return soc
+    except Exception as e:
+        logger.debug("CANN runtime detection failed: %s", e)
+    return None
+
+
+def _try_detect_npu_target_from_smi() -> "str | None":
+    """Detect SOC version via ``npu-smi info`` command."""
+    npu_smi = shutil.which("npu-smi")
+    if npu_smi is None:
+        return None
+    try:
+        out = subprocess.check_output(
+            [npu_smi, "info", "-t", "board", "-i", "0"],
+            text=True, timeout=5, stderr=subprocess.DEVNULL,
+        )
+        for line in out.splitlines():
+            if "SOC Version" in line:
+                parts = line.split(":")
+                if len(parts) >= 2:
+                    soc = parts[-1].strip()
+                    if soc in _VALID_NPU_TARGETS:
+                        return soc
+    except Exception as e:
+        logger.debug("npu-smi detection failed: %s", e)
+    return None
+
+
+@functools.lru_cache()
+def detect_npu_target() -> str:
+    """Auto-detect the Ascend NPU target device for compilation.
+
+    Detection priority (mirrors triton-ascend's approach):
+      1. ``TILELANG_NPU_TARGET`` environment variable (e.g. "Ascend910B3")
+      2. CANN runtime ``rtGetSocVersion`` via ctypes — most accurate
+      3. ``npu-smi info`` command-line tool
+      4. Fallback: ``Ascend910B1``
+    """
+    env = os.environ.get("TILELANG_NPU_TARGET", "").strip()
+    if env:
+        if env in _VALID_NPU_TARGETS:
+            logger.debug("NPU target from env: %s", env)
+            return env
+        logger.warning(
+            "TILELANG_NPU_TARGET=%r is not a recognized target; "
+            "valid values: %s. Falling back to auto-detection.",
+            env, ", ".join(sorted(_VALID_NPU_TARGETS)),
+        )
+
+    detected = _try_detect_npu_target_from_cann_rt()
+    if detected is not None:
+        logger.debug("NPU target from CANN rtGetSocVersion: %s", detected)
+        return detected
+
+    detected = _try_detect_npu_target_from_smi()
+    if detected is not None:
+        logger.debug("NPU target from npu-smi: %s", detected)
+        return detected
+
+    logger.debug("NPU target detection failed, using default: %s", _DEFAULT_NPU_TARGET)
+    return _DEFAULT_NPU_TARGET
 
 
 @functools.lru_cache()
