@@ -733,7 +733,7 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
     BroadcastableBufferCollector collector(parallel_vars, inner_vec_len, outer_extent, this);
     // Only collect broadcast buffers if there's no discrete access in the expression
     // TODO:离散判断去掉，不包含2d再做广播检测
-    if (!discrete_checker.has_discrete_access_ && !dim_checker.container_2d_dim) {
+    if (!discrete_checker.has_discrete_access_ && !dim_checker.container_2d_dim && is_2d_vectorizing) {
       collector(store->value);
     }
 

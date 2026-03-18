@@ -18,25 +18,26 @@ def column_parallel_buffer_scalar_mul_kernel(M, N, block_M, block_N, dtype="floa
 
     @T.prim_func
     def main(A: T.Tensor((M, N), dtype),
-            B: T.Tensor((M,), dtype),
+            B: T.Tensor((N,), dtype),
             C: T.Tensor((M, N), dtype)):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
             by = cid % n_num
 
             a_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
-            b_ub = T.alloc_ub((block_M // VEC_NUM,), dtype)
+            b_ub = T.alloc_ub((block_N,), dtype)
             c_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
             with T.Scope("V"):
                 T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a_ub)
-                T.copy(B[bx * block_M + vid * block_M // VEC_NUM], b_ub)
+                T.copy(B[by * block_N], b_ub)
                     
                 for (i, j) in T.Parallel(block_M // VEC_NUM, block_N):
                     # c_ub[i, j] = a_ub[i, j] + 5
-                    c_ub[i, j] = b_ub[i] + 5
+                    # c_ub[i, j] = b_ub[i] + 5
                     # c_ub[i, j] = a_ub[i, j] + b_ub[i]
-                    # c_ub[i, j] = b_ub[i]
-                    # c_ub[i, j] = a_ub[i, j] + 5
+                    # c_ub[i, j] = b_ub[j]
+                    # c_ub[i, j] = a_ub[i, j]
+                    c_ub[i, j] = b_ub[j] + 5
 
                 T.copy(c_ub, C[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
 
@@ -55,17 +56,16 @@ for M, N, block_M, block_N in test_configs:
     func = column_parallel_buffer_scalar_mul_kernel(M, N, block_M, block_N)
     print("Init successful!")
     a = torch.randn(M, N).npu()
-    b = torch.randn(M).npu()
+    b = torch.randn(N).npu()
     # print("b", b)
     # print("b.unsqueeze", b.unsqueeze(1))
     torch.npu.synchronize()
     c = func(a, b)
     # print("c", c)
     # print("c.shape", c.shape)
-    ref_c = torch.broadcast_to(b.unsqueeze(1) + 5, a.shape)
-    # ref_c = torch.broadcast_to(b.unsqueeze(1), a.shape)
-    # ref_c = a + b.unsqueeze(1)
-    # ref_c = a + 5
+    ref_c = torch.broadcast_to(b.unsqueeze(0) + 5, a.shape)
+    # ref_c = a * b.unsqueeze(0)
+    # ref_c = torch.broadcast_to(b.unsqueeze(0), a.shape)
     # print("ref_c", ref_c)
     # print("ref_c.shape", ref_c.shape)
     torch.testing.assert_close(c.cpu(), ref_c.cpu(), rtol=1e-2, atol=1e-2)
