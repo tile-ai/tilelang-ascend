@@ -209,14 +209,6 @@ if ! grep -Fq "${BISHENGIR_PY_PKGS}/mlir_core" ~/.bashrc; then
     echo "Added AscendNPU-IR python_packages (mlir_core + bishengir) to PYTHONPATH for NPUIR."
 fi
 
-# Step 12: Source .bashrc to apply changes
-echo "Applying environment changes by sourcing .bashrc..."
-source ~/.bashrc
-if [ $? -ne 0 ]; then
-    echo "Error: Failed to source .bashrc."
-    exit 1
-else
-    echo "Environment configured successfully."
-fi
+echo "NOTE: Please run \"source ~/.bashrc\" or relaunch the terminal to apply the environment changes"
 
 echo "Installation script completed successfully."
