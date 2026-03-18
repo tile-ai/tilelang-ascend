@@ -391,7 +391,7 @@ private:
           loop_ids += ", ";
         loop_ids += _id;
       }
-      LOG(INFO)
+      DLOG(DEBUG)
           << "Found " << skip_loop_ids.size()
           << " shared loop(s) with non-constant iter times: [" << loop_ids
           << "]. These loop(s) won't be counted for total loop times of \""
