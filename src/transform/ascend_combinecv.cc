@@ -599,6 +599,11 @@ public:
       return StmtMutator::VisitStmt_(op);
     }
     current_proccess_switch_ = false; // turn off
+
+    if (IsSyncSideEffectCall(call_node, is_aiv_)) {
+      return StmtMutator::VisitStmt_(op);
+    }
+
     return Evaluate(0);
   }
 
@@ -651,6 +656,87 @@ private:
       {"wmma.accumulator", "cube"},
       {"shared.dyn", "cube"},
       {"shared", "vec"}};
+
+  bool IsSyncSideEffectCall(const CallNode* call_node, bool is_aiv) {
+    if (!call_node) return false;
+
+    if (call_node->op.as<OpNode>()) {
+      auto op_name = call_node->op.as<OpNode>()->name;
+      if (op_name == "tl.ascend_set_flag" || 
+        op_name == "tl.ascend_wait_flag" || 
+        op_name == "tl.ascend_pipe_barrier" || 
+        op_name == "tl.ascend_auto_set_flag" || 
+        op_name == "tl.ascend_auto_wait_flag") {
+        if (call_node->args.size() >= 3) {
+          if (const auto* src_pipe = call_node->args[0].as<StringImmNode>()) {
+            if (const auto* dst_pipe = call_node->args[1].as<StringImmNode>()) {
+              if (const auto* event_id = call_node->args[2].as<StringImmNode>()) {
+                std::string src = src_pipe->value;
+                std::string dst = dst_pipe->value;
+
+                bool src_is_cube = IsCubePipeline(src);
+                bool dst_is_cube = IsCubePipeline(dst);
+
+                bool src_is_vector = IsVectorPipeline(src);
+                bool dst_is_vector = IsVectorPipeline(dst);
+
+                if (is_aiv) {
+                  return src_is_vector && dst_is_vector;
+                } else {
+                  return src_is_cube && dst_is_cube;
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    if (op_name == "tl.ascend_pipe_barrier") {
+      if (const auto* pipe = call_node->args[0].as<StringImmNode>()) {
+        std::string pipe_name = pipe->value;
+        if (pipe_name == "ALL") {
+          return true;
+        }
+
+        if (is_aiv) {
+          return pipe_name == "V";
+        } else {
+          return pipe_name == "M";
+        }
+      }
+    }
+
+    if (call_node->op.same_as(builtin::call_extern())) {
+      if (call_node->args.size() > 0) {
+        if (const auto* str_imm = call_node->args[0].as<StringImmNode>()) {
+          std::string func_name = str_imm->value;
+          if (func_name.find("ascend_set_flag") != std::string::npos ||
+            func_name.find("ascend_wait_flag") != std::string::npos ||
+            func_name.find("ascend_pipe_barrier") != std::string::npos ||
+            func_name.find("pipe_barrier") != std::string::npos ||
+            func_name.find("barrier_all") != std::string::npos) {
+              return true;
+          }
+        }
+      }
+    }
+    return false;
+  }
+
+  bool IsCubePipeline(const std::string& pipe) {
+    static const std::unordered_set<std::string> cube_pipelines = {
+      "M", "MTE1", "FIX"
+    }
+    return cube_pipelines.find(pipe) != cube_pipelines.end();
+  }
+  
+  bool IsVectorPipeline(const std::string& pipe) {
+    static const std::unordered_set<std::string> vector_pipelines = {
+      "V", "MTE2", "MTE3"
+    }
+    return vector_pipelines.find(pipe) != vector_pipelines.end();
+  }
 };
 
 class CombineCV : public arith::IRMutatorWithAnalyzer {
