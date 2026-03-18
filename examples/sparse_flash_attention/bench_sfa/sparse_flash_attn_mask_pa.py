@@ -5,13 +5,10 @@ import os
 import sys
 parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.append(parent_dir)
-import sfa_golden as ref
-import numpy as np
 
 def init_test():
     torch.set_default_device('npu')
-    torch.manual_seed(0)
-
+    torch.manual_seed(42)
     tilelang.disable_cache()
 
 pass_configs = {
@@ -23,193 +20,144 @@ pass_configs = {
 
 @tilelang.jit(out_idx=[3], workspace_idx=[7,8,9,10,11], pass_configs=pass_configs)
 def sparse_attention_fwd(
-    heads,
+    q_heads,
     dim,
-    tail_dim,
+    rope_dim,
     topk,
-    kv_group=1,
-    sm_scale=None,
+    kv_heads=1,
+    scale=None,
     is_causal=True,
-    block_I=64,
+    block_N=64,
     dtype="bfloat16",
-    block_num = 516,
     block_size = 128,
     core_num = 24,
 ):
     assert dim == tilelang.math.next_power_of_2(
         dim), f"haven't check padding correctness yet, dim={dim}"
-    assert tail_dim == tilelang.math.next_power_of_2(
-        tail_dim), f"haven't check padding correctness yet, dim={tail_dim}"
+    assert rope_dim == tilelang.math.next_power_of_2(
+        rope_dim), f"haven't check padding correctness yet, dim={rope_dim}"
     assert is_causal, 'non-casual is not supported'
-    assert topk % block_I == 0, 'otherwise will load some index=0 thus causing wrong kv to be loaded'
+    assert topk % block_N == 0, 'otherwise will load some index=0 thus causing wrong kv to be loaded'
 
     # NOTE: ascend only support exp interface instead of exp2
-    sm_scale = (1.0 / (dim + tail_dim))**0.5 if sm_scale is None else sm_scale
+    scale = (1.0 / (dim + rope_dim))**0.5 if scale is None else scale
 
     batch = T.symbolic("batch")
     seq_len = T.symbolic("seq_len")
 
     block_table_len = T.symbolic("block_table_len")
+    block_num = T.symbolic("block_num")
 
-    seq_len_kv = T.symbolic("seq_len_kv")
-    head_kv = heads // kv_group
-    q_shape = [batch, seq_len, heads, dim + tail_dim]
-    kv_shape = [batch, seq_len_kv, kv_group, dim + tail_dim]
-    o_shape = [batch, seq_len, heads, dim]
-    indices_shape = [seq_len, kv_group, topk]
-    # lse_shape = [batch, seq_len, heads]
+    g = q_heads // kv_heads
+    q_shape = [batch, seq_len, q_heads, dim + rope_dim]
+    o_shape = [batch, seq_len, q_heads, dim]
+    kv_shape = [block_num, block_size, 1, dim + rope_dim]
+    indices_shape = [seq_len, kv_heads, topk]
+
     indices_dtype = "int32"
     accum_dtype = "float"
 
-    H = head_kv
+    n_block_num = T.ceildiv(topk, block_N)
 
-    padded_H = max(tilelang.math.next_power_of_2(head_kv), 16)
-    if padded_H != H:
-        assert kv_group == 1, 'here we solve the H padding automatically, other wise you should handle Q copy and Output copy with your mask (when kv_group == 1, use g_i * padded_H:(g_i+1) * padded_H would be handled automatically)'
-
-    BI = block_I
-    NI = tilelang.cdiv(topk, block_I)
-    D = dim
-    D_tail = tail_dim
-
-    if head_kv > 64:
-        assert head_kv % 64 == 0, 'head_kv should be a multiple of 64'
-        REPLICATE_H = head_kv // 64
+    block_M = 64
+    if g > block_M:
+        assert g % block_M == 0, 'g should be a multiple of {block_M}'
+        g_block_num = g // block_M
     else:
-        REPLICATE_H = 1
+        g_block_num = 1
 
-    H_per_block = padded_H if REPLICATE_H == 1 else 64
-
-    v_block = H_per_block // 2
-
-    kv_shape = [block_num, block_size, 1, D + D_tail]
-
+    vec_block_M = block_M // 2
+    vec_block_N = block_N // 2
+    
     @T.prim_func
     def main(
-            Q: T.Tensor(q_shape, dtype),  # type: ignore
-            KV: T.Tensor(kv_shape, dtype),  # type: ignore
-            Indices: T.Tensor(indices_shape, indices_dtype),  # type: ignore
-            Output: T.Tensor(o_shape, dtype),  # type: ignore
+            Q: T.Tensor(q_shape, dtype),
+            KV: T.Tensor(kv_shape, dtype),
+            Indices: T.Tensor(indices_shape, indices_dtype),
+            Output: T.Tensor(o_shape, dtype),
             actual_q_len: T.Tensor([batch], indices_dtype),
             actual_kv_len: T.Tensor([batch], indices_dtype),
             block_table: T.Tensor([batch, block_table_len], indices_dtype),
-            workspace_1: T.Tensor([core_num, BI, D], dtype),  # T.Tensor([block_num, BI, D], dtype),
-            workspace_2: T.Tensor([core_num, BI, D_tail], dtype),  # T.Tensor([block_num, BI, D_tail], dtype),
-            workspace_3: T.Tensor([core_num, H_per_block, BI], accum_dtype),  # T.Tensor([block_num, H_per_block, BI], accum_dtype),
-            workspace_4: T.Tensor([core_num, H_per_block, BI], dtype),  # T.Tensor([block_num, H_per_block, BI], dtype),
-            workspace_5: T.Tensor([core_num, H_per_block, D], accum_dtype),  # T.Tensor([block_num, H_per_block, D], accum_dtype),
+            workspace_1: T.Tensor([core_num, block_N, dim], dtype),
+            workspace_2: T.Tensor([core_num, block_N, rope_dim], dtype),
+            workspace_3: T.Tensor([core_num, block_M, block_N], accum_dtype),
+            workspace_4: T.Tensor([core_num, block_M, block_N], dtype),
+            workspace_5: T.Tensor([core_num, block_M, dim], accum_dtype),
     ):
         with T.Kernel(core_num, is_npu=True) as (cid, vid):
-            # Alloc Memory
-            q_l1 = T.alloc_L1([H_per_block, D], dtype)
-            q_tail_l1 = T.alloc_L1([H_per_block, D_tail], dtype)
-            kv_l1 = T.alloc_L1([BI, D], dtype)
-            kv_tail_l1 = T.alloc_L1([BI, D_tail], dtype)
-            acc_s_l1 = T.alloc_L1([H_per_block, BI], dtype)
 
-            acc_s_l0c = T.alloc_L0C([H_per_block, BI], accum_dtype)
-            acc_o_l0c = T.alloc_L0C([H_per_block, D], accum_dtype)
+            q_l1 = T.alloc_L1([block_M, dim], dtype)
+            q_tail_l1 = T.alloc_L1([block_M, rope_dim], dtype)
+            kv_l1 = T.alloc_L1([block_N, dim], dtype)
+            kv_tail_l1 = T.alloc_L1([block_N, rope_dim], dtype)
+            acc_s_l1 = T.alloc_L1([block_M, block_N], dtype)
 
-            ## 2. Vector
-            acc_o = T.alloc_ub([v_block, D], accum_dtype)
-            sumexp = T.alloc_ub([v_block], accum_dtype)
-            m_i = T.alloc_ub([v_block], accum_dtype)
-            indices_ub_ = T.alloc_ub([BI], indices_dtype)
-            indices_ub_float = T.alloc_ub([BI], "float")
-            kv_ub = T.alloc_ub([D], dtype)
-            kv_tail_ub = T.alloc_ub([D_tail], dtype)
-            acc_s_ub = T.alloc_ub([v_block, BI], accum_dtype)
-            m_i_prev = T.alloc_ub([v_block], accum_dtype)
-            acc_s_ub_ = T.alloc_ub([v_block, BI], accum_dtype)
-            tmp_ub = T.alloc_ub([3 * DataType(accum_dtype).bits // 8 * v_block * BI], "uint8")
-            sumexp_i_ub = T.alloc_ub([v_block], accum_dtype)
-            acc_s_half = T.alloc_ub([v_block, BI], dtype)
-            acc_o_ub = T.alloc_ub([v_block, D], accum_dtype)
-            acc_o_half = T.alloc_ub([v_block, D], dtype)
-            mask_ub = T.alloc_ub([BI // 8], "uint8")
-            mask_ub_2 = T.alloc_ub([BI // 8], "uint8")
+            acc_s_l0c = T.alloc_L0C([block_M, block_N], accum_dtype)
+            acc_o_l0c = T.alloc_L0C([block_M, dim], accum_dtype)
 
+            acc_o = T.alloc_ub([vec_block_M, dim], accum_dtype)
+            sumexp = T.alloc_ub([vec_block_M], accum_dtype)
+            m_i = T.alloc_ub([vec_block_M], accum_dtype)
+            indices_ub_ = T.alloc_ub([block_N], indices_dtype)
+            indices_ub_float = T.alloc_ub([block_N], "float")
+            kv_ub = T.alloc_ub([dim], dtype)
+            kv_tail_ub = T.alloc_ub([rope_dim], dtype)
+            acc_s_ub = T.alloc_ub([vec_block_M, block_N], accum_dtype)
+            m_i_prev = T.alloc_ub([vec_block_M], accum_dtype)
+            acc_s_ub_ = T.alloc_ub([vec_block_M, block_N], accum_dtype)
+            tmp_ub = T.alloc_ub([3 * DataType(accum_dtype).bits // 8 * vec_block_M * block_N], "uint8")
+            sumexp_i_ub = T.alloc_ub([vec_block_M], accum_dtype)
+            acc_s_half = T.alloc_ub([vec_block_M, block_N], dtype)
+            acc_o_ub = T.alloc_ub([vec_block_M, dim], accum_dtype)
+            acc_o_half = T.alloc_ub([vec_block_M, dim], dtype)
+            mask_ub = T.alloc_ub([block_N // 8], "uint8")
+            mask_ub_2 = T.alloc_ub([block_N // 8], "uint8")
 
-            # # Currently manually set the address.
-            # T.annotate_address({
-            #     # L1 address
-            #     q_l1: 0,
-            #     q_tail_l1: 65536,
-            #     kv_l1: 73728,
-            #     kv_tail_l1: 139264,
-            #     acc_s_l1: 139264,
-
-            #     # L0C address
-            #     acc_s_l0c: 0,
-            #     acc_o_l0c: 0,
-
-            #     ## ub address
-            #     acc_o: 0,
-            #     sumexp: 65536,
-            #     m_i: 65664,
-            #     indices_ub_: 65792,
-            #     indices_ub_float: 66048,
-            #     kv_ub: 66048,
-            #     kv_tail_ub: 67072,
-            #     acc_s_ub: 66048,
-            #     m_i_prev: 74240,
-            #     acc_s_ub_: 74368,
-            #     tmp_ub: 74368,
-            #     sumexp_i_ub: 98944,
-            #     acc_s_half: 98944,
-            #     acc_o_ub: 98944,
-            #     acc_o_half: 98944,
-            #     mask_ub: 164480,
-            #     mask_ub_2: 164512,
-            # })
-
-            # fixed core
-            for core_index in T.serial(T.ceildiv(seq_len * REPLICATE_H * batch * kv_group, core_num)):
+            for core_index in T.serial(T.ceildiv(seq_len * g_block_num * batch * kv_heads, core_num)):
                 pid = core_index * core_num + cid
-                if pid < seq_len * REPLICATE_H * batch * kv_group:
-                    bx = pid % (seq_len * REPLICATE_H)
-                    by = pid // (seq_len * REPLICATE_H) % batch
-                    bz = pid // (seq_len * REPLICATE_H) // batch % kv_group
+                if pid < seq_len * g_block_num * batch * kv_heads:
+                    bx = pid % (seq_len * g_block_num)
+                    by = pid // (seq_len * g_block_num) % batch
+                    bz = pid // (seq_len * g_block_num) // batch % kv_heads
                   
                     b_i = by
                     g_i = bz
 
-                    s_i = (bx // REPLICATE_H)
-                    h_i = (bx % REPLICATE_H)
+                    s_i = (bx // g_block_num)
+                    h_i = (bx % g_block_num)
 
-                    H0 = g_i * padded_H + (0 if REPLICATE_H == 1 else (bx % REPLICATE_H) * 64)
-                    H1 = H0 + H_per_block
+                    H0 = g_i * g_block_num + (0 if g_block_num == 1 else (bx % g_block_num) * 64)
+                    H1 = H0 + block_M
                     act_q_len = actual_q_len[b_i]
 
 
                     if s_i < act_q_len:
-                        T.copy(Q[b_i, s_i, H0:H1, :D], q_l1)
-                        T.copy(Q[b_i, s_i, H0:H1, D:], q_tail_l1)
+                        T.copy(Q[b_i, s_i, H0:H1, :dim], q_l1)
+                        T.copy(Q[b_i, s_i, H0:H1, dim:], q_tail_l1)
 
                         T.tile.fill(acc_o, 0.0)
                         T.tile.fill(sumexp, 0.0)
                         T.tile.fill(m_i, -2.0**30)             
 
-                        for i_i in T.serial(NI):
-                        # for i_i in T.Pipelined(NI, num_stages=2):
+                        for i_i in T.serial(n_block_num):
                           
-                            T.copy(workspace_1[cid, 0:BI, 0:D], kv_l1)
-                            T.copy(workspace_2[cid, 0:BI, 0:D_tail], kv_tail_l1)
+                            T.copy(workspace_1[cid, 0:block_N, 0:dim], kv_l1)
+                            T.copy(workspace_2[cid, 0:block_N, 0:rope_dim], kv_tail_l1)
                           
 
                             T.gemm_v0(q_l1, kv_l1, acc_s_l0c, transpose_B=True, init=True)
                             T.gemm_v0(q_tail_l1, kv_tail_l1, acc_s_l0c, transpose_B=True)
                           
-                            T.copy(acc_s_l0c, workspace_3[cid, 0:H_per_block, 0:BI])
-                            T.copy(workspace_4[cid, 0:H_per_block, 0:BI], acc_s_l1)
+                            T.copy(acc_s_l0c, workspace_3[cid, 0:block_M, 0:block_N])
+                            T.copy(workspace_4[cid, 0:block_M, 0:block_N], acc_s_l1)
                           
 
                             T.gemm_v0(acc_s_l1, kv_l1, acc_o_l0c, init=True)
                           
-                            T.copy(acc_o_l0c, workspace_5[cid, 0:H_per_block, 0:D])
+                            T.copy(acc_o_l0c, workspace_5[cid, 0:block_M, 0:dim])
                       
 
-                            T.copy(Indices[s_i, g_i, i_i * BI:i_i * BI + BI], indices_ub_)
+                            T.copy(Indices[s_i, g_i, i_i * block_N:i_i * block_N + block_N], indices_ub_)
                           
                             T.copy(indices_ub_, indices_ub_float)
                           
@@ -222,29 +170,29 @@ def sparse_attention_fwd(
                           
                             T.tile.bitwise_and(mask_ub, mask_ub, mask_ub_2)
 
-                            for bi_i in range(BI // 2):
-                                index_i = indices_ub_[bi_i + vid * BI // 2]
+                            for block_N_i in range(block_N // 2):
+                                index_i = indices_ub_[block_N_i + vid * block_N // 2]
                               
                                 if index_i > -1:
                                     block_idx = index_i // block_size
                                     block_i = block_table[b_i, block_idx]
                                     block_inter = index_i % block_size
                                   
-                                    T.copy(KV[block_i, block_inter, 0, :D], kv_ub)
-                                    T.copy(KV[block_i, block_inter, 0, D:], kv_tail_ub)
+                                    T.copy(KV[block_i, block_inter, 0, :dim], kv_ub)
+                                    T.copy(KV[block_i, block_inter, 0, dim:], kv_tail_ub)
                                 else:
                                     T.tile.fill(kv_ub, 0.0)
                                     T.tile.fill(kv_tail_ub, 0.0)
                               
-                                T.copy(kv_ub, workspace_1[cid, bi_i + vid * BI // 2, :])
-                                T.copy(kv_tail_ub, workspace_2[cid, bi_i + vid * BI // 2, :])
+                                T.copy(kv_ub, workspace_1[cid, block_N_i + vid * block_N // 2, :])
+                                T.copy(kv_tail_ub, workspace_2[cid, block_N_i + vid * block_N // 2, :])
                               
 
 
                             T.tile.fill(acc_s_ub_, 0.0)
                           
 
-                            for i in T.serial(v_block):
+                            for i in T.serial(vec_block_M):
                                 T.tile.select(acc_s_ub[i, :], mask_ub, acc_s_ub_[i, :], -T.infinity(accum_dtype), "VSEL_TENSOR_SCALAR_MODE")
                               
 
@@ -252,14 +200,14 @@ def sparse_attention_fwd(
                           
 
                             T.copy(
-                                workspace_3[cid, vid * v_block:vid * v_block + v_block, :],
+                                workspace_3[cid, vid * vec_block_M:vid * vec_block_M + vec_block_M, :],
                                 acc_s_ub_)
                           
 
                             T.tile.add(acc_s_ub, acc_s_ub, acc_s_ub_)
                           
 
-                            T.tile.mul(acc_s_ub, acc_s_ub, sm_scale)
+                            T.tile.mul(acc_s_ub, acc_s_ub, scale)
                           
 
                             T.reduce_max(acc_s_ub, m_i, tmp_ub, dim=-1)
@@ -267,7 +215,6 @@ def sparse_attention_fwd(
                             T.tile.max(m_i, m_i, m_i_prev)
                           
 
-                            # alpha_ub = m_i_prev
 
                             T.tile.sub(m_i_prev, m_i_prev, m_i)
                           
@@ -275,7 +222,7 @@ def sparse_attention_fwd(
                             T.tile.exp(m_i_prev, m_i_prev)
                           
 
-                            for h_i in range(v_block):
+                            for h_i in range(vec_block_M):
                               
                                 T.tile.sub(acc_s_ub[h_i, :], acc_s_ub[h_i, :], m_i[h_i]) 
                               
@@ -292,7 +239,7 @@ def sparse_attention_fwd(
                             T.tile.add(sumexp, sumexp, sumexp_i_ub)
                           
 
-                            for h_i in range(v_block):
+                            for h_i in range(vec_block_M):
                               
                                 T.tile.mul(acc_o[h_i, :], acc_o[h_i, :], m_i_prev[h_i])
                               
@@ -302,11 +249,11 @@ def sparse_attention_fwd(
 
                             T.copy(
                                 acc_s_half, workspace_4[cid,
-                                                        vid * v_block:vid * v_block + v_block, :])
+                                                        vid * vec_block_M:vid * vec_block_M + vec_block_M, :])
                           
 
                             T.copy(
-                                workspace_5[cid, vid * v_block:vid * v_block + v_block, :],
+                                workspace_5[cid, vid * vec_block_M:vid * vec_block_M + vec_block_M, :],
                                 acc_o_ub)
                           
 
@@ -315,26 +262,16 @@ def sparse_attention_fwd(
 
                           
 
-                        for h_i in range(v_block):
+                        for h_i in range(vec_block_M):
                           
                             T.tile.div(acc_o[h_i, :], acc_o[h_i, :], sumexp[h_i])
                           
 
                         T.copy(acc_o, acc_o_half)
                       
-                        T.copy(acc_o_half, Output[b_i, s_i, H0 + vid * v_block:H1 + vid * v_block, :])
+                        T.copy(acc_o_half, Output[b_i, s_i, H0 + vid * vec_block_M:H1 + vid * vec_block_M, :])
 
     return main
-
-
-
-
-core_num = 24
-
-block_num = 20
-block_size = 128
-
-
 
 
 def sparse_attn_tilelang(
@@ -346,25 +283,17 @@ def sparse_attn_tilelang(
     query = query.unsqueeze(0)
     query_rope = query_rope.unsqueeze(0)
     block_num, block_size, num_head_kv, dim = key.size()
-    # print("query_rope.shape=",query_rope.shape)
-    # print("key_rope.shape=",key_rope.shape)
-    print("*" * 50)
+
     query = torch.cat((query, query_rope), dim=-1)
     key_value = torch.cat((key, key_rope), dim=-1)
-    print("q.shape=",query.shape)
-    print("kv.shape=",key_value.shape)
-    print("indices=",sparse_indices.shape)
-    print("actual_q_len=",actual_seq_lengths_query)
-    print("actual_kv_len=",actual_seq_lengths_kv)
-    print("block_table=",block_table.shape)
+
     kernel = sparse_attention_fwd(
-        heads=128,
+        q_heads=128,
         dim=512,
-        tail_dim=64,
+        rope_dim=64,
         topk=2048,
-        sm_scale=scale_value,
+        scale=scale_value,
         core_num=24,
-        block_num=block_num,
         block_size=block_size
     )
     output = kernel(query, key_value, sparse_indices, actual_seq_lengths_query, actual_seq_lengths_kv, block_table)
