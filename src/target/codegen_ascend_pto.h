@@ -54,8 +54,6 @@ public:
   void UnaryVecOpCodegen(const CallNode *op, const std::string& op_name);
   void ScalarOpCodegen(const CallNode *op, const std::string& op_name);
   void AxpyCodegen(const CallNode *op);
-  void FusedMulAddCodegen(const CallNode *op);
-  void MulAddDstCodegen(const CallNode *op);
   void BinaryVecClampMaxMinOpsCodegen(const CallNode *op, const std::string& op_name);
   void BinaryVecClampOpsCodegen(const CallNode *op, const std::string& op_name);
   void SigmoidCodegen(const CallNode *op, const std::string& op_type);

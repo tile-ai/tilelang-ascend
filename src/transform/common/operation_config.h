@@ -129,8 +129,6 @@ namespace tl {
       {"tl.ascend_select", {{{0, "write"}, {1, "read"}, {2, "read"}, {4, "read"}}, "PIPE_V"}},
       {"tl.ascend_leaky_relu", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
       {"tl.ascend_axpy", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
-      {"tl.ascend_fused_mul_add", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
-      {"tl.ascend_mul_add_dst", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
       {"tl.ascend_bitwise_lshift", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
       {"tl.ascend_bitwise_rshift", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
       {"tl.ascend_sort32", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},

@@ -486,10 +486,6 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
     ScalarOpCodegen(op, "AscendC::LeakyRelu");
   } else if (op->op.same_as(tl::ascend_axpy())) {
     ScalarOpCodegen(op, "AscendC::Axpy");
-  } else if (op->op.same_as(tl::ascend_fused_mul_add())) {
-    BinaryVecOpCodegen(op, "AscendC::FusedMulAdd");
-  } else if (op->op.same_as(tl::ascend_mul_add_dst())) {
-    BinaryVecOpCodegen(op, "AscendC::MulAddDst");
   } else if (op->op.same_as(tl::ascend_bitwise_lshift())) {
     ShiftOpCodegen(op, "AscendC::ShiftLeft");
   } else if (op->op.same_as(tl::ascend_bitwise_rshift())) {

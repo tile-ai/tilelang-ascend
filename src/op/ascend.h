@@ -89,10 +89,6 @@ TVM_DLL const Op &ascend_leaky_relu();
 
 TVM_DLL const Op &ascend_axpy();
 
-TVM_DLL const Op &ascend_fused_mul_add();
-
-TVM_DLL const Op &ascend_mul_add_dst();
-
 TVM_DLL const Op &ascend_bitwise_lshift();
 
 TVM_DLL const Op &ascend_bitwise_rshift();
