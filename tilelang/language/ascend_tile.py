@@ -3,9 +3,24 @@ from tvm.tir import PrimExpr, Buffer, BufferRegion, BufferLoad, Call
 from typing import Union  # noqa: UP035
 from tvm import tir
 from tilelang.language.ascend import _dtype
+import warnings
+import functools
 
 import math
 
+
+def deprecated(message=None):
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            warnings.warn(
+                message or f"{func.__name__} is deprecated and will be removed in future versions.",
+                DeprecationWarning,
+                stacklevel=2
+            )
+            return func(*args, **kwargs)
+        return wrapper
+    return decorator
 
 def _get_buffer_info(
     br: Union[Buffer, BufferRegion], mask: str  # noqa: FA100
@@ -454,6 +469,7 @@ def init_sort_buf(buffer: Buffer, num: PrimExpr, rsv: PrimExpr):
         num,
     )
 
+@deprecated()
 def brcb(dst: Buffer, src: Buffer, repeat_times: PrimExpr, dst_blk_stride: PrimExpr, dst_repeat_stride: PrimExpr):
     """Broadcast repeat copy block intrinsic.
 
@@ -543,7 +559,7 @@ def binary_op(
         )
 
 
-def add(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, BufferLoad, PrimExpr]):  # noqa: FA100
+def add(dst: Union[Buffer, BufferRegion], src0: Union[Buffer, BufferRegion], src1: Union[Buffer, BufferRegion, BufferLoad, PrimExpr]):  # noqa: FA100
     """Performs element-wise addition: dst = src0 + src1.
 
     Args:
@@ -554,7 +570,7 @@ def add(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, BufferLoad,
     return binary_op(dst, src0, src1, "add")
 
 
-def sub(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, BufferLoad]):  # noqa: FA100
+def sub(dst: Union[Buffer, BufferRegion], src0: Union[Buffer, BufferRegion], src1: Union[Buffer, BufferRegion, BufferLoad]):  # noqa: FA100
     """Performs element-wise subtraction: dst = src0 - src1.
 
     Args:
@@ -564,7 +580,7 @@ def sub(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, BufferLoad]
     """
     return binary_op(dst, src0, src1, "sub")
 
-def mul(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, BufferLoad, PrimExpr]):  # noqa: FA100
+def mul(dst: Union[Buffer, BufferRegion], src0: Union[Buffer, BufferRegion], src1: Union[Buffer, BufferRegion, BufferLoad, PrimExpr]):  # noqa: FA100
     """Performs element-wise multiplication: dst = src0 * src1.
 
     Args:
@@ -574,7 +590,7 @@ def mul(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, BufferLoad,
     """
     return binary_op(dst, src0, src1, "mul")
 
-def div(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, BufferLoad]):  # noqa: FA100
+def div(dst: Union[Buffer, BufferRegion], src0: Union[Buffer, BufferRegion], src1: Union[Buffer, BufferRegion, BufferLoad]):  # noqa: FA100
     """Performs element-wise division: dst = src0 / src1.
 
     Args:
@@ -585,7 +601,7 @@ def div(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, BufferLoad]
     return binary_op(dst, src0, src1, "div")
 
 
-def max(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, BufferLoad, PrimExpr]):  # noqa: FA100
+def max(dst: Union[Buffer, BufferRegion], src0: Union[Buffer, BufferRegion], src1: Union[Buffer, BufferRegion, BufferLoad, PrimExpr]):  # noqa: FA100
     """Performs element-wise maximum: dst = max(src0, src1).
 
     Args:
@@ -596,7 +612,7 @@ def max(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, BufferLoad,
     return binary_op(dst, src0, src1, "max")
 
 
-def min(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, BufferLoad, PrimExpr]):  # noqa: FA100
+def min(dst: Union[Buffer, BufferRegion], src0: Union[Buffer, BufferRegion], src1: Union[Buffer, BufferRegion, BufferLoad, PrimExpr]):  # noqa: FA100
     """Performs element-wise minimum: dst = min(src0, src1).
 
     Args:
@@ -607,7 +623,7 @@ def min(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, BufferLoad,
     return binary_op(dst, src0, src1, "min")
 
 
-def bitwise_and(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, BufferLoad, PrimExpr]):  # noqa: FA100
+def bitwise_and(dst: Union[Buffer, BufferRegion], src0: Union[Buffer, BufferRegion], src1: Union[Buffer, BufferRegion, BufferLoad, PrimExpr]):  # noqa: FA100
     """Performs element-wise bitwise AND: dst = src0 & src1.
 
     Args:
@@ -618,7 +634,7 @@ def bitwise_and(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, Buf
     return binary_op(dst, src0, src1, "bitwise_and")
 
 
-def bitwise_or(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, BufferLoad, PrimExpr]):  # noqa: FA100
+def bitwise_or(dst: Union[Buffer, BufferRegion], src0: Union[Buffer, BufferRegion], src1: Union[Buffer, BufferRegion, BufferLoad, PrimExpr]):  # noqa: FA100
     """Performs element-wise bitwise OR: dst = src0 | src1.
 
     Args:
@@ -655,7 +671,7 @@ def unary_op(dst: Union[Buffer, BufferRegion], src0: Union[Buffer, BufferRegion]
         size_0,
     )
 
-def exp(dst: Buffer, src0: Buffer):
+def exp(dst: Union[Buffer, BufferRegion], src0: Union[Buffer, BufferRegion]):  # noqa: FA100
     """Performs element-wise exponential: dst = exp(src0).
 
     Args:
@@ -687,7 +703,7 @@ def sigmoid(dst: Union[Buffer, BufferRegion], src: Union[Buffer, BufferRegion], 
         size,
     )
 
-def ln(dst: Buffer, src0: Buffer):
+def ln(dst: Union[Buffer, BufferRegion], src0: Union[Buffer, BufferRegion]):  # noqa: FA100
     """Performs element-wise natural logarithm: dst = ln(src0).
 
     Args:
@@ -697,7 +713,7 @@ def ln(dst: Buffer, src0: Buffer):
     return unary_op(dst, src0, "ln")
 
 
-def abs(dst: Buffer, src0: Buffer):
+def abs(dst: Union[Buffer, BufferRegion], src0: Union[Buffer, BufferRegion]):  # noqa: FA100
     """Performs element-wise absolute value: dst = abs(src0).
 
     Args:
@@ -707,7 +723,7 @@ def abs(dst: Buffer, src0: Buffer):
     return unary_op(dst, src0, "abs")
 
 
-def reciprocal(dst: Buffer, src0: Buffer):
+def reciprocal(dst: Union[Buffer, BufferRegion], src0: Union[Buffer, BufferRegion]):  # noqa: FA100
     """Performs element-wise reciprocal: dst = 1 / src0.
 
     Args:
@@ -717,7 +733,7 @@ def reciprocal(dst: Buffer, src0: Buffer):
     return unary_op(dst, src0, "reciprocal")
 
 
-def sqrt(dst: Buffer, src0: Buffer):
+def sqrt(dst: Union[Buffer, BufferRegion], src0: Union[Buffer, BufferRegion]):  # noqa: FA100
     """Performs element-wise square root: dst = sqrt(src0).
 
     Args:
@@ -727,7 +743,7 @@ def sqrt(dst: Buffer, src0: Buffer):
     return unary_op(dst, src0, "sqrt")
 
 
-def rsqrt(dst: Buffer, src0: Buffer):
+def rsqrt(dst: Union[Buffer, BufferRegion], src0: Union[Buffer, BufferRegion]):  # noqa: FA100
     """Performs element-wise reciprocal square root: dst = 1 / sqrt(src0).
 
     Args:
@@ -737,7 +753,7 @@ def rsqrt(dst: Buffer, src0: Buffer):
     return unary_op(dst, src0, "rsqrt")
 
 
-def relu(dst: Buffer, src0: Buffer):
+def relu(dst: Union[Buffer, BufferRegion], src0: Union[Buffer, BufferRegion]):  # noqa: FA100
     """Performs element-wise Rectified Linear Unit (ReLU): dst = max(0, src0).
 
     Args:
@@ -747,7 +763,7 @@ def relu(dst: Buffer, src0: Buffer):
     return unary_op(dst, src0, "relu")
 
 
-def bitwise_not(dst: Buffer, src0: Buffer):
+def bitwise_not(dst: Union[Buffer, BufferRegion], src0: Union[Buffer, BufferRegion]):  # noqa: FA100
     """Performs element-wise bitwise NOT (inversion): dst = ~src0.
 
     Args:
@@ -858,7 +874,7 @@ def bitwise_rshift(dst: Buffer, src0: Buffer, scalarValue: PrimExpr):
         size_0,
     )
 
-
+@deprecated()
 def bilinear_interpolation(
     dst: Buffer,
     src0: Buffer,
@@ -915,7 +931,7 @@ def _wholereduce(
 
     return tir.call_intrin("handle", tir.op.Op.get(f"tl.ascend_wholereduce{reduce_type}"), *args)
 
-
+@deprecated()
 def wholereducemax(
     dst: Buffer,
     src: Buffer,
@@ -933,7 +949,7 @@ def wholereducemax(
         "max", dst, src, mask, repeattimes, dstrepstride, srcblkstride, srcrepstride, ReduceOrder
     )
 
-
+@deprecated()
 def wholereducemin(
     dst: Buffer,
     src: Buffer,
@@ -951,7 +967,7 @@ def wholereducemin(
         "min", dst, src, mask, repeattimes, dstrepstride, srcblkstride, srcrepstride, ReduceOrder
     )
 
-
+@deprecated()
 def wholereducesum(
     dst: Buffer, src: Buffer, mask: PrimExpr, repeattimes: PrimExpr, dstrepstride: PrimExpr, srcblkstride: PrimExpr, srcrepstride: PrimExpr
 ):
@@ -1045,7 +1061,7 @@ def gather(dst: Buffer, src: Buffer, src_offset: Buffer, src_base_addr: PrimExpr
         count,
     )
 
-
+@deprecated()
 def block_reduce_max(
     dst: Buffer,
     src: Buffer,
@@ -1086,7 +1102,7 @@ def block_reduce_max(
         srcRepStride,
     )
 
-
+@deprecated()
 def block_reduce_min(
     dst: Buffer,
     src: Buffer,
@@ -1127,7 +1143,7 @@ def block_reduce_min(
         srcRepStride,
     )
 
-
+@deprecated()
 def block_reduce_sum(
     dst: Buffer,
     src: Buffer,
