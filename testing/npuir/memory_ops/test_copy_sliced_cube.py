@@ -14,6 +14,7 @@ Edge cases covered via pytest parametrize:
   - Leading dimensions = 1 (rank-reduction boundary)
   - Consecutive leading 1s (e.g. B=1, H=1, M=1 for 4D)
 """
+
 import pytest
 import torch
 import torch_npu  # noqa: F401
@@ -33,8 +34,11 @@ DTYPE_CASES = list(product(IN_DTYPES, OUT_DTYPES))
 # Kernel builders
 # ---------------------------------------------------------------------------
 
+
 @tilelang.jit(target="npuir")
-def cube_sliced_copy_2d(M, N, idx, in_dtype="float16", out_dtype="float16", accum_dtype="float32"):
+def cube_sliced_copy_2d(
+    M, N, idx, in_dtype="float16", out_dtype="float16", accum_dtype="float32"
+):
     @T.prim_func
     def cube_sliced_copy_2d(
         A_in: T.Tensor((M, N), in_dtype),
@@ -51,23 +55,35 @@ def cube_sliced_copy_2d(M, N, idx, in_dtype="float16", out_dtype="float16", accu
                 tail_n = N
                 tail_k = N
 
-                T.copy(A_in[idx:idx + tail_m, 0:tail_k], l1_a[0:tail_m, 0:tail_k])
+                T.copy(A_in[idx : idx + tail_m, 0:tail_k], l1_a[0:tail_m, 0:tail_k])
                 T.copy(B_in[0:tail_n, 0:tail_k], l1_b[0:tail_n, 0:tail_k])
 
                 T.npuir_dot(
-                    l1_a, l1_b, l0_c,
-                    initC=True, b_transpose=True,
+                    l1_a,
+                    l1_b,
+                    l0_c,
+                    initC=True,
+                    b_transpose=True,
                     size=[tail_m, tail_k, tail_n],
                 )
 
                 with T.rs("PIPE_FIX"):
-                    T.copy(l0_c[0:tail_m, 0:tail_n], Out[idx:idx + tail_m, 0:tail_n])
+                    T.copy(l0_c[0:tail_m, 0:tail_n], Out[idx : idx + tail_m, 0:tail_n])
 
     return cube_sliced_copy_2d
 
 
 @tilelang.jit(target="npuir")
-def cube_sliced_copy_3d(B, M, N, b_idx, m_idx, in_dtype="float16", out_dtype="float16", accum_dtype="float32"):
+def cube_sliced_copy_3d(
+    B,
+    M,
+    N,
+    b_idx,
+    m_idx,
+    in_dtype="float16",
+    out_dtype="float16",
+    accum_dtype="float32",
+):
     @T.prim_func
     def cube_sliced_copy_3d(
         A_in: T.Tensor((B, M, N), in_dtype),
@@ -84,24 +100,42 @@ def cube_sliced_copy_3d(B, M, N, b_idx, m_idx, in_dtype="float16", out_dtype="fl
                 tail_n = N
                 tail_k = N
 
-                T.copy(A_in[b_idx, m_idx:m_idx + tail_m, 0:tail_k], l1_a[0:tail_m, 0:tail_k])
+                T.copy(
+                    A_in[b_idx, m_idx : m_idx + tail_m, 0:tail_k],
+                    l1_a[0:tail_m, 0:tail_k],
+                )
                 T.copy(B_in[0:tail_n, 0:tail_k], l1_b[0:tail_n, 0:tail_k])
 
                 T.npuir_dot(
-                    l1_a, l1_b, l0_c,
-                    initC=True, b_transpose=True,
+                    l1_a,
+                    l1_b,
+                    l0_c,
+                    initC=True,
+                    b_transpose=True,
                     size=[tail_m, tail_k, tail_n],
                 )
 
                 with T.rs("PIPE_FIX"):
-                    T.copy(l0_c[0:tail_m, 0:tail_n], Out[b_idx, m_idx:m_idx + tail_m, 0:tail_n])
+                    T.copy(
+                        l0_c[0:tail_m, 0:tail_n],
+                        Out[b_idx, m_idx : m_idx + tail_m, 0:tail_n],
+                    )
 
     return cube_sliced_copy_3d
 
 
 @tilelang.jit(target="npuir")
 def cube_sliced_copy_4d(
-    B, H, M, N, b_idx, h_idx, m_idx, in_dtype="float16", out_dtype="float16", accum_dtype="float32"
+    B,
+    H,
+    M,
+    N,
+    b_idx,
+    h_idx,
+    m_idx,
+    in_dtype="float16",
+    out_dtype="float16",
+    accum_dtype="float32",
 ):
     @T.prim_func
     def cube_sliced_copy_4d(
@@ -119,18 +153,26 @@ def cube_sliced_copy_4d(
                 tail_n = N
                 tail_k = N
 
-                T.copy(A_in[b_idx, h_idx, m_idx:m_idx + tail_m, 0:tail_k], l1_a[0:tail_m, 0:tail_k])
+                T.copy(
+                    A_in[b_idx, h_idx, m_idx : m_idx + tail_m, 0:tail_k],
+                    l1_a[0:tail_m, 0:tail_k],
+                )
                 T.copy(B_in[0:tail_n, 0:tail_k], l1_b[0:tail_n, 0:tail_k])
 
                 T.npuir_dot(
-                    l1_a, l1_b, l0_c,
-                    initC=True, b_transpose=True,
+                    l1_a,
+                    l1_b,
+                    l0_c,
+                    initC=True,
+                    b_transpose=True,
                     size=[tail_m, tail_k, tail_n],
                 )
 
                 with T.rs("PIPE_FIX"):
-                    T.copy(l0_c[0:tail_m, 0:tail_n],
-                           Out[b_idx, h_idx, m_idx:m_idx + tail_m, 0:tail_n])
+                    T.copy(
+                        l0_c[0:tail_m, 0:tail_n],
+                        Out[b_idx, h_idx, m_idx : m_idx + tail_m, 0:tail_n],
+                    )
 
     return cube_sliced_copy_4d
 
@@ -141,8 +183,9 @@ def cube_sliced_copy_4d(
 
 SLICED_2D_CASES = [
     # (M,  N,  idx)
-    (16, 32, 5),         # base case
+    (16, 32, 5),  # base case
 ]
+
 
 @pytest.mark.parametrize("in_dtype, out_dtype", DTYPE_CASES)
 @pytest.mark.parametrize("M, N, idx", SLICED_2D_CASES)
@@ -169,8 +212,9 @@ def test_cube_sliced_copy_2d(M, N, idx, in_dtype, out_dtype):
 
 SLICED_3D_CASES = [
     # (B,  M,  N,  b_idx, m_idx)
-    (4,  16, 32, 1, 7),       # base case
+    (4, 16, 32, 1, 7),  # base case
 ]
+
 
 @pytest.mark.parametrize("in_dtype, out_dtype", DTYPE_CASES)
 @pytest.mark.parametrize("B_dim, M, N, b_idx, m_idx", SLICED_3D_CASES)
@@ -197,13 +241,16 @@ def test_cube_sliced_copy_3d(B_dim, M, N, b_idx, m_idx, in_dtype, out_dtype):
 
 SLICED_4D_CASES = [
     # (B,  H,  M,  N,  b_idx, h_idx, m_idx)
-    (2,  4,  16, 32, 1, 2, 5),       # base case
+    (2, 4, 16, 32, 1, 2, 5),  # base case
 ]
+
 
 @pytest.mark.parametrize("in_dtype, out_dtype", DTYPE_CASES)
 @pytest.mark.parametrize("B_dim, H, M, N, b_idx, h_idx, m_idx", SLICED_4D_CASES)
 def test_cube_sliced_copy_4d(B_dim, H, M, N, b_idx, h_idx, m_idx, in_dtype, out_dtype):
-    kernel = cube_sliced_copy_4d(B_dim, H, M, N, b_idx, h_idx, m_idx, in_dtype, out_dtype)
+    kernel = cube_sliced_copy_4d(
+        B_dim, H, M, N, b_idx, h_idx, m_idx, in_dtype, out_dtype
+    )
 
     A = gen_tensor((B_dim, H, M, N), in_dtype, kind="zeros")
     row = torch.arange(1, N + 1, dtype=A.dtype).npu()

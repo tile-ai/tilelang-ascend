@@ -1,7 +1,7 @@
 import contextlib
 import os
 from itertools import product
-from typing import Iterable, Optional, Sequence, Tuple, Union
+from typing import Optional, Sequence, Tuple, Union
 
 import torch
 import tilelang
