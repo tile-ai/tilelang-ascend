@@ -670,7 +670,7 @@ private:
         if (call_node->args.size() >= 3) {
           if (const auto* src_pipe = call_node->args[0].as<StringImmNode>()) {
             if (const auto* dst_pipe = call_node->args[1].as<StringImmNode>()) {
-              if (const auto* event_id = call_node->args[2].as<StringImmNode>()) {
+              if (const auto* event_id = call_node->args[2].as<IntImmNode>()) {
                 std::string src = src_pipe->value;
                 std::string dst = dst_pipe->value;
 
@@ -727,14 +727,14 @@ private:
   bool IsCubePipeline(const std::string& pipe) {
     static const std::unordered_set<std::string> cube_pipelines = {
       "M", "MTE1", "FIX"
-    }
+    };
     return cube_pipelines.find(pipe) != cube_pipelines.end();
   }
   
   bool IsVectorPipeline(const std::string& pipe) {
     static const std::unordered_set<std::string> vector_pipelines = {
       "V", "MTE2", "MTE3"
-    }
+    };
     return vector_pipelines.find(pipe) != vector_pipelines.end();
   }
 };
