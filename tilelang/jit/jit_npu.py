@@ -4,25 +4,20 @@ import os
 import re
 import subprocess
 import tempfile
-from dataclasses import dataclass
 from pathlib import Path
-from types import ModuleType
-from typing import Any, Dict, Optional, Tuple, Union, List
-import shutil
+from typing import Any, Dict, List, Union
 import sys
-import sysconfig
-import pybind11
 import torch
-import torch_npu
-import functools
 from ..engine import lower
 from ..utils import (
     NPUUtils,
-    get_ascend_path,
-    get_cxx,
     get_npucompiler_path,
-    get_npucompiler_opt_path,
-    get_bisheng_path
+    get_bisheng_path,
+    build_npu_ext,
+    precompile_npu_ext,
+    get_runtime_file_cache,
+    get_npu_launcher_header,
+    safe_copy,
 )
 
 from tvm import tir
@@ -45,9 +40,12 @@ class LaunchThreadExtractor:
         if hasattr(node, "block"):
             self.visit_thread_extent(node.block)
 
-        if hasattr(node, "attr_key") and node.attr_key == "thread_extent":
-            if node.node.thread_tag == self.thread:
-                self.expressions.append(node.value)
+        if (
+            hasattr(node, "attr_key")
+            and node.attr_key == "thread_extent"
+            and node.node.thread_tag == self.thread
+        ):
+            self.expressions.append(node.value)
 
     def extract(self, node: PrimFunc, thread: str):
         self.thread = thread
@@ -180,44 +178,48 @@ def extract_device_print_code_from_cann():
     ccec_compiler_bin_folder, _ = os.path.split(os.path.realpath(get_bisheng_path()))
     ccec_compiler_folder, _ = os.path.split(ccec_compiler_bin_folder)
     clang_version = os.listdir(os.path.join(ccec_compiler_folder, "lib/clang/"))[0]
-    ccelib_path = os.path.join(ccec_compiler_folder, f"lib/clang/{clang_version}/include/ccelib")
+    ccelib_path = os.path.join(
+        ccec_compiler_folder, f"lib/clang/{clang_version}/include/ccelib"
+    )
 
     def read_header(header_path):
-        with open(os.path.join(ccelib_path, header_path), 'r') as f:
+        with open(os.path.join(ccelib_path, header_path), "r") as f:
             code = f.read()
 
         # remove all #include "..."
         lines = code.splitlines()
         purged_lines = []
         for line in lines:
-            normalized_line = ' '.join(line.split())
+            normalized_line = " ".join(line.split())
             if not normalized_line.startswith('#include "'):
                 purged_lines.append(line)
-        code = '\n'.join(purged_lines)
+        code = "\n".join(purged_lines)
 
         # remove [aicore] functions
         aicore_positions = []
-        for m in re.finditer(r'\[aicore\]', code):
+        for m in re.finditer(r"\[aicore\]", code):
             aicore_positions.append(m.start())
 
         def find_aicore_function_span(src, pos):
             for i in range(pos - 1, -1, -1):
-                if src[i] == '}':  # this relies on that all [aicore] functions come after normal functions
+                if (
+                    src[i] == "}"
+                ):  # this relies on that all [aicore] functions come after normal functions
                     left = i + 1
                     break
             n = len(src)
             brace_nest = 0
             for j in range(pos, n, 1):
-                if src[j] == '{':
+                if src[j] == "{":
                     brace_nest += 1
-                elif src[j] == '}':
+                elif src[j] == "}":
                     brace_nest -= 1
                     if brace_nest == 0:
                         right = j
                         break
             return left, right
 
-        new_code = ''
+        new_code = ""
         segment_start = 0
         for pos in aicore_positions:
             left, right = find_aicore_function_span(code, pos)
@@ -226,24 +228,32 @@ def extract_device_print_code_from_cann():
         new_code += code[segment_start:]
 
         # remove __gm__ and rename macros
-        new_code = new_code.replace('__gm__', ' ')
-        new_code = new_code.replace('__CCELIB_RT_ERROR_NONE', 'RT_ERROR_NONE')
-        new_code = new_code.replace('__CCELIB_RT_MEMORY_HBM', 'RT_MEMORY_HBM')
-        new_code = new_code.replace('__CCELIB_RT_MEMCPY_HOST_TO_DEVICE', 'RT_MEMCPY_HOST_TO_DEVICE')
-        new_code = new_code.replace('__CCELIB_RT_MEMCPY_DEVICE_TO_HOST', 'RT_MEMCPY_DEVICE_TO_HOST')
+        new_code = new_code.replace("__gm__", " ")
+        new_code = new_code.replace("__CCELIB_RT_ERROR_NONE", "RT_ERROR_NONE")
+        new_code = new_code.replace("__CCELIB_RT_MEMORY_HBM", "RT_MEMORY_HBM")
+        new_code = new_code.replace(
+            "__CCELIB_RT_MEMCPY_HOST_TO_DEVICE", "RT_MEMCPY_HOST_TO_DEVICE"
+        )
+        new_code = new_code.replace(
+            "__CCELIB_RT_MEMCPY_DEVICE_TO_HOST", "RT_MEMCPY_DEVICE_TO_HOST"
+        )
         return new_code
 
     # the following headers should be included in this order
-    return '\n'.join([
-        read_header('common/common_impl.h'),
-        read_header('internal/debug_tunnel/payload.h'),
-        read_header('internal/debug_tunnel/payload_impl.h'),
-        read_header('internal/debug_tunnel/tunnel.h'),
-        read_header('internal/debug_tunnel/tunnel_impl.h')
-    ])
+    return "\n".join(
+        [
+            read_header("common/common_impl.h"),
+            read_header("internal/debug_tunnel/payload.h"),
+            read_header("internal/debug_tunnel/payload_impl.h"),
+            read_header("internal/debug_tunnel/tunnel.h"),
+            read_header("internal/debug_tunnel/tunnel_impl.h"),
+        ]
+    )
 
 
-def generate_npu_wrapper_src(constants, signature, workspace_size, mix_mode, lock_num, lock_ini_val, need_debug):
+def generate_npu_wrapper_src(
+    constants, signature, workspace_size, mix_mode, lock_num, lock_ini_val, need_debug
+):
     def _ty_to_cpp(ty):
         if ty[0] == "*":
             return "void*"
@@ -311,7 +321,7 @@ def generate_npu_wrapper_src(constants, signature, workspace_size, mix_mode, loc
         "1",
     )
     enable_auto_map_parallel_blocks = False
-    npu_utils = NPUUtils()
+    npu_utils = NPUUtils.get()
     num_physical_blocks = (
         npu_utils.get_aivector_core_num()
         if mix_mode == "aiv"
@@ -452,11 +462,13 @@ extern "C" {
       int tensorCount = 0;
       int dataTypes[MSPROF_GE_TENSOR_DATA_NUM];
       if (tensorShapes.size() > 0) {{
-        {LINE_CHANGE_CHAR.join(
-          f'dataTypes[{i}] = {convert_sigtype_to_int(ty[1:])};'
-          for i, ty in signature.items()
-          if ty.startswith("*") and i < 5
-        )}
+        {
+        LINE_CHANGE_CHAR.join(
+            f"dataTypes[{i}] = {convert_sigtype_to_int(ty[1:])};"
+            for i, ty in signature.items()
+            if ty.startswith("*") and i < 5
+        )
+    }
       }}
       for (int i = 0; i < tensorShapes.size() && tensorCount < MSPROF_GE_TENSOR_DATA_NUM; i++) {{
         auto fillTensorData = [&](int index, int tensorType) {{
@@ -488,17 +500,10 @@ extern "C" {
 """
 
     return f"""
-#include <assert.h>
-#include <stdbool.h>
-#include <string>
-#include <sys/syscall.h>
-#include <vector>
+#include "npu_launcher.h"
 #define PY_SSIZE_T_CLEAN
-#include <Python.h>
-{'#define __CCE_ENABLE_PRINT__' if need_debug else ''}
-{'#include <torch_npu/csrc/framework/OpCommand.h>' if enable_taskqueue else ''}
-#include "runtime/runtime/rt.h"
-{extract_device_print_code_from_cann()}
+{"#define __CCE_ENABLE_PRINT__" if need_debug else ""}
+{extract_device_print_code_from_cann() if need_debug else ""}
 
 #define TENSOR_KIND_INPUT 0
 #define TENSOR_KIND_OUTPUT 1
@@ -508,27 +513,38 @@ extern "C" {
 
 {cpp_device_pointer}
 
-static void _launch(const char* kernelName, const void* func, rtStream_t stream, int gridX, int gridY, int gridZ, std::vector<std::vector<int64_t>> &tensorShapes, std::vector<int> &tensorKinds, {arg_decls}) {{
+static void _launch(const char* kernelName, const void* func, rtStream_t stream, int gridX, int gridY, int gridZ, std::vector<std::vector<int64_t>> &tensorShapes, std::vector<int> &tensorKinds, {
+        arg_decls
+    }) {{
   // only 1D parallelization is supported for NPU
   // Pointer type becomes flattened 1-D Memref tuple: base_ptr, data_ptr, offset, shape, stride
   // base_ptr offset shape and stride are not used, arbitrarily set for now
   std::string name = "";
   name.append(kernelName);
-  {'auto launch_call = [=]()' if enable_taskqueue else ''} {{
+  {"auto launch_call = [=]()" if enable_taskqueue else ""} {{
     uint32_t blockNum = gridX * gridY * gridZ;
-    {'blockNum = std::min(blockNum, (uint32_t)' + str(num_physical_blocks) + ');' if enable_auto_map_parallel_blocks else ''}
-    cce::internal::DebugTunnelData *DTData = cce::internal::DebugTunnel::Open(blockNum);
+    {
+        "blockNum = std::min(blockNum, (uint32_t)" + str(num_physical_blocks) + ");"
+        if enable_auto_map_parallel_blocks
+        else ""
+    }
+    {
+        "cce::internal::DebugTunnelData *DTData = cce::internal::DebugTunnel::Open(blockNum);"
+        if need_debug
+        else ""
+    }
     rtError_t ret;
     void *ffts_addr = NULL;
     uint32_t ffts_len; ret = rtGetC2cCtrlAddr((uint64_t*)&ffts_addr, &ffts_len);
     if (ret != RT_ERROR_NONE) {{
-      return {'ret' if enable_taskqueue else ''};
+      return {"ret" if enable_taskqueue else ""};
     }}
     // stub argument for workspace
     void *syncBlockLock = NULL;
     void *workspace_addr = NULL;
     uint16_t ModuleId = 0;
-    {f'''
+    {
+        f'''
     uint64_t syncBlockLockSize = {lock_num} * sizeof(int64_t);
     ret = rtMalloc(reinterpret_cast<void **>(&syncBlockLock),
                    syncBlockLockSize, RT_MEMORY_HBM, 0);
@@ -541,38 +557,71 @@ static void _launch(const char* kernelName, const void* func, rtStream_t stream,
     if (ret != RT_ERROR_NONE) {{
       return {'ret' if enable_taskqueue else ''};
     }}
-    ''' if lock_num > 0 else ''}
-    {f'''
+    '''
+        if lock_num > 0
+        else ""
+    }
+    {
+        f'''
     uint64_t totalWorkSpaceSize = {workspace_size} * blockNum;
     ret = rtMalloc(reinterpret_cast<void **>(&workspace_addr),
                    totalWorkSpaceSize, RT_MEMORY_HBM, ModuleId);
     if (ret != RT_ERROR_NONE) {{
       return {'ret' if enable_taskqueue else ''};
     }}
-    ''' if workspace_size > 0 else ''}
+    '''
+        if workspace_size > 0
+        else ""
+    }
     struct __attribute__((packed)) {{
       void* ffts_addr __attribute__((aligned(8)));
       void* syncBlockLock __attribute__((aligned(8)));
       void* workspace_addr __attribute__((aligned(8)));
-      {' '.join(f'{_ty_to_cpp(ty)} arg{i} __attribute__((aligned({4 if ty[0] != "*" and ty[-2:] != "64" else 8})));' for i, ty in signature.items() if i not in constants)}
-      {' '.join(f'{_ty_to_cpp(ty)} grid{mark} __attribute__((aligned(4)));' for mark, ty in grid_info.items())}
-      void* DTData __attribute__((aligned(8)));
+      {
+        " ".join(
+            f"{_ty_to_cpp(ty)} arg{i} __attribute__((aligned({4 if ty[0] != '*' and ty[-2:] != '64' else 8})));"
+            for i, ty in signature.items()
+            if i not in constants
+        )
+    }
+      {
+        " ".join(
+            f"{_ty_to_cpp(ty)} grid{mark} __attribute__((aligned(4)));"
+            for mark, ty in grid_info.items()
+        )
+    }
+      {"void* DTData __attribute__((aligned(8)));" if need_debug else ""}
     }} args = {{
       static_cast<void*>(ffts_addr),
       static_cast<void*>(syncBlockLock),
       static_cast<void*>(workspace_addr),
-      {', '.join(f'static_cast<{_ty_to_cpp(ty)}>(arg{i})' for i, ty in signature.items() if i not in constants)},
-      {', '.join(f'static_cast<{_ty_to_cpp(ty)}>(grid{mark})' for mark, ty in grid_info.items())}
-      , static_cast<void*>(DTData)
+      {
+        ", ".join(
+            f"static_cast<{_ty_to_cpp(ty)}>(arg{i})"
+            for i, ty in signature.items()
+            if i not in constants
+        )
+    },
+      {
+        ", ".join(
+            f"static_cast<{_ty_to_cpp(ty)}>(grid{mark})"
+            for mark, ty in grid_info.items()
+        )
+    }
+      {", static_cast<void*>(DTData)" if need_debug else ""}
     }};
     {cpp_msprof_call_before_launch}
     ret = rtKernelLaunch(func, blockNum, static_cast<void*>(&args), sizeof(args), NULL, stream);
-    void *&stream_ref = const_cast<void*&>(stream);
-    cce::internal::DebugTunnel::Close(DTData, stream_ref);
+    {"void *&stream_ref = const_cast<void*&>(stream);" if need_debug else ""}
+    {"cce::internal::DebugTunnel::Close(DTData, stream_ref);" if need_debug else ""}
     {cpp_msprof_call_after_launch}
-    {'return ret;' if enable_taskqueue else ''}
+    {"return ret;" if enable_taskqueue else ""}
    }};
-   {'at_npu::native::OpCommand::RunOpApi(name.c_str(), launch_call);' if enable_taskqueue else ''}
+   {
+        "at_npu::native::OpCommand::RunOpApi(name.c_str(), launch_call);"
+        if enable_taskqueue
+        else ""
+    }
   return;
 }}
 
@@ -616,13 +665,17 @@ static PyObject* launch(PyObject* self, PyObject* args) {{
   PyObject *launch_enter_hook = NULL;
   PyObject *launch_exit_hook = NULL;
   std::vector<std::vector<int64_t>> tensorShapes;
-  {' '.join([f"{_extracted_ty(ty)} _arg{i}; " for i, ty in signature.items()])}
+  {" ".join([f"{_extracted_ty(ty)} _arg{i}; " for i, ty in signature.items()])}
   if(!PyArg_ParseTuple(
       args, \"{format}\",
       &gridX, &gridY, &gridZ, &stream, &function,
       &packedMetadata, &launch_metadata,
       &launch_enter_hook, &launch_exit_hook
-      {', ' + ', '.join(f"&_arg{i}" for i, ty in signature.items()) if len(signature) > 0 else ''}
+      {
+        ", " + ", ".join(f"&_arg{i}" for i, ty in signature.items())
+        if len(signature) > 0
+        else ""
+    }
       )
     ) {{
     return NULL;
@@ -630,10 +683,11 @@ static PyObject* launch(PyObject* self, PyObject* args) {{
   if (__MsprofFlagL1)
   {{
     {
-      LINE_CHANGE_CHAR.join(
-        f"{{ auto tmp = _get_tensor_shape(_arg{i}); if (!tmp.empty()) tensorShapes.push_back(tmp); }}"
-        for i, ty in signature.items() if ty[0] == "*"
-      )
+        LINE_CHANGE_CHAR.join(
+            f"{{ auto tmp = _get_tensor_shape(_arg{i}); if (!tmp.empty()) tensorShapes.push_back(tmp); }}"
+            for i, ty in signature.items()
+            if ty[0] == "*"
+        )
     }
   }}
 
@@ -656,8 +710,22 @@ static PyObject* launch(PyObject* self, PyObject* args) {{
   }}
 
   // raise exception asap
-  {"; ".join([f"DevicePtrInfo ptr_info{i} = getPointer(_arg{i}, {i}); if (!ptr_info{i}.valid) return NULL;" if ty[0] == "*" else "" for i, ty in signature.items()])};
-  _launch(kernelName, function, stream, gridX, gridY, gridZ, tensorShapes, tensorKinds, {', '.join(f"ptr_info{i}.dev_ptr" if ty[0] == "*" else f"_arg{i}" for i, ty in signature.items())});
+  {
+        "; ".join(
+            [
+                f"DevicePtrInfo ptr_info{i} = getPointer(_arg{i}, {i}); if (!ptr_info{i}.valid) return NULL;"
+                if ty[0] == "*"
+                else ""
+                for i, ty in signature.items()
+            ]
+        )
+    };
+  _launch(kernelName, function, stream, gridX, gridY, gridZ, tensorShapes, tensorKinds, {
+        ", ".join(
+            f"ptr_info{i}.dev_ptr" if ty[0] == "*" else f"_arg{i}"
+            for i, ty in signature.items()
+        )
+    });
   if (PyErr_Occurred()) {{
     return NULL;
   }}
@@ -732,18 +800,18 @@ def read_binary_file(file_path, mode="rb", chunk_size=None, return_type="bytes")
                     return bytearray(data)
                 else:
                     return data
-    except FileNotFoundError:
-        raise FileNotFoundError(f"File not found: {file_path}")
+    except FileNotFoundError as e:
+        raise FileNotFoundError(f"File not found: {file_path}") from e
     except IOError as e:
-        raise IOError(f"Error occurred while reading the file: {e}")
+        raise IOError(f"Error occurred while reading the file: {e}") from e
 
 
 class JitKernel_NPU:
     def __init__(self, metadata: dict, out_idx=None) -> None:
         self.params = metadata["params"]
         self.signature = metadata.get("signature", {})
-        self.out_idx = out_idx  
-        self.param_info = metadata.get('param_info', [])
+        self.out_idx = out_idx
+        self.param_info = metadata.get("param_info", [])
         # 1 launch path
         self.so_launcher_path = f"{metadata['kernel_name']}.so"
         self.so_utils_path = "npu_utils.so"
@@ -800,16 +868,16 @@ class JitKernel_NPU:
         )
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
-        self.launch_npu = getattr(mod, "launch")
+        self.launch_npu = mod.launch
 
     def _calcu_grid(self, orig_to_input, *args: Any):
         """
         Calculate grid dimensions based on symbolic variables and input tensors.
-        
+
         Args:
             tensor_args: List of input tensor arguments
             orig_to_tensor_pos: Mapping from original parameter indices to tensor_args positions
-            
+
         Returns:
             Dictionary of dynamic values extracted from tensors
         """
@@ -856,38 +924,42 @@ class JitKernel_NPU:
                 self.launch_grid = [int(grid_value), 1, 1]
 
         except Exception as e:
-            raise ValueError(f"Failed to evaluate grid expression '{result}': {e}")
+            raise ValueError(
+                f"Failed to evaluate grid expression '{result}': {e}"
+            ) from e
 
-        return dynamic_val 
+        return dynamic_val
 
     def __call__(self, *args: Any) -> Any:
         # Calculate the input params：total_params - out_params
         total_params = len(self.param_info)
-        num_inputs = total_params - (len(self.out_idx) if self.out_idx is not None else 0)
-        
+        num_inputs = total_params - (
+            len(self.out_idx) if self.out_idx is not None else 0
+        )
+
         if len(args) != num_inputs:
             raise ValueError(f"Expected {num_inputs} inputs, got {len(args)}")
-        
+
         # Build the mapping from original inputs to the args position
         orig_to_input = {}
         input_pos = 0
         for i, info in enumerate(self.param_info):
-            if not info['is_output']: 
+            if not info["is_output"]:
                 orig_to_input[i] = input_pos
                 input_pos += 1
-        
+
         # Calculate grid and get dynamic values
         dynamic_val = self._calcu_grid(orig_to_input, *args)
-        
+
         # Build full argument list
         full_args = [None] * total_params
         input_ptr = 0
-        
+
         for i, info in enumerate(self.param_info):
-            if info['is_output']:  # Output parameter (must be tensor)
-                dtype = info['dtype']
+            if info["is_output"]:  # Output parameter (must be tensor)
+                dtype = info["dtype"]
                 shape = []
-                for dim in info['shape']:
+                for dim in info["shape"]:
                     if isinstance(dim, tir.Var):
                         val = dynamic_val.get(str(dim))
                         if val is None:
@@ -895,20 +967,20 @@ class JitKernel_NPU:
                         shape.append(val)
                     else:
                         shape.append(int(dim))
-                
+
                 # Shape should not be empty (validated in _extract_param_info)
-                device = args[0].device if args else torch.device('cpu')
+                device = args[0].device if args else torch.device("cpu")
                 full_args[i] = torch.empty(shape, dtype=dtype, device=device)
             else:
                 # Input parameter (tensor or scalar)
                 full_args[i] = args[input_ptr]
                 input_ptr += 1
-        
+
         # Append extra_args
         full_args.extend(self.extra_args)
-        
+
         # Run kernel
-        npu_utils = NPUUtils()
+        npu_utils = NPUUtils.get()
         t_module, t_function, t_n_regs, t_n_spills = npu_utils.load_binary(
             self.utils_name,
             self.utils_kernel_src,
@@ -926,9 +998,9 @@ class JitKernel_NPU:
             self.launch_metadata,
             self.launch_enter_hook,
             self.launch_exit_hook,
-            *full_args
+            *full_args,
         )
-        
+
         # Return outputs
         if self.out_idx is None:
             return None
@@ -937,9 +1009,10 @@ class JitKernel_NPU:
         else:
             return [full_args[i] for i in self.out_idx]
         # return args[idx]
-        
-    def get_profiler(self,
-                     tensor_supply_type: TensorSupplyType = TensorSupplyType.Auto) -> Profiler:
+
+    def get_profiler(
+        self, tensor_supply_type: TensorSupplyType = TensorSupplyType.Auto
+    ) -> Profiler:
         """
         Creates a profiler to benchmark the compiled runtime module.
 
@@ -953,24 +1026,21 @@ class JitKernel_NPU:
         Profiler
             A Profiler instance for benchmarking the runtime module.
         """
-        return Profiler(self.params, self.out_idx[0], tensor_supply_type).with_direct_func(self)
-                         
-    def benchmark(self, 
-                  warmup: int = 25,
-                  rep: int = 100,
-                  n_warmup: int = 1,
-                  n_repeat: int = 1) -> float:
+        return Profiler(
+            self.params, self.out_idx[0], tensor_supply_type
+        ).with_direct_func(self)
+
+    def benchmark(
+        self, warmup: int = 25, rep: int = 100, n_warmup: int = 1, n_repeat: int = 1
+    ) -> float:
         profiler = self.get_profiler()
         return profiler.do_bench(
-            func=self,
-            warmup=warmup,
-            rep=rep,
-            n_warmup=n_warmup,
-            n_repeat=n_repeat
+            func=self, warmup=warmup, rep=rep, n_warmup=n_warmup, n_repeat=n_repeat
         )
-                      
-    def update_tuner_result(self, latency: float, config: Dict[str, Any],
-                            ref_latency: float) -> "JitKernel_NPU":
+
+    def update_tuner_result(
+        self, latency: float, config: Dict[str, Any], ref_latency: float
+    ) -> "JitKernel_NPU":
         """
         Updates the tuning results for this kernel.
 
@@ -1018,7 +1088,9 @@ class JitKernel_NPU:
             - ref_latency: The reference latency for comparison
         """
         if self.latency is None:
-            raise ValueError("Tuning results are not available. Please tune the kernel first.")
+            raise ValueError(
+                "Tuning results are not available. Please tune the kernel first."
+            )
 
         return {
             "latency": self.latency,
@@ -1026,45 +1098,47 @@ class JitKernel_NPU:
             "ref_latency": self.ref_latency,
         }
 
+
 class compiler_npu:
     def __init__(self) -> None:
         pass
 
     def _get_workspace_size(self, lib_path, suffix, default=32768):
-        #Try to get the infer_workspace_shape_function in the kernel, then use the return value as workspace_size
-        #Use default to avoid except
-        #If you have set the os env "TILELANG_ASCEND_WORKSPACE_SIZE", "TILELANG_ASCEND_WORKSPACE_SIZE" has a higher priority
+        # Try to get the infer_workspace_shape_function in the kernel, then use the return value as workspace_size
+        # Use default to avoid except
+        # If you have set the os env "TILELANG_ASCEND_WORKSPACE_SIZE", "TILELANG_ASCEND_WORKSPACE_SIZE" has a higher priority
         if not os.path.exists(lib_path):
             return default
-        symbols=[]
-        #Try to get the kernel symbol table and match function name "***_infer_workspace_shape_function"
+        symbols = []
+        # Try to get the kernel symbol table and match function name "***_infer_workspace_shape_function"
         try:
-            result = subprocess.run(['nm', '-D', lib_path],
-                                capture_output = True, text = True, timeout = 2)
+            result = subprocess.run(
+                ["nm", "-D", lib_path], capture_output=True, text=True, timeout=2
+            )
             if result.returncode == 0:
-                for line in result.stdout.split('\n'):
+                for line in result.stdout.split("\n"):
                     parts = line.strip().split()
                     if len(parts) >= 3:
                         sym_name = parts[2]
                         if sym_name.endswith(suffix):
                             symbols.append(sym_name)
-        except:
+        except (subprocess.SubprocessError, FileNotFoundError, OSError, TimeoutError):
             pass
 
         if not symbols:
             return default
-        #Load the lib
+        # Load the lib
         try:
             lib = ctypes.CDLL(lib_path)
-        except:
+        except OSError:
             return default
-        #Get the return value
+        # Get the return value
         for func_name in symbols:
             try:
                 func = getattr(lib, func_name)
                 func.restype = ctypes.c_int
                 return func()
-            except:
+            except (AttributeError, OSError, TypeError):
                 continue
         return default
 
@@ -1095,43 +1169,16 @@ class compiler_npu:
         self.constants = {}
         # get signature information
         self.signature = self._parse_signature()
-        
+
         self.metadata["signature"] = self.signature
         self.metadata["primfunc"] = self.mod
         self.metadata["mlir_content"] = self.mlir_content
-        
+
         self.lock_num = -1
         self.lock_ini_val = 0
         self._parse_npuir_metadata()
         self.metadata["kernel_src"] = self._npuir_to_bin_enable_npu_compile()
-        # Obtain the npu_utils.so file required for loading the kernel
-        self.so_utils_path = os.path.join(os.getcwd(), "npu_utils.so")
-        if not os.path.isfile(self.so_utils_path):
-            # Preferred package layout:
-            #   tilelang/jit/jit_npu.py -> tilelang/ -> tilelang/src/runtime/npu_utils.cpp
-            pkg_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            pkg_runtime_cpp = os.path.join(pkg_root, "src", "runtime", "npu_utils.cpp")
-
-            # Fallback for source-tree/PYTHONPATH workflow:
-            #   repo_root/src/runtime/npu_utils.cpp
-            # where repo_root is the parent of pkg_root (i.e. contains setup.py).
-            repo_root = os.path.dirname(pkg_root)
-            repo_runtime_cpp = os.path.join(repo_root, "src", "runtime", "npu_utils.cpp")
-
-            candidate_paths = [pkg_runtime_cpp]
-            if os.path.isfile(os.path.join(repo_root, "setup.py")):
-                candidate_paths.append(repo_runtime_cpp)
-
-            npu_utils_cpp = next((path for path in candidate_paths if os.path.isfile(path)), None)
-            if npu_utils_cpp is None:
-                searched = ", ".join(candidate_paths)
-                raise FileNotFoundError(
-                    "npu_utils.cpp not found. "
-                    f"Tried: {searched}. "
-                    "Ensure tilelang package includes src/runtime or run from a valid source tree."
-                )
-
-            self.so_utils_path = self.make_npu_launcher_stub("npu_utils", npu_utils_cpp)
+        self.header_path = get_npu_launcher_header()
         self.wrapper_src = generate_npu_wrapper_src(
             self.constants,
             self.signature,
@@ -1142,23 +1189,27 @@ class compiler_npu:
             self.need_debug,
         )
         self.so_launcher_path = self.make_npu_launcher_stub(
-            self.metadata["kernel_name"], self.wrapper_src
+            self.metadata["kernel_name"], self.header_path, self.wrapper_src
         )
-        TILELANG_ASCEND_WORKSPACE_SIZE = os.environ.get('TILELANG_ASCEND_WORKSPACE_SIZE')
-        if not TILELANG_ASCEND_WORKSPACE_SIZE is None:
-          try:
-              self.workspace_size = int(TILELANG_ASCEND_WORKSPACE_SIZE)
-          except ValueError:
-              print(f"Warning: TILELANG_ASCEND_WORKSPACE_SIZE must be integer, \
-                    got '{TILELANG_ASCEND_WORKSPACE_SIZE}', using default 32768")
-        
+
+        TILELANG_ASCEND_WORKSPACE_SIZE = os.environ.get(
+            "TILELANG_ASCEND_WORKSPACE_SIZE"
+        )
+        if TILELANG_ASCEND_WORKSPACE_SIZE is not None:
+            try:
+                self.workspace_size = int(TILELANG_ASCEND_WORKSPACE_SIZE)
+            except ValueError:
+                print(
+                    f"Warning: TILELANG_ASCEND_WORKSPACE_SIZE must be integer, "
+                    f"got '{TILELANG_ASCEND_WORKSPACE_SIZE}', using default 32768"
+                )
+
         return JitKernel_NPU(metadata=self.metadata, out_idx=out_idx)
-      
 
     def _extract_param_info(self, func: PrimFunc, out_idx):
         """
         Extract parameter information from PrimFunc.
-        
+
         Returns a list of dicts, each containing:
             - dtype: torch.dtype of the parameter
             - shape: list of dimensions (may contain tir.Var for dynamic shapes)
@@ -1167,7 +1218,7 @@ class compiler_npu:
         buffer_map = func.buffer_map
         params = func.params
         info_list = []
-        
+
         # Convert out_idx to positive indices and validate
         total_params = len(params)
         pos_out_idx = None
@@ -1175,7 +1226,7 @@ class compiler_npu:
             pos_out_idx = {i if i >= 0 else total_params + i for i in out_idx}
 
         for i, param in enumerate(params):
-            is_output = (pos_out_idx is not None and i in pos_out_idx)
+            is_output = pos_out_idx is not None and i in pos_out_idx
             if param in buffer_map:
                 # Tensor parameter (has buffer)
                 buffer = buffer_map[param]
@@ -1189,11 +1240,13 @@ class compiler_npu:
                         f"TileLang does not support scalar outputs. "
                         f"Please use 1D tensor with shape (1,) instead."
                     )
-                info_list.append({
-                    'dtype': torch_dtype,
-                    'shape': shape_expr,
-                    'is_output': is_output,
-                })
+                info_list.append(
+                    {
+                        "dtype": torch_dtype,
+                        "shape": shape_expr,
+                        "is_output": is_output,
+                    }
+                )
             else:
                 # Scalar parameter - cannot be output
                 if is_output:
@@ -1202,27 +1255,29 @@ class compiler_npu:
                         f"TileLang does not support scalar outputs. "
                         f"Please use 1D tensor with shape (1,) instead."
                     )
-                
+
                 # Get dtype from param
                 dtype_str = str(param.dtype)
                 torch_dtype = self._tvm_dtype_to_torch(dtype_str)
-                info_list.append({
-                    'dtype': torch_dtype,
-                    'shape': [],  # scalar has empty shape
-                    'is_output': False,
-                })
-        
+                info_list.append(
+                    {
+                        "dtype": torch_dtype,
+                        "shape": [],  # scalar has empty shape
+                        "is_output": False,
+                    }
+                )
+
         return info_list
 
     def _tvm_dtype_to_torch(self, dtype_str):
         mapping = {
-            'float16': torch.float16,
-            'float32': torch.float32,
-            'int8': torch.int8,
-            'int16': torch.int16,
-            'int32': torch.int32,
-            'int64': torch.int64,
-            'bool': torch.bool,
+            "float16": torch.float16,
+            "float32": torch.float32,
+            "int8": torch.int8,
+            "int16": torch.int16,
+            "int32": torch.int32,
+            "int64": torch.int64,
+            "bool": torch.bool,
         }
         return mapping.get(dtype_str, torch.float32)
 
@@ -1339,7 +1394,7 @@ class compiler_npu:
         index = 0
 
         # Skip parameters insert by compiler
-        for param in params[3: -6]:
+        for param in params[3:-6]:
             # Check if the type includes the target type
             found_type = None
             for t_type in target_types:
@@ -1372,7 +1427,6 @@ class compiler_npu:
 
     def _npuir_to_bin_enable_npu_compile(self):
         linalg = self.mlir_content
-        metadata = self.metadata
         with tempfile.TemporaryDirectory() as tmpdir:
             ttadapter_path = os.path.join(tmpdir, "kernel.npuir")
             Path(ttadapter_path).write_text(linalg)
@@ -1386,13 +1440,15 @@ class compiler_npu:
             _compile_option_list = [
                 "--enable-auto-multi-buffer=true",
                 "--enable-triton-kernel-compile=true",
-                "--enable-hivm-compile=true"
+                "--enable-hivm-compile=true",
             ]
 
-            TILELANG_ASCEND_MODE = os.environ.get('TILELANG_ASCEND_MODE')
-            if TILELANG_ASCEND_MODE is None:
-                _compile_option_list.append("--disable-hivm-tensor-compile=true")
-            elif TILELANG_ASCEND_MODE.lower().strip() in ['expert', 'exp', 'e']:
+            TILELANG_ASCEND_MODE = os.environ.get("TILELANG_ASCEND_MODE")
+            if TILELANG_ASCEND_MODE is None or TILELANG_ASCEND_MODE.lower().strip() in [
+                "expert",
+                "exp",
+                "e",
+            ]:
                 _compile_option_list.append("--disable-hivm-tensor-compile=true")
 
             cmd_list = (
@@ -1417,7 +1473,9 @@ class compiler_npu:
             except Exception as e:
                 print(f"error: {str(e)}")
                 sys.exit(1)
-            result = self._get_workspace_size(so_path, "_infer_workspace_shape_function")
+            result = self._get_workspace_size(
+                so_path, "_infer_workspace_shape_function"
+            )
             self.workspace_size = result
 
             if not Path(bin_path).exists():
@@ -1434,85 +1492,34 @@ class compiler_npu:
 
             return Path(bin_path).read_bytes()
 
-    def make_npu_launcher_stub(self, name: str, source: Union[str, os.PathLike], debug=False):
+    def make_npu_launcher_stub(self, name, header_src, wrapper_src, debug=False):
         """
         Generate the launcher stub to launch the kernel
         """
+        precompile_cache_path = get_runtime_file_cache(header_src)
+        header_path = os.path.join(precompile_cache_path, "npu_launcher.h")
+        precompile_header_path = os.path.join(
+            precompile_cache_path, "npu_launcher.h.gch"
+        )
+        if not (
+            os.path.exists(precompile_header_path)
+            and os.path.getsize(precompile_header_path) > 0
+        ):
+            print("Precompiling NPU launcher header...")
+            with tempfile.TemporaryDirectory() as tmpdir:
+                safe_copy(header_src, header_path)
+                tmp_header_gch_path = os.path.join(tmpdir, "npu_launcher.h.gch")
+                precompile_npu_ext(header_path, tmp_header_gch_path)
+                safe_copy(tmp_header_gch_path, precompile_header_path)
+
         with tempfile.TemporaryDirectory() as tmpdir:
             dst_path = os.path.join(tmpdir, f"{name}.cxx")
-            if os.path.exists(source):
-                shutil.copy(source, dst_path)
-            else:
-                with open(dst_path, 'w') as f:
-                    f.write(source)
-            so = self._build_npu_ext(name, dst_path, tmpdir, kernel_launcher="torch")
+            with open(dst_path, "w") as f:
+                f.write(wrapper_src)
+            so = build_npu_ext(
+                name, header_path, dst_path, kernel_launcher="torch", precompile=True
+            )
             return so
-
-    def _check_cxx11_abi(self):
-        import torch
-        return 1 if torch._C._GLIBCXX_USE_CXX11_ABI else 0
-
-    def _build_npu_ext(
-        self, obj_name: str, src_path, src_dir, *, kernel_launcher=None
-    ) -> str:
-        so_path = f"{obj_name}.so"
-        cxx = get_cxx()
-        cc_cmd = [cxx, src_path]
-        # disable all warnings
-        cc_cmd += [f"-w"]
-        # find the python library
-        if hasattr(sysconfig, "get_default_scheme"):
-            scheme = sysconfig.get_default_scheme()
-        else:
-            scheme = sysconfig._get_default_scheme()
-        # 'posix_local' is a custom scheme on Debian. However, starting Python 3.10, the default install
-        # path changes to include 'local'. This change is required to use triton with system-wide python.
-        if scheme == "posix_local":
-            scheme = "posix_prefix"
-        py_include_dir = sysconfig.get_paths(scheme=scheme)["include"]
-        cc_cmd += [f"-I{py_include_dir}"]
-        # device_print.h
-        cc_cmd += [f"-I{os.path.dirname(os.path.realpath(__file__))}"]
-        # find the ascend library
-        asc_path = get_ascend_path()
-
-        rt_path = os.path.join(asc_path, "include/experiment/runtime/runtime/rt.h")
-        if not os.path.exists(rt_path):
-            cc_cmd += [
-                f"-I{os.path.join(asc_path, 'pkg_inc')}",
-                f"-I{os.path.join(asc_path, 'pkg_inc/profiling')}",
-            ]
-
-        cc_cmd += [
-            f"-I{os.path.join(asc_path, 'include')}",
-            f"-I{os.path.join(asc_path, 'include/experiment')}",
-            f"-I{os.path.join(asc_path, 'include/experiment/msprof')}",
-            f"-I{pybind11.get_include()}",
-            f"-L{os.path.join(asc_path, 'lib64')}",
-            "-lruntime",
-            "-lascendcl",
-        ]
-
-        if kernel_launcher == "torch":
-            torch_path = os.path.dirname(os.path.realpath(torch.__file__))
-            torch_npu_path = os.path.dirname(os.path.realpath(torch_npu.__file__))
-            use_cxx11_abi = self._check_cxx11_abi()
-            cc_cmd += [
-                f"-I{os.path.join(torch_path, 'include')}",
-                f"-I{os.path.join(torch_npu_path, 'include')}",
-                f"-L{os.path.join(torch_npu_path, 'lib')}",
-                "-ltorch_npu",
-                f"-D_GLIBCXX_USE_CXX11_ABI={use_cxx11_abi}",
-            ]
-
-        cc_cmd += ["-std=c++17", "-shared", "-fPIC", "-o", so_path]
-
-        ret = subprocess.check_call(cc_cmd)
-
-        if ret == 0:
-            return so_path
-        else:
-            raise RuntimeError("Failed to compile " + src_path)
 
     def check_debug_op(self, func) -> bool:
         """
@@ -1525,7 +1532,7 @@ class compiler_npu:
 
         def visit(node):
             nonlocal found
-            if isinstance(node, tir.Call) and 'debug' in node.op.name:
+            if isinstance(node, tir.Call) and "debug" in node.op.name:
                 found = True
 
         tir.stmt_functor.post_order_visit(func.body, visit)
