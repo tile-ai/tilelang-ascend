@@ -1231,9 +1231,9 @@ void CodeGenTileLangNPUIRAPI::AscendCopyCodegen(const CallNode *op) {
   }
 
   mlir::Value src_sub_view =
-      GenSubviewFromRegion(npuirop.src, npuirop.src_range);
+      GenRankReducedSubviewFromRegion(npuirop.src, npuirop.src_range);
   mlir::Value dst_sub_view =
-      GenSubviewFromRegion(npuirop.dst, npuirop.dst_range);
+      GenRankReducedSubviewFromRegion(npuirop.dst, npuirop.dst_range);
   SmartMemRefCopy(src_sub_view, dst_sub_view);
 }
 
