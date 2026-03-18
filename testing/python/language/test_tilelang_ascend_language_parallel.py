@@ -704,6 +704,7 @@ class TestTileLangKernels:
             reference_func=reference_func
         )
 
+    @staticmethod
     @tilelang.jit(out_idx=[-1], pass_configs=pass_configs)
     def row_parallel_buffer_unmatch_kernel(M, N, block_M, block_N, dtype="float"):
         m_num = M // block_M
