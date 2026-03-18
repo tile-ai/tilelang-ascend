@@ -10,7 +10,7 @@ pass_configs = {
     tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
 }
 
-@tilelang.jit(out_idx=[-1], pass_configs=pass_configs)
+@tilelang.jit(out_idx=[-1], target="pto", pass_configs=pass_configs)
 def column_parallel_buffer_scalar_mul_kernel(M, N, block_M, block_N, dtype="float"):
     m_num = M // block_M
     n_num = N // block_N
