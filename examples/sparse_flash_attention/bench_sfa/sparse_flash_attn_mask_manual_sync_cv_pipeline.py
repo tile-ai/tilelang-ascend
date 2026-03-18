@@ -14,13 +14,14 @@ def init_test():
     # torch.set_default_device('npu')
     torch.manual_seed(42)
     tilelang.disable_cache()
+    # tilelang.enable_cache()
 
 
 pass_configs = {
     tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
     tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_SYNC: True,
     # tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
-    tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
+    # tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
 }
 
 
@@ -33,8 +34,8 @@ def sparse_attention_fwd(
         kv_heads=1,
         scale=None,
         is_causal=True,
-        n_base_size=64,
-        m_base_size=16,
+        n_base_size=256,  # s2 kv
+        m_base_size=32,  # s1 q
         dtype="bfloat16",
         block_size=128,
         core_num=24,
@@ -55,9 +56,9 @@ def sparse_attention_fwd(
     block_table_len = T.symbolic("block_table_len")
     block_num = T.symbolic("block_num")
 
+    seq_len_kv = T.symbolic("seq_len_kv")
     g = q_heads // kv_heads  # GQA G
     q_shape = [batch, seq_len, q_heads, dim + rope_dim]
-
 
     o_shape = [batch, seq_len, q_heads, dim]
     indices_shape = [seq_len, kv_heads, topk]
@@ -77,7 +78,7 @@ def sparse_attention_fwd(
     kernel_count = batch * seq_len * g_block_num * kv_heads
     m_base_size_v = m_base_size // 2
     n_base_size_v = n_base_size // 2
-    vec0_copy_out_size = 16
+    vec0_copy_out_size = 32
 
     @T.prim_func
     def main_pipelined(
@@ -102,37 +103,41 @@ def sparse_attention_fwd(
             kv_tail_l1 = T.alloc_L1([n_base_size, rope_dim], dtype)
             acc_s_l1 = T.alloc_L1([m_base_size, n_base_size], dtype)
 
-            acc_o_l0c = T.alloc_L0C([m_base_size, dim], accum_dtype)
-
+            # mm1 buffer
+            k_l0_size = 64  # 固定64 与rope dim一致 方便实现
+            q_l0a = T.alloc_L0A([2, m_base_size, k_l0_size], dtype)
+            kv_l0b = T.alloc_L0B([2, k_l0_size, n_base_size], dtype)
             acc_s_l0c = T.alloc_L0C([m_base_size, n_base_size], accum_dtype)
 
-            ## 2. Vector
-            acc_o = T.alloc_ub([m_base_size_v, dim], accum_dtype)
-            sumexp = T.alloc_ub([m_base_size_v, 1], accum_dtype)
-            m_i = T.alloc_ub([m_base_size_v, 1], accum_dtype)
+            # mm2 buffer
+            mm2_k_l0_size = 32
+            acc_s_l0a = T.alloc_L0A([2, m_base_size, mm2_k_l0_size], dtype)
+            mm2_kv_l0b = T.alloc_L0B([2, mm2_k_l0_size, dim], dtype)
+            acc_o_l0c = T.alloc_L0C([m_base_size, dim], accum_dtype)
 
+            # vec0
             indices_ub_ = T.alloc_ub([n_base_size], indices_dtype)
             indices_ub_float = T.alloc_ub([n_base_size], "float")
-
+            mask_ub = T.alloc_ub([32], "uint8")  # T.Pipelined need to align
             kv_ub_gather = T.alloc_ub([2, vec0_copy_out_size, dim], dtype)
             kv_rope_ub_gather = T.alloc_ub([2, vec0_copy_out_size, rope_dim], dtype)
-            # kv_ub_gather = T.alloc_ub([n_base_size_v, dim], dtype)
-            # kv_rope_ub_gather = T.alloc_ub([n_base_size_v, rope_dim], dtype)
 
-            acc_s_ub = T.alloc_ub([m_base_size_v, n_base_size], accum_dtype)
+            # vec1
+            m_i = T.alloc_ub([m_base_size_v, 1], accum_dtype)
             m_i_prev = T.alloc_ub([m_base_size_v, 1], accum_dtype)
-            acc_s_ub_ = T.alloc_ub([m_base_size_v, n_base_size], accum_dtype)
-            tmp_ub = T.alloc_ub([1 * DataType(accum_dtype).bits // 8 * m_base_size_v * n_base_size], "uint8")
-            sumexp_i_ub = T.alloc_ub([m_base_size_v, 1], accum_dtype)
-            acc_s_half = T.alloc_ub([m_base_size_v, n_base_size], dtype)
-            acc_o_ub = T.alloc_ub([m_base_size_v, dim], accum_dtype)
-            acc_o_half = T.alloc_ub([m_base_size_v, dim], dtype)
-            mask_ub = T.alloc_ub([32], "uint8")  # T.Pipelined need to align
-
-            # Broadcast target buffers
+            acc_s_ub = T.alloc_ub([m_base_size_v, n_base_size], accum_dtype)
             m_i_broadcast = T.alloc_ub([m_base_size_v, n_base_size], accum_dtype)
             m_i_prev_broadcast = T.alloc_ub([m_base_size_v, dim], accum_dtype)
+            sumexp_i_ub = T.alloc_ub([m_base_size_v, 1], accum_dtype)
+            sumexp = T.alloc_ub([m_base_size_v, 1], accum_dtype)
+            acc_s_half = T.alloc_ub([m_base_size_v, n_base_size], dtype)
+
+            # vec2
+            acc_o_ub = T.alloc_ub([m_base_size_v, dim], accum_dtype)
+            acc_o = T.alloc_ub([m_base_size_v, dim], accum_dtype)
             sumexp_broadcast = T.alloc_ub([m_base_size_v, dim], accum_dtype)
+            tmp_ub = T.alloc_ub([1 * DataType(accum_dtype).bits // 8 * m_base_size_v * n_base_size], "uint8")
+            acc_o_half = T.alloc_ub([m_base_size_v, dim], dtype)
 
             single_core_load = T.ceildiv(kernel_count, core_num)
             used_core_num = T.ceildiv(kernel_count, single_core_load)
@@ -140,6 +145,63 @@ def sparse_attention_fwd(
             start_idx = cid * single_core_load
             end_idx = T.if_then_else(cid == used_core_num - 1, start_idx + tail_block_size,
                                      start_idx + single_core_load)
+
+            T.annotate_layout(
+                {
+                    q_l1: make_zn_layout(q_l1),
+                    q_tail_l1: make_zn_layout(q_tail_l1),  # Zn
+                    kv_l1: make_zn_layout(kv_l1),  # Zn
+                    kv_tail_l1: make_zn_layout(kv_tail_l1),  # Zn
+                    acc_s_l1: make_zn_layout(acc_s_l1),  # Zn
+                }
+            )
+
+            T.annotate_address({
+
+                # cube 其中 2 表示half类型
+                q_l1: 0,
+                q_tail_l1: m_base_size * dim * 2,
+                kv_l1: m_base_size * dim * 2 + m_base_size * rope_dim * 2,
+                kv_tail_l1: m_base_size * dim * 2 + m_base_size * rope_dim * 2 + n_base_size * dim * 2,
+                acc_s_l1: m_base_size * dim * 2 + m_base_size * rope_dim * 2 + n_base_size * dim * 2 + n_base_size * rope_dim * 2,
+
+                # mm1
+                kv_l0b: 0,
+                q_l0a: 0,
+                acc_o_l0c: 0,
+
+                # mm2
+                acc_s_l0a: 0,
+                mm2_kv_l0b: 0,
+                acc_s_l0c: 0,
+
+                # UB
+                # vec0
+                indices_ub_: 0,
+                indices_ub_float: n_base_size * 4,
+                mask_ub: n_base_size * 4 * 2,
+                kv_ub_gather: n_base_size * 4 * 2 + 32,
+                kv_rope_ub_gather: n_base_size * 4 * 2 + 32 + vec0_copy_out_size * dim * 2 * 2,
+
+                # vec1 73760: 32*576*2*2 + 32 (32: vec0_copy_out_size; 576:dim+rope_dime; 2:half; 2:db buffer; 32:mask)
+                m_i_prev: 73760 + n_base_size * 4 * 2,
+                sumexp: 73760 + n_base_size * 4 * 2 + m_base_size_v * 4,
+                m_i: 73760 + n_base_size * 4 * 2 + m_base_size_v * 4 * 2,
+                acc_s_ub: 73760 + n_base_size * 4 * 2 + m_base_size_v * 4 * 3,
+                m_i_broadcast: 73760 + n_base_size * 4 * 2 + m_base_size_v * 4 * 3 + m_base_size_v * n_base_size * 4,
+                sumexp_i_ub: 73760 + n_base_size * 4 * 2 + m_base_size_v * 4 * 3 + m_base_size_v * n_base_size * 4 * 2,
+                acc_s_half: 73760 + n_base_size * 4 * 2 + m_base_size_v * 4 * 4 + m_base_size_v * n_base_size * 4 * 2,
+
+                # vec2
+                acc_o_ub: 73760 + n_base_size * 4 * 2 + m_base_size_v * 4 * 3,
+                m_i_prev_broadcast: (73760 + n_base_size * 4 * 2 + m_base_size_v * 4 * 3) + m_base_size_v * dim * 4,
+                sumexp_broadcast: (73760 + n_base_size * 4 * 2 + m_base_size_v * 4 * 3) + m_base_size_v * dim * 4,
+
+                acc_o: (73760 + n_base_size * 4 * 2 + m_base_size_v * 4 * 3) + m_base_size_v * dim * 4 * 2,
+                acc_o_half: (73760 + n_base_size * 4 * 2 + m_base_size_v * 4 * 3) + m_base_size_v * dim * 4 * 2,
+
+                tmp_ub: 184320  # 185.25K
+            })
 
             if cid < used_core_num:
                 for block_idx in T.serial(start_idx, end_idx):
@@ -170,9 +232,10 @@ def sparse_attention_fwd(
                         T.tile.fill(acc_o, 0.0)
                         T.tile.fill(sumexp, 0.0)
                         T.tile.fill(m_i, -2.0 ** 30)
+
                         # s2轴切分
-                        # for i_i in T.serial(n_block_num):
-                        for i_i in T.Pipelined(n_block_num, num_stages=2):
+                        for i_i in T.serial(n_block_num):
+                            # for i_i in T.Pipelined(n_block_num, num_stages=2):
                             # ******************** V0(处理topk) ********************
                             T.copy(Indices[s_i, g_i, i_i * n_base_size:i_i * n_base_size + n_base_size], indices_ub_)
                             T.set_flag("mte2", "v", 5)
@@ -207,50 +270,65 @@ def sparse_attention_fwd(
                                            workspace_1[cid,
                                            inner_block_id * vec0_copy_out_size + vid * n_base_size_v
                                            : (inner_block_id + 1) * vec0_copy_out_size + vid * n_base_size_v, :])
+
                                     T.copy(kv_rope_ub_gather[task_id, :, :],
                                            workspace_2[cid,
                                            inner_block_id * vec0_copy_out_size + vid * n_base_size_v:
                                            (inner_block_id + 1) * vec0_copy_out_size + vid * n_base_size_v, :])
+
                                     if g_copy_out_time < n_block_num * T.floordiv(n_base_size_v,
                                                                                   vec0_copy_out_size) - 2:
                                         T.set_flag("mte3", "mte2", task_id)
 
                             # ******************** BMM1(Q*K) ********************
+                            # L1上全载 Q和K
+                            loop_kk = T.ceildiv(dim + rope_dim, k_l0_size)
+                            # GM->L1
                             T.copy(workspace_1[cid, :, :], kv_l1)
                             T.copy(workspace_2[cid, :, :], kv_tail_l1)
 
                             T.set_flag("mte2", "mte1", 1)
                             T.wait_flag("mte2", "mte1", 1)
 
-                            T.gemm_v0(q_l1, kv_l1, acc_s_l0c, transpose_B=True, init=True)
-                            T.gemm_v0(q_tail_l1, kv_tail_l1, acc_s_l0c, transpose_B=True)
+                            # mm1： L0上只切K轴
+                            for kk in range(loop_kk):
+                                task_id = kk % 2  # 双buffer
+                                if kk > 1:
+                                    T.wait_flag("m", "mte1", task_id)
+                                # 完成L1->L0上拷贝
+                                if kk < loop_kk - 1:
+                                    T.copy(q_l1[:, kk * k_l0_size:(kk + 1) * k_l0_size],
+                                           q_l0a[kk % 2, :, :])  # Q L1->L0A
+                                    T.copy(kv_l1[:, kk * k_l0_size:(kk + 1) * k_l0_size],
+                                           kv_l0b[kk % 2, :, :], transpose=True)  # KV L1->L0B
+                                else:
+                                    T.copy(q_tail_l1[:, :], q_l0a[kk % 2, :, :])
+                                    T.copy(kv_tail_l1[:, :], kv_l0b[kk % 2, :, :], transpose=True)  # KV L1->L0B
 
+                                T.set_flag("mte1", "m", task_id)
+                                T.wait_flag("mte1", "m", task_id)
+                                T.pipe_barrier("m")
+                                T.mma(q_l0a[kk % 2, :, :], kv_l0b[kk % 2, :, :], acc_s_l0c, init=(kk == 0))
+                                if kk < loop_kk - 2:
+                                    T.set_flag("m", "mte1", task_id)
                             T.set_flag("m", "fix", 2)
                             T.wait_flag("m", "fix", 2)
-
                             T.copy(acc_s_l0c, workspace_3[cid, :, :])
 
                             # ******************** V1 ********************
-                            T.tile.fill(acc_s_ub_, 0.0)
-                            T.pipe_barrier("v")
-
-                            for i in T.serial(m_base_size_v):
-                                T.tile.select(acc_s_ub[i, :], mask_ub, acc_s_ub_[i, :], -T.infinity(accum_dtype),
-                                              "VSEL_TENSOR_SCALAR_MODE")
-
                             T.copy(m_i, m_i_prev)
-
-                            T.set_flag("v", "mte2", 0)
-                            T.wait_flag("v", "mte2", 0)
 
                             T.copy(
                                 workspace_3[cid, vid * m_base_size_v:vid * m_base_size_v + m_base_size_v, :],
-                                acc_s_ub_)
+                                acc_s_ub)
 
                             T.set_flag("mte2", "v", 0)
                             T.wait_flag("mte2", "v", 0)
 
-                            T.tile.add(acc_s_ub, acc_s_ub, acc_s_ub_)
+                            for i in T.serial(m_base_size_v):
+                                T.tile.select(acc_s_ub[i, :], mask_ub, acc_s_ub[i, :], -T.infinity(accum_dtype),
+                                              "VSEL_TENSOR_SCALAR_MODE")
+
                             T.pipe_barrier("v")
 
                             T.tile.mul(acc_s_ub, acc_s_ub, sm_scale)
@@ -297,10 +375,36 @@ def sparse_attention_fwd(
                                             vid * m_base_size_v:vid * m_base_size_v + m_base_size_v, :])
 
                             # ******************** BMM2(S*V) ********************
+                            # L1上全载 Q和K
+                            loop_kk = T.ceildiv(n_base_size, mm2_k_l0_size)
+
+                            # GM->L1
                             T.copy(workspace_4[cid, :, :], acc_s_l1)
+
                             T.set_flag("mte2", "mte1", 3)
                             T.wait_flag("mte2", "mte1", 3)
-                            T.gemm_v0(acc_s_l1, kv_l1, acc_o_l0c, init=True)
+
+                            # mm2： L0上需要切K轴和N轴，目前只能切K轴
+                            for kk in range(loop_kk):
+                                task_id = kk % 2 + 2
+                                if kk > 1:
+                                    T.wait_flag("m", "mte1", task_id)
+
+                                # 完成L1->L0上拷贝
+                                T.copy(acc_s_l1[:, kk * mm2_k_l0_size:(kk + 1) * mm2_k_l0_size],
+                                       acc_s_l0a[kk % 2, :, :])  # Q L1->L0A
+
+                                T.copy(kv_l1[kk * mm2_k_l0_size:(kk + 1) * mm2_k_l0_size, :],
+                                       mm2_kv_l0b[kk % 2, :, :])  # KV L1->L0B
+
+                                T.set_flag("mte1", "m", task_id)
+                                T.wait_flag("mte1", "m", task_id)
+                                T.pipe_barrier("m")
+                                T.mma(acc_s_l0a[kk % 2, :, :], mm2_kv_l0b[kk % 2, :, :], acc_o_l0c, init=(kk == 0))
+
+                                if kk < loop_kk - 2:
+                                    T.set_flag("m", "mte1", task_id)
+
                             T.set_flag("m", "fix", 4)
                             T.wait_flag("m", "fix", 4)
                             T.copy(acc_o_l0c, workspace_5[cid, :, :])
