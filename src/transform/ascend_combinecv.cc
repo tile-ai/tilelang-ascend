@@ -600,7 +600,7 @@ public:
     }
     current_proccess_switch_ = false; // turn off
 
-    if (IsSyncSideEffectCall(call_node, is_aiv_)) {
+    if (IsSyncSideEffectCall(call_node_, is_aiv_)) {
       return StmtMutator::VisitStmt_(op);
     }
 
@@ -690,19 +690,19 @@ private:
           }
         }
       }
-    }
 
-    if (op_name == "tl.ascend_pipe_barrier") {
-      if (const auto* pipe = call_node->args[0].as<StringImmNode>()) {
-        std::string pipe_name = pipe->value;
-        if (pipe_name == "ALL") {
-          return true;
-        }
-
-        if (is_aiv) {
-          return pipe_name == "V";
-        } else {
-          return pipe_name == "M";
+      if (op_name == "tl.ascend_pipe_barrier") {
+        if (const auto* pipe = call_node->args[0].as<StringImmNode>()) {
+          std::string pipe_name = pipe->value;
+          if (pipe_name == "ALL") {
+            return true;
+          }
+  
+          if (is_aiv) {
+            return pipe_name == "V";
+          } else {
+            return pipe_name == "M";
+          }
         }
       }
     }
