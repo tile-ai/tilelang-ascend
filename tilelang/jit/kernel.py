@@ -89,10 +89,9 @@ class JITKernel(object):
         self.execution_backend = execution_backend
         self.target = target
         self.target_host = target_host
+        self.platform = platform
         self.verbose = verbose
 
-        from tilelang.utils.target import determine_platform
-        self.platform = determine_platform(platform)
 
         if pass_configs is None:
             pass_configs = {}

@@ -315,8 +315,10 @@ public:
 
         if (core_scope_ == VEC_SCOPE) {
             ProcessInfo(workspace_writes_V_, all_statements_V_, saved_statements_V, saved_idx_V, for_info);
+            current_idx_V_ = all_statements_V_.size();
         } else if (core_scope_ == CUBE_SCOPE) {
             ProcessInfo(workspace_writes_C_, all_statements_C_, saved_statements_C, saved_idx_C, for_info);
+            current_idx_C_ = all_statements_C_.size();
         }
         if (core_scope_ != INVALID_SCOPE) {
             StmtInfo unified_for_info = for_info;
@@ -636,162 +638,13 @@ private:
         }
 
         for (const auto& [buffer, stage_indices] : buffer_stage_map) {
-            if (stage_indices.size() <= 1) continue;
-            auto buffer_scope = checkBufferScope(buffer);
-            if (buffer_scope != VEC_SCOPE) continue;
-
-            if (BufferNeedsRingBuffer(buffer, stages, stage_indices)) {
-                shared_buffers_.insert(buffer);
-            }
-        }
-    }
-
-    /*!
-     * \brief Scanline analysis: determine if a buffer truly needs ring-buffering.
-     *
-     * For each read to buffer B in stage S:
-     *   1. Check if the read region is fully covered by preceding writes to B within S.
-     *   2. If not covered, check if the uncovered read overlaps with writes from other stages.
-     *   3. If overlap exists with other stages' writes, buffer needs ring-buffering.
-     *
-     * Conservative fallback: if symbolic analysis cannot prove coverage or disjointness,
-     * assume ring-buffering is needed.
-     */
-    bool BufferNeedsRingBuffer(const std::string& buffer_name,
-                               const std::vector<StageInfo>& stages,
-                               const std::vector<int>& stage_indices) {
-        arith::Analyzer analyzer;
-
-        std::unordered_map<int, std::vector<RegionInfo>> write_regions_per_stage;
-        std::unordered_map<int, std::vector<RegionInfo>> read_regions_per_stage;
-
-        for (int si : stage_indices) {
-            const auto& stage = stages[si];
-            std::vector<RegionInfo> writes;
-            std::vector<RegionInfo> reads;
-            for (const auto& stmt_info : stage.statements) {
-                for (const auto& access : stmt_info.accesses) {
-                    if (access.buffer_name != buffer_name) continue;
-                    if (access.is_write) {
-                        writes.push_back({access.offset, access.extent});
-                    }
-                    if (access.is_read) {
-                        reads.push_back({access.offset, access.extent});
-                    }
-                }
-            }
-            write_regions_per_stage[si] = std::move(writes);
-            read_regions_per_stage[si] = std::move(reads);
-        }
-
-        bool any_stage_writes = false;
-        for (const auto& [si, writes] : write_regions_per_stage) {
-            if (!writes.empty()) { any_stage_writes = true; break; }
-        }
-        if (!any_stage_writes) return false;
-
-        for (int si : stage_indices) {
-            const auto& stage = stages[si];
-            const auto& reads = read_regions_per_stage[si];
-            if (reads.empty()) continue;
-
-            std::vector<RegionInfo> preceding_writes;
-            for (const auto& stmt_info : stage.statements) {
-                // Collect writes from this statement separately so that
-                // intra-statement writes do not cover intra-statement reads
-                // (e.g. T.tile.exp(buf, buf) where dst=write comes before src=read in args).
-                std::vector<RegionInfo> deferred_writes;
-                for (const auto& access : stmt_info.accesses) {
-                    if (access.buffer_name != buffer_name) continue;
-
-                    if (access.is_read) {
-                        PrimExpr r_off = access.offset;
-                        PrimExpr r_ext = access.extent;
-
-                        bool covered = IsReadCoveredByWrites(analyzer, r_off, r_ext, preceding_writes);
-
-                        if (!covered) {
-                            if (HasOverlapWithOtherStages(analyzer, r_off, r_ext,
-                                                          write_regions_per_stage, si)) {
-                                return true;
-                            }
-                        }
-                    }
-
-                    if (access.is_write) {
-                        deferred_writes.push_back({access.offset, access.extent});
-                    }
-                }
-                for (const auto& w : deferred_writes) {
-                    preceding_writes.push_back(w);
+            if (stage_indices.size() > 1) {
+                auto buffer_scope = checkBufferScope(buffer);
+                if (buffer_scope == VEC_SCOPE) {
+                  shared_buffers_.insert(buffer);
                 }
             }
         }
-
-        return false;
-    }
-
-    /*! \brief Check if a PrimExpr is a compile-time integer constant. */
-    static bool IsConstantExpr(const PrimExpr& e) {
-        return e.as<IntImmNode>() != nullptr;
-    }
-
-    bool IsReadCoveredByWrites(arith::Analyzer& analyzer,
-                               const PrimExpr& read_offset,
-                               const PrimExpr& read_extent,
-                               const std::vector<RegionInfo>& preceding_writes) {
-        if (preceding_writes.empty()) return false;
-
-        // Conservative: if read region is non-constant, we cannot prove coverage.
-        // Treat as reading the entire tensor — no finite write set can be guaranteed to cover it.
-        if (!IsConstantExpr(read_offset) || !IsConstantExpr(read_extent)) {
-            return false;
-        }
-
-        PrimExpr read_end = read_offset + read_extent;
-
-        for (const auto& w : preceding_writes) {
-            // Conservative: if a preceding write has non-constant offset/extent,
-            // treat it as covering nothing (skip it).
-            if (!IsConstantExpr(w.offset) || !IsConstantExpr(w.extent)) {
-                continue;
-            }
-            PrimExpr w_end = w.offset + w.extent;
-            if (analyzer.CanProve(w.offset <= read_offset) &&
-                analyzer.CanProve(read_end <= w_end)) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    bool HasOverlapWithOtherStages(arith::Analyzer& analyzer,
-                                   const PrimExpr& read_offset,
-                                   const PrimExpr& read_extent,
-                                   const std::unordered_map<int, std::vector<RegionInfo>>& write_regions_per_stage,
-                                   int current_stage) {
-        // Conservative: if read region is non-constant, assume it overlaps with everything.
-        bool read_is_symbolic = !IsConstantExpr(read_offset) || !IsConstantExpr(read_extent);
-
-        for (const auto& [si, writes] : write_regions_per_stage) {
-            if (si == current_stage) continue;
-            for (const auto& w : writes) {
-                // Conservative: if either side is non-constant, assume overlap.
-                if (read_is_symbolic || !IsConstantExpr(w.offset) || !IsConstantExpr(w.extent)) {
-                    return true;
-                }
-                auto read_set = arith::IntSet::FromRange(
-                    Range::FromMinExtent(read_offset, read_extent));
-                auto write_set = arith::IntSet::FromRange(
-                    Range::FromMinExtent(w.offset, w.extent));
-                if (!arith::Intersect({read_set, write_set}).IsNothing()) {
-                    return true;
-                }
-            }
-        }
-
-        return false;
     }
 
 private:
@@ -846,6 +699,9 @@ public:
         auto buffer_result = buffer_transformer.TransformBufferMap(fptr->buffer_map);
         fptr->buffer_map = buffer_result;
         fptr->body = this->VisitStmt(fptr->body);
+
+        auto fn_attr = fptr->attrs.CopyOnWrite();
+        fn_attr->dict.Set("buffer_versions", collected_buffer_versions_);
 
         return f;
     }
@@ -923,19 +779,12 @@ private:
                     ObjectPtr<BufferNode> extended_buffer = make_object<BufferNode>(*buffer.get());
 
                     if(!extended_buffer->shape.empty()) {
-                        if (is_workspace) {
-                            Array<PrimExpr> new_shape = extended_buffer->shape;
-                            new_shape.insert(new_shape.begin(), PrimExpr(num_stages));
-                            extended_buffer->shape = new_shape;
-                        } else {
-                            PrimExpr original_size = extended_buffer->shape[0];
-                            PrimExpr extended_size = original_size * num_stages;
-
-                            Array<PrimExpr> new_shape = extended_buffer->shape;
-                            new_shape.Set(0, extended_size);
-                            extended_buffer->shape = new_shape;
-                        }
+                      Array<PrimExpr> new_shape = extended_buffer->shape;
+                      new_shape.insert(new_shape.begin(), PrimExpr(num_stages));
+                      extended_buffer->shape = new_shape;
                     }
+
+                    this->collected_buffer_versions_.Set(extended_buffer->data, PrimExpr(num_stages));
 
                     new_alloc_buffers.push_back(Buffer(extended_buffer));
                 } else {
@@ -1087,6 +936,7 @@ private:
     Map<Var, String> location_map_;
     Map<Var, Buffer> origin_map_;
     std::vector<PipelineInfo> cross_core_pipelines_;
+    Map<Var, PrimExpr> collected_buffer_versions_;
 };
 
 tvm::transform::Pass CrossCorePipeline() {

@@ -1,14 +1,15 @@
 import tilelang.language as T
 from tvm.tir import PrimExpr, Buffer, BufferRegion, BufferLoad, Call
-from typing import List, Union, Tuple
+from typing import Union  # noqa: UP035
 from tvm import tir
+from tilelang.language.ascend import _dtype
 
 import math
 
 
 def _get_buffer_info(
-    br: Union[Buffer, BufferRegion], mask: str
-) -> Tuple[Call, PrimExpr]:
+    br: Union[Buffer, BufferRegion], mask: str  # noqa: FA100
+) -> tuple[Call, PrimExpr]:
     """
     Unified handling of Buffer and BufferRegion to retrieve the underlying access pointer and total data size.
 
@@ -39,28 +40,16 @@ def _get_buffer_info(
     else:
         raise TypeError(f"Unsupported type: {type(br)}")
 
-
-def _dtype(buf):
-    type_map = {
-        "float16": "half",
-        "float32": "float",
-        "int32": "int",
-        "uint32": "uint32_t",
-        "bfloat16": "bfloat16_t",
-        "uint16": "uint16_t",
-        "uint8": "uint8_t",
-		"int4": "int4b_t",
-        "int8": "int8_t",
-        "int16": "int16_t",
-        "int64": "int64_t",
-        "uint64": "uint64_t",
-    }
-    if isinstance(buf, BufferRegion):
-        buf = buf.buffer
-    return type_map[buf.dtype]
+def _handle_buffer_region(br: BufferRegion, mask):
+    bf = br.buffer
+    indices = [x.min for x in br.region]
+    offset = bf.offset_of(indices)[0]
+    extent = [x.extent for x in br.region]
+    size_extent = math.prod(extent)
+    return bf.access_ptr(mask, offset=offset, extent = size_extent), extent
 
 
-def fill(buffer: Buffer, value: PrimExpr):
+def fill(buffer: Union[Buffer, BufferRegion], value: PrimExpr):  # noqa: FA100
     """Fill a buffer or buffer region with a specified value.
 
     Args:
@@ -70,13 +59,18 @@ def fill(buffer: Buffer, value: PrimExpr):
     Returns:
         A TVM intrinsic call that performs the fill operation
     """
-    size = math.prod(buffer.shape)
+    if isinstance(buffer, BufferRegion):
+        buffer_ptr, buffer_extent = _handle_buffer_region(buffer, "w")
+        size = math.prod(buffer_extent)
+    else:
+        buffer_ptr = buffer.access_ptr("w")
+        size = math.prod(buffer.shape)
 
     return tir.call_intrin(
         "handle",
         tir.op.Op.get("tl.ascend_fill"),
         f"Fill<{_dtype(buffer)}>",
-        buffer.access_ptr("w"),
+        buffer_ptr,
         value,
         size,
     )
@@ -108,7 +102,7 @@ def arith_progression(
 
 
 def sort(
-    dst: Union[Buffer, BufferRegion],
+    dst: Union[Buffer, BufferRegion],  # noqa: FA100
     src: Buffer,
     indices: Buffer,
     tmp_buffer: Buffer,
@@ -204,7 +198,7 @@ def topk(dst: Buffer, src: Buffer, tmp: Buffer, block_size: PrimExpr):
     )
 
 
-def gather_mask(dst: Buffer, src: Buffer, num: PrimExpr):
+def gather_mask(dst: Buffer, src: Buffer, src1Pattern: Union[str, Buffer]):  # noqa: FA100
     """Performs a gather mask operation.
 
     This intrinsic invokes the underlying implementation to perform a gather mask
@@ -213,19 +207,42 @@ def gather_mask(dst: Buffer, src: Buffer, num: PrimExpr):
     Args:
         dst: The destination buffer where the result will be stored.
         src: The source buffer containing the input data.
-        num: The parameter specifying the mask count or threshold.
+        src1Pattern: The data collection mask has two modes: built‑in fixed mode and user‑defined mode.
+                     Currently, only fixed mode is supported.
+        When the built-in fixed mode is enabled, the data type of src1Pattern is str, including the following 7 modes:
+            - "P0101": Extract elements at even indices.
+            - "P1010": Extract elements at odd indices.
+            - "P0001": Extract the first element from every four elements.
+            - "P0010": Extract the second element from every four elements.
+            - "P0100": Extract the third element from every four elements.
+            - "P1000": Extract the fourth element from every four elements.
+            - "P1111": Extract all elements.
+        When the custom mode is enabled, the data type of src1Pattern is Buffer.
 
     Returns:
         A TVM intrinsic call that performs the gather mask operation.
     """
-    return tir.call_intrin(
-        "handle",
-        tir.op.Op.get("tl.ascend_gather_mask"),
-        f"GatherMask<{_dtype(dst)}>",
-        dst.access_ptr("w"),
-        src.access_ptr("r"),
-        num,
-    )
+
+    if isinstance(src1Pattern, Buffer):
+        assert src1Pattern.dtype == "uint32", f"src1Pattern dtype must be uint32, got {src1Pattern.dtype}"
+
+        return tir.call_intrin(
+            "handle",
+            tir.op.Op.get("tl.ascend_gather_mask"),
+            f"GatherMask<{_dtype(dst)}>",
+            dst.access_ptr("w"),
+            src.access_ptr("r"),
+            src1Pattern.access_ptr("r"),
+        )
+    else:
+        return tir.call_intrin(
+            "handle",
+            tir.op.Op.get("tl.ascend_gather_mask"),
+            f"GatherMask<{_dtype(dst)}>",
+            dst.access_ptr("w"),
+            src.access_ptr("r"),
+            src1Pattern,
+        )
 
 
 def gatherb(
@@ -267,10 +284,10 @@ def gatherb(
 
 
 def select(
-    dst: Union[Buffer, BufferRegion],
+    dst: Union[Buffer, BufferRegion],  # noqa: FA100
     selMask: Buffer,
-    src0: Union[Buffer, BufferRegion],
-    src1: Union[Buffer, BufferLoad, PrimExpr],
+    src0: Union[Buffer, BufferRegion],  # noqa: FA100
+    src1: Union[Buffer, BufferLoad, PrimExpr],  # noqa: FA100
     selMode: str,
 ):
     """Performs an element-wise Select operation based on a mask.
@@ -294,7 +311,7 @@ def select(
         A TVM intrinsic call that performs the Select operation.
     """
 
-    def retrieve_shape(object: Union[Buffer, BufferRegion]) -> List[int]:
+    def retrieve_shape(object: Union[Buffer, BufferRegion]) -> list[int]:  # noqa: FA100
         if isinstance(object, Buffer):
             return list(object.shape)
         elif isinstance(object, BufferRegion):
@@ -314,7 +331,7 @@ def select(
     assert dst_shape == src0_shape, "dst and src0 must have the same shape"
 
     def retrieve_ptr(
-        object: Union[Buffer, BufferRegion], access_type: str = "r"
+        object: Union[Buffer, BufferRegion], access_type: str = "r"  # noqa: FA100
     ) -> PrimExpr:
         if isinstance(object, Buffer):
             return object.access_ptr(access_type)
@@ -331,7 +348,9 @@ def select(
             offset = 0
             for i in range(len(indices)):
                 offset += indices[i] * strides[i]
-            return buffer.access_ptr(access_mask=access_type, offset=offset)
+            extent = [x.extent for x in object.region]
+            size_extent = math.prod(extent)
+            return buffer.access_ptr(access_mask=access_type, offset=offset, extent=size_extent)
         else:
             raise ValueError(
                 f"Unsupported argument type: {type(object)} for buffer {object}"
@@ -387,6 +406,8 @@ def select(
             src1,
             selMode,
             size_0,
+            _dtype(src0),
+            _dtype(selMask),
         )
     else:
         assert selMode in ["VSEL_CMPMASK_SPR", "VSEL_TENSOR_TENSOR_MODE"], (
@@ -461,18 +482,11 @@ def brcb(dst: Buffer, src: Buffer, repeat_times: PrimExpr, dst_blk_stride: PrimE
     return T.call_extern("handle", f"tl::ascend::brcb<{_dtype(src)}>", dst_ptr, src_ptr, repeat_times, dst_blk_stride, dst_repeat_stride)
 
 def binary_op(
-    dst: Union[Buffer, BufferRegion],
-    src0: Union[Buffer, BufferRegion],
-    src1: Union[Buffer, BufferRegion, BufferLoad, PrimExpr, float],
+    dst: Union[Buffer, BufferRegion],  # noqa: FA100
+    src0: Union[Buffer, BufferRegion],  # noqa: FA100
+    src1: Union[Buffer, BufferRegion, BufferLoad, PrimExpr, float],  # noqa: FA100
     op: str,
 ):
-    def _handle_buffer_region(br: BufferRegion, mask):
-        bf = br.buffer
-        indices = [x.min for x in br.region]
-        offset = bf.offset_of(indices)[0]
-
-        extent = [x.extent for x in br.region]
-        return bf.access_ptr(mask, offset=offset), extent
 
     if isinstance(dst, BufferRegion):
         dst_ptr, dst_extent = _handle_buffer_region(dst, "w")
@@ -615,15 +629,7 @@ def bitwise_or(dst: Union[Buffer, BufferRegion], src0: Union[Buffer, BufferRegio
     return binary_op(dst, src0, src1, "bitwise_or")
 
 
-def unary_op(dst: Union[Buffer, BufferRegion], src0: Union[Buffer, BufferRegion], op: str):
-
-    def _handle_buffer_region(br: BufferRegion, mask):
-        bf = br.buffer
-        indices = [x.min for x in br.region]
-        offset = bf.offset_of(indices)[0]
-
-        extent = [x.extent for x in br.region]
-        return bf.access_ptr(mask, offset=offset), extent
+def unary_op(dst: Union[Buffer, BufferRegion], src0: Union[Buffer, BufferRegion], op: str):  # noqa: FA100
 
     if isinstance(dst, BufferRegion):
         dst_ptr, dst_extent = _handle_buffer_region(dst, "w")
@@ -658,13 +664,25 @@ def exp(dst: Union[Buffer, BufferRegion], src0: Union[Buffer, BufferRegion]):
     """
     return unary_op(dst, src0, "exp")
 
-def sigmoid(dst: Buffer, src: Buffer, tmp: Buffer):
-    size = math.prod(dst.shape)
+def sigmoid(dst: Union[Buffer, BufferRegion], src: Union[Buffer, BufferRegion], tmp: Buffer):  # noqa: FA100
+    if isinstance(dst, BufferRegion):
+        print("test1")
+        dst_ptr, buffer_extent = _handle_buffer_region(dst, "w")
+        size = math.prod(buffer_extent)
+        print("test2")
+    else:
+        dst_ptr = dst.access_ptr("w")
+        size = math.prod(dst.shape)
+
+    if isinstance(src, BufferRegion):
+        src_ptr, _ = _handle_buffer_region(src, "r")
+    else:
+        src_ptr = src.access_ptr("r")
     return tir.call_intrin(
         "handle",
-        tir.op.Op.get(f"tl.ascend_sigmoid"),
-        dst.access_ptr("w"),
-        src.access_ptr("r"),
+        tir.op.Op.get("tl.ascend_sigmoid"),
+        dst_ptr,
+        src_ptr,
         tmp.access_ptr("w"),
         size,
     )
@@ -740,21 +758,32 @@ def bitwise_not(dst: Buffer, src0: Buffer):
 
 
 def scalar_op(
-    dst: Buffer, src0: Buffer, scalar_value: PrimExpr, op_tl: str
+    dst: Union[Buffer, BufferRegion], src0: Union[Buffer, BufferRegion], scalar_value: PrimExpr, op_tl: str  # noqa: FA100
 ):
-    size_0 = math.prod(src0.shape)
-    size_2 = math.prod(dst.shape)
+    if isinstance(dst, BufferRegion):
+        dst_ptr, dst_extent = _handle_buffer_region(dst, "w")
+        size_2 = math.prod(dst_extent)
+    else:
+        dst_ptr = dst.access_ptr("w")
+        size_2 = math.prod(dst.shape)
+
+    if isinstance(src0, BufferRegion):
+        src0_ptr, src0_extent = _handle_buffer_region(src0, "r")
+        size_0 = math.prod(src0_extent)
+    else:
+        src0_ptr = src0.access_ptr("r")
+        size_0 = math.prod(src0.shape)
 
     assert size_0 == size_2, "size must be same"
 
     return tir.call_intrin(
         "handle",
         tir.op.Op.get(f"tl.ascend_{op_tl}"),
-        dst.access_ptr("w"),
-        src0.access_ptr("r"),
+        dst_ptr,
+        src0_ptr,
         scalar_value,
         size_0,
-    )
+)
 
 
 def leaky_relu(dst: Buffer, src0: Buffer, scalar_value: PrimExpr):
@@ -1141,7 +1170,7 @@ def block_reduce_sum(
 
 
 def compare(
-    dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferLoad, PrimExpr], mode: str
+    dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferLoad, PrimExpr], mode: str  # noqa: FA100
 ):
     """Generic dispatch function for element-wise comparison operations.
 
@@ -1360,7 +1389,7 @@ def bitwise_xor(dst: Buffer, src0: Buffer, src1: Buffer, tmp: Buffer):
 
 def clamp_max(out: Buffer, buffer: Buffer, tmp: Buffer, scalar_value: PrimExpr, count: PrimExpr):
     """_summary_
-    Clip tensor elements to no more than scalar_value, replace elements larger than scalar_value with scalar_value, 
+    Clip tensor elements to no more than scalar_value, replace elements larger than scalar_value with scalar_value,
     keep original values for elements less than or equal to scalar_value
     Args:
         out: The destination buffer where the result will be stored.
@@ -1374,7 +1403,7 @@ def clamp_max(out: Buffer, buffer: Buffer, tmp: Buffer, scalar_value: PrimExpr, 
     """
     return tir.call_intrin(
         "handle",
-        tir.op.Op.get(f"tl.ascend_clamp_max"),
+        tir.op.Op.get("tl.ascend_clamp_max"),
         f"ClampMax<{_dtype(buffer)}>",
         out.access_ptr("w"),
         buffer.access_ptr("r"),
@@ -1385,7 +1414,7 @@ def clamp_max(out: Buffer, buffer: Buffer, tmp: Buffer, scalar_value: PrimExpr, 
 
 def clamp_min(out: Buffer, buffer: Buffer, tmp: Buffer, scalar_value: PrimExpr, count: PrimExpr):
     """
-    Clip tensor elements to no less than v, replace elements smaller than scalar_value with scalar_value, 
+    Clip tensor elements to no less than v, replace elements smaller than scalar_value with scalar_value,
     keep original values for elements greater than or equal to scalar_value
     Args:
         out: The destination buffer where the result will be stored.
@@ -1399,7 +1428,7 @@ def clamp_min(out: Buffer, buffer: Buffer, tmp: Buffer, scalar_value: PrimExpr, 
     """
     return tir.call_intrin(
         "handle",
-        tir.op.Op.get(f"tl.ascend_clamp_min"),
+        tir.op.Op.get("tl.ascend_clamp_min"),
         f"ClampMin<{_dtype(buffer)}>",
         out.access_ptr("w"),
         buffer.access_ptr("r"),
@@ -1424,7 +1453,7 @@ def clamp(out: Buffer, buffer: Buffer, tmp: Buffer, min_scalar: PrimExpr, max_sc
     """
     return tir.call_intrin(
         "handle",
-        tir.op.Op.get(f"tl.ascend_clamp"),
+        tir.op.Op.get("tl.ascend_clamp"),
         f"Clamp<{_dtype(buffer)}>",
         out.access_ptr("w"),
         buffer.access_ptr("r"),
@@ -1433,20 +1462,22 @@ def clamp(out: Buffer, buffer: Buffer, tmp: Buffer, min_scalar: PrimExpr, max_sc
         max_scalar,
         count
     )
-    
+
 
 def round(out: Buffer, buffer: Buffer, tmp: Buffer, count: PrimExpr):
 
     return tir.call_intrin(
         "handle",
-        tir.op.Op.get(f"tl.ascend_round"),
+        tir.op.Op.get("tl.ascend_round"),
         out.access_ptr("w"),
         buffer.access_ptr("r"),
         tmp.access_ptr("r"),
         count
     )
 
-def broadcast(dst: Union[Buffer, BufferRegion], src: Union[Buffer, BufferRegion], tmp: Union[Buffer, BufferRegion]):
+def broadcast(dst: Union[Buffer, BufferRegion],  # noqa: FA100
+              src: Union[Buffer, BufferRegion],  # noqa: FA100
+              tmp: Union[Buffer, BufferRegion]):  # noqa: FA100
     """Generates a TIR intrinsic call for the AscendC `Broadcast` operation.
 
     This function performs a broadcast copy from the source buffer (`src`) to the
@@ -1481,65 +1512,57 @@ def broadcast(dst: Union[Buffer, BufferRegion], src: Union[Buffer, BufferRegion]
             - **No Broadcast (Copy)**: If shapes are identical, the axis defaults to 0.
     """
 
-    def _get_shape(buf):
-        if isinstance(buf, Buffer):
-            return list(buf.shape)
-        elif isinstance(buf, BufferRegion):
-            return [r.extent for r in buf.region]
-        else:
-            raise ValueError(f"Unsupported argument type: {type(buf)} for buffer {buf}")
+    if isinstance(dst, BufferRegion):
+        dst_ptr, dst_extent = _handle_buffer_region(dst, "w")
+    else:
+        dst_ptr = dst.access_ptr("w")
+        dst_extent = dst.shape
 
-    def _get_access_ptr(buf, access_type):
-        if isinstance(buf, Buffer):
-            return buf.access_ptr(access_type)
-        elif isinstance(buf, BufferRegion):
-            buffer = buf.buffer
-            indices = [r.min for r in buf.region]
-            offset = buffer.offset_of(indices)[0]
-            return buffer.access_ptr(access_type, offset=offset)
-        else:
-            raise ValueError(f"Unsupported argument type: {type(buf)} for buffer {buf}")
+    if isinstance(src, BufferRegion):
+        src_ptr, src_extent = _handle_buffer_region(src, "r")
+    else:
+        src_ptr = src.access_ptr("r")
+        src_extent = src.shape
 
-    src_shape = _get_shape(src)
-    dst_shape = _get_shape(dst)
+    if isinstance(tmp, BufferRegion):
+        tmp_ptr, _ = _handle_buffer_region(tmp, "r")
+    else:
+        tmp_ptr = tmp.access_ptr("r")
 
-    # Compute effective shapes by squeezing leading singleton dimensions to handle
-    # scalar-indexed BufferRegion (e.g., r_factors[i, :, :] on a 3D buffer produces
-    # region shape [1, M, K] which should be treated as effective shape [M, K]).
-    # These effective shapes are used for axis inference and passed to the intrinsic call.
-    while len(src_shape) > len(dst_shape) and src_shape[0] == 1:
-        src_shape = src_shape[1:]
-    while len(dst_shape) > len(src_shape) and dst_shape[0] == 1:
-        dst_shape = dst_shape[1:]
+    dtype = _dtype(src)
 
-    assert len(src_shape) == len(dst_shape), "Source and Dest dimension must match."
-    dim = len(dst_shape)
+    dim = len(dst_extent)
+    if dim == 3:
+        dst_extent = [dst_extent[1], dst_extent[2]]
+        src_extent = [src_extent[1], src_extent[2]]
+        dim = 2
     assert dim in [1, 2], "Ascend Broadcast only supports dim=1 or dim=2."
+    assert len(src_extent) == dim, "Source and Dest dimension must match."
 
     axis = 0
     if dim == 2:
-        if src_shape[0] == 1 and dst_shape[0] != 1:
+        if src_extent[0] == 1 and dst_extent[0] != 1:
             axis = 0
-        elif src_shape[1] == 1 and dst_shape[1] != 1:
+        elif src_extent[1] == 1 and dst_extent[1] != 1:
             axis = 1
         else:
             axis = 0
-    else:
+    else:  # dim == 1
         axis = 0
 
     op_name = "tl.ascend_broadcast"
-    template_args = f"{_dtype(src)}, {dim}, {axis}, false"
+    template_args = f"{dtype}, {dim}, {axis}, false"
 
     return tir.call_intrin(
         "handle",
         tir.op.Op.get(op_name),
         f"Broadcast<{template_args}>",
-        _get_access_ptr(dst, "w"),
-        _get_access_ptr(src, "r"),
-        _get_access_ptr(tmp, "r"),
+        dst_ptr,
+        src_ptr,
+        tmp_ptr,
         dim,
-        *dst_shape,
-        *src_shape,
+        *dst_extent,
+        *src_extent,
     )
 
 def sub_experiment(dst: Buffer, src0: Buffer, src1: Buffer, count: PrimExpr):
@@ -1559,7 +1582,7 @@ def sub_experiment(dst: Buffer, src0: Buffer, src1: Buffer, count: PrimExpr):
 
     return T.call_intrin(
         "handle",
-        tir.op.Op.get(f"tl.ascend_sub_experiment"),
+        tir.op.Op.get("tl.ascend_sub_experiment"),
         dst.access_ptr("w"),
         src0.access_ptr("r"),
         src1.access_ptr("r"),
@@ -1581,7 +1604,7 @@ def abs_experiment(dst: Buffer, src: Buffer, count: PrimExpr):
 
     return T.call_intrin(
         "handle",
-        tir.op.Op.get(f"tl.ascend_abs_experiment"),
+        tir.op.Op.get("tl.ascend_abs_experiment"),
         dst.access_ptr("w"),
         src.access_ptr("r"),
         count,
@@ -1602,7 +1625,7 @@ def mins_experiment(dst: Buffer, src: Buffer, scalarValue: PrimExpr, count: Prim
 
     return T.call_intrin(
         "handle",
-        tir.op.Op.get(f"tl.ascend_mins_experiment"),
+        tir.op.Op.get("tl.ascend_mins_experiment"),
         dst.access_ptr("w"),
         src.access_ptr("r"),
         scalarValue,
@@ -1621,7 +1644,7 @@ def reduce_sum_experiment(dst: Buffer, src: Buffer, sharedtmp: Buffer, count: Pr
 
     return T.call_intrin(
         "handle",
-        tir.op.Op.get(f"tl.ascend_reducesum_experiment"),
+        tir.op.Op.get("tl.ascend_reducesum_experiment"),
         dst.access_ptr("w"),
         src.access_ptr("r"),
         sharedtmp.access_ptr("r"),
@@ -1644,7 +1667,7 @@ def reduce_sum_mask_experiment(
 
     return T.call_intrin(
         "handle",
-        tir.op.Op.get(f"tl.ascend_reducesum_mask_experiment"),
+        tir.op.Op.get("tl.ascend_reducesum_mask_experiment"),
         dst.access_ptr("w"),
         src.access_ptr("r"),
         sharedtmp.access_ptr("r"),
@@ -1654,7 +1677,7 @@ def reduce_sum_mask_experiment(
     )
 
 def gathermask_experiment(
-    dst: Buffer, src0: Buffer, src1Pattern: Buffer, reduceMode: bool, mask: PrimExpr, GatherMaskParams: List[int], rsvdCnt: PrimExpr
+    dst: Buffer, src0: Buffer, src1Pattern: Buffer, reduceMode: bool, mask: PrimExpr, GatherMaskParams: list[int], rsvdCnt: PrimExpr
     ):
     """Performs a gather mask operation(User-defined mode).
 
@@ -1684,7 +1707,7 @@ def gathermask_experiment(
     scr1RepeatStride = GatherMaskParams[3]
     return T.call_intrin(
         "handle",
-        tir.op.Op.get(f"tl.ascend_gather_mask_experiment"),
+        tir.op.Op.get("tl.ascend_gather_mask_experiment"),
         f"GatherMask_experiment<{_dtype(dst)}>",
         dst.access_ptr("w"),
         src0.access_ptr("r"),
@@ -1699,7 +1722,7 @@ def gathermask_experiment(
     )
 
 def fill_experiment(
-    dst: Buffer, value: PrimExpr, mask: List[int], repeatTimes: PrimExpr, dstBlockStride: PrimExpr, dstRepeatStride: PrimExpr
+    dst: Buffer, value: PrimExpr, mask: list[int], repeatTimes: PrimExpr, dstBlockStride: PrimExpr, dstRepeatStride: PrimExpr
     ):
     """Fill a buffer or buffer region with a specified value(High-dimensional tensor slicing and computation).
 
@@ -1725,7 +1748,7 @@ def fill_experiment(
         dstRepeatStride,
     )
 
-def sum_experiment(dst: Buffer, src: Buffer, sumParams: List[int]):
+def sum_experiment(dst: Buffer, src: Buffer, sumParams: list[int]):
     """Sum elements along the last dimension (high-level API).
 
     Args:
@@ -1736,7 +1759,7 @@ def sum_experiment(dst: Buffer, src: Buffer, sumParams: List[int]):
                inner * sizeof(T) must be an integer multiple of 32 bytes.
         n: Represents the actual number of elements along the inner axis of the input data.
     """
-    
+
     outter = sumParams[0]
     inner = sumParams[1]
     n = sumParams[2]
@@ -1755,7 +1778,7 @@ def datacachecleanandinvalid_experiment(dst: Buffer, CacheLine: str, DcciDst: st
 
     return T.call_intrin(
             "handle",
-            tir.op.Op.get(f"tl.ascend_datacachecleanandinvalid_experiment"),
+            tir.op.Op.get("tl.ascend_datacachecleanandinvalid_experiment"),
             f"AscendC::DataCacheCleanAndInvalid<{_dtype(dst)}, AscendC::CacheLine::{CacheLine}, AscendC::DcciDst::{DcciDst}>",
             dst.access_ptr("w"),
-        )  
+        )

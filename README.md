@@ -17,6 +17,7 @@ Tile Language Ascend (**tilelang-ascend**) is a specialized variant of the tile-
 </p>
 
 ## Latest News
+- 03/16/2026 🚀: Added [wheel package installation support](https://github.com/tile-ai/tilelang-ascend?tab=readme-ov-file#installation), enabling easy installation via pip!
 - 12/08/2025 ✨: Added [T.Parallel](https://github.com/tile-ai/tilelang-ascend?tab=readme-ov-file#tparallel) support, check out [Pull Request#113](
 https://github.com/tile-ai/tilelang-ascend/pull/113) for details.
 - 11/25/2025 ✨: [Automatic buffer reuse](https://github.com/tile-ai/tilelang-ascend?tab=readme-ov-file#automatic-buffer-reuse) support, see [Pull Request#101](
@@ -29,6 +30,18 @@ https://github.com/tile-ai/tilelang-ascend/pull/74)!
 
 ## Programming Guide
 For more instructions and tips on using TileLang-Ascend, please refer to the [TileLang-Ascend Programming Guide](./docs/TileLang-Ascend%20Programming%20Guide.md).
+
+## Lessons
+
+Welcome to the TileLang-Ascend video course series. You can access all the lessons via the links below:
+
+| Lesson | Topic | Video Link |
+| :---: | :--- | :---: |
+| **01** | Introduction to TileLang-Ascend Development Environment | [📺 Start learning](https://www.bilibili.com/video/BV1EdFVzpEbg/) |
+| **02** | TileLang-Ascend Programming Fundamentals | [📺 Start learning](https://www.bilibili.com/video/BV1uvFLzyEZ3/) |
+| **03** | TileLang-Ascend Developer Programming Model Deep Dive | [📺 Start learning](https://www.bilibili.com/video/BV1DoFzz2EHB/) |
+| **04** | Getting Started with TileLang-Ascend Performance Tuning and Debugging Tools | [📺 Start learning](https://www.bilibili.com/video/BV1QdFzz7E5W/) |
+| **05** | TileLang-Ascend Engineering Practice: Compilation, Integration, and Deployment | [📺 Start learning](https://www.bilibili.com/video/BV1bmFkzHEb6/) |
 
 ## Tested Devices
 Although tilelang-ascend aims to be portable across a range of Ascend devices, it has been specifically tested and validated on the following NPUs: A2 and A3.
@@ -56,17 +69,51 @@ We assume you already have an ascend environment with CANN (at least [8.3.RC1](h
 
 ### TileLang-Ascend Installation
 
-Here we use the method of compiling from source code for installation.
+Here we provide two installation methods: installing from wheel package and compiling from source code.
 
-#### a) Download
+#### Method 1: Install from Wheel Package (Recommended)
+
+Download the pre-built wheel package and install it directly:
+
+```bash
+# Set Ascend environment variable
+export ASCEND_HOME_PATH=/usr/local/Ascend/ascend-toolkit/latest
+
+# Install the wheel package
+pip install tilelang-*.whl
+```
+
+#### Method 2: Build Wheel Package from Source
+
+If you need to build the wheel package from source:
+
+```bash
+# Clone the repository
+git clone --recursive https://github.com/tile-ai/tilelang-ascend.git
+cd tilelang-ascend
+
+# Set Ascend environment variable
+export ASCEND_HOME_PATH=/usr/local/Ascend/ascend-toolkit/latest
+
+# Build and install wheel package
+./build_wheel_ascend.sh [--enable-llvm]
+
+# Install the built wheel package
+pip install dist/tilelang-*.whl
+```
+
+#### Method 3: Compile and Install from Source
+
+a) Download
 
     git clone --recursive https://github.com/tile-ai/tilelang-ascend.git
     cd tilelang-ascend
 
-#### b) Compile and Install
+b) Compile and Install
+
     bash install_ascend.sh
 
-#### c) Environment Variable Setup
+c) Environment Variable Setup
 
     source set_env.sh
 
@@ -499,6 +546,7 @@ Here is an example:
 ## Upcoming Features
 
 Check our [tilelang-ascend development plan](https://github.com/tile-ai/tilelang-ascend/issues/3) for upcoming features.
+
 
 
 ## Acknowledgements

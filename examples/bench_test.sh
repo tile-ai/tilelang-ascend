@@ -110,7 +110,7 @@ echo "Running pytest tests"
 echo "====================================="
 
 # 自动发现并运行 testing/python/ 目录下的所有测试文件（包括所有子目录）
-pytest ../testing/python/ -v -n $MAX_JOBS
+pytest --forked ../testing/python/ -v -n $MAX_JOBS
 pytest_exit_code=$?
 
 # 统计 pytest 结果

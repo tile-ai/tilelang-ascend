@@ -10,7 +10,8 @@ tilelang.disable_cache()
 pass_configs = {
     tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
     tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_SYNC: True,
-    tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
+    tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True
 }
 
 @tilelang.jit(out_idx=[3], workspace_idx=[4, 5, 6, 7], pass_configs=pass_configs)
@@ -102,33 +103,6 @@ def sparse_attention_fwd(
             acc_o_ub = T.alloc_ub([v_block, D], accum_dtype)
             acc_o_half = T.alloc_ub([v_block, D], dtype)
 
-            # Currently manually set the address.
-            T.annotate_address({
-                # L1 address
-                q_l1: 0,
-                kv_l1: 2048,
-                acc_s_l1: 18432,
-
-                # L0C address
-                acc_s_l0c: 0,
-                acc_o_l0c: 0,
-
-                ## ub address
-                acc_o: 0,
-                sumexp: 4096,
-                m_i: 4160,
-                indices_ub_: 4224,
-                kv_ub: 4480,
-                acc_s_ub: 4736,
-                m_i_prev: 6784,
-                acc_s_ub_: 6848,
-                tmp_ub: 8960,
-                sumexp_i_ub: 12032,
-                acc_s_half: 12032,
-                acc_o_ub: 12032,
-                acc_o_half: 12032
-            })
-
             b_i = by
             g_i = bz
 
@@ -189,9 +163,6 @@ def sparse_attention_fwd(
                 T.tile.mul(sumexp, sumexp, m_i_prev)  # check
                 T.tile.add(sumexp, sumexp, sumexp_i_ub)
 
-                for h_i in range(v_block):
-                    T.tile.mul(acc_o[h_i, :], acc_o[h_i, :], m_i_prev[h_i])
-
                 T.copy(acc_s_ub, acc_s_half)
                 T.copy(
                     acc_s_half, workspace_3[b_i, s_i, h_i, g_i,
@@ -199,6 +170,8 @@ def sparse_attention_fwd(
                 T.copy(
                     workspace_4[b_i, s_i, h_i, g_i, vid * v_block:vid * v_block + v_block, :],
                     acc_o_ub)
+                for h_i in range(v_block):
+                    T.tile.mul(acc_o[h_i, :], acc_o[h_i, :], m_i_prev[h_i])
                 T.tile.add(acc_o, acc_o, acc_o_ub)
 
             for h_i in range(v_block):

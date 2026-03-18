@@ -182,9 +182,6 @@ def sparse_attention_fwd(
 
                 T.tile.add(sumexp, sumexp, sumexp_i_ub)
 
-                for h_i in range(v_block):
-                    T.tile.mul(acc_o[h_i, :], acc_o[h_i, :], m_i_prev[h_i])
-
                 T.copy(acc_s_ub, acc_s_half)
 
                 T.copy(
@@ -194,6 +191,9 @@ def sparse_attention_fwd(
                 T.copy(
                     workspace_4[cid, vid * v_block:vid * v_block + v_block, :],
                     acc_o_ub)
+
+                for h_i in range(v_block):
+                    T.tile.mul(acc_o[h_i, :], acc_o[h_i, :], m_i_prev[h_i])
 
                 T.tile.add(acc_o, acc_o, acc_o_ub)
 

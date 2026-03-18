@@ -12,10 +12,19 @@ pass_configs = {
 	tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True
 }
 
+def current_jit_target(jit_func):
+	return jit_func.__jit_impl__.target
+
 @tilelang.jit(out_idx=[-1], pass_configs=pass_configs)
 def solve_tril_ker(B, H, L, C, dtype="float16", accum_dtype="float"):
 	chunk_num = T.ceildiv(L, C)
 	VEC_NUM = 2
+	is_pto = current_jit_target(solve_tril_ker) == "pto"
+	def alloc_temp():
+		if is_pto:
+			return T.alloc_ub([C, C], accum_dtype)
+		else:
+			return T.alloc_ub([3 * DataType(accum_dtype).bits // 8 * C * C // VEC_NUM], "uint8")
 
 	@T.prim_func
 	def main(
@@ -33,7 +42,7 @@ def solve_tril_ker(B, H, L, C, dtype="float16", accum_dtype="float"):
 			mul_ub = T.alloc_ub([C, C], accum_dtype)
 			red_ub = T.alloc_ub([C,], accum_dtype)
 			o_ub_half = T.alloc_ub([C, C], dtype)
-			tmp_ub = T.alloc_ub([3 * DataType(accum_dtype).bits // 8 * C * C // VEC_NUM], "uint8")
+			tmp_ub = alloc_temp()
 
 			with T.Scope("V"):
 				T.copy(A[bz, by, bx * C, 0], o_ub_half)
