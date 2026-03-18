@@ -3,8 +3,8 @@ from tvm.tir import PrimExpr, Buffer, BufferRegion, BufferLoad, Call
 from typing import Union  # noqa: UP035
 from tvm import tir
 from tilelang.language.ascend import _dtype
-import warnings
 import functools
+import warnings
 
 import math
 
