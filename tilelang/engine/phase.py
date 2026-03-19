@@ -77,8 +77,10 @@ def get_ascend_device_name() -> str:
 
 
 def supports_native_bf16_npuir_add(device_name: str) -> bool:
-    # native BF16 add is not supported in A2/A3.
-    return device_name not in ["Ascend910B2C"]
+    # On Ascend 910B and later, native BF16 add is supported in NPU IR.
+    if "910B" in device_name:
+        return True
+    return False
 
 
 def need_npuir_bf16_legalize(target: Optional[Target] = None) -> bool:
