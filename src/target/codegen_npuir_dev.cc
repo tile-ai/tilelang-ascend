@@ -235,10 +235,10 @@ static std::map<std::string, mlir::hivm::ReduceOperation> NPUIR_STR_REDUCEOP{
     {"prod", mlir::hivm::ReduceOperation::prod},
     {"max", mlir::hivm::ReduceOperation::max},
     {"min", mlir::hivm::ReduceOperation::min},
-    {"max_with_index_left", mlir::hivm::ReduceOperation::max_with_index_left},
-    {"max_with_index_right", mlir::hivm::ReduceOperation::max_with_index_right},
-    {"min_with_index_left", mlir::hivm::ReduceOperation::min_with_index_left},
-    {"min_with_index_right", mlir::hivm::ReduceOperation::min_with_index_right},
+    {"max_with_index_left", mlir::hivm::ReduceOperation::max_with_index},
+    {"max_with_index_right", mlir::hivm::ReduceOperation::max_with_index},
+    {"min_with_index_left", mlir::hivm::ReduceOperation::min_with_index},
+    {"min_with_index_right", mlir::hivm::ReduceOperation::min_with_index},
     {"any", mlir::hivm::ReduceOperation::any},
     {"all", mlir::hivm::ReduceOperation::all},
     {"xori", mlir::hivm::ReduceOperation::xori},
@@ -2188,8 +2188,9 @@ void CodeGenTileLangNPUIRDEV::VreduceCodegen(const CallNode *op) {
       mlir::hivm::ReduceOpAttr::get(&context, NPUIR_STR_REDUCEOP[reduce_mode]);
   mlir::Type dst_type = dst.getType();
   mlir::TypeRange result_tensors(&dst_type, 1);
+  auto booleanAttr = mlir::BoolAttr::get(builder.getContext(), false);
   auto reduceOp = builder.create<mlir::hivm::VReduceOp>(
-      builder.getUnknownLoc(), result_tensors, src, dst, mode,
+      builder.getUnknownLoc(), result_tensors, src, dst, mode, booleanAttr,
       builder.getDenseI64ArrayAttr(npuirop.reduce_dims));
   auto insertSliceOp = ReshapeCastAndInsertSlice(reduceOp.getResult()[0], dst_ori, npuirop.dst_range);
   SetVarValue(npuirop.dst, insertSliceOp);
@@ -2212,9 +2213,10 @@ void CodeGenTileLangNPUIRDEV::VcumsumCodegen(const CallNode *op) {
     ICHECK(false) <<"reverse=True is not yet supported\n";
     return;
   }
+  auto booleanAttr = mlir::BoolAttr::get(builder.getContext(), false);
   auto newCumsumOp = builder.create<mlir::hivm::VCumsumOp>(
       loc, result_tensors, src, dst,
-      builder.getDenseI64ArrayAttr(npuirop.cum_dims));
+      builder.getDenseI64ArrayAttr(npuirop.cum_dims), booleanAttr);
   SetVarValue(npuirop.dst, newCumsumOp->getResult(0));
 }
 
@@ -2476,9 +2478,10 @@ void CodeGenTileLangNPUIRDEV::FixpipeCodegen(const CallNode *op) {
       mlir::hivm::FixpipePreReluModeAttr::get(builder.getContext(),
                                               pre_relu_mode);
   mlir::BoolAttr channel_split = builder.getBoolAttr(npuirop.channel_split);
-  builder.create<mlir::hivm::FixpipeOp>(unknown_loc, result, src, dst,
-                                         enable_nz2nd, pre_quant, pre_relu,
-                                         channel_split);
+  // builder.create<mlir::hivm::FixpipeOp>(unknown_loc, result, src, dst,
+  //                                        enable_nz2nd, pre_quant, pre_relu,
+  //                                        channel_split);
+  builder.create<mlir::hivm::FixpipeOp>(unknown_loc, result, src, dst);
 }
 
 /// Generate hivm.hir.mmadL1 for tl.npuir_dot.
@@ -2636,6 +2639,10 @@ void CodeGenTileLangNPUIRDEV::CreateHIVMBinaryVectorOp(const CallNode *op) {
         builder.getContext(), op->args[3].as<Bool>().value());
     auto newOp = builder.create<T>(loc, insertBase.getType(), mlir::ValueRange{src0, src1},
         mlir::ValueRange{insertBase}, round_attr, transpose, broadcast);
+    newOpValue = newOp->getResult(0);
+  } else if constexpr (std::is_same_v<T, mlir::hivm::VDivOp>) {
+    auto newOp = builder.create<T>(loc, insertBase.getType(), mlir::ValueRange{src0, src1},
+        mlir::ValueRange{insertBase}, true, transpose, broadcast);
     newOpValue = newOp->getResult(0);
   } else {
     auto newOp = builder.create<T>(loc, insertBase.getType(), mlir::ValueRange{src0, src1},
