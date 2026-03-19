@@ -77,10 +77,8 @@ def get_ascend_device_name() -> str:
 
 
 def supports_native_bf16_npuir_add(device_name: str) -> bool:
-    # On Ascend 910B and later, native BF16 add is supported in NPU IR.
-    if "910B" in device_name:
-        return True
-    return False
+    # On Ascend 910B and later, native BF16 add not is supported in NPU IR.
+    return "910B" not in device_name
 
 
 def need_npuir_bf16_legalize(target: Optional[Target] = None) -> bool:
