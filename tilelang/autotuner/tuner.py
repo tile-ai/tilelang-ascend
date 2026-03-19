@@ -366,7 +366,7 @@ class AutoTuner:
                     # check if the cached tensors are compatible with the current configuration
                     assert len(params) == len(
                         self.jit_input_tensors), "len(params) != len(self.jit_input_tensors)"
-                    for p, c in zip(params, self.jit_input_tensors):
+                    for p, c in zip(params, self.jit_input_tensors, strict=True):
                         if not isinstance(c, torch.Tensor):
                             # skip non-tensor inputs checking
                             continue
@@ -375,7 +375,7 @@ class AutoTuner:
                         def shape_equal(a, b):
                             return all(
                                 a_dim == b_dim or isinstance(a_dim, Var) or isinstance(b_dim, Var)
-                                for a_dim, b_dim in zip(a.shape, b.shape))
+                                for a_dim, b_dim in zip(a.shape, b.shape, strict=True))
 
                         if p.dtype != c.dtype or not shape_equal(p, c):
                             logger.warning(
@@ -546,7 +546,6 @@ class AutoTuner:
                 profile_args = self.profile_args
                 supply_type = profile_args.supply_type
                 profiler = jit_kernel.get_profiler(tensor_supply_type=supply_type)
-
                 
                 if profile_args.supply_prog is not None:
                     input_tensors = profile_args.supply_prog(profiler._get_params(with_output=False))
@@ -555,7 +554,7 @@ class AutoTuner:
                     
                 ins = self._get_inputs() if input_tensors is None else input_tensors
                 bench_func = partial(jit_kernel, *ins)
-                funcs.append(bench_func)   # jit_kernel 本身就是 callable
+                funcs.append(bench_func)
                 configs.append(config)
                 jit_kernels.append(jit_kernel)
 
@@ -571,7 +570,7 @@ class AutoTuner:
                 logger.debug(f"Error: {traceback.format_exc()}")
                 latencies = [float("inf")] * len(funcs)
 
-            for latency, config, kernel in zip(latencies, configs, jit_kernels):
+            for latency, config, kernel in zip(latencies, configs, jit_kernels, strict=True):
                 tqdm.write(f"Tuned Latency {latency} with config {config}")
                 if latency < best_latency:
                     best_latency = latency

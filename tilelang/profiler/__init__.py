@@ -13,8 +13,6 @@ from tilelang.utils.tensor import (
 from tilelang.engine.param import KernelParam
 from tilelang.jit.adapter import BaseKernelAdapter
 from tilelang.profiler.bench import do_bench as npu_do_bench
-from tilelang.profiler.bench import do_bench_npu as npu_do_bench_msprof
-import os
 
 @dataclass
 class Profiler:
@@ -124,7 +122,7 @@ class Profiler:
         assert len(lib_tensors) == len(
             ref_tensors), "len(lib_tensors) not equals to len(ref_tensors) !"
 
-        for lhs, rhs in zip(lib_tensors, ref_tensors):
+        for lhs, rhs in zip(lib_tensors, ref_tensors, strict=True):
 
             torch_assert_close(
                 lhs,
@@ -185,7 +183,7 @@ class Profiler:
 
         for _ in range(repeat):
             lib_outs = self.func(*ins)
-            for lhs, rhs in zip(lib_outs, ref_outs):
+            for lhs, rhs in zip(lib_outs, ref_outs, strict=True):
                 assert torch.allclose(lhs, rhs), [
                     "result is not consistent",
                     lhs,

@@ -9,9 +9,8 @@ import tilelang.language as T
 from tilelang import carver
 from tilelang.carver.arch.ascend import Ascend
 
-os.environ["TILELANG_ASCEND_MODE"] = "Developer"
-
 torch.npu.set_device(15)
+os.environ["TILELANG_ASCEND_MODE"] = "Developer"
 
 SHAPES = [
     (64,),
@@ -36,15 +35,9 @@ def run_single_shape(shape, log_dir: Path):
         try:
             M = shape[0]
 
-            # ------------------------
-            # reference
-            # ------------------------
             def ref_prog(x):
-                return torch.abs(x)
+                return x * 0.5 * (1.0 + torch.erf(x / torch.sqrt(torch.tensor(2.0))))
 
-            # ------------------------
-            # config search
-            # ------------------------
             def get_config():
                 arch = Ascend()
 
@@ -53,7 +46,7 @@ def run_single_shape(shape, log_dir: Path):
                     dtype="float32",
                 ).with_arch(arch)
 
-                hints = carver_template.recommend_hints(topk=4)
+                hints = carver_template.recommend_hints(topk=20)
 
                 configs = []
                 for hint in hints:
@@ -64,18 +57,14 @@ def run_single_shape(shape, log_dir: Path):
 
                 return configs
 
-            # ------------------------
-            # input supplier
-            # ------------------------
             def supply_prog(params):
                 torch.manual_seed(0)
                 return [
-                    torch.randn(M, dtype=torch.float32).npu(),
+                    # torch.randn(M).npu(),
+                    torch.empty(M).uniform_(-1.0, 1.0).npu(),
+                    # torch.randn(M).half().npu(),
                 ]
 
-            # ------------------------
-            # kernel
-            # ------------------------
             @tilelang.autotune(
                 configs=get_config(),
                 ref_prog=ref_prog,
@@ -84,12 +73,12 @@ def run_single_shape(shape, log_dir: Path):
                 rtol=1e-2,
             )
             @tilelang.jit(out_idx=[-1], target="npuir")
-            def elementwise_abs(M, block_M):
+            def compute_gelu(M, block_M):
 
                 @T.prim_func
-                def elemAbs(
+                def gelu_1D(
                     A: T.Tensor((M,), "float32"),
-                    C: T.Tensor((M,), "float32"),
+                    B: T.Tensor((M,), "float32"),
                 ):
                     with T.Kernel(
                         T.ceildiv(M, block_M),
@@ -97,19 +86,28 @@ def run_single_shape(shape, log_dir: Path):
                     ) as (bid, _):
 
                         offset = bid * block_M
+                        scale1 = 1 / (2.0**0.5)
+                        scale2 = 1.0
+                        scale3 = 0.5
+
 
                         A_shared = T.alloc_shared((block_M,), "float32")
+                        B_local = T.alloc_fragment((block_M,), "float32")
                         C_local = T.alloc_fragment((block_M,), "float32")
-
+                        D_local = T.alloc_fragment((block_M,), "float32")
+                    
                         T.copy(A[offset], A_shared)
+                        T.vmul(A_shared, scale1, B_local)
+                        T.npuir_verf(B_local, C_local)
+                        T.vadd(C_local, scale2, C_local)
+                        T.vmul(C_local, scale3, C_local)
+                        T.vmul(A_shared, C_local, D_local)
 
-                        T.vabs(A_shared, C_local)
+                        T.copy(D_local, B[offset])
 
-                        T.copy(C_local, C[offset])
+                return gelu_1D
 
-                return elemAbs
-
-            func = elementwise_abs(M)
+            func = compute_gelu(M)
 
             print("\nBest Config:")
             print(func.get_tuner_result())
@@ -121,9 +119,8 @@ def run_single_shape(shape, log_dir: Path):
 
     print(f"Finished shape {shape}, log saved to {log_file}")
 
-
 def main():
-    root_log_dir = Path("./shape_logs_1d")
+    root_log_dir = Path("./shape_logs_1d_f32")
     root_log_dir.mkdir(exist_ok=True)
 
     for shape in SHAPES:

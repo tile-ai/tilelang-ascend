@@ -9,9 +9,8 @@ import tilelang.language as T
 from tilelang import carver
 from tilelang.carver.arch.ascend import Ascend
 
-os.environ["TILELANG_ASCEND_MODE"] = "Developer"
-
 torch.npu.set_device(15)
+os.environ["TILELANG_ASCEND_MODE"] = "Developer"
 
 # 4D shape (N, C, H, W)
 SHAPES = [
@@ -29,7 +28,6 @@ def run_single_shape(shape, log_dir: Path):
     log_file = log_dir / "log.log"
 
     with open(log_file, "w") as f, redirect_stdout(f), redirect_stderr(f):
-
         print("=" * 80)
         print("Running shape:", shape)
         print("=" * 80)
@@ -37,15 +35,15 @@ def run_single_shape(shape, log_dir: Path):
         try:
             N, C, H, W = shape
 
-            def ref_prog(x, y):
-                return x + y
+            def ref_prog(x):
+                return x * 0.5 * (1.0 + torch.erf(x / torch.sqrt(torch.tensor(2.0))))
 
             def get_config():
                 arch = Ascend()
 
                 carver_template = carver.ElementwiseFixTemplate(
                     shape=[N, C, H, W],
-                    dtype="float16",
+                    dtype="float32",
                 ).with_arch(arch)
 
                 hints = carver_template.recommend_hints(topk=20)
@@ -85,8 +83,8 @@ def run_single_shape(shape, log_dir: Path):
             def supply_prog(params):
                 torch.manual_seed(0)
                 return [
-                    torch.randn(N, C, H, W, dtype=torch.float16).npu(),
-                    torch.randn(N, C, H, W, dtype=torch.float16).npu(),
+                    torch.empty(N, C, H, W).uniform_(-1.0, 1.0).npu(),
+                    # torch.randn(N, C, H, W).npu(),
                 ]
 
             @tilelang.autotune(
@@ -97,21 +95,18 @@ def run_single_shape(shape, log_dir: Path):
                 rtol=1e-2,
             )
             @tilelang.jit(out_idx=[-1], target="npuir")
-            def elementwise_add(
+            def compute_gelu(
                 N, C, H, W,
                 block_N, block_C, block_H, block_W
             ):
 
                 @T.prim_func
-                def elemAdd(
-                    A: T.Tensor((N, C, H, W), "float16"),
-                    B_in: T.Tensor((N, C, H, W), "float16"),
-                    C_out: T.Tensor((N, C, H, W), "float16"),
+                def gelu_4D(
+                    A: T.Tensor((N, C, H, W), "float32"),
+                    B: T.Tensor((N, C, H, W), "float32"),
                 ):
 
-
-                    with T.Kernel(
-                        T.ceildiv(N, block_N)
+                    with T.Kernel(T.ceildiv(N, block_N)
                         * T.ceildiv(C, block_C)
                         * T.ceildiv(H, block_H)
                         * T.ceildiv(W, block_W), is_npu=True) as (cid, _):
@@ -140,20 +135,25 @@ def run_single_shape(shape, log_dir: Path):
 
                         by = tmp // T.ceildiv(W, block_W)
                         bx = tmp % T.ceildiv(W, block_W)
-
+                        scale1 = 1 / (2.0**0.5)
+                        scale2 = 1.0
+                        scale3 = 0.5
                         A_shared = T.alloc_shared(
                             (block_N, block_C, block_H, block_W),
-                            "float16",
+                            "float32",
                         )
-                        B_shared = T.alloc_shared(
+                        B_local = T.alloc_fragment(
                             (block_N, block_C, block_H, block_W),
-                            "float16",
+                            "float32",
                         )
                         C_local = T.alloc_fragment(
                             (block_N, block_C, block_H, block_W),
-                            "float16",
+                            "float32",
                         )
-
+                        D_local = T.alloc_fragment(
+                            (block_N, block_C, block_H, block_W),
+                            "float32",
+                        )
                         T.copy(
                             A[
                                 bz * block_N,
@@ -164,21 +164,15 @@ def run_single_shape(shape, log_dir: Path):
                             A_shared,
                         )
 
-                        T.copy(
-                            B_in[
-                                bz * block_N,
-                                bc * block_C,
-                                by * block_H,
-                                bx * block_W,
-                            ],
-                            B_shared,
-                        )
-
-                        T.vadd(A_shared, B_shared, C_local)
+                        T.vmul(A_shared, scale1, B_local)
+                        T.npuir_verf(B_local, C_local)
+                        T.vadd(C_local, scale2, C_local)
+                        T.vmul(C_local, scale3, C_local)
+                        T.vmul(A_shared, C_local, D_local)
 
                         T.copy(
-                            C_local,
-                            C_out[
+                            D_local,
+                            B[
                                 bz * block_N,
                                 bc * block_C,
                                 by * block_H,
@@ -186,9 +180,9 @@ def run_single_shape(shape, log_dir: Path):
                             ],
                         )
 
-                return elemAdd
+                return gelu_4D
 
-            func = elementwise_add(N, C, H, W)
+            func = compute_gelu(N, C, H, W)
 
             print("\nBest Config:")
             print(func.get_tuner_result())
@@ -201,7 +195,7 @@ def run_single_shape(shape, log_dir: Path):
     print(f"Finished shape {shape}, log saved to {log_file}")
 
 def main():
-    root_log_dir = Path("./shape_logs_4d")
+    root_log_dir = Path("./shape_logs_f32")
     root_log_dir.mkdir(exist_ok=True)
 
     for shape in SHAPES:

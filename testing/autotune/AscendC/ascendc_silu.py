@@ -7,7 +7,7 @@ from pathlib import Path
 
 import torch
 
-torch.npu.set_device(9)
+torch.npu.set_device(10)
 
 import torch_npu
 import triton
@@ -16,55 +16,42 @@ import triton.backends.ascend.runtime
 from triton.backends.ascend.testing import do_bench_npu
 
 SHAPES = [
-    (64,),
-    (8,64),
-    (1,32,64),
-    (8,4,8,64),
-    (128,),
-    (8,128),
-    (1,32,128),
-    (8,4,8,128),
-    (2048,),
-    (8,2048),
-    (1,32,2048),
-    (8,4,2048,8),
-    (127,),
-    (8,127),
-    (1,22,127),
-    (8,4,8,127),
-    (255,),
+    (32,64),
+    (32,128),
+    (32,2048),
+    (16384,4096),
+    (22,127),
     (16,255),
-    (1,44,255),
-    (16,8,16,255),
-    (1025,),
+    (44,255),
     (32,1025),
-    (1,88,1025),
-    (32,1632,1025),
-    (1024,10240),
-    (1024,14336),
-    (1024,18432),
-    (1024,22528),
-    (1024,1048576),
+    (800,4090),
 ]
 
-def fn_torch(x):
-    return torch.abs(x)
+def fn_torch(in_tensor, scale_tensor, r1_numel):
+    squared = in_tensor ** 2
+    sum_squared = torch.sum(squared, dim=1, keepdim=True)
+    mean_squared = sum_squared / r1_numel
+    normalized = mean_squared + 1e-05
+    rsqrt_norm = torch.rsqrt(normalized)
+    normalized_input = in_tensor * rsqrt_norm
+    output = normalized_input * scale_tensor
+    return output
 
 def run_test():
     dtype = torch.float32
     perf_list = []
 
     for shape in SHAPES:
-        print(f"torch_abs|dtype=float32|shape={shape}")
+        print(f"torch_silu|dtype=float32|shape={shape}")
 
         # create input tensor
         x = torch.randn(shape, dtype=dtype).npu()
 
         # benchmark
         time_torch = do_bench_npu(lambda x=x: fn_torch(x))
-        print("<<<<< time_torch", time_torch)
+        print("<<<<< time_torch in us", time_torch*1000)
 
-        msg = f"torch_abs|float32|{shape}|{time_torch*1000}" #in us
+        msg = f"torch_silu|float32|{shape}|{time_torch*1000}" #in us
         perf_list.append(msg)
 
     print("\n==== Performance Result ====")

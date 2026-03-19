@@ -11,7 +11,7 @@ import tilelang.language as T
 from tilelang import carver
 from tilelang.carver.arch.ascend import Ascend
 
-os.environ["TILELANG_ASCEND_MODE"] = "Developer"
+os.environ["TILELANG_ASCEND_MODE"] = "Expert"
 
 torch.npu.set_device(15)
 
@@ -53,7 +53,7 @@ def run_single_shape(shape, log_dir: Path):
                     dtype="float16",
                 ).with_arch(arch)
 
-                hints = carver_template.recommend_hints(topk=20)
+                hints = carver_template.recommend_hints(topk=15)
                 configs = []
 
                 for hint in hints:
@@ -62,7 +62,30 @@ def run_single_shape(shape, log_dir: Path):
                         "block_M": hint.block[0],
                         "block_N": hint.block[1],
                     })
-
+                configs.append({
+                        "block_M": 64,
+                        "block_N": 64,
+                    })
+                configs.append({
+                        "block_M": 64,
+                        "block_N": 32,
+                    })
+                configs.append({
+                        "block_M": 64,
+                        "block_N": 128,
+                    })
+                configs.append({
+                        "block_M": 32,
+                        "block_N": 64,
+                    })
+                configs.append({
+                        "block_M": 256,
+                        "block_N": 160,
+                    })
+                configs.append({
+                        "block_M": 2,
+                        "block_N": 7168,
+                    })
                 return configs
 
             def supply_prog(params):
@@ -81,30 +104,31 @@ def run_single_shape(shape, log_dir: Path):
             )
             @tilelang.jit(out_idx=[-1], target="npuir")
             def elementwise_add(M, N, block_M, block_N):
+                m_num = M // block_M
+                n_num = N // block_N
+                dtype = "float16"
+                BLOCK_SIZE = 48
                 @T.prim_func
                 def elemAdd(
                     A: T.Tensor((M, N), "float16"),
                     B: T.Tensor((M, N), "float16"),
                     C: T.Tensor((M, N), "float16"),
                 ):
-                    with T.Kernel(
-                        T.ceildiv(N, block_N) * T.ceildiv(M, block_M),
-                        is_npu=True,
-                    ) as (cid, _):
-
-                        by = cid // T.ceildiv(N, block_N)
-                        bx = cid % T.ceildiv(N, block_N)
-
-                        A_shared = T.alloc_shared((block_M, block_N), "float16")
-                        B_shared = T.alloc_shared((block_M, block_N), "float16")
-                        C_local = T.alloc_fragment((block_M, block_N), "float16")
-
-                        T.copy(A[by * block_M, bx * block_N], A_shared)
-                        T.copy(B[by * block_M, bx * block_N], B_shared)
-
-                        T.vadd(A_shared, B_shared, C_local)
-
-                        T.copy(C_local, C[by * block_M, bx * block_N])
+                    with T.Kernel(BLOCK_SIZE, is_npu=True) as (cid, _):
+                        A_VEC = T.alloc_ub((block_M, block_N), dtype)
+                        B_VEC = T.alloc_ub((block_M, block_N), dtype)
+                        C_VEC = T.alloc_ub((block_M, block_N), dtype)
+                        for i in T.serial(T.ceildiv(m_num*n_num, BLOCK_SIZE)):
+                            block_id = i * BLOCK_SIZE + cid
+                            if block_id < m_num * n_num:
+                                block_id_m = block_id // n_num
+                                block_id_n = block_id % n_num
+                                bx = block_id_m * block_M
+                                by = block_id_n * block_N
+                                T.copy(A[bx, by], A_VEC)
+                                T.copy(B[bx, by], B_VEC)
+                                T.vadd(A_VEC, B_VEC, C_VEC)
+                                T.copy(C_VEC, C[bx, by])
 
                 return elemAdd
 
@@ -121,7 +145,7 @@ def run_single_shape(shape, log_dir: Path):
     print(f"Finished shape {shape}, log saved to {log_file}")
 
 def main():
-    root_log_dir = Path("./shape_logs_2d")
+    root_log_dir = Path("./shape_logs_2d_float16_expert")
     root_log_dir.mkdir(exist_ok=True)
 
     for shape in SHAPES:

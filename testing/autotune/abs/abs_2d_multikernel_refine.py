@@ -11,15 +11,13 @@ from tilelang.carver.arch.ascend import Ascend
 
 os.environ["TILELANG_ASCEND_MODE"] = "Developer"
 
-torch.npu.set_device(15)
+torch.npu.set_device(10)
 
 SHAPES = [
-    (64,),
-    (128,),
-    (2048,),
-    (127,),
-    (255,),
-    (1025,),
+    (1024, 10240),
+    (1024,14336),
+    (1024,18432),
+    (1024,22528),
 ]
 
 def run_single_shape(shape, log_dir: Path):
@@ -34,7 +32,7 @@ def run_single_shape(shape, log_dir: Path):
         print("=" * 80)
 
         try:
-            M = shape[0]
+            M, N = shape if len(shape) == 2 else (shape[0], 1)
 
             # ------------------------
             # reference
@@ -49,17 +47,18 @@ def run_single_shape(shape, log_dir: Path):
                 arch = Ascend()
 
                 carver_template = carver.ElementwiseFixTemplate(
-                    shape=[M],
-                    dtype="float32",
+                    shape=[M, N],
+                    dtype="float16",
                 ).with_arch(arch)
 
-                hints = carver_template.recommend_hints(topk=4)
+                hints = carver_template.recommend_hints(topk=20)
 
                 configs = []
                 for hint in hints:
                     print("Hint:", hint)
                     configs.append({
                         "block_M": hint.block[0],
+                        "block_N": hint.block[1],
                     })
 
                 return configs
@@ -70,7 +69,7 @@ def run_single_shape(shape, log_dir: Path):
             def supply_prog(params):
                 torch.manual_seed(0)
                 return [
-                    torch.randn(M, dtype=torch.float32).npu(),
+                    torch.randn(M, N, dtype=torch.float16).npu(),
                 ]
 
             # ------------------------
@@ -84,32 +83,36 @@ def run_single_shape(shape, log_dir: Path):
                 rtol=1e-2,
             )
             @tilelang.jit(out_idx=[-1], target="npuir")
-            def elementwise_abs(M, block_M):
+            def elementwise_abs(M, N, block_M, block_N):
+                num_physical_kernels = 40
+                num_logical_kernels = (N // block_N) * (M // block_M)
 
                 @T.prim_func
                 def elemAbs(
-                    A: T.Tensor((M,), "float32"),
-                    C: T.Tensor((M,), "float32"),
+                    A: T.Tensor((M, N), "float16"),
+                    C: T.Tensor((M, N), "float16"),
                 ):
-                    with T.Kernel(
-                        T.ceildiv(M, block_M),
-                        is_npu=True,
-                    ) as (bid, _):
+                    with T.Kernel(num_physical_kernels, is_npu=True) as (kernel_id, _):
+                        num_local_tasks = T.ceildiv(num_logical_kernels - kernel_id, num_physical_kernels)
 
-                        offset = bid * block_M
+                        for task_id in T.serial(num_local_tasks):
+                            cid = task_id * num_physical_kernels + kernel_id
+                            by = cid // T.ceildiv(N, block_N)
+                            bx = cid % T.ceildiv(N, block_N)
 
-                        A_shared = T.alloc_shared((block_M,), "float32")
-                        C_local = T.alloc_fragment((block_M,), "float32")
+                            A_shared = T.alloc_shared((block_M, block_N), "float16")
+    
+                            C_local = T.alloc_fragment((block_M, block_N),"float16")
 
-                        T.copy(A[offset], A_shared)
+                            T.copy(A[by * block_M, bx * block_N], A_shared)
 
-                        T.vabs(A_shared, C_local)
+                            T.vabs(A_shared, C_local)
 
-                        T.copy(C_local, C[offset])
+                            T.copy(C_local, C[by * block_M, bx * block_N])
 
                 return elemAbs
 
-            func = elementwise_abs(M)
+            func = elementwise_abs(M, N)
 
             print("\nBest Config:")
             print(func.get_tuner_result())
@@ -123,13 +126,14 @@ def run_single_shape(shape, log_dir: Path):
 
 
 def main():
-    root_log_dir = Path("./shape_logs_1d")
+    root_log_dir = Path("./shape_logs_2d_f16_new")
     root_log_dir.mkdir(exist_ok=True)
 
     for shape in SHAPES:
         shape_str = "x".join(map(str, shape))
         log_dir = root_log_dir / shape_str
         run_single_shape(shape, log_dir)
+
 
 if __name__ == "__main__":
     main()

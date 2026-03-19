@@ -27,3 +27,10 @@ export TILELANG_DUMP_IR=TRUE
 |----------|---------|-------------|--------------|
 | `TILELANG_ASCEND_MODE` | `Expert` | Set the TileLang Mode; currently, Expert mode and Developer mode are supported | `Expert`: Expert Mode<br>`Developer`: Developer Mode |
 | `TILELANG_ASCEND_DEVICE_NAME` | `Ascend910B` | Override the target device name for compilation (e.g. for cross-compilation). If not set, runtime hardware detection is used. | String, e.g., `Ascend910B`|
+
+## Autotuner
+
+| Variable | Default | Description | Valid Values |
+|----------|---------|-------------|--------------|
+| `TILELANG_BENCH_METHOD` | `` | Choose the method for kernel execution evaluation |String `npu`: use torch_npu.profiler<br> Otherwise: use torch.npu.Event
+| `TILELANG_CACHE_DIR` | `` | Set the path to store autotuner cache data | String, e.g., `/home/autotune_cache` |

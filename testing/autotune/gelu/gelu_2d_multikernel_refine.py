@@ -11,9 +11,8 @@ import tilelang.language as T
 from tilelang import carver
 from tilelang.carver.arch.ascend import Ascend
 
-os.environ["TILELANG_ASCEND_MODE"] = "Developer"
-
 torch.npu.set_device(15)
+os.environ["TILELANG_ASCEND_MODE"] = "Developer"
 
 SHAPES = [
     (8, 64),
@@ -29,6 +28,7 @@ SHAPES = [
     (1024, 1048576),
 ]
 
+
 def run_single_shape(shape, log_dir: Path):
     tilelang.cache.clear_cache()
 
@@ -43,14 +43,14 @@ def run_single_shape(shape, log_dir: Path):
         try:
             M, N = shape if len(shape) == 2 else (shape[0], 1)
 
-            def ref_prog(x, y):
-                return x + y
+            def ref_prog(x):
+                return x * 0.5 * (1.0 + torch.erf(x / torch.sqrt(torch.tensor(2.0))))
 
             def get_config():
                 arch = Ascend()
                 carver_template = carver.ElementwiseFixTemplate(
                     shape=[M, N],
-                    dtype="float16",
+                    dtype="float32",
                 ).with_arch(arch)
 
                 hints = carver_template.recommend_hints(topk=20)
@@ -68,8 +68,8 @@ def run_single_shape(shape, log_dir: Path):
             def supply_prog(params):
                 torch.manual_seed(0)
                 return [
-                    torch.randn(M, N, dtype=torch.float16).npu(),
-                    torch.randn(M, N, dtype=torch.float16).npu(),
+                    torch.empty(M, N).uniform_(-1.0, 1.0).npu(),
+                    # torch.zeros(M, N).half().npu(),
                 ]
 
             @tilelang.autotune(
@@ -80,35 +80,43 @@ def run_single_shape(shape, log_dir: Path):
                 rtol=1e-2,
             )
             @tilelang.jit(out_idx=[-1], target="npuir")
-            def elementwise_add(M, N, block_M, block_N):
+            def compute_gelu(M, N, block_M, block_N):
+                num_physical_kernels = 40
+                num_logical_kernels = (N // block_N) * (M // block_M)
                 @T.prim_func
-                def elemAdd(
-                    A: T.Tensor((M, N), "float16"),
-                    B: T.Tensor((M, N), "float16"),
-                    C: T.Tensor((M, N), "float16"),
+                def gelu_2D(
+                    A: T.Tensor((M, N), "float32"),
+                    B: T.Tensor((M, N), "float32"),
                 ):
-                    with T.Kernel(
-                        T.ceildiv(N, block_N) * T.ceildiv(M, block_M),
-                        is_npu=True,
-                    ) as (cid, _):
+                    with T.Kernel(num_physical_kernels, is_npu=True) as (kernel_id, _):
+                            num_local_tasks = T.ceildiv(num_logical_kernels - kernel_id, num_physical_kernels)
 
-                        by = cid // T.ceildiv(N, block_N)
-                        bx = cid % T.ceildiv(N, block_N)
+                            for task_id in T.serial(num_local_tasks):
+                                cid = task_id * num_physical_kernels + kernel_id
+                                by = cid // T.ceildiv(N, block_N)
+                                bx = cid % T.ceildiv(N, block_N)
+                                scale1 = 1 / (2.0**0.5)
+                                scale2 = 1.0
+                                scale3 = 0.5
+                                A_shared = T.alloc_shared((block_M, block_N), "float32")
+                                B_local = T.alloc_fragment((block_M, block_N), "float32")
+                                C_local = T.alloc_fragment((block_M, block_N), "float32")
+                                D_local = T.alloc_fragment((block_M, block_N), "float32")
 
-                        A_shared = T.alloc_shared((block_M, block_N), "float16")
-                        B_shared = T.alloc_shared((block_M, block_N), "float16")
-                        C_local = T.alloc_fragment((block_M, block_N), "float16")
+                                T.copy(A[by * block_M, bx * block_N], A_shared)
 
-                        T.copy(A[by * block_M, bx * block_N], A_shared)
-                        T.copy(B[by * block_M, bx * block_N], B_shared)
+                                T.vmul(A_shared, scale1, B_local)
+                                T.npuir_verf(B_local, C_local)
+                                T.vadd(C_local, scale2, C_local)
+                                T.vmul(C_local, scale3, C_local)
+                                T.vmul(A_shared, C_local, D_local)
 
-                        T.vadd(A_shared, B_shared, C_local)
 
-                        T.copy(C_local, C[by * block_M, bx * block_N])
+                                T.copy(D_local, B[by * block_M, bx * block_N])
 
-                return elemAdd
+                return gelu_2D
 
-            func = elementwise_add(M, N)
+            func = compute_gelu(M, N)
 
             print("\nBest Config:")
             print(func.get_tuner_result())
@@ -120,8 +128,9 @@ def run_single_shape(shape, log_dir: Path):
 
     print(f"Finished shape {shape}, log saved to {log_file}")
 
+
 def main():
-    root_log_dir = Path("./shape_logs_2d")
+    root_log_dir = Path("./shape_logs_2d_f32_new")
     root_log_dir.mkdir(exist_ok=True)
 
     for shape in SHAPES:

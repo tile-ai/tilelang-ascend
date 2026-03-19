@@ -7,7 +7,7 @@ from pathlib import Path
 
 import torch
 
-torch.npu.set_device(9)
+torch.npu.set_device(10)
 
 import torch_npu
 import triton
@@ -47,30 +47,29 @@ SHAPES = [
     (1024,1048576),
 ]
 
-def fn_torch(x):
-    return torch.abs(x)
+def fn_torch(x0):
+    return torch.sigmoid(x0)
 
 def run_test():
-    dtype = torch.float32
+    dtype = torch.float16
     perf_list = []
 
     for shape in SHAPES:
-        print(f"torch_abs|dtype=float32|shape={shape}")
+        print(f"torch_abs|dtype=float16|shape={shape}")
 
         # create input tensor
         x = torch.randn(shape, dtype=dtype).npu()
 
         # benchmark
         time_torch = do_bench_npu(lambda x=x: fn_torch(x))
-        print("<<<<< time_torch", time_torch)
+        print("<<<<< time_torch in us", time_torch*1000)
 
-        msg = f"torch_abs|float32|{shape}|{time_torch*1000}" #in us
+        msg = f"torch_sigmoid|float16|{shape}|{time_torch*1000}" #in us
         perf_list.append(msg)
 
     print("\n==== Performance Result ====")
     for m in perf_list:
         print(m)
-
 
 if __name__ == "__main__":
     run_test()

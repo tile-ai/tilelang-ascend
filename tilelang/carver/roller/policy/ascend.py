@@ -178,7 +178,7 @@ class AscendDefaultPolicy(DefaultPolicy):
 
         self.max_total_numel = 1
         for _steps in steps:
-            self.max_total_numel *= _steps[len(steps) - 1]
+            self.max_total_numel *= _steps[len(_steps) - 1]
 
         self.tiny_kernel = self.max_total_numel < 128 * 1024
         self.stop_numel = min(1024 // dtype_bytes, self.max_total_numel // (self.num_ai_cores * 2)) if self.tiny_kernel else 1024 // dtype_bytes
@@ -201,7 +201,7 @@ class AscendDefaultPolicy(DefaultPolicy):
         - Optimize for AI Core utilization
         """
         _steps = [get_all_factors(n) for n in self.output_nodes[0].get_space_dim()]
-        steps = [step[step.index(t):] for step, t in zip(_steps, init_tile)]
+        steps = [step[step.index(t):] for step, t in zip(_steps, init_tile, strict=True)]
         logger.debug(f"Initial steps: {steps}")
 
         self.calc_numel_threshold(steps)
@@ -248,7 +248,7 @@ class AscendDefaultPolicy(DefaultPolicy):
         add_to_queue(init_tile)
         while not (queue.empty() or len(visited_tiles) > 2000):
             _, tile = queue.get()
-            dim_ids = [step.index(t) for step, t in zip(steps, tile)]
+            dim_ids = [step.index(t) for step, t in zip(steps, tile, strict=True)]
             for i in reversed(range(len(dim_ids))):
                 if dim_ids[i] + 1 < len(steps[i]):
                     new_tile = tile.copy()
@@ -288,7 +288,7 @@ class AscendDefaultPolicy(DefaultPolicy):
             return td
         
         output_shape = self.output_nodes[0].get_space_dim()
-        td.grid_size = int(np.prod([(y + x - 1) // x for x, y in zip(output_tile, output_shape)]))
+        td.grid_size = int(np.prod([(y + x - 1) // x for x, y in zip(output_tile, output_shape, strict=True)]))
         
         # AI Core parallel execution
         td.block_per_SM = 1
@@ -737,7 +737,7 @@ class AscendCubePolicy(AscendDefaultPolicy):
                     logger.debug(f"Tile invalid for CUBE: block_m={block_m} < {self.fractal_shape[0]}"
                                 f" or block_n={block_n} < {self.fractal_shape[1]}")
                     return False
-                if any([y % x for x, y in zip(td.tile_map[node], node.get_space_dim())]):
+                if any([y % x for x, y in zip(td.tile_map[node], node.get_space_dim(), strict=True)]):
                     logger.debug(f"Tile invalid for CUBE: tile {td.tile_map[node]} "
                                 f"not divisible by shape {node.get_space_dim()}")
                     return False

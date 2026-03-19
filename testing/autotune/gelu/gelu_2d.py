@@ -1,4 +1,6 @@
 import os
+import sys
+import argparse
 import traceback
 from contextlib import redirect_stdout, redirect_stderr
 from pathlib import Path
@@ -9,18 +11,23 @@ import tilelang.language as T
 from tilelang import carver
 from tilelang.carver.arch.ascend import Ascend
 
+torch.npu.set_device(15)
 os.environ["TILELANG_ASCEND_MODE"] = "Developer"
 
-torch.npu.set_device(15)
-
 SHAPES = [
-    (64,),
-    (128,),
-    (2048,),
-    (127,),
-    (255,),
-    (1025,),
+    (8, 64),
+    (8, 128),
+    (8, 2048),
+    (8, 127),
+    (16, 255),
+    (32, 1025),
+    (1024, 10240),
+    (1024, 14336),
+    (1024, 18432),
+    (1024, 22528),
+    (1024, 1048576),
 ]
+
 
 def run_single_shape(shape, log_dir: Path):
     tilelang.cache.clear_cache()
@@ -34,48 +41,37 @@ def run_single_shape(shape, log_dir: Path):
         print("=" * 80)
 
         try:
-            M = shape[0]
+            M, N = shape if len(shape) == 2 else (shape[0], 1)
 
-            # ------------------------
-            # reference
-            # ------------------------
             def ref_prog(x):
-                return torch.abs(x)
+                return x * 0.5 * (1.0 + torch.erf(x / torch.sqrt(torch.tensor(2.0))))
 
-            # ------------------------
-            # config search
-            # ------------------------
             def get_config():
                 arch = Ascend()
-
                 carver_template = carver.ElementwiseFixTemplate(
-                    shape=[M],
+                    shape=[M, N],
                     dtype="float32",
                 ).with_arch(arch)
 
-                hints = carver_template.recommend_hints(topk=4)
-
+                hints = carver_template.recommend_hints(topk=20)
                 configs = []
+
                 for hint in hints:
                     print("Hint:", hint)
                     configs.append({
                         "block_M": hint.block[0],
+                        "block_N": hint.block[1],
                     })
 
                 return configs
 
-            # ------------------------
-            # input supplier
-            # ------------------------
             def supply_prog(params):
                 torch.manual_seed(0)
                 return [
-                    torch.randn(M, dtype=torch.float32).npu(),
+                    torch.empty(M, N).uniform_(-1.0, 1.0).npu(),
+                    # torch.zeros(M, N).half().npu(),
                 ]
 
-            # ------------------------
-            # kernel
-            # ------------------------
             @tilelang.autotune(
                 configs=get_config(),
                 ref_prog=ref_prog,
@@ -84,32 +80,40 @@ def run_single_shape(shape, log_dir: Path):
                 rtol=1e-2,
             )
             @tilelang.jit(out_idx=[-1], target="npuir")
-            def elementwise_abs(M, block_M):
-
+            def compute_gelu(M, N, block_M, block_N):
                 @T.prim_func
-                def elemAbs(
-                    A: T.Tensor((M,), "float32"),
-                    C: T.Tensor((M,), "float32"),
+                def gelu_2D(
+                    A: T.Tensor((M, N), "float32"),
+                    B: T.Tensor((M, N), "float32"),
                 ):
                     with T.Kernel(
-                        T.ceildiv(M, block_M),
+                        T.ceildiv(N, block_N) * T.ceildiv(M, block_M),
                         is_npu=True,
-                    ) as (bid, _):
+                    ) as (cid, _):
 
-                        offset = bid * block_M
+                        by = cid // T.ceildiv(N, block_N)
+                        bx = cid % T.ceildiv(N, block_N)
+                        scale1 = 1 / (2.0**0.5)
+                        scale2 = 1.0
+                        scale3 = 0.5
+                        A_shared = T.alloc_shared((block_M, block_N), "float32")
+                        B_local = T.alloc_fragment((block_M, block_N), "float32")
+                        C_local = T.alloc_fragment((block_M, block_N), "float32")
+                        D_local = T.alloc_fragment((block_M, block_N), "float32")
 
-                        A_shared = T.alloc_shared((block_M,), "float32")
-                        C_local = T.alloc_fragment((block_M,), "float32")
+                        T.copy(A[by * block_M, bx * block_N], A_shared)
 
-                        T.copy(A[offset], A_shared)
+                        T.vmul(A_shared, scale1, B_local)
+                        T.npuir_verf(B_local, C_local)
+                        T.vadd(C_local, scale2, C_local)
+                        T.vmul(C_local, scale3, C_local)
+                        T.vmul(A_shared, C_local, D_local)
 
-                        T.vabs(A_shared, C_local)
+                        T.copy(D_local, B[by * block_M, bx * block_N])
 
-                        T.copy(C_local, C[offset])
+                return gelu_2D
 
-                return elemAbs
-
-            func = elementwise_abs(M)
+            func = compute_gelu(M, N)
 
             print("\nBest Config:")
             print(func.get_tuner_result())
@@ -121,14 +125,14 @@ def run_single_shape(shape, log_dir: Path):
 
     print(f"Finished shape {shape}, log saved to {log_file}")
 
-
 def main():
-    root_log_dir = Path("./shape_logs_1d")
+    root_log_dir = Path("./shape_logs_2d_f32")
     root_log_dir.mkdir(exist_ok=True)
 
     for shape in SHAPES:
         shape_str = "x".join(map(str, shape))
         log_dir = root_log_dir / shape_str
+
         run_single_shape(shape, log_dir)
 
 if __name__ == "__main__":

@@ -90,7 +90,7 @@ def do_bench(
     # Record clocks
     torch.npu.synchronize()
     times = torch.tensor(
-        [s.elapsed_time(e) for s, e in zip(start_event, end_event)],
+        [s.elapsed_time(e) for s, e in zip(start_event, end_event, strict=True)],
         dtype=torch.float,
     )
     if quantiles is not None:
@@ -119,7 +119,6 @@ def do_bench_npu(funcs,
         profiler_level=torch_npu.profiler.ProfilerLevel.Level1,
         data_simplification=False,
     )
-    
     if prof_dir is not None:
         torch_path = prof_dir
     else:
@@ -136,7 +135,7 @@ def do_bench_npu(funcs,
         with_flops=False,
         with_modules=False,
         experimental_config=experimental_config,
-    ) as prof:
+    ):
         
         for fn in funcs:
             for _ in builtins.range(total):
