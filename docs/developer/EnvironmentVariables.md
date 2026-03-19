@@ -25,4 +25,5 @@ export TILELANG_DUMP_IR=TRUE
 ## Compilation Options
 | Variable | Default | Description | Valid Values |
 |----------|---------|-------------|--------------|
-| `TILELANG_ASCEND_MODE` | Expert | Set the TileLang Mode; currently, Expert mode and Developer mode are supported | `Expert`: Expert Mode<br>`Developer`: Developer Mode |
+| `TILELANG_ASCEND_MODE` | `Expert` | Set the TileLang Mode; currently, Expert mode and Developer mode are supported | `Expert`: Expert Mode<br>`Developer`: Developer Mode |
+| `TILELANG_ASCEND_DEVICE_NAME` | `Ascend910B2C` | Override the target device name for compilation (e.g. for cross-compilation). If not set, runtime hardware detection is used. | String, e.g., `Ascend910B2C`|

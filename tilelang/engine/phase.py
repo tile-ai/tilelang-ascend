@@ -54,21 +54,31 @@ def allow_vectorize(pass_ctx: Optional[PassContext] = None) -> bool:
 
 
 def get_ascend_device_name() -> str:
-    for env_name in (
-        "TILELANG_ASCEND_DEVICE_NAME",
-        "ASCEND_DEVICE_NAME",
-        "DEVICE_NAME",
-    ):
-        device_name = os.environ.get(env_name)
-        if device_name:
-            return device_name.strip()
-    return ""
+    # 1. Highest priority: User-specified environment variable
+    device_name = os.environ.get("TILELANG_ASCEND_DEVICE_NAME")
+    if device_name:
+        return device_name.strip()
+
+    # 2. Secondary priority: Runtime capability detection
+    try:
+        from tilelang.utils import NPUUtils
+        return NPUUtils.get().get_arch()
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(
+            f"Failed to get Ascend arch from NPUUtils: {e}. "
+            "Fallback to default behavior."
+        )
+
+    # 3. Fallback to Ascend910B2C if runtime detection fails
+    return "Ascend910B2C"
 
 
 def supports_native_bf16_npuir_add(device_name: str) -> bool:
-    # Placeholder for future device capability table keyed by device_name.
-    _ = device_name
-    return False
+    # native BF16 add is supported in A2/A3.
+    if device_name in ["Ascend910B2C"]:
+        return False
+    return True
 
 
 def need_npuir_bf16_legalize(target: Optional[Target] = None) -> bool:
