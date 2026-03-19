@@ -35,7 +35,7 @@ def sparse_attention_fwd(
         scale=None,
         is_causal=True,
         n_base_size=256,  # s2 kv
-        m_base_size=32,  # s1 q
+        m_base_size=16,  # s1 q
         dtype="bfloat16",
         block_size=128,
         core_num=24,
@@ -48,7 +48,7 @@ def sparse_attention_fwd(
     assert topk % n_base_size == 0, 'otherwise will load some index=0 thus causing wrong kv to be loaded'
 
     # NOTE: ascend only support exp interface instead of exp2
-    sm_scale = (1.0 / (dim + rope_dim)) ** 0.5 if scale is None else scale
+    scale = (1.0 / (dim + rope_dim)) ** 0.5 if scale is None else scale
 
     batch = T.symbolic("batch")
     seq_len = T.symbolic("seq_len")
@@ -123,19 +123,20 @@ def sparse_attention_fwd(
             kv_rope_ub_gather = T.alloc_ub([2, vec0_copy_out_size, rope_dim], dtype)
 
             # vec1
-            m_i = T.alloc_ub([m_base_size_v, 1], accum_dtype)
-            m_i_prev = T.alloc_ub([m_base_size_v, 1], accum_dtype)
+            score_max = T.alloc_ub([m_base_size_v, 1], accum_dtype)
+            score_max_pre = T.alloc_ub([m_base_size_v, 1], accum_dtype)
+            score_scale = T.alloc_ub([m_base_size_v, 1], accum_dtype)
             acc_s_ub = T.alloc_ub([m_base_size_v, n_base_size], accum_dtype)
-            m_i_broadcast = T.alloc_ub([m_base_size_v, n_base_size], accum_dtype)
-            m_i_prev_broadcast = T.alloc_ub([m_base_size_v, dim], accum_dtype)
-            sumexp_i_ub = T.alloc_ub([m_base_size_v, 1], accum_dtype)
-            sumexp = T.alloc_ub([m_base_size_v, 1], accum_dtype)
+            score_max_broadcast = T.alloc_ub([m_base_size_v, n_base_size], accum_dtype)
+            score_scale_broadcast = T.alloc_ub([m_base_size_v, dim], accum_dtype)
+            score_sum = T.alloc_ub([m_base_size_v, 1], accum_dtype)
+            log_sum = T.alloc_ub([m_base_size_v, 1], accum_dtype)
             acc_s_half = T.alloc_ub([m_base_size_v, n_base_size], dtype)
 
             # vec2
+            acc_o_ub_temp = T.alloc_ub([m_base_size_v, dim], accum_dtype)
             acc_o_ub = T.alloc_ub([m_base_size_v, dim], accum_dtype)
-            acc_o = T.alloc_ub([m_base_size_v, dim], accum_dtype)
-            sumexp_broadcast = T.alloc_ub([m_base_size_v, dim], accum_dtype)
+            log_sum_broadcast = T.alloc_ub([m_base_size_v, dim], accum_dtype)
             tmp_ub = T.alloc_ub([1 * DataType(accum_dtype).bits // 8 * m_base_size_v * n_base_size], "uint8")
             acc_o_half = T.alloc_ub([m_base_size_v, dim], dtype)
 
@@ -157,7 +158,6 @@ def sparse_attention_fwd(
             )
 
             T.annotate_address({
-
                 # cube 其中 2 表示half类型
                 q_l1: 0,
                 q_tail_l1: m_base_size * dim * 2,
@@ -184,21 +184,24 @@ def sparse_attention_fwd(
                 kv_rope_ub_gather: n_base_size * 4 * 2 + 32 + vec0_copy_out_size * dim * 2 * 2,
 
                 # vec1 73760: 32*576*2*2 + 32 (32: vec0_copy_out_size; 576:dim+rope_dime; 2:half; 2:db buffer; 32:mask)
-                m_i_prev: 73760 + n_base_size * 4 * 2,
-                sumexp: 73760 + n_base_size * 4 * 2 + m_base_size_v * 4,
-                m_i: 73760 + n_base_size * 4 * 2 + m_base_size_v * 4 * 2,
-                acc_s_ub: 73760 + n_base_size * 4 * 2 + m_base_size_v * 4 * 3,
-                m_i_broadcast: 73760 + n_base_size * 4 * 2 + m_base_size_v * 4 * 3 + m_base_size_v * n_base_size * 4,
-                sumexp_i_ub: 73760 + n_base_size * 4 * 2 + m_base_size_v * 4 * 3 + m_base_size_v * n_base_size * 4 * 2,
-                acc_s_half: 73760 + n_base_size * 4 * 2 + m_base_size_v * 4 * 4 + m_base_size_v * n_base_size * 4 * 2,
+                score_max_pre: 73760 + n_base_size * 4 * 2,
+                log_sum: 73760 + n_base_size * 4 * 2 + m_base_size_v * 4,
+                score_max: 73760 + n_base_size * 4 * 2 + m_base_size_v * 4 * 2,
+                score_scale: 73760 + n_base_size * 4 * 2 + m_base_size_v * 4 * 3,
+                # 以上的localTensor常驻UB
+
+                acc_s_ub: 73760 + n_base_size * 4 * 2 + m_base_size_v * 4 * 4,
+                score_max_broadcast: 73760 + n_base_size * 4 * 2 + m_base_size_v * 4 * 4 + m_base_size_v * n_base_size * 4,
+                score_sum: 73760 + n_base_size * 4 * 2 + m_base_size_v * 4 * 4 + m_base_size_v * n_base_size * 4 * 2,
+                acc_s_half: 73760 + n_base_size * 4 * 2 + m_base_size_v * 4 * 5 + m_base_size_v * n_base_size * 4 * 2,
 
                 # vec2
-                acc_o_ub: 73760 + n_base_size * 4 * 2 + m_base_size_v * 4 * 3,
-                m_i_prev_broadcast: (73760 + n_base_size * 4 * 2 + m_base_size_v * 4 * 3) + m_base_size_v * dim * 4,
-                sumexp_broadcast: (73760 + n_base_size * 4 * 2 + m_base_size_v * 4 * 3) + m_base_size_v * dim * 4,
+                acc_o_ub_temp: 73760 + n_base_size * 4 * 2 + m_base_size_v * 4 * 4,
+                score_scale_broadcast: (73760 + n_base_size * 4 * 2 + m_base_size_v * 4 * 4) + m_base_size_v * dim * 4,
+                log_sum_broadcast: (73760 + n_base_size * 4 * 2 + m_base_size_v * 4 * 4) + m_base_size_v * dim * 4,
 
-                acc_o: (73760 + n_base_size * 4 * 2 + m_base_size_v * 4 * 3) + m_base_size_v * dim * 4 * 2,
-                acc_o_half: (73760 + n_base_size * 4 * 2 + m_base_size_v * 4 * 3) + m_base_size_v * dim * 4 * 2,
+                acc_o_ub: (73760 + n_base_size * 4 * 2 + m_base_size_v * 4 * 4) + m_base_size_v * dim * 4 * 2,
+                acc_o_half: (73760 + n_base_size * 4 * 2 + m_base_size_v * 4 * 4) + m_base_size_v * dim * 4 * 2,
 
                 tmp_ub: 184320  # 185.25K
             })
@@ -229,9 +232,9 @@ def sparse_attention_fwd(
                         T.copy(Q[b_i, s_i, H0:H1, :dim], q_l1)
                         T.copy(Q[b_i, s_i, H0:H1, dim:], q_tail_l1)
 
-                        T.tile.fill(acc_o, 0.0)
-                        T.tile.fill(sumexp, 0.0)
-                        T.tile.fill(m_i, -2.0 ** 30)
+                        T.tile.fill(acc_o_ub, 0.0)
+                        T.tile.fill(log_sum, 0.0)
+                        T.tile.fill(score_max, -2.0 ** 30)
 
                         # s2轴切分
                         for i_i in T.serial(n_block_num):
@@ -316,7 +319,7 @@ def sparse_attention_fwd(
                             T.copy(acc_s_l0c, workspace_3[cid, :, :])
 
                             # ******************** V1 ********************
-                            T.copy(m_i, m_i_prev)
+                            T.copy(score_max, score_max_pre)
 
                             T.copy(
                                 workspace_3[cid, vid * m_base_size_v:vid * m_base_size_v + m_base_size_v, :],
@@ -331,39 +334,41 @@ def sparse_attention_fwd(
 
                             T.pipe_barrier("v")
 
-                            T.tile.mul(acc_s_ub, acc_s_ub, sm_scale)
+                            # 最大值处理
+                            T.reduce_max(acc_s_ub, score_max, tmp_ub, dim=-1)
                             T.pipe_barrier("v")
 
-                            T.reduce_max(acc_s_ub, m_i, tmp_ub, dim=-1)
+                            T.tile.max(score_max, score_max, score_max_pre)
                             T.pipe_barrier("v")
 
-                            T.tile.max(m_i, m_i, m_i_prev)
+                            # score_scale操作
+                            T.tile.sub(score_scale, score_max_pre, score_max)
                             T.pipe_barrier("v")
 
-                            T.tile.sub(m_i_prev, m_i_prev, m_i)
+                            T.tile.mul(score_scale, score_scale, scale)
                             T.pipe_barrier("v")
 
-                            T.tile.exp(m_i_prev, m_i_prev)
+                            T.tile.exp(score_scale, score_scale)
                             T.pipe_barrier("v")
 
-                            T.tile.broadcast(m_i_broadcast, m_i, tmp_ub)
+                            # acc_s操作
+                            T.tile.broadcast(score_max_broadcast, score_max, tmp_ub)
                             T.pipe_barrier("v")
 
-                            T.tile.sub(acc_s_ub, acc_s_ub, m_i_broadcast)
+                            T.tile.sub(acc_s_ub, acc_s_ub, score_max_broadcast)
+                            T.pipe_barrier("v")
+
+                            T.tile.mul(acc_s_ub, acc_s_ub, scale)
                             T.pipe_barrier("v")
 
                             T.tile.exp(acc_s_ub, acc_s_ub)
                             T.pipe_barrier("v")
 
-                            T.reduce_sum(acc_s_ub, sumexp_i_ub, tmp_ub, dim=-1)
+                            # sum值操作
+                            T.reduce_sum(acc_s_ub, score_sum, tmp_ub, dim=-1)
                             T.pipe_barrier("v")
 
-                            T.tile.mul(sumexp, sumexp, m_i_prev)  # check
-                            T.pipe_barrier("v")
-
-                            T.tile.add(sumexp, sumexp, sumexp_i_ub)
-                            T.pipe_barrier("v")
-
+                            # float—>float16 方便后续计算
                             T.copy(acc_s_ub, acc_s_half)
                             T.pipe_barrier("v")
 
@@ -410,28 +415,34 @@ def sparse_attention_fwd(
                             T.copy(acc_o_l0c, workspace_5[cid, :, :])
 
                             # ******************** VEC2 ********************
-                            T.copy(
-                                workspace_5[cid, vid * m_base_size_v:vid * m_base_size_v + m_base_size_v, :],
-                                acc_o_ub)
+                            T.copy(workspace_5[cid, vid * m_base_size_v:vid * m_base_size_v + m_base_size_v, :],
+                                   acc_o_ub_temp)
 
-                            T.tile.broadcast(m_i_prev_broadcast, m_i_prev, tmp_ub)
+                            T.tile.mul(log_sum, log_sum, score_scale)
                             T.pipe_barrier("v")
 
-                            T.tile.mul(acc_o, acc_o, m_i_prev_broadcast)
+                            T.tile.add(log_sum, log_sum, score_sum)
+                            T.pipe_barrier("v")
+
+                            T.tile.broadcast(score_scale_broadcast, score_scale, tmp_ub)
+                            T.pipe_barrier("v")
+
+                            T.tile.mul(acc_o_ub, acc_o_ub, score_scale_broadcast)
                             T.pipe_barrier("v")
 
                             T.set_flag("mte2", "v", 2)
                             T.wait_flag("mte2", "v", 2)
 
-                            T.tile.add(acc_o, acc_o, acc_o_ub)
+                            T.tile.add(acc_o_ub, acc_o_ub, acc_o_ub_temp)
+                            T.pipe_barrier("v")
 
-                        T.tile.broadcast(sumexp_broadcast, sumexp, tmp_ub)
+                        T.tile.broadcast(log_sum_broadcast, log_sum, tmp_ub)
                         T.pipe_barrier("v")
 
-                        T.tile.div(acc_o, acc_o, sumexp_broadcast)
+                        T.tile.div(acc_o_ub, acc_o_ub, log_sum_broadcast)
                         T.pipe_barrier("v")
 
-                        T.copy(acc_o, acc_o_half)
+                        T.copy(acc_o_ub, acc_o_half)
 
                         T.set_flag("v", "mte3", 9)
                         T.wait_flag("v", "mte3", 9)
@@ -441,7 +452,6 @@ def sparse_attention_fwd(
 
 
 core_num = 24
-
 block_num = 20
 block_size = 128
 
