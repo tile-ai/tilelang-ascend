@@ -2570,7 +2570,17 @@ void CodeGenTileLangNPUIRDEV::CreateHIVMBinaryVectorOp(const CallNode *op) {
       const IntImmNode* int_imm = region_node->args[2].as<IntImmNode>();
       // If load only one element, do not use memref.subview, use memref.load as a scalar
       if(is_scalar_load) {
-        src = VisitExpr_(buffer_node);
+        if (arg_id == 0) {
+          src = GetVarValue(region_node);
+          auto region = tvm::tl::RegionOp(region_node->args, vmap);
+          auto region_buffer = region.GetBuffer();
+          buffer_shape.clear();
+          for (auto dim : region_buffer->shape) {
+            buffer_shape.push_back(dim);
+          }
+        } else {
+          src = VisitExpr_(buffer_node);
+        }
       } else {
         src = GenExtractSliceFromRegion(region_node);
 
