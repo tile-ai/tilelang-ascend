@@ -62,9 +62,11 @@ def get_ascend_device_name() -> str:
     # 2. Secondary priority: Runtime capability detection
     try:
         from tilelang.utils import NPUUtils
+
         return NPUUtils.get().get_arch()
     except Exception as e:
         import logging
+
         logging.getLogger(__name__).warning(
             f"Failed to get Ascend arch from NPUUtils: {e}. "
             "Fallback to default behavior."
@@ -76,9 +78,7 @@ def get_ascend_device_name() -> str:
 
 def supports_native_bf16_npuir_add(device_name: str) -> bool:
     # native BF16 add is not supported in A2/A3.
-    if device_name in ["Ascend910B2C"]:
-        return False
-    return True
+    return device_name not in ["Ascend910B2C"]
 
 
 def need_npuir_bf16_legalize(target: Optional[Target] = None) -> bool:
