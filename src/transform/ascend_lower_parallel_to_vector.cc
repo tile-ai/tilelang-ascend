@@ -780,7 +780,10 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
           // Replace with load from broadcast buffer
           // Use [0] as index since the vectorized operation will handle
           // accessing all elements of the broadcast buffer as contiguous memory
-          return BufferLoad(it->second, {IntImm(DataType::Int(32), 0)});
+          Array<PrimExpr> indicates;
+          indicates.push_back(IntImm(DataType::Int(32), 0));
+          indicates.push_back(IntImm(DataType::Int(32), 0));
+          return BufferLoad(it->second, indicates);
         }
         return ExprMutator::VisitExpr_(op);
       }
@@ -1660,8 +1663,9 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
     // The broadcast operation uses explicit shape arguments to understand the 2D layout
     int64_t total_elements = outer_extent * inner_vec_len;
     Array<PrimExpr> shape;
-    shape.push_back(IntImm(DataType::Int(32), total_elements));
-
+    // shape.push_back(IntImm(DataType::Int(32), total_elements));
+    shape.push_back(IntImm(DataType::Int(32), outer_extent));
+    shape.push_back(IntImm(DataType::Int(32), inner_vec_len));
     Buffer buf = Buffer(
       data,
       dtype,
