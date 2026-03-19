@@ -563,20 +563,20 @@ def add(dst: Union[Buffer, BufferRegion], src0: Union[Buffer, BufferRegion], src
     """Performs element-wise addition: dst = src0 + src1.
 
     Args:
-        dst: The destination buffer or buffer region.
-        src0: The first source buffer or buffer region.
-        src1: The second source operand (Buffer, BufferRegion, BufferLoad, or Scalar).
+        dst: The destination buffer.
+        src0: The first source buffer.
+        src1: The second source operand (Buffer, BufferLoad, or Scalar).
     """
     return binary_op(dst, src0, src1, "add")
 
 
-def sub(dst: Union[Buffer, BufferRegion], src0: Union[Buffer, BufferRegion], src1: Union[Buffer, BufferRegion, BufferLoad, PrimExpr]):  # noqa: FA100
+def sub(dst: Union[Buffer, BufferRegion], src0: Union[Buffer, BufferRegion], src1: Union[Buffer, BufferRegion, BufferLoad]):  # noqa: FA100
     """Performs element-wise subtraction: dst = src0 - src1.
 
     Args:
-        dst: The destination buffer or buffer region.
-        src0: The first source buffer or buffer region.
-        src1: The second source operand (Buffer, BufferRegion, BufferLoad, or Scalar).
+        dst: The destination buffer.
+        src0: The first source buffer.
+        src1: The second source operand (Buffer or BufferLoad).
     """
     return binary_op(dst, src0, src1, "sub")
 
@@ -584,19 +584,19 @@ def mul(dst: Union[Buffer, BufferRegion], src0: Union[Buffer, BufferRegion], src
     """Performs element-wise multiplication: dst = src0 * src1.
 
     Args:
-        dst: The destination buffer or buffer region.
-        src0: The first source buffer or buffer region.
-        src1: The second source operand (Buffer, BufferRegion, BufferLoad, or Scalar).
+        dst: The destination buffer.
+        src0: The first source buffer.
+        src1: The second source operand (Buffer, BufferLoad, or Scalar).
     """
     return binary_op(dst, src0, src1, "mul")
 
-def div(dst: Union[Buffer, BufferRegion], src0: Union[Buffer, BufferRegion], src1: Union[Buffer, BufferRegion, BufferLoad, PrimExpr]):  # noqa: FA100
+def div(dst: Union[Buffer, BufferRegion], src0: Union[Buffer, BufferRegion], src1: Union[Buffer, BufferRegion, BufferLoad]):  # noqa: FA100
     """Performs element-wise division: dst = src0 / src1.
 
     Args:
-        dst: The destination buffer or buffer region.
-        src0: The first source buffer or buffer region.
-        src1: The second source operand (Buffer, BufferRegion, BufferLoad, or Scalar).
+        dst: The destination buffer.
+        src0: The first source buffer.
+        src1: The second source operand (Buffer or BufferLoad).
     """
     return binary_op(dst, src0, src1, "div")
 
@@ -605,9 +605,9 @@ def max(dst: Union[Buffer, BufferRegion], src0: Union[Buffer, BufferRegion], src
     """Performs element-wise maximum: dst = max(src0, src1).
 
     Args:
-        dst: The destination buffer or buffer region.
-        src0: The first source buffer or buffer region.
-        src1: The second source operand (Buffer, BufferRegion, BufferLoad, or Scalar).
+        dst: The destination buffer.
+        src0: The first source buffer.
+        src1: The second source operand (Buffer, BufferLoad, or Scalar).
     """
     return binary_op(dst, src0, src1, "max")
 
@@ -616,9 +616,9 @@ def min(dst: Union[Buffer, BufferRegion], src0: Union[Buffer, BufferRegion], src
     """Performs element-wise minimum: dst = min(src0, src1).
 
     Args:
-        dst: The destination buffer or buffer region.
-        src0: The first source buffer or buffer region.
-        src1: The second source operand (Buffer, BufferRegion, BufferLoad, or Scalar).
+        dst: The destination buffer.
+        src0: The first source buffer.
+        src1: The second source operand (Buffer, BufferLoad, or Scalar).
     """
     return binary_op(dst, src0, src1, "min")
 
@@ -627,9 +627,9 @@ def bitwise_and(dst: Union[Buffer, BufferRegion], src0: Union[Buffer, BufferRegi
     """Performs element-wise bitwise AND: dst = src0 & src1.
 
     Args:
-        dst: The destination buffer or buffer region.
-        src0: The first source buffer or buffer region.
-        src1: The second source operand (Buffer, BufferRegion, BufferLoad, or Scalar).
+        dst: The destination buffer.
+        src0: The first source buffer.
+        src1: The second source operand (Buffer, BufferLoad, or Scalar).
     """
     return binary_op(dst, src0, src1, "bitwise_and")
 
@@ -638,9 +638,9 @@ def bitwise_or(dst: Union[Buffer, BufferRegion], src0: Union[Buffer, BufferRegio
     """Performs element-wise bitwise OR: dst = src0 | src1.
 
     Args:
-        dst: The destination buffer or buffer region.
-        src0: The first source buffer or buffer region.
-        src1: The second source operand (Buffer, BufferRegion, BufferLoad, or Scalar).
+        dst: The destination buffer.
+        src0: The first source buffer.
+        src1: The second source operand (Buffer, BufferLoad, or Scalar).
     """
     return binary_op(dst, src0, src1, "bitwise_or")
 
@@ -675,8 +675,8 @@ def exp(dst: Union[Buffer, BufferRegion], src0: Union[Buffer, BufferRegion]):  #
     """Performs element-wise exponential: dst = exp(src0).
 
     Args:
-        dst: The destination buffer or buffer region.
-        src0: The source buffer or buffer region.
+        dst: The destination buffer.
+        src0: The source buffer.
     """
     return unary_op(dst, src0, "exp")
 
@@ -1501,14 +1501,11 @@ def broadcast(dst: Union[Buffer, BufferRegion],  # noqa: FA100
     based on the shapes of the input buffers.
 
     Args:
-        dst (Union[tvm.tir.Buffer, tvm.tir.BufferRegion]): The destination buffer
-            or buffer region. Must be allocated in the Unified Buffer (UB).
-            Its shape determines the output size.
-        src (Union[tvm.tir.Buffer, tvm.tir.BufferRegion]): The source buffer
-            or buffer region. Must be allocated in the Unified Buffer (UB).
-            Its shape must be compatible with `dst` for broadcasting.
-        tmp (Union[tvm.tir.Buffer, tvm.tir.BufferRegion]): The temporary buffer
-            or buffer region.
+        dst (tvm.tir.Buffer): The destination buffer. Must be allocated in the
+            Unified Buffer (UB). Its shape determines the output size.
+        src (tvm.tir.Buffer): The source buffer. Must be allocated in the
+            Unified Buffer (UB). Its shape must be compatible with `dst` for broadcasting.
+        tmp (tvm.tir.Buffer): The temporary buffer.
 
     Returns:
         tvm.tir.Call: A TIR intrinsic call node that maps to the C++ `AscendC::Broadcast` API.
@@ -1517,8 +1514,7 @@ def broadcast(dst: Union[Buffer, BufferRegion],  # noqa: FA100
         AssertionError: If the input shapes violate the dimension constraints.
 
     Constraints:
-        1. **Rank Consistency**: The effective number of dimensions (rank) of `src` and `dst`
-           must be identical after squeezing leading singleton dimensions.
+        1. **Rank Consistency**: The number of dimensions (rank) of `src` and `dst` must be identical.
         2. **Supported Dimensions**: Only 1D and 2D tensors are supported. The rank must be 1 or 2.
         3. **Broadcasting Logic**:
             - **Axis 0 (Row Broadcast)**: Inferred if `src.shape[0] == 1` and `dst.shape[0] > 1`.
