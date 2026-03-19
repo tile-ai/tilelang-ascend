@@ -75,7 +75,7 @@ def get_ascend_device_name() -> str:
 
 
 def supports_native_bf16_npuir_add(device_name: str) -> bool:
-    # native BF16 add is supported in A2/A3.
+    # native BF16 add is not supported in A2/A3.
     if device_name in ["Ascend910B2C"]:
         return False
     return True
