@@ -24,10 +24,7 @@ import importlib
 import logging
 
 # Configure logging with basic settings
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S')
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +37,8 @@ ROOT_DIR = os.path.dirname(__file__)
 USE_LLVM = os.environ.get("USE_LLVM", "False").lower() == "true"
 # Add ROCM control environment variable
 USE_ROCM = os.environ.get("USE_ROCM", "False").lower() == "true"
+# Add ASCEND control environment variable
+USE_ASCEND = os.environ.get("USE_ASCEND", "False").lower() == "true"
 
 
 def load_module_from_path(module_name, path):
@@ -50,24 +49,27 @@ def load_module_from_path(module_name, path):
     return module
 
 
-envs = load_module_from_path('env', os.path.join(ROOT_DIR, PACKAGE_NAME, 'env.py'))
+envs = load_module_from_path("env", os.path.join(ROOT_DIR, PACKAGE_NAME, "env.py"))
 
 CUDA_HOME = envs.CUDA_HOME
 ROCM_HOME = envs.ROCM_HOME
+ASCEND_HOME = envs.ASCEND_HOME
 
 # Check if both CUDA and ROCM are enabled
 if USE_ROCM and not ROCM_HOME:
-    raise ValueError(
-        "ROCM support is enabled (USE_ROCM=True) but ROCM_HOME is not set or detected.")
+    raise ValueError("ROCM support is enabled (USE_ROCM=True) but ROCM_HOME is not set or detected.")
 
-if not USE_ROCM and not CUDA_HOME:
-    raise ValueError(
-        "CUDA support is enabled by default (USE_ROCM=False) but CUDA_HOME is not set or detected.")
+# Check if ASCEND is enabled
+if USE_ASCEND and not ASCEND_HOME:
+    raise ValueError("ASCEND support is enabled (USE_ASCEND=True) but ASCEND_HOME is not set or detected.")
 
-# Ensure one of CUDA or ROCM is available
-if not (CUDA_HOME or ROCM_HOME):
+if not USE_ROCM and not USE_ASCEND and not CUDA_HOME:
+    raise ValueError("CUDA support is enabled by default (USE_ROCM=False) but CUDA_HOME is not set or detected.")
+
+# Ensure one of CUDA or ROCM or ASCEND is available
+if not (CUDA_HOME or ROCM_HOME or ASCEND_HOME):
     raise ValueError(
-        "Failed to automatically detect CUDA or ROCM installation. Please set the CUDA_HOME or ROCM_HOME environment variable manually (e.g., export CUDA_HOME=/usr/local/cuda or export ROCM_HOME=/opt/rocm)."
+        "Failed to automatically detect CUDA, ROCM or ASCEND installation. Please set the CUDA_HOME, ROCM_HOME or ASCEND_HOME environment variable manually (e.g., export CUDA_HOME=/usr/local/cuda or export ROCM_HOME=/opt/rocm or export ASCEND_HOME=/usr/local/Ascend/ascend-toolkit/latest)."
     )
 
 # TileLang only supports Linux platform
@@ -116,13 +118,12 @@ def get_rocm_version():
     rocm_output = subprocess.check_output(["rocminfo"], universal_newlines=True)
     # Parse ROCM version from output
     # Example output: ROCM version: x.y.z-...
-    match = re.search(r'ROCm Version: (\d+\.\d+\.\d+)', rocm_output)
+    match = re.search(r"ROCm Version: (\d+\.\d+\.\d+)", rocm_output)
     if match:
         return LooseVersion(match.group(1))
     else:
         rocm_path = os.environ.get("ROCM_PATH", "/opt/rocm")
-        rocm_version_file = os.path.join(rocm_path, "lib", "cmake", "rocm",
-                                         "rocm-config-version.cmake")
+        rocm_version_file = os.path.join(rocm_path, "lib", "cmake", "rocm", "rocm-config-version.cmake")
         if os.path.exists(rocm_version_file):
             with open(rocm_version_file, "r") as f:
                 content = f.read()
@@ -133,6 +134,20 @@ def get_rocm_version():
     return LooseVersion("5.0.0")
 
 
+def get_cann_version():
+    """Get the Ascend version from version.info."""
+    ascend_home = os.environ.get("ASCEND_HOME_PATH") or os.environ.get("ASCEND_HOME", "/usr/local/Ascend/ascend-toolkit/latest")
+    cann_version_file = os.path.join(ascend_home, "opp", "version.info")
+    if os.path.exists(cann_version_file):
+        with open(cann_version_file, "r") as f:
+            content = f.read()
+            match = re.search(r"Version=(\d+\.\d+\.\d+)", content)
+            if match:
+                return LooseVersion(match.group(1))
+    # return a default
+    return LooseVersion("8.0.0")
+
+
 def get_tilelang_version(with_cuda=True, with_system_info=True, with_commit_id=False) -> str:
     version = find_version(get_path(".", "VERSION"))
     local_version_parts = []
@@ -140,7 +155,12 @@ def get_tilelang_version(with_cuda=True, with_system_info=True, with_commit_id=F
         local_version_parts.append(get_system_info().replace("-", "."))
 
     if with_cuda:
-        if USE_ROCM:
+        if USE_ASCEND:
+            if ASCEND_HOME:
+                cann_version = str(get_cann_version())
+                cann_version_str = cann_version.replace(".", "")[:3]
+                local_version_parts.append(f"cann{cann_version_str}")
+        elif USE_ROCM:
             if ROCM_HOME:
                 rocm_version = str(get_rocm_version())
                 rocm_version_str = rocm_version.replace(".", "")[:3]
@@ -157,9 +177,7 @@ def get_tilelang_version(with_cuda=True, with_system_info=True, with_commit_id=F
     if with_commit_id:
         commit_id = None
         try:
-            commit_id = subprocess.check_output(['git', 'rev-parse', 'HEAD'],
-                                                stderr=subprocess.DEVNULL,
-                                                encoding='utf-8').strip()
+            commit_id = subprocess.check_output(["git", "rev-parse", "HEAD"], stderr=subprocess.DEVNULL, encoding="utf-8").strip()
         except subprocess.SubprocessError as error:
             raise RuntimeError("Failed to get git commit id") from error
         if commit_id:
@@ -210,7 +228,7 @@ def download_and_extract_llvm(version, is_aarch64=False, extract_path="3rdparty"
     elif version >= "13.0.0":
         ubuntu_version = "18.04"
 
-    base_url = (f"https://github.com/llvm/llvm-project/releases/download/llvmorg-{version}")
+    base_url = f"https://github.com/llvm/llvm-project/releases/download/llvmorg-{version}"
     file_name = f"clang+llvm-{version}-{'aarch64-linux-gnu' if is_aarch64 else f'x86_64-linux-gnu-ubuntu-{ubuntu_version}'}.tar.xz"
 
     download_url = f"{base_url}/{file_name}"
@@ -252,8 +270,7 @@ def update_submodules():
     def is_git_repo():
         try:
             # Check if current directory is a git repository
-            subprocess.check_output(["git", "rev-parse", "--is-inside-work-tree"],
-                                    stderr=subprocess.STDOUT)
+            subprocess.check_output(["git", "rev-parse", "--is-inside-work-tree"], stderr=subprocess.STDOUT)
             return True
         except (subprocess.CalledProcessError, FileNotFoundError):
             return False
@@ -313,11 +330,9 @@ def patch_libs(libpath):
     # find patchelf in the system
     patchelf_path = shutil.which("patchelf")
     if not patchelf_path:
-        logger.warning(
-            "patchelf is not installed, which is required for auditwheel to work for compatible wheels."
-        )
+        logger.warning("patchelf is not installed, which is required for auditwheel to work for compatible wheels.")
         return
-    subprocess.run([patchelf_path, '--set-rpath', '$ORIGIN', libpath])
+    subprocess.run([patchelf_path, "--set-rpath", "$ORIGIN", libpath])
 
 
 class TileLangBuilPydCommand(build_py):
@@ -483,6 +498,55 @@ class TileLangBuilPydCommand(build_py):
                     os.makedirs(target_dir)
                 shutil.copy2(source_dir, target_dir)
 
+        # copy catlass to the package directory (for Ascend)
+        CATLASS_PREBUILD_ITEMS = [
+            "3rdparty/catlass/include",
+        ]
+        for item in CATLASS_PREBUILD_ITEMS:
+            source_dir = os.path.join(ROOT_DIR, item)
+            target_dir = os.path.join(self.build_lib, PACKAGE_NAME, item)
+            if os.path.isdir(source_dir):
+                self.mkpath(target_dir)
+                distutils.dir_util.copy_tree(source_dir, target_dir)
+            else:
+                target_dir = os.path.dirname(target_dir)
+                if not os.path.exists(target_dir):
+                    os.makedirs(target_dir)
+                shutil.copy2(source_dir, target_dir)
+
+        # copy shmem to the package directory (for Ascend)
+        SHMEM_PREBUILD_ITEMS = [
+            "3rdparty/shmem/include",
+            "3rdparty/shmem/src/device",
+        ]
+        for item in SHMEM_PREBUILD_ITEMS:
+            source_dir = os.path.join(ROOT_DIR, item)
+            target_dir = os.path.join(self.build_lib, PACKAGE_NAME, item)
+            if os.path.isdir(source_dir):
+                self.mkpath(target_dir)
+                distutils.dir_util.copy_tree(source_dir, target_dir)
+            else:
+                target_dir = os.path.dirname(target_dir)
+                if not os.path.exists(target_dir):
+                    os.makedirs(target_dir)
+                shutil.copy2(source_dir, target_dir)
+
+        # copy pto-isa to the package directory (for Ascend)
+        PTO_ISA_PREBUILD_ITEMS = [
+            "3rdparty/pto-isa/include",
+        ]
+        for item in PTO_ISA_PREBUILD_ITEMS:
+            source_dir = os.path.join(ROOT_DIR, item)
+            target_dir = os.path.join(self.build_lib, PACKAGE_NAME, item)
+            if os.path.isdir(source_dir):
+                self.mkpath(target_dir)
+                distutils.dir_util.copy_tree(source_dir, target_dir)
+            else:
+                target_dir = os.path.dirname(target_dir)
+                if not os.path.exists(target_dir):
+                    os.makedirs(target_dir)
+                shutil.copy2(source_dir, target_dir)
+
         # copy compoable kernel to the package directory
         TL_CONFIG_ITEMS = ["CMakeLists.txt", "VERSION", "README.md", "LICENSE"]
         for item in TL_CONFIG_ITEMS:
@@ -490,8 +554,7 @@ class TileLangBuilPydCommand(build_py):
             target_dir = os.path.join(self.build_lib, PACKAGE_NAME, item)
             # if is VERSION file, replace the content with the new version with commit id
             if not PYPI_BUILD and item == "VERSION":
-                version = get_tilelang_version(
-                    with_cuda=False, with_system_info=False, with_commit_id=True)
+                version = get_tilelang_version(with_cuda=False, with_system_info=False, with_commit_id=True)
                 target_dir = os.path.dirname(target_dir)
                 if not os.path.exists(target_dir):
                     os.makedirs(target_dir)
@@ -515,8 +578,7 @@ class TileLangSdistCommand(sdist):
 
     def make_distribution(self):
         self.distribution.metadata.name = PACKAGE_NAME
-        self.distribution.metadata.version = get_tilelang_version(
-            with_cuda=False, with_system_info=False, with_commit_id=False)
+        self.distribution.metadata.version = get_tilelang_version(with_cuda=False, with_system_info=False, with_commit_id=False)
         super().make_distribution()
 
 
@@ -601,8 +663,7 @@ class CMakeBuild(build_ext):
             subprocess.check_output(["cmake", "--version"])
         except OSError as error:
             # If CMake is not found, raise an error.
-            raise RuntimeError(
-                "CMake must be installed to build the following extensions") from error
+            raise RuntimeError("CMake must be installed to build the following extensions") from error
 
         update_submodules()
 
@@ -613,6 +674,7 @@ class CMakeBuild(build_ext):
         # To make it works with editable install,
         # we need to copy the lib*.so files to the tilelang/lib directory
         import glob
+
         files = glob.glob("*.so")
         if os.path.exists(PACKAGE_NAME):
             target_lib_dir = os.path.join(PACKAGE_NAME, "lib")
@@ -658,25 +720,29 @@ class CMakeBuild(build_ext):
         # Append some configuration variables to 'config.cmake'
         with open(dst_config_cmake, "a") as config_file:
             config_file.write(f"set(USE_LLVM {llvm_config_path})\n")
-            if USE_ROCM:
+            if USE_ASCEND:
+                config_file.write("set(USE_ASCEND ON)\n")
+                config_file.write("set(USE_CUDA OFF)\n")
+                config_file.write("set(USE_ROCM OFF)\n")
+            elif USE_ROCM:
                 config_file.write(f"set(USE_ROCM {ROCM_HOME})\n")
                 config_file.write("set(USE_CUDA OFF)\n")
+                config_file.write("set(USE_ASCEND OFF)\n")
             else:
                 config_file.write(f"set(USE_CUDA {CUDA_HOME})\n")
                 config_file.write("set(USE_ROCM OFF)\n")
+                config_file.write("set(USE_ASCEND OFF)\n")
 
         # Run CMake to configure the project with the given arguments.
         subprocess.check_call(["cmake", ext.sourcedir] + cmake_args, cwd=build_temp)
 
         # Build the project in "Release" mode with all available CPU cores ("-j").
-        subprocess.check_call(["cmake", "--build", ".", "--config", "Release", "-j"],
-                              cwd=build_temp)
+        subprocess.check_call(["cmake", "--build", ".", "--config", "Release", "-j"], cwd=build_temp)
 
 
 setup(
     name=PACKAGE_NAME,
-    version=(get_tilelang_version(with_cuda=False, with_system_info=False)
-             if PYPI_BUILD else get_tilelang_version()),
+    version=(get_tilelang_version(with_cuda=False, with_system_info=False) if PYPI_BUILD else get_tilelang_version()),
     packages=find_packages(where="."),
     package_dir={"": "."},
     author="Microsoft Research",
@@ -684,11 +750,15 @@ setup(
     long_description=read_readme(),
     long_description_content_type="text/markdown",
     platforms=[
-        "Environment :: GPU :: NVIDIA CUDA" if not USE_ROCM else "Environment :: GPU :: AMD ROCm",
+        "Environment :: GPU :: NVIDIA CUDA"
+        if not USE_ROCM and not USE_ASCEND
+        else "Environment :: GPU :: AMD ROCm"
+        if USE_ROCM
+        else "Environment :: GPU :: Huawei Ascend",
         "Operating System :: POSIX :: Linux",
     ],
     license="MIT",
-    keywords="BLAS, CUDA, HIP, Code Generation, TVM",
+    keywords="BLAS, CUDA, HIP, Ascend, Code Generation, TVM",
     url="https://github.com/tile-ai/tilelang",
     classifiers=[
         "Programming Language :: Python :: 3.8",

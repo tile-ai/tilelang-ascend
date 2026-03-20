@@ -29,20 +29,20 @@ static Buffer makeBufferWithLayout(const Buffer &buffer, const Layout &layout,
   const auto *ptr_type =
       TVM_TYPE_AS(buffer->data->type_annotation, PointerTypeNode);
   Type new_type;
+  Var new_var;
   // convert fragments to normal local buffer
   if (ptr_type->storage_scope == "local.fragment") {
     new_type = PointerType(ptr_type->element_type, "local");
+    new_var = Var(buffer->data->name_hint, new_type);
   } else {
-    new_type = buffer->data->type_annotation;
+    new_var = buffer->data;
   }
-  Var new_var;
   if (ptr_type->storage_scope == "global") {
     new_var = buffer->data;
   } else {
     if (var_remap.count(buffer->data)) {
       new_var = var_remap[buffer->data];
     } else {
-      new_var = Var(buffer->data->name_hint, new_type);
       var_remap.Set(buffer->data, new_var);
     }
   }

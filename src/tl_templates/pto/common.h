@@ -23,6 +23,24 @@ using TileMatL1ZN = pto::Tile<pto::TileType::Mat, T, Rows, Cols,
                        512, pto::PadValue::Zero>;
 
 
+template <typename T, int Rows, int Cols,
+          int RowValid = Rows, int ColValid = Cols>
+using TileMatL0A = pto::Tile<pto::TileType::Left, T, Rows, Cols,
+                       pto::BLayout::RowMajor,
+                       RowValid, ColValid,
+                       pto::SLayout::RowMajor,
+                       512, pto::PadValue::Zero>;
+
+
+template <typename T, int Rows, int Cols,
+          int RowValid = Rows, int ColValid = Cols>
+using TileMatL0B = pto::Tile<pto::TileType::Right, T, Rows, Cols,
+                       pto::BLayout::RowMajor,
+                       RowValid, ColValid,
+                       pto::SLayout::ColMajor,
+                       512, pto::PadValue::Zero>;
+
+
 template <typename T, int Rows, int Cols, int RowValid = Rows, int ColValid = Cols>
 using TileUbDataND = pto::Tile<pto::TileType::Vec, T, Rows, Cols,
                        pto::BLayout::RowMajor,
@@ -55,6 +73,30 @@ AICORE PTO_INLINE void cvt_tile(int32_t src_addr,
     pto::TCVT(dst_temp_ub, src_temp_ub, rmode);
 }
 
+template <typename T, uint32_t M, uint32_t N,
+          uint32_t M_L1, uint32_t N_L1, bool transpose = false>
+AICORE PTO_INLINE void copy_l1_to_l0a(
+    TileMatL0A<T, M, N, M, N> &l0a,
+    std::conditional_t<transpose,
+    TileMatL1ZN<T, M_L1, N_L1, M_L1, N_L1>,
+    TileMatL1<T, M_L1, N_L1, M_L1, N_L1>> &A,
+    uint32_t indexRow, uint32_t indexCol
+) {
+    pto::TEXTRACT(l0a, A, indexRow, indexCol);
+}
+
+template <typename T, uint32_t M, uint32_t N,
+          uint32_t M_L1, uint32_t N_L1, bool transpose = false>
+AICORE PTO_INLINE void copy_l1_to_l0b(
+    TileMatL0B<T, M, N, M, N> &l0b,
+    std::conditional_t<transpose,
+    TileMatL1ZN<T, M_L1, N_L1, M_L1, N_L1>,
+    TileMatL1<T, M_L1, N_L1, M_L1, N_L1>> &B,
+    uint32_t indexRow, uint32_t indexCol
+) {
+    pto::TEXTRACT(l0b, B, indexRow, indexCol);
+}
+
 template <typename T1, typename T2, uint32_t M, uint32_t N, uint32_t K,
           uint32_t validM = M, uint32_t validN = N, uint32_t validK = K, uint32_t K_tail,
           bool transpose_A = false, bool transpose_B = false>
@@ -71,9 +113,9 @@ AICORE PTO_INLINE void gemm_v0(
     const uint32_t kL0split = (K + kL0Size - 1) / kL0Size;  // Number of slices
     bool initflag = false;
 
-    pto::TileLeft<T1, M, kL0Size> l0a;
+    TileMatL0A<T1, M, kL0Size, M, kL0Size> l0a;
     pto::TASSIGN(l0a, 0x0);
-    pto::TileRight<T1, kL0Size, N> l0b;
+    TileMatL0B<T1, kL0Size, N, kL0Size, N> l0b;
     pto::TASSIGN(l0b, 0x0);
 
     auto war_event_id = (event_t)(((int)EVENT_ID0 + 1) % 8);
@@ -87,8 +129,8 @@ AICORE PTO_INLINE void gemm_v0(
 
         // Dynamically define the L0 cache size based on whether the tile is an end tile.
         if (is_tail_block) {
-            pto::TileLeft<T1, M, K_tail> l0a;
-            pto::TileRight<T1, K_tail, N> l0b;
+            TileMatL0A<T1, M, K_tail, M, K_tail> l0a;
+            TileMatL0B<T1, K_tail, N, K_tail, N> l0b;
             pto::TASSIGN(l0a, 0x0);
             pto::TASSIGN(l0b, 0x0);
 
@@ -101,18 +143,18 @@ AICORE PTO_INLINE void gemm_v0(
             wait_flag(PIPE_M, PIPE_MTE1, war_event_id);
 
             if constexpr (!transpose_A) {
-                pto::TEXTRACT(l0a, A, 0, kL0Idx * K_tail);
+                copy_l1_to_l0a<T1, M, K_tail, M, K, false>(l0a, A, 0, kL0Idx * K_tail);
             } else {
                 TileMatL1ZN<T1, M, K, validM, validK> A_t;
                 pto::TRESHAPE(A_t, A);
-                pto::TEXTRACT(l0a, A_t, 0, kL0Idx * K_tail);
+                copy_l1_to_l0a<T1, M, K_tail, M, K, true>(l0a, A_t, 0, kL0Idx * K_tail);
             }
             if constexpr (!transpose_B) {
-                pto::TEXTRACT(l0b, B, kL0Idx * K_tail, 0);
+                copy_l1_to_l0b<T1, K_tail, N, K, N, false>(l0b, B, kL0Idx * K_tail, 0);
             } else {
                 TileMatL1ZN<T1, K, N, validK, validN> B_t;
                 pto::TRESHAPE(B_t, B);
-                pto::TEXTRACT(l0b, B_t, kL0Idx * K_tail, 0);
+                copy_l1_to_l0b<T1, K_tail, N, K, N, true>(l0b, B_t, kL0Idx * K_tail, 0);
             }
 
             set_flag(PIPE_MTE1, PIPE_M, war_event_id);
@@ -126,8 +168,8 @@ AICORE PTO_INLINE void gemm_v0(
 
         } else {
             // Non-tail block: The L0 cache is defined at the standard size (current_kSize = kL0Size=128).
-            pto::TileLeft<T1, M, kL0Size> l0a;
-            pto::TileRight<T1, kL0Size, N> l0b;
+            TileMatL0A<T1, M, kL0Size, M, kL0Size> l0a;
+            TileMatL0B<T1, kL0Size, N, kL0Size, N> l0b;
             pto::TASSIGN(l0a, 0x0);
             pto::TASSIGN(l0b, 0x0);
 
@@ -138,18 +180,18 @@ AICORE PTO_INLINE void gemm_v0(
             wait_flag(PIPE_FIX, PIPE_M, war_event_id);
 
             if constexpr (!transpose_A) {
-                pto::TEXTRACT(l0a, A, 0, kL0Idx * kL0Size);
+                copy_l1_to_l0a<T1, M, kL0Size, M, K, false>(l0a, A, 0, kL0Idx * kL0Size);
             } else {
                 TileMatL1ZN<T1, M, K, validM, validK> A_t;
                 pto::TRESHAPE(A_t, A);
-                pto::TEXTRACT(l0a, A_t, 0, kL0Idx * kL0Size);
+                copy_l1_to_l0a<T1, M, kL0Size, M, K, true>(l0a, A_t, 0, kL0Idx * kL0Size);
             }
             if constexpr (!transpose_B) {
-                pto::TEXTRACT(l0b, B, kL0Idx * kL0Size, 0);
+                copy_l1_to_l0b<T1, kL0Size, N, K, N, false>(l0b, B, kL0Idx * kL0Size, 0);
             } else {
                 TileMatL1ZN<T1, K, N, validK, validN> B_t;
                 pto::TRESHAPE(B_t, B);
-                pto::TEXTRACT(l0b, B_t, kL0Idx * kL0Size, 0);
+                copy_l1_to_l0b<T1, kL0Size, N, K, N, true>(l0b, B_t, kL0Idx * kL0Size, 0);
             }
 
             set_flag(PIPE_MTE1, PIPE_M, war_event_id);
@@ -282,14 +324,20 @@ AICORE PTO_INLINE void copy_ub_to_gm_dynamic(
             const pto::Shape<shape1, shape2, shape3, shape4, shape5>& shape,
             const pto::Stride<stride1, stride2, stride3, stride4, stride5>& stride,
             int32_t ub_shape_addr,
-            int32_t ub_offset,
-            int32_t len) {
+            int32_t ub_offset) {
     pto::GlobalTensor<T1, pto::Shape<shape1, shape2, shape3, shape4, shape5>,
     pto::Stride<stride1, stride2, stride3, stride4, stride5>> global_tensor(handle, shape, stride);
-    // TileUbDataND<T2, ub_shape1, ub_shape2> temp_ub(valid1, valid2);
-    TileUbDataND<T2, ub_shape1, ub_shape2, valid1, valid2> temp_ub;
-    pto::TASSIGN(temp_ub, ub_shape_addr + ub_offset * len);
-    pto::TSTORE(global_tensor, temp_ub);
+    constexpr uint8_t len = sizeof(T2);
+    constexpr bool use_nd = (static_cast<uint64_t>(ub_shape2) * len) >= 32;
+    if constexpr (use_nd) {
+        TileUbDataND<T2, ub_shape1, ub_shape2, valid1, valid2> temp_ub;
+        pto::TASSIGN(temp_ub, ub_shape_addr + ub_offset * len);
+        pto::TSTORE(global_tensor, temp_ub);
+    } else {
+        TileUbDataDN<T2, ub_shape1, ub_shape2, valid1, valid2> temp_ub;
+        pto::TASSIGN(temp_ub, ub_shape_addr + ub_offset * len);
+        pto::TSTORE(global_tensor, temp_ub);
+    }
 }
 
 template <typename T1, typename T2, int32_t shape1, int32_t shape2, int32_t shape3,
@@ -331,15 +379,20 @@ template <typename T1, typename T2, int32_t shape1, int32_t shape2, int32_t shap
 AICORE PTO_INLINE void copy_ub_to_gm(
             __gm__ T1 *handle,
             int32_t ub_shape_addr,
-            int32_t ub_offset,
-            int32_t len
-            ) {
+            int32_t ub_offset) {
     pto::GlobalTensor<T1, pto::Shape<shape1, shape2, shape3, shape4, shape5>,
     pto::Stride<stride1, stride2, stride3, stride4, stride5>> global_tensor(handle);
-    // TileUbDataND<T2, ub_shape1, ub_shape2> temp_ub(valid1, valid2);
-    TileUbDataND<T2, ub_shape1, ub_shape2, valid1, valid2> temp_ub;
-    pto::TASSIGN(temp_ub, ub_shape_addr + ub_offset * len);
-    pto::TSTORE(global_tensor, temp_ub);
+    constexpr uint8_t len = sizeof(T2);
+    constexpr bool use_nd = (static_cast<uint64_t>(ub_shape2) * len) >= 32;
+    if constexpr (use_nd) {
+        TileUbDataND<T2, ub_shape1, ub_shape2, valid1, valid2> temp_ub;
+        pto::TASSIGN(temp_ub, ub_shape_addr + ub_offset * len);
+        pto::TSTORE(global_tensor, temp_ub);
+    } else {
+        TileUbDataDN<T2, ub_shape1, ub_shape2, valid1, valid2> temp_ub;
+        pto::TASSIGN(temp_ub, ub_shape_addr + ub_offset * len);
+        pto::TSTORE(global_tensor, temp_ub);
+    }
 }
 
 enum class BinaryOp {

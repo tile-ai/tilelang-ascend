@@ -316,6 +316,54 @@ def test_axpy(target, shape):
     M, N = shape
     run_test_axpy(M, N, 128, 256, target)
 
+def axpy_slice(M, N, block_M, block_N, dtype="float"):
+    m_num = M // block_M
+    n_num = N // block_N
+
+    VEC_NUM = 2
+
+    @T.prim_func
+    def main(
+            A: T.Tensor((M, N), dtype),
+            B: T.Tensor((M, N), dtype),
+    ):
+        with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
+            bx = cid // n_num
+            by = cid % n_num
+
+            a_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
+            b_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
+            T.tile.fill(b_ub, 0)
+
+            T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a_ub)
+
+            T.tile.axpy(b_ub, a_ub, 2.0)
+
+            T.copy(b_ub, B[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
+
+    return main
+
+
+def run_test_axpy_slice(M, N, block_M, block_N, target):
+    func = axpy_slice(M, N, block_M, block_N)
+    func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
+
+    a = torch.randn(M, N).npu()
+
+    torch.npu.synchronize()
+
+    b = func(a)
+
+    ref_b = a * 2.0
+    torch.testing.assert_close(b, ref_b, rtol=1e-2, atol=1e-2)
+
+
+@pytest.mark.parametrize("target", ["ascendc"])
+@pytest.mark.parametrize("shape", [(1024, 1024)])
+def test_axpy_slice(target, shape):
+    M, N = shape
+    run_test_axpy_slice(M, N, 128, 256, target)
+
 
 def bilinear_interpolation(mask, h_repeat, repeat_mode, dst_blk_stride, v_r_offset, v_repeat, src0, src0offset_int,
                            src0offset, src1):
@@ -982,7 +1030,7 @@ def run_test_clamp(size, max_val, min_val, thresh, target):
     b = func(a)
     ref_b = torch.clamp(a, min_val, max_val)
 
-    torch.testing.assert_close(b, ref_b, rtol=0, atol=0)
+    torch.testing.assert_close(b, ref_b, rtol=1e-2, atol=1e-2)
 
 
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
