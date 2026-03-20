@@ -124,12 +124,12 @@ def copy(
             src_extent = src_extent + [1] * (max_len - len(src_extent))
         if len(dst_extent) < max_len:
             dst_extent = dst_extent + [1] * (max_len - len(dst_extent))
-    
+
     extent = []
     for i in range(len(src_extent)):
         src_val = src_extent[i]
         dst_val = dst_extent[i]
-        
+
         if isinstance(src_val, (int, float)) and isinstance(dst_val, (int, float)):
             extent.append(max(src_val, dst_val))
         else:
@@ -200,13 +200,18 @@ def npu_copy_v2(src: Union[tir.Buffer, tir.BufferLoad, tir.BufferRegion],
                 dst: Union[tir.Buffer, tir.BufferLoad],
                 enable_relu: bool = False,
                 transpose: Optional[bool] = False,  # for copy_l1_to_l0 param: tranpose l1
+                pad_value: Optional[Union[float, int, tir.PrimExpr]] = None,
                 ):
     """Copy data between memory regions.
 
     Args:
         src (Union[tir.Buffer, tir.BufferLoad, tir.BufferRegion]): Source memory region
         dst (Union[tir.Buffer, tir.BufferLoad]): Destination memory region
-        coalesced_width (Optional[int], optional): Width for coalesced memory access. Defaults to None.
+        enable_relu (bool): Whether to enable ReLU. Defaults to False.
+        transpose (Optional[bool]): Whether to transpose for copy_l1_to_l0. Defaults to False.
+        pad_value (Optional[Union[float, int, tir.PrimExpr]]): Value to fill in UB unused area.
+            Supports float, int, tir.FloatImm, tir.IntImm, tir.PrimExpr (e.g., -T.infinity(dtype)).
+            Defaults to 0.
 
     Raises:
         TypeError: If copy extents cannot be deduced from arguments
@@ -215,8 +220,8 @@ def npu_copy_v2(src: Union[tir.Buffer, tir.BufferLoad, tir.BufferRegion],
         tir.Call: A handle to the copy operation
     """
     if isinstance(src, tir.Buffer) and isinstance(dst, tir.Buffer):
-            if not transpose:
-                ir.assert_structural_equal(src.shape, dst.shape)
+        if not transpose:
+            ir.assert_structural_equal(src.shape, dst.shape)
 
     src_shape = src.shape if isinstance(src, tir.Buffer) else src.buffer.shape
 
@@ -242,12 +247,12 @@ def npu_copy_v2(src: Union[tir.Buffer, tir.BufferLoad, tir.BufferRegion],
             src_extent = src_extent + [1] * (max_len - len(src_extent))
         if len(dst_extent) < max_len:
             dst_extent = dst_extent + [1] * (max_len - len(dst_extent))
-    
+
     extent = []
     for i in range(len(src_extent)):
         src_val = src_extent[i]
         dst_val = dst_extent[i]
-        
+
         if isinstance(src_val, (int, float)) and isinstance(dst_val, (int, float)):
             extent.append(max(src_val, dst_val))
         else:
@@ -270,7 +275,15 @@ def npu_copy_v2(src: Union[tir.Buffer, tir.BufferLoad, tir.BufferRegion],
     src = _to_region(src, "r")
     dst = _to_region(dst, "w")
 
-    if transpose:
-            return tir.call_intrin("handle", tir.op.Op.get("tl.ascend_copy"), src, dst, enable_relu, transpose)
+    # Handle pad_value parameter
+    if pad_value is None:
+        pad_value = 0
+    if isinstance(pad_value, (tir.FloatImm, tir.IntImm, tir.PrimExpr)):
+        pad_value_expr = pad_value
+    elif isinstance(pad_value, float):
+        pad_value_expr = tir.FloatImm("float32", pad_value)
     else:
-        return tir.call_intrin("handle", tir.op.Op.get("tl.ascend_copy"), src, dst, enable_relu)
+        pad_value_expr = tir.IntImm("int32", int(pad_value))
+
+    return tir.call_intrin("handle", tir.op.Op.get("tl.ascend_copy"),
+                           src, dst, enable_relu, transpose, pad_value_expr)

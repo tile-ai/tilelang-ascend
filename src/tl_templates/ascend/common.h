@@ -53,7 +53,7 @@ CATLASS_DEVICE void copy_l1_to_l0a(LocalTensor<T> dstTensor,
   using LayoutL1_ = std::conditional_t<transpose,
                                       Catlass::detail::TagToLayout_t<T, LayoutL1T>,
                                       Catlass::detail::TagToLayout_t<T, LayoutL1>>;
-  constexpr auto layout = transpose ? 
+  constexpr auto layout = transpose ?
   tla::MakeLayout<T, LayoutL1_>(srcN, srcM) : tla::MakeLayout<T, LayoutL1_>(srcM, srcN);
   auto src_LAYOUT = MakeLayoutTile(layout, tla::MakeShape(dstM, dstN));
   auto src = MakeTensor<decltype(srcTensor), decltype(src_LAYOUT),
@@ -75,7 +75,7 @@ CATLASS_DEVICE void copy_l1_to_l0b(LocalTensor<T> dstTensor,
   using LayoutL1_ = std::conditional_t<transpose,
                                       Catlass::detail::TagToLayout_t<T, LayoutL1T>,
                                       Catlass::detail::TagToLayout_t<T, LayoutL1>>;
-  constexpr auto layout = transpose ? 
+  constexpr auto layout = transpose ?
   tla::MakeLayout<T, LayoutL1_>(srcN, srcM) : tla::MakeLayout<T, LayoutL1_>(srcM, srcN);
   auto src_LAYOUT = MakeLayoutTile(layout, tla::MakeShape(dstM, dstN));
   auto src = MakeTensor<decltype(srcTensor), decltype(src_LAYOUT),
@@ -151,19 +151,46 @@ CATLASS_DEVICE auto thread_block_swizzle(uint64_t pid) {
 template <typename T, uint32_t dstN, uint32_t dstM = 1>
 CATLASS_DEVICE void copy_gm_to_ub(LocalTensor<T> dstTensor,
                                   GlobalTensor<T> srcTensor,
-                                  uint32_t realSrcN = 1) {
+                                  uint32_t realSrcN = 1,
+                                  uint32_t maskShapeM = 0,
+                                  uint32_t maskShapeN = 0,
+                                  T padValue = T(0)) {
+  if (maskShapeN == 0 || maskShapeM == 0) {
+    maskShapeN = dstN;
+    maskShapeM = dstM;
+  }
+
+  bool isPad = true;
+  uint32_t rightPadding = 1;
+  if (maskShapeN == dstN) {
+    isPad = false;
+    rightPadding = 0;
+  }
+  if (maskShapeM != dstM) {
+    AscendC::Duplicate<T>(dstTensor, padValue, dstM * dstN);
+    PipeBarrier<PIPE_V>();
+  }
   AscendC::DataCopyExtParams dataCopyParams(
-      dstM, dstN * sizeof(T), (realSrcN - dstN) * sizeof(T), 0, 0);
-  AscendC::DataCopyPadExtParams<T> padParams(false, 0, 0, 0);
+      maskShapeM, maskShapeN * sizeof(T), (realSrcN - maskShapeN) * sizeof(T),
+      (dstN - maskShapeN) * sizeof(T) / 32, 0);
+  AscendC::DataCopyPadExtParams<T> padParams(isPad, 0, rightPadding, padValue);
   AscendC::DataCopyPad(dstTensor, srcTensor, dataCopyParams, padParams);
 }
 
 template <typename T, uint32_t srcN, uint32_t srcM = 1>
 CATLASS_DEVICE void copy_ub_to_gm(GlobalTensor<T> dstTensor,
                                   LocalTensor<T> srcTensor,
-                                  uint32_t realdstN = 1) {
-  AscendC::DataCopyExtParams dataCopyParams(srcM, srcN * sizeof(T), 0,
-                                            (realdstN - srcN) * sizeof(T), 0);
+                                  uint32_t realdstN = 1,
+                                  uint32_t maskShapeM = 0,
+                                  uint32_t maskShapeN = 0) {
+  if (maskShapeN == 0 || maskShapeM == 0) {
+    maskShapeN = srcN;
+    maskShapeM = srcM;
+  }
+
+  AscendC::DataCopyExtParams dataCopyParams(
+      maskShapeM, maskShapeN * sizeof(T), (srcN - maskShapeN) * sizeof(T) / 32,
+      (realdstN - maskShapeN) * sizeof(T), 0);
   AscendC::DataCopyPad(dstTensor, srcTensor, dataCopyParams);
 }
 
@@ -240,13 +267,13 @@ CATLASS_DEVICE void shmem_put_nbi(const GlobalTensor<T> &output, const GlobalTen
     __gm__ T* outputPtr = const_cast<__gm__ T*>(output.GetPhyAddr());
     __gm__ T* inputPtr = const_cast<__gm__ T*>(input.GetPhyAddr());
     __ubuf__ T* buf = reinterpret_cast<__ubuf__ T*>(ub_tensor.GetPhyAddr());
-    aclshmemx_mte_put_nbi(outputPtr, inputPtr, buf, ub_size, nelems, newPe, EVENT_ID0);                                                                                 
+    aclshmemx_mte_put_nbi(outputPtr, inputPtr, buf, ub_size, nelems, newPe, EVENT_ID0);
 }
 
 template <typename T>
-CATLASS_DEVICE void shmem_ub_put_nbi(const LocalTensor<T> &ubTensor, const GlobalTensor<T> &output, size_t nelems, int newPe, int strelem) {                                                                                  
-    aclshmemx_mte_put_nbi(const_cast<__gm__ T*>(output.GetPhyAddr() + strelem),                                       
-        reinterpret_cast<__ubuf__ T*>(ubTensor.GetPhyAddr()), nelems, newPe, EVENT_ID0);                                                                     
+CATLASS_DEVICE void shmem_ub_put_nbi(const LocalTensor<T> &ubTensor, const GlobalTensor<T> &output, size_t nelems, int newPe, int strelem) {
+    aclshmemx_mte_put_nbi(const_cast<__gm__ T*>(output.GetPhyAddr() + strelem),
+        reinterpret_cast<__ubuf__ T*>(ubTensor.GetPhyAddr()), nelems, newPe, EVENT_ID0);
 }
 
 template <typename T>
@@ -261,7 +288,7 @@ CATLASS_DEVICE void shmem_get_nbi(const GlobalTensor<T> &output, const GlobalTen
     __gm__ T* outputPtr = const_cast<__gm__ T*>(output.GetPhyAddr());
     __gm__ T* inputPtr = const_cast<__gm__ T*>(input.GetPhyAddr());
     __ubuf__ T* buf = reinterpret_cast<__ubuf__ T*>(ub_tensor.GetPhyAddr());
-    aclshmemx_mte_get_nbi(outputPtr, inputPtr, buf, ub_size, nelems, newPe, EVENT_ID0); 
+    aclshmemx_mte_get_nbi(outputPtr, inputPtr, buf, ub_size, nelems, newPe, EVENT_ID0);
 }
 
 template <typename T>
@@ -492,7 +519,7 @@ template <typename T>
 CATLASS_DEVICE void Gather(const LocalTensor<T> &dst,
                            const LocalTensor<T> &sortedTensor,
                            const LocalTensor<uint32_t> &src1Pattern) {
-  
+
   int32_t count = src1Pattern.GetSize();
   int32_t scalarValue = sizeof(T);
   LocalTensor<int32_t> offset = const_cast<LocalTensor<uint32_t>&>(src1Pattern).template ReinterpretCast<int32_t>();
