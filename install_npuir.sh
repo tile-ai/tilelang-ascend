@@ -135,13 +135,15 @@ if [ -z "$BISHENGIR_PATH" ]; then
     echo "warring: no --bishengir-path set, bishengir path will be found in environment variable PATH"
     # build bishengir in 3rdparty
     echo "build bishengir in 3rdparty"
-    git submodule update --init --recursive 3rdparty/AscendNPU-IR
-    pushd 3rdparty/AscendNPU-IR
-    bash ./build-tools/apply_patches.sh
+    git submodule update --init --recursive 3rdparty/AscendNPU-IR-Dev
+    pushd 3rdparty/AscendNPU-IR-Dev
     rm -rf ./build
-    ./build-tools/build.sh -o ./build --python-binding --c-compiler=clang --cxx-compiler=clang++ \
-    --add-cmake-options="-DCMAKE_LINKER=lld -DLLVM_ENABLE_LLD=ON -DLLVM_ENABLE_RTTI=ON" --apply-patches --bishengir-publish=off
-    BISHENGIR_PATH="./3rdparty/AscendNPU-IR/build/install"
+    mkdir build
+    ./build-tools/build.sh --c-compiler clang --cxx-compiler clang++ \
+    --add-cmake-options="-DCMAKE_LINKER=lld -DLLVM_ENABLE_LLD=ON -DLLVM_ENABLE_RTTI=ON" --build-type Release -j 96 --enable-assertion \
+    --disable-werror --disable-mlir-werror --disable-bishengir-werror --build-triton \
+    --build ./build   --apply-patches
+    BISHENGIR_PATH="./3rdparty/AscendNPU-IR-Dev/build/install"
     popd
 fi
 

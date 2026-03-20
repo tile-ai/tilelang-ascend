@@ -208,10 +208,10 @@ static std::map<std::string, mlir::hivm::ReduceOperation> NPUIR_STR_REDUCEOP{
     {"prod", mlir::hivm::ReduceOperation::prod},
     {"max", mlir::hivm::ReduceOperation::max},
     {"min", mlir::hivm::ReduceOperation::min},
-    {"max_with_index_left", mlir::hivm::ReduceOperation::max_with_index_left},
-    {"max_with_index_right", mlir::hivm::ReduceOperation::max_with_index_right},
-    {"min_with_index_left", mlir::hivm::ReduceOperation::min_with_index_left},
-    {"min_with_index_right", mlir::hivm::ReduceOperation::min_with_index_right},
+    {"max_with_index_left", mlir::hivm::ReduceOperation::max_with_index},
+    {"max_with_index_right", mlir::hivm::ReduceOperation::max_with_index},
+    {"min_with_index_left", mlir::hivm::ReduceOperation::min_with_index},
+    {"min_with_index_right", mlir::hivm::ReduceOperation::min_with_index},
     {"any", mlir::hivm::ReduceOperation::any},
     {"all", mlir::hivm::ReduceOperation::all},
     {"xori", mlir::hivm::ReduceOperation::xori},
@@ -1232,9 +1232,11 @@ void CodeGenTileLangNPUIRAPI::AscendCopyCodegen(const CallNode *op) {
         mlir::hivm::FixpipePreReluModeAttr::get(builder.getContext(),
                                                 pre_relu_mode);
     mlir::BoolAttr channel_split = builder.getBoolAttr(false);
+    // builder.create<mlir::hivm::FixpipeOp>(
+    //     builder.getUnknownLoc(), mlir::TypeRange{}, src, dst, enable_nz2nd,
+    //     pre_quant, pre_relu, channel_split);
     builder.create<mlir::hivm::FixpipeOp>(
-        builder.getUnknownLoc(), mlir::TypeRange{}, src, dst, enable_nz2nd,
-        pre_quant, pre_relu, channel_split);
+    builder.getUnknownLoc(), mlir::TypeRange{}, src, dst);
     return;
   }
 
@@ -1356,9 +1358,12 @@ void CodeGenTileLangNPUIRAPI::VreduceCodegen(const CallNode *op) {
   mlir::hivm::ReduceOperation operation = NPUIR_STR_REDUCEOP[reduce_mode];
   mlir::hivm::ReduceOpAttr mode =
       mlir::hivm::ReduceOpAttr::get(&context, operation);
+  // builder.create<mlir::hivm::VReduceOp>(
+  //     loc, TypeRange{}, src, dst, mode,
+  //     builder.getDenseI64ArrayAttr(npuirop.reduce_dims));
+  auto booleanAttr = mlir::BoolAttr::get(builder.getContext(), true);
   builder.create<mlir::hivm::VReduceOp>(
-      loc, TypeRange{}, src, dst, mode,
-      builder.getDenseI64ArrayAttr(npuirop.reduce_dims));
+  loc, TypeRange{}, src, dst, mode, booleanAttr, builder.getDenseI64ArrayAttr(npuirop.reduce_dims));
 }
 
 void CodeGenTileLangNPUIRAPI::VcumsumCodegen(const CallNode *op) {
@@ -1376,9 +1381,12 @@ void CodeGenTileLangNPUIRAPI::VcumsumCodegen(const CallNode *op) {
     ICHECK(false) << "reverse=True is not yet supported\n";
     return;
   }
+  // builder.create<mlir::hivm::VCumsumOp>(
+  //     loc, TypeRange{}, src, dst,
+  //     builder.getDenseI64ArrayAttr(npuirop.cum_dims));
+  auto booleanAttr = mlir::BoolAttr::get(builder.getContext(), false);
   builder.create<mlir::hivm::VCumsumOp>(
-      loc, TypeRange{}, src, dst,
-      builder.getDenseI64ArrayAttr(npuirop.cum_dims));
+      loc, TypeRange{}, src, dst, builder.getDenseI64ArrayAttr(npuirop.cum_dims), booleanAttr);
 }
 
 void CodeGenTileLangNPUIRAPI::VsigmoidCodegen(const tvm::tir::CallNode *op) {
@@ -1628,9 +1636,10 @@ void CodeGenTileLangNPUIRAPI::FixpipeCodegen(const CallNode *op) {
       mlir::hivm::FixpipePreReluModeAttr::get(builder.getContext(),
                                               pre_relu_mode);
   mlir::BoolAttr channel_split = builder.getBoolAttr(npuirop.channel_split);
-  builder.create<mlir::hivm::FixpipeOp>(unknown_loc, result, src, dst,
-                                        enable_nz2nd, pre_quant, pre_relu,
-                                        channel_split);
+  // builder.create<mlir::hivm::FixpipeOp>(unknown_loc, result, src, dst,
+  //                                        enable_nz2nd, pre_quant, pre_relu,
+  //                                        channel_split);
+  builder.create<mlir::hivm::FixpipeOp>(unknown_loc, result, src, dst);
 }
 
 void CodeGenTileLangNPUIRAPI::DotCodegen(const CallNode *op) {
@@ -1803,6 +1812,9 @@ void CodeGenTileLangNPUIRAPI::CreateHIVMBinaryVectorOp(const CallNode *op) {
                                           op->args[3].as<Bool>().value());
     builder.create<T>(loc, mlir::TypeRange{}, mlir::ValueRange{src0, src1},
                       mlir::ValueRange{dst}, round_attr, transpose, broadcast);
+  } else if constexpr (std::is_same_v<T, mlir::hivm::VDivOp>) {
+        builder.create<T>(loc, mlir::TypeRange{}, mlir::ValueRange{src0, src1},
+                      mlir::ValueRange{dst}, true, transpose, broadcast);
   } else {
     builder.create<T>(loc, mlir::TypeRange{}, mlir::ValueRange{src0, src1},
                       mlir::ValueRange{dst}, transpose, broadcast);
