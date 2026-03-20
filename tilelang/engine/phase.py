@@ -1,12 +1,12 @@
 # Copyright (c) Tile-AI Organization.
 # Licensed under the MIT License.
-import os
 from tvm import tir, IRModule
 from tvm.target import Target
 import tilelang
 from tilelang.transform import PassContext
 from tilelang.contrib.nvcc import have_tma
 from typing import Optional
+from tilelang.utils import get_ascend_device_name, supports_native_bf16_npuir_add
 
 
 def allow_warp_specialized(
@@ -53,32 +53,7 @@ def allow_vectorize(pass_ctx: Optional[PassContext] = None) -> bool:
     return not disable_vectorize
 
 
-def get_ascend_device_name() -> str:
-    # 1. Highest priority: User-specified environment variable
-    device_name = os.environ.get("TILELANG_ASCEND_DEVICE_NAME")
-    if device_name:
-        return device_name.strip()
-
-    # 2. Secondary priority: Runtime capability detection
-    try:
-        from tilelang.utils import NPUUtils
-
-        return NPUUtils.get().get_arch()
-    except Exception as e:
-        import logging
-
-        logging.getLogger(__name__).warning(
-            f"Failed to get Ascend arch from NPUUtils: {e}. "
-            "Fallback to default behavior."
-        )
-
-    # 3. Fallback to Ascend910B2C if runtime detection fails
-    return "Ascend910B2C"
-
-
-def supports_native_bf16_npuir_add(device_name: str) -> bool:
-    # On Ascend 910B and later, native BF16 add not is supported in NPU IR.
-    return "910B" not in device_name
+# Chip capabilities and device discovery are now handled in tilelang.utils.npu_chip
 
 
 def need_npuir_bf16_legalize(target: Optional[Target] = None) -> bool:

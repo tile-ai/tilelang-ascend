@@ -84,14 +84,24 @@ fi
 export PIP_USER=0
 
 # If pre-commit is not installed, install it.
-if ! python3 -m pre_commit --version &>/dev/null; then
-    python3 -m pip install pre-commit --user
+if ! command -v pre-commit &>/dev/null; then
+    if ! python3 -m pre_commit --version &>/dev/null; then
+        python3 -m pip install pre-commit --user --break-system-packages 2>/dev/null || \
+        python3 -m pip install pre-commit --user || \
+        echo "Warning: Failed to install pre-commit via pip. Formatting may be skipped."
+    fi
+fi
+
+# Determine how to run pre-commit
+PRE_COMMIT_CMD="pre-commit"
+if ! command -v pre-commit &>/dev/null; then
+    PRE_COMMIT_CMD="python3 -m pre_commit"
 fi
 
 echo 'tile-lang pre-commit: Check Start'
 
 if [[ -n "${ALL_FILES}" ]]; then
-    python3 -m pre_commit run --all-files
+    ${PRE_COMMIT_CMD} run --all-files
 elif [[ -n "${ONLY_CHANGED}" ]]; then
     # Collect changed files (committed since merge-base + current worktree)
     CHANGED_FILES="$(git diff --name-only --diff-filter=ACM "${MERGE_BASE}" 2>/dev/null || true)"
@@ -100,12 +110,12 @@ elif [[ -n "${ONLY_CHANGED}" ]]; then
         echo "${CHANGED_FILES}"
         # Convert newline-separated files to space-separated and run pre-commit once
         CHANGED_FILES_SPACE="$(echo "${CHANGED_FILES}" | tr '\n' ' ')"
-        python3 -m pre_commit run --files ${CHANGED_FILES_SPACE}
+        ${PRE_COMMIT_CMD} run --files ${CHANGED_FILES_SPACE}
     else
         echo "No files changed relative to merge base and worktree. Skipping pre-commit."
     fi
 elif [[ "${#FILES[@]}" -gt 0 ]]; then
-    python3 -m pre_commit run --files "${FILES[@]}"
+    ${PRE_COMMIT_CMD} run --files "${FILES[@]}"
 fi
 
 echo 'tile-lang pre-commit: Done'
