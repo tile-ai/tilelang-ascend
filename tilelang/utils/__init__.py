@@ -26,8 +26,8 @@ from .npu_utils import (
     get_npu_launcher_header,  # noqa: F401
     safe_copy,  # noqa: F401
 )
-from .npu_chip import (
+from .npu_arch import (
     get_ascend_device_name,  # noqa: F401
-    supports_native_bf16_npuir_add,  # noqa: F401
-    get_chip,  # noqa: F401
+    supports_native_bf16,  # noqa: F401
+    get_arch_obj,  # noqa: F401
 )

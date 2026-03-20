@@ -1,12 +1,12 @@
-# Copyright (c) Tile-AI Organization.
+# Copyright (c) Tile-AI Corporation.
 # Licensed under the MIT License.
 
 import os
 import logging
 
 
-class AscendChip:
-    """Base class for Ascend chip capabilities."""
+class AscendArch:
+    """Base class for Ascend architecture capabilities."""
 
     def __init__(self, name: str):
         self.name = name
@@ -17,33 +17,33 @@ class AscendChip:
         return False
 
 
-class AscendChip910B(AscendChip):
+class AscendArch910B(AscendArch):
     """Specific properties for Ascend 910B series."""
 
     pass
 
 
-class AscendChip910_95(AscendChip):
+class AscendArch910_95(AscendArch):
     """Specific properties for Ascend 910_95 series."""
 
     pass
 
 
-# Map device name prefixes to their corresponding chip classes.
+# Map device name prefixes to their corresponding architecture classes.
 # Order matters if prefixes overlap.
-CHIP_MAP = {
-    "Ascend910B": AscendChip910B,
-    "Ascend910_95": AscendChip910_95,
+ARCH_MAP = {
+    "Ascend910B": AscendArch910B,
+    "Ascend910_95": AscendArch910_95,
 }
 
 
-def get_chip(device_name: str) -> AscendChip:
-    """Identify the chip type based on the device name prefix."""
-    for prefix, chip_cls in CHIP_MAP.items():
+def get_arch_obj(device_name: str) -> AscendArch:
+    """Identify the architecture type based on the device name prefix."""
+    for prefix, arch_cls in ARCH_MAP.items():
         if device_name.startswith(prefix):
-            return chip_cls(device_name)
-    # Default fallback for unknown chips.
-    return AscendChip(device_name)
+            return arch_cls(device_name)
+    # Default fallback for unknown architectures.
+    return AscendArch(device_name)
 
 
 def get_ascend_device_name() -> str:
@@ -70,7 +70,7 @@ def get_ascend_device_name() -> str:
     return "Ascend910B"
 
 
-def supports_native_bf16_npuir_add(device_name: str) -> bool:
-    """Check if the given device natively supports BF16 add instructions."""
-    chip = get_chip(device_name)
-    return chip.supports_native_bf16
+def supports_native_bf16(device_name: str) -> bool:
+    """Check if the given device natively supports BF16 instructions."""
+    arch = get_arch_obj(device_name)
+    return arch.supports_native_bf16

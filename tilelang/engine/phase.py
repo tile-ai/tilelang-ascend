@@ -6,7 +6,7 @@ import tilelang
 from tilelang.transform import PassContext
 from tilelang.contrib.nvcc import have_tma
 from typing import Optional
-from tilelang.utils import get_ascend_device_name, supports_native_bf16_npuir_add
+from tilelang.utils import get_ascend_device_name, supports_native_bf16
 
 
 def allow_warp_specialized(
@@ -60,7 +60,7 @@ def need_npuir_bf16_legalize(target: Optional[Target] = None) -> bool:
     if target is None or target.kind.name != "npuir":
         return False
 
-    return not supports_native_bf16_npuir_add(get_ascend_device_name())
+    return not supports_native_bf16(get_ascend_device_name())
 
 
 def LowerAndLegalize(mod: IRModule, target: Target) -> IRModule:
