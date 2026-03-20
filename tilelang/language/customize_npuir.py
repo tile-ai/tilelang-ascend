@@ -85,7 +85,12 @@ class AscendBinaryOp(object):
     def buildTirCall(self):
         
         src0 = _to_region(self.__src0, "r", _get_extent(self.__src0))
-        src1 = tir.const(self.__src1, self.__dst.dtype) if isinstance(self.__src1,(int,float)) else _to_region(self.__src1, "r", _get_extent(self.__src1))
+        if isinstance(self.__src1, (int, float)):
+            src1 = tir.const(self.__src1, self.__dst.dtype)
+        elif isinstance(self.__src1, tir.expr.Var):
+            src1 = self.__src1
+        else:
+            src1 = _to_region(self.__src1, "r", _get_extent(self.__src1))
         dst = _to_region(self.__dst, "w", _get_extent(self.__dst))
         return tir.call_intrin("handle", tir.op.Op.get("tl.npuir_" + self.__opName), src0, src1, dst)
 
