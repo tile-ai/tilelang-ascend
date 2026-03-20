@@ -17,9 +17,11 @@ _kernel_cache_instance = KernelCache()
 def cached(
     func: PrimFunc = None,
     out_idx: List[int] = None,
+    workspace_idx: List[int] = None,
     *args,
     target: Union[str, Target] = "auto",
     target_host: Union[str, Target] = None,
+    platform: str = "auto",
     execution_backend: Optional[Literal["dlpack", "ctypes", "cython"]] = "cython",
     verbose: Optional[bool] = False,
     pass_configs: Optional[dict] = None,
@@ -27,12 +29,15 @@ def cached(
     """
     Caches and reuses compiled kerne(ls (using KernelCache class).
     """
+
     return _kernel_cache_instance.cached(
         func,
         out_idx,
+        workspace_idx,
         *args,
         target=target,
         target_host=target_host,
+        platform=platform,
         execution_backend=execution_backend,
         verbose=verbose,
         pass_configs=pass_configs,

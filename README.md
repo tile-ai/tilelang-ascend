@@ -17,6 +17,7 @@ Tile Language Ascend (**tilelang-ascend**) is a specialized variant of the tile-
 </p>
 
 ## Latest News
+- 03/16/2026 🚀: Added [wheel package installation support](https://github.com/tile-ai/tilelang-ascend?tab=readme-ov-file#installation), enabling easy installation via pip!
 - 12/08/2025 ✨: Added [T.Parallel](https://github.com/tile-ai/tilelang-ascend?tab=readme-ov-file#tparallel) support, check out [Pull Request#113](
 https://github.com/tile-ai/tilelang-ascend/pull/113) for details.
 - 11/25/2025 ✨: [Automatic buffer reuse](https://github.com/tile-ai/tilelang-ascend?tab=readme-ov-file#automatic-buffer-reuse) support, see [Pull Request#101](
@@ -26,6 +27,21 @@ https://github.com/tile-ai/tilelang-ascend/pull/101)!
 https://github.com/tile-ai/tilelang-ascend/pull/74)!
 - 10/28/2025 🚀: Enhanced the performance of tl_templates and completed a high-performance [GEMM kernel](https://github.com/tile-ai/tilelang-ascend/blob/ascendc_pto/examples/gemm/example_gemm_intrinsic.py).
 - 09/29/2025 🚀: We are excited to announce that tilelang-ascend, a dsl for high performance AI workloads on Ascend NPUs, is now open source and available to the public!
+
+## Programming Guide
+For more instructions and tips on using TileLang-Ascend, please refer to the [TileLang-Ascend Programming Guide](./docs/TileLang-Ascend%20Programming%20Guide.md).
+
+## Lessons
+
+Welcome to the TileLang-Ascend video course series. You can access all the lessons via the links below:
+
+| Lesson | Topic | Video Link |
+| :---: | :--- | :---: |
+| **01** | Introduction to TileLang-Ascend Development Environment | [📺 Start learning](https://www.bilibili.com/video/BV1EdFVzpEbg/) |
+| **02** | TileLang-Ascend Programming Fundamentals | [📺 Start learning](https://www.bilibili.com/video/BV1uvFLzyEZ3/) |
+| **03** | TileLang-Ascend Developer Programming Model Deep Dive | [📺 Start learning](https://www.bilibili.com/video/BV1DoFzz2EHB/) |
+| **04** | Getting Started with TileLang-Ascend Performance Tuning and Debugging Tools | [📺 Start learning](https://www.bilibili.com/video/BV1QdFzz7E5W/) |
+| **05** | TileLang-Ascend Engineering Practice: Compilation, Integration, and Deployment | [📺 Start learning](https://www.bilibili.com/video/BV1bmFkzHEb6/) |
 
 ## Tested Devices
 Although tilelang-ascend aims to be portable across a range of Ascend devices, it has been specifically tested and validated on the following NPUs: A2 and A3.
@@ -53,17 +69,51 @@ We assume you already have an ascend environment with CANN (at least [8.3.RC1](h
 
 ### TileLang-Ascend Installation
 
-Here we use the method of compiling from source code for installation.
+Here we provide two installation methods: installing from wheel package and compiling from source code.
 
-#### a) Download
+#### Method 1: Install from Wheel Package (Recommended)
+
+Download the pre-built wheel package and install it directly:
+
+```bash
+# Set Ascend environment variable
+export ASCEND_HOME_PATH=/usr/local/Ascend/ascend-toolkit/latest
+
+# Install the wheel package
+pip install tilelang-*.whl
+```
+
+#### Method 2: Build Wheel Package from Source
+
+If you need to build the wheel package from source:
+
+```bash
+# Clone the repository
+git clone --recursive https://github.com/tile-ai/tilelang-ascend.git
+cd tilelang-ascend
+
+# Set Ascend environment variable
+export ASCEND_HOME_PATH=/usr/local/Ascend/ascend-toolkit/latest
+
+# Build and install wheel package
+./build_wheel_ascend.sh [--enable-llvm]
+
+# Install the built wheel package
+pip install dist/tilelang-*.whl
+```
+
+#### Method 3: Compile and Install from Source
+
+a) Download
 
     git clone --recursive https://github.com/tile-ai/tilelang-ascend.git
     cd tilelang-ascend
 
-#### b) Compile and Install
+b) Compile and Install
+
     bash install_ascend.sh
 
-#### c) Environment Variable Setup
+c) Environment Variable Setup
 
     source set_env.sh
 
@@ -365,26 +415,110 @@ pass_configs = {
 @tilelang.jit(out_idx=[3], pass_configs=pass_configs)
 def sparse_attention_fwd(
     ...
-    # T.add(acc_s_ub, acc_s_ub, acc_s_ub_)
+    # T.tile.add(acc_s_ub, acc_s_ub, acc_s_ub_)
     for (i, j) in T.Parallel(v_block, BI):
         acc_s_ub[i, j] = acc_s_ub[i, j] + acc_s_ub_[i, j]
     ...
 
-    # T.mul(acc_s_ub, acc_s_ub, sm_scale)
+    # T.tile.mul(acc_s_ub, acc_s_ub, sm_scale)
     for (i, j) in T.Parallel(v_block, BI):
         acc_s_ub[i, j] = acc_s_ub[i, j] * sm_scale
     ...
 
-    # T.max(m_i, m_i, m_i_prev)
+    # T.tile.max(m_i, m_i, m_i_prev)
     for i in T.Parallel(v_block):
         m_i[i] = T.max(m_i[i], m_i_prev[i])
     ...
 
     # for h_i in range(v_block):
-        # T.sub(acc_s_ub[h_i, :], acc_s_ub[h_i, :], m_i[h_i])
+        # T.tile.sub(acc_s_ub[h_i, :], acc_s_ub[h_i, :], m_i[h_i])
     for (h_i, j) in T.Parallel(v_block, D):
         acc_s_ub[h_i, j] = acc_s_ub[h_i, j] - m_i[h_i]
 )
+```
+
+### Auto-allocated Workspace
+We now support [automatic workspace allocation](./docs/tutorials/automatic_workspace_allocation.md), enabling users to call operators without managing workspace or output tensor allocation—they only need to handle input tensors. Refer to [example_sparse_flash_attn.py](https://github.com/tile-ai/tilelang-ascend/blob/ascendc_pto/examples/sparse_flash_attention/example_sparse_flash_attn.py) for a concrete example.
+```python
+# Specify workspace positions in parameter list via workspace_idx
+@tilelang.jit(out_idx=[3], workspace_idx=[4,5,6,7,8])
+def sparse_attention_fwd(...):
+    @T.prim_func
+    def main(
+            # --- Input tensors ---
+            Q: T.Tensor(q_shape, dtype),  
+            KV: T.Tensor(kv_shape, dtype),  
+            Indices: T.Tensor(indices_shape, indices_dtype), 
+
+            # --- Auto-allocated output (index 3 in out_idx) --- 
+            Output: T.Tensor(o_shape, dtype),  
+
+            # --- Auto-allocated workspaces (indices 4-8 in workspace_idx) ---
+            # These are temporary buffers managed by the runtime
+            workspace_1: T.Tensor([block_num, BI, D], dtype),
+            workspace_2: T.Tensor([block_num, BI, D_tail], dtype),
+            workspace_3: T.Tensor([block_num, H_per_block, BI], accum_dtype),
+            workspace_4: T.Tensor([block_num, H_per_block, BI], dtype),
+            workspace_5: T.Tensor([block_num, H_per_block, D], accum_dtype),
+    ):
+
+    ...
+
+# Instantiate sparse attention function
+func = sparse_attention_fwd(
+    heads=128,
+    dim=512,
+    tail_dim=64,
+    topk=2048,
+    kv_stride=1,
+)
+
+# Prepare input tensors
+q = torch.randn((B, S, H, DQK), dtype=dtype)
+kv = torch.randn((B, SKV, HKV, DQK), dtype=dtype)
+indices = torch.full((B, S, HKV, topk), SKV, dtype=torch.int32)
+for b in range(B):
+    for t in range(S):
+        for h in range(HKV):
+            i_i = torch.randperm(max(1, ((t + q_start_s_index) // KV_stride)))[:topk]
+            indices[b, t, h, :len(i_i)] = i_i
+
+# Call operator - output and workspaces are automatically allocated!
+output = func(q, kv, indices)
+```
+### T.Pipelined
+We have supported [T.pipelined](https://github.com/tile-ai/tilelang-ascend/blob/ascendc_pto/docs/tutorials/t_pipelied.md), which enables automatic pipeline scheduling  to achieve intra-core computation and data movement overlap, as well as inter-core pipeline overlap between Cube and Vector units, thereby enhancing performance.
+
+Here is an intra-core example refers to [matmul_add_pipeline.py](https://github.com/tile-ai/tilelang-ascend/blob/ascendc_pto/examples/pipeline/matmul_add_pipeline.py):
+```python
+for k in T.Pipelined(loop_k, num_stages=2):
+    T.copy(A[bx * block_M, k * block_K], A_L1)
+    T.copy(B[k * block_K, by * block_N], B_L1)
+
+    T.barrier_all()
+    if k == 0:
+        T.gemm_v0(A_L1, B_L1, C_L0, init=True)
+    else:
+        T.gemm_v0(A_L1, B_L1, C_L0)
+
+    T.barrier_all()
+```
+
+An inter-core example refers to [flash_attn_bshd_pipeline.py](https://github.com/tile-ai/tilelang-ascend/blob/ascendc_pto/examples/pipeline/flash_attn_bshd_pipeline.py):
+```python
+for k in T.Pipelined(T.ceildiv(seq_len, block_N), num_stages=2):
+    T.copy(K[bz, by, k * block_N:(k + 1) * block_N, :], k_l1)
+    T.gemm_v0(q_l1, k_l1, acc_s_l0c, transpose_B=True, init=True)
+    T.copy(acc_s_l0c, workspace_1[cid, :, :])
+
+    T.tile.fill(acc_s_ub, 0.0)
+    T.copy(m_i, m_i_prev)
+    T.copy(
+        workspace_1[cid, vid * block_M // 2:vid * block_M // 2 + block_M // 2, :],
+        acc_s_ub_)
+    T.tile.add(acc_s_ub, acc_s_ub, acc_s_ub_)
+    T.tile.mul(acc_s_ub, acc_s_ub, sm_scale)
+    ...
 ```
 
 ### Dive Deep into TileLang Beyond GEMM
@@ -395,9 +529,24 @@ In addition to GEMM, we provide a variety of examples to showcase the versatilit
 - [LightningIndexer](./examples/lightning_indexer/): Implementations of LightningIndexer with TileLang-Ascend.
 - [SparseFlashAttention](./examples/sparse_flash_attention/): Implementations of SparseFlashAttention with TileLang-Ascend.
 
+### Automatic insert synchronization flags between AIC and AIV, such as CrossCoreSetFlag / CrossCoreWaitFlag.
+
+Two switches need to be turned on:
+```python
+pass_configs = {
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_SYNC: True,
+}
+```
+
+Here is an example:
+- [FlashAttention](./examples/flash_attention/flash_attn_bhsd_cc_sync.py): Implementations of FlashAttention without inserting synchronization flags manually.
+
+
 ## Upcoming Features
 
 Check our [tilelang-ascend development plan](https://github.com/tile-ai/tilelang-ascend/issues/3) for upcoming features.
+
 
 
 ## Acknowledgements

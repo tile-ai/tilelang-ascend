@@ -8,7 +8,7 @@ import tilelang.language as T
 tilelang.disable_cache()
 
 
-@tilelang.jit(out_idx=[-1])  # for jit
+@tilelang.jit(out_idx=[-1], workspace_idx=[-3])  # for jit
 def indexer(B,
             N2,
             G,
@@ -25,10 +25,12 @@ def indexer(B,
             calc_dtype="float"):
 
     @T.prim_func
-    def main(Query: T.Tensor((B, S1, N2, G * D), input_dtype), KEY: T.Tensor(
-        (B, S2, N2, D), input_dtype), QK_RES: T.Tensor((B, N2, S1, G, S2), calc_dtype),
-             WEIGHTS: T.Tensor((B, S1, N2, G), calc_dtype), OUT: T.Tensor((B, N2, S1, TOP_K),
-                                                                          "int")):
+    def main(Query: T.Tensor((B, S1, N2, G * D), input_dtype), 
+             KEY: T.Tensor((B, S2, N2, D), input_dtype), 
+             QK_RES: T.Tensor((B, N2, S1, G, S2), calc_dtype),
+             WEIGHTS: T.Tensor((B, S1, N2, G), calc_dtype), 
+             OUT: T.Tensor((B, N2, S1, TOP_K),
+             "int")):
         total_process_num = N2 * S1
         each_core_process_num = total_process_num // 2
         with T.Kernel(B * N2, is_npu=True) as (cid, vid):
@@ -133,7 +135,7 @@ def indexer(B,
                         # topK
                         merge_sort_times = TOP_K // VECTOR_BASEN
                         T.barrier_all()
-                        T.tile.reduce_sum(reduce_g_ub, reduce_tmp_ub, mm_res_ub_uint8, 0)
+                        T.reduce_sum(reduce_tmp_ub, reduce_g_ub, mm_res_ub_uint8, 0)
                         T.barrier_all()
                         T.tile.add(sort_indice_tmp_ub, topk_indices_tmp_ub,
                               T.int32(s2_id * VECTOR_BASEN))
@@ -153,7 +155,7 @@ def indexer(B,
                                        VECTOR_BASEN * merge_sort_times)
                         T.barrier_all()
                     T.barrier_all()
-                    T.tile.gather_mask(topk_global_ub1, topk_global_ub2, TOP_K)
+                    T.tile.gather_mask(topk_global_ub1, topk_global_ub2, "P1010")
                     T.barrier_all()
                     T.copy(topk_global_ub1_flat, OUT[cid, n2_id, s1_id, 0:TOP_K])
                     T.barrier_all()
@@ -237,15 +239,15 @@ def test_indexer():
     k = torch.randn(B, S2, N2, D).half()
     weights = torch.randn(B, S1, N2, G, 1).float()
 
-    qk_res_workspace = torch.zeros(B, N2, S1, G, S2).float()
+    # qk_res_workspace = torch.zeros(B, N2, S1, G, S2).float()
     qk_res_workspace_, golden_out = index_golden(q, k, weights)
 
     q_npu = q.view(B, S1, N2, -1).npu()
     k_npu = k.npu()
     weights_npu = weights.npu()
-    qk_res_workspace_npu = qk_res_workspace.npu()
+    # qk_res_workspace_npu = qk_res_workspace.npu()
     torch.npu.synchronize()
-    npu_out = func(q_npu, k_npu, qk_res_workspace_npu, weights_npu).to(torch.int32)
+    npu_out = func(q_npu, k_npu, weights_npu).to(torch.int32)
     torch.npu.synchronize()
     print(npu_out.cpu().shape)
     print(f"npu out: {npu_out.cpu()}")

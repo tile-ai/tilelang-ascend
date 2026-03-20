@@ -9,7 +9,7 @@ torch.manual_seed(0)
 
 tilelang.disable_cache()
 
-@tilelang.jit(out_idx=[3])
+@tilelang.jit(out_idx=[3], workspace_idx=[7,8,9,10,11])
 def sparse_attention_fwd(
     heads,
     dim,
@@ -81,18 +81,11 @@ def sparse_attention_fwd(
             actual_q_len: T.Tensor([batch], indices_dtype),
             actual_kv_len: T.Tensor([batch], indices_dtype),
             block_table: T.Tensor([batch, block_table_len], indices_dtype),
-            workspace_1: T.Tensor([core_num, BI, D],
-                                  dtype),  # T.Tensor([block_num, BI, D], dtype),
-            workspace_2: T.Tensor([core_num, BI, D_tail],
-                                  dtype),  # T.Tensor([block_num, BI, D_tail], dtype),
-            workspace_3: T.Tensor(
-                [core_num, H_per_block, BI],
-                accum_dtype),  # T.Tensor([block_num, H_per_block, BI], accum_dtype),
-            workspace_4: T.Tensor([core_num, H_per_block, BI],
-                                  dtype),  # T.Tensor([block_num, H_per_block, BI], dtype),
-            workspace_5: T.Tensor(
-                [core_num, H_per_block, D],
-                accum_dtype),  # T.Tensor([block_num, H_per_block, D], accum_dtype),
+            workspace_1: T.Tensor([core_num, BI, D], dtype),  # T.Tensor([block_num, BI, D], dtype),
+            workspace_2: T.Tensor([core_num, BI, D_tail], dtype),  # T.Tensor([block_num, BI, D_tail], dtype),
+            workspace_3: T.Tensor([core_num, H_per_block, BI], accum_dtype),  # T.Tensor([block_num, H_per_block, BI], accum_dtype),
+            workspace_4: T.Tensor([core_num, H_per_block, BI], dtype),  # T.Tensor([block_num, H_per_block, BI], dtype),
+            workspace_5: T.Tensor([core_num, H_per_block, D], accum_dtype),  # T.Tensor([block_num, H_per_block, D], accum_dtype),
     ):
         with T.Kernel(core_num, is_npu=True) as (cid, vid):
             # Alloc Memory
@@ -165,7 +158,7 @@ def sparse_attention_fwd(
                     bx = pid % (seq_len * REPLICATE_H)
                     by = pid // (seq_len * REPLICATE_H) % batch
                     bz = pid // (seq_len * REPLICATE_H) // batch % kv_group
-                    
+
                     b_i = by
                     g_i = bz
 
@@ -231,7 +224,7 @@ def sparse_attention_fwd(
                                 T.tile.compare(mask_ub, indices_ub_float, T.float32(actual_len - act_q_len + s_i), "LE")
                                 T.tile.compare(mask_ub_2, indices_ub_float, T.float32(-1.0), "NE")
                                 T.barrier_all()
-                                T.tile.and_tl(mask_ub, mask_ub, mask_ub_2)
+                                T.tile.bitwise_and(mask_ub, mask_ub, mask_ub_2)
 
                                 for bi_i in range(BI // 2):
                                     index_i = indices_ub_[bi_i + vid * BI // 2]
@@ -275,7 +268,7 @@ def sparse_attention_fwd(
                                 T.tile.mul(acc_s_ub, acc_s_ub, sm_scale)
                                 T.barrier_all()
 
-                                T.tile.reduce_max(m_i, acc_s_ub, tmp_ub, dim=-1)
+                                T.reduce_max(acc_s_ub, m_i, tmp_ub, dim=-1)
                                 T.barrier_all()
 
                                 T.tile.max(m_i, m_i, m_i_prev)
@@ -297,7 +290,7 @@ def sparse_attention_fwd(
                                 T.tile.exp(acc_s_ub, acc_s_ub)
                                 T.barrier_all()
 
-                                T.tile.reduce_sum(sumexp_i_ub, acc_s_ub, tmp_ub, dim=-1)
+                                T.reduce_sum(acc_s_ub, sumexp_i_ub, tmp_ub, dim=-1)
                                 T.barrier_all()
 
                                 T.tile.mul(sumexp, sumexp, m_i_prev)  # check
@@ -419,11 +412,11 @@ for t in range(S):
         indices[t, h, :len(i_i)] = i_i
 torch.npu.synchronize()
 
-workspace_1 = torch.zeros((core_num, 64, 512), dtype=dtype)
-workspace_2 = torch.zeros((core_num, 64, 64), dtype=dtype)
-workspace_3 = torch.zeros((core_num, 64, 64), dtype=torch.float)
-workspace_4 = torch.zeros((core_num, 64, 64), dtype=dtype)
-workspace_5 = torch.zeros((core_num, 64, 512), dtype=torch.float)
+# workspace_1 = torch.zeros((core_num, 64, 512), dtype=dtype)
+# workspace_2 = torch.zeros((core_num, 64, 64), dtype=dtype)
+# workspace_3 = torch.zeros((core_num, 64, 64), dtype=torch.float)
+# workspace_4 = torch.zeros((core_num, 64, 64), dtype=dtype)
+# workspace_5 = torch.zeros((core_num, 64, 512), dtype=torch.float)
 
 block_table = torch.zeros((B, SKV // block_size), dtype=torch.int32)
 
@@ -433,7 +426,7 @@ actual_kv_len = torch.tensor([SKV] * B, dtype=torch.int32)
 torch.npu.synchronize()
 print("init successful!")
 
-output = func(q, kv, indices, actual_q_len, actual_kv_len, block_table, workspace_1, workspace_2, workspace_3, workspace_4, workspace_5)
+output = func(q, kv, indices, actual_q_len, actual_kv_len, block_table)
 torch.npu.synchronize()
 
 indices_ref = indices.unsqueeze(0)

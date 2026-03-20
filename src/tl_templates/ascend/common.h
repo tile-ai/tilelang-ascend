@@ -6,8 +6,11 @@
 #include "catlass/gemm/tile/tile_copy.hpp"
 #include "catlass/layout/layout.hpp"
 
+#include "shmem.h"
+
 #define CUDART_INF_F 1.0f / 0.0f
 
+typedef AscendC::int4b_t int4b_t;
 
 namespace tl::ascend {
 using namespace Catlass;
@@ -22,6 +25,9 @@ using LayoutGM = layout::RowMajor;
 using LayoutL0A = layout::zZ;
 using LayoutL0B = layout::nZ;
 using LayoutL1 = layout::zN;
+using LayoutL1T = layout::nZ;
+
+constexpr int64_t UB_HALF_SIZE = 64;
 
 template <typename T, uint32_t dstM, uint32_t dstN>
 CATLASS_DEVICE void copy_gm_to_l1(LocalTensor<T> dstTensor,
@@ -36,43 +42,46 @@ CATLASS_DEVICE void copy_gm_to_l1(LocalTensor<T> dstTensor,
   auto dst = tla::MakeTensor<decltype(dstTensor), decltype(layoutInL1),
                              AscendC::TPosition::A1>(dstTensor, layoutInL1);
 
-  TileCopyTla<ArchTag, decltype(src), decltype(dst)> tileCopier; 
+  TileCopyTla<ArchTag, decltype(src), decltype(dst)> tileCopier;
   tileCopier(dst, src);
 }
 
-template <typename T, typename LayoutL1, uint32_t srcM, uint32_t srcN,
-          uint32_t dstM, uint32_t dstN>
+template <typename T, uint32_t srcM, uint32_t srcN, bool transpose = false>
 CATLASS_DEVICE void copy_l1_to_l0a(LocalTensor<T> dstTensor,
-                                   LocalTensor<T> srcTensor) {
-  using LayoutL1_ = Catlass::detail::TagToLayout_t<T, LayoutL1>;
-  constexpr auto layout = tla::MakeLayout<T, LayoutL1_>(srcM, srcN);
+                                   LocalTensor<T> srcTensor,
+                                   uint32_t dstM, uint32_t dstN) {
+  using LayoutL1_ = std::conditional_t<transpose,
+                                      Catlass::detail::TagToLayout_t<T, LayoutL1T>,
+                                      Catlass::detail::TagToLayout_t<T, LayoutL1>>;
+  constexpr auto layout = transpose ? 
+  tla::MakeLayout<T, LayoutL1_>(srcN, srcM) : tla::MakeLayout<T, LayoutL1_>(srcM, srcN);
   auto src_LAYOUT = MakeLayoutTile(layout, tla::MakeShape(dstM, dstN));
-
   auto src = MakeTensor<decltype(srcTensor), decltype(src_LAYOUT),
-                        AscendC::TPosition::A1>(srcTensor, src_LAYOUT);
+                      AscendC::TPosition::A1>(srcTensor, src_LAYOUT);
 
   using LayoutL0A_ = Catlass::detail::TagToLayout_t<T, LayoutL0A>;
-  constexpr auto layoutAInL0 = tla::MakeLayout<T, LayoutL0A_>(dstM, dstN);
+  auto layoutAInL0 = tla::MakeLayout<T, LayoutL0A_>(dstM, dstN);
   auto dst = tla::MakeTensor<decltype(dstTensor), decltype(layoutAInL0),
                              AscendC::TPosition::A2>(dstTensor, layoutAInL0);
   TileCopyTla<ArchTag, decltype(src), decltype(dst)> tileCopier;
   tileCopier(dst, src);
 }
 
-template <typename T, typename LayoutL1, uint32_t srcM, uint32_t srcN,
-          uint32_t dstM, uint32_t dstN>
+template <typename T, uint32_t srcM, uint32_t srcN, bool transpose = false>
 CATLASS_DEVICE void copy_l1_to_l0b(LocalTensor<T> dstTensor,
-                                   LocalTensor<T> srcTensor) {
-  using LayoutL1_ = Catlass::detail::TagToLayout_t<T, LayoutL1>;
-  constexpr auto LAYOUT = tla::MakeLayout<T, LayoutL1_>(srcM, srcN);
-  auto src_LAYOUT = MakeLayoutTile(LAYOUT, tla::MakeShape(dstM, dstN));
-  ;
-
+                                   LocalTensor<T> srcTensor,
+                                   uint32_t dstM, uint32_t dstN) {
+  using LayoutL1_ = std::conditional_t<transpose,
+                                      Catlass::detail::TagToLayout_t<T, LayoutL1T>,
+                                      Catlass::detail::TagToLayout_t<T, LayoutL1>>;
+  constexpr auto layout = transpose ? 
+  tla::MakeLayout<T, LayoutL1_>(srcN, srcM) : tla::MakeLayout<T, LayoutL1_>(srcM, srcN);
+  auto src_LAYOUT = MakeLayoutTile(layout, tla::MakeShape(dstM, dstN));
   auto src = MakeTensor<decltype(srcTensor), decltype(src_LAYOUT),
-                        AscendC::TPosition::A1>(srcTensor, src_LAYOUT);
+                      AscendC::TPosition::A1>(srcTensor, src_LAYOUT);
 
   using LayoutL0B_ = Catlass::detail::TagToLayout_t<T, LayoutL0B>;
-  constexpr auto layoutBInL0 = tla::MakeLayout<T, LayoutL0B_>(dstM, dstN);
+  auto layoutBInL0 = tla::MakeLayout<T, LayoutL0B_>(dstM, dstN);
   auto dst = tla::MakeTensor<decltype(dstTensor), decltype(layoutBInL0),
                              AscendC::TPosition::B2>(dstTensor, layoutBInL0);
 
@@ -81,9 +90,9 @@ CATLASS_DEVICE void copy_l1_to_l0b(LocalTensor<T> dstTensor,
 }
 
 
-template <typename T1, typename T2, uint32_t M, uint32_t N, uint32_t K>
-CATLASS_DEVICE void mma(LocalTensor<T1> A, LocalTensor<T1> B, LocalTensor<T2> C,
-                        bool init, uint8_t unitFlag = 0) {
+template <typename T1, typename T2, uint32_t M, uint32_t N>
+CATLASS_DEVICE void mma(LocalTensor<T1> const A, LocalTensor<T1> const B, LocalTensor<T2> const C,
+                        bool init, uint32_t K, uint8_t unitFlag = 0) {
   MmadParams mmadParams;
   mmadParams.m = M;
   mmadParams.n = N;
@@ -104,7 +113,7 @@ template <typename T1, typename T2, typename LayoutGM, uint32_t srcM, uint32_t s
 CATLASS_DEVICE void copy_l0c_to_gm(GlobalTensor<T2> dstTensor,
                                    LocalTensor<T1> srcTensor,
                                    uint32_t realDstN = 1) {
-  auto layoutInL0C = tla::MakeLayoutL0C(srcM, srcN); 
+  auto layoutInL0C = tla::MakeLayoutL0C(srcM, srcN);
   auto src = tla::MakeTensor<decltype(srcTensor), decltype(layoutInL0C),
                              AscendC::TPosition::CO1>(srcTensor, layoutInL0C);
   LayoutGM gm{srcM, realDstN};
@@ -163,7 +172,14 @@ CATLASS_DEVICE void copy_ub_to_ub(LocalTensor<T1> dstTensor,
   if constexpr (std::is_same_v<T1, T2>) {
     AscendC::DataCopy(dstTensor, srcTensor, len);
   } else {
-    AscendC::Cast(dstTensor, srcTensor, AscendC::RoundMode::CAST_RINT, len);
+    if constexpr ((std::is_same_v<T1, float> && std::is_same_v<T2, half>) ||
+                  (std::is_same_v<T1, float> && std::is_same_v<T2, int16_t>) ||
+                  (std::is_same_v<T1, half> && std::is_same_v<T2, int8_t>) ||
+                  (std::is_same_v<T1, int16_t> && std::is_same_v<T2, int32_t>)) {
+      AscendC::Cast(dstTensor, srcTensor, AscendC::RoundMode::CAST_NONE, len);
+    } else {
+      AscendC::Cast(dstTensor, srcTensor, AscendC::RoundMode::CAST_RINT, len);
+    }
   }
 }
 
@@ -211,6 +227,49 @@ CATLASS_DEVICE void elementwise_binary(LocalTensor<T> const &ubIn0,
   }
 }
 
+template <typename T>
+CATLASS_DEVICE void shmem_put_nbi(const GlobalTensor<T> &output, const GlobalTensor<T> &input,
+                             size_t nelems, size_t newPe) {
+    AscendC::TPipe pipe;
+    uint32_t ub_size = UB_HALF_SIZE * 2 + 64;
+    AscendC::TBuf<AscendC::TPosition::VECIN> ub_buf;
+    pipe.InitBuffer(ub_buf, ub_size);
+    auto ub_tensor = ub_buf.Get<T>();
+    pipe.Destroy();
+    __gm__ T* outputPtr = const_cast<__gm__ T*>(output.GetPhyAddr());
+    __gm__ T* inputPtr = const_cast<__gm__ T*>(input.GetPhyAddr());
+    __ubuf__ T* buf = reinterpret_cast<__ubuf__ T*>(ub_tensor.GetPhyAddr());
+    aclshmemx_mte_put_nbi(outputPtr, inputPtr, buf, ub_size, nelems, newPe, EVENT_ID0);                                                                                 
+}
+
+template <typename T>
+CATLASS_DEVICE void shmem_ub_put_nbi(const LocalTensor<T> &ubTensor, const GlobalTensor<T> &output, size_t nelems, int newPe, int strelem) {                                                                                  
+    aclshmemx_mte_put_nbi(const_cast<__gm__ T*>(output.GetPhyAddr() + strelem),                                       
+        reinterpret_cast<__ubuf__ T*>(ubTensor.GetPhyAddr()), nelems, newPe, EVENT_ID0);                                                                     
+}
+
+template <typename T>
+CATLASS_DEVICE void shmem_get_nbi(const GlobalTensor<T> &output, const GlobalTensor<T> &input,
+                                size_t nelems, size_t newPe) {
+    AscendC::TPipe pipe;
+    uint32_t ub_size = UB_HALF_SIZE * 2 + 64;
+    AscendC::TBuf<AscendC::TPosition::VECIN> ub_buf;
+    pipe.InitBuffer(ub_buf, ub_size);
+    auto ub_tensor = ub_buf.Get<T>();
+    pipe.Destroy();
+    __gm__ T* outputPtr = const_cast<__gm__ T*>(output.GetPhyAddr());
+    __gm__ T* inputPtr = const_cast<__gm__ T*>(input.GetPhyAddr());
+    __ubuf__ T* buf = reinterpret_cast<__ubuf__ T*>(ub_tensor.GetPhyAddr());
+    aclshmemx_mte_get_nbi(outputPtr, inputPtr, buf, ub_size, nelems, newPe, EVENT_ID0); 
+}
+
+template <typename T>
+CATLASS_DEVICE void shmem_ub_get_nbi(const LocalTensor<T> &output, const GlobalTensor<T> &input,
+                             size_t nelems, size_t newPe) {
+    aclshmemx_mte_get_nbi(reinterpret_cast<__ubuf__ T*>(output.GetPhyAddr()),
+        const_cast<__gm__ T*>(input.GetPhyAddr()), nelems, newPe, EVENT_ID0);
+}
+
 template <typename T, uint32_t Len, uint32_t op>
 CATLASS_DEVICE void elementwise_unary(LocalTensor<T> const &ubIn,
                                       LocalTensor<T> const &ubOut) {
@@ -227,28 +286,63 @@ CATLASS_DEVICE void cast(LocalTensor<dst> const &ubOut,
   AscendC::Cast(ubOut, ubIn, round_mode, Len);
 }
 
-template <typename T, uint32_t Len>
-CATLASS_DEVICE void fill(LocalTensor<T> const &ubOut, T value) {
-  AscendC::Duplicate(ubOut, value, Len);
-}
+// template <typename T, uint32_t Len>
+// CATLASS_DEVICE void fill(LocalTensor<T> const &ubOut, T value) {
+//   AscendC::Duplicate(ubOut, value, Len);
+// }
 
-template <typename T, uint32_t M, uint32_t N, class pattern>
+template <typename T, uint32_t M, uint32_t N, int32_t dim>
 CATLASS_DEVICE void reduce_sum(LocalTensor<T> const &dstTensor,
                                LocalTensor<T> const &srcTensor,
                                LocalTensor<uint8_t> const &sharedTmpBuffer) {
   uint32_t shape[] = {M, N};
-  AscendC::ReduceSum<T, pattern>(dstTensor, srcTensor, sharedTmpBuffer, shape,
-                                 true);
+  if constexpr (dim == -1) {
+    AscendC::ReduceSum<T, AscendC::Pattern::Reduce::AR>(
+        dstTensor, srcTensor, sharedTmpBuffer, shape, true
+    );
+  } else {
+    AscendC::ReduceSum<T, AscendC::Pattern::Reduce::RA>(
+        dstTensor, srcTensor, sharedTmpBuffer, shape, true
+    );
+  }
 }
 
-template <typename T, uint32_t M, uint32_t N, class pattern>
+template <typename T, uint32_t M, uint32_t N, int32_t dim>
 CATLASS_DEVICE void reduce_max(LocalTensor<T> const &dstTensor,
                                LocalTensor<T> const &srcTensor,
                                LocalTensor<uint8_t> const &sharedTmpBuffer) {
   uint32_t shape[] = {M, N};
-  AscendC::ReduceMax<T, pattern>(dstTensor, srcTensor, sharedTmpBuffer, shape,
-                                 true);
+  if constexpr (dim == -1) {
+    AscendC::ReduceMax<T, AscendC::Pattern::Reduce::AR>(
+        dstTensor, srcTensor, sharedTmpBuffer, shape, true
+    );
+  } else {
+    AscendC::ReduceMax<T, AscendC::Pattern::Reduce::RA>(
+        dstTensor, srcTensor, sharedTmpBuffer, shape, true
+    );
+  }
 }
+
+template <typename T, uint32_t M, uint32_t N, int32_t dim>
+CATLASS_DEVICE void reduce_min(LocalTensor<T> const &dstTensor,
+                               LocalTensor<T> const &srcTensor,
+                               LocalTensor<uint8_t> const &sharedTmpBuffer) {
+  uint32_t shape[] = {M, N};
+  // if (count > 0) {
+  //   shape[1] = count / M;
+  // }
+  if constexpr (dim == -1) {
+    AscendC::ReduceMin<T, AscendC::Pattern::Reduce::AR>(
+        dstTensor, srcTensor, sharedTmpBuffer, shape, true
+    );
+  } else {
+    AscendC::ReduceMin<T, AscendC::Pattern::Reduce::RA>(
+        dstTensor, srcTensor, sharedTmpBuffer, shape, true
+    );
+  }
+}
+
+static constexpr uint32_t L0AB_EVENT = 0;
 
 template <typename T1, typename T2, uint32_t M, uint32_t N, uint32_t K,
           bool transpose_A = false, bool transpose_B = false>
@@ -259,23 +353,59 @@ gemm_v0(LocalTensor<T1> const &A, LocalTensor<T1> const &B,
         AscendC::TBuf<AscendC::TPosition::B2> &l0b_, bool clear) {
   auto l0a = l0a_.Get<T1>();
   auto l0b = l0b_.Get<T1>();
-  AscendC::PipeBarrier<PIPE_ALL>();
-  if constexpr (!transpose_A) {
-    tl::ascend::copy_l1_to_l0a<T1, layout::zN, M, K, M, K>(l0a, A);
-  } else {
-    tl::ascend::copy_l1_to_l0a<T1, layout::nZ, M, K, M, K>(l0a, A);
-  }
-  if constexpr (!transpose_B) {
-    tl::ascend::copy_l1_to_l0b<T1, layout::zN, K, N, K, N>(l0b, B);
-  } else {
-    tl::ascend::copy_l1_to_l0b<T1, layout::nZ, K, N, K, N>(l0b, B);
-  }
+  constexpr uint32_t kL0Size = 128;
+  uint32_t kL0split = (K + kL0Size - 1) / kL0Size;
+  uint32_t kL0Tail = K - (kL0split - 1) * kL0Size;
+  bool initflag = false;
 
-  AscendC::PipeBarrier<PIPE_ALL>();
 
-  tl::ascend::mma<T1, T2, M, N, K>(l0a, l0b, C, clear);
-  AscendC::PipeBarrier<PIPE_ALL>();
+  SetFlag<HardEvent::MTE2_MTE1>(L0AB_EVENT);
+  WaitFlag<HardEvent::MTE2_MTE1>(L0AB_EVENT);
+  SetFlag<HardEvent::FIX_M>(L0AB_EVENT);
+  WaitFlag<HardEvent::FIX_M>(L0AB_EVENT);
+
+  SetFlag<HardEvent::M_MTE1>(L0AB_EVENT);
+  SetFlag<HardEvent::M_MTE1>(L0AB_EVENT + 1);
+
+  for (uint32_t kL0Idx = 0; kL0Idx < kL0split; kL0Idx++) {
+    initflag = (clear && (kL0Idx == 0));
+    uint32_t kSize = (kL0Idx == kL0split - 1) ? kL0Tail : kL0Size;
+    uint32_t pp = (kL0Idx & 1);
+
+    uint32_t l0a_base = pp * (M * kL0Size);
+    uint32_t l0b_base = pp * (N * kL0Size);
+
+    WaitFlag<HardEvent::M_MTE1>(L0AB_EVENT + pp);
+if constexpr (!transpose_A) {
+      tl::ascend::copy_l1_to_l0a<T1, M, K>(
+        l0a[l0a_base], A[kL0Idx * M * kL0Size], M, kSize);
+    } else {
+      tl::ascend::copy_l1_to_l0a<T1, K, M, true>(
+        l0a[l0a_base], A[kL0Idx * 16 * kL0Size], M, kSize);
+    }
+    if constexpr (!transpose_B) {
+      tl::ascend::copy_l1_to_l0b<T1, K, N>(
+        l0b[l0b_base], B[kL0Idx * 16 * kL0Size], kSize, N);
+    } else {
+      tl::ascend::copy_l1_to_l0b<T1, N, K, true>(
+        l0b[l0b_base], B[kL0Idx * N * kL0Size], kSize, N);
+    }
+    SetFlag<HardEvent::MTE1_M>(L0AB_EVENT + pp);
+    WaitFlag<HardEvent::MTE1_M>(L0AB_EVENT + pp);
+    PipeBarrier<PIPE_M>();
+    tl::ascend::mma<T1, T2, M, N>(
+      l0a[l0a_base], l0b[l0b_base], C, initflag, kSize);
+    SetFlag<HardEvent::M_MTE1>(L0AB_EVENT + pp);
+  }
+  WaitFlag<HardEvent::M_MTE1>(L0AB_EVENT);
+  WaitFlag<HardEvent::M_MTE1>(L0AB_EVENT + 1);
+
+  SetFlag<HardEvent::MTE1_MTE2>(L0AB_EVENT);
+  WaitFlag<HardEvent::MTE1_MTE2>(L0AB_EVENT);
+  SetFlag<HardEvent::M_FIX>(L0AB_EVENT);
+  WaitFlag<HardEvent::M_FIX>(L0AB_EVENT);
 }
+
 
 template <typename T>
 CATLASS_DEVICE void MergeSort(const LocalTensor<T> &dst,
@@ -327,18 +457,47 @@ CATLASS_DEVICE void TopK(const LocalTensor<T> &dst, const LocalTensor<T> &src,
 template <typename T>
 CATLASS_DEVICE void GatherMask(const LocalTensor<T> &dst,
                                const LocalTensor<T> &sortedTensor,
-                               int64_t extractNum) {
+                               uint8_t src1Pattern) {
+  uint32_t eleNum = sortedTensor.GetSize();
   GatherMaskParams gatherMaskParams;
-  gatherMaskParams.repeatTimes = Ceil(extractNum * sizeof(float) * 2, 256);
+  gatherMaskParams.repeatTimes = Ceil(eleNum * sizeof(T), 256);
   gatherMaskParams.src0BlockStride = 1;
   gatherMaskParams.src0RepeatStride = 8;
   gatherMaskParams.src1RepeatStride = 0;
   uint64_t rsvdCnt = 0;    // 用于保存筛选后保留下来的元素个数
-  uint8_t src1Pattern = 2; // 内置固定模式
   GatherMask(dst.template ReinterpretCast<uint32_t>(),
              sortedTensor.template ReinterpretCast<uint32_t>(), src1Pattern,
              false, static_cast<uint32_t>(0), gatherMaskParams, rsvdCnt);
   PipeBarrier<PIPE_V>();
+}
+
+template <typename T, typename U>
+CATLASS_DEVICE void GatherMask(const LocalTensor<T> &dst,
+                               const LocalTensor<T> &sortedTensor,
+                               const LocalTensor<U> &src1Pattern) {
+  uint32_t eleNum = sortedTensor.GetSize();
+  GatherMaskParams gatherMaskParams;
+  gatherMaskParams.repeatTimes = Ceil(eleNum * sizeof(T), 256);
+  gatherMaskParams.src0BlockStride = 1;
+  gatherMaskParams.src0RepeatStride = 8;
+  gatherMaskParams.src1RepeatStride = 0;
+  uint64_t rsvdCnt = 0;    // 用于保存筛选后保留下来的元素个数
+  GatherMask(dst.template ReinterpretCast<uint32_t>(),
+             sortedTensor.template ReinterpretCast<uint32_t>(), src1Pattern,
+             false, static_cast<uint32_t>(0), gatherMaskParams, rsvdCnt);
+}
+
+template <typename T>
+CATLASS_DEVICE void Gather(const LocalTensor<T> &dst,
+                           const LocalTensor<T> &sortedTensor,
+                           const LocalTensor<uint32_t> &src1Pattern) {
+  
+  int32_t count = src1Pattern.GetSize();
+  int32_t scalarValue = sizeof(T);
+  LocalTensor<int32_t> offset = const_cast<LocalTensor<uint32_t>&>(src1Pattern).template ReinterpretCast<int32_t>();
+  AscendC::Muls(offset, offset, scalarValue, count);
+  AscendC::Gather(dst, sortedTensor, offset.template ReinterpretCast<uint32_t>(),
+                  static_cast<uint32_t>(0), static_cast<uint32_t>(count));
 }
 
 template <typename T>
@@ -385,6 +544,7 @@ CATLASS_DEVICE void InitSortBuf(const LocalTensor<T> &src, int64_t eleNum,
   }
   PipeBarrier<PIPE_V>();
 }
+
 template <typename T1, typename T2, uint32_t L1_block_M, uint32_t L1_block_N,
           uint32_t L1_block_K, uint32_t BLOCK_M, uint32_t BLOCK_N,
           uint32_t BLOCK_K, bool transpose_A = false, bool transpose_B = false>
@@ -398,24 +558,24 @@ gemm_v1(LocalTensor<T1> const &A, LocalTensor<T1> const &B,
   AscendC::PipeBarrier<PIPE_ALL>();
 
   if constexpr (!transpose_A) {
-    tl::ascend::copy_l1_to_l0a<half, layout::zN, L1_block_M, L1_block_K,
-                               BLOCK_M, BLOCK_K>(l0a, A);
+    tl::ascend::copy_l1_to_l0a<half, L1_block_M, L1_block_K>
+                               (l0a, A, BLOCK_M, BLOCK_K);
   } else {
-    tl::ascend::copy_l1_to_l0a<half, layout::nZ, L1_block_M, L1_block_K,
-                               BLOCK_M, BLOCK_K>(l0a, A);
+    tl::ascend::copy_l1_to_l0a<half, L1_block_K, L1_block_M, true>
+                               (l0a, A, BLOCK_M, BLOCK_K);
   }
 
   if constexpr (!transpose_B) {
-    tl::ascend::copy_l1_to_l0b<half, layout::zN, L1_block_K, L1_block_N,
-                               BLOCK_K, BLOCK_N>(l0b, B);
+    tl::ascend::copy_l1_to_l0b<half, L1_block_K, L1_block_N>
+                               (l0b, B, BLOCK_K, BLOCK_N);
   } else {
-    tl::ascend::copy_l1_to_l0b<half, layout::nZ, L1_block_K, L1_block_N,
-                               BLOCK_K, BLOCK_N>(l0b, B);
+    tl::ascend::copy_l1_to_l0b<half, L1_block_N, L1_block_K, true>
+                               (l0b, B, BLOCK_K, BLOCK_N);
   }
 
   AscendC::PipeBarrier<PIPE_ALL>();
 tl:
-  ascend::mma<T1, T2, BLOCK_M, BLOCK_N, BLOCK_K>(l0a, l0b, C, clear);
+  ascend::mma<T1, T2, BLOCK_M, BLOCK_N>(l0a, l0b, C, clear, BLOCK_K);
   AscendC::PipeBarrier<PIPE_ALL>();
 }
 
@@ -438,11 +598,10 @@ CATLASS_DEVICE void gemmL1(LocalTensor<T1> A, LocalTensor<T1> B,
     AscendC::SetFlag<AscendC::HardEvent::MTE2_MTE1>(0);
     AscendC::WaitFlag<AscendC::HardEvent::MTE2_MTE1>(0);
 
-    copy_l1_to_l0a<T1, LayOutL1, M, K, baseM, baseK>(A2, A[loopM * baseM * 16]);
+    copy_l1_to_l0a<T1, M, K, baseM, baseK>(A2, A[loopM * baseM * 16]);
 
     for (uint32_t loopN = 0; loopN < N / baseN; loopN++) {
-      copy_l1_to_l0b<T1, LayOutL1, K, N, baseK, baseN>(B2,
-                                                       B[loopN * baseN * K]);
+      copy_l1_to_l0b<T1, K, N, baseK, baseN>(B2, B[loopN * baseN * K]);
 
       AscendC::SetFlag<AscendC::HardEvent::MTE1_M>(0);
       AscendC::WaitFlag<AscendC::HardEvent::MTE1_M>(0);
@@ -463,4 +622,85 @@ CATLASS_DEVICE void gemmL1(LocalTensor<T1> A, LocalTensor<T1> B,
     AscendC::PipeBarrier<PIPE_ALL>();
   }
 }
+
+template <typename T, int32_t dim, int32_t axis, bool isReuseSource = false>
+CATLASS_DEVICE void Broadcast(const LocalTensor<T> &dst, const LocalTensor<T> &src, LocalTensor<uint8_t> &sharedTmpBuffer,
+                              const uint32_t dstShape[dim], const uint32_t srcShape[dim]) {
+  AscendC::Broadcast<T, dim, axis, isReuseSource>(dst, src, dstShape, srcShape, sharedTmpBuffer);
+}
+
+template <typename T>
+CATLASS_DEVICE void Fill(const LocalTensor<T>& dst, const T& scalarValue, const int32_t& count) {
+  AscendC::Duplicate<T>(dst, scalarValue, count);
+}
+
+template <typename T>
+CATLASS_DEVICE void ArithProgression(const LocalTensor<T> &dst, const T firstValue,
+                                      const T diffValue, const int32_t count) {
+  AscendC::ArithProgression<T>(dst, firstValue, diffValue, count);
+}
+
+template <typename T, bool isFullSort>
+CATLASS_DEVICE void Sort(const LocalTensor<T> &dst, const LocalTensor<T> &concat,
+                          const LocalTensor<uint32_t> &index, LocalTensor<T> &tmp,
+                          const int32_t repeatTime) {
+  AscendC::Sort<T, isFullSort>(dst, concat, index, tmp, repeatTime);
+}
+
+
+template <typename T>
+CATLASS_DEVICE void ClampMax(const LocalTensor<T> &dst, const LocalTensor<T> &buffer, const LocalTensor<uint8_t> &tmp,
+                             const T scalarValue, const int32_t count) {
+  AscendC::ClampMax<T>(dst, buffer, tmp, scalarValue, count);
+}
+
+template <typename T>
+CATLASS_DEVICE void ClampMin(const LocalTensor<T> &dst, const LocalTensor<T> &buffer, const LocalTensor<uint8_t> &tmp,
+                             const T scalarValue, const int32_t count) {
+  AscendC::ClampMin<T>(dst, buffer, tmp, scalarValue, count);
+}
+
+template <typename T>
+CATLASS_DEVICE void Clamp(const LocalTensor<T> &dst, const LocalTensor<T> &buffer, const LocalTensor<uint8_t> &tmp,
+                             const T minScalarValue, const T maxScalarValue, const int32_t count) {
+  AscendC::ClampMin<T>(dst, buffer, tmp, minScalarValue, count);
+  AscendC::ClampMax<T>(dst, buffer, tmp, maxScalarValue, count);
+}
+
+template <typename T, typename U>
+CATLASS_DEVICE void GatherMask_experiment(const LocalTensor<T> &dst,
+                               const LocalTensor<T> &src0,
+                               const LocalTensor<U> &src1Pattern, const bool reduceMode,
+                               const uint32_t mask, const uint32_t src0BlockStride,
+                               const uint32_t repeatTimes, uint32_t src0RepeatStride,
+                               const uint32_t src1RepeatStride, uint64_t rsvdCnt) {
+  GatherMaskParams gatherMaskParams;
+  gatherMaskParams.repeatTimes = repeatTimes;
+  gatherMaskParams.src0BlockStride = src0BlockStride;
+  gatherMaskParams.src0RepeatStride = src0RepeatStride;
+  gatherMaskParams.src1RepeatStride = src1RepeatStride;
+  GatherMask(dst.template ReinterpretCast<uint32_t>(),
+             src0.template ReinterpretCast<uint32_t>(), src1Pattern,
+             reduceMode, mask, gatherMaskParams, rsvdCnt);
+}
+
+template <typename T>
+CATLASS_DEVICE void Fill_experiment(const LocalTensor<T> &dst,
+                               const T &scalarValue, uint64_t mask0,
+                               const uint8_t repeatTime, const uint16_t dstBlockStride,
+                               const uint8_t dstRepeatStride) {
+  uint64_t mask[1] = {mask0};
+  AscendC::Duplicate(dst, scalarValue, mask, repeatTime, dstBlockStride, dstRepeatStride);
+}
+
+template <typename T>
+CATLASS_DEVICE void Sum_experiment(const LocalTensor<T> &dst, const LocalTensor<T> &src,
+                               const uint32_t outter, const uint32_t inner, const uint32_t n) {
+  SumParams sumParams;
+  sumParams.outter = outter;
+  sumParams.inner = inner;
+  sumParams.n = n;
+  AscendC::Sum(dst, src, sumParams);
+}
+
 } // namespace tl::ascend

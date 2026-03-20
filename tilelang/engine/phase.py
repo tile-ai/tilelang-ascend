@@ -1,15 +1,15 @@
 # Copyright (c) Tile-AI Organization.
 # Licensed under the MIT License.
+from __future__ import annotations
 from tvm import tir, IRModule
 from tvm.target import Target
 import tilelang
 from tilelang.transform import PassContext
 from tilelang.contrib.nvcc import have_tma
-from typing import Optional
 
 
-def allow_warp_specialized(pass_ctx: Optional[PassContext] = None,
-                           target: Optional[Target] = None) -> bool:
+def allow_warp_specialized(pass_ctx: PassContext | None = None,
+                           target: Target | None = None) -> bool:
     # avoid circular import
     from tilelang.jit.adapter.utils import is_cuda_target
 
@@ -21,8 +21,8 @@ def allow_warp_specialized(pass_ctx: Optional[PassContext] = None,
     return not disable_warp_specialized
 
 
-def allow_tma_and_warp_specialized(pass_ctx: Optional[PassContext] = None,
-                                   target: Optional[Target] = None) -> bool:
+def allow_tma_and_warp_specialized(pass_ctx: PassContext | None = None,
+                                   target: Target | None = None) -> bool:
     # avoid circular import
     from tilelang.jit.adapter.utils import is_cuda_target
 
@@ -34,14 +34,14 @@ def allow_tma_and_warp_specialized(pass_ctx: Optional[PassContext] = None,
     return not disable_tma_lower and allow_warp_specialized(pass_ctx=pass_ctx, target=target)
 
 
-def allow_fence_proxy(target: Optional[Target] = None) -> bool:
+def allow_fence_proxy(target: Target | None = None) -> bool:
     # avoid circular import
     from tilelang.jit.adapter.utils import is_cuda_target
 
     return is_cuda_target(target) and have_tma(target)
 
 
-def allow_vectorize(pass_ctx: Optional[PassContext] = None) -> bool:
+def allow_vectorize(pass_ctx: PassContext | None = None) -> bool:
     if pass_ctx is None:
         pass_ctx = tilelang.transform.get_pass_context()
     disable_vectorize = pass_ctx.config.get("tir.disable_vectorize", False)
@@ -49,6 +49,7 @@ def allow_vectorize(pass_ctx: Optional[PassContext] = None) -> bool:
 
 
 def LowerAndLegalize(mod: IRModule, target: Target) -> IRModule:
+    mod = tilelang.transform.AscendInferBufferScope()(mod)
     # Bind the target device information to the module
     mod = tir.transform.BindTarget(target)(mod)
     # Identify and filter host tiling data for npu
@@ -60,6 +61,7 @@ def LowerAndLegalize(mod: IRModule, target: Target) -> IRModule:
     mod = tilelang.transform.AscendLowerParallelToVector()(mod)
     # Infer memory layouts for fragments and shared memory
     mod = tilelang.transform.LayoutInference()(mod)
+    mod = tilelang.transform.CollectBufferShapes()(mod)
     # Lower high-level tile operations to low-level operations
     mod = tilelang.transform.LowerTileOp()(mod)
     # Legalize vectorized loops to ensure they are valid
@@ -74,19 +76,21 @@ def LowerAndLegalize(mod: IRModule, target: Target) -> IRModule:
     return mod
 
 
-def OptimizeForTarget(mod: IRModule, target: Target) -> IRModule:
+def OptimizeForTarget(mod: IRModule, target: Target, platform: str) -> IRModule:
+    from tilelang.utils.target import check_npu_availability
     pass_ctx = tilelang.transform.get_pass_context()
     mod = tir.transform.PlanAndUpdateBufferAllocationLocation()(mod)
+    mod = tilelang.transform.CrossCorePipeline()(mod)
     mod = tilelang.transform.CombineCV()(mod)
     mod = tilelang.transform.PipelinePlanning()(mod)
     mod = tilelang.transform.InjectSoftwarePipeline()(mod)
-    mod = tir.transform.LowerOpaqueBlock()(mod)
+    mod = tilelang.transform.AscendLowerOpaqueBlock()(mod)
     mod = tir.transform.NarrowDataType(32)(mod)
     mod = tilelang.transform.ConfigIndexBitwidth()(mod)
     mod = tilelang.transform.FlattenBuffer()(mod)
     mod = tir.transform.Simplify()(mod)
     mod = tilelang.transform.VectorizeLoop(enable_vectorize=allow_vectorize(pass_ctx=pass_ctx))(mod)
-    mod = tir.transform.StorageRewrite()(mod)
+    mod = tilelang.transform.AscendStorageRewrite(is_npu=check_npu_availability())(mod)
     mod = tir.transform.UnrollLoop()(mod)
     mod = tir.transform.RenormalizeSplitPattern()(mod)
     mod = tir.transform.Simplify()(mod)
@@ -94,6 +98,6 @@ def OptimizeForTarget(mod: IRModule, target: Target) -> IRModule:
     mod = tir.transform.RewriteUnsafeSelect()(mod)
     mod = tir.transform.HoistIfThenElse()(mod)
     mod = tilelang.transform.AscendMemoryPlanning()(mod)
-    mod = tilelang.transform.AscendSyncInsert()(mod)
+    mod = tilelang.transform.AscendSyncInsert(target, platform)(mod)
     # print(mod)
     return mod

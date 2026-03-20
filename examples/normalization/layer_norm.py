@@ -4,14 +4,18 @@ import torch
 
 tilelang.cache.clear_cache()
 
-@tilelang.jit(out_idx=[1])
+pass_configs = {
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
+}
+
+@tilelang.jit(out_idx=[1], pass_configs=pass_configs)
 def layer_norm(M, N, block_M, block_N, eps=1e-5, dtype="float"):
     """
     Layer Norm
     """
 
-    m_num = M // block_M
-    n_num = N // block_N
+    m_num = T.ceildiv(M, block_M)
+    n_num = T.ceildiv(N, block_N)
     VEC_NUM = 2
 
     @T.prim_func
@@ -26,8 +30,8 @@ def layer_norm(M, N, block_M, block_N, eps=1e-5, dtype="float"):
             sum_square_i = T.alloc_ub([block_M // VEC_NUM, block_N], dtype)
             sum_ub = T.alloc_ub([block_M // VEC_NUM], dtype)
             sum_square_ub = T.alloc_ub([block_M // VEC_NUM], dtype)
-            mean_ub = T.alloc_ub([block_M // VEC_NUM], dtype)
-            mean_square_ub = T.alloc_ub([block_M // VEC_NUM], dtype)
+            mean_ub = T.alloc_ub([block_M // VEC_NUM, 1], dtype)
+            mean_square_ub = T.alloc_ub([block_M // VEC_NUM, 1], dtype)
             tmp_ub = T.alloc_ub([3 * DataType(dtype).bits // 8 * block_M // VEC_NUM * block_N], "uint8")
 
             with T.Scope("V"):
@@ -38,54 +42,39 @@ def layer_norm(M, N, block_M, block_N, eps=1e-5, dtype="float"):
                 T.tile.fill(sum_square_ub, 0.0)
                 T.tile.fill(mean_ub, N)
                 T.tile.fill(mean_square_ub, N)
-                T.barrier_all()
 
                 # Accumulation
                 for by in T.serial(n_num):
                     T.copy(A[bx*block_M+vid*block_M//VEC_NUM:bx*block_M+(vid+1)*block_M//VEC_NUM,
                              by*block_N:(by+1)*block_N], a_ub)
-                    T.barrier_all()
                     T.tile.add(sum_i, sum_i, a_ub)
-                    T.barrier_all()
                     T.tile.mul(a_ub, a_ub, a_ub)
-                    T.barrier_all()
                     T.tile.add(sum_square_i, sum_square_i, a_ub)
-                    T.barrier_all()
-                
+
                 # Reduce
-                T.tile.reduce_sum(sum_ub, sum_i, tmp_ub, dim=-1)
-                T.tile.reduce_sum(sum_square_ub, sum_square_i, tmp_ub, dim=-1)
-                T.barrier_all()
+                T.reduce_sum(sum_i, sum_ub, tmp_ub, dim=-1)
+                T.reduce_sum(sum_square_i, sum_square_ub, tmp_ub, dim=-1)
 
                 # Compute mean and variance
                 T.tile.div(mean_ub, sum_ub, mean_ub)
                 T.tile.div(mean_square_ub, sum_square_ub, mean_square_ub)
-                T.barrier_all()
                 T.tile.mul(sum_ub, mean_ub, mean_ub)
-                T.barrier_all()
                 T.tile.sub(mean_square_ub, mean_square_ub, sum_ub)
-                T.barrier_all()
                 T.tile.fill(sum_ub, eps)
-                T.barrier_all()
                 T.tile.add(mean_square_ub, mean_square_ub, sum_ub)
-                T.barrier_all()
                 T.tile.sqrt(mean_square_ub, mean_square_ub)
-                T.barrier_all()
+
+                T.tile.broadcast(sum_i, mean_ub, tmp_ub)
+                T.tile.broadcast(sum_square_i, mean_square_ub, tmp_ub)
 
                 # Normalize
                 for by in T.serial(n_num):
                     T.copy(A[bx*block_M+vid*block_M//VEC_NUM:bx*block_M+(vid+1)*block_M//VEC_NUM,
                              by*block_N:(by+1)*block_N], a_ub)
-                    T.barrier_all()
-                    for i in range(block_M // VEC_NUM):
-                        T.tile.sub(a_ub[i, :], a_ub[i, :], mean_ub[i])
-                        T.barrier_all()
-                        T.tile.div(a_ub[i, :], a_ub[i, :], mean_square_ub[i])
-                        T.barrier_all()
-
+                    T.tile.sub(a_ub, a_ub, sum_i)
+                    T.tile.div(a_ub, a_ub, sum_square_i)
                     T.copy(a_ub, B[bx*block_M+vid*block_M//VEC_NUM:bx*block_M+(vid+1)*block_M//VEC_NUM,
                                    by*block_N:(by+1)*block_N])
-                    T.barrier_all()
 
     return main
 

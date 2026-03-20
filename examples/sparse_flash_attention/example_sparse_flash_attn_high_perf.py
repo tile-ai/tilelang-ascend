@@ -9,7 +9,7 @@ torch.manual_seed(0)
 tilelang.disable_cache()
 
 
-@tilelang.jit()
+@tilelang.jit(workspace_idx=[4, 5, 6, 7, 8])
 def sparse_attention_fwd(
     heads,
     dim,
@@ -84,18 +84,11 @@ def sparse_attention_fwd(
             KV: T.Tensor(kv_shape, dtype),  # type: ignore
             Indices: T.Tensor(indices_shape, indices_dtype),  # type: ignore
             Output: T.Tensor(o_shape, dtype),  # type: ignore
-            workspace_1: T.Tensor([batch, seq_len, kv_group, topk, D],
-                                  dtype),  # T.Tensor([block_num, BI, D], dtype),
-            workspace_2: T.Tensor([batch, seq_len, kv_group, topk, D_tail],
-                                  dtype),  # T.Tensor([block_num, BI, D_tail], dtype),
-            workspace_3: T.Tensor(
-                [*block_num, H_per_block, BI],
-                accum_dtype),  # T.Tensor([block_num, H_per_block, BI], accum_dtype),
-            workspace_4: T.Tensor([*block_num, H_per_block, BI],
-                                  dtype),  # T.Tensor([block_num, H_per_block, BI], dtype),
-            workspace_5: T.Tensor(
-                [*block_num, H_per_block, D],
-                accum_dtype),  # T.Tensor([block_num, H_per_block, D], accum_dtype),
+            workspace_1: T.Tensor([batch, seq_len, kv_group, topk, D], dtype),  # T.Tensor([block_num, BI, D], dtype),
+            workspace_2: T.Tensor([batch, seq_len, kv_group, topk, D_tail], dtype),  # T.Tensor([block_num, BI, D_tail], dtype),
+            workspace_3: T.Tensor([*block_num, H_per_block, BI], accum_dtype),  # T.Tensor([block_num, H_per_block, BI], accum_dtype),
+            workspace_4: T.Tensor([*block_num, H_per_block, BI], dtype),  # T.Tensor([block_num, H_per_block, BI], dtype),
+            workspace_5: T.Tensor([*block_num, H_per_block, D], accum_dtype),  # T.Tensor([block_num, H_per_block, D], accum_dtype),
     ):
         with T.Kernel(core_num, is_npu=True) as (cid, vid):
 	        #pre
@@ -128,7 +121,17 @@ def sparse_attention_fwd(
                             T.copy(pre_ub[loop % db, 0, 0], workspace_1[b_idx, s_idx, g_idx, topk_start_idx : topk_start_idx + pre_loop_size, :])
                             T.copy(pre_rope_ub[loop % db, 0, 0], workspace_2[b_idx, s_idx, g_idx, topk_start_idx : topk_start_idx + pre_loop_size, :])
  
-            T.sync_all()
+            # T.sync_all()
+            T.barrier_all()
+            with T.Scope("C"):
+                T.wait_cross_flag(10)
+                T.set_cross_flag("FIX", 11, 0)
+                T.wait_cross_flag(11)
+                T.set_cross_flag("MTE3", 12, 2)
+            with T.Scope("V"):
+                T.set_cross_flag("MTE3", 10, 2)
+                T.wait_cross_flag(12)
+
             q_l1 = T.alloc_L1([H_per_block, D], dtype)
             q_tail_l1 = T.alloc_L1([H_per_block, D_tail], dtype)
             kv_l1 = T.alloc_L1([BI, D], dtype)
@@ -267,7 +270,7 @@ def sparse_attention_fwd(
                             T.tile.mul(acc_s_ub, acc_s_ub, sm_scale)
                             T.pipe_barrier("v")
 
-                            T.tile.reduce_max(m_i, acc_s_ub, tmp_ub, dim=-1)
+                            T.reduce_max(acc_s_ub, m_i, tmp_ub, dim=-1)
                             T.pipe_barrier("v")
 
 
@@ -290,7 +293,7 @@ def sparse_attention_fwd(
                             T.tile.exp(acc_s_ub, acc_s_ub)
                             T.pipe_barrier("v")
 
-                            T.tile.reduce_sum(sumexp_i_ub, acc_s_ub, tmp_ub, dim=-1)
+                            T.reduce_sum(acc_s_ub, sumexp_i_ub, tmp_ub, dim=-1)
                             T.pipe_barrier("v")
 
                             T.tile.mul(sumexp, sumexp, m_i_prev)  # check
@@ -420,17 +423,17 @@ for b in range(B):
             indices[b, t, h, :len(i_i)] = i_i
 
 # output = torch.empty((B, S, H, DV), dtype=dtype)
-workspace_1 = torch.zeros((2, 273, 1, 2048, 512), dtype=dtype)
-workspace_2 = torch.zeros((2, 273, 1, 2048, 64), dtype=dtype)
-workspace_3 = torch.zeros((2, 273, 2, 1, 64, 64), dtype=torch.float)
-workspace_4 = torch.zeros((2, 273, 2, 1, 64, 64), dtype=dtype)
-workspace_5 = torch.zeros((2, 273, 2, 1, 64, 512), dtype=torch.float)
+# workspace_1 = torch.zeros((2, 273, 1, 2048, 512), dtype=dtype)
+# workspace_2 = torch.zeros((2, 273, 1, 2048, 64), dtype=dtype)
+# workspace_3 = torch.zeros((2, 273, 2, 1, 64, 64), dtype=torch.float)
+# workspace_4 = torch.zeros((2, 273, 2, 1, 64, 64), dtype=dtype)
+# workspace_5 = torch.zeros((2, 273, 2, 1, 64, 512), dtype=torch.float)
 
 torch.npu.synchronize()
 print("init successful!")
 
 output = torch.empty((B, S, H, DV), dtype=dtype)
-func(q, kv, indices, output, workspace_1, workspace_2, workspace_3, workspace_4, workspace_5)
+func(q, kv, indices, output)
 
 # torch.npu.synchronize()
 # execute_time = do_bench(lambda : func(q, kv, indices, output, workspace_1, workspace_2, workspace_3, workspace_4, workspace_5))

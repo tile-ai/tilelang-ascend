@@ -118,7 +118,26 @@ def copy(
     assert src_extent or dst_extent, "Can't deduce copy extents from args"
     src_extent = list(src_extent) if src_extent else [1] * len(dst_extent)
     dst_extent = list(dst_extent) if dst_extent else [1] * len(src_extent)
-    extent = max(src_extent, dst_extent)
+    if len(src_extent) != len(dst_extent):
+        max_len = max(len(src_extent), len(dst_extent))
+        if len(src_extent) < max_len:
+            src_extent = src_extent + [1] * (max_len - len(src_extent))
+        if len(dst_extent) < max_len:
+            dst_extent = dst_extent + [1] * (max_len - len(dst_extent))
+    
+    extent = []
+    for i in range(len(src_extent)):
+        src_val = src_extent[i]
+        dst_val = dst_extent[i]
+        
+        if isinstance(src_val, (int, float)) and isinstance(dst_val, (int, float)):
+            extent.append(max(src_val, dst_val))
+        else:
+            if not isinstance(src_val, tir.PrimExpr):
+                src_val = tir.IntImm("int32", int(src_val))
+            if not isinstance(dst_val, tir.PrimExpr):
+                dst_val = tir.IntImm("int32", int(dst_val))
+            extent.append(tir.max(src_val, dst_val))
 
     def _to_region(data, access_type):
         if isinstance(data, tir.Var) and T.has_let_value(data):
@@ -179,7 +198,9 @@ def c2d_im2col(
 
 def npu_copy_v2(src: Union[tir.Buffer, tir.BufferLoad, tir.BufferRegion],
                 dst: Union[tir.Buffer, tir.BufferLoad],
-                enable_relu: bool = False):
+                enable_relu: bool = False,
+                transpose: Optional[bool] = False,  # for copy_l1_to_l0 param: tranpose l1
+                ):
     """Copy data between memory regions.
 
     Args:
@@ -194,7 +215,8 @@ def npu_copy_v2(src: Union[tir.Buffer, tir.BufferLoad, tir.BufferRegion],
         tir.Call: A handle to the copy operation
     """
     if isinstance(src, tir.Buffer) and isinstance(dst, tir.Buffer):
-        ir.assert_structural_equal(src.shape, dst.shape)
+            if not transpose:
+                ir.assert_structural_equal(src.shape, dst.shape)
 
     src_shape = src.shape if isinstance(src, tir.Buffer) else src.buffer.shape
 
@@ -213,7 +235,27 @@ def npu_copy_v2(src: Union[tir.Buffer, tir.BufferLoad, tir.BufferRegion],
     assert src_extent or dst_extent, "Can't deduce copy extents from args"
     src_extent = list(src_extent) if src_extent else [1] * len(dst_extent)
     dst_extent = list(dst_extent) if dst_extent else [1] * len(src_extent)
-    extent = max(src_extent, dst_extent)
+
+    if len(src_extent) != len(dst_extent):
+        max_len = max(len(src_extent), len(dst_extent))
+        if len(src_extent) < max_len:
+            src_extent = src_extent + [1] * (max_len - len(src_extent))
+        if len(dst_extent) < max_len:
+            dst_extent = dst_extent + [1] * (max_len - len(dst_extent))
+    
+    extent = []
+    for i in range(len(src_extent)):
+        src_val = src_extent[i]
+        dst_val = dst_extent[i]
+        
+        if isinstance(src_val, (int, float)) and isinstance(dst_val, (int, float)):
+            extent.append(max(src_val, dst_val))
+        else:
+            if not isinstance(src_val, tir.PrimExpr):
+                src_val = tir.IntImm("int32", int(src_val))
+            if not isinstance(dst_val, tir.PrimExpr):
+                dst_val = tir.IntImm("int32", int(dst_val))
+            extent.append(tir.max(src_val, dst_val))
 
     def _to_region(data, access_type):
         if isinstance(data, tir.Var) and T.has_let_value(data):
@@ -228,4 +270,7 @@ def npu_copy_v2(src: Union[tir.Buffer, tir.BufferLoad, tir.BufferRegion],
     src = _to_region(src, "r")
     dst = _to_region(dst, "w")
 
-    return tir.call_intrin("handle", tir.op.Op.get("tl.ascend_copy"), src, dst, enable_relu)
+    if transpose:
+            return tir.call_intrin("handle", tir.op.Op.get("tl.ascend_copy"), src, dst, enable_relu, transpose)
+    else:
+        return tir.call_intrin("handle", tir.op.Op.get("tl.ascend_copy"), src, dst, enable_relu)

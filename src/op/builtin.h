@@ -18,6 +18,8 @@ namespace tl {
 
 namespace attr {
 static constexpr const char *kPaddingMap = "padding_map";
+
+static constexpr const char *kLocalVarInit = "tl.local_var_init";
 } // namespace attr
 
 static constexpr const char *kDebugMergeSharedMemoryAllocations =
@@ -280,6 +282,18 @@ const Op &adds();
 const Op &muls();
 
 const Op &exp();
+
+/*!
+ * \brief ascend pto intrinsic
+ */
+
+const Op &ascend_scalar_op();
+
+const Op &ascend_unary_op();
+
+const Op &ascend_binary_op();
+
+const Op &ascend_binary_ops();
 
 } // namespace tl
 } // namespace tvm

@@ -33,8 +33,192 @@ private:
   Array<PrimExpr> src_extents, dst_extents;
   int srcN;
   bool enRelu;
+  bool transposeL1;
 };
 
+TVM_DLL const Op &ascend_add();
+
+TVM_DLL const Op &ascend_sub();
+
+TVM_DLL const Op &ascend_mul();
+
+TVM_DLL const Op &ascend_div();
+
+TVM_DLL const Op &ascend_max();
+
+TVM_DLL const Op &ascend_min();
+
+TVM_DLL const Op &ascend_bitwise_and();
+
+TVM_DLL const Op &ascend_bitwise_or();
+
+TVM_DLL const Op &ascend_adds();
+
+TVM_DLL const Op &ascend_subs();
+
+TVM_DLL const Op &ascend_muls();
+
+TVM_DLL const Op &ascend_divs();
+
+TVM_DLL const Op &ascend_maxs();
+
+TVM_DLL const Op &ascend_mins();
+
+TVM_DLL const Op &ascend_compare();
+
+TVM_DLL const Op &ascend_compare_scalar();
+
+TVM_DLL const Op &ascend_exp();
+
+TVM_DLL const Op &ascend_ln();
+
+TVM_DLL const Op &ascend_abs();
+
+TVM_DLL const Op &ascend_reciprocal();
+
+TVM_DLL const Op &ascend_sqrt();
+
+TVM_DLL const Op &ascend_rsqrt();
+
+TVM_DLL const Op &ascend_relu();
+
+TVM_DLL const Op &ascend_bitwise_not();
+
+TVM_DLL const Op &ascend_select();
+
+TVM_DLL const Op &ascend_leaky_relu();
+
+TVM_DLL const Op &ascend_axpy();
+
+TVM_DLL const Op &ascend_bitwise_lshift();
+
+TVM_DLL const Op &ascend_bitwise_rshift();
+
+TVM_DLL const Op &ascend_sin();
+
+TVM_DLL const Op &ascend_cos();
+
+TVM_DLL const Op &ascend_transpose();
+
+TVM_DLL const Op &ascend_createvecindex();
+
+TVM_DLL const Op &ascend_fill();
+
+TVM_DLL const Op &ascend_arith_progression();
+
+TVM_DLL const Op &ascend_sort();
+
+TVM_DLL const Op &ascend_merge_sort();
+
+TVM_DLL const Op &ascend_topk();
+
+TVM_DLL const Op &ascend_shmem_put_nbi();
+
+TVM_DLL const Op &ascend_shmem_get_nbi();
+
+TVM_DLL const Op &ascend_shmem_ub_put_nbi();
+
+TVM_DLL const Op &ascend_shmem_ub_get_nbi();
+
+TVM_DLL const Op &ascend_gather_mask();
+
+TVM_DLL const Op &ascend_gatherb();
+
+TVM_DLL const Op &ascend_init_sort_buf();
+
+TVM_DLL const Op &ascend_sort32();
+
+TVM_DLL const Op &ascend_gather();
+
+TVM_DLL const Op &ascend_reduce();
+
+TVM_DLL const Op &ascend_block_reduce_max();
+
+TVM_DLL const Op &ascend_block_reduce_min();
+
+TVM_DLL const Op &ascend_block_reduce_sum();
+
+TVM_DLL const Op &ascend_cast();
+
+TVM_DLL const Op &ascend_set_deq_scale();
+
+TVM_DLL const Op &ascend_pow();
+
+TVM_DLL const Op &ascend_bitwise_xor();
+
+TVM_DLL const Op &ascend_broadcast();
+
+TVM_DLL const Op &ascend_reinterpretcast();
+
+TVM_DLL const Op &ascend_wait_cross_flag();
+
+TVM_DLL const Op &ascend_set_cross_flag();
+
+TVM_DLL const Op &ascend_set_flag();
+
+TVM_DLL const Op &ascend_wait_flag();
+
+TVM_DLL const Op &ascend_pipe_barrier();
+
+TVM_DLL const Op &ascend_sync_all();
+
+TVM_DLL const Op &ascend_gemm_v0();
+
+TVM_DLL const Op &ascend_gemm_v1();
+
+TVM_DLL const Op &ascend_printf();
+
+TVM_DLL const Op &ascend_dump_tensor();
+
+TVM_DLL const Op &ascend_bilinear_interpolation();
+
+TVM_DLL const Op &ascend_wholereducemax();
+
+TVM_DLL const Op &ascend_wholereducemin();
+
+TVM_DLL const Op &ascend_wholereducesum();
+
+TVM_DLL const Op &ascend_auto_barrier();
+
+TVM_DLL const Op &ascend_auto_set_flag();
+
+TVM_DLL const Op &ascend_auto_wait_flag();
+
+TVM_DLL const Op &ascend_auto_set_cross_flag();
+
+TVM_DLL const Op &ascend_auto_wait_cross_flag();
+
+TVM_DLL const Op &ascend_use_swizzle();
+
+TVM_DLL const Op &ascend_mma();
+
+TVM_DLL const Op &ascend_sigmoid();
+
+TVM_DLL const Op &ascend_clamp_max();
+
+TVM_DLL const Op &ascend_clamp_min();
+
+TVM_DLL const Op &ascend_clamp();
+
+TVM_DLL const Op &ascend_round();
+
+TVM_DLL const Op &ascend_sub_experiment();
+
+TVM_DLL const Op &ascend_abs_experiment();
+
+TVM_DLL const Op &ascend_mins_experiment();
+
+TVM_DLL const Op &ascend_reducesum_experiment();
+
+TVM_DLL const Op &ascend_reducesum_mask_experiment();
+
+TVM_DLL const Op &ascend_gather_mask_experiment();
+
+TVM_DLL const Op &ascend_fill_experiment();
+
+TVM_DLL const Op &ascend_sum_experiment();
+
+TVM_DLL const Op &ascend_datacachecleanandinvalid_experiment();
 } // namespace tl
 } // namespace tvm
 

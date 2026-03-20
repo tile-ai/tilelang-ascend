@@ -5,22 +5,38 @@
 
 # Add command line option parsing
 USE_LLVM=false
+USE_SHMEM=false
 while [[ $# -gt 0 ]]; do
     case $1 in
         --enable-llvm)
             USE_LLVM=true
             shift
             ;;
+        --enable-shmem)
+            USE_SHMEM=true
+            shift
+            ;;
         *)
             echo "Unknown option: $1"
-            echo "Usage: $0 [--enable-llvm]"
+            echo "Usage: $0 [--enable-llvm] [--enable-shmem]"
             exit 1
             ;;
     esac
 done
 
+# Check Python Version, require greater then 3.10
+python_version=$(python3 --version 2>&1 | grep -oP '\d+\.\d+')
+IFS='.' read -r major minor <<< "$python_version"
+if (( major >= 3 && minor >= 10 )); then
+    echo "Python version $python_version >= 3.10, pass"
+else
+    echo "[ERROR] Python version $python_version < 3.10, please upgrade it."
+    exit 1
+fi
+
 echo "Starting installation script..."
 echo "LLVM enabled: $USE_LLVM"
+echo "SHMEM enabled: $USE_SHMEM"
 
 # Step 1: Install Python requirements
 echo "Installing Python requirements from requirements.txt..."
@@ -121,11 +137,11 @@ fi
 
 echo "Building TileLang with make..."
 
-# Calculate 75% of available CPU cores
+# Calculate 50% of available CPU cores
 # Other wise, make will use all available cores
 # and it may cause the system to be unresponsive
 CORES=$(nproc)
-MAKE_JOBS=$(( CORES * 75 / 100 ))
+MAKE_JOBS=$(( CORES * 50 / 100 ))
 make -j${MAKE_JOBS}
 
 if [ $? -ne 0 ]; then
@@ -137,22 +153,41 @@ fi
 
 cd ..
 
-# Step 11: Set environment variables
-TILELANG_PATH="$(pwd)"
-echo "TileLang path set to: $TILELANG_PATH"
-echo "Configuring environment variables for TVM..."
-echo "export PYTHONPATH=${TILELANG_PATH}:\$PYTHONPATH" >> ~/.bashrc
-
-# Step 12: Source .bashrc to apply changes
-echo "Applying environment changes by sourcing .bashrc..."
-source ~/.bashrc
-if [ $? -ne 0 ]; then
-    echo "Error: Failed to source .bashrc."
-    exit 1
-else
-    echo "Environment configured successfully."
+# compile and install shmem package
+if $USE_SHMEM; then
+    echo "Starting installation shmem..."
+    cd 3rdparty/shmem
+    bash scripts/build.sh -python_extension -mf
+    pip show shmem >/dev/null 2>&1
+    if [[ $? -eq 0 ]]; then
+        echo "begin uninstall old shmem whl package"
+        pip uninstall --yes shmem
+    fi
+    cd src/python
+    python setup.py bdist_wheel
+    cd dist
+    python -m pip install shmem*.whl
+    if [ $? -ne 0 ]; then
+        echo "python -m pip install failed, try pip3 install ..."
+        pip3 install shmem*.whl
+        if [ $? -ne 0 ]; then
+            echo "Error: shmem-xxx.whl install failed."
+            exit 1
+        else
+            echo "shmem-xxx.whl install success."
+        fi
+    else
+        echo "shmem-xxx.whl install success."
+    fi
+    source ../../../install/set_env.sh
+    if [ $? -ne 0 ]; then
+        echo "Error: set shmem env failed."
+        exit 1
+    fi
+    # back to path tilelang-ascend/
+    cd ../../../../..
+    echo "Install shmem all success."
 fi
 
 echo "Installation script completed successfully."
-exec bash
 

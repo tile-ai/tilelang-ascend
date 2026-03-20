@@ -9,10 +9,12 @@ tilelang.disable_cache()
 
 pass_configs = {
     tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
-    tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_SYNC: True,
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
+    tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
 }
 
-@tilelang.jit(out_idx=[3], pass_configs=pass_configs)
+@tilelang.jit(out_idx=[3], workspace_idx=[4,5,6,7,8], pass_configs=pass_configs)
 def sparse_attention_fwd(
     heads,
     dim,
@@ -79,7 +81,7 @@ def sparse_attention_fwd(
             Output: T.Tensor(o_shape, dtype),  # type: ignore
 
             # TODO: implement automatically
-        workspace_1: T.Tensor([block_num, BI, D], dtype),
+            workspace_1: T.Tensor([block_num, BI, D], dtype),
             workspace_2: T.Tensor([block_num, BI, D_tail], dtype),
             workspace_3: T.Tensor([block_num, H_per_block, BI], accum_dtype),
             workspace_4: T.Tensor([block_num, H_per_block, BI], dtype),
@@ -115,35 +117,35 @@ def sparse_attention_fwd(
             acc_o_ub = T.alloc_ub([v_block, D], accum_dtype)
             acc_o_half = T.alloc_ub([v_block, D], dtype)
 
-            # Currently manually set the address.
-            T.annotate_address({
-                # L1 address
-                q_l1: 0,
-                q_tail_l1: 65536,
-                kv_l1: 73728,
-                kv_tail_l1: 139264,
-                acc_s_l1: 139264,
+            # Uncomment and set MEMORY_PLANNING false to annotate address manually
+            # T.annotate_address({
+            #     # L1 address
+            #     q_l1: 0,
+            #     q_tail_l1: 65536,
+            #     kv_l1: 73728,
+            #     kv_tail_l1: 139264,
+            #     acc_s_l1: 139264,
 
-                # L0C address
-                acc_s_l0c: 0,
-                acc_o_l0c: 0,
+            #     # L0C address
+            #     acc_s_l0c: 0,
+            #     acc_o_l0c: 0,
 
-                ## ub address
-                acc_o: 0,
-                sumexp: 65536,
-                m_i: 65664,
-                indices_ub_: 65792,
-                kv_ub: 66048,
-                kv_tail_ub: 67072,
-                acc_s_ub: 66048,
-                m_i_prev: 74240,
-                acc_s_ub_: 74368,
-                tmp_ub: 74368,
-                sumexp_i_ub: 98944,
-                acc_s_half: 98944,
-                acc_o_ub: 98944,
-                acc_o_half: 98944
-            })
+            #     ## ub address
+            #     acc_o: 0,
+            #     sumexp: 65536,
+            #     m_i: 65664,
+            #     indices_ub_: 65792,
+            #     kv_ub: 66048,
+            #     kv_tail_ub: 67072,
+            #     acc_s_ub: 66048,
+            #     m_i_prev: 74240,
+            #     acc_s_ub_: 74368,
+            #     tmp_ub: 74368,
+            #     sumexp_i_ub: 98944,
+            #     acc_s_half: 98944,
+            #     acc_o_ub: 98944,
+            #     acc_o_half: 98944
+            # })
 
             b_i = by
             g_i = bz
@@ -156,7 +158,6 @@ def sparse_attention_fwd(
             T.copy(Q[b_i, s_i, H0:H1, :D], q_l1)
             T.copy(Q[b_i, s_i, H0:H1, D:], q_tail_l1)
             for _ in T.serial(NI):
-                T.wait_cross_flag(0)
                 T.copy(workspace_1[cid, 0:BI, 0:D], kv_l1)
                 T.copy(workspace_2[cid, 0:BI, 0:D_tail], kv_tail_l1)
 
@@ -164,19 +165,11 @@ def sparse_attention_fwd(
                 T.gemm_v0(q_tail_l1, kv_tail_l1, acc_s_l0c, transpose_B=True)
 
                 T.copy(acc_s_l0c, workspace_3[cid, 0:H_per_block, 0:BI])
-                T.set_cross_flag("FIX", 1)
-
-                T.wait_cross_flag(2)
-
                 T.copy(workspace_4[cid, 0:H_per_block, 0:BI], acc_s_l1)
 
                 T.gemm_v0(acc_s_l1, kv_l1, acc_o_l0c, init=True)
 
                 T.copy(acc_o_l0c, workspace_5[cid, 0:H_per_block, 0:D])
-
-                T.set_cross_flag("FIX", 3)
-                T.wait_cross_flag(4)
-            T.wait_cross_flag(8)
 
             T.tile.fill(acc_o, 0.0)
             T.tile.fill(sumexp, 0.0)
@@ -191,13 +184,10 @@ def sparse_attention_fwd(
                     T.copy(kv_ub, workspace_1[cid, bi_i + vid * BI // 2, :])
                     T.copy(kv_tail_ub, workspace_2[cid, bi_i + vid * BI // 2, :])
 
-                T.set_cross_flag("MTE3", 0)
-
                 T.tile.fill(acc_s_ub, 0.0)
 
                 T.copy(m_i, m_i_prev)
 
-                T.wait_cross_flag(1)
                 T.copy(workspace_3[cid, vid * v_block:vid * v_block + v_block, :], acc_s_ub_)
 
                 for (i, j) in T.Parallel(v_block, BI):
@@ -206,7 +196,7 @@ def sparse_attention_fwd(
                 for (i, j) in T.Parallel(v_block, BI):
                     acc_s_ub[i, j] = acc_s_ub[i, j] * sm_scale
 
-                T.tile.reduce_max(m_i, acc_s_ub, tmp_ub, dim=-1)
+                T.reduce_max(acc_s_ub, m_i, tmp_ub, dim=-1)
 
                 for i in T.Parallel(v_block):
                     m_i[i] = T.max(m_i[i], m_i_prev[i])
@@ -219,13 +209,13 @@ def sparse_attention_fwd(
                 for i in T.Parallel(v_block):
                     m_i_prev[i] = T.exp(m_i_prev[i])
 
-                for (h_i, j) in T.Parallel(v_block, D):
+                for (h_i, j) in T.Parallel(v_block, BI):
                     acc_s_ub[h_i, j] = acc_s_ub[h_i, j] - m_i[h_i]
 
                 for (i, j) in T.Parallel(v_block, BI):
                     acc_s_ub[i, j] = T.exp(acc_s_ub[i, j])
 
-                T.tile.reduce_sum(sumexp_i_ub, acc_s_ub, tmp_ub, dim=-1)
+                T.reduce_sum(acc_s_ub, sumexp_i_ub, tmp_ub, dim=-1)
 
                 for i in T.Parallel(v_block):
                     sumexp[i] *= m_i_prev[i]
@@ -240,24 +230,16 @@ def sparse_attention_fwd(
 
                 T.copy(acc_s_half, workspace_4[cid, vid * v_block:vid * v_block + v_block, :])
 
-                T.set_cross_flag("MTE3", 2)
-
-                T.wait_cross_flag(3)
-
                 T.copy(workspace_5[cid, vid * v_block:vid * v_block + v_block, :], acc_o_ub)
 
                 for (i, j) in T.Parallel(v_block, D):
                     acc_o[i, j] += acc_o_ub[i, j]
-
-                T.set_cross_flag("V", 4)
 
             for (h_i, j) in T.Parallel(v_block, D):
                 acc_o[h_i, j] = acc_o[h_i, j] / sumexp[h_i]
 
             T.copy(acc_o, acc_o_half)
             T.copy(acc_o_half, Output[b_i, s_i, H0 + vid * v_block:H1 + vid * v_block, :])
-
-            T.set_cross_flag("MTE3", 8)
 
     return main
 
@@ -333,16 +315,16 @@ for b in range(B):
             indices[b, t, h, :len(i_i)] = i_i
 
 # output = torch.empty((B, S, H, DV), dtype=dtype)
-workspace_1 = torch.zeros((256, 64, 512), dtype=dtype)
-workspace_2 = torch.zeros((256, 64, 64), dtype=dtype)
-workspace_3 = torch.zeros((256, 64, 64), dtype=torch.float)
-workspace_4 = torch.zeros((256, 64, 64), dtype=dtype)
-workspace_5 = torch.zeros((256, 64, 512), dtype=torch.float)
+# workspace_1 = torch.zeros((256, 64, 512), dtype=dtype)
+# workspace_2 = torch.zeros((256, 64, 64), dtype=dtype)
+# workspace_3 = torch.zeros((256, 64, 64), dtype=torch.float)
+# workspace_4 = torch.zeros((256, 64, 64), dtype=dtype)
+# workspace_5 = torch.zeros((256, 64, 512), dtype=torch.float)
 
 torch.npu.synchronize()
 print("init successful!")
 
-output = func(q, kv, indices, workspace_1, workspace_2, workspace_3, workspace_4, workspace_5)
+output = func(q, kv, indices)
 
 torch.npu.synchronize()
 

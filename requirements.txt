@@ -7,4 +7,16 @@ cloudpickle
 ml_dtypes
 psutil
 torch
+pybind11
 pytest
+pytest-xdist
+pytest-forked
+pandas
+matplotlib
+PyYAML
+decorator 
+absl-py 
+attrs 
+scipy 
+tornado
+torch-npu

@@ -7,9 +7,33 @@ import os
 import tempfile
 import subprocess
 import logging
-from tilelang.env import TILELANG_TEMPLATE_PATH
+from tilelang.env import TILELANG_TEMPLATE_PATH, TILELANG_PACKAGE_PATH
 
 logger = logging.getLogger(__name__)
+
+
+def _get_tl_root() -> str:
+    """Get TL_ROOT path, fallback to package path if not set."""
+    tl_root = os.environ.get("TL_ROOT")
+    if tl_root is None:
+        tl_root = str(TILELANG_PACKAGE_PATH)
+    return tl_root
+
+
+def _get_ascend_home_path() -> str:
+    """Get Ascend home path, with fallback options."""
+    ascend_home = os.environ.get("ASCEND_HOME_PATH") or os.environ.get("ASCEND_HOME")
+    if ascend_home is None:
+        potential_paths = [
+            "/usr/local/Ascend/ascend-toolkit/latest",
+        ]
+        for path in potential_paths:
+            if os.path.exists(path):
+                ascend_home = path
+                break
+    if ascend_home is None:
+        raise ValueError("ASCEND_HOME_PATH or ASCEND_HOME is not set. Please set the environment variable.")
+    return ascend_home
 
 
 class LibraryGenerator(object):
@@ -17,8 +41,9 @@ class LibraryGenerator(object):
     libpath: Optional[str] = None
     lib_code: Optional[str] = None
 
-    def __init__(self, target: str):
+    def __init__(self, target: str, platform: str):
         self.target = target
+        self.platform = platform
 
     def update_lib_code(self, lib_code: str):
         self.lib_code = lib_code
@@ -32,33 +57,87 @@ class LibraryGenerator(object):
     def compile_lib(self, timeout: float = None):
         src = tempfile.NamedTemporaryFile(mode="w", suffix=".cpp", delete=False)
         libpath = src.name.replace(".cpp", ".so")
-        ASCEND_HOME_PATH = os.environ["ASCEND_HOME_PATH"]
-        TL_ROOT = os.environ["TL_ROOT"]
-        command = [
-            "bisheng",
-            "--npu-arch=dav-2201",
-            "-O2",
-            "-std=c++17",
-            "-xasc",
-            f"-I{ASCEND_HOME_PATH}/include",
-            f"-I{ASCEND_HOME_PATH}/include/experiment/msprof",
-            f"-I{ASCEND_HOME_PATH}/include/experiment/runtime",
-            f"-I{TL_ROOT}/3rdparty/catlass/include",
-            "-I" + TILELANG_TEMPLATE_PATH,
-            f"-L{ASCEND_HOME_PATH}/lib64",
-            "-Wno-macro-redefined",
-            "-Wno-ignored-attributes",
-            "-lruntime",
-            "-lascendcl",
-            "-lm",
-            "-ltiling_api",
-            "-lplatform",
-            "-lc_sec",
-            "-ldl",
-            "-fPIC",
-            "--shared",
-            src.name,
-        ]
+        ASCEND_HOME_PATH = _get_ascend_home_path()
+        TL_ROOT = _get_tl_root()
+        if self.target == "ascendc" or self.target == "auto":
+            command = [
+                "bisheng",
+                "--npu-arch=dav-2201",
+                "-O2",
+                "-std=c++17",
+                "-xasc",
+                f"-I{ASCEND_HOME_PATH}/include",
+                f"-I{ASCEND_HOME_PATH}/include/experiment/msprof",
+                f"-I{ASCEND_HOME_PATH}/include/experiment/runtime",
+                f"-I{ASCEND_HOME_PATH}/pkg_inc",
+                f"-I{ASCEND_HOME_PATH}/pkg_inc/runtime",
+                f"-I{ASCEND_HOME_PATH}/pkg_inc/profiling",
+                f"-I{TL_ROOT}/3rdparty/catlass/include",
+                f"-I{TL_ROOT}/3rdparty/shmem/include",
+                f"-I{TL_ROOT}/3rdparty/shmem/src/device",
+                f"-DBACKEND_HYBM",
+                "-I" + TILELANG_TEMPLATE_PATH,
+                f"-L{ASCEND_HOME_PATH}/lib64",
+                "-Wno-macro-redefined",
+                "-Wno-ignored-attributes",
+                "-Wno-non-c-typedef-for-linkage",
+                "-lruntime",
+                "-lascendcl",
+                "-lm",
+                "-ltiling_api",
+                "-lplatform",
+                "-lc_sec",
+                "-ldl",
+                "-fPIC",
+                "--shared",
+                src.name,
+            ]
+        elif self.target == "pto":
+            ccec = "dav-c310" if self.platform == "A5" else "dav-c220"
+            memory = "REGISTER_BASE" if self.platform == "A5" else "MEMORY_BASE"
+            command = [
+                "bisheng",
+                f"--cce-aicore-arch={ccec}",
+                f"-D{memory}",
+                "-O2",
+                "-std=gnu++17",
+                "-xcce",
+                "-mllvm",
+                "-cce-aicore-stack-size=0x8000",
+                "-mllvm",
+                "-cce-aicore-function-stack-size=0x8000",
+                "-mllvm",
+                "-cce-aicore-record-overflow=true",
+                "-mllvm",
+                "-cce-aicore-addr-transform",
+                "-mllvm",
+                "-cce-aicore-dcci-insert-for-scalar=false",
+                "-DL2_CACHE_HINT",
+                "-I../../src/",
+                f"-I{ASCEND_HOME_PATH}/include",
+                f"-I{ASCEND_HOME_PATH}/include/experiment/msprof",
+                f"-I{ASCEND_HOME_PATH}/include/experiment/runtime",
+                f"-I/usr/local/Ascend/driver/kernel/inc",
+                f"-I{TL_ROOT}/3rdparty/pto-isa/include",
+                f"-I{ASCEND_HOME_PATH}/pkg_inc",
+                f"-I{ASCEND_HOME_PATH}/pkg_inc/runtime",
+                f"-I{ASCEND_HOME_PATH}/pkg_inc/profiling",
+                f"-L{ASCEND_HOME_PATH}/lib64",
+                "-I" + TILELANG_TEMPLATE_PATH,
+                "-Wno-macro-redefined",
+                "-Wno-ignored-attributes",
+                "-lruntime",
+                "-lstdc++",
+                "-lascendcl",
+                "-lm",
+                "-ltiling_api",
+                "-lplatform",
+                "-lc_sec",
+                "-ldl",
+                "-fPIC",
+                "--shared",
+                src.name,
+            ]
         command += ["-o", libpath]
 
         src.write(self.lib_code)

@@ -2,6 +2,8 @@
 # Licensed under the MIT License.
 """The compiler for TL programs."""
 
+from typing import Literal
+
 import os
 import os.path as osp
 from typing import Union, Optional, Callable, List
@@ -155,10 +157,16 @@ def host_codegen(host_mod: tvm.IRModule, target_host: Target) -> tvm.IRModule:
     return host_mod
 
 
-def device_codegen(device_mod: tvm.IRModule, target: Target) -> tvm.IRModule:
+def device_codegen(device_mod: tvm.IRModule, target: Target, platform: str) -> tvm.IRModule:
     device_mod = tir.transform.Simplify()(device_mod)
 
-    device_mod = tvm._ffi.get_global_func("target.build.tilelang_ascend")(device_mod, target)
+    if target.model == "ascendc" or target.model == "auto":
+        device_mod = tvm._ffi.get_global_func("target.build.tilelang_ascend")(device_mod, target, platform)
+    elif target.model == "pto":
+        device_mod = tvm._ffi.get_global_func("target.build.tilelang_ascend_pto")(device_mod, target, platform)
+    else:
+        print(target.kind.name)
+        raise ValueError(f"Target {target.kind.name} is not supported")
 
     return device_mod
 
@@ -189,6 +197,7 @@ def lower(
     func_or_mod: Union[tir.PrimFunc, tvm.IRModule],
     target: Union[str, Target] = "auto",
     target_host: Optional[Union[str, Target]] = None,
+    platform: str = "auto",
     runtime_only=False,
     enable_host_codegen=False,
     enable_device_compile=False,
@@ -199,6 +208,9 @@ def lower(
         enable_device_compile: whether to enable device codegen, default is False, as we have our
         own device codegen implementation in jit.
     '''
+    
+    from tilelang.utils.target import determine_platform
+    platform = determine_platform(platform)
 
     mod = func_or_mod
     params = None
@@ -207,21 +219,20 @@ def lower(
         params = extrac_params(func) if not runtime_only else None
         mod = tvm.IRModule({func.attrs["global_symbol"]: func})
 
-    # Convert "auto" target to a specific target kind
-    if isinstance(target, str):
-        target = determine_target(target)
-
-    target_host = canon_target_host(None, target_host)
-
-    target_host = tvm.target.Target.canon_target(target_host)
-    target = tvm.target.Target(target, target_host)
+    target = tvm.target.Target({
+        "kind": "llvm",
+        "model": target
+    })
 
     # Phase 1: Lower and legalize the IR
     mod = LowerAndLegalize(mod, target)
 
     # Phase 2: Optimize the IR for the target
-    mod = OptimizeForTarget(mod, target)
+    mod = OptimizeForTarget(mod, target, platform)
 
-    codegen_mod = device_codegen(mod, target)
+    codegen_mod = device_codegen(mod, target, platform)
+
+    func = mod.functions_items()[0][1]
+    params = extrac_params(func)
 
     return CompiledArtifact(None, None, params, codegen_mod.get_source())

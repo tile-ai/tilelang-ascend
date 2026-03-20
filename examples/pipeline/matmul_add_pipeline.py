@@ -71,7 +71,8 @@ def matmul_add(M, N, K, block_M, block_N, block_K, dtype="float16", accum_dtype=
                     T.copy(D[bx * block_M + vid * block_M // VEC_NUM, by * block_N + i * block_N // vec_proc], d_ub)
 
                     T.barrier_all()
-                    T.tile.add(e_ub, c_ub, d_ub)
+                    for (j, k) in T.Parallel(block_M // VEC_NUM, block_N // vec_proc):
+                        e_ub[j, k] = c_ub[j, k] + d_ub[j, k]
                     T.barrier_all()
 
                     T.copy(e_ub, C[bx * block_M + vid * block_M // VEC_NUM, by * block_N + i * block_N // vec_proc])

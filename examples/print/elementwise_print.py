@@ -19,7 +19,7 @@ block_N = 16
 
 
 @tilelang.jit(out_idx=[-1])
-def and_tl(M, N, block_M, block_N, dtype="int16"):
+def bitwise_and(M, N, block_M, block_N, dtype="int16"):
     m_num = M // block_M
     n_num = N // block_N
 
@@ -52,13 +52,13 @@ def and_tl(M, N, block_M, block_N, dtype="int16"):
                 T.barrier_all()
                 T.printf("===========b_ub after copy:\n")
                 T.dump_tensor(b_ub, 222, block_M // VEC_NUM * block_N, (block_M // VEC_NUM, block_N))
-                
+
                 T.barrier_all()
-                T.tile.and_tl(c_ub, a_ub, b_ub)
+                T.tile.bitwise_and(c_ub, a_ub, b_ub)
                 T.barrier_all()
 
                 T.copy(c_ub, C[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
-                
+
                 T.barrier_all()
                 T.printf("===========c_ub after processing:\n")
                 T.dump_tensor(c_ub, 222, block_M // VEC_NUM * block_N, (block_M // VEC_NUM, block_N))
@@ -68,7 +68,7 @@ def and_tl(M, N, block_M, block_N, dtype="int16"):
     return main
 
 
-func = and_tl(M, N, block_M, block_N)
+func = bitwise_and(M, N, block_M, block_N)
 
 a = torch.ones(M, N, dtype=torch.int16).npu()
 b = torch.ones(M, N, dtype=torch.int16).npu() * 2

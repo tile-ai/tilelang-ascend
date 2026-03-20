@@ -90,9 +90,11 @@ def determine_target(target: Union[str, Target, Literal["auto"]] = "auto",
         elif is_npu_available:
             # NPU (Ascend) is available, use llvm as the TVM target
             # tilelang will handle Ascend-specific compilation internally
-            return_var = "llvm"
+            return_var = "llvm --keys=ascend"
         else:
             raise ValueError("No CUDA, HIP, or NPU available on this system.")
+    elif target in ["ascendc", "pto"]:
+        return_var = "llvm --keys=ascend"
     else:
         # Validate the target if it's not "auto"
         assert isinstance(
@@ -102,3 +104,46 @@ def determine_target(target: Union[str, Target, Literal["auto"]] = "auto",
     if return_object:
         return Target(return_var)
     return return_var
+
+def determine_platform(platform: str = "auto") -> str:
+    """
+    Determine the appropriate platform for compilation (e.g., "A3", "A2").
+
+    Args:
+        platform (str): User-specified platform.
+            - If "auto", the system will automatically detect the platform based on the device properties.
+            - If a string, it is directly validated.
+
+    Returns:
+        str: The selected platform ("A3", "A2", etc.).
+    """
+    if platform != "auto":
+        return platform
+
+    # Detect platform based on NPU device properties
+    try:
+        import torch
+
+        if hasattr(torch, "npu") and torch.npu.is_available():
+            props = torch.npu.get_device_properties(torch.npu.current_device())
+            name = props.name.upper()
+
+            if "910B" in name:
+                return "A2"
+            elif "910_93" in name:
+                return "A3"
+            elif "910C" in name:
+                return "A3"
+            elif "950" in name:
+                return "A5"
+            elif "910_95" in name:
+                return "A5"
+            elif "910" in name:  # Covers 910A
+                return "A2"
+            else:
+                pass
+    except Exception:
+        pass
+
+    # Default fallback if detection fails
+    return "A3"

@@ -5,6 +5,9 @@
 import tilelang.language as T
 from tvm.tir import PrimExpr, Buffer, BufferRegion, Var
 from typing import List, Union
+from tvm import tir
+from tilelang.language.ascend import _dtype
+
 
 
 def atomic_add(dst: Buffer, value: PrimExpr) -> PrimExpr:
@@ -109,13 +112,6 @@ def view(src: Buffer,
     return T.Buffer(shape, dtype, src.data)
 
 
-def _dtype(buf):
-    type_map = {"float16": "half", "float32": "float"}
-    if isinstance(buf, BufferRegion):
-        buf = buf.buffer
-    return type_map[buf.dtype]
-
-
 def npu_gemm(A, B, C, init=False):
 
     def legalize_arguments(arg: Union[Buffer, Var]):
@@ -192,8 +188,9 @@ def npu_gemm(A, B, C, init=False):
     Bptr = retrieve_ptr(B, "r")
     Cptr = retrieve_ptr(C, "rw")
 
-    return T.call_extern("handle", f"tl::ascend::mma<{_dtype(A)}, {_dtype(C)}, {M}, {N}, {K}>",
-                         Aptr, Bptr, Cptr, init)
+    return tir.call_intrin(
+        "handle", tir.op.Op.get("tl.ascend_mma"), f"mma<{_dtype(A)}, {_dtype(C)}, {M}, {N}>", Aptr, Bptr, Cptr, init, K
+    )
 
 def loop_break():
     """Break out of the innermost loop.

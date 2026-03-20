@@ -8,6 +8,8 @@ import ctypes
 from libc.stdint cimport int64_t, uintptr_t
 from libc.stdlib cimport malloc, free
 from tvm import tir
+from tvm.tir import stmt_functor
+from tvm.arith import Analyzer
 from tilelang.utils.tensor import map_torch_type
 
 cdef class CythonKernelWrapper:
@@ -19,15 +21,17 @@ cdef class CythonKernelWrapper:
         object static_shape_map     # Maps buffer variables to their corresponding static shapes
         object ptr_map              # Maps pointer arguments to their corresponding buffer indices
         list result_idx             # Indices of output tensors in the params list
+        list workspace_idx          # Indices of auto-allocated workspace tensors in the params list
         list params                 # List of parameter specifications (includes both inputs and outputs)
         object lib                  # Reference to the compiled library containing the kernel
         # Add new cache attributes
         list param_dtypes    # Cache for parameter dtypes
         list param_shapes    # Cache for parameter shapes as native Python lists
         object get_current_device
-    def __cinit__(self, result_idx, params, lib):
+    def __cinit__(self, result_idx, workspace_idx, params, lib):
         # Initialize wrapper with kernel configuration
         self.result_idx = result_idx
+        self.workspace_idx = workspace_idx
         self.params = params
         self.lib = lib
         # Convert TVM types to native Python types during initialization
@@ -71,6 +75,7 @@ cdef class CythonKernelWrapper:
         cdef int total_params = len(self.params)
         cdef int total_inputs = len(inputs)
         cdef int total_result_idx = len(self.result_idx)
+        cdef int total_workspace_idx = len(self.workspace_idx)
         cdef int total_dynamic_symbolics = len(self.dynamic_symbolic_map)
 
         # Ensure the number of inputs matches expected parameter count
@@ -84,20 +89,39 @@ cdef class CythonKernelWrapper:
         cdef int ins_idx = 0
         cdef list tensor_list = []
 
+        analyzer = Analyzer()
+        sym_val_by_name = {}
+        for key, (ref_tensor_idx, ref_shape_idx) in self.dynamic_symbolic_map.items():
+            val = int(inputs[ref_tensor_idx].shape[ref_shape_idx])
+            sym_val_by_name[key] = val
+
         # Prepare input and output tensors
         for i in range(len(self.params)):
-            if i in self.result_idx:
+            if i in self.result_idx or i in self.workspace_idx:
                 dtype = self.param_dtypes[i]
                 shape = []
                 # Now working with native Python list, no FFI calls needed
                 for s in self.param_shapes[i]:
-                    if isinstance(s, tir.Var):
-                        for key in self.dynamic_symbolic_map:
-                            if(str(s) == str(key)):
-                                ref_tensor_idx, ref_shape_idx = self.dynamic_symbolic_map[key]
-                                shape.append(tensor_list[ref_tensor_idx].shape[ref_shape_idx])
-                    else:  # Already converted to Python int during initialization
-                        shape.append(s)
+                    res = -1
+                    if isinstance(s, int):
+                        res = s
+                    elif isinstance(s, tir.IntImm):
+                        res = int(s.value)
+                    elif isinstance(s, tir.PrimExpr):
+                        vmap = {}
+                        for v in tir.analysis.undefined_vars(s):
+                            if v not in sym_val_by_name:
+                                raise KeyError(f"Unfounded symbolic var: {str(v)}")
+                            vmap[v] = tir.IntImm(v.dtype, sym_val_by_name[v])
+                        ss = stmt_functor.substitute(s, vmap)
+                        ss = analyzer.simplify(ss)
+                        if isinstance(ss, tir.IntImm):
+                            res = int(ss.value)
+                        else:
+                            raise ValueError(f"Shape not constant: {str(s)}")
+                    else:
+                        raise TypeError(f"Unsupported shape dim type: {type(s)} ({str(s)})")
+                    shape.append(res)
                 device = inputs[0].device if len(inputs) > 0 else torch.npu.current_device()
                 tensor = torch.empty(*shape, dtype=dtype, device=device)
             else:
@@ -145,24 +169,21 @@ cdef class CythonKernelWrapper:
                     raise ValueError(f"Buffer dtype mismatch for parameter {param}: expected {torch_dtype}, got {tensor_list[buffer_idx].dtype}")
         
         # Check static shape map
-        for param, (buffer_idx, shape_list) in self.static_shape_map.items():
-            if isinstance(tensor_list[buffer_idx], torch.Tensor):
-                for shape_idx, shape in shape_list:
-                    if tensor_list[buffer_idx].shape[shape_idx] != shape:
-                        raise ValueError(f"Static shape mismatch for parameter {param}: expected {shape} at index {shape_idx}, got {tensor_list[buffer_idx].shape}")
+        #for param, (buffer_idx, shape_list) in self.static_shape_map.items():
+        #    if isinstance(tensor_list[buffer_idx], torch.Tensor):
+        #        for shape_idx, shape in shape_list:
+        #            if tensor_list[buffer_idx].shape[shape_idx] != shape:
+        #                raise ValueError(f"Static shape mismatch for parameter {param}: expected {shape} at index {shape_idx}, got {tensor_list[buffer_idx].shape}")
 
         # Add dynamic dimension values to kernel arguments
         for _, (buffer_idx, shape_idx) in self.dynamic_symbolic_map.items():
-            call_args.append(ctypes.c_int64(tensor_list[buffer_idx].shape[shape_idx]))
+            call_args.append(ctypes.c_int64(inputs[buffer_idx].shape[shape_idx]))
 
         # Add npu stream to kernel arguments
         call_args.append(ctypes.c_void_p(stream))
 
         # Execute the kernel
-        result = self.lib.call(*call_args)
-        if result != 0:
-            error_msg = self.lib.get_last_error().decode('utf-8')
-            raise RuntimeError(f"Kernel call failed: {error_msg}")
+        self.lib.call(*call_args)
 
         # Return output tensor(s)
         if len(self.result_idx) == 1:
