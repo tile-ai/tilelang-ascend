@@ -699,7 +699,6 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
     
     UseDimChecker dim_checker;
     dim_checker(store->value);
-    std::cout << "dim_checker.container_2d_dim" << dim_checker.container_2d_dim << std::endl;
 
     BroadcastableBufferCollector collector(parallel_vars, inner_vec_len, outer_extent, this);
     // Only collect broadcast buffers if there's no discrete access in the expression
