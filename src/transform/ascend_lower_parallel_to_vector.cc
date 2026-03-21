@@ -580,6 +580,7 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
           if (var == outer_dim_var_) {
             uses_outer_dim = true;
           }
+        }
       }
 
       // If the buffer uses both dimensions, it's fine
