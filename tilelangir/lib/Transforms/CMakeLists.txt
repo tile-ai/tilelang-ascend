@@ -4,6 +4,7 @@ add_library(tilelangir_transforms STATIC
   CVSplit.cpp
   InferMemScope.cpp
   Vectorize.cpp
+  InsertCVSync.cpp
   EnableMultiBuffer.cpp
 )
 set_target_properties(tilelangir_transforms PROPERTIES POSITION_INDEPENDENT_CODE ON)
