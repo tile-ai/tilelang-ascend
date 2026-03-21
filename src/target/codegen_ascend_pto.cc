@@ -864,7 +864,7 @@ void CodeGenTileLangAscendPto::CallExternCodegen(const CallNode *op) {
 
     static const std::unordered_map<std::string, int> kCopyOpExtraArgs = {
         {"copy_l0c_to_gm", 1}, {"copy_gm_to_l1", 1}, {"copy_l1_to_l0a", 3},
-        {"copy_l1_to_l0b", 3}, {"copy_gm_to_ub", 1}, {"copy_ub_to_gm", 1},
+        {"copy_l1_to_l0b", 3}, {"copy_gm_to_ub", 2}, {"copy_ub_to_gm", 2},
         {"copy_ub_to_ub", 0}};
 
     std::unordered_map<std::string, std::string> ptoCopyMap = {
@@ -1082,12 +1082,33 @@ void CodeGenTileLangAscendPto::CallExternCodegen(const CallNode *op) {
           if (is_dynamic) {
             src_var = src_var + "_dynamic";
           }
-          tensor_template = tensor_template + ", " + ub_valid_shapes[0] + ", ";
-          valid_template = shape_nums[0] + ", " + shape_nums[1] + ", " +
-                           ub_valid_shapes[1] + ", " + ub_valid_shapes[2];
+          // Determine PadValue based on pad_value argument
+          std::string pad_value_str = PrintExpr(op->args[6]);
+          std::string pad_value_enum = "pto::PadValue::Null";
+          if (pad_value_str.find("-CUDART_INF") != std::string::npos ||
+              pad_value_str.find("-inf") != std::string::npos ||
+              pad_value_str.find("-INFINITY") != std::string::npos ||
+              pad_value_str == "-std::numeric_limits<float>::infinity()") {
+            pad_value_enum = "pto::PadValue::Min";
+          } else if (pad_value_str.find("CUDART_INF") != std::string::npos ||
+                     pad_value_str.find("+inf") != std::string::npos ||
+                     pad_value_str.find("INFINITY") != std::string::npos ||
+                     pad_value_str == "std::numeric_limits<float>::infinity()") {
+            pad_value_enum = "pto::PadValue::Max";
+          } else if (pad_value_str == "0" || pad_value_str == "0.0" || pad_value_str == "0.0f" ||
+                     pad_value_str.find("0.000000e+00") != std::string::npos ||
+                     pad_value_str.find("0e+00") != std::string::npos) {
+            pad_value_enum = "pto::PadValue::Zero";
+          }
+          tensor_template = tensor_template + ", " + ub_valid_shapes[0] + ", " +
+                            shape_template + ", " + stride_template + ", " +
+                            shape_nums[0] + ", " + shape_nums[1] + ", " +
+                            pad_value_enum + ">";
         }
-        tensor_template = tensor_template + shape_template + ", " +
-                          stride_template + ", " + valid_template + ">";
+        if (op_name.find("copy_gm_to_l1") != std::string::npos) {
+          tensor_template = tensor_template + shape_template + ", " +
+                            stride_template + ", " + valid_template + ">";
+        }
         this->PrintIndent();
         this->stream << kAscendPtoScope << src_var << tensor_template << "("
                      << tensor_addr << " + " << src_offset;
@@ -1131,7 +1152,10 @@ void CodeGenTileLangAscendPto::CallExternCodegen(const CallNode *op) {
             int32_t type_len =
                 GetTypeLen(global_tensor_template[String(tensor_addr)].dtype);
             this->stream << ", " << ub_valid_shapes[3] << ", " << dst_offset
-                         << "," << type_len << ");\n";
+                         << ", " << type_len;
+            this->stream << ", " << PrintExpr(op->args[4]) << ", "
+                         << PrintExpr(op->args[5]);
+            this->stream << ");\n";
           } else {
             this->stream << ", " << dst_var_id << ");\n";
           }
@@ -1240,7 +1264,6 @@ void CodeGenTileLangAscendPto::CallExternCodegen(const CallNode *op) {
           std::string shape_num_dtype =
               global_tensor_template[String(tensor_addr)].dtype;
           int num1 = std::stoi(shape_nums[1]);
-          // when shape_nums[1] * sizeof(dtype) < 32, do this
           if (shape_num_dtype == "int" && num1 < 8) {
             shape_nums[1] = "8";
           } else if (shape_num_dtype == "float" && num1 < 8) {
@@ -1250,8 +1273,7 @@ void CodeGenTileLangAscendPto::CallExternCodegen(const CallNode *op) {
           }
           tensor_template = tensor_template + shape_template + ", " +
                             stride_template + ", " + shape_nums[0] + ", " +
-                            shape_nums[1] + ", " + ub_valid_shapes[1] + ", " +
-                            ub_valid_shapes[2] + ">";
+                            shape_nums[1] + ">";
         } else {
           tensor_template = tensor_template + shape_template + ", " +
                             stride_template + ", " + valid_template + ">";
@@ -1272,8 +1294,10 @@ void CodeGenTileLangAscendPto::CallExternCodegen(const CallNode *op) {
           this->stream << ")";
         }
         if (op_name.find("copy_ub_to_gm") != std::string::npos) {
-          this->stream << ", " << ub_valid_shapes[3] << ", " << src_offset
-                       << ");\n";
+          this->stream << ", " << ub_valid_shapes[3] << ", " << src_offset;
+          this->stream << ", " << PrintExpr(op->args[4]) << ", "
+                       << PrintExpr(op->args[5]);
+          this->stream << ");\n";
         } else {
           this->stream << ", " << src_var_id << ");\n";
         }
