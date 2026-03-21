@@ -727,11 +727,7 @@ class TestTileLangKernels:
                     T.copy(B[bx * block_M + vid * block_M // VEC_NUM], b_ub)
                     
                     for (i, j) in T.Parallel(block_M // VEC_NUM, block_N):
-                        # c_ub[i, j] = a_ub[i, j] + 5
                         c_ub[i, j] = b_ub[i] + 5
-                        # c_ub[i, j] = a_ub[i, j] + b_ub[i]
-                        # c_ub[i, j] = b_ub[i]
-                        # c_ub[i, j] = a_ub[i, j] + 5
 
                     T.copy(c_ub, C[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
 
