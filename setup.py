@@ -54,10 +54,39 @@ def load_module_from_path(module_name, path):
     return module
 
 
-envs = load_module_from_path("env", os.path.join(ROOT_DIR, PACKAGE_NAME, "env.py"))
+envs = None
+try:
+    envs = load_module_from_path("env", os.path.join(ROOT_DIR, PACKAGE_NAME, "env.py"))
+except AssertionError as error:
+    logger.warning(
+        "Failed to import tilelang.env due to missing built libs: %s. "
+        "Falling back to environment variables.",
+        error,
+    )
+except Exception as error:
+    logger.warning(
+        "Unexpected error when importing tilelang.env: %s. "
+        "Falling back to environment variables.",
+        error,
+    )
+
+if envs is None:
+
+    class _FallbackEnv:
+        pass
+
+    envs = _FallbackEnv()
+    envs.CUDA_HOME = os.environ.get("CUDA_HOME", "") or ""
+    envs.ROCM_HOME = os.environ.get("ROCM_HOME", "") or ""
+    envs.ASCEND_HOME = (
+        os.environ.get("ASCEND_HOME_PATH", "")
+        or os.environ.get("ASCEND_HOME", "")
+        or ""
+    )
 
 CUDA_HOME = envs.CUDA_HOME
 ROCM_HOME = envs.ROCM_HOME
+ASCEND_HOME = envs.ASCEND_HOME
 
 # If USE_NPUIR, skip CUDA/ROCM
 if USE_NPUIR:

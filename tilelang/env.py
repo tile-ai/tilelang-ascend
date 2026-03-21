@@ -13,9 +13,13 @@ logger = logging.getLogger(__name__)
 # SETUP ENVIRONMENT VARIABLES
 CUTLASS_NOT_FOUND_MESSAGE = "CUTLASS is not installed or found in the expected path"
 ", which may lead to compilation bugs when utilize tilelang backend."
-COMPOSABLE_KERNEL_NOT_FOUND_MESSAGE = "Composable Kernel is not installed or found in the expected path"
+COMPOSABLE_KERNEL_NOT_FOUND_MESSAGE = (
+    "Composable Kernel is not installed or found in the expected path"
+)
 ", which may lead to compilation bugs when utilize tilelang backend."
-TL_TEMPLATE_NOT_FOUND_MESSAGE = "TileLang is not installed or found in the expected path"
+TL_TEMPLATE_NOT_FOUND_MESSAGE = (
+    "TileLang is not installed or found in the expected path"
+)
 ", which may lead to compilation bugs when utilize tilelang backend."
 TVM_LIBRARY_NOT_FOUND_MESSAGE = "TVM is not installed or found in the expected path"
 
@@ -38,7 +42,9 @@ if not os.path.exists(THIRD_PARTY_ROOT):
     THIRD_PARTY_ROOT = os.path.join(tl_dev_root, "3rdparty")
     logger.warning(f"Loading tilelang libs from dev root: {dev_lib_root}")
 
-assert TL_LIBS and all(os.path.exists(i) for i in TL_LIBS), f"tilelang lib root do not exists: {TL_LIBS}"
+assert TL_LIBS and all(os.path.exists(i) for i in TL_LIBS), (
+    f"tilelang lib root do not exists: {TL_LIBS}"
+)
 
 for lib in TL_LIBS:
     if lib not in sys.path:
@@ -62,7 +68,9 @@ def _is_running_autodd() -> bool:
     pos = orig_argv.index("-m") if "-m" in orig_argv else -1
     if pos != -1 and pos + 1 < len(orig_argv):
         module_name = orig_argv[pos + 1]
-        if module_name == "tilelang.autodd" or module_name.startswith("tilelang.autodd."):
+        if module_name == "tilelang.autodd" or module_name.startswith(
+            "tilelang.autodd."
+        ):
             return True
     return False
 
@@ -103,7 +111,9 @@ def _find_cuda_home() -> str:
         else:
             # Guess #4
             if sys.platform == "win32":
-                cuda_homes = glob.glob("C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v*.*")
+                cuda_homes = glob.glob(
+                    "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v*.*"
+                )
                 cuda_home = "" if len(cuda_homes) == 0 else cuda_homes[0]
             else:
                 # Linux/macOS
@@ -131,6 +141,16 @@ def _find_rocm_home() -> str:
             if not os.path.exists(rocm_home):
                 rocm_home = None
     return rocm_home if rocm_home is not None else ""
+
+
+def _find_ascend_home() -> str:
+    """Find the Ascend install path."""
+    ascend_home = os.environ.get("ASCEND_HOME_PATH") or os.environ.get("ASCEND_HOME")
+    if ascend_home is None:
+        ascend_home = "/usr/local/Ascend"
+        if not os.path.exists(ascend_home):
+            ascend_home = None
+    return ascend_home if ascend_home is not None else ""
 
 
 # Cache control
@@ -207,7 +227,9 @@ class EnvVar:
 
     key: str  # Environment variable name (e.g. "TILELANG_PRINT_ON_COMPILATION")
     default: str  # Default value if the environment variable is not set
-    _forced_value: str | None = None  # Temporary runtime override (mainly for tests/debugging)
+    _forced_value: str | None = (
+        None  # Temporary runtime override (mainly for tests/debugging)
+    )
 
     def get(self):
         if self._forced_value is not None:
@@ -238,13 +260,14 @@ class EnvVar:
 class Environment:
     """
     Environment configuration for TileLang.
-    Handles CUDA/ROCm detection, integration paths, template/cache locations,
+    Handles CUDA/ROCm/Ascend detection, integration paths, template/cache locations,
     auto-tuning configs, and build options.
     """
 
     # CUDA/ROCm home directories
     CUDA_HOME = _find_cuda_home()
     ROCM_HOME = _find_rocm_home()
+    ASCEND_HOME = _find_ascend_home()
 
     # Path to the TileLang package root
     TILELANG_PACKAGE_PATH = pathlib.Path(__file__).resolve().parent
@@ -259,15 +282,23 @@ class Environment:
 
     # TileLang resources
     TILELANG_TEMPLATE_PATH = EnvVar("TL_TEMPLATE_PATH", None)
-    TILELANG_CACHE_DIR = EnvVar("TILELANG_CACHE_DIR", os.path.expanduser("~/.tilelang/cache"))
-    TILELANG_TMP_DIR = EnvVar("TILELANG_TMP_DIR", os.path.join(TILELANG_CACHE_DIR.get(), "tmp"))
+    TILELANG_CACHE_DIR = EnvVar(
+        "TILELANG_CACHE_DIR", os.path.expanduser("~/.tilelang/cache")
+    )
+    TILELANG_TMP_DIR = EnvVar(
+        "TILELANG_TMP_DIR", os.path.join(TILELANG_CACHE_DIR.get(), "tmp")
+    )
 
     # Kernel Build options
-    TILELANG_PRINT_ON_COMPILATION = EnvVar("TILELANG_PRINT_ON_COMPILATION", "1")  # print kernel name on compile
+    TILELANG_PRINT_ON_COMPILATION = EnvVar(
+        "TILELANG_PRINT_ON_COMPILATION", "1"
+    )  # print kernel name on compile
     TILELANG_DISABLE_CACHE = EnvVar(
         "TILELANG_DISABLE_CACHE", "0"
     )  # disable kernel cache, usually for unit testing / debugging, high priority
-    TILELANG_CLEAR_CACHE = EnvVar("TILELANG_CLEAR_CACHE", "0")  # DEPRECATED! clear cache automatically if set
+    TILELANG_CLEAR_CACHE = EnvVar(
+        "TILELANG_CLEAR_CACHE", "0"
+    )  # DEPRECATED! clear cache automatically if set
     TILELANG_CLEANUP_TEMP_FILES = EnvVar(
         "TILELANG_CLEANUP_TEMP_FILES", "0"
     )  # cleanup temporary compiler files/dirs after compilation (default: keep for debugging)
@@ -277,10 +308,18 @@ class Environment:
     TILELANG_USE_GEMM_V1 = EnvVar("TILELANG_USE_GEMM_V1", "0")
 
     # Auto-tuning settings
-    TILELANG_AUTO_TUNING_DISABLE_CACHE = EnvVar("TILELANG_AUTO_TUNING_DISABLE_CACHE", "0")
-    TILELANG_AUTO_TUNING_CPU_UTILITIES = EnvVar("TILELANG_AUTO_TUNING_CPU_UTILITIES", "0.9")  # percent of CPUs used
-    TILELANG_AUTO_TUNING_CPU_COUNTS = EnvVar("TILELANG_AUTO_TUNING_CPU_COUNTS", "-1")  # -1 means auto
-    TILELANG_AUTO_TUNING_MAX_CPU_COUNT = EnvVar("TILELANG_AUTO_TUNING_MAX_CPU_COUNT", "-1")  # -1 means no limit
+    TILELANG_AUTO_TUNING_DISABLE_CACHE = EnvVar(
+        "TILELANG_AUTO_TUNING_DISABLE_CACHE", "0"
+    )
+    TILELANG_AUTO_TUNING_CPU_UTILITIES = EnvVar(
+        "TILELANG_AUTO_TUNING_CPU_UTILITIES", "0.9"
+    )  # percent of CPUs used
+    TILELANG_AUTO_TUNING_CPU_COUNTS = EnvVar(
+        "TILELANG_AUTO_TUNING_CPU_COUNTS", "-1"
+    )  # -1 means auto
+    TILELANG_AUTO_TUNING_MAX_CPU_COUNT = EnvVar(
+        "TILELANG_AUTO_TUNING_MAX_CPU_COUNT", "-1"
+    )  # -1 means no limit
 
     # Compilation defaults (for jit, autotune, compile)
     # These allow overriding default compilation parameters via environment variables
@@ -303,7 +342,9 @@ class Environment:
         target = determine_target(return_object=True)  # get target GPU
         compute_version = nvcc.get_target_compute_version(target)  # e.g. "8.6"
         major, minor = nvcc.parse_compute_version(compute_version)  # split to (8, 6)
-        os.environ["TORCH_CUDA_ARCH_LIST"] = f"{major}.{minor}"  # set env var for PyTorch
+        os.environ["TORCH_CUDA_ARCH_LIST"] = (
+            f"{major}.{minor}"  # set env var for PyTorch
+        )
 
     # Cache control API (wrap CacheState)
     def is_cache_enabled(self) -> bool:
@@ -319,13 +360,23 @@ class Environment:
         return self.TILELANG_DISABLE_CACHE.lower() in ("1", "true", "yes", "on")
 
     def is_autotune_cache_disabled(self) -> bool:
-        return self.TILELANG_AUTO_TUNING_DISABLE_CACHE.lower() in ("1", "true", "yes", "on")
+        return self.TILELANG_AUTO_TUNING_DISABLE_CACHE.lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
 
     def is_print_on_compilation_enabled(self) -> bool:
         return self.TILELANG_PRINT_ON_COMPILATION.lower() in ("1", "true", "yes", "on")
 
     def should_cleanup_temp_files(self) -> bool:
-        return str(self.TILELANG_CLEANUP_TEMP_FILES).lower() in ("1", "true", "yes", "on")
+        return str(self.TILELANG_CLEANUP_TEMP_FILES).lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
 
     def use_gemm_v1(self) -> bool:
         """Return True if GEMM v1 should be used based on env.
@@ -371,6 +422,7 @@ is_cache_enabled = env.is_cache_enabled  # CacheState.is_enabled
 # after initialization.
 CUDA_HOME = env.CUDA_HOME
 ROCM_HOME = env.ROCM_HOME
+ASCEND_HOME = env.ASCEND_HOME
 
 
 def prepend_pythonpath(path):
@@ -407,7 +459,9 @@ if os.environ.get("TL_CUTLASS_PATH", None) is None:
 if os.environ.get("TL_COMPOSABLE_KERNEL_PATH", None) is None:
     ck_inc_path = os.path.join(THIRD_PARTY_ROOT, "composable_kernel", "include")
     if os.path.exists(ck_inc_path):
-        os.environ["TL_COMPOSABLE_KERNEL_PATH"] = env.COMPOSABLE_KERNEL_INCLUDE_DIR = ck_inc_path
+        os.environ["TL_COMPOSABLE_KERNEL_PATH"] = env.COMPOSABLE_KERNEL_INCLUDE_DIR = (
+            ck_inc_path
+        )
     else:
         logger.warning(COMPOSABLE_KERNEL_NOT_FOUND_MESSAGE)
 

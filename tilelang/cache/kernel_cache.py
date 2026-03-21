@@ -16,7 +16,7 @@ import threading
 import cloudpickle
 import logging
 
-from tilelang.env import TILELANG_CACHE_DIR, is_cache_enabled
+from tilelang import env
 from tilelang.version import __version__
 
 KERNEL_PATH = "kernel.cu"
@@ -39,9 +39,9 @@ class KernelCache:
     _lock = threading.Lock()  # For thread safety
     _memory_cache = {}  # In-memory cache dictionary
 
-    cache_dir: Path = Path(TILELANG_CACHE_DIR)
+    cache_dir: Path = Path(env.TILELANG_CACHE_DIR)
 
-    def __new__(cls, cache_dir=TILELANG_CACHE_DIR):
+    def __new__(cls, cache_dir=env.TILELANG_CACHE_DIR):
         """
         Implements singleton pattern for KernelCache class.
 
@@ -96,8 +96,14 @@ class KernelCache:
         key_data = {
             "version": __version__,
             "func": sha256(func_binary).hexdigest(),  # Use SHA256 to generate hash key
-            "out_idx": (tuple(out_idx) if isinstance(out_idx, (list, tuple)) else [out_idx]),
-            "workspace_idx": (tuple(workspace_idx) if isinstance(workspace_idx, (list, tuple)) else [workspace_idx]),
+            "out_idx": (
+                tuple(out_idx) if isinstance(out_idx, (list, tuple)) else [out_idx]
+            ),
+            "workspace_idx": (
+                tuple(workspace_idx)
+                if isinstance(workspace_idx, (list, tuple))
+                else [workspace_idx]
+            ),
             "args_repr": tuple(
                 repr(arg) for arg in args
             ),  # Use repr to serialize arguments, may need more robust serialization
@@ -107,8 +113,12 @@ class KernelCache:
             "execution_backend": execution_backend,
             "pass_configs": pass_configs,
         }
-        key_string = json.dumps(key_data, sort_keys=True)  # Sort keys to ensure consistency
-        return sha256(key_string.encode()).hexdigest()  # Use SHA256 to generate hash key
+        key_string = json.dumps(
+            key_data, sort_keys=True
+        )  # Sort keys to ensure consistency
+        return sha256(
+            key_string.encode()
+        ).hexdigest()  # Use SHA256 to generate hash key
 
     def cached(
         self,
@@ -138,7 +148,7 @@ class KernelCache:
         Returns:
             JITKernel: The compiled kernel, either freshly compiled or from cache
         """
-        if not is_cache_enabled():
+        if not env.is_cache_enabled():
             return JITKernel(
                 func,
                 out_idx=out_idx,
@@ -165,13 +175,24 @@ class KernelCache:
         with self._lock:
             # First check in-memory cache
             if key in self._memory_cache:
-                self.logger.warning("Found kernel in memory cache. For better performance," \
-                                    " consider using `@tilelang.jit` instead of direct kernel caching.")
+                self.logger.warning(
+                    "Found kernel in memory cache. For better performance,"
+                    " consider using `@tilelang.jit` instead of direct kernel caching."
+                )
                 return self._memory_cache[key]
 
             # Then check disk cache
-            kernel = self._load_kernel_from_disk(key, target, target_host, platform, out_idx, workspace_idx,
-                                                 execution_backend, pass_configs, func)
+            kernel = self._load_kernel_from_disk(
+                key,
+                target,
+                target_host,
+                platform,
+                out_idx,
+                workspace_idx,
+                execution_backend,
+                pass_configs,
+                func,
+            )
             if kernel is not None:
                 # Populate memory cache with disk result
                 self._memory_cache[key] = kernel
@@ -193,7 +214,7 @@ class KernelCache:
             self.logger.warning("DLPack backend does not support cache saving to disk.")
         else:
             with self._lock:
-                if is_cache_enabled():
+                if env.is_cache_enabled():
                     self._save_kernel_to_disk(key, kernel, func)
 
         # Store in memory cache after compilation
@@ -324,7 +345,9 @@ class KernelCache:
             with open(wrapped_kernel_path, "r") as f:
                 kernel_global_source = f.read()
         except Exception as e:
-            self.logger.error(f"Error loading wrapped kernel source code from disk: {e}")
+            self.logger.error(
+                f"Error loading wrapped kernel source code from disk: {e}"
+            )
 
         kernel_lib_path = os.path.join(cache_path, KERNEL_LIB_PATH)
 
@@ -356,7 +379,7 @@ class KernelCache:
     def _clear_disk_cache(self):
         """
         Removes all cached kernels from disk.
-        
+
         Note:
             This operation will delete the entire cache directory and recreate it empty.
             Use with caution as this operation cannot be undone.

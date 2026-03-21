@@ -7,13 +7,15 @@ from pathlib import Path
 from tvm.target import Target
 from tvm.tir import PrimFunc
 from tilelang.jit import JITKernel
-from .kernel_cache import KernelCache
+
+# from .kernel_cache import KernelCache
 from .tuner_cache import AutoTunerCache
-from tilelang.env import TILELANG_CLEAR_CACHE
+from tilelang import env
 
 # Create singleton instance of KernelCache
 # _kernel_cache_instance = KernelCache()
 _kernel_cache_instance = AutoTunerCache()
+
 
 def cached(
     func: PrimFunc = None,
@@ -70,5 +72,5 @@ def clear_cache():
     _kernel_cache_instance.clear_cache()
 
 
-if TILELANG_CLEAR_CACHE.lower() in ("1", "true", "yes", "on"):
+if env.TILELANG_CLEAR_CACHE.lower() in ("1", "true", "yes", "on"):
     clear_cache()
