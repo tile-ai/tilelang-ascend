@@ -1014,6 +1014,7 @@ def createvecindex(dst: Buffer, firstValue: PrimExpr):
     return tir.call_intrin(
         "handle",
         tir.op.Op.get("tl.ascend_createvecindex"),
+        f"CreateVecIndex<{_dtype(dst)}>",
         dst.access_ptr("w"),
         firstValue,
         calCount,
