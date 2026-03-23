@@ -7,9 +7,9 @@ import torch
 tilelang.cache.clear_cache()
 
 parser = argparse.ArgumentParser(description="NPU Kernel Compilation")
-parser.add_argument("--m", type=int, default=1024, help="Matrix M dimension")
-parser.add_argument("--n", type=int, default=1024, help="Matrix N dimension")
-parser.add_argument("--k", type=int, default=1024, help="Matrix K dimension")
+parser.add_argument("--m", type=int, default=32*3, help="Matrix M dimension")
+parser.add_argument("--n", type=int, default=32, help="Matrix N dimension")
+parser.add_argument("--k", type=int, default=32*3, help="Matrix K dimension")
 args = parser.parse_args()
 
 M = args.m
@@ -19,8 +19,8 @@ K = args.k
 
 @tilelang.jit(out_idx=[-1])
 def matmul(M, N, K, block_M, block_N, K_L1, dtype="float16", accum_dtype="float"):
-    m_num = M // block_M
-    n_num = N // block_N
+    m_num = T.ceildiv(M, block_M)
+    n_num = T.ceildiv(N, block_N)
 
     @T.prim_func
     def main(
@@ -53,7 +53,7 @@ def matmul(M, N, K, block_M, block_N, K_L1, dtype="float16", accum_dtype="float"
     return main
 
 
-func = matmul(M, N, K, 128, 256, 64)
+func = matmul(M, N, K, 32, 32, 32)
 
 torch.manual_seed(0)
 

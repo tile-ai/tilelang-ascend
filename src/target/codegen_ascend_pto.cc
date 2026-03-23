@@ -62,8 +62,8 @@ static std::string getType(const DataType &dtype) {
   return "";
 }
 
-int8_t GetTypeLen(std::string type) {
-  int8_t typeSize = 1;
+int32_t GetTypeLen(std::string type) {
+  int32_t typeSize = 1;
   if (type == "float") {
     typeSize = 4;
   } else if (type == "bfloat16_t") {
@@ -974,16 +974,20 @@ void CodeGenTileLangAscendPto::CallExternCodegen(const CallNode *op) {
           auto buffer_k = op->args[2].as<CallNode>()->args[2] / element_count;
           tvm::arith::Analyzer analyzer;
           PrimExpr simplified_k = analyzer.Simplify(buffer_k);
-          this->stream << ", " << dst_var_id << "[" << simplified_k << "]"
+          auto addr = l_valid_shapes[3];
+          auto type_len = GetTypeLen(l_valid_shapes[0]);
+          this->stream << ", " << addr << " + " << dst_offset << " * " << type_len << ", " << PrintExpr(op->args[4]) << ", " << PrintExpr(op->args[5])
                        << ");\n";
-
           prefetch_n_stages_map_[dst_var_id].second++;
         } else {
           if (op_name.find("copy_gm_to_ub") != std::string::npos) {
             int32_t type_len = GetTypeLen(global_tensor_template[String(tensor_addr)].dtype);
             this->stream << ", " << ub_valid_shapes[3] << ", " << dst_offset << "," << type_len << ");\n";
           } else {
-            this->stream << ", " << dst_var_id << ");\n";
+            auto addr = l_valid_shapes[3];
+            auto type_len = GetTypeLen(l_valid_shapes[0]);
+            this->stream << ", " << addr << " + " << dst_offset << " * " << type_len << ", " << PrintExpr(op->args[4]) << ", " << PrintExpr(op->args[5])
+                       << ");\n";
           }
         }
 
@@ -1107,7 +1111,10 @@ void CodeGenTileLangAscendPto::CallExternCodegen(const CallNode *op) {
           int32_t type_len = GetTypeLen(global_tensor_template[String(tensor_addr)].dtype);
           this->stream << ", " << ub_valid_shapes[3] << ", " << src_offset << "," << type_len << ");\n";
         } else {
-          this->stream << ", " << src_var_id << ");\n";
+          auto addr = l_valid_shapes[3];
+          auto type_len = GetTypeLen(l_valid_shapes[0]);
+          this->stream << ", " << addr << " + " << dst_offset << " * " << type_len << ", " << PrintExpr(op->args[4]) << ", " << PrintExpr(op->args[5])
+                       << ");\n";
         }
       }
     } else {
@@ -2516,7 +2523,7 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
     }
     auto shape = buffer_shapess_[op->buffer_var];
     std::vector<std::string> ub_data(7);
-    std::vector<std::string> l_data(3);
+    std::vector<std::string> l_data(4);
     ub_data[0] = type;
     l_data[0] = type;
     if (pos == kAscendPtoScope + "TileUbData") {
@@ -2679,6 +2686,7 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
           for (size_t i = 0; i < shape.size(); i++) {
             stream << ", " << shape[i];
           }
+          l_data[3] = PrintExpr(target_expr);
           stream << "> " << vid << ";\n";
           this->PrintIndent();
           stream << "TASSIGN(" << vid << ", "
@@ -2708,6 +2716,9 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
             stream << ", " << shape[i];
           }
           stream << "> " << vid << "[" << shape[0] << "];\n";
+          if (l_data[3].empty()) {
+            l_data[3] = PrintExpr(target_expr);
+          }
           for (size_t j = 0; j < bufferNum; j++) {
             this->PrintIndent();
             stream << "TASSIGN(" << vid << "[" << j << "], "
@@ -2850,6 +2861,7 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
           }
           stream << "> " << vid << ";\n";
           this->PrintIndent();
+          l_data[3] = PrintExpr(address_offset_[String(pos)]);
           stream << "TASSIGN(" << vid << ", "
                  << PrintExpr(address_offset_[String(pos)])
                  << ");\n";
@@ -2881,6 +2893,9 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
           for (size_t i = 1; i < shape.size(); i++) {
             stream << ", " << shape[i];
           }
+          if (l_data[3].empty()) {
+            l_data[3] = PrintExpr(address_offset_[String(pos)]);
+          }
           stream << "> " << vid << "[" << shape[0] << "];\n";
           for (size_t j = 0; j < bufferNum; j++) {
             this->PrintIndent();
@@ -2889,7 +2904,7 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
                    << ");\n";
             address_offset_.Set(String(pos),
                                 PrimExpr(int(op->ConstantAllocationSize() *
-                                             op->dtype.bytes())) +
+                                             op->dtype.bytes() / bufferNum)) +
                                     address_offset_[String(pos)]);
           }
         }

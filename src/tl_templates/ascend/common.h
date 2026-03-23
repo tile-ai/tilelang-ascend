@@ -31,9 +31,12 @@ constexpr int64_t UB_HALF_SIZE = 64;
 
 template <typename T, uint32_t dstM, uint32_t dstN>
 CATLASS_DEVICE void copy_gm_to_l1(LocalTensor<T> dstTensor,
-                                  GlobalTensor<T> srcTensor, uint32_t realSrcN = 1) {
-  auto layout = MakeLayoutFromTag(LayoutGM{dstM, realSrcN});
-  auto src_LAYOUT = MakeLayoutTile(layout, tla::MakeShape(dstM, dstN));
+                                  GlobalTensor<T> srcTensor, uint32_t realSrcN = 1, uint32_t realTailM = 0, uint32_t realTailN = 0) {
+  uint32_t tailM = realTailM == 0 ? dstM : realTailM;
+  uint32_t tailN = realTailN == 0 ? dstN : realTailN;
+  Ascend::InitConstValue(dstTensor, {1, static_cast<uint16_t>(dstM * dstN * sizeof(T) / 32), 0, 0});
+  auto layout = MakeLayoutFromTag(LayoutGM{tailM, realSrcN});
+  auto src_LAYOUT = MakeLayoutTile(layout, tla::MakeShape(tailM, tailN));
   auto src = tla::MakeTensor<decltype(srcTensor), decltype(src_LAYOUT),
                              AscendC::TPosition::GM>(srcTensor, src_LAYOUT);
 
@@ -113,15 +116,17 @@ CATLASS_DEVICE void mma(LocalTensor<T1> const A, LocalTensor<T1> const B, LocalT
 template <typename T1, typename T2, typename LayoutGM, uint32_t srcM, uint32_t srcN, bool enRelu = false>
 CATLASS_DEVICE void copy_l0c_to_gm(GlobalTensor<T2> dstTensor,
                                    LocalTensor<T1> srcTensor,
-                                   uint32_t realDstN = 1) {
+                                   uint32_t realDstN = 1, uint32_t realTailM = 0, uint32_t realTailN = 0) {
+  uint32_t tailM = realTailM == 0 ? srcM : realTailM;
+  uint32_t tailN = realTailN == 0 ? srcN : realTailN;
   auto layoutInL0C = tla::MakeLayoutL0C(srcM, srcN);
   auto src = tla::MakeTensor<decltype(srcTensor), decltype(layoutInL0C),
                              AscendC::TPosition::CO1>(srcTensor, layoutInL0C);
-  LayoutGM gm{srcM, realDstN};
+  LayoutGM gm{tailM, realDstN};
   auto layout = MakeLayoutFromTag(gm);
   auto dTensor = MakeTensor(dstTensor, layout, Arch::PositionGM{});
   auto layout_ = dTensor.layout();
-  auto dst_LAYOUT = MakeLayoutTile(layout_, tla::MakeShape(srcM, srcN));
+  auto dst_LAYOUT = MakeLayoutTile(layout_, tla::MakeShape(tailM, tailN));
   auto dst = MakeTensor<decltype(dstTensor), decltype(dst_LAYOUT),
                         AscendC::TPosition::GM>(dstTensor, dst_LAYOUT);
 
