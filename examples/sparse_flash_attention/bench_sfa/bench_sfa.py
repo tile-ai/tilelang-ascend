@@ -23,7 +23,6 @@ def test_op(T, B, KV_S, Q_N, KV_N, D, D_rope,
     key   = torch.empty((B * KV_S // block_size, block_size, KV_N, D), dtype=qkv_dtype, device=DEVICE).normal_(mean=0.0, std=0.5).requires_grad_()
     value = key.clone()
 
-    act_q_s = T // B # step
     rand_vals = torch.rand(T, KV_N, act_kv_s, device=DEVICE)
     _, indices = torch.topk(rand_vals, sparse_size, dim=-1)
     sparse_indices = indices.to(torch.int32)
@@ -75,11 +74,11 @@ def test_op(T, B, KV_S, Q_N, KV_N, D, D_rope,
     print("[PASSED]")
 
 if __name__ == "__main__":
-    from sparse_flash_attn_mask_pa import sparse_attn_tilelang, init_test
-    from sparse_flash_attn_mask_pa_opt import sparse_attn_tilelang as sparse_attn_tilelang_opt
+    from sparse_flash_attn_pa import init_test
+    from sparse_flash_attn_pa import sparse_attn_tilelang as sparse_flash_attn_pa
     init_test()
 
-    tl_ops = [torch_npu.npu_sparse_flash_attention, sparse_attn_tilelang_opt]
+    tl_ops = [torch_npu.npu_sparse_flash_attention, sparse_flash_attn_pa]
     test_op(T = 1, B = 1, KV_S = 2560, Q_N = 128, KV_N = 1, D = 512, D_rope = 64,
         sparse_size = 2048, scale_value = 0.5, sparse_block_size = 1, sparse_mode = 0,
         block_size = 128, act_kv_s = 2560, tl_ops = tl_ops)
