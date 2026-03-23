@@ -46,14 +46,14 @@ def gemm_tail_block(M, N, K, block_M, block_N, block_K, dtype="float16", accum_t
                     for k in T.serial(k_num):
                         T.copy(A[bx * block_M, k * block_K], a)
                         T.copy(B[k * block_K, by * block_N], b)
-                        T.gemm_v1(a, b, c, init=(k == 0))
+                        T.gemm_v0(a, b, c, init=(k == 0))
                     
                     if k_tail > 0:
                         a_k = T.alloc_L1([block_M, k_tail], dtype)
                         b_k = T.alloc_L1([k_tail, block_N], dtype)
                         T.copy(A[bx * block_M, k_num * block_K], a_k)
                         T.copy(B[k_num * block_K, by * block_N], b_k)
-                        T.gemm_v1(a_k, b_k, c, init=False)
+                        T.gemm_v0(a_k, b_k, c, init=False)
                     
                     T.copy(c, C[bx * block_M, by * block_N])
                 
@@ -66,14 +66,14 @@ def gemm_tail_block(M, N, K, block_M, block_N, block_K, dtype="float16", accum_t
                     for k in T.serial(k_num):
                         T.copy(A[bx * block_M, k * block_K], a_m)
                         T.copy(B[k * block_K, by * block_N], b)
-                        T.gemm_v1(a_m, b, c_m, init=(k == 0))
+                        T.gemm_v0(a_m, b, c_m, init=(k == 0))
                     
                     if k_tail > 0:
                         a_mk = T.alloc_L1([m_tail, k_tail], dtype)
                         b_k = T.alloc_L1([k_tail, block_N], dtype)
                         T.copy(A[bx * block_M, k_num * block_K], a_mk)
                         T.copy(B[k_num * block_K, by * block_N], b_k)
-                        T.gemm_v1(a_mk, b_k, c_m, init=False)
+                        T.gemm_v0(a_mk, b_k, c_m, init=False)
                     
                     T.copy(c_m, C[bx * block_M, by * block_N])
                 
@@ -86,14 +86,14 @@ def gemm_tail_block(M, N, K, block_M, block_N, block_K, dtype="float16", accum_t
                     for k in T.serial(k_num):
                         T.copy(A[bx * block_M, k * block_K], a)
                         T.copy(B[k * block_K, by * block_N], b_n)
-                        T.gemm_v1(a, b_n, c_n, init=(k == 0))
+                        T.gemm_v0(a, b_n, c_n, init=(k == 0))
                     
                     if k_tail > 0:
                         a_k = T.alloc_L1([block_M, k_tail], dtype)
                         b_kn = T.alloc_L1([k_tail, n_tail], dtype)
                         T.copy(A[bx * block_M, k_num * block_K], a_k)
                         T.copy(B[k_num * block_K, by * block_N], b_kn)
-                        T.gemm_v1(a_k, b_kn, c_n, init=False)
+                        T.gemm_v0(a_k, b_kn, c_n, init=False)
                     
                     T.copy(c_n, C[bx * block_M, by * block_N])
                 
@@ -106,14 +106,14 @@ def gemm_tail_block(M, N, K, block_M, block_N, block_K, dtype="float16", accum_t
                     for k in T.serial(k_num):
                         T.copy(A[bx * block_M, k * block_K], a_m)
                         T.copy(B[k * block_K, by * block_N], b_n)
-                        T.gemm_v1(a_m, b_n, c_mn, init=(k == 0))
+                        T.gemm_v0(a_m, b_n, c_mn, init=(k == 0))
                     
                     if k_tail > 0:
                         a_mk = T.alloc_L1([m_tail, k_tail], dtype)
                         b_kn = T.alloc_L1([k_tail, n_tail], dtype)
                         T.copy(A[bx * block_M, k_num * block_K], a_mk)
                         T.copy(B[k_num * block_K, by * block_N], b_kn)
-                        T.gemm_v1(a_mk, b_kn, c_mn, init=False)
+                        T.gemm_v0(a_mk, b_kn, c_mn, init=False)
                     
                     T.copy(c_mn, C[bx * block_M, by * block_N])
 

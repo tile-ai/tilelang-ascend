@@ -543,40 +543,6 @@ CATLASS_DEVICE void InitSortBuf(const LocalTensor<T> &src, int64_t eleNum,
   PipeBarrier<PIPE_V>();
 }
 
-template <typename T1, typename T2, uint32_t L1_block_M, uint32_t L1_block_N,
-          uint32_t L1_block_K, uint32_t BLOCK_M, uint32_t BLOCK_N,
-          uint32_t BLOCK_K, bool transpose_A = false, bool transpose_B = false>
-CATLASS_DEVICE void
-gemm_v1(LocalTensor<T1> const &A, LocalTensor<T1> const &B,
-        LocalTensor<T2> const &C, // this must be located in l0c
-        AscendC::TBuf<AscendC::TPosition::A2> &l0a_,
-        AscendC::TBuf<AscendC::TPosition::B2> &l0b_, bool clear) {
-  auto l0a = l0a_.Get<T1>();
-  auto l0b = l0b_.Get<T1>();
-  AscendC::PipeBarrier<PIPE_ALL>();
-
-  if constexpr (!transpose_A) {
-    tl::ascend::copy_l1_to_l0a<half, L1_block_M, L1_block_K>
-                               (l0a, A, BLOCK_M, BLOCK_K);
-  } else {
-    tl::ascend::copy_l1_to_l0a<half, L1_block_K, L1_block_M, true>
-                               (l0a, A, BLOCK_M, BLOCK_K);
-  }
-
-  if constexpr (!transpose_B) {
-    tl::ascend::copy_l1_to_l0b<half, L1_block_K, L1_block_N>
-                               (l0b, B, BLOCK_K, BLOCK_N);
-  } else {
-    tl::ascend::copy_l1_to_l0b<half, L1_block_N, L1_block_K, true>
-                               (l0b, B, BLOCK_K, BLOCK_N);
-  }
-
-  AscendC::PipeBarrier<PIPE_ALL>();
-tl:
-  ascend::mma<T1, T2, BLOCK_M, BLOCK_N>(l0a, l0b, C, clear, BLOCK_K);
-  AscendC::PipeBarrier<PIPE_ALL>();
-}
-
 template <typename T>
 CATLASS_DEVICE void brcb(const LocalTensor<T> &dst, const LocalTensor<T> &src0,
                          const uint8_t repeatTime, const uint16_t dstBlkStride,
