@@ -34,7 +34,7 @@ CATLASS_DEVICE void copy_gm_to_l1(LocalTensor<T> dstTensor,
                                   GlobalTensor<T> srcTensor, uint32_t realSrcN = 1, uint32_t realTailM = 0, uint32_t realTailN = 0) {
   uint32_t tailM = realTailM == 0 ? dstM : realTailM;
   uint32_t tailN = realTailN == 0 ? dstN : realTailN;
-  Ascend::InitConstValue(dstTensor, {1, static_cast<uint16_t>(dstM * dstN * sizeof(T) / 32), 0, 0});
+  AscendC::InitConstValue(dstTensor, {1, static_cast<uint16_t>(dstM * dstN * sizeof(T) / 32), 0, 0});
   auto layout = MakeLayoutFromTag(LayoutGM{tailM, realSrcN});
   auto src_LAYOUT = MakeLayoutTile(layout, tla::MakeShape(tailM, tailN));
   auto src = tla::MakeTensor<decltype(srcTensor), decltype(src_LAYOUT),
