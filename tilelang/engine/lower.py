@@ -17,7 +17,8 @@ from tilelang.engine.phase import (
     LowerAndLegalize,
     OptimizeForTarget,
 )
-from tilelang.tladapter import transforms, conversion
+from tilelang.tladapter import transforms
+from tilelang.tladapter.utils import Pipeline
 
 
 def is_cpu_device_backend(target: Target):
@@ -26,8 +27,11 @@ def is_cpu_device_backend(target: Target):
 
 def has_device_kernel_launch(attrs) -> bool:
     """Check if the attributes indicate a device kernel launch."""
-    return bool(attrs and "calling_conv" in attrs and
-                attrs["calling_conv"] == CallingConv.DEVICE_KERNEL_LAUNCH)
+    return bool(
+        attrs
+        and "calling_conv" in attrs
+        and attrs["calling_conv"] == CallingConv.DEVICE_KERNEL_LAUNCH
+    )
 
 
 def is_device_call_c_device(func: tir.PrimFunc):
@@ -104,7 +108,9 @@ def tilelang_callback_hip_compile(code, target):
     if "TL_COMPOSABLE_KERNEL_PATH" in os.environ:
         ck_path = os.environ["TL_COMPOSABLE_KERNEL_PATH"]
     else:
-        ck_path = osp.abspath(osp.join(project_root, "3rdparty/composable_kernel/include"))
+        ck_path = osp.abspath(
+            osp.join(project_root, "3rdparty/composable_kernel/include")
+        )
 
     hsaco = hipcc.compile_hip(
         code,
@@ -130,7 +136,9 @@ def extrac_params(func: tir.PrimFunc) -> List[KernelParam]:
     return tensor_types
 
 
-def canon_target_host(target: Union[str, Target], target_host: Optional[Union[str, Target]]):
+def canon_target_host(
+    target: Union[str, Target], target_host: Optional[Union[str, Target]]
+):
 
     if not target_host:
         target_host = "llvm" if tvm.runtime.enabled("llvm") else "stackvm"
@@ -159,43 +167,61 @@ def host_codegen(host_mod: tvm.IRModule, target_host: Target) -> tvm.IRModule:
 def device_codegen(device_mod: tvm.IRModule, target: Target) -> tvm.IRModule:
     if target.kind.name == "npuir":
         # device_mod = tvm._ffi.get_global_func("target.build.tilelang_npuir")(device_mod, target)
-        TILELANG_ASCEND_MODE = os.environ.get('TILELANG_ASCEND_MODE')
-        if TILELANG_ASCEND_MODE is None:
-            device_mod = tvm._ffi.get_global_func("target.build.tilelang_npuir_apis")(device_mod, target)
-        elif TILELANG_ASCEND_MODE.lower().strip() in ['expert', 'exp', 'e']:
-            device_mod = tvm._ffi.get_global_func("target.build.tilelang_npuir_apis")(device_mod, target)
+        TILELANG_ASCEND_MODE = os.environ.get("TILELANG_ASCEND_MODE")
+        if TILELANG_ASCEND_MODE is None or TILELANG_ASCEND_MODE.lower().strip() in [
+            "expert",
+            "exp",
+            "e",
+        ]:
+            device_mod = tvm._ffi.get_global_func("target.build.tilelang_npuir_apis")(
+                device_mod, target
+            )
         else:
-            device_mod = tvm._ffi.get_global_func("target.build.tilelang_npuir_dev")(device_mod, target)
+            device_mod = tvm._ffi.get_global_func("target.build.tilelang_npuir_dev")(
+                device_mod, target
+            )
         return device_mod
     device_mod = tilelang.transform.LowerDeviceStorageAccessInfo()(device_mod)
     device_mod = tir.transform.LowerIntrin()(device_mod)
     device_mod = tir.transform.Simplify()(device_mod)
     if target.kind.name == "cuda":
-        device_mod = tvm._ffi.get_global_func("target.build.tilelang_cuda")(device_mod, target)
+        device_mod = tvm._ffi.get_global_func("target.build.tilelang_cuda")(
+            device_mod, target
+        )
     elif target.kind.name == "hip":
-        device_mod = tvm._ffi.get_global_func("target.build.tilelang_hip")(device_mod, target)
+        device_mod = tvm._ffi.get_global_func("target.build.tilelang_hip")(
+            device_mod, target
+        )
     else:
         raise ValueError(f"Target {target.kind.name} is not supported")
 
     return device_mod
 
 
-def device_codegen_without_compile(device_mod: tvm.IRModule, target: Target) -> tvm.IRModule:
+def device_codegen_without_compile(
+    device_mod: tvm.IRModule, target: Target
+) -> tvm.IRModule:
     device_mod = tilelang.transform.LowerDeviceStorageAccessInfo()(device_mod)
     device_mod = tir.transform.LowerIntrin()(device_mod)
     device_mod = tir.transform.Simplify()(device_mod)
     if target.kind.name == "cuda":
-        device_mod = tvm._ffi.get_global_func("target.build.tilelang_cuda_without_compile")(
-            device_mod, target)
+        device_mod = tvm._ffi.get_global_func(
+            "target.build.tilelang_cuda_without_compile"
+        )(device_mod, target)
     elif target.kind.name == "hip":
-        device_mod = tvm._ffi.get_global_func("target.build.tilelang_hip_without_compile")(
-            device_mod, target)
+        device_mod = tvm._ffi.get_global_func(
+            "target.build.tilelang_hip_without_compile"
+        )(device_mod, target)
     elif target.kind.name == "c":
-        device_mod = tvm._ffi.get_global_func("target.build.tilelang_cpp")(device_mod, target)
+        device_mod = tvm._ffi.get_global_func("target.build.tilelang_cpp")(
+            device_mod, target
+        )
     elif target.kind.name == "llvm":
         device_mod = tvm._ffi.get_global_func("target.build.llvm")(device_mod, target)
     elif target.kind.name == "webgpu":
-        device_mod = tvm._ffi.get_global_func("target.build.tilelang_webgpu")(device_mod, target)
+        device_mod = tvm._ffi.get_global_func("target.build.tilelang_webgpu")(
+            device_mod, target
+        )
     else:
         raise ValueError(f"Target {target.kind.name} is not supported")
 
@@ -210,12 +236,12 @@ def lower(
     enable_host_codegen=False,
     enable_device_compile=False,
 ) -> CompiledArtifact:
-    '''
-        enable_host_codegen: whether to enable host codegen, default is False, as we have our
-        own host codegen implementation in jit.
-        enable_device_compile: whether to enable device codegen, default is False, as we have our
-        own device codegen implementation in jit.
-    '''
+    """
+    enable_host_codegen: whether to enable host codegen, default is False, as we have our
+    own host codegen implementation in jit.
+    enable_device_compile: whether to enable device codegen, default is False, as we have our
+    own device codegen implementation in jit.
+    """
 
     mod = func_or_mod
     params = None
@@ -240,8 +266,8 @@ def lower(
     # Phase 2: Optimize the IR for the target
     mod = OptimizeForTarget(mod, target)
 
-    TILELANG_DUMP_IR = os.environ.get('TILELANG_DUMP_IR', '').lower()
-    dump_ir = TILELANG_DUMP_IR in ('true', '1', 'yes', 'on')
+    TILELANG_DUMP_IR = os.environ.get("TILELANG_DUMP_IR", "").lower()
+    dump_ir = TILELANG_DUMP_IR in ("true", "1", "yes", "on")
     if dump_ir:
         print("====== TVM IR ======")
         print(mod)
@@ -252,29 +278,31 @@ def lower(
         if dump_ir:
             print("====== npuir ======")
             print(mlir_str)
-        tladapter_passes = [
-            transforms.mlir.canonicalize(top_down=True),
-            transforms.bishengir.adapt_triton_kernel,
-        ]
-        for i, p in enumerate(tladapter_passes):
-            mlir_str = p(mlir_str)
-            if dump_ir:
-                name = getattr(p, "pass_name", None) or f"pass-{i}"
-                print(f"====== after {name} ======")
-                print(mlir_str)
+        pipeline = Pipeline()
+        pipeline.add(transforms.mlir.canonicalize, top_down=True)
+        pipeline.add(transforms.bishengir.adapt_triton_kernel)
+        if dump_ir:
+            pipeline.enable_ir_printing()
+        mlir_str = pipeline.run(mlir_str)
+        if dump_ir:
+            print("====== final npuir ======")
+            print(mlir_str)
         return mlir_str
 
     host_mod = tir.transform.Filter(_is_host_call)(mod)
     device_mod = tir.transform.Filter(_is_device_call)(mod)
 
-    codegen_mod = device_codegen(
-        device_mod, target) if enable_device_compile else device_codegen_without_compile(
-            device_mod, target)
+    codegen_mod = (
+        device_codegen(device_mod, target)
+        if enable_device_compile
+        else device_codegen_without_compile(device_mod, target)
+    )
 
     if enable_host_codegen:
         host_mod = host_codegen(host_mod, target_host)
         host_mod.import_module(codegen_mod)
         return CompiledArtifact(
-            host_mod, device_mod, params, codegen_mod.get_source(), rt_mod=host_mod)
+            host_mod, device_mod, params, codegen_mod.get_source(), rt_mod=host_mod
+        )
 
     return CompiledArtifact(host_mod, device_mod, params, codegen_mod.get_source())
