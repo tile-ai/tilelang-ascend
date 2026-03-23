@@ -101,8 +101,6 @@ private:
 
   void GemmV0Codegen(const CallNode *op);
 
-  void GemmV1Codegen(const CallNode *op);
-
   void SyncAllCodegen(const CallNode *op);
 
   void PipeBarrierCodegen(const CallNode *op);
