@@ -6,7 +6,7 @@
 cmake_minimum_required(VERSION 3.18)
 project(TILE_LANG C CXX)
 
-# Supress all warnings
+# Suppress all warnings
 add_definitions(-w)
 
 # Set default build type to Release if not provided
@@ -69,6 +69,7 @@ if(USE_NPUIR)
     set(Python3_EXECUTABLE "${Python3_EXECUTABLE}" CACHE FILEPATH "Python for tilelangir (from -DPython3_EXECUTABLE)" FORCE)
     message(STATUS "NPUIR/tilelangir Python: ${Python3_EXECUTABLE}")
   endif()
+  include(AddLLVM)
   add_subdirectory(${PROJECT_SOURCE_DIR}/tilelangir tilelangir)
 endif()
 
@@ -262,6 +263,11 @@ target_link_libraries(
 if(USE_NPUIR)
   # TODO: Use Tilelangir Dialect in tilelang_module
   # target_include_directories(tilelang_objs PRIVATE ${PROJECT_SOURCE_DIR}/tilelangir/include)
+
+  if(MLIR_INCLUDE_TESTS)
+    add_definitions(-DMLIR_INCLUDE_TESTS)
+    add_subdirectory(testing/mlir)
+  endif()
 endif()
 
 # Install targets

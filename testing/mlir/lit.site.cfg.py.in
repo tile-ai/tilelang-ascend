@@ -1,0 +1,16 @@
+@LIT_SITE_CFG_IN_HEADER@
+
+import sys
+
+ON = 1
+OFF = 0
+
+config.llvm_tools_dir = lit_config.substitute("@LLVM_TOOLS_DIR@")
+config.tilelangir_tools_dirs = "@TILELANGIR_TOOLS_DIRS@".split(' ')
+config.tilelangir_obj_root = "@CMAKE_BINARY_DIR@"
+
+import lit.llvm
+lit.llvm.initialize(lit_config, config)
+
+# Let the main config do the real work.
+lit_config.load_config(config, "@PROJECT_SOURCE_DIR@/testing/mlir/lit.cfg.py")
