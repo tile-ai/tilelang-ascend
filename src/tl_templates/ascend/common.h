@@ -63,7 +63,6 @@ CATLASS_DEVICE void copy_l1_to_l0a(LocalTensor<T> dstTensor,
   auto layoutAInL0 = tla::MakeLayout<T, LayoutL0A_>(dstM, dstN);
   auto dst = tla::MakeTensor<decltype(dstTensor), decltype(layoutAInL0),
                              AscendC::TPosition::A2>(dstTensor, layoutAInL0);
-
   TileCopyTla<ArchTag, decltype(src), decltype(dst)> tileCopier;
   tileCopier(dst, src);
 }
