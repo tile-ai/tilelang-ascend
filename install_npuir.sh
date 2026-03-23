@@ -15,11 +15,16 @@ $PYTHON --version
 
 # Add command line option parsing
 USE_LLVM=false
+ENABLE_TESTS=OFF
 BISHENGIR_PATH=""
 while [[ $# -gt 0 ]]; do
     case $1 in
         --enable-llvm)
             USE_LLVM=true
+            shift
+            ;;
+        --enable-tests)
+            ENABLE_TESTS=ON
             shift
             ;;
         --bishengir-path=*)
@@ -152,7 +157,7 @@ echo "set(USE_NPUIR ON)" >> config.cmake
 echo "set(BISHENGIR_ROOT_PATH $BISHENGIR_PATH)" >> config.cmake
 
 echo "Running CMake for TileLang..."
-cmake -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DPython3_EXECUTABLE="$PYTHON" ..
+cmake -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DPython3_EXECUTABLE="$PYTHON" -DMLIR_INCLUDE_TESTS=${ENABLE_TESTS} ..
 if [ $? -ne 0 ]; then
     echo "Error: CMake configuration failed."
     exit 1
