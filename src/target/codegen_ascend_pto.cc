@@ -2409,13 +2409,8 @@ void CodeGenTileLangAscendPto::BinaryVecClampOpsCodegen(
     var_names.push_back(var_name);
   }
   this->PrintIndent();
-
-  this->stream << "set_flag(PIPE_MTE2, PIPE_V, EVENT_ID1);\n";
-  this->stream << "wait_flag(PIPE_MTE2, PIPE_V, EVENT_ID1);\n";
-  
   // clamp_min: achieve with TMAXS
   this->stream << "TMAXS" << "(";
-  
   for (int i = 0; i < var_names.size(); i++) {
     this->stream << var_names[i];
     if (i != var_names.size() - 1) {
@@ -2423,14 +2418,8 @@ void CodeGenTileLangAscendPto::BinaryVecClampOpsCodegen(
     }
   }
   this->stream << ", " << scalar_min << ");\n";
-  
-  this->stream << "set_flag(PIPE_V, PIPE_MTE3, EVENT_ID1);\n";
-  this->stream << "wait_flag(PIPE_V, PIPE_MTE3, EVENT_ID1);\n";
   // clamp_max: achieve with TMINS
-  this->stream << "set_flag(PIPE_MTE3, PIPE_V, EVENT_ID1);\n";
-  this->stream << "wait_flag(PIPE_MTE3, PIPE_V, EVENT_ID1);\n";
   this->stream << "TMINS" << "(";
-  
   for (int i = 0; i < var_names.size(); i++) {
     if (i != 1) {
       this->stream << var_names[i];
@@ -2445,8 +2434,6 @@ void CodeGenTileLangAscendPto::BinaryVecClampOpsCodegen(
     }
   }
   this->stream << ", " << scalar_max << ");\n";
-  this->stream << "set_flag(PIPE_V, PIPE_MTE3, EVENT_ID1);\n";
-  this->stream << "wait_flag(PIPE_V, PIPE_MTE3, EVENT_ID1);\n";
 }
 
 void CodeGenTileLangAscendPto::SigmoidCodegen(const CallNode *op,
