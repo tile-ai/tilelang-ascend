@@ -136,9 +136,9 @@ def strided_copy_2d(total_h, width, stride, block_h, dtype):
 
                 for i in T.serial(block_h):
                     row_idx = in_start + i * stride
-                    T.copy(A[row_idx:row_idx + 1, 0:width], A_BUF[i:i + 1, 0:width])
+                    T.copy(A[row_idx : row_idx + 1, 0:width], A_BUF[i : i + 1, 0:width])
 
-                T.copy(A_BUF, B[out_start:out_start + block_h, 0:width])
+                T.copy(A_BUF, B[out_start : out_start + block_h, 0:width])
 
     return stridedCopy2D
 
