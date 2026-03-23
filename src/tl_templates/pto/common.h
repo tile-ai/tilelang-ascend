@@ -315,7 +315,7 @@ template <typename T1, typename T2, int32_t shape1, int32_t shape2, int32_t shap
         int32_t shape4, int32_t shape5, int32_t stride1, int32_t stride2,
         int32_t stride3, int32_t stride4, int32_t stride5, uint32_t valid1, uint32_t valid2>
 AICORE PTO_INLINE void copy_l0c_to_gm(__gm__ T1 *handle, int32_t addr, int32_t actualTailM, int32_t actualTailN) {
-    pto::TileAcc<T2, shape4, shape5, valid1, valid2> L0c;
+    pto::TileAcc<T2, shape4, shape5, pto::DYNAMIC, pto::DYNAMIC> L0c;
     pto::TASSIGN(L0c, addr);
     pto::Shape<shape1, shape2, shape3, pto::DYNAMIC, pto::DYNAMIC> dynamic_shape;
     dynamic_shape.shape[3] = actualTailM;
