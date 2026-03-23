@@ -1,4 +1,5 @@
 #include <pto/pto-inst.hpp>
+#include <type_traits>
 
 #ifdef __CCE_AICORE__
 #define CUDART_INF_F 1.0f / 0.0f
@@ -261,8 +262,8 @@ AICORE PTO_INLINE void gemm_v1(
         pto::TEXTRACT(l0b, B_t, 0, 0);
     }
 
-            set_flag(PIPE_MTE1, PIPE_M, war_event_id);
-            wait_flag(PIPE_MTE1, PIPE_M, war_event_id);
+    set_flag(PIPE_MTE1, PIPE_M, war_event_id);
+    wait_flag(PIPE_MTE1, PIPE_M, war_event_id);
 
     if (clear) {
         pto::TMATMUL(C, l0a, l0b);
@@ -309,9 +310,18 @@ AICORE PTO_INLINE void copy_gm_to_ub_dynamic(
             int32_t len) {
     pto::GlobalTensor<T1, pto::Shape<shape1, shape2, shape3, shape4, shape5>,
     pto::Stride<stride1, stride2, stride3, stride4, stride5>> global_tensor(handle, shape, stride);
-    TileUbDataND<T2, ub_shape1, ub_shape2, valid1, valid2> temp_ub;
-    pto::TASSIGN(temp_ub, ub_shape_addr + ub_offset * len);
-    pto::TLOAD(temp_ub, global_tensor);
+    if constexpr (std::is_same_v<T1, T2>) {
+        TileUbDataND<T2, ub_shape1, ub_shape2, valid1, valid2> temp_ub;
+        pto::TASSIGN(temp_ub, ub_shape_addr + ub_offset * len);
+        pto::TLOAD(temp_ub, global_tensor);
+    } else {
+        TileUbDataND<T1, ub_shape1, ub_shape2, valid1, valid2> temp_src_ub;
+        pto::TASSIGN(temp_src_ub, ub_shape_addr + ub_offset * sizeof(T1) / sizeof(T1) * len);
+        pto::TLOAD(temp_src_ub, global_tensor);
+        TileUbDataND<T2, ub_shape1, ub_shape2, valid1, valid2> temp_dst_ub;
+        pto::TASSIGN(temp_dst_ub, ub_shape_addr + ub_offset * len);
+        pto::TCVT(temp_dst_ub, temp_src_ub, pto::RoundMode::CAST_NONE);
+    }
 }
 
 template <typename T1, typename T2, int32_t shape1, int32_t shape2, int32_t shape3,
@@ -329,14 +339,32 @@ AICORE PTO_INLINE void copy_ub_to_gm_dynamic(
     pto::Stride<stride1, stride2, stride3, stride4, stride5>> global_tensor(handle, shape, stride);
     constexpr uint8_t len = sizeof(T2);
     constexpr bool use_nd = (static_cast<uint64_t>(ub_shape2) * len) >= 32;
-    if constexpr (use_nd) {
-        TileUbDataND<T2, ub_shape1, ub_shape2, valid1, valid2> temp_ub;
-        pto::TASSIGN(temp_ub, ub_shape_addr + ub_offset * len);
-        pto::TSTORE(global_tensor, temp_ub);
+    if constexpr (std::is_same_v<T1, T2>) {
+        if constexpr (use_nd) {
+            TileUbDataND<T2, ub_shape1, ub_shape2, valid1, valid2> temp_ub;
+            pto::TASSIGN(temp_ub, ub_shape_addr + ub_offset * len);
+            pto::TSTORE(global_tensor, temp_ub);
+        } else {
+            TileUbDataDN<T2, ub_shape1, ub_shape2, valid1, valid2> temp_ub;
+            pto::TASSIGN(temp_ub, ub_shape_addr + ub_offset * len);
+            pto::TSTORE(global_tensor, temp_ub);
+        }
     } else {
-        TileUbDataDN<T2, ub_shape1, ub_shape2, valid1, valid2> temp_ub;
-        pto::TASSIGN(temp_ub, ub_shape_addr + ub_offset * len);
-        pto::TSTORE(global_tensor, temp_ub);
+        if constexpr (use_nd) {
+            TileUbDataND<T2, ub_shape1, ub_shape2, valid1, valid2> temp_src_ub;
+            pto::TASSIGN(temp_src_ub, ub_shape_addr + ub_offset * len);
+            TileUbDataND<T1, ub_shape1, ub_shape2, valid1, valid2> temp_dst_ub;
+            pto::TASSIGN(temp_dst_ub, ub_shape_addr + ub_offset * sizeof(T1));
+            pto::TCVT(temp_dst_ub, temp_src_ub, pto::RoundMode::CAST_NONE);
+            pto::TSTORE(global_tensor, temp_dst_ub);
+        } else {
+            TileUbDataDN<T2, ub_shape1, ub_shape2, valid1, valid2> temp_src_ub;
+            pto::TASSIGN(temp_src_ub, ub_shape_addr + ub_offset * len);
+            TileUbDataDN<T1, ub_shape1, ub_shape2, valid1, valid2> temp_dst_ub;
+            pto::TASSIGN(temp_dst_ub, ub_shape_addr + ub_offset * sizeof(T1));
+            pto::TCVT(temp_dst_ub, temp_src_ub, pto::RoundMode::CAST_NONE);
+            pto::TSTORE(global_tensor, temp_dst_ub);
+        }
     }
 }
 
@@ -368,9 +396,18 @@ AICORE PTO_INLINE void copy_gm_to_ub(
             int32_t len) {
     pto::GlobalTensor<T1, pto::Shape<shape1, shape2, shape3, shape4, shape5>,
     pto::Stride<stride1, stride2, stride3, stride4, stride5>> global_tensor(handle);
-    TileUbDataND<T2, ub_shape1, ub_shape2, valid1, valid2> temp_ub;
-    pto::TASSIGN(temp_ub, ub_shape_addr + ub_offset * len);
-    pto::TLOAD(temp_ub, global_tensor);
+    if constexpr (std::is_same_v<T1, T2>) {
+        TileUbDataND<T2, ub_shape1, ub_shape2, valid1, valid2> temp_ub;
+        pto::TASSIGN(temp_ub, ub_shape_addr + ub_offset * len);
+        pto::TLOAD(temp_ub, global_tensor);
+    } else {
+        TileUbDataND<T1, ub_shape1, ub_shape2, valid1, valid2> temp_src_ub;
+        pto::TASSIGN(temp_src_ub, ub_shape_addr + ub_offset * sizeof(T1) / sizeof(T1) * len);
+        pto::TLOAD(temp_src_ub, global_tensor);
+        TileUbDataND<T2, ub_shape1, ub_shape2, valid1, valid2> temp_dst_ub;
+        pto::TASSIGN(temp_dst_ub, ub_shape_addr + ub_offset * len);
+        pto::TCVT(temp_dst_ub, temp_src_ub, pto::RoundMode::CAST_NONE);
+    }
 }
 
 template <typename T1, typename T2, int32_t shape1, int32_t shape2, int32_t shape3,
@@ -384,14 +421,32 @@ AICORE PTO_INLINE void copy_ub_to_gm(
     pto::Stride<stride1, stride2, stride3, stride4, stride5>> global_tensor(handle);
     constexpr uint8_t len = sizeof(T2);
     constexpr bool use_nd = (static_cast<uint64_t>(ub_shape2) * len) >= 32;
-    if constexpr (use_nd) {
-        TileUbDataND<T2, ub_shape1, ub_shape2, valid1, valid2> temp_ub;
-        pto::TASSIGN(temp_ub, ub_shape_addr + ub_offset * len);
-        pto::TSTORE(global_tensor, temp_ub);
+    if constexpr (std::is_same_v<T1, T2>) {
+        if constexpr (use_nd) {
+            TileUbDataND<T2, ub_shape1, ub_shape2, valid1, valid2> temp_ub;
+            pto::TASSIGN(temp_ub, ub_shape_addr + ub_offset * len);
+            pto::TSTORE(global_tensor, temp_ub);
+        } else {
+            TileUbDataDN<T2, ub_shape1, ub_shape2, valid1, valid2> temp_ub;
+            pto::TASSIGN(temp_ub, ub_shape_addr + ub_offset * len);
+            pto::TSTORE(global_tensor, temp_ub);
+        }
     } else {
-        TileUbDataDN<T2, ub_shape1, ub_shape2, valid1, valid2> temp_ub;
-        pto::TASSIGN(temp_ub, ub_shape_addr + ub_offset * len);
-        pto::TSTORE(global_tensor, temp_ub);
+        if constexpr (use_nd) {
+            TileUbDataND<T2, ub_shape1, ub_shape2, valid1, valid2> temp_src_ub;
+            pto::TASSIGN(temp_src_ub, ub_shape_addr + ub_offset * len);
+            TileUbDataND<T1, ub_shape1, ub_shape2, valid1, valid2> temp_dst_ub;
+            pto::TASSIGN(temp_dst_ub, ub_shape_addr + ub_offset * sizeof(T1));
+            pto::TCVT(temp_dst_ub, temp_src_ub, pto::RoundMode::CAST_NONE);
+            pto::TSTORE(global_tensor, temp_dst_ub);
+        } else {
+            TileUbDataDN<T2, ub_shape1, ub_shape2, valid1, valid2> temp_src_ub;
+            pto::TASSIGN(temp_src_ub, ub_shape_addr + ub_offset * len);
+            TileUbDataDN<T1, ub_shape1, ub_shape2, valid1, valid2> temp_dst_ub;
+            pto::TASSIGN(temp_dst_ub, ub_shape_addr + ub_offset * sizeof(T1));
+            pto::TCVT(temp_dst_ub, temp_src_ub, pto::RoundMode::CAST_NONE);
+            pto::TSTORE(global_tensor, temp_dst_ub);
+        }
     }
 }
 
@@ -498,14 +553,13 @@ template <typename T, int32_t row, int32_t col>
 AICORE PTO_INLINE void axpy(
     TileUbDataND<T, row, col, row, col> &dst,
     TileUbDataND<T, row, col, row, col> &src0,
-    T scalar_value
+    float scalar_value
 ){
-    // tl::ascend_pto::TileUbDataND <T, row, col, row, col> axpy_ub_temp;
-    TMULS(src0, src0, scalar_value);
+    TMULS(src0, src0, static_cast<T>(scalar_value));
     pipe_barrier(PIPE_V);
     TADD(dst, dst, src0);
     pipe_barrier(PIPE_V);
-    TMULS(src0, src0, 1.0f/scalar_value);
+    TMULS(src0, src0, static_cast<T>(1.0f/scalar_value));
 }
 
 template <typename T1, typename T2, typename T3,
@@ -583,7 +637,7 @@ AICORE PTO_INLINE void TCOLMIN_with_slice_buffer(
     pto::TCOLMIN(ub, tileUbWithValid);
 }
 
-template <typename T1, typename T2, typename T3,
+template <typename T1, typename T2,
         int32_t rows_src, int32_t cols_src,
         int32_t validRow_src, int32_t validCol_src,
         int32_t cols_dst,
@@ -592,9 +646,11 @@ AICORE PTO_INLINE void TCOLSUM_with_slice_buffer(
         uint64_t handle_src,
         uint64_t handle_dst,
         TileUbDataND<T2, 1, cols_src, 1, validCol_src> ub,
-        TileUbDataND<T3, row_tmp, col_tmp> tmp_ub) {
+        uint64_t tmp_addr) {
     tl::ascend_pto::TileUbDataND <T1, rows_src, cols_src, validRow_src, validCol_src> tileUbWithValid;
     pto::TASSIGN(tileUbWithValid, handle_src);
+    TileUbDataND<T1, row_tmp, col_tmp> tmp_ub;
+    pto::TASSIGN(tmp_ub, tmp_addr);
     pto::TCOLSUM(ub, tileUbWithValid, tmp_ub, true);
 }
 
@@ -609,15 +665,60 @@ AICORE PTO_INLINE void tci(int32_t ub_addr, int32_t ub_offset, int32_t len, T fi
     TCI<TileData, T, 0>(temp_ub, firstValue);
 }
 
-template <typename T, int32_t row, int32_t col>
-AICORE PTO_INLINE void pow(
+template <typename T>
+struct is_float_or_half : std::false_type {};
+
+template <>
+struct is_float_or_half<float> : std::true_type {};
+
+template <>
+struct is_float_or_half<half> : std::true_type {};
+
+template <typename T, int32_t row, int32_t col, int32_t tmp_rows>
+AICORE PTO_INLINE typename std::enable_if<is_float_or_half<T>::value>::type
+pow(
     TileUbDataND<T, row, col, row, col> &dst,
     TileUbDataND<T, row, col, row, col> &src0,
-    TileUbDataND<T, row, col, row, col> &src1
+    TileUbDataND<T, row, col, row, col> &src1,
+    TileUbDataND<uint8_t, tmp_rows, col, tmp_rows, col> &tmp
     ) {
     TLOG(src0, src0);
     TMUL(dst, src0, src1);
     TEXP(dst, dst);
+}
+
+template <typename T, int32_t row, int32_t col, int32_t tmp_rows>
+AICORE PTO_INLINE typename std::enable_if<std::is_integral<T>::value>::type
+pow(
+    TileUbDataND<T, row, col, row, col> &dst,
+    TileUbDataND<T, row, col, row, col> &src0,
+    TileUbDataND<T, row, col, row, col> &src1,
+    TileUbDataND<uint8_t, tmp_rows, col, tmp_rows, col> &tmp
+    ) {
+    using FloatT = float;
+    constexpr int32_t float_buf_size = row * col * sizeof(FloatT);
+    auto tmp_float0 = reinterpret_cast<__ubuf__ FloatT*>(tmp.data());
+    auto tmp_float1 = reinterpret_cast<__ubuf__ FloatT*>(tmp.data() + float_buf_size);
+    
+    TileUbDataND<FloatT, row, col, row, col> src0_float;
+    TileUbDataND<FloatT, row, col, row, col> log_src0_float;
+    TileUbDataND<FloatT, row, col, row, col> src1_float;
+    
+    pto::TASSIGN(src0_float, reinterpret_cast<uint64_t>(tmp_float0));
+    pto::TASSIGN(log_src0_float, reinterpret_cast<uint64_t>(tmp_float1));
+    pto::TASSIGN(src1_float, reinterpret_cast<uint64_t>(tmp_float0));
+    
+    pto::TCVT(src0_float, src0, pto::RoundMode::CAST_ROUND);
+    
+    pto::TLOG(log_src0_float, src0_float);
+    
+    pto::TCVT(src1_float, src1, pto::RoundMode::CAST_ROUND);
+    
+    pto::TMUL(log_src0_float, log_src0_float, src1_float);
+    
+    pto::TEXP(log_src0_float, log_src0_float);
+    
+    pto::TCVT(dst, log_src0_float, pto::RoundMode::CAST_ROUND);
 }
 
 enum class BinaryOps {
@@ -725,5 +826,105 @@ template<pipe_t pipe>
 AICORE PTO_INLINE void wait_intra_block_vec(int32_t flag) {
     wait_intra_block(pipe, flag);
 }
+
+template <typename T, int32_t Rows, int32_t Cols>
+AICORE PTO_INLINE void transpose(
+    TileUbDataND<T, Rows, Cols, Rows, Cols> &dst,
+    TileUbDataND<T, Rows, Cols, Rows, Cols> &src,
+    TileUbDataND<T, Rows, Cols, Rows, Cols> &tmp) {
+    pto::TTRANS(dst, src, tmp);
+}
+
+template <typename DstT, typename SrcT, int32_t DstRows, int32_t DstCols, int32_t SrcRows, int32_t SrcCols>
+AICORE PTO_INLINE void compare(
+    TileUbDataND<DstT, DstRows, DstCols, DstRows, DstCols> &dst,
+    TileUbDataND<SrcT, SrcRows, SrcCols, SrcRows, SrcCols> &src0,
+    TileUbDataND<SrcT, SrcRows, SrcCols, SrcRows, SrcCols> &src1,
+    pto::CmpMode mode) {
+    pto::TCMP(dst, src0, src1, mode);
+}
+
+template <typename SrcT, int32_t DstRows, int32_t DstCols, int32_t SrcRows, int32_t SrcCols>
+AICORE PTO_INLINE void compare(
+    TileUbDataND<int8_t, DstRows, DstCols, DstRows, DstCols> &dst,
+    TileUbDataND<SrcT, SrcRows, SrcCols, SrcRows, SrcCols> &src0,
+    TileUbDataND<SrcT, SrcRows, SrcCols, SrcRows, SrcCols> &src1,
+    pto::CmpMode mode) {
+    auto& dst_uint8 = reinterpret_cast<TileUbDataND<uint8_t, DstRows, DstCols, DstRows, DstCols>&>(dst);
+    pto::TCMP(dst_uint8, src0, src1, mode);
+}
+
+template <typename DstT, typename SrcT, 
+          int32_t DstRows, int32_t DstCols, int32_t DstRowValid, int32_t DstColValid,
+          int32_t SrcRows, int32_t SrcCols, int32_t SrcRowValid, int32_t SrcColValid>
+AICORE PTO_INLINE void compare_scalar(
+    TileUbDataND<DstT, DstRows, DstCols, DstRowValid, DstColValid> &dst,
+    TileUbDataND<SrcT, SrcRows, SrcCols, SrcRowValid, SrcColValid> &src,
+    SrcT scalar,
+    pto::CmpMode mode) {
+    pto::TCMPS(dst, src, scalar, mode);
+}
+
+template <typename SrcT, 
+          int32_t DstRows, int32_t DstCols, int32_t DstRowValid, int32_t DstColValid,
+          int32_t SrcRows, int32_t SrcCols, int32_t SrcRowValid, int32_t SrcColValid>
+AICORE PTO_INLINE void compare_scalar(
+    TileUbDataND<int8_t, DstRows, DstCols, DstRowValid, DstColValid> &dst,
+    TileUbDataND<SrcT, SrcRows, SrcCols, SrcRowValid, SrcColValid> &src,
+    SrcT scalar,
+    pto::CmpMode mode) {
+    auto& dst_uint8 = reinterpret_cast<TileUbDataND<uint8_t, DstRows, DstCols, DstRowValid, DstColValid>&>(dst);
+    pto::TCMPS(dst_uint8, src, scalar, mode);
+}
+
+template <typename T, int32_t Rows, int32_t Cols, int32_t RowValid, int32_t ColValid>
+AICORE PTO_INLINE void fill_scalar(
+    TileUbDataND<T, Rows, Cols, RowValid, ColValid> &dst,
+    T scalar) {
+    for (int i = 0; i < RowValid; i++) {
+        for (int j = 0; j < ColValid; j++) {
+            dst.data()[i * Cols + j] = scalar;
+        }
+    }
+}
+
+template <typename T, int32_t Rows, int32_t Cols, int32_t RowValid, int32_t ColValid>
+AICORE PTO_INLINE void tand(
+    TileUbDataND<T, Rows, Cols, RowValid, ColValid> &dst,
+    TileUbDataND<T, Rows, Cols, RowValid, ColValid> &src0,
+    TileUbDataND<T, Rows, Cols, RowValid, ColValid> &src1) {
+    pto::TAND(dst, src0, src1);
+}
+
+template <int32_t Rows, int32_t Cols, int32_t RowValid, int32_t ColValid>
+AICORE PTO_INLINE void tand(
+    TileUbDataND<uint8_t, Rows, Cols, RowValid, ColValid> &dst,
+    TileUbDataND<uint8_t, Rows, Cols, RowValid, ColValid> &src0,
+    TileUbDataND<uint8_t, Rows, Cols, RowValid, ColValid> &src1) {
+    auto& dst_u16 = reinterpret_cast<TileUbDataND<uint16_t, Rows, Cols/2, RowValid, ColValid/2>&>(dst);
+    auto& src0_u16 = reinterpret_cast<TileUbDataND<uint16_t, Rows, Cols/2, RowValid, ColValid/2>&>(src0);
+    auto& src1_u16 = reinterpret_cast<TileUbDataND<uint16_t, Rows, Cols/2, RowValid, ColValid/2>&>(src1);
+    pto::TAND(dst_u16, src0_u16, src1_u16);
+}
+
+template <typename T, int32_t Rows, int32_t Cols, int32_t RowValid, int32_t ColValid>
+AICORE PTO_INLINE void tor(
+    TileUbDataND<T, Rows, Cols, RowValid, ColValid> &dst,
+    TileUbDataND<T, Rows, Cols, RowValid, ColValid> &src0,
+    TileUbDataND<T, Rows, Cols, RowValid, ColValid> &src1) {
+    pto::TOR(dst, src0, src1);
+}
+
+template <int32_t Rows, int32_t Cols, int32_t RowValid, int32_t ColValid>
+AICORE PTO_INLINE void tor(
+    TileUbDataND<uint8_t, Rows, Cols, RowValid, ColValid> &dst,
+    TileUbDataND<uint8_t, Rows, Cols, RowValid, ColValid> &src0,
+    TileUbDataND<uint8_t, Rows, Cols, RowValid, ColValid> &src1) {
+    auto& dst_u16 = reinterpret_cast<TileUbDataND<uint16_t, Rows, Cols/2, RowValid, ColValid/2>&>(dst);
+    auto& src0_u16 = reinterpret_cast<TileUbDataND<uint16_t, Rows, Cols/2, RowValid, ColValid/2>&>(src0);
+    auto& src1_u16 = reinterpret_cast<TileUbDataND<uint16_t, Rows, Cols/2, RowValid, ColValid/2>&>(src1);
+    pto::TOR(dst_u16, src0_u16, src1_u16);
+}
+
 }
 #endif

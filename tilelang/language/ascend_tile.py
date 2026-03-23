@@ -1014,6 +1014,7 @@ def createvecindex(dst: Buffer, firstValue: PrimExpr):
     return tir.call_intrin(
         "handle",
         tir.op.Op.get("tl.ascend_createvecindex"),
+        f"CreateVecIndex<{_dtype(dst)}>",
         dst.access_ptr("w"),
         firstValue,
         calCount,
@@ -1583,7 +1584,7 @@ def sub_experiment(dst: Buffer, src0: Buffer, src1: Buffer, count: PrimExpr):
     Args:
         dst: The destination buffer where the result will be stored.
         src0: The base buffer.
-        scr1: The exponent buffer.
+        src1: The exponent buffer.
         count: The number of elements to process.
     """
 
@@ -1708,15 +1709,15 @@ def gathermask_experiment(
         GatherMaskParams: A data structure that controls the address step size of operands:
                     - "src0BlockStride": Used to set the address step size between different DataBlocks of src0 in the same iteration, in units of DataBlock.
                     - "repeatTime": Number of iterations.
-                    - "scr0RepeatStride": Used to set the address step size of src0 between adjacent iterations, in units of DataBlock.
-                    - "scr1RepeatStride": Used to set the address step size of src1 between adjacent iterations, in units of DataBlock.
+                    - "src0RepeatStride": Used to set the address step size of src0 between adjacent iterations, in units of DataBlock.
+                    - "src1RepeatStride": Used to set the address step size of src1 between adjacent iterations, in units of DataBlock.
         rsvdCnt: The count of elements retained after filtering by this instruction, corresponding to the number of valid elements in dstLocal.
     """
 
     src0BlockStride = GatherMaskParams[0]
     repeatTime = GatherMaskParams[1]
-    scr0RepeatStride = GatherMaskParams[2]
-    scr1RepeatStride = GatherMaskParams[3]
+    src0RepeatStride = GatherMaskParams[2]
+    src1RepeatStride = GatherMaskParams[3]
     return T.call_intrin(
         "handle",
         tir.op.Op.get("tl.ascend_gather_mask_experiment"),
@@ -1728,8 +1729,8 @@ def gathermask_experiment(
         mask,
         src0BlockStride,
         repeatTime,
-        scr0RepeatStride,
-        scr1RepeatStride,
+        src0RepeatStride,
+        src1RepeatStride,
         rsvdCnt,
     )
 
