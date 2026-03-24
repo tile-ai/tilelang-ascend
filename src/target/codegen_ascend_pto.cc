@@ -7,8 +7,8 @@
 
 #include "codegen_ascend_pto.h"
 #include <tvm/arith/analyzer.h>
-#include <tvm/runtime/registry.h>
 #include <tvm/runtime/container/string.h>
+#include <tvm/runtime/registry.h>
 #include <tvm/tir/index_map.h>
 #include <tvm/tir/op.h>
 
@@ -80,7 +80,8 @@ static DataType GetAccessPtrDtypePto(const CallNode *access_ptr) {
   } else if (auto *str = type_arg.as<StringImmNode>()) {
     return DataType(runtime::String2DLDataType(str->value));
   } else {
-    LOG(FATAL) << "Unexpected type for access_ptr first argument: " << type_arg->GetTypeKey();
+    LOG(FATAL) << "Unexpected type for access_ptr first argument: "
+               << type_arg->GetTypeKey();
     return DataType();
   }
 }
@@ -1602,8 +1603,8 @@ void CodeGenTileLangAscendPto::FillCodegen(const CallNode *op) {
                << PrintExpr(op->args[2]) << ");\n";
 }
 
-void CodeGenTileLangAscendPto::CreateVecIndexCodegen(const CallNode *op,
-                                                    const std::string &op_name) {
+void CodeGenTileLangAscendPto::CreateVecIndexCodegen(
+    const CallNode *op, const std::string &op_name) {
   this->PrintIndent();
   std::string dst_name = PrintExpr(op->args[1].as<CallNode>()->args[1]);
   std::string dst_offset = PrintExpr(op->args[1].as<CallNode>()->args[2]);
@@ -1693,14 +1694,16 @@ void CodeGenTileLangAscendPto::TransposeCodegen(const CallNode *op,
   std::string src_name = PrintExpr(op->args[1].as<CallNode>()->args[1]);
   DataType dtype = GetAccessPtrDtypePto(op->args[1].as<CallNode>());
   std::string type = getType(dtype);
-  
+
   this->stream << "{\n";
   this->PrintIndent();
-  this->stream << "  tl::ascend_pto::TileUbDataND<" << type << ", 16, 16, 16, 16> tmp_ub;\n";
+  this->stream << "  tl::ascend_pto::TileUbDataND<" << type
+               << ", 16, 16, 16, 16> tmp_ub;\n";
   this->PrintIndent();
   this->stream << "  pto::TASSIGN(tmp_ub, 2048);\n";
   this->PrintIndent();
-  this->stream << "  tl::ascend_pto::transpose<" << type << ", 16, 16>(" << dst_name << ", " << src_name << ", tmp_ub);\n";
+  this->stream << "  tl::ascend_pto::transpose<" << type << ", 16, 16>("
+               << dst_name << ", " << src_name << ", tmp_ub);\n";
   this->PrintIndent();
   this->stream << "}\n";
 }
@@ -1733,7 +1736,7 @@ void CodeGenTileLangAscendPto::CompareScalarCodegen(
   this->PrintIndent();
   std::string dst_name = PrintExpr(op->args[0].as<CallNode>()->args[1]);
   std::string src0_name = PrintExpr(op->args[1].as<CallNode>()->args[1]);
-  
+
   DataType src_dtype = GetAccessPtrDtypePto(op->args[1].as<CallNode>());
   DataType scalar_dtype = op->args[2].dtype();
   std::string src1_name = PrintExpr(op->args[2]);
@@ -1741,7 +1744,7 @@ void CodeGenTileLangAscendPto::CompareScalarCodegen(
     std::string target_type = getType(src_dtype);
     src1_name = target_type + "(" + src1_name + ")";
   }
-  
+
   std::string mode = Downcast<StringImm>(op->args[3])->value;
 
   this->stream << kAscendPtoScope << "compare_scalar(" << dst_name << ", "
@@ -1750,11 +1753,11 @@ void CodeGenTileLangAscendPto::CompareScalarCodegen(
 }
 
 void CodeGenTileLangAscendPto::TshCodegen(const CallNode *op,
-                                                       const std::string &op_name) {
+                                          const std::string &op_name) {
   this->PrintIndent();
   std::string dst_name = PrintExpr(op->args[0].as<CallNode>()->args[1]);
   std::string src0_name = PrintExpr(op->args[1].as<CallNode>()->args[1]);
-  
+
   DataType src_dtype = GetAccessPtrDtypePto(op->args[1].as<CallNode>());
   DataType scalar_dtype = op->args[2].dtype();
   std::string src1_name = PrintExpr(op->args[2]);
@@ -1762,8 +1765,9 @@ void CodeGenTileLangAscendPto::TshCodegen(const CallNode *op,
     std::string target_type = getType(src_dtype);
     src1_name = target_type + "(" + src1_name + ")";
   }
-  
-  this->stream << op_name << "(" << dst_name << ", " << src0_name << ", " << src1_name << ");\n";
+
+  this->stream << op_name << "(" << dst_name << ", " << src0_name << ", "
+               << src1_name << ");\n";
 }
 
 void CodeGenTileLangAscendPto::ArithProgressionCodegen(
@@ -1929,8 +1933,8 @@ void CodeGenTileLangAscendPto::BinaryVecOpCodegen(const CallNode *op,
     CreateUbVariableND(src1_temp_name, src1_shape_info);
     CreateUbVariableND(dst_temp_name, dst_shape_info);
     this->PrintIndent();
-    this->stream << ns_prefix << op_name << "(" << dst_temp_name << ", " << src0_temp_name
-                 << ", " << src1_temp_name << ");\n";
+    this->stream << ns_prefix << op_name << "(" << dst_temp_name << ", "
+                 << src0_temp_name << ", " << src1_temp_name << ");\n";
   } else if (prefetch_n_stages_map_[var_names[1]].first == 0) {
     this->PrintIndent();
     this->stream << ns_prefix << op_name << "(";
@@ -2181,8 +2185,8 @@ void CodeGenTileLangAscendPto::BinaryVecOpsCodegen(const CallNode *op,
 
     std::string scalar_expr;
     if (!selected_elements_buffer_in_pipeline) {
-      scalar_expr = PrintBufferOffset(selected_elements_buffer) +
-                    ".GetValue(" + index + ")";
+      scalar_expr = PrintBufferOffset(selected_elements_buffer) + ".GetValue(" +
+                    index + ")";
     } else {
       std::string index_pipeline = PrintExpr(op->args[op->args.size() - 2] -
                                              selected_elements_buffer->args[2]);
@@ -2190,9 +2194,9 @@ void CodeGenTileLangAscendPto::BinaryVecOpsCodegen(const CallNode *op,
           selected_elements_buffer->args[2] / selected_elements_buffer->args[3];
       tvm::arith::Analyzer analyzer;
       PrimExpr simplified_buffer_k = analyzer.Simplify(a_k);
-      scalar_expr = PrintBufferOffset(selected_elements_buffer) +
-                    "[" + PrintExpr(simplified_buffer_k) + "]" +
-                    ".GetValue(" + index_pipeline + ")";
+      scalar_expr = PrintBufferOffset(selected_elements_buffer) + "[" +
+                    PrintExpr(simplified_buffer_k) + "]" + ".GetValue(" +
+                    index_pipeline + ")";
     }
     std::string scalar_name =
         GetTempVarName(PrintBufferOffset(selected_elements_buffer) + "_scalar");
@@ -2689,10 +2693,12 @@ void CodeGenTileLangAscendPto::ReduceOpCodegen(const CallNode *op) {
         std::string tmp_cols = col_src;
         this->stream << "{\n";
         this->PrintIndent();
-        this->stream << "  " << kAscendPtoScope << "TileUbDataND<" << ub_data_type_src
-                     << ", " << tmp_rows << ", " << tmp_cols << "> " << ub_name_tmp << "_cast;\n";
+        this->stream << "  " << kAscendPtoScope << "TileUbDataND<"
+                     << ub_data_type_src << ", " << tmp_rows << ", " << tmp_cols
+                     << "> " << ub_name_tmp << "_cast;\n";
         this->PrintIndent();
-        this->stream << "  TASSIGN(" << ub_name_tmp << "_cast, " << ffts_tmp << ");\n";
+        this->stream << "  TASSIGN(" << ub_name_tmp << "_cast, " << ffts_tmp
+                     << ");\n";
         this->PrintIndent();
         this->stream << "  " << op_name << "(";
         for (int i = 0; i < var_names.size() - 1; i++) {
@@ -2720,17 +2726,18 @@ void CodeGenTileLangAscendPto::ReduceOpCodegen(const CallNode *op) {
         std::string tmp_cols = param3;
         this->stream << kAscendPtoScope << op_name << "_with_slice_buffer <"
                      << ub_data_type_src << ", " << ub_data_type << ", "
-                     << row_src << ", " << col_src
-                     << ", " << param2 << ", " << param3 << ", " << row << ", "
-                     << tmp_rows << ", " << tmp_cols << "> (" << ffts_src << ", "
-                     << ffts << ", " << ub_name << ", " << ffts_tmp << ");\n";
+                     << row_src << ", " << col_src << ", " << param2 << ", "
+                     << param3 << ", " << row << ", " << tmp_rows << ", "
+                     << tmp_cols << "> (" << ffts_src << ", " << ffts << ", "
+                     << ub_name << ", " << ffts_tmp << ");\n";
       } else {
         this->stream << kAscendPtoScope << op_name << "_with_slice_buffer <"
                      << ub_data_type_src << ", " << ub_data_type << ", "
                      << ub_data_type_tmp << ", " << row_src << ", " << col_src
                      << ", " << param2 << ", " << param3 << ", " << row << ", "
                      << row_tmp << ", " << col_tmp << "> (" << ffts_src << ", "
-                     << ffts << ", " << ub_name << ", " << ub_name_tmp << ");\n";
+                     << ffts << ", " << ub_name << ", " << ub_name_tmp
+                     << ");\n";
       }
     }
   }
@@ -3638,15 +3645,17 @@ void CodeGenTileLangAscendPto::SelectCodegen(const CallNode *op) {
     std::string scalar_value = PrintExpr(op->args[4]);
     std::string temp_name = GetTempVarName("select_scalar_tmp");
     this->PrintIndent();
-    this->stream << kAscendPtoScope << "TileUbDataND<" << src0_type << ", 1, " 
-                 << dst_shape_info.slice_col << ", 1, " << dst_shape_info.slice_col 
-                 << "> " << temp_name << ";\n";
+    this->stream << kAscendPtoScope << "TileUbDataND<" << src0_type << ", 1, "
+                 << dst_shape_info.slice_col << ", 1, "
+                 << dst_shape_info.slice_col << "> " << temp_name << ";\n";
     this->PrintIndent();
-    this->stream << "TASSIGN(" << temp_name << ", " << dst_shape_info.first_addr 
-                 << " + " << dst_shape_info.offset << " * " << GetTypeLen(src0_type) << ");\n";
+    this->stream << "TASSIGN(" << temp_name << ", " << dst_shape_info.first_addr
+                 << " + " << dst_shape_info.offset << " * "
+                 << GetTypeLen(src0_type) << ");\n";
     this->PrintIndent();
-    this->stream << kAscendPtoScope << "fill_scalar(" << temp_name << ", static_cast<" << src0_type << ">(" 
-                 << scalar_value << "));\n";
+    this->stream << kAscendPtoScope << "fill_scalar(" << temp_name
+                 << ", static_cast<" << src0_type << ">(" << scalar_value
+                 << "));\n";
     src1_name = temp_name;
     op_name = "TSEL";
   } else {
