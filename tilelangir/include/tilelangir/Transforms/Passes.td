@@ -29,4 +29,20 @@ def TileLangIRVectorize : Pass<"tilelangir-vectorize", "::mlir::ModuleOp"> {
   }];
 }
 
+def TileLangIRInsertWorkspace : Pass<"tilelangir-insert-workspace", "::mlir::func::FuncOp"> {
+  let summary = "Insert workspace for cross-core (vector/cube) data transfer";
+  let description = [{
+    Detects memref.alloc buffers that are simultaneously accessed by HIVM ops
+    of different core types (vector vs cube). When such a cross-core buffer is
+    found (and it is not already marked as gm or memref_ext.alloc_workspace),
+    this pass creates a memref_ext.alloc_workspace buffer and redirects the
+    writes from one core type through the workspace, inserting the necessary
+    memref.copy operations to complete the data transfer.
+  }];
+  let dependentDialects = [
+    "memref::MemRefDialect",
+    "bishengir::memref_ext::MemRefExtDialect"
+  ];
+}
+
 #endif // TILELANGIR_TRANSFORMS_PASSES_TD
