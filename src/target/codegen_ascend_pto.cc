@@ -2893,9 +2893,6 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
           for (size_t i = 1; i < shape.size(); i++) {
             stream << ", " << shape[i];
           }
-          if (l_data[3].empty()) {
-            l_data[3] = PrintExpr(address_offset_[String(pos)]);
-          }
           stream << "> " << vid << "[" << shape[0] << "];\n";
           for (size_t j = 0; j < bufferNum; j++) {
             this->PrintIndent();
