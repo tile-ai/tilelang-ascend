@@ -302,7 +302,7 @@ template <typename T1, typename T2, int32_t shape1, int32_t shape2, int32_t shap
 AICORE PTO_INLINE void copy_gm_to_l1(__gm__ T1 *handle, int32_t addr, int32_t actualTailM = 0, int32_t actualTailN = 0) {
     bool useTail = shape4 == valid1 && shape5 == valid2;
     int tailM = (useTail && actualTailM != 0) ? actualTailM : valid1;
-    int tailN = (useTail && actualTailM != 0) ? actualTailN : valid2;
+    int tailN = (useTail && actualTailN != 0) ? actualTailN : valid2;
     TileMatL1<T2, shape4, shape5, pto::DYNAMIC, pto::DYNAMIC> L1(tailM, tailN);
     pto::TASSIGN(L1, addr);
     pto::Shape<shape1, shape2, shape3, pto::DYNAMIC, pto::DYNAMIC> dynamic_shape;
@@ -322,7 +322,7 @@ template <typename T1, typename T2, int32_t shape1, int32_t shape2, int32_t shap
 AICORE PTO_INLINE void copy_l0c_to_gm(__gm__ T1 *handle, int32_t addr, int32_t actualTailM = 0, int32_t actualTailN = 0) {
     bool useTail = shape4 == valid1 && shape5 == valid2;
     int tailM = (useTail && actualTailM != 0) ? actualTailM : valid1;
-    int tailN = (useTail && actualTailM != 0) ? actualTailN : valid2;
+    int tailN = (useTail && actualTailN != 0) ? actualTailN : valid2;
     pto::TileAcc<T2, shape4, shape5, pto::DYNAMIC, pto::DYNAMIC> L0c(tailM, tailN);
     pto::TASSIGN(L0c, addr);
     pto::Shape<shape1, shape2, shape3, pto::DYNAMIC, pto::DYNAMIC> dynamic_shape;
