@@ -84,7 +84,7 @@ def test_op(T, B, KV_S, Q_N, KV_N, D, D_rope, sparse_size, scale_value, sparse_b
 from sparse_flash_attn_pa import init_test
 
 parser = argparse.ArgumentParser(description="SparseMLA test script")
-parser.add_argument("--file", type=str, default="sparse_flash_attn_pa", help="The version you want to run")
+parser.add_argument("--file", type=str, default="sparse_flash_attn_pa_no_cv_pipeline", help="The version you want to run")
 args = parser.parse_args()
 
 if args.file == "sparse_flash_attn_pa_baseline":
