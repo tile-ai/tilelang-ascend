@@ -642,20 +642,10 @@ CATLASS_DEVICE void ClampMin(const LocalTensor<T> &dst,
 }
 
 template <typename T>
-CATLASS_DEVICE void
-Clamp(const LocalTensor<T> &dst, const LocalTensor<T> &buffer,
-      const LocalTensor<uint8_t> &tmp, const T minScalarValue,
-      const T maxScalarValue, const int32_t count) {
-  AscendC::SetFlag<AscendC::HardEvent::MTE2_V>(1);
-  AscendC::WaitFlag<AscendC::HardEvent::MTE2_V>(1);
-  AscendC::ClampMin<T>(dst, buffer, tmp, minScalarValue, count);
-  AscendC::SetFlag<AscendC::HardEvent::V_MTE3>(2);
-  AscendC::WaitFlag<AscendC::HardEvent::V_MTE3>(2);
-  AscendC::SetFlag<AscendC::HardEvent::MTE3_V>(1);
-  AscendC::WaitFlag<AscendC::HardEvent::MTE3_V>(1);
-  AscendC::ClampMax<T>(dst, dst, tmp, maxScalarValue, count);
-  AscendC::SetFlag<AscendC::HardEvent::V_MTE3>(2);
-  AscendC::WaitFlag<AscendC::HardEvent::V_MTE3>(2);
+CATLASS_DEVICE void Clamp(const LocalTensor<T> &dst, const LocalTensor<T> &buffer, const LocalTensor<uint8_t> &tmp,
+  const T minScalarValue, const T maxScalarValue, const int32_t count) {
+    AscendC::ClampMin<T>(dst, buffer, tmp, minScalarValue, count);
+    AscendC::ClampMax<T>(dst, dst, tmp, maxScalarValue, count);
 }
 
 template <typename T, typename U>
