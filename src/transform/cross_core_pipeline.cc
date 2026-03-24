@@ -464,6 +464,176 @@ private:
     int32_t core_scope_{INVALID_SCOPE};
 };
 
+/*!
+ * \brief Check if [a_off, a_off+a_ext) ⊇ [b_off, b_off+b_ext).
+ * Conservative: returns true only when provable from constant values.
+ */
+static bool RangeContains(const PrimExpr& a_off, const PrimExpr& a_ext,
+                          const PrimExpr& b_off, const PrimExpr& b_ext) {
+    auto a0 = a_off.as<IntImmNode>();
+    auto a1 = a_ext.as<IntImmNode>();
+    auto b0 = b_off.as<IntImmNode>();
+    auto b1 = b_ext.as<IntImmNode>();
+    if (a0 && a1 && b0 && b1) {
+        return a0->value <= b0->value &&
+               a0->value + a1->value >= b0->value + b1->value;
+    }
+    return false;
+}
+
+/*!
+ * \brief Check if [a_off, a_off+a_ext) ∩ [b_off, b_off+b_ext) ≠ ∅.
+ * Conservative: returns true (assumes overlap) when non-constant.
+ */
+static bool RangeOverlaps(const PrimExpr& a_off, const PrimExpr& a_ext,
+                          const PrimExpr& b_off, const PrimExpr& b_ext) {
+    auto a0 = a_off.as<IntImmNode>();
+    auto a1 = a_ext.as<IntImmNode>();
+    auto b0 = b_off.as<IntImmNode>();
+    auto b1 = b_ext.as<IntImmNode>();
+    if (a0 && a1 && b0 && b1) {
+        int64_t a_start = a0->value, a_end = a_start + a1->value;
+        int64_t b_start = b0->value, b_end = b_start + b1->value;
+        return a_start < b_end && b_start < a_end;
+    }
+    return true;
+}
+
+/*!
+ * \brief Collect all read ranges of a specific buffer from an AST subtree.
+ */
+static void CollectBufferReads(const Stmt& stmt, const std::string& target_buf,
+                               std::vector<std::pair<PrimExpr, PrimExpr>>& reads) {
+    if (const auto* eval = stmt.as<EvaluateNode>()) {
+        if (const auto* call = eval->value.as<CallNode>()) {
+            int start = call->op.same_as(builtin::call_extern()) ? 1 : 0;
+            for (int i = start; i < static_cast<int>(call->args.size()); ++i) {
+                if (const auto* inner = call->args[i].as<CallNode>()) {
+                    if (inner->op.same_as(builtin::tvm_access_ptr()) &&
+                        inner->args.size() >= 5) {
+                        auto buf_var = Downcast<Var>(inner->args[1]);
+                        if (buf_var->name_hint != target_buf) continue;
+                        const IntImmNode* flag = inner->args[4].as<IntImmNode>();
+                        int rw_mask = flag ? static_cast<int>(flag->value) : 3;
+                        if ((rw_mask & 1) != 0) {
+                            reads.push_back({inner->args[2], inner->args[3]});
+                        }
+                    }
+                }
+            }
+        }
+    } else if (const auto* seq = stmt.as<SeqStmtNode>()) {
+        for (const auto& s : seq->seq) CollectBufferReads(s, target_buf, reads);
+    } else if (const auto* loop = stmt.as<ForNode>()) {
+        CollectBufferReads(loop->body, target_buf, reads);
+    } else if (const auto* ite = stmt.as<IfThenElseNode>()) {
+        CollectBufferReads(ite->then_case, target_buf, reads);
+        if (ite->else_case) CollectBufferReads(ite->else_case.value(), target_buf, reads);
+    } else if (const auto* let = stmt.as<LetStmtNode>()) {
+        CollectBufferReads(let->body, target_buf, reads);
+    } else if (const auto* attr = stmt.as<AttrStmtNode>()) {
+        CollectBufferReads(attr->body, target_buf, reads);
+    } else if (const auto* realize = stmt.as<BlockRealizeNode>()) {
+        CollectBufferReads(realize->block->body, target_buf, reads);
+    }
+}
+
+/*!
+ * \brief Tree-based exposed read analysis.
+ *
+ * For a fixed target (buffer, offset, extent), traverses the AST to determine:
+ *   - has_exposed_read: a read of the target range exists that is NOT preceded
+ *     by a write covering the target range.
+ *   - must_kill: this subtree definitely writes (covers) the target range.
+ *
+ * Composition rules:
+ *   Sequential(A; B):  exposed = A.exposed || (!A.kill && B.exposed)
+ *                      kill = A.kill || B.kill
+ *   For(body):         exposed = body.exposed  (first iteration, no prior kills)
+ *                      kill = body.kill
+ *   If(then, else):    exposed = then.exposed || else.exposed
+ *                      kill = then.kill && else.kill
+ *   Primitive:         exposed = reads_target && !covered_from_above
+ *                      kill = writes_covering_target
+ */
+static std::pair<bool, bool> CheckExposedRead(
+    const Stmt& stmt, const std::string& target_buf,
+    const PrimExpr& target_offset, const PrimExpr& target_extent,
+    bool covered) {
+
+    if (const auto* eval = stmt.as<EvaluateNode>()) {
+        bool reads = false, kills = false;
+        if (const auto* call = eval->value.as<CallNode>()) {
+            int start = call->op.same_as(builtin::call_extern()) ? 1 : 0;
+            for (int i = start; i < static_cast<int>(call->args.size()); ++i) {
+                if (const auto* inner = call->args[i].as<CallNode>()) {
+                    if (inner->op.same_as(builtin::tvm_access_ptr()) &&
+                        inner->args.size() >= 5) {
+                        auto buf_var = Downcast<Var>(inner->args[1]);
+                        if (buf_var->name_hint != target_buf) continue;
+                        PrimExpr off = inner->args[2];
+                        PrimExpr ext = inner->args[3];
+                        const IntImmNode* flag = inner->args[4].as<IntImmNode>();
+                        int rw_mask = flag ? static_cast<int>(flag->value) : 3;
+                        if ((rw_mask & 1) != 0 &&
+                            RangeOverlaps(off, ext, target_offset, target_extent)) {
+                            reads = true;
+                        }
+                        if ((rw_mask & 2) != 0 &&
+                            RangeContains(off, ext, target_offset, target_extent)) {
+                            kills = true;
+                        }
+                    }
+                }
+            }
+        }
+        return {reads && !covered, kills};
+    }
+
+    if (const auto* seq = stmt.as<SeqStmtNode>()) {
+        bool any_exposed = false, any_kills = false;
+        for (const auto& child : seq->seq) {
+            auto [exp, kill] = CheckExposedRead(
+                child, target_buf, target_offset, target_extent,
+                covered || any_kills);
+            any_exposed |= exp;
+            any_kills |= kill;
+        }
+        return {any_exposed, any_kills};
+    }
+
+    if (const auto* loop = stmt.as<ForNode>()) {
+        return CheckExposedRead(
+            loop->body, target_buf, target_offset, target_extent, covered);
+    }
+
+    if (const auto* ite = stmt.as<IfThenElseNode>()) {
+        auto [t_exp, t_kill] = CheckExposedRead(
+            ite->then_case, target_buf, target_offset, target_extent, covered);
+        if (ite->else_case) {
+            auto [e_exp, e_kill] = CheckExposedRead(
+                ite->else_case.value(), target_buf, target_offset, target_extent, covered);
+            return {t_exp || e_exp, t_kill && e_kill};
+        }
+        return {t_exp, false};
+    }
+
+    if (const auto* let = stmt.as<LetStmtNode>()) {
+        return CheckExposedRead(
+            let->body, target_buf, target_offset, target_extent, covered);
+    }
+    if (const auto* attr = stmt.as<AttrStmtNode>()) {
+        return CheckExposedRead(
+            attr->body, target_buf, target_offset, target_extent, covered);
+    }
+    if (const auto* realize = stmt.as<BlockRealizeNode>()) {
+        return CheckExposedRead(
+            realize->block->body, target_buf, target_offset, target_extent, covered);
+    }
+
+    return {false, false};
+}
+
 class LoopRewriter : public StmtMutator {
 public:
     struct StageInfo {
@@ -624,10 +794,12 @@ private:
         return INVALID_SCOPE;
     }
 
-    struct RegionInfo {
-        PrimExpr offset;
-        PrimExpr extent;
-    };
+    Stmt ReconstructStageBody(const StageInfo& stage) const {
+        if (stage.statements.size() == 1) return stage.statements[0].stmt;
+        Array<Stmt> seq;
+        for (const auto& s : stage.statements) seq.push_back(s.stmt);
+        return SeqStmt(seq);
+    }
 
     void AnalyzeSharedBuffers(const std::vector<StageInfo>& stages) {
         std::unordered_map<std::string, std::vector<int>> buffer_stage_map;
@@ -638,11 +810,29 @@ private:
         }
 
         for (const auto& [buffer, stage_indices] : buffer_stage_map) {
-            if (stage_indices.size() > 1) {
-                auto buffer_scope = checkBufferScope(buffer);
-                if (buffer_scope == VEC_SCOPE) {
-                  shared_buffers_.insert(buffer);
+            if (stage_indices.size() <= 1) continue;
+            if (checkBufferScope(buffer) != VEC_SCOPE) continue;
+
+            bool is_shared = false;
+            for (int si : stage_indices) {
+                Stmt stage_body = ReconstructStageBody(stages[si]);
+
+                std::vector<std::pair<PrimExpr, PrimExpr>> reads;
+                CollectBufferReads(stage_body, buffer, reads);
+
+                for (const auto& [offset, extent] : reads) {
+                    auto [exposed, kill] = CheckExposedRead(
+                        stage_body, buffer, offset, extent, false);
+                    if (exposed) {
+                        is_shared = true;
+                        break;
+                    }
                 }
+                if (is_shared) break;
+            }
+
+            if (is_shared) {
+                shared_buffers_.insert(buffer);
             }
         }
     }
