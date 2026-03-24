@@ -347,7 +347,6 @@ def sparse_attn_tilelang(
         core_num=24,
         block_size=block_size
     )
-    print(kernel.get_kernel_source())
     output = kernel(query, key_value, sparse_indices, actual_seq_lengths_query, actual_seq_lengths_kv, block_table)
     output = output.squeeze(0)
     print(type(output))
