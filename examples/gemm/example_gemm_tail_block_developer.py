@@ -6,7 +6,12 @@ import torch
 
 tilelang.cache.clear_cache()
 
-@tilelang.jit(out_idx=[-1])
+pass_configs = {
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
+    tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
+}
+
+@tilelang.jit(out_idx=[-1], pass_configs=pass_configs)
 def matmul(M, N, K, block_M, block_N, K_L1, dtype="float16", accum_dtype="float"):
     m_num = T.ceildiv(M, block_M)
     n_num = T.ceildiv(N, block_N)
@@ -31,11 +36,7 @@ def matmul(M, N, K, block_M, block_N, K_L1, dtype="float16", accum_dtype="float"
                 for k in T.serial(loop_k):
                     T.copy(A[bx * block_M, k * K_L1], A_L1)
                     T.copy(B[k * K_L1, by * block_N], B_L1)
-
-                    T.barrier_all()
                     T.gemm_v0(A_L1, B_L1, C_L0, init=(k == 0))
-
-                    T.barrier_all()
 
                 T.copy(C_L0, C[bx * block_M, by * block_N])
 
@@ -44,16 +45,13 @@ def matmul(M, N, K, block_M, block_N, K_L1, dtype="float16", accum_dtype="float"
 torch.manual_seed(0)
 test_configs = [
     (32 * 3 + 30, 32 * 2 + 16, 32 * 4 + 31, 32, 32, 32),
-    (512 + 64, 512, 512, 128, 128, 128),
-    (512, 512 + 64, 512, 128, 128, 128),
-    (512, 512, 512 + 64, 128, 128, 128),
-    (512 + 64, 512 + 64, 512, 128, 128, 128),
-    (512 + 64, 512, 512 + 64, 128, 128, 128),
-    (512, 512 + 64, 512 + 64, 128, 128, 128),
-    (512 + 64, 512 + 64, 512 + 64, 128, 128, 128),
+    (64 * 8 + 45, 64 * 8, 64 * 8 + 27, 64, 64, 64),
+    (128 * 4, 128 * 4 + 99, 128 * 4, 128, 128, 128),
+    (1024 + 118, 1024 + 206, 1024 + 55, 128, 256, 64),
 ]
 
 for M, N, K, block_M, block_N, block_K in test_configs:
+    print(f"Testing gemm_tail_block_developer with M={M}, N={N}, K={K}, block_M={block_M}, block_N={block_N}, block_K={block_K}")
     func = matmul(M, N, K, block_M, block_N, block_K)
     print("init successful!")
     a = torch.randn(M, K).half().npu()
