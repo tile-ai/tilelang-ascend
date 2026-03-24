@@ -11,17 +11,16 @@ sys.path.append(parent_dir)
 
 
 def init_test():
-    # torch.set_default_device('npu')
+    torch.set_default_device('npu')
     torch.manual_seed(42)
     tilelang.disable_cache()
-    # tilelang.enable_cache()
 
 
 pass_configs = {
     tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
     tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_SYNC: True,
     # tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
-    # tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
+    tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
 }
 
 
@@ -47,7 +46,6 @@ def sparse_attention_fwd(
     assert is_causal, 'non-casual is not supported'
     assert topk % n_base_size == 0, 'otherwise will load some index=0 thus causing wrong kv to be loaded'
 
-    # NOTE: ascend only support exp interface instead of exp2
     scale = (1.0 / (dim + rope_dim)) ** 0.5 if scale is None else scale
 
     batch = T.symbolic("batch")
@@ -56,7 +54,6 @@ def sparse_attention_fwd(
     block_table_len = T.symbolic("block_table_len")
     block_num = T.symbolic("block_num")
 
-    seq_len_kv = T.symbolic("seq_len_kv")
     g = q_heads // kv_heads  # GQA G
     q_shape = [batch, seq_len, q_heads, dim + rope_dim]
 
@@ -79,13 +76,15 @@ def sparse_attention_fwd(
     m_base_size_v = m_base_size // 2
     n_base_size_v = n_base_size // 2
     vec0_copy_out_size = 32
+    k_l0_size = 64
+    mm2_k_l0_size = 32
 
     @T.prim_func
     def main_pipelined(
-            Q: T.Tensor(q_shape, dtype),  # type: ignore
-            KV: T.Tensor(kv_shape, dtype),  # type: ignore
-            Indices: T.Tensor(indices_shape, indices_dtype),  # type: ignore
-            Output: T.Tensor(o_shape, dtype),  # type: ignore
+            Q: T.Tensor(q_shape, dtype),
+            KV: T.Tensor(kv_shape, dtype),
+            Indices: T.Tensor(indices_shape, indices_dtype),
+            Output: T.Tensor(o_shape, dtype),
             actual_q_len: T.Tensor([batch], indices_dtype),
             actual_kv_len: T.Tensor([batch], indices_dtype),
             block_table: T.Tensor([batch, block_table_len], indices_dtype),
@@ -104,13 +103,11 @@ def sparse_attention_fwd(
             acc_s_l1 = T.alloc_L1([m_base_size, n_base_size], dtype)
 
             # mm1 buffer
-            k_l0_size = 64  # 固定64 与rope dim一致 方便实现
             q_l0a = T.alloc_L0A([2, m_base_size, k_l0_size], dtype)
             kv_l0b = T.alloc_L0B([2, k_l0_size, n_base_size], dtype)
             acc_s_l0c = T.alloc_L0C([m_base_size, n_base_size], accum_dtype)
 
             # mm2 buffer
-            mm2_k_l0_size = 32
             acc_s_l0a = T.alloc_L0A([2, m_base_size, mm2_k_l0_size], dtype)
             mm2_kv_l0b = T.alloc_L0B([2, mm2_k_l0_size, dim], dtype)
             acc_o_l0c = T.alloc_L0C([m_base_size, dim], accum_dtype)
@@ -118,7 +115,7 @@ def sparse_attention_fwd(
             # vec0
             indices_ub_ = T.alloc_ub([n_base_size], indices_dtype)
             indices_ub_float = T.alloc_ub([n_base_size], "float")
-            mask_ub = T.alloc_ub([32], "uint8")  # T.Pipelined need to align
+            mask_ub = T.alloc_ub([32], "uint8")
             kv_ub_gather = T.alloc_ub([2, vec0_copy_out_size, dim], dtype)
             kv_rope_ub_gather = T.alloc_ub([2, vec0_copy_out_size, rope_dim], dtype)
 
@@ -149,70 +146,18 @@ def sparse_attention_fwd(
             T.annotate_layout(
                 {
                     q_l1: make_zn_layout(q_l1),
-                    q_tail_l1: make_zn_layout(q_tail_l1),  # Zn
-                    kv_l1: make_zn_layout(kv_l1),  # Zn
-                    kv_tail_l1: make_zn_layout(kv_tail_l1),  # Zn
-                    acc_s_l1: make_zn_layout(acc_s_l1),  # Zn
+                    q_tail_l1: make_zn_layout(q_tail_l1),
+                    kv_l1: make_zn_layout(kv_l1),
+                    kv_tail_l1: make_zn_layout(kv_tail_l1),
+                    acc_s_l1: make_zn_layout(acc_s_l1),
                 }
             )
 
-            T.annotate_address({
-                # cube 其中 2 表示half类型
-                q_l1: 0,
-                q_tail_l1: m_base_size * dim * 2,
-                kv_l1: m_base_size * dim * 2 + m_base_size * rope_dim * 2,
-                kv_tail_l1: m_base_size * dim * 2 + m_base_size * rope_dim * 2 + n_base_size * dim * 2,
-                acc_s_l1: m_base_size * dim * 2 + m_base_size * rope_dim * 2 + n_base_size * dim * 2 + n_base_size * rope_dim * 2,
-
-                # mm1
-                kv_l0b: 0,
-                q_l0a: 0,
-                acc_o_l0c: 0,
-
-                # mm2
-                acc_s_l0a: 0,
-                mm2_kv_l0b: 0,
-                acc_s_l0c: 0,
-
-                # UB
-                # vec0
-                indices_ub_: 0,
-                indices_ub_float: n_base_size * 4,
-                mask_ub: n_base_size * 4 * 2,
-                kv_ub_gather: n_base_size * 4 * 2 + 32,
-                kv_rope_ub_gather: n_base_size * 4 * 2 + 32 + vec0_copy_out_size * dim * 2 * 2,
-
-                # vec1 73760: 32*576*2*2 + 32 (32: vec0_copy_out_size; 576:dim+rope_dime; 2:half; 2:db buffer; 32:mask)
-                score_max_pre: 73760 + n_base_size * 4 * 2,
-                log_sum: 73760 + n_base_size * 4 * 2 + m_base_size_v * 4,
-                score_max: 73760 + n_base_size * 4 * 2 + m_base_size_v * 4 * 2,
-                # 以上的localTensor常驻UB
-
-                acc_s_ub: 73760 + n_base_size * 4 * 2 + m_base_size_v * 4 * 3,
-                score_max_broadcast: 73760 + n_base_size * 4 * 2 + m_base_size_v * 4 * 3 + m_base_size_v * n_base_size * 4,
-                score_sum: 73760 + n_base_size * 4 * 2 + m_base_size_v * 4 * 3 + m_base_size_v * n_base_size * 4 * 2,
-                acc_s_half: 73760 + n_base_size * 4 * 2 + m_base_size_v * 4 * 4 + m_base_size_v * n_base_size * 4 * 2,
-
-                # vec2
-                acc_o_ub_temp: 73760 + n_base_size * 4 * 2 + m_base_size_v * 4 * 4,
-                score_scale_broadcast: (73760 + n_base_size * 4 * 2 + m_base_size_v * 4 * 4) + m_base_size_v * dim * 4,
-                log_sum_broadcast: (73760 + n_base_size * 4 * 2 + m_base_size_v * 4 * 4) + m_base_size_v * dim * 4,
-
-                acc_o_ub: (73760 + n_base_size * 4 * 2 + m_base_size_v * 4 * 4) + m_base_size_v * dim * 4 * 2,
-                acc_o_half: (73760 + n_base_size * 4 * 2 + m_base_size_v * 4 * 4) + m_base_size_v * dim * 4 * 2,
-
-                tmp_ub: 184320  # 185.25K
-            })
-
             if cid < used_core_num:
                 for block_idx in T.serial(start_idx, end_idx):
-                    # bz = block_idx % kv_heads  # h轴方向
-                    # bx = block_idx // kv_heads % (g_block_num * seq_len)  # s1g方向
-                    # by = block_idx // kv_heads // (g_block_num * seq_len) % batch  # batch方向
-
-                    bx = block_idx % (g_block_num * seq_len)  # s1g方向
-                    by = block_idx // (g_block_num * seq_len) % batch  # b方向
-                    bz = block_idx // (g_block_num * seq_len) // batch % kv_heads  # n2方向
+                    bx = block_idx % (g_block_num * seq_len)
+                    by = block_idx // (g_block_num * seq_len) % batch
+                    bz = block_idx // (g_block_num * seq_len) // batch % kv_heads
 
                     b_i = by  # batch
                     g_i = bz  # n2
@@ -226,7 +171,6 @@ def sparse_attention_fwd(
                     actual_len = actual_kv_len[b_i]
 
                     if s_i < act_q_len:
-                        # 初始化操作
                         T.copy(Q[b_i, s_i, H0:H1, :dim], q_l1)
                         T.copy(Q[b_i, s_i, H0:H1, dim:], q_tail_l1)
 
@@ -234,10 +178,9 @@ def sparse_attention_fwd(
                         T.tile.fill(log_sum, 0.0)
                         T.tile.fill(score_max, 2.0 ** 30)
 
-                        # s2轴切分
+                        # split s2
                         for i_i in T.serial(n_block_num):
-                            # for i_i in T.Pipelined(n_block_num, num_stages=2):
-                            # ******************** V0(处理topk) ********************
+                            # ******************** V0 ********************
                             T.copy(Indices[s_i, g_i, i_i * n_base_size:i_i * n_base_size + n_base_size], indices_ub_)
                             T.set_flag("mte2", "v", 5)
                             T.wait_flag("mte2", "v", 5)
@@ -245,16 +188,14 @@ def sparse_attention_fwd(
                             T.pipe_barrier("v")
                             T.tile.compare(mask_ub, indices_ub_float, T.float32(actual_len - act_q_len + s_i), "LE")
 
-                            # 后续开始判断
                             for bi_i in range(n_base_size_v):
-                                inner_block_id = T.floordiv(bi_i, vec0_copy_out_size)  # 当前任务
+                                inner_block_id = T.floordiv(bi_i, vec0_copy_out_size)
                                 idx = bi_i % vec0_copy_out_size
                                 g_copy_out_time = i_i * T.floordiv(n_base_size_v, vec0_copy_out_size) + inner_block_id
                                 task_id = g_copy_out_time % 2
                                 if g_copy_out_time > 1 and bi_i % vec0_copy_out_size == 0:
                                     T.wait_flag("mte3", "mte2", task_id)
 
-                                # 从topk中取出一个index索引
                                 index_i = indices_ub_[bi_i + vid * n_base_size_v]
                                 block_idx = index_i // block_size
                                 block_i = block_table[b_i, block_idx]
@@ -282,7 +223,6 @@ def sparse_attention_fwd(
                                         T.set_flag("mte3", "mte2", task_id)
 
                             # ******************** BMM1(Q*K) ********************
-                            # L1上全载 Q和K
                             loop_kk = T.ceildiv(dim + rope_dim, k_l0_size)
                             # GM->L1
                             T.copy(workspace_1[cid, :, :], kv_l1)
@@ -291,12 +231,11 @@ def sparse_attention_fwd(
                             T.set_flag("mte2", "mte1", 1)
                             T.wait_flag("mte2", "mte1", 1)
 
-                            # mm1： L0上只切K轴
                             for kk in range(loop_kk):
-                                task_id = kk % 2  # 双buffer
+                                task_id = kk % 2  # double buffer
                                 if kk > 1:
                                     T.wait_flag("m", "mte1", task_id)
-                                # 完成L1->L0上拷贝
+                                # L1->L0
                                 if kk < loop_kk - 1:
                                     T.copy(q_l1[:, kk * k_l0_size:(kk + 1) * k_l0_size],
                                            q_l0a[kk % 2, :, :])  # Q L1->L0A
@@ -331,17 +270,15 @@ def sparse_attention_fwd(
                                               "VSEL_TENSOR_SCALAR_MODE")
                             T.pipe_barrier("v")
 
-                            # 最大值处理
                             T.reduce_max(acc_s_ub, score_max, tmp_ub, dim=-1)
                             T.pipe_barrier("v")
 
-                            T.tile.mul(score_max, score_max, -scale)  # 取负数，方便后面用axpy 其实是 -score_max
+                            T.tile.mul(score_max, score_max, -scale)
                             T.pipe_barrier("v")
 
                             T.tile.min(score_max, score_max, score_max_pre)
                             T.pipe_barrier("v")
 
-                            # acc_s_ub 操作
                             T.tile.broadcast(score_max_broadcast, score_max, tmp_ub)
                             T.pipe_barrier("v")
 
@@ -351,7 +288,7 @@ def sparse_attention_fwd(
                             T.tile.exp(acc_s_ub, score_max_broadcast)
                             T.pipe_barrier("v")
 
-                            T.copy(acc_s_ub, acc_s_half)  # float—>float16 方便后续计算
+                            T.copy(acc_s_ub, acc_s_half)  # float—>float16
                             T.pipe_barrier("v")
 
                             T.set_flag("v", "mte3", 1)
@@ -361,19 +298,16 @@ def sparse_attention_fwd(
                                 acc_s_half, workspace_4[cid,
                                             vid * m_base_size_v:vid * m_base_size_v + m_base_size_v, :])
 
-                            # sum值操作
                             T.reduce_sum(acc_s_ub, score_sum, tmp_ub, dim=-1)
                             T.pipe_barrier("v")
 
-                            # 缩放值 max_pre - max，实际上 max_pre 和 score_scale 复用一块UB
-                            T.tile.sub(score_max_pre, score_max, score_max_pre)  # 减法也需要交换
+                            T.tile.sub(score_max_pre, score_max, score_max_pre)
                             T.pipe_barrier("v")
 
                             T.tile.exp(score_max_pre, score_max_pre)
                             T.pipe_barrier("v")
 
                             # ******************** BMM2(S*V) ********************
-                            # L1上全载 Q和K
                             loop_kk = T.ceildiv(n_base_size, mm2_k_l0_size)
 
                             # GM->L1
@@ -382,13 +316,12 @@ def sparse_attention_fwd(
                             T.set_flag("mte2", "mte1", 3)
                             T.wait_flag("mte2", "mte1", 3)
 
-                            # mm2： L0上需要切K轴和N轴，目前只能切K轴
                             for kk in range(loop_kk):
                                 task_id = kk % 2 + 2
                                 if kk > 1:
                                     T.wait_flag("m", "mte1", task_id)
 
-                                # 完成L1->L0上拷贝
+                                # L1->L0
                                 T.copy(acc_s_l1[:, kk * mm2_k_l0_size:(kk + 1) * mm2_k_l0_size],
                                        acc_s_l0a[kk % 2, :, :])  # Q L1->L0A
 
@@ -458,9 +391,8 @@ def sparse_attn_tilelang(
     query_rope = query_rope.unsqueeze(0)
     print(query.shape)
     block_num, block_size, num_head_kv, dim = key.size()
-    # print("query_rope.shape=",query_rope.shape)
-    # print("key_rope.shape=",key_rope.shape)
-    print("*" * 50)
+    print("query_rope.shape=",query_rope.shape)
+    print("key_rope.shape=",key_rope.shape)
     query = torch.cat((query, query_rope), dim=-1)
     key_value = torch.cat((key, key_rope), dim=-1)
     print("q.shape=", query.shape)
@@ -479,8 +411,7 @@ def sparse_attn_tilelang(
         block_size=block_size
     )
     print(kernel.get_kernel_source())
-    for i in range(10):
-        output = kernel(query, key_value, sparse_indices, actual_seq_lengths_query, actual_seq_lengths_kv, block_table)
+    output = kernel(query, key_value, sparse_indices, actual_seq_lengths_query, actual_seq_lengths_kv, block_table)
     output = output.squeeze(0)
     print(type(output))
     return output

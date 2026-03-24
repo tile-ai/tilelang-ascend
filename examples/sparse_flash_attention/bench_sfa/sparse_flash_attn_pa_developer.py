@@ -279,7 +279,7 @@ def sparse_attn_tilelang(
     query, key, value, sparse_indices, scale_value, sparse_block_size,
     actual_seq_lengths_query, actual_seq_lengths_kv,
     query_rope=None, key_rope=None,
-    layout_query='BSND', layout_kv='BSND', sparse_mode=3, block_table=None):
+    layout_query='BSND', layout_kv='BSND', sparse_mode=3, block_table=None, attention_mode=None):
 
     query = query.unsqueeze(0)
     query_rope = query_rope.unsqueeze(0)

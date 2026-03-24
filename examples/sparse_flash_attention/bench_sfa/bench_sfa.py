@@ -1,8 +1,8 @@
 # https://gitcode.com/cann/cann-recipes-infer/blob/master/ops/ascendc/torch_ops_extension/custom_ops/converter/npu_sparse_flash_attention.py
 
+import argparse
 import torch
 import torch_npu
-import custom_ops
 
 DEVICE = "npu"
 
@@ -18,7 +18,6 @@ def test_op(T, B, KV_S, Q_N, KV_N, D, D_rope,
     assert D_rope == 0 or 64
 
     qkv_dtype = torch.bfloat16
-    #sparse_size = KV_S
     query = torch.empty((T, Q_N, D), dtype=qkv_dtype, device=DEVICE).normal_(mean=0.0, std=0.5).requires_grad_()
     key   = torch.empty((B * KV_S // block_size, block_size, KV_N, D), dtype=qkv_dtype, device=DEVICE).normal_(mean=0.0, std=0.5).requires_grad_()
     value = key.clone()
@@ -63,28 +62,43 @@ def test_op(T, B, KV_S, Q_N, KV_N, D, D_rope,
             layout_kv= 'PA_BSND',
             sparse_mode = sparse_mode,
             block_table= block_table,
+            attention_mode=2
         )
         if first_out is None:
-            first_out = out
+            first_out, _, _ = out 
             print(f"(first op) {tl_op.__name__} {out=}")
         else:
             out = out.to(first_out.dtype)
-        torch.testing.assert_close(out, first_out, rtol=1e-2, atol=1e-2, equal_nan=True)
+            torch.testing.assert_close(out, first_out, rtol=1e-2, atol=1e-2, equal_nan=True)
     print(f"(last op) {tl_op.__name__} {out=}")
     print("[PASSED]")
 
-if __name__ == "__main__":
-    from sparse_flash_attn_pa import init_test
-    from sparse_flash_attn_pa import sparse_attn_tilelang as sparse_flash_attn_pa
-    init_test()
+from sparse_flash_attn_pa import init_test
 
-    tl_ops = [torch_npu.npu_sparse_flash_attention, sparse_flash_attn_pa]
-    test_op(T = 1, B = 1, KV_S = 2560, Q_N = 128, KV_N = 1, D = 512, D_rope = 64,
-        sparse_size = 2048, scale_value = 0.5, sparse_block_size = 1, sparse_mode = 0,
-        block_size = 128, act_kv_s = 2560, tl_ops = tl_ops)
-    test_op(T = 1, B = 1, KV_S = 6400, Q_N = 128, KV_N = 1, D = 512, D_rope = 64,
-        sparse_size = 2048, scale_value = 0.5, sparse_block_size = 1, sparse_mode = 0,
-        block_size = 128, act_kv_s = 2560, tl_ops = tl_ops)
-    test_op(T = 1, B = 1, KV_S = 48000, Q_N = 128, KV_N = 1, D = 512, D_rope = 64,
-        sparse_size = 2048, scale_value = 0.5, sparse_block_size = 1, sparse_mode = 0,
-        block_size = 128, act_kv_s = 2560, tl_ops = tl_ops)
+parser = argparse.ArgumentParser(description="SparseMLA test script")
+parser.add_argument("--file", type=str, default="sparse_flash_attn_pa", help="The version you want to run")
+args = parser.parse_args()
+
+if args.file == "sparse_flash_attn_pa_baseline":
+    from sparse_flash_attn_pa_baseline import  sparse_attn_tilelang
+elif args.file == "sparse_flash_attn_pa_developer":
+    from sparse_flash_attn_pa_developer import  sparse_attn_tilelang
+elif args.file == "sparse_flash_attn_pa":
+    from sparse_flash_attn_pa import  sparse_attn_tilelang
+elif args.file == "sparse_flash_attn_pa_no_cv_pipeline":
+    from sparse_flash_attn_pa_no_cv_pipeline import  sparse_attn_tilelang
+else:
+    raise RuntimeError("not supported file, only the following files are supported: "
+                       "sparse_flash_attn_pa_baseline, sparse_flash_attn_pa_developer, sparse_flash_attn_pa, sparse_flash_attn_pa_no_cv_pipeline")
+
+init_test()
+tl_ops = [torch_npu.npu_sparse_flash_attention, sparse_attn_tilelang]
+test_op(T = 1, B = 1, KV_S = 2560, Q_N = 128, KV_N = 1, D = 512, D_rope = 64,
+    sparse_size = 2048, scale_value = 0.5, sparse_block_size = 1, sparse_mode = 0,
+    block_size = 128, act_kv_s = 2560, tl_ops = tl_ops)
+test_op(T = 1, B = 1, KV_S = 6400, Q_N = 128, KV_N = 1, D = 512, D_rope = 64,
+    sparse_size = 2048, scale_value = 0.5, sparse_block_size = 1, sparse_mode = 0,
+    block_size = 128, act_kv_s = 2560, tl_ops = tl_ops)
+test_op(T = 1, B = 1, KV_S = 48000, Q_N = 128, KV_N = 1, D = 512, D_rope = 64,
+    sparse_size = 2048, scale_value = 0.5, sparse_block_size = 1, sparse_mode = 0,
+    block_size = 128, act_kv_s = 2560, tl_ops = tl_ops)

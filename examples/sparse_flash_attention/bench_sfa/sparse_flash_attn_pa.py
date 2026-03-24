@@ -4,14 +4,12 @@ import torch
 import os
 import sys
 
-from tilelang.intrinsics import make_zn_layout
-
 parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.append(parent_dir)
 
 
 def init_test():
-    # torch.set_default_device('npu')
+    torch.set_default_device('npu')
     torch.manual_seed(42)
     tilelang.disable_cache()
 
@@ -138,16 +136,12 @@ def sparse_attention_fwd(
 
             if cid < used_core_num:
                 for block_idx in T.serial(start_idx, end_idx):
-                    # bz = block_idx % kv_heads  # h轴方向
-                    # bx = block_idx // kv_heads % (g_block_num * seq_len)  # s1g方向
-                    # by = block_idx // kv_heads // (g_block_num * seq_len) % batch  # batch方向
+                    bx = block_idx % (g_block_num * seq_len)
+                    by = block_idx // (g_block_num * seq_len) % batch
+                    bz = block_idx // (g_block_num * seq_len) // batch % kv_heads
 
-                    bx = block_idx % (g_block_num * seq_len)  # s1g方向
-                    by = block_idx // (g_block_num * seq_len) % batch  # b方向
-                    bz = block_idx // (g_block_num * seq_len) // batch % kv_heads  # n2方向
-
-                    b_i = by  # batch
-                    g_i = bz  # n2
+                    b_i = by
+                    g_i = bz
                     s1g_i = bx
 
                     s_i = (s1g_i // g_block_num)  # s1
@@ -158,7 +152,7 @@ def sparse_attention_fwd(
                     actual_len = actual_kv_len[b_i]
 
                     if s_i < act_q_len:
-                        # 初始化操作
+                        # init
                         T.copy(Q[b_i, s_i, H0:H1, :dim], q_l1)
                         T.copy(Q[b_i, s_i, H0:H1, dim:], q_rope_l1)
 
@@ -166,10 +160,9 @@ def sparse_attention_fwd(
                         T.tile.fill(log_sum, 0.0)
                         T.tile.fill(score_max, 2.0 ** 30)
 
-                        # s2轴切分
                         # for i_i in T.serial(n_block_num):
                         for i_i in T.Pipelined(n_block_num, num_stages=2):
-                            # ******************** V0(处理topk) ********************
+                            # ******************** V0 ********************
                             T.copy(Indices[s_i, g_i, i_i * n_base_size:i_i * n_base_size + n_base_size], indices_ub_)
                             T.set_flag("mte2", "v", 5)
                             T.wait_flag("mte2", "v", 5)
@@ -177,16 +170,14 @@ def sparse_attention_fwd(
                             T.pipe_barrier("v")
                             T.tile.compare(mask_ub, indices_ub_float, T.float32(actual_len - act_q_len + s_i), "LE")
 
-                            # 后续开始判断
                             for bi_i in range(n_base_size_v):
-                                inner_block_id = T.floordiv(bi_i, vec0_copy_out_size)  # 当前任务
+                                inner_block_id = T.floordiv(bi_i, vec0_copy_out_size)
                                 idx = bi_i % vec0_copy_out_size
                                 g_copy_out_time = i_i * T.floordiv(n_base_size_v, vec0_copy_out_size) + inner_block_id
                                 task_id = g_copy_out_time % 2
                                 if g_copy_out_time > 1 and bi_i % vec0_copy_out_size == 0:
                                     T.wait_flag("mte3", "mte2", task_id)
 
-                                # 从topk中取出一个index索引
                                 index_i = indices_ub_[bi_i + vid * n_base_size_v]
                                 block_idx = index_i // block_size
                                 block_i = block_table[b_i, block_idx]
@@ -241,7 +232,6 @@ def sparse_attention_fwd(
                                               "VSEL_TENSOR_SCALAR_MODE")
                             T.pipe_barrier("v")
 
-                            # 最大值处理
                             T.reduce_max(acc_s_ub, score_max, tmp_ub, dim=-1)
                             T.pipe_barrier("v")
 
@@ -251,7 +241,6 @@ def sparse_attention_fwd(
                             T.tile.min(score_max, score_max, score_max_pre)
                             T.pipe_barrier("v")
 
-                            # acc_s_ub 处理
                             T.tile.broadcast(score_max_broadcast, score_max, tmp_ub)
                             T.pipe_barrier("v")
 
@@ -261,8 +250,7 @@ def sparse_attention_fwd(
                             T.tile.exp(acc_s_ub, score_max_broadcast)
                             T.pipe_barrier("v")
 
-                            # 缩放值 max_pre - max，实际上 max_pre 和 score_scale 复用一块UB
-                            T.tile.sub(score_max_pre, score_max, score_max_pre)  # 减法也需要交换
+                            T.tile.sub(score_max_pre, score_max, score_max_pre)
                             T.pipe_barrier("v")
 
                             T.tile.exp(score_max_pre, score_max_pre)
@@ -292,7 +280,6 @@ def sparse_attention_fwd(
                                 workspace_5[cid, vid * m_base_size_v:vid * m_base_size_v + m_base_size_v, :],
                                 acc_o_ub_temp)
                             
-                            # sum值操作
                             T.reduce_sum(acc_s_ub, score_sum, tmp_ub, dim=-1)
                             T.pipe_barrier("v")
                             
@@ -320,7 +307,6 @@ def sparse_attention_fwd(
                         T.pipe_barrier("v")
 
                         T.copy(acc_o_ub, acc_o_half)
-
                         T.set_flag("v", "mte3", 9)
                         T.wait_flag("v", "mte3", 9)
                         T.copy(acc_o_half, Output[b_i, s_i, H0 + vid * m_base_size_v:H1 + vid * m_base_size_v, :])
@@ -329,7 +315,6 @@ def sparse_attention_fwd(
 
 
 core_num = 24
-
 block_num = 20
 block_size = 128
 
@@ -343,9 +328,8 @@ def sparse_attn_tilelang(
     query_rope = query_rope.unsqueeze(0)
     print(query.shape)
     block_num, block_size, num_head_kv, dim = key.size()
-    # print("query_rope.shape=",query_rope.shape)
-    # print("key_rope.shape=",key_rope.shape)
-    print("*" * 50)
+    print("query_rope.shape=",query_rope.shape)
+    print("key_rope.shape=",key_rope.shape)
     query = torch.cat((query, query_rope), dim=-1)
     key_value = torch.cat((key, key_rope), dim=-1)
     print("q.shape=", query.shape)
