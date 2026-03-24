@@ -274,26 +274,27 @@ public:
         }
     }
 
-    void VisitStmt_(const ForNode* op) override {
-        StmtInfo for_info;
-        for_info.type = "For";
-        for_info.stmt = GetRef<Stmt>(op);
+  void VisitStmt_(const ForNode* op) override {
+      StmtInfo for_info;
+      for_info.type = "For";
+      for_info.stmt = GetRef<Stmt>(op);
+      std::vector<StmtInfo> saved_statements_C = all_statements_C_;
+      std::vector<StmtInfo> saved_statements_V = all_statements_V_;
+      int saved_idx_C = current_idx_C_;
+      int saved_idx_V = current_idx_V_;
+      this->VisitStmt(op->body);
+      bool has_new_C = saved_statements_C.size() < all_statements_C_.size();
+      bool has_new_V = saved_statements_V.size() < all_statements_V_.size();
+      if (has_new_V) {
+          ProcessInfo(workspace_writes_V_, all_statements_V_, saved_statements_V, saved_idx_V, for_info);
+          current_idx_V_ = all_statements_V_.size();
+      }
+      if (has_new_C) {
+          ProcessInfo(workspace_writes_C_, all_statements_C_, saved_statements_C, saved_idx_C, for_info);
+          current_idx_C_ = all_statements_C_.size();
+      }
+  }
 
-        std::vector<StmtInfo> saved_statements_C = all_statements_C_;
-        std::vector<StmtInfo> saved_statements_V = all_statements_V_;
-        int saved_idx_C = current_idx_C_;
-        int saved_idx_V = current_idx_V_;
-
-        this->VisitStmt(op->body);
-
-        if (core_scope_ == VEC_SCOPE) {
-            ProcessInfo(workspace_writes_V_, all_statements_V_, saved_statements_V, saved_idx_V, for_info);
-            current_idx_V_ = all_statements_V_.size();
-        } else if (core_scope_ == CUBE_SCOPE) {
-            ProcessInfo(workspace_writes_C_, all_statements_C_, saved_statements_C, saved_idx_C, for_info);
-            current_idx_C_ = all_statements_C_.size();
-        }
-    }
 
     void VisitStmt_(const BlockRealizeNode* op) override {
         this->VisitStmt(op->block);
@@ -515,16 +516,19 @@ private:
     }
 
     std::vector<StageInfo> SplitIntoStages(const std::vector<LoopAnalyzer::WorkspaceWrite> workspace_writes_C,
-                                           const std::vector<LoopAnalyzer::WorkspaceWrite> workspace_writes_V) {
+                                          const std::vector<LoopAnalyzer::WorkspaceWrite> workspace_writes_V) {
         std::vector<int> split_points_C = ExtractSplitPoints(workspace_writes_C);
         std::vector<int> split_points_V = ExtractSplitPoints(workspace_writes_V);
-
         std::vector<StageInfo> stages;
         StageInfo current_stage;
         std::unordered_set<int> split_indices_C(split_points_C.begin(), split_points_C.end());
         std::unordered_set<int> split_indices_V(split_points_V.begin(), split_points_V.end());
-
+        std::unordered_set<const StmtNode*> processed_stmts;
         for (const auto& stmt_info : all_statements_C_) {
+            if (processed_stmts.count(stmt_info.stmt.get())) {
+                continue;
+            }
+            processed_stmts.insert(stmt_info.stmt.get());
             current_stage.statements.push_back(stmt_info);
             for (const auto& buffer : stmt_info.used_buffers) {
                 current_stage.used_buffers.insert(buffer);
@@ -536,9 +540,13 @@ private:
         }
         if (!current_stage.statements.empty()) {
             stages.push_back(current_stage);
+            current_stage = StageInfo();
         }
-
         for (const auto& stmt_info : all_statements_V_) {
+            if (processed_stmts.count(stmt_info.stmt.get())) {
+                continue;
+            }
+            processed_stmts.insert(stmt_info.stmt.get());
             current_stage.statements.push_back(stmt_info);
             for (const auto& buffer : stmt_info.used_buffers) {
                 current_stage.used_buffers.insert(buffer);
@@ -551,9 +559,9 @@ private:
         if (!current_stage.statements.empty()) {
             stages.push_back(current_stage);
         }
-
         return stages;
     }
+
 
     int32_t checkBufferScope(const std::string& buffer) {
         for (const auto& pair : analyzer_.location_map()) {
