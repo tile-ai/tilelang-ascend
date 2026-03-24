@@ -58,8 +58,8 @@ CATLASS_DEVICE void copy_l1_to_l0a(LocalTensor<T> dstTensor,
   using LayoutL1_ = std::conditional_t<transpose,
                                       Catlass::detail::TagToLayout_t<T, LayoutL1T>,
                                       Catlass::detail::TagToLayout_t<T, LayoutL1>>;
-  constexpr auto layout = transpose ? 
-  tla::MakeLayout<T, LayoutL1_>(srcN, srcM) : tla::MakeLayout<T, LayoutL1_>(srcM, srcN);
+  constexpr auto layout = transpose ? tla::MakeLayout<T, LayoutL1_>(srcN, srcM)
+                                    : tla::MakeLayout<T, LayoutL1_>(srcM, srcN);
   auto src_LAYOUT = MakeLayoutTile(layout, tla::MakeShape(dstM, dstN));
   auto src = MakeTensor<decltype(srcTensor), decltype(src_LAYOUT),
                       AscendC::TPosition::A1>(srcTensor, src_LAYOUT);
@@ -68,7 +68,6 @@ CATLASS_DEVICE void copy_l1_to_l0a(LocalTensor<T> dstTensor,
   auto layoutAInL0 = tla::MakeLayout<T, LayoutL0A_>(dstM, dstN);
   auto dst = tla::MakeTensor<decltype(dstTensor), decltype(layoutAInL0),
                              AscendC::TPosition::A2>(dstTensor, layoutAInL0);
-
   TileCopyTla<ArchTag, decltype(src), decltype(dst)> tileCopier;
   tileCopier(dst, src);
 }
@@ -473,8 +472,7 @@ CATLASS_DEVICE void GatherMask(const LocalTensor<T> &dst,
   gatherMaskParams.src0RepeatStride = 8;
   gatherMaskParams.src1RepeatStride = 0;
   uint64_t rsvdCnt = 0;    // 用于保存筛选后保留下来的元素个数
-  GatherMask(dst.template ReinterpretCast<uint32_t>(),
-             sortedTensor.template ReinterpretCast<uint32_t>(), src1Pattern,
+  GatherMask(dst, sortedTensor, src1Pattern,
              false, static_cast<uint32_t>(0), gatherMaskParams, rsvdCnt);
   PipeBarrier<PIPE_V>();
 }
@@ -490,9 +488,21 @@ CATLASS_DEVICE void GatherMask(const LocalTensor<T> &dst,
   gatherMaskParams.src0RepeatStride = 8;
   gatherMaskParams.src1RepeatStride = 0;
   uint64_t rsvdCnt = 0;    // 用于保存筛选后保留下来的元素个数
-  GatherMask(dst.template ReinterpretCast<uint32_t>(),
-             sortedTensor.template ReinterpretCast<uint32_t>(), src1Pattern,
+  GatherMask(dst, sortedTensor, src1Pattern,
              false, static_cast<uint32_t>(0), gatherMaskParams, rsvdCnt);
+}
+
+template <typename T>
+CATLASS_DEVICE void Gather(const LocalTensor<T> &dst,
+                           const LocalTensor<T> &sortedTensor,
+                           const LocalTensor<uint32_t> &src1Pattern) {
+  
+  int32_t count = src1Pattern.GetSize();
+  int32_t scalarValue = sizeof(T);
+  LocalTensor<int32_t> offset = const_cast<LocalTensor<uint32_t>&>(src1Pattern).template ReinterpretCast<int32_t>();
+  AscendC::Muls(offset, offset, scalarValue, count);
+  AscendC::Gather(dst, sortedTensor, offset.template ReinterpretCast<uint32_t>(),
+                  static_cast<uint32_t>(0), static_cast<uint32_t>(count));
 }
 
 template <typename T>
@@ -657,9 +667,9 @@ CATLASS_DEVICE void ClampMin(const LocalTensor<T> &dst, const LocalTensor<T> &bu
 
 template <typename T>
 CATLASS_DEVICE void Clamp(const LocalTensor<T> &dst, const LocalTensor<T> &buffer, const LocalTensor<uint8_t> &tmp,
-                             const T minScalarValue, const T maxScalarValue, const int32_t count) {
-  AscendC::ClampMin<T>(dst, buffer, tmp, minScalarValue, count);
-  AscendC::ClampMax<T>(dst, buffer, tmp, maxScalarValue, count);
+  const T minScalarValue, const T maxScalarValue, const int32_t count) {
+    AscendC::ClampMin<T>(dst, buffer, tmp, minScalarValue, count);
+    AscendC::ClampMax<T>(dst, dst, tmp, maxScalarValue, count);
 }
 
 template <typename T, typename U>
@@ -674,8 +684,7 @@ CATLASS_DEVICE void GatherMask_experiment(const LocalTensor<T> &dst,
   gatherMaskParams.src0BlockStride = src0BlockStride;
   gatherMaskParams.src0RepeatStride = src0RepeatStride;
   gatherMaskParams.src1RepeatStride = src1RepeatStride;
-  GatherMask(dst.template ReinterpretCast<uint32_t>(),
-             src0.template ReinterpretCast<uint32_t>(), src1Pattern,
+  GatherMask(dst, src0, src1Pattern,
              reduceMode, mask, gatherMaskParams, rsvdCnt);
 }
 
@@ -696,6 +705,55 @@ CATLASS_DEVICE void Sum_experiment(const LocalTensor<T> &dst, const LocalTensor<
   sumParams.inner = inner;
   sumParams.n = n;
   AscendC::Sum(dst, src, sumParams);
+}
+
+template <typename T, uint32_t M, uint32_t N>
+CATLASS_DEVICE void transpose_16x16(LocalTensor<T> const &dst, LocalTensor<T> const &src) {
+  TransDataTo5HDParams transDataParams;
+  transDataParams.dstHighHalf = false;
+  transDataParams.srcHighHalf = false;
+  transDataParams.repeatTimes = N;
+  if (transDataParams.repeatTimes == 1) {
+    transDataParams.dstRepStride = 0;
+    transDataParams.srcRepStride = 0;
+  } else {
+    transDataParams.dstRepStride = M;
+    transDataParams.srcRepStride = 1;
+  }
+
+  __ubuf__ T* dstList[16];
+  __ubuf__ T* srcList[16];
+
+  if constexpr (sizeof(T) == 4) {
+    for (int32_t m = 0; m < 16; m = m + 2) {
+      dstList[m] = (__ubuf__ T*)dst[16 * (m / 2)].GetPhyAddr();
+      dstList[m + 1] = (__ubuf__ T*)dst[16 * (m / 2) + 16].GetPhyAddr();
+    }
+    for (int32_t n = 0; n < 16; n++) {
+      srcList[n] = (__ubuf__ T*)src[n * 16].GetPhyAddr();
+    }
+  } else {
+    for (int i = 0; i < 16; i++) {
+      dstList[i] = (__ubuf__ T*)dst[i * N].GetPhyAddr();
+      srcList[i] = (__ubuf__ T*)src[i * M].GetPhyAddr();
+    }
+  }
+
+  AscendC::TransDataTo5HDImpl<T>(dstList, srcList, transDataParams);
+  AscendC::PipeBarrier<PIPE_V>();
+}
+
+template <typename T>
+CATLASS_DEVICE void transpose(LocalTensor<T> const &dst, LocalTensor<T> const &src) {
+  if constexpr (sizeof(T) == 2) {
+    AscendC::Transpose(dst, src);
+  } else {
+    for (int i = 0; i < 16; i++) {
+      for (int j = 0; j < 16; j++) {
+        dst.SetValue(i * 16 + j, src.GetValue(j * 16 + i));
+      }
+    }
+  }
 }
 
 } // namespace tl::ascend

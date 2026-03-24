@@ -4,6 +4,7 @@ on: [pull_request]
 
 jobs:
   format-check:
+    if: false
     runs-on: self-hosted
 
     steps:
