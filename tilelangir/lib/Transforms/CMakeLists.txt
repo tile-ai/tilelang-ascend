@@ -1,4 +1,5 @@
 add_library(tilelangir_transforms STATIC
+  InsertWorkspace.cpp
   CVSplit.cpp
   Vectorize.cpp
 )
