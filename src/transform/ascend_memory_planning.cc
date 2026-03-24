@@ -60,8 +60,7 @@ public:
 
     Map<Var, PrimExpr> external_address_map;
     if (fn_attr->dict.count("address_map")) {
-      external_address_map =
-          fn_attr->dict.at("address_map").as<Map<Var, PrimExpr>>().value();
+      external_address_map = fn_attr->dict.at("address_map").as<Map<Var, PrimExpr>>().value();
     }
 
     AscendMemoryPlanner planner(f, external_address_map);
@@ -79,16 +78,18 @@ public:
 private:
   class AscendMemoryPlanner : public StmtExprVisitor {
   public:
-    explicit AscendMemoryPlanner(const PrimFunc &func,
-                                 Map<Var, PrimExpr> external_address_map) {
-      memory_limits_ = {{"shared.dyn", ASCEND_SHARED_DYN_MEM_SIZE},
-                        {"wmma.matrix_a", ASCEND_WMMA_MATRIX_A_MEM_SIZE},
-                        {"wmma.matrix_b", ASCEND_WMMA_MATRIX_B_MEM_SIZE},
-                        {"wmma.accumulator", ASCEND_WMMA_ACCUMULATOR_MEM_SIZE},
-                        {"shared", ASCEND_SHARED_MEM_SIZE}};
+    explicit AscendMemoryPlanner(const PrimFunc& func, Map<Var, PrimExpr> external_address_map)  
+    {
+      memory_limits_ = {
+        {"shared.dyn", 524032},
+        {"wmma.matrix_a", 65536},
+        {"wmma.matrix_b", 65536},  
+        {"wmma.accumulator", 131072},
+        {"shared", 196352}
+      };
 
       SetPreAllocBuffer(external_address_map);
-
+      
       operator()(func->body);
       PlanMemory();
     }
@@ -276,6 +277,14 @@ private:
       }
     }
 
+    void SetPreAllocBuffer(Map<Var, PrimExpr> external_address_map) {
+      for (const auto& kv : external_address_map) {
+        const VarNode* buf = kv.first.get();
+        int64_t addr_offset = kv.second.as<IntImmNode>()->value;
+        pre_alloc_buffer_[buf] = addr_offset;
+      }
+    }
+
     void PlanMemory() {
       LivenessAnalysis();
 
@@ -416,17 +425,17 @@ private:
       DLOG(DEBUG) << "Planning memory for scope: " << scope;
 
       std::vector<LiveInterval> intervals;
-      std::unordered_map<const VarNode *, int64_t> pre_alloc_scope_buffer;
-      for (const VarNode *buffer : buffers) {
+      std::unordered_map<const VarNode*, int64_t> pre_alloc_scope_buffer;
+      for (const VarNode* buffer : buffers) {
         int64_t start = -1;
         int64_t end = -1;
 
         if (pre_alloc_buffer_.count(buffer) > 0) {
           pre_alloc_scope_buffer[buffer] = pre_alloc_buffer_[buffer];
         };
-
-        for (const auto &event_pair : event_map_) {
-          const EventEntry &event = event_pair.second;
+          
+        for (const auto& event_pair : event_map_) {
+          const EventEntry& event = event_pair.second;
           auto it = std::find(event.gen.begin(), event.gen.end(), buffer);
           if (it != event.gen.end()) {
             for (size_t i = 0; i < linear_seq_.size(); ++i) {
@@ -464,9 +473,8 @@ private:
                 [](const LiveInterval &a, const LiveInterval &b) {
                   return a.start < b.start;
                 });
-
-      LinearScanAllocator allocator(memory_limits_[scope],
-                                    pre_alloc_scope_buffer);
+      
+      LinearScanAllocator allocator(memory_limits_[scope], pre_alloc_scope_buffer);
       auto allocations = allocator.allocate(intervals);
 
       for (const auto &alloc : allocations) {
@@ -509,18 +517,17 @@ private:
 
     class LinearScanAllocator {
     public:
-      LinearScanAllocator(
-          size_t memory_limit,
-          const std::unordered_map<const VarNode *, int64_t> &pre_alloc_buffer)
-          : memory_limit_(memory_limit), next_new_offset_(0),
+      LinearScanAllocator(size_t memory_limit,
+                          const std::unordered_map<const VarNode*, int64_t>& pre_alloc_buffer)
+          : memory_limit_(memory_limit),
+            next_new_offset_(0), 
             pre_alloc_buffer_(pre_alloc_buffer) {}
-
-      std::vector<Allocation> allocate(std::vector<LiveInterval> &intervals) {
+      
+      std::vector<Allocation> allocate(std::vector<LiveInterval>& intervals) {
         std::vector<Allocation> allocations;
 
-        for (auto &interval : intervals)
-          buffer_map_[interval.buffer] = &interval;
-
+        for (auto& interval : intervals) buffer_map_[interval.buffer] = &interval;
+        
         std::sort(intervals.begin(), intervals.end(),
                   [](const LiveInterval &a, const LiveInterval &b) {
                     return a.start < b.start;
@@ -570,51 +577,48 @@ private:
           bool is_reused = false;
 
           auto pre_it = pre_alloc_buffer_.find(interval.buffer);
-          if (pre_it != pre_alloc_buffer_.end()) { // Pre alloc
+          if (pre_it != pre_alloc_buffer_.end()) {
             allocated_offset = alignUp(static_cast<size_t>(pre_it->second), 32);
             size_t allocated_end = allocated_offset + interval.size;
-
-            for (const auto &active : active_allocations) {
-              if (allocated_offset < active.offset + active.size &&
+            
+            for (const auto& active : active_allocations) {
+              if (allocated_offset < active.offset + active.size && 
                   active.offset < allocated_offset + interval.size) {
-                LOG(FATAL) << "Memory allocation failed for: "
-                           << pre_it->first->name_hint
-                           << " memory allocate conflict with: "
-                           << interval.buffer->name_hint << " at "
-                           << allocated_offset;
-                continue;
+                    LOG(FATAL) << "Memory allocation failed for: "
+                    << pre_it->first->name_hint
+                    << " memory allocate conflict with: "
+                    <<interval.buffer->name_hint
+                    << " at " << allocated_offset;
+                    continue;
               }
             }
 
             if (allocated_offset > next_new_offset_) {
-              free_blocks.emplace_back(next_new_offset_,
-                                       allocated_offset - next_new_offset_);
+              free_blocks.emplace_back(next_new_offset_, allocated_offset - next_new_offset_);
             }
 
             if (allocated_end > next_new_offset_) {
               next_new_offset_ = allocated_end;
             }
 
-          } else { // Normal Alloc
-            size_t new_memory_offset = alignUp(next_new_offset_, 32);
-            if (new_memory_offset + interval.size <= memory_limit_ &&
-                !CheckConflict(new_memory_offset, interval)) {
-              allocated_offset = new_memory_offset;
-              next_new_offset_ = new_memory_offset + interval.size;
-            } else {
-              allocated_offset = findReusableBlock(interval, free_blocks);
-              if (allocated_offset != static_cast<size_t>(-1)) {
-                is_reused = true;
-                DLOG(DEBUG) << "REUSED memory at offset: " << allocated_offset;
+          } else {
+              size_t new_memory_offset = alignUp(next_new_offset_, 32);
+              if (new_memory_offset + interval.size <= memory_limit_ && 
+                  !CheckConflict(new_memory_offset, interval)) {
+                allocated_offset = new_memory_offset;
+                next_new_offset_ = new_memory_offset + interval.size;
               } else {
-                LOG(FATAL) << "Memory allocation failed for: "
-                           << interval.buffer->name_hint
-                           << " required: " << interval.size
-                           << ", new memory available: "
-                           << (memory_limit_ - next_new_offset_);
-                continue;
+                  allocated_offset = findReusableBlock(interval, free_blocks);
+                  if (allocated_offset != static_cast<size_t>(-1)) {
+                    is_reused = true;
+                    DLOG(DEBUG) << "REUSED memory at offset: " << allocated_offset;
+                  } else {
+                      LOG(FATAL) << "Memory allocation failed for: " 
+                      << interval.buffer->name_hint << " required: " << interval.size
+                      << ", new memory available: " << (memory_limit_ - next_new_offset_);
+                      continue;
+                  }
               }
-            }
           }
 
           Allocation alloc{interval.buffer, allocated_offset, interval.size,
@@ -642,32 +646,27 @@ private:
       }
 
     private:
-      bool CheckConflict(size_t offset, const LiveInterval &current) {
-        for (const auto &kv : pre_alloc_buffer_) {
-          const LiveInterval *pre_interval = buffer_map_.at(kv.first);
-          if (pre_interval->buffer == current.buffer)
-            continue;
 
-          if (current.start < pre_interval->end &&
-              pre_interval->start < current.end) {
+      bool CheckConflict(size_t offset, const LiveInterval& current) {
+        for (const auto& kv : pre_alloc_buffer_) {
+          const LiveInterval* pre_interval = buffer_map_.at(kv.first);
+          if (pre_interval->buffer == current.buffer) continue;
+          
+          if (current.start < pre_interval->end && pre_interval->start < current.end) {
             size_t pre_offset = static_cast<size_t>(kv.second);
             size_t pre_size = pre_interval->size;
-            if (offset < pre_offset + pre_size &&
-                pre_offset < offset + current.size) {
-              DLOG(DEBUG) << "Buffer " << kv.first->name_hint << " conflict at "
-                          << pre_offset;
-              return true;
+            if (offset < pre_offset + pre_size && pre_offset < offset + current.size) {
+              DLOG(DEBUG) << "Buffer " << kv.first->name_hint <<" conflict at " << pre_offset;
+              return true; 
             }
           }
         }
         return false;
       }
 
-      void
-      mergeFreeBlocks(std::vector<std::pair<size_t, size_t>> &free_blocks) {
-        if (free_blocks.empty())
-          return;
-
+      void mergeFreeBlocks(std::vector<std::pair<size_t, size_t>>& free_blocks) {
+        if (free_blocks.empty()) return;
+        
         std::sort(free_blocks.begin(), free_blocks.end());
 
         std::vector<std::pair<size_t, size_t>> merged;
@@ -688,20 +687,18 @@ private:
 
         free_blocks = std::move(merged);
       }
-
-      size_t
-      findReusableBlock(const LiveInterval &current,
-                        std::vector<std::pair<size_t, size_t>> &free_blocks) {
-
+      
+      size_t findReusableBlock(const LiveInterval& current, 
+                                std::vector<std::pair<size_t, size_t>>& free_blocks) {
+          
         std::sort(free_blocks.begin(), free_blocks.end());
-
-        for (const auto &block : free_blocks) {
+          
+        for (const auto& block : free_blocks) {
           if (block.second >= current.size) {
             size_t aligned_offset = alignUp(block.first, 32);
-            size_t available_after_align =
-                block.second - (aligned_offset - block.first);
-
-            if (available_after_align >= current.size &&
+            size_t available_after_align = block.second - (aligned_offset - block.first);
+            
+            if (available_after_align >= current.size && 
                 !CheckConflict(aligned_offset, current)) {
               return aligned_offset;
             }
@@ -762,14 +759,14 @@ private:
       size_t memory_limit_;
       bool verbose_;
       size_t next_new_offset_;
-      const std::unordered_map<const VarNode *, int64_t> &pre_alloc_buffer_;
-      std::unordered_map<const VarNode *, const LiveInterval *> buffer_map_;
+      const std::unordered_map<const VarNode*, int64_t>& pre_alloc_buffer_;
+      std::unordered_map<const VarNode*, const LiveInterval*> buffer_map_;
     };
 
     size_t CalculateBufferSize(const AllocateNode *alloc) {
       size_t size_elements = 1;
-      for (const auto &extent : alloc->extents) {
-        const IntImmNode *int_imm = extent.as<IntImmNode>();
+      for (const auto& extent : alloc->extents) {
+        const IntImmNode* int_imm = extent.as<IntImmNode>();
         ICHECK(int_imm) << "Extent must be an integer constant";
         size_elements *= int_imm->value;
       }
@@ -792,31 +789,22 @@ private:
       return memory_limits_.count(scope) > 0;
     }
 
-    std::unordered_map<const VarNode *, AllocEntry>
-        alloc_info_; // buffer allocation and level
-    std::unordered_map<const VarNode *, int64_t>
-        address_map_; // buffer address map
-    std::unordered_map<const VarNode *, std::string>
-        buffer_scopes_; // buffer scope(UB/L1..)
-    std::unordered_map<const VarNode *, size_t>
-        buffer_sizes_; // buffer bytes size
-    std::unordered_map<const VarNode *, size_t>
-        first_use_; // buffer first use stmt scope
-    std::unordered_map<std::string, int>
-        memory_limits_; // buffer scope max limits
-    std::unordered_map<const Object *, StmtAttr>
-        stmt_attrs_; // stmt operation level
-    std::unordered_map<const Object *, EventEntry>
-        event_map_; // stmt gen/kill event
-    std::unordered_map<const VarNode *, int64_t>
-        pre_alloc_buffer_;              // pre alloction buffer address map
-    std::vector<StmtEntry> linear_seq_; // linear stmt node scopes and levels
-    std::vector<StmtEntry> scope_;      // temp stmt node scopes and levels
-
-    std::multimap<uint64_t, StorageEntry *> const_free_map_;
-    std::list<StorageEntry *> sym_free_list_;
-    std::unordered_map<const VarNode *, StorageEntry *> alloc_map_;
-
+    std::unordered_map<const VarNode*, AllocEntry> alloc_info_;
+    std::unordered_map<const VarNode*, int64_t> address_map_;
+    std::unordered_map<const VarNode*, std::string> buffer_scopes_;
+    std::unordered_map<const VarNode*, size_t> buffer_sizes_;
+    std::unordered_map<const VarNode*, size_t> first_use_;
+    std::unordered_map<std::string, int> memory_limits_;
+    std::unordered_map<const Object*, StmtAttr> stmt_attrs_;
+    std::unordered_map<const Object*, EventEntry> event_map_;
+    std::unordered_map<const VarNode*, int64_t> pre_alloc_buffer_;
+    std::vector<StmtEntry> linear_seq_;
+    std::vector<StmtEntry> scope_;
+    
+    std::multimap<uint64_t, StorageEntry*> const_free_map_;
+    std::list<StorageEntry*> sym_free_list_;
+    std::unordered_map<const VarNode*, StorageEntry*> alloc_map_;
+    
     size_t scope_level_{0};
     int max_layer_num_{1};
   };
@@ -833,5 +821,5 @@ tvm::transform::Pass AscendMemoryPlanning() {
 TVM_REGISTER_GLOBAL("tl.transform.AscendMemoryPlanning")
     .set_body_typed(AscendMemoryPlanning);
 
-} // namespace tl
-} // namespace tvm
+}  // namespace tl
+}  // namespace tvm
