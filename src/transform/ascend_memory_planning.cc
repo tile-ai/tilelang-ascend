@@ -16,7 +16,6 @@
 #include <unordered_map>
 #include <vector>
 
-
 #include "arith/ir_mutator_with_analyzer.h"
 #include "tir/analysis/var_use_def_analysis.h"
 #include "tir/transforms/ir_utils.h"
