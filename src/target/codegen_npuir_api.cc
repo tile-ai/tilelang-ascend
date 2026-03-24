@@ -84,6 +84,12 @@
 
 #include "bishengir/Dialect/HACC/IR/HACC.h"
 
+//===----------------------------------------------------------------------===//
+// MemRefExt Dialect (workspace alloc)
+//===----------------------------------------------------------------------===//
+
+#include "bishengir/Dialect/MemRefExt/IR/MemRefExt.h"
+
 using namespace mlir;
 
 namespace tvm {
@@ -193,6 +199,21 @@ getBroadcastDim(const llvm::ArrayRef<long int> &buffer_shape0,
     }
   }
   return dims;
+}
+
+static bool IsWorkspaceScope(const std::string &scope) {
+  return scope.find("workspace") == 0 || scope.find("global.workspace") == 0;
+}
+
+// Treat workspace as GM-like scope for copy routing.
+static bool IsGMLikeScope(const std::string &scope) {
+  return scope == "global" || IsWorkspaceScope(scope);
+}
+
+// Scopes that always use pure memref.copy for all copy routing.
+static bool IsPureCopyScope(const std::string &scope) {
+  return scope.find("shared.flat") == 0 || scope.find("local.fragment") == 0 ||
+         IsWorkspaceScope(scope);
 }
 
 static std::map<std::string, mlir::hivm::RoundMode> NPUIR_STR_ROUNDMODE{
@@ -486,11 +507,12 @@ mlir::Value CodeGenTileLangNPUIRAPI::ScalarConvertType(const PrimExpr &imm,
 
 CodeGenTileLangNPUIRAPI::CodeGenTileLangNPUIRAPI() : builder(&context) {
   // Load MLIR dialects in the context
-  this->context
-      .loadDialect<mlir::func::FuncDialect, mlir::arith::ArithDialect,
-                   mlir::linalg::LinalgDialect, mlir::scf::SCFDialect,
-                   mlir::memref::MemRefDialect, mlir::hivm::HIVMDialect,
-                   mlir::hfusion::HFusionDialect>();
+  this->context.loadDialect<
+      mlir::func::FuncDialect, mlir::arith::ArithDialect,
+      mlir::linalg::LinalgDialect, mlir::scf::SCFDialect,
+      mlir::memref::MemRefDialect, mlir::hivm::HIVMDialect,
+      mlir::hfusion::HFusionDialect, bishengir::memref_ext::MemRefExtDialect,
+      mlir::annotation::AnnotationDialect>();
   // Create MLIR module
   this->module = ModuleOp::create(UnknownLoc::get(&this->context));
 }
@@ -1174,10 +1196,19 @@ void CodeGenTileLangNPUIRAPI::AscendCopyCodegen(const CallNode *op) {
   const std::string src_scope = GetPtrStorageScope(npuirop.src->data);
   const std::string dst_scope = GetPtrStorageScope(npuirop.dst->data);
 
-  // Expert mode extension:
-  //   T.copy(GM, L1) => nd2nz
-  // Keep GM min_rank=2 to maintain consistent GM rank across calls.
-  if (src_scope == "global" && dst_scope == "shared.dyn") {
+  // Pure copy path: shared.flat, local.fragment, workspace <-> any scope
+  // Always use GenRankReducedSubviewFromRegion + memref.copy
+  if (IsPureCopyScope(src_scope) || IsPureCopyScope(dst_scope)) {
+    mlir::Value src =
+        GenRankReducedSubviewFromRegion(npuirop.src, npuirop.src_range);
+    mlir::Value dst =
+        GenRankReducedSubviewFromRegion(npuirop.dst, npuirop.dst_range);
+    SmartMemRefCopy(src, dst);
+    return;
+  }
+
+  // GM-like (global / workspace) -> L1: nd2nz
+  if (IsGMLikeScope(src_scope) && dst_scope == "shared.dyn") {
     mlir::Value src = GenRankReducedSubviewFromRegion(
         npuirop.src, npuirop.src_range, /*min_rank=*/2);
     mlir::Value dst =
@@ -1188,12 +1219,8 @@ void CodeGenTileLangNPUIRAPI::AscendCopyCodegen(const CallNode *op) {
     return;
   }
 
-  // Expert mode extension:
-  //   T.copy(L0C, GM) => fixpipe
-  // Defaults match migration intent from explicit npuir_store_fixpipe:
-  //   enable_nz2nd=true, channel_split=false, pre_relu_mode=no_relu.
-  // Keep GM min_rank=2 to maintain consistent GM rank across calls.
-  if (src_scope == "wmma.accumulator" && dst_scope == "global") {
+  // L0C -> GM-like (global / workspace): fixpipe with nz2nd
+  if (src_scope == "wmma.accumulator" && IsGMLikeScope(dst_scope)) {
     mlir::Value src =
         GenRankReducedSubviewFromRegion(npuirop.src, npuirop.src_range);
     mlir::Value dst = GenRankReducedSubviewFromRegion(
@@ -1216,7 +1243,7 @@ void CodeGenTileLangNPUIRAPI::AscendCopyCodegen(const CallNode *op) {
                  dst_dtype == DataType::Int(8)) {
         pre_quant_mode = mlir::hivm::FixpipePreQuantMode::S322I8;
       } else {
-        LOG(FATAL) << "Unexpected pre-quant mode in T.copy(L0C, GM).";
+        LOG(FATAL) << "Unexpected pre-quant mode in T.copy(L0C, GM-like).";
       }
     }
     mlir::hivm::FixpipePreQuantModeAttr pre_quant =
@@ -1232,6 +1259,18 @@ void CodeGenTileLangNPUIRAPI::AscendCopyCodegen(const CallNode *op) {
     return;
   }
 
+  // L1 -> GM-like (global / workspace): nz2nd
+  if (src_scope == "shared.dyn" && IsGMLikeScope(dst_scope)) {
+    mlir::Value src =
+        GenRankReducedSubviewFromRegion(npuirop.src, npuirop.src_range);
+    mlir::Value dst = GenRankReducedSubviewFromRegion(
+        npuirop.dst, npuirop.dst_range, /*min_rank=*/2);
+    builder.create<mlir::hivm::NZ2NDOp>(builder.getUnknownLoc(),
+                                        mlir::TypeRange{}, src, dst);
+    return;
+  }
+
+  // Default path (UB<->workspace, GM<->workspace, UB<->UB, etc.): memref.copy
   mlir::Value src_sub_view =
       GenRankReducedSubviewFromRegion(npuirop.src, npuirop.src_range);
   mlir::Value dst_sub_view =
@@ -2549,6 +2588,73 @@ mlir::Value CodeGenTileLangNPUIRAPI::GetAndCastIndexOp(const IterVar iv) {
 void CodeGenTileLangNPUIRAPI::VisitStmt_(const AllocateNode *op) {
   ICHECK(!is_zero(op->condition));
   std::string scope = GetPtrStorageScope(op->buffer_var);
+
+  // Workspace: lowered to memref_ext.alloc_workspace (GM-like memref)
+  if (IsWorkspaceScope(scope)) {
+    Array<PrimExpr> extents = op->extents;
+    llvm::SmallVector<int64_t> shape;
+    shape.reserve(extents.size());
+    for (const PrimExpr &e : extents) {
+      if (const auto *imm = e.as<IntImmNode>()) {
+        shape.push_back(static_cast<int64_t>(imm->value));
+      } else {
+        LOG(FATAL) << "workspace allocation only supports static shapes";
+      }
+    }
+    auto elemTy = DTypetoMLIRType(op->dtype);
+    auto memrefType = mlir::MemRefType::get(shape, elemTy);
+    int multi_buffer = 0;
+    auto pos = scope.find(";multi_buffer=");
+    if (pos != std::string::npos) {
+      multi_buffer = std::stoi(scope.substr(pos + 14));
+    }
+    auto allocOp = builder.create<bishengir::memref_ext::AllocWorkspaceOp>(
+        builder.getUnknownLoc(), memrefType,
+        /*workspaceArg=*/mlir::Value(),
+        /*dynamicSize=*/mlir::ValueRange{},
+        /*offset=*/mlir::ValueRange{});
+    mlir::Value alloc_val = allocOp.getMemref();
+    if (multi_buffer > 0) {
+      auto markOp = builder.create<mlir::annotation::MarkOp>(
+          builder.getUnknownLoc(), alloc_val);
+      markOp->setAttr("hivm.multi_buffer",
+                      builder.getI32IntegerAttr(multi_buffer));
+    }
+    ICHECK(!var_map_.count(op->buffer_var.get()));
+    var_map_[op->buffer_var.get()] = alloc_val;
+    this->VisitStmt(op->body);
+    return;
+  }
+
+  // Pure-copy buffers: shared.flat and local.fragment
+  // Emit pure memref.alloc without address space, independent of core type
+  if (scope.find("shared.flat") == 0 || scope.find("local.fragment") == 0) {
+    std::vector<long int> shape = GetShape(op->extents);
+    std::vector<int64_t> strides = GetStrideFromShapeAPI(op->extents);
+    auto layoutMap =
+        mlir::StridedLayoutAttr::get(builder.getContext(), 0, strides);
+    auto memrefType = mlir::MemRefType::get(shape, DTypetoMLIRType(op->dtype),
+                                            layoutMap, mlir::Attribute());
+    int multi_buffer = 0;
+    auto pos = scope.find(";multi_buffer=");
+    if (pos != std::string::npos) {
+      multi_buffer = std::stoi(scope.substr(pos + 14));
+    }
+    auto allocOp = builder.create<mlir::memref::AllocOp>(
+        builder.getUnknownLoc(), memrefType);
+    mlir::Value alloc_val = allocOp.getResult();
+    if (multi_buffer > 0) {
+      auto markOp = builder.create<mlir::annotation::MarkOp>(
+          builder.getUnknownLoc(), alloc_val);
+      markOp->setAttr("hivm.multi_buffer",
+                      builder.getI32IntegerAttr(multi_buffer));
+    }
+    ICHECK(!var_map_.count(op->buffer_var.get()));
+    var_map_[op->buffer_var.get()] = alloc_val;
+    this->VisitStmt(op->body);
+    return;
+  }
+
   std::map<std::string, NPU_CORETYPE> scope_coretype_map{
       {"shared", NPU_CORETYPE::AIV},
       {"shared.dyn", NPU_CORETYPE::AIC},
@@ -2562,7 +2668,6 @@ void CodeGenTileLangNPUIRAPI::VisitStmt_(const AllocateNode *op) {
     mlir::hivm::AddressSpace address_space = GetHIVMAddressSpace(scope);
     auto memorySpaceHIVMAttr =
         mlir::hivm::AddressSpaceAttr::get(builder.getContext(), address_space);
-
     auto memrefType = mlir::MemRefType::get(shape, DTypetoMLIRType(op->dtype),
                                             layoutMap, memorySpaceHIVMAttr);
 

@@ -43,10 +43,23 @@
 #include "bishengir/Dialect/HIVM/IR/HIVM.h"
 
 //===----------------------------------------------------------------------===//
+// Annotation Dialect
+//===----------------------------------------------------------------------===//
+
+#include "bishengir/Dialect/Annotation/IR/Annotation.h"
+
+//===----------------------------------------------------------------------===//
 // HFusion Dialect
 //===----------------------------------------------------------------------===//
 
 #include "bishengir/Dialect/HFusion/IR/HFusion.h"
+
+//===----------------------------------------------------------------------===//
+// MemRefExt Dialect (workspace alloc)
+//===----------------------------------------------------------------------===//
+
+#include "bishengir/Dialect/MemRefExt/IR/MemRefExt.h"
+
 #include "tvm/ir/attrs.h"
 #include "tvm/ir/expr.h"
 #include "tvm/runtime/data_type.h"

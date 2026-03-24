@@ -40,6 +40,7 @@ from .allocate import (
     alloc_shared,  # noqa: F401
     alloc_fragment,  # noqa: F401
     alloc_var,  # noqa: F401
+    alloc_workspace,  # noqa: F401
     alloc_L0A,  # noqa: F401
     alloc_L0B,  # noqa: F401
     alloc_L0C,  # noqa: F401
