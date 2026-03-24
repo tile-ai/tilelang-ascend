@@ -642,10 +642,12 @@ CATLASS_DEVICE void ClampMin(const LocalTensor<T> &dst,
 }
 
 template <typename T>
-CATLASS_DEVICE void Clamp(const LocalTensor<T> &dst, const LocalTensor<T> &buffer, const LocalTensor<uint8_t> &tmp,
-  const T minScalarValue, const T maxScalarValue, const int32_t count) {
-    AscendC::ClampMin<T>(dst, buffer, tmp, minScalarValue, count);
-    AscendC::ClampMax<T>(dst, dst, tmp, maxScalarValue, count);
+CATLASS_DEVICE void
+Clamp(const LocalTensor<T> &dst, const LocalTensor<T> &buffer,
+      const LocalTensor<uint8_t> &tmp, const T minScalarValue,
+      const T maxScalarValue, const int32_t count) {
+  AscendC::ClampMin<T>(dst, buffer, tmp, minScalarValue, count);
+  AscendC::ClampMax<T>(dst, dst, tmp, maxScalarValue, count);
 }
 
 template <typename T, typename U>
