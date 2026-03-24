@@ -1,6 +1,7 @@
+from __future__ import annotations
 import tilelang.language as T
 from tvm.tir import PrimExpr, Buffer, BufferRegion, Var
-from typing import List, Union, Literal
+from typing import Union, Literal  # noqa: F401, UP035
 from tvm import tir
 
 
@@ -27,7 +28,7 @@ def _dtype(buf):
     return type_map[buf.dtype]
 
 
-def _legalize_arguments(arg: Union[Buffer, Var]):
+def _legalize_arguments(arg: Buffer | Var):
     """Convert let-bound variables to their corresponding buffers.
 
     Args:
@@ -41,7 +42,7 @@ def _legalize_arguments(arg: Union[Buffer, Var]):
     return arg
 
 
-def _retrieve_shape(object: Union[Buffer, BufferRegion]) -> List[int]:
+def _retrieve_shape(object: Buffer | BufferRegion) -> list[int]:
     """
     Retrieves the shape of a Buffer or a BufferRegion.
 
@@ -73,7 +74,7 @@ def _retrieve_shape(object: Union[Buffer, BufferRegion]) -> List[int]:
 
 
 def _retrieve_ptr(
-    object: Union[Buffer, BufferRegion], access_type: str = "r"
+    object: Buffer | BufferRegion, access_type: str = "r"
 ) -> PrimExpr:
     """
     Retrieves the access pointer (handle) for a Buffer or BufferRegion.
@@ -270,7 +271,7 @@ def shmem_put_nbi(dst: Buffer, src: Buffer, nelems: PrimExpr, newPe: PrimExpr):
         src.access_ptr("r"),
         nelems,
         newPe,
-    )                                                  
+    )
 
 
 def shmem_ub_put_nbi(ub: Buffer, dst: Buffer, nelems: PrimExpr, newPe: PrimExpr, strelem: PrimExpr = 0):
@@ -296,7 +297,7 @@ def shmem_ub_put_nbi(ub: Buffer, dst: Buffer, nelems: PrimExpr, newPe: PrimExpr,
         nelems,
         newPe,
         strelem,
-    )                                  
+    )
 
 
 def shmem_get_nbi(dst: Buffer, src: Buffer, nelems: PrimExpr, newPe: PrimExpr):
@@ -321,7 +322,7 @@ def shmem_get_nbi(dst: Buffer, src: Buffer, nelems: PrimExpr, newPe: PrimExpr):
         src.access_ptr("r"),
         nelems,
         newPe,
-    )                         
+    )
 
 
 def shmem_ub_get_nbi(dst: Buffer, src: Buffer, nelems: PrimExpr, newPe: PrimExpr):
@@ -346,7 +347,7 @@ def shmem_ub_get_nbi(dst: Buffer, src: Buffer, nelems: PrimExpr, newPe: PrimExpr
         src.access_ptr("r"),
         nelems,
         newPe,
-    )                             
+    )
 
 
 def gemm_v0(A, B, C, transpose_A=False, transpose_B=False, init=False):
@@ -504,46 +505,46 @@ def set_deq_scale(scale: PrimExpr):
     return T.call_intrin("handle", tir.op.Op.get("tl.ascend_set_deq_scale"), scale)
 
 
-def reduce(buffer: Union[Buffer, BufferRegion], 
-           out: Union[Buffer, BufferRegion], 
-           tmp: Union[Buffer, BufferRegion], 
-           reduce_type: str, 
-           dim: int, 
+def reduce(buffer: Buffer | BufferRegion,
+           out: Buffer | BufferRegion,
+           tmp: Buffer | BufferRegion,
+           reduce_type: str,
+           dim: int,
            real_shape: list[int] = None):
     """Reduce operation supporting both Buffer and BufferRegion."""
     dtype = _dtype(buffer)
-    
+
     def _handle_buffer_region(br: BufferRegion, mask):
         bf = br.buffer
         indices = [x.min for x in br.region]
         offset = bf.offset_of(indices)[0]
         extent = [x.extent for x in br.region]
         return bf.access_ptr(mask, offset=offset), extent
-    
+
     if isinstance(buffer, BufferRegion):
         buffer_ptr, buffer_extent = _handle_buffer_region(buffer, "r")
     else:
         buffer_ptr = buffer.access_ptr("r")
         buffer_extent = buffer.shape
-        
+
     if isinstance(out, BufferRegion):
         out_ptr, _ = _handle_buffer_region(out, "w")
     else:
         out_ptr = out.access_ptr("w")
-    
+
     if isinstance(tmp, BufferRegion):
         tmp_ptr, _ = _handle_buffer_region(tmp, "r")
     else:
         tmp_ptr = tmp.access_ptr("r")
-    
+
     if len(buffer_extent) == 2:
         M = buffer_extent[0] if real_shape[0] == 0 else real_shape[0]
         N = buffer_extent[1] if real_shape[1] == 0 else real_shape[1]
     elif len(buffer_extent) == 3:
-        M = buffer_extent[1] 
-        N = buffer_extent[2] 
+        M = buffer_extent[1]
+        N = buffer_extent[2]
     shape = f"{M}, {N}"
-    
+
     return T.call_intrin(
         "handle",
         tir.op.Op.get("tl.ascend_reduce"),
@@ -554,7 +555,7 @@ def reduce(buffer: Union[Buffer, BufferRegion],
     )
 
 
-def reduce_max(buffer: Buffer, out: Buffer, tmp: Buffer, dim: int, real_shape: list[int]=[0, 0]):
+def reduce_max(buffer: Buffer, out: Buffer, tmp: Buffer, dim: int, real_shape: list[int]=None):
     """Performs a reduction max operation.
 
     Args:
@@ -563,10 +564,12 @@ def reduce_max(buffer: Buffer, out: Buffer, tmp: Buffer, dim: int, real_shape: l
         tmp: The temporary buffer.
         dim: The dimension to reduce along (-1 for last dim).
     """
+    if real_shape is None:
+        real_shape = [0, 0]
     return reduce(buffer, out, tmp, "reduce_max", dim, real_shape)
 
 
-def reduce_min(buffer: Buffer, out: Buffer, tmp: Buffer, dim: int, real_shape: list[int]=[0, 0]):
+def reduce_min(buffer: Buffer, out: Buffer, tmp: Buffer, dim: int, real_shape: list[int]=None):
     """Performs a reduction min operation.
 
     Args:
@@ -575,10 +578,12 @@ def reduce_min(buffer: Buffer, out: Buffer, tmp: Buffer, dim: int, real_shape: l
         tmp: The temporary buffer.
         dim: The dimension to reduce along (-1 for last dim).
     """
+    if real_shape is None:
+        real_shape = [0, 0]
     return reduce(buffer, out, tmp, "reduce_min", dim, real_shape)
 
 
-def reduce_sum(buffer: Buffer, out: Buffer, tmp: Buffer, dim: int, real_shape: list[int]=[0, 0]):
+def reduce_sum(buffer: Buffer, out: Buffer, tmp: Buffer, dim: int, real_shape: list[int]=None):
     """Performs a reduction sum operation.
 
     Args:
@@ -587,4 +592,6 @@ def reduce_sum(buffer: Buffer, out: Buffer, tmp: Buffer, dim: int, real_shape: l
         tmp: The temporary buffer.
         dim: The dimension to reduce along (-1 for last dim).
     """
+    if real_shape is None:
+        real_shape = [0, 0]
     return reduce(buffer, out, tmp, "reduce_sum", dim, real_shape)
