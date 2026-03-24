@@ -308,7 +308,7 @@ void CodeGenTileLangNPUIRDEV::VreduceCodegen(const CallNode *op) {
 
 ```
 if [ -z "$BISHENGIR_PATH" ]; then
-    echo "warring: no --bishengir-path set, bishengir path will be found in environment variable PATH"
+    echo "warning: no --bishengir-path set, bishengir path will be found in environment variable PATH"
     # build bishengir in 3rdparty
     echo "build bishengir in 3rdparty"
     git submodule update --init --recursive 3rdparty/AscendNPU-IR

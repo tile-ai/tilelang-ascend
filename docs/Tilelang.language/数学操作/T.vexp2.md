@@ -38,7 +38,7 @@ input, output, tmpBuffer 三者形状需要一致
 
 ### 2.4 使用方法
 
-以下示例展示了两个形状为(M,N)的输入tensor进行min计算：
+以下示例展示了两个形状为(M,N)的输入tensor进行vexp2计算：
 
 ```python
 import torch

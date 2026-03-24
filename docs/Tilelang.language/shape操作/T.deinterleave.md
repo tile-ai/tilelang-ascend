@@ -21,7 +21,7 @@ T.deinterleave(src, *dsts, channel_nums=2, index_mode="ALL_CHANNELS", size=[])
 | `size`         | `List[int]` | `[]`             | 源张量参与运算区域形状        |
 
 约束：
-- `src` 和 `dst` 应具有相同的数据类型
+- `src` 和 `*dsts` 应具有相同的数据类型
 - `src` 的最后一维必须能被 `channel_nums` 整除
 - `index_mode` 参数候选列表如下： `"CHANNEL_0", "CHANNEL_1", "ALL_CHANNELS"`
 
