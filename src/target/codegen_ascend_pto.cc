@@ -976,7 +976,7 @@ void CodeGenTileLangAscendPto::CallExternCodegen(const CallNode *op) {
           PrimExpr simplified_k = analyzer.Simplify(buffer_k);
           auto addr = l_valid_shapes[3];
           auto type_len = GetTypeLen(l_valid_shapes[0]);
-          this->stream << ", " << addr << " + " << dst_offset << " * " << type_len << ", " << PrintExpr(op->args[4]) << ", " << PrintExpr(op->args[5])
+          this->stream << ", " << addr << " + " << dst_offset << " * " << type_len << ", " << PrintExpr(op->args[6]) << ", " << PrintExpr(op->args[7])
                        << ");\n";
           prefetch_n_stages_map_[dst_var_id].second++;
         } else {
@@ -986,7 +986,7 @@ void CodeGenTileLangAscendPto::CallExternCodegen(const CallNode *op) {
           } else {
             auto addr = l_valid_shapes[3];
             auto type_len = GetTypeLen(l_valid_shapes[0]);
-            this->stream << ", " << addr << " + " << dst_offset << " * " << type_len << ", " << PrintExpr(op->args[4]) << ", " << PrintExpr(op->args[5])
+            this->stream << ", " << addr << " + " << dst_offset << " * " << type_len << ", " << PrintExpr(op->args[6]) << ", " << PrintExpr(op->args[7])
                        << ");\n";
           }
         }
@@ -1113,7 +1113,7 @@ void CodeGenTileLangAscendPto::CallExternCodegen(const CallNode *op) {
         } else {
           auto addr = l_valid_shapes[3];
           auto type_len = GetTypeLen(l_valid_shapes[0]);
-          this->stream << ", " << addr << " + " << src_offset << " * " << type_len << ", " << PrintExpr(op->args[4]) << ", " << PrintExpr(op->args[5])
+          this->stream << ", " << addr << " + " << src_offset << " * " << type_len << ", " << PrintExpr(op->args[6]) << ", " << PrintExpr(op->args[7])
                        << ");\n";
         }
       }

@@ -1907,7 +1907,7 @@ void CodeGenTileLangAscend::CopyCodegen(const CallNode *op) {
   auto dst_type = op->args[2].as<CallNode>()->args[0].as<CallNode>()->dtype;
 
   static const std::unordered_map<std::string, int> kCopyOpExtraArgs = {
-      {"copy_l0c_to_gm", 3}, {"copy_gm_to_l1", 3}, {"copy_l1_to_l0a", 2},
+      {"copy_l0c_to_gm", 1}, {"copy_gm_to_l1", 1}, {"copy_l1_to_l0a", 2},
       {"copy_l1_to_l0b", 2}, {"copy_gm_to_ub", 1}, {"copy_ub_to_gm", 1},
       {"copy_ub_to_ub", 0}
   };
@@ -1930,6 +1930,9 @@ void CodeGenTileLangAscend::CopyCodegen(const CallNode *op) {
 
     for (int i = 0; i < extra_args; ++i) {
       this->stream << ", " << PrintExpr(op->args[3 + i]);
+    }
+    if (op_name.find("copy_gm_to_l1") != std::string::npos || op_name.find("copy_l0c_to_gm") != std::string::npos) {
+      this->stream << ", " << PrintExpr(op->args[6]) << ", " << PrintExpr(op->args[7]);
     }
 
     this->stream << ");\n";
