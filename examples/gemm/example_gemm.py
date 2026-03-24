@@ -19,8 +19,8 @@ K = args.k
 
 @tilelang.jit(out_idx=[-1])
 def matmul(M, N, K, block_M, block_N, K_L1, dtype="float16", accum_dtype="float"):
-    m_num = T.ceildiv(M, block_M)
-    n_num = T.ceildiv(N, block_N)
+    m_num = M // block_M
+    n_num = N // block_N
 
     @T.prim_func
     def main(
