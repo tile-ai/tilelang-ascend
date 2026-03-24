@@ -3072,6 +3072,9 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
             stream << ", " << shape[i];
           }
           stream << "> " << vid << "[" << bufferNum << "];\n";
+          if (l_data[3].empty()) {
+            l_data[3] = PrintExpr(target_expr);
+          }
           for (size_t j = 0; j < bufferNum; j++) {
             this->PrintIndent();
             stream << "TASSIGN(" << vid << "[" << j << "], "
@@ -3242,6 +3245,9 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
           }
           for (size_t i = 0; i < shape.size(); i++) {
             stream << ", " << shape[i];
+          }
+          if (l_data[3].empty()) {
+            l_data[3] = PrintExpr(address_offset_[String(pos)]);
           }
           stream << "> " << vid << "[" << bufferNum << "];\n";
           for (size_t j = 0; j < bufferNum; j++) {
