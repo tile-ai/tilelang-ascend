@@ -4,20 +4,37 @@
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOG_DIR="$SKILL_DIR/logs"
 LOG_FILE="$LOG_DIR/git_pull.log"
-# tilelang-ascend工作目录
-WORK_DIR="/mnt/workspace/tilelang-ascend"
+# 项目根目录（SKILL目录的父目录的父目录）
+PROJECT_DIR="$(dirname "$(dirname "$(dirname "$SKILL_DIR")")")"
 
 # 创建日志目录
 mkdir -p "$LOG_DIR"
 
-cd "$WORK_DIR" || exit 1
+# 配置 git 镜像源
+echo "配置 git 镜像源..." | tee -a "$LOG_FILE"
+git config --global url."https://ghfast.top/https://github.com/".insteadOf "https://github.com/" 2>&1 | tee -a "$LOG_FILE"
+
+cd "$PROJECT_DIR" || exit 1
+
+# 记录脚本开始时间（用于10小时超时检查）
+START_TIME=$(date +%s)
+MAX_RUNTIME_SECONDS=36000
 
 while true; do
+    # 检查运行时间是否超过10小时
+    CURRENT_TIME=$(date +%s)
+    RUNTIME=$((CURRENT_TIME - START_TIME))
+    if [ "$RUNTIME" -ge "$MAX_RUNTIME_SECONDS" ]; then
+        echo "========================================" | tee -a "$LOG_FILE"
+        echo "⚠ 脚本运行超过10小时，自动停止: $(date '+%Y-%m-%d %H:%M:%S')" | tee -a "$LOG_FILE"
+        echo "已运行时间: $((RUNTIME / 3600))小时 $((RUNTIME % 3600 / 60))分钟" | tee -a "$LOG_FILE"
+        exit 0
+    fi
     echo "========================================" | tee -a "$LOG_FILE"
     echo "开始拉取: $(date '+%Y-%m-%d %H:%M:%S')" | tee -a "$LOG_FILE"
     
-    # 同时执行两个命令
-    echo "同时执行两个命令..." | tee -a "$LOG_FILE"
+    # 执行两个命令
+    echo "执行两个命令..." | tee -a "$LOG_FILE"
     
     # 命令1: git submodule update --init --recursive
     TMP_FILE1=$(mktemp)
