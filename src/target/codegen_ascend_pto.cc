@@ -62,8 +62,8 @@ static std::string getType(const DataType &dtype) {
   return "";
 }
 
-int32_t GetTypeLen(std::string type) {
-  int32_t typeSize = 1;
+int8_t GetTypeLen(std::string type) {
+  int8_t typeSize = 1;
   if (type == "float") {
     typeSize = 4;
   } else if (type == "bfloat16_t") {
