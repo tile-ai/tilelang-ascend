@@ -670,8 +670,6 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op,
     this->stream << "break;\n";
   } else if (op->op.same_as(tl::ascend_gemm_v0())) {
     GemmV0Codegen(op);
-  } else if (op->op.same_as(tl::ascend_gemm_v1())) {
-    GemmV1Codegen(op);
   } else if (op->op.same_as(tl::ascend_fill())) {
     FillCodegen(op);
   } else if (op->op.same_as(tl::ascend_exp())) {
