@@ -17,7 +17,8 @@ from tilelang.engine.phase import (
     LowerAndLegalize,
     OptimizeForTarget,
 )
-from tilelang.tladapter import transforms, conversion
+from tilelang.tladapter import transforms
+from tilelang.tladapter.utils import Pipeline
 
 
 def is_cpu_device_backend(target: Target):
@@ -252,29 +253,31 @@ def lower(
         if dump_ir:
             print("====== npuir ======")
             print(mlir_str)
-        tladapter_passes = [
-            transforms.mlir.canonicalize(top_down=True),
-            transforms.bishengir.adapt_triton_kernel,
-        ]
-        for i, p in enumerate(tladapter_passes):
-            mlir_str = p(mlir_str)
-            if dump_ir:
-                name = getattr(p, "pass_name", None) or f"pass-{i}"
-                print(f"====== after {name} ======")
-                print(mlir_str)
+        pipeline = Pipeline()
+        pipeline.add(transforms.mlir.canonicalize, top_down=True)
+        pipeline.add(transforms.bishengir.adapt_triton_kernel)
+        if dump_ir:
+            pipeline.enable_ir_printing()
+        mlir_str = pipeline.run(mlir_str)
+        if dump_ir:
+            print("====== final npuir ======")
+            print(mlir_str)
         return mlir_str
 
     host_mod = tir.transform.Filter(_is_host_call)(mod)
     device_mod = tir.transform.Filter(_is_device_call)(mod)
 
-    codegen_mod = device_codegen(
-        device_mod, target) if enable_device_compile else device_codegen_without_compile(
-            device_mod, target)
+    codegen_mod = (
+        device_codegen(device_mod, target)
+        if enable_device_compile
+        else device_codegen_without_compile(device_mod, target)
+    )
 
     if enable_host_codegen:
         host_mod = host_codegen(host_mod, target_host)
         host_mod.import_module(codegen_mod)
         return CompiledArtifact(
-            host_mod, device_mod, params, codegen_mod.get_source(), rt_mod=host_mod)
+            host_mod, device_mod, params, codegen_mod.get_source(), rt_mod=host_mod
+        )
 
     return CompiledArtifact(host_mod, device_mod, params, codegen_mod.get_source())

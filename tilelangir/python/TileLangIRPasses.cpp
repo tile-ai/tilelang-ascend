@@ -1,9 +1,5 @@
 // Copyright (c) Tile-AI Corporation.
 // Licensed under the MIT License.
-//
-// Pybind11 module: TileLangIR create_pass_runner and pass registration.
-// create_pass_runner(pass_name, pass_spec) returns a callable with pass_name
-// for dump. All pass execution goes through create_pass_runner.
 
 #include "tilelangir/InitAllDialects.h"
 #include "tilelangir/InitAllPasses.h"
@@ -22,30 +18,27 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <pybind11/pybind11.h>
+#include <pybind11/stl.h>
 
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace tilelangir {
 namespace python {
 
-static bool tryBuiltinModuleRoot(llvm::StringRef pipelineStr, llvm::StringRef* inner) {
-  pipelineStr = pipelineStr.trim();
-  if (!pipelineStr.consume_front("builtin.module(") || !pipelineStr.consume_back(")"))
-    return false;
-  *inner = pipelineStr.trim();
-  return true;
-}
-
-// Returns (true, result_mlir_str) on success, (false, error_message) on failure.
-static std::pair<bool, std::string> runPassPipeline(llvm::StringRef mlirStr,
-                                                    llvm::StringRef pipelineStr) {
-  mlir::DialectRegistry registry;
+static void populateDialectRegistry(mlir::DialectRegistry &registry) {
   mlir::registerAllDialects(registry);
   mlir::registerAllExtensions(registry);
   bishengir::registerAllDialects(registry);
   bishengir::registerAllExtensions(registry);
   ::tilelangir::registerAllDialects(registry);
+}
+
+static std::pair<bool, std::string>
+runPassPipeline(llvm::StringRef mlirStr, llvm::StringRef innerPipeline) {
+  mlir::DialectRegistry registry;
+  populateDialectRegistry(registry);
 
   mlir::MLIRContext context(registry);
   context.allowUnregisteredDialects();
@@ -57,24 +50,15 @@ static std::pair<bool, std::string> runPassPipeline(llvm::StringRef mlirStr,
     return {false, "Failed to parse MLIR string"};
   }
 
-  llvm::StringRef innerPipeline;
-  if (tryBuiltinModuleRoot(pipelineStr, &innerPipeline)) {
-    mlir::PassManager pm(&context, "builtin.module");
-    if (failed(mlir::parsePassPipeline(innerPipeline, pm, llvm::errs()))) {
-      return {false, "Failed to parse inner pass pipeline: " + innerPipeline.str()};
-    }
-    if (failed(pm.run(*module))) {
-      return {false, "Pass pipeline run failed"};
-    }
-  } else {
-    mlir::PassManager pm(&context);
-    if (failed(mlir::parsePassPipeline(pipelineStr, pm, llvm::errs()))) {
-      return {false, "Failed to parse pass pipeline: " + pipelineStr.str() +
-                         " (pass may not be registered; check .so and registerAllPasses)"};
-    }
-    if (failed(pm.run(*module))) {
-      return {false, "Pass pipeline run failed"};
-    }
+  mlir::PassManager pm(&context, "builtin.module");
+  if (failed(mlir::parsePassPipeline(innerPipeline, pm, llvm::errs()))) {
+    return {
+        false,
+        "Failed to parse pass pipeline: " + innerPipeline.str() +
+            " (pass may not be registered; check .so and registerAllPasses)"};
+  }
+  if (failed(pm.run(*module))) {
+    return {false, "Pass pipeline run failed"};
   }
 
   std::string result;
@@ -84,10 +68,9 @@ static std::pair<bool, std::string> runPassPipeline(llvm::StringRef mlirStr,
   return {true, result};
 }
 
-}  // namespace python
-}  // namespace tilelangir
+} // namespace python
+} // namespace tilelangir
 
-// Register passes when the .so is loaded so create_pass_runner can resolve pass names.
 namespace {
 struct RegisterPassesOnLoad {
   RegisterPassesOnLoad() {
@@ -96,41 +79,116 @@ struct RegisterPassesOnLoad {
     tilelangir::registerAllPasses();
   }
 } registerPassesOnLoad;
-}  // namespace
+} // namespace
 
-/// Creates a pass runner callable with pass_name attached for dump/debug.
-/// Returns a Python callable: fn(mlir_str) -> result_str.
-struct PassRunner {
-  std::string pass_name;
-  std::string pass_spec;
+struct PassPipeline {
+  std::vector<std::string> elements;
+  bool irPrinting = false;
+  std::string irPrintingFileTreeDir;
 
-  PassRunner(std::string name, std::string spec)
-      : pass_name(std::move(name)), pass_spec(std::move(spec)) {}
+  void add(const std::string &pipeline_text) {
+    elements.push_back(pipeline_text);
+  }
 
-  std::string operator()(const std::string& mlir_str) const {
-    auto [ok, out] = tilelangir::python::runPassPipeline(mlir_str, pass_spec);
-    if (!ok) {
-      throw std::runtime_error(out);
+  void enableIRPrinting() { irPrinting = true; }
+
+  void enableIRPrintingToFileTree(const std::string &dir) {
+    irPrintingFileTreeDir = dir;
+  }
+
+  std::string str() const {
+    std::string result;
+    for (size_t i = 0; i < elements.size(); ++i) {
+      if (i > 0)
+        result += ",";
+      result += elements[i];
     }
-    return out;
+    return result;
+  }
+
+  std::string run(const std::string &mlir_str) const {
+    mlir::DialectRegistry registry;
+    tilelangir::python::populateDialectRegistry(registry);
+
+    mlir::MLIRContext context(registry);
+    context.allowUnregisteredDialects();
+    if (irPrinting || !irPrintingFileTreeDir.empty()) {
+      context.disableMultithreading();
+    }
+
+    mlir::ParserConfig config(&context);
+    mlir::OwningOpRef<mlir::ModuleOp> module =
+        mlir::parseSourceString<mlir::ModuleOp>(mlir_str, config, "input.mlir");
+    if (!module) {
+      throw std::runtime_error("Failed to parse MLIR string");
+    }
+
+    mlir::PassManager pm(&context, "builtin.module");
+
+    for (const auto &elem : elements) {
+      if (failed(mlir::parsePassPipeline(elem, pm, llvm::errs()))) {
+        throw std::runtime_error(
+            "Failed to parse pass pipeline element: " + elem +
+            " (pass may not be registered; check .so and registerAllPasses)");
+      }
+    }
+
+    if (irPrinting) {
+      pm.enableIRPrinting(
+          /*shouldPrintBeforePass=*/[](mlir::Pass *,
+                                       mlir::Operation *) { return false; },
+          /*shouldPrintAfterPass=*/
+          [](mlir::Pass *, mlir::Operation *) { return true; },
+          /*printModuleScope=*/true,
+          /*printAfterOnlyOnChange=*/false,
+          /*printAfterOnlyOnFailure=*/false,
+          /*out=*/llvm::errs());
+    }
+
+    if (!irPrintingFileTreeDir.empty()) {
+      pm.enableIRPrintingToFileTree(
+          /*shouldPrintBeforePass=*/[](mlir::Pass *,
+                                       mlir::Operation *) { return false; },
+          /*shouldPrintAfterPass=*/
+          [](mlir::Pass *, mlir::Operation *) { return true; },
+          /*printModuleScope=*/true,
+          /*printAfterOnlyOnChange=*/false,
+          /*printAfterOnlyOnFailure=*/false,
+          /*printTreeDir=*/irPrintingFileTreeDir);
+    }
+
+    if (failed(pm.run(*module))) {
+      throw std::runtime_error("Pass pipeline run failed");
+    }
+
+    std::string result;
+    llvm::raw_string_ostream os(result);
+    module->print(os, mlir::OpPrintingFlags().useLocalScope());
+    os.flush();
+    return result;
   }
 };
 
 PYBIND11_MODULE(tilelangir, m) {
-  m.doc() = "TileLangIR: create_pass_runner(pass_name, pass_spec)";
+  m.doc() = "TileLangIR pass execution: PassPipeline";
 
-  pybind11::class_<PassRunner>(m, "PassRunner",
-                               "Callable pass runner with pass_name for dump.")
-      .def(pybind11::init<std::string, std::string>(),
-           pybind11::arg("pass_name"), pybind11::arg("pass_spec"))
-      .def_readonly("pass_name", &PassRunner::pass_name)
-      .def("__call__", &PassRunner::operator(), pybind11::arg("mlir_str"));
-
-  m.def(
-      "create_pass_runner",
-      [](const std::string& pass_name, const std::string& pass_spec) {
-        return pybind11::cast(PassRunner(pass_name, pass_spec));
-      },
-      pybind11::arg("pass_name"), pybind11::arg("pass_spec"),
-      "Create a pass runner callable. The returned callable has a pass_name attribute for dump.");
+  pybind11::class_<PassPipeline>(
+      m, "PassPipeline",
+      "Batched pass pipeline. add() elements using MLIR textual pipeline "
+      "format, then run() once for a single parse/serialize cycle.")
+      .def(pybind11::init<>())
+      .def("add", &PassPipeline::add, pybind11::arg("pipeline_text"),
+           "Add a textual pipeline element.")
+      .def("enable_ir_printing", &PassPipeline::enableIRPrinting,
+           "Enable per-pass IR printing to stderr after each pass.")
+      .def("enable_ir_printing_to_file_tree",
+           &PassPipeline::enableIRPrintingToFileTree,
+           pybind11::arg("dir") = ".pass_manager_output",
+           "Enable per-pass IR printing to a directory tree.")
+      .def("run", &PassPipeline::run, pybind11::arg("mlir_str"),
+           "Execute all passes on the MLIR string. Returns result MLIR string.")
+      .def("__str__", &PassPipeline::str)
+      .def("__repr__", [](const PassPipeline &self) {
+        return "PassPipeline(\"" + self.str() + "\")";
+      });
 }
