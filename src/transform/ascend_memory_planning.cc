@@ -47,11 +47,16 @@ public:
       return f;
     }
 
-    AscendMemoryPlanner planner(f);
-    auto address_map = planner.GetAddressMap();
-
     PrimFuncNode *fptr = f.CopyOnWrite();
     auto fn_attr = fptr->attrs.CopyOnWrite();
+
+    Map<Var, PrimExpr> external_address_map;
+    if (fn_attr->dict.count("address_map")) {
+      external_address_map = fn_attr->dict.at("address_map").as<Map<Var, PrimExpr>>().value();
+    }
+
+    AscendMemoryPlanner planner(f, external_address_map);
+    auto address_map = planner.GetAddressMap();
 
     Map<Var, PrimExpr> address_map_attr;
     for (const auto& kv : address_map) {
@@ -65,7 +70,7 @@ public:
 private:
   class AscendMemoryPlanner : public StmtExprVisitor {
   public:
-    explicit AscendMemoryPlanner(const PrimFunc& func) 
+    explicit AscendMemoryPlanner(const PrimFunc& func, Map<Var, PrimExpr> external_address_map)  
     {
       memory_limits_ = {
         {"shared.dyn", 524032},
@@ -74,6 +79,8 @@ private:
         {"wmma.accumulator", 131072},
         {"shared", 196352}
       };
+
+      SetPreAllocBuffer(external_address_map);
       
       operator()(func->body);
       PlanMemory();
@@ -253,6 +260,14 @@ private:
     void VisitStmt_(const WhileNode* op) final { VisitNewScope(op); }
     void VisitStmt_(const AssertStmtNode* op) final { VisitNewScope(op); }
 
+    void SetPreAllocBuffer(Map<Var, PrimExpr> external_address_map) {
+      for (const auto& kv : external_address_map) {
+        const VarNode* buf = kv.first.get();
+        int64_t addr_offset = kv.second.as<IntImmNode>()->value;
+        pre_alloc_buffer_[buf] = addr_offset;
+      }
+    }
+
     void PlanMemory() {
       LivenessAnalysis();
       
@@ -383,9 +398,14 @@ private:
       DLOG(DEBUG) << "Planning memory for scope: " << scope;
 
       std::vector<LiveInterval> intervals;
+      std::unordered_map<const VarNode*, int64_t> pre_alloc_scope_buffer;
       for (const VarNode* buffer : buffers) {
         int64_t start = -1;
         int64_t end = -1;
+
+        if (pre_alloc_buffer_.count(buffer) > 0) {
+          pre_alloc_scope_buffer[buffer] = pre_alloc_buffer_[buffer];
+        };
           
         for (const auto& event_pair : event_map_) {
           const EventEntry& event = event_pair.second;
@@ -427,7 +447,7 @@ private:
                     return a.start < b.start;
                 });
       
-      LinearScanAllocator allocator(memory_limits_[scope]);
+      LinearScanAllocator allocator(memory_limits_[scope], pre_alloc_scope_buffer);
       auto allocations = allocator.allocate(intervals);
       
       for (const auto& alloc : allocations) {
@@ -469,11 +489,16 @@ private:
     
     class LinearScanAllocator {
     public:
-      LinearScanAllocator(size_t memory_limit)
-          : memory_limit_(memory_limit), next_new_offset_(0) {}
+      LinearScanAllocator(size_t memory_limit,
+                          const std::unordered_map<const VarNode*, int64_t>& pre_alloc_buffer)
+          : memory_limit_(memory_limit),
+            next_new_offset_(0), 
+            pre_alloc_buffer_(pre_alloc_buffer) {}
       
       std::vector<Allocation> allocate(std::vector<LiveInterval>& intervals) {
         std::vector<Allocation> allocations;
+
+        for (auto& interval : intervals) buffer_map_[interval.buffer] = &interval;
         
         std::sort(intervals.begin(), intervals.end(),
                   [](const LiveInterval& a, const LiveInterval& b) {
@@ -516,24 +541,50 @@ private:
           
           size_t allocated_offset;
           bool is_reused = false;
-          
-          size_t new_memory_offset = alignUp(next_new_offset_, 32);
-          if (new_memory_offset + interval.size <= memory_limit_) {
-            allocated_offset = new_memory_offset;
-            next_new_offset_ = new_memory_offset + interval.size;
-            DLOG(DEBUG) << "  Allocated NEW memory at offset: " << allocated_offset;
-          } else {
-            allocated_offset = findReusableBlock(interval.size, free_blocks);
-            if (allocated_offset != static_cast<size_t>(-1)) {
-                is_reused = true;
-                DLOG(DEBUG) << "  REUSED memory at offset: " << allocated_offset;
-            } else {
-                LOG(FATAL) << "Memory allocation failed for: " 
-                            << interval.buffer->name_hint
-                            << " required: " << interval.size
-                            << ", new memory available: " << (memory_limit_ - next_new_offset_);
-                continue;
+
+          auto pre_it = pre_alloc_buffer_.find(interval.buffer);
+          if (pre_it != pre_alloc_buffer_.end()) {
+            allocated_offset = alignUp(static_cast<size_t>(pre_it->second), 32);
+            size_t allocated_end = allocated_offset + interval.size;
+            
+            for (const auto& active : active_allocations) {
+              if (allocated_offset < active.offset + active.size && 
+                  active.offset < allocated_offset + interval.size) {
+                    LOG(FATAL) << "Memory allocation failed for: "
+                    << pre_it->first->name_hint
+                    << " memory allocate conflict with: "
+                    <<interval.buffer->name_hint
+                    << " at " << allocated_offset;
+                    continue;
+              }
             }
+
+            if (allocated_offset > next_new_offset_) {
+              free_blocks.emplace_back(next_new_offset_, allocated_offset - next_new_offset_);
+            }
+
+            if (allocated_end > next_new_offset_) {
+              next_new_offset_ = allocated_end;
+            }
+
+          } else {
+              size_t new_memory_offset = alignUp(next_new_offset_, 32);
+              if (new_memory_offset + interval.size <= memory_limit_ && 
+                  !CheckConflict(new_memory_offset, interval)) {
+                allocated_offset = new_memory_offset;
+                next_new_offset_ = new_memory_offset + interval.size;
+              } else {
+                  allocated_offset = findReusableBlock(interval, free_blocks);
+                  if (allocated_offset != static_cast<size_t>(-1)) {
+                    is_reused = true;
+                    DLOG(DEBUG) << "REUSED memory at offset: " << allocated_offset;
+                  } else {
+                      LOG(FATAL) << "Memory allocation failed for: " 
+                      << interval.buffer->name_hint << " required: " << interval.size
+                      << ", new memory available: " << (memory_limit_ - next_new_offset_);
+                      continue;
+                  }
+              }
           }
             
             Allocation alloc{interval.buffer, allocated_offset, interval.size, is_reused};
@@ -557,7 +608,24 @@ private:
       }
         
     private:
-      
+
+      bool CheckConflict(size_t offset, const LiveInterval& current) {
+        for (const auto& kv : pre_alloc_buffer_) {
+          const LiveInterval* pre_interval = buffer_map_.at(kv.first);
+          if (pre_interval->buffer == current.buffer) continue;
+          
+          if (current.start < pre_interval->end && pre_interval->start < current.end) {
+            size_t pre_offset = static_cast<size_t>(kv.second);
+            size_t pre_size = pre_interval->size;
+            if (offset < pre_offset + pre_size && pre_offset < offset + current.size) {
+              DLOG(DEBUG) << "Buffer " << kv.first->name_hint <<" conflict at " << pre_offset;
+              return true; 
+            }
+          }
+        }
+        return false;
+      }
+
       void mergeFreeBlocks(std::vector<std::pair<size_t, size_t>>& free_blocks) {
         if (free_blocks.empty()) return;
         
@@ -581,17 +649,18 @@ private:
         free_blocks = std::move(merged);
       }
       
-      size_t findReusableBlock(size_t required_size, 
+      size_t findReusableBlock(const LiveInterval& current, 
                                 std::vector<std::pair<size_t, size_t>>& free_blocks) {
           
         std::sort(free_blocks.begin(), free_blocks.end());
           
         for (const auto& block : free_blocks) {
-          if (block.second >= required_size) {
+          if (block.second >= current.size) {
             size_t aligned_offset = alignUp(block.first, 32);
             size_t available_after_align = block.second - (aligned_offset - block.first);
             
-            if (available_after_align >= required_size) {
+            if (available_after_align >= current.size && 
+                !CheckConflict(aligned_offset, current)) {
               return aligned_offset;
             }
           }
@@ -601,11 +670,12 @@ private:
         if ((last_block.first + last_block.second) == next_new_offset_) {
           next_new_offset_ = memory_limit_;
           last_block.second = memory_limit_ - last_block.first;
-          if (last_block.second >= required_size) {
+          if (last_block.second >= current.size) {
             size_t aligned_offset = alignUp(last_block.first, 32);
             size_t available_after_align = last_block.second - (aligned_offset - last_block.first);
 
-            if (available_after_align >= required_size) {
+            if (available_after_align >= current.size &&
+                !CheckConflict(aligned_offset, current)) {
               return aligned_offset;
             }
           }
@@ -647,14 +717,16 @@ private:
       size_t memory_limit_;
       bool verbose_;
       size_t next_new_offset_;
+      const std::unordered_map<const VarNode*, int64_t>& pre_alloc_buffer_;
+      std::unordered_map<const VarNode*, const LiveInterval*> buffer_map_;
     };
 
     size_t CalculateBufferSize(const AllocateNode* alloc) {
       size_t size_elements = 1;
       for (const auto& extent : alloc->extents) {
-        if (const IntImmNode* int_imm = extent.as<IntImmNode>()) {
-          size_elements *= int_imm->value;
-        }
+        const IntImmNode* int_imm = extent.as<IntImmNode>();
+        ICHECK(int_imm) << "Extent must be an integer constant";
+        size_elements *= int_imm->value;
       }
       
       size_t size_bytes = size_elements * alloc->dtype.bytes() * alloc->dtype.lanes();
@@ -671,10 +743,7 @@ private:
 
     bool IsNPUSharedMemory(Var buffer_var) {
       std::string scope = GetPtrStorageScope(buffer_var);
-      if (memory_limits_.count(scope) > 0) {
-        return true;
-      }
-      return false;
+      return memory_limits_.count(scope) > 0;
     }
 
     std::unordered_map<const VarNode*, AllocEntry> alloc_info_;
@@ -685,6 +754,7 @@ private:
     std::unordered_map<std::string, int> memory_limits_;
     std::unordered_map<const Object*, StmtAttr> stmt_attrs_;
     std::unordered_map<const Object*, EventEntry> event_map_;
+    std::unordered_map<const VarNode*, int64_t> pre_alloc_buffer_;
     std::vector<StmtEntry> linear_seq_;
     std::vector<StmtEntry> scope_;
     
