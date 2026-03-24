@@ -525,17 +525,16 @@ private:
         std::unordered_set<int> split_indices_V(split_points_V.begin(), split_points_V.end());
         std::unordered_set<const StmtNode*> processed_stmts;
         for (const auto& stmt_info : all_statements_C_) {
-            if (processed_stmts.count(stmt_info.stmt.get())) {
-                continue;
-            }
-            processed_stmts.insert(stmt_info.stmt.get());
-            current_stage.statements.push_back(stmt_info);
-            for (const auto& buffer : stmt_info.used_buffers) {
-                current_stage.used_buffers.insert(buffer);
-            }
-            if (split_indices_C.find(stmt_info.idx) != split_indices_C.end()) {
-                stages.push_back(current_stage);
-                current_stage = StageInfo();
+            if (!processed_stmts.count(stmt_info.stmt.get())) {
+                processed_stmts.insert(stmt_info.stmt.get());
+                current_stage.statements.push_back(stmt_info);
+                for (const auto& buffer : stmt_info.used_buffers) {
+                    current_stage.used_buffers.insert(buffer);
+                }
+                if (split_indices_C.find(stmt_info.idx) != split_indices_C.end()) {
+                    stages.push_back(current_stage);
+                    current_stage = StageInfo();
+                }
             }
         }
         if (!current_stage.statements.empty()) {
