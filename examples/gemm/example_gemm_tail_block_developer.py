@@ -6,17 +6,6 @@ import torch
 
 tilelang.cache.clear_cache()
 
-parser = argparse.ArgumentParser(description="NPU Kernel Compilation")
-parser.add_argument("--m", type=int, default=1024, help="Matrix M dimension")
-parser.add_argument("--n", type=int, default=1024, help="Matrix N dimension")
-parser.add_argument("--k", type=int, default=1024, help="Matrix K dimension")
-args = parser.parse_args()
-
-M = args.m
-N = args.n
-K = args.k
-
-
 @tilelang.jit(out_idx=[-1])
 def matmul(M, N, K, block_M, block_N, K_L1, dtype="float16", accum_dtype="float"):
     m_num = T.ceildiv(M, block_M)
@@ -52,19 +41,27 @@ def matmul(M, N, K, block_M, block_N, K_L1, dtype="float16", accum_dtype="float"
 
     return main
 
-
-func = matmul(M, N, K, 128, 256, 64)
-
 torch.manual_seed(0)
+test_configs = [
+    (32 * 3 + 30, 32 * 2 + 16, 32 * 4 + 31, 32, 32, 32),
+    (512 + 64, 512, 512, 128, 128, 128),
+    (512, 512 + 64, 512, 128, 128, 128),
+    (512, 512, 512 + 64, 128, 128, 128),
+    (512 + 64, 512 + 64, 512, 128, 128, 128),
+    (512 + 64, 512, 512 + 64, 128, 128, 128),
+    (512, 512 + 64, 512 + 64, 128, 128, 128),
+    (512 + 64, 512 + 64, 512 + 64, 128, 128, 128),
+]
 
-a = torch.randn(M, K).half().npu()
-b = torch.randn(K, N).half().npu()
-c = torch.empty(M, N).half().npu()
-print("init successful!")
-
-c = func(a, b)
-
-ref_c = a @ b
-
-torch.testing.assert_close(c, ref_c, rtol=1e-2, atol=1e-2)
+for M, N, K, block_M, block_N, block_K in test_configs:
+    func = matmul(M, N, K, block_M, block_N, block_K)
+    print("init successful!")
+    a = torch.randn(M, K).half().npu()
+    b = torch.randn(K, N).half().npu()
+    c = torch.empty(M, N).half().npu()
+    c = func(a, b)
+    ref_c = a @ b
+    torch.testing.assert_close(c, ref_c, rtol=1e-2, atol=1e-2)
+    print("Test passed!")
 print("Kernel Output Match!")
+
