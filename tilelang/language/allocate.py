@@ -19,13 +19,14 @@ with the appropriate memory scope.
 from tvm.script import tir as T
 
 
-def alloc_shared(shape, dtype, scope="shared.dyn"):
+def alloc_shared(shape, dtype, scope="shared.flat", multi_buffer=None):
     """Allocate a shared memory buffer for inter-thread communication.
 
     Args:
         shape (tuple): The shape of the buffer to allocate
         dtype (str): The data type of the buffer (e.g., 'float32', 'int32')
-        scope (str, optional): The memory scope. Defaults to "shared.dyn"
+        scope (str, optional): The memory scope. Defaults to "shared.flat"
+        multi_buffer (int, optional): The number of multi-buffering stages. Defaults to None.
 
     Returns:
         T.Buffer: A TVM buffer object allocated in shared memory
@@ -34,6 +35,8 @@ def alloc_shared(shape, dtype, scope="shared.dyn"):
         # lei: This is a hack to handle bool type.
         # Because tilelang's merge smem pass cannot merge bool type currently.
         scope = "shared"
+    if multi_buffer is not None:
+        scope = f"{scope};multi_buffer={multi_buffer}"
     return T.alloc_buffer(shape, dtype, scope=scope)
 
 
@@ -51,17 +54,20 @@ def alloc_local(shape, dtype, scope="local"):
     return T.alloc_buffer(shape, dtype, scope=scope)
 
 
-def alloc_fragment(shape, dtype, scope="local.fragment"):
+def alloc_fragment(shape, dtype, scope="local.fragment", multi_buffer=None):
     """Allocate a fragment memory buffer for specialized operations.
 
     Args:
         shape (tuple): The shape of the buffer to allocate
         dtype (str): The data type of the buffer (e.g., 'float32', 'int32')
         scope (str, optional): The memory scope. Defaults to "local.fragment"
+        multi_buffer (int, optional): The number of multi-buffering stages. Defaults to None.
 
     Returns:
         T.Buffer: A TVM buffer object allocated in fragment memory
     """
+    if multi_buffer is not None:
+        scope = f"{scope};multi_buffer={multi_buffer}"
     return T.alloc_buffer(shape, dtype, scope=scope)
 
 
@@ -76,6 +82,23 @@ def alloc_var(dtype, scope="local.var"):
         T.Buffer: A TVM buffer object allocated as a single-element variable
     """
     return T.alloc_buffer([1], dtype, scope=scope)
+
+
+def alloc_workspace(shape, dtype, scope="global.workspace", multi_buffer=None):
+    """Allocate a workspace memory buffer for global memory that needs explicit memory management.
+
+    Args:
+        shape (tuple): The shape of the buffer to allocate
+        dtype (str): The data type of the buffer (e.g., 'float32', 'int32')
+        scope (str, optional): The memory scope. Defaults to "global.workspace"
+        multi_buffer (int, optional): The number of multi-buffering stages. Defaults to None.
+
+    Returns:
+        T.Buffer: A TVM buffer object allocated in workspace memory
+    """
+    if multi_buffer is not None:
+        scope = f"{scope};multi_buffer={multi_buffer}"
+    return T.alloc_buffer(shape, dtype, scope=scope)
 
 
 """
