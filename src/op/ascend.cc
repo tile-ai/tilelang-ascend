@@ -281,7 +281,8 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
   auto compute_valid_extent = [](PrimExpr min_val, PrimExpr extent,
                                  PrimExpr shape) -> PrimExpr {
     PrimExpr remaining = shape - min_val;
-    return Select(remaining >= extent, extent, remaining);
+    return Select(remaining >= extent, extent,
+                  Select(remaining > 0, remaining, 0));
   };
 
   int src_ndim = src->shape.size();

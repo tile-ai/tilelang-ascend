@@ -29,6 +29,13 @@ using LayoutL1T = layout::nZ;
 
 constexpr int64_t UB_HALF_SIZE = 64;
 
+template <typename T>
+constexpr bool IsDuplicateSupported_v =
+    std::is_same_v<T, int16_t> || std::is_same_v<T, uint16_t> ||
+    std::is_same_v<T, half> || std::is_same_v<T, bfloat16_t> ||
+    std::is_same_v<T, int32_t> || std::is_same_v<T, uint32_t> ||
+    std::is_same_v<T, float>;
+
 template <typename T, uint32_t dstM, uint32_t dstN>
 CATLASS_DEVICE void copy_gm_to_l1(LocalTensor<T> dstTensor,
                                   GlobalTensor<T> srcTensor, uint32_t realSrcN = 1) {
@@ -166,9 +173,12 @@ CATLASS_DEVICE void copy_gm_to_ub(LocalTensor<T> dstTensor,
     isPad = false;
     rightPadding = 0;
   }
-  if (maskShapeM != dstM) {
-    AscendC::Duplicate<T>(dstTensor, padValue, dstM * dstN);
-    PipeBarrier<PIPE_V>();
+  if (maskShapeM != dstM || maskShapeN != dstN) {
+    if constexpr (IsDuplicateSupported_v<T>) {
+      AscendC::Duplicate<T>(dstTensor, padValue, dstM * dstN);
+      SetFlag<HardEvent::V_MTE2>(0);
+      WaitFlag<HardEvent::V_MTE2>(0);
+    }
   }
   AscendC::DataCopyExtParams dataCopyParams(
       maskShapeM, maskShapeN * sizeof(T), (realSrcN - maskShapeN) * sizeof(T),

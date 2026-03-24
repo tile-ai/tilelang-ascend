@@ -864,7 +864,7 @@ void CodeGenTileLangAscendPto::CallExternCodegen(const CallNode *op) {
 
     static const std::unordered_map<std::string, int> kCopyOpExtraArgs = {
         {"copy_l0c_to_gm", 1}, {"copy_gm_to_l1", 1}, {"copy_l1_to_l0a", 3},
-        {"copy_l1_to_l0b", 3}, {"copy_gm_to_ub", 2}, {"copy_ub_to_gm", 2},
+        {"copy_l1_to_l0b", 3}, {"copy_gm_to_ub", 4}, {"copy_ub_to_gm", 3},
         {"copy_ub_to_ub", 0}};
 
     std::unordered_map<std::string, std::string> ptoCopyMap = {
@@ -1018,7 +1018,7 @@ void CodeGenTileLangAscendPto::CallExternCodegen(const CallNode *op) {
           is_chunking = true;
         }
         shape_nums[1] = PrintExpr(op->args[op_arg_len - 1]);
-        if (op_arg_len == 5) {
+        if (op_arg_len == 8 || shape_tile.size() == 1) {
           shape_nums[0] = "1";
         } else if (shape_tile[1] != PrintExpr(op->args[op_arg_len - 2]) &&
                    op_name.find("copy_gm_to_ub") != std::string::npos) { //
@@ -1093,9 +1093,11 @@ void CodeGenTileLangAscendPto::CallExternCodegen(const CallNode *op) {
           } else if (pad_value_str.find("CUDART_INF") != std::string::npos ||
                      pad_value_str.find("+inf") != std::string::npos ||
                      pad_value_str.find("INFINITY") != std::string::npos ||
-                     pad_value_str == "std::numeric_limits<float>::infinity()") {
+                     pad_value_str ==
+                         "std::numeric_limits<float>::infinity()") {
             pad_value_enum = "pto::PadValue::Max";
-          } else if (pad_value_str == "0" || pad_value_str == "0.0" || pad_value_str == "0.0f" ||
+          } else if (pad_value_str == "0" || pad_value_str == "0.0" ||
+                     pad_value_str == "0.0f" ||
                      pad_value_str.find("0.000000e+00") != std::string::npos ||
                      pad_value_str.find("0e+00") != std::string::npos) {
             pad_value_enum = "pto::PadValue::Zero";
@@ -1190,7 +1192,7 @@ void CodeGenTileLangAscendPto::CallExternCodegen(const CallNode *op) {
           is_chunking = true;
         }
         shape_nums[1] = PrintExpr(op->args[op_arg_len - 1]);
-        if (op_arg_len == 5) {
+        if (op_arg_len == 7 || shape_tile.size() == 1) {
           shape_nums[0] = "1";
         } else if (shape_tile[1] != PrintExpr(op->args[op_arg_len - 2]) &&
                    op_name.find("copy_ub_to_gm") != std::string::npos) { //
