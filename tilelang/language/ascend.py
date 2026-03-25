@@ -625,10 +625,6 @@ def reduce(buffer: Union[Buffer, BufferRegion],
         N = buffer_extent[2] 
     shape = f"{M}, {N}"
 
-    buffer = buffer.access_ptr("r")
-    out = out.access_ptr("w")
-    tmp = tmp.access_ptr("r")
-
     return T.call_intrin(
         "handle",
         tir.op.Op.get("tl.ascend_reduce"),
