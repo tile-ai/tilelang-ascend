@@ -81,11 +81,11 @@ private:
   public:
     explicit AscendMemoryPlanner(const PrimFunc &func,
                                  Map<Var, PrimExpr> external_address_map) {
-      memory_limits_ = {{"shared.dyn", 524032},
-                        {"wmma.matrix_a", 65536},
-                        {"wmma.matrix_b", 65536},
-                        {"wmma.accumulator", 131072},
-                        {"shared", 196352}};
+      memory_limits_ = {{"shared.dyn", ASCEND_SHARED_DYN_MEM_SIZE},
+                        {"wmma.matrix_a", ASCEND_WMMA_MATRIX_A_MEM_SIZE},
+                        {"wmma.matrix_b", ASCEND_WMMA_MATRIX_B_MEM_SIZE},
+                        {"wmma.accumulator", ASCEND_WMMA_ACCUMULATOR_MEM_SIZE},
+                        {"shared", ASCEND_SHARED_MEM_SIZE}};
 
       SetPreAllocBuffer(external_address_map);
 
@@ -238,6 +238,7 @@ private:
       StmtExprVisitor::VisitExpr_(op);
     }
 
+    // Cal Scope level and save linear stmt event
     template <typename T> void VisitNewScope(const T *op) {
       scope_.push_back(StmtEntry());
       StmtEntry e;
@@ -542,7 +543,8 @@ private:
                       << "] size=" << interval.size;
 
           while (!active_queue.empty() &&
-                 active_queue.top().end < interval.start) {
+                 active_queue.top().end <
+                     interval.start) { // Free unactivate buffer
             const auto &expired = active_queue.top();
 
             auto it = std::find_if(active_allocations.begin(),
@@ -568,7 +570,7 @@ private:
           bool is_reused = false;
 
           auto pre_it = pre_alloc_buffer_.find(interval.buffer);
-          if (pre_it != pre_alloc_buffer_.end()) {
+          if (pre_it != pre_alloc_buffer_.end()) { // Pre alloc
             allocated_offset = alignUp(static_cast<size_t>(pre_it->second), 32);
             size_t allocated_end = allocated_offset + interval.size;
 
@@ -593,7 +595,7 @@ private:
               next_new_offset_ = allocated_end;
             }
 
-          } else {
+          } else { // Normal Alloc
             size_t new_memory_offset = alignUp(next_new_offset_, 32);
             if (new_memory_offset + interval.size <= memory_limit_ &&
                 !CheckConflict(new_memory_offset, interval)) {
@@ -790,17 +792,26 @@ private:
       return memory_limits_.count(scope) > 0;
     }
 
-    std::unordered_map<const VarNode *, AllocEntry> alloc_info_;
-    std::unordered_map<const VarNode *, int64_t> address_map_;
-    std::unordered_map<const VarNode *, std::string> buffer_scopes_;
-    std::unordered_map<const VarNode *, size_t> buffer_sizes_;
-    std::unordered_map<const VarNode *, size_t> first_use_;
-    std::unordered_map<std::string, int> memory_limits_;
-    std::unordered_map<const Object *, StmtAttr> stmt_attrs_;
-    std::unordered_map<const Object *, EventEntry> event_map_;
-    std::unordered_map<const VarNode *, int64_t> pre_alloc_buffer_;
-    std::vector<StmtEntry> linear_seq_;
-    std::vector<StmtEntry> scope_;
+    std::unordered_map<const VarNode *, AllocEntry>
+        alloc_info_; // buffer allocation and level
+    std::unordered_map<const VarNode *, int64_t>
+        address_map_; // buffer address map
+    std::unordered_map<const VarNode *, std::string>
+        buffer_scopes_; // buffer scope(UB/L1..)
+    std::unordered_map<const VarNode *, size_t>
+        buffer_sizes_; // buffer bytes size
+    std::unordered_map<const VarNode *, size_t>
+        first_use_; // buffer first use stmt scope
+    std::unordered_map<std::string, int>
+        memory_limits_; // buffer scope max limits
+    std::unordered_map<const Object *, StmtAttr>
+        stmt_attrs_; // stmt operation level
+    std::unordered_map<const Object *, EventEntry>
+        event_map_; // stmt gen/kill event
+    std::unordered_map<const VarNode *, int64_t>
+        pre_alloc_buffer_;              // pre alloction buffer address map
+    std::vector<StmtEntry> linear_seq_; // linear stmt node scopes and levels
+    std::vector<StmtEntry> scope_;      // temp stmt node scopes and levels
 
     std::multimap<uint64_t, StorageEntry *> const_free_map_;
     std::list<StorageEntry *> sym_free_list_;
