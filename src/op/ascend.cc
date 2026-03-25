@@ -290,7 +290,15 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
   int dst_ndim = dst->shape.size();
   PrimExpr validRow_src, validCol_src, validRow_dst, validCol_dst;
 
-  if (src_ndim == 2) {
+  if (src_ndim > 2 && config.gm2ub) {
+    validRow_src = compute_valid_extent(src_range[src_ndim - 2]->min,
+                                        src_range[src_ndim - 2]->extent,
+                                        src->shape[src_ndim - 2]);
+    validCol_src = compute_valid_extent(src_range[src_ndim - 1]->min,
+                                        src_range[src_ndim - 1]->extent,
+                                        src->shape[src_ndim - 1]);
+  }
+  else if (src_ndim == 2) {
     validRow_src = compute_valid_extent(src_range[src_ndim - 2]->min,
                                         src_range[src_ndim - 2]->extent,
                                         src->shape[src_ndim - 2]);
@@ -306,7 +314,15 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
     validCol_src = 0;
   }
 
-  if (dst_ndim == 2) {
+  if (dst_ndim > 2 && config.ub2gm) {
+    validRow_dst = compute_valid_extent(dst_range[dst_ndim - 2]->min,
+                                        dst_range[dst_ndim - 2]->extent,
+                                        dst->shape[dst_ndim - 2]);
+    validCol_dst = compute_valid_extent(dst_range[dst_ndim - 1]->min,
+                                        dst_range[dst_ndim - 1]->extent,
+                                        dst->shape[dst_ndim - 1]);
+  }
+  else if (dst_ndim == 2) {
     validRow_dst = compute_valid_extent(dst_range[dst_ndim - 2]->min,
                                         dst_range[dst_ndim - 2]->extent,
                                         dst->shape[dst_ndim - 2]);

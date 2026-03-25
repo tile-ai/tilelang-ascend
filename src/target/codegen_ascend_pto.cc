@@ -1038,7 +1038,9 @@ void CodeGenTileLangAscendPto::CallExternCodegen(const CallNode *op) {
           is_chunking = true;
         }
         shape_nums[1] = PrintExpr(op->args[op_arg_len - 1]);
-        if (op_arg_len == 8 || shape_tile.size() == 1) {
+        if (op_name.find("copy_gm_to_ub") != std::string::npos && shape_tile.size() == 1) {
+          shape_nums[0] = "1";
+        } else if (op_arg_len == 5) {
           shape_nums[0] = "1";
         } else if (shape_tile[1] != PrintExpr(op->args[op_arg_len - 2]) &&
                    op_name.find("copy_gm_to_ub") != std::string::npos) { //
