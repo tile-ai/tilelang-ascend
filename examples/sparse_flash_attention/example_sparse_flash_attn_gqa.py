@@ -292,7 +292,7 @@ def sparse_attention_fwd(
 
                 T.copy(acc_o, acc_o_half)
 
-                T.copy(acc_o_half, Output[b_i, s_i, H0 + vid * v_block:H1 + vid * v_block, :])
+                T.copy(acc_o_half, Output[b_i, s_i, H0 + vid * v_block:H0 + v_block + vid * v_block, :])
 
 
 
@@ -332,7 +332,7 @@ def ref_sparse_attention_fwd_interface_gqa(q,
     v = kv[..., :dim]
 
     b, _, _, dim_v = v.shape
-    
+
     groups = h_q // h_kv
     g_index = h_kv
     h_index = groups

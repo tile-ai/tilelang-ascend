@@ -115,12 +115,12 @@ def sparse_attention_fwd(
                                 T.wait_flag("mte2", "s", loop % db)
                                 T.copy(KV[b_idx, Indices[b_idx, s_idx, g_idx, topk_idx], g_idx, : D], pre_ub[loop % db, (topk_idx - topk_start_idx), :])
                                 T.copy(KV[b_idx, Indices[b_idx, s_idx, g_idx, topk_idx], g_idx, D : ], pre_rope_ub[loop % db, (topk_idx - topk_start_idx), :])
-    
+
                             T.set_flag("mte2", "mte3", loop % db)
                             T.wait_flag("mte2", "mte3", loop % db)
                             T.copy(pre_ub[loop % db, 0, 0], workspace_1[b_idx, s_idx, g_idx, topk_start_idx : topk_start_idx + pre_loop_size, :])
                             T.copy(pre_rope_ub[loop % db, 0, 0], workspace_2[b_idx, s_idx, g_idx, topk_start_idx : topk_start_idx + pre_loop_size, :])
- 
+
             # T.sync_all()
             T.barrier_all()
             with T.Scope("C"):
@@ -341,7 +341,7 @@ def sparse_attention_fwd(
                         # T.barrier_all()
                         T.set_flag("v", "mte3", 1)
                         T.wait_flag("v", "mte3", 1)
-                        T.copy(acc_o_half, Output[b_i, s_i, H0 + vid * v_block:H1 + vid * v_block, :])
+                        T.copy(acc_o_half, Output[b_i, s_i, H0 + vid * v_block:H0 + v_block + vid * v_block, :])
 
                         T.set_cross_flag("MTE3", 8)
 

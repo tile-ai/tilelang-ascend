@@ -289,31 +289,77 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
   int dst_ndim = dst->shape.size();
   PrimExpr validRow_src, validCol_src, validRow_dst, validCol_dst;
 
-  if (src_ndim >= 2) {
-    validRow_src = compute_valid_extent(src_range[src_ndim - 2]->min,
-                                        src_range[src_ndim - 2]->extent,
-                                        src->shape[src_ndim - 2]);
-    validCol_src = compute_valid_extent(src_range[src_ndim - 1]->min,
-                                        src_range[src_ndim - 1]->extent,
-                                        src->shape[src_ndim - 1]);
-  } else if (src_ndim == 1) {
-    validRow_src = Integer(1);
-    validCol_src = compute_valid_extent(src_range[0]->min, src_range[0]->extent,
-                                        src->shape[0]);
-  }
+  // Find indices of active dimensions (extent != 1)
+  auto find_active_dim_indices =
+      [](const Array<PrimExpr> &extents) -> std::vector<int> {
+    std::vector<int> active_indices;
+    for (int i = 0; i < static_cast<int>(extents.size()); ++i) {
+      if (auto *int_imm = extents[i].as<IntImmNode>()) {
+        if (int_imm->value != 1) {
+          active_indices.push_back(i);
+        }
+      } else {
+        // Non-const expression, treat as potentially active
+        active_indices.push_back(i);
+      }
+    }
+    return active_indices;
+  };
 
-  if (dst_ndim >= 2) {
-    validRow_dst = compute_valid_extent(dst_range[dst_ndim - 2]->min,
-                                        dst_range[dst_ndim - 2]->extent,
-                                        dst->shape[dst_ndim - 2]);
-    validCol_dst = compute_valid_extent(dst_range[dst_ndim - 1]->min,
-                                        dst_range[dst_ndim - 1]->extent,
-                                        dst->shape[dst_ndim - 1]);
-  } else if (dst_ndim == 1) {
-    validRow_dst = Integer(1);
-    validCol_dst = compute_valid_extent(dst_range[0]->min, dst_range[0]->extent,
-                                        dst->shape[0]);
-  }
+  // Compute validRow and validCol based on active dimensions
+  // Clamp to ub_shape to ensure we don't exceed destination capacity
+  auto compute_valid_row_col =
+      [&](const std::vector<int> &active_indices, const Array<Range> &range,
+          const Buffer &buffer, int ndim,
+          const Array<PrimExpr> &ub_shape) -> std::pair<PrimExpr, PrimExpr> {
+    PrimExpr validRow, validCol;
+    if (active_indices.size() >= 2) {
+      // Use last two active dimensions as row and col
+      int row_idx = active_indices[active_indices.size() - 2];
+      int col_idx = active_indices.back();
+      validRow = compute_valid_extent(
+          range[row_idx]->min, range[row_idx]->extent, buffer->shape[row_idx]);
+      validCol = compute_valid_extent(
+          range[col_idx]->min, range[col_idx]->extent, buffer->shape[col_idx]);
+    } else if (active_indices.size() == 1) {
+      validRow = Integer(1);
+      int col_idx = active_indices[0];
+      validCol = compute_valid_extent(
+          range[col_idx]->min, range[col_idx]->extent, buffer->shape[col_idx]);
+    } else if (ndim >= 2) {
+      // No active dimensions, fallback to last two dims
+      validRow =
+          compute_valid_extent(range[ndim - 2]->min, range[ndim - 2]->extent,
+                               buffer->shape[ndim - 2]);
+      validCol =
+          compute_valid_extent(range[ndim - 1]->min, range[ndim - 1]->extent,
+                               buffer->shape[ndim - 1]);
+    } else {
+      validRow = Integer(1);
+      validCol = compute_valid_extent(range[0]->min, range[0]->extent,
+                                      buffer->shape[0]);
+    }
+
+    // Clamp to ub_shape capacity using Select
+    if (ub_shape.size() >= 2) {
+      validRow = Select(validRow < ub_shape[ub_shape.size() - 2], validRow,
+                        ub_shape[ub_shape.size() - 2]);
+      validCol = Select(validCol < ub_shape[ub_shape.size() - 1], validCol,
+                        ub_shape[ub_shape.size() - 1]);
+    } else if (ub_shape.size() == 1) {
+      validCol = Select(validCol < ub_shape[0], validCol, ub_shape[0]);
+    }
+
+    return {validRow, validCol};
+  };
+
+  std::vector<int> src_active = find_active_dim_indices(src_extents);
+  std::vector<int> dst_active = find_active_dim_indices(dst_extents);
+
+  std::tie(validRow_src, validCol_src) =
+      compute_valid_row_col(src_active, src_range, src, src_ndim, dst->shape);
+  std::tie(validRow_dst, validCol_dst) =
+      compute_valid_row_col(dst_active, dst_range, dst, dst_ndim, src->shape);
 
   Array<PrimExpr> new_args;
   new_args.push_back(StringImm(ss.str()));

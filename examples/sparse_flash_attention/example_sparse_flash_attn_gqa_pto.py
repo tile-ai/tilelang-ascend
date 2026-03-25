@@ -44,7 +44,7 @@ def sparse_attention_fwd(
     indices_dtype = "int32"
     dtype = "float16"
     accum_dtype = "float"
-    
+
     H_per_block = head_kv if REPLICATE_H == 1 else 64
     v_block = H_per_block // 2
     ub_len = max(32 // (DataType(accum_dtype).bits // 8), v_block)   # UB need 32B align
@@ -259,7 +259,7 @@ def sparse_attention_fwd(
 
                 T.copy(acc_o, acc_o_half)
                 T.barrier_all()
-                T.copy(acc_o_half, Output[b_i, s_i, H0 + vid * v_block:H1 + vid * v_block, :])
+                T.copy(acc_o_half, Output[b_i, s_i, H0 + vid * v_block:H0 + v_block + vid * v_block, :])
 
                 T.barrier_all()
 
@@ -290,7 +290,7 @@ def ref_sparse_attention_fwd_interface_gqa(q,
     v = kv[..., :dim]
 
     b, _, _, dim_v = v.shape
-    
+
     groups = h_q // h_kv
     g_index = h_kv
     h_index = groups

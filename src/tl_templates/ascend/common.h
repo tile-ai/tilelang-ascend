@@ -159,13 +159,10 @@ template <typename T, uint32_t dstN, uint32_t dstM = 1>
 CATLASS_DEVICE void copy_gm_to_ub(LocalTensor<T> dstTensor,
                                   GlobalTensor<T> srcTensor,
                                   uint32_t realSrcN = 1,
-                                  uint32_t maskShapeM = 0,
-                                  uint32_t maskShapeN = 0,
+                                  uint32_t maskShapeM = dstM,
+                                  uint32_t maskShapeN = dstN,
                                   T padValue = T(0)) {
-  if (maskShapeN == 0 || maskShapeM == 0) {
-    maskShapeN = dstN;
-    maskShapeM = dstM;
-  }
+
 
   bool isPad = true;
   uint32_t rightPadding = 1;
@@ -191,13 +188,8 @@ template <typename T, uint32_t srcN, uint32_t srcM = 1>
 CATLASS_DEVICE void copy_ub_to_gm(GlobalTensor<T> dstTensor,
                                   LocalTensor<T> srcTensor,
                                   uint32_t realdstN = 1,
-                                  uint32_t maskShapeM = 0,
-                                  uint32_t maskShapeN = 0) {
-  if (maskShapeN == 0 || maskShapeM == 0) {
-    maskShapeN = srcN;
-    maskShapeM = srcM;
-  }
-
+                                  uint32_t maskShapeM = srcM,
+                                  uint32_t maskShapeN = srcN) {
   AscendC::DataCopyExtParams dataCopyParams(
       maskShapeM, maskShapeN * sizeof(T), (srcN - maskShapeN) * sizeof(T) / 32,
       (realdstN - maskShapeN) * sizeof(T), 0);

@@ -148,7 +148,7 @@ def sparse_attention_fwd(
                     bx = pid % (seq_len * REPLICATE_H)
                     by = pid // (seq_len * REPLICATE_H) % batch
                     bz = pid // (seq_len * REPLICATE_H) // batch % kv_group
-                    
+
                     b_i = by
                     g_i = bz
 
@@ -300,7 +300,7 @@ def sparse_attention_fwd(
 
                         T.copy(acc_o, acc_o_half)
                         T.barrier_all()
-                        T.copy(acc_o_half, Output[b_i, s_i, H0 + vid * v_block:H1 + vid * v_block, :])
+                        T.copy(acc_o_half, Output[b_i, s_i, H0 + vid * v_block:H0 + v_block + vid * v_block, :])
 
                         T.barrier_all()
 
