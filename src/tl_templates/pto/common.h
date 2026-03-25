@@ -327,7 +327,7 @@ AICORE PTO_INLINE void copy_ub_to_gm_dynamic(
     pto::Stride<stride1, stride2, stride3, stride4, stride5>> global_tensor(handle, dynamic_shape, stride);
     constexpr uint8_t len = sizeof(T2);
     constexpr bool use_nd = (static_cast<uint64_t>(ub_shape2) * len) >= 32;
-    if constexpr (std::is_same_v<T1, T2>)
+    if constexpr (std::is_same_v<T1, T2>) {
         if constexpr (use_nd) {
             TileUbDataND<T2, ub_shape1, ub_shape2, pto::DYNAMIC, pto::DYNAMIC> temp_ub(valid_row, valid_col);
             pto::TASSIGN(temp_ub, ub_shape_addr + ub_offset * len);
