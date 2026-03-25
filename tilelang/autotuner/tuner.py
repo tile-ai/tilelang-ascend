@@ -437,8 +437,8 @@ class AutoTuner:
     def _load_result_from_disk(self, key) -> AutotuneResult:
         result = AutotuneResult.load_from_disk(self.cache_dir / key, self.compile_args)
         return result
-
-    def target_fn(self, jit_kernel: tilelang.JitKernel_NPU, warmup: int, rep: int):
+    
+    def target_fn(self, jit_kernel: tilelang.JitKernel_NPU, warmup: int, rep: int, config: dict = None):
         # Unpack the context
         profile_args = self.profile_args
         supply_type = profile_args.supply_type
@@ -456,19 +456,21 @@ class AutoTuner:
         # Factory functions for generating input tensors.
         # This encapsulates the logic of using either a custom supply program (`supply_prog`)
         # or the default profiler input generation (`profiler._get_inputs`).
-        def get_input_tensors_supply(with_output: bool):
+        def get_input_tensors_supply(with_output: bool, config: dict):
             def func():
                 if supply_prog is not None:
-                    return supply_prog(
-                        profiler._get_params(with_output=with_output)
-                    )
+                    fn = supply_prog
+                    params = profiler._get_params(with_output=with_output)
+                    if "config" in inspect.signature(fn).parameters:
+                        return fn(params, config)
+                    else:
+                        return fn(params)
                 else:
                     return profiler._get_inputs(with_output=with_output)
 
             return func
-
-        jit_input_tensors_supply = get_input_tensors_supply(with_output=False)
-        ref_input_tensors_supply = get_input_tensors_supply(with_output=False)
+        jit_input_tensors_supply = get_input_tensors_supply(with_output=False, config=config)
+        ref_input_tensors_supply = get_input_tensors_supply(with_output=False, config=config)
 
         if cache_input_tensors:
             params = profiler._get_params(with_output=False)
@@ -545,17 +547,20 @@ class AutoTuner:
         profiler,
         supply_prog: Callable | None,
         with_output: bool = False,
+        config: dict = None,
     ):
         """Return input tensors from supply_prog or the profiler default."""
         params = profiler._get_params(with_output=with_output)
         if supply_prog is not None:
+            
+
             return supply_prog(params)
         return profiler._get_inputs(with_output=with_output)
 
-    def _maybe_refresh_input_tensors(self, profiler, supply_prog: Callable | None) -> None:
+    def _maybe_refresh_input_tensors(self, profiler, supply_prog: Callable | None, config: dict) -> None:
         """Populate or validate self.jit_input_tensors for caching mode."""
         if self.jit_input_tensors is None:
-            self.jit_input_tensors = self._get_input_tensors(profiler, supply_prog)
+            self.jit_input_tensors = self._get_input_tensors(profiler, supply_prog, config)
             return
 
         params = profiler._get_params(with_output=False)
@@ -574,7 +579,7 @@ class AutoTuner:
                     "Incompatible cached input tensors detected — regenerating. "
                     "Set `cache_input_tensors=False` to avoid this warning."
                 )
-                self.jit_input_tensors = self._get_input_tensors(profiler, supply_prog)
+                self.jit_input_tensors = self._get_input_tensors(profiler, supply_prog, config)
                 break
 
     def _check_correctness(self, profiler, ref_prog: Callable, input_tensors) -> None:
@@ -600,6 +605,7 @@ class AutoTuner:
         jit_kernel: tilelang.JitKernel_NPU,
         warmup: int,
         rep: int,
+        config: dict,
     ) -> tuple[float, float | None]:
         """Profile *jit_kernel* and optionally the reference program.
 
@@ -610,9 +616,9 @@ class AutoTuner:
         profiler = jit_kernel.get_profiler(tensor_supply_type=pa.supply_type)
 
         if pa.cache_input_tensors:
-            self._maybe_refresh_input_tensors(profiler, pa.supply_prog)
+            self._maybe_refresh_input_tensors(profiler, pa.supply_prog, config)
         else:
-            self.jit_input_tensors = self._get_input_tensors(profiler, pa.supply_prog)
+            self.jit_input_tensors = self._get_input_tensors(profiler, pa.supply_prog, config)
 
         if not pa.skip_check and pa.ref_prog is not None:
             self._check_correctness(profiler, pa.ref_prog, self.jit_input_tensors)
@@ -633,8 +639,8 @@ class AutoTuner:
         return latency, self.ref_latency_cache
 
     # Retained as the public entry-point for the signal-based timeout path.
-    def target_fn(self, jit_kernel: tilelang.JitKernel_NPU, warmup: int, rep: int):
-        return self._measure_latency(jit_kernel, warmup, rep)
+    def target_fn(self, jit_kernel: tilelang.JitKernel_NPU, warmup: int, rep: int, config: dict = None):
+        return self._measure_latency(jit_kernel, warmup, rep, config)
 
     def _bench_all_default(
         self,
@@ -739,7 +745,6 @@ class AutoTuner:
         if self.jit_compile is None:
             self.jit_compile = self._compile_kernel
 
-
         config_args = self._build_config_args(parameters)
 
         if len(config_args) == 0:
@@ -771,19 +776,126 @@ class AutoTuner:
 
         num_workers = self._determine_num_workers()
         pool = concurrent.futures.ThreadPoolExecutor(max_workers=num_workers)
-        
-        try:
-            compiled = self._compile_all(config_args, pool)
-            use_npu = os.getenv("TILELANG_BENCH_METHOD", "default").lower() == "npu"
-            if use_npu:
-                best_latency, best_config, best_kernel = self._bench_all_npu(compiled)
-            else:
-                best_latency, best_config, best_kernel = self._bench_all_default(
-                    compiled, warmup, rep, timeout
+        futures = []
+        future_to_index = {}
+
+
+        for i, config_arg in enumerate(config_args):
+            compile_func = self._resolve_compile_func()
+
+            future = pool.submit(
+                compile_func,
+                **config_arg,
+            )
+            futures.append(future)
+            future_to_index[future] = i
+
+        results_with_configs = []
+        for future in tqdm(
+            concurrent.futures.as_completed(futures),
+            total=len(futures),
+            desc="Compiling configurations",
+        ):
+            idx = future_to_index[future]
+            config = config_args[idx]
+            try:
+                result = future.result()
+                results_with_configs.append((result, config))
+            except Exception as e:
+                logger.debug(
+                    f"Compilation failed for config {config} at index {idx} with error: {e}"
                 )
-        finally:
-            pool.shutdown()
- 
+                continue
+
+        ref_latency = None
+        progress_bar = tqdm(
+            range(len(results_with_configs)), desc="Bench configurations"
+        )
+        use_profiling = os.getenv("TILELANG_BENCH_METHOD", "default").lower() == "npu"
+        if use_profiling:
+            funcs = []
+            configs = []
+            jit_kernels = []
+
+            for i in progress_bar:
+                jit_kernel, config = results_with_configs[i]
+                profile_args = self.profile_args
+                supply_type = profile_args.supply_type
+                profiler = jit_kernel.get_profiler(tensor_supply_type=supply_type)
+
+                if profile_args.supply_prog is not None:
+                    fn = profile_args.supply_prog
+                    params = profiler._get_params(with_output=False)
+                    if "config" in inspect.signature(fn).parameters:
+                        input_tensors = fn(params, config=config)
+                    else:
+                        input_tensors = fn(params)
+                else:
+                    input_tensors = profiler._get_inputs(with_output=False)
+
+                ins = self._get_inputs() if input_tensors is None else input_tensors
+                bench_func = partial(jit_kernel, *ins)
+                funcs.append(bench_func)
+                configs.append(config)
+                jit_kernels.append(jit_kernel)
+
+            try:
+                from ..profiler.bench import do_bench_npu
+
+                latencies = do_bench_npu(
+                    funcs,
+                )
+            except Exception:
+                logger.warning(
+                    "An error occurred while benchmarking configs, checkout autotuner.log for more details"
+                )
+                logger.debug(f"Error: {traceback.format_exc()}")
+                latencies = [float("inf")] * len(funcs)
+
+            def ensure_list(x):
+                if isinstance(x, (list, tuple)):
+                    return x
+                return [x]
+
+            for latency, config, kernel in zip(
+                ensure_list(latencies), ensure_list(configs), ensure_list(jit_kernels), strict=True
+            ):
+                tqdm.write(f"Tuned Latency {latency} with config {config}")
+                if latency < best_latency:
+                    best_latency = latency
+                    best_config = config
+                    best_kernel = kernel
+        else:
+            for i in progress_bar:
+                jit_kernel, config = results_with_configs[i]
+                try:
+                    # Cannot ThreadPoolExecutor to enforce timeout on target_fn execution
+                    # Because tma init may behave strangely with one thread
+                    # latency, ref_latency = target_fn(jit_kernel)
+                    latency, ref_latency = run_with_timeout(
+                        self.target_fn, timeout, jit_kernel, warmup, rep, config
+                    )
+                except TimeoutException:
+                    logger.warning(
+                        f"A timeout occurred while testing config {config}, checkout autotuner.log for more details"
+                    )
+                    continue
+                except Exception:
+                    logger.warning(
+                        f"An error occurred while testing config {config}, checkout autotuner.log for more details"
+                    )
+                    logger.debug(f"Error: {traceback.format_exc()}")
+                    continue
+                tqdm.write(f"Tuned Latency {latency} with config {config} at index {i}")
+                if latency < best_latency:
+                    best_latency = latency
+                    best_config = config
+                    best_kernel = jit_kernel
+
+            progress_bar.set_postfix({"best_latency": best_latency})
+            
+        pool.shutdown()
+
         if best_kernel is None:
             raise RuntimeError(
                 "Auto-tuning failed: no configuration successfully compiled "
