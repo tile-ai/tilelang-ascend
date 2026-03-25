@@ -524,20 +524,6 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
     return false;
   }
 
-  // // TODO:待删除
-  // // Check if a buffer load uses discrete access patterns
-  // // Discrete access means indices are BufferLoad or other complex expressions,
-  // // not simple variables like i, j, etc.
-  // bool HasDiscreteAccess(const BufferLoadNode* load) {
-  //   for (const auto& idx : load->indices) {
-  //     // Check if the index is NOT a simple variable or IntImm
-  //     if (!idx.as<VarNode>() && !idx.as<IntImmNode>()) {
-  //       return true;
-  //     }
-  //   }
-  //   return false;
-  // }
-
   bool CheckExpressionSupports2DVectorization(
     const PrimExpr& expr,
     const std::unordered_set<const VarNode*>& parallel_vars
@@ -565,13 +551,6 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
     }
 
     for (const auto* load : collector.loads) {
-      // Check for discrete access patterns (e.g., a[idx[i], j])
-      // Discrete access cannot be vectorized with 2D vectorization
-      // TODO：待删除
-      // if (HasDiscreteAccess(load)) {
-      //   return false;
-      // }
-
       bool uses_vector_dim = false;
       bool uses_outer_dim = false;
       for (const auto& idx : load->indices) {
@@ -629,28 +608,6 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
       actual_output_offset = IntImm(DataType::Int(32), 0);  // Start from beginning of temp buffer
     }
 
-    // Step 1: Check if the expression has discrete access patterns
-    // If so, skip broadcast collection entirely
-    // TODO:离散判断相关的干掉
-    // class DiscreteAccessChecker : public StmtExprVisitor {
-    // public:
-    //   bool has_discrete_access_{false};
-
-    //   void VisitExpr_(const BufferLoadNode* op) override {
-    //     // Check if any index is not a simple variable or IntImm
-    //     for (const auto& idx : op->indices) {
-    //       if (!idx.as<VarNode>() && !idx.as<IntImmNode>()) {
-    //         has_discrete_access_ = true;
-    //         return;
-    //       }
-    //     }
-    //     StmtExprVisitor::VisitExpr_(op);
-    //   }
-    // };
-
-    // DiscreteAccessChecker discrete_checker;
-    // discrete_checker(store->value);
-
     // Step 2: Detect all 1D buffers that can be broadcasted
     // Only collect broadcast buffers if there's no discrete access
     class BroadcastableBufferCollector : public ExprVisitor {
@@ -672,16 +629,6 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
         if (op->buffer->shape.size() == 1) {
           int64_t broadcast_dim = 0;
           if (parent_->CanBroadcast(op, parallel_vars_, &broadcast_dim)) {
-            // Check for offset or discrete access
-            // TODO:离散判断相关的干掉
-            // if (!parent_->HasOffsetOrDiscreteAccess(op->indices)) {
-            //   BroadcastInfo info;
-            //   info.load = op;
-            //   info.broadcast_dim = broadcast_dim;
-            //   info.outer_extent = outer_extent_;
-            //   info.inner_vec_len = inner_vec_len_;
-            //   broadcast_infos.push_back(info);
-            // }
             BroadcastInfo info;
             info.load = op;
             info.broadcast_dim = broadcast_dim;
@@ -712,10 +659,6 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
 
     BroadcastableBufferCollector collector(parallel_vars, inner_vec_len, outer_extent, this);
     // Only collect broadcast buffers if there's no discrete access in the expression
-    // TODO:离散判断去掉，不包含2d再做广播检测
-    // if (!discrete_checker.has_discrete_access_ && !dim_checker.container_2d_dim && is_2d_vectorizing_) {
-    //   collector(store->value);
-    // }
     if (!dim_checker.container_2d_dim && is_2d_vectorizing_) {
       collector(store->value);
     }
@@ -841,38 +784,6 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
       }
     }
 
-    // TODO:离散判断先干掉
-    // Check if any expression has discrete access
-    // bool has_discrete_access = false;
-    // if (!plan.is_2d_vectorizable) {
-    //   class DiscreteAccessChecker : public StmtExprVisitor {
-    //   public:
-    //     bool has_discrete_access_{false};
-
-    //     void VisitExpr_(const BufferLoadNode* op) override {
-    //       // Check if any index is not a simple variable or IntImm
-    //       for (const auto& idx : op->indices) {
-    //         if (!idx.as<VarNode>() && !idx.as<IntImmNode>()) {
-    //           has_discrete_access_ = true;
-    //           return;
-    //         }
-    //       }
-    //       StmtExprVisitor::VisitExpr_(op);
-    //     }
-    //   };
-
-    //   for (const Stmt& s : stores_to_process) {
-    //     if (auto st = s.as<BufferStoreNode>()) {
-    //       DiscreteAccessChecker checker;
-    //       checker(st->value);
-    //       if (checker.has_discrete_access_) {
-    //         has_discrete_access = true;
-    //         break;
-    //       }
-    //     }
-    //   }
-    // }
-
     Array<Stmt> bodies;
     for (const Stmt& s : stores_to_process) {
       if (auto st = s.as<BufferStoreNode>()) {
@@ -901,32 +812,10 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
 
     Stmt combined = (bodies.size() == 1) ? bodies[0] : SeqStmt::Flatten(bodies);
 
-    // Skip outer loop creation if:
-    // - 2D vectorization is enabled, OR
-    // - There's an outer serial loop, OR
-    // - Outer extent is 1
     if (plan.is_2d_vectorizable || has_outer_serial || plan.outer_extent == 1) {
       return combined;
   }
 
-    // For discrete access cases, create a serial loop but do NOT replace the variable
-    // This preserves the original indexing (e.g., b[i]) while providing the loop structure
-    // TODO：离散判断相关的去掉
-    // if (has_discrete_access) {
-    //   // Create a serial loop using the actual outer dimension variable
-    //   if (outer_dim_var_ != nullptr) {
-    //     return For(
-    //       GetRef<Var>(outer_dim_var_),
-    //       IntImm(DataType::Int(32), 0),
-    //       IntImm(DataType::Int(32), plan.outer_extent),
-    //       ForKind::kSerial,
-    //       combined
-    //     );
-    //   }
-    //   return combined;
-    // }
-
-    // Normal case: replace outer variable with outer_broadcast_idx for broadcasting
     Var outer_var("outer_broadcast_idx", DataType::Int(32));
     if (plan.outer_index_var != nullptr) {
       ReplaceVarExpr replacer(plan.outer_index_var, outer_var);
@@ -1103,8 +992,7 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
     }
 
     if (auto load = operands[1].as<BufferLoadNode>()) {
-      // TODO:IsScalarAccess入参先不加
-      if (IsScalarAccess(load->indices, parallel_vars, load->buffer)) {
+      if (IsScalarAccess(load->indices, parallel_vars)) {
         PrimExpr scalar_offset =
             CalculateBufferOffset(load->indices, load->buffer, parallel_vars);
         auto stmt = GenerateBufferScalarVectorCall(
@@ -1186,7 +1074,7 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
     }
 
     if (auto load = operands[1].as<BufferLoadNode>()) {
-      if (IsScalarAccess(load->indices, parallel_vars, load->buffer)) {
+      if (IsScalarAccess(load->indices, parallel_vars)) {
         PrimExpr scalar_offset =
             CalculateBufferOffset(load->indices, load->buffer, parallel_vars);
         auto stmt = GenerateBufferScalarVectorCall(
@@ -1424,8 +1312,7 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
   }
 
   bool IsScalarAccess(const Array<PrimExpr>& indices,
-                      const std::unordered_set<const VarNode*>& parallel_vars,
-                      const Buffer& buffer = Buffer()) {
+                      const std::unordered_set<const VarNode*>& parallel_vars) {
     if (vector_dim_var_ == nullptr) return true;
 
     // Check if any index contains the vector dimension variable
@@ -1461,7 +1348,7 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
     }
 
     if (auto load = expr.as<BufferLoadNode>()) {
-      return IsScalarAccess(load->indices, parallel_vars, load->buffer);
+      return IsScalarAccess(load->indices, parallel_vars);
     }
 
     return false;
@@ -1545,24 +1432,6 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
     // In that case, we should not use broadcasting and fall back to looping
     return false;
   }
-
-  // TODO:离散判断干掉
-  // Check if buffer access has offset or is discrete (not contiguous)
-  // bool HasOffsetOrDiscreteAccess(const Array<PrimExpr>& indices) {
-  //   if (indices.empty()) {
-  //     return false;
-  //   }
-
-  //   // For each index, check if it's a simple variable
-  //   for (const auto& idx : indices) {
-  //     if (!idx.as<VarNode>()) {
-  //       // If it's not a simple variable, it might have offset or be complex
-  //       return true;
-  //     }
-  //   }
-
-  //   return false;
-  // }
 
   // Create a 2D view of a 1D buffer for broadcast operation
   Buffer CreateBroadcastSourceBuffer(const Buffer& src_1d, int64_t broadcast_dim) {
