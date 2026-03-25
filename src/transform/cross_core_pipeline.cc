@@ -384,6 +384,14 @@ private:
                                    std::vector<AccessInfo>& accesses) {
         auto args = call_node->args;
         int start = call_node->op.same_as(builtin::call_extern()) ? 1 : 0;
+
+        std::string op_name = "<unknown>";
+        if (call_node->op.same_as(builtin::call_extern()) && args.size() > 0) {
+            if (auto str = args[0].as<StringImmNode>()) op_name = str->value;
+        } else if (auto op = call_node->op.as<OpNode>()) {
+            op_name = op->name;
+        }
+
         for (int i = start; i < args.size(); ++i) {
             if (auto inner_call_node = args[i].as<CallNode>()) {
                 if (inner_call_node->op.same_as(builtin::tvm_access_ptr()) &&
@@ -395,10 +403,20 @@ private:
                     const IntImmNode* flag = inner_call_node->args[4].as<IntImmNode>();
                     int rw_mask = flag ? static_cast<int>(flag->value) : 3;
 
-                    if (location_map_.find(buf_var) != location_map_.end()) {
-                        if (callnodeMapPos_.find(location_map_[buf_var]) != callnodeMapPos_.end()) {
-                            used_buffers.insert(buf_name);
-                        }
+                    bool found_in_map = location_map_.find(buf_var) != location_map_.end();
+                    bool found_in_pos = false;
+                    if (found_in_map) {
+                        found_in_pos = callnodeMapPos_.find(location_map_[buf_var]) != callnodeMapPos_.end();
+                    }
+
+                    if (found_in_map && found_in_pos) {
+                        used_buffers.insert(buf_name);
+                    } else {
+                        LOG(INFO) << "[DEBUG CollectBuffersAndAccesses] op=" << op_name
+                                  << " buf='" << buf_name << "' var_ptr=" << buf_var.get()
+                                  << " found_in_map=" << found_in_map
+                                  << " found_in_pos=" << found_in_pos
+                                  << " => SKIPPED";
                     }
 
                     AccessInfo access;
@@ -756,6 +774,15 @@ private:
         std::vector<StageInfo> stages;
         if (all_statements_.empty()) return stages;
 
+        LOG(INFO) << "[DEBUG SplitIntoStages] all_statements_ count: " << all_statements_.size();
+        for (size_t i = 0; i < all_statements_.size(); ++i) {
+            std::string bufs;
+            for (const auto& b : all_statements_[i].used_buffers) bufs += b + " ";
+            LOG(INFO) << "[DEBUG SplitIntoStages] stmt[" << i << "] scope="
+                      << all_statements_[i].scope << " type=" << all_statements_[i].type
+                      << " bufs=[" << bufs << "]";
+        }
+
         StageInfo current_stage;
         int32_t current_scope = all_statements_[0].scope;
 
@@ -776,21 +803,35 @@ private:
             stages.push_back(current_stage);
         }
 
+        LOG(INFO) << "[DEBUG SplitIntoStages] total stages: " << stages.size();
+        for (size_t i = 0; i < stages.size(); ++i) {
+            std::string bufs;
+            for (const auto& b : stages[i].used_buffers) bufs += b + " ";
+            LOG(INFO) << "[DEBUG SplitIntoStages] stage[" << i << "] stmts="
+                      << stages[i].statements.size() << " bufs=[" << bufs << "]";
+        }
+
         return stages;
     }
 
     int32_t checkBufferScope(const std::string& buffer) {
         for (const auto& pair : analyzer_.location_map()) {
             if (pair.first.get()->name_hint == buffer) {
-                if (callnodeMapPos_[pair.second] == "cube") {
-                    return CUBE_SCOPE;
-                } else if (callnodeMapPos_[pair.second] == "vec") {
-                    return VEC_SCOPE;
-                } else {
-                    return INVALID_SCOPE;
+                std::string scope_str = pair.second;
+                auto it = callnodeMapPos_.find(scope_str);
+                if (it != callnodeMapPos_.end()) {
+                    if (it->second == "cube") {
+                        return CUBE_SCOPE;
+                    } else if (it->second == "vec") {
+                        return VEC_SCOPE;
+                    }
                 }
+                LOG(INFO) << "[DEBUG checkBufferScope] buffer='" << buffer
+                          << "' scope_str='" << scope_str << "' => INVALID";
+                return INVALID_SCOPE;
             }
         }
+        LOG(INFO) << "[DEBUG checkBufferScope] buffer='" << buffer << "' NOT FOUND in location_map";
         return INVALID_SCOPE;
     }
 
@@ -809,9 +850,26 @@ private:
             }
         }
 
+        LOG(INFO) << "[DEBUG AnalyzeSharedBuffers] buffer_stage_map:";
         for (const auto& [buffer, stage_indices] : buffer_stage_map) {
-            if (stage_indices.size() <= 1) continue;
-            if (checkBufferScope(buffer) != VEC_SCOPE) continue;
+            std::string indices_str;
+            for (int si : stage_indices) indices_str += std::to_string(si) + " ";
+            LOG(INFO) << "  buffer='" << buffer << "' stages=[" << indices_str << "]";
+        }
+
+        for (const auto& [buffer, stage_indices] : buffer_stage_map) {
+            if (stage_indices.size() <= 1) {
+                LOG(INFO) << "[DEBUG AnalyzeSharedBuffers] SKIP '" << buffer << "': only in 1 stage";
+                continue;
+            }
+            int scope = checkBufferScope(buffer);
+            if (scope != VEC_SCOPE) {
+                LOG(INFO) << "[DEBUG AnalyzeSharedBuffers] SKIP '" << buffer
+                          << "': scope=" << scope << " (not VEC_SCOPE=" << VEC_SCOPE << ")";
+                continue;
+            }
+            LOG(INFO) << "[DEBUG AnalyzeSharedBuffers] CANDIDATE '" << buffer
+                      << "': in " << stage_indices.size() << " stages, scope=VEC";
 
             bool is_shared = false;
             for (int si : stage_indices) {
@@ -819,10 +877,15 @@ private:
 
                 std::vector<std::pair<PrimExpr, PrimExpr>> reads;
                 CollectBufferReads(stage_body, buffer, reads);
+                LOG(INFO) << "[DEBUG AnalyzeSharedBuffers] stage[" << si
+                          << "] reads count=" << reads.size();
 
                 for (const auto& [offset, extent] : reads) {
                     auto [exposed, kill] = CheckExposedRead(
                         stage_body, buffer, offset, extent, false);
+                    LOG(INFO) << "[DEBUG AnalyzeSharedBuffers] stage[" << si
+                              << "] read offset=" << offset << " extent=" << extent
+                              << " exposed=" << exposed << " kill=" << kill;
                     if (exposed) {
                         is_shared = true;
                         break;
@@ -832,8 +895,16 @@ private:
             }
 
             if (is_shared) {
+                LOG(INFO) << "[DEBUG AnalyzeSharedBuffers] RESULT: '" << buffer << "' IS shared";
                 shared_buffers_.insert(buffer);
+            } else {
+                LOG(INFO) << "[DEBUG AnalyzeSharedBuffers] RESULT: '" << buffer << "' NOT shared";
             }
+        }
+
+        LOG(INFO) << "[DEBUG AnalyzeSharedBuffers] Final shared_buffers:";
+        for (const auto& b : shared_buffers_) {
+            LOG(INFO) << "  " << b;
         }
     }
 
@@ -866,6 +937,8 @@ public:
             for (auto buf : realize->block->alloc_buffers) {
                 String scope = GetPtrStorageScope(buf->data);
                 location_map_.Set(buf->data, scope);
+                LOG(INFO) << "[DEBUG Transform] location_map: var='" << buf->data->name_hint
+                          << "' scope='" << scope << "' var_ptr=" << buf->data.get();
             }
         }
         });
