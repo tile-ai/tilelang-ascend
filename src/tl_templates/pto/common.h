@@ -288,7 +288,9 @@ AICORE PTO_INLINE void copy_gm_to_l1_dynamic(
     __gm__ T1 *handle,
     const pto::Shape<shape1, shape2, shape3, shape4, shape5> &shape,
     const pto::Stride<stride1, stride2, stride3, stride4, stride5> &stride,
-    TileMatL1<T2, shape4, shape5, valid1, valid2> &L1) {
+    int32_t addr, int32_t actualTailM = 0, int32_t actualTailN = 0) {
+  TileMatL1<T2, shape4, shape5, valid1, valid2> L1;
+  pto::TASSIGN(L1, addr);
   pto::GlobalTensor<T1, pto::Shape<shape1, shape2, shape3, shape4, shape5>,
                     pto::Stride<stride1, stride2, stride3, stride4, stride5>>
       global_tensor(handle, shape, stride);
@@ -303,7 +305,9 @@ AICORE PTO_INLINE void copy_l0c_to_gm_dynamic(
     __gm__ T1 *handle,
     const pto::Shape<shape1, shape2, shape3, shape4, shape5> &shape,
     const pto::Stride<stride1, stride2, stride3, stride4, stride5> &stride,
-    pto::TileAcc<T2, shape4, shape5, valid1, valid2> &L0c) {
+    int32_t addr, int32_t actualTailM = 0, int32_t actualTailN = 0) {
+  pto::TileAcc<T2, shape4, shape5, valid1, valid2> L0c;
+  pto::TASSIGN(L0c, addr);
   pto::GlobalTensor<T1, pto::Shape<shape1, shape2, shape3, shape4, shape5>,
                     pto::Stride<stride1, stride2, stride3, stride4, stride5>>
       global_tensor(handle, shape, stride);
@@ -386,26 +390,39 @@ template <typename T1, typename T2, int32_t shape1, int32_t shape2,
           int32_t shape3, int32_t shape4, int32_t shape5, int32_t stride1,
           int32_t stride2, int32_t stride3, int32_t stride4, int32_t stride5,
           uint32_t valid1, uint32_t valid2>
-AICORE PTO_INLINE void
-copy_gm_to_l1(__gm__ T1 *handle,
-              TileMatL1<T2, shape4, shape5, valid1, valid2> &L1) {
-  pto::GlobalTensor<T1, pto::Shape<shape1, shape2, shape3, shape4, shape5>,
-                    pto::Stride<stride1, stride2, stride3, stride4, stride5>>
-      global_tensor(handle);
-  pto::TLOAD(L1, global_tensor);
+AICORE PTO_INLINE void copy_gm_to_l1(__gm__ T1 *handle, int32_t addr, int32_t actualTailM = 0, int32_t actualTailN = 0) {
+    bool useTail = shape4 == valid1 && shape5 == valid2;
+    int tailM = (useTail && actualTailM != 0) ? actualTailM : valid1;
+    int tailN = (useTail && actualTailN != 0) ? actualTailN : valid2;
+    TileMatL1<T2, shape4, shape5, pto::DYNAMIC, pto::DYNAMIC> L1(tailM, tailN);
+    pto::TASSIGN(L1, addr);
+    pto::Shape<shape1, shape2, shape3, pto::DYNAMIC, pto::DYNAMIC> dynamic_shape;
+    dynamic_shape.shape[3] = useTail ? tailM: shape4;
+    dynamic_shape.shape[4] = useTail ? tailN: shape5;
+    pto::GlobalTensor<T1, pto::Shape<shape1, shape2, shape3, pto::DYNAMIC, pto::DYNAMIC>,
+    pto::Stride<stride1, stride2, stride3, stride4, stride5>> global_tensor(handle, dynamic_shape);
+    pto::TLOAD(L1, global_tensor);
+    if (useTail && (tailM != shape4 || tailN != shape5)) {
+        pto::TFILLPAD(L1, L1);
+    }
 }
 
 template <typename T1, typename T2, int32_t shape1, int32_t shape2,
           int32_t shape3, int32_t shape4, int32_t shape5, int32_t stride1,
           int32_t stride2, int32_t stride3, int32_t stride4, int32_t stride5,
           uint32_t valid1, uint32_t valid2>
-AICORE PTO_INLINE void
-copy_l0c_to_gm(__gm__ T1 *handle,
-               pto::TileAcc<T2, shape4, shape5, valid1, valid2> &L0c) {
-  pto::GlobalTensor<T1, pto::Shape<shape1, shape2, shape3, shape4, shape5>,
-                    pto::Stride<stride1, stride2, stride3, stride4, stride5>>
-      global_tensor(handle);
-  pto::TSTORE(global_tensor, L0c);
+AICORE PTO_INLINE void copy_l0c_to_gm(__gm__ T1 *handle, int32_t addr, int32_t actualTailM = 0, int32_t actualTailN = 0) {
+    bool useTail = shape4 == valid1 && shape5 == valid2;
+    int tailM = (useTail && actualTailM != 0) ? actualTailM : valid1;
+    int tailN = (useTail && actualTailN != 0) ? actualTailN : valid2;
+    pto::TileAcc<T2, shape4, shape5, pto::DYNAMIC, pto::DYNAMIC> L0c(tailM, tailN);
+    pto::TASSIGN(L0c, addr);
+    pto::Shape<shape1, shape2, shape3, pto::DYNAMIC, pto::DYNAMIC> dynamic_shape;
+    dynamic_shape.shape[3] = useTail ? tailM: shape4;
+    dynamic_shape.shape[4] = useTail ? tailN: shape5;
+    pto::GlobalTensor<T1, pto::Shape<shape1, shape2, shape3, pto::DYNAMIC, pto::DYNAMIC>,
+    pto::Stride<stride1, stride2, stride3, stride4, stride5>> global_tensor(handle, dynamic_shape);
+    pto::TSTORE(global_tensor, L0c);
 }
 
 template <typename T1, typename T2, int32_t shape1, int32_t shape2,
