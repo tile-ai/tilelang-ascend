@@ -357,7 +357,11 @@ private:
 
         std::set<std::string> for_node_buffers;
         std::vector<AccessInfo> for_node_accesses;
-        for (int i = for_info.idx; i < all_statements.size(); i++) {
+        // Use saved_statements.size() as array start position, NOT for_info.idx.
+        // for_info.idx tracks logical statement index (current_idx_X_) which drifts
+        // ahead of actual array size when previous ForNodes collapse N entries into 1.
+        size_t inner_start = saved_statements.size();
+        for (size_t i = inner_start; i < all_statements.size(); i++) {
             auto buffers = all_statements[i].used_buffers;
             for (auto it = buffers.begin(); it != buffers.end(); ++it) {
                 for_node_buffers.insert(*it);
@@ -378,7 +382,9 @@ private:
 
         std::set<std::string> for_node_buffers;
         std::vector<AccessInfo> for_node_accesses;
-        for (size_t i = for_info.idx; i < all_statements.size(); i++) {
+        // Same fix: use array position, not logical index.
+        size_t inner_start = saved_statements.size();
+        for (size_t i = inner_start; i < all_statements.size(); i++) {
             for (const auto& buf : all_statements[i].used_buffers) {
                 for_node_buffers.insert(buf);
             }
