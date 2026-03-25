@@ -284,7 +284,7 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
   int dst_ndim = dst->shape.size();
   PrimExpr validRow_src, validCol_src, validRow_dst, validCol_dst;
 
-  if (src_ndim >= 2) {
+  if (src_ndim == 2) {
     validRow_src = compute_valid_extent(src_range[src_ndim - 2]->min,
                                         src_range[src_ndim - 2]->extent,
                                         src->shape[src_ndim - 2]);
@@ -295,9 +295,12 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
     validRow_src = Integer(1);
     validCol_src = compute_valid_extent(src_range[0]->min, src_range[0]->extent,
                                         src->shape[0]);
+  } else {
+    validRow_src = 0;
+    validCol_src = 0;
   }
 
-  if (dst_ndim >= 2) {
+  if (dst_ndim == 2) {
     validRow_dst = compute_valid_extent(dst_range[dst_ndim - 2]->min,
                                         dst_range[dst_ndim - 2]->extent,
                                         dst->shape[dst_ndim - 2]);
@@ -308,6 +311,9 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
     validRow_dst = Integer(1);
     validCol_dst = compute_valid_extent(dst_range[0]->min, dst_range[0]->extent,
                                         dst->shape[0]);
+  } else {
+    validRow_dst = 0;
+    validCol_dst = 0;
   }
 
   Array<PrimExpr> new_args;
