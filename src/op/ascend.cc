@@ -200,6 +200,14 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
                << ", dst = " << dst.scope();
   }
 
+  // Auto-infer transpose for L1→L0 copies from layout_map.
+  // nZ layout implies the L1 data needs transpose on load to L0.
+  if (config.l12l0 && !transposeL1 && T.layout_map.count(src)) {
+    if (T.layout_map[src]->AscendLayoutStr() == "layout::nZ") {
+      transposeL1 = true;
+    }
+  }
+
   if (!config.print_ub) {
     ss << "<" << get_dtype(src) << ", ";
 
@@ -236,7 +244,7 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
     } else {
       ss << src->shape[src_ndim - 2] << ", " << src->shape[src_ndim - 1];
       if (config.l12l0) {
-        transposeL1 == 0 ? ss << ", false" << ">" : ss << ", true" << ">";
+        ss << ", " << (transposeL1 ? "true" : "false") << ">";
       }
       // ss << src->shape[src_ndim - 2] << ", " << src->shape[src_ndim - 1] <<
       // ", "

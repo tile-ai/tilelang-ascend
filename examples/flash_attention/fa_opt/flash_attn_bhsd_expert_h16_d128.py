@@ -273,7 +273,7 @@ def flash_attention_fwd(
                                 T.copy(q_l1, l0a[side, :, :])
 
                             acquire("MTE1", [LK_K_L1])
-                            T.copy(k_l1, l0b[side, :, :], transpose=True)
+                            T.copy(k_l1, l0b[side, :, :])
                             release("MTE1", [LK_K_L1, (LK_L0AB, side)])
 
                             acquire("M", [(LK_L0AB, side), (LK_L0C, side)])

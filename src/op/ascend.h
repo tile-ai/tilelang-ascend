@@ -33,7 +33,7 @@ private:
   Array<PrimExpr> src_extents, dst_extents;
   int srcN;
   bool enRelu;
-  bool transposeL1;
+  mutable bool transposeL1;
 };
 
 TVM_DLL const Op &ascend_add();
