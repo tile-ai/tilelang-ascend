@@ -80,6 +80,7 @@ namespace tl {
       {"reduce_min", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
       {"AscendC::ClampMax", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
       {"AscendC::ClampMin", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
+      {"AscendC::Clamp", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
       {"AscendC::Round", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
       {"reduce_sum", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
       {"AscendC::Max", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
@@ -172,6 +173,7 @@ namespace tl {
       {"tl.ascend_sigmoid", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
       {"tl.ascend_clamp_max", {{{1, "write"}, {2, "read"}}, "PIPE_V"}},
       {"tl.ascend_clamp_min", {{{1, "write"}, {2, "read"}}, "PIPE_V"}},
+      {"tl.ascend_clamp", {{{1, "write"}, {2, "read"}}, "PIPE_V"}},
       {"tl.ascend_round", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
 
       {"tl.ascend_sub_experiment", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},

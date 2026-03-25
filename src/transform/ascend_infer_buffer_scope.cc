@@ -3,21 +3,23 @@
 
 #include <tvm/ir/op.h>
 
-#include <tvm/tir/transform.h>
-#include <tvm/tir/stmt_functor.h>
-#include <tvm/tir/analysis.h>
 #include <tvm/arith/analyzer.h>
 #include <tvm/runtime/registry.h>
+#include <tvm/tir/analysis.h>
 #include <tvm/tir/builtin.h>
 #include <tvm/tir/op.h>
+#include <tvm/tir/stmt_functor.h>
+#include <tvm/tir/transform.h>
 
+#include "../layout/layout.h"
+
+#include <iostream>
+#include <regex>
+#include <set>
 #include <string>
 #include <unordered_map>
-#include <vector>
-#include <set>
 #include <utility>
-#include <regex>
-#include <iostream>
+#include <vector>
 namespace tvm {
 namespace tir {
 
@@ -35,7 +37,7 @@ public:
 
     auto new_body = this->operator()(func->body);
 
-    PrimFuncNode* fptr = func.CopyOnWrite();
+    PrimFuncNode *fptr = func.CopyOnWrite();
     fptr->body = new_body;
 
     // PrintDebugInfo();
@@ -49,12 +51,12 @@ private:
     bool used_in_vector = false;
     std::set<int> gemm_positions;
     std::set<std::string> func_names;
-    std::vector<const CallNode*> call_sites;
+    std::vector<const CallNode *> call_sites;
   };
 
   struct BufferAllocationInfo {
-    const AllocateNode* alloc_node = nullptr;
-    const VarNode* handle_var = nullptr;
+    const AllocateNode *alloc_node = nullptr;
+    const VarNode *handle_var = nullptr;
     std::string original_scope;
     std::string corrected_scope;
     bool is_data_bound = false;
@@ -63,17 +65,19 @@ private:
   struct AscendCopyPositionInfo {
     bool is_first_in_at_least_one = false;
     bool is_second_in_at_least_one = false;
-    std::vector<std::pair<const VarNode*, const VarNode*>> first_second_pairs;
-    std::vector<std::pair<const VarNode*, const VarNode*>> second_first_pairs;
+    std::vector<std::pair<const VarNode *, const VarNode *>> first_second_pairs;
+    std::vector<std::pair<const VarNode *, const VarNode *>> second_first_pairs;
   };
 
   class BufferUseCollector : public StmtExprVisitor {
-   public:
-    std::unordered_map<const VarNode*, AscendCopyPositionInfo> ascend_copy_position_info;
-    std::vector<std::pair<const VarNode*, const VarNode*>> ascend_copy_buffer_pairs_;
-    std::unordered_map<const VarNode*, BufferUseInfo> buffer_use_info;
-    std::unordered_map<const VarNode*, BufferAllocationInfo> alloc_info;
-    std::unordered_map<const VarNode*, const AllocateNode*> handle_to_alloc;
+  public:
+    std::unordered_map<const VarNode *, AscendCopyPositionInfo>
+        ascend_copy_position_info;
+    std::vector<std::pair<const VarNode *, const VarNode *>>
+        ascend_copy_buffer_pairs_;
+    std::unordered_map<const VarNode *, BufferUseInfo> buffer_use_info;
+    std::unordered_map<const VarNode *, BufferAllocationInfo> alloc_info;
+    std::unordered_map<const VarNode *, const AllocateNode *> handle_to_alloc;
 
     static bool IsGEMMFunction(const std::string &func_name) {
       return IsGEMMInternal(ToLower(func_name));
@@ -91,25 +95,26 @@ private:
     }
 
     static std::string GetPtrStorageScope(Var buffer_var) {
-      if (auto* ptr_type = buffer_var->type_annotation.as<PointerTypeNode>()) {
+      if (auto *ptr_type = buffer_var->type_annotation.as<PointerTypeNode>()) {
         return ptr_type->storage_scope;
       }
       return "";
     }
 
-    void BuildHandleAllocMapping(const Stmt& stmt) {
+    void BuildHandleAllocMapping(const Stmt &stmt) {
       class MappingBuilder : public StmtExprVisitor {
-       public:
-        MappingBuilder(BufferUseCollector* parent) : parent_(parent) {}
+      public:
+        MappingBuilder(BufferUseCollector *parent) : parent_(parent) {}
 
-        void VisitStmt_(const BlockNode* op) override {
-          for (const Buffer& buffer : op->alloc_buffers) {
-            const VarNode* handle_var = buffer->data.get();
+        void VisitStmt_(const BlockNode *op) override {
+          for (const Buffer &buffer : op->alloc_buffers) {
+            const VarNode *handle_var = buffer->data.get();
 
             BufferAllocationInfo info;
             info.alloc_node = nullptr;
             info.handle_var = handle_var;
-            info.original_scope = BufferUseCollector::GetPtrStorageScope(buffer->data);
+            info.original_scope =
+                BufferUseCollector::GetPtrStorageScope(buffer->data);
             info.is_data_bound = false;
             info.from_block_alloc = true;
 
@@ -120,14 +125,15 @@ private:
           StmtExprVisitor::VisitStmt_(op);
         }
 
-        void VisitStmt_(const AllocateNode* op) override {
+        void VisitStmt_(const AllocateNode *op) override {
 
-          const VarNode* handle_var = op->buffer_var.get();
+          const VarNode *handle_var = op->buffer_var.get();
 
           BufferAllocationInfo info;
           info.alloc_node = op;
           info.handle_var = handle_var;
-          info.original_scope = BufferUseCollector::GetPtrStorageScope(op->buffer_var);
+          info.original_scope =
+              BufferUseCollector::GetPtrStorageScope(op->buffer_var);
           info.is_data_bound = false;
           info.from_block_alloc = false;
 
@@ -137,19 +143,20 @@ private:
           StmtExprVisitor::VisitStmt_(op);
         }
 
-       private:
-        BufferUseCollector* parent_;
+      private:
+        BufferUseCollector *parent_;
       };
 
       MappingBuilder builder(this);
       builder.operator()(stmt);
     }
 
-    void VisitStmt_(const AllocateNode* op) override {
+    void VisitStmt_(const AllocateNode *op) override {
 
       if (alloc_info.find(op->buffer_var.get()) == alloc_info.end()) {
-        std::string scope = op->buffer_var->type_annotation.defined() ?
-                           GetPtrStorageScope(op->buffer_var) : "";
+        std::string scope = op->buffer_var->type_annotation.defined()
+                                ? GetPtrStorageScope(op->buffer_var)
+                                : "";
 
         BufferAllocationInfo info;
         info.alloc_node = op;
@@ -164,14 +171,15 @@ private:
       StmtExprVisitor::VisitStmt_(op);
     }
 
-    void VisitStmt_(const BlockNode* op) override {
+    void VisitStmt_(const BlockNode *op) override {
 
-      for (const Buffer& buffer : op->alloc_buffers) {
-        const VarNode* handle_var = buffer->data.get();
+      for (const Buffer &buffer : op->alloc_buffers) {
+        const VarNode *handle_var = buffer->data.get();
 
         if (alloc_info.find(handle_var) == alloc_info.end()) {
-          std::string scope = buffer->data->type_annotation.defined() ?
-                             GetPtrStorageScope(buffer->data) : "";
+          std::string scope = buffer->data->type_annotation.defined()
+                                  ? GetPtrStorageScope(buffer->data)
+                                  : "";
 
           BufferAllocationInfo info;
           info.alloc_node = nullptr;
@@ -181,16 +189,15 @@ private:
           info.from_block_alloc = true;
           alloc_info[handle_var] = info;
           handle_to_alloc[handle_var] = nullptr;
-
         }
       }
 
       StmtExprVisitor::VisitStmt_(op);
     }
 
-    void VisitExpr_(const CallNode* op) override {
+    void VisitExpr_(const CallNode *op) override {
       std::string op_name = "";
-      if (const OpNode* tl_op = op->op.as<OpNode>()) {
+      if (const OpNode *tl_op = op->op.as<OpNode>()) {
         op_name = tl_op->name;
         if (tl_op->name == "tl.ascend_copy") {
 
@@ -198,42 +205,51 @@ private:
             return;
           }
 
-          const VarNode* first_buf_handle = nullptr;
-          const CallNode* first_region = op->args[0].as<CallNode>();
-          if (first_region && !first_region->args.empty() && first_region->args[0].as<BufferLoadNode>()) {
-            const BufferLoadNode* first_buf_load = first_region->args[0].as<BufferLoadNode>();
+          const VarNode *first_buf_handle = nullptr;
+          const CallNode *first_region = op->args[0].as<CallNode>();
+          if (first_region && !first_region->args.empty() &&
+              first_region->args[0].as<BufferLoadNode>()) {
+            const BufferLoadNode *first_buf_load =
+                first_region->args[0].as<BufferLoadNode>();
             first_buf_handle = first_buf_load->buffer->data.get();
           }
 
-          const VarNode* second_buf_handle = nullptr;
-          const CallNode* second_region = op->args[1].as<CallNode>();
-          if (second_region && !second_region->args.empty() && second_region->args[0].as<BufferLoadNode>()) {
-            const BufferLoadNode* second_buf_load = second_region->args[0].as<BufferLoadNode>();
+          const VarNode *second_buf_handle = nullptr;
+          const CallNode *second_region = op->args[1].as<CallNode>();
+          if (second_region && !second_region->args.empty() &&
+              second_region->args[0].as<BufferLoadNode>()) {
+            const BufferLoadNode *second_buf_load =
+                second_region->args[0].as<BufferLoadNode>();
             second_buf_handle = second_buf_load->buffer->data.get();
           }
 
           if (first_buf_handle && second_buf_handle) {
             std::string first_name = first_buf_handle->name_hint;
             std::string second_name = second_buf_handle->name_hint;
-            ascend_copy_buffer_pairs_.emplace_back(first_buf_handle, second_buf_handle);
-            AscendCopyPositionInfo& first_info = ascend_copy_position_info[first_buf_handle];
-            AscendCopyPositionInfo& second_info = ascend_copy_position_info[second_buf_handle];
+            ascend_copy_buffer_pairs_.emplace_back(first_buf_handle,
+                                                   second_buf_handle);
+            AscendCopyPositionInfo &first_info =
+                ascend_copy_position_info[first_buf_handle];
+            AscendCopyPositionInfo &second_info =
+                ascend_copy_position_info[second_buf_handle];
 
             first_info.is_first_in_at_least_one = true;
-            first_info.first_second_pairs.emplace_back(first_buf_handle, second_buf_handle);
+            first_info.first_second_pairs.emplace_back(first_buf_handle,
+                                                       second_buf_handle);
 
             second_info.is_second_in_at_least_one = true;
-            second_info.second_first_pairs.emplace_back(second_buf_handle, first_buf_handle);
+            second_info.second_first_pairs.emplace_back(second_buf_handle,
+                                                        first_buf_handle);
           }
 
           if (first_buf_handle) {
-            BufferUseInfo& info = buffer_use_info[first_buf_handle];
+            BufferUseInfo &info = buffer_use_info[first_buf_handle];
             info.func_names.insert("tl.ascend_copy");
             info.call_sites.push_back(op);
           }
 
           if (second_buf_handle) {
-            BufferUseInfo& info = buffer_use_info[second_buf_handle];
+            BufferUseInfo &info = buffer_use_info[second_buf_handle];
             info.func_names.insert("tl.ascend_copy");
             info.call_sites.push_back(op);
           }
@@ -242,7 +258,7 @@ private:
 
       if (op->op.same_as(builtin::call_extern())) {
         if (op->args.size() > 0) {
-          if (auto* func_name = op->args[0].as<StringImmNode>()) {
+          if (auto *func_name = op->args[0].as<StringImmNode>()) {
             std::string name = func_name->value;
 
             for (size_t i = 1; i < op->args.size(); ++i) {
@@ -250,28 +266,27 @@ private:
             }
           }
         }
-      }
-      else {
-        if (!op_name.empty()){
+      } else {
+        if (!op_name.empty()) {
           for (size_t i = 0; i < op->args.size(); ++i) {
-              AnalyzeBufferInCall(op, i, op_name);
+            AnalyzeBufferInCall(op, i, op_name);
           }
         }
       }
       StmtExprVisitor::VisitExpr_(op);
     }
 
-    void AnalyzeBufferInCall(const CallNode* call, size_t arg_idx,
-                            const std::string& func_name) {
-      auto* arg = call->args[arg_idx].as<CallNode>();
+    void AnalyzeBufferInCall(const CallNode *call, size_t arg_idx,
+                             const std::string &func_name) {
+      auto *arg = call->args[arg_idx].as<CallNode>();
       if (!arg || !arg->op.same_as(builtin::tvm_access_ptr())) {
         return;
       }
 
       if (arg->args.size() > 1) {
-        if (auto* var = arg->args[1].as<VarNode>()) {
+        if (auto *var = arg->args[1].as<VarNode>()) {
 
-          BufferUseInfo& info = buffer_use_info[var];
+          BufferUseInfo &info = buffer_use_info[var];
           info.func_names.insert(func_name);
           info.call_sites.push_back(call);
 
@@ -291,11 +306,11 @@ private:
       }
     }
 
-    int DetermineGEMMPosition(const CallNode* call, size_t arg_idx,
-                             const std::string& func_name) {
+    int DetermineGEMMPosition(const CallNode *call, size_t arg_idx,
+                              const std::string &func_name) {
       int access_ptr_count = 0;
       for (size_t i = 1; i < arg_idx; ++i) {
-        if (auto* prev_arg = call->args[i].as<CallNode>()) {
+        if (auto *prev_arg = call->args[i].as<CallNode>()) {
           if (prev_arg->op.same_as(builtin::tvm_access_ptr())) {
             access_ptr_count++;
           }
@@ -303,25 +318,28 @@ private:
       }
       if (func_name.find("gemm") != std::string::npos ||
           func_name.find("mma") != std::string::npos) {
-        if (access_ptr_count == 0) return 0; // A -> L0A
-        if (access_ptr_count == 1) return 1; // B -> L0B
-        if (access_ptr_count == 2) return 2; // C -> L0C
+        if (access_ptr_count == 0)
+          return 0; // A -> L0A
+        if (access_ptr_count == 1)
+          return 1; // B -> L0B
+        if (access_ptr_count == 2)
+          return 2; // C -> L0C
       }
 
       return -1;
     }
 
-    const AllocateNode* GetAllocForHandle(const VarNode* handle) const {
+    const AllocateNode *GetAllocForHandle(const VarNode *handle) const {
       auto it = handle_to_alloc.find(handle);
       return it != handle_to_alloc.end() ? it->second : nullptr;
     }
 
-    BufferAllocationInfo* GetAllocInfo(const VarNode* handle) {
+    BufferAllocationInfo *GetAllocInfo(const VarNode *handle) {
       auto it = alloc_info.find(handle);
       return it != alloc_info.end() ? &it->second : nullptr;
     }
 
-    BufferUseInfo* GetUseInfo(const VarNode* handle) {
+    BufferUseInfo *GetUseInfo(const VarNode *handle) {
       auto it = buffer_use_info.find(handle);
       return it != buffer_use_info.end() ? &it->second : nullptr;
     }
@@ -352,12 +370,13 @@ private:
   };
 
   void InferCorrectScopes() {
-    for (const auto& kv : collector_->alloc_info) {
-      const VarNode* handle = kv.first;
-      BufferAllocationInfo* alloc_info = collector_->GetAllocInfo(handle);
-      if (!alloc_info) continue;
+    for (const auto &kv : collector_->alloc_info) {
+      const VarNode *handle = kv.first;
+      BufferAllocationInfo *alloc_info = collector_->GetAllocInfo(handle);
+      if (!alloc_info)
+        continue;
 
-      BufferUseInfo* use_info = collector_->GetUseInfo(handle);
+      BufferUseInfo *use_info = collector_->GetUseInfo(handle);
 
       std::string original_scope = alloc_info->original_scope;
       std::string corrected_scope = original_scope;
@@ -365,11 +384,11 @@ private:
       if (original_scope == "local.fragment") {
         if (use_info && !use_info->gemm_positions.empty()) {
           if (use_info->gemm_positions.count(0) > 0) {
-            corrected_scope = "wmma.matrix_a";  // L0A
+            corrected_scope = "wmma.matrix_a"; // L0A
           } else if (use_info->gemm_positions.count(1) > 0) {
-            corrected_scope = "wmma.matrix_b";  // L0B
+            corrected_scope = "wmma.matrix_b"; // L0B
           } else if (use_info->gemm_positions.count(2) > 0) {
-            corrected_scope = "wmma.accumulator";  // L0C
+            corrected_scope = "wmma.accumulator"; // L0C
           } else {
             corrected_scope = "wmma.accumulator";
           }
@@ -405,29 +424,32 @@ private:
         }
 
         handle_scope_corrections_[handle] = corrected_scope;
-
       }
 
-      for (const auto& kv : collector_->alloc_info) {
-        const VarNode* handle = kv.first;
-        BufferAllocationInfo* alloc_info = collector_->GetAllocInfo(handle);
+      for (const auto &kv : collector_->alloc_info) {
+        const VarNode *handle = kv.first;
+        BufferAllocationInfo *alloc_info = collector_->GetAllocInfo(handle);
         if (!alloc_info || alloc_info->original_scope != "shared.dyn") {
           continue;
-    }
+        }
 
-        BufferUseInfo* use_info = collector_->GetUseInfo(handle);
+        BufferUseInfo *use_info = collector_->GetUseInfo(handle);
         if (!use_info) {
           continue;
         }
 
         bool only_in_ascend_copy = false;
-        if (!use_info->used_in_cube && !use_info->used_in_vector) {
-          only_in_ascend_copy = true;
-          for (const auto& func_name : use_info->func_names) {
-            if (func_name != "tl.ascend_copy") {
-              only_in_ascend_copy = false;
+        if (!use_info->used_in_cube) {
+          bool only_valid_funcs = true;
+          for (const auto &func_name : use_info->func_names) {
+            if (func_name != "tl.ascend_copy" &&
+                func_name != "tl.ascend_dump_tensor") {
+              only_valid_funcs = false;
               break;
             }
+          }
+          if (only_valid_funcs) {
+            only_in_ascend_copy = true;
           }
         }
 
@@ -439,13 +461,14 @@ private:
           continue;
         }
 
-        const AscendCopyPositionInfo& pos_info = pos_info_it->second;
+        const AscendCopyPositionInfo &pos_info = pos_info_it->second;
 
         bool found_qualified_copy = false;
 
-        for (const auto& pair : pos_info.first_second_pairs) {
-          const VarNode* second_handle = pair.second;
-          BufferAllocationInfo* second_alloc = collector_->GetAllocInfo(second_handle);
+        for (const auto &pair : pos_info.first_second_pairs) {
+          const VarNode *second_handle = pair.second;
+          BufferAllocationInfo *second_alloc =
+              collector_->GetAllocInfo(second_handle);
           if (!second_alloc) {
             continue;
           }
@@ -455,7 +478,8 @@ private:
             second_scope = second_alloc->original_scope;
           }
 
-          if (second_scope == "wmma.matrix_a" || second_scope == "wmma.matrix_b") {
+          if (second_scope == "wmma.matrix_a" ||
+              second_scope == "wmma.matrix_b") {
             found_qualified_copy = true;
             break;
           }
@@ -466,9 +490,27 @@ private:
           alloc_info->corrected_scope = "shared";
         }
 
-        if (alloc_info->corrected_scope != alloc_info->original_scope) {
+        bool has_dump_tensor = false;
+        if (use_info) {
+          for (const auto &func : use_info->func_names) {
+            if (func == "tl.ascend_dump_tensor" || func == "tl.dump_tensor") {
+              has_dump_tensor = true;
+              break;
+            }
+          }
+        }
+
+        bool should_apply = false;
+        if (has_dump_tensor && alloc_info->corrected_scope == "shared.dyn") {
+          should_apply = true;
+        } else if (alloc_info->corrected_scope != alloc_info->original_scope) {
+          should_apply = true;
+        }
+
+        if (should_apply) {
           if (alloc_info->alloc_node) {
-            scope_corrections_[alloc_info->alloc_node] = alloc_info->corrected_scope;
+            scope_corrections_[alloc_info->alloc_node] =
+                alloc_info->corrected_scope;
           }
           handle_scope_corrections_[handle] = alloc_info->corrected_scope;
         }
@@ -476,19 +518,21 @@ private:
     }
     const std::string UB_SCOPE = "shared";
 
-    for (const auto& buf_pair : collector_->ascend_copy_buffer_pairs_) {
-      const VarNode* first_buf_handle = buf_pair.first;
-      const VarNode* second_buf_handle = buf_pair.second;
+    for (const auto &buf_pair : collector_->ascend_copy_buffer_pairs_) {
+      const VarNode *first_buf_handle = buf_pair.first;
+      const VarNode *second_buf_handle = buf_pair.second;
 
-      BufferAllocationInfo* first_alloc_info = collector_->GetAllocInfo(first_buf_handle);
-      BufferAllocationInfo* second_alloc_info = collector_->GetAllocInfo(second_buf_handle);
+      BufferAllocationInfo *first_alloc_info =
+          collector_->GetAllocInfo(first_buf_handle);
+      BufferAllocationInfo *second_alloc_info =
+          collector_->GetAllocInfo(second_buf_handle);
       if (!first_alloc_info || !second_alloc_info) {
         continue;
       }
 
       std::string first_buf_scope = first_alloc_info->corrected_scope.empty()
-                                    ? first_alloc_info->original_scope
-                                    : first_alloc_info->corrected_scope;
+                                        ? first_alloc_info->original_scope
+                                        : first_alloc_info->corrected_scope;
       bool first_is_ub = (first_buf_scope == UB_SCOPE);
       std::string first_name = first_buf_handle->name_hint;
       std::string second_name = second_buf_handle->name_hint;
@@ -497,12 +541,14 @@ private:
         continue;
       }
 
-      BufferUseInfo* second_use_info = collector_->GetUseInfo(second_buf_handle);
+      BufferUseInfo *second_use_info =
+          collector_->GetUseInfo(second_buf_handle);
       bool second_no_cube_vector = false;
       if (second_use_info == nullptr) {
         second_no_cube_vector = true;
       } else {
-        if (!second_use_info->used_in_cube && !second_use_info->used_in_vector) {
+        if (!second_use_info->used_in_cube &&
+            !second_use_info->used_in_vector) {
           second_no_cube_vector = true;
         }
       }
@@ -512,8 +558,8 @@ private:
       }
 
       std::string second_old_scope = second_alloc_info->corrected_scope.empty()
-                                      ? second_alloc_info->original_scope
-                                      : second_alloc_info->corrected_scope;
+                                         ? second_alloc_info->original_scope
+                                         : second_alloc_info->corrected_scope;
 
       second_alloc_info->corrected_scope = UB_SCOPE;
       handle_scope_corrections_[second_buf_handle] = UB_SCOPE;
@@ -523,17 +569,17 @@ private:
     }
   }
 
-  bool CheckSharedBufferConflict(const BufferUseInfo* use_info) {
+  bool CheckSharedBufferConflict(const BufferUseInfo *use_info) {
     return false;
   }
 
   void PrintDebugInfo() {
     LOG(INFO) << "=== Scope Correction Results ===";
-    for (const auto& kv : collector_->alloc_info) {
-      const VarNode* handle = kv.first;
-      const BufferAllocationInfo& info = kv.second;
+    for (const auto &kv : collector_->alloc_info) {
+      const VarNode *handle = kv.first;
+      const BufferAllocationInfo &info = kv.second;
 
-      BufferUseInfo* use_info = collector_->GetUseInfo(handle);
+      BufferUseInfo *use_info = collector_->GetUseInfo(handle);
 
       LOG(INFO) << "Buffer: " << handle->name_hint;
       LOG(INFO) << "  Original scope: " << info.original_scope;
@@ -542,7 +588,7 @@ private:
       if (use_info) {
         if (!use_info->func_names.empty()) {
           LOG(INFO) << "  Used in functions:";
-          for (const auto& func : use_info->func_names) {
+          for (const auto &func : use_info->func_names) {
             LOG(INFO) << "    - " << func;
           }
         }
@@ -550,10 +596,13 @@ private:
         if (!use_info->gemm_positions.empty()) {
           LOG(INFO) << "  GEMM positions:";
           for (int pos : use_info->gemm_positions) {
-            const char* role = "Unknown";
-            if (pos == 0) role = "A (L0A)";
-            else if (pos == 1) role = "B (L0B)";
-            else if (pos == 2) role = "C (L0C)";
+            const char *role = "Unknown";
+            if (pos == 0)
+              role = "A (L0A)";
+            else if (pos == 1)
+              role = "B (L0B)";
+            else if (pos == 2)
+              role = "C (L0C)";
             LOG(INFO) << "    - Position " << pos << ": " << role;
           }
         }
@@ -565,20 +614,21 @@ private:
     }
   }
 
-  std::unordered_map<const AllocateNode*, std::string> scope_corrections_;
-  std::unordered_map<const VarNode*, std::string> handle_scope_corrections_;
-  std::unordered_map<const VarNode*, Var> var_replacements_;
+  std::unordered_map<const AllocateNode *, std::string> scope_corrections_;
+  std::unordered_map<const VarNode *, std::string> handle_scope_corrections_;
+  std::unordered_map<const VarNode *, Var> var_replacements_;
   std::unique_ptr<BufferUseCollector> collector_;
-  std::unordered_map<const VarNode*, Buffer> buffer_replacements_;
+  std::unordered_map<const VarNode *, Buffer> buffer_replacements_;
 
   static std::string GetPtrStorageScope(Var buffer_var) {
-    if (auto* ptr_type = buffer_var->type_annotation.as<PointerTypeNode>()) {
+    if (auto *ptr_type = buffer_var->type_annotation.as<PointerTypeNode>()) {
       return ptr_type->storage_scope;
     }
     return "";
   }
 
-  Var CreateVarWithCorrectScope(const Var& old_var, const std::string& new_scope) {
+  Var CreateVarWithCorrectScope(const Var &old_var,
+                                const std::string &new_scope) {
     auto it = var_replacements_.find(old_var.get());
     if (it != var_replacements_.end()) {
       return it->second;
@@ -613,7 +663,7 @@ private:
       return true;
     }
 
-    // Construct the new buffer 
+    // Construct the new buffer
     Var new_data =
         CreateVarWithCorrectScope(old_buffer->data, scope_it->second);
     *new_buffer = Buffer(new_data, old_buffer->dtype, old_buffer->shape,
@@ -623,7 +673,7 @@ private:
     return true;
   }
 
-  Stmt VisitStmt_(const AllocateNode* op) override {
+  Stmt VisitStmt_(const AllocateNode *op) override {
     auto it = scope_corrections_.find(op);
     if (it != scope_corrections_.end()) {
       std::string new_scope = it->second;
@@ -631,21 +681,22 @@ private:
       Var new_buffer_var = op->buffer_var;
       auto handle_it = handle_scope_corrections_.find(op->buffer_var.get());
       if (handle_it != handle_scope_corrections_.end()) {
-        new_buffer_var = CreateVarWithCorrectScope(op->buffer_var, handle_it->second);
+        new_buffer_var =
+            CreateVarWithCorrectScope(op->buffer_var, handle_it->second);
       }
 
-      return Allocate(new_buffer_var, op->dtype, op->extents,
-                      op->condition, VisitStmt(op->body));
+      return Allocate(new_buffer_var, op->dtype, op->extents, op->condition,
+                      VisitStmt(op->body));
     }
 
     return StmtExprMutator::VisitStmt_(op);
   }
 
-  Stmt VisitStmt_(const BlockNode* op) override {
+  Stmt VisitStmt_(const BlockNode *op) override {
     Array<Buffer> new_alloc_buffers;
 
-    for (const Buffer& buffer : op->alloc_buffers) {
-      const VarNode* handle = buffer->data.get();
+    for (const Buffer &buffer : op->alloc_buffers) {
+      const VarNode *handle = buffer->data.get();
       auto it = handle_scope_corrections_.find(handle);
 
       if (it != handle_scope_corrections_.end()) {
@@ -654,10 +705,10 @@ private:
         Var new_data = CreateVarWithCorrectScope(buffer->data, new_scope);
         var_replacements_[handle] = new_data;
 
-        auto new_buffer = Buffer(new_data, buffer->dtype, buffer->shape,
-                                buffer->strides, buffer->elem_offset,
-                                buffer->name, buffer->data_alignment,
-                                buffer->offset_factor, buffer->buffer_type);
+        auto new_buffer =
+            Buffer(new_data, buffer->dtype, buffer->shape, buffer->strides,
+                   buffer->elem_offset, buffer->name, buffer->data_alignment,
+                   buffer->offset_factor, buffer->buffer_type);
 
         new_alloc_buffers.push_back(new_buffer);
         buffer_replacements_[handle] = new_buffer;
@@ -666,21 +717,86 @@ private:
       }
     }
 
+    // Inject default physical layout for L1 Buffer
+    Map<String, ObjectRef> new_annotations =
+        InjectDefaultLayoutMap(new_alloc_buffers, op->annotations);
+
     auto new_body = VisitStmt(op->body);
-    auto new_block = Block(op->iter_vars,
-                          op->reads,
-                          op->writes,
-                          op->name_hint,
-                          new_body,
-                          op->init,
-                          new_alloc_buffers,
-                          op->match_buffers,
-                          op->annotations);
+    auto new_block =
+        Block(op->iter_vars, op->reads, op->writes, op->name_hint, new_body,
+              op->init, new_alloc_buffers, op->match_buffers, new_annotations);
 
     return new_block;
   }
 
-  PrimExpr VisitExpr_(const VarNode* op) override {
+  /*!
+   * \brief Ensure all L1-level (shared.dyn) Buffers have physical memory layout
+   * descriptions.
+   *
+   * \note
+   * If the frontend user does not explicitly declare a layout via
+   * T.annotate_layout, the backend will not be able to compute correct 1D
+   * physical address offsets during LowerTileOp. Therefore, the compiler must
+   * perform defensive fallback here to inject default zN Layout for L1 Buffers
+   * missing a Layout.
+   */
+  Map<String, ObjectRef>
+  InjectDefaultLayoutMap(const Array<Buffer> &alloc_buffers,
+                         Map<String, ObjectRef> annotations) {
+    Map<Var, tl::Layout> layout_map;
+
+    // Extract existing layout_map, respecting user's explicit definitions
+    if (annotations.count(tl::attr::kLayoutMap)) {
+      layout_map =
+          Downcast<Map<Var, tl::Layout>>(annotations.Get(tl::attr::kLayoutMap));
+    }
+
+    bool layout_map_changed = false;
+
+    for (const Buffer &buf : alloc_buffers) {
+      std::string scope = "";
+      if (auto *ptr_type = buf->data->type_annotation.as<PointerTypeNode>()) {
+        scope = ptr_type->storage_scope;
+      }
+
+      // Only data entering L1 Buffer needs to participate in Cube operations
+      // and requires fractal layout transformation.
+      if (scope == "shared.dyn") {
+        // Avoid overwriting user-defined layouts (e.g., user intentionally
+        // specified nZ instead of zN).
+        if (layout_map.count(buf->data) == 0) {
+          tl::Layout default_zn_layout = CreateDefaultZnLayout(buf);
+          layout_map.Set(buf->data, default_zn_layout);
+          layout_map_changed = true;
+        }
+      }
+    }
+
+    // Only update Annotations node when actual modifications occur, avoiding
+    // unnecessary IR copy overhead
+    if (layout_map_changed) {
+      annotations.Set(tl::attr::kLayoutMap, layout_map);
+    }
+
+    return annotations;
+  }
+
+  tl::Layout CreateDefaultZnLayout(const Buffer &buf) {
+    // The affine transformation logic for layout is well-implemented and easy
+    // to debug on the Python side (make_zn_layout). Dynamically callback Python
+    // logic via FFI to avoid hardcoding complex AST expression trees in C++.
+    const tvm::runtime::PackedFunc *make_zn_func =
+        tvm::runtime::Registry::Get("tl.ascend.make_zn_layout");
+
+    ICHECK(make_zn_func != nullptr)
+        << "Cannot find global function 'tl.ascend.make_zn_layout'. "
+        << "Please make sure it is registered in Python.";
+
+    tvm::runtime::TVMRetValue ret = (*make_zn_func)(buf);
+    return ret.operator tl::Layout();
+  }
+
+  PrimExpr VisitExpr_(const VarNode *op) override {
     auto it = handle_scope_corrections_.find(op);
     if (it != handle_scope_corrections_.end()) {
       Var old_var = GetRef<Var>(op);
@@ -730,17 +846,18 @@ private:
     return BufferStore(new_buffer, value, indices);
   }
 
-  PrimExpr VisitExpr_(const CallNode* op) override {
+  PrimExpr VisitExpr_(const CallNode *op) override {
     if (op->op.same_as(builtin::tvm_access_ptr())) {
 
       if (op->args.size() > 1) {
-        if (auto* var = op->args[1].as<VarNode>()) {
+        if (auto *var = op->args[1].as<VarNode>()) {
           auto it = handle_scope_corrections_.find(var);
           if (it != handle_scope_corrections_.end()) {
 
             Array<PrimExpr> new_args;
-            new_args.push_back(op->args[0]);  // type annotation
-            new_args.push_back(CreateVarWithCorrectScope(GetRef<Var>(var), it->second));
+            new_args.push_back(op->args[0]); // type annotation
+            new_args.push_back(
+                CreateVarWithCorrectScope(GetRef<Var>(var), it->second));
 
             for (size_t i = 2; i < op->args.size(); ++i) {
               new_args.push_back(VisitExpr(op->args[i]));
@@ -761,12 +878,11 @@ transform::Pass InferAllocScope() {
     ScopeCorrector corrector;
     return corrector.Correct(std::move(f));
   };
-  return transform::CreatePrimFuncPass(pass_func, 0,
-                                      "tl.InferAllocScope", {});
+  return transform::CreatePrimFuncPass(pass_func, 0, "tl.InferAllocScope", {});
 }
 
 TVM_REGISTER_GLOBAL("tl.transform.InferAllocScope")
     .set_body_typed(InferAllocScope);
 
-}  // namespace tir
-}  // namespace tvm
+} // namespace tir
+} // namespace tvm

@@ -57,6 +57,8 @@ public:
 private:
   std::string PrintBufferOffset(const CallNode* call_arg, bool has_offset = true);
 
+  DataType GetAccessPtrDataType(const PrimExpr& arg);
+
   void AddDeclStream(std::ostringstream &ss, const std::string &str);
 
   void PrintOpCall(const CallNode* op, const std::string& op_name,

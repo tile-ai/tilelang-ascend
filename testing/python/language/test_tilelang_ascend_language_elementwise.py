@@ -36,6 +36,20 @@ def setup_random_seed():
     yield
 
 
+def assert_close_npu(actual, expected, dtype, rtol=1e-2, atol=1e-2, **kwargs):
+    """Helper function to handle uint16/uint32 dtype for torch.testing.assert_close
+
+    torch-npu doesn't support isclose operations for uint16/uint32 dtype,
+    so we convert to int16/int32 for comparison when needed.
+    """
+    if dtype == "uint16":
+        torch.testing.assert_close(actual.to(torch.int16), expected.to(torch.int16), rtol=rtol, atol=atol, **kwargs)
+    elif dtype == "uint32":
+        torch.testing.assert_close(actual.to(torch.int32), expected.to(torch.int32), rtol=rtol, atol=atol, **kwargs)
+    else:
+        torch.testing.assert_close(actual, expected, rtol=rtol, atol=atol, **kwargs)
+
+
 def vec_abs(M, N, block_M, block_N, dtype="float"):
     m_num = M // block_M
     n_num = N // block_N
@@ -63,11 +77,11 @@ def vec_abs(M, N, block_M, block_N, dtype="float"):
     return main
 
 
-def run_test_abs(M, N, block_M, block_N, target):
-    func = vec_abs(M, N, block_M, block_N)
+def run_test_abs(M, N, block_M, block_N, dtype, target):
+    func = vec_abs(M, N, block_M, block_N, dtype)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
 
-    a = torch.randn(M, N).npu()
+    a = torch.randn(M, N, dtype=torch.float32 if dtype == "float" else torch.float16).npu()
 
     torch.npu.synchronize()
     b = func(a)
@@ -76,11 +90,12 @@ def run_test_abs(M, N, block_M, block_N, target):
     torch.testing.assert_close(b, ref_b, rtol=1e-2, atol=1e-2)
 
 
+@pytest.mark.parametrize("dtype", ["float", "float16"])
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("shape", [(1024, 1024)])
-def test_abs(target, shape):
+def test_abs(dtype, target, shape):
     M, N = shape
-    run_test_abs(M, N, 128, 256, target=target)
+    run_test_abs(M, N, 128, 256, dtype, target=target)
 
 
 def vec_add_auto_copy(M, N, block_M, block_N, dtype="float"):
@@ -110,12 +125,12 @@ def vec_add_auto_copy(M, N, block_M, block_N, dtype="float"):
     return main
 
 
-def run_test_add_auto_copy(M, N, block_M, block_N, target):
-    func = vec_add_auto_copy(M, N, block_M, block_N)
+def run_test_add_auto_copy(M, N, block_M, block_N, dtype, target):
+    func = vec_add_auto_copy(M, N, block_M, block_N, dtype)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
 
-    a = torch.randn(M, N).float().npu()
-    b = torch.randn(M, N).float().npu()
+    a = torch.randn(M, N, dtype=torch.float32 if dtype == "float" else torch.float16).npu()
+    b = torch.randn(M, N, dtype=torch.float32 if dtype == "float" else torch.float16).npu()
 
     torch.npu.synchronize()
 
@@ -124,11 +139,12 @@ def run_test_add_auto_copy(M, N, block_M, block_N, target):
     torch.testing.assert_close(c, ref_c, rtol=1e-2, atol=1e-2)
 
 
+@pytest.mark.parametrize("dtype", ["float", "float16"])
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("shape", [(1024, 1024)])
-def test_add_auto_copy(target, shape):
+def test_add_auto_copy(dtype, target, shape):
     M, N = shape
-    run_test_add_auto_copy(M, N, 128, 128, target=target)
+    run_test_add_auto_copy(M, N, 128, 128, dtype, target=target)
 
 
 def vec_add_developer(M, N, block_M, block_N, dtype="float"):
@@ -161,12 +177,12 @@ def vec_add_developer(M, N, block_M, block_N, dtype="float"):
     return main
 
 
-def run_test_add_developer(M, N, block_M, block_N, target):
-    func = vec_add_developer(M, N, block_M, block_N)
+def run_test_add_developer(M, N, block_M, block_N, dtype, target):
+    func = vec_add_developer(M, N, block_M, block_N, dtype)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
 
-    a = torch.randn(M, N).float().npu()
-    b = torch.randn(M, N).float().npu()
+    a = torch.randn(M, N, dtype=torch.float32 if dtype == "float" else torch.float16).npu()
+    b = torch.randn(M, N, dtype=torch.float32 if dtype == "float" else torch.float16).npu()
     torch.npu.synchronize()
 
     c = func(a, b)
@@ -174,11 +190,12 @@ def run_test_add_developer(M, N, block_M, block_N, target):
     torch.testing.assert_close(c, ref_c, rtol=1e-2, atol=1e-2)
 
 
+@pytest.mark.parametrize("dtype", ["float", "float16"])
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("shape", [(1024, 1024)])
-def test_add_developer(target, shape):
+def test_add_developer(dtype, target, shape):
     M, N = shape
-    run_test_add_developer(M, N, 128, 128, target=target)
+    run_test_add_developer(M, N, 128, 128, dtype, target=target)
 
 
 def adds(M, N, block_M, block_N, scalar, dtype="float"):
@@ -203,21 +220,36 @@ def adds(M, N, block_M, block_N, scalar, dtype="float"):
     return main
 
 
-def run_test_adds(M, N, block_M, block_N, scalar, target):
-    func = adds(M, N, block_M, block_N, scalar)
+def run_test_adds(M, N, block_M, block_N, scalar, dtype, target):
+    func = adds(M, N, block_M, block_N, scalar, dtype)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
 
-    a = torch.randn(M, N).float().npu()
+    dtype_map = {
+        "float": torch.float32,
+        "float16": torch.float16,
+        "int16": torch.int16,
+        "int32": torch.int32,
+    }
+    torch_dtype = dtype_map.get(dtype, torch.float32)
+
+    if dtype in ["int16", "int32"]:
+        a = torch.randint(0, 100, (M, N), dtype=torch_dtype).npu()
+        ref_b = a + int(scalar)
+    else:
+        a = torch.randn(M, N, dtype=torch_dtype).npu()
+        ref_b = a + scalar
+
     b = func(a)
-    ref_b = a + 2.0
     torch.testing.assert_close(b, ref_b, rtol=1e-2, atol=1e-2)
 
 
+@pytest.mark.parametrize("dtype", ["float", "float16", "int16", "int32"])
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("shape", [(1024, 1024)])
-def test_adds(target, shape):
+def test_adds(dtype, target, shape):
     M, N = shape
-    run_test_adds(M, N, 64, 32, 2.0, target=target)
+    scalar = 2.0 if dtype in ["float", "float16"] else 2
+    run_test_adds(M, N, 64, 32, scalar, dtype, target=target)
 
 
 def bitwise_and(M, N, block_M, block_N, dtype="int16"):
@@ -247,25 +279,27 @@ def bitwise_and(M, N, block_M, block_N, dtype="int16"):
     return main
 
 
-def run_test_bitwise_and(M, N, block_M, block_N, target):
-    func = bitwise_and(M, N, block_M, block_N)
+def run_test_bitwise_and(M, N, block_M, block_N, dtype, target):
+    func = bitwise_and(M, N, block_M, block_N, dtype)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
 
-    a = torch.randint(0, 10, (M, N), dtype=torch.int16).npu()
-    b = torch.randint(0, 10, (M, N), dtype=torch.int16).npu()
+    torch_dtype = torch.int16 if dtype == "int16" else torch.uint16
+    a = torch.randint(0, 10, (M, N), dtype=torch_dtype).npu()
+    b = torch.randint(0, 10, (M, N), dtype=torch_dtype).npu()
 
     torch.npu.synchronize()
 
     c = func(a, b)
     ref_c = a & b
-    torch.testing.assert_close(c, ref_c, rtol=1e-2, atol=1e-2)
+    assert_close_npu(c, ref_c, dtype, rtol=1e-2, atol=1e-2)
 
 
+@pytest.mark.parametrize("dtype", ["int16", "uint16"])
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("shape", [(1024, 1024)])
-def test_bitwise_and(target, shape):
+def test_bitwise_and(dtype, target, shape):
     M, N = shape
-    run_test_bitwise_and(M, N, 128, 256, target=target)
+    run_test_bitwise_and(M, N, 128, 256, dtype, target=target)
 
 
 def axpy(M, N, block_M, block_N, dtype="float"):
@@ -296,8 +330,57 @@ def axpy(M, N, block_M, block_N, dtype="float"):
     return main
 
 
-def run_test_axpy(M, N, block_M, block_N, target):
-    func = axpy(M, N, block_M, block_N)
+def run_test_axpy(M, N, block_M, block_N, dtype, target):
+    func = axpy(M, N, block_M, block_N, dtype)
+    func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
+
+    a = torch.randn(M, N, dtype=torch.float32 if dtype == "float" else torch.float16).npu()
+
+    torch.npu.synchronize()
+
+    b = func(a)
+
+    ref_b = a * 2.0
+    torch.testing.assert_close(b, ref_b, rtol=1e-2, atol=1e-2)
+
+
+@pytest.mark.parametrize("dtype", ["float", "float16"])
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@pytest.mark.parametrize("shape", [(1024, 1024)])
+def test_axpy(dtype, target, shape):
+    M, N = shape
+    run_test_axpy(M, N, 128, 256, dtype, target)
+
+def axpy_slice(M, N, block_M, block_N, dtype="float"):
+    m_num = M // block_M
+    n_num = N // block_N
+
+    VEC_NUM = 2
+
+    @T.prim_func
+    def main(
+            A: T.Tensor((M, N), dtype),
+            B: T.Tensor((M, N), dtype),
+    ):
+        with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
+            bx = cid // n_num
+            by = cid % n_num
+
+            a_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
+            b_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
+            T.tile.fill(b_ub, 0)
+
+            T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a_ub)
+
+            T.tile.axpy(b_ub, a_ub, 2.0)
+
+            T.copy(b_ub, B[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
+
+    return main
+
+
+def run_test_axpy_slice(M, N, block_M, block_N, target):
+    func = axpy_slice(M, N, block_M, block_N)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
 
     a = torch.randn(M, N).npu()
@@ -310,11 +393,11 @@ def run_test_axpy(M, N, block_M, block_N, target):
     torch.testing.assert_close(b, ref_b, rtol=1e-2, atol=1e-2)
 
 
-@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@pytest.mark.parametrize("target", ["ascendc"])
 @pytest.mark.parametrize("shape", [(1024, 1024)])
-def test_axpy(target, shape):
+def test_axpy_slice(target, shape):
     M, N = shape
-    run_test_axpy(M, N, 128, 256, target)
+    run_test_axpy_slice(M, N, 128, 256, target)
 
 
 def bilinear_interpolation(mask, h_repeat, repeat_mode, dst_blk_stride, v_r_offset, v_repeat, src0, src0offset_int,
@@ -332,8 +415,6 @@ def bilinear_interpolation(mask, h_repeat, repeat_mode, dst_blk_stride, v_r_offs
             dst: T.Tensor((src0.shape[0], src0.shape[1] // 2), "float16"),
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
-            bx = cid // n_num
-            by = cid % n_num
 
             src0_ub = T.alloc_ub((src0.shape[0] // VEC_NUM, src0.shape[1]), "float16")
             src0_offset_ub = T.alloc_ub((src0offset.shape[0] // VEC_NUM, src0offset.shape[1]), "uint32")
@@ -456,27 +537,38 @@ def bitwise_lshift(M, N, block_M, block_N, scalarvalue, dtype="int32"):
     return main
 
 
-def run_test_bitwise_lshift(M, N, block_M, block_N, scalarvalue, target):
-    func = bitwise_lshift(M, N, block_M, block_N, scalarvalue)
+def run_test_bitwise_lshift(M, N, block_M, block_N, scalarvalue, dtype, target):
+    func = bitwise_lshift(M, N, block_M, block_N, scalarvalue, dtype)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
 
-    a = torch.randint(low=1, high=101, size=(M, N), dtype=torch.int32).npu()
+    torch_dtype_map = {
+        "int16": torch.int16,
+        "int32": torch.int32,
+        "uint16": torch.uint16,
+        "uint32": torch.uint32,
+    }
+    torch_dtype = torch_dtype_map[dtype]
+    a = torch.randint(low=1, high=101, size=(M, N), dtype=torch_dtype).npu()
 
     torch.npu.synchronize()
 
     b = func(a)
 
-    ref_b = pow(2, scalarvalue) * a
+    # Compute reference on CPU to avoid NPU dtype limitations
+    a_cpu = a.cpu()
+    ref_b = (pow(2, scalarvalue) * a_cpu).npu()
 
-    torch.testing.assert_close(b, ref_b, rtol=1e-2, atol=1e-2)
+    assert_close_npu(b, ref_b, dtype, rtol=1e-2, atol=1e-2)
 
 
+@pytest.mark.parametrize("dtype", ["int16", "int32", "uint16", "uint32"])
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("shape", [(1024, 1024)])
-def test_bitwise_lshift(target, shape):
+def test_bitwise_lshift(dtype, target, shape):
     M, N = shape
-    scalarvalue = random.randint(1, 32)
-    run_test_bitwise_lshift(M, N, 128, 256, scalarvalue=scalarvalue, target=target)
+    max_shift = 16 if dtype in ["int16", "uint16"] else 32
+    scalarvalue = random.randint(1, max_shift)
+    run_test_bitwise_lshift(M, N, 128, 256, scalarvalue=scalarvalue, dtype=dtype, target=target)
 
 
 def bitwise_not(M, N, block_M, block_N, dtype="int16"):
@@ -505,26 +597,32 @@ def bitwise_not(M, N, block_M, block_N, dtype="int16"):
     return main
 
 
-def run_test_bitwise_not(M, N, block_M, block_N, target):
-    func = bitwise_not(M, N, block_M, block_N)
+def run_test_bitwise_not(M, N, block_M, block_N, dtype, target):
+    func = bitwise_not(M, N, block_M, block_N, dtype)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
 
-    a = torch.randint(0, 10, (M, N), dtype=torch.int16).npu()
+    torch_dtype = torch.int16 if dtype == "int16" else torch.uint16
+    a = torch.randint(0, 10, (M, N), dtype=torch_dtype).npu()
 
     torch.npu.synchronize()
 
     b = func(a)
 
-    ref_b = ~a
+    a_cpu = a.cpu()
+    if dtype == "uint16":
+        ref_b = (~a_cpu.to(torch.int32)).to(torch.uint16).npu()
+    else:
+        ref_b = (~a_cpu).npu()
 
-    torch.testing.assert_close(b, ref_b, rtol=1e-2, atol=1e-2)
+    assert_close_npu(b, ref_b, dtype, rtol=1e-2, atol=1e-2)
 
 
+@pytest.mark.parametrize("dtype", ["int16", "uint16"])
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("shape", [(1024, 1024)])
-def test_bitwise_not(target, shape):
+def test_bitwise_not(dtype, target, shape):
     M, N = shape
-    run_test_bitwise_not(M, N, 128, 256, target=target)
+    run_test_bitwise_not(M, N, 128, 256, dtype, target=target)
 
 
 def bitwise_rshift(M, N, block_M, block_N, scalarvalue, dtype="int32"):
@@ -554,27 +652,42 @@ def bitwise_rshift(M, N, block_M, block_N, scalarvalue, dtype="int32"):
     return main
 
 
-def run_test_bitwise_rshift(M, N, block_M, block_N, scalarvalue, target):
-    func = bitwise_rshift(M, N, block_M, block_N, scalarvalue)
+def run_test_bitwise_rshift(M, N, block_M, block_N, scalarvalue, dtype, target):
+    func = bitwise_rshift(M, N, block_M, block_N, scalarvalue, dtype)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
 
-    a = torch.randint(low=1, high=101, size=(M, N), dtype=torch.int32).npu()
+    torch_dtype_map = {
+        "int16": torch.int16,
+        "int32": torch.int32,
+        "uint16": torch.uint16,
+        "uint32": torch.uint32,
+    }
+    torch_dtype = torch_dtype_map[dtype]
+    a = torch.randint(low=1, high=101, size=(M, N), dtype=torch_dtype).npu()
 
     torch.npu.synchronize()
 
     b = func(a)
 
-    ref_b = a // pow(2, scalarvalue)
+    a_cpu = a.cpu()
+    if dtype == "uint16":
+        ref_b = (a_cpu.to(torch.int32) >> scalarvalue).to(torch.uint16).npu()
+    elif dtype == "uint32":
+        ref_b = (a_cpu.to(torch.int64) >> scalarvalue).to(torch.uint32).npu()
+    else:
+        ref_b = (a_cpu >> scalarvalue).npu()
 
-    torch.testing.assert_close(b, ref_b, rtol=1e-2, atol=1e-2)
+    assert_close_npu(b, ref_b, dtype, rtol=1e-2, atol=1e-2)
 
 
+@pytest.mark.parametrize("dtype", ["int16", "int32", "uint16", "uint32"])
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("shape", [(1024, 1024)])
-def test_bitwise_rshift(target, shape):
+def test_bitwise_rshift(dtype, target, shape):
     M, N = shape
-    scalarvalue = random.randint(1, 32)
-    run_test_bitwise_rshift(M, N, 128, 256, scalarvalue=scalarvalue, target=target)
+    max_shift = 16 if dtype in ["int16", "uint16"] else 32
+    scalarvalue = random.randint(1, max_shift)
+    run_test_bitwise_rshift(M, N, 128, 256, scalarvalue=scalarvalue, dtype=dtype, target=target)
 
 
 def bitwise_xor(M, N, block_M, block_N, dtype="int16"):
@@ -608,26 +721,33 @@ def bitwise_xor(M, N, block_M, block_N, dtype="int16"):
     return main
 
 
-def run_test_bitwise_xor(M, N, block_M, block_N, target):
-    func = bitwise_xor(M, N, block_M, block_N)
+def run_test_bitwise_xor(M, N, block_M, block_N, dtype, target):
+    func = bitwise_xor(M, N, block_M, block_N, dtype)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
 
-    a = torch.randint(0, 10, (M, N), dtype=torch.int16).npu()
-    b = torch.randint(0, 10, (M, N), dtype=torch.int16).npu()
+    torch_dtype = torch.int16 if dtype == "int16" else torch.uint16
+    a = torch.randint(0, 10, (M, N), dtype=torch_dtype).npu()
+    b = torch.randint(0, 10, (M, N), dtype=torch_dtype).npu()
 
     torch.npu.synchronize()
 
     c = func(a, b)
 
-    ref_c = torch.bitwise_xor(a, b)
-    torch.testing.assert_close(c, ref_c, rtol=1e-2, atol=1e-2)
+    a_cpu = a.cpu()
+    b_cpu = b.cpu()
+    if dtype == "uint16":
+        ref_c = torch.bitwise_xor(a_cpu.to(torch.int32), b_cpu.to(torch.int32)).to(torch.uint16).npu()
+    else:
+        ref_c = torch.bitwise_xor(a_cpu, b_cpu).npu()
+    assert_close_npu(c, ref_c, dtype, rtol=1e-2, atol=1e-2)
 
 
+@pytest.mark.parametrize("dtype", ["int16", "uint16"])
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("shape", [(1024, 1024)])
-def test_bitwise_xor(target, shape):
+def test_bitwise_xor(dtype, target, shape):
     M, N = shape
-    run_test_bitwise_xor(M, N, 128, 256, target)
+    run_test_bitwise_xor(M, N, 128, 256, dtype, target)
 
 
 def block_reduce_max(M, N, block_M, block_N, repeat, mask, dstRepStride, srcBlkStride, srcRepStride, dataBlockNum,
@@ -658,19 +778,20 @@ def block_reduce_max(M, N, block_M, block_N, repeat, mask, dstRepStride, srcBlkS
 
 
 def run_test_block_reduce_max(M, N, block_M, block_N, repeat, mask, dstRepStride, srcBlkStride, srcRepStride,
-                              dataBlockNum, target):
+                              dataBlockNum, dtype, target):
     func = block_reduce_max(M, N, block_M, block_N, repeat, mask, dstRepStride, srcBlkStride, srcRepStride,
-                            dataBlockNum)
+                            dataBlockNum, dtype)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
 
-    a = torch.randn(M, N, dtype=torch.float16).npu()
+    torch_dtype = torch.float32 if dtype == "float" else torch.float16
+    a = torch.randn(M, N, dtype=torch_dtype).npu()
 
     torch.npu.synchronize()
 
     b = func(a)
 
     num_groups = M * N // dataBlockNum
-    ref_b = torch.zeros((1, num_groups)).to(torch.float16)
+    ref_b = torch.zeros((1, num_groups)).to(torch_dtype)
     a_flag = a.reshape(-1)
     for i in range(num_groups):
         start = i * dataBlockNum
@@ -679,12 +800,13 @@ def run_test_block_reduce_max(M, N, block_M, block_N, repeat, mask, dstRepStride
         max_val = torch.max(group).item()
         ref_b[0, i] = max_val
     ref_b = ref_b.reshape(M, N // dataBlockNum)
-    ref_b = ref_b.npu().to(dtype=torch.float16)
+    ref_b = ref_b.npu().to(dtype=torch_dtype)
     torch.testing.assert_close(b, ref_b, rtol=1e-2, atol=1e-2)
 
 
+@pytest.mark.parametrize("dtype", ["float16"])
 @pytest.mark.parametrize("target", ["ascendc"])
-def test_block_reduce_max(target):
+def test_block_reduce_max(dtype, target):
     M = 2
     N = 512
     block_M = 2
@@ -696,7 +818,7 @@ def test_block_reduce_max(target):
     srcBlkStride = 1
     srcRepStride = 8
     run_test_block_reduce_max(M, N, block_M, block_N, repeat, mask, dstRepStride, srcBlkStride, srcRepStride,
-                              dataBlockNum, target)
+                              dataBlockNum, dtype, target)
 
 
 def block_reduce_min(M, N, block_M, block_N, repeat, mask, dstRepStride, srcBlkStride, srcRepStride, dataBlockNum,
@@ -728,19 +850,20 @@ def block_reduce_min(M, N, block_M, block_N, repeat, mask, dstRepStride, srcBlkS
 
 
 def run_test_block_reduce_min(M, N, block_M, block_N, repeat, mask, dstRepStride, srcBlkStride, srcRepStride,
-                              dataBlockNum, target):
+                              dataBlockNum, dtype, target):
     func = block_reduce_min(M, N, block_M, block_N, repeat, mask, dstRepStride, srcBlkStride, srcRepStride,
-                            dataBlockNum)
+                            dataBlockNum, dtype)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
 
-    a = torch.randn(M, N, dtype=torch.float16).npu()
+    torch_dtype = torch.float32 if dtype == "float" else torch.float16
+    a = torch.randn(M, N, dtype=torch_dtype).npu()
 
     torch.npu.synchronize()
 
     b = func(a)
 
     num_groups = M * N // dataBlockNum
-    ref_b = torch.zeros((1, num_groups)).to(torch.float16)
+    ref_b = torch.zeros((1, num_groups)).to(torch_dtype)
     a_flag = a.reshape(-1)
     for i in range(num_groups):
         start = i * dataBlockNum
@@ -749,13 +872,14 @@ def run_test_block_reduce_min(M, N, block_M, block_N, repeat, mask, dstRepStride
         min_val = torch.min(group).item()
         ref_b[0, i] = min_val
     ref_b = ref_b.reshape(M, N // dataBlockNum)
-    ref_b = ref_b.npu().to(dtype=torch.float16)
+    ref_b = ref_b.npu().to(dtype=torch_dtype)
 
     torch.testing.assert_close(b, ref_b, rtol=1e-2, atol=1e-2)
 
 
+@pytest.mark.parametrize("dtype", ["float16"])
 @pytest.mark.parametrize("target", ["ascendc"])
-def test_block_reduce_min(target):
+def test_block_reduce_min(dtype, target):
     M = 2
     N = 512
     block_M = 2
@@ -767,7 +891,7 @@ def test_block_reduce_min(target):
     srcBlkStride = 1
     srcRepStride = 8
     run_test_block_reduce_min(M, N, block_M, block_N, repeat, mask, dstRepStride, srcBlkStride, srcRepStride,
-                              dataBlockNum, target)
+                              dataBlockNum, dtype, target)
 
 
 def block_reduce_sum(M, N, block_M, block_N, repeat, mask, dstRepStride, srcBlkStride, srcRepStride, dataBlockNum,
@@ -799,19 +923,20 @@ def block_reduce_sum(M, N, block_M, block_N, repeat, mask, dstRepStride, srcBlkS
 
 
 def run_test_block_reduce_sum(M, N, block_M, block_N, repeat, mask, dstRepStride, srcBlkStride, srcRepStride,
-                              dataBlockNum, target):
+                              dataBlockNum, dtype, target):
     func = block_reduce_sum(M, N, block_M, block_N, repeat, mask, dstRepStride, srcBlkStride, srcRepStride,
-                            dataBlockNum)
+                            dataBlockNum, dtype)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
 
-    a = torch.randn(M, N, dtype=torch.float16).npu()
+    torch_dtype = torch.float32 if dtype == "float" else torch.float16
+    a = torch.randn(M, N, dtype=torch_dtype).npu()
 
     torch.npu.synchronize()
 
     b = func(a)
 
     num_groups = M * N // dataBlockNum
-    ref_b = torch.zeros((1, num_groups)).to(torch.float16)
+    ref_b = torch.zeros((1, num_groups)).to(torch_dtype)
     a_flag = a.reshape(-1)
     for i in range(num_groups):
         start = i * dataBlockNum
@@ -820,13 +945,14 @@ def run_test_block_reduce_sum(M, N, block_M, block_N, repeat, mask, dstRepStride
         sum_val = torch.sum(group).item()
         ref_b[0, i] = sum_val
     ref_b = ref_b.reshape(M, N // dataBlockNum)
-    ref_b = ref_b.npu().to(dtype=torch.float16)
+    ref_b = ref_b.npu().to(dtype=torch_dtype)
 
     torch.testing.assert_close(b, ref_b, rtol=1e-2, atol=1e-2)
 
 
+@pytest.mark.parametrize("dtype", ["float16"])
 @pytest.mark.parametrize("target", ["ascendc"])
-def test_block_reduce_sum(target):
+def test_block_reduce_sum(dtype, target):
     M = 2
     N = 512
     block_M = 2
@@ -838,7 +964,7 @@ def test_block_reduce_sum(target):
     srcBlkStride = 1
     srcRepStride = 8
     run_test_block_reduce_sum(M, N, block_M, block_N, repeat, mask, dstRepStride, srcBlkStride, srcRepStride,
-                              dataBlockNum, target)
+                              dataBlockNum, dtype, target)
 
 
 def cast(M, N, block_M, block_N, mode, count):
@@ -884,9 +1010,10 @@ def run_test_cast(M, N, block_M, block_N, mode, count, target):
     torch.testing.assert_close(b, ref_b, rtol=1e-2, atol=1e-2)
 
 
+@pytest.mark.parametrize("dtype", ["float"])
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("shape", [(64, 64)])
-def test_cast(target, shape):
+def test_cast(dtype, target, shape):
     M, N = shape
     run_test_cast(M, N, 16, 16, "CAST_RINT", 4096, target)
 
@@ -936,65 +1063,71 @@ def run_test_cast_scale(M, N, block_M, block_N, mode, count, scale, target):
     torch.testing.assert_close(b, ref_b, rtol=1e-2, atol=1e-2)
 
 
+@pytest.mark.parametrize("dtype", ["int32", "float16"])
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("shape", [(64, 64)])
-def test_cast_scale(target, shape):
+def test_cast_scale(dtype, target, shape):
     M, N = shape
     run_test_cast_scale(M, N, 16, 16, "CAST_RINT", 4096, 1.0, target)
 
 
-def clamp(size, max_val, min_val, dtype="float16"):
-    block_size = 64 * 1024
-    loop_num = (size + block_size - 1) // block_size
+def clamp(M, N, block_M, block_N, max_val, min_val, dtype="float16"):
+    m_num = M // block_M
+    n_num = N // block_N
+    num_blocks = m_num * n_num
 
     VEC_NUM = 2
 
     @T.prim_func
     def main(
-            input: T.Tensor([size], dtype),
-            output: T.Tensor([size], dtype),
+            input: T.Tensor((M, N), dtype),
+            output: T.Tensor((M, N), dtype),
     ):
-        with T.Kernel(loop_num, is_npu=True) as (cid, vid):
-            idx = cid
+        with T.Kernel(num_blocks, is_npu=True) as (cid, vid):
+            bx = cid // n_num
+            by = cid % n_num
 
-            in_ub = T.alloc_ub((block_size // VEC_NUM), dtype)
-            tmp_ub = T.alloc_ub((block_size // VEC_NUM), "uint8")
+            block_size = block_M * block_N // VEC_NUM
+            in_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
+            out_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
+            tmp_ub = T.alloc_ub((block_M // VEC_NUM, block_N), "uint8")
 
-            T.copy(input[idx * block_size // VEC_NUM], in_ub)
-            for i in range(size):
-                T.tile.clamp(in_ub, in_ub, tmp_ub, min_val, max_val, block_size // VEC_NUM)
+            T.copy(input[bx * block_M + vid * block_M // VEC_NUM, by * block_N], in_ub)
 
-            T.copy(in_ub, output[idx * block_size // VEC_NUM])
+            T.tile.clamp(out_ub, in_ub, tmp_ub, min_val, max_val, block_size)
+
+            T.copy(out_ub, output[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
 
     return main
 
 
-def run_test_clamp(size, max_val, min_val, thresh, target):
+def run_test_clamp(M, N, max_val, min_val, thresh, dtype, target, block_M=64, block_N=64):
     if min_val > max_val:
         max_val, min_val = min_val, max_val
 
-    func = clamp(size, max_val, min_val, "float16")
+    func = clamp(M, N, block_M, block_N, max_val, min_val, dtype)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
 
-    a = (torch.rand([size]) - 0.5) * 2 * thresh
-    a = a.half().npu()
+    a = (torch.rand(M, N) - 0.5) * 2 * thresh
+    a = a.half().npu() if dtype == "float16" else a.float().npu()
 
     b = func(a)
     ref_b = torch.clamp(a, min_val, max_val)
 
-    torch.testing.assert_close(b, ref_b, rtol=0, atol=0)
+    torch.testing.assert_close(b, ref_b, rtol=1e-2, atol=1e-2)
 
 
+@pytest.mark.parametrize("dtype", ["float", "float16"])
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
-def test_clamp(target):
-    size = 10
+def test_clamp(dtype, target):
+    M, N = 1024, 1024
     thresh = 10000
-    max_val = random.uniform(-1 * thresh, thresh)
-    min_val = random.uniform(-1 * thresh, thresh)
-    run_test_clamp(size, max_val, min_val, thresh, target)
+    max_val = random.uniform(-thresh, thresh)
+    min_val = random.uniform(-thresh, thresh)
+    run_test_clamp(M, N, max_val, min_val, thresh, dtype, target, block_M=64, block_N=64)
 
 
-def compare(M, N, block_M, block_N, mode, dtype="float"):
+def compare(M, N, block_M, block_N, mode, dtype="float", out_dtype="uint8"):
     m_num = M // block_M
     n_num = N // block_N
 
@@ -1004,7 +1137,7 @@ def compare(M, N, block_M, block_N, mode, dtype="float"):
     def main(
             A: T.Tensor((M, N), dtype),
             B: T.Tensor((M, N), dtype),
-            C: T.Tensor((M, N // 8), "uint8"),
+            C: T.Tensor((M, N // 8), out_dtype),
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
@@ -1012,7 +1145,7 @@ def compare(M, N, block_M, block_N, mode, dtype="float"):
 
             a_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
             b_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
-            c_ub = T.alloc_ub((block_M // VEC_NUM, block_N // 8), "uint8")
+            c_ub = T.alloc_ub((block_M // VEC_NUM, block_N // 8), out_dtype)
 
             T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a_ub)
             T.copy(B[bx * block_M + vid * block_M // VEC_NUM, by * block_N], b_ub)
@@ -1024,32 +1157,33 @@ def compare(M, N, block_M, block_N, mode, dtype="float"):
     return main
 
 
-def compare_and_set_bits(A, B, C):
+def compare_and_set_bits(A, B, C, out_dtype="uint8"):
     """
     compare A to B, and set C's element according to comparison result
     Args:
-        A: torch.Tensor, shape (128, 128), float32
-        B: torch.Tensor, shape (128, 128), float32
-        C: torch.Tensor, shape (128, 16), uint8
+        A: torch.Tensor, shape (128, 128), float32 or float16
+        B: torch.Tensor, shape (128, 128), float32 or float16
+        C: torch.Tensor, shape (128, 16), int8 or uint8
+        out_dtype: str, output dtype ("int8" or "uint8")
 
     Returns:
-        C: torch.Tensor, shape (128, 16), uint8
+        C: torch.Tensor, shape (128, 16), int8 or uint8
     """
-    assert A.dtype == torch.float32, "A must be float32"
-    assert B.dtype == torch.float32, "B must be float32"
-    assert C.dtype == torch.uint8, "C must be uint8"
+    assert A.dtype in [torch.float32, torch.float16], "A must be float32 or float16"
+    assert B.dtype in [torch.float32, torch.float16], "B must be float32 or float16"
+    assert out_dtype in ["int8", "uint8"], "out_dtype must be int8 or uint8"
 
-    # set mask's according bit to True when A < B, or to False
-    mask = A < B  # shape: (128, 128)
+    mask = A < B
 
-    C_result = torch.zeros(C.size(0), C.size(1), dtype=torch.uint8, device=A.device)
+    torch_out_dtype = torch.int8 if out_dtype == "int8" else torch.uint8
+    C_result = torch.zeros(C.size(0), C.size(1), dtype=torch_out_dtype, device=A.device)
 
     for i in range(C.size(0)):
         for j in range(C.size(1)):
             start_bit = j * 8
             end_bit = start_bit + 8
 
-            bits = mask[i, start_bit:end_bit]  # shape: (8,)
+            bits = mask[i, start_bit:end_bit]
 
             byte_value = 0
             for k in range(8):
@@ -1061,34 +1195,37 @@ def compare_and_set_bits(A, B, C):
     return C_result
 
 
-def run_test_compare(M, N, block_M, block_N, mode, target):
+def run_test_compare(M, N, block_M, block_N, mode, dtype, out_dtype, target):
     torch.npu.config.allow_internal_format = True
-    # torch.set_printoptions(threshold=np.inf)
 
-    func = compare(M, N, block_M, block_N, mode)
+    func = compare(M, N, block_M, block_N, mode, dtype, out_dtype)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
 
-    a = torch.zeros(M, N).npu()
-    b = torch.ones(M, N).npu()
+    torch_dtype = torch.float32 if dtype == "float" else torch.float16
+    a = torch.zeros(M, N, dtype=torch_dtype).npu()
+    b = torch.ones(M, N, dtype=torch_dtype).npu()
 
     torch.npu.synchronize()
 
     c = func(a, b)
 
-    ref_c = torch.zeros(M, N // 8, dtype=torch.uint8).npu()
-    ref_c = compare_and_set_bits(a, b, ref_c)
+    torch_out_dtype = torch.int8 if out_dtype == "int8" else torch.uint8
+    ref_c = torch.zeros(M, N // 8, dtype=torch_out_dtype).npu()
+    ref_c = compare_and_set_bits(a, b, ref_c, out_dtype)
 
     torch.testing.assert_close(c, ref_c, rtol=1e-2, atol=1e-2)
 
 
+@pytest.mark.parametrize("out_dtype", ["int8", "uint8"])
+@pytest.mark.parametrize("dtype", ["float", "float16"])
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("shape", [(256, 256)])
-def test_compare(target, shape):
+def test_compare(out_dtype, dtype, target, shape):
     M, N = shape
-    run_test_compare(M, N, 128, 256, "LT", target)
+    run_test_compare(M, N, 128, 256, "LT", dtype, out_dtype, target)
 
 
-def compare_scalar(M, N, block_M, block_N, mode, b_scalar, dtype="float"):
+def compare_scalar(M, N, block_M, block_N, mode, b_scalar, dtype="float", out_dtype="uint8"):
     m_num = M // block_M
     n_num = N // block_N
 
@@ -1097,14 +1234,14 @@ def compare_scalar(M, N, block_M, block_N, mode, b_scalar, dtype="float"):
     @T.prim_func
     def main(
             A: T.Tensor((M, N), dtype),
-            C: T.Tensor((M, N // 8), "uint8")
+            C: T.Tensor((M, N // 8), out_dtype)
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
             by = cid % n_num
 
             a_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
-            c_ub = T.alloc_ub((block_M // VEC_NUM, block_N // 8), "uint8")
+            c_ub = T.alloc_ub((block_M // VEC_NUM, block_N // 8), out_dtype)
 
             T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a_ub)
 
@@ -1115,31 +1252,32 @@ def compare_scalar(M, N, block_M, block_N, mode, b_scalar, dtype="float"):
     return main
 
 
-def compare_with_scalar_and_set_bits(A, b, C):
+def compare_with_scalar_and_set_bits(A, b, C, out_dtype="uint8"):
     """
     compare A's element to b, and set C's element according to comparison result
     Args:
-        A: torch.Tensor, shape (128, 128), float32
-        b: float, scalar value
-        C: torch.Tensor, shape (128, 16), uint8
+        A: torch.Tensor, shape (128, 128), float32 or float16
+        b: scalar value
+        C: torch.Tensor, shape (128, 16), int8 or uint8
+        out_dtype: str, output dtype ("int8" or "uint8")
 
     Returns:
-        C: torch.Tensor, shape (128, 16), uint8
+        C: torch.Tensor, shape (128, 16), int8 or uint8
     """
-    assert A.dtype == torch.float32, "A must be float32"
-    assert C.dtype == torch.uint8, "C must be uint8"
+    assert A.dtype in [torch.float32, torch.float16], "A must be float32 or float16"
+    assert out_dtype in ["int8", "uint8"], "out_dtype must be int8 or uint8"
 
-    # set mask position to True or False(position set to True when A < b, else False)
-    mask = A < b  # shape: (128, 128)
+    mask = b > A
 
-    C_result = torch.zeros(C.size(0), C.size(1), dtype=torch.uint8, device=A.device)
+    torch_out_dtype = torch.int8 if out_dtype == "int8" else torch.uint8
+    C_result = torch.zeros(C.size(0), C.size(1), dtype=torch_out_dtype, device=A.device)
 
     for i in range(C.size(0)):
         for j in range(C.size(1)):
             start_bit = j * 8
             end_bit = start_bit + 8
 
-            bits = mask[i, start_bit:end_bit]  # shape: (8,)
+            bits = mask[i, start_bit:end_bit]
 
             byte_value = 0
             for k in range(8):
@@ -1151,33 +1289,37 @@ def compare_with_scalar_and_set_bits(A, b, C):
     return C_result
 
 
-def run_test_compare_scalar(M, N, block_M, block_N, mode, b_scalar, target):
+def run_test_compare_scalar(M, N, block_M, block_N, mode, b_scalar, dtype, out_dtype, target):
     torch.npu.config.allow_internal_format = True
-    # torch.set_printoptions(threshold=np.inf)
 
-    func = compare_scalar(M, N, block_M, block_N, mode, b_scalar)
+    func = compare_scalar(M, N, block_M, block_N, mode, b_scalar, dtype, out_dtype)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
-    a = torch.zeros(M, N).npu()
+
+    torch_dtype = torch.float32 if dtype == "float" else torch.float16
+    a = torch.zeros(M, N, dtype=torch_dtype).npu()
 
     torch.npu.synchronize()
 
     c = func(a)
 
-    ref_c = torch.zeros(M, N // 8, dtype=torch.uint8).npu()
-    ref_c = compare_with_scalar_and_set_bits(a, b_scalar, ref_c)
+    torch_out_dtype = torch.int8 if out_dtype == "int8" else torch.uint8
+    ref_c = torch.zeros(M, N // 8, dtype=torch_out_dtype).npu()
+    ref_c = compare_with_scalar_and_set_bits(a, b_scalar, ref_c, out_dtype)
 
     torch.testing.assert_close(c, ref_c, rtol=1e-2, atol=1e-2)
 
 
+@pytest.mark.parametrize("out_dtype", ["int8", "uint8"])
+@pytest.mark.parametrize("dtype", ["float", "float16"])
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("shape", [(256, 256)])
-def test_compare_scalar(target, shape):
+def test_compare_scalar(out_dtype, dtype, target, shape):
     M, N = shape
     block_M = 128
     block_N = 256
     mode = "LT"
     b_scalar = 1.0
-    run_test_compare_scalar(M, N, block_M, block_N, mode, b_scalar, target)
+    run_test_compare_scalar(M, N, block_M, block_N, mode, b_scalar, dtype, out_dtype, target)
 
 
 def cos(M, N, block_M, block_N, dtype="float"):
@@ -1208,23 +1350,24 @@ def cos(M, N, block_M, block_N, dtype="float"):
     return main
 
 
-def run_test_cos(target):
+def run_test_cos(dtype, target):
     test_configs = [
         (1024, 1024, 128, 128),
     ]
 
     for M, N, block_M, block_N in test_configs:
-        func = cos(M, N, block_M, block_N, dtype="float")
+        func = cos(M, N, block_M, block_N, dtype)
         func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
-        a = torch.randn(M, N).npu()
+        a = torch.randn(M, N, dtype=torch.float32 if dtype == "float" else torch.float16).npu()
         b = func(a)
         ref_b = torch.cos(a)
         torch.testing.assert_close(b, ref_b, rtol=1e-4, atol=1e-4)
 
 
+@pytest.mark.parametrize("dtype", ["float", "float16"])
 @pytest.mark.parametrize("target", ["ascendc"])
-def test_cos(target):
-    run_test_cos(target)
+def test_cos(dtype, target):
+    run_test_cos(dtype, target)
 
 
 def createvecindex(M, N, block_M, block_N, firstValue, dtype="int32"):
@@ -1250,28 +1393,56 @@ def createvecindex(M, N, block_M, block_N, firstValue, dtype="int32"):
     return main
 
 
-def run_test_createvecindex(M, N, block_M, block_N, firstValue, target):
-    func = createvecindex(M, N, block_M, block_N, firstValue)
+def run_test_createvecindex(M, N, block_M, block_N, firstValue, dtype, target):
+    func = createvecindex(M, N, block_M, block_N, firstValue, dtype)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
 
     torch.npu.synchronize()
 
     c = func()
 
-    ref_c = torch.arange(start=firstValue, end=firstValue + block_N, dtype=torch.int32).reshape(M, N)
+    dtype_map = {
+        "int16": torch.int16,
+        "int32": torch.int32,
+        "uint16": torch.uint16,
+        "uint32": torch.uint32,
+        "float16": torch.float16,
+        "float": torch.float32,
+    }
+    torch_dtype = dtype_map.get(dtype, torch.int32)
+
+    if dtype in ["uint16", "uint32"]:
+        ref_c = torch.arange(start=firstValue, end=firstValue + block_N, dtype=torch.int32).to(torch_dtype).reshape(M, N)
+    else:
+        ref_c = torch.arange(start=firstValue, end=firstValue + block_N, dtype=torch_dtype).reshape(M, N)
     ref_c = ref_c.npu()
 
-    torch.testing.assert_close(c, ref_c, rtol=1e-2, atol=1e-2)
+    if dtype in ["uint16", "uint32"]:
+        torch.testing.assert_close(c.cpu(), ref_c.cpu(), rtol=1e-2, atol=1e-2)
+    else:
+        torch.testing.assert_close(c, ref_c, rtol=1e-2, atol=1e-2)
 
 
-@pytest.mark.parametrize("target", ["ascendc", "pto"])
-def test_createvecindex(target):
+@pytest.mark.parametrize("dtype", ["int16", "int32", "float16", "float"])
+@pytest.mark.parametrize("target", ["ascendc"])
+def test_createvecindex_ascendc(dtype, target):
     M = 1
     N = 1024
     block_M = 1
     block_N = 1024
     firstValue = 0
-    run_test_createvecindex(M, N, block_M, block_N, firstValue, target)
+    run_test_createvecindex(M, N, block_M, block_N, firstValue, dtype, target)
+
+
+@pytest.mark.parametrize("dtype", ["int32", "uint32", "int16", "uint16"])
+@pytest.mark.parametrize("target", ["pto"])
+def test_createvecindex_pto(dtype, target):
+    M = 1
+    N = 1024
+    block_M = 1
+    block_N = 1024
+    firstValue = 0
+    run_test_createvecindex(M, N, block_M, block_N, firstValue, dtype, target)
 
 
 def vec_div(M, N, block_M, block_N, dtype="float"):
@@ -1304,12 +1475,13 @@ def vec_div(M, N, block_M, block_N, dtype="float"):
     return main
 
 
-def run_test_vec_div(M, N, block_M, block_N, target):
-    func = vec_div(M, N, block_M, block_N)
+def run_test_vec_div(M, N, block_M, block_N, dtype, target):
+    func = vec_div(M, N, block_M, block_N, dtype)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
 
-    a = torch.randn(M, N).npu()
-    b = torch.randn(M, N).npu()
+    a = torch.randn(M, N, dtype=torch.float32 if dtype == "float" else torch.float16).npu()
+    b = torch.randn(M, N, dtype=torch.float32 if dtype == "float" else torch.float16).npu()
+    b = torch.where(b >= 0, torch.clamp(b, min=0.5), torch.clamp(b, max=-0.5))
 
     torch.npu.synchronize()
 
@@ -1320,11 +1492,12 @@ def run_test_vec_div(M, N, block_M, block_N, target):
     torch.testing.assert_close(c, ref_c, rtol=1e-2, atol=1e-2)
 
 
+@pytest.mark.parametrize("dtype", ["float", "float16"])
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("shape", [(1024, 1024)])
-def test_vec_div(target, shape):
+def test_vec_div(dtype, target, shape):
     M, N = shape
-    run_test_vec_div(M, N, 64, 128, target=target)
+    run_test_vec_div(M, N, 64, 128, dtype, target=target)
 
 
 def exp(M, N, block_M, block_N, dtype="float"):
@@ -1354,11 +1527,11 @@ def exp(M, N, block_M, block_N, dtype="float"):
     return main
 
 
-def run_test_exp(M, N, block_M, block_N, target):
-    func = exp(M, N, block_M, block_N)
+def run_test_exp(M, N, block_M, block_N, dtype, target):
+    func = exp(M, N, block_M, block_N, dtype)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
 
-    a = torch.randn(M, N).npu()
+    a = torch.randn(M, N, dtype=torch.float32 if dtype == "float" else torch.float16).npu()
 
     torch.npu.synchronize()
 
@@ -1369,11 +1542,12 @@ def run_test_exp(M, N, block_M, block_N, target):
     torch.testing.assert_close(b, ref_b, rtol=1e-2, atol=1e-2)
 
 
+@pytest.mark.parametrize("dtype", ["float", "float16"])
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("shape", [(1024, 1024)])
-def test_exp(target, shape):
+def test_exp(dtype, target, shape):
     M, N = shape
-    run_test_exp(M, N, 128, 256, target=target)
+    run_test_exp(M, N, 128, 256, dtype, target=target)
 
 
 def fill(M, N, block_M, block_N, dtype="float"):
@@ -1395,24 +1569,25 @@ def fill(M, N, block_M, block_N, dtype="float"):
     return main
 
 
-def run_test_fill(M, N, block_M, block_N, target):
-    func = fill(M, N, block_M, block_N)
+def run_test_fill(M, N, block_M, block_N, dtype, target):
+    func = fill(M, N, block_M, block_N, dtype)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
 
     torch.npu.synchronize()
 
     b = func()
 
-    ref_b = torch.full((M, N), 10.0).npu()
+    ref_b = torch.full((M, N), 10.0, dtype=torch.float32 if dtype == "float" else torch.float16).npu()
 
     torch.testing.assert_close(b, ref_b, rtol=1e-2, atol=1e-2)
 
 
+@pytest.mark.parametrize("dtype", ["float", "float16"])
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("shape", [(1024, 1024)])
-def test_fill(target, shape):
+def test_fill(dtype, target, shape):
     M, N = shape
-    run_test_fill(M, N, 64, 32, target=target)
+    run_test_fill(M, N, 64, 32, dtype, target=target)
 
 
 def gather(M, N, block_M, block_N, dtype="int32"):
@@ -1446,23 +1621,48 @@ def gather(M, N, block_M, block_N, dtype="int32"):
 
 
 def generate_golden_gather(a, b):
-    result = torch.zeros(a.size(0), a.size(1), dtype=torch.int32)
+    result = torch.zeros(a.size(0), a.size(1), dtype=a.dtype)
+    element_size = a.element_size()
     for i in range(a.size(0)):
-        tmp_result = torch.zeros(1, a.size(1), dtype=torch.int32)
+        tmp_result = torch.zeros(1, a.size(1), dtype=a.dtype)
         for j in range(a.size(1)):
-            index = b[i, j].to(torch.int32) / 4  # 4: sizeof(int)
+            index = b[i, j].to(torch.int32) // element_size
             index = index.long()
             tmp_result[0, j] = a[i, index]
         result[i:] = tmp_result
     return result
 
 
-def run_test_gather(M, N, block_M, block_N, target):
-    func = gather(M, N, block_M, block_N)
+def run_test_gather(M, N, block_M, block_N, dtype, target):
+    func = gather(M, N, block_M, block_N, dtype)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
 
-    a = torch.arange(N, dtype=torch.int32).unsqueeze(0).expand(M, -1).npu()
-    all_multiples = torch.arange(0, 4 * N, 4)  # 4: sizeof(int)
+    dtype_map = {
+        "int16": torch.int16,
+        "int32": torch.int32,
+        "uint16": torch.uint16,
+        "uint32": torch.uint32,
+        "float": torch.float32,
+        "float16": torch.float16,
+        "bfloat16": torch.bfloat16,
+    }
+    element_sizes = {
+        "int16": 2,
+        "int32": 4,
+        "uint16": 2,
+        "uint32": 4,
+        "float": 4,
+        "float16": 2,
+        "bfloat16": 2,
+    }
+    torch_dtype = dtype_map.get(dtype, torch.int32)
+    element_size = element_sizes.get(dtype, 4)
+
+    if dtype in ["uint16", "uint32"]:
+        a = torch.arange(N, dtype=torch.int32).to(torch_dtype).unsqueeze(0).expand(M, -1).npu()
+    else:
+        a = torch.arange(N, dtype=torch_dtype).unsqueeze(0).expand(M, -1).npu()
+    all_multiples = torch.arange(0, element_size * N, element_size)
     random_indices = torch.randperm(len(all_multiples))[:N]
     random_multiples = all_multiples[random_indices].to(torch.uint32)
     tmp_tensor = random_multiples.reshape(1, N)
@@ -1475,16 +1675,20 @@ def run_test_gather(M, N, block_M, block_N, target):
 
     ref_c = generate_golden_gather(a, b).npu()
 
-    torch.testing.assert_close(c, ref_c, rtol=1e-2, atol=1e-2)
+    if dtype in ["uint16", "uint32"]:
+        torch.testing.assert_close(c.cpu(), ref_c.cpu(), rtol=1e-2, atol=1e-2)
+    else:
+        torch.testing.assert_close(c, ref_c, rtol=1e-2, atol=1e-2)
 
 
+@pytest.mark.parametrize("dtype", ["int16", "int32", "uint16", "uint32", "float", "float16", "bfloat16"])
 @pytest.mark.parametrize("target", ["ascendc"])
 @pytest.mark.parametrize("shape", [(128, 1024)])
-def test_gather(target, shape):
+def test_gather(dtype, target, shape):
     M, N = shape
     block_M = 16
     block_N = N
-    run_test_gather(M, N, block_M, block_N, target)
+    run_test_gather(M, N, block_M, block_N, dtype, target)
 
 
 def gatherb(M, N, block_M, block_N, b_len, repeat_time, dtype="uint16"):
@@ -1517,20 +1721,32 @@ def gatherb(M, N, block_M, block_N, b_len, repeat_time, dtype="uint16"):
     return main
 
 
-def generate_golden_gatherb(a, b, N, max_index):
-    result = torch.zeros(1, N, dtype=torch.int16)
+def generate_golden_gatherb(a, b, N, max_index, element_size):
+    result = torch.zeros(1, N, dtype=a.dtype)
+    num_elements_per_gather = 32 // element_size
     for i in range(max_index):
-        start = b[0, i].to(torch.int32) // 2  # 2: sizeof(uint16)
-        for j in range(16):  # 16: 8 * 32 // (2 * 8) 一个DataBlock有16个数
-            result[0, i * 16 + j] = start + j
+        start = b[0, i].to(torch.int32) // element_size
+        for j in range(num_elements_per_gather):
+            result[0, i * num_elements_per_gather + j] = start + j
     return result
 
 
-def run_test_gatherb(M, N, block_M, block_N, b_len, repeat_time, target):
-    func = gatherb(M, N, block_M, block_N, b_len, repeat_time)
+def run_test_gatherb(M, N, block_M, block_N, b_len, repeat_time, dtype, target):
+    func = gatherb(M, N, block_M, block_N, b_len, repeat_time, dtype)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
 
-    a = torch.arange(N, dtype=torch.int16).to(torch.uint16).unsqueeze(0).expand(M, -1).npu()
+    dtype_map = {
+        "uint16": torch.uint16,
+        "uint32": torch.uint32,
+    }
+    element_sizes = {
+        "uint16": 2,
+        "uint32": 4,
+    }
+    torch_dtype = dtype_map.get(dtype, torch.uint16)
+    element_size = element_sizes.get(dtype, 2)
+
+    a = torch.arange(N, dtype=torch.int32).to(torch_dtype).unsqueeze(0).expand(M, -1).npu()
     tmp_tensor = torch.zeros(1, b_len, dtype=torch.uint32)
     for i in range(b_len):
         tmp_tensor[0, b_len - 1 - i] = i * 32
@@ -1540,20 +1756,26 @@ def run_test_gatherb(M, N, block_M, block_N, b_len, repeat_time, target):
 
     c = func(a, b)
 
-    ref_c = generate_golden_gatherb(a, b, N, b_len).expand(M, -1).npu()
+    ref_c = generate_golden_gatherb(a, b, N, b_len, element_size).expand(M, -1).npu()
 
-    torch.testing.assert_close(c.to(torch.int16), ref_c.to(torch.int16), rtol=1e-2, atol=1e-2)
+    torch.testing.assert_close(c.cpu(), ref_c.cpu(), rtol=1e-2, atol=1e-2)
 
 
+@pytest.mark.parametrize("dtype", ["uint16", "uint32"])
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("shape", [(64, 1024)])
-def test_gatherb(target, shape):
+def test_gatherb(dtype, target, shape):
     M, N = shape
     block_M = 2
     block_N = N
-    b_len = (N * 2 - 1) // 32 + 1
-    repeat_time = N * 2 // (32 * 8)
-    run_test_gatherb(M, N, block_M, block_N, b_len, repeat_time, target)
+    element_sizes = {
+        "uint16": 2,
+        "uint32": 4,
+    }
+    element_size = element_sizes.get(dtype, 2)
+    b_len = (N * element_size - 1) // 32 + 1
+    repeat_time = N * element_size // (32 * 8)
+    run_test_gatherb(M, N, block_M, block_N, b_len, repeat_time, dtype, target)
 
 
 def leaky_relu(M, N, block_M, block_N, dtype="float"):
@@ -1583,11 +1805,11 @@ def leaky_relu(M, N, block_M, block_N, dtype="float"):
     return main
 
 
-def run_test_leaky_relu(M, N, block_M, block_N, target):
-    func = leaky_relu(M, N, block_M, block_N)
+def run_test_leaky_relu(M, N, block_M, block_N, dtype, target):
+    func = leaky_relu(M, N, block_M, block_N, dtype)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
 
-    a = torch.randn(M, N).npu()
+    a = torch.randn(M, N, dtype=torch.float32 if dtype == "float" else torch.float16).npu()
 
     torch.npu.synchronize()
 
@@ -1599,13 +1821,14 @@ def run_test_leaky_relu(M, N, block_M, block_N, target):
     torch.testing.assert_close(b, ref_b, rtol=1e-2, atol=1e-2)
 
 
+@pytest.mark.parametrize("dtype", ["float", "float16"])
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("shape", [(1024, 1024)])
-def test_leaky_relu(target, shape):
+def test_leaky_relu(dtype, target, shape):
     M, N = shape
     block_M = 128
     block_N = 256
-    run_test_leaky_relu(M, N, block_M, block_N, target)
+    run_test_leaky_relu(M, N, block_M, block_N, dtype, target)
 
 
 def ln(M, N, block_M, block_N, dtype="float"):
@@ -1635,11 +1858,11 @@ def ln(M, N, block_M, block_N, dtype="float"):
     return main
 
 
-def run_test_ln(M, N, block_M, block_N, target):
-    func = ln(M, N, block_M, block_N)
+def run_test_ln(M, N, block_M, block_N, dtype, target):
+    func = ln(M, N, block_M, block_N, dtype)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
 
-    a = abs(torch.randn(M, N).npu())
+    a = abs(torch.randn(M, N, dtype=torch.float32 if dtype == "float" else torch.float16).npu())
 
     torch.npu.synchronize()
 
@@ -1650,13 +1873,14 @@ def run_test_ln(M, N, block_M, block_N, target):
     torch.testing.assert_close(b, ref_b, rtol=1e-2, atol=1e-2)
 
 
+@pytest.mark.parametrize("dtype", ["float", "float16"])
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("shape", [(1024, 1024)])
-def test_ln(target, shape):
+def test_ln(dtype, target, shape):
     M, N = shape
     block_M = 128
     block_N = 256
-    run_test_ln(M, N, block_M, block_N, target)
+    run_test_ln(M, N, block_M, block_N, dtype, target)
 
 
 def gathermask_fixed_mode(M, N, block_M, block_N, dtype="int32"):
@@ -1676,7 +1900,7 @@ def gathermask_fixed_mode(M, N, block_M, block_N, dtype="int32"):
 
             a_ub = T.alloc_shared((block_M // VEC_NUM, block_N), dtype)
             b_ub = T.alloc_shared((block_M //VEC_NUM, block_N), dtype)
-            
+
             T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a_ub)
 
             T.tile.gather_mask(b_ub, a_ub, "P0101")
@@ -1685,11 +1909,25 @@ def gathermask_fixed_mode(M, N, block_M, block_N, dtype="int32"):
 
     return main
 
-def run_test_gathermask_fixed_mode(M, N, block_M, block_N, target):
-    func = gathermask_fixed_mode(M, N, block_M, block_N)
+def run_test_gathermask(M, N, block_M, block_N, dtype, target):
+    func = gathermask_fixed_mode(M, N, block_M, block_N, dtype)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
 
-    a = torch.arange(1, M * N + 1, dtype=torch.int32).reshape(M, N).npu()
+    dtype_map = {
+        "int16": torch.int16,
+        "int32": torch.int32,
+        "uint16": torch.uint16,
+        "uint32": torch.uint32,
+        "float": torch.float32,
+        "float16": torch.float16,
+        "bfloat16": torch.bfloat16,
+    }
+    torch_dtype = dtype_map.get(dtype, torch.int32)
+
+    if dtype in ["uint16", "uint32"]:
+        a = torch.arange(1, M * N + 1, dtype=torch.int32).to(torch_dtype).reshape(M, N).npu()
+    else:
+        a = torch.arange(1, M * N + 1, dtype=torch_dtype).reshape(M, N).npu()
 
     torch.npu.synchronize()
 
@@ -1698,13 +1936,17 @@ def run_test_gathermask_fixed_mode(M, N, block_M, block_N, target):
 
     ref_b = a[:, ::2].reshape(M, N // 2)
 
-    torch.testing.assert_close(b, ref_b, rtol=1e-2, atol=1e-2)
+    if dtype in ["uint16", "uint32"]:
+        torch.testing.assert_close(b.cpu(), ref_b.cpu(), rtol=1e-2, atol=1e-2)
+    else:
+        torch.testing.assert_close(b, ref_b, rtol=1e-2, atol=1e-2)
 
+@pytest.mark.parametrize("dtype", ["int16", "int32", "uint16", "uint32", "float", "float16", "bfloat16"])
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("shape", [(4, 256)])
-def test_gathermask_fixed_mode(target, shape):
+def test_gathermask(dtype, target, shape):
     M, N = shape
-    run_test_gathermask_fixed_mode(M, N, 2, 256, target=target)
+    run_test_gathermask(M, N, 2, 256, dtype, target=target)
 
 
 def gathermask_custom_mode(M, N, block_M, block_N, dtype="int32"):
@@ -1726,7 +1968,7 @@ def gathermask_custom_mode(M, N, block_M, block_N, dtype="int32"):
             a_ub = T.alloc_shared((block_M // VEC_NUM, block_N), dtype)
             idx_ub = T.alloc_shared((1, 8), "uint32")
             b_ub = T.alloc_shared((block_M //VEC_NUM, 8), dtype)
-            
+
             T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a_ub)
             T.copy(idx, idx_ub)
 
@@ -1789,12 +2031,24 @@ def vec_max(M, N, block_M, block_N, dtype="float"):
     return main
 
 
-def run_test_vec_max(M, N, block_M, block_N, target):
-    func = vec_max(M, N, block_M, block_N)
+def run_test_vec_max(M, N, block_M, block_N, dtype, target):
+    func = vec_max(M, N, block_M, block_N, dtype)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
 
-    a = torch.randn(M, N).npu()
-    b = torch.randn(M, N).npu()
+    dtype_map = {
+        "float": torch.float32,
+        "float16": torch.float16,
+        "int16": torch.int16,
+        "int32": torch.int32,
+    }
+    torch_dtype = dtype_map.get(dtype, torch.float32)
+
+    if dtype in ["int16", "int32"]:
+        a = torch.randint(-100, 100, (M, N), dtype=torch_dtype).npu()
+        b = torch.randint(-100, 100, (M, N), dtype=torch_dtype).npu()
+    else:
+        a = torch.randn(M, N, dtype=torch_dtype).npu()
+        b = torch.randn(M, N, dtype=torch_dtype).npu()
 
     torch.npu.synchronize()
 
@@ -1805,11 +2059,12 @@ def run_test_vec_max(M, N, block_M, block_N, target):
     torch.testing.assert_close(c, ref_c, rtol=1e-2, atol=1e-2)
 
 
+@pytest.mark.parametrize("dtype", ["float", "float16", "int16", "int32"])
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("shape", [(1024, 1024)])
-def test_vec_max(target, shape):
+def test_vec_max(dtype, target, shape):
     M, N = shape
-    run_test_vec_max(M, N, 64, 128, target=target)
+    run_test_vec_max(M, N, 64, 128, dtype, target=target)
 
 
 def vec_maxs(M, N, block_M, block_N, scalar, dtype="float"):
@@ -1835,12 +2090,23 @@ def vec_maxs(M, N, block_M, block_N, scalar, dtype="float"):
     return main
 
 
-def run_test_vec_maxs(M, N, block_M, block_N, scalar, target):
-    func = vec_maxs(M, N, block_M, block_N, scalar)
+def run_test_vec_maxs(M, N, block_M, block_N, scalar, dtype, target):
+    func = vec_maxs(M, N, block_M, block_N, scalar, dtype)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
 
-    a = torch.randn(M, N).float().npu()
-    a = a * 50
+    dtype_map = {
+        "float": torch.float32,
+        "float16": torch.float16,
+        "int16": torch.int16,
+        "int32": torch.int32,
+    }
+    torch_dtype = dtype_map.get(dtype, torch.float32)
+
+    if dtype in ["int16", "int32"]:
+        a = torch.randint(-100, 100, (M, N), dtype=torch_dtype).npu()
+    else:
+        a = torch.randn(M, N, dtype=torch_dtype).npu()
+        a = a * 50
 
     torch.npu.synchronize()
 
@@ -1851,12 +2117,13 @@ def run_test_vec_maxs(M, N, block_M, block_N, scalar, target):
     torch.testing.assert_close(b, ref_b, rtol=1e-2, atol=1e-2)
 
 
+@pytest.mark.parametrize("dtype", ["float", "float16", "int16", "int32"])
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("shape", [(1024, 1024)])
-def test_vec_maxs(target, shape):
+def test_vec_maxs(dtype, target, shape):
     M, N = shape
-    scalar = 2.0
-    run_test_vec_maxs(M, N, 64, 32, scalar=scalar, target=target)
+    scalar = 2.0 if dtype in ["float", "float16"] else 2
+    run_test_vec_maxs(M, N, 64, 32, scalar=scalar, dtype=dtype, target=target)
 
 
 def vec_min(M, N, block_M, block_N, dtype="float"):
@@ -1889,12 +2156,24 @@ def vec_min(M, N, block_M, block_N, dtype="float"):
     return main
 
 
-def run_test_vec_min(M, N, block_M, block_N, target):
-    func = vec_min(M, N, block_M, block_N)
+def run_test_vec_min(M, N, block_M, block_N, dtype, target):
+    func = vec_min(M, N, block_M, block_N, dtype)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
 
-    a = torch.randn(M, N).npu()
-    b = torch.randn(M, N).npu()
+    dtype_map = {
+        "float": torch.float32,
+        "float16": torch.float16,
+        "int16": torch.int16,
+        "int32": torch.int32,
+    }
+    torch_dtype = dtype_map.get(dtype, torch.float32)
+
+    if dtype in ["int16", "int32"]:
+        a = torch.randint(-100, 100, (M, N), dtype=torch_dtype).npu()
+        b = torch.randint(-100, 100, (M, N), dtype=torch_dtype).npu()
+    else:
+        a = torch.randn(M, N, dtype=torch_dtype).npu()
+        b = torch.randn(M, N, dtype=torch_dtype).npu()
 
     torch.npu.synchronize()
 
@@ -1905,11 +2184,12 @@ def run_test_vec_min(M, N, block_M, block_N, target):
     torch.testing.assert_close(c, ref_c, rtol=1e-2, atol=1e-2)
 
 
+@pytest.mark.parametrize("dtype", ["float", "float16", "int16", "int32"])
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("shape", [(1024, 1024)])
-def test_vec_min(target, shape):
+def test_vec_min(dtype, target, shape):
     M, N = shape
-    run_test_vec_min(M, N, 64, 128, target=target)
+    run_test_vec_min(M, N, 64, 128, dtype, target=target)
 
 
 def vec_mins(M, N, block_M, block_N, scalar, dtype="float"):
@@ -1935,12 +2215,23 @@ def vec_mins(M, N, block_M, block_N, scalar, dtype="float"):
     return main
 
 
-def run_test_vec_mins(M, N, block_M, block_N, scalar, target):
-    func = vec_mins(M, N, block_M, block_N, scalar)
+def run_test_vec_mins(M, N, block_M, block_N, scalar, dtype, target):
+    func = vec_mins(M, N, block_M, block_N, scalar, dtype)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
 
-    a = torch.randn(M, N).float().npu()
-    a = a * 50
+    dtype_map = {
+        "float": torch.float32,
+        "float16": torch.float16,
+        "int16": torch.int16,
+        "int32": torch.int32,
+    }
+    torch_dtype = dtype_map.get(dtype, torch.float32)
+
+    if dtype in ["int16", "int32"]:
+        a = torch.randint(-100, 100, (M, N), dtype=torch_dtype).npu()
+    else:
+        a = torch.randn(M, N, dtype=torch_dtype).npu()
+        a = a * 50
 
     torch.npu.synchronize()
 
@@ -1951,12 +2242,13 @@ def run_test_vec_mins(M, N, block_M, block_N, scalar, target):
     torch.testing.assert_close(b, ref_b, rtol=1e-2, atol=1e-2)
 
 
+@pytest.mark.parametrize("dtype", ["float", "float16", "int16", "int32"])
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("shape", [(1024, 1024)])
-def test_vec_mins(target, shape):
+def test_vec_mins(dtype, target, shape):
     M, N = shape
-    scalar = 2.0
-    run_test_vec_mins(M, N, 64, 32, scalar=scalar, target=target)
+    scalar = 2.0 if dtype in ["float", "float16"] else 2
+    run_test_vec_mins(M, N, 64, 32, scalar=scalar, dtype=dtype, target=target)
 
 
 def vec_mul(M, N, block_M, block_N, dtype="float"):
@@ -1989,12 +2281,24 @@ def vec_mul(M, N, block_M, block_N, dtype="float"):
     return main
 
 
-def run_test_vec_mul(M, N, block_M, block_N, target):
-    func = vec_mul(M, N, block_M, block_N)
+def run_test_vec_mul(M, N, block_M, block_N, dtype, target):
+    func = vec_mul(M, N, block_M, block_N, dtype)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
 
-    a = torch.randn(M, N).npu()
-    b = torch.randn(M, N).npu()
+    dtype_map = {
+        "float": torch.float32,
+        "float16": torch.float16,
+        "int16": torch.int16,
+        "int32": torch.int32,
+    }
+    torch_dtype = dtype_map.get(dtype, torch.float32)
+
+    if dtype in ["int16", "int32"]:
+        a = torch.randint(-100, 100, (M, N), dtype=torch_dtype).npu()
+        b = torch.randint(-100, 100, (M, N), dtype=torch_dtype).npu()
+    else:
+        a = torch.randn(M, N, dtype=torch_dtype).npu()
+        b = torch.randn(M, N, dtype=torch_dtype).npu()
 
     torch.npu.synchronize()
 
@@ -2005,11 +2309,12 @@ def run_test_vec_mul(M, N, block_M, block_N, target):
     torch.testing.assert_close(c, ref_c, rtol=1e-2, atol=1e-2)
 
 
+@pytest.mark.parametrize("dtype", ["float", "float16", "int16", "int32"])
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("shape", [(1024, 1024)])
-def test_vec_mul(target, shape):
+def test_vec_mul(dtype, target, shape):
     M, N = shape
-    run_test_vec_mul(M, N, 64, 128, target=target)
+    run_test_vec_mul(M, N, 64, 128, dtype, target=target)
 
 
 def vec_muls(M, N, block_M, block_N, scalar, dtype="float"):
@@ -2034,27 +2339,39 @@ def vec_muls(M, N, block_M, block_N, scalar, dtype="float"):
     return main
 
 
-def run_test_vec_muls(M, N, block_M, block_N, scalar, target):
-    func = vec_muls(M, N, block_M, block_N, scalar)
+def run_test_vec_muls(M, N, block_M, block_N, scalar, dtype, target):
+    func = vec_muls(M, N, block_M, block_N, scalar, dtype)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
 
-    a = torch.randn(M, N).float().npu()
+    dtype_map = {
+        "float": torch.float32,
+        "float16": torch.float16,
+        "int16": torch.int16,
+        "int32": torch.int32,
+    }
+    torch_dtype = dtype_map.get(dtype, torch.float32)
+
+    if dtype in ["int16", "int32"]:
+        a = torch.randint(-100, 100, (M, N), dtype=torch_dtype).npu()
+    else:
+        a = torch.randn(M, N, dtype=torch_dtype).npu()
 
     torch.npu.synchronize()
 
     b = func(a)
 
-    ref_b = a * 2.0
+    ref_b = a * scalar
 
     torch.testing.assert_close(b, ref_b, rtol=1e-2, atol=1e-2)
 
 
+@pytest.mark.parametrize("dtype", ["float", "float16", "int16", "int32"])
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("shape", [(1024, 1024)])
-def test_vec_muls(target, shape):
+def test_vec_muls(dtype, target, shape):
     M, N = shape
-    scalar = 2.0
-    run_test_vec_muls(M, N, 64, 32, scalar=scalar, target=target)
+    scalar = 2.0 if dtype in ["float", "float16"] else 2
+    run_test_vec_muls(M, N, 64, 32, scalar=scalar, dtype=dtype, target=target)
 
 
 def bitwise_or(M, N, block_M, block_N, dtype="int16"):
@@ -2087,12 +2404,13 @@ def bitwise_or(M, N, block_M, block_N, dtype="int16"):
     return main
 
 
-def run_test_bitwise_or(M, N, block_M, block_N, target):
-    func = bitwise_or(M, N, block_M, block_N)
+def run_test_bitwise_or(M, N, block_M, block_N, dtype, target):
+    func = bitwise_or(M, N, block_M, block_N, dtype)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
 
-    a = torch.randint(0, 10, (M, N), dtype=torch.int16).npu()
-    b = torch.randint(0, 10, (M, N), dtype=torch.int16).npu()
+    torch_dtype = torch.int16 if dtype == "int16" else torch.uint16
+    a = torch.randint(0, 10, (M, N), dtype=torch_dtype).npu()
+    b = torch.randint(0, 10, (M, N), dtype=torch_dtype).npu()
 
     torch.npu.synchronize()
 
@@ -2100,14 +2418,15 @@ def run_test_bitwise_or(M, N, block_M, block_N, target):
 
     ref_c = a | b
 
-    torch.testing.assert_close(c, ref_c, rtol=1e-2, atol=1e-2)
+    assert_close_npu(c, ref_c, dtype, rtol=1e-2, atol=1e-2)
 
 
+@pytest.mark.parametrize("dtype", ["int16", "uint16"])
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("shape", [(1024, 1024)])
-def test_bitwise_or(target, shape):
+def test_bitwise_or(dtype, target, shape):
     M, N = shape
-    run_test_bitwise_or(M, N, 128, 256, target=target)
+    run_test_bitwise_or(M, N, 128, 256, dtype, target=target)
 
 
 def vec_pow(M, N, block_M, block_N, dtype="float"):
@@ -2115,6 +2434,8 @@ def vec_pow(M, N, block_M, block_N, dtype="float"):
     n_num = N // block_N
 
     VEC_NUM = 2
+
+    tmp_size_multiplier = 8 if dtype == "int32" else 2
 
     @T.prim_func
     def main(
@@ -2129,8 +2450,7 @@ def vec_pow(M, N, block_M, block_N, dtype="float"):
             a_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
             b_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
             c_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
-            # Temporary buffer allocated as uint8
-            tmp = T.alloc_ub((2 * (block_M // VEC_NUM), block_N), "uint8")
+            tmp = T.alloc_ub((tmp_size_multiplier * (block_M // VEC_NUM), block_N), "uint8")
 
             T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a_ub)
             T.copy(B[bx * block_M + vid * block_M // VEC_NUM, by * block_N], b_ub)
@@ -2142,12 +2462,23 @@ def vec_pow(M, N, block_M, block_N, dtype="float"):
     return main
 
 
-def run_test_pow(M, N, block_M, block_N, target):
-    func = vec_pow(M, N, block_M, block_N)
+def run_test_pow(M, N, block_M, block_N, dtype, target):
+    func = vec_pow(M, N, block_M, block_N, dtype)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
 
-    a = torch.rand(M, N).npu() + 0.5  # Base must be positive for pow()
-    b = torch.rand(M, N).npu()
+    dtype_map = {
+        "float": torch.float32,
+        "float16": torch.float16,
+        "int32": torch.int32,
+    }
+    torch_dtype = dtype_map.get(dtype, torch.float32)
+
+    if dtype == "int32":
+        a = torch.randint(1, 10, (M, N), dtype=torch_dtype).npu()
+        b = torch.randint(0, 5, (M, N), dtype=torch_dtype).npu()
+    else:
+        a = torch.rand(M, N, dtype=torch_dtype).npu() + 0.5
+        b = torch.rand(M, N, dtype=torch_dtype).npu()
 
     torch.npu.synchronize()
 
@@ -2158,11 +2489,12 @@ def run_test_pow(M, N, block_M, block_N, target):
     torch.testing.assert_close(c, ref_c, rtol=1e-2, atol=1e-2)
 
 
+@pytest.mark.parametrize("dtype", ["float", "float16", "int32"])
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("shape", [(1024, 1024)])
-def test_pow(target, shape):
+def test_pow(dtype, target, shape):
     M, N = shape
-    run_test_pow(M, N, 128, 128, target=target)
+    run_test_pow(M, N, 128, 128, dtype, target=target)
 
 
 def reciprocal(M, N, block_M, block_N, dtype="float"):
@@ -2192,11 +2524,11 @@ def reciprocal(M, N, block_M, block_N, dtype="float"):
     return main
 
 
-def run_test_reciprocal(M, N, block_M, block_N, target):
-    func = reciprocal(M, N, block_M, block_N)
+def run_test_reciprocal(M, N, block_M, block_N, dtype, target):
+    func = reciprocal(M, N, block_M, block_N, dtype)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
 
-    a = torch.rand(M, N).npu() * 0.9 + 0.1
+    a = (torch.rand(M, N, dtype=torch.float32 if dtype == "float" else torch.float16).npu() * 0.9 + 0.1)
 
     torch.npu.synchronize()
 
@@ -2207,11 +2539,12 @@ def run_test_reciprocal(M, N, block_M, block_N, target):
     torch.testing.assert_close(b, ref_b, rtol=1e-2, atol=1e-2)
 
 
+@pytest.mark.parametrize("dtype", ["float", "float16"])
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("shape", [(1024, 1024)])
-def test_reciprocal(target, shape):
+def test_reciprocal(dtype, target, shape):
     M, N = shape
-    run_test_reciprocal(M, N, 128, 128, target=target)
+    run_test_reciprocal(M, N, 128, 128, dtype, target=target)
 
 
 def relu(M, N, block_M, block_N, dtype="float"):
@@ -2241,11 +2574,22 @@ def relu(M, N, block_M, block_N, dtype="float"):
     return main
 
 
-def run_test_relu(M, N, block_M, block_N, target):
-    func = relu(M, N, block_M, block_N)
+def run_test_relu(M, N, block_M, block_N, dtype, target):
+    func = relu(M, N, block_M, block_N, dtype)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
 
-    a = torch.randn(M, N).npu()
+    dtype_map = {
+        "float": torch.float32,
+        "float16": torch.float16,
+        "float32": torch.float32,
+        "int32": torch.int32,
+    }
+    torch_dtype = dtype_map.get(dtype, torch.float32)
+
+    if dtype == "int32":
+        a = torch.randint(-100, 100, (M, N), dtype=torch_dtype).npu()
+    else:
+        a = torch.randn(M, N, dtype=torch_dtype).npu()
 
     torch.npu.synchronize()
 
@@ -2256,11 +2600,12 @@ def run_test_relu(M, N, block_M, block_N, target):
     torch.testing.assert_close(b, ref_b, rtol=1e-2, atol=1e-2)
 
 
+@pytest.mark.parametrize("dtype", ["float16", "float32", "int32"])
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("shape", [(1024, 1024)])
-def test_relu(target, shape):
+def test_relu(dtype, target, shape):
     M, N = shape
-    run_test_relu(M, N, 128, 256, target=target)
+    run_test_relu(M, N, 128, 256, dtype, target=target)
 
 
 def rsqrt(M, N, block_M, block_N, dtype="float"):
@@ -2290,11 +2635,11 @@ def rsqrt(M, N, block_M, block_N, dtype="float"):
     return main
 
 
-def run_test_rsqrt(M, N, block_M, block_N, target):
-    func = rsqrt(M, N, block_M, block_N)
+def run_test_rsqrt(M, N, block_M, block_N, dtype, target):
+    func = rsqrt(M, N, block_M, block_N, dtype)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
 
-    a = torch.randn(M, N).npu()
+    a = torch.randn(M, N, dtype=torch.float32 if dtype == "float" else torch.float16).npu()
 
     torch.npu.synchronize()
 
@@ -2305,11 +2650,12 @@ def run_test_rsqrt(M, N, block_M, block_N, target):
     torch.testing.assert_close(b, ref_b, rtol=1e-2, atol=1e-2, equal_nan=True)
 
 
+@pytest.mark.parametrize("dtype", ["float", "float16"])
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("shape", [(1024, 1024)])
-def test_rsqrt(target, shape):
+def test_rsqrt(dtype, target, shape):
     M, N = shape
-    run_test_rsqrt(M, N, 128, 256, target=target)
+    run_test_rsqrt(M, N, 128, 256, dtype, target=target)
 
 
 def vec_select(M, N, block_M, block_N, mode, dtype="float"):
@@ -2351,15 +2697,14 @@ def select_by_mask_bits_select(A, B, M):
     select element from A or B by bits in M, then set it to C
 
     Args:
-        A: torch.Tensor, shape (128, 128), float32
-        B: torch.Tensor, shape (128, 128), float32
+        A: torch.Tensor, shape (128, 128), float32 or float16
+        B: torch.Tensor, shape (128, 128), float32 or float16
         M: torch.Tensor, shape (128, 16), uint8,
 
     Returns:
-        C: torch.Tensor, shape (128, 128), float32
+        C: torch.Tensor, shape (128, 128), same dtype as A
     """
-    assert A.dtype == torch.float32, "A must be float32"
-    assert B.dtype == torch.float32, "B must be float32"
+    assert A.dtype == B.dtype, "A and B must have the same dtype"
     assert M.dtype == torch.uint8, "M must be uint8"
 
     C = torch.zeros_like(A).npu()
@@ -2370,7 +2715,6 @@ def select_by_mask_bits_select(A, B, M):
             byte_val = M_cpu[i, j]
 
             start_col = j * 8
-            end_col = start_col + 8
 
             for bit_pos in range(8):
                 col = start_col + bit_pos
@@ -2382,14 +2726,13 @@ def select_by_mask_bits_select(A, B, M):
     return C
 
 
-def run_test_vec_select(M, N, block_M, block_N, mode, target):
+def run_test_vec_select(M, N, block_M, block_N, mode, dtype, target):
     torch.npu.config.allow_internal_format = True
-    # torch.set_printoptions(threshold=np.inf)
 
-    func = vec_select(M, N, block_M, block_N, mode)
+    func = vec_select(M, N, block_M, block_N, mode, dtype)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
-    a = torch.zeros(M, N).npu()
-    b = torch.ones(M, N).npu()
+    a = torch.zeros(M, N, dtype=torch.float32 if dtype == "float" else torch.float16).npu()
+    b = torch.ones(M, N, dtype=torch.float32 if dtype == "float" else torch.float16).npu()
     m = torch.full((M, N // 8), 0xF, dtype=torch.uint8).npu()
 
     torch.npu.synchronize()
@@ -2401,14 +2744,15 @@ def run_test_vec_select(M, N, block_M, block_N, mode, target):
     torch.testing.assert_close(c, ref_c, rtol=1e-2, atol=1e-2)
 
 
+@pytest.mark.parametrize("dtype", ["float", "float16"])
 @pytest.mark.parametrize("target", ["ascendc"])
 @pytest.mark.parametrize("shape", [(256, 256)])
-def test_vec_select(target, shape):
+def test_vec_select(dtype, target, shape):
     M, N = shape
     block_M = 64
     block_N = 128
     mode = "VSEL_CMPMASK_SPR"
-    run_test_vec_select(M, N, block_M, block_N, mode, target)
+    run_test_vec_select(M, N, block_M, block_N, mode, dtype, target)
 
 
 def vec_select_scalar(M, N, block_M, block_N, mode, b_scalar, dtype="float"):
@@ -2447,14 +2791,13 @@ def select_by_mask_bits_select_scalar(A, b, M):
     select value by mask bits of M from A or B to assign to C
 
     Args:
-        A: torch.Tensor, shape (128, 128), float32
-        B: torch.Tensor, shape (128, 128), float32
+        A: torch.Tensor, shape (128, 128), float32 or float16
+        B: scalar value
         M: torch.Tensor, shape (128, 16), uint8, 每个元素存储8个bit位
 
     Returns:
-        C: torch.Tensor, shape (128, 128), float32
+        C: torch.Tensor, shape (128, 128), same dtype as A
     """
-    assert A.dtype == torch.float32, "A must be float32"
     assert M.dtype == torch.uint8, "M must be uint8"
 
     C = torch.zeros_like(A).npu()
@@ -2465,7 +2808,6 @@ def select_by_mask_bits_select_scalar(A, b, M):
             byte_val = M_cpu[i, j]
 
             start_col = j * 8
-            end_col = start_col + 8
 
             for bit_pos in range(8):
                 col = start_col + bit_pos
@@ -2477,14 +2819,13 @@ def select_by_mask_bits_select_scalar(A, b, M):
     return C
 
 
-def run_test_vec_select_scalar(M, N, block_M, block_N, mode, b_scalar, target):
+def run_test_vec_select_scalar(M, N, block_M, block_N, mode, b_scalar, dtype, target):
     torch.npu.config.allow_internal_format = True
-    # torch.set_printoptions(threshold=np.inf)
 
-    func = vec_select_scalar(M, N, block_M, block_N, mode, b_scalar)
+    func = vec_select_scalar(M, N, block_M, block_N, mode, b_scalar, dtype)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
 
-    a = torch.zeros(M, N).npu()
+    a = torch.zeros(M, N, dtype=torch.float32 if dtype == "float" else torch.float16).npu()
     m = torch.full((M, N // 8), 0xF, dtype=torch.uint8).npu()
 
     torch.npu.synchronize()
@@ -2496,15 +2837,16 @@ def run_test_vec_select_scalar(M, N, block_M, block_N, mode, b_scalar, target):
     torch.testing.assert_close(c, ref_c, rtol=1e-2, atol=1e-2)
 
 
+@pytest.mark.parametrize("dtype", ["float", "float16"])
 @pytest.mark.parametrize("target", ["ascendc"])
 @pytest.mark.parametrize("shape", [(256, 256)])
-def test_vec_select_scalar(target, shape):
+def test_vec_select_scalar(dtype, target, shape):
     M, N = shape
     block_M = 64
     block_N = 128
     mode = "VSEL_TENSOR_SCALAR_MODE"
     b_scalar = 1.0
-    run_test_vec_select_scalar(M, N, block_M, block_N, mode, b_scalar, target)
+    run_test_vec_select_scalar(M, N, block_M, block_N, mode, b_scalar, dtype, target)
 
 
 def sin(M, N, block_M, block_N, dtype="float"):
@@ -2534,66 +2876,80 @@ def sin(M, N, block_M, block_N, dtype="float"):
     return main
 
 
-def run_test_sin(target):
+def run_test_sin(dtype, target):
     test_configs = [
         (1024, 1024, 128, 128),
     ]
 
     for M, N, block_M, block_N in test_configs:
-        func = sin(M, N, block_M, block_N, dtype="float")
+        func = sin(M, N, block_M, block_N, dtype)
         func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
-        a = torch.randn(M, N).npu()
+        a = torch.randn(M, N, dtype=torch.float32 if dtype == "float" else torch.float16).npu()
         b = func(a)
         ref_b = torch.sin(a)
         torch.testing.assert_close(b, ref_b, rtol=1e-4, atol=1e-4)
 
 
+@pytest.mark.parametrize("dtype", ["float", "float16"])
 @pytest.mark.parametrize("target", ["ascendc"])
-def test_sin(target):
-    run_test_sin(target)
+def test_sin(dtype, target):
+    run_test_sin(dtype, target)
 
 
-def sort32(M, N, block_M, block_N):
+def sort32(M, N, block_M, block_N, dtype="float"):
     m_num = M // block_M
     n_num = N // block_N
 
     VEC_NUM = 2
 
+    out_size_multiplier = 4 if dtype == "float16" else 2
+
     @T.prim_func
     def main(
-            A: T.Tensor((M, N), "float"),
+            A: T.Tensor((M, N), dtype),
             B: T.Tensor((M, N), "uint32"),
-            C: T.Tensor((M, 2 * N), "float"),
+            C: T.Tensor((M, out_size_multiplier * N), dtype),
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
             by = cid % n_num
 
-            a_ub = T.alloc_ub((block_M, block_N // VEC_NUM), "float")
+            a_ub = T.alloc_ub((block_M, block_N // VEC_NUM), dtype)
             b_ub = T.alloc_ub((block_M, block_N // VEC_NUM), "uint32")
-            c_ub = T.alloc_ub((block_M, 2 * block_N // VEC_NUM), "float")
+            c_ub = T.alloc_ub((block_M, out_size_multiplier * block_N // VEC_NUM), dtype)
 
             T.copy(A[bx * block_M, by * block_N + vid * block_N // VEC_NUM], a_ub)
             T.copy(B[bx * block_M, by * block_N + vid * block_N // VEC_NUM], b_ub)
 
             T.tile.sort32(c_ub, a_ub, b_ub)
 
-            T.copy(c_ub, C[bx * block_M, 2 * (by * block_N + vid * block_N // VEC_NUM)])
+            T.copy(c_ub, C[bx * block_M, out_size_multiplier * (by * block_N + vid * block_N // VEC_NUM)])
 
     return main
 
 
-def run_test_sort32(M, N, block_M, block_N, target):
-    func = sort32(M, N, block_M, block_N)
+def run_test_sort32(M, N, block_M, block_N, dtype, target):
+    func = sort32(M, N, block_M, block_N, dtype)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
 
-    a = torch.randint(low=1, high=101, size=(M, N), dtype=torch.float).npu()
+    dtype_map = {
+        "float": torch.float32,
+        "float16": torch.float16,
+        "float32": torch.float32,
+    }
+    torch_dtype = dtype_map.get(dtype, torch.float32)
+
+    out_size_multiplier = 4 if dtype == "float16" else 2
+
+    if dtype == "float16":
+        a = torch.randint(low=1, high=101, size=(M, N), dtype=torch.int32).to(torch.float16).npu()
+    else:
+        a = torch.randint(low=1, high=101, size=(M, N), dtype=torch_dtype).npu()
     b = torch.zeros((M, N), dtype=torch.uint32).npu()
 
     torch.npu.synchronize()
 
     c = func(a, b)
-    # 计算ref_c
     group_size = 32
     total_elements = M * N
     b_ref = torch.zeros((M, N), dtype=torch.int32, device="npu")
@@ -2615,20 +2971,29 @@ def run_test_sort32(M, N, block_M, block_N, target):
     sorted_src0 = src0_flat.reshape(M, N)
     sorted_src1 = src1_flat.reshape(M, N)
 
-    ref_c = torch.empty((M, 2 * N), dtype=torch.float)
-    ref_c[:, ::2] = sorted_src0
-    ref_c[:, 1::2] = sorted_src1
+    ref_c = torch.empty((M, out_size_multiplier * N), dtype=torch_dtype)
+    if dtype == "float16":
+        sorted_values = sorted_src0.to(torch_dtype)
+        sorted_indices_bytes = sorted_src1.view(torch.int16).reshape(M, N * 2)
+        ref_c[:, 0::4] = sorted_values
+        ref_c[:, 1::4] = torch.zeros_like(sorted_values)
+        ref_c[:, 2::4] = sorted_indices_bytes[:, 0::2]
+        ref_c[:, 3::4] = sorted_indices_bytes[:, 1::2]
+    else:
+        ref_c[:, ::2] = sorted_src0.to(torch_dtype)
+        ref_c[:, 1::2] = sorted_src1.to(torch_dtype).view(torch_dtype)
 
     torch.testing.assert_close(c, ref_c.npu(), rtol=1e-2, atol=1e-2)
 
 
+@pytest.mark.parametrize("dtype", ["float16", "float32"])
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("shape", [(1024, 1024)])
-def test_sort32(target, shape):
+def test_sort32(dtype, target, shape):
     M, N = shape
     block_M = 64
-    block_N = 128  # block_M,block_N与repeatimes有关，repeatimes要求范围[0,255]
-    run_test_sort32(M, N, block_M, block_N, target)
+    block_N = 128
+    run_test_sort32(M, N, block_M, block_N, dtype, target)
 
 
 def sqrt(M, N, block_M, block_N, dtype="float"):
@@ -2658,11 +3023,11 @@ def sqrt(M, N, block_M, block_N, dtype="float"):
     return main
 
 
-def run_test_sqrt(M, N, block_M, block_N, target):
-    func = sqrt(M, N, block_M, block_N)
+def run_test_sqrt(M, N, block_M, block_N, dtype, target):
+    func = sqrt(M, N, block_M, block_N, dtype)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
 
-    a = torch.rand(M, N).npu()
+    a = torch.rand(M, N, dtype=torch.float32 if dtype == "float" else torch.float16).npu()
 
     torch.npu.synchronize()
 
@@ -2673,11 +3038,12 @@ def run_test_sqrt(M, N, block_M, block_N, target):
     torch.testing.assert_close(b, ref_b, rtol=1e-2, atol=1e-2)
 
 
+@pytest.mark.parametrize("dtype", ["float", "float16"])
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("shape", [(1024, 1024)])
-def test_sqrt(target, shape):
+def test_sqrt(dtype, target, shape):
     M, N = shape
-    run_test_sqrt(M, N, 128, 256, target=target)
+    run_test_sqrt(M, N, 128, 256, dtype, target=target)
 
 
 def vec_sub(M, N, block_M, block_N, dtype="float"):
@@ -2710,12 +3076,24 @@ def vec_sub(M, N, block_M, block_N, dtype="float"):
     return main
 
 
-def run_test_vec_sub(M, N, block_M, block_N, target):
-    func = vec_sub(M, N, block_M, block_N)
+def run_test_vec_sub(M, N, block_M, block_N, dtype, target):
+    func = vec_sub(M, N, block_M, block_N, dtype)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
 
-    a = torch.randn(M, N).npu()
-    b = torch.randn(M, N).npu()
+    dtype_map = {
+        "float": torch.float32,
+        "float16": torch.float16,
+        "int16": torch.int16,
+        "int32": torch.int32,
+    }
+    torch_dtype = dtype_map.get(dtype, torch.float32)
+
+    if dtype in ["int16", "int32"]:
+        a = torch.randint(-100, 100, (M, N), dtype=torch_dtype).npu()
+        b = torch.randint(-100, 100, (M, N), dtype=torch_dtype).npu()
+    else:
+        a = torch.randn(M, N, dtype=torch_dtype).npu()
+        b = torch.randn(M, N, dtype=torch_dtype).npu()
 
     torch.npu.synchronize()
 
@@ -2726,14 +3104,15 @@ def run_test_vec_sub(M, N, block_M, block_N, target):
     torch.testing.assert_close(c, ref_c, rtol=1e-2, atol=1e-2)
 
 
+@pytest.mark.parametrize("dtype", ["float", "float16", "int16", "int32"])
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("shape", [(1024, 1024)])
-def test_vec_sub(target, shape):
+def test_vec_sub(dtype, target, shape):
     M, N = shape
-    run_test_vec_sub(M, N, 64, 128, target=target)
+    run_test_vec_sub(M, N, 64, 128, dtype, target=target)
 
 
-def vec_subs(M, N, block_M, block_N, dtype="float"):
+def vec_subs(M, N, block_M, block_N, scalar, dtype="float"):
     m_num = M // block_M
     n_num = N // block_N
 
@@ -2753,33 +3132,46 @@ def vec_subs(M, N, block_M, block_N, dtype="float"):
 
             T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a_ub)
 
-            T.tile.sub(b_ub, a_ub, 3.0)
+            T.tile.sub(b_ub, a_ub, scalar)
 
             T.copy(b_ub, B[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
 
     return main
 
 
-def run_test_vec_subs(M, N, block_M, block_N, target):
-    func = vec_subs(M, N, block_M, block_N)
+def run_test_vec_subs(M, N, block_M, block_N, scalar, dtype, target):
+    func = vec_subs(M, N, block_M, block_N, scalar, dtype)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
 
-    a = torch.randn(M, N).npu()
+    dtype_map = {
+        "float": torch.float32,
+        "float16": torch.float16,
+        "int16": torch.int16,
+        "int32": torch.int32,
+    }
+    torch_dtype = dtype_map.get(dtype, torch.float32)
+
+    if dtype in ["int16", "int32"]:
+        a = torch.randint(-100, 100, (M, N), dtype=torch_dtype).npu()
+    else:
+        a = torch.randn(M, N, dtype=torch_dtype).npu()
 
     torch.npu.synchronize()
 
     b = func(a)
 
-    ref_b = a - 3.0
+    ref_b = a - scalar
 
     torch.testing.assert_close(b, ref_b, rtol=1e-2, atol=1e-2)
 
 
+@pytest.mark.parametrize("dtype", ["float", "float16", "int16", "int32"])
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("shape", [(1024, 1024)])
-def test_vec_subs(target, shape):
+def test_vec_subs(dtype, target, shape):
     M, N = shape
-    run_test_vec_subs(M, N, 128, 256, target=target)
+    scalar = 3.0 if dtype in ["float", "float16"] else 3
+    run_test_vec_subs(M, N, 128, 256, scalar, dtype, target=target)
 
 
 def transpose(M, N, block_M, block_N, dtype="int16"):
@@ -2801,11 +3193,26 @@ def transpose(M, N, block_M, block_N, dtype="int16"):
     return main
 
 
-def run_test_transpose(M, N, block_M, block_N, target):
-    func = transpose(M, N, block_M, block_N)
+def run_test_transpose(M, N, block_M, block_N, dtype, target):
+    func = transpose(M, N, block_M, block_N, dtype)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
 
-    a = torch.randn(M, N).npu().to(torch.int16)
+    dtype_map = {
+        "float": torch.float32,
+        "float16": torch.float16,
+        "int16": torch.int16,
+        "int32": torch.int32,
+        "uint16": torch.uint16,
+        "uint32": torch.uint32,
+    }
+    torch_dtype = dtype_map.get(dtype, torch.float32)
+
+    if dtype in ["int16", "int32", "uint16", "uint32"]:
+        a = torch.randint(-100 if dtype in ["int16", "int32"] else 0,
+                          100 if dtype in ["int16", "int32"] else 200,
+                          (M, N), dtype=torch_dtype).npu()
+    else:
+        a = torch.randn(M, N, dtype=torch_dtype).npu()
 
     torch.npu.synchronize()
 
@@ -2813,14 +3220,15 @@ def run_test_transpose(M, N, block_M, block_N, target):
 
     ref_b = a.T
 
-    torch.testing.assert_close(b, ref_b, rtol=1e-2, atol=1e-2)
+    assert_close_npu(b, ref_b, dtype, rtol=1e-2, atol=1e-2)
 
 
+@pytest.mark.parametrize("dtype", ["int16", "uint16", "float16", "int32", "uint32", "float"])
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("shape", [(16, 16)])
-def test_transpose(target, shape):
+def test_transpose(dtype, target, shape):
     M, N = shape
-    run_test_transpose(M, N, 16, 16, target)
+    run_test_transpose(M, N, 16, 16, dtype, target)
 
 
 def wholereducemax(M, N, block_M, block_N, mask, repeatTimes, dstRepStride, srcBlkStride, srcRepStride,

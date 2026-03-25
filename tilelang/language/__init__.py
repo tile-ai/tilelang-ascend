@@ -1,14 +1,16 @@
 # Copyright (c) Tile-AI Corporation.
 # Licensed under the MIT License.
 """The language interface for tl programs."""
+from __future__ import annotations
 
-from typing import Optional
+from typing import Optional  # noqa: F401
 # from .parser import *
 # now is fully compatible with the upstream
 # tir script
 # TODO(lei): remove this import once the
 # upstream tir script is fully compatible
 from tvm.script.parser.tir import *
+from . import overrides as _overrides # noqa: F401
 from .tir import (
     prim_func,  # noqa: F401
 )
@@ -77,7 +79,7 @@ from .builtin import *  # noqa: F401
 from .memscope import *  # noqa: F401
 
 from .ascend import *
-from . import ascend_tile as tile
+from . import ascend_tile as tile # noqa: F401
 
 def symbolic(name: str, dtype: str = "int32"):
     return tir.Var(name, dtype)
@@ -100,7 +102,7 @@ def annotate_layout(layout_map: Dict):
 
     Returns:
         block_attr: a block attribute
-    
+
     Example:
         @T.prim_func
         def main(
@@ -133,7 +135,7 @@ def annotate_padding(padding_map: Dict):
 
     Returns:
         block_attr: a block attribute
-    
+
     Example:
         @T.prim_func
         def main(
@@ -162,7 +164,7 @@ def annotate_padding(padding_map: Dict):
     return block_attr({"padding_map": _padding_map})
 
 
-def import_source(source: Optional[str] = None):
+def import_source(source: str | None = None):
     # source is the source code to be imported
     return block_attr({"pragma_import_c": source}) if source is not None else None
 
