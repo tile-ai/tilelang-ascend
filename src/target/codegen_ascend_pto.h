@@ -149,6 +149,8 @@ private:
 
   void SetDeqScaleCodegen(const CallNode *op);
 
+  void MmaCodegen(const CallNode *op);
+
   std::vector<std::string> GetGlobalTensorShapes(const CallNode *op,
                                                  std::string tensor_addr);
 

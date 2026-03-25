@@ -84,6 +84,18 @@ AICORE PTO_INLINE void copy_l1_to_l0b(
   pto::TEXTRACT(l0b, B, indexRow, indexCol);
 }
 
+template <typename T1, typename T2, int M, int N, int K, int validM = M,
+          int validN = N>
+AICORE PTO_INLINE void mma(TileMatL0A<T1, M, K> l0a, TileMatL0B<T1, K, N> l0b,
+                           pto::TileAcc<T2, M, N, validM, validN> &C,
+                           bool init) {
+  if (init) {
+    pto::TMATMUL(C, l0a, l0b);
+  } else {
+    pto::TMATMUL_ACC(C, C, l0a, l0b);
+  }
+}
+
 template <typename T1, typename T2, uint32_t M, uint32_t N, uint32_t K,
           uint32_t validM = M, uint32_t validN = N, uint32_t validK = K,
           uint32_t K_tail, bool transpose_A = false, bool transpose_B = false>
