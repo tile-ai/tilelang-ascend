@@ -139,13 +139,13 @@ def flash_attention_fwd(
 
                             T.copy(K[bz, kv_by, base_idx * block_N : (base_idx + 1) * block_N, :], k_l1)
                             T.copy(q_l1, l0a[0, :, :])
-                            T.copy(k_l1, l0b[0, :, :])
+                            T.copy(k_l1, l0b[0, :, :], transpose=True)
                             T.mma(l0a[0, :, :], l0b[0, :, :], l0c[0, :, :], init=True)
                             T.copy(l0c[0, :, :], workspace_1[cid, base_i, :, :])
 
                             T.copy(K[bz, kv_by, (base_idx + 1) * block_N : (base_idx + 2) * block_N, :], k_l1)
                             T.copy(q_l1, l0a[1, :, :])
-                            T.copy(k_l1, l0b[1, :, :])
+                            T.copy(k_l1, l0b[1, :, :], transpose=True)
                             T.mma(l0a[1, :, :], l0b[1, :, :], l0c[1, :, :], init=True)
                             T.copy(l0c[1, :, :], workspace_1[cid, base_i + 1, :, :])
 
