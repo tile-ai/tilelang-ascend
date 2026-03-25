@@ -378,12 +378,16 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
 
   if (config.l0c2gm) {
     new_args.push_back(compute_strideN(dst, dst_extents));
+    new_args.push_back(validRow_dst);
+    new_args.push_back(validCol_dst);
     new_args.push_back(src->shape[src->shape.size() - 2]);
     new_args.push_back(src->shape[src->shape.size() - 1]);
   }
 
   if (config.gm2l1) {
     new_args.push_back(compute_strideN(src, src_extents));
+    new_args.push_back(validRow_src);
+    new_args.push_back(validCol_src);
     new_args.push_back(dst->shape[dst->shape.size() - 2]);
     new_args.push_back(dst->shape[dst->shape.size() - 1]);
   }
