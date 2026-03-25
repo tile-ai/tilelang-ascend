@@ -571,8 +571,6 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
     PrintOpCall(op, "AscendC::SyncAll<false>", {0, 0}, {0, 0});
   } else if (op->op.same_as(tl::ascend_gemm_v0())) {
     GemmOpCodegen(op);
-  } else if (op->op.same_as(tl::ascend_gemm_v1())) {
-    GemmOpCodegen(op);
   } else if (op->op.same_as(tl::ascend_printf())) {
     PrintfOpCodegen(op, "AscendC::PRINTF");
   } else if (op->op.same_as(tl::ascend_dump_tensor())) {
