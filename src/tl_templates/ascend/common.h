@@ -31,14 +31,9 @@ constexpr int64_t UB_HALF_SIZE = 64;
 
 template <typename T, uint32_t dstM, uint32_t dstN>
 CATLASS_DEVICE void copy_gm_to_l1(LocalTensor<T> dstTensor,
-                                  GlobalTensor<T> srcTensor, uint32_t realSrcN = 1, uint32_t realTailM = 0, uint32_t realTailN = 0) {
-  uint32_t tailM = realTailM == 0 ? dstM : realTailM;
-  uint32_t tailN = realTailN == 0 ? dstN : realTailN;
-  if (tailM != dstM || tailN != dstN) {
-    AscendC::InitConstValue(dstTensor, {1, static_cast<uint16_t>(dstM * dstN * sizeof(T) / 32), 0, 0});
-  }
-  auto layout = MakeLayoutFromTag(LayoutGM{tailM, realSrcN});
-  auto src_LAYOUT = MakeLayoutTile(layout, tla::MakeShape(tailM, tailN));
+                                  GlobalTensor<T> srcTensor, uint32_t realSrcN = 1) {
+  auto layout = MakeLayoutFromTag(LayoutGM{dstM, realSrcN});
+  auto src_LAYOUT = MakeLayoutTile(layout, tla::MakeShape(dstM, dstN));
   auto src = tla::MakeTensor<decltype(srcTensor), decltype(src_LAYOUT),
                              AscendC::TPosition::GM>(srcTensor, src_LAYOUT);
 
