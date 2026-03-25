@@ -286,6 +286,11 @@ public:
                 }
             }
             CollectBuffersAndAccesses(call_node, info.used_buffers, info.accesses);
+            std::string bufs_str;
+            for (const auto& b : info.used_buffers) bufs_str += b + " ";
+            LOG(INFO) << "[DEBUG EvalNode] op=" << normalized_name
+                      << " core_scope_=" << core_scope_
+                      << " used_buffers=[" << bufs_str << "]";
         }
         if (core_scope_ == CUBE_SCOPE) {
             all_statements_C_.push_back(info);
@@ -312,6 +317,14 @@ public:
         int saved_idx = current_idx_;
 
         this->VisitStmt(op->body);
+
+        size_t new_C = all_statements_C_.size() - saved_statements_C.size();
+        size_t new_V = all_statements_V_.size() - saved_statements_V.size();
+        size_t new_all = all_statements_.size() - saved_statements.size();
+        LOG(INFO) << "[DEBUG ForNode] body type=" << op->body->GetTypeKey()
+                  << " new_C=" << new_C << " new_V=" << new_V
+                  << " new_all=" << new_all
+                  << " core_scope_=" << core_scope_;
 
         if (core_scope_ == VEC_SCOPE) {
             ProcessInfo(workspace_writes_V_, all_statements_V_, saved_statements_V, saved_idx_V, for_info);
@@ -392,10 +405,22 @@ private:
             op_name = op->name;
         }
 
+        LOG(INFO) << "[DEBUG Collect] op=" << op_name
+                  << " args.size()=" << args.size() << " start=" << start;
         for (int i = start; i < args.size(); ++i) {
+            bool is_call = args[i].as<CallNode>() != nullptr;
+            LOG(INFO) << "[DEBUG Collect] arg[" << i << "] type="
+                      << args[i]->GetTypeKey() << " is_call=" << is_call;
             if (auto inner_call_node = args[i].as<CallNode>()) {
-                if (inner_call_node->op.same_as(builtin::tvm_access_ptr()) &&
-                    inner_call_node->args.size() >= 5) {
+                std::string inner_op_name = "<unknown>";
+                if (auto iop = inner_call_node->op.as<OpNode>()) {
+                    inner_op_name = iop->name;
+                }
+                bool is_tvm_ap = inner_call_node->op.same_as(builtin::tvm_access_ptr());
+                LOG(INFO) << "[DEBUG Collect] arg[" << i << "] inner_op='" << inner_op_name
+                          << "' is_tvm_access_ptr=" << is_tvm_ap
+                          << " inner_args.size()=" << inner_call_node->args.size();
+                if (is_tvm_ap && inner_call_node->args.size() >= 5) {
                     auto buf_var = Downcast<Var>(inner_call_node->args[1]);
                     std::string buf_name = buf_var->name_hint;
                     PrimExpr offset = inner_call_node->args[2];
@@ -409,14 +434,15 @@ private:
                         found_in_pos = callnodeMapPos_.find(location_map_[buf_var]) != callnodeMapPos_.end();
                     }
 
+                    LOG(INFO) << "[DEBUG Collect] tvm_access_ptr buf='" << buf_name
+                              << "' var_ptr=" << buf_var.get()
+                              << " found_in_map=" << found_in_map
+                              << " found_in_pos=" << found_in_pos;
+
                     if (found_in_map && found_in_pos) {
                         used_buffers.insert(buf_name);
                     } else {
-                        LOG(INFO) << "[DEBUG CollectBuffersAndAccesses] op=" << op_name
-                                  << " buf='" << buf_name << "' var_ptr=" << buf_var.get()
-                                  << " found_in_map=" << found_in_map
-                                  << " found_in_pos=" << found_in_pos
-                                  << " => SKIPPED";
+                        LOG(INFO) << "[DEBUG Collect] => SKIPPED";
                     }
 
                     AccessInfo access;
@@ -429,7 +455,11 @@ private:
                     accesses.push_back(access);
                 } else {
                     auto buf_name = Downcast<Var>(inner_call_node->args[1]);
-                    if (location_map_.find(buf_name) != location_map_.end()) {
+                    bool found = location_map_.find(buf_name) != location_map_.end();
+                    LOG(INFO) << "[DEBUG Collect] else-branch buf='" << buf_name->name_hint
+                              << "' var_ptr=" << buf_name.get()
+                              << " found_in_map=" << found;
+                    if (found) {
                         if (callnodeMapPos_.find(location_map_[buf_name]) != callnodeMapPos_.end()) {
                             used_buffers.insert(buf_name->name_hint);
                         }
@@ -437,6 +467,7 @@ private:
                 }
             }
         }
+        LOG(INFO) << "[DEBUG Collect] RESULT: used_buffers.size()=" << used_buffers.size();
     }
 
     std::optional<std::string> FindWorkspaceName(const CallNode* call_node) {
