@@ -55,11 +55,6 @@ public:
       return f;
     }
 
-    AscendMemoryPlanner planner(f);
-    auto address_map = planner.GetAddressMap();
-    auto buffer_sizes = planner.GetBufferSizes();
-
-
     PrimFuncNode *fptr = f.CopyOnWrite();
     auto fn_attr = fptr->attrs.CopyOnWrite();
 
@@ -71,6 +66,7 @@ public:
 
     AscendMemoryPlanner planner(f, external_address_map);
     auto address_map = planner.GetAddressMap();
+    auto buffer_sizes = planner.GetBufferSizes();
 
     Map<Var, PrimExpr> address_map_attr;
     for (const auto &kv : address_map) {
