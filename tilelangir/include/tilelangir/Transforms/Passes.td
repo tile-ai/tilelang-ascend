@@ -61,4 +61,25 @@ def TileLangIRInferMemScope : Pass<"tilelangir-infer-mem-scope", "::mlir::func::
   }];
 }
 
+def TileLangIREnableMultiBuffer : Pass<"tilelangir-enable-multi-buffer", "::mlir::ModuleOp"> {
+  let summary = "TileLangIR Enable Multi Buffer pass (custom)";
+  let description = [{
+    This pass implements multi-buffering for crosscorepipeline.
+    
+    It performs the following transformations:
+    1. Identifies `memref_ext::AllocWorkspaceOp` operations annotated with the 
+       `hivm.multi_buffer` attribute and expands them by prepending a multi-buffer 
+       dimension to the original shape (e.g., `memref<64x64xf16>` → `memref<3x64x64xf16>`).
+    
+    2. Replaces `scope::ScopeOp` regions inside `scf::ForOp` loops (annotated with 
+       `num_stage` attribute) with nested `scf::ForOp` loops. The inner loop iterates 
+       over the multi-buffer dimension, enabling round-robin access to buffer copies.
+    
+    3. Adjusts all `memref::SubViewOp` and `memref::CopyOp` operations that reference 
+       the expanded workspace to use the new multi-buffer dimension. The pass uses 
+       `memref::CollapseShapeOp` to collapse size-1 dimensions, ensuring rank reduction 
+       and maintaining type compatibility with downstream operations.
+  }];
+} 
+
 #endif // TILELANGIR_TRANSFORMS_PASSES_TD
