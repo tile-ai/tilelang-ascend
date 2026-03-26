@@ -2,7 +2,7 @@ import tilelang
 from tilelang import DataType, language as T
 import torch
 
-torch.set_default_device('npu')
+torch.set_default_device("npu")
 torch.manual_seed(0)
 
 tilelang.disable_cache()
@@ -14,7 +14,8 @@ pass_configs = {
     tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
 }
 
-@tilelang.jit(out_idx=[3], workspace_idx=[4,5,6,7,8], pass_configs=pass_configs)
+
+@tilelang.jit(out_idx=[3], workspace_idx=[4, 5, 6, 7, 8], pass_configs=pass_configs)
 def sparse_attention_fwd(
     heads,
     dim,
@@ -26,15 +27,13 @@ def sparse_attention_fwd(
     is_causal=True,
     block_I=64,
 ):
-    assert dim == tilelang.math.next_power_of_2(
-        dim), f"haven't check padding correctness yet, dim={dim}"
-    assert tail_dim == tilelang.math.next_power_of_2(
-        tail_dim), f"haven't check padding correctness yet, dim={tail_dim}"
-    assert is_causal, 'non-casual is not supported'
-    assert topk % block_I == 0, 'otherwise will load some index=0 thus causing wrong kv to be loaded'
+    assert dim == tilelang.math.next_power_of_2(dim), f"haven't check padding correctness yet, dim={dim}"
+    assert tail_dim == tilelang.math.next_power_of_2(tail_dim), f"haven't check padding correctness yet, dim={tail_dim}"
+    assert is_causal, "non-casual is not supported"
+    assert topk % block_I == 0, "otherwise will load some index=0 thus causing wrong kv to be loaded"
 
     # NOTE: ascend only support exp interface instead of exp2
-    sm_scale = (1.0 / (dim + tail_dim))**0.5 if sm_scale is None else sm_scale
+    sm_scale = (1.0 / (dim + tail_dim)) ** 0.5 if sm_scale is None else sm_scale
 
     batch = 1  # T.symbolic("batch")
     seq_len = 128  # T.symbolic("seq_len")
@@ -54,7 +53,9 @@ def sparse_attention_fwd(
 
     padded_H = max(tilelang.math.next_power_of_2(head_kv), 16)
     if padded_H != H:
-        assert kv_group == 1, 'here we solve the H padding automatically, other wise you should handle Q copy and Output copy with your mask (when kv_group == 1, use g_i * padded_H:(g_i+1) * padded_H would be handled automatically)'
+        assert kv_group == 1, (
+            "here we solve the H padding automatically, other wise you should handle Q copy and Output copy with your mask (when kv_group == 1, use g_i * padded_H:(g_i+1) * padded_H would be handled automatically)"
+        )
 
     BI = block_I
     NI = tilelang.cdiv(topk, block_I)
@@ -62,7 +63,7 @@ def sparse_attention_fwd(
     D_tail = tail_dim
 
     if head_kv > 64:
-        assert head_kv % 64 == 0, 'head_kv should be a multiple of 64'
+        assert head_kv % 64 == 0, "head_kv should be a multiple of 64"
         REPLICATE_H = head_kv // 64
     else:
         REPLICATE_H = 1
@@ -75,17 +76,16 @@ def sparse_attention_fwd(
 
     @T.prim_func
     def main(
-            Q: T.Tensor(q_shape, dtype),  # type: ignore
-            KV: T.Tensor(kv_shape, dtype),  # type: ignore
-            Indices: T.Tensor(indices_shape, indices_dtype),  # type: ignore
-            Output: T.Tensor(o_shape, dtype),  # type: ignore
-
-            # TODO: implement automatically
-            workspace_1: T.Tensor([block_num, BI, D], dtype),
-            workspace_2: T.Tensor([block_num, BI, D_tail], dtype),
-            workspace_3: T.Tensor([block_num, H_per_block, BI], accum_dtype),
-            workspace_4: T.Tensor([block_num, H_per_block, BI], dtype),
-            workspace_5: T.Tensor([block_num, H_per_block, D], accum_dtype),
+        Q: T.Tensor(q_shape, dtype),  # type: ignore
+        KV: T.Tensor(kv_shape, dtype),  # type: ignore
+        Indices: T.Tensor(indices_shape, indices_dtype),  # type: ignore
+        Output: T.Tensor(o_shape, dtype),  # type: ignore
+        # TODO: implement automatically
+        workspace_1: T.Tensor([block_num, BI, D], dtype),
+        workspace_2: T.Tensor([block_num, BI, D_tail], dtype),
+        workspace_3: T.Tensor([block_num, H_per_block, BI], accum_dtype),
+        workspace_4: T.Tensor([block_num, H_per_block, BI], dtype),
+        workspace_5: T.Tensor([block_num, H_per_block, D], accum_dtype),
     ):
         with T.Kernel(block_num, is_npu=True) as (cid, vid):
             bx = cid % (seq_len * REPLICATE_H)
@@ -120,7 +120,7 @@ def sparse_attention_fwd(
             b_i = by
             g_i = bz
 
-            s_i = (bx // REPLICATE_H)
+            s_i = bx // REPLICATE_H
 
             H0 = g_i * padded_H + (0 if REPLICATE_H == 1 else (bx % REPLICATE_H) * 64)
             H1 = H0 + H_per_block
@@ -129,7 +129,7 @@ def sparse_attention_fwd(
             T.copy(Q[b_i, s_i, H0:H1, D:], q_tail_l1)
             T.tile.fill(acc_o, 0.0)
             T.tile.fill(sumexp, 0.0)
-            T.tile.fill(m_i, -2.0**30)
+            T.tile.fill(m_i, -(2.0**30))
             for i_i in T.serial(NI):
                 T.copy(workspace_1[cid, 0:BI, 0:D], kv_l1)
                 T.copy(workspace_2[cid, 0:BI, 0:D_tail], kv_tail_l1)
@@ -144,7 +144,7 @@ def sparse_attention_fwd(
 
                 T.copy(acc_o_l0c, workspace_5[cid, 0:H_per_block, 0:D])
 
-                T.copy(Indices[b_i, s_i, g_i, i_i * BI:i_i * BI + BI], indices_ub_)
+                T.copy(Indices[b_i, s_i, g_i, i_i * BI : i_i * BI + BI], indices_ub_)
 
                 for bi_i in range(BI // 2):
                     T.copy(KV[b_i, indices_ub_[bi_i + vid * BI // 2], g_i, :D], kv_ub)
@@ -156,12 +156,12 @@ def sparse_attention_fwd(
 
                 T.copy(m_i, m_i_prev)
 
-                T.copy(workspace_3[cid, vid * v_block:vid * v_block + v_block, :], acc_s_ub_)
+                T.copy(workspace_3[cid, vid * v_block : vid * v_block + v_block, :], acc_s_ub_)
 
-                for (i, j) in T.Parallel(v_block, BI):
+                for i, j in T.Parallel(v_block, BI):
                     acc_s_ub[i, j] = acc_s_ub[i, j] + acc_s_ub_[i, j]
 
-                for (i, j) in T.Parallel(v_block, BI):
+                for i, j in T.Parallel(v_block, BI):
                     acc_s_ub[i, j] = acc_s_ub[i, j] * sm_scale
 
                 T.reduce_max(acc_s_ub, m_i, tmp_ub, dim=-1)
@@ -171,7 +171,7 @@ def sparse_attention_fwd(
                     m_i_prev[i] = m_i_prev[i] - m_i[i]
                     m_i_prev[i] = T.exp(m_i_prev[i])
 
-                for (h_i, j) in T.Parallel(v_block, BI):
+                for h_i, j in T.Parallel(v_block, BI):
                     acc_s_ub[h_i, j] = acc_s_ub[h_i, j] - m_i[h_i]
                     acc_s_ub[h_i, j] = T.exp(acc_s_ub[h_i, j])
 
@@ -181,23 +181,23 @@ def sparse_attention_fwd(
                     sumexp[i] *= m_i_prev[i]
                     sumexp[i] += sumexp_i_ub[i]
 
-                for (h_i, j) in T.Parallel(v_block, D):
+                for h_i, j in T.Parallel(v_block, D):
                     acc_o[h_i, j] = acc_o[h_i, j] * m_i_prev[h_i]
 
                 T.copy(acc_s_ub, acc_s_half)
 
-                T.copy(acc_s_half, workspace_4[cid, vid * v_block:vid * v_block + v_block, :])
+                T.copy(acc_s_half, workspace_4[cid, vid * v_block : vid * v_block + v_block, :])
 
-                T.copy(workspace_5[cid, vid * v_block:vid * v_block + v_block, :], acc_o_ub)
+                T.copy(workspace_5[cid, vid * v_block : vid * v_block + v_block, :], acc_o_ub)
 
-                for (i, j) in T.Parallel(v_block, D):
+                for i, j in T.Parallel(v_block, D):
                     acc_o[i, j] += acc_o_ub[i, j]
 
-            for (h_i, j) in T.Parallel(v_block, D):
+            for h_i, j in T.Parallel(v_block, D):
                 acc_o[h_i, j] = acc_o[h_i, j] / sumexp[h_i]
 
             T.copy(acc_o, acc_o_half)
-            T.copy(acc_o_half, Output[b_i, s_i, H0 + vid * v_block:H0 + v_block + vid * v_block, :])
+            T.copy(acc_o_half, Output[b_i, s_i, H0 + vid * v_block : H0 + v_block + vid * v_block, :])
 
     return main
 
@@ -211,13 +211,7 @@ func = sparse_attention_fwd(
 )
 
 
-def ref_sparse_attention_fwd_interface(q,
-                                       kv,
-                                       indices,
-                                       q_start_index_s,
-                                       kv_stride=4,
-                                       sm_scale=None,
-                                       is_casual=True):
+def ref_sparse_attention_fwd_interface(q, kv, indices, q_start_index_s, kv_stride=4, sm_scale=None, is_casual=True):
     q = q.float()
     kv = kv.float()
     indices = indices.transpose(1, 2)
@@ -226,7 +220,7 @@ def ref_sparse_attention_fwd_interface(q,
     if q_start_index_s is None:
         q_start_index_s = sk * kv_stride - sq
 
-    assert kv.shape[-1] == 576, 'you should assign dim otherwise'
+    assert kv.shape[-1] == 576, "you should assign dim otherwise"
     dim = 512
     k = kv
     v = kv[..., :dim]
@@ -235,14 +229,14 @@ def ref_sparse_attention_fwd_interface(q,
     # num_kv_per_index = 1
     g_index = g
     h_index = h // g
-    compressed_casual_mask = torch.arange(
-        q_start_index_s, sq + q_start_index_s, dtype=torch.int32).view(-1, 1) >= torch.arange(
-            kv_stride - 1, sk * kv_stride, kv_stride, dtype=torch.int32).view(1, -1)
+    compressed_casual_mask = torch.arange(q_start_index_s, sq + q_start_index_s, dtype=torch.int32).view(-1, 1) >= torch.arange(
+        kv_stride - 1, sk * kv_stride, kv_stride, dtype=torch.int32
+    ).view(1, -1)
 
     mask = q.new_zeros(b, g_index, sq, sk + 1, dtype=torch.bool).scatter(3, indices.long(), 1)
     mask = mask[..., :-1]
     mask = mask & compressed_casual_mask.view(1, 1, sq, sk)
-    mask[:, :, :kv_stride - 1, 0] = True
+    mask[:, :, : kv_stride - 1, 0] = True
     mask = mask.view(b, g_index, 1, sq, sk)
 
     q = q.view(b, sq, g, -1, dim_q)
@@ -270,7 +264,7 @@ for b in range(B):
     for t in range(S):
         for h in range(HKV):
             i_i = torch.randperm(max(1, ((t + q_start_s_index) // KV_stride)))[:topk]
-            indices[b, t, h, :len(i_i)] = i_i
+            indices[b, t, h, : len(i_i)] = i_i
 
 torch.npu.synchronize()
 print("init successful!")
