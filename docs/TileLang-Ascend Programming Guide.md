@@ -862,6 +862,15 @@ TileLang提供了多种元素级操作算符，并结合调度原语**T.Parallel
 
   这使得在不需要完全分块时也能实现部分并行化。
 
+- 操作数与结果维度不匹配
+
+  `T.Parallel` 能够处理操作数与结果维度不匹配，可以对等号右侧广播到与左侧一样的维度
+
+  ```python
+  for (i, j) in T.Parallel(block_M // VEC_NUM, block_N):
+      c_ub[i, j] = b_ub[j] + 5 # b_ud is 1d and c_ub is 2d
+  ``` 
+
 ###### 4.1.2.1.4 两种编程范式的说明
 
 在Ascend平台上，对于Tile级别的操作，`T.Parallel`和`T.tile.xxx`两种编程范式都支持。
