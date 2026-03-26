@@ -2922,6 +2922,9 @@ void CodeGenTileLangNPUIRAPI::AddFunctionForCoreType(const GlobalVar &gvar,
   mlir::hacc::KernelArgTypeAttr accArgAttr = hacc::KernelArgTypeAttr::get(
       builder.getContext(), hacc::KernelArgType::kFFTSBaseAddr);
   funcOp.setArgAttr(0, "hacc.arg_type", accArgAttr);
+  mlir::hacc::KernelArgTypeAttr workspaceArgAttr = hacc::KernelArgTypeAttr::get(
+      builder.getContext(), hacc::KernelArgType::kWorkspace);
+  funcOp.setArgAttr(2, "hacc.arg_type", workspaceArgAttr);
   funcOp->setAttr("SyncBlockLockArgIdx", builder.getI64IntegerAttr(0));
   funcOp->setAttr("WorkspaceArgIdx", builder.getI64IntegerAttr(1));
   auto haccEntryAttr = hacc::stringifyHACCToLLVMIRTranslateAttr(
