@@ -22,6 +22,16 @@ def TileLangIRCVSplit : Pass<"tilelangir-cv-split", "func::FuncOp"> {
   ];
 }
 
+def TileLangIRSpecializeCube : Pass<"tilelangir-specialize-cube", "func::FuncOp"> {
+  let summary = "TileLangIR Specialize Cube ops pass";
+  let description = [{
+
+  }];
+  let dependentDialects = [
+    "hivm::HIVMDialect",
+  ];
+}
+
 def TileLangIRVectorize : Pass<"tilelangir-vectorize", "::mlir::ModuleOp"> {
   let summary = "TileLangIR vectorize pass (custom)";
   let description = [{

@@ -4,6 +4,7 @@ add_library(tilelangir_transforms STATIC
   CVSplit.cpp
   InferMemScope.cpp
   PlanWorkspaceMemory.cpp
+  SpecializeCube.cpp
   Vectorize.cpp
   InsertCVSync.cpp
   EnableMultiBuffer.cpp
