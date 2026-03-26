@@ -1,5 +1,6 @@
 add_library(tilelangir_transforms STATIC
   InsertWorkspace.cpp
+  MarkMultiBuffer.cpp
   CVSplit.cpp
   InferMemScope.cpp
   Vectorize.cpp

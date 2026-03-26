@@ -282,6 +282,7 @@ def lower(
         pipeline.add(transforms.mlir.canonicalize, top_down=True)
         pipeline.add(transforms.bishengir.adapt_triton_kernel)
         pipeline.add(transforms.tilelangir.insert_workspace)
+        pipeline.add(transforms.tilelangir.mark_multibuffer)
         pipeline.add(transforms.tilelangir.cv_split)
         pipeline.add(transforms.tilelangir.infer_mem_scope)
         if dump_ir:
