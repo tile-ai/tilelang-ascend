@@ -219,7 +219,9 @@ class TestTileLangKernels:
     # Basic binary operation tests
     def test_add_operation(self, clear_cache, setup_random_seed):
         """Test addition operation kernel"""
-        kernel_func = lambda M, N, block_M, block_N: self.binary_op_kernel_float(M, N, block_M, block_N, lambda a, b: a + b)
+
+        def kernel_func(M, N, block_M, block_N):
+            return self.binary_op_kernel_float(M, N, block_M, block_N, lambda a, b: a + b)
 
         def input_gen(M, N):
             a = torch.randn(M, N).npu()
@@ -230,7 +232,9 @@ class TestTileLangKernels:
 
     def test_sub_operation(self, clear_cache, setup_random_seed):
         """Test subtraction operation kernel"""
-        kernel_func = lambda M, N, block_M, block_N: self.binary_op_kernel_float(M, N, block_M, block_N, lambda a, b: a - b)
+
+        def kernel_func(M, N, block_M, block_N):
+            return self.binary_op_kernel_float(M, N, block_M, block_N, lambda a, b: a - b)
 
         def input_gen(M, N):
             a = torch.randn(M, N).npu()
@@ -241,7 +245,9 @@ class TestTileLangKernels:
 
     def test_mul_operation(self, clear_cache, setup_random_seed):
         """Test multiplication operation kernel"""
-        kernel_func = lambda M, N, block_M, block_N: self.binary_op_kernel_float(M, N, block_M, block_N, lambda a, b: a * b)
+
+        def kernel_func(M, N, block_M, block_N):
+            return self.binary_op_kernel_float(M, N, block_M, block_N, lambda a, b: a * b)
 
         def input_gen(M, N):
             a = torch.randn(M, N).npu()
@@ -252,7 +258,9 @@ class TestTileLangKernels:
 
     def test_div_operation(self, clear_cache, setup_random_seed):
         """Test division operation kernel"""
-        kernel_func = lambda M, N, block_M, block_N: self.binary_op_kernel_float(M, N, block_M, block_N, lambda a, b: a / b)
+
+        def kernel_func(M, N, block_M, block_N):
+            return self.binary_op_kernel_float(M, N, block_M, block_N, lambda a, b: a / b)
 
         def input_gen(M, N):
             a = torch.randn(M, N).npu()
@@ -263,7 +271,9 @@ class TestTileLangKernels:
 
     def test_and_operation(self, clear_cache, setup_random_seed):
         """Test AND operation kernel"""
-        kernel_func = lambda M, N, block_M, block_N: self.binary_op_kernel_int(M, N, block_M, block_N, lambda a, b: a & b)
+
+        def kernel_func(M, N, block_M, block_N):
+            return self.binary_op_kernel_int(M, N, block_M, block_N, lambda a, b: a & b)
 
         def input_gen(M, N):
             a = torch.randint(0, 10, (M, N), dtype=torch.int16).npu()
@@ -274,7 +284,9 @@ class TestTileLangKernels:
 
     def test_or_operation(self, clear_cache, setup_random_seed):
         """Test OR operation kernel"""
-        kernel_func = lambda M, N, block_M, block_N: self.binary_op_kernel_int(M, N, block_M, block_N, lambda a, b: a | b)
+
+        def kernel_func(M, N, block_M, block_N):
+            return self.binary_op_kernel_int(M, N, block_M, block_N, lambda a, b: a | b)
 
         def input_gen(M, N):
             a = torch.randint(0, 10, (M, N), dtype=torch.int16).npu()
@@ -285,7 +297,9 @@ class TestTileLangKernels:
 
     def test_min_operation(self, clear_cache, setup_random_seed):
         """Test element-wise minimum operation kernel"""
-        kernel_func = lambda M, N, block_M, block_N: self.binary_op_kernel_float(M, N, block_M, block_N, lambda a, b: T.min(a, b))
+
+        def kernel_func(M, N, block_M, block_N):
+            return self.binary_op_kernel_float(M, N, block_M, block_N, lambda a, b: T.min(a, b))
 
         def input_gen(M, N):
             a = torch.randn(M, N).npu()
@@ -298,7 +312,9 @@ class TestTileLangKernels:
 
     def test_max_operation(self, clear_cache, setup_random_seed):
         """Test element-wise maximum operation kernel"""
-        kernel_func = lambda M, N, block_M, block_N: self.binary_op_kernel_float(M, N, block_M, block_N, lambda a, b: T.max(a, b))
+
+        def kernel_func(M, N, block_M, block_N):
+            return self.binary_op_kernel_float(M, N, block_M, block_N, lambda a, b: T.max(a, b))
 
         def input_gen(M, N):
             a = torch.randn(M, N).npu()
@@ -312,7 +328,9 @@ class TestTileLangKernels:
     # Unary operation tests
     def test_abs_operation(self, clear_cache, setup_random_seed):
         """Test absolute value operation kernel"""
-        kernel_func = lambda M, N, block_M, block_N: self.unary_op_kernel_float(M, N, block_M, block_N, lambda a: T.abs(a))
+
+        def kernel_func(M, N, block_M, block_N):
+            return self.unary_op_kernel_float(M, N, block_M, block_N, lambda a: T.abs(a))
 
         KernelTestHelper.run_unary_kernel_test(
             kernel_func=kernel_func, input_generator=lambda M, N: torch.randn(M, N).npu(), reference_func=lambda a: torch.abs(a)
@@ -320,7 +338,9 @@ class TestTileLangKernels:
 
     def test_exp_operation(self, clear_cache, setup_random_seed):
         """Test exponential operation kernel"""
-        kernel_func = lambda M, N, block_M, block_N: self.unary_op_kernel_float(M, N, block_M, block_N, lambda a: T.exp(a))
+
+        def kernel_func(M, N, block_M, block_N):
+            return self.unary_op_kernel_float(M, N, block_M, block_N, lambda a: T.exp(a))
 
         KernelTestHelper.run_unary_kernel_test(
             kernel_func=kernel_func, input_generator=lambda M, N: torch.randn(M, N).npu(), reference_func=lambda a: torch.exp(a)
@@ -328,7 +348,9 @@ class TestTileLangKernels:
 
     def test_log_operation(self, clear_cache, setup_random_seed):
         """Test logarithm operation kernel"""
-        kernel_func = lambda M, N, block_M, block_N: self.unary_op_kernel_float(M, N, block_M, block_N, lambda a: T.log(a))
+
+        def kernel_func(M, N, block_M, block_N):
+            return self.unary_op_kernel_float(M, N, block_M, block_N, lambda a: T.log(a))
 
         KernelTestHelper.run_unary_kernel_test(
             kernel_func=kernel_func, input_generator=lambda M, N: torch.abs(torch.randn(M, N).npu()), reference_func=lambda a: torch.log(a)
@@ -336,7 +358,9 @@ class TestTileLangKernels:
 
     def test_sqrt_operation(self, clear_cache, setup_random_seed):
         """Test square root operation kernel"""
-        kernel_func = lambda M, N, block_M, block_N: self.unary_op_kernel_float(M, N, block_M, block_N, lambda a: T.sqrt(a))
+
+        def kernel_func(M, N, block_M, block_N):
+            return self.unary_op_kernel_float(M, N, block_M, block_N, lambda a: T.sqrt(a))
 
         KernelTestHelper.run_unary_kernel_test(
             kernel_func=kernel_func, input_generator=lambda M, N: torch.rand(M, N).npu(), reference_func=lambda a: torch.sqrt(a)
@@ -344,7 +368,9 @@ class TestTileLangKernels:
 
     def test_rsqrt_operation(self, clear_cache, setup_random_seed):
         """Test reciprocal square root operation kernel"""
-        kernel_func = lambda M, N, block_M, block_N: self.unary_op_kernel_float(M, N, block_M, block_N, lambda a: T.rsqrt(a))
+
+        def kernel_func(M, N, block_M, block_N):
+            return self.unary_op_kernel_float(M, N, block_M, block_N, lambda a: T.rsqrt(a))
 
         KernelTestHelper.run_unary_kernel_test(
             kernel_func=kernel_func,
@@ -355,7 +381,9 @@ class TestTileLangKernels:
 
     def test_relu_operation(self, clear_cache, setup_random_seed):
         """Test ReLU operation kernel"""
-        kernel_func = lambda M, N, block_M, block_N: self.unary_op_kernel_float(M, N, block_M, block_N, lambda a: T.max(a, 0))
+
+        def kernel_func(M, N, block_M, block_N):
+            return self.unary_op_kernel_float(M, N, block_M, block_N, lambda a: T.max(a, 0))
 
         KernelTestHelper.run_unary_kernel_test(
             kernel_func=kernel_func, input_generator=lambda M, N: torch.randn(M, N).npu(), reference_func=lambda a: torch.relu(a)
@@ -363,7 +391,9 @@ class TestTileLangKernels:
 
     def test_not_operation(self, clear_cache, setup_random_seed):
         """Test bitwise NOT operation kernel"""
-        kernel_func = lambda M, N, block_M, block_N: self.unary_op_kernel_int(M, N, block_M, block_N, lambda a: ~a)
+
+        def kernel_func(M, N, block_M, block_N):
+            return self.unary_op_kernel_int(M, N, block_M, block_N, lambda a: ~a)
 
         KernelTestHelper.run_unary_kernel_test(
             kernel_func=kernel_func,
@@ -375,9 +405,8 @@ class TestTileLangKernels:
         """Test bitwise left shift kernel"""
         scalar_value = random.randint(1, 16)
 
-        kernel_func = lambda M, N, block_M, block_N: self.unary_op_kernel_int(
-            M, N, block_M, block_N, op_func=lambda a: a << scalar_value, dtype="int32"
-        )
+        def kernel_func(M, N, block_M, block_N):
+            return self.unary_op_kernel_int(M, N, block_M, block_N, op_func=lambda a: a << scalar_value, dtype="int32")
 
         def input_generator(M, N):
             return torch.randint(1, 101, (M, N), dtype=torch.int32).npu()
@@ -392,9 +421,8 @@ class TestTileLangKernels:
         """Test bitwise right shift kernel"""
         scalar_value = random.randint(1, 32)
 
-        kernel_func = lambda M, N, block_M, block_N: self.unary_op_kernel_int(
-            M, N, block_M, block_N, op_func=lambda a: a >> scalar_value, dtype="int32"
-        )
+        def kernel_func(M, N, block_M, block_N):
+            return self.unary_op_kernel_int(M, N, block_M, block_N, op_func=lambda a: a >> scalar_value, dtype="int32")
 
         def input_generator(M, N):
             return torch.randint(1, 101, (M, N), dtype=torch.int32).npu()
@@ -408,7 +436,9 @@ class TestTileLangKernels:
     # Compound operation tests
     def test_fused_mul_add_operation(self, clear_cache, setup_random_seed):
         """Test fused multiply-add operation: a * b + a"""
-        kernel_func = lambda M, N, block_M, block_N: self.binary_op_kernel_float(M, N, block_M, block_N, lambda a, b: a * b + a)
+
+        def kernel_func(M, N, block_M, block_N):
+            return self.binary_op_kernel_float(M, N, block_M, block_N, lambda a, b: a * b + a)
 
         def input_gen(M, N):
             a = torch.randn(M, N).npu()
@@ -419,7 +449,9 @@ class TestTileLangKernels:
 
     def test_fused_add_mul_operation(self, clear_cache, setup_random_seed):
         """Test fused add-multiply operation: a * (b + a)"""
-        kernel_func = lambda M, N, block_M, block_N: self.binary_op_kernel_float(M, N, block_M, block_N, lambda a, b: a * (b + a))
+
+        def kernel_func(M, N, block_M, block_N):
+            return self.binary_op_kernel_float(M, N, block_M, block_N, lambda a, b: a * (b + a))
 
         def input_gen(M, N):
             a = torch.randn(M, N).npu()
@@ -431,7 +463,9 @@ class TestTileLangKernels:
     # 1D operation tests
     def test_1d_add_operation(self, clear_cache, setup_random_seed):
         """Test 1D addition operation kernel"""
-        kernel_func = lambda N, block_N: self.binary_op_kernel_1d(N, block_N, lambda a, b: a + b)
+
+        def kernel_func(N, block_N):
+            return self.binary_op_kernel_1d(N, block_N, lambda a, b: a + b)
 
         def input_gen(N):
             a = torch.randn(N).npu()
@@ -443,7 +477,9 @@ class TestTileLangKernels:
     # Scalar operation tests
     def test_add_scalar_operation(self, clear_cache, setup_random_seed):
         """Test vector + scalar operation"""
-        kernel_func = lambda M, N, block_M, block_N: self.binary_op_kernel_float(M, N, block_M, block_N, lambda a, b: a + 1)
+
+        def kernel_func(M, N, block_M, block_N):
+            return self.binary_op_kernel_float(M, N, block_M, block_N, lambda a, b: a + 1)
 
         def input_gen(M, N):
             a = torch.randn(M, N).npu()
