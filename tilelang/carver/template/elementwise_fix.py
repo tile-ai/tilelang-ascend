@@ -24,6 +24,7 @@ class ElementwiseFixTemplate(BaseTemplate):
     # OP Related Config
     shape: List[int] = None  # Shape of the tensor
     dtype: str = "float16"  # Data type of the tensor
+    custom_mem_mul : float = 1
 
     def get_hardware_aware_configs(self, arch: TileDevice = None, topk: int = 10) -> List[Hint]:
         """
@@ -36,7 +37,7 @@ class ElementwiseFixTemplate(BaseTemplate):
         Returns:
             List[Hint]: A list of optimization hints for the given architecture.
         """
-        roller_hints = get_roller_hints_from_func(self._func, arch=arch, topk=topk, allow_gemv=True)
+        roller_hints = get_roller_hints_from_func(self._func, arch=arch, topk=topk, allow_gemv=True, custom_mem_mul=self.custom_mem_mul)
         return roller_hints
 
     def initialize_function(self) -> None:

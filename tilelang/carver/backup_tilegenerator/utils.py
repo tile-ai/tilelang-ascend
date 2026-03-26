@@ -21,32 +21,27 @@
 # THE SOFTWARE.
 
 import torch
+from tilelang.carver.arch.ascend import Ascend
 
 _cached_params = None
 
 
 def _init_npu_params():
+
     global _cached_params
     if _cached_params is not None:
         return _cached_params
 
-    #target = driver.active.get_current_target()
-    target = {"arch" : ["Ascend910B"]}
+    arch = Ascend()
+
+    target = {"arch" : [arch.chip_name]}
     device = []
-    prop = {"num_aicore" : 30}
+    prop = {"num_aicore" : arch.compute_max_core}
 
     num_cube_core = prop["num_aicore"]
     num_vector_core = prop["num_aicore"]
-    ub_size_in_kbytes = 192
+    ub_size_in_kbytes = arch.ub_cap 
     rf_size_in_kbytes = None
-
-    #ASCEND_VARIANTS = ["Ascend910B", "Ascend910_93", "Ascend910_95", "Ascend950"]
-    #if any(variant in target.arch for variant in ASCEND_VARIANTS):
-    #    num_vector_core = num_cube_core * 2
-
-    #if target.arch.startswith("Ascend910_95") or target.arch.startswith("Ascend950"):
-    #    ub_size_in_kbytes = 256
-    #    rf_size_in_kbytes = 128
 
     _cached_params = {
         'target': target,
@@ -91,7 +86,6 @@ valid_axis_names = [
     "v",
     "t",
 ]
-
 
 def get_byte_per_numel(dtype: torch.dtype) -> int:
     return 1 if dtype is None else byte_per_numel[dtype]

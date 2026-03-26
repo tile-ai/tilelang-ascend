@@ -22,6 +22,7 @@
 
 from __future__ import annotations
 
+import torch
 import functools
 import sys
 from dataclasses import dataclass
@@ -93,20 +94,19 @@ class KernelMeta:
         self._validate_axis(axis_sizes, split_params, tiling_params, low_dims)
 
         axis_dict = {}
-        idx = 0
-        for name, length in axis_sizes.items():
+        for index, (name, length) in enumerate(axis_sizes.items()):
             prefix = ""
             if name.startswith("r"):
                 prefix = "r"
 
             is_split_axis = name in split_params
             is_tiling_axis = name in tiling_params
-            split_name = "" if name not in split_params else split_params[name]
-            tiling_name = "" if name not in tiling_params else tiling_params[name]
+            split_name = split_params.get(name, "")
+            tiling_name = tiling_params.get(name, "")
 
             axis_dict[name] = AxisInfo(
                 name=name,
-                index=idx,
+                index=index,
                 length=length,
                 prefix=prefix,
                 split_name=split_name,
@@ -114,7 +114,6 @@ class KernelMeta:
                 is_split_axis=is_split_axis,
                 is_tiling_axis=is_tiling_axis,
             )
-            idx += 1
 
         self.axis_info = list(axis_dict.values())
         self.split_axis = [x for x in axis_dict.values() if x.is_split_axis]
@@ -176,7 +175,7 @@ class TileGenerator:
         self.configs = []
         self.dtype_bytes = get_byte_per_numel(kernel_meta.dtype)
 
-        self.num_buffers = 3 if kernel_meta.num_buffers == 0 else min(kernel_meta.num_buffers, 3)
+        self.num_buffers = 3 if kernel_meta.num_buffers == 0 else min(kernel_meta.num_buffers, 3) # Triple buffer limit
         self.is_simt_mode = kernel_meta.is_simt_mode
         local_mem_size = (
             rf_size_in_kbytes
@@ -185,7 +184,7 @@ class TileGenerator:
         )
         self.max_numel_threshold = local_mem_size * 1024 // self.dtype_bytes // self.num_buffers
         self.max_total_numel = functools.reduce(lambda x, y: x * y, [x.block_size for x in self.blocks]) if self.blocks else 1
-        self.tiny_kernel = self.max_total_numel < 128 * 1024
+        self.tiny_kernel = self.max_total_numel < 128 * 1024 # Threshold of tiny kernel, block shape product  < 128 * 1024
         self.stop_numel = min(1024 // self.dtype_bytes, self.max_total_numel // (num_vector_core * 2)) if self.tiny_kernel else 1024 // self.dtype_bytes
         self.max_programs_num = 65535
 
@@ -254,16 +253,13 @@ class TileGenerator:
                 cfg[block_info.sub_block_name] = min(tiling_numel, candi_block[axis.index])
 
     def find_config(self, cfg):
-        for config_var in self.configs:
-            if config_var.kwargs == cfg:
-                return True
-        return False
+        return any(config_var.kwargs == cfg for config_var in self.configs)
 
     def add_to_configs(self, candi_block):
         newcfg = {}
         self.fill_config(newcfg, candi_block)
         tile_numel = self.calculate_tile_numel()
-        stop_numel_threshold = 0 if len(self.configs) < 10 or self.tiny_kernel else self.stop_numel + 100
+        stop_numel_threshold = 0 if len(self.configs) < 10 or self.tiny_kernel else self.stop_numel + 128 # Stop heuristic, no threshold when less configs and +128 for margin configs
         if (
             tile_numel <= self.max_numel_threshold
             and tile_numel >= stop_numel_threshold

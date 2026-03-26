@@ -27,6 +27,7 @@ class GEMVTemplate(BaseTemplate):
     out_dtype: str = "float16"  # Output data type
     accum_dtype: str = "float16"  # Accumulation data type
     with_bias: bool = False  # Whether to add a bias term
+    custom_mem_mul : float = 1
 
     def get_hardware_aware_configs(self, arch: TileDevice = None, topk: int = 10) -> List[Hint]:
         """
@@ -39,7 +40,7 @@ class GEMVTemplate(BaseTemplate):
         Returns:
             List[Hint]: A list of optimization hints for hardware acceleration.
         """
-        roller_hints = get_roller_hints_from_func(self._func, arch=arch, topk=topk)
+        roller_hints = get_roller_hints_from_func(self._func, arch=arch, topk=topk, custom_mem_mul=self.custom_mem_mul)
         return roller_hints
 
     def initialize_function(self) -> None:

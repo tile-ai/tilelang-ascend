@@ -180,7 +180,7 @@ class AscendDefaultPolicy(DefaultPolicy):
         for _steps in steps:
             self.max_total_numel *= _steps[len(_steps) - 1]
 
-        self.tiny_kernel = self.max_total_numel < 128 * 1024
+        self.tiny_kernel = self.max_total_numel < 128 * 1024 # Threshold of tiny kernel, block shape product  < 128 * 1024
         self.stop_numel = min(1024 // dtype_bytes, self.max_total_numel // (self.num_ai_cores * 2)) if self.tiny_kernel else 1024 // dtype_bytes
 
     def calculate_tile_numel(self, hint):
@@ -317,7 +317,6 @@ class AscendDefaultPolicy(DefaultPolicy):
         - Focus on DMA-aligned data access
         """
         tile, rsteps = td.get_tile(node), td.get_rstep(node)
-        ndim = len(tile)
         
         codegen_dict = Hint()
         codegen_dict.block = tile

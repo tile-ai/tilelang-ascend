@@ -109,7 +109,7 @@ class DefaultPolicy:
         verified_results = []
         for result in results:
             tile_numel = self.calculate_tile_numel(result)
-            stop_numel_threshold = 0 if len(verified_results) < 10 or self.tiny_kernel else self.stop_numel + 100
+            stop_numel_threshold = 0 if len(verified_results) < (topk // 2) or self.tiny_kernel else self.stop_numel + 128 # Stop heuristic, no threshold when less configs and add 128 for margin configs
             if (
                 tile_numel <= self.max_numel_threshold
                 and tile_numel >= stop_numel_threshold
@@ -120,7 +120,7 @@ class DefaultPolicy:
 
     def dfs_smem_tile(self, init_tile, rstep_map) -> Iterable[TileDict]:
         _steps = [get_all_factors(n) for n in self.output_nodes[0].get_space_dim()]
-        steps = [step[step.index(t):] for step, t in zip(_steps, init_tile)]
+        steps = [step[step.index(t):] for step, t in zip(_steps, init_tile, strict=True)]
         for i in range(len(steps)):
             added = list(
                 filter(
@@ -146,7 +146,7 @@ class DefaultPolicy:
         add_to_queue(init_tile)
         while not (queue.empty() or len(visited_tiles) > 2000):
             _, tile = queue.get()
-            dim_ids = [step.index(t) for step, t in zip(steps, tile)]
+            dim_ids = [step.index(t) for step, t in zip(steps, tile, strict=True)]
             for i in reversed(range(len(dim_ids))):
                 if dim_ids[i] + 1 < len(steps[i]):
                     new_tile = tile.copy()
@@ -600,7 +600,7 @@ class DefaultPolicy:
             td.valid = False
             return td
         output_shape = self.output_nodes[0].get_space_dim()
-        td.grid_size = int(np.prod([(y + x - 1) // x for x, y in zip(output_tile, output_shape)]))
+        td.grid_size = int(np.prod([(y + x - 1) // x for x, y in zip(output_tile, output_shape, strict=True)]))
         # estimated reg usage
         reg_usage = int(2 * max([
             np.prod(td.get_tile(node)) * node.get_dtype().bits / 32 for node in self.ordered_nodes
@@ -630,7 +630,7 @@ class DefaultPolicy:
             if np.prod(td.get_tile(node)) == 0:
                 return False
             node_grid_size = np.prod([
-                (y + x - 1) // x for x, y in zip(td.get_tile(node), node.get_space_dim())
+                (y + x - 1) // x for x, y in zip(td.get_tile(node), node.get_space_dim(), strict=True)
             ])
             if node_grid_size != td.grid_size:
                 return False
@@ -664,7 +664,7 @@ class DefaultPolicy:
             node_reduce_sizes = [
                 int(np.prod(list(td.get_rstep(node).values()))) for node in self.ordered_nodes
             ]
-            total_sizes = [x * y for x, y in zip(node_space_sizes, node_reduce_sizes)]
+            total_sizes = [x * y for x, y in zip(node_space_sizes, node_reduce_sizes, strict=True)]
             max_possible_size = functools.reduce(math.gcd, total_sizes)
             possible_block_sizes = list(
                 filter(
