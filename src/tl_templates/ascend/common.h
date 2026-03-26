@@ -38,11 +38,15 @@ constexpr bool IsDuplicateSupported_v =
 
 template <typename T, uint32_t dstM, uint32_t dstN>
 CATLASS_DEVICE void copy_gm_to_l1(LocalTensor<T> dstTensor,
-                                  GlobalTensor<T> srcTensor, uint32_t realSrcN = 1, uint32_t realTailM = 0, uint32_t realTailN = 0) {
+                                  GlobalTensor<T> srcTensor,
+                                  uint32_t realSrcN = 1, uint32_t realTailM = 0,
+                                  uint32_t realTailN = 0) {
   uint32_t tailM = realTailM == 0 ? dstM : realTailM;
   uint32_t tailN = realTailN == 0 ? dstN : realTailN;
   if (tailM != dstM || tailN != dstN) {
-    AscendC::InitConstValue(dstTensor, {1, static_cast<uint16_t>(dstM * dstN * sizeof(T) / 32), 0, 0});
+    AscendC::InitConstValue(
+        dstTensor,
+        {1, static_cast<uint16_t>(dstM * dstN * sizeof(T) / 32), 0, 0});
   }
   auto layout = MakeLayoutFromTag(LayoutGM{tailM, realSrcN});
   auto src_LAYOUT = MakeLayoutTile(layout, tla::MakeShape(tailM, tailN));
@@ -125,9 +129,10 @@ CATLASS_DEVICE void mma(LocalTensor<T1> const A, LocalTensor<T1> const B,
 
 template <typename T1, typename T2, typename LayoutGM, uint32_t srcM,
           uint32_t srcN, bool enRelu = false>
-CATLASS_DEVICE void copy_l0c_to_gm(GlobalTensor<T2> dstTensor,
-                                   LocalTensor<T1> srcTensor,
-                                   uint32_t realDstN = 1, uint32_t realTailM = 0, uint32_t realTailN = 0) {
+CATLASS_DEVICE void
+copy_l0c_to_gm(GlobalTensor<T2> dstTensor, LocalTensor<T1> srcTensor,
+               uint32_t realDstN = 1, uint32_t realTailM = 0,
+               uint32_t realTailN = 0) {
   uint32_t tailM = realTailM == 0 ? srcM : realTailM;
   uint32_t tailN = realTailN == 0 ? srcN : realTailN;
   auto layoutInL0C = tla::MakeLayoutL0C(srcM, srcN);
@@ -167,13 +172,10 @@ CATLASS_DEVICE auto thread_block_swizzle(uint64_t pid) {
 }
 
 template <typename T, uint32_t dstN, uint32_t dstM = 1>
-CATLASS_DEVICE void copy_gm_to_ub(LocalTensor<T> dstTensor,
-                                  GlobalTensor<T> srcTensor,
-                                  uint32_t realSrcN = 1,
-                                  uint32_t maskShapeM = dstM,
-                                  uint32_t maskShapeN = dstN,
-                                  T padValue = T(0)) {
-
+CATLASS_DEVICE void
+copy_gm_to_ub(LocalTensor<T> dstTensor, GlobalTensor<T> srcTensor,
+              uint32_t realSrcN = 1, uint32_t maskShapeM = dstM,
+              uint32_t maskShapeN = dstN, T padValue = T(0)) {
 
   bool isPad = true;
   uint32_t rightPadding = 1;
@@ -196,11 +198,10 @@ CATLASS_DEVICE void copy_gm_to_ub(LocalTensor<T> dstTensor,
 }
 
 template <typename T, uint32_t srcN, uint32_t srcM = 1>
-CATLASS_DEVICE void copy_ub_to_gm(GlobalTensor<T> dstTensor,
-                                  LocalTensor<T> srcTensor,
-                                  uint32_t realdstN = 1,
-                                  uint32_t maskShapeM = srcM,
-                                  uint32_t maskShapeN = srcN) {
+CATLASS_DEVICE void
+copy_ub_to_gm(GlobalTensor<T> dstTensor, LocalTensor<T> srcTensor,
+              uint32_t realdstN = 1, uint32_t maskShapeM = srcM,
+              uint32_t maskShapeN = srcN) {
   AscendC::DataCopyExtParams dataCopyParams(
       maskShapeM, maskShapeN * sizeof(T), (srcN - maskShapeN) * sizeof(T) / 32,
       (realdstN - maskShapeN) * sizeof(T), 0);
