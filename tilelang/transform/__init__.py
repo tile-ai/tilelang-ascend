@@ -425,6 +425,7 @@ def AscendInferBufferScope():
     """
     return _ffi_api.InferAllocScope()  # type: ignore
 
+
 def CollectBufferShapes():
     """Infer Buffer Scope for Ascend.
 
@@ -435,6 +436,34 @@ def CollectBufferShapes():
     ----
     """
     return _ffi_api.CollectBufferShapes()  # type: ignore
+
+def BufferShapeCollector():
+    """Collect Buffer Shape for Ascend.
+
+    Returns
+    -------
+    fpass : tvm.transform.Pass
+        The result pass
+    ----
+    """
+    return _ffi_api.BufferShapeCollector() # type: ignore
+
+
+def Flatten2DBuffer():
+    """flatten buffer shape to 2D.
+
+    Converts buffer dimensions as follows:
+    - 1D [M] -> 2D [1, M]
+    - 2D [N, M] -> 2D [N, M] (unchanged)
+    - ND [D1, D2, ..., Dn] -> 2D [D1*D2*...*Dn-1, Dn]
+
+    Returns
+    -------
+    fpass : tvm.transform.Pass
+        The result pass
+    ----
+    """
+    return _ffi_api.Flatten2DBuffer() # type: ignore
 
 def AscendStorageRewrite(is_npu: bool = False):
     """StorageRewrite for Ascend.

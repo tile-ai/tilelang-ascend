@@ -226,5 +226,14 @@ namespace tl {
     return event_mapping_;
   }
 
+  /*! \brief A set of memory scopes that require their layout to be flattened.
+   */
+  const std::unordered_set<std::string> kScopesToFlatten = {
+      "shared", "shared.dyn", "wmma.matrix_a", "wmma.matrix_b", "wmma.accumulator"};
+
+  /*! \brief The memory scope that requires alignment for its inner
+   * dimension. */
+  const std::unordered_map<std::string, int> kScopeForAlignment = {{"shared", 32 * 8}};
+
 } // namespace tl
 } // namespace tvm

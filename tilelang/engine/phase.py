@@ -50,6 +50,8 @@ def allow_vectorize(pass_ctx: PassContext | None = None) -> bool:
 
 def LowerAndLegalize(mod: IRModule, target: Target) -> IRModule:
     mod = tilelang.transform.AscendInferBufferScope()(mod)
+    # Collect buffer shape
+    mod = tilelang.transform.BufferShapeCollector()(mod)
     # Bind the target device information to the module
     mod = tir.transform.BindTarget(target)(mod)
     # Identify and filter host tiling data for npu
@@ -87,6 +89,8 @@ def OptimizeForTarget(mod: IRModule, target: Target, platform: str) -> IRModule:
     mod = tilelang.transform.AscendLowerOpaqueBlock()(mod)
     mod = tir.transform.NarrowDataType(32)(mod)
     mod = tilelang.transform.ConfigIndexBitwidth()(mod)
+    # Collect buffer shape and flatten buffer shape to 2D
+    mod = tilelang.transform.Flatten2DBuffer()(mod)
     mod = tilelang.transform.FlattenBuffer()(mod)
     mod = tir.transform.Simplify()(mod)
     mod = tilelang.transform.VectorizeLoop(enable_vectorize=allow_vectorize(pass_ctx=pass_ctx))(mod)
