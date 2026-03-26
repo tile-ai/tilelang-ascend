@@ -75,8 +75,8 @@ def sparse_attention_fwd(
     pre_total_size = batch * seq_len
     db = 2
     pre_loop_size = ((144) * 1024 // 2 // ((D + D_tail) * db))
-    pre_ub_size = pre_loop_size * D
-    pre_rope_ub_size = pre_loop_size * D_tail
+    # pre_ub_size = pre_loop_size * D
+    # pre_rope_ub_size = pre_loop_size * D_tail
 
     @T.prim_func
     def main(

@@ -70,7 +70,7 @@ def sparse_attention_fwd(
 
     v_block = H_per_block // 2
 
-    block_num = [batch, seq_len, REPLICATE_H, kv_group]
+    # block_num = [batch, seq_len, REPLICATE_H, kv_group]
 
     @T.prim_func
     def main(

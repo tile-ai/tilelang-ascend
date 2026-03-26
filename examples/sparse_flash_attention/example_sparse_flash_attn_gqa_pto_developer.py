@@ -37,10 +37,10 @@ def sparse_attention_fwd(
     BI = block_I
     NI = tilelang.cdiv(topk, block_I)
     D = dim
-    D_tail = tail_dim
+    # D_tail = tail_dim
 
     head_kv = heads // kv_group
-    H = head_kv
+    # H = head_kv
 
     if head_kv > 64:
         assert head_kv % 64 == 0, 'head_kv should be a multiple of 64'
