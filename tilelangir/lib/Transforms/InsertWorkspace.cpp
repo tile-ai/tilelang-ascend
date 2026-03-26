@@ -629,6 +629,32 @@ struct TileLangIRInsertWorkspace
         }
       }
     }
+
+    // Step 6: Erase dead view-like ops (e.g. subview) on originalBuffer.
+    // getOrCreateAlias clones subviews onto the new buffer but does not remove
+    // the originals; clean up any that have become unused.
+    {
+      SmallVector<Operation *> deadOps;
+      SmallVector<Value, 4> cleanupWorklist = {originalBuffer};
+      SmallPtrSet<Value, 8> cleanupVisited;
+      while (!cleanupWorklist.empty()) {
+        Value val = cleanupWorklist.pop_back_val();
+        if (!cleanupVisited.insert(val).second)
+          continue;
+        for (Operation *user : val.getUsers()) {
+          if (auto viewLike = dyn_cast<ViewLikeOpInterface>(user)) {
+            if (viewLike.getViewSource() == val) {
+              Value result = user->getResult(0);
+              cleanupWorklist.push_back(result);
+              if (result.use_empty())
+                deadOps.push_back(user);
+            }
+          }
+        }
+      }
+      for (auto *op : llvm::reverse(deadOps))
+        op->erase();
+    }
   }
 
   /// Replace uses of oldBuffer (and its view-like aliases) with newBuffer in
