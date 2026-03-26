@@ -1038,7 +1038,8 @@ void CodeGenTileLangAscendPto::CallExternCodegen(const CallNode *op) {
           is_chunking = true;
         }
         shape_nums[1] = PrintExpr(op->args[op_arg_len - 1]);
-        if (op_name.find("copy_gm_to_ub") != std::string::npos && shape_tile.size() == 1) {
+        if (op_name.find("copy_gm_to_ub") != std::string::npos &&
+            shape_tile.size() == 1) {
           shape_nums[0] = "1";
         } else if (op_arg_len == 5) {
           shape_nums[0] = "1";
@@ -1169,8 +1170,9 @@ void CodeGenTileLangAscendPto::CallExternCodegen(const CallNode *op) {
           PrimExpr simplified_k = analyzer.Simplify(buffer_k);
           auto addr = l_valid_shapes[3];
           auto type_len = GetTypeLen(l_valid_shapes[0]);
-          this->stream << ", " << addr << " + " << dst_offset << " * " << type_len << ", " << PrintExpr(op->args[4]) << ", " << PrintExpr(op->args[5])
-                       << ");\n";
+          this->stream << ", " << addr << " + " << dst_offset << " * "
+                       << type_len << ", " << PrintExpr(op->args[4]) << ", "
+                       << PrintExpr(op->args[5]) << ");\n";
           prefetch_n_stages_map_[dst_var_id].second++;
         } else {
           if (op_name.find("copy_gm_to_ub") != std::string::npos) {
@@ -1184,8 +1186,9 @@ void CodeGenTileLangAscendPto::CallExternCodegen(const CallNode *op) {
           } else {
             auto addr = l_valid_shapes[3];
             auto type_len = GetTypeLen(l_valid_shapes[0]);
-            this->stream << ", " << addr << " + " << dst_offset << " * " << type_len << ", " << PrintExpr(op->args[4]) << ", " << PrintExpr(op->args[5])
-                       << ");\n";
+            this->stream << ", " << addr << " + " << dst_offset << " * "
+                         << type_len << ", " << PrintExpr(op->args[4]) << ", "
+                         << PrintExpr(op->args[5]) << ");\n";
           }
         }
 
@@ -1329,8 +1332,9 @@ void CodeGenTileLangAscendPto::CallExternCodegen(const CallNode *op) {
         } else {
           auto addr = l_valid_shapes[3];
           auto type_len = GetTypeLen(l_valid_shapes[0]);
-          this->stream << ", " << addr << " + " << src_offset << " * " << type_len << ", " << PrintExpr(op->args[4]) << ", " << PrintExpr(op->args[5])
-                       << ");\n";
+          this->stream << ", " << addr << " + " << src_offset << " * "
+                       << type_len << ", " << PrintExpr(op->args[4]) << ", "
+                       << PrintExpr(op->args[5]) << ");\n";
         }
       }
     } else {
