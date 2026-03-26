@@ -1,7 +1,7 @@
 import tilelang
 from tilelang import DataType, language as T
 import torch
-from tilelang.profiler import do_bench
+# from tilelang.profiler import do_bench
 
 torch.set_default_device('npu')
 torch.manual_seed(0)
@@ -91,7 +91,7 @@ def sparse_attention_fwd(
             workspace_5: T.Tensor([*block_num, H_per_block, D], accum_dtype),  # T.Tensor([block_num, H_per_block, D], accum_dtype),
     ):
         with T.Kernel(core_num, is_npu=True) as (cid, vid):
-	        #pre
+            #pre
             pre_ub = T.alloc_ub((db, pre_loop_size, D), dtype)
             pre_rope_ub = T.alloc_ub((db, pre_loop_size, D_tail), dtype)
             precore_size = T.ceildiv(pre_total_size, core_num)
@@ -254,7 +254,7 @@ def sparse_attention_fwd(
                         T.tile.fill(sumexp, 0.0)
                         T.tile.fill(m_i, -2.0**30)
 
-                        for i_i in range(NI):
+                        for _i_i in range(NI):
 
                             T.pipe_barrier("v")
 

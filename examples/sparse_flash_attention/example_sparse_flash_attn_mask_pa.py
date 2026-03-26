@@ -2,7 +2,7 @@ import tilelang
 from tilelang import DataType, language as T
 import torch
 import sfa_golden as ref
-import numpy as np
+# import numpy as np
 
 torch.set_default_device('npu')
 torch.manual_seed(0)
@@ -219,7 +219,7 @@ def sparse_attention_fwd(
                                 T.barrier_all()
                                 actual_len = actual_kv_len[b_i]
                                 T.barrier_all()
-                                valid_kv_len = T.Min(T.float32(s_i), T.float32(actual_len))
+                                # valid_kv_len = T.Min(T.float32(s_i), T.float32(actual_len))
                                 T.barrier_all()
                                 T.tile.compare(mask_ub, indices_ub_float, T.float32(actual_len - act_q_len + s_i), "LE")
                                 T.tile.compare(mask_ub_2, indices_ub_float, T.float32(-1.0), "NE")
