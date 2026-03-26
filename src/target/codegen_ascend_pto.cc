@@ -21,6 +21,7 @@
 
 #include "../op/ascend.h"
 #include "../op/builtin.h"
+#include "../transform/common/attr.h"
 
 #include "arith/pattern_match.h"
 
@@ -36,6 +37,8 @@ namespace codegen {
 const std::string kAscendPtoScope = "tl::ascend_pto::";
 
 using ShapeInfo = CodeGenTileLangAscendPto::ShapeInfo;
+
+using BufferInfo = CodeGenTileLangAscendPto::BufferInfo;
 
 static std::string getType(const DataType &dtype) {
   if (dtype.is_float16()) {
@@ -126,6 +129,39 @@ std::string GetTypeLenString(std::string type) {
   return typeSize;
 }
 
+int GetValidShape(int shape, const std::string &dtype) {
+  int dtype_len = GetTypeLen(dtype);
+  int shape_mod = shape * GetTypeLen(dtype) % 32;
+  if (shape_mod == 0) {
+    return shape;
+  }
+  return shape + (32 - shape_mod) / dtype_len;
+}
+
+std::string CodeGenTileLangAscendPto::GetVarId(const Var &var) const {
+  auto it = var_idmap_.find(var.get());
+  return (it != var_idmap_.end() && !it->second.empty())
+             ? it->second
+             : std::string(var->name_hint);
+}
+
+BufferInfo CodeGenTileLangAscendPto::GetBufferInfo(const PrimExpr &arg) const {
+  auto *access_ptr = arg.as<CallNode>();
+  ICHECK(access_ptr)
+      << "Argument is not a CallNode representing a buffer access.";
+
+  BufferInfo info;
+  info.access_ptr = access_ptr;
+  info.var = Downcast<Var>(access_ptr->args[1]);
+  info.id = GetVarId(info.var);
+  info.offset = access_ptr->args[2];
+  info.dtype = access_ptr->args[0].as<CallNode>()->dtype;
+  ICHECK(buffer_shapess_.count(info.var))
+      << "Buffer shape not found for: " << info.var->name_hint;
+  info.shape = buffer_shapess_.at(info.var);
+  return info;
+}
+
 std::string
 CodeGenTileLangAscendPto::GetTempVarName(const std::string &temp_name) {
   return temp_name + "_" + "temp" + "_" +
@@ -134,23 +170,11 @@ CodeGenTileLangAscendPto::GetTempVarName(const std::string &temp_name) {
 
 void CodeGenTileLangAscendPto::CreateUbVariableND(const std::string &temp_name,
                                                   const ShapeInfo &shape_info) {
-  int32_t slice_row;
-  int32_t slice_col;
-  if ((GetTypeLen(shape_info.type) * shape_info.slice_col % 32) != 0 &&
-      (GetTypeLen(shape_info.type) * shape_info.slice_row % 32) == 0) {
-    slice_row = shape_info.slice_col;
-    slice_col = shape_info.slice_row;
-  } else if ((GetTypeLen(shape_info.type) * shape_info.slice_col % 32) == 0) {
-    slice_row = shape_info.slice_row;
-    slice_col = shape_info.slice_col;
-  } else {
-    ICHECK(false) << "The sliced column does not support ND typing";
-  }
-
   this->PrintIndent();
   this->stream << kAscendPtoScope << "TileUbDataND<" << shape_info.type << ", "
-               << slice_row << ", " << slice_col << ", " << slice_row << ", "
-               << slice_col << "> " << temp_name << ";\n";
+               << shape_info.slice_row << ", " << shape_info.slice_col << ", "
+               << shape_info.slice_valid_row << ", "
+               << shape_info.slice_valid_col << "> " << temp_name << ";\n";
 
   this->PrintIndent();
   this->stream << "TASSIGN(" << temp_name << ", " << shape_info.first_addr
@@ -163,8 +187,25 @@ void CodeGenTileLangAscendPto::CreateUbVariableDN(const std::string &temp_name,
   this->PrintIndent();
   this->stream << kAscendPtoScope << "TileUbDataDN<" << shape_info.type << ", "
                << shape_info.slice_col << ", " << shape_info.slice_row << ", "
-               << shape_info.slice_col << ", " << shape_info.slice_row << "> "
-               << temp_name << ";\n";
+               << shape_info.slice_valid_col << ", "
+               << shape_info.slice_valid_row << "> " << temp_name << ";\n";
+
+  this->PrintIndent();
+  this->stream << "TASSIGN(" << temp_name << ", " << shape_info.first_addr
+               << " + " << shape_info.offset << " * "
+               << GetTypeLen(shape_info.type) << ");\n";
+}
+
+void CodeGenTileLangAscendPto::CreateCubeVariable(
+    const std::string &temp_name, const ShapeInfo &shape_info,
+    const std::string &tile_name) {
+  int32_t slice_row = shape_info.slice_row;
+  int32_t slice_col = shape_info.slice_col;
+
+  this->PrintIndent();
+  this->stream << tile_name << "<" << shape_info.type << ", " << slice_row
+               << ", " << slice_col << ", " << slice_row << ", " << slice_col
+               << "> " << temp_name << ";\n";
 
   this->PrintIndent();
   this->stream << "TASSIGN(" << temp_name << ", " << shape_info.first_addr
@@ -173,9 +214,17 @@ void CodeGenTileLangAscendPto::CreateUbVariableDN(const std::string &temp_name,
 }
 
 ShapeInfo CodeGenTileLangAscendPto::GetSliceInfo(const CallNode *op) {
-  auto shape = buffer_shapess_[GetRef<tir::Var>(op->args[1].as<VarNode>())];
-  int32_t row;
-  int32_t col;
+  ICHECK(op);
+  ICHECK(op->op.same_as(builtin::tvm_access_ptr()));
+
+  Var buffer_var = Downcast<Var>(op->args[1]);
+
+  ICHECK(buffer_shapess_.count(buffer_var))
+      << "Buffer shape not found: " << buffer_var->name_hint;
+  auto shape = buffer_shapess_.at(buffer_var);
+
+  int32_t row = 1;
+  int32_t col = 1;
   if (shape.size() == 1) {
     row = 1;
     col = shape[0].as<IntImmNode>()->value;
@@ -186,24 +235,37 @@ ShapeInfo CodeGenTileLangAscendPto::GetSliceInfo(const CallNode *op) {
     row = 1;
     col = shape[0].as<IntImmNode>()->value;
   } else {
+    ICHECK(shape[0]->IsInstance<IntImmNode>()) << "Shape[0] is not IntImm!";
+    ICHECK(shape[1]->IsInstance<IntImmNode>()) << "Shape[1] is not IntImm!";
     row = shape[0].as<IntImmNode>()->value;
     col = shape[1].as<IntImmNode>()->value;
   }
+
   int32_t extent = op->args[3].as<IntImmNode>()->value;
-  int32_t slice_row = (extent / col) > 1 ? (extent / col) : 1;
-  int32_t slice_col = extent > col ? col : extent;
-  auto src_addr = ub_data_map_[PrintExpr(op->args[1])][3];
+  int32_t slice_valid_row = (extent / col) > 1 ? (extent / col) : 1;
+  int32_t slice_valid_col = extent > col ? col : extent;
+
+  ICHECK(buffer_address_map_.count(buffer_var))
+      << "Buffer address not found: " << buffer_var->name_hint;
+  auto src_addr = buffer_address_map_.at(buffer_var);
   auto offset = PrintExpr(op->args[2]);
-  auto type = ub_data_map_[PrintExpr(op->args[1])][0];
+
+  auto type = getType(op->args[0].dtype());
+
   bool is_slice;
   if (shape.size() == 1) {
     is_slice = extent != col;
   } else {
     is_slice = extent != row * col;
   }
+
+  int32_t slice_row = slice_valid_row;
+  int32_t slice_col = GetValidShape(slice_valid_col, type);
+
   auto ub_name = var_idmap_[op->args[1].as<VarNode>()];
-  return ShapeInfo{row,      col,    slice_row, slice_col, extent,
-                   src_addr, offset, type,      ub_name,   is_slice};
+  return ShapeInfo{
+      row,    col,      slice_row, slice_col, slice_valid_row, slice_valid_col,
+      extent, src_addr, offset,    type,      ub_name,         is_slice};
 }
 
 CodeGenTileLangAscendPto::CodeGenTileLangAscendPto(std::string platform) {
@@ -653,15 +715,6 @@ std::vector<std::string> extractShapeFromTemplate(const std::string &input) {
   return numbers;
 }
 
-int GetValidShape(int shape, std::string &dtype) {
-  int dtype_len = GetTypeLen(dtype);
-  int shape_mod = shape * GetTypeLen(dtype) % 32;
-  if (shape_mod == 0) {
-    return shape;
-  }
-  return shape + (32 - shape_mod) / dtype_len;
-}
-
 void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op,
                                           std::ostream &os) {
   if (op->op.same_as(builtin::call_extern())) {
@@ -819,584 +872,338 @@ std::string CodeGenTileLangAscendPto::PrintBufferOffset(const CallNode *op) {
   return _var_name;
 }
 
-std::vector<std::string>
-CodeGenTileLangAscendPto::GetGlobalTensorShapes(const CallNode *op,
-                                                std::string tensor_addr) {
-  auto srcN = PrintExpr(op->args[3]);
+// 封装的维度合并函数：根据 srcN 合并 shape 的低维
+Array<PrimExpr> MergeShapeBySrcN(const Array<PrimExpr> &shape,
+                                 const PrimExpr &srcN,
+                                 tvm::arith::Analyzer *analyzer) {
+  Array<PrimExpr> merged_shape;
   int count = 0;
-  auto srcN_tmp = 0;
-  if (srcN[0] >= '1' && srcN[0] <= '9') {
-    srcN_tmp = std::stoi(srcN);
-    for (int i =
-             global_tensor_template[String(tensor_addr)].shape_list.size() - 1;
-         i >= 0; i--) {
-      count++;
-      srcN_tmp =
-          srcN_tmp /
-          std::stoi(global_tensor_template[String(tensor_addr)].shape_list[i]);
-      if (srcN_tmp == 1) {
-        break;
+  const auto *srcN_imm = analyzer->Simplify(srcN).as<IntImmNode>();
+  if (srcN_imm && !shape.empty()) {
+    int64_t srcN_val = srcN_imm->value;
+    int64_t tmp_val = srcN_val;
+    // 从最低维开始整除，计算 srcN 涵盖了多少个维度
+    for (int i = static_cast<int>(shape.size()) - 1; i >= 0; --i) {
+      const auto *dim_imm = analyzer->Simplify(shape[i]).as<IntImmNode>();
+      if (dim_imm && tmp_val > 1) {
+        count++;
+        tmp_val /= dim_imm->value;
+        if (tmp_val == 1) {
+          break; // 刚好整除完，停止合并
+        }
+      } else {
+        break; // 遇到动态维度或无法整除，停止合并
       }
     }
+    // 如果成功合并了大于 1 个维度，并且被完美整除 (tmp_val == 1)
+    if (count > 1 && tmp_val == 1) {
+      for (size_t i = 0; i < shape.size() - count; ++i) {
+        merged_shape.push_back(shape[i]);
+      }
+      // 把合并后的连续维作为新的最低维
+      merged_shape.push_back(srcN);
+    } else {
+      // 无法合并或无需合并，保留原状
+      merged_shape = shape;
+    }
+  } else {
+    // srcN 是动态表达式或 shape 为空，保留原状
+    merged_shape = shape;
   }
-  std::vector<std::string> global_tensor_shapes;
-  auto size = global_tensor_template[String(tensor_addr)].shape_list.size();
-  for (int i = 0; i < size; i++) {
-    global_tensor_shapes.push_back(
-        global_tensor_template[String(tensor_addr)].shape_list[i]);
+  return merged_shape;
+}
+
+Array<PrimExpr> ComputeStrides(const Array<PrimExpr> &shape, PrimExpr srcN) {
+  constexpr int kMaxDims = 5;
+  tvm::arith::Analyzer analyzer;
+  int count = 0;
+
+  // =====================================================================
+  // 1. 维度合并逻辑 (Shape Flattening)
+  // 如果 srcN 跨越了多个内层维度，我们需要将这些维度在逻辑上合并
+  // =====================================================================
+  Array<PrimExpr> merged_shape = MergeShapeBySrcN(shape, srcN, &analyzer);
+
+  // =====================================================================
+  // 2. 标准 Stride 计算 (基于 merged_shape)
+  // =====================================================================
+  int ndim = static_cast<int>(merged_shape.size());
+  // 保证至少输出 5 个以便后续安全截取
+  int out_dims = std::max(kMaxDims, ndim + 1);
+  std::vector<PrimExpr> strides_vec(out_dims, Integer(1));
+
+  PrimExpr current_stride = Integer(1);
+  int stride_idx = out_dims - 1;
+
+  // 从最后一维开始计算 stride，写入到 strides_vec 的末尾
+  for (int i = ndim - 1; i >= 0; --i, stride_idx--) {
+    strides_vec[stride_idx] = current_stride;
+    current_stride = analyzer.Simplify(current_stride * merged_shape[i]);
   }
-  if (count == 2) {
-    global_tensor_shapes.pop_back();
-    global_tensor_shapes.pop_back();
-    global_tensor_shapes.push_back(srcN);
-  } else if (count == 3) {
-    global_tensor_shapes.pop_back();
-    global_tensor_shapes.pop_back();
-    global_tensor_shapes.pop_back();
-    global_tensor_shapes.push_back(srcN);
+  strides_vec[stride_idx] = current_stride;
+
+  // 转换为 TVM Array 返回
+  Array<PrimExpr> strides;
+  for (const auto &s : strides_vec) {
+    strides.push_back(s);
   }
-  return global_tensor_shapes;
+  return strides;
+}
+
+std::tuple<bool, std::string, std::string>
+FormatStrides(const Array<PrimExpr> &shape, const Array<PrimExpr> &strides) {
+  bool is_dynamic = false;
+  std::stringstream stride_ss;
+
+  // =====================================================================
+  // 1) 生成 stride 字符串：只取最后 5 个 stride (对应底层的连续内存排布)
+  // =====================================================================
+  size_t total_strides = strides.size();
+  size_t start_idx = total_strides > 5 ? total_strides - 5 : 0;
+
+  for (size_t i = start_idx; i < total_strides; ++i) {
+    if (const auto *int_imm = strides[i].as<IntImmNode>()) {
+      stride_ss << int_imm->value;
+    } else {
+      stride_ss << "-1"; // 有字符串 (PrimExpr 变量)，置为 -1
+      is_dynamic = true;
+    }
+    if (i + 1 < total_strides) {
+      stride_ss << ", ";
+    }
+  }
+
+  // =====================================================================
+  // 2) 生成括号内参数字符串：遍历 shape 决定
+  // =====================================================================
+  std::stringstream ctor_args_ss;
+  bool first = true;
+
+  // 核心突破点：底层的 5 个 stride 最多只依赖于 shape 的“最后 4 个维度”！
+  // (例如对于 7 维，前 3 个维度根本不参与最后 5 个 stride 的乘法运算)
+  // 因此，只有最后这几个维度中的动态变量，才需要作为模板参数传入！
+  int shape_size = static_cast<int>(shape.size());
+  int shape_start = std::max(0, shape_size - 4);
+
+  for (int i = shape_start; i < shape_size; ++i) {
+    if (!shape[i]->IsInstance<IntImmNode>()) {
+      if (!first) {
+        ctor_args_ss << ", ";
+      }
+      ctor_args_ss << shape[i];
+      first = false;
+      is_dynamic = true; // 只要相关范围内有动态 Shape，就标记为 dynamic
+    }
+  }
+
+  return {is_dynamic, stride_ss.str(), ctor_args_ss.str()};
+}
+
+std::string CodeGenTileLangAscendPto::GetPadEnum(const PrimExpr value) {
+  std::string value_str = PrintExpr(value);
+
+  std::string pad_value_enum = "pto::PadValue::Null";
+  if (value_str.find("-CUDART_INF") != std::string::npos ||
+      value_str.find("-inf") != std::string::npos ||
+      value_str.find("-INFINITY") != std::string::npos ||
+      value_str == "-std::numeric_limits<float>::infinity()") {
+    pad_value_enum = "pto::PadValue::Min";
+  } else if (value_str.find("CUDART_INF") != std::string::npos ||
+             value_str.find("+inf") != std::string::npos ||
+             value_str.find("INFINITY") != std::string::npos ||
+             value_str == "std::numeric_limits<float>::infinity()") {
+    pad_value_enum = "pto::PadValue::Max";
+  } else if (value_str == "0" || value_str == "0.0" || value_str == "0.0f" ||
+             value_str.find("0.000000e+00") != std::string::npos ||
+             value_str.find("0e+00") != std::string::npos) {
+    pad_value_enum = "pto::PadValue::Zero";
+  }
+
+  return pad_value_enum;
+}
+
+void CodeGenTileLangAscendPto::GMCopyCall(const CallNode *call,
+                                          std::string op_name) {
+  static const std::unordered_map<std::string, bool> kIsGmToLocalOp = {
+      {"copy_gm_to_ub", true},
+      {"copy_ub_to_gm", false},
+      {"copy_gm_to_l1", true},
+      {"copy_l0c_to_gm", false}};
+
+  ICHECK(kIsGmToLocalOp.count(op_name))
+      << "Unsupported GM copy op: " << op_name;
+  bool is_load = kIsGmToLocalOp.at(op_name);
+
+  BufferInfo src_info = GetBufferInfo(call->args[1]);
+  BufferInfo dst_info = GetBufferInfo(call->args[2]);
+
+  const auto &gm_info = is_load ? src_info : dst_info;
+  const auto &local_info = is_load ? dst_info : src_info;
+
+  ShapeInfo slice_info = GetSliceInfo(local_info.access_ptr);
+  int32_t shape4 =
+      slice_info.is_slice ? slice_info.slice_valid_row : slice_info.row;
+  int32_t shape5 =
+      slice_info.is_slice ? slice_info.slice_valid_col : slice_info.col;
+  std::string shape_tmpl =
+      "1, 1, 1, " + std::to_string(shape4) + ", " + std::to_string(shape5);
+
+  auto strides = ComputeStrides(gm_info.shape, call->args[3]);
+  auto [is_dynamic, stride_tmpl, stride_param] =
+      FormatStrides(gm_info.shape, strides);
+  if (is_dynamic) {
+    op_name += "_dynamic";
+  }
+
+  this->PrintIndent();
+  stream << kAscendPtoScope << op_name << "<" << getType(gm_info.dtype) << ", "
+         << getType(local_info.dtype) << ", " << shape_tmpl << ", "
+         << stride_tmpl << ", ";
+  if (op_name.rfind("copy_gm_to_ub", 0) == 0) {
+    stream << slice_info.slice_valid_row << ", " << slice_info.slice_valid_col
+           << ", ";
+    stream << GetPadEnum(call->args[6]);
+  } else if (op_name.rfind("copy_ub_to_gm", 0) == 0) {
+    stream << slice_info.slice_valid_row << ", " << slice_info.slice_valid_col;
+  } else {
+    stream << slice_info.slice_valid_row << ", " << slice_info.slice_valid_col;
+  }
+  stream << ">(";
+
+  // gm addr
+  stream << copy_base_addr_map_.at(gm_info.id) << " + "
+         << PrintExpr(gm_info.offset);
+
+  if (is_dynamic) {
+    stream << ", pto::Shape<" << shape_tmpl << ">()"
+           << ", pto::Stride<" << stride_tmpl << ">(" << stride_param << ")";
+  }
+
+  stream << ", " << PrintExpr(buffer_address_map_.at(local_info.var)) << ", "
+         << PrintExpr(local_info.offset) << ", " << PrintExpr(call->args[4])
+         << ", " << PrintExpr(call->args[5]) << ");\n";
+}
+
+void CodeGenTileLangAscendPto::CopyUBToUBCodegen(const CallNode *call) {
+  BufferInfo src_info = GetBufferInfo(call->args[1]);
+  BufferInfo dst_info = GetBufferInfo(call->args[2]);
+
+  bool is_cast = src_info.dtype != dst_info.dtype;
+  std::string api_name = is_cast ? "TCVT" : "TMOV";
+
+  ShapeInfo src_shape_info = GetSliceInfo(src_info.access_ptr);
+  ShapeInfo dst_shape_info = GetSliceInfo(dst_info.access_ptr);
+
+  std::string src_name = src_info.id;
+  std::string dst_name = dst_info.id;
+  if (src_shape_info.is_slice) {
+    src_name = GetTempVarName(src_shape_info.ub_name);
+    CreateUbVariableND(src_name, src_shape_info);
+  }
+
+  if (dst_shape_info.is_slice) {
+    dst_name = GetTempVarName(dst_shape_info.ub_name);
+    CreateUbVariableND(dst_name, dst_shape_info);
+  }
+
+  this->PrintIndent();
+  this->stream << api_name << "(" << dst_name << ", " << src_name;
+
+  if (is_cast) {
+    this->stream << ", pto::RoundMode::CAST_NONE";
+  }
+  this->stream << ");\n";
+}
+
+void CodeGenTileLangAscendPto::CopyL1ToL0Codegen(const CallNode *call,
+                                                 bool is_a) {
+  BufferInfo src_info = GetBufferInfo(call->args[1]);
+  BufferInfo dst_info = GetBufferInfo(call->args[2]);
+
+  std::string api_name = is_a ? "copy_l1_to_l0a" : "copy_l1_to_l0b";
+  std::string tile_name = is_a ? "TileMatL0A" : "TileMatL0B";
+
+  ShapeInfo src_shape_info = GetSliceInfo(src_info.access_ptr);
+  ShapeInfo dst_shape_info = GetSliceInfo(dst_info.access_ptr);
+
+  PrimExpr index_row = floordiv(src_info.offset, src_info.shape[1]);
+  PrimExpr index_col = floormod(src_info.offset, src_info.shape[1]);
+
+  this->PrintIndent();
+  this->stream << kAscendPtoScope << api_name << "<" << src_shape_info.type << ", "
+               << dst_shape_info.slice_row << ", " << dst_shape_info.slice_col
+               << ", " << src_shape_info.slice_row << ", "
+               << src_shape_info.slice_col << "> ";
+  if (src_shape_info.is_slice || dst_shape_info.is_slice) {
+    std::string src_temp_name = GetTempVarName(src_shape_info.ub_name);
+    std::string dst_temp_name = GetTempVarName(dst_shape_info.ub_name);
+    CreateCubeVariable(src_temp_name, src_shape_info,
+                       kAscendPtoScope + "TileMatL1");
+    CreateCubeVariable(dst_temp_name, dst_shape_info,
+                       kAscendPtoScope + "TileMatL0B");
+    this->stream << "(" << dst_temp_name << ", " << src_temp_name
+                 << PrintExpr(index_row) << ", " << PrintExpr(index_col)
+                 << ");\n";
+  } else {
+    this->stream << "(" << dst_info.id << ", " << src_info.id << ", "
+                 << PrintExpr(index_row) << ", " << PrintExpr(index_col)
+                 << ");\n";
+  }
 }
 
 void CodeGenTileLangAscendPto::CallExternCodegen(const CallNode *op) {
   std::string op_name = Downcast<StringImm>(op->args[0])->value;
-  if (op_name.find("tl::ascend::copy") != std::string::npos) {
-    auto src_var = op->args[1].as<CallNode>()->args[1].as<VarNode>();
-    auto dst_var = op->args[2].as<CallNode>()->args[1].as<VarNode>();
 
-    auto src_var_id = var_idmap_[src_var];
-    auto dst_var_id = var_idmap_[dst_var];
-    if (src_var_id == "") {
-      src_var_id = src_var->name_hint;
-    }
-    if (dst_var_id == "") {
-      dst_var_id = dst_var->name_hint;
-    }
-
-    auto src_offset = PrintExpr(op->args[1].as<CallNode>()->args[2]);
-    auto dst_offset = PrintExpr(op->args[2].as<CallNode>()->args[2]);
-
-    auto src_shape = PrintExpr(op->args[1].as<CallNode>()->args[3]);
-    auto dst_shape = PrintExpr(op->args[2].as<CallNode>()->args[3]);
-
-    auto src_type = GetAccessPtrDtypePto(op->args[1].as<CallNode>());
-    auto dst_type = GetAccessPtrDtypePto(op->args[2].as<CallNode>());
-
-    static const std::unordered_map<std::string, int> kCopyOpExtraArgs = {
-        {"copy_l0c_to_gm", 1}, {"copy_gm_to_l1", 1}, {"copy_l1_to_l0a", 3},
-        {"copy_l1_to_l0b", 3}, {"copy_gm_to_ub", 4}, {"copy_ub_to_gm", 3},
-        {"copy_ub_to_ub", 0}};
-
-    std::unordered_map<std::string, std::string> ptoCopyMap = {
-        {"copy_l0c_to_gm", "TSTORE"},   {"copy_gm_to_l1", "TLOAD"},
-        {"copy_l1_to_l0a", "TEXTRACT"}, {"copy_l1_to_l0b", "TEXTRACT"},
-        {"copy_gm_to_ub", "TLOAD"},     {"copy_ub_to_gm", "TSTORE"},
-        {"copy_ub_to_ub", "TCVT"}};
-
-    bool found = false;
-    int extra_args = 0;
-    std::string real_name = "";
-
-    for (const auto &pair : kCopyOpExtraArgs) {
-      if (op_name.find(pair.first) != std::string::npos) {
-        real_name = pair.first;
-        found = true;
-        extra_args = pair.second;
-        break;
-      }
-    }
-
-    if (found) {
-      auto api_name = ptoCopyMap[real_name];
-      PrimExpr row_index;
-      PrimExpr col_index;
-      if (api_name == "TCVT") {
-        api_name = src_type == dst_type ? "TMOV" : "TCVT";
-      } else if (api_name == "TEXTRACT") {
-        if (op->args.size() >= 3 && op->args[5].as<IntImmNode>()->value != 0) {
-          row_index = op->args[4];
-          col_index = op->args[3];
-        } else {
-          api_name = "TCVT";
-        }
-      }
-      if (api_name == "TEXTRACT") {
-        this->PrintIndent();
-        this->stream << api_name << "(" << dst_var_id << ", " << src_var_id
-                     << ", " << row_index << ", " << col_index << ");\n";
-      } else if (api_name == "TCVT") {
-        ShapeInfo src_shape_info = GetSliceInfo(op->args[1].as<CallNode>());
-        ShapeInfo dst_shape_info = GetSliceInfo(op->args[2].as<CallNode>());
-        if (src_shape_info.is_slice || dst_shape_info.is_slice) {
-          std::string src_temp_name = GetTempVarName(src_shape_info.ub_name);
-          std::string dst_temp_name = GetTempVarName(dst_shape_info.ub_name);
-          CreateUbVariableND(src_temp_name, src_shape_info);
-          CreateUbVariableND(dst_temp_name, dst_shape_info);
-          this->PrintIndent();
-          this->stream << api_name << "(" << dst_temp_name << ", "
-                       << src_temp_name << ", " << "pto::RoundMode::CAST_NONE"
-                       << ");\n";
-        } else {
-          this->PrintIndent();
-          this->stream << api_name << "(" << dst_var_id << ", " << src_var_id
-                       << ", pto::RoundMode::CAST_NONE" << ");\n";
-        }
-      } else if (api_name == "TMOV") {
-        std::vector<std::string> var_names;
-        for (int i = 1; i < op->args.size(); i++) {
-          auto var_name = PrintBufferOffset(op->args[i].as<CallNode>());
-          var_names.push_back(var_name);
-        }
-        ShapeInfo src_shape_info = GetSliceInfo(op->args[1].as<CallNode>());
-        ShapeInfo dst_shape_info = GetSliceInfo(op->args[2].as<CallNode>());
-        if (src_shape_info.is_slice || dst_shape_info.is_slice) {
-          std::string src_temp_name = GetTempVarName(src_shape_info.ub_name);
-          std::string dst_temp_name = GetTempVarName(dst_shape_info.ub_name);
-          CreateUbVariableND(src_temp_name, src_shape_info);
-          CreateUbVariableND(dst_temp_name, dst_shape_info);
-          this->PrintIndent();
-          this->stream << api_name << "(" << dst_temp_name << ", "
-                       << src_temp_name << ");\n";
-        } else {
-          this->PrintIndent();
-          this->stream << api_name << "(";
-          if (prefetch_n_stages_map_[var_names[1]].first > 0) {
-            PrimExpr element_count_src0;
-            auto shape_src0 = buffer_shapess_[GetRef<tir::Var>(
-                op->args[1].as<CallNode>()->args[1].as<VarNode>())];
-            if (shape_src0.size() == 3) {
-              element_count_src0 = shape_src0[1] * shape_src0[2];
-            } else if (shape_src0.size() == 2) {
-              element_count_src0 = shape_src0[0] * shape_src0[1];
-            } else if (shape_src0.size() == 1) {
-              element_count_src0 = shape_src0[0];
-            } else {
-              ICHECK(false)
-                  << "An error occurred. Please check prefetch_n_stages_map_, "
-                     "buffer_shapes_, and buffer_versions_.";
-            }
-            auto buffer_k_src0 =
-                op->args[2].as<CallNode>()->args[2] / element_count_src0;
-            tvm::arith::Analyzer analyzer;
-            PrimExpr simplified_buffer_k_src0 =
-                analyzer.Simplify(buffer_k_src0);
-            this->stream << var_names[1] << "["
-                         << PrintExpr(simplified_buffer_k_src0) << "], ";
-          } else {
-            this->stream << var_names[1] << ", ";
-          }
-          if (prefetch_n_stages_map_[var_names[0]].first > 0) {
-            PrimExpr element_count_dst;
-            auto shape_dst = buffer_shapess_[GetRef<tir::Var>(
-                op->args[0].as<CallNode>()->args[1].as<VarNode>())];
-            if (shape_dst.size() == 3) {
-              element_count_dst = shape_dst[1] * shape_dst[2];
-            } else if (shape_dst.size() == 2) {
-              element_count_dst = shape_dst[0] * shape_dst[1];
-            } else if (shape_dst.size() == 1) {
-              element_count_dst = shape_dst[0];
-            } else {
-              ICHECK(false)
-                  << "An error occurred. Please check prefetch_n_stages_map_, "
-                     "buffer_shapes_, and buffer_versions_.";
-            }
-            auto buffer_k_dst =
-                op->args[1].as<CallNode>()->args[2] / element_count_dst;
-            tvm::arith::Analyzer analyzer;
-            PrimExpr simplified_buffer_k_dst = analyzer.Simplify(buffer_k_dst);
-            this->stream << var_names[0] << "["
-                         << (PrintExpr(simplified_buffer_k_dst)) << "]);\n";
-          } else {
-            this->stream << var_names[0] << ");\n";
-          }
-        }
-      }
-      if (api_name == "TLOAD") {
-        ICHECK((copy_base_addr_map_.find(String(src_var_id)) !=
-                copy_base_addr_map_.end()));
-        std::vector<std::string> l_valid_shapes = l_data_map_[dst_var_id];
-        std::vector<std::string> ub_valid_shapes = ub_data_map_[dst_var_id];
-        std::vector<std::string> dynamic_names;
-        std::string tensor_addr = copy_base_addr_map_[String(src_var_id)];
-        std::string tensor_template =
-            "<" + global_tensor_template[String(tensor_addr)].dtype;
-        std::string shape_template = "", stride_template = "",
-                    valid_template = "";
-        size_t shape_len = 2;
-        size_t op_arg_len = op->args.size();
-        size_t shape_size = 5;
-        // Dynamic Shape and Static Shape
-
-        // generate shape
-        std::vector shape_tile = extractShapeFromTemplate(op_name);
-        std::vector<std::string> shape_nums(shape_len);
-        bool is_chunking = false;
-
-        if (shape_tile[0] != PrintExpr(op->args[op_arg_len - 1]) &&
-            op_name.find("copy_gm_to_ub") != std::string::npos) {
-          ub_valid_shapes[2] = shape_tile[0];
-          is_chunking = true;
-        }
-        shape_nums[1] = PrintExpr(op->args[op_arg_len - 1]);
-        if (op_name.find("copy_gm_to_ub") != std::string::npos &&
-            shape_tile.size() == 1) {
-          shape_nums[0] = "1";
-        } else if (op_arg_len == 5) {
-          shape_nums[0] = "1";
-        } else if (shape_tile[1] != PrintExpr(op->args[op_arg_len - 2]) &&
-                   op_name.find("copy_gm_to_ub") != std::string::npos) { //
-          is_chunking = true;
-          ub_valid_shapes[1] = shape_tile[1];
-          shape_nums[0] = PrintExpr(op->args[op_arg_len - 2]);
-        } else {
-          shape_nums[0] = PrintExpr(op->args[op_arg_len - 2]);
-        }
-        for (size_t i = 0; i < shape_size; i++) {
-          if (i < shape_size - shape_len) {
-            shape_template += "1";
-          } else {
-            if (is_chunking) {
-              shape_template += ub_valid_shapes[i + shape_len - shape_size + 1];
-            } else {
-              shape_template += shape_nums[i + shape_len - shape_size];
-            }
-          }
-          if (i < shape_size - 1) {
-            shape_template += ", ";
-          }
-        }
-        std::vector<std::string> global_tensor_shapes =
-            GetGlobalTensorShapes(op, tensor_addr);
-        size_t len = global_tensor_shapes.size();
-        for (size_t i = 0; i < 4; i++) {
-          if (len > 3 - i) {
-            std::string tensor_template = global_tensor_shapes[len + i - 4];
-            if (tensor_template[0] < '1' || tensor_template[0] > '9') {
-              stride_template += "-1, ";
-              dynamic_names.push_back(tensor_template);
-            } else {
-              std::string tmp_shape = "";
-              for (size_t j = 0; j < 4 - i; j++) {
-                tmp_shape += global_tensor_shapes[len - j - 1];
-                if (j < 3 - i)
-                  tmp_shape += " * ";
-              }
-              stride_template = stride_template + tmp_shape + ", ";
-            }
-          } else {
-            stride_template += "1, ";
-          }
-        }
-        stride_template += "1";
-        // get gm2l1 shape
-
-        bool is_dynamic =
-            global_tensor_template[String(tensor_addr)].shape_type == "dynamic";
-        std::string src_var = "";
-        if (op_name.find("copy_gm_to_l1") != std::string::npos) {
-          src_var = "copy_gm_to_l1";
-          if (is_dynamic) {
-            src_var = src_var + "_dynamic";
-          }
-          tensor_template = tensor_template + ", " + l_valid_shapes[0] + ", ";
-          valid_template = l_valid_shapes[1] + ", " + l_valid_shapes[2];
-        } else if (op_name.find("copy_gm_to_ub") != std::string::npos) {
-          src_var = "copy_gm_to_ub";
-          if (is_dynamic) {
-            src_var = src_var + "_dynamic";
-          }
-          // Determine PadValue based on pad_value argument
-          std::string pad_value_str = PrintExpr(op->args[6]);
-          std::string pad_value_enum = "pto::PadValue::Null";
-          if (pad_value_str.find("-CUDART_INF") != std::string::npos ||
-              pad_value_str.find("-inf") != std::string::npos ||
-              pad_value_str.find("-INFINITY") != std::string::npos ||
-              pad_value_str == "-std::numeric_limits<float>::infinity()") {
-            pad_value_enum = "pto::PadValue::Min";
-          } else if (pad_value_str.find("CUDART_INF") != std::string::npos ||
-                     pad_value_str.find("+inf") != std::string::npos ||
-                     pad_value_str.find("INFINITY") != std::string::npos ||
-                     pad_value_str ==
-                         "std::numeric_limits<float>::infinity()") {
-            pad_value_enum = "pto::PadValue::Max";
-          } else if (pad_value_str == "0" || pad_value_str == "0.0" ||
-                     pad_value_str == "0.0f" ||
-                     pad_value_str.find("0.000000e+00") != std::string::npos ||
-                     pad_value_str.find("0e+00") != std::string::npos) {
-            pad_value_enum = "pto::PadValue::Zero";
-          }
-          tensor_template = tensor_template + ", " + ub_valid_shapes[0] + ", " +
-                            shape_template + ", " + stride_template + ", " +
-                            shape_nums[0] + ", " + shape_nums[1] + ", " +
-                            pad_value_enum + ">";
-        }
-        if (op_name.find("copy_gm_to_l1") != std::string::npos) {
-          tensor_template = tensor_template + shape_template + ", " +
-                            stride_template + ", " + valid_template + ">";
-        }
-        this->PrintIndent();
-        this->stream << kAscendPtoScope << src_var << tensor_template << "("
-                     << tensor_addr << " + " << src_offset;
-        if (is_dynamic) {
-          std::string shape = "pto::Shape<" + shape_template + ">()";
-          this->stream << ", " << "pto::Shape<" << shape_template << ">"
-                       << "(), " << "pto::Stride<" << stride_template << ">"
-                       << "(";
-          for (size_t i = 0; i < dynamic_names.size(); i++) {
-            this->stream << dynamic_names[i];
-            if (i != dynamic_names.size() - 1) {
-              this->stream << ", ";
-            }
-          }
-          this->stream << ")";
-        }
-        // for the pipeline scenario of l1
-        if (api_name == "TLOAD" && prefetch_n_stages_map_.count(dst_var_id) &&
-            prefetch_n_stages_map_[dst_var_id].first > 0 &&
-            op_name.find("copy_gm_to_l1") != std::string::npos) {
-          PrimExpr element_count;
-          auto shape = buffer_shapess_[GetRef<tir::Var>(dst_var)];
-          if (shape.size() == 3) {
-            element_count = shape[1] * shape[2];
-          } else if (shape.size() == 2) {
-            element_count = shape[0] * shape[1];
-          } else {
-            ICHECK(false)
-                << "An error occurred. Please check prefetch_n_stages_map_, "
-                   "buffer_shapes_, and buffer_versions_.";
-          }
-          auto buffer_k = op->args[2].as<CallNode>()->args[2] / element_count;
-          tvm::arith::Analyzer analyzer;
-          PrimExpr simplified_k = analyzer.Simplify(buffer_k);
-          auto addr = l_valid_shapes[3];
-          auto type_len = GetTypeLen(l_valid_shapes[0]);
-          this->stream << ", " << addr << " + " << dst_offset << " * "
-                       << type_len << ", " << PrintExpr(op->args[4]) << ", "
-                       << PrintExpr(op->args[5]) << ");\n";
-          prefetch_n_stages_map_[dst_var_id].second++;
-        } else {
-          if (op_name.find("copy_gm_to_ub") != std::string::npos) {
-            int32_t type_len =
-                GetTypeLen(global_tensor_template[String(tensor_addr)].dtype);
-            this->stream << ", " << ub_valid_shapes[3] << ", " << dst_offset
-                         << ", " << type_len;
-            this->stream << ", " << PrintExpr(op->args[4]) << ", "
-                         << PrintExpr(op->args[5]);
-            this->stream << ");\n";
-          } else {
-            auto addr = l_valid_shapes[3];
-            auto type_len = GetTypeLen(l_valid_shapes[0]);
-            this->stream << ", " << addr << " + " << dst_offset << " * "
-                         << type_len << ", " << PrintExpr(op->args[4]) << ", "
-                         << PrintExpr(op->args[5]) << ");\n";
-          }
-        }
-
-      } else if (api_name == "TSTORE") {
-        ICHECK((copy_base_addr_map_.find(String(dst_var_id)) !=
-                copy_base_addr_map_.end()));
-        std::vector<std::string> l_valid_shapes = l_data_map_[src_var_id];
-        std::vector<std::string> ub_valid_shapes = ub_data_map_[src_var_id];
-        std::vector<std::string> dynamic_names;
-        std::string tensor_addr = copy_base_addr_map_[String(dst_var_id)];
-        std::string tensor_template =
-            "<" + global_tensor_template[String(tensor_addr)].dtype;
-        std::string shape_template = "", stride_template = "",
-                    valid_template = "";
-        size_t len =
-            global_tensor_template[String(tensor_addr)].shape_list.size();
-        size_t shape_len = 2;
-        size_t op_arg_len = op->args.size();
-        size_t shape_size = 5;
-        // Dynamic Shape and Static Shape
-
-        // generate shape
-        std::vector shape_tile = extractShapeFromTemplate(op_name);
-        std::vector<std::string> shape_nums(shape_len);
-        bool is_chunking = false;
-
-        if (shape_tile[0] != PrintExpr(op->args[op_arg_len - 1]) &&
-            op_name.find("copy_ub_to_gm") != std::string::npos) {
-          ub_valid_shapes[2] = shape_tile[0];
-          is_chunking = true;
-        }
-        shape_nums[1] = PrintExpr(op->args[op_arg_len - 1]);
-        if (op_arg_len == 7 || shape_tile.size() == 1) {
-          shape_nums[0] = "1";
-        } else if (shape_tile[1] != PrintExpr(op->args[op_arg_len - 2]) &&
-                   op_name.find("copy_ub_to_gm") != std::string::npos) { //
-          is_chunking = true;
-          ub_valid_shapes[1] = shape_tile[1];
-          shape_nums[0] = PrintExpr(op->args[op_arg_len - 2]);
-        } else {
-          shape_nums[0] = PrintExpr(op->args[op_arg_len - 2]);
-        }
-        for (size_t i = 0; i < shape_size; i++) {
-          if (i < shape_size - shape_len) {
-            shape_template += "1";
-          } else {
-            if (is_chunking) {
-              shape_template += ub_valid_shapes[i + shape_len - shape_size + 1];
-            } else {
-              shape_template += shape_nums[i + shape_len - shape_size];
-            }
-          }
-          if (i < shape_size - 1) {
-            shape_template += ", ";
-          }
-        }
-
-        for (size_t i = 0; i < 4; i++) {
-          if (len > 3 - i) {
-            std::string tensor_template =
-                global_tensor_template[String(tensor_addr)]
-                    .shape_list[len + i - 4];
-            if (tensor_template[0] < '1' || tensor_template[0] > '9') {
-              stride_template += "-1, ";
-              dynamic_names.push_back(tensor_template);
-            } else {
-              std::string tmp_shape = "";
-              for (size_t j = 0; j < 4 - i; j++) {
-                tmp_shape += global_tensor_template[String(tensor_addr)]
-                                 .shape_list[len - j - 1];
-                if (j < 3 - i)
-                  tmp_shape += " * ";
-              }
-              stride_template = stride_template + tmp_shape + ", ";
-            }
-          } else {
-            stride_template += "1, ";
-          }
-        }
-        stride_template += "1";
-
-        // get gm2l1 shape
-        bool is_dynamic =
-            global_tensor_template[String(tensor_addr)].shape_type == "dynamic";
-        std::string src_var = "";
-        if (op_name.find("copy_l0c_to_gm") != std::string::npos) {
-          src_var = "copy_l0c_to_gm";
-          if (is_dynamic) {
-            src_var = src_var + "_dynamic";
-          }
-          tensor_template = tensor_template + ", " + l_valid_shapes[0] + ", ";
-          valid_template = l_valid_shapes[1] + ", " + l_valid_shapes[2];
-        } else if (op_name.find("copy_ub_to_gm") != std::string::npos) {
-          src_var = "copy_ub_to_gm";
-          if (is_dynamic) {
-            src_var = src_var + "_dynamic";
-          }
-          tensor_template = tensor_template + ", " + ub_valid_shapes[0] + ", ";
-          valid_template = "";
-        }
-        // tensor_template = tensor_template + shape_template + ", " +
-        // stride_template + ", " + valid_template;
-        if (op_name.find("copy_ub_to_gm") != std::string::npos) {
-          std::string shape_num_dtype =
-              global_tensor_template[String(tensor_addr)].dtype;
-          int num1 = std::stoi(shape_nums[1]);
-          if (shape_num_dtype == "int" && num1 < 8) {
-            shape_nums[1] = "8";
-          } else if (shape_num_dtype == "float" && num1 < 8) {
-            shape_nums[1] = "8";
-          } else if (shape_num_dtype == "half" && num1 < 16) {
-            shape_nums[1] = "16";
-          }
-          tensor_template = tensor_template + shape_template + ", " +
-                            stride_template + ", " + shape_nums[0] + ", " +
-                            shape_nums[1] + ">";
-        } else {
-          tensor_template = tensor_template + shape_template + ", " +
-                            stride_template + ", " + valid_template + ">";
-        }
-        this->PrintIndent();
-        this->stream << kAscendPtoScope << src_var << tensor_template << "("
-                     << tensor_addr << " + " << dst_offset;
-        if (is_dynamic) {
-          this->stream << ", " << "pto::Shape<" << shape_template << ">"
-                       << "(), " << "pto::Stride<" << stride_template << ">"
-                       << "(";
-          for (size_t i = 0; i < dynamic_names.size(); i++) {
-            this->stream << dynamic_names[i];
-            if (i != dynamic_names.size() - 1) {
-              this->stream << ", ";
-            }
-          }
-          this->stream << ")";
-        }
-        if (op_name.find("copy_ub_to_gm") != std::string::npos) {
-          this->stream << ", " << ub_valid_shapes[3] << ", " << src_offset;
-          this->stream << ", " << PrintExpr(op->args[4]) << ", "
-                       << PrintExpr(op->args[5]);
-          this->stream << ");\n";
-        } else {
-          auto addr = l_valid_shapes[3];
-          auto type_len = GetTypeLen(l_valid_shapes[0]);
-          this->stream << ", " << addr << " + " << src_offset << " * "
-                       << type_len << ", " << PrintExpr(op->args[4]) << ", "
-                       << PrintExpr(op->args[5]) << ");\n";
-        }
-      }
-    } else {
-      this->PrintIndent();
-      this->stream << "not implemented yet\n";
-    }
+  if (op_name.find("tl::ascend::copy_gm_to_ub") != std::string::npos) {
+    GMCopyCall(op, "copy_gm_to_ub");
+  } else if (op_name.find("tl::ascend::copy_ub_to_gm") != std::string::npos) {
+    GMCopyCall(op, "copy_ub_to_gm");
+  } else if (op_name.find("tl::ascend::copy_gm_to_l1") != std::string::npos) {
+    GMCopyCall(op, "copy_gm_to_l1");
+  } else if (op_name.find("tl::ascend::copy_l0c_to_gm") != std::string::npos) {
+    GMCopyCall(op, "copy_l0c_to_gm");
+  } else if (op_name.find("tl::ascend::copy_ub_to_ub") != std::string::npos) {
+    CopyUBToUBCodegen(op);
+  } else if (op_name.find("tl::ascend::copy_l1_to_l0a") != std::string::npos) {
+    CopyL1ToL0Codegen(op, true);
+  } else if (op_name.find("tl::ascend::copy_l1_to_l0b") != std::string::npos) {
+    CopyL1ToL0Codegen(op, false);
   }
 }
 
 void CodeGenTileLangAscendPto::GemmV0Codegen(const CallNode *op) {
-  std::string op_name = Downcast<StringImm>(op->args[0])->value;
-  this->PrintIndent();
-  auto a_var = op->args[1].as<CallNode>()->args[1].as<VarNode>();
-  auto b_var = op->args[2].as<CallNode>()->args[1].as<VarNode>();
-  auto c_var = op->args[3].as<CallNode>()->args[1].as<VarNode>();
+  std::string template_args = Downcast<StringImm>(op->args[0])->value;
 
-  auto a_offset = PrintExpr(op->args[1].as<CallNode>()->args[2]);
-  auto b_offset = PrintExpr(op->args[2].as<CallNode>()->args[2]);
-  auto c_offset = PrintExpr(op->args[3].as<CallNode>()->args[2]);
+  ShapeInfo a_info = GetSliceInfo(op->args[1].as<CallNode>());
+  ShapeInfo b_info = GetSliceInfo(op->args[2].as<CallNode>());
+  ShapeInfo c_info = GetSliceInfo(op->args[3].as<CallNode>());
 
-  auto a_name = var_idmap_[a_var];
-  auto b_name = var_idmap_[b_var];
-  auto c_name = var_idmap_[c_var];
-
-  std::map<std::string, std::string> params = extractTemplateParams(op_name);
+  std::map<std::string, std::string> params =
+      extractTemplateParams(template_args);
   uint32_t K = std::stoi(params["K"]);
   uint32_t kL0Size = 128; // L0切片大小，适配64K内存限制
   uint32_t kL0split = (K + kL0Size - 1) / kL0Size; // 切片数量
   uint32_t kL0Tail = K - (kL0split - 1) * kL0Size; // 最后一块大小
 
-  auto a_shape = buffer_shapess_[GetRef<tir::Var>(a_var)];
-  auto b_shape = buffer_shapess_[GetRef<tir::Var>(b_var)];
-  auto c_shape = buffer_shapess_[GetRef<tir::Var>(c_var)];
-
-  bool a_buffer_in_pipeline = false;
-  if (buffer_versions_.count(GetRef<tir::Var>(a_var))) {
-    if (!is_one(buffer_versions_[GetRef<tir::Var>(a_var)])) {
-      a_buffer_in_pipeline = true;
-    }
-  } else if (a_shape.size() == 3) {
-    a_buffer_in_pipeline = true;
+  std::string a_name = a_info.ub_name;
+  std::string b_name = b_info.ub_name;
+  std::string c_name = c_info.ub_name;
+  if (a_info.is_slice) {
+    a_name = GetTempVarName(a_name);
+    CreateCubeVariable(a_name, a_info, kAscendPtoScope + "TileMatL1");
   }
 
-  bool b_buffer_in_pipeline = false;
-  if (buffer_versions_.count(GetRef<tir::Var>(b_var))) {
-    if (!is_one(buffer_versions_[GetRef<tir::Var>(b_var)])) {
-      b_buffer_in_pipeline = true;
-    }
-  } else if (b_shape.size() == 3) {
-    b_buffer_in_pipeline = true;
+  if (b_info.is_slice) {
+    b_name = GetTempVarName(b_name);
+    CreateCubeVariable(b_name, b_info, kAscendPtoScope + "TileMatL1");
   }
 
-  bool c_buffer_in_pipeline = false;
-  if (buffer_versions_.count(GetRef<tir::Var>(c_var))) {
-    if (!is_one(buffer_versions_[GetRef<tir::Var>(c_var)])) {
-      c_buffer_in_pipeline = true;
-    }
-  } else if (c_shape.size() == 3) {
-    c_buffer_in_pipeline = true;
+  if (c_info.is_slice) {
+    c_name = GetTempVarName(c_name);
+    CreateCubeVariable(c_name, c_info, "pto::TileAcc");
   }
 
-  // std::map<std::string, std::string> params = extractTemplateParams(op_name);
+  this->PrintIndent();
   std::string data_type_input = params["data_type_input"];
   this->stream << kAscendPtoScope << "gemm_v0" << "<"
                << params["data_type_input"] << ", "
@@ -1407,44 +1214,8 @@ void CodeGenTileLangAscendPto::GemmV0Codegen(const CallNode *op) {
                << params["M"] << ", " << params["N"] << ", " << params["K"]
                << ", " << kL0Tail << ", " << params["transpose_A"] << ", "
                << params["transpose_B"] << ">" << "(";
-
-  if (a_buffer_in_pipeline) {
-    auto a_k = op->args[2].as<CallNode>()->args[2] /
-               op->args[2].as<CallNode>()->args[3];
-    tvm::arith::Analyzer analyzer;
-    PrimExpr simplified_a_k = analyzer.Simplify(a_k);
-    auto buffer_name = a_name + "[" + PrintExpr(simplified_a_k) + "]";
-
-    this->stream << buffer_name << ", ";
-  } else {
-    this->stream << a_name << ", ";
-  }
-
-  if (b_buffer_in_pipeline) {
-    auto b_k = op->args[2].as<CallNode>()->args[2] /
-               op->args[2].as<CallNode>()->args[3];
-    tvm::arith::Analyzer analyzer;
-    PrimExpr simplified_b_k = analyzer.Simplify(b_k);
-    auto buffer_name = b_name + "[" + PrintExpr(simplified_b_k) + "]";
-
-    this->stream << buffer_name << ", ";
-  } else {
-    this->stream << b_name << ", ";
-  }
-
-  if (c_buffer_in_pipeline) {
-    auto c_k = op->args[2].as<CallNode>()->args[2] /
-               op->args[2].as<CallNode>()->args[3];
-    tvm::arith::Analyzer analyzer;
-    PrimExpr simplified_c_k = analyzer.Simplify(c_k);
-    auto buffer_name = c_name + "[" + PrintExpr(simplified_c_k) + "]";
-
-    this->stream << buffer_name << ", ";
-  } else {
-    this->stream << c_name << ", ";
-  }
-
-  this->stream << PrintExpr(op->args[4]) << ");\n";
+  this->stream << a_name << ", " << b_name << ", " << c_name << ", "
+               << PrintExpr(op->args[4]) << ");\n";
 }
 
 void CodeGenTileLangAscendPto::SyncAllCodegen(const CallNode *op) {
@@ -1575,15 +1346,19 @@ void CodeGenTileLangAscendPto::FillCodegen(const CallNode *op) {
 
 void CodeGenTileLangAscendPto::CreateVecIndexCodegen(
     const CallNode *op, const std::string &op_name) {
-  this->PrintIndent();
-  std::string dst_name = PrintExpr(op->args[1].as<CallNode>()->args[1]);
-  std::string dst_offset = PrintExpr(op->args[1].as<CallNode>()->args[2]);
+  BufferInfo dst_info = GetBufferInfo(op->args[1]);
+  ShapeInfo dst_slice_info = GetSliceInfo(op->args[1].as<CallNode>());
   std::string first_value = PrintExpr(op->args[2]);
-  std::vector<std::string> ub_data = ub_data_map_[dst_name];
-  int32_t len = GetTypeLen(ub_data[0]);
-  this->stream << kAscendPtoScope << "tci" << "<" << ub_data[0] << ", "
-               << ub_data[1] << ", " << ub_data[2] << ">" << "(" << ub_data[3]
-               << ", " << dst_offset << ", " << len << ", " << first_value
+
+  const auto &M = dst_info.shape[0];
+  const auto &N = dst_info.shape[1];
+
+  this->PrintIndent();
+  this->stream << kAscendPtoScope << "tci" << "<" << getType(dst_info.dtype)
+               << ", " << PrintExpr(M) << ", " << PrintExpr(N) << ">"
+               << "(" << PrintExpr(dst_slice_info.first_addr) << ", "
+               << dst_slice_info.offset << ", "
+               << GetTypeLen(dst_slice_info.type) << ", " << first_value
                << ");\n";
 }
 
@@ -1599,52 +1374,44 @@ void CodeGenTileLangAscendPto::GatherbCodegen(const CallNode *op,
 
 void CodeGenTileLangAscendPto::GatherMaskCodegen(const CallNode *op,
                                                  const std::string &op_name) {
+  BufferInfo dst_info = GetBufferInfo(op->args[1]);
+  BufferInfo src_info = GetBufferInfo(op->args[2]);
+
   if (op->args[3].as<CallNode>()) {
     this->PrintIndent();
-    std::string dst_name = PrintExpr(op->args[1].as<CallNode>()->args[1]);
-    std::string src_name = PrintExpr(op->args[2].as<CallNode>()->args[1]);
     std::string idx_name = PrintExpr(op->args[3].as<CallNode>()->args[1]);
-    this->stream << op_name << "(" << dst_name << ", " << src_name << ", "
+    this->stream << op_name << "(" << dst_info.id << ", " << src_info.id << ", "
                  << idx_name << ");\n";
   } else {
     std::string src1Pattern = Downcast<StringImm>(op->args[3])->value;
     this->PrintIndent();
-    std::string dst_name = PrintExpr(op->args[1].as<CallNode>()->args[1]);
-    std::string src_name = PrintExpr(op->args[2].as<CallNode>()->args[1]);
-    std::string DstT_type = ub_data_map_[dst_name][0];
-    std::string DstT_row = ub_data_map_[dst_name][1];
-    std::string DstT_col = ub_data_map_[dst_name][2];
-    std::string DstT_rowValid = ub_data_map_[dst_name][5];
-    std::string DstT_colValid = ub_data_map_[dst_name][6];
-    std::string SrcT_type = ub_data_map_[src_name][0];
-    std::string SrcT_row = ub_data_map_[src_name][1];
-    std::string SrcT_col = ub_data_map_[src_name][2];
-    std::string SrcT_rowValid = ub_data_map_[dst_name][5];
-    std::string SrcT_colValid = ub_data_map_[dst_name][6];
-
     this->stream << op_name << "<" << kAscendPtoScope << "TileUbDataND<"
-                 << DstT_type << ", " << DstT_row << ", " << DstT_col << ", "
-                 << DstT_rowValid << ", " << DstT_colValid << ">, "
-                 << kAscendPtoScope << "TileUbDataND<" << SrcT_type << ", "
-                 << SrcT_row << ", " << SrcT_col << ", " << SrcT_rowValid
-                 << ", " << SrcT_colValid << ">, "
-                 << "MaskPattern::" << src1Pattern << ">(" << dst_name << ", "
-                 << src_name << ");\n";
+                 << getType(dst_info.dtype) << ", " << dst_info.shape[0] << ", "
+                 << dst_info.shape[1] << ", " << dst_info.shape[2] << ", "
+                 << dst_info.shape[3] << ">, " << kAscendPtoScope
+                 << "TileUbDataND<" << getType(src_info.dtype) << ", "
+                 << src_info.shape[0] << ", " << src_info.shape[1] << ", "
+                 << src_info.shape[2] << ", " << src_info.shape[3] << ">, "
+                 << "MaskPattern::" << src1Pattern << ">(" << dst_info.id
+                 << ", " << src_info.id << ");\n";
   }
 }
 
 void CodeGenTileLangAscendPto::PowCodegen(const CallNode *op) {
+  BufferInfo dst_info = GetBufferInfo(op->args[0]);
+  BufferInfo src0_info = GetBufferInfo(op->args[1]);
+  BufferInfo src1_info = GetBufferInfo(op->args[2]);
+  BufferInfo tmp_info = GetBufferInfo(op->args[3]);
+
+  const auto &M = dst_info.shape[0];
+  const auto &N = dst_info.shape[1];
+
   this->PrintIndent();
-  std::string dst_name = PrintExpr(op->args[0].as<CallNode>()->args[1]);
-  std::string src0_name = PrintExpr(op->args[1].as<CallNode>()->args[1]);
-  std::string src1_name = PrintExpr(op->args[2].as<CallNode>()->args[1]);
-  std::string tmp_name = PrintExpr(op->args[3].as<CallNode>()->args[1]);
-  std::vector<std::string> ub_data = ub_data_map_[dst_name];
-  std::vector<std::string> tmp_data = ub_data_map_[tmp_name];
-  this->stream << kAscendPtoScope << "pow" << "<" << ub_data[0] << ", "
-               << ub_data[1] << ", " << ub_data[2] << ", " << tmp_data[1] << ">"
-               << "(" << dst_name << ", " << src0_name << ", " << src1_name
-               << ", " << tmp_name << ");\n";
+  this->stream << kAscendPtoScope << "pow" << "<" << getType(dst_info.dtype)
+               << ", " << PrintExpr(M) << ", " << PrintExpr(N) << ", "
+               << PrintExpr(tmp_info.shape[0]) << ">"
+               << "(" << dst_info.id << ", " << src0_info.id << ", "
+               << src1_info.id << ", " << tmp_info.id << ");\n";
 }
 
 void CodeGenTileLangAscendPto::Sort32Codegen(const CallNode *op,
@@ -1814,88 +1581,8 @@ void CodeGenTileLangAscendPto::BinaryVecOpCodegen(const CallNode *op,
     auto var_name = PrintBufferOffset(op->args[i].as<CallNode>());
     var_names.push_back(var_name);
   }
-  if (!(src0_shape_info.is_slice || src1_shape_info.is_slice ||
-        dst_shape_info.is_slice)) {
-    this->PrintIndent();
-    this->stream << ns_prefix << op_name << "(";
-
-    if (prefetch_n_stages_map_[var_names[0]].first > 0) {
-      PrimExpr element_count_dst;
-      auto shape_dst = buffer_shapess_[GetRef<tir::Var>(
-          op->args[0].as<CallNode>()->args[1].as<VarNode>())];
-      if (shape_dst.size() == 3) {
-        element_count_dst = shape_dst[1] * shape_dst[2];
-      } else if (shape_dst.size() == 2) {
-        element_count_dst = shape_dst[0] * shape_dst[1];
-      } else if (shape_dst.size() == 1) {
-        element_count_dst = shape_dst[0];
-      } else {
-        ICHECK(false)
-            << "An error occurred. Please check prefetch_n_stages_map_, "
-               "buffer_shapes_, and buffer_versions_.";
-      }
-      auto buffer_k_dst =
-          op->args[0].as<CallNode>()->args[2] / element_count_dst;
-      tvm::arith::Analyzer analyzer;
-      PrimExpr simplified_buffer_k_dst = analyzer.Simplify(buffer_k_dst);
-      this->stream << var_names[0] << "["
-                   << (PrintExpr(simplified_buffer_k_dst)) << "], ";
-    } else {
-      this->stream << var_names[0] << ", ";
-    }
-
-    if (prefetch_n_stages_map_[var_names[1]].first > 0) {
-      PrimExpr element_count_src0;
-      auto shape_src0 = buffer_shapess_[GetRef<tir::Var>(
-          op->args[1].as<CallNode>()->args[1].as<VarNode>())];
-      if (shape_src0.size() == 3) {
-        element_count_src0 = shape_src0[1] * shape_src0[2];
-      } else if (shape_src0.size() == 2) {
-        element_count_src0 = shape_src0[0] * shape_src0[1];
-      } else if (shape_src0.size() == 1) {
-        element_count_src0 = shape_src0[0];
-      } else {
-        ICHECK(false)
-            << "An error occurred. Please check prefetch_n_stages_map_, "
-               "buffer_shapes_, and buffer_versions_.";
-      }
-      auto buffer_k_src0 =
-          op->args[1].as<CallNode>()->args[2] / element_count_src0;
-      tvm::arith::Analyzer analyzer;
-      PrimExpr simplified_buffer_k_src0 = analyzer.Simplify(buffer_k_src0);
-      this->stream << var_names[1] << "[" << PrintExpr(simplified_buffer_k_src0)
-                   << "], ";
-    } else {
-      this->stream << var_names[1] << ", ";
-    }
-
-    if (prefetch_n_stages_map_[var_names[2]].first > 0) {
-      PrimExpr element_count_src1;
-      auto shape_src1 = buffer_shapess_[GetRef<tir::Var>(
-          op->args[2].as<CallNode>()->args[1].as<VarNode>())];
-      if (shape_src1.size() == 3) {
-        element_count_src1 = shape_src1[1] * shape_src1[2];
-      } else if (shape_src1.size() == 2) {
-        element_count_src1 = shape_src1[0] * shape_src1[1];
-      } else if (shape_src1.size() == 1) {
-        element_count_src1 = shape_src1[0];
-      } else {
-        ICHECK(false)
-            << "An error occurred. Please check prefetch_n_stages_map_, "
-               "buffer_shapes_, and buffer_versions_.";
-      }
-      auto buffer_k_src1 =
-          op->args[2].as<CallNode>()->args[2] / element_count_src1;
-      tvm::arith::Analyzer analyzer;
-      PrimExpr simplified_buffer_k_src1 = analyzer.Simplify(buffer_k_src1);
-      this->stream << var_names[2] << "[" << PrintExpr(simplified_buffer_k_src1)
-                   << "]);\n";
-    } else {
-      this->stream << var_names[2] << ");\n";
-    }
-
-  } else if (src0_shape_info.is_slice || src1_shape_info.is_slice ||
-             dst_shape_info.is_slice) {
+  if (src0_shape_info.is_slice || src1_shape_info.is_slice ||
+      dst_shape_info.is_slice) {
     std::string src0_temp_name = GetTempVarName(src0_shape_info.ub_name);
     std::string src1_temp_name = GetTempVarName(src1_shape_info.ub_name);
     std::string dst_temp_name = GetTempVarName(dst_shape_info.ub_name);
@@ -1905,7 +1592,7 @@ void CodeGenTileLangAscendPto::BinaryVecOpCodegen(const CallNode *op,
     this->PrintIndent();
     this->stream << ns_prefix << op_name << "(" << dst_temp_name << ", "
                  << src0_temp_name << ", " << src1_temp_name << ");\n";
-  } else if (prefetch_n_stages_map_[var_names[1]].first == 0) {
+  } else {
     this->PrintIndent();
     this->stream << ns_prefix << op_name << "(";
     for (int i = 0; i < var_names.size(); i++) {
@@ -1915,8 +1602,6 @@ void CodeGenTileLangAscendPto::BinaryVecOpCodegen(const CallNode *op,
       }
     }
     this->stream << ");\n";
-  } else {
-    ICHECK(false) << "BinaryVecOpCodegen Failed";
   }
 }
 
@@ -1942,133 +1627,57 @@ std::string extractBroadCastAxis(const std::string &input) {
   return parts[2];
 }
 
-void CodeGenTileLangAscendPto::BroadcastOpCodegen(const CallNode *op) {
-  std::string template_args = PrintExpr(op->args[0]);
-  std::string src_name = PrintExpr(op->args[2].as<CallNode>()->args[1]);
-  std::string dst_name = PrintExpr(op->args[1].as<CallNode>()->args[1]);
+void CodeGenTileLangAscendPto::CodegenRowBroadcast(const ShapeInfo &dst,
+                                                   const ShapeInfo &src) {
+  std::string dst_name = dst.ub_name;
+  std::string src_name = src.ub_name;
 
-  auto src_element_count = op->args[2].as<CallNode>()->args[3];
-  auto dst_element_count = op->args[1].as<CallNode>()->args[3];
+  // src: ND -> DN
+  src_name = GetTempVarName(src.ub_name);
+  CreateUbVariableDN(src_name, src);
 
-  bool is_slice = false;
-  auto src_shape = buffer_shapess_[GetRef<tir::Var>(
-      op->args[2].as<CallNode>()->args[1].as<VarNode>())];
-  auto dst_shape = buffer_shapess_[GetRef<tir::Var>(
-      op->args[1].as<CallNode>()->args[1].as<VarNode>())];
-  ShapeInfo src_shape_info = GetSliceInfo(op->args[2].as<CallNode>());
-  ShapeInfo dst_shape_info = GetSliceInfo(op->args[1].as<CallNode>());
-
-  auto check_equal = [&](const PrimExpr &a, const PrimExpr &b) -> bool {
-    tvm::arith::Analyzer analyzer;
-    PrimExpr simplified = analyzer.Simplify(a == b);
-    if (auto imm = simplified.as<tir::IntImmNode>())
-      return imm->value != 0;
-    return false;
-  };
-
-  bool src_buffer_in_pipeline = buffer_versions_.count(
-      GetRef<tir::Var>(op->args[2].as<CallNode>()->args[1].as<VarNode>()));
-
-  // Check whether slicing is required.
-  if (src_shape.size() == 3 && src_buffer_in_pipeline) {
-    tvm::arith::Analyzer analyzer;
-    PrimExpr cond0 = (src_shape[1] != 1);
-    PrimExpr cond1 = (src_shape[2] != 1);
-    PrimExpr both_cond = analyzer.Simplify(cond0 && cond1);
-    auto imm = both_cond.as<tir::IntImmNode>();
-    if (imm->value != 0) {
-      ICHECK(false) << "check src_shape in broadcast.";
-    }
-    is_slice = !check_equal(src_element_count, src_shape[1] * src_shape[2]);
-  } else if (src_shape.size() == 2) {
-    tvm::arith::Analyzer analyzer;
-    PrimExpr cond0 = (src_shape[0] != 1);
-    PrimExpr cond1 = (src_shape[1] != 1);
-    PrimExpr both_cond = analyzer.Simplify(cond0 && cond1);
-    auto imm = both_cond.as<tir::IntImmNode>();
-    if (imm->value != 0) {
-      ICHECK(false) << "check src_shape in broadcast.";
-    }
-    is_slice = !check_equal(src_element_count, src_shape[0] * src_shape[1]);
-  } else if (src_shape.size() == 1) {
-    is_slice = !check_equal(src_element_count, src_shape[0]);
-  } else {
-    ICHECK(false) << "check src_shape in broadcast.";
+  if (dst.is_slice) {
+    dst_name = GetTempVarName(dst.ub_name);
+    CreateUbVariableND(dst_name, dst);
   }
 
-  std::vector<std::string> ub_data_vector = ub_data_map_[src_name];
-  std::string ub_data_type = ub_data_vector[0];
-  std::string row = ub_data_vector[2];
-  std::string col = ub_data_vector[1];
-  std::string address = ub_data_vector[3];
+  this->PrintIndent();
+  this->stream << "TROWEXPAND" << "(" << dst_name << ", " << src_name << ");\n";
+}
 
+void CodeGenTileLangAscendPto::CodegenColBroadcast(const ShapeInfo &dst,
+                                                   const ShapeInfo &src) {
+  std::string dst_name = dst.ub_name;
+  std::string src_name = src.ub_name;
+
+  if (dst.is_slice) {
+    dst_name = GetTempVarName(dst.ub_name);
+    CreateUbVariableND(dst_name, dst);
+  }
+
+  if (src.is_slice) {
+    src_name = GetTempVarName(src.ub_name);
+    CreateUbVariableND(src_name, src);
+  }
+
+  this->PrintIndent();
+  this->stream << "TCOLEXPAND"
+               << "(" << dst_name << ", " << src_name << ");\n";
+}
+
+void CodeGenTileLangAscendPto::BroadcastOpCodegen(const CallNode *op) {
+  std::string template_args = PrintExpr(op->args[0]);
+
+  ShapeInfo dst_shape_info = GetSliceInfo(op->args[1].as<CallNode>());
+  ShapeInfo src_shape_info = GetSliceInfo(op->args[2].as<CallNode>());
+
+  // Parse axis from template args
   std::string axis = extractBroadCastAxis(template_args);
+
   if (axis == "1") {
-    // Handle pipeline logic
-    PrimExpr simplified_src_k;
-    int8_t typeSize = GetTypeLen(ub_data_type);
-    if (src_buffer_in_pipeline) {
-      auto src_k = op->args[2].as<CallNode>()->args[2] /
-                   op->args[2].as<CallNode>()->args[3];
-      tvm::arith::Analyzer analyzer;
-      simplified_src_k = analyzer.Simplify(src_k);
-      // src_name = src_name + "[" + PrintExpr(simplified_src_k) + "]";
-    }
-
-    // To match the PTO interface parameters, allocate a temporary tile in DN
-    // format.
-    this->PrintIndent();
-    this->stream << kAscendPtoScope << "TileUbDataDN <" << ub_data_type << ", "
-                 << row << ", " << col << ", " << row << ", " << col << "> "
-                 << src_name << "_DN_ROWEXPAND;\n";
-    this->PrintIndent();
-    if (src_buffer_in_pipeline) {
-      this->stream << "TASSIGN(" << src_name << "_DN_ROWEXPAND, " << address
-                   << " + " << PrintExpr(simplified_src_k) << " * "
-                   << static_cast<int>(typeSize) << " * " << col << " * " << row
-                   << ");\n";
-    } else {
-      this->stream << "TASSIGN(" << src_name << "_DN_ROWEXPAND, " << address
-                   << ");\n";
-    }
-
-    // Handle slice logic
-    this->PrintIndent();
-    if (!is_slice) {
-      this->stream << "TROWEXPAND" << "(" << dst_name << ", " << src_name
-                   << "_DN_ROWEXPAND" << ");\n";
-    } else {
-      std::string src_temp_name = GetTempVarName(src_shape_info.ub_name);
-      std::string dst_temp_name = GetTempVarName(dst_shape_info.ub_name);
-      CreateUbVariableDN(src_temp_name, src_shape_info);
-      CreateUbVariableND(dst_temp_name, dst_shape_info);
-      this->PrintIndent();
-      this->stream << "TROWEXPAND" << "(" << dst_temp_name << ", "
-                   << src_temp_name << ");\n";
-    }
-
-    this->PrintIndent();
-    if (src_buffer_in_pipeline) {
-      this->stream << "TRESHAPE(" << src_name << "["
-                   << PrintExpr(simplified_src_k) << "], " << src_name
-                   << "_DN_ROWEXPAND);\n";
-    } else {
-      this->stream << "TRESHAPE(" << src_name << ", " << src_name
-                   << "_DN_ROWEXPAND);\n";
-    }
+    CodegenRowBroadcast(dst_shape_info, src_shape_info);
   } else {
-    // Handle pipeline logic
-    if (src_buffer_in_pipeline) {
-      auto src_k = op->args[2].as<CallNode>()->args[2] /
-                   op->args[2].as<CallNode>()->args[3];
-      tvm::arith::Analyzer analyzer;
-      PrimExpr simplified_src_k = analyzer.Simplify(src_k);
-      src_name = src_name + "[" + PrintExpr(simplified_src_k) + "]";
-    }
-
-    this->PrintIndent();
-    this->stream << "TCOLEXPAND" << "(" << dst_name << ", " << src_name
-                 << ");\n";
+    CodegenColBroadcast(dst_shape_info, src_shape_info);
   }
 }
 
@@ -2117,112 +1726,73 @@ bool IsComplexExpression(const PrimExpr &expr) {
 
 void CodeGenTileLangAscendPto::BinaryVecOpsCodegen(const CallNode *op,
                                                    const std::string &op_name) {
+  // 收集变量名
   std::vector<std::string> var_names;
-  std::string operation;
-  std::string final_scalar;
-  std::string raw_index = PrintExpr(op->args[op->args.size() - 2]);
-  if (op_name == "TSUBS") {
-    operation = "TADDS";
-    final_scalar = "-" + raw_index;
-  } else if (op_name == "TDIVS") {
-    operation = "TMULS";
-    final_scalar = "1.0f / " + raw_index;
-  } else {
-    operation = op_name;
-    final_scalar = raw_index;
+  for (size_t i = 0; i < op->args.size() - 2; i++) {
+    var_names.push_back(PrintBufferOffset(op->args[i].as<CallNode>()));
   }
-  for (int i = 0; i < op->args.size() - 2; i++) {
-    auto var_name = PrintBufferOffset(op->args[i].as<CallNode>());
-    var_names.push_back(var_name);
-  }
-  auto selected_elements_buffer = op->args[2].as<CallNode>();
-  bool is_call = selected_elements_buffer != nullptr;
-  if (is_call) {
-    std::string index = PrintExpr(op->args[op->args.size() - 2]);
 
-    auto selected_elements_buffer_shape = buffer_shapess_[GetRef<tir::Var>(
-        selected_elements_buffer->args[1].as<tir::VarNode>())];
-    bool selected_elements_buffer_in_pipeline = false;
-    if (buffer_versions_.count(GetRef<tir::Var>(
-            selected_elements_buffer->args[1].as<tir::VarNode>()))) {
-      if (!is_one(buffer_versions_[GetRef<tir::Var>(
-              selected_elements_buffer->args[1].as<tir::VarNode>())])) {
-        selected_elements_buffer_in_pipeline = true;
-      }
-    } else if (selected_elements_buffer_shape.size() == 3) {
-      selected_elements_buffer_in_pipeline = true;
-    }
+  // 操作名转换：TSUBS->TADDS, TDIVS->TMULS
+  bool is_tsubs = (op_name == "TSUBS");
+  bool is_tdivs = (op_name == "TDIVS");
+  std::string operation =
+      (is_tsubs || is_tdivs) ? (is_tsubs ? "TADDS" : "TMULS") : op_name;
 
-    std::string scalar_expr;
-    if (!selected_elements_buffer_in_pipeline) {
-      scalar_expr = PrintBufferOffset(selected_elements_buffer) + ".GetValue(" +
-                    index + ")";
-    } else {
-      std::string index_pipeline = PrintExpr(op->args[op->args.size() - 2] -
-                                             selected_elements_buffer->args[2]);
-      auto a_k =
-          selected_elements_buffer->args[2] / selected_elements_buffer->args[3];
-      tvm::arith::Analyzer analyzer;
-      PrimExpr simplified_buffer_k = analyzer.Simplify(a_k);
-      scalar_expr = PrintBufferOffset(selected_elements_buffer) + "[" +
-                    PrintExpr(simplified_buffer_k) + "]" + ".GetValue(" +
-                    index_pipeline + ")";
-    }
-    std::string scalar_name =
-        GetTempVarName(PrintBufferOffset(selected_elements_buffer) + "_scalar");
-    this->PrintIndent();
-    this->stream << "set_flag(PIPE_V, PIPE_S, EVENT_ID0);\n";
-    this->PrintIndent();
-    this->stream << "wait_flag(PIPE_V, PIPE_S, EVENT_ID0);\n";
-    this->PrintIndent();
-    this->stream << "auto " << scalar_name << " = " << scalar_expr << ";\n";
+  std::string index = PrintExpr(op->args[op->args.size() - 2]);
+  auto buffer = op->args[2].as<CallNode>();
 
-    ShapeInfo src_shape_info = GetSliceInfo(op->args[1].as<CallNode>());
-    ShapeInfo dst_shape_info = GetSliceInfo(op->args[0].as<CallNode>());
-
-    std::string loop_num = getValueOrProcess(for_num_map_, index);
-
-    std::string final_op_name = operation;
-    std::string applied_scalar;
-    if (op_name == "TSUBS") {
-      DataType dtype0 = GetAccessPtrDtypePto(op->args[0].as<CallNode>());
-      DataType scalar_dtype = GetAccessPtrDtypePto(selected_elements_buffer);
-      std::string scalar_value = scalar_name;
-      if (scalar_dtype != dtype0 && dtype0.is_float16()) {
-        scalar_value = "float(" + scalar_name + ")";
-      }
-      applied_scalar = "-" + scalar_value;
-    } else if (op_name == "TDIVS") {
-      DataType dtype0 = GetAccessPtrDtypePto(op->args[0].as<CallNode>());
-      DataType scalar_dtype = GetAccessPtrDtypePto(selected_elements_buffer);
-      std::string scalar_value = scalar_name;
-      if (scalar_dtype != dtype0 && dtype0.is_float16()) {
-        scalar_value = "float(" + scalar_name + ")";
-      }
-      applied_scalar = "1.0f / " + scalar_value;
-    } else {
-      applied_scalar = scalar_name;
-    }
-    if (loop_num >= "0" && loop_num <= "9") {
-      std::string src_temp_name = GetTempVarName(src_shape_info.ub_name);
-      std::string dst_temp_name = GetTempVarName(dst_shape_info.ub_name);
-      CreateUbVariableND(src_temp_name, src_shape_info);
-      CreateUbVariableND(dst_temp_name, dst_shape_info);
-      this->PrintIndent();
-      this->stream << final_op_name << "(" << dst_temp_name << ", "
-                   << src_temp_name << ", " << applied_scalar << ");\n";
-    } else {
-      this->PrintIndent();
-      this->stream << operation << "(" << var_names[0] << ", " << var_names[1]
-                   << ", " << applied_scalar << ");\n";
-    }
-  } else {
+  // 非 CallNode：直接使用 index 作为标量
+  if (!buffer) {
+    std::string scalar = is_tsubs   ? ("-" + index)
+                         : is_tdivs ? ("1.0f / " + index)
+                                    : index;
     this->PrintIndent();
     this->stream << operation << "(";
-    for (size_t i = 0; i < var_names.size(); ++i) {
-      this->stream << var_names[i] << ", ";
+    for (const auto &name : var_names) {
+      this->stream << name << ", ";
     }
-    this->stream << final_scalar << ");\n";
+    this->stream << scalar << ");\n";
+    return;
+  }
+
+  // CallNode：从 buffer 获取标量值
+  std::string buf_offset = PrintBufferOffset(buffer);
+  std::string scalar_name = GetTempVarName(buf_offset + "_scalar");
+
+  this->PrintIndent();
+  this->stream << "set_flag(PIPE_V, PIPE_S, EVENT_ID0);\n";
+  this->PrintIndent();
+  this->stream << "wait_flag(PIPE_V, PIPE_S, EVENT_ID0);\n";
+  this->PrintIndent();
+  this->stream << "auto " << scalar_name << " = " << buf_offset << ".GetValue("
+               << index << ");\n";
+
+  // 计算应用的标量（TSUBS/TDIVS 需要类型转换）
+  std::string applied_scalar = scalar_name;
+  if (is_tsubs || is_tdivs) {
+    DataType dtype0 = op->args[0].as<CallNode>()->dtype;
+    std::string value = (buffer->dtype != dtype0 && dtype0.is_float16())
+                            ? ("float(" + scalar_name + ")")
+                            : scalar_name;
+    applied_scalar = is_tsubs ? ("-" + value) : ("1.0f / " + value);
+  }
+
+  // 根据 loop_num 选择操作方式
+  std::string loop_num = getValueOrProcess(for_num_map_, index);
+  if (loop_num >= "0" && loop_num <= "9") {
+    ShapeInfo src_info = GetSliceInfo(op->args[1].as<CallNode>());
+    ShapeInfo dst_info = GetSliceInfo(op->args[0].as<CallNode>());
+    std::string src_name = GetTempVarName(src_info.ub_name);
+    std::string dst_name = GetTempVarName(dst_info.ub_name);
+    CreateUbVariableND(src_name, src_info);
+    CreateUbVariableND(dst_name, dst_info);
+    this->PrintIndent();
+    this->stream << operation << "(" << dst_name << ", " << src_name << ", "
+                 << applied_scalar << ");\n";
+  } else {
+    this->PrintIndent();
+    this->stream << operation << "(" << var_names[0] << ", " << var_names[1]
+                 << ", " << applied_scalar << ");\n";
   }
 }
 
@@ -2252,57 +1822,8 @@ void CodeGenTileLangAscendPto::UnaryVecOpCodegen(const CallNode *op,
                  << ");\n";
   } else {
     this->PrintIndent();
-    this->stream << op_name << "(";
-
-    if (prefetch_n_stages_map_[var_names[0]].first > 0) {
-      PrimExpr element_count_dst;
-      auto shape_dst = buffer_shapess_[GetRef<tir::Var>(
-          op->args[0].as<CallNode>()->args[1].as<VarNode>())];
-      if (shape_dst.size() == 3) {
-        element_count_dst = shape_dst[1] * shape_dst[2];
-      } else if (shape_dst.size() == 2) {
-        element_count_dst = shape_dst[0] * shape_dst[1];
-      } else if (shape_dst.size() == 1) {
-        element_count_dst = shape_dst[0];
-      } else {
-        ICHECK(false)
-            << "An error occurred. Please check prefetch_n_stages_map_, "
-               "buffer_shapes_, and buffer_versions_.";
-      }
-      auto buffer_k_dst =
-          op->args[0].as<CallNode>()->args[2] / element_count_dst;
-      tvm::arith::Analyzer analyzer;
-      PrimExpr simplified_buffer_k_dst = analyzer.Simplify(buffer_k_dst);
-      this->stream << var_names[0] << "["
-                   << (PrintExpr(simplified_buffer_k_dst)) << "], ";
-    } else {
-      this->stream << var_names[0] << ", ";
-    }
-
-    if (prefetch_n_stages_map_[var_names[1]].first > 0) {
-      PrimExpr element_count_src0;
-      auto shape_src0 = buffer_shapess_[GetRef<tir::Var>(
-          op->args[1].as<CallNode>()->args[1].as<VarNode>())];
-      if (shape_src0.size() == 3) {
-        element_count_src0 = shape_src0[1] * shape_src0[2];
-      } else if (shape_src0.size() == 2) {
-        element_count_src0 = shape_src0[0] * shape_src0[1];
-      } else if (shape_src0.size() == 1) {
-        element_count_src0 = shape_src0[0];
-      } else {
-        ICHECK(false)
-            << "An error occurred. Please check prefetch_n_stages_map_, "
-               "buffer_shapes_, and buffer_versions_.";
-      }
-      auto buffer_k_src0 =
-          op->args[1].as<CallNode>()->args[2] / element_count_src0;
-      tvm::arith::Analyzer analyzer;
-      PrimExpr simplified_buffer_k_src0 = analyzer.Simplify(buffer_k_src0);
-      this->stream << var_names[1] << "[" << PrintExpr(simplified_buffer_k_src0)
-                   << "]);\n";
-    } else {
-      this->stream << var_names[1] << ");\n";
-    }
+    this->stream << op_name << "(" << var_names[0] << ", " << var_names[1]
+                 << ");\n";
   }
 }
 
@@ -2316,27 +1837,26 @@ void CodeGenTileLangAscendPto::ScalarOpCodegen(const CallNode *op,
 }
 
 void CodeGenTileLangAscendPto::AxpyCodegen(const CallNode *op) {
-
-  std::string dst_name = PrintBufferOffset(op->args[0].as<CallNode>());
-  std::string src0_name = PrintBufferOffset(op->args[1].as<CallNode>());
-
-  DataType dtype0 = GetAccessPtrDtypePto(op->args[0].as<CallNode>());
-  DataType scalar_dtype = op->args[2].dtype();
+  BufferInfo dst_info = GetBufferInfo(op->args[0]);
+  BufferInfo src0_info = GetBufferInfo(op->args[1]);
   std::string scalar = PrintExpr(op->args[2]);
-  if (scalar_dtype != dtype0) {
-    if (dtype0.is_float16()) {
+
+  const auto &M = dst_info.shape[0];
+  const auto &N = dst_info.shape[1];
+
+  DataType scalar_dtype = op->args[2].dtype();
+  if (getType(dst_info.dtype) != getType(scalar_dtype)) {
+    if (dst_info.dtype.is_float16()) {
       scalar = "float(" + scalar + ")";
     } else {
-      std::string target_type = getType(dtype0);
-      scalar = target_type + "(" + scalar + ")";
+      scalar = getType(dst_info.dtype) + "(" + scalar + ")";
     }
   }
 
-  std::vector<std::string> ub_data = ub_data_map_[dst_name];
   this->PrintIndent();
-  this->stream << kAscendPtoScope << "axpy" << "<" << ub_data[0] << ", "
-               << ub_data[1] << ", " << ub_data[2] << ">"
-               << "(" << dst_name << ", " << src0_name << ", " << scalar
+  this->stream << kAscendPtoScope << "axpy" << "<" << getType(dst_info.dtype)
+               << ", " << PrintExpr(M) << ", " << PrintExpr(N) << ">"
+               << "(" << dst_info.id << ", " << src0_info.id << ", " << scalar
                << ");\n";
 }
 
@@ -2414,23 +1934,29 @@ void CodeGenTileLangAscendPto::BinaryVecClampOpsCodegen(
 
 void CodeGenTileLangAscendPto::SigmoidCodegen(const CallNode *op,
                                               const std::string &op_name) {
-  std::vector<std::string> var_names;
-  for (int i = 0; i < op->args.size() - 2; i++) {
-    auto var_name = PrintBufferOffset(op->args[i].as<CallNode>());
-    var_names.push_back(var_name);
+  ShapeInfo dst = GetSliceInfo(op->args[0].as<CallNode>());
+  ShapeInfo src = GetSliceInfo(op->args[1].as<CallNode>());
+
+  std::string dst_name = dst.ub_name;
+  std::string src_name = src.ub_name;
+
+  if (dst.is_slice) {
+    dst_name = GetTempVarName(dst.ub_name);
+    CreateUbVariableND(dst_name, dst);
   }
-  std::string dst_name = PrintExpr(op->args[0].as<CallNode>()->args[1]);
-  std::vector<std::string> ub_data = ub_data_map_[dst_name];
+
+  if (src.is_slice) {
+    src_name = GetTempVarName(src.ub_name);
+    CreateUbVariableND(src_name, src);
+  }
+
+  const auto &M = dst.slice_row;
+  const auto &N = dst.slice_col;
+
   this->PrintIndent();
-  this->stream << kAscendPtoScope << op_name << "<" << ub_data[0] << ", "
-               << ub_data[1] << ", " << ub_data[2] << ">" << "(";
-  for (int i = 0; i < var_names.size(); i++) {
-    this->stream << var_names[i];
-    if (i != var_names.size() - 1) {
-      this->stream << ", ";
-    }
-  }
-  this->stream << ", " << PrintExpr(op->args[op->args.size() - 1]) << ");\n";
+  this->stream << kAscendPtoScope << op_name << "<" << dst.type << ", "
+               << PrintExpr(M) << ", " << PrintExpr(N) << ">"
+               << "(" << dst_name << ", " << src_name << ");\n";
 }
 
 void CodeGenTileLangAscendPto::CastCodegen(const CallNode *op,
@@ -2509,209 +2035,154 @@ ExtractTemplateParamsForSliceBuffer(const std::string &op_name) {
   return std::make_tuple(second_param, third_param, forth_param, false);
 }
 
-void CodeGenTileLangAscendPto::ReduceOpCodegen(const CallNode *op) {
-  std::string op_name = Downcast<StringImm>(op->args[0])->value;
+CodeGenTileLangAscendPto::ReduceOpInfo
+CodeGenTileLangAscendPto::ParseReduceOpInfo(const std::string &op_name) {
+  auto [slice_row, slice_col, direction_val, success] =
+      ExtractTemplateParamsForSliceBuffer(op_name);
 
-  // Determine whether the reduce operation needs to be sliced.
-  auto template_params = ExtractTemplateParamsForSliceBuffer(op_name);
-  int param2_int = std::get<0>(template_params);
-  int param3_int = std::get<1>(template_params);
-  int param4_int = std::get<2>(template_params);
-  std::string param2 = std::to_string(param2_int);
-  std::string param3 = std::to_string(param3_int);
-  std::string mode = "";
-  if (param4_int == -1) {
-    mode = "row";
-  } else if (param4_int == 0) {
-    mode = "col";
-  } else {
-    ICHECK(false)
-        << "Only row-wise or column-wise reduce operations are supported. Row "
-           "direction is denoted by -1, and column direction by 0.";
-  }
+  ICHECK(success) << "ExtractTemplateParams failed";
+  ICHECK(direction_val == -1 || direction_val == 0)
+      << "Only row-wise (-1) or column-wise (0) reduce supported";
 
-  bool success = std::get<3>(template_params);
-  if (!success) {
-    ICHECK(false) << "ExtractTemplateParams failed";
-  }
+  ReduceOpInfo info;
+  info.buffer_slice_row = slice_row;
+  info.buffer_slice_col = slice_col;
+  info.direction =
+      (direction_val == -1) ? ReduceDirection::ROW : ReduceDirection::COL;
 
   if (op_name.find("reduce_sum") != std::string::npos) {
-    op_name = (mode == "row") ? "TROWSUM" : "TCOLSUM";
+    info.kind = ReduceKind::SUM;
   } else if (op_name.find("reduce_max") != std::string::npos) {
-    op_name = (mode == "row") ? "TROWMAX" : "TCOLMAX";
+    info.kind = ReduceKind::MAX;
   } else if (op_name.find("reduce_min") != std::string::npos) {
-    op_name = (mode == "row") ? "TROWMIN" : "TCOLMIN";
+    info.kind = ReduceKind::MIN;
   } else {
-    ICHECK(false) << "not support reduce type: " << op_name;
+    ICHECK(false) << "Unsupported reduce type: " << op_name;
   }
 
-  std::vector<std::string> var_names;
-  for (int i = 1; i < op->args.size(); i++) {
-    auto var_name = PrintBufferOffset(op->args[i].as<CallNode>());
-    var_names.push_back(var_name);
+  return info;
+}
+
+std::string
+CodeGenTileLangAscendPto::GetReduceOpName(ReduceKind kind,
+                                          ReduceDirection direction) {
+  static const std::unordered_map<
+      ReduceKind, std::unordered_map<ReduceDirection, std::string>>
+      kOpNames = {
+          {ReduceKind::SUM,
+           {{ReduceDirection::ROW, "TROWSUM"},
+            {ReduceDirection::COL, "TCOLSUM"}}},
+          {ReduceKind::MAX,
+           {{ReduceDirection::ROW, "TROWMAX"},
+            {ReduceDirection::COL, "TCOLMAX"}}},
+          {ReduceKind::MIN,
+           {{ReduceDirection::ROW, "TROWMIN"},
+            {ReduceDirection::COL, "TCOLMIN"}}},
+      };
+  return kOpNames.at(kind).at(direction);
+}
+
+void CodeGenTileLangAscendPto::CodegenRowReduce(const ReduceOpInfo &op_info,
+                                                const ShapeInfo &dst,
+                                                const ShapeInfo &src,
+                                                const ShapeInfo &tmp) {
+  std::string op_name = GetReduceOpName(op_info.kind, ReduceDirection::ROW);
+  std::string dst_name = dst.ub_name;
+  std::string src_name = src.ub_name;
+
+  // dst: ND -> DN
+  dst_name = GetTempVarName(dst.ub_name);
+  CreateUbVariableDN(dst_name, dst);
+
+  if (src.is_slice) {
+    src_name = GetTempVarName(src.ub_name);
+    CreateUbVariableND(src_name, src);
   }
-  std::string ub_name = var_names[0];
-  std::string ub_name_dn = ub_name + "_DN_" + std::to_string(reduce_num);
-  std::vector<std::string> ub_data_vector = ub_data_map_[ub_name];
-  std::string ub_data_type = ub_data_vector[0];
-  std::string row = ub_data_vector[2];
-  std::string col = ub_data_vector[1];
-  std::string ffts = ub_data_vector[3];
 
-  std::string ub_name_src = var_names[1];
-  std::vector<std::string> ub_data_vector_src = ub_data_map_[ub_name_src];
-  std::string ub_data_type_src = ub_data_vector_src[0];
-  std::string row_src = ub_data_vector_src[1];
-  std::string col_src = ub_data_vector_src[2];
-  std::string ffts_src = ub_data_vector_src[3];
+  this->PrintIndent();
+  this->stream << op_name << "(" << dst_name << ", " << src_name << ", "
+               << tmp.ub_name << ");\n";
+}
 
-  std::string ub_name_tmp = var_names[2];
-  std::vector<std::string> ub_data_vector_tmp = ub_data_map_[ub_name_tmp];
-  std::string ub_data_type_tmp = ub_data_vector_tmp[0];
-  std::string row_tmp = ub_data_vector_tmp[1];
-  std::string col_tmp = ub_data_vector_tmp[2];
-  std::string ffts_tmp = ub_data_vector_tmp[3];
+void CodeGenTileLangAscendPto::CodegenColReduce(const ReduceOpInfo &op_info,
+                                                const ShapeInfo &dst,
+                                                const ShapeInfo &src,
+                                                const ShapeInfo &tmp) {
 
-  // Determine whether to request the TileUbData with DN arrangement.
-  ICHECK(ub_data_vector.size() == 7)
-      << "TileUbData needs 7 elements (type, row, col, ffts, applied DN or "
-         "not, validrow, validcol), got "
-      << ub_data_vector.size() << ".";
-  if (mode == "row") {
-    if (ub_data_vector[4] ==
-        "Unapplied for tileUbDataDN") { // If not applied yet, prioritize
-                                        // applying for it.
-      this->PrintIndent();
-      this->stream << kAscendPtoScope << "TileUbDataDN <" << ub_data_type
-                   << ", " << row << ", " << col << ", " << row_src << ", "
-                   << col << "> " << ub_name_dn << ";\n";
-      this->PrintIndent();
-      this->stream << "TASSIGN(" << ub_name_dn << ", " << ffts << ");\n";
-      if (param2 == row_src && param3 == col_src) {
-        this->PrintIndent();
-        this->stream << op_name << "(";
-        for (int i = 0; i < var_names.size(); i++) {
-          this->stream << var_names[i];
-          if (i == 0) {
-            this->stream << "_DN_" << reduce_num;
-          }
-          if (i != var_names.size() - 1) {
-            this->stream << ", ";
-          }
-        }
-        this->stream << ");\n";
-      } else {
-        if (op_name == "TROWMAX") {
-          this->PrintIndent();
-          this->stream << kAscendPtoScope << "TROWMAX_with_slice_buffer <"
-                       << ub_data_type_src << ", " << ub_data_type << ", "
-                       << ub_data_type_tmp << ", " << row_src << ", " << col_src
-                       << ", " << param2 << ", " << param3 << ", " << row
-                       << ", " << row_tmp << ", " << col_tmp << "> ("
-                       << ffts_src << ", " << ffts << ", " << ub_name_dn << ", "
-                       << ub_name_tmp << ");\n";
-        } else if (op_name == "TROWSUM") {
-          this->PrintIndent();
-          this->stream << kAscendPtoScope << "TROWSUM_with_slice_buffer <"
-                       << ub_data_type_src << ", " << ub_data_type << ", "
-                       << ub_data_type_tmp << ", " << row_src << ", " << col_src
-                       << ", " << param2 << ", " << param3 << ", " << row
-                       << ", " << row_tmp << ", " << col_tmp << "> ("
-                       << ffts_src << ", " << ffts << ", " << ub_name_dn << ", "
-                       << ub_name_tmp << ");\n";
-        } else if (op_name == "TROWMIN") {
-          this->PrintIndent();
-          this->stream << kAscendPtoScope << "TROWMAX_with_slice_buffer <"
-                       << ub_data_type_src << ", " << ub_data_type << ", "
-                       << ub_data_type_tmp << ", " << row_src << ", " << col_src
-                       << ", " << param2 << ", " << param3 << ", " << row
-                       << ", " << row_tmp << ", " << col_tmp << "> ("
-                       << ffts_src << ", " << ffts << ", " << ub_name_dn << ", "
-                       << ub_name_tmp << ");\n";
-        }
-      }
-      this->PrintIndent();
-      this->stream << "TRESHAPE(" << var_names[0] << ", " << var_names[0]
-                   << "_DN_" << reduce_num << ");\n";
-      ub_data_vector[4] = "Applied for tileUbDataDN";
-    } else if (ub_data_vector[4] ==
-               "Applied for tileUbDataDN") { // If already applied, leverage the
-                                             // existing application.
-      this->PrintIndent();
-      this->stream << op_name << "(";
-      for (int i = 0; i < var_names.size(); i++) {
-        this->stream << var_names[i];
-        if (i == 0) {
-          this->stream << "_DN_" << reduce_num;
-        }
-        if (i != var_names.size() - 1) {
-          this->stream << ", ";
-        }
-      }
-      this->stream << ");\n";
-      this->PrintIndent();
-      this->stream << "TRESHAPE(" << var_names[0] << ", " << var_names[0]
-                   << "_DN_" << reduce_num << ");\n";
-    } else {
-      ICHECK(false) << "Error route in ReduceOpCodegen";
-    }
-  } else {
-    this->PrintIndent();
-    if (param2 == row_src && param3 == col_src) {
-      if (op_name == "TCOLSUM") {
-        int tmp_rows = (std::stoi(row_src) + 1) / 2;
-        std::string tmp_cols = col_src;
-        this->stream << "{\n";
-        this->PrintIndent();
-        this->stream << "  " << kAscendPtoScope << "TileUbDataND<"
-                     << ub_data_type_src << ", " << tmp_rows << ", " << tmp_cols
-                     << "> " << ub_name_tmp << "_cast;\n";
-        this->PrintIndent();
-        this->stream << "  TASSIGN(" << ub_name_tmp << "_cast, " << ffts_tmp
-                     << ");\n";
-        this->PrintIndent();
-        this->stream << "  " << op_name << "(";
-        for (int i = 0; i < var_names.size() - 1; i++) {
-          this->stream << var_names[i];
-          if (i != var_names.size() - 2) {
-            this->stream << ", ";
-          }
-        }
-        this->stream << ", " << ub_name_tmp << "_cast, true);\n";
-        this->PrintIndent();
-        this->stream << "}\n";
-      } else {
-        this->stream << op_name << "(";
-        for (int i = 0; i < var_names.size() - 1; i++) {
-          this->stream << var_names[i];
-          if (i != var_names.size() - 2) {
-            this->stream << ", ";
-          }
-        }
-        this->stream << ");\n";
-      }
-    } else {
-      if (op_name == "TCOLSUM") {
-        int tmp_rows = (std::stoi(param2) + 1) / 2;
-        std::string tmp_cols = param3;
-        this->stream << kAscendPtoScope << op_name << "_with_slice_buffer <"
-                     << ub_data_type_src << ", " << ub_data_type << ", "
-                     << row_src << ", " << col_src << ", " << param2 << ", "
-                     << param3 << ", " << row << ", " << tmp_rows << ", "
-                     << tmp_cols << "> (" << ffts_src << ", " << ffts << ", "
-                     << ub_name << ", " << ffts_tmp << ");\n";
-      } else {
-        this->stream << kAscendPtoScope << op_name << "_with_slice_buffer <"
-                     << ub_data_type_src << ", " << ub_data_type << ", "
-                     << ub_data_type_tmp << ", " << row_src << ", " << col_src
-                     << ", " << param2 << ", " << param3 << ", " << row << ", "
-                     << row_tmp << ", " << col_tmp << "> (" << ffts_src << ", "
-                     << ffts << ", " << ub_name << ", " << ub_name_tmp
-                     << ");\n";
-      }
+  std::string op_name = GetReduceOpName(op_info.kind, ReduceDirection::COL);
+
+  std::string dst_name = dst.ub_name;
+  std::string src_name = src.ub_name;
+
+  if (dst.is_slice) {
+    dst_name = GetTempVarName(dst.ub_name);
+    CreateUbVariableND(dst_name, dst);
+  }
+
+  if (src.is_slice) {
+    src_name = GetTempVarName(src.ub_name);
+    CreateUbVariableND(src_name, src);
+  }
+
+  // TCOLSUM: src.dtyp == dst.dtyp == tmp.dtype
+  std::string temp_name = tmp.ub_name;
+  if (op_info.kind == ReduceKind::SUM) {
+    ICHECK(dst.type == src.type)
+        << "Reduce_sum input dtype must be consistent with the output "
+           "dtype.";
+    if (dst.type != tmp.type) {
+      temp_name = GetTempVarName(temp_name);
+
+      int tmp_col =
+          tmp.row * tmp.col * GetTypeLen(tmp.type) / GetTypeLen(dst.type);
+      tmp_col = GetValidShape(tmp_col, dst.type);
+      ShapeInfo tmp_cast =
+          ShapeInfo{1,          tmp_col,  1,           tmp_col,
+                    1,          tmp_col,  tmp.extent,  tmp.first_addr,
+                    tmp.offset, dst.type, tmp.ub_name, false};
+      CreateUbVariableND(temp_name, tmp_cast);
     }
   }
-  reduce_num++;
+
+  this->PrintIndent();
+  this->stream << op_name << "(" << dst_name << ", " << src_name;
+  // TCOLSUM needs tmp
+  if (op_info.kind == ReduceKind::SUM) {
+    this->stream << ", " << temp_name << ", false";
+  }
+
+  this->stream << ");\n";
+}
+
+void CodeGenTileLangAscendPto::ReduceOpCodegen(const CallNode *op) {
+  std::string op_name_str = Downcast<StringImm>(op->args[0])->value;
+
+  ReduceOpInfo op_info = ParseReduceOpInfo(op_name_str);
+  ShapeInfo dst = GetSliceInfo(op->args[1].as<CallNode>());
+  ShapeInfo src = GetSliceInfo(op->args[2].as<CallNode>());
+  bool is_slice = src.slice_valid_row != op_info.buffer_slice_row ||
+                  src.slice_valid_col != op_info.buffer_slice_col;
+  // reduce offer real_shape
+  if (is_slice) {
+    src.slice_valid_row = op_info.buffer_slice_row;
+    src.slice_valid_col = op_info.buffer_slice_col;
+    src.is_slice = true;
+    src.offset = "0";
+  }
+
+  ShapeInfo tmp = GetSliceInfo(op->args[3].as<CallNode>());
+
+  if (op_info.direction == ReduceDirection::ROW) {
+    if (is_slice) {
+      dst.slice_valid_col = op_info.buffer_slice_row;
+    }
+    CodegenRowReduce(op_info, dst, src, tmp);
+  } else {
+    if (is_slice) {
+      dst.slice_valid_col = op_info.buffer_slice_col;
+    }
+    CodegenColReduce(op_info, dst, src, tmp);
+  }
 }
 
 void CodeGenTileLangAscendPto::VisitStmt_(const AttrStmtNode *op) {
@@ -2773,315 +2244,98 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AttrStmtNode *op) {
   CodeGenC::VisitStmt_(op);
 }
 
-void CodeGenTileLangAscendPto::UbShapeInputCheck(const AllocateNode *op) {
-  auto shape = buffer_shapess_[op->buffer_var];
-  if (shape.size() > 3 || shape.size() == 0) {
-    ICHECK(false) << "Unsupported ubsize which is expected to be 1, 2 or 3";
-  }
-}
+const std::unordered_map<std::string, std::string> scope_to_tile = {
+    {"wmma.matrix_a", kAscendPtoScope + "TileMatL0A"},
+    {"wmma.matrix_b", kAscendPtoScope + "TileMatL0B"},
+    {"wmma.accumulator", "TileAcc"},
+    {"shared.dyn", kAscendPtoScope + "TileMatL1"},
+    {"shared", kAscendPtoScope + "TileUbDataND"},
+};
 
-bool CodeGenTileLangAscendPto::ValidLayoutEnabled(const AllocateNode *op) {
-  auto shape = buffer_shapess_[op->buffer_var];
-  bool valid = false;
-  std::string type = getType(op->dtype);
-  int8_t typeSize = GetTypeLen(type);
-  bool has_buffer_version = buffer_versions_.count(
-      op->buffer_var); // Check if multiple buffers are enabled/configured in
-                       // the T.pipeline.
-  if (!has_buffer_version) {
-    if (shape.size() == 3) {
-      if (tvm::tir::is_zero(tvm::truncmod(shape[2] * typeSize, 32))) {
-        valid = false;
-      } else {
-        valid = true;
-      }
-    } else if (shape.size() == 2) {
-      if (tvm::tir::is_zero(tvm::truncmod(shape[1] * typeSize, 32))) {
-        valid = false;
-      } else {
-        valid = true;
-      }
-    } else if (shape.size() == 1) {
-      if (tvm::tir::is_zero(tvm::truncmod(shape[0] * typeSize, 32))) {
-        valid = false;
-      } else {
-        valid = true;
-      }
-    } else {
-      ICHECK(false) << "ValidLayoutEnabled Error";
+void CodeGenTileLangAscendPto::AllocateLocalVar(const AllocateNode *op,
+                                                std::string &vid,
+                                                std::string dtype) {
+  PrimExpr init = tir::make_const(op->dtype, 0);
+
+  auto init_it = op->annotations.find(tl::attr::kLocalVarInit);
+  if (init_it != op->annotations.end()) {
+    PrimExpr user_init = Downcast<PrimExpr>((*init_it).second);
+    if (user_init.dtype().is_bool()) {
+      dtype = "bool";
+    } else if (!user_init.dtype().is_void() && user_init.dtype() != op->dtype) {
+      user_init = tir::Cast(op->dtype, user_init);
+      dtype = getType(user_init.dtype());
     }
-  } else {
-    if (shape.size() == 2) {
-      if (tvm::tir::is_zero(tvm::truncmod(shape[0] * typeSize, 32))) {
-        valid = false;
-      } else {
-        valid = true;
-      }
-    } else if (shape.size() == 3) {
-      if (tvm::tir::is_zero(tvm::truncmod(shape[2] * typeSize, 32))) {
-        valid = false;
-      } else {
-        valid = true;
-      }
-    } else if (shape.size() == 1) {
-      if (tvm::tir::is_zero(tvm::truncmod(shape[0] * typeSize, 32))) {
-        valid = false;
-      } else {
-        valid = true;
-      }
-    } else {
-      ICHECK(false) << "ValidLayoutEnabled Error";
-    }
+    init = user_init;
   }
-  return valid;
+  this->PrintIndent();
+  stream << dtype + " " << vid << " = " << PrintExpr(init) << ";\n";
 }
 
 void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
-  ICHECK(!is_zero(op->condition));
+  ICHECK(!is_zero(op->condition)) << "Allocation condition must not be zero.";
+
+  // 1. Extract basic allocation info
   std::string vid = AllocVarID(op->buffer_var.get()); // var_name
-  std::string scope = GetPtrStorageScope(op->buffer_var);
   std::string type = getType(op->dtype);
-  const VarNode *buffer = op->buffer_var.as<VarNode>();
+  std::string scope = GetPtrStorageScope(op->buffer_var);
 
-  /// Allocate PTO Tile Memory Address
-  auto print_buffer = [&](const std::string &pos) {
-    if (!buffer_shapess_.count(op->buffer_var)) {
-      ICHECK(false) << "Buffer_shape not found.";
-    }
-    auto shape = buffer_shapess_[op->buffer_var];
-    std::vector<std::string> ub_data(7);
-    std::vector<std::string> l_data(4);
-    ub_data[0] = type;
-    l_data[0] = type;
-    if (pos == kAscendPtoScope + "TileUbData") {
-      UbShapeInputCheck(op);
-    }
+  // 2. Determine the corresponding PTO Tile class name
+  // handle T.var
+  if (scope == "local.var") {
+    AllocateLocalVar(op, vid, type);
 
-    PrimExpr target_expr;
-    bool found_by_name = false;
-    std::string target_var_name = op->buffer_var->name_hint;
-
-    for (const auto &pair : address_map_) {
-      Var var_key = pair.first;
-      if (var_key->name_hint == target_var_name) {
-        target_expr = pair.second;
-        found_by_name = true;
-        break;
-      }
-    }
-
-    ICHECK(found_by_name)
-        << "CodeGenTileLangAscendPto: Cannot find pre-allocated address for "
-           "buffer: "
-        << target_var_name
-        << ". All buffers must be pre-allocated via address_map_.";
-
-    this->PrintIndent();
-
-    // Recording the count of buffer allocations in the pipeline.
-    bool buffer_in_pipeline = false;
-    if (buffer_versions_.count(op->buffer_var)) {
-      if (!is_one(buffer_versions_[op->buffer_var])) {
-        int8_t bufferNum =
-            Downcast<Integer>(buffer_versions_[op->buffer_var])->value;
-        prefetch_n_stages_map_[vid] = std::pair<int, int>{bufferNum, 0};
-        buffer_in_pipeline = true;
-      }
-    } else if (shape.size() == 3) {
-      auto bufferNum = shape[0].as<IntImmNode>()->value;
-      prefetch_n_stages_map_[vid] =
-          std::pair<int, int>{static_cast<int>(bufferNum), 0};
-      buffer_in_pipeline = true;
-    }
-
-    // use the same ub_data_map_ to record both TileUbData and TileLData
-    // information
-    if (pos == kAscendPtoScope + "TileUbData") {
-      if (shape.size() == 1) {
-        ub_data[1] = "1";
-        ub_data[2] = PrintExpr(shape[0]);
-        ub_data[4] = "Unapplied for tileUbDataDN";
-        ub_data[5] = "1";
-        ub_data[6] = PrintExpr(shape[0]);
-      } else if (shape.size() == 2) {
-        if (shape[1].as<IntImmNode>()->value != 1) {
-          if (!buffer_in_pipeline) {
-            ub_data[1] = PrintExpr(shape[0]);
-            ub_data[2] = PrintExpr(shape[1]);
-            ub_data[4] = "Unapplied for tileUbDataDN";
-            ub_data[5] = PrintExpr(shape[0]);
-            ub_data[6] = PrintExpr(shape[1]);
-          } else {
-            ub_data[1] = "1";
-            ub_data[2] = PrintExpr(shape[1]);
-            ub_data[4] = "Unapplied for tileUbDataDN";
-            ub_data[5] = "1";
-            ub_data[6] = PrintExpr(shape[1]);
-          }
-        } else {
-          ub_data[1] = "1";
-          ub_data[2] = PrintExpr(shape[0]);
-          ub_data[4] = "Unapplied for tileUbDataDN";
-          ub_data[5] = "1";
-          ub_data[6] = PrintExpr(shape[0]);
-          shape.pop_back();
-        }
-      } else if (shape.size() == 3) {
-        if (buffer_in_pipeline) {
-          if (shape[2].as<IntImmNode>()->value != 1) {
-            ub_data[1] = PrintExpr(shape[1]);
-            ub_data[2] = PrintExpr(shape[2]);
-            ub_data[4] = "Unapplied for tileUbDataDN";
-            ub_data[5] = PrintExpr(shape[1]);
-            ub_data[6] = PrintExpr(shape[2]);
-          } else {
-            ub_data[1] = "1";
-            ub_data[2] = PrintExpr(shape[1]);
-            ub_data[4] = "Unapplied for tileUbDataDN";
-            ub_data[5] = "1";
-            ub_data[6] = PrintExpr(shape[1]);
-          }
-        } else {
-          ICHECK(false) << "Check for cases where the shape size is 3 but is "
-                           "not part of the pipeline.";
-        }
-      }
-
-      // Check if padding is needed at the time of request.
-      auto valid = ValidLayoutEnabled(op);
-      if (valid) {
-        int8_t typeSize = GetTypeLen(type);
-        int8_t NDBlockSize = 32 / typeSize;
-        int shape2_val = std::stoi(ub_data[2]);
-        PrimExpr shape2_expr = IntImm(DataType::Int(32), shape2_val);
-        PrimExpr padded_shape2 =
-            tvm::floordiv(shape2_expr + NDBlockSize - 1, NDBlockSize) *
-            NDBlockSize;
-        ub_data[2] = PrintExpr(padded_shape2);
-      }
-
-      if (buffer_in_pipeline) {
-        int8_t typeSize = GetTypeLen(type);
-        // Recording the count of buffer allocations in the pipeline.
-        auto bufferNum = prefetch_n_stages_map_[vid].first;
-
-        // Output the valid shape.
-        stream << pos << "ND<" << type << ", " << ub_data[1] << ", "
-               << ub_data[2] << ", " << ub_data[5] << ", " << ub_data[6];
-        stream << "> " << vid << "[" << bufferNum << "];\n";
-
-        // Batch allocate addresses.
-        for (size_t i = 0; i < bufferNum; i++) {
-          this->PrintIndent();
-          stream << "TASSIGN(" << vid << "[" << i << "], "
-                 << PrintExpr(target_expr) << " + " << i << " * "
-                 << static_cast<int>(typeSize) << " * " << ub_data[1] << " * "
-                 << ub_data[2] << ");\n";
-        }
-      } else {
-        stream << pos << "ND<" << type << ", " << ub_data[1] << ", "
-               << ub_data[2] << ", " << ub_data[5] << ", " << ub_data[6];
-        stream << "> " << vid << ";\n";
-        this->PrintIndent();
-        stream << "TASSIGN(" << vid << ", " << PrintExpr(target_expr) << ");\n";
-      }
-      ub_data[3] = PrintExpr(target_expr);
-      ub_data_map_[vid] = ub_data;
-
-    } else {
-      if (!buffer_in_pipeline) {
-        int dtype_bytes = op->dtype.bytes();
-        std::vector<PrimExpr> valid_shapes;
-        valid_shapes.reserve(2);
-        stream << pos << "<" << type;
-        int shape_value = shape[0].as<tvm::tir::IntImmNode>()->value;
-        if (shape_value * dtype_bytes % 32 == 0) {
-          valid_shapes.push_back(shape[0]);
-        } else {
-          valid_shapes.push_back(
-              tvm::IntImm(shape[0].dtype(),
-                          shape_value + (32 - shape_value * dtype_bytes % 32) /
-                                            dtype_bytes));
-        }
-        valid_shapes.push_back(shape[1]);
-        for (size_t i = 0; i < valid_shapes.size(); i++) {
-          l_data[i + 1] = PrintExpr(valid_shapes[i]);
-          stream << ", " << valid_shapes[i];
-        }
-        for (size_t i = 0; i < shape.size(); i++) {
-          stream << ", " << shape[i];
-        }
-        l_data[3] = PrintExpr(target_expr);
-        stream << "> " << vid << ";\n";
-        this->PrintIndent();
-        stream << "TASSIGN(" << vid << ", " << PrintExpr(target_expr) << ");\n";
-      } else {
-        auto bufferNum = prefetch_n_stages_map_[vid].first;
-        int dtype_bytes = op->dtype.bytes();
-        std::vector<PrimExpr> valid_shapes;
-        valid_shapes.reserve(shape.size() - 1);
-        stream << pos << "<" << type;
-        int shape_value = shape[0].as<tvm::tir::IntImmNode>()->value;
-        if (shape_value * dtype_bytes % 32 == 0) {
-          valid_shapes.push_back(shape[0]);
-        } else {
-          valid_shapes.push_back(
-              tvm::IntImm(shape[0].dtype(),
-                          shape_value + (32 - shape_value * dtype_bytes % 32) /
-                                            dtype_bytes));
-        }
-        valid_shapes.push_back(shape[1]);
-        for (size_t i = 0; i < valid_shapes.size(); i++) {
-          l_data[i + 1] = PrintExpr(valid_shapes[i]);
-          stream << ", " << valid_shapes[i];
-        }
-        for (size_t i = 0; i < shape.size(); i++) {
-          stream << ", " << shape[i];
-        }
-        stream << "> " << vid << "[" << bufferNum << "];\n";
-        if (l_data[3].empty()) {
-          l_data[3] = PrintExpr(target_expr);
-        }
-        for (size_t j = 0; j < bufferNum; j++) {
-          this->PrintIndent();
-          stream << "TASSIGN(" << vid << "[" << j << "], "
-                 << PrintExpr(target_expr) << " + " << j << " * " << dtype_bytes
-                 << " * " << valid_shapes[0] << " * " << valid_shapes[1]
-                 << ");\n";
-        }
-      }
-      l_data_map_[vid] = l_data;
-    }
-  };
-
-  if (scope == "wmma.matrix_a") {
-    print_buffer("TileLeft");
-  } else if (scope == "wmma.matrix_b") {
-    print_buffer("TileRight");
-  } else if (scope == "wmma.accumulator") {
-    print_buffer("TileAcc");
-  } else if (scope == "shared.dyn") {
-    print_buffer(kAscendPtoScope + "TileMatL1");
-  } else if (scope == "shared") {
-    print_buffer(kAscendPtoScope + "TileUbData");
-  } else if (scope == "local.var") {
-    PrimExpr init = tir::make_const(op->dtype, 0);
-    std::string init_type = type;
-    auto init_it = op->annotations.find(tl::attr::kLocalVarInit);
-    if (init_it != op->annotations.end()) {
-      PrimExpr user_init = Downcast<PrimExpr>((*init_it).second);
-      if (user_init.dtype().is_bool()) {
-        init_type = "bool";
-      } else if (!user_init.dtype().is_void() &&
-                 user_init.dtype() != op->dtype) {
-        user_init = tir::Cast(op->dtype, user_init);
-        init_type = getType(user_init.dtype());
-      }
-      init = user_init;
-    }
-    this->PrintIndent();
-    stream << init_type + " " << vid << " = " << PrintExpr(init) << ";\n";
+    this->PrintStmt(op->body);
+    return;
   }
+
+  ICHECK(scope_to_tile.count(scope))
+      << "Unsupported storage scope for PTO allocation: " << scope
+      << ", variable: " << op->buffer_var->name_hint;
+  const std::string &op_name = scope_to_tile.at(scope);
+
+  // 3. Retrieve and validate the 4D physical layout [M, N, Valid_M, Valid_N]
+  ICHECK(buffer_shapess_.count(op->buffer_var))
+      << "Buffer shape not found for variable: " << op->buffer_var->name_hint;
+  const auto &shape = buffer_shapess_.at(op->buffer_var);
+
+  ICHECK(shape.size() == 4)
+      << "Expected a 4D shape [M, N, Valid_M, Valid_N] for PTO, but got "
+      << shape.size() << "D for " << op->buffer_var->name_hint;
+  const auto &M = shape[0];
+  const auto &N = shape[1];
+  const auto &valid_M = shape[2];
+  const auto &valid_N = shape[3];
+
+  // Print the Tile object declaration
+  this->PrintIndent();
+  stream << op_name << "<" << type << ", " << M << ", " << N << ", " << valid_M
+         << ", " << valid_N << "> " << vid << ";\n";
+
+  // address_map, use name_hint as key
+  Map<String, PrimExpr> address_map_name_hint;
+  for (const auto &[var, address] : address_map_) {
+    address_map_name_hint.Set(var->name_hint, address);
+  }
+
+  // 4. Resolve the target physical memory address
+  PrimExpr target_address;
+  if (address_map_name_hint.count(op->buffer_var->name_hint)) {
+    target_address = address_map_name_hint.at(op->buffer_var->name_hint);
+  } else {
+    PrimExpr current_offset =
+        address_offset_.Get(String(scope)).value_or(Integer(0));
+    target_address = current_offset;
+
+    int64_t alloc_bytes = op->ConstantAllocationSize() * op->dtype.bytes();
+    address_offset_.Set(String(scope), current_offset + Integer(alloc_bytes));
+  }
+  buffer_address_map_.Set(op->buffer_var, target_address);
+
+  // Print the address assignment (TASSIGN)
+  this->PrintIndent();
+  stream << "TASSIGN(" << vid << ", " << PrintExpr(target_address) << ");\n";
+
   this->PrintStmt(op->body);
 }
 
@@ -3287,8 +2541,9 @@ void CodeGenTileLangAscendPto::AddFunction(const GlobalVar &gvar,
   use_swizzle_ = f->GetAttr<Bool>("use_swizzle").value_or(Bool(false));
   // tiling_map_ = f->GetAttr<Map<Var,
   // PrimExpr>>("tiling_map").value_or(Map<Var, PrimExpr>());
-  buffer_shapess_ = f->GetAttr<Map<Var, Array<PrimExpr>>>("buffer_shapess")
-                        .value_or(Map<Var, Array<PrimExpr>>());
+  buffer_shapess_ =
+      f->GetAttr<Map<Var, Array<PrimExpr>>>(tvm::tl::kLogicBufferShapes)
+          .value_or(Map<Var, Array<PrimExpr>>());
   buffer_versions_ = f->GetAttr<Map<Var, PrimExpr>>("buffer_versions")
                          .value_or(Map<Var, PrimExpr>());
   var_sequence_ = f->GetAttr<Array<Var>>("var_sequence").value_or(Array<Var>());
@@ -3429,8 +2684,7 @@ void CodeGenTileLangAscendPto::SelectCodegen(const CallNode *op) {
   std::string src1_name;
   std::string op_name;
 
-  DataType src0_dtype = GetAccessPtrDtypePto(op->args[2].as<CallNode>());
-  std::string src0_type = getType(src0_dtype);
+  std::string src0_type = src0_shape_info.type;
 
   int src1_type = std::stoi(PrintExpr(op->args[3]));
   if (src1_type == 2) {
@@ -3440,9 +2694,11 @@ void CodeGenTileLangAscendPto::SelectCodegen(const CallNode *op) {
     std::string scalar_value = PrintExpr(op->args[4]);
     std::string temp_name = GetTempVarName("select_scalar_tmp");
     this->PrintIndent();
-    this->stream << kAscendPtoScope << "TileUbDataND<" << src0_type << ", 1, "
-                 << dst_shape_info.slice_col << ", 1, "
-                 << dst_shape_info.slice_col << "> " << temp_name << ";\n";
+    this->stream << kAscendPtoScope << "TileUbDataND<" << src0_type << ", "
+                 << dst_shape_info.slice_row << ", " << dst_shape_info.slice_col
+                 << ", " << dst_shape_info.slice_valid_row << ", "
+                 << dst_shape_info.slice_valid_col << "> " << temp_name
+                 << ";\n";
     this->PrintIndent();
     this->stream << "TASSIGN(" << temp_name << ", " << dst_shape_info.first_addr
                  << " + " << dst_shape_info.offset << " * "

@@ -272,12 +272,13 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
   for (auto &shape : dst_extents) {
     dst_len *= shape;
   }
+
   auto src_ptr = src_new_buffer.access_ptr(
-      1, DataType::Handle(), 1, src_new_buffer.OffsetOf(src_new_indices).back(),
-      src_len);
+      1, src_new_buffer->dtype, 1,
+      src_new_buffer.OffsetOf(src_new_indices).back(), src_len);
   auto dst_ptr = dst_new_buffer.access_ptr(
-      2, DataType::Handle(), 1, dst_new_buffer.OffsetOf(dst_new_indices).back(),
-      dst_len);
+      2, dst_new_buffer->dtype, 1,
+      dst_new_buffer.OffsetOf(dst_new_indices).back(), dst_len);
 
   auto compute_valid_extent = [](PrimExpr min_val, PrimExpr extent,
                                  PrimExpr shape) -> PrimExpr {
