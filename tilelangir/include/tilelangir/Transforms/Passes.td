@@ -45,4 +45,20 @@ def TileLangIRInsertWorkspace : Pass<"tilelangir-insert-workspace", "::mlir::fun
   ];
 }
 
+def TileLangIRInferMemScope : Pass<"tilelangir-infer-mem-scope", "::mlir::func::FuncOp"> {
+  let summary = "Infer and propagate memory address spaces";
+  let description = [{
+    Infers and propagates HIVM memory address spaces (`#hivm.address_space<...>`)
+    for all memref values in a device function, based on hardware semantics:
+
+    Phase 1: `memref_ext.alloc_workspace` results → GM.
+    Phase 2: `hivm.hir.mmadL1` operands → mA/mB to L1(cbuf), mC to L0C(cc).
+    Phase 3: VECTOR-core HIVM ops → all memref operands traced to root alloc → UB.
+    Phase 4: Function arguments (memref without scope) → GM; update function type.
+    Phase 5: Remaining `memref.alloc` without scope → default based on enclosing
+             `scope.scope`'s `hivm.tcore_type` or the function's `hivm.func_core_type`
+             (AIC→L1, AIV→UB).
+  }];
+}
+
 #endif // TILELANGIR_TRANSFORMS_PASSES_TD

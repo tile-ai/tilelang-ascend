@@ -1,6 +1,7 @@
 add_library(tilelangir_transforms STATIC
   InsertWorkspace.cpp
   CVSplit.cpp
+  InferMemScope.cpp
   Vectorize.cpp
 )
 set_target_properties(tilelangir_transforms PROPERTIES POSITION_INDEPENDENT_CODE ON)
