@@ -617,6 +617,14 @@ void CodeGenTileLangNPUIRAPI::VisitStmt_(const tir::ForNode *op) {
       builder.getIntegerAttr(GetMLIRType(op->min), 1));
   auto forOp = builder.create<mlir::scf::ForOp>(module->getLoc(), lowerBoundId,
                                                 upperBoundId, step);
+
+  if (auto it = op->annotations.find("num_stages"); it != op->annotations.end()) {
+    if (auto* imm = (*it).second.as<tir::IntImmNode>()) {
+      forOp->setAttr("tilelangir.num_stages",
+                      builder.getI32IntegerAttr(static_cast<int32_t>(imm->value)));
+    }
+  }
+  
   // Set the insertion point to the body of the loop
   OpBuilder::InsertionGuard saved(builder);
   builder.setInsertionPointToStart(forOp.getBody());

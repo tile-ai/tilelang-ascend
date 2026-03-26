@@ -45,6 +45,21 @@ def TileLangIRInsertWorkspace : Pass<"tilelangir-insert-workspace", "::mlir::fun
   ];
 }
 
+def TileLangIRMarkMultiBuffer : Pass<"tilelangir-mark-multibuffer", "::mlir::func::FuncOp"> {
+  let summary = "Mark alloc_workspace ops used in pipelined loops with multi_buffer annotation";
+  let description = [{
+    Finds scf.for ops carrying the `tilelangir.num_stages` attribute and
+    collects all `memref_ext.alloc_workspace` values that are used (directly
+    or through view-like chains) inside the loop body.  For each such
+    workspace allocation, an `annotation.mark` op is inserted with
+    `hivm.multi_buffer = <num_stages>`.
+  }];
+  let dependentDialects = [
+    "annotation::AnnotationDialect",
+    "bishengir::memref_ext::MemRefExtDialect"
+  ];
+}
+
 def TileLangIRInferMemScope : Pass<"tilelangir-infer-mem-scope", "::mlir::func::FuncOp"> {
   let summary = "Infer and propagate memory address spaces";
   let description = [{
