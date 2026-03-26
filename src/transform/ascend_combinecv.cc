@@ -306,12 +306,59 @@ public:
   }
 
 private:
+  // return loop iter times as const int64_t* or nullptr
+  static const int64_t *IterTimesAsConst(const ForNode *for_node) {
+    return as_const_int(for_node->extent);
+  }
+
   static int64_t GetLoopIterTimes(const ForNode *for_node) {
-    const int64_t *extent_ptr = as_const_int(for_node->extent);
+    const int64_t *extent_ptr = IterTimesAsConst(for_node);
     ICHECK(extent_ptr) << "AutoInsertCrossCoreSync::GetLoopIterTimes only "
                           "works with constant loop sizes, but got "
                        << for_node->extent;
     return *extent_ptr;
+  }
+
+  // get loop iter times but skip loop whose id in skip_loop_ids
+  static int64_t GetLoopIterTimesWithSkip(
+      const ForNode *for_node,
+      const std::unordered_set<std::string> &skip_loop_ids) {
+    if (skip_loop_ids.find(for_node->loop_var->name_hint) !=
+        skip_loop_ids.end()) {
+      return 1; // skip this loop by treating it as 1 iter
+    }
+    return GetLoopIterTimes(for_node);
+  }
+
+  // check if same depth & same name in both parent_for_nodes
+  static bool
+  IsSharedLoop(int loop_index,
+               const std::vector<const ForNode *> &cube_parent_for_nodes,
+               const std::vector<const ForNode *> &vec_parent_for_nodes) {
+    if (loop_index >= cube_parent_for_nodes.size() ||
+        loop_index >= vec_parent_for_nodes.size()) {
+      return false;
+    }
+    return cube_parent_for_nodes[loop_index]->loop_var->name_hint ==
+           vec_parent_for_nodes[loop_index]->loop_var->name_hint;
+  }
+
+  // collect ids of shared loops with non-constant iter times
+  static std::unordered_set<std::string> CollectNonConstSharedLoopIds(
+      const std::vector<const ForNode *> &cube_parent_for_nodes,
+      const std::vector<const ForNode *> &vec_parent_for_nodes) {
+    std::unordered_set<std::string> non_const_shared_loop_ids;
+    int min_size =
+        std::min(cube_parent_for_nodes.size(), vec_parent_for_nodes.size());
+    for (int i = 0; i < min_size; ++i) {
+      const auto *cube_loop = cube_parent_for_nodes[i];
+      // is non-const loop and is shared by cube and vec
+      if (IterTimesAsConst(cube_loop) == nullptr &&
+          IsSharedLoop(i, cube_parent_for_nodes, vec_parent_for_nodes)) {
+        non_const_shared_loop_ids.insert(cube_loop->loop_var->name_hint);
+      }
+    }
+    return non_const_shared_loop_ids;
   }
 
   static void PairSyncPoints(std::vector<CrossCoreSyncPoint> &cube_sync_points,
@@ -331,6 +378,24 @@ private:
                                   CrossCoreSyncPoint &vec_sp) {
     if (cube_sp.parent_for_nodes.empty() && vec_sp.parent_for_nodes.empty()) {
       return; // sync point pairs aren't in any loop
+    }
+
+    auto skip_loop_ids = CollectNonConstSharedLoopIds(cube_sp.parent_for_nodes,
+                                                      vec_sp.parent_for_nodes);
+
+    if (!skip_loop_ids.empty()) {
+      // log skip_loop_ids
+      std::string loop_ids;
+      for (const auto &_id : skip_loop_ids) {
+        if (!loop_ids.empty())
+          loop_ids += ", ";
+        loop_ids += _id;
+      }
+      DLOG(DEBUG)
+          << "Found " << skip_loop_ids.size()
+          << " shared loop(s) with non-constant iter times: [" << loop_ids
+          << "]. These loop(s) won't be counted for total loop times of \""
+          << cube_sp.workspace_name << "\"'s sync points.\n";
     }
 
     // total loop times of sync points
@@ -353,40 +418,41 @@ private:
       while (
           cube_loop_idx < cube_sp.parent_for_nodes.size() &&
           (cube_loop_times <= vec_loop_times ||
-           GetLoopIterTimes(cube_sp.parent_for_nodes.at(cube_loop_idx)) == 1)) {
+           GetLoopIterTimesWithSkip(cube_sp.parent_for_nodes.at(cube_loop_idx),
+                                    skip_loop_ids) == 1)) {
         if (cube_loop_times == vec_loop_times) {
           cube_max_pair_depth = cube_loop_idx;
           vec_max_pair_depth = vec_loop_idx;
           last_pair_loop_times = cube_loop_times;
         }
 
-        cube_loop_times *=
-            GetLoopIterTimes(cube_sp.parent_for_nodes.at(cube_loop_idx));
+        const ForNode *cube_loop = cube_sp.parent_for_nodes.at(cube_loop_idx);
+        cube_loop_times *= GetLoopIterTimesWithSkip(cube_loop, skip_loop_ids);
         cube_loop_idx++;
       }
 
       if (cube_loop_times < vec_loop_times) {
         LOG(WARNING) << "Cube loop times (= " << cube_loop_times
                      << " ) is not enough to catch up vec loop times (= "
-                     << vec_loop_times << " )" << std::endl
-                     << "Cube Sync Point:" << std::endl
-                     << cube_sp.ToString() << std::endl
-                     << "Vec Sync Point:" << std::endl
-                     << vec_sp.ToString() << std::endl;
+                     << vec_loop_times << " )\n"
+                     << "Cube Sync Point:\n"
+                     << cube_sp.ToString() << "\n"
+                     << "Vec Sync Point:\n"
+                     << vec_sp.ToString() << "\n";
       }
 
-      while (
-          vec_loop_idx < vec_sp.parent_for_nodes.size() &&
-          (vec_loop_times <= cube_loop_times ||
-           GetLoopIterTimes(vec_sp.parent_for_nodes.at(vec_loop_idx)) == 1)) {
+      while (vec_loop_idx < vec_sp.parent_for_nodes.size() &&
+             (vec_loop_times <= cube_loop_times ||
+              GetLoopIterTimesWithSkip(vec_sp.parent_for_nodes.at(vec_loop_idx),
+                                       skip_loop_ids) == 1)) {
         if (cube_loop_times == vec_loop_times) {
           cube_max_pair_depth = cube_loop_idx;
           vec_max_pair_depth = vec_loop_idx;
           last_pair_loop_times = cube_loop_times;
         }
 
-        vec_loop_times *=
-            GetLoopIterTimes(vec_sp.parent_for_nodes.at(vec_loop_idx));
+        const ForNode *vec_loop = vec_sp.parent_for_nodes.at(vec_loop_idx);
+        vec_loop_times *= GetLoopIterTimesWithSkip(vec_loop, skip_loop_ids);
         vec_loop_idx++;
 
         if (vec_loop_times == last_pair_loop_times) {
@@ -399,11 +465,11 @@ private:
       if (vec_loop_times < cube_loop_times) {
         LOG(WARNING) << "Vec loop times (= " << vec_loop_times
                      << " ) is not enough to catch up cube loop times (= "
-                     << cube_loop_times << " )" << std::endl
-                     << "Vec Sync Point:" << std::endl
-                     << vec_sp.ToString() << std::endl
-                     << "Cube Sync Point:" << std::endl
-                     << cube_sp.ToString() << std::endl;
+                     << cube_loop_times << " )\n"
+                     << "Vec Sync Point:\n"
+                     << vec_sp.ToString() << "\n"
+                     << "Cube Sync Point:\n"
+                     << cube_sp.ToString() << "\n";
       }
     }
 

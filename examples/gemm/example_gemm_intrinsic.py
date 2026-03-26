@@ -2,7 +2,6 @@ import argparse
 
 import tilelang
 import tilelang.language as T
-from tilelang.intrinsics import make_zn_layout
 import torch
 from tilelang.profiler import do_bench
 
@@ -44,18 +43,13 @@ def matmul(M, N, K, block_M, block_N, block_K, K_L1, S1, S2, dtype="float16", ac
 
     @T.prim_func
     def main(
-            A: T.Tensor((M, K), dtype),
-            B: T.Tensor((K, N), dtype),
-            C: T.Tensor((M, N), dtype),
+        A: T.Tensor((M, K), dtype),
+        B: T.Tensor((K, N), dtype),
+        C: T.Tensor((M, N), dtype),
     ):
         with T.Kernel(core_num, is_npu=True) as (cid, _):
             A_L1 = T.alloc_L1((S1, block_M, K_L1), dtype)
             B_L1 = T.alloc_L1((S1, K_L1, block_N), dtype)
-
-            T.annotate_layout({
-                A_L1: make_zn_layout(A_L1),
-                B_L1: make_zn_layout(B_L1),
-            })
 
             A_L0 = T.alloc_L0A((S2, block_M, block_K), dtype)
             B_L0 = T.alloc_L0B((S2, block_K, block_N), dtype)
@@ -65,8 +59,7 @@ def matmul(M, N, K, block_M, block_N, block_K, K_L1, S1, S2, dtype="float16", ac
                 init_flag()
 
                 for i in T.serial(T.ceildiv(m_num * n_num, core_num)):
-                    cid = T.use_swizzle(
-                        i * core_num + cid, M, N, K, block_M, block_N, off=3)
+                    cid = T.use_swizzle(i * core_num + cid, M, N, K, block_M, block_N, off=3)
                     if cid < m_num * n_num:
                         bx = cid // n_num
                         by = cid % n_num
@@ -98,7 +91,6 @@ def matmul(M, N, K, block_M, block_N, block_K, K_L1, S1, S2, dtype="float16", ac
                                 T.set_flag("mte1", "m", kk % S2)
                                 T.wait_flag("mte1", "m", kk % S2)
 
-
                                 T.mma(A_L0[kk % S2, :, :], B_L0[kk % S2, :, :], C_L0, init=T.And(k == 0, kk == 0))
 
                                 T.set_flag("m", "mte1", kk % S2)
@@ -109,7 +101,6 @@ def matmul(M, N, K, block_M, block_N, block_K, K_L1, S1, S2, dtype="float16", ac
                         T.set_flag("fix", "m", 0)
 
                 clear_flag()
-
 
     return main
 
