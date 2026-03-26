@@ -12,12 +12,14 @@
 
 include "mlir/Pass/PassBase.td"
 
-def TileLangIRCVSplit : Pass<"tilelangir-cv-split", "::mlir::ModuleOp"> {
-  let summary = "TileLangIR CV split pass (custom)";
+def TileLangIRCVSplit : Pass<"tilelangir-cv-split", "func::FuncOp"> {
+  let summary = "TileLangIR CV split pass";
   let description = [{
-    Splits or transforms operations for CV (e.g. coefficient/variable separation).
-    Implementation to be added.
+    This pass is grouping ops in each `scf::ForOp` according to loads and stores connected to workspaces. Each group of ops is wrapped into a `scope::ScopeOp` identifying the `hivm::TCoreType` of the scope along with its results. The pass is applied on `scf::ForOp`s in a post-order manner and it looks at the operations from the current nesting level only.
   }];
+  let dependentDialects = [
+    "scope::ScopeDialect",
+  ];
 }
 
 def TileLangIRVectorize : Pass<"tilelangir-vectorize", "::mlir::ModuleOp"> {
