@@ -6,4 +6,5 @@ from tilelang.tladapter.utils import pass_fn
 
 insert_workspace = pass_fn("tilelangir-insert-workspace", "func.func")
 cv_split = pass_fn("tilelangir-cv-split", "func.func")
+infer_mem_scope = pass_fn("tilelangir-infer-mem-scope", "func.func")
 vectorize = pass_fn("tilelangir-vectorize")
