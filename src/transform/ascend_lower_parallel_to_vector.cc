@@ -633,7 +633,7 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
     }
 
     // Step 2: Detect all 1D buffers that can be broadcasted
-    // Only collect broadcast buffers if there's no discrete access
+    // Only collect broadcast buffers if there's no container 2d dim and output is 2d
     class BroadcastableBufferCollector : public ExprVisitor {
     public:
       std::vector<BroadcastInfo> broadcast_infos;
@@ -682,7 +682,7 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
     dim_checker(store->value);
 
     BroadcastableBufferCollector collector(parallel_vars, inner_vec_len, outer_extent, this);
-    // Only collect broadcast buffers if there's no discrete access in the expression
+    // Only collect broadcast buffers if there's no container 2d dim and output is 2d
     if (!dim_checker.container_2d_dim && is_2d_vectorizing_) {
       collector(store->value);
     }
@@ -1538,11 +1538,9 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
       PointerType(PrimType(dtype), "shared")
     );
 
-    // Create 1D shape for broadcast (vector operations expect contiguous 1D buffers)
-    // The broadcast operation uses explicit shape arguments to understand the 2D layout
+    // Create 2D shape for broadcast
     int64_t total_elements = outer_extent * inner_vec_len;
     Array<PrimExpr> shape;
-    // shape.push_back(IntImm(DataType::Int(32), total_elements));
     shape.push_back(IntImm(DataType::Int(32), outer_extent));
     shape.push_back(IntImm(DataType::Int(32), inner_vec_len));
     Buffer buf = Buffer(
@@ -1594,15 +1592,13 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
     return buf;
   }
 
-  // Generate broadcast statement to broadcast a 1D buffer to a 1D buffer (broadcasted data stored contiguously)
+  // Generate broadcast statement to broadcast
   Stmt GenerateBroadcastStmt(const Buffer& src_1d,
-                             const Buffer& dst_1d,
+                             const Buffer& dst_2d,
                              const Buffer& workspace,
                              int64_t broadcast_dim,
                              int64_t outer_extent,
                              int64_t inner_vec_len) {
-    // Build the tl.ascend_broadcast call
-    // The broadcast operation uses explicit shape arguments, so the buffer shape doesn't matter
     // Format: tir.call_intrin("handle", tl.ascend_broadcast(), "Broadcast<{dtype}, 2, {axis}, false>",
     //                         dst.access_ptr("w"), src.access_ptr("r"), tmp.access_ptr("r"),
     //                         dim, dst_shape[0], dst_shape[1], ..., src_shape[0], ...)
@@ -1618,7 +1614,7 @@ class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
 
     // 1. dst buffer access ptr (1D buffer, but broadcast op treats it as 2D based on shape args)
     int64_t total_elements = outer_extent * inner_vec_len;
-    broadcast_args.push_back(CreateAccessPtr(dst_1d, dtype_str, IntImm(DataType::Int(32), 0),
+    broadcast_args.push_back(CreateAccessPtr(dst_2d, dtype_str, IntImm(DataType::Int(32), 0),
                                             total_elements, 2));
 
     // 2. src buffer access ptr (2D view)
