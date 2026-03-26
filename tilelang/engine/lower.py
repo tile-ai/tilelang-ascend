@@ -285,6 +285,7 @@ def lower(
         pipeline.add(transforms.tilelangir.mark_multibuffer)
         pipeline.add(transforms.tilelangir.cv_split)
         pipeline.add(transforms.tilelangir.infer_mem_scope)
+        pipeline.add(transforms.tilelangir.enable_multi_buffer)
         if dump_ir:
             pipeline.enable_ir_printing()
         mlir_str = pipeline.run(mlir_str)
