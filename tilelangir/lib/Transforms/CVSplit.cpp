@@ -20,8 +20,7 @@
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/Debug.h"
 
-namespace mlir {
-namespace tilelangir {
+namespace mlir::tilelangir {
 
 #define GEN_PASS_DEF_TILELANGIRCVSPLIT
 #include "tilelangir/Transforms/Passes.h.inc"
@@ -186,5 +185,4 @@ private:
 };
 #undef DEBUG_TYPE
 
-} // namespace tilelangir
-} // namespace mlir
+} // namespace mlir::tilelangir
