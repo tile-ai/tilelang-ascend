@@ -180,6 +180,46 @@ getWriterCoreType(Value buffer, Operation *refOp = nullptr) {
   return lastCT;
 }
 
+/// Find the core type of HIVM ops that read from `buffer` (or its aliases).
+/// A "reader" is any core-typed op that uses the buffer as a non-DPS-init
+/// operand, or any core-typed op at all if it doesn't implement DPS.
+/// Returns nullopt if no reader is found or if readers have conflicting types.
+static std::optional<hivm::TCoreType> getReaderCoreType(Value buffer) {
+  SmallVector<Value, 4> worklist = {buffer};
+  SmallPtrSet<Value, 8> visited;
+  std::optional<hivm::TCoreType> result;
+
+  while (!worklist.empty()) {
+    Value val = worklist.pop_back_val();
+    if (!visited.insert(val).second)
+      continue;
+
+    for (Operation *user : val.getUsers()) {
+      if (auto viewLike = dyn_cast<ViewLikeOpInterface>(user)) {
+        if (viewLike.getViewSource() == val)
+          worklist.push_back(user->getResult(0));
+        continue;
+      }
+
+      auto coreTypeIface = dyn_cast<hivm::CoreTypeInterface>(user);
+      if (!coreTypeIface)
+        continue;
+      auto ct = coreTypeIface.getCoreType();
+      if (!ct)
+        continue;
+      if (*ct == hivm::TCoreType::CUBE_AND_VECTOR ||
+          *ct == hivm::TCoreType::CUBE_OR_VECTOR)
+        continue;
+
+      if (!result)
+        result = ct;
+      else if (*result != *ct)
+        return std::nullopt;
+    }
+  }
+  return result;
+}
+
 /// Find the best insertion point for a workspace alloc at function level:
 /// before the earliest memref.alloc or the ancestor enclosing the cross-core
 /// buffer, whichever comes first.
@@ -208,6 +248,49 @@ struct TileLangIRInsertWorkspace
     memref::AllocOp allocOp;
     SmallVector<CoreTypedOp> ops;
   };
+
+  /// Handle a memref.copy user of the analyzed buffer (or one of its aliases).
+  ///
+  /// memref.copy bridges two buffers, so we infer the core type transitively:
+  ///  - Buffer is the DESTINATION of the copy: the writer core type comes from
+  ///    the copy's source (via getWriterCoreType).
+  ///  - Buffer is the SOURCE of the copy: the reader core type comes from the
+  ///    copy's direct target value (via getReaderCoreType).  We intentionally
+  ///    use the target value rather than its root alloc to avoid double-counting
+  ///    cross-core users that are already tracked by the root alloc's own
+  ///    analysis.
+  void collectCopyOp(memref::CopyOp copyOp, Value val, BufferInfo &info,
+                     SmallPtrSet<Operation *, 16> &addedOps) {
+    // Case 1: buffer (or alias) is the copy destination.
+    if (copyOp.getTarget() == val &&
+        addedOps.insert(copyOp.getOperation()).second) {
+      Value sourceRoot = getRootAlloc(copyOp.getSource());
+      if (!hasGMAddressSpace(sourceRoot) && !isAllocWorkspace(sourceRoot)) {
+        if (auto writerCT =
+                getWriterCoreType(sourceRoot, copyOp.getOperation())) {
+          LLVM_DEBUG(DBGS() << "  copy-writer (" << coreTypeName(*writerCT)
+                            << ",W): " << *copyOp << "\n");
+          info.ops.push_back(
+              {copyOp.getOperation(), *writerCT, /*isWriter=*/true});
+        }
+      }
+    }
+
+    // Case 2: buffer (or alias) is the copy source.
+    if (copyOp.getSource() == val &&
+        addedOps.insert(copyOp.getOperation()).second) {
+      Value target = copyOp.getTarget();
+      Value targetRoot = getRootAlloc(target);
+      if (!hasGMAddressSpace(targetRoot) && !isAllocWorkspace(targetRoot)) {
+        if (auto readerCT = getReaderCoreType(target)) {
+          LLVM_DEBUG(DBGS() << "  copy-reader (" << coreTypeName(*readerCT)
+                            << ",R): " << *copyOp << "\n");
+          info.ops.push_back(
+              {copyOp.getOperation(), *readerCT, /*isWriter=*/false});
+        }
+      }
+    }
+  }
 
   void runOnOperation() override {
     func::FuncOp funcOp = getOperation();
@@ -284,25 +367,8 @@ struct TileLangIRInsertWorkspace
             continue;
           }
 
-          // memref.copy where our buffer (or alias) is the destination:
-          // the core type is inferred from the copy source's writer.
-          if (auto copyOp = dyn_cast<memref::CopyOp>(user)) {
-            if (copyOp.getTarget() == val &&
-                addedOps.insert(copyOp.getOperation()).second) {
-              Value sourceRoot = getRootAlloc(copyOp.getSource());
-              if (!hasGMAddressSpace(sourceRoot) &&
-                  !isAllocWorkspace(sourceRoot)) {
-                if (auto writerCT =
-                        getWriterCoreType(sourceRoot, copyOp.getOperation())) {
-                  LLVM_DEBUG(DBGS()
-                             << "  copy-writer (" << coreTypeName(*writerCT)
-                             << ",W): " << *copyOp << "\n");
-                  info.ops.push_back({copyOp.getOperation(), *writerCT,
-                                      /*isWriter=*/true});
-                }
-              }
-            }
-          }
+          if (auto copyOp = dyn_cast<memref::CopyOp>(user))
+            collectCopyOp(copyOp, val, info, addedOps);
         }
       }
 

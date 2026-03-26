@@ -50,6 +50,32 @@ func.func @conflicting_writers(%arg0: i64 {hacc.arg_type = #hacc.arg_type<ffts_b
 
 // -----
 
+// CHECK-LABEL: @copy_source
+// CHECK: memref_ext.alloc_workspace() : memref<64x64xf16>
+// CHECK-NOT: memref_ext.alloc_workspace()
+// CHECK: hivm.hir.vcast
+// CHECK: memref.copy
+// CHECK: memref.copy %{{.*}}, %{{.*}} : memref<64x64xf16, strided<[64, 1]>> to memref<64x64xf16>
+// CHECK-NEXT: memref.copy %{{.*}}, %{{.*}} : memref<64x64xf16> to memref<64x64xf16, strided<[64, 1]>>
+// CHECK: hivm.hir.mmadL1
+func.func @copy_source(%arg0: i64 {hacc.arg_type = #hacc.arg_type<ffts_base_address>}, %arg1: memref<?xi8>, %arg2: memref<?xi8>) attributes {SyncBlockLockArgIdx = 0 : i64, WorkspaceArgIdx = 1 : i64, hacc.entry, hacc.function_kind = #hacc.function_kind<DEVICE>, hivm.func_core_type = #hivm.func_core_type<AIC>, mix_mode = "aic"} {
+  %c64 = arith.constant 64 : index
+  %true = arith.constant true
+  hivm.hir.set_ffts_base_addr %arg0
+  %buf = memref.alloc() : memref<32x64xf16, strided<[64, 1]>>
+  %src = memref.alloc() : memref<32x64xf32, strided<[64, 1]>>
+  %target = memref.alloc() : memref<64x64xf16, strided<[64, 1]>>
+  %other = memref.alloc() : memref<64x64xf16, strided<[64, 1]>>
+  %out = memref.alloc() : memref<64x64xf32, strided<[64, 1]>>
+  hivm.hir.vcast ins(%src : memref<32x64xf32, strided<[64, 1]>>) outs(%buf : memref<32x64xf16, strided<[64, 1]>>)
+  %subview = memref.subview %target[0, 0] [32, 64] [1, 1] : memref<64x64xf16, strided<[64, 1]>> to memref<32x64xf16, strided<[64, 1]>>
+  memref.copy %buf, %subview : memref<32x64xf16, strided<[64, 1]>> to memref<32x64xf16, strided<[64, 1]>>
+  hivm.hir.mmadL1 {b_transpose} ins(%target, %other, %true, %c64, %c64, %c64 : memref<64x64xf16, strided<[64, 1]>>, memref<64x64xf16, strided<[64, 1]>>, i1, index, index, index) outs(%out : memref<64x64xf32, strided<[64, 1]>>)
+  return
+}
+
+// -----
+
 // CHECK-LABEL: @minicv
 // CHECK: %[[WS:.*]] = memref_ext.alloc_workspace() : memref<64x32xf16>
 // CHECK: memref.copy %{{.*}}, %[[WS]] : memref<64x32xf16, strided<[32, 1]>> to memref<64x32xf16>
