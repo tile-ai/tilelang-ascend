@@ -244,11 +244,11 @@ target_link_libraries(
   tilelang_module
   PUBLIC
   tvm
-  zstd
-  z
   -Wl,--start-group
   ${NPUIR_LIBS}
   -Wl,--end-group
+  zstd
+  z
 )
 
 # Install targets
