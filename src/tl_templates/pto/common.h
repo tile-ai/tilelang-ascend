@@ -740,7 +740,9 @@ pow(TileUbDataND<T, row, col, row, col> &dst,
     TileUbDataND<T, row, col, row, col> &src1,
     TileUbDataND<uint8_t, tmp_rows, col, tmp_rows, col> &tmp) {
   TLOG(src0, src0);
+  pipe_barrier(PIPE_V);
   TMUL(dst, src0, src1);
+  pipe_barrier(PIPE_V);
   TEXP(dst, dst);
 }
 
