@@ -93,6 +93,18 @@ def TileLangIRInferMemScope : Pass<"tilelangir-infer-mem-scope", "::mlir::func::
   }];
 }
 
+def TileLangIRMergeCopyChains : Pass<"tilelangir-merge-copy-chains", "::mlir::func::FuncOp"> {
+  let summary = "Merge memref.copy chains after memscope inference";
+  let description = [{
+    Merges chains where address spaces match the hardware pattern, i.e. first copy is cc→cbuf, second copy is cbuf→gm.
+  }];
+  let dependentDialects = [
+    "memref::MemRefDialect",
+    "bishengir::memref_ext::MemRefExtDialect",
+    "hivm::HIVMDialect",
+  ];
+}
+
 def TileLangIRPlanWorkspaceMemory : Pass<"tilelangir-plan-workspace-memory", "::mlir::func::FuncOp"> {
   let summary = "Assign byte offsets to memref_ext.alloc_workspace ops";
   let description = [{

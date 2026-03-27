@@ -285,6 +285,7 @@ def lower(
         pipeline.add(transforms.tilelangir.mark_multibuffer)
         pipeline.add(transforms.tilelangir.cv_split)
         pipeline.add(transforms.tilelangir.infer_mem_scope)
+        pipeline.add(transforms.tilelangir.merge_copy_chains)
         pipeline.add(transforms.tilelangir.enable_multi_buffer)
         pipeline.add(transforms.tilelangir.specialize_cube)
         pipeline.add(transforms.bishengir.bind_workspace_arg)
