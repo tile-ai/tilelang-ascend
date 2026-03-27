@@ -16,3 +16,4 @@
 [submodule "3rdparty/AscendNPU-IR-Dev"]
 	path = 3rdparty/AscendNPU-IR-Dev
 	url = https://gitcode.com/Ascend/AscendNPU-IR-Dev.git
+	branch = master
