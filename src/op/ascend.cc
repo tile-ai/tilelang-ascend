@@ -42,11 +42,16 @@ AscendCopy::AscendCopy(Array<PrimExpr> args, BufferMap vmap) : args_(args) {
     rgs[i] = region.GetRanges();
     bf[i] = region.GetBuffer();
   }
-  if (args.size() >= 2) {
+  if (args.size() >= 3) {
     enRelu = args[2].as<Bool>().value();
   }
   if (args.size() >= 4) {
     transposeL1 = args[3].as<Bool>().value();
+  }
+  if (args.size() >= 5) {
+    padValue = args[4];
+  } else {
+    padValue = Integer(0);
   }
   std::tie(this->src, this->dst) = std::tie(bf[0], bf[1]);
   std::tie(this->src_range, this->dst_range) = std::tie(rgs[0], rgs[1]);
@@ -274,6 +279,63 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
       2, DataType::Handle(), 1, dst_new_buffer.OffsetOf(dst_new_indices).back(),
       dst_len);
 
+  auto compute_valid_extent = [](PrimExpr min_val, PrimExpr extent,
+                                 PrimExpr shape) -> PrimExpr {
+    PrimExpr remaining = shape - min_val;
+    return Select(remaining >= extent, extent,
+                  Select(remaining > 0, remaining, 0));
+  };
+
+  int src_ndim = src->shape.size();
+  int dst_ndim = dst->shape.size();
+  PrimExpr validRow_src, validCol_src, validRow_dst, validCol_dst;
+
+  if (src_ndim > 2 && config.gm2ub) {
+    validRow_src = compute_valid_extent(src_range[src_ndim - 2]->min,
+                                        src_range[src_ndim - 2]->extent,
+                                        src->shape[src_ndim - 2]);
+    validCol_src = compute_valid_extent(src_range[src_ndim - 1]->min,
+                                        src_range[src_ndim - 1]->extent,
+                                        src->shape[src_ndim - 1]);
+  } else if (src_ndim == 2) {
+    validRow_src = compute_valid_extent(src_range[src_ndim - 2]->min,
+                                        src_range[src_ndim - 2]->extent,
+                                        src->shape[src_ndim - 2]);
+    validCol_src = compute_valid_extent(src_range[src_ndim - 1]->min,
+                                        src_range[src_ndim - 1]->extent,
+                                        src->shape[src_ndim - 1]);
+  } else if (src_ndim == 1) {
+    validRow_src = Integer(1);
+    validCol_src = compute_valid_extent(src_range[0]->min, src_range[0]->extent,
+                                        src->shape[0]);
+  } else {
+    validRow_src = 0;
+    validCol_src = 0;
+  }
+
+  if (dst_ndim > 2 && config.ub2gm) {
+    validRow_dst = compute_valid_extent(dst_range[dst_ndim - 2]->min,
+                                        dst_range[dst_ndim - 2]->extent,
+                                        dst->shape[dst_ndim - 2]);
+    validCol_dst = compute_valid_extent(dst_range[dst_ndim - 1]->min,
+                                        dst_range[dst_ndim - 1]->extent,
+                                        dst->shape[dst_ndim - 1]);
+  } else if (dst_ndim == 2) {
+    validRow_dst = compute_valid_extent(dst_range[dst_ndim - 2]->min,
+                                        dst_range[dst_ndim - 2]->extent,
+                                        dst->shape[dst_ndim - 2]);
+    validCol_dst = compute_valid_extent(dst_range[dst_ndim - 1]->min,
+                                        dst_range[dst_ndim - 1]->extent,
+                                        dst->shape[dst_ndim - 1]);
+  } else if (dst_ndim == 1) {
+    validRow_dst = Integer(1);
+    validCol_dst = compute_valid_extent(dst_range[0]->min, dst_range[0]->extent,
+                                        dst->shape[0]);
+  } else {
+    validRow_dst = 0;
+    validCol_dst = 0;
+  }
+
   Array<PrimExpr> new_args;
   new_args.push_back(StringImm(ss.str()));
   new_args.push_back(src_ptr);
@@ -291,17 +353,28 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
 
   if (config.l0c2gm) {
     new_args.push_back(compute_strideN(dst, dst_extents));
+    new_args.push_back(validRow_dst);
+    new_args.push_back(validCol_dst);
     new_args.push_back(src->shape[src->shape.size() - 2]);
     new_args.push_back(src->shape[src->shape.size() - 1]);
   }
 
   if (config.gm2l1) {
     new_args.push_back(compute_strideN(src, src_extents));
+    new_args.push_back(validRow_src);
+    new_args.push_back(validCol_src);
     new_args.push_back(dst->shape[dst->shape.size() - 2]);
     new_args.push_back(dst->shape[dst->shape.size() - 1]);
   }
 
   if (config.gm2ub) {
+    new_args.push_back(validRow_src);
+    new_args.push_back(validCol_src);
+    PrimExpr pad_val = padValue;
+    if (pad_val->dtype != dst->dtype) {
+      pad_val = Cast(dst->dtype, pad_val);
+    }
+    new_args.push_back(pad_val);
     if (dst->shape.size() > 1) {
       new_args.push_back(dst->shape[dst->shape.size() - 2]);
     }
@@ -309,6 +382,8 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
   }
 
   if (config.ub2gm) {
+    new_args.push_back(validRow_dst);
+    new_args.push_back(validCol_dst);
     if (src->shape.size() > 1) {
       new_args.push_back(src->shape[src->shape.size() - 2]);
     }
