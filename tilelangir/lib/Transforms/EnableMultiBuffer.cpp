@@ -485,11 +485,11 @@ public:
       : pipelineLoop_(pipelineLoop), workspaceValues_(workspaceValues) {}
   
   bool process() {
-    auto attr = pipelineLoop_->getAttrOfType<IntegerAttr>("num_stage");
+    auto attr = pipelineLoop_->getAttrOfType<IntegerAttr>("tilelangir.num_stages");
     if (!attr) return false;
     
     int32_t numStage = static_cast<int32_t>(attr.getInt());
-    LLVM_DEBUG(DBGS() << "Processing pipeline loop with num_stage=" << numStage 
+    LLVM_DEBUG(DBGS() << "Processing pipeline loop with tilelangir.num_stages=" << numStage 
                       << ", workspace count=" << workspaceValues_.size() << "\n");
     
     SmallVector<Operation *> scopesToReplace;
@@ -550,7 +550,7 @@ void TileLangIREnableMultiBuffer::runOnOperation() {
                       << func.getSymName() << "\n");
 
     func.walk([&](scf::ForOp forOp) {
-      if (forOp->getAttr("num_stage")) {
+      if (forOp->getAttr("tilelangir.num_stages")) {
           bool usesAnyWs = false;
           forOp.walk([&](Operation *op) {
               if (auto sv = dyn_cast<memref::SubViewOp>(op)) {
