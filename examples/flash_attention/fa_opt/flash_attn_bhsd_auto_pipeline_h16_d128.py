@@ -1,28 +1,3 @@
-"""
-autocvsync_pipelined.py — KNOWN BROKEN (UB out of bounds at runtime)
-
-This file attempts to use T.Pipelined for the unified C+V flash attention body.
-It compiles successfully but crashes at runtime because the compiler ring-buffers
-ALL UB scratch buffers by num_stages, exceeding the 256KB UB limit.
-
-Root cause analysis (from compiler source study):
-  1. PlanAndUpdateBufferAllocationLocation moves scratch buffer allocs into the
-     pipelined loop's block (since their LCA is the loop body).
-  2. InjectSoftwarePipeline (inject_pipeline.cc) collects ALL alloc_buffers from
-     the pipeline block and calls ComputeBufferVersions() on each. Any buffer
-     written and read across different pipeline stages gets num_versions > 1.
-  3. Scratch buffers (io_buf, work_ub, buf_2d, acc_s_half, tmp_ub) total ~159KB.
-     Even ×2 ring-buffering (318KB) exceeds the 256KB UB limit per vector core.
-
-No compiler annotation exists to opt specific buffers out of ring-buffering.
-The only fixes would be:
-  (a) Compiler change: add a no_pipeline_version annotation
-  (b) Dramatically reduce UB scratch usage (different softmax implementation)
-  (c) Use T.serial instead (see autocvsync.py — the working version)
-
-Kept as reference for future compiler improvements.
-"""
-
 import argparse
 import tilelang
 from tilelang import DataType, language as T
