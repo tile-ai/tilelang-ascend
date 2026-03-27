@@ -58,6 +58,18 @@ In sparse scenarios, KV data is discretely distributed in Global Memory (GM), bu
 - **Asynchronous Copying (Manual Intra-Core Synchronization)**: Manually setup operations for `set_flag` / `wait_flag` make the discrete copy-in executed asynchronously, significantly reducing the overall KV gather time.
 - **Copy In and Out Ping-Pong (Double Buffer)**: A double-buffer mechanism is used for the discrete KV gather operation. While the current data is being written to the Workspace through MTE3, the MTE2 read instruction for the next block of data has already been asynchronously initiated, enabling instruction overlap and hiding the latency of MTE2 and MTE3.
 
+With the coordinated operation of the multiple optimization mechanisms mentioned above, the overall design objectives and implementation ideas of this sparse KV memory access optimization are illustrated in the figure below:
+
+![Sparse Memory Access Optimization](figures/v0_sparse_kv.png)
+
+The actual pipelines before and after the final optimization of this sample are shown in the following figures. By manually configuring on-core synchronization, MTE2 load instructions can be issued continuously, which greatly improves the parallelism of MTE2. Meanwhile, the ping-pong operation of data loading and unloading realizes pipeline overlapping between MTE3 and MTE2, further reducing the latency of KV gather.
+
+**Pipeline before optimization:**
+![Before Sparse Memory Access Optimization](figures/v0_sparse_kv_before.png)
+
+**Pipeline after optimization:**
+![After Sparse Memory Access Optimization](figures/v0_sparse_kv_after.png)
+
 ## Tiling: Split Strategy
 
 Tiling not only determines the inter-core load balance but also directly affects overall computational efficiency and task scheduling. It mainly involves two key dimensions of split design:
@@ -69,6 +81,17 @@ Tiling not only determines the inter-core load balance but also directly affects
 
 A2 and A3 machines adopt a separated Cube core and Vector core architecture, making CV operation overlapping possible. The `T.Pipelined` primitive introduces dual stages on the `seq_len_kv` loop. The compiler arranges the CV serial tasks within the loop into a CV pipeline execution:
 - The **Vector MTE memory access** of the next iteration (like KV gather and copy-out in the V0 stage) overlaps with the **Cube core calculation** of the previous iteration (QK matrix multiplication in the C1 stage); and the **vector calculation** of the next iteration (Online Softmax in the V1 stage) overlaps with the **Cube core calculation** of the previous iteration (PV matrix multiplication in the C2 stage), etc. Using different hardware units to mask each other drastically reduces the operator's execution time.
+
+Based on the above description, the CV pipeline uses the T.Pipelined primitive to realize automatic compute-move overlapping and cross-core pipeline parallel execution. The overall design concept and optimization objectives are as follows:
+![CV pipeline](figures/pipelined_optimize.png)
+
+The actual pipelines before and after the final optimization of this sample are shown in the figures below. With the declarative pipeline programming abstraction provided by the T.Pipelined primitive, hardware utilization is maximized and throughput is significantly improved.
+
+**Pipeline before optimization:**
+![CV pipeline Before](figures/pipelined_optimize_before.png)
+
+**Pipeline after optimization:**
+![CV pipeline After](figures/pipelined_optimize_after.png)
 
 ## Vectorization: Broadcast and AXPY
 
