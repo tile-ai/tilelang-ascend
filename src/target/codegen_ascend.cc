@@ -733,7 +733,7 @@ void CodeGenTileLangAscend::VisitStmt_(const AllocateNode *op) {
         address_offset_.Set(String(pos), 0);
       }
       stream << "auto " << vid << " = " << pos << ".GetWithOffset<" << type
-             << ">(" << op->ConstantAllocationSize() << ","
+             << ">(" << op->ConstantAllocationSize() << ", "
              << PrintExpr(address_offset_[String(pos)]) << ");\n";
       address_offset_.Set(
           String(pos),
