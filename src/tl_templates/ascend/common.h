@@ -353,21 +353,23 @@ CATLASS_DEVICE void reduce_sum(LocalTensor<T> const &dstTensor,
   AscendC::WholeReduceSum<T>(dstTensor, srcTensor, mask, repeatTime, 1, 8, srcRepStride);
 }
 
-template <typename T>
+template <typename T, uint32_t M, uint32_t N, int32_t dim>
 CATLASS_DEVICE void reduce_max(LocalTensor<T> const &dstTensor,
                                LocalTensor<T> const &srcTensor,
                                LocalTensor<uint8_t> const &sharedTmpBuffer) {
   uint32_t shape[] = {M, N};
   if constexpr (dim == -1) {
     AscendC::ReduceMax<T, AscendC::Pattern::Reduce::AR>(
-        dstTensor, srcTensor, sharedTmpBuffer, shape, true);
+        dstTensor, srcTensor, sharedTmpBuffer, shape, true
+    );
   } else {
     AscendC::ReduceMax<T, AscendC::Pattern::Reduce::RA>(
-        dstTensor, srcTensor, sharedTmpBuffer, shape, true);
+        dstTensor, srcTensor, sharedTmpBuffer, shape, true
+    );
   }
 }
 
-template <typename T>
+template <typename T, uint32_t M, uint32_t N, int32_t dim>
 CATLASS_DEVICE void reduce_min(LocalTensor<T> const &dstTensor,
                                LocalTensor<T> const &srcTensor,
                                LocalTensor<uint8_t> const &sharedTmpBuffer) {
@@ -377,10 +379,12 @@ CATLASS_DEVICE void reduce_min(LocalTensor<T> const &dstTensor,
   // }
   if constexpr (dim == -1) {
     AscendC::ReduceMin<T, AscendC::Pattern::Reduce::AR>(
-        dstTensor, srcTensor, sharedTmpBuffer, shape, true);
+        dstTensor, srcTensor, sharedTmpBuffer, shape, true
+    );
   } else {
     AscendC::ReduceMin<T, AscendC::Pattern::Reduce::RA>(
-        dstTensor, srcTensor, sharedTmpBuffer, shape, true);
+        dstTensor, srcTensor, sharedTmpBuffer, shape, true
+    );
   }
 }
 
