@@ -92,6 +92,8 @@ choco install gh
 gh auth login
 ```
 
+> **重要**：国内网络连接 GitHub 不稳定，`gh auth login` 可能因网络超时失败。**遇到网络错误必须自动重试至少 3 次**，不要向用户询问其他认证方式。
+
 按提示选择：
 1. **GitHub.com** 或 GitHub Enterprise
 2. **HTTPS** 协议
@@ -153,5 +155,5 @@ gh auth status
 
 ### 网络相关
 
-8. **国内网络不稳定**：GitHub 操作失败时请重试
+8. **国内网络不稳定，必须自动重试**：GitHub 操作（如 `gh auth login`、`git push`、`gh pr create`）因网络超时或连接失败时，**必须自动重试至少 3 次**，禁止因网络问题向用户询问其他方案。只有连续失败 3 次后才考虑其他认证方式（如 Token）
 9. **代理设置**：如需代理，设置 `export https_proxy=http://proxy:port`
