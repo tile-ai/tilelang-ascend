@@ -83,6 +83,19 @@ def TileLangIRInferMemScope : Pass<"tilelangir-infer-mem-scope", "::mlir::func::
   }];
 }
 
+def TileLangIRPlanWorkspaceMemory : Pass<"tilelangir-plan-workspace-memory", "::mlir::func::FuncOp"> {
+  let summary = "Assign byte offsets to memref_ext.alloc_workspace ops";
+  let description = [{
+    Collects all `memref_ext.alloc_workspace` operations that lack offset
+    information, groups them by their workspace argument, and assigns
+    sequential byte offsets within each group.  
+  }];
+  let dependentDialects = [
+    "arith::ArithDialect",
+    "bishengir::memref_ext::MemRefExtDialect",
+  ];
+}
+
 def TileLangIREnableMultiBuffer : Pass<"tilelangir-enable-multi-buffer", "::mlir::ModuleOp"> {
   let summary = "TileLangIR Enable Multi Buffer pass (custom)";
   let description = [{

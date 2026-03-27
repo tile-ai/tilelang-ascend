@@ -3,6 +3,7 @@ add_library(tilelangir_transforms STATIC
   MarkMultiBuffer.cpp
   CVSplit.cpp
   InferMemScope.cpp
+  PlanWorkspaceMemory.cpp
   Vectorize.cpp
   InsertCVSync.cpp
   EnableMultiBuffer.cpp
