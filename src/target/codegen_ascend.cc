@@ -81,7 +81,8 @@ DataType GetAccessPtrDtype(const CallNode *access_ptr) {
   } else if (auto *str = type_arg.as<StringImmNode>()) {
     return DataType(runtime::String2DLDataType(str->value));
   } else {
-    LOG(FATAL) << "Unexpected type for access_ptr first argument: " << type_arg->GetTypeKey();
+    LOG(FATAL) << "Unexpected type for access_ptr first argument: "
+               << type_arg->GetTypeKey();
     return DataType();
   }
 }
@@ -1289,12 +1290,12 @@ void CodeGenTileLangAscend::SelectCodegen(const CallNode *op,
 }
 
 void CodeGenTileLangAscend::ScalarOpCodegen(const CallNode *op,
-                                             const std::string &op_name) {
+                                            const std::string &op_name) {
   DataType dtype0 = GetAccessPtrDtype(op->args[0].as<CallNode>());
   DataType dtype1 = GetAccessPtrDtype(op->args[1].as<CallNode>());
   ICHECK(dtype0 == dtype1)
-      << "Type mismatch between first and second buffer operands: " << dtype0 << " vs "
-      << dtype1;
+      << "Type mismatch between first and second buffer operands: " << dtype0
+      << " vs " << dtype1;
 
   std::vector<std::string> args;
   for (int i = 0; i < 2; ++i) {
@@ -1325,7 +1326,7 @@ void CodeGenTileLangAscend::ScalarOpCodegen(const CallNode *op,
 }
 
 void CodeGenTileLangAscend::ShiftOpCodegen(const CallNode *op,
-                                            const std::string &op_name) {
+                                           const std::string &op_name) {
   std::vector<std::string> args;
   for (int i = 0; i < 2; ++i) {
     args.push_back(PrintBufferOffset(op->args[i].as<CallNode>(), true));
@@ -1364,12 +1365,12 @@ void CodeGenTileLangAscend::TrigOpCodegen(const CallNode *op,
 void CodeGenTileLangAscend::TransposeCodegen(const CallNode *op,
                                              const std::string &op_name) {
   DataType dtype = GetAccessPtrDtype(op->args[1].as<CallNode>());
-  
+
   std::vector<std::string> args;
   for (int i = 0; i < 2; ++i) {
     args.push_back(PrintBufferOffset(op->args[i].as<CallNode>(), true));
   }
-  
+
   this->PrintIndent();
   if (dtype.bits() == 32) {
     this->stream << "tl::ascend::transpose<" << getType(dtype) << ">(";
@@ -1507,7 +1508,7 @@ void CodeGenTileLangAscend::InitSortBufCodegen(const CallNode *op) {
 }
 
 void CodeGenTileLangAscend::AddsAndMulsOpCodegen(const CallNode *op,
-                                                  const std::string &op_name) {
+                                                 const std::string &op_name) {
   DataType dtype1 = GetAccessPtrDtype(op->args[0].as<CallNode>());
   DataType dtype2 = GetAccessPtrDtype(op->args[1].as<CallNode>());
   ICHECK(dtype1 == dtype2)
@@ -1664,7 +1665,7 @@ void CodeGenTileLangAscend::CompareCodegen(const CallNode *op,
 }
 
 void CodeGenTileLangAscend::CompareScalarCodegen(const CallNode *op,
-                                                  const std::string &op_name) {
+                                                 const std::string &op_name) {
   std::vector<std::string> var_names;
   int para_idx = 0;
   for (int i = 0; i <= 1; i++) {
@@ -2084,7 +2085,7 @@ void CodeGenTileLangAscend::CopyCodegen(const CallNode *op) {
 
   static const std::unordered_map<std::string, int> kCopyOpExtraArgs = {
       {"copy_l0c_to_gm", 3}, {"copy_gm_to_l1", 3}, {"copy_l1_to_l0a", 2},
-      {"copy_l1_to_l0b", 2}, {"copy_gm_to_ub", 1}, {"copy_ub_to_gm", 1},
+      {"copy_l1_to_l0b", 2}, {"copy_gm_to_ub", 4}, {"copy_ub_to_gm", 3},
       {"copy_ub_to_ub", 0}};
 
   bool found = false;

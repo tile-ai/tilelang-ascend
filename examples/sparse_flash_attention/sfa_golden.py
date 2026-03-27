@@ -1,29 +1,79 @@
 import torch
 import numpy as np
+
+
 def pa_to_bsnd(pa_in, block_table, actual_seq_lengths):
     block_num, block_size, n, d = pa_in.shape
     b = len(actual_seq_lengths)
     output = torch.zeros((b, block_num * block_size // b, 1, d)).to(pa_in.dtype)
     for i in range(b):
         for j in range(actual_seq_lengths[i] // block_size):
-            output[i, j * block_size: (j + 1) * block_size, 0, :] = \
-                pa_in[block_table[i][j], :, 0, :].reshape(block_size, d)
+            output[i, j * block_size : (j + 1) * block_size, 0, :] = pa_in[block_table[i][j], :, 0, :].reshape(block_size, d)
     return output
 
-def gather_kv(k_tensor, v_tensor, sparse_indices, sparse_block_size, sparse_count, batch, n2_idx, s1_idx,
-             cur_actual_seq_lengths_kv):
+
+def trans_tnd_to_bsnd(tensor, shape, act_seq):
+    n = shape[1]
+    d = shape[2]
+    b = len(act_seq)
+    s = max(act_seq)
+    output = np.zeros((b, s, n, d), dtype=tensor.dtype)
+    t_start = 0
+    for b_idx in range(b):
+        act_s = act_seq[b_idx]
+        t_end = t_start + act_s
+        if act_s == 0:
+            continue
+        for n_idx in range(n):
+            output[b_idx, 0:act_s, n_idx, :] = tensor[t_start:t_end, n_idx, :]
+        t_start += act_s
+    return output
+
+
+def trans_bnsd_to_tnd(tensor, shape, act_seq):
+    t = sum(act_seq)
+    b = tensor.shape[0]
+    n = tensor.shape[1]
+    d = tensor.shape[3]
+    output = torch.full(size=(t, n, d), fill_value=-1, dtype=tensor.dtype)
+    t_start = 0
+    for b_idx in range(b):
+        act_s = act_seq[b_idx]
+        t_end = t_start + act_s
+        if act_s == 0:
+            continue
+        for n_idx in range(n):
+            output[t_start:t_end, n_idx, :] = tensor[b_idx, n_idx, :act_s, :]
+        t_start += act_s
+    return output
+
+
+def trans_tnd_actseq(seq):
+    list_len = len(seq)
+    output = []
+    output.append(seq[0])
+    for i in range(list_len - 1):
+        new_item = seq[i + 1] - seq[i]
+        if new_item >= 0:
+            output.append(new_item)
+        else:
+            print(f"[ERROR]trans_tnd_actseq: Wrong input actseq:{seq}, in loop {i}, item {new_item} < 0")
+    return output
+
+
+def gather_kv(k_tensor, v_tensor, sparse_indices, sparse_block_size, sparse_count, batch, n2_idx, s1_idx, cur_actual_seq_lengths_kv):
     s2_sparse = list()
     for sparse_id in sparse_indices:
         if sparse_id == -1:
             break
         begin_idx = sparse_id * sparse_block_size
-        end_idx = begin_idx + sparse_block_size \
-                if begin_idx + sparse_block_size <= cur_actual_seq_lengths_kv else cur_actual_seq_lengths_kv
+        end_idx = begin_idx + sparse_block_size if begin_idx + sparse_block_size <= cur_actual_seq_lengths_kv else cur_actual_seq_lengths_kv
         s2_sparse.extend(np.arange(begin_idx, end_idx))
 
     k_sparse, v_sparse = k_tensor[batch, n2_idx, s2_sparse, :], v_tensor[batch, n2_idx, s2_sparse, :]
 
     return k_sparse, v_sparse
+
 
 def mask(res, cur_actual_seq_q, cur_actual_seq, topk_indices, s1_idx, sparse_blocksize):
     # 求尾块ID和尾块长度
@@ -48,10 +98,11 @@ def mask(res, cur_actual_seq_q, cur_actual_seq, topk_indices, s1_idx, sparse_blo
             local_offset = 0 if threshold <= begin_idx else threshold - begin_idx
             mask_begin = s_idx + local_offset
             mask_end = s_idx + block_len
-            res[:, mask_begin: mask_end] = -1e12
+            res[:, mask_begin:mask_end] = -1e12
         s_idx += block_len
 
     return res
+
 
 def softmax(x):
     x = x.astype(np.float32)
@@ -62,13 +113,25 @@ def softmax(x):
     ans = y / x_sum
     return ans
 
+
 def cpu_sparse_flash_attention(
-    query, key, value, sparse_indices, scale_value, sparse_block_size,
-    actual_seq_lengths_query, actual_seq_lengths_kv,
-    query_rope=None, key_rope=None,
-    layout_query='BSND', layout_kv='BSND', sparse_mode=3, block_table=None):
+    query,
+    key,
+    value,
+    sparse_indices,
+    scale_value,
+    sparse_block_size,
+    actual_seq_lengths_query,
+    actual_seq_lengths_kv,
+    query_rope=None,
+    key_rope=None,
+    layout_query="BSND",
+    layout_kv="BSND",
+    sparse_mode=3,
+    block_table=None,
+):
     query = query.cpu().to(torch.float32).numpy()
-    if layout_kv == 'PA_BSND':
+    if layout_kv == "PA_BSND":
         key = pa_to_bsnd(key, block_table, actual_seq_lengths_kv)
         key_rope = pa_to_bsnd(key_rope, block_table, actual_seq_lengths_kv)
     key = key.cpu().to(torch.float32).numpy()
@@ -84,7 +147,7 @@ def cpu_sparse_flash_attention(
     sparse_count = sparse_indices.shape[-1]
     g = num_heads // num_kv_heads
 
-    if layout_query == 'TND':
+    if layout_query == "TND":
         actual_seq_lengths_query = trans_tnd_actseq(actual_seq_lengths_query)
         query = trans_tnd_to_bsnd(query, query.shape, actual_seq_lengths_query)
         query_rope = trans_tnd_to_bsnd(query_rope, query_rope.shape, actual_seq_lengths_query)
@@ -104,23 +167,33 @@ def cpu_sparse_flash_attention(
         cur_actual_seq_lengths_kv = actual_seq_lengths_kv[batch]
         for n2_idx in range(num_kv_heads):
             for s1_idx in range(cur_acutal_seq_lengths_q):
-                q_curr = q_bnsd_tensor[batch, n2_idx * g: (n2_idx + 1) * g, s1_idx, :]
+                q_curr = q_bnsd_tensor[batch, n2_idx * g : (n2_idx + 1) * g, s1_idx, :]
                 cur_sparse_indices = sparse_indices[batch, n2_idx, s1_idx, :]
-                k_sparse, v_sparse = gather_kv(k_bnsd_tensor, v_bnsd_tensor, cur_sparse_indices, sparse_block_size,
-                                              sparse_count, batch, n2_idx, s1_idx, cur_actual_seq_lengths_kv)
+                k_sparse, v_sparse = gather_kv(
+                    k_bnsd_tensor,
+                    v_bnsd_tensor,
+                    cur_sparse_indices,
+                    sparse_block_size,
+                    sparse_count,
+                    batch,
+                    n2_idx,
+                    s1_idx,
+                    cur_actual_seq_lengths_kv,
+                )
                 mm1_res = np.matmul(q_curr.astype(np.float32), k_sparse.astype(np.float32).T, dtype=matmul_dtype)
                 scale_res = mm1_res * scale_value
-                
+
                 if sparse_mode == 3:
-                    mask_res = mask(scale_res, cur_acutal_seq_lengths_q, cur_actual_seq_lengths_kv,
-                                    cur_sparse_indices, s1_idx, sparse_block_size)
+                    mask_res = mask(
+                        scale_res, cur_acutal_seq_lengths_q, cur_actual_seq_lengths_kv, cur_sparse_indices, s1_idx, sparse_block_size
+                    )
                 else:
                     mask_res = scale_res
                 softmax_res = softmax(mask_res)
                 mm2_res = np.matmul(softmax_res, v_sparse, dtype=matmul_dtype)
-                y[batch, n2_idx * g: (n2_idx + 1) * g, s1_idx, :] = mm2_res
+                y[batch, n2_idx * g : (n2_idx + 1) * g, s1_idx, :] = mm2_res
 
-    if layout_query == 'TND':
+    if layout_query == "TND":
         cpu_out = torch.tensor(y)
         return trans_bnsd_to_tnd(cpu_out, cpu_out.shape, actual_seq_lengths_query)
     return np.transpose(y, axes=(0, 2, 1, 3))

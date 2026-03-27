@@ -29,13 +29,24 @@ using LayoutL1T = layout::nZ;
 
 constexpr int64_t UB_HALF_SIZE = 64;
 
+template <typename T>
+constexpr bool IsDuplicateSupported_v =
+    std::is_same_v<T, int16_t> || std::is_same_v<T, uint16_t> ||
+    std::is_same_v<T, half> || std::is_same_v<T, bfloat16_t> ||
+    std::is_same_v<T, int32_t> || std::is_same_v<T, uint32_t> ||
+    std::is_same_v<T, float>;
+
 template <typename T, uint32_t dstM, uint32_t dstN>
 CATLASS_DEVICE void copy_gm_to_l1(LocalTensor<T> dstTensor,
-                                  GlobalTensor<T> srcTensor, uint32_t realSrcN = 1, uint32_t realTailM = 0, uint32_t realTailN = 0) {
+                                  GlobalTensor<T> srcTensor,
+                                  uint32_t realSrcN = 1, uint32_t realTailM = 0,
+                                  uint32_t realTailN = 0) {
   uint32_t tailM = realTailM == 0 ? dstM : realTailM;
   uint32_t tailN = realTailN == 0 ? dstN : realTailN;
   if (tailM != dstM || tailN != dstN) {
-    AscendC::InitConstValue(dstTensor, {1, static_cast<uint16_t>(dstM * dstN * sizeof(T) / 32), 0, 0});
+    AscendC::InitConstValue(
+        dstTensor,
+        {1, static_cast<uint16_t>(dstM * dstN * sizeof(T) / 32), 0, 0});
   }
   auto layout = MakeLayoutFromTag(LayoutGM{tailM, realSrcN});
   auto src_LAYOUT = MakeLayoutTile(layout, tla::MakeShape(tailM, tailN));
@@ -118,9 +129,10 @@ CATLASS_DEVICE void mma(LocalTensor<T1> const A, LocalTensor<T1> const B,
 
 template <typename T1, typename T2, typename LayoutGM, uint32_t srcM,
           uint32_t srcN, bool enRelu = false>
-CATLASS_DEVICE void copy_l0c_to_gm(GlobalTensor<T2> dstTensor,
-                                   LocalTensor<T1> srcTensor,
-                                   uint32_t realDstN = 1, uint32_t realTailM = 0, uint32_t realTailN = 0) {
+CATLASS_DEVICE void
+copy_l0c_to_gm(GlobalTensor<T2> dstTensor, LocalTensor<T1> srcTensor,
+               uint32_t realDstN = 1, uint32_t realTailM = 0,
+               uint32_t realTailN = 0) {
   uint32_t tailM = realTailM == 0 ? srcM : realTailM;
   uint32_t tailN = realTailN == 0 ? srcN : realTailN;
   auto layoutInL0C = tla::MakeLayoutL0C(srcM, srcN);
@@ -160,21 +172,39 @@ CATLASS_DEVICE auto thread_block_swizzle(uint64_t pid) {
 }
 
 template <typename T, uint32_t dstN, uint32_t dstM = 1>
-CATLASS_DEVICE void copy_gm_to_ub(LocalTensor<T> dstTensor,
-                                  GlobalTensor<T> srcTensor,
-                                  uint32_t realSrcN = 1) {
+CATLASS_DEVICE void
+copy_gm_to_ub(LocalTensor<T> dstTensor, GlobalTensor<T> srcTensor,
+              uint32_t realSrcN = 1, uint32_t maskShapeM = dstM,
+              uint32_t maskShapeN = dstN, T padValue = T(0)) {
+
+  bool isPad = true;
+  uint32_t rightPadding = 1;
+  if (maskShapeN == dstN) {
+    isPad = false;
+    rightPadding = 0;
+  }
+  if (maskShapeM != dstM || maskShapeN != dstN) {
+    if constexpr (IsDuplicateSupported_v<T>) {
+      AscendC::Duplicate<T>(dstTensor, padValue, dstM * dstN);
+      SetFlag<HardEvent::V_MTE2>(0);
+      WaitFlag<HardEvent::V_MTE2>(0);
+    }
+  }
   AscendC::DataCopyExtParams dataCopyParams(
-      dstM, dstN * sizeof(T), (realSrcN - dstN) * sizeof(T), 0, 0);
-  AscendC::DataCopyPadExtParams<T> padParams(false, 0, 0, 0);
+      maskShapeM, maskShapeN * sizeof(T), (realSrcN - maskShapeN) * sizeof(T),
+      (dstN - maskShapeN) * sizeof(T) / 32, 0);
+  AscendC::DataCopyPadExtParams<T> padParams(isPad, 0, rightPadding, padValue);
   AscendC::DataCopyPad(dstTensor, srcTensor, dataCopyParams, padParams);
 }
 
 template <typename T, uint32_t srcN, uint32_t srcM = 1>
-CATLASS_DEVICE void copy_ub_to_gm(GlobalTensor<T> dstTensor,
-                                  LocalTensor<T> srcTensor,
-                                  uint32_t realdstN = 1) {
-  AscendC::DataCopyExtParams dataCopyParams(srcM, srcN * sizeof(T), 0,
-                                            (realdstN - srcN) * sizeof(T), 0);
+CATLASS_DEVICE void
+copy_ub_to_gm(GlobalTensor<T> dstTensor, LocalTensor<T> srcTensor,
+              uint32_t realdstN = 1, uint32_t maskShapeM = srcM,
+              uint32_t maskShapeN = srcN) {
+  AscendC::DataCopyExtParams dataCopyParams(
+      maskShapeM, maskShapeN * sizeof(T), (srcN - maskShapeN) * sizeof(T) / 32,
+      (realdstN - maskShapeN) * sizeof(T), 0);
   AscendC::DataCopyPad(dstTensor, srcTensor, dataCopyParams);
 }
 
