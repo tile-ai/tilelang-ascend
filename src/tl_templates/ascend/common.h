@@ -291,55 +291,34 @@ CATLASS_DEVICE void cast(LocalTensor<dst> const &ubOut,
 //   AscendC::Duplicate(ubOut, value, Len);
 // }
 
-template <typename T, uint32_t M, uint32_t N, int32_t dim>
+template <typename T>
 CATLASS_DEVICE void reduce_sum(LocalTensor<T> const &dstTensor,
-                               LocalTensor<T> const &srcTensor,
-                               LocalTensor<uint8_t> const &sharedTmpBuffer) {
-  uint32_t shape[] = {M, N};
-  if constexpr (dim == -1) {
-    AscendC::ReduceSum<T, AscendC::Pattern::Reduce::AR>(
-        dstTensor, srcTensor, sharedTmpBuffer, shape, true
-    );
-  } else {
-    AscendC::ReduceSum<T, AscendC::Pattern::Reduce::RA>(
-        dstTensor, srcTensor, sharedTmpBuffer, shape, true
-    );
-  }
+                                LocalTensor<T> const &srcTensor,
+                                LocalTensor<T> const &sharedTmpBuffer,
+                                const int32_t mask,
+                                const int32_t repeatTime,
+                                const int32_t srcRepStride) {
+  AscendC::WholeReduceSum<T>(dstTensor, srcTensor, mask, repeatTime, 1, 8, srcRepStride);
 }
 
-template <typename T, uint32_t M, uint32_t N, int32_t dim>
+template <typename T>
 CATLASS_DEVICE void reduce_max(LocalTensor<T> const &dstTensor,
-                               LocalTensor<T> const &srcTensor,
-                               LocalTensor<uint8_t> const &sharedTmpBuffer) {
-  uint32_t shape[] = {M, N};
-  if constexpr (dim == -1) {
-    AscendC::ReduceMax<T, AscendC::Pattern::Reduce::AR>(
-        dstTensor, srcTensor, sharedTmpBuffer, shape, true
-    );
-  } else {
-    AscendC::ReduceMax<T, AscendC::Pattern::Reduce::RA>(
-        dstTensor, srcTensor, sharedTmpBuffer, shape, true
-    );
-  }
+                                LocalTensor<T> const &srcTensor,
+                                LocalTensor<T> const &sharedTmpBuffer,
+                                const int32_t mask,
+                                const int32_t repeatTime,
+                                const int32_t srcRepStride) {
+  AscendC::ReduceMax<T>(dstTensor, srcTensor, sharedTmpBuffer, mask, repeatTime, srcRepStride);
 }
 
-template <typename T, uint32_t M, uint32_t N, int32_t dim>
+template <typename T>
 CATLASS_DEVICE void reduce_min(LocalTensor<T> const &dstTensor,
-                               LocalTensor<T> const &srcTensor,
-                               LocalTensor<uint8_t> const &sharedTmpBuffer) {
-  uint32_t shape[] = {M, N};
-  // if (count > 0) {
-  //   shape[1] = count / M;
-  // }
-  if constexpr (dim == -1) {
-    AscendC::ReduceMin<T, AscendC::Pattern::Reduce::AR>(
-        dstTensor, srcTensor, sharedTmpBuffer, shape, true
-    );
-  } else {
-    AscendC::ReduceMin<T, AscendC::Pattern::Reduce::RA>(
-        dstTensor, srcTensor, sharedTmpBuffer, shape, true
-    );
-  }
+                                LocalTensor<T> const &srcTensor,
+                                LocalTensor<T> const &sharedTmpBuffer,
+                                const int32_t mask,
+                                const int32_t repeatTime,
+                                const int32_t srcRepStride) {
+  AscendC::ReduceMin<T>(dstTensor, srcTensor, sharedTmpBuffer, mask, repeatTime, srcRepStride);
 }
 
 static constexpr uint32_t L0AB_EVENT = 0;

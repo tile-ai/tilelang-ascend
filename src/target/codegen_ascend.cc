@@ -1749,24 +1749,72 @@ void CodeGenTileLangAscend::ReduceOpCodegen(const CallNode *op) {
   std::string op_name =
       "tl::ascend::" + Downcast<StringImm>(op->args[0])->value;
 
+  bool is_reduce_sum = (op_name.find("reduce_sum") != std::string::npos);
+
   std::vector<std::string> var_names;
   for (int i = 1; i < op->args.size(); i++) {
     auto var_name = PrintBufferOffset(op->args[i].as<CallNode>());
     var_names.push_back(var_name);
   }
+
   this->PrintIndent();
-  this->stream << op_name << "(";
-  for (int i = 0; i < var_names.size(); i++) {
-    this->stream << var_names[i];
-    if (i != var_names.size() - 1) {
+
+  if (is_reduce_sum) {
+    size_t pos1 = op_name.find("<");
+    size_t pos2 = op_name.find(">");
+    std::string template_params = op_name.substr(pos1 + 1, pos2 - pos1 - 1);
+
+    size_t comma1 = template_params.find(",");
+    size_t comma2 = template_params.find(",", comma1 + 1);
+    size_t comma3 = template_params.find(",", comma2 + 1);
+
+    std::string dtype = template_params.substr(0, comma1);
+    std::string m_str = template_params.substr(comma1 + 1, comma2 - comma1 - 1);
+    std::string n_str = template_params.substr(comma2 + 1, comma3 - comma2 - 1);
+    std::string dim_str = template_params.substr(comma3 + 1);
+
+    std::string new_op_name = "tl::ascend::reduce_sum<" + dtype + ">";
+
+    int64_t m_val = 0, n_val = 0, dim_val = 0;
+    try {
+      m_val = std::stoll(m_str);
+      n_val = std::stoll(n_str);
+      dim_val = std::stoll(dim_str);
+    } catch (...) {
+    }
+
+    std::string mask, repeatTime, srcRepStride;
+    if (dim_val == -1) {
+      mask = std::to_string(n_val);
+      repeatTime = std::to_string(m_val);
+      // srcRepStride = std::to_string(n_val);
+      srcRepStride = "1";
+    } else if (dim_val == 0) {
+      mask = std::to_string(m_val);
+      repeatTime = std::to_string(n_val);
+      srcRepStride = "1";
+    } else {
+      mask = std::to_string(m_val * n_val);
+      repeatTime = "1";
+      srcRepStride = "0";
+    }
+
+    this->stream << new_op_name << "(";
+    for (int i = 0; i < var_names.size(); i++) {
+      this->stream << var_names[i];
       this->stream << ", ";
     }
+    this->stream << mask << ", " << repeatTime << ", " << srcRepStride << ");\n";
+  } else {
+    this->stream << op_name << "(";
+    for (int i = 0; i < var_names.size(); i++) {
+      this->stream << var_names[i];
+      if (i != var_names.size() - 1) {
+        this->stream << ", ";
+      }
+    }
+    this->stream << ");\n";
   }
-  this->stream << ");\n";
-  // this->stream << ", " << PrintExpr(op->args[op->args.size() - 1]) << ");\n";
-  // this->EndScope(func_scope);
-  // this->PrintIndent();
-  // this->stream << "}\n";
 }
 
 void CodeGenTileLangAscend::BlockReduceOpCodegen(const CallNode *op,
