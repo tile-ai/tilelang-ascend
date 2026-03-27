@@ -1417,15 +1417,15 @@ void CodeGenTileLangAscendPto::PowCodegen(const CallNode *op) {
     CreateUbVariableND(dst_temp_name, dst_shape_info);
     this->PrintIndent();
     this->stream << kAscendPtoScope << "pow" << "<" << dst_shape_info.type << ", "
-               << dst_shape_info.slice_row << ", " << dst_shape_info.slice_col << "," << temp_shape_info.row ">"
-               << "(" << dst_temp_name << ", " << src0_temp_name << ", " << src1_temp_name << ", " << temp_shape_info.ub_name <<
+               << dst_shape_info.slice_row << ", " << dst_shape_info.slice_col << "," << temp_shape_info.row << ">" 
+               << "(" << dst_temp_name << ", " << src0_temp_name << ", " << src1_temp_name << ", " << temp_shape_info.ub_name
                << ");\n";
   } else {
   this->PrintIndent();
   this->stream << kAscendPtoScope << "pow" << "<" << dst_shape_info.type << ", "
                << dst_shape_info.row << ", " << dst_shape_info.col << ", " << temp_shape_info.row << ">"
                << "(" << dst_shape_info.ub_name << ", " << src0_shape_info.ub_name << ", " << src1_shape_info.ub_name
-               << ", " << temp_shape_info.bu_name << ");\n";
+               << ", " << temp_shape_info.ub_name << ");\n";
   }
 }
 
@@ -1544,7 +1544,7 @@ void CodeGenTileLangAscendPto::TshCodegen(const CallNode *op,
   this->PrintIndent();
   ShapeInfo src0_shape_info = GetSliceInfo(op->args[1].as<CallNode>());
   ShapeInfo dst_shape_info = GetSliceInfo(op->args[0].as<CallNode>());
-  auto src1_name = op->args[2].as<IntImmNode>()->value;
+  auto src1_name = PrintExpr(op->args[2]);
 
   DataType src_dtype = op->args[1].as<CallNode>()->dtype;
   DataType scalar_dtype = op->args[2].dtype();
