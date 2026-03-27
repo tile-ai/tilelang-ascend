@@ -485,7 +485,6 @@ private:
       }
     }
 
-
     if (cube_loop_times == vec_loop_times) {
       // in case the loop instantly ends after vec_loop_idx step to next loop
       cube_max_pair_depth = cube_loop_idx;
