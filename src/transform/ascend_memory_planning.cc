@@ -14,6 +14,7 @@
 #include <stack>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "arith/ir_mutator_with_analyzer.h"
@@ -131,6 +132,11 @@ private:
       alloc_info_[buf].level = level;
 
       if (IsNPUSharedMemory(op->buffer_var)) {
+        ICHECK(buffer_names_.find(buf->name_hint) == buffer_names_.end())
+            << "Duplicate buffer name found: " << buf->name_hint
+            << ". Please ensure all buffers have unique names.";
+        buffer_names_.insert(buf->name_hint);
+
         std::string scope = GetPtrStorageScope(op->buffer_var);
         if (memory_limits_.count(scope)) {
           buffer_scopes_[buf] = scope;
@@ -273,6 +279,10 @@ private:
       for (const auto &kv : external_address_map) {
         const VarNode *buf = kv.first.get();
         int64_t addr_offset = kv.second.as<IntImmNode>()->value;
+        if (pre_alloc_buffer_.count(buf->name_hint)) {
+          LOG(FATAL) << "Buffer " << buf->name_hint
+                     << " already been allocated.";
+        }
         pre_alloc_buffer_[buf->name_hint] = addr_offset;
       }
     }
@@ -846,6 +856,8 @@ private:
     std::vector<StmtEntry> linear_seq_; // linear stmt node scopes and levels
     std::vector<StmtEntry> scope_;      // temp stmt node scopes and levels
     std::vector<const VarNode *> origin_buffer; // original buffer list
+    std::unordered_set<std::string>
+        buffer_names_; // buffer names for duplicate check
 
     std::multimap<uint64_t, StorageEntry *> const_free_map_;
     std::list<StorageEntry *> sym_free_list_;
