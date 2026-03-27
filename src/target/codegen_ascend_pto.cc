@@ -884,7 +884,7 @@ void CodeGenTileLangAscendPto::CallExternCodegen(const CallNode *op) {
 
     static const std::unordered_map<std::string, int> kCopyOpExtraArgs = {
         {"copy_l0c_to_gm", 1}, {"copy_gm_to_l1", 1}, {"copy_l1_to_l0a", 3},
-        {"copy_l1_to_l0b", 3}, {"copy_gm_to_ub", 1}, {"copy_ub_to_gm", 1},
+        {"copy_l1_to_l0b", 3}, {"copy_gm_to_ub", 4}, {"copy_ub_to_gm", 3},
         {"copy_ub_to_ub", 0}};
 
     std::unordered_map<std::string, std::string> ptoCopyMap = {
@@ -1038,7 +1038,10 @@ void CodeGenTileLangAscendPto::CallExternCodegen(const CallNode *op) {
           is_chunking = true;
         }
         shape_nums[1] = PrintExpr(op->args[op_arg_len - 1]);
-        if (op_arg_len == 5) {
+        if (op_name.find("copy_gm_to_ub") != std::string::npos &&
+            shape_tile.size() == 1) {
+          shape_nums[0] = "1";
+        } else if (op_arg_len == 5) {
           shape_nums[0] = "1";
         } else if (shape_tile[1] != PrintExpr(op->args[op_arg_len - 2]) &&
                    op_name.find("copy_gm_to_ub") != std::string::npos) { //
@@ -1102,12 +1105,35 @@ void CodeGenTileLangAscendPto::CallExternCodegen(const CallNode *op) {
           if (is_dynamic) {
             src_var = src_var + "_dynamic";
           }
-          tensor_template = tensor_template + ", " + ub_valid_shapes[0] + ", ";
-          valid_template = shape_nums[0] + ", " + shape_nums[1] + ", " +
-                           ub_valid_shapes[1] + ", " + ub_valid_shapes[2];
+          // Determine PadValue based on pad_value argument
+          std::string pad_value_str = PrintExpr(op->args[6]);
+          std::string pad_value_enum = "pto::PadValue::Null";
+          if (pad_value_str.find("-CUDART_INF") != std::string::npos ||
+              pad_value_str.find("-inf") != std::string::npos ||
+              pad_value_str.find("-INFINITY") != std::string::npos ||
+              pad_value_str == "-std::numeric_limits<float>::infinity()") {
+            pad_value_enum = "pto::PadValue::Min";
+          } else if (pad_value_str.find("CUDART_INF") != std::string::npos ||
+                     pad_value_str.find("+inf") != std::string::npos ||
+                     pad_value_str.find("INFINITY") != std::string::npos ||
+                     pad_value_str ==
+                         "std::numeric_limits<float>::infinity()") {
+            pad_value_enum = "pto::PadValue::Max";
+          } else if (pad_value_str == "0" || pad_value_str == "0.0" ||
+                     pad_value_str == "0.0f" ||
+                     pad_value_str.find("0.000000e+00") != std::string::npos ||
+                     pad_value_str.find("0e+00") != std::string::npos) {
+            pad_value_enum = "pto::PadValue::Zero";
+          }
+          tensor_template = tensor_template + ", " + ub_valid_shapes[0] + ", " +
+                            shape_template + ", " + stride_template + ", " +
+                            shape_nums[0] + ", " + shape_nums[1] + ", " +
+                            pad_value_enum + ">";
         }
-        tensor_template = tensor_template + shape_template + ", " +
-                          stride_template + ", " + valid_template + ">";
+        if (op_name.find("copy_gm_to_l1") != std::string::npos) {
+          tensor_template = tensor_template + shape_template + ", " +
+                            stride_template + ", " + valid_template + ">";
+        }
         this->PrintIndent();
         this->stream << kAscendPtoScope << src_var << tensor_template << "("
                      << tensor_addr << " + " << src_offset;
@@ -1144,20 +1170,25 @@ void CodeGenTileLangAscendPto::CallExternCodegen(const CallNode *op) {
           PrimExpr simplified_k = analyzer.Simplify(buffer_k);
           auto addr = l_valid_shapes[3];
           auto type_len = GetTypeLen(l_valid_shapes[0]);
-          this->stream << ", " << addr << " + " << dst_offset << " * " << type_len << ", " << PrintExpr(op->args[4]) << ", " << PrintExpr(op->args[5])
-                       << ");\n";
+          this->stream << ", " << addr << " + " << dst_offset << " * "
+                       << type_len << ", " << PrintExpr(op->args[4]) << ", "
+                       << PrintExpr(op->args[5]) << ");\n";
           prefetch_n_stages_map_[dst_var_id].second++;
         } else {
           if (op_name.find("copy_gm_to_ub") != std::string::npos) {
             int32_t type_len =
                 GetTypeLen(global_tensor_template[String(tensor_addr)].dtype);
             this->stream << ", " << ub_valid_shapes[3] << ", " << dst_offset
-                         << "," << type_len << ");\n";
+                         << ", " << type_len;
+            this->stream << ", " << PrintExpr(op->args[4]) << ", "
+                         << PrintExpr(op->args[5]);
+            this->stream << ");\n";
           } else {
             auto addr = l_valid_shapes[3];
             auto type_len = GetTypeLen(l_valid_shapes[0]);
-            this->stream << ", " << addr << " + " << dst_offset << " * " << type_len << ", " << PrintExpr(op->args[4]) << ", " << PrintExpr(op->args[5])
-                       << ");\n";
+            this->stream << ", " << addr << " + " << dst_offset << " * "
+                         << type_len << ", " << PrintExpr(op->args[4]) << ", "
+                         << PrintExpr(op->args[5]) << ");\n";
           }
         }
 
@@ -1190,7 +1221,7 @@ void CodeGenTileLangAscendPto::CallExternCodegen(const CallNode *op) {
           is_chunking = true;
         }
         shape_nums[1] = PrintExpr(op->args[op_arg_len - 1]);
-        if (op_arg_len == 5) {
+        if (op_arg_len == 7 || shape_tile.size() == 1) {
           shape_nums[0] = "1";
         } else if (shape_tile[1] != PrintExpr(op->args[op_arg_len - 2]) &&
                    op_name.find("copy_ub_to_gm") != std::string::npos) { //
@@ -1264,7 +1295,6 @@ void CodeGenTileLangAscendPto::CallExternCodegen(const CallNode *op) {
           std::string shape_num_dtype =
               global_tensor_template[String(tensor_addr)].dtype;
           int num1 = std::stoi(shape_nums[1]);
-          // when shape_nums[1] * sizeof(dtype) < 32, do this
           if (shape_num_dtype == "int" && num1 < 8) {
             shape_nums[1] = "8";
           } else if (shape_num_dtype == "float" && num1 < 8) {
@@ -1274,8 +1304,7 @@ void CodeGenTileLangAscendPto::CallExternCodegen(const CallNode *op) {
           }
           tensor_template = tensor_template + shape_template + ", " +
                             stride_template + ", " + shape_nums[0] + ", " +
-                            shape_nums[1] + ", " + ub_valid_shapes[1] + ", " +
-                            ub_valid_shapes[2] + ">";
+                            shape_nums[1] + ">";
         } else {
           tensor_template = tensor_template + shape_template + ", " +
                             stride_template + ", " + valid_template + ">";
@@ -1296,13 +1325,16 @@ void CodeGenTileLangAscendPto::CallExternCodegen(const CallNode *op) {
           this->stream << ")";
         }
         if (op_name.find("copy_ub_to_gm") != std::string::npos) {
-          this->stream << ", " << ub_valid_shapes[3] << ", " << src_offset
-                       << ");\n";
+          this->stream << ", " << ub_valid_shapes[3] << ", " << src_offset;
+          this->stream << ", " << PrintExpr(op->args[4]) << ", "
+                       << PrintExpr(op->args[5]);
+          this->stream << ");\n";
         } else {
           auto addr = l_valid_shapes[3];
           auto type_len = GetTypeLen(l_valid_shapes[0]);
-          this->stream << ", " << addr << " + " << src_offset << " * " << type_len << ", " << PrintExpr(op->args[4]) << ", " << PrintExpr(op->args[5])
-                       << ");\n";
+          this->stream << ", " << addr << " + " << src_offset << " * "
+                       << type_len << ", " << PrintExpr(op->args[4]) << ", "
+                       << PrintExpr(op->args[5]) << ");\n";
         }
       }
     } else {
@@ -2824,6 +2856,7 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
     if (pos == kAscendPtoScope + "TileUbData") {
       UbShapeInputCheck(op);
     }
+
     PrimExpr target_expr;
     bool found_by_name = false;
     std::string target_var_name = op->buffer_var->name_hint;
@@ -2836,6 +2869,13 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
         break;
       }
     }
+
+    ICHECK(found_by_name)
+        << "CodeGenTileLangAscendPto: Cannot find pre-allocated address for "
+           "buffer: "
+        << target_var_name
+        << ". All buffers must be pre-allocated via address_map_.";
+
     this->PrintIndent();
 
     // Recording the count of buffer allocations in the pipeline.
@@ -2854,354 +2894,163 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
       buffer_in_pipeline = true;
     }
 
-    // Allocate buffer
-    if (found_by_name) {
-      if (pos == kAscendPtoScope + "TileUbData") {
-        // Log Unified Buffer (UB) information.
-        if (shape.size() == 1) {
+    // use the same ub_data_map_ to record both TileUbData and TileLData
+    // information
+    if (pos == kAscendPtoScope + "TileUbData") {
+      if (shape.size() == 1) {
+        ub_data[1] = "1";
+        ub_data[2] = PrintExpr(shape[0]);
+        ub_data[4] = "Unapplied for tileUbDataDN";
+        ub_data[5] = "1";
+        ub_data[6] = PrintExpr(shape[0]);
+      } else if (shape.size() == 2) {
+        if (shape[1].as<IntImmNode>()->value != 1) {
+          if (!buffer_in_pipeline) {
+            ub_data[1] = PrintExpr(shape[0]);
+            ub_data[2] = PrintExpr(shape[1]);
+            ub_data[4] = "Unapplied for tileUbDataDN";
+            ub_data[5] = PrintExpr(shape[0]);
+            ub_data[6] = PrintExpr(shape[1]);
+          } else {
+            ub_data[1] = "1";
+            ub_data[2] = PrintExpr(shape[1]);
+            ub_data[4] = "Unapplied for tileUbDataDN";
+            ub_data[5] = "1";
+            ub_data[6] = PrintExpr(shape[1]);
+          }
+        } else {
           ub_data[1] = "1";
           ub_data[2] = PrintExpr(shape[0]);
           ub_data[4] = "Unapplied for tileUbDataDN";
           ub_data[5] = "1";
           ub_data[6] = PrintExpr(shape[0]);
-        } else if (shape.size() == 2) {
-          if (shape[1].as<IntImmNode>()->value != 1) {
-            if (!buffer_in_pipeline) {
-              ub_data[1] = PrintExpr(shape[0]);
-              ub_data[2] = PrintExpr(shape[1]);
-              ub_data[4] = "Unapplied for tileUbDataDN";
-              ub_data[5] = PrintExpr(shape[0]);
-              ub_data[6] = PrintExpr(shape[1]);
-            } else {
-              ub_data[1] = "1";
-              ub_data[2] = PrintExpr(shape[1]);
-              ub_data[4] = "Unapplied for tileUbDataDN";
-              ub_data[5] = "1";
-              ub_data[6] = PrintExpr(shape[1]);
-            }
+          shape.pop_back();
+        }
+      } else if (shape.size() == 3) {
+        if (buffer_in_pipeline) {
+          if (shape[2].as<IntImmNode>()->value != 1) {
+            ub_data[1] = PrintExpr(shape[1]);
+            ub_data[2] = PrintExpr(shape[2]);
+            ub_data[4] = "Unapplied for tileUbDataDN";
+            ub_data[5] = PrintExpr(shape[1]);
+            ub_data[6] = PrintExpr(shape[2]);
           } else {
             ub_data[1] = "1";
-            ub_data[2] = PrintExpr(shape[0]);
+            ub_data[2] = PrintExpr(shape[1]);
             ub_data[4] = "Unapplied for tileUbDataDN";
             ub_data[5] = "1";
-            ub_data[6] = PrintExpr(shape[0]);
-            shape.pop_back();
-          }
-        } else if (shape.size() == 3) {
-          if (buffer_in_pipeline) {
-            if (shape[2].as<IntImmNode>()->value != 1) {
-              ub_data[1] = PrintExpr(shape[1]);
-              ub_data[2] = PrintExpr(shape[2]);
-              ub_data[4] = "Unapplied for tileUbDataDN";
-              ub_data[5] = PrintExpr(shape[1]);
-              ub_data[6] = PrintExpr(shape[2]);
-            } else {
-              ub_data[1] = "1";
-              ub_data[2] = PrintExpr(shape[1]);
-              ub_data[4] = "Unapplied for tileUbDataDN";
-              ub_data[5] = "1";
-              ub_data[6] = PrintExpr(shape[1]);
-            }
-          } else {
-            ICHECK(false) << "Check for cases where the shape size is 3 but is "
-                             "not part of the pipeline.";
-          }
-        }
-
-        // Check if padding is needed at the time of request.
-        auto valid = ValidLayoutEnabled(op);
-        if (valid) {
-          int8_t typeSize = GetTypeLen(type);
-          int8_t NDBlockSize = 32 / typeSize;
-          int shape2_val = std::stoi(ub_data[2]);
-          PrimExpr shape2_expr = IntImm(DataType::Int(32), shape2_val);
-          PrimExpr padded_shape2 =
-              tvm::floordiv(shape2_expr + NDBlockSize - 1, NDBlockSize) *
-              NDBlockSize;
-          ub_data[2] = PrintExpr(padded_shape2);
-        }
-
-        if (buffer_in_pipeline) {
-          int8_t typeSize = GetTypeLen(type);
-          // Recording the count of buffer allocations in the pipeline.
-          auto bufferNum = prefetch_n_stages_map_[vid].first;
-          // prefetch_n_stages_map_[vid] = std::pair<int, int>{bufferNum, 0};
-
-          // Output the valid shape.
-          stream << pos << "ND<" << type << ", " << ub_data[1] << ", "
-                 << ub_data[2] << ", " << ub_data[5] << ", " << ub_data[6];
-          stream << "> " << vid << "[" << bufferNum << "];\n";
-
-          // Batch allocate addresses.
-          for (size_t i = 0; i < bufferNum; i++) {
-            this->PrintIndent();
-            stream << "TASSIGN(" << vid << "[" << i << "], "
-                   << PrintExpr(target_expr) << " + " << i << " * "
-                   << static_cast<int>(typeSize) << " * " << ub_data[1] << " * "
-                   << ub_data[2] << ");\n";
-            // if (ub_data[3].empty()) {
-            //     ub_data[3] = PrintExpr(address_offset_[String(pos)]);
-            // }
-            // ub_data_map_[vid] = ub_data;
-            // address_offset_.Set(String(pos),
-            //                     PrimExpr(int(op->ConstantAllocationSize() *
-            //                                  op->dtype.bytes() / 2)) +
-            //                         address_offset_[String(pos)]);
+            ub_data[6] = PrintExpr(shape[1]);
           }
         } else {
-          stream << pos << "ND<" << type << ", " << ub_data[1] << ", "
-                 << ub_data[2] << ", " << ub_data[5] << ", " << ub_data[6];
-          stream << "> " << vid << ";\n";
-          this->PrintIndent();
-          stream << "TASSIGN(" << vid << ", " << PrintExpr(target_expr)
-                 << ");\n";
+          ICHECK(false) << "Check for cases where the shape size is 3 but is "
+                           "not part of the pipeline.";
         }
-        ub_data[3] = PrintExpr(target_expr);
-        ub_data_map_[vid] = ub_data;
+      }
 
+      // Check if padding is needed at the time of request.
+      auto valid = ValidLayoutEnabled(op);
+      if (valid) {
+        int8_t typeSize = GetTypeLen(type);
+        int8_t NDBlockSize = 32 / typeSize;
+        int shape2_val = std::stoi(ub_data[2]);
+        PrimExpr shape2_expr = IntImm(DataType::Int(32), shape2_val);
+        PrimExpr padded_shape2 =
+            tvm::floordiv(shape2_expr + NDBlockSize - 1, NDBlockSize) *
+            NDBlockSize;
+        ub_data[2] = PrintExpr(padded_shape2);
+      }
+
+      if (buffer_in_pipeline) {
+        int8_t typeSize = GetTypeLen(type);
+        // Recording the count of buffer allocations in the pipeline.
+        auto bufferNum = prefetch_n_stages_map_[vid].first;
+
+        // Output the valid shape.
+        stream << pos << "ND<" << type << ", " << ub_data[1] << ", "
+               << ub_data[2] << ", " << ub_data[5] << ", " << ub_data[6];
+        stream << "> " << vid << "[" << bufferNum << "];\n";
+
+        // Batch allocate addresses.
+        for (size_t i = 0; i < bufferNum; i++) {
+          this->PrintIndent();
+          stream << "TASSIGN(" << vid << "[" << i << "], "
+                 << PrintExpr(target_expr) << " + " << i << " * "
+                 << static_cast<int>(typeSize) << " * " << ub_data[1] << " * "
+                 << ub_data[2] << ");\n";
+        }
       } else {
-        if (!buffer_in_pipeline) {
-          int dtype_bytes = op->dtype.bytes();
-          std::vector<PrimExpr> valid_shapes;
-          valid_shapes.reserve(2);
-          stream << pos << "<" << type;
-          int shape_value = shape[0].as<tvm::tir::IntImmNode>()->value;
-          if (shape_value * dtype_bytes % 32 == 0) {
-            valid_shapes.push_back(shape[0]);
-          } else {
-            valid_shapes.push_back(tvm::IntImm(
-                shape[0].dtype(),
-                shape_value +
-                    (32 - shape_value * dtype_bytes % 32) / dtype_bytes));
-          }
-          valid_shapes.push_back(shape[1]);
-          for (size_t i = 0; i < valid_shapes.size(); i++) {
-            l_data[i + 1] = PrintExpr(valid_shapes[i]);
-            stream << ", " << valid_shapes[i];
-          }
-          for (size_t i = 0; i < shape.size(); i++) {
-            stream << ", " << shape[i];
-          }
-          l_data[3] = PrintExpr(target_expr);
-          stream << "> " << vid << ";\n";
-          this->PrintIndent();
-          stream << "TASSIGN(" << vid << ", " << PrintExpr(target_expr)
-                 << ");\n";
+        stream << pos << "ND<" << type << ", " << ub_data[1] << ", "
+               << ub_data[2] << ", " << ub_data[5] << ", " << ub_data[6];
+        stream << "> " << vid << ";\n";
+        this->PrintIndent();
+        stream << "TASSIGN(" << vid << ", " << PrintExpr(target_expr) << ");\n";
+      }
+      ub_data[3] = PrintExpr(target_expr);
+      ub_data_map_[vid] = ub_data;
+
+    } else {
+      if (!buffer_in_pipeline) {
+        int dtype_bytes = op->dtype.bytes();
+        std::vector<PrimExpr> valid_shapes;
+        valid_shapes.reserve(2);
+        stream << pos << "<" << type;
+        int shape_value = shape[0].as<tvm::tir::IntImmNode>()->value;
+        if (shape_value * dtype_bytes % 32 == 0) {
+          valid_shapes.push_back(shape[0]);
         } else {
-          auto bufferNum = prefetch_n_stages_map_[vid].first;
-          // prefetch_n_stages_map_[vid] = std::pair<int, int>{bufferNum, 0};
-          int dtype_bytes = op->dtype.bytes();
-          std::vector<PrimExpr> valid_shapes;
-          valid_shapes.reserve(shape.size() - 1);
-          stream << pos << "<" << type;
-          int shape_value = shape[0].as<tvm::tir::IntImmNode>()->value;
-          if (shape_value * dtype_bytes % 32 == 0) {
-            valid_shapes.push_back(shape[0]);
-          } else {
-            valid_shapes.push_back(tvm::IntImm(
-                shape[0].dtype(),
-                shape_value +
-                    (32 - shape_value * dtype_bytes % 32) / dtype_bytes));
-          }
-          valid_shapes.push_back(shape[1]);
-          for (size_t i = 0; i < valid_shapes.size(); i++) {
-            l_data[i + 1] = PrintExpr(valid_shapes[i]);
-            stream << ", " << valid_shapes[i];
-          }
-          for (size_t i = 0; i < shape.size(); i++) {
-            stream << ", " << shape[i];
-          }
-          stream << "> " << vid << "[" << bufferNum << "];\n";
-          if (l_data[3].empty()) {
-            l_data[3] = PrintExpr(target_expr);
-          }
-          for (size_t j = 0; j < bufferNum; j++) {
-            this->PrintIndent();
-            stream << "TASSIGN(" << vid << "[" << j << "], "
-                   << PrintExpr(target_expr) << " + " << j << " * "
-                   << dtype_bytes << " * " << valid_shapes[0] << " * "
-                   << valid_shapes[1] << ");\n";
-          }
+          valid_shapes.push_back(
+              tvm::IntImm(shape[0].dtype(),
+                          shape_value + (32 - shape_value * dtype_bytes % 32) /
+                                            dtype_bytes));
+        }
+        valid_shapes.push_back(shape[1]);
+        for (size_t i = 0; i < valid_shapes.size(); i++) {
+          l_data[i + 1] = PrintExpr(valid_shapes[i]);
+          stream << ", " << valid_shapes[i];
+        }
+        for (size_t i = 0; i < shape.size(); i++) {
+          stream << ", " << shape[i];
+        }
+        l_data[3] = PrintExpr(target_expr);
+        stream << "> " << vid << ";\n";
+        this->PrintIndent();
+        stream << "TASSIGN(" << vid << ", " << PrintExpr(target_expr) << ");\n";
+      } else {
+        auto bufferNum = prefetch_n_stages_map_[vid].first;
+        int dtype_bytes = op->dtype.bytes();
+        std::vector<PrimExpr> valid_shapes;
+        valid_shapes.reserve(shape.size() - 1);
+        stream << pos << "<" << type;
+        int shape_value = shape[0].as<tvm::tir::IntImmNode>()->value;
+        if (shape_value * dtype_bytes % 32 == 0) {
+          valid_shapes.push_back(shape[0]);
+        } else {
+          valid_shapes.push_back(
+              tvm::IntImm(shape[0].dtype(),
+                          shape_value + (32 - shape_value * dtype_bytes % 32) /
+                                            dtype_bytes));
+        }
+        valid_shapes.push_back(shape[1]);
+        for (size_t i = 0; i < valid_shapes.size(); i++) {
+          l_data[i + 1] = PrintExpr(valid_shapes[i]);
+          stream << ", " << valid_shapes[i];
+        }
+        for (size_t i = 0; i < shape.size(); i++) {
+          stream << ", " << shape[i];
+        }
+        stream << "> " << vid << "[" << bufferNum << "];\n";
+        if (l_data[3].empty()) {
+          l_data[3] = PrintExpr(target_expr);
+        }
+        for (size_t j = 0; j < bufferNum; j++) {
+          this->PrintIndent();
+          stream << "TASSIGN(" << vid << "[" << j << "], "
+                 << PrintExpr(target_expr) << " + " << j << " * " << dtype_bytes
+                 << " * " << valid_shapes[0] << " * " << valid_shapes[1]
+                 << ");\n";
         }
       }
       l_data_map_[vid] = l_data;
-    } else {
-      if (address_offset_.find(String(pos)) == address_offset_.end()) {
-        address_offset_.Set(String(pos), 0);
-      }
-      if (pos == kAscendPtoScope + "TileUbData") {
-
-        // Log Unified Buffer (UB) information.
-        if (shape.size() == 1) {
-          ub_data[1] = "1";
-          ub_data[2] = PrintExpr(shape[0]);
-          ub_data[4] = "Unapplied for tileUbDataDN";
-          ub_data[5] = "1";
-          ub_data[6] = PrintExpr(shape[0]);
-          // when ub_data[6] * sizeof(dtype) < 32, do this
-          int num1 = std::stoi(ub_data[6]);
-          if (ub_data[0] == "int" && num1 < 8) {
-            ub_data[6] = "8";
-          } else if (ub_data[0] == "float" && num1 < 8) {
-            ub_data[6] = "8";
-          } else if (ub_data[0] == "half" && num1 < 16) {
-            ub_data[6] = "16";
-          }
-        } else if (shape.size() == 2) {
-          if (shape[1].as<IntImmNode>()->value != 1) {
-            if (!buffer_in_pipeline) {
-              ub_data[1] = PrintExpr(shape[0]);
-              ub_data[2] = PrintExpr(shape[1]);
-              ub_data[4] = "Unapplied for tileUbDataDN";
-              ub_data[5] = PrintExpr(shape[0]);
-              ub_data[6] = PrintExpr(shape[1]);
-            } else {
-              ub_data[1] = "1";
-              ub_data[2] = PrintExpr(shape[1]);
-              ub_data[4] = "Unapplied for tileUbDataDN";
-              ub_data[5] = "1";
-              ub_data[6] = PrintExpr(shape[1]);
-            }
-          } else {
-            ub_data[1] = "1";
-            ub_data[2] = PrintExpr(shape[0]);
-            ub_data[4] = "Unapplied for tileUbDataDN";
-            ub_data[5] = "1";
-            ub_data[6] = PrintExpr(shape[0]);
-            shape.pop_back();
-          }
-        } else if (shape.size() == 3) {
-          ub_data[1] = PrintExpr(shape[1]);
-          ub_data[2] = PrintExpr(shape[2]);
-          ub_data[4] = "Unapplied for tileUbDataDN";
-          ub_data[5] = PrintExpr(shape[1]);
-          ub_data[6] = PrintExpr(shape[2]);
-        }
-
-        // Check if padding is needed at the time of request.
-        auto valid = ValidLayoutEnabled(op);
-        if (valid) {
-          int8_t typeSize = GetTypeLen(type);
-          int8_t NDBlockSize = 32 / typeSize;
-          int shape2_val = std::stoi(ub_data[2]);
-          PrimExpr shape2_expr = IntImm(DataType::Int(32), shape2_val);
-          PrimExpr padded_shape2 =
-              tvm::floordiv(shape2_expr + NDBlockSize - 1, NDBlockSize) *
-              NDBlockSize;
-          ub_data[2] = PrintExpr(padded_shape2);
-        }
-
-        if (buffer_in_pipeline) {
-          // Recording the count of buffer allocations in the pipeline.
-          auto bufferNum = prefetch_n_stages_map_[vid].first;
-          // prefetch_n_stages_map_[vid] = std::pair<int, int>{bufferNum, 0};
-
-          // Output the valid shape.
-          stream << pos << "ND<" << type << ", " << ub_data[1] << ", "
-                 << ub_data[2] << ", " << ub_data[5] << ", " << ub_data[6];
-          stream << "> " << vid << "[" << bufferNum << "];\n";
-
-          // Batch allocate addresses.
-          for (size_t i = 0; i < bufferNum; i++) {
-            this->PrintIndent();
-            stream << "TASSIGN(" << vid << "[" << i << "], "
-                   << PrintExpr(address_offset_[String(pos)]) << ");\n";
-            if (ub_data[3].empty()) {
-              ub_data[3] = PrintExpr(address_offset_[String(pos)]);
-            }
-            ub_data_map_[vid] = ub_data;
-            address_offset_.Set(String(pos),
-                                PrimExpr(int(op->ConstantAllocationSize() *
-                                             op->dtype.bytes() / 2)) +
-                                    address_offset_[String(pos)]);
-          }
-        } else {
-          stream << pos << "ND<" << type << ", " << ub_data[1] << ", "
-                 << ub_data[2] << ", " << ub_data[5] << ", " << ub_data[6];
-          stream << "> " << vid << ";\n";
-          this->PrintIndent();
-          stream << "TASSIGN(" << vid << ", "
-                 << PrintExpr(address_offset_[String(pos)]) << ");\n";
-          ub_data[3] = PrintExpr(address_offset_[String(pos)]);
-          ub_data_map_[vid] = ub_data;
-          address_offset_.Set(
-              String(pos),
-              PrimExpr(int(op->ConstantAllocationSize() * op->dtype.bytes())) +
-                  address_offset_[String(pos)]);
-        }
-
-      } else {
-        if (!buffer_in_pipeline) {
-          int dtype_bytes = op->dtype.bytes();
-          std::vector<PrimExpr> valid_shapes;
-          valid_shapes.reserve(2);
-          stream << pos << "<" << type;
-          int shape_value = shape[0].as<tvm::tir::IntImmNode>()->value;
-          if (shape_value * dtype_bytes % 32 == 0) {
-            valid_shapes.push_back(shape[0]);
-          } else {
-            valid_shapes.push_back(tvm::IntImm(
-                shape[0].dtype(),
-                shape_value +
-                    (32 - shape_value * dtype_bytes % 32) / dtype_bytes));
-          }
-          valid_shapes.push_back(shape[1]);
-          for (size_t i = 0; i < valid_shapes.size(); i++) {
-            l_data[i + 1] = PrintExpr(valid_shapes[i]);
-            stream << ", " << valid_shapes[i];
-          }
-          for (size_t i = 0; i < shape.size(); i++) {
-            stream << ", " << shape[i];
-          }
-          stream << "> " << vid << ";\n";
-          this->PrintIndent();
-          l_data[3] = PrintExpr(address_offset_[String(pos)]);
-          stream << "TASSIGN(" << vid << ", "
-                 << PrintExpr(address_offset_[String(pos)]) << ");\n";
-          address_offset_.Set(
-              String(pos),
-              PrimExpr(int(op->ConstantAllocationSize() * op->dtype.bytes())) +
-                  address_offset_[String(pos)]);
-        } else {
-          auto bufferNum = prefetch_n_stages_map_[vid].first;
-          // prefetch_n_stages_map_[vid] = std::pair<int, int>{bufferNum, 0};
-          int dtype_bytes = op->dtype.bytes();
-          std::vector<PrimExpr> valid_shapes;
-          valid_shapes.reserve(shape.size() - 1);
-          stream << pos << "<" << type;
-          int shape_value = shape[0].as<tvm::tir::IntImmNode>()->value;
-          if (shape_value * dtype_bytes % 32 == 0) {
-            valid_shapes.push_back(shape[0]);
-          } else {
-            valid_shapes.push_back(tvm::IntImm(
-                shape[0].dtype(),
-                shape_value +
-                    (32 - shape_value * dtype_bytes % 32) / dtype_bytes));
-          }
-          valid_shapes.push_back(shape[1]);
-          for (size_t i = 0; i < valid_shapes.size(); i++) {
-            l_data[i + 1] = PrintExpr(valid_shapes[i]);
-            stream << ", " << valid_shapes[i];
-          }
-          for (size_t i = 0; i < shape.size(); i++) {
-            stream << ", " << shape[i];
-          }
-          if (l_data[3].empty()) {
-            l_data[3] = PrintExpr(address_offset_[String(pos)]);
-          }
-          stream << "> " << vid << "[" << bufferNum << "];\n";
-          for (size_t j = 0; j < bufferNum; j++) {
-            this->PrintIndent();
-            stream << "TASSIGN(" << vid << "[" << j << "], "
-                   << PrintExpr(address_offset_[String(pos)]) << ");\n";
-            address_offset_.Set(String(pos),
-                                PrimExpr(int(op->ConstantAllocationSize() *
-                                             op->dtype.bytes() / bufferNum)) +
-                                    address_offset_[String(pos)]);
-          }
-        }
-        l_data_map_[vid] = l_data;
-      }
     }
   };
 

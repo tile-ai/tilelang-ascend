@@ -2,14 +2,15 @@ import tilelang
 from tilelang import DataType, language as T
 import torch
 import sfa_golden as ref
-import numpy as np
+# import numpy as np
 
-torch.set_default_device('npu')
+torch.set_default_device("npu")
 torch.manual_seed(0)
 
 tilelang.disable_cache()
 
-@tilelang.jit(out_idx=[3], workspace_idx=[7,8,9,10,11])
+
+@tilelang.jit(out_idx=[3], workspace_idx=[7, 8, 9, 10, 11])
 def sparse_attention_fwd(
     heads,
     dim,
@@ -20,19 +21,17 @@ def sparse_attention_fwd(
     is_causal=True,
     block_I=64,
     dtype="bfloat16",
-    block_num = 516,
-    block_size = 128,
-    core_num = 24,
+    block_num=516,
+    block_size=128,
+    core_num=24,
 ):
-    assert dim == tilelang.math.next_power_of_2(
-        dim), f"haven't check padding correctness yet, dim={dim}"
-    assert tail_dim == tilelang.math.next_power_of_2(
-        tail_dim), f"haven't check padding correctness yet, dim={tail_dim}"
-    assert is_causal, 'non-casual is not supported'
-    assert topk % block_I == 0, 'otherwise will load some index=0 thus causing wrong kv to be loaded'
+    assert dim == tilelang.math.next_power_of_2(dim), f"haven't check padding correctness yet, dim={dim}"
+    assert tail_dim == tilelang.math.next_power_of_2(tail_dim), f"haven't check padding correctness yet, dim={tail_dim}"
+    assert is_causal, "non-casual is not supported"
+    assert topk % block_I == 0, "otherwise will load some index=0 thus causing wrong kv to be loaded"
 
     # NOTE: ascend only support exp interface instead of exp2
-    sm_scale = (1.0 / (dim + tail_dim))**0.5 if sm_scale is None else sm_scale
+    sm_scale = (1.0 / (dim + tail_dim)) ** 0.5 if sm_scale is None else sm_scale
 
     batch = T.symbolic("batch")
     seq_len = T.symbolic("seq_len")
@@ -53,7 +52,9 @@ def sparse_attention_fwd(
 
     padded_H = max(tilelang.math.next_power_of_2(head_kv), 16)
     if padded_H != H:
-        assert kv_group == 1, 'here we solve the H padding automatically, other wise you should handle Q copy and Output copy with your mask (when kv_group == 1, use g_i * padded_H:(g_i+1) * padded_H would be handled automatically)'
+        assert kv_group == 1, (
+            "here we solve the H padding automatically, other wise you should handle Q copy and Output copy with your mask (when kv_group == 1, use g_i * padded_H:(g_i+1) * padded_H would be handled automatically)"
+        )
 
     BI = block_I
     NI = tilelang.cdiv(topk, block_I)
@@ -61,7 +62,7 @@ def sparse_attention_fwd(
     D_tail = tail_dim
 
     if head_kv > 64:
-        assert head_kv % 64 == 0, 'head_kv should be a multiple of 64'
+        assert head_kv % 64 == 0, "head_kv should be a multiple of 64"
         REPLICATE_H = head_kv // 64
     else:
         REPLICATE_H = 1
@@ -74,18 +75,18 @@ def sparse_attention_fwd(
 
     @T.prim_func
     def main(
-            Q: T.Tensor(q_shape, dtype),  # type: ignore
-            KV: T.Tensor(kv_shape, dtype),  # type: ignore
-            Indices: T.Tensor(indices_shape, indices_dtype),  # type: ignore
-            Output: T.Tensor(o_shape, dtype),  # type: ignore
-            actual_q_len: T.Tensor([batch], indices_dtype),
-            actual_kv_len: T.Tensor([batch], indices_dtype),
-            block_table: T.Tensor([batch, block_table_len], indices_dtype),
-            workspace_1: T.Tensor([core_num, BI, D], dtype),  # T.Tensor([block_num, BI, D], dtype),
-            workspace_2: T.Tensor([core_num, BI, D_tail], dtype),  # T.Tensor([block_num, BI, D_tail], dtype),
-            workspace_3: T.Tensor([core_num, H_per_block, BI], accum_dtype),  # T.Tensor([block_num, H_per_block, BI], accum_dtype),
-            workspace_4: T.Tensor([core_num, H_per_block, BI], dtype),  # T.Tensor([block_num, H_per_block, BI], dtype),
-            workspace_5: T.Tensor([core_num, H_per_block, D], accum_dtype),  # T.Tensor([block_num, H_per_block, D], accum_dtype),
+        Q: T.Tensor(q_shape, dtype),  # type: ignore
+        KV: T.Tensor(kv_shape, dtype),  # type: ignore
+        Indices: T.Tensor(indices_shape, indices_dtype),  # type: ignore
+        Output: T.Tensor(o_shape, dtype),  # type: ignore
+        actual_q_len: T.Tensor([batch], indices_dtype),
+        actual_kv_len: T.Tensor([batch], indices_dtype),
+        block_table: T.Tensor([batch, block_table_len], indices_dtype),
+        workspace_1: T.Tensor([core_num, BI, D], dtype),  # T.Tensor([block_num, BI, D], dtype),
+        workspace_2: T.Tensor([core_num, BI, D_tail], dtype),  # T.Tensor([block_num, BI, D_tail], dtype),
+        workspace_3: T.Tensor([core_num, H_per_block, BI], accum_dtype),  # T.Tensor([block_num, H_per_block, BI], accum_dtype),
+        workspace_4: T.Tensor([core_num, H_per_block, BI], dtype),  # T.Tensor([block_num, H_per_block, BI], dtype),
+        workspace_5: T.Tensor([core_num, H_per_block, D], accum_dtype),  # T.Tensor([block_num, H_per_block, D], accum_dtype),
     ):
         with T.Kernel(core_num, is_npu=True) as (cid, vid):
             # Alloc Memory
@@ -117,39 +118,38 @@ def sparse_attention_fwd(
             mask_ub = T.alloc_ub([BI // 8], "uint8")
             mask_ub_2 = T.alloc_ub([BI // 8], "uint8")
 
-
             # Currently manually set the address.
-            T.annotate_address({
-                # L1 address
-                q_l1: 0,
-                q_tail_l1: 65536,
-                kv_l1: 73728,
-                kv_tail_l1: 139264,
-                acc_s_l1: 139264,
-
-                # L0C address
-                acc_s_l0c: 0,
-                acc_o_l0c: 0,
-
-                ## ub address
-                acc_o: 0,
-                sumexp: 65536,
-                m_i: 65664,
-                indices_ub_: 65792,
-                indices_ub_float: 66048,
-                kv_ub: 66048,
-                kv_tail_ub: 67072,
-                acc_s_ub: 66048,
-                m_i_prev: 74240,
-                acc_s_ub_: 74368,
-                tmp_ub: 74368,
-                sumexp_i_ub: 98944,
-                acc_s_half: 98944,
-                acc_o_ub: 98944,
-                acc_o_half: 98944,
-                mask_ub: 164480,
-                mask_ub_2: 164512,
-            })
+            T.annotate_address(
+                {
+                    # L1 address
+                    q_l1: 0,
+                    q_tail_l1: 65536,
+                    kv_l1: 73728,
+                    kv_tail_l1: 139264,
+                    acc_s_l1: 139264,
+                    # L0C address
+                    acc_s_l0c: 0,
+                    acc_o_l0c: 0,
+                    ## ub address
+                    acc_o: 0,
+                    sumexp: 65536,
+                    m_i: 65664,
+                    indices_ub_: 65792,
+                    indices_ub_float: 66048,
+                    kv_ub: 66048,
+                    kv_tail_ub: 67072,
+                    acc_s_ub: 66048,
+                    m_i_prev: 74240,
+                    acc_s_ub_: 74368,
+                    tmp_ub: 74368,
+                    sumexp_i_ub: 98944,
+                    acc_s_half: 98944,
+                    acc_o_ub: 98944,
+                    acc_o_half: 98944,
+                    mask_ub: 164480,
+                    mask_ub_2: 164512,
+                }
+            )
 
             # fixed core
             for core_index in T.serial(T.ceildiv(seq_len * REPLICATE_H * batch * kv_group, core_num)):
@@ -162,8 +162,8 @@ def sparse_attention_fwd(
                     b_i = by
                     g_i = bz
 
-                    s_i = (bx // REPLICATE_H)
-                    h_i = (bx % REPLICATE_H)
+                    s_i = bx // REPLICATE_H
+                    h_i = bx % REPLICATE_H
 
                     H0 = g_i * padded_H + (0 if REPLICATE_H == 1 else (bx % REPLICATE_H) * 64)
                     H1 = H0 + H_per_block
@@ -206,20 +206,19 @@ def sparse_attention_fwd(
                                 T.wait_cross_flag(4)
 
                         with T.Scope("V"):
-
                             T.tile.fill(acc_o, 0.0)
                             T.tile.fill(sumexp, 0.0)
-                            T.tile.fill(m_i, -2.0**30)
+                            T.tile.fill(m_i, -(2.0**30))
                             T.barrier_all()
 
                             for i_i in range(NI):
-                                T.copy(Indices[s_i, g_i, i_i * BI:i_i * BI + BI], indices_ub_)
+                                T.copy(Indices[s_i, g_i, i_i * BI : i_i * BI + BI], indices_ub_)
                                 T.barrier_all()
                                 T.copy(indices_ub_, indices_ub_float)
                                 T.barrier_all()
                                 actual_len = actual_kv_len[b_i]
                                 T.barrier_all()
-                                valid_kv_len = T.Min(T.float32(s_i), T.float32(actual_len))
+                                # valid_kv_len = T.Min(T.float32(s_i), T.float32(actual_len))
                                 T.barrier_all()
                                 T.tile.compare(mask_ub, indices_ub_float, T.float32(actual_len - act_q_len + s_i), "LE")
                                 T.tile.compare(mask_ub_2, indices_ub_float, T.float32(-1.0), "NE")
@@ -250,16 +249,16 @@ def sparse_attention_fwd(
                                 T.barrier_all()
 
                                 for i in T.serial(v_block):
-                                    T.tile.select(acc_s_ub[i, :], mask_ub, acc_s_ub_[i, :], -T.infinity(accum_dtype), "VSEL_TENSOR_SCALAR_MODE")
+                                    T.tile.select(
+                                        acc_s_ub[i, :], mask_ub, acc_s_ub_[i, :], -T.infinity(accum_dtype), "VSEL_TENSOR_SCALAR_MODE"
+                                    )
                                     T.barrier_all()
 
                                 T.copy(m_i, m_i_prev)
                                 T.barrier_all()
 
                                 T.wait_cross_flag(1)
-                                T.copy(
-                                    workspace_3[cid, vid * v_block:vid * v_block + v_block, :],
-                                    acc_s_ub_)
+                                T.copy(workspace_3[cid, vid * v_block : vid * v_block + v_block, :], acc_s_ub_)
                                 T.barrier_all()
 
                                 T.tile.add(acc_s_ub, acc_s_ub, acc_s_ub_)
@@ -307,9 +306,7 @@ def sparse_attention_fwd(
                                 T.copy(acc_s_ub, acc_s_half)
                                 T.barrier_all()
 
-                                T.copy(
-                                    acc_s_half, workspace_4[cid,
-                                                            vid * v_block:vid * v_block + v_block, :])
+                                T.copy(acc_s_half, workspace_4[cid, vid * v_block : vid * v_block + v_block, :])
                                 T.barrier_all()
 
                                 T.set_cross_flag("MTE3", 2)
@@ -317,9 +314,7 @@ def sparse_attention_fwd(
                                 T.wait_cross_flag(3)
                                 T.barrier_all()
 
-                                T.copy(
-                                    workspace_5[cid, vid * v_block:vid * v_block + v_block, :],
-                                    acc_o_ub)
+                                T.copy(workspace_5[cid, vid * v_block : vid * v_block + v_block, :], acc_o_ub)
                                 T.barrier_all()
 
                                 T.tile.add(acc_o, acc_o, acc_o_ub)
@@ -335,7 +330,7 @@ def sparse_attention_fwd(
 
                             T.copy(acc_o, acc_o_half)
                             T.barrier_all()
-                            T.copy(acc_o_half, Output[b_i, s_i, H0 + vid * v_block:H1 + vid * v_block, :])
+                            T.copy(acc_o_half, Output[b_i, s_i, H0 + vid * v_block : H0 + v_block + vid * v_block, :])
 
     return main
 
@@ -358,10 +353,13 @@ func = sparse_attention_fwd(
 print(func.get_kernel_source())
 # exit(0)
 
-def ref_sparse_attention_fwd_interface(q,
-                                       kv,
-                                       indices,
-                                       sm_scale=None,):
+
+def ref_sparse_attention_fwd_interface(
+    q,
+    kv,
+    indices,
+    sm_scale=None,
+):
     q = q.float()
     kv = kv.float()
     indices = indices.transpose(1, 2)
@@ -376,14 +374,14 @@ def ref_sparse_attention_fwd_interface(q,
     b, _, _, dim_v = v.shape
     g_index = g
     h_index = h // g
-    compressed_casual_mask = torch.arange(
-        0, sq, dtype=torch.int32).view(-1, 1) >= torch.arange(
-            1 - 1, sk * 1, 1, dtype=torch.int32).view(1, -1)
+    compressed_casual_mask = torch.arange(0, sq, dtype=torch.int32).view(-1, 1) >= torch.arange(1 - 1, sk * 1, 1, dtype=torch.int32).view(
+        1, -1
+    )
 
     mask = q.new_zeros(b, g_index, sq, sk + 1, dtype=torch.bool).scatter(3, indices.long(), 1)
     mask = mask[..., :-1]
     mask = mask & compressed_casual_mask.view(1, 1, sq, sk)
-    mask[:, :, :1 - 1, 0] = True
+    mask[:, :, : 1 - 1, 0] = True
     mask = mask.view(b, g_index, 1, sq, sk)
 
     q = q.view(b, sq, g, -1, dim_q)
@@ -398,6 +396,7 @@ def ref_sparse_attention_fwd_interface(q,
     o = o.reshape(b, sq, h, dim_v)
     return o.to(torch.bfloat16)
 
+
 B, S, SKV, H, HKV, DQK, DV, topk = 1, 512, 32 * 1024, 128, 1, 576, 512, 2048
 dtype = torch.bfloat16
 
@@ -409,7 +408,7 @@ indices = torch.full((S, HKV, topk), -1, dtype=torch.int32)
 for t in range(S):
     for h in range(HKV):
         i_i = torch.randperm(max(1, t))[:topk]
-        indices[t, h, :len(i_i)] = i_i
+        indices[t, h, : len(i_i)] = i_i
 torch.npu.synchronize()
 
 # workspace_1 = torch.zeros((core_num, 64, 512), dtype=dtype)
@@ -431,13 +430,25 @@ torch.npu.synchronize()
 
 indices_ref = indices.unsqueeze(0)
 import math
+
 scale_value = math.sqrt(1 / DQK)
 sparse_block_size = 1
 cpu_out = ref.cpu_sparse_flash_attention(
-            q[..., 0:512], kv[..., 0:512], kv[..., 0:512], indices_ref, scale_value, sparse_block_size,
-            actual_seq_lengths_query=actual_q_len, actual_seq_lengths_kv=actual_kv_len,
-            query_rope=q[..., 512:], key_rope=kv[..., 512:],
-            layout_query='BSND', layout_kv='PA_BSND', sparse_mode=3, block_table=block_table)
+    q[..., 0:512],
+    kv[..., 0:512],
+    kv[..., 0:512],
+    indices_ref,
+    scale_value,
+    sparse_block_size,
+    actual_seq_lengths_query=actual_q_len,
+    actual_seq_lengths_kv=actual_kv_len,
+    query_rope=q[..., 512:],
+    key_rope=kv[..., 512:],
+    layout_query="BSND",
+    layout_kv="PA_BSND",
+    sparse_mode=3,
+    block_table=block_table,
+)
 
 cpu_out = torch.from_numpy(cpu_out).to(dtype).to("npu")
 

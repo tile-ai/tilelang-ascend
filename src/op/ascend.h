@@ -34,6 +34,7 @@ private:
   int srcN;
   bool enRelu;
   mutable bool transposeL1;
+  PrimExpr padValue;
 };
 
 TVM_DLL const Op &ascend_add();
