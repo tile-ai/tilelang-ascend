@@ -782,6 +782,8 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op,
     PowCodegen(op);
   } else if (op->op.same_as(tl::ascend_sort32())) {
     Sort32Codegen(op, "TSORT32");
+  } else if (op->op.same_as(tl::ascend_merge_sort())) {
+    MergeSortCodegen(op, "TMRGSORT");
   } else if (op->op.same_as(tl::ascend_transpose())) {
     TransposeCodegen(op, "TTRANS");
   } else if (op->op.same_as(tl::ascend_bitwise_xor())) {
@@ -1655,6 +1657,48 @@ void CodeGenTileLangAscendPto::Sort32Codegen(const CallNode *op,
   std::string idx_name = PrintExpr(op->args[2].as<CallNode>()->args[1]);
   this->stream << op_name << "(" << dst_name << ", " << src_name << ", "
                << idx_name << ");\n";
+}
+
+void CodeGenTileLangAscendPto::MergeSortCodegen(const CallNode *op,
+                                                const std::string &op_name) {
+  // args: [func_name, num_ways, dst, src0, src1, ...]
+  // TMRGSORT API: TMRGSORT(dst, executedNumList, tmp, src0, src1, ...)
+  // tmp buffer is passed from caller, executedNumList is managed internally by pto/common.h MergeSort wrapper
+  // args: [func_name, num_ways, dst, tmp, src0, src1, ..., blockLens...]
+  int num_ways = Downcast<IntImm>(op->args[1])->value;
+
+  this->PrintIndent();
+
+  // Get dst buffer name
+  std::string dst_name = PrintExpr(op->args[2].as<CallNode>()->args[1]);
+  std::vector<std::string> dst_data = ub_data_map_[dst_name];
+  std::string dst_type = dst_data[0];
+  std::string dst_col = dst_data[2];
+
+  // Get tmp buffer name
+  std::string tmp_name = PrintExpr(op->args[3].as<CallNode>()->args[1]);
+
+  // Get src buffer names (starting from args[4])
+  std::vector<std::string> src_names;
+  std::string src_col;
+  for (int i = 0; i < num_ways; ++i) {
+    std::string src_name = PrintExpr(op->args[4 + i].as<CallNode>()->args[1]);
+    src_names.push_back(src_name);
+    if (i == 0) {
+      std::vector<std::string> src_data = ub_data_map_[src_name];
+      src_col = src_data[2];
+    }
+  }
+
+  // Generate call: MergeSort<type, SrcCols, DstCols>(dst, tmp, src0, src1, ...)
+  // This uses the wrapper in pto/common.h which internally calls TMRGSORT
+  this->stream << kAscendPtoScope << "MergeSort<" << dst_type << ", "
+               << src_col << ", " << dst_col << ">(" << dst_name
+               << ", " << tmp_name;
+  for (const auto& src_name : src_names) {
+    this->stream << ", " << src_name;
+  }
+  this->stream << ");\n";
 }
 
 void CodeGenTileLangAscendPto::TransposeCodegen(const CallNode *op,

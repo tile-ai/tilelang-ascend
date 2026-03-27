@@ -1426,8 +1426,17 @@ void CodeGenTileLangAscend::SortCodegen(const CallNode *op) {
 void CodeGenTileLangAscend::MergeSortCodegen(const CallNode *op) {
   std::string op_name =
       "tl::ascend::" + Downcast<StringImm>(op->args[0])->value;
-  int len = op->args.size();
-  PrintOpCall(op, op_name, {1, len - 3}, {len - 3, len});
+
+  int num_ways = Downcast<IntImm>(op->args[1])->value;
+
+  // args: [func_name, num_ways, dst, tmp, src0, src1, ..., blockLen0, blockLen1, ...]
+  // Buffer args: args[2] (dst), args[3] (tmp), args[4] to args[4+num_ways-1] (sources)
+  // Scalar args: args[4+num_ways] to args[4+num_ways+num_ways-1] (blockLen for each source)
+  int buffer_start = 2;
+  int buffer_end = 4 + num_ways;  // dst(1) + tmp(1) + sources(num_ways)
+  int scalar_start = buffer_end;
+  int scalar_end = scalar_start + num_ways;
+  PrintOpCall(op, op_name, {buffer_start, buffer_end}, {scalar_start, scalar_end});
 }
 
 void CodeGenTileLangAscend::TopKCodegen(const CallNode *op) {

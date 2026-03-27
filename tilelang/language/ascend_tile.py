@@ -154,36 +154,61 @@ def sort(
 
 def merge_sort(
     dst: Buffer,
-    src: Buffer,
-    block_size: PrimExpr,
-    block_num: PrimExpr,
-    is_copy: PrimExpr,
+    tmp: Buffer,
+    src0: Buffer,
+    src1: Buffer,
+    src2: Buffer | None = None,
+    src3: Buffer | None = None,
 ):
-    """Performs a merge sort operation.
+    """Performs a 2/3/4-way merge sort operation.
 
     This intrinsic invokes the underlying implementation to perform merge sort
-    on the data blocks.
+    on multiple sorted blocks using AscendC::MrgSort hardware API.
+    blockLen is calculated from each source buffer size.
+
+    Hardware MrgSort format: 4 floats per element
+    - Position 0: sort key (value)
+    - Position 1: data (index)
+    - Position 2-3: reserved/padding
+    - blockLen = number of elements = buffer_size / 4
 
     Args:
-        dst: The destination buffer where the sorted result will be stored.
-        src: The source buffer containing the data to be merged or sorted.
-        block_size: The number of elements in each block to be merged.
-        block_num: The total number of blocks to process.
-        is_copy: A boolean flag (0 or 1) indicating whether to copy the data
-            without sorting.
+        dst: The destination buffer where the merged result will be stored.
+        tmp: A temporary buffer used for intermediate calculations.
+        src0: First source buffer.
+        src1: Second source buffer.
+        src2: Third source buffer (optional, for 3-way or 4-way merge).
+        src3: Fourth source buffer (optional, for 4-way merge).
 
     Returns:
         A TVM intrinsic call that performs the merge sort operation.
     """
+    src_buffers = [s for s in [src0, src1, src2, src3] if s is not None]
+    num_ways = len(src_buffers)
+
+    if num_ways < 2 or num_ways > 4:
+        raise ValueError(f"merge_sort requires 2-4 source buffers, got {num_ways}")
+
+    # Calculate blockLen for each source buffer
+    # Value-index pair format: 2 floats per element [value, index]
+    # blockLen = number of elements = buffer_size / 2
+    # Note: Hardware MrgSort has format compatibility issues with this format
+    blockLens = []
+    for buf in src_buffers:
+        buf_size = math.prod(buf.shape)
+        blockLens.append(buf_size // 2)  # Value-index pair format
+
+    args = [
+        f"MergeSort<{_dtype(dst)}>",
+        num_ways,
+        dst.access_ptr("w"),
+        tmp.access_ptr("w"),
+    ] + [buf.access_ptr("r") for buf in src_buffers] + blockLens
+
     return tir.call_intrin(
         "handle",
         tir.op.Op.get("tl.ascend_merge_sort"),
-        f"MergeSort<{_dtype(dst)}>",
-        dst.access_ptr("w"),
-        src.access_ptr("r"),
-        block_size,
-        block_num,
-        is_copy,
+        *args,
     )
 
 
