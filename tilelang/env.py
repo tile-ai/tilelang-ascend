@@ -39,12 +39,14 @@ if not os.path.exists(THIRD_PARTY_ROOT):
     # In dev builds, place artifacts under build/lib and point search path there
     # to avoid adding the entire build root to sys.path.
     TL_LIBS = [os.path.join(dev_lib_root, "lib"), os.path.join(dev_lib_root, "tvm")]
+    TL_LIBS = [i for i in TL_LIBS if os.path.exists(i)]  # Filter out non-existent paths
     THIRD_PARTY_ROOT = os.path.join(tl_dev_root, "3rdparty")
     logger.warning(f"Loading tilelang libs from dev root: {dev_lib_root}")
 
-assert TL_LIBS and all(os.path.exists(i) for i in TL_LIBS), (
-    f"tilelang lib root do not exists: {TL_LIBS}"
-)
+if not DEV:
+    assert TL_LIBS and all(os.path.exists(i) for i in TL_LIBS), (
+        f"tilelang lib root do not exists: {TL_LIBS}"
+    )
 
 for lib in TL_LIBS:
     if lib not in sys.path:
@@ -439,10 +441,14 @@ if env.TVM_IMPORT_PYTHON_PATH is not None:
     prepend_pythonpath(env.TVM_IMPORT_PYTHON_PATH)
 else:
     tvm_path = os.path.join(THIRD_PARTY_ROOT, "tvm", "python")
-    assert os.path.exists(tvm_path), tvm_path
-    if tvm_path not in sys.path:
-        prepend_pythonpath(tvm_path)
-        env.TVM_IMPORT_PYTHON_PATH = tvm_path
+    if os.path.exists(tvm_path):
+        if tvm_path not in sys.path:
+            prepend_pythonpath(tvm_path)
+            env.TVM_IMPORT_PYTHON_PATH = tvm_path
+    else:
+        logger.warning(
+            f"TVM python path not found: {tvm_path}. You may need to build TVM or set TVM_IMPORT_PYTHON_PATH manually."
+        )
 # By default, the built TVM-related libraries are stored in TL_LIBS.
 if os.environ.get("TVM_LIBRARY_PATH") is None:
     os.environ["TVM_LIBRARY_PATH"] = env.TVM_LIBRARY_PATH = os.pathsep.join(TL_LIBS)
