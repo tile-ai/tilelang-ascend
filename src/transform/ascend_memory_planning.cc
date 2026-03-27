@@ -49,11 +49,8 @@ TVM_REGISTER_PASS_CONFIG_OPTION(kAscendMemoryPlanning, Bool);
 class AscendMemoryPlanning : public arith::IRMutatorWithAnalyzer {
 public:
   static PrimFunc Substitute(PrimFunc f, PassContext ctx) {
-    bool ascend_memory_planning =
+    bool auto_ascend_memory_planning =
         ctx->GetConfig<Bool>(kAscendMemoryPlanning, Bool(false)).value();
-    if (!ascend_memory_planning) {
-      return f;
-    }
 
     PrimFuncNode *fptr = f.CopyOnWrite();
     auto fn_attr = fptr->attrs.CopyOnWrite();
@@ -64,7 +61,8 @@ public:
           fn_attr->dict.at("address_map").as<Map<Var, PrimExpr>>().value();
     }
 
-    AscendMemoryPlanner planner(f, external_address_map);
+    AscendMemoryPlanner planner(f, external_address_map,
+                                auto_ascend_memory_planning);
     auto address_map = planner.GetAddressMap();
 
     Map<Var, PrimExpr> address_map_attr;
@@ -80,7 +78,9 @@ private:
   class AscendMemoryPlanner : public StmtExprVisitor {
   public:
     explicit AscendMemoryPlanner(const PrimFunc &func,
-                                 Map<Var, PrimExpr> external_address_map) {
+                                 Map<Var, PrimExpr> external_address_map,
+                                 bool auto_plan = false) {
+      memory_auto_plan = auto_plan;
       memory_limits_ = {{"shared.dyn", ASCEND_SHARED_DYN_MEM_SIZE},
                         {"wmma.matrix_a", ASCEND_WMMA_MATRIX_A_MEM_SIZE},
                         {"wmma.matrix_b", ASCEND_WMMA_MATRIX_B_MEM_SIZE},
@@ -134,6 +134,7 @@ private:
         std::string scope = GetPtrStorageScope(op->buffer_var);
         if (memory_limits_.count(scope)) {
           buffer_scopes_[buf] = scope;
+          origin_buffer.push_back(buf);
           buffer_sizes_[buf] = CalculateBufferSize(op);
 
           DLOG(DEBUG) << "Found NPU memory allocation: "
@@ -272,7 +273,7 @@ private:
       for (const auto &kv : external_address_map) {
         const VarNode *buf = kv.first.get();
         int64_t addr_offset = kv.second.as<IntImmNode>()->value;
-        pre_alloc_buffer_[buf] = addr_offset;
+        pre_alloc_buffer_[buf->name_hint] = addr_offset;
       }
     }
 
@@ -292,7 +293,10 @@ private:
       }
 
       for (const auto &scope_kv : scope_groups) {
-        PlanMemoryForScope(scope_kv.first, scope_kv.second);
+        if (memory_auto_plan)
+          PlanMemoryForScope(scope_kv.first, scope_kv.second);
+        else
+          PlanMemoryForScopeLinear(scope_kv.first, scope_kv.second);
       }
     }
 
@@ -421,8 +425,8 @@ private:
         int64_t start = -1;
         int64_t end = -1;
 
-        if (pre_alloc_buffer_.count(buffer) > 0) {
-          pre_alloc_scope_buffer[buffer] = pre_alloc_buffer_[buffer];
+        if (pre_alloc_buffer_.count(buffer->name_hint) > 0) {
+          pre_alloc_scope_buffer[buffer] = pre_alloc_buffer_[buffer->name_hint];
         };
 
         for (const auto &event_pair : event_map_) {
@@ -487,6 +491,35 @@ private:
       if (total_used > memory_limits_[scope]) {
         DLOG(WARNING) << "Memory limit exceeded for scope " << scope << ": "
                       << total_used << " > " << memory_limits_[scope];
+      }
+    }
+
+    void PlanMemoryForScopeLinear(const std::string &scope,
+                                  const std::vector<const VarNode *> &buffers) {
+      bool check_overflow = false; // reserve memory overflow check
+      int64_t current_offset = 0;
+      for (const VarNode *buffer : origin_buffer) {
+        if (std::find(buffers.begin(), buffers.end(), buffer) !=
+            buffers.end()) {
+          if (pre_alloc_buffer_.count(buffer->name_hint)) {
+            address_map_[buffer] = pre_alloc_buffer_[buffer->name_hint];
+          } else {
+            int64_t buf_size = buffer_sizes_[buffer];
+            if (current_offset + buf_size > memory_limits_[scope] &&
+                check_overflow) {
+              LOG(FATAL)
+                  << "Linear memory allocation failed! Out of memory in scope: "
+                  << scope << "\nBuffer: " << buffer->name_hint
+                  << "\nRequired size: " << buffer_sizes_[buffer]
+                  << "\nCurrent offset: " << current_offset
+                  << "\nMemory limit: " << memory_limits_[scope];
+            } else {
+              address_map_[buffer] = current_offset;
+              current_offset =
+                  static_cast<int64_t>(AlignUp(current_offset + buf_size, 32));
+            }
+          }
+        }
       }
     }
 
@@ -808,10 +841,11 @@ private:
         stmt_attrs_; // stmt operation level
     std::unordered_map<const Object *, EventEntry>
         event_map_; // stmt gen/kill event
-    std::unordered_map<const VarNode *, int64_t>
+    std::unordered_map<std::string, int64_t>
         pre_alloc_buffer_;              // pre alloction buffer address map
     std::vector<StmtEntry> linear_seq_; // linear stmt node scopes and levels
     std::vector<StmtEntry> scope_;      // temp stmt node scopes and levels
+    std::vector<const VarNode *> origin_buffer; // original buffer list
 
     std::multimap<uint64_t, StorageEntry *> const_free_map_;
     std::list<StorageEntry *> sym_free_list_;
@@ -819,6 +853,7 @@ private:
 
     size_t scope_level_{0};
     int max_layer_num_{1};
+    bool memory_auto_plan{false};
   };
 };
 

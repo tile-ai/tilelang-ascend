@@ -708,39 +708,33 @@ void CodeGenTileLangAscend::VisitStmt_(const AllocateNode *op) {
   std::string type = getType(op->dtype);
   const VarNode *buffer = op->buffer_var.as<VarNode>();
 
-  auto print_buffer = [&](const std::string &pos) {
-    this->PrintIndent();
+  auto print_buffer =
+      [&](const std::string &pos) {
+        this->PrintIndent();
 
-    PrimExpr target_expr;
-    bool found_by_name = false;
-    std::string target_var_name = op->buffer_var->name_hint;
+        PrimExpr target_expr;
+        bool found_by_name = false;
+        std::string target_var_name = op->buffer_var->name_hint;
 
-    for (const auto &pair : address_map_) {
-      Var var_key = pair.first;
-      if (var_key->name_hint == target_var_name) {
-        target_expr = pair.second;
-        found_by_name = true;
-        break;
-      }
-    }
+        for (const auto &pair : address_map_) {
+          Var var_key = pair.first;
+          if (var_key->name_hint == target_var_name) {
+            target_expr = pair.second;
+            found_by_name = true;
+            break;
+          }
+        }
 
-    if (found_by_name) {
-      stream << "auto " << vid << " = " << pos << ".GetWithOffset<" << type
-             << ">(" << op->ConstantAllocationSize() << ", "
-             << PrintExpr(target_expr) << ");\n";
-    } else {
-      if (address_offset_.find(String(pos)) == address_offset_.end()) {
-        address_offset_.Set(String(pos), 0);
-      }
-      stream << "auto " << vid << " = " << pos << ".GetWithOffset<" << type
-             << ">(" << op->ConstantAllocationSize() << ","
-             << PrintExpr(address_offset_[String(pos)]) << ");\n";
-      address_offset_.Set(
-          String(pos),
-          PrimExpr(int(op->ConstantAllocationSize() * op->dtype.bytes())) +
-              address_offset_[String(pos)]);
-    }
-  };
+        ICHECK(found_by_name)
+            << "CodeGenTileLangAscend: Cannot find pre-allocated address for "
+               "buffer: "
+            << target_var_name
+            << ". All buffers must be pre-allocated via address_map_.";
+
+        stream << "auto " << vid << " = " << pos << ".GetWithOffset<" << type
+               << ">(" << op->ConstantAllocationSize() << ", "
+               << PrintExpr(target_expr) << ");\n";
+      };
 
   if (scope == "wmma.matrix_a") {
     print_buffer("ascend_l0a");
