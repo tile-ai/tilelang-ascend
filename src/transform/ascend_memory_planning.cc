@@ -585,6 +585,24 @@ private:
           }
         }
       }
+      // allocate tmp buffer in shared memory after origin buffer
+      if (scope == "shared") {
+        for (auto buffer : tmp_buffers) {
+          int64_t buf_size = buffer_sizes_[buffer];
+          if (max_offset + buf_size > memory_limits_[scope] && check_overflow) {
+            LOG(FATAL) << "Linear tmp memory allocation failed! Out of memory "
+                          "in scope: "
+                       << scope << "\nBuffer: " << buffer->name_hint
+                       << "\nRequired size: " << buffer_sizes_[buffer]
+                       << "\nCurrent offset: " << max_offset
+                       << "\nMemory limit: " << memory_limits_[scope];
+          } else {
+            address_map_[buffer] = max_offset;
+            max_offset =
+                static_cast<int64_t>(AlignUp(max_offset + buf_size, 32));
+          }
+        }
+      }
     }
 
     struct LiveInterval {
