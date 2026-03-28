@@ -528,49 +528,48 @@ private:
       bool check_overflow = false; // reserve memory overflow check
       int64_t current_offset = 0;
       int64_t max_offset = 0;
+
+      // Allocate origin buffer first, then tmp buffer in shared memory
+      auto alloc_buffer = [&](const VarNode *buffer, int64_t &offset,
+                              const std::string &err_prefix) -> bool {
+        int64_t buf_size = buffer_sizes_[buffer];
+        if (offset + buf_size > memory_limits_[scope] && check_overflow) {
+          LOG(FATAL) << err_prefix << " Out of memory in scope: " << scope
+                     << "\nBuffer: " << buffer->name_hint
+                     << "\nRequired size: " << buf_size
+                     << "\nCurrent offset: " << offset
+                     << "\nMemory limit: " << memory_limits_[scope];
+          return false;
+        }
+        address_map_[buffer] = offset;
+        offset = static_cast<int64_t>(AlignUp(offset + buf_size, 32));
+        return true;
+      };
+
       for (const VarNode *buffer : origin_buffer) {
-        if (std::find(buffers.begin(), buffers.end(), buffer) !=
+        if (std::find(buffers.begin(), buffers.end(), buffer) ==
             buffers.end()) {
-          if (pre_alloc_buffer_.count(buffer->name_hint)) {
-            address_map_[buffer] = pre_alloc_buffer_[buffer->name_hint];
-            max_offset = std::max(
-                max_offset,
-                static_cast<int64_t>(pre_alloc_buffer_[buffer->name_hint] +
-                                     buffer_sizes_[buffer]));
-          } else {
-            int64_t buf_size = buffer_sizes_[buffer];
-            if (current_offset + buf_size > memory_limits_[scope] &&
-                check_overflow) {
-              LOG(FATAL)
-                  << "Linear memory allocation failed! Out of memory in scope: "
-                  << scope << "\nBuffer: " << buffer->name_hint
-                  << "\nRequired size: " << buffer_sizes_[buffer]
-                  << "\nCurrent offset: " << current_offset
-                  << "\nMemory limit: " << memory_limits_[scope];
-            } else {
-              address_map_[buffer] = current_offset;
-              current_offset =
-                  static_cast<int64_t>(AlignUp(current_offset + buf_size, 32));
-              max_offset = std::max(max_offset, current_offset);
-            }
-          }
+          continue;
+        }
+        if (pre_alloc_buffer_.count(buffer->name_hint)) {
+          address_map_[buffer] = pre_alloc_buffer_[buffer->name_hint];
+          max_offset = std::max(
+              max_offset,
+              static_cast<int64_t>(pre_alloc_buffer_[buffer->name_hint] +
+                                   buffer_sizes_[buffer]));
+        } else if (scope != "shared" || !tmp_buffers.empty()) {
+          alloc_buffer(buffer, current_offset,
+                       "Linear memory allocation failed!");
+          max_offset = std::max(max_offset, current_offset);
         }
       }
-      // allocate tmp buffer in shared memory after origin buffer
+
+      // Allocate tmp buffer in shared memory after origin buffer
       if (scope == "shared") {
-        for (auto buffer : tmp_buffers) {
-          int64_t buf_size = buffer_sizes_[buffer];
-          if (max_offset + buf_size > memory_limits_[scope] && check_overflow) {
-            LOG(FATAL) << "Linear tmp memory allocation failed! Out of memory "
-                          "in scope: "
-                       << scope << "\nBuffer: " << buffer->name_hint
-                       << "\nRequired size: " << buffer_sizes_[buffer]
-                       << "\nCurrent offset: " << max_offset
-                       << "\nMemory limit: " << memory_limits_[scope];
-          } else {
-            address_map_[buffer] = max_offset;
-            max_offset =
-                static_cast<int64_t>(AlignUp(max_offset + buf_size, 32));
+        for (const VarNode *buffer : tmp_buffers) {
+          if (!address_map_.count(buffer)) {
+            alloc_buffer(buffer, max_offset,
+                         "Linear tmp memory allocation failed!");
           }
         }
       }
