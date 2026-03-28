@@ -9,7 +9,7 @@
 
 ### Ubuntu/Debian（apt 方式）
 
-> **向用户展示的提示**：GitHub packages 源下载可能较为缓慢，请耐心等待。如用户希望加速，可尝试手动下载：https://github.com/cli/cli/releases
+> **向用户展示的提示**：GitHub packages 源下载可能较为缓慢，请耐心等待。如希望加速，可尝试手动下载：https://github.com/cli/cli/releases
 
 **步骤一：添加 GitHub CLI 源**
 
