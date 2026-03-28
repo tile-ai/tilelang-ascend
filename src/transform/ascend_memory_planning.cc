@@ -65,6 +65,7 @@ public:
     AscendMemoryPlanner planner(f, external_address_map,
                                 auto_ascend_memory_planning);
     auto address_map = planner.GetAddressMap();
+    auto buffer_sizes = planner.GetBufferSizes();
 
     Map<Var, PrimExpr> address_map_attr;
     for (const auto &kv : address_map) {
@@ -72,6 +73,13 @@ public:
       address_map_attr.Set(buffer_var, Integer(kv.second));
     }
     fn_attr->dict.Set("address_map", address_map_attr);
+
+    Map<Var, PrimExpr> size_map_attr;
+    for (const auto &kv : buffer_sizes) {
+      Var buffer_var = GetRef<Var>(kv.first);
+      size_map_attr.Set(buffer_var, Integer(static_cast<int64_t>(kv.second)));
+    }
+    fn_attr->dict.Set("size_map", size_map_attr);
     return f;
   }
 
@@ -96,6 +104,10 @@ private:
 
     const std::unordered_map<const VarNode *, int64_t> &GetAddressMap() const {
       return address_map_;
+    }
+
+    const std::unordered_map<const VarNode *, size_t> &GetBufferSizes() const {
+      return buffer_sizes_;
     }
 
   private:
