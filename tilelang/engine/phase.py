@@ -8,7 +8,8 @@ from tilelang.transform import PassContext
 from tilelang.contrib.nvcc import have_tma
 
 
-def allow_warp_specialized(pass_ctx: PassContext | None = None, target: Target | None = None) -> bool:
+def allow_warp_specialized(pass_ctx: PassContext | None = None,
+                           target: Target | None = None) -> bool:
     # avoid circular import
     from tilelang.jit.adapter.utils import is_cuda_target
 
@@ -20,7 +21,8 @@ def allow_warp_specialized(pass_ctx: PassContext | None = None, target: Target |
     return not disable_warp_specialized
 
 
-def allow_tma_and_warp_specialized(pass_ctx: PassContext | None = None, target: Target | None = None) -> bool:
+def allow_tma_and_warp_specialized(pass_ctx: PassContext | None = None,
+                                   target: Target | None = None) -> bool:
     # avoid circular import
     from tilelang.jit.adapter.utils import is_cuda_target
 
@@ -48,8 +50,6 @@ def allow_vectorize(pass_ctx: PassContext | None = None) -> bool:
 
 def LowerAndLegalize(mod: IRModule, target: Target) -> IRModule:
     mod = tilelang.transform.AscendInferBufferScope()(mod)
-    # Collect buffer shape
-    mod = tilelang.transform.BufferShapeCollector()(mod)
     # Bind the target device information to the module
     mod = tir.transform.BindTarget(target)(mod)
     # Identify and filter host tiling data for npu
@@ -78,7 +78,6 @@ def LowerAndLegalize(mod: IRModule, target: Target) -> IRModule:
 
 def OptimizeForTarget(mod: IRModule, target: Target, platform: str) -> IRModule:
     from tilelang.utils.target import check_npu_availability
-
     pass_ctx = tilelang.transform.get_pass_context()
     mod = tir.transform.PlanAndUpdateBufferAllocationLocation()(mod)
     mod = tilelang.transform.CrossCorePipeline()(mod)
@@ -88,8 +87,6 @@ def OptimizeForTarget(mod: IRModule, target: Target, platform: str) -> IRModule:
     mod = tilelang.transform.AscendLowerOpaqueBlock()(mod)
     mod = tir.transform.NarrowDataType(32)(mod)
     mod = tilelang.transform.ConfigIndexBitwidth()(mod)
-    # Collect buffer shape and flatten buffer shape to 2D
-    mod = tilelang.transform.Flatten2DBuffer()(mod)
     mod = tilelang.transform.FlattenBuffer()(mod)
     mod = tir.transform.Simplify()(mod)
     mod = tilelang.transform.VectorizeLoop(enable_vectorize=allow_vectorize(pass_ctx=pass_ctx))(mod)

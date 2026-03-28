@@ -1194,13 +1194,14 @@ private:
                                const PrimExpr &input_offset,
                                int64_t element_count, bool is_2d = false) {
     DataType dtype = output_buffer->dtype;
+    std::string dtype_str = DTypeToString(dtype);
 
     Array<PrimExpr> call_args;
     // call_args.push_back(StringImm(op_type));
-    call_args.push_back(
-        CreateAccessPtr(output_buffer, dtype, output_offset, element_count, 2));
-    call_args.push_back(
-        CreateAccessPtr(input_buffer, dtype, input_offset, element_count, 1));
+    call_args.push_back(CreateAccessPtr(output_buffer, dtype_str, output_offset,
+                                        element_count, 2));
+    call_args.push_back(CreateAccessPtr(input_buffer, dtype_str, input_offset,
+                                        element_count, 1));
     call_args.push_back(IntImm(DataType::Int(32), element_count));
 
     PrimExpr call = Call(DataType::Handle(), op_type, call_args);
@@ -1215,15 +1216,16 @@ private:
                                 const PrimExpr &input_offset2,
                                 int64_t element_count, bool is_2d = false) {
     DataType dtype = output_buffer->dtype;
+    std::string dtype_str = DTypeToString(dtype);
 
     Array<PrimExpr> call_args;
     // call_args.push_back(StringImm(op_type));
-    call_args.push_back(
-        CreateAccessPtr(output_buffer, dtype, output_offset, element_count, 2));
-    call_args.push_back(
-        CreateAccessPtr(input_buffer1, dtype, input_offset1, element_count, 1));
-    call_args.push_back(
-        CreateAccessPtr(input_buffer2, dtype, input_offset2, element_count, 1));
+    call_args.push_back(CreateAccessPtr(output_buffer, dtype_str, output_offset,
+                                        element_count, 2));
+    call_args.push_back(CreateAccessPtr(input_buffer1, dtype_str, input_offset1,
+                                        element_count, 1));
+    call_args.push_back(CreateAccessPtr(input_buffer2, dtype_str, input_offset2,
+                                        element_count, 1));
     call_args.push_back(IntImm(DataType::Int(32), element_count));
 
     PrimExpr call = Call(DataType::Handle(), op_type, call_args);
@@ -1255,10 +1257,10 @@ private:
 
     Array<PrimExpr> call_args;
     // call_args.push_back(StringImm(scalar_op_type));
-    call_args.push_back(
-        CreateAccessPtr(output_buffer, dtype, output_offset, element_count, 2));
-    call_args.push_back(
-        CreateAccessPtr(input_buffer, dtype, input_offset, element_count, 1));
+    call_args.push_back(CreateAccessPtr(output_buffer, dtype_str, output_offset,
+                                        element_count, 2));
+    call_args.push_back(CreateAccessPtr(input_buffer, dtype_str, input_offset,
+                                        element_count, 1));
     call_args.push_back(scalar_value);
     call_args.push_back(IntImm(DataType::Int(32), element_count));
 
@@ -1273,6 +1275,7 @@ private:
       const PrimExpr &scalar_offset, int64_t element_count,
       bool is_2d = false) {
     DataType dtype = output_buffer->dtype;
+    std::string dtype_str = DTypeToString(dtype);
 
     // std::string scalar_op_type = kNoSuffixOps.count(op_type) > 0 ? op_type :
     // op_type + "s";
@@ -1297,12 +1300,12 @@ private:
 
     Array<PrimExpr> call_args;
     // call_args.push_back(StringImm(scalar_op_type));
-    call_args.push_back(
-        CreateAccessPtr(output_buffer, dtype, output_offset, element_count, 2));
-    call_args.push_back(
-        CreateAccessPtr(input_buffer, dtype, input_offset, element_count, 1));
-    call_args.push_back(
-        CreateAccessPtr(scalar_buffer, dtype, scalar_offset, scalar_extent, 1));
+    call_args.push_back(CreateAccessPtr(output_buffer, dtype_str, output_offset,
+                                        element_count, 2));
+    call_args.push_back(CreateAccessPtr(input_buffer, dtype_str, input_offset,
+                                        element_count, 1));
+    call_args.push_back(CreateAccessPtr(scalar_buffer, dtype_str, scalar_offset,
+                                        scalar_extent, 1));
     call_args.push_back(scalar_offset);
     call_args.push_back(IntImm(DataType::Int(32), element_count));
 
@@ -1408,11 +1411,11 @@ private:
     return false;
   }
 
-  PrimExpr CreateAccessPtr(const Buffer &buffer, const DataType &dtype,
+  PrimExpr CreateAccessPtr(const Buffer &buffer, const std::string &dtype_str,
                            const PrimExpr &offset, int64_t extent,
                            int access_mask) {
     return Call(DataType::Handle(), builtin::tvm_access_ptr(),
-                {TypeAnnotation(dtype), buffer->data, offset,
+                {StringImm(dtype_str), buffer->data, offset,
                  IntImm(DataType::Int(32), extent),
                  IntImm(DataType::Int(32), access_mask)});
   }
@@ -1611,7 +1614,6 @@ private:
     Buffer src_2d_view = CreateBroadcastSourceBuffer(src_1d, broadcast_dim);
 
     // 0. Template argument string
-    DataType dtype = src_1d->dtype;
     std::string dtype_str = DTypeToAscendCString(src_1d->dtype);
     std::string template_args =
         dtype_str + ", 2, " + std::to_string(broadcast_dim) + ", false";
@@ -1621,7 +1623,7 @@ private:
     // based on shape args)
     int64_t total_elements = outer_extent * inner_vec_len;
     broadcast_args.push_back(CreateAccessPtr(
-        dst_2d, dtype, IntImm(DataType::Int(32), 0), total_elements, 2));
+        dst_2d, dtype_str, IntImm(DataType::Int(32), 0), total_elements, 2));
 
     // 2. src buffer access ptr (2D view)
     int64_t src_elements = 0;
@@ -1631,12 +1633,12 @@ private:
       LOG(FATAL) << "Source buffer shape must be constant for broadcast";
     }
     broadcast_args.push_back(CreateAccessPtr(
-        src_2d_view, dtype, IntImm(DataType::Int(32), 0), src_elements, 2));
+        src_2d_view, dtype_str, IntImm(DataType::Int(32), 0), src_elements, 2));
 
     // 3. tmp buffer access ptr (workspace buffer, 1D shape)
     // Workspace buffer should be 2x the size of the dst buffer
     int64_t workspace_elements = 2 * total_elements;
-    broadcast_args.push_back(CreateAccessPtr(workspace, DataType::UInt(8),
+    broadcast_args.push_back(CreateAccessPtr(workspace, "uint8",
                                              IntImm(DataType::Int(32), 0),
                                              workspace_elements, 1));
 
