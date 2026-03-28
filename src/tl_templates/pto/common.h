@@ -230,14 +230,12 @@ AICORE PTO_INLINE void copy_gm_to_l1_dynamic(
     __gm__ T1 *handle,
     const pto::Shape<shape1, shape2, shape3, shape4, shape5> &shape,
     const pto::Stride<stride1, stride2, stride3, stride4, stride5> &stride,
-    int32_t buffer_addr, int32_t offset, int32_t actualTailM = 0,
-    int32_t actualTailN = 0) {
-  constexpr uint8_t len = sizeof(T2);
+    int32_t addr, int32_t actualTailM = 0, int32_t actualTailN = 0) {
   bool useTail = shape4 == valid1 && shape5 == valid2;
   int tailM = (useTail && actualTailM != 0) ? actualTailM : valid1;
   int tailN = (useTail && actualTailN != 0) ? actualTailN : valid2;
   TileMatL1<T2, shape4, shape5, pto::DYNAMIC, pto::DYNAMIC> L1(tailM, tailN);
-  pto::TASSIGN(L1, buffer_addr + offset * len);
+  pto::TASSIGN(L1, addr);
   pto::Shape<shape1, shape2, shape3, pto::DYNAMIC, pto::DYNAMIC> dynamic_shape;
   dynamic_shape.shape[3] = useTail ? tailM : shape4;
   dynamic_shape.shape[4] = useTail ? tailN : shape5;
@@ -259,15 +257,13 @@ AICORE PTO_INLINE void copy_l0c_to_gm_dynamic(
     __gm__ T1 *handle,
     const pto::Shape<shape1, shape2, shape3, shape4, shape5> &shape,
     const pto::Stride<stride1, stride2, stride3, stride4, stride5> &stride,
-    int32_t buffer_addr, int32_t offset, int32_t actualTailM = 0,
-    int32_t actualTailN = 0) {
-  constexpr uint8_t len = sizeof(T2);
+    int32_t addr, int32_t actualTailM = 0, int32_t actualTailN = 0) {
   bool useTail = shape4 == valid1 && shape5 == valid2;
   int tailM = (useTail && actualTailM != 0) ? actualTailM : valid1;
   int tailN = (useTail && actualTailN != 0) ? actualTailN : valid2;
   pto::TileAcc<T2, shape4, shape5, pto::DYNAMIC, pto::DYNAMIC> L0c(tailM,
                                                                    tailN);
-  pto::TASSIGN(L0c, buffer_addr + offset * len);
+  pto::TASSIGN(L0c, addr);
   pto::Shape<shape1, shape2, shape3, pto::DYNAMIC, pto::DYNAMIC> dynamic_shape;
   dynamic_shape.shape[3] = useTail ? tailM : shape4;
   dynamic_shape.shape[4] = useTail ? tailN : shape5;
@@ -287,9 +283,9 @@ AICORE PTO_INLINE void copy_gm_to_ub_dynamic(
     __gm__ T1 *handle,
     const pto::Shape<shape1, shape2, shape3, shape4, shape5> &shape,
     const pto::Stride<stride1, stride2, stride3, stride4, stride5> &stride,
-    int32_t ub_shape_addr, int32_t ub_offset, int32_t valid_row,
+    int32_t ub_shape_addr, int32_t ub_offset, int32_t len, int32_t valid_row,
     int32_t valid_col) {
-  constexpr uint8_t len = sizeof(T2);
+
   pto::Shape<shape1, shape2, shape3, pto::DYNAMIC, pto::DYNAMIC> dynamic_shape;
   dynamic_shape.shape[3] = valid_row;
   dynamic_shape.shape[4] = valid_col;
@@ -389,15 +385,14 @@ template <typename T1, typename T2, int32_t shape1, int32_t shape2,
           int32_t shape3, int32_t shape4, int32_t shape5, int32_t stride1,
           int32_t stride2, int32_t stride3, int32_t stride4, int32_t stride5,
           uint32_t valid1, uint32_t valid2>
-AICORE PTO_INLINE void copy_gm_to_l1(__gm__ T1 *handle, int32_t buffer_addr,
-                                     int32_t offset, int32_t actualTailM = 0,
+AICORE PTO_INLINE void copy_gm_to_l1(__gm__ T1 *handle, int32_t addr,
+                                     int32_t actualTailM = 0,
                                      int32_t actualTailN = 0) {
-  constexpr uint8_t len = sizeof(T2);
   bool useTail = shape4 == valid1 && shape5 == valid2;
   int tailM = (useTail && actualTailM != 0) ? actualTailM : valid1;
   int tailN = (useTail && actualTailN != 0) ? actualTailN : valid2;
   TileMatL1<T2, shape4, shape5, pto::DYNAMIC, pto::DYNAMIC> L1(tailM, tailN);
-  pto::TASSIGN(L1, buffer_addr + offset * len);
+  pto::TASSIGN(L1, addr);
   pto::Shape<shape1, shape2, shape3, pto::DYNAMIC, pto::DYNAMIC> dynamic_shape;
   dynamic_shape.shape[3] = useTail ? tailM : shape4;
   dynamic_shape.shape[4] = useTail ? tailN : shape5;
@@ -415,16 +410,15 @@ template <typename T1, typename T2, int32_t shape1, int32_t shape2,
           int32_t shape3, int32_t shape4, int32_t shape5, int32_t stride1,
           int32_t stride2, int32_t stride3, int32_t stride4, int32_t stride5,
           uint32_t valid1, uint32_t valid2>
-AICORE PTO_INLINE void copy_l0c_to_gm(__gm__ T1 *handle, int32_t buffer_addr,
-                                      int32_t offset, int32_t actualTailM = 0,
+AICORE PTO_INLINE void copy_l0c_to_gm(__gm__ T1 *handle, int32_t addr,
+                                      int32_t actualTailM = 0,
                                       int32_t actualTailN = 0) {
-  constexpr uint8_t len = sizeof(T2);
   bool useTail = shape4 == valid1 && shape5 == valid2;
   int tailM = (useTail && actualTailM != 0) ? actualTailM : valid1;
   int tailN = (useTail && actualTailN != 0) ? actualTailN : valid2;
   pto::TileAcc<T2, shape4, shape5, pto::DYNAMIC, pto::DYNAMIC> L0c(tailM,
                                                                    tailN);
-  pto::TASSIGN(L0c, buffer_addr + offset * len);
+  pto::TASSIGN(L0c, addr);
   pto::Shape<shape1, shape2, shape3, pto::DYNAMIC, pto::DYNAMIC> dynamic_shape;
   dynamic_shape.shape[3] = useTail ? tailM : shape4;
   dynamic_shape.shape[4] = useTail ? tailN : shape5;
@@ -441,9 +435,9 @@ template <typename T1, typename T2, int32_t shape1, int32_t shape2,
           uint32_t ub_shape1, uint32_t ub_shape2,
           pto::PadValue PadVal = pto::PadValue::Null>
 AICORE PTO_INLINE void copy_gm_to_ub(__gm__ T1 *handle, int32_t ub_shape_addr,
-                                     int32_t ub_offset, int32_t valid_row,
-                                     int32_t valid_col) {
-  constexpr uint8_t len = sizeof(T2);
+                                     int32_t ub_offset, int32_t len,
+                                     int32_t valid_row, int32_t valid_col) {
+
   pto::Shape<shape1, shape2, shape3, pto::DYNAMIC, pto::DYNAMIC> dynamic_shape;
   dynamic_shape.shape[3] = valid_row;
   dynamic_shape.shape[4] = valid_col;
@@ -608,7 +602,9 @@ AICORE PTO_INLINE void unary_tile(int32_t dst_addr, int32_t src_addr,
 template <typename T, int32_t row, int32_t col>
 AICORE PTO_INLINE void
 TSIGMOID(TileUbDataND<T, row, col, row, col> &dst_addr,
-         TileUbDataND<T, row, col, row, col> &src0_addr) {
+         TileUbDataND<T, row, col, row, col> &src0_addr,
+         // TileUbDataND<T, row, col, row, col> &tmp_addr,
+         int32_t len) {
   TMULS(src0_addr, src0_addr, -1);
   pipe_barrier(PIPE_V);
   TEXP(src0_addr, src0_addr);

@@ -17,9 +17,5 @@ constexpr const char *tilelang_is_cpu_kernel_frame =
 constexpr const char *tilelang_is_npu_kernel_frame =
     "tilelang.is_npu_kernel_frame";
 
-constexpr const char *kInitialBufferShapes = "initial_buffer_shapes";
-
-constexpr const char *kLogicBufferShapes = "logic_buffer_shapes";
-
 } // namespace tl
 } // namespace tvm
