@@ -1,5 +1,7 @@
 # CV Fusion Operator Performance Analysis and Tuning Methods
 
+[中文](flash_attention_performance_optimization_zh.md) | **English**
+
 ## Table of Contents
 
 - [I. Performance Analysis Tools](#i-performance-analysis-tools)
@@ -53,21 +55,12 @@ Taking FA operator as an example, this section introduces the overall approach f
 
 ### 2.1 Optimization Hierarchy Architecture
 
-```
-┌─────────────────────────────────────────────┐
-│         Operator Performance Optimization    │
-├──────────────────┬──────────────────────────┤
-│  Inter-Core      │      Intra-Core          │
-│  Optimization    │      Optimization        │
-├──────────────────┼──────────────────────────┤
-│  · num_stages    │  Cube Core: L1 resident, │
-│  · Load balance  │              DB           │
-│  · Sync optimize │  Vector Core: MTE2/VEC/  │
-│                  │               MTE3        │
-│                  │  · Double Buffer         │
-│                  │  · Instruction vectorization│
-└──────────────────┴──────────────────────────┘
-```
+| Inter-Core Optimization | Intra-Core Optimization |
+|:---:|:---:|
+| · num_stages | Cube Core: L1 resident, DB |
+| · Load balance | Vector Core: MTE2/VEC/MTE3 DB |
+| · Sync optimize | · num_stages |
+| | · Instruction vectorization |
 
 ### 2.2 Optimization Process
 
@@ -143,13 +136,18 @@ When L0 space is smaller than L1, multiple transfers are needed with overlap bet
 **Goal**: Use the longest pipeline as the bound, and mask other pipelines with it.
 
 ```
-Before optimization: MTE  ████████
-        M     ████████████
-        FIX   ████████████████████  ← Longest time
+Before optimization (pipelines execute serially):
+Timeline →
+MTE:  [==]        [==]
+M:          [===]      [===]
+FIX:                         [====================]
 
-After optimization: MTE   ████████████████████
-        M     ████████████████████
-        FIX   ████████████████████  ← All masked by FIX
+After optimization (one FIX masks two MTE and M):
+Timeline →
+      |------ One FIX cycle ------|
+MTE:  [==]   [==]               ← 2x MTE masked by FIX
+M:    [===]  [===]              ← 2x M masked by FIX
+FIX:  [====================]     ← bound pipeline
 ```
 
 ### 3.3 Vector Core Optimization
@@ -264,7 +262,7 @@ for i in T.pipelined(loop, num_stages):
     process_on_vector()
 
 # Method 2: Enable inter-core/intra-core pipeline separately
-for i in T.pipelined(loop, num_stages):  # Inter-core
+for i in T.pipelined(loop, num_stages):  # Intra-core
     process_on_cube()
 for i in T.pipelined(loop, num_stages):  # Intra-core
     process_on_vector()
@@ -329,5 +327,5 @@ Performance below expectations
 ## Appendix: Related Resources
 
 - [T.pipelined Detailed Tutorial](https://github.com/tile-ai/tilelang-ascend/blob/ascendc_pto/docs/tutorials/t_pipelined.md)
-- [TileLang-Ascend Programming Guide](../docs/TileLang-Ascend%20Programming%20Guide.md)
+- [TileLang-Ascend Programming Guide](../../../docs/TileLang-Ascend%20Programming%20Guide.md)
 - [MindStudio Insight Download](https://gitcode.com/Ascend/msinsight/releases/tag_MindStudio_26.0.0-alpha.1)

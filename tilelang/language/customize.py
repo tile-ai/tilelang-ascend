@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import tilelang.language as T
-from tvm import op as op
 from tvm.tir import PrimExpr, Buffer, BufferRegion, Var
 from tvm import tir
 from tilelang.language.ascend import _dtype
