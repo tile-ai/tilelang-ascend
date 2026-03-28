@@ -170,7 +170,6 @@ def generate_test_cases(args):
 
 
 from multiprocessing import Pool
-import sys
 
 
 def run_performance_case(pack):
@@ -387,7 +386,7 @@ def run_benchmark():
     else:
         print(">>> Single-process Performance mode enabled")
         tasks = []
-        for idx, case in enumerate(test_cases):
+        for _, case in enumerate(test_cases):
             tasks.append((*case, args, session_dir, mode_str))
 
         for idx, task in enumerate(tasks):

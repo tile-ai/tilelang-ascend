@@ -306,8 +306,8 @@ public:
 
         if (cube_sp->is_write == vec_sp->is_write) {
           LOG(FATAL) << "Inconsistent read/write operations for workspace "
-                     << ws << " at sync point " << i << ": cube is_write="
-                     << cube_sp->is_write << ", "
+                     << ws << " at sync point " << i
+                     << ": cube is_write=" << cube_sp->is_write << ", "
                      << "vec is_write=" << vec_sp->is_write;
         }
 

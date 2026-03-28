@@ -74,7 +74,7 @@ public:
     fn_attr->dict.Set("address_map", address_map_attr);
 
     Map<Var, PrimExpr> size_map_attr;
-    for (const auto& kv : buffer_sizes) {
+    for (const auto &kv : buffer_sizes) {
       Var buffer_var = GetRef<Var>(kv.first);
       size_map_attr.Set(buffer_var, Integer(static_cast<int64_t>(kv.second)));
     }
@@ -105,7 +105,7 @@ private:
       return address_map_;
     }
 
-    const std::unordered_map<const VarNode*, size_t>& GetBufferSizes() const {
+    const std::unordered_map<const VarNode *, size_t> &GetBufferSizes() const {
       return buffer_sizes_;
     }
 

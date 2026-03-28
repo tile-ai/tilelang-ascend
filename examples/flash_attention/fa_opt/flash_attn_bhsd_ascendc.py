@@ -2,7 +2,7 @@ import argparse
 import torch
 import torch_npu
 
-torch.set_default_device('npu')
+torch.set_default_device("npu")
 torch.manual_seed(0)
 
 if __name__ == "__main__":
@@ -24,17 +24,20 @@ if __name__ == "__main__":
     v = torch.randn(B, KV_H, S, D, dtype=torch.float16)
     print("init successful!")
 
-    sm_scale = (1.0 / D)**0.5
+    sm_scale = (1.0 / D) ** 0.5
     output = torch_npu.npu_fusion_attention(
-      q, k, v, Q_H,
-      padding_mask=None,
-      atten_mask=None,
-      scale=sm_scale,
-      keep_prob=1.0,
-      input_layout="BNSD",
-      pre_tockens=65535,
-      next_tockens=65535,
-      sparse_mode=0,
+        q,
+        k,
+        v,
+        Q_H,
+        padding_mask=None,
+        atten_mask=None,
+        scale=sm_scale,
+        keep_prob=1.0,
+        input_layout="BNSD",
+        pre_tockens=65535,
+        next_tockens=65535,
+        sparse_mode=0,
     )[0]
     torch.npu.synchronize()
 
@@ -49,12 +52,7 @@ if __name__ == "__main__":
         k = k.float()
         v = v.float()
 
-        output = torch.nn.functional.scaled_dot_product_attention(
-            q, k, v,
-            attn_mask=None,
-            dropout_p=0.0,
-            is_causal=False
-        )
+        output = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask=None, dropout_p=0.0, is_causal=False)
         return output.to(torch.float16)
 
     if not args.no_check:
