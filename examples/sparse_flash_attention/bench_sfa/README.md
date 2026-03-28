@@ -37,13 +37,12 @@ Three sets of shapes differ only in KV_S:
 ```
 
 The specific optimization details of each version are shown in the following table:
-
-| File | Fixed Core | s2 Split Size | Sparse Memory Access Optimization | CV pipeline | Broadcast and AXPY Optimization | Performance Data (A3) |
-|----- |:-----------:  | :----------: | :-----------: | :-----------: | :------------------: | :-----:  |
-|[sparse_flash_attn_pa_baseline.py](./sparse_flash_attn_pa_baseline.py)             | √ | 64  | × | × | × | 602us |
-|[sparse_flash_attn_pa_developer.py](./sparse_flash_attn_pa_developer.py)           | √ | 64  | × | × | √ | 347us |
-|[sparse_flash_attn_pa.py](./sparse_flash_attn_pa.py)                               | √ | 64  | √ | √ | √ | 127us |
-|[sparse_flash_attn_pa_no_cv_pipeline.py](./sparse_flash_attn_pa_no_cv_pipeline.py) | √ | 256 | √ | × | √ | 109us |
+| File | Fixed Core | s2 Split Size  | kv gather & continuous move-out | Async copy | ping-pong In/Out | CV pipeline   |  Broadcast Opt | AXPY Opt |  Performance Data (A3) |
+|----- |:-----------:  | :----------: | :----------------: | :-----------------: | :---------------: | :-----------: | :-----------: | :------: | :------------: |
+|[sparse_flash_attn_pa_baseline.py](./sparse_flash_attn_pa_baseline.py)             | √ | 64  | × | × | × | × | × | × | 602us |
+|[sparse_flash_attn_pa_developer.py](./sparse_flash_attn_pa_developer.py)           | √ | 64  | √ | × | × | × | √ | × | 347us |
+|[sparse_flash_attn_pa.py](./sparse_flash_attn_pa.py)                               | √ | 64  | √ | √ | √ | √ | √ | √ | 127us |
+|[sparse_flash_attn_pa_no_cv_pipeline.py](./sparse_flash_attn_pa_no_cv_pipeline.py) | √ | 256 | √ | √ | √ | × | √ | √ | 109us |
 
 ## 📄 Usage
 
