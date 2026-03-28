@@ -54,7 +54,8 @@ public:
     AscendSyncInsert syncInserter(&analyzer, target, platform);
 
     auto address_map = f->GetAttr<Map<Var, PrimExpr>>("address_map").value_or(Map<Var, PrimExpr>());
-    syncInserter.InitConfig(config_path, address_map);
+    auto size_map = f->GetAttr<Map<Var, PrimExpr>>("size_map").value_or(Map<Var, PrimExpr>());
+    syncInserter.InitConfig(config_path, address_map, size_map);
 
     PrimFuncNode* fptr = f.CopyOnWrite();
     auto fn_attr = fptr->attrs.CopyOnWrite();
@@ -102,9 +103,10 @@ private:
     }
   };
 
-  void InitConfig(const std::string& config_path, const Map<Var, PrimExpr>& address_map) {
+  void InitConfig(const std::string& config_path, const Map<Var, PrimExpr>& address_map, const Map<Var, PrimExpr>& size_map) {
     event_id_counter_ = 0;
     address_map_ = address_map;
+    size_map_ = size_map;
     LoadDefaultConfig();
   }
 
@@ -1217,16 +1219,23 @@ private:
   }
 
   bool HasDataDependency(const BufferAccess& prev, const BufferAccess& curr) {
-    if (prev.physical_address != -1 && curr.physical_address != -1 &&
-        prev.physical_address == curr.physical_address) {
-      if ((prev.is_write && curr.is_write) ||      // WAW
-          (prev.is_write && !curr.is_write) ||     // RAW
-          (!prev.is_write && curr.is_write)) {     // WAR
-        return true;
+    bool shares_memory = false;
+
+    if (prev.buffer_name == curr.buffer_name) {
+      shares_memory = true;
+    } else if (prev.physical_address != -1 && curr.physical_address != -1) {
+      int64_t prev_size = GetBufferSize(prev.buffer_name);
+      int64_t curr_size = GetBufferSize(curr.buffer_name);
+      if (prev_size > 0 && curr_size > 0) {
+        int64_t prev_end = prev.physical_address + prev_size;
+        int64_t curr_end = curr.physical_address + curr_size;
+        shares_memory = (prev.physical_address < curr_end && curr.physical_address < prev_end);
+      } else {
+        shares_memory = (prev.physical_address == curr.physical_address);
       }
     }
 
-    if (prev.buffer_name == curr.buffer_name) {
+    if (shares_memory) {
       if ((prev.is_write && curr.is_write) ||      // WAW
           (prev.is_write && !curr.is_write) ||     // RAW
           (!prev.is_write && curr.is_write)) {     // WAR
@@ -1272,6 +1281,17 @@ private:
     return -1;
   }
 
+  int64_t GetBufferSize(const std::string& buffer_name) {
+    for (const auto& pair : size_map_) {
+      if (pair.first->name_hint == buffer_name) {
+        if (auto int_imm = pair.second.as<IntImmNode>()) {
+          return int_imm->value;
+        }
+      }
+    }
+    return -1;
+  }
+
   std::vector<std::string> FindRelatedBuffers(const std::string& buffer_name) {
     std::vector<std::string> related;
     int64_t target_addr = GetPhysicalAddress(buffer_name);
@@ -1281,9 +1301,35 @@ private:
       return related;
     }
 
+    int64_t target_size = GetBufferSize(buffer_name);
+    if (target_size <= 0) {
+      // No size info, fall back to exact address match
+      for (const auto& pair : address_map_) {
+        if (auto int_imm = pair.second.as<IntImmNode>()) {
+          if (int_imm->value == target_addr) {
+            related.push_back(pair.first->name_hint);
+          }
+        }
+      }
+      return related;
+    }
+
+    int64_t target_end = target_addr + target_size;
+
     for (const auto& pair : address_map_) {
       if (auto int_imm = pair.second.as<IntImmNode>()) {
-        if (int_imm->value == target_addr) {
+        int64_t other_addr = int_imm->value;
+        int64_t other_size = GetBufferSize(pair.first->name_hint);
+        if (other_size <= 0) {
+          // No size info for other buffer, check exact match only
+          if (other_addr == target_addr) {
+            related.push_back(pair.first->name_hint);
+          }
+          continue;
+        }
+        int64_t other_end = other_addr + other_size;
+        // Check interval overlap: [target_addr, target_end) ∩ [other_addr, other_end)
+        if (target_addr < other_end && other_addr < target_end) {
           related.push_back(pair.first->name_hint);
         }
       }
@@ -1427,6 +1473,7 @@ private:
   std::unordered_map<std::string, OperationConfig> operation_config_;
   std::unordered_map<std::string, BufferAccess> current_access_history_;
   Map<Var, PrimExpr> address_map_;
+  Map<Var, PrimExpr> size_map_;
   std::string platform_;
   Target target_;
 };

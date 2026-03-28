@@ -113,6 +113,7 @@ def view(src: Buffer,
 
 
 def npu_gemm(A, B, C, init=False):
+    """NPU GEMM intrinsic. A, B, C can be 2D or higher-order (leading dims must be 1)."""
 
     def legalize_arguments(arg: Union[Buffer, Var]):
         """Convert let-bound variables to their corresponding buffers.
@@ -147,9 +148,13 @@ def npu_gemm(A, B, C, init=False):
     B_shape = retrieve_shape(B)
     C_shape = retrieve_shape(C)
 
-    assert len(C_shape) == 2, "current only support C as a 2D tensor"
+    assert len(C_shape) >= 2, "current only support C as a 2D or higher-order tensor"
     assert len(A_shape) >= 2, "current only support A as a 2D or higher-order tensor"
     assert len(B_shape) >= 2, "current only support B as a 2D or higher-order tensor"
+    if len(C_shape) > 2:
+        for i in range(len(C_shape) - 2):
+            assert C_shape[i] == 1, \
+                "current only support C as a 2D or higher-order tensor with the last two dimensions being the matrix dimensions"
     if len(A_shape) > 2:
         for i in range(len(A_shape) - 2):
             assert A_shape[i] == 1, \
@@ -159,7 +164,7 @@ def npu_gemm(A, B, C, init=False):
             assert B_shape[i] == 1, \
                 "current only support B as a 2D or higher-order tensor with the last two dimensions being the matrix dimensions"
 
-    M, N = C_shape
+    M, N = C_shape[-2], C_shape[-1]
     K = A_shape[-1]
     K_B = B_shape[-2]
     assert K == K_B, f"T.gemm K shape check failed: K_A = {K}, K_B = {K_B}"

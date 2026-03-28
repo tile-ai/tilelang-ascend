@@ -1544,11 +1544,11 @@ def broadcast(dst: Union[Buffer, BufferRegion],  # noqa: FA100
 
     dtype = _dtype(src)
 
-    dim = len(dst_extent)
-    if dim == 3:
+    if len(dst_extent) == 3:
         dst_extent = [dst_extent[1], dst_extent[2]]
+    if len(src_extent) == 3:
         src_extent = [src_extent[1], src_extent[2]]
-        dim = 2
+    dim = len(dst_extent)
     assert dim in [1, 2], "Ascend Broadcast only supports dim=1 or dim=2."
     assert len(src_extent) == dim, "Source and Dest dimension must match."
 
