@@ -1,5 +1,7 @@
 # CV融合算子性能分析与调优方法
 
+[English](flash_attention_performance_optimization.md) | **中文**
+
 ## 目录
 
 - [一、性能分析工具](#一性能分析工具)
@@ -52,19 +54,12 @@ msprof op simulator --soc-version=Ascend910B4 --kernel-name="main_kernel" --outp
 
 ### 2.1 优化层次架构
 
-```
-┌─────────────────────────────────────────────┐
-│              算子性能优化                     │
-├──────────────────┬──────────────────────────┤
-│    核间优化      │       核内优化            │
-│  (Inter-Core)    │     (Intra-Core)         │
-├──────────────────┼──────────────────────────┤
-│  · num_stages    │  Cube核: L1常驻、DB      │
-│  · 任务均衡      │  Vector核: MTE2/VEC/MTE3 │
-│  · 同步优化      │  · Double Buffer         │
-│                  │  · 指令向量化             │
-└──────────────────┴──────────────────────────┘
-```
+| 核间优化 (Inter-Core) | 核内优化 (Intra-Core) |
+|:---:|:---:|
+| · num_stages | Cube核: L1常驻、DB |
+| · 任务均衡 | Vector核: MTE2/VEC/MTE3 DB |
+| · 同步优化 | · num_stages |
+| | · 指令向量化 |
 
 ### 2.2 优化流程
 
@@ -140,13 +135,18 @@ for k in T.Pipelined(T.ceildiv(seq_len, block_N), num_stages=num_stages):
 **目标**：将耗时最长的流水作为 bound，其余流水被其掩盖。
 
 ```
-优化前: MTE  ████████
-       M     ████████████
-       FIX   ████████████████████  ← 耗时最长
+优化前 (各流水串行执行):
+时间轴 →
+MTE:  [==]        [==]
+M:          [===]      [===]
+FIX:                         [==============]
 
-优化后: MTE   ████████████████████
-       M     ████████████████████
-       FIX   ████████████████████  ← 全部被 FIX 掩盖
+优化后 (一个FIX掩盖两个MTE和M):
+时间轴 →
+      |------ 一个FIX周期 ------|
+MTE:  [==]   [==]               ← 2次MTE被FIX掩盖
+M:    [===]  [===]              ← 2次M被FIX掩盖
+FIX:  [=============]           ← bound流水
 ```
 
 ### 3.3 Vector 核优化
@@ -261,7 +261,7 @@ for i in T.pipelined(loop, num_stages):
     process_on_vector()
 
 # 方式二：分别开启核间/核内流水
-for i in T.pipelined(loop, num_stages):  # 核间
+for i in T.pipelined(loop, num_stages):  # 核内
     process_on_cube()
 for i in T.pipelined(loop, num_stages):  # 核内
     process_on_vector()
@@ -326,5 +326,5 @@ for i in T.pipelined(outer, num_stages):
 ## 附录：相关资源
 
 - [T.pipelined 详细教程](https://github.com/tile-ai/tilelang-ascend/blob/ascendc_pto/docs/tutorials/t_pipelined.md)
-- [TileLang-Ascend Programming Guide](../docs/TileLang-Ascend%20Programming%20Guide.md)
+- [TileLang-Ascend Programming Guide](../../../docs/TileLang-Ascend%20Programming%20Guide.md)
 - [MindStudio Insight 下载](https://gitcode.com/Ascend/msinsight/releases/tag_MindStudio_26.0.0-alpha.1)
