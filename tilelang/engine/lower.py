@@ -288,6 +288,7 @@ def lower(
         pipeline.add(transforms.tilelangir.enable_multi_buffer)
         pipeline.add(transforms.bishengir.bind_workspace_arg)
         pipeline.add(transforms.tilelangir.plan_workspace_memory)
+        pipeline.add(transforms.tilelangir.insert_cv_sync)
         pipeline.add(transforms.bishengir.infer_workspace_size_func)
         pipeline.add(transforms.bishengir.lower_memref_ext)
         if dump_ir:
