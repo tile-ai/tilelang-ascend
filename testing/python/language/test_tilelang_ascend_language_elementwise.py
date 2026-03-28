@@ -425,7 +425,7 @@ def run_test_axpy_slice(M, N, block_M, block_N, target):
     torch.testing.assert_close(b, ref_b, rtol=1e-2, atol=1e-2)
 
 
-@pytest.mark.parametrize("target", ["ascendc"])
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("shape", [(1024, 1024)])
 def test_axpy_slice(target, shape):
     M, N = shape

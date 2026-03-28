@@ -1517,7 +1517,7 @@ void CodeGenTileLangAscendPto::CompareScalarCodegen(
   std::string dst_name = PrintExpr(op->args[0].as<CallNode>()->args[1]);
   std::string src0_name = PrintExpr(op->args[1].as<CallNode>()->args[1]);
 
-  DataType src_dtype = op->args[1].as<CallNode>()->dtype;
+  DataType src_dtype = GetAccessPtrDtypePto(op->args[1].as<CallNode>());
   DataType scalar_dtype = op->args[2].dtype();
   if (scalar_dtype != src_dtype) {
     std::string target_type = getType(src_dtype);
@@ -1546,7 +1546,7 @@ void CodeGenTileLangAscendPto::TshCodegen(const CallNode *op,
   ShapeInfo dst_shape_info = GetSliceInfo(op->args[0].as<CallNode>());
   auto src1_name = PrintExpr(op->args[2]);
 
-  DataType src_dtype = op->args[1].as<CallNode>()->dtype;
+  DataType src_dtype = GetAccessPtrDtypePto(op->args[1].as<CallNode>());
   DataType scalar_dtype = op->args[2].dtype();
 
   if (scalar_dtype != src_dtype) {
@@ -1913,7 +1913,7 @@ void CodeGenTileLangAscendPto::AxpyCodegen(const CallNode *op) {
   ShapeInfo dst_shape_info = GetSliceInfo(op->args[0].as<CallNode>());
   auto scalar = PrintExpr(op->args[2]);
 
-  DataType dtype0 = op->args[0].as<CallNode>()->dtype;
+  DataType dtype0 = GetAccessPtrDtypePto(op->args[0].as<CallNode>());
   DataType scalar_dtype = op->args[2].dtype();
   if (scalar_dtype != dtype0) {
     if (dtype0.is_float16()) {
@@ -1986,26 +1986,61 @@ void CodeGenTileLangAscendPto::BinaryVecClampMaxMinOpsCodegen(
 }
 
 void CodeGenTileLangAscendPto::BinaryVecClampOpsCodegen(
-  const CallNode *op, const std::string &op_name) {
+    const CallNode *op, const std::string &op_name) {
+  // Extract shape information
   ShapeInfo src_shape_info = GetSliceInfo(op->args[2].as<CallNode>());
   ShapeInfo dst_shape_info = GetSliceInfo(op->args[1].as<CallNode>());
+  
+  // Get scalar bounds (last two arguments)
   auto scalar_min = PrintExpr(op->args[op->args.size() - 3]);
   auto scalar_max = PrintExpr(op->args[op->args.size() - 2]);
-
+  
+  // Collect variable names (skip first arg and last 3 args: scalar_min, scalar_max, and one more)
+  std::vector<std::string> var_names;
+  var_names.reserve(op->args.size() - 5);  // Pre-allocate memory
+  for (size_t i = 1; i < op->args.size() - 4; ++i) {
+    var_names.push_back(PrintBufferOffset(op->args[i].as<CallNode>()));
+  }
+  
+  this->PrintIndent();
+  
   if (src_shape_info.is_slice || dst_shape_info.is_slice) {
+    // Handle slice case with temporary variables
     std::string src_temp_name = GetTempVarName(src_shape_info.ub_name);
     std::string dst_temp_name = GetTempVarName(dst_shape_info.ub_name);
+    
     CreateUbVariableND(src_temp_name, src_shape_info);
     CreateUbVariableND(dst_temp_name, dst_shape_info);
+    
+    this->stream << "pipe_barrier(PIPE_ALL);\n";
     this->PrintIndent();
-    this->stream << "TMAXS" << "(" << dst_temp_name << ", " << src_temp_name << "," << scalar_min << ");\n";
+    this->stream << "TMAXS(" << dst_temp_name << ", " << src_temp_name 
+                 << ", " << scalar_min << ");\n";
+    this->stream << "pipe_barrier(PIPE_ALL);\n";
     this->PrintIndent();
-    this->stream << "TMINS" << "(" << dst_temp_name << ", " << src_temp_name << "," << scalar_max << ");\n";
+    this->stream << "TMINS(" << dst_temp_name << ", " << dst_temp_name 
+                 << ", " << scalar_max << ");\n";
+    this->stream << "pipe_barrier(PIPE_ALL);\n";
   } else {
-    this->PrintIndent();
-    this->stream << "TMAXS" << "(" << dst_shape_info.ub_name << ", " << src_shape_info.ub_name << "," << scalar_min << ");\n";
-    this->PrintIndent();
-    this->stream << "TMINS" << "(" << dst_shape_info.ub_name << ", " << src_shape_info.ub_name << "," << scalar_max << ");\n";
+    // Handle non-slice case - clamp_min with TMAXS
+    this->stream << "TMAXS(";
+    for (size_t i = 0; i < var_names.size(); ++i) {
+      this->stream << var_names[i];
+      if (i != var_names.size() - 1) {
+        this->stream << ", ";
+      }
+    }
+    this->stream << ", " << scalar_min << ");\n";
+    
+    // clamp_max with TMINS - fixed the bug where index 1 was incorrectly handled
+    this->stream << "TMINS(";
+    for (size_t i = 0; i < var_names.size(); ++i) {
+      this->stream << var_names[i];
+      if (i != var_names.size() - 1) {
+        this->stream << ", ";
+      }
+    }
+    this->stream << ", " << scalar_max << ");\n";
   }
 }
 
@@ -2772,24 +2807,8 @@ void CodeGenTileLangAscendPto::SelectCodegen(const CallNode *op) {
     src1_name = PrintBufferOffset(op->args[4].as<CallNode>());
     op_name = "TSEL";
   } else if (src1_type == 1) {
-    std::string scalar_value = PrintExpr(op->args[4]);
-    std::string temp_name = GetTempVarName("select_scalar_tmp");
-    this->PrintIndent();
-    this->stream << kAscendPtoScope << "TileUbDataND<" << src0_type << ", "
-                 << dst_shape_info.slice_row << ", " << dst_shape_info.slice_col
-                 << ", " << dst_shape_info.slice_valid_row << ", "
-                 << dst_shape_info.slice_valid_col << "> " << temp_name
-                 << ";\n";
-    this->PrintIndent();
-    this->stream << "TASSIGN(" << temp_name << ", " << dst_shape_info.first_addr
-                 << " + " << dst_shape_info.offset << " * "
-                 << GetTypeLen(src0_type) << ");\n";
-    this->PrintIndent();
-    this->stream << kAscendPtoScope << "fill_scalar(" << temp_name
-                 << ", static_cast<" << src0_type << ">(" << scalar_value
-                 << "));\n";
-    src1_name = temp_name;
-    op_name = "TSEL";
+    src1_name = PrintExpr(op->args[4]);
+    op_name = "TSELS";
   } else {
     LOG(FATAL) << "CodeGenAscendPto: Select currently only supports "
                   "src1_type=2 (Tensor-Tensor mode). "

@@ -767,15 +767,15 @@ pow(TileUbDataND<T, row, col, row, col> &dst,
   pto::TASSIGN(src1_float, reinterpret_cast<uint64_t>(tmp_float0));
 
   pto::TCVT(src0_float, src0, pto::RoundMode::CAST_ROUND);
-
+  pipe_barrier(PIPE_V);
   pto::TLOG(log_src0_float, src0_float);
-
+  pipe_barrier(PIPE_V);    
   pto::TCVT(src1_float, src1, pto::RoundMode::CAST_ROUND);
-
+  pipe_barrier(PIPE_V);
   pto::TMUL(log_src0_float, log_src0_float, src1_float);
-
+  pipe_barrier(PIPE_V);
   pto::TEXP(log_src0_float, log_src0_float);
-
+  pipe_barrier(PIPE_V);
   pto::TCVT(dst, log_src0_float, pto::RoundMode::CAST_ROUND);
 }
 
