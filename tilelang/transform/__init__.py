@@ -10,6 +10,7 @@ from tilelang import tvm as tvm  # noqa: F401
 from tvm.ir.transform import PassContext  # noqa: F401
 from tvm.target import Target
 
+
 def HostProcesser():
     """HostProcesser
 
@@ -19,6 +20,7 @@ def HostProcesser():
         The result pass
     """
     return _ffi_api.HostLegalize()  # type: ignore
+
 
 def get_pass_context():
     """Get the current pass context"""
@@ -99,8 +101,7 @@ def LowerHopperIntrin():
     fpass : tvm.transform.Pass
         The result pass
     """
-    return _ffi_api.LowerHopperIntrin() \
-        if hasattr(_ffi_api, "LowerHopperIntrin") else lambda f: f # type: ignore
+    return _ffi_api.LowerHopperIntrin() if hasattr(_ffi_api, "LowerHopperIntrin") else lambda f: f  # type: ignore
 
 
 def WarpSpecializedPipeline():
@@ -340,8 +341,7 @@ def FlattenBuffer():
 
 
 def EliminateStorageSyncForMBarrier():
-    """EliminateStorageSyncForMBarrier
-    """
+    """EliminateStorageSyncForMBarrier"""
     return _ffi_api.EliminateStorageSyncForMBarrier()  # type: ignore
 
 
@@ -437,6 +437,7 @@ def CollectBufferShapes():
     """
     return _ffi_api.CollectBufferShapes()  # type: ignore
 
+
 def BufferShapeCollector():
     """Collect Buffer Shape for Ascend.
 
@@ -446,7 +447,7 @@ def BufferShapeCollector():
         The result pass
     ----
     """
-    return _ffi_api.BufferShapeCollector() # type: ignore
+    return _ffi_api.BufferShapeCollector()  # type: ignore
 
 
 def Flatten2DBuffer():
@@ -463,7 +464,8 @@ def Flatten2DBuffer():
         The result pass
     ----
     """
-    return _ffi_api.Flatten2DBuffer() # type: ignore
+    return _ffi_api.Flatten2DBuffer()  # type: ignore
+
 
 def AscendStorageRewrite(is_npu: bool = False):
     """StorageRewrite for Ascend.
@@ -476,6 +478,7 @@ def AscendStorageRewrite(is_npu: bool = False):
     """
     return _ffi_api.AscendStorageRewrite(is_npu)  # type: ignore
 
+
 def AscendLowerOpaqueBlock():
     """LowerOpaqueBlock for Ascend.
 
@@ -485,4 +488,4 @@ def AscendLowerOpaqueBlock():
         The result pass
     ----
     """
-    return _ffi_api.AscendLowerOpaqueBlock() # type: ignore
+    return _ffi_api.AscendLowerOpaqueBlock()  # type: ignore

@@ -1197,10 +1197,10 @@ private:
 
     Array<PrimExpr> call_args;
     // call_args.push_back(StringImm(op_type));
-    call_args.push_back(CreateAccessPtr(output_buffer, dtype, output_offset,
-                                        element_count, 2));
-    call_args.push_back(CreateAccessPtr(input_buffer, dtype, input_offset,
-                                        element_count, 1));
+    call_args.push_back(
+        CreateAccessPtr(output_buffer, dtype, output_offset, element_count, 2));
+    call_args.push_back(
+        CreateAccessPtr(input_buffer, dtype, input_offset, element_count, 1));
     call_args.push_back(IntImm(DataType::Int(32), element_count));
 
     PrimExpr call = Call(DataType::Handle(), op_type, call_args);
@@ -1218,12 +1218,12 @@ private:
 
     Array<PrimExpr> call_args;
     // call_args.push_back(StringImm(op_type));
-    call_args.push_back(CreateAccessPtr(output_buffer, dtype, output_offset,
-                                        element_count, 2));
-    call_args.push_back(CreateAccessPtr(input_buffer1, dtype, input_offset1,
-                                        element_count, 1));
-    call_args.push_back(CreateAccessPtr(input_buffer2, dtype, input_offset2,
-                                        element_count, 1));
+    call_args.push_back(
+        CreateAccessPtr(output_buffer, dtype, output_offset, element_count, 2));
+    call_args.push_back(
+        CreateAccessPtr(input_buffer1, dtype, input_offset1, element_count, 1));
+    call_args.push_back(
+        CreateAccessPtr(input_buffer2, dtype, input_offset2, element_count, 1));
     call_args.push_back(IntImm(DataType::Int(32), element_count));
 
     PrimExpr call = Call(DataType::Handle(), op_type, call_args);
@@ -1255,10 +1255,10 @@ private:
 
     Array<PrimExpr> call_args;
     // call_args.push_back(StringImm(scalar_op_type));
-    call_args.push_back(CreateAccessPtr(output_buffer, dtype, output_offset,
-                                        element_count, 2));
-    call_args.push_back(CreateAccessPtr(input_buffer, dtype, input_offset,
-                                        element_count, 1));
+    call_args.push_back(
+        CreateAccessPtr(output_buffer, dtype, output_offset, element_count, 2));
+    call_args.push_back(
+        CreateAccessPtr(input_buffer, dtype, input_offset, element_count, 1));
     call_args.push_back(scalar_value);
     call_args.push_back(IntImm(DataType::Int(32), element_count));
 
@@ -1297,12 +1297,12 @@ private:
 
     Array<PrimExpr> call_args;
     // call_args.push_back(StringImm(scalar_op_type));
-    call_args.push_back(CreateAccessPtr(output_buffer, dtype, output_offset,
-                                        element_count, 2));
-    call_args.push_back(CreateAccessPtr(input_buffer, dtype, input_offset,
-                                        element_count, 1));
-    call_args.push_back(CreateAccessPtr(scalar_buffer, dtype, scalar_offset,
-                                        scalar_extent, 1));
+    call_args.push_back(
+        CreateAccessPtr(output_buffer, dtype, output_offset, element_count, 2));
+    call_args.push_back(
+        CreateAccessPtr(input_buffer, dtype, input_offset, element_count, 1));
+    call_args.push_back(
+        CreateAccessPtr(scalar_buffer, dtype, scalar_offset, scalar_extent, 1));
     call_args.push_back(scalar_offset);
     call_args.push_back(IntImm(DataType::Int(32), element_count));
 

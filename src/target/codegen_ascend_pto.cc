@@ -872,7 +872,7 @@ std::string CodeGenTileLangAscendPto::PrintBufferOffset(const CallNode *op) {
   return _var_name;
 }
 
-// 封装的维度合并函数：根据 srcN 合并 shape 的低维
+// merge shape's lower dimensions based on srcN
 Array<PrimExpr> MergeShapeBySrcN(const Array<PrimExpr> &shape,
                                  const PrimExpr &srcN,
                                  tvm::arith::Analyzer *analyzer) {
@@ -882,32 +882,35 @@ Array<PrimExpr> MergeShapeBySrcN(const Array<PrimExpr> &shape,
   if (srcN_imm && !shape.empty()) {
     int64_t srcN_val = srcN_imm->value;
     int64_t tmp_val = srcN_val;
-    // 从最低维开始整除，计算 srcN 涵盖了多少个维度
+    // Divide from the lowest dimension, calculate how many dimensions srcN
+    // covers
     for (int i = static_cast<int>(shape.size()) - 1; i >= 0; --i) {
       const auto *dim_imm = analyzer->Simplify(shape[i]).as<IntImmNode>();
       if (dim_imm && tmp_val > 1) {
         count++;
         tmp_val /= dim_imm->value;
         if (tmp_val == 1) {
-          break; // 刚好整除完，停止合并
+          break; // Perfectly divided, stop merging
         }
       } else {
-        break; // 遇到动态维度或无法整除，停止合并
+        break; // Encountered dynamic dimension or cannot divide evenly, stop
+               // merging
       }
     }
-    // 如果成功合并了大于 1 个维度，并且被完美整除 (tmp_val == 1)
+    // If successfully merged more than 1 dimension and perfectly divided
+    // (tmp_val == 1)
     if (count > 1 && tmp_val == 1) {
       for (size_t i = 0; i < shape.size() - count; ++i) {
         merged_shape.push_back(shape[i]);
       }
-      // 把合并后的连续维作为新的最低维
+      // Use the merged continuous dimension as the new lowest dimension
       merged_shape.push_back(srcN);
     } else {
-      // 无法合并或无需合并，保留原状
+      // Cannot merge or no need to merge, keep original state
       merged_shape = shape;
     }
   } else {
-    // srcN 是动态表达式或 shape 为空，保留原状
+    // srcN is dynamic expression or shape is empty, keep original state
     merged_shape = shape;
   }
   return merged_shape;
@@ -919,30 +922,30 @@ Array<PrimExpr> ComputeStrides(const Array<PrimExpr> &shape, PrimExpr srcN) {
   int count = 0;
 
   // =====================================================================
-  // 1. 维度合并逻辑 (Shape Flattening)
-  // 如果 srcN 跨越了多个内层维度，我们需要将这些维度在逻辑上合并
+  // 1. Dimension Merging Logic (Shape Flattening)
+  // If srcN spans multiple inner dimensions, merge them logically
   // =====================================================================
   Array<PrimExpr> merged_shape = MergeShapeBySrcN(shape, srcN, &analyzer);
 
   // =====================================================================
-  // 2. 标准 Stride 计算 (基于 merged_shape)
+  // 2. Standard Stride Computation (based on merged_shape)
   // =====================================================================
   int ndim = static_cast<int>(merged_shape.size());
-  // 保证至少输出 5 个以便后续安全截取
+  // Ensure at least 5 outputs for safe truncation later
   int out_dims = std::max(kMaxDims, ndim + 1);
   std::vector<PrimExpr> strides_vec(out_dims, Integer(1));
 
   PrimExpr current_stride = Integer(1);
   int stride_idx = out_dims - 1;
 
-  // 从最后一维开始计算 stride，写入到 strides_vec 的末尾
+  // Calculate stride from the last dimension, write to strides_vec end
   for (int i = ndim - 1; i >= 0; --i, stride_idx--) {
     strides_vec[stride_idx] = current_stride;
     current_stride = analyzer.Simplify(current_stride * merged_shape[i]);
   }
   strides_vec[stride_idx] = current_stride;
 
-  // 转换为 TVM Array 返回
+  // Convert to TVM Array and return
   Array<PrimExpr> strides;
   for (const auto &s : strides_vec) {
     strides.push_back(s);
@@ -956,7 +959,7 @@ FormatStrides(const Array<PrimExpr> &shape, const Array<PrimExpr> &strides) {
   std::stringstream stride_ss;
 
   // =====================================================================
-  // 1) 生成 stride 字符串：只取最后 5 个 stride (对应底层的连续内存排布)
+  // 1) Generate stride string: take last 5 strides (contiguous memory layout)
   // =====================================================================
   size_t total_strides = strides.size();
   size_t start_idx = total_strides > 5 ? total_strides - 5 : 0;
@@ -965,7 +968,7 @@ FormatStrides(const Array<PrimExpr> &shape, const Array<PrimExpr> &strides) {
     if (const auto *int_imm = strides[i].as<IntImmNode>()) {
       stride_ss << int_imm->value;
     } else {
-      stride_ss << "-1"; // 有字符串 (PrimExpr 变量)，置为 -1
+      stride_ss << "-1"; // Has PrimExpr variable, set to -1
       is_dynamic = true;
     }
     if (i + 1 < total_strides) {
@@ -974,14 +977,15 @@ FormatStrides(const Array<PrimExpr> &shape, const Array<PrimExpr> &strides) {
   }
 
   // =====================================================================
-  // 2) 生成括号内参数字符串：遍历 shape 决定
+  // 2) Generate bracket parameter string: traverse shape to decide
   // =====================================================================
   std::stringstream ctor_args_ss;
   bool first = true;
 
-  // 核心突破点：底层的 5 个 stride 最多只依赖于 shape 的“最后 4 个维度”！
-  // (例如对于 7 维，前 3 个维度根本不参与最后 5 个 stride 的乘法运算)
-  // 因此，只有最后这几个维度中的动态变量，才需要作为模板参数传入！
+  // Core insight: bottom 5 strides only depend on last 4 dimensions of shape!
+  // (e.g., for 7D tensor, first 3 dimensions don't participate in stride
+  // computation) Therefore, only dynamic variables in these last dimensions
+  // need template parameters
   int shape_size = static_cast<int>(shape.size());
   int shape_start = std::max(0, shape_size - 4);
 
@@ -992,7 +996,8 @@ FormatStrides(const Array<PrimExpr> &shape, const Array<PrimExpr> &strides) {
       }
       ctor_args_ss << shape[i];
       first = false;
-      is_dynamic = true; // 只要相关范围内有动态 Shape，就标记为 dynamic
+      is_dynamic =
+          true; // Mark as dynamic if any dynamic shapes in relevant range
     }
   }
 
@@ -1130,10 +1135,10 @@ void CodeGenTileLangAscendPto::CopyL1ToL0Codegen(const CallNode *call,
   PrimExpr index_col = floormod(src_info.offset, src_info.shape[1]);
 
   this->PrintIndent();
-  this->stream << kAscendPtoScope << api_name << "<" << src_shape_info.type << ", "
-               << dst_shape_info.slice_row << ", " << dst_shape_info.slice_col
-               << ", " << src_shape_info.slice_row << ", "
-               << src_shape_info.slice_col << "> ";
+  this->stream << kAscendPtoScope << api_name << "<" << src_shape_info.type
+               << ", " << dst_shape_info.slice_row << ", "
+               << dst_shape_info.slice_col << ", " << src_shape_info.slice_row
+               << ", " << src_shape_info.slice_col << "> ";
   if (src_shape_info.is_slice || dst_shape_info.is_slice) {
     std::string src_temp_name = GetTempVarName(src_shape_info.ub_name);
     std::string dst_temp_name = GetTempVarName(dst_shape_info.ub_name);
@@ -1181,9 +1186,9 @@ void CodeGenTileLangAscendPto::GemmV0Codegen(const CallNode *op) {
   std::map<std::string, std::string> params =
       extractTemplateParams(template_args);
   uint32_t K = std::stoi(params["K"]);
-  uint32_t kL0Size = 128; // L0切片大小，适配64K内存限制
-  uint32_t kL0split = (K + kL0Size - 1) / kL0Size; // 切片数量
-  uint32_t kL0Tail = K - (kL0split - 1) * kL0Size; // 最后一块大小
+  uint32_t kL0Size = 128; // L0 slice size, adapted for 64K memory limit
+  uint32_t kL0split = (K + kL0Size - 1) / kL0Size; // slice count
+  uint32_t kL0Tail = K - (kL0split - 1) * kL0Size; // last block size
 
   std::string a_name = a_info.ub_name;
   std::string b_name = b_info.ub_name;
@@ -1726,13 +1731,13 @@ bool IsComplexExpression(const PrimExpr &expr) {
 
 void CodeGenTileLangAscendPto::BinaryVecOpsCodegen(const CallNode *op,
                                                    const std::string &op_name) {
-  // 收集变量名
+  // Collect variable names
   std::vector<std::string> var_names;
   for (size_t i = 0; i < op->args.size() - 2; i++) {
     var_names.push_back(PrintBufferOffset(op->args[i].as<CallNode>()));
   }
 
-  // 操作名转换：TSUBS->TADDS, TDIVS->TMULS
+  // Operation name conversion: TSUBS->TADDS, TDIVS->TMULS
   bool is_tsubs = (op_name == "TSUBS");
   bool is_tdivs = (op_name == "TDIVS");
   std::string operation =
@@ -1741,7 +1746,7 @@ void CodeGenTileLangAscendPto::BinaryVecOpsCodegen(const CallNode *op,
   std::string index = PrintExpr(op->args[op->args.size() - 2]);
   auto buffer = op->args[2].as<CallNode>();
 
-  // 非 CallNode：直接使用 index 作为标量
+  // Non-CallNode: use index directly as scalar
   if (!buffer) {
     std::string scalar = is_tsubs   ? ("-" + index)
                          : is_tdivs ? ("1.0f / " + index)
@@ -1755,7 +1760,7 @@ void CodeGenTileLangAscendPto::BinaryVecOpsCodegen(const CallNode *op,
     return;
   }
 
-  // CallNode：从 buffer 获取标量值
+  // CallNode: get scalar value from buffer
   std::string buf_offset = PrintBufferOffset(buffer);
   std::string scalar_name = GetTempVarName(buf_offset + "_scalar");
 
@@ -1767,7 +1772,7 @@ void CodeGenTileLangAscendPto::BinaryVecOpsCodegen(const CallNode *op,
   this->stream << "auto " << scalar_name << " = " << buf_offset << ".GetValue("
                << index << ");\n";
 
-  // 计算应用的标量（TSUBS/TDIVS 需要类型转换）
+  // Compute scalar to apply (TSUBS/TDIVS need type conversion)
   std::string applied_scalar = scalar_name;
   if (is_tsubs || is_tdivs) {
     DataType dtype0 = op->args[0].as<CallNode>()->dtype;
@@ -1777,7 +1782,7 @@ void CodeGenTileLangAscendPto::BinaryVecOpsCodegen(const CallNode *op,
     applied_scalar = is_tsubs ? ("-" + value) : ("1.0f / " + value);
   }
 
-  // 根据 loop_num 选择操作方式
+  // Select operation method based on loop_num
   std::string loop_num = getValueOrProcess(for_num_map_, index);
   if (loop_num >= "0" && loop_num <= "9") {
     ShapeInfo src_info = GetSliceInfo(op->args[1].as<CallNode>());
