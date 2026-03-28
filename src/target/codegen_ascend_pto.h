@@ -286,7 +286,8 @@ private:
 
   std::string platform_;
 
-  std::string current_resource_scope_ = ""; // 标识是CUBE还是VEC
+  std::string current_resource_scope_ =
+      ""; // Identifies whether it's CUBE or VEC
 };
 
 } // namespace codegen

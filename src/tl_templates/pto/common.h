@@ -390,8 +390,7 @@ template <typename T1, typename T2, int32_t shape1, int32_t shape2,
           int32_t stride2, int32_t stride3, int32_t stride4, int32_t stride5,
           uint32_t valid1, uint32_t valid2>
 AICORE PTO_INLINE void copy_gm_to_l1(__gm__ T1 *handle, int32_t buffer_addr,
-                                     int32_t offset,
-                                     int32_t actualTailM = 0,
+                                     int32_t offset, int32_t actualTailM = 0,
                                      int32_t actualTailN = 0) {
   constexpr uint8_t len = sizeof(T2);
   bool useTail = shape4 == valid1 && shape5 == valid2;
@@ -417,8 +416,7 @@ template <typename T1, typename T2, int32_t shape1, int32_t shape2,
           int32_t stride2, int32_t stride3, int32_t stride4, int32_t stride5,
           uint32_t valid1, uint32_t valid2>
 AICORE PTO_INLINE void copy_l0c_to_gm(__gm__ T1 *handle, int32_t buffer_addr,
-                                     int32_t offset,
-                                      int32_t actualTailM = 0,
+                                      int32_t offset, int32_t actualTailM = 0,
                                       int32_t actualTailN = 0) {
   constexpr uint8_t len = sizeof(T2);
   bool useTail = shape4 == valid1 && shape5 == valid2;
@@ -443,8 +441,8 @@ template <typename T1, typename T2, int32_t shape1, int32_t shape2,
           uint32_t ub_shape1, uint32_t ub_shape2,
           pto::PadValue PadVal = pto::PadValue::Null>
 AICORE PTO_INLINE void copy_gm_to_ub(__gm__ T1 *handle, int32_t ub_shape_addr,
-                                     int32_t ub_offset, 
-                                     int32_t valid_row, int32_t valid_col) {
+                                     int32_t ub_offset, int32_t valid_row,
+                                     int32_t valid_col) {
   constexpr uint8_t len = sizeof(T2);
   pto::Shape<shape1, shape2, shape3, pto::DYNAMIC, pto::DYNAMIC> dynamic_shape;
   dynamic_shape.shape[3] = valid_row;

@@ -8,8 +8,7 @@ from tilelang.transform import PassContext
 from tilelang.contrib.nvcc import have_tma
 
 
-def allow_warp_specialized(pass_ctx: PassContext | None = None,
-                           target: Target | None = None) -> bool:
+def allow_warp_specialized(pass_ctx: PassContext | None = None, target: Target | None = None) -> bool:
     # avoid circular import
     from tilelang.jit.adapter.utils import is_cuda_target
 
@@ -21,8 +20,7 @@ def allow_warp_specialized(pass_ctx: PassContext | None = None,
     return not disable_warp_specialized
 
 
-def allow_tma_and_warp_specialized(pass_ctx: PassContext | None = None,
-                                   target: Target | None = None) -> bool:
+def allow_tma_and_warp_specialized(pass_ctx: PassContext | None = None, target: Target | None = None) -> bool:
     # avoid circular import
     from tilelang.jit.adapter.utils import is_cuda_target
 
@@ -80,6 +78,7 @@ def LowerAndLegalize(mod: IRModule, target: Target) -> IRModule:
 
 def OptimizeForTarget(mod: IRModule, target: Target, platform: str) -> IRModule:
     from tilelang.utils.target import check_npu_availability
+
     pass_ctx = tilelang.transform.get_pass_context()
     mod = tir.transform.PlanAndUpdateBufferAllocationLocation()(mod)
     mod = tilelang.transform.CrossCorePipeline()(mod)
