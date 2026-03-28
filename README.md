@@ -17,6 +17,7 @@ Within the TileLang ecosystem, we have developed an NPU Intermediate Representat
 
 
 ## Latest News
+- 3/28/2026 🚀: We provide a free environment to facilitate user experience and development for TileLang [Pull Request#708](https://github.com/tile-ai/tilelang-ascend/pull/708).
 
 - 1/23/2026 🚀: TileLang now supports CANN 8.5. Check out [Pull Request#334](https://github.com/tile-ai/tilelang-ascend/pull/334) and [Pull Request#346](https://github.com/tile-ai/tilelang-ascend/pull/346) for details!
 
@@ -52,6 +53,8 @@ Currently, we need to set environment variables to configure the developer mode 
 ## Tested Devices
 Although TileLang aims to support portability across a variety of devices, it has been specifically tested and validated on the following hardware:Huawei Ascend AI accelerators,including Ascend 910B/C.
 
+## Accessing Ascend NPU
+If you need to access Ascend NPU computing resources for development or testing, please visit the [HiDevLab - Online Development](https://hidevlab.huawei.com/online-develop-intro) page on the Huawei HiDevLab platform to apply for and use them
 
 ## OP Implementation Examples
 **tile-lang** provides the building blocks to implement a wide variety of operators. Some examples include:
