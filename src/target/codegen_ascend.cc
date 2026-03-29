@@ -1567,35 +1567,34 @@ void CodeGenTileLangAscend::SubsOpCodegen(const CallNode *op) {
     var_names.push_back(var_name);
   }
 
+  DataType dtype0 = GetAccessPtrDtype(op->args[0].as<CallNode>());
+  bool is_half = dtype0.is_float16();
+
   this->PrintIndent();
   this->stream << "{\n";
   if (op->args[2].as<CallNode>()) {
     auto var_name = PrintBufferOffset(op->args[2].as<CallNode>(), false);
-    DataType dtype0 = GetAccessPtrDtype(op->args[0].as<CallNode>());
+    std::string index_expr = PrintExpr(op->args[op->args.size() - 2]);
 
     this->PrintIndent();
     this->stream << "AscendC::PipeBarrier<PIPE_ALL>();\n";
     this->PrintIndent();
-    if (dtype0.is_float16()) {
+    if (is_half) {
       this->stream << "auto " << var_name << "_scalar = half(-(float)" << var_name
-                   << ".GetValue(" << PrintExpr(op->args[op->args.size() - 2])
-                   << "));\n";
+                   << ".GetValue(" << index_expr << "));\n";
     } else {
       this->stream << "auto " << var_name << "_scalar = -(float)" << var_name
-                   << ".GetValue(" << PrintExpr(op->args[op->args.size() - 2])
-                   << ");\n";
+                   << ".GetValue(" << index_expr << ");\n";
     }
     var_names.push_back(var_name + "_scalar");
   } else {
-    DataType dtype0 = GetAccessPtrDtype(op->args[0].as<CallNode>());
     DataType scalar_dtype = op->args[2].dtype();
     std::string scalar_value = PrintExpr(op->args[2]);
     if (scalar_dtype != dtype0) {
-      if (dtype0.is_float16()) {
+      if (is_half) {
         scalar_value = "half(-" + scalar_value + ")";
       } else {
-        std::string target_type = getType(dtype0);
-        scalar_value = target_type + "(-" + scalar_value + ")";
+        scalar_value = getType(dtype0) + "(-" + scalar_value + ")";
       }
     } else {
       scalar_value = "-" + scalar_value;
@@ -1605,7 +1604,7 @@ void CodeGenTileLangAscend::SubsOpCodegen(const CallNode *op) {
   this->PrintIndent();
   this->stream << "AscendC::Adds"
                << "(";
-  for (int i = 0; i < var_names.size(); i++) {
+  for (size_t i = 0; i < var_names.size(); i++) {
     this->stream << var_names[i];
     if (i != var_names.size() - 1) {
       this->stream << ", ";
@@ -1624,30 +1623,36 @@ void CodeGenTileLangAscend::DivsOpCodegen(const CallNode *op) {
     var_names.push_back(var_name);
   }
 
+  DataType dtype0 = GetAccessPtrDtype(op->args[0].as<CallNode>());
+  bool is_half = dtype0.is_float16();
+
   if (op->args[2].as<CallNode>()) {
     auto var_name = PrintBufferOffset(op->args[2].as<CallNode>(), false);
-    DataType dtype0 = GetAccessPtrDtype(op->args[0].as<CallNode>());
+    std::string index_expr = PrintExpr(op->args[op->args.size() - 2]);
 
     this->PrintIndent();
     this->stream << "AscendC::PipeBarrier<PIPE_ALL>();\n";
     this->PrintIndent();
-    if (dtype0.is_float16()) {
+    if (is_half) {
       this->stream << "auto " << var_name << "_scalar = half(1.0f / (float)" << var_name
-                   << ".GetValue(" << PrintExpr(op->args[op->args.size() - 2])
-                   << "));\n";
+                   << ".GetValue(" << index_expr << "));\n";
     } else {
       this->stream << "auto " << var_name << "_scalar = 1.0f / (float)" << var_name
-                   << ".GetValue(" << PrintExpr(op->args[op->args.size() - 2])
-                   << ");\n";
+                   << ".GetValue(" << index_expr << ");\n";
     }
     var_names.push_back(var_name + "_scalar");
   } else {
-    var_names.push_back("1.0f / " + PrintExpr(op->args[op->args.size() - 2]));
+    std::string scalar_expr = PrintExpr(op->args[op->args.size() - 2]);
+    if (is_half) {
+      var_names.push_back("half(1.0f / " + scalar_expr + ")");
+    } else {
+      var_names.push_back("1.0f / " + scalar_expr);
+    }
   }
   this->PrintIndent();
   this->stream << "AscendC::Muls"
                << "(";
-  for (int i = 0; i < var_names.size(); i++) {
+  for (size_t i = 0; i < var_names.size(); i++) {
     this->stream << var_names[i];
     if (i != var_names.size() - 1) {
       this->stream << ", ";
