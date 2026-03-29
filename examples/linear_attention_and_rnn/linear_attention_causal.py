@@ -3,7 +3,7 @@ import tilelang
 from tilelang import language as T
 import torch
 
-'''
+r'''
 Functionality:
 O = ((Q * K^T) \odot M) * V, where M is the causal mask
 
@@ -102,7 +102,7 @@ def linear_attention_ker(H, D, C, dtype="float16", accum_dtype="float"):
                         T.copy(hsum_ub, workspace_2[cid, vid * D // VEC_NUM, 0])
                         T.set_cross_flag("MTE3", 1)
 
-                        for i in T.serial(chunk_num):
+                        for _i in T.serial(chunk_num):
                             T.wait_cross_flag(0)
                             T.copy(workspace_1[cid, vid * C // VEC_NUM, 0], acc_ub)
                             T.copy(workspace_2[cid, vid * D // VEC_NUM, 0], h_ub)
