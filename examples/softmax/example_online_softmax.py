@@ -81,7 +81,7 @@ def online_softmax(M, N, block_M, block_N, dtype="float"):
 
 torch.manual_seed(0)
 test_configs = [
-    # (1024, 51200, 128, 128, "float"),
+    (1024, 51200, 128, 128, "float"),
     (1024, 51200, 128, 128, "float16"),
 ]
 
@@ -91,6 +91,8 @@ for M, N, block_M, block_N, dtype in test_configs:
     a = torch.randn(M, N, dtype=getattr(torch, dtype) if dtype != "float" else torch.float32).npu()
     b = func(a)
     ref_b = torch.nn.functional.softmax(a, dim=1)
-    torch.testing.assert_close(b, ref_b, rtol=1e-4, atol=1e-4)
+    rtol = 1e-2 if dtype == "float16" else 1e-4
+    atol = 1e-3 if dtype == "float16" else 1e-4
+    torch.testing.assert_close(b, ref_b, rtol=rtol, atol=atol)
     print("Test passed!")
 print("Kernel Output Match!")

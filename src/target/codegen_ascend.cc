@@ -1571,14 +1571,21 @@ void CodeGenTileLangAscend::SubsOpCodegen(const CallNode *op) {
   this->stream << "{\n";
   if (op->args[2].as<CallNode>()) {
     auto var_name = PrintBufferOffset(op->args[2].as<CallNode>(), false);
+    DataType dtype0 = GetAccessPtrDtype(op->args[0].as<CallNode>());
 
     this->PrintIndent();
     this->stream << "AscendC::PipeBarrier<PIPE_ALL>();\n";
     this->PrintIndent();
-    this->stream << "auto " << var_name << "_scalar = " << var_name
-                 << ".GetValue(" << PrintExpr(op->args[op->args.size() - 2])
-                 << ");\n";
-    var_names.push_back("-" + var_name + "_scalar");
+    if (dtype0.is_float16()) {
+      this->stream << "auto " << var_name << "_scalar = half(-(float)" << var_name
+                   << ".GetValue(" << PrintExpr(op->args[op->args.size() - 2])
+                   << "));\n";
+    } else {
+      this->stream << "auto " << var_name << "_scalar = -(float)" << var_name
+                   << ".GetValue(" << PrintExpr(op->args[op->args.size() - 2])
+                   << ");\n";
+    }
+    var_names.push_back(var_name + "_scalar");
   } else {
     DataType dtype0 = GetAccessPtrDtype(op->args[0].as<CallNode>());
     DataType scalar_dtype = op->args[2].dtype();
@@ -1619,13 +1626,20 @@ void CodeGenTileLangAscend::DivsOpCodegen(const CallNode *op) {
 
   if (op->args[2].as<CallNode>()) {
     auto var_name = PrintBufferOffset(op->args[2].as<CallNode>(), false);
+    DataType dtype0 = GetAccessPtrDtype(op->args[0].as<CallNode>());
 
     this->PrintIndent();
     this->stream << "AscendC::PipeBarrier<PIPE_ALL>();\n";
     this->PrintIndent();
-    this->stream << "auto " << var_name << "_scalar = 1.0f / " << var_name
-                 << ".GetValue(" << PrintExpr(op->args[op->args.size() - 2])
-                 << ");\n";
+    if (dtype0.is_float16()) {
+      this->stream << "auto " << var_name << "_scalar = half(1.0f / (float)" << var_name
+                   << ".GetValue(" << PrintExpr(op->args[op->args.size() - 2])
+                   << "));\n";
+    } else {
+      this->stream << "auto " << var_name << "_scalar = 1.0f / (float)" << var_name
+                   << ".GetValue(" << PrintExpr(op->args[op->args.size() - 2])
+                   << ");\n";
+    }
     var_names.push_back(var_name + "_scalar");
   } else {
     var_names.push_back("1.0f / " + PrintExpr(op->args[op->args.size() - 2]));
