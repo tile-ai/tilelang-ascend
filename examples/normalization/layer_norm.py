@@ -85,13 +85,15 @@ test_configs = [
     (256, 256, 64, 64, "float"),
     (1024, 1024, 128, 128, "float"),
     (1024, 51200, 128, 128, "float"),
+    (256, 256, 64, 64, "float16"),
 ]
 
 for M, N, block_M, block_N, dtype in test_configs:
     print(f"Testing layer_norm with M={M}, N={N}, block_M={block_M}, block_N={block_N}, dtype={dtype}")
     func = layer_norm(M, N, block_M, block_N, dtype=dtype)
     print("Init successful!")
-    a = torch.randn(M, N).npu()
+    torch_dtype = torch.float16 if dtype == "float16" else torch.float32
+    a = torch.randn(M, N, dtype=torch_dtype).npu()
     b = func(a)
     ref_b = torch.layer_norm(a, normalized_shape=[N])
     torch.testing.assert_close(b.cpu(), ref_b.cpu(), rtol=1e-2, atol=1e-2)

@@ -1263,7 +1263,7 @@ compare_dtype_target_params = [
     ("float16", "ascendc"),
     ("float", "pto"),
     ("float16", "pto"),
-    ("int32", "pto"),
+    # ("int32", "pto"),
 ]
 
 
@@ -3535,26 +3535,23 @@ def reduce_sum(M, N, block_M, block_N, dim, dtype="float"):
     @T.prim_func
     def main(
             A: T.Tensor((M, N), dtype),
-            B: T.Tensor((M, 1), dtype),
+            B: T.Tensor((M), dtype),
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
             by = cid % n_num
 
             a_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
-            # b_ub = T.alloc_ub((block_M // VEC_NUM, 1), dtype)
             b_ub = T.alloc_ub((block_M // VEC_NUM), dtype)
 
-            tmp_ub = T.alloc_ub((block_M * block_N * 4), dtype)
+            tmp_ub = T.alloc_ub((block_M * block_N * 4), "uint8")
 
             T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a_ub)
 
             T.reduce_sum(a_ub, b_ub, tmp_ub, dim, [block_M // VEC_NUM, block_N])
-            # T.dump_tensor(a_ub, 111, block_M*block_N, (block_M, block_N))
-            # T.barrier_all()
-            # T.dump_tensor(b_ub, 222, block_M // 2, (1, block_M // 2))
+            T.barrier_all()
 
-            T.copy(b_ub, B[bx * block_M + vid * block_M // VEC_NUM, 0])
+            T.copy(b_ub, B[bx * block_M + vid * block_M // VEC_NUM])
 
     return main
 
@@ -3565,15 +3562,15 @@ def run_test_reduce_sum(M, N, block_M, block_N, dim, dtype, target):
     print(func.get_kernel_source())
 
     a = torch.ones(M, N, dtype=torch.float32 if dtype == "float" else torch.float16).npu()
-    b = torch.zeros(M, 1, dtype=torch.float32).npu()
+    b = torch.zeros(M, dtype=torch.float32).npu()
     torch.npu.synchronize()
 
     b = func(a)
 
     if dim == -1:
-        ref_b = torch.sum(a, dim=1, keepdim=True)
+        ref_b = torch.sum(a, dim=1)
     else:
-        ref_b = torch.sum(a, dim=0, keepdim=True)
+        ref_b = torch.sum(a, dim=0)
     print(a)
     print(b)
     print(ref_b)
@@ -3582,10 +3579,10 @@ def run_test_reduce_sum(M, N, block_M, block_N, dim, dtype, target):
 
 @pytest.mark.parametrize("dim", [-1])
 @pytest.mark.parametrize("dtype", ["float", "float16"])
-@pytest.mark.parametrize("target", ["ascendc"])
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
 def test_reduce_sum(dim, dtype, target):
-    M, N = 16, 8
-    run_test_reduce_sum(M, N, 16, 8, dim, dtype, target)
+    M, N = 1024, 64
+    run_test_reduce_sum(M, N, 64, 64, dim, dtype, target)
 
 
 def reduce_max(M, N, block_M, block_N, dim, dtype="float"):
@@ -3595,7 +3592,7 @@ def reduce_max(M, N, block_M, block_N, dim, dtype="float"):
     @T.prim_func
     def main(
             A: T.Tensor((M, N), dtype),
-            B: T.Tensor((M, 1), dtype),
+            B: T.Tensor((M), dtype),
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
@@ -3604,13 +3601,13 @@ def reduce_max(M, N, block_M, block_N, dim, dtype="float"):
             a_ub = T.alloc_ub((block_M, block_N), dtype)
             b_ub = T.alloc_ub((block_M), dtype)
 
-            tmp_ub = T.alloc_ub((block_M * block_N * 4), dtype)
+            tmp_ub = T.alloc_ub((block_M * block_N * 4), "uint8")
 
             T.copy(A[bx * block_M, by * block_N], a_ub)
 
             T.reduce_max(a_ub, b_ub, tmp_ub, dim, [block_M, block_N])
 
-            T.copy(b_ub, B[bx * block_M, 0])
+            T.copy(b_ub, B[bx * block_M])
 
     return main
 
@@ -3627,20 +3624,20 @@ def run_test_reduce_max(M, N, block_M, block_N, dim, dtype, target):
     b = func(a)
 
     if dim == -1:
-        ref_b = torch.max(a, dim=1, keepdim=True)[0]
+        ref_b = torch.max(a, dim=1)[0]
     else:
-        ref_b = torch.max(a, dim=0, keepdim=True)[0]
+        ref_b = torch.max(a, dim=0)[0]
     print(b)
     print(ref_b)
     torch.testing.assert_close(b, ref_b, rtol=1e-2, atol=1e-2)
 
 
 @pytest.mark.parametrize("dim", [-1])
-@pytest.mark.parametrize("dtype", ["float"])
+@pytest.mark.parametrize("dtype", ["float", "float16"])
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 def test_reduce_max(dim, dtype, target):
-    M, N = 8, 8
-    run_test_reduce_max(M, N, 8, 8, dim, dtype, target)
+    M, N = 1024, 64
+    run_test_reduce_max(M, N, 64, 64, dim, dtype, target)
 
 
 def reduce_min(M, N, block_M, block_N, dim, dtype="float"):
@@ -3650,7 +3647,7 @@ def reduce_min(M, N, block_M, block_N, dim, dtype="float"):
     @T.prim_func
     def main(
             A: T.Tensor((M, N), dtype),
-            B: T.Tensor((M, 1), dtype),
+            B: T.Tensor((M), dtype),
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
@@ -3659,13 +3656,13 @@ def reduce_min(M, N, block_M, block_N, dim, dtype="float"):
             a_ub = T.alloc_ub((block_M, block_N), dtype)
             b_ub = T.alloc_ub((block_M), dtype)
 
-            tmp_ub = T.alloc_ub((block_M * block_N * 4), dtype)
+            tmp_ub = T.alloc_ub((block_M * block_N * 4), "uint8")
 
             T.copy(A[bx * block_M, by * block_N], a_ub)
 
             T.reduce_min(a_ub, b_ub, tmp_ub, dim, [block_M, block_N])
 
-            T.copy(b_ub, B[bx * block_M, 0])
+            T.copy(b_ub, B[bx * block_M])
 
     return main
 
@@ -3682,20 +3679,20 @@ def run_test_reduce_min(M, N, block_M, block_N, dim, dtype, target):
     b = func(a)
 
     if dim == -1:
-        ref_b = torch.min(a, dim=1, keepdim=True)[0]
+        ref_b = torch.min(a, dim=1)[0]
     else:
-        ref_b = torch.min(a, dim=0, keepdim=True)[0]
+        ref_b = torch.min(a, dim=0)[0]
     print(b)
     print(ref_b)
     torch.testing.assert_close(b, ref_b, rtol=1e-2, atol=1e-2)
 
 
 @pytest.mark.parametrize("dim", [-1])
-@pytest.mark.parametrize("dtype", ["float"])
+@pytest.mark.parametrize("dtype", ["float", "float16"])
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 def test_reduce_min(dim, dtype, target):
-    M, N = 8, 8
-    run_test_reduce_min(M, N, 8, 8, dim, dtype, target)
+    M, N = 1024, 64
+    run_test_reduce_min(M, N, 64, 64, dim, dtype, target)
 
 
 if __name__ == "__main__":

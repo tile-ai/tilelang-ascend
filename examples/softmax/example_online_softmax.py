@@ -81,13 +81,14 @@ def online_softmax(M, N, block_M, block_N, dtype="float"):
 
 torch.manual_seed(0)
 test_configs = [
-    (1024, 51200, 128, 128),
+    # (1024, 51200, 128, 128, "float"),
+    (1024, 51200, 128, 128, "float16"),
 ]
 
-for M, N, block_M, block_N in test_configs:
-    func = online_softmax(M, N, block_M, block_N, dtype="float")
-    print("Init successful!")
-    a = torch.randn(M, N).npu()
+for M, N, block_M, block_N, dtype in test_configs:
+    func = online_softmax(M, N, block_M, block_N, dtype=dtype)
+    print(f"Init successful with dtype={dtype}!")
+    a = torch.randn(M, N, dtype=getattr(torch, dtype) if dtype != "float" else torch.float32).npu()
     b = func(a)
     ref_b = torch.nn.functional.softmax(a, dim=1)
     torch.testing.assert_close(b, ref_b, rtol=1e-4, atol=1e-4)

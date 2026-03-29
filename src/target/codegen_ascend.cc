@@ -1772,8 +1772,6 @@ void CodeGenTileLangAscend::ReduceOpCodegen(const CallNode *op) {
     std::string n_str = template_params.substr(comma2 + 1, comma3 - comma2 - 1);
     std::string dim_str = template_params.substr(comma3 + 1);
 
-    std::string new_op_name = "tl::ascend::reduce_sum<" + dtype + ">";
-
     int64_t m_val = 0, n_val = 0, dim_val = 0;
     try {
       m_val = std::stoll(m_str);
@@ -1782,28 +1780,37 @@ void CodeGenTileLangAscend::ReduceOpCodegen(const CallNode *op) {
     } catch (...) {
     }
 
-    std::string mask, repeatTime, srcRepStride;
-    if (dim_val == -1) {
-      mask = std::to_string(n_val);
-      repeatTime = std::to_string(m_val);
-      // srcRepStride = std::to_string(n_val);
-      srcRepStride = "1";
-    } else if (dim_val == 0) {
-      mask = std::to_string(m_val);
-      repeatTime = std::to_string(n_val);
-      srcRepStride = "1";
-    } else {
-      mask = std::to_string(m_val * n_val);
-      repeatTime = "1";
-      srcRepStride = "0";
-    }
+    if (dtype == "half") {
+      std::string mask, repeatTime, srcRepStride;
+      if (dim_val == -1) {
+        mask = std::to_string(n_val);
+        repeatTime = std::to_string(m_val);
+        srcRepStride = "1";
+      } else if (dim_val == 0) {
+        mask = std::to_string(m_val);
+        repeatTime = std::to_string(n_val);
+        srcRepStride = "1";
+      } else {
+        mask = std::to_string(m_val * n_val);
+        repeatTime = "1";
+        srcRepStride = "0";
+      }
 
-    this->stream << new_op_name << "(";
-    for (int i = 0; i < var_names.size(); i++) {
-      this->stream << var_names[i];
-      this->stream << ", ";
+      std::string new_op_name = "tl::ascend::reduce_sum_half<" + dtype + ">";
+      this->stream << new_op_name << "(";
+      this->stream << var_names[0] << ", " << var_names[1];
+      this->stream << ", " << mask << ", " << repeatTime << ", " << srcRepStride << ");\n";
+    } else {
+      std::string new_op_name = "tl::ascend::reduce_sum<" + dtype + ", " + m_str + ", " + n_str + ", " + dim_str + ">";
+      this->stream << new_op_name << "(";
+      for (int i = 0; i < var_names.size(); i++) {
+        this->stream << var_names[i];
+        if (i != var_names.size() - 1) {
+          this->stream << ", ";
+        }
+      }
+      this->stream << ");\n";
     }
-    this->stream << mask << ", " << repeatTime << ", " << srcRepStride << ");\n";
   } else {
     this->stream << op_name << "(";
     for (int i = 0; i < var_names.size(); i++) {
