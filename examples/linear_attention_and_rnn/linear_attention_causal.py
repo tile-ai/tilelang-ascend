@@ -1,3 +1,4 @@
+import functools
 import tilelang
 from tilelang import language as T
 import torch
@@ -15,6 +16,7 @@ Persistent-kernel version:
 '''
 
 tilelang.cache.clear_cache()
+tilelang.disable_cache()  # force re-compile, unless explicitly reusing compile kernel
 
 pass_configs = {
     tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True
@@ -116,10 +118,19 @@ def linear_attention_ker(H, D, C, dtype="float16", accum_dtype="float"):
     return main
 
 
+@functools.lru_cache(maxsize=None)
+def _compiled_ker(H, D, C):
+    return linear_attention_ker(H, D, C)
+
+
 def linear_attention(q, k, v, C):
-    B, H, L, D = q.shape
-    # Compile once for (H, D, C); reuse across different (B, L)
-    ker = linear_attention_ker(H, D, C)
+    _, H, _, D = q.shape
+    before = _compiled_ker.cache_info().hits
+    ker = _compiled_ker(H, D, C)
+    if _compiled_ker.cache_info().hits > before:
+        print(f"  reuse compiled kernel (H={H}, D={D}, C={C})")
+    else:
+        print(f"  !!recompile (H={H}, D={D}, C={C})")
     o = ker(q, k, v)
     return o
 
