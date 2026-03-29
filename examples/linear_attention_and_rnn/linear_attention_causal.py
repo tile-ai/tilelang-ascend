@@ -3,7 +3,7 @@ import tilelang
 from tilelang import language as T
 import torch
 
-r'''
+r"""
 Functionality:
 O = ((Q * K^T) \odot M) * V, where M is the causal mask
 
@@ -13,14 +13,12 @@ Persistent-kernel version:
 - Each core processes ceil(B*H / core_num) work items sequentially
 - V scope zeros workspace_2 per work item and signals C (init handshake),
   so there is no stale accumulated-H from previous work items
-'''
+"""
 
 tilelang.cache.clear_cache()
 tilelang.disable_cache()  # force re-compile, unless explicitly reusing compile kernel
 
-pass_configs = {
-    tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True
-}
+pass_configs = {tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True}
 
 try:
     core_num = int(torch.npu.get_device_properties("npu").cube_core_num)
@@ -39,12 +37,12 @@ def linear_attention_ker(H, D, C, dtype="float16", accum_dtype="float"):
 
     @T.prim_func
     def main(
-            Q: T.Tensor(shape, dtype),
-            K: T.Tensor(shape, dtype),
-            V: T.Tensor(shape, dtype),
-            workspace_1: T.Tensor([core_num, C, C], dtype),
-            workspace_2: T.Tensor([core_num, D, D], dtype),
-            O: T.Tensor(shape, dtype),
+        Q: T.Tensor(shape, dtype),
+        K: T.Tensor(shape, dtype),
+        V: T.Tensor(shape, dtype),
+        workspace_1: T.Tensor([core_num, C, C], dtype),
+        workspace_2: T.Tensor([core_num, D, D], dtype),
+        O: T.Tensor(shape, dtype),
     ):
         with T.Kernel(core_num, is_npu=True) as (cid, vid):
             q_l1 = T.alloc_L1([C, D], dtype)
@@ -154,7 +152,7 @@ def ref_linear_attention(q, k, v):
 
 
 torch.manual_seed(0)
-torch.set_printoptions(threshold=float('inf'), sci_mode=False)
+torch.set_printoptions(threshold=float("inf"), sci_mode=False)
 
 # All configs share H=2, D=128, C=64 → compiled ONCE; only B and L vary at runtime.
 #
@@ -166,30 +164,26 @@ torch.set_printoptions(threshold=float('inf'), sci_mode=False)
 # L coverage: single chunk (L==C), small, medium, large (up to 4096)
 test_configs = [
     # --- single chunk edge case ---
-    (1, 2,   64, 128, 64),   # L==C, 1 chunk;  B*H=2  < 20
-
+    (1, 2, 64, 128, 64),  # L==C, 1 chunk;  B*H=2  < 20
     # --- B*H < core_num ---
-    (1, 2,  256, 128, 64),   # B*H=2
-    (4, 2,  128, 128, 64),   # B*H=8
-    (8, 2,  512, 128, 64),   # B*H=16
-
+    (1, 2, 256, 128, 64),  # B*H=2
+    (4, 2, 128, 128, 64),  # B*H=8
+    (8, 2, 512, 128, 64),  # B*H=16
     # --- B*H == core_num ---
-    (12, 2, 512, 128, 64),   # B*H=20
-
+    (12, 2, 512, 128, 64),  # B*H=20
     # --- B*H > core_num (multiple work items per core) ---
-    (16, 2,  256, 128, 64),  # B*H=32  → 2 work items/core
-    (32, 2,  128, 128, 64),  # B*H=64  → 4 work items/core
+    (16, 2, 256, 128, 64),  # B*H=32  → 2 work items/core
+    (32, 2, 128, 128, 64),  # B*H=64  → 4 work items/core
     (50, 20, 128, 128, 64),  # B*H=1000  → (large B + large H)
-
     # --- large L ---
-    (1,  2, 1024, 128, 64),  # L=1k,  B*H=2
-    (8,  2, 2048, 128, 64),  # L=2k,  B*H=16
-    (2,  2, 4096, 128, 64),  # L=4k,  B*H=4
+    (1, 2, 1024, 128, 64),  # L=1k,  B*H=2
+    (8, 2, 2048, 128, 64),  # L=2k,  B*H=16
+    (2, 2, 4096, 128, 64),  # L=4k,  B*H=4
     (16, 2, 1024, 128, 64),  # L=1k,  B*H=32 (large B + large L)
 ]
 
 for B, H, L, D, C in test_configs:
-    print(f"Testing B={B}, H={H}, L={L}, D={D}, C={C}  (B*H={B*H})")
+    print(f"Testing B={B}, H={H}, L={L}, D={D}, C={C}  (B*H={B * H})")
     q = torch.randn([B, H, L, D]).npu().to(torch.float16)
     k = torch.randn([B, H, L, D]).npu().to(torch.float16)
     v = torch.randn([B, H, L, D]).npu().to(torch.float16)
