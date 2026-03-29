@@ -10,6 +10,8 @@
 #include "tir/analysis/var_use_def_analysis.h"
 #include "tir/transforms/ir_utils.h"
 
+#include <tvm/arith/analyzer.h>
+#include <tvm/arith/int_set.h>
 #include <tvm/tir/builtin.h>
 #include <tvm/tir/stmt_functor.h>
 #include <tvm/tir/transform.h>
@@ -178,12 +180,27 @@ private:
 
 class LoopAnalyzer : public StmtVisitor {
 public:
+  /*!
+   * \brief A single buffer access extracted from tvm_access_ptr(dtype, buf,
+   * offset, extent, rw_mask).
+   */
+  struct AccessInfo {
+    std::string buffer_name;
+    PrimExpr offset;
+    PrimExpr extent;
+    bool is_read;
+    bool is_write;
+    int order;
+  };
+
   struct StmtInfo {
     int idx;
     std::string type;
     std::string buffer_name;
     Stmt stmt;
     std::set<std::string> used_buffers;
+    std::vector<AccessInfo> accesses;
+    int32_t scope{INVALID_SCOPE};
   };
 
   struct WorkspaceWrite {
@@ -202,10 +219,12 @@ public:
   void Analyze() {
     all_statements_C_.clear();
     all_statements_V_.clear();
+    all_statements_.clear();
     workspace_writes_C_.clear();
     workspace_writes_V_.clear();
     current_idx_C_ = 0;
     current_idx_V_ = 0;
+    current_idx_ = 0;
     core_scope_ = INVALID_SCOPE;
     this->VisitStmt(pipeline_loop_->body);
   }
@@ -215,6 +234,9 @@ public:
   }
   const std::vector<StmtInfo> &all_statements_V() const {
     return all_statements_V_;
+  }
+  const std::vector<StmtInfo> &all_statements() const {
+    return all_statements_;
   }
   const std::vector<WorkspaceWrite> &workspace_writes_C() const {
     return workspace_writes_C_;
@@ -235,7 +257,8 @@ public:
     info.type = "Evaluate";
     info.stmt = GetRef<Stmt>(op);
     if (auto call_node = op->value.as<CallNode>()) {
-      for (int idx = 1; idx < call_node->args.size(); idx++) {
+      int arg_start = call_node->op.same_as(builtin::call_extern()) ? 1 : 0;
+      for (int idx = arg_start; idx < call_node->args.size(); idx++) {
         if (auto inter_node = call_node->args[idx].as<CallNode>()) {
           auto buf_name = Downcast<Var>(inter_node->args[1]);
           core_scope_ = checkBufferScope(location_map_, buf_name);
@@ -275,12 +298,17 @@ public:
           workspace_writes_V_.push_back(write);
         }
       }
-      CollectBuffers(call_node, info.used_buffers);
+      CollectBuffersAndAccesses(call_node, info.used_buffers, info.accesses);
     }
     if (core_scope_ == CUBE_SCOPE) {
       all_statements_C_.push_back(info);
     } else if (core_scope_ == VEC_SCOPE) {
       all_statements_V_.push_back(info);
+    }
+    if (core_scope_ != INVALID_SCOPE) {
+      info.idx = current_idx_++;
+      info.scope = core_scope_;
+      all_statements_.push_back(info);
     }
   }
 
@@ -288,13 +316,20 @@ public:
     StmtInfo for_info;
     for_info.type = "For";
     for_info.stmt = GetRef<Stmt>(op);
+
     std::vector<StmtInfo> saved_statements_C = all_statements_C_;
     std::vector<StmtInfo> saved_statements_V = all_statements_V_;
+    std::vector<StmtInfo> saved_statements = all_statements_;
     int saved_idx_C = current_idx_C_;
     int saved_idx_V = current_idx_V_;
+    int saved_idx = current_idx_;
+
     this->VisitStmt(op->body);
+
     bool has_new_C = saved_statements_C.size() < all_statements_C_.size();
     bool has_new_V = saved_statements_V.size() < all_statements_V_.size();
+    size_t new_all = all_statements_.size() - saved_statements.size();
+
     if (has_new_V) {
       ProcessInfo(workspace_writes_V_, all_statements_V_, saved_statements_V,
                   saved_idx_V, for_info);
@@ -304,6 +339,12 @@ public:
       ProcessInfo(workspace_writes_C_, all_statements_C_, saved_statements_C,
                   saved_idx_C, for_info);
       current_idx_C_ = all_statements_C_.size();
+    }
+    if (has_new_V || has_new_C) {
+      StmtInfo unified_for_info = for_info;
+      unified_for_info.scope = core_scope_;
+      ProcessInfoUnified(all_statements_, saved_statements, saved_idx,
+                         unified_for_info);
     }
   }
 
@@ -325,27 +366,95 @@ private:
     }
 
     std::set<std::string> for_node_buffers;
-    for (int i = for_info.idx; i < all_statements.size(); i++) {
+    std::vector<AccessInfo> for_node_accesses;
+    // Use saved_statements.size() as array start position, NOT for_info.idx.
+    // for_info.idx tracks logical statement index (current_idx_X_) which drifts
+    // ahead of actual array size when previous ForNodes collapse N entries
+    // into 1.
+    size_t inner_start = saved_statements.size();
+    for (size_t i = inner_start; i < all_statements.size(); i++) {
       auto buffers = all_statements[i].used_buffers;
       for (auto it = buffers.begin(); it != buffers.end(); ++it) {
         for_node_buffers.insert(*it);
+      }
+      for (const auto &access : all_statements[i].accesses) {
+        for_node_accesses.push_back(access);
       }
     }
     all_statements = saved_statements;
     all_statements.push_back(for_info);
     all_statements.back().used_buffers = for_node_buffers;
+    all_statements.back().accesses = for_node_accesses;
   }
 
-  void CollectBuffers(const CallNode *call_node,
-                      std::set<std::string> &used_buffers) {
+  void ProcessInfoUnified(std::vector<StmtInfo> &all_statements,
+                          std::vector<StmtInfo> &saved_statements,
+                          int saved_idx, StmtInfo for_info) {
+    for_info.idx = saved_idx++;
+
+    std::set<std::string> for_node_buffers;
+    std::vector<AccessInfo> for_node_accesses;
+    // Same fix: use array position, not logical index.
+    size_t inner_start = saved_statements.size();
+    for (size_t i = inner_start; i < all_statements.size(); i++) {
+      for (const auto &buf : all_statements[i].used_buffers) {
+        for_node_buffers.insert(buf);
+      }
+      for (const auto &access : all_statements[i].accesses) {
+        for_node_accesses.push_back(access);
+      }
+    }
+    all_statements = saved_statements;
+    all_statements.push_back(for_info);
+    all_statements.back().used_buffers = for_node_buffers;
+    all_statements.back().accesses = for_node_accesses;
+  }
+
+  void CollectBuffersAndAccesses(const CallNode *call_node,
+                                 std::set<std::string> &used_buffers,
+                                 std::vector<AccessInfo> &accesses) {
     auto args = call_node->args;
-    for (int i = 1; i < args.size(); ++i) {
+    int start = call_node->op.same_as(builtin::call_extern()) ? 1 : 0;
+
+    for (int i = start; i < args.size(); ++i) {
       if (auto inner_call_node = args[i].as<CallNode>()) {
-        auto buf_name = Downcast<Var>(inner_call_node->args[1]);
-        if (location_map_.find(buf_name) != location_map_.end()) {
-          if (callnodeMapPos_.find(location_map_[buf_name]) !=
-              callnodeMapPos_.end()) {
-            used_buffers.insert(buf_name->name_hint);
+        bool is_tvm_ap = inner_call_node->op.same_as(builtin::tvm_access_ptr());
+        if (is_tvm_ap && inner_call_node->args.size() >= 5) {
+          auto buf_var = Downcast<Var>(inner_call_node->args[1]);
+          std::string buf_name = buf_var->name_hint;
+          PrimExpr offset = inner_call_node->args[2];
+          PrimExpr extent = inner_call_node->args[3];
+          const IntImmNode *flag = inner_call_node->args[4].as<IntImmNode>();
+          int rw_mask = flag ? static_cast<int>(flag->value) : 3;
+
+          bool found_in_map =
+              location_map_.find(buf_var) != location_map_.end();
+          bool found_in_pos = false;
+          if (found_in_map) {
+            found_in_pos = callnodeMapPos_.find(location_map_[buf_var]) !=
+                           callnodeMapPos_.end();
+          }
+
+          if (found_in_map && found_in_pos) {
+            used_buffers.insert(buf_name);
+          }
+
+          AccessInfo access;
+          access.buffer_name = buf_name;
+          access.offset = offset;
+          access.extent = extent;
+          access.is_read = (rw_mask & 1) != 0;
+          access.is_write = (rw_mask & 2) != 0;
+          access.order = static_cast<int>(accesses.size());
+          accesses.push_back(access);
+        } else {
+          auto buf_name = Downcast<Var>(inner_call_node->args[1]);
+          bool found = location_map_.find(buf_name) != location_map_.end();
+          if (found) {
+            if (callnodeMapPos_.find(location_map_[buf_name]) !=
+                callnodeMapPos_.end()) {
+              used_buffers.insert(buf_name->name_hint);
+            }
           }
         }
       }
@@ -354,7 +463,8 @@ private:
 
   std::optional<std::string> FindWorkspaceName(const CallNode *call_node) {
     auto args = call_node->args;
-    for (int i = 1; i < args.size(); ++i) {
+    int start = call_node->op.same_as(builtin::call_extern()) ? 1 : 0;
+    for (int i = start; i < args.size(); ++i) {
       if (auto inner_call_node = args[i].as<CallNode>()) {
         std::string buf_name =
             Downcast<Var>(inner_call_node->args[1])->name_hint;
@@ -386,12 +496,188 @@ private:
   Map<Var, String> location_map_;
   std::vector<StmtInfo> all_statements_C_;
   std::vector<StmtInfo> all_statements_V_;
+  std::vector<StmtInfo> all_statements_;
   std::vector<WorkspaceWrite> workspace_writes_C_;
   std::vector<WorkspaceWrite> workspace_writes_V_;
   int current_idx_C_{0};
   int current_idx_V_{0};
+  int current_idx_{0};
   int32_t core_scope_{INVALID_SCOPE};
 };
+
+/*!
+ * \brief Check if [a_off, a_off+a_ext) ⊇ [b_off, b_off+b_ext).
+ * Conservative: returns true only when provable from constant values.
+ */
+static bool RangeContains(const PrimExpr &a_off, const PrimExpr &a_ext,
+                          const PrimExpr &b_off, const PrimExpr &b_ext) {
+  auto a0 = a_off.as<IntImmNode>();
+  auto a1 = a_ext.as<IntImmNode>();
+  auto b0 = b_off.as<IntImmNode>();
+  auto b1 = b_ext.as<IntImmNode>();
+  if (a0 && a1 && b0 && b1) {
+    return a0->value <= b0->value &&
+           a0->value + a1->value >= b0->value + b1->value;
+  }
+  return false;
+}
+
+/*!
+ * \brief Check if [a_off, a_off+a_ext) ∩ [b_off, b_off+b_ext) ≠ ∅.
+ * Conservative: returns true (assumes overlap) when non-constant.
+ */
+static bool RangeOverlaps(const PrimExpr &a_off, const PrimExpr &a_ext,
+                          const PrimExpr &b_off, const PrimExpr &b_ext) {
+  auto a0 = a_off.as<IntImmNode>();
+  auto a1 = a_ext.as<IntImmNode>();
+  auto b0 = b_off.as<IntImmNode>();
+  auto b1 = b_ext.as<IntImmNode>();
+  if (a0 && a1 && b0 && b1) {
+    int64_t a_start = a0->value, a_end = a_start + a1->value;
+    int64_t b_start = b0->value, b_end = b_start + b1->value;
+    return a_start < b_end && b_start < a_end;
+  }
+  return true;
+}
+
+/*!
+ * \brief Collect all read ranges of a specific buffer from an AST subtree.
+ */
+static void
+CollectBufferReads(const Stmt &stmt, const std::string &target_buf,
+                   std::vector<std::pair<PrimExpr, PrimExpr>> &reads) {
+  if (const auto *eval = stmt.as<EvaluateNode>()) {
+    if (const auto *call = eval->value.as<CallNode>()) {
+      int start = call->op.same_as(builtin::call_extern()) ? 1 : 0;
+      for (int i = start; i < static_cast<int>(call->args.size()); ++i) {
+        if (const auto *inner = call->args[i].as<CallNode>()) {
+          if (inner->op.same_as(builtin::tvm_access_ptr()) &&
+              inner->args.size() >= 5) {
+            auto buf_var = Downcast<Var>(inner->args[1]);
+            if (buf_var->name_hint != target_buf)
+              continue;
+            const IntImmNode *flag = inner->args[4].as<IntImmNode>();
+            int rw_mask = flag ? static_cast<int>(flag->value) : 3;
+            if ((rw_mask & 1) != 0) {
+              reads.push_back({inner->args[2], inner->args[3]});
+            }
+          }
+        }
+      }
+    }
+  } else if (const auto *seq = stmt.as<SeqStmtNode>()) {
+    for (const auto &s : seq->seq)
+      CollectBufferReads(s, target_buf, reads);
+  } else if (const auto *loop = stmt.as<ForNode>()) {
+    CollectBufferReads(loop->body, target_buf, reads);
+  } else if (const auto *ite = stmt.as<IfThenElseNode>()) {
+    CollectBufferReads(ite->then_case, target_buf, reads);
+    if (ite->else_case)
+      CollectBufferReads(ite->else_case.value(), target_buf, reads);
+  } else if (const auto *let = stmt.as<LetStmtNode>()) {
+    CollectBufferReads(let->body, target_buf, reads);
+  } else if (const auto *attr = stmt.as<AttrStmtNode>()) {
+    CollectBufferReads(attr->body, target_buf, reads);
+  } else if (const auto *realize = stmt.as<BlockRealizeNode>()) {
+    CollectBufferReads(realize->block->body, target_buf, reads);
+  }
+}
+
+/*!
+ * \brief Tree-based exposed read analysis.
+ *
+ * For a fixed target (buffer, offset, extent), traverses the AST to determine:
+ *   - has_exposed_read: a read of the target range exists that is NOT preceded
+ *     by a write covering the target range.
+ *   - must_kill: this subtree definitely writes (covers) the target range.
+ *
+ * Composition rules:
+ *   Sequential(A; B):  exposed = A.exposed || (!A.kill && B.exposed)
+ *                      kill = A.kill || B.kill
+ *   For(body):         exposed = body.exposed  (first iteration, no prior
+ * kills) kill = body.kill If(then, else):    exposed = then.exposed ||
+ * else.exposed kill = then.kill && else.kill Primitive:         exposed =
+ * reads_target && !covered_from_above kill = writes_covering_target
+ */
+static std::pair<bool, bool> CheckExposedRead(const Stmt &stmt,
+                                              const std::string &target_buf,
+                                              const PrimExpr &target_offset,
+                                              const PrimExpr &target_extent,
+                                              bool covered) {
+
+  if (const auto *eval = stmt.as<EvaluateNode>()) {
+    bool reads = false, kills = false;
+    if (const auto *call = eval->value.as<CallNode>()) {
+      int start = call->op.same_as(builtin::call_extern()) ? 1 : 0;
+      for (int i = start; i < static_cast<int>(call->args.size()); ++i) {
+        if (const auto *inner = call->args[i].as<CallNode>()) {
+          if (inner->op.same_as(builtin::tvm_access_ptr()) &&
+              inner->args.size() >= 5) {
+            auto buf_var = Downcast<Var>(inner->args[1]);
+            if (buf_var->name_hint != target_buf)
+              continue;
+            PrimExpr off = inner->args[2];
+            PrimExpr ext = inner->args[3];
+            const IntImmNode *flag = inner->args[4].as<IntImmNode>();
+            int rw_mask = flag ? static_cast<int>(flag->value) : 3;
+            if ((rw_mask & 1) != 0 &&
+                RangeOverlaps(off, ext, target_offset, target_extent)) {
+              reads = true;
+            }
+            if ((rw_mask & 2) != 0 &&
+                RangeContains(off, ext, target_offset, target_extent)) {
+              kills = true;
+            }
+          }
+        }
+      }
+    }
+    return {reads && !covered, kills};
+  }
+
+  if (const auto *seq = stmt.as<SeqStmtNode>()) {
+    bool any_exposed = false, any_kills = false;
+    for (const auto &child : seq->seq) {
+      auto [exp, kill] = CheckExposedRead(child, target_buf, target_offset,
+                                          target_extent, covered || any_kills);
+      any_exposed |= exp;
+      any_kills |= kill;
+    }
+    return {any_exposed, any_kills};
+  }
+
+  if (const auto *loop = stmt.as<ForNode>()) {
+    return CheckExposedRead(loop->body, target_buf, target_offset,
+                            target_extent, covered);
+  }
+
+  if (const auto *ite = stmt.as<IfThenElseNode>()) {
+    auto [t_exp, t_kill] = CheckExposedRead(
+        ite->then_case, target_buf, target_offset, target_extent, covered);
+    if (ite->else_case) {
+      auto [e_exp, e_kill] =
+          CheckExposedRead(ite->else_case.value(), target_buf, target_offset,
+                           target_extent, covered);
+      return {t_exp || e_exp, t_kill && e_kill};
+    }
+    return {t_exp, false};
+  }
+
+  if (const auto *let = stmt.as<LetStmtNode>()) {
+    return CheckExposedRead(let->body, target_buf, target_offset, target_extent,
+                            covered);
+  }
+  if (const auto *attr = stmt.as<AttrStmtNode>()) {
+    return CheckExposedRead(attr->body, target_buf, target_offset,
+                            target_extent, covered);
+  }
+  if (const auto *realize = stmt.as<BlockRealizeNode>()) {
+    return CheckExposedRead(realize->block->body, target_buf, target_offset,
+                            target_extent, covered);
+  }
+
+  return {false, false};
+}
 
 class LoopRewriter : public StmtMutator {
 public:
@@ -403,10 +689,9 @@ public:
   LoopRewriter(const LoopAnalyzer &analyzer, const ForNode *original_loop,
                int num_stages)
       : analyzer_(analyzer), original_loop_(original_loop),
+        all_statements_(analyzer.all_statements()),
         all_statements_C_(analyzer.all_statements_C()),
         all_statements_V_(analyzer.all_statements_V()),
-        workspace_writes_C_(analyzer.workspace_writes_C()),
-        workspace_writes_V_(analyzer.workspace_writes_V()),
         num_stages_(num_stages) {
     original_loop_var_ = original_loop->loop_var;
     std::string outer_var_name = original_loop_var_->name_hint + "_outer";
@@ -415,8 +700,7 @@ public:
   }
 
   Stmt Rewrite() {
-    std::vector<StageInfo> stages =
-        SplitIntoStages(workspace_writes_C_, workspace_writes_V_);
+    std::vector<StageInfo> stages = SplitIntoStages();
     AnalyzeSharedBuffers(stages);
     return CreateStagedLoops(stages);
   }
@@ -429,13 +713,7 @@ public:
 
   std::set<std::string> GetAllBuffersToAdjust() const {
     std::set<std::string> all_buffers = shared_buffers_;
-    for (const auto &stmt_info : all_statements_C_) {
-      if (!stmt_info.buffer_name.empty() &&
-          stmt_info.buffer_name.find("workspace") != std::string::npos) {
-        all_buffers.insert(stmt_info.buffer_name);
-      }
-    }
-    for (const auto &stmt_info : all_statements_V_) {
+    for (const auto &stmt_info : all_statements_) {
       if (!stmt_info.buffer_name.empty() &&
           stmt_info.buffer_name.find("workspace") != std::string::npos) {
         all_buffers.insert(stmt_info.buffer_name);
@@ -518,82 +796,59 @@ private:
                original_loop_->span);
   }
 
-  std::vector<int> ExtractSplitPoints(
-      const std::vector<LoopAnalyzer::WorkspaceWrite> workspace_writes) {
-    std::vector<int> split_points;
-    split_points.reserve(workspace_writes.size());
-    for (const auto &write : workspace_writes) {
-      split_points.push_back(write.stmt_idx);
-    }
-
-    std::sort(split_points.begin(), split_points.end());
-    split_points.erase(std::unique(split_points.begin(), split_points.end()),
-                       split_points.end());
-    return split_points;
-  }
-
-  std::vector<StageInfo> SplitIntoStages(
-      const std::vector<LoopAnalyzer::WorkspaceWrite> workspace_writes_C,
-      const std::vector<LoopAnalyzer::WorkspaceWrite> workspace_writes_V) {
-    std::vector<int> split_points_C = ExtractSplitPoints(workspace_writes_C);
-    std::vector<int> split_points_V = ExtractSplitPoints(workspace_writes_V);
+  std::vector<StageInfo> SplitIntoStages() {
     std::vector<StageInfo> stages;
+    if (all_statements_.empty())
+      return stages;
+
     StageInfo current_stage;
-    std::unordered_set<int> split_indices_C(split_points_C.begin(),
-                                            split_points_C.end());
-    std::unordered_set<int> split_indices_V(split_points_V.begin(),
-                                            split_points_V.end());
-    std::unordered_set<const StmtNode *> processed_stmts;
-    for (const auto &stmt_info : all_statements_C_) {
-      if (!processed_stmts.count(stmt_info.stmt.get())) {
-        processed_stmts.insert(stmt_info.stmt.get());
-        current_stage.statements.push_back(stmt_info);
-        for (const auto &buffer : stmt_info.used_buffers) {
-          current_stage.used_buffers.insert(buffer);
-        }
-        if (split_indices_C.find(stmt_info.idx) != split_indices_C.end()) {
+    int32_t current_scope = all_statements_[0].scope;
+
+    for (const auto &stmt_info : all_statements_) {
+      if (stmt_info.scope != current_scope) {
+        if (!current_stage.statements.empty()) {
           stages.push_back(current_stage);
           current_stage = StageInfo();
         }
+        current_scope = stmt_info.scope;
       }
-    }
-    if (!current_stage.statements.empty()) {
-      stages.push_back(current_stage);
-      current_stage = StageInfo();
-    }
-    for (const auto &stmt_info : all_statements_V_) {
-      if (processed_stmts.count(stmt_info.stmt.get())) {
-        continue;
-      }
-      processed_stmts.insert(stmt_info.stmt.get());
       current_stage.statements.push_back(stmt_info);
       for (const auto &buffer : stmt_info.used_buffers) {
         current_stage.used_buffers.insert(buffer);
       }
-      if (split_indices_V.find(stmt_info.idx) != split_indices_V.end()) {
-        stages.push_back(current_stage);
-        current_stage = StageInfo();
-      }
     }
     if (!current_stage.statements.empty()) {
       stages.push_back(current_stage);
     }
+
     return stages;
   }
 
   int32_t checkBufferScope(const std::string &buffer) {
     for (const auto &pair : analyzer_.location_map()) {
       if (pair.first.get()->name_hint == buffer) {
-        if (callnodeMapPos_[pair.second] == "cube") {
-          return CUBE_SCOPE;
-        } else if (callnodeMapPos_[pair.second] == "vec") {
-          return VEC_SCOPE;
-        } else {
-          return INVALID_SCOPE;
+        std::string scope_str = pair.second;
+        auto it = callnodeMapPos_.find(scope_str);
+        if (it != callnodeMapPos_.end()) {
+          if (it->second == "cube") {
+            return CUBE_SCOPE;
+          } else if (it->second == "vec") {
+            return VEC_SCOPE;
+          }
         }
+        return INVALID_SCOPE;
       }
     }
     return INVALID_SCOPE;
+  }
+
+  Stmt ReconstructStageBody(const StageInfo &stage) const {
+    if (stage.statements.size() == 1)
+      return stage.statements[0].stmt;
+    Array<Stmt> seq;
+    for (const auto &s : stage.statements)
+      seq.push_back(s.stmt);
+    return SeqStmt(seq);
   }
 
   void AnalyzeSharedBuffers(const std::vector<StageInfo> &stages) {
@@ -603,9 +858,36 @@ private:
         buffer_stage_map[buffer].push_back(stage_idx);
       }
     }
+
     for (const auto &[buffer, stage_indices] : buffer_stage_map) {
-      if (stage_indices.size() > 1) {
-        auto buffer_scope = checkBufferScope(buffer);
+      if (stage_indices.size() <= 1) {
+        continue;
+      }
+      int scope = checkBufferScope(buffer);
+      if (scope != VEC_SCOPE) {
+        continue;
+      }
+
+      bool is_shared = false;
+      for (int si : stage_indices) {
+        Stmt stage_body = ReconstructStageBody(stages[si]);
+
+        std::vector<std::pair<PrimExpr, PrimExpr>> reads;
+        CollectBufferReads(stage_body, buffer, reads);
+
+        for (const auto &[offset, extent] : reads) {
+          auto [exposed, kill] =
+              CheckExposedRead(stage_body, buffer, offset, extent, false);
+          if (exposed) {
+            is_shared = true;
+            break;
+          }
+        }
+        if (is_shared)
+          break;
+      }
+
+      if (is_shared) {
         shared_buffers_.insert(buffer);
       }
     }
@@ -614,10 +896,9 @@ private:
 private:
   const LoopAnalyzer &analyzer_;
   const ForNode *original_loop_;
+  const std::vector<LoopAnalyzer::StmtInfo> &all_statements_;
   const std::vector<LoopAnalyzer::StmtInfo> &all_statements_C_;
   const std::vector<LoopAnalyzer::StmtInfo> &all_statements_V_;
-  const std::vector<LoopAnalyzer::WorkspaceWrite> &workspace_writes_C_;
-  const std::vector<LoopAnalyzer::WorkspaceWrite> &workspace_writes_V_;
   std::set<std::string> shared_buffers_;
   int num_stages_;
   Var original_loop_var_;
@@ -700,7 +981,18 @@ private:
         ModifyOuterLoop(pipeline, staged_loops, num_stages, outer_loop_var);
     std::set<std::string> buffers_to_adjust = rewriter.GetAllBuffersToAdjust();
     if (!buffers_to_adjust.empty()) {
-      outer_loop = AdjustBuffersAndAccess(origin_map_, outer_loop,
+      // Build a combined buffer map that includes both function params
+      // (origin_map_) and locally allocated buffers (alloc_buffers), so
+      // AdjustBuffersAndAccess can look up shapes for on-chip buffers like
+      // r_factors, sumexp_is, etc.
+      Map<Var, Buffer> combined_map(origin_map_);
+      if (const BlockRealizeNode *realize =
+              pipeline->body.as<BlockRealizeNode>()) {
+        for (const auto &buf : realize->block->alloc_buffers) {
+          combined_map.Set(buf->data, buf);
+        }
+      }
+      outer_loop = AdjustBuffersAndAccess(combined_map, outer_loop,
                                           buffers_to_adjust, num_stages);
     }
 
@@ -842,22 +1134,19 @@ private:
                       PrimExpr new_offset = original_offset;
 
                       if (stage_var_.defined()) {
-                        if (is_shared_buffer && !is_workspace_buffer) {
-                          PrimExpr block_size = 1;
-                          if (inner_call->args.size() >= 4) {
-                            block_size = inner_call->args[3];
-                          }
-                          new_offset = original_offset + i_value * block_size;
-                        } else if (is_shared_buffer && is_workspace_buffer) {
+                        if (is_shared_buffer || is_workspace_buffer) {
                           for (auto &kv : origin_map) {
-                            Var var = kv.first;
                             Buffer buffer = kv.second;
                             if (buffer->name == buffer_name) {
-                              PrimExpr offset = 1;
-                              for (int i = 0; i < buffer->shape.size(); ++i) {
-                                offset = offset * buffer->shape[i];
+                              PrimExpr total_size = 1;
+                              for (int i = 0;
+                                   i < static_cast<int>(buffer->shape.size());
+                                   ++i) {
+                                total_size = total_size * buffer->shape[i];
                               }
-                              new_offset = original_offset + i_value * offset;
+                              new_offset =
+                                  original_offset + i_value * total_size;
+                              break;
                             }
                           }
                         }

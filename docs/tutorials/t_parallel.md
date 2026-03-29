@@ -167,6 +167,15 @@ for i in range(block_M // VEC_NUM):  # Row sequential
 
 This enables partial parallelization when full tiling is unnecessary.
 
+### 3.5 Mismatched Operand-Result Dimensions
+
+`T.Parallel` can handle operands of different dimensions, performing dimension broadcasting on the right side of the equals sign, but indx needs to be a simple variable or expression
+
+```python
+for (i, j) in T.Parallel(block_M // VEC_NUM, block_N):
+    c_ub[i, j] = b_ub[j] + 5 # b_ud is 1d and c_ub is 2d
+```
+
 
 ## 4. Conclusion
 For vector operations on Ascend C, both programming paradigms are supported.

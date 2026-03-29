@@ -282,14 +282,15 @@ gh pr merge <number>
 
 ## 注意事项
 
-1. **始终确认目标仓库和分支** - 默认为 `tile-ai/tilelang-ascend` 的 `ascendc_pto` 分支；若用户仅指定仓库，默认分支通常为 `main`
-2. **提交前展示文件列表** - 让用户确认，避免提交意外文件
-3. **不要提交敏感文件** - 如 `.env`、`credentials.json`、密钥等
-4. **commit message 要清晰** - 说明改动了什么，为什么改动
-5. **检查 .gitignore** - 确保不需要的文件已被忽略
-6. **国内网络不稳定** - GitHub 操作失败时请重试
-7. **AI Agent 标识** - 所有 commit 和 PR 标题末尾必须添加 `🤖` 标识
-8. **PR 创建后总结** - 向用户展示 PR 基本信息、代码变更统计、内容概述
+1. **检查 gh 工具可用性** - 创建 PR 前确认 `gh`（GitHub CLI）已安装并完成认证。若工具不存在，请参考 [gh-cli-guide.md](./gh-cli-guide.md) 进行安装和配置
+2. **始终确认目标仓库和分支** - 默认为 `tile-ai/tilelang-ascend` 的 `ascendc_pto` 分支；若用户仅指定仓库，默认分支通常为 `main`
+3. **提交前展示文件列表** - 让用户确认，避免提交意外文件
+4. **不要提交敏感文件** - 如 `.env`、`credentials.json`、密钥等
+5. **commit message 要清晰** - 说明改动了什么，为什么改动
+6. **检查 .gitignore** - 确保不需要的文件已被忽略
+7. **国内网络不稳定** - GitHub 操作失败时请重试
+8. **AI Agent 标识** - 所有 commit 和 PR 标题末尾必须添加 `🤖` 标识
+9. **PR 创建后总结** - 向用户展示 PR 基本信息、代码变更统计、内容概述
 
 ---
 

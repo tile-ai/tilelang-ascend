@@ -19,6 +19,10 @@
 #include "../op/builtin.h"
 #include "./common/collector.h"
 
+#include <algorithm>
+#include <deque>
+#include <map>
+
 namespace tvm {
 namespace tl {
 
@@ -271,31 +275,51 @@ public:
     cube_collector(cube_code);
     vec_collector(vec_code);
 
-    // Check sync points consistency
-    if (cube_sync_points.size() != vec_sync_points.size()) {
-      LOG(FATAL) << "Mismatch in sync points between cube and vec: "
-                 << "cube has " << cube_sync_points.size() << ", "
-                 << "vec has " << vec_sync_points.size();
+    // Map to group sync points by workspace_name
+    std::map<std::string, std::vector<CrossCoreSyncPoint *>> cube_ws_map;
+    std::map<std::string, std::vector<CrossCoreSyncPoint *>> vec_ws_map;
+
+    for (auto &sp : cube_sync_points) {
+      cube_ws_map[sp.workspace_name].push_back(&sp);
+    }
+    for (auto &sp : vec_sync_points) {
+      vec_ws_map[sp.workspace_name].push_back(&sp);
     }
 
-    for (size_t i = 0; i < cube_sync_points.size(); ++i) {
-      const auto &cube_sp = cube_sync_points[i];
-      const auto &vec_sp = vec_sync_points[i];
-      if (cube_sp.is_write == vec_sp.is_write) {
-        LOG(FATAL) << "Inconsistent read/write operations at sync point " << i
-                   << ": "
-                   << "cube is_write=" << cube_sp.is_write << ", "
-                   << "vec is_write=" << vec_sp.is_write;
+    int global_sync_flag_id = 0;
+
+    for (auto &[ws, cube_sps] : cube_ws_map) {
+      auto &vec_sps = vec_ws_map[ws];
+
+      // Check sync points consistency per workspace
+      if (cube_sps.size() != vec_sps.size()) {
+        LOG(FATAL) << "Mismatch in sync points between cube and vec for "
+                      "workspace "
+                   << ws << ": "
+                   << "cube has " << cube_sps.size() << ", "
+                   << "vec has " << vec_sps.size();
       }
-      if (cube_sp.workspace_name != vec_sp.workspace_name) {
-        LOG(FATAL) << "Inconsistent workspace names at sync point " << i << ": "
-                   << "cube workspace=" << cube_sp.workspace_name << ", "
-                   << "vec workspace=" << vec_sp.workspace_name;
+
+      for (size_t i = 0; i < cube_sps.size(); ++i) {
+        auto *cube_sp = cube_sps[i];
+        auto *vec_sp = vec_sps[i];
+
+        if (cube_sp->is_write == vec_sp->is_write) {
+          LOG(FATAL) << "Inconsistent read/write operations for workspace "
+                     << ws << " at sync point " << i
+                     << ": cube is_write=" << cube_sp->is_write << ", "
+                     << "vec is_write=" << vec_sp->is_write;
+        }
+
+        // Assign a common sync_flag_id for matched pair
+        cube_sp->sync_flag_id = global_sync_flag_id;
+        vec_sp->sync_flag_id = global_sync_flag_id;
+        global_sync_flag_id++;
+
+        // find target_for_node using iterative depth search
+        FindTargetLoopDepth(*cube_sp, *vec_sp);
       }
     }
-
-    // find CrossCoreSyncPoint.target_for_node at here
-    PairSyncPoints(cube_sync_points, vec_sync_points);
 
     // Insert sync statements
     CrossCoreSyncInserter cube_sync_inserter(cube_sync_points);
@@ -359,18 +383,6 @@ private:
       }
     }
     return non_const_shared_loop_ids;
-  }
-
-  static void PairSyncPoints(std::vector<CrossCoreSyncPoint> &cube_sync_points,
-                             std::vector<CrossCoreSyncPoint> &vec_sync_points) {
-    for (auto &cube_sp : cube_sync_points) {
-      for (auto &vec_sp : vec_sync_points) {
-        if (cube_sp.sync_flag_id != vec_sp.sync_flag_id) {
-          continue;
-        }
-        FindTargetLoopDepth(cube_sp, vec_sp);
-      }
-    }
   }
 
   // find target ForNodes to attach sync stmts

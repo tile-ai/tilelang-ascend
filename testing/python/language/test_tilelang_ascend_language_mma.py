@@ -85,7 +85,7 @@ def run_test(M, N, K, block_M, block_N, block_k, K_L1, target):
 # -----------------------------------------------------------------------------
 # Pytest entry point
 # -----------------------------------------------------------------------------
-@pytest.mark.parametrize("target", ["ascendc"])
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("shape", [(8192, 1024, 8192)])
 def test_select_op(target, shape):
     M, N, K = shape
