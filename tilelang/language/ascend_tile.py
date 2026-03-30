@@ -1,7 +1,6 @@
 from __future__ import annotations
 import tilelang.language as T
 from tvm.tir import PrimExpr, Buffer, BufferRegion, BufferLoad, Call
-from typing import Union
 from tvm import tir
 from tilelang.language.ascend import _dtype
 import functools
@@ -640,7 +639,7 @@ def sub(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, src1: Buffer | 
     return binary_op(dst, src0, src1, "sub")
 
 
-def mul(dst: Union[Buffer, BufferRegion], src0: Union[Buffer, BufferRegion], src1: Union[Buffer, BufferRegion, BufferLoad, PrimExpr]):  # noqa: FA100
+def mul(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, src1: Buffer | BufferRegion | BufferLoad | PrimExpr):
     """Performs element-wise multiplication: dst = src0 * src1.
 
     Args:
@@ -651,7 +650,7 @@ def mul(dst: Union[Buffer, BufferRegion], src0: Union[Buffer, BufferRegion], src
     return binary_op(dst, src0, src1, "mul")
 
 
-def div(dst: Union[Buffer, BufferRegion], src0: Union[Buffer, BufferRegion], src1: Union[Buffer, BufferRegion, BufferLoad]):  # noqa: FA100
+def div(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, src1: Buffer | BufferRegion | BufferLoad):
     """Performs element-wise division: dst = src0 / src1.
 
     Args:
@@ -684,9 +683,7 @@ def min(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, src1: Buffer | 
     return binary_op(dst, src0, src1, "min")
 
 
-def bitwise_and(
-    dst: Union[Buffer, BufferRegion], src0: Union[Buffer, BufferRegion], src1: Union[Buffer, BufferRegion, BufferLoad, PrimExpr]
-):  # noqa: FA100
+def bitwise_and(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, src1: Buffer | BufferRegion | BufferLoad | PrimExpr):
     """Performs element-wise bitwise AND: dst = src0 & src1.
 
     Args:
@@ -697,9 +694,7 @@ def bitwise_and(
     return binary_op(dst, src0, src1, "bitwise_and")
 
 
-def bitwise_or(
-    dst: Union[Buffer, BufferRegion], src0: Union[Buffer, BufferRegion], src1: Union[Buffer, BufferRegion, BufferLoad, PrimExpr]
-):  # noqa: FA100
+def bitwise_or(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, src1: Buffer | BufferRegion | BufferLoad | PrimExpr):
     """Performs element-wise bitwise OR: dst = src0 | src1.
 
     Args:
@@ -710,7 +705,7 @@ def bitwise_or(
     return binary_op(dst, src0, src1, "bitwise_or")
 
 
-def unary_op(dst: Union[Buffer, BufferRegion], src0: Union[Buffer, BufferRegion], op: str):  # noqa: FA100
+def unary_op(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, op: str):
     if isinstance(dst, BufferRegion):
         dst_ptr, dst_extent = _handle_buffer_region(dst, "w")
     else:
@@ -736,7 +731,7 @@ def unary_op(dst: Union[Buffer, BufferRegion], src0: Union[Buffer, BufferRegion]
     )
 
 
-def exp(dst: Union[Buffer, BufferRegion], src0: Union[Buffer, BufferRegion]):  # noqa: FA100
+def exp(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion):
     """Performs element-wise exponential: dst = exp(src0).
 
     Args:
@@ -746,7 +741,7 @@ def exp(dst: Union[Buffer, BufferRegion], src0: Union[Buffer, BufferRegion]):  #
     return unary_op(dst, src0, "exp")
 
 
-def sigmoid(dst: Union[Buffer, BufferRegion], src: Union[Buffer, BufferRegion], tmp: Buffer):  # noqa: FA100
+def sigmoid(dst: Buffer | BufferRegion, src: Buffer | BufferRegion, tmp: Buffer):
     if isinstance(dst, BufferRegion):
         print("test1")
         dst_ptr, buffer_extent = _handle_buffer_region(dst, "w")
@@ -770,7 +765,7 @@ def sigmoid(dst: Union[Buffer, BufferRegion], src: Union[Buffer, BufferRegion], 
     )
 
 
-def ln(dst: Union[Buffer, BufferRegion], src0: Union[Buffer, BufferRegion]):  # noqa: FA100
+def ln(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion):
     """Performs element-wise natural logarithm: dst = ln(src0).
 
     Args:
@@ -841,10 +836,10 @@ def bitwise_not(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion):
 
 
 def scalar_op(
-    dst: Union[Buffer, BufferRegion],
-    src0: Union[Buffer, BufferRegion],
+    dst: Buffer | BufferRegion,
+    src0: Buffer | BufferRegion,
     scalar_value: PrimExpr,
-    op_tl: str,  # noqa: FA100
+    op_tl: str,
 ):
     if isinstance(dst, BufferRegion):
         dst_ptr, dst_extent = _handle_buffer_region(dst, "w")
@@ -1262,8 +1257,8 @@ def block_reduce_sum(
 def compare(
     dst: Buffer,
     src0: Buffer,
-    src1: Union[Buffer, BufferLoad, PrimExpr],
-    mode: str,  # noqa: FA100
+    src1: Buffer | BufferLoad | PrimExpr,
+    mode: str,
 ):
     """Generic dispatch function for element-wise comparison operations.
 
@@ -1567,10 +1562,10 @@ def round(out: Buffer, buffer: Buffer, tmp: Buffer, count: PrimExpr):
 
 
 def broadcast(
-    dst: Union[Buffer, BufferRegion],  # noqa: FA100
-    src: Union[Buffer, BufferRegion],  # noqa: FA100
-    tmp: Union[Buffer, BufferRegion],
-):  # noqa: FA100
+    dst: Buffer | BufferRegion,
+    src: Buffer | BufferRegion,
+    tmp: Buffer | BufferRegion,
+):
     """Generates a TIR intrinsic call for the AscendC `Broadcast` operation.
 
     This function performs a broadcast copy from the source buffer (`src`) to the
