@@ -687,12 +687,12 @@ public:
   };
 
   LoopRewriter(const LoopAnalyzer &analyzer, const ForNode *original_loop,
-               int num_stages)
+               int num_stages, int cross_interval = 1)
       : analyzer_(analyzer), original_loop_(original_loop),
         all_statements_(analyzer.all_statements()),
         all_statements_C_(analyzer.all_statements_C()),
-        all_statements_V_(analyzer.all_statements_V()),
-        num_stages_(num_stages) {
+        all_statements_V_(analyzer.all_statements_V()), num_stages_(num_stages),
+        cross_interval_(cross_interval) {
     original_loop_var_ = original_loop->loop_var;
     std::string outer_var_name = original_loop_var_->name_hint + "_outer";
     outer_loop_var_ = Var(outer_var_name, original_loop_var_->dtype);
@@ -790,6 +790,8 @@ private:
 
     Map<String, ObjectRef> annotations;
     annotations.Set("stage_loop", Bool(true));
+    annotations.Set("tl_cross_interval", PrimExpr(cross_interval_));
+    annotations.Set("tl_original_loop_var", original_loop_var_);
 
     return For(stage_loop_var_, min, extent, ForKind::kSerial, loop_body,
                original_loop_->thread_binding, annotations,
@@ -901,6 +903,7 @@ private:
   const std::vector<LoopAnalyzer::StmtInfo> &all_statements_V_;
   std::set<std::string> shared_buffers_;
   int num_stages_;
+  int cross_interval_;
   Var original_loop_var_;
   Var outer_loop_var_;
   Var stage_loop_var_;
@@ -974,7 +977,11 @@ private:
 
     auto num_stages_anno = pipeline->annotations.Get("num_stages");
     int num_stages = num_stages_anno.as<IntImmNode>()->value;
-    LoopRewriter rewriter(analyzer, pipeline, num_stages);
+    auto cross_interval_anno = pipeline->annotations.Get("tl_cross_interval");
+    int cross_interval = cross_interval_anno.defined()
+                             ? cross_interval_anno.as<IntImmNode>()->value
+                             : 1;
+    LoopRewriter rewriter(analyzer, pipeline, num_stages, cross_interval);
     Stmt staged_loops = rewriter.Rewrite();
     const Var &outer_loop_var = rewriter.outer_loop_var();
     Stmt outer_loop =
@@ -1194,8 +1201,11 @@ private:
           original_extent * make_const(original_extent.dtype(), num_stages);
     }
 
+    Map<String, ObjectRef> annotations;
+    annotations.Set("tl_original_extent", original_extent);
+
     return For(outer_loop_var, pipeline->min, new_extent, ForKind::kSerial,
-               inner_loops, pipeline->thread_binding, Map<String, ObjectRef>(),
+               inner_loops, pipeline->thread_binding, annotations,
                pipeline->span);
   }
 
