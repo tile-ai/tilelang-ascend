@@ -867,7 +867,7 @@ def scalar_op(
     )
 
 
-def leaky_relu(dst: Buffer, src0: Buffer, scalar_value: PrimExpr):
+def leaky_relu(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, scalar_value: PrimExpr): # type: ignore  # noqa: F821
     """Performs element-wise Leaky ReLU activation.
 
     Formula: dst = src0 if src0 >= 0 else src0 * scalar_value
@@ -880,7 +880,7 @@ def leaky_relu(dst: Buffer, src0: Buffer, scalar_value: PrimExpr):
     return scalar_op(dst, src0, scalar_value, "leaky_relu")
 
 
-def axpy(dst: Buffer, src0: Buffer, scalar_value: PrimExpr):
+def axpy(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, scalar_value: PrimExpr):  # noqa: F821
     """Performs element-wise AXPY operation: dst = scalar_value * src0 + dst.
 
     Note: This operation updates the destination buffer in-place by adding
@@ -894,7 +894,7 @@ def axpy(dst: Buffer, src0: Buffer, scalar_value: PrimExpr):
     return scalar_op(dst, src0, scalar_value, "axpy")
 
 
-def bitwise_lshift(dst: Buffer, src0: Buffer, scalarValue: PrimExpr):
+def bitwise_lshift(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, scalarValue: PrimExpr):  # noqa: F821
     """Performs element-wise bitwise left shift: dst = src0 << scalarValue.
 
     Args:
@@ -902,22 +902,33 @@ def bitwise_lshift(dst: Buffer, src0: Buffer, scalarValue: PrimExpr):
         src0: The source buffer.
         scalarValue: The number of bits to shift (scalar).
     """
-    size_0 = math.prod(src0.shape)
-    size_2 = math.prod(dst.shape)
+    if isinstance(dst, BufferRegion):
+        dst_ptr, dst_extent = _handle_buffer_region(dst, "w")
+        size_2 = math.prod(dst_extent)
+    else:
+        dst_ptr = dst.access_ptr("w")
+        size_2 = math.prod(dst.shape)
+
+    if isinstance(src0, BufferRegion):
+        src0_ptr, src0_extent = _handle_buffer_region(src0, "r")
+        size_0 = math.prod(src0_extent)
+    else:
+        src0_ptr = src0.access_ptr("r")
+        size_0 = math.prod(src0.shape)
 
     assert size_0 == size_2, "size must be same"
 
     return tir.call_intrin(
         "handle",
         tir.op.Op.get("tl.ascend_bitwise_lshift"),
-        dst.access_ptr("w"),
-        src0.access_ptr("r"),
+        dst_ptr,
+        src0_ptr,
         scalarValue,
         size_0,
     )
 
 
-def bitwise_rshift(dst: Buffer, src0: Buffer, scalarValue: PrimExpr):
+def bitwise_rshift(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, scalarValue: PrimExpr):  # noqa: F821
     """Performs element-wise bitwise right shift: dst = src0 >> scalarValue.
 
     Args:
@@ -925,16 +936,27 @@ def bitwise_rshift(dst: Buffer, src0: Buffer, scalarValue: PrimExpr):
         src0: The source buffer.
         scalarValue: The number of bits to shift (scalar).
     """
-    size_0 = math.prod(src0.shape)
-    size_2 = math.prod(dst.shape)
+    if isinstance(dst, BufferRegion):
+        dst_ptr, dst_extent = _handle_buffer_region(dst, "w")
+        size_2 = math.prod(dst_extent)
+    else:
+        dst_ptr = dst.access_ptr("w")
+        size_2 = math.prod(dst.shape)
+
+    if isinstance(src0, BufferRegion):
+        src0_ptr, src0_extent = _handle_buffer_region(src0, "r")
+        size_0 = math.prod(src0_extent)
+    else:
+        src0_ptr = src0.access_ptr("r")
+        size_0 = math.prod(src0.shape)
 
     assert size_0 == size_2, "size must be same"
 
     return tir.call_intrin(
         "handle",
         tir.op.Op.get("tl.ascend_bitwise_rshift"),
-        dst.access_ptr("w"),
-        src0.access_ptr("r"),
+        dst_ptr,
+        src0_ptr,
         scalarValue,
         size_0,
     )
@@ -1104,7 +1126,7 @@ def transpose(dst: Buffer, src: Buffer):
     )
 
 
-def gather(dst: Buffer, src: Buffer, src_offset: Buffer, src_base_addr: PrimExpr):
+def gather(dst: Buffer | BufferRegion, src: Buffer | BufferRegion, src_offset: Buffer | BufferRegion, src_base_addr: PrimExpr):  # noqa: F821
     """Performs a gather operation.
 
     This intrinsic gathers elements from the source buffer based on the provided
@@ -1116,15 +1138,31 @@ def gather(dst: Buffer, src: Buffer, src_offset: Buffer, src_base_addr: PrimExpr
         src_offset: The buffer containing offsets/indices for gathering.
         src_base_addr: The base address offset to be added to the gather indices.
     """
-    count = math.prod(src.shape)
+    if isinstance(dst, BufferRegion):
+        dst_ptr, _ = _handle_buffer_region(dst, "w")
+    else:
+        dst_ptr = dst.access_ptr("w")
+
+    if isinstance(src, BufferRegion):
+        src_ptr, src_extent = _handle_buffer_region(src, "r")
+        size = math.prod(src_extent)
+    else:
+        src_ptr = src.access_ptr("r")
+        size = math.prod(src.shape)
+
+    if isinstance(src, BufferRegion):
+        src_offset_ptr, _ = _handle_buffer_region(src_offset, "r")
+    else:
+        src_offset_ptr = src_offset.access_ptr("r")
+
     return T.call_intrin(
         "handle",
         tir.op.Op.get("tl.ascend_gather"),
-        dst.access_ptr("w"),
-        src.access_ptr("r"),
-        src_offset.access_ptr("r"),
+        dst_ptr,
+        src_ptr,
+        src_offset_ptr,
         src_base_addr,
-        count,
+        size,
     )
 
 
@@ -1255,10 +1293,7 @@ def block_reduce_sum(
 
 
 def compare(
-    dst: Buffer,
-    src0: Buffer,
-    src1: Buffer | BufferLoad | PrimExpr,
-    mode: str,
+    dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, src1: Buffer | BufferRegion | BufferLoad | PrimExpr, mode: str  # noqa: F821, FA100
 ):
     """Generic dispatch function for element-wise comparison operations.
 
@@ -1284,15 +1319,19 @@ def compare(
         A TVM intrinsic call that performs the comparison operation.
     """
     assert mode in ["EQ", "NE", "GT", "GE", "LT", "LE"]
+    if isinstance(dst, BufferRegion):
+        dst_ptr, _ = _handle_buffer_region(dst, "w")
+    else:
+        dst_ptr = dst.access_ptr("w")
 
-    dst_ptr = dst.access_ptr("w")
+    if isinstance(src0, BufferRegion):
+        src0_ptr, src0_extent = _handle_buffer_region(src0, "r")
+        size_0 = math.prod(src0_extent)
+    else:
+        src0_ptr = src0.access_ptr("r")
+        size_0 = math.prod(src0.shape)
 
-    src0_ptr = src0.access_ptr("r")
-    src0_extent = src0.shape
-
-    size_1 = math.prod(src0_extent)
-
-    dst_size = size_1
+    dst_size = size_0
 
     if isinstance(src1, BufferLoad):
         buffer_1 = src1.buffer
@@ -1317,6 +1356,17 @@ def compare(
             mode,
             dst_size,
         )
+    elif isinstance(src1, BufferRegion):
+        src1_ptr, _ = _handle_buffer_region(src1, "r")
+        return T.call_intrin(
+            "handle",
+            tir.op.Op.get("tl.ascend_compare"),
+            dst_ptr,
+            src0_ptr,
+            src1_ptr,
+            mode,
+            dst_size,
+        )
     else:
         return T.call_intrin(
             "handle",
@@ -1329,7 +1379,7 @@ def compare(
         )
 
 
-def cast(dst: Buffer, src: Buffer, mode: str, count: PrimExpr):
+def cast(dst: Buffer | BufferRegion, src: Buffer | BufferRegion, mode: str, count: PrimExpr):  # noqa: F821
     """Performs element-wise data type conversion with a specified rounding mode.
 
     Args:
@@ -1358,17 +1408,27 @@ def cast(dst: Buffer, src: Buffer, mode: str, count: PrimExpr):
         "CAST_ODD",
     ]
 
+    if isinstance(dst, BufferRegion):
+        dst_ptr, _ = _handle_buffer_region(dst, "w")
+    else:
+        dst_ptr = dst.access_ptr("w")
+
+    if isinstance(src, BufferRegion):
+        src_ptr, _ = _handle_buffer_region(src, "r")
+    else:
+        src_ptr = src.access_ptr("r")
+
     return T.call_intrin(
         "handle",
         tir.op.Op.get("tl.ascend_cast"),
-        dst.access_ptr("w"),
-        src.access_ptr("r"),
+        dst_ptr,
+        src_ptr,
         mode,
         count,
     )
 
 
-def sin(dst: Buffer, src: Buffer, tmp: Buffer):
+def sin(dst: Buffer | BufferRegion, src: Buffer | BufferRegion, tmp: Buffer):  # noqa: F821
     """Performs element-wise sine calculation: dst = sin(src).
 
     Args:
@@ -1379,22 +1439,33 @@ def sin(dst: Buffer, src: Buffer, tmp: Buffer):
     Returns:
         A TVM intrinsic call that performs the sine operation.
     """
-    size_0 = math.prod(src.shape)
-    size_2 = math.prod(dst.shape)
+    if isinstance(dst, BufferRegion):
+        dst_ptr, dst_extent = _handle_buffer_region(dst, "w")
+        size_2 = math.prod(dst_extent)
+    else:
+        dst_ptr = dst.access_ptr("w")
+        size_2 = math.prod(dst.shape)
+
+    if isinstance(src, BufferRegion):
+        src_ptr, src_extent = _handle_buffer_region(src, "r")
+        size_0 = math.prod(src_extent)
+    else:
+        src_ptr = src.access_ptr("r")
+        size_0 = math.prod(src.shape)
 
     assert size_0 == size_2, "size must be same"
 
     return tir.call_intrin(
         "handle",
         tir.op.Op.get("tl.ascend_sin"),
-        dst.access_ptr("w"),
-        src.access_ptr("r"),
+        dst_ptr,
+        src_ptr,
         tmp.access_ptr("r"),
         size_0,
     )
 
 
-def cos(dst: Buffer, src: Buffer, tmp: Buffer):
+def cos(dst: Buffer | BufferRegion, src: Buffer | BufferRegion, tmp: Buffer):  # noqa: F821
     """Performs element-wise cosine calculation: dst = cos(src).
 
     Args:
@@ -1405,16 +1476,27 @@ def cos(dst: Buffer, src: Buffer, tmp: Buffer):
     Returns:
         A TVM intrinsic call that performs the cosine operation.
     """
-    size_0 = math.prod(src.shape)
-    size_2 = math.prod(dst.shape)
+    if isinstance(dst, BufferRegion):
+        dst_ptr, dst_extent = _handle_buffer_region(dst, "w")
+        size_2 = math.prod(dst_extent)
+    else:
+        dst_ptr = dst.access_ptr("w")
+        size_2 = math.prod(dst.shape)
+
+    if isinstance(src, BufferRegion):
+        src_ptr, src_extent = _handle_buffer_region(src, "r")
+        size_0 = math.prod(src_extent)
+    else:
+        src_ptr = src.access_ptr("r")
+        size_0 = math.prod(src.shape)
 
     assert size_0 == size_2, "size must be same"
 
     return tir.call_intrin(
         "handle",
         tir.op.Op.get("tl.ascend_cos"),
-        dst.access_ptr("w"),
-        src.access_ptr("r"),
+        dst_ptr,
+        src_ptr,
         tmp.access_ptr("r"),
         size_0,
     )
@@ -1432,7 +1514,7 @@ def cos(dst: Buffer, src: Buffer, tmp: Buffer):
 #
 #     return cast(dst, src, "CAST_ROUND", count)
 #
-def pow(dst: Buffer, src0: Buffer, src1: Buffer, tmp: Buffer):
+def pow(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, src1: Buffer | BufferRegion, tmp: Buffer):  # noqa: F821
     """Performs element-wise power calculation: dst = src0 ^ src1.
 
     Args:
@@ -1444,17 +1526,32 @@ def pow(dst: Buffer, src0: Buffer, src1: Buffer, tmp: Buffer):
     Returns:
         A TVM intrinsic call that performs the power operation.
     """
+    if isinstance(dst, BufferRegion):
+        dst_ptr, _ = _handle_buffer_region(dst, "w")
+    else:
+        dst_ptr = dst.access_ptr("w")
+
+    if isinstance(src0, BufferRegion):
+        src0_ptr, _ = _handle_buffer_region(src0, "r")
+    else:
+        src0_ptr = src0.access_ptr("r")
+
+    if isinstance(src1, BufferRegion):
+        src1_ptr, _ = _handle_buffer_region(src1, "r")
+    else:
+        src1_ptr = src1.access_ptr("r")
+
     return tir.call_intrin(
         "handle",
         tir.op.Op.get("tl.ascend_pow"),
-        dst.access_ptr("w"),
-        src0.access_ptr("r"),
-        src1.access_ptr("r"),
+        dst_ptr,
+        src0_ptr,
+        src1_ptr,
         tmp.access_ptr("w"),
     )
 
 
-def bitwise_xor(dst: Buffer, src0: Buffer, src1: Buffer, tmp: Buffer):
+def bitwise_xor(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, src1: Buffer | BufferRegion, tmp: Buffer):  # noqa: F821
     """Performs element-wise bitwise XOR operation: dst = src0 ^ src1.
 
     Args:
@@ -1466,17 +1563,32 @@ def bitwise_xor(dst: Buffer, src0: Buffer, src1: Buffer, tmp: Buffer):
     Returns:
         A TVM intrinsic call that performs the bitwise XOR operation.
     """
+    if isinstance(dst, BufferRegion):
+        dst_ptr, _ = _handle_buffer_region(dst, "w")
+    else:
+        dst_ptr = dst.access_ptr("w")
+
+    if isinstance(src0, BufferRegion):
+        src0_ptr, _ = _handle_buffer_region(src0, "r")
+    else:
+        src0_ptr = src0.access_ptr("r")
+
+    if isinstance(src1, BufferRegion):
+        src1_ptr, _ = _handle_buffer_region(src1, "r")
+    else:
+        src1_ptr = src1.access_ptr("r")
+
     return tir.call_intrin(
         "handle",
         tir.op.Op.get("tl.ascend_bitwise_xor"),
-        dst.access_ptr("w"),
-        src0.access_ptr("r"),
-        src1.access_ptr("r"),
-        tmp.access_ptr("w"),
+        dst_ptr,
+        src0_ptr,
+        src1_ptr,
+        tmp.access_ptr("w")
     )
 
 
-def clamp_max(out: Buffer, buffer: Buffer, tmp: Buffer, scalar_value: PrimExpr, count: PrimExpr):
+def clamp_max(out: Buffer | BufferRegion, buffer: Buffer | BufferRegion, tmp: Buffer, scalar_value: PrimExpr, count: PrimExpr):  # noqa: F821
     """_summary_
     Clip tensor elements to no more than scalar_value, replace elements larger than scalar_value with scalar_value,
     keep original values for elements less than or equal to scalar_value
@@ -1490,19 +1602,28 @@ def clamp_max(out: Buffer, buffer: Buffer, tmp: Buffer, scalar_value: PrimExpr, 
     Returns:
         A TVM intrinsic call that performs the clamp_max operation.
     """
+    if isinstance(out, BufferRegion):
+        out_ptr, _ = _handle_buffer_region(out, "w")
+    else:
+        out_ptr = out.access_ptr("w")
+
+    if isinstance(buffer, BufferRegion):
+        buffer_ptr, _ = _handle_buffer_region(buffer, "r")
+    else:
+        buffer_ptr = buffer.access_ptr("r")
+
     return tir.call_intrin(
         "handle",
         tir.op.Op.get("tl.ascend_clamp_max"),
         f"ClampMax<{_dtype(buffer)}>",
-        out.access_ptr("w"),
-        buffer.access_ptr("r"),
+        out_ptr,
+        buffer_ptr,
         tmp.access_ptr("r"),
         scalar_value,
         count,
     )
 
-
-def clamp_min(out: Buffer, buffer: Buffer, tmp: Buffer, scalar_value: PrimExpr, count: PrimExpr):
+def clamp_min(out: Buffer | BufferRegion, buffer: Buffer | BufferRegion, tmp: Buffer, scalar_value: PrimExpr, count: PrimExpr):  # noqa: F821
     """
     Clip tensor elements to no less than v, replace elements smaller than scalar_value with scalar_value,
     keep original values for elements greater than or equal to scalar_value
@@ -1516,19 +1637,28 @@ def clamp_min(out: Buffer, buffer: Buffer, tmp: Buffer, scalar_value: PrimExpr, 
     Returns:
         A TVM intrinsic call that performs the clamp_min operation.
     """
+    if isinstance(out, BufferRegion):
+        out_ptr, _ = _handle_buffer_region(out, "w")
+    else:
+        out_ptr = out.access_ptr("w")
+
+    if isinstance(buffer, BufferRegion):
+        buffer_ptr, _ = _handle_buffer_region(buffer, "r")
+    else:
+        buffer_ptr = buffer.access_ptr("r")
+
     return tir.call_intrin(
         "handle",
         tir.op.Op.get("tl.ascend_clamp_min"),
         f"ClampMin<{_dtype(buffer)}>",
-        out.access_ptr("w"),
-        buffer.access_ptr("r"),
+        out_ptr,
+        buffer_ptr,
         tmp.access_ptr("r"),
         scalar_value,
         count,
     )
 
-
-def clamp(out: Buffer, buffer: Buffer, tmp: Buffer, min_scalar: PrimExpr, max_scalar: PrimExpr, count: PrimExpr):
+def clamp(out: Buffer | BufferRegion, buffer: Buffer | BufferRegion, tmp: Buffer, min_scalar: PrimExpr, max_scalar: PrimExpr, count: PrimExpr):  # noqa: F821
     """
     Clip tensor elements to [min_scalar, max_scalar] range, replace out-of-bounds values with boundary values
     Args:
@@ -1542,12 +1672,22 @@ def clamp(out: Buffer, buffer: Buffer, tmp: Buffer, min_scalar: PrimExpr, max_sc
     Returns:
         A TVM intrinsic call that performs the clamp operation.
     """
+    if isinstance(out, BufferRegion):
+        out_ptr, _ = _handle_buffer_region(out, "w")
+    else:
+        out_ptr = out.access_ptr("w")
+
+    if isinstance(buffer, BufferRegion):
+        buffer_ptr, _ = _handle_buffer_region(buffer, "r")
+    else:
+        buffer_ptr = buffer.access_ptr("r")
+
     return tir.call_intrin(
         "handle",
         tir.op.Op.get("tl.ascend_clamp"),
         f"Clamp<{_dtype(buffer)}>",
-        out.access_ptr("w"),
-        buffer.access_ptr("r"),
+        out_ptr,
+        buffer_ptr,
         tmp.access_ptr("r"),
         min_scalar,
         max_scalar,
@@ -1555,17 +1695,29 @@ def clamp(out: Buffer, buffer: Buffer, tmp: Buffer, min_scalar: PrimExpr, max_sc
     )
 
 
-def round(out: Buffer, buffer: Buffer, tmp: Buffer, count: PrimExpr):
+def round(out: Buffer | BufferRegion, buffer: Buffer | BufferRegion, tmp: Buffer, count: PrimExpr):  # noqa: F821
+    if isinstance(out, BufferRegion):
+        out_ptr, _ = _handle_buffer_region(out, "w")
+    else:
+        out_ptr = out.access_ptr("w")
+
+    if isinstance(buffer, BufferRegion):
+        buffer_ptr, _ = _handle_buffer_region(buffer, "r")
+    else:
+        buffer_ptr = buffer.access_ptr("r")
+
     return tir.call_intrin(
-        "handle", tir.op.Op.get("tl.ascend_round"), out.access_ptr("w"), buffer.access_ptr("r"), tmp.access_ptr("r"), count
+        "handle",
+        tir.op.Op.get("tl.ascend_round"),
+        out_ptr,
+        buffer_ptr,
+        tmp.access_ptr("r"),
+        count
     )
 
-
-def broadcast(
-    dst: Buffer | BufferRegion,
-    src: Buffer | BufferRegion,
-    tmp: Buffer | BufferRegion,
-):
+def broadcast(dst: Buffer | BufferRegion,  # noqa: F821, FA100
+              src: Buffer | BufferRegion,  # noqa: F821, FA100
+              tmp: Buffer | BufferRegion):  # noqa: F821, FA100
     """Generates a TIR intrinsic call for the AscendC `Broadcast` operation.
 
     This function performs a broadcast copy from the source buffer (`src`) to the
