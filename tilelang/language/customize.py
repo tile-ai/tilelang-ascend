@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import tilelang.language as T
+from tilelang.language.tir import op
 from tvm.tir import PrimExpr, Buffer, BufferRegion, Var
 from tvm import tir
 from tilelang.language.ascend import _dtype
@@ -202,4 +203,4 @@ def npu_gemm(A, B, C, init=False):
 
 def loop_break():
     """Break out of the innermost loop."""
-    return T.call_intrin("handle", op.Op.get("tl.loop_break"))
+    return T.call_intrin("handle", op.Op.get("tl.loop_break"))  # noqa: F821
