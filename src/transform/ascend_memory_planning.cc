@@ -14,6 +14,7 @@
 #include <stack>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "arith/ir_mutator_with_analyzer.h"
@@ -61,9 +62,17 @@ public:
           fn_attr->dict.at("address_map").as<Map<Var, PrimExpr>>().value();
     }
 
-    AscendMemoryPlanner planner(f, external_address_map,
+    Map<Var, Array<PrimExpr>> external_shape_map;
+    if (fn_attr->dict.count("buffer_shapess")) {
+      external_shape_map = fn_attr->dict.at("buffer_shapess")
+                               .as<Map<Var, Array<PrimExpr>>>()
+                               .value();
+    }
+
+    AscendMemoryPlanner planner(f, external_address_map, external_shape_map,
                                 auto_ascend_memory_planning);
     auto address_map = planner.GetAddressMap();
+    auto buffer_sizes = planner.GetBufferSizes();
 
     Map<Var, PrimExpr> address_map_attr;
     for (const auto &kv : address_map) {
@@ -71,6 +80,13 @@ public:
       address_map_attr.Set(buffer_var, Integer(kv.second));
     }
     fn_attr->dict.Set("address_map", address_map_attr);
+
+    Map<Var, PrimExpr> size_map_attr;
+    for (const auto &kv : buffer_sizes) {
+      Var buffer_var = GetRef<Var>(kv.first);
+      size_map_attr.Set(buffer_var, Integer(static_cast<int64_t>(kv.second)));
+    }
+    fn_attr->dict.Set("size_map", size_map_attr);
     return f;
   }
 
@@ -79,6 +95,7 @@ private:
   public:
     explicit AscendMemoryPlanner(const PrimFunc &func,
                                  Map<Var, PrimExpr> external_address_map,
+                                 Map<Var, Array<PrimExpr>> external_shape_map,
                                  bool auto_plan = false) {
       memory_auto_plan = auto_plan;
       memory_limits_ = {{"shared.dyn", ASCEND_SHARED_DYN_MEM_SIZE},
@@ -88,6 +105,7 @@ private:
                         {"shared", ASCEND_SHARED_MEM_SIZE}};
 
       SetPreAllocBuffer(external_address_map);
+      SetTmpBuffers(external_shape_map);
 
       operator()(func->body);
       PlanMemory();
@@ -95,6 +113,10 @@ private:
 
     const std::unordered_map<const VarNode *, int64_t> &GetAddressMap() const {
       return address_map_;
+    }
+
+    const std::unordered_map<const VarNode *, size_t> &GetBufferSizes() const {
+      return buffer_sizes_;
     }
 
   private:
@@ -131,6 +153,11 @@ private:
       alloc_info_[buf].level = level;
 
       if (IsNPUSharedMemory(op->buffer_var)) {
+        ICHECK(buffer_names_.find(buf->name_hint) == buffer_names_.end())
+            << "Duplicate buffer name found: " << buf->name_hint
+            << ". Please ensure all buffers have unique names.";
+        buffer_names_.insert(buf->name_hint);
+
         std::string scope = GetPtrStorageScope(op->buffer_var);
         if (memory_limits_.count(scope)) {
           buffer_scopes_[buf] = scope;
@@ -273,7 +300,21 @@ private:
       for (const auto &kv : external_address_map) {
         const VarNode *buf = kv.first.get();
         int64_t addr_offset = kv.second.as<IntImmNode>()->value;
+        if (pre_alloc_buffer_.count(buf->name_hint)) {
+          LOG(FATAL) << "Buffer " << buf->name_hint
+                     << " already been allocated.";
+        }
         pre_alloc_buffer_[buf->name_hint] = addr_offset;
+      }
+    }
+
+    void SetTmpBuffers(Map<Var, Array<PrimExpr>> external_shape_map) {
+      for (auto &kv : external_shape_map) {
+        const VarNode *buf = kv.first.get();
+        std::string scope = GetPtrStorageScope(kv.first);
+        if (!pre_alloc_buffer_.count(buf->name_hint) && scope == "shared") {
+          tmp_buffers.push_back(buf);
+        }
       }
     }
 
@@ -498,26 +539,49 @@ private:
                                   const std::vector<const VarNode *> &buffers) {
       bool check_overflow = false; // reserve memory overflow check
       int64_t current_offset = 0;
+      int64_t max_offset = 0;
+
+      // Allocate origin buffer first, then tmp buffer in shared memory
+      auto alloc_buffer = [&](const VarNode *buffer, int64_t &offset,
+                              const std::string &err_prefix) -> bool {
+        int64_t buf_size = buffer_sizes_[buffer];
+        if (offset + buf_size > memory_limits_[scope] && check_overflow) {
+          LOG(FATAL) << err_prefix << " Out of memory in scope: " << scope
+                     << "\nBuffer: " << buffer->name_hint
+                     << "\nRequired size: " << buf_size
+                     << "\nCurrent offset: " << offset
+                     << "\nMemory limit: " << memory_limits_[scope];
+          return false;
+        }
+        address_map_[buffer] = offset;
+        offset = static_cast<int64_t>(AlignUp(offset + buf_size, 32));
+        return true;
+      };
+
       for (const VarNode *buffer : origin_buffer) {
-        if (std::find(buffers.begin(), buffers.end(), buffer) !=
+        if (std::find(buffers.begin(), buffers.end(), buffer) ==
             buffers.end()) {
-          if (pre_alloc_buffer_.count(buffer->name_hint)) {
-            address_map_[buffer] = pre_alloc_buffer_[buffer->name_hint];
-          } else {
-            int64_t buf_size = buffer_sizes_[buffer];
-            if (current_offset + buf_size > memory_limits_[scope] &&
-                check_overflow) {
-              LOG(FATAL)
-                  << "Linear memory allocation failed! Out of memory in scope: "
-                  << scope << "\nBuffer: " << buffer->name_hint
-                  << "\nRequired size: " << buffer_sizes_[buffer]
-                  << "\nCurrent offset: " << current_offset
-                  << "\nMemory limit: " << memory_limits_[scope];
-            } else {
-              address_map_[buffer] = current_offset;
-              current_offset =
-                  static_cast<int64_t>(AlignUp(current_offset + buf_size, 32));
-            }
+          continue;
+        }
+        if (pre_alloc_buffer_.count(buffer->name_hint)) {
+          address_map_[buffer] = pre_alloc_buffer_[buffer->name_hint];
+          max_offset = std::max(
+              max_offset,
+              static_cast<int64_t>(pre_alloc_buffer_[buffer->name_hint] +
+                                   buffer_sizes_[buffer]));
+        } else if (scope != "shared" || !tmp_buffers.empty()) {
+          alloc_buffer(buffer, current_offset,
+                       "Linear memory allocation failed!");
+          max_offset = std::max(max_offset, current_offset);
+        }
+      }
+
+      // Allocate tmp buffer in shared memory after origin buffer
+      if (scope == "shared") {
+        for (const VarNode *buffer : tmp_buffers) {
+          if (!address_map_.count(buffer)) {
+            alloc_buffer(buffer, max_offset,
+                         "Linear tmp memory allocation failed!");
           }
         }
       }
@@ -846,6 +910,10 @@ private:
     std::vector<StmtEntry> linear_seq_; // linear stmt node scopes and levels
     std::vector<StmtEntry> scope_;      // temp stmt node scopes and levels
     std::vector<const VarNode *> origin_buffer; // original buffer list
+    std::unordered_set<std::string>
+        buffer_names_; // buffer names for duplicate check
+    std::vector<const VarNode *>
+        tmp_buffers; // temp buffer list for memory planning
 
     std::multimap<uint64_t, StorageEntry *> const_free_map_;
     std::list<StorageEntry *> sym_free_list_;
