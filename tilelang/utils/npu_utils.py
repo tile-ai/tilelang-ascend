@@ -12,6 +12,8 @@ import subprocess
 import tempfile
 import uuid
 import logging
+import stat
+import errno
 from hashlib import sha256
 from tilelang import env
 
@@ -113,34 +115,150 @@ class NPUUtils(object):
         return self.npu_utils_mod.get_device_num()
 
 
-def safe_copy(src: str, dst: str, tmp_dir: str = None):
-    """Atomic copy functions resolve write conflicts in multi-process environments.
+def _get_device_id(path: str) -> int:
+    """Get the device ID (filesystem) of a path to check if it's on the same filesystem."""
+    try:
+        return os.stat(path if os.path.exists(path) else os.path.dirname(path)).st_dev
+    except OSError:
+        return -1
+
+
+def _is_same_filesystem(src: str, dst: str) -> bool:
+    """Check if source and destination are on the same filesystem."""
+    src_dev = _get_device_id(src)
+    dst_dev = _get_device_id(os.path.dirname(dst))
+    return src_dev == dst_dev and src_dev != -1
+
+
+def _atomic_replace_same_fs(src: str, dst: str) -> bool:
+    """Atomic replace for files on the same filesystem using os.replace()."""
+    try:
+        os.replace(src, dst)
+        return True
+    except OSError as e:
+        logging.debug(f"os.replace failed: {e}")
+        return False
+
+
+def _atomic_replace_hardlink(src: str, dst: str) -> bool:
+    """Atomic replace using link/unlink for same filesystem."""
+    try:
+        backup = dst + ".backup"
+        if os.path.exists(dst):
+            os.link(dst, backup)
+
+        try:
+            os.link(src, dst)
+            os.unlink(src)
+            if os.path.exists(backup):
+                os.unlink(backup)
+            return True
+        except OSError:
+            if os.path.exists(backup):
+                os.rename(backup, dst)
+            raise
+    except OSError as e:
+        logging.debug(f"hardlink approach failed: {e}")
+        return False
+
+
+def _atomic_replace_fallback(src: str, dst: str) -> None:
+    """Atomic replace using multiple strategies.
+
+    Since temp file is already in the same filesystem as dst,
+    we only need to handle same-filesystem operations.
+    """
+    # Ensure destination directory exists
+    dst_dir = os.path.dirname(dst)
+    if dst_dir and not os.path.exists(dst_dir):
+        os.makedirs(dst_dir, exist_ok=True)
+
+    # Strategy 1: Use os.replace (most atomic on same filesystem)
+    if _atomic_replace_same_fs(src, dst):
+        return
+
+    # Strategy 2: Fallback to hardlink approach
+    if _atomic_replace_hardlink(src, dst):
+        return
+
+    # Strategy 3: Final fallback - non-atomic rename
+    logging.warning(f"Using non-atomic rename for {dst}")
+    if os.path.exists(dst):
+        try:
+            os.unlink(dst)
+        except OSError:
+            pass
+    try:
+        os.rename(src, dst)
+    except OSError:
+        # If rename fails too, copy as last resort
+        shutil.copy2(src, dst)
+        try:
+            os.unlink(src)
+        except OSError:
+            pass
+
+
+def safe_copy(src: str, dst: str, tmp_dir: str = None) -> None:
+    """Atomic copy function handling same/different filesystem scenarios.
+
+    Key optimization: Choose appropriate temp directory at the start to avoid
+    redundant cross-filesystem copies.
+
+    For same-filesystem: use system temp (avoid cluttering dst directory)
+    For cross-filesystem: use dst directory (ensure temp file is on same filesystem as dst)
 
     Args:
         src: source file path
         dst: target file path
-        tmp_dir: Temporary file directory (the system temporary directory is used by default)
+        tmp_dir: Explicit temporary directory. If not provided, intelligently chosen
+                based on filesystem relationship between src and dst.
+
+    Raises:
+        FileNotFoundError: If source file does not exist
+        OSError: If copy operation fails
     """
-    if tmp_dir is None:
-        tmp_dir = tempfile.gettempdir()
+    if not os.path.exists(src):
+        raise FileNotFoundError(f"Source file does not exist: {src}")
 
     dst_dir = os.path.dirname(dst)
     if not os.path.exists(dst_dir):
         os.makedirs(dst_dir, exist_ok=True)
 
+    # Intelligently choose temporary directory
+    if tmp_dir is None:
+        # Check if src and dst are on the same filesystem
+        if _is_same_filesystem(src, dst_dir):
+            # Same filesystem: use system temp directory
+            # This avoids cluttering the target directory with temp files
+            tmp_dir = tempfile.gettempdir()
+        else:
+            # Different filesystems: use dst directory
+            # This ensures temp file is on same filesystem as dst,
+            # avoiding an extra cross-filesystem copy
+            tmp_dir = dst_dir
+
+    # Generate unique temporary filename for process safety
     temp_filename = f"{os.getpid()}_{uuid.uuid4()}_{os.path.basename(dst)}"
     temp_path = os.path.join(tmp_dir, temp_filename)
 
     try:
-        shutil.copy(src, temp_path)
-        # Use atomic POSIX replace, so other processes cannot see a partial write
-        os.replace(temp_path, dst)
+        # Single copy: src → temp (guaranteed to be on same fs as dst)
+        shutil.copy2(src, temp_path)
+
+        # Atomic replacement: temp → dst (same filesystem operation)
+        _atomic_replace_fallback(temp_path, dst)
+
+    except Exception as e:
+        logging.error(f"Failed to safely copy {src} to {dst}: {e}")
+        raise
     finally:
+        # Clean up temporary file if it still exists
         if os.path.exists(temp_path):
             try:
                 os.unlink(temp_path)
-            except Exception:
-                logging.warning(f"Failed to clean temp file: {temp_path}")
+            except Exception as e:
+                logging.warning(f"Failed to clean temp file: {temp_path}, error: {e}")
 
 
 def get_runtime_file_cache(source):
