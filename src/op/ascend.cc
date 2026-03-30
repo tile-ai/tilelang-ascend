@@ -290,8 +290,9 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
   int dst_ndim = dst->shape.size();
   PrimExpr validRow_src, validCol_src, validRow_dst, validCol_dst;
 
-  // Find indices of active dimensions (extent > 2), compatible data dimensions are discontinuous 
-  // like this T.copy(Query[cid, m * BLOCK_M: (m + 1) * BLOCK_M, n2, g * D: (g + 1) * D], Q_L1)
+  // Find indices of active dimensions (extent > 2), compatible data dimensions
+  // are discontinuous like this T.copy(Query[cid, m * BLOCK_M: (m + 1) *
+  // BLOCK_M, n2, g * D: (g + 1) * D], Q_L1)
   auto find_active_dim_indices =
       [](const Array<PrimExpr> &extents) -> std::vector<int> {
     std::vector<int> active_indices;
