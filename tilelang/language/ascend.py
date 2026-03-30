@@ -386,6 +386,11 @@ def gemm_v0(A, B, C, transpose_A=False, transpose_B=False, init=False):
             assert B_shape[i] == 1, (
                 "current only support B as a 2D or higher-order tensor with the last two dimensions being the matrix dimensions"
             )
+    if len(C_shape) > 2:
+        for i in range(len(C_shape) - 2):
+            assert C_shape[i] == 1, (
+                "current only support B as a 2D or higher-order tensor with the last two dimensions being the matrix dimensions"
+            )
 
     M, N = C_shape[-2], C_shape[-1]
     K = A_shape[-2] if transpose_A else A_shape[-1]
