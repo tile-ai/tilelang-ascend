@@ -252,11 +252,9 @@ bash .agents/skills/tilelang-custom-skill/tilelang-review-skill/scritps/check-cp
 - ✅ **必须**使用 `AskUserQuestion` 工具等待用户确认
 - ✅ **只有**用户明确同意后才执行步骤 5
 
-## 步骤 5: 执行修复
+**⚠️ 严格遵守 AskUserQuestion 格式 ⚠️**
 
-**⚠️ 只有用户明确同意后才执行此步骤！**
-
-使用 `AskUserQuestion` 工具获取用户确认：
+使用 `AskUserQuestion` 工具时，**必须严格按照以下格式**：
 
 ```
 问题: 是否进行代码格式修复？
@@ -264,6 +262,61 @@ bash .agents/skills/tilelang-custom-skill/tilelang-review-skill/scritps/check-cp
   - 是 / 同意 / Y - 执行自动修复
   - 否 / 拒绝 / N - 跳过修复
 ```
+
+**⛔ 禁止私自修改 AskUserQuestion 的内容和选项：**
+
+| 禁止行为 | 说明 |
+|---------|------|
+| ❌ 添加额外选项 | 不要添加"仅修复 Python"、"仅修复 C++"等选项 |
+| ❌ 修改问题内容 | 不要在问题中添加详细的问题说明文字 |
+| ❌ 修改选项描述 | 不要修改选项的 label 或 description |
+| ❌ 添加自定义选项 | 不要使用 "Type your own answer" 提供额外选项 |
+
+**正确示例 vs 错误示例：**
+
+❌ **错误做法**（私自添加选项和详细说明）：
+```
+问题: 发现 3426 个 Python lint 问题（主要是 tabs 缩进）和 20 个 C++ 格式问题。是否进行自动修复？
+选项:
+  - 是 / 同意 / Y (Recommended) - 自动修复所有 Python 和 C++ 格式问题
+  - 仅修复 Python - 仅修复 Python 文件（lint + format）
+  - 仅修复 C++ - 仅修复 C++ 文件（format）
+  - 否 / 拒绝 / N - 不进行任何修复，仅查看报告
+```
+↑ **这是错误的！私自添加了"仅修复 Python"、"仅修复 C++"选项，并在问题中添加了详细说明**
+
+✅ **正确做法**（严格按照模板）：
+```
+问题: 是否进行代码格式修复？
+选项:
+  - 是 / 同意 / Y - 执行自动修复
+  - 否 / 拒绝 / N - 跳过修复
+```
+↑ **这是正确的！严格遵循 skill 规定的格式，没有私自添加内容**
+
+**为什么必须严格遵守格式？**
+
+1. **保证一致性**: 每次执行 skill 都使用相同的交互方式
+2. **避免混乱**: 额外的选项会让用户困惑，不知道如何选择
+3. **简化流程**: 用户只需要简单的二选一，不需要考虑复杂的分支
+4. **符合预期**: skill 的设计是有意为之，不要擅自改变
+
+**如果用户需要单独修复 Python 或 C++：**
+
+用户可以在选择 "否" 后，手动执行修复命令：
+```bash
+# 仅修复 Python
+bash .agents/skills/tilelang-custom-skill/tilelang-review-skill/scritps/fix-python.sh --all
+
+# 仅修复 C++
+bash .agents/skills/tilelang-custom-skill/tilelang-review-skill/scritps/fix-cpp.sh --all
+```
+
+## 步骤 5: 执行修复
+
+**⚠️ 只有用户明确同意后才执行此步骤！**
+
+用户确认后，调用修复脚本，**使用与检查阶段相同的参数**：
 
 用户确认后，调用修复脚本，**使用与检查阶段相同的参数**：
 
