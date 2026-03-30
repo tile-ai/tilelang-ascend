@@ -298,6 +298,7 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
     std::vector<int> active_indices;
     for (int i = 0; i < static_cast<int>(extents.size()); ++i) {
       if (auto *int_imm = extents[i].as<IntImmNode>()) {
+        // The extent of non-1 is valid
         if (int_imm->value != 1) {
           active_indices.push_back(i);
         }
@@ -312,6 +313,7 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
   if (src_ndim > 2) {
     std::vector<int> src_active = find_active_dim_indices(src_extents);
     if (src_active.size() >= 2) {
+      // if src_active.size > 2, select the last two active dimensions
       int row_idx = src_active[src_active.size() - 2];
       int col_idx = src_active.back();
       validRow_src =
@@ -321,12 +323,14 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
           compute_valid_extent(src_range[col_idx]->min,
                                src_range[col_idx]->extent, src->shape[col_idx]);
     } else if (src_active.size() == 1) {
+      // if src_active.size = 1, select the last active dimensions
       int col_idx = src_active[0];
       validRow_src = Integer(1);
       validCol_src =
           compute_valid_extent(src_range[col_idx]->min,
                                src_range[col_idx]->extent, src->shape[col_idx]);
     } else {
+      // else use the origin extents last two dimensions
       validRow_src = compute_valid_extent(src_range[src_ndim - 2]->min,
                                           src_range[src_ndim - 2]->extent,
                                           src->shape[src_ndim - 2]);
@@ -353,6 +357,7 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
   if (dst_ndim > 2) {
     std::vector<int> dst_active = find_active_dim_indices(dst_extents);
     if (dst_active.size() >= 2) {
+      // if dst_active.size > 2, select the last two active dimensions
       int row_idx = dst_active[dst_active.size() - 2];
       int col_idx = dst_active.back();
       validRow_dst =
@@ -362,12 +367,14 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
           compute_valid_extent(dst_range[col_idx]->min,
                                dst_range[col_idx]->extent, dst->shape[col_idx]);
     } else if (dst_active.size() == 1) {
+      // if dst_active.size = 1, select the last active dimensions
       int col_idx = dst_active[0];
       validRow_dst = Integer(1);
       validCol_dst =
           compute_valid_extent(dst_range[col_idx]->min,
                                dst_range[col_idx]->extent, dst->shape[col_idx]);
     } else {
+      // else use the origin extents last two dimensions
       validRow_dst = compute_valid_extent(dst_range[dst_ndim - 2]->min,
                                           dst_range[dst_ndim - 2]->extent,
                                           dst->shape[dst_ndim - 2]);
