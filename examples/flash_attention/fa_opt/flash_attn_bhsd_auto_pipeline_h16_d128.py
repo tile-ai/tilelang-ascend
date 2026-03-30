@@ -54,6 +54,7 @@ def flash_attention_fwd(
     heads_kv,
     dim,
     num_stages=8,
+    cross_interval=1,
 ):
     assert heads_q % heads_kv == 0, "heads_q must be a multiple of heads_kv"
     block_M, block_N = 128, 128
@@ -174,9 +175,7 @@ def flash_attention_fwd(
                 T.tile.fill(sumexp, 0.0)
                 T.tile.fill(neg_sm, 2**30)
 
-                T.barrier_all()
-
-                for k in T.Pipelined(num_iters // 2, num_stages=num_stages // 2):
+                for k in T.Pipelined(num_iters // 2, num_stages=num_stages // 2, cross_interval=cross_interval):
                     # k ranges over [0, num_iters // 2), each step = 2 KV tiles
                     kv_offset = k * 2
 
@@ -264,7 +263,6 @@ def flash_attention_fwd(
 
                 # V: write output
                 T.copy(acc_o, acc_s_half)
-                T.barrier_all()
                 T.copy(acc_s_half, Output[bz, by, bx * block_M + vid * block_M // 2 : bx * block_M + vid * block_M // 2 + half_M, :])
 
     return main
@@ -279,6 +277,7 @@ if __name__ == "__main__":
     parser.add_argument("--kv-heads", type=int, default=None, help="kv head size")
     parser.add_argument("--D", type=int, default=128, help="hidden dim")
     parser.add_argument("--no-check", action="store_true", help="disable reference check")
+    parser.add_argument("--cross-interval", type=int, default=1, help="cross-core sync interval")
     args = parser.parse_args()
     B, S, H, D = args.B, args.S, args.H, args.D
     Q_H = args.q_heads or H
@@ -290,6 +289,7 @@ if __name__ == "__main__":
         heads_q=Q_H,
         heads_kv=KV_H,
         dim=D,
+        cross_interval=args.cross_interval,
     )
     print(func.get_kernel_source())
 
