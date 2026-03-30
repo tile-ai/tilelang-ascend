@@ -7,6 +7,7 @@ add_library(tilelangir_transforms STATIC
   Vectorize.cpp
   InsertCVSync.cpp
   EnableMultiBuffer.cpp
+  SplitMixKernel.cpp
 )
 set_target_properties(tilelangir_transforms PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_compile_options(tilelangir_transforms PRIVATE -frtti)
