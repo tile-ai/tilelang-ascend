@@ -25,8 +25,8 @@ def deprecated(message=None):
 
 
 def _get_buffer_info(
-    br: Union[Buffer, BufferRegion],
-    mask: str,  # noqa: FA100
+    br: Buffer | BufferRegion,
+    mask: str,
 ) -> tuple[Call, PrimExpr]:
     """
     Unified handling of Buffer and BufferRegion to retrieve the underlying access pointer and total data size.
@@ -155,12 +155,12 @@ def sort(
 
 
 def merge_sort(
-    dst: Union[Buffer, BufferRegion],  # noqa: FA100
-    tmp: Union[Buffer, BufferRegion],  # noqa: FA100
-    src0: Union[Buffer, BufferRegion],  # noqa: FA100
-    src1: Union[Buffer, BufferRegion],  # noqa: FA100
-    src2: Union[Buffer, BufferRegion, None] = None,  # noqa: FA100
-    src3: Union[Buffer, BufferRegion, None] = None,  # noqa: FA100
+    dst: Buffer | BufferRegion,
+    tmp: Buffer | BufferRegion,
+    src0: Buffer | BufferRegion,
+    src1: Buffer | BufferRegion,
+    src2: Buffer | BufferRegion | None = None,
+    src3: Buffer | BufferRegion | None = None,
 ):
     """Performs a 2/3/4-way merge sort operation.
 
@@ -186,7 +186,7 @@ def merge_sort(
         A TVM intrinsic call that performs the merge sort operation.
     """
 
-    def retrieve_shape(object: Union[Buffer, BufferRegion]) -> list[int]:  # noqa: FA100
+    def retrieve_shape(object: Buffer | BufferRegion) -> list[int]:
         if isinstance(object, Buffer):
             return list(object.shape)
         elif isinstance(object, BufferRegion):
@@ -199,8 +199,8 @@ def merge_sort(
             raise ValueError(f"Unsupported argument type: {type(object)} for buffer {object}")
 
     def retrieve_ptr(
-        object: Union[Buffer, BufferRegion],
-        access_type: str = "r",  # noqa: FA100
+        object: Buffer | BufferRegion,
+        access_type: str = "r",
     ) -> PrimExpr:
         if isinstance(object, Buffer):
             return object.access_ptr(access_type)
@@ -413,8 +413,8 @@ def select(
     assert dst_shape == src0_shape, "dst and src0 must have the same shape"
 
     def retrieve_ptr(
-        object: Union[Buffer, BufferRegion],
-        access_type: str = "r",  # noqa: FA100
+        object: Buffer | BufferRegion,
+        access_type: str = "r",
     ) -> PrimExpr:
         if isinstance(object, Buffer):
             return object.access_ptr(access_type)
