@@ -45,14 +45,18 @@ struct CrossCoreSyncPoint {
   int order;        // execute order
   int sync_flag_id; // cross core sync flag id
   bool is_write;    // whether write to workspace or not
-  const std::string workspace_name;
-  const std::string pipe; // MTE2, MTE3 or FIX
+  std::string workspace_name;
+  std::string pipe; // MTE2, MTE3 or FIX
   const EvaluateNode *node;
   std::optional<const ForNode *> target_for_node = std::nullopt;
   // the ForNode to which the sync stmt will be attached. If not specified, will
   // be attached to the EvaluateNode.
-  const std::vector<const ForNode *> parent_for_nodes;
+  std::vector<const ForNode *> parent_for_nodes;
   // the ForNode list (from outer to inner) before reaching the EvaluateNode
+
+  // Cross interval support
+  int cross_interval = 1;
+  const ForNode *stage_loop = nullptr;
 
   std::string ToString() const {
     std::ostringstream oss;
@@ -70,6 +74,7 @@ struct CrossCoreSyncPoint {
       oss << ", target_for_node=None";
     }
     oss << ", parent_for_nodes.size()=" << parent_for_nodes.size();
+    oss << ", cross_interval=" << cross_interval;
     oss << ")";
     return oss.str();
   }
@@ -100,27 +105,49 @@ public:
         std::string pipe = cfg_info->second;
 
         if (auto workspace_name_opt = FetchWorkspaceName(call_node)) {
-          sync_points_.push_back(CrossCoreSyncPoint{
-              is_aiv_ ? 1 : 0,
-              order_,
-              sync_flag_id_++,
-              is_write,
-              workspace_name_opt.value(),
-              pipe,
-              op,
-              std::nullopt, // no target_for_node by default. Will be updated
-                            // later
-              current_loops_,
-          });
+          CrossCoreSyncPoint sp;
+          sp.scope = is_aiv_ ? 1 : 0;
+          sp.order = order_;
+          sp.sync_flag_id = sync_flag_id_++;
+          sp.is_write = is_write;
+          sp.workspace_name = workspace_name_opt.value();
+          sp.pipe = pipe;
+          sp.node = op;
+          sp.target_for_node = std::nullopt;
+          sp.parent_for_nodes = current_loops_;
+          sp.cross_interval = GetCrossInterval();
+          sp.stage_loop = current_stage_loop_;
+          sync_points_.push_back(sp);
         }
       }
     }
   }
 
   void VisitStmt_(const ForNode *op) override {
+    bool is_stage_loop = op->annotations.Get("stage_loop").defined();
+
+    if (is_stage_loop) {
+      current_stage_loop_ = op;
+    }
+
     current_loops_.push_back(op);
     StmtVisitor::VisitStmt_(op);
     current_loops_.pop_back();
+
+    if (is_stage_loop) {
+      current_stage_loop_ = nullptr;
+    }
+  }
+
+  int GetCrossInterval() const {
+    if (current_stage_loop_) {
+      auto interval_anno =
+          current_stage_loop_->annotations.Get("tl_cross_interval");
+      if (interval_anno.defined()) {
+        return interval_anno.as<IntImmNode>()->value;
+      }
+    }
+    return 1;
   }
 
 private:
@@ -129,6 +156,7 @@ private:
   int order_{0};
   int sync_flag_id_{0};
   std::vector<const ForNode *> current_loops_;
+  const ForNode *current_stage_loop_ = nullptr;
 
   /**
    * The configuration info table
@@ -227,12 +255,61 @@ private:
 
   /**
    * SetFlag After Write, WaitFlag Before Read.
+   * Note: Only sync_stmt is conditional, op_stmt (data copy) always executes.
    */
   Stmt AttachSyncStmt(const CrossCoreSyncPoint &sp, const Stmt &op_stmt) {
+    Stmt sync_stmt;
     if (sp.is_write) {
-      return SeqStmt({op_stmt, GenAutoCrossCoreSetFlagStmt(sp)});
+      sync_stmt = GenAutoCrossCoreSetFlagStmt(sp);
     } else {
-      return SeqStmt({GenAutoCrossCoreWaitFlagStmt(sp), op_stmt});
+      sync_stmt = GenAutoCrossCoreWaitFlagStmt(sp);
+    }
+
+    if (sp.cross_interval > 1 && sp.stage_loop != nullptr) {
+      PrimExpr condition = GenSyncCondition(sp);
+      // op_stmt always executes, sync_stmt is conditional
+      if (sp.is_write) {
+        // writer: op_stmt first, then conditional sync
+        return SeqStmt(
+            {op_stmt, IfThenElse(condition, sync_stmt, Evaluate(0))});
+      } else {
+        // reader: conditional sync first, then op_stmt
+        return SeqStmt(
+            {IfThenElse(condition, sync_stmt, Evaluate(0)), op_stmt});
+      }
+    }
+
+    if (sp.is_write) {
+      return SeqStmt({op_stmt, sync_stmt});
+    } else {
+      return SeqStmt({sync_stmt, op_stmt});
+    }
+  }
+
+  /**
+   * Generate sync condition based on cross_interval.
+   * Writer (set): (stage_var % cross_interval == cross_interval - 1) ||
+   * is_last_iteration Reader (wait): stage_var % cross_interval == 0
+   */
+  PrimExpr GenSyncCondition(const CrossCoreSyncPoint &sp) {
+    const ForNode *stage_loop = sp.stage_loop;
+    if (stage_loop == nullptr) {
+      return make_const(DataType::Bool(), true);
+    }
+    PrimExpr stage_var = stage_loop->loop_var;
+    PrimExpr stage_extent = stage_loop->extent;
+    int cross_interval = sp.cross_interval;
+    auto int32 = DataType::Int(32);
+
+    if (sp.is_write) {
+      PrimExpr mod_cond = EQ(Mod(stage_var, make_const(int32, cross_interval)),
+                             make_const(int32, cross_interval - 1));
+      PrimExpr last_iter_cond =
+          EQ(stage_var, Sub(stage_extent, make_const(int32, 1)));
+      return tir::Or(mod_cond, last_iter_cond);
+    } else {
+      return EQ(Mod(stage_var, make_const(int32, cross_interval)),
+                make_const(int32, 0));
     }
   }
 

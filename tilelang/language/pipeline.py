@@ -2,7 +2,7 @@
 # Licensed under the MIT License.
 """The language interface for tl programs."""
 
-from typing import List, Optional
+from __future__ import annotations
 from tvm import tir
 from tvm.tir import IntImm
 from tilelang import _ffi_api
@@ -12,10 +12,11 @@ def Pipelined(
     start: tir.PrimExpr,
     stop: tir.PrimExpr = None,
     num_stages: int = 0,
-    order: Optional[List[int]] = None,
-    stage: Optional[List[int]] = None,
-    sync: Optional[List[List[int]]] = None,
-    group: Optional[List[List[int]]] = None,
+    order: list[int] | None = None,
+    stage: list[int] | None = None,
+    sync: list[list[int]] | None = None,
+    group: list[list[int]] | None = None,
+    cross_interval: int = 1,
 ):
     """Tools to construct pipelined for loop.
 
@@ -28,6 +29,9 @@ def Pipelined(
     num_stages : int
         The max number of buffer used between pipeline producers and consumers.
         if num_stages is 0, pipeline will not be enabled.
+    cross_interval : int
+        The interval for cross-core synchronization. When cross_interval=1,
+        sync every iteration. When cross_interval=N, sync every N iterations.
     Returns
     -------
     res : frame.ForFrame
@@ -45,4 +49,4 @@ def Pipelined(
     if group is None:
         group = []
     # type: ignore[attr-defined] # pylint: disable=no-member
-    return _ffi_api.Pipelined(start, stop, num_stages, order, stage, sync, group)
+    return _ffi_api.Pipelined(start, stop, num_stages, order, stage, sync, group, cross_interval)

@@ -42,6 +42,7 @@ Through systematic optimization, the FA operator achieves 80% of native AscendC 
 |------|:----------:|:----------:|:------------:|:-----------:|:------------------:|:---------:|:---------:|:---------:|
 | flash_attn_bhsd_expert_h16_d128.py | √ | √ | √ | √ | √ | √ | √ | 80% |
 | flash_attn_bhsd_auto_pipeline_h16_d128.py | √ | √ | √ | × | √ | × | √ | 60% |
+
 Operator implementation: https://github.com/tile-ai/tilelang-ascend/tree/ascendc_pto/examples/flash_attention/fa_opt
 
 | File Name | Description |
