@@ -546,16 +546,6 @@ private:
           }
         }
       }
-
-      // Allocate tmp buffer in shared memory after origin buffer
-      if (scope == "shared") {
-        for (const VarNode *buffer : tmp_buffers) {
-          if (!address_map_.count(buffer)) {
-            alloc_buffer(buffer, max_offset,
-                         "Linear tmp memory allocation failed!");
-          }
-        }
-      }
     }
 
     struct LiveInterval {
