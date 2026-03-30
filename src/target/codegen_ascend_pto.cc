@@ -1883,11 +1883,8 @@ void CodeGenTileLangAscendPto::BinaryVecOpsCodegen(const CallNode *op,
                  << applied_scalar << ");\n";
   } else {
     this->PrintIndent();
-    this->stream << operation << "(";
-    for (const auto &name : var_names) {
-      this->stream << name << ", ";
-    }
-    this->stream << applied_scalar << ");\n";
+    this->stream << operation << "(" << var_names[0] << ", " << var_names[1]
+                 << ", " << applied_scalar << ");\n";
   }
 }
 
