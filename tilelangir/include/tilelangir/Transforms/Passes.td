@@ -117,4 +117,20 @@ def TileLangIREnableMultiBuffer : Pass<"tilelangir-enable-multi-buffer", "::mlir
   }];
 }
 
+def TileLangIRSplitMixKernel : Pass<"tilelangir-split-mix-kernel", "::mlir::ModuleOp"> {
+  let summary = "TileLangIR Split Mix Kernel pass";
+  let description = [{
+    This pass splits a mixed kernel (containing both cube and vector operations)
+    into two separate kernels: one for cube operations (AIC) and one for vector
+    operations (AIV). 
+    
+    The pass identifies functions marked with mix_mode = "aic" and transforms them:
+    - Creates two functions: original_name_mix_aic and original_name_mix_aiv
+    - Filters operations based on core type (CUBE vs VECTOR)
+    - Filters memory allocations based on address space (cbuf/cc for AIC, ub for AIV)
+    - Preserves gm (global memory) operations in both functions
+    - Preserves scalar operations in both functions
+  }];
+}
+
 #endif // TILELANGIR_TRANSFORMS_PASSES_TD
