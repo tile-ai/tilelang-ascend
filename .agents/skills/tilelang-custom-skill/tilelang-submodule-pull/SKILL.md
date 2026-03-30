@@ -1,143 +1,172 @@
 ---
-name: tile-user-submodule-pull
-description: 自动拉取 tilelang 仓库及其三方仓代码。提供定时拉取脚本，支持 git pull --recurse-submodules 和 git submodule update --init --recursive 两种方式，自动检测错误并重试。当用户提到"重试拉取三方库"、"自动重试拉取"、"拉取子模块"、"更新三方库"、"重试git拉取"、"自动拉取代码"等关键词时触发此技能。
+name: tilelang-submodule-pull
+description: Automatically pull tilelang repository and its third-party code. Provides scheduled pull script supporting git pull --recurse-submodules and git submodule update --init --recursive with automatic error detection and retry. Triggers when user mentions "重新拉取三方库", "自动重拉", "重新拉取子模块", "auto retry pull", "pull submodules", "update third-party libs", "retry pulling third-party libs", "auto pull code" or similar keywords.
 ---
 
-# Tilelang 三方仓自动拉取
+# Tilelang Third-Party Repository Auto-Pull
 
-## 概述
+## Overview
 
-本技能提供自动拉取 tilelang 仓库及其三方仓代码的能力：
-- **定时拉取**：每隔一小时执行一次拉取
-- **错误处理**：自动检测网络错误、访问失败等问题
-- **多种方式**：支持两种拉取方式，自动切换
-- **实时输出**：拉取过程实时打印到终端和日志文件
+This skill provides automatic pulling of tilelang repository and its third-party code:
+- **Scheduled Pull**: Executes pull every hour
+- **Error Handling**: Automatically detects network errors, access failures, etc.
+- **Multiple Methods**: Supports two pull methods with automatic switching
+- **Real-time Output**: Pull process printed to terminal and log file in real-time
+- **Timeout Protection**: Automatically stops after 10 hours of background running to prevent forgetting to close
 
-## 脚本路径
+## Script Paths
 
-所有路径都是相对于SKILL目录的相对路径：
+All paths are relative to the current project root directory:
 
-| 文件 | 路径 | 说明 |
+Assuming the current project is at `/mnt/workspace/tilelang-ascend`, then:
+
+| File | Path | Description |
 |-----|------|------|
-| 拉取脚本 | `scripts/auto_pull.sh` | 主脚本 |
-| 日志文件 | `logs/git_pull.log` | 拉取日志 |
+| Pull Script | `.agents/skills/tilelang-custom-skill/tilelang-submodule-pull/scripts/auto_pull.sh` | Main script |
+| Log File | `.agents/skills/tilelang-custom-skill/tilelang-submodule-pull/logs/git_pull.log` | Pull log |
 
-SKILL目录：`/home/developer/.config/opencode/skills/tilelang-submodule-pull/`
+The script automatically detects the project root directory, no manual configuration needed.
 
-## 使用方式
+## Usage
 
-### 1. 直接运行（前台）
-
-```bash
-bash /home/developer/.config/opencode/skills/tilelang-submodule-pull/scripts/auto_pull.sh
-```
-
-### 2. 后台运行
+### 1. Direct Run (Foreground)
 
 ```bash
-nohup /home/developer/.config/opencode/skills/tilelang-submodule-pull/scripts/auto_pull.sh &
+bash .agents/skills/tilelang-custom-skill/tilelang-submodule-pull/scripts/auto_pull.sh
 ```
 
-### 3. 查看日志
+### 2. Background Run
 
 ```bash
-tail -f /home/developer/.config/opencode/skills/tilelang-submodule-pull/logs/git_pull.log
+nohup .agents/skills/tilelang-custom-skill/tilelang-submodule-pull/scripts/auto_pull.sh &
 ```
 
-## 工作流程
+### 3. View Logs
+
+```bash
+tail -f .agents/skills/tilelang-custom-skill/tilelang-submodule-pull/logs/git_pull.log
+```
+
+## Workflow
 
 ```
-1. 同时执行两个命令：
+1. Configure git mirror source (using ghfast.top for acceleration)
+2. Check if running time exceeds 10 hours (background run only)
+    ↓ Exceeds 10 hours
+3. Automatically stop script and log
+    ↓ Not exceeded
+4. Execute two commands simultaneously:
    - git submodule update --init --recursive
    - git pull --recurse-submodules
-    ↓ 任一失败
-2. 等待 1 小时后重试整个流程
-    ↓ 两个都成功
-3. 停止脚本
+    ↓ If either fails
+5. Wait 1 hour then retry the entire process
+    ↓ Both succeed
+6. Stop script
 ```
 
-## 错误检测
+## Error Detection
 
-脚本会自动检测以下错误：
+The script automatically detects the following errors:
 
-- `Could not access`：无法访问子模块
-- `error`：一般错误
-- `fatal`：致命错误
-- `Failed to clone`：克隆失败
-- `unable to access`：无法访问 URL
+- `Could not access`: Cannot access submodule
+- `error`: General error
+- `fatal`: Fatal error
+- `Failed to clone`: Clone failed
+- `unable to access`: Cannot access URL
 
-## 脚本内容
+## Script Content
 
 ```bash
 #!/bin/bash
 
-# SKILL目录
+# SKILL directory
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOG_DIR="$SKILL_DIR/logs"
 LOG_FILE="$LOG_DIR/git_pull.log"
-# tilelang-ascend工作目录
-WORK_DIR="/mnt/workspace/tilelang-ascend"
+# Project root directory (parent of parent of SKILL directory)
+PROJECT_DIR="$(dirname "$(dirname "$(dirname "$SKILL_DIR")")")"
 
-# 创建日志目录
+# Create log directory
 mkdir -p "$LOG_DIR"
 
-cd "$WORK_DIR" || exit 1
+# Configure git mirror source
+echo "Configuring git mirror source..." | tee -a "$LOG_FILE"
+git config --global url."https://ghfast.top/https://github.com/".insteadOf "https://github.com/" 2>&1 | tee -a "$LOG_FILE"
+
+cd "$PROJECT_DIR" || exit 1
+
+# Record script start time (for 10-hour timeout check)
+START_TIME=$(date +%s)
+MAX_RUNTIME_SECONDS=36000
 
 while true; do
+    # Check if running time exceeds 10 hours
+    CURRENT_TIME=$(date +%s)
+    RUNTIME=$((CURRENT_TIME - START_TIME))
+    if [ "$RUNTIME" -ge "$MAX_RUNTIME_SECONDS" ]; then
+        echo "========================================" | tee -a "$LOG_FILE"
+        echo "⚠ Script running for over 10 hours, auto-stopping: $(date '+%Y-%m-%d %H:%M:%S')" | tee -a "$LOG_FILE"
+        echo "Runtime: $((RUNTIME / 3600)) hours $((RUNTIME % 3600 / 60)) minutes" | tee -a "$LOG_FILE"
+        exit 0
+    fi
+    
     echo "========================================" | tee -a "$LOG_FILE"
-    echo "开始拉取: $(date '+%Y-%m-%d %H:%M:%S')" | tee -a "$LOG_FILE"
+    echo "Starting pull: $(date '+%Y-%m-%d %H:%M:%S')" | tee -a "$LOG_FILE"
     
-    # 同时执行两个命令
-    echo "同时执行两个命令..." | tee -a "$LOG_FILE"
+    # Execute two commands
+    echo "Executing two commands..." | tee -a "$LOG_FILE"
     
-    # 命令1: git submodule update --init --recursive
+    # Command 1: git submodule update --init --recursive
+    echo "1. Executing command \`git submodule update --init --recursive\`" | tee -a "$LOG_FILE"
     TMP_FILE1=$(mktemp)
     git submodule update --init --recursive 2>&1 | tee -a "$LOG_FILE" | tee "$TMP_FILE1"
     OUTPUT1=$(cat "$TMP_FILE1")
     rm "$TMP_FILE1"
     
-    # 命令2: git pull --recurse-submodules
+    # Command 2: git pull --recurse-submodules
+    echo "2. Executing command \`git pull --recurse-submodules\`" | tee -a "$LOG_FILE"
     TMP_FILE2=$(mktemp)
     git pull --recurse-submodules 2>&1 | tee -a "$LOG_FILE" | tee "$TMP_FILE2"
     OUTPUT2=$(cat "$TMP_FILE2")
     rm "$TMP_FILE2"
     
-    # 检查命令1是否有错误
+    # Check if command 1 has errors
     HAS_ERROR1=false
     if echo "$OUTPUT1" | grep -q "Could not access\|error\|fatal\|Failed to clone\|unable to access"; then
-        echo "✗ git submodule update --init --recursive 失败" | tee -a "$LOG_FILE"
+        echo "✗ git submodule update --init --recursive failed" | tee -a "$LOG_FILE"
         HAS_ERROR1=true
     else
-        echo "✓ git submodule update --init --recursive 成功" | tee -a "$LOG_FILE"
+        echo "✓ git submodule update --init --recursive succeeded" | tee -a "$LOG_FILE"
     fi
     
-    # 检查命令2是否有错误
+    # Check if command 2 has errors
     HAS_ERROR2=false
     if echo "$OUTPUT2" | grep -q "Could not access\|error\|fatal\|Failed to clone\|unable to access"; then
-        echo "✗ git pull --recurse-submodules 失败" | tee -a "$LOG_FILE"
+        echo "✗ git pull --recurse-submodules failed" | tee -a "$LOG_FILE"
         HAS_ERROR2=true
     else
-        echo "✓ git pull --recurse-submodules 成功" | tee -a "$LOG_FILE"
+        echo "✓ git pull --recurse-submodules succeeded" | tee -a "$LOG_FILE"
     fi
     
-    # 如果任一命令失败，等待1小时后重试
+    # If either command fails, wait 1 hour then retry
     if [ "$HAS_ERROR1" = true ] || [ "$HAS_ERROR2" = true ]; then
-        echo "✗ 拉取失败: $(date '+%Y-%m-%d %H:%M:%S')" | tee -a "$LOG_FILE"
-        echo "等待 1 小时后重试..."
+        echo "✗ Pull failed: $(date '+%Y-%m-%d %H:%M:%S')" | tee -a "$LOG_FILE"
+        echo "Waiting 1 hour before retry..."
         sleep 3600
         continue
     fi
     
-    # 两个命令都成功
-    echo "✓ 所有代码已成功拉取: $(date '+%Y-%m-%d %H:%M:%S')" | tee -a "$LOG_FILE"
-    echo "脚本停止"
+    # Both commands succeeded
+    echo "✓ All code successfully pulled: $(date '+%Y-%m-%d %H:%M:%S')" | tee -a "$LOG_FILE"
+    echo "Script stopped"
     break
 done
 ```
 
-## 注意事项
+## Notes
 
-1. 脚本会在所有代码成功拉取后自动停止
-2. 如果网络不稳定，脚本会自动重试
-3. 所有输出都会同时显示在终端和日志文件中
-4. 日志文件会记录每次拉取的详细过程
+1. The script automatically stops after all code is successfully pulled
+2. If the network is unstable, the script will automatically retry
+3. All output is displayed in both terminal and log file
+4. The log file records detailed process of each pull
+

@@ -2,12 +2,12 @@
 # Licensed under the MIT License.
 """The language interface for tl programs."""
 
+from __future__ import annotations
+
 import tilelang.language as T
 from tvm.tir import PrimExpr, Buffer, BufferRegion, Var
-from typing import List, Union
 from tvm import tir
 from tilelang.language.ascend import _dtype
-
 
 
 def atomic_add(dst: Buffer, value: PrimExpr) -> PrimExpr:
@@ -65,12 +65,12 @@ def dp4a(A: Buffer, B: Buffer, C: Buffer) -> PrimExpr:
 
 def clamp(dst: PrimExpr, min_val: PrimExpr, max_val: PrimExpr) -> PrimExpr:
     """Clamps the input value dst between [min_val, max_val]
-    
+
     Args:
         dst: Input value to be clamped
         min_val: Minimum value
         max_val: Maximum value
-    
+
     Returns:
         Value clamped to the specified range
     """
@@ -79,12 +79,12 @@ def clamp(dst: PrimExpr, min_val: PrimExpr, max_val: PrimExpr) -> PrimExpr:
     return dst
 
 
-def reshape(src: Buffer, shape: List[PrimExpr]) -> Buffer:
+def reshape(src: Buffer, shape: list[PrimExpr]) -> Buffer:
     """Reshapes the input buffer to the specified shape.
-    
+
     Args:
         src (Buffer): Input buffer to be reshaped
-        shape (List[PrimExpr]): New shape for the buffer
+        shape (list[PrimExpr]): New shape for the buffer
 
     Returns:
         Buffer: A new buffer view with the specified shape
@@ -92,15 +92,13 @@ def reshape(src: Buffer, shape: List[PrimExpr]) -> Buffer:
     return T.Buffer(shape, src.dtype, src.data)
 
 
-def view(src: Buffer,
-         shape: Union[List[PrimExpr], None] = None,
-         dtype: Union[str, None] = None) -> Buffer:
+def view(src: Buffer, shape: list[PrimExpr] | None = None, dtype: str | None = None) -> Buffer:
     """Views the input buffer with optionally modified shape and dtype.
-    
+
     Args:
         src (Buffer): Input buffer to be viewed
-        shape (Union[List[PrimExpr], None], optional): New shape for the buffer. Defaults to None.
-        dtype (Union[str, None], optional): New dtype for the buffer. Defaults to None.
+        shape (list[PrimExpr] | None, optional): New shape for the buffer. Defaults to None.
+        dtype (str | None = None, optional): New dtype for the buffer. Defaults to None.
 
     Returns:
         Buffer: A new buffer view with the specified shape and dtype
@@ -113,15 +111,16 @@ def view(src: Buffer,
 
 
 def npu_gemm(A, B, C, init=False):
+    """NPU GEMM intrinsic. A, B, C can be 2D or higher-order (leading dims must be 1)."""
 
-    def legalize_arguments(arg: Union[Buffer, Var]):
+    def legalize_arguments(arg: Buffer | Var):
         """Convert let-bound variables to their corresponding buffers.
 
         Args:
-            arg (Union[tir.Buffer, tir.Var]): Input argument to legalize
+            arg (tir.Buffer | tir.Var: Input argument to legalize
 
         Returns:
-            Union[tir.Buffer, tir.Var]: The legalized argument
+            tir.Buffer | tir.Var: The legalized argument
         """
         if isinstance(arg, Var) and T.has_let_value(arg):
             return T.get_let_value(arg).buffer
@@ -131,7 +130,7 @@ def npu_gemm(A, B, C, init=False):
     B = legalize_arguments(B)
     C = legalize_arguments(C)
 
-    def retrieve_shape(object: Union[Buffer, BufferRegion]) -> List[int]:
+    def retrieve_shape(object: Buffer | BufferRegion) -> list[int]:
         if isinstance(object, Buffer):
             return object.shape
         elif isinstance(object, BufferRegion):
@@ -147,24 +146,31 @@ def npu_gemm(A, B, C, init=False):
     B_shape = retrieve_shape(B)
     C_shape = retrieve_shape(C)
 
-    assert len(C_shape) == 2, "current only support C as a 2D tensor"
+    assert len(C_shape) >= 2, "current only support C as a 2D or higher-order tensor"
     assert len(A_shape) >= 2, "current only support A as a 2D or higher-order tensor"
     assert len(B_shape) >= 2, "current only support B as a 2D or higher-order tensor"
+    if len(C_shape) > 2:
+        for i in range(len(C_shape) - 2):
+            assert C_shape[i] == 1, (
+                "current only support C as a 2D or higher-order tensor with the last two dimensions being the matrix dimensions"
+            )
     if len(A_shape) > 2:
         for i in range(len(A_shape) - 2):
-            assert A_shape[i] == 1, \
+            assert A_shape[i] == 1, (
                 "current only support A as a 2D or higher-order tensor with the last two dimensions being the matrix dimensions"
+            )
     if len(B_shape) > 2:
         for i in range(len(B_shape) - 2):
-            assert B_shape[i] == 1, \
+            assert B_shape[i] == 1, (
                 "current only support B as a 2D or higher-order tensor with the last two dimensions being the matrix dimensions"
+            )
 
-    M, N = C_shape
+    M, N = C_shape[-2], C_shape[-1]
     K = A_shape[-1]
     K_B = B_shape[-2]
     assert K == K_B, f"T.gemm K shape check failed: K_A = {K}, K_B = {K_B}"
 
-    def retrieve_ptr(object: Union[Buffer, BufferRegion], access_type: str = "r") -> PrimExpr:
+    def retrieve_ptr(object: Buffer | BufferRegion, access_type: str = "r") -> PrimExpr:
         if isinstance(object, Buffer):
             return object.access_ptr(access_type)
         elif isinstance(object, BufferRegion):
@@ -188,11 +194,9 @@ def npu_gemm(A, B, C, init=False):
     Bptr = retrieve_ptr(B, "r")
     Cptr = retrieve_ptr(C, "rw")
 
-    return tir.call_intrin(
-        "handle", tir.op.Op.get("tl.ascend_mma"), f"mma<{_dtype(A)}, {_dtype(C)}, {M}, {N}>", Aptr, Bptr, Cptr, init, K
-    )
+    return tir.call_intrin("handle", tir.op.Op.get("tl.ascend_mma"), f"mma<{_dtype(A)}, {_dtype(C)}, {M}, {N}>", Aptr, Bptr, Cptr, init, K)
+
 
 def loop_break():
-    """Break out of the innermost loop.
-    """
+    """Break out of the innermost loop."""
     return T.call_intrin("handle", op.Op.get("tl.loop_break"))

@@ -8,9 +8,9 @@
  */
 
 #include "./transform/common/attr.h"
+#include "op/builtin.h"
 #include <tvm/arith/analyzer.h>
 #include <tvm/script/ir_builder/tir/ir.h>
-#include "op/builtin.h"
 
 namespace tvm {
 namespace tl {
@@ -78,7 +78,7 @@ ForFrame ParallelFor(Array<PrimExpr> extents,
 ForFrame PipelinedFor(PrimExpr start, PrimExpr stop, int num_stages,
                       Array<PrimExpr> order, Array<PrimExpr> stages,
                       Array<Array<PrimExpr>> sync,
-                      Array<Array<PrimExpr>> groups) {
+                      Array<Array<PrimExpr>> groups, int cross_interval) {
   using namespace tvm::tir;
   ObjectPtr<ForFrameNode> n = make_object<ForFrameNode>();
   DataType dtype = stop.dtype();
@@ -100,6 +100,8 @@ ForFrame PipelinedFor(PrimExpr start, PrimExpr stop, int num_stages,
       anno.Set("tl_pipeline_sync", sync);
     if (groups.size() > 0)
       anno.Set("tl_pipeline_group", groups);
+    if (cross_interval > 0)
+      anno.Set("tl_cross_interval", PrimExpr(cross_interval));
     body = For(vars[0], doms[0]->min, doms[0]->extent, ForKind::kSerial,
                std::move(body),
                /*thread_binding=*/NullOpt, /*annotations=*/anno);
