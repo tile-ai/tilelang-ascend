@@ -11,6 +11,8 @@
 #include <tvm/tir/stmt_functor.h>
 #include <tvm/tir/transform.h>
 
+#include "../layout/layout.h"
+
 #include <iostream>
 #include <regex>
 #include <set>
@@ -715,12 +717,83 @@ private:
       }
     }
 
+    // Inject default physical layout for L1 Buffer
+    Map<String, ObjectRef> new_annotations =
+        InjectDefaultLayoutMap(new_alloc_buffers, op->annotations);
+
     auto new_body = VisitStmt(op->body);
     auto new_block =
         Block(op->iter_vars, op->reads, op->writes, op->name_hint, new_body,
-              op->init, new_alloc_buffers, op->match_buffers, op->annotations);
+              op->init, new_alloc_buffers, op->match_buffers, new_annotations);
 
     return new_block;
+  }
+
+  /*!
+   * \brief Ensure all L1-level (shared.dyn) Buffers have physical memory layout
+   * descriptions.
+   *
+   * \note
+   * If the frontend user does not explicitly declare a layout via
+   * T.annotate_layout, the backend will not be able to compute correct 1D
+   * physical address offsets during LowerTileOp. Therefore, the compiler must
+   * perform defensive fallback here to inject default zN Layout for L1 Buffers
+   * missing a Layout.
+   */
+  Map<String, ObjectRef>
+  InjectDefaultLayoutMap(const Array<Buffer> &alloc_buffers,
+                         Map<String, ObjectRef> annotations) {
+    Map<Var, tl::Layout> layout_map;
+
+    // Extract existing layout_map, respecting user's explicit definitions
+    if (annotations.count(tl::attr::kLayoutMap)) {
+      layout_map =
+          Downcast<Map<Var, tl::Layout>>(annotations.Get(tl::attr::kLayoutMap));
+    }
+
+    bool layout_map_changed = false;
+
+    for (const Buffer &buf : alloc_buffers) {
+      std::string scope = "";
+      if (auto *ptr_type = buf->data->type_annotation.as<PointerTypeNode>()) {
+        scope = ptr_type->storage_scope;
+      }
+
+      // Only data entering L1 Buffer needs to participate in Cube operations
+      // and requires fractal layout transformation.
+      if (scope == "shared.dyn") {
+        // Avoid overwriting user-defined layouts (e.g., user intentionally
+        // specified nZ instead of zN).
+        if (layout_map.count(buf->data) == 0) {
+          tl::Layout default_zn_layout = CreateDefaultZnLayout(buf);
+          layout_map.Set(buf->data, default_zn_layout);
+          layout_map_changed = true;
+        }
+      }
+    }
+
+    // Only update Annotations node when actual modifications occur, avoiding
+    // unnecessary IR copy overhead
+    if (layout_map_changed) {
+      annotations.Set(tl::attr::kLayoutMap, layout_map);
+    }
+
+    return annotations;
+  }
+
+  tl::Layout CreateDefaultZnLayout(const Buffer &buf) {
+    // The affine transformation logic for layout is well-implemented and easy
+    // to debug on the Python side (make_zn_layout). Dynamically callback Python
+    // logic via FFI to avoid hardcoding complex AST expression trees in C++.
+    const tvm::runtime::PackedFunc *make_zn_func =
+        tvm::runtime::Registry::Get("tl.ascend.make_zn_layout");
+
+    ICHECK(make_zn_func != nullptr)
+        << "Cannot find global function 'tl.ascend.make_zn_layout'. "
+        << "Please make sure it is registered in Python.";
+
+    tvm::runtime::TVMRetValue ret = (*make_zn_func)(buf);
+    return ret.operator tl::Layout();
   }
 
   PrimExpr VisitExpr_(const VarNode *op) override {

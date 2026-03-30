@@ -2,14 +2,13 @@ import tilelang
 from tilelang import DataType, language as T
 import torch
 
-torch.set_default_device('npu')
+torch.set_default_device("npu")
 torch.manual_seed(0)
 
 tilelang.disable_cache()
 
-pass_configs = {
-    tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True
-}
+pass_configs = {tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True}
+
 
 @tilelang.jit(out_idx=[3], workspace_idx=[4, 5, 6, 7], pass_configs=pass_configs)
 def sparse_attention_fwd(
@@ -23,18 +22,17 @@ def sparse_attention_fwd(
     is_causal=True,
     block_I=64,
 ):
-    assert dim == tilelang.math.next_power_of_2(
-        dim), f"haven't check padding correctness yet, dim={dim}"
-    assert is_causal, 'non-casual is not supported'
-    assert topk % block_I == 0, 'otherwise will load some index=0 thus causing wrong kv to be loaded'
+    assert dim == tilelang.math.next_power_of_2(dim), f"haven't check padding correctness yet, dim={dim}"
+    assert is_causal, "non-casual is not supported"
+    assert topk % block_I == 0, "otherwise will load some index=0 thus causing wrong kv to be loaded"
 
     # NOTE: ascend only support exp interface instead of exp2
-    sm_scale = (1.0 / (dim + tail_dim))**0.5 if sm_scale is None else sm_scale
+    sm_scale = (1.0 / (dim + tail_dim)) ** 0.5 if sm_scale is None else sm_scale
 
     batch = T.symbolic("batch")
     seq_len = T.symbolic("seq_len")
     seq_len_kv = T.symbolic("seq_len_kv")
-    head_kv = heads // kv_group # 64 / 8 = 8
+    head_kv = heads // kv_group  # 64 / 8 = 8
     q_shape = [batch, seq_len, heads, dim + tail_dim]
     kv_shape = [batch, seq_len_kv, kv_group, dim + tail_dim]
     o_shape = [batch, seq_len, heads, dim]
@@ -43,22 +41,22 @@ def sparse_attention_fwd(
     dtype = "float16"
     accum_dtype = "float"
 
-    H = head_kv
+    # H = head_kv
 
     BI = block_I
     NI = tilelang.cdiv(topk, block_I)
     D = dim
-    D_tail = tail_dim
+    # D_tail = tail_dim
 
     if head_kv > 64:
-        assert head_kv % 64 == 0, 'head_kv should be a multiple of 64'
+        assert head_kv % 64 == 0, "head_kv should be a multiple of 64"
         REPLICATE_H = head_kv // 64
     else:
         REPLICATE_H = 1
 
     H_per_block = head_kv if REPLICATE_H == 1 else 64
     v_block = H_per_block // 2
-    ub_len = max(32 // (DataType(accum_dtype).bits // 8), v_block)   # UB need 32B align
+    ub_len = max(32 // (DataType(accum_dtype).bits // 8), v_block)  # UB need 32B align
 
     # block_num = [batch, seq_len, REPLICATE_H, kv_group]
 
@@ -66,26 +64,26 @@ def sparse_attention_fwd(
 
     @T.prim_func
     def main(
-            Q: T.Tensor(q_shape, dtype),  # type: ignore
-            KV: T.Tensor(kv_shape, dtype),  # type: ignore
-            Indices: T.Tensor(indices_shape, indices_dtype),  # type: ignore
-            Output: T.Tensor(o_shape, dtype),  # type: ignore
-            # workspace_1: T.Tensor([*block_num, BI, D], dtype),
-            # workspace_2: T.Tensor([*block_num, H_per_block, BI], accum_dtype),
-            # workspace_3: T.Tensor([*block_num, H_per_block, BI], dtype),
-            # workspace_4: T.Tensor([*block_num, H_per_block, D], accum_dtype),
-            workspace_1: T.Tensor([block_num, BI, D], dtype),
-            workspace_2: T.Tensor([block_num, H_per_block, BI], accum_dtype),
-            workspace_3: T.Tensor([block_num, H_per_block, BI], dtype),
-            workspace_4: T.Tensor([block_num, H_per_block, D], accum_dtype),
+        Q: T.Tensor(q_shape, dtype),  # type: ignore
+        KV: T.Tensor(kv_shape, dtype),  # type: ignore
+        Indices: T.Tensor(indices_shape, indices_dtype),  # type: ignore
+        Output: T.Tensor(o_shape, dtype),  # type: ignore
+        # workspace_1: T.Tensor([*block_num, BI, D], dtype),
+        # workspace_2: T.Tensor([*block_num, H_per_block, BI], accum_dtype),
+        # workspace_3: T.Tensor([*block_num, H_per_block, BI], dtype),
+        # workspace_4: T.Tensor([*block_num, H_per_block, D], accum_dtype),
+        workspace_1: T.Tensor([block_num, BI, D], dtype),
+        workspace_2: T.Tensor([block_num, H_per_block, BI], accum_dtype),
+        workspace_3: T.Tensor([block_num, H_per_block, BI], dtype),
+        workspace_4: T.Tensor([block_num, H_per_block, D], accum_dtype),
     ):
         # with T.Kernel(seq_len * REPLICATE_H * batch * kv_group, is_npu=True) as (cid, vid):
         with T.Kernel(block_num, is_npu=True) as (cid, vid):
-            bx = cid % (seq_len * REPLICATE_H)   # S
+            bx = cid % (seq_len * REPLICATE_H)  # S
             by = cid // (seq_len * REPLICATE_H) % batch  # B
             bz = cid // (seq_len * REPLICATE_H) // batch % kv_group  # H
 
-            q_l1 = T.alloc_L1([H_per_block, D], dtype) # [8, 128]
+            q_l1 = T.alloc_L1([H_per_block, D], dtype)  # [8, 128]
             kv_l1 = T.alloc_L1([BI, D], dtype)
             acc_s_l1 = T.alloc_L1([H_per_block, BI], dtype)
 
@@ -93,7 +91,7 @@ def sparse_attention_fwd(
             acc_o_l0c = T.alloc_L0C([H_per_block, D], accum_dtype)
 
             ## 2. Vector
-            acc_o = T.alloc_ub([v_block, D], accum_dtype) # [4, 128]
+            acc_o = T.alloc_ub([v_block, D], accum_dtype)  # [4, 128]
             sumexp = T.alloc_ub([ub_len], accum_dtype)
             m_i = T.alloc_ub([ub_len], accum_dtype)
             indices_ub_ = T.alloc_ub([BI], indices_dtype)
@@ -137,8 +135,8 @@ def sparse_attention_fwd(
             b_i = by
             g_i = bz
 
-            s_i = (bx // REPLICATE_H)
-            h_i = (bx % REPLICATE_H)
+            s_i = bx // REPLICATE_H
+            h_i = bx % REPLICATE_H
 
             heads_per_group = heads // kv_group
             group_start = g_i * heads_per_group
@@ -161,9 +159,7 @@ def sparse_attention_fwd(
                     T.copy(workspace_1[cid, 0:BI, 0:D], kv_l1)
                     # T.copy(workspace_1[b_i, s_i, h_i, g_i, 0:BI, 0:D], kv_l1)
 
-
                     T.gemm_v0(q_l1, kv_l1, acc_s_l0c, transpose_B=True, init=True)
-
 
                     T.copy(acc_s_l0c, workspace_2[cid, 0:heads_per_group, 0:BI])
                     # T.copy(acc_s_l0c, workspace_2[b_i, s_i, h_i, g_i, 0:heads_per_group, 0:BI])
@@ -172,32 +168,25 @@ def sparse_attention_fwd(
 
                     T.wait_cross_flag(2)
 
-
                     T.copy(workspace_3[cid, 0:H_per_block, 0:BI], acc_s_l1)
-                    #T.copy(workspace_3[b_i, s_i, h_i, g_i, 0:H_per_block, 0:BI], acc_s_l1)
-
+                    # T.copy(workspace_3[b_i, s_i, h_i, g_i, 0:H_per_block, 0:BI], acc_s_l1)
 
                     T.gemm_v0(acc_s_l1, kv_l1, acc_o_l0c, init=True)
 
-
                     T.copy(acc_o_l0c, workspace_4[cid, 0:H_per_block, 0:D])
                     # T.copy(acc_o_l0c, workspace_4[b_i, s_i, h_i, g_i, 0:H_per_block, 0:D])
-
 
                     T.set_cross_flag("FIX", 3)
                     T.wait_cross_flag(4)
                 T.wait_cross_flag(8)
 
             with T.Scope("V"):
-
                 T.tile.fill(acc_o, 0.0)
                 T.tile.fill(sumexp, 0.0)
-                T.tile.fill(m_i, -2.0**30)
-
+                T.tile.fill(m_i, -(2.0**30))
 
                 for i_i in range(NI):
-                    T.copy(Indices[b_i, s_i, g_i, i_i * BI:i_i * BI + BI], indices_ub_)
-
+                    T.copy(Indices[b_i, s_i, g_i, i_i * BI : i_i * BI + BI], indices_ub_)
 
                     for bi_i in range(BI // 2):
                         T.copy(KV[b_i, indices_ub_[bi_i + vid * BI // 2], g_i, :D], kv_ub)
@@ -205,96 +194,67 @@ def sparse_attention_fwd(
                         T.copy(kv_ub, workspace_1[cid, bi_i + vid * BI // 2, :])
                         # T.copy(kv_ub, workspace_1[b_i, s_i, h_i, g_i, bi_i + vid * BI // 2, :])
 
-
                     T.set_cross_flag("MTE3", 0)
 
                     T.tile.fill(acc_s_ub, 0.0)
 
-
                     T.copy(m_i, m_i_prev)
-
 
                     T.wait_cross_flag(1)
                     T.copy(
-                        workspace_2[cid, vid * v_block:vid * v_block + v_block, :],
+                        workspace_2[cid, vid * v_block : vid * v_block + v_block, :],
                         # workspace_2[b_i, s_i, h_i, g_i, vid * v_block:vid * v_block + v_block, :],
-                        acc_s_ub_)
-
+                        acc_s_ub_,
+                    )
 
                     T.tile.add(acc_s_ub, acc_s_ub, acc_s_ub_)
 
-
                     T.tile.mul(acc_s_ub, acc_s_ub, sm_scale)
-
 
                     T.reduce_max(acc_s_ub, m_i, tmp_ub, dim=-1)
 
-
                     T.tile.max(m_i, m_i, m_i_prev)
-
 
                     T.tile.sub(m_i_prev, m_i_prev, m_i)
 
-
                     T.tile.exp(m_i_prev, m_i_prev)
 
-
                     for h_i in range(v_block):
-
                         T.tile.sub(acc_s_ub[h_i, :], acc_s_ub[h_i, :], m_i[h_i])  # -
-
 
                     T.tile.exp(acc_s_ub, acc_s_ub)
 
-
                     T.reduce_sum(acc_s_ub, sumexp_i_ub, tmp_ub, dim=-1)
-
 
                     T.tile.mul(sumexp, sumexp, m_i_prev)  # check
 
-
                     T.tile.add(sumexp, sumexp, sumexp_i_ub)
 
-
                     for h_i in range(v_block):
-
                         T.tile.mul(acc_o[h_i, :], acc_o[h_i, :], m_i_prev[h_i])
-
 
                     T.copy(acc_s_ub, acc_s_half)
 
-
-                    T.copy(
-                        acc_s_half, workspace_3[cid, vid * v_block:vid * v_block + v_block, :])
-                        #acc_s_half, workspace_3[b_i, s_i, h_i, g_i, vid * v_block:vid * v_block + v_block, :])
-
+                    T.copy(acc_s_half, workspace_3[cid, vid * v_block : vid * v_block + v_block, :])
+                    # acc_s_half, workspace_3[b_i, s_i, h_i, g_i, vid * v_block:vid * v_block + v_block, :])
 
                     T.set_cross_flag("MTE3", 2)
 
                     T.wait_cross_flag(3)
 
-
-                    T.copy(
-                        workspace_4[cid, vid * v_block:vid * v_block + v_block, :], acc_o_ub)
-                        #workspace_4[b_i, s_i, h_i, g_i, vid * v_block:vid * v_block + v_block, :], acc_o_ub)
-
+                    T.copy(workspace_4[cid, vid * v_block : vid * v_block + v_block, :], acc_o_ub)
+                    # workspace_4[b_i, s_i, h_i, g_i, vid * v_block:vid * v_block + v_block, :], acc_o_ub)
 
                     T.tile.add(acc_o, acc_o, acc_o_ub)
 
-
                     T.set_cross_flag("V", 4)
 
-
                 for h_i in range(v_block):
-
                     T.tile.div(acc_o[h_i, :], acc_o[h_i, :], sumexp[h_i])
-
 
                 T.copy(acc_o, acc_o_half)
 
-                T.copy(acc_o_half, Output[b_i, s_i, H0 + vid * v_block:H1 + vid * v_block, :])
-
-
+                T.copy(acc_o_half, Output[b_i, s_i, H0 + vid * v_block : H0 + v_block + vid * v_block, :])
 
                 T.set_cross_flag("MTE3", 8)
 
@@ -311,40 +271,34 @@ func = sparse_attention_fwd(
 )
 
 
-def ref_sparse_attention_fwd_interface_gqa(q,
-                                           kv,
-                                           indices,
-                                           q_start_index_s,
-                                           kv_stride=4,
-                                           sm_scale=None,
-                                           is_casual=True):
+def ref_sparse_attention_fwd_interface_gqa(q, kv, indices, q_start_index_s, kv_stride=4, sm_scale=None, is_casual=True):
     q = q.float()
     kv = kv.float()
-    indices = indices.transpose(1, 2)    # [b, g, sq, topk]
+    indices = indices.transpose(1, 2)  # [b, g, sq, topk]
     b, sq, h_q, dim_q = q.shape
     b, sk, h_kv, _ = kv.shape
     if q_start_index_s is None:
         q_start_index_s = sk * kv_stride - sq
 
-    assert kv.shape[-1] == 128, 'dim should be 128 for GQA'
+    assert kv.shape[-1] == 128, "dim should be 128 for GQA"
     dim = 128
     k = kv
     v = kv[..., :dim]
 
     b, _, _, dim_v = v.shape
-    
+
     groups = h_q // h_kv
     g_index = h_kv
     h_index = groups
-    compressed_casual_mask = torch.arange(
-        q_start_index_s, sq + q_start_index_s, dtype=torch.int32).view(-1, 1) >= torch.arange(
-            kv_stride - 1, sk * kv_stride, kv_stride, dtype=torch.int32).view(1, -1)
+    compressed_casual_mask = torch.arange(q_start_index_s, sq + q_start_index_s, dtype=torch.int32).view(-1, 1) >= torch.arange(
+        kv_stride - 1, sk * kv_stride, kv_stride, dtype=torch.int32
+    ).view(1, -1)
 
     # create mask, shape [b, g_index, sq, sk]
     mask = q.new_zeros(b, g_index, sq, sk + 1, dtype=torch.bool).scatter(3, indices.long(), 1)
     mask = mask[..., :-1]
     mask = mask & compressed_casual_mask.view(1, 1, sq, sk)
-    mask[:, :, :kv_stride - 1, 0] = True
+    mask[:, :, : kv_stride - 1, 0] = True
     mask = mask.view(b, g_index, 1, sq, sk)  # broadcast
 
     # [b, sq, g, h_per_group, dim_q]
@@ -385,7 +339,7 @@ for b in range(B):
     for t in range(S):
         for h in range(H_KV):
             i_i = torch.randperm(max(1, ((t + q_start_s_index) // KV_stride)))[:topk]
-            indices[b, t, h, :len(i_i)] = i_i
+            indices[b, t, h, : len(i_i)] = i_i
 
 # output = torch.empty((B, S, H_Q, DIM), dtype=dtype)
 # workspace_1 = torch.zeros((B, S, 1, H_KV, 64, DIM), dtype=dtype)

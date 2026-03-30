@@ -2,7 +2,6 @@ import argparse
 
 import tilelang
 import tilelang.language as T
-from tilelang.intrinsics import make_zn_layout
 import torch
 from tilelang.profiler import do_bench
 
@@ -11,9 +10,6 @@ tilelang.cache.clear_cache()
 
 @tilelang.jit(out_idx=[-1])
 def matmul(M, N, K, block_M, block_N, block_K, K_L1, S1, S2, dtype="float16", accum_dtype="float"):
-    m_num = M // block_M
-    n_num = N // block_N
-
     core_num = 20
 
     @T.macro
@@ -34,18 +30,13 @@ def matmul(M, N, K, block_M, block_N, block_K, K_L1, S1, S2, dtype="float16", ac
 
     @T.prim_func
     def main(
-            A: T.Tensor((M, K), dtype),
-            B: T.Tensor((K, N), dtype),
-            C: T.Tensor((M, N), dtype),
+        A: T.Tensor((M, K), dtype),
+        B: T.Tensor((K, N), dtype),
+        C: T.Tensor((M, N), dtype),
     ):
         with T.Kernel(core_num, is_npu=True) as (cid, _):
             A_L1 = T.alloc_L1((S1, block_M, K_L1), dtype)
             B_L1 = T.alloc_L1((S1, K_L1, block_N), dtype)
-
-            T.annotate_layout({
-                A_L1: make_zn_layout(A_L1),
-                B_L1: make_zn_layout(B_L1),
-            })
 
             A_L0 = T.alloc_L0A((S2, block_M, block_K), dtype)
             B_L0 = T.alloc_L0B((S2, block_K, block_N), dtype)
@@ -54,9 +45,7 @@ def matmul(M, N, K, block_M, block_N, block_K, K_L1, S1, S2, dtype="float16", ac
             with T.Scope("C"):
                 init_flag()
 
-                for bx, by in T.Persistent([T.ceildiv(M, block_M), T.ceildiv(N, block_N)],
-                    core_num, cid):
-
+                for bx, by in T.Persistent([T.ceildiv(M, block_M), T.ceildiv(N, block_N)], core_num, cid):
                     loop_k = T.ceildiv(K, K_L1)
 
                     T.wait_flag("mte1", "mte2", 0)
@@ -83,7 +72,6 @@ def matmul(M, N, K, block_M, block_N, block_K, K_L1, S1, S2, dtype="float16", ac
                                 T.set_flag("mte1", "mte2", k % S1)
                             T.set_flag("mte1", "m", kk % S2)
                             T.wait_flag("mte1", "m", kk % S2)
-
 
                             T.mma(A_L0[kk % S2, :, :], B_L0[kk % S2, :, :], C_L0, init=T.And(k == 0, kk == 0))
 

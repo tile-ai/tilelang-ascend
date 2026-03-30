@@ -19,6 +19,10 @@
 #include "../op/builtin.h"
 #include "./common/collector.h"
 
+#include <algorithm>
+#include <deque>
+#include <map>
+
 namespace tvm {
 namespace tl {
 
@@ -41,14 +45,18 @@ struct CrossCoreSyncPoint {
   int order;        // execute order
   int sync_flag_id; // cross core sync flag id
   bool is_write;    // whether write to workspace or not
-  const std::string workspace_name;
-  const std::string pipe; // MTE2, MTE3 or FIX
+  std::string workspace_name;
+  std::string pipe; // MTE2, MTE3 or FIX
   const EvaluateNode *node;
   std::optional<const ForNode *> target_for_node = std::nullopt;
   // the ForNode to which the sync stmt will be attached. If not specified, will
   // be attached to the EvaluateNode.
-  const std::vector<const ForNode *> parent_for_nodes;
+  std::vector<const ForNode *> parent_for_nodes;
   // the ForNode list (from outer to inner) before reaching the EvaluateNode
+
+  // Cross interval support
+  int cross_interval = 1;
+  const ForNode *stage_loop = nullptr;
 
   std::string ToString() const {
     std::ostringstream oss;
@@ -66,6 +74,7 @@ struct CrossCoreSyncPoint {
       oss << ", target_for_node=None";
     }
     oss << ", parent_for_nodes.size()=" << parent_for_nodes.size();
+    oss << ", cross_interval=" << cross_interval;
     oss << ")";
     return oss.str();
   }
@@ -96,27 +105,49 @@ public:
         std::string pipe = cfg_info->second;
 
         if (auto workspace_name_opt = FetchWorkspaceName(call_node)) {
-          sync_points_.push_back(CrossCoreSyncPoint{
-              is_aiv_ ? 1 : 0,
-              order_,
-              sync_flag_id_++,
-              is_write,
-              workspace_name_opt.value(),
-              pipe,
-              op,
-              std::nullopt, // no target_for_node by default. Will be updated
-                            // later
-              current_loops_,
-          });
+          CrossCoreSyncPoint sp;
+          sp.scope = is_aiv_ ? 1 : 0;
+          sp.order = order_;
+          sp.sync_flag_id = sync_flag_id_++;
+          sp.is_write = is_write;
+          sp.workspace_name = workspace_name_opt.value();
+          sp.pipe = pipe;
+          sp.node = op;
+          sp.target_for_node = std::nullopt;
+          sp.parent_for_nodes = current_loops_;
+          sp.cross_interval = GetCrossInterval();
+          sp.stage_loop = current_stage_loop_;
+          sync_points_.push_back(sp);
         }
       }
     }
   }
 
   void VisitStmt_(const ForNode *op) override {
+    bool is_stage_loop = op->annotations.Get("stage_loop").defined();
+
+    if (is_stage_loop) {
+      current_stage_loop_ = op;
+    }
+
     current_loops_.push_back(op);
     StmtVisitor::VisitStmt_(op);
     current_loops_.pop_back();
+
+    if (is_stage_loop) {
+      current_stage_loop_ = nullptr;
+    }
+  }
+
+  int GetCrossInterval() const {
+    if (current_stage_loop_) {
+      auto interval_anno =
+          current_stage_loop_->annotations.Get("tl_cross_interval");
+      if (interval_anno.defined()) {
+        return interval_anno.as<IntImmNode>()->value;
+      }
+    }
+    return 1;
   }
 
 private:
@@ -125,6 +156,7 @@ private:
   int order_{0};
   int sync_flag_id_{0};
   std::vector<const ForNode *> current_loops_;
+  const ForNode *current_stage_loop_ = nullptr;
 
   /**
    * The configuration info table
@@ -223,12 +255,61 @@ private:
 
   /**
    * SetFlag After Write, WaitFlag Before Read.
+   * Note: Only sync_stmt is conditional, op_stmt (data copy) always executes.
    */
   Stmt AttachSyncStmt(const CrossCoreSyncPoint &sp, const Stmt &op_stmt) {
+    Stmt sync_stmt;
     if (sp.is_write) {
-      return SeqStmt({op_stmt, GenAutoCrossCoreSetFlagStmt(sp)});
+      sync_stmt = GenAutoCrossCoreSetFlagStmt(sp);
     } else {
-      return SeqStmt({GenAutoCrossCoreWaitFlagStmt(sp), op_stmt});
+      sync_stmt = GenAutoCrossCoreWaitFlagStmt(sp);
+    }
+
+    if (sp.cross_interval > 1 && sp.stage_loop != nullptr) {
+      PrimExpr condition = GenSyncCondition(sp);
+      // op_stmt always executes, sync_stmt is conditional
+      if (sp.is_write) {
+        // writer: op_stmt first, then conditional sync
+        return SeqStmt(
+            {op_stmt, IfThenElse(condition, sync_stmt, Evaluate(0))});
+      } else {
+        // reader: conditional sync first, then op_stmt
+        return SeqStmt(
+            {IfThenElse(condition, sync_stmt, Evaluate(0)), op_stmt});
+      }
+    }
+
+    if (sp.is_write) {
+      return SeqStmt({op_stmt, sync_stmt});
+    } else {
+      return SeqStmt({sync_stmt, op_stmt});
+    }
+  }
+
+  /**
+   * Generate sync condition based on cross_interval.
+   * Writer (set): (stage_var % cross_interval == cross_interval - 1) ||
+   * is_last_iteration Reader (wait): stage_var % cross_interval == 0
+   */
+  PrimExpr GenSyncCondition(const CrossCoreSyncPoint &sp) {
+    const ForNode *stage_loop = sp.stage_loop;
+    if (stage_loop == nullptr) {
+      return make_const(DataType::Bool(), true);
+    }
+    PrimExpr stage_var = stage_loop->loop_var;
+    PrimExpr stage_extent = stage_loop->extent;
+    int cross_interval = sp.cross_interval;
+    auto int32 = DataType::Int(32);
+
+    if (sp.is_write) {
+      PrimExpr mod_cond = EQ(Mod(stage_var, make_const(int32, cross_interval)),
+                             make_const(int32, cross_interval - 1));
+      PrimExpr last_iter_cond =
+          EQ(stage_var, Sub(stage_extent, make_const(int32, 1)));
+      return tir::Or(mod_cond, last_iter_cond);
+    } else {
+      return EQ(Mod(stage_var, make_const(int32, cross_interval)),
+                make_const(int32, 0));
     }
   }
 
@@ -271,31 +352,51 @@ public:
     cube_collector(cube_code);
     vec_collector(vec_code);
 
-    // Check sync points consistency
-    if (cube_sync_points.size() != vec_sync_points.size()) {
-      LOG(FATAL) << "Mismatch in sync points between cube and vec: "
-                 << "cube has " << cube_sync_points.size() << ", "
-                 << "vec has " << vec_sync_points.size();
+    // Map to group sync points by workspace_name
+    std::map<std::string, std::vector<CrossCoreSyncPoint *>> cube_ws_map;
+    std::map<std::string, std::vector<CrossCoreSyncPoint *>> vec_ws_map;
+
+    for (auto &sp : cube_sync_points) {
+      cube_ws_map[sp.workspace_name].push_back(&sp);
+    }
+    for (auto &sp : vec_sync_points) {
+      vec_ws_map[sp.workspace_name].push_back(&sp);
     }
 
-    for (size_t i = 0; i < cube_sync_points.size(); ++i) {
-      const auto &cube_sp = cube_sync_points[i];
-      const auto &vec_sp = vec_sync_points[i];
-      if (cube_sp.is_write == vec_sp.is_write) {
-        LOG(FATAL) << "Inconsistent read/write operations at sync point " << i
-                   << ": "
-                   << "cube is_write=" << cube_sp.is_write << ", "
-                   << "vec is_write=" << vec_sp.is_write;
+    int global_sync_flag_id = 0;
+
+    for (auto &[ws, cube_sps] : cube_ws_map) {
+      auto &vec_sps = vec_ws_map[ws];
+
+      // Check sync points consistency per workspace
+      if (cube_sps.size() != vec_sps.size()) {
+        LOG(FATAL) << "Mismatch in sync points between cube and vec for "
+                      "workspace "
+                   << ws << ": "
+                   << "cube has " << cube_sps.size() << ", "
+                   << "vec has " << vec_sps.size();
       }
-      if (cube_sp.workspace_name != vec_sp.workspace_name) {
-        LOG(FATAL) << "Inconsistent workspace names at sync point " << i << ": "
-                   << "cube workspace=" << cube_sp.workspace_name << ", "
-                   << "vec workspace=" << vec_sp.workspace_name;
+
+      for (size_t i = 0; i < cube_sps.size(); ++i) {
+        auto *cube_sp = cube_sps[i];
+        auto *vec_sp = vec_sps[i];
+
+        if (cube_sp->is_write == vec_sp->is_write) {
+          LOG(FATAL) << "Inconsistent read/write operations for workspace "
+                     << ws << " at sync point " << i
+                     << ": cube is_write=" << cube_sp->is_write << ", "
+                     << "vec is_write=" << vec_sp->is_write;
+        }
+
+        // Assign a common sync_flag_id for matched pair
+        cube_sp->sync_flag_id = global_sync_flag_id;
+        vec_sp->sync_flag_id = global_sync_flag_id;
+        global_sync_flag_id++;
+
+        // find target_for_node using iterative depth search
+        FindTargetLoopDepth(*cube_sp, *vec_sp);
       }
     }
-
-    // find CrossCoreSyncPoint.target_for_node at here
-    PairSyncPoints(cube_sync_points, vec_sync_points);
 
     // Insert sync statements
     CrossCoreSyncInserter cube_sync_inserter(cube_sync_points);
@@ -306,24 +407,59 @@ public:
   }
 
 private:
+  // return loop iter times as const int64_t* or nullptr
+  static const int64_t *IterTimesAsConst(const ForNode *for_node) {
+    return as_const_int(for_node->extent);
+  }
+
   static int64_t GetLoopIterTimes(const ForNode *for_node) {
-    const int64_t *extent_ptr = as_const_int(for_node->extent);
+    const int64_t *extent_ptr = IterTimesAsConst(for_node);
     ICHECK(extent_ptr) << "AutoInsertCrossCoreSync::GetLoopIterTimes only "
                           "works with constant loop sizes, but got "
                        << for_node->extent;
     return *extent_ptr;
   }
 
-  static void PairSyncPoints(std::vector<CrossCoreSyncPoint> &cube_sync_points,
-                             std::vector<CrossCoreSyncPoint> &vec_sync_points) {
-    for (auto &cube_sp : cube_sync_points) {
-      for (auto &vec_sp : vec_sync_points) {
-        if (cube_sp.sync_flag_id != vec_sp.sync_flag_id) {
-          continue;
-        }
-        FindTargetLoopDepth(cube_sp, vec_sp);
+  // get loop iter times but skip loop whose id in skip_loop_ids
+  static int64_t GetLoopIterTimesWithSkip(
+      const ForNode *for_node,
+      const std::unordered_set<std::string> &skip_loop_ids) {
+    if (skip_loop_ids.find(for_node->loop_var->name_hint) !=
+        skip_loop_ids.end()) {
+      return 1; // skip this loop by treating it as 1 iter
+    }
+    return GetLoopIterTimes(for_node);
+  }
+
+  // check if same depth & same name in both parent_for_nodes
+  static bool
+  IsSharedLoop(int loop_index,
+               const std::vector<const ForNode *> &cube_parent_for_nodes,
+               const std::vector<const ForNode *> &vec_parent_for_nodes) {
+    if (loop_index >= cube_parent_for_nodes.size() ||
+        loop_index >= vec_parent_for_nodes.size()) {
+      return false;
+    }
+    return cube_parent_for_nodes[loop_index]->loop_var->name_hint ==
+           vec_parent_for_nodes[loop_index]->loop_var->name_hint;
+  }
+
+  // collect ids of shared loops with non-constant iter times
+  static std::unordered_set<std::string> CollectNonConstSharedLoopIds(
+      const std::vector<const ForNode *> &cube_parent_for_nodes,
+      const std::vector<const ForNode *> &vec_parent_for_nodes) {
+    std::unordered_set<std::string> non_const_shared_loop_ids;
+    int min_size =
+        std::min(cube_parent_for_nodes.size(), vec_parent_for_nodes.size());
+    for (int i = 0; i < min_size; ++i) {
+      const auto *cube_loop = cube_parent_for_nodes[i];
+      // is non-const loop and is shared by cube and vec
+      if (IterTimesAsConst(cube_loop) == nullptr &&
+          IsSharedLoop(i, cube_parent_for_nodes, vec_parent_for_nodes)) {
+        non_const_shared_loop_ids.insert(cube_loop->loop_var->name_hint);
       }
     }
+    return non_const_shared_loop_ids;
   }
 
   // find target ForNodes to attach sync stmts
@@ -331,6 +467,24 @@ private:
                                   CrossCoreSyncPoint &vec_sp) {
     if (cube_sp.parent_for_nodes.empty() && vec_sp.parent_for_nodes.empty()) {
       return; // sync point pairs aren't in any loop
+    }
+
+    auto skip_loop_ids = CollectNonConstSharedLoopIds(cube_sp.parent_for_nodes,
+                                                      vec_sp.parent_for_nodes);
+
+    if (!skip_loop_ids.empty()) {
+      // log skip_loop_ids
+      std::string loop_ids;
+      for (const auto &_id : skip_loop_ids) {
+        if (!loop_ids.empty())
+          loop_ids += ", ";
+        loop_ids += _id;
+      }
+      DLOG(DEBUG)
+          << "Found " << skip_loop_ids.size()
+          << " shared loop(s) with non-constant iter times: [" << loop_ids
+          << "]. These loop(s) won't be counted for total loop times of \""
+          << cube_sp.workspace_name << "\"'s sync points.\n";
     }
 
     // total loop times of sync points
@@ -353,40 +507,41 @@ private:
       while (
           cube_loop_idx < cube_sp.parent_for_nodes.size() &&
           (cube_loop_times <= vec_loop_times ||
-           GetLoopIterTimes(cube_sp.parent_for_nodes.at(cube_loop_idx)) == 1)) {
+           GetLoopIterTimesWithSkip(cube_sp.parent_for_nodes.at(cube_loop_idx),
+                                    skip_loop_ids) == 1)) {
         if (cube_loop_times == vec_loop_times) {
           cube_max_pair_depth = cube_loop_idx;
           vec_max_pair_depth = vec_loop_idx;
           last_pair_loop_times = cube_loop_times;
         }
 
-        cube_loop_times *=
-            GetLoopIterTimes(cube_sp.parent_for_nodes.at(cube_loop_idx));
+        const ForNode *cube_loop = cube_sp.parent_for_nodes.at(cube_loop_idx);
+        cube_loop_times *= GetLoopIterTimesWithSkip(cube_loop, skip_loop_ids);
         cube_loop_idx++;
       }
 
       if (cube_loop_times < vec_loop_times) {
         LOG(WARNING) << "Cube loop times (= " << cube_loop_times
                      << " ) is not enough to catch up vec loop times (= "
-                     << vec_loop_times << " )" << std::endl
-                     << "Cube Sync Point:" << std::endl
-                     << cube_sp.ToString() << std::endl
-                     << "Vec Sync Point:" << std::endl
-                     << vec_sp.ToString() << std::endl;
+                     << vec_loop_times << " )\n"
+                     << "Cube Sync Point:\n"
+                     << cube_sp.ToString() << "\n"
+                     << "Vec Sync Point:\n"
+                     << vec_sp.ToString() << "\n";
       }
 
-      while (
-          vec_loop_idx < vec_sp.parent_for_nodes.size() &&
-          (vec_loop_times <= cube_loop_times ||
-           GetLoopIterTimes(vec_sp.parent_for_nodes.at(vec_loop_idx)) == 1)) {
+      while (vec_loop_idx < vec_sp.parent_for_nodes.size() &&
+             (vec_loop_times <= cube_loop_times ||
+              GetLoopIterTimesWithSkip(vec_sp.parent_for_nodes.at(vec_loop_idx),
+                                       skip_loop_ids) == 1)) {
         if (cube_loop_times == vec_loop_times) {
           cube_max_pair_depth = cube_loop_idx;
           vec_max_pair_depth = vec_loop_idx;
           last_pair_loop_times = cube_loop_times;
         }
 
-        vec_loop_times *=
-            GetLoopIterTimes(vec_sp.parent_for_nodes.at(vec_loop_idx));
+        const ForNode *vec_loop = vec_sp.parent_for_nodes.at(vec_loop_idx);
+        vec_loop_times *= GetLoopIterTimesWithSkip(vec_loop, skip_loop_ids);
         vec_loop_idx++;
 
         if (vec_loop_times == last_pair_loop_times) {
@@ -399,11 +554,11 @@ private:
       if (vec_loop_times < cube_loop_times) {
         LOG(WARNING) << "Vec loop times (= " << vec_loop_times
                      << " ) is not enough to catch up cube loop times (= "
-                     << cube_loop_times << " )" << std::endl
-                     << "Vec Sync Point:" << std::endl
-                     << vec_sp.ToString() << std::endl
-                     << "Cube Sync Point:" << std::endl
-                     << cube_sp.ToString() << std::endl;
+                     << cube_loop_times << " )\n"
+                     << "Vec Sync Point:\n"
+                     << vec_sp.ToString() << "\n"
+                     << "Cube Sync Point:\n"
+                     << cube_sp.ToString() << "\n";
       }
     }
 

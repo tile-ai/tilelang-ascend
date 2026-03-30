@@ -1,6 +1,7 @@
+from __future__ import annotations
 import tilelang.language as T
 from tvm.tir import PrimExpr, Buffer, BufferRegion, Var
-from typing import List, Union, Literal
+from typing import Union, Literal  # noqa: F401, UP035
 from tvm import tir
 
 
@@ -27,7 +28,7 @@ def _dtype(buf):
     return type_map[buf.dtype]
 
 
-def _legalize_arguments(arg: Union[Buffer, Var]):
+def _legalize_arguments(arg: Buffer | Var):
     """Convert let-bound variables to their corresponding buffers.
 
     Args:
@@ -41,7 +42,7 @@ def _legalize_arguments(arg: Union[Buffer, Var]):
     return arg
 
 
-def _retrieve_shape(object: Union[Buffer, BufferRegion]) -> List[int]:
+def _retrieve_shape(object: Buffer | BufferRegion) -> list[int]:
     """
     Retrieves the shape of a Buffer or a BufferRegion.
 
@@ -67,14 +68,10 @@ def _retrieve_shape(object: Union[Buffer, BufferRegion]) -> List[int]:
             shape.append(r.extent)
         return shape
     else:
-        raise ValueError(
-            f"Unsupported argument type: {type(object)} for buffer {object}"
-        )
+        raise ValueError(f"Unsupported argument type: {type(object)} for buffer {object}")
 
 
-def _retrieve_ptr(
-    object: Union[Buffer, BufferRegion], access_type: str = "r"
-) -> PrimExpr:
+def _retrieve_ptr(object: Buffer | BufferRegion, access_type: str = "r") -> PrimExpr:
     """
     Retrieves the access pointer (handle) for a Buffer or BufferRegion.
 
@@ -111,12 +108,10 @@ def _retrieve_ptr(
             offset += indices[i] * strides[i]
         return buffer.access_ptr(access_mask=access_type, offset=offset)
     else:
-        raise ValueError(
-            f"Unsupported argument type: {type(object)} for buffer {object}"
-        )
+        raise ValueError(f"Unsupported argument type: {type(object)} for buffer {object}")
 
 
-def set_cross_flag(pipe: str, flag: int, mode: int=2):
+def set_cross_flag(pipe: str, flag: int, mode: int = 2):
     """
     Sets a cross-core synchronization flag.
 
@@ -135,9 +130,7 @@ def set_cross_flag(pipe: str, flag: int, mode: int=2):
     Returns:
         tvm.tir.Call: A TIR intrinsic call node.
     """
-    return tir.call_intrin(
-        "handle", tir.op.Op.get("tl.ascend_set_cross_flag"), pipe.upper(), flag, mode
-    )
+    return tir.call_intrin("handle", tir.op.Op.get("tl.ascend_set_cross_flag"), pipe.upper(), flag, mode)
 
 
 def wait_cross_flag(flag: int, pipe: _pipe | Literal[""] = ""):
@@ -175,9 +168,7 @@ def set_flag(src: _pipe, dst: _pipe, eventId: int):
     Returns:
         tvm.tir.Call: A TIR intrinsic call node.
     """
-    return tir.call_intrin(
-        "handle", tir.op.Op.get("tl.ascend_set_flag"), src.upper(), dst.upper(), eventId
-    )
+    return tir.call_intrin("handle", tir.op.Op.get("tl.ascend_set_flag"), src.upper(), dst.upper(), eventId)
 
 
 def wait_flag(src: _pipe, dst: _pipe, eventId: int):
@@ -230,9 +221,7 @@ def pipe_barrier(pipe: _pipe):
     Returns:
         tvm.tir.Call: A TIR intrinsic call node.
     """
-    return tir.call_intrin(
-        "handle", tir.op.Op.get("tl.ascend_pipe_barrier"), pipe.upper()
-    )
+    return tir.call_intrin("handle", tir.op.Op.get("tl.ascend_pipe_barrier"), pipe.upper())
 
 
 def sync_all():
@@ -270,7 +259,7 @@ def shmem_put_nbi(dst: Buffer, src: Buffer, nelems: PrimExpr, newPe: PrimExpr):
         src.access_ptr("r"),
         nelems,
         newPe,
-    )                                                  
+    )
 
 
 def shmem_ub_put_nbi(ub: Buffer, dst: Buffer, nelems: PrimExpr, newPe: PrimExpr, strelem: PrimExpr = 0):
@@ -296,7 +285,7 @@ def shmem_ub_put_nbi(ub: Buffer, dst: Buffer, nelems: PrimExpr, newPe: PrimExpr,
         nelems,
         newPe,
         strelem,
-    )                                  
+    )
 
 
 def shmem_get_nbi(dst: Buffer, src: Buffer, nelems: PrimExpr, newPe: PrimExpr):
@@ -321,7 +310,7 @@ def shmem_get_nbi(dst: Buffer, src: Buffer, nelems: PrimExpr, newPe: PrimExpr):
         src.access_ptr("r"),
         nelems,
         newPe,
-    )                         
+    )
 
 
 def shmem_ub_get_nbi(dst: Buffer, src: Buffer, nelems: PrimExpr, newPe: PrimExpr):
@@ -346,7 +335,7 @@ def shmem_ub_get_nbi(dst: Buffer, src: Buffer, nelems: PrimExpr, newPe: PrimExpr
         src.access_ptr("r"),
         nelems,
         newPe,
-    )                             
+    )
 
 
 def gemm_v0(A, B, C, transpose_A=False, transpose_B=False, init=False):
@@ -379,9 +368,14 @@ def gemm_v0(A, B, C, transpose_A=False, transpose_B=False, init=False):
     B_shape = _retrieve_shape(B)
     C_shape = _retrieve_shape(C)
 
-    assert len(C_shape) == 2, "current only support C as a 2D tensor"
+    assert len(C_shape) >= 2, "current only support C as a 2D or higher-order tensor"
     assert len(A_shape) >= 2, "current only support A as a 2D or higher-order tensor"
     assert len(B_shape) >= 2, "current only support B as a 2D or higher-order tensor"
+    if len(C_shape) > 2:
+        for i in range(len(C_shape) - 2):
+            assert C_shape[i] == 1, (
+                "current only support C as a 2D or higher-order tensor with the last two dimensions being the matrix dimensions"
+            )
     if len(A_shape) > 2:
         for i in range(len(A_shape) - 2):
             assert A_shape[i] == 1, (
@@ -393,7 +387,7 @@ def gemm_v0(A, B, C, transpose_A=False, transpose_B=False, init=False):
                 "current only support B as a 2D or higher-order tensor with the last two dimensions being the matrix dimensions"
             )
 
-    M, N = C_shape
+    M, N = C_shape[-2], C_shape[-1]
     K = A_shape[-2] if transpose_A else A_shape[-1]
     K_B = B_shape[-1] if transpose_B else B_shape[-2]
     assert K == K_B, f"T.gemm K shape check failed: K_A = {K}, K_B = {K_B}"
@@ -407,76 +401,6 @@ def gemm_v0(A, B, C, transpose_A=False, transpose_B=False, init=False):
         "handle",
         tir.op.Op.get("tl.ascend_gemm_v0"),
         f"gemm_v0<{_dtype(A)}, {_dtype(C)}, {M}, {N}, {K}, {str(transpose_A).lower()}, {str(transpose_B).lower()}>",
-        Aptr,
-        Bptr,
-        Cptr,
-        init,
-    )
-
-
-def gemm_v1(A, B, C, transpose_A=False, transpose_B=False, init=False):
-    """
-    Performs a tiling-aware GEMM operation suitable for hierarchical memory management.
-
-    Unlike `gemm_v0` which passes standard M/N/K dimensions, this version extracts L1 and
-    computation block sizes directly from the input buffer shapes.
-
-    Args:
-        A (Union[Buffer, BufferRegion]): The input matrix A. Its shape is used to derive
-            L1_BLOCK dimensions.
-        B (Union[Buffer, BufferRegion]): The input matrix B. Its shape helps derive tiling
-            dimensions.
-        C (Union[Buffer, BufferRegion]): The output matrix C. Its shape determines the
-            computation block sizes (BLOCK_M, BLOCK_N).
-        transpose_A (bool, optional): Whether to transpose matrix A. Defaults to False.
-        transpose_B (bool, optional): Whether to transpose matrix B. Defaults to False.
-        init (bool, optional): Whether to initialize the accumulator C. Defaults to False.
-
-    Returns:
-        tvm.tir.Call: A TIR intrinsic call to `tl.ascend_gemm_v1` with detailed tiling parameters.
-    """
-    A = _legalize_arguments(A)
-    B = _legalize_arguments(B)
-    C = _legalize_arguments(C)
-
-    A_shape = _retrieve_shape(A)
-    B_shape = _retrieve_shape(B)
-    C_shape = _retrieve_shape(C)
-
-    assert len(C_shape) == 2, "current only support C as a 2D tensor"
-    assert len(A_shape) >= 2, "current only support A as a 2D or higher-order tensor"
-    assert len(B_shape) >= 2, "current only support B as a 2D or higher-order tensor"
-    if len(A_shape) > 2:
-        for i in range(len(A_shape) - 2):
-            assert A_shape[i] == 1, (
-                "current only support A as a 2D or higher-order tensor with the last two dimensions being the matrix dimensions"
-            )
-    if len(B_shape) > 2:
-        for i in range(len(B_shape) - 2):
-            assert B_shape[i] == 1, (
-                "current only support B as a 2D or higher-order tensor with the last two dimensions being the matrix dimensions"
-            )
-
-    BLOCK_M, BLOCK_N = C_shape
-    if not transpose_A:
-        L1_BLOCK_M, L1_BLOCK_K = A_shape
-    else:
-        L1_BLOCK_K, L1_BLOCK_M = A_shape
-    L1_BLOCK_N = A_shape[-2] if transpose_B else B_shape[-2]
-
-    K = A_shape[-2] if transpose_A else A_shape[-1]
-    K_B = B_shape[-1] if transpose_B else B_shape[-2]
-    assert K == K_B, f"T.gemm K shape check failed: K_A = {K}, K_B = {K_B}"
-
-    Aptr = _retrieve_ptr(A, "r")
-    Bptr = _retrieve_ptr(B, "r")
-    Cptr = _retrieve_ptr(C, "rw")
-
-    # assert _dtype(A) == _dtype(B), f"gemm A and B dtype mismatch: {_dtype(A)} vs {_dtype(B)}"
-    return T.call_intrin(
-        "handle",
-        tir.op.Op.get("tl.ascend_gemm_v1"),
-        f"gemm_v1<{_dtype(A)}, {_dtype(C)}, {L1_BLOCK_M}, {L1_BLOCK_N}, {L1_BLOCK_K}, {BLOCK_M}, {BLOCK_N}, {L1_BLOCK_K}, {str(transpose_A).lower()}, {str(transpose_B).lower()}>",
         Aptr,
         Bptr,
         Cptr,
@@ -550,12 +474,12 @@ def dump_tensor(tensor: Buffer, desc: int, dump_size: int, shape_info: tuple = (
         *shape_info,
     )
 
+
 def reinterpretcast(dst: Buffer, src: Buffer, casttype: str):
 
     # return T.call_extern("handle", f"ReinterpretCast", dst.access_ptr("w"), src.access_ptr("r"),
     #                      casttype)
-    return T.call_intrin("handle", tir.op.Op.get("tl.ascend_reinterpretcast"), dst.access_ptr("w"), src.access_ptr("r"),
-                         casttype)
+    return T.call_intrin("handle", tir.op.Op.get("tl.ascend_reinterpretcast"), dst.access_ptr("w"), src.access_ptr("r"), casttype)
 
 
 def set_deq_scale(scale: PrimExpr):
@@ -575,46 +499,48 @@ def set_deq_scale(scale: PrimExpr):
     return T.call_intrin("handle", tir.op.Op.get("tl.ascend_set_deq_scale"), scale)
 
 
-def reduce(buffer: Union[Buffer, BufferRegion], 
-           out: Union[Buffer, BufferRegion], 
-           tmp: Union[Buffer, BufferRegion], 
-           reduce_type: str, 
-           dim: int, 
-           real_shape: list[int] = None):
+def reduce(
+    buffer: Buffer | BufferRegion,
+    out: Buffer | BufferRegion,
+    tmp: Buffer | BufferRegion,
+    reduce_type: str,
+    dim: int,
+    real_shape: list[int] = None,
+):
     """Reduce operation supporting both Buffer and BufferRegion."""
     dtype = _dtype(buffer)
-    
+
     def _handle_buffer_region(br: BufferRegion, mask):
         bf = br.buffer
         indices = [x.min for x in br.region]
         offset = bf.offset_of(indices)[0]
         extent = [x.extent for x in br.region]
         return bf.access_ptr(mask, offset=offset), extent
-    
+
     if isinstance(buffer, BufferRegion):
         buffer_ptr, buffer_extent = _handle_buffer_region(buffer, "r")
     else:
         buffer_ptr = buffer.access_ptr("r")
         buffer_extent = buffer.shape
-        
+
     if isinstance(out, BufferRegion):
         out_ptr, _ = _handle_buffer_region(out, "w")
     else:
         out_ptr = out.access_ptr("w")
-    
+
     if isinstance(tmp, BufferRegion):
         tmp_ptr, _ = _handle_buffer_region(tmp, "r")
     else:
         tmp_ptr = tmp.access_ptr("r")
-    
+
     if len(buffer_extent) == 2:
         M = buffer_extent[0] if real_shape[0] == 0 else real_shape[0]
         N = buffer_extent[1] if real_shape[1] == 0 else real_shape[1]
     elif len(buffer_extent) == 3:
-        M = buffer_extent[1] 
-        N = buffer_extent[2] 
+        M = buffer_extent[1]
+        N = buffer_extent[2]
     shape = f"{M}, {N}"
-    
+
     return T.call_intrin(
         "handle",
         tir.op.Op.get("tl.ascend_reduce"),
@@ -625,7 +551,7 @@ def reduce(buffer: Union[Buffer, BufferRegion],
     )
 
 
-def reduce_max(buffer: Buffer, out: Buffer, tmp: Buffer, dim: int, real_shape: list[int]=[0, 0]):
+def reduce_max(buffer: Buffer, out: Buffer, tmp: Buffer, dim: int, real_shape: list[int] = None):
     """Performs a reduction max operation.
 
     Args:
@@ -634,10 +560,12 @@ def reduce_max(buffer: Buffer, out: Buffer, tmp: Buffer, dim: int, real_shape: l
         tmp: The temporary buffer.
         dim: The dimension to reduce along (-1 for last dim).
     """
+    if real_shape is None:
+        real_shape = [0, 0]
     return reduce(buffer, out, tmp, "reduce_max", dim, real_shape)
 
 
-def reduce_min(buffer: Buffer, out: Buffer, tmp: Buffer, dim: int, real_shape: list[int]=[0, 0]):
+def reduce_min(buffer: Buffer, out: Buffer, tmp: Buffer, dim: int, real_shape: list[int] = None):
     """Performs a reduction min operation.
 
     Args:
@@ -646,10 +574,12 @@ def reduce_min(buffer: Buffer, out: Buffer, tmp: Buffer, dim: int, real_shape: l
         tmp: The temporary buffer.
         dim: The dimension to reduce along (-1 for last dim).
     """
+    if real_shape is None:
+        real_shape = [0, 0]
     return reduce(buffer, out, tmp, "reduce_min", dim, real_shape)
 
 
-def reduce_sum(buffer: Buffer, out: Buffer, tmp: Buffer, dim: int, real_shape: list[int]=[0, 0]):
+def reduce_sum(buffer: Buffer, out: Buffer, tmp: Buffer, dim: int, real_shape: list[int] = None):
     """Performs a reduction sum operation.
 
     Args:
@@ -658,4 +588,6 @@ def reduce_sum(buffer: Buffer, out: Buffer, tmp: Buffer, dim: int, real_shape: l
         tmp: The temporary buffer.
         dim: The dimension to reduce along (-1 for last dim).
     """
+    if real_shape is None:
+        real_shape = [0, 0]
     return reduce(buffer, out, tmp, "reduce_sum", dim, real_shape)

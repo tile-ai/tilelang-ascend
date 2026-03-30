@@ -1,0 +1,41 @@
+{
+  "skill_name": "tilelang-debug-helper",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "I need to debug the sigmoid example in examples/activation/sigmoid.py. Can you add debugging code so I can attach GDB?",
+      "expected_output": "A modified sigmoid.py file with import os, PID printing, and input() for GDB attachment, placed before kernel execution",
+      "files": [],
+      "assertions": [
+        {
+          "name": "has_os_import",
+          "description": "File contains 'import os' statement"
+        },
+        {
+          "name": "has_pid_print",
+          "description": "File contains PID printing code with os.getpid()"
+        },
+        {
+          "name": "has_input_wait",
+          "description": "File contains input() call for waiting"
+        },
+        {
+          "name": "debug_before_execution",
+          "description": "Debug code is placed before kernel execution (before test loop)"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "Help me debug this TileLang operator. I want to use GDB to step through the C++ code. The file is examples/activation/relu.py",
+      "expected_output": "A debug version of relu.py with proper debug code insertion",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "Create a debug version of examples/gemm/matmul_example.py so I can attach a debugger in VSCode",
+      "expected_output": "A new matmul_example_debug.py file with GDB debug code added",
+      "files": []
+    }
+  ]
+}
