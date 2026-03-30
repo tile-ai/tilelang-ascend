@@ -47,6 +47,10 @@ static constexpr const char *kAscendMemoryPlanning =
 
 TVM_REGISTER_PASS_CONFIG_OPTION(kAscendMemoryPlanning, Bool);
 
+static size_t AlignUp(size_t value, size_t alignment) {
+  return ((value + alignment - 1) / alignment) * alignment;
+}
+
 class AscendMemoryPlanning : public arith::IRMutatorWithAnalyzer {
 public:
   static PrimFunc Substitute(PrimFunc f, PassContext ctx) {
@@ -145,6 +149,22 @@ private:
       size_t level{0};
     };
 
+    // Track a buffer touch for NPU shared memory.
+    void TrackBufferTouch(const VarNode *buf) {
+      auto it = alloc_info_.find(buf);
+      if (it != alloc_info_.end() && it->second.alloc) {
+        if (IsNPUSharedMemory(GetRef<Var>(buf))) {
+          scope_.back().touched.push_back(buf);
+
+          if (first_use_.count(buf) == 0) {
+            first_use_[buf] = linear_seq_.size();
+            DLOG(DEBUG) << "First use of buffer " << buf->name_hint
+                        << " at statement index " << linear_seq_.size();
+          }
+        }
+      }
+    }
+
     void VisitStmt_(const AllocateNode *op) final {
       size_t level = scope_.size();
       const VarNode *buf = op->buffer_var.get();
@@ -177,19 +197,7 @@ private:
       scope_.push_back(StmtEntry());
       StmtExprVisitor::VisitStmt_(op);
 
-      const VarNode *buf = op->buffer->data.get();
-      auto it = alloc_info_.find(buf);
-      if (it != alloc_info_.end() && it->second.alloc) {
-        if (IsNPUSharedMemory(GetRef<Var>(buf))) {
-          scope_.back().touched.push_back(buf);
-
-          if (first_use_.count(buf) == 0) {
-            first_use_[buf] = linear_seq_.size();
-            DLOG(DEBUG) << "First use of buffer " << buf->name_hint
-                        << " at statement index " << linear_seq_.size();
-          }
-        }
-      }
+      TrackBufferTouch(op->buffer->data.get());
 
       StmtEntry e = scope_.back();
       scope_.pop_back();
@@ -215,52 +223,16 @@ private:
 
     void VisitExpr_(const BufferLoadNode *op) final {
       StmtExprVisitor::VisitExpr_(op);
-
-      const VarNode *buf = op->buffer->data.get();
-      auto it = alloc_info_.find(buf);
-      if (it != alloc_info_.end() && it->second.alloc) {
-        if (IsNPUSharedMemory(GetRef<Var>(buf))) {
-          scope_.back().touched.push_back(buf);
-
-          if (first_use_.count(buf) == 0) {
-            first_use_[buf] = linear_seq_.size();
-            DLOG(DEBUG) << "First use of buffer " << buf->name_hint
-                        << " at statement index " << linear_seq_.size();
-          }
-        }
-      }
+      TrackBufferTouch(op->buffer->data.get());
     }
 
-    void VisitExpr_(const VarNode *buf) final {
-      auto it = alloc_info_.find(buf);
-      if (it != alloc_info_.end() && it->second.alloc) {
-        if (IsNPUSharedMemory(GetRef<Var>(buf))) {
-          scope_.back().touched.push_back(buf);
-
-          if (first_use_.count(buf) == 0) {
-            first_use_[buf] = linear_seq_.size();
-            DLOG(DEBUG) << "First use of buffer " << buf->name_hint
-                        << " at statement index " << linear_seq_.size();
-          }
-        }
-      }
-    }
+    void VisitExpr_(const VarNode *buf) final { TrackBufferTouch(buf); }
 
     void VisitExpr_(const CallNode *op) final {
       if (op->op.same_as(builtin::tvm_access_ptr())) {
         Var buffer = Downcast<Var>(op->args[1]);
         if (IsNPUSharedMemory(buffer)) {
-          const VarNode *buf = buffer.get();
-          auto it = alloc_info_.find(buf);
-          if (it != alloc_info_.end() && it->second.alloc) {
-            scope_.back().touched.push_back(buf);
-
-            if (first_use_.count(buf) == 0) {
-              first_use_[buf] = linear_seq_.size();
-              DLOG(DEBUG) << "First use of buffer " << buf->name_hint
-                          << " at statement index " << linear_seq_.size();
-            }
-          }
+          TrackBufferTouch(buffer.get());
         }
       }
       StmtExprVisitor::VisitExpr_(op);
@@ -456,6 +428,23 @@ private:
       }
     }
 
+    int64_t FindEventIndex(const VarNode *buffer, bool use_gen) {
+      for (const auto &event_pair : event_map_) {
+        const EventEntry &event = event_pair.second;
+        const auto &vec = use_gen ? event.gen : event.kill;
+        auto it = std::find(vec.begin(), vec.end(), buffer);
+        if (it != vec.end()) {
+          for (size_t i = 0; i < linear_seq_.size(); ++i) {
+            if (linear_seq_[i].stmt == event_pair.first) {
+              return static_cast<int64_t>(i);
+            }
+          }
+          break;
+        }
+      }
+      return -1;
+    }
+
     void PlanMemoryForScope(const std::string &scope,
                             const std::vector<const VarNode *> &buffers) {
       DLOG(DEBUG) << "Planning memory for scope: " << scope;
@@ -463,40 +452,12 @@ private:
       std::vector<LiveInterval> intervals;
       std::unordered_map<const VarNode *, int64_t> pre_alloc_scope_buffer;
       for (const VarNode *buffer : buffers) {
-        int64_t start = -1;
-        int64_t end = -1;
-
         if (pre_alloc_buffer_.count(buffer->name_hint) > 0) {
           pre_alloc_scope_buffer[buffer] = pre_alloc_buffer_[buffer->name_hint];
         };
 
-        for (const auto &event_pair : event_map_) {
-          const EventEntry &event = event_pair.second;
-          auto it = std::find(event.gen.begin(), event.gen.end(), buffer);
-          if (it != event.gen.end()) {
-            for (size_t i = 0; i < linear_seq_.size(); ++i) {
-              if (linear_seq_[i].stmt == event_pair.first) {
-                start = static_cast<int64_t>(i);
-                break;
-              }
-            }
-            break;
-          }
-        }
-
-        for (const auto &event_pair : event_map_) {
-          const EventEntry &event = event_pair.second;
-          auto it = std::find(event.kill.begin(), event.kill.end(), buffer);
-          if (it != event.kill.end()) {
-            for (size_t i = 0; i < linear_seq_.size(); ++i) {
-              if (linear_seq_[i].stmt == event_pair.first) {
-                end = static_cast<int64_t>(i);
-                break;
-              }
-            }
-            break;
-          }
-        }
+        int64_t start = FindEventIndex(buffer, true);
+        int64_t end = FindEventIndex(buffer, false);
 
         if (start != -1 && end != -1) {
           intervals.emplace_back(buffer, start, end, buffer_sizes_[buffer]);
@@ -668,7 +629,7 @@ private:
 
           auto pre_it = pre_alloc_buffer_.find(interval.buffer);
           if (pre_it != pre_alloc_buffer_.end()) { // Pre alloc
-            allocated_offset = alignUp(static_cast<size_t>(pre_it->second), 32);
+            allocated_offset = AlignUp(static_cast<size_t>(pre_it->second), 32);
             size_t allocated_end = allocated_offset + interval.size;
 
             for (const auto &active : active_allocations) {
@@ -693,7 +654,7 @@ private:
             }
 
           } else { // Normal Alloc
-            size_t new_memory_offset = alignUp(next_new_offset_, 32);
+            size_t new_memory_offset = AlignUp(next_new_offset_, 32);
             if (new_memory_offset + interval.size <= memory_limit_ &&
                 !CheckConflict(new_memory_offset, interval)) {
               allocated_offset = new_memory_offset;
@@ -794,7 +755,7 @@ private:
 
         for (const auto &block : free_blocks) {
           if (block.second >= current.size) {
-            size_t aligned_offset = alignUp(block.first, 32);
+            size_t aligned_offset = AlignUp(block.first, 32);
             size_t available_after_align =
                 block.second - (aligned_offset - block.first);
 
@@ -810,7 +771,7 @@ private:
           next_new_offset_ = memory_limit_;
           last_block.second = memory_limit_ - last_block.first;
           if (last_block.second >= current.size) {
-            size_t aligned_offset = alignUp(last_block.first, 32);
+            size_t aligned_offset = AlignUp(last_block.first, 32);
             size_t available_after_align =
                 last_block.second - (aligned_offset - last_block.first);
 
@@ -852,12 +813,7 @@ private:
         }
       }
 
-      static size_t alignUp(size_t value, size_t alignment) {
-        return ((value + alignment - 1) / alignment) * alignment;
-      }
-
       size_t memory_limit_;
-      bool verbose_;
       size_t next_new_offset_;
       const std::unordered_map<const VarNode *, int64_t> &pre_alloc_buffer_;
       std::unordered_map<const VarNode *, const LiveInterval *> buffer_map_;
@@ -874,10 +830,6 @@ private:
       size_t size_bytes =
           size_elements * alloc->dtype.bytes() * alloc->dtype.lanes();
       return AlignUp(size_bytes, 32);
-    }
-
-    static size_t AlignUp(size_t value, size_t alignment) {
-      return ((value + alignment - 1) / alignment) * alignment;
     }
 
     void UpdateStmtAttr(const Object *stmt, size_t level) {
@@ -915,12 +867,7 @@ private:
     std::vector<const VarNode *>
         tmp_buffers; // temp buffer list for memory planning
 
-    std::multimap<uint64_t, StorageEntry *> const_free_map_;
-    std::list<StorageEntry *> sym_free_list_;
-    std::unordered_map<const VarNode *, StorageEntry *> alloc_map_;
-
     size_t scope_level_{0};
-    int max_layer_num_{1};
     bool memory_auto_plan{false};
   };
 };
