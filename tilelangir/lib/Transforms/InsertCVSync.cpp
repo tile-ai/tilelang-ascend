@@ -106,7 +106,7 @@ void mlir::tilelangir::TileLangIRInsertCVSync::runOnOperation() {
   // 先收集所有外层循环，避免在遍历中修改
   SmallVector<scf::ForOp> outerLoops;
   getOperation()->walk([&](scf::ForOp forOp) {
-    if (forOp->getAttr("num_stage"))
+    if (forOp->getAttr("tilelangir.num_stages"))
       outerLoops.push_back(forOp);
   });
 
@@ -273,10 +273,10 @@ void mlir::tilelangir::TileLangIRInsertCVSync::
   OpBuilder builder(forOp->getContext());
   builder.setInsertionPoint(forOp);
 
-  // 获取 num_stage 属性，创建边界常量（放在外层循环的父块中）
-  auto intAttr = forOp->getAttr("num_stage").dyn_cast<IntegerAttr>();
+  // 获取 tilelangir.num_stages 属性，创建边界常量（放在外层循环的父块中）
+  auto intAttr = forOp->getAttr("tilelangir.num_stages").dyn_cast<IntegerAttr>();
   if (!intAttr) {
-    forOp.emitError("Missing num_stage attribute");
+    forOp.emitError("Missing tilelangir.num_stages attribute");
     return;
   }
   Type indexType = intAttr.getType(); // 通常为 i32
