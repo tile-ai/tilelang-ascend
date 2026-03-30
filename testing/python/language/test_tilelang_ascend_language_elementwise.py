@@ -58,8 +58,8 @@ def vec_abs(M, N, block_M, block_N, dtype="float"):
 
     @T.prim_func
     def main(
-        A: T.Tensor((M, N), dtype),
-        B: T.Tensor((M, N), dtype),
+        A: T.Tensor((M, N), dtype), # type: ignore
+        B: T.Tensor((M, N), dtype), # type: ignore
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
@@ -105,9 +105,9 @@ def vec_add_auto_copy(M, N, block_M, block_N, dtype="float"):
 
     @T.prim_func
     def main(
-        A: T.Tensor((M, N), dtype),
-        B: T.Tensor((M, N), dtype),
-        C: T.Tensor((M, N), dtype),
+        A: T.Tensor((M, N), dtype), # type: ignore
+        B: T.Tensor((M, N), dtype), # type: ignore
+        C: T.Tensor((M, N), dtype), # type: ignore
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
@@ -175,9 +175,9 @@ def vec_add_developer(M, N, block_M, block_N, dtype="float"):
 
     @T.prim_func
     def main(
-        A: T.Tensor((M, N), dtype),
-        B: T.Tensor((M, N), dtype),
-        C: T.Tensor((M, N), dtype),
+        A: T.Tensor((M, N), dtype), # type: ignore
+        B: T.Tensor((M, N), dtype), # type: ignore
+        C: T.Tensor((M, N), dtype), # type: ignore
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
@@ -236,8 +236,8 @@ def adds(M, N, block_M, block_N, scalar, dtype="float"):
 
     @T.prim_func
     def main(
-        A: T.Tensor((M, N), dtype),
-        B: T.Tensor((M, N), dtype),
+        A: T.Tensor((M, N), dtype), # type: ignore
+        B: T.Tensor((M, N), dtype), # type: ignore
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, _):
             bx = cid // n_num
@@ -292,9 +292,9 @@ def bitwise_and(M, N, block_M, block_N, dtype="int16"):
 
     @T.prim_func
     def main(
-        A: T.Tensor((M, N), dtype),
-        B: T.Tensor((M, N), dtype),
-        C: T.Tensor((M, N), dtype),
+        A: T.Tensor((M, N), dtype), # type: ignore
+        B: T.Tensor((M, N), dtype), # type: ignore
+        C: T.Tensor((M, N), dtype), # type: ignore
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
@@ -342,8 +342,8 @@ def axpy(M, N, block_M, block_N, dtype="float"):
 
     @T.prim_func
     def main(
-        A: T.Tensor((M, N), dtype),
-        B: T.Tensor((M, N), dtype),
+        A: T.Tensor((M, N), dtype), # type: ignore
+        B: T.Tensor((M, N), dtype), # type: ignore
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
@@ -392,8 +392,8 @@ def axpy_slice(M, N, block_M, block_N, dtype="float"):
 
     @T.prim_func
     def main(
-        A: T.Tensor((M, N), dtype),
-        B: T.Tensor((M, N), dtype),
+        A: T.Tensor((M, N), dtype), # type: ignore
+        B: T.Tensor((M, N), dtype), # type: ignore
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
@@ -440,10 +440,10 @@ def bilinear_interpolation(mask, h_repeat, repeat_mode, dst_blk_stride, v_r_offs
 
     @T.prim_func
     def main(
-        src0: T.Tensor((src0.shape[0], src0.shape[1]), "float16"),
-        src0_offset: T.Tensor((src0offset.shape[0], src0offset.shape[1]), "uint32"),
-        src1: T.Tensor((src1.shape[0], src1.shape[1]), "float16"),
-        dst: T.Tensor((src0.shape[0], src0.shape[1] // 2), "float16"),
+        src0: T.Tensor((src0.shape[0], src0.shape[1]), "float16"), # type: ignore
+        src0_offset: T.Tensor((src0offset.shape[0], src0offset.shape[1]), "uint32"), # type: ignore
+        src1: T.Tensor((src1.shape[0], src1.shape[1]), "float16"), # type: ignore
+        dst: T.Tensor((src0.shape[0], src0.shape[1] // 2), "float16"), # type: ignore
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             src0_ub = T.alloc_ub((src0.shape[0] // VEC_NUM, src0.shape[1]), "float16")
@@ -557,8 +557,8 @@ def bitwise_lshift(M, N, block_M, block_N, scalarvalue, dtype="int32"):
 
     @T.prim_func
     def main(
-        A: T.Tensor((M, N), dtype),
-        B: T.Tensor((M, N), dtype),
+        A: T.Tensor((M, N), dtype), # type: ignore
+        B: T.Tensor((M, N), dtype), # type: ignore
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
@@ -616,8 +616,8 @@ def bitwise_lshift_slice(M, N, block_M, block_N, scalarvalue, dtype="int32"):
 
     @T.prim_func
     def main(
-            A: T.Tensor((M, N), dtype),
-            B: T.Tensor((M, N), dtype),
+            A: T.Tensor((M, N), dtype), # type: ignore
+            B: T.Tensor((M, N), dtype), # type: ignore
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
@@ -676,8 +676,8 @@ def bitwise_not(M, N, block_M, block_N, dtype="int16"):
 
     @T.prim_func
     def main(
-        A: T.Tensor((M, N), dtype),
-        B: T.Tensor((M, N), dtype),
+        A: T.Tensor((M, N), dtype), # type: ignore
+        B: T.Tensor((M, N), dtype), # type: ignore
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
@@ -730,8 +730,8 @@ def bitwise_rshift(M, N, block_M, block_N, scalarvalue, dtype="int32"):
 
     @T.prim_func
     def main(
-        A: T.Tensor((M, N), dtype),
-        B: T.Tensor((M, N), dtype),
+        A: T.Tensor((M, N), dtype), # type: ignore
+        B: T.Tensor((M, N), dtype), # type: ignore
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
@@ -794,8 +794,8 @@ def bitwise_rshift_slice(M, N, block_M, block_N, scalarvalue, dtype="int32"):
 
     @T.prim_func
     def main(
-            A: T.Tensor((M, N), dtype),
-            B: T.Tensor((M, N), dtype),
+            A: T.Tensor((M, N), dtype), # type: ignore
+            B: T.Tensor((M, N), dtype), # type: ignore
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
@@ -858,9 +858,9 @@ def bitwise_xor(M, N, block_M, block_N, dtype="int16"):
 
     @T.prim_func
     def main(
-        A: T.Tensor((M, N), dtype),
-        B: T.Tensor((M, N), dtype),
-        C: T.Tensor((M, N), dtype),
+        A: T.Tensor((M, N), dtype), # type: ignore
+        B: T.Tensor((M, N), dtype), # type: ignore
+        C: T.Tensor((M, N), dtype), # type: ignore
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
@@ -917,9 +917,9 @@ def bitwise_xor_slice(M, N, block_M, block_N, dtype="int16"):
 
     @T.prim_func
     def main(
-            A: T.Tensor((M, N), dtype),
-            B: T.Tensor((M, N), dtype),
-            C: T.Tensor((M, N), dtype),
+            A: T.Tensor((M, N), dtype), # type: ignore
+            B: T.Tensor((M, N), dtype), # type: ignore
+            C: T.Tensor((M, N), dtype), # type: ignore
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
@@ -976,8 +976,8 @@ def block_reduce_max(M, N, block_M, block_N, repeat, mask, dstRepStride, srcBlkS
 
     @T.prim_func
     def main(
-        A: T.Tensor((M, N), dtype),
-        B: T.Tensor((M, N // dataBlockNum), dtype),
+        A: T.Tensor((M, N), dtype), # type: ignore
+        B: T.Tensor((M, N // dataBlockNum), dtype), # type: ignore
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
@@ -1043,8 +1043,8 @@ def block_reduce_min(M, N, block_M, block_N, repeat, mask, dstRepStride, srcBlkS
 
     @T.prim_func
     def main(
-        A: T.Tensor((M, N), dtype),
-        B: T.Tensor((M, N // dataBlockNum), dtype),
+        A: T.Tensor((M, N), dtype), # type: ignore
+        B: T.Tensor((M, N // dataBlockNum), dtype), # type: ignore
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
@@ -1112,8 +1112,8 @@ def block_reduce_sum(M, N, block_M, block_N, repeat, mask, dstRepStride, srcBlkS
 
     @T.prim_func
     def main(
-        A: T.Tensor((M, N), dtype),
-        B: T.Tensor((M, N // dataBlockNum), dtype),
+        A: T.Tensor((M, N), dtype), # type: ignore
+        B: T.Tensor((M, N // dataBlockNum), dtype), # type: ignore
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
@@ -1181,8 +1181,8 @@ def cast(M, N, block_M, block_N, mode, count):
 
     @T.prim_func
     def main(
-        A: T.Tensor((M, N), "float"),
-        B: T.Tensor((M, N), "float"),
+        A: T.Tensor((M, N), "float"), # type: ignore
+        B: T.Tensor((M, N), "float"), # type: ignore
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
@@ -1231,8 +1231,8 @@ def cast_slice(M, N, block_M, block_N, mode, count):
 
     @T.prim_func
     def main(
-            A: T.Tensor((M, N), "float"),
-            B: T.Tensor((M, N), "float"),
+            A: T.Tensor((M, N), "float"), # type: ignore
+            B: T.Tensor((M, N), "float"), # type: ignore
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
@@ -1280,8 +1280,8 @@ def cast_scale(M, N, block_M, block_N, mode, count, scale):
 
     @T.prim_func
     def main(
-        A: T.Tensor((M, N), "int32"),
-        B: T.Tensor((M, N), "float16"),
+        A: T.Tensor((M, N), "int32"), # type: ignore
+        B: T.Tensor((M, N), "float16"), # type: ignore
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
@@ -1334,8 +1334,8 @@ def clamp(M, N, block_M, block_N, max_val, min_val, dtype="float16"):
 
     @T.prim_func
     def main(
-        input: T.Tensor((M, N), dtype),
-        output: T.Tensor((M, N), dtype),
+        input: T.Tensor((M, N), dtype), # type: ignore
+        output: T.Tensor((M, N), dtype), # type: ignore
     ):
         with T.Kernel(num_blocks, is_npu=True) as (cid, vid):
             bx = cid // n_num
@@ -1389,8 +1389,8 @@ def clamp_slice(M, N, block_M, block_N, max_val, min_val, dtype="float16"):
 
     @T.prim_func
     def main(
-            input: T.Tensor((M, N), dtype),
-            output: T.Tensor((M, N), dtype),
+            input: T.Tensor((M, N), dtype), # type: ignore
+            output: T.Tensor((M, N), dtype), # type: ignore
     ):
         with T.Kernel(num_blocks, is_npu=True) as (cid, vid):
             bx = cid // n_num
@@ -1443,9 +1443,9 @@ def compare(M, N, block_M, block_N, mode, dtype="float", out_dtype="uint8"):
 
     @T.prim_func
     def main(
-        A: T.Tensor((M, N), dtype),
-        B: T.Tensor((M, N), dtype),
-        C: T.Tensor((M, N // 8), out_dtype),
+        A: T.Tensor((M, N), dtype), # type: ignore
+        B: T.Tensor((M, N), dtype), # type: ignore
+        C: T.Tensor((M, N // 8), out_dtype), # type: ignore
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
@@ -1558,9 +1558,9 @@ def compare_slice(M, N, block_M, block_N, mode, dtype="float", out_dtype="uint8"
 
     @T.prim_func
     def main(
-            A: T.Tensor((M, N), dtype),
-            B: T.Tensor((M, N), dtype),
-            C: T.Tensor((M, N // 8), out_dtype),
+            A: T.Tensor((M, N), dtype), # type: ignore
+            B: T.Tensor((M, N), dtype), # type: ignore
+            C: T.Tensor((M, N // 8), out_dtype), # type: ignore
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
@@ -1615,7 +1615,7 @@ def compare_scalar(M, N, block_M, block_N, mode, b_scalar, dtype="float", out_dt
     VEC_NUM = 2
 
     @T.prim_func
-    def main(A: T.Tensor((M, N), dtype), C: T.Tensor((M, N // 8), out_dtype)):
+    def main(A: T.Tensor((M, N), dtype), C: T.Tensor((M, N // 8), out_dtype)): # type: ignore
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
             by = cid % n_num
@@ -1709,8 +1709,8 @@ def compare_scalar_slice(M, N, block_M, block_N, mode, b_scalar, dtype="float", 
 
     @T.prim_func
     def main(
-            A: T.Tensor((M, N), dtype),
-            C: T.Tensor((M, N // 8), out_dtype)
+            A: T.Tensor((M, N), dtype), # type: ignore
+            C: T.Tensor((M, N // 8), out_dtype) # type: ignore
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
@@ -1768,8 +1768,8 @@ def cos(M, N, block_M, block_N, dtype="float"):
 
     @T.prim_func
     def main(
-        A: T.Tensor([M, N], dtype),
-        B: T.Tensor([M, N], dtype),
+        A: T.Tensor([M, N], dtype), # type: ignore
+        B: T.Tensor([M, N], dtype), # type: ignore
     ):
         T.func_attr({"enable_auto_sync": True})
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
@@ -1817,8 +1817,8 @@ def cos_slice(M, N, block_M, block_N, dtype="float"):
 
     @T.prim_func
     def main(
-            A: T.Tensor([M, N], dtype),
-            B: T.Tensor([M, N], dtype),
+            A: T.Tensor([M, N], dtype), # type: ignore
+            B: T.Tensor([M, N], dtype), # type: ignore
     ):
         T.func_attr({"enable_auto_sync": True})
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
@@ -1865,7 +1865,7 @@ def createvecindex(M, N, block_M, block_N, firstValue, dtype="int32"):
 
     @T.prim_func
     def main(
-        C: T.Tensor((M, N), dtype),
+        C: T.Tensor((M, N), dtype), # type: ignore
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
@@ -1940,9 +1940,9 @@ def vec_div(M, N, block_M, block_N, dtype="float"):
 
     @T.prim_func
     def main(
-        A: T.Tensor((M, N), dtype),
-        B: T.Tensor((M, N), dtype),
-        C: T.Tensor((M, N), dtype),
+        A: T.Tensor((M, N), dtype), # type: ignore
+        B: T.Tensor((M, N), dtype), # type: ignore
+        C: T.Tensor((M, N), dtype), # type: ignore
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
@@ -1995,8 +1995,8 @@ def exp(M, N, block_M, block_N, dtype="float"):
 
     @T.prim_func
     def main(
-        A: T.Tensor((M, N), dtype),
-        B: T.Tensor((M, N), dtype),
+        A: T.Tensor((M, N), dtype), # type: ignore
+        B: T.Tensor((M, N), dtype), # type: ignore
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
@@ -2042,7 +2042,7 @@ def fill(M, N, block_M, block_N, dtype="float"):
     n_num = N // block_N
 
     @T.prim_func
-    def main(A: T.Tensor((M, N), dtype)):
+    def main(A: T.Tensor((M, N), dtype)): # type: ignore
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, _):
             bx = cid // n_num
             by = cid % n_num
@@ -2083,9 +2083,9 @@ def gather(M, N, block_M, block_N, dtype="int32"):
 
     @T.prim_func
     def main(
-        A: T.Tensor((M, N), dtype),
-        B: T.Tensor((M, N), "uint32"),
-        C: T.Tensor((M, N), dtype),
+        A: T.Tensor((M, N), dtype), # type: ignore
+        B: T.Tensor((M, N), "uint32"), # type: ignore
+        C: T.Tensor((M, N), dtype), # type: ignore
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
@@ -2175,7 +2175,7 @@ def test_gather(dtype, target, shape):
     block_N = N
     run_test_gather(M, N, block_M, block_N, dtype, target)
 
-def gather(M, N, block_M, block_N, dtype="int32"):
+def gather(M, N, block_M, block_N, dtype="int32"):  # noqa: F811
     m_num = M // block_M
     n_num = N // block_N
 
@@ -2183,9 +2183,9 @@ def gather(M, N, block_M, block_N, dtype="int32"):
 
     @T.prim_func
     def main(
-            A: T.Tensor((M, N), dtype),
-            B: T.Tensor((M, N), "uint32"),
-            C: T.Tensor((M, N), dtype),
+            A: T.Tensor((M, N), dtype), # type: ignore
+            B: T.Tensor((M, N), "uint32"), # type: ignore
+            C: T.Tensor((M, N), dtype), # type: ignore
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
@@ -2212,9 +2212,9 @@ def gather_slice(M, N, block_M, block_N, dtype="int32"):
 
     @T.prim_func
     def main(
-            A: T.Tensor((M, N), dtype),
-            B: T.Tensor((M, N), "uint32"),
-            C: T.Tensor((M, N), dtype),
+            A: T.Tensor((M, N), dtype), # type: ignore
+            B: T.Tensor((M, N), "uint32"), # type: ignore
+            C: T.Tensor((M, N), dtype), # type: ignore
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
@@ -2299,9 +2299,9 @@ def gatherb(M, N, block_M, block_N, b_len, repeat_time, dtype="uint16"):
 
     @T.prim_func
     def main(
-        A: T.Tensor((M, N), dtype),
-        B: T.Tensor((M, b_len), "uint32"),
-        C: T.Tensor((M, N), dtype),
+        A: T.Tensor((M, N), dtype), # type: ignore
+        B: T.Tensor((M, b_len), "uint32"), # type: ignore
+        C: T.Tensor((M, N), dtype), # type: ignore
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
@@ -2386,8 +2386,8 @@ def leaky_relu(M, N, block_M, block_N, dtype="float"):
 
     @T.prim_func
     def main(
-        A: T.Tensor((M, N), dtype),
-        B: T.Tensor((M, N), dtype),
+        A: T.Tensor((M, N), dtype), # type: ignore
+        B: T.Tensor((M, N), dtype), # type: ignore
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
@@ -2438,8 +2438,8 @@ def leaky_relu_slice(M, N, block_M, block_N, dtype="float"):
 
     @T.prim_func
     def main(
-            A: T.Tensor((M, N), dtype),
-            B: T.Tensor((M, N), dtype),
+            A: T.Tensor((M, N), dtype), # type: ignore
+            B: T.Tensor((M, N), dtype), # type: ignore
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
@@ -2491,8 +2491,8 @@ def ln(M, N, block_M, block_N, dtype="float"):
 
     @T.prim_func
     def main(
-        A: T.Tensor((M, N), dtype),
-        B: T.Tensor((M, N), dtype),
+        A: T.Tensor((M, N), dtype), # type: ignore
+        B: T.Tensor((M, N), dtype), # type: ignore
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
@@ -2543,8 +2543,8 @@ def gathermask_fixed_mode(M, N, block_M, block_N, dtype="int32"):
 
     @T.prim_func
     def main(
-        A: T.Tensor((M, N), dtype),
-        B: T.Tensor((M, N), dtype),
+        A: T.Tensor((M, N), dtype), # type: ignore
+        B: T.Tensor((M, N), dtype), # type: ignore
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
@@ -2611,9 +2611,9 @@ def gathermask_custom_mode(M, N, block_M, block_N, dtype="int32"):
 
     @T.prim_func
     def main(
-        A: T.Tensor((M, N), dtype),
-        idx: T.Tensor((1, 8), "uint32"),
-        B: T.Tensor((M, 8), dtype),
+        A: T.Tensor((M, N), dtype), # type: ignore
+        idx: T.Tensor((1, 8), "uint32"), # type: ignore
+        B: T.Tensor((M, 8), dtype), # type: ignore
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
@@ -2665,9 +2665,9 @@ def vec_max(M, N, block_M, block_N, dtype="float"):
 
     @T.prim_func
     def main(
-        A: T.Tensor((M, N), dtype),
-        B: T.Tensor((M, N), dtype),
-        C: T.Tensor((M, N), dtype),
+        A: T.Tensor((M, N), dtype), # type: ignore
+        B: T.Tensor((M, N), dtype), # type: ignore
+        C: T.Tensor((M, N), dtype), # type: ignore
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
@@ -2729,8 +2729,8 @@ def vec_maxs(M, N, block_M, block_N, scalar, dtype="float"):
 
     @T.prim_func
     def main(
-        A: T.Tensor((M, N), dtype),
-        B: T.Tensor((M, N), dtype),
+        A: T.Tensor((M, N), dtype), # type: ignore
+        B: T.Tensor((M, N), dtype), # type: ignore
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, _):
             bx = cid // n_num
@@ -2790,9 +2790,9 @@ def vec_min(M, N, block_M, block_N, dtype="float"):
 
     @T.prim_func
     def main(
-        A: T.Tensor((M, N), dtype),
-        B: T.Tensor((M, N), dtype),
-        C: T.Tensor((M, N), dtype),
+        A: T.Tensor((M, N), dtype), # type: ignore
+        B: T.Tensor((M, N), dtype), # type: ignore
+        C: T.Tensor((M, N), dtype), # type: ignore
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
@@ -2854,8 +2854,8 @@ def vec_mins(M, N, block_M, block_N, scalar, dtype="float"):
 
     @T.prim_func
     def main(
-        A: T.Tensor((M, N), dtype),
-        B: T.Tensor((M, N), dtype),
+        A: T.Tensor((M, N), dtype), # type: ignore
+        B: T.Tensor((M, N), dtype), # type: ignore
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, _):
             bx = cid // n_num
@@ -2915,9 +2915,9 @@ def vec_mul(M, N, block_M, block_N, dtype="float"):
 
     @T.prim_func
     def main(
-        A: T.Tensor((M, N), dtype),
-        B: T.Tensor((M, N), dtype),
-        C: T.Tensor((M, N), dtype),
+        A: T.Tensor((M, N), dtype), # type: ignore
+        B: T.Tensor((M, N), dtype), # type: ignore
+        C: T.Tensor((M, N), dtype), # type: ignore
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
@@ -2979,8 +2979,8 @@ def vec_muls(M, N, block_M, block_N, scalar, dtype="float"):
 
     @T.prim_func
     def main(
-        A: T.Tensor((M, N), dtype),
-        B: T.Tensor((M, N), dtype),
+        A: T.Tensor((M, N), dtype), # type: ignore
+        B: T.Tensor((M, N), dtype), # type: ignore
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, _):
             bx = cid // n_num
@@ -3038,9 +3038,9 @@ def bitwise_or(M, N, block_M, block_N, dtype="int16"):
 
     @T.prim_func
     def main(
-        A: T.Tensor((M, N), dtype),
-        B: T.Tensor((M, N), dtype),
-        C: T.Tensor((M, N), dtype),
+        A: T.Tensor((M, N), dtype), # type: ignore
+        B: T.Tensor((M, N), dtype), # type: ignore
+        C: T.Tensor((M, N), dtype), # type: ignore
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
@@ -3095,9 +3095,9 @@ def vec_pow(M, N, block_M, block_N, dtype="float"):
 
     @T.prim_func
     def main(
-        A: T.Tensor((M, N), dtype),
-        B: T.Tensor((M, N), dtype),
-        C: T.Tensor((M, N), dtype),
+        A: T.Tensor((M, N), dtype), # type: ignore
+        B: T.Tensor((M, N), dtype), # type: ignore
+        C: T.Tensor((M, N), dtype), # type: ignore
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
@@ -3162,9 +3162,9 @@ def vec_pow_slice(M, N, block_M, block_N, dtype="float"):
 
     @T.prim_func
     def main(
-            A: T.Tensor((M, N), dtype),
-            B: T.Tensor((M, N), dtype),
-            C: T.Tensor((M, N), dtype),
+            A: T.Tensor((M, N), dtype), # type: ignore
+            B: T.Tensor((M, N), dtype), # type: ignore
+            C: T.Tensor((M, N), dtype), # type: ignore
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
@@ -3227,8 +3227,8 @@ def reciprocal(M, N, block_M, block_N, dtype="float"):
 
     @T.prim_func
     def main(
-        A: T.Tensor((M, N), dtype),
-        B: T.Tensor((M, N), dtype),
+        A: T.Tensor((M, N), dtype), # type: ignore
+        B: T.Tensor((M, N), dtype), # type: ignore
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
@@ -3277,8 +3277,8 @@ def relu(M, N, block_M, block_N, dtype="float"):
 
     @T.prim_func
     def main(
-        A: T.Tensor((M, N), dtype),
-        B: T.Tensor((M, N), dtype),
+        A: T.Tensor((M, N), dtype), # type: ignore
+        B: T.Tensor((M, N), dtype), # type: ignore
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
@@ -3338,8 +3338,8 @@ def rsqrt(M, N, block_M, block_N, dtype="float"):
 
     @T.prim_func
     def main(
-        A: T.Tensor((M, N), dtype),
-        B: T.Tensor((M, N), dtype),
+        A: T.Tensor((M, N), dtype), # type: ignore
+        B: T.Tensor((M, N), dtype), # type: ignore
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
@@ -3388,10 +3388,10 @@ def vec_select(M, N, block_M, block_N, mode, dtype="float"):
 
     @T.prim_func
     def main(
-        A: T.Tensor((M, N), dtype),
-        B: T.Tensor((M, N), dtype),
-        MASK: T.Tensor((M, N // 8), "uint8"),
-        C: T.Tensor((M, N), dtype),
+        A: T.Tensor((M, N), dtype), # type: ignore
+        B: T.Tensor((M, N), dtype), # type: ignore
+        MASK: T.Tensor((M, N // 8), "uint8"), # type: ignore
+        C: T.Tensor((M, N), dtype), # type: ignore
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
@@ -3484,9 +3484,9 @@ def vec_select_scalar(M, N, block_M, block_N, mode, b_scalar, dtype="float"):
 
     @T.prim_func
     def main(
-        A: T.Tensor((M, N), dtype),
-        MASK: T.Tensor((M, N // 8), "uint8"),
-        C: T.Tensor((M, N), dtype),
+        A: T.Tensor((M, N), dtype), # type: ignore
+        MASK: T.Tensor((M, N // 8), "uint8"), # type: ignore
+        C: T.Tensor((M, N), dtype), # type: ignore
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
@@ -3577,8 +3577,8 @@ def sin(M, N, block_M, block_N, dtype="float"):
 
     @T.prim_func
     def main(
-        A: T.Tensor([M, N], dtype),
-        B: T.Tensor([M, N], dtype),
+        A: T.Tensor([M, N], dtype), # type: ignore
+        B: T.Tensor([M, N], dtype), # type: ignore
     ):
         T.func_attr({"enable_auto_sync": True})
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
@@ -3625,8 +3625,8 @@ def sin_slice(M, N, block_M, block_N, dtype="float"):
 
     @T.prim_func
     def main(
-            A: T.Tensor([M, N], dtype),
-            B: T.Tensor([M, N], dtype),
+            A: T.Tensor([M, N], dtype), # type: ignore
+            B: T.Tensor([M, N], dtype), # type: ignore
     ):
         T.func_attr({"enable_auto_sync": True})
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
@@ -3673,9 +3673,9 @@ def sort32(M, N, block_M, block_N, dtype="float"):
 
     @T.prim_func
     def main(
-        A: T.Tensor((M, N), dtype),
-        B: T.Tensor((M, N), "uint32"),
-        C: T.Tensor((M, out_size_multiplier * N), dtype),
+        A: T.Tensor((M, N), dtype), # type: ignore
+        B: T.Tensor((M, N), "uint32"), # type: ignore
+        C: T.Tensor((M, out_size_multiplier * N), dtype), # type: ignore
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
@@ -3771,8 +3771,8 @@ def sqrt(M, N, block_M, block_N, dtype="float"):
 
     @T.prim_func
     def main(
-        A: T.Tensor((M, N), dtype),
-        B: T.Tensor((M, N), dtype),
+        A: T.Tensor((M, N), dtype), # type: ignore
+        B: T.Tensor((M, N), dtype), # type: ignore
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
@@ -3821,9 +3821,9 @@ def vec_sub(M, N, block_M, block_N, dtype="float"):
 
     @T.prim_func
     def main(
-        A: T.Tensor((M, N), dtype),
-        B: T.Tensor((M, N), dtype),
-        C: T.Tensor((M, N), dtype),
+        A: T.Tensor((M, N), dtype), # type: ignore
+        B: T.Tensor((M, N), dtype), # type: ignore
+        C: T.Tensor((M, N), dtype), # type: ignore
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
@@ -3944,8 +3944,8 @@ def test_vec_subs(dtype, target, shape):
 def transpose(M, N, block_M, block_N, dtype="int16"):
     @T.prim_func
     def main(
-        A: T.Tensor((M, N), dtype),
-        B: T.Tensor((M, N), dtype),
+        A: T.Tensor((M, N), dtype), # type: ignore
+        B: T.Tensor((M, N), dtype), # type: ignore
     ):
         with T.Kernel(1, is_npu=True) as (cid, vid):
             a_ub = T.alloc_ub((M, N), dtype)
@@ -4006,8 +4006,8 @@ def wholereducemax(M, N, block_M, block_N, mask, repeatTimes, dstRepStride, srcB
 
     @T.prim_func
     def main(
-        A: T.Tensor((M, N), dtype),
-        B: T.Tensor((M, 2 * N // mask), dtype),
+        A: T.Tensor((M, N), dtype), # type: ignore
+        B: T.Tensor((M, 2 * N // mask), dtype), # type: ignore
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
@@ -4073,8 +4073,8 @@ def wholereducemin(M, N, block_M, block_N, mask, repeatTimes, dstRepStride, srcB
 
     @T.prim_func
     def main(
-        A: T.Tensor((M, N), dtype),
-        B: T.Tensor((M, 2 * N // mask), dtype),
+        A: T.Tensor((M, N), dtype), # type: ignore
+        B: T.Tensor((M, 2 * N // mask), dtype), # type: ignore
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
@@ -4140,8 +4140,8 @@ def wholereducesum(M, N, block_M, block_N, mask, repeatTimes, dstRepStride, srcB
 
     @T.prim_func
     def main(
-        A: T.Tensor((M, N), dtype),
-        B: T.Tensor((M, N // mask), dtype),
+        A: T.Tensor((M, N), dtype), # type: ignore
+        B: T.Tensor((M, N // mask), dtype), # type: ignore
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
@@ -4201,7 +4201,7 @@ def generate_arithmetic_progression(N, block_size, dtype="int32"):
 
     @T.prim_func
     def main(
-        output: T.Tensor((N,), dtype),
+        output: T.Tensor((N,), dtype), # type: ignore
     ):
         with T.Kernel(num_blocks, is_npu=True) as (cid, _):
             start_idx = cid * block_size
@@ -4245,8 +4245,8 @@ def reduce_sum(M, N, block_M, block_N, dim, dtype="float"):
 
     @T.prim_func
     def main(
-        A: T.Tensor((M, N), dtype),
-        B: T.Tensor((M), dtype),
+        A: T.Tensor((M, N), dtype), # type: ignore
+        B: T.Tensor((M), dtype), # type: ignore
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
@@ -4302,8 +4302,8 @@ def reduce_max(M, N, block_M, block_N, dim, dtype="float"):
 
     @T.prim_func
     def main(
-        A: T.Tensor((M, N), dtype),
-        B: T.Tensor((M), dtype),
+        A: T.Tensor((M, N), dtype), # type: ignore
+        B: T.Tensor((M), dtype), # type: ignore
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
@@ -4357,8 +4357,8 @@ def reduce_min(M, N, block_M, block_N, dim, dtype="float"):
 
     @T.prim_func
     def main(
-        A: T.Tensor((M, N), dtype),
-        B: T.Tensor((M), dtype),
+        A: T.Tensor((M, N), dtype), # type: ignore
+        B: T.Tensor((M), dtype), # type: ignore
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num

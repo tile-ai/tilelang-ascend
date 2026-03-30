@@ -803,7 +803,7 @@ def scalar_op(
     )
 
 
-def leaky_relu(dst: Union[Buffer, BufferRegion], src0: Union[Buffer, BufferRegion], scalar_value: PrimExpr):
+def leaky_relu(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, scalar_value: PrimExpr): # type: ignore  # noqa: F821
     """Performs element-wise Leaky ReLU activation.
 
     Formula: dst = src0 if src0 >= 0 else src0 * scalar_value
@@ -816,7 +816,7 @@ def leaky_relu(dst: Union[Buffer, BufferRegion], src0: Union[Buffer, BufferRegio
     return scalar_op(dst, src0, scalar_value, "leaky_relu")
 
 
-def axpy(dst: Union[Buffer, BufferRegion], src0: Union[Buffer, BufferRegion], scalar_value: PrimExpr):
+def axpy(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, scalar_value: PrimExpr):  # noqa: F821
     """Performs element-wise AXPY operation: dst = scalar_value * src0 + dst.
 
     Note: This operation updates the destination buffer in-place by adding
@@ -830,7 +830,7 @@ def axpy(dst: Union[Buffer, BufferRegion], src0: Union[Buffer, BufferRegion], sc
     return scalar_op(dst, src0, scalar_value, "axpy")
 
 
-def bitwise_lshift(dst: Union[Buffer, BufferRegion], src0: Union[Buffer, BufferRegion], scalarValue: PrimExpr):
+def bitwise_lshift(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, scalarValue: PrimExpr):  # noqa: F821
     """Performs element-wise bitwise left shift: dst = src0 << scalarValue.
 
     Args:
@@ -864,7 +864,7 @@ def bitwise_lshift(dst: Union[Buffer, BufferRegion], src0: Union[Buffer, BufferR
     )
 
 
-def bitwise_rshift(dst: Union[Buffer, BufferRegion], src0: Union[Buffer, BufferRegion], scalarValue: PrimExpr):
+def bitwise_rshift(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, scalarValue: PrimExpr):  # noqa: F821
     """Performs element-wise bitwise right shift: dst = src0 >> scalarValue.
 
     Args:
@@ -1062,7 +1062,7 @@ def transpose(dst: Buffer, src: Buffer):
     )
 
 
-def gather(dst: Union[Buffer, BufferRegion], src: Union[Buffer, BufferRegion], src_offset: Union[Buffer, BufferRegion], src_base_addr: PrimExpr):
+def gather(dst: Buffer | BufferRegion, src: Buffer | BufferRegion, src_offset: Buffer | BufferRegion, src_base_addr: PrimExpr):  # noqa: F821
     """Performs a gather operation.
 
     This intrinsic gathers elements from the source buffer based on the provided
@@ -1229,7 +1229,7 @@ def block_reduce_sum(
 
 
 def compare(
-    dst: Union[Buffer, BufferRegion], src0: Union[Buffer, BufferRegion], src1: Union[Buffer, BufferRegion, BufferLoad, PrimExpr], mode: str  # noqa: FA100
+    dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, src1: Buffer | BufferRegion | BufferLoad | PrimExpr, mode: str  # noqa: F821, FA100
 ):
     """Generic dispatch function for element-wise comparison operations.
 
@@ -1315,7 +1315,7 @@ def compare(
         )
 
 
-def cast(dst: Union[Buffer, BufferRegion], src: Union[Buffer, BufferRegion], mode: str, count: PrimExpr):
+def cast(dst: Buffer | BufferRegion, src: Buffer | BufferRegion, mode: str, count: PrimExpr):  # noqa: F821
     """Performs element-wise data type conversion with a specified rounding mode.
 
     Args:
@@ -1364,7 +1364,7 @@ def cast(dst: Union[Buffer, BufferRegion], src: Union[Buffer, BufferRegion], mod
     )
 
 
-def sin(dst: Union[Buffer, BufferRegion], src: Union[Buffer, BufferRegion], tmp: Buffer):
+def sin(dst: Buffer | BufferRegion, src: Buffer | BufferRegion, tmp: Buffer):  # noqa: F821
     """Performs element-wise sine calculation: dst = sin(src).
 
     Args:
@@ -1401,7 +1401,7 @@ def sin(dst: Union[Buffer, BufferRegion], src: Union[Buffer, BufferRegion], tmp:
     )
 
 
-def cos(dst: Union[Buffer, BufferRegion], src: Union[Buffer, BufferRegion], tmp: Buffer):
+def cos(dst: Buffer | BufferRegion, src: Buffer | BufferRegion, tmp: Buffer):  # noqa: F821
     """Performs element-wise cosine calculation: dst = cos(src).
 
     Args:
@@ -1450,7 +1450,7 @@ def cos(dst: Union[Buffer, BufferRegion], src: Union[Buffer, BufferRegion], tmp:
 #
 #     return cast(dst, src, "CAST_ROUND", count)
 #
-def pow(dst: Union[Buffer, BufferRegion], src0: Union[Buffer, BufferRegion], src1: Union[Buffer, BufferRegion], tmp: Buffer):
+def pow(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, src1: Buffer | BufferRegion, tmp: Buffer):  # noqa: F821
     """Performs element-wise power calculation: dst = src0 ^ src1.
 
     Args:
@@ -1487,7 +1487,7 @@ def pow(dst: Union[Buffer, BufferRegion], src0: Union[Buffer, BufferRegion], src
     )
 
 
-def bitwise_xor(dst: Union[Buffer, BufferRegion], src0: Union[Buffer, BufferRegion], src1: Union[Buffer, BufferRegion], tmp: Buffer):
+def bitwise_xor(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, src1: Buffer | BufferRegion, tmp: Buffer):  # noqa: F821
     """Performs element-wise bitwise XOR operation: dst = src0 ^ src1.
 
     Args:
@@ -1524,7 +1524,7 @@ def bitwise_xor(dst: Union[Buffer, BufferRegion], src0: Union[Buffer, BufferRegi
     )
 
 
-def clamp_max(out: Union[Buffer, BufferRegion], buffer: Union[Buffer, BufferRegion], tmp: Buffer, scalar_value: PrimExpr, count: PrimExpr):
+def clamp_max(out: Buffer | BufferRegion, buffer: Buffer | BufferRegion, tmp: Buffer, scalar_value: PrimExpr, count: PrimExpr):  # noqa: F821
     """_summary_
     Clip tensor elements to no more than scalar_value, replace elements larger than scalar_value with scalar_value,
     keep original values for elements less than or equal to scalar_value
@@ -1559,7 +1559,7 @@ def clamp_max(out: Union[Buffer, BufferRegion], buffer: Union[Buffer, BufferRegi
         count,
     )
 
-def clamp_min(out: Union[Buffer, BufferRegion], buffer: Union[Buffer, BufferRegion], tmp: Buffer, scalar_value: PrimExpr, count: PrimExpr):
+def clamp_min(out: Buffer | BufferRegion, buffer: Buffer | BufferRegion, tmp: Buffer, scalar_value: PrimExpr, count: PrimExpr):  # noqa: F821
     """
     Clip tensor elements to no less than v, replace elements smaller than scalar_value with scalar_value,
     keep original values for elements greater than or equal to scalar_value
@@ -1594,7 +1594,7 @@ def clamp_min(out: Union[Buffer, BufferRegion], buffer: Union[Buffer, BufferRegi
         count,
     )
 
-def clamp(out: Union[Buffer, BufferRegion], buffer: Union[Buffer, BufferRegion], tmp: Buffer, min_scalar: PrimExpr, max_scalar: PrimExpr, count: PrimExpr):
+def clamp(out: Buffer | BufferRegion, buffer: Buffer | BufferRegion, tmp: Buffer, min_scalar: PrimExpr, max_scalar: PrimExpr, count: PrimExpr):  # noqa: F821
     """
     Clip tensor elements to [min_scalar, max_scalar] range, replace out-of-bounds values with boundary values
     Args:
@@ -1631,7 +1631,7 @@ def clamp(out: Union[Buffer, BufferRegion], buffer: Union[Buffer, BufferRegion],
     )
 
 
-def round(out: Union[Buffer, BufferRegion], buffer: Union[Buffer, BufferRegion], tmp: Buffer, count: PrimExpr):
+def round(out: Buffer | BufferRegion, buffer: Buffer | BufferRegion, tmp: Buffer, count: PrimExpr):  # noqa: F821
     if isinstance(out, BufferRegion):
         out_ptr, _ = _handle_buffer_region(out, "w")
     else:
@@ -1651,9 +1651,9 @@ def round(out: Union[Buffer, BufferRegion], buffer: Union[Buffer, BufferRegion],
         count
     )
 
-def broadcast(dst: Union[Buffer, BufferRegion],  # noqa: FA100
-              src: Union[Buffer, BufferRegion],  # noqa: FA100
-              tmp: Union[Buffer, BufferRegion]):  # noqa: FA100
+def broadcast(dst: Buffer | BufferRegion,  # noqa: F821, FA100
+              src: Buffer | BufferRegion,  # noqa: F821, FA100
+              tmp: Buffer | BufferRegion):  # noqa: F821, FA100
     """Generates a TIR intrinsic call for the AscendC `Broadcast` operation.
 
     This function performs a broadcast copy from the source buffer (`src`) to the
