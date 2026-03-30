@@ -299,13 +299,54 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
   int dst_ndim = dst->shape.size();
   PrimExpr validRow_src, validCol_src, validRow_dst, validCol_dst;
 
-  if (src_ndim > 2 && config.gm2ub) {
-    validRow_src = compute_valid_extent(src_range[src_ndim - 2]->min,
-                                        src_range[src_ndim - 2]->extent,
-                                        src->shape[src_ndim - 2]);
-    validCol_src = compute_valid_extent(src_range[src_ndim - 1]->min,
-                                        src_range[src_ndim - 1]->extent,
-                                        src->shape[src_ndim - 1]);
+  // Find indices of active dimensions (extent > 2), compatible data dimensions
+  // are discontinuous like this T.copy(Query[cid, m * BLOCK_M: (m + 1) *
+  // BLOCK_M, n2, g * D: (g + 1) * D], Q_L1)
+  auto find_active_dim_indices =
+      [](const Array<PrimExpr> &extents) -> std::vector<int> {
+    std::vector<int> active_indices;
+    for (int i = 0; i < static_cast<int>(extents.size()); ++i) {
+      if (auto *int_imm = extents[i].as<IntImmNode>()) {
+        // The extent of non-1 is valid
+        if (int_imm->value != 1) {
+          active_indices.push_back(i);
+        }
+      } else {
+        // Non-const expression, treat as potentially active
+        active_indices.push_back(i);
+      }
+    }
+    return active_indices;
+  };
+
+  if (src_ndim > 2) {
+    std::vector<int> src_active = find_active_dim_indices(src_extents);
+    if (src_active.size() >= 2) {
+      // if src_active.size > 2, select the last two active dimensions
+      int row_idx = src_active[src_active.size() - 2];
+      int col_idx = src_active.back();
+      validRow_src =
+          compute_valid_extent(src_range[row_idx]->min,
+                               src_range[row_idx]->extent, src->shape[row_idx]);
+      validCol_src =
+          compute_valid_extent(src_range[col_idx]->min,
+                               src_range[col_idx]->extent, src->shape[col_idx]);
+    } else if (src_active.size() == 1) {
+      // if src_active.size = 1, select the last active dimensions
+      int col_idx = src_active[0];
+      validRow_src = Integer(1);
+      validCol_src =
+          compute_valid_extent(src_range[col_idx]->min,
+                               src_range[col_idx]->extent, src->shape[col_idx]);
+    } else {
+      // else use the origin extents last two dimensions
+      validRow_src = compute_valid_extent(src_range[src_ndim - 2]->min,
+                                          src_range[src_ndim - 2]->extent,
+                                          src->shape[src_ndim - 2]);
+      validCol_src = compute_valid_extent(src_range[src_ndim - 1]->min,
+                                          src_range[src_ndim - 1]->extent,
+                                          src->shape[src_ndim - 1]);
+    }
   } else if (src_ndim == 2) {
     validRow_src = compute_valid_extent(src_range[src_ndim - 2]->min,
                                         src_range[src_ndim - 2]->extent,
@@ -322,13 +363,34 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
     validCol_src = 0;
   }
 
-  if (dst_ndim > 2 && config.ub2gm) {
-    validRow_dst = compute_valid_extent(dst_range[dst_ndim - 2]->min,
-                                        dst_range[dst_ndim - 2]->extent,
-                                        dst->shape[dst_ndim - 2]);
-    validCol_dst = compute_valid_extent(dst_range[dst_ndim - 1]->min,
-                                        dst_range[dst_ndim - 1]->extent,
-                                        dst->shape[dst_ndim - 1]);
+  if (dst_ndim > 2) {
+    std::vector<int> dst_active = find_active_dim_indices(dst_extents);
+    if (dst_active.size() >= 2) {
+      // if dst_active.size > 2, select the last two active dimensions
+      int row_idx = dst_active[dst_active.size() - 2];
+      int col_idx = dst_active.back();
+      validRow_dst =
+          compute_valid_extent(dst_range[row_idx]->min,
+                               dst_range[row_idx]->extent, dst->shape[row_idx]);
+      validCol_dst =
+          compute_valid_extent(dst_range[col_idx]->min,
+                               dst_range[col_idx]->extent, dst->shape[col_idx]);
+    } else if (dst_active.size() == 1) {
+      // if dst_active.size = 1, select the last active dimensions
+      int col_idx = dst_active[0];
+      validRow_dst = Integer(1);
+      validCol_dst =
+          compute_valid_extent(dst_range[col_idx]->min,
+                               dst_range[col_idx]->extent, dst->shape[col_idx]);
+    } else {
+      // else use the origin extents last two dimensions
+      validRow_dst = compute_valid_extent(dst_range[dst_ndim - 2]->min,
+                                          dst_range[dst_ndim - 2]->extent,
+                                          dst->shape[dst_ndim - 2]);
+      validCol_dst = compute_valid_extent(dst_range[dst_ndim - 1]->min,
+                                          dst_range[dst_ndim - 1]->extent,
+                                          dst->shape[dst_ndim - 1]);
+    }
   } else if (dst_ndim == 2) {
     validRow_dst = compute_valid_extent(dst_range[dst_ndim - 2]->min,
                                         dst_range[dst_ndim - 2]->extent,
