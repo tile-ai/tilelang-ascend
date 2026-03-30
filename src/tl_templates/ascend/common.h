@@ -343,6 +343,15 @@ CATLASS_DEVICE void cast(LocalTensor<dst> const &ubOut,
 //   AscendC::Duplicate(ubOut, value, Len);
 // }
 
+template <typename T>
+CATLASS_DEVICE void
+reduce_sum_half(LocalTensor<T> const &dstTensor,
+                LocalTensor<T> const &srcTensor, const int32_t mask,
+                const int32_t repeatTime, const int32_t srcRepStride) {
+  AscendC::WholeReduceSum<T>(dstTensor, srcTensor, mask, repeatTime, 1, 8,
+                             srcRepStride);
+}
+
 template <typename T, uint32_t M, uint32_t N, int32_t dim>
 CATLASS_DEVICE void reduce_sum(LocalTensor<T> const &dstTensor,
                                LocalTensor<T> const &srcTensor,

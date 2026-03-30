@@ -1731,26 +1731,33 @@ bool IsComplexExpression(const PrimExpr &expr) {
 
 void CodeGenTileLangAscendPto::BinaryVecOpsCodegen(const CallNode *op,
                                                    const std::string &op_name) {
-  // Collect variable names
   std::vector<std::string> var_names;
-  for (size_t i = 0; i < op->args.size() - 2; i++) {
-    var_names.push_back(PrintBufferOffset(op->args[i].as<CallNode>()));
+  for (int i = 0; i < (int)op->args.size() - 2; i++) {
+    auto var_name = PrintBufferOffset(op->args[i].as<CallNode>());
+    var_names.push_back(var_name);
   }
 
-  // Operation name conversion: TSUBS->TADDS, TDIVS->TMULS
-  bool is_tsubs = (op_name == "TSUBS");
-  bool is_tdivs = (op_name == "TDIVS");
+  DataType dtype0 = GetAccessPtrDtypePto(op->args[0].as<CallNode>());
+  bool is_half = dtype0.is_float16();
+  bool is_subs = (op_name == "TSUBS");
+  bool is_divs = (op_name == "TDIVS");
   std::string operation =
-      (is_tsubs || is_tdivs) ? (is_tsubs ? "TADDS" : "TMULS") : op_name;
-
+      (is_subs || is_divs) ? (is_subs ? "TADDS" : "TMULS") : op_name;
   std::string index = PrintExpr(op->args[op->args.size() - 2]);
+
+  auto apply_scalar_for_half = [&](const std::string &expr) -> std::string {
+    if (is_subs) {
+      return is_half ? "half(-(float)" + expr + ")" : "-" + expr;
+    } else if (is_divs) {
+      return is_half ? "half(1.0f / (float)" + expr + ")" : "1.0f / " + expr;
+    }
+    return expr;
+  };
+
   auto buffer = op->args[2].as<CallNode>();
 
-  // Non-CallNode: use index directly as scalar
   if (!buffer) {
-    std::string scalar = is_tsubs   ? ("-" + index)
-                         : is_tdivs ? ("1.0f / " + index)
-                                    : index;
+    std::string scalar = apply_scalar_for_half(index);
     this->PrintIndent();
     this->stream << operation << "(";
     for (const auto &name : var_names) {
@@ -1760,7 +1767,6 @@ void CodeGenTileLangAscendPto::BinaryVecOpsCodegen(const CallNode *op,
     return;
   }
 
-  // CallNode: get scalar value from buffer
   std::string buf_offset = PrintBufferOffset(buffer);
   std::string scalar_name = GetTempVarName(buf_offset + "_scalar");
 
@@ -1772,17 +1778,8 @@ void CodeGenTileLangAscendPto::BinaryVecOpsCodegen(const CallNode *op,
   this->stream << "auto " << scalar_name << " = " << buf_offset << ".GetValue("
                << index << ");\n";
 
-  // Compute scalar to apply (TSUBS/TDIVS need type conversion)
-  std::string applied_scalar = scalar_name;
-  if (is_tsubs || is_tdivs) {
-    DataType dtype0 = op->args[0].as<CallNode>()->dtype;
-    std::string value = (buffer->dtype != dtype0 && dtype0.is_float16())
-                            ? ("float(" + scalar_name + ")")
-                            : scalar_name;
-    applied_scalar = is_tsubs ? ("-" + value) : ("1.0f / " + value);
-  }
+  std::string applied_scalar = apply_scalar_for_half(scalar_name);
 
-  // Select operation method based on loop_num
   std::string loop_num = getValueOrProcess(for_num_map_, index);
   if (loop_num >= "0" && loop_num <= "9") {
     ShapeInfo src_info = GetSliceInfo(op->args[1].as<CallNode>());
@@ -1796,8 +1793,11 @@ void CodeGenTileLangAscendPto::BinaryVecOpsCodegen(const CallNode *op,
                  << applied_scalar << ");\n";
   } else {
     this->PrintIndent();
-    this->stream << operation << "(" << var_names[0] << ", " << var_names[1]
-                 << ", " << applied_scalar << ");\n";
+    this->stream << operation << "(";
+    for (const auto &name : var_names) {
+      this->stream << name << ", ";
+    }
+    this->stream << applied_scalar << ");\n";
   }
 }
 
