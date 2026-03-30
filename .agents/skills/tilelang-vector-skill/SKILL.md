@@ -53,7 +53,39 @@ VEC_NUM = 2    # 固定为2
 - 单个buffer: `block_M // VEC_NUM * block_N * sizeof(dtype)`
 - 需要验证不会内存溢出
 
-### 4. 编写Kernel结构
+### 4. 动态Shape设置（如需要）
+
+如果算子的某个维度是动态的（如batch、seq_len等），可以使用 `T.symbolic` 定义：
+
+```python
+@tilelang.jit(out_idx=[...], pass_configs=pass_configs)
+def my_dynamic_op(N, block_M, block_N, dtype="float16"):
+    # 在 @T.prim_func 之前定义动态维度
+    M = T.symbolic("M")
+    shape = [M, N]  # 定义shape变量
+    
+    m_num = T.ceildiv(M, block_M)
+    n_num = T.ceildiv(N, block_N)
+    VEC_NUM = 2
+    
+    @T.prim_func
+    def main(
+        A: T.Tensor(shape, dtype),  # 使用shape变量
+        B: T.Tensor(shape, dtype),
+        Out: T.Tensor(shape, dtype),
+    ):
+        with T.Kernel(m_num, is_npu=True) as (cid, vid):
+            # Kernel实现
+
+    return main
+```
+
+**注意**：
+- `M = T.symbolic("M")` 必须放在 `@tilelang.jit` 装饰的函数内部、`@T.prim_func` 之前
+- shape 需要先定义为变量（如 `shape = [M, N]`），然后在 `T.Tensor(shape, dtype)` 中使用
+- 动态维度会从输入tensor的shape自动推断
+
+### 5. 编写Kernel结构
 
 #### 基础模板
 ```python
@@ -86,7 +118,7 @@ with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
     # 处理单个块
 ```
 
-### 5. 内存分配
+### 6. 内存分配
 
 #### UB分配
 ```python
@@ -100,7 +132,7 @@ temp_ub = T.alloc_ub([block_M // VEC_NUM, block_N], dtype)
 tmp_ub = T.alloc_ub([3 * DataType(dtype).bits // 8 * block_M // VEC_NUM * block_N], "uint8")
 ```
 
-### 6. 数据搬运
+### 7. 数据搬运
 
 ```python
 # GM → UB
@@ -110,7 +142,7 @@ T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a_ub)
 T.copy(a_ub, B[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
 ```
 
-### 7. 计算实现
+### 8. 计算实现
 
 #### Elementwise操作
 ```python
@@ -137,7 +169,7 @@ with T.Scope("V"):
     T.reduce_sum(a_ub, sum_ub, tmp_ub, dim=-1)  # 行求和
 ```
 
-### 8. 广播操作
+### 9. 广播操作
 当需要将1D向量广播到2D矩阵时：
 ```python
 max_ub = T.alloc_ub([block_M // VEC_NUM, 1], dtype)     # [M, 1]
@@ -146,7 +178,7 @@ max_2d_ub = T.alloc_ub([block_M // VEC_NUM, block_N], dtype)  # [M, N]
 T.tile.broadcast(max_2d_ub, max_ub, tmp_ub)  # 广播 [M,1] → [M,N]
 ```
 
-### 9. 同步
+### 10. 同步
 在Vector核内，不同操作间需要同步：
 ```python
 T.barrier_all()  # Vector核内同步
