@@ -1,5 +1,5 @@
-#include "catlass/catlass.hpp"
 #include "catlass/arch/arch.hpp"
+#include "catlass/catlass.hpp"
 
 #include "catlass/detail/tag_to_layout.hpp"
 #include "catlass/gemm/block/block_swizzle.hpp"
@@ -453,14 +453,12 @@ gemm_v0(LocalTensor<T1> const &A, LocalTensor<T1> const &B,
 
 // 2-way merge sort
 template <typename T>
-CATLASS_DEVICE void MergeSort(
-    const LocalTensor<T> &dst,
-    const LocalTensor<T> &tmp,
-    const LocalTensor<T> &src0,
-    const LocalTensor<T> &src1,
-    uint32_t blockLen0,
-    uint32_t blockLen1) {
-  // Note: tmp parameter is kept for API consistency with PTO backend but not used in AscendC
+CATLASS_DEVICE void
+MergeSort(const LocalTensor<T> &dst, const LocalTensor<T> &tmp,
+          const LocalTensor<T> &src0, const LocalTensor<T> &src1,
+          uint32_t blockLen0, uint32_t blockLen1) {
+  // Note: tmp parameter is kept for API consistency with PTO backend but not
+  // used in AscendC
 
   AscendC::MrgSort4Info params;
   params.elementLengths[0] = blockLen0;
@@ -469,7 +467,6 @@ CATLASS_DEVICE void MergeSort(
   params.elementLengths[3] = 0;
   params.ifExhaustedSuspension = false;
   params.validBit = 3;
-
 
   AscendC::MrgSortSrcList<T> srcList;
   srcList.src1 = src0;
@@ -483,16 +480,13 @@ CATLASS_DEVICE void MergeSort(
 
 // 3-way merge sort
 template <typename T>
-CATLASS_DEVICE void MergeSort(
-    const LocalTensor<T> &dst,
-    const LocalTensor<T> &tmp,
-    const LocalTensor<T> &src0,
-    const LocalTensor<T> &src1,
-    const LocalTensor<T> &src2,
-    uint32_t blockLen0,
-    uint32_t blockLen1,
-    uint32_t blockLen2) {
-  // Note: tmp parameter is kept for API consistency with PTO backend but not used in AscendC
+CATLASS_DEVICE void
+MergeSort(const LocalTensor<T> &dst, const LocalTensor<T> &tmp,
+          const LocalTensor<T> &src0, const LocalTensor<T> &src1,
+          const LocalTensor<T> &src2, uint32_t blockLen0, uint32_t blockLen1,
+          uint32_t blockLen2) {
+  // Note: tmp parameter is kept for API consistency with PTO backend but not
+  // used in AscendC
 
   AscendC::MrgSort4Info params;
   params.elementLengths[0] = blockLen0;
@@ -501,7 +495,6 @@ CATLASS_DEVICE void MergeSort(
   params.elementLengths[3] = 0;
   params.ifExhaustedSuspension = false;
   params.validBit = 7;
-
 
   AscendC::MrgSortSrcList<T> srcList;
   srcList.src1 = src0;
@@ -515,18 +508,14 @@ CATLASS_DEVICE void MergeSort(
 
 // 4-way merge sort
 template <typename T>
-CATLASS_DEVICE void MergeSort(
-    const LocalTensor<T> &dst,
-    const LocalTensor<T> &tmp,
-    const LocalTensor<T> &src0,
-    const LocalTensor<T> &src1,
-    const LocalTensor<T> &src2,
-    const LocalTensor<T> &src3,
-    uint32_t blockLen0,
-    uint32_t blockLen1,
-    uint32_t blockLen2,
-    uint32_t blockLen3) {
-  // Note: tmp parameter is kept for API consistency with PTO backend but not used in AscendC
+CATLASS_DEVICE void
+MergeSort(const LocalTensor<T> &dst, const LocalTensor<T> &tmp,
+          const LocalTensor<T> &src0, const LocalTensor<T> &src1,
+          const LocalTensor<T> &src2, const LocalTensor<T> &src3,
+          uint32_t blockLen0, uint32_t blockLen1, uint32_t blockLen2,
+          uint32_t blockLen3) {
+  // Note: tmp parameter is kept for API consistency with PTO backend but not
+  // used in AscendC
 
   AscendC::MrgSort4Info params;
   params.elementLengths[0] = blockLen0;
@@ -535,7 +524,6 @@ CATLASS_DEVICE void MergeSort(
   params.elementLengths[3] = blockLen3;
   params.ifExhaustedSuspension = false;
   params.validBit = 15;
-
 
   AscendC::MrgSortSrcList<T> srcList;
   srcList.src1 = src0;

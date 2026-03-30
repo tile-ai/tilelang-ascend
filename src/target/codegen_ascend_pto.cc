@@ -1435,8 +1435,9 @@ void CodeGenTileLangAscendPto::MergeSortCodegen(const CallNode *op,
                                                 const std::string &op_name) {
   // args: [func_name, num_ways, dst, src0, src1, ...]
   // TMRGSORT API: TMRGSORT(dst, executedNumList, tmp, src0, src1, ...)
-  // tmp buffer is passed from caller, executedNumList is managed internally by pto/common.h MergeSort wrapper
-  // args: [func_name, num_ways, dst, tmp, src0, src1, ..., blockLens...]
+  // tmp buffer is passed from caller, executedNumList is managed internally by
+  // pto/common.h MergeSort wrapper args: [func_name, num_ways, dst, tmp, src0,
+  // src1, ..., blockLens...]
   int num_ways = Downcast<IntImm>(op->args[1])->value;
 
   this->PrintIndent();
@@ -1464,10 +1465,9 @@ void CodeGenTileLangAscendPto::MergeSortCodegen(const CallNode *op,
 
   // Generate call: MergeSort<type, SrcCols, DstCols>(dst, tmp, src0, src1, ...)
   // This uses the wrapper in pto/common.h which internally calls TMRGSORT
-  this->stream << kAscendPtoScope << "MergeSort<" << dst_type << ", "
-               << src_col << ", " << dst_col << ">(" << dst_name
-               << ", " << tmp_name;
-  for (const auto& src_name : src_names) {
+  this->stream << kAscendPtoScope << "MergeSort<" << dst_type << ", " << src_col
+               << ", " << dst_col << ">(" << dst_name << ", " << tmp_name;
+  for (const auto &src_name : src_names) {
     this->stream << ", " << src_name;
   }
   this->stream << ");\n";
