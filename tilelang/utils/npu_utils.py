@@ -1,6 +1,7 @@
 # Copyright (c) Tile-AI Corporation.
 # Licensed under the MIT License.
 # Copied from bitblas
+import contextlib
 import functools
 import os
 import shutil
@@ -12,8 +13,6 @@ import subprocess
 import tempfile
 import uuid
 import logging
-import stat
-import errno
 from hashlib import sha256
 from tilelang import env
 
@@ -184,19 +183,16 @@ def _atomic_replace_fallback(src: str, dst: str) -> None:
     # Strategy 3: Final fallback - non-atomic rename
     logging.warning(f"Using non-atomic rename for {dst}")
     if os.path.exists(dst):
-        try:
+        with contextlib.suppress(OSError):
             os.unlink(dst)
-        except OSError:
-            pass
+
     try:
         os.rename(src, dst)
     except OSError:
         # If rename fails too, copy as last resort
         shutil.copy2(src, dst)
-        try:
+        with contextlib.suppress(OSError):
             os.unlink(src)
-        except OSError:
-            pass
 
 
 def safe_copy(src: str, dst: str, tmp_dir: str = None) -> None:
