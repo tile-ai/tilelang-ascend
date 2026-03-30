@@ -174,7 +174,7 @@ def flash_attention_fwd(
                                 T.copy(q_l1, l0a[side, :, :])
 
                             T.wait_flag("MTE2", "MTE1", SIG_K_L1)
-                            T.copy(k_l1, l0b[side, :, :])
+                            T.copy(k_l1, l0b[side, :, :], transpose=True)
                             T.set_flag("MTE1", "MTE2", SIG_K_L1)
                             T.set_flag("MTE1", "M", SIG_L0AB + side)
 
