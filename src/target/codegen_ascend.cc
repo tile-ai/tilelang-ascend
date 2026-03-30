@@ -1574,8 +1574,8 @@ void CodeGenTileLangAscend::SubsOpCodegen(const CallNode *op) {
     this->stream << "AscendC::PipeBarrier<PIPE_ALL>();\n";
     this->PrintIndent();
     if (is_half) {
-      this->stream << "auto " << var_name << "_scalar = half(-(float)" << var_name
-                   << ".GetValue(" << index_expr << "));\n";
+      this->stream << "auto " << var_name << "_scalar = half(-(float)"
+                   << var_name << ".GetValue(" << index_expr << "));\n";
     } else {
       this->stream << "auto " << var_name << "_scalar = -(float)" << var_name
                    << ".GetValue(" << index_expr << ");\n";
@@ -1628,11 +1628,11 @@ void CodeGenTileLangAscend::DivsOpCodegen(const CallNode *op) {
     this->stream << "AscendC::PipeBarrier<PIPE_ALL>();\n";
     this->PrintIndent();
     if (is_half) {
-      this->stream << "auto " << var_name << "_scalar = half(1.0f / (float)" << var_name
-                   << ".GetValue(" << index_expr << "));\n";
+      this->stream << "auto " << var_name << "_scalar = half(1.0f / (float)"
+                   << var_name << ".GetValue(" << index_expr << "));\n";
     } else {
-      this->stream << "auto " << var_name << "_scalar = 1.0f / (float)" << var_name
-                   << ".GetValue(" << index_expr << ");\n";
+      this->stream << "auto " << var_name << "_scalar = 1.0f / (float)"
+                   << var_name << ".GetValue(" << index_expr << ");\n";
     }
     var_names.push_back(var_name + "_scalar");
   } else {
@@ -1812,9 +1812,11 @@ void CodeGenTileLangAscend::ReduceOpCodegen(const CallNode *op) {
       std::string new_op_name = "tl::ascend::reduce_sum_half<" + dtype + ">";
       this->stream << new_op_name << "(";
       this->stream << var_names[0] << ", " << var_names[1];
-      this->stream << ", " << mask << ", " << repeatTime << ", " << srcRepStride << ");\n";
+      this->stream << ", " << mask << ", " << repeatTime << ", " << srcRepStride
+                   << ");\n";
     } else {
-      std::string new_op_name = "tl::ascend::reduce_sum<" + dtype + ", " + m_str + ", " + n_str + ", " + dim_str + ">";
+      std::string new_op_name = "tl::ascend::reduce_sum<" + dtype + ", " +
+                                m_str + ", " + n_str + ", " + dim_str + ">";
       this->stream << new_op_name << "(";
       for (int i = 0; i < var_names.size(); i++) {
         this->stream << var_names[i];

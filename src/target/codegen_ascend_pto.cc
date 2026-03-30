@@ -1730,7 +1730,7 @@ bool IsComplexExpression(const PrimExpr &expr) {
 }
 
 void CodeGenTileLangAscendPto::BinaryVecOpsCodegen(const CallNode *op,
-                                                    const std::string &op_name) {
+                                                   const std::string &op_name) {
   std::vector<std::string> var_names;
   for (int i = 0; i < (int)op->args.size() - 2; i++) {
     auto var_name = PrintBufferOffset(op->args[i].as<CallNode>());
@@ -1741,10 +1741,11 @@ void CodeGenTileLangAscendPto::BinaryVecOpsCodegen(const CallNode *op,
   bool is_half = dtype0.is_float16();
   bool is_subs = (op_name == "TSUBS");
   bool is_divs = (op_name == "TDIVS");
-  std::string operation = (is_subs || is_divs) ? (is_subs ? "TADDS" : "TMULS") : op_name;
+  std::string operation =
+      (is_subs || is_divs) ? (is_subs ? "TADDS" : "TMULS") : op_name;
   std::string index = PrintExpr(op->args[op->args.size() - 2]);
 
-  auto apply_scalar_for_half = [&](const std::string& expr) -> std::string {
+  auto apply_scalar_for_half = [&](const std::string &expr) -> std::string {
     if (is_subs) {
       return is_half ? "half(-(float)" + expr + ")" : "-" + expr;
     } else if (is_divs) {

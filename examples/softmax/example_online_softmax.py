@@ -1,5 +1,5 @@
 import tilelang
-from tilelang import DataType, language as T
+from tilelang import language as T
 import torch
 
 tilelang.cache.clear_cache()
@@ -9,6 +9,7 @@ pass_configs = {
     tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
     tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
 }
+
 
 @tilelang.jit(out_idx=[1], pass_configs=pass_configs)
 def online_softmax(M, N, block_M, block_N, dtype="float"):
@@ -50,34 +51,38 @@ def online_softmax(M, N, block_M, block_N, dtype="float"):
             T.tile.fill(prev_sum, 0.0)
             # First pass: compute max and sum
             for by in T.serial(n_num):
-                T.copy(A[bx * block_M + vid * sub_block_M: bx * block_M + (vid + 1) * sub_block_M,
-                            by * block_N: (by + 1) * block_N], a) # Load input
+                T.copy(
+                    A[bx * block_M + vid * sub_block_M : bx * block_M + (vid + 1) * sub_block_M, by * block_N : (by + 1) * block_N], a
+                )  # Load input
                 T.reduce_max(a, tile_max, tmp, dim=-1)  # Compute tile max
-                T.tile.max(tile_max, prev_max, tile_max) # m_j = max(m_{j-1}, x_j)
-                T.tile.sub(tmp_exp, prev_max, tile_max) # m_{j-1} - m_j
-                T.tile.exp(tmp_exp, tmp_exp) # exp(m_{j-1} - m_j)
-                T.tile.mul(tmp_exp, prev_sum, tmp_exp) # s_{j-1} * exp(m_{j-1} - m_j)
+                T.tile.max(tile_max, prev_max, tile_max)  # m_j = max(m_{j-1}, x_j)
+                T.tile.sub(tmp_exp, prev_max, tile_max)  # m_{j-1} - m_j
+                T.tile.exp(tmp_exp, tmp_exp)  # exp(m_{j-1} - m_j)
+                T.tile.mul(tmp_exp, prev_sum, tmp_exp)  # s_{j-1} * exp(m_{j-1} - m_j)
                 for i in range(sub_block_M):
-                    T.tile.sub(a[i, :], a[i, :], tile_max[i]) # x_j - m_j
-                T.tile.exp(a, a) # exp(x_j - m_j)
-                T.reduce_sum(a, tile_sum, tmp, dim=-1) # sum_j exp(x_j - m_j)
-                T.tile.add(prev_sum, tile_sum, tmp_exp) # s_j = s_{j-1} * exp(m_{j-1} - m_j) + exp(x_j - m_j)
+                    T.tile.sub(a[i, :], a[i, :], tile_max[i])  # x_j - m_j
+                T.tile.exp(a, a)  # exp(x_j - m_j)
+                T.reduce_sum(a, tile_sum, tmp, dim=-1)  # sum_j exp(x_j - m_j)
+                T.tile.add(prev_sum, tile_sum, tmp_exp)  # s_j = s_{j-1} * exp(m_{j-1} - m_j) + exp(x_j - m_j)
                 T.copy(tile_max, prev_max)
-            
+
             # Second pass: compute final output
             # After first pass, prev_max holds m_N, prev_sum holds s_N
             for by in T.serial(n_num):
-                T.copy(A[bx * block_M + vid * sub_block_M: bx * block_M + (vid + 1) * sub_block_M,
-                            by * block_N: (by + 1) * block_N], a) # Load input
+                T.copy(
+                    A[bx * block_M + vid * sub_block_M : bx * block_M + (vid + 1) * sub_block_M, by * block_N : (by + 1) * block_N], a
+                )  # Load input
                 for i in range(sub_block_M):
-                    T.tile.sub(a[i, :], a[i, :], prev_max[i]) # x_j - m_N
-                T.tile.exp(a, a) # exp(x_j - m_N)
+                    T.tile.sub(a[i, :], a[i, :], prev_max[i])  # x_j - m_N
+                T.tile.exp(a, a)  # exp(x_j - m_N)
                 for i in range(sub_block_M):
-                    T.tile.div(a[i, :], a[i, :], prev_sum[i]) # y_j = exp(x_j - m_N) / s_N
-                T.copy(a, B[bx * block_M + vid * sub_block_M: bx * block_M + (vid + 1) * sub_block_M,
-                                by * block_N: (by + 1) * block_N]) # Store output
-    
+                    T.tile.div(a[i, :], a[i, :], prev_sum[i])  # y_j = exp(x_j - m_N) / s_N
+                T.copy(
+                    a, B[bx * block_M + vid * sub_block_M : bx * block_M + (vid + 1) * sub_block_M, by * block_N : (by + 1) * block_N]
+                )  # Store output
+
     return main
+
 
 torch.manual_seed(0)
 test_configs = [
