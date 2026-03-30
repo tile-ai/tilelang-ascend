@@ -14,7 +14,7 @@ pass_configs = {
     tl.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
     tl.PassConfigKey.TL_ASCEND_AUTO_CV_SYNC: True,
     tl.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
-    tl.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True
+    tl.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
 }
 
 
@@ -136,6 +136,7 @@ def ref_program(blocks):
         sequences.append(pairs)
 
     import heapq
+
     neg_seqs = [[(-v, i) for v, i in seq] for seq in sequences]
     merged = list(heapq.merge(*neg_seqs))
     merged = [(-v, i) for v, i in merged]
@@ -159,10 +160,10 @@ def format_block(block):
 
 
 def test_merge(merge_num):
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"Testing {merge_num}-way merge sort (value-index pair format):")
     print(f"N = {N} elements per block, each element = {ELEMENT_SIZE} floats")
-    print('='*60)
+    print("=" * 60)
 
     blocks = [create_sorted_block(N) for _ in range(merge_num)]
     print("blocks", blocks)
@@ -197,7 +198,7 @@ def test_merge(merge_num):
     print(f"\nref_result output (all elements): {format_block(ref_result)}")
 
     output_values = [result_cpu[i * ELEMENT_SIZE + VALUE_POSITION].item() for i in range(N * merge_num)]
-    is_sorted = all(output_values[i] >= output_values[i+1] for i in range(len(output_values)-1))
+    is_sorted = all(output_values[i] >= output_values[i + 1] for i in range(len(output_values) - 1))
     print(f"\nIs output sorted (descending): {is_sorted}")
 
     ref_values = [ref_result[i * ELEMENT_SIZE + VALUE_POSITION].item() for i in range(N * merge_num)]
@@ -218,7 +219,7 @@ def main():
         success = test_merge(merge_num)
         results.append((merge_num, success))
 
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print("Summary:")
     for merge_num, success in results:
         status = "Kernel Output Match!" if success else "FAIL"
