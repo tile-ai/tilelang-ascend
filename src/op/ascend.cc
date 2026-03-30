@@ -312,12 +312,18 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
     if (src_active.size() >= 2) {
       int row_idx = src_active[src_active.size() - 2];
       int col_idx = src_active.back();
-      validRow_src = compute_valid_extent(src_range[row_idx]->min,
-                                          src_range[row_idx]->extent,
-                                          src_range->shape[row_idx]);
-      validCol_src = compute_valid_extent(src_range[col_idx]->min,
-                                          src_range[col_idx]->extent,
-                                          src_range->shape[col_idx]);
+      validRow_src =
+          compute_valid_extent(src_range[row_idx]->min,
+                               src_range[row_idx]->extent, src->shape[row_idx]);
+      validCol_src =
+          compute_valid_extent(src_range[col_idx]->min,
+                               src_range[col_idx]->extent, src->shape[col_idx]);
+    } else if (src_active.size() == 1) {
+      int col_idx = src_active[0];
+      validRow_src = Integer(1);
+      validCol_src =
+          compute_valid_extent(src_range[col_idx]->min,
+                               src_range[col_idx]->extent, src->shape[col_idx]);
     } else {
       validRow_src = compute_valid_extent(src_range[src_ndim - 2]->min,
                                           src_range[src_ndim - 2]->extent,
@@ -347,12 +353,18 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
     if (dst_active.size() >= 2) {
       int row_idx = dst_active[dst_active.size() - 2];
       int col_idx = dst_active.back();
-      validRow_dst = compute_valid_extent(dst_range[row_idx]->min,
-                                          dst_range[row_idx]->extent,
-                                          dst_range->shape[row_idx]);
-      validCol_dst = compute_valid_extent(dst_range[col_idx]->min,
-                                          dst_range[col_idx]->extent,
-                                          dst_range->shape[col_idx]);
+      validRow_dst =
+          compute_valid_extent(dst_range[row_idx]->min,
+                               dst_range[row_idx]->extent, dst->shape[row_idx]);
+      validCol_dst =
+          compute_valid_extent(dst_range[col_idx]->min,
+                               dst_range[col_idx]->extent, dst->shape[col_idx]);
+    } else if (dst_active.size() == 1) {
+      int col_idx = dst_active[0];
+      validRow_dst = Integer(1);
+      validCol_dst =
+          compute_valid_extent(dst_range[col_idx]->min,
+                               dst_range[col_idx]->extent, dst->shape[col_idx]);
     } else {
       validRow_dst = compute_valid_extent(dst_range[dst_ndim - 2]->min,
                                           dst_range[dst_ndim - 2]->extent,
