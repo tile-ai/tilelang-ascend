@@ -8,6 +8,7 @@ import tilelang.language as T
 from tvm.tir import PrimExpr, Buffer, BufferRegion, Var
 from tvm import tir
 from tilelang.language.ascend import _dtype
+import math
 
 
 def atomic_add(dst: Buffer, value: PrimExpr) -> PrimExpr:
@@ -186,7 +187,9 @@ def npu_gemm(A, B, C, init=False):
             offset = 0
             for i in range(len(indices)):
                 offset += indices[i] * strides[i]
-            return buffer.access_ptr(access_mask=access_type, offset=offset)
+            extent = [x.extent for x in object.region]
+            size_extent = math.prod(extent)
+            return buffer.access_ptr(access_mask=access_type, offset=offset, extent=size_extent)
         else:
             raise ValueError(f"Unsupported argument type: {type(object)} for buffer {object}")
 

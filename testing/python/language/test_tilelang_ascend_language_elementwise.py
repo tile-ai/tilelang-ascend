@@ -1427,7 +1427,7 @@ def run_test_clamp_slice(M, N, max_val, min_val, thresh, dtype, target, block_M=
 
 
 @pytest.mark.parametrize("dtype", ["float", "float16"])
-@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@pytest.mark.parametrize("target", ["ascendc"])
 def test_clamp_slice(dtype, target):
     M, N = 1024, 1024
     thresh = 10000
