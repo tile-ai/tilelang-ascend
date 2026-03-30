@@ -1,5 +1,5 @@
-#include "catlass/arch/arch.hpp"
 #include "catlass/catlass.hpp"
+#include "catlass/arch/arch.hpp"
 
 #include "catlass/detail/tag_to_layout.hpp"
 #include "catlass/gemm/block/block_swizzle.hpp"
