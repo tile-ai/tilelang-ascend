@@ -50,7 +50,7 @@ class LaunchThreadExtractor:
     def extract(self, node: PrimFunc, thread: str):
         self.thread = thread
         self.visit_thread_extent(node)
-        if self.expressions is None:
+        if not self.expressions:
             return None
         return self.expressions[0]
 
@@ -1282,10 +1282,17 @@ class compiler_npu:
         return mapping.get(dtype_str, torch.float32)
 
     def _parse_grid(self):
-        launcher = LaunchThreadExtractor()
-        expr = launcher.extract(self.mod, "blockIdx.x")
-        self.metadata["gridfunc"] = str(expr)
+        launcher_x = LaunchThreadExtractor()
+        expr_x = launcher_x.extract(self.mod, "blockIdx.x")
+        launcher_y = LaunchThreadExtractor()
+        expr_y = launcher_y.extract(self.mod, "blockIdx.y")
+        launcher_z = LaunchThreadExtractor()
+        expr_z = launcher_z.extract(self.mod, "blockIdx.z")
 
+        if expr_z is None:
+            self.metadata["gridfunc"] = str(expr_x)
+        else:
+            self.metadata["gridfunc"] = f"[{expr_x}, {expr_y}, 1]"
     def _read_mlir_file(self, file_path) -> str:
         """
         Read the content of the MLIR file and return it as a string.

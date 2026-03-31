@@ -2506,10 +2506,27 @@ void CodeGenTileLangNPUIRAPI::VisitStmt_(const LetStmtNode *op) {
 void CodeGenTileLangNPUIRAPI::VisitStmt_(const AttrStmtNode *op) {
   if (op->attr_key == "thread_extent") {
     IterVar iv = Downcast<IterVar>(op->node);
-    if (iv->thread_tag == "blockIdx.x" && iv->var->name_hint != "_") {
+    if (iv->thread_tag == "blockIdx.x" && iv->var->name_hint == "cid") {
       mlir::Value indexOp = GetAndCastIndexOp<mlir::hivm::GetBlockIdxOp>(iv);
       var_map_[iv->var.get()] = indexOp;
-    } else if (iv->thread_tag == "blockIdx.y" && iv->var->name_hint != "_") {
+    } else if (iv->thread_tag == "blockIdx.y" && iv->var->name_hint == "vid") {
+      mlir::Value indexOp = GetAndCastIndexOp<mlir::hivm::GetSubBlockIdxOp>(iv);
+      var_map_[iv->var.get()] = indexOp;
+    } else if (iv->thread_tag == "blockIdx.x" && iv->var->name_hint == "bx") {
+      mlir::Value blockIdx = GetAndCastIndexOp<mlir::hivm::GetBlockIdxOp>(iv);
+      auto extent_expr = iv->dom->extent;
+      auto extent_val = extent_expr.as<IntImmNode>()->value;
+      auto extent_const = builder.create<mlir::arith::ConstantOp>(
+          mlir::UnknownLoc::get(&context), builder.getI32Type(),
+          builder.getI32IntegerAttr(extent_val));
+      this->extent_const_ = extent_const;
+      auto x_val = builder.create<mlir::arith::RemSIOp>(mlir::UnknownLoc::get(&context), blockIdx, extent_const);
+      var_map_[iv->var.get()] = x_val;
+      this->blockIdx_ = blockIdx;
+    } else if (iv->thread_tag == "blockIdx.y" && iv->var->name_hint == "by") {
+      auto y_val = builder.create<mlir::arith::DivSIOp>(mlir::UnknownLoc::get(&context), this->blockIdx_, this->extent_const_);
+      var_map_[iv->var.get()] = y_val;
+    } else if (iv->thread_tag == "blockIdx.z" && iv->var->name_hint != "_") {
       mlir::Value indexOp = GetAndCastIndexOp<mlir::hivm::GetSubBlockIdxOp>(iv);
       var_map_[iv->var.get()] = indexOp;
     }

@@ -27,9 +27,9 @@ def vec_atomic_add_1d(N, block_size, dtype="float32"):
         B: T.Tensor((N,), dtype),
         shape: T.int32,
     ):
-        with T.Kernel(n_blocks, is_npu=True) as (bid, _):
+        with T.Kernel(n_blocks, is_npu=True) as (cid, _):
             A_VEC = T.alloc_shared((block_size,), dtype)
-            start = bid * block_size
+            start = cid * block_size
             t0 = shape - start
             tail_size = T.min(block_size, t0)
             T.copy(A[start:start + tail_size], A_VEC[0:tail_size])
