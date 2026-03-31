@@ -1,0 +1,805 @@
+Using Python (current env): /home/zuomin/miniconda3/envs/tilelang/bin/python3
+Python 3.11.14
+Starting installation script...
+LLVM enabled: false
+Installing Python requirements from requirements.txt...
+Requirement already satisfied: build in /home/zuomin/miniconda3/envs/tilelang/lib/python3.11/site-packages (from -r requirements-build.txt (line 2)) (1.4.2)
+Requirement already satisfied: cmake>=3.26 in /home/zuomin/miniconda3/envs/tilelang/lib/python3.11/site-packages (from -r requirements-build.txt (line 3)) (4.3.0)
+Requirement already satisfied: packaging in /home/zuomin/miniconda3/envs/tilelang/lib/python3.11/site-packages (from -r requirements-build.txt (line 4)) (26.0)
+Requirement already satisfied: pybind11==3.0.1 in /home/zuomin/miniconda3/envs/tilelang/lib/python3.11/site-packages (from -r requirements-build.txt (line 5)) (3.0.1)
+Requirement already satisfied: setuptools>=61 in /home/zuomin/miniconda3/envs/tilelang/lib/python3.11/site-packages (from -r requirements-build.txt (line 6)) (80.10.2)
+Requirement already satisfied: wheel in /home/zuomin/miniconda3/envs/tilelang/lib/python3.11/site-packages (from -r requirements-build.txt (line 7)) (0.46.3)
+Requirement already satisfied: tox in /home/zuomin/miniconda3/envs/tilelang/lib/python3.11/site-packages (from -r requirements-build.txt (line 8)) (4.52.0)
+Requirement already satisfied: auditwheel in /home/zuomin/miniconda3/envs/tilelang/lib/python3.11/site-packages (from -r requirements-build.txt (line 9)) (6.6.0)
+Requirement already satisfied: patchelf in /home/zuomin/miniconda3/envs/tilelang/lib/python3.11/site-packages (from -r requirements-build.txt (line 10)) (0.17.2.4)
+Requirement already satisfied: pyproject_hooks in /home/zuomin/miniconda3/envs/tilelang/lib/python3.11/site-packages (from build->-r requirements-build.txt (line 2)) (1.2.0)
+Requirement already satisfied: cachetools>=7.0.3 in /home/zuomin/miniconda3/envs/tilelang/lib/python3.11/site-packages (from tox->-r requirements-build.txt (line 8)) (7.0.5)
+Requirement already satisfied: colorama>=0.4.6 in /home/zuomin/miniconda3/envs/tilelang/lib/python3.11/site-packages (from tox->-r requirements-build.txt (line 8)) (0.4.6)
+Requirement already satisfied: filelock>=3.25 in /home/zuomin/miniconda3/envs/tilelang/lib/python3.11/site-packages (from tox->-r requirements-build.txt (line 8)) (3.25.2)
+Requirement already satisfied: platformdirs>=4.9.4 in /home/zuomin/miniconda3/envs/tilelang/lib/python3.11/site-packages (from tox->-r requirements-build.txt (line 8)) (4.9.4)
+Requirement already satisfied: pluggy>=1.6 in /home/zuomin/miniconda3/envs/tilelang/lib/python3.11/site-packages (from tox->-r requirements-build.txt (line 8)) (1.6.0)
+Requirement already satisfied: pyproject-api>=1.10 in /home/zuomin/miniconda3/envs/tilelang/lib/python3.11/site-packages (from tox->-r requirements-build.txt (line 8)) (1.10.0)
+Requirement already satisfied: python-discovery>=1.2.1 in /home/zuomin/miniconda3/envs/tilelang/lib/python3.11/site-packages (from tox->-r requirements-build.txt (line 8)) (1.2.1)
+Requirement already satisfied: tomli-w>=1.2 in /home/zuomin/miniconda3/envs/tilelang/lib/python3.11/site-packages (from tox->-r requirements-build.txt (line 8)) (1.2.0)
+Requirement already satisfied: virtualenv>=21.1 in /home/zuomin/miniconda3/envs/tilelang/lib/python3.11/site-packages (from tox->-r requirements-build.txt (line 8)) (21.2.0)
+Requirement already satisfied: pyelftools>=0.24 in /home/zuomin/miniconda3/envs/tilelang/lib/python3.11/site-packages (from auditwheel->-r requirements-build.txt (line 9)) (0.32)
+Requirement already satisfied: distlib<1,>=0.3.7 in /home/zuomin/miniconda3/envs/tilelang/lib/python3.11/site-packages (from virtualenv>=21.1->tox->-r requirements-build.txt (line 8)) (0.4.0)
+Requirement already satisfied: Cython in /home/zuomin/miniconda3/envs/tilelang/lib/python3.11/site-packages (from -r requirements.txt (line 2)) (3.2.4)
+Requirement already satisfied: numpy>=1.23.5 in /home/zuomin/miniconda3/envs/tilelang/lib/python3.11/site-packages (from -r requirements.txt (line 3)) (2.4.4)
+Requirement already satisfied: tqdm>=4.62.3 in /home/zuomin/miniconda3/envs/tilelang/lib/python3.11/site-packages (from -r requirements.txt (line 4)) (4.67.3)
+Requirement already satisfied: typing_extensions>=4.10.0 in /home/zuomin/miniconda3/envs/tilelang/lib/python3.11/site-packages (from -r requirements.txt (line 5)) (4.15.0)
+Requirement already satisfied: cloudpickle in /home/zuomin/miniconda3/envs/tilelang/lib/python3.11/site-packages (from -r requirements.txt (line 6)) (3.1.2)
+Requirement already satisfied: ml_dtypes in /home/zuomin/miniconda3/envs/tilelang/lib/python3.11/site-packages (from -r requirements.txt (line 7)) (0.5.4)
+Requirement already satisfied: psutil in /home/zuomin/miniconda3/envs/tilelang/lib/python3.11/site-packages (from -r requirements.txt (line 8)) (7.2.2)
+Requirement already satisfied: pyyaml in /home/zuomin/miniconda3/envs/tilelang/lib/python3.11/site-packages (from -r requirements.txt (line 9)) (6.0.3)
+Requirement already satisfied: pybind11==3.0.1 in /home/zuomin/miniconda3/envs/tilelang/lib/python3.11/site-packages (from -r requirements.txt (line 10)) (3.0.1)
+Python requirements installed successfully.
+Cloning TVM repository and initializing submodules...
+warring: no --bishengir-path set, bishengir path will be found in environment variable PATH
+build bishengir in 3rdparty
+~/Projects/Compiler/tilelang-ascend/3rdparty/AscendNPU-IR ~/Projects/Compiler/tilelang-ascend
+Resetting torch-mlir submodule patches.
+[Warning] This will also reset changes you made to the submodule!
+HEAD is now at 155680c [MLIR][TORCH] Add E2E support for aten.as_strided op (#4269)
+Resetting llvm-project submodule patches.
+[Warning] This will also reset changes you made to the submodule!
+HEAD is now at cd708029e0 Fix print module manifest file for macos (#122370)
+Removing mlir/include/mlir/Dialect/Linalg/IR/LinalgExtensions.h
+Removing mlir/include/mlir/Dialect/Utils/ExpandShapeUtils.h
+Removing mlir/lib/Dialect/Linalg/IR/LinalgExtensions.cpp
+Removing mlir/test/Analysis/DataFlow/test-last-modified-error.mlir
+Applying patches to submodules
+Applying patches for 
+patching file lib/Conversion/TorchToLinalg/Linear.cpp
+patching file lib/Dialect/Torch/Transforms/DecomposeComplexOps.cpp
+patching file lib/Dialect/Torch/Transforms/ScalarizeShapes.cpp
+patching file lib/Conversion/TorchToLinalg/Linear.cpp
+patching file lib/Dialect/TMTensor/Transforms/Bufferize.cpp
+patching file lib/Dialect/Torch/Transforms/DecomposeComplexOps.cpp
+patching file lib/Dialect/Torch/Transforms/GlobalizeObjectGraph.cpp
+patching file lib/Dialect/Torch/Transforms/InlineGlobalSlots.cpp
+patching file lib/Dialect/Torch/Transforms/RecomposeComplexOps.cpp
+patching file lib/Dialect/Torch/Transforms/RestructureNonConstantAxes.cpp
+patching file lib/Dialect/Torch/Transforms/ScalarizeShapes.cpp
+patching file lib/Dialect/Torch/Transforms/SimplifyDtypeCalculations.cpp
+patching file lib/Dialect/Torch/Transforms/SimplifyShapeCalculations.cpp
+patching file lib/Dialect/TorchConversion/Transforms/UnpackQuantTensor.cpp
+patching file lib/RefBackend/RefBackend.cpp
+patching file lib/Dialect/Torch/Transforms/AdjustCallingConventions.cpp
+patching file lib/Dialect/Torch/Transforms/InlineGlobalSlots.cpp
+patching file lib/Dialect/TorchConversion/Transforms/BackendTypeConversion.cpp
+patching file lib/Dialect/TorchConversion/Transforms/BackendTypeConversion.cpp
+Applying patches for 
+patching file mlir/include/mlir/Config/mlir-config.h.cmake
+patching file mlir/test/lit.cfg.py
+patching file mlir/test/lit.site.cfg.py.in
+patching file mlir/include/mlir/Conversion/LLVMCommon/LoweringOptions.h
+patching file mlir/include/mlir/Conversion/LLVMCommon/TypeConverter.h
+patching file mlir/lib/Conversion/FuncToLLVM/FuncToLLVM.cpp
+patching file mlir/lib/Conversion/FuncToLLVM/FuncToLLVM.cpp
+patching file mlir/include/mlir/Dialect/Linalg/Passes.td
+patching file mlir/include/mlir/Dialect/Linalg/Transforms/Transforms.h
+patching file mlir/lib/Dialect/Linalg/Transforms/DropUnitDims.cpp
+patching file mlir/test/Dialect/Linalg/drop-unit-extent-dims.mlir
+patching file mlir/include/mlir/Dialect/Linalg/TransformOps/LinalgTransformOps.td
+patching file mlir/lib/Dialect/Linalg/TransformOps/LinalgTransformOps.cpp
+patching file mlir/include/mlir/Dialect/Linalg/TransformOps/LinalgTransformOps.td
+patching file mlir/lib/Dialect/Linalg/TransformOps/LinalgTransformOps.cpp
+patching file mlir/include/mlir/Dialect/Linalg/TransformOps/LinalgTransformOps.td
+patching file mlir/lib/Dialect/Linalg/TransformOps/LinalgTransformOps.cpp
+patching file mlir/include/mlir/Dialect/MemRef/IR/MemRefOps.td
+patching file mlir/lib/Dialect/MemRef/IR/MemRefOps.cpp
+patching file mlir/include/mlir/Interfaces/ViewLikeInterface.h
+patching file mlir/test/Pass/run-reproducer.mlir
+patching file mlir/lib/Dialect/Tensor/Transforms/BufferizableOpInterfaceImpl.cpp
+patching file mlir/test/Dialect/Tensor/bufferize.mlir
+patching file mlir/include/mlir/Interfaces/DestinationStyleOpInterface.td
+patching file mlir/include/mlir/Dialect/Linalg/Transforms/Transforms.h
+patching file mlir/include/mlir/Dialect/Tensor/Utils/Utils.h
+patching file mlir/lib/Dialect/Linalg/Transforms/BubbleUpExtractSlice.cpp
+patching file mlir/lib/Dialect/Tensor/Utils/Utils.cpp
+patching file mlir/lib/Dialect/Linalg/Transforms/BubbleUpExtractSlice.cpp
+patching file mlir/lib/Dialect/SCF/TransformOps/SCFTransformOps.cpp
+patching file mlir/lib/Dialect/SCF/Utils/Utils.cpp
+patching file mlir/test/Dialect/SCF/transform-loop-fuse-sibling.mlir
+patching file mlir/include/mlir/Dialect/Utils/ReshapeOpsUtils.h
+patching file mlir/lib/Dialect/Bufferization/Transforms/DropEquivalentBufferResults.cpp
+patching file mlir/include/mlir/Dialect/Transform/IR/TransformOps.td
+patching file mlir/lib/Dialect/SCF/IR/SCF.cpp
+patching file mlir/lib/Dialect/Transform/IR/TransformOps.cpp
+patching file mlir/lib/Dialect/SCF/IR/SCF.cpp
+patching file mlir/lib/Dialect/SCF/IR/SCF.cpp
+patching file mlir/include/mlir/Dialect/Bufferization/IR/BufferizableOpInterface.h
+patching file mlir/lib/Dialect/Bufferization/Transforms/FuncBufferizableOpInterfaceImpl.cpp
+patching file mlir/test/Dialect/Bufferization/Transforms/one-shot-module-bufferize-invalid.mlir
+patching file mlir/test/Dialect/Bufferization/Transforms/one-shot-module-bufferize.mlir
+patching file mlir/include/mlir/Dialect/Utils/ExpandShapeUtils.h
+patching file mlir/lib/Dialect/Tensor/IR/TensorOps.cpp
+patching file mlir/include/mlir/Dialect/Utils/ReshapeOpsUtils.h
+patching file mlir/lib/Dialect/Tensor/IR/TensorOps.cpp
+patching file mlir/lib/Dialect/Utils/ReshapeOpsUtils.cpp
+patching file mlir/include/mlir/Dialect/Tensor/Transforms/Transforms.h
+patching file mlir/lib/Dialect/Tensor/Transforms/MergeConsecutiveInsertExtractSlicePatterns.cpp
+patching file mlir/lib/Dialect/Tensor/IR/TensorTilingInterfaceImpl.cpp
+patching file mlir/include/mlir/Dialect/Utils/ReshapeOpsUtils.h
+patching file mlir/test/Dialect/Tensor/canonicalize.mlir
+patching file mlir/lib/Dialect/Linalg/Transforms/TilingInterfaceImpl.cpp
+patching file mlir/lib/Dialect/Tensor/IR/TensorOps.cpp
+patching file mlir/lib/Dialect/Tensor/IR/TensorOps.cpp
+patching file mlir/lib/Dialect/Tensor/IR/TensorTilingInterfaceImpl.cpp
+patching file mlir/test/Dialect/Tensor/tiling.mlir
+patching file mlir/include/mlir/Dialect/Utils/StructuredOpsUtils.td
+patching file mlir/include/mlir/Dialect/Linalg/IR/LinalgExtensions.h
+patching file mlir/lib/Dialect/Linalg/IR/CMakeLists.txt
+patching file mlir/lib/Dialect/Linalg/IR/LinalgExtensions.cpp
+patching file mlir/include/mlir/Dialect/Linalg/IR/LinalgExtensions.h
+patch unexpectedly ends in middle of line
+patching file mlir/include/mlir/Dialect/Linalg/IR/LinalgExtensions.h
+patch unexpectedly ends in middle of line
+patching file mlir/include/mlir/Dialect/Linalg/IR/LinalgExtensions.h
+patching file mlir/lib/Dialect/Linalg/IR/LinalgExtensions.cpp
+patching file mlir/include/mlir/Dialect/Linalg/Transforms/Transforms.h
+patching file mlir/lib/Dialect/Linalg/Transforms/DropUnitDims.cpp
+patching file mlir/test/lib/Dialect/Linalg/TestLinalgDropUnitDims.cpp
+patching file mlir/include/mlir/Dialect/Linalg/Transforms/Transforms.h
+patching file mlir/lib/Dialect/Linalg/Transforms/BubbleUpExtractSlice.cpp
+patching file mlir/lib/Dialect/Linalg/Transforms/DropUnitDims.cpp
+patching file mlir/include/mlir/Dialect/Tensor/IR/TensorOps.td
+patching file mlir/lib/Dialect/Tensor/IR/TensorOps.cpp
+patching file mlir/lib/Dialect/Tensor/Transforms/ConcatOpPatterns.cpp
+patching file mlir/test/Dialect/Tensor/decompose-concat.mlir
+patching file mlir/lib/Dialect/Linalg/Transforms/BubbleUpExtractSlice.cpp
+patching file mlir/lib/Dialect/MemRef/Utils/MemRefUtils.cpp
+patching file mlir/include/mlir/Dialect/Utils/ReshapeOpsUtils.h
+patching file mlir/lib/Dialect/Linalg/TransformOps/LinalgTransformOps.cpp
+patching file mlir/lib/Dialect/Linalg/Transforms/BubbleUpExtractSlice.cpp
+patching file mlir/lib/Dialect/SCF/Utils/Utils.cpp
+patching file mlir/lib/Dialect/MemRef/IR/MemRefOps.cpp
+patching file mlir/lib/Dialect/MemRef/IR/MemRefOps.cpp
+patching file mlir/lib/Dialect/MemRef/IR/MemRefOps.cpp
+patching file mlir/lib/Dialect/MemRef/IR/MemRefOps.cpp
+patching file mlir/lib/Dialect/MemRef/IR/MemRefOps.cpp
+patching file mlir/test/Dialect/MemRef/ops.mlir
+patching file mlir/lib/Dialect/MemRef/Utils/MemRefUtils.cpp
+patching file mlir/include/mlir/Conversion/FuncToLLVM/ConvertFuncToLLVM.h
+patching file mlir/include/mlir/Dialect/Linalg/CMakeLists.txt
+patching file mlir/include/mlir/Dialect/Linalg/Passes.h
+patching file mlir/include/mlir/Dialect/Linalg/TransformOps/LinalgTransformOps.td
+patching file mlir/include/mlir/Dialect/Linalg/Transforms/Transforms.h
+patching file mlir/include/mlir/Dialect/Tensor/IR/TensorOps.td
+patching file mlir/include/mlir/Dialect/Tensor/Transforms/Transforms.h
+patching file mlir/include/mlir/Dialect/Tensor/Utils/Utils.h
+patching file mlir/include/mlir/Dialect/Utils/CMakeLists.txt
+patching file mlir/include/mlir/Dialect/Utils/ExpandShapeUtils.h
+patching file mlir/include/mlir/Dialect/Utils/ReshapeOpsUtils.h
+patching file mlir/include/mlir/Dialect/Utils/StaticValueUtils.h
+patching file mlir/include/mlir/Dialect/Utils/StructuredOpsUtils.td
+patching file mlir/lib/Dialect/Arith/IR/ArithOps.cpp
+patching file mlir/lib/Dialect/Arith/IR/CMakeLists.txt
+patching file mlir/lib/Dialect/Arith/Transforms/CMakeLists.txt
+patching file mlir/lib/Dialect/Bufferization/Transforms/FuncBufferizableOpInterfaceImpl.cpp
+patching file mlir/lib/Dialect/Linalg/IR/CMakeLists.txt
+patching file mlir/lib/Dialect/Linalg/IR/LinalgOps.cpp
+patching file mlir/lib/Dialect/Linalg/TransformOps/CMakeLists.txt
+patching file mlir/lib/Dialect/Linalg/Transforms/BubbleUpExtractSlice.cpp
+patching file mlir/lib/Dialect/Linalg/Transforms/CMakeLists.txt
+patching file mlir/lib/Dialect/Linalg/Transforms/MeshShardingInterfaceImpl.cpp
+patching file mlir/lib/Dialect/Linalg/Transforms/TilingInterfaceImpl.cpp
+patching file mlir/lib/Dialect/MemRef/IR/CMakeLists.txt
+patching file mlir/lib/Dialect/MemRef/Utils/MemRefUtils.cpp
+patching file mlir/lib/Dialect/Mesh/Interfaces/ShardingInterface.cpp
+patching file mlir/lib/Dialect/Mesh/Transforms/ShardingPropagation.cpp
+patching file mlir/lib/Dialect/SCF/IR/CMakeLists.txt
+patching file mlir/lib/Dialect/SCF/IR/SCF.cpp
+patching file mlir/lib/Dialect/Tensor/IR/CMakeLists.txt
+patching file mlir/lib/Dialect/Tensor/IR/TensorDialect.cpp
+patching file mlir/lib/Dialect/Tensor/IR/TensorInferTypeOpInterfaceImpl.cpp
+patching file mlir/lib/Dialect/Tensor/IR/TensorOps.cpp
+patching file mlir/lib/Dialect/Tensor/IR/TensorTilingInterfaceImpl.cpp
+patching file mlir/lib/Dialect/Tensor/Transforms/BufferizableOpInterfaceImpl.cpp
+patching file mlir/lib/Dialect/Tensor/Transforms/MergeConsecutiveInsertExtractSlicePatterns.cpp
+patching file mlir/lib/Dialect/Tensor/Utils/Utils.cpp
+patching file mlir/lib/Dialect/Transform/IR/TransformOps.cpp
+patching file mlir/lib/Dialect/Utils/ReshapeOpsUtils.cpp
+patching file mlir/lib/Dialect/Utils/StaticValueUtils.cpp
+patching file mlir/lib/IR/AffineExpr.cpp
+patching file mlir/lib/Interfaces/InferTypeOpInterface.cpp
+patching file mlir/lib/Target/Cpp/TranslateToCpp.cpp
+patching file mlir/lib/Target/LLVMIR/DebugTranslation.cpp
+patching file mlir/lib/Transforms/Canonicalizer.cpp
+patching file mlir/test/Dialect/Arith/bufferize.mlir
+patching file mlir/test/Dialect/Bufferization/Transforms/one-shot-module-bufferize.mlir
+patching file mlir/test/Dialect/Linalg/bubble-up-extract-slice-op.mlir
+patching file mlir/test/Dialect/Linalg/resolve-shaped-type-result-dims.mlir
+patching file mlir/test/Dialect/Tensor/fold-empty-op.mlir
+patching file mlir/test/lib/Dialect/Linalg/CMakeLists.txt
+patching file mlir/test/lib/Dialect/Linalg/TestLinalgTransforms.cpp
+patching file mlir/test/lit.site.cfg.py.in
+patching file mlir/test/mlir-cpu-runner/async-error.mlir
+patching file mlir/test/mlir-cpu-runner/async-func.mlir
+patching file mlir/test/mlir-cpu-runner/async-group.mlir
+patching file mlir/test/mlir-cpu-runner/async-value.mlir
+patching file mlir/test/mlir-cpu-runner/async.mlir
+patching file mlir/test/python/execution_engine.py
+patching file mlir/lib/Dialect/Linalg/IR/CMakeLists.txt
+patching file mlir/lib/Dialect/MemRef/IR/MemRefOps.cpp
+patching file mlir/include/mlir/Dialect/Linalg/IR/LinalgExtensions.h
+patching file mlir/docs/PatternRewriter.md
+patching file mlir/examples/standalone/lib/Standalone/StandalonePasses.cpp
+patching file mlir/include/mlir/Transforms/GreedyPatternRewriteDriver.h
+patching file mlir/lib/CAPI/Transforms/Rewrite.cpp
+patching file mlir/lib/Conversion/ArithToArmSME/ArithToArmSME.cpp
+patching file mlir/lib/Conversion/ArmNeon2dToIntr/ArmNeon2dToIntr.cpp
+patching file mlir/lib/Conversion/GPUToNVVM/LowerGpuOpsToNVVMOps.cpp
+patching file mlir/lib/Conversion/GPUToROCDL/LowerGpuOpsToROCDLOps.cpp
+patching file mlir/lib/Conversion/ShapeToStandard/ConvertShapeConstraints.cpp
+patching file mlir/lib/Conversion/VectorToArmSME/VectorToArmSMEPass.cpp
+patching file mlir/lib/Conversion/VectorToGPU/VectorToGPU.cpp
+patching file mlir/lib/Conversion/VectorToSCF/VectorToSCF.cpp
+patching file mlir/lib/Dialect/Affine/TransformOps/AffineTransformOps.cpp
+patching file mlir/lib/Dialect/Affine/Transforms/AffineDataCopyGeneration.cpp
+patching file mlir/lib/Dialect/Affine/Transforms/AffineExpandIndexOps.cpp
+patching file mlir/lib/Dialect/Affine/Transforms/SimplifyAffineStructures.cpp
+patching file mlir/lib/Dialect/Affine/Utils/LoopUtils.cpp
+patching file mlir/lib/Dialect/Affine/Utils/Utils.cpp
+patching file mlir/lib/Dialect/Arith/Transforms/IntRangeOptimizations.cpp
+patching file mlir/lib/Dialect/ArmSME/Transforms/OuterProductFusion.cpp
+patching file mlir/lib/Dialect/ArmSVE/Transforms/LegalizeVectorStorage.cpp
+patching file mlir/lib/Dialect/Async/Transforms/AsyncParallelFor.cpp
+patching file mlir/lib/Dialect/Bufferization/Transforms/BufferDeallocationSimplification.cpp
+patching file mlir/lib/Dialect/Bufferization/Transforms/EmptyTensorToAllocTensor.cpp
+patching file mlir/lib/Dialect/EmitC/Transforms/FormExpressions.cpp
+patching file mlir/lib/Dialect/GPU/Transforms/EliminateBarriers.cpp
+patching file mlir/lib/Dialect/LLVMIR/Transforms/OptimizeForNVVM.cpp
+patching file mlir/lib/Dialect/Linalg/TransformOps/LinalgTransformOps.cpp
+patching file mlir/lib/Dialect/Linalg/Transforms/BlockPackMatmul.cpp
+patching file mlir/lib/Dialect/Linalg/Transforms/Detensorize.cpp
+patching file mlir/lib/Dialect/Linalg/Transforms/ElementwiseOpFusion.cpp
+patching file mlir/lib/Dialect/Linalg/Transforms/Generalization.cpp
+patching file mlir/lib/Dialect/Linalg/Transforms/InlineScalarOperands.cpp
+patching file mlir/lib/Dialect/Linalg/Transforms/Loops.cpp
+patching file mlir/lib/Dialect/Linalg/Transforms/NamedOpConversions.cpp
+patching file mlir/lib/Dialect/Math/Transforms/UpliftToFMA.cpp
+patching file mlir/lib/Dialect/MemRef/Transforms/ExpandStridedMetadata.cpp
+patching file mlir/lib/Dialect/MemRef/Transforms/FoldMemRefAliasOps.cpp
+patching file mlir/lib/Dialect/MemRef/Transforms/ResolveShapedTypeResultDims.cpp
+patching file mlir/lib/Dialect/SCF/Transforms/ForToWhile.cpp
+patching file mlir/lib/Dialect/SCF/Transforms/LoopCanonicalization.cpp
+patching file mlir/lib/Dialect/SCF/Transforms/LoopSpecialization.cpp
+patching file mlir/lib/Dialect/SPIRV/Transforms/CanonicalizeGLPass.cpp
+patching file mlir/lib/Dialect/SPIRV/Transforms/SPIRVWebGPUTransforms.cpp
+patching file mlir/lib/Dialect/Shape/Transforms/OutlineShapeComputation.cpp
+patching file mlir/lib/Dialect/Shape/Transforms/RemoveShapeConstraints.cpp
+patching file mlir/lib/Dialect/SparseTensor/Transforms/SparseTensorPasses.cpp
+patching file mlir/lib/Dialect/Tensor/Transforms/FoldTensorSubsetOps.cpp
+patching file mlir/lib/Dialect/Tosa/Transforms/TosaLayerwiseConstantFoldPass.cpp
+patching file mlir/lib/Dialect/Tosa/Transforms/TosaMakeBroadcastable.cpp
+patching file mlir/lib/Dialect/Tosa/Transforms/TosaOptionalDecompositions.cpp
+patching file mlir/lib/Dialect/Transform/IR/TransformOps.cpp
+patching file mlir/lib/Dialect/Vector/Transforms/LowerVectorMask.cpp
+patching file mlir/lib/Dialect/Vector/Transforms/LowerVectorMultiReduction.cpp
+patching file mlir/lib/Dialect/XeGPU/Transforms/XeGPUFoldAliasOps.cpp
+patching file mlir/lib/Reducer/ReductionTreePass.cpp
+patching file mlir/lib/Transforms/Canonicalizer.cpp
+patching file mlir/lib/Transforms/Utils/GreedyPatternRewriteDriver.cpp
+patching file mlir/lib/Transforms/Utils/OneToNTypeConversion.cpp
+patching file mlir/test/Transforms/test-operation-folder.mlir
+patching file mlir/test/lib/Conversion/MathToVCIX/TestMathToVCIXConversion.cpp
+patching file mlir/test/lib/Conversion/VectorToSPIRV/TestVectorReductionToSPIRVDotProd.cpp
+patching file mlir/test/lib/Dialect/Affine/TestAffineDataCopy.cpp
+patching file mlir/test/lib/Dialect/ArmNeon/TestLowerToArmNeon.cpp
+patching file mlir/test/lib/Dialect/GPU/TestGpuRewrite.cpp
+patching file mlir/test/lib/Dialect/Linalg/TestDataLayoutPropagation.cpp
+patching file mlir/test/lib/Dialect/Linalg/TestLinalgDecomposeOps.cpp
+patching file mlir/test/lib/Dialect/Linalg/TestLinalgElementwiseFusion.cpp
+patching file mlir/test/lib/Dialect/Linalg/TestLinalgFusionTransforms.cpp
+patching file mlir/test/lib/Dialect/Linalg/TestLinalgRankReduceContractionOps.cpp
+patching file mlir/test/lib/Dialect/Linalg/TestLinalgTransforms.cpp
+patching file mlir/test/lib/Dialect/Linalg/TestPadFusion.cpp
+patching file mlir/test/lib/Dialect/Math/TestAlgebraicSimplification.cpp
+patching file mlir/test/lib/Dialect/Math/TestExpandMath.cpp
+patching file mlir/test/lib/Dialect/Math/TestPolynomialApproximation.cpp
+patching file mlir/test/lib/Dialect/MemRef/TestComposeSubView.cpp
+patching file mlir/test/lib/Dialect/Mesh/TestOpLowering.cpp
+patching file mlir/test/lib/Dialect/Mesh/TestReshardingSpmdization.cpp
+patching file mlir/test/lib/Dialect/Mesh/TestSimplifications.cpp
+patching file mlir/test/lib/Dialect/NVGPU/TestNVGPUTransforms.cpp
+patching file mlir/test/lib/Dialect/SCF/TestUpliftWhileToFor.cpp
+patching file mlir/test/lib/Dialect/Tensor/TestTensorTransforms.cpp
+patching file mlir/test/lib/Dialect/Test/TestPatterns.cpp
+patching file mlir/test/lib/Dialect/Test/TestTraits.cpp
+patching file mlir/test/lib/Dialect/Tosa/TosaTestPasses.cpp
+patching file mlir/test/lib/Dialect/Vector/TestVectorTransforms.cpp
+patching file mlir/test/lib/Rewrite/TestPDLByteCode.cpp
+patching file mlir/test/lib/Tools/PDLL/TestPDLL.cpp
+patching file mlir/test/lib/Transforms/TestCommutativityUtils.cpp
+patching file mlir/test/lib/Transforms/TestMakeIsolatedFromAbove.cpp
+patching file mlir/include/mlir/Analysis/DataFlow/ConstantPropagationAnalysis.h
+patching file mlir/include/mlir/Analysis/DataFlow/DenseAnalysis.h
+patching file mlir/include/mlir/Analysis/DataFlow/IntegerRangeAnalysis.h
+patching file mlir/include/mlir/Analysis/DataFlow/LivenessAnalysis.h
+patching file mlir/include/mlir/Analysis/DataFlow/SparseAnalysis.h
+patching file mlir/lib/Analysis/DataFlow/ConstantPropagationAnalysis.cpp
+patching file mlir/lib/Analysis/DataFlow/DenseAnalysis.cpp
+patching file mlir/lib/Analysis/DataFlow/IntegerRangeAnalysis.cpp
+patching file mlir/lib/Analysis/DataFlow/LivenessAnalysis.cpp
+patching file mlir/lib/Analysis/DataFlow/SparseAnalysis.cpp
+patching file mlir/test/Analysis/DataFlow/test-last-modified-error.mlir
+patching file mlir/test/lib/Analysis/DataFlow/TestDenseBackwardDataFlowAnalysis.cpp
+patching file mlir/test/lib/Analysis/DataFlow/TestDenseDataFlowAnalysis.h
+patching file mlir/test/lib/Analysis/DataFlow/TestDenseForwardDataFlowAnalysis.cpp
+patching file mlir/test/lib/Analysis/DataFlow/TestSparseBackwardDataFlowAnalysis.cpp
+patching file mlir/include/mlir/Analysis/DataFlow/DeadCodeAnalysis.h
+patching file mlir/include/mlir/Analysis/DataFlow/DenseAnalysis.h
+patching file mlir/include/mlir/Analysis/DataFlow/IntegerRangeAnalysis.h
+patching file mlir/include/mlir/Analysis/DataFlow/SparseAnalysis.h
+patching file mlir/include/mlir/Analysis/DataFlowFramework.h
+patching file mlir/lib/Analysis/DataFlow/DeadCodeAnalysis.cpp
+patching file mlir/lib/Analysis/DataFlow/DenseAnalysis.cpp
+patching file mlir/lib/Analysis/DataFlow/IntegerRangeAnalysis.cpp
+patching file mlir/lib/Analysis/DataFlow/SparseAnalysis.cpp
+patching file mlir/lib/Analysis/DataFlowFramework.cpp
+patching file mlir/test/lib/Analysis/DataFlow/TestDeadCodeAnalysis.cpp
+patching file mlir/test/lib/Analysis/DataFlow/TestDenseDataFlowAnalysis.h
+patching file mlir/test/lib/Analysis/TestDataFlowFramework.cpp
+patching file mlir/include/mlir/Analysis/DataFlow/DeadCodeAnalysis.h
+patching file mlir/include/mlir/Analysis/DataFlow/DenseAnalysis.h
+patching file mlir/include/mlir/Analysis/DataFlow/SparseAnalysis.h
+patching file mlir/include/mlir/Analysis/DataFlowFramework.h
+patching file mlir/include/mlir/IR/Block.h
+patching file mlir/lib/Analysis/DataFlow/DeadCodeAnalysis.cpp
+patching file mlir/lib/Analysis/DataFlow/DenseAnalysis.cpp
+patching file mlir/lib/Analysis/DataFlow/IntegerRangeAnalysis.cpp
+patching file mlir/lib/Analysis/DataFlow/LivenessAnalysis.cpp
+patching file mlir/lib/Analysis/DataFlow/SparseAnalysis.cpp
+patching file mlir/lib/Analysis/DataFlowFramework.cpp
+patching file mlir/lib/Dialect/Arith/Transforms/IntRangeOptimizations.cpp
+patching file mlir/test/lib/Analysis/DataFlow/TestDeadCodeAnalysis.cpp
+patching file mlir/test/lib/Analysis/DataFlow/TestDenseBackwardDataFlowAnalysis.cpp
+patching file mlir/test/lib/Analysis/DataFlow/TestDenseForwardDataFlowAnalysis.cpp
+patching file mlir/test/lib/Analysis/DataFlow/TestSparseBackwardDataFlowAnalysis.cpp
+patching file mlir/test/lib/Analysis/TestDataFlowFramework.cpp
+patching file mlir/lib/Transforms/Utils/DialectConversion.cpp
+patching file mlir/lib/Dialect/Linalg/Transforms/BubbleUpExtractSlice.cpp
+patching file mlir/lib/Dialect/SCF/IR/SCF.cpp
+patching file mlir/lib/Dialect/SCF/IR/SCF.cpp
+patching file mlir/lib/Dialect/SCF/IR/SCF.cpp
+patching file llvm/cmake/modules/TableGen.cmake
+patching file mlir/lib/Dialect/MemRef/Utils/MemRefUtils.cpp
+patching file mlir/include/mlir/Dialect/Bufferization/Transforms/FuncBufferizableOpInterfaceImpl.h
+patching file mlir/lib/Dialect/Bufferization/Transforms/FuncBufferizableOpInterfaceImpl.cpp
+patching file mlir/lib/Dialect/Bufferization/Transforms/OneShotModuleBufferize.cpp
+patching file mlir/test/Dialect/Bufferization/Transforms/one-shot-module-bufferize-analysis.mlir
+patching file mlir/test/Dialect/Bufferization/Transforms/one-shot-module-bufferize-invalid.mlir
+patching file mlir/test/Dialect/Bufferization/Transforms/one-shot-module-bufferize.mlir
+patching file mlir/lib/Conversion/MemRefToLLVM/MemRefToLLVM.cpp
+Finished applying patches
+Resetting torch-mlir submodule patches.
+[Warning] This will also reset changes you made to the submodule!
+HEAD is now at 155680c [MLIR][TORCH] Add E2E support for aten.as_strided op (#4269)
+Resetting llvm-project submodule patches.
+[Warning] This will also reset changes you made to the submodule!
+HEAD is now at cd708029e0 Fix print module manifest file for macos (#122370)
+Removing mlir/include/mlir/Dialect/Linalg/IR/LinalgExtensions.h
+Removing mlir/include/mlir/Dialect/Utils/ExpandShapeUtils.h
+Removing mlir/lib/Dialect/Linalg/IR/LinalgExtensions.cpp
+Removing mlir/test/Analysis/DataFlow/test-last-modified-error.mlir
+Applying patches to submodules
+Applying patches for 
+patching file lib/Conversion/TorchToLinalg/Linear.cpp
+patching file lib/Dialect/Torch/Transforms/DecomposeComplexOps.cpp
+patching file lib/Dialect/Torch/Transforms/ScalarizeShapes.cpp
+patching file lib/Conversion/TorchToLinalg/Linear.cpp
+patching file lib/Dialect/TMTensor/Transforms/Bufferize.cpp
+patching file lib/Dialect/Torch/Transforms/DecomposeComplexOps.cpp
+patching file lib/Dialect/Torch/Transforms/GlobalizeObjectGraph.cpp
+patching file lib/Dialect/Torch/Transforms/InlineGlobalSlots.cpp
+patching file lib/Dialect/Torch/Transforms/RecomposeComplexOps.cpp
+patching file lib/Dialect/Torch/Transforms/RestructureNonConstantAxes.cpp
+patching file lib/Dialect/Torch/Transforms/ScalarizeShapes.cpp
+patching file lib/Dialect/Torch/Transforms/SimplifyDtypeCalculations.cpp
+patching file lib/Dialect/Torch/Transforms/SimplifyShapeCalculations.cpp
+patching file lib/Dialect/TorchConversion/Transforms/UnpackQuantTensor.cpp
+patching file lib/RefBackend/RefBackend.cpp
+patching file lib/Dialect/Torch/Transforms/AdjustCallingConventions.cpp
+patching file lib/Dialect/Torch/Transforms/InlineGlobalSlots.cpp
+patching file lib/Dialect/TorchConversion/Transforms/BackendTypeConversion.cpp
+patching file lib/Dialect/TorchConversion/Transforms/BackendTypeConversion.cpp
+Applying patches for 
+patching file mlir/include/mlir/Config/mlir-config.h.cmake
+patching file mlir/test/lit.cfg.py
+patching file mlir/test/lit.site.cfg.py.in
+patching file mlir/include/mlir/Conversion/LLVMCommon/LoweringOptions.h
+patching file mlir/include/mlir/Conversion/LLVMCommon/TypeConverter.h
+patching file mlir/lib/Conversion/FuncToLLVM/FuncToLLVM.cpp
+patching file mlir/lib/Conversion/FuncToLLVM/FuncToLLVM.cpp
+patching file mlir/include/mlir/Dialect/Linalg/Passes.td
+patching file mlir/include/mlir/Dialect/Linalg/Transforms/Transforms.h
+patching file mlir/lib/Dialect/Linalg/Transforms/DropUnitDims.cpp
+patching file mlir/test/Dialect/Linalg/drop-unit-extent-dims.mlir
+patching file mlir/include/mlir/Dialect/Linalg/TransformOps/LinalgTransformOps.td
+patching file mlir/lib/Dialect/Linalg/TransformOps/LinalgTransformOps.cpp
+patching file mlir/include/mlir/Dialect/Linalg/TransformOps/LinalgTransformOps.td
+patching file mlir/lib/Dialect/Linalg/TransformOps/LinalgTransformOps.cpp
+patching file mlir/include/mlir/Dialect/Linalg/TransformOps/LinalgTransformOps.td
+patching file mlir/lib/Dialect/Linalg/TransformOps/LinalgTransformOps.cpp
+patching file mlir/include/mlir/Dialect/MemRef/IR/MemRefOps.td
+patching file mlir/lib/Dialect/MemRef/IR/MemRefOps.cpp
+patching file mlir/include/mlir/Interfaces/ViewLikeInterface.h
+patching file mlir/test/Pass/run-reproducer.mlir
+patching file mlir/lib/Dialect/Tensor/Transforms/BufferizableOpInterfaceImpl.cpp
+patching file mlir/test/Dialect/Tensor/bufferize.mlir
+patching file mlir/include/mlir/Interfaces/DestinationStyleOpInterface.td
+patching file mlir/include/mlir/Dialect/Linalg/Transforms/Transforms.h
+patching file mlir/include/mlir/Dialect/Tensor/Utils/Utils.h
+patching file mlir/lib/Dialect/Linalg/Transforms/BubbleUpExtractSlice.cpp
+patching file mlir/lib/Dialect/Tensor/Utils/Utils.cpp
+patching file mlir/lib/Dialect/Linalg/Transforms/BubbleUpExtractSlice.cpp
+patching file mlir/lib/Dialect/SCF/TransformOps/SCFTransformOps.cpp
+patching file mlir/lib/Dialect/SCF/Utils/Utils.cpp
+patching file mlir/test/Dialect/SCF/transform-loop-fuse-sibling.mlir
+patching file mlir/include/mlir/Dialect/Utils/ReshapeOpsUtils.h
+patching file mlir/lib/Dialect/Bufferization/Transforms/DropEquivalentBufferResults.cpp
+patching file mlir/include/mlir/Dialect/Transform/IR/TransformOps.td
+patching file mlir/lib/Dialect/SCF/IR/SCF.cpp
+patching file mlir/lib/Dialect/Transform/IR/TransformOps.cpp
+patching file mlir/lib/Dialect/SCF/IR/SCF.cpp
+patching file mlir/lib/Dialect/SCF/IR/SCF.cpp
+patching file mlir/include/mlir/Dialect/Bufferization/IR/BufferizableOpInterface.h
+patching file mlir/lib/Dialect/Bufferization/Transforms/FuncBufferizableOpInterfaceImpl.cpp
+patching file mlir/test/Dialect/Bufferization/Transforms/one-shot-module-bufferize-invalid.mlir
+patching file mlir/test/Dialect/Bufferization/Transforms/one-shot-module-bufferize.mlir
+patching file mlir/include/mlir/Dialect/Utils/ExpandShapeUtils.h
+patching file mlir/lib/Dialect/Tensor/IR/TensorOps.cpp
+patching file mlir/include/mlir/Dialect/Utils/ReshapeOpsUtils.h
+patching file mlir/lib/Dialect/Tensor/IR/TensorOps.cpp
+patching file mlir/lib/Dialect/Utils/ReshapeOpsUtils.cpp
+patching file mlir/include/mlir/Dialect/Tensor/Transforms/Transforms.h
+patching file mlir/lib/Dialect/Tensor/Transforms/MergeConsecutiveInsertExtractSlicePatterns.cpp
+patching file mlir/lib/Dialect/Tensor/IR/TensorTilingInterfaceImpl.cpp
+patching file mlir/include/mlir/Dialect/Utils/ReshapeOpsUtils.h
+patching file mlir/test/Dialect/Tensor/canonicalize.mlir
+patching file mlir/lib/Dialect/Linalg/Transforms/TilingInterfaceImpl.cpp
+patching file mlir/lib/Dialect/Tensor/IR/TensorOps.cpp
+patching file mlir/lib/Dialect/Tensor/IR/TensorOps.cpp
+patching file mlir/lib/Dialect/Tensor/IR/TensorTilingInterfaceImpl.cpp
+patching file mlir/test/Dialect/Tensor/tiling.mlir
+patching file mlir/include/mlir/Dialect/Utils/StructuredOpsUtils.td
+patching file mlir/include/mlir/Dialect/Linalg/IR/LinalgExtensions.h
+patching file mlir/lib/Dialect/Linalg/IR/CMakeLists.txt
+patching file mlir/lib/Dialect/Linalg/IR/LinalgExtensions.cpp
+patching file mlir/include/mlir/Dialect/Linalg/IR/LinalgExtensions.h
+patch unexpectedly ends in middle of line
+patching file mlir/include/mlir/Dialect/Linalg/IR/LinalgExtensions.h
+patch unexpectedly ends in middle of line
+patching file mlir/include/mlir/Dialect/Linalg/IR/LinalgExtensions.h
+patching file mlir/lib/Dialect/Linalg/IR/LinalgExtensions.cpp
+patching file mlir/include/mlir/Dialect/Linalg/Transforms/Transforms.h
+patching file mlir/lib/Dialect/Linalg/Transforms/DropUnitDims.cpp
+patching file mlir/test/lib/Dialect/Linalg/TestLinalgDropUnitDims.cpp
+patching file mlir/include/mlir/Dialect/Linalg/Transforms/Transforms.h
+patching file mlir/lib/Dialect/Linalg/Transforms/BubbleUpExtractSlice.cpp
+patching file mlir/lib/Dialect/Linalg/Transforms/DropUnitDims.cpp
+patching file mlir/include/mlir/Dialect/Tensor/IR/TensorOps.td
+patching file mlir/lib/Dialect/Tensor/IR/TensorOps.cpp
+patching file mlir/lib/Dialect/Tensor/Transforms/ConcatOpPatterns.cpp
+patching file mlir/test/Dialect/Tensor/decompose-concat.mlir
+patching file mlir/lib/Dialect/Linalg/Transforms/BubbleUpExtractSlice.cpp
+patching file mlir/lib/Dialect/MemRef/Utils/MemRefUtils.cpp
+patching file mlir/include/mlir/Dialect/Utils/ReshapeOpsUtils.h
+patching file mlir/lib/Dialect/Linalg/TransformOps/LinalgTransformOps.cpp
+patching file mlir/lib/Dialect/Linalg/Transforms/BubbleUpExtractSlice.cpp
+patching file mlir/lib/Dialect/SCF/Utils/Utils.cpp
+patching file mlir/lib/Dialect/MemRef/IR/MemRefOps.cpp
+patching file mlir/lib/Dialect/MemRef/IR/MemRefOps.cpp
+patching file mlir/lib/Dialect/MemRef/IR/MemRefOps.cpp
+patching file mlir/lib/Dialect/MemRef/IR/MemRefOps.cpp
+patching file mlir/lib/Dialect/MemRef/IR/MemRefOps.cpp
+patching file mlir/test/Dialect/MemRef/ops.mlir
+patching file mlir/lib/Dialect/MemRef/Utils/MemRefUtils.cpp
+patching file mlir/include/mlir/Conversion/FuncToLLVM/ConvertFuncToLLVM.h
+patching file mlir/include/mlir/Dialect/Linalg/CMakeLists.txt
+patching file mlir/include/mlir/Dialect/Linalg/Passes.h
+patching file mlir/include/mlir/Dialect/Linalg/TransformOps/LinalgTransformOps.td
+patching file mlir/include/mlir/Dialect/Linalg/Transforms/Transforms.h
+patching file mlir/include/mlir/Dialect/Tensor/IR/TensorOps.td
+patching file mlir/include/mlir/Dialect/Tensor/Transforms/Transforms.h
+patching file mlir/include/mlir/Dialect/Tensor/Utils/Utils.h
+patching file mlir/include/mlir/Dialect/Utils/CMakeLists.txt
+patching file mlir/include/mlir/Dialect/Utils/ExpandShapeUtils.h
+patching file mlir/include/mlir/Dialect/Utils/ReshapeOpsUtils.h
+patching file mlir/include/mlir/Dialect/Utils/StaticValueUtils.h
+patching file mlir/include/mlir/Dialect/Utils/StructuredOpsUtils.td
+patching file mlir/lib/Dialect/Arith/IR/ArithOps.cpp
+patching file mlir/lib/Dialect/Arith/IR/CMakeLists.txt
+patching file mlir/lib/Dialect/Arith/Transforms/CMakeLists.txt
+patching file mlir/lib/Dialect/Bufferization/Transforms/FuncBufferizableOpInterfaceImpl.cpp
+patching file mlir/lib/Dialect/Linalg/IR/CMakeLists.txt
+patching file mlir/lib/Dialect/Linalg/IR/LinalgOps.cpp
+patching file mlir/lib/Dialect/Linalg/TransformOps/CMakeLists.txt
+patching file mlir/lib/Dialect/Linalg/Transforms/BubbleUpExtractSlice.cpp
+patching file mlir/lib/Dialect/Linalg/Transforms/CMakeLists.txt
+patching file mlir/lib/Dialect/Linalg/Transforms/MeshShardingInterfaceImpl.cpp
+patching file mlir/lib/Dialect/Linalg/Transforms/TilingInterfaceImpl.cpp
+patching file mlir/lib/Dialect/MemRef/IR/CMakeLists.txt
+patching file mlir/lib/Dialect/MemRef/Utils/MemRefUtils.cpp
+patching file mlir/lib/Dialect/Mesh/Interfaces/ShardingInterface.cpp
+patching file mlir/lib/Dialect/Mesh/Transforms/ShardingPropagation.cpp
+patching file mlir/lib/Dialect/SCF/IR/CMakeLists.txt
+patching file mlir/lib/Dialect/SCF/IR/SCF.cpp
+patching file mlir/lib/Dialect/Tensor/IR/CMakeLists.txt
+patching file mlir/lib/Dialect/Tensor/IR/TensorDialect.cpp
+patching file mlir/lib/Dialect/Tensor/IR/TensorInferTypeOpInterfaceImpl.cpp
+patching file mlir/lib/Dialect/Tensor/IR/TensorOps.cpp
+patching file mlir/lib/Dialect/Tensor/IR/TensorTilingInterfaceImpl.cpp
+patching file mlir/lib/Dialect/Tensor/Transforms/BufferizableOpInterfaceImpl.cpp
+patching file mlir/lib/Dialect/Tensor/Transforms/MergeConsecutiveInsertExtractSlicePatterns.cpp
+patching file mlir/lib/Dialect/Tensor/Utils/Utils.cpp
+patching file mlir/lib/Dialect/Transform/IR/TransformOps.cpp
+patching file mlir/lib/Dialect/Utils/ReshapeOpsUtils.cpp
+patching file mlir/lib/Dialect/Utils/StaticValueUtils.cpp
+patching file mlir/lib/IR/AffineExpr.cpp
+patching file mlir/lib/Interfaces/InferTypeOpInterface.cpp
+patching file mlir/lib/Target/Cpp/TranslateToCpp.cpp
+patching file mlir/lib/Target/LLVMIR/DebugTranslation.cpp
+patching file mlir/lib/Transforms/Canonicalizer.cpp
+patching file mlir/test/Dialect/Arith/bufferize.mlir
+patching file mlir/test/Dialect/Bufferization/Transforms/one-shot-module-bufferize.mlir
+patching file mlir/test/Dialect/Linalg/bubble-up-extract-slice-op.mlir
+patching file mlir/test/Dialect/Linalg/resolve-shaped-type-result-dims.mlir
+patching file mlir/test/Dialect/Tensor/fold-empty-op.mlir
+patching file mlir/test/lib/Dialect/Linalg/CMakeLists.txt
+patching file mlir/test/lib/Dialect/Linalg/TestLinalgTransforms.cpp
+patching file mlir/test/lit.site.cfg.py.in
+patching file mlir/test/mlir-cpu-runner/async-error.mlir
+patching file mlir/test/mlir-cpu-runner/async-func.mlir
+patching file mlir/test/mlir-cpu-runner/async-group.mlir
+patching file mlir/test/mlir-cpu-runner/async-value.mlir
+patching file mlir/test/mlir-cpu-runner/async.mlir
+patching file mlir/test/python/execution_engine.py
+patching file mlir/lib/Dialect/Linalg/IR/CMakeLists.txt
+patching file mlir/lib/Dialect/MemRef/IR/MemRefOps.cpp
+patching file mlir/include/mlir/Dialect/Linalg/IR/LinalgExtensions.h
+patching file mlir/docs/PatternRewriter.md
+patching file mlir/examples/standalone/lib/Standalone/StandalonePasses.cpp
+patching file mlir/include/mlir/Transforms/GreedyPatternRewriteDriver.h
+patching file mlir/lib/CAPI/Transforms/Rewrite.cpp
+patching file mlir/lib/Conversion/ArithToArmSME/ArithToArmSME.cpp
+patching file mlir/lib/Conversion/ArmNeon2dToIntr/ArmNeon2dToIntr.cpp
+patching file mlir/lib/Conversion/GPUToNVVM/LowerGpuOpsToNVVMOps.cpp
+patching file mlir/lib/Conversion/GPUToROCDL/LowerGpuOpsToROCDLOps.cpp
+patching file mlir/lib/Conversion/ShapeToStandard/ConvertShapeConstraints.cpp
+patching file mlir/lib/Conversion/VectorToArmSME/VectorToArmSMEPass.cpp
+patching file mlir/lib/Conversion/VectorToGPU/VectorToGPU.cpp
+patching file mlir/lib/Conversion/VectorToSCF/VectorToSCF.cpp
+patching file mlir/lib/Dialect/Affine/TransformOps/AffineTransformOps.cpp
+patching file mlir/lib/Dialect/Affine/Transforms/AffineDataCopyGeneration.cpp
+patching file mlir/lib/Dialect/Affine/Transforms/AffineExpandIndexOps.cpp
+patching file mlir/lib/Dialect/Affine/Transforms/SimplifyAffineStructures.cpp
+patching file mlir/lib/Dialect/Affine/Utils/LoopUtils.cpp
+patching file mlir/lib/Dialect/Affine/Utils/Utils.cpp
+patching file mlir/lib/Dialect/Arith/Transforms/IntRangeOptimizations.cpp
+patching file mlir/lib/Dialect/ArmSME/Transforms/OuterProductFusion.cpp
+patching file mlir/lib/Dialect/ArmSVE/Transforms/LegalizeVectorStorage.cpp
+patching file mlir/lib/Dialect/Async/Transforms/AsyncParallelFor.cpp
+patching file mlir/lib/Dialect/Bufferization/Transforms/BufferDeallocationSimplification.cpp
+patching file mlir/lib/Dialect/Bufferization/Transforms/EmptyTensorToAllocTensor.cpp
+patching file mlir/lib/Dialect/EmitC/Transforms/FormExpressions.cpp
+patching file mlir/lib/Dialect/GPU/Transforms/EliminateBarriers.cpp
+patching file mlir/lib/Dialect/LLVMIR/Transforms/OptimizeForNVVM.cpp
+patching file mlir/lib/Dialect/Linalg/TransformOps/LinalgTransformOps.cpp
+patching file mlir/lib/Dialect/Linalg/Transforms/BlockPackMatmul.cpp
+patching file mlir/lib/Dialect/Linalg/Transforms/Detensorize.cpp
+patching file mlir/lib/Dialect/Linalg/Transforms/ElementwiseOpFusion.cpp
+patching file mlir/lib/Dialect/Linalg/Transforms/Generalization.cpp
+patching file mlir/lib/Dialect/Linalg/Transforms/InlineScalarOperands.cpp
+patching file mlir/lib/Dialect/Linalg/Transforms/Loops.cpp
+patching file mlir/lib/Dialect/Linalg/Transforms/NamedOpConversions.cpp
+patching file mlir/lib/Dialect/Math/Transforms/UpliftToFMA.cpp
+patching file mlir/lib/Dialect/MemRef/Transforms/ExpandStridedMetadata.cpp
+patching file mlir/lib/Dialect/MemRef/Transforms/FoldMemRefAliasOps.cpp
+patching file mlir/lib/Dialect/MemRef/Transforms/ResolveShapedTypeResultDims.cpp
+patching file mlir/lib/Dialect/SCF/Transforms/ForToWhile.cpp
+patching file mlir/lib/Dialect/SCF/Transforms/LoopCanonicalization.cpp
+patching file mlir/lib/Dialect/SCF/Transforms/LoopSpecialization.cpp
+patching file mlir/lib/Dialect/SPIRV/Transforms/CanonicalizeGLPass.cpp
+patching file mlir/lib/Dialect/SPIRV/Transforms/SPIRVWebGPUTransforms.cpp
+patching file mlir/lib/Dialect/Shape/Transforms/OutlineShapeComputation.cpp
+patching file mlir/lib/Dialect/Shape/Transforms/RemoveShapeConstraints.cpp
+patching file mlir/lib/Dialect/SparseTensor/Transforms/SparseTensorPasses.cpp
+patching file mlir/lib/Dialect/Tensor/Transforms/FoldTensorSubsetOps.cpp
+patching file mlir/lib/Dialect/Tosa/Transforms/TosaLayerwiseConstantFoldPass.cpp
+patching file mlir/lib/Dialect/Tosa/Transforms/TosaMakeBroadcastable.cpp
+patching file mlir/lib/Dialect/Tosa/Transforms/TosaOptionalDecompositions.cpp
+patching file mlir/lib/Dialect/Transform/IR/TransformOps.cpp
+patching file mlir/lib/Dialect/Vector/Transforms/LowerVectorMask.cpp
+patching file mlir/lib/Dialect/Vector/Transforms/LowerVectorMultiReduction.cpp
+patching file mlir/lib/Dialect/XeGPU/Transforms/XeGPUFoldAliasOps.cpp
+patching file mlir/lib/Reducer/ReductionTreePass.cpp
+patching file mlir/lib/Transforms/Canonicalizer.cpp
+patching file mlir/lib/Transforms/Utils/GreedyPatternRewriteDriver.cpp
+patching file mlir/lib/Transforms/Utils/OneToNTypeConversion.cpp
+patching file mlir/test/Transforms/test-operation-folder.mlir
+patching file mlir/test/lib/Conversion/MathToVCIX/TestMathToVCIXConversion.cpp
+patching file mlir/test/lib/Conversion/VectorToSPIRV/TestVectorReductionToSPIRVDotProd.cpp
+patching file mlir/test/lib/Dialect/Affine/TestAffineDataCopy.cpp
+patching file mlir/test/lib/Dialect/ArmNeon/TestLowerToArmNeon.cpp
+patching file mlir/test/lib/Dialect/GPU/TestGpuRewrite.cpp
+patching file mlir/test/lib/Dialect/Linalg/TestDataLayoutPropagation.cpp
+patching file mlir/test/lib/Dialect/Linalg/TestLinalgDecomposeOps.cpp
+patching file mlir/test/lib/Dialect/Linalg/TestLinalgElementwiseFusion.cpp
+patching file mlir/test/lib/Dialect/Linalg/TestLinalgFusionTransforms.cpp
+patching file mlir/test/lib/Dialect/Linalg/TestLinalgRankReduceContractionOps.cpp
+patching file mlir/test/lib/Dialect/Linalg/TestLinalgTransforms.cpp
+patching file mlir/test/lib/Dialect/Linalg/TestPadFusion.cpp
+patching file mlir/test/lib/Dialect/Math/TestAlgebraicSimplification.cpp
+patching file mlir/test/lib/Dialect/Math/TestExpandMath.cpp
+patching file mlir/test/lib/Dialect/Math/TestPolynomialApproximation.cpp
+patching file mlir/test/lib/Dialect/MemRef/TestComposeSubView.cpp
+patching file mlir/test/lib/Dialect/Mesh/TestOpLowering.cpp
+patching file mlir/test/lib/Dialect/Mesh/TestReshardingSpmdization.cpp
+patching file mlir/test/lib/Dialect/Mesh/TestSimplifications.cpp
+patching file mlir/test/lib/Dialect/NVGPU/TestNVGPUTransforms.cpp
+patching file mlir/test/lib/Dialect/SCF/TestUpliftWhileToFor.cpp
+patching file mlir/test/lib/Dialect/Tensor/TestTensorTransforms.cpp
+patching file mlir/test/lib/Dialect/Test/TestPatterns.cpp
+patching file mlir/test/lib/Dialect/Test/TestTraits.cpp
+patching file mlir/test/lib/Dialect/Tosa/TosaTestPasses.cpp
+patching file mlir/test/lib/Dialect/Vector/TestVectorTransforms.cpp
+patching file mlir/test/lib/Rewrite/TestPDLByteCode.cpp
+patching file mlir/test/lib/Tools/PDLL/TestPDLL.cpp
+patching file mlir/test/lib/Transforms/TestCommutativityUtils.cpp
+patching file mlir/test/lib/Transforms/TestMakeIsolatedFromAbove.cpp
+patching file mlir/include/mlir/Analysis/DataFlow/ConstantPropagationAnalysis.h
+patching file mlir/include/mlir/Analysis/DataFlow/DenseAnalysis.h
+patching file mlir/include/mlir/Analysis/DataFlow/IntegerRangeAnalysis.h
+patching file mlir/include/mlir/Analysis/DataFlow/LivenessAnalysis.h
+patching file mlir/include/mlir/Analysis/DataFlow/SparseAnalysis.h
+patching file mlir/lib/Analysis/DataFlow/ConstantPropagationAnalysis.cpp
+patching file mlir/lib/Analysis/DataFlow/DenseAnalysis.cpp
+patching file mlir/lib/Analysis/DataFlow/IntegerRangeAnalysis.cpp
+patching file mlir/lib/Analysis/DataFlow/LivenessAnalysis.cpp
+patching file mlir/lib/Analysis/DataFlow/SparseAnalysis.cpp
+patching file mlir/test/Analysis/DataFlow/test-last-modified-error.mlir
+patching file mlir/test/lib/Analysis/DataFlow/TestDenseBackwardDataFlowAnalysis.cpp
+patching file mlir/test/lib/Analysis/DataFlow/TestDenseDataFlowAnalysis.h
+patching file mlir/test/lib/Analysis/DataFlow/TestDenseForwardDataFlowAnalysis.cpp
+patching file mlir/test/lib/Analysis/DataFlow/TestSparseBackwardDataFlowAnalysis.cpp
+patching file mlir/include/mlir/Analysis/DataFlow/DeadCodeAnalysis.h
+patching file mlir/include/mlir/Analysis/DataFlow/DenseAnalysis.h
+patching file mlir/include/mlir/Analysis/DataFlow/IntegerRangeAnalysis.h
+patching file mlir/include/mlir/Analysis/DataFlow/SparseAnalysis.h
+patching file mlir/include/mlir/Analysis/DataFlowFramework.h
+patching file mlir/lib/Analysis/DataFlow/DeadCodeAnalysis.cpp
+patching file mlir/lib/Analysis/DataFlow/DenseAnalysis.cpp
+patching file mlir/lib/Analysis/DataFlow/IntegerRangeAnalysis.cpp
+patching file mlir/lib/Analysis/DataFlow/SparseAnalysis.cpp
+patching file mlir/lib/Analysis/DataFlowFramework.cpp
+patching file mlir/test/lib/Analysis/DataFlow/TestDeadCodeAnalysis.cpp
+patching file mlir/test/lib/Analysis/DataFlow/TestDenseDataFlowAnalysis.h
+patching file mlir/test/lib/Analysis/TestDataFlowFramework.cpp
+patching file mlir/include/mlir/Analysis/DataFlow/DeadCodeAnalysis.h
+patching file mlir/include/mlir/Analysis/DataFlow/DenseAnalysis.h
+patching file mlir/include/mlir/Analysis/DataFlow/SparseAnalysis.h
+patching file mlir/include/mlir/Analysis/DataFlowFramework.h
+patching file mlir/include/mlir/IR/Block.h
+patching file mlir/lib/Analysis/DataFlow/DeadCodeAnalysis.cpp
+patching file mlir/lib/Analysis/DataFlow/DenseAnalysis.cpp
+patching file mlir/lib/Analysis/DataFlow/IntegerRangeAnalysis.cpp
+patching file mlir/lib/Analysis/DataFlow/LivenessAnalysis.cpp
+patching file mlir/lib/Analysis/DataFlow/SparseAnalysis.cpp
+patching file mlir/lib/Analysis/DataFlowFramework.cpp
+patching file mlir/lib/Dialect/Arith/Transforms/IntRangeOptimizations.cpp
+patching file mlir/test/lib/Analysis/DataFlow/TestDeadCodeAnalysis.cpp
+patching file mlir/test/lib/Analysis/DataFlow/TestDenseBackwardDataFlowAnalysis.cpp
+patching file mlir/test/lib/Analysis/DataFlow/TestDenseForwardDataFlowAnalysis.cpp
+patching file mlir/test/lib/Analysis/DataFlow/TestSparseBackwardDataFlowAnalysis.cpp
+patching file mlir/test/lib/Analysis/TestDataFlowFramework.cpp
+patching file mlir/lib/Transforms/Utils/DialectConversion.cpp
+patching file mlir/lib/Dialect/Linalg/Transforms/BubbleUpExtractSlice.cpp
+patching file mlir/lib/Dialect/SCF/IR/SCF.cpp
+patching file mlir/lib/Dialect/SCF/IR/SCF.cpp
+patching file mlir/lib/Dialect/SCF/IR/SCF.cpp
+patching file llvm/cmake/modules/TableGen.cmake
+patching file mlir/lib/Dialect/MemRef/Utils/MemRefUtils.cpp
+patching file mlir/include/mlir/Dialect/Bufferization/Transforms/FuncBufferizableOpInterfaceImpl.h
+patching file mlir/lib/Dialect/Bufferization/Transforms/FuncBufferizableOpInterfaceImpl.cpp
+patching file mlir/lib/Dialect/Bufferization/Transforms/OneShotModuleBufferize.cpp
+patching file mlir/test/Dialect/Bufferization/Transforms/one-shot-module-bufferize-analysis.mlir
+patching file mlir/test/Dialect/Bufferization/Transforms/one-shot-module-bufferize-invalid.mlir
+patching file mlir/test/Dialect/Bufferization/Transforms/one-shot-module-bufferize.mlir
+patching file mlir/lib/Conversion/MemRefToLLVM/MemRefToLLVM.cpp
+Finished applying patches
+CMake Deprecation Warning at /home/zuomin/Projects/Compiler/tilelang-ascend/3rdparty/AscendNPU-IR/third-party/llvm-project/cmake/Modules/CMakePolicy.cmake:6 (cmake_policy):
+  The OLD behavior for policy CMP0114 will be removed from a future version
+  of CMake.
+
+  The cmake-policies(7) manual explains that the OLD behaviors of all
+  policies are deprecated and that a policy should be set to OLD only under
+  specific short-term circumstances.  Projects should be ported to the NEW
+  behavior and not rely on setting a policy to OLD.
+Call Stack (most recent call first):
+  CMakeLists.txt:6 (include)
+
+
+CMake Deprecation Warning at /home/zuomin/Projects/Compiler/tilelang-ascend/3rdparty/AscendNPU-IR/third-party/llvm-project/cmake/Modules/CMakePolicy.cmake:11 (cmake_policy):
+  The OLD behavior for policy CMP0116 will be removed from a future version
+  of CMake.
+
+  The cmake-policies(7) manual explains that the OLD behaviors of all
+  policies are deprecated and that a policy should be set to OLD only under
+  specific short-term circumstances.  Projects should be ported to the NEW
+  behavior and not rely on setting a policy to OLD.
+Call Stack (most recent call first):
+  CMakeLists.txt:6 (include)
+
+
+-- The C compiler identification is unknown
+-- The CXX compiler identification is unknown
+-- The ASM compiler identification is unknown
+-- Didn't find assembler
+CMake Error at CMakeLists.txt:45 (project):
+  The CMAKE_C_COMPILER:
+
+    clang
+
+  is not a full path and was not found in the PATH.
+
+  Tell CMake where to find the compiler by setting either the environment
+  variable "CC" or the CMake cache entry CMAKE_C_COMPILER to the full path to
+  the compiler, or to the compiler name if it is in the PATH.
+
+
+CMake Error at CMakeLists.txt:45 (project):
+  The CMAKE_CXX_COMPILER:
+
+    clang++
+
+  is not a full path and was not found in the PATH.
+
+  Tell CMake where to find the compiler by setting either the environment
+  variable "CXX" or the CMake cache entry CMAKE_CXX_COMPILER to the full path
+  to the compiler, or to the compiler name if it is in the PATH.
+
+
+CMake Error at CMakeLists.txt:45 (project):
+  No CMAKE_ASM_COMPILER could be found.
+
+  Tell CMake where to find the compiler by setting either the environment
+  variable "ASM" or the CMake cache entry CMAKE_ASM_COMPILER to the full path
+  to the compiler, or to the compiler name if it is in the PATH.
+
+
+-- Configuring incomplete, errors occurred!
+~/Projects/Compiler/tilelang-ascend
+Running CMake for TileLang...
+-- The C compiler identification is GNU 15.2.0
+-- The CXX compiler identification is GNU 15.2.0
+-- Detecting C compiler ABI info
+-- Detecting C compiler ABI info - done
+-- Check for working C compiler: /home/zuomin/miniconda3/envs/tilelang/bin/x86_64-conda-linux-gnu-cc - skipped
+-- Detecting C compile features
+-- Detecting C compile features - done
+-- Detecting CXX compiler ABI info
+-- Detecting CXX compiler ABI info - done
+-- Check for working CXX compiler: /home/zuomin/miniconda3/envs/tilelang/bin/x86_64-conda-linux-gnu-c++ - skipped
+-- Detecting CXX compile features
+-- Detecting CXX compile features - done
+CMake Error at CMakeLists.txt:61 (find_package):
+  Could not find a package configuration file provided by "MLIR" with any of
+  the following names:
+
+    MLIR.cps
+    mlir.cps
+    MLIRConfig.cmake
+    mlir-config.cmake
+
+  Add the installation prefix of "MLIR" to CMAKE_PREFIX_PATH or set
+  "MLIR_DIR" to a directory containing one of the above files.  If "MLIR"
+  provides a separate development package or SDK, be sure it has been
+  installed.
+
+
+-- Configuring incomplete, errors occurred!
+Error: CMake configuration failed.
+ERROR conda.cli.main_run:execute(142): `conda run bash install_npuir.sh` failed. (See above for error)
