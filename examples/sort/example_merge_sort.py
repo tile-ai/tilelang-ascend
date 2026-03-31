@@ -171,7 +171,6 @@ def test_merge(merge_num):
         kernel = generate_merge_sort_4way()
 
     print("\nGenerated kernel source:")
-    print(kernel.get_kernel_source())
 
     torch.npu.synchronize()
     print("init successful!")
