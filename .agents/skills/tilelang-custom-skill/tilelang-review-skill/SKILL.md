@@ -241,7 +241,7 @@ bash .agents/skills/tilelang-custom-skill/tilelang-review-skill/scritps/check-cp
 ║  📄 报告已保存到:                                             ║
 ║  .agents/reports/format-report-xxx.md                      ║
 ║                                                               ║
-║  🔧 是否进行自动修复？                                        ║
+║  🔧 是否进行自动修复？（可在最后一项选择性填写单独对 C++ 或者 Python 进行修复）║
 ║     [ 是 / Y ] - 执行修复                                     ║
 ║     [ 否 / N ] - 跳过修复                                     ║
 ╚═══════════════════════════════════════════════════════════════╝
@@ -260,7 +260,7 @@ bash .agents/skills/tilelang-custom-skill/tilelang-review-skill/scritps/check-cp
 问题: 是否进行代码格式修复？
 选项:
   - 是 / 同意 / Y - 执行自动修复
-  - 否 / 拒绝 / N - 跳过修复
+  - 否 / 拒绝 / N - 跳过修复（可在最后一项选择性填写单独对 C++ 或者 Python 进行修复）
 ```
 
 **⛔ 禁止私自修改 AskUserQuestion 的内容和选项：**
@@ -290,7 +290,7 @@ bash .agents/skills/tilelang-custom-skill/tilelang-review-skill/scritps/check-cp
 问题: 是否进行代码格式修复？
 选项:
   - 是 / 同意 / Y - 执行自动修复
-  - 否 / 拒绝 / N - 跳过修复
+  - 否 / 拒绝 / N - 跳过修复（可在最后一项选择性填写单独对 C++ 或者 Python 进行修复）
 ```
 ↑ **这是正确的！严格遵循 skill 规定的格式，没有私自添加内容**
 
