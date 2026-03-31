@@ -89,7 +89,7 @@ jobs:
         CACHING_URL="cache-service.nginx-pypi-cache.svc.cluster.local"
         pip config set global.index-url http://${CACHING_URL}/pypi/simple
         pip config set global.trusted-host "${CACHING_URL}"
-        pip install torch==2.7.1+cpu -i ${TORCH_CACHE_URL} --extra-index-url ${PYPI_CACHE_URL}
+        pip install torch==2.7.1 -i ${TORCH_CACHE_URL} --extra-index-url ${PYPI_CACHE_URL}
         pip install torch-npu==2.7.1
         pip install dist/*.whl
         pip install pytest pytest-xdist pytest-html numpy
