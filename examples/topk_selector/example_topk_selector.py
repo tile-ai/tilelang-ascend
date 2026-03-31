@@ -48,8 +48,8 @@ def simple_topk_selector(B: int, N: int, top_k: int, block_N: int, dtype: Litera
 
     @T.prim_func
     def main(
-        x: T.Tensor([B, N], dtype),                     # type: ignore
-        indices: T.Tensor([B, top_k], INDEX_DTYPE),     # type: ignore
+        x: T.Tensor([B, N], dtype),  # type: ignore
+        indices: T.Tensor([B, top_k], INDEX_DTYPE),  # type: ignore
     ):
         with T.Kernel(b_num, is_npu=True) as (cid, vid):
             row_id = (cid * VEC_NUM + vid) % B  # one v-core for one row
@@ -58,11 +58,11 @@ def simple_topk_selector(B: int, N: int, top_k: int, block_N: int, dtype: Litera
             x_ub = T.alloc_ub([block_N], dtype)
 
             sort_indices = T.alloc_ub([block_N], INDEX_DTYPE)
-            sort_indices_u = T.alloc_ub([block_N], SORT_INDEX_DTYPE)    # same buffer as sort_indices
+            sort_indices_u = T.alloc_ub([block_N], SORT_INDEX_DTYPE)  # same buffer as sort_indices
             topk_indices_tmp_ub = T.alloc_ub([block_N], INDEX_DTYPE)
 
             sort_result = T.alloc_ub([merge_num, block_N * 2], dtype)
-            sort_result_index = T.alloc_ub([top_k], INDEX_DTYPE)        # sub buffer of sort_result
+            sort_result_index = T.alloc_ub([top_k], INDEX_DTYPE)  # sub buffer of sort_result
 
             topk_global = T.alloc_ub([top_k * 2], dtype)
             merge_tmp = T.alloc_ub([top_k * 2], dtype)
@@ -84,7 +84,7 @@ def simple_topk_selector(B: int, N: int, top_k: int, block_N: int, dtype: Litera
             )
 
             T.tile.arith_progression(topk_indices_tmp_ub, 0, 1, block_N)  # (0..block_N-1)
-            T.tile.init_sort_buf(topk_global, top_k * 2, rsv=0)   # rsv is always 0
+            T.tile.init_sort_buf(topk_global, top_k * 2, rsv=0)  # rsv is always 0
 
             for bn in T.serial(n_num):
                 T.copy(x[row_id, bn * block_N], x_ub)
