@@ -182,14 +182,14 @@ def flash_attention_fwd(
                     # ---- C: QK matmul (even) → ws1[0] ----
                     T.copy(K[bz, kv_by, kv_offset * block_N : (kv_offset + 1) * block_N, :], k_l1)
                     T.copy(q_l1, l0a[0, :, :])
-                    T.copy(k_l1, l0b[0, :, :])
+                    T.copy(k_l1, l0b[0, :, :], transpose=True)
                     T.mma(l0a[0, :, :], l0b[0, :, :], l0c[0, :, :], init=True)
                     T.copy(l0c[0, :, :], workspace_1[cid, 0, :, :])
 
                     # ---- C: QK matmul (odd) → ws1[1] ----
                     T.copy(K[bz, kv_by, (kv_offset + 1) * block_N : (kv_offset + 2) * block_N, :], k_l1)
                     T.copy(q_l1, l0a[1, :, :])
-                    T.copy(k_l1, l0b[1, :, :])
+                    T.copy(k_l1, l0b[1, :, :], transpose=True)
                     T.mma(l0a[1, :, :], l0b[1, :, :], l0c[1, :, :], init=True)
                     T.copy(l0c[1, :, :], workspace_1[cid, 1, :, :])
 
