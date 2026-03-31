@@ -215,16 +215,16 @@ mlir::tilelangir::TileLangIRInsertCVSync::GetFinalFlagIds(OpBuilder &builder,
       setFlagOffsetInt = 0;
     } else {
       setFlagOffsetInt = cubeFlagCnt;
-      vectorFlagCnt += loopCnt;
     }
+    vectorFlagCnt += loopCnt;
   } else {
     waitFlagOffsetInt = cubeFlagCnt;
     if (isLast) {
       setFlagOffsetInt = 0;
     } else {
       setFlagOffsetInt = vectorFlagCnt;
-      cubeFlagCnt += loopCnt;
     }
+    cubeFlagCnt += loopCnt;
   }
 
   // 计算最终标志 ID
@@ -328,17 +328,7 @@ void mlir::tilelangir::TileLangIRInsertCVSync::
     builder.setInsertionPointToStart(clearBody);
     Value clearId = clearForOp.getInductionVar();
     clearId = convertToI64(builder, clearForOp->getLoc(), clearId);
-    Value syncFlagsLimit = builder.create<arith::ConstantOp>(
-        clearForOp->getLoc(), builder.getI64Type(),
-        builder.getI64IntegerAttr(SYNC_FLAGS_LIMIT));
-    Value endOffset = builder.create<arith::ConstantOp>(
-        clearForOp->getLoc(), builder.getI64Type(),
-        builder.getI64IntegerAttr(endOffsetInt));
-    Value endIdWithOffset = builder.create<arith::AddIOp>(
-        clearForOp->getLoc(), clearId, endOffset);
-    Value endId = builder.create<arith::RemSIOp>(
-        clearForOp->getLoc(), endIdWithOffset, syncFlagsLimit);
-    buildCVSyncWait(builder, clearForOp->getLoc(), clearCoreType, endId);
+    buildCVSyncWait(builder, clearForOp->getLoc(), clearCoreType, clearId);
   }
 }
 
