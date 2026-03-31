@@ -99,7 +99,7 @@ class KernelLaunchFrame(TIRFrame):
             # CPU kernel frame, return a list of for frame items.
             return [frame.vars[0] for frame in self.frames[0:-1]]
         elif maybe_npu:
-            return [self.frames[i].iter_var.var for i in range(2)]
+            return [frame.iter_var.var for frame in self.frames[0:-1]]
         else:
             # Otherwise, return a list of iter_var.var objects (excluding the last 4 frames).
             # As 4 frames for threadIdx.x, threadIdx.y, threadIdx.z and block frame with attributes
@@ -243,7 +243,7 @@ def Kernel(
     """
     attrs: dict = {}
     if is_npu:
-        assert len(blocks) == 1, "NPU kernel must have exactly one block dimension"
+        assert len(blocks) <= 2, "NPU kernel only supports up to 2D blocks"
         attrs["tilelang.is_npu_kernel_frame"] = True
         return _ffi_api.KernelLaunch(blocks, threads, attrs)
 
