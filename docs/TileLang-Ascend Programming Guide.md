@@ -1767,25 +1767,40 @@ Expert编程模式可以复用Developer模式的Reduce类计算原语。
   T.tile.sort(dst, src, indices, tmp_buffer, repeat_time)
   ```
 
-- `T.tile.merge_sort(dst, src, block_size, block_num, is_copy):`
+```
+T.tile.merge_sort(dst, tmp, src0, src1, src2=None, src3=None)
+```
 
-  **参数**：
+**参数**：
 
-  - dst：排序结果将存储到的目标缓冲区
-  - src：包含待合并或排序数据的源缓冲区
-  - block_size：每个待合并块中的元素数量
-  - block_num：待处理的区块总数
-  - is_copy：一个布尔标志（0 或 1），用于指示是否在复制数据时不进行排序
+- dst：归并结果输出缓冲区
+- tmp：临时缓冲区，用于归并计算的中间结果存储
+- src0：第一个已排序的源数据缓冲区
+- src1：第二个已排序的源数据缓冲区
+- src2：第三个已排序的源数据缓冲区（可选，3-way 或 4-way 归并时需要）
+- src3：第四个已排序的源数据缓冲区（可选，4-way 归并时需要）
 
-  **功能**：将已经排好序的最多4条队列，合并排列成1条队列。
+**功能**：将多个已排序的数据块合并为一个有序结果，支持 2-way、3-way 和 4-way 归并排序。
 
-  更详细说明，详见AscendC文档：https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/83RC1alpha002/API/ascendcopapi/atlasascendc_api_07_0847.html
+**数据格式**：输入/输出格式均为 value-index pair：`[value0, index0, value1, index1, ...]`，按降序排列。
 
-  **举例**：
+**举例**：
 
-  ```
-  T.tile.merge_sort(dst, src, block_size, block_num, 0)
-  ```
+```python
+# 2-way 归并
+T.tile.merge_sort(merge_dst, merge_tmp, src0, src1)
+
+# 3-way 归并
+T.tile.merge_sort(merge_dst, merge_tmp, src0, src1, src2)
+
+# 4-way 归并
+T.tile.merge_sort(merge_dst, merge_tmp, src0, src1, src2, src3)
+```
+
+**注意事项**：
+- `tmp` 缓冲区大小需与 `dst` 相同
+- 输入缓冲区必须已按降序排序
+- 所有缓冲区的数据格式必须为 value-index pair（每 2 个 float 表示一个元素）
 
 - `T.tile.topk(dst, src, tmp_buffer, block_size):`
 
