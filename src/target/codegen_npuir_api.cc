@@ -499,6 +499,13 @@ std::string CodeGenTileLangNPUIRAPI::Finish() {
   std::string mlirCode;
   llvm::raw_string_ostream os(mlirCode);
   module->print(os);
+
+  if (failed(mlir::verify(*module))) {
+    LOG(FATAL) << "CodeGenTileLangNPUIRAPI: Generated MLIR module failed "
+                  "verification: \n"
+               << mlirCode;
+  }
+
   return mlirCode;
 }
 
