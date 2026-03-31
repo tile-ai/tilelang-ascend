@@ -281,6 +281,7 @@ def lower(
         pipeline = Pipeline()
         pipeline.add(transforms.mlir.canonicalize, top_down=True)
         pipeline.add(transforms.bishengir.adapt_triton_kernel)
+        pipeline.add(transforms.tilelangir.wrap_host_function)
         if dump_ir:
             pipeline.enable_ir_printing()
         mlir_str = pipeline.run(mlir_str)
