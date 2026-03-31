@@ -158,24 +158,36 @@ static std::map<tl::SyncBlockMode, mlir::hivm::SyncBlockInstrMode>
 
 static llvm::SmallVector<int64_t>
 getBroadcastDim(const Array<PrimExpr> &buffer_shape0,
-                const Array<PrimExpr> &buffer_shape1) {
-  llvm::SmallVector<int64_t> dims;
+                const llvm::ArrayRef<int64_t> buffer_shape1) {
   if (buffer_shape0.empty() || buffer_shape1.empty()) {
-    return dims;
+    return {};
   }
   CHECK(buffer_shape0.size() == buffer_shape1.size());
+  llvm::SmallVector<int64_t> dims;
   for (int i = 0; i < buffer_shape0.size(); i++) {
-    if (*as_const_int(buffer_shape0[i]) == 1 &&
-        *as_const_int(buffer_shape1[i]) != 1) {
+    if (*as_const_int(buffer_shape0[i]) == 1 && buffer_shape1[i] != 1) {
       dims.emplace_back(i);
-    } else if (*as_const_int(buffer_shape0[i]) != 1 &&
-               *as_const_int(buffer_shape1[i]) == 1) {
+    } else if (*as_const_int(buffer_shape0[i]) != 1 && buffer_shape1[i] == 1) {
       dims.emplace_back(i);
     } else {
-      CHECK(*as_const_int(buffer_shape0[i]) == *as_const_int(buffer_shape1[i]));
+      CHECK(*as_const_int(buffer_shape0[i]) == buffer_shape1[i]);
     }
   }
   return dims;
+}
+
+static llvm::SmallVector<int64_t>
+getBroadcastDim(const Array<PrimExpr> &buffer_shape0,
+                const Array<PrimExpr> &buffer_shape1) {
+  if (buffer_shape0.empty() || buffer_shape1.empty()) {
+    return {};
+  }
+  CHECK(buffer_shape0.size() == buffer_shape1.size());
+  return getBroadcastDim(
+      buffer_shape0,
+      llvm::map_to_vector(buffer_shape1, [](const PrimExpr &shape) {
+        return *as_const_int(shape);
+      }));
 }
 
 static llvm::SmallVector<int64_t>
@@ -2123,6 +2135,8 @@ void CodeGenTileLangNPUIRDEV::VbrcCodegen(const CallNode *op) {
       !npuirop.in.as<tvm::tir::Buffer>() &&
       !npuirop.in.as<tvm::tir::BufferRegion>() &&
       !npuirop.in.as<tvm::tir::CallNode>();
+  Value dst = GetVarValue(npuirop.dst);
+  Value newCastOp;
   if (isScalar) {
     // Scalar case
     if (npuirop.in->dtype != npuirop.dst->dtype) {
@@ -2130,25 +2144,29 @@ void CodeGenTileLangNPUIRDEV::VbrcCodegen(const CallNode *op) {
     } else {
       src = MakeValue(npuirop.in);
     }
+    mlir::Type dst_type = dst.getType();
+    mlir::TypeRange result_tensors(&dst_type, 1);
+    newCastOp = builder
+                    .create<mlir::linalg::FillOp>(builder.getUnknownLoc(),
+                                                  result_tensors, src, dst)
+                    ->getResult(0);
   } else {
     const CallNode *src_tmp = npuirop.in.as<CallNode>();
     src = GenExtractSliceFromRegion(src_tmp);
     auto srcTensor = llvm::dyn_cast<TypedValue<RankedTensorType>>(src);
     inBufferShape = srcTensor.getType().getShape();
-  }
-  Value dst = GetVarValue(npuirop.dst);
-  auto broadcastDimAttr = builder.getDenseI64ArrayAttr({});
-  if (!inBufferShape.empty()) {
     auto outTensor = llvm::dyn_cast<TypedValue<RankedTensorType>>(dst);
     auto outBufferShape = outTensor.getType().getShape();
     auto broadcastDim = getBroadcastDim(inBufferShape, outBufferShape);
-    broadcastDimAttr = builder.getDenseI64ArrayAttr(broadcastDim);
+    auto broadcastDimAttr = builder.getDenseI64ArrayAttr(broadcastDim);
+    mlir::Type dst_type = dst.getType();
+    mlir::TypeRange result_tensors(&dst_type, 1);
+    newCastOp = builder
+                    .create<mlir::linalg::BroadcastOp>(
+                        builder.getUnknownLoc(), src, dst, broadcastDimAttr)
+                    ->getResult(0);
   }
-  mlir::Type dst_type = dst.getType();
-  mlir::TypeRange result_tensors(&dst_type, 1);
-  auto newCastOp = builder.create<mlir::hivm::VBrcOp>(builder.getUnknownLoc(), result_tensors,
-                                      src, dst, broadcastDimAttr);
-  SetVarValue(npuirop.dst, newCastOp->getResult(0));
+  SetVarValue(npuirop.dst, newCastOp);
 }
 
 /// Generate hivm.hir.vcast for tl.npuir_cast.
@@ -2528,6 +2546,86 @@ void CodeGenTileLangNPUIRDEV::DotCodegen(const CallNode *op) {
   SetVarValue(npuirop.dst, newMmadL1OpValue);
 }
 
+Value CodeGenTileLangNPUIRDEV::broadcast(Value input, Value output,
+                                         DenseI64ArrayAttr dims,
+                                         OpBuilder &builder) {
+  auto inputType = input.getType();
+  auto loc = builder.getUnknownLoc();
+
+  if (inputType.isa<FloatType, IntegerType>()) {
+    return builder.create<mlir::linalg::FillOp>(loc, input, output)
+        ->getResult(0);
+  }
+
+  if (dims.empty()) {
+    return input;
+  }
+
+  if (auto type = mlir::dyn_cast<RankedTensorType>(inputType)) {
+    ArrayRef<int64_t> shape = type.getShape();
+    SmallVector<ReassociationIndices> reassoc;
+    ReassociationIndices currentGroup;
+
+    for (int64_t i = 0; i < shape.size(); i++) {
+      currentGroup.push_back(i);
+
+      if (shape[i] != 1 ||
+          llvm::find(dims.asArrayRef(), i) == dims.asArrayRef().end()) {
+        reassoc.push_back(currentGroup);
+        currentGroup.clear();
+      }
+    }
+    if (!currentGroup.empty()) {
+      reassoc.back().append(currentGroup.begin(), currentGroup.end());
+    }
+    if (reassoc.size() == shape.size()) {
+      return input;
+    }
+    auto collapsed =
+        builder.create<tensor::CollapseShapeOp>(loc, input, reassoc);
+    return builder
+        .create<mlir::linalg::BroadcastOp>(loc, collapsed, output, dims)
+        ->getResult(0);
+  }
+
+  return input;
+}
+
+Value CodeGenTileLangNPUIRDEV::transpose(Value input, Value output,
+                                         DenseI64ArrayAttr dims,
+                                         OpBuilder &builder) {
+  auto inputType = input.getType();
+
+  if (dims.empty()) {
+    return input;
+  }
+
+  if (auto tensorType = mlir::dyn_cast<RankedTensorType>(inputType)) {
+    auto loc = builder.getUnknownLoc();
+    auto transposed =
+        builder.create<mlir::linalg::TransposeOp>(loc, input, output, dims)
+            ->getResult(0);
+    return transposed;
+  }
+
+  return input;
+}
+
+Value CodeGenTileLangNPUIRDEV::broadcastOrTranspose(Value input, Value output,
+                                                    DenseI64ArrayAttr brcDims,
+                                                    DenseI64ArrayAttr trnDims,
+                                                    OpBuilder &builder) {
+  auto result = broadcast(input, output, brcDims, builder);
+  result = transpose(result, output, trnDims, builder);
+  return result;
+}
+
+static inline constexpr bool startsWith(std::string_view str,
+                                        std::string_view prefix) {
+  return str.size() >= prefix.size() &&
+         str.compare(0, prefix.size(), prefix) == 0;
+}
+
 /// Generate hivm.hir.vadd for tl.npuir_add.
 /// Generate hivm.hir.vcmp for tl.npuir_cmp.
 /// Generate hivm.hir.vdiv for tl.npuir_div.
@@ -2614,9 +2712,18 @@ void CodeGenTileLangNPUIRDEV::CreateHIVMBinaryVectorOp(const CallNode *op) {
   // transpose
   mlir::DenseI64ArrayAttr transpose = builder.getDenseI64ArrayAttr({});
   // broadcast
-  llvm::SmallVector<int64_t> dims =
-      getBroadcastDim(buffer_shape0, buffer_shape1);
-  mlir::DenseI64ArrayAttr broadcast = builder.getDenseI64ArrayAttr(dims);
+  ArrayRef<int64_t> shape;
+  if (auto shapedType = insertBase.getType().dyn_cast<ShapedType>()) {
+    shape = shapedType.getShape();
+  }
+  auto dims0 = getBroadcastDim(buffer_shape0, shape);
+  auto brc0 = builder.getDenseI64ArrayAttr(dims0);
+  auto dims1 = getBroadcastDim(buffer_shape1, shape);
+  auto brc1 = builder.getDenseI64ArrayAttr(dims1);
+  llvm::SetVector<int64_t> dims(llvm::from_range_t(), dims0);
+  dims.insert_range(dims1);
+  mlir::DenseI64ArrayAttr broadcast =
+      builder.getDenseI64ArrayAttr(dims.takeVector());
 
   // Create hivm::op
   auto loc = builder.getUnknownLoc();
@@ -2644,11 +2751,22 @@ void CodeGenTileLangNPUIRDEV::CreateHIVMBinaryVectorOp(const CallNode *op) {
     auto newOp = builder.create<T>(loc, insertBase.getType(), mlir::ValueRange{src0, src1},
         mlir::ValueRange{insertBase}, true, transpose, broadcast);
     newOpValue = newOp->getResult(0);
-  } else {
-    auto newOp = builder.create<T>(loc, insertBase.getType(), mlir::ValueRange{src0, src1},
-        mlir::ValueRange{insertBase}, transpose, broadcast);
-    newOpValue = newOp->getResult(0);
-  }
+    } else if constexpr (startsWith(
+                             T::getOperationName(),
+                             mlir::hivm::HIVMDialect::getDialectNamespace())) {
+      auto newOp = builder.create<T>(
+          loc, insertBase.getType(), mlir::ValueRange{src0, src1},
+          mlir::ValueRange{insertBase}, transpose, broadcast);
+      newOpValue = newOp->getResult(0);
+    } else {
+      src0 = broadcastOrTranspose(src0, insertBase, brc0, transpose, builder);
+      src1 = broadcastOrTranspose(src1, insertBase, brc1, transpose, builder);
+      newOpValue =
+          builder
+              .create<T>(loc, insertBase.getType(), ValueRange{src0, src1},
+                         ValueRange{insertBase})
+              ->getResult(0);
+    }
 
   mlir::Value result = needInsertSlice
     ? ReshapeCastAndInsertSlice(newOpValue, GetVarValue(region_node_dst), dst_range)
@@ -3139,7 +3257,7 @@ mlir::Value CodeGenTileLangNPUIRDEV::VisitExpr_(const CallNode *op) {
   } else if (op->op.same_as(Op::Get("tl.copy"))) {
     AscendCopyCodegen(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_add"))) {
-    CreateHIVMBinaryVectorOp<mlir::hivm::VAddOp>(op);
+    CreateHIVMBinaryVectorOp<linalg::AddOp>(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_exp"))) {
     UnaryVecOpCodegen<tvm::tl::NpuirExp, mlir::hivm::VExpOp>(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_ln"))) {
@@ -3600,15 +3718,17 @@ void CodeGenTileLangNPUIRDEV::AddFunctionForCoreType(const GlobalVar &gvar,
   funcOp.setArgAttr(1, "hacc.arg_type", workspaceArgAttr);
   funcOp->setAttr("SyncBlockLockArgIdx", builder.getI64IntegerAttr(0));
   funcOp->setAttr("WorkspaceArgIdx", builder.getI64IntegerAttr(1));
-  auto haccEntryAttr = hacc::stringifyHACCToLLVMIRTranslateAttr(
-      hacc::HACCToLLVMIRTranslateAttr::ENTRY);
-  funcOp->setAttr(haccEntryAttr, builder.getUnitAttr());
-  auto haccFuncTypeAttr = hacc::HACCFuncTypeAttr::get(
-      builder.getContext(), hacc::HACCFuncType::DEVICE);
-  funcOp->setAttr(hacc::HACCFuncTypeAttr::name, haccFuncTypeAttr);
-  auto funcCoreTypeAttr = hivm::TFuncCoreTypeAttr::get(
-      builder.getContext(), NPUIR_FUNCCORETYPE_STR[this->current_coretype]);
-  funcOp->setAttr(hivm::TFuncCoreTypeAttr::name, funcCoreTypeAttr);
+  // TODO: Better to consider using checks for different targets
+  // auto haccEntryAttr = hacc::stringifyHACCToLLVMIRTranslateAttr(
+  //     hacc::HACCToLLVMIRTranslateAttr::ENTRY);
+  // funcOp->setAttr(haccEntryAttr, builder.getUnitAttr());
+  // auto haccFuncTypeAttr = hacc::HACCFuncTypeAttr::get(
+  //     builder.getContext(), hacc::HACCFuncType::DEVICE);
+  // funcOp->setAttr(hacc::HACCFuncTypeAttr::name, haccFuncTypeAttr);
+  // auto funcCoreTypeAttr = hivm::TFuncCoreTypeAttr::get(
+  //     builder.getContext(), NPUIR_FUNCCORETYPE_STR[this->current_coretype]);
+  // funcOp->setAttr(hivm::TFuncCoreTypeAttr::name, funcCoreTypeAttr);
+  funcOp->setAttr("global_kernel", builder.getStringAttr("local"));
   if (this->func_coretype == NPU_CORETYPE::MIX) {
     funcOp->setAttr(hivm::TPartOfMixAttr::name, builder.getUnitAttr());
     funcOp->setAttr("mix_mode", builder.getStringAttr(

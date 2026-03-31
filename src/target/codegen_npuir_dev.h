@@ -231,6 +231,14 @@ protected:
       std::vector<const VarNode*>& if_carried_vars);
 
 private:
+  mlir::Value broadcast(Value input, Value output, DenseI64ArrayAttr dims,
+                        OpBuilder &builder);
+  mlir::Value transpose(Value input, Value output, DenseI64ArrayAttr dims,
+                        OpBuilder &builder);
+  mlir::Value broadcastOrTranspose(Value input, Value output,
+                                   DenseI64ArrayAttr brcDims,
+                                   DenseI64ArrayAttr trnDims,
+                                   OpBuilder &builder);
   mlir::Value GetEventID(PrimExpr id);
   template <typename T, typename T1> void PipeFlagCodegen(const CallNode *op);
   mlir::Value ScalarConvertType(const PrimExpr &imm, DataType targetDtype);
