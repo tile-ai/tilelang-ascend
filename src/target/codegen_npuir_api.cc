@@ -345,67 +345,104 @@ void CodeGenTileLangNPUIRAPI::SmartMemRefCopy(mlir::Value src,
     }
 
     // 2. Compute strides for StridedLayoutAttr
-    // Rule: Calculate from the last dimension to the first. When encountering a
-    // dynamic dimension, the current and all preceding strides become dynamic.
-    llvm::SmallVector<int64_t> layout_strides(dst_type.getRank(),
-                                              mlir::ShapedType::kDynamic);
-    int64_t current_stride = 1;
-    bool all_static_so_far = true;
+    llvm::SmallVector<int64_t> layout_strides(dst_type.getRank(), mlir::ShapedType::kDynamic);
+    llvm::SmallVector<mlir::OpFoldResult> strides;
 
-    // Calculate from the lowest dimension (last dimension) to the highest
-    for (int i = dst_type.getRank() - 1; i >= 0; --i) {
-      int64_t dim_size = dst_type.getDimSize(i);
+    llvm::SmallVector<int, 4> src_non_1_indices;
+    for (int i = 0; i < src_type.getRank(); ++i) {
+      if (src_type.getDimSize(i) != 1) src_non_1_indices.push_back(i);
+    }
+    llvm::SmallVector<int, 4> dst_non_1_indices;
+    for (int i = 0; i < dst_type.getRank(); ++i) {
+      if (dst_type.getDimSize(i) != 1) dst_non_1_indices.push_back(i);
+    }
 
-      // Set stride for the current dimension
-      if (i == dst_type.getRank() - 1) {
-        // The lowest dimension's stride is always 1
-        layout_strides[i] = 1;
-      } else {
-        // Normal case
-        layout_strides[i] = current_stride;
-      }
-
-      // Update current_stride for the next dimension (higher dimension)
-      if (mlir::ShapedType::isDynamic(dim_size)) {
-        all_static_so_far = false;
-        break;
-      } else {
-        current_stride *= dim_size;
+    bool is_singleton_reshape = (src_non_1_indices.size() == dst_non_1_indices.size());
+    if (is_singleton_reshape) {
+      for (size_t i = 0; i < src_non_1_indices.size(); ++i) {
+        if (src_type.getDimSize(src_non_1_indices[i]) != dst_type.getDimSize(dst_non_1_indices[i])) {
+          is_singleton_reshape = false;
+          break;
+        }
       }
     }
 
-    // 3. Prepare dynamic strides parameters for reinterpret_cast
-    llvm::SmallVector<mlir::OpFoldResult> strides;
-
-    if (all_static_so_far) {
-      // All static: use static stride values
-      for (int64_t stride : layout_strides) {
-        strides.push_back(builder.getIndexAttr(stride));
+    if (is_singleton_reshape) {
+      int64_t src_offset;
+      llvm::SmallVector<int64_t, 4> src_static_strides;
+      if (mlir::failed(mlir::getStridesAndOffset(src_type, src_static_strides, src_offset))) {
+        src_static_strides.assign(src_type.getRank(), mlir::ShapedType::kDynamic);
       }
-    } else {
-      // Has dynamic dimensions: need to compute dynamic strides
-      // Create a vector to store computed strides (calculated from back to
-      // front)
-      llvm::SmallVector<mlir::Value> temp_strides(dst_type.getRank());
 
-      // Calculate from back to front
-      mlir::Value current_dyn_stride =
-          builder.create<mlir::arith::ConstantIndexOp>(loc, 1);
+      mlir::ValueRange runtime_src_strides = extractOp.getStrides();
+      int non1_idx = src_non_1_indices.size() - 1;
+      int64_t current_static_stride = 1;
+      mlir::Value current_dyn_stride = builder.create<mlir::arith::ConstantIndexOp>(loc, 1);
+      bool is_dynamic_stride = false;
+
       for (int i = dst_type.getRank() - 1; i >= 0; --i) {
-        // Store stride for current dimension
-        temp_strides[i] = current_dyn_stride;
+        if (dst_type.getDimSize(i) == 1) {
+           if (is_dynamic_stride) {
+              layout_strides[i] = mlir::ShapedType::kDynamic;
+              strides.push_back(current_dyn_stride);
+           } else {
+              layout_strides[i] = current_static_stride;
+              strides.push_back(builder.getIndexAttr(current_static_stride));
+           }
+        } else {
+           int src_idx = src_non_1_indices[non1_idx];
+           layout_strides[i] = src_static_strides[src_idx];
+           if (layout_strides[i] == mlir::ShapedType::kDynamic) {
+              is_dynamic_stride = true;
+              strides.push_back(runtime_src_strides[src_idx]);
+              current_dyn_stride = builder.create<mlir::arith::MulIOp>(loc, runtime_src_strides[src_idx], dim_values[i]);
+           } else {
+              is_dynamic_stride = false;
+              strides.push_back(builder.getIndexAttr(layout_strides[i]));
+              current_static_stride = layout_strides[i] * dst_type.getDimSize(i);
+              current_dyn_stride = builder.create<mlir::arith::ConstantIndexOp>(loc, current_static_stride);
+           }
+           non1_idx--;
+        }
+      }
+      std::reverse(strides.begin(), strides.end());
+    } else {
+      int64_t current_stride = 1;
+      bool all_static_so_far = true;
 
-        if (i > 0) {
-          // Update current_dyn_stride for the next dimension (higher dimension)
-          // current_dimension_stride * current_dimension_size
-          current_dyn_stride = builder.create<mlir::arith::MulIOp>(
-              loc, current_dyn_stride, dim_values[i]);
+      for (int i = dst_type.getRank() - 1; i >= 0; --i) {
+        int64_t dim_size = dst_type.getDimSize(i);
+        if (i == dst_type.getRank() - 1) {
+          layout_strides[i] = 1;
+        } else {
+          layout_strides[i] = current_stride;
+        }
+        if (mlir::ShapedType::isDynamic(dim_size)) {
+          all_static_so_far = false;
+          break;
+        } else {
+          current_stride *= dim_size;
         }
       }
 
-      // Convert temp_strides to OpFoldResult and add to strides in order
-      for (int i = 0; i < dst_type.getRank(); ++i) {
-        strides.push_back(temp_strides[i]);
+      if (all_static_so_far) {
+        for (int64_t stride : layout_strides) {
+          strides.push_back(builder.getIndexAttr(stride));
+        }
+      } else {
+        llvm::SmallVector<mlir::Value> temp_strides(dst_type.getRank());
+        mlir::Value current_dyn_stride =
+            builder.create<mlir::arith::ConstantIndexOp>(loc, 1);
+        for (int i = dst_type.getRank() - 1; i >= 0; --i) {
+          temp_strides[i] = current_dyn_stride;
+          if (i > 0) {
+            current_dyn_stride = builder.create<mlir::arith::MulIOp>(
+                loc, current_dyn_stride, dim_values[i]);
+          }
+        }
+        for (int i = 0; i < dst_type.getRank(); ++i) {
+          strides.push_back(temp_strides[i]);
+        }
       }
     }
 
