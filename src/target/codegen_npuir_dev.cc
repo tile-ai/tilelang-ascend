@@ -3516,7 +3516,7 @@ void CodeGenTileLangNPUIRDEV::AddFunctionForCoreType(const GlobalVar &gvar,
   llvm::SmallVector<mlir::Type> funcArgs;
   llvm::DenseMap<size_t, mlir::Type> recastNeedInsert;
   // %arg0 is ffts addr
-  funcArgs.emplace_back(builder.getI64Type());
+  // funcArgs.emplace_back(builder.getI64Type());
   // %arg1 is SyncLockArgs
   funcArgs.emplace_back(
       MemRefType::get({ShapedType::kDynamic}, builder.getI8Type()));
@@ -3557,8 +3557,8 @@ void CodeGenTileLangNPUIRDEV::AddFunctionForCoreType(const GlobalVar &gvar,
     tir::Var real_v = v.dtype().is_handle() ? f->buffer_map[v]->data : v;
     SetVarValue(real_v.get(), funcOp.getArgument(i + funcArgsOffset));
   }
-  builder.create<hivm::SetFFTSBaseAddrOp>(builder.getUnknownLoc(),
-                                           funcOp.getArgument(0));
+  // builder.create<hivm::SetFFTSBaseAddrOp>(builder.getUnknownLoc(),
+  //                                          funcOp.getArgument(0));
   for (auto recastInfo : recastNeedInsert) {
     tir::Var v = f->params[recastInfo.first];
     tir::Var real_v = f->buffer_map[v]->data;
@@ -3591,13 +3591,13 @@ void CodeGenTileLangNPUIRDEV::AddFunctionForCoreType(const GlobalVar &gvar,
   }
   mlir::hacc::KernelArgTypeAttr accArgAttr = hacc::KernelArgTypeAttr::get(
       builder.getContext(), hacc::KernelArgType::kFFTSBaseAddr);
-  funcOp.setArgAttr(0, "hacc.arg_type", accArgAttr);
+  // funcOp.setArgAttr(0, "hacc.arg_type", accArgAttr);
   mlir::hacc::KernelArgTypeAttr syncArgAttr = hacc::KernelArgTypeAttr::get(
       builder.getContext(), hacc::KernelArgType::kSyncBlockLock);
-  funcOp.setArgAttr(1, "hacc.arg_type", syncArgAttr);
+  funcOp.setArgAttr(0, "hacc.arg_type", syncArgAttr);
   mlir::hacc::KernelArgTypeAttr workspaceArgAttr = hacc::KernelArgTypeAttr::get(
       builder.getContext(), hacc::KernelArgType::kWorkspace);
-  funcOp.setArgAttr(2, "hacc.arg_type", workspaceArgAttr);
+  funcOp.setArgAttr(1, "hacc.arg_type", workspaceArgAttr);
   funcOp->setAttr("SyncBlockLockArgIdx", builder.getI64IntegerAttr(0));
   funcOp->setAttr("WorkspaceArgIdx", builder.getI64IntegerAttr(1));
   auto haccEntryAttr = hacc::stringifyHACCToLLVMIRTranslateAttr(
@@ -3617,6 +3617,7 @@ void CodeGenTileLangNPUIRDEV::AddFunctionForCoreType(const GlobalVar &gvar,
     funcOp->setAttr("mix_mode", builder.getStringAttr(
                                     NPU_CORETYPE_STR[this->current_coretype]));
   }
+  funcOp->setAttr("parallel_mode", builder.getStringAttr("simd"));
   // Call VisitStmt on function body
   this->VisitStmt(f->body);
   builder.create<func::ReturnOp>(builder.getUnknownLoc());
