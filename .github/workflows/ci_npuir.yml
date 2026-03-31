@@ -79,6 +79,7 @@ jobs:
 
     - name: Install clang
       run: |
+        echo 'Acquire::http::Proxy "http://cache-service.nginx-pypi-cache.svc.cluster.local";' > /etc/apt/apt.conf.d/01proxy
         apt-get update && apt-get install -y clang
 
     - name: Install tilelang and test dependencies
