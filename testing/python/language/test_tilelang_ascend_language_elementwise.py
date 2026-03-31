@@ -3663,6 +3663,58 @@ def run_test_sin_slice(dtype, target):
 def test_sin_slice(dtype, target):
     run_test_sin_slice(dtype, target)
 
+
+def sort(M, N, block_M, block_N, dtype="float"):
+    m_num = M // block_M
+    n_num = N // block_N
+
+    VEC_NUM = 1
+
+    ub_N = ((block_N + 31) // 32) * 32
+
+    @T.prim_func
+    def main(
+        a: T.Tensor((M, N), dtype),
+        b: T.Tensor((M, N), dtype),
+    ):
+        with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
+            bx = cid // n_num
+            by = cid % n_num
+
+            src_ub = T.alloc_ub((block_M // VEC_NUM, ub_N), dtype)
+            dst_ub = T.alloc_ub((block_M // VEC_NUM, ub_N), dtype)
+            tmp_ub = T.alloc_ub((block_M // VEC_NUM, ub_N * 4), dtype)
+
+            T.copy(a[bx * block_M + vid * block_M // VEC_NUM, by * ub_N], src_ub)
+
+            T.tile.sort(dst_ub, src_ub, tmp_ub, block_N)
+
+            T.copy(dst_ub, b[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
+
+    return main
+
+def run_test_sort(M, N, block_M, block_N, dtype, target):
+    func = sort(M, N, block_M, block_N, dtype)
+    func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
+
+    a = torch.arange(M*N, dtype=torch.float32 if dtype == "float" else torch.float16).reshape(M, N).npu()
+    b = func(a)
+
+    # a_cpu = a.cpu().reshape(-1)
+    ref_b, sorted_indices = torch.sort(a, descending=True)
+
+    torch.testing.assert_close(b, ref_b, rtol=1e-3, atol=1e-3)
+
+@pytest.mark.parametrize("dtype", ["float16", "float"])
+@pytest.mark.parametrize("target", ["ascendc"])
+@pytest.mark.parametrize("shape", [(1, 299)])
+def test_sort(dtype, target, shape):
+    M, N = shape
+    block_M = 1
+    block_N = 299
+    run_test_sort(M, N, block_M, block_N, dtype, target)
+
+
 def sort32(M, N, block_M, block_N, dtype="float"):
     m_num = M // block_M
     n_num = N // block_N

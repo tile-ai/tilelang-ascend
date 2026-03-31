@@ -118,39 +118,30 @@ def arith_progression(buffer: Buffer, first_value: PrimExpr, diff_value: PrimExp
     )
 
 
-def sort(
-    dst: Buffer | BufferRegion,
-    src: Buffer,
-    indices: Buffer,
-    tmp_buffer: Buffer,
-    repeat_time: PrimExpr,
-):
-    """Sorts elements from the source buffer and stores values and indices.
-
-    This function performs a sort operation on the source buffer, outputting both
-    the sorted values to the destination buffer and the original indices to the
-    indices buffer.
+def sort(dst: Buffer, src: Buffer, tmp: Buffer, actual_num: PrimExpr):
+    """
+    Performs a full sort on arbitrarily-lengthed input data with automatic internal
+    alignment. Sorts each 32-element block via sort32, then merges all sorted
+    blocks via merge_sort to produce the final ordered output.
 
     Args:
-        dst: The destination buffer or buffer region where the sorted values will be stored.
-        src: The source buffer containing the data to be sorted.
-        indices: The buffer where the original indices of the sorted elements will be stored.
-        tmp_buffer: A temporary buffer required by the hardware for the sorting computation.
-        repeat_time: The number of iterations or elements to process in the sort operation.
-
-    Returns:
-        A TVM intrinsic call that performs the sort operation.
+    dst: Destination buffer for the final sorted result. Only sorted values
+         are output; sort indices are not returned.
+    src: Source buffer containing the data to be sorted.
+    tmp: Temporary buffer for intermediate sort/merge results (4x the size of src).
+    actual_num: The number of valid elements in src. When actual_num is less than
+                the buffer size, unused positions are padded with -inf before sorting.
     """
-    dst_ptr, dst_size = _get_buffer_info(dst, "w")
+    repeatTimes = (actual_num + 31) // 32  # ceiling to 32-aligned
     return tir.call_intrin(
         "handle",
         tir.op.Op.get("tl.ascend_sort"),
-        f"Sort<{_dtype(dst)}, true>",
-        dst_ptr,
+        f"Sort<{_dtype(dst)}>",
+        dst.access_ptr("w"),
         src.access_ptr("r"),
-        indices.access_ptr("r"),
-        tmp_buffer.access_ptr("r"),
-        repeat_time,
+        tmp.access_ptr("w"),
+        repeatTimes,
+        actual_num,
     )
 
 
