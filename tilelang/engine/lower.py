@@ -294,6 +294,7 @@ def lower(
         pipeline.add(transforms.bishengir.infer_workspace_size_func)
         pipeline.add(transforms.bishengir.lower_memref_ext)
         pipeline.add(transforms.tilelangir.split_mix_kernel)
+        pipeline.add(transforms.tilelangir.wrap_host_function)
         if dump_ir:
             pipeline.enable_ir_printing()
         mlir_str = pipeline.run(mlir_str)

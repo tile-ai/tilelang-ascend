@@ -31,3 +31,4 @@ from .npu_arch import (
     supports_native_bf16,  # noqa: F401
     get_arch_obj,  # noqa: F401
 )
+from .npu_host_funcs import _NpuSoHostProbe  # noqa: F401
