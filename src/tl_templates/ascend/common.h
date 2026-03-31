@@ -185,6 +185,10 @@ copy_gm_to_ub(LocalTensor<T> dstTensor, GlobalTensor<T> srcTensor,
   }
   if (maskShapeM != dstM || maskShapeN != dstN) {
     if constexpr (IsDuplicateSupported_v<T>) {
+      SetFlag<HardEvent::MTE2_V>(0);
+      WaitFlag<HardEvent::MTE2_V>(0);
+      SetFlag<HardEvent::MTE3_V>(0);
+      WaitFlag<HardEvent::MTE3_V>(0);
       AscendC::Duplicate<T>(dstTensor, padValue, dstM * dstN);
       SetFlag<HardEvent::V_MTE2>(0);
       WaitFlag<HardEvent::V_MTE2>(0);
