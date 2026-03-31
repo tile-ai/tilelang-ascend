@@ -99,7 +99,7 @@ private:
   void InsertInitAndClearInSinglePipeline(scf::ForOp forOp);
   std::pair<Value, Value> GetFinalFlagIds(OpBuilder &builder, Location loc,
                                           Value id, int64_t loopCnt,
-                                          bool isVector);
+                                          bool isVector, bool isLast);
 };
 
 void mlir::tilelangir::TileLangIRInsertCVSync::runOnOperation() {
@@ -146,7 +146,8 @@ void mlir::tilelangir::TileLangIRInsertCVSync::InsertCVSyncInSinglePipeline(
   }
 
   // 依次处理每个内部循环
-  for (scf::ForOp inner : innerLoops) {
+  for (int i = 0; i < innerLoops.size(); ++i) {
+    scf::ForOp inner = innerLoops[i];
     auto coreTypeAttr = inner->getAttrOfType<hivm::TCoreTypeAttr>(
         hivm::TCoreTypeAttr::name);
     if (!coreTypeAttr)
@@ -179,9 +180,10 @@ void mlir::tilelangir::TileLangIRInsertCVSync::InsertCVSyncInSinglePipeline(
     }
 
     // 5. 计算标志 ID
-    auto [waitFlagId, setFlagId] =
-        GetFinalFlagIds(builder, inner.getLoc(), id, *upperOpt,
-                        coreType == hivm::TCoreType::VECTOR);
+    auto [waitFlagId, setFlagId] = GetFinalFlagIds(
+        builder, inner.getLoc(), id, *upperOpt,
+        coreType == hivm::TCoreType::VECTOR, i == innerLoops.size() - 1
+        );
 
     // 6. 插入 SyncBlockWaitOp（循环体开头）
     buildCVSyncWait(builder, inner.getLoc(), coreType, waitFlagId);
@@ -202,18 +204,27 @@ mlir::tilelangir::TileLangIRInsertCVSync::GetFinalFlagIds(OpBuilder &builder,
                                                           Location loc,
                                                           Value id,
                                                           int64_t loopCnt,
-                                                          bool isVector) {
+                                                          bool isVector,
+                                                          bool isLast=false) {
   // 计算偏移量
   size_t waitFlagOffsetInt;
   size_t setFlagOffsetInt;
   if (isVector) {
     waitFlagOffsetInt = vectorFlagCnt;
-    setFlagOffsetInt = cubeFlagCnt;
-    vectorFlagCnt += loopCnt;
+    if (isLast) {
+      setFlagOffsetInt = 0;
+    } else {
+      setFlagOffsetInt = cubeFlagCnt;
+      vectorFlagCnt += loopCnt;
+    }
   } else {
     waitFlagOffsetInt = cubeFlagCnt;
-    setFlagOffsetInt = vectorFlagCnt;
-    cubeFlagCnt += loopCnt;
+    if (isLast) {
+      setFlagOffsetInt = 0;
+    } else {
+      setFlagOffsetInt = vectorFlagCnt;
+      cubeFlagCnt += loopCnt;
+    }
   }
 
   // 计算最终标志 ID
