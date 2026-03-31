@@ -49,7 +49,7 @@ class JITKernel(object):
         execution_backend: Literal["dlpack", "ctypes", "cython"] = "cython",
         target: Union[str, Target] = "auto",
         target_host: Union[str, Target] = None,
-        platform: Literal["A2", "A3", "A5"] = "A3",
+        platform: str = "auto",
         verbose: bool = False,
         pass_configs: Optional[Dict[str, Any]] = None,
         from_database: bool = False,
@@ -89,8 +89,9 @@ class JITKernel(object):
         self.execution_backend = execution_backend
         self.target = target
         self.target_host = target_host
-        self.verbose = verbose
         self.platform = platform
+        self.verbose = verbose
+
 
         if pass_configs is None:
             pass_configs = {}

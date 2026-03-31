@@ -78,6 +78,13 @@ class SimpleBufferShapeCollector : public StmtVisitor {
     shape_map_.Set(op->buffer_var, shape);
     StmtVisitor::VisitStmt_(op);
   }
+
+  void VisitStmt_(const BlockNode *op) final {
+    for (const Buffer& buffer : op->alloc_buffers) {
+      shape_map_.Set(buffer->data, buffer->shape);
+    }
+    StmtVisitor::VisitStmt_(op);
+  }
   
   Map<Var, Array<PrimExpr>> shape_map_;
 };

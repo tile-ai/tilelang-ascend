@@ -26,7 +26,7 @@ constexpr const char* cv_1_2 = "cv_1_2";
 
 class CodeGenTileLangAscend final : public CodeGenC {
 public:
-  CodeGenTileLangAscend();
+  CodeGenTileLangAscend(std::string platform);
   std::string Finish();
   // override behavior
   void PrintFuncPrefix(std::ostream &os) final;
@@ -60,6 +60,8 @@ public:
 
 private:
   std::string PrintBufferOffset(const CallNode* call_arg, bool has_offset = true);
+
+  DataType GetAccessPtrDataType(const PrimExpr& arg);
 
   void AddDeclStream(std::ostringstream &ss, const std::string &str);
 
@@ -231,6 +233,8 @@ private:
   Map<String, PrimExpr> address_offset_;
 
   bool use_swizzle_{false};
+
+  std::string platform_;
 };
 
 } // namespace codegen

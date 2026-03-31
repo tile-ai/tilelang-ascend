@@ -87,6 +87,8 @@ def chunk_h_ker(B, H, L, DK, DV, C, BK = None, BV = None, dtype="float16", accum
 				T.copy(G[bz, by, 0], g_ub) # The g value of the whole chunk
 				T.set_flag("mte2", "v", 0)
 				T.wait_flag("mte2", "v", 0)
+				T.set_flag("v", "s", 0)
+				T.wait_flag("v", "s", 0)
 				for i in T.serial(chunk_num): # Calculate hidden state S chunk by chunk
 					T.copy(U[bz, by, i * C + vid * C // VEC_NUM, bx * BV], u_ub_half)
 					T.copy(k_ub_half, k_ub)
@@ -94,8 +96,10 @@ def chunk_h_ker(B, H, L, DK, DV, C, BK = None, BV = None, dtype="float16", accum
 					tmp = g_ub[C - 1]
 					for i in T.Parallel(C // VEC_NUM):
 						coeff_ub[i] = g_v_ub[i] - tmp
+					T.pipe_barrier("v")
 					for i in T.Parallel(C // VEC_NUM):
 						coeff_ub[i] = zero_ub[i] - coeff_ub[i]
+					T.pipe_barrier("v")
 					for i in T.Parallel(C // VEC_NUM):
 						coeff_ub[i] = T.exp(coeff_ub[i])
 					# coeff_ub now stores exp(g_last - g_i)
@@ -108,14 +112,10 @@ def chunk_h_ker(B, H, L, DK, DV, C, BK = None, BV = None, dtype="float16", accum
 
 					#\tilde K = K * exp(g_last - g_i)
 					for i in range((C // VEC_NUM) // 4):
-						tmp0 = coeff_ub[i * 4]
-						tmp1 = coeff_ub[i * 4 + 1]
-						tmp2 = coeff_ub[i * 4 + 2]
-						tmp3 = coeff_ub[i * 4 + 3]
-						T.tile.mul(k_ub[i * 4, :], k_ub[i * 4, :], tmp0)
-						T.tile.mul(k_ub[i * 4 + 1, :], k_ub[i * 4 + 1, :], tmp1)
-						T.tile.mul(k_ub[i * 4 + 2, :], k_ub[i * 4 + 2, :], tmp2)
-						T.tile.mul(k_ub[i * 4 + 3, :], k_ub[i * 4 + 3, :], tmp3)
+						T.tile.mul(k_ub[i * 4, :], k_ub[i * 4, :], coeff_ub[i * 4])
+						T.tile.mul(k_ub[i * 4 + 1, :], k_ub[i * 4 + 1, :], coeff_ub[i * 4 + 1])
+						T.tile.mul(k_ub[i * 4 + 2, :], k_ub[i * 4 + 2, :], coeff_ub[i * 4 + 2])
+						T.tile.mul(k_ub[i * 4 + 3, :], k_ub[i * 4 + 3, :], coeff_ub[i * 4 + 3])
 
 					T.wait_cross_flag(0)
 					T.copy(workspace_1[cid, vid * C // VEC_NUM, 0], u_ub_half)
@@ -132,6 +132,8 @@ def chunk_h_ker(B, H, L, DK, DV, C, BK = None, BV = None, dtype="float16", accum
 					T.copy(k_ub_half, workspace_2[cid, vid * C // VEC_NUM, 0])
 					T.set_cross_flag("MTE3", 1)
 
+					T.set_flag("mte3", "s", 0)
+					T.wait_flag("mte3", "s", 0)
 					tmp = g_ub[C - 1]
 					T.tile.mul(s_ub, s_ub, tmp)
 					# s_ub now stores S * exp(g_last)

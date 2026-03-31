@@ -8,12 +8,13 @@ import torch
 tilelang.cache.clear_cache()
 
 
-B, C, H, W, F, KH, KW, stride, padding, seed  = 2, 2, 15, 15, 128, 8, 8, 1, 0, 42
+B, C, H, W, OC, KH, KW, stride, padding, seed  = 2, 2, 15, 15, 128, 8, 8, 1, 0, 42
 HO = (H + 2 * padding - KH) // stride + 1
 WO = (W + 2 * padding - KW) // stride + 1
 
 
 pass_configs = {
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
     tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
     tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
 }
@@ -33,20 +34,19 @@ def matmul(M, N, K, block_M=128, block_N=256, block_K=64, dtype="float16", accum
             bx = cid // n_num
             by = cid % n_num
 
-            A_L1 = T.alloc_L1((block_M, block_K), dtype)
-            B_L1 = T.alloc_L1((block_K, block_N), dtype)
+            A_L1 = T.alloc_shared((block_M, block_K), dtype)
+            B_L1 = T.alloc_shared((block_K, block_N), dtype)
 
-            C_L0 = T.alloc_L0C((block_M, block_N), accum_dtype)
+            C_L0 = T.alloc_fragment((block_M, block_N), accum_dtype)
 
-            with T.Scope("C"):
-                loop_k = T.ceildiv(K, block_K)
-                for k in T.serial(loop_k):
-                    T.copy(A[bx * block_M, k * block_K], A_L1)
-                    T.copy(B[k * block_K, by * block_N], B_L1)
+            loop_k = T.ceildiv(K, block_K)
+            for k in T.serial(loop_k):
+                T.copy(A[bx * block_M, k * block_K], A_L1)
+                T.copy(B[k * block_K, by * block_N], B_L1)
 
-                    T.gemm_v0(A_L1, B_L1, C_L0, init=(k == 0))
+                T.gemm_v0(A_L1, B_L1, C_L0, init=(k == 0))
 
-                T.copy(C_L0, C[bx * block_M, by * block_N])
+            T.copy(C_L0, C[bx * block_M, by * block_N])
 
     return main
 
@@ -88,40 +88,26 @@ def conv_im2col_gemm(input_tensor: torch.Tensor, kernel: torch.Tensor,
     input_flat = im2col(input_tensor, KH, KW, stride, padding)
     input_flat = input_flat.contiguous()
     
-    kernel_flat = kernel.view(F, -1)
+    kernel_flat = kernel.view(OC, -1)
     kernel_flat = kernel_flat.contiguous()
-    
+
     func = matmul(kernel_flat.shape[0], input_flat.shape[1], kernel_flat.shape[1], 128, 128, 128)
     print("init successful!")
     ouput = func(kernel_flat, input_flat)
-    
-    output = ouput.view(F, B, HO, WO).permute(1, 0, 2, 3)
+
+    output = ouput.view(OC, B, HO, WO).permute(1, 0, 2, 3)
     
     return output
-
-
-def conv_torch(input_tensor: torch.Tensor, kernel: torch.Tensor, 
-               stride: int = 1, padding: int = 0) -> torch.Tensor:
-    
-    conv_layer = torch.nn.Conv2d(
-        in_channels=kernel.shape[1],
-        out_channels=kernel.shape[0],
-        kernel_size=(kernel.shape[2], kernel.shape[3]),
-        stride=stride,
-        padding=padding,
-        bias=False
-    )
-    conv_layer.weight.data = kernel
-    return conv_layer(input_tensor)
 
 
 torch.manual_seed(seed)
 
 input_torch = torch.randn(B, C, H, W).half().npu()
-kernel_torch = torch.randn(F, C, KH, KW).half().npu()
+kernel_torch = torch.randn(OC, C, KH, KW).half().npu()
 
 result_np = conv_im2col_gemm(input_torch, kernel_torch, stride, padding)
-result_torch = conv_torch(input_torch, kernel_torch, stride, padding)
+# Use CPU for reference to avoid NPU environment issues
+result_torch = F.conv2d(input_torch.cpu(), kernel_torch.cpu(), stride=stride, padding=padding).npu()
 
 torch.testing.assert_close(result_np, result_torch, rtol=1e-2, atol=1e-2)
 print("Kernel Output Match!")

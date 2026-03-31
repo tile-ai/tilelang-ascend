@@ -36,6 +36,10 @@ def cumsum_ker(B, H, L, C, CC = 8, accum_dtype="float"):
 				T.wait_flag("mte2", "v", 0)
 				for ii in range(CC): # For each chunk
 					ofs = ii * C
+     
+					T.set_flag("v", "s", 0)
+					T.wait_flag("v", "s", 0)
+     
 					s_ub[ofs + 0] = g_ub[ofs + 0]
 					for i in range(1, C):
 						tmp2 = s_ub[ofs + i - 1] + g_ub[ofs + i]

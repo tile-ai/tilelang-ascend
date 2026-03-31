@@ -28,11 +28,11 @@ using namespace tir;
   TVM_REGISTER_OP("tl." #OpName)                                               \
       .set_attr<TScriptPrinterName>("TScriptPrinterName", #OpName)
 
-
 AscendCopy::AscendCopy(Array<PrimExpr> args, BufferMap vmap) : args_(args) {
   Array<Range> rgs[2];
   Buffer bf[2];
   Array<PrimExpr> ets[2];
+  transposeL1 = 0;
   for (int i = 0; i < 2; i++) {
     auto expr = args[i];
     auto call = expr.as<CallNode>();
@@ -42,8 +42,16 @@ AscendCopy::AscendCopy(Array<PrimExpr> args, BufferMap vmap) : args_(args) {
     rgs[i] = region.GetRanges();
     bf[i] = region.GetBuffer();
   }
-  if (args.size() >= 2) {
+  if (args.size() >= 3) {
     enRelu = args[2].as<Bool>().value();
+  }
+  if (args.size() >= 4) {
+    transposeL1 = args[3].as<Bool>().value();
+  }
+  if (args.size() >= 5) {
+    padValue = args[4];
+  } else {
+    padValue = Integer(0);
   }
   std::tie(this->src, this->dst) = std::tie(bf[0], bf[1]);
   std::tie(this->src_range, this->dst_range) = std::tie(rgs[0], rgs[1]);
@@ -82,7 +90,8 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
     return "";
   };
 
-  auto compute_strideN = [](const Buffer &buf, const Array<PrimExpr> &extents) -> PrimExpr {
+  auto compute_strideN = [](const Buffer &buf,
+                            const Array<PrimExpr> &extents) -> PrimExpr {
     PrimExpr strideN = buf->shape[buf->shape.size() - 1];
     if (extents.size() > 1) {
       for (int i = extents.size() - 2; i >= 0; --i) {
@@ -96,15 +105,17 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
     return strideN;
   };
 
-  auto compute_blocklen = [](const Buffer &buf, const Array<PrimExpr> &extents) -> PrimExpr {
-      PrimExpr res = buf->shape[buf->shape.size() - 2];
-      auto ext_size = extents.size();
-      if (ext_size > 1 && extents[ext_size - 2]->IsInstance<IntImmNode>() &&
-      res->IsInstance<IntImmNode>()) {
-        auto extent = static_cast<int>(extents[ext_size - 2].as<IntImmNode>()->value);
-        auto shape = static_cast<int>(res.as<IntImmNode>()->value);
-        res = shape < extent ? res : extents[ext_size - 2];
-      }
+  auto compute_blocklen = [](const Buffer &buf,
+                             const Array<PrimExpr> &extents) -> PrimExpr {
+    PrimExpr res = buf->shape[buf->shape.size() - 2];
+    auto ext_size = extents.size();
+    if (ext_size > 1 && extents[ext_size - 2]->IsInstance<IntImmNode>() &&
+        res->IsInstance<IntImmNode>()) {
+      auto extent =
+          static_cast<int>(extents[ext_size - 2].as<IntImmNode>()->value);
+      auto shape = static_cast<int>(res.as<IntImmNode>()->value);
+      res = shape < extent ? res : extents[ext_size - 2];
+    }
 
     return res;
   };
@@ -121,7 +132,7 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
     bool needs_strideN = false;
     bool l0c2gm = false;
     bool gm2l1 = false;
-    // bool l12l0 = false;
+    bool l12l0 = false;
     bool print_gm_layout = false;
     bool print_src_layout = false;
     bool print_dst_layout = false;
@@ -140,13 +151,13 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
     config.gm2l1 = true;
   } else if (src.scope() == "shared.dyn" && dst.scope() == "wmma.matrix_a") {
     ss << "copy_l1_to_l0a";
-    config.print_src_layout = true;
-    // config.l12l0 = true;
+    // config.print_src_layout = true;
+    config.l12l0 = true;
     config.l0_dst_split = true;
   } else if (src.scope() == "shared.dyn" && dst.scope() == "wmma.matrix_b") {
     ss << "copy_l1_to_l0b";
-    config.print_src_layout = true;
-    // config.l12l0 = true;
+    // config.print_src_layout = true;
+    config.l12l0 = true;
     config.l0_dst_split = true;
   } else if (src.scope() == "wmma.accumulator" && dst.scope() == "global") {
     ss << "copy_l0c_to_gm";
@@ -183,11 +194,11 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
       ss << ">";
     } else {
       PrimExpr len = 1;
-      for (auto &shape : src->shape) {
+      for (auto &shape : dst_extents) {
         len *= shape;
       }
-      ss << "copy_ub_to_ub<" << get_dtype(dst) << ", "
-         << get_dtype(src) << ", " << len << ">";
+      ss << "copy_ub_to_ub<" << get_dtype(dst) << ", " << get_dtype(src) << ", "
+         << len << ">";
     }
   } else {
     LOG(FATAL) << "Unsupported scope: src = " << src.scope()
@@ -203,7 +214,8 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
 
     if (config.print_gm_layout) {
       ss << (T.layout_map.count(src) ? T.layout_map[src]->AscendLayoutStr()
-                                     : "layout::RowMajor") << ", ";
+                                     : "layout::RowMajor")
+         << ", ";
     }
 
     if (config.print_src_layout) {
@@ -223,13 +235,18 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
       if (config.l0c2gm) {
         ss << ", " << enRelu;
       }
-      ss<< ">";
+      ss << ">";
     } else if (src.scope() == "global") {
       ss << dst->shape[dst_ndim - 2] << ", " << dst->shape[dst_ndim - 1] << ">";
     } else {
-      ss << src->shape[src_ndim - 2] << ", " << src->shape[src_ndim - 1] << ">";
-      // ss << src->shape[src_ndim - 2] << ", " << src->shape[src_ndim - 1] << ", "
-      //    << dst->shape[dst_ndim - 2] << ", " << dst->shape[dst_ndim - 1] << ">";
+      ss << src->shape[src_ndim - 2] << ", " << src->shape[src_ndim - 1];
+      if (config.l12l0) {
+        transposeL1 == 0 ? ss << ", false" << ">" : ss << ", true" << ">";
+      }
+      // ss << src->shape[src_ndim - 2] << ", " << src->shape[src_ndim - 1] <<
+      // ", "
+      //    << dst->shape[dst_ndim - 2] << ", " << dst->shape[dst_ndim - 1] <<
+      //    ">";
     }
   }
 
@@ -246,12 +263,141 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
   auto src_new_buffer = T.buffer_remap.count(src) ? T.buffer_remap[src] : src;
   auto dst_new_buffer = T.buffer_remap.count(dst) ? T.buffer_remap[dst] : dst;
 
+  PrimExpr src_len = 1;
+  for (auto &shape : src_extents) {
+    src_len *= shape;
+  }
+
+  PrimExpr dst_len = 1;
+  for (auto &shape : dst_extents) {
+    dst_len *= shape;
+  }
+
   auto src_ptr = src_new_buffer.access_ptr(
-      1, DataType::Handle(), 1,
-      src_new_buffer.OffsetOf(src_new_indices).back());
+      1, src_new_buffer->dtype, 1,
+      src_new_buffer.OffsetOf(src_new_indices).back(), src_len);
   auto dst_ptr = dst_new_buffer.access_ptr(
-      2, DataType::Handle(), 1,
-      dst_new_buffer.OffsetOf(dst_new_indices).back());
+      2, dst_new_buffer->dtype, 1,
+      dst_new_buffer.OffsetOf(dst_new_indices).back(), dst_len);
+
+  auto compute_valid_extent = [](PrimExpr min_val, PrimExpr extent,
+                                 PrimExpr shape) -> PrimExpr {
+    PrimExpr remaining = shape - min_val;
+    return Select(remaining >= extent, extent,
+                  Select(remaining > 0, remaining, 0));
+  };
+
+  int src_ndim = src->shape.size();
+  int dst_ndim = dst->shape.size();
+  PrimExpr validRow_src, validCol_src, validRow_dst, validCol_dst;
+
+  // Find indices of active dimensions (extent > 2), compatible data dimensions
+  // are discontinuous like this T.copy(Query[cid, m * BLOCK_M: (m + 1) *
+  // BLOCK_M, n2, g * D: (g + 1) * D], Q_L1)
+  auto find_active_dim_indices =
+      [](const Array<PrimExpr> &extents) -> std::vector<int> {
+    std::vector<int> active_indices;
+    for (int i = 0; i < static_cast<int>(extents.size()); ++i) {
+      if (auto *int_imm = extents[i].as<IntImmNode>()) {
+        // The extent of non-1 is valid
+        if (int_imm->value != 1) {
+          active_indices.push_back(i);
+        }
+      } else {
+        // Non-const expression, treat as potentially active
+        active_indices.push_back(i);
+      }
+    }
+    return active_indices;
+  };
+
+  if (src_ndim > 2) {
+    std::vector<int> src_active = find_active_dim_indices(src_extents);
+    if (src_active.size() >= 2) {
+      // if src_active.size > 2, select the last two active dimensions
+      int row_idx = src_active[src_active.size() - 2];
+      int col_idx = src_active.back();
+      validRow_src =
+          compute_valid_extent(src_range[row_idx]->min,
+                               src_range[row_idx]->extent, src->shape[row_idx]);
+      validCol_src =
+          compute_valid_extent(src_range[col_idx]->min,
+                               src_range[col_idx]->extent, src->shape[col_idx]);
+    } else if (src_active.size() == 1) {
+      // if src_active.size = 1, select the last active dimensions
+      int col_idx = src_active[0];
+      validRow_src = Integer(1);
+      validCol_src =
+          compute_valid_extent(src_range[col_idx]->min,
+                               src_range[col_idx]->extent, src->shape[col_idx]);
+    } else {
+      // else use the origin extents last two dimensions
+      validRow_src = compute_valid_extent(src_range[src_ndim - 2]->min,
+                                          src_range[src_ndim - 2]->extent,
+                                          src->shape[src_ndim - 2]);
+      validCol_src = compute_valid_extent(src_range[src_ndim - 1]->min,
+                                          src_range[src_ndim - 1]->extent,
+                                          src->shape[src_ndim - 1]);
+    }
+  } else if (src_ndim == 2) {
+    validRow_src = compute_valid_extent(src_range[src_ndim - 2]->min,
+                                        src_range[src_ndim - 2]->extent,
+                                        src->shape[src_ndim - 2]);
+    validCol_src = compute_valid_extent(src_range[src_ndim - 1]->min,
+                                        src_range[src_ndim - 1]->extent,
+                                        src->shape[src_ndim - 1]);
+  } else if (src_ndim == 1) {
+    validRow_src = Integer(1);
+    validCol_src = compute_valid_extent(src_range[0]->min, src_range[0]->extent,
+                                        src->shape[0]);
+  } else {
+    validRow_src = 0;
+    validCol_src = 0;
+  }
+
+  if (dst_ndim > 2) {
+    std::vector<int> dst_active = find_active_dim_indices(dst_extents);
+    if (dst_active.size() >= 2) {
+      // if dst_active.size > 2, select the last two active dimensions
+      int row_idx = dst_active[dst_active.size() - 2];
+      int col_idx = dst_active.back();
+      validRow_dst =
+          compute_valid_extent(dst_range[row_idx]->min,
+                               dst_range[row_idx]->extent, dst->shape[row_idx]);
+      validCol_dst =
+          compute_valid_extent(dst_range[col_idx]->min,
+                               dst_range[col_idx]->extent, dst->shape[col_idx]);
+    } else if (dst_active.size() == 1) {
+      // if dst_active.size = 1, select the last active dimensions
+      int col_idx = dst_active[0];
+      validRow_dst = Integer(1);
+      validCol_dst =
+          compute_valid_extent(dst_range[col_idx]->min,
+                               dst_range[col_idx]->extent, dst->shape[col_idx]);
+    } else {
+      // else use the origin extents last two dimensions
+      validRow_dst = compute_valid_extent(dst_range[dst_ndim - 2]->min,
+                                          dst_range[dst_ndim - 2]->extent,
+                                          dst->shape[dst_ndim - 2]);
+      validCol_dst = compute_valid_extent(dst_range[dst_ndim - 1]->min,
+                                          dst_range[dst_ndim - 1]->extent,
+                                          dst->shape[dst_ndim - 1]);
+    }
+  } else if (dst_ndim == 2) {
+    validRow_dst = compute_valid_extent(dst_range[dst_ndim - 2]->min,
+                                        dst_range[dst_ndim - 2]->extent,
+                                        dst->shape[dst_ndim - 2]);
+    validCol_dst = compute_valid_extent(dst_range[dst_ndim - 1]->min,
+                                        dst_range[dst_ndim - 1]->extent,
+                                        dst->shape[dst_ndim - 1]);
+  } else if (dst_ndim == 1) {
+    validRow_dst = Integer(1);
+    validCol_dst = compute_valid_extent(dst_range[0]->min, dst_range[0]->extent,
+                                        dst->shape[0]);
+  } else {
+    validRow_dst = 0;
+    validCol_dst = 0;
+  }
 
   Array<PrimExpr> new_args;
   new_args.push_back(StringImm(ss.str()));
@@ -270,17 +416,28 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
 
   if (config.l0c2gm) {
     new_args.push_back(compute_strideN(dst, dst_extents));
+    new_args.push_back(validRow_dst);
+    new_args.push_back(validCol_dst);
     new_args.push_back(src->shape[src->shape.size() - 2]);
     new_args.push_back(src->shape[src->shape.size() - 1]);
   }
 
   if (config.gm2l1) {
     new_args.push_back(compute_strideN(src, src_extents));
+    new_args.push_back(validRow_src);
+    new_args.push_back(validCol_src);
     new_args.push_back(dst->shape[dst->shape.size() - 2]);
     new_args.push_back(dst->shape[dst->shape.size() - 1]);
   }
 
   if (config.gm2ub) {
+    new_args.push_back(validRow_src);
+    new_args.push_back(validCol_src);
+    PrimExpr pad_val = padValue;
+    if (pad_val->dtype != dst->dtype) {
+      pad_val = Cast(dst->dtype, pad_val);
+    }
+    new_args.push_back(pad_val);
     if (dst->shape.size() > 1) {
       new_args.push_back(dst->shape[dst->shape.size() - 2]);
     }
@@ -288,6 +445,8 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
   }
 
   if (config.ub2gm) {
+    new_args.push_back(validRow_dst);
+    new_args.push_back(validCol_dst);
     if (src->shape.size() > 1) {
       new_args.push_back(src->shape[src->shape.size() - 2]);
     }
@@ -303,9 +462,11 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
   //     if (i == -1) {
   //         break;
   //     }
-  //     // std::cout << "dst_shape_size -2 = " << dst_shape_size - 2  << ", i = " << i << ", dst->shape: " << dst->shape[i]
+  //     // std::cout << "dst_shape_size -2 = " << dst_shape_size - 2  << ", i =
+  //     " << i << ", dst->shape: " << dst->shape[i]
   //     //   << "src->shape: " << src->shape[i] << "\n";
-  //     if (src->shape[i].as<IntImmNode>()->value != dst->shape[i].as<IntImmNode>()->value) {
+  //     if (src->shape[i].as<IntImmNode>()->value !=
+  //     dst->shape[i].as<IntImmNode>()->value) {
   //         is_extract = true;
   //     }
   //     new_args.push_back(src_indices[i]);
@@ -333,370 +494,460 @@ TIR_REGISTER_TL_OP(AscendCopy, ascend_copy)
 
 TIR_DEFINE_TL_BUILTIN(ascend_add)
     .set_num_inputs(4)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_sub)
     .set_num_inputs(4)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_mul)
     .set_num_inputs(4)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_div)
     .set_num_inputs(4)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_max)
     .set_num_inputs(4)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_min)
     .set_num_inputs(4)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_bitwise_and)
     .set_num_inputs(4)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_bitwise_or)
     .set_num_inputs(4)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_adds)
     .set_num_inputs(-1)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_subs)
     .set_num_inputs(-1)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_muls)
     .set_num_inputs(-1)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_divs)
     .set_num_inputs(-1)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_maxs)
     .set_num_inputs(-1)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_mins)
     .set_num_inputs(-1)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_compare)
     .set_num_inputs(5)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_compare_scalar)
     .set_num_inputs(-1)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_exp)
     .set_num_inputs(3)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
-TIR_DEFINE_TL_BUILTIN(ascend_ln)
-    .set_num_inputs(3)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+TIR_DEFINE_TL_BUILTIN(ascend_ln).set_num_inputs(3).set_attr<TCallEffectKind>(
+    "TCallEffectKind", Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_abs)
     .set_num_inputs(3)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_reciprocal)
     .set_num_inputs(3)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_sqrt)
     .set_num_inputs(3)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_rsqrt)
     .set_num_inputs(3)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_relu)
     .set_num_inputs(3)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_bitwise_not)
     .set_num_inputs(3)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_select)
     .set_num_inputs(-1)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_leaky_relu)
     .set_num_inputs(5)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_axpy)
     .set_num_inputs(5)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_bitwise_lshift)
     .set_num_inputs(4)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_bitwise_rshift)
     .set_num_inputs(4)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_sin)
     .set_num_inputs(4)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_cos)
     .set_num_inputs(4)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_transpose)
     .set_num_inputs(2)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_createvecindex)
     .set_num_inputs(3)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_fill)
     .set_num_inputs(4)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_arith_progression)
     .set_num_inputs(5)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_sort)
     .set_num_inputs(6)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_merge_sort)
     .set_num_inputs(6)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_topk)
     .set_num_inputs(5)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_shmem_put_nbi)
     .set_num_inputs(5)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_shmem_get_nbi)
     .set_num_inputs(5)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_shmem_ub_put_nbi)
     .set_num_inputs(6)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_shmem_ub_get_nbi)
     .set_num_inputs(5)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));        
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_gather_mask)
     .set_num_inputs(4)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_gatherb)
     .set_num_inputs(7)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_init_sort_buf)
     .set_num_inputs(4)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_sort32)
     .set_num_inputs(4)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_gather)
     .set_num_inputs(5)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_reduce)
     .set_num_inputs(4)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_block_reduce_max)
     .set_num_inputs(7)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_block_reduce_min)
     .set_num_inputs(7)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_block_reduce_sum)
     .set_num_inputs(7)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_cast)
     .set_num_inputs(4)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_set_deq_scale)
     .set_num_inputs(1)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_pow)
     .set_num_inputs(4)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_bitwise_xor)
     .set_num_inputs(4)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_broadcast)
     .set_num_inputs(-1)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_wait_cross_flag)
     .set_num_inputs(2)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_set_cross_flag)
-    .set_num_inputs(2)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_num_inputs(3)
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_wait_flag)
     .set_num_inputs(3)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_set_flag)
     .set_num_inputs(3)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_pipe_barrier)
     .set_num_inputs(1)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_sync_all)
     .set_num_inputs(0)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_gemm_v0)
     .set_num_inputs(5)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_gemm_v1)
     .set_num_inputs(5)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_printf)
     .set_num_inputs(-1)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_dump_tensor)
     .set_num_inputs(-1)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_bilinear_interpolation)
     .set_num_inputs(11)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_wholereducemax)
     .set_num_inputs(8)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_wholereducemin)
     .set_num_inputs(8)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_wholereducesum)
     .set_num_inputs(7)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_auto_barrier)
     .set_num_inputs(1)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_auto_set_flag)
     .set_num_inputs(2)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_auto_wait_flag)
     .set_num_inputs(2)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_auto_set_cross_flag)
     .set_num_inputs(3)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_auto_wait_cross_flag)
     .set_num_inputs(2)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_use_swizzle)
     .set_num_inputs(3)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_mma)
     .set_num_inputs(6)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_sigmoid)
     .set_num_inputs(4)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_clamp_max)
     .set_num_inputs(6)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_clamp_min)
     .set_num_inputs(6)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_clamp)
     .set_num_inputs(6)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_round)
     .set_num_inputs(4)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_reinterpretcast)
     .set_num_inputs(3)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_sub_experiment)
     .set_num_inputs(4)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_abs_experiment)
     .set_num_inputs(3)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_mins_experiment)
     .set_num_inputs(4)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_reducesum_experiment)
     .set_num_inputs(4)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_reducesum_mask_experiment)
     .set_num_inputs(6)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_gather_mask_experiment)
     .set_num_inputs(11)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_fill_experiment)
     .set_num_inputs(7)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_sum_experiment)
     .set_num_inputs(6)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_datacachecleanandinvalid_experiment)
     .set_num_inputs(2)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 } // namespace tl
 } // namespace tvm

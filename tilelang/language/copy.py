@@ -2,7 +2,7 @@
 # Licensed under the MIT License.
 """The language interface for tl programs."""
 
-from typing import Union, List, Optional
+from __future__ import annotations
 from tilelang import language as T
 from tvm import ir, tir
 
@@ -37,7 +37,7 @@ def buffer_to_tile_region(buffer: tir.Buffer, access_type: str):
     return region(T.BufferLoad(buffer, mins), access_type, *extents)
 
 
-def buffer_load_to_tile_region(load: tir.BufferLoad, access_type: str, extents: List[tir.PrimExpr]):
+def buffer_load_to_tile_region(load: tir.BufferLoad, access_type: str, extents: list[tir.PrimExpr]):
     """Convert a buffer load operation to a tile region descriptor.
 
     Args:
@@ -62,8 +62,7 @@ def buffer_load_to_tile_region(load: tir.BufferLoad, access_type: str, extents: 
     return region(load, access_type, *extents)
 
 
-def buffer_region_to_tile_region(buffer_region: tir.BufferRegion, access_type: str,
-                                 extents: List[tir.PrimExpr]):
+def buffer_region_to_tile_region(buffer_region: tir.BufferRegion, access_type: str, extents: list[tir.PrimExpr]):
     """Convert a buffer region to a tile region descriptor.
 
     Args:
@@ -75,17 +74,15 @@ def buffer_region_to_tile_region(buffer_region: tir.BufferRegion, access_type: s
     """
     mins = [x.min for x in buffer_region.region]
     region_extents = [x.extent for x in buffer_region.region]
-    assert len(region_extents) >= len(
-        extents
-    ), f"region_extents must be >= extents, region_extents = {region_extents}, extents = {extents}"
+    assert len(region_extents) >= len(extents), f"region_extents must be >= extents, region_extents = {region_extents}, extents = {extents}"
 
     return region(T.BufferLoad(buffer_region.buffer, mins), access_type, *region_extents)
 
 
 def copy(
-    src: Union[tir.Buffer, tir.BufferLoad, tir.BufferRegion],
-    dst: Union[tir.Buffer, tir.BufferLoad],
-    coalesced_width: Optional[int] = None,
+    src: tir.Buffer | tir.BufferLoad | tir.BufferRegion,
+    dst: tir.Buffer | tir.BufferLoad,
+    coalesced_width: int | None = None,
 ):
     """Copy data between memory regions.
 
@@ -124,12 +121,12 @@ def copy(
             src_extent = src_extent + [1] * (max_len - len(src_extent))
         if len(dst_extent) < max_len:
             dst_extent = dst_extent + [1] * (max_len - len(dst_extent))
-    
+
     extent = []
     for i in range(len(src_extent)):
         src_val = src_extent[i]
         dst_val = dst_extent[i]
-        
+
         if isinstance(src_val, (int, float)) and isinstance(dst_val, (int, float)):
             extent.append(max(src_val, dst_val))
         else:
@@ -196,15 +193,23 @@ def c2d_im2col(
     )
 
 
-def npu_copy_v2(src: Union[tir.Buffer, tir.BufferLoad, tir.BufferRegion],
-                dst: Union[tir.Buffer, tir.BufferLoad],
-                enable_relu: bool = False):
+def npu_copy_v2(
+    src: tir.Buffer | tir.BufferLoad | tir.BufferRegion,
+    dst: tir.Buffer | tir.BufferLoad,
+    enable_relu: bool = False,
+    transpose: bool | None = False,  # for copy_l1_to_l0 param: tranpose l1
+    pad_value: float | int | tir.PrimExpr | None = None,
+):
     """Copy data between memory regions.
 
     Args:
         src (Union[tir.Buffer, tir.BufferLoad, tir.BufferRegion]): Source memory region
         dst (Union[tir.Buffer, tir.BufferLoad]): Destination memory region
-        coalesced_width (Optional[int], optional): Width for coalesced memory access. Defaults to None.
+        enable_relu (bool): Whether to enable ReLU. Defaults to False.
+        transpose (Optional[bool]): Whether to transpose for copy_l1_to_l0. Defaults to False.
+        pad_value (Optional[Union[float, int, tir.PrimExpr]]): Value to fill in UB unused area.
+            Supports float, int, tir.FloatImm, tir.IntImm, tir.PrimExpr (e.g., -T.infinity(dtype)).
+            Defaults to 0.
 
     Raises:
         TypeError: If copy extents cannot be deduced from arguments
@@ -212,10 +217,10 @@ def npu_copy_v2(src: Union[tir.Buffer, tir.BufferLoad, tir.BufferRegion],
     Returns:
         tir.Call: A handle to the copy operation
     """
-    if isinstance(src, tir.Buffer) and isinstance(dst, tir.Buffer):
+    if isinstance(src, tir.Buffer) and isinstance(dst, tir.Buffer) and not transpose:
         ir.assert_structural_equal(src.shape, dst.shape)
 
-    src_shape = src.shape if isinstance(src, tir.Buffer) else src.buffer.shape
+    # src_shape = src.shape if isinstance(src, tir.Buffer) else src.buffer.shape
 
     def get_extent(data):
         if isinstance(data, tir.Var) and T.has_let_value(data):
@@ -239,12 +244,12 @@ def npu_copy_v2(src: Union[tir.Buffer, tir.BufferLoad, tir.BufferRegion],
             src_extent = src_extent + [1] * (max_len - len(src_extent))
         if len(dst_extent) < max_len:
             dst_extent = dst_extent + [1] * (max_len - len(dst_extent))
-    
+
     extent = []
     for i in range(len(src_extent)):
         src_val = src_extent[i]
         dst_val = dst_extent[i]
-        
+
         if isinstance(src_val, (int, float)) and isinstance(dst_val, (int, float)):
             extent.append(max(src_val, dst_val))
         else:
@@ -260,11 +265,21 @@ def npu_copy_v2(src: Union[tir.Buffer, tir.BufferLoad, tir.BufferRegion],
         if isinstance(data, tir.Buffer):
             return buffer_to_tile_region(data, access_type)
         elif isinstance(data, tir.BufferRegion):
-            return buffer_region_to_tile_region(data, access_type, extent[-len(data.buffer.shape):])
+            return buffer_region_to_tile_region(data, access_type, extent[-len(data.buffer.shape) :])
         else:
-            return buffer_load_to_tile_region(data, access_type, extent[-len(data.buffer.shape):])
+            return buffer_load_to_tile_region(data, access_type, extent[-len(data.buffer.shape) :])
 
     src = _to_region(src, "r")
     dst = _to_region(dst, "w")
 
-    return tir.call_intrin("handle", tir.op.Op.get("tl.ascend_copy"), src, dst, enable_relu)
+    # Handle pad_value parameter
+    if pad_value is None:
+        pad_value = 0
+    if isinstance(pad_value, (tir.FloatImm, tir.IntImm, tir.PrimExpr)):
+        pad_value_expr = pad_value
+    elif isinstance(pad_value, float):
+        pad_value_expr = tir.FloatImm("float32", pad_value)
+    else:
+        pad_value_expr = tir.IntImm("int32", int(pad_value))
+
+    return tir.call_intrin("handle", tir.op.Op.get("tl.ascend_copy"), src, dst, enable_relu, transpose, pad_value_expr)

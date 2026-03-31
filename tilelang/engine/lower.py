@@ -161,7 +161,7 @@ def device_codegen(device_mod: tvm.IRModule, target: Target, platform: str) -> t
     device_mod = tir.transform.Simplify()(device_mod)
 
     if target.model == "ascendc" or target.model == "auto":
-        device_mod = tvm._ffi.get_global_func("target.build.tilelang_ascend")(device_mod, target)
+        device_mod = tvm._ffi.get_global_func("target.build.tilelang_ascend")(device_mod, target, platform)
     elif target.model == "pto":
         device_mod = tvm._ffi.get_global_func("target.build.tilelang_ascend_pto")(device_mod, target, platform)
     else:
@@ -197,7 +197,7 @@ def lower(
     func_or_mod: Union[tir.PrimFunc, tvm.IRModule],
     target: Union[str, Target] = "auto",
     target_host: Optional[Union[str, Target]] = None,
-    platform: Literal["A2", "A3", "A5"] = "A3",
+    platform: str = "auto",
     runtime_only=False,
     enable_host_codegen=False,
     enable_device_compile=False,
@@ -208,6 +208,9 @@ def lower(
         enable_device_compile: whether to enable device codegen, default is False, as we have our
         own device codegen implementation in jit.
     '''
+    
+    from tilelang.utils.target import determine_platform
+    platform = determine_platform(platform)
 
     mod = func_or_mod
     params = None
