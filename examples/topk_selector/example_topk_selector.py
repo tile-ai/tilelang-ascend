@@ -23,7 +23,7 @@ def simple_topk_selector(B: int, N: int, top_k: int, block_N: int, dtype: Litera
     VEC_NUM = 2
     INDEX_DTYPE = "int32"
     SORT_INDEX_DTYPE = "uint32"
-    SORT_TEMP_ROWS = 32
+    SORT_TEMP_ROWS = 32  # large enough
 
     b_num = T.ceildiv(B, VEC_NUM)
     n_num = T.ceildiv(N, block_N)
@@ -48,21 +48,21 @@ def simple_topk_selector(B: int, N: int, top_k: int, block_N: int, dtype: Litera
 
     @T.prim_func
     def main(
-        x: T.Tensor([B, N], dtype),
-        indices: T.Tensor([B, top_k], INDEX_DTYPE),
+        x: T.Tensor([B, N], dtype),                     # type: ignore
+        indices: T.Tensor([B, top_k], INDEX_DTYPE),     # type: ignore
     ):
         with T.Kernel(b_num, is_npu=True) as (cid, vid):
-            row_id = (cid * VEC_NUM + vid) % B
+            row_id = (cid * VEC_NUM + vid) % B  # one v-core for one row
 
             sort_temp = T.alloc_ub([SORT_TEMP_ROWS, block_N], dtype)
             x_ub = T.alloc_ub([block_N], dtype)
 
             sort_indices = T.alloc_ub([block_N], INDEX_DTYPE)
-            sort_indices_u = T.alloc_ub([block_N], SORT_INDEX_DTYPE)
+            sort_indices_u = T.alloc_ub([block_N], SORT_INDEX_DTYPE)    # same buffer as sort_indices
             topk_indices_tmp_ub = T.alloc_ub([block_N], INDEX_DTYPE)
 
             sort_result = T.alloc_ub([merge_num, block_N * 2], dtype)
-            sort_result_index = T.alloc_ub([top_k], INDEX_DTYPE)
+            sort_result_index = T.alloc_ub([top_k], INDEX_DTYPE)        # sub buffer of sort_result
 
             topk_global = T.alloc_ub([top_k * 2], dtype)
             merge_tmp = T.alloc_ub([top_k * 2], dtype)
@@ -83,25 +83,25 @@ def simple_topk_selector(B: int, N: int, top_k: int, block_N: int, dtype: Litera
                 }
             )
 
-            T.tile.arith_progression(topk_indices_tmp_ub, 0, 1, block_N)
-            T.tile.init_sort_buf(topk_global, top_k * 2, rsv=0)
+            T.tile.arith_progression(topk_indices_tmp_ub, 0, 1, block_N)  # (0..block_N-1)
+            T.tile.init_sort_buf(topk_global, top_k * 2, rsv=0)   # rsv is always 0
 
             for bn in T.serial(n_num):
                 T.copy(x[row_id, bn * block_N], x_ub)
 
-                T.tile.add(sort_indices, topk_indices_tmp_ub, T.int32(bn * block_N))
+                T.tile.add(sort_indices, topk_indices_tmp_ub, T.int32(bn * block_N))  # (0..block_N-1) + bn * block_N
                 T.tile.sort(sort_result[(bn % merge_num), :], x_ub, sort_indices_u, sort_temp, repeat_time)
 
                 if bn % merge_num == merge_num - 1:
-                    if bn == merge_num - 1:
+                    if bn == merge_num - 1:  # first time merge, update topk_global directly
                         T.tile.merge_sort(
                             topk_global, merge_tmp, sort_result[0, :], sort_result[1, :], sort_result[2, :], sort_result[3, :]
                         )
-                    else:
+                    else:  # later merges, merge to merge_dst and update topk_global by it
                         T.tile.merge_sort(merge_dst, merge_tmp, sort_result[0, :], sort_result[1, :], sort_result[2, :], sort_result[3, :])
                         T.tile.topk(topk_global, merge_dst, merge_tmp, top_k)
 
-            T.tile.gather_mask(sort_result, topk_global, "P1010")
+            T.tile.gather_mask(sort_result, topk_global, "P1010")  # [value, idx] => [idx]
 
             T.copy(sort_result_index, indices[row_id, :top_k])
 
