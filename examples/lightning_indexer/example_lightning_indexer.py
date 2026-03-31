@@ -254,7 +254,6 @@ def compare_tensors(tensor1, tensor2):
 
 def test_indexer():
     func = indexer(B, N2, G, S1, S2, D, TOP_K, 512, 32, 128, 128, 128)
-    print(func.get_kernel_source())
 
     q = torch.randn(B, S1, N2, G, D).half()
     k = torch.randn(B, S2, N2, D).half()
