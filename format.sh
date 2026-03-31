@@ -124,7 +124,7 @@ fi
 if [[ ${#RUN_CLANG_TIDY_CMD[@]} -gt 0 ]]; then
     # Check if clang-tidy is available
     if [[ ! -x "$(command -v clang-tidy)" ]]; then
-        python3 -m pip install --upgrade --requirements "${ROOT}/requirements-lint.txt" --user
+        python3 -m pip install --upgrade -r "${ROOT}/requirements-lint.txt" --user
     fi
 
     # Get clang-tidy version

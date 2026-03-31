@@ -29,10 +29,10 @@ def parallel_add_scalar_invariant_dev(M, N, dtype):
 
             T.copy(A, a)
 
-            # 先把 runtime scalar materialize 成 buffer
+            # materialize runtime scalar to buffer
             c_buf[0] = T.Cast(dtype, C)
 
-            # 用最简单的 2D parallel elementwise add
+            # 2D parallel elementwise add
             for i, j in T.Parallel(M, N):
                 b[i, j] = a[i, j] + c_buf[0]
 

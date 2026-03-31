@@ -141,6 +141,12 @@ private:
                     const std::vector<const VarNode *> &loop_vars) {
     if (IsScalar(expr))
       return true;
+    if (auto var = expr.as<VarNode>()) {
+      for (auto lv : loop_vars)
+        if (lv == var)
+          return false;
+      return true;
+    }
     if (auto load = expr.as<BufferLoadNode>())
       return IsLoopInvariant(load->indices, loop_vars);
     return false;
@@ -518,6 +524,10 @@ private:
     if (!DecomposeExpression(operand, output_ref, tmp_bufs, loop_vars,
                              loop_extents, stmts))
       return std::nullopt;
+    // if conditon is complex expression of scalars, such as scalar_a < scalar_b
+    // it doesn't generate tmp buffer, so the tmp_bufs may be empty
+    if (tmp_bufs->empty())
+      return std::nullopt;
     return tmp_bufs->back();
   }
 
@@ -563,12 +573,10 @@ private:
                               const std::vector<int64_t> &loop_extents,
                               Array<Stmt> *stmts) {
     DepthGuard guard(depth);
-
     auto resolved_a = ResolveOperand(operands[0], output_ref, tmp_bufs,
                                      loop_vars, loop_extents, stmts, op_name);
     auto resolved_b = ResolveOperand(operands[1], output_ref, tmp_bufs,
                                      loop_vars, loop_extents, stmts, op_name);
-
     // Both operands are scalar — cannot vectorize.
     if (!resolved_a && !resolved_b)
       return false;
@@ -580,19 +588,16 @@ private:
 
     if (!resolved_a) {
       if (op_name == "Add" || op_name == "Mul" || IsCmpOp(op_name)) {
-        // Commutative ops: swap operands directly.
         if (op_name == "LT")
           op_name = "GT";
         if (op_name == "LE")
           op_name = "GE";
         std::swap(region_a, region_b);
       } else {
-        if (auto load = operands[0].as<BufferLoadNode>()) {
-          // Loop-invariant BufferLoad on the left: wrap as a size-1 region.
-          region_a =
-              BuildRegionCall(ExtractBufferAccessInfo(operands[0]), 1, 1);
+        if (IsScalar(operands[0]) || operands[0].as<VarNode>()) {
+          region_a = operands[0];
         } else {
-          // Pure scalar Sub/Div cannot be swapped; broadcast the scalar first.
+          // BufferLoad or compound expression: broadcast to tmp buffer.
           const BufferAccessInfo &ref = *resolved_b;
           auto scalar_buf = CreateTempBuffer(ref, op_name);
           tmp_bufs->push_back(scalar_buf);
@@ -604,12 +609,17 @@ private:
     }
 
     if (!resolved_b) {
-      if (auto load = operands[1].as<BufferLoadNode>()) {
-        // Loop-invariant BufferLoad: wrap as a size-1 region.
-        region_b = BuildRegionCall(ExtractBufferAccessInfo(operands[1]), 1, 1);
+      if (IsScalar(operands[1]) || operands[1].as<VarNode>()) {
+        region_b = operands[1];
+      } else {
+        // BufferLoad or compound expression: broadcast to tmp buffer.
+        const BufferAccessInfo &ref = *resolved_a;
+        auto scalar_buf = CreateTempBuffer(ref, op_name);
+        tmp_bufs->push_back(scalar_buf);
+        stmts->push_back(BuildNpuirCall(
+            "Broadcast", {operands[1], BuildRegionCall(scalar_buf, 2, 1)}));
+        region_b = BuildRegionCall(scalar_buf, 1, 1);
       }
-      // Pure scalar (IntImm / FloatImm): use directly, no extra handling
-      // needed.
     }
 
     const BufferAccessInfo &ref = resolved_a ? *resolved_a : *resolved_b;
@@ -618,7 +628,6 @@ private:
       output = CreateTempBuffer(ref, op_name);
       tmp_bufs->push_back(output);
     }
-
     stmts->push_back(BuildBinaryStmt(op_name, region_a, region_b, output));
     guard.commit();
     return true;
@@ -635,19 +644,65 @@ private:
     auto *call = expr.as<CallNode>();
     std::string op_name = call->op.as<OpNode>()->name;
 
-    // Scalar-like operands must be broadcast into a buffer first.
     auto ResolveTernaryOperand =
         [&](const PrimExpr &e,
             const std::string &tmp_op =
                 "npuir_add") -> std::optional<BufferAccessInfo> {
+      // Case 1: simple scalar (IntImm/FloatImm/VarNode/loop-invariant
+      // BufferLoad)
       if (IsScalarLike(e, loop_vars)) {
         auto tmp = CreateTempBuffer(output_ref, tmp_op);
         tmp_bufs->push_back(tmp);
         stmts->push_back(BuildUnaryStmt("Broadcast", e, tmp));
         return tmp;
       }
-      return ResolveOperand(e, output_ref, tmp_bufs, loop_vars, loop_extents,
-                            stmts, op_name);
+
+      // Case 2: try normal vectorization path
+      auto resolved = ResolveOperand(e, output_ref, tmp_bufs, loop_vars,
+                                     loop_extents, stmts, op_name);
+      if (resolved)
+        return resolved;
+
+      // Case 3: ResolveOperand failed — e is a pure scalar compound expression
+      // (e.g. `1 <= cid`, neither side contains a loop variable).
+      // Verify that e contains no loop variables before broadcasting.
+      bool contains_loop_var = false;
+      for (auto lv : loop_vars) {
+        if (tir::UsesVar(e, [lv](const VarNode *v) { return v == lv; })) {
+          contains_loop_var = true;
+          break;
+        }
+      }
+      if (!contains_loop_var) {
+        // Create a tmp buffer with the full output shape (e.g. 32x16).
+        auto tmp = CreateTempBuffer(output_ref, tmp_op);
+        tmp_bufs->push_back(tmp);
+
+        // Build a region with all-zero offsets and the full buffer shape,
+        // so the broadcast fills the entire buffer in one shot.
+        const Buffer &buf = tmp.buffer;
+        int ndim = buf->shape.size();
+        Array<PrimExpr> zero_indices;
+        for (int i = 0; i < ndim; i++)
+          zero_indices.push_back(make_const(DataType::Int(32), 0));
+
+        Array<PrimExpr> brc_args = {BufferLoad(buf, zero_indices),
+                                    make_const(DataType::Int(32), 2)};
+        for (const auto &s : buf->shape)
+          brc_args.push_back(s);
+
+        // Hoist the broadcast outside the loop so it executes once and
+        // fills the entire buffer.
+        hoisted_stmts_.push_back(Evaluate(Call(
+            DataType::Void(), Op::Get("tl.npuir_brc"),
+            {e, Call(DataType::Handle(), Op::Get("tl.region"), brc_args)})));
+
+        // Return all-zero indices so that subsequent BuildRegionCall
+        // generates the correct read region.
+        return BufferAccessInfo{buf, zero_indices, true};
+      }
+
+      return std::nullopt;
     };
 
     auto cond_info = ResolveTernaryOperand(call->args[0], "GT");
@@ -1159,7 +1214,8 @@ private:
     auto loop_var_node_ptr = forNode->loop_var.get();
     std::vector<PrimExpr> new_regions;
     for (const auto &region : call->args) {
-      if (IsScalar(region) || region.as<StringImmNode>()) {
+      if (IsScalar(region) || region.as<StringImmNode>() ||
+          region.as<VarNode>()) {
         new_regions.push_back(region);
         continue;
       }
