@@ -29,7 +29,7 @@ def layer_norm(M, N, block_M, block_N, eps=1e-5, dtype="float"):
     VEC_NUM = 2
     sub_block_M = block_M // VEC_NUM
 
-    use_float32_compute = (dtype == "bfloat16")
+    use_float32_compute = dtype in ["bfloat16", "float16"]
     cal_dtype = "float32" if use_float32_compute else dtype
 
     def cast_or_copy(dst, src, mode, count):
@@ -109,12 +109,12 @@ def layer_norm(M, N, block_M, block_N, eps=1e-5, dtype="float"):
 
 torch.manual_seed(0)
 test_configs = [
-    (16, 16, 16, 16, "float"),
-    (16, 16, 16, 16, "float16"),
-    (16, 16, 16, 16, "bfloat16"),
+    (33, 33, 16, 16, "float"),
+    (33, 33, 16, 16, "float16"),
+    (33, 33, 16, 16, "bfloat16"),
     (256, 256, 64, 64, "float"),
-    (1024, 1024, 128, 128, "float16"),
-    (1024, 51200, 128, 128, "float"),
+    (1030, 1030, 128, 128, "float16"),
+    (1024, 51200, 128, 128, "bfloat16"),
 ]
 
 for M, N, block_M, block_N, dtype in test_configs:
