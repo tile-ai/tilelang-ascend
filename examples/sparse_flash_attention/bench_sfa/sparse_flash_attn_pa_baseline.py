@@ -228,7 +228,7 @@ def sparse_attention_fwd(
 
                         T.copy(acc_o, acc_o_half)
 
-                        T.copy(acc_o_half, Output[b_i, s_i, H0 + vid * vec_block_M : H1 + vid * vec_block_M, :])
+                        T.copy(acc_o_half, Output[b_i, s_i, H0 + vid * vec_block_M : H0 + (vid + 1) * vec_block_M, :])
 
     return main
 
@@ -250,7 +250,6 @@ def sparse_attn_tilelang(
     block_table=None,
     attention_mode=None,
 ):
-
     query = query.unsqueeze(0)
     query_rope = query_rope.unsqueeze(0)
     block_num, block_size, num_head_kv, dim = key.size()
