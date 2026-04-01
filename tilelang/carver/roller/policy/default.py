@@ -963,4 +963,4 @@ class DefaultPolicy:
         RasterRationPlan
             This function is not implemented yet.
         """
-        return NoRasterization()
+        return NoRasterization()
