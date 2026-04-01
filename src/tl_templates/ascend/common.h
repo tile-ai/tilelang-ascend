@@ -463,31 +463,88 @@ gemm_v0(LocalTensor<T1> const &A, LocalTensor<T1> const &B,
   WaitFlag<HardEvent::M_FIX>(L0AB_EVENT);
 }
 
+// 2-way merge sort
 template <typename T>
-CATLASS_DEVICE void MergeSort(const LocalTensor<T> &dst,
-                              const LocalTensor<T> &src, uint32_t blockSize,
-                              uint32_t blockNum, uint32_t is_copy) {
-  // 初始化合并排序参数
-  AscendC::MrgSort4Info params;
-  params.elementLengths[0] = blockSize;
-  params.elementLengths[1] = blockSize;
-  params.elementLengths[2] = blockSize;
-  params.elementLengths[3] = blockSize;
-  params.ifExhaustedSuspension = false;
-  params.validBit = 0b1111;
+CATLASS_DEVICE void
+MergeSort(const LocalTensor<T> &dst, const LocalTensor<T> &tmp,
+          const LocalTensor<T> &src0, const LocalTensor<T> &src1,
+          uint32_t blockLen0, uint32_t blockLen1) {
+  // Note: tmp parameter is kept for API consistency with PTO backend but not
+  // used in AscendC
 
-  // 初始化源列表
+  AscendC::MrgSort4Info params;
+  params.elementLengths[0] = blockLen0;
+  params.elementLengths[1] = blockLen1;
+  params.elementLengths[2] = 0;
+  params.elementLengths[3] = 0;
+  params.ifExhaustedSuspension = false;
+  params.validBit = 3;
+
   AscendC::MrgSortSrcList<T> srcList;
-  srcList.src1 = src[0];
-  srcList.src2 = src[blockSize * 2 * 1];
-  srcList.src3 = src[blockSize * 2 * 2];
-  srcList.src4 = src[blockSize * 2 * 3];
-  // 执行合并排序
+  srcList.src1 = src0;
+  srcList.src2 = src1;
+  srcList.src3 = src0;
+  srcList.src4 = src0;
+
   AscendC::MrgSort<T>(dst, srcList, params);
   PipeBarrier<PIPE_V>();
-  if (is_copy) {
-    AscendC::DataCopy(src, dst, blockNum * blockSize * 2);
-  }
+}
+
+// 3-way merge sort
+template <typename T>
+CATLASS_DEVICE void
+MergeSort(const LocalTensor<T> &dst, const LocalTensor<T> &tmp,
+          const LocalTensor<T> &src0, const LocalTensor<T> &src1,
+          const LocalTensor<T> &src2, uint32_t blockLen0, uint32_t blockLen1,
+          uint32_t blockLen2) {
+  // Note: tmp parameter is kept for API consistency with PTO backend but not
+  // used in AscendC
+
+  AscendC::MrgSort4Info params;
+  params.elementLengths[0] = blockLen0;
+  params.elementLengths[1] = blockLen1;
+  params.elementLengths[2] = blockLen2;
+  params.elementLengths[3] = 0;
+  params.ifExhaustedSuspension = false;
+  params.validBit = 7;
+
+  AscendC::MrgSortSrcList<T> srcList;
+  srcList.src1 = src0;
+  srcList.src2 = src1;
+  srcList.src3 = src2;
+  srcList.src4 = src0;
+
+  AscendC::MrgSort<T>(dst, srcList, params);
+  PipeBarrier<PIPE_V>();
+}
+
+// 4-way merge sort
+template <typename T>
+CATLASS_DEVICE void
+MergeSort(const LocalTensor<T> &dst, const LocalTensor<T> &tmp,
+          const LocalTensor<T> &src0, const LocalTensor<T> &src1,
+          const LocalTensor<T> &src2, const LocalTensor<T> &src3,
+          uint32_t blockLen0, uint32_t blockLen1, uint32_t blockLen2,
+          uint32_t blockLen3) {
+  // Note: tmp parameter is kept for API consistency with PTO backend but not
+  // used in AscendC
+
+  AscendC::MrgSort4Info params;
+  params.elementLengths[0] = blockLen0;
+  params.elementLengths[1] = blockLen1;
+  params.elementLengths[2] = blockLen2;
+  params.elementLengths[3] = blockLen3;
+  params.ifExhaustedSuspension = false;
+  params.validBit = 15;
+
+  AscendC::MrgSortSrcList<T> srcList;
+  srcList.src1 = src0;
+  srcList.src2 = src1;
+  srcList.src3 = src2;
+  srcList.src4 = src3;
+
+  AscendC::MrgSort<T>(dst, srcList, params);
+  PipeBarrier<PIPE_V>();
 }
 
 template <typename T>
