@@ -3,6 +3,7 @@
 This module provides functionality for auto-tuning tilelang programs, including JIT compilation
 and performance optimization through configuration search.
 """
+
 from __future__ import annotations
 from dataclasses import dataclass
 
@@ -14,7 +15,8 @@ from tvm.tir import PrimFunc, Var
 from tvm.target import Target
 import inspect
 from functools import partial
-from typing import (Callable, Generic, Literal, Any, TypeVar, TYPE_CHECKING)
+from typing import Callable, Generic, Literal, Any, TypeVar, TYPE_CHECKING
+
 # Python 3.9 compatibility for ParamSpec
 try:
     from typing import ParamSpec
@@ -77,8 +79,8 @@ def _init_logger_handlers():
     global _logger_handlers_initialized
     if _logger_handlers_initialized:
         return
-    formatter = logging.Formatter('%(asctime)s %(levelname)s:%(message)s')
-    file_handler = logging.FileHandler('autotuner.log', mode='w')
+    formatter = logging.Formatter("%(asctime)s %(levelname)s:%(message)s")
+    file_handler = logging.FileHandler("autotuner.log", mode="w")
     file_handler.setLevel(logging.DEBUG)
     file_handler.setFormatter(formatter)
     console_handler = logging.StreamHandler(sys.stdout)
@@ -90,8 +92,7 @@ def _init_logger_handlers():
 
 
 def get_available_cpu_count() -> int:
-    """Gets the number of CPU cores available to the current process.
-    """
+    """Gets the number of CPU cores available to the current process."""
     try:
         cpu_count = len(os.sched_getaffinity(0))
     except AttributeError:
@@ -110,6 +111,7 @@ class AutoTuner:
         fn: The function to be auto-tuned.
         configs: List of configurations to try during auto-tuning.
     """
+
     compile_args = CompileArgs()
     profile_args = ProfileArgs()
 
@@ -140,13 +142,15 @@ class AutoTuner:
         """
         return cls(kernel, configs)
 
-    def set_compile_args(self,
-                         out_idx: list[int] | int | None = None,
-                         target: Literal['auto', 'cuda', 'hip'] = 'auto',
-                         execution_backend: Literal["dlpack", "ctypes", "cython"] = "cython",
-                         target_host: str | Target = None,
-                         verbose: bool = False,
-                         pass_configs: dict[str, Any] | None = None):
+    def set_compile_args(
+        self,
+        out_idx: list[int] | int | None = None,
+        target: Literal["auto", "cuda", "hip"] = "auto",
+        execution_backend: Literal["dlpack", "ctypes", "cython"] = "cython",
+        target_host: str | Target = None,
+        verbose: bool = False,
+        pass_configs: dict[str, Any] | None = None,
+    ):
         """Set compilation arguments for the auto-tuner.
 
         Args:
@@ -166,23 +170,26 @@ class AutoTuner:
             execution_backend=execution_backend,
             target_host=target_host,
             verbose=verbose,
-            pass_configs=pass_configs)
+            pass_configs=pass_configs,
+        )
 
         return self
 
-    def set_profile_args(self,
-                         warmup: int = 25,
-                         rep: int = 100,
-                         timeout: int = 30,
-                         supply_type: tilelang.TensorSupplyType = tilelang.TensorSupplyType.Auto,
-                         ref_prog: Callable | None = None,
-                         supply_prog: Callable | None = None,
-                         rtol: float = 1e-2,
-                         atol: float = 1e-2,
-                         max_mismatched_ratio: float = 0.01,
-                         skip_check: bool = False,
-                         manual_check_prog: Callable | None = None,
-                         cache_input_tensors: bool = False):
+    def set_profile_args(
+        self,
+        warmup: int = 25,
+        rep: int = 100,
+        timeout: int = 30,
+        supply_type: tilelang.TensorSupplyType = tilelang.TensorSupplyType.Auto,
+        ref_prog: Callable | None = None,
+        supply_prog: Callable | None = None,
+        rtol: float = 1e-2,
+        atol: float = 1e-2,
+        max_mismatched_ratio: float = 0.01,
+        skip_check: bool = False,
+        manual_check_prog: Callable | None = None,
+        cache_input_tensors: bool = False,
+    ):
         """Set profiling arguments for the auto-tuner.
 
         Args:
@@ -223,24 +230,28 @@ class AutoTuner:
             cache_input_tensors=cache_input_tensors,
             warmup=warmup,
             rep=rep,
-            timeout=timeout)
+            timeout=timeout,
+        )
 
         # If a custom `supply_prog` is provided, the profiler's `supply_type` setting
         # becomes ineffective. The custom supply program will be used instead.
         if supply_prog is not None and supply_type != tilelang.TensorSupplyType.Auto:
-            logger.warning("Ignoring `supply_type` passed to `set_profile_args` because "
-                           "`supply_prog` is not None.")
+            logger.warning(
+                "Ignoring `supply_type` passed to `set_profile_args` because "
+                "`supply_prog` is not None."
+            )
 
         return self
 
-    def set_kernel_parameters(self, k_parameters: tuple[str, ...], f_parameters: dict[str, Any]):
+    def set_kernel_parameters(
+        self, k_parameters: tuple[str, ...], f_parameters: dict[str, Any]
+    ):
         # for cache key generation
         self._kernel_parameters = k_parameters
         self._function_parameters = f_parameters
 
     def generate_cache_key(self, parameters: dict[str, Any]) -> AutotuneResult | None:
-        """Generate a cache key for the auto-tuning process.
-        """
+        """Generate a cache key for the auto-tuning process."""
 
         def _normalize_param(value):
             if isinstance(value, Var):
@@ -291,7 +302,6 @@ class AutoTuner:
         Returns:
             AutotuneResult: Results of the auto-tuning process.
         """
-        import time
         start_time = time.time()
         _init_logger_handlers()
 
@@ -307,8 +317,10 @@ class AutoTuner:
             if env.is_cache_enabled():
                 # First check in-memory cache
                 if key in self._memory_cache:
-                    logger.warning("Found kernel in memory cache. For better performance," \
-                                        " consider using `@tilelang.autotune` instead of direct AutoTuner.from_kernel.")
+                    logger.warning(
+                        "Found kernel in memory cache. For better performance,"
+                        " consider using `@tilelang.autotune` instead of direct AutoTuner.from_kernel."
+                    )
                     return self._memory_cache[key]
 
                 # Then check disk cache
@@ -344,28 +356,33 @@ class AutoTuner:
             max_mismatched_ratio = profile_args.max_mismatched_ratio
 
             profiler = jit_kernel.get_profiler(tensor_supply_type=supply_type)
+
             # Factory functions for generating input tensors.
             # This encapsulates the logic of using either a custom supply program (`supply_prog`)
             # or the default profiler input generation (`profiler._get_inputs`).
             def get_input_tensors_supply(with_output: bool):
                 def func():
                     if supply_prog is not None:
-                        return supply_prog(profiler._get_params(with_output=with_output))
+                        return supply_prog(
+                            profiler._get_params(with_output=with_output)
+                        )
                     else:
                         return profiler._get_inputs(with_output=with_output)
 
                 return func
+
             jit_input_tensors_supply = get_input_tensors_supply(with_output=False)
             ref_input_tensors_supply = get_input_tensors_supply(with_output=False)
-            
+
             if cache_input_tensors:
                 params = profiler._get_params(with_output=False)
                 if self.jit_input_tensors is None:
                     self.jit_input_tensors = jit_input_tensors_supply()
                 else:
                     # check if the cached tensors are compatible with the current configuration
-                    assert len(params) == len(
-                        self.jit_input_tensors), "len(params) != len(self.jit_input_tensors)"
+                    assert len(params) == len(self.jit_input_tensors), (
+                        "len(params) != len(self.jit_input_tensors)"
+                    )
                     for p, c in zip(params, self.jit_input_tensors, strict=True):
                         if not isinstance(c, torch.Tensor):
                             # skip non-tensor inputs checking
@@ -374,8 +391,11 @@ class AutoTuner:
                         # Check tensor compatibility using generator expression
                         def shape_equal(a, b):
                             return all(
-                                a_dim == b_dim or isinstance(a_dim, Var) or isinstance(b_dim, Var)
-                                for a_dim, b_dim in zip(a.shape, b.shape, strict=True))
+                                a_dim == b_dim
+                                or isinstance(a_dim, Var)
+                                or isinstance(b_dim, Var)
+                                for a_dim, b_dim in zip(a.shape, b.shape, strict=True)
+                            )
 
                         if p.dtype != c.dtype or not shape_equal(p, c):
                             logger.warning(
@@ -386,7 +406,8 @@ class AutoTuner:
                                 "To ensure fresh, compatible inputs are generated for every trial "
                                 "you can disable caching by setting:\n"
                                 "  `cache_input_tensors=False`\n"
-                                "within your `.set_compile_args(...)` call.\n")
+                                "within your `.set_compile_args(...)` call.\n"
+                            )
                             # otherwise, regenerate the input tensors for safety
                             self.jit_input_tensors = jit_input_tensors_supply()
                             break
@@ -397,22 +418,29 @@ class AutoTuner:
                     profiler.manual_assert_close(
                         ref_prog,
                         input_tensors=self.jit_input_tensors,
-                        manual_check_prog=manual_check_prog)
+                        manual_check_prog=manual_check_prog,
+                    )
                 else:
                     profiler.assert_allclose(
                         ref_prog,
                         input_tensors=self.jit_input_tensors,
                         rtol=rtol,
                         atol=atol,
-                        max_mismatched_ratio=max_mismatched_ratio)
-                    
+                        max_mismatched_ratio=max_mismatched_ratio,
+                    )
+
             latency = profiler.do_bench(
-                warmup=warmup, rep=rep, input_tensors=self.jit_input_tensors)
+                warmup=warmup, rep=rep, input_tensors=self.jit_input_tensors
+            )
 
             if self.ref_latency_cache is None and ref_prog is not None:
                 self.ref_input_tensors = ref_input_tensors_supply()
                 self.ref_latency_cache = profiler.do_bench(
-                    ref_prog, n_warmup=warmup, n_repeat=rep, input_tensors=self.ref_input_tensors)
+                    ref_prog,
+                    n_warmup=warmup,
+                    n_repeat=rep,
+                    input_tensors=self.ref_input_tensors,
+                )
 
             return latency, self.ref_latency_cache
 
@@ -429,7 +457,9 @@ class AutoTuner:
             config_args.append(new_kwargs)
 
         if len(config_args) == 0:
-            raise ValueError("No configurations to tune, please check your `@autotune` decorator")
+            raise ValueError(
+                "No configurations to tune, please check your `@autotune` decorator"
+            )
 
         # check if the tunable arguments has been set.
         # get the back config argument
@@ -441,13 +471,18 @@ class AutoTuner:
 
             def check_tunable_argument_value(key, parameters, key_args_tuple) -> bool:
                 params_list = list(parameters.keys())
-                assert key in params_list, f"Tunable argument {key} not found in function parameters"
+                assert key in params_list, (
+                    f"Tunable argument {key} not found in function parameters"
+                )
                 return params_list.index(key) < len(key_args_tuple)
 
             # Check if all tunable arguments have been tuned by comparing config keys with key_kwargs_tuple
             if any(key in top_config for key, _ in key_kwargs_tuple) or any(
-                    check_tunable_argument_value(key, self._function_parameters, key_args_tuple)
-                    for key in tunable_arguments):
+                check_tunable_argument_value(
+                    key, self._function_parameters, key_args_tuple
+                )
+                for key in tunable_arguments
+            ):
                 logger.warning(
                     f"Tunable parameters {tunable_arguments} already provided during auto-tuning. Skipping compilation and using direct JIT"
                 )
@@ -456,7 +491,8 @@ class AutoTuner:
                 autotuner_result = AutotuneResult(
                     libcode=jit_kernel.get_kernel_source(),
                     func=jit_kernel.prim_func,
-                    kernel=jit_kernel)
+                    kernel=jit_kernel,
+                )
                 self._memory_cache[key] = autotuner_result
                 return autotuner_result
         # get the cpu count
@@ -497,9 +533,9 @@ class AutoTuner:
             def inner(**config_arg):
                 torch.npu.set_device(device)
                 return func(**config_arg)
-            
+
             return inner
-    
+
         for i, config_arg in enumerate(config_args):
             compile_func = self.jit_compile
 
@@ -507,7 +543,7 @@ class AutoTuner:
                 device = torch.cuda.current_device()
                 compile_func = cuda_device_wrapper(self.jit_compile, device)
             # TODO: whether necessary to specify npu device here
-            elif hasattr(torch, 'npu') and torch.npu.is_available():
+            elif hasattr(torch, "npu") and torch.npu.is_available():
                 device = torch.npu.current_device()
                 compile_func = npu_device_wrapper(self.jit_compile, device)
 
@@ -520,9 +556,10 @@ class AutoTuner:
 
         results_with_configs = []
         for future in tqdm(
-                concurrent.futures.as_completed(futures),
-                total=len(futures),
-                desc="Compiling configurations"):
+            concurrent.futures.as_completed(futures),
+            total=len(futures),
+            desc="Compiling configurations",
+        ):
             idx = future_to_index[future]
             config = config_args[idx]
             try:
@@ -530,11 +567,14 @@ class AutoTuner:
                 results_with_configs.append((result, config))
             except Exception as e:
                 logger.debug(
-                    f"Compilation failed for config {config} at index {idx} with error: {e}")
+                    f"Compilation failed for config {config} at index {idx} with error: {e}"
+                )
                 continue
 
         ref_latency = None
-        progress_bar = tqdm(range(len(results_with_configs)), desc="Bench configurations")
+        progress_bar = tqdm(
+            range(len(results_with_configs)), desc="Bench configurations"
+        )
         use_profiling = os.getenv("TILELANG_BENCH_METHOD", "default").lower() == "npu"
         if use_profiling:
             funcs = []
@@ -546,12 +586,14 @@ class AutoTuner:
                 profile_args = self.profile_args
                 supply_type = profile_args.supply_type
                 profiler = jit_kernel.get_profiler(tensor_supply_type=supply_type)
-                
+
                 if profile_args.supply_prog is not None:
-                    input_tensors = profile_args.supply_prog(profiler._get_params(with_output=False))
+                    input_tensors = profile_args.supply_prog(
+                        profiler._get_params(with_output=False)
+                    )
                 else:
                     input_tensors = profiler._get_inputs(with_output=False)
-                    
+
                 ins = self._get_inputs() if input_tensors is None else input_tensors
                 bench_func = partial(jit_kernel, *ins)
                 funcs.append(bench_func)
@@ -560,6 +602,7 @@ class AutoTuner:
 
             try:
                 from ..profiler.bench import do_bench_npu
+
                 latencies = do_bench_npu(
                     funcs,
                 )
@@ -570,7 +613,9 @@ class AutoTuner:
                 logger.debug(f"Error: {traceback.format_exc()}")
                 latencies = [float("inf")] * len(funcs)
 
-            for latency, config, kernel in zip(latencies, configs, jit_kernels, strict=True):
+            for latency, config, kernel in zip(
+                latencies, configs, jit_kernels, strict=True
+            ):
                 tqdm.write(f"Tuned Latency {latency} with config {config}")
                 if latency < best_latency:
                     best_latency = latency
@@ -583,7 +628,9 @@ class AutoTuner:
                     # Cannot ThreadPoolExecutor to enforce timeout on target_fn execution
                     # Because tma init may behave strangely with one thread
                     # latency, ref_latency = target_fn(jit_kernel)
-                    latency, ref_latency = run_with_timeout(target_fn, timeout, jit_kernel)
+                    latency, ref_latency = run_with_timeout(
+                        target_fn, timeout, jit_kernel
+                    )
                 except TimeoutException:
                     logger.warning(
                         f"A timeout occurred while testing config {config}, checkout autotuner.log for more details"
@@ -606,8 +653,10 @@ class AutoTuner:
         pool.shutdown()
 
         if best_kernel is None:
-            error_msg = ("Auto-tuning failed: No configuration successfully "
-                         "compiled and passed benchmarking/validation.")
+            error_msg = (
+                "Auto-tuning failed: No configuration successfully "
+                "compiled and passed benchmarking/validation."
+            )
             logger.error(error_msg)
             raise RuntimeError(error_msg)
 
@@ -623,7 +672,8 @@ class AutoTuner:
             ref_latency=ref_latency,
             libcode=best_kernel.get_kernel_source(),
             func=best_kernel.prim_func,
-            kernel=best_kernel)
+            kernel=best_kernel,
+        )
 
         if self.compile_args.execution_backend in ("dlpack", "torch"):
             logger.warning("DLPack backend does not support cache saving to disk.")
@@ -646,8 +696,8 @@ class AutoTuner:
         return self.run()
 
 
-_P = ParamSpec('_P')
-_T = TypeVar('_T')
+_P = ParamSpec("_P")
+_T = TypeVar("_T")
 
 
 @dataclass
@@ -674,8 +724,9 @@ class AutoTuneImpl(Generic[_P, _T]):
     def get_tunner(self):
         # Use the real function from jit_impl, not a placeholder
         assert self.jit_impl.func is not None
-        autotuner = AutoTuner(
-            self.jit_impl.func, configs=self.configs).set_profile_args(
+        autotuner = (
+            AutoTuner(self.jit_impl.func, configs=self.configs)
+            .set_profile_args(
                 supply_type=self.supply_type,
                 ref_prog=self.ref_prog,
                 supply_prog=self.supply_prog,
@@ -685,7 +736,8 @@ class AutoTuneImpl(Generic[_P, _T]):
                 skip_check=self.skip_check,
                 manual_check_prog=self.manual_check_prog,
                 cache_input_tensors=self.cache_input_tensors,
-            ).set_compile_args(
+            )
+            .set_compile_args(
                 out_idx=self.jit_impl.out_idx,
                 execution_backend=self.jit_impl.execution_backend,
                 target=self.jit_impl.target,
@@ -693,6 +745,7 @@ class AutoTuneImpl(Generic[_P, _T]):
                 verbose=self.jit_impl.verbose,
                 pass_configs=self.jit_impl.pass_configs,
             )
+        )
         autotuner.run = partial(autotuner.run, self.warmup, self.rep, self.timeout)
         return autotuner
 
@@ -786,9 +839,12 @@ def autotune(  # This is the new public interface
         # Case 1: Used as @autotune (func_or_out_idx is the function, others are defaults)
         # This is a placeholder for a real auto tuner implementation
         raise ValueError(
-            "Use tilelang.autotune to decorate func without arguments is not supported yet.")
+            "Use tilelang.autotune to decorate func without arguments is not supported yet."
+        )
     elif isinstance(func, PrimFunc):
-        raise ValueError("Use tilelang.autotune to decorate prim_func is not supported yet.")
+        raise ValueError(
+            "Use tilelang.autotune to decorate prim_func is not supported yet."
+        )
     else:
         # ...existing code...
 
@@ -796,13 +852,13 @@ def autotune(  # This is the new public interface
             # impl could be either:
             # 1. A wrapper function from @jit with __jit_impl__ attribute
             # 2. A _JitImplementation instance directly
-            if callable(impl) and hasattr(impl, '__jit_impl__'):
+            if callable(impl) and hasattr(impl, "__jit_impl__"):
                 # Case 1: wrapper function from @jit decorator
                 jit_impl = impl.__jit_impl__
             else:
                 # Case 2: _JitImplementation instance
                 jit_impl = impl
-            
+
             return AutoTuneImpl(
                 jit_impl=jit_impl,
                 configs=configs,
