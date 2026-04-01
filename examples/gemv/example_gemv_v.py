@@ -5,6 +5,8 @@ import tilelang.language as T
 
 import torch
 
+tl.cache.clear_cache()
+
 @tl.jit(
     out_idx=[-1],
     pass_configs={
