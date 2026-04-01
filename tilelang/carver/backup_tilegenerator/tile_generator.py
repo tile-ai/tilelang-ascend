@@ -85,7 +85,7 @@ class KernelMeta:
             This param can be empty. Note that the auto tiling feature will be disabled when the split_params and tiling_params are both empty.
             The tiling axis can usually be identified according to `tl.arange()` expression.
         :type tiling_params: Dict[str, str]
-        :param low_dims: a list of axis name in which the corresponding axis is low dim aixs.
+        :param low_dims: a list of axis name in which the corresponding axis is low dim axis.
             The axis name must be in key's axis names. Do not add prefix 'r' before the axis name.
         :type low_dims: List[str]
         :param dual_reduction: performing reduction on more than one axis.
