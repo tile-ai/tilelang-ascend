@@ -3706,14 +3706,14 @@ def sort(M, N, block_M, block_N, dtype="float"):
     @T.prim_func
     def main(
         a: T.Tensor((M, N), dtype),
-        b: T.Tensor((M, N), dtype),
+        b: T.Tensor((M, 2 * N), dtype),
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
             by = cid % n_num
 
             src_ub = T.alloc_ub((block_M // VEC_NUM, ub_N), dtype)
-            dst_ub = T.alloc_ub((block_M // VEC_NUM, ub_N), dtype)
+            dst_ub = T.alloc_ub((block_M // VEC_NUM, ub_N * 2), dtype)
             tmp_ub = T.alloc_ub((block_M // VEC_NUM, ub_N * 2), dtype)
 
             T.copy(a[bx * block_M + vid * block_M // VEC_NUM, by * ub_N], src_ub)
@@ -3729,22 +3729,29 @@ def run_test_sort(M, N, block_M, block_N, dtype, target):
     func = sort(M, N, block_M, block_N, dtype)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
 
-    a = torch.arange(M * N, dtype=torch.float32 if dtype == "float" else torch.float16).reshape(M, N).npu()
+    torch_dtype = torch.float if dtype == "float" else torch.float16
+    a = torch.randn(M, N, dtype=torch_dtype).npu()
     b = func(a)
 
-    # a_cpu = a.cpu().reshape(-1)
-    ref_b, sorted_indices = torch.sort(a, descending=True)
+    b_cpu = b.cpu().float().reshape(-1)
+    a_cpu = a.cpu().float().reshape(-1)
 
-    torch.testing.assert_close(b, ref_b, rtol=1e-3, atol=1e-3)
+    out_values = b_cpu[0::2][:N]
+    out_indices = b_cpu[1::2][:N]
+
+    ref_vals, ref_index = torch.sort(a_cpu, descending=True)
+
+    torch.testing.assert_close(out_values, ref_vals, rtol=1e-3, atol=1e-3)
+    torch.testing.assert_close(out_indices, ref_index.float(), rtol=1e-3, atol=1e-3)
 
 
 @pytest.mark.parametrize("dtype", ["float16", "float"])
 @pytest.mark.parametrize("target", ["ascendc"])
-@pytest.mark.parametrize("shape", [(1, 299)])
+@pytest.mark.parametrize("shape", [(1, 131)])
 def test_sort(dtype, target, shape):
     M, N = shape
     block_M = 1
-    block_N = 299
+    block_N = 131
     run_test_sort(M, N, block_M, block_N, dtype, target)
 
 
