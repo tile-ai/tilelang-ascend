@@ -15,17 +15,14 @@ tl.cache.clear_cache()
         tl.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
     }
 )
-def simple_gemv(
-    N:int, K:int, block_N:int, block_K:int,
-    dtype:str = "float16", accum_dtype:str = "float32"
-):
-    """ Vector core GEMV implementation"""
+def simple_gemv(N: int, K: int, block_N: int, block_K: int, dtype: str = "float16", accum_dtype: str = "float32"):
+    """Vector core GEMV implementation"""
     VEC_NUM = 2
     TEMP_DTYPE = "uint8"
     CAST_MODE = "CAST_NONE"
 
     def current_jit_target(jit_func):
-        """ Get current jit target of jit_func. e.g. 'auto', 'pto' """
+        """Get current jit target of jit_func. e.g. 'auto', 'pto'"""
         return jit_func.__jit_impl__.target
 
     n_num = T.ceildiv(N, block_N)
@@ -50,9 +47,9 @@ def simple_gemv(
 
     @T.prim_func
     def main(
-        x: T.Tensor((K,), dtype),   # type: ignore
-        A: T.Tensor((N, K), dtype), # type: ignore
-        y: T.Tensor((N,), dtype),   # type: ignore
+        x: T.Tensor((K,), dtype),  # type: ignore
+        A: T.Tensor((N, K), dtype),  # type: ignore
+        y: T.Tensor((N,), dtype),  # type: ignore
     ):
         with T.Kernel(kernel_num, is_npu=True) as (cid, vid):
             bn = (cid * VEC_NUM + vid) % n_num
@@ -88,7 +85,7 @@ def ref_program(x, A):
     return x @ A.T
 
 
-def check_case(N:int, K:int, block_N: int = 64, block_K: int = 128, dtype="float16"):
+def check_case(N: int, K: int, block_N: int = 64, block_K: int = 128, dtype="float16"):
     torch_dtype_map = {"float16": torch.half, "float32": torch.float32, "float": torch.float32}
     x = torch.randn(K).to(torch_dtype_map[dtype]).npu()
     A = torch.randn(N, K).to(torch_dtype_map[dtype]).npu()
