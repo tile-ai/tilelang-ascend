@@ -1,6 +1,4 @@
 import os
-import sys
-import argparse
 import traceback
 from contextlib import redirect_stdout, redirect_stderr
 from pathlib import Path
@@ -15,30 +13,31 @@ torch.npu.set_device(10)
 os.environ["TILELANG_ASCEND_MODE"] = "Developer"
 
 SHAPES = [
-    (8,256),
-    (8,768),
-    (8,1280),
-    (8,1792),
-    (32,256),
-    (32,768),
-    (32,1280),
-    (32,1792),
-    (256,512),
-    (256,1536),
-    (256,2560),
-    (256,3584),
-    (64,8192),
-    (64,12288),
-    (64,16384),
-    (64,20480),
-    (1024,10240),
-    (1024,14336),
-    (1024,18432),
-    (1024,22528),
-    (1024,1048576),
-    (1024,2097152),
-    (1024,3145728),
+    (8, 256),
+    (8, 768),
+    (8, 1280),
+    (8, 1792),
+    (32, 256),
+    (32, 768),
+    (32, 1280),
+    (32, 1792),
+    (256, 512),
+    (256, 1536),
+    (256, 2560),
+    (256, 3584),
+    (64, 8192),
+    (64, 12288),
+    (64, 16384),
+    (64, 20480),
+    (1024, 10240),
+    (1024, 14336),
+    (1024, 18432),
+    (1024, 22528),
+    (1024, 1048576),
+    (1024, 2097152),
+    (1024, 3145728),
 ]
+
 
 def run_single_shape(shape, log_dir: Path):
 
@@ -48,13 +47,11 @@ def run_single_shape(shape, log_dir: Path):
     log_file = log_dir / "log.log"
 
     with open(log_file, "w") as f, redirect_stdout(f), redirect_stderr(f):
-
         print("=" * 80)
         print("Running shape:", shape)
         print("=" * 80)
 
         try:
-
             M, N = shape
             eps = 1e-5
 
@@ -88,13 +85,14 @@ def run_single_shape(shape, log_dir: Path):
                 configs = []
 
                 for hint in hints:
-
                     print("Hint:", hint)
 
-                    configs.append({
-                        "block_M": hint.block[0],
-                        "block_N": hint.block[1],
-                    })
+                    configs.append(
+                        {
+                            "block_M": hint.block[0],
+                            "block_N": hint.block[1],
+                        }
+                    )
 
                 return configs
 
@@ -184,7 +182,9 @@ def run_single_shape(shape, log_dir: Path):
                         for i in T.serial(block_M):
                             row = bx * block_M + i
                             if row < M:
-                                row_var[i, 0] = row_var[i, 0] - row_var[i, 0] * (1.0 - 1.0 / N)
+                                row_var[i, 0] = row_var[i, 0] - row_var[i, 0] * (
+                                    1.0 - 1.0 / N
+                                )
                                 row_var[i, 0] = row_var[i, 0] + eps
                                 T.vrsqrt(row_var[i, 0], row_rstd[i, 0])
 
@@ -211,6 +211,7 @@ def run_single_shape(shape, log_dir: Path):
                             T.copy(X_shared, Y[bx * block_M, col_base])
 
                 return layer_norm_fwd_kernel
+
             # -----------------------------
             # compile
             # -----------------------------
