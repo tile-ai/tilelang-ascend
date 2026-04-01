@@ -1,6 +1,4 @@
 import os
-import sys
-import argparse
 import traceback
 from contextlib import redirect_stdout, redirect_stderr
 from pathlib import Path
@@ -16,16 +14,17 @@ os.environ["TILELANG_ASCEND_MODE"] = "Developer"
 
 # 你给的所有 shape
 SHAPES = [
-    (32,64),
-    (32,128),
-    (32,2048),
-    (22,127),
-    (16,255),
-    (44,255),
-    (32,1025),
-    (800,4090),
-    (16384,4096),
+    (32, 64),
+    (32, 128),
+    (32, 2048),
+    (22, 127),
+    (16, 255),
+    (44, 255),
+    (32, 1025),
+    (800, 4090),
+    (16384, 4096),
 ]
+
 
 def run_single_shape(shape, log_dir: Path):
 
@@ -40,7 +39,6 @@ def run_single_shape(shape, log_dir: Path):
         print("=" * 80)
 
         try:
-
             M, N = shape
             eps = 1e-5
 
@@ -72,13 +70,14 @@ def run_single_shape(shape, log_dir: Path):
                 configs = []
 
                 for hint in hints:
-
                     print("Hint:", hint)
 
-                    configs.append({
-                        "block_M": hint.block[0],
-                        "block_N": hint.block[1],
-                    })
+                    configs.append(
+                        {
+                            "block_M": hint.block[0],
+                            "block_N": hint.block[1],
+                        }
+                    )
 
                 return configs
 
@@ -108,18 +107,18 @@ def run_single_shape(shape, log_dir: Path):
             def rms_norm(M, N, block_M, block_N):
                 @T.prim_func
                 def rms_norm_kernel(
-                    X:   T.Tensor((M, N), "float16"),
-                    W:   T.Tensor((N,),   "float16"),
+                    X: T.Tensor((M, N), "float16"),
+                    W: T.Tensor((N,), "float16"),
                     Out: T.Tensor((M, N), "float16"),
                 ):
                     with T.Kernel(T.ceildiv(M, block_M), is_npu=True) as (bx, _):
-                        eps=1e-5
-                        X_shared      = T.alloc_shared((block_M, block_N), "float16")
-                        W_shared      = T.alloc_shared((block_N,),         "float16")
-                        W_reshape     = T.alloc_shared((1, block_N),       "float16")
-                        local_reduce  = T.alloc_shared((block_M, 1),       "float16")
-                        row_rms       = T.alloc_shared((block_M, 1),       "float16")
-                        row_rstd      = T.alloc_shared((block_M, 1),       "float16")
+                        eps = 1e-5
+                        X_shared = T.alloc_shared((block_M, block_N), "float16")
+                        W_shared = T.alloc_shared((block_N,), "float16")
+                        W_reshape = T.alloc_shared((1, block_N), "float16")
+                        local_reduce = T.alloc_shared((block_M, 1), "float16")
+                        row_rms = T.alloc_shared((block_M, 1), "float16")
+                        row_rstd = T.alloc_shared((block_M, 1), "float16")
 
                         T.clear(row_rms)
 
@@ -134,7 +133,9 @@ def run_single_shape(shape, log_dir: Path):
                         for i in T.serial(block_M):
                             row = bx * block_M + i
                             if row < M:
-                                row_rms[i, 0] = row_rms[i, 0] - row_rms[i, 0] * (1.0 - 1.0 / N)
+                                row_rms[i, 0] = row_rms[i, 0] - row_rms[i, 0] * (
+                                    1.0 - 1.0 / N
+                                )
                                 row_rms[i, 0] = row_rms[i, 0] + eps
                                 T.vrsqrt(row_rms[i, 0], row_rstd[i, 0])
 
@@ -150,6 +151,7 @@ def run_single_shape(shape, log_dir: Path):
                             T.copy(X_shared, Out[bx * block_M, col_base])
 
                 return rms_norm_kernel
+
             func = rms_norm(M, N)
 
             torch.npu.synchronize()
