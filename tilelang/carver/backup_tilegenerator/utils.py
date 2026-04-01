@@ -34,31 +34,40 @@ def _init_npu_params():
 
     arch = Ascend()
 
-    target = {"arch" : [arch.chip_name]}
+    target = {"arch": [arch.chip_name]}
     device = []
-    prop = {"num_aicore" : arch.compute_max_core}
+    prop = {"num_aicore": arch.compute_max_core}
 
     num_cube_core = prop["num_aicore"]
     num_vector_core = prop["num_aicore"]
-    ub_size_in_kbytes = arch.ub_cap 
+    ub_size_in_kbytes = arch.ub_cap
     rf_size_in_kbytes = None
 
     _cached_params = {
-        'target': target,
-        'device': device,
-        'prop': prop,
-        'num_cube_core': num_cube_core,
-        'num_vector_core': num_vector_core,
-        'ub_size_in_kbytes': ub_size_in_kbytes,
-        'rf_size_in_kbytes': rf_size_in_kbytes,
+        "target": target,
+        "device": device,
+        "prop": prop,
+        "num_cube_core": num_cube_core,
+        "num_vector_core": num_vector_core,
+        "ub_size_in_kbytes": ub_size_in_kbytes,
+        "rf_size_in_kbytes": rf_size_in_kbytes,
     }
     return _cached_params
 
 
 def __getattr__(name):
-    if name in ['target', 'device', 'prop', 'num_cube_core', 'num_vector_core', 'ub_size_in_kbytes', 'rf_size_in_kbytes']:
+    if name in [
+        "target",
+        "device",
+        "prop",
+        "num_cube_core",
+        "num_vector_core",
+        "ub_size_in_kbytes",
+        "rf_size_in_kbytes",
+    ]:
         return _init_npu_params()[name]
     raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
+
 
 # wrapper npu 32 bytes align, get and pass unalign info to triton meta
 # then autotune choose tiling param and send them to bishengIR
@@ -86,6 +95,7 @@ valid_axis_names = [
     "v",
     "t",
 ]
+
 
 def get_byte_per_numel(dtype: torch.dtype) -> int:
     return 1 if dtype is None else byte_per_numel[dtype]
