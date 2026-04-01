@@ -33,7 +33,7 @@ private:
   Array<PrimExpr> src_extents, dst_extents;
   int srcN;
   bool enRelu;
-  mutable bool transposeL1;
+  bool transposeL1;
   PrimExpr padValue;
 };
 

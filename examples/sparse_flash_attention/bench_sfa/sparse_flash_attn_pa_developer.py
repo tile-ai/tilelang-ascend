@@ -244,7 +244,7 @@ def sparse_attention_fwd(
 
                         T.copy(acc_o, acc_o_half)
 
-                        T.copy(acc_o_half, Output[b_i, s_i, H0 + vid * v_block : H1 + vid * v_block, :])
+                        T.copy(acc_o_half, Output[b_i, s_i, H0 + vid * v_block : H0 + (vid + 1) * v_block, :])
 
     return main_opt
 

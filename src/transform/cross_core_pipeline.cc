@@ -328,7 +328,6 @@ public:
 
     bool has_new_C = saved_statements_C.size() < all_statements_C_.size();
     bool has_new_V = saved_statements_V.size() < all_statements_V_.size();
-    size_t new_all = all_statements_.size() - saved_statements.size();
 
     if (has_new_V) {
       ProcessInfo(workspace_writes_V_, all_statements_V_, saved_statements_V,
@@ -345,6 +344,7 @@ public:
       unified_for_info.scope = core_scope_;
       ProcessInfoUnified(all_statements_, saved_statements, saved_idx,
                          unified_for_info);
+      current_idx_ = all_statements_.size();
     }
   }
 
@@ -367,12 +367,7 @@ private:
 
     std::set<std::string> for_node_buffers;
     std::vector<AccessInfo> for_node_accesses;
-    // Use saved_statements.size() as array start position, NOT for_info.idx.
-    // for_info.idx tracks logical statement index (current_idx_X_) which drifts
-    // ahead of actual array size when previous ForNodes collapse N entries
-    // into 1.
-    size_t inner_start = saved_statements.size();
-    for (size_t i = inner_start; i < all_statements.size(); i++) {
+    for (size_t i = for_info.idx; i < all_statements.size(); i++) {
       auto buffers = all_statements[i].used_buffers;
       for (auto it = buffers.begin(); it != buffers.end(); ++it) {
         for_node_buffers.insert(*it);
@@ -394,9 +389,7 @@ private:
 
     std::set<std::string> for_node_buffers;
     std::vector<AccessInfo> for_node_accesses;
-    // Same fix: use array position, not logical index.
-    size_t inner_start = saved_statements.size();
-    for (size_t i = inner_start; i < all_statements.size(); i++) {
+    for (size_t i = for_info.idx; i < all_statements.size(); i++) {
       for (const auto &buf : all_statements[i].used_buffers) {
         for_node_buffers.insert(buf);
       }
@@ -689,9 +682,7 @@ public:
   LoopRewriter(const LoopAnalyzer &analyzer, const ForNode *original_loop,
                int num_stages, int cross_interval = 1)
       : analyzer_(analyzer), original_loop_(original_loop),
-        all_statements_(analyzer.all_statements()),
-        all_statements_C_(analyzer.all_statements_C()),
-        all_statements_V_(analyzer.all_statements_V()), num_stages_(num_stages),
+        all_statements_(analyzer.all_statements()), num_stages_(num_stages),
         cross_interval_(cross_interval) {
     original_loop_var_ = original_loop->loop_var;
     std::string outer_var_name = original_loop_var_->name_hint + "_outer";
@@ -899,8 +890,6 @@ private:
   const LoopAnalyzer &analyzer_;
   const ForNode *original_loop_;
   const std::vector<LoopAnalyzer::StmtInfo> &all_statements_;
-  const std::vector<LoopAnalyzer::StmtInfo> &all_statements_C_;
-  const std::vector<LoopAnalyzer::StmtInfo> &all_statements_V_;
   std::set<std::string> shared_buffers_;
   int num_stages_;
   int cross_interval_;

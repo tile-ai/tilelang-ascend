@@ -9,11 +9,12 @@ description: 检查代码格式是否符合 CI 规则。自动检测并安装缺
 
 ## ⚠️ 核心原则
 
-**自动安装 + 检查和修复分离**：
-0. **自动安装**: 检测缺失工具并自动安装（ruff、clang-format）
-1. **检查阶段**: 只运行检查脚本，生成报告，**不修改任何文件**
-2. **询问阶段**: 使用醒目的方式询问用户是否修复
-3. **修复阶段**: 只有用户明确同意后才运行修复脚本
+**询问范围 + 自动安装 + 检查和修复分离**：
+0. **询问范围**: 首先询问用户检查范围（修改文件 / 全部文件）
+1. **自动安装**: 检测缺失工具并自动安装（ruff、clang-format）
+2. **检查阶段**: 只运行检查脚本，生成报告，**不修改任何文件**
+3. **询问阶段**: 使用醒目的方式询问用户是否修复
+4. **修复阶段**: 只有用户明确同意后才运行修复脚本
 
 ```text
 ╔═══════════════════════════════════════════════════════════════╗
@@ -25,39 +26,69 @@ description: 检查代码格式是否符合 CI 规则。自动检测并安装缺
 
 ```mermaid
 flowchart TD
-    A[开始] --> B[检测环境]
-    B --> C{工具已安装?}
-    C -->|否| D[🔧 自动安装工具]
-    C -->|是| E[运行检查脚本]
-    D --> E
-    E --> F[收集检查结果]
-    F --> G[生成初始报告]
-    G --> H{有问题?}
-    H -->|否| I[✅ 报告: 全部通过]
-    H -->|是| J[显示问题摘要]
-    J --> K[⚠️ 醒目询问用户]
-    K --> L{用户确认修复?}
-    L -->|是| M[运行修复脚本]
-    L -->|否| N[❌ 跳过修复]
-    M --> O[📝 更新报告: 追加修复结果]
-    O --> Q
-    I --> Q
-    N --> Q
-    Q[检查报告是否生成] --> R{报告已生成?}
-    R -->|是| S[输出报告路径]
-    R -->|否| T[分析跳过的步骤]
-    T --> U[重新生成报告]
-    U --> S
-    S --> Z[✅ 完成]
+    A[开始] --> B[🔍 询问检查范围]
+    B --> C{检查范围?}
+    C -->|修改文件| D[仅检查变更文件]
+    C -->|全部文件| E[检查所有文件]
+    D --> F[检测环境]
+    E --> F
+    F --> G{工具已安装?}
+    G -->|否| H[🔧 自动安装工具]
+    G -->|是| I[运行检查脚本]
+    H --> I
+    I --> J[收集检查结果]
+    J --> K[生成初始报告]
+    K --> L{有问题?}
+    L -->|否| M[✅ 报告: 全部通过]
+    L -->|是| N[显示问题摘要]
+    N --> O[⚠️ 醒目询问用户]
+    O --> P{用户确认修复?}
+    P -->|是| Q[运行修复脚本]
+    P -->|否| R[❌ 跳过修复]
+    Q --> S[📝 更新报告: 追加修复结果]
+    S --> T
+    M --> T
+    R --> T
+    T[检查报告是否生成] --> U{报告已生成?}
+    U -->|是| V[输出报告路径]
+    U -->|否| W[分析跳过的步骤]
+    W --> X[重新生成报告]
+    X --> V
+    V --> Y[✅ 完成]
 
-    style D fill:#9c27b0,stroke:#7b1fa2,stroke-width:2px,color:#fff
-    style K fill:#ff9800,stroke:#f57c00,stroke-width:3px,color:#fff
-    style L fill:#2196f3,stroke:#1976d2,stroke-width:2px,color:#fff
-    style J fill:#fff3e0,stroke:#ff9800,stroke-width:2px
-    style O fill:#4caf50,stroke:#388e3c,stroke-width:2px,color:#fff
-    style Q fill:#e91e63,stroke:#c2185b,stroke-width:2px,color:#fff
-    style T fill:#ff5722,stroke:#e64a19,stroke-width:2px,color:#fff
+    style B fill:#2196f3,stroke:#1976d2,stroke-width:2px,color:#fff
+    style H fill:#9c27b0,stroke:#7b1fa2,stroke-width:2px,color:#fff
+    style O fill:#ff9800,stroke:#f57c00,stroke-width:3px,color:#fff
+    style P fill:#2196f3,stroke:#1976d2,stroke-width:2px,color:#fff
+    style N fill:#fff3e0,stroke:#ff9800,stroke-width:2px
+    style S fill:#4caf50,stroke:#388e3c,stroke-width:2px,color:#fff
+    style T fill:#e91e63,stroke:#c2185b,stroke-width:2px,color:#fff
+    style W fill:#ff5722,stroke:#e64a19,stroke-width:2px,color:#fff
 ```
+
+## 步骤 0: 询问检查范围 ⭐ **重要：第一步必须询问**
+
+**在开始任何检查之前，必须先询问用户检查范围！**
+
+使用 `AskUserQuestion` 工具询问：
+
+```
+问题: 请选择代码格式检查的范围？
+选项:
+  - 仅修改文件 (Recommended) - 只检查 git status 中的变更文件（修改、新增、未跟踪）
+  - 全部文件 - 检查项目中的所有 Python/C++ 文件
+```
+
+**检查范围说明**:
+
+| 范围 | 说明 | 适用场景 |
+|------|------|----------|
+| 仅修改文件 | 通过 `git status --porcelain` 获取变更文件 | 提交 PR 前验证、日常开发 |
+| 全部文件 | 检查项目中所有匹配的文件 | CI 全量检查、代码规范初始化 |
+
+**根据用户选择执行后续步骤**:
+- 选择"仅修改文件": 调用脚本时不带 `--all` 参数
+- 选择"全部文件": 调用脚本时带 `--all` 参数
 
 ## 步骤 1: 环境检测
 
@@ -96,11 +127,22 @@ fi
 
 ## 步骤 2: 运行检查脚本
 
-从 skill 的 `scripts/` 目录调用检查脚本：
+从 skill 的 `scripts/` 目录调用检查脚本，**根据步骤 0 的选择传递参数**：
+
+### 检查范围参数
+
+| 参数 | 说明 |
+|------|------|
+| 无参数 | 仅检查变更文件（默认） |
+| `--all` | 检查所有文件 |
 
 ### Python 检查
 ```bash
-bash .agents/skills/review-format-skill/scritps/check-python.sh
+# 仅修改文件
+bash .agents/skills/tilelang-custom-skill/tilelang-review-skill/scritps/check-python.sh
+
+# 全部文件
+bash .agents/skills/tilelang-custom-skill/tilelang-review-skill/scritps/check-python.sh --all
 ```
 
 **输出**: JSON 格式
@@ -114,7 +156,11 @@ bash .agents/skills/review-format-skill/scritps/check-python.sh
 
 ### C++ 检查
 ```bash
-bash .agents/skills/review-format-skill/scritps/check-cpp.sh
+# 仅修改文件
+bash .agents/skills/tilelang-custom-skill/tilelang-review-skill/scritps/check-cpp.sh
+
+# 全部文件
+bash .agents/skills/tilelang-custom-skill/tilelang-review-skill/scritps/check-cpp.sh --all
 ```
 
 **输出**: JSON 格式
@@ -125,9 +171,12 @@ bash .agents/skills/review-format-skill/scritps/check-cpp.sh
 }
 ```
 
-### 获取变更文件的方式
+### 文件获取方式
 
-脚本通过 `git status --porcelain` 获取所有变更文件（包括已修改、已暂存、未跟踪的文件），提取文件路径后进行检查。
+| 检查范围 | 获取方式 |
+|----------|----------|
+| 仅修改文件 | `git status --porcelain` 获取变更文件（修改、新增、未跟踪） |
+| 全部文件 | `find` 或 `git ls-files` 获取所有匹配的文件 |
 
 ## 步骤 3: 生成报告
 
@@ -192,7 +241,7 @@ bash .agents/skills/review-format-skill/scritps/check-cpp.sh
 ║  📄 报告已保存到:                                             ║
 ║  .agents/reports/format-report-xxx.md                      ║
 ║                                                               ║
-║  🔧 是否进行自动修复？                                        ║
+║  🔧 是否进行自动修复？（可在最后一项选择性填写单独对 C++ 或者 Python 进行修复）║
 ║     [ 是 / Y ] - 执行修复                                     ║
 ║     [ 否 / N ] - 跳过修复                                     ║
 ╚═══════════════════════════════════════════════════════════════╝
@@ -203,24 +252,81 @@ bash .agents/skills/review-format-skill/scritps/check-cpp.sh
 - ✅ **必须**使用 `AskUserQuestion` 工具等待用户确认
 - ✅ **只有**用户明确同意后才执行步骤 5
 
-## 步骤 5: 执行修复
+**⚠️ 严格遵守 AskUserQuestion 格式 ⚠️**
 
-**⚠️ 只有用户明确同意后才执行此步骤！**
-
-使用 `AskUserQuestion` 工具获取用户确认：
+使用 `AskUserQuestion` 工具时，**必须严格按照以下格式**：
 
 ```
 问题: 是否进行代码格式修复？
 选项:
   - 是 / 同意 / Y - 执行自动修复
-  - 否 / 拒绝 / N - 跳过修复
+  - 否 / 拒绝 / N - 跳过修复（可在最后一项选择性填写单独对 C++ 或者 Python 进行修复）
 ```
 
-用户确认后，调用修复脚本：
+**⛔ 禁止私自修改 AskUserQuestion 的内容和选项：**
+
+| 禁止行为 | 说明 |
+|---------|------|
+| ❌ 添加额外选项 | 不要添加"仅修复 Python"、"仅修复 C++"等选项 |
+| ❌ 修改问题内容 | 不要在问题中添加详细的问题说明文字 |
+| ❌ 修改选项描述 | 不要修改选项的 label 或 description |
+| ❌ 添加自定义选项 | 不要使用 "Type your own answer" 提供额外选项 |
+
+**正确示例 vs 错误示例：**
+
+❌ **错误做法**（私自添加选项和详细说明）：
+```
+问题: 发现 3426 个 Python lint 问题（主要是 tabs 缩进）和 20 个 C++ 格式问题。是否进行自动修复？
+选项:
+  - 是 / 同意 / Y (Recommended) - 自动修复所有 Python 和 C++ 格式问题
+  - 仅修复 Python - 仅修复 Python 文件（lint + format）
+  - 仅修复 C++ - 仅修复 C++ 文件（format）
+  - 否 / 拒绝 / N - 不进行任何修复，仅查看报告
+```
+↑ **这是错误的！私自添加了"仅修复 Python"、"仅修复 C++"选项，并在问题中添加了详细说明**
+
+✅ **正确做法**（严格按照模板）：
+```
+问题: 是否进行代码格式修复？
+选项:
+  - 是 / 同意 / Y - 执行自动修复
+  - 否 / 拒绝 / N - 跳过修复（可在最后一项选择性填写单独对 C++ 或者 Python 进行修复）
+```
+↑ **这是正确的！严格遵循 skill 规定的格式，没有私自添加内容**
+
+**为什么必须严格遵守格式？**
+
+1. **保证一致性**: 每次执行 skill 都使用相同的交互方式
+2. **避免混乱**: 额外的选项会让用户困惑，不知道如何选择
+3. **简化流程**: 用户只需要简单的二选一，不需要考虑复杂的分支
+4. **符合预期**: skill 的设计是有意为之，不要擅自改变
+
+**如果用户需要单独修复 Python 或 C++：**
+
+用户可以在选择 "否" 后，手动执行修复命令：
+```bash
+# 仅修复 Python
+bash .agents/skills/tilelang-custom-skill/tilelang-review-skill/scritps/fix-python.sh --all
+
+# 仅修复 C++
+bash .agents/skills/tilelang-custom-skill/tilelang-review-skill/scritps/fix-cpp.sh --all
+```
+
+## 步骤 5: 执行修复
+
+**⚠️ 只有用户明确同意后才执行此步骤！**
+
+用户确认后，调用修复脚本，**使用与检查阶段相同的参数**：
+
+用户确认后，调用修复脚本，**使用与检查阶段相同的参数**：
 
 ### Python 修复
 ```bash
-bash .agents/skills/review-format-skill/scritps/fix-python.sh
+# 仅修改文件
+bash .agents/skills/tilelang-custom-skill/tilelang-review-skill/scritps/fix-python.sh
+
+# 全部文件
+bash .agents/skills/tilelang-custom-skill/tilelang-review-skill/scritps/fix-python.sh --all
 ```
 
 **执行命令**:
@@ -229,7 +335,11 @@ bash .agents/skills/review-format-skill/scritps/fix-python.sh
 
 ### C++ 修复
 ```bash
-bash .agents/skills/review-format-skill/scritps/fix-cpp.sh
+# 仅修改文件
+bash .agents/skills/tilelang-custom-skill/tilelang-review-skill/scritps/fix-cpp.sh
+
+# 全部文件
+bash .agents/skills/tilelang-custom-skill/tilelang-review-skill/scritps/fix-cpp.sh --all
 ```
 
 **执行命令**:
