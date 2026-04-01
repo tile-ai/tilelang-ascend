@@ -124,11 +124,15 @@ def sort(dst: Buffer, src: Buffer, tmp: Buffer, actual_num: PrimExpr):
     alignment. Sorts each 32-element block via sort32, then merges all sorted
     blocks via merge_sort to produce the final ordered output.
 
+    The output contains interleaved (value, index) pairs in descending order:
+      [val0, idx0, val1, idx1, ...] where idx is the original position (0-based).
+    Indices are generated internally; dst must be 2x the size of src.
+
     Args:
-    dst: Destination buffer for the final sorted result. Only sorted values
-         are output; sort indices are not returned.
+    dst: Destination buffer for interleaved (value, index) pairs. Must have
+         at least 2 * aligned_size elements.
     src: Source buffer containing the data to be sorted.
-    tmp: Temporary buffer for intermediate sort/merge results (4x the size of src).
+    tmp: Temporary buffer for intermediate sort/merge results (2x the size of src).
     actual_num: The number of valid elements in src. When actual_num is less than
                 the buffer size, unused positions are padded with -inf before sorting.
     """

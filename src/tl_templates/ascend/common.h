@@ -1,5 +1,7 @@
+clang-format off
 #include "catlass/catlass.hpp"
 #include "catlass/arch/arch.hpp"
+clang-format on
 
 #include "catlass/detail/tag_to_layout.hpp"
 #include "catlass/gemm/block/block_swizzle.hpp"
@@ -670,41 +672,26 @@ CATLASS_DEVICE void Sort(const LocalTensor<T> &dst, const LocalTensor<T> &src,
   if constexpr (sizeof(T) == 2) {
     // B16 (half): MrgSort requires >= 256 bytes per source, but Sort32 only
     // produces 128 bytes per block for B16. Work around by sorting in float.
-    // Memory reuse: tmp needs ub_N*8 half elements (= ub_N*16 bytes, same as
-    // ub_N*4 float elements) — identical byte budget as the float path.
     //
     // Layout in tmp (N = alignedCount, as float elements via ReinterpretCast):
-    //   ftmp[0 .. N*2-1]  = bufA  (Sort32 output, merge ping-pong)
-    //   ftmp[N*2 .. N*3-1]= indices (uint32_t, reused as bufB after Sort32)
-    //   ftmp[N*3 .. N*4-1]= float_src (Cast destination, reused as bufB after
-    //   Sort32)
-    // After Sort32, [N*2..N*4) becomes bufB for merge.
-    // GatherMask result goes to the free ping-pong buffer; Cast back to half
-    // dst.
+    //   ftmp[0 .. N*2-1]    = Sort32 output + merge ping-pong buffer A
+    //   ftmp[N*2 .. N*4-1]  = Sort<float>'s dst (merge ping-pong buffer B)
+    //     - before Sort32: indices at [N*2..N*3), float_src at [N*3..N*4)
+    //     - after  Sort32: entire region free for merge
+    // Total: 4N float elements = 8N half elements.
     uint32_t N = repeatTimes * 32;
-    uint32_t blockNum = repeatTimes;
-
-    // Precompute which buffer holds the final sort result
-    uint32_t numRounds = 0;
-    uint32_t segs = blockNum;
-    while (segs > 1) {
-      segs = (segs + 3) / 4;
-      numRounds++;
-    }
-    bool resultInBufA = (blockNum <= 1) || (numRounds % 2 == 0);
-    uint32_t freeBase = resultInBufA ? N * 2 : 0;
 
     auto ftmp = tmp.template ReinterpretCast<float>();
     auto float_src = ftmp[N * 3];
 
-    // Cast half → float (into the bufB region that Sort32 hasn't written yet)
+    // Cast half → float
     AscendC::Cast(float_src, src, AscendC::RoundMode::CAST_NONE, N);
 
-    // Sort<float> with dst inside the free ping-pong buffer
-    Sort<float>(ftmp[freeBase], float_src, ftmp, repeatTimes, actualCount);
+    // Sort<float> guarantees result in dst (= ftmp[N*2])
+    Sort<float>(ftmp[N * 2], float_src, ftmp, repeatTimes, actualCount);
 
-    // Cast float result → half
-    AscendC::Cast(dst, ftmp[freeBase], AscendC::RoundMode::CAST_RINT, N);
+    // Cast float result → half (2*N elements: interleaved [value, index] pairs)
+    AscendC::Cast(dst, ftmp[N * 2], AscendC::RoundMode::CAST_RINT, N * 2);
     PipeBarrier<PIPE_V>();
     return;
   }
@@ -714,17 +701,14 @@ CATLASS_DEVICE void Sort(const LocalTensor<T> &dst, const LocalTensor<T> &src,
   uint32_t padCount = alignedCount - actualCount;
   uint32_t blockNum = repeatTimes;
 
-  // For float: bufB has alignedCount*2*4 bytes, indices needs
-  // alignedCount*4 bytes → fits.
-  // For half:  bufB has alignedCount*2*2 bytes, indices needs
-  // alignedCount*4 bytes → exact fit.
-  // Sort32 writes to bufA (tmp[0..alignedCount*2-1]),
-  // no overlap with indices.
-  // After Sort32, merge can safely overwrite this area.
-  LocalTensor<uint32_t> indices =
-      tmp[alignedCount * 2].template ReinterpretCast<uint32_t>();
-  AscendC::Duplicate<uint32_t>(indices, (uint32_t)0, alignedCount);
+  // Generate ascending indices as float values (0.0, 1.0, 2.0, ...) in dst
+  // (temporary storage — overwritten by merge later). This allows tmp to
+  // be only alignedCount*2 elements instead of alignedCount*4, because dst
+  // (which is 2*alignedCount for interleaved output) doubles as the second
+  // merge ping-pong buffer.
+  AscendC::ArithProgression<T>(dst, T(0), T(1), alignedCount);
   PipeBarrier<PIPE_V>();
+  LocalTensor<uint32_t> indices = dst.template ReinterpretCast<uint32_t>();
 
   // Pad src in-place with -inf for unused positions
   if (padCount > 0) {
@@ -762,22 +746,16 @@ CATLASS_DEVICE void Sort(const LocalTensor<T> &dst, const LocalTensor<T> &src,
   AscendC::Sort32(tmp, src, indices, repeatTimes);
   PipeBarrier<PIPE_V>();
 
-  // tmp layout for merge ping-pong:
-  //   bufA = tmp[0 .. alignedCount*2-1]
-  //   bufB = tmp[alignedCount*2 .. alignedCount*4-1]
-  // dst is only alignedCount floats (values only)
-
-  uint32_t resultOffset = 0; // offset in tmp where merge result lives
+  // Merge ping-pong between tmp[0..2N-1] and dst[0..2N-1].
+  // tmp only needs alignedCount*2 elements (Sort32 output size).
 
   if (blockNum > 1) {
     uint32_t fullSegSize = blockSize;
     uint32_t lastSegSize = blockSize;
     uint32_t numSegs = blockNum;
-    bool readFromA = true;
+    bool readFromTmp = true; // Sort32 output is in tmp
 
     while (numSegs > 1) {
-      uint32_t readBase = readFromA ? 0 : alignedCount * 2;
-      uint32_t writeBase = readFromA ? alignedCount * 2 : 0;
       uint32_t newNumSegs = 0;
       uint32_t inOffset = 0;
       uint32_t outOffset = 0;
@@ -804,8 +782,11 @@ CATLASS_DEVICE void Sort(const LocalTensor<T> &dst, const LocalTensor<T> &src,
         }
 
         if (groupCount == 1) {
-          AscendC::DataCopy(tmp[writeBase + outOffset],
-                            tmp[readBase + inOffset], len0 * 2);
+          if (readFromTmp) {
+            AscendC::DataCopy(dst[outOffset], tmp[inOffset], len0 * 2);
+          } else {
+            AscendC::DataCopy(tmp[outOffset], dst[inOffset], len0 * 2);
+          }
         } else {
           AscendC::MrgSort4Info params;
           params.elementLengths[0] = len0;
@@ -815,17 +796,25 @@ CATLASS_DEVICE void Sort(const LocalTensor<T> &dst, const LocalTensor<T> &src,
           params.ifExhaustedSuspension = false;
           params.validBit = (1 << groupCount) - 1;
 
-          uint32_t off0 = readBase + inOffset;
+          uint32_t off0 = inOffset;
           uint32_t off1 = off0 + len0 * 2;
           uint32_t off2 = off1 + len1 * 2;
           uint32_t off3 = off2 + len2 * 2;
 
           AscendC::MrgSortSrcList<T> srcList;
-          srcList.src1 = tmp[off0];
-          srcList.src2 = tmp[off1];
-          srcList.src3 = groupCount > 2 ? tmp[off2] : tmp[off0];
-          srcList.src4 = groupCount > 3 ? tmp[off3] : tmp[off0];
-          AscendC::MrgSort<T>(tmp[writeBase + outOffset], srcList, params);
+          if (readFromTmp) {
+            srcList.src1 = tmp[off0];
+            srcList.src2 = tmp[off1];
+            srcList.src3 = groupCount > 2 ? tmp[off2] : tmp[off0];
+            srcList.src4 = groupCount > 3 ? tmp[off3] : tmp[off0];
+            AscendC::MrgSort<T>(dst[outOffset], srcList, params);
+          } else {
+            srcList.src1 = dst[off0];
+            srcList.src2 = dst[off1];
+            srcList.src3 = groupCount > 2 ? dst[off2] : dst[off0];
+            srcList.src4 = groupCount > 3 ? dst[off3] : dst[off0];
+            AscendC::MrgSort<T>(tmp[outOffset], srcList, params);
+          }
         }
 
         inOffset += totalElems * 2;
@@ -834,7 +823,6 @@ CATLASS_DEVICE void Sort(const LocalTensor<T> &dst, const LocalTensor<T> &src,
       }
 
       PipeBarrier<PIPE_V>();
-      resultOffset = writeBase;
 
       uint32_t lastGroupStart = ((numSegs - 1) / 4) * 4;
       uint32_t lastGroupCount = numSegs - lastGroupStart;
@@ -847,25 +835,16 @@ CATLASS_DEVICE void Sort(const LocalTensor<T> &dst, const LocalTensor<T> &src,
       fullSegSize = (newNumSegs > 1) ? 4 * fullSegSize : newLastSegSize;
       lastSegSize = newLastSegSize;
       numSegs = newNumSegs;
-      readFromA = !readFromA;
+      readFromTmp = !readFromTmp;
     }
-  }
 
-  // Extract values only from interleaved [v,i] pairs using GatherMask P0101
-  // (This code only runs for float/B32 now; half delegates to Sort<float>
-  // above)
-  {
-    uint32_t interleaveBytes = alignedCount * 2 * sizeof(T);
-    GatherMaskParams gatherMaskParams;
-    gatherMaskParams.repeatTimes = (interleaveBytes + 255) / 256;
-    gatherMaskParams.src0BlockStride = 1;
-    gatherMaskParams.src0RepeatStride = 8;
-    gatherMaskParams.src1RepeatStride = 0;
-    uint64_t rsvdCnt = 0;
-    AscendC::GatherMask(dst.template ReinterpretCast<uint32_t>(),
-                        tmp[resultOffset].template ReinterpretCast<uint32_t>(),
-                        static_cast<uint8_t>(1), false,
-                        static_cast<uint32_t>(0), gatherMaskParams, rsvdCnt);
+    // readFromTmp=true means last round wrote to tmp → result in tmp
+    if (readFromTmp) {
+      AscendC::DataCopy(dst, tmp, alignedCount * 2);
+    }
+  } else {
+    // Single block: Sort32 output is in tmp, copy to dst
+    AscendC::DataCopy(dst, tmp, alignedCount * 2);
   }
 }
 

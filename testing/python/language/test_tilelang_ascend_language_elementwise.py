@@ -3714,7 +3714,7 @@ def sort(M, N, block_M, block_N, dtype="float"):
 
             src_ub = T.alloc_ub((block_M // VEC_NUM, ub_N), dtype)
             dst_ub = T.alloc_ub((block_M // VEC_NUM, ub_N), dtype)
-            tmp_ub = T.alloc_ub((block_M // VEC_NUM, ub_N * 4), dtype)
+            tmp_ub = T.alloc_ub((block_M // VEC_NUM, ub_N * 2), dtype)
 
             T.copy(a[bx * block_M + vid * block_M // VEC_NUM, by * ub_N], src_ub)
 
