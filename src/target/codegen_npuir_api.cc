@@ -392,6 +392,14 @@ void CodeGenTileLangNPUIRAPI::SmartMemRefCopy(mlir::Value src,
         } else {
            int src_idx = src_non_1_indices[non1_idx];
            layout_strides[i] = src_static_strides[src_idx];
+           
+           // CRITICAL FIX: The innermost dimension of TVM/MLIR tensors is contiguous by default.
+           // If its static stride was erased to kDynamic due to base pointer signature,
+           // safely restore it to 1 to appease static bounds checkers on the NPU backend.
+           if (layout_strides[i] == mlir::ShapedType::kDynamic && src_idx == src_type.getRank() - 1) {
+               layout_strides[i] = 1;
+           }
+
            if (layout_strides[i] == mlir::ShapedType::kDynamic) {
               is_dynamic_stride = true;
               strides.push_back(runtime_src_strides[src_idx]);
