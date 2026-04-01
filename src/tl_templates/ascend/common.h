@@ -663,11 +663,9 @@ CATLASS_DEVICE void ArithProgression(const LocalTensor<T> &dst,
 }
 
 template <typename T>
-CATLASS_DEVICE void Sort(const LocalTensor<T> &dst,
-                              const LocalTensor<T> &src,
-                              const LocalTensor<T> &tmp,
-                              const int32_t repeatTimes,
-                              const int32_t actualCount) {
+CATLASS_DEVICE void Sort(const LocalTensor<T> &dst, const LocalTensor<T> &src,
+                         const LocalTensor<T> &tmp, const int32_t repeatTimes,
+                         const int32_t actualCount) {
   if constexpr (sizeof(T) == 2) {
     // B16 (half): MrgSort requires >= 256 bytes per source, but Sort32 only
     // produces 128 bytes per block for B16. Work around by sorting in float.
@@ -677,15 +675,21 @@ CATLASS_DEVICE void Sort(const LocalTensor<T> &dst,
     // Layout in tmp (N = alignedCount, as float elements via ReinterpretCast):
     //   ftmp[0 .. N*2-1]  = bufA  (Sort32 output, merge ping-pong)
     //   ftmp[N*2 .. N*3-1]= indices (uint32_t, reused as bufB after Sort32)
-    //   ftmp[N*3 .. N*4-1]= float_src (Cast destination, reused as bufB after Sort32)
+    //   ftmp[N*3 .. N*4-1]= float_src (Cast destination, reused as bufB after 
+    //   Sort32)
     // After Sort32, [N*2..N*4) becomes bufB for merge.
-    // GatherMask result goes to the free ping-pong buffer; Cast back to half dst.
+    // GatherMask result goes to the free ping-pong buffer; Cast back to half 
+    // dst.
     uint32_t N = repeatTimes * 32;
     uint32_t blockNum = repeatTimes;
 
     // Precompute which buffer holds the final sort result
     uint32_t numRounds = 0;
-    { uint32_t segs = blockNum; while (segs > 1) { segs = (segs + 3) / 4; numRounds++; } }
+    uint32_t segs = blockNum;
+    while (segs > 1) {
+      segs = (segs + 3) / 4;
+      numRounds++;
+    }
     bool resultInBufA = (blockNum <= 1) || (numRounds % 2 == 0);
     uint32_t freeBase = resultInBufA ? N * 2 : 0;
 
@@ -709,19 +713,23 @@ CATLASS_DEVICE void Sort(const LocalTensor<T> &dst,
   uint32_t padCount = alignedCount - actualCount;
   uint32_t blockNum = repeatTimes;
 
-  // Allocate indices internally at start of bufB (tmp[alignedCount*2])
-  // For float: bufB has alignedCount*2*4 bytes, indices needs alignedCount*4 bytes → fits
-  // For half:  bufB has alignedCount*2*2 bytes, indices needs alignedCount*4 bytes → exact fit
-  // Sort32 writes to bufA (tmp[0..alignedCount*2-1]), no overlap with indices
-  // After Sort32, merge can safely overwrite this area
-  LocalTensor<uint32_t> indices = tmp[alignedCount * 2].template ReinterpretCast<uint32_t>();
+  // For float: bufB has alignedCount*2*4 bytes, indices needs 
+  // alignedCount*4 bytes → fits. 
+  // For half:  bufB has alignedCount*2*2 bytes, indices needs
+  // alignedCount*4 bytes → exact fit. 
+  // Sort32 writes to bufA (tmp[0..alignedCount*2-1]),
+  // no overlap with indices.
+  // After Sort32, merge can safely overwrite this area.
+  LocalTensor<uint32_t> indices =
+      tmp[alignedCount * 2].template ReinterpretCast<uint32_t>();
   AscendC::Duplicate<uint32_t>(indices, (uint32_t)0, alignedCount);
   PipeBarrier<PIPE_V>();
 
   // Pad src in-place with -inf for unused positions
   if (padCount > 0) {
     T negInf = -CUDART_INF_F;
-    constexpr uint32_t elemPerBlock = 32 / sizeof(T);  // 16 for half, 8 for float
+    constexpr uint32_t elemPerBlock =
+        32 / sizeof(T); // 16 for half, 8 for float
     uint32_t alignedActual = (actualCount / elemPerBlock) * elemPerBlock;
     uint32_t inBlockOffset = actualCount - alignedActual;
 
@@ -733,15 +741,18 @@ CATLASS_DEVICE void Sort(const LocalTensor<T> &dst,
       uint32_t nextAligned = alignedActual + elemPerBlock;
       // Fill full aligned blocks after the partial one
       if (nextAligned < alignedCount) {
-        AscendC::Duplicate<T>(src[nextAligned], negInf, alignedCount - nextAligned);
+        AscendC::Duplicate<T>(src[nextAligned], negInf,
+                              alignedCount - nextAligned);
       }
-      // Fill partial block using mask to preserve valid elements before actualCount
+      // Fill partial block using mask to preserve valid elements before
+      // actualCount
       uint64_t mask0 = 0;
       for (uint32_t i = inBlockOffset; i < elemPerBlock; i++) {
         mask0 |= (1ULL << i);
       }
       uint64_t masks[2] = {mask0, 0};
-      AscendC::Duplicate(src[alignedActual], negInf, masks, (uint8_t)1, (uint16_t)1, (uint8_t)0);
+      AscendC::Duplicate(src[alignedActual], negInf, masks, (uint8_t)1,
+                        (uint16_t)1, (uint8_t)0);
     }
     PipeBarrier<PIPE_V>();
   }
@@ -755,7 +766,7 @@ CATLASS_DEVICE void Sort(const LocalTensor<T> &dst,
   //   bufB = tmp[alignedCount*2 .. alignedCount*4-1]
   // dst is only alignedCount floats (values only)
 
-  uint32_t resultOffset = 0;  // offset in tmp where merge result lives
+  uint32_t resultOffset = 0; // offset in tmp where merge result lives
 
   if (blockNum > 1) {
     uint32_t fullSegSize = blockSize;
@@ -772,17 +783,28 @@ CATLASS_DEVICE void Sort(const LocalTensor<T> &dst,
 
       for (uint32_t g = 0; g < numSegs; g += 4) {
         uint32_t groupCount = numSegs - g;
-        if (groupCount > 4) groupCount = 4;
-
+        if (groupCount > 4) {
+          groupCount = 4; 
+        }
         uint32_t len0 = (g == numSegs - 1) ? lastSegSize : fullSegSize;
         uint32_t len1 = 0, len2 = 0, len3 = 0;
         uint32_t totalElems = len0;
-        if (groupCount > 1) { len1 = (g + 1 == numSegs - 1) ? lastSegSize : fullSegSize; totalElems += len1; }
-        if (groupCount > 2) { len2 = (g + 2 == numSegs - 1) ? lastSegSize : fullSegSize; totalElems += len2; }
-        if (groupCount > 3) { len3 = (g + 3 == numSegs - 1) ? lastSegSize : fullSegSize; totalElems += len3; }
+        if (groupCount > 1) {
+          len1 = (g + 1 == numSegs - 1) ? lastSegSize : fullSegSize;
+          totalElems += len1;
+        }
+        if (groupCount > 2) {
+          len2 = (g + 2 == numSegs - 1) ? lastSegSize : fullSegSize;
+          totalElems += len2;
+        }
+        if (groupCount > 3) {
+          len3 = (g + 3 == numSegs - 1) ? lastSegSize : fullSegSize;
+          totalElems += len3;
+        }
 
         if (groupCount == 1) {
-          AscendC::DataCopy(tmp[writeBase + outOffset], tmp[readBase + inOffset], len0 * 2);
+          AscendC::DataCopy(tmp[writeBase + outOffset], 
+                            tmp[readBase + inOffset], len0 * 2);
         } else {
           AscendC::MrgSort4Info params;
           params.elementLengths[0] = len0;
@@ -817,7 +839,8 @@ CATLASS_DEVICE void Sort(const LocalTensor<T> &dst,
       uint32_t lastGroupCount = numSegs - lastGroupStart;
       uint32_t newLastSegSize = 0;
       for (uint32_t i = 0; i < lastGroupCount; i++) {
-        newLastSegSize += (lastGroupStart + i == numSegs - 1) ? lastSegSize : fullSegSize;
+        newLastSegSize += 
+            (lastGroupStart + i == numSegs - 1) ? lastSegSize : fullSegSize;
       }
 
       fullSegSize = (newNumSegs > 1) ? 4 * fullSegSize : newLastSegSize;
@@ -828,7 +851,8 @@ CATLASS_DEVICE void Sort(const LocalTensor<T> &dst,
   }
 
   // Extract values only from interleaved [v,i] pairs using GatherMask P0101
-  // (This code only runs for float/B32 now; half delegates to Sort<float> above)
+  // (This code only runs for float/B32 now; half delegates to Sort<float> 
+  // above)
   {
     uint32_t interleaveBytes = alignedCount * 2 * sizeof(T);
     GatherMaskParams gatherMaskParams;
@@ -839,10 +863,8 @@ CATLASS_DEVICE void Sort(const LocalTensor<T> &dst,
     uint64_t rsvdCnt = 0;
     AscendC::GatherMask(dst.template ReinterpretCast<uint32_t>(),
                         tmp[resultOffset].template ReinterpretCast<uint32_t>(),
-                        static_cast<uint8_t>(1),
-                        false, static_cast<uint32_t>(0),
-                        gatherMaskParams, rsvdCnt);
-    PipeBarrier<PIPE_V>();
+                        static_cast<uint8_t>(1), false,
+                        static_cast<uint32_t>(0), gatherMaskParams, rsvdCnt);
   }
 }
 
