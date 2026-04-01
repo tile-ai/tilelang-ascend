@@ -1,7 +1,7 @@
-clang-format off
+// clang-format off
 #include "catlass/catlass.hpp"
 #include "catlass/arch/arch.hpp"
-clang-format on
+// clang-format on
 
 #include "catlass/detail/tag_to_layout.hpp"
 #include "catlass/gemm/block/block_swizzle.hpp"
