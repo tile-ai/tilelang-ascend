@@ -21,6 +21,7 @@ SHAPES = [
     (16, 8, 16, 255),
 ]
 
+
 def run_single_shape(shape, log_dir: Path):
     tilelang.cache.clear_cache()
 
@@ -61,7 +62,7 @@ def run_single_shape(shape, log_dir: Path):
                     blocks = hint.block
                     ndim = len(blocks)
 
-                    shape_dims = [N,C,H,W]
+                    shape_dims = [N, C, H, W]
                     result_blocks = []
 
                     j = 0
@@ -76,12 +77,14 @@ def run_single_shape(shape, log_dir: Path):
                             else:
                                 result_blocks.append(1)
 
-                    configs.append({
-                        "block_N": result_blocks[0],
-                        "block_C": result_blocks[1],
-                        "block_H": result_blocks[2],
-                        "block_W": result_blocks[3],
-                    })
+                    configs.append(
+                        {
+                            "block_N": result_blocks[0],
+                            "block_C": result_blocks[1],
+                            "block_H": result_blocks[2],
+                            "block_W": result_blocks[3],
+                        }
+                    )
 
                 return configs
 
@@ -116,8 +119,9 @@ def run_single_shape(shape, log_dir: Path):
                         T.ceildiv(N, block_N)
                         * T.ceildiv(C, block_C)
                         * T.ceildiv(H, block_H)
-                        * T.ceildiv(W, block_W), is_npu=True) as (cid, _):
-
+                        * T.ceildiv(W, block_W),
+                        is_npu=True,
+                    ) as (cid, _):
                         tmp = cid
 
                         bz = tmp // (
@@ -131,14 +135,8 @@ def run_single_shape(shape, log_dir: Path):
                             * T.ceildiv(W, block_W)
                         )
 
-                        bc = tmp // (
-                            T.ceildiv(H, block_H)
-                            * T.ceildiv(W, block_W)
-                        )
-                        tmp %= (
-                            T.ceildiv(H, block_H)
-                            * T.ceildiv(W, block_W)
-                        )
+                        bc = tmp // (T.ceildiv(H, block_H) * T.ceildiv(W, block_W))
+                        tmp %= T.ceildiv(H, block_H) * T.ceildiv(W, block_W)
 
                         by = tmp // T.ceildiv(W, block_W)
                         bx = tmp % T.ceildiv(W, block_W)
@@ -188,6 +186,7 @@ def run_single_shape(shape, log_dir: Path):
 
     print(f"Finished shape {shape}, log saved to {log_file}")
 
+
 def main():
     root_log_dir = Path("./shape_logs_4d_f16")
     root_log_dir.mkdir(exist_ok=True)
@@ -196,6 +195,7 @@ def main():
         shape_str = "x".join(map(str, shape))
         log_dir = root_log_dir / shape_str
         run_single_shape(shape, log_dir)
+
 
 if __name__ == "__main__":
     main()

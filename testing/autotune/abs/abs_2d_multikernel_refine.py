@@ -15,10 +15,11 @@ torch.npu.set_device(10)
 
 SHAPES = [
     (1024, 10240),
-    (1024,14336),
-    (1024,18432),
-    (1024,22528),
+    (1024, 14336),
+    (1024, 18432),
+    (1024, 22528),
 ]
+
 
 def run_single_shape(shape, log_dir: Path):
     tilelang.cache.clear_cache()
@@ -56,10 +57,12 @@ def run_single_shape(shape, log_dir: Path):
                 configs = []
                 for hint in hints:
                     print("Hint:", hint)
-                    configs.append({
-                        "block_M": hint.block[0],
-                        "block_N": hint.block[1],
-                    })
+                    configs.append(
+                        {
+                            "block_M": hint.block[0],
+                            "block_N": hint.block[1],
+                        }
+                    )
 
                 return configs
 
@@ -93,7 +96,9 @@ def run_single_shape(shape, log_dir: Path):
                     C: T.Tensor((M, N), "float16"),
                 ):
                     with T.Kernel(num_physical_kernels, is_npu=True) as (kernel_id, _):
-                        num_local_tasks = T.ceildiv(num_logical_kernels - kernel_id, num_physical_kernels)
+                        num_local_tasks = T.ceildiv(
+                            num_logical_kernels - kernel_id, num_physical_kernels
+                        )
 
                         for task_id in T.serial(num_local_tasks):
                             cid = task_id * num_physical_kernels + kernel_id
@@ -101,8 +106,8 @@ def run_single_shape(shape, log_dir: Path):
                             bx = cid % T.ceildiv(N, block_N)
 
                             A_shared = T.alloc_shared((block_M, block_N), "float16")
-    
-                            C_local = T.alloc_fragment((block_M, block_N),"float16")
+
+                            C_local = T.alloc_fragment((block_M, block_N), "float16")
 
                             T.copy(A[by * block_M, bx * block_N], A_shared)
 

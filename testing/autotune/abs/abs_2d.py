@@ -27,6 +27,7 @@ SHAPES = [
     # (1024, 1048576),
 ]
 
+
 def run_single_shape(shape, log_dir: Path):
     tilelang.cache.clear_cache()
 
@@ -63,10 +64,12 @@ def run_single_shape(shape, log_dir: Path):
                 configs = []
                 for hint in hints:
                     print("Hint:", hint)
-                    configs.append({
-                        "block_M": hint.block[0],
-                        "block_N": hint.block[1],
-                    })
+                    configs.append(
+                        {
+                            "block_M": hint.block[0],
+                            "block_N": hint.block[1],
+                        }
+                    )
 
                 return configs
 
@@ -101,12 +104,15 @@ def run_single_shape(shape, log_dir: Path):
                         T.ceildiv(N, block_N) * T.ceildiv(M, block_M),
                         is_npu=True,
                     ) as (cid, _):
-
                         by = cid // T.ceildiv(N, block_N)
                         bx = cid % T.ceildiv(N, block_N)
 
-                        A_shared = T.alloc_shared([T.min(M,block_M), T.min(N, block_N)], "float16")
-                        C_local = T.alloc_shared([T.min(M,block_M), T.min(N, block_N)], "float16")
+                        A_shared = T.alloc_shared(
+                            [T.min(M, block_M), T.min(N, block_N)], "float16"
+                        )
+                        C_local = T.alloc_shared(
+                            [T.min(M, block_M), T.min(N, block_N)], "float16"
+                        )
 
                         T.copy(A[by * block_M, bx * block_N], A_shared)
 
