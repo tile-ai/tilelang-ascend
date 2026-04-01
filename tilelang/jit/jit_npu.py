@@ -6,7 +6,6 @@ import subprocess
 import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Union
-import sys
 import torch
 from ..engine import lower
 from ..utils import (

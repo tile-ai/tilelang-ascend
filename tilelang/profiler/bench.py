@@ -5,6 +5,7 @@
 import torch
 from typing import Callable, List, Literal, Optional, Union
 
+
 def do_bench(
     fn: Callable,
     warmup: float = 25,
@@ -17,13 +18,13 @@ def do_bench(
     return_mode: Literal["min", "max", "mean", "median"] = "mean",
 ) -> Union[float, List[float]]:
     """Benchmarks the runtime of a PyTorch function.
-    
+
     This function handles:
     - L2 cache flushing between runs for consistent timing
     - Automatic warmup and repeat count calculation
     - Optional gradient clearing for backward passes
     - Multiple measurement modes (mean, median, min, max)
-    
+
     Args:
         fn: Function to benchmark
         warmup: Target warmup time in milliseconds
@@ -34,7 +35,7 @@ def do_bench(
         quantiles: Optional performance percentiles to compute
         fast_flush: Whether to use faster L2 cache flushing
         return_mode: How to aggregate timing results ("mean", "median", "min", "max")
-        
+
     Returns:
         float: Aggregated runtime in milliseconds
     """
@@ -100,14 +101,12 @@ def do_bench(
         return ret
     return getattr(torch, return_mode)(times).item()
 
+
 import builtins
 import os
 
-def do_bench_npu(funcs, 
-    warmup: float = 5,
-    rep=30, 
-    prof_dir=None, 
-    keep_res=False):
+
+def do_bench_npu(funcs, warmup: float = 5, rep=30, prof_dir=None, keep_res=False):
     import torch_npu
 
     for fn in funcs:
@@ -122,8 +121,7 @@ def do_bench_npu(funcs,
     if prof_dir is not None:
         torch_path = prof_dir
     else:
-        torch_path = os.path.join(os.environ.get('TILELANG_CACHE_DIR'), 'autotuner_tmp')
-
+        torch_path = os.path.join(os.environ.get("TILELANG_CACHE_DIR"), "autotuner_tmp")
 
     total = warmup + rep
     with torch_npu.profiler.profile(
@@ -136,7 +134,6 @@ def do_bench_npu(funcs,
         with_modules=False,
         experimental_config=experimental_config,
     ):
-        
         for fn in funcs:
             for _ in builtins.range(total):
                 fn()
@@ -155,7 +152,10 @@ def _rm_dic(keep_res, torch_path):
     if os.path.exists(torch_path):
         shutil.rmtree(torch_path)
 
-def _collect_prof_result(base_dir: str, funcs, num_warmup: int, num_active: int, key: str = None):
+
+def _collect_prof_result(
+    base_dir: str, funcs, num_warmup: int, num_active: int, key: str = None
+):
     """
     Collect kernel performance from kernel_details.csv, returned in millisecond.
     The first `num_warmup` rows of each function are warmup data and will be ignored, the next `num_active` rows will be averaged.

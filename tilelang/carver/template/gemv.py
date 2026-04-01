@@ -15,7 +15,7 @@ class GEMVTemplate(BaseTemplate):
     """
     A template for Generalized Matrix-Vector Multiplication (GEMV).
 
-    This template defines the computation for a matrix-vector multiplication 
+    This template defines the computation for a matrix-vector multiplication
     with configurable parameters such as transposition, data types, and bias addition.
     """
 
@@ -27,9 +27,11 @@ class GEMVTemplate(BaseTemplate):
     out_dtype: str = "float16"  # Output data type
     accum_dtype: str = "float16"  # Accumulation data type
     with_bias: bool = False  # Whether to add a bias term
-    custom_mem_mul : float = 1
+    custom_mem_mul: float = 1
 
-    def get_hardware_aware_configs(self, arch: TileDevice = None, topk: int = 10) -> List[Hint]:
+    def get_hardware_aware_configs(
+        self, arch: TileDevice = None, topk: int = 10
+    ) -> List[Hint]:
         """
         Retrieves optimized hardware-aware configurations.
 
@@ -40,28 +42,35 @@ class GEMVTemplate(BaseTemplate):
         Returns:
             List[Hint]: A list of optimization hints for hardware acceleration.
         """
-        roller_hints = get_roller_hints_from_func(self._func, arch=arch, topk=topk, custom_mem_mul=self.custom_mem_mul)
+        roller_hints = get_roller_hints_from_func(
+            self._func, arch=arch, topk=topk, custom_mem_mul=self.custom_mem_mul
+        )
         return roller_hints
 
     def initialize_function(self) -> None:
         """
         Defines and initializes the GEMV computation function.
 
-        This method sets up placeholders for input matrices, computes 
-        the matrix-vector multiplication using TVM's compute API, 
+        This method sets up placeholders for input matrices, computes
+        the matrix-vector multiplication using TVM's compute API,
         and optionally applies bias and type casting.
         """
         M: int = 16  # Fixed M value, representing a single batch dimension
         N, K = self.N, self.K
 
         # Ensure M, N, K are valid positive integers
-        assert (isinstance(M, int) and isinstance(N, int) and
-                isinstance(K, int)), "Only Support Integer M, N, K"
-        assert (M > 0 and N > 0 and K > 0), "M, N, K should be positive"
+        assert isinstance(M, int) and isinstance(N, int) and isinstance(K, int), (
+            "Only Support Integer M, N, K"
+        )
+        assert M > 0 and N > 0 and K > 0, "M, N, K should be positive"
 
         # Load configuration parameters
         trans_B = self.trans_B
-        in_dtype, out_dtype, accum_dtype = self.in_dtype, self.out_dtype, self.accum_dtype
+        in_dtype, out_dtype, accum_dtype = (
+            self.in_dtype,
+            self.out_dtype,
+            self.accum_dtype,
+        )
         with_bias = self.with_bias
 
         # Define tensor shapes
@@ -92,8 +101,10 @@ class GEMVTemplate(BaseTemplate):
             A_indices = [i, k]
             B_indices = [k, j] if not trans_B else [j, k]
             return te.sum(
-                A[tuple(A_indices)].astype(accum_dtype) * B[tuple(B_indices)].astype(accum_dtype),
-                axis=k)
+                A[tuple(A_indices)].astype(accum_dtype)
+                * B[tuple(B_indices)].astype(accum_dtype),
+                axis=k,
+            )
 
         # Compute matrix multiplication result
         C = te.compute(
