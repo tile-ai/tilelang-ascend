@@ -1653,6 +1653,19 @@ void CodeGenTileLangAscend::CompareCodegen(const CallNode *op,
       this->stream << ", ";
     }
   }
+  std::string count_str = PrintExpr(op->args[op->args.size() - 1]);
+
+  // Check 256-byte alignment required by Ascend NPU
+  DataType src_dtype = GetAccessPtrDtype(op->args[1].as<CallNode>());
+  int element_bytes = src_dtype.bytes();
+  uint64_t count = std::stoull(count_str);
+  uint64_t total_bytes = count * element_bytes;
+
+  ICHECK(total_bytes % 256 == 0)
+      << "Compare alignment error: count=" << count
+      << ", element_bytes=" << element_bytes << ", total_bytes=" << total_bytes
+      << " bytes is not 256-byte aligned. ";
+
   this->stream << ", "
                << "AscendC::CMPMODE::" +
                       Downcast<StringImm>(op->args[op->args.size() - 2])->value
@@ -1696,6 +1709,17 @@ void CodeGenTileLangAscend::CompareScalarCodegen(const CallNode *op,
   para_idx++;
 
   auto var_name_size = PrintExpr(op->args[para_idx]);
+
+  // Check 256-byte alignment required by Ascend NPU
+  DataType src_dtype = GetAccessPtrDtype(op->args[1].as<CallNode>());
+  int element_bytes = src_dtype.bytes();
+  uint64_t size = std::stoull(var_name_size);
+  uint64_t total_bytes = size * element_bytes;
+  ICHECK(total_bytes % 256 == 0)
+      << "CompareScalar alignment error: size=" << size
+      << ", element_bytes=" << element_bytes << ", total_bytes=" << total_bytes
+      << " byte is not 256-byte aligned. ";
+
   var_names.push_back(var_name_size);
 
   this->PrintIndent();
