@@ -22,6 +22,7 @@ SHAPES = [
     (1025,),
 ]
 
+
 def run_single_shape(shape, log_dir: Path):
     tilelang.cache.clear_cache()
 
@@ -53,9 +54,11 @@ def run_single_shape(shape, log_dir: Path):
                 configs = []
                 for hint in hints:
                     print("Hint:", hint)
-                    configs.append({
-                        "block_M": hint.block[0],
-                    })
+                    configs.append(
+                        {
+                            "block_M": hint.block[0],
+                        }
+                    )
 
                 return configs
 
@@ -86,7 +89,6 @@ def run_single_shape(shape, log_dir: Path):
                         T.ceildiv(M, block_M),
                         is_npu=True,
                     ) as (bid, _):
-
                         offset = bid * block_M
 
                         A_shared = T.alloc_shared((block_M,), "float16")
@@ -114,6 +116,7 @@ def run_single_shape(shape, log_dir: Path):
 
     print(f"Finished shape {shape}, log saved to {log_file}")
 
+
 def main():
     root_log_dir = Path("./shape_logs_1d")
     root_log_dir.mkdir(exist_ok=True)
@@ -122,6 +125,7 @@ def main():
         shape_str = "x".join(map(str, shape))
         log_dir = root_log_dir / shape_str
         run_single_shape(shape, log_dir)
+
 
 if __name__ == "__main__":
     main()

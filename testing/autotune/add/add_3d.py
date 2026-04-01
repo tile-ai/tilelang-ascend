@@ -1,6 +1,4 @@
 import os
-import sys
-import argparse
 import traceback
 from contextlib import redirect_stdout, redirect_stderr
 from pathlib import Path
@@ -24,6 +22,7 @@ SHAPES = [
     (1, 88, 1025),
     (32, 1632, 1025),
 ]
+
 
 def run_single_shape(shape, log_dir: Path):
     tilelang.cache.clear_cache()
@@ -75,11 +74,13 @@ def run_single_shape(shape, log_dir: Path):
                             else:
                                 result_blocks.append(1)
 
-                    configs.append({
-                        "block_B": result_blocks[0],
-                        "block_M": result_blocks[1],
-                        "block_N": result_blocks[2],
-                    })
+                    configs.append(
+                        {
+                            "block_B": result_blocks[0],
+                            "block_M": result_blocks[1],
+                            "block_N": result_blocks[2],
+                        }
+                    )
 
                 return configs
 
@@ -113,17 +114,10 @@ def run_single_shape(shape, log_dir: Path):
                         * T.ceildiv(N, block_N),
                         is_npu=True,
                     ) as (cid, _):
-
                         tmp = cid
 
-                        bz = tmp // (
-                            T.ceildiv(M, block_M)
-                            * T.ceildiv(N, block_N)
-                        )
-                        tmp = tmp % (
-                            T.ceildiv(M, block_M)
-                            * T.ceildiv(N, block_N)
-                        )
+                        bz = tmp // (T.ceildiv(M, block_M) * T.ceildiv(N, block_N))
+                        tmp = tmp % (T.ceildiv(M, block_M) * T.ceildiv(N, block_N))
 
                         by = tmp // T.ceildiv(N, block_N)
                         bx = tmp % T.ceildiv(N, block_N)
@@ -168,6 +162,7 @@ def run_single_shape(shape, log_dir: Path):
 
     print(f"Finished shape {shape}, log saved to {log_file}")
 
+
 def main():
     root_log_dir = Path("./shape_logs_3d")
     root_log_dir.mkdir(exist_ok=True)
@@ -176,6 +171,7 @@ def main():
         shape_str = "x".join(map(str, shape))
         log_dir = root_log_dir / shape_str
         run_single_shape(shape, log_dir)
+
 
 if __name__ == "__main__":
     main()

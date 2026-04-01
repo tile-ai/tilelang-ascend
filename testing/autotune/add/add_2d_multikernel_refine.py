@@ -1,6 +1,4 @@
 import os
-import sys
-import argparse
 import traceback
 from contextlib import redirect_stdout, redirect_stderr
 from pathlib import Path
@@ -28,6 +26,7 @@ SHAPES = [
     (1024, 22528),
     (1024, 1048576),
 ]
+
 
 def run_single_shape(shape, log_dir: Path):
     tilelang.cache.clear_cache()
@@ -58,10 +57,12 @@ def run_single_shape(shape, log_dir: Path):
 
                 for hint in hints:
                     print("Hint:", hint)
-                    configs.append({
-                        "block_M": hint.block[0],
-                        "block_N": hint.block[1],
-                    })
+                    configs.append(
+                        {
+                            "block_M": hint.block[0],
+                            "block_N": hint.block[1],
+                        }
+                    )
 
                 return configs
 
@@ -91,23 +92,25 @@ def run_single_shape(shape, log_dir: Path):
                     C: T.Tensor((M, N), "float16"),
                 ):
                     with T.Kernel(num_physical_kernels, is_npu=True) as (kernel_id, _):
-                            num_local_tasks = T.ceildiv(num_logical_kernels - kernel_id, num_physical_kernels)
+                        num_local_tasks = T.ceildiv(
+                            num_logical_kernels - kernel_id, num_physical_kernels
+                        )
 
-                            for task_id in T.serial(num_local_tasks):
-                                cid = task_id * num_physical_kernels + kernel_id
-                                by = cid // T.ceildiv(N, block_N)
-                                bx = cid % T.ceildiv(N, block_N)
+                        for task_id in T.serial(num_local_tasks):
+                            cid = task_id * num_physical_kernels + kernel_id
+                            by = cid // T.ceildiv(N, block_N)
+                            bx = cid % T.ceildiv(N, block_N)
 
-                                A_shared = T.alloc_shared((block_M, block_N), "float16")
-                                B_shared = T.alloc_shared((block_M, block_N), "float16")
-                                C_local = T.alloc_fragment((block_M, block_N),"float16")
+                            A_shared = T.alloc_shared((block_M, block_N), "float16")
+                            B_shared = T.alloc_shared((block_M, block_N), "float16")
+                            C_local = T.alloc_fragment((block_M, block_N), "float16")
 
-                                T.copy(A[by * block_M, bx * block_N], A_shared)
-                                T.copy(B[by * block_M, bx * block_N], B_shared)
+                            T.copy(A[by * block_M, bx * block_N], A_shared)
+                            T.copy(B[by * block_M, bx * block_N], B_shared)
 
-                                T.vadd(A_shared, B_shared, C_local)
+                            T.vadd(A_shared, B_shared, C_local)
 
-                                T.copy(C_local, C[by * block_M, bx * block_N])
+                            T.copy(C_local, C[by * block_M, bx * block_N])
 
                 return elemAdd
 
@@ -133,6 +136,7 @@ def main():
         log_dir = root_log_dir / shape_str
 
         run_single_shape(shape, log_dir)
+
 
 if __name__ == "__main__":
     main()

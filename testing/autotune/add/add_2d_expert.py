@@ -1,6 +1,4 @@
 import os
-import sys
-import argparse
 import traceback
 from contextlib import redirect_stdout, redirect_stderr
 from pathlib import Path
@@ -28,6 +26,7 @@ SHAPES = [
     (1024, 22528),
     (1024, 1048576),
 ]
+
 
 def run_single_shape(shape, log_dir: Path):
     tilelang.cache.clear_cache()
@@ -58,34 +57,48 @@ def run_single_shape(shape, log_dir: Path):
 
                 for hint in hints:
                     print("Hint:", hint)
-                    configs.append({
-                        "block_M": hint.block[0],
-                        "block_N": hint.block[1],
-                    })
-                configs.append({
+                    configs.append(
+                        {
+                            "block_M": hint.block[0],
+                            "block_N": hint.block[1],
+                        }
+                    )
+                configs.append(
+                    {
                         "block_M": 64,
                         "block_N": 64,
-                    })
-                configs.append({
+                    }
+                )
+                configs.append(
+                    {
                         "block_M": 64,
                         "block_N": 32,
-                    })
-                configs.append({
+                    }
+                )
+                configs.append(
+                    {
                         "block_M": 64,
                         "block_N": 128,
-                    })
-                configs.append({
+                    }
+                )
+                configs.append(
+                    {
                         "block_M": 32,
                         "block_N": 64,
-                    })
-                configs.append({
+                    }
+                )
+                configs.append(
+                    {
                         "block_M": 256,
                         "block_N": 160,
-                    })
-                configs.append({
+                    }
+                )
+                configs.append(
+                    {
                         "block_M": 2,
                         "block_N": 7168,
-                    })
+                    }
+                )
                 return configs
 
             def supply_prog(params):
@@ -108,6 +121,7 @@ def run_single_shape(shape, log_dir: Path):
                 n_num = N // block_N
                 dtype = "float16"
                 BLOCK_SIZE = 48
+
                 @T.prim_func
                 def elemAdd(
                     A: T.Tensor((M, N), "float16"),
@@ -118,7 +132,7 @@ def run_single_shape(shape, log_dir: Path):
                         A_VEC = T.alloc_ub((block_M, block_N), dtype)
                         B_VEC = T.alloc_ub((block_M, block_N), dtype)
                         C_VEC = T.alloc_ub((block_M, block_N), dtype)
-                        for i in T.serial(T.ceildiv(m_num*n_num, BLOCK_SIZE)):
+                        for i in T.serial(T.ceildiv(m_num * n_num, BLOCK_SIZE)):
                             block_id = i * BLOCK_SIZE + cid
                             if block_id < m_num * n_num:
                                 block_id_m = block_id // n_num
@@ -144,6 +158,7 @@ def run_single_shape(shape, log_dir: Path):
 
     print(f"Finished shape {shape}, log saved to {log_file}")
 
+
 def main():
     root_log_dir = Path("./shape_logs_2d_float16_expert")
     root_log_dir.mkdir(exist_ok=True)
@@ -153,6 +168,7 @@ def main():
         log_dir = root_log_dir / shape_str
 
         run_single_shape(shape, log_dir)
+
 
 if __name__ == "__main__":
     main()
