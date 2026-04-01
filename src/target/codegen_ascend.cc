@@ -771,8 +771,11 @@ inline void PrintConst(const FloatImmNode *op, std::ostream &os,
                        CodeGenTileLangAscend *p) { // NOLINT(*)
   // Type code is kBFloat
   if (op->dtype.is_bfloat16()) {
-    os << "bfloat16_t";
-    os << '(' << std::scientific << op->value << 'f' << ')';
+    if (std::isinf(op->value)) {
+      os << "bfloat16_t(" << (op->value < 0 ? "-" : "") << "CUDART_INF_F)";
+    } else {
+      os << "bfloat16_t(" << std::scientific << op->value << 'f' << ')';
+    }
     return;
   }
   // Type code is kFloat8_e5m2 or kE4M4Float
@@ -805,10 +808,15 @@ inline void PrintConst(const FloatImmNode *op, std::ostream &os,
     break;
   }
   case 16: {
-    os << "half" << '(';
+    // Only fp16 reaches here (bf16 is handled above)
+    if (std::isinf(op->value)) {
+      os << "half(" << (op->value < 0 ? "-" : "") << "CUDART_INF_F)";
+    } else {
+      os << "half(";
     FloatImm const_f32 = FloatImm(DataType::Float(32), op->value);
     PrintConst(const_f32.get(), os, p);
     os << ')';
+    }
     break;
   }
   default:
@@ -819,6 +827,41 @@ inline void PrintConst(const FloatImmNode *op, std::ostream &os,
 void CodeGenTileLangAscend::VisitExpr_(const FloatImmNode *op,
                                        std::ostream &os) { // NOLINT(*)
   PrintConst(op, os, this);
+}
+
+void CodeGenTileLangAscend::VisitExpr_(const MulNode *op,
+                                        std::ostream &os) { // NOLINT(*)
+  // Detect pattern: inf * (-1) -> -inf
+  auto is_float_imm_inf = [](const PrimExpr& expr) -> bool {
+    if (auto* float_imm = expr.as<FloatImmNode>()) {
+      return std::isinf(float_imm->value);
+    }
+    return false;
+  };
+
+  auto is_neg_one = [](const PrimExpr& expr) -> bool {
+    if (auto* float_imm = expr.as<FloatImmNode>()) {
+      return float_imm->value == -1.0;
+    }
+    return false;
+  };
+
+  // Check if this is inf * (-1) or (-1) * inf pattern
+  if ((is_float_imm_inf(op->a) && is_neg_one(op->b)) ||
+      (is_float_imm_inf(op->b) && is_neg_one(op->a))) {
+    // Generate negated inf directly
+    if (auto* float_imm = op->a.as<FloatImmNode>()) {
+      FloatImm neg_inf(float_imm->dtype, -std::numeric_limits<double>::infinity());
+      PrintConst(neg_inf.get(), os, this);
+    } else if (auto* float_imm = op->b.as<FloatImmNode>()) {
+      FloatImm neg_inf(float_imm->dtype, -std::numeric_limits<double>::infinity());
+      PrintConst(neg_inf.get(), os, this);
+    }
+    return;
+  }
+
+  // Default handling
+  CodeGenC::VisitExpr_(op, os);
 }
 
 void CodeGenTileLangAscend::PreFunctionBody(const PrimFunc &f) {

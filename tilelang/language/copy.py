@@ -208,8 +208,16 @@ def npu_copy_v2(
         enable_relu (bool): Whether to enable ReLU. Defaults to False.
         transpose (Optional[bool]): Whether to transpose for copy_l1_to_l0. Defaults to False.
         pad_value (Optional[Union[float, int, tir.PrimExpr]]): Value to fill in UB unused area.
-            Supports float, int, tir.FloatImm, tir.IntImm, tir.PrimExpr (e.g., -T.infinity(dtype)).
+            Supports float, int, tir.FloatImm, tir.IntImm, tir.PrimExpr.
             Defaults to 0.
+
+            Note: Only supports 0, positive infinity, and negative infinity. Other values are not supported.
+
+            For infinity values:
+            - FP32: ``-T.infinity("float32")`` or ``T.infinity("float32")``
+            - FP16: ``-T.infinity("float16")`` or ``T.infinity("float16")``
+            - BF16: ``T.cast(-T.infinity("float32"), "bfloat16")`` or ``T.cast(T.infinity("float32"), "bfloat16")``
+              (Note: BF16 does not support ``T.infinity("bfloat16")`` directly, use cast from float32)
 
     Raises:
         TypeError: If copy extents cannot be deduced from arguments
