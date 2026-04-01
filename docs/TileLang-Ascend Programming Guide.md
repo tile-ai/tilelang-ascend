@@ -1782,11 +1782,13 @@ Expert编程模式可以复用Developer模式的Reduce类计算原语。
 
   **数据格式**：输入/输出格式均为 value-index pair：`[value0, index0, value1, index1, value2, index2, ...]`，按降序排列。
 
-  数据类型为float，每个结构占据8Bytes。
-  <img width="566" height="232" alt="image" src="https://github.com/user-attachments/assets/7d3994e9-87e2-42ab-bb5c-f3c4b22a5de8" />
+  数据类型为float，每个结构占据8Bytes：
 
-  数据类型为half，每个结构也占据8Bytes，中间有2Bytes保留。
-  <img width="570" height="235" alt="image" src="https://github.com/user-attachments/assets/f3b548ac-71b0-4e9e-ac7f-5edf8ab2cada" />
+  ![image-tilelang_ascend_mergesort2](./images/zh-cn_image_0000002449970177.png)
+
+  数据类型为half，每个结构也占据8Bytes，中间有2Bytes保留：
+  
+  ![image-tilelang_ascend_mergesort2](./images/zh-cn_image_0000002449890293.png)
 
   **举例**：
 
