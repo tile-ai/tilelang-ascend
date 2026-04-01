@@ -5,8 +5,6 @@ import tilelang.language as T
 
 import torch
 
-tl.cache.clear_cache()
-
 
 @tl.jit(
     out_idx=[-1],
@@ -121,4 +119,5 @@ def main(custom_args=None):
 
 
 if __name__ == "__main__":
+    tl.disable_cache()
     main()
