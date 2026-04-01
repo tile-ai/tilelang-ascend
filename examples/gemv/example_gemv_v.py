@@ -7,13 +7,14 @@ import torch
 
 tl.cache.clear_cache()
 
+
 @tl.jit(
     out_idx=[-1],
     pass_configs={
         tl.PassConfigKey.TIR_MERGE_STATIC_SMEM: True,
         tl.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
         tl.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
-    }
+    },
 )
 def simple_gemv(N: int, K: int, block_N: int, block_K: int, dtype: str = "float16", accum_dtype: str = "float32"):
     """Vector core GEMV implementation"""
@@ -39,6 +40,7 @@ def simple_gemv(N: int, K: int, block_N: int, block_K: int, dtype: str = "float1
             return T.copy(src, dst)
 
     is_pto = current_jit_target(simple_gemv) == "pto"
+
     def alloc_temp():
         if is_pto:
             return T.alloc_ub((block_N, block_K // 2), accum_dtype)
@@ -78,6 +80,7 @@ def simple_gemv(N: int, K: int, block_N: int, block_K: int, dtype: str = "float1
 
             cast_or_copy(y_ub, y_total_32_ub, CAST_MODE, block_N)  # cast back
             T.copy(y_ub, y[bn * block_N])
+
     return main
 
 
@@ -115,6 +118,7 @@ def main(custom_args=None):
 
     print("GEMV example passed!")
     print("Kernel Output Match!")
+
 
 if __name__ == "__main__":
     main()
