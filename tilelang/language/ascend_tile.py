@@ -794,7 +794,7 @@ def scalar_op(
     )
 
 
-def leaky_relu(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, scalar_value: PrimExpr): # type: ignore  # noqa: F821
+def leaky_relu(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, scalar_value: PrimExpr):  # type: ignore  # noqa: F821
     """Performs element-wise Leaky ReLU activation.
 
     Formula: dst = src0 if src0 >= 0 else src0 * scalar_value
@@ -1220,7 +1220,10 @@ def block_reduce_sum(
 
 
 def compare(
-    dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, src1: Buffer | BufferRegion | BufferLoad | PrimExpr, mode: str  # noqa: F821, FA100
+    dst: Buffer | BufferRegion,
+    src0: Buffer | BufferRegion,
+    src1: Buffer | BufferRegion | BufferLoad | PrimExpr,
+    mode: str,  # noqa: F821, FA100
 ):
     """Generic dispatch function for element-wise comparison operations.
 
@@ -1505,14 +1508,7 @@ def bitwise_xor(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, src1: B
     else:
         src1_ptr = src1.access_ptr("r")
 
-    return tir.call_intrin(
-        "handle",
-        tir.op.Op.get("tl.ascend_bitwise_xor"),
-        dst_ptr,
-        src0_ptr,
-        src1_ptr,
-        tmp.access_ptr("w")
-    )
+    return tir.call_intrin("handle", tir.op.Op.get("tl.ascend_bitwise_xor"), dst_ptr, src0_ptr, src1_ptr, tmp.access_ptr("w"))
 
 
 def clamp_max(out: Buffer | BufferRegion, buffer: Buffer | BufferRegion, tmp: Buffer, scalar_value: PrimExpr, count: PrimExpr):  # noqa: F821
@@ -1550,6 +1546,7 @@ def clamp_max(out: Buffer | BufferRegion, buffer: Buffer | BufferRegion, tmp: Bu
         count,
     )
 
+
 def clamp_min(out: Buffer | BufferRegion, buffer: Buffer | BufferRegion, tmp: Buffer, scalar_value: PrimExpr, count: PrimExpr):  # noqa: F821
     """
     Clip tensor elements to no less than v, replace elements smaller than scalar_value with scalar_value,
@@ -1585,7 +1582,10 @@ def clamp_min(out: Buffer | BufferRegion, buffer: Buffer | BufferRegion, tmp: Bu
         count,
     )
 
-def clamp(out: Buffer | BufferRegion, buffer: Buffer | BufferRegion, tmp: Buffer, min_scalar: PrimExpr, max_scalar: PrimExpr, count: PrimExpr):  # noqa: F821
+
+def clamp(
+    out: Buffer | BufferRegion, buffer: Buffer | BufferRegion, tmp: Buffer, min_scalar: PrimExpr, max_scalar: PrimExpr, count: PrimExpr
+):  # noqa: F821
     """
     Clip tensor elements to [min_scalar, max_scalar] range, replace out-of-bounds values with boundary values
     Args:
@@ -1633,18 +1633,14 @@ def round(out: Buffer | BufferRegion, buffer: Buffer | BufferRegion, tmp: Buffer
     else:
         buffer_ptr = buffer.access_ptr("r")
 
-    return tir.call_intrin(
-        "handle",
-        tir.op.Op.get("tl.ascend_round"),
-        out_ptr,
-        buffer_ptr,
-        tmp.access_ptr("r"),
-        count
-    )
+    return tir.call_intrin("handle", tir.op.Op.get("tl.ascend_round"), out_ptr, buffer_ptr, tmp.access_ptr("r"), count)
 
-def broadcast(dst: Buffer | BufferRegion,  # noqa: F821, FA100
-              src: Buffer | BufferRegion,  # noqa: F821, FA100
-              tmp: Buffer | BufferRegion):  # noqa: F821, FA100
+
+def broadcast(
+    dst: Buffer | BufferRegion,  # noqa: F821, FA100
+    src: Buffer | BufferRegion,  # noqa: F821, FA100
+    tmp: Buffer | BufferRegion,
+):  # noqa: F821, FA100
     """Generates a TIR intrinsic call for the AscendC `Broadcast` operation.
 
     This function performs a broadcast copy from the source buffer (`src`) to the

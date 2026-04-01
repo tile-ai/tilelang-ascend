@@ -47,7 +47,7 @@ CATLASS_DEVICE void copy_gm_to_l1(LocalTensor<T> dstTensor,
     AscendC::InitConstValue(
         dstTensor,
         {1, static_cast<uint16_t>(dstM * dstN * sizeof(T) / 32), 0, 0});
-    AscendC::PipeBarrier<PIPE_MTE2>();  
+    AscendC::PipeBarrier<PIPE_MTE2>();
   }
   auto layout = MakeLayoutFromTag(LayoutGM{tailM, realSrcN});
   auto src_LAYOUT = MakeLayoutTile(layout, tla::MakeShape(tailM, tailN));
