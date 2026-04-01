@@ -4,7 +4,6 @@
 import torch
 import tilelang
 import tilelang.language as T
-import os
 
 import pytest
 import testcommon as tc
@@ -15,8 +14,10 @@ BLOCK_M = 16
 BLOCK_N = 16
 DTYPE_CASES = ["float16", "float32"]
 
+
 def generate_tensor_new(shape, dtype, data_range):
-    return torch.empty(shape, dtype = dtype).uniform_(data_range[0], data_range[1])
+    return torch.empty(shape, dtype=dtype).uniform_(data_range[0], data_range[1])
+
 
 def vec_tanh(M, N, block_M, block_N, dtype="float16"):
     m_num = M // block_M
@@ -25,8 +26,8 @@ def vec_tanh(M, N, block_M, block_N, dtype="float16"):
 
     @T.prim_func
     def vecTanhDev(
-            A: T.Tensor((M, N), dtype),
-            B: T.Tensor((M, N), dtype),
+        A: T.Tensor((M, N), dtype),
+        B: T.Tensor((M, N), dtype),
     ):
         with T.Kernel(BLOCK_SIZE, is_npu=True) as (cid, _):
             A_VEC = T.alloc_shared((block_M, block_N), dtype)
@@ -43,6 +44,7 @@ def vec_tanh(M, N, block_M, block_N, dtype="float16"):
                     T.copy(A[bx, by], A_VEC)
                     T.npuir_vtanh(A_VEC, B_VEC)
                     T.copy(B_VEC, B[bx, by])
+
     return vecTanhDev
 
 
@@ -55,16 +57,16 @@ def test_vec_tanh(dtype):
     compiled_kernel = tilelang.compile(func, target="npuir")
 
     A = generate_tensor_new(
-        shape = (M, N),
-        dtype = datatype,
-        data_range = (-1.0, 1.0),
+        shape=(M, N),
+        dtype=datatype,
+        data_range=(-3.0, 3.0),
     ).npu()
-    B = torch.zeros((M, N), dtype = datatype).npu()
+    B = torch.zeros((M, N), dtype=datatype).npu()
 
     compiled_kernel(A, B)
 
     A_cpu = A.cpu()
     B_cpu = B.cpu()
     ref_cpu = torch.tanh(A_cpu)
-    
+
     tc.assert_close(B_cpu, ref_cpu, rtol=1e-2, atol=1e-2)

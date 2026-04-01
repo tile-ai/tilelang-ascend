@@ -3115,115 +3115,89 @@ void CodeGenTileLangNPUIRDEV::VerfCodegen(const CallNode *op) {
   }
 }
 
-// Generate vector hyperbolic tangent approximation using polynomial expansion
+// Generate vector hyperbolic tangent approximation using exponential identity
 // in codegen.
 //
 // before(TileLang/TIR semantic):
 //   Y = tl.npuir_vtanh
-//   where tanh(x) is approximated as:
-//     tanh(x) ≈ x - x³/3 + 2x⁵/15 - 17x⁷/315
+//   where tanh(x) is computed using the identity:
+//     tanh(x) = (exp(2x) - 1) / (exp(2x) + 1)
 //
 // after(MLIR Lowering):
-//   - materialize scalar constants (2, -1, -17, 3, 15, 315) and compute
-//   coefficients
-//   - compute x^2, x^3, x^5, x^7 via hivm::VMul
-//   - scale each term with corresponding coefficient (-1/3, 2/15, -17/315)
-//   - accumulate terms using hivm::VAdd
+//   - materialize scalar constants (2.0, 1.0) for computation
+//   - extract source slices from region for each source operand
+//   - compute 2x via hivm::VMul
+//   - compute exp(2x) via hivm::VExp
+//   - compute numerator (exp(2x) - 1) via hivm::VSub
+//   - compute denominator (exp(2x) + 1) via hivm::VAdd
+//   - compute final result (numer / denom) via hivm::VDiv
 //   - store the final result into destination vector
 //   - all intermediate results are lowered to vector operations on memref
-//   subviews
+//   subviews with temporary buffer allocation
 void CodeGenTileLangNPUIRDEV::VtanhCodegen(const CallNode *op) {
   tvm::tl::NpuirVTanh npuirop(op->args, this->vmap);
   auto loc = builder.getUnknownLoc();
 
-  llvm::SmallVector<Value> srcs;
+  Value dstVal = GetVarValue(npuirop.dst);
+
   size_t n_srcs = npuirop.srcs.size();
   for (size_t i = 0; i < n_srcs; i++) {
     Value src =
         GenExtractSliceFromRegion(npuirop.srcs[i], npuirop.srcs_range[i]);
-    srcs.push_back(src);
-  }
-  mlir::ValueRange srcs_vr(srcs);
-  Value dstVal = GetVarValue(npuirop.dst);
 
-  auto srcTensorType = srcs_vr[0].getType().cast<RankedTensorType>();
-  mlir::Type elementType = srcTensorType.getElementType();
-  Value two = builder.create<mlir::arith::ConstantOp>(
-      loc, builder.getFloatAttr(elementType, 2.0f));
-  Value minusOne = builder.create<mlir::arith::ConstantOp>(
-      loc, builder.getFloatAttr(elementType, -1.0f));
-  Value minus17 = builder.create<mlir::arith::ConstantOp>(
-      loc, builder.getFloatAttr(elementType, -17.0f));
-  Value three = builder.create<mlir::arith::ConstantOp>(
-      loc, builder.getFloatAttr(elementType, 3.0f));
-  Value fifteen = builder.create<mlir::arith::ConstantOp>(
-      loc, builder.getFloatAttr(elementType, 15.0f));
-  Value threeHundredFifteen = builder.create<mlir::arith::ConstantOp>(
-      loc, builder.getFloatAttr(elementType, 315.0f));
-  Value minusOneOver3 =
-      builder.create<mlir::arith::DivFOp>(loc, minusOne, three);
-  Value twoOver15 = builder.create<mlir::arith::DivFOp>(loc, two, fifteen);
-  Value minusSeventeenOver315 =
-      builder.create<mlir::arith::DivFOp>(loc, minus17, threeHundredFifteen);
+    auto srcTensorType = src.getType().cast<RankedTensorType>();
+    mlir::Type elementType = srcTensorType.getElementType();
+    mlir::Type dstType = dstVal.getType();
+    mlir::TypeRange resultType(&dstType, 1);
 
-  for (size_t i = 0; i < n_srcs; i++) {
-    Value src = srcs[i];
-    Value x2 = mlir::utils::createTmpBufferOrTensorWithTargetType(
+    // Constants
+    Value two = builder.create<mlir::arith::ConstantOp>(
+        loc, builder.getFloatAttr(elementType, 2.0f));
+    Value one = builder.create<mlir::arith::ConstantOp>(
+        loc, builder.getFloatAttr(elementType, 1.0f));
+
+    // Temporary buffers
+    Value twoX = mlir::utils::createTmpBufferOrTensorWithTargetType(
         builder, loc, src, elementType);
-    Value x3 = mlir::utils::createTmpBufferOrTensorWithTargetType(
+    Value exp2x = mlir::utils::createTmpBufferOrTensorWithTargetType(
         builder, loc, src, elementType);
-    Value x5 = mlir::utils::createTmpBufferOrTensorWithTargetType(
+    Value numer = mlir::utils::createTmpBufferOrTensorWithTargetType(
         builder, loc, src, elementType);
-    Value x7 = mlir::utils::createTmpBufferOrTensorWithTargetType(
-        builder, loc, src, elementType);
-    Value tmp = mlir::utils::createTmpBufferOrTensorWithTargetType(
+    Value denom = mlir::utils::createTmpBufferOrTensorWithTargetType(
         builder, loc, src, elementType);
 
-    x2 = builder
-             .create<mlir::hivm::VMulOp>(loc, src.getType(),
-                                         ValueRange{src, src}, ValueRange{x2})
-             ->getResult(0);
-    x3 = builder
-             .create<mlir::hivm::VMulOp>(loc, x2.getType(), ValueRange{x2, src},
-                                         ValueRange{x3})
-             ->getResult(0);
-    x5 = builder
-             .create<mlir::hivm::VMulOp>(loc, x3.getType(), ValueRange{x3, x2},
-                                         ValueRange{x5})
-             ->getResult(0);
-    x7 = builder
-             .create<mlir::hivm::VMulOp>(loc, x5.getType(), ValueRange{x5, x2},
-                                         ValueRange{x7})
-             ->getResult(0);
+    // Step 1: twoX = 2 * x
+    twoX = builder
+               .create<mlir::hivm::VMulOp>(
+                   loc, src.getType(), ValueRange{src, two}, ValueRange{twoX})
+               ->getResult(0);
 
-    x3 = builder
-             .create<mlir::hivm::VMulOp>(loc, x3.getType(),
-                                         ValueRange{x3, minusOneOver3},
-                                         ValueRange{x3})
-             ->getResult(0);
-    x5 = builder
-             .create<mlir::hivm::VMulOp>(
-                 loc, x5.getType(), ValueRange{x5, twoOver15}, ValueRange{x5})
-             ->getResult(0);
-    x7 = builder
-             .create<mlir::hivm::VMulOp>(loc, x7.getType(),
-                                         ValueRange{x7, minusSeventeenOver315},
-                                         ValueRange{x7})
-             ->getResult(0);
+    // Step 2: exp2x = exp(2x)
+    exp2x = builder
+                .create<mlir::hivm::VExpOp>(loc, twoX.getType(),
+                                            ValueRange{twoX}, ValueRange{exp2x})
+                ->getResult(0);
 
-    tmp = builder
-              .create<mlir::hivm::VAddOp>(loc, src.getType(),
-                                          ValueRange{src, x3}, ValueRange{tmp})
-              ->getResult(0);
-    tmp = builder
-              .create<mlir::hivm::VAddOp>(loc, tmp.getType(),
-                                          ValueRange{x5, tmp}, ValueRange{tmp})
-              ->getResult(0);
-    Value result =
-        builder
-            .create<mlir::hivm::VAddOp>(loc, dstVal.getType(),
-                                        ValueRange{x7, tmp}, ValueRange{dstVal})
-            ->getResult(0);
+    // Step 3: numer = exp(2x) - 1
+    numer = builder
+                .create<mlir::hivm::VSubOp>(loc, exp2x.getType(),
+                                            ValueRange{exp2x, one},
+                                            ValueRange{numer})
+                ->getResult(0);
+
+    // Step 4: denom = exp(2x) + 1
+    denom = builder
+                .create<mlir::hivm::VAddOp>(loc, exp2x.getType(),
+                                            ValueRange{exp2x, one},
+                                            ValueRange{denom})
+                ->getResult(0);
+
+    // Step 5: result = numer / denom = (exp(2x) - 1) / (exp(2x) + 1)
+    Value result = builder
+                       .create<mlir::hivm::VDivOp>(loc, dstVal.getType(),
+                                                   ValueRange{numer, denom},
+                                                   ValueRange{dstVal})
+                       ->getResult(0);
     SetVarValue(npuirop.dst, result);
   }
 }
