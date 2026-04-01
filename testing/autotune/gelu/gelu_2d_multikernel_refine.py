@@ -1,6 +1,4 @@
 import os
-import sys
-import argparse
 import traceback
 from contextlib import redirect_stdout, redirect_stderr
 from pathlib import Path
@@ -58,10 +56,12 @@ def run_single_shape(shape, log_dir: Path):
 
                 for hint in hints:
                     print("Hint:", hint)
-                    configs.append({
-                        "block_M": hint.block[0],
-                        "block_N": hint.block[1],
-                    })
+                    configs.append(
+                        {
+                            "block_M": hint.block[0],
+                            "block_N": hint.block[1],
+                        }
+                    )
 
                 return configs
 
@@ -83,36 +83,38 @@ def run_single_shape(shape, log_dir: Path):
             def compute_gelu(M, N, block_M, block_N):
                 num_physical_kernels = 40
                 num_logical_kernels = (N // block_N) * (M // block_M)
+
                 @T.prim_func
                 def gelu_2D(
                     A: T.Tensor((M, N), "float32"),
                     B: T.Tensor((M, N), "float32"),
                 ):
                     with T.Kernel(num_physical_kernels, is_npu=True) as (kernel_id, _):
-                            num_local_tasks = T.ceildiv(num_logical_kernels - kernel_id, num_physical_kernels)
+                        num_local_tasks = T.ceildiv(
+                            num_logical_kernels - kernel_id, num_physical_kernels
+                        )
 
-                            for task_id in T.serial(num_local_tasks):
-                                cid = task_id * num_physical_kernels + kernel_id
-                                by = cid // T.ceildiv(N, block_N)
-                                bx = cid % T.ceildiv(N, block_N)
-                                scale1 = 1 / (2.0**0.5)
-                                scale2 = 1.0
-                                scale3 = 0.5
-                                A_shared = T.alloc_shared((block_M, block_N), "float32")
-                                B_local = T.alloc_fragment((block_M, block_N), "float32")
-                                C_local = T.alloc_fragment((block_M, block_N), "float32")
-                                D_local = T.alloc_fragment((block_M, block_N), "float32")
+                        for task_id in T.serial(num_local_tasks):
+                            cid = task_id * num_physical_kernels + kernel_id
+                            by = cid // T.ceildiv(N, block_N)
+                            bx = cid % T.ceildiv(N, block_N)
+                            scale1 = 1 / (2.0**0.5)
+                            scale2 = 1.0
+                            scale3 = 0.5
+                            A_shared = T.alloc_shared((block_M, block_N), "float32")
+                            B_local = T.alloc_fragment((block_M, block_N), "float32")
+                            C_local = T.alloc_fragment((block_M, block_N), "float32")
+                            D_local = T.alloc_fragment((block_M, block_N), "float32")
 
-                                T.copy(A[by * block_M, bx * block_N], A_shared)
+                            T.copy(A[by * block_M, bx * block_N], A_shared)
 
-                                T.vmul(A_shared, scale1, B_local)
-                                T.npuir_verf(B_local, C_local)
-                                T.vadd(C_local, scale2, C_local)
-                                T.vmul(C_local, scale3, C_local)
-                                T.vmul(A_shared, C_local, D_local)
+                            T.vmul(A_shared, scale1, B_local)
+                            T.npuir_verf(B_local, C_local)
+                            T.vadd(C_local, scale2, C_local)
+                            T.vmul(C_local, scale3, C_local)
+                            T.vmul(A_shared, C_local, D_local)
 
-
-                                T.copy(D_local, B[by * block_M, bx * block_N])
+                            T.copy(D_local, B[by * block_M, bx * block_N])
 
                 return gelu_2D
 
@@ -138,6 +140,7 @@ def main():
         log_dir = root_log_dir / shape_str
 
         run_single_shape(shape, log_dir)
+
 
 if __name__ == "__main__":
     main()
