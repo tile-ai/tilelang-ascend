@@ -911,6 +911,70 @@ AICORE PTO_INLINE void wait_intra_block_vec(int32_t flag) {
   wait_intra_block(pipe, flag);
 }
 
+// ============================================================================
+// Merge Sort for PTO backend
+// tmp buffer is passed from caller, MrgSortExecutedNumList is managed
+// internally Each element is a value-index pair: 2 floats per element [value,
+// index]
+// ============================================================================
+
+// 2-way merge sort
+template <typename T, int32_t SrcCols, int32_t DstCols>
+AICORE PTO_INLINE void
+MergeSort(TileUbDataND<T, 1, DstCols, 1, DstCols> &dst,
+          TileUbDataND<T, 1, DstCols, 1, DstCols> &tmp,
+          TileUbDataND<T, 1, SrcCols, 1, SrcCols> &src0,
+          TileUbDataND<T, 1, SrcCols, 1, SrcCols> &src1) {
+
+  pto::MrgSortExecutedNumList executedNumList;
+  pto::TMRGSORT<TileUbDataND<T, 1, DstCols, 1, DstCols>,
+                TileUbDataND<T, 1, DstCols, 1, DstCols>,
+                TileUbDataND<T, 1, SrcCols, 1, SrcCols>,
+                TileUbDataND<T, 1, SrcCols, 1, SrcCols>, false>(
+      dst, executedNumList, tmp, src0, src1);
+  pipe_barrier(PIPE_V);
+}
+
+// 3-way merge sort
+template <typename T, int32_t SrcCols, int32_t DstCols>
+AICORE PTO_INLINE void
+MergeSort(TileUbDataND<T, 1, DstCols, 1, DstCols> &dst,
+          TileUbDataND<T, 1, DstCols, 1, DstCols> &tmp,
+          TileUbDataND<T, 1, SrcCols, 1, SrcCols> &src0,
+          TileUbDataND<T, 1, SrcCols, 1, SrcCols> &src1,
+          TileUbDataND<T, 1, SrcCols, 1, SrcCols> &src2) {
+
+  pto::MrgSortExecutedNumList executedNumList;
+  pto::TMRGSORT<TileUbDataND<T, 1, DstCols, 1, DstCols>,
+                TileUbDataND<T, 1, DstCols, 1, DstCols>,
+                TileUbDataND<T, 1, SrcCols, 1, SrcCols>,
+                TileUbDataND<T, 1, SrcCols, 1, SrcCols>,
+                TileUbDataND<T, 1, SrcCols, 1, SrcCols>, false>(
+      dst, executedNumList, tmp, src0, src1, src2);
+  pipe_barrier(PIPE_V);
+}
+
+// 4-way merge sort
+template <typename T, int32_t SrcCols, int32_t DstCols>
+AICORE PTO_INLINE void
+MergeSort(TileUbDataND<T, 1, DstCols, 1, DstCols> &dst,
+          TileUbDataND<T, 1, DstCols, 1, DstCols> &tmp,
+          TileUbDataND<T, 1, SrcCols, 1, SrcCols> &src0,
+          TileUbDataND<T, 1, SrcCols, 1, SrcCols> &src1,
+          TileUbDataND<T, 1, SrcCols, 1, SrcCols> &src2,
+          TileUbDataND<T, 1, SrcCols, 1, SrcCols> &src3) {
+
+  pto::MrgSortExecutedNumList executedNumList;
+  pto::TMRGSORT<TileUbDataND<T, 1, DstCols, 1, DstCols>,
+                TileUbDataND<T, 1, DstCols, 1, DstCols>,
+                TileUbDataND<T, 1, SrcCols, 1, SrcCols>,
+                TileUbDataND<T, 1, SrcCols, 1, SrcCols>,
+                TileUbDataND<T, 1, SrcCols, 1, SrcCols>,
+                TileUbDataND<T, 1, SrcCols, 1, SrcCols>, false>(
+      dst, executedNumList, tmp, src0, src1, src2, src3);
+  pipe_barrier(PIPE_V);
+}
+
 template <typename T, int32_t Rows, int32_t Cols>
 AICORE PTO_INLINE void transpose(TileUbDataND<T, Rows, Cols, Rows, Cols> &dst,
                                  TileUbDataND<T, Rows, Cols, Rows, Cols> &src,
