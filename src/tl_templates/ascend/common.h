@@ -675,10 +675,10 @@ CATLASS_DEVICE void Sort(const LocalTensor<T> &dst, const LocalTensor<T> &src,
     // Layout in tmp (N = alignedCount, as float elements via ReinterpretCast):
     //   ftmp[0 .. N*2-1]  = bufA  (Sort32 output, merge ping-pong)
     //   ftmp[N*2 .. N*3-1]= indices (uint32_t, reused as bufB after Sort32)
-    //   ftmp[N*3 .. N*4-1]= float_src (Cast destination, reused as bufB after 
+    //   ftmp[N*3 .. N*4-1]= float_src (Cast destination, reused as bufB after
     //   Sort32)
     // After Sort32, [N*2..N*4) becomes bufB for merge.
-    // GatherMask result goes to the free ping-pong buffer; Cast back to half 
+    // GatherMask result goes to the free ping-pong buffer; Cast back to half
     // dst.
     uint32_t N = repeatTimes * 32;
     uint32_t blockNum = repeatTimes;
@@ -713,10 +713,10 @@ CATLASS_DEVICE void Sort(const LocalTensor<T> &dst, const LocalTensor<T> &src,
   uint32_t padCount = alignedCount - actualCount;
   uint32_t blockNum = repeatTimes;
 
-  // For float: bufB has alignedCount*2*4 bytes, indices needs 
-  // alignedCount*4 bytes → fits. 
+  // For float: bufB has alignedCount*2*4 bytes, indices needs
+  // alignedCount*4 bytes → fits.
   // For half:  bufB has alignedCount*2*2 bytes, indices needs
-  // alignedCount*4 bytes → exact fit. 
+  // alignedCount*4 bytes → exact fit.
   // Sort32 writes to bufA (tmp[0..alignedCount*2-1]),
   // no overlap with indices.
   // After Sort32, merge can safely overwrite this area.
@@ -752,7 +752,7 @@ CATLASS_DEVICE void Sort(const LocalTensor<T> &dst, const LocalTensor<T> &src,
       }
       uint64_t masks[2] = {mask0, 0};
       AscendC::Duplicate(src[alignedActual], negInf, masks, (uint8_t)1,
-                        (uint16_t)1, (uint8_t)0);
+                         (uint16_t)1, (uint8_t)0);
     }
     PipeBarrier<PIPE_V>();
   }
@@ -784,7 +784,7 @@ CATLASS_DEVICE void Sort(const LocalTensor<T> &dst, const LocalTensor<T> &src,
       for (uint32_t g = 0; g < numSegs; g += 4) {
         uint32_t groupCount = numSegs - g;
         if (groupCount > 4) {
-          groupCount = 4; 
+          groupCount = 4;
         }
         uint32_t len0 = (g == numSegs - 1) ? lastSegSize : fullSegSize;
         uint32_t len1 = 0, len2 = 0, len3 = 0;
@@ -803,7 +803,7 @@ CATLASS_DEVICE void Sort(const LocalTensor<T> &dst, const LocalTensor<T> &src,
         }
 
         if (groupCount == 1) {
-          AscendC::DataCopy(tmp[writeBase + outOffset], 
+          AscendC::DataCopy(tmp[writeBase + outOffset],
                             tmp[readBase + inOffset], len0 * 2);
         } else {
           AscendC::MrgSort4Info params;
@@ -839,7 +839,7 @@ CATLASS_DEVICE void Sort(const LocalTensor<T> &dst, const LocalTensor<T> &src,
       uint32_t lastGroupCount = numSegs - lastGroupStart;
       uint32_t newLastSegSize = 0;
       for (uint32_t i = 0; i < lastGroupCount; i++) {
-        newLastSegSize += 
+        newLastSegSize +=
             (lastGroupStart + i == numSegs - 1) ? lastSegSize : fullSegSize;
       }
 
@@ -851,7 +851,7 @@ CATLASS_DEVICE void Sort(const LocalTensor<T> &dst, const LocalTensor<T> &src,
   }
 
   // Extract values only from interleaved [v,i] pairs using GatherMask P0101
-  // (This code only runs for float/B32 now; half delegates to Sort<float> 
+  // (This code only runs for float/B32 now; half delegates to Sort<float>
   // above)
   {
     uint32_t interleaveBytes = alignedCount * 2 * sizeof(T);
