@@ -196,7 +196,7 @@ def npu_gemm(A, B, C, init=False):
 
     Aptr = retrieve_ptr(A, "r")
     Bptr = retrieve_ptr(B, "r")
-    Cptr = retrieve_ptr(C, "rw")
+    Cptr = retrieve_ptr(C, "w" if init is True else "rw")
 
     return tir.call_intrin("handle", tir.op.Op.get("tl.ascend_mma"), f"mma<{_dtype(A)}, {_dtype(C)}, {M}, {N}>", Aptr, Bptr, Cptr, init, K)
 

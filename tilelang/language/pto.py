@@ -263,7 +263,7 @@ def gemm_v0(A, B, C, transpose_A=False, transpose_B=False, init=False):
 
     Aptr = _retrieve_ptr(A, "r")
     Bptr = _retrieve_ptr(B, "r")
-    Cptr = _retrieve_ptr(C, "rw")
+    Cptr = _retrieve_ptr(C, "w" if init is True else "rw")
 
     # assert _dtype(A) == _dtype(B), f"gemm A and B dtype mismatch: {_dtype(A)} vs {_dtype(B)}"
     return T.call_intrin(
