@@ -154,6 +154,8 @@ private:
 
   void Sort32Codegen(const CallNode *op, const std::string &op_name);
 
+  void MergeSortCodegen(const CallNode *op, const std::string &op_name);
+
   void TransposeCodegen(const CallNode *op, const std::string &op_name);
 
   void XorCodegen(const CallNode *op, const std::string &op_name);

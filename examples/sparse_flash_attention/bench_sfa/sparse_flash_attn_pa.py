@@ -310,7 +310,7 @@ def sparse_attention_fwd(
                         T.copy(acc_o_ub, acc_o_half)
                         T.set_flag("v", "mte3", 9)
                         T.wait_flag("v", "mte3", 9)
-                        T.copy(acc_o_half, Output[b_i, s_i, H0 + vid * m_base_size_v : H1 + vid * m_base_size_v, :])
+                        T.copy(acc_o_half, Output[b_i, s_i, H0 + vid * m_base_size_v : H0 + (vid + 1) * m_base_size_v, :])
 
     return main_pipelined
 

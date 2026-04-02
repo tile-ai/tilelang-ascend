@@ -4,5 +4,6 @@ UseTab: Never
 IndentWidth: 2
 ColumnLimit: 80
 
+
 Language: Cpp
 Standard: c++17

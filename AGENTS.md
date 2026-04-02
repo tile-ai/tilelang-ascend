@@ -50,6 +50,7 @@
 - ✅ 第二步：查阅 `examples/` 中的同类实现
 - ✅ 第三步：若文档未覆盖，查阅源码 `tilelang/language/ascend_tile.py` · `tilelang/language/ascend.py` · `testing/python/language/`
 - ❌ 禁止：凭直觉编造 API 调用、猜测参数签名
+- ❌ 禁止：`tilelang/language/pto.py` 此文件已废弃，禁止使用
 
 ### 原则 2：从示例入手
 
@@ -165,6 +166,7 @@ export TL_DEBUG=1
 3. 使用 `T.dump_tensor` 检查张量内容
 4. 查看 build 目录中生成的 Ascend C 代码
 5. 参考 [debug-helper](.agents/skills/tilelang-custom-skill/tilelang-debug-helper/SKILL.md) 配置 GDB
+6. 遇到错误时，优先使用 [tilelang-error-fixer](.agents/skills/tilelang-custom-skill/tilelang-error-fixer/SKILL.md) 进行调试
 
 ### 阶段五：编写测试
 
