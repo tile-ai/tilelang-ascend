@@ -1659,7 +1659,7 @@ void CodeGenTileLangNPUIRDEV::EmitCopyMemrefToTensor(
       << "dst with dynamic dimension(s) not supported for UB alloc";
 
   mlir::Value base_ub = CreateStaticLocalUB(
-      ub_alloc_shape, dst_tensor_type_ori.getElementType(), loc);
+      ub_alloc_shape, src_memref_type_ori.getElementType(), loc);
 
   // 4) Create ub_view matching copy rank
   mlir::Value ub_view;
