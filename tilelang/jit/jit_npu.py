@@ -242,7 +242,7 @@ def extract_device_print_code_from_cann():
     ])
 
 
-def generate_npu_wrapper_src(constants, signature, workspace_size, mix_mode, lock_num, lock_ini_val, need_debug):
+def generate_npu_wrapper_src(constants, signature, workspace_size, mix_mode, lock_num, lock_ini_val, need_debug, force_simt_only=False, shared_mem_dynamic_size=0, compile_on_910_95=False, target_support_ffts=True):
     def _ty_to_cpp(ty):
         if ty[0] == "*":
             return "void*"
@@ -513,16 +513,13 @@ static void _launch(const char* kernelName, const void* func, rtStream_t stream,
   // base_ptr offset shape and stride are not used, arbitrarily set for now
   std::string name = "";
   name.append(kernelName);
-  {'auto launch_call = [=]()' if enable_taskqueue else ''} {{
+  {'auto launch_call = [=]() -> rtError_t' if enable_taskqueue else ''} {{
     uint32_t blockNum = gridX * gridY * gridZ;
     {'blockNum = std::min(blockNum, (uint32_t)' + str(num_physical_blocks) + ');' if enable_auto_map_parallel_blocks else ''}
     cce::internal::DebugTunnelData *DTData = cce::internal::DebugTunnel::Open(blockNum);
     rtError_t ret;
-    void *ffts_addr = NULL;
-    uint32_t ffts_len; ret = rtGetC2cCtrlAddr((uint64_t*)&ffts_addr, &ffts_len);
-    if (ret != RT_ERROR_NONE) {{
-      return {'ret' if enable_taskqueue else ''};
-    }}
+    {'void *ffts_addr = NULL; uint32_t ffts_len; ret = rtGetC2cCtrlAddr((uint64_t*)&ffts_addr, &ffts_len);' if target_support_ffts else ''}
+    {'if (ret != RT_ERROR_NONE) {{ return ret; }}' if (target_support_ffts and enable_taskqueue) else 'if (ret != RT_ERROR_NONE) return;' if (target_support_ffts and (not enable_taskqueue)) else ''}
     // stub argument for workspace
     void *syncBlockLock = NULL;
     void *workspace_addr = NULL;
@@ -550,28 +547,35 @@ static void _launch(const char* kernelName, const void* func, rtStream_t stream,
     }}
     ''' if workspace_size > 0 else ''}
     struct __attribute__((packed)) {{
-      void* ffts_addr __attribute__((aligned(8)));
-      void* syncBlockLock __attribute__((aligned(8)));
-      void* workspace_addr __attribute__((aligned(8)));
+      {'void* ffts_addr __attribute__((aligned(8)));' if target_support_ffts else ''}
+      {'void* syncBlockLock __attribute__((aligned(8)));' if not force_simt_only else ''}
+      {'void* workspace_addr __attribute__((aligned(8)));' if not force_simt_only else ''}
       {' '.join(f'{_ty_to_cpp(ty)} arg{i} __attribute__((aligned({4 if ty[0] != "*" and ty[-2:] != "64" else 8})));' for i, ty in signature.items() if i not in constants)}
       {' '.join(f'{_ty_to_cpp(ty)} grid{mark} __attribute__((aligned(4)));' for mark, ty in grid_info.items())}
       void* DTData __attribute__((aligned(8)));
     }} args = {{
-      static_cast<void*>(ffts_addr),
-      static_cast<void*>(syncBlockLock),
-      static_cast<void*>(workspace_addr),
+      {'static_cast<void*>(ffts_addr),' if target_support_ffts else ''}
+      {('static_cast<void*>(syncBlockLock),' if lock_num > 0 else 'nullptr,') if not force_simt_only else ''}
+      {('static_cast<void*>(workspace_addr),' if workspace_size > 0 else 'nullptr,') if not force_simt_only else ''}
       {', '.join(f'static_cast<{_ty_to_cpp(ty)}>(arg{i})' for i, ty in signature.items() if i not in constants)},
       {', '.join(f'static_cast<{_ty_to_cpp(ty)}>(grid{mark})' for mark, ty in grid_info.items())}
       , static_cast<void*>(DTData)
     }};
     {cpp_msprof_call_before_launch}
-    ret = rtKernelLaunch(func, blockNum, static_cast<void*>(&args), sizeof(args), NULL, stream);
+    {f'''
+    rtArgsEx_t argsInfo = {{}};
+    argsInfo.args = static_cast<void*>(&args);
+    argsInfo.argsSize = sizeof(args);
+    rtTaskCfgInfo_t cfgInfo = {{}};
+    cfgInfo.localMemorySize = {shared_mem_dynamic_size};
+    ret = rtKernelLaunchWithFlagV2(func, blockNum, &argsInfo, NULL, stream, 0, &cfgInfo);
+    ''' if compile_on_910_95 and force_simt_only else 'ret = rtKernelLaunch(func, blockNum, static_cast<void*>(&args), sizeof(args), NULL, stream);'}
     void *&stream_ref = const_cast<void*&>(stream);
     cce::internal::DebugTunnel::Close(DTData, stream_ref);
     {cpp_msprof_call_after_launch}
-    {'return ret;' if enable_taskqueue else ''}
+    {'return ret;' if enable_taskqueue else 'ret = rtStreamSynchronize(stream);'}
    }};
-   {'at_npu::native::OpCommand::RunOpApi(name.c_str(), launch_call);' if enable_taskqueue else ''}
+   {'at_npu::native::OpCommand cmd; cmd.Name(name.c_str()).SetCustomHandler(launch_call).Run();' if enable_taskqueue else ''}
   return;
 }}
 
@@ -1109,6 +1113,10 @@ class compiler_npu:
             self.lock_num,
             self.lock_ini_val,
             self.need_debug,
+            self.metadata.get("force_simt_only", False),
+            self.metadata.get("shared_mem_dynamic_size", 0),
+            self.metadata.get("compile_on_910_95", True),
+            self.metadata.get("target_support_ffts", not self.metadata.get("compile_on_910_95", True)),
         )
         self.so_launcher_path = self.make_npu_launcher_stub(
             self.metadata["kernel_name"], self.wrapper_src
@@ -1300,7 +1308,14 @@ class compiler_npu:
         index = 0
 
         # Skip parameters insert by compiler
-        for param in params[3: -6]:
+        # Original (A3): 3 params (ffts_addr, syncBlockLock, workspace)
+        # A5 (910_95/950): 2 params (syncBlockLock, workspace) - ffts_addr is not supported
+        # Detect based on device architecture
+        arch = NPUUtils().get_arch()
+        is_910_95 = "910_95" in arch or "950" in arch
+        compiler_inserted_params = 2 if is_910_95 else 3
+        
+        for param in params[compiler_inserted_params: -6]:
             # Check if the type includes the target type
             found_type = None
             for t_type in target_types:
@@ -1382,12 +1397,22 @@ class compiler_npu:
             # Hot fix for CANN 8.5 ends here
 
             npu_compiler_path = get_npucompiler_path()
+            npu_utils = NPUUtils()
+            env_arch = os.getenv("TRITON_ASCEND_ARCH", "")
+            if env_arch:
+                target_arch = env_arch
+            else:
+                target_arch = npu_utils.get_arch()
             # TileLang Ascend JIT Runtime now follows Triton JIT style.
             # bishengir-compile --enable-triton-kernel-compile=true make sure the way.
             _compile_option_list = [
+                f"--target={target_arch}",
                 "--enable-auto-multi-buffer=true",
+                "--disable-ffts",
                 "--enable-triton-kernel-compile=true",
-                "--enable-hivm-compile=true"
+                "--enable-hivm-compile=true",
+                "--enable-vf-merge-level=1",
+                "--enable-hfusion-compile=true"
             ]
 
             TILELANG_ASCEND_MODE = os.environ.get('TILELANG_ASCEND_MODE')
@@ -1395,6 +1420,13 @@ class compiler_npu:
                 _compile_option_list.append("--disable-hivm-tensor-compile=true")
             elif TILELANG_ASCEND_MODE.lower().strip() in ['expert', 'exp', 'e']:
                 _compile_option_list.append("--disable-hivm-tensor-compile=true")
+
+            # Add 910_95/950 specific compile options
+            arch = NPUUtils().get_arch()
+            is_910_95 = "910_95" in arch or "950" in arch
+            if is_910_95:
+                _compile_option_list.append("--enable-auto-bind-sub-block=true")
+                print(f"Detected 910_95/950 device, target={target_arch}, enabling auto-bind-sub-block")
 
             cmd_list = (
                 [npu_compiler_path, ttadapter_path]
