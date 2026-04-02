@@ -1102,9 +1102,10 @@ mlir::Value CodeGenTileLangNPUIRDEV::InsertSlice(
 }
 
 // Helper to handle slice insertion with optional type casting
-mlir::Value CodeGenTileLangNPUIRDEV::InsertSliceWithCast(
-    mlir::Value src_slice, mlir::Value dst, const SliceRange& dstR,
-    mlir::Location loc) {
+mlir::Value CodeGenTileLangNPUIRDEV::InsertSliceWithCast(mlir::Value src_slice,
+                                                         mlir::Value dst,
+                                                         const SliceRange &dstR,
+                                                         mlir::Location loc) {
   auto srcElemTy = mlir::getElementTypeOrSelf(src_slice.getType());
   auto dstElemTy = mlir::getElementTypeOrSelf(dst.getType());
 

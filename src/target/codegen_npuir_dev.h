@@ -57,7 +57,7 @@ using namespace mlir;
 // For using MLIR APIs to support developer codegen here
 
 namespace tvm {
-namespace tl{
+namespace tl {
 struct AscendCopy;
 }
 namespace codegen {
@@ -130,7 +130,7 @@ public:
   */
   struct PrimExprMapKey {
     tvm::PrimExpr expr;
-    const mlir::Block* block;
+    const mlir::Block *block;
 
     bool operator==(const PrimExprMapKey &key) const {
       // Use StructuralEqual instead of pointer comparison
@@ -147,16 +147,17 @@ public:
     }
   };
   // map to restrict the creation of duplicated nodes in MLIR
-  std::unordered_map<PrimExprMapKey, mlir::Value, PrimExprMapKeyHash> prim_expr_map;
+  std::unordered_map<PrimExprMapKey, mlir::Value, PrimExprMapKeyHash>
+      prim_expr_map;
 
   /*
   Using composite key for mlir_value_map consisting of mlir::Value and Block
-  Two mlir::Value are treated equal only if they are similar and are in same scope
-  Block keeps scope of mlir::Value
+  Two mlir::Value are treated equal only if they are similar and are in same
+  scope Block keeps scope of mlir::Value
   */
   struct MLIRValueMapKey {
     mlir::Value value;
-    const mlir::Block* block;
+    const mlir::Block *block;
     // check if both value and scope are same
     bool operator==(const MLIRValueMapKey &key) const {
       return value == key.value && block == key.block;
@@ -169,8 +170,10 @@ public:
       return llvm::hash_combine(key.value.getAsOpaquePointer(), key.block);
     }
   };
-  // map to restrict the creation of duplicated nodes in MLIR (using MLIR value as key)
-  std::unordered_map<MLIRValueMapKey, mlir::Value, MMLIRValueKeyHash> mlir_value_map;
+  // map to restrict the creation of duplicated nodes in MLIR (using MLIR value
+  // as key)
+  std::unordered_map<MLIRValueMapKey, mlir::Value, MMLIRValueKeyHash>
+      mlir_value_map;
 
   // Get current function name
   String GetCurrentFunctionName();
@@ -207,7 +210,7 @@ protected:
   std::unique_ptr<arith::Analyzer> analyzer_;
   // set of var that are not restricted(can alias)
   std::unordered_set<const VarNode *> alias_var_set_;
-  // Get variable value 
+  // Get variable value
   mlir::Value GetVarValue(const VarNode *v) const;
   mlir::Value GetVarValue(const CallNode *region_node) const;
   mlir::Value GetVarValue(const Buffer &buffer_data) const;
@@ -220,15 +223,14 @@ protected:
   // Delete variable value layer
   void DeleteVarLayer();
   // Get the corresponding thread index
-  template <typename T>
-  mlir::Value GetAndCastIndexOp(const IterVar iv);
+  template <typename T> mlir::Value GetAndCastIndexOp(const IterVar iv);
   std::vector<int64_t> GetStrideFromShapeAPI(Array<tvm::PrimExpr> shape);
   // Collect all variables defined outside the loop body
-  void CollectVarsUsedInBodyButDefinedOutside(const ForNode *op, 
-      std::vector<const VarNode*>& loop_carried_vars);
+  void CollectVarsUsedInBodyButDefinedOutside(
+      const ForNode *op, std::vector<const VarNode *> &loop_carried_vars);
   // Collect all variables defined outside the if block
-  void CollectVarsUsedInBodyButDefinedOutside(const IfThenElseNode* op,
-      std::vector<const VarNode*>& if_carried_vars);
+  void CollectVarsUsedInBodyButDefinedOutside(
+      const IfThenElseNode *op, std::vector<const VarNode *> &if_carried_vars);
 
 private:
   mlir::Value GetEventID(PrimExpr id);
@@ -268,9 +270,12 @@ private:
   void BarrierCodegen(const CallNode *op);
   void VselectCodegen(const CallNode *op);
   template <typename T, typename U>
-  mlir::Value BinaryOpCodegen(const PrimExprNode *op, U mode, mlir::Value lhs, mlir::Value rhs);
-  mlir::Value NeedGenInsertSlice(Buffer buffer_data, Array<Range> range, mlir::Value src);
-  mlir::Value ReshapeCastAndInsertSlice(mlir::Value tensor, mlir::Value dst, Array<Range> dst_range); 
+  mlir::Value BinaryOpCodegen(const PrimExprNode *op, U mode, mlir::Value lhs,
+                              mlir::Value rhs);
+  mlir::Value NeedGenInsertSlice(Buffer buffer_data, Array<Range> range,
+                                 mlir::Value src);
+  mlir::Value ReshapeCastAndInsertSlice(mlir::Value tensor, mlir::Value dst,
+                                        Array<Range> dst_range);
   // returns HIVM address space against given address space
   mlir::hivm::AddressSpace GetHIVMAddressSpace(String address_space);
   std::vector<long int> GetShape(Array<PrimExpr> extents);
@@ -284,89 +289,81 @@ private:
   mlir::Value GenExtractSliceFromRegion(Buffer buffer_data, Array<Range> range);
   mlir::Value CreateIndexCastOp(mlir::Value src);
   std::pair<bool, mlir::Value> CheckMLIRValueMap(mlir::Value val);
-  std::pair<bool, mlir::Value> CheckPrimExprMap(const PrimExprNode * op);
-  void UpdatePrimExprMap(const PrimExprNode * key, mlir::Value val);
-  void UpdateMLIRValueMap(const mlir::Value key,  mlir::Value val);
+  std::pair<bool, mlir::Value> CheckPrimExprMap(const PrimExprNode *op);
+  void UpdatePrimExprMap(const PrimExprNode *key, mlir::Value val);
+  void UpdateMLIRValueMap(const mlir::Value key, mlir::Value val);
 
   // === helpers for ascend_copy lowering (member-functionized) ===
-  mlir::Value CreateCastIfTypeMismatch(mlir::Value src_value, mlir::Value dst_value);
+  mlir::Value CreateCastIfTypeMismatch(mlir::Value src_value,
+                                       mlir::Value dst_value);
   mlir::Value ReshapeTensorImpl(mlir::Value src,
                                 llvm::ArrayRef<int64_t> dstShapeStatic,
                                 llvm::ArrayRef<mlir::OpFoldResult> dstShapeOFR);
-  mlir::Value MaybeReshapeTensorByDstSize(mlir::Value src, llvm::ArrayRef<mlir::OpFoldResult> sizes);
-  mlir::Value ReshapeTensorWithTensorReshape(mlir::Value src, llvm::ArrayRef<mlir::OpFoldResult> dstSizes);
-  std::tuple<SmallVector<mlir::OpFoldResult>, 
-             SmallVector<mlir::OpFoldResult>, 
-             SmallVector<mlir::OpFoldResult>> 
-  CreateOpFoldResultArray(const Array<Range>& range);
-  mlir::Value InsertSlice(
-      mlir::Value src_slice, 
-      mlir::Value dst_tensor, 
-      llvm::SmallVector<mlir::OpFoldResult>& dst_offsets,
-      llvm::SmallVector<mlir::OpFoldResult>& dst_sizes,
-      llvm::SmallVector<mlir::OpFoldResult>& dst_strides);
+  mlir::Value
+  MaybeReshapeTensorByDstSize(mlir::Value src,
+                              llvm::ArrayRef<mlir::OpFoldResult> sizes);
+  mlir::Value
+  ReshapeTensorWithTensorReshape(mlir::Value src,
+                                 llvm::ArrayRef<mlir::OpFoldResult> dstSizes);
+  std::tuple<SmallVector<mlir::OpFoldResult>, SmallVector<mlir::OpFoldResult>,
+             SmallVector<mlir::OpFoldResult>>
+  CreateOpFoldResultArray(const Array<Range> &range);
+  mlir::Value InsertSlice(mlir::Value src_slice, mlir::Value dst_tensor,
+                          llvm::SmallVector<mlir::OpFoldResult> &dst_offsets,
+                          llvm::SmallVector<mlir::OpFoldResult> &dst_sizes,
+                          llvm::SmallVector<mlir::OpFoldResult> &dst_strides);
   struct SliceRange {
     llvm::SmallVector<mlir::OpFoldResult> offs;
     llvm::SmallVector<mlir::OpFoldResult> sizes;
     llvm::SmallVector<mlir::OpFoldResult> strides;
   };
-  mlir::Value InsertSliceWithCast(
-      mlir::Value src_slice,
-      mlir::Value dst_tensor,
-      const SliceRange& dstR,
-      mlir::Location loc);
+  mlir::Value InsertSliceWithCast(mlir::Value src_slice, mlir::Value dst_tensor,
+                                  const SliceRange &dstR, mlir::Location loc);
   struct CollapsedDims {
-    llvm::SmallVector<mlir::OpFoldResult> sizes;   // after dropping static-1 dims
-    llvm::SmallVector<int64_t> projected;          // same rank as sizes; kDynamic allowed
-    llvm::SmallVector<unsigned> keptIdx;           // kept indices from original rank
+    llvm::SmallVector<mlir::OpFoldResult> sizes; // after dropping static-1 dims
+    llvm::SmallVector<int64_t>
+        projected;                       // same rank as sizes; kDynamic allowed
+    llvm::SmallVector<unsigned> keptIdx; // kept indices from original rank
   };
   // Entry dispatch
-  void EmitCopyMemrefToTensor(
-      const tvm::tl::AscendCopy& npuirop,
-      mlir::Value src, mlir::Value dst,
-      const SliceRange& srcR, const SliceRange& dstR,
-      mlir::Location loc);
-  void EmitCopyTensorToMemref(
-      const tvm::tl::AscendCopy& npuirop,
-      mlir::Value src, mlir::Value dst,
-      const SliceRange& srcR, const SliceRange& dstR,
-      mlir::Location loc);
-  void EmitCopyTensorToTensor(
-      const tvm::tl::AscendCopy& npuirop,
-      mlir::Value src, mlir::Value dst,
-      const SliceRange& srcR, const SliceRange& dstR,
-      mlir::Location loc);
+  void EmitCopyMemrefToTensor(const tvm::tl::AscendCopy &npuirop,
+                              mlir::Value src, mlir::Value dst,
+                              const SliceRange &srcR, const SliceRange &dstR,
+                              mlir::Location loc);
+  void EmitCopyTensorToMemref(const tvm::tl::AscendCopy &npuirop,
+                              mlir::Value src, mlir::Value dst,
+                              const SliceRange &srcR, const SliceRange &dstR,
+                              mlir::Location loc);
+  void EmitCopyTensorToTensor(const tvm::tl::AscendCopy &npuirop,
+                              mlir::Value src, mlir::Value dst,
+                              const SliceRange &srcR, const SliceRange &dstR,
+                              mlir::Location loc);
   // Small utilities
-  template <typename RangeT>
-  SliceRange MakeSliceRange(const RangeT& range);
-  mlir::Value CreateStaticLocalUB(
-      llvm::ArrayRef<int64_t> shape,
-      mlir::Type elem_type,
-      mlir::Location loc);
+  template <typename RangeT> SliceRange MakeSliceRange(const RangeT &range);
+  mlir::Value CreateStaticLocalUB(llvm::ArrayRef<int64_t> shape,
+                                  mlir::Type elem_type, mlir::Location loc);
   bool IsStaticOneOFR(mlir::OpFoldResult ofr) const;
   // Collapse static-1 dims with an optional rank limit. When maxRank < 0,
   // removes all static-1 dims.
-  CollapsedDims CollapseStaticOneDims(
-      llvm::ArrayRef<mlir::OpFoldResult> fullSizes,
-      int64_t maxRank = -1);
+  CollapsedDims
+  CollapseStaticOneDims(llvm::ArrayRef<mlir::OpFoldResult> fullSizes,
+                        int64_t maxRank = -1);
   mlir::Value CreateRankReducedSubviewFromBaseRank(
       mlir::Value base,
-      llvm::ArrayRef<mlir::OpFoldResult> fullOffsets,  // len == baseRank
-      llvm::ArrayRef<mlir::OpFoldResult> fullSizes,    // len == baseRank
-      llvm::ArrayRef<mlir::OpFoldResult> fullStrides,  // len == baseRank
-      llvm::ArrayRef<int64_t> projectedReducedShape,   // result rank
+      llvm::ArrayRef<mlir::OpFoldResult> fullOffsets, // len == baseRank
+      llvm::ArrayRef<mlir::OpFoldResult> fullSizes,   // len == baseRank
+      llvm::ArrayRef<mlir::OpFoldResult> fullStrides, // len == baseRank
+      llvm::ArrayRef<int64_t> projectedReducedShape,  // result rank
       mlir::Location loc);
   mlir::Value CreateRankReducedExtractSlice(
-      mlir::Value base,
-      llvm::ArrayRef<mlir::OpFoldResult> fullOffsets,
+      mlir::Value base, llvm::ArrayRef<mlir::OpFoldResult> fullOffsets,
       llvm::ArrayRef<mlir::OpFoldResult> fullSizes,
       llvm::ArrayRef<mlir::OpFoldResult> fullStrides,
-      llvm::ArrayRef<int64_t> projectedReducedShape,
-      mlir::Location loc);
-  mlir::Value CreateSameRankDynamicSubview(
-      mlir::Value base,
-      llvm::ArrayRef<mlir::OpFoldResult> sizesSameRank,
-      mlir::Location loc);
+      llvm::ArrayRef<int64_t> projectedReducedShape, mlir::Location loc);
+  mlir::Value
+  CreateSameRankDynamicSubview(mlir::Value base,
+                               llvm::ArrayRef<mlir::OpFoldResult> sizesSameRank,
+                               mlir::Location loc);
   llvm::SmallVector<int64_t> ComputeUBAllocShapeFromDstRange(
       mlir::RankedTensorType dst_tensor_type_ori,
       llvm::ArrayRef<mlir::OpFoldResult> dstR_sizes);
@@ -384,27 +381,26 @@ private:
   std::string current_function_name;
 
 private:
-  class LoopCarriedVarCollector
-      : public tir::StmtExprVisitor {
+  class LoopCarriedVarCollector : public tir::StmtExprVisitor {
   private:
-    CodeGenTileLangNPUIRDEV* outer_;
-    std::vector<const VarNode*>& loop_carried_vars_;
+    CodeGenTileLangNPUIRDEV *outer_;
+    std::vector<const VarNode *> &loop_carried_vars_;
     std::unordered_set<const VarNode *> vars_set_;
 
-    void CheckVar(const tir::VarNode* var_node);
-    
+    void CheckVar(const tir::VarNode *var_node);
+
   public:
-    LoopCarriedVarCollector(CodeGenTileLangNPUIRDEV* outer, 
-                            std::vector<const VarNode*>& loop_carried_vars)
+    LoopCarriedVarCollector(CodeGenTileLangNPUIRDEV *outer,
+                            std::vector<const VarNode *> &loop_carried_vars)
         : outer_(outer), loop_carried_vars_(loop_carried_vars) {}
-    
-    using tir::StmtExprVisitor::VisitStmt;
+
     using tir::StmtExprVisitor::VisitExpr;
-    
-    void VisitExpr_(const tir::CallNode* call) override;
-    void VisitStmt_(const tir::BufferStoreNode* op) override;
-    
-    void VisitStmt_(const tir::ForNode* for_node) override {
+    using tir::StmtExprVisitor::VisitStmt;
+
+    void VisitExpr_(const tir::CallNode *call) override;
+    void VisitStmt_(const tir::BufferStoreNode *op) override;
+
+    void VisitStmt_(const tir::ForNode *for_node) override {
       VisitStmt(for_node->body);
     }
   };
