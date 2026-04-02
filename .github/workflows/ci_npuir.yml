@@ -3,6 +3,7 @@ name: AscendNPU-IR CI
 on:
   pull_request:
     branches: [npuir]
+    types: [opened, synchronize, reopened]
   issue_comment:
     types: [created]
   release:
@@ -10,6 +11,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read
 
 jobs:
   check-trigger:
@@ -58,6 +60,10 @@ jobs:
       checkout-ref: refs/pull/${{ needs.check-trigger.outputs.pr-number }}/merge
 
   test-npuir:
+    if: >-
+      github.event_name == 'issue_comment' &&
+      github.event.issue.pull_request &&
+      contains(github.event.comment.body, 'TilelangFullTest')
     needs: [check-trigger, build]
     runs-on: linux-aarch64-a3-2
     container:
