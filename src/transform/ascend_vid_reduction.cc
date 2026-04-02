@@ -18,6 +18,9 @@
 #include "../op/builtin.h"
 #include "./common/collector.h"
 
+#include <set>
+#include <string>
+
 namespace tvm {
 namespace tl {
 
@@ -173,19 +176,150 @@ private:
     return imm->value == 1;
   }
 
+  // Extract buffer from access_ptr call argument
+  Buffer ExtractBufferFromArg(const PrimExpr& arg) const {
+    if (const CallNode* call = arg.as<CallNode>()) {
+      if (call->op.same_as(builtin::tvm_access_ptr())) {
+        // access_ptr args: [access_mask, buffer_data, offset, extent, ...]
+        // buffer_data is usually at index 1
+        if (call->args.size() >= 2) {
+          if (const VarNode* var = call->args[1].as<VarNode>()) {
+            // Find buffer by data var in origin_to_new_buffer_
+            for (const auto& pair : origin_to_new_buffer_) {
+              if (pair.first->data.get() == var) {
+                return pair.first;
+              }
+            }
+          }
+        }
+      }
+    }
+    return Buffer();
+  }
+
+  // Check if any buffer in the call args is in origin_to_new_buffer_
+  bool HasModifiedBuffer(const CallNode* op) const {
+    for (const PrimExpr& arg : op->args) {
+      Buffer buf = ExtractBufferFromArg(arg);
+      if (buf.defined()) {
+        auto it = origin_to_new_buffer_.find(buf);
+        if (it != origin_to_new_buffer_.end()) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  // Check if the operation is a tile op that needs size modification
+  // Only include operations whose last argument is size calculated from buffer shape
+  // and has size_0 == size_1 assertion
+  bool IsTileOp(const std::string& op_name) const {
+    static const std::set<std::string> tile_ops = {
+      // binary_op: size = math.prod(dst_extent), assert size_0 == size_1
+      "tl.ascend_add", "tl.ascend_adds",
+      "tl.ascend_mul", "tl.ascend_muls",
+      "tl.ascend_sub", "tl.ascend_subs",
+      "tl.ascend_div", "tl.ascend_divs",
+      "tl.ascend_max", "tl.ascend_maxs",
+      "tl.ascend_min", "tl.ascend_mins",
+      "tl.ascend_bitwise_and", "tl.ascend_bitwise_or",
+      // unary_op: size = math.prod(dst_extent), assert size_0 == size_1
+      "tl.ascend_exp", "tl.ascend_ln",
+      "tl.ascend_abs", "tl.ascend_reciprocal",
+      "tl.ascend_sqrt", "tl.ascend_rsqrt",
+      "tl.ascend_relu", "tl.ascend_bitwise_not",
+      // scalar_op: size = math.prod(src0_extent), assert size_0 == size_2
+      "tl.ascend_leaky_relu", "tl.ascend_axpy",
+      // bitwise_shift: size = math.prod(src0_extent), assert size_0 == size_2
+      "tl.ascend_bitwise_lshift", "tl.ascend_bitwise_rshift",
+      // compare: dst_size = math.prod(src0_extent)
+      "tl.ascend_compare", "tl.ascend_compare_scalar",
+      // sin/cos: size = math.prod(src_extent), assert size_0 == size_2
+      "tl.ascend_sin", "tl.ascend_cos", "tl.ascend_fill"
+    };
+    return tile_ops.find(op_name) != tile_ops.end();
+  }
+
+  // Modify the last argument (size) of tile operations
+  PrimExpr ModifyTileOpSize(const CallNode* op) {
+    Call tile_call = GetRef<Call>(op);
+    Array<PrimExpr> new_args = tile_call->args;
+    
+    // Only modify size if the op involves modified buffer
+    if (!HasModifiedBuffer(op)) {
+      return IRMutatorWithAnalyzer::VisitExpr_(op);
+    }
+    
+    size_t last_idx = new_args.size() - 1;
+    PrimExpr last_arg = new_args[last_idx];
+    
+    PrimExpr simplified = analyzer_->Simplify(last_arg);
+    if (const IntImmNode* int_imm = simplified.as<IntImmNode>()) {
+      int64_t new_value = int_imm->value / threads_cnt_;
+      if (new_value < 1) new_value = 1;
+      new_args.Set(last_idx, IntImm(last_arg.dtype(), new_value));
+    } else {
+      new_args.Set(last_idx, VisitExpr(indexdiv(last_arg, threads_cnt_)));
+    }
+    
+    for (size_t i = 0; i < last_idx; ++i) {
+      new_args.Set(i, VisitExpr(new_args[i]));
+    }
+    
+    return Call(tile_call->dtype, tile_call->op, new_args, tile_call->span);
+  }
+
   PrimExpr VisitExpr_(const CallNode* op) final {
-    // Check if the number of vector cores (v-cores) is 2 
     if (threads_cnt_ != 2) {
       return IRMutatorWithAnalyzer::VisitExpr_(op);
     }
 
-    // Filter out the tl.ascend_copy operator
+    // Handle tvm_access_ptr: modify extent if buffer is in origin_to_new_buffer_
+    if (op->op.same_as(builtin::tvm_access_ptr())) {
+      ICHECK_EQ(op->args.size(), 5U);
+      const VarNode* buffer_var = op->args[1].as<VarNode>();
+      
+      // Check if this buffer is in origin_to_new_buffer_
+      Buffer matched_buffer;
+      for (const auto& pair : origin_to_new_buffer_) {
+        if (pair.first->data.get() == buffer_var) {
+          matched_buffer = pair.first;
+          break;
+        }
+      }
+      
+      if (matched_buffer.defined()) {
+        // Modify extent (args[3]) by dividing by threads_cnt_
+        PrimExpr extent = op->args[3];
+        PrimExpr simplified = analyzer_->Simplify(extent);
+        PrimExpr new_extent;
+        if (const IntImmNode* int_imm = simplified.as<IntImmNode>()) {
+          int64_t new_value = int_imm->value / threads_cnt_;
+          if (new_value < 1) new_value = 1;
+          new_extent = IntImm(extent.dtype(), new_value);
+        } else {
+          new_extent = VisitExpr(indexdiv(extent, threads_cnt_));
+        }
+        
+        Array<PrimExpr> new_args = op->args;
+        new_args.Set(3, new_extent);
+        return Call(op->dtype, op->op, new_args, op->span);
+      }
+      return IRMutatorWithAnalyzer::VisitExpr_(op);
+    }
+
     const OpNode* call_op = op->op.as<OpNode>();
     if (!call_op) {
       std::cerr << "[info]<callnode>: call_op is nullptr\n";
       return IRMutatorWithAnalyzer::VisitExpr_(op);
     }
     std::string op_name = call_op->name;
+    
+    if (IsTileOp(op_name)) {
+      return ModifyTileOpSize(op);
+    }
+    
     if (op_name != "tl.ascend_copy") {
       return IRMutatorWithAnalyzer::VisitExpr_(op);
     }
