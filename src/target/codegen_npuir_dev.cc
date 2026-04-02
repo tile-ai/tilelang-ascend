@@ -2288,16 +2288,26 @@ void CodeGenTileLangNPUIRDEV::VAtomicAddCodegen(const CallNode *op) {
 
 void CodeGenTileLangNPUIRDEV::VgatherCodegen(const CallNode *op) {
   tvm::tl::NpuirGather npuirop(op->args, this->vmap);
-  Value src = GenExtractSliceFromRegion(npuirop.src, npuirop.src_range);
-  Value dst = GenExtractSliceFromRegion(npuirop.dst, npuirop.dst_range);
+  mlir::Value src = GenExtractSliceFromRegion(npuirop.src, npuirop.src_range);
+  mlir::Value dst = GetVarValue(npuirop.dst);
   Value indices =
       GenExtractSliceFromRegion(npuirop.indices, npuirop.indices_range);
-  mlir::Type dst_type = dst.getType();
-  mlir::TypeRange result_tensors(&dst_type, 1);
 
+  mlir::Value insertBase =
+      NeedGenInsertSlice(npuirop.dst, npuirop.dst_range, src);
+  bool needInsertSlice = (insertBase != GetVarValue(npuirop.dst));
+
+  mlir::Value gatherOutput;
   auto gatherOp = builder.create<mlir::hivm::VGatherOp>(
-      builder.getUnknownLoc(), result_tensors, src, indices, dst);
-  SetVarValue(npuirop.dst, gatherOp->getResult(0));
+      builder.getUnknownLoc(), mlir::TypeRange{insertBase.getType()}, src,
+      indices, dst);
+  gatherOutput = gatherOp->getResult(0);
+
+  mlir::Value result =
+      needInsertSlice
+          ? ReshapeCastAndInsertSlice(gatherOutput, dst, npuirop.dst_range)
+          : gatherOutput;
+  SetVarValue(npuirop.dst, result);
 }
 
 void CodeGenTileLangNPUIRDEV::VtransposeCodegen(const CallNode *op) {
