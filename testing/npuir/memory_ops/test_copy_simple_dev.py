@@ -214,4 +214,7 @@ def test_copy_implicit_cast_dev(dtype, mid_dtype):
 
     kernel(input_tensor, output_tensor)
 
-    assert_close(output_tensor.cpu(), input_tensor.cpu(), dtype=dtype)
+    expected_tensor = input_tensor.to(getattr(torch, mid_dtype)).to(
+        getattr(torch, dtype)
+    )
+    assert_close(output_tensor.cpu(), expected_tensor.cpu(), dtype=dtype)
