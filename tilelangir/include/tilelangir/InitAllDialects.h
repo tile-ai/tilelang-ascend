@@ -25,7 +25,7 @@ inline void registerAllDialects(mlir::DialectRegistry &registry) {
 /// context.
 inline void registerAllDialects(mlir::MLIRContext &context) {
   mlir::DialectRegistry registry;
-  tilelangir::registerAllDialects(registry);
+  ::tilelangir::registerAllDialects(registry);
   context.appendDialectRegistry(registry);
 }
 

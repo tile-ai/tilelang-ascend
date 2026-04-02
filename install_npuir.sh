@@ -142,7 +142,7 @@ if [ -z "$BISHENGIR_PATH" ]; then
     ./build-tools/build.sh --c-compiler clang --cxx-compiler clang++ \
     --add-cmake-options="-DCMAKE_LINKER=lld -DLLVM_ENABLE_LLD=ON -DLLVM_ENABLE_RTTI=ON" --build-type Release -j 96 --enable-assertion \
     --disable-werror --disable-mlir-werror --disable-bishengir-werror --build-triton \
-    --build ./build   --apply-patches
+    --build ./build   --apply-patches --python-binding
     BISHENGIR_PATH="./3rdparty/AscendNPU-IR-Dev/build/install"
     popd
 fi

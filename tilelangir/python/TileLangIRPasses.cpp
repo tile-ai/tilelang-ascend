@@ -76,7 +76,7 @@ struct RegisterPassesOnLoad {
   RegisterPassesOnLoad() {
     mlir::registerAllPasses();
     bishengir::registerAllPasses();
-    tilelangir::registerAllPasses();
+    ::tilelangir::registerAllPasses();
   }
 } registerPassesOnLoad;
 } // namespace
@@ -108,7 +108,7 @@ struct PassPipeline {
 
   std::string run(const std::string &mlir_str) const {
     mlir::DialectRegistry registry;
-    tilelangir::python::populateDialectRegistry(registry);
+    ::tilelangir::python::populateDialectRegistry(registry);
 
     mlir::MLIRContext context(registry);
     context.allowUnregisteredDialects();
