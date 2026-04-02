@@ -1101,6 +1101,44 @@ mlir::Value CodeGenTileLangNPUIRDEV::InsertSlice(
   return insertOp.getResult();
 }
 
+// Helper to handle slice insertion with optional type casting
+mlir::Value CodeGenTileLangNPUIRDEV::InsertSliceWithCast(
+    mlir::Value src_slice, mlir::Value dst, const SliceRange& dstR,
+    mlir::Location loc) {
+  auto srcElemTy = mlir::getElementTypeOrSelf(src_slice.getType());
+  auto dstElemTy = mlir::getElementTypeOrSelf(dst.getType());
+
+  if (srcElemTy == dstElemTy) {
+    return InsertSlice(
+        src_slice, dst,
+        const_cast<llvm::SmallVector<mlir::OpFoldResult> &>(dstR.offs),
+        const_cast<llvm::SmallVector<mlir::OpFoldResult> &>(dstR.sizes),
+        const_cast<llvm::SmallVector<mlir::OpFoldResult> &>(dstR.strides));
+  }
+
+  // Type mismatch path: use intermediate empty tensor of rank D to avoid rank
+  // mismatch in backend vcast fusion
+  auto dstTy = dst.getType().cast<mlir::RankedTensorType>();
+  auto shadowTy = mlir::RankedTensorType::get(dstTy.getShape(), srcElemTy);
+
+  llvm::SmallVector<mlir::Value> dynamicDims;
+  for (int64_t i = 0; i < dstTy.getRank(); ++i) {
+    if (dstTy.isDynamicDim(i)) {
+      dynamicDims.push_back(builder.create<mlir::tensor::DimOp>(loc, dst, i));
+    }
+  }
+  mlir::Value shadow_empty =
+      builder.create<mlir::tensor::EmptyOp>(loc, shadowTy, dynamicDims);
+
+  mlir::Value inserted = InsertSlice(
+      src_slice, shadow_empty,
+      const_cast<llvm::SmallVector<mlir::OpFoldResult> &>(dstR.offs),
+      const_cast<llvm::SmallVector<mlir::OpFoldResult> &>(dstR.sizes),
+      const_cast<llvm::SmallVector<mlir::OpFoldResult> &>(dstR.strides));
+
+  return CreateCastIfTypeMismatch(inserted, dst);
+}
+
 // Smart reshape tensor using expand_shape or collapse_shape when possible,
 // falling back to collapse_shape + expand_shape only when necessary.
 //
@@ -1666,8 +1704,6 @@ void CodeGenTileLangNPUIRDEV::EmitCopyMemrefToTensor(
   auto ubTy = base_ub.getType().cast<mlir::MemRefType>();
 
   if ((int64_t)copy_sizes.size() == ubTy.getRank()) {
-    // When shape is static and matches alloc shape (offsets are 0), skip
-    // subview
     if (OpFoldResultsEqualStaticShape(copy_sizes, ub_alloc_shape)) {
       ub_view = base_ub;
     } else {
@@ -1709,20 +1745,10 @@ void CodeGenTileLangNPUIRDEV::EmitCopyMemrefToTensor(
   mlir::Value loaded_tensor = builder.create<mlir::bufferization::ToTensorOp>(
       loc, ub_view, /*restrict=*/true, /*writable=*/false);
 
-  // 7) Type Cast (skip reshape - let InsertSlice handle rank difference to
-  // avoid
-  //    expand_shape failures on strided memrefs from subview)
-  mlir::Value casted_tensor = CreateCastIfTypeMismatch(loaded_tensor, dst);
+  // 7) Insert slice with optional cast
+  mlir::Value result = InsertSliceWithCast(loaded_tensor, dst, dstR, loc);
 
-  // 8) InsertSlice - tensor.insert_slice can handle source rank < dest rank,
-  //    using dstR.sizes to specify the slice shape in the destination.
-  mlir::Value result = InsertSlice(
-      casted_tensor, dst,
-      const_cast<llvm::SmallVector<mlir::OpFoldResult> &>(dstR.offs),
-      const_cast<llvm::SmallVector<mlir::OpFoldResult> &>(dstR.sizes),
-      const_cast<llvm::SmallVector<mlir::OpFoldResult> &>(dstR.strides));
-
-  // 9) SetVarValue
+  // 8) SetVarValue
   SetVarValue(npuirop.dst, result);
 }
 
@@ -1795,13 +1821,8 @@ void CodeGenTileLangNPUIRDEV::EmitCopyTensorToTensor(
   mlir::Value src_slice = CreateRankReducedExtractSlice(
       src, srcR.offs, srcR.sizes, srcR.strides, srcC.projected, loc);
 
-  mlir::Value casted_tensor = CreateCastIfTypeMismatch(src_slice, dst);
-
-  mlir::Value result = InsertSlice(
-      casted_tensor, dst,
-      const_cast<llvm::SmallVector<mlir::OpFoldResult> &>(dstR.offs),
-      const_cast<llvm::SmallVector<mlir::OpFoldResult> &>(dstR.sizes),
-      const_cast<llvm::SmallVector<mlir::OpFoldResult> &>(dstR.strides));
+  // Insert slice with optional cast
+  mlir::Value result = InsertSliceWithCast(src_slice, dst, dstR, loc);
 
   SetVarValue(npuirop.dst, result);
 }

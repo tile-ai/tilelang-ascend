@@ -310,6 +310,11 @@ private:
     llvm::SmallVector<mlir::OpFoldResult> sizes;
     llvm::SmallVector<mlir::OpFoldResult> strides;
   };
+  mlir::Value InsertSliceWithCast(
+      mlir::Value src_slice,
+      mlir::Value dst_tensor,
+      const SliceRange& dstR,
+      mlir::Location loc);
   struct CollapsedDims {
     llvm::SmallVector<mlir::OpFoldResult> sizes;   // after dropping static-1 dims
     llvm::SmallVector<int64_t> projected;          // same rank as sizes; kDynamic allowed
