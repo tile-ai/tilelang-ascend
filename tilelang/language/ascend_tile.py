@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 import tilelang.language as T
 from tvm.tir import PrimExpr, Buffer, BufferRegion, BufferLoad, Call
 from tvm import tir
@@ -118,74 +117,136 @@ def arith_progression(buffer: Buffer, first_value: PrimExpr, diff_value: PrimExp
     )
 
 
-def sort(
-    dst: Buffer | BufferRegion,
-    src: Buffer,
-    indices: Buffer,
-    tmp_buffer: Buffer,
-    repeat_time: PrimExpr,
-):
-    """Sorts elements from the source buffer and stores values and indices.
+def sort(dst: Buffer, src: Buffer, tmp: Buffer, actual_num: PrimExpr):
+    """
+    Performs a full sort on arbitrarily-lengthed input data with automatic internal
+    alignment. Sorts each 32-element block via sort32, then merges all sorted
+    blocks via merge_sort to produce the final ordered output.
 
-    This function performs a sort operation on the source buffer, outputting both
-    the sorted values to the destination buffer and the original indices to the
-    indices buffer.
+    The output contains interleaved (value, index) pairs in descending order:
+      [val0, idx0, val1, idx1, ...] where idx is the original position (0-based).
+    Indices are generated internally; dst must be 2x the size of src.
 
     Args:
-        dst: The destination buffer or buffer region where the sorted values will be stored.
-        src: The source buffer containing the data to be sorted.
-        indices: The buffer where the original indices of the sorted elements will be stored.
-        tmp_buffer: A temporary buffer required by the hardware for the sorting computation.
-        repeat_time: The number of iterations or elements to process in the sort operation.
-
-    Returns:
-        A TVM intrinsic call that performs the sort operation.
+    dst: Destination buffer for interleaved (value, index) pairs. Must have
+         at least 2 * aligned_size elements.
+    src: Source buffer containing the data to be sorted.
+    tmp: Temporary buffer for intermediate sort/merge results (2x the size of src).
+    actual_num: The number of valid elements in src. When actual_num is less than
+                the buffer size, unused positions are padded with -inf before sorting.
     """
-    dst_ptr, dst_size = _get_buffer_info(dst, "w")
+    repeatTimes = (actual_num + 31) // 32  # ceiling to 32-aligned
     return tir.call_intrin(
         "handle",
         tir.op.Op.get("tl.ascend_sort"),
-        f"Sort<{_dtype(dst)}, true>",
-        dst_ptr,
+        f"Sort<{_dtype(dst)}>",
+        dst.access_ptr("w"),
         src.access_ptr("r"),
-        indices.access_ptr("r"),
-        tmp_buffer.access_ptr("r"),
-        repeat_time,
+        tmp.access_ptr("w"),
+        repeatTimes,
+        actual_num,
     )
 
 
 def merge_sort(
-    dst: Buffer,
-    src: Buffer,
-    block_size: PrimExpr,
-    block_num: PrimExpr,
-    is_copy: PrimExpr,
+    dst: Buffer | BufferRegion,
+    tmp: Buffer | BufferRegion,
+    src0: Buffer | BufferRegion,
+    src1: Buffer | BufferRegion,
+    src2: Buffer | BufferRegion | None = None,
+    src3: Buffer | BufferRegion | None = None,
 ):
-    """Performs a merge sort operation.
+    """Performs a 2/3/4-way merge sort operation.
 
     This intrinsic invokes the underlying implementation to perform merge sort
-    on the data blocks.
+    on multiple sorted blocks using AscendC::MrgSort hardware API.
+    blockLen is calculated from each source buffer size.
+
+    Hardware MrgSort format: 4 floats per element
+    - Position 0: sort key (value)
+    - Position 1: data (index)
+    - Position 2-3: reserved/padding
+    - blockLen = number of elements = buffer_size / 4
 
     Args:
-        dst: The destination buffer where the sorted result will be stored.
-        src: The source buffer containing the data to be merged or sorted.
-        block_size: The number of elements in each block to be merged.
-        block_num: The total number of blocks to process.
-        is_copy: A boolean flag (0 or 1) indicating whether to copy the data
-            without sorting.
+        dst: The destination buffer or buffer region where the merged result will be stored.
+        tmp: A temporary buffer or buffer region used for intermediate calculations.
+        src0: First source buffer or buffer region.
+        src1: Second source buffer or buffer region.
+        src2: Third source buffer or buffer region (optional, for 3-way or 4-way merge).
+        src3: Fourth source buffer or buffer region (optional, for 4-way merge).
 
     Returns:
         A TVM intrinsic call that performs the merge sort operation.
     """
+
+    def retrieve_shape(object: Buffer | BufferRegion) -> list[int]:
+        if isinstance(object, Buffer):
+            return list(object.shape)
+        elif isinstance(object, BufferRegion):
+            region = object.region
+            shape = []
+            for r in region:
+                shape.append(r.extent)
+            return shape
+        else:
+            raise ValueError(f"Unsupported argument type: {type(object)} for buffer {object}")
+
+    def retrieve_ptr(
+        object: Buffer | BufferRegion,
+        access_type: str = "r",
+    ) -> PrimExpr:
+        if isinstance(object, Buffer):
+            return object.access_ptr(access_type)
+        elif isinstance(object, BufferRegion):
+            buffer, region = object.buffer, object.region
+            indices = []
+            for r in region:
+                indices.append(r.min)
+            strides = []
+            stride = 1
+            for s in reversed(buffer.shape):
+                strides.insert(0, stride)
+                stride *= s
+            offset = 0
+            for i in range(len(indices)):
+                offset += indices[i] * strides[i]
+            extent = [x.extent for x in object.region]
+            size_extent = math.prod(extent)
+            return buffer.access_ptr(access_mask=access_type, offset=offset, extent=size_extent)
+        else:
+            raise ValueError(f"Unsupported argument type: {type(object)} for buffer {object}")
+
+    src_buffers = [s for s in [src0, src1, src2, src3] if s is not None]
+    num_ways = len(src_buffers)
+
+    if num_ways < 2 or num_ways > 4:
+        raise ValueError(f"merge_sort requires 2-4 source buffers, got {num_ways}")
+
+    # Calculate blockLen for each source buffer
+    # Value-index pair format: 2 floats per element [value, index]
+    # blockLen = number of elements = buffer_size / 2
+    # Note: Hardware MrgSort has format compatibility issues with this format
+    blockLens = []
+    for buf in src_buffers:
+        buf_size = math.prod(retrieve_shape(buf))
+        blockLens.append(buf_size // 2)  # Value-index pair format
+
+    args = (
+        [
+            f"MergeSort<{_dtype(dst)}>",
+            num_ways,
+            retrieve_ptr(dst, "w"),
+            retrieve_ptr(tmp, "w"),
+        ]
+        + [retrieve_ptr(buf, "r") for buf in src_buffers]
+        + blockLens
+    )
+
     return tir.call_intrin(
         "handle",
         tir.op.Op.get("tl.ascend_merge_sort"),
-        f"MergeSort<{_dtype(dst)}>",
-        dst.access_ptr("w"),
-        src.access_ptr("r"),
-        block_size,
-        block_num,
-        is_copy,
+        *args,
     )
 
 
@@ -498,7 +559,6 @@ def binary_op(
     src1: Buffer | BufferRegion | BufferLoad | PrimExpr | float,
     op: str,
 ):
-
     if isinstance(dst, BufferRegion):
         dst_ptr, dst_extent = _handle_buffer_region(dst, "w")
     else:
@@ -641,7 +701,6 @@ def bitwise_or(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, src1: Bu
 
 
 def unary_op(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, op: str):
-
     if isinstance(dst, BufferRegion):
         dst_ptr, dst_extent = _handle_buffer_region(dst, "w")
     else:
@@ -803,7 +862,7 @@ def scalar_op(
     )
 
 
-def leaky_relu(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, scalar_value: PrimExpr): # type: ignore  # noqa: F821
+def leaky_relu(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, scalar_value: PrimExpr):  # type: ignore  # noqa: F821
     """Performs element-wise Leaky ReLU activation.
 
     Formula: dst = src0 if src0 >= 0 else src0 * scalar_value
@@ -1229,7 +1288,10 @@ def block_reduce_sum(
 
 
 def compare(
-    dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, src1: Buffer | BufferRegion | BufferLoad | PrimExpr, mode: str  # noqa: F821, FA100
+    dst: Buffer | BufferRegion,
+    src0: Buffer | BufferRegion,
+    src1: Buffer | BufferRegion | BufferLoad | PrimExpr,
+    mode: str,  # noqa: F821, FA100
 ):
     """Generic dispatch function for element-wise comparison operations.
 
@@ -1514,14 +1576,7 @@ def bitwise_xor(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, src1: B
     else:
         src1_ptr = src1.access_ptr("r")
 
-    return tir.call_intrin(
-        "handle",
-        tir.op.Op.get("tl.ascend_bitwise_xor"),
-        dst_ptr,
-        src0_ptr,
-        src1_ptr,
-        tmp.access_ptr("w")
-    )
+    return tir.call_intrin("handle", tir.op.Op.get("tl.ascend_bitwise_xor"), dst_ptr, src0_ptr, src1_ptr, tmp.access_ptr("w"))
 
 
 def clamp_max(out: Buffer | BufferRegion, buffer: Buffer | BufferRegion, tmp: Buffer, scalar_value: PrimExpr, count: PrimExpr):  # noqa: F821
@@ -1559,6 +1614,7 @@ def clamp_max(out: Buffer | BufferRegion, buffer: Buffer | BufferRegion, tmp: Bu
         count,
     )
 
+
 def clamp_min(out: Buffer | BufferRegion, buffer: Buffer | BufferRegion, tmp: Buffer, scalar_value: PrimExpr, count: PrimExpr):  # noqa: F821
     """
     Clip tensor elements to no less than v, replace elements smaller than scalar_value with scalar_value,
@@ -1594,7 +1650,10 @@ def clamp_min(out: Buffer | BufferRegion, buffer: Buffer | BufferRegion, tmp: Bu
         count,
     )
 
-def clamp(out: Buffer | BufferRegion, buffer: Buffer | BufferRegion, tmp: Buffer, min_scalar: PrimExpr, max_scalar: PrimExpr, count: PrimExpr):  # noqa: F821
+
+def clamp(
+    out: Buffer | BufferRegion, buffer: Buffer | BufferRegion, tmp: Buffer, min_scalar: PrimExpr, max_scalar: PrimExpr, count: PrimExpr
+):  # noqa: F821
     """
     Clip tensor elements to [min_scalar, max_scalar] range, replace out-of-bounds values with boundary values
     Args:
@@ -1642,18 +1701,14 @@ def round(out: Buffer | BufferRegion, buffer: Buffer | BufferRegion, tmp: Buffer
     else:
         buffer_ptr = buffer.access_ptr("r")
 
-    return tir.call_intrin(
-        "handle",
-        tir.op.Op.get("tl.ascend_round"),
-        out_ptr,
-        buffer_ptr,
-        tmp.access_ptr("r"),
-        count
-    )
+    return tir.call_intrin("handle", tir.op.Op.get("tl.ascend_round"), out_ptr, buffer_ptr, tmp.access_ptr("r"), count)
 
-def broadcast(dst: Buffer | BufferRegion,  # noqa: F821, FA100
-              src: Buffer | BufferRegion,  # noqa: F821, FA100
-              tmp: Buffer | BufferRegion):  # noqa: F821, FA100
+
+def broadcast(
+    dst: Buffer | BufferRegion,  # noqa: F821, FA100
+    src: Buffer | BufferRegion,  # noqa: F821, FA100
+    tmp: Buffer | BufferRegion,
+):  # noqa: F821, FA100
     """Generates a TIR intrinsic call for the AscendC `Broadcast` operation.
 
     This function performs a broadcast copy from the source buffer (`src`) to the
@@ -1954,7 +2009,6 @@ def sum_experiment(dst: Buffer, src: Buffer, sumParams: list[int]):
 
 
 def datacachecleanandinvalid_experiment(dst: Buffer, CacheLine: str, DcciDst: str):
-
     return T.call_intrin(
         "handle",
         tir.op.Op.get("tl.ascend_datacachecleanandinvalid_experiment"),

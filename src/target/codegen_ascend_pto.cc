@@ -835,6 +835,8 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op,
     PowCodegen(op);
   } else if (op->op.same_as(tl::ascend_sort32())) {
     Sort32Codegen(op, "TSORT32");
+  } else if (op->op.same_as(tl::ascend_merge_sort())) {
+    MergeSortCodegen(op, "TMRGSORT");
   } else if (op->op.same_as(tl::ascend_transpose())) {
     TransposeCodegen(op, "TTRANS");
   } else if (op->op.same_as(tl::ascend_bitwise_xor())) {
@@ -1474,6 +1476,82 @@ void CodeGenTileLangAscendPto::Sort32Codegen(const CallNode *op,
   std::string idx_name = PrintExpr(op->args[2].as<CallNode>()->args[1]);
   this->stream << op_name << "(" << dst_name << ", " << src_name << ", "
                << idx_name << ");\n";
+}
+
+void CodeGenTileLangAscendPto::MergeSortCodegen(const CallNode *op,
+                                                const std::string &op_name) {
+  // args: [func_name, num_ways, dst, tmp, src0, src1, ..., blockLens...]
+  // TMRGSORT API: TMRGSORT(dst, executedNumList, tmp, src0, src1, ...)
+  // tmp buffer is passed from caller, executedNumList is managed internally by
+  // pto/common.h MergeSort wrapper args: [func_name, num_ways, dst, tmp, src0,
+  // src1, ..., blockLens...]
+  ICHECK(op->args.size() >= 4) << "MergeSort requires at least 4 arguments";
+
+  int num_ways = Downcast<IntImm>(op->args[1])->value;
+  ICHECK(op->args.size() >= static_cast<size_t>(4 + num_ways))
+      << "MergeSort requires at least " << (4 + num_ways) << " arguments for "
+      << num_ways << "-way merge, but got " << op->args.size();
+
+  this->PrintIndent();
+
+  // Get dst buffer info using GetSliceInfo (like other codegen functions)
+  auto dst_call = op->args[2].as<CallNode>();
+  ICHECK(dst_call != nullptr) << "MergeSort args[2] (dst) is not a CallNode";
+  ICHECK(dst_call->op.same_as(builtin::tvm_access_ptr()))
+      << "MergeSort args[2] (dst) is not a tvm_access_ptr";
+  ShapeInfo dst_shape_info = GetSliceInfo(dst_call);
+  std::string dst_name = dst_shape_info.ub_name;
+  std::string dst_type = dst_shape_info.type;
+  int32_t dst_col = dst_shape_info.slice_col;
+  if (dst_shape_info.is_slice) {
+    dst_name = GetTempVarName(dst_shape_info.ub_name);
+    CreateUbVariableND(dst_name, dst_shape_info);
+  }
+
+  // Get tmp buffer info
+  auto tmp_call = op->args[3].as<CallNode>();
+  ICHECK(tmp_call != nullptr) << "MergeSort args[3] (tmp) is not a CallNode";
+  ICHECK(tmp_call->op.same_as(builtin::tvm_access_ptr()))
+      << "MergeSort args[3] (tmp) is not a tvm_access_ptr";
+  ShapeInfo tmp_shape_info = GetSliceInfo(tmp_call);
+  std::string tmp_name = tmp_shape_info.ub_name;
+  if (tmp_shape_info.is_slice) {
+    tmp_name = GetTempVarName(tmp_shape_info.ub_name);
+    CreateUbVariableND(tmp_name, tmp_shape_info);
+  }
+
+  // Get src buffer info (starting from args[4])
+  std::vector<std::string> src_names;
+  int32_t src_col = 0;
+  for (int i = 0; i < num_ways; ++i) {
+    auto src_call = op->args[4 + i].as<CallNode>();
+    ICHECK(src_call != nullptr)
+        << "MergeSort args[" << (4 + i) << "] (src" << i
+        << ") is not a CallNode, arg type: " << op->args[4 + i]->GetTypeKey();
+    ICHECK(src_call->op.same_as(builtin::tvm_access_ptr()))
+        << "MergeSort args[" << (4 + i) << "] (src" << i
+        << ") is not a tvm_access_ptr";
+    ShapeInfo src_shape_info = GetSliceInfo(src_call);
+    std::string src_name = src_shape_info.ub_name;
+    if (src_shape_info.is_slice) {
+      src_name = GetTempVarName(src_shape_info.ub_name);
+      CreateUbVariableND(src_name, src_shape_info);
+    }
+    src_names.push_back(src_name);
+    if (i == 0) {
+      src_col = src_shape_info.slice_col;
+    }
+  }
+
+  // Generate call: MergeSort<type, SrcCols, DstCols>(dst, tmp, src0, src1, ...)
+  // This uses the wrapper in pto/common.h which internally calls TMRGSORT
+  this->PrintIndent();
+  this->stream << kAscendPtoScope << "MergeSort<" << dst_type << ", " << src_col
+               << ", " << dst_col << ">(" << dst_name << ", " << tmp_name;
+  for (const auto &src_name : src_names) {
+    this->stream << ", " << src_name;
+  }
+  this->stream << ");\n";
 }
 
 void CodeGenTileLangAscendPto::TransposeCodegen(const CallNode *op,

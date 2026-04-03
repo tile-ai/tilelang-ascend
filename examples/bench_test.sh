@@ -4,6 +4,15 @@
 MAX_JOBS=8  # 同时并行执行的任务数，建议根据 NPU 负载调整
 export TILELANG_AUTO_TUNING_CPU_COUNTS=4 # for autotuner
 export TILELANG_AUTO_TUNING_MAX_CPU_COUNT=4 # for autotuner
+
+# --- 新增：特定目录执行特定指令配置 ---
+# 每个任务独立加入测试队列，分别执行、分别显示结果
+# 格式: EXTRA_TASKS 数组，每项为 "目录|命令|显示名称"
+EXTRA_TASKS=(
+    "./sparse_flash_attention/bench_sfa|python bench_sfa.py --file sparse_flash_attn_pa_baseline|[bench_sfa] sparse_flash_attn_pa_baseline"
+    "./sparse_flash_attention/bench_sfa|python bench_sfa.py --file sparse_flash_attn_pa_developer|[bench_sfa] sparse_flash_attn_pa_developer"
+    "./sparse_flash_attention/bench_sfa|python bench_sfa.py --file sparse_flash_attn_pa_no_cv_pipeline|[bench_sfa] sparse_flash_attn_pa_no_cv_pipeline"
+)
 # ==========================================
 
 echo "Starting parallel unified test execution (Live Output)..."
@@ -44,6 +53,13 @@ if [ -d "./torch_tl_ascend" ]; then
     fi
 fi
 
+# ====== 新增：将特定目录任务逐个加入测试队列 ======
+for extra_task in "${EXTRA_TASKS[@]}"; do
+    # 使用特殊前缀标记，格式: CUSTOM_TASK::目录|命令|显示名称
+    all_scripts+=("CUSTOM_TASK::${extra_task}")
+done
+# =================================================
+
 if [ ${#all_scripts[@]} -eq 0 ]; then
     echo "No test scripts found."
     exit 0
@@ -58,25 +74,46 @@ for script in "${all_scripts[@]}"; do
 
     # 启动后台子进程
     {
-        script_dir=$(dirname "$script")
-        script_name=$(basename "$script")
+        # 判断是否为自定义任务
+        if [[ "$script" == CUSTOM_TASK::* ]]; then
+            # 提取任务信息（去掉前缀后按 | 分割: 目录|命令|显示名称）
+            task_info=${script#CUSTOM_TASK::}
+            task_dir=$(echo "$task_info" | cut -d'|' -f1)
+            task_cmd=$(echo "$task_info" | cut -d'|' -f2)
+            display_name=$(echo "$task_info" | cut -d'|' -f3)
 
-        # 执行脚本并捕获输出到变量，不在磁盘生成日志文件
-        if [[ "$script" == *.py ]]; then
-            output=$(cd "$script_dir" && python "$script_name" 2>&1)
+            # 在指定目录下执行指定命令
+            output=$(cd "$task_dir" && eval "$task_cmd" 2>&1)
             exit_code=$?
+            current_script_ref="$display_name"
         else
-            output=$(cd "$script_dir" && bash "$script_name" 2>&1)
-            exit_code=$?
+            # 原有普通脚本执行逻辑
+            script_dir=$(dirname "$script")
+            script_name=$(basename "$script")
+            current_script_ref="$script"
+
+            # 执行脚本并捕获输出到变量，不在磁盘生成日志文件
+            if [[ "$script" == *.py ]]; then
+                output=$(cd "$script_dir" && python "$script_name" 2>&1)
+                exit_code=$?
+            else
+                output=$(cd "$script_dir" && bash "$script_name" 2>&1)
+                exit_code=$?
+            fi
         fi
 
         # 结果判定逻辑
+        # 判定条件：
+        # 1. 原有正则匹配 (KERNEL OUTPUT MATCH 或 TEST PASSED!)
+        # 2. OR (是自定义任务 且 退出码为 0)
         last_line=$(echo "$output" | tail -n 1)
-        if [[ "$output" =~ [Kk][Ee][Rr][Nn][Ee][Ll][[:space:]][Oo][Uu][Tt][Pp][Uu][Tt][[:space:]][Mm][Aa][Tt][Cc][Hh] ]] || [[ "$output" =~ [Tt][Ee][Ss][Tt][[:space:]][Pp][Aa][Ss][Ss][Ee][Dd][!] ]]; then
-            echo "[PASSED] $script"
+        if [[ "$output" =~ [Kk][Ee][Rr][Nn][Ee][Ll][[:space:]][Oo][Uu][Tt][Pp][Uu][Tt][[:space:]][Mm][Aa][Tt][Cc][Hh] ]] || \
+           [[ "$output" =~ [Tt][Ee][Ss][Tt][[:space:]][Pp][Aa][Ss][Ss][Ee][Dd][!] ]] || \
+           [[ "$script" == CUSTOM_TASK::* && $exit_code -eq 0 ]]; then
+            echo "[PASSED] $current_script_ref"
             touch "$temp_dir/pass_$total_scripts"
         else
-            echo "[FAILED] $script (Exit: $exit_code)"
+            echo "[FAILED] $current_script_ref (Exit: $exit_code)"
             echo "  Last line: $last_line"
             # 失败时打印最后5行方便调试
             echo "$output" | tail -n 5 | sed 's/^/  /'
