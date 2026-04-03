@@ -746,39 +746,6 @@ pow(TileUbDataND<T, row, col, row, col> &dst,
   TEXP(dst, dst);
 }
 
-template <typename T, int32_t row, int32_t col, int32_t tmp_rows>
-AICORE PTO_INLINE typename std::enable_if<std::is_integral<T>::value>::type
-pow(TileUbDataND<T, row, col, row, col> &dst,
-    TileUbDataND<T, row, col, row, col> &src0,
-    TileUbDataND<T, row, col, row, col> &src1,
-    TileUbDataND<uint8_t, tmp_rows, col, tmp_rows, col> &tmp) {
-  using FloatT = float;
-  constexpr int32_t float_buf_size = row * col * sizeof(FloatT);
-  auto tmp_float0 = reinterpret_cast<__ubuf__ FloatT *>(tmp.data());
-  auto tmp_float1 =
-      reinterpret_cast<__ubuf__ FloatT *>(tmp.data() + float_buf_size);
-
-  TileUbDataND<FloatT, row, col, row, col> src0_float;
-  TileUbDataND<FloatT, row, col, row, col> log_src0_float;
-  TileUbDataND<FloatT, row, col, row, col> src1_float;
-
-  pto::TASSIGN(src0_float, reinterpret_cast<uint64_t>(tmp_float0));
-  pto::TASSIGN(log_src0_float, reinterpret_cast<uint64_t>(tmp_float1));
-  pto::TASSIGN(src1_float, reinterpret_cast<uint64_t>(tmp_float0));
-
-  pto::TCVT(src0_float, src0, pto::RoundMode::CAST_ROUND);
-  pipe_barrier(PIPE_V);
-  pto::TLOG(log_src0_float, src0_float);
-  pipe_barrier(PIPE_V);
-  pto::TCVT(src1_float, src1, pto::RoundMode::CAST_ROUND);
-  pipe_barrier(PIPE_V);
-  pto::TMUL(log_src0_float, log_src0_float, src1_float);
-  pipe_barrier(PIPE_V);
-  pto::TEXP(log_src0_float, log_src0_float);
-  pipe_barrier(PIPE_V);
-  pto::TCVT(dst, log_src0_float, pto::RoundMode::CAST_ROUND);
-}
-
 enum class BinaryOps { TADDS, TSUBS, TMULS, TDIVS, TMAXS, TMINS };
 
 template <BinaryOps Op, typename T, int32_t dst_shape, int32_t src_shape>

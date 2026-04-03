@@ -3170,8 +3170,16 @@ def run_test_pow(M, N, block_M, block_N, dtype, target):
     torch.testing.assert_close(c, ref_c, rtol=1e-2, atol=1e-2)
 
 
-@pytest.mark.parametrize("dtype", ["float", "float16", "int32"])
-@pytest.mark.parametrize("target", ["ascendc", "pto"])
+pow_dtype_target_params = [
+    ("float", "ascendc"),
+    ("float16", "ascendc"),
+    ("float", "pto"),
+    ("float16", "pto"),
+    ("int32", "ascendc"),
+]
+
+
+@pytest.mark.parametrize("dtype,target", pow_dtype_target_params)
 @pytest.mark.parametrize("shape", [(1024, 1024)])
 def test_pow(dtype, target, shape):
     M, N = shape
