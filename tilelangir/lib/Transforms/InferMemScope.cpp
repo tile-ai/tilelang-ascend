@@ -13,9 +13,11 @@
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Pass/Pass.h"
 
+#include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/Debug.h"
 
 namespace mlir {
@@ -30,7 +32,94 @@ namespace {
 
 using namespace hivm;
 
-/// Set address space on a root alloc and propagate to all users.
+// ===----------------------------------------------------------------------===//
+// Replaces AscendNPU-IR's MemScopeInferAndPropagateHelper with a more general
+// approach: instead of a whitelist for single-result ops, we propagate the scope
+// to *every* memref-typed result of any user op.
+// ===----------------------------------------------------------------------===//
+class MemScopePropagator {
+public:
+  LogicalResult run(Value operand, AddressSpaceAttr targetScope) {
+    auto memRefType = dyn_cast<BaseMemRefType>(operand.getType());
+    if (!memRefType)
+      return failure();
+    if (memRefType.getMemorySpace())
+      return success();
+
+    setBaseMemRefTypeScope(operand, targetScope);
+    return propagateToUsers(operand);
+  }
+
+private:
+  static BlockArgument getTiedWhileBodyIterArg(scf::WhileOp op,
+                                               OpOperand *opOperand) {
+    auto argsMutable = op.getInitsMutable();
+    auto *it = llvm::find(argsMutable, *opOperand);
+    if (it == argsMutable.end())
+      return {};
+    return op.getAfterArguments()[std::distance(argsMutable.begin(), it)];
+  }
+
+  LogicalResult propagateToUsers(Value val) {
+    auto memrefScope = getHIVMAddressSpaceAttr(val.getType());
+
+    for (OpOperand &use : val.getUses()) {
+      Operation *userOp = use.getOwner();
+      LogicalResult res =
+          TypeSwitch<Operation *, LogicalResult>(userOp)
+              .Case<scf::YieldOp>([&](scf::YieldOp op) {
+                Operation *parentOp = op->getParentOp();
+                Value yieldOperand = op.getOperand(use.getOperandNumber());
+                if (!isa<BaseMemRefType>(yieldOperand.getType()))
+                  return success();
+                Value parentResult =
+                    parentOp->getResult(use.getOperandNumber());
+                setBaseMemRefTypeScope(parentResult, memrefScope);
+                return propagateToUsers(parentResult);
+              })
+              .Case<scf::ForOp>([&](scf::ForOp op) {
+                Value result = op.getTiedLoopResult(&use);
+                setBaseMemRefTypeScope(result, memrefScope);
+                Value bbArg = op.getTiedLoopRegionIterArg(&use);
+                setBaseMemRefTypeScope(bbArg, memrefScope);
+                return success(
+                    propagateToUsers(bbArg).succeeded() &&
+                    propagateToUsers(result).succeeded());
+              })
+              .Case<scf::WhileOp>([&](scf::WhileOp op) {
+                BlockArgument bbArg =
+                    cast<BlockArgument>(op.getTiedLoopRegionIterArg(&use));
+                auto yield = op.getTiedLoopYieldedValue(bbArg);
+                BlockArgument afterArg = getTiedWhileBodyIterArg(op, &use);
+                setBaseMemRefTypeScope(bbArg, memrefScope);
+                setBaseMemRefTypeScope(yield->get(), memrefScope);
+                setBaseMemRefTypeScope(afterArg, memrefScope);
+                return success(
+                    propagateToUsers(afterArg).succeeded() &&
+                    propagateToUsers(bbArg).succeeded() &&
+                    propagateToUsers(yield->get()).succeeded());
+              })
+              .Case<func::CallOp>([&](auto) { return success(); })
+              .Default([&](Operation *op) {
+                if (op->getNumResults() == 0)
+                  return success();
+                for (OpResult result : op->getResults()) {
+                  if (!isa<BaseMemRefType>(result.getType()))
+                    continue;
+                  setBaseMemRefTypeScope(result, memrefScope);
+                  if (failed(propagateToUsers(result)))
+                    return failure();
+                }
+                return success();
+              });
+      if (failed(res))
+        return failure();
+    }
+    return success();
+  }
+};
+
+/// Set address space on a root value and propagate to all users.
 static LogicalResult setAllocScope(Value rootVal,
                                    hivm::AddressSpace space) {
   auto memRefType = dyn_cast<BaseMemRefType>(rootVal.getType());
@@ -40,8 +129,8 @@ static LogicalResult setAllocScope(Value rootVal,
     return success();
 
   auto spaceAttr = AddressSpaceAttr::get(rootVal.getContext(), space);
-  MemScopeInferAndPropagateHelper helper;
-  return helper.Run(rootVal, spaceAttr);
+  MemScopePropagator propagator;
+  return propagator.run(rootVal, spaceAttr);
 }
 
 /// Infer and set UB scope for all memref operands of a VECTOR-core op.
@@ -70,7 +159,6 @@ getDefaultScope(memref::AllocOp allocOp, func::FuncOp funcOp) {
   if (allocOp.getType().getMemorySpace())
     return std::nullopt;
 
-  // Walk up to find an enclosing scope.scope with tcore_type annotation.
   Operation *parent = allocOp->getParentOp();
   while (parent && parent != funcOp.getOperation()) {
     if (auto scopeOp = dyn_cast<scope::ScopeOp>(parent)) {
@@ -86,7 +174,6 @@ getDefaultScope(memref::AllocOp allocOp, func::FuncOp funcOp) {
     parent = parent->getParentOp();
   }
 
-  // Fall back to function-level core type.
   auto funcCoreType = hivm::queryFuncCoreType(funcOp);
   if (funcCoreType.has_value()) {
     if (*funcCoreType == hivm::TFuncCoreType::AIC)
@@ -150,7 +237,7 @@ struct TileLangIRInferMemScope
       LLVM_DEBUG(DBGS() << "Phase 5 remaining alloc → "
                         << hivm::stringifyAddressSpace(*scope) << ": " << *op
                         << "\n");
-      if (failed(hivm::inferAndPropagateMemScopeForAlloc(op, *scope)))
+      if (failed(setAllocScope(op, *scope)))
         signalPassFailure();
     });
   }
