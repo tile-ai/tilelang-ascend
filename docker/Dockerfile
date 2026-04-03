@@ -104,7 +104,8 @@ RUN apt remove --purge --auto-remove --yes cmake && \
     echo cmake version: $(cmake --version | head -n 1)
 
 # install libzstd-dev and patch
-RUN apt install --yes --no-install-recommends --no-install-suggests \
+RUN apt-get update && \
+    apt install --yes --no-install-recommends --no-install-suggests \
     libzstd-dev \
     patch
 
