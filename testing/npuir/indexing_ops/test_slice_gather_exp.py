@@ -15,8 +15,6 @@ pytestmark = [
 GATHER_CASES = [(260, 260, 32, 32, 1)]
 DTYPES = ["float16"]
 
-torch.npu.set_device(11)
-
 
 def vec_gather(M, N, block_M, block_N, dim, dtype="float16"):
     itype = "int32"
