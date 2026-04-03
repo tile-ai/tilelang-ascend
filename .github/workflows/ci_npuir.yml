@@ -94,20 +94,17 @@ jobs:
         pip install dist/*.whl
         pip install pytest pytest-xdist pytest-html numpy
 
-    - name: Run npuir tests
-      env:
-        TILELANG_CLEAR_CACHE: "1"
+    - name: Prepare npuir test workspace
       run: |
         mkdir -p testing/npuir/output
-        mv tilelang _tilelang_src
-        python -m pytest -v testing/npuir/*_ops \
-          -n 2 \
-          --html=testing/npuir/output/report.html --self-contained-html \
-          --junitxml=testing/npuir/output/junit.xml
+        if [ -d tilelang ] && [ ! -d _tilelang_src ]; then
+          mv tilelang _tilelang_src
+        fi
 
     - name: Run npuir examples (python scripts)
       env:
         TILELANG_CLEAR_CACHE: "1"
+      shell: bash
       run: |
         set -euo pipefail
         mkdir -p testing/npuir/output/examples
@@ -145,7 +142,7 @@ jobs:
           fi
 
           log_file="testing/npuir/output/examples/$(basename "${script}").log"
-          echo "Running ${script}"
+          echo "Running: python ${script}"
           python "${script}" 2>&1 | tee "${log_file}"
 
           if ! grep -Eqi "passed|success" "${log_file}"; then
@@ -153,6 +150,15 @@ jobs:
             exit 1
           fi
         done
+
+    - name: Run npuir tests
+      env:
+        TILELANG_CLEAR_CACHE: "1"
+      run: |
+        python -m pytest -v testing/npuir/*_ops \
+          -n 2 \
+          --html=testing/npuir/output/report.html --self-contained-html \
+          --junitxml=testing/npuir/output/junit.xml
 
     - name: Upload test report
       if: always()
