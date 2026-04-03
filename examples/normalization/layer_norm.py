@@ -11,11 +11,6 @@ pass_configs = {
 CAST_MODE_LOW2HIGH = "CAST_NONE"
 CAST_MODE_HIGH2LOW = "CAST_RINT"
 
-
-def bytes_of(dtype: str) -> int:
-    return DataType(dtype).bits // 8
-
-
 @tilelang.jit(out_idx=[1], pass_configs=pass_configs)
 def layer_norm(M, N, block_M, block_N, eps=1e-5, dtype="float"):
     """
@@ -54,7 +49,7 @@ def layer_norm(M, N, block_M, block_N, eps=1e-5, dtype="float"):
             sum_square_ub = T.alloc_ub([sub_block_M], cal_dtype)
             mean_ub = T.alloc_ub([sub_block_M, 1], cal_dtype)
             mean_square_ub = T.alloc_ub([sub_block_M, 1], cal_dtype)
-            tmp_ub = T.alloc_ub([3 * bytes_of(cal_dtype) * sub_block_M * block_N], "uint8")
+            tmp_ub = T.alloc_ub([3 * DataType(cal_dtype).bits // 8 * sub_block_M * block_N], "uint8")
 
             with T.Scope("V"):
                 # Initialize
@@ -109,10 +104,10 @@ def layer_norm(M, N, block_M, block_N, eps=1e-5, dtype="float"):
 
 torch.manual_seed(0)
 test_configs = [
-    (33, 33, 16, 16, "float"),
-    (33, 33, 16, 16, "float16"),
-    (33, 33, 16, 16, "bfloat16"),
-    (256, 256, 64, 64, "float"),
+    (34, 34, 32, 32, "float"),
+    (34, 34, 32, 32, "float16"),
+    (34, 34, 32, 32, "bfloat16"),
+    (270, 270, 64, 64, "float"),
     (1030, 1030, 128, 128, "float16"),
     (1024, 51200, 128, 128, "bfloat16"),
 ]

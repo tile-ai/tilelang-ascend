@@ -30,11 +30,11 @@ def online_softmax(M, N, block_M, block_N, dtype="float"):
         for j in [1, N]:
             y_j = exp(x_j - m_N) / s_N
     """
-    use_float32_compute = (dtype == "bfloat16")
+    use_float32_compute = dtype in ["bfloat16", "float16"]
     cal_dtype = "float32" if use_float32_compute else dtype
 
-    m_num = M // block_M
-    n_num = N // block_N
+    m_num = T.ceildiv(M, block_M)
+    n_num = T.ceildiv(N, block_N)
     VEC_NUM = 2
     sub_block_M = block_M // VEC_NUM
 
@@ -70,7 +70,8 @@ def online_softmax(M, N, block_M, block_N, dtype="float"):
             # First pass: compute max and sum
             for by in T.serial(n_num):
                 T.copy(
-                    A[bx * block_M + vid * sub_block_M : bx * block_M + (vid + 1) * sub_block_M, by * block_N : (by + 1) * block_N], a
+                    A[bx * block_M + vid * sub_block_M : bx * block_M + (vid + 1) * sub_block_M, by * block_N : (by + 1) * block_N], a,
+                    pad_value=-T.infinity(cal_dtype)
                 )  # Load input
                 cast_or_copy(a_cal, a, CAST_MODE_LOW2HIGH, sub_block_M * block_N)  # Cast to compute dtype if needed
                 T.reduce_max(a_cal, tile_max, tmp, dim=-1)  # Compute tile max
@@ -107,6 +108,9 @@ def online_softmax(M, N, block_M, block_N, dtype="float"):
 
 torch.manual_seed(0)
 test_configs = [
+    (34, 130, 32, 32, "float"),
+    (34, 130, 32, 32, "float16"),
+    (34, 130, 32, 32, "bfloat16"),
     (1024, 51200, 128, 128, "float"),
     (1024, 51200, 128, 128, "float16"),
     (1024, 51200, 128, 128, "bfloat16"),
