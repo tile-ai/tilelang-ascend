@@ -2001,16 +2001,30 @@ mlir::Value CodeGenTileLangNPUIRDEV::NeedGenInsertSlice(Buffer buffer_data,
     strides_val.push_back(builder.getI64IntegerAttr(1));
   }
 
-  auto srcTensorTy = src.getType().cast<mlir::TensorType>();
-  auto dstTensorTy =
-      GetVarValue(buffer_data).getType().cast<mlir::TensorType>();
-  auto elemTy = dstTensorTy.getElementType();
-  auto srcShape = srcTensorTy.getShape();
+  auto dst_value = GetVarValue(buffer_data);
 
-  auto emptyTensor = builder.create<mlir::tensor::EmptyOp>(
-      builder.getUnknownLoc(), srcShape, elemTy);
+  auto extractOp = builder.create<mlir::tensor::ExtractSliceOp>(
+      builder.getUnknownLoc(), dst_value, offsets, shape_val, strides_val);
 
-  return emptyTensor.getResult();
+  mlir::Value extractResult = extractOp.getResult();
+
+  // If buffer_data has higher rank than src, collapse the extracted slice
+  // to match src rank (e.g. drop leading size-1 dims from a region slice).
+  auto extractedTensorTy =
+      extractResult.getType().dyn_cast<mlir::RankedTensorType>();
+  auto srcTensorTy = src.getType().dyn_cast<mlir::RankedTensorType>();
+  if (extractedTensorTy && srcTensorTy &&
+      extractedTensorTy.getRank() > srcTensorTy.getRank()) {
+    llvm::SmallVector<mlir::OpFoldResult> dstShapeOFR;
+    for (int64_t dim : srcTensorTy.getShape()) {
+      dstShapeOFR.push_back(builder.getI64IntegerAttr(dim));
+    }
+    mlir::Value collapsed =
+        ReshapeTensorImpl(extractResult, srcTensorTy.getShape(), dstShapeOFR);
+    return collapsed;
+  }
+
+  return extractResult;
 }
 
 // Convert TVM Range to MLIR OpFoldResult arrays
@@ -2300,7 +2314,7 @@ void CodeGenTileLangNPUIRDEV::VgatherCodegen(const CallNode *op) {
   mlir::Value gatherOutput;
   auto gatherOp = builder.create<mlir::hivm::VGatherOp>(
       builder.getUnknownLoc(), mlir::TypeRange{insertBase.getType()}, src,
-      indices, dst);
+      indices, insertBase);
   gatherOutput = gatherOp->getResult(0);
 
   mlir::Value result =
