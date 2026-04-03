@@ -48,6 +48,13 @@ private:
   // Store the original map and the modified map
   std::unordered_map<Buffer, Buffer, ObjectPtrHash, ObjectPtrEqual> origin_to_new_buffer_;
 
+  // Store GM buffer offset info: GM buffer -> {UB buffer, ub_dims}
+  struct GmBufferOffsetInfo {
+    Buffer ub_buffer;
+    int ub_dims;
+  };
+  std::unordered_map<Buffer, GmBufferOffsetInfo, ObjectPtrHash, ObjectPtrEqual> gm_buffer_offset_info_;
+
   // Determine if it is a ub buffer
   bool IsUbBuffer(const Buffer& buffer) const {
     if (buffer->data->type_annotation.defined()) {
@@ -133,7 +140,54 @@ private:
     ObjectPtr<BlockNode> new_block = make_object<BlockNode>(*op);
     new_block->body = new_body;
     new_block->alloc_buffers = new_alloc_buffers;
+
+    // Modify reads/writes BufferRegion for GM buffers
+    Array<BufferRegion> new_reads = ModifyBufferRegions(op->reads);
+    Array<BufferRegion> new_writes = ModifyBufferRegions(op->writes);
+    if (!new_reads.same_as(op->reads)) {
+      new_block->reads = new_reads;
+    }
+    if (!new_writes.same_as(op->writes)) {
+      new_block->writes = new_writes;
+    }
+
     return Stmt(new_block);
+  }
+
+  // Modify BufferRegions for GM buffers that have offset info
+  Array<BufferRegion> ModifyBufferRegions(const Array<BufferRegion>& regions) {
+    Array<BufferRegion> new_regions = regions;
+    bool modified = false;
+
+    for (size_t i = 0; i < regions.size(); ++i) {
+      const BufferRegion& region = regions[i];
+      auto it = gm_buffer_offset_info_.find(region->buffer);
+      if (it != gm_buffer_offset_info_.end()) {
+        const GmBufferOffsetInfo& info = it->second;
+        Buffer ub_buf = info.ub_buffer;
+        int ub_dims = info.ub_dims;
+
+        // Get modified UB buffer shape
+        auto ub_it = origin_to_new_buffer_.find(ub_buf);
+        ICHECK(ub_it != origin_to_new_buffer_.end());
+        Buffer modified_ub_buf = ub_it->second;
+
+        // Calculate target dimension (same logic as ascend_copy)
+        int gm_dims = region->region.size();
+        int target_dim = gm_dims - ub_dims;
+
+        // Modify the target dimension's Range min
+        Array<Range> new_ranges = region->region;
+        const Range& old_range = new_ranges[target_dim];
+        PrimExpr new_min = old_range->min + vid_ * modified_ub_buf->shape[0];
+        new_ranges.Set(target_dim, Range::FromMinExtent(new_min, old_range->extent));
+
+        new_regions.Set(i, BufferRegion(region->buffer, new_ranges));
+        modified = true;
+      }
+    }
+
+    return modified ? new_regions : regions;
   }
 
   BufferLoad ExtractBufferLoadFromRegion(const Call& region_call) const {
@@ -348,8 +402,12 @@ private:
     Call target_region = src_is_ub ? dst_region : src_region; // target region is gm
     BufferLoad target_load = src_is_ub ? dst_load : src_load; 
     Buffer ub_buf = src_is_ub ? src_buf : dst_buf;
+    Buffer gm_buf = src_is_ub ? dst_buf : src_buf;
     int ub_dims = ub_buf->shape.size();
     BufferLoad modified_load = ModifyBufferLoadIndices(target_load, ub_dims, ub_buf);
+
+    // Record GM buffer offset info for later use in BlockNode reads/writes
+    gm_buffer_offset_info_[gm_buf] = {ub_buf, ub_dims};
 
     // Refactor GM Region
     Array<PrimExpr> new_region_args = target_region->args;
