@@ -92,7 +92,7 @@ RUN useradd tilelang \
 
 WORKDIR /home/tilelang
 
-# update cmake
+# update cmake, libzstd-dev and patch for AscendNPU-IR build
 RUN apt remove --purge --auto-remove --yes cmake && \
     apt-get update && \
     apt-get install -y --no-install-recommends wget gpg ca-certificates gnupg2 && \
@@ -100,14 +100,10 @@ RUN apt remove --purge --auto-remove --yes cmake && \
     echo "deb [signed-by=/usr/share/keyrings/kitware-archive-keyring.gpg] https://apt.kitware.com/ubuntu/ jammy main" | tee /etc/apt/sources.list.d/kitware.list && \
     apt-get update && \
     apt-get install -y cmake && \
+    apt-get install -y libzstd-dev && \
+    apt-get install -y patch && \
     rm -rf /var/lib/apt/lists/* && \
     echo cmake version: $(cmake --version | head -n 1)
-
-# install libzstd-dev and patch
-RUN apt-get update && \
-    apt install --yes --no-install-recommends --no-install-suggests \
-    libzstd-dev \
-    patch
 
 # Install tilelang requirements
 COPY Makefile requirements.txt requirements-dev.txt build/
