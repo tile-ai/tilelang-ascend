@@ -162,9 +162,11 @@ private:
         Buffer ub_buf = it->second;
         int ub_dims = ub_buf->shape.size();
 
-        // Get modified UB buffer shape
+        // Get modified UB buffer shape, skip if not found
         auto ub_it = origin_to_new_buffer_.find(ub_buf);
-        ICHECK(ub_it != origin_to_new_buffer_.end());
+        if (ub_it == origin_to_new_buffer_.end()) {
+          continue;
+        }
         Buffer modified_ub_buf = ub_it->second;
 
         // Calculate target dimension (same logic as ascend_copy)
@@ -193,6 +195,13 @@ private:
   }
 
   BufferLoad ModifyBufferLoadIndices(const BufferLoad& load, size_t ub_dims, const Buffer& ub_buf) {
+    // Check if ub_buf is in origin_to_new_buffer_, return original if not found
+    auto ub_it = origin_to_new_buffer_.find(ub_buf);
+    if (ub_it == origin_to_new_buffer_.end()) {
+      return load;
+    }
+    Buffer modified_ub_buf = ub_it->second;
+
     Array<PrimExpr> new_indices;
     // 1. Recursively process original indices (sub-expressions included)
     for (const PrimExpr& idx : load->indices) {
@@ -202,7 +211,6 @@ private:
     // 2. Add vid to the (size - dims)-th dimension
     ICHECK(new_indices.size() >= ub_dims) << "[Error]<ascend_vid_reduction.cc>: ub dims may not be more than gm dims!";
     int target_dim = new_indices.size() - ub_dims;
-    Buffer modified_ub_buf = origin_to_new_buffer_[ub_buf];
     new_indices.Set(
         target_dim, 
         new_indices[target_dim] + vid_ * modified_ub_buf->shape[0]// Insert vid (vector core ID)
