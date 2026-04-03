@@ -19,10 +19,10 @@ def vec_add(N, block_N, dtype="float32"):
 
     @T.prim_func
     def main(
-            A: T.Tensor((N), dtype),
-            B: T.Tensor((N), dtype),
-            C: T.Tensor((N), dtype),
-            shape: T.int32,
+        A: T.Tensor((N), dtype),
+        B: T.Tensor((N), dtype),
+        C: T.Tensor((N), dtype),
+        shape: T.int32,
     ):
         with T.Kernel(n_num, is_npu=True) as (cid, _):
             A_VEC = T.alloc_ub((block_N), dtype)
@@ -54,6 +54,8 @@ def test_vec_add():
 
     print(y_ref)
     print(v3)
+    torch.testing.assert_close(y_ref, v3, rtol=1e-2, atol=1e-2)
+    print("All check passed")
 
 
 if __name__ == "__main__":

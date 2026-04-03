@@ -20,9 +20,9 @@ def matmul(block_M, block_N, K_L1, dtype="float16", accum_dtype="float32"):
     def main(
         A: T.Tensor((M, K), dtype),
         B: T.Tensor((K, N), dtype),
-        C: T.Tensor((M, N), dtype)
+        C: T.Tensor((M, N), dtype),
     ):
-        with T.Kernel(m_num*n_num, is_npu=True) as (cid, _):
+        with T.Kernel(m_num * n_num, is_npu=True) as (cid, _):
             with T.Scope("Cube"):
                 bx = cid // n_num * block_M
                 by = cid % n_num * block_N
@@ -35,14 +35,27 @@ def matmul(block_M, block_N, K_L1, dtype="float16", accum_dtype="float32"):
                     T.load_nd2nz(B[i * K_L1, by], B_BUF, [K_L1, block_N])
 
                     if i == 0:
-                        T.gemm(A_BUF, B_BUF, C_BUF, initC=True, b_transpose=False,
-                            size=[block_M, K_L1, block_N])
+                        T.gemm(
+                            A_BUF,
+                            B_BUF,
+                            C_BUF,
+                            initC=True,
+                            b_transpose=False,
+                            size=[block_M, K_L1, block_N],
+                        )
                     else:
-                        T.gemm(A_BUF, B_BUF, C_BUF, initC=False, b_transpose=False,
-                            size=[block_M, K_L1, block_N])
+                        T.gemm(
+                            A_BUF,
+                            B_BUF,
+                            C_BUF,
+                            initC=False,
+                            b_transpose=False,
+                            size=[block_M, K_L1, block_N],
+                        )
 
-                    T.store_fixpipe(C_BUF, C[bx, by],
-                        size=[block_M, block_N], enable_nz2nd=True)
+                    T.store_fixpipe(
+                        C_BUF, C[bx, by], size=[block_M, block_N], enable_nz2nd=True
+                    )
 
     return main
 
@@ -52,7 +65,6 @@ def test_mat_mul():
     a = torch.randn(M, K).half().npu()
     b = torch.randn(K, N).half().npu()
     c = torch.randn(M, N).half().npu()
-    print("\033[92mAll Init Success!\033[0m")
 
     func(a, b, c)
     print(c)
@@ -63,6 +75,6 @@ def test_mat_mul():
     torch.testing.assert_close(c, ref_c, rtol=1e-2, atol=1e-2)
     print("\033[92mAll check passed!\033[0m")
 
+
 if __name__ == "__main__":
     test_mat_mul()
- 
