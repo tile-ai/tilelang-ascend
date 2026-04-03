@@ -48,12 +48,8 @@ private:
   // Store the original map and the modified map
   std::unordered_map<Buffer, Buffer, ObjectPtrHash, ObjectPtrEqual> origin_to_new_buffer_;
 
-  // Store GM buffer offset info: GM buffer -> {UB buffer, ub_dims}
-  struct GmBufferOffsetInfo {
-    Buffer ub_buffer;
-    int ub_dims;
-  };
-  std::unordered_map<Buffer, GmBufferOffsetInfo, ObjectPtrHash, ObjectPtrEqual> gm_buffer_offset_info_;
+  // Store GM buffer offset info: GM buffer -> UB buffer
+  std::unordered_map<Buffer, Buffer, ObjectPtrHash, ObjectPtrEqual> gm_buffer_offset_info_;
 
   // Determine if it is a ub buffer
   bool IsUbBuffer(const Buffer& buffer) const {
@@ -163,9 +159,8 @@ private:
       const BufferRegion& region = regions[i];
       auto it = gm_buffer_offset_info_.find(region->buffer);
       if (it != gm_buffer_offset_info_.end()) {
-        const GmBufferOffsetInfo& info = it->second;
-        Buffer ub_buf = info.ub_buffer;
-        int ub_dims = info.ub_dims;
+        Buffer ub_buf = it->second;
+        int ub_dims = ub_buf->shape.size();
 
         // Get modified UB buffer shape
         auto ub_it = origin_to_new_buffer_.find(ub_buf);
@@ -407,7 +402,7 @@ private:
     BufferLoad modified_load = ModifyBufferLoadIndices(target_load, ub_dims, ub_buf);
 
     // Record GM buffer offset info for later use in BlockNode reads/writes
-    gm_buffer_offset_info_[gm_buf] = {ub_buf, ub_dims};
+    gm_buffer_offset_info_[gm_buf] = ub_buf;
 
     // Refactor GM Region
     Array<PrimExpr> new_region_args = target_region->args;
