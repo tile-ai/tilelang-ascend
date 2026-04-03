@@ -28,7 +28,6 @@ def simple_topk_selector(B: int, N: int, top_k: int, block_N: int, dtype: Litera
     b_num = T.ceildiv(B, VEC_NUM)
     n_num = T.ceildiv(N, block_N)
     merge_num = T.ceildiv(top_k, block_N)
-    repeat_time = T.ceildiv(block_N, 32)
 
     assert merge_num == 4
 
@@ -37,14 +36,12 @@ def simple_topk_selector(B: int, N: int, top_k: int, block_N: int, dtype: Litera
 
     address_sort_temp = 0
     address_x_ub = address_sort_temp + SORT_TEMP_ROWS * block_N * bytes_of(dtype)
-    address_topk_indices_tmp_ub = address_x_ub + block_N * bytes_of(dtype)
-    address_sort_indices = address_topk_indices_tmp_ub + block_N * bytes_of(INDEX_DTYPE)
-    address_sort_indices_u = address_sort_indices
-    address_sort_result = address_sort_indices_u + block_N * bytes_of(INDEX_DTYPE)
-    address_sort_result_index = address_sort_result
-    address_topk_global = address_sort_result_index + merge_num * block_N * 2 * bytes_of(dtype)
-    address_merge_tmp = address_topk_global + top_k * 2 * bytes_of(dtype)
-    address_merge_dst = address_sort_temp
+    address_sort_output = address_x_ub + block_N * bytes_of(dtype)
+    address_sort_index = address_sort_output + block_N * 2 * bytes_of(dtype)
+    address_sort_result = address_sort_index + block_N * bytes_of(dtype)
+    address_topk_global = address_sort_result + merge_num * block_N * 2 * bytes_of(dtype)
+    address_gather_result = address_topk_global + top_k * 2 * bytes_of(dtype)
+    address_output_index = address_gather_result + top_k * bytes_of(dtype)
 
     @T.prim_func
     def main(
@@ -57,53 +54,56 @@ def simple_topk_selector(B: int, N: int, top_k: int, block_N: int, dtype: Litera
             sort_temp = T.alloc_ub([SORT_TEMP_ROWS, block_N], dtype)
             x_ub = T.alloc_ub([block_N], dtype)
 
-            sort_indices = T.alloc_ub([block_N], INDEX_DTYPE)
-            sort_indices_u = T.alloc_ub([block_N], SORT_INDEX_DTYPE)  # same buffer as sort_indices
-            topk_indices_tmp_ub = T.alloc_ub([block_N], INDEX_DTYPE)
+            sort_output = T.alloc_ub([block_N * 2], dtype)
+            sort_index = T.alloc_ub([block_N], dtype)
 
             sort_result = T.alloc_ub([merge_num, block_N * 2], dtype)
-            sort_result_index = T.alloc_ub([top_k], INDEX_DTYPE)  # sub buffer of sort_result
 
             topk_global = T.alloc_ub([top_k * 2], dtype)
-            merge_tmp = T.alloc_ub([top_k * 2], dtype)
-            merge_dst = T.alloc_ub([top_k * 2], dtype)
+            gather_result = T.alloc_ub([top_k], dtype)
+            output_index = T.alloc_ub([top_k], INDEX_DTYPE)
 
             T.annotate_address(
                 {
+                    # ub address
                     sort_temp: address_sort_temp,
                     x_ub: address_x_ub,
-                    topk_indices_tmp_ub: address_topk_indices_tmp_ub,
-                    sort_indices: address_sort_indices,
-                    sort_indices_u: address_sort_indices_u,
+                    sort_output: address_sort_output,
+                    sort_index: address_sort_index,
                     sort_result: address_sort_result,
-                    sort_result_index: address_sort_result_index,
                     topk_global: address_topk_global,
-                    merge_tmp: address_merge_tmp,
-                    merge_dst: address_merge_dst,
+                    gather_result: address_gather_result,
+                    output_index: address_output_index,
                 }
             )
 
-            T.tile.arith_progression(topk_indices_tmp_ub, 0, 1, block_N)  # (0..block_N-1)
             T.tile.init_sort_buf(topk_global, top_k * 2, rsv=0)  # rsv is always 0
 
             for bn in T.serial(n_num):
                 T.copy(x[row_id, bn * block_N], x_ub)
 
-                T.tile.add(sort_indices, topk_indices_tmp_ub, T.int32(bn * block_N))  # (0..block_N-1) + bn * block_N
-                T.tile.sort(sort_result[(bn % merge_num), :], x_ub, sort_indices_u, sort_temp, repeat_time)
+                T.tile.sort(sort_output, x_ub, sort_temp, block_N)
+
+                T.tile.gather_mask(sort_index, sort_output, "P1010")
+                T.tile.add(sort_index, sort_index, T.float32(bn * block_N))
+
+                for i in range(block_N):
+                    sort_result[bn % merge_num, i * 2] = sort_output[i * 2]
+                    sort_result[bn % merge_num, i * 2 + 1] = sort_index[i]
 
                 if bn % merge_num == merge_num - 1:
                     if bn == merge_num - 1:  # first time merge, update topk_global directly
+                        T.tile.merge_sort(topk_global, sort_result, block_N, merge_num, is_copy=0)
+                    else:  # later merges, merge to sort_temp and then copy topk to topk_global
                         T.tile.merge_sort(
-                            topk_global, merge_tmp, sort_result[0, :], sort_result[1, :], sort_result[2, :], sort_result[3, :]
-                        )
-                    else:  # later merges, merge to merge_dst and update topk_global by it
-                        T.tile.merge_sort(merge_dst, merge_tmp, sort_result[0, :], sort_result[1, :], sort_result[2, :], sort_result[3, :])
-                        T.tile.topk(topk_global, merge_dst, merge_tmp, top_k)
+                            sort_temp, sort_result, block_N, merge_num, is_copy=1
+                        )  # is_copy=1 => merge result copy back to sort_result
+                        T.tile.topk(topk_global, sort_result, sort_temp, top_k)
 
-            T.tile.gather_mask(sort_result, topk_global, "P1010")  # [value, idx] => [idx]
+            T.tile.gather_mask(gather_result, topk_global, "P1010")  # [value, idx] => [idx]
+            T.tile.cast(output_index, gather_result, "CAST_ROUND", top_k)
 
-            T.copy(sort_result_index, indices[row_id, :top_k])
+            T.copy(output_index, indices[row_id, :top_k])
 
     return main
 
