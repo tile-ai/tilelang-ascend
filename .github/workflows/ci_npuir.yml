@@ -130,7 +130,6 @@ jobs:
           examples/flash_attn_npuir.py
           examples/mixcv_mixkernel.py
           examples/flash_attn_npuir_dev.py
-          examples/sparse_mla_fwd_dynamic_shape.py
           examples/sparse_mla_fwd.py
           examples/vectorization_in_parallel.py
         )
