@@ -4,7 +4,6 @@ import tilelang as tl
 import tilelang.language as T
 import os
 
-torch.npu.set_device(6)
 
 dtype = "float16"
 accum_dtype = "float32"

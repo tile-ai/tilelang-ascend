@@ -664,5 +664,4 @@ def run_test():
 
 if __name__ == "__main__":
     os.environ["TILELANG_ASCEND_MODE"] = "Dev"
-    torch.npu.set_device(11)
     run_test()
