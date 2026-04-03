@@ -22,7 +22,6 @@ def simple_topk_selector(B: int, N: int, top_k: int, block_N: int, dtype: Litera
 
     VEC_NUM = 2
     INDEX_DTYPE = "int32"
-    SORT_INDEX_DTYPE = "uint32"
     SORT_TEMP_ROWS = 32  # large enough
 
     b_num = T.ceildiv(B, VEC_NUM)
