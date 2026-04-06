@@ -12,9 +12,9 @@ ENV DEBIAN_FRONTEND=noninteractive \
     CHIP_TYPE=${CHIP_TYPE} \
     CANN_VERSION=${CANN_VERSION} \
     REGION=${REGION} \
-    HTTP_PROXY=${HTTP_PROXY} \
-    HTTPS_PROXY=${HTTPS_PROXY} \
-    NO_PROXY=${NO_PROXY}
+    http_proxy=${HTTP_PROXY} \
+    https_proxy=${HTTPS_PROXY} \
+    no_proxy=${NO_PROXY}
 
 RUN apt update && \
     apt install --yes --no-install-recommends --no-install-suggests \
