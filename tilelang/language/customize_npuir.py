@@ -13,6 +13,7 @@ from .kernel import get_thread_bindings, get_thread_extents, FrameStack
 import threading
 import os
 import math
+from tilelang.env import env
 
 from tilelang.language.copy import buffer_region_to_tile_region, buffer_load_to_tile_region, region
 
@@ -604,9 +605,7 @@ def npuir_reduce(src, dst, dims:Union[list, tuple, int], reduce_mode, size=[], c
             "max": "max",
             "min": "min",
         }
-        TILELANG_ASCEND_MODE = os.environ.get('TILELANG_ASCEND_MODE')
-        if TILELANG_ASCEND_MODE is None or \
-            TILELANG_ASCEND_MODE.lower().strip() in ['expert', 'exp', 'e']:
+        if env.is_expert_mode():
             tmp = _get_tmp_buffer_exp(dst)
         else:
             tmp = _get_tmp_buffer_dev(dst)
