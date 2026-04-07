@@ -156,21 +156,21 @@ def indexer(B, N2, G, S1, S2, D, TOP_K, VECTOR_BASEN, VECTOR_BASEG, BLOCK_M, BLO
                         if s2_id % merge_sort_times == merge_sort_times - 1:
                             if s2_id == merge_sort_times - 1:
                                 T.tile.merge_sort(
-                                    topk_global_ub2, 
-                                    mm_res_ub, 
-                                    topk_global_ub1[0, :], 
-                                    topk_global_ub1[1, :], 
-                                    topk_global_ub1[2, :], 
-                                    topk_global_ub1[3, :], 
+                                    topk_global_ub2,
+                                    mm_res_ub,
+                                    topk_global_ub1[0, :],
+                                    topk_global_ub1[1, :],
+                                    topk_global_ub1[2, :],
+                                    topk_global_ub1[3, :],
                                 )
                             else:
                                 T.tile.merge_sort(
-                                    reduce_tmp_ub, 
-                                    mm_res_ub, 
-                                    topk_global_ub1[0, :], 
-                                    topk_global_ub1[1, :], 
-                                    topk_global_ub1[2, :], 
-                                    topk_global_ub1[3, :], 
+                                    reduce_tmp_ub,
+                                    mm_res_ub,
+                                    topk_global_ub1[0, :],
+                                    topk_global_ub1[1, :],
+                                    topk_global_ub1[2, :],
+                                    topk_global_ub1[3, :],
                                 )
                                 T.barrier_all()
                                 T.tile.topk(topk_global_ub2, reduce_tmp_ub, mm_res_ub, VECTOR_BASEN * merge_sort_times)
