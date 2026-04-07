@@ -95,9 +95,13 @@ def simple_topk_selector(B: int, N: int, top_k: int, block_N: int, dtype: Litera
 
                 if bn % merge_num == merge_num - 1:
                     if bn == merge_num - 1:  # first time merge, update topk_global directly
-                        T.tile.merge_sort(topk_global, sort_temp, sort_result[0, :], sort_result[1, :], sort_result[2, :], sort_result[3, :])
+                        T.tile.merge_sort(
+                            topk_global, sort_temp, sort_result[0, :], sort_result[1, :], sort_result[2, :], sort_result[3, :]
+                        )
                     else:  # later merges, merge to merge_sort_dst and then topk to topk_global
-                        T.tile.merge_sort(merge_sort_dst, sort_temp, sort_result[0, :], sort_result[1, :], sort_result[2, :], sort_result[3, :])
+                        T.tile.merge_sort(
+                            merge_sort_dst, sort_temp, sort_result[0, :], sort_result[1, :], sort_result[2, :], sort_result[3, :]
+                        )
                         T.tile.topk(topk_global, merge_sort_dst, sort_temp, top_k)
 
             T.tile.gather_mask(gather_result, topk_global, "P1010")  # [value, idx] => [idx]
