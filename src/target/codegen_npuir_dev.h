@@ -296,12 +296,10 @@ private:
   // === helpers for ascend_copy lowering (member-functionized) ===
   mlir::Value CreateCastIfTypeMismatch(mlir::Value src_value,
                                        mlir::Value dst_value);
-  int64_t InferStaticUpperBoundForDim(mlir::Value shaped_value, int64_t dim);
-  mlir::Value CreateDimValueForShaped(mlir::Location loc,
-                                      mlir::Value shaped_value, int64_t dim);
-  mlir::Value CreateStaticBackedTensor(
-      mlir::RankedTensorType tensor_type, mlir::Value runtime_shape_source,
-      mlir::Value static_bound_source, mlir::Location loc);
+  mlir::Value CreateStaticBackedTensor(mlir::RankedTensorType tensor_type,
+                                       mlir::Value runtime_shape_source,
+                                       mlir::Value static_bound_source,
+                                       mlir::Location loc);
   mlir::Value ReshapeTensorImpl(mlir::Value src,
                                 llvm::ArrayRef<int64_t> dstShapeStatic,
                                 llvm::ArrayRef<mlir::OpFoldResult> dstShapeOFR);

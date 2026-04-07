@@ -1075,96 +1075,62 @@ mlir::Value CodeGenTileLangNPUIRDEV::CreateCastIfTypeMismatch(mlir::Value src,
   return newCastOp->getResult(0);
 }
 
-int64_t CodeGenTileLangNPUIRDEV::InferStaticUpperBoundForDim(
-    mlir::Value shaped_value, int64_t dim) {
-  if (!shaped_value)
-    return mlir::ShapedType::kDynamic;
-
-  auto shapedTy = shaped_value.getType().dyn_cast<mlir::ShapedType>();
-  if (!shapedTy || !shapedTy.hasRank() || dim < 0 || dim >= shapedTy.getRank())
-    return mlir::ShapedType::kDynamic;
-
-  if (!shapedTy.isDynamicDim(dim))
-    return shapedTy.getDimSize(dim);
-
-  if (auto toTensor =
-          shaped_value.getDefiningOp<mlir::bufferization::ToTensorOp>()) {
-    return InferStaticUpperBoundForDim(toTensor.getMemref(), dim);
-  }
-
-  if (auto extract =
-          shaped_value.getDefiningOp<mlir::tensor::ExtractSliceOp>()) {
-    auto srcTy = extract.getSource().getType().dyn_cast<mlir::ShapedType>();
-    if (srcTy && srcTy.hasRank() && srcTy.getRank() == shapedTy.getRank()) {
-      return InferStaticUpperBoundForDim(extract.getSource(), dim);
-    }
-  }
-
-  if (auto insert = shaped_value.getDefiningOp<mlir::tensor::InsertSliceOp>()) {
-    return InferStaticUpperBoundForDim(insert.getDest(), dim);
-  }
-
-  if (auto tensorCast = shaped_value.getDefiningOp<mlir::tensor::CastOp>()) {
-    return InferStaticUpperBoundForDim(tensorCast.getSource(), dim);
-  }
-
-  if (auto subview = shaped_value.getDefiningOp<mlir::memref::SubViewOp>()) {
-    auto srcTy = subview.getSource().getType().dyn_cast<mlir::ShapedType>();
-    if (srcTy && srcTy.hasRank() && srcTy.getRank() == shapedTy.getRank()) {
-      return InferStaticUpperBoundForDim(subview.getSource(), dim);
-    }
-  }
-
-  return mlir::ShapedType::kDynamic;
-}
-
-mlir::Value CodeGenTileLangNPUIRDEV::CreateDimValueForShaped(
-    mlir::Location loc, mlir::Value shaped_value, int64_t dim) {
-  if (shaped_value.getType().isa<mlir::RankedTensorType>()) {
-    return builder.create<mlir::tensor::DimOp>(loc, shaped_value, dim);
-  }
-  if (shaped_value.getType().isa<mlir::MemRefType>()) {
-    return builder.create<mlir::memref::DimOp>(loc, shaped_value, dim);
-  }
-  ICHECK(false) << "expected ranked tensor or memref for dim query";
-  return mlir::Value{};
-}
-
 mlir::Value CodeGenTileLangNPUIRDEV::CreateStaticBackedTensor(
     mlir::RankedTensorType tensor_type, mlir::Value runtime_shape_source,
     mlir::Value static_bound_source, mlir::Location loc) {
+  // Fast path: all dims are static, just create empty tensor
+  if (tensor_type.hasStaticShape()) {
+    return builder.create<mlir::tensor::EmptyOp>(loc, tensor_type.getShape(),
+                                                 tensor_type.getElementType());
+  }
+
+  // Dynamic dims path: derive static upper bounds directly from source types.
+  // In codegen, callers always provide GM buffer values (static shapes) as
+  // sources, so we check their types directly without recursive SSA traversal.
+  auto tryGetStaticDim = [](mlir::Value val, int64_t dim) -> int64_t {
+    if (!val)
+      return mlir::ShapedType::kDynamic;
+    auto ty = val.getType().dyn_cast<mlir::ShapedType>();
+    if (!ty || !ty.hasRank() || dim < 0 || dim >= ty.getRank())
+      return mlir::ShapedType::kDynamic;
+    return ty.getDimSize(dim); // static or kDynamic
+  };
+
+  auto rank = tensor_type.getRank();
   llvm::SmallVector<int64_t> staticShape(tensor_type.getShape().begin(),
                                          tensor_type.getShape().end());
-  bool needsSlice = false;
-  for (int64_t i = 0, rank = tensor_type.getRank(); i < rank; ++i) {
+  for (int64_t i = 0; i < rank; ++i) {
     if (!tensor_type.isDynamicDim(i))
       continue;
-    needsSlice = true;
-    int64_t upperBound = InferStaticUpperBoundForDim(runtime_shape_source, i);
-    if (mlir::ShapedType::isDynamic(upperBound)) {
-      upperBound = InferStaticUpperBoundForDim(static_bound_source, i);
-    }
-    ICHECK(!mlir::ShapedType::isDynamic(upperBound))
-        << "failed to infer static upper bound for dynamic tensor dim " << i;
-    staticShape[i] = upperBound;
+    int64_t bound = tryGetStaticDim(runtime_shape_source, i);
+    if (mlir::ShapedType::isDynamic(bound))
+      bound = tryGetStaticDim(static_bound_source, i);
+    ICHECK(!mlir::ShapedType::isDynamic(bound))
+        << "failed to infer static upper bound for dynamic tensor dim " << i
+        << "; ensure callers provide a static-shaped source";
+    staticShape[i] = bound;
   }
 
   mlir::Value fullEmpty = builder.create<mlir::tensor::EmptyOp>(
       loc, staticShape, tensor_type.getElementType());
-  if (!needsSlice) {
-    return fullEmpty;
-  }
 
-  llvm::SmallVector<mlir::OpFoldResult> offsets(tensor_type.getRank(),
-                                                builder.getIndexAttr(0));
-  llvm::SmallVector<mlir::OpFoldResult> strides(tensor_type.getRank(),
-                                                builder.getIndexAttr(1));
+  // Build extract_slice to recover the dynamic shape from runtime_shape_source
+  llvm::SmallVector<mlir::OpFoldResult> offsets(rank, builder.getIndexAttr(0));
+  llvm::SmallVector<mlir::OpFoldResult> strides(rank, builder.getIndexAttr(1));
   llvm::SmallVector<mlir::OpFoldResult> sizes;
-  sizes.reserve(tensor_type.getRank());
-
-  for (int64_t i = 0, rank = tensor_type.getRank(); i < rank; ++i) {
+  sizes.reserve(rank);
+  for (int64_t i = 0; i < rank; ++i) {
     if (tensor_type.isDynamicDim(i)) {
-      sizes.push_back(CreateDimValueForShaped(loc, runtime_shape_source, i));
+      // Inline DimOp creation — runtime_shape_source is always tensor or memref
+      if (runtime_shape_source.getType().isa<mlir::RankedTensorType>()) {
+        sizes.push_back(
+            builder.create<mlir::tensor::DimOp>(loc, runtime_shape_source, i)
+                .getResult());
+      } else {
+        sizes.push_back(
+            builder.create<mlir::memref::DimOp>(loc, runtime_shape_source, i)
+                .getResult());
+      }
     } else {
       sizes.push_back(builder.getIndexAttr(tensor_type.getDimSize(i)));
     }

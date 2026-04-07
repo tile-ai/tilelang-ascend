@@ -203,9 +203,7 @@ def implicit_cast_copy_1d(L, block_L, dtype="float16", mid_dtype="float32"):
 
 
 @tilelang.jit(target="npuir")
-def implicit_cast_copy_1d_dynamic(
-    L, block_L, dtype="float16", mid_dtype="float32"
-):
+def implicit_cast_copy_1d_dynamic(L, block_L, dtype="float16", mid_dtype="float32"):
 
     @T.prim_func
     def implicit_cast_copy_1d_dynamic(
@@ -246,9 +244,7 @@ def test_copy_implicit_cast_dev(dtype, mid_dtype):
 def test_copy_implicit_cast_dynamic_dev():
     dtype, mid_dtype = "float16", "float32"
     L, block_L = 1000, 256
-    kernel = implicit_cast_copy_1d_dynamic(
-        L, block_L, dtype=dtype, mid_dtype=mid_dtype
-    )
+    kernel = implicit_cast_copy_1d_dynamic(L, block_L, dtype=dtype, mid_dtype=mid_dtype)
 
     input_tensor = gen_tensor((L,), dtype, kind="randn")
     output_tensor = gen_tensor((L,), dtype, kind="zeros")
