@@ -162,7 +162,8 @@ def indexer(N2, G, D, TOP_K, VECTOR_BASEN, VECTOR_BASEG, BLOCK_M, BLOCK_N, BLOCK
                             if s2_id == merge_sort_times - 1:
                                 T.tile.merge_sort(
                                     topk_global_ub2,
-                                    mm_res_ub, topk_global_ub1[0, :],
+                                    mm_res_ub,
+                                    topk_global_ub1[0, :],
                                     topk_global_ub1[1, :],
                                     topk_global_ub1[2, :],
                                     topk_global_ub1[3, :],
