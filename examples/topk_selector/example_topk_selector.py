@@ -41,6 +41,7 @@ def simple_topk_selector(B: int, N: int, top_k: int, block_N: int, dtype: Litera
     address_topk_global = address_sort_result + merge_num * block_N * 2 * bytes_of(dtype)
     address_gather_result = address_topk_global + top_k * 2 * bytes_of(dtype)
     address_output_index = address_gather_result + top_k * bytes_of(dtype)
+    address_merge_sort_dst = address_output_index + top_k * bytes_of(INDEX_DTYPE)
 
     @T.prim_func
     def main(
@@ -61,6 +62,7 @@ def simple_topk_selector(B: int, N: int, top_k: int, block_N: int, dtype: Litera
             topk_global = T.alloc_ub([top_k * 2], dtype)
             gather_result = T.alloc_ub([top_k], dtype)
             output_index = T.alloc_ub([top_k], INDEX_DTYPE)
+            merge_sort_dst = T.alloc_ub([top_k * 2], dtype)
 
             T.annotate_address(
                 {
@@ -73,6 +75,7 @@ def simple_topk_selector(B: int, N: int, top_k: int, block_N: int, dtype: Litera
                     topk_global: address_topk_global,
                     gather_result: address_gather_result,
                     output_index: address_output_index,
+                    merge_sort_dst: address_merge_sort_dst,
                 }
             )
 
@@ -92,12 +95,10 @@ def simple_topk_selector(B: int, N: int, top_k: int, block_N: int, dtype: Litera
 
                 if bn % merge_num == merge_num - 1:
                     if bn == merge_num - 1:  # first time merge, update topk_global directly
-                        T.tile.merge_sort(topk_global, sort_result, block_N, merge_num, is_copy=0)
-                    else:  # later merges, merge to sort_temp and then copy topk to topk_global
-                        T.tile.merge_sort(
-                            sort_temp, sort_result, block_N, merge_num, is_copy=1
-                        )  # is_copy=1 => merge result copy back to sort_result
-                        T.tile.topk(topk_global, sort_result, sort_temp, top_k)
+                        T.tile.merge_sort(topk_global, sort_temp, sort_result[0, :], sort_result[1, :], sort_result[2, :], sort_result[3, :])
+                    else:  # later merges, merge to merge_sort_dst and then topk to topk_global
+                        T.tile.merge_sort(merge_sort_dst, sort_temp, sort_result[0, :], sort_result[1, :], sort_result[2, :], sort_result[3, :])
+                        T.tile.topk(topk_global, merge_sort_dst, sort_temp, top_k)
 
             T.tile.gather_mask(gather_result, topk_global, "P1010")  # [value, idx] => [idx]
             T.tile.cast(output_index, gather_result, "CAST_ROUND", top_k)
