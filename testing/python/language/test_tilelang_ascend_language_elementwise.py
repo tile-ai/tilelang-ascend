@@ -4371,7 +4371,7 @@ def run_test_reduce_sum(M, N, block_M, block_N, dim, dtype, target):
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
     print(func.get_kernel_source())
 
-    a = torch.ones(M, N, dtype=torch.float32 if dtype == "float" else torch.float16).npu()
+    a = torch.randn(M, N, dtype=torch.float32 if dtype == "float" else torch.float16).npu()
     b = torch.zeros(M, dtype=torch.float32).npu()
     torch.npu.synchronize()
 
