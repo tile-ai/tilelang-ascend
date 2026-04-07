@@ -1855,14 +1855,17 @@ void CodeGenTileLangAscend::ReduceOpCodegen(const CallNode *op) {
 
     if (dtype == "half") {
       std::string mask, repeatTime, srcRepStride;
+      constexpr int64_t ELE_NUM_PER_C0_FOR_HALF = 16;
       if (dim_val == -1) {
         mask = std::to_string(n_val);
         repeatTime = std::to_string(m_val);
-        srcRepStride = "1";
+        srcRepStride = std::to_string((n_val + ELE_NUM_PER_C0_FOR_HALF - 1) /
+                                      ELE_NUM_PER_C0_FOR_HALF);
       } else if (dim_val == 0) {
         mask = std::to_string(m_val);
         repeatTime = std::to_string(n_val);
-        srcRepStride = "1";
+        srcRepStride = std::to_string((m_val + ELE_NUM_PER_C0_FOR_HALF - 1) /
+                                      ELE_NUM_PER_C0_FOR_HALF);
       } else {
         mask = std::to_string(m_val * n_val);
         repeatTime = "1";
