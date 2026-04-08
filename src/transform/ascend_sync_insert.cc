@@ -35,6 +35,8 @@
 #include "./common/collector.h"
 #include "./common/operation_config.h"
 
+#include "../../3rdparty/tvm/src/tir/transforms/ir_utils.h"
+
 namespace tvm {
 namespace tl {
 
@@ -1347,6 +1349,15 @@ private:
     return -1;
   }
 
+  std::string GetBufferScope(const std::string &buffer_name) {
+    for (const auto &pair : address_map_) {
+      if (pair.first->name_hint == buffer_name) {
+        return GetPtrStorageScope(pair.first);
+      }
+    }
+    return "";
+  }
+
   std::vector<std::string> FindRelatedBuffers(const std::string &buffer_name) {
     std::vector<std::string> related;
     int64_t target_addr = GetPhysicalAddress(buffer_name);
@@ -1356,12 +1367,15 @@ private:
       return related;
     }
 
+    std::string target_scope = GetBufferScope(buffer_name);
+
     int64_t target_size = GetBufferSize(buffer_name);
     if (target_size <= 0) {
       // No size info, fall back to exact address match
       for (const auto &pair : address_map_) {
         if (auto int_imm = pair.second.as<IntImmNode>()) {
-          if (int_imm->value == target_addr) {
+          if (int_imm->value == target_addr &&
+              GetPtrStorageScope(pair.first) == target_scope) {
             related.push_back(pair.first->name_hint);
           }
         }
@@ -1373,6 +1387,9 @@ private:
 
     for (const auto &pair : address_map_) {
       if (auto int_imm = pair.second.as<IntImmNode>()) {
+        if (GetPtrStorageScope(pair.first) != target_scope) {
+          continue;
+        }
         int64_t other_addr = int_imm->value;
         int64_t other_size = GetBufferSize(pair.first->name_hint);
         if (other_size <= 0) {
