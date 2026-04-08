@@ -26,6 +26,16 @@ Three sets of shapes differ only in KV_S:
 
 `act_kv_s` is fixed at 2560, and `sparse_size` is fixed at 2048. The effective sparse window size actually participating in the computation remains basically unchanged.
 
+## Performance Results
+
+|  | shape0 | shape1 | shape2 | Average Time (us) | AscendC / TileLang |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| AscendC  | 98.000 | 99.000 | 100.000 | 99.000 | 1.00x |
+| TileLang | 109.760 | 109.100 | 108.980 | 109.280 | 0.91x |
+
+*Note: AscendC reference implementation source:* https://gitcode.com/cann/cann-recipes-infer/blob/master/ops/ascendc/torch_ops_extension/custom_ops/converter/npu_sparse_flash_attention.py
+
+
 ## 📖 File Description
 ```
 ├── sparse_flash_attn_pa_baseline.py            # Baseline version
