@@ -1,0 +1,27 @@
+# TileLang-Ascend compile flags for clangd fallback.
+# Used when compile_commands.json is absent (no cmake build/ directory).
+# Relative -I paths resolve from this file's directory (project root).
+# Derived from root CMakeLists.txt.
+-std=c++17
+-fPIC
+# TVM core includes (CMakeLists.txt lines 153-158)
+-I3rdparty/tvm/include
+-I3rdparty/tvm/src
+-I3rdparty/tvm/3rdparty/dlpack/include
+-I3rdparty/tvm/3rdparty/dmlc-core/include
+# Third-party includes for tl_templates browsing
+-I3rdparty/catlass/include
+-I3rdparty/shmem/include
+-I3rdparty/pto-isa/include
+-I3rdparty/cutlass/include
+-I3rdparty/composable_kernel/include
+# Compile definitions (CMakeLists.txt lines 195-204)
+-DDMLC_USE_LOGGING_LIBRARY=<tvm/runtime/logging.h>
+-D__STDC_FORMAT_MACROS=1
+-DPICOJSON_USE_INT64
+-DTILE_LANG_EXPORTS
+# Note: CMake conditionally adds CUDA_MAJOR_VERSION (USE_CUDA),
+# __HIP_PLATFORM_AMD__ and __HIP_PLATFORM_HCC__ (USE_ROCM).
+# These are intentionally omitted here because this file is a
+# fallback for when no cmake build/ exists. Files requiring those
+# defines (rt_mod_hip.cc) are already suppressed in .clangd.
