@@ -11,6 +11,7 @@ pass_configs = {
 CAST_MODE_LOW2HIGH = "CAST_NONE"
 CAST_MODE_HIGH2LOW = "CAST_RINT"
 
+
 @tilelang.jit(out_idx=[1], pass_configs=pass_configs)
 def layer_norm(M, N, block_M, block_N, eps=1e-5, dtype="float"):
     """
@@ -34,10 +35,7 @@ def layer_norm(M, N, block_M, block_N, eps=1e-5, dtype="float"):
             return T.copy(src, dst)
 
     @T.prim_func
-    def main(
-            A: T.Tensor((M, N), dtype),
-            B: T.Tensor((M, N), dtype)
-    ):
+    def main(A: T.Tensor((M, N), dtype), B: T.Tensor((M, N), dtype)):
         with T.Kernel(m_num, is_npu=True) as (cid, vid):
             bx = cid
 
@@ -62,8 +60,13 @@ def layer_norm(M, N, block_M, block_N, eps=1e-5, dtype="float"):
 
                 # Accumulation
                 for by in T.serial(n_num):
-                    T.copy(A[bx*block_M+vid*block_M//VEC_NUM:bx*block_M+(vid+1)*block_M//VEC_NUM,
-                             by*block_N:(by+1)*block_N], a_ub)
+                    T.copy(
+                        A[
+                            bx * block_M + vid * block_M // VEC_NUM : bx * block_M + (vid + 1) * block_M // VEC_NUM,
+                            by * block_N : (by + 1) * block_N,
+                        ],
+                        a_ub,
+                    )
                     cast_or_copy(a_cal, a_ub, CAST_MODE_LOW2HIGH, sub_block_M * block_N)
 
                     T.tile.add(sum_i, sum_i, a_cal)
@@ -88,16 +91,26 @@ def layer_norm(M, N, block_M, block_N, eps=1e-5, dtype="float"):
 
                 # Normalize
                 for by in T.serial(n_num):
-                    T.copy(A[bx*block_M+vid*block_M//VEC_NUM:bx*block_M+(vid+1)*block_M//VEC_NUM,
-                             by*block_N:(by+1)*block_N], a_ub)
+                    T.copy(
+                        A[
+                            bx * block_M + vid * block_M // VEC_NUM : bx * block_M + (vid + 1) * block_M // VEC_NUM,
+                            by * block_N : (by + 1) * block_N,
+                        ],
+                        a_ub,
+                    )
                     cast_or_copy(a_cal, a_ub, CAST_MODE_LOW2HIGH, sub_block_M * block_N)
 
                     T.tile.sub(a_cal, a_cal, sum_i)
                     T.tile.div(a_cal, a_cal, sum_square_i)
 
                     cast_or_copy(a_ub, a_cal, CAST_MODE_HIGH2LOW, sub_block_M * block_N)
-                    T.copy(a_ub, B[bx*block_M+vid*block_M//VEC_NUM:bx*block_M+(vid+1)*block_M//VEC_NUM,
-                                   by*block_N:(by+1)*block_N])
+                    T.copy(
+                        a_ub,
+                        B[
+                            bx * block_M + vid * block_M // VEC_NUM : bx * block_M + (vid + 1) * block_M // VEC_NUM,
+                            by * block_N : (by + 1) * block_N,
+                        ],
+                    )
 
     return main
 

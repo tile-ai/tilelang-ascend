@@ -65,13 +65,14 @@ def online_softmax(M, N, block_M, block_N, dtype="float"):
             tmp_exp = T.alloc_ub([sub_block_M, 1], cal_dtype)
             tmp = T.alloc_ub([2 * sub_block_M * block_N], "uint8")
 
-            T.tile.fill(prev_max, -1e38)
+            T.tile.fill(prev_max, -T.infinity(cal_dtype))
             T.tile.fill(prev_sum, 0.0)
             # First pass: compute max and sum
             for by in T.serial(n_num):
                 T.copy(
-                    A[bx * block_M + vid * sub_block_M : bx * block_M + (vid + 1) * sub_block_M, by * block_N : (by + 1) * block_N], a,
-                    pad_value=-T.infinity(cal_dtype)
+                    A[bx * block_M + vid * sub_block_M : bx * block_M + (vid + 1) * sub_block_M, by * block_N : (by + 1) * block_N],
+                    a,
+                    pad_value=-T.infinity(cal_dtype),
                 )  # Load input
                 cast_or_copy(a_cal, a, CAST_MODE_LOW2HIGH, sub_block_M * block_N)  # Cast to compute dtype if needed
                 T.reduce_max(a_cal, tile_max, tmp, dim=-1)  # Compute tile max

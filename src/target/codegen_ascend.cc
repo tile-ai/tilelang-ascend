@@ -813,9 +813,9 @@ inline void PrintConst(const FloatImmNode *op, std::ostream &os,
       os << "half(" << (op->value < 0 ? "-" : "") << "CUDART_INF_F)";
     } else {
       os << "half(";
-    FloatImm const_f32 = FloatImm(DataType::Float(32), op->value);
-    PrintConst(const_f32.get(), os, p);
-    os << ')';
+      FloatImm const_f32 = FloatImm(DataType::Float(32), op->value);
+      PrintConst(const_f32.get(), os, p);
+      os << ')';
     }
     break;
   }
@@ -830,17 +830,17 @@ void CodeGenTileLangAscend::VisitExpr_(const FloatImmNode *op,
 }
 
 void CodeGenTileLangAscend::VisitExpr_(const MulNode *op,
-                                        std::ostream &os) { // NOLINT(*)
+                                       std::ostream &os) { // NOLINT(*)
   // Detect pattern: inf * (-1) -> -inf
-  auto is_float_imm_inf = [](const PrimExpr& expr) -> bool {
-    if (auto* float_imm = expr.as<FloatImmNode>()) {
+  auto is_float_imm_inf = [](const PrimExpr &expr) -> bool {
+    if (auto *float_imm = expr.as<FloatImmNode>()) {
       return std::isinf(float_imm->value);
     }
     return false;
   };
 
-  auto is_neg_one = [](const PrimExpr& expr) -> bool {
-    if (auto* float_imm = expr.as<FloatImmNode>()) {
+  auto is_neg_one = [](const PrimExpr &expr) -> bool {
+    if (auto *float_imm = expr.as<FloatImmNode>()) {
       return float_imm->value == -1.0;
     }
     return false;
@@ -850,11 +850,13 @@ void CodeGenTileLangAscend::VisitExpr_(const MulNode *op,
   if ((is_float_imm_inf(op->a) && is_neg_one(op->b)) ||
       (is_float_imm_inf(op->b) && is_neg_one(op->a))) {
     // Generate negated inf directly
-    if (auto* float_imm = op->a.as<FloatImmNode>()) {
-      FloatImm neg_inf(float_imm->dtype, -std::numeric_limits<double>::infinity());
+    if (auto *float_imm = op->a.as<FloatImmNode>()) {
+      FloatImm neg_inf(float_imm->dtype,
+                       -std::numeric_limits<double>::infinity());
       PrintConst(neg_inf.get(), os, this);
-    } else if (auto* float_imm = op->b.as<FloatImmNode>()) {
-      FloatImm neg_inf(float_imm->dtype, -std::numeric_limits<double>::infinity());
+    } else if (auto *float_imm = op->b.as<FloatImmNode>()) {
+      FloatImm neg_inf(float_imm->dtype,
+                       -std::numeric_limits<double>::infinity());
       PrintConst(neg_inf.get(), os, this);
     }
     return;
