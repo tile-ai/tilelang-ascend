@@ -46,6 +46,7 @@
 #include <mlir/Conversion/Passes.h>
 #include <mlir/Dialect/Arith/IR/Arith.h>
 #include <mlir/Dialect/Func/IR/FuncOps.h>
+#include <mlir/Dialect/Linalg/IR/Linalg.h>
 #include <mlir/Dialect/MemRef/IR/MemRef.h>
 #include <mlir/Dialect/SCF/IR/SCF.h>
 #include <mlir/Dialect/Tensor/IR/Tensor.h>
@@ -77,7 +78,7 @@
 // // HFusion Dialect
 // //===----------------------------------------------------------------------===//
 
-// #include "bishengir/Dialect/HFusion/IR/HFusion.h"
+#include "bishengir/Dialect/HFusion/IR/HFusion.h"
 
 //===----------------------------------------------------------------------===//
 // HACC Dialect
@@ -241,6 +242,14 @@ static std::map<std::string, mlir::hivm::RoundMode> NPUIR_STR_ROUNDMODE{
     {"ceil", mlir::hivm::RoundMode::CEIL},
     {"trunc", mlir::hivm::RoundMode::TRUNC},
     {"odd", mlir::hivm::RoundMode::ODD}};
+
+static std::map<std::string, mlir::hfusion::RoundMode> NPUIR_STR_HFUSION_ROUNDMODE{
+    {"round", mlir::hfusion::RoundMode::ROUND},
+    {"rint", mlir::hfusion::RoundMode::RINT},
+    {"floor", mlir::hfusion::RoundMode::FLOOR},
+    {"ceil", mlir::hfusion::RoundMode::CEIL},
+    {"trunc", mlir::hfusion::RoundMode::TRUNC},
+    {"odd", mlir::hfusion::RoundMode::ODD}};
 
 static std::map<std::string, mlir::hivm::ReduceOperation> NPUIR_STR_REDUCEOP{
     {"sum", mlir::hivm::ReduceOperation::sum},
@@ -2169,26 +2178,64 @@ void CodeGenTileLangNPUIRDEV::VbrcCodegen(const CallNode *op) {
   SetVarValue(npuirop.dst, newCastOp);
 }
 
-/// Generate hivm.hir.vcast for tl.npuir_cast.
+/// Generate hfusion.cast for tl.npuir_cast.
 /// before:
 ///    T.npuir_cast(A, B, "rint")
 /// after:
-///    %.* = hivm.hir.vcast ins(A) outs(B) -> tensor<>
+///    %.* = hfusion.cast ins(A) outs(B) {round_mode = #hfusion.round_mode<RINT>} -> tensor<>
 void CodeGenTileLangNPUIRDEV::VcastCodegen(const CallNode *op) {
   tvm::tl::NpuirCast npuirop(op->args, this->vmap);
   Value src = GetVarValue(npuirop.src);
   Value dst = GetVarValue(npuirop.dst);
   auto round_mode = npuirop.round_mode;
-  mlir::hivm::RoundMode mode = NPUIR_STR_ROUNDMODE[round_mode];
+  mlir::hfusion::RoundMode mode = NPUIR_STR_HFUSION_ROUNDMODE[round_mode];
+  
+  auto srcTensorTy = src.getType().dyn_cast<mlir::TensorType>();
+  auto dstTensorTy = dst.getType().dyn_cast<mlir::TensorType>();
+  ICHECK(srcTensorTy && dstTensorTy) << "src and dst must be tensor types";
+  
+  mlir::Type srcElemTy = srcTensorTy.getElementType();
+  
+  auto loc = builder.getUnknownLoc();
+  
   auto broadcastDim = getBroadcastDim(npuirop.src->shape, npuirop.dst->shape);
   auto broadcastDimAttr = builder.getDenseI64ArrayAttr(broadcastDim);
-  mlir::Type dst_type = dst.getType();
-  mlir::TypeRange result_tensors(&dst_type, 1);
-  auto newCastOp = builder.create<mlir::hivm::VCastOp>(
-      builder.getUnknownLoc(), result_tensors, src, dst,
-      mlir::hivm::RoundModeAttr::get(&context, mode), nullptr,
-      broadcastDimAttr);
-  SetVarValue(npuirop.dst, newCastOp->getResult(0));
+  
+  auto dstShape = dstTensorTy.getShape();
+  SmallVector<mlir::Value> dynamicDims;
+  for (int64_t i = 0, rank = dstTensorTy.getRank(); i < rank; ++i) {
+    if (dstTensorTy.isDynamicDim(i)) {
+      dynamicDims.push_back(builder.create<mlir::tensor::DimOp>(loc, dst, i));
+    }
+  }
+  auto emptyForBroadcast = builder.create<mlir::tensor::EmptyOp>(
+      loc, dstShape, srcElemTy, dynamicDims);
+  
+  Value srcAfterBroadcast = broadcast(src, emptyForBroadcast.getResult(), 
+                                       broadcastDimAttr, builder);
+  
+  auto roundingAttr = builder.getAttr<mlir::hfusion::RoundModeAttr>(mode);
+  // TODO: enable_overflow is currently fixed to true. May need to be configurable
+  // based on specific use cases in the future.
+  auto enableOverflowAttr = builder.getBoolAttr(true);
+  // TODO: TypeFn is currently fixed to cast_signed. If unsigned integer conversion
+  // is needed, extend NpuirCast class to include an is_unsigned parameter and set
+  // TypeFn::cast_unsigned accordingly. bitcast mode is also available for
+  // reinterpretation of bit patterns without conversion.
+  auto castAttr = builder.getAttr<mlir::hfusion::TypeFnAttr>(
+      mlir::hfusion::TypeFn::cast_signed);
+  
+  SmallVector<mlir::NamedAttribute> attrs;
+  attrs.push_back(builder.getNamedAttr(
+      mlir::hfusion::RoundModeAttr::getMnemonic(), roundingAttr));
+  attrs.push_back(builder.getNamedAttr("enable_overflow", enableOverflowAttr));
+  attrs.push_back(builder.getNamedAttr(
+      mlir::hfusion::TypeFnAttr::getMnemonic(), castAttr));
+  
+  auto newCastOp = builder.create<mlir::hfusion::CastOp>(
+      loc, mlir::ValueRange(srcAfterBroadcast), mlir::ValueRange(dst), attrs);
+  
+  SetVarValue(npuirop.dst, newCastOp.getResult(0));
 }
 
 /// Generate hivm.hir.vreduce for tl.npuir_reduce.
