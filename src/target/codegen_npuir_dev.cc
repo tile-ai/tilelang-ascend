@@ -2196,21 +2196,157 @@ void CodeGenTileLangNPUIRDEV::VcastCodegen(const CallNode *op) {
 ///    T.npuir_reduce(A, B, "rint")
 /// after:
 ///    %.* = hivm.hir.vreduce ins(A) outs(B) -> tensor<>
+using namespace mlir;
+using ReassociationIndices = SmallVector<int64_t, 2>;
+
+FailureOr<Value> unsqueezeDims(OpBuilder &rewriter, Location loc,
+                                     Value operand,
+                                     SmallVector<int64_t> &dimensions) {
+  auto operandType = dyn_cast<RankedTensorType>(operand.getType());
+  if (!operandType)
+    return failure();
+
+  llvm::SmallVector<int64_t> operandShape(operandType.getShape());
+  DenseSet<int64_t> dimSet(dimensions.begin(), dimensions.end());
+
+  SmallVector<ReassociationIndices> reassociation(operandShape.size());
+  int64_t idx = -1;
+  if (!reassociation.empty()) {
+    for (size_t i = 0; i < operandShape.size() + dimensions.size(); ++i) {
+      if (!dimSet.contains(i))
+        ++idx;
+      reassociation[std::max<int64_t>(idx, 0)].push_back(i);
+    }
+  }
+
+  SmallVector<int64_t> resultShape(operandType.getShape());
+  for (int64_t dim : dimensions) {
+    resultShape.insert(resultShape.begin() + dim, 1);
+  }
+
+  auto resultType = RankedTensorType::get(resultShape, operandType.getElementType());
+  Value result = rewriter.create<tensor::ExpandShapeOp>(loc, resultType, operand, reassociation);
+  return result;
+}
+
+FailureOr<Value> squeezeDims(OpBuilder &rewriter, Location loc,
+                                   Value operand,
+                                   SmallVector<int64_t> &dimensions) {
+  auto operandTy = dyn_cast<RankedTensorType>(operand.getType());
+  if (!operandTy)
+    return failure();
+
+  ArrayRef<int64_t> operandShape = operandTy.getShape();
+  SmallVector<int64_t> newOperandShape;
+  auto resultRank = operandShape.size() - dimensions.size();
+
+  if (resultRank == 0) {
+    SmallVector<ReassociationIndices> reassociation;
+    auto newOperandType = RankedTensorType::get({}, operandTy.getElementType());
+    operand = rewriter.create<tensor::CollapseShapeOp>(loc, newOperandType, operand, reassociation);
+    return operand;
+  }
+
+  SmallVector<ReassociationIndices> reassociation(resultRank);
+  DenseSet<int64_t> dimSet;
+  for (auto i : dimensions) {
+    assert(operandShape[i] == 1 && "Only squeeze dim=1!");
+    dimSet.insert(i);
+  }
+
+  int64_t idx = -1;
+  for (size_t i = 0; i < operandShape.size(); ++i) {
+    if (!dimSet.contains(i)) {
+      ++idx;
+      newOperandShape.push_back(operandShape[i]);
+    }
+    reassociation[std::max<int64_t>(idx, 0)].push_back(i);
+  }
+
+  auto newOperandType = RankedTensorType::get(newOperandShape, operandTy.getElementType());
+  operand = rewriter.create<tensor::CollapseShapeOp>(loc, newOperandType, operand, reassociation);
+  return operand;
+}
+
 void CodeGenTileLangNPUIRDEV::VreduceCodegen(const CallNode *op) {
   tvm::tl::NpuirReduce npuirop(op->args, this->vmap);
-  Value src = GenExtractSliceFromRegion(npuirop.src, npuirop.src_range);
-  Value dst_ori = GetVarValue(npuirop.dst);
-  Value dst = GenExtractSliceFromRegion(npuirop.dst, npuirop.dst_range);
-  auto reduce_mode = npuirop.reduce_mode;
-  mlir::hivm::ReduceOpAttr mode =
-      mlir::hivm::ReduceOpAttr::get(&context, NPUIR_STR_REDUCEOP[reduce_mode]);
-  mlir::Type dst_type = dst.getType();
-  mlir::TypeRange result_tensors(&dst_type, 1);
-  auto booleanAttr = mlir::BoolAttr::get(builder.getContext(), false);
-  auto reduceOp = builder.create<mlir::hivm::VReduceOp>(
-      builder.getUnknownLoc(), result_tensors, src, dst, mode, booleanAttr,
-      builder.getDenseI64ArrayAttr(npuirop.reduce_dims));
-  auto insertSliceOp = ReshapeCastAndInsertSlice(reduceOp.getResult()[0], dst_ori, npuirop.dst_range);
+
+  mlir::Value src = GenExtractSliceFromRegion(npuirop.src, npuirop.src_range);
+  mlir::Value dst_ori = GetVarValue(npuirop.dst);
+  mlir::Value dst = GenExtractSliceFromRegion(npuirop.dst, npuirop.dst_range);
+
+  auto loc = builder.getUnknownLoc();
+  auto elemTy = src.getType().cast<mlir::RankedTensorType>().getElementType();
+  auto dstRankedTy = dst.getType().cast<mlir::RankedTensorType>();
+  auto dstShape = dstRankedTy.getShape();
+  int dstRank = dstShape.size();
+
+  llvm::SmallVector<int64_t> squeezeDimsList;
+  for (int i = 0; i < dstRank; ++i) {
+    if (dstShape[i] == 1) {
+      squeezeDimsList.push_back(i);
+    }
+  }
+
+  mlir::Value squeezedInit = dst;
+  if (!squeezeDimsList.empty()) {
+    auto squeezed = squeezeDims(builder, loc, dst, squeezeDimsList);
+    if (failed(squeezed)) {
+      emitError(loc, "squeezeDims failed");
+      return;
+    }
+    squeezedInit = *squeezed;
+  }
+
+  auto squeezedTy = squeezedInit.getType().cast<mlir::RankedTensorType>();
+  auto reduceOp = builder.create<mlir::linalg::ReduceOp>(
+    loc, squeezedTy, src, squeezedInit,
+    builder.getDenseI64ArrayAttr(npuirop.reduce_dims)
+  );
+
+  {
+    mlir::OpBuilder::InsertionGuard guard(builder);
+    mlir::Region& region = reduceOp.getRegion();
+    mlir::Block* block = builder.createBlock(&region);
+    block->addArgument(elemTy, loc);
+    block->addArgument(elemTy, loc);
+    builder.setInsertionPointToStart(block);
+
+    mlir::Value inputElem = block->getArgument(0);
+    mlir::Value accumElem = block->getArgument(1);
+    mlir::Value result;
+
+    if (npuirop.reduce_mode == "sum") {
+      if (elemTy.isa<mlir::FloatType>())
+        result = builder.create<mlir::arith::AddFOp>(loc, inputElem, accumElem);
+      else
+        result = builder.create<mlir::arith::AddIOp>(loc, inputElem, accumElem);
+    } else if (npuirop.reduce_mode == "max") {
+      if (elemTy.isa<mlir::FloatType>()) {
+        auto cmp = builder.create<mlir::arith::CmpFOp>(loc, mlir::arith::CmpFPredicate::OGT, inputElem, accumElem);
+        result = builder.create<mlir::arith::SelectOp>(loc, cmp, inputElem, accumElem);
+      } else {
+        auto intTy = elemTy.cast<mlir::IntegerType>();
+        auto pred = intTy.isSigned() ? mlir::arith::CmpIPredicate::sgt : mlir::arith::CmpIPredicate::ugt;
+        auto cmp = builder.create<mlir::arith::CmpIOp>(loc, pred, inputElem, accumElem);
+        result = builder.create<mlir::arith::SelectOp>(loc, cmp, inputElem, accumElem);
+      }
+    }
+
+    builder.create<mlir::linalg::YieldOp>(loc, result);
+  }
+
+  mlir::Value reducedResult = reduceOp.getResult(0);
+  if (!squeezeDimsList.empty()) {
+    auto unsqueezed = unsqueezeDims(builder, loc, reducedResult, squeezeDimsList);
+    if (failed(unsqueezed)) {
+      emitError(loc, "unsqueezeDims failed");
+      return;
+    }
+    reducedResult = *unsqueezed;
+  }
+
+  auto insertSliceOp = ReshapeCastAndInsertSlice(reducedResult, dst_ori, npuirop.dst_range);
   SetVarValue(npuirop.dst, insertSliceOp);
 }
 
