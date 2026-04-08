@@ -1943,11 +1943,19 @@ mlir::Value CodeGenTileLangNPUIRDEV::BinaryOpCodegen(const PrimExprNode *op,
   return mlirVal;
 }
 
-/// Generate hivm.hir.vexp for tl.npuir_exp
+static inline constexpr bool startsWith(std::string_view str,
+                                        std::string_view prefix) {
+  return str.size() >= prefix.size() &&
+         str.compare(0, prefix.size(), prefix) == 0;
+}
+
+/// Generate vectorized unary op for npuir ops (e.g., tl.npuir_exp)
 /// before:
 ///     T.npuir_exp(A, B)
 /// after:
-///     %.* = hivm.hir.vexp ins(A) outs(B) -> tensor<>
+        %.* = <linalg>.<op> ins(%A_trans) outs(B) -> tensor<>
+        or
+///     %.* = hivm.hir.<op> ins(A) outs(B) -> tensor<>
 template <typename T, typename U>
 void CodeGenTileLangNPUIRDEV::UnaryVecOpCodegen(const CallNode *op) {
   T npuirop(op->args, this->vmap);
@@ -1955,17 +1963,40 @@ void CodeGenTileLangNPUIRDEV::UnaryVecOpCodegen(const CallNode *op) {
   auto out_data_name = GetVarValue(npuirop.dst);
   auto dims = getBroadcastDim(npuirop.src->shape, npuirop.dst->shape);
   mlir::Type dst_type = out_data_name.getType();
-  mlir::TypeRange result_tensors(&dst_type, 1);
-  // Create HIVM Op
-  auto newOp = builder.create<U>(
-      builder.getUnknownLoc(), 
-      result_tensors,            // result type
-      in_data_name,              // in
-      out_data_name,             // out
-      builder.getDenseI64ArrayAttr({}),           // transpose
-      builder.getDenseI64ArrayAttr(dims)          // broadcast
-  );
-  SetVarValue(npuirop.dst, newOp->getResult(0));
+  auto loc = builder.getUnknownLoc();
+  mlir::Value newOpValue;
+
+  auto transposeAttr = builder.getDenseI64ArrayAttr({});
+  auto broadcastAttr = builder.getDenseI64ArrayAttr(dims);
+
+  if constexpr (startsWith(
+                     U::getOperationName(),
+                     mlir::hivm::HIVMDialect::getDialectNamespace())) {
+    // Create HIVM Op
+    auto newOp = builder.create<U>(
+        loc, 
+        mlir::TypeRange{&dst_type, 1}, 
+        in_data_name, 
+        out_data_name, 
+        transposeAttr, 
+        broadcastAttr
+    );
+    newOpValue = newOp->getResult(0);
+  } else {
+    // Create linalg Op
+    in_data_name = broadcastOrTranspose(in_data_name, out_data_name, 
+                                        broadcastAttr, transposeAttr, builder);
+
+    auto newOp = builder.create<U>(
+        loc, 
+        dst_type, 
+        mlir::ValueRange{in_data_name}, 
+        mlir::ValueRange{out_data_name}
+    );
+    newOpValue = newOp->getResult(0);
+  }
+
+  SetVarValue(npuirop.dst, newOpValue);
 }
 
 void CodeGenTileLangNPUIRDEV::BarrierCodegen(const CallNode *op) {
@@ -2802,12 +2833,6 @@ Value CodeGenTileLangNPUIRDEV::broadcastOrTranspose(Value input, Value output,
   return result;
 }
 
-static inline constexpr bool startsWith(std::string_view str,
-                                        std::string_view prefix) {
-  return str.size() >= prefix.size() &&
-         str.compare(0, prefix.size(), prefix) == 0;
-}
-
 /// Generate hivm.hir.vadd for tl.npuir_add.
 /// Generate hivm.hir.vcmp for tl.npuir_cmp.
 /// Generate hivm.hir.vdiv for tl.npuir_div.
@@ -3441,7 +3466,7 @@ mlir::Value CodeGenTileLangNPUIRDEV::VisitExpr_(const CallNode *op) {
   } else if (op->op.same_as(Op::Get("tl.npuir_add"))) {
     CreateHIVMBinaryVectorOp<linalg::AddOp>(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_exp"))) {
-    UnaryVecOpCodegen<tvm::tl::NpuirExp, mlir::hivm::VExpOp>(op);
+    UnaryVecOpCodegen<tvm::tl::NpuirExp, mlir::linalg::ExpOp>(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_ln"))) {
     UnaryVecOpCodegen<tvm::tl::NpuirLn, mlir::hivm::VLnOp>(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_relu"))) {
@@ -3471,7 +3496,7 @@ mlir::Value CodeGenTileLangNPUIRDEV::VisitExpr_(const CallNode *op) {
   } else if (op->op.same_as(Op::Get("tl.npuir_bitcast"))) {
     BitcastCodegen(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_div"))) {
-    CreateHIVMBinaryVectorOp<mlir::hivm::VDivOp>(op);
+    CreateHIVMBinaryVectorOp<mlir::linalg::DivOp>(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_mul"))) {
     CreateHIVMBinaryVectorOp<mlir::linalg::MulOp>(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_sub"))) {
