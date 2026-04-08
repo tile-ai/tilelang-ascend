@@ -637,6 +637,58 @@ public:
   //     current_proccess_switch_ = false; // turn off
   //     return StmtMutator::VisitStmt_(op);
   // }
+  Stmt VisitStmt_(const ForNode *op) final {
+    Stmt new_stmt = StmtMutator::VisitStmt_(op);
+
+    const ForNode *new_for = new_stmt.as<ForNode>();
+    if (!new_for) {
+      return new_stmt;
+    }
+
+    Stmt new_body = new_for->body;
+    // Recursively check if the body is effectively empty
+    // (e.g., BlockRealize with only alloc_buffers and Evaluate(0))
+    if (IsEmptyBody(new_body)) {
+      return Evaluate(0);
+    }
+
+    return new_stmt;
+  }
+
+  bool IsEmptyBody(const Stmt &stmt) {
+    if (const auto *eval = stmt.as<EvaluateNode>()) {
+      if (const auto *int_imm = eval->value.as<IntImmNode>()) {
+        return int_imm->value == 0;
+      }
+    }
+    if (const auto *alloc = stmt.as<AllocateNode>()) {
+      return IsEmptyBody(alloc->body);
+    }
+    if (const auto *realize = stmt.as<BlockRealizeNode>()) {
+      // Check if block only has allocations and no actual statements
+      return IsEmptyBody(realize->block->body);
+    }
+    if (const auto *block = stmt.as<BlockNode>()) {
+      // Block may have alloc_buffers, but we only care about the body
+      return IsEmptyBody(block->body);
+    }
+    if (const auto *if_then_else = stmt.as<IfThenElseNode>()) {
+      bool then_empty = IsEmptyBody(if_then_else->then_case);
+      bool else_empty = if_then_else->else_case.defined()
+                            ? IsEmptyBody(if_then_else->else_case.value())
+                            : true;
+      return then_empty && else_empty;
+    }
+    if (const auto *seq = stmt.as<SeqStmtNode>()) {
+      for (const auto &s : seq->seq) {
+        if (!IsEmptyBody(s)) {
+          return false;
+        }
+      }
+      return true;
+    }
+    return false;
+  }
 
   Stmt VisitStmt_(const EvaluateNode *op) final {
     auto call_node_ = op->value.as<CallNode>();
