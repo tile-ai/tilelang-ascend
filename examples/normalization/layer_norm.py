@@ -16,8 +16,6 @@ CAST_MODE_HIGH2LOW = "CAST_RINT"
 def layer_norm(M, N, block_M, block_N, eps=1e-5, dtype="float"):
     """
     Layer Norm
-    Uses float32 for intermediate computation only for bfloat16.
-    float/float16 use their native types.
     """
 
     m_num = T.ceildiv(M, block_M)

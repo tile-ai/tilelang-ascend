@@ -19,7 +19,6 @@ def online_softmax(M, N, block_M, block_N, dtype="float"):
     """
     Safe softmax with online normalizer.
     Supports float, float16, and bfloat16.
-    Uses float32 for intermediate computation only for bfloat16.
 
     Algorithm:
         m_0 = -inf
