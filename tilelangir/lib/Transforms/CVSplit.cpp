@@ -145,6 +145,8 @@ private:
     LDBG("Visiting " << *op);
 
     for (auto user : op->getUsers()) {
+      if (!currentForOp->isProperAncestor(user))
+        continue;
       if (isa<scf::YieldOp>(user))
         continue;
       visitGroupOfOps(user, visitor);
@@ -152,9 +154,10 @@ private:
 
     for (auto operand : op->getOperands()) {
       auto definingOp = operand.getDefiningOp();
-      if (!definingOp || !currentForOp->isProperAncestor(definingOp))
+      if (!definingOp)
         continue;
-      if (isScalarOp(definingOp))
+      if (isScalarOp(definingOp) ||
+          isa<bishengir::memref_ext::AllocWorkspaceOp>(definingOp))
         continue;
       visitGroupOfOps(definingOp, visitor);
     }

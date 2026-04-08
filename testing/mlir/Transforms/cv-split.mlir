@@ -46,6 +46,8 @@ module attributes {hivm.module_core_type = #hivm.module_core_type<MIX>, memref.m
     %23 = hivm.hir.vbrc ins(%cst_4 : f32) outs(%12 : tensor<64x64xf32>) -> tensor<64x64xf32>
     %c8_i32 = arith.constant 8 : i32
     %c1_i32_5 = arith.constant 1 : i32
+    %alloc_10 = memref.alloc() : memref<64x128xf16>
+    %alloc_21 = memref.alloc() : memref<64x64xf16>
     %24:6 = scf.for %arg13 = %c0_i32 to %c8_i32 step %c1_i32_5 iter_args(%arg14 = %inserted_slice, %arg15 = %19, %arg16 = %23, %arg17 = %22, %arg18 = %21, %arg19 = %14) -> (tensor<64x128xf16>, tensor<64x128xf32>, tensor<64x64xf32>, tensor<64x1xf32>, tensor<64x1xf32>, tensor<64x128xf32>)  : i32 {
       %28 = tensor.empty() : tensor<64x128xf16>
       %29 = tensor.empty() : tensor<64x128xf16>
@@ -63,7 +65,6 @@ module attributes {hivm.module_core_type = #hivm.module_core_type<MIX>, memref.m
       %40 = arith.muli %arg13, %c64_i32_8 : i32
       %41 = arith.index_cast %40 : i32 to index
       %subview_9 = memref.subview %reinterpret_cast_1[%41, 0] [64, 128] [1, 1] : memref<512x128xf16, strided<[128, 1]>> to memref<64x128xf16, strided<[128, 1], offset: ?>>
-      %alloc_10 = memref.alloc() : memref<64x128xf16>
       memref.copy %subview_9, %alloc_10 : memref<64x128xf16, strided<[128, 1], offset: ?>> to memref<64x128xf16>
       %42 = bufferization.to_tensor %alloc_10 restrict : memref<64x128xf16>
       %inserted_slice_11 = tensor.insert_slice %42 into %28[0, 0] [64, 128] [1, 1] : tensor<64x128xf16> into tensor<64x128xf16>
@@ -104,7 +105,6 @@ module attributes {hivm.module_core_type = #hivm.module_core_type<MIX>, memref.m
       %alloc_20 = memref.alloc() : memref<64x128xf32>
       bufferization.materialize_in_destination %59 in writable %alloc_20 : (tensor<64x128xf32>, memref<64x128xf32>) -> ()
       hivm.hir.store ins(%alloc_20 : memref<64x128xf32>) outs(%7 : memref<64x128xf32>)
-      %alloc_21 = memref.alloc() : memref<64x64xf16>
       bufferization.materialize_in_destination %60 in writable %alloc_21 : (tensor<64x64xf16>, memref<64x64xf16>) -> ()
       hivm.hir.store ins(%alloc_21 : memref<64x64xf16>) outs(%6 : memref<64x64xf16>)
       %c0_i32_22 = arith.constant 0 : i32
