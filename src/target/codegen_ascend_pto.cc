@@ -1440,7 +1440,6 @@ void CodeGenTileLangAscendPto::PowCodegen(const CallNode *op) {
   ShapeInfo src0_shape_info = GetSliceInfo(op->args[1].as<CallNode>());
   ShapeInfo src1_shape_info = GetSliceInfo(op->args[2].as<CallNode>());
   ShapeInfo dst_shape_info = GetSliceInfo(op->args[0].as<CallNode>());
-  ShapeInfo temp_shape_info = GetSliceInfo(op->args[3].as<CallNode>());
 
   if (src0_shape_info.is_slice || src1_shape_info.is_slice ||
       dst_shape_info.is_slice) {
@@ -1453,18 +1452,17 @@ void CodeGenTileLangAscendPto::PowCodegen(const CallNode *op) {
     this->PrintIndent();
     this->stream << kAscendPtoScope << "pow" << "<" << dst_shape_info.type
                  << ", " << dst_shape_info.slice_row << ", "
-                 << dst_shape_info.slice_col << "," << temp_shape_info.row
-                 << ">"
+                 << dst_shape_info.slice_col << ">"
                  << "(" << dst_temp_name << ", " << src0_temp_name << ", "
-                 << src1_temp_name << ", " << temp_shape_info.ub_name << ");\n";
+                 << src1_temp_name << ");\n";
   } else {
     this->PrintIndent();
     this->stream << kAscendPtoScope << "pow" << "<" << dst_shape_info.type
                  << ", " << dst_shape_info.row << ", " << dst_shape_info.col
-                 << ", " << temp_shape_info.row << ">"
+                 << ">"
                  << "(" << dst_shape_info.ub_name << ", "
                  << src0_shape_info.ub_name << ", " << src1_shape_info.ub_name
-                 << ", " << temp_shape_info.ub_name << ");\n";
+                 << ");\n";
   }
 }
 

@@ -351,7 +351,7 @@ CATLASS_DEVICE void
 reduce_sum_half(LocalTensor<T> const &dstTensor,
                 LocalTensor<T> const &srcTensor, const int32_t mask,
                 const int32_t repeatTime, const int32_t srcRepStride) {
-  AscendC::WholeReduceSum<T>(dstTensor, srcTensor, mask, repeatTime, 1, 8,
+  AscendC::WholeReduceSum<T>(dstTensor, srcTensor, mask, repeatTime, 1, 1,
                              srcRepStride);
 }
 

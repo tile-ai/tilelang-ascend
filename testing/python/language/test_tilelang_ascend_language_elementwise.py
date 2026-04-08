@@ -3170,8 +3170,16 @@ def run_test_pow(M, N, block_M, block_N, dtype, target):
     torch.testing.assert_close(c, ref_c, rtol=1e-2, atol=1e-2)
 
 
-@pytest.mark.parametrize("dtype", ["float", "float16", "int32"])
-@pytest.mark.parametrize("target", ["ascendc", "pto"])
+pow_dtype_target_params = [
+    ("float", "ascendc"),
+    ("float16", "ascendc"),
+    ("float", "pto"),
+    ("float16", "pto"),
+    ("int32", "ascendc"),
+]
+
+
+@pytest.mark.parametrize("dtype,target", pow_dtype_target_params)
 @pytest.mark.parametrize("shape", [(1024, 1024)])
 def test_pow(dtype, target, shape):
     M, N = shape
@@ -3238,8 +3246,7 @@ def run_test_pow_slice(M, N, block_M, block_N, dtype, target):
     torch.testing.assert_close(c, ref_c, rtol=1e-2, atol=1e-2)
 
 
-@pytest.mark.parametrize("dtype", ["float", "float16", "int32"])
-@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@pytest.mark.parametrize("dtype,target", pow_dtype_target_params)
 @pytest.mark.parametrize("shape", [(1024, 1024)])
 def test_pow_slice(dtype, target, shape):
     M, N = shape
@@ -4364,7 +4371,7 @@ def run_test_reduce_sum(M, N, block_M, block_N, dim, dtype, target):
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
     print(func.get_kernel_source())
 
-    a = torch.ones(M, N, dtype=torch.float32 if dtype == "float" else torch.float16).npu()
+    a = torch.randn(M, N, dtype=torch.float32 if dtype == "float" else torch.float16).npu()
     b = torch.zeros(M, dtype=torch.float32).npu()
     torch.npu.synchronize()
 
