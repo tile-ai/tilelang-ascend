@@ -2281,18 +2281,16 @@ void CodeGenTileLangNPUIRDEV::VreduceCodegen(const CallNode *op) {
   auto dstShape = dstRankedTy.getShape();
   int dstRank = dstShape.size();
 
-  llvm::SmallVector<int64_t> squeezeDimsList;
-  for (int i = 0; i < dstRank; ++i) {
-    if (dstShape[i] == 1) {
-      squeezeDimsList.push_back(i);
-    }
-  }
+  llvm::SmallVector<int64_t> squeezeDimsList(
+      npuirop.reduce_dims.begin(),
+      npuirop.reduce_dims.end()
+  );
 
   mlir::Value squeezedInit = dst;
   if (!squeezeDimsList.empty()) {
     auto squeezed = squeezeDims(builder, loc, dst, squeezeDimsList);
     if (failed(squeezed)) {
-      emitError(loc, "squeezeDims failed");
+      emitError(loc, "squeeze failed");
       return;
     }
     squeezedInit = *squeezed;
@@ -2340,7 +2338,7 @@ void CodeGenTileLangNPUIRDEV::VreduceCodegen(const CallNode *op) {
   if (!squeezeDimsList.empty()) {
     auto unsqueezed = unsqueezeDims(builder, loc, reducedResult, squeezeDimsList);
     if (failed(unsqueezed)) {
-      emitError(loc, "unsqueezeDims failed");
+      emitError(loc, "unsqueeze failed");
       return;
     }
     reducedResult = *unsqueezed;
@@ -3427,11 +3425,11 @@ mlir::Value CodeGenTileLangNPUIRDEV::VisitExpr_(const CallNode *op) {
   } else if (op->op.same_as(Op::Get("tl.npuir_div"))) {
     CreateHIVMBinaryVectorOp<mlir::hivm::VDivOp>(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_mul"))) {
-    CreateHIVMBinaryVectorOp<mlir::hivm::VMulOp>(op);
+    CreateHIVMBinaryVectorOp<mlir::linalg::MulOp>(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_sub"))) {
-    CreateHIVMBinaryVectorOp<mlir::hivm::VSubOp>(op);
+    CreateHIVMBinaryVectorOp<mlir::linalg::SubOp>(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_max"))) {
-    CreateHIVMBinaryVectorOp<mlir::hivm::VMaxOp>(op);
+    CreateHIVMBinaryVectorOp<mlir::linalg::MaxOp>(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_min"))) {
     CreateHIVMBinaryVectorOp<mlir::hivm::VMinOp>(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_or"))) {
