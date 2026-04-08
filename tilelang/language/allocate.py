@@ -78,6 +78,23 @@ def alloc_var(dtype, scope="local.var"):
     return T.alloc_buffer([1], dtype, scope=scope)
 
 
+def alloc_workspace(shape, dtype, scope="global.workspace"):
+    """Allocate a workspace memory buffer.
+
+    This buffer is intended to be lowered to memref_ext.alloc_workspace
+    in Ascend NPU-IR dev mode, and participates in copies as a memref.
+
+    Args:
+        shape (tuple): The shape of the buffer to allocate
+        dtype (str): The data type of the buffer (e.g., 'float32', 'int32')
+        scope (str, optional): The memory scope. Defaults to "global.workspace"
+
+    Returns:
+        T.Buffer: A TVM buffer object allocated in workspace memory
+    """
+    return T.alloc_buffer(shape, dtype, scope=scope)
+
+
 """
 The following are memory scopes in Ascend.
 Here is the correspondence between TIR scopes and Ascend memory scopes:
