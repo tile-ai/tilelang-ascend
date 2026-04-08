@@ -144,28 +144,22 @@ T.tile.max(dst, src0, src1)  # dst = max(src0, src1)
 
 ## 调试技巧
 
-### 1. 使用调试模式
 
-```bash
-export TL_DEBUG=1
-python my_kernel.py
-```
-
-### 2. 打印中间值
+### 1. 打印中间值
 
 在kernel中添加：
 ```python
 T.printf("value = %f\n", buffer[0])
 ```
 
-### 3. 查看生成的代码
+### 2. 查看生成的代码
 
 ```python
 func = my_op(...)
 print(func.get_kernel_source())
 ```
 
-### 4. 分步验证
+### 3. 分步验证
 
 1. 验证数据拷贝：
    ```python
@@ -176,7 +170,7 @@ print(func.get_kernel_source())
 
 2. 逐步添加计算，每步验证
 
-### 5. 小规模测试
+### 4. 小规模测试
 
 ```python
 # 从最小规模开始

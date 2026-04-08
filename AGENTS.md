@@ -145,9 +145,6 @@ source set_env.sh
 
 # 运行测试
 python examples/<算子>.py
-
-# 调试模式
-export TL_DEBUG=1
 ```
 
 验证步骤：
@@ -161,12 +158,11 @@ export TL_DEBUG=1
 
 遇到问题时：
 
-1. 开启调试：`export TL_DEBUG=1`
-2. 在 kernel 中使用 `T.printf` 打印中间值
-3. 使用 `T.dump_tensor` 检查张量内容
-4. 查看 build 目录中生成的 Ascend C 代码
-5. 参考 [debug-helper](.agents/skills/tilelang-custom-skill/tilelang-debug-helper/SKILL.md) 配置 GDB
-6. 遇到错误时，优先使用 [tilelang-error-fixer](.agents/skills/tilelang-custom-skill/tilelang-error-fixer/SKILL.md) 进行调试
+1. 在 kernel 中使用 `T.printf` 打印中间值
+2. 使用 `T.dump_tensor` 检查张量内容
+3. 查看 build 目录中生成的 Ascend C 代码
+4. 参考 [debug-helper](.agents/skills/tilelang-custom-skill/tilelang-debug-helper/SKILL.md) 配置 GDB
+5. 遇到错误时，优先使用 [tilelang-error-fixer](.agents/skills/tilelang-custom-skill/tilelang-error-fixer/SKILL.md) 进行调试
 
 ### 阶段五：编写测试
 
@@ -186,7 +182,7 @@ export TL_DEBUG=1
 | 错误类型  | 处理方式                                                                                                   |
 | ----- | ------------------------------------------------------------------------------------------------------ |
 | 编译错误  | 定位错误行号，对比 API 文档检查用法，参考 `examples/` 同类实现                                                               |
-| 运行时错误 | `TL_DEBUG=1` + `T.printf` 定位问题，采用渐进式调试                                                                 |
+| 运行时错误 | `T.dump_tensor` + `T.printf` 定位问题，采用渐进式调试                                                                 |
 | 精度错误  | 从最小用例开始，分段验证中间结果，检查数据类型                                                                                |
 | 环境问题  | 运行 `source set_env.sh`，参考 [env-check](.agents/skills/tilelang-custom-skill/ascendc-env-check/SKILL.md) |
 

@@ -1,52 +1,102 @@
-# Developer 模式与 Expert 模式概览
+# 模式对比与选择策略
 
-## 两种模式的定位
+## 两种模式定位
 
-TileLang Ascend 提供两种编程模式，位于编译降级流程的不同层级，可以在同一 kernel 中混合使用。
+| 维度 | Developer 模式（自动化） | Expert 模式（手动控制） |
+|------|-------------------------|------------------------|
+| **定位** | Hardware-Aware with Tile Library | Hardware-Aware with Thread Primitives |
+| **目标用户** | 对 AI 芯片内存层次有基本了解的开发者 | 对底层硬件特性有深入理解的专家 |
+| **内存分配** | `T.alloc_shared` / `T.alloc_fragment`（编译器自动映射） | `T.alloc_L1` / `T.alloc_ub` / `T.alloc_L0A/L0B/L0C`（显式指定） |
+| **计算表达** | `T.Parallel` + 符号运算（`+`, `-`, `*`, `/`, `T.exp` 等） | `T.tile.add` / `T.tile.exp` / `T.tile.max` 等 |
+| **执行作用域** | 编译器自动分离 Cube/Vector（无需指定） | 显式 `with T.Scope("C"):` 和 `with T.Scope("V"):` |
+| **同步控制** | 自动（通过 pass_configs 开关） | 手动 `T.barrier_all` / `T.set_flag` / `T.wait_flag` / `T.set_cross_flag` |
+| **pass_configs** | 需要开启多项自动化开关 | 通常全部关闭或不设置 |
+| **代码复杂度** | 低 | 高 |
+| **性能上限** | 良好 | 极致 |
+| **跨平台兼容** | 理论上可跨架构 | 特定于 Ascend 平台 |
 
-### Developer 模式（Hardware-Aware with Tile Library）
+---
 
-- **目标用户**：对 AI 芯片内存层次结构有基本了解的开发人员
-- **核心理念**：使用抽象化的 Tile Library 接口，编译器自动处理存储映射、同步插入、CV 分离
-- **优势**：代码简洁、易于维护、理论上可跨架构平台兼容
-- **限制**：无法进行细粒度的硬件控制
+## 选择决策树
 
-### Expert 模式（Hardware-Aware with Thread Primitives）
+```
+用户需求
+  ├─ 快速原型 / 算法验证 / 不熟悉硬件 → Developer 模式
+  ├─ 纯 Vector 算子（elementwise, softmax, layernorm 等） → Developer 模式
+  ├─ 简单 Cube 算子（基础 GEMM） → Developer 模式
+  ├─ Cube + Vector 融合算子（matmul_add, flash_attention 等） → Developer 模式（优先）或混合模式
+  ├─ 性能关键路径的极致优化 → Expert 模式
+  ├─ 需要精确控制流水线同步 → Expert 模式
+  ├─ 需要手动双缓冲 / 多级流水 → Expert 模式
+  └─ 用户明确指定模式 → 按用户要求
+```
 
-- **目标用户**：对底层硬件特性（Cube、Vector、MTE、UB 等）有深入理解的专家
-- **核心理念**：显式控制存储层级、执行作用域、同步时机
-- **优势**：最大灵活性，可针对特定架构进行极致优化
-- **限制**：代码复杂度高、平台绑定
+---
 
-## 关键差异对照表
+## 推荐：Developer 模式
 
-| 维度 | Developer 模式 | Expert 模式 |
-|------|---------------|-------------|
-| **内存分配** | `T.alloc_shared(shape, dtype)` — 编译器自动映射到 L1 或 UB | `T.alloc_L1()` / `T.alloc_ub()` — 显式指定存储位置 |
-| | `T.alloc_fragment(shape, dtype)` — 编译器自动映射到 L0C | `T.alloc_L0A()` / `T.alloc_L0B()` / `T.alloc_L0C()` — 显式指定 |
-| **计算表达** | `T.Parallel` + 符号 API（`+`, `T.exp`, `T.max` 等） | `T.tile.add()`, `T.tile.exp()`, `T.tile.max()` 等 |
-| **执行作用域** | 无需指定，编译器通过 `AUTO_CV_COMBINE` 自动分离 Cube/Vector | 需要显式 `with T.Scope("C"):` 和 `with T.Scope("V"):` |
-| **同步控制** | 自动（`AUTO_SYNC` + `AUTO_CV_SYNC`） | 手动 `T.barrier_all()`, `T.set_flag/wait_flag`, `T.set_cross_flag/wait_cross_flag` |
-| **pass_configs** | 需要开启多项自动化开关 | 通常不需要（手动控制一切） |
-
-## 何时选择哪种模式
-
-### 推荐：使用 Developer 模式
-
-- 快速原型开发
-- 算法验证阶段
+**适用场景：**
+- 快速原型开发和算法验证
 - 追求代码可读性和可维护性
 - 不熟悉 Ascend 硬件细节
+- 需要跨平台兼容性
 - 大多数算子开发场景
 
-### 选择 Expert 模式
+**优势：**
+- 代码量少，逻辑清晰
+- 编译器自动处理同步和内存映射
+- 更容易调试和维护
+- 支持混合编程（可调用 Expert 扩展 API）
 
-- 性能关键路径的极致优化
+---
+
+## 选择 Expert 模式
+
+**仅在以下场景选择 Expert 模式：**
+- 性能关键路径需要极致优化
 - 需要精确控制流水线同步时机
+- 需要手动双缓冲和多级流水线
 - 需要使用 `T.annotate_address` 手动规划内存布局
 - 需要使用 `T.use_swizzle` 等高级特性
-- 需要精确控制 Cube/Vector 核的执行分工
+- Developer 模式无法满足性能要求
 
-### 混合使用
+---
 
-实践中最常见的是混合编程方式：Developer 模式处理主体逻辑，Expert 模式的扩展接口（如 `T.tile.fill`、`T.tile.cast` 等）用于补充 Developer 模式暂不支持的操作。
+## 混合编程
+
+实践中最常见的方式：**Developer 模式处理主体逻辑**，Expert 模式的扩展接口补充 Developer 模式暂不支持的操作。
+
+可在 Developer 模式中直接使用的 Expert 扩展 API：
+- `T.tile.fill(buffer, value)` — 初始化填充
+- `T.tile.cast(dst, src, mode, count)` — 精度转换
+- `T.tile.broadcast(dst, src, tmp)` — 广播
+- `T.tile.axpy(dst, src, scalar)` — 向量乘加
+- `T.reduce_max` / `T.reduce_sum` / `T.reduce_min` — 归约操作
+- `T.tile.compare` / `T.tile.select` — 比较与条件选择
+
+详见 [混合模式指南](mixed-mode-guide.md)
+
+---
+
+## pass_configs 速览
+
+### Developer 模式（4 个开关全开）
+
+```python
+pass_configs = {
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,    # 自动 Cube/Vector 分离
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,          # 自动同步插入
+    tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,    # 自动内存规划
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_SYNC: True,       # 自动核间同步
+}
+```
+
+> 纯 Vector 算子（无 GEMM）可只开 `AUTO_SYNC` + `MEMORY_PLANNING`
+
+### Expert 模式
+
+```python
+@tilelang.jit(out_idx=[-1])  # 无 pass_configs，或全部设为 False
+```
+
+详见 [pass_configs 配置说明](convert-passconfigs.md)
