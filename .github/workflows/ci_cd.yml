@@ -50,8 +50,12 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          submodules: recursive
-          fetch-depth: 0
+          submodules: false  
+          
+      - name: init submodules
+        run: |
+          git submodule sync --recursive
+          git submodule update --init --recursive --force
 
       - name: Set up environment
         run: |
