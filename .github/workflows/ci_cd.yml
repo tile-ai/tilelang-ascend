@@ -46,11 +46,7 @@ jobs:
     runs-on: [self-hosted, linux, x64, 910b]                # 使用自托管运行器（需安装 Ascend 环境）
     if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.run_tests == 'true' }} # 手动触发时可跳过测试
     timeout-minutes: 120                               # 超时 2 小时
-    steps:
-      - name: Config github proxy
-        run: |
-          git config --global url."https://ghfast.top/https://github.com/".insteadOf "https://github.com/"
-        
+    steps:       
       - name: Checkout code
         uses: actions/checkout@v4
         with:
