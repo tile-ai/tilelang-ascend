@@ -42,7 +42,6 @@ def solve_tril_ker(B, H, L, C, dtype="float16", accum_dtype="float"):
 			mul_ub = T.alloc_ub([C, C], accum_dtype)
 			red_ub = T.alloc_ub([C,], accum_dtype)
 			o_ub_half = T.alloc_ub([C, C], dtype)
-			tmp_ub = alloc_temp()
 
 			with T.Scope("V"):
 				T.copy(A[bz, by, bx * C, 0], o_ub_half)
@@ -53,7 +52,7 @@ def solve_tril_ker(B, H, L, C, dtype="float16", accum_dtype="float"):
 					T.tile.fill(red_ub, 0.0)
 					for j, k in T.Parallel(C, C):
 						mul_ub[j, k] = o_ub[j, k] * o_ub[i, j]
-					T.reduce_sum(mul_ub, red_ub, tmp_ub, dim = 0)
+					T.reduce_sum(mul_ub, red_ub, dim = 0)
 					for j in T.Parallel(C):
 						o_ub[i, j] = o_ub[i, j] - red_ub[j]
 				for i, j in T.Parallel(C, C):

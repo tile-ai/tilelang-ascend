@@ -44,7 +44,7 @@ def rope_kernel_in_place(
             for i in T.serial(0, row_per_vec):
                 T.copy(x[row_x + i, dim_start:], x_half_ub[i, :])
             T.copy(x_half_ub, x_ub)  # cast float16 -> float32
-            
+
             # 2. copy sin/cos: gm -> ub
             sin_ub = T.alloc_shared([1, rope_dim], ACC_DTYPE)
             sin_half_ub = T.alloc_shared([1, rope_dim], dtype)
@@ -54,7 +54,7 @@ def rope_kernel_in_place(
             T.copy(sin_half_ub, sin_ub)
             T.copy(cos[row_sin_cos, :], cos_half_ub[0, :])
             T.copy(cos_half_ub, cos_ub)
-            
+
             # 3. set mask: gm -> ub
             mask_ub_i16 = T.alloc_shared([row_per_vec, rope_dim], "int16")
             mask_ub_f32 = T.alloc_shared([row_per_vec, rope_dim], "float32")
@@ -63,11 +63,10 @@ def rope_kernel_in_place(
             idx_ub = T.alloc_shared([row_per_vec, rope_dim], "int32")
             tmp_ub_i16 = T.alloc_shared([row_per_vec, rope_dim], "int16")
             ones_mask_ub = T.alloc_shared([row_per_vec, rope_dim], "int16")
-            xor_tmp_ub = T.alloc_shared([row_per_vec, rope_dim], "int16")
             T.tile.createvecindex(idx_ub, 0)
             T.copy(idx_ub, tmp_ub_i16)
             T.tile.fill(ones_mask_ub, 1)
-            T.tile.bitwise_xor(mask_ub_i16, tmp_ub_i16, ones_mask_ub, xor_tmp_ub)
+            T.tile.bitwise_xor(mask_ub_i16, tmp_ub_i16, ones_mask_ub)
             T.copy(mask_ub_i16, mask_ub_f32)
             T.copy(mask_ub_f32, mask_ub_i32)
             T.tile.mul(mask_ub_i32, mask_ub_i32, 4)
@@ -80,12 +79,11 @@ def rope_kernel_in_place(
             T.tile.mul(sin_ub[0, :], sin_ub[0, :], sin_mask_ub)
 
             # 4. broadcast sin/cos: [1, rope_dim] -> [row_per_vec, rope_dim]
-            tmp_ub = T.alloc_shared(row_per_vec * rope_dim, TMP_DTYPE)
             sin_block_ub = T.alloc_shared([row_per_vec, rope_dim], ACC_DTYPE)
-            T.tile.broadcast(sin_block_ub, sin_ub, tmp_ub)
+            T.tile.broadcast(sin_block_ub, sin_ub)
             cos_block_ub = T.alloc_shared([row_per_vec, rope_dim], ACC_DTYPE)
-            T.tile.broadcast(cos_block_ub, cos_ub, tmp_ub)
-            
+            T.tile.broadcast(cos_block_ub, cos_ub)
+
             # 5. rotate x
             x_rotate_ub = T.alloc_shared([row_per_vec, rope_dim], ACC_DTYPE)
             T.tile.gather(x_rotate_ub, x_ub, mask_ub, 0)
@@ -100,7 +98,7 @@ def rope_kernel_in_place(
             T.copy(out_ub, x_half_ub)  # cast float32 -> float16
             for i in T.serial(0, row_per_vec):
                 T.copy(x_half_ub[i, :], x[row_x + i, dim_start:])
-                    
+
     return kernel
 
 

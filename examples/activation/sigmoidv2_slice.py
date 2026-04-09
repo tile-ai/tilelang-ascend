@@ -16,7 +16,7 @@ pass_configs = {
 @tilelang.jit(out_idx=[1], pass_configs=pass_configs)
 def sigmoidv2():
     dtype = "float"
-    
+
     @T.prim_func
     def main(input: T.Tensor([4, 8], dtype),
              output: T.Tensor([4, 8], dtype),
@@ -24,13 +24,12 @@ def sigmoidv2():
         with T.Kernel(1, is_npu=True) as (cid, vid):
             input_shared = T.alloc_ub((4, 8), dtype)
             output_shared = T.alloc_ub((4, 8), dtype)
-            tmp_shared = T.alloc_ub((4, 8), "uint8")
-            
+
             T.copy(input, input_shared)
             for i in range(4):
-                T.tile.sigmoid(output_shared[i, :], input_shared[i, :], tmp_shared)
+                T.tile.sigmoid(output_shared[i, :], input_shared[i, :])
             T.copy(output_shared, output)
-            
+
     return main
 
 dtype = torch.float

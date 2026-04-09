@@ -25,7 +25,6 @@ def rms_norm(M, N, block_M, block_N, eps=1e-5, dtype="float"):
             sum_square_i = T.alloc_ub([block_M // VEC_NUM, block_N], dtype)
             sum_square_ub = T.alloc_ub([block_M // VEC_NUM], dtype)
             mean_square_ub = T.alloc_ub([block_M // VEC_NUM], dtype)
-            tmp_ub = T.alloc_ub([3 * DataType(dtype).bits // 8 * block_M // VEC_NUM * block_N], "uint8")
 
             with T.Scope("V"):
                 # Initialize
@@ -43,9 +42,9 @@ def rms_norm(M, N, block_M, block_N, eps=1e-5, dtype="float"):
                     T.barrier_all()
                     T.tile.add(sum_square_i, sum_square_i, a_ub)
                     T.barrier_all()
-                
+
                 # Reduce
-                T.reduce_sum(sum_square_i, sum_square_ub, tmp_ub, dim=-1)
+                T.reduce_sum(sum_square_i, sum_square_ub, dim=-1)
                 T.barrier_all()
 
                 # Compute mean and variance
