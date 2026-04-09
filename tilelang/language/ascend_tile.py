@@ -93,6 +93,23 @@ def fill(buffer: Buffer | BufferRegion, value: PrimExpr):
         size,
     )
 
+def clear(buffer: Buffer | tir.Var):
+    """Clear a buffer or buffer region by filling with zeros.
+
+    Args:
+        buffer: The buffer, buffer region, or variable to be cleared.
+                If a tir.Var is provided, it will be resolved automatically.
+
+    Returns:
+        A TVM intrinsic call that fills the buffer with zeros.
+    """
+    if isinstance(buffer, tir.Var) and T.has_let_value(buffer):
+        buffer_region = T.get_let_value(buffer)
+        if isinstance(buffer_region, BufferRegion):
+            return fill(buffer_region, 0)
+        else:
+            raise ValueError(f"Invalid buffer region: {buffer_region}")
+    return fill(buffer, 0)
 
 def arith_progression(buffer: Buffer, first_value: PrimExpr, diff_value: PrimExpr, count: PrimExpr):
     """Generates an arithmetic progression sequence in a buffer.
