@@ -4,7 +4,6 @@ name: TileLang-Ascend CI
 # 全局环境变量，所有 job 都可使用
 env:
   ASCEND_HOME: /usr/local/Ascend/ascend-toolkit/latest  # Ascend CANN 安装路径
-  TILELANG_DIR: ${{ github.workspace }}/tilelang-ascend/tilelang-ascend/
 
 # 触发条件
 on:
@@ -74,7 +73,7 @@ jobs:
         env:
           USE_ASCEND: 'true'
         run: |
-          cd ${TILELANG_DIR}
+          echo "****************$PWD"
           bash install_ascend.sh                              # 执行安装脚本
 
       - name: Set tilelang environment variables
