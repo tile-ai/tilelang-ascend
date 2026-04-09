@@ -59,11 +59,6 @@ jobs:
           source ${ASCEND_HOME}/set_env.sh || true      # 加载 Ascend 环境变量
           echo "ASCEND_HOME=${ASCEND_HOME}" >> $GITHUB_ENV   # 持久化到环境变量
 
-      - name: Check NPU availability
-        run: |
-          npu-smi info || echo "NPU-SMI not available, continuing..."  # 检查 NPU 状态
-          nproc
-
       - name: Create virtual environment
         run: |
           python -m venv test_venv 
@@ -99,11 +94,6 @@ jobs:
             *.log
             *.json
           retention-days: 30
-
-      - name: Cleanup
-        if: always()
-        run: |
-          rm -rf test_venv || true
 
   # Job 2: 汇总结果并输出摘要
   notify:
