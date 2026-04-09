@@ -70,12 +70,6 @@ jobs:
           echo "VIRTUAL_ENV=$PWD/test_venv" >> $GITHUB_ENV    # 设置虚拟环境路径
           echo "$PWD/test_venv/bin" >> $GITHUB_PATH           # 添加到 PATH
 
-      - name: Install dependencies
-        run: |
-          pip install --upgrade pip
-          pip install -r requirements-build.txt
-          pip install -r requirements.txt
-
       - name: Build and install tilelang-ascend
         env:
           USE_ASCEND: 'true'
