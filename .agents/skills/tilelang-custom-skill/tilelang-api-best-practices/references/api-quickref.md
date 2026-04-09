@@ -40,9 +40,9 @@
 
 | API | 说明 |
 |-----|------|
-| `T.reduce_sum(buf, out, tmp, dim)` | 按维度求和 |
-| `T.reduce_max(buf, out, tmp, dim)` | 按维度求最大值 |
-| `T.reduce_min(buf, out, tmp, dim)` | 按维度求最小值 |
+| `T.reduce_sum(buf, out, dim)` | 按维度求和 |
+| `T.reduce_max(buf, out, dim)` | 按维度求最大值 |
+| `T.reduce_min(buf, out, dim)` | 按维度求最小值 |
 
 ## 循环与调度
 
@@ -74,7 +74,7 @@
 | `T.tile.reciprocal(dst, src)` | 取倒数 |
 | `T.tile.leaky_relu(dst, src, scalar)` | Leaky ReLU |
 | `T.tile.axpy(dst, src, scalar)` | dst = scalar*src + dst |
-| `T.tile.sin/cos(dst, src, tmp)` | 三角函数 |
+| `T.tile.sin/cos(dst, src)` | 三角函数 |
 | `T.tile.compare(dst, src0, src1, mode)` | 逐元素比较 |
 | `T.tile.select(dst, mask, src0, src1, mode)` | 条件选择 |
 | `T.tile.cast(dst, src, mode, count)` | 精度转换 |
@@ -83,9 +83,9 @@
 | `T.tile.createvecindex(dst, first_value)` | 创建向量索引 |
 | `T.tile.gather(dst, src, offset, base_addr)` | 数据收集 |
 | `T.tile.arith_progression(buf, first, diff, count)` | 等差数列 |
-| `T.tile.sort(dst, src, indices, tmp, repeat)` | 排序 |
+| `T.tile.sort(dst, src, indices, repeat)` | 排序 |
 | `T.tile.merge_sort(dst, src, block_size, block_num, is_copy)` | 合并排序 |
-| `T.tile.topk(dst, src, tmp, block_size)` | Top-K |
+| `T.tile.topk(dst, src, block_size)` | Top-K |
 
 ## 同步原语
 

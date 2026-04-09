@@ -65,8 +65,6 @@ def flash_attention_fwd(
             acc_s_ub = T.alloc_ub([block_M // 2, block_N], accum_dtype)
             m_i_prev = T.alloc_ub([block_M // 2], accum_dtype)
             acc_s_ub_ = T.alloc_ub([block_M // 2, block_N], accum_dtype)
-            tmp_ub = T.alloc_ub([3 * DataType(accum_dtype).bits // 8 * block_M // 2 * block_N],
-                                "uint8")
             sumexp_i_ub = T.alloc_ub([block_M // 2], accum_dtype)
             acc_s_half = T.alloc_ub([block_M // 2, block_N], dtype)
             acc_o_ub = T.alloc_ub([block_M // 2, dim], accum_dtype)
@@ -90,7 +88,6 @@ def flash_attention_fwd(
                 acc_s_ub: 66048,
                 m_i_prev: 74240,
                 acc_s_ub_: 74368,
-                tmp_ub: 74368,
                 sumexp_i_ub: 98944,
                 acc_s_half: 98944,
                 acc_o_ub: 98944,
@@ -120,7 +117,7 @@ def flash_attention_fwd(
                 T.copy(workspace_1[cid, vid * block_M // 2:vid * block_M // 2 + block_M // 2, :], acc_s_ub_)
                 T.tile.add(acc_s_ub, acc_s_ub, acc_s_ub_)
                 T.tile.mul(acc_s_ub, acc_s_ub, sm_scale)
-                T.reduce_max(acc_s_ub, m_i, tmp_ub, dim=-1)
+                T.reduce_max(acc_s_ub, m_i, dim=-1)
                 T.tile.max(m_i, m_i, m_i_prev)
                 T.tile.sub(m_i_prev, m_i_prev, m_i)
                 T.tile.exp(m_i_prev, m_i_prev)
@@ -129,7 +126,7 @@ def flash_attention_fwd(
                     T.tile.sub(acc_s_ub[h_i, :], acc_s_ub[h_i, :], m_i[h_i])  # -
 
                 T.tile.exp(acc_s_ub, acc_s_ub)
-                T.reduce_sum(acc_s_ub, sumexp_i_ub, tmp_ub, dim=-1)
+                T.reduce_sum(acc_s_ub, sumexp_i_ub, dim=-1)
                 T.tile.mul(sumexp, sumexp, m_i_prev)  # check
                 T.tile.add(sumexp, sumexp, sumexp_i_ub)
 
