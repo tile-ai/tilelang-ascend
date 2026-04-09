@@ -35,25 +35,33 @@ design.md 可能很长，**只提取以下字段，忽略其余内容**：
 
 ---
 
-## 2. 参考示例（优先级高于 design.md 伪代码）
+## 2. 参考来源（优先级高于 design.md 伪代码）
 
 **当 design.md 伪代码与 examples/ 中同类实现有冲突时，以 examples/ 为准。**
+
+### 2.1 API 用法和模式选择
+
+- **API 用法**：查阅 [tilelang-api-best-practices SKILL.md](../tilelang-custom-skill/tilelang-api-best-practices/SKILL.md) 及其 references 目录
+- **编程模式和 pass_configs**：查阅 [tilelang-expert-to-developer SKILL.md](../tilelang-custom-skill/tilelang-expert-to-developer/SKILL.md) 及其 references 目录
+
+### 2.2 同类算子示例
 
 生成代码前，必须查阅 `examples/` 中的同类算子：
 
 | 算子类型 | 参考示例 |
 |---------|---------|
-| 逐元素运算（add/mul/sigmoid/relu） | `examples/vec_add/`、`examples/activation/` |
+| 逐元素运算（add/mul/sigmoid/relu） | `examples/elementwise/`、`examples/activation/` |
 | 归约运算（reduce_sum/max/min） | `examples/reduce/` |
-| 归一化（softmax/layernorm/rmsnorm） | `examples/softmax/`、`examples/layer_norm/`、`examples/rms_norm/` |
-| GEMM | `examples/gemm/` |
+| 归一化（softmax/layernorm/rmsnorm） | `examples/softmax/`、`examples/normalization/` |
+| GEMM | `examples/gemm/`、`examples/developer_mode/gemm_developer.py` |
 | 融合算子 | `examples/flash_attention/` |
+| Developer 模式 | `examples/developer_mode/` |
 
 查阅示例时关注：
 1. **Kernel 结构**：`T.Kernel` 参数、`cid`/`vid` 用法
-2. **Buffer 分配方式**：`T.alloc_ub` 的 shape 和 dtype
+2. **Buffer 分配方式**：shape 和 dtype
 3. **tmp buffer 写法**：归约操作的 tmp 大小和 dtype
-4. **同步方式**：`T.barrier_all()` 的位置
+4. **pass_configs 配置**：该类算子实际使用哪些开关
 5. **数据搬运**：`T.copy` 的索引写法
 
 ---

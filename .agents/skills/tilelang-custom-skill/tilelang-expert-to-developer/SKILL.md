@@ -1,120 +1,166 @@
 ---
 name: tilelang-mode-guide
-description: TileLang Ascend Developer 模式与 Expert 模式编程指南。当需要编写 Developer/Expert/混合模式的算子代码、了解两种模式的编程规范和 API 用法、进行模式转换时触发此 skill。提供各模式的完整编写规则、代码模板、硬件约束和检查清单。
+description: TileLang Ascend Developer/Expert 模式选择与 pass_configs 配置指南。当需要确定编程模式、配置 pass_configs、或在两种模式之间转换时触发。API 详情请参考 tilelang-api-best-practices skill。
 ---
 
-# TileLang Ascend Developer 与 Expert 模式编程指南
+# TileLang Ascend 编程模式与 pass_configs 指南
 
-本 skill 提供 Developer 模式和 Expert 模式的完整编程参考。选定模式后，按照对应指南编写算子代码。
+> 来源：`docs/TileLang-Ascend Programming Guide.md` §4, `tilelang/transform/pass_config.py`, `examples/`
+>
+> **API 用法详情**（内存分配、计算原语、同步原语等）请参考 **tilelang-api-best-practices** skill，本文档不再重复。
 
 ---
 
-## 模式概览
+## 1. 模式对比
+
+> 来源：Programming Guide §1, §4.1, §4.2
 
 | 维度 | Developer 模式 | Expert 模式 |
 |------|---------------|-------------|
-| **内存分配** | `T.alloc_shared` / `T.alloc_fragment`（编译器自动映射） | `T.alloc_L1` / `T.alloc_ub` / `T.alloc_L0A/L0B/L0C`（显式指定） |
-| **计算表达** | `T.Parallel` + 符号运算（`+`, `T.exp` 等） | `T.tile.add` / `T.tile.exp` 等 |
-| **执行作用域** | 编译器自动分离 Cube/Vector | 显式 `with T.Scope("C"/"V")` |
-| **同步控制** | 自动（pass_configs 开关） | 手动 `T.barrier_all` / `T.set_flag` / `T.wait_flag` |
-| **pass_configs** | 需开启自动化开关 | 通常关闭或不设置 |
+| **内存分配** | `T.alloc_shared` / `T.alloc_fragment` | `T.alloc_L1` / `T.alloc_ub` / `T.alloc_L0A/L0B/L0C` |
+| **计算表达** | `T.Parallel` + 符号运算 | `T.tile.xxx` 扩展原语 |
+| **作用域** | 编译器自动分离 Cube/Vector | 手动 `with T.Scope("C"/"V")` |
+| **同步** | 编译器自动插入 | 手动 `T.barrier_all` / `T.set_flag` / `T.wait_flag` |
+| **pass_configs** | **全部开启** | **全部关闭或不设** |
+| **适用场景** | 大多数算子，跨平台兼容 | 极致性能优化，需要底层控制 |
+| **示例目录** | `examples/developer_mode/` | `examples/flash_attention/fa_opt/flash_attn_bhsd_expert_*.py` |
 
-详细对比与选择建议：[模式对比与选择策略](references/mode-overview.md)
-
----
-
-## 编写指南
-
-根据选定的模式，查阅对应指南：
-
-### Developer 模式
-
-完整编写规则、API 用法、代码骨架、禁止事项：
-
-→ [Developer 模式编写指南](references/developer-mode-guide.md)
-
-**关键要点速记：**
-- pass_configs 4 个开关全开（纯 Vector 只需 2 个）
-- 内存用 `alloc_shared` / `alloc_fragment`
-- 计算用 `T.Parallel` + 符号运算
-- 不写 `T.Scope`、不写同步、不写显式内存层级
-- Cube→Vector 数据中转用 workspace tensor
-
-### Expert 模式
-
-完整编写规则、同步原语、双缓冲、高级优化：
-
-→ [Expert 模式编写指南](references/expert-mode-guide.md)
-
-**关键要点速记：**
-- 无 pass_configs 或全部 False
-- 内存用 `alloc_L1` / `alloc_ub` / `alloc_L0A/L0B/L0C`
-- 计算用 `T.tile.*` 操作
-- 必须写 `with T.Scope("C")` / `with T.Scope("V")`
-- 必须手动管理 `set_flag` / `wait_flag` 同步
-- Flag 初始化和清理必须成对
-
-### 混合模式
-
-Developer 主体 + Expert 扩展 API 的编写规则：
-
-→ [混合模式编写指南](references/mixed-mode-guide.md)
-
-**关键要点速记：**
-- 使用 Developer 的 pass_configs
-- 主体用 `T.Parallel`，特殊操作用 `T.tile.fill` / `T.reduce_*` 等 Expert API 补充
+**混合模式**：Developer 主体 + 少量 Expert。使用 Developer 的 pass_configs，不写 `T.Scope` 和手动同步。大多数实际算子使用混合模式。
 
 ---
 
-## 硬件约束
+## 2. pass_configs 详解（核心）
 
-编写任何模式的算子都需要了解的硬件基础：
+> 来源：`tilelang/transform/pass_config.py`，`examples/` 中的实际配置
 
-→ [硬件架构基础](references/hardware-architecture.md)
+### 2.1 四个 Ascend 专用开关
 
-**核心约束：**
-- 内存层级：GM → L1/UB → L0A/L0B → L0C，**不可跨级访问**
-- 每核 2 个 Vector 线程（`vid` = 0 或 1）
-- GEMM block 需 16 对齐
-- 累加器必须用 `float`（float32）
+```python
+import tilelang
+
+pass_configs = {
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,        # ① 自动同步
+    tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,   # ② 自动内存规划
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,   # ③ 自动CV分离
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_SYNC: True,      # ④ 自动核间同步
+}
+```
+
+#### ① TL_ASCEND_AUTO_SYNC（自动核内同步）
+
+- **底层 key**：`"tl.ascend_auto_sync"`，默认 False
+- **功能**：自动在数据搬运和计算之间插入 `T.barrier_all()` 等同步指令
+- **开启时**：无需手写 `T.barrier_all()`、`T.set_flag`/`T.wait_flag`
+- **关闭时**：必须手动插入所有同步点
+
+#### ② TL_ASCEND_MEMORY_PLANNING（自动内存规划）
+
+- **底层 key**：`"tl.ascend_memory_planning"`，默认 False
+- **功能**：自动分析 buffer 生命周期，实现片上内存复用
+- **开启时**：自动复用 buffer 空间，减少片上内存占用
+- **关闭时**：需手动通过 `T.annotate_address` 规划内存地址
+
+> 注意：Expert 模式也可以单独开启此开关获益。
+
+#### ③ TL_ASCEND_AUTO_CV_COMBINE（自动 CV 分离）
+
+- **底层 key**：`"tl.ascend_auto_cv_combine"`，默认 False
+- **功能**：自动将 kernel 中的 Cube 操作和 Vector 操作分离到不同的执行核
+- **开启时**：无需手写 `with T.Scope("C")` / `with T.Scope("V")`
+- **关闭时**：必须手动用 `T.Scope` 标注每段代码的执行域
+
+#### ④ TL_ASCEND_AUTO_CV_SYNC（自动核间同步）
+
+- **底层 key**：`"tl.ascend_auto_cross_core_sync"`，默认 False
+- **功能**：自动在 Cube Scope 和 Vector Scope 之间插入 `T.set_cross_flag`/`T.wait_cross_flag`
+- **开启时**：无需手写核间同步
+- **关闭时**：必须手动管理核间同步
+
+### 2.2 按场景选择 pass_configs
+
+> 来源：`examples/` 中的真实配置总结
+
+| 场景 | AUTO_SYNC | MEMORY_PLANNING | AUTO_CV_COMBINE | AUTO_CV_SYNC |
+|------|-----------|-----------------|-----------------|--------------|
+| **纯 Vector 算子**（elementwise, softmax） | ✅ | ✅ | 不需要 | 不需要 |
+| **Developer GEMM** | ✅ | ✅ | ✅ | ✅ |
+| **Developer Flash Attention（核间流水线）** | ✅ | 视情况 | ✅ | ✅ |
+| **Expert 极致性能** | ❌ | ❌ | ❌ | ❌ |
+| **混合模式** | ✅ | ✅ | ✅ | ✅ |
+
+**纯 Vector 算子**（来自 Programming Guide §2.2）：
+```python
+pass_configs = {
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
+    tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
+}
+```
+
+**Developer GEMM**（来自 `examples/developer_mode/gemm_developer.py`）：
+```python
+pass_configs = {
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
+    tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_SYNC: True,
+}
+```
+
+**Expert 全手动**（来自 `examples/flash_attention/fa_opt/flash_attn_bhsd_expert_h16_d128.py`）：
+```python
+pass_configs = {
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: False,
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_SYNC: False,
+    tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: False,
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: False,
+}
+```
 
 ---
 
-## 代码模板
+## 3. 模式转换规则（Expert → Developer）
 
-选定模式后，从对应模板出发编写代码：
+### 3.1 转换步骤
 
-| 算子类型 | 适用模式 | 模板 |
-|---------|---------|------|
-| 纯 Vector（elementwise, activation） | Developer | [template-vector-op](templates/template-vector-op.md) |
-| GEMM 矩阵乘法 | Developer | [template-gemm-developer](templates/template-gemm-developer.md) |
-| Cube + Vector 融合（matmul_add 等） | Developer | [template-fused-op](templates/template-fused-op.md) |
-| Flash Attention | Developer + 混合 | [template-flash-attention](templates/template-flash-attention.md) |
-| 高性能 GEMM（双缓冲流水线） | Expert | [template-expert-gemm](templates/template-expert-gemm.md) |
+1. **开启 pass_configs**：添加完整 4 个 True 开关
+2. **内存分配**：`T.alloc_L1` → `T.alloc_shared`，`T.alloc_L0C` → `T.alloc_fragment`，`T.alloc_ub` → `T.alloc_shared`
+3. **删除作用域**：移除 `with T.Scope("C")` / `with T.Scope("V")`
+4. **删除同步**：移除 `T.barrier_all()`、`T.set_flag`/`T.wait_flag`、`T.set_cross_flag`/`T.wait_cross_flag`
+5. **计算转换**（可选）：`T.tile.exp(dst, src)` → `for i,j in T.Parallel(...): dst[i,j] = T.exp(src[i,j])`
+6. **删除手动内存规划**：移除 `T.annotate_address`
 
----
+> 计算部分可以保持 `T.tile.xxx` 不变（混合模式），Developer 模式的 pass_configs 能兼容 Expert 计算原语。
 
-## 检查清单
+### 3.2 转换对照表
 
-编写完成后，按对应模式的清单逐项检查：
-
-→ [检查清单与常见错误](references/generation-checklist.md)
-
----
-
-## 模式转换
-
-需要将 Expert 模式代码转换为 Developer 模式（或反向）时：
-
-- [内存分配转换](references/convert-memory.md)
-- [计算原语转换](references/convert-compute.md)
-- [同步与作用域转换](references/convert-sync-scope.md)
-- [pass_configs 配置](references/convert-passconfigs.md)
-- [完整转换示例](references/convert-examples.md)
+| Expert 写法 | Developer 写法 |
+|-------------|---------------|
+| `T.alloc_L1(shape, dtype)` | `T.alloc_shared(shape, dtype)` |
+| `T.alloc_ub(shape, dtype)` | `T.alloc_shared(shape, dtype)` |
+| `T.alloc_L0A/L0B(shape, dtype)` | 删除（`gemm_v0` 内部处理） |
+| `T.alloc_L0C(shape, dtype)` | `T.alloc_fragment(shape, dtype)` |
+| `with T.Scope("C"): ...` | 直接写代码（编译器自动分离） |
+| `T.barrier_all()` | 删除（编译器自动插入） |
+| `T.set_flag/T.wait_flag(...)` | 删除 |
+| `T.set_cross_flag/T.wait_cross_flag(...)` | 删除 |
+| `T.tile.exp(dst, src)` | `for i,j in T.Parallel(...): dst[i,j] = T.exp(src[i,j])` 或保留 |
+| `T.annotate_address({...})` | 删除（开启 MEMORY_PLANNING） |
 
 ---
 
-## 示例代码位置
+## 4. 实际代码对比
 
-- **Developer 模式**：`examples/developer_mode/`
-- **Expert 模式**：`examples/gemm/example_gemm_intrinsic.py`、`examples/flash_attention/fa_opt/`
+完整的 Developer vs Expert 代码对比，请参考：
+
+→ [mode-examples.md](references/mode-examples.md)
+
+---
+
+## 5. 示例代码位置
+
+| 模式 | 目录 |
+|------|------|
+| Developer | `examples/developer_mode/` |
+| Expert | `examples/gemm/example_gemm_intrinsic.py`、`examples/flash_attention/fa_opt/flash_attn_bhsd_expert_*.py` |
+| 混合（核间流水线） | `examples/flash_attention/flash_attn_bhsd_cc_sync.py`、`examples/flash_attention/fa_opt/flash_attn_bhsd_auto_pipeline_*.py` |
+| 纯 Vector | `examples/elementwise/`、`examples/softmax/` |

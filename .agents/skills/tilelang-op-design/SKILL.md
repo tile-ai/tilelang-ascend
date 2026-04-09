@@ -75,8 +75,8 @@ description: "根据算子需求生成 TileLang-Ascend 算子设计文档（desi
 ### Phase 2：信息收集
 
 1. 查阅 `examples/` 中同类算子实现
-2. 查阅 [API 速查表](../tilelang-api-best-practices/references/api-quickref.md) 确认 API 可用性
-3. 查阅 `references/quick_ref.md` 获取设计约束
+2. 查阅 [tilelang-api-best-practices SKILL.md](../tilelang-api-best-practices/SKILL.md) 确认 API 可用性和用法
+3. 查阅 [tilelang-expert-to-developer SKILL.md](../tilelang-expert-to-developer/SKILL.md) 确认编程模式和 pass_configs 配置
 4. 如有参考实现，分析其计算步骤
 
 ### Phase 3：生成 design.md
@@ -170,13 +170,13 @@ description: "根据算子需求生成 TileLang-Ascend 算子设计文档（desi
 
 | 优先级 | 信息源 | 用途 |
 |--------|--------|------|
-| 1 | `docs/` 官方文档 | 权威 API 说明和编程指南 |
-| 2 | `references/quick_ref.md` | 核心设计约束速查 |
-| 3 | `examples/` 示例代码 | 实际 API 用法和编程模式参考 |
-| 4 | `tilelang/language/` 源码 | API 签名和参数细节确认 |
+| 1 | `docs/TileLang-Ascend Programming Guide.md` | 权威 API 说明和编程指南 |
+| 2 | [tilelang-api-best-practices SKILL.md](../tilelang-api-best-practices/SKILL.md) | API 用法速查和最佳实践 |
+| 3 | [tilelang-expert-to-developer SKILL.md](../tilelang-expert-to-developer/SKILL.md) | 编程模式选择和 pass_configs 配置 |
+| 4 | `examples/` 示例代码 | 实际 API 用法和编程模式参考 |
 | 5 | `testing/python/language/` | 边界用法和测试模式参考 |
 
-**冲突处理**：当信息源之间矛盾时，以 `docs/` 为准。若 `docs/` 未覆盖，以源码实际实现为准。
+**冲突处理**：当信息源之间矛盾时，以 `docs/` 为准。若 `docs/` 未覆盖，以 `tilelang/language/` 源码实际实现为准。
 
 ---
 
