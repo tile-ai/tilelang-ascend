@@ -1,5 +1,5 @@
 import tilelang
-from tilelang import DataType, language as T
+from tilelang import language as T
 import torch
 
 tilelang.cache.clear_cache()
