@@ -47,7 +47,7 @@ error: Source and Dest dimension must match.
 # 正确
 max_ub = T.alloc_ub([block_M // VEC_NUM, 1], dtype)      # [M, 1]
 max_2d_ub = T.alloc_ub([block_M // VEC_NUM, block_N], dtype)  # [M, N]
-T.tile.broadcast(max_2d_ub, max_ub, tmp_ub)
+T.tile.broadcast(max_2d_ub, max_ub)
 
 # 错误：源buffer是1D
 max_ub = T.alloc_ub([block_M // VEC_NUM], dtype)  # [M] - 错误

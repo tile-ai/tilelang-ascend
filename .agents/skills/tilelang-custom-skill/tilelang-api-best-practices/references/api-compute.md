@@ -1,18 +1,15 @@
 # 计算原语：GEMM、归约与 Tile 扩展操作
 
-> 来源：`docs/TileLang-Ascend Programming Guide.md` §4, `tilelang/language/ascend.py`, `tilelang/language/ascend_tile.py`, `examples/`
-
 ---
 
 ## 1. 矩阵计算（GEMM）
 
 ### T.gemm_v0(A, B, C, transpose_A=False, transpose_B=False, init=False)
 
-> 来源：`ascend.py:341`，Programming Guide §4.1.3.1
-
 块级矩阵乘操作，计算 C += op(A) × op(B)。A、B 位于 shared 层级，C 位于 fragment 层级。
 
 **参数**：
+
 - `A`：左输入矩阵（shared 层级）
 - `B`：右输入矩阵（shared 层级）
 - `C`：结果累加输出矩阵（fragment 层级）
@@ -36,15 +33,13 @@ for k in T.serial(loop_k):
 T.copy(C_L0, C[bx * block_M, by * block_N])
 ```
 
-**带转置的用法**（来自 `examples/flash_attention/`）：
+**带转置的用法**：
 
 ```python
 T.gemm_v0(q_l1, k_l1, acc_s_l0c, transpose_B=True, init=True)
 ```
 
 ### T.mma(A, B, C, init=False)
-
-> 来源：`tilelang/language/customize.py:115`，`testing/python/language/test_tilelang_ascend_language_mma.py`
 
 NPU 级别的矩阵乘累加指令，比 `gemm_v0` 更底层。不支持 `transpose_A`/`transpose_B`。通常配合 `T.alloc_L0A`/`T.alloc_L0B` 和 `T.annotate_layout` 使用。
 
@@ -60,42 +55,35 @@ T.mma(A_L0, B_L0, C_L0, init=True)
 
 ## 2. 归约操作
 
-> 来源：`ascend.py:559-598`，Programming Guide §4.1.3.2
+### T.reduce_sum(buffer, out, dim)
 
-### T.reduce_sum(buffer, out, tmp, dim)
-### T.reduce_max(buffer, out, tmp, dim)
-### T.reduce_min(buffer, out, tmp, dim)
+### T.reduce_max(buffer, out, dim)
+
+### T.reduce_min(buffer, out, dim)
 
 对输入 buffer 按指定维度进行归约。
 
 **参数**：
+
 - `buffer`：输入 buffer（2D）
 - `out`：目的输出 buffer
-- `tmp`：临时 buffer（**必须提供**，用于内部中间计算）
 - `dim`：reduce 轴（-1 表示最后一维）
 
 **归约轴说明**（shape 为 (M, N) 的 2D 矩阵）：
+
 - `dim=0`：沿第一维归约，输出 shape 为 (N,)
 - `dim=-1`：沿最后一维归约，输出 shape 为 (M,)
-
-**临时 buffer 推荐分配方式**（来自 Programming Guide）：
-
-```python
-tmp_ub = T.alloc_ub([3 * DataType(accum_dtype).bits // 8 * block_M // 2 * block_N], "uint8")
-```
 
 **Softmax 中的典型用法**（来自 `examples/softmax/`）：
 
 ```python
-T.reduce_max(acc_s_ub, m_i, tmp_ub, dim=-1)
-T.reduce_sum(acc_s_ub, sumexp_i_ub, tmp_ub, dim=-1)
+T.reduce_max(acc_s_ub, m_i, dim=-1)
+T.reduce_sum(acc_s_ub, sumexp_i_ub, dim=-1)
 ```
 
 ---
 
 ## 3. Element-wise 运算（Developer 模式 T.Parallel）
-
-> 来源：Programming Guide §4.1.2.1, §4.1.3.3
 
 在 `T.Parallel` 循环内使用符号 API，跨平台兼容。
 
@@ -147,8 +135,6 @@ for i in range(block_M // VEC_NUM):  # 行顺序
 
 ## 4. Tile 扩展原语（Expert 模式 T.tile.xxx）
 
-> 来源：`ascend_tile.py`，Programming Guide §4.1.3.2
-
 `T.tile.xxx` 系列接口直接触发 Tile 级的 Vector 操作指令。
 
 ### 4.1 基础算术
@@ -180,8 +166,8 @@ for i in range(block_M // VEC_NUM):  # 行顺序
 |-----|------|
 | `T.tile.leaky_relu(dst, src0, scalar)` | Leaky ReLU，scalar 为负斜率系数 |
 | `T.tile.axpy(dst, src0, scalar)` | dst = scalar * src0 + dst |
-| `T.tile.sin(dst, src0, tmp)` | dst = sin(src0)，需要 tmp buffer |
-| `T.tile.cos(dst, src0, tmp)` | dst = cos(src0)，需要 tmp buffer |
+| `T.tile.sin(dst, src0)` | dst = sin(src0) |
+| `T.tile.cos(dst, src0)` | dst = cos(src0) |
 
 ### 4.4 逻辑运算
 
@@ -194,7 +180,6 @@ for i in range(block_M // VEC_NUM):  # 行顺序
 | `T.tile.bitwise_lshift(dst, src0, scalar)` | 左移操作 |
 | `T.tile.bitwise_rshift(dst, src0, scalar)` | 右移操作 |
 
-> 注意：`bitwise_xor` 的源码实现（`ascend_tile.py:1552`）实际需要额外的 `tmp` 参数，但 Programming Guide 文档中未标注。使用时请以源码签名为准：`T.tile.bitwise_xor(dst, src0, src1, tmp)`。
 
 ### 4.5 比较操作
 
@@ -213,11 +198,10 @@ T.tile.compare(c_ub, a_ub, 1.0, "GT")     # tensor vs scalar
 
 #### T.tile.select(dst, selMask, src0, src1, selMode)
 
-> 来源：Programming Guide §4.1.3.2.3，`testing/python/language/test_tilelang_ascend_language_select.py`
-
 根据 selMask 的比特位选取元素。bit=1 选 src0，bit=0 选 src1。
 
 **selMode 取值**：
+
 - `"VSEL_CMPMASK_SPR"`：根据 compare mask 选择
 - `"VSEL_TENSOR_SCALAR_MODE"`：tensor 和 scalar 之间选择
 - `"VSEL_TENSOR_TENSOR_MODE"`：两个 tensor 之间选择
@@ -232,11 +216,10 @@ T.tile.select(c_ub, mask_ub, a_ub, b_ub, "VSEL_TENSOR_TENSOR_MODE")
 
 #### T.tile.gather_mask(dst, src, src1Pattern)
 
-> 来源：Programming Guide §4.1.3.2.3
-
 根据 mask 模式收集元素。
 
 **固定模式**（src1Pattern 为字符串）：
+
 - `"P0101"`：按偶数索引  `"P1010"`：按奇数索引
 - `"P0001"/"P0010"/"P0100"/"P1000"`：每四个取一个
 - `"P1111"`：取全部
@@ -269,45 +252,39 @@ T.tile.cast(b_ub, a_ub, "CAST_RINT", 4096)
 
 ### 4.10 排序操作
 
-#### T.tile.sort(dst, src, tmp, actual_num)
-
-> 来源：`ascend_tile.py:120`，Programming Guide §4.1.3.2.7
+#### T.tile.sort(dst, src, actual_num)
 
 任意长度序列降序排序。dst 以 (val0, index0, val1, index1, ...) 形式交替存储。
 
 **注意**：
+
 - dst 和 src 仅支持 float32 和 float16
 - dst 大小至少为 src 的 2 倍（value-index 交替）
-- tmp 大小至少为 src 的 2 倍
 - index 数据由后端自动生成
 
 ```python
-T.tile.sort(dst, src, tmp_buffer, actual_num)
+T.tile.sort(dst, src, actual_num)
 ```
 
-#### T.tile.merge_sort(dst, tmp, src0, src1, src2=None, src3=None)
-
-> 来源：`ascend_tile.py:151`，Programming Guide §4.1.3.2.7
+#### T.tile.merge_sort(dst, src0, src1, src2=None, src3=None)
 
 将多个已排序数据块合并，支持 2/3/4-way 归并。输入/输出均为 value-index pair 格式。
 
 ```python
-T.tile.merge_sort(merge_dst, merge_tmp, src0, src1)            # 2-way
-T.tile.merge_sort(merge_dst, merge_tmp, src0, src1, src2)       # 3-way
-T.tile.merge_sort(merge_dst, merge_tmp, src0, src1, src2, src3) # 4-way
+T.tile.merge_sort(merge_dst, src0, src1)            # 2-way
+T.tile.merge_sort(merge_dst, src0, src1, src2)       # 3-way
+T.tile.merge_sort(merge_dst, src0, src1, src2, src3) # 4-way
 ```
 
-#### T.tile.topk(dst, src, tmp, block_size)
+#### T.tile.topk(dst, src, block_size)
 
 获取前 K 个最大值及其索引。
 
 ```python
-T.tile.topk(topk_global, sort_result, sort_temp, top_k)
+T.tile.topk(topk_global, sort_result, top_k)
 ```
 
 ### 4.11 两种编程范式对比
-
-> 来源：Programming Guide §4.1.2.1.4
 
 ```python
 # 方式一：T.Parallel + 符号 API（推荐，跨平台兼容）

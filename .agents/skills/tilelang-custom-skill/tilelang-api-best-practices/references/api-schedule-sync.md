@@ -1,12 +1,8 @@
 # 调度、同步与调试
 
-> 来源：`docs/TileLang-Ascend Programming Guide.md` §3.4, §4.1.2, §4.1.4, §5, §6, `tilelang/language/ascend.py`, `examples/`
-
 ---
 
 ## 1. 循环原语
-
-> 来源：Programming Guide §3.4
 
 ### T.serial(N) / T.serial(start, end, step)
 
@@ -44,8 +40,6 @@ while i < N:
 ---
 
 ## 2. T.Pipelined
-
-> 来源：Programming Guide §4.1.2.2
 
 实现计算/搬运的流水线并行，通过预取来掩盖内存访问延迟。
 
@@ -88,8 +82,6 @@ for k in T.Pipelined(loop_k, num_stages=2):
 
 ### 核间流水线（Inter-core）
 
-> 来源：Programming Guide §4.1.2.2 Inter-core case
-
 Cube 和 Vector 核之间的流水并行：
 
 ```python
@@ -113,8 +105,6 @@ for k in T.Pipelined(T.ceildiv(seq_len, block_N), num_stages=2):
 ---
 
 ## 3. T.Persistent
-
-> 来源：Programming Guide §4.1.2.3
 
 优化数据块在 AI Core 间的调度，使相邻数据块交由同一 AI Core 处理，提高缓存命中率。
 
@@ -149,8 +139,6 @@ with T.Kernel(m_num * n_num, is_npu=True) as (cid, _):
 ---
 
 ## 4. 同步原语
-
-> 来源：Programming Guide §4.1.4，`ascend.py`
 
 ### 核内同步
 
@@ -188,8 +176,6 @@ T.wait_cross_flag(0)
 
 ## 5. T.Scope
 
-> 来源：`examples/softmax/`, `examples/elementwise/`
-
 用于标注代码块的执行域。
 
 ```python
@@ -203,11 +189,7 @@ with T.Scope("V"):   # Vector 域
 
 ## 6. 调试工具
 
-> 来源：Programming Guide §5
-
 ### T.printf(format_str, *args)
-
-> 来源：`ascend.py:416`
 
 设备端格式化打印，类似 C 语言 printf。Buffer 参数自动转换为 access pointer。
 
@@ -218,8 +200,6 @@ T.printf("fmt %s %d\n", "string", 0x123)
 ```
 
 ### T.dump_tensor(tensor, desc, dump_size, shape_info=())
-
-> 来源：`ascend.py:447`
 
 转储指定 Tensor 的内容。
 
@@ -247,8 +227,6 @@ print(f"{func.get_kernel_source()}")
 ---
 
 ## 7. 性能调优工具
-
-> 来源：Programming Guide §6
 
 ### msProf
 

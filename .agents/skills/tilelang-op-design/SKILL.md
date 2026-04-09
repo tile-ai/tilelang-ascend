@@ -142,8 +142,8 @@ description: "根据算子需求生成 TileLang-Ascend 算子设计文档（desi
     两种模式均可使用 T.reduce_*，选择依据：
     ├─ 简单归约（如单步 reduce_sum）→ Developer 模式
     └─ 归约 + 多步后续计算 + 需精细 buffer 管理 → Expert 模式
-    API: T.reduce_sum / T.reduce_max / T.reduce_min（需要 tmp buffer）
-    内存: GM→UB（+tmp buffer）→GM
+    API: T.reduce_sum / T.reduce_max / T.reduce_min
+    内存: GM→UB→GM
 ```
 
 ---

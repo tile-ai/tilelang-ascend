@@ -64,7 +64,7 @@ $$
 | 步骤 | 数学表达 | TileLang API | 参数 | 模式 |
 |------|----------|-------------|------|------|
 | 1 | {子表达式} | {如: T.tile.exp(dst, src)} | {参数说明} | {Developer/Expert} |
-| 2 | {子表达式} | {如: T.reduce_sum(buf, out, tmp, dim=-1)} | {参数说明} | {Developer/Expert} |
+| 2 | {子表达式} | {如: T.reduce_sum(buf, out, dim=-1)} | {参数说明} | {Developer/Expert} |
 | ... | ... | ... | ... | ... |
 
 ### 3.3 计算伪代码

@@ -1,7 +1,5 @@
 # Kernel 定义、内存分配与数据搬运
 
-> 来源：`docs/TileLang-Ascend Programming Guide.md` §2-§4, `tilelang/language/ascend.py`, `examples/`
-
 ---
 
 ## 1. Kernel 定义与启动
@@ -43,7 +41,6 @@ def add_kernel(
           ...
   ```
 
-> 注意：`T.symbolic` 是 `T.dynamic` 的已弃用别名。
 
 ### T.Kernel
 

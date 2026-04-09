@@ -60,9 +60,8 @@ design.md 可能很长，**只提取以下字段，忽略其余内容**：
 查阅示例时关注：
 1. **Kernel 结构**：`T.Kernel` 参数、`cid`/`vid` 用法
 2. **Buffer 分配方式**：shape 和 dtype
-3. **tmp buffer 写法**：归约操作的 tmp 大小和 dtype
-4. **pass_configs 配置**：该类算子实际使用哪些开关
-5. **数据搬运**：`T.copy` 的索引写法
+3. **pass_configs 配置**：该类算子实际使用哪些开关
+4. **数据搬运**：`T.copy` 的索引写法
 
 ---
 
@@ -143,10 +142,6 @@ python examples/{op}/example_{op}.py
 ```python
 # VEC_NUM = 2，每个 vector 核处理 block_M // VEC_NUM 行
 a_ub = T.alloc_ub([block_M // VEC_NUM, block_N], dtype)
-
-# 归约 tmp buffer（uint8 类型）
-tmp_size = 3 * DataType(dtype).bits // 8 * block_M // VEC_NUM * block_N
-tmp_ub = T.alloc_ub([tmp_size], "uint8")
 ```
 
 ### 数据搬运索引
@@ -182,7 +177,7 @@ pass_configs = {
 # 归约结果 [M, 1] 广播到 [M, N]
 max_ub = T.alloc_ub([block_M // VEC_NUM, 1], dtype)
 max_2d_ub = T.alloc_ub([block_M // VEC_NUM, block_N], dtype)
-T.tile.broadcast(max_2d_ub, max_ub, tmp_ub)  # 需要 tmp buffer
+T.tile.broadcast(max_2d_ub, max_ub)
 ```
 
 ### 测试模板
@@ -204,8 +199,7 @@ torch.testing.assert_close(output.cpu(), ref_output.cpu(), rtol=rtol, atol=atol)
 | 1 | `out_idx` 与函数签名中的输出参数位置一致 |
 | 2 | `block_M // VEC_NUM` 在 buffer 分配和索引中一致使用 |
 | 3 | 所有 `T.alloc_ub` 的 shape 乘积不超 UB 容量 |
-| 4 | 归约 tmp buffer 使用 `"uint8"` dtype |
-| 5 | Expert 模式有 `T.Scope("V")` 和 `T.barrier_all()` |
-| 6 | Developer 模式有对应的 `pass_configs` |
-| 7 | 测试包含至少 2 个配置（小规模 + 典型规模） |
-| 8 | golden 函数使用 PyTorch 标准实现 |
+| 4 | Expert 模式有 `T.Scope("V")` 和 `T.barrier_all()` |
+| 5 | Developer 模式有对应的 `pass_configs` |
+| 6 | 测试包含至少 2 个配置（小规模 + 典型规模） |
+| 7 | golden 函数使用 PyTorch 标准实现 |

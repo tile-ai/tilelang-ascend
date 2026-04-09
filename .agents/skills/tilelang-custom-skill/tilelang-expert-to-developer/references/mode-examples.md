@@ -1,12 +1,8 @@
 # Developer vs Expert 模式代码对比
 
-> 以下代码均来自仓库 `examples/` 目录中的实际实现。
-
 ---
 
 ## 1. GEMM — Developer 模式
-
-> 来源：`examples/developer_mode/gemm_developer.py`
 
 ```python
 import tilelang
@@ -60,8 +56,6 @@ def matmul(M, N, K, block_M, block_N, K_L1, dtype="float16", accum_dtype="float"
 
 ## 2. GEMM — Expert 模式
 
-> 来源：`examples/gemm/example_gemm.py`
-
 ```python
 import tilelang
 import tilelang.language as T
@@ -109,8 +103,6 @@ def matmul(M, N, K, block_M, block_N, block_K, dtype="float16", accum_dtype="flo
 
 ## 3. Flash Attention — Expert 模式 pass_configs
 
-> 来源：`examples/flash_attention/fa_opt/flash_attn_bhsd_expert_h16_d128.py`
-
 Expert 模式极致性能场景，**全部关闭**：
 
 ```python
@@ -127,8 +119,6 @@ def flash_attention_fwd(...):
 ```
 
 ## 4. Flash Attention — Developer 核间流水线 pass_configs
-
-> 来源：`examples/flash_attention/fa_opt/flash_attn_bhsd_auto_pipeline_h32_d512.py`
 
 核间流水线场景，**全部开启**：
 
@@ -149,8 +139,6 @@ def flash_attention_fwd(...):
 
 ## 5. 混合模式 — Softmax
 
-> 来源：`examples/softmax/example_online_softmax.py` 使用模式
-
 混合模式典型场景：Developer pass_configs + Expert 计算原语（`T.tile.fill/max/sub/exp/div`）
 
 ```python
@@ -164,10 +152,10 @@ pass_configs = {
 with T.Kernel(m_num, is_npu=True) as (cid, vid):
     # Expert API：T.tile.fill, T.tile.max, T.tile.sub, T.tile.exp 等
     T.tile.fill(acc_ub, 0.0)
-    T.reduce_max(scores_ub, row_max_ub, tmp_ub, dim=-1)
+    T.reduce_max(scores_ub, row_max_ub, dim=-1)
     T.tile.sub(scores_ub, scores_ub, row_max_ub)
     T.tile.exp(scores_ub, scores_ub)
-    T.reduce_sum(scores_ub, row_sum_ub, tmp_ub, dim=-1)
+    T.reduce_sum(scores_ub, row_sum_ub, dim=-1)
     T.tile.div(scores_ub, scores_ub, row_sum_ub)
     # 使用 Developer 的 pass_configs 自动处理同步
 ```
