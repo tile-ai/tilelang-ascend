@@ -348,6 +348,8 @@ private:
   Array<Buffer>
   createPTOXORAndMergeSortTmpBuffer_(Array<Buffer> alloc_buffers) {
     std::unordered_map<DataType, Array<PrimExpr>> shapes;
+    // Iterate over the stored CallNodes, find the corresponding xor and merge_sort
+    // and allocate tmp_ub for them (requires tmp_ub of the corresponding datatype)
     for (size_t i = 0; i < calls_.size(); i++) {
       const CallNode *call = calls_[i].get();
       if (call->op.same_as(tl::ascend_bitwise_xor())) {
@@ -602,6 +604,7 @@ private:
     int64_t shape_size = 0;
     for (size_t i = 0; i < calls_.size(); i++) {
       const CallNode *call = calls_[i].get();
+      // pto uses formula calculate tmp_buffer size
       if (call->op.same_as(tl::ascend_reduce())) {
         const CallNode *src_access_ptr = Downcast<Call>(call->args[2]).get();
         std::string op_name = Downcast<StringImm>(call->args[0])->value;
@@ -653,7 +656,7 @@ private:
             shape = tmp_shape;
             shape_size = tmp_shape_size;
           }
-        } else if (op_name == "TROWSUM" || "TCOLSUM") {
+        } else if (op_name == "TROWSUM" || op_name == "TCOLSUM") {
           int64_t tmp_shape_size = valid_row * valid_col / 2;
           if (tmp_shape_size > shape_size) {
             Array<PrimExpr> tmp_shape = {
@@ -729,7 +732,7 @@ private:
 
   const BufferNode *GetBufferNodeByName_(Array<Buffer> alloc_buffers,
                                          std::string src_buffer_name) {
-    const BufferNode *buffer;
+    const BufferNode *buffer = nullptr;
     for (size_t j = 0; j < alloc_buffers.size(); j++) {
       if (alloc_buffers[j].get()->name == src_buffer_name) {
         buffer = alloc_buffers[j].get();

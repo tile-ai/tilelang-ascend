@@ -99,9 +99,9 @@ T.tile.cast(b_ub, a_ub, "CAST_RINT", 4096)
 
 | API | 功能 |
 |-----|------|
-| `T.tile.sort(dst, src, indices, repeat_time)` | 降序排序 |
+| `T.tile.sort(dst, src, actual_num)` | 降序排序 |
 | `T.tile.merge_sort(dst, src, block_size, block_num, is_copy)` | 合并排序 |
-| `T.tile.topk(dst, src, block_size)` | 获取 Top-K |
+| `T.tile.topk(dst, src, block_size)` | 执行 TopK 操作，调用底层实现来从源数据中选取前 K 个元素 |
 
 ## 两种编程范式对比
 

@@ -1729,14 +1729,13 @@ Expert编程模式可以复用Developer模式的Reduce类计算原语。
 
 ###### 4.1.3.2.7 排序组合
 
-- `T.tile.sort(dst, src, indices, repeat_time):`
+- `T.tile.sort(dst, src, actual_num):`
 
   **参数**：
 
   - dst：保存排序后的数据的存储buffer
   - src：源操作数，待排序数据
-  - indices：存储排序元素原始索引的缓冲区
-  - repeat_time：重复迭代次数
+  - actual_num：src 中有效元素的数量。当 actual_num 小于缓冲区大小时，排序前未使用的位置会用 -inf 填充
 
   **功能**：排序函数，按照数值大小进行降序排序。
 
@@ -1745,7 +1744,7 @@ Expert编程模式可以复用Developer模式的Reduce类计算原语。
   **举例**：
 
   ```
-  T.tile.sort(dst, src, indices, repeat_time)
+  T.tile.sort(dst, src, actual_num)
   ```
 
 - `T.tile.merge_sort(dst, src0, src1, src2=None, src3=None):`
@@ -1800,7 +1799,7 @@ Expert编程模式可以复用Developer模式的Reduce类计算原语。
   - src：包含输入数据的源缓冲区
   - block_size：待处理数据块的大小
 
-  **功能**：获取最后一个维度的前k个最大值或最小值及其对应的索引。
+  **功能**：执行 TopK 操作，调用底层实现来从源数据中选取前 K 个元素
 
   更详细说明，详见AscendC文档：https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/83RC1alpha002/API/ascendcopapi/atlasascendc_api_07_0836.html
 

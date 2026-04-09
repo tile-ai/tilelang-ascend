@@ -83,9 +83,9 @@
 | `T.tile.createvecindex(dst, first_value)` | 创建向量索引 |
 | `T.tile.gather(dst, src, offset, base_addr)` | 数据收集 |
 | `T.tile.arith_progression(buf, first, diff, count)` | 等差数列 |
-| `T.tile.sort(dst, src, indices, repeat)` | 排序 |
+| `T.tile.sort(dst, src, actual_num)` | 排序 |
 | `T.tile.merge_sort(dst, src, block_size, block_num, is_copy)` | 合并排序 |
-| `T.tile.topk(dst, src, block_size)` | Top-K |
+| `T.tile.topk(dst, src, block_size)` | 执行 TopK 操作，调用底层实现来从源数据中选取前 K 个元素 |
 
 ## 同步原语
 
