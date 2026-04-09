@@ -2321,15 +2321,16 @@ void CodeGenTileLangNPUIRDEV::VreduceCodegen(const CallNode *op) {
         result = builder.create<mlir::arith::AddIOp>(loc, inputElem, accumElem);
     } else if (npuirop.reduce_mode == "max") {
       if (elemTy.isa<mlir::FloatType>()) {
-        auto cmp = builder.create<mlir::arith::CmpFOp>(loc, mlir::arith::CmpFPredicate::OGT, inputElem, accumElem);
-        result = builder.create<mlir::arith::SelectOp>(loc, cmp, inputElem, accumElem);
-      } else {
-        auto intTy = elemTy.cast<mlir::IntegerType>();
-        auto pred = intTy.isSigned() ? mlir::arith::CmpIPredicate::sgt : mlir::arith::CmpIPredicate::ugt;
-        auto cmp = builder.create<mlir::arith::CmpIOp>(loc, pred, inputElem, accumElem);
-        result = builder.create<mlir::arith::SelectOp>(loc, cmp, inputElem, accumElem);
-      }
+        result = builder.create<mlir::arith::MaxNumFOp>(loc, inputElem, accumElem);
+    } else {
+      auto intTy = elemTy.cast<mlir::IntegerType>();
+      if (intTy.isSigned()) {
+        result = builder.create<mlir::arith::MaxSIOp>(loc, inputElem, accumElem);
+    } else {
+        result = builder.create<mlir::arith::MaxUIOp>(loc, inputElem, accumElem);
     }
+  }
+}
 
     builder.create<mlir::linalg::YieldOp>(loc, result);
   }
