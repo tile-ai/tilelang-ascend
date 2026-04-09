@@ -4,6 +4,7 @@ name: TileLang-Ascend CI
 # 全局环境变量，所有 job 都可使用
 env:
   ASCEND_HOME: /usr/local/Ascend/ascend-toolkit/latest  # Ascend CANN 安装路径
+  TILELANG_DIR: ${{ github.workspace }}/tilelang-ascend/tilelang-ascend/
 
 # 触发条件
 on:
@@ -46,6 +47,9 @@ jobs:
     runs-on: [self-hosted, linux, x64, 910b]                # 使用自托管运行器（需安装 Ascend 环境）
     if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.run_tests == 'true' }} # 手动触发时可跳过测试
     timeout-minutes: 120                               # 超时 2 小时
+    outputs:                                          # 定义 job 输出
+      pass_rate: ${{ steps.check_results.outputs.pass_rate }}
+      test_status: ${{ steps.check_results.outputs.test_status }}
     steps:       
       - name: Checkout code
         uses: actions/checkout@v4
@@ -53,13 +57,13 @@ jobs:
           submodules: false 
           fetch-depth: 1
 
-      - name: Set up environment
+      - name: Set Ascend environment
         run: |
           echo "Setting up Ascend environment..."
           source ${ASCEND_HOME}/set_env.sh || true      # 加载 Ascend 环境变量
           echo "ASCEND_HOME=${ASCEND_HOME}" >> $GITHUB_ENV   # 持久化到环境变量
 
-      - name: Create virtual environment
+      - name: Create virtual python environment
         run: |
           python -m venv test_venv 
           source test_venv/bin/activate
@@ -70,20 +74,73 @@ jobs:
         env:
           USE_ASCEND: 'true'
         run: |
+          cd ${TILELANG_DIR}
           bash install_ascend.sh                              # 执行安装脚本
 
-      - name: Set environment variables
+      - name: Set tilelang environment variables
         run: |
           source set_env.sh                                   # 加载项目环境变量
           echo "TILELANG_PATH=$PWD" >> $GITHUB_ENV
 
       - name: Run benchmark tests
+        id: run_tests
         run: |
           cd examples
           chmod +x bench_test.sh
-          ./bench_test.sh
-        continue-on-error: true                               # 测试失败仍继续
+          ./bench_test.sh 2>&1 | tee test_output.log
+        
+          TEST_EXIT_CODE=${PIPESTATUS[0]}                    # 保存退出码
+          echo "Test exit code: $TEST_EXIT_CODE"
+          echo "test_exit_code=$TEST_EXIT_CODE" >> $GITHUB_OUTPUT
 
+      - name: Check pass rate
+        id: check_results
+        run: |
+          echo "Checking test results..."
+          
+          # 从测试输出中提取 Pass rate
+          if [ -f test_output.log ]; then
+            PASS_RATE_LINE=$(grep -i "Pass rate:" test_output.log || echo "")
+            if [ -n "$PASS_RATE_LINE" ]; then             
+              PASS_RATE=$(echo "$PASS_RATE_LINE" | grep -o '[0-9]*%' | tr -d '%')
+              echo "Found Pass rate: ${PASS_RATE}%"
+              echo "pass_rate=${PASS_RATE}" >> $GITHUB_OUTPUT
+              
+              if [ "$PASS_RATE" = "100" ]; then
+                echo "✅ All tests passed (Pass rate: 100%)"
+                echo "test_status=passed" >> $GITHUB_OUTPUT
+              else
+                echo "❌ Tests failed (Pass rate: ${PASS_RATE}%)"
+                echo "test_status=failed" >> $GITHUB_OUTPUT
+                echo "Failing step because Pass rate is not 100%"
+                exit 1
+              fi
+            else
+              echo "⚠️ Could not find 'Pass rate:' in test output"
+              echo "pass_rate=0" >> $GITHUB_OUTPUT
+              echo "test_status=error" >> $GITHUB_OUTPUT
+              
+              # 如果没有找到 Pass rate，也标记为失败
+              echo "Failing step because 'Pass rate:' was not found in output"
+              exit 1
+            fi
+            
+            # 同时提取其他统计信息
+            EXEC_SUMMARY=$(grep -i "Execution Summary" -A 2 test_output.log || echo "")
+            if [ -n "$EXEC_SUMMARY" ]; then
+              echo "Execution Summary:"
+              echo "$EXEC_SUMMARY"
+            fi
+          else
+            echo "⚠️ Test output file not found"
+            echo "pass_rate=0" >> $GITHUB_OUTPUT
+            echo "test_status=error" >> $GITHUB_OUTPUT
+            
+            # 如果没有测试输出文件，标记为失败
+            echo "Failing step because test output file was not found"
+            exit 1
+          fi
+      
       - name: Upload test results
         uses: actions/upload-artifact@v4
         if: always()                                          # 无论成功失败都上传结果
@@ -106,6 +163,10 @@ jobs:
         run: |
           echo "## CI Results Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Job | Status |" >> $GITHUB_STEP_SUMMARY
-          echo "|-----|--------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Test | ${{ needs.test.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Job | Status | Pass Rate |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----|--------|-----------|" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ needs.test.result }}" = "success" ]; then
+            echo "| Benchmark Tests | ✅ Success | ${{ needs.test.outputs.pass_rate }}% |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| Benchmark Tests | ❌ Failed | ${{ needs.test.outputs.pass_rate }}% |" >> $GITHUB_STEP_SUMMARY
+          fi
