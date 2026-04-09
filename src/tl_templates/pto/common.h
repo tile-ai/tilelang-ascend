@@ -313,9 +313,16 @@ AICORE PTO_INLINE void copy_gm_to_ub_dynamic(
         using DstTile = pto::Tile<pto::TileType::Vec, T2, ub_shape1, ub_shape2,
                                   pto::BLayout::RowMajor, ub_shape1, ub_shape2,
                                   pto::SLayout::NoneBox, 512, PadVal>;
+        set_flag(PIPE_MTE2, PIPE_V, 0);
+        wait_flag(PIPE_MTE2, PIPE_V, 0);
         DstTile dst_tile;
         pto::TASSIGN(dst_tile, ub_shape_addr + ub_offset * len);
         pto::TFILLPAD_INPLACE(dst_tile, src_tile);
+        set_flag(PIPE_V, PIPE_MTE2, 0);
+        wait_flag(PIPE_V, PIPE_MTE2, 0);
+        set_flag(PIPE_V, PIPE_MTE3, 0);
+        wait_flag(PIPE_V, PIPE_MTE3, 0);
+        pipe_barrier(PIPE_V);
       }
     }
   } else {
@@ -468,8 +475,15 @@ AICORE PTO_INLINE void copy_gm_to_ub(__gm__ T1 *handle, int32_t ub_shape_addr,
                                   pto::BLayout::RowMajor, ub_shape1, ub_shape2,
                                   pto::SLayout::NoneBox, 512, PadVal>;
         DstTile dst_tile;
+        set_flag(PIPE_MTE2, PIPE_V, 0);
+        wait_flag(PIPE_MTE2, PIPE_V, 0);
         pto::TASSIGN(dst_tile, ub_shape_addr + ub_offset * len);
         pto::TFILLPAD_INPLACE(dst_tile, src_tile);
+        set_flag(PIPE_V, PIPE_MTE2, 0);
+        wait_flag(PIPE_V, PIPE_MTE2, 0);
+        set_flag(PIPE_V, PIPE_MTE3, 0);
+        wait_flag(PIPE_V, PIPE_MTE3, 0);
+        pipe_barrier(PIPE_V);
       }
     }
   } else {
