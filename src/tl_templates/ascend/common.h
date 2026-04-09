@@ -1,5 +1,7 @@
+// clang-format off
 #include "catlass/catlass.hpp"
 #include "catlass/arch/arch.hpp"
+// clang-format on
 
 #include "catlass/detail/tag_to_layout.hpp"
 #include "catlass/gemm/block/block_swizzle.hpp"
@@ -47,7 +49,7 @@ CATLASS_DEVICE void copy_gm_to_l1(LocalTensor<T> dstTensor,
     AscendC::InitConstValue(
         dstTensor,
         {1, static_cast<uint16_t>(dstM * dstN * sizeof(T) / 32), 0, 0});
-    AscendC::PipeBarrier<PIPE_MTE2>();  
+    AscendC::PipeBarrier<PIPE_MTE2>();
   }
   auto layout = MakeLayoutFromTag(LayoutGM{tailM, realSrcN});
   auto src_LAYOUT = MakeLayoutTile(layout, tla::MakeShape(tailM, tailN));
@@ -349,7 +351,7 @@ CATLASS_DEVICE void
 reduce_sum_half(LocalTensor<T> const &dstTensor,
                 LocalTensor<T> const &srcTensor, const int32_t mask,
                 const int32_t repeatTime, const int32_t srcRepStride) {
-  AscendC::WholeReduceSum<T>(dstTensor, srcTensor, mask, repeatTime, 1, 8,
+  AscendC::WholeReduceSum<T>(dstTensor, srcTensor, mask, repeatTime, 1, 1,
                              srcRepStride);
 }
 
@@ -464,7 +466,7 @@ gemm_v0(LocalTensor<T1> const &A, LocalTensor<T1> const &B,
 // 2-way merge sort
 template <typename T>
 CATLASS_DEVICE void
-MergeSort(const LocalTensor<T> &dst, const LocalTensor<T> &tmp,
+MergeSort(const LocalTensor<T> &dst, const LocalTensor<uint8_t> &tmp,
           const LocalTensor<T> &src0, const LocalTensor<T> &src1,
           uint32_t blockLen0, uint32_t blockLen1) {
   // Note: tmp parameter is kept for API consistency with PTO backend but not
@@ -491,7 +493,7 @@ MergeSort(const LocalTensor<T> &dst, const LocalTensor<T> &tmp,
 // 3-way merge sort
 template <typename T>
 CATLASS_DEVICE void
-MergeSort(const LocalTensor<T> &dst, const LocalTensor<T> &tmp,
+MergeSort(const LocalTensor<T> &dst, const LocalTensor<uint8_t> &tmp,
           const LocalTensor<T> &src0, const LocalTensor<T> &src1,
           const LocalTensor<T> &src2, uint32_t blockLen0, uint32_t blockLen1,
           uint32_t blockLen2) {
@@ -519,7 +521,7 @@ MergeSort(const LocalTensor<T> &dst, const LocalTensor<T> &tmp,
 // 4-way merge sort
 template <typename T>
 CATLASS_DEVICE void
-MergeSort(const LocalTensor<T> &dst, const LocalTensor<T> &tmp,
+MergeSort(const LocalTensor<T> &dst, const LocalTensor<uint8_t> &tmp,
           const LocalTensor<T> &src0, const LocalTensor<T> &src1,
           const LocalTensor<T> &src2, const LocalTensor<T> &src3,
           uint32_t blockLen0, uint32_t blockLen1, uint32_t blockLen2,
@@ -720,12 +722,187 @@ CATLASS_DEVICE void ArithProgression(const LocalTensor<T> &dst,
   AscendC::ArithProgression<T>(dst, firstValue, diffValue, count);
 }
 
-template <typename T, bool isFullSort>
-CATLASS_DEVICE void Sort(const LocalTensor<T> &dst,
-                         const LocalTensor<T> &concat,
-                         const LocalTensor<uint32_t> &index,
-                         LocalTensor<T> &tmp, const int32_t repeatTime) {
-  AscendC::Sort<T, isFullSort>(dst, concat, index, tmp, repeatTime);
+template <typename T>
+CATLASS_DEVICE void Sort(const LocalTensor<T> &dst, const LocalTensor<T> &src,
+                         const LocalTensor<T> &tmp, const int32_t repeatTimes,
+                         const int32_t actualCount) {
+  if constexpr (sizeof(T) == 2) {
+    // B16 (half): MrgSort requires >= 256 bytes per source, but Sort32 only
+    // produces 128 bytes per block for B16. Work around by sorting in float.
+    //
+    // Layout in tmp (N = alignedCount, as float elements via ReinterpretCast):
+    //   ftmp[0 .. N*2-1]    = Sort32 output + merge ping-pong buffer A
+    //   ftmp[N*2 .. N*4-1]  = Sort<float>'s dst (merge ping-pong buffer B)
+    //     - before Sort32: indices at [N*2..N*3), float_src at [N*3..N*4)
+    //     - after  Sort32: entire region free for merge
+    // Total: 4N float elements = 8N half elements.
+    uint32_t N = repeatTimes * 32;
+
+    auto ftmp = tmp.template ReinterpretCast<float>();
+    auto float_src = ftmp[N * 3];
+
+    // Cast half → float
+    AscendC::Cast(float_src, src, AscendC::RoundMode::CAST_NONE, N);
+
+    // Sort<float> guarantees result in dst (= ftmp[N*2])
+    Sort<float>(ftmp[N * 2], float_src, ftmp, repeatTimes, actualCount);
+
+    // Cast float result → half (2*N elements: interleaved [value, index] pairs)
+    AscendC::Cast(dst, ftmp[N * 2], AscendC::RoundMode::CAST_RINT, N * 2);
+    PipeBarrier<PIPE_V>();
+    return;
+  }
+
+  constexpr uint32_t blockSize = 32;
+  uint32_t alignedCount = repeatTimes * blockSize;
+  uint32_t padCount = alignedCount - actualCount;
+  uint32_t blockNum = repeatTimes;
+
+  // Generate ascending indices as float values (0.0, 1.0, 2.0, ...) in dst
+  // (temporary storage — overwritten by merge later). This allows tmp to
+  // be only alignedCount*2 elements instead of alignedCount*4, because dst
+  // (which is 2*alignedCount for interleaved output) doubles as the second
+  // merge ping-pong buffer.
+  AscendC::ArithProgression<T>(dst, T(0), T(1), alignedCount);
+  PipeBarrier<PIPE_V>();
+  LocalTensor<uint32_t> indices = dst.template ReinterpretCast<uint32_t>();
+
+  // Pad src in-place with -inf for unused positions
+  if (padCount > 0) {
+    T negInf = -CUDART_INF_F;
+    constexpr uint32_t elemPerBlock =
+        32 / sizeof(T); // 16 for half, 8 for float
+    uint32_t alignedActual = (actualCount / elemPerBlock) * elemPerBlock;
+    uint32_t inBlockOffset = actualCount - alignedActual;
+
+    if (inBlockOffset == 0) {
+      // actualCount is already 32-byte aligned, simple Duplicate
+      AscendC::Duplicate<T>(src[actualCount], negInf, padCount);
+    } else {
+      // Non-aligned: split into aligned bulk fill + masked partial block
+      uint32_t nextAligned = alignedActual + elemPerBlock;
+      // Fill full aligned blocks after the partial one
+      if (nextAligned < alignedCount) {
+        AscendC::Duplicate<T>(src[nextAligned], negInf,
+                              alignedCount - nextAligned);
+      }
+      // Fill partial block using mask to preserve valid elements before
+      // actualCount
+      uint64_t mask0 = 0;
+      for (uint32_t i = inBlockOffset; i < elemPerBlock; i++) {
+        mask0 |= (1ULL << i);
+      }
+      uint64_t masks[2] = {mask0, 0};
+      AscendC::Duplicate(src[alignedActual], negInf, masks, (uint8_t)1,
+                         (uint16_t)1, (uint8_t)0);
+    }
+    PipeBarrier<PIPE_V>();
+  }
+
+  // Sort32: each 32-element block → tmp[0..alignedCount*2-1] (bufA)
+  AscendC::Sort32(tmp, src, indices, repeatTimes);
+  PipeBarrier<PIPE_V>();
+
+  // Merge ping-pong between tmp[0..2N-1] and dst[0..2N-1].
+  // tmp only needs alignedCount*2 elements (Sort32 output size).
+
+  if (blockNum > 1) {
+    uint32_t fullSegSize = blockSize;
+    uint32_t lastSegSize = blockSize;
+    uint32_t numSegs = blockNum;
+    bool readFromTmp = true; // Sort32 output is in tmp
+
+    while (numSegs > 1) {
+      uint32_t newNumSegs = 0;
+      uint32_t inOffset = 0;
+      uint32_t outOffset = 0;
+
+      for (uint32_t g = 0; g < numSegs; g += 4) {
+        uint32_t groupCount = numSegs - g;
+        if (groupCount > 4) {
+          groupCount = 4;
+        }
+        uint32_t len0 = (g == numSegs - 1) ? lastSegSize : fullSegSize;
+        uint32_t len1 = 0, len2 = 0, len3 = 0;
+        uint32_t totalElems = len0;
+        if (groupCount > 1) {
+          len1 = (g + 1 == numSegs - 1) ? lastSegSize : fullSegSize;
+          totalElems += len1;
+        }
+        if (groupCount > 2) {
+          len2 = (g + 2 == numSegs - 1) ? lastSegSize : fullSegSize;
+          totalElems += len2;
+        }
+        if (groupCount > 3) {
+          len3 = (g + 3 == numSegs - 1) ? lastSegSize : fullSegSize;
+          totalElems += len3;
+        }
+
+        if (groupCount == 1) {
+          if (readFromTmp) {
+            AscendC::DataCopy(dst[outOffset], tmp[inOffset], len0 * 2);
+          } else {
+            AscendC::DataCopy(tmp[outOffset], dst[inOffset], len0 * 2);
+          }
+        } else {
+          AscendC::MrgSort4Info params;
+          params.elementLengths[0] = len0;
+          params.elementLengths[1] = len1;
+          params.elementLengths[2] = groupCount > 2 ? len2 : 0;
+          params.elementLengths[3] = groupCount > 3 ? len3 : 0;
+          params.ifExhaustedSuspension = false;
+          params.validBit = (1 << groupCount) - 1;
+
+          uint32_t off0 = inOffset;
+          uint32_t off1 = off0 + len0 * 2;
+          uint32_t off2 = off1 + len1 * 2;
+          uint32_t off3 = off2 + len2 * 2;
+
+          AscendC::MrgSortSrcList<T> srcList;
+          if (readFromTmp) {
+            srcList.src1 = tmp[off0];
+            srcList.src2 = tmp[off1];
+            srcList.src3 = groupCount > 2 ? tmp[off2] : tmp[off0];
+            srcList.src4 = groupCount > 3 ? tmp[off3] : tmp[off0];
+            AscendC::MrgSort<T>(dst[outOffset], srcList, params);
+          } else {
+            srcList.src1 = dst[off0];
+            srcList.src2 = dst[off1];
+            srcList.src3 = groupCount > 2 ? dst[off2] : dst[off0];
+            srcList.src4 = groupCount > 3 ? dst[off3] : dst[off0];
+            AscendC::MrgSort<T>(tmp[outOffset], srcList, params);
+          }
+        }
+
+        inOffset += totalElems * 2;
+        outOffset += totalElems * 2;
+        newNumSegs++;
+      }
+
+      PipeBarrier<PIPE_V>();
+
+      uint32_t lastGroupStart = ((numSegs - 1) / 4) * 4;
+      uint32_t lastGroupCount = numSegs - lastGroupStart;
+      uint32_t newLastSegSize = 0;
+      for (uint32_t i = 0; i < lastGroupCount; i++) {
+        newLastSegSize +=
+            (lastGroupStart + i == numSegs - 1) ? lastSegSize : fullSegSize;
+      }
+
+      fullSegSize = (newNumSegs > 1) ? 4 * fullSegSize : newLastSegSize;
+      lastSegSize = newLastSegSize;
+      numSegs = newNumSegs;
+      readFromTmp = !readFromTmp;
+    }
+
+    // readFromTmp=true means last round wrote to tmp → result in tmp
+    if (readFromTmp) {
+      AscendC::DataCopy(dst, tmp, alignedCount * 2);
+    }
+  } else {
+    // Single block: Sort32 output is in tmp, copy to dst
+    AscendC::DataCopy(dst, tmp, alignedCount * 2);
+  }
 }
 
 template <typename T>

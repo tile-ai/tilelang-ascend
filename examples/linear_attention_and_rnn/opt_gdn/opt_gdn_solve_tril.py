@@ -44,7 +44,6 @@ def solve_tril_ker(B, H, L, C, dtype="float16", accum_dtype="float"):
 			mul_ub = T.alloc_ub([C, C], accum_dtype)
 			red_ub = T.alloc_ub([C,], accum_dtype)
 			o_ub_half = T.alloc_ub([C, C], dtype)
-			tmp_ub = T.alloc_ub([3 * C * C], "uint8")
 
 			with T.Scope("V"):
 				T.copy(A[bz, by, bx * C, 0], o_ub_half)
@@ -53,19 +52,19 @@ def solve_tril_ker(B, H, L, C, dtype="float16", accum_dtype="float"):
 				T.wait_flag("mte2", "v", 0)
 				T.tile.fill(mul_ub, 0.0)
 				T.copy(o_ub_half, o_ub)
-				
+
 				# Transfer o_ub from A to -B row by row
 				for i in range(2, C):
 					T.copy(o_ub[i, :], o_row_ub) # A_i
 
 					# A_i * (-B_{0...i-1})
-					T.tile.broadcast(o_row_2d_ub, o_row_ub, tmp_ub)
+					T.tile.broadcast(o_row_2d_ub, o_row_ub)
 					T.tile.fill(red_ub, 0.0)
 					T.tile.mul(mul_ub, o_ub, o_row_2d_ub)
-					T.reduce_sum(mul_ub, red_ub, tmp_ub, dim = 0)
+					T.reduce_sum(mul_ub, red_ub, dim = 0)
 
 					T.tile.sub(o_ub[i, :], o_ub[i, :], red_ub) # A_i - (A_i * (-B_{0...i-1})) = -B_i
-				
+
 				T.tile.sub(o_ub, i_ub, o_ub) # I - (-B) = I + B = O
 				T.copy(o_ub, o_ub_half)
 				T.set_flag("v", "mte3", 0)
@@ -110,7 +109,6 @@ def solve_tril_64_ker(B, H, L, dtype="float16", accum_dtype="float"):
 			red_ub = T.alloc_ub([F,], accum_dtype)
 			o_ub_half = T.alloc_ub([F, F], dtype)
 			zero_ub_half = T.alloc_ub([F, F], dtype)
-			tmp_ub = T.alloc_ub([3 * F * F], "uint8")
 
 			o11_l1 = T.alloc_L1([F, F], dtype)
 			o22_l1 = T.alloc_L1([F, F], dtype)
@@ -130,10 +128,10 @@ def solve_tril_64_ker(B, H, L, dtype="float16", accum_dtype="float"):
 				# Same as basic algorithm
 				for i in range(2, F):
 					T.copy(o_ub[i, :], o_row_ub)
-					T.tile.broadcast(o_row_2d_ub, o_row_ub, tmp_ub)
+					T.tile.broadcast(o_row_2d_ub, o_row_ub)
 					T.tile.fill(red_ub, 0.0)
 					T.tile.mul(mul_ub, o_ub, o_row_2d_ub)
-					T.reduce_sum(mul_ub, red_ub, tmp_ub, dim = 0)
+					T.reduce_sum(mul_ub, red_ub, dim = 0)
 					T.tile.sub(o_ub[i, :], o_ub[i, :], red_ub)
 				T.tile.sub(o_ub, i_ub, o_ub)
 				T.copy(o_ub, o_ub_half)
@@ -216,7 +214,6 @@ def solve_tril_128_ker(B, H, L, dtype="float16", accum_dtype="float"):
 			zero_ub_half = T.alloc_ub([F, F], dtype)
 			fat_o_ub_half = T.alloc_ub([F, 2 * F], dtype)
 			fat_zero_ub_half = T.alloc_ub([F, 2 * F], dtype)
-			tmp_ub = T.alloc_ub([3 * DataType(accum_dtype).bits // 8 * F * F // VEC_NUM], "uint8")
 
 			o11_s_l1 = T.alloc_L1([F, F], dtype)
 			o22_s_l1 = T.alloc_L1([F, F], dtype)
@@ -265,10 +262,10 @@ def solve_tril_128_ker(B, H, L, dtype="float16", accum_dtype="float"):
 					# Same as basic algorithm
 					for i in range(2, F):
 						T.copy(o_ub[i, :], o_row_ub)
-						T.tile.broadcast(o_row_2d_ub, o_row_ub, tmp_ub)
+						T.tile.broadcast(o_row_2d_ub, o_row_ub)
 						T.tile.fill(red_ub, 0.0)
 						T.tile.mul(mul_ub, o_ub, o_row_2d_ub)
-						T.reduce_sum(mul_ub, red_ub, tmp_ub, dim = 0)
+						T.reduce_sum(mul_ub, red_ub, dim = 0)
 						T.tile.sub(o_ub[i, :], o_ub[i, :], red_ub)
 					T.set_flag("mte2", "v", 0)
 					T.wait_flag("mte2", "v", 0)
@@ -298,7 +295,7 @@ def solve_tril_128_ker(B, H, L, dtype="float16", accum_dtype="float"):
 					T.copy(final_s_l0, O[bz, by, bx * C + (ii * 2 + 1) * F, (ii * 2) * F])
 					if ii == 0:
 						T.copy(O[bz, by, bx * C + 3 * F, 2 * F], a21_s_l1)
-				
+
 				# Calculate the left-bottom 2x2 blocks of O
 				T.copy(O[bz, by, bx * C, 0], o11_l_l1)
 				T.set_flag("fix", "mte2", 0)

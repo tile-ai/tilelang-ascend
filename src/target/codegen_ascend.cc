@@ -1401,26 +1401,8 @@ void CodeGenTileLangAscend::ArithProgressionCodegen(const CallNode *op) {
 void CodeGenTileLangAscend::SortCodegen(const CallNode *op) {
   std::string op_name =
       "tl::ascend::" + Downcast<StringImm>(op->args[0])->value;
-  std::vector<std::string> var_names;
-  for (int i = 1; i < op->args.size() - 2; i++) {
-    auto var_name = PrintBufferOffset(op->args[i].as<CallNode>());
-    var_names.push_back(var_name);
-  }
-
-  auto var_name =
-      PrintBufferOffset(op->args[op->args.size() - 2].as<CallNode>(),
-                        false); // tensor with offset will be
-  var_names.push_back(var_name);
-
-  this->PrintIndent();
-  this->stream << op_name << "(";
-  for (int i = 0; i < var_names.size(); i++) {
-    this->stream << var_names[i];
-    if (i != var_names.size() - 1) {
-      this->stream << ", ";
-    }
-  }
-  this->stream << ", " << PrintExpr(op->args[op->args.size() - 1]) << ");\n";
+  int len = op->args.size();
+  PrintOpCall(op, op_name, {1, len - 2}, {len - 2, len});
 }
 
 void CodeGenTileLangAscend::MergeSortCodegen(const CallNode *op) {
@@ -1830,14 +1812,17 @@ void CodeGenTileLangAscend::ReduceOpCodegen(const CallNode *op) {
 
     if (dtype == "half") {
       std::string mask, repeatTime, srcRepStride;
+      constexpr int64_t ELE_NUM_PER_C0_FOR_HALF = 16;
       if (dim_val == -1) {
         mask = std::to_string(n_val);
         repeatTime = std::to_string(m_val);
-        srcRepStride = "1";
+        srcRepStride = std::to_string((n_val + ELE_NUM_PER_C0_FOR_HALF - 1) /
+                                      ELE_NUM_PER_C0_FOR_HALF);
       } else if (dim_val == 0) {
         mask = std::to_string(m_val);
         repeatTime = std::to_string(n_val);
-        srcRepStride = "1";
+        srcRepStride = std::to_string((m_val + ELE_NUM_PER_C0_FOR_HALF - 1) /
+                                      ELE_NUM_PER_C0_FOR_HALF);
       } else {
         mask = std::to_string(m_val * n_val);
         repeatTime = "1";
