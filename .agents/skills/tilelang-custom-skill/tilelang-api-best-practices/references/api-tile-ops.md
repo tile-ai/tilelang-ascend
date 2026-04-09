@@ -32,8 +32,8 @@
 | `T.tile.relu(dst, src0)` | dst = max(0, src0) | `T.tile.relu(c_ub, a_ub)` |
 | `T.tile.leaky_relu(dst, src0, scalar)` | Leaky ReLU | `T.tile.leaky_relu(c_ub, a_ub, 0.01)` |
 | `T.tile.axpy(dst, src0, scalar)` | dst = scalar * src0 + dst | `T.tile.axpy(c_ub, a_ub, scalar)` |
-| `T.tile.sin(dst, src0, tmp)` | dst = sin(src0) | `T.tile.sin(c_ub, a_ub, tmp)` |
-| `T.tile.cos(dst, src0, tmp)` | dst = cos(src0) | `T.tile.cos(c_ub, a_ub, tmp)` |
+| `T.tile.sin(dst, src0)` | dst = sin(src0) | `T.tile.sin(c_ub, a_ub)` |
+| `T.tile.cos(dst, src0)` | dst = cos(src0) | `T.tile.cos(c_ub, a_ub)` |
 
 ### 逻辑运算
 
@@ -99,9 +99,9 @@ T.tile.cast(b_ub, a_ub, "CAST_RINT", 4096)
 
 | API | 功能 |
 |-----|------|
-| `T.tile.sort(dst, src, indices, tmp, repeat_time)` | 降序排序 |
+| `T.tile.sort(dst, src, actual_num)` | 降序排序 |
 | `T.tile.merge_sort(dst, src, block_size, block_num, is_copy)` | 合并排序 |
-| `T.tile.topk(dst, src, tmp, block_size)` | 获取 Top-K |
+| `T.tile.topk(dst, src, block_size)` | 执行 TopK 操作，调用底层实现来从源数据中选取前 K 个元素 |
 
 ## 两种编程范式对比
 

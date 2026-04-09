@@ -34,7 +34,7 @@ def indexer(B, N2, G, S1, S2, D, TOP_K, VECTOR_BASEN, VECTOR_BASEG, BLOCK_M, BLO
                     {
                         # L1 address
                         Q_L1: 0,
-                        K_L1: 32768,
+                        K_L1: 16384,
                         # L0C address
                         C_L0: 0,
                     }
@@ -83,17 +83,17 @@ def indexer(B, N2, G, S1, S2, D, TOP_K, VECTOR_BASEN, VECTOR_BASEG, BLOCK_M, BLO
                         mm_res_ub: 0,
                         mm_res_ub_flat: 0,
                         mm_res_ub_uint8: 0,
-                        weight_ub: 65536,
-                        weight_brcb_ub: 65664,
-                        reduce_tmp_ub: 66688,
-                        reduce_g_ub: 132224,
-                        sort_output_ub: 134272,
-                        sort_index_ub: 138368,
-                        topk_global_ub1: 140416,
-                        topk_global_ub1_uint: 140416,
-                        topk_global_ub1_flat: 140416,
-                        topk_global_ub2: 156800,
-                        output_ub: 173184,
+                        weight_ub: 32768,
+                        weight_brcb_ub: 32832,
+                        reduce_tmp_ub: 33344,
+                        reduce_g_ub: 66112,
+                        sort_output_ub: 67136,
+                        sort_index_ub: 69184,
+                        topk_global_ub1: 70208,
+                        topk_global_ub1_uint: 70208,
+                        topk_global_ub1_flat: 70208,
+                        topk_global_ub2: 78400,
+                        output_ub: 86592,
                     }
                 )
 
@@ -135,12 +135,11 @@ def indexer(B, N2, G, S1, S2, D, TOP_K, VECTOR_BASEN, VECTOR_BASEG, BLOCK_M, BLO
                         # topK
                         merge_sort_times = TOP_K // VECTOR_BASEN
                         T.barrier_all()
-                        T.reduce_sum(reduce_tmp_ub, reduce_g_ub, mm_res_ub_uint8, 0)
+                        T.reduce_sum(reduce_tmp_ub, reduce_g_ub, 0)
                         T.barrier_all()
                         T.tile.sort(
                             sort_output_ub,
                             reduce_g_ub,
-                            mm_res_ub,
                             VECTOR_BASEN,
                         )
                         T.barrier_all()
@@ -157,7 +156,6 @@ def indexer(B, N2, G, S1, S2, D, TOP_K, VECTOR_BASEN, VECTOR_BASEG, BLOCK_M, BLO
                             if s2_id == merge_sort_times - 1:
                                 T.tile.merge_sort(
                                     topk_global_ub2,
-                                    mm_res_ub,
                                     topk_global_ub1[0, :],
                                     topk_global_ub1[1, :],
                                     topk_global_ub1[2, :],
@@ -166,14 +164,13 @@ def indexer(B, N2, G, S1, S2, D, TOP_K, VECTOR_BASEN, VECTOR_BASEG, BLOCK_M, BLO
                             else:
                                 T.tile.merge_sort(
                                     reduce_tmp_ub,
-                                    mm_res_ub,
                                     topk_global_ub1[0, :],
                                     topk_global_ub1[1, :],
                                     topk_global_ub1[2, :],
                                     topk_global_ub1[3, :],
                                 )
                                 T.barrier_all()
-                                T.tile.topk(topk_global_ub2, reduce_tmp_ub, mm_res_ub, VECTOR_BASEN * merge_sort_times)
+                                T.tile.topk(topk_global_ub2, reduce_tmp_ub, VECTOR_BASEN * merge_sort_times)
                         T.barrier_all()
                     T.barrier_all()
                     T.tile.gather_mask(topk_global_ub1, topk_global_ub2, "P1010")
@@ -188,11 +185,11 @@ def indexer(B, N2, G, S1, S2, D, TOP_K, VECTOR_BASEN, VECTOR_BASEG, BLOCK_M, BLO
 
 B = 2
 N2 = 1
-G = 64
-S1 = 1024
-S2 = 8192
-D = 128
-TOP_K = 2048
+G = 32
+S1 = 512
+S2 = 4096
+D = 64
+TOP_K = 1024
 
 
 def index_golden(q, k, weights):
@@ -255,7 +252,7 @@ def compare_tensors(tensor1, tensor2):
 
 
 def test_indexer():
-    func = indexer(B, N2, G, S1, S2, D, TOP_K, 512, 32, 128, 128, 128)
+    func = indexer(B, N2, G, S1, S2, D, TOP_K, 256, 16, 64, 64, 64)
 
     q = torch.randn(B, S1, N2, G, D).half()
     k = torch.randn(B, S2, N2, D).half()

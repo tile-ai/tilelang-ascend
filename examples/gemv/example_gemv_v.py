@@ -57,7 +57,6 @@ def simple_gemv(N: int, K: int, block_N: int, block_K: int, dtype: str = "float1
             x_ub = T.alloc_ub((1, block_K), dtype)
             x_32_ub = T.alloc_ub((1, block_K), accum_dtype)
             A_ub = T.alloc_ub((block_N, block_K), dtype)
-            temp_ub = alloc_temp()  # for reduce_sum    TODO: Remove temp buffer of T.reduce_xxx
             A_32_ub = T.alloc_ub((block_N, block_K), accum_dtype)
             y_single_32_ub = T.alloc_ub((block_N,), accum_dtype)
             y_total_32_ub = T.alloc_ub((block_N,), accum_dtype)
@@ -73,7 +72,7 @@ def simple_gemv(N: int, K: int, block_N: int, block_K: int, dtype: str = "float1
                 cast_or_copy(A_32_ub, A_ub, CAST_MODE, block_N * block_K)
                 for i in T.serial(block_N):
                     T.tile.mul(A_32_ub[i, :], A_32_ub[i, :], x_32_ub)
-                T.reduce_sum(A_32_ub, y_single_32_ub, temp_ub, dim=-1)
+                T.reduce_sum(A_32_ub, y_single_32_ub, dim=-1)
                 T.tile.add(y_total_32_ub, y_total_32_ub, y_single_32_ub)
 
             cast_or_copy(y_ub, y_total_32_ub, CAST_MODE, block_N)  # cast back

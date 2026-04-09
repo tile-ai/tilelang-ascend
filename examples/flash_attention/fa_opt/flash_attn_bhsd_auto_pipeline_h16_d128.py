@@ -133,7 +133,6 @@ def flash_attention_fwd(
             acc_s_half = T.alloc_ub([half_M, block_N], dtype)
 
             work_ub = T.alloc_ub([half_M, block_N], accum_dtype)
-            tmp_ub = T.alloc_ub([DataType(accum_dtype).bits // 8 * half_M * 128], "uint8")
             buf_2d = T.alloc_ub([half_M, block_N], accum_dtype)
 
             my_start, my_count = task_range(cid)
@@ -197,28 +196,28 @@ def flash_attention_fwd(
                     T.copy(workspace_1[cid, 0, vid * half_M : vid * half_M + half_M, :], io_buf)
                     T.copy(io_buf, work_ub)
                     T.copy(workspace_1[cid, 1, vid * half_M : vid * half_M + half_M, :], io_buf)
-                    T.reduce_max(work_ub, neg_sm[0, :, :], tmp_ub, dim=-1)
+                    T.reduce_max(work_ub, neg_sm[0, :, :], dim=-1)
                     T.tile.mul(neg_sm[0, :, :], neg_sm[0, :, :], -sm_scale)
                     T.tile.min(neg_sm[0, :, :], neg_sm[0, :, :], neg_sm[1, :, :])
-                    T.tile.broadcast(buf_2d, neg_sm[0, :, :], tmp_ub)
+                    T.tile.broadcast(buf_2d, neg_sm[0, :, :])
                     T.tile.axpy(buf_2d, work_ub, sm_scale)
                     T.tile.exp(work_ub, buf_2d)
                     T.copy(work_ub, acc_s_half)
                     T.copy(acc_s_half, workspace_2[cid, 0, vid * half_M : vid * half_M + half_M, :])
-                    T.reduce_sum(work_ub, sumexp_is[0, :, :], tmp_ub, dim=-1)
+                    T.reduce_sum(work_ub, sumexp_is[0, :, :], dim=-1)
                     T.tile.sub(r_factors[0, :, :], neg_sm[0, :, :], neg_sm[1, :, :])
 
                     # ---- V: softmax(ws1[1]) ----
                     T.copy(io_buf, work_ub)
-                    T.reduce_max(work_ub, neg_sm[1, :, :], tmp_ub, dim=-1)
+                    T.reduce_max(work_ub, neg_sm[1, :, :], dim=-1)
                     T.tile.mul(neg_sm[1, :, :], neg_sm[1, :, :], -sm_scale)
                     T.tile.min(neg_sm[1, :, :], neg_sm[1, :, :], neg_sm[0, :, :])
-                    T.tile.broadcast(buf_2d, neg_sm[1, :, :], tmp_ub)
+                    T.tile.broadcast(buf_2d, neg_sm[1, :, :])
                     T.tile.axpy(buf_2d, work_ub, sm_scale)
                     T.tile.exp(work_ub, buf_2d)
                     T.copy(work_ub, acc_s_half)
                     T.copy(acc_s_half, workspace_2[cid, 1, vid * half_M : vid * half_M + half_M, :])
-                    T.reduce_sum(work_ub, sumexp_is[1, :, :], tmp_ub, dim=-1)
+                    T.reduce_sum(work_ub, sumexp_is[1, :, :], dim=-1)
                     T.tile.sub(r_factors[1, :, :], neg_sm[1, :, :], neg_sm[0, :, :])
 
                     # ---- C: PV matmul (even): p_l1 × V → ws3[0] ----
@@ -241,7 +240,7 @@ def flash_attention_fwd(
                     T.tile.exp(r_factors[0, :, :], r_factors[0, :, :])
                     T.tile.mul(sumexp, sumexp, r_factors[0, :, :])
                     T.tile.add(sumexp, sumexp, sumexp_is[0, :, :])
-                    T.tile.broadcast(buf_2d, r_factors[0, :, :], tmp_ub)
+                    T.tile.broadcast(buf_2d, r_factors[0, :, :])
                     T.tile.mul(acc_o, acc_o, buf_2d)
                     T.copy(workspace_3[cid, 0, vid * half_M : vid * half_M + half_M, :], io_buf)
                     T.copy(io_buf, work_ub)
@@ -252,13 +251,13 @@ def flash_attention_fwd(
                     T.tile.exp(r_factors[1, :, :], r_factors[1, :, :])
                     T.tile.mul(sumexp, sumexp, r_factors[1, :, :])
                     T.tile.add(sumexp, sumexp, sumexp_is[1, :, :])
-                    T.tile.broadcast(buf_2d, r_factors[1, :, :], tmp_ub)
+                    T.tile.broadcast(buf_2d, r_factors[1, :, :])
                     T.tile.mul(acc_o, acc_o, buf_2d)
                     T.copy(io_buf, work_ub)
                     T.tile.add(acc_o, acc_o, work_ub)
 
                 # V: normalize
-                T.tile.broadcast(buf_2d, sumexp, tmp_ub)
+                T.tile.broadcast(buf_2d, sumexp)
                 T.tile.div(acc_o, acc_o, buf_2d)
 
                 # V: write output

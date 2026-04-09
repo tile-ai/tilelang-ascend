@@ -45,7 +45,6 @@ def layer_norm(M, N, block_M, block_N, eps=1e-5, dtype="float"):
             sum_square_ub = T.alloc_ub([sub_block_M], cal_dtype)
             mean_ub = T.alloc_ub([sub_block_M, 1], cal_dtype)
             mean_square_ub = T.alloc_ub([sub_block_M, 1], cal_dtype)
-            tmp_ub = T.alloc_ub([3 * DataType(cal_dtype).bits // 8 * sub_block_M * block_N], "uint8")
 
             with T.Scope("V"):
                 # Initialize
@@ -72,8 +71,8 @@ def layer_norm(M, N, block_M, block_N, eps=1e-5, dtype="float"):
                     T.tile.add(sum_square_i, sum_square_i, a_cal)
 
                 # Reduce
-                T.reduce_sum(sum_i, sum_ub, tmp_ub, dim=-1)
-                T.reduce_sum(sum_square_i, sum_square_ub, tmp_ub, dim=-1)
+                T.reduce_sum(sum_i, sum_ub, dim=-1)
+                T.reduce_sum(sum_square_i, sum_square_ub, dim=-1)
 
                 # Compute mean and variance
                 T.tile.div(mean_ub, sum_ub, mean_ub)
@@ -84,8 +83,8 @@ def layer_norm(M, N, block_M, block_N, eps=1e-5, dtype="float"):
                 T.tile.add(mean_square_ub, mean_square_ub, sum_ub)
                 T.tile.sqrt(mean_square_ub, mean_square_ub)
 
-                T.tile.broadcast(sum_i, mean_ub, tmp_ub)
-                T.tile.broadcast(sum_square_i, mean_square_ub, tmp_ub)
+                T.tile.broadcast(sum_i, mean_ub)
+                T.tile.broadcast(sum_square_i, mean_square_ub)
 
                 # Normalize
                 for by in T.serial(n_num):

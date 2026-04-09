@@ -27,7 +27,7 @@ def moe_dispatch_kernel(
     total_expert_num = ep_world_size * local_expert_num     # Total MOE experts count
     assist_size = 3     # Triple size
     ub_align = 32   # UB requires 32-byte alignment
-    ub_float_int32_align = 8    
+    ub_float_int32_align = 8
     status_per_core = (total_expert_num + aiv_num - 1) // aiv_num   # Number of states to be processed per v-core, rounded up to the nearest integer
     # Calculate the number of tokens already received by the current MoE expert.
     @T.macro
@@ -48,9 +48,9 @@ def moe_dispatch_kernel(
         T.reinterpretcast(tmp_fp_32, sub_ub, "float")
         T.reinterpretcast(tmp_out_fp_32, dst_expert_id_ub, "float")
         T.tile.abs_experiment(tmp_out_fp_32, tmp_fp_32, cal_cnt)
-        T.tile.mins_experiment(sub_ub, dst_expert_id_ub, 1, cal_cnt) 
+        T.tile.mins_experiment(sub_ub, dst_expert_id_ub, 1, cal_cnt)
         T.barrier_all()
-        T.tile.reduce_sum_experiment(tmp_out_fp_32, tmp_fp_32, work_local_ub, cal_cnt)
+        T.tile.reduce_sum_experiment(tmp_out_fp_32, tmp_fp_32, cal_cnt)
         T.barrier_all()
     # Synchronization function between different pipelines
     @T.macro
@@ -74,18 +74,17 @@ def moe_dispatch_kernel(
             x_ub = T.alloc_ub([H + (32 + 12) // 2], "bfloat16")     # Data to be dispatched, H is the token length, 32-bit reserved quantization parameter space, 12 is the triple size (4 bytes * 3)
             x_ub_cast32 = T.alloc_ub([H + (32 + 12) // 2], "int32")
             x_win_ub = T.alloc_ub([H], "bfloat16")  # Local win area token -> ub
-            expert_ids_ub = T.alloc_ub([Bs* K], "int32")   
+            expert_ids_ub = T.alloc_ub([Bs* K], "int32")
             dst_expert_id_ub = T.alloc_ub([Bs* K], "int32") # Used for cal_token_send_expert_cnt, filling in the target MOE expert index
-            sub_ub = T.alloc_ub([Bs* K], "int32")   
+            sub_ub = T.alloc_ub([Bs* K], "int32")
             tmp_fp_32 = T.alloc_ub([Bs* K], "float")
             tmp_out_fp_32 = T.alloc_ub([Bs* K], "float")
             work_local_ub = T.alloc_ub([Bs* K], "float")
             win_status_ub = T.alloc_ub([status_per_core * ub_float_int32_align], "int32")    # Store the status to be sent to the win status area of other ranks
-            win_status_fp_ub = T.alloc_ub([status_per_core * ub_float_int32_align], "float")     
+            win_status_fp_ub = T.alloc_ub([status_per_core * ub_float_int32_align], "float")
             status_sum_ub = T.alloc_ub([status_per_core * ub_float_int32_align], "float")
             status_sum_int_ub = T.alloc_ub([status_per_core * ub_float_int32_align], "int32")
             status_sum_out = T.alloc_ub([status_per_core * ub_float_int32_align], "float")
-            status_sum_out_tmp_ub = T.alloc_ub([status_per_core * ub_float_int32_align], "float")
             gather_mask_out_ub = T.alloc_ub([status_per_core], "float")
             receive_count_max_ub = T.alloc_ub([status_per_core], "int32")
             sum_local_ub = T.alloc_ub([aiv_num * ub_align // 4], "int32")
@@ -156,7 +155,7 @@ def moe_dispatch_kernel(
                 aiv_expert_num = T.if_then_else(cur_vid[0] < remainder_expert_num, aiv_expert_num + 1, aiv_expert_num)
                 total_send_token_num = Bs * K
                 for cur_expert_id in range(start_expert_id, start_expert_id + aiv_expert_num):
-                    cal_token_send_expert_cnt(cur_expert_id, total_send_token_num, dst_expert_id_ub, sub_ub, expert_ids_ub, tmp_fp_32, tmp_out_fp_32, work_local_ub)                    
+                    cal_token_send_expert_cnt(cur_expert_id, total_send_token_num, dst_expert_id_ub, sub_ub, expert_ids_ub, tmp_fp_32, tmp_out_fp_32, work_local_ub)
                     cnt_pos_index = (cur_expert_id - start_expert_id) * 8
                     win_status_ub[cnt_pos_index + 1] = total_send_token_num - dst_expert_id_ub[0]   # The second position in the status area is filled with the number of tokens.
                     win_status_ub[cnt_pos_index] = 1    # The first position in the status area is the flag indicator. Flag "1" indicates that the current state is ready.
@@ -167,8 +166,8 @@ def moe_dispatch_kernel(
                 for cur_expert_id in range(start_expert_id, start_expert_id + aiv_expert_num):
                     dest_rank_id = cur_expert_id // local_expert_num    # Target rank
                     local_expert_id = cur_expert_id % local_expert_num  # Target MOE expert
-                    index = (cur_expert_id - start_expert_id) * 8   
-                    T.copy(win_status_fp_ub[index:index+8], win_status_ub_single)  
+                    index = (cur_expert_id - start_expert_id) * 8
+                    T.copy(win_status_fp_ub[index:index+8], win_status_ub_single)
                     T.shmem_ub_put_nbi(win_status_ub_single, win_status, 8, dest_rank_id, local_expert_id * ep_world_size * 8 + rank * 8)
                     sync_func("mte3", "s", 5)
                 # Loop waiting for status WaitDispatch
@@ -182,7 +181,7 @@ def moe_dispatch_kernel(
                     T.copy(win_status[start_status_index, 0], status_sum_ub)
                     sync_func("mte2", "v", 7)
                     T.pipe_barrier("v")
-                    T.tile.reduce_sum_mask_experiment(status_sum_out, status_sum_ub, status_sum_out_tmp_ub, mask, status_num_per_core, 1)  # Each core accumulates the flag bits of the status area it is responsible for.
+                    T.tile.reduce_sum_mask_experiment(status_sum_out, status_sum_ub, mask, status_num_per_core, 1)  # Each core accumulates the flag bits of the status area it is responsible for.
                     sync_func("v", "s", 8)
                     sum_of_flag[0] = status_sum_out[0]
                 sync_func("v", "mte3", 9)
@@ -195,7 +194,7 @@ def moe_dispatch_kernel(
                 gather_tmp_ub[0] = 2
                 mask = 2
                 sync_func("s", "v", 10)
-                T.tile.gathermask_experiment(gather_mask_out_ub, status_sum_ub, gather_tmp_ub, True, mask, [1, aiv_expert_num, 1, 0], 0)   
+                T.tile.gathermask_experiment(gather_mask_out_ub, status_sum_ub, gather_tmp_ub, True, mask, [1, aiv_expert_num, 1, 0], 0)
                 T.pipe_barrier("v")
                 rec_status_num_per_core_inner = (aiv_expert_num * 4 + ub_align - 1) // ub_align * ub_align // 4
                 T.tile.sum_experiment(status_sum_on_core_ub, gather_mask_out_ub, [1, rec_status_num_per_core_inner, aiv_expert_num])
@@ -219,7 +218,7 @@ def moe_dispatch_kernel(
                 if cur_vid[0] == 0:
                     out_count_ub[0] = 0
                 begin_idx_ub[0] = out_count_ub[0]
-                # Local data copy 
+                # Local data copy
                 for i in range(status_num_per_core):
                     begin_idx = begin_idx_ub[0]
                     count = status_sum_int_ub[i * 8 + 1]
@@ -349,7 +348,7 @@ def moe_combine_kernel(
                     while((sum_of_flag[0] < (compare_target - 0.5)) or (sum_of_flag[0] > (compare_target + 0.5))):
                         T.copy(win_status[state_gm, 0], state_ub)
                         T.barrier_all()
-                        T.tile.reduce_sum_experiment(state_sum_out, state_ub, work_local_ub, compare_target)
+                        T.tile.reduce_sum_experiment(state_sum_out, state_ub, compare_target)
                         sum_of_flag[0] = state_sum_out[0]
                         T.barrier_all()
                     T.copy(state_reset, win_status[state_gm, 0])
@@ -456,7 +455,7 @@ if __name__ == '__main__':
     Bs = 64
     H = 7168
     K = 4
-    ep_world_size = 16 
+    ep_world_size = 16
     local_expert_num = 3
     aiv_num = 48
     num_processes = 16

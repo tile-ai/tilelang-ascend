@@ -62,7 +62,6 @@ def online_softmax(M, N, block_M, block_N, dtype="float"):
             prev_sum = T.alloc_ub([sub_block_M, 1], cal_dtype)
             prev_sum_2d = T.alloc_ub([sub_block_M, block_N], cal_dtype)
             tmp_exp = T.alloc_ub([sub_block_M, 1], cal_dtype)
-            tmp = T.alloc_ub([2 * sub_block_M * block_N], "uint8")
 
             T.tile.fill(prev_max, -T.infinity(cal_dtype))
             T.tile.fill(prev_sum, 0.0)
@@ -74,22 +73,22 @@ def online_softmax(M, N, block_M, block_N, dtype="float"):
                     pad_value=-T.infinity(cal_dtype),
                 )  # Load input
                 cast_or_copy(a_cal, a, CAST_MODE_LOW2HIGH, sub_block_M * block_N)  # Cast to compute dtype if needed
-                T.reduce_max(a_cal, tile_max, tmp, dim=-1)  # Compute tile max
+                T.reduce_max(a_cal, tile_max, dim=-1)  # Compute tile max
                 T.tile.max(tile_max, prev_max, tile_max)  # m_j = max(m_{j-1}, x_j)
                 T.tile.sub(tmp_exp, prev_max, tile_max)  # m_{j-1} - m_j
                 T.tile.exp(tmp_exp, tmp_exp)  # exp(m_{j-1} - m_j)
                 T.tile.mul(tmp_exp, prev_sum, tmp_exp)  # s_{j-1} * exp(m_{j-1} - m_j)
-                T.tile.broadcast(tile_max_2d, tile_max, tmp)  # Broadcast tile_max for sub operation
+                T.tile.broadcast(tile_max_2d, tile_max)  # Broadcast tile_max for sub operation
                 T.tile.sub(a_cal, a_cal, tile_max_2d)  # x_j - m_j
                 T.tile.exp(a_cal, a_cal)  # exp(x_j - m_j)
-                T.reduce_sum(a_cal, tile_sum, tmp, dim=-1)  # sum_j exp(x_j - m_j)
+                T.reduce_sum(a_cal, tile_sum, dim=-1)  # sum_j exp(x_j - m_j)
                 T.tile.add(prev_sum, tile_sum, tmp_exp)  # s_j = s_{j-1} * exp(m_{j-1} - m_j) + exp(x_j - m_j)
                 T.copy(tile_max, prev_max)
 
             # Second pass: compute final output
             # After first pass, prev_max holds m_N, prev_sum holds s_N
-            T.tile.broadcast(prev_max_2d, prev_max, tmp)
-            T.tile.broadcast(prev_sum_2d, prev_sum, tmp)
+            T.tile.broadcast(prev_max_2d, prev_max)
+            T.tile.broadcast(prev_sum_2d, prev_sum)
             for by in T.serial(n_num):
                 T.copy(
                     A[bx * block_M + vid * sub_block_M : bx * block_M + (vid + 1) * sub_block_M, by * block_N : (by + 1) * block_N], a
