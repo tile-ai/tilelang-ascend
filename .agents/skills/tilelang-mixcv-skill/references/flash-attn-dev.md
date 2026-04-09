@@ -3,8 +3,8 @@
 ## MixCV feature definition (Developer mode)
 
 - A kernel is treated as MixCV when it has:
-	- Cube-side T.gemm compute, and
-	- Vector-side at least one v-prefix op (for example T.vmul, T.vadd, T.vexp, T.vcast, T.vbrc).
+  - Cube-side T.gemm compute, and
+  - Vector-side at least one v-prefix op (for example T.vmul, T.vadd, T.vexp, T.vcast, T.vbrc).
 
 ## Typical style
 

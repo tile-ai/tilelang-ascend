@@ -92,37 +92,36 @@ When any skill answers technical questions, it must route references by docs dir
 ### Keyword to Docs Mapping
 
 - Vector ops (vadd/vmul/vexp/vcast/vbrc/reduce/sigmoid/rmsnorm):
-	docs/Tilelang.language/数学操作/
-	docs/Tilelang.language/数据类型转换操作/
-	docs/Tilelang.language/shape操作/
-	docs/Tilelang.language/规约操作/
+    docs/Tilelang.language/数学操作/
+    docs/Tilelang.language/数据类型转换操作/
+    docs/Tilelang.language/shape操作/
+    docs/Tilelang.language/规约操作/
 
 - Cube ops (gemm/load_nd2nz/store_fixpipe/L1/L0C/NZ):
-	docs/Tilelang.language/线性代数操作/
-	docs/Tilelang.language/内存操作/
+    docs/Tilelang.language/线性代数操作/
+    docs/Tilelang.language/内存操作/
 
 - Pipeline and sync (sync_block_set/wait/pipe_barrier/set_flag/wait_flag):
-	docs/Tilelang.language/同步管道操作/
+    docs/Tilelang.language/同步管道操作/
 
 - Debug, compile failure, runtime failure, precision issue:
-	docs/Tilelang算子调试指南.md
-	docs/Tilelang.language/调试操作/
+    docs/Tilelang算子调试指南.md
+    docs/Tilelang.language/调试操作/
 
 - MLIR, pass, tilelangir, bishengir-compile:
-	docs/Tilelang算子调试指南.md
-	docs/developer/EnvironmentVariables.md
+    docs/Tilelang算子调试指南.md
+    docs/developer/EnvironmentVariables.md
 
 - Runtime target, mode switch, env setup:
-	docs/developer/npu runtime.md
-	docs/developer/EnvironmentVariables.md
-	docs/安装指南.md
+    docs/developer/npu runtime.md
+    docs/developer/EnvironmentVariables.md
+    docs/安装指南.md
 
 - PR, rebase, commit, issue, CI workflow:
-	docs/Tilelang-Ascend贡献指南.md
+    docs/Tilelang-Ascend贡献指南.md
 
 ### Conflict Resolution
 
 - If multiple mappings match, select by priority and keep at most 3 primary doc references.
 - Always include at least 1 concrete API doc under docs/Tilelang.language/ when the question is API-related.
 - If API docs and examples differ, API docs are source of truth and examples are secondary.
-

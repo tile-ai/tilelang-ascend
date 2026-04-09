@@ -23,8 +23,8 @@ Before answering, follow AGENTS.md section "Docs Auto Routing Rules (Mandatory)"
 ## Developer mode identification rule (Mandatory)
 
 - In Developer mode, classify as MixCV when both conditions are true in the same kernel:
-	1) Cube-side compute contains T.gemm.
-	2) Vector-side compute contains at least one v-prefix op (for example T.vmul, T.vadd, T.vexp, T.vcast, T.vbrc).
+    1) Cube-side compute contains T.gemm.
+    2) Vector-side compute contains at least one v-prefix op (for example T.vmul, T.vadd, T.vexp, T.vcast, T.vbrc).
 - If both conditions hold, route to this skill even if the user does not explicitly say "mixcv".
 
 ## Key primitives

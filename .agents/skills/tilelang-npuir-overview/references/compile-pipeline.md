@@ -7,9 +7,9 @@
 3. Optional pass orchestration through tilelang/tladapter
 4. TileLangIR and MLIR pass application
 5. Backend codegen through:
-	- Expert mode: src/target/codegen_npuir_api.cc and src/target/codegen_npuir_api.h
-	- Developer mode: src/target/codegen_npuir_dev.cc and src/target/codegen_npuir_dev.h
-	- Deprecated: src/target/codegen_npuir.cc
+   - Expert mode: src/target/codegen_npuir_api.cc and src/target/codegen_npuir_api.h
+   - Developer mode: src/target/codegen_npuir_dev.cc and src/target/codegen_npuir_dev.h
+   - Deprecated: src/target/codegen_npuir.cc
 6. Runtime launch integration via jit_npu workflow
 
 ## Practical checks
