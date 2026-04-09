@@ -142,7 +142,13 @@ RUN cd tilelang-ascend/3rdparty/AscendNPU-IR && \
 
 RUN cd tilelang-ascend/3rdparty/AscendNPU-IR && \
     git submodule sync && \
-    git submodule update --init
+    git config --global http.postBuffer 524288000 && \
+    git config --global http.lowSpeedLimit 0 && \
+    git config --global http.lowSpeedTime 999999 && \
+    for i in $(seq 1 5); do \
+    git submodule update --init --jobs 1 && break || \
+    (echo "Submodule clone attempt $i failed, retrying in 10s..." && sleep 10); \
+    done
 
 RUN cd tilelang-ascend/3rdparty/AscendNPU-IR && \
     if [ "$REGION" = "ChinaMainland" ]; then \
