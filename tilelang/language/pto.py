@@ -1,6 +1,8 @@
+from __future__ import annotations
+
 import tilelang.language as T
 from tvm.tir import PrimExpr, Buffer, BufferRegion, BufferLoad, Var
-from typing import List, Union, Literal
+from typing import Literal
 from tvm import tir
 
 import math
@@ -8,14 +10,27 @@ import math
 
 _pipe = Literal["fix", "mte1", "mte2", "mte3", "m", "v"]
 
+
 def _dtype(buf):
-    type_map = {"float16": "half", "float32": "float", "int32": "int", "uint32": "uint32_t", "bfloat16": "bfloat16_t", "uint16": "uint16_t", "uint8": "uint8_t",
-                "int8": "int8_t", "int16": "int16_t", "int64": "int64_t", "uint64": "uint64_t"}
+    type_map = {
+        "float16": "half",
+        "float32": "float",
+        "int32": "int",
+        "uint32": "uint32_t",
+        "bfloat16": "bfloat16_t",
+        "uint16": "uint16_t",
+        "uint8": "uint8_t",
+        "int8": "int8_t",
+        "int16": "int16_t",
+        "int64": "int64_t",
+        "uint64": "uint64_t",
+    }
     if isinstance(buf, BufferRegion):
         buf = buf.buffer
     return type_map[buf.dtype]
 
-def set_cross_flag(pipe: str, flag: int, mode: int=2):
+
+def set_cross_flag(pipe: str, flag: int, mode: int = 2):
     """
     Sets a cross-core synchronization flag.
 
@@ -34,9 +49,8 @@ def set_cross_flag(pipe: str, flag: int, mode: int=2):
     Returns:
         tvm.tir.Call: A TIR intrinsic call node.
     """
-    return tir.call_intrin(
-        "handle", tir.op.Op.get("tl.ascend_set_cross_flag"), pipe.upper(), flag, mode
-    )
+    return tir.call_intrin("handle", tir.op.Op.get("tl.ascend_set_cross_flag"), pipe.upper(), flag, mode)
+
 
 def wait_cross_flag(flag: int):
     """
@@ -80,9 +94,8 @@ def pipe_barrier(pipe: _pipe):
     Returns:
         tvm.tir.Call: A TIR intrinsic call node.
     """
-    return tir.call_intrin(
-        "handle", tir.op.Op.get("tl.ascend_pipe_barrier"), pipe.upper()
-    )
+    return tir.call_intrin("handle", tir.op.Op.get("tl.ascend_pipe_barrier"), pipe.upper())
+
 
 def set_flag(src: _pipe, dst: _pipe, eventId: int):
     """
@@ -99,9 +112,8 @@ def set_flag(src: _pipe, dst: _pipe, eventId: int):
     Returns:
         tvm.tir.Call: A TIR intrinsic call node.
     """
-    return tir.call_intrin(
-        "handle", tir.op.Op.get("tl.ascend_set_flag"), src.upper(), dst.upper(), eventId
-    )
+    return tir.call_intrin("handle", tir.op.Op.get("tl.ascend_set_flag"), src.upper(), dst.upper(), eventId)
+
 
 def wait_flag(src: _pipe, dst: _pipe, eventId: int):
     """
@@ -126,7 +138,8 @@ def wait_flag(src: _pipe, dst: _pipe, eventId: int):
         eventId,
     )
 
-def _legalize_arguments(arg: Union[Buffer, Var]):
+
+def _legalize_arguments(arg: Buffer | Var):
     """Convert let-bound variables to their corresponding buffers.
 
     Args:
@@ -139,7 +152,8 @@ def _legalize_arguments(arg: Union[Buffer, Var]):
         return T.get_let_value(arg).buffer
     return arg
 
-def _retrieve_shape(object: Union[Buffer, BufferRegion]) -> List[int]:
+
+def _retrieve_shape(object: Buffer | BufferRegion) -> list[int]:
     """
     Retrieves the shape of a Buffer or a BufferRegion.
 
@@ -165,13 +179,10 @@ def _retrieve_shape(object: Union[Buffer, BufferRegion]) -> List[int]:
             shape.append(r.extent)
         return shape
     else:
-        raise ValueError(
-            f"Unsupported argument type: {type(object)} for buffer {object}"
-        )
+        raise ValueError(f"Unsupported argument type: {type(object)} for buffer {object}")
 
-def _retrieve_ptr(
-    object: Union[Buffer, BufferRegion], access_type: str = "r"
-) -> PrimExpr:
+
+def _retrieve_ptr(object: Buffer | BufferRegion, access_type: str = "r") -> PrimExpr:
     """
     Retrieves the access pointer (handle) for a Buffer or BufferRegion.
 
@@ -208,9 +219,8 @@ def _retrieve_ptr(
             offset += indices[i] * strides[i]
         return buffer.access_ptr(access_mask=access_type, offset=offset)
     else:
-        raise ValueError(
-            f"Unsupported argument type: {type(object)} for buffer {object}"
-        )
+        raise ValueError(f"Unsupported argument type: {type(object)} for buffer {object}")
+
 
 def gemm_v0(A, B, C, transpose_A=False, transpose_B=False, init=False):
     """
@@ -263,7 +273,7 @@ def gemm_v0(A, B, C, transpose_A=False, transpose_B=False, init=False):
 
     Aptr = _retrieve_ptr(A, "r")
     Bptr = _retrieve_ptr(B, "r")
-    Cptr = _retrieve_ptr(C, "rw")
+    Cptr = _retrieve_ptr(C, "w" if init is True else "rw")
 
     # assert _dtype(A) == _dtype(B), f"gemm A and B dtype mismatch: {_dtype(A)} vs {_dtype(B)}"
     return T.call_intrin(
@@ -275,6 +285,7 @@ def gemm_v0(A, B, C, transpose_A=False, transpose_B=False, init=False):
         Cptr,
         init,
     )
+
 
 def fill(buffer: Buffer, value: PrimExpr):
     """Fill a buffer or buffer region with a specified value.
@@ -297,10 +308,11 @@ def fill(buffer: Buffer, value: PrimExpr):
         size,
     )
 
+
 def binary_op(
-    dst: Union[Buffer, BufferRegion],
-    src0: Union[Buffer, BufferRegion],
-    src1: Union[Buffer, BufferRegion, BufferLoad, PrimExpr, float],
+    dst: Buffer | BufferRegion,
+    src0: Buffer | BufferRegion,
+    src1: Buffer | BufferRegion | BufferLoad | PrimExpr | float,
     op: str,
 ):
     def _handle_buffer_region(br: BufferRegion, mask):
@@ -339,9 +351,7 @@ def binary_op(
         )
 
     elif isinstance(src1, (PrimExpr, float, int)):
-        return T.call_intrin(
-            "handle", tir.op.Op.get(f"tl.ascend_{op}s"), dst_ptr, src0_ptr, src1, size_0
-        )
+        return T.call_intrin("handle", tir.op.Op.get(f"tl.ascend_{op}s"), dst_ptr, src0_ptr, src1, size_0)
     elif isinstance(src1, BufferRegion):
         src1_ptr, src1_extent = _handle_buffer_region(src1, "r")
         size_2 = math.prod(src1_extent)
@@ -366,7 +376,7 @@ def binary_op(
         )
 
 
-def add(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, BufferLoad, PrimExpr]):
+def add(dst: Buffer, src0: Buffer, src1: Buffer | BufferRegion | BufferLoad | PrimExpr):
     """Performs element-wise addition: dst = src0 + src1.
 
     Args:
@@ -377,7 +387,7 @@ def add(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, BufferLoad,
     return binary_op(dst, src0, src1, "add")
 
 
-def sub(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, BufferLoad]):
+def sub(dst: Buffer, src0: Buffer, src1: Buffer | BufferRegion | BufferLoad):
     """Performs element-wise subtraction: dst = src0 - src1.
 
     Args:
@@ -387,7 +397,8 @@ def sub(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, BufferLoad]
     """
     return binary_op(dst, src0, src1, "sub")
 
-def mul(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, BufferLoad, PrimExpr]):
+
+def mul(dst: Buffer, src0: Buffer, src1: Buffer | BufferRegion | BufferLoad | PrimExpr):
     """Performs element-wise multiplication: dst = src0 * src1.
 
     Args:
@@ -397,7 +408,8 @@ def mul(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, BufferLoad,
     """
     return binary_op(dst, src0, src1, "mul")
 
-def div(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, BufferLoad]):
+
+def div(dst: Buffer, src0: Buffer, src1: Buffer | BufferRegion | BufferLoad):
     """Performs element-wise division: dst = src0 / src1.
 
     Args:
@@ -408,7 +420,7 @@ def div(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, BufferLoad]
     return binary_op(dst, src0, src1, "div")
 
 
-def max(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, BufferLoad, PrimExpr]):
+def max(dst: Buffer, src0: Buffer, src1: Buffer | BufferRegion | BufferLoad | PrimExpr):
     """Performs element-wise maximum: dst = max(src0, src1).
 
     Args:
@@ -419,7 +431,7 @@ def max(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, BufferLoad,
     return binary_op(dst, src0, src1, "max")
 
 
-def min(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, BufferLoad, PrimExpr]):
+def min(dst: Buffer, src0: Buffer, src1: Buffer | BufferRegion | BufferLoad | PrimExpr):
     """Performs element-wise minimum: dst = min(src0, src1).
 
     Args:
@@ -430,7 +442,7 @@ def min(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, BufferLoad,
     return binary_op(dst, src0, src1, "min")
 
 
-def bitwise_and(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, BufferLoad, PrimExpr]):
+def bitwise_and(dst: Buffer, src0: Buffer, src1: Buffer | BufferRegion | BufferLoad | PrimExpr):
     """Performs element-wise bitwise AND: dst = src0 & src1.
 
     Args:
@@ -441,7 +453,7 @@ def bitwise_and(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, Buf
     return binary_op(dst, src0, src1, "bitwise_and")
 
 
-def bitwise_or(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferRegion, BufferLoad, PrimExpr]):
+def bitwise_or(dst: Buffer, src0: Buffer, src1: Buffer | BufferRegion | BufferLoad | PrimExpr):
     """Performs element-wise bitwise OR: dst = src0 | src1.
 
     Args:
@@ -459,9 +471,9 @@ def unary_op(dst: Buffer, src0: Buffer, op: str):
     assert size_0 == size_2, "size must be same"
 
     return tir.call_intrin(
-        "handle", 
-        tir.op.Op.get(f"tl.ascend_{op}"), 
-        dst.access_ptr("w"), 
+        "handle",
+        tir.op.Op.get(f"tl.ascend_{op}"),
+        dst.access_ptr("w"),
         src0.access_ptr("r"),
         size_0,
     )
@@ -494,21 +506,21 @@ def rsqrt(dst: Buffer, src0: Buffer):
 def relu(dst: Buffer, src0: Buffer):
     return unary_op(dst, src0, "relu")
 
+
 def not_tl(dst: Buffer, src0: Buffer):
     return unary_op(dst, src0, "bitwise_not")
 
-def scalar_op(
-        dst: Buffer, src0: Buffer, scalar_value: PrimExpr, op_tl: str
-):
+
+def scalar_op(dst: Buffer, src0: Buffer, scalar_value: PrimExpr, op_tl: str):
     size_0 = math.prod(src0.shape)
     size_2 = math.prod(dst.shape)
 
     assert size_0 == size_2, "size must be same"
 
     return tir.call_intrin(
-        "handle", 
-        tir.op.Op.get(f"tl.ascend_{op_tl}"), 
-        dst.access_ptr("w"), 
+        "handle",
+        tir.op.Op.get(f"tl.ascend_{op_tl}"),
+        dst.access_ptr("w"),
         src0.access_ptr("r"),
         scalar_value,
         size_0,
@@ -518,8 +530,10 @@ def scalar_op(
 def leaky_relu(dst: Buffer, src0: Buffer, scalar_value: PrimExpr):
     return scalar_op(dst, src0, scalar_value, "leaky_relu")
 
+
 def axpy(dst: Buffer, src0: Buffer, scalar_value: PrimExpr):
     return scalar_op(dst, src0, scalar_value, "axpy")
+
 
 def reduce(out: Buffer, buffer: Buffer, tmp: Buffer, reduce_type: str, dim: int):
     dtype = _dtype(buffer)
@@ -530,18 +544,18 @@ def reduce(out: Buffer, buffer: Buffer, tmp: Buffer, reduce_type: str, dim: int)
     tmp = tmp.access_ptr("r")
 
     return T.call_intrin(
-        "handle", 
-        tir.op.Op.get("tl.ascend_reduce"), 
-        f"{reduce_type}<{dtype}, {shape}, {dim}>", 
+        "handle",
+        tir.op.Op.get("tl.ascend_reduce"),
+        f"{reduce_type}<{dtype}, {shape}, {dim}>",
         out,
-        buffer, 
+        buffer,
         tmp,
     )
 
-def reduce_max(out: Buffer, buffer: Buffer, tmp: Buffer, dim: int):
 
+def reduce_max(out: Buffer, buffer: Buffer, tmp: Buffer, dim: int):
     return reduce(out, buffer, tmp, "reduce_max", dim)
 
-def reduce_sum(out: Buffer, buffer: Buffer, tmp: Buffer, dim: int):
 
+def reduce_sum(out: Buffer, buffer: Buffer, tmp: Buffer, dim: int):
     return reduce(out, buffer, tmp, "reduce_sum", dim)
