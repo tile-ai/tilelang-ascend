@@ -1,0 +1,22 @@
+PR workflow for npuir
+
+1) Branch sync
+- git fetch upstream
+- git checkout <feature-branch>
+- git rebase upstream/npuir
+
+2) Local validation
+- run focused tests for changed area
+- run formatting/lint checks if needed
+- run mandatory format validation from repo root:
+	bash format.sh --files changed_files
+
+3) Commit and push
+- write clear commit message
+- git push origin <feature-branch>
+
+4) PR creation
+- target branch: npuir
+- PR title must start with [AscendNPU-IR]
+- include repro, scope, and risk notes
+- track CI and update quickly on failures

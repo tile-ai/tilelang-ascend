@@ -1,0 +1,25 @@
+TileLang npuir review checklist
+
+1) API style
+- New vector paths use v-prefix APIs by default.
+- Legacy npuir_xxx usage is only for compatibility.
+
+2) Correctness
+- Check boundary/tail logic for tiled loops.
+- Check dtype and cast paths for numerical stability.
+- Check sync_block_set/wait pairing in mixed pipelines.
+
+3) Performance
+- Check redundant copies and excessive casts.
+- Check tile size and loop ordering reasonableness.
+
+4) Tests
+- Verify at least one focused repro or unit test exists.
+- Prefer covering both normal and boundary tile shapes.
+- Check whether implementation is based on existing patterns in examples/ and testing/npuir/.
+- Flag scratch-built operator code when a close existing template is available.
+
+5) Formatting
+- Keep CI style requirements satisfied.
+- Before PR, run from repository root:
+	bash format.sh --files changed_files
