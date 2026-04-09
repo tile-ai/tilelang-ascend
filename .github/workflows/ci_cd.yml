@@ -7,7 +7,6 @@ env:
 
 # 触发条件
 on:
-  # push 事件触发
   push:
     branches:
       - main                                  # main 分支
@@ -19,7 +18,6 @@ on:
       - 'docs/**'                              # 文档目录
       - 'images/**'                            # 图片目录
 
-  # pull_request 事件触发
   pull_request:
     branches:
       - main
