@@ -35,7 +35,7 @@
 #include "./common/collector.h"
 #include "./common/operation_config.h"
 
-#include "../../3rdparty/tvm/src/tir/transforms/ir_utils.h"
+#include "tir/transforms/ir_utils.h"
 
 namespace tvm {
 namespace tl {
