@@ -1,0 +1,130 @@
+# TileLang-Ascend 持续集成工作流
+name: TileLang-Ascend CI
+
+# 全局环境变量，所有 job 都可使用
+env:
+  ASCEND_HOME: /usr/local/Ascend/ascend-toolkit/latest  # Ascend CANN 安装路径
+
+# 触发条件
+on:
+  # push 事件触发
+  push:
+    branches:
+      - main                                  # main 分支
+      - ascendc_pto                           # ascendc_pto 分支
+      - npuir                                  # npuir 分支
+      - 'feature/**'                           # 所有 feature/ 开头的分支
+    paths-ignore:                              # 以下路径的修改不触发 CI
+      - '**.md'                                # Markdown 文件
+      - 'docs/**'                              # 文档目录
+      - 'images/**'                            # 图片目录
+
+  # pull_request 事件触发
+  pull_request:
+    branches:
+      - main
+      - ascendc_pto
+      - npuir
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'images/**'
+
+  # 手动触发（通过 GitHub Actions 页面）
+  workflow_dispatch:
+    inputs:
+      run_tests:
+        description: 'Run benchmark tests'     # 是否运行测试
+        required: false
+        default: true
+        type: boolean
+      test_filter:
+        description: 'Test filter pattern'     # 测试过滤模式
+        required: false
+        default: ''
+        type: string
+
+jobs:
+  test:
+    name: Benchmark Tests (Ascend NPU)
+    runs-on: [self-hosted, linux, x64, 910b]                # 使用自托管运行器（需安装 Ascend 环境）
+    if: ${{ github.event.inputs.run_tests != false }} # 手动触发时可跳过测试
+    timeout-minutes: 120                               # 超时 2 小时
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up environment
+        run: |
+          echo "Setting up Ascend environment..."
+          source ${ASCEND_HOME}/set_env.sh || true      # 加载 Ascend 环境变量
+          echo "ASCEND_HOME=${ASCEND_HOME}" >> $GITHUB_ENV   # 持久化到环境变量
+
+      - name: Check NPU availability
+        run: |
+          npu-smi info || echo "NPU-SMI not available, continuing..."  # 检查 NPU 状态
+          nproc
+
+      - name: Create virtual environment
+        run: |
+          python -m venv test_venv 
+          source test_venv/bin/activate
+          echo "VIRTUAL_ENV=$PWD/test_venv" >> $GITHUB_ENV    # 设置虚拟环境路径
+          echo "$PWD/test_venv/bin" >> $GITHUB_PATH           # 添加到 PATH
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements-build.txt
+          pip install -r requirements.txt
+
+      - name: Build and install tilelang-ascend
+        env:
+          USE_ASCEND: 'true'
+        run: |
+          bash install_ascend.sh                              # 执行安装脚本
+
+      - name: Set environment variables
+        run: |
+          source set_env.sh                                   # 加载项目环境变量
+          echo "TILELANG_PATH=$PWD" >> $GITHUB_ENV
+
+      - name: Run benchmark tests
+        run: |
+          cd examples
+          chmod +x bench_test.sh
+          ./bench_test.sh
+        continue-on-error: true                               # 测试失败仍继续
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()                                          # 无论成功失败都上传结果
+        with:
+          name: test-results
+          path: |
+            test_results/
+            *.log
+            *.json
+          retention-days: 30
+
+      - name: Cleanup
+        if: always()
+        run: |
+          rm -rf test_venv || true
+
+  # Job 2: 汇总结果并输出摘要
+  notify:
+    name: Notify Results
+    runs-on: [self-hosted, linux, x64, 910b]
+    needs: [test] 
+    if: always()                         # 无论成功失败都执行
+    steps:
+      - name: Check results
+        run: |
+          echo "## CI Results Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Job | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Test | ${{ needs.test.result }} |" >> $GITHUB_STEP_SUMMARY
