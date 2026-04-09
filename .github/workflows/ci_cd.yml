@@ -38,11 +38,6 @@ on:
         required: false
         default: true
         type: boolean
-      test_filter:
-        description: 'Test filter pattern'     # 测试过滤模式
-        required: false
-        default: ''
-        type: string
 
   schedule:
     - cron: '0 18 * * *' # 每天 UTC 18:00 运行 (北京时间凌晨 2:00)
