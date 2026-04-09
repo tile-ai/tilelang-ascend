@@ -29,9 +29,9 @@ Before answering, follow AGENTS.md section "Docs Auto Routing Rules (Mandatory)"
 
 ## Key primitives
 
-- Scope("Cube") and Scope("Vector")
-- rs("PIPE_FIX") and other pipe regions
-- sync_block_set and sync_block_wait
+- T.Scope("Cube") and T.Scope("Vector")
+- T.rs("PIPE_FIX") and other pipe regions
+- T.sync_block_set and T.sync_block_wait
 - Pipelined loops where suitable
 
 ## References

@@ -57,7 +57,7 @@ Use the matching skill whenever the user asks for:
 - commit/push/rebase/upstream sync, PR or issue workflow
 
 Developer-mode MixCV trigger rule:
-- If one kernel contains Cube-side T.gemm and Vector-side at least one v-prefix op (such as vadd/vmul/vexp/vcast/vbrc), treat it as MixCV and use tilelang-mixcv-skill.
+- If one kernel contains Cube-side T.gemm and Vector-side at least one v-prefix op (such as T.vadd/T.vmul/T.vexp/T.vcast/T.vbrc), treat it as MixCV and use tilelang-mixcv-skill.
 
 ## Operator Implementation Baseline (Mandatory)
 

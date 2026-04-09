@@ -13,7 +13,7 @@
 
 ## Compute
 
-- T.gemm(A, B, C, initC=True or False, b_transpose=bool, size=[M, K, N])
+- T.gemm(A, B, C, initC=True or False, b_transpose=True or False, size=[M, K, N])
 
 ## Store path
 
@@ -22,8 +22,8 @@
 
 ## Scope recommendation
 
-Use explicit Scope("Cube") for cube sections in expert mode kernels.
-Don't use explicit Scope for cube sections in developer mode kernels.
+Use explicit T.Scope("Cube") for cube sections in expert mode kernels.
+Don't use explicit T.Scope for cube sections in developer mode kernels.
 
 ## Mode guidance
 
