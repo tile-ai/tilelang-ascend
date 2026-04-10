@@ -35,7 +35,7 @@ def matmul(M, N, K, block_M, block_N, block_K, dtype="int8", accum_dtype="int32"
 
 
 def main():
-    # In the futrue, Developer mode and Expert Mode will transition smoothly without
+    # In the future, Developer mode and Expert Mode will transition smoothly without
     # requiring explicit declarations.
     os.environ["TILELANG_ASCEND_MODE"] = "Developer"
     kernel = matmul(1024, 1024, 1024, 128, 128, 32)
