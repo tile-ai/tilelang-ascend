@@ -4336,7 +4336,6 @@ def reduce_sum(M, N, block_M, block_N, dim, dtype="float"):
             a_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
             b_ub = T.alloc_ub((block_M // VEC_NUM), dtype)
 
-
             T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a_ub)
 
             T.reduce_sum(a_ub, b_ub, dim, [block_M // VEC_NUM, block_N])
