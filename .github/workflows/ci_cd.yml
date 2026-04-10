@@ -64,8 +64,17 @@ jobs:
 
       - name: Create virtual python environment
         run: |
-          [ ! -d "test_venv" ] && python -m venv test_venv    # 如果虚拟环境不存在，则创建
+          # 检查虚拟环境是否存在
+          if [ ! -d "test_venv" ]; then
+            echo "Create python venv `test_venv`..."
+            python -m venv test_venv
+            echo "python venv `test_venv` created successfully."
+          else
+            echo "python venv `test_venv` already exists."
+          fi
+          
           source test_venv/bin/activate
+          pip list
           echo "VIRTUAL_ENV=$PWD/test_venv" >> $GITHUB_ENV    # 设置虚拟环境路径
           echo "$PWD/test_venv/bin" >> $GITHUB_PATH           # 添加到 PATH
 
