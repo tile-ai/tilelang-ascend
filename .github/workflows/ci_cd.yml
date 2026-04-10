@@ -82,6 +82,7 @@ jobs:
           USE_ASCEND: 'true'
         run: |
           echo "#########$PWD"
+          source "${PY_VENV_DIR}/test_venv/bin/activate"
           bash install_ascend.sh                              # 执行安装脚本
 
       - name: Set tilelang environment variables
