@@ -73,16 +73,15 @@ jobs:
           else
             echo "python venv <test_venv> already exists."
           fi
-          
           source "${PY_VENV_DIR}/test_venv/bin/activate"
           pip list
-          echo "VIRTUAL_ENV=$PWD/test_venv" >> $GITHUB_ENV    # 设置虚拟环境路径
           echo "$PWD/test_venv/bin" >> $GITHUB_PATH           # 添加到 PATH
 
       - name: Build and install tilelang-ascend
         env:
           USE_ASCEND: 'true'
         run: |
+          echo "#########$PWD"
           bash install_ascend.sh                              # 执行安装脚本
 
       - name: Set tilelang environment variables
