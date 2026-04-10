@@ -15,9 +15,9 @@ T.npuir_dot(src1, src2, dst, size=[], initC=False, a_transpose=False, b_transpos
 
 | 参数名  | 类型  | 说明  |
 | ------------ | ------------ | ------------ |
-| `src1` | `tensor`| 输入tensor, `fp16`  |
-| `src2` | `tensor`| 输入tensor, `fp16` |
-| `dst` | `tensor` | 输出tensor, `fp32` |
+| `src1` | `tensor`| 输入tensor, `fp16` 或 `int8`  |
+| `src2` | `tensor`| 输入tensor, `fp16` 或 `int8` |
+| `dst` | `tensor` | 输出tensor, 对应 `fp32`（fp16输入）或 `int32`（int8输入） |
 |`size`|`shape`|如果size=[a, b, c], 则 `src1`的shape为[a, b]或[b, a], `src2`的shape为[b, c]或[c, b], `dst`的shape为[a, c]|
 | `initC` | `bool` | 是否对dst清零。`initC`=True表示dst=src1@src2; `initC`=False表示dst=src1@src2+dst|
 | `a_transpose` | `bool` |是否对src1进行转置 |
@@ -29,7 +29,7 @@ T.npuir_dot(src1, src2, dst, size=[], initC=False, a_transpose=False, b_transpos
 
 |   | uint8 | int8 | uint16 | int16 | uint32 | int32 | uint64 | int64 | fp16 | fp32 | bf16 | bool/int1 |
 | ------------ | ------------ | ------------ | ------------ | ------------ | ------------ | ------------ | ------------ | ------------ | ------------ | ------------ | ------------ | ------------ |
-| Ascend | ×  | × |  × |  × | ×  | ×  | ×  | ×  | √  | √ |  ×  | ×  |
+| Ascend | ×  | √ |  × |  × | ×  | √  | ×  | ×  | √  | √ |  ×  | ×  |
 
 #### 2.2.2 Shape支持
 
@@ -37,7 +37,9 @@ T.npuir_dot(src1, src2, dst, size=[], initC=False, a_transpose=False, b_transpos
 
 ### 2.3 特殊限制说明
 
-无
+- `fp16 x fp16` 场景中，`dst`/累加类型必须设置为 `fp32`。
+- 若错误设置为 `fp16`，可能导致运行时卡死。
+- `int8 x int8` 场景中，`dst`/累加类型应设置为 `int32`。
 
 ### 2.4 使用方法
 
@@ -54,7 +56,7 @@ def matmul(M, N, K, block_M, block_N, block_K, dtype="float16", accum_dtype="flo
     def gemm(
         A: T.Tensor((M, K), dtype),
         B: T.Tensor((K, N), dtype),
-        C: T.Tensor((M, N), dtype),
+        C: T.Tensor((M, N), accum_dtype),
     ):
         with T.Kernel(T.ceildiv(N, block_N) * T.ceildiv(M, block_M), is_npu=True) as (cid, _):
             by = cid // T.ceildiv(N, block_N)

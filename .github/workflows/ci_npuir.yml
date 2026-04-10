@@ -121,6 +121,7 @@ jobs:
           examples/elementwise/vec_add_2d.py
           examples/elementwise/vec_add_auto_brc.py
           examples/gemm/example_gemm.py
+          examples/gemm/example_gemm_int82int32.py
           examples/gemm/matmul_dynamic_shape.py
           examples/gemm/matmul.py
           examples/gemv/example_gemv.py

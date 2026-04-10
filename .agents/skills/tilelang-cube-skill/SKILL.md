@@ -47,6 +47,13 @@ Before answering, follow AGENTS.md section "Docs Auto Routing Rules (Mandatory)"
 - references/examples-matmul.md
 - references/nz-format.md
 
+## Example entry points
+
+- examples/gemm/example_gemm.py
+- examples/gemm/example_gemm_int82int32.py
+- examples/gemm/matmul.py
+- examples/gemm/matmul_dynamic_shape.py
+
 ## Official docs to consult
 
 - docs/Tilelang.language/内存操作/T.alloc_shared.md
