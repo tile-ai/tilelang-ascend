@@ -18,14 +18,13 @@ def reduce_min(M, N, block_M, dtype="float"):
         with T.Kernel(m_num, is_npu=True) as (cid, vid):
             a_ub = T.alloc_ub((sub_block_M, N), dtype)
             b_ub = T.alloc_ub((sub_block_M), dtype)
-            tmp = T.alloc_ub((2 * sub_block_M, N), "uint8")
 
             row_base = cid * block_M + vid * sub_block_M
             with T.Scope("V"):
                 T.copy(A[row_base : row_base + sub_block_M, :], a_ub)
 
                 T.barrier_all()
-                T.reduce_min(a_ub, b_ub, tmp, dim=-1)
+                T.reduce_min(a_ub, b_ub, dim=-1)
                 T.barrier_all()
 
                 T.copy(b_ub, B[row_base : row_base + sub_block_M])

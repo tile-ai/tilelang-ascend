@@ -20,9 +20,9 @@ import torch
 def simple_topk_selector(B: int, N: int, top_k: int, block_N: int, dtype: Literal["float32"] = "float32"):
     """Simple TopK implementation"""
 
+
     VEC_NUM = 2
     INDEX_DTYPE = "int32"
-    SORT_TEMP_ROWS = 32  # large enough
 
     b_num = T.ceildiv(B, VEC_NUM)
     n_num = T.ceildiv(N, block_N)
@@ -33,9 +33,8 @@ def simple_topk_selector(B: int, N: int, top_k: int, block_N: int, dtype: Litera
     def bytes_of(dtype: str) -> int:
         return DataType(dtype).bits // 8
 
-    address_sort_temp = 0
-    address_x_ub = address_sort_temp + SORT_TEMP_ROWS * block_N * bytes_of(dtype)
-    address_sort_output = address_x_ub + block_N * bytes_of(dtype)
+    address_x_ub = 0
+    address_sort_output = block_N * bytes_of(dtype)
     address_sort_index = address_sort_output + block_N * 2 * bytes_of(dtype)
     address_sort_result = address_sort_index + block_N * bytes_of(dtype)
     address_topk_global = address_sort_result + merge_num * block_N * 2 * bytes_of(dtype)
@@ -51,7 +50,6 @@ def simple_topk_selector(B: int, N: int, top_k: int, block_N: int, dtype: Litera
         with T.Kernel(b_num, is_npu=True) as (cid, vid):
             row_id = (cid * VEC_NUM + vid) % B  # one v-core for one row
 
-            sort_temp = T.alloc_ub([SORT_TEMP_ROWS, block_N], dtype)
             x_ub = T.alloc_ub([block_N], dtype)
 
             sort_output = T.alloc_ub([block_N * 2], dtype)
@@ -67,7 +65,6 @@ def simple_topk_selector(B: int, N: int, top_k: int, block_N: int, dtype: Litera
             T.annotate_address(
                 {
                     # ub address
-                    sort_temp: address_sort_temp,
                     x_ub: address_x_ub,
                     sort_output: address_sort_output,
                     sort_index: address_sort_index,
@@ -84,7 +81,7 @@ def simple_topk_selector(B: int, N: int, top_k: int, block_N: int, dtype: Litera
             for bn in T.serial(n_num):
                 T.copy(x[row_id, bn * block_N], x_ub)
 
-                T.tile.sort(sort_output, x_ub, sort_temp, block_N)
+                T.tile.sort(sort_output, x_ub, block_N)
 
                 T.tile.gather_mask(sort_index, sort_output, "P1010")
                 T.tile.add(sort_index, sort_index, T.float32(bn * block_N))
@@ -96,13 +93,13 @@ def simple_topk_selector(B: int, N: int, top_k: int, block_N: int, dtype: Litera
                 if bn % merge_num == merge_num - 1:
                     if bn == merge_num - 1:  # first time merge, update topk_global directly
                         T.tile.merge_sort(
-                            topk_global, sort_temp, sort_result[0, :], sort_result[1, :], sort_result[2, :], sort_result[3, :]
+                            topk_global, sort_result[0, :], sort_result[1, :], sort_result[2, :], sort_result[3, :]
                         )
                     else:  # later merges, merge to merge_sort_dst and then topk to topk_global
                         T.tile.merge_sort(
-                            merge_sort_dst, sort_temp, sort_result[0, :], sort_result[1, :], sort_result[2, :], sort_result[3, :]
+                            merge_sort_dst, sort_result[0, :], sort_result[1, :], sort_result[2, :], sort_result[3, :]
                         )
-                        T.tile.topk(topk_global, merge_sort_dst, sort_temp, top_k)
+                        T.tile.topk(topk_global, merge_sort_dst, top_k)
 
             T.tile.gather_mask(gather_result, topk_global, "P1010")  # [value, idx] => [idx]
             T.tile.cast(output_index, gather_result, "CAST_ROUND", top_k)

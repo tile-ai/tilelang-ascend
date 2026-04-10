@@ -50,24 +50,23 @@ def linear_attention_ker1(B, H, L, D, block_L, block_D, dtype="float16", accum_d
 			sumk_ub = T.alloc_ub([block_D // VEC_NUM,], accum_dtype)
 			acc_half_ub = T.alloc_ub([block_D // VEC_NUM,], dtype)
 			acc_ub = T.alloc_ub([block_D // VEC_NUM,], accum_dtype)
-			tmp_ub = alloc_temp()
 
 			with T.Scope("C"):
 				for i in T.serial(lb_num):
 					T.copy(K[bz, by, i * block_L, bx * block_D], k_l1)
 					T.copy(V[bz, by, i * block_L, 0], v_l1)
 					T.gemm_v0(k_l1, v_l1, acc_l0, transpose_A = True, init = (i == 0))
-				
+
 				T.copy(acc_l0, Acc[bz, by, bx * block_D, 0])
-			
+
 			with T.Scope("V"):
 				T.tile.fill(acc_ub, 0.0)
 				for i in T.serial(lb_num):
 					T.copy(K[bz, by, i * block_L, bx * block_D + vid * block_D // VEC_NUM], k_half_ub)
 					T.copy(k_half_ub, k_ub)
-					T.reduce_sum(k_ub, sumk_ub, tmp_ub, dim = 0)
+					T.reduce_sum(k_ub, sumk_ub, dim = 0)
 					T.tile.add(acc_ub, acc_ub, sumk_ub)
-				
+
 				T.copy(acc_ub, acc_half_ub)
 				T.copy(acc_half_ub, Acc[bz, by, D, bx * block_D + vid * block_D // VEC_NUM])
 
@@ -111,17 +110,16 @@ def linear_attention_ker2(B, H, L, D, block_L, block_D, dtype="float16", accum_d
 			denom_ub = T.alloc_ub([block_L // VEC_NUM,], accum_dtype)
 			o_half_ub = T.alloc_ub([block_L // VEC_NUM, D], dtype)
 			o_ub = T.alloc_ub([block_L // VEC_NUM, D], accum_dtype)
-			tmp_ub = alloc_temp()
 
 			with T.Scope("C"):
 				for i in T.serial(db_num):
 					T.copy(Q[bz, by, bx * block_L, i * block_D], q_l1)
 					T.copy(Acc[bz, by, i * block_D, 0], acc_l1)
 					T.gemm_v0(q_l1, acc_l1, o_l0, init = (i == 0))
-				
+
 				T.copy(o_l0, workspace[cid, 0, 0])
 				T.set_cross_flag("FIX", 0)
-			
+
 			with T.Scope("V"):
 				T.copy(Q[bz, by, bx* block_L + vid * block_L // VEC_NUM, 0], q_half_ub)
 				T.copy(Acc[bz, by, D, 0], acc_half_ub)
@@ -130,17 +128,17 @@ def linear_attention_ker2(B, H, L, D, block_L, block_D, dtype="float16", accum_d
 
 				for h_i in range(block_L // VEC_NUM):
 					T.tile.mul(q_ub[h_i, :], q_ub[h_i, :], acc_ub)
-				
-				T.reduce_sum(q_ub, denom_ub, tmp_ub, dim = -1)
+
+				T.reduce_sum(q_ub, denom_ub, dim = -1)
 				T.wait_cross_flag(0)
 				T.copy(workspace[cid, vid * block_L // VEC_NUM, 0], qkv_ub)
 
 				for h_i in range(block_L // VEC_NUM):
 					T.tile.div(o_ub[h_i, :], qkv_ub[h_i, :], denom_ub[h_i])
-				
+
 				T.copy(o_ub, o_half_ub)
 				T.copy(o_half_ub, O[bz, by, bx * block_L + vid * block_L // VEC_NUM, 0])
-	
+
 	return main
 
 def linear_attention(q, k, v, block_L, block_D):

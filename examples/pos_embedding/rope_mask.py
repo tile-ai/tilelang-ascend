@@ -65,12 +65,11 @@ def rope_kernel_in_place(
             T.tile.mul(sin_ub[0, :], sin_ub[0, :], sin_mask_ub)
 
             # 4. broadcast sin/cos: [1, rope_dim] -> [row_per_vec, rope_dim]
-            tmp_ub = T.alloc_shared(row_per_vec * rope_dim, TMP_DTYPE)
             sin_block_ub = T.alloc_shared([row_per_vec, rope_dim], ACC_DTYPE)
-            T.tile.broadcast(sin_block_ub, sin_ub, tmp_ub)
+            T.tile.broadcast(sin_block_ub, sin_ub)
 
             cos_block_ub = T.alloc_shared([row_per_vec, rope_dim], ACC_DTYPE)
-            T.tile.broadcast(cos_block_ub, cos_ub, tmp_ub)
+            T.tile.broadcast(cos_block_ub, cos_ub)
 
             # 5. rotate x
             x_rotate_ub = T.alloc_shared([row_per_vec, rope_dim], ACC_DTYPE)
