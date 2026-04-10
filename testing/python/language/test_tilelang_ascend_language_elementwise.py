@@ -3107,8 +3107,6 @@ def vec_pow(M, N, block_M, block_N, dtype="float"):
 
     VEC_NUM = 2
 
-    tmp_size_multiplier = 8 if dtype == "int32" else 2
-
     @T.prim_func
     def main(
         A: T.Tensor((M, N), dtype),  # type: ignore
@@ -3181,8 +3179,6 @@ def vec_pow_slice(M, N, block_M, block_N, dtype="float"):
     n_num = N // block_N
 
     VEC_NUM = 2
-
-    tmp_size_multiplier = 8 if dtype == "int32" else 2
 
     @T.prim_func
     def main(
