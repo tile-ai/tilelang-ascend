@@ -188,6 +188,10 @@ copy_gm_to_ub(LocalTensor<T> dstTensor, GlobalTensor<T> srcTensor,
   }
   if (maskShapeM != dstM || maskShapeN != dstN) {
     if constexpr (IsDuplicateSupported_v<T>) {
+      SetFlag<HardEvent::MTE2_V>(0);
+      WaitFlag<HardEvent::MTE2_V>(0);
+      SetFlag<HardEvent::MTE3_V>(0);
+      WaitFlag<HardEvent::MTE3_V>(0);
       AscendC::Duplicate<T>(dstTensor, padValue, dstM * dstN);
       SetFlag<HardEvent::V_MTE2>(0);
       WaitFlag<HardEvent::V_MTE2>(0);
@@ -466,7 +470,7 @@ gemm_v0(LocalTensor<T1> const &A, LocalTensor<T1> const &B,
 // 2-way merge sort
 template <typename T>
 CATLASS_DEVICE void
-MergeSort(const LocalTensor<T> &dst, const LocalTensor<T> &tmp,
+MergeSort(const LocalTensor<T> &dst, const LocalTensor<uint8_t> &tmp,
           const LocalTensor<T> &src0, const LocalTensor<T> &src1,
           uint32_t blockLen0, uint32_t blockLen1) {
   // Note: tmp parameter is kept for API consistency with PTO backend but not
@@ -493,7 +497,7 @@ MergeSort(const LocalTensor<T> &dst, const LocalTensor<T> &tmp,
 // 3-way merge sort
 template <typename T>
 CATLASS_DEVICE void
-MergeSort(const LocalTensor<T> &dst, const LocalTensor<T> &tmp,
+MergeSort(const LocalTensor<T> &dst, const LocalTensor<uint8_t> &tmp,
           const LocalTensor<T> &src0, const LocalTensor<T> &src1,
           const LocalTensor<T> &src2, uint32_t blockLen0, uint32_t blockLen1,
           uint32_t blockLen2) {
@@ -521,7 +525,7 @@ MergeSort(const LocalTensor<T> &dst, const LocalTensor<T> &tmp,
 // 4-way merge sort
 template <typename T>
 CATLASS_DEVICE void
-MergeSort(const LocalTensor<T> &dst, const LocalTensor<T> &tmp,
+MergeSort(const LocalTensor<T> &dst, const LocalTensor<uint8_t> &tmp,
           const LocalTensor<T> &src0, const LocalTensor<T> &src1,
           const LocalTensor<T> &src2, const LocalTensor<T> &src3,
           uint32_t blockLen0, uint32_t blockLen1, uint32_t blockLen2,
