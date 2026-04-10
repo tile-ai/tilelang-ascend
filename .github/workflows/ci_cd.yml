@@ -66,11 +66,11 @@ jobs:
         run: |
           # 检查虚拟环境是否存在
           if [ ! -d "test_venv" ]; then
-            echo "Create python venv `test_venv`..."
+            echo "Create python venv <test_venv>..."
             python -m venv test_venv
-            echo "python venv `test_venv` created successfully."
+            echo "python venv <test_venv> created successfully."
           else
-            echo "python venv `test_venv` already exists."
+            echo "python venv <test_venv> already exists."
           fi
           
           source test_venv/bin/activate
