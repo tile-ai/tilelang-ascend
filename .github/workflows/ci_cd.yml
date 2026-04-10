@@ -87,7 +87,7 @@ jobs:
           chmod +x bench_test.sh
           ./bench_test.sh 2>&1 | tee test_output.log
         
-          TEST_EXIT_CODE=${PIPESTATUS[0]}                    # 保存退出码
+          TEST_EXIT_CODE=${PIPESTATUS[0]}                      # 保存退出码
           echo "Test exit code: $TEST_EXIT_CODE"
           echo "test_exit_code=$TEST_EXIT_CODE" >> $GITHUB_OUTPUT
 
