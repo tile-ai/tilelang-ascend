@@ -77,22 +77,23 @@ jobs:
         name: tilelang-npuir-py3.11-arm64
         path: dist/
 
-    - name: Install clang
-      run: |
-        apt-get update && apt-get install -y clang
-
     - name: Install tilelang and test dependencies
       env:
         TORCH_CACHE_URL: "http://cache-service.nginx-pypi-cache.svc.cluster.local/whl/cpu"
         PYPI_CACHE_URL: "http://cache-service.nginx-pypi-cache.svc.cluster.local/pypi/simple"
       run: |
         CACHING_URL="cache-service.nginx-pypi-cache.svc.cluster.local"
+        sed -Ei "s@(ports|archive).ubuntu.com@${CACHING_URL}:8081@g" /etc/apt/sources.list
         pip config set global.index-url http://${CACHING_URL}/pypi/simple
         pip config set global.trusted-host "${CACHING_URL}"
         pip install torch==2.7.1 -i ${TORCH_CACHE_URL} --extra-index-url ${PYPI_CACHE_URL}
         pip install torch-npu==2.7.1
         pip install dist/*.whl
         pip install pytest pytest-xdist pytest-html numpy
+    
+    - name: Install clang
+      run: |
+        apt-get update && apt-get install -y clang
 
     - name: Prepare npuir test workspace
       run: |

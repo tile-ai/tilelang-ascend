@@ -1,0 +1,17 @@
+{"id":"overview-01","prompt":"解释 npuir 分支里 target=npuir 的完整编译链路，从 lower 到 codegen","expected_skill":"tilelang-npuir-overview"}
+{"id":"overview-02","prompt":"Developer 模式和 Expert 模式在 npuir 下有什么区别，怎么切换","expected_skill":"tilelang-npuir-overview"}
+{"id":"vector-01","prompt":"帮我写一个 vector add，默认用 vadd 不要 npuir_add","expected_skill":"tilelang-vector-skill"}
+{"id":"vector-02","prompt":"实现 sigmoid 的向量版本，用 vexp vadd vrec 这类接口","expected_skill":"tilelang-vector-skill"}
+{"id":"cube-01","prompt":"写一个 matmul，要求用 load_nd2nz 和 store_fixpipe","expected_skill":"tilelang-cube-skill"}
+{"id":"cube-02","prompt":"Cube 路径下 L1 和 L0C 怎么分配，GEMM initC 怎么控制","expected_skill":"tilelang-cube-skill"}
+{"id":"mixcv-01","prompt":"实现 flash attention 的 mixcv 流水，Cube 阶段和 Vector 阶段要同步","expected_skill":"tilelang-mixcv-skill"}
+{"id":"mixcv-02","prompt":"sync_block_set 和 sync_block_wait 在融合算子里怎么配对","expected_skill":"tilelang-mixcv-skill"}
+{"id":"mlir-01","prompt":"tilelangir-cv-split 和 tilelangir-vectorize 在哪一层执行，如何调试","expected_skill":"tilelang-mlir-skill"}
+{"id":"mlir-02","prompt":"帮我定位 MLIR pass pipeline 哪一步把 IR 变坏了","expected_skill":"tilelang-mlir-skill"}
+{"id":"debug-01","prompt":"这个 npuir kernel 结果不对，想通过 T.print 和 IR dump 定位","expected_skill":"tilelang-debug-helper"}
+{"id":"debug-02","prompt":"需要给 Python 脚本加 GDB 附加点来定位崩溃","expected_skill":"tilelang-debug-helper"}
+{"id":"fixer-01","prompt":"编译时报错并且出现段错误，帮我定位并给修复方案","expected_skill":"tilelang-error-fixer"}
+{"id":"review-01","prompt":"请对这个 PR 做代码审查，优先看行为回归和测试缺口","expected_skill":"tilelang-review-skill"}
+{"id":"review-02","prompt":"提交前帮我跑一遍格式和 lint 检查，看看 CI 风险","expected_skill":"tilelang-review-skill"}
+{"id":"github-01","prompt":"我准备把分支提 PR 到 npuir，给我完整 commit push PR 流程","expected_skill":"tilelang-github-operations"}
+{"id":"github-02","prompt":"帮我同步 upstream/npuir，rebase 后再发起 PR","expected_skill":"tilelang-github-operations"}

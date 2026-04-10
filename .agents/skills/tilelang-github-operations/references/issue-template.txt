@@ -1,0 +1,11 @@
+Issue template hints for npuir
+
+Title:
+- Prefix with [npuir] or [AscendNPU-IR]
+
+Body:
+- Environment and branch
+- Minimal repro script
+- Expected vs actual behavior
+- Logs or IR snippet
+- Impact scope and urgency
