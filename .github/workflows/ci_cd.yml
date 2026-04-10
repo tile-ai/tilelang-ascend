@@ -114,6 +114,7 @@ jobs:
           # 从测试输出中提取 Pass rate
           echo "**************$PWD"
           cd examples
+          echo "==============$PWD"
           if [ -f test_output.log ]; then
             PASS_RATE_LINE=$(grep -i "Pass rate:" test_output.log || echo "")
             if [ -n "$PASS_RATE_LINE" ]; then             
