@@ -613,8 +613,13 @@ class AutoTuner:
                 logger.debug(f"Error: {traceback.format_exc()}")
                 latencies = [float("inf")] * len(funcs)
 
+            def ensure_list(x):
+                if isinstance(x, (list, tuple)):
+                    return x
+                return [x]
+
             for latency, config, kernel in zip(
-                latencies, configs, jit_kernels, strict=True
+                ensure_list(latencies), ensure_list(configs), ensure_list(jit_kernels), strict=True
             ):
                 tqdm.write(f"Tuned Latency {latency} with config {config}")
                 if latency < best_latency:
