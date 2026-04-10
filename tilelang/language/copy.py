@@ -4,7 +4,7 @@
 
 from typing import Union, List, Optional
 from tilelang import language as T
-from tvm import ir, tir
+from tvm import tir
 
 
 def region(buffer: tir.BufferLoad, access_type: str, *args: tir.PrimExpr):
@@ -90,7 +90,7 @@ def buffer_region_to_tile_region(buffer_region: tir.BufferRegion, access_type: s
 
 def copy(
     src: Union[tir.Buffer, tir.BufferLoad, tir.BufferRegion],
-    dst: Union[tir.Buffer, tir.BufferLoad],
+    dst: Union[tir.Buffer, tir.BufferLoad, tir.BufferRegion],
     coalesced_width: Optional[int] = None,
     size: Optional[List] = None,
 ):
@@ -98,7 +98,7 @@ def copy(
 
     Args:
         src (Union[tir.Buffer, tir.BufferLoad, tir.BufferRegion]): Source memory region
-        dst (Union[tir.Buffer, tir.BufferLoad]): Destination memory region
+        dst (Union[tir.Buffer, tir.BufferLoad, tir.BufferRegion]): Destination memory region
         coalesced_width (Optional[int], optional): Width for coalesced memory access. Defaults to None.
         size (Optional[list], optional): Explicit extent for copy region. Legacy API compatibility.
 
@@ -109,9 +109,6 @@ def copy(
     Returns:
         tir.Call: A handle to the copy operation
     """
-    if isinstance(src, tir.Buffer) and isinstance(dst, tir.Buffer):
-        ir.assert_structural_equal(src.shape, dst.shape)
-
     def get_extent(data):
         if isinstance(data, tir.Var) and T.has_let_value(data):
             data = T.get_let_value(data)
@@ -131,40 +128,38 @@ def copy(
             data = T.get_let_value(data)
         return isinstance(data, tir.BufferRegion)
 
-    src_extent = get_extent(src)
-    dst_extent = get_extent(dst)
-
     has_explicit_size = size is not None and len(size) > 0
     if has_explicit_size and (_is_slice(src) or _is_slice(dst)):
         raise ValueError(
             "T.copy: cannot use both slice syntax and the size parameter. "
         )
 
-    if has_explicit_size:
-        extent = list(size)
-    else:
-        assert src_extent or dst_extent, "Can't deduce copy extents from args"
-        max_len = max(len(src_extent or []), len(dst_extent or []))
-        src_extent = [1] * (max_len - len(src_extent)) + list(src_extent) if src_extent else [1] * max_len
-        dst_extent = [1] * (max_len - len(dst_extent)) + list(dst_extent) if dst_extent else [1] * max_len
-        extent = []
-        for se, de in zip(src_extent, dst_extent):
-            sv = getattr(se, "value", se)
-            dv = getattr(de, "value", de)
-            if isinstance(sv, int) and isinstance(dv, int):
-                extent.append(se if sv >= dv else de)
-            elif isinstance(sv, int) and sv == 1:
-                extent.append(de)
-            elif isinstance(dv, int) and dv == 1:
-                extent.append(se)
-            else:
-                extent.append(se)
+    src_extent = get_extent(src)
+    dst_extent = get_extent(dst)
 
-    def _to_region(data, access_type):
+    def _borrowed_extent(data, peer_extent):
+        if has_explicit_size:
+            return list(size)
+        if isinstance(data, tir.Buffer):
+            return list(data.shape)
+        if isinstance(data, tir.BufferRegion):
+            return [x.extent for x in data.region]
+        # BufferLoad only carries a starting point, so when size=... is absent
+        # it has to borrow extents from the opposite operand.
+        assert peer_extent is not None, (
+            "T.copy cannot deduce copy extents from two BufferLoad operands; "
+            "use slice syntax on one side or pass size=[...]."
+        )
+        return list(peer_extent)
+
+    def _to_region(data, access_type, peer_extent):
         if isinstance(data, tir.Var) and T.has_let_value(data):
             data = T.get_let_value(data)
         if isinstance(data, tir.Buffer):
+            if not has_explicit_size:
+                return buffer_to_tile_region(data, access_type)
             ndim = len(data.shape)
+            extent = _borrowed_extent(data, peer_extent)
             trailing = extent[-ndim:] if len(extent) >= ndim else extent
             return buffer_load_to_tile_region(
                 T.BufferLoad(data, [0] * ndim), access_type, trailing)
@@ -173,11 +168,12 @@ def copy(
                 data, access_type, [x.extent for x in data.region])
         else:
             ndim = len(data.buffer.shape)
+            extent = _borrowed_extent(data, peer_extent)
             trailing = extent[-ndim:] if len(extent) >= ndim else extent
             return buffer_load_to_tile_region(data, access_type, trailing)
 
-    src = _to_region(src, "r")
-    dst = _to_region(dst, "w")
+    src = _to_region(src, "r", dst_extent)
+    dst = _to_region(dst, "w", src_extent)
     if coalesced_width is not None:
         return tir.call_intrin("handle", tir.op.Op.get("tl.copy"), src, dst, coalesced_width)
     else:

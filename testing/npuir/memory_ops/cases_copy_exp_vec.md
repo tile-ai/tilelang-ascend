@@ -1,0 +1,59 @@
+# Expert mode Vec-core copy general cases
+
+Suppose:
+- src and dst
+  - T.copy(src[src_range], dst[dst_range])
+  - src and dst can be GM or UB. There is no GM to GM copy.
+  - src/dst is 1D, 2D, 3D, 4D, 5D
+  - src/dst shape are noted as (N_5, N_4, N_3, N_2, N_1)
+- src_range and dst_range
+  - range is not a must. We can use `T.copy(src, dst)` to copy the whole tensor.
+  - src/dst range are noted as (idx51:idx52, idx41:idx42, idx31:idx32, idx21:idx22, idx11:idx12)
+  - idxi1 < idxi2, i in [1, 5]
+  - idxi1:idxi2 should be in [0:N_i], i in [1, 5]
+  - The more common way to write range is `idxi1:idxi1+blocki`, where idxi2=idxi1+blocki.
+  - src_range and dst_range should `semantically have the same shape. When we say semantically, we mean regardless of rank mismatch. For example, src[0, 0:10] and dst[0:10] semantically have the same shape (10,), even though their shape are (1, 10) and (10,).
+- dynamic
+  - When we say static, we mean that the value is known at compilation
+  - When we say dynamic, we mean that the value is known only at runtime
+  - Dynamic value comes from
+    - cid/vid/i calculation result
+    - T.min/T.max
+    - load from UB
+
+Usage senerios:
+- src and dst:
+  - GM -> UB
+  - UB -> GM
+  - UB -> UB
+- Range Slicing:
+  - [idx11:idx12]
+  - [idx21:idx22, idx11:idx12]
+  - [idx31:idx32, idx21:idx22, idx11:idx12]
+  - [idx41:idx42, idx31:idx32, idx21:idx22, idx11:idx12]
+  - [idx51:idx52, idx41:idx42, idx31:idx32, idx21:idx22, idx11:idx12]
+- Dynamic Shape
+  - Tail Block
+    - idxi1 is static
+    - idxi2 is written as `idxi1+blocki`, and blocki is dynamic
+  - Dynamic Index
+    - idxi1 is dynamic
+    - idxi2 is written as `idxi1+blocki`, blocki is static, but idxi2's value is dynamic.
+  - Mix
+    - both idxi1, blocki, and thus idxi2, are dynamic
+- Memory Layout Taxonomy & Rank Mismatch
+  - Dense (Same Rank): Extents match identically, often an implicit/full tensor copy (`T.copy(A, B)`). Entirely contiguous.
+  - Dense Rank-Reduced (Singletons): Indexing on dimensions of size 1. Rank decreases in AST but retains 100% contiguous physical elements (e.g. `src[0, :, :]` from shape `(1, 16, 64)`).
+  - Dense Squeeze / Expand: Indexing a single slice of a multi-element dimension to pull an unbroken contiguous block (e.g. `src[2, :, :]` from shape `(4, 16, 64)` -> `dst[0:16, 0:64]`).
+  - True Strided / Nd-Block: Slices skipping elements, creating physical memory gaps. Forces hardware MTE2/MTE3 engines to use strided DMA logic (e.g. `src[1:3, 4:12, 16:48]` from shape `(4, 16, 64)` or `src[:, 0, :]` from `(4, 16, 64)`).
+- Tail-axis 32B Alignment
+  - src/dst shape align/unalign
+  - src_range/dst_range shape align/unalign
+- Base Address 32B Alignment
+  - Aligned base address
+  - Unaligned base address
+- Implicit vs Explicit Range Writing
+  - Explicit Range (`T.copy(src[i:i+H, j:j+W], dst)`)
+  - Implicit Block Infer (`T.copy(src[bx, by], dst)` where shape infers from`dst`)
+- Dtype
+  - float16, float32

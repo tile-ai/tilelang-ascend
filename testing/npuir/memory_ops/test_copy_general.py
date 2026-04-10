@@ -1,0 +1,307 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2025.
+import pytest
+import torch
+import torch_npu  # noqa: F401
+
+import tilelang
+import tilelang.language as T
+
+from testcommon import assert_close, gen_tensor
+
+
+pytestmark = [
+    pytest.mark.op("copy_general"),
+    pytest.mark.mode("Developer"),
+]
+
+DTYPE = "float16"
+
+
+@pytest.fixture(autouse=True)
+def _force_expert_backend(monkeypatch):
+    monkeypatch.setenv("TILELANG_ASCEND_MODE", "expert")
+
+
+def _compile(func):
+    return tilelang.compile(func, target="npuir")
+
+
+# src.shape = [64, 128], src.range = [:, :], src.slice = [64, 128]
+# dst.shape = [64, 128], dst.range = [:, :], dst.slice = [64, 128]
+# Tests exact-shape contiguous copy.
+@T.prim_func
+def same_shape_2d_kernel(A: T.Tensor((64, 128), DTYPE), B: T.Tensor((64, 128), DTYPE)):
+    with T.Kernel(1, is_npu=True):
+        UB = T.alloc_ub((64, 128), DTYPE)
+        T.copy(A, UB)
+        T.copy(UB, B)
+
+
+# src.shape = [1, 64, 128], src.range = [:, :, :], src.slice = [1, 64, 128]
+# dst.shape = [1, 64, 128], dst.range = [:, :, :], dst.slice = [1, 64, 128]
+# Tests exact-shape copy with a leading singleton dimension.
+@T.prim_func
+def same_shape_3d_leading_one_kernel(
+    A: T.Tensor((1, 64, 128), DTYPE), B: T.Tensor((1, 64, 128), DTYPE)
+):
+    with T.Kernel(1, is_npu=True):
+        UB = T.alloc_ub((1, 64, 128), DTYPE)
+        T.copy(A, UB)
+        T.copy(UB, B)
+
+
+# src.shape = [64, 128, 1], src.range = [:, :, :], src.slice = [64, 128, 1]
+# dst.shape = [64, 128, 1], dst.range = [:, :, :], dst.slice = [64, 128, 1]
+# Tests exact-shape copy with a trailing singleton dimension.
+@T.prim_func
+def same_shape_3d_trailing_one_kernel(
+    A: T.Tensor((64, 128, 1), DTYPE), B: T.Tensor((64, 128, 1), DTYPE)
+):
+    with T.Kernel(1, is_npu=True):
+        UB = T.alloc_ub((64, 128, 1), DTYPE)
+        T.copy(A, UB)
+        T.copy(UB, B)
+
+
+# src.shape = [64, 128], src.range = [:, :], src.slice = [64, 128]
+# dst.shape = [1, 64, 128], dst.range = [:, :, :], dst.slice = [1, 64, 128]
+# Tests whole-buffer copy into a destination with an extra leading singleton dim.
+@T.prim_func
+def add_leading_one_dim_kernel(
+    A: T.Tensor((64, 128), DTYPE), B: T.Tensor((1, 64, 128), DTYPE)
+):
+    with T.Kernel(1, is_npu=True):
+        UB = T.alloc_ub((1, 64, 128), DTYPE)
+        T.copy(A, UB)
+        T.copy(UB, B)
+
+
+# src.shape = [1, 64, 1, 128], src.range = [:, :, :, :], src.slice = [1, 64, 1, 128]
+# dst.shape = [64, 128], dst.range = [:, :], dst.slice = [64, 128]
+# Tests whole-buffer copy that removes multiple singleton dims on the source side.
+@T.prim_func
+def remove_multiple_one_dims_kernel(
+    A: T.Tensor((1, 64, 1, 128), DTYPE), B: T.Tensor((64, 128), DTYPE)
+):
+    with T.Kernel(1, is_npu=True):
+        UB = T.alloc_ub((64, 128), DTYPE)
+        T.copy(A, UB)
+        T.copy(UB, B)
+
+
+# src.shape = [1, 3, 4, 1, 5], src.range = [:, :, :, :, :], src.slice = [1, 3, 4, 1, 5]
+# dst.shape = [3, 4, 5], dst.range = [:, :, :], dst.slice = [3, 4, 5]
+# Tests the same singleton-removal rule on a higher-rank whole-buffer example.
+@T.prim_func
+def remove_multiple_one_dims_5d_kernel(
+    A: T.Tensor((1, 3, 4, 1, 5), DTYPE), B: T.Tensor((3, 4, 5), DTYPE)
+):
+    with T.Kernel(1, is_npu=True):
+        UB = T.alloc_ub((3, 4, 5), DTYPE)
+        T.copy(A, UB)
+        T.copy(UB, B)
+
+
+# src.shape = [1, 16, 1], src.range = [:, :, :], src.slice = [1, 16, 1]
+# dst.shape = [1, 16], dst.range = [:, :], dst.slice = [1, 16]
+# Tests whole-buffer copy that drops a trailing singleton dim without explicit slices.
+@T.prim_func
+def remove_trailing_one_dim_kernel(A: T.Tensor((1, 16, 1), DTYPE), B: T.Tensor((1, 16), DTYPE)):
+    with T.Kernel(1, is_npu=True):
+        UB = T.alloc_ub((1, 16), DTYPE)
+        T.copy(A, UB)
+        T.copy(UB, B)
+
+
+# src.shape = [4, 16, 16, 32]
+# src.range = [i, idx1:idx1+8, j, idx2:idx2+8], src.slice = [8, 8]
+# dst.shape = [4, 16, 16, 32]
+# dst.range = [i, idx1:idx1+8, j, idx2:idx2+8], dst.slice = [8, 8]
+# Tests dynamic range.min with equal logical slice shapes.
+@T.prim_func
+def dynamic_min_offsets_kernel(
+    A: T.Tensor((4, 16, 16, 32), DTYPE),
+    B: T.Tensor((4, 16, 16, 32), DTYPE),
+    i: T.int32,
+    idx1: T.int32,
+    j: T.int32,
+    idx2: T.int32,
+):
+    with T.Kernel(1, is_npu=True):
+        UB = T.alloc_ub((8, 8), DTYPE)
+        T.copy(A[i, idx1 : idx1 + 8, j, idx2 : idx2 + 8], UB)
+        T.copy(UB, B[i, idx1 : idx1 + 8, j, idx2 : idx2 + 8])
+
+
+# src.shape = [4, 32], src.range = [row, start:start+tail], src.slice = [tail]
+# dst.shape = [4, 32], dst.range = [row, start:start+tail], dst.slice = [tail]
+# Tests dynamic range.extent via tail = T.min(32 - start, 16).
+@T.prim_func
+def dynamic_extent_tail_kernel(
+    A: T.Tensor((4, 32), DTYPE),
+    B: T.Tensor((4, 32), DTYPE),
+    row: T.int32,
+    start: T.int32,
+):
+    with T.Kernel(1, is_npu=True):
+        UB = T.alloc_ub((16,), DTYPE)
+        tail = T.min(32 - start, 16)
+        T.copy(A[row, start : start + tail], UB[0:tail])
+        T.copy(UB[0:tail], B[row, start : start + tail])
+
+
+dynamic_gm_active_static_s = T.symbolic("dynamic_gm_active_static_s")
+
+
+# src.shape = [16, S, 16, 32]
+# src.range = [i, j, idx1:idx1+8, idx2:idx2+16], src.slice = [8, 16]
+# dst.shape = [8, 16], dst.range = [:, :], dst.slice = [8, 16]
+# Tests the supported sparse-attention-style case where the dynamic GM dim
+# is indexed away before aligned-layout projection.
+@T.prim_func
+def dynamic_gm_active_stride_static_kernel(
+    A: T.Tensor((16, dynamic_gm_active_static_s, 16, 32), DTYPE),
+    B: T.Tensor((8, 16), DTYPE),
+    i: T.int32,
+    j: T.int32,
+    idx1: T.int32,
+    idx2: T.int32,
+):
+    with T.Kernel(1, is_npu=True):
+        UB = T.alloc_ub((8, 16), DTYPE)
+        T.copy(A[i, j, idx1 : idx1 + 8, idx2 : idx2 + 16], UB)
+        T.copy(UB, B)
+
+
+singleton_dynamic_stride_s = T.symbolic("singleton_dynamic_stride_s")
+
+
+# src.shape = [1, S, 128], src.range = [0:1, j:j+1, :], src.slice = [1, 1, 128]
+# dst.shape = [1, 1, 128], dst.range = [:, :, :], dst.slice = [1, 1, 128]
+# Tests singleton dynamic-stride canonicalization.
+@T.prim_func
+def singleton_dynamic_stride_kernel(
+    A: T.Tensor((1, singleton_dynamic_stride_s, 128), DTYPE),
+    B: T.Tensor((1, 1, 128), DTYPE),
+    j: T.int32,
+):
+    with T.Kernel(1, is_npu=True):
+        UB = T.alloc_ub((1, 1, 128), DTYPE)
+        T.copy(A[0:1, j : j + 1, :], UB)
+        T.copy(UB, B)
+
+
+def test_copy_general_same_shape_2d():
+    kernel = _compile(same_shape_2d_kernel)
+    a = gen_tensor((64, 128), DTYPE, kind="randn")
+    b = gen_tensor((64, 128), DTYPE, kind="zeros")
+    kernel(a, b)
+    assert_close(b.cpu(), a.cpu(), dtype=DTYPE, rtol=1e-2, atol=1e-2)
+
+
+def test_copy_general_same_shape_3d_leading_one():
+    kernel = _compile(same_shape_3d_leading_one_kernel)
+    a = gen_tensor((1, 64, 128), DTYPE, kind="randn")
+    b = gen_tensor((1, 64, 128), DTYPE, kind="zeros")
+    kernel(a, b)
+    assert_close(b.cpu(), a.cpu(), dtype=DTYPE, rtol=1e-2, atol=1e-2)
+
+
+def test_copy_general_same_shape_3d_trailing_one():
+    kernel = _compile(same_shape_3d_trailing_one_kernel)
+    a = gen_tensor((64, 128, 1), DTYPE, kind="randn")
+    b = gen_tensor((64, 128, 1), DTYPE, kind="zeros")
+    kernel(a, b)
+    assert_close(b.cpu(), a.cpu(), dtype=DTYPE, rtol=1e-2, atol=1e-2)
+
+
+def test_copy_general_add_leading_one_dim():
+    kernel = _compile(add_leading_one_dim_kernel)
+    a = gen_tensor((64, 128), DTYPE, kind="randn")
+    b = gen_tensor((1, 64, 128), DTYPE, kind="zeros")
+    kernel(a, b)
+
+    expected = torch.zeros_like(b)
+    expected[0, :, :] = a
+    assert_close(b.cpu(), expected.cpu(), dtype=DTYPE, rtol=1e-2, atol=1e-2)
+
+
+def test_copy_general_remove_multiple_one_dims():
+    kernel = _compile(remove_multiple_one_dims_kernel)
+    a = gen_tensor((1, 64, 1, 128), DTYPE, kind="randn")
+    b = gen_tensor((64, 128), DTYPE, kind="zeros")
+    kernel(a, b)
+
+    expected = a[0, :, 0, :].clone()
+    assert_close(b.cpu(), expected.cpu(), dtype=DTYPE, rtol=1e-2, atol=1e-2)
+
+
+def test_copy_general_remove_multiple_one_dims_5d():
+    kernel = _compile(remove_multiple_one_dims_5d_kernel)
+    a = gen_tensor((1, 3, 4, 1, 5), DTYPE, kind="randn")
+    b = gen_tensor((3, 4, 5), DTYPE, kind="zeros")
+    kernel(a, b)
+
+    expected = a[0, :, :, 0, :].clone()
+    assert_close(b.cpu(), expected.cpu(), dtype=DTYPE, rtol=1e-2, atol=1e-2)
+
+
+def test_copy_general_remove_trailing_one_dim():
+    kernel = _compile(remove_trailing_one_dim_kernel)
+    a = gen_tensor((1, 16, 1), DTYPE, kind="randn")
+    b = gen_tensor((1, 16), DTYPE, kind="zeros")
+    kernel(a, b)
+
+    expected = a[:, :, 0].clone()
+    assert_close(b.cpu(), expected.cpu(), dtype=DTYPE, rtol=1e-2, atol=1e-2)
+
+
+def test_copy_general_dynamic_min_offsets():
+    args = (2, 3, 5, 7)
+    kernel = _compile(dynamic_min_offsets_kernel)
+    a = gen_tensor((4, 16, 16, 32), DTYPE, kind="randn")
+    b = gen_tensor((4, 16, 16, 32), DTYPE, kind="zeros")
+    kernel(a, b, *args)
+
+    expected = torch.zeros_like(b)
+    i, idx1, j, idx2 = args
+    expected[i, idx1 : idx1 + 8, j, idx2 : idx2 + 8] = a[i, idx1 : idx1 + 8, j, idx2 : idx2 + 8]
+    assert_close(b.cpu(), expected.cpu(), dtype=DTYPE, rtol=1e-2, atol=1e-2)
+
+
+def test_copy_general_dynamic_extent_tail():
+    row, start = (2, 23)
+    kernel = _compile(dynamic_extent_tail_kernel)
+    a = gen_tensor((4, 32), DTYPE, kind="randn")
+    b = gen_tensor((4, 32), DTYPE, kind="zeros")
+    kernel(a, b, row, start)
+
+    tail = min(32 - start, 16)
+    expected = torch.zeros_like(b)
+    expected[row, start : start + tail] = a[row, start : start + tail]
+    assert_close(b.cpu(), expected.cpu(), dtype=DTYPE, rtol=1e-2, atol=1e-2)
+
+
+def test_copy_general_dynamic_gm_active_stride_static():
+    runtime_s = 9
+    args = (3, 4, 2, 8)
+    kernel = _compile(dynamic_gm_active_stride_static_kernel)
+    a = gen_tensor((16, runtime_s, 16, 32), DTYPE, kind="randn")
+    b = gen_tensor((8, 16), DTYPE, kind="zeros")
+    kernel(a, b, *args)
+
+    i, j, idx1, idx2 = args
+    expected = a[i, j, idx1 : idx1 + 8, idx2 : idx2 + 16].clone()
+    assert_close(b.cpu(), expected.cpu(), dtype=DTYPE, rtol=1e-2, atol=1e-2)
+
+
+def test_copy_general_singleton_dynamic_stride():
+    runtime_s = 7
+    j = 3
+    kernel = _compile(singleton_dynamic_stride_kernel)
+    a = gen_tensor((1, runtime_s, 128), DTYPE, kind="randn")
+    b = gen_tensor((1, 1, 128), DTYPE, kind="zeros")
+    kernel(a, b, j)
+
+    expected = a[:, j : j + 1, :].clone()
+    assert_close(b.cpu(), expected.cpu(), dtype=DTYPE, rtol=1e-2, atol=1e-2)
