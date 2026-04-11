@@ -59,22 +59,30 @@ class ElementwiseTemplate(BaseTemplate):
         """
         shape, dtype = self.shape, self.dtype  # Extract shape and dtype
 
-        # Define a placeholder tensor A
+        # Define a placeholder tensor A, B
+        shape.insert(0, 1)
         A = te.placeholder(shape, name="A", dtype=dtype)
+        B = te.placeholder(shape, name="B", dtype=dtype)
+
+        k = te.reduce_axis((0, 1), name="k")
 
         # Define the element-wise computation (adding 1 to each element)
         def _compute_elementwise(*indices):
-            return A[indices] + 1
+            indices_k = [k]
+            for i in indices:
+                indices_k.append(i)
+            return te.sum(A[tuple(indices_k)] + B[tuple(indices_k)], axis=k)
 
+        shape.pop(0)
         # Define the computation for B based on A
-        B = te.compute(
+        C = te.compute(
             shape,
             fcompute=_compute_elementwise,  # Function that defines element-wise computation
-            name="B",
+            name="C",
         )
 
         # Store input and output tensors as function arguments
-        args = [A, B]
+        args = [A, B, C]
 
         # Create and set the computation function
         self.set_function(te.create_prim_func(args))

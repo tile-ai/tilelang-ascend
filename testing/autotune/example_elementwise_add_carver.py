@@ -24,7 +24,7 @@ def ref_prog(x, y):
 
 def get_config() -> list[dict]:
     arch = Ascend()
-    carver_template = carver.ElementwiseFixTemplate(
+    carver_template = carver.ElementwiseTemplate(
         shape = [M, N],
         dtype="float32",
     ).with_arch(arch)
