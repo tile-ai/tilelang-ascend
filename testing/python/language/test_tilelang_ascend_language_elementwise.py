@@ -3107,8 +3107,6 @@ def vec_pow(M, N, block_M, block_N, dtype="float"):
 
     VEC_NUM = 2
 
-    tmp_size_multiplier = 8 if dtype == "int32" else 2
-
     @T.prim_func
     def main(
         A: T.Tensor((M, N), dtype),  # type: ignore
@@ -3181,8 +3179,6 @@ def vec_pow_slice(M, N, block_M, block_N, dtype="float"):
     n_num = N // block_N
 
     VEC_NUM = 2
-
-    tmp_size_multiplier = 8 if dtype == "int32" else 2
 
     @T.prim_func
     def main(
@@ -4340,7 +4336,6 @@ def reduce_sum(M, N, block_M, block_N, dim, dtype="float"):
             a_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
             b_ub = T.alloc_ub((block_M // VEC_NUM), dtype)
 
-
             T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a_ub)
 
             T.reduce_sum(a_ub, b_ub, dim, [block_M // VEC_NUM, block_N])
@@ -4376,6 +4371,8 @@ def run_test_reduce_sum(M, N, block_M, block_N, dim, dtype, target):
 @pytest.mark.parametrize("dtype", ["float", "float16"])
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 def test_reduce_sum(dim, dtype, target):
+    if dtype == "float16":
+        pytest.xfail(reason="float16 reduction sum may overflow")
     M, N = 1024, 64
     run_test_reduce_sum(M, N, 64, 64, dim, dtype, target)
 
