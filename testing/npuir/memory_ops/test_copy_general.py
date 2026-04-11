@@ -235,10 +235,10 @@ def dynamic_gm_active_stride_dynamic_kernel(
 
 # src.shape = [M, N]
 # src.range = [bx:bx+remain_m, by:by+remain_n], src.slice = [remain_m, remain_n]
-# dst.shape = [M, N]
-# dst.range = [bx:bx+remain_m, by:by+remain_n], dst.slice = [remain_m, remain_n]
-# Tests the vec-add-style dynamic 2D tail-tile copy now supported by projected
-# dynamic strides.
+# dst.shape = [32, 32] / [M, N]
+# dst.range = [:, :] borrowed from the source slice on the UB side, then
+# [bx:bx+remain_m, by:by+remain_n] on the GM side
+# Tests the vec-add-style dynamic 2D tail-tile copy with plain UB buffers.
 @T.prim_func
 def dynamic_gm_2d_tile_kernel(
     A: T.Tensor((dynamic_2d_tile_m, dynamic_2d_tile_n), DTYPE),
@@ -250,8 +250,8 @@ def dynamic_gm_2d_tile_kernel(
 ):
     with T.Kernel(1, is_npu=True):
         UB = T.alloc_ub((32, 32), DTYPE)
-        T.copy(A[bx : bx + remain_m, by : by + remain_n], UB[0:remain_m, 0:remain_n])
-        T.copy(UB[0:remain_m, 0:remain_n], B[bx : bx + remain_m, by : by + remain_n])
+        T.copy(A[bx : bx + remain_m, by : by + remain_n], UB)
+        T.copy(UB, B[bx : bx + remain_m, by : by + remain_n])
 
 
 def test_copy_general_same_shape_2d():

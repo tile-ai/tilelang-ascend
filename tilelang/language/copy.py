@@ -152,11 +152,21 @@ def copy(
         )
         return list(peer_extent)
 
-    def _to_region(data, access_type, peer_extent):
+    def _to_region(data, access_type, peer_extent, peer_is_slice):
         if isinstance(data, tir.Var) and T.has_let_value(data):
             data = T.get_let_value(data)
         if isinstance(data, tir.Buffer):
             if not has_explicit_size:
+                # When a plain buffer is paired with an explicit slice of the
+                # same rank, reuse the peer extents so tail-tile copies like
+                # T.copy(A[bx:..., by:...], UB) and T.copy(UB, C[bx:..., by:...])
+                # keep matching logical shapes. For rank-mismatch singleton
+                # cases, preserve whole-buffer semantics and let the backend
+                # perform shape alignment.
+                if peer_is_slice and peer_extent is not None and len(peer_extent) == len(data.shape):
+                    return buffer_load_to_tile_region(
+                        T.BufferLoad(data, [0] * len(data.shape)), access_type, list(peer_extent)
+                    )
                 return buffer_to_tile_region(data, access_type)
             ndim = len(data.shape)
             extent = _borrowed_extent(data, peer_extent)
@@ -172,8 +182,8 @@ def copy(
             trailing = extent[-ndim:] if len(extent) >= ndim else extent
             return buffer_load_to_tile_region(data, access_type, trailing)
 
-    src = _to_region(src, "r", dst_extent)
-    dst = _to_region(dst, "w", src_extent)
+    src = _to_region(src, "r", dst_extent, _is_slice(dst))
+    dst = _to_region(dst, "w", src_extent, _is_slice(src))
     if coalesced_width is not None:
         return tir.call_intrin("handle", tir.op.Op.get("tl.copy"), src, dst, coalesced_width)
     else:
