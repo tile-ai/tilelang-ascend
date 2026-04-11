@@ -1859,7 +1859,7 @@ Expert编程模式可以复用Developer模式的Reduce类计算原语。
 
   - buffer：要填充的数据buffer
 
-  **功能**：将数据buffer填充为0，实现buffer清空操作。
+  **功能**：将数据buffer填充为0，实现buffer清空操作，该接口使用仅支持操作 UB (Unified Buffer)，暂时不支持L1/L0A/L0B/L0C的清空。
 
   **举例**：
 
