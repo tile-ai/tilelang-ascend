@@ -282,7 +282,8 @@ private:
   };
 
   struct ProjectedLayoutPlan {
-    llvm::SmallVector<int64_t> viewStrides;
+    llvm::SmallVector<int64_t> viewStrideStatics;
+    llvm::SmallVector<mlir::OpFoldResult> viewStrideValues;
     llvm::SmallVector<mlir::OpFoldResult> viewSizes;
     mlir::OpFoldResult viewOffset;
   };

@@ -151,6 +151,10 @@ def dynamic_extent_tail_kernel(
 
 
 dynamic_gm_active_static_s = T.symbolic("dynamic_gm_active_static_s")
+dynamic_backbone_tail = T.symbolic("dynamic_backbone_tail")
+dynamic_gm_active_dynamic_s = T.symbolic("dynamic_gm_active_dynamic_s")
+dynamic_2d_tile_m = T.symbolic("dynamic_2d_tile_m")
+dynamic_2d_tile_n = T.symbolic("dynamic_2d_tile_n")
 
 
 # src.shape = [16, S, 16, 32]
@@ -178,7 +182,7 @@ singleton_dynamic_stride_s = T.symbolic("singleton_dynamic_stride_s")
 
 # src.shape = [1, S, 128], src.range = [0:1, j:j+1, :], src.slice = [1, 1, 128]
 # dst.shape = [1, 1, 128], dst.range = [:, :, :], dst.slice = [1, 1, 128]
-# Tests singleton dynamic-stride canonicalization.
+# Tests direct support for a singleton-aligned dynamic projected stride.
 @T.prim_func
 def singleton_dynamic_stride_kernel(
     A: T.Tensor((1, singleton_dynamic_stride_s, 128), DTYPE),
@@ -189,6 +193,65 @@ def singleton_dynamic_stride_kernel(
         UB = T.alloc_ub((1, 1, 128), DTYPE)
         T.copy(A[0:1, j : j + 1, :], UB)
         T.copy(UB, B)
+
+
+# src.shape = [1, 8, tail], src.range = [:, :, :], src.slice = [1, 8, tail]
+# dst.shape = [1, 8, 16], dst.range = [:, :, 0:tail], dst.slice = [1, 8, tail]
+# Tests same-rank dynamic GM copy where the projected row stride stays dynamic
+# while the logical slice shapes remain equal on both sides.
+@T.prim_func
+def dynamic_backbone_tail_kernel(
+    A: T.Tensor((1, 8, dynamic_backbone_tail), DTYPE),
+    B: T.Tensor((1, 8, 16), DTYPE),
+):
+    with T.Kernel(1, is_npu=True):
+        UB = T.alloc_ub((1, 8, 16), DTYPE)
+        T.copy(A, UB[:, :, 0:dynamic_backbone_tail])
+        T.copy(UB[:, :, 0:dynamic_backbone_tail], B[:, :, 0:dynamic_backbone_tail])
+
+
+# src.shape = [4, S, 16, 32]
+# src.range = [i:i+1, idx1:idx1+8, j:j+1, idx2:idx2+tail], src.slice = [1, 8, 1, tail]
+# dst.shape = [1, 8, 1, 16], dst.range = [:, :, :, 0:tail], dst.slice = [1, 8, 1, tail]
+# Tests direct support for dynamic projected strides on contiguous GM layouts.
+@T.prim_func
+def dynamic_gm_active_stride_dynamic_kernel(
+    A: T.Tensor((4, dynamic_gm_active_dynamic_s, 16, 32), DTYPE),
+    B: T.Tensor((1, 8, 1, 16), DTYPE),
+    i: T.int32,
+    idx1: T.int32,
+    j: T.int32,
+    idx2: T.int32,
+):
+    with T.Kernel(1, is_npu=True):
+        UB = T.alloc_ub((1, 8, 1, 16), DTYPE)
+        tail = T.min(32 - idx2, 16)
+        T.copy(
+            A[i : i + 1, idx1 : idx1 + 8, j : j + 1, idx2 : idx2 + tail],
+            UB[:, :, :, 0:tail],
+        )
+        T.copy(UB[:, :, :, 0:tail], B[:, :, :, 0:tail])
+
+
+# src.shape = [M, N]
+# src.range = [bx:bx+remain_m, by:by+remain_n], src.slice = [remain_m, remain_n]
+# dst.shape = [M, N]
+# dst.range = [bx:bx+remain_m, by:by+remain_n], dst.slice = [remain_m, remain_n]
+# Tests the vec-add-style dynamic 2D tail-tile copy now supported by projected
+# dynamic strides.
+@T.prim_func
+def dynamic_gm_2d_tile_kernel(
+    A: T.Tensor((dynamic_2d_tile_m, dynamic_2d_tile_n), DTYPE),
+    B: T.Tensor((dynamic_2d_tile_m, dynamic_2d_tile_n), DTYPE),
+    bx: T.int32,
+    by: T.int32,
+    remain_m: T.int32,
+    remain_n: T.int32,
+):
+    with T.Kernel(1, is_npu=True):
+        UB = T.alloc_ub((32, 32), DTYPE)
+        T.copy(A[bx : bx + remain_m, by : by + remain_n], UB[0:remain_m, 0:remain_n])
+        T.copy(UB[0:remain_m, 0:remain_n], B[bx : bx + remain_m, by : by + remain_n])
 
 
 def test_copy_general_same_shape_2d():
@@ -304,4 +367,46 @@ def test_copy_general_singleton_dynamic_stride():
     kernel(a, b, j)
 
     expected = a[:, j : j + 1, :].clone()
+    assert_close(b.cpu(), expected.cpu(), dtype=DTYPE, rtol=1e-2, atol=1e-2)
+
+
+def test_copy_general_dynamic_backbone_tail():
+    tail = 13
+    kernel = _compile(dynamic_backbone_tail_kernel)
+    a = gen_tensor((1, 8, tail), DTYPE, kind="randn")
+    b = gen_tensor((1, 8, 16), DTYPE, kind="zeros")
+    kernel(a, b)
+
+    expected = torch.zeros_like(b)
+    expected[:, :, 0:tail] = a
+    assert_close(b.cpu(), expected.cpu(), dtype=DTYPE, rtol=1e-2, atol=1e-2)
+
+
+def test_copy_general_dynamic_gm_active_stride_dynamic():
+    runtime_s = 9
+    args = (0, 1, 2, 7)
+    kernel = _compile(dynamic_gm_active_stride_dynamic_kernel)
+    a = gen_tensor((4, runtime_s, 16, 32), DTYPE, kind="randn")
+    b = gen_tensor((1, 8, 1, 16), DTYPE, kind="zeros")
+    kernel(a, b, *args)
+
+    i, idx1, j, idx2 = args
+    tail = min(32 - idx2, 16)
+    expected = torch.zeros_like(b)
+    expected[:, :, :, 0:tail] = a[i : i + 1, idx1 : idx1 + 8, j : j + 1, idx2 : idx2 + tail]
+    assert_close(b.cpu(), expected.cpu(), dtype=DTYPE, rtol=1e-2, atol=1e-2)
+
+
+def test_copy_general_dynamic_gm_2d_tile():
+    runtime_m, runtime_n = 77, 88
+    bx, by = 64, 64
+    remain_m = runtime_m - bx
+    remain_n = runtime_n - by
+    kernel = _compile(dynamic_gm_2d_tile_kernel)
+    a = gen_tensor((runtime_m, runtime_n), DTYPE, kind="randn")
+    b = gen_tensor((runtime_m, runtime_n), DTYPE, kind="zeros")
+    kernel(a, b, bx, by, remain_m, remain_n)
+
+    expected = torch.zeros_like(b)
+    expected[bx : bx + remain_m, by : by + remain_n] = a[bx : bx + remain_m, by : by + remain_n]
     assert_close(b.cpu(), expected.cpu(), dtype=DTYPE, rtol=1e-2, atol=1e-2)

@@ -407,27 +407,6 @@ BuildIndexFoldResultsFromExprs(mlir::OpBuilder &builder,
   return ofrs;
 }
 
-static llvm::SmallVector<int64_t>
-InferCanonicalStrides(llvm::ArrayRef<int64_t> shape) {
-  // Compute the canonical row-major strides for an aligned logical shape.
-  // This is not the source of truth for projected copy layout: generic T.copy
-  // still projects real strides from the base layout. We only use these
-  // canonical strides to replace dynamic strides on singleton dimensions,
-  // where the stride is not observable in the accessed element set.
-  llvm::SmallVector<int64_t> strides(shape.size(), mlir::ShapedType::kDynamic);
-  int64_t running = 1;
-  bool suffixStatic = true;
-  for (int i = static_cast<int>(shape.size()) - 1; i >= 0; --i) {
-    strides[i] = suffixStatic ? running : mlir::ShapedType::kDynamic;
-    if (mlir::ShapedType::isDynamic(shape[i])) {
-      suffixStatic = false;
-    } else {
-      running *= shape[i];
-    }
-  }
-  return strides;
-}
-
 mlir::Type CodeGenTileLangNPUIRAPI::GetMLIRType(const PrimExpr &expr) {
   auto ttype = GetType(expr);
   auto DType = GetRuntimeDataType(ttype);
@@ -1267,27 +1246,19 @@ CodeGenTileLangNPUIRAPI::BuildProjectedLayoutPlan(
       << "generic T.copy internal error: projected rank mismatch.";
 
   ProjectedLayoutPlan layout;
-  llvm::SmallVector<int64_t> canonicalStrides =
-      InferCanonicalStrides(alignedShape);
-  layout.viewStrides.reserve(keptDims.size());
+  layout.viewStrideStatics.reserve(keptDims.size());
+  layout.viewStrideValues.reserve(keptDims.size());
   layout.viewSizes.reserve(keptDims.size());
   for (size_t i = 0; i < keptDims.size(); ++i) {
     unsigned idx = keptDims[i];
     // Each kept dim must refer back to a valid original slice/base-layout dim.
     ICHECK(idx < facts.baseLayoutStrides.size() && idx < facts.sliceSizes.size())
         << "generic T.copy internal error: kept index out of range.";
-    int64_t stride = facts.baseLayoutStrides[idx];
-    if (mlir::ShapedType::isDynamic(stride) && alignedShape[i] == 1 &&
-        !mlir::ShapedType::isDynamic(canonicalStrides[i])) {
-      stride = canonicalStrides[i];
-    }
-    // Runtime min/extent are fine, but the active projected layout still has
-    // to lower to a concrete memref.copy-compatible stride pattern.
-    ICHECK(!mlir::ShapedType::isDynamic(stride))
-        << "generic T.copy requires statically-known projected strides; "
-           "only contiguous dynamic base shape, dynamic range min/extent, "
-           "and singleton-stride canonicalization are supported";
-    layout.viewStrides.push_back(stride);
+    // Dynamic projected strides are valid for contiguous buffers. We keep a
+    // static-or-dynamic type view for memref metadata plus the runtime stride
+    // values needed by reinterpret_cast operands.
+    layout.viewStrideStatics.push_back(facts.baseLayoutStrides[idx]);
+    layout.viewStrideValues.push_back(facts.baseLayoutStrideValues[idx]);
     layout.viewSizes.push_back(facts.sliceSizes[idx]);
   }
 
@@ -1325,7 +1296,8 @@ mlir::Value CodeGenTileLangNPUIRAPI::BuildAlignedCopyView(
   };
 
   auto targetLayout = mlir::StridedLayoutAttr::get(
-      builder.getContext(), getTypeOffset(layout.viewOffset), layout.viewStrides);
+      builder.getContext(), getTypeOffset(layout.viewOffset),
+      layout.viewStrideStatics);
   auto targetTy =
       mlir::MemRefType::get(alignedShape, elemTy, targetLayout, memSpace);
 
@@ -1333,15 +1305,11 @@ mlir::Value CodeGenTileLangNPUIRAPI::BuildAlignedCopyView(
     return fullSubview;
   }
 
-  llvm::SmallVector<mlir::OpFoldResult> strideOfrs;
-  strideOfrs.reserve(layout.viewStrides.size());
-  for (int64_t stride : layout.viewStrides) {
-    strideOfrs.push_back(builder.getIndexAttr(stride));
-  }
-
+  // The target type records which offset/stride positions stay dynamic; the
+  // reinterpret operands carry their concrete runtime values.
   return builder.create<mlir::memref::ReinterpretCastOp>(
       builder.getUnknownLoc(), targetTy, fullSubview, layout.viewOffset,
-      layout.viewSizes, strideOfrs);
+      layout.viewSizes, layout.viewStrideValues);
 }
 
 /// Generate hivm.hir.load or hivm.hir.store for tl.copy.
