@@ -1,0 +1,65 @@
+# ============================================================================
+# TileLang-Ascend .clangd configuration
+#
+# Provides IDE support for the C++ backend (src/**).
+# Compile flags (-I, -D, -std) live in compile_flags.txt (project root)
+# so that relative paths resolve correctly from the project root.
+#
+# This file controls: compiler driver, diagnostics, and indexing.
+#
+# Platform SDKs (CANN, CUDA, HIP) are NOT modeled here — their headers
+# are suppressed in the SDK-dependent fragments below.
+# When a cmake build/ directory with compile_commands.json exists,
+# clangd will prefer it over compile_flags.txt.
+# ============================================================================
+
+# --- Fragment 1: TileLang host backend code (src/**) ---
+If:
+  PathMatch: src/.*
+CompileFlags:
+  Compiler: clang++
+Diagnostics:
+  UnusedIncludes: None
+Index:
+  Background: Build
+
+---
+# --- Fragment 2: SDK-dependent tl_templates (CANN/CUDA/HIP/PTO) ---
+# These template headers rely heavily on platform SDK types and intrinsics
+# (AscendC, CUDA, HIP, PTO) that are unavailable on macOS.
+# Suppress all diagnostics to reduce noise. The cpp/ and cpu/ subtrees
+# are NOT suppressed so genuine errors remain visible there.
+If:
+  PathMatch:
+    - src/tl_templates/ascend/.*
+    - src/tl_templates/cuda/.*
+    - src/tl_templates/hip/.*
+    - src/tl_templates/pto/.*
+Diagnostics:
+  Suppress:
+    - "*"
+
+---
+# --- Fragment 3: SDK-dependent .cc files (HIP runtime module) ---
+# rt_mod_hip.cc directly includes <hip/hip_runtime.h> and <hip/hiprtc.h>
+# which are unavailable without the HIP SDK. The missing header causes a
+# fatal parse error that clangd cannot suppress (Suppress only filters
+# diagnostics after successful parsing). This fragment is retained for
+# documentation and will take effect if the HIP SDK is partially installed.
+# This is the only .cc file affected (1 of 71).
+If:
+  PathMatch: src/target/rt_mod_hip\.cc
+Diagnostics:
+  Suppress:
+    - "*"
+
+---
+# --- Fragment 4: Vendored third-party code ---
+# Reduce indexing cost and diagnostic noise from vendored submodules.
+If:
+  PathMatch: 3rdparty/.*
+Index:
+  Background: Skip
+Diagnostics:
+  Suppress:
+    - "*"

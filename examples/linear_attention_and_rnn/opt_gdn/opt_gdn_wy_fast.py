@@ -52,7 +52,6 @@ def wy_fast_ker(B, H, L, DK, DV, C, BK = None, BV = None, dtype="float16", accum
 			a1_ub_half = T.alloc_ub([C // VEC_NUM, C], dtype)
 			a2_ub_half = T.alloc_ub([C // VEC_NUM, C], dtype)
 			beta_ub_half = T.alloc_ub([C,], dtype)
-			tmp_ub = T.alloc_ub([3 * C * C // VEC_NUM], "uint8")
 
 			k_l1 = T.alloc_L1([C, BK], dtype)
 			v_l1 = T.alloc_L1([C, BV], dtype)
@@ -71,7 +70,7 @@ def wy_fast_ker(B, H, L, DK, DV, C, BK = None, BV = None, dtype="float16", accum
 				T.pipe_barrier("v")
 				T.copy(beta_ub, beta_r_ub[0, :])
 				T.pipe_barrier("v")
-				T.tile.broadcast(beta_2d_ub, beta_r_ub, tmp_ub)
+				T.tile.broadcast(beta_2d_ub, beta_r_ub)
 				T.set_flag("mte2", "v", 0)
 				T.wait_flag("mte2", "v", 0)
 				T.copy(a1_ub_half, a1_ub)
@@ -91,14 +90,14 @@ def wy_fast_ker(B, H, L, DK, DV, C, BK = None, BV = None, dtype="float16", accum
 				T.pipe_barrier("v")
 				T.copy(g_ub, g_r_ub[0, :])
 				T.pipe_barrier("v")
-				T.tile.broadcast(g_2d_ub, g_r_ub, tmp_ub)
+				T.tile.broadcast(g_2d_ub, g_r_ub)
 				T.tile.mul(a1_ub, a1_ub, g_2d_ub) # A1 = A * diag(exp(g) * Beta)
 				T.copy(a1_ub, a1_ub_half)
 				T.set_flag("v", "mte3", 0)
 				T.wait_flag("v", "mte3", 0)
 				T.copy(a1_ub_half, workspace_a1[bz, by, bx * C + vid * C // VEC_NUM, 0])
 				T.set_cross_flag("MTE3", 1)
-			
+
 			with T.Scope("C"):
 				T.copy(K[bz, by, bx * C, 0], k_l1)
 				T.copy(V[bz, by, bx * C, 0], v_l1)

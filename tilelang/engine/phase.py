@@ -47,6 +47,8 @@ def allow_vectorize(pass_ctx: PassContext | None = None) -> bool:
 
 
 def LowerAndLegalize(mod: IRModule, target: Target) -> IRModule:
+    # allocate the tmp buffer for vector api
+    mod = tilelang.transform.InjectTmpBuffer(target)(mod)
     mod = tilelang.transform.AscendInferBufferScope()(mod)
     # Collect buffer shape
     mod = tilelang.transform.BufferShapeCollector()(mod)

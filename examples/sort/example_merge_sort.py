@@ -30,12 +30,11 @@ def generate_merge_sort_2way():
             src0 = T.alloc_shared([N * ELEMENT_SIZE], "float32")
             src1 = T.alloc_shared([N * ELEMENT_SIZE], "float32")
             merge_output = T.alloc_shared([N * 2 * ELEMENT_SIZE], "float32")
-            tmp = T.alloc_shared([N * 2 * ELEMENT_SIZE], "float32")
 
             T.copy(block0, src0)
             T.copy(block1, src1)
 
-            T.tile.merge_sort(merge_output, tmp, src0, src1)
+            T.tile.merge_sort(merge_output, src0, src1)
 
             T.copy(merge_output, output)
 
@@ -56,13 +55,12 @@ def generate_merge_sort_3way():
             src1 = T.alloc_shared([N * ELEMENT_SIZE], "float32")
             src2 = T.alloc_shared([N * ELEMENT_SIZE], "float32")
             merge_output = T.alloc_shared([N * 3 * ELEMENT_SIZE], "float32")
-            tmp = T.alloc_shared([N * 3 * ELEMENT_SIZE], "float32")
 
             T.copy(block0, src0)
             T.copy(block1, src1)
             T.copy(block2, src2)
 
-            T.tile.merge_sort(merge_output, tmp, src0, src1, src2)
+            T.tile.merge_sort(merge_output, src0, src1, src2)
 
             T.copy(merge_output, output)
 
@@ -85,14 +83,13 @@ def generate_merge_sort_4way():
             src2 = T.alloc_shared([N * ELEMENT_SIZE], "float32")
             src3 = T.alloc_shared([N * ELEMENT_SIZE], "float32")
             merge_output = T.alloc_shared([N * 4 * ELEMENT_SIZE], "float32")
-            tmp = T.alloc_shared([N * 4 * ELEMENT_SIZE], "float32")
 
             T.copy(block0, src0)
             T.copy(block1, src1)
             T.copy(block2, src2)
             T.copy(block3, src3)
 
-            T.tile.merge_sort(merge_output, tmp, src0, src1, src2, src3)
+            T.tile.merge_sort(merge_output, src0, src1, src2, src3)
 
             T.copy(merge_output, output)
 

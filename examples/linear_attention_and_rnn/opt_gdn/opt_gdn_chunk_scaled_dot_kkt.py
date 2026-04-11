@@ -48,7 +48,6 @@ def kkt_ker(B, H, L, DK, C, BK = None, dtype="float16", accum_dtype="float"):
 			g_r_2d_ub = T.alloc_ub([C // VEC_NUM, C], accum_dtype)
 			g_c_ub = T.alloc_ub([1, C], accum_dtype)
 			g_c_2d_ub = T.alloc_ub([C // VEC_NUM, C], accum_dtype)
-			tmp_ub = T.alloc_ub([3 * C * C // VEC_NUM], "uint8")
 
 			k_l1 = T.alloc_L1([C, BK], dtype)
 			a_l0 = T.alloc_L0C([C, C], accum_dtype)
@@ -80,8 +79,8 @@ def kkt_ker(B, H, L, DK, C, BK = None, dtype="float16", accum_dtype="float"):
 				T.set_flag("v", "mte2", 0)
 				T.wait_flag("v", "mte2", 0)
 				T.copy(Msk[vid * C // VEC_NUM, 0], msk_ub)
-				T.tile.broadcast(g_r_2d_ub, g_r_ub, tmp_ub)
-				T.tile.broadcast(g_c_2d_ub, g_c_ub, tmp_ub)
+				T.tile.broadcast(g_r_2d_ub, g_r_ub)
+				T.tile.broadcast(g_c_2d_ub, g_c_ub)
 				T.tile.sub(coeff_ub, g_r_2d_ub, g_c_2d_ub) # coeff_ub now stores ln(beta_i) + g_i - g_j
 				T.tile.exp(coeff_ub, coeff_ub) # coeff_ub now stores beta_i * exp(g_i - g_j)
 
@@ -123,7 +122,7 @@ def ref_kkt(k, beta, g, C):
 		gamma = torch.exp(gamma)
 		a_c = (kkt * beta_c.unsqueeze(-1) * gamma).tril(-1)
 		a[:, :, i * C : (i + 1) * C, :] = a_c
-	
+
 	return a.to(torch.float16)
 
 if __name__ == "__main__":

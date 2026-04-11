@@ -24,11 +24,10 @@ def reduce_max_slice_buffer():
         with T.Kernel(1, is_npu=True) as (cid, vid):
             in_shared = T.alloc_ub((5, 8), dtype)
             out_shared = T.alloc_ub((1, 8), dtype=dtype)
-            reduce_tmp_shared = T.alloc_shared([3 * DataType(dtype).bits // 8 * 4 * 8], "float")
 
             if vid == 0:
                 T.copy(Input, in_shared)
-                T.reduce_max(in_shared, out_shared, reduce_tmp_shared, dim=0, real_shape=[3, 8])
+                T.reduce_max(in_shared, out_shared, dim=0, real_shape=[3, 8])
                 T.copy(out_shared, Output)
 
     return main
