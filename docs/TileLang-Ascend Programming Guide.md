@@ -1809,7 +1809,7 @@ Expert编程模式可以复用Developer模式的Reduce类计算原语。
   T.tile.topk(topk_global, sort_result, top_k)
   ```
 
-###### 4.1.3.2.6 数据分散/收集
+###### 4.1.3.2.8 数据分散/收集
 
 - `T.tile.gather(dst, src, src_offset, src_base_addr):`
 
@@ -1830,7 +1830,7 @@ Expert编程模式可以复用Developer模式的Reduce类计算原语。
   T.tile.gather(c_ub, a_ub, b_ub, 0)
   ```
 
-###### 4.1.3.2.7 索引操作
+###### 4.1.3.2.9 索引操作
 
 - `T.tile.arith_progression(buffer, first_value, diff_value, count):`
 
@@ -1849,6 +1849,22 @@ Expert编程模式可以复用Developer模式的Reduce类计算原语。
 
   ```
   T.tile.arith_progression(sort_indices, 0, 1, block_N)
+  ```
+
+###### 4.1.3.2.10 数据清除
+
+- `T.tile.clear(buffer):`
+
+  **参数**：
+
+  - buffer：要填充的数据buffer
+
+  **功能**：将数据buffer填充为0，实现buffer清空操作。
+
+  **举例**：
+
+  ```
+  T.tile.clear(ub)；
   ```
 
 #### 4.1.4 同步原语
