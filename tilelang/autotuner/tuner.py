@@ -40,7 +40,6 @@ from pathlib import Path
 
 from tilelang import env
 from tilelang.autotuner.param import CompileArgs, ProfileArgs, AutotuneResult
-from tilelang.autotuner.capture import get_autotune_inputs
 from tilelang.utils.target import determine_target
 import time
 
@@ -209,15 +208,6 @@ class AutoTuner:
         Returns:
             AutoTuner: Self for method chaining.
         """
-        # If the program is under `with set_autotune_inputs` context,
-        # the `supply_prog` will be ignored and the `get_autotune_inputs` will be used instead.
-        if get_autotune_inputs() is not None:
-            if supply_prog is not None:
-                logger.warning(
-                    "`supply_prog` will be ignored as this program is under `with set_autotune_inputs` context."
-                )
-            supply_prog = lambda _: get_autotune_inputs()  # noqa: E731
-
         self.profile_args = ProfileArgs(
             supply_type=supply_type,
             ref_prog=ref_prog,
