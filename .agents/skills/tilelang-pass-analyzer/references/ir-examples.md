@@ -1000,7 +1000,11 @@ Buffer B[fragment, float16, [K, N]]
 
 **输出伪 IR：**
 ```
+<<<<<<< HEAD
 # 变换后：推断 layout
+=======
+# 叇换后：推断 layout
+>>>>>>> [Skill] Add pass skill pass-analyzer & pass-workflow-analyzer
 Buffer A[fragment, float16, [M, K], layout="row_major"]    ← 行主序
 Buffer B[fragment, float16, [K, N], layout="column_major"] ← 列主序
 Buffer C[fragment, float32, [M, N], layout="row_major"]
