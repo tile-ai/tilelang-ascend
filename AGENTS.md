@@ -26,7 +26,7 @@
 
 本项目的 skills 位于 `.agents/skills/` 目录下，每个 skill 包含一个 SKILL.md 文件。
 
-可用 skills：
+可用 skills ：
 
 
 | 技能                           | 触发时机            | 说明                                                                                                  |
@@ -35,9 +35,44 @@
 | tilelang-vector-skill | 写vector算子时触发           | 专注于vector算子生成，内含skill和参考文档 |
 | tilelang-cube-skill       | 写cube算子时触发    |    专注于cube算子生成，内含skill和参考文档    |
 | tilelang-fused-skill         | 写融合算子时触发 | 专注于融合算子生成，内含skill和参考文档   |
+| tilelang-pass-analyzer       | **查询 Pass 功能时立即触发**  | Pass 功能分析、对比、分类查询。关键词："XX pass 是干什么的"、"分析 XX pass"、"XX 和 YY pass 的区别" |
+| tilelang-pass-workflow-analyzer | **查询 Pass 工作流时立即触发** | Pass 工作流分析、执行顺序、依赖关系、新 Pass 定位。关键词："pass 的工作流程"、"Pass 执行顺序"、"Pass 依赖关系"、"如何添加新 Pass" |
 | tilelang-pass-skill            | 写pass时触发           | 用于框架优化，写pass |
 | tilelang-api-skill       | 封装和修改api时触发           | 用于封装新的api或重构已有api  |
 | skill-creator      | 创建skill时触发          | 用于创建skill  |
+
+## Skill 自动调用规则 ⭐⭐⭐
+
+**必须在第一时间识别用户意图，查阅 Skills 表格，匹配可用 skill 并自动调用，禁止先用 grep/read 等工具。**
+
+### 自动调用流程
+
+```
+用户提问
+  ↓
+1. 分析用户意图（要做什么任务）
+  ↓
+2. 查阅 Skills 表格，检查哪些 skill 可用
+  ↓
+3. 根据触发时机匹配对应的 skill
+  ↓
+4. 匹配成功 → 立即调用对应 skill
+  ↓
+5. 不匹配 → 使用其他工具（grep/read/glob）
+```
+
+### 识别示例
+
+| 用户问题 | 意图分析 | 匹配 Skill | 调用动作 |
+|---------|---------|-----------|---------|
+| "lower tile op 是干什么的" | Pass 功能查询 | tilelang-pass-analyzer | 立即调用 |
+| "写一个 softmax 算子" | Vector 算子开发 | tilelang-vector-skill | 立即调用 |
+| "VectorizeLoop pass 的作用" | Pass 功能查询 | tilelang-pass-analyzer | 立即调用 |
+| "同步相关的 pass 有哪些" | Pass 分类查询 | tilelang-pass-analyzer | 立即调用 |
+| "pass 的工作流程" | Pass 工作流查询 | tilelang-pass-analyzer | 立即调用 |
+| "创建一个新的 skill" | Skill 创建 | skill-creator | 立即调用 |
+
+**核心原则：先查 Skills 表格，匹配触发时机，再决定是否调用 skill。**
 
 
 ## 核心原则 ⭐⭐⭐
