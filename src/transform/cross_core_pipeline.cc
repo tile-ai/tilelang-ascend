@@ -856,11 +856,6 @@ private:
       if (stage_indices.size() <= 1) {
         continue;
       }
-      int scope = checkBufferScope(buffer);
-      if (scope != VEC_SCOPE) {
-        continue;
-      }
-
       bool is_shared = false;
       for (int si : stage_indices) {
         Stmt stage_body = ReconstructStageBody(stages[si]);

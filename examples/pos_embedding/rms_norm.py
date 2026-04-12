@@ -35,7 +35,6 @@ def rms_norm(M, head_dim, block_M, eps, dtype="float16"):
 
             sum_square_ub = T.alloc_shared([row_per_vec, head_dim], ACC_DTYPE)
             rms_ub = T.alloc_shared([row_per_vec], ACC_DTYPE)
-            tmp_ub = T.alloc_shared(row_per_vec * head_dim, TMP_DTYPE)
 
             ## Accumulation
             T.copy(x[row_x : row_x + row_per_vec, :], x_ub)
@@ -43,7 +42,7 @@ def rms_norm(M, head_dim, block_M, eps, dtype="float16"):
             T.tile.mul(sum_square_ub, x_ub_fp32, x_ub_fp32)
 
             ## Reduce
-            T.reduce_sum(sum_square_ub, rms_ub, tmp_ub, dim=-1)
+            T.reduce_sum(sum_square_ub, rms_ub, dim=-1)
 
             ## Compute mean and variance
             T.tile.div(rms_ub, rms_ub, head_dim)

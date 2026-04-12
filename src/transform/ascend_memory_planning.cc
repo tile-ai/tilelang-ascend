@@ -534,7 +534,12 @@ private:
           alloc_buffer(buffer, current_offset,
                        "Linear memory allocation failed!");
           max_offset = std::max(max_offset, current_offset);
-        } else if (scope == "shared") {
+        }
+      }
+      // Allocate tmp buffer/default buffer after origin buffer to avoid
+      // fragmention in shared memory
+      if (scope == "shared") {
+        for (const VarNode *buffer : origin_buffer) {
           if (std::find(tmp_buffers.begin(), tmp_buffers.end(), buffer) !=
                   tmp_buffers.end() &&
               !address_map_.count(buffer)) {
