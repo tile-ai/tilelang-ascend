@@ -128,6 +128,9 @@ class AutoTuner:
         self.ref_input_tensors = None
         self.jit_compile = None
 
+    def _compile_kernel(self, **config_arg) -> tilelang.JitKernel_NPU:
+        return self.compile_args.compile_program(self.fn(**config_arg))
+
     @classmethod
     def from_kernel(cls, kernel: Callable, configs):
         """Create an AutoTuner instance from a kernel function.
@@ -281,6 +284,109 @@ class AutoTuner:
         result = AutotuneResult.load_from_disk(self.cache_dir / key, self.compile_args)
         return result
 
+    def target_fn(self, jit_kernel: tilelang.JitKernel_NPU, warmup: int, rep: int):
+        # Unpack the context
+        profile_args = self.profile_args
+        supply_type = profile_args.supply_type
+        skip_check = profile_args.skip_check
+        manual_check_prog = profile_args.manual_check_prog
+        cache_input_tensors = profile_args.cache_input_tensors
+        ref_prog = profile_args.ref_prog
+        supply_prog = profile_args.supply_prog
+        rtol = profile_args.rtol
+        atol = profile_args.atol
+        max_mismatched_ratio = profile_args.max_mismatched_ratio
+
+        profiler = jit_kernel.get_profiler(tensor_supply_type=supply_type)
+
+        # Factory functions for generating input tensors.
+        # This encapsulates the logic of using either a custom supply program (`supply_prog`)
+        # or the default profiler input generation (`profiler._get_inputs`).
+        def get_input_tensors_supply(with_output: bool):
+            def func():
+                if supply_prog is not None:
+                    return supply_prog(
+                        profiler._get_params(with_output=with_output)
+                    )
+                else:
+                    return profiler._get_inputs(with_output=with_output)
+
+            return func
+
+        jit_input_tensors_supply = get_input_tensors_supply(with_output=False)
+        ref_input_tensors_supply = get_input_tensors_supply(with_output=False)
+
+        if cache_input_tensors:
+            params = profiler._get_params(with_output=False)
+            if self.jit_input_tensors is None:
+                self.jit_input_tensors = jit_input_tensors_supply()
+            else:
+                # check if the cached tensors are compatible with the current configuration
+                assert len(params) == len(self.jit_input_tensors), (
+                    "len(params) != len(self.jit_input_tensors)"
+                )
+                for p, c in zip(params, self.jit_input_tensors, strict=True):
+                    if not isinstance(c, torch.Tensor):
+                        # skip non-tensor inputs checking
+                        continue
+
+                    # Check tensor compatibility using generator expression
+                    def shape_equal(a, b):
+                        return all(
+                            a_dim == b_dim
+                            or isinstance(a_dim, Var)
+                            or isinstance(b_dim, Var)
+                            for a_dim, b_dim in zip(a.shape, b.shape, strict=True)
+                        )
+
+                    if p.dtype != c.dtype or not shape_equal(p, c):
+                        logger.warning(
+                            "\nIncompatible input tensor properties detected between cached tensors and "
+                            "tensors regenerated for the current configuration trial. "
+                            "This can happen if different tuning configurations require different input shapes/dtypes "
+                            "and input tensor caching is enabled.\n"
+                            "To ensure fresh, compatible inputs are generated for every trial "
+                            "you can disable caching by setting:\n"
+                            "  `cache_input_tensors=False`\n"
+                            "within your `.set_compile_args(...)` call.\n"
+                        )
+                        # otherwise, regenerate the input tensors for safety
+                        self.jit_input_tensors = jit_input_tensors_supply()
+                        break
+        else:
+            self.jit_input_tensors = jit_input_tensors_supply()
+        if (not skip_check) and (ref_prog is not None):
+            if manual_check_prog is not None:
+                profiler.manual_assert_close(
+                    ref_prog,
+                    input_tensors=self.jit_input_tensors,
+                    manual_check_prog=manual_check_prog,
+                )
+            else:
+                profiler.assert_allclose(
+                    ref_prog,
+                    input_tensors=self.jit_input_tensors,
+                    rtol=rtol,
+                    atol=atol,
+                    max_mismatched_ratio=max_mismatched_ratio,
+                )
+
+        latency = profiler.do_bench(
+            warmup=warmup, rep=rep, input_tensors=self.jit_input_tensors
+        )
+
+        if self.ref_latency_cache is None and ref_prog is not None:
+            self.ref_input_tensors = ref_input_tensors_supply()
+            self.ref_latency_cache = profiler.do_bench(
+                ref_prog,
+                n_warmup=warmup,
+                n_repeat=rep,
+                input_tensors=self.ref_input_tensors,
+            )
+
+        return latency, self.ref_latency_cache
+
+
     def run(self, warmup: int = 5, rep: int = 30, timeout: int = 30):
         """Run the auto-tuning process.
 
@@ -325,114 +431,9 @@ class AutoTuner:
         best_config: dict[str, Any] | None = None
         best_kernel: tilelang.JitKernel_NPU | None = None
 
-        def _compile(**config_arg) -> tilelang.JitKernel_NPU:
-            compile_args = self.compile_args
-            return compile_args.compile_program(self.fn(**config_arg))
-
         if self.jit_compile is None:
-            self.jit_compile = _compile
+            self.jit_compile = self._compile_kernel
 
-        def target_fn(jit_kernel: tilelang.JitKernel_NPU):
-            # Unpack the context
-            profile_args = self.profile_args
-            supply_type = profile_args.supply_type
-            skip_check = profile_args.skip_check
-            manual_check_prog = profile_args.manual_check_prog
-            cache_input_tensors = profile_args.cache_input_tensors
-            ref_prog = profile_args.ref_prog
-            supply_prog = profile_args.supply_prog
-            rtol = profile_args.rtol
-            atol = profile_args.atol
-            max_mismatched_ratio = profile_args.max_mismatched_ratio
-
-            profiler = jit_kernel.get_profiler(tensor_supply_type=supply_type)
-
-            # Factory functions for generating input tensors.
-            # This encapsulates the logic of using either a custom supply program (`supply_prog`)
-            # or the default profiler input generation (`profiler._get_inputs`).
-            def get_input_tensors_supply(with_output: bool):
-                def func():
-                    if supply_prog is not None:
-                        return supply_prog(
-                            profiler._get_params(with_output=with_output)
-                        )
-                    else:
-                        return profiler._get_inputs(with_output=with_output)
-
-                return func
-
-            jit_input_tensors_supply = get_input_tensors_supply(with_output=False)
-            ref_input_tensors_supply = get_input_tensors_supply(with_output=False)
-
-            if cache_input_tensors:
-                params = profiler._get_params(with_output=False)
-                if self.jit_input_tensors is None:
-                    self.jit_input_tensors = jit_input_tensors_supply()
-                else:
-                    # check if the cached tensors are compatible with the current configuration
-                    assert len(params) == len(self.jit_input_tensors), (
-                        "len(params) != len(self.jit_input_tensors)"
-                    )
-                    for p, c in zip(params, self.jit_input_tensors, strict=True):
-                        if not isinstance(c, torch.Tensor):
-                            # skip non-tensor inputs checking
-                            continue
-
-                        # Check tensor compatibility using generator expression
-                        def shape_equal(a, b):
-                            return all(
-                                a_dim == b_dim
-                                or isinstance(a_dim, Var)
-                                or isinstance(b_dim, Var)
-                                for a_dim, b_dim in zip(a.shape, b.shape, strict=True)
-                            )
-
-                        if p.dtype != c.dtype or not shape_equal(p, c):
-                            logger.warning(
-                                "\nIncompatible input tensor properties detected between cached tensors and "
-                                "tensors regenerated for the current configuration trial. "
-                                "This can happen if different tuning configurations require different input shapes/dtypes "
-                                "and input tensor caching is enabled.\n"
-                                "To ensure fresh, compatible inputs are generated for every trial "
-                                "you can disable caching by setting:\n"
-                                "  `cache_input_tensors=False`\n"
-                                "within your `.set_compile_args(...)` call.\n"
-                            )
-                            # otherwise, regenerate the input tensors for safety
-                            self.jit_input_tensors = jit_input_tensors_supply()
-                            break
-            else:
-                self.jit_input_tensors = jit_input_tensors_supply()
-            if (not skip_check) and (ref_prog is not None):
-                if manual_check_prog is not None:
-                    profiler.manual_assert_close(
-                        ref_prog,
-                        input_tensors=self.jit_input_tensors,
-                        manual_check_prog=manual_check_prog,
-                    )
-                else:
-                    profiler.assert_allclose(
-                        ref_prog,
-                        input_tensors=self.jit_input_tensors,
-                        rtol=rtol,
-                        atol=atol,
-                        max_mismatched_ratio=max_mismatched_ratio,
-                    )
-
-            latency = profiler.do_bench(
-                warmup=warmup, rep=rep, input_tensors=self.jit_input_tensors
-            )
-
-            if self.ref_latency_cache is None and ref_prog is not None:
-                self.ref_input_tensors = ref_input_tensors_supply()
-                self.ref_latency_cache = profiler.do_bench(
-                    ref_prog,
-                    n_warmup=warmup,
-                    n_repeat=rep,
-                    input_tensors=self.ref_input_tensors,
-                )
-
-            return latency, self.ref_latency_cache
 
         config_args = []
         for config in self.configs:
@@ -624,7 +625,7 @@ class AutoTuner:
                     # Because tma init may behave strangely with one thread
                     # latency, ref_latency = target_fn(jit_kernel)
                     latency, ref_latency = run_with_timeout(
-                        target_fn, timeout, jit_kernel
+                        self.target_fn, timeout, jit_kernel, warmup, rep
                     )
                 except TimeoutException:
                     logger.warning(
@@ -637,14 +638,14 @@ class AutoTuner:
                     )
                     logger.debug(f"Error: {traceback.format_exc()}")
                     continue
-
+                tqdm.write(f"Tuned Latency {latency} with config {config} at index {i}")
                 if latency < best_latency:
                     best_latency = latency
                     best_config = config
                     best_kernel = jit_kernel
 
             progress_bar.set_postfix({"best_latency": best_latency})
-            tqdm.write(f"Tuned Latency {latency} with config {config} at index {i}")
+            
         pool.shutdown()
 
         if best_kernel is None:
