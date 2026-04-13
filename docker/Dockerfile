@@ -12,9 +12,9 @@ ENV DEBIAN_FRONTEND=noninteractive \
     CHIP_TYPE=${CHIP_TYPE} \
     CANN_VERSION=${CANN_VERSION} \
     REGION=${REGION} \
-    HTTP_PROXY=${HTTP_PROXY} \
-    HTTPS_PROXY=${HTTPS_PROXY} \
-    NO_PROXY=${NO_PROXY}
+    http_proxy=${HTTP_PROXY} \
+    https_proxy=${HTTPS_PROXY} \
+    no_proxy=${NO_PROXY}
 
 RUN apt update && \
     apt install --yes --no-install-recommends --no-install-suggests \
@@ -92,7 +92,7 @@ RUN useradd tilelang \
 
 WORKDIR /home/tilelang
 
-# update cmake
+# update cmake, libzstd-dev and patch for AscendNPU-IR build
 RUN apt remove --purge --auto-remove --yes cmake && \
     apt-get update && \
     apt-get install -y --no-install-recommends wget gpg ca-certificates gnupg2 && \
@@ -100,13 +100,10 @@ RUN apt remove --purge --auto-remove --yes cmake && \
     echo "deb [signed-by=/usr/share/keyrings/kitware-archive-keyring.gpg] https://apt.kitware.com/ubuntu/ jammy main" | tee /etc/apt/sources.list.d/kitware.list && \
     apt-get update && \
     apt-get install -y cmake && \
+    apt-get install -y libzstd-dev && \
+    apt-get install -y patch && \
     rm -rf /var/lib/apt/lists/* && \
     echo cmake version: $(cmake --version | head -n 1)
-
-# install libzstd-dev and patch
-RUN apt install --yes --no-install-recommends --no-install-suggests \
-    libzstd-dev \
-    patch
 
 # Install tilelang requirements
 COPY Makefile requirements.txt requirements-dev.txt build/
@@ -145,7 +142,13 @@ RUN cd tilelang-ascend/3rdparty/AscendNPU-IR && \
 
 RUN cd tilelang-ascend/3rdparty/AscendNPU-IR && \
     git submodule sync && \
-    git submodule update --init
+    git config --global http.postBuffer 524288000 && \
+    git config --global http.lowSpeedLimit 0 && \
+    git config --global http.lowSpeedTime 999999 && \
+    for i in $(seq 1 5); do \
+    git submodule update --init --jobs 1 && break || \
+    (echo "Submodule clone attempt $i failed, retrying in 10s..." && sleep 10); \
+    done
 
 RUN cd tilelang-ascend/3rdparty/AscendNPU-IR && \
     if [ "$REGION" = "ChinaMainland" ]; then \
