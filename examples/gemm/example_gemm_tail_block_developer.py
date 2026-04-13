@@ -9,6 +9,7 @@ pass_configs = {
     tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
 }
 
+
 @tilelang.jit(out_idx=[-1], pass_configs=pass_configs)
 def matmul(M, N, K, block_M, block_N, K_L1, dtype="float16", accum_dtype="float"):
     m_num = T.ceildiv(M, block_M)
@@ -16,9 +17,9 @@ def matmul(M, N, K, block_M, block_N, K_L1, dtype="float16", accum_dtype="float"
 
     @T.prim_func
     def main(
-            A: T.Tensor((M, K), dtype),
-            B: T.Tensor((K, N), dtype),
-            C: T.Tensor((M, N), dtype),
+        A: T.Tensor((M, K), dtype),
+        B: T.Tensor((K, N), dtype),
+        C: T.Tensor((M, N), dtype),
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, _):
             bx = cid // n_num
@@ -39,6 +40,7 @@ def matmul(M, N, K, block_M, block_N, K_L1, dtype="float16", accum_dtype="float"
                 T.copy(C_L0, C[bx * block_M, by * block_N])
 
     return main
+
 
 torch.manual_seed(0)
 test_configs = [

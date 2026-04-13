@@ -9,6 +9,7 @@ pass_configs = {
     tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
 }
 
+
 @tilelang.jit(out_idx=[-1], pass_configs=pass_configs)
 def gemm_tail_block(M, N, K, block_M, block_N, block_K, dtype="float16", accum_type="float32"):
     """
@@ -28,12 +29,12 @@ def gemm_tail_block(M, N, K, block_M, block_N, block_K, dtype="float16", accum_t
 
     @T.prim_func
     def main(
-        A: T.Tensor([M, K], dtype), # type: ignore
-        B: T.Tensor([K, N], dtype), # type: ignore
-        C: T.Tensor([M, N], dtype), # type: ignore
+        A: T.Tensor([M, K], dtype),  # type: ignore
+        B: T.Tensor([K, N], dtype),  # type: ignore
+        C: T.Tensor([M, N], dtype),  # type: ignore
     ):
-         T.func_attr({"enable_auto_sync": True})
-         with T.Kernel(total_blocks, is_npu=True) as (cid, _):
+        T.func_attr({"enable_auto_sync": True})
+        with T.Kernel(total_blocks, is_npu=True) as (cid, _):
             bx = cid // total_n_blocks
             by = cid % total_n_blocks
             with T.Scope("C"):
@@ -118,6 +119,7 @@ def gemm_tail_block(M, N, K, block_M, block_N, block_K, dtype="float16", accum_t
                     T.copy(c_mn_4, C[bx * block_M, by * block_N])
 
     return main
+
 
 torch.manual_seed(0)
 test_configs = [
