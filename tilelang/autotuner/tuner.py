@@ -74,6 +74,13 @@ logger.propagate = False
 _logger_handlers_initialized = False
 
 
+class _LazyStreamHandler(logging.StreamHandler):
+    """Always resolves sys.stdout at emit time, never captures it at init."""
+    def emit(self, record):
+        self.stream = sys.stdout
+        super().emit(record)
+
+
 def _init_logger_handlers():
     global _logger_handlers_initialized
     if _logger_handlers_initialized:
@@ -82,7 +89,7 @@ def _init_logger_handlers():
     file_handler = logging.FileHandler("autotuner.log", mode="w")
     file_handler.setLevel(logging.DEBUG)
     file_handler.setFormatter(formatter)
-    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler = _LazyStreamHandler()  # resolves sys.stdout fresh on every emit
     console_handler.setLevel(logging.INFO)
     console_handler.setFormatter(formatter)
     logger.addHandler(file_handler)
