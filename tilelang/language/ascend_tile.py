@@ -263,7 +263,7 @@ def merge_sort(
     )
 
 
-def topk(dst: Buffer, src: Buffer, tmp: Buffer, K: PrimExpr, actual_num: PrimExpr):
+def topk(dst: Buffer, src: Buffer, K: PrimExpr, actual_num: PrimExpr):
     """Performs a TopK operation by sorting the source data and extracting the top K elements.
 
     Internally calls Sort on the source data, then copies the top K interleaved
@@ -288,7 +288,6 @@ def topk(dst: Buffer, src: Buffer, tmp: Buffer, K: PrimExpr, actual_num: PrimExp
         f"TopK<{_dtype(dst)}>",
         dst.access_ptr("w"),
         src.access_ptr("r"),
-        tmp.access_ptr("w"),
         K,
         repeatTimes,
         actual_num,

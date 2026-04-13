@@ -320,6 +320,7 @@ const std::unordered_map<const tvm::OpNode *, int64_t> ascendc_tmp_arg_ops = {
     {tl::ascend_clamp_min().get(), 3},
     {tl::ascend_reduce().get(), 3},
     {tl::ascend_sort().get(), 3},
+    {tl::ascend_topk().get(), 3},
     {tl::ascend_sigmoid().get(), 2},
     {tl::ascend_bilinear_interpolation().get(), 10},
     {tl::ascend_sin().get(), 2},

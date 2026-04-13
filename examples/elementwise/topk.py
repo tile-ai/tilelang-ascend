@@ -43,12 +43,12 @@ def topk_kernel(M, N, K, block_M, block_N, dtype=DTYPE):
             # tmp for topk_new: needs space for sort destination (2*ub_N)
             # plus Sort's own workspace (2*ub_N for float, 8*ub_N for half)
             # Total: 4*ub_N for float, 10*ub_N for half
-            tmp_ub = T.alloc_ub((block_M // VEC_NUM, ub_N * 4), dtype)
+            # tmp_ub = T.alloc_ub((block_M // VEC_NUM, ub_N * 4), dtype)
 
             T.copy(x[bx * block_M + vid * block_M // VEC_NUM, by * ub_N], src_ub)
 
             # TopK: sort then extract top K (value, index) pairs into dst
-            T.tile.topk(dst_ub, src_ub, tmp_ub, K, block_N)
+            T.tile.topk(dst_ub, src_ub, K, block_N)
 
             T.copy(dst_ub, out[bx * block_M + vid * block_M // VEC_NUM, 0])
 

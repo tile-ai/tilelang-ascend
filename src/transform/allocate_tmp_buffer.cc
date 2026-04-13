@@ -131,7 +131,8 @@ private:
   PrimExpr AddTmpArgs_(const CallNode *op, int64_t rw_mask) {
     Buffer tmp_buffer;
     if (("ascendc" == target_ || "auto" == target_) &&
-        (op->op.same_as(tl::ascend_sort())) &&
+        (op->op.same_as(tl::ascend_sort()) ||
+         op->op.same_as(tl::ascend_topk())) &&
         tmp_bufs_.size() > 0) {
       const CallNode *src_access_ptr = Downcast<Call>(op->args[1]).get();
       DataType dtype = src_access_ptr->args[0].as<CallNode>()->dtype;
@@ -290,6 +291,38 @@ private:
             Array<PrimExpr> tmp_shape;
             int64_t tmp_shape_size =
                 Downcast<IntImm>(src_access_ptr->args[3])->value * 8;
+            tmp_shape.push_back(IntImm(DataType::Int(32), tmp_shape_size));
+            shapes[dtype] = tmp_shape;
+          }
+        }
+      } else if (call->op.same_as(tl::ascend_topk())) {
+        const CallNode *src_access_ptr = Downcast<Call>(call->args[2]).get();
+        std::string src_buffer_name =
+            src_access_ptr->args[1].as<VarNode>()->name_hint;
+        const BufferNode *src_buffer_node =
+            GetBufferNodeByName_(alloc_buffers, src_buffer_name);
+        DataType dtype = src_buffer_node->dtype;
+        if (dtype != DataType::UInt(8)) {
+          if (shapes.count(dtype) > 0) {
+            int64_t shape_size = 0;
+            for (size_t k = 0; k < shapes.at(dtype).size(); k++) {
+              if (shape_size == 0) {
+                shape_size = shapes.at(dtype)[k].as<IntImmNode>()->value;
+              } else {
+                shape_size *= shapes.at(dtype)[k].as<IntImmNode>()->value;
+              }
+            }
+            int64_t tmp_shape_size =
+                Downcast<IntImm>(src_access_ptr->args[3])->value * 4;
+            if (tmp_shape_size > shape_size) {
+              Array<PrimExpr> tmp_shape;
+              tmp_shape.push_back(IntImm(DataType::Int(32), tmp_shape_size));
+              shapes[dtype] = tmp_shape;
+            }
+          } else {
+            Array<PrimExpr> tmp_shape;
+            int64_t tmp_shape_size =
+                Downcast<IntImm>(src_access_ptr->args[3])->value * 4;
             tmp_shape.push_back(IntImm(DataType::Int(32), tmp_shape_size));
             shapes[dtype] = tmp_shape;
           }
@@ -482,6 +515,19 @@ private:
         int64_t tmp_shape_size =
             Downcast<IntImm>(src_access_ptr->args[3])->value *
             src_buffer_node->dtype.bytes() * 8;
+        if (tmp_shape_size > shape_size) {
+          shape = {
+              IntImm(DataType::Int(32), tmp_shape_size),
+          };
+        }
+      } else if (call->op.same_as(tl::ascend_topk())) {
+        const CallNode *src_access_ptr = Downcast<Call>(call->args[2]).get();
+        std::string src_buffer_name =
+            src_access_ptr->args[1].as<VarNode>()->name_hint;
+        const BufferNode *src_buffer_node =
+            GetBufferNodeByName_(alloc_buffers, src_buffer_name);
+        int64_t tmp_shape_size =
+            Downcast<IntImm>(src_access_ptr->args[3])->value * 4;
         if (tmp_shape_size > shape_size) {
           shape = {
               IntImm(DataType::Int(32), tmp_shape_size),
