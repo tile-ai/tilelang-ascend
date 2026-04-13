@@ -96,3 +96,6 @@ tilelang/jit/adapter/cython/.cycache
 
 # unit test output files
 unittest/npuir/output/
+
+# thirdparty
+**/third_party/

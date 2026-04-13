@@ -272,6 +272,12 @@ private:
   template <typename T, typename U>
   mlir::Value BinaryOpCodegen(const PrimExprNode *op, U mode, mlir::Value lhs,
                               mlir::Value rhs);
+  // Scalar ops codegen
+  mlir::Value ScalarExpCodegen(const CallNode *op);
+  mlir::Value ScalarExp2Codegen(const CallNode *op);
+  mlir::Value ScalarLogCodegen(const CallNode *op);
+  mlir::Value ScalarLog2Codegen(const CallNode *op);
+
   mlir::Value NeedGenInsertSlice(Buffer buffer_data, Array<Range> range,
                                  mlir::Value src);
   mlir::Value ReshapeCastAndInsertSlice(mlir::Value tensor, mlir::Value dst,

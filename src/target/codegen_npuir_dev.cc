@@ -3424,6 +3424,146 @@ void CodeGenTileLangNPUIRDEV::CallExternCodegen(const CallNode *op) {
   // Todo: Implementation pending
 }
 
+mlir::Value CodeGenTileLangNPUIRDEV::ScalarExpCodegen(const CallNode *op) {
+  std::pair<bool, mlir::Value> result = CheckPrimExprMap(op);
+  if (result.first) {
+    return result.second;
+  }
+  ICHECK_EQ(op->args.size(), 1U) << "tir.exp expects exactly one argument";
+  mlir::Location loc = builder.getUnknownLoc();
+  mlir::Value src = MakeValue(op->args[0]);
+  mlir::Type src_type = src.getType();
+
+  auto src_empty = builder.create<mlir::tensor::EmptyOp>(
+      loc, llvm::ArrayRef<int64_t>{1}, src_type);
+  mlir::Value idx0 = builder.create<mlir::arith::ConstantIndexOp>(loc, 0);
+  mlir::Value src_tensor = builder.create<mlir::tensor::InsertOp>(
+      loc, src, src_empty.getResult(), mlir::ValueRange{idx0});
+
+  auto dst_empty = builder.create<mlir::tensor::EmptyOp>(
+      loc, llvm::ArrayRef<int64_t>{1}, src_type);
+  mlir::Type dst_type = dst_empty.getResult().getType();
+  mlir::TypeRange result_tensors(&dst_type, 1);
+  auto exp_op = builder.create<mlir::hivm::VExpOp>(
+      loc, result_tensors, mlir::ValueRange{src_tensor},
+      mlir::ValueRange{dst_empty.getResult()});
+
+  mlir::Value exp_scalar = builder.create<mlir::tensor::ExtractOp>(
+      loc, exp_op->getResult(0), mlir::ValueRange{idx0});
+  UpdatePrimExprMap(op, exp_scalar);
+  return exp_scalar;
+}
+
+mlir::Value CodeGenTileLangNPUIRDEV::ScalarExp2Codegen(const CallNode *op) {
+  std::pair<bool, mlir::Value> result = CheckPrimExprMap(op);
+  if (result.first) {
+    return result.second;
+  }
+  ICHECK_EQ(op->args.size(), 1U) << "tir.exp2 expects exactly one argument";
+  mlir::Location loc = builder.getUnknownLoc();
+  mlir::Value src = MakeValue(op->args[0]);
+  mlir::Type src_type = src.getType();
+
+  double ln2 = std::log(2.0);
+  mlir::Value ln2_const = builder.create<mlir::arith::ConstantOp>(
+      loc, mlir::FloatAttr::get(src_type.cast<mlir::FloatType>(), ln2));
+
+  mlir::Value scaled_src =
+      builder.create<mlir::arith::MulFOp>(loc, src, ln2_const);
+
+  auto src_empty = builder.create<mlir::tensor::EmptyOp>(
+      loc, llvm::ArrayRef<int64_t>{1}, src_type);
+  mlir::Value idx0 = builder.create<mlir::arith::ConstantIndexOp>(loc, 0);
+  mlir::Value src_tensor = builder.create<mlir::tensor::InsertOp>(
+      loc, scaled_src, src_empty.getResult(), mlir::ValueRange{idx0});
+
+  auto dst_empty = builder.create<mlir::tensor::EmptyOp>(
+      loc, llvm::ArrayRef<int64_t>{1}, src_type);
+  mlir::Type dst_type = dst_empty.getResult().getType();
+  mlir::TypeRange result_tensors(&dst_type, 1);
+
+  // exp(x * ln(2)) = exp2(x)
+  auto exp_op = builder.create<mlir::hivm::VExpOp>(
+      loc, result_tensors, mlir::ValueRange{src_tensor},
+      mlir::ValueRange{dst_empty.getResult()});
+
+  mlir::Value exp2_scalar = builder.create<mlir::tensor::ExtractOp>(
+      loc, exp_op->getResult(0), mlir::ValueRange{idx0});
+
+  UpdatePrimExprMap(op, exp2_scalar);
+  return exp2_scalar;
+}
+
+mlir::Value CodeGenTileLangNPUIRDEV::ScalarLogCodegen(const CallNode *op) {
+  std::pair<bool, mlir::Value> result = CheckPrimExprMap(op);
+  if (result.first) {
+    return result.second;
+  }
+  ICHECK_EQ(op->args.size(), 1U) << "tir.log expects exactly one argument";
+  mlir::Location loc = builder.getUnknownLoc();
+  mlir::Value src = MakeValue(op->args[0]);
+  mlir::Type src_type = src.getType();
+
+  auto src_empty = builder.create<mlir::tensor::EmptyOp>(
+      loc, llvm::ArrayRef<int64_t>{1}, src_type);
+  mlir::Value idx0 = builder.create<mlir::arith::ConstantIndexOp>(loc, 0);
+  mlir::Value src_tensor = builder.create<mlir::tensor::InsertOp>(
+      loc, src, src_empty.getResult(), mlir::ValueRange{idx0});
+
+  auto dst_empty = builder.create<mlir::tensor::EmptyOp>(
+      loc, llvm::ArrayRef<int64_t>{1}, src_type);
+  mlir::Type dst_type = dst_empty.getResult().getType();
+  mlir::TypeRange result_tensors(&dst_type, 1);
+  auto log_op = builder.create<mlir::hivm::VLnOp>(
+      loc, result_tensors, mlir::ValueRange{src_tensor},
+      mlir::ValueRange{dst_empty.getResult()});
+
+  mlir::Value log_scalar = builder.create<mlir::tensor::ExtractOp>(
+      loc, log_op->getResult(0), mlir::ValueRange{idx0});
+  UpdatePrimExprMap(op, log_scalar);
+  return log_scalar;
+}
+
+mlir::Value CodeGenTileLangNPUIRDEV::ScalarLog2Codegen(const CallNode *op) {
+  std::pair<bool, mlir::Value> result = CheckPrimExprMap(op);
+  if (result.first) {
+    return result.second;
+  }
+  ICHECK_EQ(op->args.size(), 1U) << "tir.log2 expects exactly one argument";
+  mlir::Location loc = builder.getUnknownLoc();
+  mlir::Value src = MakeValue(op->args[0]);
+  mlir::Type src_type = src.getType();
+
+  auto src_empty = builder.create<mlir::tensor::EmptyOp>(
+      loc, llvm::ArrayRef<int64_t>{1}, src_type);
+  mlir::Value idx0 = builder.create<mlir::arith::ConstantIndexOp>(loc, 0);
+  mlir::Value src_tensor = builder.create<mlir::tensor::InsertOp>(
+      loc, src, src_empty.getResult(), mlir::ValueRange{idx0});
+
+  auto dst_empty = builder.create<mlir::tensor::EmptyOp>(
+      loc, llvm::ArrayRef<int64_t>{1}, src_type);
+  mlir::Type dst_type = dst_empty.getResult().getType();
+  mlir::TypeRange result_tensors(&dst_type, 1);
+
+  auto ln_op = builder.create<mlir::hivm::VLnOp>(
+      loc, result_tensors, mlir::ValueRange{src_tensor},
+      mlir::ValueRange{dst_empty.getResult()});
+
+  mlir::Value ln_scalar = builder.create<mlir::tensor::ExtractOp>(
+      loc, ln_op->getResult(0), mlir::ValueRange{idx0});
+
+  double ln2 = std::log(2.0);
+  mlir::Value ln2_const = builder.create<mlir::arith::ConstantOp>(
+      loc, mlir::FloatAttr::get(src_type.cast<mlir::FloatType>(), ln2));
+
+  // log2(x) = ln(x) / ln(2)
+  mlir::Value log2_scalar =
+      builder.create<mlir::arith::DivFOp>(loc, ln_scalar, ln2_const);
+
+  UpdatePrimExprMap(op, log2_scalar);
+  return log2_scalar;
+}
+
 mlir::Value CodeGenTileLangNPUIRDEV::VisitExpr_(const CallNode *op) {
   if (op->op.same_as(Op::Get("tl.npuir_pipe_barrier"))) {
     BarrierCodegen(op);
@@ -3539,8 +3679,14 @@ mlir::Value CodeGenTileLangNPUIRDEV::VisitExpr_(const CallNode *op) {
     DebugPrintCodegen(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_reshape"))) {
     ReshapeCodegen(op);
-  } else {
-    VisitExpr_(op);
+  } else if (op->op.same_as(Op::Get("tir.exp"))) {
+    return ScalarExpCodegen(op);
+  } else if (op->op.same_as(Op::Get("tir.exp2"))) {
+    return ScalarExp2Codegen(op);
+  } else if (op->op.same_as(Op::Get("tir.log"))) {
+    return ScalarLogCodegen(op);
+  } else if (op->op.same_as(Op::Get("tir.log2"))) {
+    return ScalarLog2Codegen(op);
   }
   return mlir::Value();
 }
