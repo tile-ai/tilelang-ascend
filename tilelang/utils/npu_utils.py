@@ -17,7 +17,7 @@ from hashlib import sha256
 from tilelang import env
 
 import pybind11
-
+logger = logging.getLogger(__name__)
 
 class NPUUtils(object):
     """Singleton helper for Ascend NPU utilities.
@@ -135,7 +135,7 @@ def _atomic_replace_same_fs(src: str, dst: str) -> bool:
         os.replace(src, dst)
         return True
     except OSError as e:
-        logging.debug(f"os.replace failed: {e}")
+        logger.debug(f"os.replace failed: {e}")
         return False
 
 
@@ -157,7 +157,7 @@ def _atomic_replace_hardlink(src: str, dst: str) -> bool:
                 os.rename(backup, dst)
             raise
     except OSError as e:
-        logging.debug(f"hardlink approach failed: {e}")
+        logger.debug(f"hardlink approach failed: {e}")
         return False
 
 
@@ -181,7 +181,7 @@ def _atomic_replace_fallback(src: str, dst: str) -> None:
         return
 
     # Strategy 3: Final fallback - non-atomic rename
-    logging.warning(f"Using non-atomic rename for {dst}")
+    logger.warning(f"Using non-atomic rename for {dst}")
     if os.path.exists(dst):
         with contextlib.suppress(OSError):
             os.unlink(dst)
@@ -246,7 +246,7 @@ def safe_copy(src: str, dst: str, tmp_dir: str = None) -> None:
         _atomic_replace_fallback(temp_path, dst)
 
     except Exception as e:
-        logging.error(f"Failed to safely copy {src} to {dst}: {e}")
+        logger.error(f"Failed to safely copy {src} to {dst}: {e}")
         raise
     finally:
         # Clean up temporary file if it still exists
@@ -254,7 +254,7 @@ def safe_copy(src: str, dst: str, tmp_dir: str = None) -> None:
             try:
                 os.unlink(temp_path)
             except Exception as e:
-                logging.warning(f"Failed to clean temp file: {temp_path}, error: {e}")
+                logger.warning(f"Failed to clean temp file: {temp_path}, error: {e}")
 
 
 def get_runtime_file_cache(source):
