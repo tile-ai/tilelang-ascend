@@ -271,7 +271,8 @@ private:
   void VtanhCodegen(const CallNode *op);
   void DebugPrintCodegen(const CallNode *op);
   void ReshapeCodegen(const CallNode *op);
-  template <typename T> void CreateHIVMBinaryVectorOp(const CallNode *op);
+  template <typename T, typename U = void, typename V = void>
+  void CreateHIVMBinaryVectorOp(const CallNode *op);
   template <typename T, typename U> void UnaryVecOpCodegen(const CallNode *op);
   void BarrierCodegen(const CallNode *op);
   void VselectCodegen(const CallNode *op);

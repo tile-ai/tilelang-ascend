@@ -47,12 +47,15 @@ def online_flash_attention(block_M, block_N, block_K, dtype="float16", accum_dty
             scales = T.alloc_fragment([block_m, block_n], accum_dtype)
 
             value_zero = 0
+            value_neg_inf = float("-INF")
             scale = (1.0 / dim)**0.5
             value_min = -T.infinity(accum_dtype)
             T.vbrc(value_zero, acc_o)
             T.vbrc(value_zero, acc_l)
             T.vbrc(value_min, acc_m)
             T.vbrc(scale, scales)
+            T.vbrc(value_neg_inf, local_max)
+            T.vbrc(value_zero, local_sum)
 
             for k in T.Pipelined(T.ceildiv(seq_len, block_n), num_stages=2):
 
@@ -100,11 +103,11 @@ def main():
     k = torch.randn((seq_len, dim), dtype=torch.float16).npu()
     v = torch.randn((seq_len, dim), dtype=torch.float16).npu()
 
-    output = kernel(q, k, v)
+    output = kernel(q, k, v).cpu()
 
     scale = (1.0 / dim)**0.5
     ref_output = torch.nn.functional.softmax(
-        (q @ k.T).to(torch.float32) * scale, dim=-1).to(torch.float16) @ v
+        (q.cpu() @ k.cpu().T).to(torch.float32) * scale, dim=-1).to(torch.float16) @ v.cpu()
     print("output:")
     print(output)
     print("ref_output:")

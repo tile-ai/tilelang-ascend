@@ -1953,8 +1953,8 @@ static inline constexpr bool startsWith(std::string_view str,
 /// before:
 ///     T.npuir_exp(A, B)
 /// after:
-        %.* = <linalg>.<op> ins(%A_trans) outs(B) -> tensor<>
-        or
+///        %.* = <linalg>.<op> ins(%A_trans) outs(B) -> tensor<>
+///        or
 ///     %.* = hivm.hir.<op> ins(A) outs(B) -> tensor<>
 template <typename T, typename U>
 void CodeGenTileLangNPUIRDEV::UnaryVecOpCodegen(const CallNode *op) {
@@ -1969,9 +1969,8 @@ void CodeGenTileLangNPUIRDEV::UnaryVecOpCodegen(const CallNode *op) {
   auto transposeAttr = builder.getDenseI64ArrayAttr({});
   auto broadcastAttr = builder.getDenseI64ArrayAttr(dims);
 
-  if constexpr (startsWith(
-                     U::getOperationName(),
-                     mlir::hivm::HIVMDialect::getDialectNamespace())) {
+  if constexpr (startsWith(U::getOperationName(),
+                           mlir::hivm::HIVMDialect::getDialectNamespace())) {
     // Create HIVM Op
     auto newOp = builder.create<U>(
         loc, 
@@ -1983,17 +1982,10 @@ void CodeGenTileLangNPUIRDEV::UnaryVecOpCodegen(const CallNode *op) {
     );
     newOpValue = newOp->getResult(0);
   } else {
-    // Create linalg Op
     in_data_name = broadcastOrTranspose(in_data_name, out_data_name, 
                                         broadcastAttr, transposeAttr, builder);
 
-    auto newOp = builder.create<U>(
-        loc, 
-        dst_type, 
-        mlir::ValueRange{in_data_name}, 
-        mlir::ValueRange{out_data_name}
-    );
-    newOpValue = newOp->getResult(0);
+    newOpValue = builder.create<U>(loc, out_data_name.getType(), in_data_name);
   }
 
   SetVarValue(npuirop.dst, newOpValue);
@@ -2399,16 +2391,19 @@ void CodeGenTileLangNPUIRDEV::VreduceCodegen(const CallNode *op) {
         result = builder.create<mlir::arith::AddIOp>(loc, inputElem, accumElem);
     } else if (npuirop.reduce_mode == "max") {
       if (elemTy.isa<mlir::FloatType>()) {
-        result = builder.create<mlir::arith::MaxNumFOp>(loc, inputElem, accumElem);
-    } else {
-      auto intTy = elemTy.cast<mlir::IntegerType>();
-      if (intTy.isSigned()) {
-        result = builder.create<mlir::arith::MaxSIOp>(loc, inputElem, accumElem);
-    } else {
-        result = builder.create<mlir::arith::MaxUIOp>(loc, inputElem, accumElem);
+        result =
+            builder.create<mlir::arith::MaximumFOp>(loc, inputElem, accumElem);
+      } else {
+        auto intTy = elemTy.cast<mlir::IntegerType>();
+        if (intTy.isSigned()) {
+          result =
+              builder.create<mlir::arith::MaxSIOp>(loc, inputElem, accumElem);
+        } else {
+          result =
+              builder.create<mlir::arith::MaxUIOp>(loc, inputElem, accumElem);
+        }
+      }
     }
-  }
-}
 
     builder.create<mlir::linalg::YieldOp>(loc, result);
   }
@@ -2846,7 +2841,7 @@ Value CodeGenTileLangNPUIRDEV::broadcastOrTranspose(Value input, Value output,
 /// Generate hivm.hir.vpow for tl.npuir_pow
 /// Generate hivm.hir.vshl for tl.npuir_shl
 /// Generate hivm.hir.vshr for tl.npuir_shr
-template <typename T>
+template <typename T, typename U, typename V>
 void CodeGenTileLangNPUIRDEV::CreateHIVMBinaryVectorOp(const CallNode *op) {
   auto processImm = [&](mlir::Value &src, int arg_id,
                         Array<PrimExpr> &buffer_shape) {
@@ -2968,11 +2963,30 @@ void CodeGenTileLangNPUIRDEV::CreateHIVMBinaryVectorOp(const CallNode *op) {
     } else {
       src0 = broadcastOrTranspose(src0, insertBase, brc0, transpose, builder);
       src1 = broadcastOrTranspose(src1, insertBase, brc1, transpose, builder);
-      newOpValue =
-          builder
-              .create<T>(loc, insertBase.getType(), ValueRange{src0, src1},
-                         ValueRange{insertBase})
-              ->getResult(0);
+
+      const auto dstElemType =
+          insertBase.getType().cast<ShapedType>().getElementType();
+      if (std::is_same_v<U, void> || dstElemType.isa<FloatType>())
+        newOpValue = builder.create<T>(loc, insertBase.getType(), src0, src1)
+                         .getResult();
+      else {
+        // NOTE: The logic is done in this way to avoid code repitition because
+        // of the else branch
+        bool usedV = false;
+        if constexpr (!std::is_same_v<V, void>) {
+          if (dstElemType.cast<IntegerType>().isUnsigned()) {
+            newOpValue =
+                builder.create<V>(loc, insertBase.getType(), src0, src1)
+                    .getResult();
+            usedV = true;
+          }
+        }
+
+        if (!usedV) {
+          newOpValue = builder.create<U>(loc, insertBase.getType(), src0, src1)
+                           .getResult();
+        }
+      }
     }
 
   mlir::Value result = needInsertSlice
@@ -3464,9 +3478,9 @@ mlir::Value CodeGenTileLangNPUIRDEV::VisitExpr_(const CallNode *op) {
   } else if (op->op.same_as(Op::Get("tl.copy"))) {
     AscendCopyCodegen(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_add"))) {
-    CreateHIVMBinaryVectorOp<linalg::AddOp>(op);
+    CreateHIVMBinaryVectorOp<mlir::arith::AddFOp, mlir::arith::AddIOp>(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_exp"))) {
-    UnaryVecOpCodegen<tvm::tl::NpuirExp, mlir::linalg::ExpOp>(op);
+    UnaryVecOpCodegen<tvm::tl::NpuirExp, mlir::math::ExpOp>(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_ln"))) {
     UnaryVecOpCodegen<tvm::tl::NpuirLn, mlir::hivm::VLnOp>(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_relu"))) {
@@ -3496,13 +3510,15 @@ mlir::Value CodeGenTileLangNPUIRDEV::VisitExpr_(const CallNode *op) {
   } else if (op->op.same_as(Op::Get("tl.npuir_bitcast"))) {
     BitcastCodegen(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_div"))) {
-    CreateHIVMBinaryVectorOp<mlir::linalg::DivOp>(op);
+    CreateHIVMBinaryVectorOp<mlir::arith::DivFOp, mlir::arith::DivSIOp,
+                             mlir::arith::DivUIOp>(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_mul"))) {
-    CreateHIVMBinaryVectorOp<mlir::linalg::MulOp>(op);
+    CreateHIVMBinaryVectorOp<mlir::arith::MulFOp, mlir::arith::MulIOp>(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_sub"))) {
-    CreateHIVMBinaryVectorOp<mlir::linalg::SubOp>(op);
+    CreateHIVMBinaryVectorOp<mlir::arith::SubFOp, mlir::arith::SubIOp>(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_max"))) {
-    CreateHIVMBinaryVectorOp<mlir::linalg::MaxOp>(op);
+    CreateHIVMBinaryVectorOp<mlir::arith::MaximumFOp, mlir::arith::MaxSIOp,
+                             mlir::arith::MaxUIOp>(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_min"))) {
     CreateHIVMBinaryVectorOp<mlir::hivm::VMinOp>(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_or"))) {
