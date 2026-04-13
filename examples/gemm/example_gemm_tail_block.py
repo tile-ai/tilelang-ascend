@@ -143,6 +143,7 @@ for idx, (M, N, K, block_M, block_N, block_K) in enumerate(test_configs, 1):
         torch.testing.assert_close(c, ref_c, rtol=1e-3, atol=1e-3)
         print(f"Passed test case {idx}/{len(test_configs)}: M={M}, N={N}, K={K}")
     except Exception as e:
+        print("error message:", e)
         print(f"Failed test case {idx}/{len(test_configs)}: M={M}, N={N}, K={K}")
         raise
 
