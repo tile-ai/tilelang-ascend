@@ -9,6 +9,7 @@ add_library(tilelangir_transforms STATIC
   Vectorize.cpp
   InsertCVSync.cpp
   EnableMultiBuffer.cpp
+  EnableLocalBuffer.cpp
   SplitMixKernel.cpp
   WrapHostFunction.cpp
 )

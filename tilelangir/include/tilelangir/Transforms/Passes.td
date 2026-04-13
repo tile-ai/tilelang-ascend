@@ -139,6 +139,22 @@ def TileLangIREnableMultiBuffer : Pass<"tilelangir-enable-multi-buffer", "::mlir
   }];
 }
 
+def TileLangIREnableLocalBuffer : Pass<"tilelangir-enable-local-buffer", "::mlir::ModuleOp"> {
+  let summary = "TileLangIR Enable Local Buffer pass";
+  let description = [{
+    This pass expands annotated local buffers with a multi-buffer dimension for pipelined access.
+
+    Transformations:
+    1. Expands `memref::AllocOp` with `hivm.multi_buffer` attribute by prepending a multi-buffer
+       dimension (e.g., `memref<64x64xf16>` → `memref<3x64x64xf16>`).
+
+    2. Inside stage loops (marked `tilelangir.num_stages`), replaces buffer uses with subview +
+       collapse shape to select the current stage and restore original type.
+
+    3. Leaves non-stage uses unchanged, allowing direct access to the full multi-buffer.
+  }];
+}
+
 def TileLangIRSplitMixKernel : Pass<"tilelangir-split-mix-kernel", "::mlir::ModuleOp"> {
   let summary = "TileLangIR Split Mix Kernel pass";
   let description = [{
