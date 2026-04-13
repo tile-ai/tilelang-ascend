@@ -553,22 +553,22 @@ MergeSort(const LocalTensor<T> &dst, const LocalTensor<uint8_t> &tmp,
 
 template <typename T>
 CATLASS_DEVICE void TopK(const LocalTensor<T> &dst, const LocalTensor<T> &src,
-                         const LocalTensor<T> &tmp, uint32_t blockSize) {
-  // 初始化合并排序参数
-  AscendC::MrgSort4Info params;
-  params.elementLengths[0] = blockSize;
-  params.elementLengths[1] = blockSize;
-  params.ifExhaustedSuspension = true;
-  params.validBit = 0b0011;
-  // 初始化源列表
-  AscendC::MrgSortSrcList<T> srcList;
-  srcList.src1 = dst;
-  srcList.src2 = src;
-  // 执行合并排序
-  AscendC::MrgSort<T>(tmp, srcList, params);
-  // PipeBarrier<PIPE_V>();
-  // 将结果复制到目标张量
-  AscendC::DataCopy(dst, tmp, blockSize * 2);
+                         const LocalTensor<T> &tmp, const int32_t K,
+                         const int32_t repeatTimes, const int32_t actualCount) {
+  // Sort all elements, then extract top K.
+  // tmp layout (N = alignedCount = repeatTimes * 32):
+  //   For float: tmp[0..2N-1] = Sort dst, tmp[2N..4N-1] = Sort workspace
+  //   For half:  tmp[0..2N-1] = Sort dst (half), tmp[2N..10N-1] = Sort workspace
+  uint32_t alignedCount = repeatTimes * 32;
+
+  auto sortDst = tmp;
+  auto sortTmp = tmp[alignedCount * 2];
+
+  Sort<T>(sortDst, src, sortTmp, repeatTimes, actualCount);
+  PipeBarrier<PIPE_V>();
+
+  // Copy top K interleaved (value, index) pairs from sort result to dst
+  AscendC::DataCopy(dst, sortDst, K * 2);
 }
 
 template <typename T>

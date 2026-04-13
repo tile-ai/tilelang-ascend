@@ -227,7 +227,9 @@ GetOperationConfig() {
          {6, "read"},
          {7, "read"}},
         "PIPE_V"}},
-      {"tl.ascend_topk", {{{1, "write"}, {2, "read"}, {3, "read"}}, "PIPE_V"}},
+      {"tl.ascend_topk",
+       {{{1, "write"}, {2, "read"}, {3, "read"}, {4, "read"}, {5, "read"}},
+        "PIPE_V"}},
       {"tl.ascend_gather_mask", {{{1, "write"}, {2, "read"}}, "PIPE_V"}},
       {"tl.ascend_init_sort_buf", {{{1, "write"}}, "PIPE_V"}},
 
@@ -318,7 +320,6 @@ const std::unordered_map<const tvm::OpNode *, int64_t> ascendc_tmp_arg_ops = {
     {tl::ascend_clamp_min().get(), 3},
     {tl::ascend_reduce().get(), 3},
     {tl::ascend_sort().get(), 3},
-    {tl::ascend_topk().get(), 3},
     {tl::ascend_sigmoid().get(), 2},
     {tl::ascend_bilinear_interpolation().get(), 10},
     {tl::ascend_sin().get(), 2},

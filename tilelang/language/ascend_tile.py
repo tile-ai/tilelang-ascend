@@ -263,27 +263,35 @@ def merge_sort(
     )
 
 
-def topk(dst: Buffer, src: Buffer, block_size: PrimExpr):
-    """Performs a TopK operation.
+def topk(dst: Buffer, src: Buffer, tmp: Buffer, K: PrimExpr, actual_num: PrimExpr):
+    """Performs a TopK operation by sorting the source data and extracting the top K elements.
 
-    This intrinsic invokes the underlying implementation to select the top K elements
-    from the source data.
+    Internally calls Sort on the source data, then copies the top K interleaved
+    (value, index) pairs into the destination buffer.
 
     Args:
-        dst: The destination buffer where the TopK results will be stored.
-        src: The source buffer containing the input data.
-        block_size: The size of the data block to be processed.
+        dst: Destination buffer for top K interleaved (value, index) pairs.
+             Must have at least 2*K elements.
+        src: Source buffer containing the data to find top K from.
+        tmp: Temporary workspace buffer. For float: needs 4*aligned_N elements.
+             For half: needs 10*aligned_N elements, where aligned_N = ceil(actual_num/32)*32.
+        K: Number of top elements to extract.
+        actual_num: The number of valid elements in src.
 
     Returns:
         A TVM intrinsic call that performs the TopK operation.
     """
+    repeatTimes = (actual_num + 31) // 32
     return tir.call_intrin(
         "handle",
         tir.op.Op.get("tl.ascend_topk"),
         f"TopK<{_dtype(dst)}>",
         dst.access_ptr("w"),
         src.access_ptr("r"),
-        block_size,
+        tmp.access_ptr("w"),
+        K,
+        repeatTimes,
+        actual_num,
     )
 
 
