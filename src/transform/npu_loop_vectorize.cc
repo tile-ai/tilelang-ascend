@@ -440,6 +440,7 @@ private:
                       {RegionND(load->buffer, src_offsets, 1, rbi.src_sizes),
                        RegionND(local_buf, local_offsets, 2, rbi.src_sizes)})));
 
+    // testing only
     // Build view_shape and brc_shape aligned to the dimensionality of
     // output_ref. For each dimension in output_ref:
     //   - if it corresponds to a loop variable, brc_shape fills loop_extents[j]
