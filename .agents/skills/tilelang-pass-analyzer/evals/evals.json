@@ -1,0 +1,40 @@
+{
+  "skill_name": "tilelang-pass-analyzer",
+  "evals": [
+    {
+      "id": 1,
+      "eval_name": "single-pass-analysis",
+      "prompt": "AscendMemoryPlanning pass 是干什么的？介绍一下它的功能。",
+      "expected_output": "应该展示单 Pass 分析报告：一句话总结（内存规划与地址分配），功能详解包括作用目的、工作原理、IR变换示例、使用场景、代码位置。核心类 AscendMemoryPlanner，核心方法 Substitute/GetAddressMap/GetBufferSizes。配置键 tl.ascend_memory_planning。C++ 文件 ascend_memory_planning.cc。",
+      "files": []
+    },
+    {
+      "id": 2,
+      "eval_name": "dual-pass-comparison",
+      "prompt": "AscendSyncInsert 和 CrossCorePipeline 有什么区别？对比一下。",
+      "expected_output": "应该展示双 Pass 对比报告：一句话总结两者的核心差异。功能对比表包括作用目的、工作原理、IR变换、使用场景对比。关键差异点：AscendSyncInsert 负责同步插入（PipeBarrier/EventPair），CrossCorePipeline 负责跨核流水线规划（set_flag/wait_flag）。执行顺序关系：CrossCorePipeline → AscendSyncInsert。代码位置对比表。",
+      "files": []
+    },
+    {
+      "id": 3,
+      "eval_name": "dual-pass-relationship",
+      "prompt": "LowerTileOp 和 LayoutInference 有什么联系？它们是怎么协作的？",
+      "expected_output": "应该展示双 Pass 联系报告：一句话总结协作关系。关系分析包括作用目的联系（共同目标：处理 Layout），工作原理联系（数据流：LayoutInference 推断 layout → LowerTileOp 应用变换），执行顺序（LayoutInference → LowerTileOp），协作场景（GEMM 算子的 layout 优化）。代码位置表。",
+      "files": []
+    },
+    {
+      "id": 4,
+      "eval_name": "classification-query",
+      "prompt": "内存相关的 pass 有哪些？请列出 Ascend 平台的内存管理 Pass。",
+      "expected_output": "应该展示分类查询报告：分类概述（Ascend 内存管理 Pass 共同特征）。Pass 列表包括：AscendMemoryPlanning（内存规划）、AscendStorageRewrite（存储重写）、InferAllocScope（推断 scope）、Flatten2DBuffer（扁平化）。典型使用场景示例。代码位置信息。",
+      "files": []
+    },
+    {
+      "id": 5,
+      "eval_name": "fuzzy-match-query",
+      "prompt": "那个处理同步的 pass 叫什么？我记得是 Ascend 开头的。",
+      "expected_output": "应该展示模糊匹配候选列表：根据关键词'同步'和'Ascend'找到候选 Pass。候选列表：1. AscendSyncInsert（自动插入同步指令），2. CrossCorePipeline（跨核流水线同步）。提示用户选择序号或输入完整名称。",
+      "files": []
+    }
+  ]
+}
