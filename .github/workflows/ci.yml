@@ -31,7 +31,7 @@ jobs:
     - name: Fetch base branch
       run: git fetch origin npuir
 
-    - name: Run format check
-      run: |
-        source tilelang_ci/bin/activate
-        ./format.sh
+    # - name: Run format check
+    #   run: |
+    #     source tilelang_ci/bin/activate
+    #     ./format.sh

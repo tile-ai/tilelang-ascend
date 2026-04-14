@@ -162,8 +162,8 @@ def test_parallel_delta_broadcast(B, S, H, BS, block_H, sm_scale):
 @pytest.mark.parametrize("B, S, H, D, block_H, sm_scale", ROW2D_MUL_VEC1D_CASES)
 def test_row2d(B, S, H, D, block_H, sm_scale):
     func = hellohellowrapper(B, S, H, D, block_H, sm_scale)
-    print(func)
-    # kernel = tilelang.compile(func, target="npuir")
+    kernel = tilelang.compile(func, target="npuir")
+    print(kernel)
 
     # h_2d = torch.randn((B, S, H, D), dtype=torch.float32, device="npu")
     # weight = torch.randn((B, S, H, D), dtype=torch.float32, device="npu")
