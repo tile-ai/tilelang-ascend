@@ -1473,7 +1473,8 @@ void CodeGenTileLangAscend::TopKCodegen(const CallNode *op) {
       "tl::ascend::" + Downcast<StringImm>(op->args[0])->value;
   int len = op->args.size();
   // args: [name, dst, src, tmp, K, repeatTimes, actual_num]
-  // buffers: args[1..3] (dst, src, tmp), scalars: args[4..6] (K, repeatTimes, actual_num)
+  // buffers: args[1..3] (dst, src, tmp), scalars: args[4..6] (K, repeatTimes,
+  // actual_num)
   PrintOpCall(op, op_name, {1, 4}, {4, len});
 }
 
