@@ -3882,6 +3882,67 @@ def test_sort32(dtype, target, shape):
     run_test_sort32(M, N, block_M, block_N, dtype, target)
 
 
+def topk(M, N, K, block_M, block_N, dtype="float"):
+    m_num = M // block_M
+    n_num = N // block_N
+
+    VEC_NUM = 1
+
+    ub_N = ((block_N + 31) // 32) * 32
+
+    @T.prim_func
+    def main(
+        a: T.Tensor((M, N), dtype),
+        b: T.Tensor((M, 2 * K), dtype),
+    ):
+        with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
+            bx = cid // n_num
+            by = cid % n_num
+
+            src_ub = T.alloc_ub((block_M // VEC_NUM, ub_N), dtype)
+            dst_ub = T.alloc_ub((block_M // VEC_NUM, K * 2), dtype)
+
+            T.copy(a[bx * block_M + vid * block_M // VEC_NUM, by * ub_N], src_ub)
+
+            T.tile.topk(dst_ub, src_ub, K, block_N)
+
+            T.copy(dst_ub, b[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
+
+    return main
+
+def run_test_topk(M, N, K, block_M, block_N, dtype, target):
+    func = topk(M, N, K, block_M, block_N, dtype)
+    func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
+
+    torch_dtype = torch.float if dtype == "float" else torch.float16
+    a = torch.randn(M, N, dtype=torch_dtype).npu()
+    b = func(a)
+
+    b_cpu = b.cpu().float().reshape(-1)
+    a_cpu = a.cpu().float().reshape(-1)
+
+    out_values = b_cpu[0::2][:K]
+    out_indices = b_cpu[1::2][:K]
+
+    topk_vals, topk_index = torch.sort(a_cpu, descending=True)
+    ref_values = topk_vals[:K]
+    ref_indices = topk_index[:K].float()
+
+    torch.testing.assert_close(out_values, ref_values, rtol=1e-3, atol=1e-3)
+    torch.testing.assert_close(out_indices, ref_indices.float(), rtol=1e-3, atol=1e-3)
+
+
+@pytest.mark.parametrize("dtype", ["float16", "float"])
+@pytest.mark.parametrize("target", ["ascendc"])
+@pytest.mark.parametrize("shape", [(1, 51)])
+def test_topk(dtype, target, shape):
+    M, N = shape
+    block_M = 1
+    block_N = 51
+    K = 10
+    run_test_topk(M, N, K, block_M, block_N, dtype, target)
+
+
 def sqrt(M, N, block_M, block_N, dtype="float"):
     m_num = M // block_M
     n_num = N // block_N
