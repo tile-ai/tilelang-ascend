@@ -39,7 +39,7 @@ import traceback
 from pathlib import Path
 
 from tilelang import env
-from tilelang.autotuner.param import CompileArgs, ProfileArgs, AutotuneResult
+from tilelang.autotuner.param import CompileArgs, ProfileArgs, AutotuneResult, KernelCache
 from tilelang.utils.target import determine_target
 import time
 
@@ -430,13 +430,11 @@ class AutoTuner:
                 )
         return results
 
-
     def _save_result_to_disk(self, key, result: AutotuneResult):
-        result.save_to_disk(self.cache_dir / key, self.compile_args.verbose)
+        KernelCache.save(self.cache_dir / key, result, self.compile_args.verbose)
 
     def _load_result_from_disk(self, key) -> AutotuneResult:
-        result = AutotuneResult.load_from_disk(self.cache_dir / key, self.compile_args)
-        return result
+        return KernelCache.load(self.cache_dir / key, self.compile_args)
     
     def target_fn(self, jit_kernel: tilelang.JitKernel_NPU, warmup: int, rep: int, config: dict = None):
         # Unpack the context
