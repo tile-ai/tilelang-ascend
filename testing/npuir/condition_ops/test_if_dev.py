@@ -41,13 +41,13 @@ def if_no_yield(M, block_N, dtype="float16", indexType="int32"):
                     offset_n = idx_n * block_N
                     remain_n = T.min(N - offset_n, block_N)
                     if idx[i] == 1:
-                        T.copy(Input[i:i + 1, offset_n:offset_n + remain_n], src)
+                        T.copy(Input[i:i + 1, offset_n:offset_n + remain_n], src[0, 0:remain_n])
                         T.npuir_add(src, src, dst)
-                        T.copy(dst, Output[i:i + 1, offset_n:offset_n + remain_n])
+                        T.copy(dst[0, 0:remain_n], Output[i:i + 1, offset_n:offset_n + remain_n])
                     else:
                         value_zero = 0
                         T.npuir_brc(value_zero, dst)
-                        T.copy(dst, Output[i:i + 1, offset_n:offset_n + remain_n])
+                        T.copy(dst[0, 0:remain_n], Output[i:i + 1, offset_n:offset_n + remain_n])
 
     return if_no_yield_
 

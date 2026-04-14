@@ -40,7 +40,7 @@ def slice_reduce(block_M, block_N, dtype="float16"):
                     remain_m = T.min(block_M, M - offset_m)
                     T.copy(
                         Input[offset_m : offset_m + remain_m, offset_n : offset_n + remain_n],
-                        src,
+                        src[0:remain_m, 0:remain_n],
                     )
                     T.npuir_reduce(
                         src,
@@ -50,7 +50,7 @@ def slice_reduce(block_M, block_N, dtype="float16"):
                         size=[remain_m, remain_n],
                         clear=False,
                     )
-                T.copy(dst, Output[0:1, offset_n : offset_n + remain_n])
+                T.copy(dst[0, 0:remain_n], Output[0:1, offset_n : offset_n + remain_n])
 
     return sliceReduceSizeDev
 
