@@ -275,8 +275,6 @@ def topk(dst: Buffer, src: Buffer, K: PrimExpr, actual_num: PrimExpr):
         dst: Destination buffer for top K interleaved (value, index) pairs.
              Must have at least 2*K elements.
         src: Source buffer containing the data to find top K from.
-        tmp: Temporary workspace buffer. For float: needs 4*aligned_N elements.
-             For half: needs 10*aligned_N elements, where aligned_N = ceil(actual_num/32)*32.
         K: Number of top elements to extract.
         actual_num: The number of valid elements in src.
 
