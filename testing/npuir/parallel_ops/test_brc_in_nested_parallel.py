@@ -97,7 +97,7 @@ def kernel_row2d_mul_vec1d(B, S, H, D, block_H, sm_scale):
     backend to emit a 2-D vectorised multiply instruction, which is the
     vectorisation robustness case under test.
     """
-    h_tiles = T.ceildiv(H, block_H)
+    # h_tiles = T.ceildiv(H, block_H)
 
     @T.prim_func
     def row2d_mul_vec1d(
@@ -107,40 +107,41 @@ def kernel_row2d_mul_vec1d(B, S, H, D, block_H, sm_scale):
         ),  # weight vector (1-D semantics along D)
         out: T.Tensor((B, S, H, D), ACCUM_DTYPE),  # element-wise scaled output
     ):
-        with T.Kernel(B * S * h_tiles, is_npu=True) as (cid, _):
-            bz_batch = cid // (S * h_tiles)
-            rem = cid % (S * h_tiles)
-            s_i = rem // h_tiles
-            h_tile = rem % h_tiles
-            h_start = h_tile * block_H
-            h_tail = T.min(block_H, H - h_start)
+        # with T.Kernel(B * S * h_tiles, is_npu=True) as (cid, _):
+        # bz_batch = cid // (S * h_tiles)
+        # rem = cid % (S * h_tiles)
+        # s_i = rem // h_tiles
+        # h_tile = rem % h_tiles
+        # h_start = h_tile * block_H
+        # h_tail = T.min(block_H, H - h_start)
 
-            # Shared buffers: one (block_H, D) tile for the activation and weight.
-            h_2d_buf = T.alloc_shared((block_H, D), ACCUM_DTYPE)
-            weight_buf = T.alloc_shared((D,), ACCUM_DTYPE)
-            # out_buf = T.alloc_shared((block_H, D), ACCUM_DTYPE)
+        # # Shared buffers: one (block_H, D) tile for the activation and weight.
+        # h_2d_buf = T.alloc_shared((block_H, D), ACCUM_DTYPE)
+        # weight_buf = T.alloc_shared((D,), ACCUM_DTYPE)
+        # # out_buf = T.alloc_shared((block_H, D), ACCUM_DTYPE)
 
-            # Load the current head-tile slice for both activation and weight.
-            T.copy(
-                h_2d[bz_batch, s_i, h_start : h_start + h_tail, :], h_2d_buf[:h_tail, :]
-            )
-            T.copy(weight[bz_batch, s_i, h_start : h_start + 1, :], weight_buf)
+        # # Load the current head-tile slice for both activation and weight.
+        # T.copy(
+        #     h_2d[bz_batch, s_i, h_start : h_start + h_tail, :], h_2d_buf[:h_tail, :]
+        # )
+        # T.copy(weight[bz_batch, s_i, h_start : h_start + 1, :], weight_buf)
 
-            # Vectorised element-wise multiply over the full (block_H, D) tile.
-            # The inner D loop mirrors: h_2d[0, j] = h_2d[0, j] * rms_w_h_shared[j]
-            # T.Parallel over both axes lets the backend fuse them into a single
-            # vector instruction, exercising the 2-D vectorisation path.
-            # for d_i in T.Parallel(D):
-            #     out_buf[0, d_i] = (
-            #         h_2d_buf[0, d_i] * weight_buf[d_i] * T.float32(sm_scale)
-            #     )
+        # Vectorised element-wise multiply over the full (block_H, D) tile.
+        # The inner D loop mirrors: h_2d[0, j] = h_2d[0, j] * rms_w_h_shared[j]
+        # T.Parallel over both axes lets the backend fuse them into a single
+        # vector instruction, exercising the 2-D vectorisation path.
+        # for d_i in T.Parallel(D):
+        #     out_buf[0, d_i] = (
+        #         h_2d_buf[0, d_i] * weight_buf[d_i] * T.float32(sm_scale)
+        #     )
 
-            # T.copy(h_2d_buf[1:h_tail, :], out_buf[1:h_tail, :])
+        # T.copy(h_2d_buf[1:h_tail, :], out_buf[1:h_tail, :])
 
-            # Write the scaled tile back to global memory.
-            # T.copy(
-            #     out_buf[:h_tail, :], out[bz_batch, s_i, h_start : h_start + h_tail, :]
-            # )
+        # Write the scaled tile back to global memory.
+        # T.copy(
+        #     out_buf[:h_tail, :], out[bz_batch, s_i, h_start : h_start + h_tail, :]
+        # )
+        pass
 
     return row2d_mul_vec1d
 
