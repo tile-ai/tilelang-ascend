@@ -19,7 +19,9 @@ def region(buffer: tir.BufferLoad, access_type: str, *args: tir.PrimExpr):
         tir.Call: A region descriptor for tile operations
     """
     access_type = {"r": 1, "w": 2, "rw": 3}[access_type]
-    return tir.call_intrin("handle", tir.op.Op.get("tl.region"), buffer, access_type, *args)
+    return tir.call_intrin(
+        "handle", tir.op.Op.get("tl.region"), buffer, access_type, *args
+    )
 
 
 def buffer_to_tile_region(buffer: tir.Buffer, access_type: str):
@@ -37,7 +39,9 @@ def buffer_to_tile_region(buffer: tir.Buffer, access_type: str):
     return region(T.BufferLoad(buffer, mins), access_type, *extents)
 
 
-def buffer_load_to_tile_region(load: tir.BufferLoad, access_type: str, extents: List[tir.PrimExpr]):
+def buffer_load_to_tile_region(
+    load: tir.BufferLoad, access_type: str, extents: List[tir.PrimExpr]
+):
     """Convert a buffer load operation to a tile region descriptor.
 
     Args:
@@ -68,8 +72,9 @@ def buffer_load_to_tile_region(load: tir.BufferLoad, access_type: str, extents: 
     return region(T.BufferLoad(load.buffer, indices_head), access_type, *extents)
 
 
-def buffer_region_to_tile_region(buffer_region: tir.BufferRegion, access_type: str,
-                                 extents: List[tir.PrimExpr]):
+def buffer_region_to_tile_region(
+    buffer_region: tir.BufferRegion, access_type: str, extents: List[tir.PrimExpr]
+):
     """Convert a buffer region to a tile region descriptor.
 
     Args:
@@ -81,11 +86,13 @@ def buffer_region_to_tile_region(buffer_region: tir.BufferRegion, access_type: s
     """
     mins = [x.min for x in buffer_region.region]
     region_extents = [x.extent for x in buffer_region.region]
-    assert len(region_extents) >= len(
-        extents
-    ), f"region_extents must be >= extents, region_extents = {region_extents}, extents = {extents}"
+    assert len(region_extents) >= len(extents), (
+        f"region_extents must be >= extents, region_extents = {region_extents}, extents = {extents}"
+    )
 
-    return region(T.BufferLoad(buffer_region.buffer, mins), access_type, *region_extents)
+    return region(
+        T.BufferLoad(buffer_region.buffer, mins), access_type, *region_extents
+    )
 
 
 def copy(
@@ -109,6 +116,7 @@ def copy(
     Returns:
         tir.Call: A handle to the copy operation
     """
+
     def get_extent(data):
         if isinstance(data, tir.Var) and T.has_let_value(data):
             data = T.get_let_value(data)
@@ -163,19 +171,27 @@ def copy(
                 # keep matching logical shapes. For rank-mismatch singleton
                 # cases, preserve whole-buffer semantics and let the backend
                 # perform shape alignment.
-                if peer_is_slice and peer_extent is not None and len(peer_extent) == len(data.shape):
+                if (
+                    peer_is_slice
+                    and peer_extent is not None
+                    and len(peer_extent) == len(data.shape)
+                ):
                     return buffer_load_to_tile_region(
-                        T.BufferLoad(data, [0] * len(data.shape)), access_type, list(peer_extent)
+                        T.BufferLoad(data, [0] * len(data.shape)),
+                        access_type,
+                        list(peer_extent),
                     )
                 return buffer_to_tile_region(data, access_type)
             ndim = len(data.shape)
             extent = _borrowed_extent(data, peer_extent)
             trailing = extent[-ndim:] if len(extent) >= ndim else extent
             return buffer_load_to_tile_region(
-                T.BufferLoad(data, [0] * ndim), access_type, trailing)
+                T.BufferLoad(data, [0] * ndim), access_type, trailing
+            )
         elif isinstance(data, tir.BufferRegion):
             return buffer_region_to_tile_region(
-                data, access_type, [x.extent for x in data.region])
+                data, access_type, [x.extent for x in data.region]
+            )
         else:
             ndim = len(data.buffer.shape)
             extent = _borrowed_extent(data, peer_extent)
@@ -185,7 +201,9 @@ def copy(
     src = _to_region(src, "r", dst_extent, _is_slice(dst))
     dst = _to_region(dst, "w", src_extent, _is_slice(src))
     if coalesced_width is not None:
-        return tir.call_intrin("handle", tir.op.Op.get("tl.copy"), src, dst, coalesced_width)
+        return tir.call_intrin(
+            "handle", tir.op.Op.get("tl.copy"), src, dst, coalesced_width
+        )
     else:
         return tir.call_intrin("handle", tir.op.Op.get("tl.copy"), src, dst)
 

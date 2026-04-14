@@ -1033,11 +1033,10 @@ static mlir::Value MaterializeIndexFoldResult(mlir::OpBuilder &builder,
   return val;
 }
 
-static mlir::OpFoldResult
-ComputeProjectedViewOffset(mlir::OpBuilder &builder, mlir::Location loc,
-                           int64_t baseLayoutOffset,
-                           llvm::ArrayRef<mlir::OpFoldResult> sliceOffsets,
-                           llvm::ArrayRef<mlir::OpFoldResult> baseLayoutStrides) {
+static mlir::OpFoldResult ComputeProjectedViewOffset(
+    mlir::OpBuilder &builder, mlir::Location loc, int64_t baseLayoutOffset,
+    llvm::ArrayRef<mlir::OpFoldResult> sliceOffsets,
+    llvm::ArrayRef<mlir::OpFoldResult> baseLayoutStrides) {
   ICHECK(sliceOffsets.size() == baseLayoutStrides.size());
   int64_t staticOffset = baseLayoutOffset;
   mlir::Value dynamicOffset;
@@ -1055,7 +1054,8 @@ ComputeProjectedViewOffset(mlir::OpBuilder &builder, mlir::Location loc,
       continue;
     }
 
-    mlir::Value term = MaterializeIndexFoldResult(builder, loc, sliceOffsets[i]);
+    mlir::Value term =
+        MaterializeIndexFoldResult(builder, loc, sliceOffsets[i]);
     if (!strideAttr || strideAttr.cast<mlir::IntegerAttr>().getInt() != 1) {
       mlir::Value strideVal =
           MaterializeIndexFoldResult(builder, loc, baseLayoutStrides[i]);
@@ -1085,7 +1085,8 @@ CodeGenTileLangNPUIRAPI::BuildSliceFacts(Buffer buffer_data,
                                          Array<Range> range) {
   SliceFacts facts;
   facts.baseMemref = GetVarValue(buffer_data->data.get());
-  facts.baseMemrefType = facts.baseMemref.getType().dyn_cast<mlir::MemRefType>();
+  facts.baseMemrefType =
+      facts.baseMemref.getType().dyn_cast<mlir::MemRefType>();
   // Generic T.copy only reasons about memref views in the default path.
   ICHECK(facts.baseMemrefType)
       << "generic T.copy only supports memref operands in the default path.";
@@ -1252,7 +1253,8 @@ CodeGenTileLangNPUIRAPI::BuildProjectedLayoutPlan(
   for (size_t i = 0; i < keptDims.size(); ++i) {
     unsigned idx = keptDims[i];
     // Each kept dim must refer back to a valid original slice/base-layout dim.
-    ICHECK(idx < facts.baseLayoutStrides.size() && idx < facts.sliceSizes.size())
+    ICHECK(idx < facts.baseLayoutStrides.size() &&
+           idx < facts.sliceSizes.size())
         << "generic T.copy internal error: kept index out of range.";
     // Dynamic projected strides are valid for contiguous buffers. We keep a
     // static-or-dynamic type view for memref metadata plus the runtime stride
@@ -1264,10 +1266,9 @@ CodeGenTileLangNPUIRAPI::BuildProjectedLayoutPlan(
 
   // All original slice offsets contribute to the final view start, including
   // dimensions later dropped from the aligned rank.
-  layout.viewOffset =
-      ComputeProjectedViewOffset(builder, builder.getUnknownLoc(),
-                                 facts.baseLayoutOffset, facts.sliceOffsets,
-                                 facts.baseLayoutStrideValues);
+  layout.viewOffset = ComputeProjectedViewOffset(
+      builder, builder.getUnknownLoc(), facts.baseLayoutOffset,
+      facts.sliceOffsets, facts.baseLayoutStrideValues);
   return layout;
 }
 
@@ -1279,10 +1280,9 @@ CodeGenTileLangNPUIRAPI::BuildFullRankSubview(const SliceFacts &facts) {
 
   llvm::SmallVector<mlir::OpFoldResult> unitStrides(facts.sliceOffsets.size(),
                                                     builder.getIndexAttr(1));
-  return builder.create<mlir::memref::SubViewOp>(builder.getUnknownLoc(),
-                                                 facts.baseMemref,
-                                                 facts.sliceOffsets,
-                                                 facts.sliceSizes, unitStrides);
+  return builder.create<mlir::memref::SubViewOp>(
+      builder.getUnknownLoc(), facts.baseMemref, facts.sliceOffsets,
+      facts.sliceSizes, unitStrides);
 }
 
 mlir::Value CodeGenTileLangNPUIRAPI::BuildAlignedCopyView(
@@ -2924,18 +2924,16 @@ void CodeGenTileLangNPUIRAPI::AddFunctionForCoreType(const GlobalVar &gvar,
     auto memrefType = llvm::dyn_cast<MemRefType>(recastInfo.second);
     auto strideLayout =
         llvm::dyn_cast<StridedLayoutAttr>(memrefType.getLayout());
-    SmallVector<OpFoldResult> shape_val =
-        BuildIndexFoldResultsFromExprs(builder, shapeExprs,
-                                       [this](PrimExpr expr) {
+    SmallVector<OpFoldResult> shape_val = BuildIndexFoldResultsFromExprs(
+        builder, shapeExprs, [this](PrimExpr expr) {
           mlir::Value value = MakeValue(expr);
           return value.getType().isIndex() ? value : CreateIndexCastOp(value);
         });
     SmallVector<PrimExpr> strideExprs =
         strides.empty() ? BuildContiguousStrideExprs(shapeExprs)
                         : SmallVector<PrimExpr>(strides.begin(), strides.end());
-    SmallVector<OpFoldResult> stride_val =
-        BuildIndexFoldResultsFromExprs(builder, strideExprs,
-                                       [this](PrimExpr expr) {
+    SmallVector<OpFoldResult> stride_val = BuildIndexFoldResultsFromExprs(
+        builder, strideExprs, [this](PrimExpr expr) {
           mlir::Value value = MakeValue(expr);
           return value.getType().isIndex() ? value : CreateIndexCastOp(value);
         });
