@@ -2392,18 +2392,40 @@ void CodeGenTileLangNPUIRDEV::VreduceCodegen(const CallNode *op) {
       }
     } else if (npuirop.reduce_mode == "max") {
       if (elemTy.isa<mlir::FloatType>()) {
-        result =
-            builder.create<mlir::arith::MaximumFOp>(loc, inputElem, accumElem);
+        result = builder.create<mlir::arith::MaxNumFOp>(loc, inputElem, accumElem);
       } else {
         auto intTy = elemTy.cast<mlir::IntegerType>();
         if (intTy.isSigned()) {
-          result =
-              builder.create<mlir::arith::MaxSIOp>(loc, inputElem, accumElem);
+          result = builder.create<mlir::arith::MaxSIOp>(loc, inputElem, accumElem);
         } else {
-          result =
-              builder.create<mlir::arith::MaxUIOp>(loc, inputElem, accumElem);
+          result = builder.create<mlir::arith::MaxUIOp>(loc, inputElem, accumElem);
         }
       }
+    } else if (npuirop.reduce_mode == "min") {
+      if (elemTy.isa<mlir::FloatType>()) {
+        result = builder.create<mlir::arith::MinNumFOp>(loc, inputElem, accumElem);
+      } else {
+        auto intTy = elemTy.cast<mlir::IntegerType>();
+        if (intTy.isSigned()) {
+          result = builder.create<mlir::arith::MinSIOp>(loc, inputElem, accumElem);
+        } else {
+          result = builder.create<mlir::arith::MinUIOp>(loc, inputElem, accumElem);
+        }
+      }
+    } else if (npuirop.reduce_mode == "prod") {
+      if (elemTy.isa<mlir::FloatType>()) {
+        result = builder.create<mlir::arith::MulFOp>(loc, inputElem, accumElem);
+      } else {
+        result = builder.create<mlir::arith::MulIOp>(loc, inputElem, accumElem);
+      }
+    } else if (npuirop.reduce_mode == "any" || npuirop.reduce_mode == "ori") {
+      result = builder.create<mlir::arith::OrIOp>(loc, inputElem, accumElem);
+    } else if (npuirop.reduce_mode == "all") {
+      result = builder.create<mlir::arith::AndIOp>(loc, inputElem, accumElem);
+    } else if (npuirop.reduce_mode == "xori") {
+      result = builder.create<mlir::arith::XOrIOp>(loc, inputElem, accumElem);
+    } else if (npuirop.reduce_mode == "none") {
+      result = accumElem;
     }
 
     // TODO: max_with_index_left/max_with_index_right/min_with_index_left/min_with_index_right
