@@ -78,7 +78,7 @@ def kernel_parallel_delta_broadcast(B, S, H, BS, block_H, sm_scale):
     return parallel_delta_broadcast
 
 
-def kernel_row2d_mul_vec1d(B, S, H, D, block_H, sm_scale):
+def hellohellowrapper(B, S, H, D, block_H, sm_scale):
     """
     Kernel that performs element-wise multiply of a 2-D activation buffer by a
     1-D weight vector (broadcast over the H dimension), matching the RMS-norm
@@ -100,7 +100,7 @@ def kernel_row2d_mul_vec1d(B, S, H, D, block_H, sm_scale):
     # h_tiles = T.ceildiv(H, block_H)
 
     @T.prim_func
-    def row2d_mul_vec1d(
+    def hellohello(
         h_2d: T.Tensor((B, S, H, D), ACCUM_DTYPE),  # 2-D activation buffer
         weight: T.Tensor(
             (B, S, H, D), ACCUM_DTYPE
@@ -143,7 +143,7 @@ def kernel_row2d_mul_vec1d(B, S, H, D, block_H, sm_scale):
         # )
         pass
 
-    return row2d_mul_vec1d
+    return hellohello
 
 
 @pytest.mark.parametrize("B, S, H, BS, block_H, sm_scale", CASES)
@@ -164,7 +164,7 @@ def test_parallel_delta_broadcast(B, S, H, BS, block_H, sm_scale):
 @pytest.mark.parametrize("B, S, H, D, block_H, sm_scale", ROW2D_MUL_VEC1D_CASES)
 def test_row2d_mul_vec1d(B, S, H, D, block_H, sm_scale):
     tilelang.cache.clear_cache()
-    func = kernel_row2d_mul_vec1d(B, S, H, D, block_H, sm_scale)
+    func = hellohellowrapper(B, S, H, D, block_H, sm_scale)
     kernel = tilelang.compile(func, target="npuir")
 
     h_2d = torch.randn((B, S, H, D), dtype=torch.float32, device="npu")
