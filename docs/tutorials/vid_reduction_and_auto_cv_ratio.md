@@ -1,7 +1,7 @@
 # Tilelang-Ascend Vid Reduction & Auto CV Ratio Feature
 
 ## 1. Design Goals
-Because the ShengTeng architecture sometimes has a 1:1 or 1:2 ratio of cubes to vectors, the TileLang frontend needs to explicitly use vids to partition data on the vectors. This exposes architectural details in the frontend representation. Therefore, this feature aims to achieve automatic CV matching, thereby eliminating vids in the frontend representation, making them imperceptible to the user, thus shielding hardware details and simplifying programming.
+Because the Ascend architecture sometimes has a 1:1 or 1:2 ratio of cubes to vectors, the TileLang frontend needs to explicitly use vids to partition data on the vectors. This exposes architectural details in the frontend representation. Therefore, this feature aims to achieve automatic CV matching, thereby eliminating vids in the frontend representation, making them imperceptible to the user, thus shielding hardware details and simplifying programming.
 
 ## 2. Usage Guide
 It's very simple. You only need to use the parameter `threads=VECNUM` to control whether you want to start one or two V-cores. `VEC_NUM` can be 1 or 2, corresponding to C:V=1:1 and C:V=1:2 respectively. When setting the `threads` parameter, the return value will only contain `cid` and not `vid`. See the example for details[matmul_add_developer.py](../../examples/developer_mode/matmul_add_developer.py).
