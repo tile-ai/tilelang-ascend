@@ -2368,8 +2368,8 @@ void CodeGenTileLangNPUIRDEV::VreduceCodegen(const CallNode *op) {
 
   auto squeezedTy = squeezedInit.getType().cast<mlir::RankedTensorType>();
   auto reduceOp = builder.create<mlir::linalg::ReduceOp>(
-    loc, squeezedTy, src, squeezedInit,
-    builder.getDenseI64ArrayAttr(npuirop.reduce_dims)
+      loc, squeezedTy, src, squeezedInit,
+      builder.getDenseI64ArrayAttr(npuirop.reduce_dims)
   );
 
   {
@@ -2385,10 +2385,11 @@ void CodeGenTileLangNPUIRDEV::VreduceCodegen(const CallNode *op) {
     mlir::Value result;
 
     if (npuirop.reduce_mode == "sum") {
-      if (elemTy.isa<mlir::FloatType>())
+      if (elemTy.isa<mlir::FloatType>()) {
         result = builder.create<mlir::arith::AddFOp>(loc, inputElem, accumElem);
-      else
+      } else {
         result = builder.create<mlir::arith::AddIOp>(loc, inputElem, accumElem);
+      }
     } else if (npuirop.reduce_mode == "max") {
       if (elemTy.isa<mlir::FloatType>()) {
         result =
@@ -2405,6 +2406,7 @@ void CodeGenTileLangNPUIRDEV::VreduceCodegen(const CallNode *op) {
       }
     }
 
+    // TODO: max_with_index_left/max_with_index_right/min_with_index_left/min_with_index_right
     builder.create<mlir::linalg::YieldOp>(loc, result);
   }
 
