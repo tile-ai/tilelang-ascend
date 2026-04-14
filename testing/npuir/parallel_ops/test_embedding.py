@@ -64,6 +64,7 @@ def kernel_embedding_1d(dim, block):
 
 @pytest.mark.parametrize("seq_len, table_len, dim, block, seed", EMBEDDING_CASES)
 def test_parallel_embedding_1d(seq_len, table_len, dim, block, seed):
+    tilelang.cache.clear_cache()
     kernel = kernel_embedding_1d(
         dim,
         block,
