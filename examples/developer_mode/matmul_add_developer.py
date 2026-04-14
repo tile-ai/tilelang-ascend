@@ -29,15 +29,13 @@ def matmul_add(M, N, K, block_M, block_N, block_K, dtype="float16", accum_dtype=
     m_num = M // block_M
     n_num = N // block_N
 
-    VEC_NUM = 2
-
     @T.prim_func
     def main(
-            A: T.Tensor((M, K), dtype),
-            B: T.Tensor((K, N), dtype),
-            C: T.Tensor((M, N), dtype),
-            D: T.Tensor((M, N), dtype),
-            workspace: T.Tensor((M, N), dtype),
+        A: T.Tensor((M, K), dtype),
+        B: T.Tensor((K, N), dtype),
+        C: T.Tensor((M, N), dtype),
+        D: T.Tensor((M, N), dtype),
+        workspace: T.Tensor((M, N), dtype),
     ):
         with T.Kernel(m_num * n_num, threads=2, is_npu=True) as (cid):
             bx = cid // n_num

@@ -660,7 +660,7 @@ void CodeGenTileLangAscend::VisitStmt_(const AttrStmtNode *op) {
       if (cv_ratio_ != cv_1_1) {
         this->PrintIndent();
         this->stream << current_block_id << " = " << current_block_id
-                    << " / 2;\n";
+                     << " / 2;\n";
       }
       this->PrintIndent();
       this->stream << "}\n";

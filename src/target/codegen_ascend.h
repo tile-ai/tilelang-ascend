@@ -20,9 +20,9 @@
 namespace tvm {
 namespace codegen {
 
-constexpr const char* cv_1_1 = "cv_1_1";
+constexpr const char *cv_1_1 = "cv_1_1";
 
-constexpr const char* cv_1_2 = "cv_1_2"; 
+constexpr const char *cv_1_2 = "cv_1_2";
 
 class CodeGenTileLangAscend final : public CodeGenC {
 public:

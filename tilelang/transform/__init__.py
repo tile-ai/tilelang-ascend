@@ -502,9 +502,10 @@ def AscendLowerOpaqueBlock():
     """
     return _ffi_api.AscendLowerOpaqueBlock()  # type: ignore
 
+
 def InjectTmpBuffer(target: Target):
     """InjectTmpBuffer for Ascend
-    
+
     Returns
     -------
     fpass : tvm.transform.Pass
