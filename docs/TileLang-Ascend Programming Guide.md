@@ -1733,19 +1733,23 @@ Expert编程模式可以复用Developer模式的Reduce类计算原语。
 
   **参数**：
 
-  - dst：保存排序后的数据的存储buffer
-  - src：源操作数，待排序数据
-  - actual_num：src 中有效元素的数量。当 actual_num 小于缓冲区大小时，排序前未使用的位置会用 -inf 填充
+  - dst：存储排序后结果的目标缓冲区(val0, index0, val1, index1 ,...)
+  - src：源操作数，待排序数据(val0, val1, val2, ...)
+  - actual_num：src 中实际参与排序的元素数量
 
-  **功能**：排序函数，按照数值大小进行降序排序。
-
-  更详细说明，详见AscendC文档：https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/83RC1alpha002/API/ascendcopapi/atlasascendc_api_07_0842.html
+  **功能**：排序函数，将任意长度数据按照数值大小进行一次性降序排序
 
   **举例**：
 
   ```
+  # 对131个数进行排序
+  # 131向上对齐到160，src.shape = (1, 160), actual_num = 131
   T.tile.sort(dst, src, actual_num)
   ```
+
+  **注意事项**：
+  - `dst`与 `src` 数据类型相同，仅支持float32和float16数据类型
+  - `src` 的大小需要满足32或32的整数倍
 
 - `T.tile.merge_sort(dst, src0, src1, src2=None, src3=None):`
 
@@ -1791,23 +1795,28 @@ Expert编程模式可以复用Developer模式的Reduce类计算原语。
 
   更详细说明，详见AscendC文档：https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/83RC1alpha002/API/ascendcopapi/atlasascendc_api_07_0232.html
 
-- `T.tile.topk(dst, src, block_size):`
+- `T.tile.topk(dst, src, K, actual_num):`
 
   **参数**：
 
-  - dst：存储TopK结果的目标缓冲区
-  - src：包含输入数据的源缓冲区
-  - block_size：待处理数据块的大小
+  - dst：存储TopK结果的目标缓冲区(val0, index0, val1, index1 ,...)
+  - src：包含输入数据的源缓冲区(val0, val1, val2, ...)
+  - K：前K个排序结果
+  - actual_num：实际参与排序的元素个数
 
-  **功能**：执行 TopK 操作，调用底层实现来从源数据中选取前 K 个元素
-
-  更详细说明，详见AscendC文档：https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/83RC1alpha002/API/ascendcopapi/atlasascendc_api_07_0836.html
+  **功能**：执行 TopK 操作，实现对源数据的一次性从大到小排序，选择前K个元素，以（数、索引）的方式输出
 
   **举例**:
 
   ```
-  T.tile.topk(topk_global, sort_result, top_k)
+  # 对41个数进行排序，选择前10个数
+  # 需要使41向上对齐至32 * 2 = 64，K = 10, actual_num = 41
+  # topk_global.shape = (1, 20)sort_result.shape = (1, 64)
+  T.tile.topk(topk_global, sort_result, K, actual_num)
   ```
+
+  **注意事项**：
+  - `src` 的大小需要满足32或32的整数倍
 
 ###### 4.1.3.2.8 数据分散/收集
 

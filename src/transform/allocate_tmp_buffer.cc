@@ -26,8 +26,6 @@ namespace tl {
 using namespace tir;
 using namespace tir::transform;
 
-
-
 class CallNodeCollector : public ExprVisitor, public StmtVisitor {
 public:
   static std::vector<Call> Collect(PrimFunc f, Target target) {
@@ -348,8 +346,9 @@ private:
   Array<Buffer>
   createPTOXORAndMergeSortTmpBuffer_(Array<Buffer> alloc_buffers) {
     std::unordered_map<DataType, Array<PrimExpr>> shapes;
-    // Iterate over the stored CallNodes, find the corresponding xor and merge_sort
-    // and allocate tmp_ub for them (requires tmp_ub of the corresponding datatype)
+    // Iterate over the stored CallNodes, find the corresponding xor and
+    // merge_sort and allocate tmp_ub for them (requires tmp_ub of the
+    // corresponding datatype)
     for (size_t i = 0; i < calls_.size(); i++) {
       const CallNode *call = calls_[i].get();
       if (call->op.same_as(tl::ascend_bitwise_xor())) {

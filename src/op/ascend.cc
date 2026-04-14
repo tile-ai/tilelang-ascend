@@ -676,7 +676,7 @@ TIR_DEFINE_TL_BUILTIN(ascend_merge_sort)
                                Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_topk)
-    .set_num_inputs(5)
+    .set_num_inputs(7)
     .set_attr<TCallEffectKind>("TCallEffectKind",
                                Integer(CallEffectKind::kOpaque));
 

@@ -69,12 +69,10 @@ def indexer(B, N2, G, S1, S2, D, TOP_K, VECTOR_BASEN, VECTOR_BASEG, BLOCK_M, BLO
                 weight_brcb_ub = T.alloc_ub((VECTOR_BASEG, 8), calc_dtype)
                 reduce_tmp_ub = T.alloc_ub((VECTOR_BASEG, VECTOR_BASEN), calc_dtype)
                 reduce_g_ub = T.alloc_ub(VECTOR_BASEN, calc_dtype)
-                sort_output_ub = T.alloc_ub(VECTOR_BASEN * 2, calc_dtype)
-                sort_index_ub = T.alloc_ub(VECTOR_BASEN, calc_dtype)
-                topk_global_ub1 = T.alloc_ub([TOP_K // VECTOR_BASEN, VECTOR_BASEN * 2], calc_dtype)
-                topk_global_ub1_flat = T.alloc_ub(TOP_K, calc_dtype)
-                topk_global_ub1_uint = T.alloc_ub([TOP_K // VECTOR_BASEN, VECTOR_BASEN * 2], "uint")
-                topk_global_ub2 = T.alloc_ub(TOP_K * 2, calc_dtype)
+                # Accumulate all S2 scores, then topk once
+                score_accum_ub = T.alloc_ub(S2, calc_dtype)
+                topk_dst_ub = T.alloc_ub(2 * TOP_K, calc_dtype)
+                topk_index_ub = T.alloc_ub(TOP_K, calc_dtype)
                 output_ub = T.alloc_ub(TOP_K, "int")
 
                 T.annotate_address(
@@ -87,13 +85,10 @@ def indexer(B, N2, G, S1, S2, D, TOP_K, VECTOR_BASEN, VECTOR_BASEG, BLOCK_M, BLO
                         weight_brcb_ub: 32832,
                         reduce_tmp_ub: 33344,
                         reduce_g_ub: 66112,
-                        sort_output_ub: 67136,
-                        sort_index_ub: 69184,
-                        topk_global_ub1: 70208,
-                        topk_global_ub1_uint: 70208,
-                        topk_global_ub1_flat: 70208,
-                        topk_global_ub2: 78400,
-                        output_ub: 86592,
+                        score_accum_ub: 67136,
+                        topk_dst_ub: 83520,
+                        topk_index_ub: 91712,
+                        output_ub: 95808,
                     }
                 )
 
@@ -103,7 +98,6 @@ def indexer(B, N2, G, S1, S2, D, TOP_K, VECTOR_BASEN, VECTOR_BASEG, BLOCK_M, BLO
                 T.wait_cross_flag(0)
                 for s1_id in T.serial(s1_start_idx, s1_end_idx):
                     T.barrier_all()
-                    T.tile.init_sort_buf(topk_global_ub2, TOP_K * 2, 0)
                     for s2_id in T.serial(S2 // VECTOR_BASEN):
                         T.barrier_all()
                         T.tile.fill(reduce_tmp_ub, 0)
@@ -132,50 +126,20 @@ def indexer(B, N2, G, S1, S2, D, TOP_K, VECTOR_BASEN, VECTOR_BASEG, BLOCK_M, BLO
                             T.barrier_all()
                             T.tile.add(reduce_tmp_ub, mm_res_ub, reduce_tmp_ub)
                             T.barrier_all()
-                        # topK
-                        merge_sort_times = TOP_K // VECTOR_BASEN
                         T.barrier_all()
                         T.reduce_sum(reduce_tmp_ub, reduce_g_ub, 0)
                         T.barrier_all()
-                        T.tile.sort(
-                            sort_output_ub,
-                            reduce_g_ub,
-                            VECTOR_BASEN,
-                        )
-                        T.barrier_all()
-                        T.tile.gather_mask(sort_index_ub, sort_output_ub, "P1010")
-                        T.barrier_all()
-                        T.tile.add(sort_index_ub, sort_index_ub, T.float32(s2_id * VECTOR_BASEN))
-                        T.barrier_all()
-                        row_idx = s2_id % merge_sort_times
+                        # Accumulate scores into flat buffer
                         for i in range(VECTOR_BASEN):
-                            topk_global_ub1[row_idx, i * 2] = sort_output_ub[i * 2]
-                            topk_global_ub1[row_idx, i * 2 + 1] = sort_index_ub[i]
+                            score_accum_ub[s2_id * VECTOR_BASEN + i] = reduce_g_ub[i]
                         T.barrier_all()
-                        if s2_id % merge_sort_times == merge_sort_times - 1:
-                            if s2_id == merge_sort_times - 1:
-                                T.tile.merge_sort(
-                                    topk_global_ub2,
-                                    topk_global_ub1[0, :],
-                                    topk_global_ub1[1, :],
-                                    topk_global_ub1[2, :],
-                                    topk_global_ub1[3, :],
-                                )
-                            else:
-                                T.tile.merge_sort(
-                                    reduce_tmp_ub,
-                                    topk_global_ub1[0, :],
-                                    topk_global_ub1[1, :],
-                                    topk_global_ub1[2, :],
-                                    topk_global_ub1[3, :],
-                                )
-                                T.barrier_all()
-                                T.tile.topk(topk_global_ub2, reduce_tmp_ub, VECTOR_BASEN * merge_sort_times)
-                        T.barrier_all()
+                    # After all s2 iterations, extract top K
                     T.barrier_all()
-                    T.tile.gather_mask(topk_global_ub1, topk_global_ub2, "P1010")
+                    T.tile.topk(topk_dst_ub, score_accum_ub, TOP_K, S2)
                     T.barrier_all()
-                    T.tile.cast(output_ub, topk_global_ub1_flat, "CAST_ROUND", TOP_K)
+                    T.tile.gather_mask(topk_index_ub, topk_dst_ub, "P1010")
+                    T.barrier_all()
+                    T.tile.cast(output_ub, topk_index_ub, "CAST_ROUND", TOP_K)
                     T.barrier_all()
                     T.copy(output_ub, OUT[cid, n2_id, s1_id, 0:TOP_K])
                     T.barrier_all()

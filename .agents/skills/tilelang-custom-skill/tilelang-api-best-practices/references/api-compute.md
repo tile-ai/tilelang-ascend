@@ -254,17 +254,25 @@ T.tile.cast(b_ub, a_ub, "CAST_RINT", 4096)
 
 #### T.tile.sort(dst, src, actual_num)
 
-任意长度序列降序排序。dst 以 (val0, index0, val1, index1, ...) 形式交替存储。
+**参数**：
 
-**注意**：
+  - dst：存储排序后结果的目标缓冲区(val0, index0, val1, index1 ,...)
+  - src：源操作数，待排序数据(val0, val1, val2, ...)
+  - actual_num：src 中实际参与排序的元素数量
 
-- dst 和 src 仅支持 float32 和 float16
-- dst 大小至少为 src 的 2 倍（value-index 交替）
-- index 数据由后端自动生成
+**功能**：排序函数，将任意长度数据按照数值大小进行一次性降序排序
 
-```python
+**举例**：
+
+```
+# 对131个数进行排序
+# 131向上对齐到160，src.shape = (1, 160), actual_num = 131
 T.tile.sort(dst, src, actual_num)
 ```
+
+**注意事项**：
+  - `dst`与 `src` 数据类型相同，仅支持float32和float16数据类型
+  - `src` 的大小需要满足32或32的整数倍
 
 #### T.tile.merge_sort(dst, src0, src1, src2=None, src3=None)
 
@@ -276,13 +284,28 @@ T.tile.merge_sort(merge_dst, src0, src1, src2)       # 3-way
 T.tile.merge_sort(merge_dst, src0, src1, src2, src3) # 4-way
 ```
 
-#### T.tile.topk(dst, src, block_size)
+#### T.tile.topk(dst, src, K, actual_num)
 
-获取前 K 个最大值及其索引。
+**参数**：
 
-```python
-T.tile.topk(topk_global, sort_result, top_k)
+  - dst：存储TopK结果的目标缓冲区(val0, index0, val1, index1 ,...)
+  - src：包含输入数据的源缓冲区(val0, val1, val2, ...)
+  - K：前K个排序结果
+  - actual_num：实际参与排序的元素个数
+
+**功能**：执行 TopK 操作，实现对源数据的一次性从大到小排序，选择前K个元素，以（数、索引）的方式输出
+
+**举例**:
+
 ```
+# 对41个数进行排序，选择前10个数
+# 需要使41向上对齐至32 * 2 = 64，K = 10, actual_num = 41
+# topk_global.shape = (1, 20)sort_result.shape = (1, 64)
+T.tile.topk(topk_global, sort_result, K, actual_num)
+```
+
+**注意事项**：
+  - `src` 的大小需要满足32或32的整数倍
 
 ### 4.11 两种编程范式对比
 
