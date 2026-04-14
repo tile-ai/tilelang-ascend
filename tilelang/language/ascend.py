@@ -3,6 +3,7 @@ import tilelang.language as T
 from tvm.tir import PrimExpr, Buffer, BufferRegion, Var
 from typing import Union, Literal  # noqa: F401, UP035
 from tvm import tir
+import math
 
 
 _pipe = Literal["fix", "mte1", "mte2", "mte3", "m", "v"]
@@ -399,7 +400,7 @@ def gemm_v0(A, B, C, transpose_A=False, transpose_B=False, init=False):
 
     Aptr = _retrieve_ptr(A, "r")
     Bptr = _retrieve_ptr(B, "r")
-    Cptr = _retrieve_ptr(C, "rw")
+    Cptr = _retrieve_ptr(C, "w" if init is True else "rw")
 
     # assert _dtype(A) == _dtype(B), f"gemm A and B dtype mismatch: {_dtype(A)} vs {_dtype(B)}"
     return T.call_intrin(
@@ -507,7 +508,6 @@ def set_deq_scale(scale: PrimExpr):
 def reduce(
     buffer: Buffer | BufferRegion,
     out: Buffer | BufferRegion,
-    tmp: Buffer | BufferRegion,
     reduce_type: str,
     dim: int,
     real_shape: list[int] = None,
@@ -520,7 +520,8 @@ def reduce(
         indices = [x.min for x in br.region]
         offset = bf.offset_of(indices)[0]
         extent = [x.extent for x in br.region]
-        return bf.access_ptr(mask, offset=offset), extent
+        size_extent = math.prod(extent)
+        return bf.access_ptr(mask, offset=offset, extent=size_extent), extent
 
     if isinstance(buffer, BufferRegion):
         buffer_ptr, buffer_extent = _handle_buffer_region(buffer, "r")
@@ -532,11 +533,6 @@ def reduce(
         out_ptr, _ = _handle_buffer_region(out, "w")
     else:
         out_ptr = out.access_ptr("w")
-
-    if isinstance(tmp, BufferRegion):
-        tmp_ptr, _ = _handle_buffer_region(tmp, "r")
-    else:
-        tmp_ptr = tmp.access_ptr("r")
 
     if len(buffer_extent) == 2:
         M = buffer_extent[0] if real_shape[0] == 0 else real_shape[0]
@@ -552,47 +548,43 @@ def reduce(
         f"{reduce_type}<{dtype}, {shape}, {dim}>",
         out_ptr,
         buffer_ptr,
-        tmp_ptr,
     )
 
 
-def reduce_max(buffer: Buffer, out: Buffer, tmp: Buffer, dim: int, real_shape: list[int] = None):
+def reduce_max(buffer: Buffer, out: Buffer, dim: int, real_shape: list[int] = None):
     """Performs a reduction max operation.
 
     Args:
         buffer: The source buffer (2D).
         out: The destination buffer.
-        tmp: The temporary buffer.
         dim: The dimension to reduce along (-1 for last dim).
     """
     if real_shape is None:
         real_shape = [0, 0]
-    return reduce(buffer, out, tmp, "reduce_max", dim, real_shape)
+    return reduce(buffer, out, "reduce_max", dim, real_shape)
 
 
-def reduce_min(buffer: Buffer, out: Buffer, tmp: Buffer, dim: int, real_shape: list[int] = None):
+def reduce_min(buffer: Buffer, out: Buffer, dim: int, real_shape: list[int] = None):
     """Performs a reduction min operation.
 
     Args:
         buffer: The source buffer (2D).
         out: The destination buffer.
-        tmp: The temporary buffer.
         dim: The dimension to reduce along (-1 for last dim).
     """
     if real_shape is None:
         real_shape = [0, 0]
-    return reduce(buffer, out, tmp, "reduce_min", dim, real_shape)
+    return reduce(buffer, out, "reduce_min", dim, real_shape)
 
 
-def reduce_sum(buffer: Buffer, out: Buffer, tmp: Buffer, dim: int, real_shape: list[int] = None):
+def reduce_sum(buffer: Buffer, out: Buffer, dim: int, real_shape: list[int] = None):
     """Performs a reduction sum operation.
 
     Args:
         buffer: The source buffer (2D).
         out: The destination buffer.
-        tmp: The temporary buffer.
         dim: The dimension to reduce along (-1 for last dim).
     """
     if real_shape is None:
         real_shape = [0, 0]
-    return reduce(buffer, out, tmp, "reduce_sum", dim, real_shape)
+    return reduce(buffer, out, "reduce_sum", dim, real_shape)

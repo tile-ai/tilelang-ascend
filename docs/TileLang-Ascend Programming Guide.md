@@ -592,13 +592,12 @@ fragment层级的存储对应偏上的寄存器级别的存储单元，一般用
 
 ##### 4.1.3.2 Reduce类
 
-- `T.reduce_sum(buffer: Buffer, out: Buffer, tmp: Buffer, dim: int)`
+- `T.reduce_sum(buffer: Buffer, out: Buffer, dim: int)`
 
   **参数**：
 
   - buffer：输入buffer
   - out：目的输出buffer
-  - tmp：临时申请buffer
   - dim：reduce轴（-1：last dim）
 
   **功能说明**：
@@ -615,26 +614,21 @@ fragment层级的存储对应偏上的寄存器级别的存储单元，一般用
 
   ![image-tilelang_ascend_reducesum_2](./images/image-tilelang_ascend_reducesum_2.png)
 
-  **注意**：
-
-  由于该接口的内部实现中涉及复杂的数学计算，需要额外的临时空间来存储计算过程中的中间变量。临时空间通过sharedTmpBuffer入参传入。
 
   **举例**：
 
   ```
-  tmp_ub = T.alloc_ub([3 * DataType(accum_dtype).bits // 8 * block_M // 2 * block_N], "uint8")
-  T.reduce_sum(acc_s_ub, sumexp_i_ub, tmp_ub, dim=-1)
+  T.reduce_sum(acc_s_ub, sumexp_i_ub, dim=-1)
   ```
 
   
 
-- `T.reduce_max(buffer: Buffer, out: Buffer, tmp: Buffer, dim: int)`
+- `T.reduce_max(buffer: Buffer, out: Buffer, dim: int)`
 
   **参数**：
 
   - buffer：输入buffer（2D）
   - out：目的输出buffer
-  - tmp：临时申请buffer
   - dim：reduce轴（-1：last dim）
 
   **功能说明**：
@@ -651,24 +645,19 @@ fragment层级的存储对应偏上的寄存器级别的存储单元，一般用
 
   ![image-tilelang_ascend_reducemax_2](./images/image-tilelang_ascend_reducemax_2.png)
 
-  **注意**：
-
-  由于该接口的内部实现中涉及复杂的数学计算，需要额外的临时空间来存储计算过程中的中间变量。临时空间通过sharedTmpBuffer入参传入。
 
   **举例**：
 
   ```
-  tmp_ub = T.alloc_ub([3 * DataType(accum_dtype).bits // 8 * block_M // 2 * block_N], "uint8")
-  T.reduce_max(acc_s_ub, m_i, tmp_ub, dim=-1)
+  T.reduce_max(acc_s_ub, m_i, dim=-1)
   ```
 
-- `T.reduce_min(buffer: Buffer, out: Buffer, tmp: Buffer, dim: int)`  
+- `T.reduce_min(buffer: Buffer, out: Buffer, dim: int)`  
 
   **参数**：
 
   - buffer：输入buffer
   - out：目的输出buffer
-  - tmp：临时申请buffer
   - dim：reduce轴（-1：last dim）
 
   **功能说明**：
@@ -685,15 +674,10 @@ fragment层级的存储对应偏上的寄存器级别的存储单元，一般用
 
   ![image-tilelang_ascend_reducemin_2](./images/image-tilelang_ascend_reducemin_2.png)
 
-  **注意**：
-
-  由于该接口的内部实现中涉及复杂的数学计算，需要额外的临时空间来存储计算过程中的中间变量。临时空间通过sharedTmpBuffer入参传入。
-
   **举例**：
 
   ```
-  tmp = T.alloc_ub((2 * sub_block_M, N), "uint8")
-  T.reduce_min(a_ub, b_ub, tmp, dim=-1)
+  T.reduce_min(a_ub, b_ub, dim=-1)
   ```
   
 
@@ -1167,8 +1151,8 @@ Expert编程模式可以复用Developer模式的Reduce类计算原语。
 | ReLU       | T.tile.relu(dst, src0)                   | element-wise 进行ReLU激活计算，dst = max(0, src0)            |
 | LeakeyReLU | T.tile.leaky_relu(dst, src0, scalar)     | element-wise 进行Leaky ReLU激活计算，dst = src0 if src0 >= 0 else src0 * scalar |
 | AXPY       | T.tile.axpy(dst, src0, scalar)           | element-wise 进行AXPY计算，dst = scalar * src0 + dst         |
-| 正弦       | T.tile.sin(dst, src0, tmp)               | element-wise 进行sin计算，dst = sin(src)                     |
-| 余弦       | T.tile.cos(dst, src0, tmp)               | element-wise 进行cos计算，dst = sin(src)                     |
+| 正弦       | T.tile.sin(dst, src0)               | element-wise 进行sin计算，dst = sin(src)                     |
+| 余弦       | T.tile.cos(dst, src0)               | element-wise 进行cos计算，dst = sin(src)                     |
 | 与         | T.tile.bitwise_and(dst, src0, src1)      | element-wise bitwise AND，dst = src0 & src1                  |
 | 或         | T.tile.bitwise_or(dst, src0, src1)       | element-wise bitwise OR，dst = src0                          |
 | 非         | T.tile.bitwise_not(dst, src0)            | element-wise bitwise NOT，dst = ~src0                        |
@@ -1444,13 +1428,12 @@ Expert编程模式可以复用Developer模式的Reduce类计算原语。
   T.tile.axpy(c_ub, a_ub, scalar)
   ```
 
-- `T.tile.sin(dst, src0, tmp)`:
+- `T.tile.sin(dst, src0)`:
 
   **参数**：
 
   - dst：计算结果存放目的buffer
   - src0：源操作数，数据类型为buffer类型
-  - tmp：内部计算需要提供的临时申请的缓冲区
 
   **功能**：element-wise 进行sin计算，dst = sin(src)
 
@@ -1458,16 +1441,15 @@ Expert编程模式可以复用Developer模式的Reduce类计算原语。
 
   ```
   #a_ub逐元素进行sin计算，结果存放到c_ub
-  T.tile.sin(c_ub, a_ub, tmp)
+  T.tile.sin(c_ub, a_ub)
   ```
 
-- `T.tile.cos(dst, src0, tmp)`:
+- `T.tile.cos(dst, src0)`:
 
   **参数**：
 
   - dst：计算结果存放目的buffer
   - src0：源操作数，数据类型为buffer类型
-  - tmp：内部计算需要提供的临时申请的缓冲区
 
   **功能**：element-wise 进行cos计算，dst = cos(src)
 
@@ -1475,7 +1457,7 @@ Expert编程模式可以复用Developer模式的Reduce类计算原语。
 
   ```
   #a_ub逐元素进行计算cos，结果存放到c_ub
-  T.tile.cos(c_ub, a_ub, tmp)
+  T.tile.cos(c_ub, a_ub)
   ```
 
 **(2) 逻辑计算**
@@ -1747,15 +1729,13 @@ Expert编程模式可以复用Developer模式的Reduce类计算原语。
 
 ###### 4.1.3.2.7 排序组合
 
-- `T.tile.sort(dst, src, indices, tmp_buffer, repeat_time):`
+- `T.tile.sort(dst, src, actual_num):`
 
   **参数**：
 
   - dst：保存排序后的数据的存储buffer
   - src：源操作数，待排序数据
-  - indices：存储排序元素原始索引的缓冲区
-  - tmp_buffer：排序计算硬件所需的临时缓冲区
-  - repeat_time：重复迭代次数
+  - actual_num：src 中有效元素的数量。当 actual_num 小于缓冲区大小时，排序前未使用的位置会用 -inf 填充
 
   **功能**：排序函数，按照数值大小进行降序排序。
 
@@ -1764,49 +1744,72 @@ Expert编程模式可以复用Developer模式的Reduce类计算原语。
   **举例**：
 
   ```
-  T.tile.sort(dst, src, indices, tmp_buffer, repeat_time)
+  T.tile.sort(dst, src, actual_num)
   ```
 
-- `T.tile.merge_sort(dst, src, block_size, block_num, is_copy):`
+- `T.tile.merge_sort(dst, src0, src1, src2=None, src3=None):`
 
   **参数**：
 
-  - dst：排序结果将存储到的目标缓冲区
-  - src：包含待合并或排序数据的源缓冲区
-  - block_size：每个待合并块中的元素数量
-  - block_num：待处理的区块总数
-  - is_copy：一个布尔标志（0 或 1），用于指示是否在复制数据时不进行排序
+  - dst：归并结果输出缓冲区
+  - tmp：临时缓冲区，用于归并计算的中间结果存储
+  - src0：第一个已排序的源数据缓冲区
+  - src1：第二个已排序的源数据缓冲区
+  - src2：第三个已排序的源数据缓冲区（可选，3-way 或 4-way 归并时需要）
+  - src3：第四个已排序的源数据缓冲区（可选，4-way 归并时需要）
 
-  **功能**：将已经排好序的最多4条队列，合并排列成1条队列。
+  **功能**：将多个已排序的数据块合并为一个有序结果，支持 2-way、3-way 和 4-way 归并排序。
 
-  更详细说明，详见AscendC文档：https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/83RC1alpha002/API/ascendcopapi/atlasascendc_api_07_0847.html
+  **数据格式**：输入/输出格式均为 value-index pair：`[value0, index0, value1, index1, value2, index2, ...]`，按降序排列。
+
+  数据类型为float，每个结构占据8Bytes：
+
+  ![image-tilelang_ascend_mergesort2](./images/zh-cn_image_0000002449970177.png)
+
+  数据类型为half，每个结构也占据8Bytes，中间有2Bytes保留：
+  
+  ![image-tilelang_ascend_mergesort2](./images/zh-cn_image_0000002449890293.png)
 
   **举例**：
 
-  ```
-  T.tile.merge_sort(dst, src, block_size, block_num, 0)
+  ```python
+  # 2-way 归并
+  T.tile.merge_sort(merge_dst, src0, src1)
+
+  # 3-way 归并
+  T.tile.merge_sort(merge_dst, src0, src1, src2)
+
+  # 4-way 归并
+  T.tile.merge_sort(merge_dst, src0, src1, src2, src3)
   ```
 
-- `T.tile.topk(dst, src, tmp_buffer, block_size):`
+  **注意事项**：
+  - `tmp` 缓冲区大小需与 `dst` 相同
+  - 输入缓冲区必须已按降序排序
+  - 所有缓冲区的数据格式必须为 value-index pair（每 2 个 float 表示一个元素）
+  - 建议配合 `T.tile.sort32` 一起使用
+
+  更详细说明，详见AscendC文档：https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/83RC1alpha002/API/ascendcopapi/atlasascendc_api_07_0232.html
+
+- `T.tile.topk(dst, src, block_size):`
 
   **参数**：
 
   - dst：存储TopK结果的目标缓冲区
   - src：包含输入数据的源缓冲区
-  - tmp_buffer：用于处理过程中中间计算的临时缓冲区
   - block_size：待处理数据块的大小
 
-  **功能**：获取最后一个维度的前k个最大值或最小值及其对应的索引。
+  **功能**：执行 TopK 操作，调用底层实现来从源数据中选取前 K 个元素
 
   更详细说明，详见AscendC文档：https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/83RC1alpha002/API/ascendcopapi/atlasascendc_api_07_0836.html
 
   **举例**:
 
   ```
-  T.tile.topk(topk_global, sort_result, sort_temp, top_k)
+  T.tile.topk(topk_global, sort_result, top_k)
   ```
 
-###### 4.1.3.2.6 数据分散/收集
+###### 4.1.3.2.8 数据分散/收集
 
 - `T.tile.gather(dst, src, src_offset, src_base_addr):`
 
@@ -1827,7 +1830,7 @@ Expert编程模式可以复用Developer模式的Reduce类计算原语。
   T.tile.gather(c_ub, a_ub, b_ub, 0)
   ```
 
-###### 4.1.3.2.7 索引操作
+###### 4.1.3.2.9 索引操作
 
 - `T.tile.arith_progression(buffer, first_value, diff_value, count):`
 
@@ -1846,6 +1849,22 @@ Expert编程模式可以复用Developer模式的Reduce类计算原语。
 
   ```
   T.tile.arith_progression(sort_indices, 0, 1, block_N)
+  ```
+
+###### 4.1.3.2.10 数据清除
+
+- `T.tile.clear(buffer):`
+
+  **参数**：
+
+  - buffer：要填充的数据buffer
+
+  **功能**：将数据buffer填充为0，实现buffer清空操作。
+
+  **举例**：
+
+  ```
+  T.tile.clear(ub)；
   ```
 
 #### 4.1.4 同步原语
@@ -2125,7 +2144,3 @@ g.replay()
 | 2026.1.22 | Initial release | Chaoyang Ji |
 | 2026.2.03 | MsProf update   | Yuhan Zhang |
 | 2026.3.12 | aclgraph        |   Di He     |
-
-
-
-

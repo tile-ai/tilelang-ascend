@@ -129,7 +129,6 @@ def flash_attention_fwd(
             acc_s_half = T.alloc_ub([block_M // 2, block_N], dtype)
 
             work_ub = T.alloc_ub([block_M // 2, block_N], accum_dtype)
-            tmp_ub = T.alloc_ub([DataType(accum_dtype).bits // 8 * block_M // 2 * 128], "uint8")
             buf_2d = T.alloc_ub([block_M // 2, block_N], accum_dtype)
 
             my_start, my_count = task_range(cid)
@@ -276,10 +275,10 @@ def flash_attention_fwd(
                             T.copy(io_buf, work_ub)
                             T.set_flag("V", "MTE2", SIG_IO_UB)
 
-                            T.reduce_max(work_ub, neg_sm[cur, :, :], tmp_ub, dim=-1)
+                            T.reduce_max(work_ub, neg_sm[cur, :, :], dim=-1)
                             T.tile.mul(neg_sm[cur, :, :], neg_sm[cur, :, :], -sm_scale)
                             T.tile.min(neg_sm[cur, :, :], neg_sm[cur, :, :], neg_sm[prv, :, :])
-                            T.tile.broadcast(buf_2d, neg_sm[cur, :, :], tmp_ub)
+                            T.tile.broadcast(buf_2d, neg_sm[cur, :, :])
                             T.tile.axpy(buf_2d, work_ub, sm_scale)
                             T.tile.exp(work_ub, buf_2d)
 
@@ -293,7 +292,7 @@ def flash_attention_fwd(
                             if (i + 1) % cross_interval == 0 or i == batch_iters - 1:
                                 T.set_cross_flag("MTE3", SEM_WS2_V2C)
 
-                            T.reduce_sum(work_ub, sumexp_is[i, :, :], tmp_ub, dim=-1)
+                            T.reduce_sum(work_ub, sumexp_is[i, :, :], dim=-1)
 
                             T.tile.sub(r_factors[i, :, :], neg_sm[cur, :, :], neg_sm[prv, :, :])
 
@@ -304,7 +303,7 @@ def flash_attention_fwd(
                             T.tile.exp(r_factors[i, :, :], r_factors[i, :, :])
                             T.tile.mul(sumexp, sumexp, r_factors[i, :, :])
                             T.tile.add(sumexp, sumexp, sumexp_is[i, :, :])
-                            T.tile.broadcast(buf_2d, r_factors[i, :, :], tmp_ub)
+                            T.tile.broadcast(buf_2d, r_factors[i, :, :])
                             T.tile.mul(acc_o, acc_o, buf_2d)
 
                             T.wait_flag("V", "MTE2", SIG_IO_UB)
@@ -321,7 +320,7 @@ def flash_attention_fwd(
 
                         T.set_cross_flag("MTE2", SEM_WS3_V2C)
 
-                    T.tile.broadcast(buf_2d, sumexp, tmp_ub)
+                    T.tile.broadcast(buf_2d, sumexp)
                     T.tile.div(acc_o, acc_o, buf_2d)
 
                     T.copy(acc_o, acc_s_half)

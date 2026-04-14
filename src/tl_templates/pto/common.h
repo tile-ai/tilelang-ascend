@@ -313,9 +313,16 @@ AICORE PTO_INLINE void copy_gm_to_ub_dynamic(
         using DstTile = pto::Tile<pto::TileType::Vec, T2, ub_shape1, ub_shape2,
                                   pto::BLayout::RowMajor, ub_shape1, ub_shape2,
                                   pto::SLayout::NoneBox, 512, PadVal>;
+        set_flag(PIPE_MTE2, PIPE_V, EVENT_ID0);
+        wait_flag(PIPE_MTE2, PIPE_V, EVENT_ID0);
         DstTile dst_tile;
         pto::TASSIGN(dst_tile, ub_shape_addr + ub_offset * len);
         pto::TFILLPAD_INPLACE(dst_tile, src_tile);
+        set_flag(PIPE_V, PIPE_MTE2, EVENT_ID0);
+        wait_flag(PIPE_V, PIPE_MTE2, EVENT_ID0);
+        set_flag(PIPE_V, PIPE_MTE3, EVENT_ID0);
+        wait_flag(PIPE_V, PIPE_MTE3, EVENT_ID0);
+        pipe_barrier(PIPE_V);
       }
     }
   } else {
@@ -468,8 +475,15 @@ AICORE PTO_INLINE void copy_gm_to_ub(__gm__ T1 *handle, int32_t ub_shape_addr,
                                   pto::BLayout::RowMajor, ub_shape1, ub_shape2,
                                   pto::SLayout::NoneBox, 512, PadVal>;
         DstTile dst_tile;
+        set_flag(PIPE_MTE2, PIPE_V, EVENT_ID0);
+        wait_flag(PIPE_MTE2, PIPE_V, EVENT_ID0);
         pto::TASSIGN(dst_tile, ub_shape_addr + ub_offset * len);
         pto::TFILLPAD_INPLACE(dst_tile, src_tile);
+        set_flag(PIPE_V, PIPE_MTE2, EVENT_ID0);
+        wait_flag(PIPE_V, PIPE_MTE2, EVENT_ID0);
+        set_flag(PIPE_V, PIPE_MTE3, EVENT_ID0);
+        wait_flag(PIPE_V, PIPE_MTE3, EVENT_ID0);
+        pipe_barrier(PIPE_V);
       }
     }
   } else {
@@ -733,50 +747,16 @@ template <> struct is_float_or_half<float> : std::true_type {};
 
 template <> struct is_float_or_half<half> : std::true_type {};
 
-template <typename T, int32_t row, int32_t col, int32_t tmp_rows>
+template <typename T, int32_t row, int32_t col>
 AICORE PTO_INLINE typename std::enable_if<is_float_or_half<T>::value>::type
 pow(TileUbDataND<T, row, col, row, col> &dst,
     TileUbDataND<T, row, col, row, col> &src0,
-    TileUbDataND<T, row, col, row, col> &src1,
-    TileUbDataND<uint8_t, tmp_rows, col, tmp_rows, col> &tmp) {
+    TileUbDataND<T, row, col, row, col> &src1) {
   TLOG(src0, src0);
   pipe_barrier(PIPE_V);
   TMUL(dst, src0, src1);
   pipe_barrier(PIPE_V);
   TEXP(dst, dst);
-}
-
-template <typename T, int32_t row, int32_t col, int32_t tmp_rows>
-AICORE PTO_INLINE typename std::enable_if<std::is_integral<T>::value>::type
-pow(TileUbDataND<T, row, col, row, col> &dst,
-    TileUbDataND<T, row, col, row, col> &src0,
-    TileUbDataND<T, row, col, row, col> &src1,
-    TileUbDataND<uint8_t, tmp_rows, col, tmp_rows, col> &tmp) {
-  using FloatT = float;
-  constexpr int32_t float_buf_size = row * col * sizeof(FloatT);
-  auto tmp_float0 = reinterpret_cast<__ubuf__ FloatT *>(tmp.data());
-  auto tmp_float1 =
-      reinterpret_cast<__ubuf__ FloatT *>(tmp.data() + float_buf_size);
-
-  TileUbDataND<FloatT, row, col, row, col> src0_float;
-  TileUbDataND<FloatT, row, col, row, col> log_src0_float;
-  TileUbDataND<FloatT, row, col, row, col> src1_float;
-
-  pto::TASSIGN(src0_float, reinterpret_cast<uint64_t>(tmp_float0));
-  pto::TASSIGN(log_src0_float, reinterpret_cast<uint64_t>(tmp_float1));
-  pto::TASSIGN(src1_float, reinterpret_cast<uint64_t>(tmp_float0));
-
-  pto::TCVT(src0_float, src0, pto::RoundMode::CAST_ROUND);
-  pipe_barrier(PIPE_V);
-  pto::TLOG(log_src0_float, src0_float);
-  pipe_barrier(PIPE_V);
-  pto::TCVT(src1_float, src1, pto::RoundMode::CAST_ROUND);
-  pipe_barrier(PIPE_V);
-  pto::TMUL(log_src0_float, log_src0_float, src1_float);
-  pipe_barrier(PIPE_V);
-  pto::TEXP(log_src0_float, log_src0_float);
-  pipe_barrier(PIPE_V);
-  pto::TCVT(dst, log_src0_float, pto::RoundMode::CAST_ROUND);
 }
 
 enum class BinaryOps { TADDS, TSUBS, TMULS, TDIVS, TMAXS, TMINS };
@@ -909,6 +889,70 @@ AICORE PTO_INLINE void wait_intra_block_cube(int32_t flag) {
 template <pipe_t pipe>
 AICORE PTO_INLINE void wait_intra_block_vec(int32_t flag) {
   wait_intra_block(pipe, flag);
+}
+
+// ============================================================================
+// Merge Sort for PTO backend
+// tmp buffer is passed from caller, MrgSortExecutedNumList is managed
+// internally Each element is a value-index pair: 2 floats per element [value,
+// index]
+// ============================================================================
+
+// 2-way merge sort
+template <typename T, int32_t SrcCols, int32_t DstCols>
+AICORE PTO_INLINE void
+MergeSort(TileUbDataND<T, 1, DstCols, 1, DstCols> &dst,
+          TileUbDataND<T, 1, DstCols, 1, DstCols> &tmp,
+          TileUbDataND<T, 1, SrcCols, 1, SrcCols> &src0,
+          TileUbDataND<T, 1, SrcCols, 1, SrcCols> &src1) {
+
+  pto::MrgSortExecutedNumList executedNumList;
+  pto::TMRGSORT<TileUbDataND<T, 1, DstCols, 1, DstCols>,
+                TileUbDataND<T, 1, DstCols, 1, DstCols>,
+                TileUbDataND<T, 1, SrcCols, 1, SrcCols>,
+                TileUbDataND<T, 1, SrcCols, 1, SrcCols>, false>(
+      dst, executedNumList, tmp, src0, src1);
+  pipe_barrier(PIPE_V);
+}
+
+// 3-way merge sort
+template <typename T, int32_t SrcCols, int32_t DstCols>
+AICORE PTO_INLINE void
+MergeSort(TileUbDataND<T, 1, DstCols, 1, DstCols> &dst,
+          TileUbDataND<T, 1, DstCols, 1, DstCols> &tmp,
+          TileUbDataND<T, 1, SrcCols, 1, SrcCols> &src0,
+          TileUbDataND<T, 1, SrcCols, 1, SrcCols> &src1,
+          TileUbDataND<T, 1, SrcCols, 1, SrcCols> &src2) {
+
+  pto::MrgSortExecutedNumList executedNumList;
+  pto::TMRGSORT<TileUbDataND<T, 1, DstCols, 1, DstCols>,
+                TileUbDataND<T, 1, DstCols, 1, DstCols>,
+                TileUbDataND<T, 1, SrcCols, 1, SrcCols>,
+                TileUbDataND<T, 1, SrcCols, 1, SrcCols>,
+                TileUbDataND<T, 1, SrcCols, 1, SrcCols>, false>(
+      dst, executedNumList, tmp, src0, src1, src2);
+  pipe_barrier(PIPE_V);
+}
+
+// 4-way merge sort
+template <typename T, int32_t SrcCols, int32_t DstCols>
+AICORE PTO_INLINE void
+MergeSort(TileUbDataND<T, 1, DstCols, 1, DstCols> &dst,
+          TileUbDataND<T, 1, DstCols, 1, DstCols> &tmp,
+          TileUbDataND<T, 1, SrcCols, 1, SrcCols> &src0,
+          TileUbDataND<T, 1, SrcCols, 1, SrcCols> &src1,
+          TileUbDataND<T, 1, SrcCols, 1, SrcCols> &src2,
+          TileUbDataND<T, 1, SrcCols, 1, SrcCols> &src3) {
+
+  pto::MrgSortExecutedNumList executedNumList;
+  pto::TMRGSORT<TileUbDataND<T, 1, DstCols, 1, DstCols>,
+                TileUbDataND<T, 1, DstCols, 1, DstCols>,
+                TileUbDataND<T, 1, SrcCols, 1, SrcCols>,
+                TileUbDataND<T, 1, SrcCols, 1, SrcCols>,
+                TileUbDataND<T, 1, SrcCols, 1, SrcCols>,
+                TileUbDataND<T, 1, SrcCols, 1, SrcCols>, false>(
+      dst, executedNumList, tmp, src0, src1, src2, src3);
+  pipe_barrier(PIPE_V);
 }
 
 template <typename T, int32_t Rows, int32_t Cols>

@@ -38,7 +38,6 @@ def rms_norm_kernel(M, head_dim, block_M, eps, dtype="float16"):
 
             sum_square_ub = T.alloc_shared([row_per_vec, head_dim], ACC_DTYPE)
             rms_ub = T.alloc_shared([row_per_vec], ACC_DTYPE)
-            tmp_ub = T.alloc_shared(row_per_vec * head_dim, TMP_DTYPE)
 
             ## Accumulation
             T.copy(x[row_x : row_x + row_per_vec, :], x_ub)
@@ -46,7 +45,7 @@ def rms_norm_kernel(M, head_dim, block_M, eps, dtype="float16"):
             T.tile.mul(sum_square_ub, x_ub_fp32, x_ub_fp32)
 
             ## Reduce
-            T.reduce_sum(sum_square_ub, rms_ub, tmp_ub, dim=-1)
+            T.reduce_sum(sum_square_ub, rms_ub, dim=-1)
 
             ## Compute mean and variance
             T.tile.div(rms_ub, rms_ub, head_dim)
@@ -126,11 +125,10 @@ def rope_kernel_in_place(
             idx_ub = T.alloc_shared([row_per_vec, rope_dim], "int32")
             tmp_ub_i16 = T.alloc_shared([row_per_vec, rope_dim], "int16")
             ones_mask_ub = T.alloc_shared([row_per_vec, rope_dim], "int16")
-            xor_tmp_ub = T.alloc_shared([row_per_vec, rope_dim], "int16")
             T.tile.createvecindex(idx_ub, 0)
             T.copy(idx_ub, tmp_ub_i16)
             T.tile.fill(ones_mask_ub, 1)
-            T.tile.bitwise_xor(mask_ub_i16, tmp_ub_i16, ones_mask_ub, xor_tmp_ub)
+            T.tile.bitwise_xor(mask_ub_i16, tmp_ub_i16, ones_mask_ub)
             T.copy(mask_ub_i16, mask_ub_f32)
             T.copy(mask_ub_f32, mask_ub_i32)
             T.tile.mul(mask_ub_i32, mask_ub_i32, 4)
@@ -143,11 +141,10 @@ def rope_kernel_in_place(
             T.tile.mul(sin_ub[0, :], sin_ub[0, :], sin_mask_ub)
 
             # 4. broadcast sin/cos: [1, rope_dim] -> [row_per_vec, rope_dim]
-            tmp_ub = T.alloc_shared(row_per_vec * rope_dim, TMP_DTYPE)
             sin_block_ub = T.alloc_shared([row_per_vec, rope_dim], ACC_DTYPE)
-            T.tile.broadcast(sin_block_ub, sin_ub, tmp_ub)
+            T.tile.broadcast(sin_block_ub, sin_ub)
             cos_block_ub = T.alloc_shared([row_per_vec, rope_dim], ACC_DTYPE)
-            T.tile.broadcast(cos_block_ub, cos_ub, tmp_ub)
+            T.tile.broadcast(cos_block_ub, cos_ub)
 
             # 5. rotate x
             x_rotate_ub = T.alloc_shared([row_per_vec, rope_dim], ACC_DTYPE)

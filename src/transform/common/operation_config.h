@@ -12,6 +12,8 @@
 #include <utility>
 #include <vector>
 
+#include "../../op/ascend.h"
+
 namespace tvm {
 namespace tl {
 
@@ -97,8 +99,7 @@ GetOperationConfig() {
        {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
       {"AscendC::ShiftRight",
        {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
-      {"AscendC::Sort",
-       {{{0, "write"}, {1, "read"}, {2, "read"}, {3, "read"}}, "PIPE_V"}},
+      {"AscendC::Sort", {{{1, "write"}, {2, "read"}, {3, "write"}}, "PIPE_V"}},
       {"AscendC::ArithProgression", {{{0, "write"}}, "PIPE_V"}},
       {"GatherMask", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
       {"AscendC::BilinearInterpolation",
@@ -218,7 +219,14 @@ GetOperationConfig() {
       {"tl.arith_progression", {{{1, "write"}}, "PIPE_V"}},
       {"tl.ascend_sort",
        {{{1, "write"}, {2, "read"}, {3, "read"}, {4, "read"}}, "PIPE_V"}},
-      {"tl.ascend_merge_sort", {{{1, "write"}, {2, "read"}}, "PIPE_V"}},
+      {"tl.ascend_merge_sort",
+       {{{2, "write"},
+         {3, "write"},
+         {4, "read"},
+         {5, "read"},
+         {6, "read"},
+         {7, "read"}},
+        "PIPE_V"}},
       {"tl.ascend_topk", {{{1, "write"}, {2, "read"}, {3, "read"}}, "PIPE_V"}},
       {"tl.ascend_gather_mask", {{{1, "write"}, {2, "read"}}, "PIPE_V"}},
       {"tl.ascend_init_sort_buf", {{{1, "write"}}, "PIPE_V"}},
@@ -303,6 +311,43 @@ const std::unordered_set<std::string> kScopesToFlatten = {
  * dimension. */
 const std::unordered_map<std::string, int> kScopeForAlignment = {
     {"shared", 32 * 8}};
+
+const std::unordered_map<const tvm::OpNode *, int64_t> ascendc_tmp_arg_ops = {
+    {tl::ascend_clamp().get(), 3},
+    {tl::ascend_clamp_max().get(), 3},
+    {tl::ascend_clamp_min().get(), 3},
+    {tl::ascend_reduce().get(), 3},
+    {tl::ascend_sort().get(), 3},
+    {tl::ascend_topk().get(), 3},
+    {tl::ascend_sigmoid().get(), 2},
+    {tl::ascend_bilinear_interpolation().get(), 10},
+    {tl::ascend_sin().get(), 2},
+    {tl::ascend_cos().get(), 2},
+    {tl::ascend_pow().get(), 3},
+    {tl::ascend_bitwise_xor().get(), 3},
+    {tl::ascend_round().get(), 2},
+    {tl::ascend_broadcast().get(), 3},
+    {tl::ascend_reducesum_experiment().get(), 2},
+    {tl::ascend_reducesum_mask_experiment().get(), 2},
+    {tl::ascend_merge_sort().get(), 3},
+};
+
+// The PTO currently supports the following vector APIs with tmp parameters.
+// However, among these, only the reduce and bitwise_xor operators actually
+// require tmp. For other APIs, tmp is retained to keep the codegen logic for
+// obtaining API arguments unchanged.
+const std::unordered_map<const tvm::OpNode *, int64_t> pto_tmp_arg_ops = {
+    {tl::ascend_clamp().get(), 3},       
+    {tl::ascend_clamp_max().get(), 3},
+    {tl::ascend_clamp_min().get(), 3},   
+    {tl::ascend_reduce().get(), 3},
+    {tl::ascend_sigmoid().get(), 2},     
+    {tl::ascend_pow().get(), 3},
+    {tl::ascend_bitwise_xor().get(), 3}, 
+    {tl::ascend_round().get(), 2},
+    {tl::ascend_broadcast().get(), 3},   
+    {tl::ascend_merge_sort().get(), 3},
+};
 
 } // namespace tl
 } // namespace tvm

@@ -5,25 +5,23 @@ import tilelang.language as T
 
 import torch
 
+
 @tl.jit(
     out_idx=[-1],
     pass_configs={
         tl.PassConfigKey.TIR_MERGE_STATIC_SMEM: True,
         tl.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
         tl.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
-    }
+    },
 )
-def simple_gemv(
-    N:int, K:int, block_N:int, block_K:int,
-    dtype:str = "float16", accum_dtype:str = "float32"
-):
-    """ Vector core GEMV implementation"""
+def simple_gemv(N: int, K: int, block_N: int, block_K: int, dtype: str = "float16", accum_dtype: str = "float32"):
+    """Vector core GEMV implementation"""
     VEC_NUM = 2
     TEMP_DTYPE = "uint8"
     CAST_MODE = "CAST_NONE"
 
     def current_jit_target(jit_func):
-        """ Get current jit target of jit_func. e.g. 'auto', 'pto' """
+        """Get current jit target of jit_func. e.g. 'auto', 'pto'"""
         return jit_func.__jit_impl__.target
 
     n_num = T.ceildiv(N, block_N)
@@ -40,6 +38,7 @@ def simple_gemv(
             return T.copy(src, dst)
 
     is_pto = current_jit_target(simple_gemv) == "pto"
+
     def alloc_temp():
         if is_pto:
             return T.alloc_ub((block_N, block_K // 2), accum_dtype)
@@ -48,9 +47,9 @@ def simple_gemv(
 
     @T.prim_func
     def main(
-        x: T.Tensor((K,), dtype),   # type: ignore
-        A: T.Tensor((N, K), dtype), # type: ignore
-        y: T.Tensor((N,), dtype),   # type: ignore
+        x: T.Tensor((K,), dtype),  # type: ignore
+        A: T.Tensor((N, K), dtype),  # type: ignore
+        y: T.Tensor((N,), dtype),  # type: ignore
     ):
         with T.Kernel(kernel_num, is_npu=True) as (cid, vid):
             bn = (cid * VEC_NUM + vid) % n_num
@@ -58,7 +57,6 @@ def simple_gemv(
             x_ub = T.alloc_ub((1, block_K), dtype)
             x_32_ub = T.alloc_ub((1, block_K), accum_dtype)
             A_ub = T.alloc_ub((block_N, block_K), dtype)
-            temp_ub = alloc_temp()  # for reduce_sum    TODO: Remove temp buffer of T.reduce_xxx
             A_32_ub = T.alloc_ub((block_N, block_K), accum_dtype)
             y_single_32_ub = T.alloc_ub((block_N,), accum_dtype)
             y_total_32_ub = T.alloc_ub((block_N,), accum_dtype)
@@ -74,11 +72,12 @@ def simple_gemv(
                 cast_or_copy(A_32_ub, A_ub, CAST_MODE, block_N * block_K)
                 for i in T.serial(block_N):
                     T.tile.mul(A_32_ub[i, :], A_32_ub[i, :], x_32_ub)
-                T.reduce_sum(A_32_ub, y_single_32_ub, temp_ub, dim=-1)
+                T.reduce_sum(A_32_ub, y_single_32_ub, dim=-1)
                 T.tile.add(y_total_32_ub, y_total_32_ub, y_single_32_ub)
 
             cast_or_copy(y_ub, y_total_32_ub, CAST_MODE, block_N)  # cast back
             T.copy(y_ub, y[bn * block_N])
+
     return main
 
 
@@ -86,7 +85,7 @@ def ref_program(x, A):
     return x @ A.T
 
 
-def check_case(N:int, K:int, block_N: int = 64, block_K: int = 128, dtype="float16"):
+def check_case(N: int, K: int, block_N: int = 64, block_K: int = 128, dtype="float16"):
     torch_dtype_map = {"float16": torch.half, "float32": torch.float32, "float": torch.float32}
     x = torch.randn(K).to(torch_dtype_map[dtype]).npu()
     A = torch.randn(N, K).to(torch_dtype_map[dtype]).npu()
@@ -117,5 +116,7 @@ def main(custom_args=None):
     print("GEMV example passed!")
     print("Kernel Output Match!")
 
+
 if __name__ == "__main__":
+    tl.disable_cache()
     main()

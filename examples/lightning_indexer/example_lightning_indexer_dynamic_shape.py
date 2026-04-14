@@ -9,29 +9,20 @@ tilelang.disable_cache()
 
 
 @tilelang.jit(out_idx=[-1], workspace_idx=[2])  # for jit
-def indexer(N2,
-            G,
-            D,
-            TOP_K,
-            VECTOR_BASEN,
-            VECTOR_BASEG,
-            BLOCK_M,
-            BLOCK_N,
-            BLOCK_K,
-            input_dtype="float16",
-            calc_dtype="float"):
+def indexer(N2, G, D, TOP_K, VECTOR_BASEN, VECTOR_BASEG, BLOCK_M, BLOCK_N, BLOCK_K, input_dtype="float16", calc_dtype="float"):
 
     B = T.symbolic("B")
     S1 = T.symbolic("S1")
     S2 = T.symbolic("S2")
 
     @T.prim_func
-    def main(Query: T.Tensor((B, S1, N2, G * D), input_dtype), 
-             KEY: T.Tensor((B, S2, N2, D), input_dtype), 
-             QK_RES: T.Tensor((B, N2, S1, G, S2), calc_dtype),
-             WEIGHTS: T.Tensor((B, S1, N2, G), calc_dtype), 
-             OUT: T.Tensor((B, N2, S1, TOP_K),
-             "int")):
+    def main(
+        Query: T.Tensor((B, S1, N2, G * D), input_dtype),
+        KEY: T.Tensor((B, S2, N2, D), input_dtype),
+        QK_RES: T.Tensor((B, N2, S1, G, S2), calc_dtype),
+        WEIGHTS: T.Tensor((B, S1, N2, G), calc_dtype),
+        OUT: T.Tensor((B, N2, S1, TOP_K), "int"),
+    ):
 
         total_process_num = N2 * S1
         each_core_process_num = total_process_num // 2
@@ -44,30 +35,34 @@ def indexer(N2,
 
                 C_L0 = T.alloc_L0C((BLOCK_M, BLOCK_N), calc_dtype)
 
-                T.annotate_address({
-                    # L1 address
-                    Q_L1: 0,
-                    K_L1: 32768,
-
-                    # L0C address
-                    C_L0: 0,
-                })
+                T.annotate_address(
+                    {
+                        # L1 address
+                        Q_L1: 0,
+                        K_L1: 16384,
+                        # L0C address
+                        C_L0: 0,
+                    }
+                )
                 T.barrier_all()
                 for n2 in T.serial(N2):
                     for g in T.serial(G):
                         for m in T.serial(S1 // BLOCK_M):
                             for n in T.serial(S2 // BLOCK_N):
                                 T.barrier_all()
-                                T.copy(Query[cid, m * BLOCK_M: (m + 1) * BLOCK_M, n2, g * D: (g + 1) * D], Q_L1)
+                                T.copy(Query[cid, m * BLOCK_M : (m + 1) * BLOCK_M, n2, g * D : (g + 1) * D], Q_L1)
                                 T.barrier_all()
-                                T.copy(KEY[cid, n * BLOCK_N: (n + 1) * BLOCK_N, n2, 0: D], K_L1)
+                                T.copy(KEY[cid, n * BLOCK_N : (n + 1) * BLOCK_N, n2, 0:D], K_L1)
                                 T.barrier_all()
                                 T.gemm_v0(Q_L1, K_L1, C_L0, transpose_B=True, init=True)
                                 T.barrier_all()
                                 T.copy(
                                     C_L0,
-                                    QK_RES[cid, n2, m * BLOCK_M: (m + 1) * BLOCK_M, g, n * BLOCK_N: (n + 1) * BLOCK_N], # [B, N2, S1, G, S2]
-                                    enable_relu=True)
+                                    QK_RES[
+                                        cid, n2, m * BLOCK_M : (m + 1) * BLOCK_M, g, n * BLOCK_N : (n + 1) * BLOCK_N
+                                    ],  # [B, N2, S1, G, S2]
+                                    enable_relu=True,
+                                )
                                 T.barrier_all()
                 T.set_cross_flag("FIX", 0)
 
@@ -79,39 +74,38 @@ def indexer(N2,
                 weight_brcb_ub = T.alloc_ub((VECTOR_BASEG, 8), calc_dtype)
                 reduce_tmp_ub = T.alloc_ub((VECTOR_BASEG, VECTOR_BASEN), calc_dtype)
                 reduce_g_ub = T.alloc_ub(VECTOR_BASEN, calc_dtype)
-                sort_indice_tmp_ub = T.alloc_ub(VECTOR_BASEN, "int")
-                sort_indice_tmp_ub_uint = T.alloc_ub(VECTOR_BASEN, "uint")
-                topk_indices_tmp_ub = T.alloc_ub(VECTOR_BASEN, "int")
-                topk_indices_tmp_ub_uint = T.alloc_ub(VECTOR_BASEN, "uint")
+                sort_output_ub = T.alloc_ub(VECTOR_BASEN * 2, calc_dtype)
+                sort_index_ub = T.alloc_ub(VECTOR_BASEN, calc_dtype)
                 topk_global_ub1 = T.alloc_ub([TOP_K // VECTOR_BASEN, VECTOR_BASEN * 2], calc_dtype)
-                topk_global_ub1_flat = T.alloc_ub(TOP_K, "int")
+                topk_global_ub1_flat = T.alloc_ub(TOP_K, calc_dtype)
                 topk_global_ub1_uint = T.alloc_ub([TOP_K // VECTOR_BASEN, VECTOR_BASEN * 2], "uint")
                 topk_global_ub2 = T.alloc_ub(TOP_K * 2, calc_dtype)
+                output_ub = T.alloc_ub(TOP_K, "int")
 
-                T.annotate_address({
-                    # ub address
-                    mm_res_ub: 0,
-                    mm_res_ub_flat: 0,
-                    mm_res_ub_uint8: 0,
-                    weight_ub: 65536,
-                    weight_brcb_ub: 65664,
-                    reduce_tmp_ub: 66688,
-                    reduce_g_ub: 132224,
-                    sort_indice_tmp_ub: 134272,
-                    sort_indice_tmp_ub_uint: 134272,
-                    topk_indices_tmp_ub: 136320,
-                    topk_indices_tmp_ub_uint: 136320,
-                    topk_global_ub1: 138368,
-                    topk_global_ub1_uint: 138368,
-                    topk_global_ub1_flat: 138368,
-                    topk_global_ub2: 154752
-                })
+                T.annotate_address(
+                    {
+                        # ub address
+                        mm_res_ub: 0,
+                        mm_res_ub_flat: 0,
+                        mm_res_ub_uint8: 0,
+                        weight_ub: 32768,
+                        weight_brcb_ub: 32832,
+                        reduce_tmp_ub: 33344,
+                        reduce_g_ub: 66112,
+                        sort_output_ub: 67136,
+                        sort_index_ub: 69184,
+                        topk_global_ub1: 70208,
+                        topk_global_ub1_uint: 70208,
+                        topk_global_ub1_flat: 70208,
+                        topk_global_ub2: 78400,
+                        output_ub: 86592,
+                    }
+                )
 
                 s1_start_idx = vid * each_core_process_num
                 s1_end_idx = s1_start_idx + each_core_process_num
 
                 T.wait_cross_flag(0)
-                T.tile.arith_progression(topk_indices_tmp_ub, 0, 1, VECTOR_BASEN)
                 for s1_id in T.serial(s1_start_idx, s1_end_idx):
                     T.barrier_all()
                     T.tile.init_sort_buf(topk_global_ub2, TOP_K * 2, 0)
@@ -123,9 +117,18 @@ def indexer(N2,
 
                         for g_id in T.serial(G // VECTOR_BASEG):
                             T.barrier_all()
-                            T.copy(QK_RES[cid, n2_id, s1_id, g_id * VECTOR_BASEG: (g_id + 1) * VECTOR_BASEG, s2_id * VECTOR_BASEN: (s2_id + 1) * VECTOR_BASEN], mm_res_ub)
+                            T.copy(
+                                QK_RES[
+                                    cid,
+                                    n2_id,
+                                    s1_id,
+                                    g_id * VECTOR_BASEG : (g_id + 1) * VECTOR_BASEG,
+                                    s2_id * VECTOR_BASEN : (s2_id + 1) * VECTOR_BASEN,
+                                ],
+                                mm_res_ub,
+                            )
                             T.barrier_all()
-                            T.copy(WEIGHTS[cid, s1_id, n2_id, g_id * VECTOR_BASEG: (g_id + 1) * VECTOR_BASEG], weight_ub)
+                            T.copy(WEIGHTS[cid, s1_id, n2_id, g_id * VECTOR_BASEG : (g_id + 1) * VECTOR_BASEG], weight_ub)
                             T.barrier_all()
                             for i in range(VECTOR_BASEG):
                                 T.barrier_all()
@@ -137,38 +140,58 @@ def indexer(N2,
                         # topK
                         merge_sort_times = TOP_K // VECTOR_BASEN
                         T.barrier_all()
-                        T.reduce_sum(reduce_tmp_ub, reduce_g_ub, mm_res_ub_uint8, 0)
+                        T.reduce_sum(reduce_tmp_ub, reduce_g_ub, 0)
                         T.barrier_all()
-                        T.tile.add(sort_indice_tmp_ub, topk_indices_tmp_ub,
-                              T.int32(s2_id * VECTOR_BASEN))
+                        T.tile.sort(
+                            sort_output_ub,
+                            reduce_g_ub,
+                            VECTOR_BASEN,
+                        )
                         T.barrier_all()
-                        T.tile.sort(topk_global_ub1[(s2_id % merge_sort_times), :], reduce_g_ub,
-                               sort_indice_tmp_ub_uint, mm_res_ub, VECTOR_BASEN // 32)
+                        T.tile.gather_mask(sort_index_ub, sort_output_ub, "P1010")
+                        T.barrier_all()
+                        T.tile.add(sort_index_ub, sort_index_ub, T.float32(s2_id * VECTOR_BASEN))
+                        T.barrier_all()
+                        row_idx = s2_id % merge_sort_times
+                        for i in range(VECTOR_BASEN):
+                            topk_global_ub1[row_idx, i * 2] = sort_output_ub[i * 2]
+                            topk_global_ub1[row_idx, i * 2 + 1] = sort_index_ub[i]
                         T.barrier_all()
                         if s2_id % merge_sort_times == merge_sort_times - 1:
                             if s2_id == merge_sort_times - 1:
-                                T.tile.merge_sort(topk_global_ub2, topk_global_ub1, VECTOR_BASEN,
-                                             merge_sort_times, 0)
+                                T.tile.merge_sort(
+                                    topk_global_ub2,
+                                    topk_global_ub1[0, :],
+                                    topk_global_ub1[1, :],
+                                    topk_global_ub1[2, :],
+                                    topk_global_ub1[3, :],
+                                )
                             else:
-                                T.tile.merge_sort(mm_res_ub, topk_global_ub1, VECTOR_BASEN,
-                                             merge_sort_times, 1)
+                                T.tile.merge_sort(
+                                    reduce_tmp_ub,
+                                    topk_global_ub1[0, :],
+                                    topk_global_ub1[1, :],
+                                    topk_global_ub1[2, :],
+                                    topk_global_ub1[3, :],
+                                )
                                 T.barrier_all()
-                                T.tile.topk(topk_global_ub2, topk_global_ub1, mm_res_ub,
-                                       VECTOR_BASEN * merge_sort_times)
+                                T.tile.topk(topk_global_ub2, reduce_tmp_ub, VECTOR_BASEN * merge_sort_times)
                         T.barrier_all()
                     T.barrier_all()
                     T.tile.gather_mask(topk_global_ub1, topk_global_ub2, "P1010")
                     T.barrier_all()
-                    T.copy(topk_global_ub1_flat, OUT[cid, n2_id, s1_id, 0:TOP_K])
+                    T.tile.cast(output_ub, topk_global_ub1_flat, "CAST_ROUND", TOP_K)
+                    T.barrier_all()
+                    T.copy(output_ub, OUT[cid, n2_id, s1_id, 0:TOP_K])
                     T.barrier_all()
 
     return main
 
 
 N2 = 1
-G = 64
-D = 128
-TOP_K = 2048
+G = 32
+D = 64
+TOP_K = 1024
 
 
 def index_golden(q, k, weights):
@@ -182,8 +205,7 @@ def index_golden(q, k, weights):
 
 
 def count_mismatches_last_dim(tensor1, tensor2):
-    assert tensor1.shape[-1] == tensor2.shape[
-        -1], "the last dimension of two tensors must be the same"
+    assert tensor1.shape[-1] == tensor2.shape[-1], "the last dimension of two tensors must be the same"
     last_dim = tensor1.shape[-1]
     tensor1_flat = tensor1.view(-1, last_dim)
     tensor2_flat = tensor2.view(-1, last_dim)
@@ -232,10 +254,10 @@ def compare_tensors(tensor1, tensor2):
 
 
 def test_indexer():
-    B = 2
-    S1 = 1024
-    S2 = 8192
-    func = indexer(N2, G, D, TOP_K, 512, 32, 128, 128, 128)
+    B = 1
+    S1 = 512
+    S2 = 4096
+    func = indexer(N2, G, D, TOP_K, 256, 16, 64, 64, 64)
     # print(f"{func.get_kernel_source()}")
 
     q = torch.randn(B, S1, N2, G, D).half()
@@ -258,7 +280,7 @@ def test_indexer():
     if (1 - total_mismatches / (B * S1 * N2 * TOP_K)) > 0.99:
         print("Test passed!")
     else:
-        print('Test failed! The precision is not correct!')
+        print("Test failed! The precision is not correct!")
 
 
 if __name__ == "__main__":
