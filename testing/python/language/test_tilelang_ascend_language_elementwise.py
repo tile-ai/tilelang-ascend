@@ -3758,7 +3758,7 @@ def run_test_sort(M, N, block_M, block_N, dtype, target):
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
 
     torch_dtype = torch.float if dtype == "float" else torch.float16
-    a = torch.randn(M, N, dtype=torch_dtype).npu()
+    a = torch.arange(0, M * N, dtype=torch_dtype).reshape(M, N).npu()
     b = func(a)
 
     b_cpu = b.cpu().float().reshape(-1)
@@ -3917,7 +3917,7 @@ def run_test_topk(M, N, K, block_M, block_N, dtype, target):
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
 
     torch_dtype = torch.float if dtype == "float" else torch.float16
-    a = torch.randn(M, N, dtype=torch_dtype).npu()
+    a = torch.arange(0, M * N, dtype=torch_dtype).reshape(M, N).npu()
     b = func(a)
 
     b_cpu = b.cpu().float().reshape(-1)
