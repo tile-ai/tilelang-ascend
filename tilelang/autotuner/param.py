@@ -31,7 +31,6 @@ SO_LAUNCHER_PATH = "main.so"
 PARAMS_PATH = "params.pkl"
 METADATA_PATH = "metadata.pkl"
 
-
 @dataclass(frozen=True)
 class CompileArgs:
     """Compile arguments for the auto-tuner. Detailed description can be found in `tilelang.jit.compile`.
@@ -147,249 +146,142 @@ class AutotuneResult:
     func: Callable | None = None
     kernel: Callable | None = None
 
-    def _save_kernel_to_disk(self, cache_path: Path, kernel: JITKernel, verbose: bool = False):
-        """
-        Persists a compiled kernel to disk cache.
+class KernelCache:
+    """Handles serialising and deserialising AutotuneResult to/from disk.
 
-        Args:
-            cache_path (Path): The root path for the cache files.
-            kernel (JITKernel): The compiled kernel to be saved.
-            verbose (bool): Enable verbose log messages.
+    Keeps all file-I/O logic in one place so AutotuneResult stays a plain
+    data object.
+    """
 
-        Note:
-            Saves the following files:
-            - kernel.cu: The compiled kernel source code
-            - wrapped_kernel.cu: The wrapped kernel source code
-            - kernel_lib.so: The compiled kernel library
-            - params.pkl: The serialized kernel parameters
-        """
-        os.makedirs(cache_path, exist_ok=True)  # Ensure directory exists
+    @staticmethod
+    def save(path: Path, result: AutotuneResult, verbose: bool = False) -> None:
+        """Persist *result* under *path*.  Creates the directory if needed."""
+        path = Path(path)
+        path.mkdir(parents=True, exist_ok=True)
 
-        # Save kernel source code
-        try:
-            kernel_path = os.path.join(cache_path, KERNEL_PATH)
-            if verbose:
-                logger.debug(f"Saving kernel source code to file: {kernel_path}")
-            if kernel.mlir_content is not None:
-                with open(kernel_path, "w") as f:
-                    f.write(kernel.mlir_content)
-        except Exception as e:
-            logger.error(f"Error saving kernel source code to disk: {e}")
+        KernelCache._save_json(path / BEST_CONFIG_PATH, result.config, verbose)
+        KernelCache._save_pickle(path / FUNCTION_PATH, result.func, verbose)
+        KernelCache._save_json(
+            path / LATENCY_PATH,
+            {"latency": result.latency, "ref_latency": result.ref_latency},
+            verbose,
+        )
+        KernelCache._save_kernel(path, result.kernel, verbose)
 
-        # Save wrapped kernel source code
-        try:
-            wrapped_kernel_path = os.path.join(cache_path, WRAPPED_KERNEL_PATH)
-            if verbose:
-                logger.debug(f"Saving wrapped kernel source code to file: {wrapped_kernel_path}")
-            with open(wrapped_kernel_path, "wb") as f:
-                f.write(kernel.get_kernel_source())
-        except Exception as e:
-            logger.error(f"Error saving wrapped kernel source code to disk: {e}")
-
-        # Save kernel library
-
-        try:
-            so_utils_path = os.path.join(cache_path, SO_UTILS_PATH)
-            src_utils_path = kernel.so_utils_path
-            if verbose:
-                logger.debug(f"Saving utils library to file: {so_utils_path}")
-            shutil.copy(src_utils_path, so_utils_path)
-        except Exception as e:
-            logger.error(f"Error saving utils library to disk: {e}")
-
-        try:
-            so_launcher_path = os.path.join(cache_path, SO_LAUNCHER_PATH)
-            src_lib_path = kernel.so_launcher_path
-            if verbose:
-                logger.debug(f"Saving kernel library to file: {so_launcher_path}")
-            shutil.copy(src_lib_path, so_launcher_path)
-        except Exception as e:
-            logger.error(f"Error saving kernel library to disk: {e}")
-
-
-        # Save kernel parameters
-        try:
-            params_path = os.path.join(cache_path, PARAMS_PATH)
-            if verbose:
-                logger.debug(f"Saving kernel parameters to disk: {params_path}")
-            with open(params_path, "wb") as f:
-                cloudpickle.dump(kernel.params, f)
-        except Exception as e:
-            logger.error(f"Error saving kernel parameters to disk: {e}")
-
-        # Save metadata
-        try:
-            metadata_path = os.path.join(cache_path, "metadata.pkl")
-            if verbose:
-                logger.debug(f"Saving metadata to file: {metadata_path}")
-            metadata_to_save = {
-                "symbolic": kernel.symbolic,
-                "params": kernel.params,
-                "out_idx": kernel.out_idx,
-                "signature": kernel.signature,    
-                "primfunc": kernel.prim_func,
-                "mlir_content": kernel.mlir_content,
-                "shared": kernel.utils_shared,
-                "kernel_name": kernel.kernel_name,
-                "gridfunc": kernel.gridfunc,
-                "mix_mode": kernel.mix_mode,
-                "shared": kernel.utils_shared,
-                "name": kernel.utils_name,
-                "tensor_kinds": kernel.tensor_kinds,
-                "grid_func": kernel.gridfunc,
-                "kernel_src": kernel.utils_kernel_src,
-            }
-            with open(metadata_path, "wb") as f:
-                cloudpickle.dump(metadata_to_save, f)
-        except Exception as e:
-            logger.error(f"Error saving metadata to disk: {e}")
-
-
-    def _load_kernel_from_disk(
-        self,
-        cache_path: Path,
-        target: str | Target = "auto",
-        target_host: str | Target = None,
-        out_idx: list[int] | int | None = None,
-        execution_backend: Literal["dlpack", "ctypes", "cython"] = "cython",
-        pass_configs: dict = None,
-        func: Callable = None,
-        verbose: bool = False,
-    ) -> JITKernel:
-        """
-        Loads a previously compiled kernel from disk cache.
-
-        Args:
-            key (str): The hash key identifying the kernel.
-            target (Union[str, Target]): Compilation target platform. Defaults to "auto".
-            target_host (Union[str, Target], optional): Host target platform.
-            out_idx (List[int], optional): Indices specifying which outputs to return.
-            execution_backend (Literal): Backend type for execution. Defaults to "cython".
-            pass_configs (dict, optional): Configuration for compiler passes.
-            func (Callable, optional): The original function.
-            verbose (bool): Enable verbose log messages.
-
-        Returns:
-            JITKernel: The loaded kernel if found, None otherwise.
-        """
-
-        if not os.path.exists(cache_path):
-            return None
-
-        kernel_global_source: str | None = None
-        kernel_params: list[KernelParam] | None = None
-
-        try:
-            kernel_path = os.path.join(cache_path, KERNEL_PATH)
-            with open(kernel_path, "r") as f:
-                kernel_source = f.read()
-        except Exception as e:
-            logger.error(f"Error saving kernel source code to disk: {e}")
-
-        try:
-            wrapped_kernel_path = os.path.join(cache_path, WRAPPED_KERNEL_PATH)
-            with open(wrapped_kernel_path, "rb") as f:
-                kernel_global_source = f.read()
-        except Exception as e:
-            logger.error(f"Error loading wrapped kernel source code from disk: {e}")
-
-        so_utils_path = os.path.join(cache_path, SO_UTILS_PATH)
-
-        so_launcher_path = os.path.join(cache_path, SO_LAUNCHER_PATH)
-
-        # Load kernel parameters
-        try:
-            params_path = os.path.join(cache_path, PARAMS_PATH)
-            with open(params_path, "rb") as f:
-                kernel_params = cloudpickle.load(f)
-        except Exception as e:
-            logger.error(f"Error loading kernel parameters from disk: {e}")
-
-        try:
-            metadata_path = os.path.join(cache_path, METADATA_PATH)
-            with open(metadata_path, "rb") as f:
-                metadata = cloudpickle.load(f)
-        except Exception as e:
-            logger.error(f"Error loading metadata from disk: {e}")
-
-        if kernel_global_source and kernel_params:
-            return JitKernel_NPU.from_database(
-                mod=func,
-                kernel_source=kernel_source,
-                kernel_launcher_path=so_launcher_path,
-                kernel_utils_path=so_utils_path,
-                metadata=metadata,
-                # params=kernel_params,
-                out_idx=out_idx,
-            )
-        else:
-            return None
-
-    def save_to_disk(self, path: Path, verbose: bool = False):
-        if not os.path.exists(path):
-            os.makedirs(path)
-
-        # save best config
+    @staticmethod
+    def _save_json(dest: Path, obj: Any, verbose: bool) -> None:
         if verbose:
-            logger.debug(f"Saving best config to file: {path / BEST_CONFIG_PATH}")
-        with open(path / BEST_CONFIG_PATH, "w") as f:
-            json.dump(self.config, f)
+            logger.debug(f"Saving to {dest}")
+        with open(dest, "w") as f:
+            json.dump(obj, f)
 
-        # save function
+    @staticmethod
+    def _save_pickle(dest: Path, obj: Any, verbose: bool) -> None:
         if verbose:
-            logger.debug(f"Saving function to file: {path / FUNCTION_PATH}")
-        with open(path / FUNCTION_PATH, "wb") as f:
-            cloudpickle.dump(self.func, f)
+            logger.debug(f"Saving to {dest}")
+        with open(dest, "wb") as f:
+            cloudpickle.dump(obj, f)
 
-        # save ref latency
+    @staticmethod
+    def _save_kernel(cache_path: Path, kernel: JitKernel_NPU, verbose: bool) -> None:
+        """Write all kernel artefacts to *cache_path*."""
+
+        def _try(label: str, fn):
+            try:
+                fn()
+            except Exception as exc:
+                logger.error(f"Error saving {label}: {exc}")
+
+        if kernel.mlir_content is not None:
+            dest = cache_path / KERNEL_PATH
+            if verbose:
+                logger.debug(f"Saving kernel MLIR to {dest}")
+            _try("kernel MLIR", lambda: dest.write_text(kernel.mlir_content))
+
+        dest = cache_path / WRAPPED_KERNEL_PATH
         if verbose:
-            logger.debug(f"Saving latency to file: {path / LATENCY_PATH}")
-        with open(path / LATENCY_PATH, "w") as f:
-            json.dump({
-                "latency": self.latency,
-                "ref_latency": self.ref_latency,
-            }, f)
+            logger.debug(f"Saving wrapped kernel to {dest}")
+        _try("wrapped kernel", lambda: dest.write_bytes(kernel.get_kernel_source()))
 
-        # save kernel
-        self._save_kernel_to_disk(path, self.kernel)
+        dest_utils = cache_path / SO_UTILS_PATH
+        if verbose:
+            logger.debug(f"Saving utils library to {dest_utils}")
+        _try("utils .so", lambda: shutil.copy(kernel.so_utils_path, dest_utils))
 
-    @classmethod
-    def load_from_disk(cls, path: Path, compile_args: CompileArgs) -> AutotuneResult:
-        if not os.path.exists(path):
+        dest_launcher = cache_path / SO_LAUNCHER_PATH
+        if verbose:
+            logger.debug(f"Saving launcher library to {dest_launcher}")
+        _try("launcher .so", lambda: shutil.copy(kernel.so_launcher_path, dest_launcher))
+
+        dest_params = cache_path / PARAMS_PATH
+        if verbose:
+            logger.debug(f"Saving kernel params to {dest_params}")
+        _try(
+            "kernel params",
+            lambda: dest_params.write_bytes(cloudpickle.dumps(kernel.params)),
+        )
+
+        metadata = {
+            "symbolic": kernel.symbolic,
+            "params": kernel.params,
+            "out_idx": kernel.out_idx,
+            "signature": kernel.signature,
+            "primfunc": kernel.prim_func,
+            "mlir_content": kernel.mlir_content,
+            "shared": kernel.utils_shared,
+            "kernel_name": kernel.kernel_name,
+            "gridfunc": kernel.gridfunc,
+            "mix_mode": kernel.mix_mode,
+            "name": kernel.utils_name,
+            "tensor_kinds": kernel.tensor_kinds,
+            "kernel_src": kernel.utils_kernel_src,
+        }
+        dest_meta = cache_path / METADATA_PATH
+        if verbose:
+            logger.debug(f"Saving metadata to {dest_meta}")
+        _try("metadata", lambda: dest_meta.write_bytes(cloudpickle.dumps(metadata)))
+
+    @staticmethod
+    def load(
+        path: Path,
+        compile_args: CompileArgs,
+    ) -> AutotuneResult | None:
+        """Load a previously saved result from *path*.
+
+        Returns ``None`` if the cache entry is absent or incomplete.
+        """
+        path = Path(path)
+        if not path.exists():
             return None
 
         verbose = compile_args.verbose
-        # load best config
-        if verbose:
-            logger.debug(f"Loading best config from file: {path / BEST_CONFIG_PATH}")
-        with open(path / BEST_CONFIG_PATH) as f:
-            config = json.load(f)
 
-        # load function
-        if verbose:
-            logger.debug(f"Loading function from file: {path / FUNCTION_PATH}")
-        with open(path / FUNCTION_PATH, "rb") as f:
-            func = cloudpickle.load(f)
+        try:
+            config = KernelCache._load_json(path / BEST_CONFIG_PATH, verbose)
+            func = KernelCache._load_pickle(path / FUNCTION_PATH, verbose)
+            latency_data = KernelCache._load_json(path / LATENCY_PATH, verbose)
+        except Exception as exc:
+            logger.error(f"Failed to load cache metadata from {path}: {exc}")
+            return None
 
-        # load latency
-        if verbose:
-            logger.debug(f"Loading latency from file: {path / LATENCY_PATH}")
-        with open(path / LATENCY_PATH) as f:
-            latency = json.load(f)
-            latency, ref_latency = latency["latency"], latency["ref_latency"]
+        latency = latency_data["latency"]
+        ref_latency = latency_data["ref_latency"]
 
-        kernel = cls._load_kernel_from_disk(cls, path, compile_args.target,
-                                            compile_args.target_host, compile_args.out_idx,
-                                            compile_args.execution_backend,
-                                            compile_args.pass_configs, func)
+        kernel = KernelCache._load_kernel(
+            path,
+            func=func,
+            out_idx=compile_args.out_idx,
+            verbose=verbose,
+        )
         if kernel is None:
             return None
+
         kernel.update_tuner_result(
             config=config,
             latency=latency,
             ref_latency=ref_latency,
         )
-        result = cls(
+        return AutotuneResult(
             config=config,
             func=func,
             kernel=kernel,
@@ -397,4 +289,72 @@ class AutotuneResult:
             latency=latency,
             ref_latency=ref_latency,
         )
-        return result
+
+    @staticmethod
+    def _load_json(src: Path, verbose: bool) -> Any:
+        if verbose:
+            logger.debug(f"Loading from {src}")
+        with open(src) as f:
+            return json.load(f)
+
+    @staticmethod
+    def _load_pickle(src: Path, verbose: bool) -> Any:
+        if verbose:
+            logger.debug(f"Loading from {src}")
+        with open(src, "rb") as f:
+            return cloudpickle.load(f)
+
+    @staticmethod
+    def _load_kernel(
+        cache_path: Path,
+        func: Callable,
+        out_idx: list[int] | int | None,
+        verbose: bool,
+    ) -> JitKernel_NPU | None:
+        """Reconstruct a JitKernel_NPU from cached artefacts.
+
+        Returns ``None`` if any required artefact is missing or unreadable.
+        """
+        # Initialise all to None so we never hit NameError in the guard below.
+        kernel_source: str | None = None
+        kernel_global_source: bytes | None = None
+        kernel_params: list[KernelParam] | None = None
+        metadata: dict | None = None
+
+        try:
+            kernel_source = (cache_path / KERNEL_PATH).read_text()
+        except Exception as exc:
+            logger.error(f"Error loading kernel MLIR from {cache_path}: {exc}")
+
+        try:
+            kernel_global_source = (cache_path / WRAPPED_KERNEL_PATH).read_bytes()
+        except Exception as exc:
+            logger.error(f"Error loading wrapped kernel from {cache_path}: {exc}")
+
+        so_utils_path = str(cache_path / SO_UTILS_PATH)
+        so_launcher_path = str(cache_path / SO_LAUNCHER_PATH)
+
+        try:
+            kernel_params = cloudpickle.loads((cache_path / PARAMS_PATH).read_bytes())
+        except Exception as exc:
+            logger.error(f"Error loading kernel params from {cache_path}: {exc}")
+
+        try:
+            metadata = cloudpickle.loads((cache_path / METADATA_PATH).read_bytes())
+        except Exception as exc:
+            logger.error(f"Error loading metadata from {cache_path}: {exc}")
+
+        if not (kernel_global_source and kernel_params and metadata):
+            logger.warning(
+                f"Incomplete cache entry at {cache_path} — missing required artefacts."
+            )
+            return None
+
+        return JitKernel_NPU.from_database(
+            mod=func,
+            kernel_source=kernel_source,
+            kernel_launcher_path=so_launcher_path,
+            kernel_utils_path=so_utils_path,
+            metadata=metadata,
+            out_idx=out_idx,
+        )
