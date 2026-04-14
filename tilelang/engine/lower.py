@@ -292,6 +292,7 @@ def lower(
         pipeline.add(transforms.bishengir.bind_workspace_arg)
         pipeline.add(transforms.tilelangir.plan_workspace_memory)
         pipeline.add(transforms.tilelangir.insert_cv_sync)
+        pipeline.add(transforms.bishengir.graph_sync_solver)
         pipeline.add(transforms.bishengir.infer_workspace_size_func)
         pipeline.add(transforms.bishengir.lower_memref_ext)
         pipeline.add(transforms.tilelangir.split_mix_kernel)

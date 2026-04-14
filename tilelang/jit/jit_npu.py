@@ -1289,6 +1289,8 @@ class compiler_npu:
                 "--enable-auto-multi-buffer=true",
                 "--enable-triton-kernel-compile=true",
                 "--enable-hivm-compile=true",
+                "--disable-hivm-auto-inject-sync=true",
+                "--disable-auto-inject-block-sync=true",
             ]
 
             TILELANG_ASCEND_MODE = os.environ.get("TILELANG_ASCEND_MODE")
