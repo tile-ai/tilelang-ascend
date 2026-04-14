@@ -1,4 +1,3 @@
-import math
 import pytest
 import torch
 
@@ -162,8 +161,7 @@ def test_parallel_delta_broadcast(B, S, H, BS, block_H, sm_scale):
 
 
 @pytest.mark.parametrize("B, S, H, D, block_H, sm_scale", ROW2D_MUL_VEC1D_CASES)
-def test_row2d_mul_vec1d(B, S, H, D, block_H, sm_scale):
-    tilelang.cache.clear_cache()
+def test_row2d(B, S, H, D, block_H, sm_scale):
     func = hellohellowrapper(B, S, H, D, block_H, sm_scale)
     kernel = tilelang.compile(func, target="npuir")
 
@@ -171,13 +169,13 @@ def test_row2d_mul_vec1d(B, S, H, D, block_H, sm_scale):
     weight = torch.randn((B, S, H, D), dtype=torch.float32, device="npu")
     out = torch.zeros((B, S, H, D), dtype=torch.float32, device="npu")
 
-    ref_output = h_2d.clone()
-    h_tiles = math.ceil(H / block_H)
-    for h_tile in range(h_tiles):
-        h_start = h_tile * block_H
-        ref_output[:, :, h_start, :] = (
-            h_2d[:, :, h_start, :] * weight[:, :, h_start, :] * sm_scale
-        )
+    # ref_output = h_2d.clone()
+    # h_tiles = math.ceil(H / block_H)
+    # for h_tile in range(h_tiles):
+    #     h_start = h_tile * block_H
+    #     ref_output[:, :, h_start, :] = (
+    #         h_2d[:, :, h_start, :] * weight[:, :, h_start, :] * sm_scale
+    #     )
 
     kernel(h_2d, weight, out)
     # torch.testing.assert_close(out, ref_output, rtol=1e-3, atol=1e-3)
