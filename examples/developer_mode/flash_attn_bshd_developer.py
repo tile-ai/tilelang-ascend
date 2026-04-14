@@ -67,8 +67,6 @@ def flash_attention_fwd(
             acc_s_ub = T.alloc_shared([block_M // 2, block_N], accum_dtype)
             m_i_prev = T.alloc_shared([block_M // 2], accum_dtype)
             acc_s_ub_ = T.alloc_shared([block_M // 2, block_N], accum_dtype)
-            tmp_ub = T.alloc_shared([3 * DataType(accum_dtype).bits // 8 * block_M // 2 * block_N],
-                                "uint8")
             sumexp_i_ub = T.alloc_shared([block_M // 2], accum_dtype)
             acc_s_half = T.alloc_shared([block_M // 2, block_N], dtype)
             acc_o_ub = T.alloc_shared([block_M // 2, dim], accum_dtype)
@@ -94,26 +92,26 @@ def flash_attention_fwd(
                 # scale
                 T.tile.mul(acc_s_ub, acc_s_ub, sm_scale)
                 # Update maximum
-                T.reduce_max(acc_s_ub, m_i, tmp_ub, dim=-1)
+                T.reduce_max(acc_s_ub, m_i, dim=-1)
                 T.tile.max(m_i, m_i, m_i_prev)
                 T.tile.sub(m_i_prev, m_i_prev, m_i)
                 T.tile.exp(m_i_prev, m_i_prev)
-                
+
                 # current sumexp
                 for h_i in range(block_M // 2):
                     T.tile.sub(acc_s_ub[h_i, :], acc_s_ub[h_i, :], m_i[h_i])
                 T.tile.exp(acc_s_ub, acc_s_ub)
                 # update history sumexp
-                T.reduce_sum(acc_s_ub, sumexp_i_ub, tmp_ub, dim=-1)
+                T.reduce_sum(acc_s_ub, sumexp_i_ub, dim=-1)
                 T.tile.mul(sumexp, sumexp, m_i_prev)
                 T.tile.add(sumexp, sumexp, sumexp_i_ub)
-                
+
                 # softmax(S_scaled) @ V
                 T.copy(acc_s_ub, acc_s_half)
                 T.copy(
                     acc_s_half,
                     workspace_2[cid, vid * block_M // 2:vid * block_M // 2 + block_M // 2, :])
-                
+
                 T.copy(workspace_2[cid, :, :], acc_s_l1)
                 T.copy(V[bz, by, k * block_N:(k + 1) * block_N, :], v_l1)
                 T.gemm_v0(acc_s_l1, v_l1, acc_o_l0c, init=True)

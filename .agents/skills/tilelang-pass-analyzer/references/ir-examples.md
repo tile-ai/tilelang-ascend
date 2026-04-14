@@ -1000,7 +1000,7 @@ Buffer B[fragment, float16, [K, N]]
 
 **输出伪 IR：**
 ```
-# 叇换后：推断 layout
+# 变换后：推断 layout
 Buffer A[fragment, float16, [M, K], layout="row_major"]    ← 行主序
 Buffer B[fragment, float16, [K, N], layout="column_major"] ← 列主序
 Buffer C[fragment, float32, [M, N], layout="row_major"]

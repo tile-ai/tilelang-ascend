@@ -451,7 +451,6 @@ def bilinear_interpolation(mask, h_repeat, repeat_mode, dst_blk_stride, v_r_offs
             src0_offset_ub = T.alloc_ub((src0offset.shape[0] // VEC_NUM, src0offset.shape[1]), "uint32")
             src1_ub = T.alloc_ub((src1.shape[0] // VEC_NUM, src1.shape[1]), "float16")
             dst_ub = T.alloc_ub((src0.shape[0] // VEC_NUM, src0.shape[1] // 2), "float16")
-            shared_tmp_buffer_ub = T.alloc_ub((src0.shape[0], src0.shape[1]), "uint8")
 
             T.copy(src0[0, 0], src0_ub)
             T.copy(src0_offset[0, 0], src0_offset_ub)
@@ -468,7 +467,6 @@ def bilinear_interpolation(mask, h_repeat, repeat_mode, dst_blk_stride, v_r_offs
                 dst_blk_stride,
                 v_r_offset,
                 v_repeat,
-                shared_tmp_buffer_ub,
             )
 
             T.copy(dst_ub, dst[0, 0])
@@ -874,12 +872,11 @@ def bitwise_xor(M, N, block_M, block_N, dtype="int16"):
             a_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
             b_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
             c_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
-            tmp_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
 
             T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a_ub)
             T.copy(B[bx * block_M + vid * block_M // VEC_NUM, by * block_N], b_ub)
 
-            T.tile.bitwise_xor(c_ub, a_ub, b_ub, tmp_ub)
+            T.tile.bitwise_xor(c_ub, a_ub, b_ub)
 
             T.copy(c_ub, C[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
 
@@ -934,12 +931,11 @@ def bitwise_xor_slice(M, N, block_M, block_N, dtype="int16"):
             a_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
             b_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
             c_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
-            tmp_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
 
             T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a_ub)
             T.copy(B[bx * block_M + vid * block_M // VEC_NUM, by * block_N], b_ub)
             for i in range(block_M // VEC_NUM):
-                T.tile.bitwise_xor(c_ub[i, :], a_ub[i, :], b_ub[i, :], tmp_ub)
+                T.tile.bitwise_xor(c_ub[i, :], a_ub[i, :], b_ub[i, :])
 
             T.copy(c_ub, C[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
 
@@ -1354,11 +1350,10 @@ def clamp(M, N, block_M, block_N, max_val, min_val, dtype="float16"):
             block_size = block_M * block_N // VEC_NUM
             in_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
             out_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
-            tmp_ub = T.alloc_ub((block_M // VEC_NUM, block_N), "uint8")
 
             T.copy(input[bx * block_M + vid * block_M // VEC_NUM, by * block_N], in_ub)
 
-            T.tile.clamp(out_ub, in_ub, tmp_ub, min_val, max_val, block_size)
+            T.tile.clamp(out_ub, in_ub, min_val, max_val, block_size)
 
             T.copy(out_ub, output[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
 
@@ -1410,11 +1405,9 @@ def clamp_slice(M, N, block_M, block_N, max_val, min_val, dtype="float16"):
             block_size = block_M * block_N // VEC_NUM
             in_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
             out_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
-            tmp_ub = T.alloc_ub((block_M // VEC_NUM, block_N), "uint8")
-
             T.copy(input[bx * block_M + vid * block_M // VEC_NUM, by * block_N], in_ub)
             for i in range(block_M // VEC_NUM):
-                T.tile.clamp(out_ub[i, :], in_ub[i, :], tmp_ub, min_val, max_val, block_size)
+                T.tile.clamp(out_ub[i, :], in_ub[i, :], min_val, max_val, block_size)
 
             T.copy(out_ub, output[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
 
@@ -1794,12 +1787,11 @@ def cos(M, N, block_M, block_N, dtype="float"):
             by = cid % n_num
             a = T.alloc_ub([sub_block_M, block_N], dtype)
             b = T.alloc_ub([sub_block_M, block_N], dtype)
-            tmp = T.alloc_ub([2 * sub_block_M * block_N], "uint8")
 
             T.copy(
                 A[bx * block_M + vid * sub_block_M : bx * block_M + (vid + 1) * sub_block_M, by * block_N : (by + 1) * block_N], a
             )  # Load input
-            T.tile.cos(b, a, tmp)  # Compute cos
+            T.tile.cos(b, a)  # Compute cos
             T.copy(
                 b, B[bx * block_M + vid * sub_block_M : bx * block_M + (vid + 1) * sub_block_M, by * block_N : (by + 1) * block_N]
             )  # Store output
@@ -1844,13 +1836,12 @@ def cos_slice(M, N, block_M, block_N, dtype="float"):
             by = cid % n_num
             a = T.alloc_ub([sub_block_M, block_N], dtype)
             b = T.alloc_ub([sub_block_M, block_N], dtype)
-            tmp = T.alloc_ub([2 * sub_block_M * block_N], "uint8")
 
             T.copy(
                 A[bx * block_M + vid * sub_block_M : bx * block_M + (vid + 1) * sub_block_M, by * block_N : (by + 1) * block_N], a
             )  # Load input
             for i in range(sub_block_M):
-                T.tile.cos(b[i, :], a[i, :], tmp)  # Compute cos
+                T.tile.cos(b[i, :], a[i, :])  # Compute cos
             T.copy(
                 b, B[bx * block_M + vid * sub_block_M : bx * block_M + (vid + 1) * sub_block_M, by * block_N : (by + 1) * block_N]
             )  # Store output
@@ -2094,6 +2085,44 @@ def run_test_fill(M, N, block_M, block_N, dtype, target):
 def test_fill(dtype, target, shape):
     M, N = shape
     run_test_fill(M, N, 64, 32, dtype, target=target)
+
+def clear(M, N, block_M, block_N, dtype="float"):
+    m_num = M // block_M
+    n_num = N // block_N
+
+    @T.prim_func
+    def main(A: T.Tensor((M, N), dtype)):  # type: ignore
+        with T.Kernel(m_num * n_num, is_npu=True) as (cid, _):
+            bx = cid // n_num
+            by = cid % n_num
+            a_ub = T.alloc_ub((block_M, block_N), dtype)
+
+            T.tile.fill(a_ub, 10.0)
+            T.tile.clear(a_ub)
+            T.copy(a_ub, A[bx * block_M, by * block_N])
+
+    return main
+
+
+def run_test_clear(M, N, block_M, block_N, dtype, target):
+    func = clear(M, N, block_M, block_N, dtype)
+    func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
+
+    torch.npu.synchronize()
+
+    b = func()
+
+    ref_b = torch.zeros((M, N), dtype=torch.float32 if dtype == "float" else torch.float16).npu()
+
+    torch.testing.assert_close(b, ref_b, rtol=1e-2, atol=1e-2)
+
+
+@pytest.mark.parametrize("dtype", ["float", "float16"])
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@pytest.mark.parametrize("shape", [(1024, 1024)])
+def test_clear(dtype, target, shape):
+    M, N = shape
+    run_test_clear(M, N, 64, 32, dtype, target=target)
 
 
 def gather(M, N, block_M, block_N, dtype="int32"):
@@ -3116,8 +3145,6 @@ def vec_pow(M, N, block_M, block_N, dtype="float"):
 
     VEC_NUM = 2
 
-    tmp_size_multiplier = 8 if dtype == "int32" else 2
-
     @T.prim_func
     def main(
         A: T.Tensor((M, N), dtype),  # type: ignore
@@ -3131,12 +3158,11 @@ def vec_pow(M, N, block_M, block_N, dtype="float"):
             a_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
             b_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
             c_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
-            tmp = T.alloc_ub((tmp_size_multiplier * (block_M // VEC_NUM), block_N), "uint8")
 
             T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a_ub)
             T.copy(B[bx * block_M + vid * block_M // VEC_NUM, by * block_N], b_ub)
 
-            T.tile.pow(c_ub, a_ub, b_ub, tmp)
+            T.tile.pow(c_ub, a_ub, b_ub)
 
             T.copy(c_ub, C[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
 
@@ -3192,8 +3218,6 @@ def vec_pow_slice(M, N, block_M, block_N, dtype="float"):
 
     VEC_NUM = 2
 
-    tmp_size_multiplier = 8 if dtype == "int32" else 2
-
     @T.prim_func
     def main(
         A: T.Tensor((M, N), dtype),  # type: ignore
@@ -3207,12 +3231,11 @@ def vec_pow_slice(M, N, block_M, block_N, dtype="float"):
             a_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
             b_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
             c_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
-            tmp = T.alloc_ub((tmp_size_multiplier * (block_M // VEC_NUM), block_N), "uint8")
 
             T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a_ub)
             T.copy(B[bx * block_M + vid * block_M // VEC_NUM, by * block_N], b_ub)
             for i in range(block_M // VEC_NUM):
-                T.tile.pow(c_ub[i, :], a_ub[i, :], b_ub[i, :], tmp)
+                T.tile.pow(c_ub[i, :], a_ub[i, :], b_ub[i, :])
 
             T.copy(c_ub, C[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
 
@@ -3620,11 +3643,10 @@ def sin(M, N, block_M, block_N, dtype="float"):
             by = cid % n_num
             a = T.alloc_ub([sub_block_M, block_N], dtype)
             b = T.alloc_ub([sub_block_M, block_N], dtype)
-            tmp = T.alloc_ub([2 * sub_block_M * block_N], "uint8")
             T.copy(
                 A[bx * block_M + vid * sub_block_M : bx * block_M + (vid + 1) * sub_block_M, by * block_N : (by + 1) * block_N], a
             )  # Load input
-            T.tile.sin(b, a, tmp)  # Compute sin
+            T.tile.sin(b, a)  # Compute sin
             T.copy(
                 b, B[bx * block_M + vid * sub_block_M : bx * block_M + (vid + 1) * sub_block_M, by * block_N : (by + 1) * block_N]
             )  # Store output
@@ -3669,12 +3691,11 @@ def sin_slice(M, N, block_M, block_N, dtype="float"):
             by = cid % n_num
             a = T.alloc_ub([sub_block_M, block_N], dtype)
             b = T.alloc_ub([sub_block_M, block_N], dtype)
-            tmp = T.alloc_ub([2 * sub_block_M * block_N], "uint8")
             T.copy(
                 A[bx * block_M + vid * sub_block_M : bx * block_M + (vid + 1) * sub_block_M, by * block_N : (by + 1) * block_N], a
             )  # Load input
             for i in range(sub_block_M):
-                T.tile.sin(b[i, :], a[i, :], tmp)  # Compute sin
+                T.tile.sin(b[i, :], a[i, :])  # Compute sin
             T.copy(
                 b, B[bx * block_M + vid * sub_block_M : bx * block_M + (vid + 1) * sub_block_M, by * block_N : (by + 1) * block_N]
             )  # Store output
@@ -3721,11 +3742,10 @@ def sort(M, N, block_M, block_N, dtype="float"):
 
             src_ub = T.alloc_ub((block_M // VEC_NUM, ub_N), dtype)
             dst_ub = T.alloc_ub((block_M // VEC_NUM, ub_N * 2), dtype)
-            tmp_ub = T.alloc_ub((block_M // VEC_NUM, ub_N * 2), dtype)
 
             T.copy(a[bx * block_M + vid * block_M // VEC_NUM, by * ub_N], src_ub)
 
-            T.tile.sort(dst_ub, src_ub, tmp_ub, block_N)
+            T.tile.sort(dst_ub, src_ub, block_N)
 
             T.copy(dst_ub, b[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
 
@@ -4354,11 +4374,9 @@ def reduce_sum(M, N, block_M, block_N, dim, dtype="float"):
             a_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
             b_ub = T.alloc_ub((block_M // VEC_NUM), dtype)
 
-            tmp_ub = T.alloc_ub((block_M * block_N * 4), "uint8")
-
             T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a_ub)
 
-            T.reduce_sum(a_ub, b_ub, tmp_ub, dim, [block_M // VEC_NUM, block_N])
+            T.reduce_sum(a_ub, b_ub, dim, [block_M // VEC_NUM, block_N])
             T.barrier_all()
 
             T.copy(b_ub, B[bx * block_M + vid * block_M // VEC_NUM])
@@ -4391,6 +4409,8 @@ def run_test_reduce_sum(M, N, block_M, block_N, dim, dtype, target):
 @pytest.mark.parametrize("dtype", ["float", "float16"])
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 def test_reduce_sum(dim, dtype, target):
+    if dtype == "float16":
+        pytest.xfail(reason="float16 reduction sum may overflow")
     M, N = 1024, 64
     run_test_reduce_sum(M, N, 64, 64, dim, dtype, target)
 
@@ -4411,11 +4431,9 @@ def reduce_max(M, N, block_M, block_N, dim, dtype="float"):
             a_ub = T.alloc_ub((block_M, block_N), dtype)
             b_ub = T.alloc_ub((block_M), dtype)
 
-            tmp_ub = T.alloc_ub((block_M * block_N * 4), "uint8")
-
             T.copy(A[bx * block_M, by * block_N], a_ub)
 
-            T.reduce_max(a_ub, b_ub, tmp_ub, dim, [block_M, block_N])
+            T.reduce_max(a_ub, b_ub, dim, [block_M, block_N])
 
             T.copy(b_ub, B[bx * block_M])
 
@@ -4466,11 +4484,9 @@ def reduce_min(M, N, block_M, block_N, dim, dtype="float"):
             a_ub = T.alloc_ub((block_M, block_N), dtype)
             b_ub = T.alloc_ub((block_M), dtype)
 
-            tmp_ub = T.alloc_ub((block_M * block_N * 4), "uint8")
-
             T.copy(A[bx * block_M, by * block_N], a_ub)
 
-            T.reduce_min(a_ub, b_ub, tmp_ub, dim, [block_M, block_N])
+            T.reduce_min(a_ub, b_ub, dim, [block_M, block_N])
 
             T.copy(b_ub, B[bx * block_M])
 

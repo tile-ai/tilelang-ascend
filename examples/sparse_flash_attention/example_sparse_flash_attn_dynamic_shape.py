@@ -94,7 +94,6 @@ def sparse_attention_fwd(heads, dim, tail_dim, topk, kv_stride, kv_group=1, sm_s
             acc_s_ub = T.alloc_ub([v_block, BI], accum_dtype)
             m_i_prev = T.alloc_ub([v_block], accum_dtype)
             acc_s_ub_ = T.alloc_ub([v_block, BI], accum_dtype)
-            tmp_ub = T.alloc_ub([3 * DataType(accum_dtype).bits // 8 * v_block * BI], "uint8")
             sumexp_i_ub = T.alloc_ub([v_block], accum_dtype)
             acc_s_half = T.alloc_ub([v_block, BI], dtype)
             acc_o_ub = T.alloc_ub([v_block, D], accum_dtype)
@@ -122,7 +121,6 @@ def sparse_attention_fwd(heads, dim, tail_dim, topk, kv_stride, kv_group=1, sm_s
                     acc_s_ub: 66048,
                     m_i_prev: 74240,
                     acc_s_ub_: 74368,
-                    tmp_ub: 74368,
                     sumexp_i_ub: 98944,
                     acc_s_half: 98944,
                     acc_o_ub: 98944,
@@ -219,7 +217,7 @@ def sparse_attention_fwd(heads, dim, tail_dim, topk, kv_stride, kv_group=1, sm_s
                             T.tile.mul(acc_s_ub, acc_s_ub, sm_scale)
                             T.barrier_all()
 
-                            T.reduce_max(acc_s_ub, m_i, tmp_ub, dim=-1)
+                            T.reduce_max(acc_s_ub, m_i, dim=-1)
                             T.barrier_all()
 
                             T.tile.max(m_i, m_i, m_i_prev)
@@ -241,7 +239,7 @@ def sparse_attention_fwd(heads, dim, tail_dim, topk, kv_stride, kv_group=1, sm_s
                             T.tile.exp(acc_s_ub, acc_s_ub)
                             T.barrier_all()
 
-                            T.reduce_sum(acc_s_ub, sumexp_i_ub, tmp_ub, dim=-1)
+                            T.reduce_sum(acc_s_ub, sumexp_i_ub, dim=-1)
                             T.barrier_all()
 
                             T.tile.mul(sumexp, sumexp, m_i_prev)  # check

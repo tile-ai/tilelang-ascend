@@ -101,7 +101,6 @@ def sparse_attention_fwd(
             acc_s_ub = T.alloc_ub([v_block, BI], accum_dtype)  # [4, 64]
             m_i_prev = T.alloc_ub([ub_len], accum_dtype)
             acc_s_ub_ = T.alloc_ub([v_block, BI], accum_dtype)
-            tmp_ub = T.alloc_ub([3 * DataType(accum_dtype).bits // 8 * v_block * BI], "uint8")
             sumexp_i_ub = T.alloc_ub([ub_len], accum_dtype)
             acc_s_half = T.alloc_ub([v_block, BI], dtype)
             acc_o_ub = T.alloc_ub([v_block, D], accum_dtype)
@@ -158,7 +157,7 @@ def sparse_attention_fwd(
 
                 T.tile.mul(acc_s_ub, acc_s_ub, sm_scale)
 
-                T.reduce_max(acc_s_ub, m_i, tmp_ub, dim=-1)
+                T.reduce_max(acc_s_ub, m_i, dim=-1)
 
                 T.tile.max(m_i, m_i, m_i_prev)
 
@@ -171,7 +170,7 @@ def sparse_attention_fwd(
 
                 T.tile.exp(acc_s_ub, acc_s_ub)
 
-                T.reduce_sum(acc_s_ub, sumexp_i_ub, tmp_ub, dim=-1)
+                T.reduce_sum(acc_s_ub, sumexp_i_ub, dim=-1)
 
                 T.tile.mul(sumexp, sumexp, m_i_prev)  # check
 
