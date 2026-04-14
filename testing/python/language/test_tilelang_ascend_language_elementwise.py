@@ -2086,6 +2086,7 @@ def test_fill(dtype, target, shape):
     M, N = shape
     run_test_fill(M, N, 64, 32, dtype, target=target)
 
+
 def clear(M, N, block_M, block_N, dtype="float"):
     m_num = M // block_M
     n_num = N // block_N
@@ -3909,6 +3910,7 @@ def topk(M, N, K, block_M, block_N, dtype="float"):
             T.copy(dst_ub, b[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
 
     return main
+
 
 def run_test_topk(M, N, K, block_M, block_N, dtype, target):
     func = topk(M, N, K, block_M, block_N, dtype)

@@ -93,6 +93,7 @@ def fill(buffer: Buffer | BufferRegion, value: PrimExpr):
         size,
     )
 
+
 def clear(buffer: Buffer | tir.Var):
     """Clear a buffer or buffer region by filling with zeros.
 
@@ -110,6 +111,7 @@ def clear(buffer: Buffer | tir.Var):
         else:
             raise ValueError(f"Invalid buffer region: {buffer_region}")
     return fill(buffer, 0)
+
 
 def arith_progression(buffer: Buffer, first_value: PrimExpr, diff_value: PrimExpr, count: PrimExpr):
     """Generates an arithmetic progression sequence in a buffer.
@@ -1657,9 +1659,7 @@ def clamp_min(out: Buffer | BufferRegion, buffer: Buffer | BufferRegion, scalar_
     )
 
 
-def clamp(
-    out: Buffer | BufferRegion, buffer: Buffer | BufferRegion, min_scalar: PrimExpr, max_scalar: PrimExpr, count: PrimExpr
-):  # noqa: F821
+def clamp(out: Buffer | BufferRegion, buffer: Buffer | BufferRegion, min_scalar: PrimExpr, max_scalar: PrimExpr, count: PrimExpr):  # noqa: F821
     """
     Clip tensor elements to [min_scalar, max_scalar] range, replace out-of-bounds values with boundary values
 

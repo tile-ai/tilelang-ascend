@@ -899,21 +899,22 @@ CATLASS_DEVICE void ClampMax(const LocalTensor<T> &dst,
 
 template <typename T>
 CATLASS_DEVICE void TopK(const LocalTensor<T> &dst, const LocalTensor<T> &src,
-                            const LocalTensor<T> &tmp, const int32_t K,
-                            const int32_t repeatTimes,
-                            const int32_t actualCount) {
+                         const LocalTensor<T> &tmp, const int32_t K,
+                         const int32_t repeatTimes, const int32_t actualCount) {
   // Use tmp as the full-size sort destination (2 * alignedCount elements).
   // Sort writes its result into tmp's first region; we then copy the top-K
   // portion into dst.
   uint32_t alignedCount = repeatTimes * 32;
   // sortDst needs 2 * alignedCount elements; reuse the tail of tmp.
-  // Layout of tmp: [0 .. 2*alignedCount-1] = sortDst, [2*alignedCount ..] = sortTmp
+  // Layout of tmp: [0 .. 2*alignedCount-1] = sortDst, [2*alignedCount ..] =
+  // sortTmp
   auto sortDst = tmp;
   auto sortTmp = tmp[alignedCount * 2];
   Sort<T>(sortDst, src, sortTmp, repeatTimes, actualCount);
   PipeBarrier<PIPE_V>();
-  // Copy 2*K elements (interleaved value-index pairs) from sorted result to dst.
-  // DataCopy requires the byte count to be a multiple of 32 bytes, so round up.
+  // Copy 2*K elements (interleaved value-index pairs) from sorted result to
+  // dst. DataCopy requires the byte count to be a multiple of 32 bytes, so
+  // round up.
   uint32_t topkElems = 2 * K;
   constexpr uint32_t elemsPerBlock = 32 / sizeof(T);
   uint32_t alignedTopk =
