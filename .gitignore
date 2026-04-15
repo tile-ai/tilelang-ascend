@@ -99,3 +99,6 @@ unittest/npuir/output/
 
 # precision debug tool output
 .precision_debug/
+
+# agents
+.worktree/
