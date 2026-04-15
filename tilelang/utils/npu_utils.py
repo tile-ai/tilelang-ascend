@@ -442,10 +442,16 @@ def precompile_npu_ext(header_path, gch_path):
 
 
 def build_npu_ext(
-    obj_name: str, header_path, src_path, *, kernel_launcher="torch", precompile=False
+    obj_name: str,
+    header_path,
+    src_path,
+    *,
+    kernel_launcher="torch",
+    precompile=False,
+    output_path=None,
 ) -> str:
     # TODO: change to use Cache before 330
-    so_path = f"{obj_name}.so"
+    so_path = output_path or f"{obj_name}.so"
     if precompile:
         cc_cmd = get_cxx_precompiled(header_path)
         cc_cmd += [src_path]

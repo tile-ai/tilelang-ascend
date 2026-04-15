@@ -812,7 +812,9 @@ class JitKernel_NPU:
         self.out_idx = out_idx
         self.param_info = metadata.get("param_info", [])
         # 1 launch path
-        self.so_launcher_path = f"{metadata['kernel_name']}.so"
+        self.so_launcher_path = metadata.get(
+            "so_launcher_path", f"{metadata['kernel_name']}.so"
+        )
         self.so_utils_path = "npu_utils.so"
         self.utils_name = f"{metadata['name']}"
         # 2 kernel path
@@ -1190,6 +1192,7 @@ class compiler_npu:
         self.so_launcher_path = self.make_npu_launcher_stub(
             self.metadata["kernel_name"], self.header_path, self.wrapper_src
         )
+        self.metadata["so_launcher_path"] = self.so_launcher_path
 
         TILELANG_ASCEND_WORKSPACE_SIZE = os.environ.get(
             "TILELANG_ASCEND_WORKSPACE_SIZE"
@@ -1509,14 +1512,27 @@ class compiler_npu:
                 precompile_npu_ext(header_path, tmp_header_gch_path)
                 safe_copy(tmp_header_gch_path, precompile_header_path)
 
+        cache_key = wrapper_src.encode("utf-8") + Path(header_src).read_bytes()
+        wrapper_cache_path = get_runtime_file_cache(cache_key)
+        launcher_so_path = os.path.join(wrapper_cache_path, f"{name}.so")
+        if os.path.exists(launcher_so_path) and os.path.getsize(launcher_so_path) > 0:
+            return launcher_so_path
+
         with tempfile.TemporaryDirectory() as tmpdir:
             dst_path = os.path.join(tmpdir, f"{name}.cxx")
+            tmp_so_path = os.path.join(tmpdir, f"{name}.so")
             with open(dst_path, "w") as f:
                 f.write(wrapper_src)
             so = build_npu_ext(
-                name, header_path, dst_path, kernel_launcher="torch", precompile=True
+                name,
+                header_path,
+                dst_path,
+                kernel_launcher="torch",
+                precompile=True,
+                output_path=tmp_so_path,
             )
-            return so
+            safe_copy(so, launcher_so_path)
+            return launcher_so_path
 
     def check_debug_op(self, func) -> bool:
         """
