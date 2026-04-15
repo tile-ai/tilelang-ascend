@@ -1,16 +1,11 @@
 # TileLang-Ascend 持续集成工作流
 name: TileLang-Ascend CI
 
-# 全局环境变量，所有 job 都可使用
-env:
-  ASCEND_HOME: /usr/local/Ascend/ascend-toolkit/latest  # Ascend CANN 安装路径
-  PY_VENV_DIR: /home/runner/
-
 # 触发条件
 on:
   push:
     branches:
-      - ascendc_pto                           # ascendc_pto 分支
+      - ascendc_pto*                           # ascendc_pto 分支
       - npuir                                  # npuir 分支
     paths-ignore:                              # 以下路径的修改不触发 CI
       - '**.md'                                # Markdown 文件
@@ -19,7 +14,7 @@ on:
 
   pull_request:
     branches:
-      - ascendc_pto
+      - ascendc_pto*
       - npuir
     paths-ignore:
       - '**.md'
@@ -41,62 +36,67 @@ on:
 jobs:
   test:
     name: Benchmark Tests (Ascend NPU)
-    runs-on: [self-hosted, linux, x64, 910b]                # 使用自托管运行器（需安装 Ascend 环境）
-    if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.run_tests == 'true' }} # 手动触发时可跳过测试
-    timeout-minutes: 120                               # 2 小时超时退出
-    outputs:                                           # 定义 job 输出
+    runs-on: [self-hosted, linux, x64, 910b]
+    
+    container:
+      image: tilelang-env1:latest  # 镜像名
+      options: >-
+        --user root
+        --privileged
+        --network host
+        --ipc host
+        --shm-size 128g
+        --ulimit nproc=65535:65535
+        --device /dev/davinci0
+        --device /dev/davinci_manager
+        --device /dev/devmm_svm
+        --device /dev/hisi_hdc
+        -v /home:/home
+        -v /data:/data
+        -v /etc/localtime:/etc/localtime
+        -v /usr/local/Ascend/driver:/usr/local/Ascend/driver
+        -v /etc/ascend_install.info:/etc/ascend_install.info
+        -v /var/log/npu/:/usr/slog
+        -v /usr/local/bin/npu-smi:/usr/local/bin/npu-smi
+        -v /sys/fs/cgroup:/sys/fs/cgroup:ro
+        -v /usr/local/dcmi:/usr/local/dcmi
+        -v /usr/local/sbin:/usr/local/sbin
+        -v /etc/hccn.conf:/etc/hccn.conf
+        -v /root/.pip:/root/.pip
+        -v /etc/hosts:/etc/hosts
+        -v /usr/bin/hostname:/usr/bin/hostname
+
+    if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.run_tests == 'true' }}
+    timeout-minutes: 120
+    outputs:
       pass_rate: ${{ steps.check_results.outputs.pass_rate }}
       test_status: ${{ steps.check_results.outputs.test_status }}
-    steps:       
+
+    steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          submodules: false 
+          submodules: false
           fetch-depth: 1
 
-      - name: Set environment and run test
+      - name: Build and Test
         run: |
-          echo "Setting up Ascend environment..."
-          if [ ! -f "${ASCEND_HOME}/set_env.sh" ]; then
-            echo "❌ Ascend environment file not found: ${ASCEND_HOME}/set_env.sh"
-            exit 1
-          fi
-          source ${ASCEND_HOME}/set_env.sh || {
-            echo "❌ Failed to source Ascend environment"
-            exit 1
-          }
-          echo "✅ Ascend environment setup completed"
+          # 1. 在容器内重新编译项目
+          echo "Building project..."
+          bash install_ascend.sh
 
-          # 检查虚拟环境是否存在
-          if [ ! -d "${PY_VENV_DIR}/test_venv" ]; then
-            echo "Create python venv <test_venv>..."
-            python -m venv "${PY_VENV_DIR}/test_venv" || {
-              echo "❌ Failed to create Python virtual environment"
-              exit 1
-            }
-            echo "✅ Python venv <test_venv> created successfully."
-          else
-            echo "python venv <test_venv> already exists."
-          fi
-          
-          # 激活虚拟环境
-          source "${PY_VENV_DIR}/test_venv/bin/activate" || {
-            echo "❌ Failed to activate Python virtual environment"
-            exit 1
-          }
-          pip list
-
-          echo "USE_ASCEND=$USE_ASCEND"
-          bash install_ascend.sh                              # 执行安装脚本
-
-          source set_env.sh                                   # 加载项目环境变量
+          # 2. 加载环境变量
+          echo "Sourcing environment..."
+          source set_env.sh
           echo "TILELANG_PATH=$PWD" >> $GITHUB_ENV
 
+          # 3. 运行测试用例
           cd examples
           chmod +x bench_test.sh
+          echo "Running benchmark tests..."
           ./bench_test.sh 2>&1 | tee test_output.log
         
-          TEST_EXIT_CODE=${PIPESTATUS[0]}                      # 保存退出码
+          TEST_EXIT_CODE=${PIPESTATUS[0]}
           echo "Test exit code: $TEST_EXIT_CODE"
           echo "test_exit_code=$TEST_EXIT_CODE" >> $GITHUB_OUTPUT
 
