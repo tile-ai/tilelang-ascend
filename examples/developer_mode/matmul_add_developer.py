@@ -29,17 +29,15 @@ def matmul_add(M, N, K, block_M, block_N, block_K, dtype="float16", accum_dtype=
     m_num = M // block_M
     n_num = N // block_N
 
-    VEC_NUM = 2
-
     @T.prim_func
     def main(
-            A: T.Tensor((M, K), dtype),
-            B: T.Tensor((K, N), dtype),
-            C: T.Tensor((M, N), dtype),
-            D: T.Tensor((M, N), dtype),
-            workspace: T.Tensor((M, N), dtype),
+        A: T.Tensor((M, K), dtype),
+        B: T.Tensor((K, N), dtype),
+        C: T.Tensor((M, N), dtype),
+        D: T.Tensor((M, N), dtype),
+        workspace: T.Tensor((M, N), dtype),
     ):
-        with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
+        with T.Kernel(m_num * n_num, threads=2, is_npu=True) as (cid):
             bx = cid // n_num
             by = cid % n_num
             A_L1 = T.alloc_shared((block_M, block_K), dtype)
@@ -47,8 +45,8 @@ def matmul_add(M, N, K, block_M, block_N, block_K, dtype="float16", accum_dtype=
 
             C_L0 = T.alloc_fragment((block_M, block_N), accum_dtype)
 
-            d_ub = T.alloc_shared((block_M // VEC_NUM, block_N), dtype)
-            c_ub = T.alloc_shared((block_M // VEC_NUM, block_N), dtype)
+            d_ub = T.alloc_shared((block_M, block_N), dtype)
+            c_ub = T.alloc_shared((block_M, block_N), dtype)
 
             loop_k = T.ceildiv(K, block_K)
             for k in T.serial(loop_k):
@@ -62,12 +60,12 @@ def matmul_add(M, N, K, block_M, block_N, block_K, dtype="float16", accum_dtype=
 
             T.copy(C_L0, workspace[bx * block_M, by * block_N])
 
-            T.copy(workspace[bx * block_M + vid * block_M // VEC_NUM, by * block_N], c_ub)
-            T.copy(D[bx * block_M + vid * block_M // VEC_NUM, by * block_N], d_ub)
+            T.copy(workspace[bx * block_M, by * block_N], c_ub)
+            T.copy(D[bx * block_M, by * block_N], d_ub)
 
             T.tile.add(c_ub, c_ub, d_ub)
 
-            T.copy(c_ub, C[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
+            T.copy(c_ub, C[bx * block_M, by * block_N])
 
     return main
 
