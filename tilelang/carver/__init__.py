@@ -1,6 +1,7 @@
 # Copyright (c) Tile-AI Corporation.
 # Licensed under the MIT License.
 """Base infra"""
+
 from .analysis import (
     BlockInfo,  # noqa: F401
     IterInfo,  # noqa: F401
@@ -10,7 +11,18 @@ from .analysis import (
     is_broadcast_epilogue,  # noqa: F401
     normalize_prim_func,  # noqa: F401
 )  # noqa: F401
-from .common_schedules import get_block, get_output_blocks, try_inline, try_inline_contiguous_spatial  # noqa: F401
+from .common_schedules import (
+    get_block,
+    get_output_blocks,
+    try_inline,
+    try_inline_contiguous_spatial,
+)  # noqa: F401
 from .roller import *
 from .arch import CUDA, CDNA  # noqa: F401
-from .template import MatmulTemplate, GEMVTemplate, ElementwiseTemplate, GeneralReductionTemplate, FlashAttentionTemplate  # noqa: F401
+from .template import (
+    MatmulTemplate,
+    GEMVTemplate,
+    ElementwiseTemplate,
+    GeneralReductionTemplate,
+    FlashAttentionTemplate,
+)  # noqa: F401

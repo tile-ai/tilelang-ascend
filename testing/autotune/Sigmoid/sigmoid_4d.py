@@ -19,6 +19,7 @@ SHAPES = [
     (16, 8, 16, 255),
 ]
 
+
 def run_single_shape(shape, log_dir: Path):
     tilelang.cache.clear_cache()
 
@@ -26,7 +27,6 @@ def run_single_shape(shape, log_dir: Path):
     log_file = log_dir / "log.log"
 
     with open(log_file, "w") as f, redirect_stdout(f), redirect_stderr(f):
-
         print("=" * 80)
         print("Running shape:", shape)
         print("=" * 80)
@@ -55,7 +55,7 @@ def run_single_shape(shape, log_dir: Path):
                     blocks = hint.block
                     ndim = len(blocks)
 
-                    shape_dims = [N,C,H,W]
+                    shape_dims = [N, C, H, W]
                     result_blocks = []
 
                     j = 0
@@ -70,12 +70,14 @@ def run_single_shape(shape, log_dir: Path):
                             else:
                                 result_blocks.append(1)
 
-                    configs.append({
-                        "block_N": result_blocks[0],
-                        "block_C": result_blocks[1],
-                        "block_H": result_blocks[2],
-                        "block_W": result_blocks[3],
-                    })
+                    configs.append(
+                        {
+                            "block_N": result_blocks[0],
+                            "block_C": result_blocks[1],
+                            "block_H": result_blocks[2],
+                            "block_W": result_blocks[3],
+                        }
+                    )
 
                 return configs
 
@@ -93,10 +95,7 @@ def run_single_shape(shape, log_dir: Path):
                 rtol=1e-2,
             )
             @tilelang.jit(out_idx=[-1], target="npuir")
-            def compute_sigmoid(
-                N, C, H, W,
-                block_N, block_C, block_H, block_W
-            ):
+            def compute_sigmoid(N, C, H, W, block_N, block_C, block_H, block_W):
 
                 @T.prim_func
                 def sigmoid_4D(
@@ -104,11 +103,13 @@ def run_single_shape(shape, log_dir: Path):
                     B: T.Tensor((N, C, H, W), "float16"),
                 ):
 
-                    with T.Kernel(T.ceildiv(N, block_N)
+                    with T.Kernel(
+                        T.ceildiv(N, block_N)
                         * T.ceildiv(C, block_C)
                         * T.ceildiv(H, block_H)
-                        * T.ceildiv(W, block_W), is_npu=True) as (cid, _):
-
+                        * T.ceildiv(W, block_W),
+                        is_npu=True,
+                    ) as (cid, _):
                         tmp = cid
                         bz = tmp // (
                             T.ceildiv(C, block_C)
@@ -120,14 +121,8 @@ def run_single_shape(shape, log_dir: Path):
                             * T.ceildiv(H, block_H)
                             * T.ceildiv(W, block_W)
                         )
-                        bc = tmp // (
-                            T.ceildiv(H, block_H)
-                            * T.ceildiv(W, block_W)
-                        )
-                        tmp %= (
-                            T.ceildiv(H, block_H)
-                            * T.ceildiv(W, block_W)
-                        )
+                        bc = tmp // (T.ceildiv(H, block_H) * T.ceildiv(W, block_W))
+                        tmp %= T.ceildiv(H, block_H) * T.ceildiv(W, block_W)
 
                         by = tmp // T.ceildiv(W, block_W)
                         bx = tmp % T.ceildiv(W, block_W)
@@ -186,6 +181,7 @@ def main():
         shape_str = "x".join(map(str, shape))
         log_dir = root_log_dir / shape_str
         run_single_shape(shape, log_dir)
+
 
 if __name__ == "__main__":
     main()

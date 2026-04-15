@@ -17,7 +17,9 @@ from hashlib import sha256
 from tilelang import env
 
 import pybind11
+
 logger = logging.getLogger(__name__)
+
 
 class NPUUtils(object):
     """Singleton helper for Ascend NPU utilities.

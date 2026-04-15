@@ -90,7 +90,10 @@ class AnnealCarver:
         for constraints, cap in zip(
             self.custom_kernel.mem_caps, self.mem_caps, strict=True
         ):
-            if constraints.calc_results(cfg) * self.annealparam.custom_mem_multiply > cap:
+            if (
+                constraints.calc_results(cfg) * self.annealparam.custom_mem_multiply
+                > cap
+            ):
                 return False
         return True
 

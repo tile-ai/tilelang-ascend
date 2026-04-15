@@ -6,8 +6,9 @@ import builtins
 import os
 import shutil
 from typing import Callable, List, Literal, Optional, Union
- 
+
 import torch
+
 
 def do_bench(
     fn: Callable,
@@ -104,6 +105,7 @@ def do_bench(
         return ret
     return getattr(torch, return_mode)(times).item()
 
+
 def do_bench_npu(funcs, warmup: float = 5, rep=30, prof_dir=None, keep_res=False):
     import torch_npu
 
@@ -138,7 +140,7 @@ def do_bench_npu(funcs, warmup: float = 5, rep=30, prof_dir=None, keep_res=False
             torch.npu.synchronize()
 
     time_cost = _collect_prof_result(torch_path, funcs, warmup, rep)
-    
+
     if not keep_res:
         _remove_dir(torch_path)
 
@@ -151,8 +153,7 @@ def _remove_dir(path: str) -> None:
         shutil.rmtree(path)
 
 
-def _collect_prof_result(
-    base_dir: str, funcs, num_warmup: int, num_active: int):
+def _collect_prof_result(base_dir: str, funcs, num_warmup: int, num_active: int):
     """
     Collect kernel performance from kernel_details.csv, returned in millisecond.
     The first `num_warmup` rows of each function are warmup data and will be ignored, the next `num_active` rows will be averaged.
@@ -187,7 +188,7 @@ def _collect_prof_result(
     # filter out l2 cache clearing operation
     filter_cond = ~df["Type"].str.contains(r"^ReduceSum$", case=False, na=False)
     filter_df = df[filter_cond]
-    
+
     key_rows = filter_df
     time_cost = [0] * num_funcs
     for func_idx in np.arange(0, num_funcs):
