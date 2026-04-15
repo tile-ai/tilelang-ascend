@@ -50,8 +50,6 @@ def LowerAndLegalize(mod: IRModule, target: Target) -> IRModule:
     # allocate the tmp buffer for vector api
     mod = tilelang.transform.InjectTmpBuffer(target)(mod)
     mod = tilelang.transform.AscendInferBufferScope()(mod)
-    # Vid reduction
-    mod = tilelang.transform.AscendVidReduction()(mod)
     # Collect buffer shape
     mod = tilelang.transform.BufferShapeCollector()(mod)
     # Bind the target device information to the module
