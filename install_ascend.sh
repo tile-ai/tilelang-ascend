@@ -127,6 +127,10 @@ cp 3rdparty/tvm/cmake/config.cmake build
 cd build
 
 echo "set(USE_ASCEND ON)" >> config.cmake
+# PGTestConfig.cmake: GTest::gtest may not define IMPORTED_LOCATION,
+# but which TVM's CMake still queries it, causing build error
+# C++ gtests are optional for TileLang; keep them off for this install path.
+echo 'set(USE_GTEST OFF)' >> config.cmake
 
 echo "Running CMake for TileLang..."
 cmake ..
