@@ -62,7 +62,7 @@ def rms_norm_kernel(M, head_dim, block_M, eps, dtype="float16"):
             T.copy(x[row_x : row_x + row_per_vec, :], x_ub)
             # 2. Compute sum of squares → reduce → mean → sqrt
             T.tile.mul(sum_square_ub, x_ub_fp32, x_ub_fp32)
-            T.reduce_sum(sum_square_ub, rms_ub, tmp_ub, dim=-1)
+            T.reduce_sum(sum_square_ub, rms_ub, dim=-1)
             T.tile.div(rms_ub, rms_ub, head_dim)
             T.tile.add(rms_ub, rms_ub, eps)
             T.tile.sqrt(rms_ub, rms_ub)

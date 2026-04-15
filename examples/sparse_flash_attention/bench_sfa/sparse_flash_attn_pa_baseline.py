@@ -105,7 +105,6 @@ def sparse_attention_fwd(
             acc_s_ub = T.alloc_ub([vec_block_M, block_N], accum_dtype)
             m_i_prev = T.alloc_ub([vec_block_M], accum_dtype)
             acc_s_ub_ = T.alloc_ub([vec_block_M, block_N], accum_dtype)
-            tmp_ub = T.alloc_ub([3 * DataType(accum_dtype).bits // 8 * vec_block_M * block_N], "uint8")
             sumexp_i_ub = T.alloc_ub([vec_block_M], accum_dtype)
             acc_s_half = T.alloc_ub([vec_block_M, block_N], dtype)
             acc_o_ub = T.alloc_ub([vec_block_M, dim], accum_dtype)
@@ -193,7 +192,7 @@ def sparse_attention_fwd(
 
                             T.tile.mul(acc_s_ub, acc_s_ub, scale)
 
-                            T.reduce_max(acc_s_ub, m_i, tmp_ub, dim=-1)
+                            T.reduce_max(acc_s_ub, m_i, dim=-1)
 
                             T.tile.max(m_i, m_i, m_i_prev)
 
@@ -206,7 +205,7 @@ def sparse_attention_fwd(
 
                             T.tile.exp(acc_s_ub, acc_s_ub)
 
-                            T.reduce_sum(acc_s_ub, sumexp_i_ub, tmp_ub, dim=-1)
+                            T.reduce_sum(acc_s_ub, sumexp_i_ub, dim=-1)
 
                             T.tile.mul(sumexp, sumexp, m_i_prev)  # check
 
@@ -228,7 +227,7 @@ def sparse_attention_fwd(
 
                         T.copy(acc_o, acc_o_half)
 
-                        T.copy(acc_o_half, Output[b_i, s_i, H0 + vid * vec_block_M : H1 + vid * vec_block_M, :])
+                        T.copy(acc_o_half, Output[b_i, s_i, H0 + vid * vec_block_M : H0 + (vid + 1) * vec_block_M, :])
 
     return main
 
@@ -250,7 +249,6 @@ def sparse_attn_tilelang(
     block_table=None,
     attention_mode=None,
 ):
-
     query = query.unsqueeze(0)
     query_rope = query_rope.unsqueeze(0)
     block_num, block_size, num_head_kv, dim = key.size()

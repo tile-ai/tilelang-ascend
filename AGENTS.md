@@ -26,19 +26,48 @@
 
 本项目的 skills 位于 `.agents/skills/` 目录下，每个 skill 包含一个 SKILL.md 文件。
 
-可用 skills：
+可用 skills ：
 
 
 | 技能                           | 触发时机            | 说明                                                                                                  |
 | ---------------------------- | --------------- | --------------------------------------------------------------------------------------------------- |
-| tilelang-custom-skill  | 每次都触发     | 包含api使用说明、developer和expert模式说明等        |
-| tilelang-vector-skill | 写vector算子时触发           | 专注于vector算子生成，内含skill和参考文档 |
-| tilelang-cube-skill       | 写cube算子时触发    |    专注于cube算子生成，内含skill和参考文档    |
-| tilelang-fused-skill         | 写融合算子时触发 | 专注于融合算子生成，内含skill和参考文档   |
-| tilelang-pass-skill            | 写pass时触发           | 用于框架优化，写pass |
-| tilelang-api-skill       | 封装和修改api时触发           | 用于封装新的api或重构已有api  |
-| skill-creator      | 创建skill时触发          | 用于创建skill  |
+| tilelang-custom-skill  | 需要时触发     | 通用skill |
+| tilelang-op-design | 设计算子时 | 算子方案设计，生成 design.md |
+| tilelang-op-generate | 实现算子时 | 基于 design.md 生成算子代码 |
+| tilelang-pass-analyzer       | **查询 Pass 功能时立即触发**  | Pass 功能分析、对比、分类查询。关键词："XX pass 是干什么的"、"分析 XX pass"、"XX 和 YY pass 的区别" |
+| tilelang-pass-workflow-analyzer | **查询 Pass 工作流时立即触发** | Pass 工作流分析、执行顺序、依赖关系、新 Pass 定位。关键词："pass 的工作流程"、"Pass 执行顺序"、"Pass 依赖关系"、"如何添加新 Pass" |
+| skill-creator      | 创建skill时          | 用于创建skill  |
 
+## Skill 自动调用规则 ⭐⭐⭐
+
+**必须在第一时间识别用户意图，查阅 Skills 表格，匹配可用 skill以及触发时机，再决定是否调用，禁止先用 grep/read 等工具。**
+
+### 自动调用流程
+
+```
+用户提问
+  ↓
+1. 分析用户意图（要做什么任务）
+  ↓
+2. 查阅 Skills 表格，检查哪些 skill 可用
+  ↓
+3. 根据触发时机匹配对应的 skill
+  ↓
+4. 匹配成功 → 立即调用对应 skill
+  ↓
+5. 不匹配 → 使用其他工具（grep/read/glob）
+```
+
+### 识别示例
+
+| 用户问题 | 意图分析 | 匹配 Skill | 调用动作 |
+|---------|---------|-----------|---------|
+| "lower tile op 是干什么的" | Pass 功能查询 | tilelang-pass-analyzer | 立即调用 |
+| "写一个 softmax 算子" | Vector 算子开发 | tilelang-vector-skill | 立即调用 |
+| "VectorizeLoop pass 的作用" | Pass 功能查询 | tilelang-pass-analyzer | 立即调用 |
+| "同步相关的 pass 有哪些" | Pass 分类查询 | tilelang-pass-analyzer | 立即调用 |
+| "pass 的工作流程" | Pass 工作流查询 | tilelang-pass-workflow-analyzer | 立即调用 |
+| "创建一个新的 skill" | Skill 创建 | skill-creator | 立即调用 |
 
 ## 核心原则 ⭐⭐⭐
 
@@ -46,7 +75,7 @@
 
 ### 原则 1：不要凭记忆猜 API
 
-- ✅ 第一步：查阅 [API 参考文档](.agents/skills/tilelang-custom-skill/tilelang-api-best-practices/references/api-quickref.md)
+- ✅ 第一步：查阅 [tilelang-api-best-practices](.agents/skills/tilelang-custom-skill/tilelang-api-best-practices/SKILL.md)（API 速查表和详细文档）
 - ✅ 第二步：查阅 `examples/` 中的同类实现
 - ✅ 第三步：若文档未覆盖，查阅源码 `tilelang/language/ascend_tile.py` · `tilelang/language/ascend.py` · `testing/python/language/`
 - ❌ 禁止：凭直觉编造 API 调用、猜测参数签名
@@ -91,37 +120,38 @@ L0A / L0B（矩阵输入寄存器）→ L0C（矩阵输出寄存器）
 
 ## Developer 模式 vs Expert 模式
 
+| 维度 | Developer（自动化） | Expert（手动控制） |
+| --- | --- | --- |
+| 内存分配 | `T.alloc_shared/fragment` 编译器自动映射 | `T.alloc_L1/ub/L0A/L0B/L0C` 显式指定 |
+| 计算 | `T.Parallel` + 符号运算 | `T.tile.add/exp/max` 等 |
+| 作用域 | 编译器自动分离 Cube/Vector | 显式 `with T.Scope("C"/"V")` |
+| 同步 | 自动 | 手动 `T.barrier_all/set_flag/wait_flag` |
+| pass_configs | 全部开启 | 全部关闭或不设 |
 
-| 维度   | Developer（自动化）                    | Expert（手动控制）                          |
-| ---- | --------------------------------- | ------------------------------------- |
-| 内存分配 | `T.alloc_shared/fragment` 编译器自动映射 | `T.alloc_L1/ub/L0A/L0B/L0C` 显式指定      |
-| 计算   | `T.Parallel` + 符号运算               | `T.tile.add/exp/max` 等                |
-| 作用域  | 编译器自动分离 Cube/Vector               | 显式 `with T.Scope("C"/"V")`            |
-| 同步   | 自动                                | 手动 `T.barrier_all/set_flag/wait_flag` |
-
-
-详细对照与转换指南: [mode-overview](.agents/skills/tilelang-custom-skill/tilelang-expert-to-developer/references/mode-overview.md) · [转换示例](.agents/skills/tilelang-custom-skill/tilelang-expert-to-developer/references/convert-examples.md)
+详细对照、pass_configs 配置与转换指南：[tilelang-expert-to-developer](.agents/skills/tilelang-custom-skill/tilelang-expert-to-developer/SKILL.md)
 
 ## API 参考
 
-编写 kernel 时按需查阅：
+编写 kernel 时的 API 查阅入口：
 
-- [Kernel 定义](.agents/skills/tilelang-custom-skill/tilelang-api-best-practices/references/api-kernel.md) · [内存分配](.agents/skills/tilelang-custom-skill/tilelang-api-best-practices/references/api-memory.md) · [数据搬运](.agents/skills/tilelang-custom-skill/tilelang-api-best-practices/references/api-datacopy.md)
-- [矩阵计算](.agents/skills/tilelang-custom-skill/tilelang-api-best-practices/references/api-gemm.md) · [归约](.agents/skills/tilelang-custom-skill/tilelang-api-best-practices/references/api-reduce.md) · [Element-wise](.agents/skills/tilelang-custom-skill/tilelang-api-best-practices/references/api-elementwise.md)
-- [Tile 原语](.agents/skills/tilelang-custom-skill/tilelang-api-best-practices/references/api-tile-ops.md) · [调度](.agents/skills/tilelang-custom-skill/tilelang-api-best-practices/references/api-schedule.md) · [同步](.agents/skills/tilelang-custom-skill/tilelang-api-best-practices/references/api-sync.md)
-- [调试工具](.agents/skills/tilelang-custom-skill/tilelang-api-best-practices/references/api-debug.md) · [速查表](.agents/skills/tilelang-custom-skill/tilelang-api-best-practices/references/api-quickref.md)
+- **API 速查与最佳实践**：[tilelang-api-best-practices](.agents/skills/tilelang-custom-skill/tilelang-api-best-practices/SKILL.md)
+  - [Kernel 定义、内存分配、数据搬运](.agents/skills/tilelang-custom-skill/tilelang-api-best-practices/references/api-kernel-memory.md)
+  - [计算原语：GEMM、归约、Tile 扩展操作](.agents/skills/tilelang-custom-skill/tilelang-api-best-practices/references/api-compute.md)
+  - [调度、同步与调试](.agents/skills/tilelang-custom-skill/tilelang-api-best-practices/references/api-schedule-sync.md)
 
-若上述文档未覆盖，查阅源码: `tilelang/language/ascend_tile.py` · `tilelang/language/ascend.py` · `testing/python/language/`
+若上述文档未覆盖，查阅源码：`tilelang/language/ascend_tile.py` · `tilelang/language/ascend.py` · `testing/python/language/`
 
 ## 分阶段开发指南
+
 严格按照以下阶段开发算子
+
 ### 阶段一：需求分析与方案设计
 
 1. 理解算子的数学公式和计算逻辑
 2. 在 `examples/` 中找到最相似的实现作为参考
-3. 必须询问使用 Developer 模式、 Expert 模式或混合编程模式，否则不进入下一步
+3. 必须询问使用 Developer 模式、Expert 模式或混合编程模式，否则不进入下一步
 4. 将公式拆解为 TileLang API 的组合，查阅 API 文档验证可行性
-5. 按需调用skill
+5. 按需调用 skill
 
 ### 阶段二：算子实现
 
@@ -145,9 +175,6 @@ source set_env.sh
 
 # 运行测试
 python examples/<算子>.py
-
-# 调试模式
-export TL_DEBUG=1
 ```
 
 验证步骤：
@@ -161,12 +188,11 @@ export TL_DEBUG=1
 
 遇到问题时：
 
-1. 开启调试：`export TL_DEBUG=1`
-2. 在 kernel 中使用 `T.printf` 打印中间值
-3. 使用 `T.dump_tensor` 检查张量内容
-4. 查看 build 目录中生成的 Ascend C 代码
-5. 参考 [debug-helper](.agents/skills/tilelang-custom-skill/tilelang-debug-helper/SKILL.md) 配置 GDB
-6. 遇到错误时，优先使用 [tilelang-error-fixer](.agents/skills/tilelang-custom-skill/tilelang-error-fixer/SKILL.md) 进行调试
+1. 在 kernel 中使用 `T.printf` 打印中间值
+2. 使用 `T.dump_tensor` 检查张量内容
+3. 查看 build 目录中生成的 Ascend C 代码
+4. 参考 [debug-helper](.agents/skills/tilelang-custom-skill/tilelang-debug-helper/SKILL.md) 配置 GDB
+5. 遇到错误时，优先使用 [tilelang-error-fixer](.agents/skills/tilelang-custom-skill/tilelang-error-fixer/SKILL.md) 进行调试
 
 ### 阶段五：编写测试
 
@@ -182,14 +208,12 @@ export TL_DEBUG=1
 
 ## 错误处理 ⭐
 
-
-| 错误类型  | 处理方式                                                                                                   |
-| ----- | ------------------------------------------------------------------------------------------------------ |
-| 编译错误  | 定位错误行号，对比 API 文档检查用法，参考 `examples/` 同类实现                                                               |
-| 运行时错误 | `TL_DEBUG=1` + `T.printf` 定位问题，采用渐进式调试                                                                 |
-| 精度错误  | 从最小用例开始，分段验证中间结果，检查数据类型                                                                                |
-| 环境问题  | 运行 `source set_env.sh`，参考 [env-check](.agents/skills/tilelang-custom-skill/ascendc-env-check/SKILL.md) |
-
+| 错误类型 | 处理方式 |
+| --- | --- |
+| 编译错误 | 定位错误行号，对比 API 文档检查用法，参考 `examples/` 同类实现 |
+| 运行时错误 | `T.dump_tensor` + `T.printf` 定位问题，采用渐进式调试 |
+| 精度错误 | 从最小用例开始，分段验证中间结果，检查数据类型 |
+| 环境问题 | 运行 `source set_env.sh`，参考 [env-check](.agents/skills/tilelang-custom-skill/ascendc-env-check/SKILL.md) |
 
 **禁止：一遇到错误就全部重写、不分析原因就尝试其他方案。**
 
@@ -214,4 +238,3 @@ export TL_DEBUG=1
 - 优先使用 Glob 工具通过文件名模式搜索
 - 文档中的路径可能是相对路径，需用 Glob 在整个项目中搜索
 - 使用 Explore Agent 查找资料，使用 Plan Agent 进行方案设计
-

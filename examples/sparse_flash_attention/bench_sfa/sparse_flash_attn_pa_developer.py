@@ -126,7 +126,6 @@ def sparse_attention_fwd(
             acc_s_ub = T.alloc_ub([v_block, BI], accum_dtype)
             m_i_prev = T.alloc_ub([v_block, 1], accum_dtype)
             acc_s_ub_ = T.alloc_ub([v_block, BI], accum_dtype)
-            tmp_ub = T.alloc_ub([1 * DataType(accum_dtype).bits // 8 * v_block * BI], "uint8")
             sumexp_i_ub = T.alloc_ub([v_block, 1], accum_dtype)
             acc_s_half = T.alloc_ub([v_block, BI], dtype)
             acc_o_ub = T.alloc_ub([v_block, D], accum_dtype)
@@ -210,7 +209,7 @@ def sparse_attention_fwd(
 
                             T.tile.mul(acc_s_ub, acc_s_ub, sm_scale)
 
-                            T.reduce_max(acc_s_ub, m_i, tmp_ub, dim=-1)
+                            T.reduce_max(acc_s_ub, m_i, dim=-1)
 
                             T.tile.max(m_i, m_i, m_i_prev)
 
@@ -218,12 +217,12 @@ def sparse_attention_fwd(
 
                             T.tile.exp(m_i_prev, m_i_prev)
 
-                            T.tile.broadcast(m_i_broadcast, m_i, tmp_ub)
+                            T.tile.broadcast(m_i_broadcast, m_i)
                             T.tile.sub(acc_s_ub, acc_s_ub, m_i_broadcast)
 
                             T.tile.exp(acc_s_ub, acc_s_ub)
 
-                            T.reduce_sum(acc_s_ub, sumexp_i_ub, tmp_ub, dim=-1)
+                            T.reduce_sum(acc_s_ub, sumexp_i_ub, dim=-1)
 
                             T.tile.mul(sumexp, sumexp, m_i_prev)  # check
 
@@ -235,16 +234,16 @@ def sparse_attention_fwd(
 
                             T.copy(workspace_5[cid, vid * v_block : vid * v_block + v_block, :], acc_o_ub)
 
-                            T.tile.broadcast(m_i_prev_broadcast, m_i_prev, tmp_ub)
+                            T.tile.broadcast(m_i_prev_broadcast, m_i_prev)
                             T.tile.mul(acc_o, acc_o, m_i_prev_broadcast)
                             T.tile.add(acc_o, acc_o, acc_o_ub)
 
-                        T.tile.broadcast(sumexp_broadcast, sumexp, tmp_ub)
+                        T.tile.broadcast(sumexp_broadcast, sumexp)
                         T.tile.div(acc_o, acc_o, sumexp_broadcast)
 
                         T.copy(acc_o, acc_o_half)
 
-                        T.copy(acc_o_half, Output[b_i, s_i, H0 + vid * v_block : H1 + vid * v_block, :])
+                        T.copy(acc_o_half, Output[b_i, s_i, H0 + vid * v_block : H0 + (vid + 1) * v_block, :])
 
     return main_opt
 

@@ -41,7 +41,6 @@ def paged_flash_attention_fwd(
 
     block_M_2 = T.ceildiv(block_M, VEC_NUM)
     kernel_block_num = T.ceildiv(seq_len, block_M) * heads * batch
-    tmp_ub_size = bytes_of(ACCUM_DTYPE) * block_M_2 * block_size
 
     n_num = T.max(T.ceildiv(block_size * dim * bytes_of(DTYPE), L0AB_MAX_SIZE), 1)
     block_QK = T.ceildiv(block_size, n_num)
@@ -85,7 +84,6 @@ def paged_flash_attention_fwd(
             sumexp = T.alloc_ub([block_M_2, 1], ACCUM_DTYPE)
             sumexp_2d = T.alloc_ub([block_M_2, dim], ACCUM_DTYPE)
             sumexp_i_ub = T.alloc_ub([block_M_2, 1], ACCUM_DTYPE)
-            tmp_ub = T.alloc_ub([tmp_ub_size], TEMP_DTYPE)
 
             T.tile.fill(acc_o, 0.0)
             T.tile.fill(sumexp, 0.0)
@@ -105,16 +103,16 @@ def paged_flash_attention_fwd(
                 T.copy(workspace_1[cid, vid * block_M_2 : (vid + 1) * block_M_2, :], acc_s_ub_)
                 T.tile.add(acc_s_ub, acc_s_ub, acc_s_ub_)
                 T.tile.mul(acc_s_ub, acc_s_ub, sm_scale)
-                T.reduce_max(acc_s_ub, m_i, tmp_ub, dim=-1)
+                T.reduce_max(acc_s_ub, m_i, dim=-1)
                 T.tile.max(m_i, m_i, m_i_prev)
                 T.tile.sub(m_i_prev, m_i_prev, m_i)
                 T.tile.exp(m_i_prev, m_i_prev)
 
-                T.tile.broadcast(m_i_2d, m_i, tmp_ub)
+                T.tile.broadcast(m_i_2d, m_i)
                 T.tile.sub(acc_s_ub, acc_s_ub, m_i_2d)
 
                 T.tile.exp(acc_s_ub, acc_s_ub)
-                T.reduce_sum(acc_s_ub, sumexp_i_ub, tmp_ub, dim=-1)
+                T.reduce_sum(acc_s_ub, sumexp_i_ub, dim=-1)
                 T.tile.mul(sumexp, sumexp, m_i_prev)
                 T.tile.add(sumexp, sumexp, sumexp_i_ub)
 
@@ -127,13 +125,13 @@ def paged_flash_attention_fwd(
                     T.gemm_v0(acc_s_l1, v_l1, acc_o_l0c, init=True)
                     T.copy(acc_o_l0c, workspace_3[cid, :, bdim * block_DIM : (bdim + 1) * block_DIM])
 
-                T.tile.broadcast(m_i_prev_2d, m_i_prev, tmp_ub)
+                T.tile.broadcast(m_i_prev_2d, m_i_prev)
                 T.tile.mul(acc_o, acc_o, m_i_prev_2d)
 
                 T.copy(workspace_3[cid, vid * block_M_2 : (vid + 1) * block_M_2, :], acc_o_ub)
                 T.tile.add(acc_o, acc_o, acc_o_ub)
 
-            T.tile.broadcast(sumexp_2d, sumexp, tmp_ub)
+            T.tile.broadcast(sumexp_2d, sumexp)
             T.tile.div(acc_o, acc_o, sumexp_2d)
 
             T.tile.cast(acc_o_half, acc_o, CAST_MODE, block_M_2 * dim)

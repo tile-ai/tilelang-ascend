@@ -32,19 +32,22 @@ public:
   void PrintStorageScope(const std::string &scope,
                          std::ostream &os) final;     // NOLINT(*)
   void PrintType(DataType t, std::ostream &os) final; // NOLINT(*)
-  void ProcessTilingInput(std::ostream &os, std::string func_name, std::vector<std::string> &arg_names,
-    std::vector<const tir::VarNode*> &shape_vars);
-  void CallTilingInput(std::ostream &os, std::string func_name, std::vector<std::string> &tiling_args,
-    std::vector<const tir::VarNode*> &shape_vars);
-  void PrintHostFunc(const PrimFunc &f, const std::string &name, std::ostringstream &os,
-                     std::string &core,
-                     std::vector<const tir::VarNode*> &shape_vars);
+  void ProcessTilingInput(std::ostream &os, std::string func_name,
+                          std::vector<std::string> &arg_names,
+                          std::vector<const tir::VarNode *> &shape_vars);
+  void CallTilingInput(std::ostream &os, std::string func_name,
+                       std::vector<std::string> &tiling_args,
+                       std::vector<const tir::VarNode *> &shape_vars);
+  void PrintHostFunc(const PrimFunc &f, const std::string &name,
+                     std::ostringstream &os, std::string &core,
+                     std::vector<const tir::VarNode *> &shape_vars);
 
   // overload visitor
   void VisitExpr_(const FloatImmNode *op, std::ostream &os) final;
   void VisitExpr_(const CallNode *op, std::ostream &os) final;
   void VisitExpr_(const FloorDivNode *op, std::ostream &os);
   void VisitExpr_(const FloorModNode *op, std::ostream &os);
+  void VisitExpr_(const MulNode *op, std::ostream &os) final;
   void VisitExpr_(const SelectNode *op, std::ostream &os) final;
   void VisitExpr_(const BufferLoadNode *op, std::ostream &os) final;
   void VisitStmt_(const BufferStoreNode *op) final;
@@ -55,30 +58,33 @@ public:
   void AddFunction(const GlobalVar &gvar, const PrimFunc &f);
 
 private:
-  std::string PrintBufferOffset(const CallNode* call_arg, bool has_offset = true);
+  std::string PrintBufferOffset(const CallNode *call_arg,
+                                bool has_offset = true);
 
-  DataType GetAccessPtrDataType(const PrimExpr& arg);
+  DataType GetAccessPtrDataType(const PrimExpr &arg);
 
   void AddDeclStream(std::ostringstream &ss, const std::string &str);
 
-  void PrintOpCall(const CallNode* op, const std::string& op_name,
-                  std::pair<int, int> buffer_range, std::pair<int, int> expr_range);
+  void PrintOpCall(const CallNode *op, const std::string &op_name,
+                   std::pair<int, int> buffer_range,
+                   std::pair<int, int> expr_range);
 
-  void PrintConstArray(const CallNode* op, int start_idx, int len, const std::string& dtype = "uint32_t");
+  void PrintConstArray(const CallNode *op, int start_idx, int len,
+                       const std::string &dtype = "uint32_t");
 
-  void BinaryVecOpCodegen(const CallNode* op, const std::string& op_name);
+  void BinaryVecOpCodegen(const CallNode *op, const std::string &op_name);
 
-  void UnaryVecOpCodegen(const CallNode *op, const std::string& op_name);
+  void UnaryVecOpCodegen(const CallNode *op, const std::string &op_name);
 
-  void ScalarOpCodegen(const CallNode *op, const std::string& op_name);
+  void ScalarOpCodegen(const CallNode *op, const std::string &op_name);
 
-  void ShiftOpCodegen(const CallNode *op, const std::string& op_name);
+  void ShiftOpCodegen(const CallNode *op, const std::string &op_name);
 
-  void TrigOpCodegen(const CallNode *op, const std::string& op_name);
+  void TrigOpCodegen(const CallNode *op, const std::string &op_name);
 
-  void TransposeCodegen(const CallNode *op, const std::string& op_name);
+  void TransposeCodegen(const CallNode *op, const std::string &op_name);
 
-  void CreateVecIndexCodegen(const CallNode *op, const std::string& op_name);
+  void CreateVecIndexCodegen(const CallNode *op, const std::string &op_name);
 
   void FillCodegen(const CallNode *op);
 
@@ -96,33 +102,33 @@ private:
 
   void GatherbCodegen(const CallNode *op);
 
-  void SelectCodegen(const CallNode *op, const std::string& op_name);
+  void SelectCodegen(const CallNode *op, const std::string &op_name);
 
   void InitSortBufCodegen(const CallNode *op);
 
-  void AddsAndMulsOpCodegen(const CallNode *op, const std::string& op_name);
+  void AddsAndMulsOpCodegen(const CallNode *op, const std::string &op_name);
 
   void SubsOpCodegen(const CallNode *op);
 
   void DivsOpCodegen(const CallNode *op);
 
-  void CompareCodegen(const CallNode *op, const std::string& op_name);
+  void CompareCodegen(const CallNode *op, const std::string &op_name);
 
-  void CompareScalarCodegen(const CallNode *op, const std::string& op_name);
+  void CompareScalarCodegen(const CallNode *op, const std::string &op_name);
 
-  void Sort32Codegen(const CallNode *op, const std::string& op_name);
+  void Sort32Codegen(const CallNode *op, const std::string &op_name);
 
-  void GatherCodegen(const CallNode *op, const std::string& op_name);
+  void GatherCodegen(const CallNode *op, const std::string &op_name);
 
   void ReduceOpCodegen(const CallNode *op);
 
-  void BlockReduceOpCodegen(const CallNode *op, const std::string& op_name);
+  void BlockReduceOpCodegen(const CallNode *op, const std::string &op_name);
 
-  void CastCodegen(const CallNode *op, const std::string& op_name);
+  void CastCodegen(const CallNode *op, const std::string &op_name);
 
-  void SetDeqScaleCodegen(const CallNode *op, const std::string& op_name);
+  void SetDeqScaleCodegen(const CallNode *op, const std::string &op_name);
 
-  void PowerOpCodegen(const CallNode *op, const std::string& op_name);
+  void PowerOpCodegen(const CallNode *op, const std::string &op_name);
 
   void BroadcastOpCodegen(const CallNode *op);
 
@@ -130,49 +136,53 @@ private:
 
   void FlagOpCodegen(const CallNode *op, std::string op_name);
 
-  void PipeBarrierCodegen (const CallNode *op);
+  void PipeBarrierCodegen(const CallNode *op);
 
   void GemmOpCodegen(const CallNode *op);
 
-  void PrintfOpCodegen(const CallNode *op, const std::string& op_name);
+  void PrintfOpCodegen(const CallNode *op, const std::string &op_name);
 
   void DumpTensorCodegen(const CallNode *op);
 
   void BilinearInterpolationCodegen(const CallNode *op);
 
-  void WholeReduceOpCodegen(const CallNode *op, const std::string& op_name);
+  void WholeReduceOpCodegen(const CallNode *op, const std::string &op_name);
 
-  void AutoBarrierCodegen (const CallNode *op);
+  void AutoBarrierCodegen(const CallNode *op);
 
-  void AutoFlagOpCodegen (const CallNode *op, std::string op_name);
+  void AutoFlagOpCodegen(const CallNode *op, std::string op_name);
 
-  void AutoSetCrossFlagCodegen (const CallNode *op);
+  void AutoSetCrossFlagCodegen(const CallNode *op);
 
-  void AutoWaitCrossFlagCodegen (const CallNode *op);
+  void AutoWaitCrossFlagCodegen(const CallNode *op);
 
-  void UseSwizzleCodegen (const CallNode *op, std::ostream &os);
+  void UseSwizzleCodegen(const CallNode *op, std::ostream &os);
 
-  void MmaCodegen (const CallNode *op);
+  void MmaCodegen(const CallNode *op);
 
-  void CopyCodegen (const CallNode *op);
+  void CopyCodegen(const CallNode *op);
 
-  void SigmoidCodegen (const CallNode *op, const std::string& op_name);
+  void SigmoidCodegen(const CallNode *op, const std::string &op_name);
 
-  void ClampMaxMinCodegen (const CallNode *op);
+  void ClampMaxMinCodegen(const CallNode *op);
 
-  void ClampCodegen (const CallNode *op);
+  void ClampCodegen(const CallNode *op);
 
-  void RoundCodegen (const CallNode *op, const std::string& op_name);
+  void RoundCodegen(const CallNode *op, const std::string &op_name);
 
-  void ReinterpretCastCodegen (const CallNode *op);
+  void ReinterpretCastCodegen(const CallNode *op);
 
-  void CreateSubExperimentCodegen(const CallNode *op, const std::string& op_name);
+  void CreateSubExperimentCodegen(const CallNode *op,
+                                  const std::string &op_name);
 
-  void CreateAbsExperimentCodegen(const CallNode *op, const std::string& op_name);
+  void CreateAbsExperimentCodegen(const CallNode *op,
+                                  const std::string &op_name);
 
-  void CreateMinsExperimentCodegen(const CallNode *op, const std::string& op_name);
+  void CreateMinsExperimentCodegen(const CallNode *op,
+                                   const std::string &op_name);
 
-  void CreateReduceSumExperimentCodegen(const CallNode *op, const std::string& op_name);
+  void CreateReduceSumExperimentCodegen(const CallNode *op,
+                                        const std::string &op_name);
 
   void GatherMaskExperimentCodegen(const CallNode *op);
 

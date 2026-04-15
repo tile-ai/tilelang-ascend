@@ -771,8 +771,11 @@ inline void PrintConst(const FloatImmNode *op, std::ostream &os,
                        CodeGenTileLangAscend *p) { // NOLINT(*)
   // Type code is kBFloat
   if (op->dtype.is_bfloat16()) {
-    os << "bfloat16_t";
-    os << '(' << std::scientific << op->value << 'f' << ')';
+    if (std::isinf(op->value)) {
+      os << "bfloat16_t(" << (op->value < 0 ? "-" : "") << "CUDART_INF_F)";
+    } else {
+      os << "bfloat16_t(" << std::scientific << op->value << 'f' << ')';
+    }
     return;
   }
   // Type code is kFloat8_e5m2 or kE4M4Float
@@ -805,10 +808,15 @@ inline void PrintConst(const FloatImmNode *op, std::ostream &os,
     break;
   }
   case 16: {
-    os << "half" << '(';
-    FloatImm const_f32 = FloatImm(DataType::Float(32), op->value);
-    PrintConst(const_f32.get(), os, p);
-    os << ')';
+    // Only fp16 reaches here (bf16 is handled above)
+    if (std::isinf(op->value)) {
+      os << "half(" << (op->value < 0 ? "-" : "") << "CUDART_INF_F)";
+    } else {
+      os << "half(";
+      FloatImm const_f32 = FloatImm(DataType::Float(32), op->value);
+      PrintConst(const_f32.get(), os, p);
+      os << ')';
+    }
     break;
   }
   default:
@@ -819,6 +827,43 @@ inline void PrintConst(const FloatImmNode *op, std::ostream &os,
 void CodeGenTileLangAscend::VisitExpr_(const FloatImmNode *op,
                                        std::ostream &os) { // NOLINT(*)
   PrintConst(op, os, this);
+}
+
+void CodeGenTileLangAscend::VisitExpr_(const MulNode *op,
+                                       std::ostream &os) { // NOLINT(*)
+  // Detect pattern: inf * (-1) -> -inf
+  auto is_float_imm_inf = [](const PrimExpr &expr) -> bool {
+    if (auto *float_imm = expr.as<FloatImmNode>()) {
+      return std::isinf(float_imm->value);
+    }
+    return false;
+  };
+
+  auto is_neg_one = [](const PrimExpr &expr) -> bool {
+    if (auto *float_imm = expr.as<FloatImmNode>()) {
+      return float_imm->value == -1.0;
+    }
+    return false;
+  };
+
+  // Check if this is inf * (-1) or (-1) * inf pattern
+  if ((is_float_imm_inf(op->a) && is_neg_one(op->b)) ||
+      (is_float_imm_inf(op->b) && is_neg_one(op->a))) {
+    // Generate negated inf directly
+    if (auto *float_imm = op->a.as<FloatImmNode>()) {
+      FloatImm neg_inf(float_imm->dtype,
+                       -std::numeric_limits<double>::infinity());
+      PrintConst(neg_inf.get(), os, this);
+    } else if (auto *float_imm = op->b.as<FloatImmNode>()) {
+      FloatImm neg_inf(float_imm->dtype,
+                       -std::numeric_limits<double>::infinity());
+      PrintConst(neg_inf.get(), os, this);
+    }
+    return;
+  }
+
+  // Default handling
+  CodeGenC::VisitExpr_(op, os);
 }
 
 void CodeGenTileLangAscend::PreFunctionBody(const PrimFunc &f) {
@@ -1401,40 +1446,36 @@ void CodeGenTileLangAscend::ArithProgressionCodegen(const CallNode *op) {
 void CodeGenTileLangAscend::SortCodegen(const CallNode *op) {
   std::string op_name =
       "tl::ascend::" + Downcast<StringImm>(op->args[0])->value;
-  std::vector<std::string> var_names;
-  for (int i = 1; i < op->args.size() - 2; i++) {
-    auto var_name = PrintBufferOffset(op->args[i].as<CallNode>());
-    var_names.push_back(var_name);
-  }
-
-  auto var_name =
-      PrintBufferOffset(op->args[op->args.size() - 2].as<CallNode>(),
-                        false); // tensor with offset will be
-  var_names.push_back(var_name);
-
-  this->PrintIndent();
-  this->stream << op_name << "(";
-  for (int i = 0; i < var_names.size(); i++) {
-    this->stream << var_names[i];
-    if (i != var_names.size() - 1) {
-      this->stream << ", ";
-    }
-  }
-  this->stream << ", " << PrintExpr(op->args[op->args.size() - 1]) << ");\n";
+  int len = op->args.size();
+  PrintOpCall(op, op_name, {1, len - 2}, {len - 2, len});
 }
 
 void CodeGenTileLangAscend::MergeSortCodegen(const CallNode *op) {
   std::string op_name =
       "tl::ascend::" + Downcast<StringImm>(op->args[0])->value;
-  int len = op->args.size();
-  PrintOpCall(op, op_name, {1, len - 3}, {len - 3, len});
+
+  int num_ways = Downcast<IntImm>(op->args[1])->value;
+
+  // args: [func_name, num_ways, dst, tmp, src0, src1, ..., blockLen0,
+  // blockLen1, ...] Buffer args: args[2] (dst), args[3] (tmp), args[4] to
+  // args[4+num_ways-1] (sources) Scalar args: args[4+num_ways] to
+  // args[4+num_ways+num_ways-1] (blockLen for each source)
+  int buffer_start = 2;
+  int buffer_end = 4 + num_ways; // dst(1) + tmp(1) + sources(num_ways)
+  int scalar_start = buffer_end;
+  int scalar_end = scalar_start + num_ways;
+  PrintOpCall(op, op_name, {buffer_start, buffer_end},
+              {scalar_start, scalar_end});
 }
 
 void CodeGenTileLangAscend::TopKCodegen(const CallNode *op) {
   std::string op_name =
       "tl::ascend::" + Downcast<StringImm>(op->args[0])->value;
   int len = op->args.size();
-  PrintOpCall(op, op_name, {1, len - 1}, {len - 1, len});
+  // args: [name, dst, src, tmp, K, repeatTimes, actual_num]
+  // buffers: args[1..3] (dst, src, tmp), scalars: args[4..6] (K, repeatTimes,
+  // actual_num)
+  PrintOpCall(op, op_name, {1, 4}, {4, len});
 }
 
 void CodeGenTileLangAscend::ShmemCodegen(const CallNode *op) {
@@ -1671,6 +1712,19 @@ void CodeGenTileLangAscend::CompareCodegen(const CallNode *op,
       this->stream << ", ";
     }
   }
+  std::string count_str = PrintExpr(op->args[op->args.size() - 1]);
+
+  // Check 256-byte alignment required by Ascend NPU
+  DataType src_dtype = GetAccessPtrDtype(op->args[1].as<CallNode>());
+  int element_bytes = src_dtype.bytes();
+  uint64_t count = std::stoull(count_str);
+  uint64_t total_bytes = count * element_bytes;
+
+  ICHECK(total_bytes % 256 == 0)
+      << "Compare alignment error: count=" << count
+      << ", element_bytes=" << element_bytes << ", total_bytes=" << total_bytes
+      << " bytes is not 256-byte aligned. ";
+
   this->stream << ", "
                << "AscendC::CMPMODE::" +
                       Downcast<StringImm>(op->args[op->args.size() - 2])->value
@@ -1714,6 +1768,17 @@ void CodeGenTileLangAscend::CompareScalarCodegen(const CallNode *op,
   para_idx++;
 
   auto var_name_size = PrintExpr(op->args[para_idx]);
+
+  // Check 256-byte alignment required by Ascend NPU
+  DataType src_dtype = GetAccessPtrDtype(op->args[1].as<CallNode>());
+  int element_bytes = src_dtype.bytes();
+  uint64_t size = std::stoull(var_name_size);
+  uint64_t total_bytes = size * element_bytes;
+  ICHECK(total_bytes % 256 == 0)
+      << "CompareScalar alignment error: size=" << size
+      << ", element_bytes=" << element_bytes << ", total_bytes=" << total_bytes
+      << " byte is not 256-byte aligned. ";
+
   var_names.push_back(var_name_size);
 
   this->PrintIndent();
@@ -1795,14 +1860,17 @@ void CodeGenTileLangAscend::ReduceOpCodegen(const CallNode *op) {
 
     if (dtype == "half") {
       std::string mask, repeatTime, srcRepStride;
+      constexpr int64_t ELE_NUM_PER_C0_FOR_HALF = 16;
       if (dim_val == -1) {
         mask = std::to_string(n_val);
         repeatTime = std::to_string(m_val);
-        srcRepStride = "1";
+        srcRepStride = std::to_string((n_val + ELE_NUM_PER_C0_FOR_HALF - 1) /
+                                      ELE_NUM_PER_C0_FOR_HALF);
       } else if (dim_val == 0) {
         mask = std::to_string(m_val);
         repeatTime = std::to_string(n_val);
-        srcRepStride = "1";
+        srcRepStride = std::to_string((m_val + ELE_NUM_PER_C0_FOR_HALF - 1) /
+                                      ELE_NUM_PER_C0_FOR_HALF);
       } else {
         mask = std::to_string(m_val * n_val);
         repeatTime = "1";
