@@ -3520,7 +3520,8 @@ mlir::Value CodeGenTileLangNPUIRDEV::VisitExpr_(const CallNode *op) {
     CreateHIVMBinaryVectorOp<mlir::arith::MaximumFOp, mlir::arith::MaxSIOp,
                              mlir::arith::MaxUIOp>(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_min"))) {
-    CreateHIVMBinaryVectorOp<mlir::hivm::VMinOp>(op);
+    CreateHIVMBinaryVectorOp<mlir::arith::MinimumFOp, mlir::arith::MinSIOp,
+                             mlir::arith::MinUIOp>(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_or"))) {
     CreateHIVMBinaryVectorOp<mlir::hivm::VOrOp>(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_and"))) {
