@@ -1,6 +1,17 @@
 # Copyright (c) Tile-AI Corporation.
 # Licensed under the MIT License.
 """Base infra"""
+__all__ = [
+    'get_block',
+    'get_output_blocks',
+    'try_inline',
+    'try_inline_contiguous_spatial',
+    'MatmulTemplate',
+    'GEMVTemplate',
+    'ElementwiseTemplate',
+    'GeneralReductionTemplate',
+    'FlashAttentionTemplate',
+]
 
 from .analysis import (
     BlockInfo,  # noqa: F401
