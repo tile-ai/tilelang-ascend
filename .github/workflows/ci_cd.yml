@@ -42,9 +42,6 @@ jobs:
   test:
     name: Benchmark Tests (Ascend NPU)
     runs-on: [self-hosted, linux, x64, 910b]                # 使用自托管运行器（需安装 Ascend 环境）
-    defaults:
-      run:
-        shell: bash -l {0}                                # 使用 login shell，使环境变量可以传递到后续步骤
     if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.run_tests == 'true' }} # 手动触发时可跳过测试
     timeout-minutes: 120                               # 2 小时超时退出
     outputs:                                           # 定义 job 输出
