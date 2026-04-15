@@ -20,6 +20,10 @@
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/Debug.h"
 
+#include "bishengir/Dialect/Annotation/IR/Annotation.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
+
+
 namespace mlir::tilelangir {
 
 #define GEN_PASS_DEF_TILELANGIRCVSPLIT
@@ -138,13 +142,27 @@ struct TileLangIRCVSplit : impl::TileLangIRCVSplitBase<TileLangIRCVSplit> {
 private:
   scf::ForOp currentForOp;
 
+  bool touchesMarkedLocalBoundary(Operation *op) {
+    for(auto *user:op->getUsers()){
+      auto markOp = dyn_cast<annotation::MarkOp>(user);
+      if(markOp && markOp->hasAttr("hivm.multi_buffer")){
+        return true;
+      }
+    }
+    return false;
+  }
+
   bool visitGroupOfOps(Operation *op,
                        llvm::function_ref<bool(const Operation *)> visitor) {
+    if (touchesMarkedLocalBoundary(op))
+      return false;
     if (visitor(op))
       return true;
     LDBG("Visiting " << *op);
 
     for (auto user : op->getUsers()) {
+      if (!currentForOp->isProperAncestor(user))
+        continue;
       if (isa<scf::YieldOp>(user))
         continue;
       visitGroupOfOps(user, visitor);
@@ -152,9 +170,10 @@ private:
 
     for (auto operand : op->getOperands()) {
       auto definingOp = operand.getDefiningOp();
-      if (!definingOp || !currentForOp->isProperAncestor(definingOp))
+      if (!definingOp)
         continue;
-      if (isScalarOp(definingOp))
+      if (isScalarOp(definingOp) ||
+          isa<bishengir::memref_ext::AllocWorkspaceOp>(definingOp))
         continue;
       visitGroupOfOps(definingOp, visitor);
     }
