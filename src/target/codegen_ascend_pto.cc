@@ -2442,6 +2442,11 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AttrStmtNode *op) {
       this->PrintIndent();
       auto current_vec_id = this->vec_id_;
       this->stream << "auto " << current_vec_id << " = get_subblockid();\n";
+    } else if (iv->thread_tag == "threadIdx.x") {
+      this->vec_id_ = AllocVarID(iv->var.get());
+      this->PrintIndent();
+      auto current_vec_id = this->vec_id_;
+      this->stream << "auto " << current_vec_id << " = get_subblockid();\n";
     }
     this->VisitStmt(op->body);
     return;
