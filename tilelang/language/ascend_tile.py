@@ -93,6 +93,7 @@ def fill(buffer: Buffer | BufferRegion, value: PrimExpr):
         size,
     )
 
+
 def clear(buffer: Buffer | tir.Var):
     """Clear a buffer or buffer region by filling with zeros.
 
@@ -110,6 +111,7 @@ def clear(buffer: Buffer | tir.Var):
         else:
             raise ValueError(f"Invalid buffer region: {buffer_region}")
     return fill(buffer, 0)
+
 
 def arith_progression(buffer: Buffer, first_value: PrimExpr, diff_value: PrimExpr, count: PrimExpr):
     """Generates an arithmetic progression sequence in a buffer.
@@ -263,27 +265,32 @@ def merge_sort(
     )
 
 
-def topk(dst: Buffer, src: Buffer, block_size: PrimExpr):
-    """Performs a TopK operation.
+def topk(dst: Buffer, src: Buffer, K: PrimExpr, actual_num: PrimExpr):
+    """Performs a TopK operation by sorting the source data and extracting the top K elements.
 
-    This intrinsic invokes the underlying implementation to select the top K elements
-    from the source data.
+    Internally calls Sort on the source data, then copies the top K interleaved
+    (value, index) pairs into the destination buffer.
 
     Args:
-        dst: The destination buffer where the TopK results will be stored.
-        src: The source buffer containing the input data.
-        block_size: The size of the data block to be processed.
+        dst: Destination buffer for top K interleaved (value, index) pairs.
+             Must have at least 2*K elements.
+        src: Source buffer containing the data to find top K from.
+        K: Number of top elements to extract.
+        actual_num: The number of valid elements in src.
 
     Returns:
         A TVM intrinsic call that performs the TopK operation.
     """
+    repeatTimes = (actual_num + 31) // 32
     return tir.call_intrin(
         "handle",
         tir.op.Op.get("tl.ascend_topk"),
         f"TopK<{_dtype(dst)}>",
         dst.access_ptr("w"),
         src.access_ptr("r"),
-        block_size,
+        K,
+        repeatTimes,
+        actual_num,
     )
 
 
@@ -1650,9 +1657,7 @@ def clamp_min(out: Buffer | BufferRegion, buffer: Buffer | BufferRegion, scalar_
     )
 
 
-def clamp(
-    out: Buffer | BufferRegion, buffer: Buffer | BufferRegion, min_scalar: PrimExpr, max_scalar: PrimExpr, count: PrimExpr
-):  # noqa: F821
+def clamp(out: Buffer | BufferRegion, buffer: Buffer | BufferRegion, min_scalar: PrimExpr, max_scalar: PrimExpr, count: PrimExpr):  # noqa: F821
     """
     Clip tensor elements to [min_scalar, max_scalar] range, replace out-of-bounds values with boundary values
 
