@@ -6,7 +6,6 @@ on:
   push:
     branches:
       - ascendc_pto*                           # ascendc_pto 分支
-      - npuir                                  # npuir 分支
     paths-ignore:                              # 以下路径的修改不触发 CI
       - '**.md'                                # Markdown 文件
       - 'docs/**'                              # 文档目录
@@ -15,7 +14,6 @@ on:
   pull_request:
     branches:
       - ascendc_pto*
-      - npuir
     paths-ignore:
       - '**.md'
       - 'docs/**'
@@ -82,6 +80,7 @@ jobs:
       - name: Build and Test
         run: |
           # 1. 在容器内重新编译项目
+          echo "**********$PWD"
           echo "Building project..."
           bash install_ascend.sh
 
