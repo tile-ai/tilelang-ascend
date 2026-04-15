@@ -2403,6 +2403,20 @@ void CodeGenTileLangNPUIRDEV::VreduceCodegen(const CallNode *op) {
               builder.create<mlir::arith::MaxUIOp>(loc, inputElem, accumElem);
         }
       }
+    } else if (npuirop.reduce_mode == "min") {
+      if (elemTy.isa<mlir::FloatType>()) {
+        result =
+            builder.create<mlir::arith::MinimumFOp>(loc, inputElem, accumElem);
+      } else {
+        auto intTy = elemTy.cast<mlir::IntegerType>();
+        if (intTy.isSigned()) {
+          result =
+              builder.create<mlir::arith::MinSIOp>(loc, inputElem, accumElem);
+        } else {
+          result =
+              builder.create<mlir::arith::MinUIOp>(loc, inputElem, accumElem);
+        }
+      }
     }
 
     builder.create<mlir::linalg::YieldOp>(loc, result);
