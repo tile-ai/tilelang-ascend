@@ -5,6 +5,7 @@ from typing import Optional, Sequence, Tuple, Union
 
 import torch
 import tilelang
+from tilelang.utils.precision_debug import DEFAULT_TOLERANCE, prec_assert_close
 
 
 TorchDTypeLike = Union[str, torch.dtype]
@@ -18,17 +19,6 @@ DTYPE_MAP = {
     "int32": torch.int32,
     "int64": torch.int64,
     "bool": torch.bool,
-}
-
-DEFAULT_TOLERANCE = {
-    "float16": (1e-3, 1e-3),
-    "bfloat16": (2e-2, 2e-2),
-    "float32": (1e-4, 1e-4),
-    "int8": (0.0, 0.0),
-    "int16": (0.0, 0.0),
-    "int32": (0.0, 0.0),
-    "int64": (0.0, 0.0),
-    "bool": (0.0, 0.0),
 }
 
 
@@ -134,17 +124,29 @@ def assert_close(
     atol: Optional[float] = None,
     equal_nan: bool = True,
 ) -> None:
-    if dtype is None:
-        dtype = actual.dtype
-    name = dtype_name(dtype)
-    default_rtol, default_atol = DEFAULT_TOLERANCE[name]
-    torch.testing.assert_close(
-        actual,
-        expected,
-        rtol=default_rtol if rtol is None else rtol,
-        atol=default_atol if atol is None else atol,
-        equal_nan=equal_nan,
-    )
+    enabled = os.environ.get("TL_PREC_DEBUG", "0") == "1"
+
+    if enabled:
+        prec_assert_close(
+            actual,
+            expected,
+            dtype=dtype,
+            rtol=rtol,
+            atol=atol,
+            equal_nan=equal_nan,
+        )
+    else:
+        if dtype is None:
+            dtype = actual.dtype
+        name = dtype_name(dtype)
+        default_rtol, default_atol = DEFAULT_TOLERANCE[name]
+        torch.testing.assert_close(
+            actual,
+            expected,
+            rtol=default_rtol if rtol is None else rtol,
+            atol=default_atol if atol is None else atol,
+            equal_nan=equal_nan,
+        )
 
 
 def build_dtype_param_combos(

@@ -35,3 +35,4 @@ Before answering, follow AGENTS.md section "Docs Auto Routing Rules (Mandatory)"
 
 - tilelang-mlir-skill
 - tilelang-error-fixer
+- tilelang-precision-debug-skill

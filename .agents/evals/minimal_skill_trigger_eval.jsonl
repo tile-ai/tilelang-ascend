@@ -15,3 +15,5 @@
 {"id":"review-02","prompt":"提交前帮我跑一遍格式和 lint 检查，看看 CI 风险","expected_skill":"tilelang-review-skill"}
 {"id":"github-01","prompt":"我准备把分支提 PR 到 npuir，给我完整 commit push PR 流程","expected_skill":"tilelang-github-operations"}
 {"id":"github-02","prompt":"帮我同步 upstream/npuir，rebase 后再发起 PR","expected_skill":"tilelang-github-operations"}
+{"id":"precision-01","prompt":"算子输出有 nan，并且和 Torch 的结果有细微差异，如何看精度报告","expected_skill":"tilelang-precision-debug-skill"}
+{"id":"precision-02","prompt":"请用 assert_close 给跑一下测试，输出 ascii diff map 帮我看看误差分布","expected_skill":"tilelang-precision-debug-skill"}

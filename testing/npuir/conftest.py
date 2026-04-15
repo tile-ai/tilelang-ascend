@@ -21,6 +21,13 @@ def _get_npu_device_id(config: pytest.Config) -> tuple[int, Optional[str]]:
     return resolve_npu_device_id(config.getoption("--npu-device"))
 
 
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers",
+        "precision_debug: enable tilelang advanced precision debugging for this test",
+    )
+
+
 def pytest_addoption(parser):
     parser.addoption(
         "--op",
@@ -116,3 +123,12 @@ def _apply_mode_marker(request: pytest.FixtureRequest):
 
     with ascend_mode(mode):
         yield
+
+
+@pytest.fixture(autouse=True)
+def _apply_precision_debug_marker(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+):
+    if request.node.get_closest_marker("precision_debug") is not None:
+        monkeypatch.setenv("TL_PREC_DEBUG", "1")
+    yield

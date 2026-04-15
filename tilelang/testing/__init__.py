@@ -11,6 +11,7 @@ from tvm.testing.utils import *
 from tvm.testing.utils import _compose
 
 from tilelang.utils.tensor import torch_assert_close as torch_assert_close
+from tilelang.utils.precision_debug import prec_assert_close as prec_assert_close
 
 
 # pytest.main() wrapper to allow running single test file
