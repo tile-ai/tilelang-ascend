@@ -377,7 +377,6 @@ private:
 
     const OpNode *call_op = op->op.as<OpNode>();
     if (!call_op) {
-      std::cerr << "[info]<callnode>: call_op is nullptr\n";
       return IRMutatorWithAnalyzer::VisitExpr_(op);
     }
     std::string op_name = call_op->name;
