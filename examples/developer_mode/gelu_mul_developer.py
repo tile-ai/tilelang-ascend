@@ -23,10 +23,10 @@ def gelu_mul(M, N, block_M, block_N, dtype="float"):
         with T.Kernel(m_num * n_num, threads=2, is_npu=True) as (cid):
             bx = cid // n_num
             by = cid % n_num
-            a1_ub = T.alloc_ub((block_M, block_N), dtype)
-            a2_ub = T.alloc_ub((block_M, block_N), dtype)
-            b_ub = T.alloc_ub((block_M, block_N), dtype)
-            temp_ub = T.alloc_ub((block_M, block_N), dtype)
+            a1_ub = T.alloc_shared((block_M, block_N), dtype)
+            a2_ub = T.alloc_shared((block_M, block_N), dtype)
+            b_ub = T.alloc_shared((block_M, block_N), dtype)
+            temp_ub = T.alloc_shared((block_M, block_N), dtype)
 
             ## [In vector]
             # The left half is cached using a1_ub
