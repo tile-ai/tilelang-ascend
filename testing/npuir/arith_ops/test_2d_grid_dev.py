@@ -1,9 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2025.
-import torch
-import torch_npu
 import tilelang
 import tilelang.language as T
-import os
 import pytest
 
 from testcommon import assert_close, gen_tensor
@@ -15,6 +12,7 @@ pytestmark = [
 
 DTYPES = ["float16", "float32"]
 
+
 @tilelang.jit(target="npuir")
 def grid_2d_demo_dev(M, N, block_M, block_N, dtype="float16"):
     @T.prim_func
@@ -23,7 +21,11 @@ def grid_2d_demo_dev(M, N, block_M, block_N, dtype="float16"):
         B: T.Tensor((M, N), dtype),
         C: T.Tensor((M, N), dtype),
     ):
-        with T.Kernel(T.ceildiv(N, block_N), T.ceildiv(M, block_M), is_npu=True) as (bx, by, _):
+        with T.Kernel(T.ceildiv(N, block_N), T.ceildiv(M, block_M), is_npu=True) as (
+            bx,
+            by,
+            _,
+        ):
             idx_x = bx * block_N
             idx_y = by * block_M
 
@@ -31,12 +33,13 @@ def grid_2d_demo_dev(M, N, block_M, block_N, dtype="float16"):
             B_VEC = T.alloc_shared([block_M, block_N], dtype)
             C_VEC = T.alloc_shared([block_M, block_N], dtype)
 
-            T.copy(A[idx_y:idx_y + block_M, idx_x:idx_x + block_N], A_VEC)
-            T.copy(B[idx_y:idx_y + block_M, idx_x:idx_x + block_N], B_VEC)
+            T.copy(A[idx_y : idx_y + block_M, idx_x : idx_x + block_N], A_VEC)
+            T.copy(B[idx_y : idx_y + block_M, idx_x : idx_x + block_N], B_VEC)
             T.npuir_add(A_VEC, B_VEC, C_VEC)
-            T.copy(C_VEC, C[idx_y:idx_y + block_M, idx_x:idx_x + block_N])
+            T.copy(C_VEC, C[idx_y : idx_y + block_M, idx_x : idx_x + block_N])
 
     return grid_2d_dev
+
 
 @pytest.mark.parametrize("dtype", DTYPES)
 def test_grid_2d_dev(dtype):

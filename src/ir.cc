@@ -173,18 +173,19 @@ KernelLaunchFrame KernelLaunch(Array<PrimExpr> grid_size,
     }
     // Launch CPU Kernel
   } else if (is_npu_kernel_frame) { // Launch NPU Kernel
-    ICHECK(grid_size.size() <= 2) << "NPU kernel only supports 1D or 2D grid size";
+    ICHECK(grid_size.size() <= 2)
+        << "NPU kernel only supports 1D or 2D grid size";
 
     // Note: corresponding relationship for 1D grid size ->
     // blockIdx.x => cube idx in ascend
     // blockIdx.y => vec idx in ascend
     if (grid_size.size() == 1) {
-      n->frames.push_back(
-        LaunchThread(CreateEnvThread("cid", "blockIdx.x", grid_size[0].dtype()),
-                     grid_size[0]));
-      n->frames.push_back(
-        LaunchThread(CreateEnvThread("vid", "blockIdx.y", grid_size[0].dtype()),
-                     grid_size[0] * 2));
+      n->frames.push_back(LaunchThread(
+          CreateEnvThread("cid", "blockIdx.x", grid_size[0].dtype()),
+          grid_size[0]));
+      n->frames.push_back(LaunchThread(
+          CreateEnvThread("vid", "blockIdx.z", grid_size[0].dtype()),
+          grid_size[0] * 2));
     } else {
       // For 2D grid size, corresponding relationship is as follows:
       // blockIdx.x => x dim of cube idx in ascend

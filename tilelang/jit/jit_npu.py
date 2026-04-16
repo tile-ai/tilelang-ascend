@@ -1286,15 +1286,8 @@ class compiler_npu:
     def _parse_grid(self):
         launcher_x = LaunchThreadExtractor()
         expr_x = launcher_x.extract(self.mod, "blockIdx.x")
-        launcher_y = LaunchThreadExtractor()
-        expr_y = launcher_y.extract(self.mod, "blockIdx.y")
-        launcher_z = LaunchThreadExtractor()
-        expr_z = launcher_z.extract(self.mod, "blockIdx.z")
+        self.metadata["gridfunc"] = str(expr_x)
 
-        if expr_z is None:
-            self.metadata["gridfunc"] = str(expr_x)
-        else:
-            self.metadata["gridfunc"] = f"[{expr_x}, {expr_y}, 1]"
     def _read_mlir_file(self, file_path) -> str:
         """
         Read the content of the MLIR file and return it as a string.

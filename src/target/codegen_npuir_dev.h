@@ -204,9 +204,6 @@ protected:
   // Variable shadowing and scoping is not a problem in TileLang
   // Each variable assignment gets a unique name in TIR
   std::vector<std::unordered_map<const VarNode *, mlir::Value>> var_map_;
-  // Store blockIdx and extent_const for calculating blockIdx.y in 2D grid
-  mlir::Value blockIdx_;
-  mlir::Value extent_const_;
   // Whether current function is restricted
   bool is_restricted_{true};
   // The analyzer information

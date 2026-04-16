@@ -51,4 +51,6 @@ ignore = [
     "B019",
     # No such file or directory
     "E902",
+    # Combine with statement
+    "SIM117",
 ]

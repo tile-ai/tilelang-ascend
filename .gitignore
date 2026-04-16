@@ -99,3 +99,7 @@ unittest/npuir/output/
 
 # thirdparty
 **/third_party/
+
+# claude
+.claude/
+CLAUDE.md
