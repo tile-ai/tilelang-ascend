@@ -1,12 +1,9 @@
 import functools
-from typing import Optional
 import torch
 import math
 import tilelang as tl
 import tilelang.language as T
 import os
-
-__all__ = ["EngramGateConvFwdKernel"]
 
 ALIGNMENT = 256
 CONV_KERNEL_SIZE = 4
@@ -25,7 +22,7 @@ def _engram_gate_pass1_kernel(M, seq_len, d, eps, dtype):
         out_idx=[4, 5, 6, 7, 8],
         target="npuir",
     )
-    def _func1(threads):
+    def _func1():
         @T.macro
         def _gate_pass1(
             H: T.Tensor((M, seq_len, d_padded), dtype),
@@ -38,17 +35,12 @@ def _engram_gate_pass1_kernel(M, seq_len, d, eps, dtype):
             rrms_k_buf: T.Tensor((M, seq_len), accum_dtype),
             rrms_v_buf: T.Tensor((M, seq_len), accum_dtype),
         ):
-            with T.Kernel(seq_len * M, is_npu=True, threads=[threads]) as (cid, _):
+            with T.Kernel(seq_len * M, is_npu=True) as (cid, _):
                 bx = cid // M
                 by = cid % M
                 h_2d = T.alloc_shared((1, d_padded), accum_dtype)
-                h_2d_cast = T.alloc_shared((1, d_padded), dtype)
-
                 k_2d = T.alloc_shared((1, d_padded), accum_dtype)
-                k_2d_cast = T.alloc_shared((1, d_padded), dtype)
-
                 v_1d = T.alloc_shared((d_padded,), accum_dtype)
-                v_1d_cast = T.alloc_shared((d_padded,), dtype)
 
                 hsq = T.alloc_shared((1, d_padded), accum_dtype)
                 ksq = T.alloc_shared((1, d_padded), accum_dtype)
@@ -60,12 +52,9 @@ def _engram_gate_pass1_kernel(M, seq_len, d, eps, dtype):
                 bid = by
                 tid = bx
 
-                T.copy(H[bid, tid, 0:d_padded], h_2d_cast)
-                T.vcast(h_2d_cast, h_2d)
-                T.copy(k[bid, tid, 0:d_padded], k_2d_cast)
-                T.vcast(k_2d_cast, k_2d)
-                T.copy(v[bid, tid, 0:d_padded], v_1d_cast)
-                T.vcast(v_1d_cast, v_1d)
+                T.copy(H[bid, tid, 0:d_padded], h_2d)
+                T.copy(k[bid, tid, 0:d_padded], k_2d)
+                T.copy(v[bid, tid, 0:d_padded], v_1d)
 
                 d_shared = T.alloc_shared((1, 1), accum_dtype)
                 d_shared[0, 0] = d
@@ -78,8 +67,7 @@ def _engram_gate_pass1_kernel(M, seq_len, d, eps, dtype):
                     ksq[0, j] = k_2d[0, j] * k_2d[0, j]
                 T.reduce_sum(ksq, sumsq_k, dim=1)
 
-                T.vdiv(sumsq_k, d_shared, sumsq_k)
-                T.vadd(sumsq_k, eps, sumsq_k)
+                sumsq_k[0, 0] = sumsq_k[0, 0] / d + eps
                 rrms_k_val = T.alloc_shared((1, 1), accum_dtype)
                 T.vrsqrt(sumsq_k, rrms_k_val)
                 T.copy(rrms_k_val, rrms_k_buf[bid : bid + 1, tid : tid + 1])
@@ -90,16 +78,12 @@ def _engram_gate_pass1_kernel(M, seq_len, d, eps, dtype):
                 T.vrsqrt(sumsq_h, rrms_h_val)
                 T.copy(rrms_h_val, rrms_h_buf[bid : bid + 1, tid : tid + 1])
 
-                rms_w_h_cast = T.alloc_shared((d_padded,), dtype)
                 rms_w_h_shared = T.alloc_shared((d_padded,), accum_dtype)
-                rms_w_h_reshape = T.alloc_shared((1, d_padded), accum_dtype)
-                T.copy(rms_w_h, rms_w_h_cast)
-                T.vcast(rms_w_h_cast, rms_w_h_shared)
-                T.reshape(rms_w_h_shared, rms_w_h_reshape)
+                T.copy(rms_w_h, rms_w_h_shared)
                 for j in T.Parallel(d_padded):
-                    h_2d[0, j] = h_2d[0, j] * rms_w_h_reshape[0, j]
+                    h_2d[0, j] = h_2d[0, j] * rms_w_h_shared[j]
                 for j in T.Parallel(d_padded):
-                    k_2d[0, j] = k_2d[0, j] * rms_w_h_reshape[0, j]
+                    k_2d[0, j] = k_2d[0, j] * rms_w_h_shared[j]
                 T.vmul(h_2d, rrms_h_val, h_2d)
                 T.vmul(k_2d, rrms_k_val, k_2d)
 
@@ -167,7 +151,7 @@ def _engram_gate_pass2_kernel(M, seq_len, d, dtype):
     @tl.jit(
         target="npuir",
     )
-    def _func2(threads):
+    def _func2():
         @T.macro
         def _gate_pass2(
             rms_w_v: T.Tensor((d_padded,), dtype),
@@ -176,14 +160,12 @@ def _engram_gate_pass2_kernel(M, seq_len, d, dtype):
             rrms_v_buf: T.Tensor((M, seq_len), accum_dtype),
             Y: T.Tensor((M, seq_len, d_padded), dtype),
         ):
-            with T.Kernel(seq_len * M, is_npu=True, threads=[threads]) as (cid, _):
+            with T.Kernel(seq_len * M, is_npu=True) as (cid, _):
                 tid = cid // M
                 bid = cid % M
 
-                vhat_cur_cast = T.alloc_shared((1, d_padded), dtype)
                 vhat_cur = T.alloc_shared((1, d_padded), accum_dtype)
-                T.copy(vhat_buf[bid, tid, 0:d_padded], vhat_cur_cast)
-                T.vcast(vhat_cur_cast, vhat_cur)
+                T.copy(vhat_buf[bid, tid, 0:d_padded], vhat_cur)
 
                 conv_out = T.alloc_shared((1, d_padded), accum_dtype)
                 T.clear(conv_out)
@@ -193,22 +175,16 @@ def _engram_gate_pass2_kernel(M, seq_len, d, dtype):
                     src_rrms = T.alloc_shared((1, 1), accum_dtype)
                     T.clear(src_rrms)
 
-                    raw_val_cast = T.alloc_shared((1, d_padded), dtype)
                     raw_val = T.alloc_shared((1, d_padded), accum_dtype)
                     T.clear(raw_val)
 
                     if src_t >= 0:
-                        T.copy(vhat_buf[bid, src_t, 0:d_padded], raw_val_cast)
+                        T.copy(vhat_buf[bid, src_t, 0:d_padded], raw_val)
                         T.copy(rrms_v_buf[bid : bid + 1, src_t : src_t + 1], src_rrms)
-                    T.vcast(raw_val_cast, raw_val)
-                    rms_w_v_cast = T.alloc_shared((d_padded,), dtype)
                     rms_w_v_shared = T.alloc_shared((d_padded,), accum_dtype)
-                    T.copy(rms_w_v, rms_w_v_cast)
-                    T.vcast(rms_w_v_cast, rms_w_v_shared)
-                    conv_w_cast = T.alloc_shared((1, d_padded), dtype)
+                    T.copy(rms_w_v, rms_w_v_shared)
                     conv_w_shared = T.alloc_shared((1, d_padded), accum_dtype)
-                    T.copy(conv_w[p : p + 1, 0:d_padded], conv_w_cast)
-                    T.vcast(conv_w_cast, conv_w_shared)
+                    T.copy(conv_w[p : p + 1, 0:d_padded], conv_w_shared)
 
                     for j in T.Parallel(d_padded):
                         normed = raw_val[0, j] * src_rrms[0, 0] * rms_w_v_shared[j]
@@ -240,7 +216,6 @@ def _engram_gate_conv_fwd_wrapped(
     d: int,
     eps: float,
     dtype_str: str,
-    threads: int,
     H: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,
@@ -248,9 +223,9 @@ def _engram_gate_conv_fwd_wrapped(
     rms_w_v: torch.Tensor,
     conv_w: torch.Tensor,
 ) -> list[torch.Tensor]:
-    pass1_res = _engram_gate_pass1_kernel(M, seq_len, d, eps, dtype_str)(
-        threads,
-    )(H, k, v, rms_w_h)
+    pass1_res = _engram_gate_pass1_kernel(M, seq_len, d, eps, dtype_str)()(
+        H, k, v, rms_w_h
+    )
     vhat_buf = pass1_res[0]
     alpha_buf = pass1_res[1]
     rrms_h_buf = pass1_res[2]
@@ -258,15 +233,15 @@ def _engram_gate_conv_fwd_wrapped(
     rrms_v_buf = pass1_res[4]
     d_padded = _align_up(d, ALIGNMENT)
     Y = torch.empty((M, seq_len, d_padded), dtype=eval("torch." + dtype_str)).npu()
-    _engram_gate_pass2_kernel(M, seq_len, d, dtype_str)(
-        threads,
-    )(rms_w_v, conv_w, vhat_buf, rrms_v_buf, Y)
+    _engram_gate_pass2_kernel(M, seq_len, d, dtype_str)()(
+        rms_w_v, conv_w, vhat_buf, rrms_v_buf, Y
+    )
     results = [Y, vhat_buf, alpha_buf, rrms_h_buf, rrms_k_buf, rrms_v_buf]
     return results
 
 
 @_engram_gate_conv_fwd_wrapped.register_fake
-def _(M, seq_len, d, eps, dtype_str, threads, H, k, v, rms_w_h, rms_w_v, conv_w):
+def _(M, seq_len, d, eps, dtype_str, H, k, v, rms_w_h, rms_w_v, conv_w):
     d_padded = _align_up(d, ALIGNMENT)
     device = H.device
     dt = H.dtype
@@ -278,74 +253,6 @@ def _(M, seq_len, d, eps, dtype_str, threads, H, k, v, rms_w_h, rms_w_v, conv_w)
         torch.empty((M, seq_len), dtype=torch.float32, device=device),  # rrms_k
         torch.empty((M, seq_len), dtype=torch.float32, device=device),  # rrms_v
     ]
-
-
-class EngramGateConvFwdKernel:
-    """Engram GateConv forward kernel.
-
-    Fuses RMSNorm-based scalar gating and depthwise causal Conv1D
-    with SiLU activation. Projection (GEMM) is done externally.
-
-    Inputs:  H (M,T,d), k (M,T,d), v (M,T,d), rms_w_h, rms_w_v, conv_w
-    Outputs: Y (M,T,d), vhat (M,T,d), alpha (M,T), rrms_h/k/v (M,T)
-    """
-
-    supported_archs: list[int] = [80, 86, 89, 90]
-
-    def __init__(
-        self,
-        M: int,
-        seq_len: int,
-        d: int,
-        eps: float,
-        dtype: torch.dtype,
-        config: Optional[dict] = None,
-        tune: bool = False,
-    ):
-        super().__init__()
-        self.M = M
-        self.seq_len = seq_len
-        self.d = d
-        self.eps = eps
-        self.dtype = dtype
-        self.d_padded = _align_up(d, ALIGNMENT)
-        # TODO
-        # self.kernel = _engram_gate_conv_fwd_kernel(
-        #     M, seq_len, d, eps, self.dtype_str,
-        # )
-        self.init_config(config, tune)
-
-    @property
-    def default_config(self) -> dict:
-        return {"threads": 128}
-
-    @property
-    def autotune_configs(self) -> list[dict]:
-        return [{"threads": t} for t in [128, 256, 512]]
-
-    def forward(
-        self,
-        H: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        rms_w_h: torch.Tensor,
-        rms_w_v: torch.Tensor,
-        conv_w: torch.Tensor,
-    ) -> list[torch.Tensor]:
-        return _engram_gate_conv_fwd_wrapped(
-            self.M,
-            self.seq_len,
-            self.d,
-            self.eps,
-            self.dtype_str,
-            self.config["threads"],
-            H,
-            k,
-            v,
-            rms_w_h,
-            rms_w_v,
-            conv_w,
-        )
 
 
 def ref_engram_gate_conv_fwd(
@@ -436,7 +343,6 @@ def run_test(
     d=128,
     eps=1e-6,
     dtype=torch.float16,
-    threads=128,
     atol=1e-2,
     rtol=1e-2,
     seed=0,
@@ -464,7 +370,6 @@ def run_test(
             d,
             eps,
             dtype_str,
-            threads,
             H,
             k,
             v,
@@ -584,5 +489,4 @@ if __name__ == "__main__":
         d=128,
         eps=1e-6,
         dtype=torch.float16,
-        threads=128,
     )

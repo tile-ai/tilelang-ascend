@@ -1,4 +1,3 @@
-import functools
 import math
 import torch
 import tilelang as tl
@@ -13,11 +12,12 @@ def _align_up(n: int, alignment: int) -> int:
     return ((n + alignment - 1) // alignment) * alignment
 
 
-@functools.lru_cache(maxsize=32)
 def engram_gate_conv_bwd_pass1(M, seq_len, d, dtype):
+
     accum_dtype = "float32"
     d_padded = _align_up(d, ALIGNMENT)
     KS = CONV_KERNEL_SIZE
+    block_N = 32
 
     @tl.jit(
         target="npuir",
@@ -38,60 +38,97 @@ def engram_gate_conv_bwd_pass1(M, seq_len, d, dtype):
             # Pass 1: SiLU bwd + dconv_w
             # grid flatten: M * seq_len
             # ---------------------------------
-            with T.Kernel(seq_len * M, is_npu=True) as (cid, _):
+            with T.Kernel(T.ceildiv(seq_len, block_N) * M, is_npu=True) as (cid, _):
                 bid = cid % M
-                tid = cid // M
+                tile_id = cid // M
+                tid_base = tile_id * block_N
 
-                dy_local = T.alloc_shared((d_padded,), accum_dtype)
-                T.copy(dY[bid, tid, :], dy_local)
-                conv_out = T.alloc_shared((d_padded,), accum_dtype)
-                T.clear(conv_out)
+                rms_w_v_cast = T.alloc_ub((d_padded,), dtype)
+                rms_w_v_shared = T.alloc_ub((d_padded,), accum_dtype)
+                T.copy(rms_w_v, rms_w_v_cast)
+                T.vcast(rms_w_v_cast, rms_w_v_shared)
 
-                for p in T.serial(KS):
-                    src_t = tid - (KS - 1) + p
+                dy_local_cast = T.alloc_ub((1, d_padded), dtype)
+                dy_local = T.alloc_ub((1, d_padded), accum_dtype)
+                raw_val_cast = T.alloc_ub((1, d_padded), dtype)
+                raw_val = T.alloc_ub((1, d_padded), accum_dtype)
+                conv_w_cast = T.alloc_ub((1, d_padded), dtype)
+                conv_w_local = T.alloc_ub((1, d_padded), accum_dtype)
+                src_rrms = T.alloc_ub((1, 1), accum_dtype)
+                conv_out = T.alloc_ub((1, d_padded), accum_dtype)
+                sig = T.alloc_ub((1, d_padded), accum_dtype)
+                d_silu = T.alloc_ub((1, d_padded), accum_dtype)
+                tmp = T.alloc_ub((1, d_padded), accum_dtype)
 
-                    raw_val = T.alloc_shared((d_padded,), accum_dtype)
-                    T.clear(raw_val)
-                    src_rrms = T.alloc_shared((1, 1), accum_dtype)
-                    T.clear(src_rrms)
+                for ti in T.serial(block_N):
+                    tid = tid_base + ti
 
-                    if src_t >= 0:
-                        T.copy(vhat[bid, src_t, :], raw_val)
-                        T.copy(rrms_v[bid : bid + 1, src_t : src_t + 1], src_rrms)
-                    rms_w_v_shared = T.alloc_shared((d_padded,), accum_dtype)
-                    T.copy(rms_w_v, rms_w_v_shared)
-                    conv_w_shared = T.alloc_shared((1, d_padded), accum_dtype)
-                    T.copy(conv_w[p : p + 1, 0:d_padded], conv_w_shared)
-                    for j in T.Parallel(d_padded):
-                        normed = raw_val[j] * src_rrms[0, 0] * rms_w_v_shared[j]
-                        conv_out[j] += conv_w_shared[0, j] * normed
-                sig = T.alloc_shared((d_padded,), accum_dtype)
-                d_silu = T.alloc_shared((d_padded,), accum_dtype)
-                T.vsigmoid(conv_out, sig)
-                for j in T.Parallel(d_padded):
-                    d_silu[j] = dy_local[j] * (
-                        sig[j] + conv_out[j] * sig[j] * (1.0 - sig[j])
-                    )
+                    if tid < seq_len:
+                        T.copy(dY[bid, tid, :], dy_local_cast)
+                        T.vcast(dy_local_cast, dy_local)
 
-                for p in T.serial(KS):
-                    src_t = tid - (KS - 1) + p
-                    raw_val = T.alloc_shared((d_padded,), accum_dtype)
-                    T.clear(raw_val)
-                    src_rrms = T.alloc_shared((1, 1), accum_dtype)
-                    T.clear(src_rrms)
+                        T.clear(conv_out)
 
-                    if src_t >= 0:
-                        T.copy(vhat[bid, src_t, :], raw_val)
-                        T.copy(rrms_v[bid : bid + 1, src_t : src_t + 1], src_rrms)
-                    rms_w_v_shared = T.alloc_shared((d_padded,), accum_dtype)
-                    T.copy(rms_w_v, rms_w_v_shared)
-                    tmp = T.alloc_shared((1, d_padded), accum_dtype)
-                    for j in T.Parallel(d_padded):
-                        normed = raw_val[j] * src_rrms[0, 0] * rms_w_v_shared[j]
-                        tmp[0, j] = d_silu[j] * normed
-                    T.atomic_add(dconv_w[p : p + 1, :], tmp)
+                        for p in T.serial(KS):
+                            src_t = tid - (KS - 1) + p
 
-                T.copy(d_silu, dvhat_buf[bid, tid : tid + 1, :])
+                            T.clear(raw_val_cast)
+                            T.clear(raw_val)
+                            T.clear(src_rrms)
+
+                            if src_t >= 0:
+                                T.copy(vhat[bid, src_t, :], raw_val_cast)
+                                T.copy(rrms_v[bid, src_t], src_rrms)
+
+                            T.vcast(raw_val_cast, raw_val)
+
+                            T.copy(conv_w[p : p + 1, 0:d_padded], conv_w_cast)
+                            T.vcast(conv_w_cast, conv_w_local)
+
+                            for j in T.Parallel(d_padded):
+                                conv_out[0, j] += (
+                                    conv_w_local[0, j]
+                                    * raw_val[0, j]
+                                    * src_rrms[0, 0]
+                                    * rms_w_v_shared[j]
+                                )
+
+                        T.clear(sig)
+                        T.clear(d_silu)
+                        T.vsigmoid(conv_out, sig)
+
+                        for j in T.Parallel(d_padded):
+                            d_silu[0, j] = dy_local[0, j] * (
+                                sig[0, j]
+                                + conv_out[0, j] * sig[0, j] * (1.0 - sig[0, j])
+                            )
+
+                        for p in T.serial(KS):
+                            src_t = tid - (KS - 1) + p
+
+                            T.clear(raw_val_cast)
+                            T.clear(raw_val)
+                            T.clear(src_rrms)
+                            T.clear(tmp)
+
+                            if src_t >= 0:
+                                T.copy(vhat[bid, src_t, :], raw_val_cast)
+                                T.copy(
+                                    rrms_v[bid : bid + 1, src_t : src_t + 1], src_rrms
+                                )
+
+                            T.vcast(raw_val_cast, raw_val)
+
+                            for j in T.Parallel(d_padded):
+                                tmp[0, j] = (
+                                    d_silu[0, j]
+                                    * raw_val[0, j]
+                                    * src_rrms[0, 0]
+                                    * rms_w_v_shared[j]
+                                )
+                            T.atomic_add(dconv_w[p, :], tmp)
+
+                        T.copy(d_silu, dvhat_buf[bid, tid : tid + 1, :])
 
         @T.prim_func
         def pass1(
@@ -110,7 +147,6 @@ def engram_gate_conv_bwd_pass1(M, seq_len, d, dtype):
     return _func1
 
 
-@functools.lru_cache(maxsize=32)
 def engram_gate_conv_bwd_pass2(
     M,
     seq_len,
@@ -120,6 +156,7 @@ def engram_gate_conv_bwd_pass2(
     accum_dtype = "float32"
     d_padded = _align_up(d, ALIGNMENT)
     KS = CONV_KERNEL_SIZE
+    block_N = 16
 
     @tl.jit(
         target="npuir",
@@ -133,57 +170,82 @@ def engram_gate_conv_bwd_pass2(
             vhat: T.Tensor((M, seq_len, d_padded), dtype),
             rrms_v: T.Tensor((M, seq_len), accum_dtype),
             drms_w_v: T.Tensor((d_padded,), accum_dtype),
+            dvhat_in: T.Tensor((M, seq_len, d_padded), accum_dtype),
             dvhat_buf: T.Tensor((M, seq_len, d_padded), accum_dtype),
         ):
-            with T.Kernel(seq_len * M, is_npu=True) as (cid, _):
+            with T.Kernel(T.ceildiv(seq_len, block_N) * M, is_npu=True) as (cid, _):
                 bid = cid % M
-                tid = cid // M
-                d_vnorm = T.alloc_shared((d_padded,), accum_dtype)
-                T.clear(d_vnorm)
-                for p in T.serial(KS):
-                    dst_t = tid + (KS - 1) - p
-                    d_si = T.alloc_shared((d_padded,), accum_dtype)
-                    T.clear(d_si)
-                    if (dst_t >= 0) * (dst_t < seq_len):
-                        T.copy(dvhat_buf[bid, dst_t, :], d_si)
-                    conv_w_shared = T.alloc_shared((d_padded,), accum_dtype)
-                    T.copy(conv_w[p : p + 1, 0:d_padded], conv_w_shared)
-                    for j in T.Parallel(d_padded):
-                        d_vnorm[j] += conv_w_shared[j] * d_si[j]
+                tile_id = cid // M
+                tid_base = tile_id * block_N
 
-                rrms_v_val = rrms_v[bid, tid]
-                vhat_local = T.alloc_shared((d_padded,), accum_dtype)
-                T.copy(vhat[bid, tid, :], vhat_local)
+                rms_w_v_cast = T.alloc_ub((d_padded,), dtype)
+                rms_w_v_shared = T.alloc_ub((d_padded,), accum_dtype)
+                T.copy(rms_w_v, rms_w_v_cast)
+                T.vcast(rms_w_v_cast, rms_w_v_shared)
 
-                add_val = T.alloc_shared((d_padded,), accum_dtype)
-                T.vmul(d_vnorm, vhat_local, add_val)
-                T.vmul(add_val, rrms_v_val, add_val)
-                T.atomic_add(drms_w_v, add_val)
+                d_vnorm = T.alloc_ub((d_padded,), accum_dtype)
+                d_si = T.alloc_ub((d_padded,), accum_dtype)
+                conv_w_cast = T.alloc_ub((d_padded,), dtype)
+                conv_w_shared = T.alloc_ub((d_padded,), accum_dtype)
+                vhat_cast = T.alloc_ub((d_padded,), dtype)
+                vhat_local = T.alloc_ub((d_padded,), accum_dtype)
+                add_val = T.alloc_ub((d_padded,), accum_dtype)
+                dot_2d = T.alloc_ub((d_padded,), accum_dtype)
+                dot_sum = T.alloc_ub((1,), accum_dtype)
+                dvhat_local = T.alloc_ub((d_padded,), accum_dtype)
+                val_local = T.alloc_ub((d_padded,), accum_dtype)
+                val_1 = T.alloc_ub((d_padded,), accum_dtype)
+                dy_local_cast = T.alloc_ub((d_padded,), dtype)
+                dy_local = T.alloc_ub((d_padded,), accum_dtype)
 
-                dot_2d = T.alloc_shared((1, d_padded), accum_dtype)
-                rms_w_v_shared = T.alloc_shared((d_padded,), accum_dtype)
-                T.copy(rms_w_v, rms_w_v_shared)
-                for j in T.Parallel(d_padded):
-                    dot_2d[0, j] = vhat_local[j] * rms_w_v_shared[j] * d_vnorm[j]
-                dot_sum = T.alloc_shared((1, 1), accum_dtype)
-                T.reduce_sum(dot_2d, dot_sum, dim=1)
+                for ti in T.serial(block_N):
+                    tid = tid_base + ti
 
-                dvhat_local = T.alloc_shared((d_padded,), accum_dtype)
-                for j in T.serial(d_padded):
-                    dvhat_local[j] = (
-                        rrms_v_val * rms_w_v_shared[j] * d_vnorm[j]
-                        - rrms_v_val
-                        * rrms_v_val
-                        * rrms_v_val
-                        * vhat_local[j]
-                        * dot_sum[0, 0]
-                        / d
-                    )
-                dy_local = T.alloc_shared((d_padded,), accum_dtype)
-                T.copy(dY[bid, tid, :], dy_local)
-                for j in T.Parallel(d_padded):
-                    dvhat_local[j] += dy_local[j]
-                T.copy(dvhat_local, dvhat_buf[bid, tid, :])
+                    if tid < seq_len:
+                        T.clear(d_vnorm)
+
+                        for p in T.serial(KS):
+                            dst_t = tid + (KS - 1) - p
+                            T.clear(d_si)
+
+                            if (dst_t >= 0) * (dst_t < seq_len):
+                                T.copy(dvhat_in[bid, dst_t, :], d_si)
+
+                            T.copy(conv_w[p, 0:d_padded], conv_w_cast)
+                            T.vcast(conv_w_cast, conv_w_shared)
+
+                            for j in T.Parallel(d_padded):
+                                d_vnorm[j] += conv_w_shared[j] * d_si[j]
+
+                        T.copy(vhat[bid, tid, :], vhat_cast)
+                        T.vcast(vhat_cast, vhat_local)
+
+                        rrms_v_val = rrms_v[bid, tid]
+
+                        T.vmul(d_vnorm, vhat_local, add_val)
+                        T.vmul(add_val, rrms_v_val, add_val)
+                        T.atomic_add(drms_w_v, add_val)
+
+                        for j in T.Parallel(d_padded):
+                            dot_2d[j] = vhat_local[j] * rms_w_v_shared[j] * d_vnorm[j]
+                        T.reduce_sum(dot_2d, dot_sum, dim=0)
+
+                        tmp_val = rrms_v_val * rrms_v_val * rrms_v_val * dot_sum[0] / d
+
+                        T.vmul(vhat_local, tmp_val, val_local)
+                        T.vmul(rms_w_v_shared, d_vnorm, val_1)
+                        T.vmul(val_1, rrms_v_val, val_1)
+
+                        for j in T.Parallel(d_padded):
+                            dvhat_local[j] = val_1[j] - val_local[j]
+
+                        T.copy(dY[bid, tid, :], dy_local_cast)
+                        T.vcast(dy_local_cast, dy_local)
+
+                        for j in T.Parallel(d_padded):
+                            dvhat_local[j] += dy_local[j]
+
+                        T.copy(dvhat_local, dvhat_buf[bid, tid, :])
 
         @T.prim_func
         def pass2(
@@ -193,19 +255,20 @@ def engram_gate_conv_bwd_pass2(
             vhat: T.Tensor((M, seq_len, d_padded), dtype),
             rrms_v: T.Tensor((M, seq_len), accum_dtype),
             drms_w_v: T.Tensor((d_padded,), accum_dtype),
+            dvhat_in: T.Tensor((M, seq_len, d_padded), accum_dtype),
             dvhat_buf: T.Tensor((M, seq_len, d_padded), accum_dtype),
         ):
-            _bwd_pass2(dY, rms_w_v, conv_w, vhat, rrms_v, drms_w_v, dvhat_buf)
+            _bwd_pass2(dY, rms_w_v, conv_w, vhat, rrms_v, drms_w_v, dvhat_in, dvhat_buf)
 
         return pass2
 
     return _func2
 
 
-@functools.lru_cache(maxsize=32)
 def engram_gate_conv_bwd_pass3(M, seq_len, d, dtype):
     accum_dtype = "float32"
     d_padded = _align_up(d, ALIGNMENT)
+    block_N = 8
 
     @tl.jit(
         target="npuir",
@@ -226,96 +289,136 @@ def engram_gate_conv_bwd_pass3(M, seq_len, d, dtype):
             drms_w_h: T.Tensor((d_padded,), accum_dtype),
             dvhat_buf: T.Tensor((M, seq_len, d_padded), accum_dtype),
         ):
-            with T.Kernel(seq_len * M, is_npu=True) as (cid, _):
+
+            with T.Kernel(T.ceildiv(seq_len, block_N) * M, is_npu=True) as (cid, _):
                 bid = cid % M
-                tid = cid // M
-                dvhat_local = T.alloc_shared((1, d_padded), accum_dtype)
-                T.copy(dvhat_buf[bid, tid, :], dvhat_local)
-                v_local = T.alloc_shared((1, d_padded), accum_dtype)
-                T.copy(v[bid, tid, :], v_local)
-                h_local = T.alloc_shared((d_padded,), accum_dtype)
-                T.copy(H[bid, tid, :], h_local)
-                k_local = T.alloc_shared((d_padded,), accum_dtype)
-                T.copy(k[bid, tid, :], k_local)
+                tile_id = cid // M
+                tid_base = tile_id * block_N
 
-                alpha_val = alpha[bid, tid]
-                rrms_h_val = rrms_h[bid, tid]
-                rrms_k_val = rrms_k[bid, tid]
+                rms_w_h_cast = T.alloc_ub((d_padded,), dtype)
+                rms_w_h_local = T.alloc_ub((d_padded,), accum_dtype)
+                T.copy(rms_w_h, rms_w_h_cast)
+                T.vcast(rms_w_h_cast, rms_w_h_local)
 
-                dalpha_2d = T.alloc_shared((1, d_padded), accum_dtype)
-                dv_local = T.alloc_shared((d_padded,), accum_dtype)
-                for j in T.Parallel(d_padded):
-                    dalpha_2d[0, j] = dvhat_local[0, j] * v_local[0, j]
-                    dv_local[j] = alpha_val * dvhat_local[0, j]
-                dalpha_sum = T.alloc_shared((1, 1), accum_dtype)
-                T.reduce_sum(dalpha_2d, dalpha_sum, dim=1)
-
-                sqrt_d = T.alloc_shared((1, 1), accum_dtype)
+                sqrt_d = T.alloc_ub((1, 1), accum_dtype)
                 sqrt_d[0, 0] = d
                 T.vsqrt(sqrt_d, sqrt_d)
+                drms_w_h_local = T.alloc_ub((d_padded,), accum_dtype)
+                T.clear(drms_w_h_local)
 
-                ddot_val = (
-                    dalpha_sum[0, 0] * alpha_val * (1.0 - alpha_val) / sqrt_d[0, 0]
-                )
+                dvhat_local = T.alloc_ub((d_padded,), accum_dtype)
+                v_local_cast = T.alloc_ub((d_padded,), dtype)
+                v_local = T.alloc_ub((d_padded,), accum_dtype)
+                h_local_cast = T.alloc_ub((d_padded,), dtype)
+                h_local = T.alloc_ub((d_padded,), accum_dtype)
+                k_local_cast = T.alloc_ub((d_padded,), dtype)
+                k_local = T.alloc_ub((d_padded,), accum_dtype)
+                dalpha_2d = T.alloc_ub((d_padded,), accum_dtype)
+                dv_local = T.alloc_ub((d_padded,), accum_dtype)
+                dalpha_sum = T.alloc_ub((1,), accum_dtype)
+                h_norm_local = T.alloc_ub((d_padded,), accum_dtype)
+                k_norm_local = T.alloc_ub((d_padded,), accum_dtype)
+                dot_h_2d = T.alloc_ub((d_padded,), accum_dtype)
+                dot_h_sum = T.alloc_ub((1,), accum_dtype)
+                dh_local = T.alloc_ub((d_padded,), accum_dtype)
+                dot_k_2d = T.alloc_ub((d_padded,), accum_dtype)
+                dot_k_sum = T.alloc_ub((1,), accum_dtype)
+                dk_local = T.alloc_ub((d_padded,), accum_dtype)
+                dh_val = T.alloc_ub((d_padded,), dtype)
+                dk_val = T.alloc_ub((d_padded,), dtype)
+                dv_val = T.alloc_ub((d_padded,), dtype)
 
-                h_norm_local = T.alloc_shared((d_padded,), accum_dtype)
-                k_norm_local = T.alloc_shared((d_padded,), accum_dtype)
-                rms_w_h_local = T.alloc_shared((d_padded,), accum_dtype)
-                T.copy(rms_w_h, rms_w_h_local)
-                for j in T.Parallel(d_padded):
-                    h_norm_local[j] = h_local[j] * rrms_h_val * rms_w_h_local[j]
-                    k_norm_local[j] = k_local[j] * rrms_k_val * rms_w_h_local[j]
-                dot_h_2d = T.alloc_shared((1, d_padded), accum_dtype)
-                for j in T.Parallel(d_padded):
-                    dot_h_2d[0, j] = (
-                        h_local[j] * rms_w_h_local[j] * ddot_val * k_norm_local[j]
-                    )
-                dot_h_sum = T.alloc_shared((1, 1), accum_dtype)
-                T.reduce_sum(dot_h_2d, dot_h_sum, dim=1)
+                for ti in T.serial(block_N):
+                    tid = tid_base + ti
 
-                dh_local = T.alloc_shared((d_padded,), accum_dtype)
-                for j in T.serial(d_padded):
-                    dh_local[j] = (
-                        rrms_h_val * rms_w_h_local[j] * ddot_val * k_norm_local[j]
-                        - rrms_h_val
-                        * rrms_h_val
-                        * rrms_h_val
-                        * h_local[j]
-                        * dot_h_sum[0, 0]
-                        / d
-                    )
-                add_val = T.alloc_shared((d_padded,), accum_dtype)
-                for j in T.Parallel(d_padded):
-                    add_val[j] = ddot_val * k_norm_local[j] * h_local[j] * rrms_h_val
-                T.atomic_add(drms_w_h, add_val)
+                    if tid < seq_len:
+                        T.copy(dvhat_buf[bid, tid, :], dvhat_local)
+                        T.copy(v[bid, tid, :], v_local_cast)
+                        T.vcast(v_local_cast, v_local)
+                        T.copy(H[bid, tid, :], h_local_cast)
+                        T.vcast(h_local_cast, h_local)
+                        T.copy(k[bid, tid, :], k_local_cast)
+                        T.vcast(k_local_cast, k_local)
 
-                dot_k_2d = T.alloc_shared((1, d_padded), accum_dtype)
-                for j in T.Parallel(d_padded):
-                    dot_k_2d[0, j] = (
-                        k_local[j] * rms_w_h_local[j] * ddot_val * h_norm_local[j]
-                    )
-                dot_k_sum = T.alloc_shared((1, 1), accum_dtype)
-                T.reduce_sum(dot_k_2d, dot_k_sum, dim=1)
+                        alpha_val = alpha[bid, tid]
+                        rrms_h_val = rrms_h[bid, tid]
+                        rrms_k_val = rrms_k[bid, tid]
 
-                dk_local = T.alloc_shared((d_padded,), accum_dtype)
-                for j in T.serial(d_padded):
-                    dk_local[j] = (
-                        rrms_k_val * rms_w_h_local[j] * ddot_val * h_norm_local[j]
-                        - rrms_k_val
-                        * rrms_k_val
-                        * rrms_k_val
-                        * k_local[j]
-                        * dot_k_sum[0, 0]
-                        / d
-                    )
-                add_val_2 = T.alloc_shared((d_padded,), accum_dtype)
-                for j in T.Parallel(d_padded):
-                    add_val_2[j] = ddot_val * h_norm_local[j] * k_local[j] * rrms_k_val
-                T.atomic_add(drms_w_h, add_val_2)
+                        # ---------- dalpha / dv ----------
+                        for j in T.Parallel(d_padded):
+                            dalpha_2d[j] = dvhat_local[j] * v_local[j]
+                        for j in T.Parallel(d_padded):
+                            dv_local[j] = alpha_val * dvhat_local[j]
+                        T.reduce_sum(dalpha_2d, dalpha_sum, dim=0)
 
-                T.copy(dh_local, dH[bid, tid, :])
-                T.copy(dk_local, dk[bid, tid, :])
-                T.copy(dv_local, dv[bid, tid, :])
+                        ddot_val = (
+                            dalpha_sum[0] * alpha_val * (1.0 - alpha_val) / sqrt_d[0, 0]
+                        )
+
+                        # ---------- h_norm / k_norm ----------
+                        for j in T.Parallel(d_padded):
+                            h_norm_local[j] = h_local[j] * rrms_h_val * rms_w_h_local[j]
+                        for j in T.Parallel(d_padded):
+                            k_norm_local[j] = k_local[j] * rrms_k_val * rms_w_h_local[j]
+
+                        # ---------- dh ----------
+                        for j in T.Parallel(d_padded):
+                            dot_h_2d[j] = (
+                                h_local[j]
+                                * rms_w_h_local[j]
+                                * ddot_val
+                                * k_norm_local[j]
+                            )
+                        T.reduce_sum(dot_h_2d, dot_h_sum, dim=0)
+
+                        tmp_h_val = (
+                            rrms_h_val * rrms_h_val * rrms_h_val * dot_h_sum[0] / d
+                        )
+                        for j in T.Parallel(d_padded):
+                            dh_local[j] = (
+                                rrms_h_val
+                                * rms_w_h_local[j]
+                                * ddot_val
+                                * k_norm_local[j]
+                                - tmp_h_val * h_local[j]
+                            )
+
+                        # ---------- dk ----------
+                        for j in T.Parallel(d_padded):
+                            dot_k_2d[j] = (
+                                k_local[j]
+                                * rms_w_h_local[j]
+                                * ddot_val
+                                * h_norm_local[j]
+                            )
+                        T.reduce_sum(dot_k_2d, dot_k_sum, dim=0)
+
+                        tmp_k_val = (
+                            rrms_k_val * rrms_k_val * rrms_k_val * dot_k_sum[0] / d
+                        )
+                        for j in T.Parallel(d_padded):
+                            dk_local[j] = (
+                                rrms_k_val
+                                * rms_w_h_local[j]
+                                * ddot_val
+                                * h_norm_local[j]
+                                - tmp_k_val * k_local[j]
+                            )
+
+                        for j in T.Parallel(d_padded):
+                            drms_w_h_local[j] += (
+                                ddot_val * k_norm_local[j] * h_local[j] * rrms_h_val
+                                + ddot_val * h_norm_local[j] * k_local[j] * rrms_k_val
+                            )
+
+                        T.vcast(dh_local, dh_val)
+                        T.vcast(dk_local, dk_val)
+                        T.vcast(dv_local, dv_val)
+                        T.copy(dh_val, dH[bid, tid, :])
+                        T.copy(dk_val, dk[bid, tid, :])
+                        T.copy(dv_val, dv[bid, tid, :])
+
+                T.atomic_add(drms_w_h, drms_w_h_local)
 
         @T.prim_func
         def pass3(
@@ -346,7 +449,6 @@ def _engram_gate_conv_bwd_wrapped(
     M: int,
     seq_len: int,
     d: int,
-    eps: float,
     dtype_str: str,
     dY: torch.Tensor,
     H: torch.Tensor,
@@ -370,14 +472,15 @@ def _engram_gate_conv_bwd_wrapped(
     drms_w_h = torch.zeros((d_padded,), dtype=torch.float32).npu()
     drms_w_v = torch.zeros((d_padded,), dtype=torch.float32).npu()
     dconv_w = torch.zeros((KS, d_padded), dtype=torch.float32).npu()
+    dvhat_buf_1 = torch.zeros((M, seq_len, d_padded), dtype=torch.float32).npu()
     dvhat_buf = torch.zeros((M, seq_len, d_padded), dtype=torch.float32).npu()
 
     engram_gate_conv_bwd_pass1(M, seq_len, d, dtype_str)()(
-        dY, rms_w_v, conv_w, vhat, rrms_v, dconv_w, dvhat_buf
+        dY, rms_w_v, conv_w, vhat, rrms_v, dconv_w, dvhat_buf_1
     )
 
     engram_gate_conv_bwd_pass2(M, seq_len, d, dtype_str)()(
-        dY, rms_w_v, conv_w, vhat, rrms_v, drms_w_v, dvhat_buf
+        dY, rms_w_v, conv_w, vhat, rrms_v, drms_w_v, dvhat_buf_1, dvhat_buf
     )
 
     engram_gate_conv_bwd_pass3(M, seq_len, d, dtype_str)()(
@@ -392,7 +495,6 @@ def _(
     M,
     seq_len,
     d,
-    eps,
     dtype_str,
     dY,
     H,
@@ -593,10 +695,9 @@ def run_test():
     torch.manual_seed(0)
 
     # fixed config
-    M = 2
-    seq_len = 8
-    d = 64
-    eps = 1e-6
+    M = 1
+    seq_len = 4096
+    d = 512
     dtype_str = "float16"
 
     d_padded = _align_up(d, ALIGNMENT)
@@ -624,7 +725,6 @@ def run_test():
         M,
         seq_len,
         d,
-        eps,
         dtype_str,
         dY,
         H,
@@ -697,5 +797,5 @@ def run_test():
 
 
 if __name__ == "__main__":
-    os.environ["TILELANG_ASCEND_MODE"] = "Dev"
+    os.environ["TILELANG_ASCEND_MODE"] = "Expert"
     run_test()
