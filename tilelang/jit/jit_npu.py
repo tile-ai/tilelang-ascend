@@ -6,6 +6,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Union
 import torch
+from ..utils.npu_utils import get_configured_hivmc_version
 from ..engine import lower
 from ..utils import (
     NPUUtils,

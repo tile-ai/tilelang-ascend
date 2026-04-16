@@ -12,6 +12,7 @@ from tvm.ir import CallingConv
 from tvm.target import Target
 from tilelang.contrib import hipcc, nvcc
 from tilelang.engine.param import KernelParam, CompiledArtifact
+from tilelang.utils.npu_utils import get_configured_hivmc_version
 from tilelang.utils.target import determine_target  # noqa: F401
 from tilelang.engine.phase import (
     LowerAndLegalize,
@@ -280,7 +281,10 @@ def lower(
             print(mlir_str)
         pipeline = Pipeline()
         pipeline.add(transforms.mlir.canonicalize, top_down=True)
-        pipeline.add(transforms.bishengir.adapt_triton_kernel)
+        pipeline.add(
+            transforms.bishengir.adapt_triton_kernel,
+            hivmc_version=get_configured_hivmc_version(),
+        )
         pipeline.add(transforms.tilelangir.insert_workspace)
         pipeline.add(transforms.tilelangir.mark_multibuffer)
         pipeline.add(transforms.tilelangir.cv_split)

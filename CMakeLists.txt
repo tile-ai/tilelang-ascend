@@ -44,6 +44,25 @@ endif()
 
 # Setting up MLIR infrastructure
 set(NPUIR_LIBS "")
+set(_tilelang_ascend_cann_version "${TILELANG_ASCEND_CANN_VERSION}")
+if("${_tilelang_ascend_cann_version}" STREQUAL "")
+  if(DEFINED ENV{ASCEND_HOME_PATH} AND NOT "$ENV{ASCEND_HOME_PATH}" STREQUAL "")
+    set(_tilelang_ascend_home "$ENV{ASCEND_HOME_PATH}")
+  elseif(DEFINED ENV{ASCEND_HOME} AND NOT "$ENV{ASCEND_HOME}" STREQUAL "")
+    set(_tilelang_ascend_home "$ENV{ASCEND_HOME}")
+  endif()
+
+  if(DEFINED _tilelang_ascend_home)
+    if(_tilelang_ascend_home MATCHES "cann-8\\.5\\.0(/|$)")
+      set(_tilelang_ascend_cann_version "8.5.0")
+    elseif(_tilelang_ascend_home MATCHES "cann-9\\.0\\.0-beta\\.2(/|$)")
+      set(_tilelang_ascend_cann_version "9.0.0.beta2")
+    endif()
+  endif()
+endif()
+set(TILELANG_ASCEND_CANN_VERSION "${_tilelang_ascend_cann_version}" CACHE STRING "CANN compatibility version for TileLang NPUIR build" FORCE)
+unset(_tilelang_ascend_cann_version)
+unset(_tilelang_ascend_home)
 if(USE_NPUIR)
   set(BISHENGIR_INCLUDE_DIRS "")
   set(BISHENGIR_LIBRARY_DIRS "")
@@ -228,6 +247,19 @@ set(TILE_LANG_COMPILE_DEFS
   __STDC_FORMAT_MACROS=1
   PICOJSON_USE_INT64
 )
+
+if(USE_NPUIR)
+  if(TILELANG_ASCEND_CANN_VERSION STREQUAL "")
+    message(FATAL_ERROR "TILELANG_ASCEND_CANN_VERSION must be set when USE_NPUIR=ON")
+  endif()
+  if(TILELANG_ASCEND_CANN_VERSION STREQUAL "8.5.0")
+    list(APPEND TILE_LANG_COMPILE_DEFS TILELANG_ASCEND_CANN_VERSION_8_5_0=1)
+  elseif(TILELANG_ASCEND_CANN_VERSION STREQUAL "9.0.0.beta2")
+    list(APPEND TILE_LANG_COMPILE_DEFS TILELANG_ASCEND_CANN_VERSION_9_0_0_BETA2=1)
+  else()
+    message(FATAL_ERROR "Unsupported TILELANG_ASCEND_CANN_VERSION=${TILELANG_ASCEND_CANN_VERSION}")
+  endif()
+endif()
 
 # Set target properties for object library
 target_include_directories(tilelang_objs PRIVATE ${TILE_LANG_INCLUDES})

@@ -4,6 +4,7 @@
 import contextlib
 import functools
 import os
+import re
 import shutil
 import sysconfig
 from pathlib import Path
@@ -112,6 +113,68 @@ class NPUUtils(object):
     def get_device_num(self):
         # Return Ascend device number
         return self.npu_utils_mod.get_device_num()
+
+
+_SUPPORTED_CANN_TO_HIVMC = {
+    "8.5.0": "0.1.0",
+    "9.0.0.beta2": "0.2.0",
+}
+
+
+def _normalize_cann_version(value: str) -> str:
+    if not value:
+        raise ValueError(
+            "Unsupported CANN version: "
+            f"{value!r}. Supported versions: {', '.join(_SUPPORTED_CANN_TO_HIVMC)}"
+        )
+
+    normalized = os.path.basename(value.rstrip("/").strip().lower())
+    if normalized.startswith("cann-"):
+        normalized = normalized[len("cann-") :]
+
+    if re.fullmatch(r"8\.5\.0", normalized):
+        return "8.5.0"
+    if re.fullmatch(r"9\.0\.0(?:[.-]?beta(?:[.-]?2)?)", normalized):
+        return "9.0.0.beta2"
+
+    raise ValueError(
+        "Unsupported CANN version: "
+        f"{value!r}. Supported versions: {', '.join(_SUPPORTED_CANN_TO_HIVMC)}"
+    )
+
+
+def get_configured_hivmc_version() -> str:
+    env_value = os.environ.get("TILELANG_ASCEND_CANN_VERSION")
+    if env_value:
+        cann_version = _normalize_cann_version(env_value)
+    else:
+        ascend_home = os.environ.get("ASCEND_HOME_PATH") or os.environ.get(
+            "ASCEND_HOME"
+        )
+        if not ascend_home:
+            raise ValueError(
+                "ASCEND_HOME_PATH is not set; unable to infer the target CANN version."
+            )
+        cann_version = _normalize_cann_version(ascend_home)
+    return _SUPPORTED_CANN_TO_HIVMC[cann_version]
+
+
+@functools.lru_cache()
+def detect_hivmc_version(hivmc_path: str) -> str | None:
+    """Return the semantic hivmc version reported by a local executable."""
+    try:
+        result = subprocess.run(
+            [hivmc_path, "--version"],
+            capture_output=True,
+            check=True,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return None
+
+    first_line = result.stdout.splitlines()[0] if result.stdout else ""
+    match = re.search(r"\bhivmc\s+(\d+\.\d+\.\d+)\b", first_line)
+    return match.group(1) if match else None
 
 
 def _get_device_id(path: str) -> int:

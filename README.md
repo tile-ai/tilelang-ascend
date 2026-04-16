@@ -124,6 +124,8 @@ Run the installation script
 cd tilelang-ascend
 # build AscendNPU-IR in 3rdparty
 bash install_npuir.sh
+# build with an explicit CANN compatibility version
+bash install_npuir.sh --cann-version=8.5.0
 # Alternative way of building with local AscendNPU-IR
 bash install_npuir.sh --bishengir-path=/path/to/bishengir-compile
 ```
@@ -287,4 +289,3 @@ def matmul(M, N, K, block_M, block_N, block_K, dtype="float16", accum_dtype="flo
 ## Acknowledgements
 
 Peking University Kunpeng & Ascend Center for Excellence in Science, Education, Innovation
-
