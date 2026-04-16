@@ -42,9 +42,6 @@ jobs:
     runs-on: [self-hosted, Linux, X64, ascend_910b]                # 使用自托管运行器（需安装 Ascend 环境）
     if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.run_tests == 'true' }} # 手动触发时可跳过测试
     timeout-minutes: 60                               # 1 小时超时退出
-    outputs:                                           # 定义 job 输出
-      pass_rate: ${{ steps.check_results.outputs.pass_rate }}
-      test_status: ${{ steps.check_results.outputs.test_status }}
     steps:       
       - name: Checkout code
         uses: actions/checkout@v4
@@ -143,6 +140,7 @@ jobs:
                 echo "========== Error Details =========="
                 grep -A 10 '\[FAILED\]' test_output.log | grep -v '\[PASSED\]'
                 echo "==================================="
+                exit 1
               fi
             else
               echo "⚠️ Could not find 'Pass rate:' in test output"
@@ -172,22 +170,3 @@ jobs:
             *.log
             *.json
           retention-days: 30
-
-  # Job 2: 汇总结果并输出摘要
-  notify:
-    name: Notify Results
-    runs-on: [self-hosted, Linux, X64, ascend_910b] 
-    needs: [test] 
-    if: always()                         # 无论成功失败都执行
-    steps:
-      - name: Check results
-        run: |
-          echo "## CI Results Summary" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Job | Status | Pass Rate |" >> $GITHUB_STEP_SUMMARY
-          echo "|-----|--------|-----------|" >> $GITHUB_STEP_SUMMARY
-          if [ "${{ needs.test.result }}" = "success" ]; then
-            echo "| Benchmark Tests | ✅ Success | ${{ needs.test.outputs.pass_rate }}% |" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "| Benchmark Tests | ❌ Failed | ${{ needs.test.outputs.pass_rate }}% |" >> $GITHUB_STEP_SUMMARY
-          fi
