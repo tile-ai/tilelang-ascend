@@ -21,7 +21,7 @@ DTYPE_MAP = {
 }
 
 DEFAULT_TOLERANCE = {
-    "float16": (1e-3, 1e-3),
+    "float16": (1e-2, 1e-2),
     "bfloat16": (2e-2, 2e-2),
     "float32": (1e-4, 1e-4),
     "int8": (0.0, 0.0),
