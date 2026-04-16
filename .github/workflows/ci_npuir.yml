@@ -53,15 +53,36 @@ jobs:
 
   build:
     needs: check-trigger
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - cann-version: 8.5.0
+            cann-version-slug: cann-8.5.0
+          - cann-version: 9.0.0.beta2
+            cann-version-slug: cann-9.0.0.beta2
     uses: ./.github/workflows/build-tilelang-npuir.yml
     with:
       checkout-ref: refs/pull/${{ needs.check-trigger.outputs.pr-number }}/merge
+      cann-version: ${{ matrix.cann-version }}
 
   test-npuir:
     needs: [check-trigger, build]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - cann-version: 8.5.0
+            cann-version-slug: cann-8.5.0
+            container-image: swr.cn-southwest-2.myhuaweicloud.com/base_image/ascend-ci/cann:8.5.0-a3-ubuntu22.04-py3.11
+          - cann-version: 9.0.0.beta2
+            cann-version-slug: cann-9.0.0.beta2
+            container-image: swr.cn-southwest-2.myhuaweicloud.com/base_image/ascend-ci/cann:9.0.0.beta.2-a3-ubuntu22.04-py3.11
     runs-on: linux-aarch64-a3-2
     container:
-      image: swr.cn-southwest-2.myhuaweicloud.com/base_image/ascend-ci/cann:8.5.0-a3-ubuntu22.04-py3.11
+      image: ${{ matrix.container-image }}
+    env:
+      TILELANG_ASCEND_CANN_VERSION: ${{ matrix.cann-version }}
     timeout-minutes: 120
     steps:
 
@@ -74,7 +95,7 @@ jobs:
     - name: Download arm64 wheel
       uses: actions/download-artifact@v4
       with:
-        name: tilelang-npuir-py3.11-arm64
+        name: tilelang-npuir-${{ matrix.cann-version-slug }}-py3.11-arm64
         path: dist/
 
     - name: Install tilelang and test dependencies
@@ -165,14 +186,21 @@ jobs:
       if: always()
       uses: actions/upload-artifact@v4
       with:
-        name: npuir-test-report
+        name: npuir-test-report-${{ matrix.cann-version-slug }}
         path: testing/npuir/output/
 
   build-release:
     if: github.event_name == 'release'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - cann-version: 8.5.0
+          - cann-version: 9.0.0.beta2
     uses: ./.github/workflows/build-tilelang-npuir.yml
     with:
       checkout-ref: refs/tags/${{ github.event.release.tag_name }}
+      cann-version: ${{ matrix.cann-version }}
     secrets: inherit
 
   upload-release-assets:

@@ -9,6 +9,10 @@ on:
         description: "Git ref to checkout (leave empty for default event ref)"
         type: string
         default: ''
+      ascend-npuir-commit:
+        description: "Override AscendNPU-IR commit hash for cache/build selection"
+        type: string
+        default: ''
     outputs:
       npuir-commit:
         description: "AscendNPU-IR commit hash"
@@ -42,7 +46,11 @@ jobs:
     - name: Get AscendNPU-IR commit ID
       id: npuir-version
       run: |
-        NPUIR_COMMIT=$(git rev-parse HEAD:3rdparty/AscendNPU-IR)
+        if [ -n "${{ inputs.ascend-npuir-commit }}" ]; then
+          NPUIR_COMMIT="${{ inputs.ascend-npuir-commit }}"
+        else
+          NPUIR_COMMIT=$(git rev-parse HEAD:3rdparty/AscendNPU-IR)
+        fi
         echo "commit=${NPUIR_COMMIT}" >> "$GITHUB_OUTPUT"
         echo "AscendNPU-IR commit: ${NPUIR_COMMIT}"
 
@@ -62,6 +70,10 @@ jobs:
       run: |
         git submodule update --init 3rdparty/AscendNPU-IR
         cd 3rdparty/AscendNPU-IR
+        if [ -n "${{ inputs.ascend-npuir-commit }}" ]; then
+          git fetch --depth=1 origin "${{ inputs.ascend-npuir-commit }}"
+          git checkout --detach "${{ inputs.ascend-npuir-commit }}"
+        fi
         git submodule update --init
 
     - name: Set up Python 3.11
