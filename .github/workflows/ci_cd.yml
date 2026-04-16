@@ -37,7 +37,7 @@ jobs:
     runs-on: [self-hosted, Linux, X64, ascend_910b] 
     
     container:
-      image: tilelang-env1:latest  # 镜像名
+      image: localhost:5000/tilelang-env1:latest  # 本地镜像名
       options: >-
         --user root
         --privileged
