@@ -52,18 +52,14 @@ jobs:
           submodules: false 
           fetch-depth: 1
 
-      - name: Set environment and run test
+      - name: Check environment
+        id: check
         run: |
           echo "Setting up Ascend environment..."
           if [ ! -f "${ASCEND_HOME}/set_env.sh" ]; then
             echo "❌ Ascend environment file not found: ${ASCEND_HOME}/set_env.sh"
             exit 1
           fi
-          source ${ASCEND_HOME}/set_env.sh || {
-            echo "❌ Failed to source Ascend environment"
-            exit 1
-          }
-          echo "✅ Ascend environment setup completed"
 
           # 检查虚拟环境是否存在
           if [ ! -d "${PY_VENV_DIR}/test_venv" ]; then
@@ -77,6 +73,13 @@ jobs:
             echo "python venv <test_venv> already exists."
           fi
           
+      - name: Install Ascend Dependencies
+        id: install_ascend
+        run: |
+          source ${ASCEND_HOME}/set_env.sh || {
+            echo "❌ Failed to source Ascend environment"
+            exit 1
+          }
           # 激活虚拟环境
           source "${PY_VENV_DIR}/test_venv/bin/activate" || {
             echo "❌ Failed to activate Python virtual environment"
@@ -84,11 +87,21 @@ jobs:
           }
           pip list
 
-          echo "USE_ASCEND=$USE_ASCEND"
           bash install_ascend.sh                              # 执行安装脚本
-
+      
+      - name: Run bench tests
+        id: test
+        run: |
+          source ${ASCEND_HOME}/set_env.sh || {
+            echo "❌ Failed to source Ascend environment"
+            exit 1
+          }
+          # 激活虚拟环境
+          source "${PY_VENV_DIR}/test_venv/bin/activate" || {
+            echo "❌ Failed to activate Python virtual environment"
+            exit 1
+          }
           source set_env.sh                                   # 加载项目环境变量
-          echo "TILELANG_PATH=$PWD" >> $GITHUB_ENV
 
           cd examples
           chmod +x bench_test.sh
