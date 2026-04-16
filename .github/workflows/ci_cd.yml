@@ -35,35 +35,6 @@ jobs:
   test:
     name: Benchmark Tests (Ascend NPU)
     runs-on: [self-hosted, Linux, X64, ascend_910b] 
-    
-    container:
-      image: localhost:5000/tilelang-env1:latest  # 本地镜像名
-      options: >-
-        --user root
-        --privileged
-        --network host
-        --ipc host
-        --shm-size 128g
-        --ulimit nproc=65535:65535
-        --device /dev/davinci0
-        --device /dev/davinci_manager
-        --device /dev/devmm_svm
-        --device /dev/hisi_hdc
-        -v /home:/home
-        -v /data:/data
-        -v /etc/localtime:/etc/localtime
-        -v /usr/local/Ascend/driver:/usr/local/Ascend/driver
-        -v /etc/ascend_install.info:/etc/ascend_install.info
-        -v /var/log/npu/:/usr/slog
-        -v /usr/local/bin/npu-smi:/usr/local/bin/npu-smi
-        -v /sys/fs/cgroup:/sys/fs/cgroup:ro
-        -v /usr/local/dcmi:/usr/local/dcmi
-        -v /usr/local/sbin:/usr/local/sbin
-        -v /etc/hccn.conf:/etc/hccn.conf
-        -v /root/.pip:/root/.pip
-        -v /etc/hosts:/etc/hosts
-        -v /usr/bin/hostname:/usr/bin/hostname
-
     if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.run_tests == 'true' }}
     timeout-minutes: 120
     outputs:
@@ -77,34 +48,88 @@ jobs:
           submodules: false
           fetch-depth: 1
 
-      - name: Build and Test
+      - name: Build and Test in Local Container
         run: |
-          # 1. 在容器内重新编译项目
+          # 1. 动态生成容器内执行的脚本，避免在 YAML 中痛苦地转义环境变量
+          cat << 'EOF' > run_test_inside.sh
+          #!/bin/bash
+          set -e
+          
           echo "**********$PWD"
           echo "Building project..."
           bash install_ascend.sh
 
-          # 2. 加载环境变量
           echo "Sourcing environment..."
           source set_env.sh
           echo "TILELANG_PATH=$PWD" >> $GITHUB_ENV
 
-          # 3. 运行测试用例
           cd examples
           chmod +x bench_test.sh
           echo "Running benchmark tests..."
+          set +e
           ./bench_test.sh 2>&1 | tee test_output.log
-        
           TEST_EXIT_CODE=${PIPESTATUS[0]}
+          set -e
+
           echo "Test exit code: $TEST_EXIT_CODE"
-          echo "test_exit_code=$TEST_EXIT_CODE" >> $GITHUB_OUTPUT
+          # 将退出码写到文件里，传给宿主机
+          echo "$TEST_EXIT_CODE" > /workspace_test_exit_code
+          EOF
+
+          chmod +x run_test_inside.sh
+
+          # 2. 使用本地镜像直接启动容器执行脚本
+          docker run --rm \
+            --user root \
+            --privileged \
+            --network host \
+            --ipc host \
+            --shm-size 128g \
+            --ulimit nproc=65535:65535 \
+            --device /dev/davinci0 \
+            --device /dev/davinci_manager \
+            --device /dev/devmm_svm \
+            --device /dev/hisi_hdc \
+            -v /home:/home \
+            -v /data:/data \
+            -v /etc/localtime:/etc/localtime \
+            -v /usr/local/Ascend/driver:/usr/local/Ascend/driver \
+            -v /etc/ascend_install.info:/etc/ascend_install.info \
+            -v /var/log/npu/:/usr/slog \
+            -v /usr/local/bin/npu-smi:/usr/local/bin/npu-smi \
+            -v /sys/fs/cgroup:/sys/fs/cgroup:ro \
+            -v /usr/local/dcmi:/usr/local/dcmi \
+            -v /usr/local/sbin:/usr/local/sbin \
+            -v /etc/hccn.conf:/etc/hccn.conf \
+            -v /root/.pip:/root/.pip \
+            -v /etc/hosts:/etc/hosts \
+            -v /usr/bin/hostname:/usr/bin/hostname \
+            -v $GITHUB_WORKSPACE:/workspace \
+            -w /workspace \
+            -e GITHUB_ACTIONS=true \
+            -e CI=true \
+            tilelang-env1:latest \
+            bash run_test_inside.sh
+          
+          # 3. 检查容器内的退出码
+          if [ -f /workspace_test_exit_code ]; then
+            TEST_EXIT_CODE=$(cat /workspace_test_exit_code)
+            rm -f /workspace_test_exit_code
+            if [ "$TEST_EXIT_CODE" -ne 0 ]; then
+              echo "❌ Container test exited with code $TEST_EXIT_CODE"
+              exit 1
+            fi
+          else
+            echo "⚠️ Did not find exit code file, assuming failure."
+            exit 1
+          fi
 
       - name: Check pass rate
         id: check_results
         run: |
           echo "Checking test results..."
           
-          # 从测试输出中提取 Pass rate
+          # 此时已经在宿主机上，且 checkout 的工作目录中已经生成了容器内的 log
           cd examples
           if [ -f test_output.log ]; then
             PASS_RATE_LINE=$(grep -i "Pass rate:" test_output.log || echo "")
@@ -126,13 +151,9 @@ jobs:
               echo "⚠️ Could not find 'Pass rate:' in test output"
               echo "pass_rate=0" >> $GITHUB_OUTPUT
               echo "test_status=error" >> $GITHUB_OUTPUT
-              
-              # 如果没有找到 Pass rate，也标记为失败
-              echo "Failing step because 'Pass rate:' was not found in output"
               exit 1
             fi
             
-            # 同时提取其他统计信息
             EXEC_SUMMARY=$(grep -i "Execution Summary" -A 2 test_output.log || echo "")
             if [ -n "$EXEC_SUMMARY" ]; then
               echo "Execution Summary:"
@@ -142,36 +163,32 @@ jobs:
             echo "⚠️ Test output file not found"
             echo "pass_rate=0" >> $GITHUB_OUTPUT
             echo "test_status=error" >> $GITHUB_OUTPUT
-            
-            # 如果没有测试输出文件，标记为失败
-            echo "Failing step because test output file was not found"
             exit 1
           fi
       
       - name: Upload test results
         uses: actions/upload-artifact@v4
-        if: always()                                          # 无论成功失败都上传结果
+        if: always()
         with:
           name: test-results
           path: |
-            test_results/
-            *.log
-            *.json
+            examples/test_results/
+            examples/*.log
+            examples/*.json
           retention-days: 30
 
-  # Job 2: 汇总结果并输出摘要
   notify:
     name: Notify Results
-    runs-on: [self-hosted, Linux, X64, ascend_910b] 
-    needs: [test] 
-    if: always()                         # 无论成功失败都执行
+    runs-on: [self-hosted, Linux, X64, ascend_910b]
+    needs: [test]
+    if: always()
     steps:
       - name: Check results
         run: |
           echo "## CI Results Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Job | Status | Pass Rate |" >> $GITHUB_STEP_SUMMARY
-          echo "|-----|--------|-----------|" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|----------|-----------|" >> $GITHUB_STEP_SUMMARY
           if [ "${{ needs.test.result }}" = "success" ]; then
             echo "| Benchmark Tests | ✅ Success | ${{ needs.test.outputs.pass_rate }}% |" >> $GITHUB_STEP_SUMMARY
           else
