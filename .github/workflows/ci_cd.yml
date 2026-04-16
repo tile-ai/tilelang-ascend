@@ -50,6 +50,7 @@ jobs:
             -w $GITHUB_WORKSPACE \
             -e GITHUB_ENV=$GITHUB_ENV \
             -e GITHUB_OUTPUT=$GITHUB_OUTPUT \
+            -e BASH_ENV=/root/.bashrc \
             tilelang_x1 \
             bash -c "
               set -e
