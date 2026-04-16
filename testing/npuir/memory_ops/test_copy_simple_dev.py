@@ -56,7 +56,10 @@ def simple_copy_2d(M, N, block_M, block_N, dtype="float16", accum_dtype="float32
         B: T.Tensor((M, N), dtype),
         C: T.Tensor((M, N), accum_dtype),
     ):
-        with T.Kernel(T.ceildiv(N, block_N) * T.ceildiv(M, block_M), is_npu=True) as (cid, _):
+        with T.Kernel(T.ceildiv(N, block_N) * T.ceildiv(M, block_M), is_npu=True) as (
+            cid,
+            _,
+        ):
             by = cid // T.ceildiv(N, block_N)
             bx = cid % T.ceildiv(N, block_N)
 
@@ -77,7 +80,9 @@ def simple_copy_2d(M, N, block_M, block_N, dtype="float16", accum_dtype="float32
 
 
 @tilelang.jit(target="npuir")
-def simple_copy_3d(M, N, K, block_M, block_N, block_K, dtype="float16", accum_dtype="float32"):
+def simple_copy_3d(
+    M, N, K, block_M, block_N, block_K, dtype="float16", accum_dtype="float32"
+):
     @T.prim_func
     def simple_copy_3d(
         In: T.Tensor((M, N, K), dtype),
@@ -85,7 +90,10 @@ def simple_copy_3d(M, N, K, block_M, block_N, block_K, dtype="float16", accum_dt
         B: T.Tensor((M, N, K), dtype),
         C: T.Tensor((M, N, K), accum_dtype),
     ):
-        with T.Kernel(T.ceildiv(M, block_M) * T.ceildiv(N, block_N) * T.ceildiv(K, block_K), is_npu=True) as (cid, _):
+        with T.Kernel(
+            T.ceildiv(M, block_M) * T.ceildiv(N, block_N) * T.ceildiv(K, block_K),
+            is_npu=True,
+        ) as (cid, _):
             num_blocks_N = T.ceildiv(N, block_N)
             num_blocks_K = T.ceildiv(K, block_K)
 
@@ -127,7 +135,9 @@ def test_copy_simple_1d_dev(dtype, L, block_L):
 
     assert_close(a.cpu(), input_tensor.cpu(), dtype=dtype, rtol=1e-5, atol=1e-5)
     assert_close(b.cpu(), (a * 2).cpu(), dtype=dtype, rtol=1e-5, atol=1e-5)
-    assert_close(c.cpu(), b.to(torch.float32).cpu(), dtype="float32", rtol=1e-5, atol=1e-5)
+    assert_close(
+        c.cpu(), b.to(torch.float32).cpu(), dtype="float32", rtol=1e-5, atol=1e-5
+    )
 
 
 @pytest.mark.parametrize("dtype", DTYPES)
@@ -144,7 +154,9 @@ def test_copy_simple_2d_dev(dtype, M, N, block_M, block_N):
 
     assert_close(a.cpu(), input_tensor.cpu(), dtype=dtype, rtol=1e-5, atol=1e-5)
     assert_close(b.cpu(), (a * 2).cpu(), dtype=dtype, rtol=1e-5, atol=1e-5)
-    assert_close(c.cpu(), b.to(torch.float32).cpu(), dtype="float32", rtol=1e-5, atol=1e-5)
+    assert_close(
+        c.cpu(), b.to(torch.float32).cpu(), dtype="float32", rtol=1e-5, atol=1e-5
+    )
 
 
 @pytest.mark.parametrize("dtype", DTYPES)
@@ -165,4 +177,81 @@ def test_copy_simple_3d_dev(dtype, M, N, K, block_M, block_N, block_K):
 
     assert_close(a.cpu(), input_tensor.cpu(), dtype=dtype, rtol=1e-5, atol=1e-5)
     assert_close(b.cpu(), (a * 2).cpu(), dtype=dtype, rtol=1e-5, atol=1e-5)
-    assert_close(c.cpu(), b.to(torch.float32).cpu(), dtype="float32", rtol=1e-5, atol=1e-5)
+    assert_close(
+        c.cpu(), b.to(torch.float32).cpu(), dtype="float32", rtol=1e-5, atol=1e-5
+    )
+
+
+@tilelang.jit(target="npuir")
+def implicit_cast_copy_1d(L, block_L, dtype="float16", mid_dtype="float32"):
+
+    @T.prim_func
+    def implicit_cast_copy_1d(
+        In: T.Tensor((L,), dtype),
+        Out: T.Tensor((L,), dtype),
+    ):
+        with T.Kernel(T.ceildiv(L, block_L), is_npu=True) as (cid, _):
+            start_idx = cid * block_L
+            # Alloc UB with mid_dtype (different from dtype)
+            A_frag = T.alloc_fragment((block_L,), mid_dtype)
+            # GM(dtype) -> UB(mid_dtype) : Implicit Cast during GM2UB
+            T.copy(In[start_idx], A_frag)
+            # UB(mid_dtype) -> GM(dtype) : Implicit Cast during UB2GM
+            T.copy(A_frag, Out[start_idx])
+
+    return implicit_cast_copy_1d
+
+
+@tilelang.jit(target="npuir")
+def implicit_cast_copy_1d_dynamic(L, block_L, dtype="float16", mid_dtype="float32"):
+
+    @T.prim_func
+    def implicit_cast_copy_1d_dynamic(
+        In: T.Tensor((L,), dtype),
+        Out: T.Tensor((L,), dtype),
+        shape_L: T.int32,
+    ):
+        with T.Kernel(T.ceildiv(L, block_L), is_npu=True) as (cid, _):
+            start_idx = cid * block_L
+            tile_size = T.min(block_L, shape_L - start_idx)
+
+            A_frag = T.alloc_fragment((block_L,), mid_dtype)
+
+            T.copy(In[start_idx : start_idx + tile_size], A_frag[0:tile_size])
+            T.copy(A_frag[0:tile_size], Out[start_idx : start_idx + tile_size])
+
+    return implicit_cast_copy_1d_dynamic
+
+
+@pytest.mark.parametrize(
+    "dtype, mid_dtype", [("float16", "float32"), ("float32", "float16")]
+)
+def test_copy_implicit_cast_dev(dtype, mid_dtype):
+    L, block_L = 1024, 256
+    kernel = implicit_cast_copy_1d(L, block_L, dtype=dtype, mid_dtype=mid_dtype)
+
+    input_tensor = gen_tensor((L,), dtype, kind="randn")
+    output_tensor = gen_tensor((L,), dtype, kind="zeros")
+
+    kernel(input_tensor, output_tensor)
+
+    expected_tensor = input_tensor.to(getattr(torch, mid_dtype)).to(
+        getattr(torch, dtype)
+    )
+    assert_close(output_tensor.cpu(), expected_tensor.cpu(), dtype=dtype)
+
+
+def test_copy_implicit_cast_dynamic_dev():
+    dtype, mid_dtype = "float16", "float32"
+    L, block_L = 1000, 256
+    kernel = implicit_cast_copy_1d_dynamic(L, block_L, dtype=dtype, mid_dtype=mid_dtype)
+
+    input_tensor = gen_tensor((L,), dtype, kind="randn")
+    output_tensor = gen_tensor((L,), dtype, kind="zeros")
+
+    kernel(input_tensor, output_tensor, L)
+
+    expected_tensor = input_tensor.to(getattr(torch, mid_dtype)).to(
+        getattr(torch, dtype)
+    )
+    assert_close(output_tensor.cpu(), expected_tensor.cpu(), dtype=dtype)
