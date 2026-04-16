@@ -352,7 +352,7 @@ private:
   ReshapeBrcInfo
   CheckNeedsReshapeBrc(const BufferLoadNode *load,
                        const std::vector<const VarNode *> &loop_vars,
-                       const std::vector<int64_t> &loop_extents) {
+                       const std::vector<int64_t> &loop_extents, int out_ndim) {
     ReshapeBrcInfo info;
     int N = loop_vars.size();
     info.index_to_loop.assign(load->indices.size(), -1);
@@ -371,9 +371,10 @@ private:
     std::set<int> used(info.index_to_loop.begin(), info.index_to_loop.end());
     used.erase(-1);
 
-    // If all loop axes are used, or the access is completely loop-invariant,
-    // no special handling is needed.
-    if ((int)used.size() == N || used.empty())
+    // [MODIFIED] original: (used.size()==N || used.empty())
+    // added dim_mismatch to also trigger when buf has fewer dims than output
+    int buf_ndim = static_cast<int>(load->indices.size());
+    if (((int)used.size() == N || used.empty()) && buf_ndim >= out_ndim)
       return info;
 
     info.needed = true;
@@ -417,14 +418,12 @@ private:
       return arr;
     };
 
-    // 1. local_buf: copy from the global buffer to a local-scope buffer.
+    // 1. local_buf: copy from the original buffer into a local-scope buffer.
     Buffer local_buf =
         CreateTempBufferWithShape(to_shape_expr(rbi.src_sizes),
                                   load->buffer->dtype, "local_src_buf", scope);
     tmp_buffers.push_back(local_buf);
 
-    // src_offsets: loop dimensions use 0; loop-invariant dimensions keep
-    // their original index (e.g. cid).
     std::vector<PrimExpr> src_offsets;
     src_offsets.reserve(load->indices.size());
     for (int i = 0; i < (int)load->indices.size(); i++)
@@ -434,17 +433,12 @@ private:
 
     auto local_offsets = make_zero_offsets((int)rbi.src_sizes.size());
 
-    // Hoist all reshape + brc statements.
     hoisted_stmts_.push_back(
         Evaluate(Call(DataType::Void(), Op::Get("tl.copy"),
                       {RegionND(load->buffer, src_offsets, 1, rbi.src_sizes),
                        RegionND(local_buf, local_offsets, 2, rbi.src_sizes)})));
 
-    // Build view_shape and brc_shape aligned to the dimensionality of
-    // output_ref. For each dimension in output_ref:
-    //   - if it corresponds to a loop variable, brc_shape fills loop_extents[j]
-    //     and view_shape fills rbi.view_shape[j] (1 for broadcast dims);
-    //   - otherwise both remain 1.
+    // Build view_shape and brc_shape aligned to output_ref dimensionality.
     int out_dim = output_ref.buffer->shape.size();
     std::vector<int64_t> aligned_view_shape(out_dim, 1);
     std::vector<int64_t> aligned_brc_shape(out_dim, 1);
@@ -460,7 +454,7 @@ private:
       }
     }
 
-    // 2. view_buf: reshape local_buf using aligned_view_shape.
+    // 2. view_buf: reshape local_buf to aligned_view_shape.
     Buffer view_buf = CreateTempBufferWithShape(
         to_shape_expr(aligned_view_shape), load->buffer->dtype,
         "reshape_view_buf", scope);
@@ -473,7 +467,26 @@ private:
              {RegionND(local_buf, local_offsets, 1, rbi.src_sizes),
               RegionND(view_buf, view_offsets, 2, aligned_view_shape)})));
 
-    // 3. brc_buf: broadcast view_buf to the full aligned_brc_shape.
+    // Check whether brc is actually needed: if view_shape already equals
+    // brc_shape in every dimension, the broadcast would be a no-op and the
+    // backend rejects it with "empty broadcast dims array".
+    // This happens when the buffer has fewer dims than output_ref but covers
+    // all loop vars (e.g. weight_buf(D,)[d_i] with out_buf(1,D)[0,d_i]:
+    // aligned_view_shape=[1,32], aligned_brc_shape=[1,32] -> no broadcast dim).
+    // In this case skip brc and return view_buf directly.
+    bool needs_brc = false;
+    for (int i = 0; i < out_dim; i++) {
+      if (aligned_brc_shape[i] != aligned_view_shape[i]) {
+        needs_brc = true;
+        break;
+      }
+    }
+
+    if (!needs_brc) {
+      return {view_buf, output_ref.indices, true};
+    }
+
+    // 3. brc_buf: broadcast view_buf to aligned_brc_shape.
     Buffer brc_buf = CreateTempBufferWithShape(to_shape_expr(aligned_brc_shape),
                                                load->buffer->dtype, "brc_buf",
                                                scope, op_name);
@@ -509,7 +522,8 @@ private:
     if (auto load = operand.as<BufferLoadNode>()) {
       if (!ValidBufferIndices(load->indices))
         return std::nullopt;
-      auto rbi = CheckNeedsReshapeBrc(load, loop_vars, loop_extents);
+      auto rbi = CheckNeedsReshapeBrc(load, loop_vars, loop_extents,
+                                      (int)output_ref.indices.size());
       if (rbi.needed) {
         auto expanded = EmitReshapeAndBroadcast(
             load, rbi, output_ref, loop_vars, loop_extents, op_name);
@@ -1273,8 +1287,11 @@ using namespace tir::transform;
 tvm::transform::Pass NpuLoopVectorize() {
   auto pass_func = [=](PrimFunc f, IRModule m, PassContext ctx) {
     auto *new_pf = f.CopyOnWrite();
+    LOG(INFO) << new_pf->body;
     new_pf->body = LoopDecompose()(std::move(new_pf->body));
+    LOG(INFO) << new_pf->body;
     new_pf->body = LoopVectorize()(std::move(new_pf->body));
+    LOG(INFO) << new_pf->body;
     return f;
   };
   return CreatePrimFuncPass(pass_func, 0, "tl.NpuLoopVectorize", {});
