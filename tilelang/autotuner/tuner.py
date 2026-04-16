@@ -593,45 +593,6 @@ class AutoTuner:
         progress_bar.set_postfix({"best_latency": best_latency})
         return best_latency, best_config, best_kernel
 
-    def _bench_all_npu(
-        self,
-        compiled: list[tuple[tilelang.JitKernel_NPU, dict]],
-    ) -> tuple[float, dict | None, tilelang.JitKernel_NPU | None]:
-        """Benchmark using the NPU bulk-profiling path. Returns (best_latency, best_config, best_kernel)."""
-        funcs, configs, kernels = [], [], []
-        for jit_kernel, config in tqdm(compiled, desc="Bench configurations"):
-            pa = self.profile_args
-            profiler = jit_kernel.get_profiler(tensor_supply_type=pa.supply_type)
-            input_tensors = self._get_input_tensors(profiler, pa.supply_prog, config=config)
-            funcs.append(partial(jit_kernel, *input_tensors))
-            configs.append(config)
-            kernels.append(jit_kernel)
-
-        try:
-            from ..profiler.bench import do_bench_npu
-
-            latencies = do_bench_npu(funcs)
-        except Exception:
-            logger.warning("NPU benchmarking failed. See autotuner.log.")
-            logger.debug(traceback.format_exc())
-            latencies = [float("inf")] * len(funcs)
-
-        def _ensure_list(x):
-            return x if isinstance(x, (list, tuple)) else [x]
-
-        best_latency, best_config, best_kernel = 1e8, None, None
-        for latency, config, kernel in zip(
-            _ensure_list(latencies),
-            _ensure_list(configs),
-            _ensure_list(kernels),
-            strict=True,
-        ):
-            tqdm.write(f"Tuned latency {latency:.4f} ms  config={config}")
-            if latency < best_latency:
-                best_latency, best_config, best_kernel = latency, config, kernel
-
-        return best_latency, best_config, best_kernel
-
     def run(self, warmup: int = 5, rep: int = 30, timeout: int = 30):
         """Run the auto-tuning process.
 
@@ -754,6 +715,29 @@ class AutoTuner:
                     input_tensors = profiler._get_inputs(with_output=False)
 
                 ins = self._get_inputs() if input_tensors is None else input_tensors
+
+                if not profile_args.skip_check and profile_args.ref_prog is not None:
+                    try:
+                        self._check_correctness(profiler, profile_args.ref_prog, ins)
+                    except Exception:
+                        logger.warning(
+                            f"Correctness check failed for config {config}, skipping. "
+                            "See autotuner.log for details."
+                        )
+                        logger.debug(traceback.format_exc())
+                        continue  # drop this config; don't add it to funcs/configs/kernels
+ 
+                if self.ref_latency_cache is None and profile_args.ref_prog is not None:
+                    ref_input_tensors = self._get_input_tensors(
+                        profiler, profile_args.supply_prog
+                    )
+                    self.ref_latency_cache = profiler.do_bench(
+                        profile_args.ref_prog,
+                        n_warmup=warmup,
+                        n_repeat=rep,
+                        input_tensors=ref_input_tensors,
+                    )
+                    
                 bench_func = partial(jit_kernel, *ins)
                 funcs.append(bench_func)
                 configs.append(config)
