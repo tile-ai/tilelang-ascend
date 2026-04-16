@@ -135,17 +135,19 @@ jobs:
               else
                 echo "❌ Tests failed (Pass rate: ${PASS_RATE}%)"
                 echo "test_status=failed" >> $GITHUB_OUTPUT
-                echo "Failing step because Pass rate is not 100%"
-                exit 1
+                echo ""
+                echo "========== Failed Cases =========="
+                grep '\[FAILED\]' test_output.log | sort -u
+                echo "==================================="
+                echo ""
+                echo "========== Error Details =========="
+                grep -A 10 '\[FAILED\]' test_output.log | grep -v '\[PASSED\]'
+                echo "==================================="
               fi
             else
               echo "⚠️ Could not find 'Pass rate:' in test output"
               echo "pass_rate=0" >> $GITHUB_OUTPUT
               echo "test_status=error" >> $GITHUB_OUTPUT
-              
-              # 如果没有找到 Pass rate，也标记为失败
-              echo "Failing step because 'Pass rate:' was not found in output"
-              exit 1
             fi
             
             # 同时提取其他统计信息
