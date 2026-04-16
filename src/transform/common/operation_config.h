@@ -227,7 +227,9 @@ GetOperationConfig() {
          {6, "read"},
          {7, "read"}},
         "PIPE_V"}},
-      {"tl.ascend_topk", {{{1, "write"}, {2, "read"}, {3, "read"}}, "PIPE_V"}},
+      {"tl.ascend_topk",
+       {{{1, "write"}, {2, "read"}, {3, "read"}, {4, "read"}, {5, "read"}},
+        "PIPE_V"}},
       {"tl.ascend_gather_mask", {{{1, "write"}, {2, "read"}}, "PIPE_V"}},
       {"tl.ascend_init_sort_buf", {{{1, "write"}}, "PIPE_V"}},
 
@@ -337,16 +339,11 @@ const std::unordered_map<const tvm::OpNode *, int64_t> ascendc_tmp_arg_ops = {
 // require tmp. For other APIs, tmp is retained to keep the codegen logic for
 // obtaining API arguments unchanged.
 const std::unordered_map<const tvm::OpNode *, int64_t> pto_tmp_arg_ops = {
-    {tl::ascend_clamp().get(), 3},       
-    {tl::ascend_clamp_max().get(), 3},
-    {tl::ascend_clamp_min().get(), 3},   
-    {tl::ascend_reduce().get(), 3},
-    {tl::ascend_sigmoid().get(), 2},     
-    {tl::ascend_pow().get(), 3},
-    {tl::ascend_bitwise_xor().get(), 3}, 
-    {tl::ascend_round().get(), 2},
-    {tl::ascend_broadcast().get(), 3},   
-    {tl::ascend_merge_sort().get(), 3},
+    {tl::ascend_clamp().get(), 3},       {tl::ascend_clamp_max().get(), 3},
+    {tl::ascend_clamp_min().get(), 3},   {tl::ascend_reduce().get(), 3},
+    {tl::ascend_sigmoid().get(), 2},     {tl::ascend_pow().get(), 3},
+    {tl::ascend_bitwise_xor().get(), 3}, {tl::ascend_round().get(), 2},
+    {tl::ascend_broadcast().get(), 3},   {tl::ascend_merge_sort().get(), 3},
 };
 
 } // namespace tl

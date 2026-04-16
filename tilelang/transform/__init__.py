@@ -414,6 +414,18 @@ def AscendLowerParallelToVector():
     return _ffi_api.AscendLowerParallelToVector()  # type: ignore
 
 
+def AscendVidReduction():
+    """Reduction Vid for Ascend.
+
+    Returns
+    -------
+    fpass : tvm.transform.Pass
+        The result pass
+    ----
+    """
+    return _ffi_api.AscendVidReduction()  # type: ignore
+
+
 def AscendInferBufferScope():
     """Infer Buffer Scope for Ascend.
 
@@ -490,9 +502,10 @@ def AscendLowerOpaqueBlock():
     """
     return _ffi_api.AscendLowerOpaqueBlock()  # type: ignore
 
+
 def InjectTmpBuffer(target: Target):
     """InjectTmpBuffer for Ascend
-    
+
     Returns
     -------
     fpass : tvm.transform.Pass

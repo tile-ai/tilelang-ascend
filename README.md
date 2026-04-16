@@ -596,6 +596,30 @@ pass_configs = {
 Here is an example:
 - [FlashAttention](./examples/flash_attention/flash_attn_bhsd_cc_sync.py): Implementations of FlashAttention without inserting synchronization flags manually.
 
+### Vid reduction & Auto CV Ratio
+
+The parameter `threads` needs to be set. (Only 1 or 2 are allowed).When setting thread parameters, the return value will only have cid and no vid：
+```python
+with T.Kernel(m_num * n_num, threads=2, is_npu=True) as (cid):
+```
+Therefore, ub application and transfer will no longer need to consider core allocation, and the usage will change as follows:
+```python
+# UB allocation original form
+c_ub = T.alloc_shared((block_M // VEC_NUM, block_N), dtype) 
+# New form after UB reduce elimination
+c_ub = T.alloc_shared((block_M, block_N), dtype)
+# UB moved to its original form
+T.copy(c_ub, C[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
+# New form after UB transport elimination
+T.copy(c_ub, C[bx * block_M, by * block_N])
+
+```
+
+Here is an example:
+- [MatmulAddDeveloper](./examples/developer_mode/matmul_add_developer.py)
+
+For a more detailed feature introduction, please see:
+- [vid_reduction_and_auto_cv_ratio.md](./docs/tutorials/vid_reduction_and_auto_cv_ratio.md)
 
 ## Contributing
 

@@ -1,0 +1,26 @@
+{
+  "skill_name": "tilelang-pass-workflow-analyzer",
+  "evals": [
+    {
+      "id": 1,
+      "eval_name": "understand-pipeline-architecture",
+      "prompt": "整个 Pass pipeline 是怎么组织的？请介绍一下编译流程的架构。",
+      "expected_output": "应该展示两阶段架构图（LowerAndLegalize 和 OptimizeForTarget），解释 Phase 1 和 Phase 2 的设计原理，列出关键 Pass，说明 Pass 的执行顺序。",
+      "files": []
+    },
+    {
+      "id": 2,
+      "eval_name": "understand-pass-dependency",
+      "prompt": "AscendMemoryPlanning 和 AscendSyncInsert 有什么关系？它们之间传递了什么数据？",
+      "expected_output": "应该展示依赖关系：AscendMemoryPlanning → address_map, size_map → AscendSyncInsert，说明 AscendMemoryPlanning 产生地址和大小信息，AscendSyncInsert 使用这些信息插入同步，强调这是 Phase 2 的关键依赖链。",
+      "files": []
+    },
+    {
+      "id": 3,
+      "eval_name": "add-new-pass-buffer-optimization",
+      "prompt": "我想加一个 Pass 来优化 buffer 的大小，减少内存占用。应该加在哪里？",
+      "expected_output": "应该分析 Pass 功能（内存优化），确定阶段归属（Phase 2），分析依赖关系（需要 buffer_shapess，输出给 AscendMemoryPlanning），推荐位置（Phase 2，在 AscendStorageRewrite 后，AscendMemoryPlanning 前），给出理由和实现建议。",
+      "files": []
+    }
+  ]
+}
