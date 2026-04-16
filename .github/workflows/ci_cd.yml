@@ -34,7 +34,7 @@ on:
 jobs:
   test:
     name: Benchmark Tests (Ascend NPU)
-    runs-on: [self-hosted, linux, x64, 910b]
+    runs-on: [Linux]
     
     container:
       image: tilelang-env1:latest  # 镜像名
@@ -162,7 +162,7 @@ jobs:
   # Job 2: 汇总结果并输出摘要
   notify:
     name: Notify Results
-    runs-on: [self-hosted, linux, x64, 910b]
+    runs-on: [Linux]
     needs: [test] 
     if: always()                         # 无论成功失败都执行
     steps:
