@@ -695,7 +695,7 @@ class AutoTuner:
                         )
                         logger.debug(traceback.format_exc())
                         continue  # drop this config; don't add it to funcs/configs/kernels
- 
+
                 if self.ref_latency_cache is None and profile_args.ref_prog is not None:
                     ref_input_tensors = self._get_input_tensors(
                         profiler, profile_args.supply_prog
