@@ -362,8 +362,29 @@ reduce_sum_half(LocalTensor<T> const &dstTensor,
 template <typename T, uint32_t M, uint32_t N, int32_t dim>
 CATLASS_DEVICE void reduce_sum(LocalTensor<T> const &dstTensor,
                                LocalTensor<T> const &srcTensor,
-                               LocalTensor<uint8_t> const &sharedTmpBuffer) {
+                               LocalTensor<uint8_t> const &sharedTmpBuffer,
+                               bool clear = true) {
   uint32_t shape[] = {M, N};
+  if (clear) {
+    if constexpr (dim == -1) {
+      AscendC::ReduceSum<T, AscendC::Pattern::Reduce::AR>(
+          dstTensor, srcTensor, sharedTmpBuffer, shape, true);
+    } else {
+      AscendC::ReduceSum<T, AscendC::Pattern::Reduce::RA>(
+          dstTensor, srcTensor, sharedTmpBuffer, shape, true);
+    }
+    return;
+  }
+
+  constexpr uint32_t kReduceResultLen = dim == -1 ? M : N;
+  // ReduceSum appears to use scratch in a way that can interfere with a local
+  // UB backup on real_shape/slice paths, so keep the old dst in scalar locals
+  // before forcing clear=true and merging manually.
+  T dstBackup[kReduceResultLen];
+  for (uint32_t i = 0; i < kReduceResultLen; ++i) {
+    dstBackup[i] = dstTensor.GetValue(i);
+  }
+
   if constexpr (dim == -1) {
     AscendC::ReduceSum<T, AscendC::Pattern::Reduce::AR>(
         dstTensor, srcTensor, sharedTmpBuffer, shape, true);
@@ -371,13 +392,52 @@ CATLASS_DEVICE void reduce_sum(LocalTensor<T> const &dstTensor,
     AscendC::ReduceSum<T, AscendC::Pattern::Reduce::RA>(
         dstTensor, srcTensor, sharedTmpBuffer, shape, true);
   }
+
+  for (uint32_t i = 0; i < kReduceResultLen; ++i) {
+    T reducedValue = dstTensor.GetValue(i);
+    dstTensor.SetValue(i, static_cast<T>(reducedValue + dstBackup[i]));
+  }
+}
+
+template <typename T>
+CATLASS_DEVICE T reduce_scalar_max_safe(T lhsValue, T rhsValue) {
+  // Bisheng/AICore does not allow scalar half/bfloat16 comparisons inside
+  // device code, so the clear=false fallback compares through float.
+  if constexpr (std::is_same_v<T, half> || std::is_same_v<T, bfloat16_t>) {
+    return static_cast<float>(lhsValue) > static_cast<float>(rhsValue)
+               ? lhsValue
+               : rhsValue;
+  } else {
+    return lhsValue > rhsValue ? lhsValue : rhsValue;
+  }
 }
 
 template <typename T, uint32_t M, uint32_t N, int32_t dim>
 CATLASS_DEVICE void reduce_max(LocalTensor<T> const &dstTensor,
                                LocalTensor<T> const &srcTensor,
-                               LocalTensor<uint8_t> const &sharedTmpBuffer) {
+                               LocalTensor<uint8_t> const &sharedTmpBuffer,
+                               bool clear = true) {
   uint32_t shape[] = {M, N};
+  if (clear) {
+    if constexpr (dim == -1) {
+      AscendC::ReduceMax<T, AscendC::Pattern::Reduce::AR>(
+          dstTensor, srcTensor, sharedTmpBuffer, shape, true);
+    } else {
+      AscendC::ReduceMax<T, AscendC::Pattern::Reduce::RA>(
+          dstTensor, srcTensor, sharedTmpBuffer, shape, true);
+    }
+    return;
+  }
+
+  // AscendC::ReduceMax(..., clear=false) does not reliably preserve the
+  // upstream "merge old dst with reduced value" contract on real_shape/slice
+  // paths, so we make the merge explicit here.
+  constexpr uint32_t kReduceResultLen = dim == -1 ? M : N;
+  T dstBackup[kReduceResultLen];
+  for (uint32_t i = 0; i < kReduceResultLen; ++i) {
+    dstBackup[i] = dstTensor.GetValue(i);
+  }
+
   if constexpr (dim == -1) {
     AscendC::ReduceMax<T, AscendC::Pattern::Reduce::AR>(
         dstTensor, srcTensor, sharedTmpBuffer, shape, true);
@@ -385,22 +445,69 @@ CATLASS_DEVICE void reduce_max(LocalTensor<T> const &dstTensor,
     AscendC::ReduceMax<T, AscendC::Pattern::Reduce::RA>(
         dstTensor, srcTensor, sharedTmpBuffer, shape, true);
   }
+
+  // Keep the merge explicit instead of relying on an in-place vector max,
+  // because aliasing dst with one input can produce unstable results here.
+  for (uint32_t i = 0; i < kReduceResultLen; ++i) {
+    T reducedValue = dstTensor.GetValue(i);
+    T backupValue = dstBackup[i];
+    dstTensor.SetValue(i, reduce_scalar_max_safe(reducedValue, backupValue));
+  }
+}
+
+template <typename T>
+CATLASS_DEVICE T reduce_scalar_min_safe(T lhsValue, T rhsValue) {
+  // Bisheng/AICore does not allow scalar half/bfloat16 comparisons inside
+  // device code, so the clear=false fallback compares through float.
+  if constexpr (std::is_same_v<T, half> || std::is_same_v<T, bfloat16_t>) {
+    return static_cast<float>(lhsValue) < static_cast<float>(rhsValue)
+               ? lhsValue
+               : rhsValue;
+  } else {
+    return lhsValue < rhsValue ? lhsValue : rhsValue;
+  }
 }
 
 template <typename T, uint32_t M, uint32_t N, int32_t dim>
 CATLASS_DEVICE void reduce_min(LocalTensor<T> const &dstTensor,
                                LocalTensor<T> const &srcTensor,
-                               LocalTensor<uint8_t> const &sharedTmpBuffer) {
+                               LocalTensor<uint8_t> const &sharedTmpBuffer,
+                               bool clear = true) {
   uint32_t shape[] = {M, N};
-  // if (count > 0) {
-  //   shape[1] = count / M;
-  // }
+  if (clear) {
+    if constexpr (dim == -1) {
+      AscendC::ReduceMin<T, AscendC::Pattern::Reduce::AR>(
+          dstTensor, srcTensor, sharedTmpBuffer, shape, true);
+    } else {
+      AscendC::ReduceMin<T, AscendC::Pattern::Reduce::RA>(
+          dstTensor, srcTensor, sharedTmpBuffer, shape, true);
+    }
+    return;
+  }
+
+  // AscendC::ReduceMin(..., clear=false) does not reliably preserve the
+  // upstream "merge old dst with reduced value" contract on real_shape/slice
+  // paths, so we make the merge explicit here.
+  constexpr uint32_t kReduceResultLen = dim == -1 ? M : N;
+  T dstBackup[kReduceResultLen];
+  for (uint32_t i = 0; i < kReduceResultLen; ++i) {
+    dstBackup[i] = dstTensor.GetValue(i);
+  }
+
   if constexpr (dim == -1) {
     AscendC::ReduceMin<T, AscendC::Pattern::Reduce::AR>(
         dstTensor, srcTensor, sharedTmpBuffer, shape, true);
   } else {
     AscendC::ReduceMin<T, AscendC::Pattern::Reduce::RA>(
         dstTensor, srcTensor, sharedTmpBuffer, shape, true);
+  }
+
+  // Keep the merge explicit instead of relying on an in-place vector min,
+  // because aliasing dst with one input can produce unstable results here.
+  for (uint32_t i = 0; i < kReduceResultLen; ++i) {
+    T reducedValue = dstTensor.GetValue(i);
+    T backupValue = dstBackup[i];
+    dstTensor.SetValue(i, reduce_scalar_min_safe(reducedValue, backupValue));
   }
 }
 

@@ -61,13 +61,23 @@ Note that the current implementation has some shape and dtype
 constraints, for example, the length of reduction axis must be a
 multiple of 32 for fp16 multiplicand case, we will update this later.
 
-T.reduce_max T.reduce_sum
--------------------------
+T.reduce_sum / T.reduce_max / T.reduce_min
+-----------------------------------------
 
-args: src, dst, dim
+args: src, dst, dim=-1, clear=True, real_shape=None
 
-Performs a reduce operation from src to dst on dimension dim. Currently
-we only support src and dst to be a fragment.
+Performs an Ascend fast-path reduce operation from src to dst on
+dimension dim.
+
+- `clear=True` initializes the destination before writing the reduce
+  result.
+- `clear=False` merges the reduce result into the existing destination
+  (`sum` adds, `max` takes elementwise maximum, `min` takes elementwise
+  minimum).
+- `real_shape` is optional and describes the logical valid region of a
+  sliced 2D UB tile.
+- The frontend rejects invalid axes, invalid `real_shape`, and invalid
+  output shapes before lowering to the backend.
 
 T.Parallel
 ----------

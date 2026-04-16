@@ -8,6 +8,9 @@ import torch.nn as nn
 
 import tilelang
 import tilelang.language as T
+import tilelang.language.reduce_ascend as reduce_ascend_lang
+
+tir = tilelang.tvm.tir
 
 """
 This is an element-wise pytest automation test suite.
@@ -48,6 +51,15 @@ def assert_close_npu(actual, expected, dtype, rtol=1e-2, atol=1e-2, **kwargs):
         torch.testing.assert_close(actual.to(torch.int32), expected.to(torch.int32), rtol=rtol, atol=atol, **kwargs)
     else:
         torch.testing.assert_close(actual, expected, rtol=rtol, atol=atol, **kwargs)
+
+
+def _get_reduce_fn(op: str):
+    reduce_fns = {
+        "sum": T.reduce_sum,
+        "max": T.reduce_max,
+        "min": T.reduce_min,
+    }
+    return reduce_fns[op]
 
 
 def vec_abs(M, N, block_M, block_N, dtype="float"):
@@ -4450,7 +4462,6 @@ def reduce_sum(M, N, block_M, block_N, dim, dtype="float"):
 def run_test_reduce_sum(M, N, block_M, block_N, dim, dtype, target):
     func = reduce_sum(M, N, block_M, block_N, dim, dtype)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
-    print(func.get_kernel_source())
 
     a = torch.randn(M, N, dtype=torch.float32 if dtype == "float" else torch.float16).npu()
     b = torch.zeros(M, dtype=torch.float32).npu()
@@ -4462,9 +4473,6 @@ def run_test_reduce_sum(M, N, block_M, block_N, dim, dtype, target):
         ref_b = torch.sum(a, dim=1)
     else:
         ref_b = torch.sum(a, dim=0)
-    print(a)
-    print(b)
-    print(ref_b)
     torch.testing.assert_close(b, ref_b, rtol=1e-2, atol=1e-2)
 
 
@@ -4472,8 +4480,6 @@ def run_test_reduce_sum(M, N, block_M, block_N, dim, dtype, target):
 @pytest.mark.parametrize("dtype", ["float", "float16"])
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 def test_reduce_sum(dim, dtype, target):
-    if dtype == "float16":
-        pytest.xfail(reason="float16 reduction sum may overflow")
     M, N = 1024, 64
     run_test_reduce_sum(M, N, 64, 64, dim, dtype, target)
 
@@ -4506,7 +4512,6 @@ def reduce_max(M, N, block_M, block_N, dim, dtype="float"):
 def run_test_reduce_max(M, N, block_M, block_N, dim, dtype, target):
     func = reduce_max(M, N, block_M, block_N, dim, dtype)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
-    print(func.get_kernel_source())
 
     a = torch.randn(M, N, dtype=torch.float32 if dtype == "float" else torch.float16).npu()
 
@@ -4518,8 +4523,6 @@ def run_test_reduce_max(M, N, block_M, block_N, dim, dtype, target):
         ref_b = torch.max(a, dim=1)[0]
     else:
         ref_b = torch.max(a, dim=0)[0]
-    print(b)
-    print(ref_b)
     torch.testing.assert_close(b, ref_b, rtol=1e-2, atol=1e-2)
 
 
@@ -4559,7 +4562,6 @@ def reduce_min(M, N, block_M, block_N, dim, dtype="float"):
 def run_test_reduce_min(M, N, block_M, block_N, dim, dtype, target):
     func = reduce_min(M, N, block_M, block_N, dim, dtype)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
-    print(func.get_kernel_source())
 
     a = torch.randn(M, N, dtype=torch.float32 if dtype == "float" else torch.float16).npu()
 
@@ -4571,8 +4573,6 @@ def run_test_reduce_min(M, N, block_M, block_N, dim, dtype, target):
         ref_b = torch.min(a, dim=1)[0]
     else:
         ref_b = torch.min(a, dim=0)[0]
-    print(b)
-    print(ref_b)
     torch.testing.assert_close(b, ref_b, rtol=1e-2, atol=1e-2)
 
 
@@ -4582,6 +4582,168 @@ def run_test_reduce_min(M, N, block_M, block_N, dim, dtype, target):
 def test_reduce_min(dim, dtype, target):
     M, N = 1024, 64
     run_test_reduce_min(M, N, 64, 64, dim, dtype, target)
+
+
+def reduce_runtime_semantics_kernel(
+    M, N, op, dim, clear=True, init_value=0.0, dtype="float"
+):
+    reduce_fn = _get_reduce_fn(op)
+    output_size = M if dim == -1 else N
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((M, N), dtype),  # type: ignore
+        B: T.Tensor((output_size,), dtype),  # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (_, vid):
+            a_ub = T.alloc_ub((M, N), dtype)
+            b_ub = T.alloc_ub((output_size,), dtype)
+
+            if vid == 0:
+                T.copy(A, a_ub)
+                if not clear:
+                    T.tile.fill(b_ub, init_value)
+                reduce_fn(a_ub, b_ub, dim=dim, clear=clear)
+                T.copy(b_ub, B)
+
+    return main
+
+
+def reduce_runtime_reference(a, op, dim, clear=True, init_value=0.0):
+    reduce_dim = 1 if dim == -1 else 0
+    if op == "sum":
+        reduced = torch.sum(a, dim=reduce_dim)
+    elif op == "max":
+        reduced = torch.max(a, dim=reduce_dim).values
+    else:
+        reduced = torch.min(a, dim=reduce_dim).values
+
+    if clear:
+        return reduced
+
+    init = torch.full_like(reduced, init_value)
+    if op == "sum":
+        return reduced + init
+    if op == "max":
+        return torch.maximum(reduced, init)
+    return torch.minimum(reduced, init)
+
+
+def run_test_reduce_runtime_semantics(op, dim, target, clear=True, init_value=0.0):
+    M, N = 64, 64
+    func = reduce_runtime_semantics_kernel(
+        M, N, op, dim, clear=clear, init_value=init_value, dtype="float"
+    )
+    func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
+
+    a = torch.randn(M, N, dtype=torch.float32).npu()
+    torch.npu.synchronize()
+    b = func(a)
+
+    ref_b = reduce_runtime_reference(a, op, dim, clear=clear, init_value=init_value)
+    torch.testing.assert_close(b, ref_b, rtol=1e-2, atol=1e-2)
+
+
+@pytest.mark.parametrize("op", ["sum", "max", "min"])
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+def test_reduce_dim0_runtime_smoke(op, target):
+    run_test_reduce_runtime_semantics(op, dim=0, target=target, clear=True)
+
+
+@pytest.mark.parametrize(
+    ("op", "init_value"),
+    [
+        pytest.param("sum", 1.25, id="sum"),
+        pytest.param("max", -0.5, id="max"),
+        pytest.param("min", 0.5, id="min"),
+    ],
+)
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+def test_reduce_clear_false_runtime_merge(op, init_value, target):
+    run_test_reduce_runtime_semantics(
+        op, dim=-1, target=target, clear=False, init_value=init_value
+    )
+
+
+@pytest.mark.parametrize("op", ["sum", "max", "min"])
+def test_reduce_api_compat_positional_and_keyword(monkeypatch, op):
+    captured = []
+
+    def fake_reduce_with_clear(buffer, out, reduce_type, dim, clear, real_shape):
+        captured.append((reduce_type, dim, clear, real_shape))
+        return "ok"
+
+    monkeypatch.setattr(reduce_ascend_lang, "_reduce_with_clear", fake_reduce_with_clear)
+
+    reduce_fn = _get_reduce_fn(op)
+    input_buffer = tir.decl_buffer((4, 8), "float32")
+    output_buffer = tir.decl_buffer((4,), "float32")
+
+    assert reduce_fn(input_buffer, output_buffer, dim=-1) == "ok"
+    assert reduce_fn(input_buffer, output_buffer, dim=-1, clear=False) == "ok"
+    assert reduce_fn(input_buffer, output_buffer, -1, False) == "ok"
+    assert reduce_fn(input_buffer, output_buffer, dim=0, real_shape=[4, 8]) == "ok"
+    assert reduce_fn(input_buffer, output_buffer, 0, [4, 8]) == "ok"
+    assert reduce_fn(input_buffer, output_buffer, 0, [4, 8], False) == "ok"
+    assert reduce_fn(input_buffer, output_buffer, 0, False, [4, 8]) == "ok"
+
+    expected_reduce_type = f"reduce_{op}"
+    assert captured == [
+        (expected_reduce_type, -1, True, None),
+        (expected_reduce_type, -1, False, None),
+        (expected_reduce_type, -1, False, None),
+        (expected_reduce_type, 0, True, [4, 8]),
+        (expected_reduce_type, 0, True, [4, 8]),
+        (expected_reduce_type, 0, False, [4, 8]),
+        (expected_reduce_type, 0, False, [4, 8]),
+    ]
+
+
+@pytest.mark.parametrize("op", ["sum", "max", "min"])
+@pytest.mark.parametrize(("dim", "expected_dim"), [(1, -1), (-2, 0)])
+def test_reduce_axis_legalization(monkeypatch, op, dim, expected_dim):
+    captured = []
+
+    def fake_reduce_with_clear(buffer, out, reduce_type, dim, clear, real_shape):
+        captured.append((reduce_type, dim, clear, real_shape))
+        return "ok"
+
+    monkeypatch.setattr(reduce_ascend_lang, "_reduce_with_clear", fake_reduce_with_clear)
+
+    reduce_fn = _get_reduce_fn(op)
+    input_buffer = tir.decl_buffer((4, 8), "float32")
+    output_buffer = tir.decl_buffer((4,), "float32")
+
+    assert reduce_fn(input_buffer, output_buffer, dim=dim) == "ok"
+    assert captured == [(f"reduce_{op}", expected_dim, True, None)]
+
+
+@pytest.mark.parametrize("op", ["sum", "max", "min"])
+@pytest.mark.parametrize("axis", [2, -3], ids=lambda axis: f"axis{axis}")
+def test_reduce_invalid_axis_raises_value_error(op, axis):
+    reduce_fn = _get_reduce_fn(op)
+    input_buffer = tir.decl_buffer((4, 8), "float32")
+    output_buffer = tir.decl_buffer((8,), "float32")
+    with pytest.raises(ValueError):
+        reduce_fn(input_buffer, output_buffer, dim=axis)
+
+
+@pytest.mark.parametrize(
+    ("input_shape", "real_shape", "dim", "out_shape"),
+    [
+        pytest.param((4, 8), (4, 4), -1, (8,), id="row-slice-flat-physical-layout"),
+        pytest.param((4, 8), (4, 4), -1, (1, 8), id="row-slice-keepdim-physical-layout"),
+        pytest.param((5, 8), (3, 4), 0, (1, 8), id="col-slice-keepdim-physical-layout"),
+    ],
+)
+def test_reduce_slice_buffer_physical_output_shape_is_accepted(
+    input_shape, real_shape, dim, out_shape
+):
+    input_buffer = tir.decl_buffer(input_shape, "float32")
+    output_buffer = tir.decl_buffer(out_shape, "float32")
+    result = T.reduce_sum(input_buffer, output_buffer, dim=dim, real_shape=list(real_shape))
+    assert isinstance(result, tir.Call)
+    assert result.op.same_as(tir.op.Op.get("tl.ascend_reduce"))
 
 
 if __name__ == "__main__":

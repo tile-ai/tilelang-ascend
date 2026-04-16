@@ -592,13 +592,31 @@ fragment层级的存储对应偏上的寄存器级别的存储单元，一般用
 
 ##### 4.1.3.2 Reduce类
 
-- `T.reduce_sum(buffer: Buffer, out: Buffer, dim: int)`
+当前 Ascend reduce 仍然属于 fast-path 原语，主要服务于 UB tile / slice buffer 场景。本次接口语义与实现边界如下：
+
+- 当前支持 1D buffer、2D buffer，以及 3D trailing-tile buffer；当前主要验收范围是 2D UB/slice reduce。
+- `dim` 支持范围：
+  - 1D buffer：`0` / `-1`
+  - 2D buffer：`0` / `1` / `-1` / `-2`
+  - 3D buffer：仅支持 trailing-tile 轴 `0` / `1` / `-1` / `-2`
+- `clear=True` 表示先初始化输出再写入 reduce 结果；`clear=False` 表示在已有 `out` 上做 merge：
+  - `reduce_sum`：将 reduce 结果与已有 `out` 相加
+  - `reduce_max`：将 reduce 结果与已有 `out` 逐元素取最大值
+  - `reduce_min`：将 reduce 结果与已有 `out` 逐元素取最小值
+- `real_shape` 用于描述 2D slice buffer 的逻辑有效区域；未设置时默认使用物理 buffer 形状。
+- `out` 既可以使用压缩后的 reduce 结果 shape，也可以使用 keepdim 形式的 shape。
+- 非法 `dim`、非法 `real_shape`、非法 `out` shape 会在前端直接报错，而不是静默进入后端。
+- `clear` 和 `real_shape` 同时支持关键字传参和兼容的 positional 传参形式，建议优先使用关键字形式以获得更清晰的可读性。
+
+- `T.reduce_sum(buffer: Buffer, out: Buffer, dim: int = -1, clear: bool = True, real_shape: list[int] | None = None)`
 
   **参数**：
 
   - buffer：输入buffer
   - out：目的输出buffer
-  - dim：reduce轴（-1：last dim）
+  - dim：reduce轴
+  - clear：是否在计算前清空输出buffer
+  - real_shape：2D slice buffer 的逻辑有效范围
 
   **功能说明**：
 
@@ -614,22 +632,27 @@ fragment层级的存储对应偏上的寄存器级别的存储单元，一般用
 
   ![image-tilelang_ascend_reducesum_2](./images/image-tilelang_ascend_reducesum_2.png)
 
-
   **举例**：
 
   ```
   T.reduce_sum(acc_s_ub, sumexp_i_ub, dim=-1)
   ```
 
-  
+  带 `clear=False` 的示例：
 
-- `T.reduce_max(buffer: Buffer, out: Buffer, dim: int)`
+  ```
+  T.reduce_sum(acc_s_ub, sumexp_i_ub, dim=-1, clear=False)
+  ```
+
+- `T.reduce_max(buffer: Buffer, out: Buffer, dim: int = -1, clear: bool = True, real_shape: list[int] | None = None)`
 
   **参数**：
 
-  - buffer：输入buffer（2D）
+  - buffer：输入buffer
   - out：目的输出buffer
-  - dim：reduce轴（-1：last dim）
+  - dim：reduce轴
+  - clear：是否在计算前清空输出buffer
+  - real_shape：2D slice buffer 的逻辑有效范围
 
   **功能说明**：
 
@@ -645,20 +668,27 @@ fragment层级的存储对应偏上的寄存器级别的存储单元，一般用
 
   ![image-tilelang_ascend_reducemax_2](./images/image-tilelang_ascend_reducemax_2.png)
 
-
   **举例**：
 
   ```
   T.reduce_max(acc_s_ub, m_i, dim=-1)
   ```
 
-- `T.reduce_min(buffer: Buffer, out: Buffer, dim: int)`  
+  带 `real_shape` 的示例：
+
+  ```
+  T.reduce_max(in_shared, out_shared, dim=-1, real_shape=[4, 4])
+  ```
+
+- `T.reduce_min(buffer: Buffer, out: Buffer, dim: int = -1, clear: bool = True, real_shape: list[int] | None = None)`
 
   **参数**：
 
   - buffer：输入buffer
   - out：目的输出buffer
-  - dim：reduce轴（-1：last dim）
+  - dim：reduce轴
+  - clear：是否在计算前清空输出buffer
+  - real_shape：2D slice buffer 的逻辑有效范围
 
   **功能说明**：
 
@@ -679,7 +709,12 @@ fragment层级的存储对应偏上的寄存器级别的存储单元，一般用
   ```
   T.reduce_min(a_ub, b_ub, dim=-1)
   ```
-  
+
+  Slice buffer 与基础 reduce 示例可参考：
+
+  - `examples/reduce/example_row_reduce_max_slice_buffer.py`
+  - `examples/reduce/example_col_reduce_max_slice_buffer.py`
+  - `examples/reduce/example_reduce_min.py`
 
 ##### 4.1.3.3 Element-wise math类
 
