@@ -453,7 +453,13 @@ class AutoTuner:
         """Return input tensors from supply_prog or the profiler default."""
         params = profiler._get_params(with_output=with_output)
         if supply_prog is not None:
-            return supply_prog(params)
+            fn = supply_prog
+            params = profiler._get_params(with_output=False)
+            if "config" in inspect.signature(fn).parameters:
+                input_tensors = fn(params, config=config)
+            else:
+                input_tensors = fn(params)
+            return input_tensors
         return profiler._get_inputs(with_output=with_output)
 
     def _maybe_refresh_input_tensors(
@@ -462,7 +468,7 @@ class AutoTuner:
         """Populate or validate self.jit_input_tensors for caching mode."""
         if self.jit_input_tensors is None:
             self.jit_input_tensors = self._get_input_tensors(
-                profiler, supply_prog, config
+                profiler, supply_prog, config=config
             )
             return
 
@@ -482,7 +488,7 @@ class AutoTuner:
                     "Set `cache_input_tensors=False` to avoid this warning."
                 )
                 self.jit_input_tensors = self._get_input_tensors(
-                    profiler, supply_prog, config
+                    profiler, supply_prog, config=config
                 )
                 break
 
@@ -523,7 +529,7 @@ class AutoTuner:
             self._maybe_refresh_input_tensors(profiler, pa.supply_prog, config)
         else:
             self.jit_input_tensors = self._get_input_tensors(
-                profiler, pa.supply_prog, config
+                profiler, pa.supply_prog, config=config
             )
 
         if not pa.skip_check and pa.ref_prog is not None:
@@ -534,7 +540,7 @@ class AutoTuner:
         )
 
         if self.ref_latency_cache is None and pa.ref_prog is not None:
-            self.ref_input_tensors = self._get_input_tensors(profiler, pa.supply_prog)
+            self.ref_input_tensors = self._get_input_tensors(profiler, pa.supply_prog, config=config)
             self.ref_latency_cache = profiler.do_bench(
                 pa.ref_prog,
                 n_warmup=warmup,
@@ -596,7 +602,7 @@ class AutoTuner:
         for jit_kernel, config in tqdm(compiled, desc="Bench configurations"):
             pa = self.profile_args
             profiler = jit_kernel.get_profiler(tensor_supply_type=pa.supply_type)
-            input_tensors = self._get_input_tensors(profiler, pa.supply_prog)
+            input_tensors = self._get_input_tensors(profiler, pa.supply_prog, config=config)
             funcs.append(partial(jit_kernel, *input_tensors))
             configs.append(config)
             kernels.append(jit_kernel)
