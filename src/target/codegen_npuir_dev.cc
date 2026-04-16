@@ -2078,16 +2078,30 @@ mlir::Value CodeGenTileLangNPUIRDEV::NeedGenInsertSlice(Buffer buffer_data,
     strides_val.push_back(builder.getI64IntegerAttr(1));
   }
 
-  auto srcTensorTy = src.getType().cast<mlir::TensorType>();
-  auto dstTensorTy =
-      GetVarValue(buffer_data).getType().cast<mlir::TensorType>();
-  auto elemTy = dstTensorTy.getElementType();
-  auto srcShape = srcTensorTy.getShape();
+  auto dst_value = GetVarValue(buffer_data);
 
-  auto emptyTensor = builder.create<mlir::tensor::EmptyOp>(
-      builder.getUnknownLoc(), srcShape, elemTy);
+  auto extractOp = builder.create<mlir::tensor::ExtractSliceOp>(
+      builder.getUnknownLoc(), dst_value, offsets, shape_val, strides_val);
 
-  return emptyTensor.getResult();
+  mlir::Value extractResult = extractOp.getResult();
+
+  // If buffer_data has higher rank than src, collapse the extracted slice
+  // to match src rank (e.g. drop leading size-1 dims from a region slice).
+  auto extractedTensorTy =
+      extractResult.getType().dyn_cast<mlir::RankedTensorType>();
+  auto srcTensorTy = src.getType().dyn_cast<mlir::RankedTensorType>();
+  if (extractedTensorTy && srcTensorTy &&
+      extractedTensorTy.getRank() > srcTensorTy.getRank()) {
+    llvm::SmallVector<mlir::OpFoldResult> dstShapeOFR;
+    for (int64_t dim : srcTensorTy.getShape()) {
+      dstShapeOFR.push_back(builder.getI64IntegerAttr(dim));
+    }
+    mlir::Value collapsed =
+        ReshapeTensorImpl(extractResult, srcTensorTy.getShape(), dstShapeOFR);
+    return collapsed;
+  }
+
+  return extractResult;
 }
 
 // Convert TVM Range to MLIR OpFoldResult arrays
@@ -2365,12 +2379,26 @@ void CodeGenTileLangNPUIRDEV::VAtomicAddCodegen(const CallNode *op) {
 
 void CodeGenTileLangNPUIRDEV::VgatherCodegen(const CallNode *op) {
   tvm::tl::NpuirGather npuirop(op->args, this->vmap);
-  Value src = GenSubviewFromRegion(npuirop.src, npuirop.src_range);
-  Value dst = GenSubviewFromRegion(npuirop.dst, npuirop.dst_range);
-  Value indices = GenSubviewFromRegion(npuirop.indices, npuirop.indices_range);
+  mlir::Value src = GenExtractSliceFromRegion(npuirop.src, npuirop.src_range);
+  mlir::Value dst = GetVarValue(npuirop.dst);
+  Value indices =
+      GenExtractSliceFromRegion(npuirop.indices, npuirop.indices_range);
 
-  builder.create<mlir::hivm::VGatherOp>(builder.getUnknownLoc(), TypeRange{},
-                                        src, indices, dst);
+  mlir::Value insertBase =
+      NeedGenInsertSlice(npuirop.dst, npuirop.dst_range, src);
+  bool needInsertSlice = (insertBase != GetVarValue(npuirop.dst));
+
+  mlir::Value gatherOutput;
+  auto gatherOp = builder.create<mlir::hivm::VGatherOp>(
+      builder.getUnknownLoc(), mlir::TypeRange{insertBase.getType()}, src,
+      indices, insertBase);
+  gatherOutput = gatherOp->getResult(0);
+
+  mlir::Value result =
+      needInsertSlice
+          ? ReshapeCastAndInsertSlice(gatherOutput, dst, npuirop.dst_range)
+          : gatherOutput;
+  SetVarValue(npuirop.dst, result);
 }
 
 void CodeGenTileLangNPUIRDEV::VtransposeCodegen(const CallNode *op) {
