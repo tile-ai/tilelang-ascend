@@ -374,8 +374,7 @@ BuildContiguousStrideExprs(llvm::ArrayRef<PrimExpr> shape) {
 
 template <typename OnStatic, typename OnDynamic>
 static void DispatchSimplifiedExpr(llvm::ArrayRef<PrimExpr> exprs,
-                                   OnStatic &&onStatic,
-                                   OnDynamic &&onDynamic) {
+                                   OnStatic &&onStatic, OnDynamic &&onDynamic) {
   arith::Analyzer analyzer;
   for (PrimExpr expr : exprs) {
     PrimExpr simplified = analyzer.Simplify(expr);
@@ -392,8 +391,7 @@ ExtractStaticInts(llvm::ArrayRef<PrimExpr> exprs) {
   llvm::SmallVector<int64_t> staticValues;
   staticValues.reserve(exprs.size());
   DispatchSimplifiedExpr(
-      exprs,
-      [&](int64_t value) { staticValues.push_back(value); },
+      exprs, [&](int64_t value) { staticValues.push_back(value); },
       [&](PrimExpr) { staticValues.push_back(mlir::ShapedType::kDynamic); });
   return staticValues;
 }
