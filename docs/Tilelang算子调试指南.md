@@ -19,6 +19,26 @@
 | **2.编译失败**| 算子编译失败，未生成预期的TVM IR和MLIR | 编译调试 |
 | **3.运行时失败** | 算子编译成功，但未生成.o文件，进程终止 | 运行时调试 |
 
+### 1.2 精度问题快速定位（precision debug）
+
+对于 `assert_close` 失败、结果不一致或需要观察误差分布的场景，推荐优先使用
+`testing/npuir/testcommon.py` 中的 `assert_close` 包装器，或直接使用
+`tilelang.utils.prec_assert_close`。
+
+开启方式有两种：
+
+- 在单个 pytest 用例上增加 `@pytest.mark.precision_debug`
+- 运行测试前设置环境变量 `TL_PREC_DEBUG=1`
+
+当比对失败时，工具会在 `.precision_debug/<test_name>_<timestamp>/` 下生成：
+
+- `report.txt`：误差统计、Top-10 差异点、误差分布
+- `diff_map.txt`：ASCII diff map，便于观察块状、条纹、边界等模式
+- `actual.pt` / `expected.pt`：失败时的张量快照
+
+建议优先在最小复现用例上使用该工具，先判断误差是全局扩散、局部边界异常，还是
+特定布局/广播模式下的周期性偏差，再回到 TVM IR 或 MLIR 阶段做进一步定位。
+
 # 2 Tilelang-AscendNPUIR 编译流程概览
 
 | 编译阶段  | 输入  | 输出  | 工具/组件  | 说明 |

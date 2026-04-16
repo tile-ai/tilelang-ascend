@@ -6,24 +6,27 @@ single source of truth.
 
 ## Design
 
-The test model is split into three layers:
+The test model is split into four layers:
 
 - Marker metadata: `op` and `mode`
+- Optional debug marker: `precision_debug`
 - Runtime controls: `--op`, `--mode`, `--npu-device`
 - Test matrix: `dtype`, shapes, and other case dimensions via `@pytest.mark.parametrize(...)`
 
 That split is intentional:
 
-- `op` and `mode` are the only custom markers. They define what a test is.
+- `op` and `mode` define what a test is.
+- `precision_debug` is an opt-in debug switch for mismatch reporting.
 - CLI options only choose which tests to run and which NPU device to use.
 - Data-oriented coverage stays inside the test matrix instead of growing more CLI flags.
 
 ## Marker Rules
 
-Only two custom markers are valid:
+Three custom markers are valid:
 
 - `@pytest.mark.op("<real-op>")`
 - `@pytest.mark.mode("<mode>")`
+- `@pytest.mark.precision_debug`
 
 Use file-level `pytestmark` when a whole file shares the same metadata:
 
@@ -55,6 +58,9 @@ def test_copy_release():
 The closest marker wins. In practice that means a test-level marker overrides a
 file-level marker of the same kind.
 
+Use `precision_debug` only on focused repro tests. It is not part of the test
+identity and should not be used as a broad file-level marker.
+
 ## Runtime Rules
 
 `--npu-device` is the only supported device selector in this pytest layer. The
@@ -68,6 +74,10 @@ warning so the remapping is visible in the test output.
 `mode` is marker-driven. Contributors should not manually wrap tests with
 `with ascend_mode(...)`. The pytest runtime reads the closest `mode` marker and
 applies `ascend_mode(mode)` automatically around the test body.
+
+`precision_debug` is also marker-driven. When present, pytest sets
+`TL_PREC_DEBUG=1` around that test so `testcommon.assert_close(...)` emits a
+report directory under `.precision_debug/` on mismatch.
 
 ## Test Matrix Rules
 
@@ -104,12 +114,13 @@ def test_copy_shape(M, N, block_M, block_N, in_dtype, out_dtype):
 
 ## Contributor Rules
 
-- Do not add custom markers beyond `op` and `mode`.
+- Do not add custom markers beyond `op`, `mode`, and `precision_debug`.
 - Do not add `@pytest.mark.dtype(...)`.
 - Do not add folder-category markers such as `@pytest.mark.memory`.
 - Do not call `torch.npu.set_device(...)` inside tests.
 - Prefer file-level `pytestmark` for shared `op` / `mode`.
 - Use test-level markers only when a file intentionally needs overrides.
+- Use `precision_debug` sparingly for mismatch-focused repros.
 - Keep compile and execution work inside test functions, not at module import time.
 
 The directory name remains the category signal for humans. For example,
@@ -136,6 +147,9 @@ pytest testing/npuir --mode=Developer
 
 # combined selection
 pytest testing/npuir --op=copy --mode=Developer --npu-device=0
+
+# focused precision report for one repro
+TL_PREC_DEBUG=1 pytest testing/npuir/memory_ops/test_copy_shape_dev.py
 ```
 
 `--op` and `--mode` accept comma-separated values.
@@ -146,6 +160,7 @@ pytest testing/npuir --op=copy --mode=Developer --npu-device=0
 - `--mode` matches the closest `@pytest.mark.mode(...)`
 - `--npu-device` sets the session device before tests execute
 - out-of-range `--npu-device` values are remapped with modulo and reported as warnings
+- `@pytest.mark.precision_debug` enables detailed mismatch reports for that test
 
 Tests without a matching marker are excluded when that selector is provided.
 
@@ -168,4 +183,27 @@ CASES = [
 @pytest.mark.parametrize("M, N, block_M, block_N", CASES)
 def test_copy_shape_dev(M, N, block_M, block_N, dtype):
     ...
+```
+
+## Precision Debug
+
+Use `from testcommon import assert_close` for NPUIR tests. On mismatch, the
+precision debug tool can emit:
+
+- `report.txt`
+- `diff_map.txt`
+- serialized `actual.pt` and `expected.pt`
+
+Enable it in one of two ways:
+
+```python
+import pytest
+
+@pytest.mark.precision_debug
+def test_copy_debug():
+    ...
+```
+
+```bash
+TL_PREC_DEBUG=1 pytest testing/npuir/test_xxx.py
 ```

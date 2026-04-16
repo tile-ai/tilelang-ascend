@@ -11,6 +11,7 @@ from tvm.testing.utils import *
 from tvm.testing.utils import _compose
 
 from tilelang.utils.tensor import torch_assert_close as torch_assert_close
+from tilelang.utils.precision_debug import prec_assert_close as prec_assert_close
 
 
 # pytest.main() wrapper to allow running single test file
@@ -45,7 +46,7 @@ def requires_cuda_compute_version(major_version, minor_version=0, mode="ge"):
     minor_version: int
 
         The minor version of the (major,minor) version tuple.
-    
+
     mode: str
 
         The mode of the comparison.
