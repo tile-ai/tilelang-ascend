@@ -467,9 +467,8 @@ class AutoTuner:
             return
 
         params = profiler._get_params(with_output=False)
-        assert len(params) == len(self.jit_input_tensors), (
-            "len(params) != len(self.jit_input_tensors)"
-        )
+        if len(params) != len(self.jit_input_tensors):
+                        raise ValueError("len(params) != len(self.jit_input_tensors)")
         for p, c in zip(params, self.jit_input_tensors, strict=True):
             if not isinstance(c, torch.Tensor):
                 continue
