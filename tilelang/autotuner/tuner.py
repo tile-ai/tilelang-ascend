@@ -560,39 +560,6 @@ class AutoTuner:
     ):
         return self._measure_latency(jit_kernel, warmup, rep, config)
 
-    def _bench_all_default(
-        self,
-        compiled: list[tuple[tilelang.JitKernel_NPU, dict]],
-        warmup: int,
-        rep: int,
-        timeout: int,
-    ) -> tuple[float, dict | None, tilelang.JitKernel_NPU | None]:
-        """Benchmark using the signal-timeout path. Returns (best_latency, best_config, best_kernel)."""
-        best_latency = 1e8
-        best_config = None
-        best_kernel = None
-
-        progress_bar = tqdm(compiled, desc="Bench configurations")
-        for i, (jit_kernel, config) in enumerate(progress_bar):
-            try:
-                latency, _ = run_with_timeout(
-                    self._measure_latency, timeout, jit_kernel, warmup, rep
-                )
-            except TimeoutException:
-                logger.warning(f"Timeout for config {config}. See autotuner.log.")
-                continue
-            except Exception:
-                logger.warning(f"Error for config {config}. See autotuner.log.")
-                logger.debug(traceback.format_exc())
-                continue
-
-            tqdm.write(f"Tuned latency {latency:.4f} ms  config={config}  idx={i}")
-            if latency < best_latency:
-                best_latency, best_config, best_kernel = latency, config, jit_kernel
-
-        progress_bar.set_postfix({"best_latency": best_latency})
-        return best_latency, best_config, best_kernel
-
     def run(self, warmup: int = 5, rep: int = 30, timeout: int = 30):
         """Run the auto-tuning process.
 
