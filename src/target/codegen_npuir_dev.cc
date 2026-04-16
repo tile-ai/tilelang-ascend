@@ -2610,15 +2610,15 @@ void CodeGenTileLangNPUIRDEV::FixpipeCodegen(const CallNode *op) {
                                         enable_nz2nd, pre_quant, pre_relu,
                                         channel_split);
 #elif defined(TILELANG_ASCEND_CANN_VERSION_9_0_0_BETA2)
-  mlir::hivm::FixpipeDMAModeAttr dma_mode =
-      mlir::hivm::FixpipeDMAModeAttr::get(
-          builder.getContext(),
-          npuirop.enable_nz2nd ? mlir::hivm::FixpipeDMAMode::NZ2ND
-                               : mlir::hivm::FixpipeDMAMode::NZ2NZ);
-  mlir::hivm::FixpipeDualDstModeAttr dual_dst_mode;
-  builder.create<mlir::hivm::FixpipeOp>(unknown_loc, result, src, dst,
-                                        dma_mode, dual_dst_mode, pre_quant,
-                                        pre_relu,
+  mlir::hivm::FixpipeDMAModeAttr dma_mode = mlir::hivm::FixpipeDMAModeAttr::get(
+      builder.getContext(), npuirop.enable_nz2nd
+                                ? mlir::hivm::FixpipeDMAMode::NZ2ND
+                                : mlir::hivm::FixpipeDMAMode::NZ2NZ);
+  mlir::hivm::FixpipeDualDstModeAttr dual_dst_mode =
+      mlir::hivm::FixpipeDualDstModeAttr::get(
+          builder.getContext(), mlir::hivm::FixpipeDualDstMode::NO_DUAL);
+  builder.create<mlir::hivm::FixpipeOp>(unknown_loc, result, src, dst, dma_mode,
+                                        dual_dst_mode, pre_quant, pre_relu,
                                         channel_split);
 #else
 #error "Unsupported TILELANG_ASCEND_CANN_VERSION for FixpipeOp codegen"
