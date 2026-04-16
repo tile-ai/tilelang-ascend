@@ -4,6 +4,7 @@
 Precision debug tool: drop-in replacement for torch.testing.assert_close.
 On mismatch, writes a text report, saves tensors, and prints an ASCII diff map.
 """
+
 from __future__ import annotations
 
 import inspect
@@ -43,6 +44,7 @@ DEFAULT_TOLERANCE = {
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _prod(shape: tuple[int, ...]) -> int:
     p = 1
@@ -87,6 +89,7 @@ def _equalize_for_compare(
 # Statistics
 # ---------------------------------------------------------------------------
 
+
 def _compute_stats(
     actual: torch.Tensor,
     expected: torch.Tensor,
@@ -129,34 +132,48 @@ def _compute_stats(
     for fi in top10_flat.tolist():
         idx = list(np.unravel_index(fi, a.shape))
         av, bv = float(a.reshape(-1)[fi].item()), float(b.reshape(-1)[fi].item())
-        top10_list.append({
-            "index": idx,
-            "actual": av,
-            "expected": bv,
-            "abs_diff": abs(av - bv),
-            "rel_diff": abs(av - bv) / (abs(bv) + 1e-12),
-        })
+        top10_list.append(
+            {
+                "index": idx,
+                "actual": av,
+                "expected": bv,
+                "abs_diff": abs(av - bv),
+                "rel_diff": abs(av - bv) / (abs(bv) + 1e-12),
+            }
+        )
 
     hist_edges = np.linspace(0, max_abs if max_abs > 0 else 1, 11)
     hist_vals, _ = np.histogram(flat_abs.numpy(), bins=hist_edges)
     hist_max = int(max(hist_vals.max(), 1))
 
     return {
-        "shape": tuple(a.shape), "dtype": str(a.dtype), "device": str(actual.device),
-        "rtol": rtol, "atol": atol, "total": total,
+        "shape": tuple(a.shape),
+        "dtype": str(a.dtype),
+        "device": str(actual.device),
+        "rtol": rtol,
+        "atol": atol,
+        "total": total,
         "num_mismatched": num_mismatched,
-        "max_abs": max_abs, "max_abs_idx": max_abs_idx,
-        "max_rel": max_rel, "max_rel_idx": max_rel_idx,
-        "mean_abs": mean_abs, "median_abs": median_abs,
+        "max_abs": max_abs,
+        "max_abs_idx": max_abs_idx,
+        "max_rel": max_rel,
+        "max_rel_idx": max_rel_idx,
+        "mean_abs": mean_abs,
+        "median_abs": median_abs,
         "top10": top10_list,
-        "hist_edges": hist_edges, "hist_vals": hist_vals, "hist_max": hist_max,
-        "diff_abs": diff_abs, "actual_cpu": a, "expected_cpu": b,
+        "hist_edges": hist_edges,
+        "hist_vals": hist_vals,
+        "hist_max": hist_max,
+        "diff_abs": diff_abs,
+        "actual_cpu": a,
+        "expected_cpu": b,
     }
 
 
 # ---------------------------------------------------------------------------
 # Text report (saved to file)
 # ---------------------------------------------------------------------------
+
 
 def _write_report(out_dir: str, stats: dict[str, Any], msg: str) -> None:
     lines = [
@@ -203,6 +220,7 @@ def _write_report(out_dir: str, stats: dict[str, Any], msg: str) -> None:
 # Vectorised diff-level computation & string building
 # ---------------------------------------------------------------------------
 
+
 def _arr_to_levels(arr: np.ndarray, atol: float) -> np.ndarray:
     """Map abs-diff values to integer levels 0-5 (vectorised)."""
     tol = max(atol, 1e-12)
@@ -229,7 +247,7 @@ def _levels_rows_to_strings(
             parts: list[str] = []
             for g in range(outer):
                 s = g * group_size
-                parts.append("".join(_LEVEL_CHARS_NP[row[s:s + group_size]]))
+                parts.append("".join(_LEVEL_CHARS_NP[row[s : s + group_size]]))
             results.append("|".join(parts))
         else:
             results.append("".join(_LEVEL_CHARS_NP[row]))
@@ -250,8 +268,10 @@ def _parallel_build_strings(
         futs = [
             pool.submit(
                 _levels_rows_to_strings,
-                levels[s:min(s + chunk, total)],
-                has_sep, outer, group_size,
+                levels[s : min(s + chunk, total)],
+                has_sep,
+                outer,
+                group_size,
             )
             for s in range(0, total, chunk)
         ]
@@ -264,6 +284,7 @@ def _parallel_build_strings(
 # ---------------------------------------------------------------------------
 # Smart line-layout helpers
 # ---------------------------------------------------------------------------
+
 
 def _format_row_label(
     idx: tuple[int, ...],
@@ -339,6 +360,7 @@ def _choose_line_split(shape: tuple[int, ...], term_width: int = 200) -> int:
 # Batch row-content builder (vectorised + optional threading)
 # ---------------------------------------------------------------------------
 
+
 def _build_all_row_contents(
     diff_abs: torch.Tensor,
     total_rows: int,
@@ -405,6 +427,7 @@ def _build_all_row_contents(
 # ASCII diff map (console + file)
 # ---------------------------------------------------------------------------
 
+
 def _print_diff_map(
     stats: dict[str, Any],
     atol: float,
@@ -445,7 +468,11 @@ def _print_diff_map(
 
         # --- vectorised row content ---
         contents = _build_all_row_contents(
-            diff_abs, total_rows, merged_shape, atol, max_content,
+            diff_abs,
+            total_rows,
+            merged_shape,
+            atol,
+            max_content,
         )
 
         # --- build labels ---
@@ -481,10 +508,7 @@ def _print_diff_map(
             else:
                 out.append(f"  {fl} {content}")
                 tag = "same pattern" if has_err else "all pass"
-                out.append(
-                    f"    ... ({count - 1} more rows, {tag},"
-                    f" to {last_lbl}) ..."
-                )
+                out.append(f"    ... ({count - 1} more rows, {tag}, to {last_lbl}) ...")
 
     # --- write to file ---
     with open(os.path.join(run_dir, "diff_map.txt"), "w", encoding="utf-8") as f:
@@ -497,6 +521,7 @@ def _print_diff_map(
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
 
 def prec_assert_close(
     actual: torch.Tensor,
@@ -522,7 +547,8 @@ def prec_assert_close(
     """
     if actual.shape != expected.shape:
         raise AssertionError(
-            f"Shape mismatch: actual {actual.shape} vs expected {expected.shape}. " + msg
+            f"Shape mismatch: actual {actual.shape} vs expected {expected.shape}. "
+            + msg
         )
 
     # Handle dtype-based default tolerances (Compatibility with testing/npuir/testcommon.py)
@@ -546,7 +572,9 @@ def prec_assert_close(
 
     stats = _compute_stats(actual, expected, rtol, atol, equal_nan=equal_nan)
     filename, func = _get_caller_info()
-    safe = "".join(c if c.isalnum() or c in "._-" else "_" for c in f"{filename}_{func}")
+    safe = "".join(
+        c if c.isalnum() or c in "._-" else "_" for c in f"{filename}_{func}"
+    )
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_dir = os.path.join(output_dir, f"{safe}_{ts}")
     os.makedirs(run_dir, exist_ok=True)
