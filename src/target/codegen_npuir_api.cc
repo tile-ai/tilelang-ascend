@@ -372,19 +372,29 @@ BuildContiguousStrideExprs(llvm::ArrayRef<PrimExpr> shape) {
   return strides;
 }
 
-static llvm::SmallVector<int64_t>
-ExtractStaticInts(llvm::ArrayRef<PrimExpr> exprs) {
-  llvm::SmallVector<int64_t> staticValues;
-  staticValues.reserve(exprs.size());
+template <typename OnStatic, typename OnDynamic>
+static void DispatchSimplifiedExpr(llvm::ArrayRef<PrimExpr> exprs,
+                                   OnStatic &&onStatic,
+                                   OnDynamic &&onDynamic) {
   arith::Analyzer analyzer;
   for (PrimExpr expr : exprs) {
     PrimExpr simplified = analyzer.Simplify(expr);
     if (auto intImm = as_const_int(simplified)) {
-      staticValues.push_back(*intImm);
+      onStatic(*intImm);
     } else {
-      staticValues.push_back(mlir::ShapedType::kDynamic);
+      onDynamic(simplified);
     }
   }
+}
+
+static llvm::SmallVector<int64_t>
+ExtractStaticInts(llvm::ArrayRef<PrimExpr> exprs) {
+  llvm::SmallVector<int64_t> staticValues;
+  staticValues.reserve(exprs.size());
+  DispatchSimplifiedExpr(
+      exprs,
+      [&](int64_t value) { staticValues.push_back(value); },
+      [&](PrimExpr) { staticValues.push_back(mlir::ShapedType::kDynamic); });
   return staticValues;
 }
 
@@ -395,15 +405,10 @@ BuildIndexFoldResultsFromExprs(mlir::OpBuilder &builder,
                                MaterializeFn &&materialize) {
   llvm::SmallVector<mlir::OpFoldResult> ofrs;
   ofrs.reserve(exprs.size());
-  arith::Analyzer analyzer;
-  for (PrimExpr expr : exprs) {
-    PrimExpr simplified = analyzer.Simplify(expr);
-    if (auto intImm = as_const_int(simplified)) {
-      ofrs.push_back(builder.getIndexAttr(*intImm));
-    } else {
-      ofrs.push_back(materialize(simplified));
-    }
-  }
+  DispatchSimplifiedExpr(
+      exprs,
+      [&](int64_t value) { ofrs.push_back(builder.getIndexAttr(value)); },
+      [&](PrimExpr simplified) { ofrs.push_back(materialize(simplified)); });
   return ofrs;
 }
 
