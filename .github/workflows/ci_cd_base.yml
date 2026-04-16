@@ -1,172 +1,172 @@
-# # TileLang-Ascend 持续集成工作流
-# name: TileLang-Ascend CI
+# TileLang-Ascend 持续集成工作流
+name: TileLang-Ascend CI
 
-# # 全局环境变量，所有 job 都可使用
-# env:
-#   ASCEND_HOME: /usr/local/Ascend/ascend-toolkit/latest  # Ascend CANN 安装路径
-#   PY_VENV_DIR: /home/runner/
+# 全局环境变量，所有 job 都可使用
+env:
+  ASCEND_HOME: /usr/local/Ascend/ascend-toolkit/latest  # Ascend CANN 安装路径
+  PY_VENV_DIR: /home/runner/
 
-# # 触发条件
-# on:
-#   push:
-#     branches:
-#       - ascendc_pto*                           # ascendc_pto 分支
-#     paths-ignore:                              # 以下路径的修改不触发 CI
-#       - '**.md'                                # Markdown 文件
-#       - 'docs/**'                              # 文档目录
-#       - 'images/**'                            # 图片目录
+# 触发条件
+on:
+  push:
+    branches:
+      - ascendc_pto*                           # ascendc_pto 分支
+    paths-ignore:                              # 以下路径的修改不触发 CI
+      - '**.md'                                # Markdown 文件
+      - 'docs/**'                              # 文档目录
+      - 'images/**'                            # 图片目录
 
-#   pull_request:
-#     branches:
-#       - ascendc_pto*
-#     paths-ignore:
-#       - '**.md'
-#       - 'docs/**'
-#       - 'images/**'
+  pull_request:
+    branches:
+      - ascendc_pto*
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'images/**'
 
-#   # 手动触发（通过 GitHub Actions 页面）
-#   workflow_dispatch:
-#     inputs:
-#       run_tests:
-#         description: 'Run benchmark tests'     # 是否运行测试
-#         required: false
-#         default: true
-#         type: boolean
+  # 手动触发（通过 GitHub Actions 页面）
+  workflow_dispatch:
+    inputs:
+      run_tests:
+        description: 'Run benchmark tests'     # 是否运行测试
+        required: false
+        default: true
+        type: boolean
 
-#   schedule:
-#     - cron: '0 18 * * *' # 每天 UTC 18:00 运行 (北京时间凌晨 2:00)
+  schedule:
+    - cron: '0 18 * * *' # 每天 UTC 18:00 运行 (北京时间凌晨 2:00)
 
-# jobs:
-#   test:
-#     name: Benchmark Tests (Ascend NPU)
-#     runs-on: [self-hosted, Linux, X64, ascend_910b]                # 使用自托管运行器（需安装 Ascend 环境）
-#     if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.run_tests == 'true' }} # 手动触发时可跳过测试
-#     timeout-minutes: 60                               # 1 小时超时退出
-#     steps:       
-#       - name: Checkout code
-#         uses: actions/checkout@v4
-#         with:
-#           submodules: false 
-#           fetch-depth: 1
+jobs:
+  test:
+    name: Benchmark Tests (Ascend NPU)
+    runs-on: [self-hosted, Linux, X64, ascend_910b]                # 使用自托管运行器（需安装 Ascend 环境）
+    if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.run_tests == 'true' }} # 手动触发时可跳过测试
+    timeout-minutes: 60                               # 1 小时超时退出
+    steps:       
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: false 
+          fetch-depth: 1
 
-#       - name: Check environment
-#         id: check
-#         run: |
-#           echo "Setting up Ascend environment..."
-#           if [ ! -f "${ASCEND_HOME}/set_env.sh" ]; then
-#             echo "❌ Ascend environment file not found: ${ASCEND_HOME}/set_env.sh"
-#             exit 1
-#           fi
+      - name: Check environment
+        id: check
+        run: |
+          echo "Setting up Ascend environment..."
+          if [ ! -f "${ASCEND_HOME}/set_env.sh" ]; then
+            echo "❌ Ascend environment file not found: ${ASCEND_HOME}/set_env.sh"
+            exit 1
+          fi
 
-#           # 检查虚拟环境是否存在
-#           if [ ! -d "${PY_VENV_DIR}/test_venv" ]; then
-#             echo "Create python venv <test_venv>..."
-#             python -m venv "${PY_VENV_DIR}/test_venv" || {
-#               echo "❌ Failed to create Python virtual environment"
-#               exit 1
-#             }
-#             echo "✅ Python venv <test_venv> created successfully."
-#           else
-#             echo "python venv <test_venv> already exists."
-#           fi
+          # 检查虚拟环境是否存在
+          if [ ! -d "${PY_VENV_DIR}/test_venv" ]; then
+            echo "Create python venv <test_venv>..."
+            python -m venv "${PY_VENV_DIR}/test_venv" || {
+              echo "❌ Failed to create Python virtual environment"
+              exit 1
+            }
+            echo "✅ Python venv <test_venv> created successfully."
+          else
+            echo "python venv <test_venv> already exists."
+          fi
           
-#       - name: Install Ascend Dependencies
-#         id: install_ascend
-#         run: |
-#           source ${ASCEND_HOME}/set_env.sh || {
-#             echo "❌ Failed to source Ascend environment"
-#             exit 1
-#           }
-#           # 激活虚拟环境
-#           source "${PY_VENV_DIR}/test_venv/bin/activate" || {
-#             echo "❌ Failed to activate Python virtual environment"
-#             exit 1
-#           }
-#           pip list
+      - name: Install Ascend Dependencies
+        id: install_ascend
+        run: |
+          source ${ASCEND_HOME}/set_env.sh || {
+            echo "❌ Failed to source Ascend environment"
+            exit 1
+          }
+          # 激活虚拟环境
+          source "${PY_VENV_DIR}/test_venv/bin/activate" || {
+            echo "❌ Failed to activate Python virtual environment"
+            exit 1
+          }
+          pip list
 
-#           bash install_ascend.sh || {
-#             echo "❌ Failed to install Ascend dependencies"
-#             exit 1
-#           }
-#           echo "✅ Ascend dependencies installed successfully"
+          bash install_ascend.sh || {
+            echo "❌ Failed to install Ascend dependencies"
+            exit 1
+          }
+          echo "✅ Ascend dependencies installed successfully"
       
-#       - name: Run bench tests
-#         id: test
-#         run: |
-#           source ${ASCEND_HOME}/set_env.sh || {
-#             echo "❌ Failed to source Ascend environment"
-#             exit 1
-#           }
-#           # 激活虚拟环境
-#           source "${PY_VENV_DIR}/test_venv/bin/activate" || {
-#             echo "❌ Failed to activate Python virtual environment"
-#             exit 1
-#           }
-#           source set_env.sh                                   # 加载项目环境变量
+      - name: Run bench tests
+        id: test
+        run: |
+          source ${ASCEND_HOME}/set_env.sh || {
+            echo "❌ Failed to source Ascend environment"
+            exit 1
+          }
+          # 激活虚拟环境
+          source "${PY_VENV_DIR}/test_venv/bin/activate" || {
+            echo "❌ Failed to activate Python virtual environment"
+            exit 1
+          }
+          source set_env.sh                                   # 加载项目环境变量
 
-#           cd examples
-#           chmod +x bench_test.sh
-#           ./bench_test.sh 2>&1 | tee test_output.log
+          cd examples
+          chmod +x bench_test.sh
+          ./bench_test.sh 2>&1 | tee test_output.log
         
-#           TEST_EXIT_CODE=${PIPESTATUS[0]}                      # 保存退出码
-#           echo "Test exit code: $TEST_EXIT_CODE"
-#           echo "test_exit_code=$TEST_EXIT_CODE" >> $GITHUB_OUTPUT
+          TEST_EXIT_CODE=${PIPESTATUS[0]}                      # 保存退出码
+          echo "Test exit code: $TEST_EXIT_CODE"
+          echo "test_exit_code=$TEST_EXIT_CODE" >> $GITHUB_OUTPUT
 
-#       - name: Check pass rate
-#         id: check_results
-#         run: |
-#           echo "Checking test results..."
+      - name: Check pass rate
+        id: check_results
+        run: |
+          echo "Checking test results..."
           
-#           # 从测试输出中提取 Pass rate
-#           cd examples
-#           if [ -f test_output.log ]; then
-#             PASS_RATE_LINE=$(grep -i "Pass rate:" test_output.log || echo "")
-#             if [ -n "$PASS_RATE_LINE" ]; then             
-#               PASS_RATE=$(echo "$PASS_RATE_LINE" | grep -o '[0-9]*%' | tr -d '%')
-#               echo "Found Pass rate: ${PASS_RATE}%"
-#               echo "pass_rate=${PASS_RATE}" >> $GITHUB_OUTPUT
+          # 从测试输出中提取 Pass rate
+          cd examples
+          if [ -f test_output.log ]; then
+            PASS_RATE_LINE=$(grep -i "Pass rate:" test_output.log || echo "")
+            if [ -n "$PASS_RATE_LINE" ]; then             
+              PASS_RATE=$(echo "$PASS_RATE_LINE" | grep -o '[0-9]*%' | tr -d '%')
+              echo "Found Pass rate: ${PASS_RATE}%"
+              echo "pass_rate=${PASS_RATE}" >> $GITHUB_OUTPUT
               
-#               if [ "$PASS_RATE" = "100" ]; then
-#                 echo "✅ All tests passed (Pass rate: 100%)"
-#                 echo "test_status=passed" >> $GITHUB_OUTPUT
-#               else
-#                 echo "❌ Tests failed (Pass rate: ${PASS_RATE}%)"
-#                 echo "test_status=failed" >> $GITHUB_OUTPUT
-#                 echo ""
-#                 echo "========== Failed Cases =========="
-#                 grep '\[FAILED\]' test_output.log | sort -u
-#                 echo "==================================="
-#                 echo ""
-#                 echo "========== Error Details =========="
-#                 grep -A 10 '\[FAILED\]' test_output.log | grep -v '\[PASSED\]'
-#                 echo "==================================="
-#                 exit 1
-#               fi
-#             else
-#               echo "⚠️ Could not find 'Pass rate:' in test output"
-#               echo "pass_rate=0" >> $GITHUB_OUTPUT
-#               echo "test_status=error" >> $GITHUB_OUTPUT
-#             fi
+              if [ "$PASS_RATE" = "100" ]; then
+                echo "✅ All tests passed (Pass rate: 100%)"
+                echo "test_status=passed" >> $GITHUB_OUTPUT
+              else
+                echo "❌ Tests failed (Pass rate: ${PASS_RATE}%)"
+                echo "test_status=failed" >> $GITHUB_OUTPUT
+                echo ""
+                echo "========== Failed Cases =========="
+                grep '\[FAILED\]' test_output.log | sort -u
+                echo "==================================="
+                echo ""
+                echo "========== Error Details =========="
+                grep -A 10 '\[FAILED\]' test_output.log | grep -v '\[PASSED\]'
+                echo "==================================="
+                exit 1
+              fi
+            else
+              echo "⚠️ Could not find 'Pass rate:' in test output"
+              echo "pass_rate=0" >> $GITHUB_OUTPUT
+              echo "test_status=error" >> $GITHUB_OUTPUT
+            fi
             
-#             # 同时提取其他统计信息
-#             EXEC_SUMMARY=$(grep -i "Execution Summary" -A 2 test_output.log || echo "")
-#             if [ -n "$EXEC_SUMMARY" ]; then
-#               echo "Execution Summary:"
-#               echo "$EXEC_SUMMARY"
-#             fi
-#           else
-#             echo "⚠️ Test output file not found"
-#             echo "pass_rate=0" >> $GITHUB_OUTPUT
-#             echo "test_status=error" >> $GITHUB_OUTPUT
-#           fi
+            # 同时提取其他统计信息
+            EXEC_SUMMARY=$(grep -i "Execution Summary" -A 2 test_output.log || echo "")
+            if [ -n "$EXEC_SUMMARY" ]; then
+              echo "Execution Summary:"
+              echo "$EXEC_SUMMARY"
+            fi
+          else
+            echo "⚠️ Test output file not found"
+            echo "pass_rate=0" >> $GITHUB_OUTPUT
+            echo "test_status=error" >> $GITHUB_OUTPUT
+          fi
       
-#       - name: Upload test results
-#         uses: actions/upload-artifact@v4
-#         if: always()                                          # 无论成功失败都上传结果
-#         with:
-#           name: test-results
-#           path: |
-#             test_results/
-#             *.log
-#             *.json
-#           retention-days: 30
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()                                          # 无论成功失败都上传结果
+        with:
+          name: test-results
+          path: |
+            test_results/
+            *.log
+            *.json
+          retention-days: 30
