@@ -62,6 +62,8 @@ jobs:
     runs-on: linux-aarch64-a3-2
     container:
       image: swr.cn-southwest-2.myhuaweicloud.com/base_image/ascend-ci/cann:8.5.0-a3-ubuntu22.04-py3.11
+    env:
+      TILELANG_DUMP_IR: "0"
     timeout-minutes: 120
     steps:
 
@@ -90,7 +92,7 @@ jobs:
         pip install torch-npu==2.7.1
         pip install dist/*.whl
         pip install pytest pytest-xdist pytest-html numpy
-    
+
     - name: Install clang
       run: |
         apt-get update && apt-get install -y clang
