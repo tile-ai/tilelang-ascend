@@ -39,7 +39,7 @@ on:
 jobs:
   test:
     name: Benchmark Tests (Ascend NPU)
-    runs-on: [self-hosted, Linux]                # 使用自托管运行器（需安装 Ascend 环境）
+    runs-on: [self-hosted, Linux, X64, ascend_910b]                # 使用自托管运行器（需安装 Ascend 环境）
     if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.run_tests == 'true' }} # 手动触发时可跳过测试
     timeout-minutes: 60                               # 1 小时超时退出
     outputs:                                           # 定义 job 输出
@@ -161,7 +161,7 @@ jobs:
   # Job 2: 汇总结果并输出摘要
   notify:
     name: Notify Results
-    runs-on: [self-hosted, Linux]
+    runs-on: [self-hosted, Linux, X64, ascend_910b] 
     needs: [test] 
     if: always()                         # 无论成功失败都执行
     steps:
