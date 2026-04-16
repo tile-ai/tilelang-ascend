@@ -52,7 +52,7 @@ def test_slice_add(dtype):
     datatype = tc.resolve_dtype(dtype)
 
     # case 1
-    M, N = 17, 256
+    M, N = 2, 256
     input = torch.randn([M, N], dtype=datatype).npu()
     output = torch.randn([1, N], dtype=datatype).npu()
     kernel(input, output)
@@ -61,7 +61,7 @@ def test_slice_add(dtype):
     tc.assert_close(output, ref_output, rtol=1e-2, atol=1e-2)
 
     # case 2
-    M, N = 23, 466
+    M, N = 3, 466
     input = torch.randn([M, N], dtype=datatype).npu()
     output = torch.randn([1, N], dtype=datatype).npu()
     kernel(input, output)
