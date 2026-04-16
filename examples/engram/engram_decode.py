@@ -4,9 +4,6 @@ import tilelang as tl
 import tilelang.language as T
 import os
 import functools
-from typing import Optional
-
-__all__ = ["EngramDecodeKernel"]
 
 ALIGNMENT = 256
 
@@ -24,7 +21,7 @@ def _engram_decode_kernel(
     accum_dtype = "float32"
 
     @tl.jit(out_idx=[8, 9], target="npuir")
-    def _func(threads):
+    def _func():
 
         @T.macro
         def _decode_fused(
@@ -39,11 +36,9 @@ def _engram_decode_kernel(
             y_t: T.Tensor((batch, d_padded), dtype),
             new_conv_state: T.Tensor((batch, max_conv_len, d_padded), dtype),
         ):
-            with T.Kernel(batch, is_npu=True, threads=[threads]) as (bid, _):
-                e_local_cast = T.alloc_shared((d_mem,), dtype)
+            with T.Kernel(batch, is_npu=True) as (bid, _):
                 e_local = T.alloc_shared((d_mem,), accum_dtype)
-                T.copy(e_t[bid, :], e_local_cast)
-                T.vcast(e_local_cast, e_local)
+                T.copy(e_t[bid, :], e_local)
 
                 k_local = T.alloc_shared((d_padded,), accum_dtype)
                 v_local = T.alloc_shared((d_padded,), accum_dtype)
@@ -51,44 +46,36 @@ def _engram_decode_kernel(
                 T.clear(v_local)
 
                 for i in T.serial(d_mem):
-                    W_K_cast = T.alloc_shared((d_padded,), dtype)
                     W_K_local = T.alloc_shared((d_padded,), accum_dtype)
-                    T.copy(W_K[i, :], W_K_cast)
-                    T.vcast(W_K_cast, W_K_local)
+                    T.copy(W_K[i, :], W_K_local)
 
-                    W_V_cast = T.alloc_shared((d_padded,), dtype)
                     W_V_local = T.alloc_shared((d_padded,), accum_dtype)
-                    T.copy(W_V[i, :], W_V_cast)
-                    T.vcast(W_V_cast, W_V_local)
+                    T.copy(W_V[i, :], W_V_local)
 
                     for j in T.Parallel(d_padded):
                         k_local[j] += e_local[i] * W_K_local[j]
                         v_local[j] += e_local[i] * W_V_local[j]
 
-                h_cast = T.alloc_shared((d_padded,), dtype)
                 h_local = T.alloc_shared((d_padded,), accum_dtype)
-                T.copy(h_t[bid, :], h_cast)
-                T.vcast(h_cast, h_local)
+                T.copy(h_t[bid, :], h_local)
 
                 hsq_2d = T.alloc_shared((1, d_padded), accum_dtype)
-                for j in T.serial(d_padded):
+                for j in T.Parallel(d_padded):
                     hsq_2d[0, j] = h_local[j] * h_local[j]
 
                 sumsq_h = T.alloc_shared((1, 1), accum_dtype)
                 T.reduce_sum(hsq_2d, sumsq_h, dim=1)
-                T.vdiv(sumsq_h, d, sumsq_h)
-                T.vadd(sumsq_h, eps, sumsq_h)
+
+                sumsq_h[0, 0] = sumsq_h[0, 0] / d + eps
                 T.vrsqrt(sumsq_h, sumsq_h)
 
-                rms_w_h_cast = T.alloc_shared((d_padded,), dtype)
                 rms_w_h_local = T.alloc_shared((d_padded,), accum_dtype)
-                T.copy(rms_w_h, rms_w_h_cast)
-                T.vcast(rms_w_h_cast, rms_w_h_local)
+                T.copy(rms_w_h, rms_w_h_local)
                 for j in T.Parallel(d_padded):
                     h_local[j] = h_local[j] * sumsq_h[0, 0] * rms_w_h_local[j]
 
                 ksq_2d = T.alloc_shared((1, d_padded), accum_dtype)
-                for j in T.serial(d_padded):
+                for j in T.Parallel(d_padded):
                     ksq_2d[0, j] = k_local[j] * k_local[j]
                 sumsq_k = T.alloc_shared((1, 1), accum_dtype)
                 T.reduce_sum(ksq_2d, sumsq_k, dim=1)
@@ -99,7 +86,7 @@ def _engram_decode_kernel(
                     k_local[j] = k_local[j] * sumsq_k[0, 0] * rms_w_h_local[j]
 
                 hk_2d = T.alloc_shared((1, d_padded), accum_dtype)
-                for j in T.serial(d_padded):
+                for j in T.Parallel(d_padded):
                     hk_2d[0, j] = h_local[j] * k_local[j]
                 dot_hk = T.alloc_shared((1, 1), accum_dtype)
                 T.reduce_sum(hk_2d, dot_hk, dim=1)
@@ -109,23 +96,21 @@ def _engram_decode_kernel(
                 alpha = T.alloc_shared((1, 1), accum_dtype)
                 alpha[0, 0] = dot_hk[0, 0] / sqrt_d[0, 0]
                 T.vsigmoid(alpha, alpha)
-
+                val = alpha[0, 0]
                 vhat_local = T.alloc_shared((d_padded,), accum_dtype)
-                for j in T.serial(d_padded):
-                    vhat_local[j] = alpha[0, 0] * v_local[j]
+                for j in T.Parallel(d_padded):
+                    vhat_local[j] = val * v_local[j]
 
                 vsq_2d = T.alloc_shared((1, d_padded), accum_dtype)
-                for j in T.serial(d_padded):
+                for j in T.Parallel(d_padded):
                     vsq_2d[0, j] = vhat_local[j] * vhat_local[j]
                 sumsq_v = T.alloc_shared((1, 1), accum_dtype)
                 T.reduce_sum(vsq_2d, sumsq_v, dim=1)
                 T.vdiv(sumsq_v, d, sumsq_v)
                 T.vadd(sumsq_v, eps, sumsq_v)
                 T.vrsqrt(sumsq_v, sumsq_v)
-                rms_w_v_cast = T.alloc_shared((d_padded,), dtype)
                 rms_w_v_local = T.alloc_shared((d_padded,), accum_dtype)
-                T.copy(rms_w_v, rms_w_v_cast)
-                T.vcast(rms_w_v_cast, rms_w_v_local)
+                T.copy(rms_w_v, rms_w_v_local)
                 for j in T.Parallel(d_padded):
                     vhat_local[j] = vhat_local[j] * sumsq_v[0, 0] * rms_w_v_local[j]
 
@@ -133,43 +118,38 @@ def _engram_decode_kernel(
                 T.clear(conv_out)
 
                 for p in T.serial(w - 1):
-                    conv_w_cast = T.alloc_shared((1, d_padded), dtype)
-                    conv_w_local = T.alloc_shared((1, d_padded), accum_dtype)
-                    T.copy(conv_w[p, :], conv_w_cast)
-                    T.vcast(conv_w_cast, conv_w_local)
-                    conv_state_cast = T.alloc_shared((1, d_padded), dtype)
-                    conv_state_local = T.alloc_shared((1, d_padded), accum_dtype)
+                    conv_w_local = T.alloc_shared((d_padded,), accum_dtype)
+                    T.copy(conv_w[p, :], conv_w_local)
+                    conv_state_local = T.alloc_shared((d_padded,), accum_dtype)
                     T.copy(
                         conv_state[bid, max_conv_len - (w - 1 - p) * dilation, :],
-                        conv_state_cast,
+                        conv_state_local,
                     )
-                    T.vcast(conv_state_cast, conv_state_local)
-                    for j in T.serial(d_padded):
-                        conv_out[j] += conv_w_local[0, j] * conv_state_local[0, j]
+                    for j in T.Parallel(d_padded):
+                        conv_out[j] += conv_w_local[j] * conv_state_local[j]
 
-                conv_w_c = T.alloc_shared((d_padded,), dtype)
                 conv_w_l = T.alloc_shared((d_padded,), accum_dtype)
-                T.copy(conv_w[w - 1, :], conv_w_c)
-                T.vcast(conv_w_c, conv_w_l)
+                T.copy(conv_w[w - 1, :], conv_w_l)
                 for j in T.Parallel(d_padded):
                     conv_out[j] += conv_w_l[j] * vhat_local[j]
 
+                # Unsupported memref to memref copy yet.
+                # for s in T.serial(max_conv_len - 1):
+                #     for j in T.Parallel(d_padded):
+                #         new_conv_state[bid, s, j] = conv_state[bid, s + 1, j]
                 for s in T.serial(max_conv_len - 1):
                     tmp = T.alloc_shared((d_padded,), dtype)
                     T.copy(conv_state[bid, s + 1, :], tmp)
                     T.copy(tmp, new_conv_state[bid, s, :])
 
-                vhat_cast = T.alloc_shared((d_padded,), dtype)
-                T.vcast(vhat_local, vhat_cast)
-                T.copy(vhat_cast, new_conv_state[bid, max_conv_len - 1, :])
+                T.copy(vhat_local, new_conv_state[bid, max_conv_len - 1, :])
 
                 sig = T.alloc_shared((d_padded,), accum_dtype)
                 T.vsigmoid(conv_out, sig)
-                for j in T.serial(d_padded):
-                    conv_out[j] = conv_out[j] * sig[j] + alpha[0, 0] * v_local[j]
-                y_t_local = T.alloc_shared((d_padded,), dtype)
-                T.vcast(conv_out, y_t_local)
-                T.copy(y_t_local, y_t[bid, :])
+                alpha_val = alpha[0, 0]
+                for j in T.Parallel(d_padded):
+                    conv_out[j] = conv_out[j] * sig[j] + alpha_val * v_local[j]
+                T.copy(conv_out, y_t[bid, :])
 
         @T.prim_func
         def main(
@@ -212,7 +192,6 @@ def _engram_decode_wrapped(
     dilation: int,
     eps: float,
     dtype_str: str,
-    threads: int,
     e_t: torch.Tensor,
     h_t: torch.Tensor,
     conv_state: torch.Tensor,
@@ -231,7 +210,7 @@ def _engram_decode_wrapped(
         dilation,
         eps,
         dtype_str,
-    )(threads)(e_t, h_t, conv_state, W_K, W_V, rms_w_h, rms_w_v, conv_w)
+    )()(e_t, h_t, conv_state, W_K, W_V, rms_w_h, rms_w_v, conv_w)
     return list(results)
 
 
@@ -245,7 +224,6 @@ def _(
     dilation,
     eps,
     dtype_str,
-    threads,
     e_t,
     h_t,
     conv_state,
@@ -262,110 +240,6 @@ def _(
         torch.empty((batch, d_padded), dtype=dt, device=device),
         torch.empty((batch, max_conv_len, d_padded), dtype=dt, device=device),
     ]
-
-
-class EngramDecodeKernel:
-    """Engram fused decode kernel — full single-token pipeline.
-
-    Fuses GEMV projection, RMSNorm gating, dilated causal conv with state
-    update, and SiLU activation into a single kernel launch.
-
-    The conv_state is padded to max_conv_len by the op before calling this kernel.
-
-    Args:
-        batch: batch size.
-        d_mem: memory embedding dimension.
-        d: model hidden dimension.
-        max_conv_len: max conv cache capacity (compile-time).
-        conv_kernel_size: number of conv taps (w=4 in paper).
-        dilation: dilation factor (δ = max N-gram order in paper).
-        eps: RMSNorm epsilon.
-        dtype: data type.
-    """
-
-    supported_archs: list[int] = [80, 86, 89, 90]
-
-    def __init__(
-        self,
-        batch: int,
-        d_mem: int,
-        d: int,
-        max_conv_len: int,
-        conv_kernel_size: int,
-        dilation: int,
-        eps: float,
-        dtype: torch.dtype,
-        config: Optional[dict] = None,
-        tune: bool = False,
-    ):
-        super().__init__()
-        self.batch = batch
-        self.d_mem = d_mem
-        self.d = d
-        self.max_conv_len = max_conv_len
-        self.conv_kernel_size = conv_kernel_size
-        self.dilation = dilation
-        self.eps = eps
-        self.dtype = dtype
-        self.d_padded = _align_up(d, ALIGNMENT)
-
-        min_cache = dilation * (conv_kernel_size - 1)
-        if max_conv_len < min_cache:
-            raise ValueError(
-                f"max_conv_len ({max_conv_len}) must be >= "
-                f"dilation * (conv_kernel_size - 1) = {min_cache}"
-            )
-
-        self.kernel = _engram_decode_kernel(
-            batch,
-            d_mem,
-            d,
-            max_conv_len,
-            conv_kernel_size,
-            dilation,
-            eps,
-            self.dtype_str,
-        )
-        self.init_config(config, tune)
-
-    @property
-    def default_config(self) -> dict:
-        return {"threads": 128}
-
-    @property
-    def autotune_configs(self) -> list[dict]:
-        return [{"threads": t} for t in [128, 256, 512]]
-
-    def forward(
-        self,
-        e_t: torch.Tensor,
-        h_t: torch.Tensor,
-        conv_state: torch.Tensor,
-        W_K: torch.Tensor,
-        W_V: torch.Tensor,
-        rms_w_h: torch.Tensor,
-        rms_w_v: torch.Tensor,
-        conv_w: torch.Tensor,
-    ) -> list[torch.Tensor]:
-        return _engram_decode_wrapped(
-            self.batch,
-            self.d_mem,
-            self.d,
-            self.max_conv_len,
-            self.conv_kernel_size,
-            self.dilation,
-            self.eps,
-            self.dtype_str,
-            self.config["threads"],
-            e_t,
-            h_t,
-            conv_state,
-            W_K,
-            W_V,
-            rms_w_h,
-            rms_w_v,
-            conv_w,
-        )
 
 
 def ref_engram_decode(
@@ -457,7 +331,6 @@ def run_test(
     dilation=2,
     eps=1e-6,
     dtype=torch.float16,
-    threads=128,
     atol=2e-2,
     rtol=2e-2,
     seed=0,
@@ -494,7 +367,6 @@ def run_test(
         dilation,
         eps,
         dtype_str,
-        threads,
         e_t,
         h_t,
         conv_state,
@@ -586,5 +458,4 @@ if __name__ == "__main__":
         dilation=2,
         eps=1e-6,
         dtype=torch.float16,
-        threads=128,
     )
