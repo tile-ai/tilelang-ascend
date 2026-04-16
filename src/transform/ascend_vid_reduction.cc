@@ -42,7 +42,8 @@ private:
 
   Var vid_;
 
-  // The vector number takes the value 2 when cid:vid = 1:2 in vid elimination mode
+  // The vector number takes the value 2 when cid:vid = 1:2 in vid elimination
+  // mode
   int threads_cnt_ = 1;
 
   // Store the original map and the modified map
@@ -56,8 +57,10 @@ private:
   // Collect all UB buffers in current Block
   std::unordered_set<Buffer, ObjectPtrHash, ObjectPtrEqual> ub_buffers_;
 
-  // UB buffers that should skip vid reduction (when GM indices contain UB BufferLoad)
-  std::unordered_set<Buffer, ObjectPtrHash, ObjectPtrEqual> buffers_skip_vid_reduction_;
+  // UB buffers that should skip vid reduction (when GM indices contain UB
+  // BufferLoad)
+  std::unordered_set<Buffer, ObjectPtrHash, ObjectPtrEqual>
+      buffers_skip_vid_reduction_;
 
   // Determine if it is a ub buffer
   bool IsUbBuffer(const Buffer &buffer) const {
@@ -110,8 +113,9 @@ private:
     return new_extents;
   }
 
-  bool ExprContainsUbBufferLoad(const PrimExpr &expr,
-                                 const std::unordered_set<Buffer, ObjectPtrHash, ObjectPtrEqual> &ub_set) {
+  bool ExprContainsUbBufferLoad(
+      const PrimExpr &expr,
+      const std::unordered_set<Buffer, ObjectPtrHash, ObjectPtrEqual> &ub_set) {
     if (const auto *load = expr.as<BufferLoadNode>()) {
       if (ub_set.count(load->buffer) > 0) {
         return true;
@@ -132,8 +136,9 @@ private:
     return false;
   }
 
-  bool IndicesContainUbBufferLoad(const Array<PrimExpr> &indices,
-                                   const std::unordered_set<Buffer, ObjectPtrHash, ObjectPtrEqual> &ub_set) {
+  bool IndicesContainUbBufferLoad(
+      const Array<PrimExpr> &indices,
+      const std::unordered_set<Buffer, ObjectPtrHash, ObjectPtrEqual> &ub_set) {
     for (const PrimExpr &idx : indices) {
       if (ExprContainsUbBufferLoad(idx, ub_set)) {
         return true;
@@ -165,24 +170,31 @@ private:
   class AscendCopyAnalyzer : public StmtExprVisitor {
   public:
     const std::unordered_set<Buffer, ObjectPtrHash, ObjectPtrEqual> &ub_buffers;
-    std::unordered_set<Buffer, ObjectPtrHash, ObjectPtrEqual> &buffers_skip_vid_reduction;
+    std::unordered_set<Buffer, ObjectPtrHash, ObjectPtrEqual>
+        &buffers_skip_vid_reduction;
     std::function<bool(const Buffer &)> is_ub_checker;
-    std::function<bool(const Array<PrimExpr> &, const std::unordered_set<Buffer, ObjectPtrHash, ObjectPtrEqual> &)>
+    std::function<bool(
+        const Array<PrimExpr> &,
+        const std::unordered_set<Buffer, ObjectPtrHash, ObjectPtrEqual> &)>
         indices_contain_ub_checker;
 
     AscendCopyAnalyzer(
         const std::unordered_set<Buffer, ObjectPtrHash, ObjectPtrEqual> &ubs,
         std::unordered_set<Buffer, ObjectPtrHash, ObjectPtrEqual> &skip_set,
         std::function<bool(const Buffer &)> checker,
-        std::function<bool(const Array<PrimExpr> &, const std::unordered_set<Buffer, ObjectPtrHash, ObjectPtrEqual> &)>
+        std::function<bool(
+            const Array<PrimExpr> &,
+            const std::unordered_set<Buffer, ObjectPtrHash, ObjectPtrEqual> &)>
             idx_checker)
         : ub_buffers(ubs), buffers_skip_vid_reduction(skip_set),
           is_ub_checker(checker), indices_contain_ub_checker(idx_checker) {}
 
     BufferLoad ExtractBufferLoadFromRegion(const Call &region_call) const {
       ICHECK(region_call->args.size() >= 1)
-          << "[Error]<ascend_vid_reduction.cc>: tl.region must have at least 1 arg (BufferLoad)";
-      const BufferLoadNode *load_node = region_call->args[0].as<BufferLoadNode>();
+          << "[Error]<ascend_vid_reduction.cc>: tl.region must have at least 1 "
+             "arg (BufferLoad)";
+      const BufferLoadNode *load_node =
+          region_call->args[0].as<BufferLoadNode>();
       ICHECK(load_node != nullptr)
           << "[Error]<ascend_vid_reduction.cc>: BufferLoadNode is nullptr";
       return GetRef<BufferLoad>(load_node);
@@ -198,8 +210,8 @@ private:
       Call src_region = Downcast<Call>(op->args[0]);
       Call dst_region = Downcast<Call>(op->args[1]);
 
-// Extract BufferLoad and Buffer from the two regions
-    BufferLoad src_load = ExtractBufferLoadFromRegion(src_region);
+      // Extract BufferLoad and Buffer from the two regions
+      BufferLoad src_load = ExtractBufferLoadFromRegion(src_region);
       BufferLoad dst_load = ExtractBufferLoadFromRegion(dst_region);
       Buffer src_buf = src_load->buffer;
       Buffer dst_buf = dst_load->buffer;
@@ -226,11 +238,11 @@ private:
   };
 
   bool NeedsVidReduction(const Buffer &buffer) const {
-    return IsUbBuffer(buffer) &&
-           buffers_skip_vid_reduction_.count(buffer) == 0;
+    return IsUbBuffer(buffer) && buffers_skip_vid_reduction_.count(buffer) == 0;
   }
 
-  void AnalyzeBlockBuffers(const Array<Buffer> &alloc_buffers, const Stmt &body) {
+  void AnalyzeBlockBuffers(const Array<Buffer> &alloc_buffers,
+                           const Stmt &body) {
     // First, collect UB buffers from current Block's alloc_buffers
     for (const Buffer &buffer : alloc_buffers) {
       if (IsUbBuffer(buffer)) {
@@ -239,7 +251,8 @@ private:
     }
 
     // Also collect UB buffers from nested Blocks in body
-    UbBufferCollector collector([this](const Buffer &b) { return IsUbBuffer(b); });
+    UbBufferCollector collector(
+        [this](const Buffer &b) { return IsUbBuffer(b); });
     collector(body);
     for (const Buffer &buf : collector.ub_buffers) {
       ub_buffers_.insert(buf);
@@ -250,7 +263,8 @@ private:
         ub_buffers_, buffers_skip_vid_reduction_,
         [this](const Buffer &b) { return IsUbBuffer(b); },
         [this](const Array<PrimExpr> &indices,
-               const std::unordered_set<Buffer, ObjectPtrHash, ObjectPtrEqual> &ub_set) {
+               const std::unordered_set<Buffer, ObjectPtrHash, ObjectPtrEqual>
+                   &ub_set) {
           return IndicesContainUbBufferLoad(indices, ub_set);
         });
     analyzer(body);
@@ -318,7 +332,7 @@ private:
         Buffer ub_buf = it->second;
         int ub_dims = ub_buf->shape.size();
 
-// Get modified UB buffer shape, skip if not found
+        // Get modified UB buffer shape, skip if not found
         auto ub_it = origin_to_new_buffer_.find(ub_buf);
         if (ub_it == origin_to_new_buffer_.end()) {
           continue;
@@ -359,11 +373,13 @@ private:
 
     // 2. Add vid to the (size - dims)-th dimension
     ICHECK(new_indices.size() >= ub_dims)
-        << "[Error]<ascend_vid_reduction.cc>: ub dims may not be more than gm dims!";
+        << "[Error]<ascend_vid_reduction.cc>: ub dims may not be more than gm "
+           "dims!";
     int target_dim = new_indices.size() - ub_dims;
     new_indices.Set(
         target_dim,
-        new_indices[target_dim] + vid_ * modified_ub_buf->shape[0] // Insert vid (vector core ID)
+        new_indices[target_dim] +
+            vid_ * modified_ub_buf->shape[0] // Insert vid (vector core ID)
     );
 
     // 3. Refactor BufferLoad
@@ -419,8 +435,8 @@ private:
   }
 
   // Check if the operation is a tile op that needs size modification
-  // Only include operations whose last argument is size calculated from buffer shape
-  // and has size_0 == size_1 assertion
+  // Only include operations whose last argument is size calculated from buffer
+  // shape and has size_0 == size_1 assertion
   bool IsTileOp(const std::string &op_name) const {
     static const std::set<std::string> tile_ops = {
         // binary_op: size = math.prod(dst_extent), assert size_0 == size_1
@@ -488,7 +504,8 @@ private:
       return IRMutatorWithAnalyzer::VisitExpr_(op);
     }
 
-    // Handle tvm_access_ptr: modify extent if buffer is in origin_to_new_buffer_
+    // Handle tvm_access_ptr: modify extent if buffer is in
+    // origin_to_new_buffer_
     if (op->op.same_as(builtin::tvm_access_ptr())) {
       ICHECK_EQ(op->args.size(), 5U);
       const VarNode *buffer_var = op->args[1].as<VarNode>();
@@ -558,7 +575,8 @@ private:
     if (!only_one_ub) {
       return IRMutatorWithAnalyzer::VisitExpr_(op);
     }
-    // Locate the non-UB region(GM region) and modify the indices of its BufferLoad
+    // Locate the non-UB region(GM region) and modify the indices of its
+    // BufferLoad
     Buffer ub_buf = src_is_ub ? src_buf : dst_buf;
     Buffer gm_buf = src_is_ub ? dst_buf : src_buf;
     BufferLoad gm_load = src_is_ub ? dst_load : src_load;
@@ -584,7 +602,8 @@ private:
     gm_buffer_offset_info_[gm_buf] = ub_buf;
 
     // Refactor GM Region
-    Call target_region = src_is_ub ? dst_region : src_region; // target region is gm
+    Call target_region =
+        src_is_ub ? dst_region : src_region; // target region is gm
     Array<PrimExpr> new_region_args = target_region->args;
     new_region_args.Set(0, VisitExpr(modified_load));
     for (size_t i = 1; i < new_region_args.size(); ++i) {
