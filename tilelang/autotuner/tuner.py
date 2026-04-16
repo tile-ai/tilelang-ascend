@@ -540,7 +540,8 @@ class AutoTuner:
         )
 
         if self.ref_latency_cache is None and pa.ref_prog is not None:
-            self.ref_input_tensors = self._get_input_tensors(profiler, pa.supply_prog, config=config)
+            self.ref_input_tensors = self._get_input_tensors(
+                profiler, pa.supply_prog, config=config)
             self.ref_latency_cache = profiler.do_bench(
                 pa.ref_prog,
                 n_warmup=warmup,
@@ -704,7 +705,7 @@ class AutoTuner:
                         n_repeat=rep,
                         input_tensors=ref_input_tensors,
                     )
-                    
+
                 bench_func = partial(jit_kernel, *ins)
                 funcs.append(bench_func)
                 configs.append(config)
