@@ -541,7 +541,8 @@ class AutoTuner:
 
         if self.ref_latency_cache is None and pa.ref_prog is not None:
             self.ref_input_tensors = self._get_input_tensors(
-                profiler, pa.supply_prog, config=config)
+                profiler, pa.supply_prog, config=config
+            )
             self.ref_latency_cache = profiler.do_bench(
                 pa.ref_prog,
                 n_warmup=warmup,
