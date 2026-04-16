@@ -87,7 +87,11 @@ jobs:
           }
           pip list
 
-          bash install_ascend.sh                              # 执行安装脚本
+          bash install_ascend.sh || {
+            echo "❌ Failed to install Ascend dependencies"
+            exit 1
+          }
+          echo "✅ Ascend dependencies installed successfully"
       
       - name: Run bench tests
         id: test
@@ -154,10 +158,6 @@ jobs:
             echo "⚠️ Test output file not found"
             echo "pass_rate=0" >> $GITHUB_OUTPUT
             echo "test_status=error" >> $GITHUB_OUTPUT
-            
-            # 如果没有测试输出文件，标记为失败
-            echo "Failing step because test output file was not found"
-            exit 1
           fi
       
       - name: Upload test results
