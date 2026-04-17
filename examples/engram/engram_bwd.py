@@ -340,8 +340,6 @@ def engram_gate_conv_bwd_pass3(M, seq_len, d, dtype):
 
     return _func3
 
-
-@torch.library.custom_op("top::engram_gate_conv_bwd", mutates_args=())
 def _engram_gate_conv_bwd_wrapped(
     M: int,
     seq_len: int,
@@ -385,45 +383,6 @@ def _engram_gate_conv_bwd_wrapped(
     )
     results = [dH, dk, dv, drms_w_h, drms_w_v, dconv_w, dvhat_buf]
     return results
-
-
-@_engram_gate_conv_bwd_wrapped.register_fake
-def _(
-    M,
-    seq_len,
-    d,
-    eps,
-    dtype_str,
-    dY,
-    H,
-    k,
-    v,
-    rms_w_h,
-    rms_w_v,
-    conv_w,
-    vhat,
-    alpha,
-    rrms_h,
-    rrms_k,
-    rrms_v,
-):
-    d_padded = _align_up(d, ALIGNMENT)
-    device = dY.device
-    dt = dY.dtype
-    return [
-        torch.empty((M, seq_len, d_padded), dtype=dt, device=device),  # dH
-        torch.empty((M, seq_len, d_padded), dtype=dt, device=device),  # dk
-        torch.empty((M, seq_len, d_padded), dtype=dt, device=device),  # dv
-        torch.empty((d_padded,), dtype=torch.float32, device=device),  # drms_w_h
-        torch.empty((d_padded,), dtype=torch.float32, device=device),  # drms_w_v
-        torch.empty(
-            (CONV_KERNEL_SIZE, d_padded), dtype=torch.float32, device=device
-        ),  # dconv_w
-        torch.empty(
-            (M, seq_len, d_padded), dtype=torch.float32, device=device
-        ),  # dvhat_buf
-    ]
-
 
 def ref_engram_gate_conv_bwd(
     dY,

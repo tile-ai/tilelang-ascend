@@ -181,8 +181,6 @@ def _engram_decode_kernel(
 
     return _func
 
-
-@torch.library.custom_op("top::engram_decode", mutates_args=())
 def _engram_decode_wrapped(
     batch: int,
     d_mem: int,
@@ -212,35 +210,6 @@ def _engram_decode_wrapped(
         dtype_str,
     )()(e_t, h_t, conv_state, W_K, W_V, rms_w_h, rms_w_v, conv_w)
     return list(results)
-
-
-@_engram_decode_wrapped.register_fake
-def _(
-    batch,
-    d_mem,
-    d,
-    max_conv_len,
-    conv_kernel_size,
-    dilation,
-    eps,
-    dtype_str,
-    e_t,
-    h_t,
-    conv_state,
-    W_K,
-    W_V,
-    rms_w_h,
-    rms_w_v,
-    conv_w,
-):
-    d_padded = _align_up(d, ALIGNMENT)
-    device = e_t.device
-    dt = e_t.dtype
-    return [
-        torch.empty((batch, d_padded), dtype=dt, device=device),
-        torch.empty((batch, max_conv_len, d_padded), dtype=dt, device=device),
-    ]
-
 
 def ref_engram_decode(
     batch: int,

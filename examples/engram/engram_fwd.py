@@ -208,8 +208,6 @@ def _engram_gate_pass2_kernel(M, seq_len, d, dtype):
 
     return _func2
 
-
-@torch.library.custom_op("top::engram_gate_conv_fwd", mutates_args=())
 def _engram_gate_conv_fwd_wrapped(
     M: int,
     seq_len: int,
@@ -238,22 +236,6 @@ def _engram_gate_conv_fwd_wrapped(
     )
     results = [Y, vhat_buf, alpha_buf, rrms_h_buf, rrms_k_buf, rrms_v_buf]
     return results
-
-
-@_engram_gate_conv_fwd_wrapped.register_fake
-def _(M, seq_len, d, eps, dtype_str, H, k, v, rms_w_h, rms_w_v, conv_w):
-    d_padded = _align_up(d, ALIGNMENT)
-    device = H.device
-    dt = H.dtype
-    return [
-        torch.empty((M, seq_len, d_padded), dtype=dt, device=device),  # Y
-        torch.empty((M, seq_len, d_padded), dtype=dt, device=device),  # vhat_buf
-        torch.empty((M, seq_len), dtype=torch.float32, device=device),  # alpha
-        torch.empty((M, seq_len), dtype=torch.float32, device=device),  # rrms_h
-        torch.empty((M, seq_len), dtype=torch.float32, device=device),  # rrms_k
-        torch.empty((M, seq_len), dtype=torch.float32, device=device),  # rrms_v
-    ]
-
 
 def ref_engram_gate_conv_fwd(
     M: int,
