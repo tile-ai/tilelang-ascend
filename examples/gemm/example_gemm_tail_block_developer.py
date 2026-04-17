@@ -65,5 +65,5 @@ for idx, (M, N, K, block_M, block_N, block_K) in enumerate(test_configs, 1):
         print(f"Failed test case {idx}/{len(test_configs)}: M={M}, N={N}, K={K}")
         raise
 
-print("All test cases passed!")
+print("All test cases passed")
 print("Kernel Output Match!")
