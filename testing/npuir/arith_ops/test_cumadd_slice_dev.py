@@ -35,7 +35,7 @@ def slice_add(block_M, block_N, dtype="float16"):
                             offset_m : offset_m + remain_m,
                             offset_n : offset_n + remain_n,
                         ],
-                        src[0:remain_m, 0:remain_n]
+                        src[0:remain_m, 0:remain_n],
                     )
                     for k in T.serial(remain_m):
                         T.npuir_add(src[k : k + 1, :], dst, dst)
