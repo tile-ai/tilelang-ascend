@@ -181,6 +181,7 @@ def _engram_decode_kernel(
 
     return _func
 
+
 def _engram_decode_wrapped(
     batch: int,
     d_mem: int,
@@ -210,6 +211,7 @@ def _engram_decode_wrapped(
         dtype_str,
     )()(e_t, h_t, conv_state, W_K, W_V, rms_w_h, rms_w_v, conv_w)
     return list(results)
+
 
 def ref_engram_decode(
     batch: int,

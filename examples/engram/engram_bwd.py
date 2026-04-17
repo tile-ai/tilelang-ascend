@@ -340,6 +340,7 @@ def engram_gate_conv_bwd_pass3(M, seq_len, d, dtype):
 
     return _func3
 
+
 def _engram_gate_conv_bwd_wrapped(
     M: int,
     seq_len: int,
@@ -383,6 +384,7 @@ def _engram_gate_conv_bwd_wrapped(
     )
     results = [dH, dk, dv, drms_w_h, drms_w_v, dconv_w, dvhat_buf]
     return results
+
 
 def ref_engram_gate_conv_bwd(
     dY,
