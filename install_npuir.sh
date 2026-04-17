@@ -45,11 +45,10 @@ normalize_cann_version() {
 infer_cann_version_from_env() {
     local current_home="${ASCEND_HOME_PATH}"
     if [ -z "$current_home" ]; then
-        echo "Error: neither --cann-version nor ASCEND_HOME_PATH is set." >&2
-        echo "Please choose one of the following before re-running:" >&2
-        echo "  1. Pass --cann-version=<${SUPPORTED_CANN_VERSIONS[*]}>" >&2
-        echo "  2. Export ASCEND_HOME_PATH to a supported CANN install, then re-run" >&2
-        return 1
+        echo "Warning: neither --cann-version nor ASCEND_HOME_PATH is set." >&2
+        echo "Falling back to default CANN version 8.5.0." >&2
+        echo "8.5.0"
+        return 0
     fi
     normalize_cann_version "$current_home"
 }
