@@ -338,7 +338,7 @@ private:
       }
 
       const int64_t extent = Downcast<IntImm>(dst_access_ptr->args[3])->value;
-      const int64_t valid_row = std::max<int64_t>(extent / col, 1);
+      const int64_t valid_row = std::max<int64_t>((extent + col - 1) / col, 1);
       const int64_t valid_col = extent > col ? col : extent;
       const int64_t padded_col =
           AlignReduceOutputCols(valid_col, dst_buffer_node->dtype.bytes());
