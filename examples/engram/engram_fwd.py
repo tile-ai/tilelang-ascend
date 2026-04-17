@@ -208,6 +208,7 @@ def _engram_gate_pass2_kernel(M, seq_len, d, dtype):
 
     return _func2
 
+
 def _engram_gate_conv_fwd_wrapped(
     M: int,
     seq_len: int,
@@ -236,6 +237,7 @@ def _engram_gate_conv_fwd_wrapped(
     )
     results = [Y, vhat_buf, alpha_buf, rrms_h_buf, rrms_k_buf, rrms_v_buf]
     return results
+
 
 def ref_engram_gate_conv_fwd(
     M: int,
