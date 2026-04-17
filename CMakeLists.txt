@@ -298,6 +298,7 @@ if(USE_NPUIR)
   # TODO: Use Tilelangir Dialect in tilelang_module
   # target_include_directories(tilelang_objs PRIVATE ${PROJECT_SOURCE_DIR}/tilelangir/include)
 
+  target_compile_definitions(tilelangir_headers INTERFACE ${TILE_LANG_COMPILE_DEFS})
   if(MLIR_INCLUDE_TESTS)
     add_definitions(-DMLIR_INCLUDE_TESTS)
     add_subdirectory(testing/mlir)

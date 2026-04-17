@@ -48,9 +48,18 @@ struct TileLangIRSpecializeCube
             rewriter.getUnitAttr());
       } else if (llvm::is_contained(cubeSpaces, srcSpace) &&
                  dstSpace == hivm::AddressSpace::GM) {
+#if defined(TILELANG_ASCEND_CANN_VERSION_8_5_0)
         rewriter.replaceOpWithNewOp<hivm::FixpipeOp>(
             op, TypeRange{}, op.getSource(), op.getTarget(),
             rewriter.getUnitAttr());
+#elif defined(TILELANG_ASCEND_CANN_VERSION_9_0_0_BETA2)
+        auto dmaMode = hivm::FixpipeDMAModeAttr::get(
+            rewriter.getContext(), hivm::FixpipeDMAMode::NZ2ND);
+        rewriter.replaceOpWithNewOp<hivm::FixpipeOp>(
+            op, TypeRange{}, op.getSource(), op.getTarget(), dmaMode);
+#else
+#error "Unsupported TILELANG_ASCEND_CANN_VERSION for FixpipeOp specialization"
+#endif
       }
     });
   }
