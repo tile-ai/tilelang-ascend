@@ -35,7 +35,7 @@ concurrency:
   # PR 场景：按 PR 分支名分组，同一 PR 的新 push 共享同一组
   # 手动/定时场景：head_ref 为空，退化为 github.run_id（每次唯一），互不干扰
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
-  # 同一组中有新运行时，自动取消旧的正在运行的 workflow
+  # 同一组中有新运行时，自动取消旧的正在运行的 workflow 
   cancel-in-progress: true
   
 jobs:
@@ -43,7 +43,7 @@ jobs:
     name: Benchmark Tests (Ascend NPU)
     runs-on: [self-hosted, Linux, X64, ascend_910b] 
     if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.run_tests == 'true' }}
-    timeout-minutes: 120
+    timeout-minutes: 60            # 1小时超时失败
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
