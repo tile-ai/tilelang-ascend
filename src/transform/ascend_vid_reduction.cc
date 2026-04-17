@@ -572,6 +572,57 @@ private:
     // Check if there is exactly one UB Buffer
     bool src_is_ub = IsUbBuffer(src_buf);
     bool dst_is_ub = IsUbBuffer(dst_buf);
+    bool src_was_vid_reduced = origin_to_new_buffer_.count(src_buf) > 0;
+    bool dst_was_vid_reduced = origin_to_new_buffer_.count(dst_buf) > 0;
+
+    // Handle UB -> UB case where both buffers are vid-reduced
+    if (src_is_ub && dst_is_ub && src_was_vid_reduced && dst_was_vid_reduced) {
+      int src_dims = src_buf->shape.size();
+      int dst_dims = dst_buf->shape.size();
+
+      // Refactor src UB Region
+      Array<PrimExpr> src_region_args = src_region->args;
+      size_t src_target_idx = src_region_args.size() - src_dims;
+      for (size_t i = 0; i < src_region_args.size(); i++) {
+        if (i == src_target_idx) {
+          if (ExtentIsEqualOne(src_region_args[i])) {
+            src_region_args.Set(i, VisitExpr(src_region_args[i]));
+          } else {
+            src_region_args.Set(i, VisitExpr(indexdiv(src_region_args[i], threads_cnt_)));
+          }
+        } else {
+          src_region_args.Set(i, VisitExpr(src_region_args[i]));
+        }
+      }
+      Call modified_src_region = Call(src_region->dtype, src_region->op, src_region_args, src_region->span);
+
+      // Refactor dst UB Region
+      Array<PrimExpr> dst_region_args = dst_region->args;
+      size_t dst_target_idx = dst_region_args.size() - dst_dims;
+      for (size_t i = 0; i < dst_region_args.size(); i++) {
+        if (i == dst_target_idx) {
+          if (ExtentIsEqualOne(dst_region_args[i])) {
+            dst_region_args.Set(i, VisitExpr(dst_region_args[i]));
+          } else {
+            dst_region_args.Set(i, VisitExpr(indexdiv(dst_region_args[i], threads_cnt_)));
+          }
+        } else {
+          dst_region_args.Set(i, VisitExpr(dst_region_args[i]));
+        }
+      }
+      Call modified_dst_region = Call(dst_region->dtype, dst_region->op, dst_region_args, dst_region->span);
+
+      // Refactor tl.ascend_copy
+      Array<PrimExpr> new_copy_args = ascend_copy->args;
+      new_copy_args.Set(0, modified_src_region);
+      new_copy_args.Set(1, modified_dst_region);
+      for (size_t i = 2; i < new_copy_args.size(); ++i) {
+        new_copy_args.Set(i, VisitExpr(new_copy_args[i]));
+      }
+
+      return Call(ascend_copy->dtype, ascend_copy->op, new_copy_args, ascend_copy->span);
+    }
+
     bool only_one_ub = (src_is_ub && !dst_is_ub) || (!src_is_ub && dst_is_ub);
     if (!only_one_ub) {
       return IRMutatorWithAnalyzer::VisitExpr_(op);
