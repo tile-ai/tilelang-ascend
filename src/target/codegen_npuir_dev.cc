@@ -1956,35 +1956,66 @@ static inline constexpr bool startsWith(std::string_view str,
 ///        %.* = <linalg>.<op> ins(%A_trans) outs(B) -> tensor<>
 ///        or
 ///     %.* = hivm.hir.<op> ins(A) outs(B) -> tensor<>
+namespace {
+struct LinalgOpTag {};
+template <mlir::linalg::UnaryFn Fn>
+struct LinalgUnaryTag : LinalgOpTag {
+  static constexpr mlir::linalg::UnaryFn fn = Fn;
+};
+
+struct HFusionOpTag {};
+template <hfusion::UnaryFn Fn>
+struct HFusionUnaryTag : HFusionOpTag {
+  static constexpr hfusion::UnaryFn fn = Fn;
+};
+}
+
+template <mlir::linalg::UnaryFn Fn>
+static mlir::Value createLinalgElemwiseUnary(mlir::OpBuilder &builder,
+                                                 mlir::Location loc,
+                                                 mlir::Value input,
+                                                 mlir::Value out) {
+  auto attr = builder.getAttr<mlir::linalg::UnaryFnAttr>(Fn);
+  auto fnAttr = builder.getNamedAttr("fun", attr);
+  auto newOp = builder.create<mlir::linalg::ElemwiseUnaryOp>(
+      loc, mlir::ValueRange{input}, mlir::ValueRange{out}, fnAttr);
+  return newOp->getResult(0);
+}
+
+template <hfusion::UnaryFn hfusionFn>
+static mlir::Value createHFusionUnary(mlir::OpBuilder &builder,
+                                        mlir::Location loc,
+                                        mlir::Value input,
+                                        mlir::Value out) {
+  auto attr = builder.getAttr<hfusion::UnaryFnAttr>(hfusionFn);
+  auto fnAttr = builder.getNamedAttr("fun", attr);
+  auto newOp = builder.create<hfusion::ElemwiseUnaryOp>(
+      loc, mlir::ValueRange{input}, mlir::ValueRange{out}, fnAttr);
+  return newOp->getResult(0);
+}
+
 template <typename T, typename U>
 void CodeGenTileLangNPUIRDEV::UnaryVecOpCodegen(const CallNode *op) {
   T npuirop(op->args, this->vmap);
   auto in_data_name = GetVarValue(npuirop.src);
   auto out_data_name = GetVarValue(npuirop.dst);
   auto dims = getBroadcastDim(npuirop.src->shape, npuirop.dst->shape);
-  mlir::Type dst_type = out_data_name.getType();
   auto loc = builder.getUnknownLoc();
   mlir::Value newOpValue;
 
   auto transposeAttr = builder.getDenseI64ArrayAttr({});
   auto broadcastAttr = builder.getDenseI64ArrayAttr(dims);
 
-  if constexpr (startsWith(U::getOperationName(),
-                           mlir::hivm::HIVMDialect::getDialectNamespace())) {
-    // Create HIVM Op
-    auto newOp = builder.create<U>(
-        loc, 
-        mlir::TypeRange{&dst_type, 1}, 
-        in_data_name, 
-        out_data_name, 
-        transposeAttr, 
-        broadcastAttr
-    );
-    newOpValue = newOp->getResult(0);
-  } else {
-    in_data_name = broadcastOrTranspose(in_data_name, out_data_name, 
-                                        broadcastAttr, transposeAttr, builder);
+  in_data_name = broadcastOrTranspose(in_data_name, out_data_name,
+                                      broadcastAttr, transposeAttr, builder);
 
+  if constexpr (std::is_base_of_v<HFusionOpTag, U>) {
+    newOpValue = createHFusionUnary<U::fn>(builder, loc, in_data_name, out_data_name);
+  }
+  else if constexpr (std::is_base_of_v<LinalgOpTag, U>) {
+    newOpValue = createLinalgElemwiseUnary<U::fn>(builder, loc, in_data_name, out_data_name);
+  }
+  else {
     newOpValue = builder.create<U>(loc, out_data_name.getType(), in_data_name);
   }
 
