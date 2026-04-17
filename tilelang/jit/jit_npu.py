@@ -1289,16 +1289,9 @@ class compiler_npu:
             _compile_option_list = [
                 "--enable-auto-multi-buffer=true",
                 "--enable-triton-kernel-compile=true",
-                "--enable-hivm-compile=true",
+                "--enable-hfusion-compile=false",
+                "--enable-hivm-compile=false",
             ]
-
-            TILELANG_ASCEND_MODE = os.environ.get("TILELANG_ASCEND_MODE")
-            if TILELANG_ASCEND_MODE is None or TILELANG_ASCEND_MODE.lower().strip() in [
-                "expert",
-                "exp",
-                "e",
-            ]:
-                _compile_option_list.append("--disable-hivm-tensor-compile=true")
 
             cmd_list = (
                 [npu_compiler_path, ttadapter_path]

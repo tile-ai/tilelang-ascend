@@ -229,6 +229,111 @@ def device_codegen_without_compile(
     return device_mod
 
 
+def _add_hivm_canonicalization_pipeline(pipeline: Pipeline) -> None:
+    """Match canonicalizationHIVMPipeline() from HIVMPipelines.cpp."""
+    pipeline.add(transforms.mlir.arith_to_affine)
+    pipeline.add(transforms.mlir.scf_canonicalize_iter_arg)
+    pipeline.add(transforms.bishengir.canonicalize_ext)
+    pipeline.add(transforms.mlir.scf_for_loop_canonicalization)
+    pipeline.add(transforms.mlir.cse)
+    pipeline.add(transforms.mlir.canonicalize_ext_func)
+    pipeline.add(transforms.bishengir.opt_single_point)
+    pipeline.add(transforms.mlir.canonicalize_ext_func)
+    pipeline.add(transforms.mlir.memref_dse)
+
+
+def _add_hivm_infer_and_set_buffer_size_pipeline(pipeline: Pipeline) -> None:
+    """Match inferAndSetBufferSizePipeline() from HIVMPipelines.cpp."""
+    pipeline.add(transforms.bishengir.auto_infer_buffer_size)
+    pipeline.add(transforms.mlir.arith_to_affine)
+    pipeline.add(transforms.bishengir.constantize_buffer_size)
+    pipeline.add(transforms.bishengir.set_buffer_size)
+
+
+def _add_hivm_post_bufferization_pipeline(pipeline: Pipeline) -> None:
+    """Replay the HIVM tail used by optimize-hivm-pipeline.
+
+    TileLang's NPU lowering already emits buffer-form HIVM IR, so we only need
+    the late HIVM passes that normally run after tensor compilation.
+    """
+    pipeline.add(transforms.bishengir.init_entry_kernel)
+    pipeline.add(transforms.bishengir.lift_zero_rank)
+    pipeline.add(transforms.mlir.map_for_to_forall)
+    pipeline.add(transforms.bishengir.map_forall_to_blocks)
+    pipeline.add(transforms.bishengir.decompose_op)
+    pipeline.add(transforms.bishengir.sync_block_hoisting)
+    pipeline.add(transforms.bishengir.bind_sync_block_lock_arg)
+    pipeline.add(
+        transforms.bishengir.insert_infer_sync_block_lock_num_and_init_func
+    )
+    pipeline.add(transforms.bishengir.sync_block_lock_lowering)
+    pipeline.add(transforms.bishengir.convert_non_contiguous_reshape_to_copy)
+    pipeline.add(transforms.bishengir.infer_mem_scope)
+    pipeline.add(transforms.bishengir.decompose_op)
+    pipeline.add(
+        transforms.bishengir.aggregated_decompose_op,
+        decompose_phase="before-hivm-align",
+    )
+    pipeline.add(transforms.bishengir.recognize_deinterleave_op)
+    pipeline.add(
+        transforms.bishengir.aggregated_decompose_op,
+        decompose_phase="after-hivm-recognize-deinterleave",
+    )
+    pipeline.add(
+        transforms.bishengir.aggregated_decompose_op,
+        decompose_phase="after-hivm-recognize-broadcast",
+    )
+    pipeline.add(transforms.bishengir.align_alloc_size)
+    pipeline.add(transforms.bishengir.mark_stride_align)
+    pipeline.add(transforms.bishengir.fold_alloc_reshape)
+    pipeline.add(transforms.bishengir.enable_stride_align)
+    pipeline.add(
+        transforms.bishengir.aggregated_decompose_op,
+        decompose_phase="after-hivm-align",
+    )
+    pipeline.add(transforms.bishengir.infer_data_layout)
+    pipeline.add(
+        transforms.bishengir.aggregated_decompose_op,
+        decompose_phase="after-infer-hivm-data-layout",
+    )
+    pipeline.add(transforms.bishengir.canonicalize_ext)
+    _add_hivm_infer_and_set_buffer_size_pipeline(pipeline)
+    pipeline.add(transforms.bishengir.flatten_ops)
+    pipeline.add(
+        transforms.bishengir.aggregated_decompose_op,
+        decompose_phase="after-hivm-flatten-ops",
+    )
+    pipeline.add(transforms.bishengir.reduce_rank_subview)
+    pipeline.add(transforms.bishengir.lift_lowest_stride)
+    pipeline.add(
+        transforms.bishengir.aggregated_decompose_op,
+        decompose_phase="after-hivm-lift-lowest-stride",
+    )
+    pipeline.add(transforms.bishengir.alloc_extra_buffer)
+    pipeline.add(transforms.bishengir.infer_mem_scope)
+    _add_hivm_canonicalization_pipeline(pipeline)
+    pipeline.add(transforms.bishengir.inline_load_copy)
+    pipeline.add(
+        "func.func("
+        "hivm-mark-multi-buffer{enable-auto=true "
+        "limit-auto-multi-buffer-only-for-local-buffer=true}"
+        ")"
+    )
+    pipeline.add(transforms.bishengir.plan_memory)
+    pipeline.add(transforms.bishengir.lower_to_loops)
+    pipeline.add(transforms.bishengir.decompose_op)
+    pipeline.add(transforms.bishengir.graph_sync_solver)
+    pipeline.add(transforms.bishengir.add_ffts_to_syncblocksetop)
+    pipeline.add(transforms.bishengir.enable_multi_buffer)
+    pipeline.add(transforms.bishengir.lift_lowest_stride)
+    pipeline.add(transforms.mlir.inline_scope, force_inline=True)
+    pipeline.add(transforms.bishengir.enable_hivmc_compatible_print)
+    pipeline.add(transforms.bishengir.annotation_lowering)
+    pipeline.add(transforms.bishengir.insert_init_and_finish_for_debug)
+    pipeline.add(transforms.bishengir.mark_disable_load)
+    pipeline.add(transforms.bishengir.convert_hivm_to_std)
+
+
 def lower(
     func_or_mod: Union[tir.PrimFunc, tvm.IRModule],
     target: Union[str, Target] = "auto",
@@ -280,9 +385,14 @@ def lower(
             print("====== npuir ======")
             print(mlir_str)
         pipeline = Pipeline()
+        pipeline.add(transforms.bishengir.canonicalize_module)
         pipeline.add(transforms.mlir.canonicalize, top_down=True)
         pipeline.add(
             transforms.bishengir.adapt_triton_kernel,
+            hivmc_version=get_configured_hivmc_version(),
+        )
+        pipeline.add(
+            transforms.bishengir.append_device_spec,
             hivmc_version=get_configured_hivmc_version(),
         )
         pipeline.add(transforms.tilelangir.insert_workspace)
@@ -300,6 +410,10 @@ def lower(
         pipeline.add(transforms.bishengir.lower_memref_ext)
         pipeline.add(transforms.tilelangir.split_mix_kernel)
         pipeline.add(transforms.tilelangir.wrap_host_function)
+        pipeline.add(transforms.bishengir.triton_global_kernel_args_to_hivm_op)
+        pipeline.add(transforms.bishengir.convert_tensor_to_hivm)
+        pipeline.add(transforms.bishengir.convert_to_hivm_op)
+        _add_hivm_post_bufferization_pipeline(pipeline)
         if dump_ir:
             pipeline.enable_ir_printing()
         mlir_str = pipeline.run(mlir_str)
