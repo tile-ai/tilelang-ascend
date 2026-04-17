@@ -2419,13 +2419,29 @@ void CodeGenTileLangNPUIRDEV::VreduceCodegen(const CallNode *op) {
         result = builder.create<mlir::arith::MulIOp>(loc, inputElem, accumElem);
       }
     } else if (npuirop.reduce_mode == "any" || npuirop.reduce_mode == "ori") {
+      if (!elemTy.isa<mlir::IntegerType>()) {
+        emitError(loc, "reduce_mode 'any'/'ori' requires integer element type");
+        return;
+      }
       result = builder.create<mlir::arith::OrIOp>(loc, inputElem, accumElem);
     } else if (npuirop.reduce_mode == "all") {
+      if (!elemTy.isa<mlir::IntegerType>()) {
+        emitError(loc, "reduce_mode 'all' requires integer element type");
+        return;
+      }
       result = builder.create<mlir::arith::AndIOp>(loc, inputElem, accumElem);
     } else if (npuirop.reduce_mode == "xori") {
+      if (!elemTy.isa<mlir::IntegerType>()) {
+        emitError(loc, "reduce_mode 'xori' requires integer element type");
+        return;
+      }
       result = builder.create<mlir::arith::XOrIOp>(loc, inputElem, accumElem);
     } else if (npuirop.reduce_mode == "none") {
       result = accumElem;
+    } else {
+      emitError(loc, "unknown reduce_mode: " + npuirop.reduce_mode);
+      return;
+    }
     }
 
     // TODO: max_with_index_left/max_with_index_right/min_with_index_left/min_with_index_right
@@ -3544,7 +3560,8 @@ mlir::Value CodeGenTileLangNPUIRDEV::VisitExpr_(const CallNode *op) {
     CreateHIVMBinaryVectorOp<mlir::arith::MaximumFOp, mlir::arith::MaxSIOp,
                              mlir::arith::MaxUIOp>(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_min"))) {
-    CreateHIVMBinaryVectorOp<mlir::hivm::VMinOp>(op);
+    CreateHIVMBinaryVectorOp<mlir::arith::MinimumFOp, mlir::arith::MinSIOp,
+                             mlir::arith::MinUIOp>(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_or"))) {
     CreateHIVMBinaryVectorOp<mlir::hivm::VOrOp>(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_and"))) {
