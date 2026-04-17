@@ -3527,19 +3527,19 @@ mlir::Value CodeGenTileLangNPUIRDEV::VisitExpr_(const CallNode *op) {
   } else if (op->op.same_as(Op::Get("tl.npuir_exp"))) {
     UnaryVecOpCodegen<tvm::tl::NpuirExp, mlir::math::ExpOp>(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_ln"))) {
-    UnaryVecOpCodegen<tvm::tl::NpuirLn, mlir::hivm::VLnOp>(op);
+    UnaryVecOpCodegen<tvm::tl::NpuirLn, LinalgUnaryTag<mlir::linalg::UnaryFn::log>>(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_relu"))) {
-    UnaryVecOpCodegen<tvm::tl::NpuirRelu, mlir::hivm::VReluOp>(op);
+    UnaryVecOpCodegen<tvm::tl::NpuirRelu, HFusionUnaryTag<hfusion::UnaryFn::relu>>(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_sqrt"))) {
-    UnaryVecOpCodegen<tvm::tl::NpuirSqrt, mlir::hivm::VSqrtOp>(op);
+    UnaryVecOpCodegen<tvm::tl::NpuirSqrt, LinalgUnaryTag<mlir::linalg::UnaryFn::sqrt>>(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_rsqrt"))) {
-    UnaryVecOpCodegen<tvm::tl::NpuirRsqrt, mlir::hivm::VRsqrtOp>(op);
+    UnaryVecOpCodegen<tvm::tl::NpuirRsqrt, LinalgUnaryTag<mlir::linalg::UnaryFn::rsqrt>>(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_abs"))) {
-    UnaryVecOpCodegen<tvm::tl::NpuirAbs, mlir::hivm::VAbsOp>(op);
+    UnaryVecOpCodegen<tvm::tl::NpuirAbs, LinalgUnaryTag<mlir::linalg::UnaryFn::abs>>(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_rec"))) {
-    UnaryVecOpCodegen<tvm::tl::NpuirRec, mlir::hivm::VRecOp>(op);
+    UnaryVecOpCodegen<tvm::tl::NpuirRec, LinalgUnaryTag<mlir::linalg::UnaryFn::reciprocal>>(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_not"))) {
-    UnaryVecOpCodegen<tvm::tl::NpuirNot, mlir::hivm::VNotOp>(op);
+    UnaryVecOpCodegen<tvm::tl::NpuirNot, HFusionUnaryTag<hfusion::UnaryFn::vnot>>(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_select"))) {
     VselectCodegen(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_cmp"))) {
