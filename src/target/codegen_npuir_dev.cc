@@ -86,7 +86,9 @@
 
 #include "bishengir/Dialect/HACC/IR/HACC.h"
 #include "bishengir/Dialect/Utils/Util.h"
+#include "mlir/IR/TypeUtilities.h"
 #include "tvm/runtime/logging.h"
+#include "llvm/Support/Debug.h"
 
 using namespace mlir;
 
@@ -2842,6 +2844,16 @@ Value CodeGenTileLangNPUIRDEV::broadcastOrTranspose(Value input, Value output,
   return result;
 }
 
+template<typename T, typename = void>
+struct has_hivm_operation_name {
+    static constexpr bool value = false;
+};
+template<typename T>
+struct has_hivm_operation_name<T, std::void_t<decltype(T::getOperationName())>> {
+    static constexpr bool value = startsWith(T::getOperationName(), mlir::hivm::HIVMDialect::getDialectNamespace());
+};
+
+
 /// Generate hivm.hir.vadd for tl.npuir_add.
 /// Generate hivm.hir.vcmp for tl.npuir_cmp.
 /// Generate hivm.hir.vdiv for tl.npuir_div.
@@ -2945,63 +2957,76 @@ void CodeGenTileLangNPUIRDEV::CreateHIVMBinaryVectorOp(const CallNode *op) {
   auto loc = builder.getUnknownLoc();
   mlir::Value newOpValue;
 
-  if constexpr (std::is_same_v<T, mlir::hivm::VCmpOp>) {
-    mlir::hivm::CompareMode mode =
+  if constexpr (has_hivm_operation_name<T>::value) {
+    static_assert(
+        std::is_void_v<U> && std::is_void_v<V>,
+        "Dispatch logic is not applied for hivm ops. U and V should be void");
+    if constexpr (std::is_same_v<T, mlir::hivm::VCmpOp>) {
+      mlir::hivm::CompareMode mode =
           COMPARE_MODE[op->args[3].as<StringImm>().value()->value];
-    auto cmp_attr =
-        mlir::hivm::CompareModeAttr::get(builder.getContext(), mode);
-    auto newOp = builder.create<T>(loc, insertBase.getType(), mlir::ValueRange{src0, src1},
-        mlir::ValueRange{insertBase}, cmp_attr, transpose, broadcast);
-    newOpValue = newOp->getResult(0);
-  } else if constexpr (std::is_same_v<T, mlir::hivm::VPowOp>) {
-    auto newOp = builder.create<T>(loc, insertBase.getType(), mlir::ValueRange{src0, src1},
-        mlir::ValueRange{insertBase}, mlir::Value(), transpose, broadcast);
-    newOpValue = newOp->getResult(0);
-  } else if constexpr (std::is_same_v<T, mlir::hivm::VShROp>) {
-    auto round_attr = mlir::BoolAttr::get(
-        builder.getContext(), op->args[3].as<Bool>().value());
-    auto newOp = builder.create<T>(loc, insertBase.getType(), mlir::ValueRange{src0, src1},
-        mlir::ValueRange{insertBase}, round_attr, transpose, broadcast);
-    newOpValue = newOp->getResult(0);
+      auto cmp_attr =
+          mlir::hivm::CompareModeAttr::get(builder.getContext(), mode);
+      auto newOp = builder.create<T>(
+          loc, insertBase.getType(), mlir::ValueRange{src0, src1},
+          mlir::ValueRange{insertBase}, cmp_attr, transpose, broadcast);
+      newOpValue = newOp->getResult(0);
+    } else if constexpr (std::is_same_v<T, mlir::hivm::VPowOp>) {
+      auto newOp = builder.create<T>(
+          loc, insertBase.getType(), mlir::ValueRange{src0, src1},
+          mlir::ValueRange{insertBase}, mlir::Value(), transpose, broadcast);
+      newOpValue = newOp->getResult(0);
     } else if constexpr (std::is_same_v<T, mlir::hivm::VDivOp>) {
-    auto newOp = builder.create<T>(loc, insertBase.getType(), mlir::ValueRange{src0, src1},
-        mlir::ValueRange{insertBase}, true, transpose, broadcast);
-    newOpValue = newOp->getResult(0);
-    } else if constexpr (startsWith(
-                             T::getOperationName(),
-                             mlir::hivm::HIVMDialect::getDialectNamespace())) {
+      auto newOp = builder.create<T>(
+          loc, insertBase.getType(), mlir::ValueRange{src0, src1},
+          mlir::ValueRange{insertBase}, true, transpose, broadcast);
+      newOpValue = newOp->getResult(0);
+    } else {
       auto newOp = builder.create<T>(
           loc, insertBase.getType(), mlir::ValueRange{src0, src1},
           mlir::ValueRange{insertBase}, transpose, broadcast);
       newOpValue = newOp->getResult(0);
-    } else {
-      src0 = broadcastOrTranspose(src0, insertBase, brc0, transpose, builder);
-      src1 = broadcastOrTranspose(src1, insertBase, brc1, transpose, builder);
-
-      const auto dstElemType =
-          insertBase.getType().cast<ShapedType>().getElementType();
-      if (std::is_same_v<U, void> || dstElemType.isa<FloatType>())
-        newOpValue = builder.create<T>(loc, insertBase.getType(), src0, src1)
-                         .getResult();
-      else {
-        // NOTE: The logic is done in this way to avoid code repitition because
-        // of the else branch
-        bool usedV = false;
-        if constexpr (!std::is_same_v<V, void>) {
-          if (dstElemType.cast<IntegerType>().isUnsigned()) {
-            newOpValue =
-                builder.create<V>(loc, insertBase.getType(), src0, src1)
-                    .getResult();
-            usedV = true;
-          }
+    }
+  } else {
+    src0 = broadcastOrTranspose(src0, insertBase, brc0, transpose, builder);
+    src1 = broadcastOrTranspose(src1, insertBase, brc1, transpose, builder);
+    // FIXME: The dispatch logic is currently based on the dst element type.
+    // However, signed and unsigned int types are both converted to signless int
+    // type in npuir. We need to find a better way to dispatch different int
+    // types to the correct op
+    mlir::Type srcType = getElementTypeOrSelf(src0.getType());
+    do {
+      if constexpr (!std::is_void_v<T>)
+        // If only T is provided, always build T
+        // If not only T is provided, T will be float op, check if dst element
+        // type is float, if yes, build T
+        if ((std::is_void_v<U> && std::is_void_v<V>) ||
+            isa<FloatType>(srcType)) {
+          newOpValue = builder.create<T>(loc, insertBase.getType(), src0, src1)
+                           .getResult();
+          break;
         }
-
-        if (!usedV) {
+      if constexpr (!std::is_void_v<U>)
+        // If only T, U are provided, U will be int op, check if dst element
+        // type is int, if yes, build U If T, U, V are provided, U will be int
+        // signed op, check if dst element type is int unsigned (or signless),
+        // if yes, build U
+        if (auto maybeIntType = dyn_cast<IntegerType>(srcType);
+            maybeIntType && (std::is_void_v<V> || !maybeIntType.isUnsigned())) {
           newOpValue = builder.create<U>(loc, insertBase.getType(), src0, src1)
                            .getResult();
+          break;
         }
-      }
-    }
+      if constexpr (!std::is_void_v<V>)
+        // V will be int unsigned op, check if dst element type is int unsigned
+        // (or signless), if yes, build V
+        if (srcType.isUnsignedInteger() || srcType.isSignlessInteger()) {
+          newOpValue = builder.create<V>(loc, insertBase.getType(), src0, src1)
+                           .getResult();
+          break;
+        }
+      assert(false && "Unsupported dst element type for binary op");
+    } while (false);
+  }
 
   mlir::Value result = needInsertSlice
     ? ReshapeCastAndInsertSlice(newOpValue, GetVarValue(region_node_dst), dst_range)
@@ -3537,17 +3562,17 @@ mlir::Value CodeGenTileLangNPUIRDEV::VisitExpr_(const CallNode *op) {
     CreateHIVMBinaryVectorOp<mlir::arith::MinimumFOp, mlir::arith::MinSIOp,
                              mlir::arith::MinUIOp>(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_or"))) {
-    CreateHIVMBinaryVectorOp<mlir::hivm::VOrOp>(op);
+    CreateHIVMBinaryVectorOp<void, mlir::arith::OrIOp>(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_and"))) {
-    CreateHIVMBinaryVectorOp<mlir::hivm::VAndOp>(op);
+    CreateHIVMBinaryVectorOp<void, mlir::arith::AndIOp>(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_xor"))) {
-    CreateHIVMBinaryVectorOp<mlir::hivm::VXorOp>(op);
+    CreateHIVMBinaryVectorOp<void, mlir::arith::XOrIOp>(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_pow"))) {
     CreateHIVMBinaryVectorOp<mlir::hivm::VPowOp>(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_shl"))) {
-    CreateHIVMBinaryVectorOp<mlir::hivm::VShLOp>(op);
+    CreateHIVMBinaryVectorOp<void, mlir::arith::ShLIOp>(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_shr"))) {
-    CreateHIVMBinaryVectorOp<mlir::hivm::VShROp>(op);
+    CreateHIVMBinaryVectorOp<void, mlir::arith::ShRSIOp, mlir::arith::ShRUIOp>(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_brc"))) {
     VbrcCodegen(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_cast"))) {
