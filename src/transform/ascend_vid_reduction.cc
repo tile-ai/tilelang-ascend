@@ -563,6 +563,7 @@ private:
     ICHECK(Downcast<Op>(dst_region->op)->name == "tl.region")
         << "args[1] must be tl.region";
 
+    // Extract BufferLoad and Buffer from the two regions
     BufferLoad src_load = ExtractBufferLoadFromRegion(src_region);
     BufferLoad dst_load = ExtractBufferLoadFromRegion(dst_region);
     Buffer src_buf = src_load->buffer;
@@ -661,18 +662,27 @@ private:
 
   PrimExpr VisitExpr_(const BufferLoadNode *op) final {
     auto it = origin_to_new_buffer_.find(op->buffer);
-    if (it != origin_to_new_buffer_.end()) {
-      return BufferLoad(it->second, op->indices);
+    Array<PrimExpr> new_indices;
+    for (const PrimExpr &idx : op->indices) {
+      new_indices.push_back(VisitExpr(idx));
     }
-    return IRMutatorWithAnalyzer::VisitExpr_(op);
+    if (it != origin_to_new_buffer_.end()) {
+      return BufferLoad(it->second, new_indices);
+    }
+    return BufferLoad(op->buffer, new_indices);
   }
 
   Stmt VisitStmt_(const BufferStoreNode *op) final {
     auto it = origin_to_new_buffer_.find(op->buffer);
-    if (it != origin_to_new_buffer_.end()) {
-      return BufferStore(it->second, op->value, op->indices);
+    PrimExpr new_value = VisitExpr(op->value);
+    Array<PrimExpr> new_indices;
+    for (const PrimExpr &idx : op->indices) {
+      new_indices.push_back(VisitExpr(idx));
     }
-    return IRMutatorWithAnalyzer::VisitStmt_(op);
+    if (it != origin_to_new_buffer_.end()) {
+      return BufferStore(it->second, new_value, new_indices);
+    }
+    return BufferStore(op->buffer, new_value, new_indices);
   }
 
   Stmt VisitStmt_(const AttrStmtNode *op) final {
