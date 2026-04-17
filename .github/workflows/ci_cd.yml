@@ -19,7 +19,7 @@ on:
       - 'docs/**'
       - 'images/**'
 
-  # 手动触发（通过 GitHub Actions 页面）
+  # 手动触发（通过 GitHub Actions 页面点击）
   workflow_dispatch:
     inputs:
       run_tests:
