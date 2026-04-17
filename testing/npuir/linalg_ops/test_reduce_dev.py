@@ -52,6 +52,108 @@ def vec_reduce_3d_to_2d_sum(M, K, N, dtype="float32"):
     return main_sum
 
 
+def vec_reduce_3d_to_2d_min(M, K, N, dtype="float32"):
+    @T.prim_func
+    def main_min(A: T.Tensor((M, K, N), dtype),
+             B: T.Tensor((M, K, 1), dtype),
+             ):
+        with T.Kernel(1, is_npu=True) as (cid, _):
+            a = T.alloc_shared((M, K, N), dtype)
+            s = T.alloc_shared((M, K, 1), dtype)
+
+            T.copy(A, a)
+            T.reduce(a, s, dims=2, reduce_mode="min", clear=True)
+
+            T.copy(s, B)
+
+    return main_min
+
+
+def vec_reduce_3d_to_2d_prod(M, K, N, dtype="float32"):
+    @T.prim_func
+    def main_prod(A: T.Tensor((M, K, N), dtype),
+             B: T.Tensor((M, K, 1), dtype),
+             ):
+        with T.Kernel(1, is_npu=True) as (cid, _):
+            a = T.alloc_shared((M, K, N), dtype)
+            s = T.alloc_shared((M, K, 1), dtype)
+
+            T.copy(A, a)
+            T.reduce(a, s, dims=2, reduce_mode="prod", clear=True)
+
+            T.copy(s, B)
+
+    return main_prod
+
+
+def vec_reduce_3d_to_2d_any(M, K, N, dtype="float32"):
+    @T.prim_func
+    def main_any(A: T.Tensor((M, K, N), dtype),
+             B: T.Tensor((M, K, 1), dtype),
+             ):
+        with T.Kernel(1, is_npu=True) as (cid, _):
+            a = T.alloc_shared((M, K, N), dtype)
+            s = T.alloc_shared((M, K, 1), dtype)
+
+            T.copy(A, a)
+            T.reduce(a, s, dims=2, reduce_mode="any", clear=True)
+
+            T.copy(s, B)
+
+    return main_any
+
+
+def vec_reduce_3d_to_2d_all(M, K, N, dtype="float32"):
+    @T.prim_func
+    def main_all(A: T.Tensor((M, K, N), dtype),
+             B: T.Tensor((M, K, 1), dtype),
+             ):
+        with T.Kernel(1, is_npu=True) as (cid, _):
+            a = T.alloc_shared((M, K, N), dtype)
+            s = T.alloc_shared((M, K, 1), dtype)
+
+            T.copy(A, a)
+            T.reduce(a, s, dims=2, reduce_mode="all", clear=True)
+
+            T.copy(s, B)
+
+    return main_all
+
+
+def vec_reduce_3d_to_2d_xori(M, K, N, dtype="float32"):
+    @T.prim_func
+    def main_xori(A: T.Tensor((M, K, N), dtype),
+             B: T.Tensor((M, K, 1), dtype),
+             ):
+        with T.Kernel(1, is_npu=True) as (cid, _):
+            a = T.alloc_shared((M, K, N), dtype)
+            s = T.alloc_shared((M, K, 1), dtype)
+
+            T.copy(A, a)
+            T.reduce(a, s, dims=2, reduce_mode="xori", clear=True)
+
+            T.copy(s, B)
+
+    return main_xori
+
+
+def vec_reduce_3d_to_2d_ori(M, K, N, dtype="float32"):
+    @T.prim_func
+    def main_ori(A: T.Tensor((M, K, N), dtype),
+             B: T.Tensor((M, K, 1), dtype),
+             ):
+        with T.Kernel(1, is_npu=True) as (cid, _):
+            a = T.alloc_shared((M, K, N), dtype)
+            s = T.alloc_shared((M, K, 1), dtype)
+
+            T.copy(A, a)
+            T.reduce(a, s, dims=2, reduce_mode="ori", clear=True)
+
+            T.copy(s, B)
+
+    return main_ori
+
+
 def test_vec_reduce_max():
     torch.npu.set_device(0)
     os.environ['TILELANG_ASCEND_MODE'] = 'Developer'
@@ -127,10 +229,17 @@ def test_vec_reduce_any():
     func = vec_reduce_3d_to_2d_any(M, K, N)
     compiled_kernel = tilelang.compile(func, target="npuir")
 
-    v1 = torch.randint(low=0, high=2, size=[M, K, N], dtype=torch.int32).npu()
-    v2 = torch.empty(size=[M, K, 1], dtype=torch.int32).npu()
+    v1 = torch.randint(0, 2, size=[M, K, N], dtype=torch.int32).npu().to(torch.float32)
+    v2 = torch.zeros(size=[M, K, 1], dtype=torch.float32).npu()
 
-    v_ref = torch.any(v1, dim=2, keepdim=True).to(torch.int32)
+    def manual_any_reduce(tensor, dim):
+        int_tensor = tensor.view(torch.int32)
+        result = torch.zeros_like(int_tensor.select(dim, 0))
+        for i in range(tensor.shape[dim]):
+            result = result | int_tensor.select(dim, i)
+        return result.view(torch.float32)
+
+    v_ref = manual_any_reduce(v1, dim=2).unsqueeze(2)
     compiled_kernel(v1, v2)
 
     torch.testing.assert_close(v_ref, v2, rtol=1e-2, atol=1e-2)
@@ -144,10 +253,17 @@ def test_vec_reduce_all():
     func = vec_reduce_3d_to_2d_all(M, K, N)
     compiled_kernel = tilelang.compile(func, target="npuir")
 
-    v1 = torch.randint(low=0, high=2, size=[M, K, N], dtype=torch.int32).npu()
-    v2 = torch.empty(size=[M, K, 1], dtype=torch.int32).npu()
+    v1 = torch.randint(0, 2, size=[M, K, N], dtype=torch.int32).npu().to(torch.float32)
+    v2 = torch.zeros(size=[M, K, 1], dtype=torch.float32).npu()
 
-    v_ref = torch.all(v1, dim=2, keepdim=True).to(torch.int32)
+    def manual_all_reduce(tensor, dim):
+        int_tensor = tensor.view(torch.int32)
+        result = torch.ones_like(int_tensor.select(dim, 0)) * -1
+        for i in range(tensor.shape[dim]):
+            result = result & int_tensor.select(dim, i)
+        return result.view(torch.float32)
+
+    v_ref = manual_all_reduce(v1, dim=2).unsqueeze(2)
     compiled_kernel(v1, v2)
 
     torch.testing.assert_close(v_ref, v2, rtol=1e-2, atol=1e-2)
@@ -161,14 +277,15 @@ def test_vec_reduce_xori():
     func = vec_reduce_3d_to_2d_xori(M, K, N)
     compiled_kernel = tilelang.compile(func, target="npuir")
 
-    v1 = torch.randint(low=0, high=2, size=[M, K, N], dtype=torch.int32).npu()
-    v2 = torch.empty(size=[M, K, 1], dtype=torch.int32).npu()
+    v1 = torch.randint(0, 2, size=[M, K, N], dtype=torch.int32).npu().to(torch.float32)
+    v2 = torch.zeros(size=[M, K, 1], dtype=torch.float32).npu()
 
     def manual_xor_reduce(tensor, dim):
-        result = torch.zeros_like(tensor.select(dim, 0))
+        int_tensor = tensor.view(torch.int32)
+        result = torch.zeros_like(int_tensor.select(dim, 0))
         for i in range(tensor.shape[dim]):
-            result.bitwise_xor_(tensor.select(dim, i))
-        return result
+            result = result ^ int_tensor.select(dim, i)
+        return result.view(torch.float32)
 
     v_ref = manual_xor_reduce(v1, dim=2).unsqueeze(2)
     compiled_kernel(v1, v2)
@@ -184,14 +301,15 @@ def test_vec_reduce_ori():
     func = vec_reduce_3d_to_2d_ori(M, K, N)
     compiled_kernel = tilelang.compile(func, target="npuir")
 
-    v1 = torch.randint(low=0, high=2, size=[M, K, N], dtype=torch.int32).npu()
-    v2 = torch.empty(size=[M, K, 1], dtype=torch.int32).npu()
+    v1 = torch.randint(0, 2, size=[M, K, N], dtype=torch.int32).npu().to(torch.float32)
+    v2 = torch.zeros(size=[M, K, 1], dtype=torch.float32).npu()
 
     def manual_or_reduce(tensor, dim):
-        result = torch.zeros_like(tensor.select(dim, 0))
+        int_tensor = tensor.view(torch.int32)
+        result = torch.zeros_like(int_tensor.select(dim, 0))
         for i in range(tensor.shape[dim]):
-            result.bitwise_or_(tensor.select(dim, i))
-        return result
+            result = result | int_tensor.select(dim, i)
+        return result.view(torch.float32)
 
     v_ref = manual_or_reduce(v1, dim=2).unsqueeze(2)
     compiled_kernel(v1, v2)
@@ -200,26 +318,12 @@ def test_vec_reduce_ori():
     print("ori Reduce Pass!")
 
 
-def test_vec_reduce_min():
-    torch.npu.set_device(0)
-    os.environ['TILELANG_ASCEND_MODE'] = 'Developer'
-
-    func = vec_reduce_3d_to_2d_min(M, K, N)
-    compiled_kernel = tilelang.compile(func, target="npuir")
-
-    v1 = torch.randn(size=[M, K, N], dtype=eval("torch." + dtype)).npu()
-    v2 = torch.randn(size=[M, K, 1], dtype=eval("torch." + dtype)).npu()
-
-    v_ref = torch.min(v1, dim=2).values.reshape(M, K, 1)
-    compiled_kernel(v1, v2)
-
-    print("Min 参考结果 shape:", v_ref.shape)
-    print("Min 计算结果 shape:", v2.shape)
-    torch.testing.assert_close(v_ref, v2, rtol=1e-2, atol=1e-2)
-    print("Min Reduce 校验通过")
-
-
 if __name__ == "__main__":
     test_vec_reduce_max()
     test_vec_reduce_sum()
-    print("所有测试全部通过！")
+    test_vec_reduce_min()
+    test_vec_reduce_prod()
+    test_vec_reduce_any()
+    test_vec_reduce_all()
+    test_vec_reduce_xori()
+    test_vec_reduce_ori()

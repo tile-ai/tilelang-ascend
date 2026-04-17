@@ -2419,24 +2419,36 @@ void CodeGenTileLangNPUIRDEV::VreduceCodegen(const CallNode *op) {
         result = builder.create<mlir::arith::MulIOp>(loc, inputElem, accumElem);
       }
     } else if (npuirop.reduce_mode == "any" || npuirop.reduce_mode == "ori") {
-      if (!elemTy.isa<mlir::IntegerType>()) {
-        emitError(loc, "reduce_mode 'any'/'ori' requires integer element type");
-        return;
+      if (elemTy.isa<mlir::FloatType>()) {
+        auto intTy = builder.getIntegerType(elemTy.getIntOrFloatBitWidth());
+        auto inputAsInt = builder.create<mlir::arith::BitcastOp>(loc, intTy, inputElem);
+        auto accumAsInt = builder.create<mlir::arith::BitcastOp>(loc, intTy, accumElem);
+        auto orResult = builder.create<mlir::arith::OrIOp>(loc, inputAsInt, accumAsInt);
+        result = builder.create<mlir::arith::BitcastOp>(loc, elemTy, orResult);
+      } else {
+        result = builder.create<mlir::arith::OrIOp>(loc, inputElem, accumElem);
       }
-      result = builder.create<mlir::arith::OrIOp>(loc, inputElem, accumElem);
     } else if (npuirop.reduce_mode == "all") {
-      if (!elemTy.isa<mlir::IntegerType>()) {
-        emitError(loc, "reduce_mode 'all' requires integer element type");
-        return;
+      if (elemTy.isa<mlir::FloatType>()) {
+        auto intTy = builder.getIntegerType(elemTy.getIntOrFloatBitWidth());
+        auto inputAsInt = builder.create<mlir::arith::BitcastOp>(loc, intTy, inputElem);
+        auto accumAsInt = builder.create<mlir::arith::BitcastOp>(loc, intTy, accumElem);
+        auto andResult = builder.create<mlir::arith::AndIOp>(loc, inputAsInt, accumAsInt);
+        result = builder.create<mlir::arith::BitcastOp>(loc, elemTy, andResult);
+      } else {
+        result = builder.create<mlir::arith::AndIOp>(loc, inputElem, accumElem);
       }
-      result = builder.create<mlir::arith::AndIOp>(loc, inputElem, accumElem);
     } else if (npuirop.reduce_mode == "xori") {
-      if (!elemTy.isa<mlir::IntegerType>()) {
-        emitError(loc, "reduce_mode 'xori' requires integer element type");
-        return;
+      if (elemTy.isa<mlir::FloatType>()) {
+        auto intTy = builder.getIntegerType(elemTy.getIntOrFloatBitWidth());
+        auto inputAsInt = builder.create<mlir::arith::BitcastOp>(loc, intTy, inputElem);
+        auto accumAsInt = builder.create<mlir::arith::BitcastOp>(loc, intTy, accumElem);
+        auto xorResult = builder.create<mlir::arith::XOrIOp>(loc, inputAsInt, accumAsInt);
+        result = builder.create<mlir::arith::BitcastOp>(loc, elemTy, xorResult);
+      } else {
+        result = builder.create<mlir::arith::XOrIOp>(loc, inputElem, accumElem);
       }
-      result = builder.create<mlir::arith::XOrIOp>(loc, inputElem, accumElem);
-    } else if (npuirop.reduce_mode == "none") {
+    }else if (npuirop.reduce_mode == "none") {
       result = accumElem;
     } else {
       emitError(loc, "unknown reduce_mode: " + npuirop.reduce_mode);
