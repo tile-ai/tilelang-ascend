@@ -1960,7 +1960,7 @@ namespace {
 struct LinalgOpTag {};
 template <mlir::linalg::UnaryFn Fn>
 struct LinalgUnaryTag : LinalgOpTag {
-  static constexpr mlir::linalg::UnaryFn fn = Fn;
+  static constexpr linalg::UnaryFn fn = Fn;
 };
 
 struct HFusionOpTag {};
@@ -3527,17 +3527,17 @@ mlir::Value CodeGenTileLangNPUIRDEV::VisitExpr_(const CallNode *op) {
   } else if (op->op.same_as(Op::Get("tl.npuir_exp"))) {
     UnaryVecOpCodegen<tvm::tl::NpuirExp, mlir::math::ExpOp>(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_ln"))) {
-    UnaryVecOpCodegen<tvm::tl::NpuirLn, LinalgUnaryTag<mlir::linalg::UnaryFn::log>>(op);
+    UnaryVecOpCodegen<tvm::tl::NpuirLn, LinalgUnaryTag<linalg::UnaryFn::log>>(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_relu"))) {
     UnaryVecOpCodegen<tvm::tl::NpuirRelu, HFusionUnaryTag<hfusion::UnaryFn::relu>>(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_sqrt"))) {
-    UnaryVecOpCodegen<tvm::tl::NpuirSqrt, LinalgUnaryTag<mlir::linalg::UnaryFn::sqrt>>(op);
+    UnaryVecOpCodegen<tvm::tl::NpuirSqrt, LinalgUnaryTag<linalg::UnaryFn::sqrt>>(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_rsqrt"))) {
-    UnaryVecOpCodegen<tvm::tl::NpuirRsqrt, LinalgUnaryTag<mlir::linalg::UnaryFn::rsqrt>>(op);
+    UnaryVecOpCodegen<tvm::tl::NpuirRsqrt, LinalgUnaryTag<linalg::UnaryFn::rsqrt>>(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_abs"))) {
-    UnaryVecOpCodegen<tvm::tl::NpuirAbs, LinalgUnaryTag<mlir::linalg::UnaryFn::abs>>(op);
+    UnaryVecOpCodegen<tvm::tl::NpuirAbs, LinalgUnaryTag<linalg::UnaryFn::abs>>(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_rec"))) {
-    UnaryVecOpCodegen<tvm::tl::NpuirRec, LinalgUnaryTag<mlir::linalg::UnaryFn::reciprocal>>(op);
+    UnaryVecOpCodegen<tvm::tl::NpuirRec, LinalgUnaryTag<linalg::UnaryFn::reciprocal>>(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_not"))) {
     UnaryVecOpCodegen<tvm::tl::NpuirNot, HFusionUnaryTag<hfusion::UnaryFn::vnot>>(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_select"))) {
