@@ -3,21 +3,21 @@ name: TileLang-Ascend CI
 
 # 触发条件
 on:
-  # push:
-  #   branches:
-  #     - ascendc_pto*                           # ascendc_pto 分支
-  #   paths-ignore:                              # 以下路径的修改不触发 CI
-  #     - '**.md'                                # Markdown 文件
-  #     - 'docs/**'                              # 文档目录
-  #     - 'images/**'                            # 图片目录
+  push:
+    branches:
+      - ascendc_pto*                           # ascendc_pto 分支
+    paths-ignore:                              # 以下路径的修改不触发 CI
+      - '**.md'                                # Markdown 文件
+      - 'docs/**'                              # 文档目录
+      - 'images/**'                            # 图片目录
 
-  # pull_request:
-  #   branches:
-  #     - ascendc_pto*
-  #   paths-ignore:
-  #     - '**.md'
-  #     - 'docs/**'
-  #     - 'images/**'
+  pull_request:
+    branches:
+      - ascendc_pto*
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'images/**'
 
   # 手动触发（通过 GitHub Actions 页面）
   workflow_dispatch:
@@ -31,6 +31,13 @@ on:
   schedule:
     - cron: '0 18 * * *' # 每天 UTC 18:00 运行 (北京时间凌晨 2:00)
 
+concurrency:
+  # PR 场景：按 PR 分支名分组，同一 PR 的新 push 共享同一组
+  # 手动/定时场景：head_ref 为空，退化为 github.run_id（每次唯一），互不干扰
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  # 同一组中有新运行时，自动取消旧的正在运行的 workflow
+  cancel-in-progress: true
+  
 jobs:
   test:
     name: Benchmark Tests (Ascend NPU)
