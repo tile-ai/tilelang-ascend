@@ -3127,9 +3127,9 @@ void CodeGenTileLangNPUIRDEV::DebugPrintCodegen(const CallNode *op) {
 //
 //after(MLIR Lowering):
 //  - materialize scalar constants (1,-1/2,1/24,-1/720)
-//  - compute x^2 x^4 x^6 via hivm::Vmul
+//  - compute x^2 x^4 x^6 via linalg::ElemwiseBinaryOp with mul
 //  - scale each term with corresponding constant
-//  - accumulate terms using hivm::Vadd
+//  - accumulate terms using linalg::ElemwiseBinaryOp with add
 //  - store the final result into destination vector
 //  - all intermediate results are lowered to tensor operations
 void CodeGenTileLangNPUIRDEV::VcosCodegen(const CallNode *op) {
@@ -3163,17 +3163,26 @@ void CodeGenTileLangNPUIRDEV::VcosCodegen(const CallNode *op) {
     Value x6 = mlir::utils::createTmpBufferOrTensorWithTargetType(builder, loc, src, elementType);
     Value tmp = mlir::utils::createTmpBufferOrTensorWithTargetType(builder, loc, src, elementType);
 
-    x2 = builder.create<mlir::hivm::VMulOp>(loc, src.getType(), ValueRange{src, src}, ValueRange{x2})->getResult(0);
-    x4 = builder.create<mlir::hivm::VMulOp>(loc, x2.getType(), ValueRange{x2, x2}, ValueRange{x4})->getResult(0);
-    x6 = builder.create<mlir::hivm::VMulOp>(loc, x2.getType(), ValueRange{x2, x4}, ValueRange{x6})->getResult(0);
+    x2 = builder.create<mlir::linalg::ElemwiseBinaryOp>(loc, ValueRange{src, src}, ValueRange{x2},
+        ArrayRef{builder.getNamedAttr("fun", builder.getAttr<mlir::linalg::BinaryFnAttr>(mlir::linalg::BinaryFn::mul))})->getResult(0);
+    x4 = builder.create<mlir::linalg::ElemwiseBinaryOp>(loc, ValueRange{x2, x2}, ValueRange{x4},
+        ArrayRef{builder.getNamedAttr("fun", builder.getAttr<mlir::linalg::BinaryFnAttr>(mlir::linalg::BinaryFn::mul))})->getResult(0);
+    x6 = builder.create<mlir::linalg::ElemwiseBinaryOp>(loc, ValueRange{x2, x4}, ValueRange{x6},
+        ArrayRef{builder.getNamedAttr("fun", builder.getAttr<mlir::linalg::BinaryFnAttr>(mlir::linalg::BinaryFn::mul))})->getResult(0);
 
-    x2 = builder.create<mlir::hivm::VMulOp>(loc, x2.getType(), ValueRange{x2, minusHalf}, ValueRange{x2})->getResult(0);
-    x4 = builder.create<mlir::hivm::VMulOp>(loc, x4.getType(), ValueRange{x4, oneOver24}, ValueRange{x4})->getResult(0);
-    x6 = builder.create<mlir::hivm::VMulOp>(loc, x6.getType(), ValueRange{x6, minusOneOver720}, ValueRange{x6})->getResult(0);
+    x2 = builder.create<mlir::linalg::ElemwiseBinaryOp>(loc, ValueRange{x2, minusHalf}, ValueRange{x2},
+        ArrayRef{builder.getNamedAttr("fun", builder.getAttr<mlir::linalg::BinaryFnAttr>(mlir::linalg::BinaryFn::mul))})->getResult(0);
+    x4 = builder.create<mlir::linalg::ElemwiseBinaryOp>(loc, ValueRange{x4, oneOver24}, ValueRange{x4},
+        ArrayRef{builder.getNamedAttr("fun", builder.getAttr<mlir::linalg::BinaryFnAttr>(mlir::linalg::BinaryFn::mul))})->getResult(0);
+    x6 = builder.create<mlir::linalg::ElemwiseBinaryOp>(loc, ValueRange{x6, minusOneOver720}, ValueRange{x6},
+        ArrayRef{builder.getNamedAttr("fun", builder.getAttr<mlir::linalg::BinaryFnAttr>(mlir::linalg::BinaryFn::mul))})->getResult(0);
 
-    tmp = builder.create<mlir::hivm::VAddOp>(loc, x2.getType(), ValueRange{x2, one}, ValueRange{tmp})->getResult(0);
-    tmp = builder.create<mlir::hivm::VAddOp>(loc, tmp.getType(), ValueRange{x4, tmp}, ValueRange{tmp})->getResult(0);
-    Value result = builder.create<mlir::hivm::VAddOp>(loc, dstVal.getType(), ValueRange{x6, tmp}, ValueRange{dstVal})->getResult(0);
+    tmp = builder.create<mlir::linalg::ElemwiseBinaryOp>(loc, ValueRange{x2, one}, ValueRange{tmp},
+        ArrayRef{builder.getNamedAttr("fun", builder.getAttr<mlir::linalg::BinaryFnAttr>(mlir::linalg::BinaryFn::add))})->getResult(0);
+    tmp = builder.create<mlir::linalg::ElemwiseBinaryOp>(loc, ValueRange{x4, tmp}, ValueRange{tmp},
+        ArrayRef{builder.getNamedAttr("fun", builder.getAttr<mlir::linalg::BinaryFnAttr>(mlir::linalg::BinaryFn::add))})->getResult(0);
+    Value result = builder.create<mlir::linalg::ElemwiseBinaryOp>(loc, ValueRange{x6, tmp}, ValueRange{dstVal},
+        ArrayRef{builder.getNamedAttr("fun", builder.getAttr<mlir::linalg::BinaryFnAttr>(mlir::linalg::BinaryFn::add))})->getResult(0);
     SetVarValue(npuirop.dst, result);
   }
 }
@@ -3187,9 +3196,9 @@ void CodeGenTileLangNPUIRDEV::VcosCodegen(const CallNode *op) {
 //
 // after(MLIR Lowering):
 //   - materialize scalar constants (1, -1, 6, 120, 5040) and compute coefficients
-//   - compute x^2, x^3, x^5, x^7 via hivm::VMul
+//   - compute x^2, x^3, x^5, x^7 via linalg::ElemwiseBinaryOp with mul
 //   - scale each term with corresponding coefficient (-1/6, 1/120, -1/5040)
-//   - accumulate terms using hivm::VAdd
+//   - accumulate terms using linalg::ElemwiseBinaryOp with add
 //   - store the final result into destination vector
 //   - all intermediate results are lowered to tensor operations
 void CodeGenTileLangNPUIRDEV::VsinCodegen(const CallNode *op) {
@@ -3223,18 +3232,28 @@ void CodeGenTileLangNPUIRDEV::VsinCodegen(const CallNode *op) {
     Value x7 = mlir::utils::createTmpBufferOrTensorWithTargetType(builder, loc, src, elementType);
     Value tmp = mlir::utils::createTmpBufferOrTensorWithTargetType(builder, loc, src, elementType);
 
-    x2 = builder.create<mlir::hivm::VMulOp>(loc, src.getType(), ValueRange{src, src}, ValueRange{x2})->getResult(0);
-    x3 = builder.create<mlir::hivm::VMulOp>(loc, x2.getType(), ValueRange{x2, src}, ValueRange{x3})->getResult(0);
-    x5 = builder.create<mlir::hivm::VMulOp>(loc, x3.getType(), ValueRange{x3, x2}, ValueRange{x5})->getResult(0);
-    x7 = builder.create<mlir::hivm::VMulOp>(loc, x5.getType(), ValueRange{x5, x2}, ValueRange{x7})->getResult(0);
+    x2 = builder.create<mlir::linalg::ElemwiseBinaryOp>(loc, ValueRange{src, src}, ValueRange{x2},
+        ArrayRef{builder.getNamedAttr("fun", builder.getAttr<mlir::linalg::BinaryFnAttr>(mlir::linalg::BinaryFn::mul))})->getResult(0);
+    x3 = builder.create<mlir::linalg::ElemwiseBinaryOp>(loc, ValueRange{x2, src}, ValueRange{x3},
+        ArrayRef{builder.getNamedAttr("fun", builder.getAttr<mlir::linalg::BinaryFnAttr>(mlir::linalg::BinaryFn::mul))})->getResult(0);
+    x5 = builder.create<mlir::linalg::ElemwiseBinaryOp>(loc, ValueRange{x3, x2}, ValueRange{x5},
+        ArrayRef{builder.getNamedAttr("fun", builder.getAttr<mlir::linalg::BinaryFnAttr>(mlir::linalg::BinaryFn::mul))})->getResult(0);
+    x7 = builder.create<mlir::linalg::ElemwiseBinaryOp>(loc, ValueRange{x5, x2}, ValueRange{x7},
+        ArrayRef{builder.getNamedAttr("fun", builder.getAttr<mlir::linalg::BinaryFnAttr>(mlir::linalg::BinaryFn::mul))})->getResult(0);
 
-    x3 = builder.create<mlir::hivm::VMulOp>(loc, x3.getType(), ValueRange{x3, minusOneOver6}, ValueRange{x3})->getResult(0);
-    x5 = builder.create<mlir::hivm::VMulOp>(loc, x5.getType(), ValueRange{x5, oneOver120}, ValueRange{x5})->getResult(0);
-    x7 = builder.create<mlir::hivm::VMulOp>(loc, x7.getType(), ValueRange{x7, minusOneOver5040}, ValueRange{x7})->getResult(0);
+    x3 = builder.create<mlir::linalg::ElemwiseBinaryOp>(loc, ValueRange{x3, minusOneOver6}, ValueRange{x3},
+        ArrayRef{builder.getNamedAttr("fun", builder.getAttr<mlir::linalg::BinaryFnAttr>(mlir::linalg::BinaryFn::mul))})->getResult(0);
+    x5 = builder.create<mlir::linalg::ElemwiseBinaryOp>(loc, ValueRange{x5, oneOver120}, ValueRange{x5},
+        ArrayRef{builder.getNamedAttr("fun", builder.getAttr<mlir::linalg::BinaryFnAttr>(mlir::linalg::BinaryFn::mul))})->getResult(0);
+    x7 = builder.create<mlir::linalg::ElemwiseBinaryOp>(loc, ValueRange{x7, minusOneOver5040}, ValueRange{x7},
+        ArrayRef{builder.getNamedAttr("fun", builder.getAttr<mlir::linalg::BinaryFnAttr>(mlir::linalg::BinaryFn::mul))})->getResult(0);
 
-    tmp = builder.create<mlir::hivm::VAddOp>(loc, src.getType(), ValueRange{src, x3}, ValueRange{tmp})->getResult(0);
-    tmp = builder.create<mlir::hivm::VAddOp>(loc, tmp.getType(), ValueRange{x5, tmp}, ValueRange{tmp})->getResult(0);
-    Value result = builder.create<mlir::hivm::VAddOp>(loc, dstVal.getType(), ValueRange{x7, tmp}, ValueRange{dstVal})->getResult(0);
+    tmp = builder.create<mlir::linalg::ElemwiseBinaryOp>(loc, ValueRange{src, x3}, ValueRange{tmp},
+        ArrayRef{builder.getNamedAttr("fun", builder.getAttr<mlir::linalg::BinaryFnAttr>(mlir::linalg::BinaryFn::add))})->getResult(0);
+    tmp = builder.create<mlir::linalg::ElemwiseBinaryOp>(loc, ValueRange{x5, tmp}, ValueRange{tmp},
+        ArrayRef{builder.getNamedAttr("fun", builder.getAttr<mlir::linalg::BinaryFnAttr>(mlir::linalg::BinaryFn::add))})->getResult(0);
+    Value result = builder.create<mlir::linalg::ElemwiseBinaryOp>(loc, ValueRange{x7, tmp}, ValueRange{dstVal},
+        ArrayRef{builder.getNamedAttr("fun", builder.getAttr<mlir::linalg::BinaryFnAttr>(mlir::linalg::BinaryFn::add))})->getResult(0);
     SetVarValue(npuirop.dst, result);
   }
 }
@@ -3248,9 +3267,9 @@ void CodeGenTileLangNPUIRDEV::VsinCodegen(const CallNode *op) {
 //
 // after(MLIR Lowering):
 //   - materialize scalar constants (2, √π, -1, 3, 1, 10, 42) and compute coefficients
-//   - compute x^2, x^3, x^5, x^7 via hivm::VMul
+//   - compute x^2, x^3, x^5, x^7 via linalg::ElemwiseBinaryOp with mul
 //   - scale each term with corresponding coefficient (-1/3, 1/10, -1/42)
-//   - accumulate terms using hivm::VAdd
+//   - accumulate terms using linalg::ElemwiseBinaryOp with add
 //   - multiply the result by (2/√π)
 //   - store the final result into destination vector
 //   - all intermediate results are lowered to vector operations on memref subviews
@@ -3289,19 +3308,30 @@ void CodeGenTileLangNPUIRDEV::VerfCodegen(const CallNode *op) {
     Value x7 = mlir::utils::createTmpBufferOrTensorWithTargetType(builder, loc, src, elementType);    
     Value tmp = mlir::utils::createTmpBufferOrTensorWithTargetType(builder, loc, src, elementType);
 
-    x2 = builder.create<mlir::hivm::VMulOp>(loc, src.getType(), ValueRange{src, src}, ValueRange{x2})->getResult(0);
-    x3 = builder.create<mlir::hivm::VMulOp>(loc, x2.getType(), ValueRange{x2, src}, ValueRange{x3})->getResult(0);
-    x5 = builder.create<mlir::hivm::VMulOp>(loc, x3.getType(), ValueRange{x3, x2}, ValueRange{x5})->getResult(0);
-    x7 = builder.create<mlir::hivm::VMulOp>(loc, x5.getType(), ValueRange{x5, x2}, ValueRange{x7})->getResult(0);
+    x2 = builder.create<mlir::linalg::ElemwiseBinaryOp>(loc, ValueRange{src, src}, ValueRange{x2},
+        ArrayRef{builder.getNamedAttr("fun", builder.getAttr<mlir::linalg::BinaryFnAttr>(mlir::linalg::BinaryFn::mul))})->getResult(0);
+    x3 = builder.create<mlir::linalg::ElemwiseBinaryOp>(loc, ValueRange{x2, src}, ValueRange{x3},
+        ArrayRef{builder.getNamedAttr("fun", builder.getAttr<mlir::linalg::BinaryFnAttr>(mlir::linalg::BinaryFn::mul))})->getResult(0);
+    x5 = builder.create<mlir::linalg::ElemwiseBinaryOp>(loc, ValueRange{x3, x2}, ValueRange{x5},
+        ArrayRef{builder.getNamedAttr("fun", builder.getAttr<mlir::linalg::BinaryFnAttr>(mlir::linalg::BinaryFn::mul))})->getResult(0);
+    x7 = builder.create<mlir::linalg::ElemwiseBinaryOp>(loc, ValueRange{x5, x2}, ValueRange{x7},
+        ArrayRef{builder.getNamedAttr("fun", builder.getAttr<mlir::linalg::BinaryFnAttr>(mlir::linalg::BinaryFn::mul))})->getResult(0);
 
-    x3 = builder.create<mlir::hivm::VMulOp>(loc, x3.getType(), ValueRange{x3, minusOneOver3}, ValueRange{x3})->getResult(0);
-    x5 = builder.create<mlir::hivm::VMulOp>(loc, x5.getType(), ValueRange{x5, oneOver10}, ValueRange{x5})->getResult(0);
-    x7 = builder.create<mlir::hivm::VMulOp>(loc, x7.getType(), ValueRange{x7, minusOneOver42}, ValueRange{x7})->getResult(0);
+    x3 = builder.create<mlir::linalg::ElemwiseBinaryOp>(loc, ValueRange{x3, minusOneOver3}, ValueRange{x3},
+        ArrayRef{builder.getNamedAttr("fun", builder.getAttr<mlir::linalg::BinaryFnAttr>(mlir::linalg::BinaryFn::mul))})->getResult(0);
+    x5 = builder.create<mlir::linalg::ElemwiseBinaryOp>(loc, ValueRange{x5, oneOver10}, ValueRange{x5},
+        ArrayRef{builder.getNamedAttr("fun", builder.getAttr<mlir::linalg::BinaryFnAttr>(mlir::linalg::BinaryFn::mul))})->getResult(0);
+    x7 = builder.create<mlir::linalg::ElemwiseBinaryOp>(loc, ValueRange{x7, minusOneOver42}, ValueRange{x7},
+        ArrayRef{builder.getNamedAttr("fun", builder.getAttr<mlir::linalg::BinaryFnAttr>(mlir::linalg::BinaryFn::mul))})->getResult(0);
 
-    tmp = builder.create<mlir::hivm::VAddOp>(loc, src.getType(), ValueRange{src, x3}, ValueRange{tmp})->getResult(0);
-    tmp = builder.create<mlir::hivm::VAddOp>(loc, tmp.getType(), ValueRange{x5, tmp}, ValueRange{tmp})->getResult(0);
-    tmp = builder.create<mlir::hivm::VAddOp>(loc, tmp.getType(), ValueRange{x7, tmp}, ValueRange{tmp})->getResult(0);
-    Value result = builder.create<mlir::hivm::VMulOp>(loc, dstVal.getType(), ValueRange{tmp, twoOverSqrtPi}, ValueRange{dstVal})->getResult(0);
+    tmp = builder.create<mlir::linalg::ElemwiseBinaryOp>(loc, ValueRange{src, x3}, ValueRange{tmp},
+        ArrayRef{builder.getNamedAttr("fun", builder.getAttr<mlir::linalg::BinaryFnAttr>(mlir::linalg::BinaryFn::add))})->getResult(0);
+    tmp = builder.create<mlir::linalg::ElemwiseBinaryOp>(loc, ValueRange{x5, tmp}, ValueRange{tmp},
+        ArrayRef{builder.getNamedAttr("fun", builder.getAttr<mlir::linalg::BinaryFnAttr>(mlir::linalg::BinaryFn::add))})->getResult(0);
+    tmp = builder.create<mlir::linalg::ElemwiseBinaryOp>(loc, ValueRange{x7, tmp}, ValueRange{tmp},
+        ArrayRef{builder.getNamedAttr("fun", builder.getAttr<mlir::linalg::BinaryFnAttr>(mlir::linalg::BinaryFn::add))})->getResult(0);
+    Value result = builder.create<mlir::linalg::ElemwiseBinaryOp>(loc, ValueRange{tmp, twoOverSqrtPi}, ValueRange{dstVal},
+        ArrayRef{builder.getNamedAttr("fun", builder.getAttr<mlir::linalg::BinaryFnAttr>(mlir::linalg::BinaryFn::mul))})->getResult(0);
     SetVarValue(npuirop.dst, result);
   }
 }
