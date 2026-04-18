@@ -123,10 +123,7 @@ _SUPPORTED_CANN_TO_HIVMC = {
 
 def _normalize_cann_version(value: str) -> str:
     if not value:
-        raise ValueError(
-            "Unsupported CANN version: "
-            f"{value!r}. Supported versions: {', '.join(_SUPPORTED_CANN_TO_HIVMC)}"
-        )
+        return "8.5.0"
 
     normalized = os.path.basename(value.rstrip("/").strip().lower())
     if normalized.startswith("cann-"):
@@ -137,10 +134,7 @@ def _normalize_cann_version(value: str) -> str:
     if re.fullmatch(r"9\.0\.0(?:[.-]?beta(?:[.-]?2)?)", normalized):
         return "9.0.0.beta2"
 
-    raise ValueError(
-        "Unsupported CANN version: "
-        f"{value!r}. Supported versions: {', '.join(_SUPPORTED_CANN_TO_HIVMC)}"
-    )
+    return "8.5.0"
 
 
 def get_configured_hivmc_version() -> str:
@@ -151,10 +145,6 @@ def get_configured_hivmc_version() -> str:
         ascend_home = os.environ.get("ASCEND_HOME_PATH") or os.environ.get(
             "ASCEND_HOME"
         )
-        if not ascend_home:
-            raise ValueError(
-                "ASCEND_HOME_PATH is not set; unable to infer the target CANN version."
-            )
         cann_version = _normalize_cann_version(ascend_home)
     return _SUPPORTED_CANN_TO_HIVMC[cann_version]
 
