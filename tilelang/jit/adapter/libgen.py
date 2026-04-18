@@ -1,7 +1,6 @@
 # Copyright (c) Tile-AI Corporation.
 # Licensed under the MIT License.
 from __future__ import annotations
-from typing import Optional
 from tilelang import tvm as tvm
 import ctypes
 import os
