@@ -3,7 +3,8 @@
 ## 1. OP概述
 
 简介：`tilelang.language.transpose`根据给定的维度排列对输入Tensor的维度进行转置。
-```
+
+```python
 T.transpose(src, dst, permutation, size=[])
 ```
 
@@ -39,16 +40,16 @@ T.transpose(src, dst, permutation, size=[])
 以下示例实现了一个transpose计算
 
 ```python
+@tilelang.jit(target="npuir")
 def transpose_kernel(M, N, dtype):
     BLOCK_SIZE = 1
 
     @T.prim_func
     def main(
-        src:T.Tensor((M, N), dtype),
-        dst:T.Tensor((N, M), dtype),
+        src: T.Tensor((M, N), dtype),
+        dst: T.Tensor((N, M), dtype),
     ):
         with T.Kernel(BLOCK_SIZE, is_npu=True) as (cid, _):
-
             src_ub = T.alloc_shared((M, N), dtype)
             dst_ub = T.alloc_shared((N, M), dtype)
 

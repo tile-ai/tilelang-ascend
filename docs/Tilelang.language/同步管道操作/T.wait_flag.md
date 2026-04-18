@@ -32,16 +32,17 @@
 以下示例实现了计算两个张量的和，并输出到第三个张量里，
 同时在数据搬运和向量计算运算中通过 `set_flag` 和 `wait_flag` 显式定义了核内同步方式：
 
-```
+```python
 @tilelang.jit(target='npuir')
 def vec_add(M, N, K, block_M, block_N, dtype="float16"):
     m_num = M // block_M
     n_num = N // block_N
+
     @T.prim_func
     def main(
-            A: T.Tensor((M, K), dtype),
-            B: T.Tensor((K, N), dtype),
-            C: T.Tensor((M, N), dtype),
+        A: T.Tensor((M, K), dtype),
+        B: T.Tensor((K, N), dtype),
+        C: T.Tensor((M, N), dtype),
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, _):
             bx_ = cid // n_num
@@ -67,7 +68,6 @@ def vec_add(M, N, K, block_M, block_N, dtype="float16"):
                 T.copy(C_VEC, C[bx, by])
 
     return main
-
 ```
 
 ### 3. Tilelang Op到Ascend NPU IR Op的转换

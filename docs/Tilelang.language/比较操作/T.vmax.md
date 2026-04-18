@@ -4,7 +4,7 @@
 
 简介：`tilelang.language.vmax`按向量元素取最大值操作，该算子对比两个输入源的对应元素，并将较大值写入输出目标。
 
-```
+```python
 T.vmax(src0, src1, dst)
 ```
 
@@ -44,12 +44,11 @@ def vmax_kernel(M, N, dtype):
 
     @T.prim_func
     def main(
-        src0:T.Tensor((M, N), dtype),
-        src1:T.Tensor((M, N), dtype),
-        dst:T.Tensor((M, N), dtype),
+        src0: T.Tensor((M, N), dtype),
+        src1: T.Tensor((M, N), dtype),
+        dst: T.Tensor((M, N), dtype),
     ):
         with T.Kernel(BLOCK_SIZE, is_npu=True) as (cid, _):
-
             src0_ub = T.alloc_shared((M, N), dtype)
             src1_ub = T.alloc_shared((M, N), dtype)
             dst_ub = T.alloc_shared((M, N), dtype)

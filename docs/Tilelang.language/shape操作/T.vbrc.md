@@ -4,7 +4,7 @@
 
 简介：`tilelang.language.brc` 返回输入向量/标量基于输出形状的广播broadcast计算结果
 
-```
+```python
 T.vbrc(src, dst)
 ```
 
@@ -51,18 +51,16 @@ T.vbrc(src, dst)
 
 示例1：实现了将value = 3 广播到一个形状为(M, K)的tensor
 
-```
+```python
+@tilelang.jit(target="npuir")
 def vec_brc(M, N, dtype):
     dtype = "float16"
     BLOCK_SIZE = 1
 
     @T.prim_func
-    def main(
-            A: T.Tensor((M, N), dtype)
-    ):
+    def main(A: T.Tensor((M, N), dtype)):
         with T.Kernel(BLOCK_SIZE, is_npu=True) as (cid, _):
             A_ub = T.alloc_ub((M, N), dtype)
-            T.copy(A, A_ub)
             brc_value = 3
             T.vbrc(brc_value, A_ub)
             T.copy(A_ub, A)
@@ -72,26 +70,23 @@ def vec_brc(M, N, dtype):
 
 示例2：实现了将vector(1, N) 广播到形状(M, N)
 
-```
+```python
+@tilelang.jit(target="npuir")
 def vec_brc(M, N, dtype):
     dtype = "float16"
     BLOCK_SIZE = 1
 
     @T.prim_func
-    def main(
-            A: T.Tensor((1, N), dtype),
-            B: T.Tensor((M, N), dtype)
-    ):
+    def main(A: T.Tensor((1, N), dtype), B: T.Tensor((M, N), dtype)):
         with T.Kernel(BLOCK_SIZE, is_npu=True) as (cid, _):
             A_ub = T.alloc_ub((1, N), dtype)
             B_ub = T.alloc_ub((M, N), dtype)
-           
-             T.copy(A, A_ub)
-             T.vbrc(A_ub, B_ub)
-             T.copy(B_ub, B)
+
+            T.copy(A, A_ub)
+            T.vbrc(A_ub, B_ub)
+            T.copy(B_ub, B)
 
     return main
-
 ```
 
 ## 3. Tilelang Op到Ascend NPU IR Op的转换

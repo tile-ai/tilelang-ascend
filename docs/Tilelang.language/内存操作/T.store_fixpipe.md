@@ -1,5 +1,3 @@
-from gc import enable
-
 # tilelang.language.store_fixpipe
 
 ## 1. 概述
@@ -24,6 +22,7 @@ T.store_fixpipe(src, dst, size=[], enable_nz2nd=False, channel_split=False, pre_
 | `pre_relu_mode` | `str`       | `""`    | 在数据搬运同时应用何种relu操作    |
 
 约束：
+
 - `src` 和 `dst` 应具有相同的数据类型。
 - 在 `src` 和 `dst` 维数不一致的情况下 `size` 参数会对齐最后的维度
 - `pre_relu_mode` 参数候选列表如下：`"", "relu", "leaky_relu", "prelu"` ，其中默认值 `""` 代表不应用 `relu` 。
@@ -55,28 +54,34 @@ def kernel_mha_qk_matmul(b, n, s, d, block_d, dtype="float16", accum_dtype="floa
 
     @T.prim_func
     def main(
-            Q: T.Tensor((b, n, s, d), dtype),
-            K: T.Tensor((b, n, s, d), dtype),
-            A: T.Tensor((b, n, s, s), accum_dtype)
+        Q: T.Tensor((b, n, s, d), dtype),
+        K: T.Tensor((b, n, s, d), dtype),
+        A: T.Tensor((b, n, s, s), accum_dtype),
     ):
-        with T.Kernel(b * n, is_npu=True) as (cid, _):
-            with T.Scope("Cube"):
-                b_id = cid // n
-                n_id = cid % n
+        with T.Kernel(b * n, is_npu=True) as (cid, _), T.Scope("Cube"):
+            b_id = cid // n
+            n_id = cid % n
 
-                Q_BUF = T.alloc_L1([s, block_d], dtype)
-                K_BUF = T.alloc_L1([s, block_d], dtype)
-                A_BUF = T.alloc_L0C([s, s], accum_dtype)
+            Q_BUF = T.alloc_L1([s, block_d], dtype)
+            K_BUF = T.alloc_L1([s, block_d], dtype)
+            A_BUF = T.alloc_L0C([s, s], accum_dtype)
 
-                for i in T.serial(T.ceildiv(d, block_d)):
-                    real_block_d = d - i * block_d
-                    real_block_d = T.min(real_block_d, block_d)
-                    T.load_nd2nz(Q[b_id, n_id, 0, i * block_d], Q_BUF, [s, real_block_d])
-                    T.load_nd2nz(K[b_id, n_id, 0, i * block_d], K_BUF, [s, real_block_d])
+            for i in T.serial(T.ceildiv(d, block_d)):
+                real_block_d = d - i * block_d
+                real_block_d = T.min(real_block_d, block_d)
+                T.load_nd2nz(Q[b_id, n_id, 0, i * block_d], Q_BUF, [s, real_block_d])
+                T.load_nd2nz(K[b_id, n_id, 0, i * block_d], K_BUF, [s, real_block_d])
 
-                    T.gemm(Q_BUF, K_BUF, A_BUF, initC=(i == 0), b_transpose=True, size=[s, real_block_d, s])
+                T.gemm(
+                    Q_BUF,
+                    K_BUF,
+                    A_BUF,
+                    initC=(i == 0),
+                    b_transpose=True,
+                    size=[s, real_block_d, s],
+                )
 
-                T.store_fixpipe(A_BUF, A[b_id, n_id, 0, 0], size=[s, s], enable_nz2nd=True)
+            T.store_fixpipe(A_BUF, A[b_id, n_id, 0, 0], size=[s, s], enable_nz2nd=True)
 
     return main
 ```

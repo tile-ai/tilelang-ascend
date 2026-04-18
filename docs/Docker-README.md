@@ -15,6 +15,7 @@ sudo docker build -f docker/Dockerfile -t tilelang-ascend .
 ```
 
 此构建会：
+
 - 使用清华镜像加速 Git 子模块下载
 - 预编译 AscendNPU-IR 组件
 - 清理源码以减小镜像体积
@@ -37,7 +38,7 @@ docker run -it --rm tilelang-ascend
 
 进入容器后，您会看到欢迎消息：
 
-```
+```shell
 Welcome to TileLang AscendNPU IR Docker container!
 
 TileLang URL: https://github.com/tile-ai/tilelang-ascend/tree/npuir

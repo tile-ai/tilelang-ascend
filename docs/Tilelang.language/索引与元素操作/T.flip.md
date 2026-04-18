@@ -33,16 +33,14 @@ T.flip(src, dst, axis: int)
 ```python
 @tilelang.jit(target="npuir")
 def vec_flip(block_M, block_N, dtype="float16"):
-
     BLOCK_SIZE = 1
 
     @T.prim_func
     def main(
-            A: T.Tensor((block_M, block_N), dtype),
-            C: T.Tensor((block_M, block_N), dtype),
+        A: T.Tensor((block_M, block_N), dtype),
+        C: T.Tensor((block_M, block_N), dtype),
     ):
         with T.Kernel(BLOCK_SIZE, is_npu=True) as (cid, _):
-
             A_VEC = T.alloc_ub((block_M, block_N), dtype)
             C_VEC = T.alloc_ub((block_M, block_N), dtype)
 

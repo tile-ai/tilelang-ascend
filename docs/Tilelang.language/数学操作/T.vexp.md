@@ -40,15 +40,15 @@ T.vexp(src, dst)
 以下示例实现了计算输入张量 `input` 中每个元素以 `e` 为底的幂并输出到张量 `output` 中：
 
 ```python
-@tilelang.jit(target='npuir')
+@tilelang.jit(target="npuir")
 def vec_exp(M, N, block_M, block_N, dtype="float16"):
     m_num = M // block_M
     n_num = N // block_N
 
     @T.prim_func
     def main(
-            Input: T.Tensor((M, N), dtype),
-            Output: T.Tensor((M, N), dtype),
+        Input: T.Tensor((M, N), dtype),
+        Output: T.Tensor((M, N), dtype),
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, _):
             bx = cid // n_num
@@ -60,7 +60,7 @@ def vec_exp(M, N, block_M, block_N, dtype="float16"):
             T.copy(Input[bx * block_M, by * block_N], ub_input)
             T.vexp(ub_input, ub_output)
             T.copy(ub_output, Output[bx * block_M, by * block_N])
-            
+
     return main
 ```
 

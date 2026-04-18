@@ -2,9 +2,9 @@
 
 ## 1. OP概述
 
-简介：`tilelang.language.vdiv`执行逐元素除法</pre>
+简介：`tilelang.language.vdiv`执行逐元素除法
 
-```
+```python
 T.vdiv(src1, src2, dst)
 ```
 
@@ -48,17 +48,19 @@ T.vdiv(src1, src2, dst)
 
 以下示例展示了两个形状为(M,N)的输入tensor进行div计算：
 
-```
+```python
+@tilelang.jit(target="npuir")
 def sub_kernel(M, N, dtype):
     BLOCK_SIZE = 1
 
     @T.prim_func
-    def main(src0: T.Tensor((M, N), dtype),
-             src1: T.Tensor((M, N), dtype),
-             dst: T.Tensor((M, N), dtype)):
+    def main(
+        src0: T.Tensor((M, N), dtype),
+        src1: T.Tensor((M, N), dtype),
+        dst: T.Tensor((M, N), dtype),
+    ):
 
         with T.Kernel(BLOCK_SIZE, is_npu=True) as (cid, _):
-
             src0_ub = T.alloc_shared((M, N), dtype)
             src1_ub = T.alloc_shared((M, N), dtype)
             dst_ub = T.alloc_shared((M, N), dtype)

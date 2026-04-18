@@ -4,7 +4,7 @@
 
 简介：`tilelang.language.Kernel` 用于定义内核启动域的上下文构造接口。
 
-```
+```python
 T.Kernel(blocks, threads, is_cpu, prelude, is_npu, pipeline)
 ```
 

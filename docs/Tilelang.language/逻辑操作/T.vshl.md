@@ -4,7 +4,7 @@
 
 简介：`tilelang.language.vshl`对输入张量`A`执行按元素左移（bitwise left shift），移位位数由另一个输入`B`指定，结果写入输出`C`
 
-```
+```python
 T.vshl(A, B, C)
 ```
 
@@ -32,16 +32,19 @@ C和A的shape必须保持一致
 B的shape需要和A的一致或为标量
 
 ### 2.3 使用方法
+
 示例1：B与A有相同的shape
+
 ```python
+@tilelang.jit(target="npuir")
 def vshl_kernel(N, dtype):
     BLOCK_SIZE = 1
 
     @T.prim_func
     def main(
-            A: T.Tensor((N,), dtype),
-            B: T.Tensor((N,), dtype),
-            Out: T.Tensor((N,), dtype),
+        A: T.Tensor((N,), dtype),
+        B: T.Tensor((N,), dtype),
+        Out: T.Tensor((N,), dtype),
     ):
         with T.Kernel(BLOCK_SIZE, is_npu=True) as (cid, _):
             acc_A = T.alloc_shared((N,), dtype)
@@ -52,19 +55,22 @@ def vshl_kernel(N, dtype):
             T.copy(B, acc_B)
             T.vshl(acc_A, acc_B, out_ub)
             T.copy(out_ub, Out)
+
     return main
 ```
 
 示例2：B是标量
+
 ```python
+@tilelang.jit(target="npuir")
 def vshl_kernel(N, dtype):
     BLOCK_SIZE = 1
 
     @T.prim_func
     def main(
-            A: T.Tensor((N,), dtype),
-            B: T.Tensor((1,), dtype),
-            Out: T.Tensor((N,), dtype),
+        A: T.Tensor((N,), dtype),
+        B: T.Tensor((1,), dtype),
+        Out: T.Tensor((N,), dtype),
     ):
         with T.Kernel(BLOCK_SIZE, is_npu=True) as (cid, _):
             acc_A = T.alloc_shared((N,), dtype)
@@ -75,9 +81,9 @@ def vshl_kernel(N, dtype):
             T.copy(B, acc_B)
             T.vshl(acc_A, acc_B, out_ub)
             T.copy(out_ub, Out)
+
     return main
 ```
-
 
 ## 3. Tilelang Op到Ascend NPU IR Op的转换
 

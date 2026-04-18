@@ -4,7 +4,7 @@
 
 简介：`tilelang.language.vabs` 该算子返回输入向量中的元素**逐元素的绝对值**
 
-```
+```python
 T.vabs(src, dst) [Developer Op]
 T.vabs(src, dst) [Expert Op]
 ```
@@ -38,16 +38,11 @@ T.vabs(src, dst) [Expert Op]
 
 示例1：实现了Expert Mode中将一个二维张量（Tensor） 的绝对值存到dst中
 
-```
-import tilelang
-import tilelang.language as T
-tilelang.cache.clear_cache()
-dtype = "float16"          # Input data type
-out_dtype = "float16"      # Output data type (same as input for abs)
-def vabs_kernel(M, N):
+```python
+@tilelang.jit(target="npuir")
+def vabs_kernel(M, N, dtype="float16", out_dtype="float16"):
     @T.prim_func
-    def main(src: T.Tensor((M, N), dtype),
-             dst: T.Tensor((M, N), out_dtype)):
+    def main(src: T.Tensor((M, N), dtype), dst: T.Tensor((M, N), out_dtype)):
         # Use a single block to process the whole tensor
         with T.Kernel(1, is_npu=True) as (bid, _):
             # Allocate UB memory for input and output
@@ -58,6 +53,7 @@ def vabs_kernel(M, N):
             T.vabs(src_ub, dst_ub)
             # Copy results back to GM
             T.copy(dst_ub, dst)
+
     return main
 ```
 

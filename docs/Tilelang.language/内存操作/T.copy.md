@@ -4,7 +4,7 @@
 
 简介：`tilelang.language.copy` 该算子用于不同内存区域之间（ub-ub， gm-ub）执行数据复制操作。
 
-```
+```python
 T.copy(src[0:size], dst[0:size] ) [Developer Op]
 T.copy(src[0:size], dst[0:size] ) [Expert Op]
 或
@@ -42,10 +42,12 @@ T.copy(src, dst, size) [Expert Op]
 
 示例1：实现了Expert Mode中将一个二维张量（Tensor） 的copy到A_ub中 (gm -> ub)
 
-```
+```python
+@tilelang.jit(target="npuir")
 def atomic_add_2d(M, N, block_M, block_N, dtype="float32"):
     m_blocks = M // block_M
     n_blocks = N // block_N
+
     @T.prim_func
     def main(
         A: T.Tensor((M, N), dtype),
@@ -62,16 +64,18 @@ def atomic_add_2d(M, N, block_M, block_N, dtype="float32"):
                 A_ub[0:tile_M, 0:tile_N],
             )
             T.npuir_atomic_add(B[bx, by], A_ub, [tile_M, tile_N])
+
     return main
-​
 ```
 
 示例2：实现了Developer Mode中将一个二维张量（Tensor） 的copy到A_shared中 (gm -> ub)
 
-```
+```python
+@tilelang.jit(target="npuir")
 def atomic_add_2d_dev(M, N, block_M, block_N, dtype="float32"):
     m_blocks = M // block_M
     n_blocks = N // block_N
+
     @T.prim_func
     def main(
         A: T.Tensor((M, N), dtype),
@@ -88,8 +92,8 @@ def atomic_add_2d_dev(M, N, block_M, block_N, dtype="float32"):
                 A_shared[0:tile_M, 0:tile_N],
             )
             T.npuir_atomic_add(B[bx, by], A_shared, [tile_M, tile_N])
+
     return main
-​
 ```
 
 ## 3. Tilelang Op到Ascend NPU IR Op的转换

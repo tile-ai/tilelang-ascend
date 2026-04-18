@@ -4,7 +4,7 @@
 
 简介：`tilelang.language.vsub` 对两个向量/tensor执行逐元素减法运算，支持自动广播
 
-```
+```python
 T.vsub(src0, src1, dst)
 ```
 
@@ -48,22 +48,19 @@ T.vsub(src0, src1, dst)
 
 示例一：实现了一个形状为(M,N)的tensor的逐元素减法计算
 
-```
-import torch
-import torch_npu
-import tilelang
-import tilelang.language as T
-
+```python
+@tilelang.jit(target="npuir")
 def sub_kernel(M, N, dtype):
     BLOCK_SIZE = 1
 
     @T.prim_func
-    def main(src0: T.Tensor((M, N), dtype),
-             src1: T.Tensor((M, N), dtype),
-             dst: T.Tensor((M, N), dtype)):
+    def main(
+        src0: T.Tensor((M, N), dtype),
+        src1: T.Tensor((M, N), dtype),
+        dst: T.Tensor((M, N), dtype),
+    ):
 
         with T.Kernel(BLOCK_SIZE, is_npu=True) as (cid, _):
-
             src0_ub = T.alloc_shared((M, N), dtype)
             src1_ub = T.alloc_shared((M, N), dtype)
             dst_ub = T.alloc_shared((M, N), dtype)
@@ -78,20 +75,17 @@ def sub_kernel(M, N, dtype):
 
 示例二：利用自动广播实现Softmax中的数值稳定化（每行减去行最大值）
 
-```
-import torch
-import torch_npu
-import tilelang
-import tilelang.language as T
-
+```python
+@tilelang.jit(target="npuir")
 def softmax_sub_kernel(M, N, dtype):
 
     @T.prim_func
-    def main(X: T.Tensor((M, N), dtype),
-             Y: T.Tensor((M, N), dtype)):
+    def main(
+        X: T.Tensor((M, N), dtype),
+        Y: T.Tensor((M, N), dtype),
+    ):
 
         with T.Kernel(M, is_npu=True) as (row_id, _):
-
             x_ub = T.alloc_shared((1, N), dtype)
             max_ub = T.alloc_shared((1, 1), dtype)
 

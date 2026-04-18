@@ -4,7 +4,7 @@
 
 简介：`tilelang.language.reduce_max`对输入Tensor的指定维度进行最大值归约。
 
-```
+```python
 T.reduce_max(buffer, out, dim=-1, size=[], clear=True)
 ```
 
@@ -41,19 +41,16 @@ T.reduce_max(buffer, out, dim=-1, size=[], clear=True)
 以下示例实现了一个reduce_max计算
 
 ```python
-dtype = "float16"
-accum_dtype =  "float16"
-
-def reduce_max_kernel(M, N, block_M):
+@tilelang.jit(target="npuir")
+def reduce_max_kernel(M, N, dtype, accum_dtype):
     BLOCK_SIZE = 1
 
     @T.prim_func
     def main(
-        B:T.Tensor((M, N), dtype),
-        O:T.Tensor((M, 1), accum_dtype),
+        B: T.Tensor((M, N), dtype),
+        O: T.Tensor((M, 1), accum_dtype),
     ):
         with T.Kernel(BLOCK_SIZE, is_npu=True) as (cid, _):
-
             b = T.alloc_shared((M, N), dtype)
             s = T.alloc_shared((M, 1), accum_dtype)
 

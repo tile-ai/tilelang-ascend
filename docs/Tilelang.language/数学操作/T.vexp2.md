@@ -6,7 +6,7 @@
 
 由于底层不支持硬件级别的exp2操作，实际上使用的是 $B = exp(A*ln2)$，其中 tmpBuffer 用来存储 $A*ln2$ 这一中间结果
 
-```
+```python
 T.vexp2(input, output, tmpBuffer)
 ```
 
@@ -41,26 +41,24 @@ input, output, tmpBuffer 三者形状需要一致
 以下示例展示了两个形状为(M,N)的输入tensor进行vexp2计算：
 
 ```python
-import torch
-import torch_npu
-import tilelang
-import tilelang.language as T
+@tilelang.jit(target="npuir")
 def vec_exp2(M, N, block_M, block_N):
     m_num = M // block_M
     n_num = N // block_N
     dtype = "float16"
     BLOCK_SIZE = 20
+
     @T.prim_func
     def main(
-            A: T.Tensor((M, N), dtype),
-            B: T.Tensor((M, N), dtype),
-            C: T.Tensor((M, N), dtype),
+        A: T.Tensor((M, N), dtype),
+        B: T.Tensor((M, N), dtype),
+        C: T.Tensor((M, N), dtype),
     ):
         with T.Kernel(BLOCK_SIZE, is_npu=True) as (cid, _):
             A_VEC = T.alloc_ub((block_M, block_N), dtype)
             B_VEC = T.alloc_ub((block_M, block_N), dtype)
             C_VEC = T.alloc_ub((block_M, block_N), dtype)
-            for i in T.serial(T.ceildiv(m_num*n_num, BLOCK_SIZE)):
+            for i in T.serial(T.ceildiv(m_num * n_num, BLOCK_SIZE)):
                 block_id = i * BLOCK_SIZE + cid
                 if block_id < m_num * n_num:
                     block_id_m = block_id // n_num
@@ -71,6 +69,7 @@ def vec_exp2(M, N, block_M, block_N):
                     T.copy(B[bx, by], B_VEC)
                     T.vexp2(A_VEC, B_VEC, C_VEC)
                     T.copy(C_VEC, C[bx, by])
+
     return main
 ```
 
