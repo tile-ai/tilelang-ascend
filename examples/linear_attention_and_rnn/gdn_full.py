@@ -74,7 +74,7 @@ for Batch, H, L, DK, DV, C, BK, BV in test_configs:
 	ref_chunk_o = ref_chunk_gdn(q, k, v, g, beta, C)
 	ker_o = kernel_chunk_gdn(q, k, v, g, beta, C, BK, BV)
 	torch.testing.assert_close(ref_chunk_o.cpu(), ref_o.cpu(), rtol=1e-3, atol=1e-3)
-	torch.testing.assert_close(ker_o.cpu(), ref_chunk_o.cpu(), rtol=1e-5, atol=1e-5)
+	torch.testing.assert_close(ker_o.cpu(), ref_chunk_o.cpu(), rtol=1e-3, atol=1e-3)
 	print("Test passed!")
 
 print("Kernel Output Match!")

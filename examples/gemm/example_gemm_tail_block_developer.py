@@ -9,6 +9,7 @@ pass_configs = {
     tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
 }
 
+
 @tilelang.jit(out_idx=[-1], pass_configs=pass_configs)
 def matmul(M, N, K, block_M, block_N, K_L1, dtype="float16", accum_dtype="float"):
     m_num = T.ceildiv(M, block_M)
@@ -16,9 +17,9 @@ def matmul(M, N, K, block_M, block_N, K_L1, dtype="float16", accum_dtype="float"
 
     @T.prim_func
     def main(
-            A: T.Tensor((M, K), dtype),
-            B: T.Tensor((K, N), dtype),
-            C: T.Tensor((M, N), dtype),
+        A: T.Tensor((M, K), dtype),
+        B: T.Tensor((K, N), dtype),
+        C: T.Tensor((M, N), dtype),
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, _):
             bx = cid // n_num
@@ -40,6 +41,7 @@ def matmul(M, N, K, block_M, block_N, K_L1, dtype="float16", accum_dtype="float"
 
     return main
 
+
 torch.manual_seed(0)
 test_configs = [
     (32 * 3 + 30, 32 * 2 + 16, 32 * 4 + 31, 32, 32, 32),
@@ -48,16 +50,20 @@ test_configs = [
     (1024 + 118, 1024 + 206, 1024 + 55, 128, 256, 64),
 ]
 
-for M, N, K, block_M, block_N, block_K in test_configs:
-    print(f"Testing gemm_tail_block_developer with M={M}, N={N}, K={K}, block_M={block_M}, block_N={block_N}, block_K={block_K}")
-    func = matmul(M, N, K, block_M, block_N, block_K)
-    print("init successful!")
-    a = torch.randn(M, K).half().npu()
-    b = torch.randn(K, N).half().npu()
-    c = torch.empty(M, N).half().npu()
-    c = func(a, b)
-    ref_c = a @ b
-    torch.testing.assert_close(c, ref_c, rtol=1e-2, atol=1e-2)
-    print("Test passed!")
-print("Kernel Output Match!")
+for idx, (M, N, K, block_M, block_N, block_K) in enumerate(test_configs, 1):
+    try:
+        func = matmul(M, N, K, block_M, block_N, block_K)
+        a = torch.randn(M, K).half().npu()
+        b = torch.randn(K, N).half().npu()
+        c = torch.empty(M, N).half().npu()
+        c = func(a, b)
+        ref_c = a @ b
+        torch.testing.assert_close(c, ref_c, rtol=1e-2, atol=1e-2)
+        print(f"Passed test case {idx}/{len(test_configs)}: M={M}, N={N}, K={K}")
+    except Exception as e:
+        print("error message:", e)
+        print(f"Failed test case {idx}/{len(test_configs)}: M={M}, N={N}, K={K}")
+        raise
 
+print("All test cases passed!")
+print("Kernel Output Match!")

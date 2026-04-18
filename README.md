@@ -17,16 +17,20 @@ Tile Language Ascend (**tilelang-ascend**) is a specialized variant of the tile-
 </p>
 
 ## Latest News
-- 03/16/2026 🚀: Added [wheel package installation support](https://github.com/tile-ai/tilelang-ascend?tab=readme-ov-file#installation), enabling easy installation via pip!
-- 12/08/2025 ✨: Added [T.Parallel](https://github.com/tile-ai/tilelang-ascend?tab=readme-ov-file#tparallel) support, check out [Pull Request#113](
-https://github.com/tile-ai/tilelang-ascend/pull/113) for details.
-- 11/25/2025 ✨: [Automatic buffer reuse](https://github.com/tile-ai/tilelang-ascend?tab=readme-ov-file#automatic-buffer-reuse) support, see [Pull Request#101](
-https://github.com/tile-ai/tilelang-ascend/pull/101)!
-- 11/17/2025 ✨: Added debug tools for tilelang-ascend—`T.printf` and `T.dump_tensor`, enabling users to [print and dump](https://github.com/tile-ai/tilelang-ascend/tree/ascendc_pto/examples/print) device-side buffers for easier inspection and troubleshooting.
-- 11/07/2025 ✨: [Automatic insertion of intra-kernel synchronization](https://github.com/tile-ai/tilelang-ascend?tab=readme-ov-file#automatic-insertion-of-synchronization-instruction) support, see [Pull Request#74](
-https://github.com/tile-ai/tilelang-ascend/pull/74)!
-- 10/28/2025 🚀: Enhanced the performance of tl_templates and completed a high-performance [GEMM kernel](https://github.com/tile-ai/tilelang-ascend/blob/ascendc_pto/examples/gemm/example_gemm_intrinsic.py).
-- 09/29/2025 🚀: We are excited to announce that tilelang-ascend, a dsl for high performance AI workloads on Ascend NPUs, is now open source and available to the public!
+- 03/28/2026 🚀: Released high-performance [Flash Attention](./examples/flash_attention/) & [Sparse Flash Attention](./examples/sparse_flash_attention/) benchmark and optimization guide, see [PR#698](https://github.com/tile-ai/tilelang-ascend/pull/698) and [PR#665](https://github.com/tile-ai/tilelang-ascend/pull/665).
+- 03/16/2026 🚀: Introduced [wheel package installation](https://github.com/tile-ai/tilelang-ascend?tab=readme-ov-file#installation), enabling easy setup via `pip install`!
+- 03/12/2026 ✨: New [ACLGraph](./examples/aclgraph/) integration example for graph-level optimization on Ascend NPU.
+- 03/03/2026 ✨: Supported [shared memory (shmem) with put/get API](https://github.com/tile-ai/tilelang-ascend/pull/194) for inter-core communication.
+- 01/29/2026 📖: Published the [TileLang-Ascend Programming Guide](./docs/TileLang-Ascend%20Programming%20Guide.md) with comprehensive development tutorials.
+- 01/23/2026 🚀: Landed [PTO backend](https://github.com/tile-ai/tilelang-ascend/pull/341) as a new code generation target.
+- 01/21/2026 ✨: New [torch_tl_ascend](./examples/torch_tl_ascend/) PyTorch integration example for seamless NPU + PyTorch workflows, see [PR#292](https://github.com/tile-ai/tilelang-ascend/pull/292).
+- 01/15/2026 ✨: Introduced [T.Pipelined](https://github.com/tile-ai/tilelang-ascend/pull/274) for software pipelining on Ascend NPU.
+- 12/08/2025 ✨: Supported [T.Parallel](https://github.com/tile-ai/tilelang-ascend?tab=readme-ov-file#tparallel) for automatic vectorization, check out [PR#113](https://github.com/tile-ai/tilelang-ascend/pull/113) for details.
+- 11/25/2025 ✨: Enabled [automatic buffer reuse](https://github.com/tile-ai/tilelang-ascend?tab=readme-ov-file#automatic-buffer-reuse) to reduce on-chip memory footprint, see [PR#101](https://github.com/tile-ai/tilelang-ascend/pull/101).
+- 11/17/2025 🛠️: Shipped debug tools `T.printf` and `T.dump_tensor` for [printing and dumping](https://github.com/tile-ai/tilelang-ascend/tree/ascendc_pto/examples/print) device-side buffers.
+- 11/07/2025 ✨: Enabled [automatic intra-kernel synchronization insertion](https://github.com/tile-ai/tilelang-ascend?tab=readme-ov-file#automatic-insertion-of-synchronization-instruction), see [PR#74](https://github.com/tile-ai/tilelang-ascend/pull/74).
+- 10/28/2025 🚀: Optimized tl_templates performance and delivered a high-performance [GEMM kernel](https://github.com/tile-ai/tilelang-ascend/blob/ascendc_pto/examples/gemm/example_gemm_intrinsic.py).
+- 09/29/2025 🎉: tilelang-ascend is now open source! A DSL for high-performance AI workloads on Ascend NPUs.
 
 ## Programming Guide
 For more instructions and tips on using TileLang-Ascend, please refer to the [TileLang-Ascend Programming Guide](./docs/TileLang-Ascend%20Programming%20Guide.md).
@@ -50,12 +54,22 @@ Although tilelang-ascend aims to be portable across a range of Ascend devices, i
 **tilelang-ascend** provides the building blocks to implement a wide variety of operators on the NPU.
 Some examples include:
 
-- [Matrix Multiplication](./examples/gemm/)
-- [Vector Add](./examples/elementwise/)
+- [Matrix Multiplication (GEMM)](./examples/gemm/)
+- [Batch GEMM](./examples/batch_gemm/)
+- [Elementwise Operations](./examples/elementwise/)
 - [Flash Attention](./examples/flash_attention/)
+- [Sparse Flash Attention](./examples/sparse_flash_attention/)
+- [Linear Attention & RNN](./examples/linear_attention_and_rnn/)
+- [Softmax](./examples/softmax/)
+- [Normalization](./examples/normalization/)
+- [Activation Functions](./examples/activation/)
+- [Reduce](./examples/reduce/)
+- [Sort](./examples/sort/)
+- [Convolution](./examples/convolution/)
+- [Cross Entropy Loss](./examples/cross_entropy_loss/)
+- [Dispatch & Combine](./examples/dispatch_combine/)
 
-
-Within the `examples` directory, you will also find additional complex kernels—such as [LightningIndexer](./examples/lightning_indexer/) and [SparseFlashAttention](./examples/sparse_flash_attention/), more operators will continuously be added.
+Within the `examples` directory, you will also find additional complex kernels—such as [LightningIndexer](./examples/lightning_indexer/), [TopK Selector](./examples/topk_selector/), and [ACLGraph Integration](./examples/aclgraph/). More operators are continuously being added.
 
 
 ## Installation
@@ -148,11 +162,20 @@ GPUs primarily feature a three-level memory hierarchy that can be analogously ma
 **Memory Management:**
 TileLang-Ascend provides memory allocation primitives similar to the GPU version. For example, `alloc_{L1/ub/...}` functions allow on-chip memory allocation in a manner comparable to GPU programming.
 
-**Execution Model Differences:**
-At the execution level, NPUs lack thread-level abstractions. Therefore, we currently provide computation primitives operating at the `tile` granularity on vector cores. While the GPU version enables automatic parallelization of internal computations (e.g., addition) across different threads using `T.Parallel`, the NPU version requires manual vectorization through primitives like `T.add`.
+**Multiple Styles for Vector Operations:**
+TileLang-Ascend offers multiple ways to express vector computations on the NPU, from high-level automatic vectorization to fine-grained tile primitives:
 
-**Cross-Core Communication:**
-Additionally, since cube and vector cores on NPUs can only exchange data through global memory/L2 cache, the current implementation requires explicit specification of execution code for different cores using the `T.Scope` primitive. Synchronization between cores is managed through `T.set_cross_flag` and `T.wait_cross_flag`, and intermediate data transfer global tensors must be explicitly specified during kernel definition.
+```python
+# Style 1: T.Parallel — automatic vectorization
+for (i, j) in T.Parallel(M, N):
+    C_ub[i, j] = A_ub[i, j] + B_ub[i, j]
+
+# Style 2: Tile primitives — explicit tile-level operations
+T.tile.add(C_ub, A_ub, B_ub)
+```
+
+**Automatic Cube/Vector Scope Separation:**
+Cube and vector cores on A2/A3 exchange data through global memory/L2 cache. In **Developer mode**, the compiler automatically separates Cube/Vector scopes and inserts synchronization. In **Expert mode**, you explicitly specify execution scopes using `T.Scope("C")/T.Scope("V")` and manage synchronization via `T.set_cross_flag` / `T.wait_cross_flag`.
 
 
 ## Quick Start
@@ -487,9 +510,38 @@ for b in range(B):
 output = func(q, kv, indices)
 ```
 ### T.Pipelined
-We have supported [T.pipelined](https://github.com/tile-ai/tilelang-ascend/blob/ascendc_pto/docs/tutorials/t_pipelied.md), which enables automatic pipeline scheduling  to achieve intra-core computation and data movement overlap, as well as inter-core pipeline overlap between Cube and Vector units, thereby enhancing performance.
+[T.Pipelined](https://github.com/tile-ai/tilelang-ascend/blob/ascendc_pto/docs/tutorials/t_pipelined.md) enables automatic pipeline scheduling to achieve intra-core computation and data movement overlap, as well as inter-core pipeline overlap between Cube and Vector units.
 
-Here is an intra-core example refers to [matmul_add_pipeline.py](https://github.com/tile-ai/tilelang-ascend/blob/ascendc_pto/examples/pipeline/matmul_add_pipeline.py):
+**Usage:**
+```python
+for i in T.Pipelined(loop_range, num_stages=N):
+    # loop body
+```
+
+**Usage Constraints:**
+- `T.Pipelined` **does not support nesting**. You cannot place a `T.Pipelined` loop inside another `T.Pipelined` loop.
+- For inter-core pipelining, place both Cube and Vector operations in a single `T.Pipelined` loop.
+- For intra-core pipelining only, use separate `T.Pipelined` loops for Cube and Vector respectively.
+
+```python
+# Correct: inter-core pipeline (Cube + Vector in one loop)
+for i in T.Pipelined(loop, num_stages=2):
+    cube_operations()
+    vector_operations()
+
+# Correct: intra-core pipeline (separate loops)
+for i in T.Pipelined(loop, num_stages=2):
+    cube_operations()
+for i in T.Pipelined(loop, num_stages=2):
+    vector_operations()
+
+# WRONG: nested T.Pipelined is NOT supported
+for i in T.Pipelined(outer, num_stages=2):
+    for j in T.Pipelined(inner, num_stages=2):  # Error!
+        ...
+```
+
+An intra-core example refers to [matmul_add_pipeline.py](https://github.com/tile-ai/tilelang-ascend/blob/ascendc_pto/examples/pipeline/matmul_add_pipeline.py):
 ```python
 for k in T.Pipelined(loop_k, num_stages=2):
     T.copy(A[bx * block_M, k * block_K], A_L1)
@@ -521,6 +573,8 @@ for k in T.Pipelined(T.ceildiv(seq_len, block_N), num_stages=2):
     ...
 ```
 
+For performance tuning with `T.Pipelined` (choosing `num_stages`, Double Buffer, etc.), see the [Flash Attention Performance Optimization Guide](./examples/flash_attention/fa_opt/flash_attention_performance_optimization_zh.md).
+
 ### Dive Deep into TileLang Beyond GEMM
 
 In addition to GEMM, we provide a variety of examples to showcase the versatility and power of TileLang-Ascend, including:
@@ -542,6 +596,62 @@ pass_configs = {
 Here is an example:
 - [FlashAttention](./examples/flash_attention/flash_attn_bhsd_cc_sync.py): Implementations of FlashAttention without inserting synchronization flags manually.
 
+### Vid reduction & Auto CV Ratio
+
+The parameter `threads` needs to be set. (Only 1 or 2 are allowed).When setting thread parameters, the return value will only have cid and no vid：
+```python
+with T.Kernel(m_num * n_num, threads=2, is_npu=True) as (cid):
+```
+Therefore, ub application and transfer will no longer need to consider core allocation, and the usage will change as follows:
+```python
+# UB allocation original form
+c_ub = T.alloc_shared((block_M // VEC_NUM, block_N), dtype) 
+# New form after UB reduce elimination
+c_ub = T.alloc_shared((block_M, block_N), dtype)
+# UB moved to its original form
+T.copy(c_ub, C[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
+# New form after UB transport elimination
+T.copy(c_ub, C[bx * block_M, by * block_N])
+
+```
+
+Here is an example:
+- [MatmulAddDeveloper](./examples/developer_mode/matmul_add_developer.py)
+
+For a more detailed feature introduction, please see:
+- [vid_reduction_and_auto_cv_ratio.md](./docs/tutorials/vid_reduction_and_auto_cv_ratio.md)
+
+## Contributing
+
+We welcome contributions of new operators and framework improvements! Please follow the guidelines below to ensure your changes integrate smoothly.
+
+### Contributing Operators
+
+When adding a new operator:
+
+1. Create your operator under the `examples/` directory (e.g., `examples/my_op/my_op.py`).
+2. Make sure your script prints `Kernel Output Match!` or `Test Passed!` upon success, so the CI can recognize it.
+3. Verify that `bench_test.sh` can discover and run your script — it auto-discovers `*.py` files up to 2 levels deep under `examples/`.
+4. Run the full test suite locally before submitting:
+   ```bash
+   cd examples
+   bash bench_test.sh
+   ```
+
+### Contributing Framework Changes
+
+When modifying the compiler, passes, or runtime:
+
+1. Ensure **all existing tests pass** by running `bench_test.sh` end-to-end. Framework changes must not break any existing operator.
+2. The CI will also run `pytest` on `testing/python/` — make sure those tests pass as well.
+3. If your change adds a new API or primitive, add corresponding test coverage under `testing/python/` or a new example under `examples/`.
+
+### CI Overview
+
+The current CI workflow is triggered manually via [`bench_test.sh`](./examples/bench_test.sh).
+
+
+> **Rule of thumb**: If you add an operator, make sure `bench_test.sh` picks it up. If you change the framework, make sure `bench_test.sh` still reports 100% pass.
 
 ## Upcoming Features
 

@@ -127,6 +127,10 @@ cp 3rdparty/tvm/cmake/config.cmake build
 cd build
 
 echo "set(USE_ASCEND ON)" >> config.cmake
+# PGTestConfig.cmake: GTest::gtest may not define IMPORTED_LOCATION,
+# but which TVM's CMake still queries it, causing build error
+# C++ gtests are optional for TileLang; keep them off for this install path.
+echo 'set(USE_GTEST OFF)' >> config.cmake
 
 echo "Running CMake for TileLang..."
 cmake ..
@@ -137,11 +141,14 @@ fi
 
 echo "Building TileLang with make..."
 
-# Calculate 50% of available CPU cores
+# Calculate 50% of available CPU cores (ensure at least 1)
 # Other wise, make will use all available cores
 # and it may cause the system to be unresponsive
 CORES=$(nproc)
 MAKE_JOBS=$(( CORES * 50 / 100 ))
+if [ $MAKE_JOBS -lt 1 ]; then
+    MAKE_JOBS=1
+fi
 make -j${MAKE_JOBS}
 
 if [ $? -ne 0 ]; then
