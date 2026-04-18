@@ -121,8 +121,11 @@ _SUPPORTED_CANN_TO_HIVMC = {
 }
 
 
-def _normalize_cann_version(value: str) -> str:
+def _normalize_cann_version(value: str | None) -> str:
     if not value:
+        logging.warning(
+            "CANN version is not configured; defaulting to 8.5.0."
+        )
         return "8.5.0"
 
     normalized = os.path.basename(value.rstrip("/").strip().lower())
@@ -134,6 +137,10 @@ def _normalize_cann_version(value: str) -> str:
     if re.fullmatch(r"9\.0\.0(?:[.-]?beta(?:[.-]?2)?)", normalized):
         return "9.0.0.beta2"
 
+    logging.warning(
+        "Unsupported CANN version %r; defaulting to 8.5.0.",
+        value,
+    )
     return "8.5.0"
 
 

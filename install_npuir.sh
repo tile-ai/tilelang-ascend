@@ -37,6 +37,9 @@ normalize_cann_version() {
             echo "9.0.0.beta2"
             ;;
         *)
+            if [ -n "$raw" ]; then
+                echo "Warning: Unsupported CANN version '$raw'; defaulting to 8.5.0." >&2
+            fi
             echo "8.5.0"
             ;;
     esac
