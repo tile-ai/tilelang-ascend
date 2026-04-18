@@ -1,5 +1,6 @@
 # Copyright (c) Tile-AI Corporation.
 # Licensed under the MIT License.
+from __future__ import annotations
 from typing import Optional
 from tilelang import tvm as tvm
 import ctypes
@@ -36,10 +37,10 @@ def _get_ascend_home_path() -> str:
     return ascend_home
 
 
-class LibraryGenerator(object):
-    srcpath: Optional[str] = None
-    libpath: Optional[str] = None
-    lib_code: Optional[str] = None
+class LibraryGenerator:
+    srcpath: str | None = None
+    libpath: str | None = None
+    lib_code: str | None = None
 
     def __init__(self, target: str, platform: str):
         self.target = target
@@ -49,7 +50,7 @@ class LibraryGenerator(object):
         self.lib_code = lib_code
 
     # Assume currently we only support CUDA compilation
-    def load_lib(self, lib_path: Optional[str] = None):
+    def load_lib(self, lib_path: str | None = None):
         if lib_path is None:
             lib_path = self.libpath
         return ctypes.CDLL(lib_path)
@@ -75,7 +76,7 @@ class LibraryGenerator(object):
                 f"-I{TL_ROOT}/3rdparty/catlass/include",
                 f"-I{TL_ROOT}/3rdparty/shmem/include",
                 f"-I{TL_ROOT}/3rdparty/shmem/src/device",
-                f"-DBACKEND_HYBM",
+                "-DBACKEND_HYBM",
                 "-I" + TILELANG_TEMPLATE_PATH,
                 f"-L{ASCEND_HOME_PATH}/lib64",
                 "-Wno-macro-redefined",
@@ -114,11 +115,11 @@ class LibraryGenerator(object):
                 "-cce-aicore-dcci-insert-for-scalar=false",
                 "-DL2_CACHE_HINT",
                 "-I../../src/",
+                f"-I{TL_ROOT}/3rdparty/pto-isa/include",
                 f"-I{ASCEND_HOME_PATH}/include",
                 f"-I{ASCEND_HOME_PATH}/include/experiment/msprof",
                 f"-I{ASCEND_HOME_PATH}/include/experiment/runtime",
-                f"-I/usr/local/Ascend/driver/kernel/inc",
-                f"-I{TL_ROOT}/3rdparty/pto-isa/include",
+                "-I/usr/local/Ascend/driver/kernel/inc",
                 f"-I{ASCEND_HOME_PATH}/pkg_inc",
                 f"-I{ASCEND_HOME_PATH}/pkg_inc/runtime",
                 f"-I{ASCEND_HOME_PATH}/pkg_inc/profiling",
