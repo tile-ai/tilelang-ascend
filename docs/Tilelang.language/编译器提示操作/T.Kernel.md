@@ -99,6 +99,7 @@ def flash_attention_kernel(seq_len, dim, block_m, dtype="float16"):
             q_shared = T.alloc_shared((block_m, dim), dtype)
             T.copy(Q[offset, 0], q_shared, size=[block_m, dim])
             T.copy(q_shared, Q_block)
+            # ... 后续还有 K/V 搬运、Cube/Vector 计算与结果写回，这里省略，只展示 T.Kernel 的启动方式
 
     return main
 ```
