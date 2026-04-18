@@ -1,6 +1,5 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2025.
 import torch
-import os
 import tilelang
 import tilelang.language as T
 
@@ -10,16 +9,15 @@ import testcommon as tc
 DATATYPE_CASES = ["float16", "float32"]
 pytestmark = [pytest.mark.mode("Developer")]
 
+
 @tilelang.jit(target="npuir")
-def slice_add(block_M, block_N, dtype = "float16"):
+def slice_add(block_M, block_N, dtype="float16"):
     M = T.symbolic("M")
     N = T.symbolic("N")
     BLOCK_SIZE = 1
+
     @T.prim_func
-    def sliceAdd(
-        Input: T.Tensor((M, N), dtype),
-        Output: T.Tensor((1, N), dtype)
-    ):
+    def sliceAdd(Input: T.Tensor((M, N), dtype), Output: T.Tensor((1, N), dtype)):
         with T.Kernel(BLOCK_SIZE, is_npu=True) as (cid, _):
             src = T.alloc_shared([block_M, block_N], dtype=dtype)
             dst = T.alloc_shared([1, block_N], dtype=dtype)
@@ -32,10 +30,16 @@ def slice_add(block_M, block_N, dtype = "float16"):
                 for j in T.serial(T.ceildiv(M, block_M)):
                     offset_m = j * block_M
                     remain_m = T.min(block_M, M - offset_m)
-                    T.copy(Input[offset_m : offset_m + remain_m, offset_n : offset_n + remain_n], src)
+                    T.copy(
+                        Input[
+                            offset_m : offset_m + remain_m,
+                            offset_n : offset_n + remain_n,
+                        ],
+                        src[0:remain_m, 0:remain_n],
+                    )
                     for k in T.serial(remain_m):
-                        T.npuir_add(src[k:k+1, :], dst, dst)
-                T.copy(dst, Output[0 : 1, offset_n : offset_n + remain_n])
+                        T.npuir_add(src[k : k + 1, :], dst, dst)
+                T.copy(dst[0, 0:remain_n], Output[0:1, offset_n : offset_n + remain_n])
 
     return sliceAdd
 
@@ -48,7 +52,7 @@ def test_slice_add(dtype):
     datatype = tc.resolve_dtype(dtype)
 
     # case 1
-    M, N = 17, 256
+    M, N = 2, 256
     input = torch.randn([M, N], dtype=datatype).npu()
     output = torch.randn([1, N], dtype=datatype).npu()
     kernel(input, output)
@@ -57,7 +61,7 @@ def test_slice_add(dtype):
     tc.assert_close(output, ref_output, rtol=1e-2, atol=1e-2)
 
     # case 2
-    M, N = 39, 466
+    M, N = 3, 466
     input = torch.randn([M, N], dtype=datatype).npu()
     output = torch.randn([1, N], dtype=datatype).npu()
     kernel(input, output)

@@ -41,18 +41,29 @@ def if_no_yield(M, block_N, dtype="float16", indexType="int32"):
                     offset_n = idx_n * block_N
                     remain_n = T.min(N - offset_n, block_N)
                     if idx[i] == 1:
-                        T.copy(Input[i:i + 1, offset_n:offset_n + remain_n], src)
+                        T.copy(
+                            Input[i : i + 1, offset_n : offset_n + remain_n],
+                            src[0, 0:remain_n],
+                        )
                         T.npuir_add(src, src, dst)
-                        T.copy(dst, Output[i:i + 1, offset_n:offset_n + remain_n])
+                        T.copy(
+                            dst[0, 0:remain_n],
+                            Output[i : i + 1, offset_n : offset_n + remain_n],
+                        )
                     else:
                         value_zero = 0
                         T.npuir_brc(value_zero, dst)
-                        T.copy(dst, Output[i:i + 1, offset_n:offset_n + remain_n])
+                        T.copy(
+                            dst[0, 0:remain_n],
+                            Output[i : i + 1, offset_n : offset_n + remain_n],
+                        )
 
     return if_no_yield_
 
 
-def if_no_yield_torch(Input: torch.Tensor, Index: torch.Tensor, block_N: int) -> torch.Tensor:
+def if_no_yield_torch(
+    Input: torch.Tensor, Index: torch.Tensor, block_N: int
+) -> torch.Tensor:
     M, N = Input.shape
     Output = torch.zeros_like(Input)
     for i in range(M):
@@ -60,14 +71,14 @@ def if_no_yield_torch(Input: torch.Tensor, Index: torch.Tensor, block_N: int) ->
             for idx_n in range(0, N, block_N):
                 offset_n = idx_n
                 remain_n = min(N - offset_n, block_N)
-                src = Input[i, offset_n:offset_n + remain_n]
+                src = Input[i, offset_n : offset_n + remain_n]
                 dst = src + src
-                Output[i, offset_n:offset_n + remain_n] = dst
+                Output[i, offset_n : offset_n + remain_n] = dst
         else:
             for idx_n in range(0, N, block_N):
                 offset_n = idx_n
                 remain_n = min(N - offset_n, block_N)
-                Output[i, offset_n:offset_n + remain_n] = 0
+                Output[i, offset_n : offset_n + remain_n] = 0
     return Output
 
 
@@ -82,4 +93,6 @@ def test_if_no_yield_dev(dtype, N):
     output_ref = if_no_yield_torch(input_tensor, index_tensor, BLOCK_N)
     kernel(input_tensor, index_tensor, output_tensor)
 
-    assert_close(output_tensor.cpu(), output_ref.cpu(), dtype=dtype, rtol=1e-2, atol=1e-2)
+    assert_close(
+        output_tensor.cpu(), output_ref.cpu(), dtype=dtype, rtol=1e-2, atol=1e-2
+    )

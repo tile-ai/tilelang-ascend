@@ -44,14 +44,19 @@ def if_have_yield(M, block_N, dtype="float16", indexType="int32"):
                 remain_n = T.min(N - offset_n, block_N)
                 for i in T.serial(M):
                     if idx[i] == 1:
-                        T.copy(Input[i:i + 1, offset_n:offset_n + remain_n], src)
+                        T.copy(
+                            Input[i : i + 1, offset_n : offset_n + remain_n],
+                            src[0, 0:remain_n],
+                        )
                         T.npuir_add(src, dst, dst)
-                T.copy(dst, Output[0:1, offset_n:offset_n + remain_n])
+                T.copy(dst[0, 0:remain_n], Output[0:1, offset_n : offset_n + remain_n])
 
     return if_have_yield_
 
 
-def if_have_yield_torch(Input: torch.Tensor, Index: torch.Tensor, block_N: int) -> torch.Tensor:
+def if_have_yield_torch(
+    Input: torch.Tensor, Index: torch.Tensor, block_N: int
+) -> torch.Tensor:
     M, N = Input.shape
     Output = torch.zeros((1, N), dtype=Input.dtype, device=Input.device)
     n_num = (N + block_N - 1) // block_N
@@ -61,10 +66,10 @@ def if_have_yield_torch(Input: torch.Tensor, Index: torch.Tensor, block_N: int) 
         dst = torch.zeros(remain_n, dtype=Input.dtype, device=Input.device)
         for i in range(M):
             if Index[i].item() == 1:
-                src = Input[i, offset_n:offset_n + remain_n]
+                src = Input[i, offset_n : offset_n + remain_n]
                 dst = dst + src
 
-        Output[0, offset_n:offset_n + remain_n] = dst
+        Output[0, offset_n : offset_n + remain_n] = dst
 
     return Output
 
@@ -80,4 +85,6 @@ def test_if_have_yield_dev(dtype, N):
     output_ref = if_have_yield_torch(input_tensor, index_tensor, BLOCK_N)
     kernel(input_tensor, index_tensor, output_tensor)
 
-    assert_close(output_tensor.cpu(), output_ref.cpu(), dtype=dtype, rtol=1e-2, atol=1e-2)
+    assert_close(
+        output_tensor.cpu(), output_ref.cpu(), dtype=dtype, rtol=1e-2, atol=1e-2
+    )

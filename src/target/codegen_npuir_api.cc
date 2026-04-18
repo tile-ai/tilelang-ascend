@@ -297,187 +297,6 @@ CodeGenTileLangNPUIRAPI
 ******************************************************************************************
 ******************************************************************************************/
 
-void CodeGenTileLangNPUIRAPI::SmartMemRefCopy(mlir::Value src,
-                                              mlir::Value dst) {
-  auto src_type = src.getType().cast<mlir::MemRefType>();
-  auto dst_type = dst.getType().cast<mlir::MemRefType>();
-  auto loc = builder.getUnknownLoc();
-
-  // Copy if shape match
-  if (src_type.getShape() == dst_type.getShape()) {
-    builder.create<mlir::memref::CopyOp>(loc, TypeRange{}, src, dst);
-    return;
-  }
-
-  // 2. Try Reinterpret Copy if shape not match but numElements match
-  if (src_type.getNumElements() == dst_type.getNumElements()) {
-
-    // safety check: stride hack only when elementTypes match
-    if (src_type.getElementType() != dst_type.getElementType()) {
-      ICHECK(false) << "HandleMemRefReshapeCopy requires same element type.";
-      return;
-    }
-
-    // Get offset of src MemRef
-    auto extractOp =
-        builder.create<mlir::memref::ExtractStridedMetadataOp>(loc, src);
-    mlir::Value offsetValue = extractOp.getOffset();
-
-    llvm::SmallVector<mlir::OpFoldResult> offsets;
-    offsets.push_back(offsetValue);
-
-    // 1. get sizes for dst value.
-    llvm::SmallVector<mlir::OpFoldResult> sizes;
-    llvm::SmallVector<mlir::Value> dim_values;
-
-    for (int i = 0; i < dst_type.getRank(); ++i) {
-      int64_t static_dim = dst_type.getDimSize(i);
-
-      if (mlir::ShapedType::isDynamic(static_dim)) {
-        mlir::Value dim_val = builder.create<mlir::memref::DimOp>(loc, dst, i);
-        sizes.push_back(dim_val);
-        dim_values.push_back(dim_val);
-      } else {
-        sizes.push_back(builder.getIndexAttr(static_dim));
-        dim_values.push_back(
-            builder.create<mlir::arith::ConstantIndexOp>(loc, static_dim));
-      }
-    }
-
-    // 2. Compute strides for StridedLayoutAttr
-    // Rule: Calculate from the last dimension to the first. When encountering a
-    // dynamic dimension, the current and all preceding strides become dynamic.
-    llvm::SmallVector<int64_t> layout_strides(dst_type.getRank(),
-                                              mlir::ShapedType::kDynamic);
-    int64_t current_stride = 1;
-    bool all_static_so_far = true;
-
-    // Calculate from the lowest dimension (last dimension) to the highest
-    for (int i = dst_type.getRank() - 1; i >= 0; --i) {
-      int64_t dim_size = dst_type.getDimSize(i);
-
-      // Set stride for the current dimension
-      if (i == dst_type.getRank() - 1) {
-        // The lowest dimension's stride is always 1
-        layout_strides[i] = 1;
-      } else {
-        // Normal case
-        layout_strides[i] = current_stride;
-      }
-
-      // Update current_stride for the next dimension (higher dimension)
-      if (mlir::ShapedType::isDynamic(dim_size)) {
-        all_static_so_far = false;
-        break;
-      } else {
-        current_stride *= dim_size;
-      }
-    }
-
-    // 3. Prepare dynamic strides parameters for reinterpret_cast
-    llvm::SmallVector<mlir::OpFoldResult> strides;
-
-    if (all_static_so_far) {
-      // All static: use static stride values
-      for (int64_t stride : layout_strides) {
-        strides.push_back(builder.getIndexAttr(stride));
-      }
-    } else {
-      // Has dynamic dimensions: need to compute dynamic strides
-      // Create a vector to store computed strides (calculated from back to
-      // front)
-      llvm::SmallVector<mlir::Value> temp_strides(dst_type.getRank());
-
-      // Calculate from back to front
-      mlir::Value current_dyn_stride =
-          builder.create<mlir::arith::ConstantIndexOp>(loc, 1);
-      for (int i = dst_type.getRank() - 1; i >= 0; --i) {
-        // Store stride for current dimension
-        temp_strides[i] = current_dyn_stride;
-
-        if (i > 0) {
-          // Update current_dyn_stride for the next dimension (higher dimension)
-          // current_dimension_stride * current_dimension_size
-          current_dyn_stride = builder.create<mlir::arith::MulIOp>(
-              loc, current_dyn_stride, dim_values[i]);
-        }
-      }
-
-      // Convert temp_strides to OpFoldResult and add to strides in order
-      for (int i = 0; i < dst_type.getRank(); ++i) {
-        strides.push_back(temp_strides[i]);
-      }
-    }
-
-    // 4. Create StridedLayoutAttr
-    auto layout = mlir::StridedLayoutAttr::get(
-        &context, mlir::ShapedType::kDynamic, layout_strides);
-
-    // 5. Create target type
-    mlir::MemRefType new_dst_type =
-        mlir::MemRefType::get(dst_type.getShape(), dst_type.getElementType(),
-                              layout, src_type.getMemorySpace());
-
-    // 6. Create reinterpret_cast
-    mlir::Value reinterpreted_src =
-        builder.create<mlir::memref::ReinterpretCastOp>(
-            loc, new_dst_type, src, offsets, sizes, strides);
-
-    // 7. Copy
-    builder.create<mlir::memref::CopyOp>(loc, TypeRange{}, reinterpreted_src,
-                                         dst);
-
-    return;
-  }
-
-  // 3. Copy with shape mismatch: use the smaller extent to avoid overflow.
-  //    - src dynamic (remain_M, remain_N), dst static (32, 32): subview dst to
-  //      src's sizes, copy src -> dst_sub.
-  //    - src static (32, 32), dst dynamic (remain_M, remain_N): subview src to
-  //      dst's sizes, copy src_sub -> dst.
-  if (src_type.getRank() == dst_type.getRank() &&
-      src_type.getElementType() == dst_type.getElementType()) {
-    llvm::SmallVector<mlir::OpFoldResult> zeros(dst_type.getRank(),
-                                                builder.getIndexAttr(0));
-    llvm::SmallVector<mlir::OpFoldResult> strides(dst_type.getRank(),
-                                                  builder.getIndexAttr(1));
-    llvm::SmallVector<mlir::OpFoldResult> sizes;
-    bool use_src_sizes =
-        false; // true => subview dst to copy src in; else subview src
-    for (int i = 0; i < src_type.getRank(); ++i) {
-      bool src_dyn = mlir::ShapedType::isDynamic(src_type.getDimSize(i));
-      bool dst_dyn = mlir::ShapedType::isDynamic(dst_type.getDimSize(i));
-      if (src_dyn && !dst_dyn) {
-        use_src_sizes = true;
-        sizes.push_back(
-            builder.create<mlir::memref::DimOp>(loc, src, i).getResult());
-      } else if (!src_dyn && dst_dyn) {
-        sizes.push_back(
-            builder.create<mlir::memref::DimOp>(loc, dst, i).getResult());
-      } else if (src_dyn && dst_dyn) {
-        use_src_sizes = true;
-        sizes.push_back(
-            builder.create<mlir::memref::DimOp>(loc, src, i).getResult());
-      } else {
-        // Both static: use dst sizes so we subview src and never overflow dst
-        sizes.push_back(builder.getIndexAttr(dst_type.getDimSize(i)));
-      }
-    }
-    if (use_src_sizes) {
-      mlir::Value dst_sub = builder.create<mlir::memref::SubViewOp>(
-          loc, dst, zeros, sizes, strides);
-      builder.create<mlir::memref::CopyOp>(loc, TypeRange{}, src, dst_sub);
-    } else {
-      mlir::Value src_sub = builder.create<mlir::memref::SubViewOp>(
-          loc, src, zeros, sizes, strides);
-      builder.create<mlir::memref::CopyOp>(loc, TypeRange{}, src_sub, dst);
-    }
-    return;
-  }
-  ICHECK(false)
-      << "SmartMemRefCopy: Shape mismatch and cannot interpret cast. ";
-}
-
 mlir::Value CodeGenTileLangNPUIRAPI::ScalarConvertType(const PrimExpr &imm,
                                                        DataType targetDtype) {
   auto castNode = std::make_unique<tir::Cast>(targetDtype, imm);
@@ -522,19 +341,73 @@ CodeGenTileLangNPUIRAPI::GetHIVMAddressSpace(String address_space) {
   return mlir::hivm::AddressSpace::Zero;
 }
 
-inline std::vector<long int>
+inline std::vector<int64_t>
 CodeGenTileLangNPUIRAPI::GetShape(Array<PrimExpr> shape_in) {
-  std::vector<long int> shape;
+  std::vector<int64_t> shape;
   for (PrimExpr s : shape_in) {
     if (auto s_int = as_const_int(s)) {
       // Statically known dimension
       shape.push_back(*s_int);
     } else {
       // Dynamic dimension "?x";
-      shape.push_back(-1);
+      shape.push_back(mlir::ShapedType::kDynamic);
     }
   }
   return shape;
+}
+
+static llvm::SmallVector<PrimExpr>
+BuildContiguousStrideExprs(llvm::ArrayRef<PrimExpr> shape) {
+  llvm::SmallVector<PrimExpr> strides(shape.size());
+  if (shape.empty()) {
+    return strides;
+  }
+
+  arith::Analyzer analyzer;
+  PrimExpr running = IntImm(shape.front().dtype(), 1);
+  for (int i = static_cast<int>(shape.size()) - 1; i >= 0; --i) {
+    strides[i] = analyzer.Simplify(running);
+    running = analyzer.Simplify(Mul(shape[i], running));
+  }
+  return strides;
+}
+
+template <typename OnStatic, typename OnDynamic>
+static void DispatchSimplifiedExpr(llvm::ArrayRef<PrimExpr> exprs,
+                                   OnStatic &&onStatic, OnDynamic &&onDynamic) {
+  arith::Analyzer analyzer;
+  for (PrimExpr expr : exprs) {
+    PrimExpr simplified = analyzer.Simplify(expr);
+    if (auto intImm = as_const_int(simplified)) {
+      onStatic(*intImm);
+    } else {
+      onDynamic(simplified);
+    }
+  }
+}
+
+static llvm::SmallVector<int64_t>
+ExtractStaticInts(llvm::ArrayRef<PrimExpr> exprs) {
+  llvm::SmallVector<int64_t> staticValues;
+  staticValues.reserve(exprs.size());
+  DispatchSimplifiedExpr(
+      exprs, [&](int64_t value) { staticValues.push_back(value); },
+      [&](PrimExpr) { staticValues.push_back(mlir::ShapedType::kDynamic); });
+  return staticValues;
+}
+
+template <typename MaterializeFn>
+static llvm::SmallVector<mlir::OpFoldResult>
+BuildIndexFoldResultsFromExprs(mlir::OpBuilder &builder,
+                               llvm::ArrayRef<PrimExpr> exprs,
+                               MaterializeFn &&materialize) {
+  llvm::SmallVector<mlir::OpFoldResult> ofrs;
+  ofrs.reserve(exprs.size());
+  DispatchSimplifiedExpr(
+      exprs,
+      [&](int64_t value) { ofrs.push_back(builder.getIndexAttr(value)); },
+      [&](PrimExpr simplified) { ofrs.push_back(materialize(simplified)); });
+  return ofrs;
 }
 
 mlir::Type CodeGenTileLangNPUIRAPI::GetMLIRType(const PrimExpr &expr) {
@@ -544,39 +417,14 @@ mlir::Type CodeGenTileLangNPUIRAPI::GetMLIRType(const PrimExpr &expr) {
 }
 
 mlir::Type CodeGenTileLangNPUIRAPI::GetMLIRType(const Buffer &buffer) {
-  llvm::SmallVector<int64_t> shape, stride;
-  int64_t base = 1;
-  bool isDynamicShape = false;
-  for (auto s : buffer->shape) {
-    auto intImm = s.as<tvm::tir::IntImmNode>();
-    if (intImm != nullptr) {
-      shape.emplace_back(intImm->value);
-      base *= intImm->value;
-    } else {
-      shape.emplace_back(ShapedType::kDynamic);
-      isDynamicShape = true;
-    }
-  }
-  if (buffer->strides.size()) {
-    for (auto s : buffer->strides) {
-      auto intImm = s.as<tvm::tir::IntImmNode>();
-      if (intImm != nullptr) {
-        stride.emplace_back(intImm->value);
-      } else {
-        stride.emplace_back(ShapedType::kDynamic);
-      }
-    }
-  } else {
-    for (auto s : buffer->shape) {
-      auto intImm = s.as<tvm::tir::IntImmNode>();
-      if (!isDynamicShape) {
-        base /= intImm->value;
-        stride.emplace_back(base);
-      } else {
-        stride.emplace_back(ShapedType::kDynamic);
-      }
-    }
-  }
+  llvm::SmallVector<PrimExpr> shapeExprs(buffer->shape.begin(),
+                                         buffer->shape.end());
+  llvm::SmallVector<int64_t> shape = ExtractStaticInts(shapeExprs);
+  llvm::SmallVector<int64_t> stride =
+      buffer->strides.empty()
+          ? ExtractStaticInts(BuildContiguousStrideExprs(shapeExprs))
+          : ExtractStaticInts(llvm::SmallVector<PrimExpr>(
+                buffer->strides.begin(), buffer->strides.end()));
   auto elementType = DTypetoMLIRType(buffer->dtype);
   auto offset = 0;
   String scope = GetPtrStorageScope(buffer->data);
@@ -1164,6 +1012,309 @@ mlir::Value CodeGenTileLangNPUIRAPI::BinaryOpCodegen(const PrimExprNode *op,
   return mlirVal;
 }
 
+static int64_t ExtractStaticShapeDim(mlir::OpFoldResult ofr) {
+  if (auto attr = ofr.dyn_cast<mlir::Attribute>()) {
+    if (auto intAttr = attr.dyn_cast<mlir::IntegerAttr>()) {
+      return intAttr.getInt();
+    }
+  }
+  return mlir::ShapedType::kDynamic;
+}
+
+static mlir::Value MaterializeIndexFoldResult(mlir::OpBuilder &builder,
+                                              mlir::Location loc,
+                                              mlir::OpFoldResult ofr) {
+  if (auto attr = ofr.dyn_cast<mlir::Attribute>()) {
+    return builder.create<mlir::arith::ConstantIndexOp>(
+        loc, attr.cast<mlir::IntegerAttr>().getInt());
+  }
+  mlir::Value val = ofr.get<mlir::Value>();
+  if (!val.getType().isIndex()) {
+    val = builder.create<mlir::arith::IndexCastOp>(loc, builder.getIndexType(),
+                                                   val);
+  }
+  return val;
+}
+
+static mlir::OpFoldResult ComputeProjectedViewOffset(
+    mlir::OpBuilder &builder, mlir::Location loc, int64_t baseLayoutOffset,
+    llvm::ArrayRef<mlir::OpFoldResult> sliceOffsets,
+    llvm::ArrayRef<mlir::OpFoldResult> baseLayoutStrides) {
+  ICHECK(sliceOffsets.size() == baseLayoutStrides.size());
+  int64_t staticOffset = baseLayoutOffset;
+  mlir::Value dynamicOffset;
+
+  for (size_t i = 0; i < sliceOffsets.size(); ++i) {
+    auto offAttr = sliceOffsets[i].dyn_cast<mlir::Attribute>();
+    auto strideAttr = baseLayoutStrides[i].dyn_cast<mlir::Attribute>();
+    if (offAttr && strideAttr) {
+      staticOffset += offAttr.cast<mlir::IntegerAttr>().getInt() *
+                      strideAttr.cast<mlir::IntegerAttr>().getInt();
+      continue;
+    }
+
+    if (offAttr && offAttr.cast<mlir::IntegerAttr>().getInt() == 0) {
+      continue;
+    }
+
+    mlir::Value term =
+        MaterializeIndexFoldResult(builder, loc, sliceOffsets[i]);
+    if (!strideAttr || strideAttr.cast<mlir::IntegerAttr>().getInt() != 1) {
+      mlir::Value strideVal =
+          MaterializeIndexFoldResult(builder, loc, baseLayoutStrides[i]);
+      term = builder.create<mlir::arith::MulIOp>(loc, term, strideVal);
+    }
+    dynamicOffset =
+        dynamicOffset
+            ? builder.create<mlir::arith::AddIOp>(loc, dynamicOffset, term)
+            : term;
+  }
+
+  if (!dynamicOffset) {
+    return builder.getIndexAttr(staticOffset);
+  }
+
+  if (staticOffset != 0) {
+    mlir::Value staticOffsetVal =
+        builder.create<mlir::arith::ConstantIndexOp>(loc, staticOffset);
+    dynamicOffset = builder.create<mlir::arith::AddIOp>(loc, staticOffsetVal,
+                                                        dynamicOffset);
+  }
+  return dynamicOffset;
+}
+
+CodeGenTileLangNPUIRAPI::SliceFacts
+CodeGenTileLangNPUIRAPI::BuildSliceFacts(Buffer buffer_data,
+                                         Array<Range> range) {
+  SliceFacts facts;
+  facts.baseMemref = GetVarValue(buffer_data->data.get());
+  facts.baseMemrefType =
+      facts.baseMemref.getType().dyn_cast<mlir::MemRefType>();
+  // Generic T.copy only reasons about memref views in the default path.
+  ICHECK(facts.baseMemrefType)
+      << "generic T.copy only supports memref operands in the default path.";
+
+  auto layoutAttr =
+      facts.baseMemrefType.getLayout().dyn_cast<mlir::StridedLayoutAttr>();
+  // The projected-layout path expects offset/stride metadata in strided form.
+  ICHECK(layoutAttr)
+      << "generic T.copy only supports strided memref operands in the default "
+         "path.";
+  // Slice offsets may be dynamic, but the base memref layout itself must have a
+  // fixed starting point so the projected view offset stays well-defined.
+  ICHECK(!mlir::ShapedType::isDynamic(layoutAttr.getOffset()))
+      << "generic T.copy requires a statically-known base layout offset.";
+  // Keep the generic path intentionally narrow: contiguous buffers only.
+  ICHECK(buffer_data->strides.empty())
+      << "generic T.copy only supports contiguous buffers; explicit buffer "
+         "strides are unsupported.";
+
+  facts.baseLayoutOffset = layoutAttr.getOffset();
+  llvm::SmallVector<PrimExpr> shapeExprs(buffer_data->shape.begin(),
+                                         buffer_data->shape.end());
+  llvm::SmallVector<PrimExpr> strideExprs =
+      BuildContiguousStrideExprs(shapeExprs);
+  facts.baseLayoutStrides = ExtractStaticInts(strideExprs);
+  facts.baseLayoutStrideValues = BuildIndexFoldResultsFromExprs(
+      builder, strideExprs, [this](PrimExpr expr) {
+        mlir::Value value = MakeValue(expr);
+        return value.getType().isIndex() ? value : CreateIndexCastOp(value);
+      });
+
+  Array<PrimExpr> region_shape, region_indices;
+  for (Range r : range) {
+    region_shape.push_back(r->extent);
+    region_indices.push_back(r->min);
+    if (auto s_int = as_const_int(r->min)) {
+      facts.sliceOffsets.push_back(builder.getIndexAttr(*s_int));
+    } else {
+      facts.sliceOffsets.push_back(CreateIndexCastOp(MakeValue(r->min)));
+    }
+    if (auto s_int = as_const_int(r->extent)) {
+      facts.sliceSizes.push_back(builder.getIndexAttr(*s_int));
+    } else {
+      facts.sliceSizes.push_back(CreateIndexCastOp(MakeValue(r->extent)));
+    }
+  }
+
+  // Region rank and base memref rank must match because the default path always
+  // builds a full-rank subview before reinterpreting the aligned copy view.
+  ICHECK(static_cast<int64_t>(facts.sliceOffsets.size()) ==
+         facts.baseMemrefType.getRank())
+      << "generic T.copy expects range rank to match base memref rank.";
+  // The contiguous stride model must produce one stride per original slice dim.
+  ICHECK(facts.baseLayoutStrides.size() == facts.sliceOffsets.size())
+      << "generic T.copy expects buffer rank to match inferred layout rank.";
+  facts.coversWholeBuffer =
+      IsEqual(buffer_data->shape, region_shape) && AllZero(region_indices);
+  return facts;
+}
+
+CodeGenTileLangNPUIRAPI::CopyShapePlan
+CodeGenTileLangNPUIRAPI::BuildCopyShapePlan(const SliceFacts &src,
+                                            const SliceFacts &dst) {
+  struct ShapeExtract {
+    llvm::SmallVector<int64_t> backbone;
+    llvm::SmallVector<unsigned> backboneIdx;
+    std::vector<llvm::SmallVector<unsigned>> gapIdx;
+  };
+
+  auto extract = [](llvm::ArrayRef<mlir::OpFoldResult> sizes) {
+    ShapeExtract info;
+    info.gapIdx.emplace_back();
+    for (unsigned i = 0; i < sizes.size(); ++i) {
+      int64_t dim = ExtractStaticShapeDim(sizes[i]);
+      if (dim == 1) {
+        info.gapIdx.back().push_back(i);
+      } else {
+        info.backbone.push_back(dim);
+        info.backboneIdx.push_back(i);
+        info.gapIdx.emplace_back();
+      }
+    }
+    return info;
+  };
+
+  auto srcInfo = extract(src.sliceSizes);
+  auto dstInfo = extract(dst.sliceSizes);
+
+  // After removing static-1 gaps, src and dst must expose the same number of
+  // backbone dimensions to be alignable at all.
+  ICHECK(srcInfo.backbone.size() == dstInfo.backbone.size())
+      << "generic T.copy backbone mismatch: src has " << srcInfo.backbone.size()
+      << " non-singleton dims, dst has " << dstInfo.backbone.size()
+      << " non-singleton dims.";
+
+  CopyShapePlan plan;
+  for (size_t i = 0; i < srcInfo.backbone.size(); ++i) {
+    int64_t srcDim = srcInfo.backbone[i];
+    int64_t dstDim = dstInfo.backbone[i];
+    bool srcDyn = mlir::ShapedType::isDynamic(srcDim);
+    bool dstDyn = mlir::ShapedType::isDynamic(dstDim);
+    // Each aligned backbone slot must agree statically, unless at least one
+    // side stays dynamic and we carry that uncertainty into the aligned shape.
+    ICHECK(srcDyn || dstDyn || srcDim == dstDim)
+        << "generic T.copy backbone dimension mismatch at position " << i
+        << ": src=" << srcDim << ", dst=" << dstDim;
+
+    size_t targetGap =
+        std::min(srcInfo.gapIdx[i].size(), dstInfo.gapIdx[i].size());
+    for (size_t j = 0; j < targetGap; ++j) {
+      size_t srcIdx = srcInfo.gapIdx[i].size() - targetGap + j;
+      size_t dstIdx = dstInfo.gapIdx[i].size() - targetGap + j;
+      plan.alignedShape.push_back(1);
+      plan.srcKeptDims.push_back(srcInfo.gapIdx[i][srcIdx]);
+      plan.dstKeptDims.push_back(dstInfo.gapIdx[i][dstIdx]);
+    }
+
+    plan.alignedShape.push_back(srcDyn || dstDyn ? mlir::ShapedType::kDynamic
+                                                 : srcDim);
+    plan.srcKeptDims.push_back(srcInfo.backboneIdx[i]);
+    plan.dstKeptDims.push_back(dstInfo.backboneIdx[i]);
+  }
+
+  size_t trailingGap =
+      std::min(srcInfo.gapIdx.back().size(), dstInfo.gapIdx.back().size());
+  for (size_t j = 0; j < trailingGap; ++j) {
+    plan.alignedShape.push_back(1);
+    plan.srcKeptDims.push_back(srcInfo.gapIdx.back()[j]);
+    plan.dstKeptDims.push_back(dstInfo.gapIdx.back()[j]);
+  }
+
+  if (plan.alignedShape.empty()) {
+    // Scalar-like copies still need one representative singleton dimension so
+    // the generic path can materialize a legal memref.copy view.
+    ICHECK(!srcInfo.gapIdx.empty() && !srcInfo.gapIdx.front().empty() &&
+           !dstInfo.gapIdx.empty() && !dstInfo.gapIdx.front().empty())
+        << "generic T.copy could not derive a valid target shape.";
+    plan.alignedShape.push_back(1);
+    plan.srcKeptDims.push_back(srcInfo.gapIdx.front().front());
+    plan.dstKeptDims.push_back(dstInfo.gapIdx.front().front());
+  }
+
+  // Every aligned dimension must correspond to exactly one kept source dim and
+  // one kept destination dim.
+  ICHECK(plan.alignedShape.size() == plan.srcKeptDims.size() &&
+         plan.alignedShape.size() == plan.dstKeptDims.size())
+      << "generic T.copy internal error: target shape / kept-dim mismatch.";
+  return plan;
+}
+
+CodeGenTileLangNPUIRAPI::ProjectedLayoutPlan
+CodeGenTileLangNPUIRAPI::BuildProjectedLayoutPlan(
+    const SliceFacts &facts, llvm::ArrayRef<unsigned> keptDims,
+    llvm::ArrayRef<int64_t> alignedShape) {
+  // The shape-alignment phase decides the projected rank; layout projection
+  // must consume exactly that many kept dimensions.
+  ICHECK(keptDims.size() == alignedShape.size())
+      << "generic T.copy internal error: projected rank mismatch.";
+
+  ProjectedLayoutPlan layout;
+  layout.viewStrideStatics.reserve(keptDims.size());
+  layout.viewStrideValues.reserve(keptDims.size());
+  layout.viewSizes.reserve(keptDims.size());
+  for (size_t i = 0; i < keptDims.size(); ++i) {
+    unsigned idx = keptDims[i];
+    // Each kept dim must refer back to a valid original slice/base-layout dim.
+    ICHECK(idx < facts.baseLayoutStrides.size() &&
+           idx < facts.sliceSizes.size())
+        << "generic T.copy internal error: kept index out of range.";
+    // Dynamic projected strides are valid for contiguous buffers. We keep a
+    // static-or-dynamic type view for memref metadata plus the runtime stride
+    // values needed by reinterpret_cast operands.
+    layout.viewStrideStatics.push_back(facts.baseLayoutStrides[idx]);
+    layout.viewStrideValues.push_back(facts.baseLayoutStrideValues[idx]);
+    layout.viewSizes.push_back(facts.sliceSizes[idx]);
+  }
+
+  // All original slice offsets contribute to the final view start, including
+  // dimensions later dropped from the aligned rank.
+  layout.viewOffset = ComputeProjectedViewOffset(
+      builder, builder.getUnknownLoc(), facts.baseLayoutOffset,
+      facts.sliceOffsets, facts.baseLayoutStrideValues);
+  return layout;
+}
+
+mlir::Value
+CodeGenTileLangNPUIRAPI::BuildFullRankSubview(const SliceFacts &facts) {
+  if (facts.coversWholeBuffer) {
+    return facts.baseMemref;
+  }
+
+  llvm::SmallVector<mlir::OpFoldResult> unitStrides(facts.sliceOffsets.size(),
+                                                    builder.getIndexAttr(1));
+  return builder.create<mlir::memref::SubViewOp>(
+      builder.getUnknownLoc(), facts.baseMemref, facts.sliceOffsets,
+      facts.sliceSizes, unitStrides);
+}
+
+mlir::Value CodeGenTileLangNPUIRAPI::BuildAlignedCopyView(
+    mlir::Value fullSubview, mlir::Type elemTy, mlir::Attribute memSpace,
+    llvm::ArrayRef<int64_t> alignedShape, const ProjectedLayoutPlan &layout) {
+  auto getTypeOffset = [](mlir::OpFoldResult ofr) -> int64_t {
+    if (auto attr = ofr.dyn_cast<mlir::Attribute>()) {
+      return attr.cast<mlir::IntegerAttr>().getInt();
+    }
+    return mlir::ShapedType::kDynamic;
+  };
+
+  auto targetLayout = mlir::StridedLayoutAttr::get(
+      builder.getContext(), getTypeOffset(layout.viewOffset),
+      layout.viewStrideStatics);
+  auto targetTy =
+      mlir::MemRefType::get(alignedShape, elemTy, targetLayout, memSpace);
+
+  if (fullSubview.getType() == targetTy) {
+    return fullSubview;
+  }
+
+  // The target type records which offset/stride positions stay dynamic; the
+  // reinterpret operands carry their concrete runtime values.
+  return builder.create<mlir::memref::ReinterpretCastOp>(
+      builder.getUnknownLoc(), targetTy, fullSubview, layout.viewOffset,
+      layout.viewSizes, layout.viewStrideValues);
+}
+
 /// Generate hivm.hir.load or hivm.hir.store for tl.copy.
 /// before:
 ///   T.copy(T.region(A[bx, by], 1, 128, 256), T.region(A_VEC[0, 0],
@@ -1238,11 +1389,46 @@ void CodeGenTileLangNPUIRAPI::AscendCopyCodegen(const CallNode *op) {
     return;
   }
 
-  mlir::Value src_sub_view =
-      GenRankReducedSubviewFromRegion(npuirop.src, npuirop.src_range);
-  mlir::Value dst_sub_view =
-      GenRankReducedSubviewFromRegion(npuirop.dst, npuirop.dst_range);
-  SmartMemRefCopy(src_sub_view, dst_sub_view);
+  // Early dtype check: T.copy does not support element type casting.
+  ICHECK(npuirop.src->dtype == npuirop.dst->dtype)
+      << "T.copy does not support element type casting. ";
+
+  SliceFacts srcFacts = BuildSliceFacts(npuirop.src, npuirop.src_range);
+  SliceFacts dstFacts = BuildSliceFacts(npuirop.dst, npuirop.dst_range);
+  CopyShapePlan shapePlan = BuildCopyShapePlan(srcFacts, dstFacts);
+  ProjectedLayoutPlan srcLayout = BuildProjectedLayoutPlan(
+      srcFacts, shapePlan.srcKeptDims, shapePlan.alignedShape);
+  ProjectedLayoutPlan dstLayout = BuildProjectedLayoutPlan(
+      dstFacts, shapePlan.dstKeptDims, shapePlan.alignedShape);
+
+  mlir::Value srcFullSubview = BuildFullRankSubview(srcFacts);
+  mlir::Value dstFullSubview = BuildFullRankSubview(dstFacts);
+  mlir::Value srcAlignedView = BuildAlignedCopyView(
+      srcFullSubview, srcFacts.baseMemrefType.getElementType(),
+      srcFacts.baseMemrefType.getMemorySpace(), shapePlan.alignedShape,
+      srcLayout);
+  mlir::Value dstAlignedView = BuildAlignedCopyView(
+      dstFullSubview, dstFacts.baseMemrefType.getElementType(),
+      dstFacts.baseMemrefType.getMemorySpace(), shapePlan.alignedShape,
+      dstLayout);
+
+  auto src_ty = srcAlignedView.getType().cast<mlir::MemRefType>();
+  auto dst_ty = dstAlignedView.getType().cast<mlir::MemRefType>();
+  // memref.copy requires matching element type and logical shape, but the
+  // projected src/dst views may legitimately differ in memory space and
+  // physical layout (for example GM -> UB copies).
+  // If this fails, one of the earlier generic-copy planning stages produced
+  // incompatible view types for what should have been the same logical copy.
+  ICHECK(src_ty.getElementType() == dst_ty.getElementType())
+      << "generic T.copy internal error: src/dst projected views do not "
+         "share the same element type.";
+  // The aligned copy contract is defined in terms of logical shape equality,
+  // not full memref type equality.
+  ICHECK(src_ty.getShape() == dst_ty.getShape())
+      << "generic T.copy internal error: src/dst projected views do not "
+         "share the same logical shape.";
+  builder.create<mlir::memref::CopyOp>(builder.getUnknownLoc(), TypeRange{},
+                                       srcAlignedView, dstAlignedView);
 }
 
 template <typename T, typename U>
@@ -1914,53 +2100,15 @@ void CodeGenTileLangNPUIRAPI::ReshapeCodegen(const CallNode *op) {
   auto memSpace = srcTy.getMemorySpace();
 
   std::vector<tvm::PrimExpr> dstShape = npuirop.dst_shape;
-
-  SmallVector<tvm::PrimExpr> stridesVec;
-  stridesVec.reserve(dstShape.size());
-  tvm::PrimExpr strideExpr = tvm::Integer(1);
-  for (int i = static_cast<int>(dstShape.size()) - 1; i >= 0; --i) {
-    stridesVec.push_back(strideExpr);
-    strideExpr = strideExpr * dstShape[i];
-  }
-  std::reverse(stridesVec.begin(), stridesVec.end());
+  SmallVector<tvm::PrimExpr> stridesVec = BuildContiguousStrideExprs(dstShape);
 
   auto toIndexValue = [&](const tvm::PrimExpr &e) -> mlir::Value {
-    mlir::Value v = MakeValue(e);
-    if (!v.getType().isIndex()) {
-      v = builder.create<mlir::arith::IndexCastOp>(loc, builder.getIndexType(),
-                                                   v);
-    }
-    return v;
+    mlir::Value value = MakeValue(e);
+    return value.getType().isIndex() ? value : CreateIndexCastOp(value);
   };
 
-  bool allStatic =
-      std::all_of(dstShape.begin(), dstShape.end(), [](const tvm::PrimExpr &e) {
-        return e.as<tvm::IntImmNode>() != nullptr;
-      });
-
-  SmallVector<int64_t> dstShapeForType;
-  dstShapeForType.reserve(dstShape.size());
-  for (auto s : dstShape) {
-    if (auto imm = s.as<tvm::IntImmNode>()) {
-      dstShapeForType.push_back(static_cast<int64_t>(imm->value));
-    } else {
-      dstShapeForType.push_back(mlir::ShapedType::kDynamic);
-    }
-  }
-
-  SmallVector<int64_t> stridesForType;
-  if (allStatic) {
-    stridesForType.reserve(dstShape.size());
-    int64_t stride = 1;
-    for (int i = static_cast<int>(dstShape.size()) - 1; i >= 0; --i) {
-      stridesForType.push_back(stride);
-      auto imm = dstShape[i].as<tvm::IntImmNode>();
-      stride *= imm->value;
-    }
-    std::reverse(stridesForType.begin(), stridesForType.end());
-  } else {
-    stridesForType.resize(dstShape.size(), mlir::ShapedType::kDynamic);
-  }
+  SmallVector<int64_t> dstShapeForType = ExtractStaticInts(dstShape);
+  SmallVector<int64_t> stridesForType = ExtractStaticInts(stridesVec);
 
   auto layoutAttr = mlir::StridedLayoutAttr::get(builder.getContext(),
                                                  /*offset=*/0, stridesForType);
@@ -1968,32 +2116,12 @@ void CodeGenTileLangNPUIRAPI::ReshapeCodegen(const CallNode *op) {
   auto dstMemRefTy =
       mlir::MemRefType::get(dstShapeForType, elemTy, layoutAttr, memSpace);
 
-  SmallVector<mlir::OpFoldResult> offsets;
-  offsets.reserve(dstShape.size());
-  for (size_t i = 0; i < dstShape.size(); ++i) {
-    offsets.push_back(builder.getIndexAttr(0));
-  }
-
-  SmallVector<mlir::OpFoldResult> sizes;
-  sizes.reserve(dstShape.size());
-  for (auto s : dstShape) {
-    if (allStatic) {
-      auto imm = s.as<tvm::IntImmNode>();
-      sizes.push_back(builder.getIndexAttr(imm->value));
-    } else {
-      sizes.push_back(toIndexValue(s));
-    }
-  }
-
-  SmallVector<mlir::OpFoldResult> strides;
-  strides.reserve(stridesVec.size());
-  for (size_t i = 0; i < stridesVec.size(); ++i) {
-    if (allStatic) {
-      strides.push_back(builder.getIndexAttr(stridesForType[i]));
-    } else {
-      strides.push_back(toIndexValue(stridesVec[i]));
-    }
-  }
+  SmallVector<mlir::OpFoldResult> offsets(dstShape.size(),
+                                          builder.getIndexAttr(0));
+  SmallVector<mlir::OpFoldResult> sizes =
+      BuildIndexFoldResultsFromExprs(builder, dstShape, toIndexValue);
+  SmallVector<mlir::OpFoldResult> strides =
+      BuildIndexFoldResultsFromExprs(builder, stridesVec, toIndexValue);
 
   mlir::Value reshaped = builder.create<mlir::memref::ReinterpretCastOp>(
       loc, dstMemRefTy, src, offsets, sizes, strides);
@@ -2560,7 +2688,7 @@ void CodeGenTileLangNPUIRAPI::VisitStmt_(const AllocateNode *op) {
       {"shared.dyn", NPU_CORETYPE::AIC},
       {"wmma.accumulator", NPU_CORETYPE::AIC}};
   if (scope_coretype_map[scope] == this->current_coretype) {
-    std::vector<long int> shape = GetShape(op->extents);
+    std::vector<int64_t> shape = GetShape(op->extents);
     std::vector<int64_t> strides = GetStrideFromShapeAPI(op->extents);
 
     auto layoutMap =
@@ -2794,26 +2922,24 @@ void CodeGenTileLangNPUIRAPI::AddFunctionForCoreType(const GlobalVar &gvar,
     tir::Var v = f->params[recastInfo.first];
     tir::Var real_v = f->buffer_map[v]->data;
     Array<PrimExpr> shape = f->buffer_map[v]->shape;
+    Array<PrimExpr> strides = f->buffer_map[v]->strides;
+    llvm::SmallVector<PrimExpr> shapeExprs(shape.begin(), shape.end());
     auto memrefType = llvm::dyn_cast<MemRefType>(recastInfo.second);
     auto strideLayout =
         llvm::dyn_cast<StridedLayoutAttr>(memrefType.getLayout());
-    SmallVector<OpFoldResult> shape_val;
-    for (PrimExpr s : shape) {
-      if (auto s_int = as_const_int(s)) {
-        shape_val.push_back(builder.getI64IntegerAttr(*s_int));
-      } else {
-        mlir::Value s_index = CreateIndexCastOp(MakeValue(s));
-        shape_val.push_back(s_index);
-      }
-    }
-    size_t dim = shape.size();
-    SmallVector<OpFoldResult> stride_val(dim);
-    tvm::PrimExpr tmp_stride = IntImm(shape[0].dtype(), 1);
-    for (int i = dim - 1; i >= 0; i--) {
-      mlir::Value s_index = CreateIndexCastOp(MakeValue(tmp_stride));
-      stride_val[i] = s_index;
-      tmp_stride = Mul(shape[i], tmp_stride);
-    }
+    SmallVector<OpFoldResult> shape_val = BuildIndexFoldResultsFromExprs(
+        builder, shapeExprs, [this](PrimExpr expr) {
+          mlir::Value value = MakeValue(expr);
+          return value.getType().isIndex() ? value : CreateIndexCastOp(value);
+        });
+    SmallVector<PrimExpr> strideExprs =
+        strides.empty() ? BuildContiguousStrideExprs(shapeExprs)
+                        : SmallVector<PrimExpr>(strides.begin(), strides.end());
+    SmallVector<OpFoldResult> stride_val = BuildIndexFoldResultsFromExprs(
+        builder, strideExprs, [this](PrimExpr expr) {
+          mlir::Value value = MakeValue(expr);
+          return value.getType().isIndex() ? value : CreateIndexCastOp(value);
+        });
     OpFoldResult offset = builder.getI64IntegerAttr(strideLayout.getOffset());
     auto recastOp = builder.create<memref::ReinterpretCastOp>(
         builder.getUnknownLoc(), memrefType, var_map_[real_v.get()], offset,

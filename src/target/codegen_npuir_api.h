@@ -126,7 +126,7 @@ public:
   */
   struct PrimExprMapKey {
     tvm::PrimExpr expr;
-    const mlir::Block* block;
+    const mlir::Block *block;
 
     bool operator==(const PrimExprMapKey &key) const {
       // Use StructuralEqual instead of pointer comparison
@@ -143,16 +143,17 @@ public:
     }
   };
   // map to restrict the creation of duplicated nodes in MLIR
-  std::unordered_map<PrimExprMapKey, mlir::Value, PrimExprMapKeyHash> prim_expr_map;
+  std::unordered_map<PrimExprMapKey, mlir::Value, PrimExprMapKeyHash>
+      prim_expr_map;
 
   /*
   Using composite key for mlir_value_map consisting of mlir::Value and Block
-  Two mlir::Value are treated equal only if they are similar and are in same scope
-  Block keeps scope of mlir::Value
+  Two mlir::Value are treated equal only if they are similar and are in same
+  scope Block keeps scope of mlir::Value
   */
   struct MLIRValueMapKey {
     mlir::Value value;
-    const mlir::Block* block;
+    const mlir::Block *block;
     // check if both value and scope are same
     bool operator==(const MLIRValueMapKey &key) const {
       return value == key.value && block == key.block;
@@ -165,8 +166,10 @@ public:
       return llvm::hash_combine(key.value.getAsOpaquePointer(), key.block);
     }
   };
-  // map to restrict the creation of duplicated nodes in MLIR (using MLIR value as key)
-  std::unordered_map<MLIRValueMapKey, mlir::Value, MMLIRValueKeyHash> mlir_value_map;
+  // map to restrict the creation of duplicated nodes in MLIR (using MLIR value
+  // as key)
+  std::unordered_map<MLIRValueMapKey, mlir::Value, MMLIRValueKeyHash>
+      mlir_value_map;
 
   // Get current function name
   String GetCurrentFunctionName();
@@ -209,11 +212,10 @@ protected:
   std::unordered_set<const VarNode *> alias_var_set_;
   /*! \brief the storage scope of allocation */
   std::unordered_map<const VarNode *, StorageInfo> alloc_storage_info_;
-  // Get variable value 
+  // Get variable value
   mlir::Value GetVarValue(const VarNode *v) const;
   // Get the corresponding thread index
-  template <typename T>
-  mlir::Value GetAndCastIndexOp(const IterVar iv);
+  template <typename T> mlir::Value GetAndCastIndexOp(const IterVar iv);
 
 private:
   mlir::Value GetEventID(PrimExpr id);
@@ -253,13 +255,38 @@ private:
   void BarrierCodegen(const CallNode *op);
   void VselectCodegen(const CallNode *op);
   template <typename T, typename U>
-  mlir::Value BinaryOpCodegen(const PrimExprNode *op, U mode, mlir::Value lhs, mlir::Value rhs);
+  mlir::Value BinaryOpCodegen(const PrimExprNode *op, U mode, mlir::Value lhs,
+                              mlir::Value rhs);
 
   // returns HIVM address space against given address space
   mlir::hivm::AddressSpace GetHIVMAddressSpace(String address_space);
-  std::vector<long int> GetShape(Array<PrimExpr> extents);
+  std::vector<int64_t> GetShape(Array<PrimExpr> extents);
 
   friend void PrintConst(const FloatImmNode *op, CodeGenTileLangNPUIRAPI *p);
+
+  struct SliceFacts {
+    mlir::Value baseMemref;
+    mlir::MemRefType baseMemrefType;
+    llvm::SmallVector<mlir::OpFoldResult> sliceOffsets;
+    llvm::SmallVector<mlir::OpFoldResult> sliceSizes;
+    llvm::SmallVector<mlir::OpFoldResult> baseLayoutStrideValues;
+    bool coversWholeBuffer{false};
+    llvm::SmallVector<int64_t> baseLayoutStrides;
+    int64_t baseLayoutOffset{0};
+  };
+
+  struct CopyShapePlan {
+    llvm::SmallVector<int64_t> alignedShape;
+    llvm::SmallVector<unsigned> srcKeptDims;
+    llvm::SmallVector<unsigned> dstKeptDims;
+  };
+
+  struct ProjectedLayoutPlan {
+    llvm::SmallVector<int64_t> viewStrideStatics;
+    llvm::SmallVector<mlir::OpFoldResult> viewStrideValues;
+    llvm::SmallVector<mlir::OpFoldResult> viewSizes;
+    mlir::OpFoldResult viewOffset;
+  };
 
   mlir::Value GenMemrefLoadFromRegion(const BufferLoadNode *op);
   mlir::Value GenSubviewFromRegion(const CallNode *region_node);
@@ -269,12 +296,23 @@ private:
   mlir::Value GenRankReducedSubviewFromRegion(Buffer buffer_data,
                                               Array<Range> range,
                                               int min_rank = 0);
+  SliceFacts BuildSliceFacts(Buffer buffer_data, Array<Range> range);
+  CopyShapePlan BuildCopyShapePlan(const SliceFacts &src,
+                                   const SliceFacts &dst);
+  ProjectedLayoutPlan
+  BuildProjectedLayoutPlan(const SliceFacts &facts,
+                           llvm::ArrayRef<unsigned> keptDims,
+                           llvm::ArrayRef<int64_t> alignedShape);
+  mlir::Value BuildFullRankSubview(const SliceFacts &facts);
+  mlir::Value BuildAlignedCopyView(mlir::Value fullSubview, mlir::Type elemTy,
+                                   mlir::Attribute memSpace,
+                                   llvm::ArrayRef<int64_t> alignedShape,
+                                   const ProjectedLayoutPlan &layout);
   mlir::Value CreateIndexCastOp(mlir::Value src);
   std::pair<bool, mlir::Value> CheckMLIRValueMap(mlir::Value val);
-  std::pair<bool, mlir::Value> CheckPrimExprMap(const PrimExprNode * op);
-  void UpdatePrimExprMap(const PrimExprNode * key, mlir::Value val);
-  void UpdateMLIRValueMap(const mlir::Value key,  mlir::Value val);
-  void SmartMemRefCopy(mlir::Value src, mlir::Value dst);
+  std::pair<bool, mlir::Value> CheckPrimExprMap(const PrimExprNode *op);
+  void UpdatePrimExprMap(const PrimExprNode *key, mlir::Value val);
+  void UpdateMLIRValueMap(const mlir::Value key, mlir::Value val);
 
   // Whether global barrier is needed.
   bool need_global_barrier_{false};

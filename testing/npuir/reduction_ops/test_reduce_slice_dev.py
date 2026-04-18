@@ -39,11 +39,18 @@ def slice_reduce(block_M, block_N, dtype="float16"):
                     offset_m = j * block_M
                     remain_m = T.min(block_M, M - offset_m)
                     T.copy(
-                        Input[offset_m : offset_m + remain_m, offset_n : offset_n + remain_n],
-                        src,
+                        Input[
+                            offset_m : offset_m + remain_m,
+                            offset_n : offset_n + remain_n,
+                        ],
+                        src[0:remain_m, 0:remain_n],
                     )
                     T.npuir_reduce(
-                        src[:remain_m, :], dst, dims=0, reduce_mode="abssum", clear=False
+                        src[:remain_m, :],
+                        dst,
+                        dims=0,
+                        reduce_mode="abssum",
+                        clear=False,
                     )
                 T.copy(
                     dst[0, :remain_n],
