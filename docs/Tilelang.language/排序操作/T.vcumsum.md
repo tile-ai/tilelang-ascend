@@ -4,7 +4,7 @@
 
 简介：`tilelang.language.cumsum`该算子返回对输入张量 `src` 沿指定维度 `dim` 进行**​累积和（cumulative sum）​**操作。
 
-```
+```python
 T.vcumsum(src, dst, dim, reverse) [Developer Op]
 ```
 
@@ -39,16 +39,13 @@ T.vcumsum(src, dst, dim, reverse) [Developer Op]
 
 示例：实现了第0维的cumsum
 
-```
-import tilelang
-import tilelang.language as T
-dtype = "float16"
-accum_dtype = "float16"
-def cumsum_kernel(M, N, dim, reverse):
+```python
+@tilelang.jit(target="npuir")
+def cumsum_kernel(M, N, dim, reverse, dtype="float16", accum_dtype="float16"):
     BLOCK_SIZE = 1
+
     @T.prim_func
-    def main(src: T.Tensor((M, N), dtype),
-             dst: T.Tensor((M, N), accum_dtype)):
+    def main(src: T.Tensor((M, N), dtype), dst: T.Tensor((M, N), accum_dtype)):
 
         with T.Kernel(BLOCK_SIZE, is_npu=True) as (cid, _):
             # Allocate UB memory

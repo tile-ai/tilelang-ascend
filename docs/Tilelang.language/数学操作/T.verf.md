@@ -8,7 +8,7 @@ $$
 $$
 其值域为 \((-1, 1)\)。
 
-```
+```python
 T.verf(src, dst)
 ```
 
@@ -36,6 +36,7 @@ T.verf(src, dst)
 ### 2.3 使用方法
 
 ```python
+@tilelang.jit(target="npuir")
 def vec_erf(M, N, block_M, block_N, dtype="float16"):
     m_num = M // block_M
     n_num = N // block_N
@@ -43,8 +44,8 @@ def vec_erf(M, N, block_M, block_N, dtype="float16"):
 
     @T.prim_func
     def main(
-            A: T.Tensor((M, N), dtype),
-            B: T.Tensor((M, N), dtype),
+        A: T.Tensor((M, N), dtype),
+        B: T.Tensor((M, N), dtype),
     ):
         with T.Kernel(BLOCK_SIZE, is_npu=True) as (cid, _):
             A_VEC = T.alloc_shared((block_M, block_N), dtype)
@@ -59,11 +60,11 @@ def vec_erf(M, N, block_M, block_N, dtype="float16"):
                     by = block_id_n * block_N
 
                     T.copy(A[bx, by], A_VEC)
-                    T.npuir_verf(A_VEC, B_VEC)
+                    T.verf(A_VEC, B_VEC)
                     T.copy(B_VEC, B[bx, by])
+
     return main
 ```
-
 
 ## 3. Tilelang Op到Ascend NPU IR Op的转换
 

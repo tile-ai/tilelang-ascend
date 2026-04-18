@@ -4,7 +4,7 @@
 
 简介：`tilelang.language.vselect`根据条件Tensor（Cond）的布尔值，按元素从两个输入Tensor（A或B）中选择值并输出。
 
-```
+```python
 T.vselect(Cond, A, B, Out)
 ```
 
@@ -40,6 +40,7 @@ T.vselect(Cond, A, B, Out)
 以下示例实现了一个vselect计算
 
 ```python
+@tilelang.jit(target="npuir")
 def select_kernel(N, block_M, dtype="float16"):
     grid = (N + block_M - 1) // block_M
 
@@ -64,7 +65,12 @@ def select_kernel(N, block_M, dtype="float16"):
                 T.copy(B[start:end], acc_B[0:cur_size])
 
                 T.vcmp(acc_A[0:cur_size], acc_B[0:cur_size], cond_ub[0:cur_size], "ge")
-                T.vselect(cond_ub[0:cur_size], acc_A[0:cur_size], acc_B[0:cur_size], out_ub[0:cur_size])
+                T.vselect(
+                    cond_ub[0:cur_size],
+                    acc_A[0:cur_size],
+                    acc_B[0:cur_size],
+                    out_ub[0:cur_size],
+                )
                 T.copy(out_ub[0:cur_size], Out[start:end])
 
     return main

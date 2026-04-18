@@ -4,7 +4,7 @@
 
 简介：`tilelang.language.cast`该算子返回输入向量中的元素​**逐元素的数据类型转换**​，并可指定不同的舍入（rounding）模式
 
-```
+```python
 T.vcast(src, dst, round_mode) [Developer Op]
 T.vcast(src, dst, round_mode) [Expert Op]
 ```
@@ -23,7 +23,7 @@ T.vcast(src, dst, round_mode) [Expert Op]
 
 #### 2.2.1 DataType支持
 
-```
+```python
 | src  | dst  | roundingmode                                      |
 |------|------|---------------------------------------------------|
 | f32  | f32  | round, rint, floor, ceil, trunc                   |
@@ -68,13 +68,15 @@ T.vcast(src, dst, round_mode) [Expert Op]
 
 示例1：实现了Expert Mode中将一个二维张量（Tensor） 从fp32转换成fp16
 
-```
+```python
+@tilelang.jit(target="npuir")
 def vec_cast(M, N, block_M, block_N, round_mode="round"):
     m_num = M // block_M
     n_num = N // block_N
     src_dtype = "float32"
     dst_dtype = "float16"
     BLOCK_SIZE = 20
+
     @T.prim_func
     def main(
         SRC: T.Tensor((M, N), src_dtype),
@@ -98,18 +100,21 @@ def vec_cast(M, N, block_M, block_N, round_mode="round"):
                         round_mode=round_mode,
                     )
                     T.copy(DST_UB, DST[bx, by])
+
     return main
 ```
 
 示例2：实现了Developer Mode中将一个二维张量（Tensor） 从fp32转换成fp16
 
-```
+```python
+@tilelang.jit(target="npuir")
 def vec_cast(M, N, block_M, block_N, round_mode="round"):
     m_num = M // block_M
     n_num = N // block_N
     src_dtype = "float32"
     dst_dtype = "int32"
     BLOCK_SIZE = 20
+
     @T.prim_func
     def main(
         SRC: T.Tensor((M, N), src_dtype),
@@ -135,8 +140,8 @@ def vec_cast(M, N, block_M, block_N, round_mode="round"):
                     )
                     # UB -> GM
                     T.copy(DST_UB, DST[bx, by])
+
     return main
-​
 ```
 
 ## 3. Tilelang Op到Ascend NPU IR Op的转换

@@ -4,7 +4,7 @@
 
 简介：`tilelang.language.reduce_sum` 对输入tensor在指定维度上进行求和归约
 
-```
+```python
 T.reduce_sum(buffer, out, dim=-1, clear=True)
 ```
 
@@ -39,16 +39,18 @@ T.reduce_sum(buffer, out, dim=-1, clear=True)
 
 以下示例实现了对形状为(M,N)的tensor在最后一个维度上进行求和归约
 
-```
+```python
+@tilelang.jit(target="npuir")
 def reduce_sum_kernel(M, N, dtype):
     BLOCK_SIZE = 1
 
     @T.prim_func
-    def main(src: T.Tensor((M, N), dtype),
-             dst: T.Tensor((M,), dtype)):
+    def main(
+        src: T.Tensor((M, N), dtype),
+        dst: T.Tensor((M,), dtype),
+    ):
 
         with T.Kernel(BLOCK_SIZE, is_npu=True) as (cid, _):
-
             src_ub = T.alloc_shared((M, N), dtype)
             dst_ub = T.alloc_shared((M,), dtype)
 

@@ -4,7 +4,7 @@
 
 简介：`tilelang.language.vsin`用于计算张量的逐元素sin值
 
-```
+```python
 T.vsin(src, dst)
 ```
 
@@ -37,19 +37,15 @@ T.vsin(src, dst)
 
 以下示例实现了计算张量`src`中每个元素的sin值并输出到张量`dst`中
 
-```
-import torch
-import torch_npu
-import tilelang
-import tilelang.language as T
-
+```python
+@tilelang.jit(target="npuir")
 def vecsin(M, N, block_M, block_N, dtype="float16"):
     @T.prim_func
-    def vecsin_(
-        A: T.Tensor((M, N), dtype),
-        B: T.Tensor((M, N), dtype)
-    ):
-        with T.Kernel(T.ceildiv(N, block_N) * T.ceildiv(M, block_M), is_npu=True) as (cid, _):
+    def vecsin_(A: T.Tensor((M, N), dtype), B: T.Tensor((M, N), dtype)):
+        with T.Kernel(T.ceildiv(N, block_N) * T.ceildiv(M, block_M), is_npu=True) as (
+            cid,
+            _,
+        ):
             by = cid // T.ceildiv(N, block_N)
             bx = cid % T.ceildiv(N, block_N)
 
@@ -61,7 +57,6 @@ def vecsin(M, N, block_M, block_N, dtype="float16"):
             T.copy(B_BUF, B[by * block_M, bx * block_N])
 
     return vecsin_
-
 ```
 
 ## 3. Tilelang Op到Ascend NPU IR Op的转换

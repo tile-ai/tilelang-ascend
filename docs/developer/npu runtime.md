@@ -4,7 +4,7 @@ Compile the given TileLang PrimFunc and construct JITKernel_NPU.
 
 ## Function signature
 
-```
+```python
 tilelang.jit.compile(
     func=None,
     out_idx=None,
@@ -35,7 +35,7 @@ JITKernel_NPU
 
 ## Usage Example
 
-```
+```python
 # Basic Usage - The target="npuir" must be specified. 
  kernel = tilelang.jit.compile(func=my_func, target="npuir")
 

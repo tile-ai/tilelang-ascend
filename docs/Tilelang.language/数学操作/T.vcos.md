@@ -39,8 +39,8 @@ def vec_cos(M, N, block_M, block_N, dtype="float16"):
 
     @T.prim_func
     def main(
-            Input: T.Tensor((M, N), dtype),
-            Output: T.Tensor((M, N), dtype),
+        Input: T.Tensor((M, N), dtype),
+        Output: T.Tensor((M, N), dtype),
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, _):
             bx = cid // n_num

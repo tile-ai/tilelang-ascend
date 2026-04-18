@@ -4,7 +4,7 @@
 
 简介：`tilelang.language.Kernel` 用于定义内核启动域的上下文构造接口。
 
-```
+```python
 T.Kernel(blocks, threads, is_cpu, prelude, is_npu, pipeline)
 ```
 
@@ -51,7 +51,7 @@ T.Kernel(blocks, threads, is_cpu, prelude, is_npu, pipeline)
 
 `examples/gemm/example_gemm.py`：用「总 block 数」启动，在 kernel 里把 `cid` 拆成 (by, bx)。
 
-```
+```python
 @T.prim_func
 def gemm(
     A: T.Tensor((M, K), dtype),
@@ -79,7 +79,7 @@ def gemm(
 
 `examples/flash_attn_npuir_dev.py`：block 数 = 序列方向上的块数，用 cid 算当前块的偏移。
 
-```
+```python
 with T.Kernel(T.ceildiv(seq_len, block_m), is_npu=True) as (cid, _):
     offset = cid * block_m
     Q_shared = T.alloc_shared([block_m, dim], dtype)
@@ -91,7 +91,7 @@ with T.Kernel(T.ceildiv(seq_len, block_m), is_npu=True) as (cid, _):
 
 `examples/elementwise/vec_add_2d.py`：block 数固定为 `BLOCK_SIZE`（如 20），每个 block 用 `cid` 区分，在循环里算真实 `block_id`，再拆成 (block_id_m, block_id_n)。
 
-```
+```python
 BLOCK_SIZE = 20
 m_num = M // block_M
 n_num = N // block_N

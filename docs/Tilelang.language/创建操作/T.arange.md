@@ -38,15 +38,16 @@ T.arange(dst, strides: Union[list, tuple], offset=0)
 
 以下示例实现了一个形状为(M,N)的tensor的arange功能
 
-```markup
+```python
+@tilelang.jit(target="npuir")
 def vec_arange(M, N, block_M, block_N, src_dtype="float32", dst_dtype="float16"):
     m_num = M // block_M
     n_num = N // block_N
 
     @T.prim_func
     def main(
-            A: T.Tensor((M, N), dst_dtype),
-            B: T.Tensor((M, N), dst_dtype),
+        A: T.Tensor((M, N), dst_dtype),
+        B: T.Tensor((M, N), dst_dtype),
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, _):
             bx_ = cid // n_num
@@ -56,7 +57,7 @@ def vec_arange(M, N, block_M, block_N, src_dtype="float32", dst_dtype="float16")
 
             A_VEC = T.alloc_ub((block_M, block_N), dst_dtype)
             B_VEC = T.alloc_ub((block_M, block_N), dst_dtype)
-            strides= [1, 2]
+            strides = [1, 2]
             T.arange(A_VEC, strides, offset=1)
             T.arange(B_VEC, strides)
             T.copy(A_VEC, A[bx, by])

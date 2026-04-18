@@ -4,7 +4,7 @@
 
 简介：`tilelang.language.min` 返回给定标量A和B的最小值。
 
-```
+```python
 T.min(A, B)
 ```
 
@@ -37,14 +37,17 @@ T.min(A, B)
 
 以下示例实现了两个形状为(M,)的tensor的逐元素min计算
 
-```
+```python
+@tilelang.jit(target="npuir")
 def Tmin(M, dtype="float16"):
     BLOCK_SIZE = 1
 
     @T.prim_func
-    def main(A: T.Tensor((M, ), dtype),
-             B: T.Tensor((M, ), dtype),
-             C: T.Tensor((M, ), dtype),):
+    def main(
+        A: T.Tensor((M,), dtype),
+        B: T.Tensor((M,), dtype),
+        C: T.Tensor((M,), dtype),
+    ):
 
         with T.Kernel(BLOCK_SIZE, is_npu=True) as (cid, _):
             for i in range(M):

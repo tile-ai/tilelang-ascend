@@ -4,7 +4,7 @@
 
 简介：`tilelang.language.alloc_shared` 申请一块shared memory的内存，Ascend中对应ub/L1上的内存
 
-```
+```python
 T.alloc_shared(shape, dtype) [Developer mode]
 T.alloc_ub(shape, dtype) [Expert mode]
 T.alloc_L1(shape, dtype) [Expert mode]
@@ -43,7 +43,7 @@ T.alloc_L1(shape, dtype) [Expert mode]
 
 示例1：以下示例实现了一个形状为(M,K)的tensor和一个形状为(K,N)的tensor矩阵乘，其中`T.alloc_shared`申请了Ascend L1内存
 
-```
+```python
 def matmul(M, N, K, block_M, block_N, block_K, dtype="float16", accum_dtype="float32"):
     @T.prim_func
     def gemm(
@@ -51,7 +51,10 @@ def matmul(M, N, K, block_M, block_N, block_K, dtype="float16", accum_dtype="flo
         B: T.Tensor((K, N), dtype),
         C: T.Tensor((M, N), dtype),
     ):
-        with T.Kernel(T.ceildiv(N, block_N) * T.ceildiv(M, block_M), is_npu=True) as (cid, _):
+        with T.Kernel(T.ceildiv(N, block_N) * T.ceildiv(M, block_M), is_npu=True) as (
+            cid,
+            _,
+        ):
             by = cid // T.ceildiv(N, block_N)
             bx = cid % T.ceildiv(N, block_N)
 
@@ -67,12 +70,12 @@ def matmul(M, N, K, block_M, block_N, block_K, dtype="float16", accum_dtype="flo
             T.copy(C_local, C[by * block_M, bx * block_N])
 
     return gemm
-
 ```
 
 示例2：以下示例实现了一个形状为(M,N)的tensor和一个形状为(M,N)的tensor向量减，其中`T.alloc_shared`申请了Ascend UB内存
 
-```
+```python
+@tilelang.jit(target="npuir")
 def vecsub(M, N, block_M, block_N, dtype="float16"):
     @T.prim_func
     def vecsub_(
@@ -80,7 +83,10 @@ def vecsub(M, N, block_M, block_N, dtype="float16"):
         B: T.Tensor((M, N), dtype),
         C: T.Tensor((M, N), dtype),
     ):
-        with T.Kernel(T.ceildiv(N, block_N) * T.ceildiv(M, block_M), is_npu=True) as (cid, _):
+        with T.Kernel(T.ceildiv(N, block_N) * T.ceildiv(M, block_M), is_npu=True) as (
+            cid,
+            _,
+        ):
             by = cid // T.ceildiv(N, block_N)
             bx = cid % T.ceildiv(N, block_N)
 
@@ -94,7 +100,6 @@ def vecsub(M, N, block_M, block_N, dtype="float16"):
             T.copy(C_shared, C[by * block_M, bx * block_N])
 
     return vecsub_
-
 ```
 
 ## 3. Tilelang Op到Ascend NPU IR Op的转换

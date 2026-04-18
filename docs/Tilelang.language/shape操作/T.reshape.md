@@ -5,13 +5,12 @@
 简介：`tilelang.language.reshape` 在不改变数据内容与存储顺序的前提下，仅调整张量的形状视图
 
 ```markup
-T.reshape(src,dst)
+T.reshape(src, dst)
 ```
 
 ## 2. OP规格
 
 ### 2.1 参数说明
-
 
 | 参数名 | 类型     | 说明                                    |
 | ------ | -------- | --------------------------------------- |
@@ -22,7 +21,6 @@ T.reshape(src,dst)
 
 #### 2.2.1 DataType支持
 
-
 |        | uint8 | int8 | uint16 | int16 | uint32 | int32 | uint64 | int64 | fp16 | fp32 | bf16 | bool |
 | ------ | ----- | ---- | ------ | ----- | ------ | ----- | ------ | ----- | ---- | ---- | ---- | ---- |
 | Ascend | ×    | √   | ×     | √    | ×     | √    | ×     | √    | √   | √   | √   | ×   |
@@ -31,26 +29,20 @@ T.reshape(src,dst)
 
 以下示例实现了对[M,N]矩阵做reshape得到[N,M]矩阵
 
-```markup
-import torch
-import torch_npu
-import tilelang
-import tilelang.language as T
-
+```python
+@tilelang.jit(target="npuir")
 def reshape_dev(M, N, dtype="float16"):
     BLOCK_SIZE = 1
 
     @T.prim_func
-    def main(
-        A: T.Tensor((M, N), dtype),
-        B: T.Tensor((N, M), dtype)
-    ):
+    def main(A: T.Tensor((M, N), dtype), B: T.Tensor((N, M), dtype)):
         with T.Kernel(BLOCK_SIZE, is_npu=True) as (cid, _):
             a = T.alloc_shared((M, N), dtype)
             b = T.alloc_shared((N, M), dtype)
-            T.copy(A,a)
-            T.reshape(a,b)
-            T.copy(b,B)
+            T.copy(A, a)
+            T.reshape(a, b)
+            T.copy(b, B)
+
     return main
 ```
 

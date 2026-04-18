@@ -4,7 +4,7 @@
 
 简介：`tilelang.language.vcmp` 对两个输入tensor进行元素级比较，返回比较结果
 
-```
+```python
 T.vcmp(A, B, C, cmp_mod)
 ```
 
@@ -41,17 +41,19 @@ T.vcmp(A, B, C, cmp_mod)
 
 以下示例实现了对两个形状为(M,N)的tensor进行大于等于比较
 
-```
+```python
+@tilelang.jit(target="npuir")
 def vcmp_kernel(M, N, dtype):
     BLOCK_SIZE = 1
 
     @T.prim_func
-    def main(A: T.Tensor((M, N), dtype),
-             B: T.Tensor((M, N), dtype),
-             C: T.Tensor((M, N), "bool")):
+    def main(
+        A: T.Tensor((M, N), dtype),
+        B: T.Tensor((M, N), dtype),
+        C: T.Tensor((M, N), "bool"),
+    ):
 
         with T.Kernel(BLOCK_SIZE, is_npu=True) as (cid, _):
-
             A_ub = T.alloc_shared((M, N), dtype)
             B_ub = T.alloc_shared((M, N), dtype)
             C_ub = T.alloc_shared((M, N), "bool")

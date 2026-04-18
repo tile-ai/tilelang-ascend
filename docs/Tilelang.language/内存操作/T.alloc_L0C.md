@@ -31,7 +31,7 @@ T.alloc_L0C(shape, dtype)
 
 ```python
 @tilelang.jit(target="npuir")
-def matmul(block_M, block_N, K_L1, dtype="float16", accum_dtype="float32"):
+def matmul(M, N, K, block_M, block_N, K_L1, dtype="float16", accum_dtype="float32"):
     m_num = M // block_M
     n_num = N // block_N
 
@@ -39,29 +39,39 @@ def matmul(block_M, block_N, K_L1, dtype="float16", accum_dtype="float32"):
     def main(
         A: T.Tensor((M, K), dtype),
         B: T.Tensor((K, N), dtype),
-        C: T.Tensor((M, N), dtype)
+        C: T.Tensor((M, N), dtype),
     ):
-        with T.Kernel(m_num*n_num, is_npu=True) as (cid, _):
-            with T.Scope("Cube"):
-                bx = cid // n_num * block_M
-                by = cid % n_num * block_N
-                A_BUF = T.alloc_L1([block_M, K_L1], dtype)
-                B_BUF = T.alloc_L1([K_L1, block_N], dtype)
-                C_BUF = T.alloc_L0C([block_M, block_N], accum_dtype)
+        with T.Kernel(m_num * n_num, is_npu=True) as (cid, _), T.Scope("Cube"):
+            bx = cid // n_num * block_M
+            by = cid % n_num * block_N
+            A_BUF = T.alloc_L1([block_M, K_L1], dtype)
+            B_BUF = T.alloc_L1([K_L1, block_N], dtype)
+            C_BUF = T.alloc_L0C([block_M, block_N], accum_dtype)
 
-                for i in T.serial(T.ceildiv(K, K_L1)):
-                    T.npuir_load_nd2nz(A[bx, i * K_L1], A_BUF, [block_M, K_L1])
-                    T.npuir_load_nd2nz(B[i * K_L1, by], B_BUF, [K_L1, block_N])
+            for i in T.serial(T.ceildiv(K, K_L1)):
+                T.npuir_load_nd2nz(A[bx, i * K_L1], A_BUF, [block_M, K_L1])
+                T.npuir_load_nd2nz(B[i * K_L1, by], B_BUF, [K_L1, block_N])
 
-                    if i == 0:
-                        T.npuir_dot(A_BUF, B_BUF, C_BUF, initC=True, 
-                            size=[block_M, K_L1, block_N])
-                    else:
-                        T.npuir_dot(A_BUF, B_BUF, C_BUF, initC=False, 
-                            size=[block_M, K_L1, block_N])
+                if i == 0:
+                    T.npuir_dot(
+                        A_BUF,
+                        B_BUF,
+                        C_BUF,
+                        initC=True,
+                        size=[block_M, K_L1, block_N],
+                    )
+                else:
+                    T.npuir_dot(
+                        A_BUF,
+                        B_BUF,
+                        C_BUF,
+                        initC=False,
+                        size=[block_M, K_L1, block_N],
+                    )
 
-                    T.npuir_store_fixpipe(C_BUF, C[bx, by],
-                        size=[block_M, block_N], enable_nz2nd=True)
+                T.npuir_store_fixpipe(
+                    C_BUF, C[bx, by], size=[block_M, block_N], enable_nz2nd=True
+                )
 
     return main
 ```

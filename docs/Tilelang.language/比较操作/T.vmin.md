@@ -4,7 +4,7 @@
 
 简介：`tilelang.language.vmin`对向量元素取最小值操作，该算子对比两个输入源的对应元素，并将较小值写入输出目标。
 
-```
+```python
 T.vmin(src1, src2, dst)
 ```
 
@@ -50,6 +50,7 @@ T.vmin(src1, src2, dst)
 以下示例展示了两个形状为(M,N)的输入tensor进行min计算：
 
 ```python
+@tilelang.jit(target="npuir")
 def vec_min(M, N, block_M, block_N):
     m_num = M // block_M
     n_num = N // block_N
@@ -58,15 +59,15 @@ def vec_min(M, N, block_M, block_N):
 
     @T.prim_func
     def main(
-            A: T.Tensor((M, N), dtype),
-            B: T.Tensor((M, N), dtype),
-            C: T.Tensor((M, N), dtype),
+        A: T.Tensor((M, N), dtype),
+        B: T.Tensor((M, N), dtype),
+        C: T.Tensor((M, N), dtype),
     ):
         with T.Kernel(BLOCK_SIZE, is_npu=True) as (cid, _):
             A_VEC = T.alloc_ub((block_M, block_N), dtype)
             B_VEC = T.alloc_ub((block_M, block_N), dtype)
             C_VEC = T.alloc_ub((block_M, block_N), dtype)
-            for i in T.serial(T.ceildiv(m_num*n_num, BLOCK_SIZE)):
+            for i in T.serial(T.ceildiv(m_num * n_num, BLOCK_SIZE)):
                 block_id = i * BLOCK_SIZE + cid
                 if block_id < m_num * n_num:
                     block_id_m = block_id // n_num

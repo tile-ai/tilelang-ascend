@@ -4,7 +4,7 @@
 
 简介：`tilelang.language.vclamp`按向量元素，把输入逐元素限制到区间 `[min_val, max_val]`。
 
-```
+```python
 T.vmin(src, dst, min_val, max_val)
 ```
 

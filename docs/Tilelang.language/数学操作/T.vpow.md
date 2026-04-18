@@ -4,7 +4,7 @@
 
 简介：`tilelang.language.vpow`用于对输入张量`A`按元素幂运算，指数由另一输入`B`指定，结果写入输出`C`
 
-```
+```python
 T.vpow(A, B, C) [Developer mode]
 T.vpow(A, B, C) [Expert mode]
 ```
@@ -37,15 +37,19 @@ T.vpow(A, B, C) [Expert mode]
 
 以下示例实现了逐元素以`A`为底数，`B`为指数的幂运算
 
-```
+```python
+@tilelang.jit(target="npuir")
 def vecpow(M, N, block_M, block_N, dtype="int32"):
     @T.prim_func
     def vecpow_(
         A: T.Tensor((M, N), dtype),
         B: T.Tensor((M, N), dtype),
-        C: T.Tensor((M, N), dtype)
+        C: T.Tensor((M, N), dtype),
     ):
-        with T.Kernel(T.ceildiv(N, block_N) * T.ceildiv(M, block_M), is_npu=True) as (cid, _):
+        with T.Kernel(T.ceildiv(N, block_N) * T.ceildiv(M, block_M), is_npu=True) as (
+            cid,
+            _,
+        ):
             by = cid // T.ceildiv(N, block_N)
             bx = cid % T.ceildiv(N, block_N)
 
@@ -59,7 +63,6 @@ def vecpow(M, N, block_M, block_N, dtype="int32"):
             T.copy(C_BUF, C[by * block_M, bx * block_N])
 
     return vecpow_
-
 ```
 
 ## 3. Tilelang Op到Ascend NPU IR Op的转换

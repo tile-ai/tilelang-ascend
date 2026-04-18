@@ -3,14 +3,16 @@
 This document describes all supported environment variables and their effects.
 
 ## 📋 Table of Contents
+
 - [Overview](#overview)
 - [Debugging](#debugging)
 - [Compilation Options](#compilation-options)
 
 ## Overview
+
 Environment variables allow you to control various aspects of the project's runtime behavior, debugging output, performance optimizations, and more.
 
-```bash
+```shell
 # Example of setting environment variables
 export TILELANG_DUMP_IR=TRUE
 ```
@@ -23,6 +25,7 @@ export TILELANG_DUMP_IR=TRUE
 | `TILELANG_ASCEND_WORKSPACE_SIZE` | `32768` | Set workspace size for Ascend CV fusion (in Byte, Single aicore) | Positive integer, e.g., `32768`, `65536` |
 
 ## Compilation Options
+
 | Variable | Default | Description | Valid Values |
 |----------|---------|-------------|--------------|
 | `TILELANG_ASCEND_MODE` | `Expert` | Set the TileLang Mode; currently, Expert mode and Developer mode are supported | `Expert`: Expert Mode<br>`Developer`: Developer Mode |

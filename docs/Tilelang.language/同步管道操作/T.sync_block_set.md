@@ -12,7 +12,6 @@ T.sync_block_set(i)
 
 ### 2.1 参数说明
 
-
 | 参数名 | 类型  | 说明                     |
 | ------ | ----- | ------------------------ |
 | `id`   | `int` | 同步标志位 ID（Flag ID） |
@@ -35,7 +34,7 @@ T.sync_block_set(i)
 
 以下示例包含了sync_block_wait同步指令的使用
 
-```markup
+```python
 def simple_sync_demo(A, Workspace, Output):
     with T.Kernel(T.ceildiv(seq_len, block_m), is_npu=True) as (cid, _):
 
