@@ -76,6 +76,13 @@ dimension dim.
   minimum).
 - `real_shape` is optional and describes the logical valid region of a
   sliced 2D UB tile.
+- `dst` may use either the reduced output shape or the keepdim form,
+  where the reduced axis is retained with extent `1` (for example,
+  `[M, N] -> [M]` or `[M, 1]` for `dim=-1`, and `[N]` or `[1, N]` for
+  `dim=0`).
+- For sliced 2D buffers with `real_shape`, the current frontend also
+  accepts compatible physical-layout output forms such as
+  `[physical_cols]` or `[1, physical_cols]`.
 - The frontend rejects invalid axes, invalid `real_shape`, and invalid
   output shapes before lowering to the backend.
 

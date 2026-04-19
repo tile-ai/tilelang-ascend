@@ -604,7 +604,11 @@ fragment层级的存储对应偏上的寄存器级别的存储单元，一般用
   - `reduce_max`：将 reduce 结果与已有 `out` 逐元素取最大值
   - `reduce_min`：将 reduce 结果与已有 `out` 逐元素取最小值
 - `real_shape` 用于描述 2D slice buffer 的逻辑有效区域；未设置时默认使用物理 buffer 形状。
-- `out` 既可以使用压缩后的 reduce 结果 shape，也可以使用 keepdim 形式的 shape。
+- `out` 一般可以使用两类 shape：
+  - 压缩后的 reduce 结果 shape。例如输入为 `[M, N]` 时，`dim=-1` 可输出为 `[M]`，`dim=0` 可输出为 `[N]`。
+  - keepdim 形式的 shape，即保留被规约的轴，但该轴长度变为 `1`。例如输入为 `[M, N]` 时，`dim=-1` 可输出为 `[M, 1]`，`dim=0` 可输出为 `[1, N]`。
+- `keepdim` 不表示输出 shape 可以任意保持为与输入 buffer 相同的 shape；只有在被规约轴本身长度就是 `1` 的退化情况下，数值上才可能与输入 shape 一致。
+- 对 2D slice buffer 且设置了 `real_shape` 的兼容路径，`out` 还允许保持部分 physical-layout 形式，例如 `[physical_cols]` 或 `[1, physical_cols]`；这是为了兼容当前后端对 slice buffer 的 lowering 方式。
 - 非法 `dim`、非法 `real_shape`、非法 `out` shape 会在前端直接报错，而不是静默进入后端。
 - `clear` 和 `real_shape` 同时支持关键字传参和兼容的 positional 传参形式，建议优先使用关键字形式以获得更清晰的可读性。
 
@@ -631,6 +635,8 @@ fragment层级的存储对应偏上的寄存器级别的存储单元，一般用
   按最后一个维度计算示例：
 
   ![image-tilelang_ascend_reducesum_2](./images/image-tilelang_ascend_reducesum_2.png)
+
+  以上图示均以 `clear=True` 为例，主要说明不同 `dim` 下的 reduce 方向、输出 shape 和 reduce 结果本身。当 `clear=False` 时，reduce 的轴语义和输出 shape 约束保持不变，只是在得到 reduce 结果后，还会再与已有 `out` 按对应规则做 merge，而不是直接覆盖写入。
 
   **举例**：
 
@@ -715,6 +721,52 @@ fragment层级的存储对应偏上的寄存器级别的存储单元，一般用
   - `examples/reduce/example_row_reduce_max_slice_buffer.py`
   - `examples/reduce/example_col_reduce_max_slice_buffer.py`
   - `examples/reduce/example_reduce_min.py`
+
+  **`clear=False` 语义补充说明**：
+
+  `clear=False` 不会改变 reduce 的方向、输出 shape 或 `real_shape` 的解释方式；它只会在 reduce 结果产生之后，再与已有 `out` 做一次 merge。可以将其理解为：
+
+  - 第一步：按 `clear=True` 的方式先得到 reduce 结果 `reduced_result`
+  - 第二步：将 `reduced_result` 与已有 `out` 合并，得到新的输出 `new_out`
+
+  对三种 reduce 的 merge 规则分别为：
+
+  - `reduce_sum`：`new_out = old_out + reduced_result`
+  - `reduce_max`：`new_out = max(old_out, reduced_result)`
+  - `reduce_min`：`new_out = min(old_out, reduced_result)`
+
+  以二维输入 `[M, N]` 为例：
+
+  - 当 `dim=-1` 时，先沿最后一维得到 `[M]` 或 `[M, 1]` 形式的 `reduced_result`，再与已有 `out` 做 merge。
+  - 当 `dim=0` 时，先沿第一维得到 `[N]` 或 `[1, N]` 形式的 `reduced_result`，再与已有 `out` 做 merge。
+
+  `reduce_sum` 的一个简单数值示例如下：
+
+  ```
+  input =
+  [[1, 2, 3],
+   [4, 5, 6]]
+
+  reduced_result = reduce_sum(input, dim=-1) = [6, 15]
+  old_out = [10, 20]
+  new_out = old_out + reduced_result = [16, 35]
+  ```
+
+  下面三张图分别以 `reduce_sum`、`reduce_max` 和 `reduce_min` 为例，展示 `clear=False` 的增量 merge 语义。三张图都沿用前文 `clear=True` 图示中已经说明的 reduce 方向和 `reduced_result` 含义，新增表达的重点是：已有 `old_out` 会与 `reduced_result` 做一次 merge，得到新的输出 `new_out`。
+
+  - `reduce_sum`：`new_out = old_out + reduced_result`
+
+  ![image-tilelang_ascend_clear_false_reducesum](./images/image-tilelang_ascend_clear_false_reducesum.png)
+
+  - `reduce_max`：`new_out = max(old_out, reduced_result)`
+
+  ![image-tilelang_ascend_clear_false_reducemax](./images/image-tilelang_ascend_clear_false_reducemax.png)
+
+  - `reduce_min`：`new_out = min(old_out, reduced_result)`
+
+  ![image-tilelang_ascend_clear_false_reducemin](./images/image-tilelang_ascend_clear_false_reducemin.png)
+
+  从这三张图可以看出，`clear=False` 并不会改变 reduce 轴本身的定义，也不会改变输出 shape 的约束；它只是在 reduce 结果生成之后，再根据操作类型执行一次额外的 merge。
 
 ##### 4.1.3.3 Element-wise math类
 
