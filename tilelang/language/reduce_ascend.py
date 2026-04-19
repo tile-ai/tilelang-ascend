@@ -21,9 +21,7 @@ def _normalize_reduce_real_shape(real_shape) -> list[int] | None:
     if real_shape is None:
         return None
     if not isinstance(real_shape, (list, tuple)):
-        raise TypeError(
-            f"real_shape must be provided as a list or tuple, but got {type(real_shape).__name__}"
-        )
+        raise TypeError(f"real_shape must be provided as a list or tuple, but got {type(real_shape).__name__}")
     if len(real_shape) != 2:
         raise ValueError(f"real_shape must have length 2, but got {real_shape}")
     return list(real_shape)
@@ -73,29 +71,20 @@ def _validate_reduce_real_shape(
     validated_real_shape = []
     for axis, value in enumerate(real_shape):
         if isinstance(value, bool):
-            raise TypeError(
-                f"real_shape[{axis}] must be an integer extent or PrimExpr, but got bool"
-            )
+            raise TypeError(f"real_shape[{axis}] must be an integer extent or PrimExpr, but got bool")
         if isinstance(value, Integral):
             if int(value) < 0:
-                raise ValueError(
-                    f"real_shape[{axis}] must be >= 0, but got {value} for buffer shape "
-                    f"{_shape_to_str(buffer_extent)}"
-                )
+                raise ValueError(f"real_shape[{axis}] must be >= 0, but got {value} for buffer shape " f"{_shape_to_str(buffer_extent)}")
             validated_real_shape.append(int(value))
         elif isinstance(value, tir.PrimExpr):
             const_value = _try_get_const_int(value)
             if const_value is not None and const_value < 0:
                 raise ValueError(
-                    f"real_shape[{axis}] must be >= 0, but got {const_value} for buffer shape "
-                    f"{_shape_to_str(buffer_extent)}"
+                    f"real_shape[{axis}] must be >= 0, but got {const_value} for buffer shape " f"{_shape_to_str(buffer_extent)}"
                 )
             validated_real_shape.append(value)
         else:
-            raise TypeError(
-                f"real_shape[{axis}] must be an integer extent or PrimExpr, but got "
-                f"{type(value).__name__}"
-            )
+            raise TypeError(f"real_shape[{axis}] must be an integer extent or PrimExpr, but got " f"{type(value).__name__}")
 
     if len(buffer_extent) == 2:
         for axis, (value, extent) in enumerate(zip(validated_real_shape, buffer_extent)):
@@ -122,9 +111,7 @@ def _resolve_reduce_logical_shape(
     return list(buffer_extent)
 
 
-def _shape_can_embed_expected_shape(
-    out_extent: list[PrimExpr | int], expected_shape: list[PrimExpr | int]
-) -> bool:
+def _shape_can_embed_expected_shape(out_extent: list[PrimExpr | int], expected_shape: list[PrimExpr | int]) -> bool:
     out_index = 0
     expected_index = 0
     while out_index < len(out_extent) and expected_index < len(expected_shape):
@@ -163,9 +150,7 @@ def _validate_reduce_out_shape(
     normalized_dim = rank - 1 if dim == -1 else dim
 
     reduced_shape = list(logical_shape[:normalized_dim]) + list(logical_shape[normalized_dim + 1 :])
-    keepdim_shape = (
-        list(logical_shape[:normalized_dim]) + [1] + list(logical_shape[normalized_dim + 1 :])
-    )
+    keepdim_shape = list(logical_shape[:normalized_dim]) + [1] + list(logical_shape[normalized_dim + 1 :])
 
     expected_shapes = [reduced_shape]
     if not _shape_list_equal(keepdim_shape, reduced_shape):
@@ -181,9 +166,7 @@ def _validate_reduce_out_shape(
         physical_cols_const = _try_get_const_int(physical_cols)
         reduced_extent_const = _try_get_const_int(reduced_extent)
         has_slice_buffer_capacity = (
-            reduced_extent_const is None
-            or physical_cols_const is None
-            or physical_cols_const >= reduced_extent_const
+            reduced_extent_const is None or physical_cols_const is None or physical_cols_const >= reduced_extent_const
         )
         if has_slice_buffer_capacity:
             expected_shapes.append([physical_cols])
@@ -192,10 +175,7 @@ def _validate_reduce_out_shape(
     out_extent = list(out_extent)
     if any(_shape_list_equal(out_extent, expected_shape) for expected_shape in expected_shapes):
         return
-    if out_is_region and any(
-        _shape_can_embed_expected_shape(out_extent, expected_shape)
-        for expected_shape in expected_shapes
-    ):
+    if out_is_region and any(_shape_can_embed_expected_shape(out_extent, expected_shape) for expected_shape in expected_shapes):
         return
 
     expected_shapes_str = " or ".join(_shape_to_str(expected_shape) for expected_shape in expected_shapes)
@@ -229,9 +209,7 @@ def _parse_reduce_optional_args(
         real_shape_assigned = True
 
     if len(args) > 2:
-        raise TypeError(
-            f"{op_name} accepts at most two extra positional arguments after dim, got {len(args)}"
-        )
+        raise TypeError(f"{op_name} accepts at most two extra positional arguments after dim, got {len(args)}")
 
     for arg in args:
         if isinstance(arg, bool):
@@ -245,10 +223,7 @@ def _parse_reduce_optional_args(
             parsed_real_shape = _normalize_reduce_real_shape(arg)
             real_shape_assigned = True
         else:
-            raise TypeError(
-                f"{op_name} only accepts bool(clear) or list/tuple(real_shape) "
-                f"after dim, but got {type(arg).__name__}"
-            )
+            raise TypeError(f"{op_name} only accepts bool(clear) or list/tuple(real_shape) " f"after dim, but got {type(arg).__name__}")
 
     return parsed_clear, parsed_real_shape
 
@@ -262,8 +237,7 @@ def _legalize_reduce_dim(buffer_extent: list[int], dim: int) -> int:
         normalized_dim = dim if dim >= 0 else 1 + dim
         if normalized_dim != 0:
             raise ValueError(
-                f"Ascend reduce only supports axis 0/-1 for 1D buffers, "
-                f"but got dim={dim} for shape {tuple(buffer_extent)}"
+                f"Ascend reduce only supports axis 0/-1 for 1D buffers, " f"but got dim={dim} for shape {tuple(buffer_extent)}"
             )
         return -1
 
@@ -271,8 +245,7 @@ def _legalize_reduce_dim(buffer_extent: list[int], dim: int) -> int:
         normalized_dim = dim if dim >= 0 else 2 + dim
         if normalized_dim not in (0, 1):
             raise ValueError(
-                f"Ascend reduce only supports axis 0/1/-1/-2 for 2D buffers, "
-                f"but got dim={dim} for shape {tuple(buffer_extent)}"
+                f"Ascend reduce only supports axis 0/1/-1/-2 for 2D buffers, " f"but got dim={dim} for shape {tuple(buffer_extent)}"
             )
         return 0 if normalized_dim == 0 else -1
 
@@ -355,9 +328,7 @@ def reduce(
         M = buffer_extent[1]
         N = buffer_extent[2]
     else:
-        raise ValueError(
-            f"Unsupported buffer rank {len(buffer_extent)} for Ascend fast-path reduce: {buffer_extent}"
-        )
+        raise ValueError(f"Unsupported buffer rank {len(buffer_extent)} for Ascend fast-path reduce: {buffer_extent}")
     shape = f"{M}, {N}"
 
     return tir.call_intrin(
@@ -391,13 +362,9 @@ def reduce_max(
         clear: Whether to initialize ``out`` before reduction.
         real_shape: Optional logical 2D shape for sliced UB tiles.
     """
-    parsed_clear, parsed_real_shape = _parse_reduce_optional_args(
-        "reduce_max", args, clear=clear, real_shape=real_shape
-    )
+    parsed_clear, parsed_real_shape = _parse_reduce_optional_args("reduce_max", args, clear=clear, real_shape=real_shape)
     legalized_dim = _legalize_reduce_dim(_get_buffer_extent(buffer), dim)
-    return _reduce_with_clear(
-        buffer, out, "reduce_max", legalized_dim, parsed_clear, parsed_real_shape
-    )
+    return _reduce_with_clear(buffer, out, "reduce_max", legalized_dim, parsed_clear, parsed_real_shape)
 
 
 def reduce_min(
@@ -421,13 +388,9 @@ def reduce_min(
         clear: Whether to initialize ``out`` before reduction.
         real_shape: Optional logical 2D shape for sliced UB tiles.
     """
-    parsed_clear, parsed_real_shape = _parse_reduce_optional_args(
-        "reduce_min", args, clear=clear, real_shape=real_shape
-    )
+    parsed_clear, parsed_real_shape = _parse_reduce_optional_args("reduce_min", args, clear=clear, real_shape=real_shape)
     legalized_dim = _legalize_reduce_dim(_get_buffer_extent(buffer), dim)
-    return _reduce_with_clear(
-        buffer, out, "reduce_min", legalized_dim, parsed_clear, parsed_real_shape
-    )
+    return _reduce_with_clear(buffer, out, "reduce_min", legalized_dim, parsed_clear, parsed_real_shape)
 
 
 def reduce_sum(
@@ -451,10 +414,6 @@ def reduce_sum(
         clear: Whether to initialize ``out`` before reduction.
         real_shape: Optional logical 2D shape for sliced UB tiles.
     """
-    parsed_clear, parsed_real_shape = _parse_reduce_optional_args(
-        "reduce_sum", args, clear=clear, real_shape=real_shape
-    )
+    parsed_clear, parsed_real_shape = _parse_reduce_optional_args("reduce_sum", args, clear=clear, real_shape=real_shape)
     legalized_dim = _legalize_reduce_dim(_get_buffer_extent(buffer), dim)
-    return _reduce_with_clear(
-        buffer, out, "reduce_sum", legalized_dim, parsed_clear, parsed_real_shape
-    )
+    return _reduce_with_clear(buffer, out, "reduce_sum", legalized_dim, parsed_clear, parsed_real_shape)

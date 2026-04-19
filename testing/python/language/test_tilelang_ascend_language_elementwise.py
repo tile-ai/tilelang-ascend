@@ -4584,9 +4584,7 @@ def test_reduce_min(dim, dtype, target):
     run_test_reduce_min(M, N, 64, 64, dim, dtype, target)
 
 
-def reduce_runtime_semantics_kernel(
-    M, N, op, dim, clear=True, init_value=0.0, dtype="float"
-):
+def reduce_runtime_semantics_kernel(M, N, op, dim, clear=True, init_value=0.0, dtype="float"):
     reduce_fn = _get_reduce_fn(op)
     output_size = M if dim == -1 else N
 
@@ -4631,9 +4629,7 @@ def reduce_runtime_reference(a, op, dim, clear=True, init_value=0.0):
 
 def run_test_reduce_runtime_semantics(op, dim, target, clear=True, init_value=0.0):
     M, N = 64, 64
-    func = reduce_runtime_semantics_kernel(
-        M, N, op, dim, clear=clear, init_value=init_value, dtype="float"
-    )
+    func = reduce_runtime_semantics_kernel(M, N, op, dim, clear=clear, init_value=init_value, dtype="float")
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
 
     a = torch.randn(M, N, dtype=torch.float32).npu()
@@ -4660,9 +4656,7 @@ def test_reduce_dim0_runtime_smoke(op, target):
 )
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 def test_reduce_clear_false_runtime_merge(op, init_value, target):
-    run_test_reduce_runtime_semantics(
-        op, dim=-1, target=target, clear=False, init_value=init_value
-    )
+    run_test_reduce_runtime_semantics(op, dim=-1, target=target, clear=False, init_value=init_value)
 
 
 @pytest.mark.parametrize("op", ["sum", "max", "min"])
@@ -4736,9 +4730,7 @@ def test_reduce_invalid_axis_raises_value_error(op, axis):
         pytest.param((5, 8), (3, 4), 0, (1, 8), id="col-slice-keepdim-physical-layout"),
     ],
 )
-def test_reduce_slice_buffer_physical_output_shape_is_accepted(
-    input_shape, real_shape, dim, out_shape
-):
+def test_reduce_slice_buffer_physical_output_shape_is_accepted(input_shape, real_shape, dim, out_shape):
     input_buffer = tir.decl_buffer(input_shape, "float32")
     output_buffer = tir.decl_buffer(out_shape, "float32")
     result = T.reduce_sum(input_buffer, output_buffer, dim=dim, real_shape=list(real_shape))

@@ -33,13 +33,11 @@ bool IsConstFalse(const PrimExpr &expr) {
 }
 
 int64_t AlignReduceOutputCols(int64_t valid_col, int64_t dtype_bytes) {
-  const int64_t aligned_bytes =
-      ((valid_col * dtype_bytes + 31) / 32) * 32;
+  const int64_t aligned_bytes = ((valid_col * dtype_bytes + 31) / 32) * 32;
   return aligned_bytes / dtype_bytes;
 }
 
 } // namespace
-
 
 class CallNodeCollector : public ExprVisitor, public StmtVisitor {
 public:
@@ -131,9 +129,8 @@ private:
   Call CallNodeAddReduceOutputTmp(const CallNode *op,
                                   int64_t tmp_buffer_param_offset,
                                   int64_t rw_mask) {
-    Array<PrimExpr> new_args =
-        this->InsertExprAt_(op->args, tmp_buffer_param_offset,
-                            this->AddTmpArgs_(op, rw_mask));
+    Array<PrimExpr> new_args = this->InsertExprAt_(
+        op->args, tmp_buffer_param_offset, this->AddTmpArgs_(op, rw_mask));
     new_args = this->InsertExprAt_(
         new_args, tmp_buffer_param_offset + 1,
         this->MakeAccessPtrFromBuffer_(reduce_out_tmp_buf_, rw_mask));
@@ -263,8 +260,8 @@ private:
       }
 
       if ("pto" == target_) {
-        reduce_out_tmp_buf_ = createPTOClearReduceOutputTmpBuffer_(
-            op->alloc_buffers);
+        reduce_out_tmp_buf_ =
+            createPTOClearReduceOutputTmpBuffer_(op->alloc_buffers);
         if (reduce_out_tmp_buf_.defined()) {
           new_alloc_buffers.push_back(reduce_out_tmp_buf_);
         }

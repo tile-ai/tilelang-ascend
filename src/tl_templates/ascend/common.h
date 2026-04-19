@@ -360,10 +360,9 @@ reduce_sum_half(LocalTensor<T> const &dstTensor,
 }
 
 template <typename T, uint32_t M, uint32_t N, int32_t dim>
-CATLASS_DEVICE void reduce_sum(LocalTensor<T> const &dstTensor,
-                               LocalTensor<T> const &srcTensor,
-                               LocalTensor<uint8_t> const &sharedTmpBuffer,
-                               bool clear = true) {
+CATLASS_DEVICE void
+reduce_sum(LocalTensor<T> const &dstTensor, LocalTensor<T> const &srcTensor,
+           LocalTensor<uint8_t> const &sharedTmpBuffer, bool clear = true) {
   uint32_t shape[] = {M, N};
   if (clear) {
     if constexpr (dim == -1) {
@@ -413,10 +412,9 @@ CATLASS_DEVICE T reduce_scalar_max_safe(T lhsValue, T rhsValue) {
 }
 
 template <typename T, uint32_t M, uint32_t N, int32_t dim>
-CATLASS_DEVICE void reduce_max(LocalTensor<T> const &dstTensor,
-                               LocalTensor<T> const &srcTensor,
-                               LocalTensor<uint8_t> const &sharedTmpBuffer,
-                               bool clear = true) {
+CATLASS_DEVICE void
+reduce_max(LocalTensor<T> const &dstTensor, LocalTensor<T> const &srcTensor,
+           LocalTensor<uint8_t> const &sharedTmpBuffer, bool clear = true) {
   uint32_t shape[] = {M, N};
   if (clear) {
     if constexpr (dim == -1) {
@@ -469,10 +467,9 @@ CATLASS_DEVICE T reduce_scalar_min_safe(T lhsValue, T rhsValue) {
 }
 
 template <typename T, uint32_t M, uint32_t N, int32_t dim>
-CATLASS_DEVICE void reduce_min(LocalTensor<T> const &dstTensor,
-                               LocalTensor<T> const &srcTensor,
-                               LocalTensor<uint8_t> const &sharedTmpBuffer,
-                               bool clear = true) {
+CATLASS_DEVICE void
+reduce_min(LocalTensor<T> const &dstTensor, LocalTensor<T> const &srcTensor,
+           LocalTensor<uint8_t> const &sharedTmpBuffer, bool clear = true) {
   uint32_t shape[] = {M, N};
   if (clear) {
     if constexpr (dim == -1) {
