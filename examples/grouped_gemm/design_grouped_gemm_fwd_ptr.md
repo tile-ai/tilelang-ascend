@@ -1,10 +1,10 @@
-# Grouped GEMM (Forward) 算子设计文档
+# Grouped GEMM (Forward_ptr) 算子设计文档
 
 ## 1. 概述
 
 ### 1.1 算子名称
 
-Grouped GEMM (Forward)
+Grouped GEMM (Forward_ptr)
 
 ### 1.2 功能描述
 
@@ -396,7 +396,7 @@ def torch_grouped_gemm(a_list, b_list):
 examples/grouped_gemm/
 ├── example_grouped_gemm_fwd_ptr.py  # 算子实现 + 测试 + benchmark
 ├── example_grouped_gemm_fwd.py      # 已有变体（metadata 表方式）
-├── design.md                        # 本设计文档
+├── design_grouped_gemm_fwd_ptr.md   # example_grouped_gemm_fwd_ptr.py设计文档
 └── README.md                        # 使用说明
 ```
 

@@ -19,7 +19,7 @@ def torch_grouped_gemm(a_list, b_list):
 
 
 @tilelang.jit(out_idx=[2])
-def grouped_gemm_fwd(batch_sizes_list, K, N, block_M, block_N, block_K, dtype="float16"):
+def grouped_gemm_fwd_ptr(batch_sizes_list, K, N, block_M, block_N, block_K, dtype="float16"):
     padded_sizes = [math.ceil(s / block_M) * block_M for s in batch_sizes_list]
     batch_sum_padded = sum(padded_sizes)
     batch_count = len(batch_sizes_list)
@@ -115,7 +115,7 @@ def benchmark(kernel, inputs, warmup=10, rep=30):
     return start.elapsed_time(end) / rep
 
 
-def run_tilelang_grouped_gemm_fwd(
+def run_tilelang_grouped_gemm_fwd_ptr(
     batch_sizes_list,
     K,
     N,
@@ -127,7 +127,7 @@ def run_tilelang_grouped_gemm_fwd(
     device = torch.device("npu")
     dtype = torch.float16
 
-    kernel = grouped_gemm_fwd(tuple(batch_sizes_list), K, N, block_M, block_N, block_K)
+    kernel = grouped_gemm_fwd_ptr(tuple(batch_sizes_list), K, N, block_M, block_N, block_K)
 
     A, B, C, block_metadata, b_list, padded_offsets = construct_inputs(batch_sizes_list, K, N, block_M, device, dtype)
 
@@ -145,11 +145,11 @@ def run_tilelang_grouped_gemm_fwd(
         print(f"TFlops: {total_flops / (latency * 1e9):.4f}")
 
 
-def test_grouped_gemm_fwd():
-    run_tilelang_grouped_gemm_fwd([16, 33, 96], 128, 96, 32, 32, 32)
-    run_tilelang_grouped_gemm_fwd([16, 64, 128], 128, 96, 32, 32, 32)
-    run_tilelang_grouped_gemm_fwd([29, 57, 101], 128, 96, 32, 32, 32)
-    run_tilelang_grouped_gemm_fwd([100, 200, 300], 128, 96, 32, 32, 32)
+def test_grouped_gemm_fwd_ptr():
+    run_tilelang_grouped_gemm_fwd_ptr([16, 33, 96], 128, 96, 32, 32, 32)
+    run_tilelang_grouped_gemm_fwd_ptr([16, 64, 128], 128, 96, 32, 32, 32)
+    run_tilelang_grouped_gemm_fwd_ptr([29, 57, 101], 128, 96, 32, 32, 32)
+    run_tilelang_grouped_gemm_fwd_ptr([100, 200, 300], 128, 96, 32, 32, 32)
 
 
 if __name__ == "__main__":
@@ -165,6 +165,6 @@ if __name__ == "__main__":
     block_N = 128
     block_K = 64
 
-    run_tilelang_grouped_gemm_fwd(batch_sizes_list, args.K, args.N, block_M, block_N, block_K, profile=args.profile)
+    run_tilelang_grouped_gemm_fwd_ptr(batch_sizes_list, args.K, args.N, block_M, block_N, block_K, profile=args.profile)
 
-    # test_grouped_gemm_fwd()
+    # test_grouped_gemm_fwd_ptr()
