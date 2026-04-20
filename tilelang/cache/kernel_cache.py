@@ -6,23 +6,41 @@ import os
 import json
 import shutil
 from pathlib import Path
-from hashlib import sha256
 from typing import Callable, List, Literal, Union, Optional
 from tvm.target import Target
 from tvm.tir import PrimFunc
 from tilelang.jit import JITKernel
+from tilelang.jit.jit_npu import JitKernel_NPU
 from tilelang.engine.param import KernelParam
 import threading
 import cloudpickle
 import logging
+from tilelang.utils.npu_utils import compute_sha256_hash
 
 from tilelang import env
 from tilelang.version import __version__
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from tilelang.autotuner.param import AutotuneResult
 
 KERNEL_PATH = "kernel.cu"
 WRAPPED_KERNEL_PATH = "wrapped_kernel.cu"
 KERNEL_LIB_PATH = "kernel_lib.so"
 PARAMS_PATH = "params.pkl"
+
+AUTOTUNE_SUBDIR = "autotune"
+AUTOTUNE_BEST_CONFIG_PATH = "best_config.json"
+AUTOTUNE_FUNCTION_PATH = "function.pkl"
+AUTOTUNE_LATENCY_PATH = "latency.json"
+# NPU kernel artefacts (written at the entry root, same level as GPU files)
+AUTOTUNE_KERNEL_MLIR_PATH = "kernel.mlir"
+AUTOTUNE_WRAPPED_KERNEL_PATH = "wrapped_kernel.o"
+AUTOTUNE_SO_UTILS_PATH = "npu_utils.so"
+AUTOTUNE_SO_LAUNCHER_PATH = "main.so"
+AUTOTUNE_PARAMS_PATH = "npu_params.pkl"
+AUTOTUNE_METADATA_PATH = "metadata.pkl"
+COMPILE_SUBDIR = "compile"
 
 
 class KernelCache:
@@ -33,6 +51,27 @@ class KernelCache:
         wrapped_kernel.cu: The compiled wrapped kernel source code
         kernel_lib.so: The compiled kernel library
         params.pkl: The compiled kernel parameters
+        Directory layout::
+
+        <cache_dir>/
+            <kernel_hash>/
+                # GPU artefacts
+                kernel.cu
+                wrapped_kernel.cu
+                kernel_lib.so
+                params.pkl
+                # NPU artefacts (compile path)
+                kernel.mlir
+                wrapped_kernel.o
+                npu_utils.so
+                main.so
+                npu_params.pkl
+                metadata.pkl            <- presence signals a valid NPU compile entry
+                # autotune extras
+                autotune/
+                    best_config.json
+                    function.pkl
+                    latency.json
     """
 
     _instance = None  # For implementing singleton pattern
@@ -95,7 +134,7 @@ class KernelCache:
         func_binary = cloudpickle.dumps(func.script())
         key_data = {
             "version": __version__,
-            "func": sha256(func_binary).hexdigest(),  # Use SHA256 to generate hash key
+            "func": compute_sha256_hash(func_binary),
             "out_idx": (
                 tuple(out_idx) if isinstance(out_idx, (list, tuple)) else [out_idx]
             ),
@@ -116,9 +155,43 @@ class KernelCache:
         key_string = json.dumps(
             key_data, sort_keys=True
         )  # Sort keys to ensure consistency
-        return sha256(
-            key_string.encode()
-        ).hexdigest()  # Use SHA256 to generate hash key
+        return compute_sha256_hash(key_string)
+
+    def _generate_compile_key(
+        self,
+        func,
+        out_idx,
+        target,
+        target_host,
+        execution_backend,
+        verbose,
+        pass_configs,
+    ) -> str:
+        """Stable hash key for a ``compile()`` call targeting NPU IR.
+
+        The key captures every input that could produce a different binary:
+        the serialised PrimFunc source, output-index spec, target strings,
+        execution backend, and pass configurations.  ``verbose`` is included
+        so debug builds are never confused with release builds.
+        """
+        func_binary = cloudpickle.dumps(func.script())
+        key_data = {
+            "version": __version__,
+            "func": compute_sha256_hash(func_binary),
+            "out_idx": (
+                list(out_idx)
+                if isinstance(out_idx, (list, tuple))
+                else ([out_idx] if out_idx is not None else [])
+            ),
+            "target": str(target),
+            "target_host": str(target_host) if target_host else None,
+            "execution_backend": execution_backend,
+            "verbose": verbose,
+            "pass_configs": (
+                json.dumps(pass_configs, sort_keys=True) if pass_configs else None
+            ),
+        }
+        return compute_sha256_hash(json.dumps(key_data, sort_keys=True))
 
     def cached(
         self,
@@ -251,7 +324,7 @@ class KernelCache:
         Returns:
             str: Absolute path to the cache directory for this kernel.
         """
-        return os.path.join(self.cache_dir, key)
+        return self.cache_dir / key
 
     def _save_kernel_to_disk(self, key: str, kernel: JITKernel, func: Callable = None):
         """
@@ -390,3 +463,272 @@ class KernelCache:
             os.makedirs(self.cache_dir, exist_ok=True)  # Re-create cache directory
         except Exception as e:
             self.logger.error(f"Error clearing disk cache: {e}")
+
+    def save_compile_result(
+        self,
+        key: str,
+        kernel: JitKernel_NPU,
+        verbose: bool = False,
+    ) -> None:
+        """Persist a ``JitKernel_NPU`` produced by ``compile()`` to disk.
+
+        A sentinel sub-directory ``compile/`` is created so that
+        ``load_compile_result`` can distinguish a compile-cache entry from an
+        autotune-cache entry that happens to share the same root directory.
+
+        Layout::
+
+            <cache_dir>/<key>/
+                compile/          ← sentinel sub-directory
+                kernel.mlir
+                wrapped_kernel.o
+                npu_utils.so
+                main.so
+                npu_params.pkl
+                metadata.pkl
+        """
+        cache_path = self._get_cache_path(key)
+        cache_path.mkdir(parents=True, exist_ok=True)
+
+        self._save_npu_kernel_to_disk(cache_path, kernel, verbose)
+
+        if verbose:
+            self.logger.debug(f"Compile result saved to {cache_path}")
+
+    def load_compile_result(
+        self,
+        key: str,
+        func,
+        out_idx,
+        verbose: bool = False,
+    ) -> Optional[JitKernel_NPU]:
+        """Load a ``JitKernel_NPU`` saved by ``save_compile_result``.
+
+        Returns ``None`` on cache miss (sentinel directory absent or any
+        required artefact missing/corrupt).
+        """
+        cache_path = self._get_cache_path(key)
+
+        if not (cache_path / AUTOTUNE_METADATA_PATH).exists():
+            return None
+
+        kernel = self._load_npu_kernel_from_disk(cache_path, func=func, out_idx=out_idx)
+        if verbose and kernel is not None:
+            self.logger.debug(f"Compile result loaded from {cache_path}")
+        return kernel
+
+    def save_autotune_result(
+        self,
+        key: str,
+        result: "AutotuneResult",
+        verbose: bool = False,
+    ) -> None:
+        """Persist an autotune result under ``<cache_dir>/<key>/``.
+
+        NPU kernel artefacts are written at the entry root (alongside the GPU
+        files).  The three tuning metadata files go into the ``autotune/``
+        subfolder so they are easy to spot and never collide with kernel files.
+        """
+        cache_path = self._get_cache_path(key)
+        autotune_path = cache_path / AUTOTUNE_SUBDIR
+        cache_path.mkdir(parents=True, exist_ok=True)
+        autotune_path.mkdir(exist_ok=True)
+
+        # --- NPU kernel artefacts (entry root) ---
+        self._save_npu_kernel_to_disk(cache_path, result.kernel, verbose)
+
+        # --- Tuning metadata (autotune/ subfolder) ---
+        self._try_save(
+            "best config",
+            lambda: _write_json(
+                autotune_path / AUTOTUNE_BEST_CONFIG_PATH, result.config
+            ),
+        )
+        self._try_save(
+            "function",
+            lambda: (autotune_path / AUTOTUNE_FUNCTION_PATH).write_bytes(
+                cloudpickle.dumps(result.func)
+            ),
+        )
+        self._try_save(
+            "latency",
+            lambda: _write_json(
+                autotune_path / AUTOTUNE_LATENCY_PATH,
+                {"latency": result.latency, "ref_latency": result.ref_latency},
+            ),
+        )
+
+        if verbose:
+            self.logger.debug(f"Autotune result saved to {autotune_path}")
+
+    def load_autotune_result(
+        self,
+        key: str,
+        out_idx: Optional[List[int]],
+        verbose: bool = False,
+    ) -> Optional["AutotuneResult"]:
+        """Load a previously saved autotune result.  Returns ``None`` on miss."""
+
+        cache_path = self._get_cache_path(key)
+        autotune_path = cache_path / AUTOTUNE_SUBDIR
+        if not autotune_path.exists():
+            return None
+
+        try:
+            config = _read_json(autotune_path / AUTOTUNE_BEST_CONFIG_PATH)
+            func = cloudpickle.loads(
+                (autotune_path / AUTOTUNE_FUNCTION_PATH).read_bytes()
+            )
+            latency_data = _read_json(autotune_path / AUTOTUNE_LATENCY_PATH)
+        except Exception as exc:
+            self.logger.error(
+                f"Failed to load autotune metadata from {autotune_path}: {exc}"
+            )
+            return None
+
+        latency = latency_data["latency"]
+        ref_latency = latency_data["ref_latency"]
+
+        kernel = self._load_npu_kernel_from_disk(cache_path, func=func, out_idx=out_idx)
+        if kernel is None:
+            return None
+
+        kernel.update_tuner_result(
+            config=config, latency=latency, ref_latency=ref_latency
+        )
+        from tilelang.autotuner.param import AutotuneResult
+
+        return AutotuneResult(
+            config=config,
+            func=func,
+            kernel=kernel,
+            libcode=kernel.get_kernel_source(),
+            latency=latency,
+            ref_latency=ref_latency,
+        )
+
+    def _save_npu_kernel_to_disk(
+        self, cache_path: Path, kernel: JitKernel_NPU, verbose: bool = False
+    ) -> None:
+        if kernel.mlir_content is not None:
+            self._try_save(
+                "kernel MLIR",
+                lambda: (cache_path / AUTOTUNE_KERNEL_MLIR_PATH).write_text(
+                    kernel.mlir_content
+                ),
+            )
+        self._try_save(
+            "wrapped kernel",
+            lambda: (cache_path / AUTOTUNE_WRAPPED_KERNEL_PATH).write_bytes(
+                kernel.get_kernel_source()
+            ),
+        )
+        self._try_save(
+            "npu_utils.so",
+            lambda: shutil.copy(
+                kernel.so_utils_path, cache_path / AUTOTUNE_SO_UTILS_PATH
+            ),
+        )
+        self._try_save(
+            "main.so",
+            lambda: shutil.copy(
+                kernel.so_launcher_path, cache_path / AUTOTUNE_SO_LAUNCHER_PATH
+            ),
+        )
+        self._try_save(
+            "npu params",
+            lambda: (cache_path / AUTOTUNE_PARAMS_PATH).write_bytes(
+                cloudpickle.dumps(kernel.params)
+            ),
+        )
+        metadata = {
+            "symbolic": kernel.symbolic,
+            "params": kernel.params,
+            "param_info": kernel.param_info,
+            "out_idx": kernel.out_idx,
+            "signature": kernel.signature,
+            "primfunc": kernel.prim_func,
+            "mlir_content": kernel.mlir_content,
+            "shared": kernel.utils_shared,
+            "kernel_name": kernel.kernel_name,
+            "gridfunc": kernel.gridfunc,
+            "mix_mode": kernel.mix_mode,
+            "name": kernel.utils_name,
+            "tensor_kinds": kernel.tensor_kinds,
+            "kernel_src": kernel.utils_kernel_src,
+        }
+        self._try_save(
+            "metadata",
+            lambda: (cache_path / AUTOTUNE_METADATA_PATH).write_bytes(
+                cloudpickle.dumps(metadata)
+            ),
+        )
+
+    def _load_npu_kernel_from_disk(
+        self,
+        cache_path: Path,
+        func: Callable,
+        out_idx: Optional[List[int]],
+    ) -> Optional[JitKernel_NPU]:
+        if not cache_path.exists():
+            return None
+
+        kernel_source: Optional[str] = None
+        kernel_global_source: Optional[bytes] = None
+        kernel_params = None
+        metadata: Optional[dict] = None
+
+        try:
+            kernel_source = (cache_path / AUTOTUNE_KERNEL_MLIR_PATH).read_text()
+        except Exception as exc:
+            self.logger.error(f"Error loading kernel MLIR: {exc}")
+
+        try:
+            kernel_global_source = (
+                cache_path / AUTOTUNE_WRAPPED_KERNEL_PATH
+            ).read_bytes()
+        except Exception as exc:
+            self.logger.error(f"Error loading wrapped kernel: {exc}")
+
+        try:
+            kernel_params = cloudpickle.loads(
+                (cache_path / AUTOTUNE_PARAMS_PATH).read_bytes()
+            )
+        except Exception as exc:
+            self.logger.error(f"Error loading npu kernel params: {exc}")
+
+        try:
+            metadata = cloudpickle.loads(
+                (cache_path / AUTOTUNE_METADATA_PATH).read_bytes()
+            )
+        except Exception as exc:
+            self.logger.error(f"Error loading metadata: {exc}")
+
+        if not (kernel_global_source and kernel_params and metadata):
+            self.logger.warning(f"Incomplete NPU kernel artefacts at {cache_path}.")
+            return None
+
+        return JitKernel_NPU.from_database(
+            mod=func,
+            kernel_source=kernel_source,
+            kernel_launcher_path=str(cache_path / AUTOTUNE_SO_LAUNCHER_PATH),
+            kernel_utils_path=str(cache_path / AUTOTUNE_SO_UTILS_PATH),
+            metadata=metadata,
+            out_idx=out_idx,
+        )
+
+    def _try_save(self, label: str, fn: Callable) -> None:
+        try:
+            fn()
+        except Exception as exc:
+            self.logger.error(f"Error saving {label}: {exc}")
+
+
+def _write_json(path: Path, obj) -> None:
+    with open(path, "w") as f:
+        json.dump(obj, f)
+
+
+def _read_json(path: Path):
+    with open(path) as f:
+        return json.load(f)

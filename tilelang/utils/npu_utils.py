@@ -15,6 +15,7 @@ import uuid
 import logging
 from hashlib import sha256
 from tilelang import env
+from typing import Union
 
 import pybind11
 
@@ -259,6 +260,17 @@ def safe_copy(src: str, dst: str, tmp_dir: str = None) -> None:
                 logger.warning(f"Failed to clean temp file: {temp_path}, error: {e}")
 
 
+def compute_sha256_hash(data: Union[str, bytes]) -> str:
+    """Return the SHA-256 hex digest of *data*.
+
+    Accepts either a UTF-8 string or raw bytes so callers don't need to
+    encode themselves.
+    """
+    if isinstance(data, str):
+        data = data.encode()
+    return sha256(data).hexdigest()
+
+
 def get_runtime_file_cache(source):
     """
     Return the path to cache runtime files, such as npu_utils or precompiled headers.
@@ -282,8 +294,7 @@ def get_runtime_file_cache(source):
     else:
         raise ValueError("source must be a file path (str or Path) or content (bytes)")
 
-    hashvalue = sha256(content)
-    key = hashvalue.hexdigest()
+    key = compute_sha256_hash(content)
     cache_dir = os.path.join(env.TILELANG_CACHE_DIR, key)
     os.makedirs(cache_dir, exist_ok=True)
     return cache_dir

@@ -43,8 +43,8 @@ from tilelang.autotuner.param import (
     CompileArgs,
     ProfileArgs,
     AutotuneResult,
-    KernelCache,
 )
+
 from tilelang.utils.target import determine_target
 import time
 
@@ -142,7 +142,7 @@ class AutoTuner:
     _function_parameters: dict[str, Any] | None = None
     _lock = threading.Lock()  # For thread safety
     _memory_cache = {}  # In-memory cache dictionary
-    cache_dir: Path = Path(env.TILELANG_CACHE_DIR) / "autotuner"
+    cache_dir: Path = Path(env.TILELANG_CACHE_DIR)
 
     def __init__(self, fn: Callable, configs):
         self.fn = fn
@@ -438,10 +438,20 @@ class AutoTuner:
         return results
 
     def _save_result_to_disk(self, key, result: AutotuneResult):
-        KernelCache.save(self.cache_dir / key, result, self.compile_args.verbose)
+        from tilelang.cache.kernel_cache import KernelCache  # lazy — breaks cycle
+
+        # KernelCache.save(self.cache_dir / key, result, self.compile_args.verbose)
+        KernelCache().save_autotune_result(key, result, self.compile_args.verbose)
 
     def _load_result_from_disk(self, key) -> AutotuneResult:
-        return KernelCache.load(self.cache_dir / key, self.compile_args)
+        from tilelang.cache.kernel_cache import KernelCache  # lazy — breaks cycle
+
+        # return KernelCache.load(self.cache_dir / key, self.compile_args)
+        return KernelCache().load_autotune_result(
+            key,
+            out_idx=self.compile_args.out_idx,
+            verbose=self.compile_args.verbose,
+        )
 
     def _get_input_tensors(
         self,

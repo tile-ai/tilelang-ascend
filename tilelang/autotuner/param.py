@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import tilelang
 from tilelang import tvm as tvm
 from tvm.tir import PrimFunc
 from tvm.target import Target
@@ -13,7 +12,6 @@ from pathlib import Path
 from tilelang.jit.jit_npu import JitKernel_NPU
 import cloudpickle
 import shutil
-from tilelang.engine.param import KernelParam
 from tilelang import logger
 import json
 import hashlib
@@ -51,6 +49,8 @@ class CompileArgs:
     pass_configs: dict[str, Any] | None = None
 
     def compile_program(self, program: PrimFunc):
+        import tilelang
+
         return tilelang.compile(
             program,
             out_idx=self.out_idx,
@@ -101,7 +101,7 @@ class ProfileArgs:
     warmup: int = 25
     rep: int = 100
     timeout: int = 30
-    supply_type: tilelang.TensorSupplyType = tilelang.TensorSupplyType.Auto
+    supply_type: Any = None
     ref_prog: Callable | None = None
     supply_prog: Callable | None = None
     rtol: float = 1e-2
@@ -244,119 +244,12 @@ class KernelCache:
         _try("metadata", lambda: dest_meta.write_bytes(cloudpickle.dumps(metadata)))
 
     @staticmethod
-    def load(
-        path: Path,
-        compile_args: CompileArgs,
-    ) -> AutotuneResult | None:
-        """Load a previously saved result from *path*.
+    def load(path: Path, compile_args: CompileArgs) -> AutotuneResult | None:
+        from tilelang.cache import _kernel_cache_instance
 
-        Returns ``None`` if the cache entry is absent or incomplete.
-        """
-        path = Path(path)
-        if not path.exists():
-            return None
-
-        verbose = compile_args.verbose
-
-        try:
-            config = KernelCache._load_json(path / BEST_CONFIG_PATH, verbose)
-            func = KernelCache._load_pickle(path / FUNCTION_PATH, verbose)
-            latency_data = KernelCache._load_json(path / LATENCY_PATH, verbose)
-        except Exception as exc:
-            logger.error(f"Failed to load cache metadata from {path}: {exc}")
-            return None
-
-        latency = latency_data["latency"]
-        ref_latency = latency_data["ref_latency"]
-
-        kernel = KernelCache._load_kernel(
-            path,
-            func=func,
+        key = Path(path).name
+        return _kernel_cache_instance.load_autotune_result(
+            key,
             out_idx=compile_args.out_idx,
-            verbose=verbose,
-        )
-        if kernel is None:
-            return None
-
-        kernel.update_tuner_result(
-            config=config,
-            latency=latency,
-            ref_latency=ref_latency,
-        )
-        return AutotuneResult(
-            config=config,
-            func=func,
-            kernel=kernel,
-            libcode=kernel.get_kernel_source(),
-            latency=latency,
-            ref_latency=ref_latency,
-        )
-
-    @staticmethod
-    def _load_json(src: Path, verbose: bool) -> Any:
-        if verbose:
-            logger.debug(f"Loading from {src}")
-        with open(src) as f:
-            return json.load(f)
-
-    @staticmethod
-    def _load_pickle(src: Path, verbose: bool) -> Any:
-        if verbose:
-            logger.debug(f"Loading from {src}")
-        with open(src, "rb") as f:
-            return cloudpickle.load(f)
-
-    @staticmethod
-    def _load_kernel(
-        cache_path: Path,
-        func: Callable,
-        out_idx: list[int] | int | None,
-        verbose: bool,
-    ) -> JitKernel_NPU | None:
-        """Reconstruct a JitKernel_NPU from cached artefacts.
-
-        Returns ``None`` if any required artefact is missing or unreadable.
-        """
-        # Initialise all to None so we never hit NameError in the guard below.
-        kernel_source: str | None = None
-        kernel_global_source: bytes | None = None
-        kernel_params: list[KernelParam] | None = None
-        metadata: dict | None = None
-
-        try:
-            kernel_source = (cache_path / KERNEL_PATH).read_text()
-        except Exception as exc:
-            logger.error(f"Error loading kernel MLIR from {cache_path}: {exc}")
-
-        try:
-            kernel_global_source = (cache_path / WRAPPED_KERNEL_PATH).read_bytes()
-        except Exception as exc:
-            logger.error(f"Error loading wrapped kernel from {cache_path}: {exc}")
-
-        so_utils_path = str(cache_path / SO_UTILS_PATH)
-        so_launcher_path = str(cache_path / SO_LAUNCHER_PATH)
-
-        try:
-            kernel_params = cloudpickle.loads((cache_path / PARAMS_PATH).read_bytes())
-        except Exception as exc:
-            logger.error(f"Error loading kernel params from {cache_path}: {exc}")
-
-        try:
-            metadata = cloudpickle.loads((cache_path / METADATA_PATH).read_bytes())
-        except Exception as exc:
-            logger.error(f"Error loading metadata from {cache_path}: {exc}")
-
-        if not (kernel_global_source and kernel_params and metadata):
-            logger.warning(
-                f"Incomplete cache entry at {cache_path} — missing required artefacts."
-            )
-            return None
-
-        return JitKernel_NPU.from_database(
-            mod=func,
-            kernel_source=kernel_source,
-            kernel_launcher_path=so_launcher_path,
-            kernel_utils_path=so_utils_path,
-            metadata=metadata,
-            out_idx=out_idx,
+            verbose=compile_args.verbose,
         )
