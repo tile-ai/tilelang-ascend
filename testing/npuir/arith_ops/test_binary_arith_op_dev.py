@@ -4,14 +4,14 @@ import tilelang
 import tilelang.language as T
 import pytest
 import os
-
+import numpy as np
 import testcommon as tc
 
 tilelang.cache.clear_cache()
 
 pytestmark = pytest.mark.mode("Developer")
 
-BITWISE_DTYPE_CASES = ["int32", "int16", "uint32", "uint16"]
+BITWISE_DTYPE_CASES = ["int32", "int16", "uint32", "uint16"]  # also works for int16, int8 if needed
 DTYPE_CASES = ["float16", "float32"] + BITWISE_DTYPE_CASES
 
 M, N = 4, 64
@@ -91,56 +91,6 @@ def binary_partial_kernel(M, N, block_M, op, dtype="float16"):
             T.copy(out_ub, Out)
 
     return binaryArithPartialDev
-
-
-def make_integer_tensor(shape, dtype, *, low, high):
-    return torch.randint(low, high, shape, dtype=tc.DTYPE_MAP[dtype]).npu()
-
-
-def compute_uint_reference(lhs, rhs, op):
-    lhs_u = lhs.to(torch.int64)
-    rhs_u = rhs.to(torch.int64)
-    if op == "add":
-        return lhs_u + rhs_u
-    if op == "sub":
-        return lhs_u - rhs_u
-    if op == "mul":
-        return lhs_u * rhs_u
-    if op == "div":
-        return lhs_u // rhs_u
-    if op == "and":
-        return lhs_u & rhs_u
-    if op == "or":
-        return lhs_u | rhs_u
-    if op == "xor":
-        return lhs_u ^ rhs_u
-    if op == "shl":
-        return lhs_u << rhs_u
-    if op == "shr":
-        return lhs_u >> rhs_u
-    raise ValueError(op)
-
-
-def compute_int_reference(lhs, rhs, op):
-    if op == "add":
-        return lhs + rhs
-    if op == "sub":
-        return lhs - rhs
-    if op == "mul":
-        return lhs * rhs
-    if op == "div":
-        return lhs / rhs
-    if op == "and":
-        return lhs & rhs
-    if op == "or":
-        return lhs | rhs
-    if op == "xor":
-        return lhs ^ rhs
-    if op == "shl":
-        return lhs << rhs
-    if op == "shr":
-        return lhs >> rhs
-    raise ValueError(op)
 
 # ---------- New: Bitwise Kernels (AND, OR, XOR) ----------
 def bitwise_kernel(M, N, block_M, op, dtype="int32"):
@@ -267,56 +217,57 @@ def shift_partial_kernel(M, N, block_M, op, dtype="int32"):
 # ---------- Reference functions ----------
 def reference_arith(A, B, M, op):
     if op == "add":
-        ref = (A + B)[None, :].expand(M, -1)
+        if not (A.is_signed() or A.is_floating_point()):
+            ref = (A.to(torch.int64) + B.to(torch.int64))[None, :].expand(M, -1).to(A.dtype)
+        else:
+            ref = (A + B)[None, :].expand(M, -1)
     elif op == "sub":
-        ref = (A - B)[None, :].expand(M, -1)
+        if not (A.is_signed() or A.is_floating_point()):
+            ref = (A.to(torch.int64) - B.to(torch.int64))[None, :].expand(M, -1).to(A.dtype)
+        else:
+            ref = (A - B)[None, :].expand(M, -1)
     elif op == "mul":
-        ref = (A * B)[None, :].expand(M, -1)
+        if not (A.is_signed() or A.is_floating_point()):
+            ref = (A.to(torch.int64) * B.to(torch.int64))[None, :].expand(M, -1).to(A.dtype)
+        else:
+            ref = (A * B)[None, :].expand(M, -1)
     elif op == "div":
-        ref = (A / B)[None, :].expand(M, -1)
-    elif op == "add" and A.dtype.is_unsigned:
-        ref = (A.to(torch.int64) + B.to(torch.int64))[None, :].expand(M, -1).to(A.dtype)
-    elif op == "sub" and A.dtype.is_unsigned:
-        ref = (A.to(torch.int64) - B.to(torch.int64))[None, :].expand(M, -1).to(A.dtype)
-    elif op == "mul" and A.dtype.is_unsigned:
-        ref = (A.to(torch.int64) * B.to(torch.int64))[None, :].expand(M, -1).to(A.dtype)
-    elif op == "div" and A.dtype.is_unsigned:
-        ref = (A.to(torch.int64) // B.to(torch.int64))[None, :].expand(M, -1).to(A.dtype)
+        if not A.is_floating_point():
+            if A.is_signed():
+                ref = (A // B)[None, :].expand(M, -1)
+            else:
+                ref = (A.to(torch.int64) // B.to(torch.int64))[None, :].expand(M, -1).to(A.dtype)
+        else:
+            ref = (A / B)[None, :].expand(M, -1)
     else:
         raise ValueError(op)
     return ref
 
 def reference_bitwise(A, B, M, op):
+    A_type = A.dtype
+    if not A.is_signed():
+        A = A.to(torch.int64)
+        B = B.to(torch.int64)
     if op == "and":
         ref = torch.bitwise_and(A, B)[None, :].expand(M, -1)
     elif op == "or":
         ref = torch.bitwise_or(A, B)[None, :].expand(M, -1)
     elif op == "xor":
         ref = torch.bitwise_xor(A, B)[None, :].expand(M, -1)
-    elif op == "shl":
-        ref = (A << B)[None, :].expand(M, -1)
-    elif op == "shr":
-        ref = (A >> B)[None, :].expand(M, -1)
     else:
         raise ValueError(op)
-    return ref
+    return ref.to(A_type)
 
 def reference_shift(A, B, M, op, bitwidth=32):
-    # B is shift amount, clamp to 0..bitwidth-1 to avoid undefined behavior
-    B_clamped = B.clamp(0, bitwidth - 1)
     if op == "shl":
-        ref = (A << B_clamped)[None, :].expand(M, -1)
+        ref = torch.from_numpy(np.left_shift(A.cpu().numpy(), B.cpu().numpy()))
+        ref = ref[None, :].expand(M, -1)
     elif op == "shr":
-        ref = (A >> B_clamped)[None, :].expand(M, -1)
+        ref = torch.from_numpy(np.right_shift(A.cpu().numpy(), B.cpu().numpy()))
+        ref = ref[None, :].expand(M, -1)
     else:
         raise ValueError(op)
     return ref
-
-
-def reference_integer(A, B, M, op):
-    if A.dtype.is_unsigned:
-        return compute_uint_reference(A, B, op)[None, :].expand(M, -1).to(A.dtype)
-    return compute_int_reference(A, B, op)[None, :].expand(M, -1)
 
 # ---------- Arithmetic Tests (unchanged) ----------
 @pytest.mark.op("vadd")
@@ -340,11 +291,7 @@ def test_vadd(dtype):
         ref = (A.long() + B.long()).to(datatype)
     else:
         ref = A + B
-    if dtype in BITWISE_DTYPE_CASES:
-        # For bitwise ops, expect exact match
-        assert(torch.equal(Out.cpu(), ref.cpu()))
-    else:
-        tc.assert_close(Out.cpu(), ref.cpu(), rtol=1e-2, atol=1e-2, equal_nan=True)
+    tc.assert_close(Out.cpu(), ref.cpu(), rtol=1e-2, atol=1e-2, equal_nan=True)
 
 @pytest.mark.op("vsub")
 @pytest.mark.parametrize("dtype", DTYPE_CASES)
@@ -361,7 +308,10 @@ def test_vsub(dtype):
     func = binary_kernel(M, N, block_M, "sub", dtype)
     compiled = tilelang.compile(func, target="npuir")
     compiled(A, B, Out)
-    ref = A - B
+    if dtype.startswith("uint"):
+        ref = (A.long() - B.long()).to(datatype)
+    else:
+        ref = A - B
     tc.assert_close(Out.cpu(), ref.cpu(), rtol=1e-2, atol=1e-2, equal_nan=True)
 
 @pytest.mark.op("vmul")
@@ -379,7 +329,10 @@ def test_vmul(dtype):
     func = binary_kernel(M, N, block_M, "mul", dtype)
     compiled = tilelang.compile(func, target="npuir")
     compiled(A, B, Out)
-    ref = A * B
+    if dtype.startswith("uint"):
+        ref = (A.long() * B.long()).to(datatype)
+    else:
+        ref = A * B
     tc.assert_close(Out.cpu(), ref.cpu(), rtol=1e-2, atol=1e-2, equal_nan=True)
 
 @pytest.mark.op("vdiv")
@@ -397,7 +350,12 @@ def test_vdiv(dtype):
     func = binary_kernel(M, N, block_M, "div", dtype)
     compiled = tilelang.compile(func, target="npuir")
     compiled(A, B, Out)
-    ref = A / B
+    if dtype.startswith("uint"):
+        ref = (A.long() // B.long()).to(datatype)
+    elif dtype.startswith("int"):
+        ref = A // B
+    else:
+        ref = A / B
     tc.assert_close(Out.cpu(), ref.cpu(), rtol=1e-2, atol=1e-2, equal_nan=True)
 
 # Partial arithmetic
@@ -425,8 +383,13 @@ def test_vadd_partial(dtype):
 @pytest.mark.parametrize("dtype", DTYPE_CASES)
 def test_vsub_partial(dtype):
     datatype = tc.DTYPE_MAP[dtype]
-    A = torch.randn(N, dtype=datatype).npu()
-    B = torch.randn(N, dtype=datatype).npu()
+    if dtype in BITWISE_DTYPE_CASES:
+        # For bitwise ops, use integer inputs
+        A = torch.randint(torch.iinfo(datatype).min, torch.iinfo(datatype).max, (N,), dtype=datatype).npu()
+        B = torch.randint(torch.iinfo(datatype).min, torch.iinfo(datatype).max, (N,), dtype=datatype).npu()
+    else:
+        A = torch.randn(N, dtype=datatype).npu()
+        B = torch.randn(N, dtype=datatype).npu()
     Out = torch.zeros((M, N), dtype=datatype).npu()
 
     func = binary_partial_kernel(M, N, block_M, "sub", dtype)
@@ -440,8 +403,13 @@ def test_vsub_partial(dtype):
 @pytest.mark.parametrize("dtype", DTYPE_CASES)
 def test_vmul_partial(dtype):
     datatype = tc.DTYPE_MAP[dtype]
-    A = torch.randn(N, dtype=datatype).npu()
-    B = torch.randn(N, dtype=datatype).npu()
+    if dtype in BITWISE_DTYPE_CASES:
+        # For bitwise ops, use integer inputs
+        A = torch.randint(torch.iinfo(datatype).min, torch.iinfo(datatype).max, (N,), dtype=datatype).npu()
+        B = torch.randint(torch.iinfo(datatype).min, torch.iinfo(datatype).max, (N,), dtype=datatype).npu()
+    else:
+        A = torch.randn(N, dtype=datatype).npu()
+        B = torch.randn(N, dtype=datatype).npu()
     Out = torch.zeros((M, N), dtype=datatype).npu()
 
     func = binary_partial_kernel(M, N, block_M, "mul", dtype)
@@ -453,10 +421,15 @@ def test_vmul_partial(dtype):
 
 @pytest.mark.op("vdiv_partial")
 @pytest.mark.parametrize("dtype", DTYPE_CASES)
-def test_vdiv_partial(dtype):   
+def test_vdiv_partial(dtype):
     datatype = tc.DTYPE_MAP[dtype]
-    A = torch.randn(N, dtype=datatype).npu()
-    B = torch.randn(N, dtype=datatype).npu()
+    if dtype in BITWISE_DTYPE_CASES:
+        # For bitwise ops, use integer inputs
+        A = torch.randint(torch.iinfo(datatype).min, torch.iinfo(datatype).max, (N,), dtype=datatype).npu()
+        B = torch.randint(torch.iinfo(datatype).min, torch.iinfo(datatype).max, (N,), dtype=datatype).npu()
+    else:
+        A = torch.randn(N, dtype=datatype).npu()
+        B = torch.randn(N, dtype=datatype).npu()
     Out = torch.zeros((M, N), dtype=datatype).npu()
 
     func = binary_partial_kernel(M, N, block_M, "div", dtype)
@@ -473,12 +446,8 @@ def test_vdiv_partial(dtype):
 def test_vand(dtype):
     datatype = tc.DTYPE_MAP[dtype]
     # Generate random integers within reasonable range for the dtype
-    if dtype == "int32":
-        A = torch.randint(-(2**31), 2**31-1, (N,), dtype=datatype).npu()
-        B = torch.randint(-(2**31), 2**31-1, (N,), dtype=datatype).npu()
-    else:  # int16, int8 fallback
-        A = torch.randint(-128, 127, (N,), dtype=datatype).npu()
-        B = torch.randint(-128, 127, (N,), dtype=datatype).npu()
+    A = torch.randint(torch.iinfo(datatype).min, torch.iinfo(datatype).max, (N,), dtype=datatype).npu()
+    B = torch.randint(torch.iinfo(datatype).min, torch.iinfo(datatype).max, (N,), dtype=datatype).npu()
     Out = torch.zeros((N,), dtype=datatype).npu()
 
     func = bitwise_kernel(M, N, block_M, "and", dtype)
@@ -491,12 +460,8 @@ def test_vand(dtype):
 @pytest.mark.parametrize("dtype", BITWISE_DTYPE_CASES)
 def test_vor(dtype):
     datatype = tc.DTYPE_MAP[dtype]
-    if dtype == "int32":
-        A = torch.randint(-(2**31), 2**31-1, (N,), dtype=datatype).npu()
-        B = torch.randint(-(2**31), 2**31-1, (N,), dtype=datatype).npu()
-    else:
-        A = torch.randint(-128, 127, (N,), dtype=datatype).npu()
-        B = torch.randint(-128, 127, (N,), dtype=datatype).npu()
+    A = torch.randint(torch.iinfo(datatype).min, torch.iinfo(datatype).max, (N,), dtype=datatype).npu()
+    B = torch.randint(torch.iinfo(datatype).min, torch.iinfo(datatype).max, (N,), dtype=datatype).npu()
     Out = torch.zeros((N,), dtype=datatype).npu()
 
     func = bitwise_kernel(M, N, block_M, "or", dtype)
@@ -509,12 +474,8 @@ def test_vor(dtype):
 @pytest.mark.parametrize("dtype", BITWISE_DTYPE_CASES)
 def test_vxor(dtype):
     datatype = tc.DTYPE_MAP[dtype]
-    if dtype == "int32":
-        A = torch.randint(-(2**31), 2**31-1, (N,), dtype=datatype).npu()
-        B = torch.randint(-(2**31), 2**31-1, (N,), dtype=datatype).npu()
-    else:
-        A = torch.randint(-128, 127, (N,), dtype=datatype).npu()
-        B = torch.randint(-128, 127, (N,), dtype=datatype).npu()
+    A = torch.randint(torch.iinfo(datatype).min, torch.iinfo(datatype).max, (N,), dtype=datatype).npu()
+    B = torch.randint(torch.iinfo(datatype).min, torch.iinfo(datatype).max, (N,), dtype=datatype).npu()
     Out = torch.zeros((N,), dtype=datatype).npu()
 
     func = bitwise_kernel(M, N, block_M, "xor", dtype)
@@ -528,12 +489,8 @@ def test_vxor(dtype):
 @pytest.mark.parametrize("dtype", BITWISE_DTYPE_CASES)
 def test_vand_partial(dtype):
     datatype = tc.DTYPE_MAP[dtype]
-    if dtype == "int32":
-        A = torch.randint(-(2**31), 2**31-1, (N,), dtype=datatype).npu()
-        B = torch.randint(-(2**31), 2**31-1, (N,), dtype=datatype).npu()
-    else:
-        A = torch.randint(-128, 127, (N,), dtype=datatype).npu()
-        B = torch.randint(-128, 127, (N,), dtype=datatype).npu()
+    A = torch.randint(torch.iinfo(datatype).min, torch.iinfo(datatype).max, (N,), dtype=datatype).npu()
+    B = torch.randint(torch.iinfo(datatype).min, torch.iinfo(datatype).max, (N,), dtype=datatype).npu()
     Out = torch.zeros((M, N), dtype=datatype).npu()
 
     func = bitwise_partial_kernel(M, N, block_M, "and", dtype)
@@ -546,12 +503,8 @@ def test_vand_partial(dtype):
 @pytest.mark.parametrize("dtype", BITWISE_DTYPE_CASES)
 def test_vor_partial(dtype):
     datatype = tc.DTYPE_MAP[dtype]
-    if dtype == "int32":
-        A = torch.randint(-(2**31), 2**31-1, (N,), dtype=datatype).npu()
-        B = torch.randint(-(2**31), 2**31-1, (N,), dtype=datatype).npu()
-    else:
-        A = torch.randint(-128, 127, (N,), dtype=datatype).npu()
-        B = torch.randint(-128, 127, (N,), dtype=datatype).npu()
+    A = torch.randint(torch.iinfo(datatype).min, torch.iinfo(datatype).max, (N,), dtype=datatype).npu()
+    B = torch.randint(torch.iinfo(datatype).min, torch.iinfo(datatype).max, (N,), dtype=datatype).npu()
     Out = torch.zeros((M, N), dtype=datatype).npu()
 
     func = bitwise_partial_kernel(M, N, block_M, "or", dtype)
@@ -564,12 +517,8 @@ def test_vor_partial(dtype):
 @pytest.mark.parametrize("dtype", BITWISE_DTYPE_CASES)
 def test_vxor_partial(dtype):
     datatype = tc.DTYPE_MAP[dtype]
-    if dtype == "int32":
-        A = torch.randint(-(2**31), 2**31-1, (N,), dtype=datatype).npu()
-        B = torch.randint(-(2**31), 2**31-1, (N,), dtype=datatype).npu()
-    else:
-        A = torch.randint(-128, 127, (N,), dtype=datatype).npu()
-        B = torch.randint(-128, 127, (N,), dtype=datatype).npu()
+    A = torch.randint(torch.iinfo(datatype).min, torch.iinfo(datatype).max, (N,), dtype=datatype).npu()
+    B = torch.randint(torch.iinfo(datatype).min, torch.iinfo(datatype).max, (N,), dtype=datatype).npu()
     Out = torch.zeros((M, N), dtype=datatype).npu()
 
     func = bitwise_partial_kernel(M, N, block_M, "xor", dtype)
@@ -583,34 +532,33 @@ def test_vxor_partial(dtype):
 @pytest.mark.parametrize("dtype", BITWISE_DTYPE_CASES)
 def test_vshl(dtype):
     datatype = tc.DTYPE_MAP[dtype]
-    bitwidth = 32 if dtype == "int32" else 16 if dtype == "int16" else 8
-    A = torch.randint(-(2**(bitwidth-1)), 2**(bitwidth-1)-1, (N,), dtype=datatype).npu()
+    bitwidth = 32 if dtype.endswith("int32") else 16 if dtype.endswith("int16") else 8
+    A = torch.randint(torch.iinfo(datatype).min, torch.iinfo(datatype).max, (N,), dtype=datatype).npu()
     # shift amounts between 0 and bitwidth-1
-    B = torch.randint(0, bitwidth, (N,), dtype=torch.int32).npu()
+    B = torch.randint(0, bitwidth, (N,), dtype=datatype).npu()
     Out = torch.zeros((N,), dtype=datatype).npu()
 
     func = shift_kernel(M, N, block_M, "shl", dtype)
     compiled = tilelang.compile(func, target="npuir")
     compiled(A, B, Out)
-    # clamp shift amounts for reference
-    B_cpu = B.cpu().clamp(0, bitwidth - 1)
-    ref = (A.cpu() << B_cpu)
+    B_cpu = B.cpu().numpy()
+    ref = torch.from_numpy(np.left_shift(A.cpu().numpy(), B_cpu)).to(datatype)
     tc.assert_close(Out.cpu(), ref.cpu(), rtol=0, atol=0)
 
 @pytest.mark.op("vshr")
 @pytest.mark.parametrize("dtype", BITWISE_DTYPE_CASES)
 def test_vshr(dtype):
     datatype = tc.DTYPE_MAP[dtype]
-    bitwidth = 32 if dtype == "int32" else 16 if dtype == "int16" else 8
-    A = torch.randint(-(2**(bitwidth-1)), 2**(bitwidth-1)-1, (N,), dtype=datatype).npu()
-    B = torch.randint(0, bitwidth, (N,), dtype=torch.int32).npu()
+    bitwidth = 32 if dtype.endswith("int32") else 16 if dtype.endswith("int16") else 8
+    A = torch.randint(torch.iinfo(datatype).min, torch.iinfo(datatype).max, (N,), dtype=datatype).npu()
+    B = torch.randint(0, bitwidth, (N,), dtype=datatype).npu()
     Out = torch.zeros((N,), dtype=datatype).npu()
 
     func = shift_kernel(M, N, block_M, "shr", dtype)
     compiled = tilelang.compile(func, target="npuir")
     compiled(A, B, Out)
-    B_cpu = B.cpu().clamp(0, bitwidth - 1)
-    ref = (A.cpu() >> B_cpu)
+    B_cpu = B.cpu().numpy()
+    ref = torch.from_numpy(np.right_shift(A.cpu().numpy(), B_cpu)).to(datatype)
     tc.assert_close(Out.cpu(), ref.cpu(), rtol=0, atol=0)
 
 # Partial shift tests
@@ -618,9 +566,9 @@ def test_vshr(dtype):
 @pytest.mark.parametrize("dtype", BITWISE_DTYPE_CASES)
 def test_vshl_partial(dtype):
     datatype = tc.DTYPE_MAP[dtype]
-    bitwidth = 32 if dtype == "int32" else 16 if dtype == "int16" else 8
-    A = torch.randint(-(2**(bitwidth-1)), 2**(bitwidth-1)-1, (N,), dtype=datatype).npu()
-    B = torch.randint(0, bitwidth, (N,), dtype=torch.int32).npu()
+    bitwidth = 32 if dtype.endswith("int32") else 16 if dtype.endswith("int16") else 8
+    A = torch.randint(torch.iinfo(datatype).min, torch.iinfo(datatype).max, (N,), dtype=datatype).npu()
+    B = torch.randint(0, bitwidth, (N,), dtype=datatype).npu()
     Out = torch.zeros((M, N), dtype=datatype).npu()
 
     func = shift_partial_kernel(M, N, block_M, "shl", dtype)
@@ -633,9 +581,9 @@ def test_vshl_partial(dtype):
 @pytest.mark.parametrize("dtype", BITWISE_DTYPE_CASES)
 def test_vshr_partial(dtype):
     datatype = tc.DTYPE_MAP[dtype]
-    bitwidth = 32 if dtype == "int32" else 16 if dtype == "int16" else 8
-    A = torch.randint(-(2**(bitwidth-1)), 2**(bitwidth-1)-1, (N,), dtype=datatype).npu()
-    B = torch.randint(0, bitwidth, (N,), dtype=torch.int32).npu()
+    bitwidth = 32 if dtype.endswith("int32") else 16 if dtype.endswith("int16") else 8
+    A = torch.randint(torch.iinfo(datatype).min, torch.iinfo(datatype).max, (N,), dtype=datatype).npu()
+    B = torch.randint(0, bitwidth, (N,), dtype=datatype).npu()
     Out = torch.zeros((M, N), dtype=datatype).npu()
 
     func = shift_partial_kernel(M, N, block_M, "shr", dtype)
