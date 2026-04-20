@@ -4,7 +4,7 @@ import numpy as np
 
 
 class Config:
-    kwargs: list = []
+    kwargs: list = None
 
     def __init__(self, kwargs, value):
         self.kwargs = kwargs
@@ -97,15 +97,6 @@ class CustomTemplate:
     mem_caps: List[PolyConstraintsSet]
     batch_size: int = 1
     is_causal: bool = False
-
-
-@dataclass
-class Arch:
-    name: str = "Ascend910B"
-    l1_cap: int = 1024 * 1024
-    ub_cap: int = 192 * 1024
-    num_ai_cores: int = 30
-
 
 byte_per_numel = {
     "float32": 4,  # torch.float32 or torch.float

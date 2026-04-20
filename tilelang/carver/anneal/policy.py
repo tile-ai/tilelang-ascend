@@ -1,13 +1,13 @@
 from dataclasses import dataclass
 import random
 import math
+from tilelang.utils.npu_arch import AscendArch, get_ascend_device_name
 from .customtemplate import (
     PolyConstraints,
     FuncConstraints,
     PolyConstraintsSet,
     CustomTemplate,
     Config,
-    Arch,
     get_byte_per_numel,
     get_all_factors,
 )
@@ -17,16 +17,26 @@ import bisect
 
 def _get_unique_configs(configs):
     _configs = []
+    seen = set()
     for config in configs:
-        if not any(config.kwargs == _config.kwargs for _config in _configs):
+        kwargs_tuple = tuple(config.kwargs)
+        if kwargs_tuple not in seen:
             _configs.append(config)
+            seen.add(kwargs_tuple)
     return _configs
 
 
-def _get_ai_cores(num_ai_cores=-1):
+def _get_aivector_cores(num_ai_cores=-1):
     if num_ai_cores < 0:
-        default_arch = Arch()
-        return default_arch.num_ai_cores
+        default_arch = AscendArch(get_ascend_device_name())
+        return default_arch.aivector_core_num
+    return num_ai_cores
+
+
+def _get_aicube_cores(num_ai_cores=-1):
+    if num_ai_cores < 0:
+        default_arch = AscendArch(get_ascend_device_name())
+        return default_arch.aicube_core_num
     return num_ai_cores
 
 
@@ -44,15 +54,12 @@ def _get_real_idx(idx, use_idx, other_idx):
 
 def _get_mem_caps(mem_caps, arch=None):
     if arch is None:
-        default_arch = Arch()
-        arch = default_arch
+        default_arch = AscendArch(get_ascend_device_name())
 
     _mem_caps = []
     for cap in mem_caps:
-        if cap == "l1":
-            _mem_caps.append(arch.l1_cap)
-        elif cap == "ub":
-            _mem_caps.append(arch.ub_cap)
+        if cap in default_arch.mem_caps:
+            _mem_caps.append(default_arch.mem_cap[cap])
         else:
             raise ValueError("Unsupported mem_caps!")
 
@@ -289,13 +296,13 @@ def _compute_num_waves_vector(idx, init_idx, num_ai_cores):
 
 def _compute_carver_policy_matmul(idx, nbytes, init_idx, num_ai_cores=-1):
     return _compute_memory_traffic_matmul(idx, nbytes) * _compute_num_waves_matmul(
-        idx, init_idx, _get_ai_cores(num_ai_cores)
+        idx, init_idx, _get_aicube_cores(num_ai_cores)
     )
 
 
 def _compute_carver_policy_vector(idx, nbytes, init_idx, num_ai_cores=-1):
     return _compute_memory_traffic_vector(idx, nbytes) * _compute_num_waves_vector(
-        idx, init_idx, _get_ai_cores(num_ai_cores)
+        idx, init_idx, _get_aivector_cores(num_ai_cores)
     )
 
 
@@ -304,7 +311,7 @@ def _compute_carver_policy_matmul_custom_idx(
 ):
     _idx = _get_real_idx(idx, use_idx, other_idx)
     return _compute_memory_traffic_matmul(_idx, nbytes) * _compute_num_waves_matmul(
-        _idx, init_idx, _get_ai_cores(num_ai_cores)
+        _idx, init_idx, _get_aicube_cores(num_ai_cores)
     )
 
 
@@ -313,7 +320,7 @@ def _compute_carver_policy_vector_custom_idx(
 ):
     _idx = _get_real_idx(idx, use_idx, other_idx)
     return _compute_memory_traffic_vector(_idx, nbytes) * _compute_num_waves_vector(
-        _idx, init_idx, _get_ai_cores(num_ai_cores)
+        _idx, init_idx, _get_aivector_cores(num_ai_cores)
     )
 
 
@@ -331,6 +338,7 @@ class AnnealTemplate:
         custom_kernel=None,
         policy=None,
         mem_caps=None,
+        arch=None,
     ):
         BLOCK_BASE = 16
         template_map = ["Elementwise", "Matmul", "FlashAttention", "Custom"]
@@ -339,6 +347,9 @@ class AnnealTemplate:
 
         if annealparam is None:
             annealparam = Annealparam()
+
+        if arch is None:
+            self.arch = AscendArch(get_ascend_device_name())
 
         self.shape = shape
         self.n = len(shape)
@@ -354,11 +365,11 @@ class AnnealTemplate:
                 case "Custom":
                     raise ValueError("custom mem_caps is none!")
                 case "Elementwise":
-                    self.mem_caps = ["ub"]
+                    self.mem_caps = ["UB"]
                 case "Matmul":
-                    self.mem_caps = ["l1"]
+                    self.mem_caps = ["L1"]
                 case "FlashAttention":
-                    self.mem_caps = ["l1", "l1", "ub"]
+                    self.mem_caps = ["L1", "L1", "UB"]
         else:
             self.mem_caps = mem_caps
 
@@ -398,8 +409,7 @@ class AnnealTemplate:
         numel_dtype = get_byte_per_numel(self.dtype)
         numel_accum_dtype = get_byte_per_numel(self.accum_dtype)
 
-        default_arch = Arch()
-        arch = default_arch
+        arch = self.arch
 
         custom_kernel = CustomTemplate(
             init_low_tile=self.init_low_tile,
@@ -437,7 +447,7 @@ class AnnealTemplate:
                         _compute_carver_policy_matmul,
                         nbytes=[numel_dtype, numel_dtype, numel_accum_dtype],
                         init_idx=self.shape,
-                        num_ai_cores=arch.num_ai_cores,
+                        num_ai_cores=arch.aicube_core_num,
                     ),
                 ],
                 [],
@@ -454,8 +464,7 @@ class AnnealTemplate:
         numel_dtype = get_byte_per_numel(self.dtype)
         numel_accum_dtype = get_byte_per_numel(self.accum_dtype)
 
-        default_arch = Arch()
-        arch = default_arch
+        arch = self.arch
 
         custom_kernel = CustomTemplate(
             init_low_tile=self.init_low_tile,
@@ -486,7 +495,7 @@ class AnnealTemplate:
                         _compute_carver_policy_vector,
                         nbytes=[numel_dtype] * self.n,
                         init_idx=self.shape,
-                        num_ai_cores=arch.num_ai_cores,
+                        num_ai_cores=arch.aivector_core_num,
                     ),
                 ],
                 [],
@@ -502,8 +511,7 @@ class AnnealTemplate:
         numel_dtype = get_byte_per_numel(self.dtype)
         numel_accum_dtype = get_byte_per_numel(self.accum_dtype)
 
-        default_arch = Arch()
-        arch = default_arch
+        arch = self.arch
 
         custom_kernel = CustomTemplate(
             init_low_tile=self.init_low_tile,
@@ -571,7 +579,7 @@ class AnnealTemplate:
                         _compute_carver_policy_matmul,
                         nbytes=[numel_dtype, numel_dtype, numel_accum_dtype],
                         init_idx=self.shape,
-                        num_ai_cores=arch.num_ai_cores,
+                        num_ai_cores=arch.aicube_core_num,
                     ),
                     FuncConstraints(
                         [
@@ -583,7 +591,7 @@ class AnnealTemplate:
                         _compute_carver_policy_matmul,
                         nbytes=[numel_dtype, numel_dtype, numel_accum_dtype],
                         init_idx=[self.shape[0], self.shape[2], self.shape[1]],
-                        num_ai_cores=arch.num_ai_cores,
+                        num_ai_cores=arch.aicube_core_num,
                     ),
                     FuncConstraints(
                         [
@@ -594,7 +602,7 @@ class AnnealTemplate:
                         _compute_carver_policy_vector,
                         nbytes=[numel_accum_dtype, numel_accum_dtype],
                         init_idx=[self.shape[0], self.shape[2]],
-                        num_ai_cores=arch.num_ai_cores,
+                        num_ai_cores=arch.aivector_core_num,
                     ),
                 ],
                 [],
