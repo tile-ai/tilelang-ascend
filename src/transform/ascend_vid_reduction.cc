@@ -62,6 +62,9 @@ private:
   std::unordered_set<Buffer, ObjectPtrHash, ObjectPtrEqual>
       buffers_skip_vid_reduction_;
 
+  // Collect current loop variables and their extents
+  std::vector<std::pair<Var, PrimExpr>> current_loops_;
+
   // Determine if it is a ub buffer
   bool IsUbBuffer(const Buffer &buffer) const {
     if (buffer->data->type_annotation.defined()) {
@@ -144,7 +147,28 @@ private:
         return true;
       }
     }
-    return false;
+return false;
+  }
+
+  // Find loop variable dimension in GM indices (exact match only)
+  int FindLoopVarDimInGmIndices(const Array<PrimExpr> &indices, const Var &loop_var) {
+    for (size_t i = 0; i < indices.size(); i++) {
+      if (const VarNode *v = indices[i].as<VarNode>()) {
+        if (v == loop_var.get()) {
+          return static_cast<int>(i);
+        }
+      }
+    }
+    return -1;
+  }
+
+  // Check if GM dimension needs vid offset (loop_extent * threads_cnt <= gm_dim_size)
+  bool GmDimNeedsVidOffset(const PrimExpr &gm_dim_size, const PrimExpr &loop_extent) {
+    PrimExpr total_extent = loop_extent * threads_cnt_;
+    PrimExpr simplified_total = analyzer_->Simplify(total_extent);
+    PrimExpr simplified_gm = analyzer_->Simplify(gm_dim_size);
+    
+    return analyzer_->CanProve(simplified_total <= simplified_gm);
   }
 
   class UbBufferCollector : public StmtExprVisitor {
@@ -642,7 +666,67 @@ private:
       return IRMutatorWithAnalyzer::VisitExpr_(op);
     }
 
+    // Handle case where UB was not vid-reduced
+    // Check if GM indices contain loop variable and needs vid offset
     if (!ub_was_vid_reduced) {
+      Array<PrimExpr> new_gm_indices = gm_load->indices;
+      bool indices_modified = false;
+
+      for (const auto &loop_info : current_loops_) {
+        Var loop_var = loop_info.first;
+        PrimExpr loop_extent = loop_info.second;
+
+        int dim = FindLoopVarDimInGmIndices(gm_load->indices, loop_var);
+        if (dim >= 0 && dim < static_cast<int>(gm_buf->shape.size())) {
+          // Check if loop_extent * threads_cnt <= gm_dim_size
+          if (GmDimNeedsVidOffset(gm_buf->shape[dim], loop_extent)) {
+            PrimExpr offset = vid_ * loop_extent;
+            new_gm_indices.Set(dim, new_gm_indices[dim] + offset);
+            indices_modified = true;
+          }
+        }
+      }
+
+      if (indices_modified) {
+        BufferLoad modified_gm_load = BufferLoad(gm_buf, new_gm_indices);
+        gm_buffer_offset_info_[gm_buf] = ub_buf;
+
+        // Refactor GM Region
+        Call gm_region = src_is_ub ? dst_region : src_region;
+        Array<PrimExpr> gm_region_args = gm_region->args;
+        gm_region_args.Set(0, VisitExpr(modified_gm_load));
+        for (size_t i = 1; i < gm_region_args.size(); ++i) {
+          gm_region_args.Set(i, VisitExpr(gm_region_args[i]));
+        }
+        Call modified_gm_region = Call(gm_region->dtype, gm_region->op,
+                                        gm_region_args, gm_region->span);
+
+        // Refactor UB Region (no changes needed since UB was not vid-reduced)
+        Call ub_region = src_is_ub ? src_region : dst_region;
+        Array<PrimExpr> ub_region_args = ub_region->args;
+        for (size_t i = 0; i < ub_region_args.size(); i++) {
+          ub_region_args.Set(i, VisitExpr(ub_region_args[i]));
+        }
+        Call modified_ub_region = Call(ub_region->dtype, ub_region->op,
+                                        ub_region_args, ub_region->span);
+
+        // Refactor tl.ascend_copy
+        Array<PrimExpr> new_copy_args = ascend_copy->args;
+        if (src_is_ub) {
+          new_copy_args.Set(0, modified_ub_region);
+          new_copy_args.Set(1, modified_gm_region);
+        } else {
+          new_copy_args.Set(0, modified_gm_region);
+          new_copy_args.Set(1, modified_ub_region);
+        }
+        for (size_t i = 2; i < new_copy_args.size(); ++i) {
+          new_copy_args.Set(i, VisitExpr(new_copy_args[i]));
+        }
+
+        return Call(ascend_copy->dtype, ascend_copy->op, new_copy_args,
+                    ascend_copy->span);
+      }
+
       return IRMutatorWithAnalyzer::VisitExpr_(op);
     }
 
@@ -734,6 +818,17 @@ private:
       return BufferStore(it->second, new_value, new_indices);
     }
     return BufferStore(op->buffer, new_value, new_indices);
+  }
+
+  Stmt VisitStmt_(const ForNode *op) final {
+    if (threads_cnt_ == 2) {
+      current_loops_.push_back({op->loop_var, op->extent});
+      Stmt new_body = VisitStmt(op->body);
+      current_loops_.pop_back();
+      return For(op->loop_var, op->min, op->extent, op->kind, new_body,
+                 op->thread_binding, op->annotations);
+    }
+    return IRMutatorWithAnalyzer::VisitStmt_(op);
   }
 
   Stmt VisitStmt_(const AttrStmtNode *op) final {
