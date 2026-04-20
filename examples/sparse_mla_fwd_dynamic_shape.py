@@ -17,32 +17,29 @@ tilelang.cache.clear_cache()
 
 @tilelang.jit(target="npuir")
 def sparse_attn_kernel(
-        batch,
-        heads,
-        dim,
-        tail_dim,
-        top_k,
-        num_kernels,
-        sm_scale=None,
-        block=64,
+    batch,
+    heads,
+    dim,
+    tail_dim,
+    top_k,
+    num_kernels,
+    sm_scale=None,
+    block=64,
 ):
     # Validate input parameters
     assert block % 2 == 0, "Block I size must be even"
-    assert dim == tilelang.math.next_power_of_2(
-        dim
-    ), f"haven't check padding correctness yet, dim={dim}"
-    assert tail_dim == 0 or tail_dim == tilelang.math.next_power_of_2(
-        tail_dim
-    ), f"haven't check padding correctness yet, dim={tail_dim}"
+    assert dim == tilelang.math.next_power_of_2(dim), (
+        f"haven't check padding correctness yet, dim={dim}"
+    )
+    assert tail_dim == 0 or tail_dim == tilelang.math.next_power_of_2(tail_dim), (
+        f"haven't check padding correctness yet, dim={tail_dim}"
+    )
 
     seq_len = T.symbolic("seqLen")
     seq_len_kv = T.symbolic("seqLenKV")
 
     # Set softmax scale if not provided
-    if sm_scale is None:
-        sm_scale = (1.0 / (dim + tail_dim)) ** 0.5
-    else:
-        sm_scale = sm_scale
+    sm_scale = (1.0 / (dim + tail_dim)) ** 0.5 if sm_scale is None else sm_scale
 
     # Calculate total number of logical kernels
     num_logic_kernels = batch * seq_len
@@ -63,11 +60,15 @@ def sparse_attn_kernel(
 
     @T.macro
     def CubeQKMatmul(
-            Q: T.Tensor([batch, seq_len, heads, full_dim], dtype),
-            workspace_kv: T.Tensor([num_kernels, top_k, full_dim], dtype),
-            workspace_s: T.Tensor([num_kernels, 1, heads, block], accum_dtype),
-            l1_q, l1_kv_sparse, l0_c,
-            num_top_k_blocks, kernel_id, task_id,
+        Q: T.Tensor([batch, seq_len, heads, full_dim], dtype),
+        workspace_kv: T.Tensor([num_kernels, top_k, full_dim], dtype),
+        workspace_s: T.Tensor([num_kernels, 1, heads, block], accum_dtype),
+        l1_q,
+        l1_kv_sparse,
+        l0_c,
+        num_top_k_blocks,
+        kernel_id,
+        task_id,
     ):
         local_id = task_id // num_top_k_blocks
         block_i_id = task_id % num_top_k_blocks
@@ -88,25 +89,40 @@ def sparse_attn_kernel(
             T.sync_block_wait(0)
 
         # Load sparse KV data to L1
-        T.load_nd2nz(workspace_kv[kernel_id, block_i_offset, 0],
-                           l1_kv_sparse, size=[block, full_dim])
+        T.load_nd2nz(
+            workspace_kv[kernel_id, block_i_offset, 0],
+            l1_kv_sparse,
+            size=[block, full_dim],
+        )
 
         # Perform matrix multiplication (Q @ K^T)
-        T.gemm(l1_q, l1_kv_sparse, l0_c, initC=True, b_transpose=True,
-                    size=[heads, full_dim, block])
+        T.gemm(
+            l1_q,
+            l1_kv_sparse,
+            l0_c,
+            initC=True,
+            b_transpose=True,
+            size=[heads, full_dim, block],
+        )
 
         # Store intermediate results and synchronize
         with T.rs("PIPE_FIX"):
-            T.store_fixpipe(l0_c, workspace_s[kernel_id, 0, 0, 0], size=[heads, block],
-                                  enable_nz2nd=True)
+            T.store_fixpipe(
+                l0_c,
+                workspace_s[kernel_id, 0, 0, 0],
+                size=[heads, block],
+                enable_nz2nd=True,
+            )
             T.sync_block_set(0)
 
     @T.macro
     def CubePVMatmul(
-            workspace_p: T.Tensor([num_kernels, 1, heads, block], dtype),
-            workspace_o: T.Tensor([num_kernels, 1, heads, dim], accum_dtype),
-            l1_kv_sparse, l0_c,
-            kernel_id, task_id,
+        workspace_p: T.Tensor([num_kernels, 1, heads, block], dtype),
+        workspace_o: T.Tensor([num_kernels, 1, heads, dim], accum_dtype),
+        l1_kv_sparse,
+        l0_c,
+        kernel_id,
+        task_id,
     ):
         l1_p = T.alloc_L1([heads, block], dtype)
 
@@ -116,11 +132,11 @@ def sparse_attn_kernel(
             T.load_nd2nz(workspace_p[kernel_id, 0, 0, 0], l1_p, size=[heads, block])
 
         # Perform matrix multiplication (P @ V)
-        T.gemm(l1_p, l1_kv_sparse, l0_c, initC=True,
-                    size=[heads, block, dim])
+        T.gemm(l1_p, l1_kv_sparse, l0_c, initC=True, size=[heads, block, dim])
 
-        T.store_fixpipe(l0_c, workspace_o[kernel_id, 0, 0, 0],
-                              size=[heads, dim], enable_nz2nd=True)
+        T.store_fixpipe(
+            l0_c, workspace_o[kernel_id, 0, 0, 0], size=[heads, dim], enable_nz2nd=True
+        )
 
         # Synchronize after output computation
         with T.rs("PIPE_FIX"):
@@ -128,11 +144,16 @@ def sparse_attn_kernel(
 
     @T.macro
     def VectorGatherSparseKV(
-            KV: T.Tensor([batch, seq_len_kv, full_dim], dtype),
-            Indices: T.Tensor([batch, seq_len, top_k], indices_dtype),
-            workspace_kv: T.Tensor([num_kernels, top_k, full_dim], dtype),
-            ub_acc_o, ub_var_logsum, ub_indices,
-            num_top_k_blocks, kernel_id, subid, task_id,
+        KV: T.Tensor([batch, seq_len_kv, full_dim], dtype),
+        Indices: T.Tensor([batch, seq_len, top_k], indices_dtype),
+        workspace_kv: T.Tensor([num_kernels, top_k, full_dim], dtype),
+        ub_acc_o,
+        ub_var_logsum,
+        ub_indices,
+        num_top_k_blocks,
+        kernel_id,
+        subid,
+        task_id,
     ):
         value_zero = 0
 
@@ -164,12 +185,18 @@ def sparse_attn_kernel(
             for idx_id in T.serial(tail_size_i_half):
                 current_index = ub_indices[0, block_i_sub_offset + idx_id]
                 if current_index >= 0 and current_index < seq_len_kv:
-                    T.copy(KV[batch_id, current_index, 0], ub_kv_sparse[idx_id, 0],
-                           size=[1, full_dim])
+                    T.copy(
+                        KV[batch_id, current_index, 0],
+                        ub_kv_sparse[idx_id, 0],
+                        size=[1, full_dim],
+                    )
 
             # Store gathered KV data to workspace
-            T.copy(ub_kv_sparse, workspace_kv[kernel_id, block_i_offset + block_i_sub_offset, 0],
-                   size=[tail_size_i_half, full_dim])
+            T.copy(
+                ub_kv_sparse,
+                workspace_kv[kernel_id, block_i_offset + block_i_sub_offset, 0],
+                size=[tail_size_i_half, full_dim],
+            )
 
         # Synchronize after KV gathering
         with T.rs("PIPE_MTE3"):
@@ -177,10 +204,17 @@ def sparse_attn_kernel(
 
     @T.macro
     def VectorScoresExp(
-            workspace_s: T.Tensor([num_kernels, 1, heads, block], accum_dtype),
-            workspace_p: T.Tensor([num_kernels, 1, heads, block], dtype),
-            ub_var_scores_max, ub_var_scores_scale, ub_indices, ub_arrange_mask, ub_var_logsum,
-            num_top_k_blocks, kernel_id, subid, task_id,
+        workspace_s: T.Tensor([num_kernels, 1, heads, block], accum_dtype),
+        workspace_p: T.Tensor([num_kernels, 1, heads, block], dtype),
+        ub_var_scores_max,
+        ub_var_scores_scale,
+        ub_indices,
+        ub_arrange_mask,
+        ub_var_logsum,
+        num_top_k_blocks,
+        kernel_id,
+        subid,
+        task_id,
     ):
         acc_s_scale = sm_scale
         value_zero = 0
@@ -203,8 +237,11 @@ def sparse_attn_kernel(
         # Load attention scores from workspace
         with T.rs("PIPE_MTE2"):
             T.sync_block_wait(0)
-            T.copy(workspace_s[kernel_id, 0, subid * heads_half, 0],
-                   ub_cross_kernel_32, size=[heads_half, block])
+            T.copy(
+                workspace_s[kernel_id, 0, subid * heads_half, 0],
+                ub_cross_kernel_32,
+                size=[heads_half, block],
+            )
 
         # Apply softmax scaling and compute max
         T.vmul(ub_cross_kernel_32, acc_s_scale, ub_cross_kernel_32)
@@ -232,13 +269,20 @@ def sparse_attn_kernel(
         # Apply valid mask
         T.vcast(ub_var_valid_indices, ub_var_valid_indices_32)
         T.vmul(ub_cross_kernel_32, ub_var_valid_indices_32, ub_cross_kernel_32)
-        T.vcast(ub_cross_kernel_32, ub_cross_kernel_16, round_mode="rint",
-                     size=[heads_half, block])
+        T.vcast(
+            ub_cross_kernel_32,
+            ub_cross_kernel_16,
+            round_mode="rint",
+            size=[heads_half, block],
+        )
 
         # Store softmax results and synchronize
         with T.rs("PIPE_MTE3"):
-            T.copy(ub_cross_kernel_16, workspace_p[kernel_id, 0, subid * heads_half, 0],
-                   size=[heads_half, block])
+            T.copy(
+                ub_cross_kernel_16,
+                workspace_p[kernel_id, 0, subid * heads_half, 0],
+                size=[heads_half, block],
+            )
             T.sync_block_set(0)
 
         # Compute sum of exponential for softmax denominator
@@ -250,10 +294,15 @@ def sparse_attn_kernel(
 
     @T.macro
     def VectorAccAndNormOutput(
-            Output: T.Tensor([batch, seq_len, heads, dim], dtype),
-            workspace_o: T.Tensor([num_kernels, 1, heads, dim], accum_dtype),
-            ub_acc_o, ub_var_scores_scale, ub_var_logsum,
-            num_top_k_blocks, kernel_id, subid, task_id,
+        Output: T.Tensor([batch, seq_len, heads, dim], dtype),
+        workspace_o: T.Tensor([num_kernels, 1, heads, dim], accum_dtype),
+        ub_acc_o,
+        ub_var_scores_scale,
+        ub_var_logsum,
+        num_top_k_blocks,
+        kernel_id,
+        subid,
+        task_id,
     ):
         eps = 1e-8
 
@@ -272,8 +321,11 @@ def sparse_attn_kernel(
         # Load and accumulate output values
         with T.rs("PIPE_MTE2"):
             T.sync_block_wait(0)
-            T.copy(workspace_o[kernel_id, 0, subid * heads_half, 0], ub_acc_o_new,
-                   size=[heads_half, dim])
+            T.copy(
+                workspace_o[kernel_id, 0, subid * heads_half, 0],
+                ub_acc_o_new,
+                size=[heads_half, dim],
+            )
 
         T.vadd(ub_acc_o, ub_acc_o_new, ub_acc_o)
 
@@ -288,23 +340,30 @@ def sparse_attn_kernel(
                 tail_size_k = dim - block_k_offset
                 tail_size_k = T.min(tail_size_k, block)
 
-                T.vcast(ub_acc_o[0, block_k_offset], ub_cross_kernel_16, round_mode="rint",
-                             size=[heads_half, tail_size_k])
+                T.vcast(
+                    ub_acc_o[0, block_k_offset],
+                    ub_cross_kernel_16,
+                    round_mode="rint",
+                    size=[heads_half, tail_size_k],
+                )
 
-                T.copy(ub_cross_kernel_16, Output[batch_id, seq_id, subid * heads_half, block_k_offset],
-                       size=[heads_half, tail_size_k])
+                T.copy(
+                    ub_cross_kernel_16,
+                    Output[batch_id, seq_id, subid * heads_half, block_k_offset],
+                    size=[heads_half, tail_size_k],
+                )
 
     # Define the main sparse attention kernel using TileLang
     @T.prim_func
     def SparseAttnExp(
-            Q: T.Tensor([batch, seq_len, heads, full_dim], dtype),  # type: ignore
-            KV: T.Tensor([batch, seq_len_kv, full_dim], dtype),  # type: ignore
-            Output: T.Tensor([batch, seq_len, heads, dim], dtype),  # type: ignore
-            Indices: T.Tensor([batch, seq_len, top_k], indices_dtype),  # type: ignore
-            workspace_kv: T.Tensor([num_kernels, top_k, full_dim], dtype),
-            workspace_s: T.Tensor([num_kernels, 1, heads, block], accum_dtype),
-            workspace_p: T.Tensor([num_kernels, 1, heads, block], dtype),
-            workspace_o: T.Tensor([num_kernels, 1, heads, dim], accum_dtype),
+        Q: T.Tensor([batch, seq_len, heads, full_dim], dtype),  # type: ignore
+        KV: T.Tensor([batch, seq_len_kv, full_dim], dtype),  # type: ignore
+        Output: T.Tensor([batch, seq_len, heads, dim], dtype),  # type: ignore
+        Indices: T.Tensor([batch, seq_len, top_k], indices_dtype),  # type: ignore
+        workspace_kv: T.Tensor([num_kernels, top_k, full_dim], dtype),
+        workspace_s: T.Tensor([num_kernels, 1, heads, block], accum_dtype),
+        workspace_p: T.Tensor([num_kernels, 1, heads, block], dtype),
+        workspace_o: T.Tensor([num_kernels, 1, heads, dim], accum_dtype),
     ):
         # Launch NPU kernel with specified number of parallel kernels
         with T.Kernel(num_kernels, is_npu=True) as (kernel_id, subid):
@@ -317,20 +376,30 @@ def sparse_attn_kernel(
                 # Allocate L0 buffer for accumulation
                 l0_c = T.alloc_L0C([heads, dim], accum_dtype)
 
-                num_local_logic_kernels = T.ceildiv(num_logic_kernels - kernel_id, num_kernels)
+                num_local_logic_kernels = T.ceildiv(
+                    num_logic_kernels - kernel_id, num_kernels
+                )
                 num_top_k_blocks = T.ceildiv(top_k, block)
 
                 # Add some operations to stop TVM from moving alloc into the inner loop
                 T.reshape(l1_q, l1_q)
 
                 for task_id in T.serial(num_local_logic_kernels * num_top_k_blocks):
-                    CubeQKMatmul(Q, workspace_kv, workspace_s,
-                                 l1_q, l1_kv_sparse, l0_c,
-                                 num_top_k_blocks, kernel_id, task_id)
+                    CubeQKMatmul(
+                        Q,
+                        workspace_kv,
+                        workspace_s,
+                        l1_q,
+                        l1_kv_sparse,
+                        l0_c,
+                        num_top_k_blocks,
+                        kernel_id,
+                        task_id,
+                    )
 
-                    CubePVMatmul(workspace_p, workspace_o,
-                                 l1_kv_sparse, l0_c,
-                                 kernel_id, task_id)
+                    CubePVMatmul(
+                        workspace_p, workspace_o, l1_kv_sparse, l0_c, kernel_id, task_id
+                    )
 
             # Vector computation section (softmax and normalization)
             with T.Scope("Vector"):
@@ -346,7 +415,9 @@ def sparse_attn_kernel(
                 ub_arrange_mask = T.alloc_ub([1, block], "int16")
                 T.arange(ub_arrange_mask, [0, 1], 0)
 
-                num_local_logic_kernels = T.ceildiv(num_logic_kernels - kernel_id, num_kernels)
+                num_local_logic_kernels = T.ceildiv(
+                    num_logic_kernels - kernel_id, num_kernels
+                )
                 num_top_k_blocks = T.ceildiv(top_k, block)
 
                 # Add some operations to stop TVM from moving alloc into the inner loop
@@ -356,29 +427,52 @@ def sparse_attn_kernel(
 
                 for task_id in T.serial(num_local_logic_kernels * num_top_k_blocks):
                     VectorGatherSparseKV(
-                        KV, Indices, workspace_kv,
-                        ub_acc_o, ub_var_logsum, ub_indices,
-                        num_top_k_blocks, kernel_id, subid, task_id
+                        KV,
+                        Indices,
+                        workspace_kv,
+                        ub_acc_o,
+                        ub_var_logsum,
+                        ub_indices,
+                        num_top_k_blocks,
+                        kernel_id,
+                        subid,
+                        task_id,
                     )
 
                     VectorScoresExp(
-                        workspace_s, workspace_p,
-                        ub_var_scores_max, ub_var_scores_scale, ub_indices, ub_arrange_mask, ub_var_logsum,
-                        num_top_k_blocks, kernel_id, subid, task_id,
+                        workspace_s,
+                        workspace_p,
+                        ub_var_scores_max,
+                        ub_var_scores_scale,
+                        ub_indices,
+                        ub_arrange_mask,
+                        ub_var_logsum,
+                        num_top_k_blocks,
+                        kernel_id,
+                        subid,
+                        task_id,
                     )
 
                     VectorAccAndNormOutput(
-                        Output, workspace_o,
-                        ub_acc_o, ub_var_scores_scale, ub_var_logsum,
-                        num_top_k_blocks, kernel_id, subid, task_id,
+                        Output,
+                        workspace_o,
+                        ub_acc_o,
+                        ub_var_scores_scale,
+                        ub_var_logsum,
+                        num_top_k_blocks,
+                        kernel_id,
+                        subid,
+                        task_id,
                     )
 
     return SparseAttnExp
 
 
 def sparse_attn(
-        q: torch.Tensor, kv: torch.Tensor, topk_idxs: torch.Tensor,
-        softmax_scale: Optional[float] = None
+    q: torch.Tensor,
+    kv: torch.Tensor,
+    topk_idxs: torch.Tensor,
+    softmax_scale: Optional[float] = None,
 ):
     num_kernels = 24
     block = 64
@@ -390,15 +484,30 @@ def sparse_attn(
         "dim": dim,
         "top_k": top_k,
     }
-    if not hasattr(sparse_attn, 'kernel_cache') or new_static_param_dict != sparse_attn.static_param_dict:
-        sparse_attn.kernel = sparse_attn_kernel(batch, heads, dim, tail_dim=0, top_k=top_k,
-                                                num_kernels=num_kernels, sm_scale=softmax_scale, block=block, )
+    if (
+        not hasattr(sparse_attn, "kernel_cache")
+        or new_static_param_dict != sparse_attn.static_param_dict
+    ):
+        sparse_attn.kernel = sparse_attn_kernel(
+            batch,
+            heads,
+            dim,
+            tail_dim=0,
+            top_k=top_k,
+            num_kernels=num_kernels,
+            sm_scale=softmax_scale,
+            block=block,
+        )
         sparse_attn.static_param_dict = new_static_param_dict
     output = torch.empty((batch, seq_len, heads, dim), dtype=q.dtype, device=q.device)
     w_kv = torch.empty((num_kernels, top_k, dim), dtype=q.dtype, device=q.device)
-    w_s = torch.empty((num_kernels, 1, heads, block), dtype=torch.float32, device=q.device)
+    w_s = torch.empty(
+        (num_kernels, 1, heads, block), dtype=torch.float32, device=q.device
+    )
     w_p = torch.empty((num_kernels, 1, heads, block), dtype=q.dtype, device=q.device)
-    w_o = torch.empty((num_kernels, 1, heads, dim), dtype=torch.float32, device=q.device)
+    w_o = torch.empty(
+        (num_kernels, 1, heads, dim), dtype=torch.float32, device=q.device
+    )
     sparse_attn.kernel(q, kv, output, topk_idxs, w_kv, w_s, w_p, w_o)
     return output
 
@@ -412,27 +521,40 @@ def gather_from_kv(KV, indices):
     return out
 
 
-def sparse_attn_torch(q: torch.Tensor, kv: torch.Tensor, topk_idxs: torch.Tensor,
-                      softmax_scale: Optional[float] = None):
+def sparse_attn_torch(
+    q: torch.Tensor,
+    kv: torch.Tensor,
+    topk_idxs: torch.Tensor,
+    softmax_scale: Optional[float] = None,
+):
     """Reference Sparse Attention kernel implemented in PyTorch"""
     kv_sparse = gather_from_kv(kv, topk_idxs)
-    mask_acc_s = torch.where((topk_idxs == -1).unsqueeze(-2), -torch.inf, 0.)
+    mask_acc_s = torch.where((topk_idxs == -1).unsqueeze(-2), -torch.inf, 0.0)
     mask_acc_s = mask_acc_s.to(device=q.device, dtype=torch.float32)
-    ref_output = torch.nn.functional.softmax(
-        ((q @ kv_sparse.transpose(-2, -1)).to(torch.float32) + mask_acc_s) * softmax_scale,
-        dim=-1).to(torch.float16) @ kv_sparse
+    ref_output = (
+        torch.nn.functional.softmax(
+            ((q @ kv_sparse.transpose(-2, -1)).to(torch.float32) + mask_acc_s)
+            * softmax_scale,
+            dim=-1,
+        ).to(torch.float16)
+        @ kv_sparse
+    )
 
     return ref_output
 
 
-def rand_sparse_attn_input(batch_size, num_heads, seq_len, seq_len_kv, top_k, dim, seed=88888888, causal=True):
+def rand_sparse_attn_input(
+    batch_size, num_heads, seq_len, seq_len_kv, top_k, dim, seed=88888888, causal=True
+):
     """Generate legalized random inputs for Sparse Attention"""
     torch.manual_seed(seed)
 
     # Generate inputs
     q = torch.randn((batch_size, seq_len, num_heads, dim), dtype=torch.float16).npu()
     kv = torch.randn((batch_size, seq_len_kv, dim), dtype=torch.float16).npu()
-    top_k_indices = torch.randint(low=0, high=seq_len_kv, size=(batch_size, seq_len, top_k), dtype=torch.int32).npu()
+    top_k_indices = torch.randint(
+        low=0, high=seq_len_kv, size=(batch_size, seq_len, top_k), dtype=torch.int32
+    ).npu()
 
     if causal:
         # Apply causal mask on top_k_indices
@@ -445,17 +567,17 @@ def rand_sparse_attn_input(batch_size, num_heads, seq_len, seq_len_kv, top_k, di
     scale = (1.0 / dim) ** 0.5
 
     return {
-        'q': q,
-        'kv': kv,
-        'topk_idxs': top_k_indices,
-        'softmax_scale': scale,
+        "q": q,
+        "kv": kv,
+        "topk_idxs": top_k_indices,
+        "softmax_scale": scale,
     }
 
 
 def generate_and_save_data(case_id, **kwargs):
     inputs = rand_sparse_attn_input(**kwargs)
     outputs = sparse_attn_torch(**inputs)
-    torch.save({'inputs': inputs, 'outputs': outputs}, f"case_{case_id}.pt")
+    torch.save({"inputs": inputs, "outputs": outputs}, f"case_{case_id}.pt")
 
 
 def generate_data():
@@ -504,24 +626,26 @@ def run_test(verify_acc=True):
     for file_path in file_paths:
         filename = os.path.basename(file_path)
         try:
-            data = torch.load(file_path, map_location=torch.device('npu'))
-            output = sparse_attn(**data['inputs'])
+            data = torch.load(file_path, map_location=torch.device("npu"))
+            output = sparse_attn(**data["inputs"])
 
             if verify_acc:
-                torch.testing.assert_close(data['outputs'], output, rtol=1e-2, atol=1e-2)
-                print(f'{filename}: \033[92mPassed.\033[0m')
+                torch.testing.assert_close(
+                    data["outputs"], output, rtol=1e-2, atol=1e-2
+                )
+                print(f"{filename}: \033[92mPassed.\033[0m")
             else:
                 assert output is not None
-                print(f'{filename}: \033[92mFinished.\033[0m')
+                print(f"{filename}: \033[92mFinished.\033[0m")
         except Exception as e:
             errors.append(f"{filename}: {str(e)}")
-            print(f'{filename}: \033[91mFailed: {e}\033[0m')
+            print(f"{filename}: \033[91mFailed: {e}\033[0m")
 
     if errors:
         error_msg = "\n".join(errors)
         raise AssertionError(f"Some cases failed:\n{error_msg}")
     else:
-        print('\033[92mAll checks passed.\033[0m')
+        print("\033[92mAll checks passed.\033[0m")
 
 
 if __name__ == "__main__":
