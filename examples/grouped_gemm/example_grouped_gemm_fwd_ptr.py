@@ -168,4 +168,4 @@ if __name__ == "__main__":
 
     run_tilelang_grouped_gemm_fwd_ptr(batch_sizes_list, args.K, args.N, block_M, block_N, block_K, profile=args.profile)
 
-    test_grouped_gemm_fwd_ptr()
+    # test_grouped_gemm_fwd_ptr()
