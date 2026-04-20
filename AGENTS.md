@@ -66,16 +66,8 @@
 | "写一个 softmax 算子" | Vector 算子开发 | tilelang-vector-skill | 立即调用 |
 | "VectorizeLoop pass 的作用" | Pass 功能查询 | tilelang-pass-analyzer | 立即调用 |
 | "同步相关的 pass 有哪些" | Pass 分类查询 | tilelang-pass-analyzer | 立即调用 |
-<<<<<<< HEAD
 | "pass 的工作流程" | Pass 工作流查询 | tilelang-pass-workflow-analyzer | 立即调用 |
 | "创建一个新的 skill" | Skill 创建 | skill-creator | 立即调用 |
-=======
-| "pass 的工作流程" | Pass 工作流查询 | tilelang-pass-analyzer | 立即调用 |
-| "创建一个新的 skill" | Skill 创建 | skill-creator | 立即调用 |
-
-**核心原则：先查 Skills 表格，匹配触发时机，再决定是否调用 skill。**
-
->>>>>>> [Skill] Add pass skill pass-analyzer & pass-workflow-analyzer
 
 ## 核心原则 ⭐⭐⭐
 
