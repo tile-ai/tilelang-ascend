@@ -200,8 +200,8 @@ struct BroadcastInfo {
 
 #### 3.2.1 Pass 入口
 
-```python
-# 伪代码：Pass入口流程
+```text
+伪代码：Pass入口流程
 
 输入: PrimFunc f
 处理流程:
@@ -214,23 +214,23 @@ struct BroadcastInfo {
 
 #### 3.2.2 循环结构识别（VisitStmt_）
 
-```python
-# 伪代码：循环结构识别
+```text
+伪代码：循环结构识别
 
 输入: ForNode op
 处理流程:
     if op->kind == kParallel:
-        # Case 1: parallel → (store | seq)
+        // Case 1: parallel → (store | seq)
         if body is BufferStore or SeqStmt:
             尝试向量化 → TryVectorizeStoreSeq()
         
-        # Case 2: parallel → parallel → (store | seq) [2D向量化]
+        // Case 2: parallel → parallel → (store | seq) [2D向量化]
         if inner_for->kind == kParallel:
             if third_for exists: ERROR "不支持3D及以上"
             尝试2D向量化 → TryVectorizeStoreSeq(is_2d=True)
     
     if op->kind == kSerial:
-        # Case 3: serial → parallel → (store | seq)
+        // Case 3: serial → parallel → (store | seq)
         if inner_for->kind == kParallel:
             尝试向量化 → TryVectorizeStoreSeq(has_outer_serial=True)
             若成功，保留外层Serial循环
@@ -239,19 +239,19 @@ struct BroadcastInfo {
 
 #### 3.2.3 向量化计划检测（DetectVectorPlan）
 
-```python
-# 伪代码：向量化计划检测
+```text
+伪代码：向量化计划检测
 
 输入: BufferStoreNode *store, element_count
 处理流程:
-    # 1D Case
+    // 1D Case
     if output_buffer->shape.size() == 1:
         if indices[0] contains vector_dim_var:
             plan.inner_vec_len = element_count
             plan.outer_extent = 1
             plan.is_2d_vectorizable = false
     
-    # 2D Case
+    // 2D Case
     if output_buffer->shape.size() == 2:
         if indices[1] contains vector_dim_var:
             inner_vec_len = vector_dim_extent_ or buffer->shape[1]
@@ -259,7 +259,7 @@ struct BroadcastInfo {
             plan.outer_extent = element_count / inner_vec_len
             plan.is_2d_vectorizable = (outer_dim_var in indices[0])
     
-    # 3D Case (double buffer)
+    // 3D Case (double buffer)
     if output_buffer->shape.size() == 3:
         类似2D处理，使用indices[1]和indices[2]
 输出: VectorPlan (inner_vec_len, outer_extent, is_2d_vectorizable)
@@ -267,36 +267,36 @@ struct BroadcastInfo {
 
 #### 3.2.4 表达式分解（DecomposeExpression）
 
-```python
-# 伪代码：表达式分解
+```text
+伪代码：表达式分解
 
 输入: PrimExpr expr, output_buffer, element_count
 处理流程:
-    # Case 1: L0C→GM (Cast + BufferLoad from L0C)
+    // Case 1: L0C→GM (Cast + BufferLoad from L0C)
     if expr is Cast of L0C BufferLoad:
         生成 ascend_copy(L0C → GM)
     
-    # Case 2: 简单数据搬运 (BufferLoad)
+    // Case 2: 简单数据搬运 (BufferLoad)
     if expr is BufferLoad:
         生成 ascend_copy(input → output)
     
-    # Case 3: 一元操作
+    // Case 3: 一元操作
     if IsUnaryOp(expr):
         生成 GenerateUnaryVectorCall(op, out, in, count)
     
-    # Case 4: 二元操作
+    // Case 4: 二元操作
     if IsBinaryOp(expr):
-        # Simple-Simple: 两边都是BufferLoad或Scalar
+        // Simple-Simple: 两边都是BufferLoad或Scalar
         if left_simple and right_simple:
             HandleSimpleCase() → 直接生成vector call
         
-        # Simple-Complex: 一边简单，一边复杂
+        // Simple-Complex: 一边简单，一边复杂
         if left_simple and right_complex:
             CreateTempBuffer(rhs_tmp)
             DecomposeExpression(rhs → rhs_tmp)
             GenerateBinaryVectorCall(lhs, rhs_tmp → out)
         
-        # Complex-Complex: 两边都复杂
+        // Complex-Complex: 两边都复杂
         if left_complex and right_complex:
             CreateTempBuffer(lhs_tmp, rhs_tmp)
             DecomposeExpression(lhs → lhs_tmp)
@@ -307,8 +307,8 @@ struct BroadcastInfo {
 
 #### 3.2.5 广播处理
 
-```python
-# 伪代码：广播处理流程
+```text
+伪代码：广播处理流程
 
 输入: 1D BufferLoad in 2D context
 处理流程:
@@ -332,31 +332,31 @@ struct BroadcastInfo {
 
 #### 3.2.6 拷贝处理
 
-```python
-# 伪代码：拷贝处理（含GM写入、L0C输出、简单搬运）
+```text
+伪代码：拷贝处理（含GM写入、L0C输出、简单搬运）
 
 输入: BufferStore 或 表达式中的BufferLoad
 处理流程:
-    # Case 1: GM直接写入（输出目标为GM）
+    // Case 1: GM直接写入（输出目标为GM）
     if IsGlobalMemoryBuffer(output_buffer) and not is_l0c_input:
-        # 创建临时UB Buffer存放计算结果
+        // 创建临时UB Buffer存放计算结果
         temp_ub = CreateTempBufferLike(output, total_elements, inner_vec_len)
         
-        # 将计算写入临时UB
+        // 将计算写入临时UB
         DecomposeExpression(expr → temp_ub)
         
-        # 生成 UB→GM 复制
+        // 生成 UB→GM 复制
         GenerateAscendCopy(temp_ub → output_gm)
     
-    # Case 2: L0C→GM（矩阵计算输出）
+    // Case 2: L0C→GM（矩阵计算输出）
     if expr is Cast of L0C BufferLoad:
         生成 ascend_copy(L0C → GM)
     
-    # Case 3: 简单数据搬运（纯BufferLoad表达式）
+    // Case 3: 简单数据搬运（纯BufferLoad表达式）
     if expr is BufferLoad:
         生成 ascend_copy(input_buffer → output_buffer)
     
-    # Case 4: UB/L1直接写入
+    // Case 4: UB/L1直接写入
     if output in UB/L1:
         直接写入目标Buffer（无需额外copy）
 输出: 计算Stmt + Copy Stmt (若需要)
