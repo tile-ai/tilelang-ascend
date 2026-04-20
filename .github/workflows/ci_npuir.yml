@@ -90,7 +90,7 @@ jobs:
         pip install torch-npu==2.7.1
         pip install dist/*.whl
         pip install pytest pytest-xdist pytest-html numpy
-    
+
     - name: Install clang
       run: |
         apt-get update && apt-get install -y clang
