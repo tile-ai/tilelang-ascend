@@ -1958,45 +1958,7 @@ static inline constexpr bool startsWith(std::string_view str,
 ///        %.* = <linalg>.<op> ins(%A_trans) outs(B) -> tensor<>
 ///        or
 ///     %.* = hivm.hir.<op> ins(A) outs(B) -> tensor<>
-namespace {
-struct LinalgOpTag {};
-template <mlir::linalg::UnaryFn Fn>
-struct LinalgUnaryTag : LinalgOpTag {
-  static constexpr linalg::UnaryFn fn = Fn;
-};
-
-struct HFusionOpTag {};
-template <hfusion::UnaryFn Fn>
-struct HFusionUnaryTag : HFusionOpTag {
-  static constexpr hfusion::UnaryFn fn = Fn;
-};
-}
-
-template <mlir::linalg::UnaryFn Fn>
-static mlir::Value createLinalgElemwiseUnary(mlir::OpBuilder &builder,
-                                                 mlir::Location loc,
-                                                 mlir::Value input,
-                                                 mlir::Value out) {
-  auto attr = builder.getAttr<mlir::linalg::UnaryFnAttr>(Fn);
-  auto fnAttr = builder.getNamedAttr("fun", attr);
-  auto newOp = builder.create<mlir::linalg::ElemwiseUnaryOp>(
-      loc, mlir::ValueRange{input}, mlir::ValueRange{out}, fnAttr);
-  return newOp->getResult(0);
-}
-
-template <hfusion::UnaryFn hfusionFn>
-static mlir::Value createHFusionUnary(mlir::OpBuilder &builder,
-                                        mlir::Location loc,
-                                        mlir::Value input,
-                                        mlir::Value out) {
-  auto attr = builder.getAttr<hfusion::UnaryFnAttr>(hfusionFn);
-  auto fnAttr = builder.getNamedAttr("fun", attr);
-  auto newOp = builder.create<hfusion::ElemwiseUnaryOp>(
-      loc, mlir::ValueRange{input}, mlir::ValueRange{out}, fnAttr);
-  return newOp->getResult(0);
-}
-
-template <typename T, typename U>
+template <typename T, auto fn>
 void CodeGenTileLangNPUIRDEV::UnaryVecOpCodegen(const CallNode *op) {
   T npuirop(op->args, this->vmap);
   auto in_data_name = GetVarValue(npuirop.src);
@@ -2011,14 +1973,19 @@ void CodeGenTileLangNPUIRDEV::UnaryVecOpCodegen(const CallNode *op) {
   in_data_name = broadcastOrTranspose(in_data_name, out_data_name,
                                       broadcastAttr, transposeAttr, builder);
 
-  if constexpr (std::is_base_of_v<HFusionOpTag, U>) {
-    newOpValue = createHFusionUnary<U::fn>(builder, loc, in_data_name, out_data_name);
+  if constexpr (std::is_same_v<std::decay_t<decltype(fn)>, mlir::linalg::UnaryFn>) {
+    auto attr = builder.getAttr<mlir::linalg::UnaryFnAttr>(fn);
+    auto fnAttr = builder.getNamedAttr("fun", attr);
+    auto newOp = builder.create<mlir::linalg::ElemwiseUnaryOp>(
+        loc, mlir::ValueRange{in_data_name}, mlir::ValueRange{out_data_name}, fnAttr);
+    newOpValue = newOp->getResult(0);
   }
-  else if constexpr (std::is_base_of_v<LinalgOpTag, U>) {
-    newOpValue = createLinalgElemwiseUnary<U::fn>(builder, loc, in_data_name, out_data_name);
-  }
-  else {
-    newOpValue = builder.create<U>(loc, out_data_name.getType(), in_data_name);
+  else if constexpr (std::is_same_v<std::decay_t<decltype(fn)>, hfusion::UnaryFn>) {
+    auto attr = builder.getAttr<hfusion::UnaryFnAttr>(fn);
+    auto fnAttr = builder.getNamedAttr("fun", attr);
+    auto newOp = builder.create<hfusion::ElemwiseUnaryOp>(
+        loc, mlir::ValueRange{in_data_name}, mlir::ValueRange{out_data_name}, fnAttr);
+    newOpValue = newOp->getResult(0);
   }
 
   SetVarValue(npuirop.dst, newOpValue);
@@ -3580,21 +3547,21 @@ mlir::Value CodeGenTileLangNPUIRDEV::VisitExpr_(const CallNode *op) {
   } else if (op->op.same_as(Op::Get("tl.npuir_add"))) {
     CreateHIVMBinaryVectorOp<mlir::arith::AddFOp, mlir::arith::AddIOp>(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_exp"))) {
-    UnaryVecOpCodegen<tvm::tl::NpuirExp, mlir::math::ExpOp>(op);
+    UnaryVecOpCodegen<tvm::tl::NpuirExp, mlir::linalg::UnaryFn::exp>(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_ln"))) {
-    UnaryVecOpCodegen<tvm::tl::NpuirLn, LinalgUnaryTag<linalg::UnaryFn::log>>(op);
+    UnaryVecOpCodegen<tvm::tl::NpuirLn, mlir::linalg::UnaryFn::log>(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_relu"))) {
-    UnaryVecOpCodegen<tvm::tl::NpuirRelu, HFusionUnaryTag<hfusion::UnaryFn::relu>>(op);
+    UnaryVecOpCodegen<tvm::tl::NpuirRelu, hfusion::UnaryFn::relu>(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_sqrt"))) {
-    UnaryVecOpCodegen<tvm::tl::NpuirSqrt, LinalgUnaryTag<linalg::UnaryFn::sqrt>>(op);
+    UnaryVecOpCodegen<tvm::tl::NpuirSqrt, mlir::linalg::UnaryFn::sqrt>(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_rsqrt"))) {
-    UnaryVecOpCodegen<tvm::tl::NpuirRsqrt, LinalgUnaryTag<linalg::UnaryFn::rsqrt>>(op);
+    UnaryVecOpCodegen<tvm::tl::NpuirRsqrt, mlir::linalg::UnaryFn::rsqrt>(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_abs"))) {
-    UnaryVecOpCodegen<tvm::tl::NpuirAbs, LinalgUnaryTag<linalg::UnaryFn::abs>>(op);
+    UnaryVecOpCodegen<tvm::tl::NpuirAbs, mlir::linalg::UnaryFn::abs>(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_rec"))) {
-    UnaryVecOpCodegen<tvm::tl::NpuirRec, LinalgUnaryTag<linalg::UnaryFn::reciprocal>>(op);
+    UnaryVecOpCodegen<tvm::tl::NpuirRec, mlir::linalg::UnaryFn::reciprocal>(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_not"))) {
-    UnaryVecOpCodegen<tvm::tl::NpuirNot, HFusionUnaryTag<hfusion::UnaryFn::vnot>>(op);
+    UnaryVecOpCodegen<tvm::tl::NpuirNot, hfusion::UnaryFn::vnot>(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_select"))) {
     VselectCodegen(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_cmp"))) {
