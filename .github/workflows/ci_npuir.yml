@@ -134,6 +134,7 @@ jobs:
           examples/flash_attn_npuir_dev.py
           examples/sparse_mla_fwd.py
           examples/vectorization_in_parallel.py
+          examples/sparse_mla_fwd_dynamic_shape.py
         )
 
         for script in "${EXAMPLE_FILES[@]}"; do
