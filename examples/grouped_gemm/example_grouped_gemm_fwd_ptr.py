@@ -6,6 +6,8 @@ import torch
 import tilelang
 import tilelang.language as T
 
+tilelang.disable_cache()
+
 
 def torch_grouped_gemm(a_list, b_list):
     """PyTorch reference: grouped GEMM with separate tensors per group."""
@@ -14,7 +16,6 @@ def torch_grouped_gemm(a_list, b_list):
     for a, b in zip(a_list, b_list):
         assert a.shape[1] == b.shape[0], "incompatible GEMM shapes"
         outputs.append(torch.matmul(a, b))
-        # outputs.append(torch.zeros_like(torch.matmul(a, b)))
     return outputs
 
 
@@ -54,7 +55,7 @@ def grouped_gemm_fwd_ptr(batch_sizes_list, K, N, block_M, block_N, block_K, dtyp
                     T.barrier_all()
                     T.gemm_v0(A_L1, B_L1, C_L0, init=(k == 0))
                     T.barrier_all()
-
+                    
                 T.copy(C_L0, C[m_start : m_start + block_M, by * block_N : (by + 1) * block_N])
 
     return kernel
@@ -167,4 +168,4 @@ if __name__ == "__main__":
 
     run_tilelang_grouped_gemm_fwd_ptr(batch_sizes_list, args.K, args.N, block_M, block_N, block_K, profile=args.profile)
 
-    # test_grouped_gemm_fwd_ptr()
+    test_grouped_gemm_fwd_ptr()
