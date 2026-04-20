@@ -288,9 +288,10 @@ private:
     mlir::OpFoldResult viewOffset;
   };
 
-  mlir::Value GenMemrefLoadFromRegion(const BufferLoadNode *op);
+  mlir::Value GenMemrefLoadFromRegion(Buffer buffer_data, Array<Range> range);
   mlir::Value GenSubviewFromRegion(const CallNode *region_node);
   mlir::Value GenSubviewFromRegion(Buffer buffer_data, Array<Range> range);
+  bool EnableToReduceRank(Array<Range> range, int target_rank);
   // Similar to GenSubviewFromRegion but performs rank reduction by dropping
   // static-1 dimensions from the slice sizes (Region extents).
   mlir::Value GenRankReducedSubviewFromRegion(Buffer buffer_data,
