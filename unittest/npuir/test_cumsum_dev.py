@@ -16,19 +16,18 @@ parser.add_argument("--dim", type=int, default=0, help="Dimension to perform cum
 parser.add_argument("--reverse", action="store_true", help="Perform reverse cumulative sum")
 
 dtype = "float16"
-accum_dtype = "float16"
 
 def cumsum_kernel(M, N, dim, reverse):
     BLOCK_SIZE = 1
 
     @T.prim_func
     def main(src: T.Tensor((M, N), dtype),
-             dst: T.Tensor((M, N), accum_dtype)):
+             dst: T.Tensor((M, N), dtype)):
         
         with T.Kernel(BLOCK_SIZE, is_npu=True) as (cid, _):
             # Allocate UB memory
             src_ub = T.alloc_shared((M, N), dtype)
-            dst_ub = T.alloc_fragment((M, N), accum_dtype)
+            dst_ub = T.alloc_fragment((M, N), dtype)
             
             # Copy data from GM to UB
             T.copy(src, src_ub)
