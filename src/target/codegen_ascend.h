@@ -20,6 +20,10 @@
 namespace tvm {
 namespace codegen {
 
+constexpr const char *cv_1_1 = "cv_1_1";
+
+constexpr const char *cv_1_2 = "cv_1_2";
+
 class CodeGenTileLangAscend final : public CodeGenC {
 public:
   CodeGenTileLangAscend(std::string platform);
@@ -223,11 +227,13 @@ private:
   std::vector<std::string> inst_;
   bool flush_out_{false};
 
-  std::string core_num_{0};
+  std::string core_num_{"1"};
 
   std::vector<std::string> para_;
 
   std::string block_id_;
+  // cv ratio in vid reduce mode
+  std::string cv_ratio_;
 
   Map<Var, PrimExpr> address_map_;
 

@@ -657,14 +657,20 @@ void CodeGenTileLangAscend::VisitStmt_(const AttrStmtNode *op) {
       this->PrintIndent();
       this->stream << "if ASCEND_IS_AIV {\n";
       this->PrintIndent();
-      this->PrintIndent();
-      this->stream << current_block_id << " = " << current_block_id
-                   << " / 2;\n";
+      if (cv_ratio_ != cv_1_1) {
+        this->PrintIndent();
+        this->stream << current_block_id << " = " << current_block_id
+                     << " / 2;\n";
+      }
       this->PrintIndent();
       this->stream << "}\n";
 
       this->core_num_ = PrintExpr(op->value);
     } else if (iv->thread_tag == "blockIdx.y" && iv->var->name_hint != "_") {
+      auto vec_id_ = AllocVarID(iv->var.get());
+      this->PrintIndent();
+      this->stream << "auto " << vec_id_ << " = AscendC::GetSubBlockIdx();\n";
+    } else if (iv->thread_tag == "threadIdx.x") {
       auto vec_id_ = AllocVarID(iv->var.get());
       this->PrintIndent();
       this->stream << "auto " << vec_id_ << " = AscendC::GetSubBlockIdx();\n";
@@ -869,7 +875,11 @@ void CodeGenTileLangAscend::VisitExpr_(const MulNode *op,
 void CodeGenTileLangAscend::PreFunctionBody(const PrimFunc &f) {
   int func_scope = this->BeginScope();
   this->PrintIndent();
-  stream << "KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_MIX_AIC_1_2);\n";
+  if (cv_ratio_ == cv_1_1) {
+    stream << "KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_MIX_AIC_1_1);\n";
+  } else {
+    stream << "KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_MIX_AIC_1_2);\n";
+  }
   this->PrintIndent();
   stream << "AscendC::TPipe pipe;\n\n";
 
@@ -1091,6 +1101,11 @@ void CodeGenTileLangAscend::AddFunction(const GlobalVar &gvar,
   ICHECK(global_symbol.defined())
       << "CodeGenC: Expect PrimFunc to have the global_symbol attribute";
   bool no_alias = f->HasNonzeroAttr(tir::attr::kNoAlias);
+
+  auto cv_ratio_opt = f->GetAttr<StringImm>("npu_cv_ratio");
+  if (cv_ratio_opt.defined()) {
+    cv_ratio_ = cv_ratio_opt.value().as<StringImmNode>()->value;
+  }
 
   this->PrintFuncPrefix(stream);
   CodeGenC::PrintType(f->ret_type, stream);
@@ -1827,9 +1842,16 @@ void CodeGenTileLangAscend::ReduceOpCodegen(const CallNode *op) {
       "tl::ascend::" + Downcast<StringImm>(op->args[0])->value;
 
   bool is_reduce_sum = (op_name.find("reduce_sum") != std::string::npos);
+  int buffer_arg_end = static_cast<int>(op->args.size());
+  bool clear = true;
+  if (buffer_arg_end > 0 && op->args[buffer_arg_end - 1].dtype().is_bool()) {
+    clear = !is_zero(op->args[buffer_arg_end - 1]);
+    buffer_arg_end--;
+  }
+  std::string clear_str = clear ? "true" : "false";
 
   std::vector<std::string> var_names;
-  for (int i = 1; i < op->args.size(); i++) {
+  for (int i = 1; i < buffer_arg_end; i++) {
     auto var_name = PrintBufferOffset(op->args[i].as<CallNode>());
     var_names.push_back(var_name);
   }
@@ -1858,7 +1880,7 @@ void CodeGenTileLangAscend::ReduceOpCodegen(const CallNode *op) {
     } catch (...) {
     }
 
-    if (dtype == "half") {
+    if (dtype == "half" && clear) {
       std::string mask, repeatTime, srcRepStride;
       constexpr int64_t ELE_NUM_PER_C0_FOR_HALF = 16;
       if (dim_val == -1) {
@@ -1892,7 +1914,10 @@ void CodeGenTileLangAscend::ReduceOpCodegen(const CallNode *op) {
           this->stream << ", ";
         }
       }
-      this->stream << ");\n";
+      if (!var_names.empty()) {
+        this->stream << ", ";
+      }
+      this->stream << clear_str << ");\n";
     }
   } else {
     this->stream << op_name << "(";
@@ -1902,7 +1927,10 @@ void CodeGenTileLangAscend::ReduceOpCodegen(const CallNode *op) {
         this->stream << ", ";
       }
     }
-    this->stream << ");\n";
+    if (!var_names.empty()) {
+      this->stream << ", ";
+    }
+    this->stream << clear_str << ");\n";
   }
 }
 

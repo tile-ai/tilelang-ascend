@@ -40,6 +40,30 @@ using ShapeInfo = CodeGenTileLangAscendPto::ShapeInfo;
 
 using BufferInfo = CodeGenTileLangAscendPto::BufferInfo;
 
+namespace {
+
+bool ParseConstBoolArg(const PrimExpr &expr, bool default_value = true) {
+  if (!expr.defined() || !expr.dtype().is_bool()) {
+    return default_value;
+  }
+  return !is_zero(expr);
+}
+
+std::string GetReduceMergeOpName(CodeGenTileLangAscendPto::ReduceKind kind) {
+  switch (kind) {
+  case CodeGenTileLangAscendPto::ReduceKind::SUM:
+    return "TADD";
+  case CodeGenTileLangAscendPto::ReduceKind::MAX:
+    return "TMAX";
+  case CodeGenTileLangAscendPto::ReduceKind::MIN:
+    return "TMIN";
+  }
+  LOG(FATAL) << "Unsupported reduce kind";
+  return "";
+}
+
+} // namespace
+
 static std::string getType(const DataType &dtype) {
   if (dtype.is_float16()) {
     return "half";
@@ -2387,11 +2411,14 @@ void CodeGenTileLangAscendPto::ReduceOpCodegen(const CallNode *op) {
   std::string op_name_str = Downcast<StringImm>(op->args[0])->value;
 
   ReduceOpInfo op_info = ParseReduceOpInfo(op_name_str);
+  bool clear = ParseConstBoolArg(op->args[op->args.size() - 1], true);
   ShapeInfo dst = GetSliceInfo(op->args[1].as<CallNode>());
   ShapeInfo src = GetSliceInfo(op->args[2].as<CallNode>());
   bool is_slice = src.slice_valid_row != op_info.buffer_slice_row ||
                   src.slice_valid_col != op_info.buffer_slice_col;
-  // reduce offer real_shape
+  // Slice inputs carry the physical UB window, while the encoded reduce op
+  // already captures the logical real_shape. Rebase the slice view before
+  // emitting the PTO reduce call.
   if (is_slice) {
     src.slice_valid_row = op_info.buffer_slice_row;
     src.slice_valid_col = op_info.buffer_slice_col;
@@ -2400,6 +2427,56 @@ void CodeGenTileLangAscendPto::ReduceOpCodegen(const CallNode *op) {
   }
 
   ShapeInfo tmp = GetSliceInfo(op->args[3].as<CallNode>());
+  auto emit_merge = [&](const ShapeInfo &reduce_dst) {
+    std::string dst_name = dst.ub_name;
+    if (dst.is_slice) {
+      dst_name = GetTempVarName(dst.ub_name);
+      CreateUbVariableND(dst_name, dst);
+    }
+
+    std::string reduce_dst_name = GetTempVarName(reduce_dst.ub_name);
+    CreateUbVariableND(reduce_dst_name, reduce_dst);
+
+    this->PrintIndent();
+    this->stream << GetReduceMergeOpName(op_info.kind) << "(" << dst_name
+                 << ", " << dst_name << ", " << reduce_dst_name << ");\n";
+  };
+
+  auto build_reduce_tmp_dst = [&](const ShapeInfo &tmp_dst_raw) {
+    ShapeInfo tmp_dst = dst;
+    tmp_dst.first_addr = tmp_dst_raw.first_addr;
+    tmp_dst.offset = "0";
+    tmp_dst.type = dst.type;
+    tmp_dst.ub_name = GetTempVarName(dst.ub_name + "_reduce_out");
+    // This buffer is a synthetic raw-byte tmp allocation rather than a
+    // predeclared UB tile object, so PTO always needs an explicit view before
+    // using it as a reduce destination.
+    tmp_dst.is_slice = true;
+    return tmp_dst;
+  };
+
+  if (!clear) {
+    ICHECK(op->args.size() >= 6 && op->args[4].as<CallNode>())
+        << "PTO reduce(clear=False) expects an injected temporary output "
+           "buffer.";
+    ShapeInfo tmp_dst_raw = GetSliceInfo(op->args[4].as<CallNode>());
+    ShapeInfo tmp_dst = build_reduce_tmp_dst(tmp_dst_raw);
+    if (op_info.direction == ReduceDirection::ROW) {
+      if (is_slice) {
+        dst.slice_valid_col = op_info.buffer_slice_row;
+        tmp_dst.slice_valid_col = op_info.buffer_slice_row;
+      }
+      CodegenRowReduce(op_info, tmp_dst, src, tmp);
+    } else {
+      if (is_slice) {
+        dst.slice_valid_col = op_info.buffer_slice_col;
+        tmp_dst.slice_valid_col = op_info.buffer_slice_col;
+      }
+      CodegenColReduce(op_info, tmp_dst, src, tmp);
+    }
+    emit_merge(tmp_dst);
+    return;
+  }
 
   if (op_info.direction == ReduceDirection::ROW) {
     if (is_slice) {
@@ -2438,6 +2515,11 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AttrStmtNode *op) {
 
       this->core_num_ = PrintExpr(op->value);
     } else if (iv->thread_tag == "blockIdx.y" && iv->var->name_hint != "_") {
+      this->vec_id_ = AllocVarID(iv->var.get());
+      this->PrintIndent();
+      auto current_vec_id = this->vec_id_;
+      this->stream << "auto " << current_vec_id << " = get_subblockid();\n";
+    } else if (iv->thread_tag == "threadIdx.x") {
       this->vec_id_ = AllocVarID(iv->var.get());
       this->PrintIndent();
       auto current_vec_id = this->vec_id_;
