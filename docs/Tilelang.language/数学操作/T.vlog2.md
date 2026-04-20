@@ -38,9 +38,7 @@ T.vlog2(src, dst, temp)
 ​**NPU tile 级示例（`examples/log2.py`）**​：
 
 ```python
-import tilelang.language as T
-
-
+@tilelang.jit(target="npuir")
 def vlog2_kernel(M, N, block_M, block_N, dtype="float16"):
     m_num = M // block_M
     n_num = N // block_N
@@ -74,9 +72,7 @@ def vlog2_kernel(M, N, block_M, block_N, dtype="float16"):
 **表达式级 T.log2 在 TIR 中的用法（`test_tilelang_kernel_mha_bwd.py`）**：
 
 ```python
-import tilelang.language as T
-
-
+@tilelang.jit(target="npuir")
 def log2_expr_example(block_M):
     @T.prim_func
     def update_logsum(

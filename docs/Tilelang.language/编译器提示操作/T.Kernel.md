@@ -52,9 +52,7 @@ T.Kernel(blocks, threads, is_cpu, prelude, is_npu, pipeline)
 `examples/gemm/example_gemm.py`：用「总 block 数」启动，在 kernel 里把 `cid` 拆成 (by, bx)。
 
 ```python
-import tilelang.language as T
-
-
+@tilelang.jit(target="npuir")
 def gemm_kernel(M, N, K, block_M, block_N, block_K, dtype="float16", accum_dtype="float32"):
     @T.prim_func
     def gemm(
@@ -85,9 +83,7 @@ def gemm_kernel(M, N, K, block_M, block_N, block_K, dtype="float16", accum_dtype
 `examples/flash_attn_npuir_dev.py`：block 数 = 序列方向上的块数，用 cid 算当前块的偏移。
 
 ```python
-import tilelang.language as T
-
-
+@tilelang.jit(target="npuir")
 def flash_attention_kernel(seq_len, dim, block_m, dtype="float16"):
     @T.prim_func
     def main(
@@ -109,9 +105,7 @@ def flash_attention_kernel(seq_len, dim, block_m, dtype="float16"):
 `examples/elementwise/vec_add_2d.py`：block 数固定为 `BLOCK_SIZE`（如 20），每个 block 用 `cid` 区分，在循环里算真实 `block_id`，再拆成 (block_id_m, block_id_n)。
 
 ```python
-import tilelang.language as T
-
-
+@tilelang.jit(target="npuir")
 def vec_add_kernel(M, N, block_M, block_N, dtype="float16"):
     block_size = 20
     m_num = M // block_M

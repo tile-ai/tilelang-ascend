@@ -45,9 +45,7 @@ T.vclamp(src, dst, min_val, max_val)
 标量上下界
 
 ```python
-import tilelang.language as T
-
-
+@tilelang.jit(target="npuir")
 def vclamp_scalar_kernel(M, N, dtype="float16"):
     block_size = 1
     clamp_min = 0.0
@@ -73,9 +71,7 @@ def vclamp_scalar_kernel(M, N, dtype="float16"):
 参考 `testing/npuir/arith_ops/test_clamp_vec_dev.py`：
 
 ```python
-import tilelang.language as T
-
-
+@tilelang.jit(target="npuir")
 def vclamp_tensor_kernel(M, N, dtype="float16"):
     block_size = 1
 
