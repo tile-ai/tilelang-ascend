@@ -16,6 +16,9 @@ DTYPE_MAP = {
     "int8": torch.int8,
     "int16": torch.int16,
     "int32": torch.int32,
+    "uint8": torch.uint8,
+    "uint16": torch.uint16,
+    "uint32": torch.uint32,
     "int64": torch.int64,
     "bool": torch.bool,
 }
@@ -113,6 +116,11 @@ def assert_close(
     if dtype is None:
         dtype = actual.dtype
     name = dtype_name(dtype)
+
+    if not expected.is_floating_point():
+        assert torch.equal(actual, expected)
+        return
+
     default_rtol, default_atol = DEFAULT_TOLERANCE[name]
     torch.testing.assert_close(
         actual,
