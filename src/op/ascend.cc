@@ -318,50 +318,48 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
     return active_indices;
   };
 
-  int src_ndim = src->shape.size();
-  int dst_ndim = dst->shape.size();
   PrimExpr validRow_src, validCol_src, validRow_dst, validCol_dst;
 
   // src: compute validRow and validCol using active dimension indices
-    std::vector<int> src_active = find_active_dim_indices(src_extents);
-    if (src_active.size() >= 2) {
-      int row_idx = src_active[src_active.size() - 2];
-      int col_idx = src_active.back();
-      validRow_src =
-          compute_valid_extent(src_range[row_idx]->min,
-                               src_range[row_idx]->extent, src->shape[row_idx]);
-      validCol_src =
-          compute_valid_extent(src_range[col_idx]->min,
-                               src_range[col_idx]->extent, src->shape[col_idx]);
-    } else if (src_active.size() == 1) {
-      int col_idx = src_active[0];
-      validRow_src = Integer(1);
-      validCol_src =
-          compute_valid_extent(src_range[col_idx]->min,
-                               src_range[col_idx]->extent, src->shape[col_idx]);
-    } else {
+  std::vector<int> src_active = find_active_dim_indices(src_extents);
+  if (src_active.size() >= 2) {
+    int row_idx = src_active[src_active.size() - 2];
+    int col_idx = src_active.back();
+    validRow_src =
+        compute_valid_extent(src_range[row_idx]->min,
+                             src_range[row_idx]->extent, src->shape[row_idx]);
+    validCol_src =
+        compute_valid_extent(src_range[col_idx]->min,
+                             src_range[col_idx]->extent, src->shape[col_idx]);
+  } else if (src_active.size() == 1) {
+    int col_idx = src_active[0];
+    validRow_src = Integer(1);
+    validCol_src =
+        compute_valid_extent(src_range[col_idx]->min,
+                             src_range[col_idx]->extent, src->shape[col_idx]);
+  } else {
     validRow_src = 0;
     validCol_src = 0;
   }
 
   // dst: compute validRow and validCol using active dimension indices
-    std::vector<int> dst_active = find_active_dim_indices(dst_extents);
-    if (dst_active.size() >= 2) {
-      int row_idx = dst_active[dst_active.size() - 2];
-      int col_idx = dst_active.back();
-      validRow_dst =
-          compute_valid_extent(dst_range[row_idx]->min,
-                               dst_range[row_idx]->extent, dst->shape[row_idx]);
-      validCol_dst =
-          compute_valid_extent(dst_range[col_idx]->min,
-                               dst_range[col_idx]->extent, dst->shape[col_idx]);
-    } else if (dst_active.size() == 1) {
-      int col_idx = dst_active[0];
-      validRow_dst = Integer(1);
-      validCol_dst =
-          compute_valid_extent(dst_range[col_idx]->min,
-                               dst_range[col_idx]->extent, dst->shape[col_idx]);
-    } else {
+  std::vector<int> dst_active = find_active_dim_indices(dst_extents);
+  if (dst_active.size() >= 2) {
+    int row_idx = dst_active[dst_active.size() - 2];
+    int col_idx = dst_active.back();
+    validRow_dst =
+        compute_valid_extent(dst_range[row_idx]->min,
+                             dst_range[row_idx]->extent, dst->shape[row_idx]);
+    validCol_dst =
+        compute_valid_extent(dst_range[col_idx]->min,
+                             dst_range[col_idx]->extent, dst->shape[col_idx]);
+  } else if (dst_active.size() == 1) {
+    int col_idx = dst_active[0];
+    validRow_dst = Integer(1);
+    validCol_dst =
+        compute_valid_extent(dst_range[col_idx]->min,
+                             dst_range[col_idx]->extent, dst->shape[col_idx]);
+  } else {
     validRow_dst = 0;
     validCol_dst = 0;
   }
