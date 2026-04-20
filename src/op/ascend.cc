@@ -309,7 +309,7 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
       active_indices.push_back(size - 1);
     }
 
-    // If extents.size() >= 2 and active_indices.size() == 1,
+    // Special: If extents.size() >= 2 and active_indices.size() == 1,
     // insert size-2 at the second-to-last position
     if (size >= 2 && active_indices.size() == 1) {
       active_indices.insert(active_indices.begin(), size - 2);
