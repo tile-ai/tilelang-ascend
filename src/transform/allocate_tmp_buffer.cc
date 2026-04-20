@@ -474,6 +474,7 @@ private:
           shape = {
               IntImm(DataType::Int(32), tmp_shape_size),
           };
+          shape_size = tmp_shape_size;
         }
       } else if (call->op.same_as(tl::ascend_clamp()) ||
                  call->op.same_as(tl::ascend_clamp_max()) ||
@@ -490,6 +491,7 @@ private:
           shape = {
               IntImm(DataType::Int(32), tmp_shape_size),
           };
+          shape_size = tmp_shape_size;
         }
       } else if (call->op.same_as(tl::ascend_reduce())) {
         const CallNode *src_access_ptr = Downcast<Call>(call->args[2]).get();
@@ -504,6 +506,7 @@ private:
           shape = {
               IntImm(DataType::Int(32), tmp_shape_size),
           };
+          shape_size = tmp_shape_size;
         }
       } else if (call->op.same_as(tl::ascend_sort())) {
         const CallNode *src_access_ptr = Downcast<Call>(call->args[2]).get();
@@ -518,6 +521,7 @@ private:
           shape = {
               IntImm(DataType::Int(32), tmp_shape_size),
           };
+          shape_size = tmp_shape_size;
         }
       } else if (call->op.same_as(tl::ascend_topk())) {
         const CallNode *src_access_ptr = Downcast<Call>(call->args[2]).get();
@@ -531,6 +535,7 @@ private:
           shape = {
               IntImm(DataType::Int(32), tmp_shape_size),
           };
+          shape_size = tmp_shape_size;
         }
       } else if (call->op.same_as(tl::ascend_sigmoid()) ||
                  call->op.same_as(tl::ascend_bilinear_interpolation()) ||
@@ -549,6 +554,7 @@ private:
           shape = {
               IntImm(DataType::Int(32), tmp_shape_size),
           };
+          shape_size = tmp_shape_size;
         }
       } else if (call->op.same_as(tl::ascend_broadcast())) {
         const CallNode *dst_access_ptr = Downcast<Call>(call->args[1]).get();
@@ -563,6 +569,7 @@ private:
           shape = {
               IntImm(DataType::Int(32), tmp_shape_size),
           };
+          shape_size = tmp_shape_size;
         }
       } else if (call->op.same_as(tl::ascend_round())) {
         const CallNode *dst_access_ptr = Downcast<Call>(call->args[1]).get();
@@ -578,6 +585,7 @@ private:
           shape = {
               IntImm(DataType::Int(32), tmp_shape_size),
           };
+          shape_size = tmp_shape_size;
         }
       } else if (call->op.same_as(tl::ascend_merge_sort())) {
         const CallNode *dst_access_ptr = Downcast<Call>(call->args[2]).get();
@@ -592,6 +600,7 @@ private:
           shape = {
               IntImm(DataType::Int(32), tmp_shape_size),
           };
+          shape_size = tmp_shape_size;
         }
       }
     }
@@ -687,6 +696,7 @@ private:
             shape = {
                 IntImm(DataType::Int(32), tmp_shape_size),
             };
+            shape_size = tmp_shape_size;
           }
         }
       } else if (call->op.same_as(tl::ascend_sigmoid()) ||
@@ -706,6 +716,7 @@ private:
           shape = {
               IntImm(DataType::Int(32), tmp_shape_size),
           };
+          shape_size = tmp_shape_size;
         }
       } else if (call->op.same_as(tl::ascend_clamp()) ||
                  call->op.same_as(tl::ascend_clamp_max()) ||
@@ -723,6 +734,7 @@ private:
           shape = {
               IntImm(DataType::Int(32), tmp_shape_size),
           };
+          shape_size = tmp_shape_size;
         }
       }
     }
