@@ -8,6 +8,7 @@ on:
       - ascendc_pto*                           # ascendc_pto 分支
     paths-ignore:                              # 以下路径的修改不触发 CI
       - '**.md'                                # Markdown 文件
+      - '**.png'
       - 'docs/**'                              # 文档目录
       - 'images/**'                            # 图片目录
 
@@ -16,6 +17,7 @@ on:
       - ascendc_pto*
     paths-ignore:
       - '**.md'
+      - '**.png'
       - 'docs/**'
       - 'images/**'
 
