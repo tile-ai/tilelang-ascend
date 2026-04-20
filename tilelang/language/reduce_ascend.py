@@ -74,17 +74,15 @@ def _validate_reduce_real_shape(
             raise TypeError(f"real_shape[{axis}] must be an integer extent or PrimExpr, but got bool")
         if isinstance(value, Integral):
             if int(value) < 0:
-                raise ValueError(f"real_shape[{axis}] must be >= 0, but got {value} for buffer shape " f"{_shape_to_str(buffer_extent)}")
+                raise ValueError(f"real_shape[{axis}] must be >= 0, but got {value} for buffer shape {_shape_to_str(buffer_extent)}")
             validated_real_shape.append(int(value))
         elif isinstance(value, tir.PrimExpr):
             const_value = _try_get_const_int(value)
             if const_value is not None and const_value < 0:
-                raise ValueError(
-                    f"real_shape[{axis}] must be >= 0, but got {const_value} for buffer shape " f"{_shape_to_str(buffer_extent)}"
-                )
+                raise ValueError(f"real_shape[{axis}] must be >= 0, but got {const_value} for buffer shape {_shape_to_str(buffer_extent)}")
             validated_real_shape.append(value)
         else:
-            raise TypeError(f"real_shape[{axis}] must be an integer extent or PrimExpr, but got " f"{type(value).__name__}")
+            raise TypeError(f"real_shape[{axis}] must be an integer extent or PrimExpr, but got {type(value).__name__}")
 
     if len(buffer_extent) == 2:
         for axis, (value, extent) in enumerate(zip(validated_real_shape, buffer_extent)):
@@ -92,8 +90,7 @@ def _validate_reduce_real_shape(
             extent_const = _try_get_const_int(extent)
             if value_const is not None and extent_const is not None and value_const > extent_const:
                 raise ValueError(
-                    f"real_shape[{axis}]={value_const} exceeds buffer extent {extent_const} "
-                    f"for buffer shape {_shape_to_str(buffer_extent)}"
+                    f"real_shape[{axis}]={value_const} exceeds buffer extent {extent_const} for buffer shape {_shape_to_str(buffer_extent)}"
                 )
 
     return validated_real_shape
@@ -223,7 +220,7 @@ def _parse_reduce_optional_args(
             parsed_real_shape = _normalize_reduce_real_shape(arg)
             real_shape_assigned = True
         else:
-            raise TypeError(f"{op_name} only accepts bool(clear) or list/tuple(real_shape) " f"after dim, but got {type(arg).__name__}")
+            raise TypeError(f"{op_name} only accepts bool(clear) or list/tuple(real_shape) after dim, but got {type(arg).__name__}")
 
     return parsed_clear, parsed_real_shape
 
@@ -236,16 +233,14 @@ def _legalize_reduce_dim(buffer_extent: list[int], dim: int) -> int:
     if rank == 1:
         normalized_dim = dim if dim >= 0 else 1 + dim
         if normalized_dim != 0:
-            raise ValueError(
-                f"Ascend reduce only supports axis 0/-1 for 1D buffers, " f"but got dim={dim} for shape {tuple(buffer_extent)}"
-            )
+            raise ValueError(f"Ascend reduce only supports axis 0/-1 for 1D buffers, but got dim={dim} for shape {tuple(buffer_extent)}")
         return -1
 
     if rank == 2:
         normalized_dim = dim if dim >= 0 else 2 + dim
         if normalized_dim not in (0, 1):
             raise ValueError(
-                f"Ascend reduce only supports axis 0/1/-1/-2 for 2D buffers, " f"but got dim={dim} for shape {tuple(buffer_extent)}"
+                f"Ascend reduce only supports axis 0/1/-1/-2 for 2D buffers, but got dim={dim} for shape {tuple(buffer_extent)}"
             )
         return 0 if normalized_dim == 0 else -1
 
