@@ -145,7 +145,7 @@ echo "Building TileLang with make..."
 # Other wise, make will use all available cores
 # and it may cause the system to be unresponsive
 CORES=$(nproc)
-MAKE_JOBS=$(( CORES * 50 / 100 ))
+MAKE_JOBS=$(( CORES * 80 / 100 ))
 if [ $MAKE_JOBS -lt 1 ]; then
     MAKE_JOBS=1
 fi
