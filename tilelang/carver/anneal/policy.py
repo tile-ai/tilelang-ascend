@@ -76,7 +76,7 @@ class Annealparam:
     steps: int = 60
     temperature: float = 100
     alpha: float = 0.97  # temperature reduce rate
-    custom_mem_multiply: float = 1
+    custom_mem_multiply: float = 0.7
 
 
 class AnnealCarver:
@@ -474,7 +474,7 @@ class AnnealTemplate:
                 PolyConstraintsSet(
                     [
                         PolyConstraints(
-                            polynomial=[1] * self.n, other_value=[numel_accum_dtype]
+                            polynomial=[1] * self.n, other_value=[2, numel_accum_dtype]
                         ),
                     ],
                     [],

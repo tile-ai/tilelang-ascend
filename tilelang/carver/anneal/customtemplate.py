@@ -98,7 +98,6 @@ class CustomTemplate:
     batch_size: int = 1
     is_causal: bool = False
 
-
 byte_per_numel = {
     "float32": 4,  # torch.float32 or torch.float
     "float64": 8,  # torch.float64 or torch.double
