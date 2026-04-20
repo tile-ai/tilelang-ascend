@@ -2394,7 +2394,7 @@ void CodeGenTileLangNPUIRDEV::VreduceCodegen(const CallNode *op) {
       }
     } else if (npuirop.reduce_mode == "max") {
       if (elemTy.isa<mlir::FloatType>()) {
-        result = builder.create<mlir::arith::MaxNumFOp>(loc, inputElem, accumElem);
+        result = builder.create<mlir::arith::MaximumFOp>(loc, inputElem, accumElem);
       } else {
         auto intTy = elemTy.cast<mlir::IntegerType>();
         if (intTy.isSigned()) {
@@ -2405,7 +2405,7 @@ void CodeGenTileLangNPUIRDEV::VreduceCodegen(const CallNode *op) {
       }
     } else if (npuirop.reduce_mode == "min") {
       if (elemTy.isa<mlir::FloatType>()) {
-        result = builder.create<mlir::arith::MinNumFOp>(loc, inputElem, accumElem);
+        result = builder.create<mlir::arith::MinimumFOp>(loc, inputElem, accumElem);
       } else {
         auto intTy = elemTy.cast<mlir::IntegerType>();
         if (intTy.isSigned()) {
@@ -2450,12 +2450,11 @@ void CodeGenTileLangNPUIRDEV::VreduceCodegen(const CallNode *op) {
       } else {
         result = builder.create<mlir::arith::XOrIOp>(loc, inputElem, accumElem);
       }
-    }else if (npuirop.reduce_mode == "none") {
+    } else if (npuirop.reduce_mode == "none") {
       result = accumElem;
     } else {
       emitError(loc, "unknown reduce_mode: " + npuirop.reduce_mode);
       return;
-    }
     }
 
     // TODO: max_with_index_left/max_with_index_right/min_with_index_left/min_with_index_right
