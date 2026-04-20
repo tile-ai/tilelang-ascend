@@ -31,7 +31,6 @@
 
 | 技能                           | 触发时机            | 说明                                                                                                  |
 | ---------------------------- | --------------- | --------------------------------------------------------------------------------------------------- |
-<<<<<<< HEAD
 | tilelang-custom-skill  | 需要时触发     | 通用skill |
 | tilelang-op-design | 设计算子时 | 算子方案设计，生成 design.md |
 | tilelang-op-generate | 实现算子时 | 基于 design.md 生成算子代码 |
@@ -42,21 +41,6 @@
 ## Skill 自动调用规则 ⭐⭐⭐
 
 **必须在第一时间识别用户意图，查阅 Skills 表格，匹配可用 skill以及触发时机，再决定是否调用，禁止先用 grep/read 等工具。**
-=======
-| tilelang-custom-skill  | 每次都触发     | 包含api使用说明、developer和expert模式说明等        |
-| tilelang-vector-skill | 写vector算子时触发           | 专注于vector算子生成，内含skill和参考文档 |
-| tilelang-cube-skill       | 写cube算子时触发    |    专注于cube算子生成，内含skill和参考文档    |
-| tilelang-fused-skill         | 写融合算子时触发 | 专注于融合算子生成，内含skill和参考文档   |
-| tilelang-pass-analyzer       | **查询 Pass 功能时立即触发**  | Pass 功能分析、对比、分类查询。关键词："XX pass 是干什么的"、"分析 XX pass"、"XX 和 YY pass 的区别" |
-| tilelang-pass-workflow-analyzer | **查询 Pass 工作流时立即触发** | Pass 工作流分析、执行顺序、依赖关系、新 Pass 定位。关键词："pass 的工作流程"、"Pass 执行顺序"、"Pass 依赖关系"、"如何添加新 Pass" |
-| tilelang-pass-skill            | 写pass时触发           | 用于框架优化，写pass |
-| tilelang-api-skill       | 封装和修改api时触发           | 用于封装新的api或重构已有api  |
-| skill-creator      | 创建skill时触发          | 用于创建skill  |
-
-## Skill 自动调用规则 ⭐⭐⭐
-
-**必须在第一时间识别用户意图，查阅 Skills 表格，匹配可用 skill 并自动调用，禁止先用 grep/read 等工具。**
->>>>>>> [Skill] Add pass skill pass-analyzer & pass-workflow-analyzer
 
 ### 自动调用流程
 
