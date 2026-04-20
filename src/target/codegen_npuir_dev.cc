@@ -2526,8 +2526,10 @@ void CodeGenTileLangNPUIRDEV::VgatherCodegen(const CallNode *op) {
   Value dst = GenSubviewFromRegion(npuirop.dst, npuirop.dst_range);
   Value indices = GenSubviewFromRegion(npuirop.indices, npuirop.indices_range);
 
-  builder.create<mlir::hivm::VGatherOp>(builder.getUnknownLoc(), TypeRange{},
-                                        src, indices, dst);
+  auto newGatherOp = builder.create<hfusion::GatherOp>(
+      builder.getUnknownLoc(), src, indices, dst,
+      src.getType().cast<ShapedType>().getRank() - 1);
+  SetVarValue(npuirop.dst, newGatherOp->getResult(0));
 }
 
 void CodeGenTileLangNPUIRDEV::VtransposeCodegen(const CallNode *op) {
@@ -2535,9 +2537,8 @@ void CodeGenTileLangNPUIRDEV::VtransposeCodegen(const CallNode *op) {
   Value src = GenExtractSliceFromRegion(npuirop.src, npuirop.src_range);
   Value dst = GenExtractSliceFromRegion(npuirop.dst, npuirop.dst_range);
   auto permutation = builder.getDenseI64ArrayAttr(npuirop.permutation);
-  mlir::Type dstType = dst.getType();
-  auto transposeOp = builder.create<mlir::hivm::VTransposeOp>(
-      builder.getUnknownLoc(), mlir::TypeRange{dstType}, src, dst, permutation);
+  auto newOp = transpose(src, dst, permutation, builder);
+  SetVarValue(npuirop.dst, newOp);
 }
 
 void CodeGenTileLangNPUIRDEV::VinterleaveCodegen(const CallNode *op) {
@@ -3153,8 +3154,7 @@ void CodeGenTileLangNPUIRDEV::DebugPrintCodegen(const CallNode *op) {
   }
 
   mlir::Location unknown_loc = builder.getUnknownLoc();
-  builder.create<mlir::hivm::DebugOp>(unknown_loc, "print", prefix, hex, arg,
-                                       mlir::hivm::TCoreTypeAttr{});
+  builder.create<hfusion::PrintOp>(unknown_loc, StringRef(prefix), hex, arg);
 }
 
 //Generate vector cosine approximation using polynomial expansion in codegen.
