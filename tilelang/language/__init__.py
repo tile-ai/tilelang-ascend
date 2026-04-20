@@ -1,16 +1,18 @@
 # Copyright (c) Tile-AI Corporation.
 # Licensed under the MIT License.
 """The language interface for tl programs."""
+
 from __future__ import annotations
 
 from typing import Optional  # noqa: F401
+
 # from .parser import *
 # now is fully compatible with the upstream
 # tir script
 # TODO(lei): remove this import once the
 # upstream tir script is fully compatible
 from tvm.script.parser.tir import *
-from . import overrides as _overrides # noqa: F401
+from . import overrides as _overrides  # noqa: F401
 from .tir import (
     prim_func,  # noqa: F401
 )
@@ -51,6 +53,7 @@ from .allocate import (
 )
 from .copy import copy, c2d_im2col, npu_copy_v2 as copy  # noqa: F401, F811
 from .gemm import GemmWarpPolicy, gemm  # noqa: F401
+
 # from .fill import fill, clear  # noqa: F401
 from .reduce import (
     reduce,  # noqa: F401
@@ -79,7 +82,9 @@ from .builtin import *  # noqa: F401
 from .memscope import *  # noqa: F401
 
 from .ascend import *
-from . import ascend_tile as tile # noqa: F401
+from .reduce_ascend import *  # noqa: F401, F403
+from . import ascend_tile as tile  # noqa: F401
+
 
 def symbolic(name: str, dtype: str = "int32"):
     return tir.Var(name, dtype)
@@ -89,9 +94,8 @@ def use_swizzle(panel_size: int, order: str = "row", enable: bool = True):
     # If order is row, use rasterization2DRow, otherwise use rasterization2DColumn
     # The panel size is the number of threads in a warp
     # Use to improve the L2 Cache Locality
-    device_func = ("rasterization2DRow" if order == "row" else "rasterization2DColumn")
-    return attr(None, "threadblock_swizzle_pattern",
-                f"tl::{device_func}<{panel_size}>") if enable else None
+    device_func = "rasterization2DRow" if order == "row" else "rasterization2DColumn"
+    return attr(None, "threadblock_swizzle_pattern", f"tl::{device_func}<{panel_size}>") if enable else None
 
 
 def annotate_layout(layout_map: Dict):

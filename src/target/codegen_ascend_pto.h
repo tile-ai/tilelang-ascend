@@ -113,9 +113,6 @@ private:
   friend void PrintConst(const FloatImmNode *op, std::ostream &os,
                          CodeGenTileLangAscendPto *p);
 
-  friend void PrintConst(const FloatImmNode *op, std::ostream &os,
-                         CodeGenTileLangAscendPto *p);
-
   std::string GetVarId(const Var &var) const;
 
   BufferInfo GetBufferInfo(const PrimExpr &arg) const;
@@ -237,7 +234,7 @@ private:
   std::vector<std::string> inst_;
   bool flush_out_{false};
 
-  std::string core_num_{0};
+  std::string core_num_{"1"};
 
   std::vector<std::string> para_;
 
