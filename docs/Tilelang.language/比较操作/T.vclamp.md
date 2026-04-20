@@ -4,8 +4,8 @@
 
 简介：`tilelang.language.vclamp`按向量元素，把输入逐元素限制到区间 `[min_val, max_val]`。
 
-```python
-T.vmin(src, dst, min_val, max_val)
+```
+T.vclamp(src, dst, min_val, max_val)
 ```
 
 ## 2. OP规格
@@ -16,8 +16,8 @@ T.vmin(src, dst, min_val, max_val)
 | - | - | - |
 | `src` | `tensor` | 输入tensor |
 | `dst`  | `tensor` | 输出tensor |
-| `min_val`  | `scaler` 或 `tensor` | 下界（或逐元素下界） |
-| `max_val`  | `scaler` 或 `tensor` | 上界（或逐元素上界） |
+| `min_val`  | `scalar` 或 `tensor` | 下界（或逐元素下界） |
+| `max_val`  | `scalar` 或 `tensor` | 上界（或逐元素上界） |
 
 ### 2.2 支持规格
 
@@ -40,36 +40,61 @@ T.vmin(src, dst, min_val, max_val)
 
 ### 2.4 使用方法
 
-参考 `testing/npuir/arith_ops/test_clamp.py`：
+参考 `testing/npuir/arith_ops/test_clamp_dev.py`：
 
 标量上下界
 
 ```python
-with T.Kernel(BLOCK_SIZE, is_npu=True) as (cid, _):
-    src_ub = T.alloc_ub((M, N), "float16")
-    dst_ub = T.alloc_ub((M, N), "float16")
-    T.copy(src, src_ub)
-    T.vclamp(src_ub, dst_ub, 0.0, 100.0)
-    T.copy(dst_ub, dst)
+@tilelang.jit(target="npuir")
+def vclamp_scalar_kernel(M, N, dtype="float16"):
+    block_size = 1
+    clamp_min = 0.0
+    clamp_max = 100.0
+
+    @T.prim_func
+    def main(
+        src: T.Tensor((M, N), dtype),
+        dst: T.Tensor((M, N), dtype),
+    ):
+        with T.Kernel(block_size, is_npu=True) as (cid, _):
+            src_ub = T.alloc_shared((M, N), dtype)
+            dst_ub = T.alloc_fragment((M, N), dtype)
+            T.copy(src, src_ub)
+            T.vclamp(src_ub, dst_ub, clamp_min, clamp_max)
+            T.copy(dst_ub, dst)
+
+    return main
 ```
 
 张量上下界（逐元素 min/max）
 
-参考 `testing/npuir/arith_ops/test_clamp_vec.py`：
+参考 `testing/npuir/arith_ops/test_clamp_vec_dev.py`：
 
 ```python
-with T.Kernel(BLOCK_SIZE, is_npu=True) as (cid, _):
-    src_ub = T.alloc_ub((M, N), dtype)
-    dst_ub = T.alloc_ub((M, N), dtype)
-    min_ub = T.alloc_ub((M, N), dtype)
-    max_ub = T.alloc_ub((M, N), dtype)
+@tilelang.jit(target="npuir")
+def vclamp_tensor_kernel(M, N, dtype="float16"):
+    block_size = 1
 
-    T.copy(src, src_ub)
-    T.copy(min_val, min_ub)
-    T.copy(max_val, max_ub)
+    @T.prim_func
+    def main(
+        src: T.Tensor((M, N), dtype),
+        dst: T.Tensor((M, N), dtype),
+        min_val: T.Tensor((M, N), dtype),
+        max_val: T.Tensor((M, N), dtype),
+    ):
+        with T.Kernel(block_size, is_npu=True) as (cid, _):
+            src_ub = T.alloc_shared((M, N), dtype)
+            dst_ub = T.alloc_fragment((M, N), dtype)
+            min_ub = T.alloc_shared((M, N), dtype)
+            max_ub = T.alloc_shared((M, N), dtype)
 
-    T.vclamp(src_ub, dst_ub, min_ub, max_ub)
-    T.copy(dst_ub, dst)
+            T.copy(src, src_ub)
+            T.copy(min_val, min_ub)
+            T.copy(max_val, max_ub)
+            T.vclamp(src_ub, dst_ub, min_ub, max_ub)
+            T.copy(dst_ub, dst)
+
+    return main
 ```
 
 ## 3. Tilelang Op到Ascend NPU IR Op的转换

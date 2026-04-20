@@ -38,35 +38,52 @@ T.vlog2(src, dst, temp)
 ​**NPU tile 级示例（`examples/log2.py`）**​：
 
 ```python
-@T.prim_func
-def main(
-        A: T.Tensor((M, N), dtype),
-        B: T.Tensor((M, N), dtype),
-):
-    with T.Kernel(BLOCK_SIZE, is_npu=True) as (cid, _):
-        A_VEC = T.alloc_ub((block_M, block_N), dtype)
-        B_VEC = T.alloc_ub((block_M, block_N), dtype)
-        tmp = T.alloc_ub((block_M, block_N), dtype)
+@tilelang.jit(target="npuir")
+def vlog2_kernel(M, N, block_M, block_N, dtype="float16"):
+    m_num = M // block_M
+    n_num = N // block_N
+    block_size = 8
 
-        for i in T.serial(T.ceildiv(m_num * n_num, BLOCK_SIZE)):
-            block_id = i * BLOCK_SIZE + cid
-            if block_id < m_num * n_num:
-                block_id_m = block_id // n_num
-                block_id_n = block_id % n_num
-                bx = block_id_m * block_M
-                by = block_id_n * block_N
+    @T.prim_func
+    def main(
+        src: T.Tensor((M, N), dtype),
+        dst: T.Tensor((M, N), dtype),
+    ):
+        with T.Kernel(block_size, is_npu=True) as (cid, _):
+            src_ub = T.alloc_ub((block_M, block_N), dtype)
+            dst_ub = T.alloc_ub((block_M, block_N), dtype)
+            tmp_ub = T.alloc_ub((block_M, block_N), dtype)
 
-                T.copy(A[bx, by], A_VEC)
-                T.vlog2(A_VEC, B_VEC, tmp)  # 逐元素 log2
-                T.copy(B_VEC, B[bx, by])
+            for i in T.serial(T.ceildiv(m_num * n_num, block_size)):
+                block_id = i * block_size + cid
+                if block_id < m_num * n_num:
+                    block_id_m = block_id // n_num
+                    block_id_n = block_id % n_num
+                    bx = block_id_m * block_M
+                    by = block_id_n * block_N
+
+                    T.copy(src[bx, by], src_ub)
+                    T.vlog2(src_ub, dst_ub, tmp_ub)
+                    T.copy(dst_ub, dst[bx, by])
+
+    return main
 ```
 
 **表达式级 T.log2 在 TIR 中的用法（`test_tilelang_kernel_mha_bwd.py`）**：
 
 ```python
-# logsum 是一维 Fragment/Buffer，标量级 log2
-for i in T.Parallel(block_M):
-    logsum[i] = T.log2(logsum[i]) + scores_max[i] * scale
+@tilelang.jit(target="npuir")
+def log2_expr_example(block_M):
+    @T.prim_func
+    def update_logsum(
+        logsum: T.Tensor((block_M,), "float32"),
+        scores_max: T.Tensor((block_M,), "float32"),
+    ):
+        scale = 0.5
+        for i in T.Parallel(block_M):
+            logsum[i] = T.log2(logsum[i]) + scores_max[i] * scale
+
+    return update_logsum
 ```
 
 ## 3. Tilelang Op到Ascend NPU IR Op的转换

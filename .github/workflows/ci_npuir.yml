@@ -138,6 +138,7 @@ jobs:
           examples/engram/engram_bwd.py
           examples/engram/engram_decode.py
           examples/engram/engram_fwd.py
+          examples/sparse_mla_fwd_dynamic_shape.py
         )
 
         for script in "${EXAMPLE_FILES[@]}"; do
