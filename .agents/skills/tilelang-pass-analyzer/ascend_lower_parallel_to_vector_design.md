@@ -456,7 +456,7 @@ evaluate(call tl.ascend_add(
 | `test_column_parallel_buffer_scalar_mul` | `b[i]` broadcast to `[M, N]` | for循环索引语义 | 行向量广播效果 |
 | `test_row_parallel_buffer_scalar_mul` | `b[j]` broadcast to `[M, N]` | for循环索引语义 | 列向量广播效果 |
 | `test_column_parallel_buffer_unmatch` | `b[j] + 5` broadcast | for循环索引语义 | 列向量广播 + scalar |
-| `test_row_parallel_buffer_unmatch` | `b[i] + 5` broadcast | for
+| `test_row_parallel_buffer_unmatch` | `b[i] + 5` broadcast | for循环索引语义 | 行向量广播 + scalar |
 
 #### 4.2.5 GM 直接写入测试
 
