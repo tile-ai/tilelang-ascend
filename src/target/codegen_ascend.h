@@ -227,7 +227,7 @@ private:
   std::vector<std::string> inst_;
   bool flush_out_{false};
 
-  std::string core_num_{0};
+  std::string core_num_{"1"};
 
   std::vector<std::string> para_;
 

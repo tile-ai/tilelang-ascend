@@ -55,30 +55,60 @@ T.mma(A_L0, B_L0, C_L0, init=True)
 
 ## 2. 归约操作
 
-### T.reduce_sum(buffer, out, dim)
+### T.reduce_sum(buffer, out, dim=-1, clear=True, real_shape=None)
 
-### T.reduce_max(buffer, out, dim)
+### T.reduce_max(buffer, out, dim=-1, clear=True, real_shape=None)
 
-### T.reduce_min(buffer, out, dim)
+### T.reduce_min(buffer, out, dim=-1, clear=True, real_shape=None)
 
-对输入 buffer 按指定维度进行归约。
+Ascend fast-path reduce 原语，主要服务于 UB tile / slice buffer 场景。
 
 **参数**：
 
-- `buffer`：输入 buffer（2D）
-- `out`：目的输出 buffer
-- `dim`：reduce 轴（-1 表示最后一维）
+- `buffer`：输入 buffer 或 buffer slice
+- `out`：目的输出 buffer 或 buffer slice
+- `dim`：reduce 轴
+- `clear`：是否在计算前初始化输出
+- `real_shape`：2D slice buffer 的逻辑有效范围；未设置时默认使用物理 buffer 形状
 
-**归约轴说明**（shape 为 (M, N) 的 2D 矩阵）：
+**当前支持范围**：
 
-- `dim=0`：沿第一维归约，输出 shape 为 (N,)
-- `dim=-1`：沿最后一维归约，输出 shape 为 (M,)
+- 1D buffer：`0 / -1`
+- 2D buffer：`0 / 1 / -1 / -2`
+- 3D buffer：仅支持 trailing-tile 轴 `0 / 1 / -1 / -2`
 
-**Softmax 中的典型用法**（来自 `examples/softmax/`）：
+**`clear` 语义**：
+
+- `clear=True`：先初始化输出，再写入 reduce 结果
+- `clear=False`：将 reduce 结果 merge 到已有输出
+  - `reduce_sum`：`new_out = old_out + reduced_result`
+  - `reduce_max`：`new_out = max(old_out, reduced_result)`
+  - `reduce_min`：`new_out = min(old_out, reduced_result)`
+
+**输出 shape 约束**（以 2D 输入 `[M, N]` 为例）：
+
+- `dim=-1`：输出可为 `[M]` 或 `[M, 1]`
+- `dim=0`：输出可为 `[N]` 或 `[1, N]`
+- 对设置了 `real_shape` 的 2D slice buffer，当前前端还兼容部分 physical-layout 输出形式，例如 `[physical_cols]` 或 `[1, physical_cols]`
+
+**使用建议**：
+
+- `clear` 和 `real_shape` 同时支持关键字传参和兼容的 positional 传参形式
+- 推荐优先使用关键字形式，以获得更清晰的可读性
+- 非法 `dim`、非法 `real_shape`、非法输出 shape 会在前端直接报错，而不是静默进入后端
+
+**典型用法**：
 
 ```python
+# Softmax / attention 场景
 T.reduce_max(acc_s_ub, m_i, dim=-1)
 T.reduce_sum(acc_s_ub, sumexp_i_ub, dim=-1)
+
+# clear=False merge 语义
+T.reduce_sum(acc_s_ub, sumexp_i_ub, dim=-1, clear=False)
+
+# slice buffer + real_shape
+T.reduce_max(in_shared, out_shared, dim=-1, real_shape=[4, 4])
 ```
 
 ---

@@ -26,6 +26,19 @@ namespace tl {
 using namespace tir;
 using namespace tir::transform;
 
+namespace {
+
+bool IsConstFalse(const PrimExpr &expr) {
+  return expr.defined() && expr.dtype().is_bool() && is_zero(expr);
+}
+
+int64_t AlignReduceOutputCols(int64_t valid_col, int64_t dtype_bytes) {
+  const int64_t aligned_bytes = ((valid_col * dtype_bytes + 31) / 32) * 32;
+  return aligned_bytes / dtype_bytes;
+}
+
+} // namespace
+
 class CallNodeCollector : public ExprVisitor, public StmtVisitor {
 public:
   static std::vector<Call> Collect(PrimFunc f, Target target) {
@@ -67,7 +80,8 @@ private:
 class CallNodeModifier : public StmtExprMutator {
 public:
   static Stmt Modify(PrimFunc f, Target target, Buffer &tmp_buffer,
-                     Array<Buffer> &tmp_buffers) {
+                     Array<Buffer> &tmp_buffers,
+                     Buffer &reduce_out_tmp_buffer) {
     CallNodeModifier modifier;
     modifier.target_ = Downcast<String>(target.get()->attrs["model"]);
     if ("pto" == modifier.target_) {
@@ -77,6 +91,7 @@ public:
     }
     modifier.tmp_buf_ = tmp_buffer;
     modifier.tmp_bufs_ = tmp_buffers;
+    modifier.reduce_out_tmp_buf_ = reduce_out_tmp_buffer;
     return modifier.AddTmpArg(f->body);
   }
 
@@ -87,6 +102,9 @@ private:
     if (const auto *op_node = op->op.as<OpNode>()) {
       if (tmp_arg_ops_.count(op_node) > 0) {
         int64_t tmp_buffer_param_offset = tmp_arg_ops_.at(op_node);
+        if (NeedReduceOutputTmp(op)) {
+          return CallNodeAddReduceOutputTmp(op, tmp_buffer_param_offset, 1);
+        }
         if (op->op.same_as(tl::ascend_sigmoid()) ||
             op->op.same_as(tl::ascend_pow()) ||
             op->op.same_as(tl::ascend_bitwise_xor()) ||
@@ -105,6 +123,17 @@ private:
     PrimExpr access_ptr = this->AddTmpArgs_(op, rw_mask);
     Array<PrimExpr> new_args =
         this->InsertExprAt_(op->args, tmp_buffer_param_offset, access_ptr);
+    return Call(op->dtype, op->op, new_args, Span());
+  }
+
+  Call CallNodeAddReduceOutputTmp(const CallNode *op,
+                                  int64_t tmp_buffer_param_offset,
+                                  int64_t rw_mask) {
+    Array<PrimExpr> new_args = this->InsertExprAt_(
+        op->args, tmp_buffer_param_offset, this->AddTmpArgs_(op, rw_mask));
+    new_args = this->InsertExprAt_(
+        new_args, tmp_buffer_param_offset + 1,
+        this->MakeAccessPtrFromBuffer_(reduce_out_tmp_buf_, rw_mask));
     return Call(op->dtype, op->op, new_args, Span());
   }
 
@@ -162,6 +191,12 @@ private:
       tmp_buffer = tmp_buf_;
     }
 
+    return MakeAccessPtrFromBuffer_(tmp_buffer, rw_mask);
+  }
+
+  PrimExpr MakeAccessPtrFromBuffer_(const Buffer &tmp_buffer, int64_t rw_mask) {
+    ICHECK(tmp_buffer.defined()) << "Expected tmp buffer to be defined.";
+
     int64_t shape_size = 0;
     for (size_t j = 0; j < tmp_buffer.get()->shape.size(); j++) {
       if (shape_size == 0) {
@@ -180,8 +215,15 @@ private:
     return Call(DataType::Handle(), builtin::tvm_access_ptr(), args);
   }
 
+  bool NeedReduceOutputTmp(const CallNode *op) const {
+    return "pto" == target_ && reduce_out_tmp_buf_.defined() &&
+           op->op.same_as(tl::ascend_reduce()) && op->args.size() >= 4 &&
+           IsConstFalse(op->args[op->args.size() - 1]);
+  }
+
   Buffer tmp_buf_;
   Array<Buffer> tmp_bufs_;
+  Buffer reduce_out_tmp_buf_;
   std::string target_;
   std::unordered_map<const tvm::OpNode *, int64_t> tmp_arg_ops_;
 };
@@ -196,7 +238,8 @@ public:
     Stmt new_body = injector.inject(f->body);
     fptr->body = new_body;
     new_body = CallNodeModifier::Modify(f, target, injector.tmp_buf_,
-                                        injector.tmp_bufs_);
+                                        injector.tmp_bufs_,
+                                        injector.reduce_out_tmp_buf_);
     fptr->body = new_body;
     return f;
   }
@@ -217,6 +260,11 @@ private:
       }
 
       if ("pto" == target_) {
+        reduce_out_tmp_buf_ =
+            createPTOClearReduceOutputTmpBuffer_(op->alloc_buffers);
+        if (reduce_out_tmp_buf_.defined()) {
+          new_alloc_buffers.push_back(reduce_out_tmp_buf_);
+        }
         tmp_bufs_ = createPTOXORAndMergeSortTmpBuffer_(op->alloc_buffers);
         for (const Buffer &tmp_buffer : tmp_bufs_) {
           new_alloc_buffers.push_back(tmp_buffer);
@@ -255,6 +303,57 @@ private:
     } else {
       return Buffer();
     }
+  }
+
+  Buffer createPTOClearReduceOutputTmpBuffer_(Array<Buffer> alloc_buffers) {
+    int64_t shape_size = 0;
+    for (size_t i = 0; i < calls_.size(); i++) {
+      const CallNode *call = calls_[i].get();
+      if (!call->op.same_as(tl::ascend_reduce()) || call->args.size() < 4 ||
+          !IsConstFalse(call->args[call->args.size() - 1])) {
+        continue;
+      }
+
+      const CallNode *dst_access_ptr = Downcast<Call>(call->args[1]).get();
+      std::string dst_buffer_name =
+          dst_access_ptr->args[1].as<VarNode>()->name_hint;
+      const BufferNode *dst_buffer_node =
+          GetBufferNodeByName_(alloc_buffers, dst_buffer_name);
+      ICHECK(dst_buffer_node) << "Buffer not found for " << dst_buffer_name;
+
+      int64_t col = 1;
+      if (dst_buffer_node->shape.size() == 1) {
+        col = dst_buffer_node->shape[0].as<IntImmNode>()->value;
+      } else if (dst_buffer_node->shape.size() == 2 &&
+                 dst_buffer_node->shape[0].as<IntImmNode>()->value == 0) {
+        col = dst_buffer_node->shape[1].as<IntImmNode>()->value;
+      } else if (dst_buffer_node->shape.size() == 2 &&
+                 dst_buffer_node->shape[1].as<IntImmNode>()->value == 0) {
+        col = dst_buffer_node->shape[0].as<IntImmNode>()->value;
+      } else {
+        col = dst_buffer_node->shape[1].as<IntImmNode>()->value;
+      }
+
+      const int64_t extent = Downcast<IntImm>(dst_access_ptr->args[3])->value;
+      const int64_t valid_row = std::max<int64_t>((extent + col - 1) / col, 1);
+      const int64_t valid_col = extent > col ? col : extent;
+      const int64_t padded_col =
+          AlignReduceOutputCols(valid_col, dst_buffer_node->dtype.bytes());
+      const int64_t tmp_shape_size =
+          valid_row * padded_col * dst_buffer_node->dtype.bytes();
+      shape_size = std::max(shape_size, tmp_shape_size);
+    }
+
+    if (shape_size == 0) {
+      return Buffer();
+    }
+
+    const std::string buffer_name = buffer_name_ + "_reduce_out";
+    Var tmp_buf(buffer_name,
+                PointerType(PrimType(DataType::UInt(8)), "shared"));
+    return Buffer(tmp_buf, DataType::UInt(8),
+                  {IntImm(DataType::Int(32), shape_size)}, {}, PrimExpr(),
+                  buffer_name, -1, 0, BufferType::kDefault);
   }
 
   Array<Buffer> createASCTopKAndSortTmpBuffer_(Array<Buffer> alloc_buffers) {
@@ -796,6 +895,7 @@ private:
   const std::string buffer_name_ = "tmp_ub";
   Buffer tmp_buf_;
   Array<Buffer> tmp_bufs_;
+  Buffer reduce_out_tmp_buf_;
 };
 
 tvm::transform::Pass InjectTmpBuffer(Target target) {
