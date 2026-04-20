@@ -385,84 +385,29 @@ def run_test(
         conv_w=conv_w,
     )
 
-    try:
-        torch.testing.assert_close(Y.float(), Y_ref.float(), atol=atol, rtol=rtol)
-        print("Y check passed!")
-    except AssertionError as e:
-        print("Y check failed!")
-        print(e)
+    torch.testing.assert_close(Y.float(), Y_ref.float(), atol=atol, rtol=rtol)
 
-    try:
-        torch.testing.assert_close(
-            vhat_buf.float(), vhat_buf_ref.float(), atol=atol, rtol=rtol
-        )
-        print("vhat_buf check passed!")
-    except AssertionError as e:
-        print("vhat_buf check failed!")
-        print(e)
+    torch.testing.assert_close(
+        vhat_buf.float(), vhat_buf_ref.float(), atol=atol, rtol=rtol
+    )
 
-    try:
-        torch.testing.assert_close(
-            alpha_buf.float(), alpha_buf_ref.float(), atol=atol, rtol=rtol
-        )
-        print("alpha_buf check passed!")
-    except AssertionError as e:
-        print("alpha_buf check failed!")
-        print(e)
+    torch.testing.assert_close(
+        alpha_buf.float(), alpha_buf_ref.float(), atol=atol, rtol=rtol
+    )
 
-    try:
-        torch.testing.assert_close(
-            rrms_h_buf.float(), rrms_h_buf_ref.float(), atol=atol, rtol=rtol
-        )
-        print("rrms_h_buf check passed!")
-    except AssertionError as e:
-        print("rrms_h_buf check failed!")
-        print(e)
+    torch.testing.assert_close(
+        rrms_h_buf.float(), rrms_h_buf_ref.float(), atol=atol, rtol=rtol
+    )
 
-    try:
-        torch.testing.assert_close(
-            rrms_k_buf.float(), rrms_k_buf_ref.float(), atol=atol, rtol=rtol
-        )
-        print("rrms_k_buf check passed!")
-    except AssertionError as e:
-        print("rrms_k_buf check failed!")
-        print(e)
+    torch.testing.assert_close(
+        rrms_k_buf.float(), rrms_k_buf_ref.float(), atol=atol, rtol=rtol
+    )
 
-    try:
-        torch.testing.assert_close(
-            rrms_v_buf.float(), rrms_v_buf_ref.float(), atol=atol, rtol=rtol
-        )
-        print("rrms_v_buf check passed!")
-    except AssertionError as e:
-        print("rrms_v_buf check failed!")
-        print(e)
+    torch.testing.assert_close(
+        rrms_v_buf.float(), rrms_v_buf_ref.float(), atol=atol, rtol=rtol
+    )
 
-    return {
-        "inputs": {
-            "H": H,
-            "k": k,
-            "v": v,
-            "rms_w_h": rms_w_h,
-            "rms_w_v": rms_w_v,
-            "conv_w": conv_w,
-        },
-        "outputs": {
-            "Y": Y,
-            "vhat_buf": vhat_buf,
-            "alpha_buf": alpha_buf,
-            "rrms_h_buf": rrms_h_buf,
-            "rrms_k_buf": rrms_k_buf,
-            "rrms_v_buf": rrms_v_buf,
-        },
-        "refs": {
-            "Y_ref": Y_ref,
-            "vhat_buf_ref": vhat_buf_ref,
-            "alpha_buf_ref": alpha_buf_ref,
-            "rrms_h_buf_ref": rrms_h_buf_ref,
-            "rrms_k_buf_ref": rrms_k_buf_ref,
-            "rrms_v_buf_ref": rrms_v_buf_ref,
-        },
-    }
+    print("All check passed!")
 
 
 if __name__ == "__main__":

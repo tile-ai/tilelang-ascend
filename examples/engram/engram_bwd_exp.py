@@ -721,41 +721,14 @@ def run_test():
         d=d,
     )
 
-    names = ["dH", "dk", "dv", "drms_w_h", "drms_w_v", "dconv_w", "dvhat_buf"]
-
-    for name, out_tensor, ref_tensor in zip(names, out, ref_out, strict=True):
-        try:
-            torch.testing.assert_close(
-                out_tensor.float().cpu(),
-                ref_tensor.float().cpu(),
-                rtol=1e-2,
-                atol=1e-2,
-            )
-            print(f"{name} check passed!")
-        except AssertionError as e:
-            print(f"{name} check failed!")
-            print(e)
-
-    return {
-        "kernel": {
-            "dH": dH,
-            "dk": dk,
-            "dv": dv,
-            "drms_w_h": drms_w_h,
-            "drms_w_v": drms_w_v,
-            "dconv_w": dconv_w,
-            "dvhat_buf": dvhat_buf,
-        },
-        "ref": {
-            "dH": ref_out[0],
-            "dk": ref_out[1],
-            "dv": ref_out[2],
-            "drms_w_h": ref_out[3],
-            "drms_w_v": ref_out[4],
-            "dconv_w": ref_out[5],
-            "dvhat_buf": ref_out[6],
-        },
-    }
+    for out_tensor, ref_tensor in zip(out, ref_out, strict=True):
+        torch.testing.assert_close(
+            out_tensor.float().cpu(),
+            ref_tensor.float().cpu(),
+            rtol=1e-2,
+            atol=1e-2,
+        )
+    print("All check passed!")
 
 
 if __name__ == "__main__":

@@ -366,56 +366,15 @@ def run_test(
         conv_w=conv_w,
     )
 
-    y_diff = (y_t.float() - y_ref.float()).abs()
-    state_diff = (new_conv_state.float() - new_conv_state_ref.float()).abs()
+    torch.testing.assert_close(y_t.float(), y_ref.float(), atol=atol, rtol=rtol)
 
-    print(
-        f"y_t: max_diff={y_diff.max().item():.6f}, mean_diff={y_diff.mean().item():.6f}"
+    torch.testing.assert_close(
+        new_conv_state.float(),
+        new_conv_state_ref.float(),
+        atol=atol,
+        rtol=rtol,
     )
-    print(
-        f"new_conv_state: max_diff={state_diff.max().item():.6f}, "
-        f"mean_diff={state_diff.mean().item():.6f}"
-    )
-
-    try:
-        torch.testing.assert_close(y_t.float(), y_ref.float(), atol=atol, rtol=rtol)
-        print("y_t check passed!")
-    except AssertionError as e:
-        print("y_t check failed!")
-        print(e)
-
-    try:
-        torch.testing.assert_close(
-            new_conv_state.float(),
-            new_conv_state_ref.float(),
-            atol=atol,
-            rtol=rtol,
-        )
-        print("new_conv_state check passed!")
-    except AssertionError as e:
-        print("new_conv_state check failed!")
-        print(e)
-
-    return {
-        "inputs": {
-            "e_t": e_t,
-            "h_t": h_t,
-            "conv_state": conv_state,
-            "W_K": W_K,
-            "W_V": W_V,
-            "rms_w_h": rms_w_h,
-            "rms_w_v": rms_w_v,
-            "conv_w": conv_w,
-        },
-        "outputs": {
-            "y_t": y_t,
-            "new_conv_state": new_conv_state,
-        },
-        "refs": {
-            "y_ref": y_ref,
-            "new_conv_state_ref": new_conv_state_ref,
-        },
-    }
+    print("All check passed!")
 
 
 if __name__ == "__main__":

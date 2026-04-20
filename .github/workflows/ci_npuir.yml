@@ -134,6 +134,10 @@ jobs:
           examples/flash_attn_npuir_dev.py
           examples/sparse_mla_fwd.py
           examples/vectorization_in_parallel.py
+          examples/engram/engram_bwd_exp.py
+          examples/engram/engram_bwd.py
+          examples/engram/engram_decode.py
+          examples/engram/engram_fwd.py
         )
 
         for script in "${EXAMPLE_FILES[@]}"; do
