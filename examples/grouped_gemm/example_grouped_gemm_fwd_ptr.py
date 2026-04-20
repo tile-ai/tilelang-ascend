@@ -55,7 +55,7 @@ def grouped_gemm_fwd_ptr(batch_sizes_list, K, N, block_M, block_N, block_K, dtyp
                     T.barrier_all()
                     T.gemm_v0(A_L1, B_L1, C_L0, init=(k == 0))
                     T.barrier_all()
-                    
+
                 T.copy(C_L0, C[m_start : m_start + block_M, by * block_N : (by + 1) * block_N])
 
     return kernel
