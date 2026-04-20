@@ -196,7 +196,7 @@ def main():
 
     print(f"Testing Hadamard transform with batch={B}, dim={N}, dtype={dtype}, block_size={block_size}")
 
-    if N > block_size:
+    if block_size < N:
         log_n = int(math.log2(N))
         log_block = int(math.log2(block_size))
         print(f"Using multi-block mode: {N // block_size} blocks, {log_n} stages")
