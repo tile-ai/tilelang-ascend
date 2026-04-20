@@ -36,7 +36,7 @@ def hadamard_block_intra(b, n, block_size, dtype="float"):
     def main(A: T.Tensor((b, n), dtype), B: T.Tensor((b, n), dtype)):
         T.func_attr({"enable_auto_sync": True})
         with T.Kernel(total_blocks, is_npu=True) as (cid, vid):
-            if vid ==0:
+            if vid == 0:
                 batch_id = cid // num_blocks_per_batch
                 block_id_in_batch = cid % num_blocks_per_batch
                 offset = block_id_in_batch * block_size
