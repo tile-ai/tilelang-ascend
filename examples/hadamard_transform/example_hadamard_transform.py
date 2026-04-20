@@ -36,33 +36,32 @@ def hadamard_block_intra(b, n, block_size, dtype="float"):
     def main(A: T.Tensor((b, n), dtype), B: T.Tensor((b, n), dtype)):
         T.func_attr({"enable_auto_sync": True})
         with T.Kernel(total_blocks, is_npu=True) as (cid, vid):
-            batch_id = cid // num_blocks_per_batch
-            block_id_in_batch = cid % num_blocks_per_batch
-            offset = block_id_in_batch * block_size
+            if vid ==0:
+                batch_id = cid // num_blocks_per_batch
+                block_id_in_batch = cid % num_blocks_per_batch
+                offset = block_id_in_batch * block_size
 
-            data_ub = T.alloc_ub((block_size,), dtype)
-            tmp_ub = T.alloc_ub((block_size,), dtype)
+                data_ub = T.alloc_ub((block_size,), dtype)
+                tmp_ub = T.alloc_ub((block_size,), dtype)
 
-            T.copy(A[batch_id, offset : offset + block_size], data_ub)
+                T.copy(A[batch_id, offset : offset + block_size], data_ub)
 
-            for stage in T.serial(log_block):
-                chunk_size = 1 << (stage + 1)
-                chunk_num = block_size // chunk_size
+                for stage in T.serial(log_block):
+                    chunk_size = 1 << (stage + 1)
+                    chunk_num = block_size // chunk_size
 
-                for chunk_idx in T.serial(chunk_num):
-                    base = chunk_idx * chunk_size
-                    half = chunk_size // 2
+                    for chunk_idx in T.serial(chunk_num):
+                        base = chunk_idx * chunk_size
+                        half = chunk_size // 2
 
-                    for k in T.serial(half):
-                        a_val = data_ub[base + k]
-                        b_val = data_ub[base + k + half]
-                        tmp_ub[base + k] = a_val + b_val
-                        tmp_ub[base + k + half] = a_val - b_val
+                        for k in T.serial(half):
+                            a_val = data_ub[base + k]
+                            b_val = data_ub[base + k + half]
+                            tmp_ub[base + k] = a_val + b_val
+                            tmp_ub[base + k + half] = a_val - b_val
+                    T.copy(tmp_ub, data_ub)
 
-                for i in T.serial(block_size):
-                    data_ub[i] = tmp_ub[i]
-
-            T.copy(data_ub, B[batch_id, offset : offset + block_size])
+                T.copy(data_ub, B[batch_id, offset : offset + block_size])
 
     return main
 
@@ -79,14 +78,12 @@ def hadamard_cross_block_pair(b, n, block_size, cross_stage, dtype="float"):
     assert is_pow_of_2(block_size), "block_size must be a power of 2"
     assert n % block_size == 0, "n must be divisible by block_size"
 
-    log_n = int(math.log2(n))
     log_block = int(math.log2(block_size))
     assert cross_stage >= log_block, "cross_stage must >= log_block"
 
     chunk_size = 1 << (cross_stage + 1)
     half = chunk_size // 2
 
-    num_blocks_per_batch = n // block_size
     num_chunks_per_batch = n // chunk_size
     total_chunks = b * num_chunks_per_batch
 
