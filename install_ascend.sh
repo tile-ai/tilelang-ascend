@@ -142,7 +142,7 @@ fi
 
 cd build
 
-if !$INCREMENTAL_BUILD; then
+if ! $INCREMENTAL_BUILD; then
     echo "set(USE_ASCEND ON)" >> config.cmake
     echo 'set(USE_GTEST OFF)' >> config.cmake
     cmake ..
