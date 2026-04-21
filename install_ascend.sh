@@ -6,6 +6,7 @@
 # Add command line option parsing
 USE_LLVM=false
 USE_SHMEM=false
+INCREMENTAL_BUILD=false  # 增量编译选项
 while [[ $# -gt 0 ]]; do
     case $1 in
         --enable-llvm)
@@ -16,9 +17,13 @@ while [[ $# -gt 0 ]]; do
             USE_SHMEM=true
             shift
             ;;
+        --enable-incremental)
+            INCREMENTAL_BUILD=true
+            shift
+            ;;
         *)
             echo "Unknown option: $1"
-            echo "Usage: $0 [--enable-llvm] [--enable-shmem]"
+            echo "Usage: $0 [--enable-llvm] [--enable-shmem] [--enable-incremental]"
             exit 1
             ;;
     esac
@@ -37,6 +42,7 @@ fi
 echo "Starting installation script..."
 echo "LLVM enabled: $USE_LLVM"
 echo "SHMEM enabled: $USE_SHMEM"
+echo "Incremental build: $INCREMENTAL_BUILD"
 
 # Step 1: Install Python requirements
 echo "Installing Python requirements from requirements.txt..."
@@ -118,25 +124,35 @@ echo "Cloning TVM repository and initializing submodules..."
 # clone and build tvm
 git submodule update --init --recursive
 
-if [ -d build ]; then
-    rm -rf build
+# 根据增量编译选项决定是否清理 build 目录
+if $INCREMENTAL_BUILD; then
+    if [ -d build ]; then
+        echo "Using existing build directory for incremental build..."
+    else
+        echo "Creating new build directory..."
+        mkdir -p build
+        cp 3rdparty/tvm/cmake/config.cmake build
+    fi
+else
+    echo "Performing clean build..."
+    if [ -d build ]; then
+        rm -rf build
+    fi
+    mkdir build
+    cp 3rdparty/tvm/cmake/config.cmake build
 fi
 
-mkdir build
-cp 3rdparty/tvm/cmake/config.cmake build
 cd build
 
-echo "set(USE_ASCEND ON)" >> config.cmake
-# PGTestConfig.cmake: GTest::gtest may not define IMPORTED_LOCATION,
-# but which TVM's CMake still queries it, causing build error
-# C++ gtests are optional for TileLang; keep them off for this install path.
-echo 'set(USE_GTEST OFF)' >> config.cmake
-
-echo "Running CMake for TileLang..."
-cmake ..
-if [ $? -ne 0 ]; then
-    echo "Error: CMake configuration failed."
-    exit 1
+if !$INCREMENTAL_BUILD; then
+    echo "set(USE_ASCEND ON)" >> config.cmake
+    echo 'set(USE_GTEST OFF)' >> config.cmake
+    echo "Running CMake for TileLang..."
+    cmake ..
+    if [ $? -ne 0 ]; then
+        echo "Error: CMake configuration failed."
+        exit 1
+    fi
 fi
 
 echo "Building TileLang with make..."
@@ -145,7 +161,7 @@ echo "Building TileLang with make..."
 # Other wise, make will use all available cores
 # and it may cause the system to be unresponsive
 CORES=$(nproc)
-MAKE_JOBS=$(( CORES * 80 / 100 ))
+MAKE_JOBS=$(( CORES * 50 / 100 ))
 if [ $MAKE_JOBS -lt 1 ]; then
     MAKE_JOBS=1
 fi
