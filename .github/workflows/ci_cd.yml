@@ -53,21 +53,58 @@ jobs:
           submodules: false
           fetch-depth: 1
 
+      # 缓存编译产物，除非关键文件变更
+      - name: Restore build cache
+        id: cache-build
+        uses: actions/cache@v4
+        with:
+          path: build-cache/
+          key: tilelang-build-${{ github.sha }}-${{ hashFiles('CMakeLists.txt', 'requirements.txt', 'install_ascend.sh') }}
+          restore-keys: |
+            tilelang-build-
+
       - name: Build and Test in Local Container
         run: |
+          # 准备缓存目录
+          if steps.cache-build.outputs.cache-hit == 'true' && [ -d "build-cache" ]; then
+            echo "✅ Cache hit! Will use incremental build."
+            INCREMENTAL_FLAG="--enable-incremental"
+            # 将缓存的构建文件挂载到容器
+            CACHE_VOLUME="-v $(pwd)/build-cache:/tmp/cached-build"
+          else
+            echo "🔄 Cache miss. Performing clean build."
+            INCREMENTAL_FLAG=""
+            CACHE_VOLUME=""
+          fi
+          
           echo 'run in existed container...'
           docker exec \
             -w $GITHUB_WORKSPACE \
             -e GITHUB_ENV=$GITHUB_ENV \
             -e GITHUB_OUTPUT=$GITHUB_OUTPUT \
             -e BASH_ENV=/root/.bashrc \
+            -e INCREMENTAL_FLAG="$INCREMENTAL_FLAG" \
+            $CACHE_VOLUME \
             tilelang_x1 \
             bash -c "
               set -e
-          
-              # 1. 在容器内重新编译项目
+
+              # 如果有缓存，复制到 build 目录
+              if [ -d /tmp/cached-build ]; then
+                echo \"Restoring cached build...\"
+                mkdir -p build
+                cp -r /tmp/cached-build/* build/ 2>/dev/null || true
+              fi
+
+              # 1. 增量编译项目
               echo 'Building project...'
-              bash install_ascend.sh
+              bash install_ascend.sh \$INCREMENTAL_FLAG
+              if [ -d \"build\" ]; then
+                echo \"Saving build artifacts...\"
+                mkdir -p /tmp/cached-build
+                rm -rf /tmp/cached-build/*
+                cp -r build/* /tmp/cached-build/ 2>/dev/null || true
+              fi
 
               # 2. 加载环境变量
               echo 'Sourcing environment...'
