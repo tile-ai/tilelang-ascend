@@ -83,28 +83,27 @@ jobs:
             -e GITHUB_OUTPUT=$GITHUB_OUTPUT \
             -e BASH_ENV=/root/.bashrc \
             -e INCREMENTAL_FLAG="$INCREMENTAL_FLAG" \
-            -v $(pwd)/build-cache:/tmp/cached-build
             tilelang_x1 \
             bash -c "
               set -e
 
               # 如果有缓存，复制到 build 目录
-              if [ -d /tmp/cached-build ]; then
+              if [ -d build-cache ] && [ \"\$(ls -A build-cache)\" ]; then
                 echo \"Restoring cached build...\"
                 mkdir -p build
-                cp -r /tmp/cached-build/* build/ 2>/dev/null || true
-                echo "=============================="
+                cp -r build-cache/* build/ 2>/dev/null || true
+                echo \"==============================\"
                 ls -l build
               fi
 
               # 1. 增量编译项目
               echo 'Building project...'
               bash install_ascend.sh \$INCREMENTAL_FLAG
+              # 保存编译产物
               if [ -d \"build\" ]; then
                 echo \"Saving build artifacts...\"
-                mkdir -p /tmp/cached-build
-                rm -rf /tmp/cached-build/*
-                cp -r build/* /tmp/cached-build/ 2>/dev/null || true
+                rm -rf build-cache/*
+                cp -r build/* build-cache/ 2>/dev/null || true
               fi
 
               # 2. 加载环境变量
