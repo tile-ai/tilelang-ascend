@@ -7,12 +7,23 @@ on:
         description: "Git ref to checkout"
         type: string
         required: true
+      cann-version:
+        description: "CANN compatibility version"
+        type: string
+        required: true
   workflow_dispatch:
     inputs:
       checkout-ref:
         description: "Git ref to checkout (leave empty for default)"
         type: string
         default: ''
+      cann-version:
+        description: "CANN compatibility version"
+        type: choice
+        options:
+          - 8.5.0
+          - 9.0.0.beta2
+        default: 8.5.0
 
 permissions:
   contents: read
@@ -23,10 +34,39 @@ env:
   TVM_INSTALL_DIR: tvm-prebuild
 
 jobs:
+  select-npuir-version:
+    runs-on: ubuntu-22.04
+    outputs:
+      npuir-commit: ${{ steps.resolve.outputs.npuir-commit }}
+      cann-version-slug: ${{ steps.resolve.outputs.cann-version-slug }}
+      wheel-build-number: ${{ steps.resolve.outputs.wheel-build-number }}
+    steps:
+    - name: Resolve AscendNPU-IR cache version
+      id: resolve
+      run: |
+        case "${{ inputs.cann-version }}" in
+          8.5.0)
+            echo "npuir-commit=31f690369d1247fbd5529a3f88b758f7d470ae4f" >> "$GITHUB_OUTPUT"
+            echo "cann-version-slug=cann-8.5.0" >> "$GITHUB_OUTPUT"
+            echo "wheel-build-number=850cann850" >> "$GITHUB_OUTPUT"
+            ;;
+          9.0.0.beta2)
+            echo "npuir-commit=139bb6c7aef6cf923babb88318aaec3697f2091f" >> "$GITHUB_OUTPUT"
+            echo "cann-version-slug=cann-9.0.0.beta2" >> "$GITHUB_OUTPUT"
+            echo "wheel-build-number=9000cann9000beta2" >> "$GITHUB_OUTPUT"
+            ;;
+          *)
+            echo "::error::Unsupported CANN version: ${{ inputs.cann-version }}"
+            exit 1
+            ;;
+        esac
+
   prebuild-npuir:
+    needs: select-npuir-version
     uses: ./.github/workflows/build-npuir.yml
     with:
       checkout-ref: ${{ inputs.checkout-ref }}
+      ascend-npuir-commit: ${{ needs.select-npuir-version.outputs.npuir-commit }}
 
   prebuild-tvm:
     uses: ./.github/workflows/build-tvm.yml
@@ -34,7 +74,7 @@ jobs:
       checkout-ref: ${{ inputs.checkout-ref }}
 
   build-wheel:
-    needs: [prebuild-npuir, prebuild-tvm]
+    needs: [select-npuir-version, prebuild-npuir, prebuild-tvm]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
     strategy:
@@ -63,7 +103,7 @@ jobs:
       uses: actions/cache/restore@v4
       with:
         path: ${{ env.NPUIR_INSTALL_DIR }}
-        key: npuir-prebuild-rtti-${{ matrix.arch }}-${{ needs.prebuild-npuir.outputs.npuir-commit }}
+        key: npuir-prebuild-rtti-${{ matrix.arch }}-${{ needs.select-npuir-version.outputs.npuir-commit }}
         fail-on-cache-miss: true
 
     - name: Restore TVM prebuild from cache
@@ -94,6 +134,7 @@ jobs:
         cp 3rdparty/tvm/cmake/config.cmake build/
         echo "set(USE_NPUIR ON)" >> build/config.cmake
         echo "set(BISHENGIR_ROOT_PATH ${BISHENGIR_PATH})" >> build/config.cmake
+        echo "set(TILELANG_ASCEND_CANN_VERSION ${{ inputs.cann-version }})" >> build/config.cmake
         echo "set(USE_CUDA OFF)" >> build/config.cmake
         echo "set(USE_ROCM OFF)" >> build/config.cmake
         echo "set(USE_LLVM OFF)" >> build/config.cmake
@@ -112,11 +153,12 @@ jobs:
         USE_NPUIR: "true"
         BISHENGIR_PATH: ${{ github.workspace }}/npuir-prebuild
         TVM_PREBUILD_PATH: ${{ github.workspace }}/tvm-prebuild
-      run: python setup.py bdist_wheel
+      run: |
+        python setup.py bdist_wheel --build-number "${{ needs.select-npuir-version.outputs.wheel-build-number }}"
 
     - name: Upload wheel artifact
       uses: actions/upload-artifact@v4
       with:
-        name: tilelang-npuir-py${{ env.PYTHON_VERSION }}-${{ matrix.arch }}
+        name: tilelang-npuir-${{ needs.select-npuir-version.outputs.cann-version-slug }}-py${{ env.PYTHON_VERSION }}-${{ matrix.arch }}
         path: dist/*.whl
         retention-days: 30

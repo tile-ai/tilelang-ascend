@@ -13,10 +13,66 @@ export PATH="${PYTHON_DIR}:$PATH"
 echo "Using Python (current env): $PYTHON"
 $PYTHON --version
 
+SUPPORTED_CANN_VERSIONS=("8.5.0" "9.0.0.beta2")
+ASCEND_NPUIR_COMMIT_8_5_0="31f690369d1247fbd5529a3f88b758f7d470ae4f"
+ASCEND_NPUIR_COMMIT_9_0_0_BETA2="139bb6c7aef6cf923babb88318aaec3697f2091f"
+
+print_usage() {
+    echo "Usage: $0 [--enable-llvm] [--enable-tests] [--bishengir-path=DIR] [--cann-version=VERSION]"
+    echo "Supported CANN versions: ${SUPPORTED_CANN_VERSIONS[*]}"
+}
+
+normalize_cann_version() {
+    local raw="$1"
+    local value
+    value="$(basename "${raw%/}")"
+    value="${value#cann-}"
+    value="${value,,}"
+
+    case "$value" in
+        8.5.0)
+            echo "8.5.0"
+            ;;
+        9.0.0.beta2|9.0.0-beta.2|9.0.0.beta.2|9.0.0-beta2)
+            echo "9.0.0.beta2"
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+infer_cann_version_from_env() {
+    local current_home="${ASCEND_HOME_PATH}"
+    if [ -z "$current_home" ]; then
+        echo "Warning: neither --cann-version nor ASCEND_HOME_PATH is set." >&2
+        echo "Falling back to default CANN version 8.5.0." >&2
+        echo "8.5.0"
+        return 0
+    fi
+    normalize_cann_version "$current_home"
+}
+
+get_ascend_npu_ir_commit() {
+    case "$1" in
+        8.5.0)
+            echo "$ASCEND_NPUIR_COMMIT_8_5_0"
+            ;;
+        9.0.0.beta2)
+            echo "$ASCEND_NPUIR_COMMIT_9_0_0_BETA2"
+            ;;
+        *)
+            echo "Error: Unsupported CANN version '$1' for AscendNPU-IR mapping." >&2
+            return 1
+            ;;
+    esac
+}
+
 # Add command line option parsing
 USE_LLVM=false
 ENABLE_TESTS=OFF
 BISHENGIR_PATH=""
+CANN_VERSION=""
 while [[ $# -gt 0 ]]; do
     case $1 in
         --enable-llvm)
@@ -40,16 +96,43 @@ while [[ $# -gt 0 ]]; do
                 exit 1
             fi
             ;;
+        --cann-version=*)
+            CANN_VERSION="${1#*=}"
+            shift
+            ;;
+        --cann-version)
+            if [ -n "$2" ]; then
+                CANN_VERSION="$2"
+                shift 2
+            else
+                echo "err: --cann-version needs to be specified with a supported CANN version" >&2
+                exit 1
+            fi
+            ;;
         *)
             echo "Unknown option: $1"
-            echo "Usage: $0 [--enable-llvm] [--bishengir-path=DIR]"
+            print_usage
             exit 1
             ;;
     esac
 done
 
+if [ -n "$CANN_VERSION" ]; then
+    CANN_VERSION="$(normalize_cann_version "$CANN_VERSION")" || {
+        echo "Error: Unsupported CANN version '$CANN_VERSION'." >&2
+        print_usage
+        exit 1
+    }
+else
+    CANN_VERSION="$(infer_cann_version_from_env)" || {
+        print_usage
+        exit 1
+    }
+fi
+
 echo "Starting installation script..."
 echo "LLVM enabled: $USE_LLVM"
+echo "Resolved CANN version: $CANN_VERSION"
 
 # Step 1: Install Python requirements
 echo "Installing Python requirements from requirements.txt..."
@@ -133,10 +216,16 @@ git submodule update --init --recursive 3rdparty/catlass 3rdparty/composable_ker
 
 if [ -z "$BISHENGIR_PATH" ]; then
     echo "warring: no --bishengir-path set, bishengir path will be found in environment variable PATH"
-    # build bishengir in 3rdparty
     echo "build bishengir in 3rdparty"
     git submodule update --init --recursive 3rdparty/AscendNPU-IR
+    ASCEND_NPUIR_COMMIT="$(get_ascend_npu_ir_commit "$CANN_VERSION")" || exit 1
     pushd 3rdparty/AscendNPU-IR
+    echo "checkout AscendNPU-IR commit: ${ASCEND_NPUIR_COMMIT}"
+    if ! git cat-file -e "${ASCEND_NPUIR_COMMIT}^{commit}" 2>/dev/null; then
+        git fetch origin "${ASCEND_NPUIR_COMMIT}"
+    fi
+    git checkout --detach "${ASCEND_NPUIR_COMMIT}"
+    git submodule update --init --recursive --force
     bash ./build-tools/apply_patches.sh
     rm -rf ./build
     ./build-tools/build.sh -o ./build --python-binding --c-compiler=clang --cxx-compiler=clang++ \
@@ -155,6 +244,7 @@ cd build
 
 echo "set(USE_NPUIR ON)" >> config.cmake
 echo "set(BISHENGIR_ROOT_PATH $BISHENGIR_PATH)" >> config.cmake
+echo "set(TILELANG_ASCEND_CANN_VERSION \"$CANN_VERSION\")" >> config.cmake
 
 echo "Running CMake for TileLang..."
 cmake -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DPython3_EXECUTABLE="$PYTHON" -DMLIR_INCLUDE_TESTS=${ENABLE_TESTS} ..

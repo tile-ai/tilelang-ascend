@@ -31,6 +31,8 @@ export TILELANG_DUMP_IR=TRUE
 | `TILELANG_ASCEND_MODE` | `Expert` | Set the TileLang Mode; currently, Expert mode and Developer mode are supported | `Expert`: Expert Mode<br>`Developer`: Developer Mode |
 | `TILELANG_ASCEND_DEVICE_NAME` | `Ascend910B` | Override the target device name for compilation (e.g. for cross-compilation). If not set, runtime hardware detection is used. | String, e.g., `Ascend910B`|
 
+For NPUIR builds and JIT compilation, TileLang resolves the CANN compatibility version from `ASCEND_HOME_PATH` by default. `install_npuir.sh --cann-version=<version>` uses the same version source to build both `AscendNPU-IR` and TileLang, and JIT compilation forwards the matching `hivmc-version` to `adapt_triton_kernel` and `bishengir-compile`.
+
 ## Autotuner
 
 | Variable | Default | Description | Valid Values |
