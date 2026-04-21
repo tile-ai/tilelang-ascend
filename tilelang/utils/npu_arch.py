@@ -10,7 +10,7 @@ class AscendArch:
 
     def __init__(self, name: str):
         self.name = name
-        
+
         try:
             from tilelang.utils import NPUUtils
 
@@ -36,32 +36,32 @@ class AscendArch:
         match self.name:
             case "Ascend910A":
                 self.mem_cap = {
-                        "UB": 256 * 1024,
-                        "L1": 1024 * 1024,
-                        "L0A": 64 * 1024,
-                        "L0B": 64 * 1024,
-                        "L0C": 256 * 1024,
-                        "L2": 16 * 1024 * 1024,
-                    }
+                    "UB": 256 * 1024,
+                    "L1": 1024 * 1024,
+                    "L0A": 64 * 1024,
+                    "L0B": 64 * 1024,
+                    "L0C": 256 * 1024,
+                    "L2": 16 * 1024 * 1024,
+                }
             case "Ascend910B":
                 self.mem_cap = {
-                        "UB": 192 * 1024,  # 910B UB size
-                        "L1": 1024 * 1024,
-                        "L0A": 64 * 1024,
-                        "L0B": 64 * 1024,
-                        "L0C": 512 * 1024,
-                        "L2": 16 * 1024 * 1024,
-                    }
+                    "UB": 192 * 1024,  # 910B UB size
+                    "L1": 1024 * 1024,
+                    "L0A": 64 * 1024,
+                    "L0B": 64 * 1024,
+                    "L0C": 512 * 1024,
+                    "L2": 16 * 1024 * 1024,
+                }
             case "Ascend950":
                 self.mem_cap = {
-                        "UB": 192 * 1024,
-                        "L1": 512 * 1024,
-                        "L0A": 64 * 1024,
-                        "L0B": 64 * 1024,
-                        "L0C": 128 * 1024,
-                        "L2": 192 * 1024 * 1024,
-                    }
-    
+                    "UB": 192 * 1024,
+                    "L1": 512 * 1024,
+                    "L0A": 64 * 1024,
+                    "L0B": 64 * 1024,
+                    "L0C": 128 * 1024,
+                    "L2": 192 * 1024 * 1024,
+                }
+
     @property
     def supports_native_bf16(self) -> bool:
         # Currently, all supported chips require legalization for BF16.
