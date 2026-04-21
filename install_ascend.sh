@@ -129,12 +129,10 @@ if $INCREMENTAL_BUILD; then
     if [ -d build ]; then
         echo "Using existing build directory for incremental build..."
     else
-        echo "Creating new build directory..."
         mkdir -p build
         cp 3rdparty/tvm/cmake/config.cmake build
     fi
 else
-    echo "Performing clean build..."
     if [ -d build ]; then
         rm -rf build
     fi
@@ -147,7 +145,6 @@ cd build
 if !$INCREMENTAL_BUILD; then
     echo "set(USE_ASCEND ON)" >> config.cmake
     echo 'set(USE_GTEST OFF)' >> config.cmake
-    echo "Running CMake for TileLang..."
     cmake ..
     if [ $? -ne 0 ]; then
         echo "Error: CMake configuration failed."
