@@ -2638,16 +2638,61 @@ void CodeGenTileLangNPUIRDEV::VarangeCodegen(const CallNode *op) {
   SetVarValue(npuirop.dst, arangeOp->getResult(0));
 }
 
+bool isIdentityRange(const Array<Range>& range, const Buffer& buffer_data){
+  Array<PrimExpr> region_shape;
+  Array<PrimExpr> region_indices;
+  for (Range r: range) {
+    region_shape.push_back(r.get()->extent);
+    region_indices.push_back(r.get()->min);
+  }
+  return (IsEqual(buffer_data->shape, region_shape) && AllZero(region_indices));
+}
+
 void CodeGenTileLangNPUIRDEV::VconcatCodegen(const CallNode *op) {
+  auto getBufferVarValue = [this](const Buffer &buffer_data) -> mlir::Value {
+    const VarNode *v = buffer_data->data.get();
+    return GetVarValue(v);
+  };
+  auto isBufferMemref = [getBufferVarValue](const Buffer &buffer_data) -> bool {
+    mlir::Value v_value = getBufferVarValue(buffer_data);
+    if (isa<TensorType>(v_value.getType()))
+      return false;
+    if (isa<MemRefType>(v_value.getType()))
+      return true;
+    llvm::dbgs() << "got v as " << v_value << "\n";
+    LOG(FATAL) << "expect value from tensor or memref dialect";
+  };
   tvm::tl::NpuirConcat npuirop(op->args, this->vmap);
-  auto dim = builder.getIntegerAttr(builder.getI64Type(), npuirop.dim);
   llvm::SmallVector<Value> srcs;
   size_t n_srcs = npuirop.srcs.size();
+  assert(n_srcs > 0 && "Concatenation must have at least one operand");
+  bool bufferIsMemref = isBufferMemref(npuirop.dst);
   for (size_t i = 0; i < n_srcs; i++) {
-    Value src = GenSubviewFromRegion(npuirop.srcs[i], npuirop.srcs_range[i]);
+    assert(isBufferMemref(npuirop.srcs[i]) == bufferIsMemref &&
+           "Concatenating a mixture of memref & tensor is not supported");
+    Value src =
+        bufferIsMemref
+            ? GenSubviewFromRegion(npuirop.srcs[i], npuirop.srcs_range[i])
+            : GenExtractSliceFromRegion(npuirop.srcs[i], npuirop.srcs_range[i]);
     srcs.push_back(src);
   }
   mlir::ValueRange srcs_vr(srcs);
+  // Value dst = GenSubviewFromRegion(npuirop.dst, npuirop.dst_range);
+  if (!bufferIsMemref) {
+    auto concatResult = builder.create<mlir::tensor::ConcatOp>(
+        builder.getUnknownLoc(), npuirop.dim, srcs_vr);
+    Value dst = GenExtractSliceFromRegion(npuirop.dst, npuirop.dst_range);
+    if (isIdentityRange(npuirop.dst_range, npuirop.dst))
+      SetVarValue(npuirop.dst, concatResult.getResult());
+    else {
+      SliceRange rg = MakeSliceRange(npuirop.dst_range);
+      Value newVal = InsertSlice(concatResult, getBufferVarValue(npuirop.dst),
+                                 rg.offs, rg.sizes, rg.strides);
+      SetVarValue(npuirop.dst, newVal);
+    }
+    return;
+  }
+  IntegerAttr dim = builder.getI64IntegerAttr(npuirop.dim);
   Value dst = GenSubviewFromRegion(npuirop.dst, npuirop.dst_range);
   builder.create<mlir::hivm::VConcatOp>(builder.getUnknownLoc(), TypeRange{},
                                         dim, srcs_vr, dst);
