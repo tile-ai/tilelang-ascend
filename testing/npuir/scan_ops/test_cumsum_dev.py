@@ -16,7 +16,7 @@ pytestmark = [
 DTYPES = ["float16"]
 
 
-def cumsum_kernel(M, N, dim, reverse, dtype, accum_dtype):
+def cumsum_kernel(M, N, dim, reverse, dtype):
     BLOCK_SIZE = 1
 
     @T.prim_func
