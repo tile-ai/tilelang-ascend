@@ -66,15 +66,14 @@ jobs:
       - name: Build and Test in Local Container
         run: |
           # 准备缓存目录
-          if [[ "${{ steps.cache-build.outputs.cache-hit }}" == 'true' ]] && [ -d "build-cache" ]; then
+          mkdir -p build-cache
+          
+          if [[ "${{ steps.cache-build.outputs.cache-hit }}" == 'true' ]]; then
             echo "✅ Cache hit! Will use incremental build."
             INCREMENTAL_FLAG="--enable-incremental"
-            # 将缓存的构建文件挂载到容器
-            CACHE_VOLUME="-v $(pwd)/build-cache:/tmp/cached-build"
           else
             echo "🔄 Cache miss. Performing clean build."
             INCREMENTAL_FLAG=""
-            CACHE_VOLUME=""
           fi
           
           echo 'run in existed container...'
@@ -84,7 +83,7 @@ jobs:
             -e GITHUB_OUTPUT=$GITHUB_OUTPUT \
             -e BASH_ENV=/root/.bashrc \
             -e INCREMENTAL_FLAG="$INCREMENTAL_FLAG" \
-            $CACHE_VOLUME \
+            -v $(pwd)/build-cache:/tmp/cached-build
             tilelang_x1 \
             bash -c "
               set -e
