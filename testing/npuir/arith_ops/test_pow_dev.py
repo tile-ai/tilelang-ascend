@@ -7,7 +7,7 @@ import os
 import pytest
 import testcommon as tc
 
-DTYPE_CASES = ["int32"]
+DTYPE_CASES = ["float32", "int32"]
 
 def pow_int_kernel(M, N, block_M, dtype):
     grid_M = (M + block_M - 1) // block_M

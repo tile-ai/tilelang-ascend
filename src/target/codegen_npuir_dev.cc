@@ -1975,6 +1975,42 @@ static inline constexpr bool startsWith(std::string_view str,
          str.compare(0, prefix.size(), prefix) == 0;
 }
 
+template <typename T, typename = void> struct has_hivm_operation_name {
+  static constexpr bool value = false;
+};
+template <typename T>
+struct has_hivm_operation_name<T,
+                               std::void_t<decltype(T::getOperationName())>> {
+  static constexpr bool value = startsWith(
+      T::getOperationName(), mlir::hivm::HIVMDialect::getDialectNamespace());
+};
+
+template <auto V> struct ElemwiseOp;
+
+template <linalg::BinaryFn V> struct ElemwiseOp<V> {
+  using Op = linalg::ElemwiseBinaryOp;
+  using FnAttr = linalg::BinaryFnAttr;
+  static constexpr linalg::BinaryFn Fn = V;
+};
+
+template <hfusion::BinaryFn V> struct ElemwiseOp<V> {
+  using Op = hfusion::ElemwiseBinaryOp;
+  using FnAttr = hfusion::BinaryFnAttr;
+  static constexpr hfusion::BinaryFn Fn = V;
+};
+
+template <linalg::UnaryFn V> struct ElemwiseOp<V> {
+  using Op = linalg::ElemwiseUnaryOp;
+  using FnAttr = linalg::UnaryFnAttr;
+  static constexpr linalg::UnaryFn Fn = V;
+};
+
+template <hfusion::UnaryFn V> struct ElemwiseOp<V> {
+  using Op = hfusion::ElemwiseUnaryOp;
+  using FnAttr = hfusion::UnaryFnAttr;
+  static constexpr hfusion::UnaryFn Fn = V;
+};
+
 /// Generate vectorized unary op for npuir ops (e.g., tl.npuir_exp)
 /// before:
 ///     T.npuir_exp(A, B)
@@ -1982,7 +2018,7 @@ static inline constexpr bool startsWith(std::string_view str,
 ///        %.* = <linalg>.<op> ins(%A_trans) outs(B) -> tensor<>
 ///        or
 ///     %.* = hivm.hir.<op> ins(A) outs(B) -> tensor<>
-template <typename T, auto fn>
+template <typename T, typename U>
 void CodeGenTileLangNPUIRDEV::UnaryVecOpCodegen(const CallNode *op) {
   T npuirop(op->args, this->vmap);
   auto in_data_name = GetVarValue(npuirop.src);
@@ -1994,22 +2030,26 @@ void CodeGenTileLangNPUIRDEV::UnaryVecOpCodegen(const CallNode *op) {
   auto transposeAttr = builder.getDenseI64ArrayAttr({});
   auto broadcastAttr = builder.getDenseI64ArrayAttr(dims);
 
-  in_data_name = broadcastOrTranspose(in_data_name, out_data_name,
-                                      broadcastAttr, transposeAttr, builder);
+  if constexpr (has_hivm_operation_name<U>::value) {
+    // Create HIVM Op
+    newOpValue =
+        builder
+            .create<U>(loc, TypeRange{out_data_name.getType()},
+                       ValueRange{in_data_name}, ValueRange{out_data_name},
+                       transposeAttr, broadcastAttr)
+            .getResult(0);
+  } else {
+    in_data_name = broadcastOrTranspose(in_data_name, out_data_name,
+                                        broadcastAttr, transposeAttr, builder);
 
-  if constexpr (std::is_same_v<std::decay_t<decltype(fn)>, mlir::linalg::UnaryFn>) {
-    auto attr = builder.getAttr<mlir::linalg::UnaryFnAttr>(fn);
-    auto fnAttr = builder.getNamedAttr("fun", attr);
-    auto newOp = builder.create<mlir::linalg::ElemwiseUnaryOp>(
-        loc, mlir::ValueRange{in_data_name}, mlir::ValueRange{out_data_name}, fnAttr);
-    newOpValue = newOp->getResult(0);
-  }
-  else if constexpr (std::is_same_v<std::decay_t<decltype(fn)>, hfusion::UnaryFn>) {
-    auto attr = builder.getAttr<hfusion::UnaryFnAttr>(fn);
-    auto fnAttr = builder.getNamedAttr("fun", attr);
-    auto newOp = builder.create<hfusion::ElemwiseUnaryOp>(
-        loc, mlir::ValueRange{in_data_name}, mlir::ValueRange{out_data_name}, fnAttr);
-    newOpValue = newOp->getResult(0);
+    newOpValue =
+        builder
+            .create<typename U::Op>(
+                loc, out_data_name.getType(), ValueRange{in_data_name},
+                ValueRange{out_data_name},
+                ArrayRef{builder.getNamedAttr(
+                    "fun", builder.getAttr<typename U::FnAttr>(U::Fn))})
+            .getResult(0);
   }
 
   SetVarValue(npuirop.dst, newOpValue);
@@ -2947,16 +2987,6 @@ Value CodeGenTileLangNPUIRDEV::broadcastOrTranspose(Value input, Value output,
   return result;
 }
 
-template<typename T, typename = void>
-struct has_hivm_operation_name {
-    static constexpr bool value = false;
-};
-template<typename T>
-struct has_hivm_operation_name<T, std::void_t<decltype(T::getOperationName())>> {
-    static constexpr bool value = startsWith(T::getOperationName(), mlir::hivm::HIVMDialect::getDialectNamespace());
-};
-
-
 /// Generate hivm.hir.vadd for tl.npuir_add.
 /// Generate hivm.hir.vcmp for tl.npuir_cmp.
 /// Generate hivm.hir.vdiv for tl.npuir_div.
@@ -3060,7 +3090,7 @@ void CodeGenTileLangNPUIRDEV::CreateHIVMBinaryVectorOp(const CallNode *op) {
   auto loc = builder.getUnknownLoc();
   mlir::Value newOpValue;
 
-  if constexpr (has_hivm_operation_name<T>::value) {
+  if constexpr (!std::is_void_v<T> && has_hivm_operation_name<T>::value) {
     static_assert(
         std::is_void_v<U> && std::is_void_v<V>,
         "Dispatch logic is not applied for hivm ops. U and V should be void");
@@ -3104,8 +3134,14 @@ void CodeGenTileLangNPUIRDEV::CreateHIVMBinaryVectorOp(const CallNode *op) {
         // type is float, if yes, build T
         if ((std::is_void_v<U> && std::is_void_v<V>) ||
             isa<FloatType>(srcType)) {
-          newOpValue = builder.create<T>(loc, insertBase.getType(), src0, src1)
-                           .getResult();
+          newOpValue =
+              builder
+                  .create<typename T::Op>(
+                      loc, insertBase.getType(), ValueRange{src0, src1},
+                      ValueRange{insertBase},
+                      ArrayRef{builder.getNamedAttr(
+                          "fun", builder.getAttr<typename T::FnAttr>(T::Fn))})
+                  .getResult(0);
           break;
         }
       if constexpr (!std::is_void_v<U>)
@@ -3115,19 +3151,31 @@ void CodeGenTileLangNPUIRDEV::CreateHIVMBinaryVectorOp(const CallNode *op) {
         // if yes, build U
         if (auto maybeIntType = dyn_cast<IntegerType>(srcType);
             maybeIntType && (std::is_void_v<V> || !maybeIntType.isUnsigned())) {
-          newOpValue = builder.create<U>(loc, insertBase.getType(), src0, src1)
-                           .getResult();
+          newOpValue =
+              builder
+                  .create<typename U::Op>(
+                      loc, insertBase.getType(), ValueRange{src0, src1},
+                      ValueRange{insertBase},
+                      ArrayRef{builder.getNamedAttr(
+                          "fun", builder.getAttr<typename U::FnAttr>(U::Fn))})
+                  .getResult(0);
           break;
         }
       if constexpr (!std::is_void_v<V>)
         // V will be int unsigned op, check if dst element type is int unsigned
         // (or signless), if yes, build V
-        if (srcType.isUnsignedInteger() || srcType.isSignlessInteger()) {
-          newOpValue = builder.create<V>(loc, insertBase.getType(), src0, src1)
-                           .getResult();
+        if (!srcType.isSignedInteger()) {
+          newOpValue =
+              builder
+                  .create<typename V::Op>(
+                      loc, insertBase.getType(), ValueRange{src0, src1},
+                      ValueRange{insertBase},
+                      ArrayRef{builder.getNamedAttr(
+                          "fun", builder.getAttr<typename V::FnAttr>(V::Fn))})
+                  .getResult(0);
           break;
         }
-      assert(false && "Unsupported dst element type for binary op");
+      assert(false && "Unsupported element type for binary op");
     } while (false);
   }
 
@@ -3469,23 +3517,28 @@ mlir::Value CodeGenTileLangNPUIRDEV::VisitExpr_(const CallNode *op) {
   } else if (op->op.same_as(Op::Get("tl.copy"))) {
     AscendCopyCodegen(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_add"))) {
-    CreateHIVMBinaryVectorOp<mlir::arith::AddFOp, mlir::arith::AddIOp>(op);
+    CreateHIVMBinaryVectorOp<ElemwiseOp<linalg::BinaryFn::add>>(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_exp"))) {
-    UnaryVecOpCodegen<tvm::tl::NpuirExp, mlir::linalg::UnaryFn::exp>(op);
+    UnaryVecOpCodegen<tvm::tl::NpuirExp, ElemwiseOp<linalg::UnaryFn::exp>>(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_ln"))) {
-    UnaryVecOpCodegen<tvm::tl::NpuirLn, mlir::linalg::UnaryFn::log>(op);
+    UnaryVecOpCodegen<tvm::tl::NpuirLn, ElemwiseOp<linalg::UnaryFn::log>>(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_relu"))) {
-    UnaryVecOpCodegen<tvm::tl::NpuirRelu, hfusion::UnaryFn::relu>(op);
+    UnaryVecOpCodegen<tvm::tl::NpuirRelu, ElemwiseOp<hfusion::UnaryFn::relu>>(
+        op);
   } else if (op->op.same_as(Op::Get("tl.npuir_sqrt"))) {
-    UnaryVecOpCodegen<tvm::tl::NpuirSqrt, mlir::linalg::UnaryFn::sqrt>(op);
+    UnaryVecOpCodegen<tvm::tl::NpuirSqrt, ElemwiseOp<linalg::UnaryFn::sqrt>>(
+        op);
   } else if (op->op.same_as(Op::Get("tl.npuir_rsqrt"))) {
-    UnaryVecOpCodegen<tvm::tl::NpuirRsqrt, mlir::linalg::UnaryFn::rsqrt>(op);
+    UnaryVecOpCodegen<tvm::tl::NpuirRsqrt, ElemwiseOp<linalg::UnaryFn::rsqrt>>(
+        op);
   } else if (op->op.same_as(Op::Get("tl.npuir_abs"))) {
-    UnaryVecOpCodegen<tvm::tl::NpuirAbs, mlir::linalg::UnaryFn::abs>(op);
+    UnaryVecOpCodegen<tvm::tl::NpuirAbs, ElemwiseOp<linalg::UnaryFn::abs>>(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_rec"))) {
-    UnaryVecOpCodegen<tvm::tl::NpuirRec, mlir::linalg::UnaryFn::reciprocal>(op);
+    UnaryVecOpCodegen<tvm::tl::NpuirRec,
+                      ElemwiseOp<linalg::UnaryFn::reciprocal>>(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_not"))) {
-    UnaryVecOpCodegen<tvm::tl::NpuirNot, hfusion::UnaryFn::vnot>(op);
+    UnaryVecOpCodegen<tvm::tl::NpuirNot, ElemwiseOp<hfusion::UnaryFn::vnot>>(
+        op);
   } else if (op->op.same_as(Op::Get("tl.npuir_select"))) {
     VselectCodegen(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_cmp"))) {
@@ -3501,30 +3554,35 @@ mlir::Value CodeGenTileLangNPUIRDEV::VisitExpr_(const CallNode *op) {
   } else if (op->op.same_as(Op::Get("tl.npuir_bitcast"))) {
     BitcastCodegen(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_div"))) {
-    CreateHIVMBinaryVectorOp<mlir::arith::DivFOp, mlir::arith::DivSIOp,
-                             mlir::arith::DivUIOp>(op);
+    CreateHIVMBinaryVectorOp<ElemwiseOp<linalg::BinaryFn::div>,
+                             ElemwiseOp<linalg::BinaryFn::div>,
+                             ElemwiseOp<linalg::BinaryFn::div_unsigned>>(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_mul"))) {
-    CreateHIVMBinaryVectorOp<mlir::arith::MulFOp, mlir::arith::MulIOp>(op);
+    CreateHIVMBinaryVectorOp<ElemwiseOp<linalg::BinaryFn::mul>>(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_sub"))) {
-    CreateHIVMBinaryVectorOp<mlir::arith::SubFOp, mlir::arith::SubIOp>(op);
+    CreateHIVMBinaryVectorOp<ElemwiseOp<linalg::BinaryFn::sub>>(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_max"))) {
-    CreateHIVMBinaryVectorOp<mlir::arith::MaximumFOp, mlir::arith::MaxSIOp,
-                             mlir::arith::MaxUIOp>(op);
+    CreateHIVMBinaryVectorOp<ElemwiseOp<hfusion::BinaryFn::maxf>,
+                             ElemwiseOp<linalg::BinaryFn::max_signed>,
+                             ElemwiseOp<linalg::BinaryFn::max_unsigned>>(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_min"))) {
-    CreateHIVMBinaryVectorOp<mlir::arith::MinimumFOp, mlir::arith::MinSIOp,
-                             mlir::arith::MinUIOp>(op);
+    CreateHIVMBinaryVectorOp<ElemwiseOp<hfusion::BinaryFn::minf>,
+                             ElemwiseOp<linalg::BinaryFn::min_signed>,
+                             ElemwiseOp<linalg::BinaryFn::min_unsigned>>(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_or"))) {
-    CreateHIVMBinaryVectorOp<void, mlir::arith::OrIOp>(op);
+    CreateHIVMBinaryVectorOp<ElemwiseOp<hfusion::BinaryFn::vor>>(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_and"))) {
-    CreateHIVMBinaryVectorOp<void, mlir::arith::AndIOp>(op);
+    CreateHIVMBinaryVectorOp<ElemwiseOp<hfusion::BinaryFn::vand>>(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_xor"))) {
-    CreateHIVMBinaryVectorOp<void, mlir::arith::XOrIOp>(op);
+    CreateHIVMBinaryVectorOp<ElemwiseOp<hfusion::BinaryFn::vxor>>(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_pow"))) {
-    CreateHIVMBinaryVectorOp<mlir::hivm::VPowOp>(op);
+    CreateHIVMBinaryVectorOp<ElemwiseOp<hfusion::BinaryFn::powf>,
+                             ElemwiseOp<hfusion::BinaryFn::powi>>(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_shl"))) {
-    CreateHIVMBinaryVectorOp<void, mlir::arith::ShLIOp>(op);
+    CreateHIVMBinaryVectorOp<void, ElemwiseOp<hfusion::BinaryFn::shli>>(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_shr"))) {
-    CreateHIVMBinaryVectorOp<void, mlir::arith::ShRSIOp, mlir::arith::ShRUIOp>(op);
+    CreateHIVMBinaryVectorOp<void, ElemwiseOp<hfusion::BinaryFn::shrsi>,
+                             ElemwiseOp<hfusion::BinaryFn::shrui>>(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_brc"))) {
     VbrcCodegen(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_cast"))) {
@@ -3564,7 +3622,7 @@ mlir::Value CodeGenTileLangNPUIRDEV::VisitExpr_(const CallNode *op) {
   } else if (op->op.same_as(Op::Get("tl.npuir_debug_print_var")) ||
              op->op.same_as(Op::Get("tl.npuir_debug_print_buffer_value"))) {
     DebugPrintCodegen(op);
-} else if (op->op.same_as(Op::Get("tl.npuir_reshape"))) {
+  } else if (op->op.same_as(Op::Get("tl.npuir_reshape"))) {
     ReshapeCodegen(op);
   } else {
     VisitExpr_(op);
