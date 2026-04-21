@@ -435,7 +435,7 @@ class TestTileLangKernels:
 
     # Compound operation tests
     def test_fused_mul_add_operation(self, clear_cache, setup_random_seed):
-        """Test fused multiply-add operation: a * b + a"""
+        """Test for fused multiply-add operation: a * b + a"""
 
         def kernel_func(M, N, block_M, block_N):
             return self.binary_op_kernel_float(M, N, block_M, block_N, lambda a, b: a * b + a)
