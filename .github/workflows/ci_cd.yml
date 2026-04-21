@@ -62,6 +62,7 @@ jobs:
           key: tilelang-build-${{ github.sha }}-${{ hashFiles('CMakeLists.txt', 'requirements.txt', 'install_ascend.sh') }}
           restore-keys: |
             tilelang-build-
+          save-always: true
 
       - name: Build and Test in Local Container
         run: |
@@ -102,7 +103,7 @@ jobs:
               if [ -d \"build\" ]; then
                 echo \"Saving build artifacts...\"
                 rm -rf build-cache/*
-                cp -r build/* build-cache/ 2>/dev/null || true
+                cp -r build/* build-cache/
               fi
 
               # 2. 加载环境变量
