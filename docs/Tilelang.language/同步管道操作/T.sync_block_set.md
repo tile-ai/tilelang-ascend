@@ -32,23 +32,53 @@ T.sync_block_set(i)
 
 ### 2.4 使用方法
 
-以下示例包含了sync_block_wait同步指令的使用
+以下示例包含了sync_block_set同步指令的使用
 
 ```python
-def simple_sync_demo(A, Workspace, Output):
-    with T.Kernel(T.ceildiv(seq_len, block_m), is_npu=True) as (cid, _):
+def simple_sync(M, N, block_M, block_N, dtype="float16", inner_dtype="float32"):
+    m_num = M // block_M
+    n_num = N // block_N
 
-        with T.Scope("Cube"):
-            for i in T.serial(num_blocks):
+    @T.prim_func
+    def main(
+            A: T.Tensor((M, N), dtype),
+            B: T.Tensor((M, N), dtype),
+    ):
+        with T.Kernel(m_num * n_num, is_npu=True) as (cid, subid):
+
+            with T.Scope("Cube"):
+                bx = (cid // n_num) * block_M
+                by = (cid % n_num) * block_N
+
+                A_BUF = T.alloc_L1((block_M, block_N), dtype)
+                T.copy(A[bx, by], A_BUF)
+
+                C_BUF = T.alloc_L0C((block_M, block_N), inner_dtype)
+
                 with T.rs("PIPE_FIX"):
-                    T.npuir_store_fixpipe(l0_result, Workspace[cid * block_m, i * block_n])
-                    T.sync_block_set(i)
+                    T.sync_block_wait(1)  
+                    T.npuir_store_fixpipe(C_BUF, B[bx, by], [block_M, block_N], enable_nz2nd=True)
+                    T.sync_block_set(0)    
 
-        with T.Scope("Vector"):
-            for i in T.serial(num_blocks):
+                with T.rs("PIPE_FIX"):
+                    for i in range(0, FFTS_FLAG_THRESHOLD):
+                        T.sync_block_wait(1)
+
+            with T.Scope("Vector"):
+                bx = (cid // n_num) * block_M
+                by = (cid % n_num) * block_N
+
                 with T.rs("PIPE_MTE2"):
-                    T.sync_block_wait(i)
-                    T.copy(Workspace[cid * block_m, i * block_n], cross_kernel_ub)
+                    for i in range(0, FFTS_FLAG_THRESHOLD):
+                        T.sync_block_set(1)   
+
+                C_VEC = T.alloc_ub((block_M, block_N), dtype)
+
+                with T.rs("PIPE_MTE2"):
+                    T.sync_block_wait(0)  
+                    T.copy(B[bx, by], C_VEC)
+                    T.sync_block_set(1)   
+    return main
 ```
 
 ## 3. Tilelang Op到Ascend NPU IR Op的转换
