@@ -145,7 +145,7 @@ def sparse_attention_fwd(
 
                 T.copy(Indices[b_i, s_i, g_i, i_i * BI : i_i * BI + BI], indices_ub_)
 
-                for bi_i in range(BI):
+                for bi_i in range(BI // 2):
                     T.copy(KV[b_i, indices_ub_[bi_i], g_i, :D], kv_ub)
                     T.copy(KV[b_i, indices_ub_[bi_i], g_i, D:], kv_tail_ub)
                     T.copy(kv_ub, workspace_1[cid, bi_i, :])
@@ -157,30 +157,30 @@ def sparse_attention_fwd(
 
                 T.copy(workspace_3[cid, 0 : v_block, :], acc_s_ub_)
 
-                for i, j in T.Parallel(v_block, BI):
+                for i, j in T.Parallel(v_block // 2, BI):
                     acc_s_ub[i, j] = acc_s_ub[i, j] + acc_s_ub_[i, j]
 
-                for i, j in T.Parallel(v_block, BI):
+                for i, j in T.Parallel(v_block // 2, BI):
                     acc_s_ub[i, j] = acc_s_ub[i, j] * sm_scale
 
                 T.reduce_max(acc_s_ub, m_i, dim=-1)
 
-                for i in T.Parallel(v_block):
+                for i in T.Parallel(v_block // 2):
                     m_i[i] = T.max(m_i[i], m_i_prev[i])
                     m_i_prev[i] = m_i_prev[i] - m_i[i]
                     m_i_prev[i] = T.exp(m_i_prev[i])
 
-                for h_i, j in T.Parallel(v_block, BI):
+                for h_i, j in T.Parallel(v_block // 2, BI):
                     acc_s_ub[h_i, j] = acc_s_ub[h_i, j] - m_i[h_i]
                     acc_s_ub[h_i, j] = T.exp(acc_s_ub[h_i, j])
 
                 T.reduce_sum(acc_s_ub, sumexp_i_ub, dim=-1)
 
-                for i in T.Parallel(v_block):
+                for i in T.Parallel(v_block // 2):
                     sumexp[i] *= m_i_prev[i]
                     sumexp[i] += sumexp_i_ub[i]
 
-                for h_i, j in T.Parallel(v_block, D):
+                for h_i, j in T.Parallel(v_block // 2, D):
                     acc_o[h_i, j] = acc_o[h_i, j] * m_i_prev[h_i]
 
                 T.copy(acc_s_ub, acc_s_half)
@@ -189,10 +189,10 @@ def sparse_attention_fwd(
 
                 T.copy(workspace_5[cid, 0 : v_block, :], acc_o_ub)
 
-                for i, j in T.Parallel(v_block, D):
+                for i, j in T.Parallel(v_block // 2, D):
                     acc_o[i, j] += acc_o_ub[i, j]
 
-            for h_i, j in T.Parallel(v_block, D):
+            for h_i, j in T.Parallel(v_block // 2, D):
                 acc_o[h_i, j] = acc_o[h_i, j] / sumexp[h_i]
 
             T.copy(acc_o, acc_o_half)
