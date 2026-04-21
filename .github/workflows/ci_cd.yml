@@ -94,6 +94,8 @@ jobs:
                 echo \"Restoring cached build...\"
                 mkdir -p build
                 cp -r /tmp/cached-build/* build/ 2>/dev/null || true
+                echo "=============================="
+                ls -l build
               fi
 
               # 1. 增量编译项目
