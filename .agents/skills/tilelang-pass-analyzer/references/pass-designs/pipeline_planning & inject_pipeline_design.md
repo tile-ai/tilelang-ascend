@@ -448,7 +448,7 @@ for i in T.Pipelined(vec_proc, num_stages=2):
 
 ### 与其他 Pass 的协作
 
-**整体 Pass 执行顺序见：** [T.pipelined.md](./T.pipelined.md)
+**整体 Pass 执行顺序见：** [T.pipelined.md](../../T.pipelined.md)
 
 PipelinePlanning + InjectSoftwarePipeline 输出信息及下游消费关系：
 

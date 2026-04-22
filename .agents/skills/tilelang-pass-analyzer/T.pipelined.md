@@ -88,7 +88,7 @@ for i in T.Pipelined(cross_core_proc_num, num_stages=2):
 
 → **CrossCorePipeline** 按 Cube/Vector scope 拆分 stage，扩展 workspace buffer 维度。
 
-**详细设计见：** [pipeline_planning & Inject_pipeline_design.md](./pipeline_planning%20&%20inject_pipeline_design.md)
+**详细设计见：** [pipeline_planning & Inject_pipeline_design.md](./references/pass-designs/pipeline_planning%20&%20inject_pipeline_design.md)
 
 ### 核内流水线
 
