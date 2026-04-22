@@ -6,12 +6,12 @@
 
 ---
 
-## 1. Pass 快速概览
+## 1. Pass 概览
 
 | 特性 | 说明 |
 |-----|-----|
 | 循环展开重建 | 展开→插入→合并重建，区分迭代内/间依赖 |
-| 数据依赖检测 | RAW/WAR/WAW + 物理地址区间重叠 |
+| 同步依赖插入 | RAW/WAR/WAW + 物理地址区间重叠 |
 | 同步优化 | SyncGraph 传递闭包，避免冗余同步 |
 | 同步类型 | PipeBarrier（同流水线）/ EventPair（跨流水线）|
 
@@ -116,25 +116,24 @@ Substitute 入口
 
 ## 5. 核心算法决策树
 
-### 5.0 昇腾流水线类型速查
+### 5.1 流水线类型
 
 | 流水线 | 名称 | 典型操作 |
 |-------|-----|---------|
-| **PIPE_MTE2** | 内存加载 | copy_gm_to_l1/l0a/l0b/ub |
-| **PIPE_MTE1** | L1搬运 | copy_l1_to_l0a/l0b |
-| **PIPE_MTE3** | 内存存储 | copy_ub_to_gm/l1 |
-| **PIPE_M** | 矩阵计算 | mma, gemm_v0/v1 |
+| **PIPE_MTE2** | 内存加载 | copy_gm_to_l1/ub |
+| **PIPE_MTE3** | 内存存储 | copy_ub_to_gm/copy_l0c_to_gm |
+| **PIPE_M** | 矩阵计算 | gemm_v0/v1 |
 | **PIPE_V** | 向量计算 | Add, Mul, Exp, Reduce, Sub, Div 等 |
 | **PIPE_S** | 标量计算 | Scalar |
 | **PIPE_FIX** | L0C搬运 | copy_l0c_to_gm/l1 |
 
 **常见同步类型**（见 GetEventMapping）：
-- MTE2→V, MTE3→V（内存与向量间）
-- MTE1→M, MTE2→M（搬运与矩阵间）
+- MTE2→V, MTE3→V, V->MTE2, V->MTE3（内存与向量间）
+- MTE2→M, MTE2→M, M->MTE2, M->MTE3（搬运与矩阵间）
 - M→V（矩阵与向量间）
 - V→V（向量内部）
 
-### 5.1 依赖检测决策
+### 5.2 依赖检测决策
 
 | 条件 | 内存共享 | 依赖类型 | 结果 |
 |-----|---------|---------|-----|
@@ -146,7 +145,7 @@ Substitute 入口
 
 **地址重叠公式**：`prev_addr < curr_end && curr_addr < prev_end`
 
-### 5.2 同步类型决策
+### 5.3 同步类型决策
 
 | 条件 | 同步类型 | IR 生成 |
 |-----|---------|---------|
@@ -157,7 +156,7 @@ Substitute 入口
 
 **EventPair 命名规则**：从 GetEventMapping 查询，如 `PIPE_MTE2_PIPE_V` → `MTE2_V`
 
-### 5.3 同步优化算法（核心）
+### 5.4 同步优化算法
 
 ```
 输入：requirements = [(sync_type, buffer_name)]
@@ -183,7 +182,7 @@ OptimizeSyncRequirements:
 判断：HasPath(M, MTE3)=true → EventPair_M_MTE3 被优化掉
 ```
 
-### 5.4 同步 IR 映射
+### 5.5 同步 IR 映射
 
 | sync_type | IR 语句 |
 |----------|---------|
@@ -197,7 +196,7 @@ OptimizeSyncRequirements:
 
 ## 6. IR 变换模式
 
-### 6.1 典型模式速查
+### 6.1 典型模式
 
 | 场景 | 输入 IR 模式 | 输出 IR 模式 | 同步类型 |
 |-----|------------|------------|---------|
@@ -236,34 +235,12 @@ OptimizeSyncRequirements:
 ```
 输入：
   copy_gm_to_ub(A_ub, data);  // PIPE_MTE2 写 A_ub
-  ascend_add(B_ub, src, tmp); // PIPE_V 读 B_ub（地址重叠）
+  ascend_add(B_ub, src, tmp); // PIPE_V 读 B_ub（与A_ub地址重叠）
 
 输出：
   copy_gm_to_ub(A_ub, data);
   [EventPair_MTE2_V]
   ascend_add(B_ub, src, tmp);
-```
-```
-输入：
-  copy_gm_to_l1(A, a_l1);  // PIPE_MTE2 写
-  mm_op_gemm(c, a_l1, b_l1);  // PIPE_M 读
-
-输出：
-  copy_gm_to_l1(A, a_l1);
-  [EventPair_MTE2_M]
-  mm_op_gemm(c, a_l1, b_l1);
-```
-
-**WAW 同流水线**：
-```
-输入：
-  vector_op_write(A, data1);  // PIPE_V 写
-  vector_op_write(A, data2);  // PIPE_V 写
-
-输出：
-  vector_op_write(A, data1);
-  [PipeBarrier_V]
-  vector_op_write(A, data2);
 ```
 
 ---
