@@ -96,8 +96,9 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: build-cache/
-          key: tilelang-build-${{ hashFiles('CMakeLists.txt', 'requirements.txt', 'install_ascend.sh') }}
+          key: tilelang-build-${{ github.head_ref || github.ref_name }}-${{ hashFiles('CMakeLists.txt', 'requirements.txt', 'install_ascend.sh') }}
           restore-keys: |
+            tilelang-build-${{ github.head_ref || github.ref_name }}-
             tilelang-build-
       
       # 全量编译，清理所有残留编译产物
