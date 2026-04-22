@@ -95,9 +95,9 @@ Substitute 入口
 
 | 结构体 | 关键字段 | 用途 |
 |-------|---------|-----|
-| **BufferAccess** | buffer_name, is_write, pipeline (MTE2/MTE1/MTE3/M/V/S/FIX), sync_graph, pipe_barriers, physical_address, is_sliced | 访问分析核心 |
+| **BufferAccess** | buffer_name, is_write, pipeline (MTE2/MTE1/MTE3/M/V/S/FIX), operation, sync_graph, pipe_barriers, physical_address, is_sliced | 访问分析核心 |
 | **SyncGraph** | graph: map<string, set<string>> | 同步优化核心 |
-| **LoopInfo** | loop_var, min, extent, kind, loop_id, depth | 循环重建 |
+| **LoopInfo** | loop_var, min, extent, kind, annotations, loop_id, depth | 循环重建 |
 | SyncRequirement | sync_type, buffer_name | 同步需求 |
 | BufferInfo | buffer_name, is_read, is_write, is_sliced | 缓冲区信息 |
 
@@ -114,7 +114,7 @@ Substitute 入口
 
 ---
 
-## 5. 核心算法决策树
+## 5. 算法逻辑
 
 ### 5.1 流水线类型
 
@@ -133,7 +133,7 @@ Substitute 入口
 - M→V（矩阵与向量间）
 - V→V（向量内部）
 
-### 5.2 依赖检测决策
+### 5.2 同步依赖检测决策
 
 | 条件 | 内存共享 | 依赖类型 | 结果 |
 |-----|---------|---------|-----|
@@ -184,6 +184,8 @@ OptimizeSyncRequirements:
 
 ### 5.5 同步 IR 映射
 
+最终实现的IR插入效果：
+
 | sync_type | IR 语句 |
 |----------|---------|
 | PipeBarrier_ALL | `Evaluate(Call tl.ascend_auto_barrier, ["PIPE_ALL"])` |
@@ -194,7 +196,7 @@ OptimizeSyncRequirements:
 
 ---
 
-## 6. IR 变换模式
+## 6. IR 变换示例
 
 ### 6.1 典型模式
 
