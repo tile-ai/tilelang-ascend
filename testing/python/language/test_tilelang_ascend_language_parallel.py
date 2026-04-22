@@ -97,7 +97,7 @@ class TestTileLangKernels:
     @staticmethod
     @tilelang.jit(out_idx=[-1], pass_configs=pass_configs)
     def binary_op_kernel_int(M, N, block_M, block_N, op_func, dtype="int16"):
-        """Generic binary operation kernel for int types"""
+        """Generic binary operation kernel for int type"""
         m_num = M // block_M
         n_num = N // block_N
         VEC_NUM = 2
