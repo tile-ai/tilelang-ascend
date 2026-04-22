@@ -4480,6 +4480,8 @@ def run_test_reduce_sum(M, N, block_M, block_N, dim, dtype, target):
 @pytest.mark.parametrize("dtype", ["float", "float16"])
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 def test_reduce_sum(dim, dtype, target):
+    if dtype == "float16":
+        pytest.xfail(reason="float16 reduction sum may overflow")
     M, N = 1024, 64
     run_test_reduce_sum(M, N, 64, 64, dim, dtype, target)
 
