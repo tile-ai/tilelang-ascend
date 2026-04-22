@@ -24,9 +24,7 @@ def input_guard(fn):
     @functools.wraps(fn)
     def wrapper(*args, **kwargs):
         contiguous_args = tuple(arg.contiguous() if isinstance(arg, torch.Tensor) else arg for arg in args)
-        contiguous_kwargs = {
-            key: value.contiguous() if isinstance(value, torch.Tensor) else value for key, value in kwargs.items()
-        }
+        contiguous_kwargs = {key: value.contiguous() if isinstance(value, torch.Tensor) else value for key, value in kwargs.items()}
         return fn(*contiguous_args, **contiguous_kwargs)
 
     return wrapper
@@ -37,9 +35,7 @@ def _sequence_bounds(cu_seqlens: torch.Tensor) -> list[tuple[int, int]]:
     return [(int(cu_seqlens_list[i]), int(cu_seqlens_list[i + 1])) for i in range(len(cu_seqlens_list) - 1)]
 
 
-def _canonicalize_chunk_indices(
-    cu_seqlens: torch.Tensor, chunk_size: int, chunk_indices: torch.Tensor | None
-) -> torch.Tensor:
+def _canonicalize_chunk_indices(cu_seqlens: torch.Tensor, chunk_size: int, chunk_indices: torch.Tensor | None) -> torch.Tensor:
     expected = prepare_chunk_indices(cu_seqlens, chunk_size)
     if chunk_indices is None:
         return expected
@@ -309,9 +305,7 @@ def chunk_global_cumsum_vector_kernel(B, H, SEQ_LEN, S_DIM, BT, BS, reverse=Fals
     return main
 
 
-def _chunk_local_cumsum_scalar_dense(
-    s, chunk_size, reverse=False, scale=None, head_first=False, output_dtype=torch.float
-):
+def _chunk_local_cumsum_scalar_dense(s, chunk_size, reverse=False, scale=None, head_first=False, output_dtype=torch.float):
     if head_first:
         B, H, SEQ_LEN = s.shape
     else:
@@ -377,9 +371,7 @@ def _chunk_global_cumsum_scalar_dense(s, reverse=False, scale=None, head_first=F
     return o.to(output_dtype)
 
 
-def _chunk_local_cumsum_vector_dense(
-    s, chunk_size, reverse=False, scale=None, head_first=False, output_dtype=torch.float
-):
+def _chunk_local_cumsum_vector_dense(s, chunk_size, reverse=False, scale=None, head_first=False, output_dtype=torch.float):
     if head_first:
         B, H, SEQ_LEN, S_DIM = s.shape
     else:
