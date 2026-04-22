@@ -32,8 +32,28 @@ public:
   static PrimFunc Substitute(PrimFunc f, PassContext ctx) {
     arith::Analyzer analyzer;
     AscendVidReduction substituter(&analyzer);
+    
     PrimFuncNode *fptr = f.CopyOnWrite();
+    
+    // Apply transformation (buffers_skip_vid_reduction_ collected internally)
     fptr->body = substituter.VisitStmt(f->body);
+    
+    // Store skip buffer names as PrimFunc attrs for downstream passes
+    // Only set attrs if there are buffers to skip (avoid empty attrs)
+    if (!substituter.buffers_skip_vid_reduction_.empty()) {
+      Array<String> skip_buffer_names;
+      for (const Buffer &buf : substituter.buffers_skip_vid_reduction_) {
+        skip_buffer_names.push_back(buf->name);
+      }
+      
+      Map<String, ObjectRef> attrs_map;
+      if (fptr->attrs.defined()) {
+        attrs_map = fptr->attrs->dict;
+      }
+      attrs_map.Set("buffers_skip_vid_reduction", skip_buffer_names);
+      fptr->attrs = DictAttrs(attrs_map);
+    }
+    
     return f;
   }
 
@@ -261,12 +281,12 @@ return false;
     }
   };
 
-  bool NeedsVidReduction(const Buffer &buffer) const {
+bool NeedsVidReduction(const Buffer &buffer) const {
     return IsUbBuffer(buffer) && buffers_skip_vid_reduction_.count(buffer) == 0;
   }
 
   void AnalyzeBlockBuffers(const Array<Buffer> &alloc_buffers,
-                           const Stmt &body) {
+                            const Stmt &body) {
     // First, collect UB buffers from current Block's alloc_buffers
     for (const Buffer &buffer : alloc_buffers) {
       if (IsUbBuffer(buffer)) {
