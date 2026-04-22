@@ -3430,17 +3430,17 @@ mlir::Value CodeGenTileLangNPUIRDEV::VisitExpr_(const CallNode *op) {
   } else if (op->op.same_as(Op::Get("tl.npuir_ln"))) {
     UnaryVecOpCodegen<tvm::tl::NpuirLn, mlir::linalg::UnaryFn::log>(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_relu"))) {
-    UnaryVecOpCodegen<tvm::tl::NpuirRelu, hfusion::UnaryFn::relu>(op);
+    UnaryVecOpCodegen<tvm::tl::NpuirRelu, mlir::hfusion::UnaryFn::relu>(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_sqrt"))) {
     UnaryVecOpCodegen<tvm::tl::NpuirSqrt, mlir::linalg::UnaryFn::sqrt>(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_rsqrt"))) {
-    UnaryVecOpCodegen<tvm::tl::NpuirRsqrt, mlir::linalg::UnaryFn::rsqrt>(op);
+    UnaryVecOpCodegen<tvm::tl::NpuirRsqrt, mlir::hfusion::UnaryFn::rsqrt>(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_abs"))) {
     UnaryVecOpCodegen<tvm::tl::NpuirAbs, mlir::linalg::UnaryFn::abs>(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_rec"))) {
     UnaryVecOpCodegen<tvm::tl::NpuirRec, mlir::linalg::UnaryFn::reciprocal>(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_not"))) {
-    UnaryVecOpCodegen<tvm::tl::NpuirNot, hfusion::UnaryFn::vnot>(op);
+    UnaryVecOpCodegen<tvm::tl::NpuirNot, mlir::hfusion::UnaryFn::vnot>(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_select"))) {
     VselectCodegen(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_cmp"))) {
