@@ -87,6 +87,7 @@
 #include "bishengir/Dialect/HACC/IR/HACC.h"
 #include "bishengir/Dialect/Utils/Util.h"
 #include "mlir/IR/TypeUtilities.h"
+#include "mlir/Dialect/Math/IR/Math.h"
 #include "tvm/runtime/logging.h"
 #include "llvm/Support/Debug.h"
 
@@ -377,9 +378,9 @@ CodeGenTileLangNPUIRDEV::CodeGenTileLangNPUIRDEV() : builder(&context) {
   // Load MLIR dialects in the context
   this->context
       .loadDialect<mlir::func::FuncDialect, mlir::arith::ArithDialect,
-                   mlir::linalg::LinalgDialect, mlir::scf::SCFDialect,
-                   mlir::memref::MemRefDialect, mlir::hivm::HIVMDialect,
-                   mlir::hfusion::HFusionDialect,
+                   mlir::linalg::LinalgDialect, mlir::math::MathDialect,
+                   mlir::scf::SCFDialect, mlir::memref::MemRefDialect, 
+                   mlir::hivm::HIVMDialect, mlir::hfusion::HFusionDialect,
                    mlir::bufferization::BufferizationDialect>();
   // Create MLIR module
   this->module = ModuleOp::create(UnknownLoc::get(&this->context));
@@ -1077,6 +1078,9 @@ mlir::Value CodeGenTileLangNPUIRDEV::CreateCastIfTypeMismatch(mlir::Value src, m
   auto srcTensorTy = src.getType().dyn_cast<mlir::TensorType>();
   ICHECK(srcTensorTy) << "src must be a tensor";
 
+  auto dstTensorTy = src.getType().dyn_cast<mlir::TensorType>();
+  ICHECK(dstTensorTy) << "dst must be a tensor";
+
   mlir::Type srcElemTy = mlir::getElementTypeOrSelf(src.getType());
   mlir::Type dstElemTy = mlir::getElementTypeOrSelf(dst.getType());
 
@@ -1084,11 +1088,12 @@ mlir::Value CodeGenTileLangNPUIRDEV::CreateCastIfTypeMismatch(mlir::Value src, m
     return src;
   }
 
-  auto resultTensorTy = mlir::RankedTensorType::get(
-      srcTensorTy.getShape(), dstElemTy);
-  
-  auto loc = builder.getUnknownLoc();
 
+  auto loc = builder.getUnknownLoc();
+  auto srcShape = srcTensorTy.getShape();
+  auto dstShape = dstTensorTy.getShape();
+  auto broadcastDim = getBroadcastDim(srcShape, dstShape);
+  auto broadcastDimAttr = builder.getDenseI64ArrayAttr(broadcastDim);
   SmallVector<mlir::Value> dynamicDims;
   for (int64_t i = 0, rank = srcTensorTy.getRank(); i < rank; ++i) {
     if (srcTensorTy.isDynamicDim(i)) {
@@ -1096,15 +1101,34 @@ mlir::Value CodeGenTileLangNPUIRDEV::CreateCastIfTypeMismatch(mlir::Value src, m
           builder.create<mlir::tensor::DimOp>(loc, src, i));
     }
   }
+  auto emptyForBroadcast = builder.create<mlir::tensor::EmptyOp>(
+      loc, dstShape, srcElemTy, dynamicDims);
+  
+  Value srcAfterBroadcast = broadcast(src, emptyForBroadcast.getResult(), 
+                                       broadcastDimAttr, builder);
+  
+  auto roundingAttr = builder.getAttr<mlir::hfusion::RoundModeAttr>(mlir::hfusion::RoundMode::RINT);
+  // TODO: enable_overflow is currently fixed to true. May need to be configurable
+  // based on specific use cases in the future.
+  auto enableOverflowAttr = builder.getBoolAttr(true);
+  // TODO: TypeFn is currently fixed to cast_signed. If unsigned integer conversion
+  // is needed, extend NpuirCast class to include an is_unsigned parameter and set
+  // TypeFn::cast_unsigned accordingly. bitcast mode is also available for
+  // reinterpretation of bit patterns without conversion.
+  auto castAttr = builder.getAttr<mlir::hfusion::TypeFnAttr>(
+      mlir::hfusion::TypeFn::cast_signed);
 
   auto castDstTensor = builder.create<mlir::tensor::EmptyOp>(
-      loc, resultTensorTy, dynamicDims);
+      loc, dstTensorTy, dynamicDims);
   
-  auto newCastOp = builder.create<mlir::hivm::VCastOp>(
-      loc, resultTensorTy, src, 
-      castDstTensor.getResult(), 
-      mlir::hivm::RoundModeAttr::get(&context, mlir::hivm::RoundMode::RINT),
-      nullptr);
+  SmallVector<mlir::NamedAttribute> attrs;
+  attrs.push_back(builder.getNamedAttr(
+      mlir::hfusion::RoundModeAttr::getMnemonic(), roundingAttr));
+  attrs.push_back(builder.getNamedAttr("enable_overflow", enableOverflowAttr));
+  attrs.push_back(builder.getNamedAttr(
+      mlir::hfusion::TypeFnAttr::getMnemonic(), castAttr));
+  auto newCastOp = builder.create<mlir::hfusion::CastOp>(
+      loc, mlir::ValueRange(srcAfterBroadcast), mlir::ValueRange(castDstTensor), attrs);
       
   return newCastOp->getResult(0);
 }
@@ -3088,9 +3112,9 @@ void CodeGenTileLangNPUIRDEV::BitcastCodegen(const CallNode *op) {
   } else if (auto tensor_type = mlir::dyn_cast<RankedTensorType>(src_type)) {
     auto src_shape = tensor_type.getShape();
     auto res_type =
-        mlir::RankedTensorType::get(src_shape, DTypetoMLIRType(tir_dtype));
-    builder.create<mlir::hivm::BitcastOp>(builder.getUnknownLoc(), res_type,
-                                          src);
+    mlir::RankedTensorType::get(src_shape, DTypetoMLIRType(tir_dtype));
+    Value result = builder.create<mlir::arith::BitcastOp>(builder.getUnknownLoc(), res_type, src);
+    SetVarValue(npuirop.src, result);
   } else {
     llvm_unreachable("Unspported source type (expected tensor or memref)");
   }
@@ -3207,54 +3231,10 @@ void CodeGenTileLangNPUIRDEV::DebugPrintCodegen(const CallNode *op) {
 void CodeGenTileLangNPUIRDEV::VcosCodegen(const CallNode *op) {
   tvm::tl::NpuirVCos npuirop(op->args, this->vmap);
   auto loc = builder.getUnknownLoc();
-
-  llvm::SmallVector<Value> srcs;
   size_t n_srcs = npuirop.srcs.size();
   for (size_t i = 0; i < n_srcs; i++) {
     Value src = GenExtractSliceFromRegion(npuirop.srcs[i], npuirop.srcs_range[i]);
-    srcs.push_back(src);
-  }
-  Value dstVal = GetVarValue(npuirop.dst);
-  mlir::Type tensorType = dstVal.getType();
-  mlir::TypeRange resultType(&tensorType, 1);
-
-  auto srcTensorType = srcs[0].getType().cast<mlir::RankedTensorType>();
-  mlir::Type elementType = srcTensorType.getElementType();
-  Value one = builder.create<mlir::arith::ConstantOp>(loc, builder.getFloatAttr(elementType, 1.0f));
-  Value minusHalf = builder.create<mlir::arith::ConstantOp>(loc, builder.getFloatAttr(elementType, -0.5f));
-  Value twentyFour = builder.create<mlir::arith::ConstantOp>(loc, builder.getFloatAttr(elementType, 24.0f));
-  Value sevenTwenty = builder.create<mlir::arith::ConstantOp>(loc, builder.getFloatAttr(elementType, 720.0f));
-  Value minusOne = builder.create<mlir::arith::ConstantOp>(loc, builder.getFloatAttr(elementType, -1.0f));
-  Value oneOver24 = builder.create<mlir::arith::DivFOp>(loc, one, twentyFour);
-  Value minusOneOver720 = builder.create<mlir::arith::DivFOp>(loc, minusOne, sevenTwenty);
-
-  for (size_t i = 0; i < n_srcs; i++) {
-    Value src = srcs[i];
-    Value x2 = mlir::utils::createTmpBufferOrTensorWithTargetType(builder, loc, src, elementType);
-    Value x4 = mlir::utils::createTmpBufferOrTensorWithTargetType(builder, loc, src, elementType);
-    Value x6 = mlir::utils::createTmpBufferOrTensorWithTargetType(builder, loc, src, elementType);
-    Value tmp = mlir::utils::createTmpBufferOrTensorWithTargetType(builder, loc, src, elementType);
-
-    x2 = builder.create<mlir::linalg::ElemwiseBinaryOp>(loc, ValueRange{src, src}, ValueRange{x2},
-        ArrayRef{builder.getNamedAttr("fun", builder.getAttr<mlir::linalg::BinaryFnAttr>(mlir::linalg::BinaryFn::mul))})->getResult(0);
-    x4 = builder.create<mlir::linalg::ElemwiseBinaryOp>(loc, ValueRange{x2, x2}, ValueRange{x4},
-        ArrayRef{builder.getNamedAttr("fun", builder.getAttr<mlir::linalg::BinaryFnAttr>(mlir::linalg::BinaryFn::mul))})->getResult(0);
-    x6 = builder.create<mlir::linalg::ElemwiseBinaryOp>(loc, ValueRange{x2, x4}, ValueRange{x6},
-        ArrayRef{builder.getNamedAttr("fun", builder.getAttr<mlir::linalg::BinaryFnAttr>(mlir::linalg::BinaryFn::mul))})->getResult(0);
-
-    x2 = builder.create<mlir::linalg::ElemwiseBinaryOp>(loc, ValueRange{x2, minusHalf}, ValueRange{x2},
-        ArrayRef{builder.getNamedAttr("fun", builder.getAttr<mlir::linalg::BinaryFnAttr>(mlir::linalg::BinaryFn::mul))})->getResult(0);
-    x4 = builder.create<mlir::linalg::ElemwiseBinaryOp>(loc, ValueRange{x4, oneOver24}, ValueRange{x4},
-        ArrayRef{builder.getNamedAttr("fun", builder.getAttr<mlir::linalg::BinaryFnAttr>(mlir::linalg::BinaryFn::mul))})->getResult(0);
-    x6 = builder.create<mlir::linalg::ElemwiseBinaryOp>(loc, ValueRange{x6, minusOneOver720}, ValueRange{x6},
-        ArrayRef{builder.getNamedAttr("fun", builder.getAttr<mlir::linalg::BinaryFnAttr>(mlir::linalg::BinaryFn::mul))})->getResult(0);
-
-    tmp = builder.create<mlir::linalg::ElemwiseBinaryOp>(loc, ValueRange{x2, one}, ValueRange{tmp},
-        ArrayRef{builder.getNamedAttr("fun", builder.getAttr<mlir::linalg::BinaryFnAttr>(mlir::linalg::BinaryFn::add))})->getResult(0);
-    tmp = builder.create<mlir::linalg::ElemwiseBinaryOp>(loc, ValueRange{x4, tmp}, ValueRange{tmp},
-        ArrayRef{builder.getNamedAttr("fun", builder.getAttr<mlir::linalg::BinaryFnAttr>(mlir::linalg::BinaryFn::add))})->getResult(0);
-    Value result = builder.create<mlir::linalg::ElemwiseBinaryOp>(loc, ValueRange{x6, tmp}, ValueRange{dstVal},
-        ArrayRef{builder.getNamedAttr("fun", builder.getAttr<mlir::linalg::BinaryFnAttr>(mlir::linalg::BinaryFn::add))})->getResult(0);
+    Value result = builder.create<mlir::math::CosOp>(loc, src)->getResult(0);
     SetVarValue(npuirop.dst, result);
   }
 }
@@ -3276,56 +3256,10 @@ void CodeGenTileLangNPUIRDEV::VcosCodegen(const CallNode *op) {
 void CodeGenTileLangNPUIRDEV::VsinCodegen(const CallNode *op) {
   tvm::tl::NpuirVSin npuirop(op->args, this->vmap);
   auto loc = builder.getUnknownLoc();
-
-  llvm::SmallVector<Value> srcs;
   size_t n_srcs = npuirop.srcs.size();
   for (size_t i = 0; i < n_srcs; i++) {
     Value src = GenExtractSliceFromRegion(npuirop.srcs[i], npuirop.srcs_range[i]);
-    srcs.push_back(src);
-  }
-  Value dstVal = GetVarValue(npuirop.dst);
-
-  auto srcTensorType = srcs[0].getType().cast<mlir::RankedTensorType>();
-  mlir::Type elementType = srcTensorType.getElementType();
-  Value one = builder.create<mlir::arith::ConstantOp>(loc, builder.getFloatAttr(elementType, 1.0f));
-  Value minusOne = builder.create<mlir::arith::ConstantOp>(loc, builder.getFloatAttr(elementType, -1.0f));
-  Value six = builder.create<mlir::arith::ConstantOp>(loc, builder.getFloatAttr(elementType, 6.0f));
-  Value oneTwenty = builder.create<mlir::arith::ConstantOp>(loc, builder.getFloatAttr(elementType, 120.0f));
-  Value fiveThousandForty = builder.create<mlir::arith::ConstantOp>(loc, builder.getFloatAttr(elementType, 5040.0f));
-  Value minusOneOver6 = builder.create<mlir::arith::DivFOp>(loc, minusOne, six);
-  Value oneOver120 = builder.create<mlir::arith::DivFOp>(loc, one, oneTwenty);
-  Value minusOneOver5040 = builder.create<mlir::arith::DivFOp>(loc, minusOne, fiveThousandForty);
-
-  for (size_t i = 0; i < n_srcs; i++) {
-    Value src = srcs[i];
-    Value x2 = mlir::utils::createTmpBufferOrTensorWithTargetType(builder, loc, src, elementType);
-    Value x3 = mlir::utils::createTmpBufferOrTensorWithTargetType(builder, loc, src, elementType);
-    Value x5 = mlir::utils::createTmpBufferOrTensorWithTargetType(builder, loc, src, elementType);
-    Value x7 = mlir::utils::createTmpBufferOrTensorWithTargetType(builder, loc, src, elementType);
-    Value tmp = mlir::utils::createTmpBufferOrTensorWithTargetType(builder, loc, src, elementType);
-
-    x2 = builder.create<mlir::linalg::ElemwiseBinaryOp>(loc, ValueRange{src, src}, ValueRange{x2},
-        ArrayRef{builder.getNamedAttr("fun", builder.getAttr<mlir::linalg::BinaryFnAttr>(mlir::linalg::BinaryFn::mul))})->getResult(0);
-    x3 = builder.create<mlir::linalg::ElemwiseBinaryOp>(loc, ValueRange{x2, src}, ValueRange{x3},
-        ArrayRef{builder.getNamedAttr("fun", builder.getAttr<mlir::linalg::BinaryFnAttr>(mlir::linalg::BinaryFn::mul))})->getResult(0);
-    x5 = builder.create<mlir::linalg::ElemwiseBinaryOp>(loc, ValueRange{x3, x2}, ValueRange{x5},
-        ArrayRef{builder.getNamedAttr("fun", builder.getAttr<mlir::linalg::BinaryFnAttr>(mlir::linalg::BinaryFn::mul))})->getResult(0);
-    x7 = builder.create<mlir::linalg::ElemwiseBinaryOp>(loc, ValueRange{x5, x2}, ValueRange{x7},
-        ArrayRef{builder.getNamedAttr("fun", builder.getAttr<mlir::linalg::BinaryFnAttr>(mlir::linalg::BinaryFn::mul))})->getResult(0);
-
-    x3 = builder.create<mlir::linalg::ElemwiseBinaryOp>(loc, ValueRange{x3, minusOneOver6}, ValueRange{x3},
-        ArrayRef{builder.getNamedAttr("fun", builder.getAttr<mlir::linalg::BinaryFnAttr>(mlir::linalg::BinaryFn::mul))})->getResult(0);
-    x5 = builder.create<mlir::linalg::ElemwiseBinaryOp>(loc, ValueRange{x5, oneOver120}, ValueRange{x5},
-        ArrayRef{builder.getNamedAttr("fun", builder.getAttr<mlir::linalg::BinaryFnAttr>(mlir::linalg::BinaryFn::mul))})->getResult(0);
-    x7 = builder.create<mlir::linalg::ElemwiseBinaryOp>(loc, ValueRange{x7, minusOneOver5040}, ValueRange{x7},
-        ArrayRef{builder.getNamedAttr("fun", builder.getAttr<mlir::linalg::BinaryFnAttr>(mlir::linalg::BinaryFn::mul))})->getResult(0);
-
-    tmp = builder.create<mlir::linalg::ElemwiseBinaryOp>(loc, ValueRange{src, x3}, ValueRange{tmp},
-        ArrayRef{builder.getNamedAttr("fun", builder.getAttr<mlir::linalg::BinaryFnAttr>(mlir::linalg::BinaryFn::add))})->getResult(0);
-    tmp = builder.create<mlir::linalg::ElemwiseBinaryOp>(loc, ValueRange{x5, tmp}, ValueRange{tmp},
-        ArrayRef{builder.getNamedAttr("fun", builder.getAttr<mlir::linalg::BinaryFnAttr>(mlir::linalg::BinaryFn::add))})->getResult(0);
-    Value result = builder.create<mlir::linalg::ElemwiseBinaryOp>(loc, ValueRange{x7, tmp}, ValueRange{dstVal},
-        ArrayRef{builder.getNamedAttr("fun", builder.getAttr<mlir::linalg::BinaryFnAttr>(mlir::linalg::BinaryFn::add))})->getResult(0);
+    Value result = builder.create<mlir::math::SinOp>(loc, src)->getResult(0);
     SetVarValue(npuirop.dst, result);
   }
 }
@@ -3348,62 +3282,10 @@ void CodeGenTileLangNPUIRDEV::VsinCodegen(const CallNode *op) {
 void CodeGenTileLangNPUIRDEV::VerfCodegen(const CallNode *op) {
   tvm::tl::NpuirVErf npuirop(op->args, this->vmap);
   auto loc = builder.getUnknownLoc();
-
-  llvm::SmallVector<Value> srcs;
   size_t n_srcs = npuirop.srcs.size();
-  for (size_t i=0; i < n_srcs; i++) {
-    Value src = GenExtractSliceFromRegion(npuirop.srcs[i], npuirop.srcs_range[i]);
-    srcs.push_back(src);
-  }
-  mlir::ValueRange srcs_vr(srcs);
-  Value dstVal = GetVarValue(npuirop.dst);
-
-  auto srcTensorType = srcs_vr[0].getType().cast<RankedTensorType>();
-  mlir::Type elementType = srcTensorType.getElementType();
-  Value two = builder.create<mlir::arith::ConstantOp>(loc, builder.getFloatAttr(elementType, 2.0f));
-  Value sqrtPi = builder.create<mlir::arith::ConstantOp>(loc, builder.getFloatAttr(elementType, 1.7724538509055160f));
-  Value minusOne = builder.create<mlir::arith::ConstantOp>(loc, builder.getFloatAttr(elementType, -1.0f));
-  Value three = builder.create<mlir::arith::ConstantOp>(loc, builder.getFloatAttr(elementType, 3.0f));
-  Value one = builder.create<mlir::arith::ConstantOp>(loc, builder.getFloatAttr(elementType, 1.0f));
-  Value ten = builder.create<mlir::arith::ConstantOp>(loc, builder.getFloatAttr(elementType, 10.0f));
-  Value fortyTwo = builder.create<mlir::arith::ConstantOp>(loc, builder.getFloatAttr(elementType, 42.0f));
-  Value twoOverSqrtPi = builder.create<mlir::arith::DivFOp>(loc, two, sqrtPi);
-  Value minusOneOver3 = builder.create<mlir::arith::DivFOp>(loc, minusOne, three);
-  Value oneOver10 = builder.create<mlir::arith::DivFOp>(loc, one, ten);
-  Value minusOneOver42 = builder.create<mlir::arith::DivFOp>(loc, minusOne, fortyTwo);
-
   for (size_t i = 0; i < n_srcs; i++) {
-    Value src = srcs[i];
-    Value x2 = mlir::utils::createTmpBufferOrTensorWithTargetType(builder, loc, src, elementType);
-    Value x3 = mlir::utils::createTmpBufferOrTensorWithTargetType(builder, loc, src, elementType);
-    Value x5 = mlir::utils::createTmpBufferOrTensorWithTargetType(builder, loc, src, elementType);
-    Value x7 = mlir::utils::createTmpBufferOrTensorWithTargetType(builder, loc, src, elementType);    
-    Value tmp = mlir::utils::createTmpBufferOrTensorWithTargetType(builder, loc, src, elementType);
-
-    x2 = builder.create<mlir::linalg::ElemwiseBinaryOp>(loc, ValueRange{src, src}, ValueRange{x2},
-        ArrayRef{builder.getNamedAttr("fun", builder.getAttr<mlir::linalg::BinaryFnAttr>(mlir::linalg::BinaryFn::mul))})->getResult(0);
-    x3 = builder.create<mlir::linalg::ElemwiseBinaryOp>(loc, ValueRange{x2, src}, ValueRange{x3},
-        ArrayRef{builder.getNamedAttr("fun", builder.getAttr<mlir::linalg::BinaryFnAttr>(mlir::linalg::BinaryFn::mul))})->getResult(0);
-    x5 = builder.create<mlir::linalg::ElemwiseBinaryOp>(loc, ValueRange{x3, x2}, ValueRange{x5},
-        ArrayRef{builder.getNamedAttr("fun", builder.getAttr<mlir::linalg::BinaryFnAttr>(mlir::linalg::BinaryFn::mul))})->getResult(0);
-    x7 = builder.create<mlir::linalg::ElemwiseBinaryOp>(loc, ValueRange{x5, x2}, ValueRange{x7},
-        ArrayRef{builder.getNamedAttr("fun", builder.getAttr<mlir::linalg::BinaryFnAttr>(mlir::linalg::BinaryFn::mul))})->getResult(0);
-
-    x3 = builder.create<mlir::linalg::ElemwiseBinaryOp>(loc, ValueRange{x3, minusOneOver3}, ValueRange{x3},
-        ArrayRef{builder.getNamedAttr("fun", builder.getAttr<mlir::linalg::BinaryFnAttr>(mlir::linalg::BinaryFn::mul))})->getResult(0);
-    x5 = builder.create<mlir::linalg::ElemwiseBinaryOp>(loc, ValueRange{x5, oneOver10}, ValueRange{x5},
-        ArrayRef{builder.getNamedAttr("fun", builder.getAttr<mlir::linalg::BinaryFnAttr>(mlir::linalg::BinaryFn::mul))})->getResult(0);
-    x7 = builder.create<mlir::linalg::ElemwiseBinaryOp>(loc, ValueRange{x7, minusOneOver42}, ValueRange{x7},
-        ArrayRef{builder.getNamedAttr("fun", builder.getAttr<mlir::linalg::BinaryFnAttr>(mlir::linalg::BinaryFn::mul))})->getResult(0);
-
-    tmp = builder.create<mlir::linalg::ElemwiseBinaryOp>(loc, ValueRange{src, x3}, ValueRange{tmp},
-        ArrayRef{builder.getNamedAttr("fun", builder.getAttr<mlir::linalg::BinaryFnAttr>(mlir::linalg::BinaryFn::add))})->getResult(0);
-    tmp = builder.create<mlir::linalg::ElemwiseBinaryOp>(loc, ValueRange{x5, tmp}, ValueRange{tmp},
-        ArrayRef{builder.getNamedAttr("fun", builder.getAttr<mlir::linalg::BinaryFnAttr>(mlir::linalg::BinaryFn::add))})->getResult(0);
-    tmp = builder.create<mlir::linalg::ElemwiseBinaryOp>(loc, ValueRange{x7, tmp}, ValueRange{tmp},
-        ArrayRef{builder.getNamedAttr("fun", builder.getAttr<mlir::linalg::BinaryFnAttr>(mlir::linalg::BinaryFn::add))})->getResult(0);
-    Value result = builder.create<mlir::linalg::ElemwiseBinaryOp>(loc, ValueRange{tmp, twoOverSqrtPi}, ValueRange{dstVal},
-        ArrayRef{builder.getNamedAttr("fun", builder.getAttr<mlir::linalg::BinaryFnAttr>(mlir::linalg::BinaryFn::mul))})->getResult(0);
+    Value src = GenExtractSliceFromRegion(npuirop.srcs[i], npuirop.srcs_range[i]);
+    Value result = builder.create<mlir::math::ErfOp>(loc, src)->getResult(0);
     SetVarValue(npuirop.dst, result);
   }
 }
@@ -3425,48 +3307,10 @@ void CodeGenTileLangNPUIRDEV::VerfCodegen(const CallNode *op) {
 void CodeGenTileLangNPUIRDEV::VtanhCodegen(const CallNode *op) {
   tvm::tl::NpuirVTanh npuirop(op->args, this->vmap);
   auto loc = builder.getUnknownLoc();
-
-  llvm::SmallVector<Value> srcs;
   size_t n_srcs = npuirop.srcs.size();
-  for (size_t i=0; i < n_srcs; i++) {
-    Value src = GenExtractSliceFromRegion(npuirop.srcs[i], npuirop.srcs_range[i]);
-    srcs.push_back(src);
-  }
-  mlir::ValueRange srcs_vr(srcs);
-  Value dstVal = GetVarValue(npuirop.dst);
-
-  auto srcTensorType = srcs_vr[0].getType().cast<RankedTensorType>();
-  mlir::Type elementType = srcTensorType.getElementType();
-  Value two = builder.create<mlir::arith::ConstantOp>(loc, builder.getFloatAttr(elementType, 2.0f));
-  Value minusOne = builder.create<mlir::arith::ConstantOp>(loc, builder.getFloatAttr(elementType, -1.0f));
-  Value minus17 = builder.create<mlir::arith::ConstantOp>(loc, builder.getFloatAttr(elementType, -17.0f));
-  Value three = builder.create<mlir::arith::ConstantOp>(loc, builder.getFloatAttr(elementType, 3.0f));
-  Value fifteen = builder.create<mlir::arith::ConstantOp>(loc, builder.getFloatAttr(elementType, 15.0f));
-  Value threeHundredFifteen = builder.create<mlir::arith::ConstantOp>(loc, builder.getFloatAttr(elementType, 315.0f));
-  Value minusOneOver3 = builder.create<mlir::arith::DivFOp>(loc, minusOne, three);
-  Value twoOver15 = builder.create<mlir::arith::DivFOp>(loc, two, fifteen);
-  Value minusSeventeenOver315 = builder.create<mlir::arith::DivFOp>(loc, minus17, threeHundredFifteen);
-
   for (size_t i = 0; i < n_srcs; i++) {
-    Value src = srcs[i];
-    Value x2 = mlir::utils::createTmpBufferOrTensorWithTargetType(builder, loc, src, elementType);
-    Value x3 = mlir::utils::createTmpBufferOrTensorWithTargetType(builder, loc, src, elementType);
-    Value x5 = mlir::utils::createTmpBufferOrTensorWithTargetType(builder, loc, src, elementType);
-    Value x7 = mlir::utils::createTmpBufferOrTensorWithTargetType(builder, loc, src, elementType);    
-    Value tmp = mlir::utils::createTmpBufferOrTensorWithTargetType(builder, loc, src, elementType);
-
-    x2 = builder.create<mlir::hivm::VMulOp>(loc, src.getType(), ValueRange{src, src}, ValueRange{x2})->getResult(0);
-    x3 = builder.create<mlir::hivm::VMulOp>(loc, x2.getType(), ValueRange{x2, src}, ValueRange{x3})->getResult(0);
-    x5 = builder.create<mlir::hivm::VMulOp>(loc, x3.getType(), ValueRange{x3, x2}, ValueRange{x5})->getResult(0);
-    x7 = builder.create<mlir::hivm::VMulOp>(loc, x5.getType(), ValueRange{x5, x2}, ValueRange{x7})->getResult(0);
-
-    x3 = builder.create<mlir::hivm::VMulOp>(loc, x3.getType(), ValueRange{x3, minusOneOver3}, ValueRange{x3})->getResult(0);
-    x5 = builder.create<mlir::hivm::VMulOp>(loc, x5.getType(), ValueRange{x5, twoOver15}, ValueRange{x5})->getResult(0);
-    x7 = builder.create<mlir::hivm::VMulOp>(loc, x7.getType(), ValueRange{x7, minusSeventeenOver315}, ValueRange{x7})->getResult(0);
-
-    tmp = builder.create<mlir::hivm::VAddOp>(loc, src.getType(), ValueRange{src, x3}, ValueRange{tmp})->getResult(0);
-    tmp = builder.create<mlir::hivm::VAddOp>(loc, tmp.getType(), ValueRange{x5, tmp}, ValueRange{tmp})->getResult(0);
-    Value result = builder.create<mlir::hivm::VAddOp>(loc, dstVal.getType(), ValueRange{x7, tmp}, ValueRange{dstVal})->getResult(0);
+    Value src = GenExtractSliceFromRegion(npuirop.srcs[i], npuirop.srcs_range[i]);
+    Value result = builder.create<mlir::math::TanhOp>(loc, src)->getResult(0);
     SetVarValue(npuirop.dst, result);
   }
 }
