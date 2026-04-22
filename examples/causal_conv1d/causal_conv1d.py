@@ -1,5 +1,12 @@
-# adapted from vllm/model_executor/layers/mamba/ops/causal_conv1d.py
+# Reference: ops-transformer/attention/causal_conv1d
 # SPDX-License-Identifier: Apache-2.0
+#
+# v2 version: 基于 causal_conv1d.py，添加 ops-transformer Ascend C 的功能扩展
+# - weight: (width, dim) kernel format only
+# - conv_state: (num_cache_lines, state_len, dim) kernel format only
+# - 索引类型: int32 (TileLang 兼容)
+# - Prefill 支持 width=3,4,5,6
+# - Decode 支持 width=3,4
 
 import tilelang
 import tilelang.language as T
@@ -9,29 +16,34 @@ tilelang.cache.clear_cache()
 
 PAD_SLOT_ID = -1
 
-pass_configs = {
+pass_configs_fn = {
     tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
     tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
     tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: False,
 }
 
-_kernel_cache_fn = {}
-_kernel_cache_update = {}
+pass_configs_decode = {
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
+    tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
+}
 
+_kernel_cache_fn = {}
+_kernel_cache_decode = {}
 
 def clear_all_caches():
-    global _kernel_cache_fn, _kernel_cache_update
+    global _kernel_cache_fn, _kernel_cache_decode
     _kernel_cache_fn = {}
-    _kernel_cache_update = {}
+    _kernel_cache_decode = {}
     tilelang.cache.clear_cache()
 
 
 # ============================================================================
-# Kernel 1: Prefill (FN mode - process full sequences)
+# Kernel 1: Prefill (FN mode)
 # ============================================================================
 
 
-@tilelang.jit(out_idx=[-1], pass_configs=pass_configs)
+@tilelang.jit(out_idx=[-1], pass_configs=pass_configs_fn)
 def causal_conv1d_fn_kernel(
     batch_size: int,
     width: int,
@@ -45,18 +57,15 @@ def causal_conv1d_fn_kernel(
     """
     Prefill kernel: FN VARLEN mode
 
-    Reference: causal_conv1d_varlen_with_update.py
-
     Grid = batch_size * dim_num * seqlen_num
-    Each kernel processes one batch, one token block, one dim block
 
     Input:
     - x: (total_len, dim) packed layout
-    - weight: (width, dim)
-    - conv_state: (num_cache_lines, state_len, dim)
-    - cu_seqlens: (batch_size + 1)
-    - cache_indices: (batch_size) optional
-    - initial_state_mode: (batch_size) optional
+    - weight: (width, dim) kernel format
+    - conv_state: (num_cache_lines, state_len, dim) kernel format
+    - cu_seqlens: (batch_size + 1,) int32
+    - cache_indices: (batch_size,) int32
+    - initial_state_mode: (batch_size,) int32
 
     Output:
     - y: (total_len, dim)
@@ -71,7 +80,7 @@ def causal_conv1d_fn_kernel(
 
     dim_num = T.ceildiv(dim, block_D)
     seqlen_num = T.ceildiv(total_len, block_M)
-    grid_size = dim_num * seqlen_num * batch_size
+    grid_size = batch_size * dim_num * seqlen_num
 
     @T.prim_func
     def main(
@@ -95,11 +104,6 @@ def causal_conv1d_fn_kernel(
             seq_start = cu_seqlens[batch_id]
             seq_end = cu_seqlens[batch_id + 1]
             seqlen = seq_end - seq_start
-
-            has_init = False
-            if has_initial_state_mode:
-                init_val = initial_state_mode[batch_id]
-                has_init = init_val != 0
 
             t_block_start = seq_block * block_M
             t_block_end_candidate = t_block_start + block_M
@@ -150,34 +154,36 @@ def causal_conv1d_fn_kernel(
 
             hist_len = width - 1
 
-            if has_init and seq_block == 0:
-                if has_cache_indices:
-                    ci = cache_indices[batch_id]
-                    for h in T.serial(hist_len):
-                        if h < state_len:
-                            if h == 0:
-                                T.copy(conv_state[ci, 0, d_offset], hist0_ub)
-                            if h == 1:
-                                T.copy(conv_state[ci, 1, d_offset], hist1_ub)
-                            if h == 2:
-                                T.copy(conv_state[ci, 2, d_offset], hist2_ub)
-                            if h == 3:
-                                T.copy(conv_state[ci, 3, d_offset], hist3_ub)
-                            if h == 4:
-                                T.copy(conv_state[ci, 4, d_offset], hist4_ub)
-                else:
-                    for h in T.serial(hist_len):
-                        if h < state_len:
-                            if h == 0:
-                                T.copy(conv_state[batch_id, 0, d_offset], hist0_ub)
-                            if h == 1:
-                                T.copy(conv_state[batch_id, 1, d_offset], hist1_ub)
-                            if h == 2:
-                                T.copy(conv_state[batch_id, 2, d_offset], hist2_ub)
-                            if h == 3:
-                                T.copy(conv_state[batch_id, 3, d_offset], hist3_ub)
-                            if h == 4:
-                                T.copy(conv_state[batch_id, 4, d_offset], hist4_ub)
+            if has_initial_state_mode and seq_block == 0:
+                init_val = initial_state_mode[batch_id]
+                if init_val != 0:
+                    if has_cache_indices:
+                        ci = cache_indices[batch_id]
+                        for h in T.serial(hist_len):
+                            if h < state_len:
+                                if h == 0:
+                                    T.copy(conv_state[ci, 0, d_offset], hist0_ub)
+                                if h == 1:
+                                    T.copy(conv_state[ci, 1, d_offset], hist1_ub)
+                                if h == 2:
+                                    T.copy(conv_state[ci, 2, d_offset], hist2_ub)
+                                if h == 3:
+                                    T.copy(conv_state[ci, 3, d_offset], hist3_ub)
+                                if h == 4:
+                                    T.copy(conv_state[ci, 4, d_offset], hist4_ub)
+                    else:
+                        for h in T.serial(hist_len):
+                            if h < state_len:
+                                if h == 0:
+                                    T.copy(conv_state[batch_id, 0, d_offset], hist0_ub)
+                                if h == 1:
+                                    T.copy(conv_state[batch_id, 1, d_offset], hist1_ub)
+                                if h == 2:
+                                    T.copy(conv_state[batch_id, 2, d_offset], hist2_ub)
+                                if h == 3:
+                                    T.copy(conv_state[batch_id, 3, d_offset], hist3_ub)
+                                if h == 4:
+                                    T.copy(conv_state[batch_id, 4, d_offset], hist4_ub)
             else:
                 for h in T.serial(hist_len):
                     hist_token_idx = t_block_start - hist_len + h
@@ -308,74 +314,31 @@ def get_fn_kernel(batch_size, width, has_bias, has_activation, has_cache_indices
 def causal_conv1d_fn(
     x: torch.Tensor,
     weight: torch.Tensor,
+    conv_states: torch.Tensor,
     bias: torch.Tensor | None = None,
     activation: str | None = "silu",
-    conv_states: torch.Tensor | None = None,
     cache_indices: torch.Tensor | None = None,
     query_start_loc: torch.Tensor | None = None,
     initial_state_mode: torch.Tensor | None = None,
-    weight_format: str = "kernel",
-    conv_state_format: str = "kernel",
 ):
     """
-    Prefill mode: Process full sequences (FN VARLEN)
-
-    性能优化：支持 kernel 格式输入，避免 transpose 开销
+    Prefill mode
 
     Args:
-        x: (total_tokens, dim) for varlen mode (packed layout)
-        weight: 卷积权重
-            - kernel format (推荐): (width, dim) - 无 transpose，性能最优
-            - vLLM format: (dim, width) - 会 transpose，有开销
-        conv_states: 卷积状态
-            - kernel format (推荐): (num_cache_lines, state_len, dim) - 无 transpose
-            - vLLM format: (num_cache_lines, dim, state_len) - 会 transpose
+        x: (total_len, dim) packed layout
+        weight: (width, dim) kernel format only
+        conv_states: (num_cache_lines, state_len, dim) kernel format only
+        bias: (dim,) optional
         cache_indices: (batch,) int32
         query_start_loc: (batch + 1,) int32
         initial_state_mode: (batch,) int32
-        weight_format: "kernel" 或 "vllm"
-        conv_state_format: "kernel" 或 "vllm"
-
-    性能对比:
-        - kernel format (无transpose): FN kernel = 0.169 ms
-        - vLLM format (每次transpose): FN kernel = 0.864 ms (5.1x慢)
-
-    使用建议:
-        # 方式1：初始化时 transpose（推荐）
-        weight_kernel = weight_vllm.transpose(0, 1).contiguous()  # 一次性
-        conv_state_kernel = conv_state_vllm.transpose(1, 2).contiguous()
-        out = causal_conv1d_fn(x, weight_kernel, ..., weight_format="kernel")
-
-        # 方式2：直接传 kernel 格式（最优）
-        out = causal_conv1d_fn(x, weight_kernel, conv_state_kernel,
-                               weight_format="kernel", conv_state_format="kernel")
     """
     original_dtype = x.dtype
 
-    is_varlen = query_start_loc is not None
-
-    if is_varlen:
-        batch_size = cache_indices.size(0)
-        total_len = x.size(0)
-        dim = x.size(1)
-    else:
-        batch_size, dim, max_seqlen = x.shape
-        total_len = batch_size * max_seqlen
-        x = x.reshape(total_len, dim).contiguous()
-        query_start_loc = torch.arange(0, total_len + 1, max_seqlen, dtype=torch.int32, device=x.device)
-
-    # 格式转换（只在需要时做）
-    if weight_format == "vllm":
-        weight_kernel = weight.transpose(0, 1).contiguous()
-    else:
-        weight_kernel = weight
-
-    if conv_state_format == "vllm":
-        conv_state_kernel = conv_states.transpose(1, 2).contiguous()
-    else:
-        conv_state_kernel = conv_states
-
-    width = weight_kernel.shape[0]
+    batch_size = cache_indices.size(0)
+    x.size(0)
+    dim = x.size(1)
+    width = weight.shape[0]
 
     has_bias = bias is not None
     has_activation = activation in ["silu", "swish"]
@@ -388,31 +351,26 @@ def causal_conv1d_fn(
     kernel = get_fn_kernel(batch_size, width, has_bias, has_activation, has_cache_indices, has_initial_state_mode, block_M, block_D)
 
     if bias is None:
-        bias = torch.zeros(dim, dtype=conv_state_kernel.dtype, device=x.device)
+        bias = torch.zeros(dim, dtype=conv_states.dtype, device=x.device)
     if cache_indices is None:
         cache_indices = torch.zeros(batch_size, dtype=torch.int32, device=x.device)
     if initial_state_mode is None:
         initial_state_mode = torch.zeros(batch_size, dtype=torch.int32, device=x.device)
 
-    conv_state_kernel_f32 = conv_state_kernel.float()
-    out = kernel(x.float(), weight_kernel.float(), bias.float(), conv_state_kernel_f32, query_start_loc, cache_indices, initial_state_mode)
+    conv_states_f32 = conv_states.float()
+    out = kernel(x.float(), weight.float(), bias.float(), conv_states_f32, query_start_loc, cache_indices, initial_state_mode)
 
-    conv_state_kernel.copy_(conv_state_kernel_f32)
-
-    if conv_state_format == "vllm":
-        conv_states.copy_(conv_state_kernel.transpose(1, 2))
-    elif conv_states.data_ptr() != conv_state_kernel.data_ptr():
-        conv_states.copy_(conv_state_kernel)
+    conv_states.copy_(conv_states_f32)
 
     return out.to(original_dtype)
 
 
 # ============================================================================
-# Kernel 2: Decode (统一支持单token和投机解码)
+# Kernel 2: Decode (UPDATE mode) - 直接使用原始版本代码
 # ============================================================================
 
 
-@tilelang.jit(out_idx=[-1], pass_configs=pass_configs)
+@tilelang.jit(out_idx=[-1], pass_configs=pass_configs_decode)
 def causal_conv1d_decode_kernel(
     batch: int,
     seqlen: int,
@@ -422,6 +380,7 @@ def causal_conv1d_decode_kernel(
     has_bias: bool,
     has_activation: bool,
     has_cache_indices: bool,
+    has_num_accepted_tokens: bool,
     block_D: int = 512,
 ):
     """
@@ -429,22 +388,24 @@ def causal_conv1d_decode_kernel(
 
     Grid = dim_num (按 dim 分块)
 
-    输入：
+    Input:
     - x: (batch, seqlen, dim)
-    - weight: (width, dim)
+    - weight: (width, dim) kernel format
     - bias: (dim,)
-    - conv_state: (num_cache_lines, state_len, dim)
-    - cache_indices: (batch,)
+    - conv_state: (num_cache_lines, state_len, dim) kernel format
+    - cache_indices: (batch,) int32
+    - num_accepted_tokens: (batch,) int32, 用于投机解码状态偏移
 
-    输出：
+    Output:
     - y: (batch, seqlen, dim)
     - conv_state: 状态更新
 
-    状态逻辑：
-    - seqlen=1: 从 state[0,1,2] 读取，写入 state[2]
-    - seqlen>1: 从 state[offset,offset+1,offset+2] 读取，滚动+写入多个token
+    状态偏移逻辑:
+    - 无 num_accepted_tokens: state_token_offset = seqlen - 1
+    - 有 num_accepted_tokens: state_token_offset = num_accepted_tokens[b] - 1
+      (投机解码被拒绝时，从实际接受的位置读取历史)
     """
-    dtype = "float"
+    dtype = "float16"
     dim_num = T.ceildiv(dim, block_D)
     num_cache_lines = T.symbolic("num_cache_lines")
 
@@ -455,6 +416,7 @@ def causal_conv1d_decode_kernel(
         bias: T.Tensor((dim,), dtype),
         conv_state: T.Tensor((num_cache_lines, state_len, dim), dtype),
         cache_indices: T.Tensor((batch,), "int32"),
+        num_accepted_tokens: T.Tensor((batch,), "int32"),
         y: T.Tensor((batch, seqlen, dim), dtype),
     ):
         with T.Kernel(dim_num, is_npu=True) as (cid, vid):
@@ -480,11 +442,23 @@ def causal_conv1d_decode_kernel(
             for b_idx in T.serial(batch):
                 ci = cache_indices[b_idx]
 
+                # Calculate state_token_offset for speculative decoding
+                # If num_accepted_tokens provided: offset = num_accepted_tokens - 1
+                # Otherwise: offset = seqlen - 1
+                hist_len = width - 1
+
                 hist0_ub = T.alloc_ub((block_D,), dtype)
                 hist1_ub = T.alloc_ub((block_D,), dtype)
                 hist2_ub = T.alloc_ub((block_D,), dtype)
 
-                state_token_offset = seqlen - 1
+                # Read num_accepted_tokens for this batch item
+                accepted = num_accepted_tokens[b_idx] if has_num_accepted_tokens else seqlen
+
+                # Clamp offset to valid range
+                max_offset = state_len - hist_len
+                raw_offset = accepted - 1
+                state_token_offset = T.if_then_else(raw_offset < 0, 0,
+                                                    T.if_then_else(raw_offset > max_offset, max_offset, raw_offset))
 
                 if has_cache_indices:
                     T.copy(conv_state[ci, state_token_offset + 0, d_offset], hist0_ub)
@@ -503,7 +477,7 @@ def causal_conv1d_decode_kernel(
 
                     T.copy(x[b_idx, t_idx, d_offset], x_cur)
 
-                    T.copy(bias_ub, acc)
+                    T.tile.fill(acc, 0.0)
                     T.tile.mul(tmp, hist0_ub, w0)
                     T.tile.add(acc, acc, tmp)
                     T.tile.mul(tmp, hist1_ub, w1)
@@ -527,10 +501,18 @@ def causal_conv1d_decode_kernel(
 
                     T.copy(out, y[b_idx, t_idx, d_offset])
 
-                    T.copy(hist1_ub, hist0_ub)
-                    T.copy(hist2_ub, hist1_ub)
+                    # Shift history buffers using intermediate buffers to ensure correct ordering
+                    tmp_hist0 = T.alloc_ub((block_D,), dtype)
+                    tmp_hist1 = T.alloc_ub((block_D,), dtype)
+                    T.copy(hist1_ub, tmp_hist0)
+                    T.copy(hist2_ub, tmp_hist1)
+                    T.copy(tmp_hist0, hist0_ub)
+                    T.copy(tmp_hist1, hist1_ub)
                     T.copy(x_cur, hist2_ub)
 
+                # State update for speculative decoding
+                # 1. Shift old state: move state[offset+1] -> state[0], state[offset+2] -> state[1]
+                # 2. Write new tokens to positions 2, 3, 4... (write_pos = 2 + write_t)
                 tmp_state1 = T.alloc_ub((block_D,), dtype)
                 tmp_state2 = T.alloc_ub((block_D,), dtype)
 
@@ -562,14 +544,11 @@ def causal_conv1d_decode_kernel(
     return main
 
 
-_kernel_cache_decode = {}
-
-
-def get_decode_kernel(batch, seqlen, dim, state_len, width, has_bias, has_activation, has_cache_indices, block_D=512):
-    key = (batch, seqlen, dim, state_len, width, has_bias, has_activation, has_cache_indices, block_D)
+def get_decode_kernel(batch, seqlen, dim, state_len, width, has_bias, has_activation, has_cache_indices, has_num_accepted_tokens, block_D=512):
+    key = (batch, seqlen, dim, state_len, width, has_bias, has_activation, has_cache_indices, has_num_accepted_tokens, block_D)
     if key not in _kernel_cache_decode:
         _kernel_cache_decode[key] = causal_conv1d_decode_kernel(
-            batch, seqlen, dim, state_len, width, has_bias, has_activation, has_cache_indices, block_D
+            batch, seqlen, dim, state_len, width, has_bias, has_activation, has_cache_indices, has_num_accepted_tokens, block_D
         )
     return _kernel_cache_decode[key]
 
@@ -581,78 +560,57 @@ def causal_conv1d_update(
     bias: torch.Tensor | None = None,
     activation: str | None = "silu",
     cache_indices: torch.Tensor | None = None,
-    weight_format: str = "kernel",
-    conv_state_format: str = "kernel",
+    num_accepted_tokens: torch.Tensor | None = None,
 ):
     """
-    Decode mode: 统一支持单token和投机解码
+    Decode mode
 
     Args:
-        x: 输入 token
-            - 单token: (1, dim) 或 (dim,)
-            - 投机解码: (batch, seqlen, dim)，seqlen=numAcceptedTokens
-        conv_state: 卷积状态
-            - kernel format (推荐): (num_cache_lines, state_len, dim)
-            - vLLM format: (num_cache_lines, dim, state_len)
-        weight: 卷积权重
-            - kernel format (推荐): (width, dim)
-            - vLLM format: (dim, width)
+        x: (batch, dim) or (dim,) for single token
+           (batch, seqlen, dim) for speculative decode
+        conv_state: (num_cache_lines, state_len, dim) kernel format only
+        weight: (width, dim) kernel format only, width=3 or 4
+        bias: (dim,) optional
         cache_indices: (batch,) int32
-
-    状态更新逻辑：
-    - seqlen=1: 单token decode，从 state[0,1,2] 读取
-    - seqlen>1: 投机解码，从 state[offset,offset+1,offset+2] 读取
+        num_accepted_tokens: (batch,) int32, 用于投机解码
+            - 投机解码被拒绝时，指定每个 batch 实际接受的 token 数量
+            - state_token_offset = num_accepted_tokens - 1
+            - 如果为 None，则使用 seqlen - 1 作为偏移
     """
-    original_dtype = x.dtype
 
     if x.dim() == 1:
-        x = x.unsqueeze(0).unsqueeze(0)  # (dim,) -> (1, 1, dim)
+        x = x.unsqueeze(0).unsqueeze(0)
     elif x.dim() == 2:
-        x = x.unsqueeze(1)  # (batch, dim) -> (batch, 1, dim)
+        x = x.unsqueeze(1)
 
     batch, seqlen, dim = x.shape
-
-    state_len = conv_state.shape[1] if conv_state_format == "kernel" else conv_state.shape[2]
-
-    if weight_format == "vllm":
-        weight_kernel = weight.transpose(0, 1).contiguous()
-    else:
-        weight_kernel = weight
-
-    if conv_state_format == "vllm":
-        conv_state_kernel = conv_state.transpose(1, 2).contiguous()
-    else:
-        conv_state_kernel = conv_state
-
-    width = weight_kernel.shape[0]
+    width = weight.shape[0]
+    state_len = conv_state.shape[1]
 
     has_bias = bias is not None
     has_activation = activation in ["silu", "swish"]
     has_cache_indices = cache_indices is not None
+    has_num_accepted_tokens = num_accepted_tokens is not None
 
-    block_D = 512 if dim >= 512 else 256
+    # Use block_D = dim for single block to avoid reading out-of-bounds data
+    # When dim < 512, max(512, dim) would cause reading beyond tensor boundaries
+    block_D = dim
 
-    kernel = get_decode_kernel(batch, seqlen, dim, state_len, width, has_bias, has_activation, has_cache_indices, block_D)
+    kernel = get_decode_kernel(batch, seqlen, dim, state_len, width, has_bias, has_activation, has_cache_indices, has_num_accepted_tokens, block_D)
 
     if bias is None:
-        bias = torch.zeros(dim, dtype=conv_state_kernel.dtype, device=x.device)
+        bias = torch.zeros(dim, dtype=conv_state.dtype, device=x.device)
     if cache_indices is None:
         cache_indices = torch.zeros(batch, dtype=torch.int32, device=x.device)
+    if num_accepted_tokens is None:
+        num_accepted_tokens = torch.full((batch,), seqlen, dtype=torch.int32, device=x.device)
 
-    conv_state_kernel_f32 = conv_state_kernel.float()
-    out = kernel(x.float(), weight_kernel.float(), bias.float(), conv_state_kernel_f32, cache_indices)
-
-    conv_state_kernel.copy_(conv_state_kernel_f32)
-
-    if conv_state_format == "vllm":
-        conv_state.copy_(conv_state_kernel.transpose(1, 2).contiguous())
-    elif conv_state.data_ptr() != conv_state_kernel.data_ptr():
-        conv_state.copy_(conv_state_kernel)
+    out = kernel(x, weight, bias, conv_state, cache_indices, num_accepted_tokens)
 
     if seqlen == 1:
-        return out.squeeze(1).to(original_dtype)  # (batch, 1, dim) -> (batch, dim)
+        return out.squeeze(1)
     else:
-        return out.to(original_dtype)
+        return out
 
 
 # ============================================================================
@@ -663,19 +621,19 @@ def causal_conv1d_update(
 def causal_conv1d_fn_ref(
     x: torch.Tensor,
     weight: torch.Tensor,
+    conv_states: torch.Tensor,
     bias: torch.Tensor | None = None,
     activation: str | None = "silu",
-    conv_states: torch.Tensor | None = None,
     cache_indices: torch.Tensor | None = None,
     query_start_loc: torch.Tensor | None = None,
     initial_state_mode: torch.Tensor | None = None,
 ):
-    """PyTorch reference implementation for prefill mode."""
     dtype = x.dtype
     x = x.float()
     weight = weight.float()
     if bias is not None:
         bias = bias.float()
+    conv_states = conv_states.float()
 
     batch_size = cache_indices.size(0)
     total_len, dim = x.shape
@@ -697,7 +655,7 @@ def causal_conv1d_fn_ref(
         if has_init and conv_states is not None:
             for h in range(hist_len):
                 if h < conv_states.shape[1]:
-                    history.append(conv_states[ci, h, :].float().clone())
+                    history.append(conv_states[ci, h, :].clone())
                 else:
                     history.append(torch.zeros(dim, dtype=torch.float32, device=x.device))
         else:
@@ -727,7 +685,7 @@ def causal_conv1d_fn_ref(
             for pos in range(hist_len):
                 last_idx = seqlen - hist_len + pos
                 if last_idx >= 0:
-                    conv_states[ci, pos, :] = x[seq_start + last_idx, :].to(conv_states.dtype)
+                    conv_states[ci, pos, :] = x[seq_start + last_idx, :]
 
     return y.to(dtype)
 
@@ -739,8 +697,11 @@ def causal_conv1d_update_ref(
     bias: torch.Tensor | None = None,
     activation: str | None = "silu",
     cache_indices: torch.Tensor | None = None,
+    num_accepted_tokens: torch.Tensor | None = None,
 ):
-    """PyTorch reference implementation for decode mode."""
+    """
+    Reference implementation for decode mode with num_accepted_tokens support
+    """
     dtype = x.dtype
 
     if x.dim() == 1:
@@ -757,19 +718,27 @@ def causal_conv1d_update_ref(
     weight = weight.float()
     if bias is not None:
         bias = bias.float()
-    conv_state = conv_state.float()
+    conv_state_f = conv_state.float().clone()
 
     y = torch.zeros(batch, seqlen, dim, dtype=torch.float32, device=x.device)
 
     for b in range(batch):
         ci = cache_indices[b].item() if cache_indices is not None else b
-        state_token_offset = seqlen - 1
+
+        # Calculate state_token_offset from num_accepted_tokens
+        if num_accepted_tokens is not None:
+            accepted = num_accepted_tokens[b].item()
+            max_offset = state_len - hist_len
+            raw_offset = accepted - 1
+            state_token_offset = max(0, min(raw_offset, max_offset))
+        else:
+            state_token_offset = seqlen - 1
 
         history = []
         for h in range(hist_len):
             src_idx = state_token_offset + h
             if src_idx < state_len:
-                history.append(conv_state[ci, src_idx, :].clone())
+                history.append(conv_state_f[ci, src_idx, :].clone())
             else:
                 history.append(torch.zeros(dim, dtype=torch.float32, device=x.device))
 
@@ -792,14 +761,16 @@ def causal_conv1d_update_ref(
                 history[h] = history[h + 1]
             history[hist_len - 1] = x_t.clone()
 
-        if state_len >= 2:
-            conv_state[ci, 0, :] = conv_state[ci, state_token_offset + 1, :]
-            conv_state[ci, 1, :] = conv_state[ci, state_token_offset + 2, :]
+        # State update: shift and write new tokens
+        conv_state_f[ci, 0, :] = conv_state_f[ci, state_token_offset + 1, :]
+        conv_state_f[ci, 1, :] = conv_state_f[ci, state_token_offset + 2, :]
 
         for t in range(seqlen):
             write_pos = 2 + t
             if write_pos < state_len:
-                conv_state[ci, write_pos, :] = x[b, t, :]
+                conv_state_f[ci, write_pos, :] = x[b, t, :]
+
+    conv_state.copy_(conv_state_f)
 
     if seqlen == 1:
         return y.squeeze(1).to(dtype)
@@ -829,28 +800,14 @@ if __name__ == "__main__":
     initial_state_mode_fn = torch.tensor([0], dtype=torch.int32, device="npu")
 
     out_ref_fn = causal_conv1d_fn_ref(
-        x_fn,
-        weight_fn,
-        None,
-        activation="silu",
-        conv_states=conv_state_fn,
-        cache_indices=cache_indices_fn,
-        query_start_loc=query_start_loc_fn,
-        initial_state_mode=initial_state_mode_fn,
+        x_fn, weight_fn, conv_state_fn.clone(),
+        None, "silu", cache_indices_fn, query_start_loc_fn, initial_state_mode_fn
     )
 
     out_kernel_fn = causal_conv1d_fn(
-        x_fn,
-        weight_fn,
-        None,
-        activation="silu",
-        conv_states=conv_state_fn,
-        cache_indices=cache_indices_fn,
-        query_start_loc=query_start_loc_fn,
-        initial_state_mode=initial_state_mode_fn,
-        weight_format="kernel",
-        conv_state_format="kernel",
+        x_fn, weight_fn, conv_state_fn.clone(),
+        None, "silu", cache_indices_fn, query_start_loc_fn, initial_state_mode_fn
     )
 
     torch.testing.assert_close(out_kernel_fn, out_ref_fn, rtol=1e-2, atol=1e-2)
-    print("Batch Kernel Output Match!")
+    print("Kernel Output Match!")
