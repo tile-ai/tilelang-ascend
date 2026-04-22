@@ -2555,8 +2555,8 @@ void CodeGenTileLangNPUIRDEV::VcumsumCodegen(const CallNode *op) {
     return;
   }
   auto booleanAttr = mlir::BoolAttr::get(builder.getContext(), false);
-  auto newCumsumOp = builder.create<mlir::hivm::VCumsumOp>(
-      loc, result_tensors, src, dst,
+  auto newCumsumOp = builder.create<mlir::hfusion::CumsumOp>(
+      loc, result_tensors, src,
       builder.getDenseI64ArrayAttr(npuirop.cum_dims), booleanAttr);
   SetVarValue(npuirop.dst, newCumsumOp->getResult(0));
 }
@@ -2648,9 +2648,13 @@ void CodeGenTileLangNPUIRDEV::VinterleaveCodegen(const CallNode *op) {
   }
   mlir::ValueRange srcs_vr(srcs);
   Value dst = GenSubviewFromRegion(npuirop.dst, npuirop.dst_range);
-  builder.create<mlir::hivm::VInterleaveOp>(
-      builder.getUnknownLoc(), TypeRange{}, srcs_vr, dst,
-      static_cast<int64_t>(npuirop.channel_nums));
+  mlir::Type outputType = dst.getType();
+
+  auto interleaveOp = builder.create<mlir::hfusion::InterleaveOp>(
+    builder.getUnknownLoc(),
+    outputType,
+    srcs_vr);
+  SetVarValue(npuirop.dst, interleaveOp->getResult(0));
 }
 
 void CodeGenTileLangNPUIRDEV::VdeinterleaveCodegen(const CallNode *op) {
@@ -2660,17 +2664,18 @@ void CodeGenTileLangNPUIRDEV::VdeinterleaveCodegen(const CallNode *op) {
   size_t n_dsts = npuirop.dsts.size();
   for (size_t i = 0; i < n_dsts; i++) {
     Value dst = GenSubviewFromRegion(npuirop.dsts[i], npuirop.dsts_range[i]);
-    dsts.push_back(dst);
+
+    int64_t current_channel_idx = i;
+    auto channelIdxAttr = builder.getI64IntegerAttr(current_channel_idx);
+
+    auto deinterleaveOp = builder.create<hfusion::DeinterleaveOp>(
+        builder.getUnknownLoc(),
+        dst.getType(),
+        src,
+        channelIdxAttr
+    );
+    SetVarValue(npuirop.dsts[i], deinterleaveOp->getResult(0));
   }
-  mlir::ValueRange dsts_vr(dsts);
-  auto channel_nums = mlir::IntegerAttr::get(
-      builder.getI64Type(), static_cast<int64_t>(npuirop.channel_nums));
-  mlir::hivm::DeinterleaveModeAttr index_mode =
-      mlir::hivm::DeinterleaveModeAttr::get(
-          &context, NPUIR_STR_DEINTERLEAVEMODE[npuirop.index_mode]);
-  builder.create<mlir::hivm::VDeinterleaveOp>(builder.getUnknownLoc(),
-                                              TypeRange{}, src, dsts_vr,
-                                              channel_nums, index_mode);
 }
 
 /// Generate hivm.hir.varange for tl.npuir_arange.
