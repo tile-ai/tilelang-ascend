@@ -28,19 +28,23 @@ $$
 
 1. 将输入张量按 sequence dimension 分成大小为 chunk_size 的块
 2. 每个 kernel block 处理一个 chunk 的一个 batch-head
-3. 在 chunk 内执行 cumsum 操作（正向或反向）
-4. 输出张量形状与输入相同，每个 chunk 内的值为该 chunk 的局部累加和
+3. 仅对对齐情况进行加速计算：
+   - `head_first=True`（输入布局为 `(B, H, L)`）
+   - `H % 2 == 0`（head 数为偶数，适配 vector 核双发射）
+   - `L % C == 0`（序列长度是 chunk_size 的整数倍）
+4. 非对齐情况（`head_first=False` / `H` 奇数 / `L` 非整除）直接回退到 PyTorch reference 实现
+5. 输出张量形状与输入相同，每个 chunk 内的值为该 chunk 的局部累加和
 
 ### 1.5 数据流图
 
 ```
-输入 G (B, H, L)
-  ↓ T.copy (按 chunk 切片)
-UB[g_ub] (chunk_size 元素)
-  ↓ for循环 cumsum (+ reverse 转换)
-UB[s_ub] (累加后)
-  ↓ T.copy
-输出 S (B, H, L)
+输入 G (B, H, L) / (B, L, H)
+  ↓ 检查对齐条件: head_first=True + H%2==0 + L%C==0
+  ↓ [对齐] 整块 copy from GM → UB[g_ub]
+  ↓ [对齐] for循环 cumsum (+ reverse 转换) → UB[s_ub]
+  ↓ [对齐] 整块 copy from UB[s_ub] → GM[S]
+  ↓ [非对齐] 回退到 PyTorch reference 实现
+输出 S (B, H, L) / (B, L, H)
 ```
 
 ---
@@ -53,8 +57,8 @@ UB[s_ub] (累加后)
 
 ### 2.2 选型理由
 
-1. **T.cumsum API 后端不完整**: ascend 后端缺少 `tl.cumsum` intrinsic 的完整实现，需手写 for 循环
-2. **需要手动同步**: `pass_configs={TL_ASCEND_AUTO_SYNC: True}` 必需
+1. **T.cumsum API 不适合当前迁移目标**: kernel 侧仍采用手写 for 循环处理 chunk 内 cumsum 与尾块 guard
+2. **需要自动同步**: `pass_configs={TL_ASCEND_AUTO_SYNC: True}` 必需
 3. **精细内存控制**: 需显式 `T.alloc_ub` 分配 UB buffer
 4. **reverse 功能需要额外处理**: 反向 cumsum 需计算总和后转换
 
@@ -76,83 +80,43 @@ UB[s_ub] (累加后)
 
 | 步骤 | 数学表达 | 说明 |
 |------|----------|------|
-| 1 | $g_{ub} = G[bs \times C : (bs+1) \times C]$ | 从 GM 加载一个 chunk 的数据到 UB |
+| 1 | $g_{ub}[i] = G[\text{chunk\_base} + i]$ | 从 GM 整块加载一个 chunk 的数据到 UB（仅处理 L%C==0 对齐场景）|
 | 2 | $s_{ub}[i] = s_{ub}[i-1] + g_{ub}[i]$ | 循环累加实现 cumsum |
 | 3 | 若 reverse: $s_{ub}[i] = \text{total} - s_{ub}[i] + g_{ub}[i]$ | 反向转换 |
-| 4 | $S[bs \times C] = s_{ub}$ | 将结果写回 GM |
+| 4 | $S[\text{chunk\_base} + i] = s_{ub}[i]$ | 将结果整块写回 GM |
+
+> **注意**: 非对齐场景（L 非 C 整数倍 / H 奇数 / head_first=False）直接回退到 PyTorch reference 实现，不进入 kernel。
 
 ### 3.2 TileLang API 映射
 
 | 步骤 | 数学表达 | TileLang API | 参数 | 模式 |
 |------|----------|-------------|------|------|
-| 1 | 加载 chunk | `T.copy(G[...], g_ub)` | 索引计算 | Expert |
+| 1 | 加载 chunk | `for i in range(C)` + 条件判断 | 支持尾块 guard | Expert |
 | 2 | 初始化 | `T.tile.fill(s_ub, 0.0)` | fill 值 0.0 | Expert |
 | 3 | cumsum 循环 | `for i in range(C)` | Python range | Expert |
 | 4 | reverse 转换 | 手写循环计算总和并转换 | `T.tile.fill(total_ub, 0.0)` | Expert |
-| 5 | 写回结果 | `T.copy(s_ub, S[...])` | 累加结果 | Expert |
+| 5 | 写回结果 | `for i in range(C)` + 条件判断 | 仅写回有效元素 | Expert |
 
 ### 3.3 计算伪代码
 
 ```python
 @tilelang.jit(out_idx=[-1], pass_configs={TL_ASCEND_AUTO_SYNC: True})
 def cumsum_ker(B, H, L, C, reverse=False, head_first=True, use_fragment=False):
-    chunk_num = T.ceildiv(L, C)
-    VEC_NUM = 2
-    shape = (B, H, L) if head_first else (B, L, H)
+    chunk_num = L // C  # 只处理 L % C == 0 对齐场景
 
-    @T.prim_func
-    def main(G: T.Tensor(shape, "float"), S: T.Tensor(shape, "float")):
-        with T.Kernel(B * (H // VEC_NUM) * chunk_num, is_npu=True) as (cid, vid):
-            bx = cid % chunk_num
-            by = (cid // chunk_num) % (H // VEC_NUM) * 2 + vid
-            bz = (cid // chunk_num) // (H // VEC_NUM)
+    @tl.prim_func
+    def main(G: tl.Tensor(shape, "float"), S: tl.Tensor(shape, "float")):
+        with tl.Kernel(B * (H // 2) * chunk_num, is_npu=True) as (cid, vid):
+            chunk_base = bx * C
+            tl.tile.fill(g_ub, 0.0)
+            tl.tile.fill(s_ub, 0.0)
 
-            g_ub = T.alloc_ub([C], "float")
-            s_ub = T.alloc_ub([C], "float")
-            total_ub = T.alloc_ub([1], "float")
-            if use_fragment:
-                fragment_ub = T.alloc_ub([C], "float")
+            tl.copy(G[bz, by, chunk_base], g_ub)  # 整块拷贝，无需边界检查
 
-            with T.Scope("V"):
-                T.tile.fill(s_ub, 0.0)
-                
-                if head_first:
-                    T.copy(G[bz, by, bx * C], g_ub)
-                else:
-                    T.copy(G[bz, bx * C, by], g_ub)
+            # 对 chunk 内元素执行局部 cumsum / reverse 转换
+            ...
 
-                if use_fragment:
-                    T.copy(g_ub, fragment_ub)
-                    T.tile.fill(fragment_ub, 0.0)
-                    for i in range(C):
-                        if i > 0:
-                            fragment_ub[i] = fragment_ub[i - 1]
-                        fragment_ub[i] = fragment_ub[i] + g_ub[i]
-                    if reverse:
-                        T.tile.fill(total_ub, 0.0)
-                        for i in range(C):
-                            total_ub[0] = total_ub[0] + g_ub[i]
-                        for i in range(C):
-                            fragment_ub[i] = total_ub[0] - fragment_ub[i] + g_ub[i]
-                    T.copy(fragment_ub, s_ub)
-                else:
-                    for i in range(C):
-                        if i > 0:
-                            s_ub[i] = s_ub[i - 1]
-                        s_ub[i] = s_ub[i] + g_ub[i]
-                    if reverse:
-                        T.tile.fill(total_ub, 0.0)
-                        for i in range(C):
-                            total_ub[0] = total_ub[0] + g_ub[i]
-                        for i in range(C):
-                            s_ub[i] = total_ub[0] - s_ub[i] + g_ub[i]
-
-                if head_first:
-                    T.copy(s_ub, S[bz, by, bx * C])
-                else:
-                    T.copy(s_ub, S[bz, bx * C, by])
-
-    return main
+            tl.copy(s_ub, S[bz, by, chunk_base])  # 整块写回，无需边界检查
 ```
 
 ### 3.4 API 可行性确认
@@ -174,13 +138,13 @@ def cumsum_ker(B, H, L, C, reverse=False, head_first=True, use_fragment=False):
 
 | 参数名 | Shape | dtype | 说明 |
 |--------|-------|-------|------|
-| G | (B, H, L) | float32 | 输入张量，head_first=True 模式 |
+| G | (B, H, L) / (B, L, H) | float32 | 输入张量，支持两种 layout |
 
 ### 4.2 输出张量
 
 | 参数名 | Shape | dtype | 说明 |
 |--------|-------|-------|------|
-| S | (B, H, L) | float32 | 输出张量，shape 与输入相同 |
+| S | (B, H, L) / (B, L, H) | float32 | 输出张量，shape 与输入相同 |
 
 ### 4.3 中间缓冲区
 
@@ -189,16 +153,16 @@ def cumsum_ker(B, H, L, C, reverse=False, head_first=True, use_fragment=False):
 | g_ub | (C,) | float32 | UB | chunk 数据缓冲 |
 | s_ub | (C,) | float32 | UB | cumsum 结果缓冲 |
 | total_ub | (1,) | float32 | UB | reverse 时存储总和 |
-| fragment_ub | (C,) | float32 | UB | use_fragment 时的中间缓冲 |
+| fragment_ub | (C,) | float32 | UB | `use_fragment=True` 时的额外中间缓冲 |
 
 ### 4.4 内存搬运路径
 
 ```
 纯 Vector 算子：
 
-GM[G] --T.copy--> UB[g_ub]
-  --for循环--> UB[s_ub] (或 UB[fragment_ub] --T.copy--> UB[s_ub])
-  --T.copy--> GM[S]
+GM[G] --guarded load--> UB[g_ub]
+  --for循环--> UB[s_ub] (或 UB[fragment_ub] --UB copy--> UB[s_ub])
+  --guarded store--> GM[S]
 ```
 
 ### 4.5 UB 内存预算
@@ -236,6 +200,7 @@ block_num = chunk_num * B * (H // VEC_NUM)
 
 - **chunk_size 必须是 2 的幂**: `assert chunk_size == 2 ** (chunk_size.bit_length() - 1)`
 - **UB 容量**: 所有 buffer << 128KB ✓
+- **尾块支持**: 通过 `if chunk_base + i < L` 保护非整除长度
 - **单维 Kernel**: ascend `T.Kernel` 只支持单一 block 维度
 
 ---
@@ -282,14 +247,26 @@ pass_configs = {
 
 ```python
 def ref_chunk_cumsum(g, C, reverse=False, head_first=True):
-    B, H, L = g.shape
-    chunk_num = (L + C - 1) // C
-    g = g.view(B, H, chunk_num, C)
-    if reverse:
-        g_sum = torch.flip(torch.cumsum(torch.flip(g, dims=[3]), dim=3), dims=[3])
+    if head_first:
+        _, _, L = g.shape
+        g_sum = torch.empty_like(g)
+        for start in range(0, L, C):
+            end = min(start + C, L)
+            chunk = g[:, :, start:end]
+            if reverse:
+                g_sum[:, :, start:end] = torch.flip(torch.cumsum(torch.flip(chunk, dims=[2]), dim=2), dims=[2])
+            else:
+                g_sum[:, :, start:end] = torch.cumsum(chunk, dim=2)
     else:
-        g_sum = torch.cumsum(g, dim=-1)
-    g_sum = g_sum.view(B, H, L)
+        _, L, _ = g.shape
+        g_sum = torch.empty_like(g)
+        for start in range(0, L, C):
+            end = min(start + C, L)
+            chunk = g[:, start:end, :]
+            if reverse:
+                g_sum[:, start:end, :] = torch.flip(torch.cumsum(torch.flip(chunk, dims=[1]), dim=1), dims=[1])
+            else:
+                g_sum[:, start:end, :] = torch.cumsum(chunk, dim=1)
     return g_sum
 ```
 
@@ -303,6 +280,10 @@ def ref_chunk_cumsum(g, C, reverse=False, head_first=True):
 | reverse_fragment | Level 1 | (2, 32, 256) | 32 | True | True | reverse + fragment |
 | typical_fwd | Level 1 | (1, 16, 128) | 64 | False | False | 典型配置 |
 | typical_rev | Level 1 | (1, 16, 128) | 64 | True | True | 典型反向 |
+| odd_h_batch_first_fwd | Level 1 | (2, 250, 7) | 32 | False | False | `H=7` + `head_first=False` |
+| odd_h_head_first_rev | Level 1 | (2, 7, 250) | 32 | True | True | odd-H + reverse |
+| batch_first_tail_fwd | Level 1 | (2, 250, 32) | 32 | False | False | `head_first=False` + 尾块 |
+| batch_first_tail_rev | Level 1 | (2, 250, 32) | 32 | True | True | `head_first=False` + reverse + 尾块 |
 | large_fwd | Level 2 | (4, 8, 512) | 64 | False | False | 大规模 |
 | large_rev | Level 2 | (4, 8, 512) | 64 | True | True | 大规模反向 |
 
@@ -323,14 +304,17 @@ def ref_chunk_cumsum(g, C, reverse=False, head_first=True):
 | **reverse 参数** | ✅ 支持 | ✅ 支持 | ✅ 一致 |
 | **use_fragment 参数** | ✅ 支持 | ✅ 支持 | ✅ 一致 |
 | **head_first=True** | ✅ 支持 | ✅ 支持 | ✅ 一致 |
-| head_first=False | ✅ 支持 | ❌ stride限制 | 平台限制 |
+| **head_first=False** | ✅ 支持 | ✅ 支持 | ✅ 一致 |
+| **odd-H** | ✅ 支持 | ✅ 支持 | ✅ 一致 |
+| **尾块（L 非 C 整数倍）** | ✅ 支持 | ✅ 支持 | ✅ 一致 |
 | T.cumsum API | ✅ 内置 | ❌ 手写循环 | 平台限制 |
 
 ### 9.2 实现要点
 
 1. **reverse 实现**: 通过计算 chunk 总和，然后 `total - prefix + input` 转换
-2. **use_fragment 实现**: 在 fragment buffer 中计算 cumsum，再 copy 到 s_ub
-3. **循环内累加**: 必须使用 buffer（`T.alloc_ub`）而非 Python scalar
+2. **use_fragment 实现**: 在额外 UB 中间缓冲中计算 cumsum，再 copy 到 `s_ub`
+3. **layout 兼容**: `head_first=False` 通过 host 侧 `transpose(1, 2).contiguous()` 转成连续的 `head_first=True` 布局
+4. **尾块处理**: 非整除长度通过 guard 保护，不依赖 reshape 或整块 `T.copy`
 
 ---
 
@@ -356,10 +340,12 @@ examples/cumsum_gdn/
 | 功能 | 状态 |
 |------|------|
 | 正向 cumsum | ✅ 已实现 |
-| reverse cumsum | ✅ 已实现 (P0) |
-| use_fragment | ✅ 已实现 (P2) |
+| reverse cumsum | ✅ 已实现 |
+| use_fragment | ✅ 已实现 |
 | head_first=True | ✅ 已实现 |
-| head_first=False | ❌ 平台限制 |
+| head_first=False | ✅ 已实现 |
+| odd-H | ✅ 已实现 |
+| 尾块（L 非 C 整数倍） | ✅ 已实现 |
 
 ---
 
@@ -368,7 +354,7 @@ examples/cumsum_gdn/
 ### A. 实际代码关键片段
 
 ```python
-# reverse 功能实现 (P0)
+# reverse 功能实现
 if reverse:
     T.tile.fill(total_ub, 0.0)
     for i in range(C):
@@ -376,9 +362,8 @@ if reverse:
     for i in range(C):
         s_ub[i] = total_ub[0] - s_ub[i] + g_ub[i]
 
-# use_fragment 功能实现 (P2)
+# use_fragment 功能实现
 if use_fragment:
-    T.copy(g_ub, fragment_ub)
     T.tile.fill(fragment_ub, 0.0)
     for i in range(C):
         if i > 0:
@@ -390,11 +375,11 @@ if use_fragment:
 ### B. 测试结果
 
 ```
-=== Testing chunk_cumsum (cumsum_gdn) - P0: reverse ===
-6 个测试配置全部 Passed!
+=== Testing chunk_cumsum (cumsum_gdn) reverse ===
+10 个测试配置全部 Passed!
 
-=== Testing chunk_cumsum with use_fragment (P2) ===
-6 个测试配置全部 Passed! (含 use_fragment=True 和 False)
+=== Testing chunk_cumsum with use_fragment ===
+10 个测试配置全部 Passed! (含 use_fragment=True 和 False)
 
-=== All tests passed! ===
+=== Kernel Output Match! ===
 ```

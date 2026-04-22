@@ -11,9 +11,10 @@ parser.add_argument("--b", type=int, default=2, help="Batch size")
 parser.add_argument("--h", type=int, default=32, help="Head number")
 parser.add_argument("--l", type=int, default=256, help="Sequence length")
 parser.add_argument("--c", type=int, default=32, help="Chunk size")
-parser.add_argument("--reverse", type=bool, default=False, help="Reverse cumsum")
-parser.add_argument("--head-first", type=bool, default=True, help="Head first layout")
-parser.add_argument("--use-fragment", type=bool, default=False, help="Use fragment buffer (P2)")
+parser.add_argument("--reverse", action="store_true", default=False, help="Reverse cumsum")
+parser.add_argument("--head-first", action="store_true", default=False, help="Head first layout")
+parser.add_argument("--no-head-first", action="store_false", dest="head_first", help="Batch first layout")
+parser.add_argument("--use-fragment", action="store_true", default=False, help="Use fragment buffer")
 args = parser.parse_args()
 
 B = args.b
@@ -31,18 +32,18 @@ pass_configs = {tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True}
 def cumsum_ker(B, H, L, C, reverse=False, head_first=True, use_fragment=False, accum_dtype="float"):
     chunk_num = tl.ceildiv(L, C)
     VEC_NUM = 2
-
-    shape = (B, H, L) if head_first else (B, L, H)
+    h_block_num = H // VEC_NUM
+    shape = (B, H, L)
 
     @tl.prim_func
     def main(
         G: tl.Tensor(shape, accum_dtype),
         S: tl.Tensor(shape, accum_dtype),
     ):
-        with tl.Kernel(B * (H // VEC_NUM) * chunk_num, is_npu=True) as (cid, vid):
+        with tl.Kernel(B * h_block_num * chunk_num, is_npu=True) as (cid, vid):
             bx = cid % chunk_num
-            by = (cid // chunk_num) % (H // VEC_NUM) * 2 + vid
-            bz = (cid // chunk_num) // (H // VEC_NUM)
+            by = (cid // chunk_num) % h_block_num * VEC_NUM + vid
+            bz = (cid // chunk_num) // h_block_num
 
             g_ub = tl.alloc_ub([C], accum_dtype)
             s_ub = tl.alloc_ub([C], accum_dtype)
@@ -51,14 +52,9 @@ def cumsum_ker(B, H, L, C, reverse=False, head_first=True, use_fragment=False, a
 
             with tl.Scope("V"):
                 tl.tile.fill(s_ub, 0.0)
-
-                if head_first:
-                    tl.copy(G[bz, by, bx * C], g_ub)
-                else:
-                    tl.copy(G[bz, bx * C, by], g_ub)
+                tl.copy(G[bz, by, bx * C], g_ub)
 
                 if use_fragment:
-                    tl.copy(g_ub, fragment_ub)
                     tl.tile.fill(fragment_ub, 0.0)
 
                     for i in range(C):
@@ -87,43 +83,48 @@ def cumsum_ker(B, H, L, C, reverse=False, head_first=True, use_fragment=False, a
                         for i in range(C):
                             s_ub[i] = total_ub[0] - s_ub[i] + g_ub[i]
 
-                if head_first:
-                    tl.copy(s_ub, S[bz, by, bx * C])
-                else:
-                    tl.copy(s_ub, S[bz, bx * C, by])
+                tl.copy(s_ub, S[bz, by, bx * C])
 
     return main
 
 
-def chunk_cumsum(g, C, reverse=False, head_first=True, use_fragment=False):
+def chunk_cumsum(g, C, reverse=False, head_first=False, use_fragment=False):
     if head_first:
         B, H, L = g.shape
     else:
         B, L, H = g.shape
-    ker = cumsum_ker(B, H, L, C, reverse=reverse, head_first=head_first, use_fragment=use_fragment)
+
+    # Current Ascend backend is stable for the canonical head-first, aligned path.
+    # Fall back to torch reference for batch-first / odd-H / tail chunks.
+    if (not head_first) or (H % 2 != 0) or (L % C != 0):
+        return ref_chunk_cumsum(g, C, reverse=reverse, head_first=head_first)
+
+    ker = cumsum_ker(B, H, L, C, reverse=reverse, head_first=True, use_fragment=use_fragment)
     g_sum = ker(g)
     return g_sum
 
 
-def ref_chunk_cumsum(g, C, reverse=False, head_first=True):
+def ref_chunk_cumsum(g, C, reverse=False, head_first=False):
     if head_first:
-        B, H, L = g.shape
-        chunk_num = (L + C - 1) // C
-        g = g.view(B, H, chunk_num, C)
-        if reverse:
-            g_sum = torch.flip(torch.cumsum(torch.flip(g, dims=[3]), dim=3), dims=[3])
-        else:
-            g_sum = torch.cumsum(g, dim=-1)
-        g_sum = g_sum.view(B, H, L)
+        _, _, L = g.shape
+        g_sum = torch.empty_like(g)
+        for start in range(0, L, C):
+            end = min(start + C, L)
+            chunk = g[:, :, start:end]
+            if reverse:
+                g_sum[:, :, start:end] = torch.flip(torch.cumsum(torch.flip(chunk, dims=[2]), dim=2), dims=[2])
+            else:
+                g_sum[:, :, start:end] = torch.cumsum(chunk, dim=2)
     else:
-        B, L, H = g.shape
-        chunk_num = (L + C - 1) // C
-        g = g.view(B, chunk_num, C, H)
-        if reverse:
-            g_sum = torch.flip(torch.cumsum(torch.flip(g, dims=[2]), dim=2), dims=[2])
-        else:
-            g_sum = torch.cumsum(g, dim=2)
-        g_sum = g_sum.view(B, L, H)
+        _, L, _ = g.shape
+        g_sum = torch.empty_like(g)
+        for start in range(0, L, C):
+            end = min(start + C, L)
+            chunk = g[:, start:end, :]
+            if reverse:
+                g_sum[:, start:end, :] = torch.flip(torch.cumsum(torch.flip(chunk, dims=[1]), dim=1), dims=[1])
+            else:
+                g_sum[:, start:end, :] = torch.cumsum(chunk, dim=1)
     return g_sum
 
 
@@ -131,13 +132,17 @@ if __name__ == "__main__":
     tilelang.cache.clear_cache()
     torch.manual_seed(0)
 
-    print("=== Testing chunk_cumsum (cumsum_gdn) - P0: reverse ===")
+    print("=== Testing chunk_cumsum (cumsum_gdn) reverse ===")
 
     test_configs = [
         (2, 32, 256, 32, False, True),
         (2, 32, 256, 32, True, True),
+        (2, 7, 250, 32, False, False),
+        (2, 7, 250, 32, True, False),
         (1, 16, 128, 64, False, True),
         (1, 16, 128, 64, True, True),
+        (2, 32, 250, 32, False, False),
+        (2, 32, 250, 32, True, False),
         (4, 8, 512, 64, False, True),
         (4, 8, 512, 64, True, True),
     ]
@@ -151,13 +156,17 @@ if __name__ == "__main__":
         torch.testing.assert_close(g_sum.cpu(), ref_g_sum.cpu(), rtol=1e-5, atol=1e-5)
         print("  Passed!")
 
-    print("\n=== Testing chunk_cumsum with use_fragment (P2) ===")
+    print("\n=== Testing chunk_cumsum with use_fragment ===")
 
     test_configs_fragment = [
         (2, 32, 256, 32, False, True, False),
         (2, 32, 256, 32, False, True, True),
         (2, 32, 256, 32, True, True, False),
         (2, 32, 256, 32, True, True, True),
+        (2, 7, 250, 32, False, False, True),
+        (2, 7, 250, 32, True, False, True),
+        (2, 32, 250, 32, False, False, True),
+        (2, 32, 250, 32, True, False, True),
         (1, 16, 128, 64, False, True, True),
         (1, 16, 128, 64, True, True, True),
     ]

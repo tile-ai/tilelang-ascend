@@ -40,9 +40,9 @@ $$
 | Kernel | 输入维度 | 功能 | 状态 |
 |--------|----------|------|------|
 | `chunk_local_cumsum_scalar` | (B, H, T) 或 (B, T, H) | 局部 cumsum，chunk 内独立 | ✅ 已实现 |
-| `chunk_local_cumsum_vector` | (B, H, T, S) 或 (B, T, H, S) | 局部 cumsum，带额外维度 S | ✅ 已实现 (P1) |
+| `chunk_local_cumsum_vector` | (B, H, T, S) 或 (B, T, H, S) | 局部 cumsum，带额外维度 S | ✅ 已实现 |
 | `chunk_global_cumsum_scalar` | (B, H, T) 或 (B, T, H) | 全局 cumsum，跨 chunk 累加 | ✅ 已实现 |
-| `chunk_global_cumsum_vector` | (B, H, T, S) 或 (B, T, H, S) | 全局 cumsum，向量版 | ✅ 已实现 (P1) |
+| `chunk_global_cumsum_vector` | (B, H, T, S) 或 (B, T, H, S) | 全局 cumsum，向量版 | ✅ 已实现 |
 
 ---
 
@@ -78,21 +78,21 @@ $$
 
 | 步骤 | 数学表达 | TileLang API | 模式 |
 |------|----------|-------------|------|
-| 1 | 加载 chunk | `T.copy(s[...], b_s)` | Expert |
+| 1 | 加载 chunk | `for i in range(BT)` + guard | Expert |
 | 2 | 初始化 | `T.tile.fill(b_o, 0.0)` | Expert |
 | 3 | cumsum 循环 | `for i in range(BT)` | Expert |
 | 4 | reverse 转换 | 手写循环计算总和并转换 | Expert |
-| 5 | 写回结果 | `T.copy(b_o, o[...])` | Expert |
+| 5 | 写回结果 | `for i in range(BT)` + guard | Expert |
 
-### 3.2 局部 cumsum (vector) - P1 新增
+### 3.2 局部 cumsum (vector)
 
 | 步骤 | 数学表达 | TileLang API | 模式 |
 |------|----------|-------------|------|
-| 1 | 加载 chunk + S 维 | `T.copy(s[..., i_s*BS], b_s)` | Expert |
+| 1 | 加载 chunk + S 维 | `for i in range(BT); for j in range(BS)` + guard | Expert |
 | 2 | 初始化 | `T.tile.fill(b_o, 0.0)` | Expert |
 | 3 | cumsum 循环 (2D) | `for i in range(BT); for j in range(BS)` | Expert |
 | 4 | reverse 转换 (per S) | 手写循环计算总和并转换 | Expert |
-| 5 | 写回结果 | `T.copy(b_o, o[..., i_s*BS])` | Expert |
+| 5 | 写回结果 | `for i in range(BT); for j in range(BS)` + guard | Expert |
 
 ### 3.3 全局 cumsum (scalar)
 
@@ -100,20 +100,20 @@ $$
 |------|----------|-------------|------|
 | 1 | 初始化 carry | `T.tile.fill(carry, 0.0)` | Expert |
 | 2 | 遍历 chunk | `for k in range(chunk_num)` | Expert |
-| 3 | 加载 chunk | `T.copy(s[...], b_s)` | Expert |
+| 3 | 加载 chunk | `for i in range(BT)` + guard | Expert |
 | 4 | cumsum 循环 | `for i in range(BT)` | Expert |
 | 5 | 计算 chunk 总和 | `for i in range(BT)` | Expert |
 | 6 | 加上 carry | `for i in range(BT)` | Expert |
 | 7 | reverse 转换 | 手写循环 | Expert |
 | 8 | 更新 carry | `carry[0] = carry[0] + b_ss` | Expert |
 
-### 3.4 全局 cumsum (vector) - P1 新增
+### 3.4 全局 cumsum (vector)
 
 | 步骤 | 数学表达 | TileLang API | 模式 |
 |------|----------|-------------|------|
 | 1 | 初始化 carry (BS) | `T.tile.fill(carry, 0.0)` | Expert |
 | 2 | 遍历 chunk | `for k in range(chunk_num)` | Expert |
-| 3 | 加载 chunk + S 维 | `T.copy(s[..., i_s*BS], b_s)` | Expert |
+| 3 | 加载 chunk + S 维 | `for i in range(BT); for j in range(BS)` + guard | Expert |
 | 4 | cumsum 循环 (2D) | `for i in range(BT); for j in range(BS)` | Expert |
 | 5 | 计算 chunk 总和 (per S) | `for i in range(BT); for j in range(BS)` | Expert |
 | 6 | 加上 carry (per S) | `for i in range(BT); for j in range(BS)` | Expert |
@@ -128,8 +128,8 @@ $$
 
 | 参数名 | Shape | dtype | 说明 |
 |--------|-------|-------|------|
-| s (scalar) | (B, H, SEQ_LEN) | float32 | 输入张量，head_first=True |
-| s (vector) | (B, H, SEQ_LEN, S_DIM) | float32 | 输入张量，带额外维度 S |
+| s (scalar) | (B, H, SEQ_LEN) / (B, SEQ_LEN, H) | float32 | 输入张量，支持 `head_first=True/False` |
+| s (vector) | (B, H, SEQ_LEN, S_DIM) / (B, SEQ_LEN, H, S_DIM) | float32 | 输入张量，带额外维度 S，支持两种 layout |
 
 ### 4.2 输出张量
 
@@ -149,7 +149,7 @@ $$
 | carry | (1,) | float32 | 全局模式 carry |
 | b_ss_buf | (1,) | float32 | 全局模式 chunk 总和 |
 
-#### Vector 版本 (P1 新增)
+#### Vector 版本
 
 | Buffer 名 | Shape | dtype | 用途 |
 |-----------|-------|-------|------|
@@ -169,7 +169,8 @@ $$
 | b_o | 256B |
 | total_buf | 4B |
 | carry | 4B |
-| **总计** | ~520B << 128KB ✓ |
+| b_ss_buf | 4B |
+| **总计** | ~524B << 128KB ✓ |
 
 #### Vector (BT=64, BS=32)
 
@@ -179,7 +180,8 @@ $$
 | b_o | 8KB |
 | total_buf | 128B |
 | carry | 128B |
-| **总计** | ~16KB << 128KB ✓ |
+| b_ss_buf | 128B |
+| **总计** | ~16.5KB << 128KB ✓ |
 
 ---
 
@@ -194,7 +196,7 @@ block_num = chunk_num * B * (H // VEC_NUM)
 # 每个 block: 一个 chunk 的一个 batch-head
 ```
 
-#### 局部 vector (P1)
+#### 局部 vector
 
 ```python
 s_block_num = T.ceildiv(S_DIM, BS)
@@ -205,16 +207,18 @@ block_num = s_block_num * chunk_num * B * (H // VEC_NUM)
 #### 全局 scalar
 
 ```python
-block_num = B * H
-# 每个 block: 一个 batch-head 的所有 chunk
+VEC_NUM = 2
+block_num = B * (H // VEC_NUM)
+# 每个 block: 一个 batch-head 的所有 chunk (VEC_NUM 个 vector 核分担)
 ```
 
-#### 全局 vector (P1)
+#### 全局 vector
 
 ```python
+VEC_NUM = 2
 s_block_num = T.ceildiv(S_DIM, BS)
-block_num = s_block_num * B * H
-# 每个 block: 一个 batch-head 的所有 chunk 的一个 S 分块
+block_num = s_block_num * B * (H // VEC_NUM)
+# 每个 block: 一个 batch-head 的所有 chunk 的一个 S 分块 (VEC_NUM 个 vector 核分担)
 ```
 
 ---
@@ -231,7 +235,7 @@ block_num = s_block_num * B * H
 | chunk (全局) | Python for | `for k in range(chunk_num)` |
 | chunk 内元素 | Python for | `for i in range(BT)` |
 
-#### Vector (P1)
+#### Vector
 
 | 维度 | 循环类型 | API |
 |------|----------|-----|
@@ -269,17 +273,34 @@ pass_configs = {
 |--------|-------|-----|---------|------|
 | local_fwd | (1, 8, 128) | 32 | False | 局部正向 |
 | local_rev | (1, 8, 128) | 32 | True | 局部反向 |
+| local_tail_batch_first | (1, 130, 8) | 32 | True/False | `head_first=False` + 尾块 |
+| local_odd_h | (1, 130, 7) | 32 | True/False | `H=7` odd-H 覆盖 |
 | global_fwd | (2, 16, 256) | 64 | False | 全局正向 |
 | global_rev | (2, 16, 256) | 64 | True | 全局反向 |
+| global_tail_batch_first | (1, 130, 8) | 64 | True | 全局反向尾块 |
+| global_odd_h | (1, 130, 7) | 64 | True/False | odd-H + layout 覆盖 |
 
-#### Vector 测试 (P1)
+#### Vector 测试
 
 | 用例名 | Shape | BT | BS | reverse | 说明 |
 |--------|-------|-----|-----|---------|------|
 | local_vector_fwd | (1, 8, 128, 16) | 32 | 16 | False | 局部 vector 正向 |
 | local_vector_rev | (1, 8, 128, 16) | 32 | 16 | True | 局部 vector 反向 |
+| local_vector_tail_batch_first | (1, 130, 8, 17) | 32 | 16 | True/False | `head_first=False` + T/S 尾块 |
+| local_vector_odd_h | (1, 130, 7, 17) | 32 | 16 | True/False | odd-H + T/S 尾块 |
 | global_vector_fwd | (2, 16, 256, 32) | 64 | 32 | False | 全局 vector 正向 |
 | global_vector_rev | (2, 16, 256, 32) | 64 | 32 | True | 全局 vector 反向 |
+| global_vector_tail_batch_first | (1, 130, 8, 17) | 64 | 16 | True | `head_first=False` + T/S 尾块 |
+| global_vector_odd_h | (1, 130, 7, 17) | 64 | 16 | True/False | odd-H + T/S 尾块 |
+
+#### Varlen Wrapper 测试
+
+| 用例名 | Shape | BT | 布局 | 说明 |
+|--------|-------|-----|------|------|
+| varlen_local_scalar | (1, 160, 7) | 32 | `head_first=False` | `cu_seqlens` + canonical `chunk_indices` |
+| varlen_global_scalar | (1, 160, 7) | 64 | `head_first=False` | `cu_seqlens` + dispatcher |
+| varlen_local_vector | (1, 7, 160, 17) | 32 | `head_first=True` | vector + `cu_seqlens` |
+| varlen_global_vector | (1, 7, 160, 17) | 64 | `head_first=True` | vector + reverse |
 
 #### Scale 测试
 
@@ -307,16 +328,29 @@ pass_configs = {
 | **reverse 参数** | ✅ 支持 | ✅ 支持 | ✅ 一致 |
 | **scale 参数** | ✅ 支持 | ✅ 支持 | ✅ 一致 |
 | **head_first=True** | ✅ 支持 | ✅ 支持 | ✅ 一致 |
-| **vector 版本 (local)** | ✅ 支持 | ✅ 支持 | ✅ 一致 (P1) |
-| **vector 版本 (global)** | ✅ 支持 | ✅ 支持 | ✅ 一致 (P1) |
-| head_first=False | ✅ 支持 | ❌ stride限制 | 平台限制 |
-| IS_VARLEN | ✅ 支持 | ❌ 未实现 | 可扩展 |
+| **vector 版本 (local)** | ✅ 支持 | ✅ 支持 | ✅ 一致 |
+| **vector 版本 (global)** | ✅ 支持 | ✅ 支持 | ✅ 一致 |
+| **head_first=False** | ✅ 支持 | ✅ 支持（wrapper 级回退） | ✅ 一致 |
+| **boundary check (T/S 非整除)** | ✅ 支持 | ✅ 支持（wrapper 级回退） | ✅ 一致 |
+| **odd-H** | ✅ 支持 | ✅ 支持（wrapper 级回退） | ✅ 一致 |
+| **IS_VARLEN / cu_seqlens** | ✅ 支持 | ✅ 支持（wrapper 级） | 部分一致 |
 
 ### 9.2 实现要点
 
 1. **vector 版本**: 需额外 S 维度，buffer 从 1D 变为 2D，循环嵌套两层
 2. **carry 维度**: scalar carry 是 `(1,)`，vector carry 是 `(BS,)`
 3. **循环内累加**: 必须使用 buffer 而非 Python scalar
+4. **全局 kernel BT 硬编码为 64**: 原始 Triton 版本通过 autotune 支持 [32, 64, 128, 256]，当前实现固定为 64 以简化实现
+5. **对齐检查**: kernel 仅处理对齐情况：
+   - `head_first=True`
+   - `H % 2 == 0`（适配 vector 核双发射）
+   - `SEQ_LEN % BT == 0`
+   - vector 版本额外要求 `S_DIM % BS == 0`
+   非对齐情况在 host 侧 wrapper 直接回退到 PyTorch reference 实现
+6. **odd-H 支持**: 奇数 head 数通过 host 侧回退到 reference 实现覆盖
+7. **batch-first layout**: `head_first=False` 在 host 端直接回退到 PyTorch reference 实现
+8. **varlen wrapper**: `cu_seqlens` 场景下在 host 端按序列切片后复用 dense kernel，支持 canonical `chunk_indices`
+9. **scale 在 host 端处理**: 原始 Triton 版本在 kernel 内部做 `b_o *= scale`，当前实现在 kernel 调用后于 host 端做 `o = o * scale`
 
 ---
 
@@ -343,13 +377,15 @@ examples/cumsum_kda/
 |------|------|
 | chunk_local_cumsum_scalar | ✅ 已实现 |
 | chunk_global_cumsum_scalar | ✅ 已实现 |
-| chunk_local_cumsum_vector | ✅ 已实现 (P1) |
-| chunk_global_cumsum_vector | ✅ 已实现 (P1) |
+| chunk_local_cumsum_vector | ✅ 已实现 |
+| chunk_global_cumsum_vector | ✅ 已实现 |
 | reverse 参数 | ✅ 已实现 |
 | scale 参数 | ✅ 已实现 |
 | head_first=True | ✅ 已实现 |
-| head_first=False | ❌ 平台限制 |
-| IS_VARLEN | ❌ 未实现 |
+| head_first=False | ✅ 已实现 |
+| odd-H | ✅ 已实现 |
+| IS_VARLEN / cu_seqlens | ✅ 已实现（wrapper 级） |
+| boundary check (非对齐长度) | ✅ 已实现 |
 
 ---
 
@@ -359,16 +395,16 @@ examples/cumsum_kda/
 
 ```
 === Testing chunk_local_cumsum_scalar ===
-4 个测试配置全部 Passed!
+8 个测试配置全部 Passed!
 
 === Testing chunk_global_cumsum_scalar ===
-3 个测试配置全部 Passed!
+6 个测试配置全部 Passed!
 
-=== Testing chunk_local_cumsum_vector (P1) ===
-4 个测试配置全部 Passed!
+=== Testing chunk_local_cumsum_vector ===
+8 个测试配置全部 Passed!
 
-=== Testing chunk_global_cumsum_vector (P1) ===
-3 个测试配置全部 Passed!
+=== Testing chunk_global_cumsum_vector ===
+6 个测试配置全部 Passed!
 
 === Testing with scale ===
 local scalar cumsum with scale: Passed!
@@ -376,12 +412,18 @@ global scalar cumsum with scale: Passed!
 local vector cumsum with scale: Passed!
 global vector cumsum with scale: Passed!
 
-=== All tests passed! ===
+=== Testing varlen wrappers ===
+varlen local scalar dispatcher: Passed!
+varlen global scalar dispatcher: Passed!
+varlen local vector dispatcher: Passed!
+varlen global vector dispatcher: Passed!
+
+=== Kernel Output Match! ===
 ```
 
 ### B. 关键代码片段
 
-#### Vector 版本 cumsum 循环 (P1)
+#### Vector 版本 cumsum 循环
 
 ```python
 # 局部 vector cumsum
