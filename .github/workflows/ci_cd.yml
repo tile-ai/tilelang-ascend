@@ -29,6 +29,11 @@ on:
         required: false
         default: true
         type: boolean
+      full_build:                          # 是否全量编译
+        description: 'Force full build (no cache)'
+        required: false
+        default: false        
+        type: boolean
 
   schedule:
     - cron: '0 18 * * *' # 每天 UTC 18:00 运行 (北京时间凌晨 2:00)
@@ -46,6 +51,8 @@ jobs:
     runs-on: [self-hosted, Linux, X64, ascend_910b] 
     if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.run_tests == 'true' }}
     timeout-minutes: 60            # 1小时超时失败
+    env:
+      FULL_BUILD: ${{ github.event_name == 'schedule' || github.event.inputs.full_build == 'true' }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -82,21 +89,33 @@ jobs:
             echo "Will run full tests"
           fi
 
-      # 缓存编译产物，除非关键文件变更
+      # 非全量编译，缓存编译产物，除非关键文件变更
       - name: Restore build cache
+        if: env.FULL_BUILD != 'true'
         id: cache-build
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: build-cache/
           key: tilelang-build-${{ hashFiles('CMakeLists.txt', 'requirements.txt', 'install_ascend.sh') }}
           restore-keys: |
             tilelang-build-
+      
+      # 全量编译，清理所有残留编译产物
+      - name: Clean build artifacts for full build
+        if: env.FULL_BUILD == 'true'
+        run: |
+          echo "🗑️ Full build mode: cleaning all build artifacts"
+          rm -rf build build-cache
+          echo "Clean completed. Will build from scratch."
 
       - name: Build and Test in Local Container
         run: |
           # 准备缓存目录
           mkdir -p build-cache
-          if [[ "${{ steps.cache-build.outputs.cache-hit }}" == 'true' ]]; then
+          if [[ "${FULL_BUILD}" == "true" ]]; then
+            echo "📅 Full build (schedule/manual): NO cache, NO incremental"
+            INCREMENTAL_FLAG=""
+          elif [[ "${{ steps.cache-build.outputs.cache-hit }}" == 'true' ]]; then
             echo "✅ Cache hit! Will use incremental build."
             INCREMENTAL_FLAG="--enable-incremental"
           else
@@ -122,7 +141,7 @@ jobs:
               if [ -d build-cache ] && [ \"\$(ls -A build-cache)\" ]; then
                 echo \"Copy build cache...\"
                 mkdir -p build
-                cp -r build-cache/* build/ 2>/dev/null || true
+                cp -r build-cache/* build/ 
               fi
 
               # 1. 增量编译项目
@@ -160,7 +179,14 @@ jobs:
                 exit 1
               fi
             "
-
+      - name: Save build cache
+        if: always()    # 即使前面步骤失败也保存，避免编译产物丢失
+        continue-on-error: true    # key 已存在时不报错
+        uses: actions/cache/save@v4
+        with:
+          path: build-cache/
+          key: tilelang-build-${{ hashFiles('CMakeLists.txt', 'requirements.txt', 'install_ascend.sh') }}
+          
       - name: Check pass rate
         id: check_results
         run: |
