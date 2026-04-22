@@ -834,42 +834,53 @@ mlir::Value CodeGenTileLangNPUIRAPI::GenRankReducedSubviewFromRegion(
 
   auto baseTy = v_value.getType().cast<mlir::MemRefType>();
 
-  // Build projected reduced shape by dropping static-1 dims from slice sizes.
-  // When min_rank > 0, keep leading static-1 dims as needed to satisfy the
-  // minimum rank requirement. This ensures GM operands for Cube nd2nz/fixpipe
-  // maintain consistent rank (2D) across all calls in the same function.
-
-  // 1. Count non-static-1 dims
+  // Count non-static-1 slice dims so we know how many singleton dims have to
+  // be dropped to satisfy the caller's `min_rank` contract.
   int numNonStatic1 = 0;
   for (auto ofr : sizes) {
     if (!IsStaticIntOFR(ofr, 1))
       numNonStatic1++;
   }
-  // 2. How many static-1 dims must we keep to satisfy min_rank?
+  int totalStatic1 = sizes.size() - numNonStatic1;
   int static1ToKeep = std::max(0, min_rank - numNonStatic1);
+  int static1ToDrop = std::max(0, totalStatic1 - static1ToKeep);
 
-  // 3. Build projected shape, keeping leading static-1 dims as needed
+  // Build the projected shape and the explicit kept-dim index list in a
+  // single pass. Tracking `keptDims` ourselves removes the ambiguity that
+  // `computeRankReductionMask` runs into when slice sizes contain multiple
+  // static-1 extents: e.g. sizes=[1,64,1] target=[64,1] can legally reduce
+  // to either kept=(0,1) or kept=(1,2), and the heuristic may pick the
+  // wrong one. Leading static-1 dims are dropped first so trailing
+  // singleton dims stay addressable for nd2nz / fixpipe consumers.
   llvm::SmallVector<int64_t> projectedReducedShape;
+  llvm::SmallVector<unsigned> keptDims;
   projectedReducedShape.reserve(sizes.size());
-  int static1Kept = 0;
-  for (auto ofr : sizes) {
+  keptDims.reserve(sizes.size());
+  int static1Dropped = 0;
+  for (unsigned i = 0; i < sizes.size(); ++i) {
+    auto ofr = sizes[i];
     if (IsStaticIntOFR(ofr, 1)) {
-      if (static1Kept < static1ToKeep) {
-        projectedReducedShape.push_back(1);
-        static1Kept++;
+      if (static1Dropped < static1ToDrop) {
+        static1Dropped++;
+        continue;
       }
-      continue; // drop this static-1 dim
+      projectedReducedShape.push_back(1);
+      keptDims.push_back(i);
+      continue;
     }
-    // non-static-1 dim: always keep
+    keptDims.push_back(i);
     if (auto attr = ofr.dyn_cast<mlir::Attribute>()) {
       projectedReducedShape.push_back(attr.cast<mlir::IntegerAttr>().getInt());
     } else {
       projectedReducedShape.push_back(mlir::ShapedType::kDynamic);
     }
   }
-  // Fallback: if all dims are static-1 and min_rank <= 1, keep one dim=1
+  // A memref must have rank >= 1. If every dim was a droppable static-1,
+  // reinstate the trailing one so the projected view still has a valid
+  // shape and stride entry.
   if (projectedReducedShape.empty()) {
     projectedReducedShape.push_back(1);
+    keptDims.push_back(static_cast<unsigned>(sizes.size()) - 1);
   }
 
   // Fast path: only reuse the original memref when no rank reduction is needed.
@@ -880,10 +891,32 @@ mlir::Value CodeGenTileLangNPUIRAPI::GenRankReducedSubviewFromRegion(
     return v_value;
   }
 
-  // Infer the rank-reduced memref type and create the SubViewOp.
-  auto reducedTy = mlir::memref::SubViewOp::inferRankReducedResultType(
-                       projectedReducedShape, baseTy, offsets, sizes, strides)
-                       .cast<mlir::MemRefType>();
+  // Compute the reduced result type ourselves from the explicit `keptDims`
+  // instead of calling `inferRankReducedResultType`, which relies on a
+  // shape-matching heuristic and can drop the wrong original dimension.
+  auto fullSubviewTy =
+      mlir::memref::SubViewOp::inferResultType(baseTy, offsets, sizes, strides)
+          .cast<mlir::MemRefType>();
+  mlir::MemRefType reducedTy;
+  if (static_cast<int64_t>(keptDims.size()) == fullSubviewTy.getRank()) {
+    reducedTy = fullSubviewTy;
+  } else {
+    auto fullLayout =
+        fullSubviewTy.getLayout().cast<mlir::StridedLayoutAttr>();
+    llvm::SmallVector<int64_t> keptShape;
+    llvm::SmallVector<int64_t> keptStrides;
+    keptShape.reserve(keptDims.size());
+    keptStrides.reserve(keptDims.size());
+    for (unsigned d : keptDims) {
+      keptShape.push_back(fullSubviewTy.getShape()[d]);
+      keptStrides.push_back(fullLayout.getStrides()[d]);
+    }
+    auto reducedLayout = mlir::StridedLayoutAttr::get(
+        baseTy.getContext(), fullLayout.getOffset(), keptStrides);
+    reducedTy =
+        mlir::MemRefType::get(keptShape, fullSubviewTy.getElementType(),
+                              reducedLayout, fullSubviewTy.getMemorySpace());
+  }
 
   return builder.create<mlir::memref::SubViewOp>(
       builder.getUnknownLoc(), reducedTy, v_value, offsets, sizes, strides);
