@@ -16,12 +16,7 @@ done
 # ===========================================
 
 # ================= 配置区 =================
-# MAX_JOBS=8  # 同时并行执行的任务数，建议根据 NPU 负载调整
-CORES=$(nproc)
-MAX_JOBS=$(( CORES * 80 / 100 ))
-if [ $MAX_JOBS -lt 1 ]; then
-    MAX_JOBS=1
-fi
+MAX_JOBS=8  # 同时并行执行的任务数，建议根据 NPU 负载调整
 export TILELANG_AUTO_TUNING_CPU_COUNTS=4 # for autotuner
 export TILELANG_AUTO_TUNING_MAX_CPU_COUNT=4 # for autotuner
 
