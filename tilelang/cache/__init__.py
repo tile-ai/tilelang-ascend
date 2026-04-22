@@ -46,6 +46,29 @@ def cached(
     )
 
 
+def cached_npu(
+    func: PrimFunc = None,
+    out_idx: List[int] = None,
+    target: Union[str, Target] = "auto",
+    target_host: Union[str, Target] = None,
+    execution_backend: Optional[Literal["dlpack", "ctypes", "cython"]] = "cython",
+    verbose: Optional[bool] = True,
+    pass_configs: Optional[dict] = None,
+) -> JITKernel:
+    """
+    Caches and reuses compiled kerne(ls (using KernelCache class).
+    """
+    return _kernel_cache_instance.cached_npu(
+        func,
+        out_idx,
+        target=target,
+        target_host=target_host,
+        execution_backend=execution_backend,
+        verbose=verbose,
+        pass_configs=pass_configs,
+    )
+
+
 def get_cache_dir() -> Path:
     """
     Gets the cache directory for the kernel cache.

@@ -6,8 +6,6 @@ It includes functionality to JIT-compile TileLang programs into a runnable
 kernel adapter using TVM.
 """
 
-from .jit_npu import compiler_npu
-
 from typing import (
     Any,
     List,
@@ -24,7 +22,7 @@ from tvm.tir import PrimFunc
 from tvm.target import Target
 
 from tilelang.jit.kernel import JITKernel
-from tilelang.cache import cached
+from tilelang.cache import cached, cached_npu
 from os import path, makedirs
 from logging import getLogger
 import functools
@@ -69,48 +67,15 @@ def compile(
         Additional keyword arguments to pass to the Compiler PassContext.
     """
     if target == "npuir":
-        from tilelang.cache.kernel_cache import KernelCache
-        from tilelang import env
-
-        _cache = KernelCache()
-
-        _key = _cache._generate_compile_key(
+        return cached_npu(
             func=func,
             out_idx=out_idx,
+            execution_backend=execution_backend,
             target=target,
             target_host=target_host,
-            execution_backend=execution_backend,
-            verbose=verbose,
+            verbose=True,
             pass_configs=pass_configs,
         )
-        verbose = True
-        if env.is_cache_enabled():
-            # 1. Check in-memory cache first (cheapest).
-            mem_hit = _cache._memory_cache.get(_key)
-            if mem_hit is not None:
-                if verbose:
-                    logger.debug(f"compile(): memory cache hit for key {_key[:8]}…")
-                return mem_hit
-
-            # 2. Check disk cache.
-            disk_hit = _cache.load_compile_result(
-                _key, func=func, out_idx=out_idx, verbose=verbose
-            )
-            if disk_hit is not None:
-                if verbose:
-                    logger.debug(f"compile(): disk cache hit for key {_key[:8]}…")
-                _cache._memory_cache[_key] = disk_hit
-                return disk_hit
-
-        # --- cache miss: compile from scratch -------------------------
-        compile_npuir = compiler_npu()
-        kernel = compile_npuir.compile(func, out_idx)
-
-        if env.is_cache_enabled():
-            _cache.save_compile_result(_key, kernel, verbose=verbose)
-            _cache._memory_cache[_key] = kernel
-
-        return kernel
 
     # --- GPU / other targets ------------------------------------------
     return cached(

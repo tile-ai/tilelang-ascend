@@ -22,7 +22,6 @@ LATENCY_PATH = "latency.json"
 KERNEL_PATH = "kernel.mlir"
 WRAPPED_KERNEL_PATH = "wrapped_kernel.o"
 KERNEL_LIB_PATH = "kernel_lib.so"
-SO_UTILS_PATH = "npu_utils.so"
 SO_LAUNCHER_PATH = "main.so"
 PARAMS_PATH = "params.pkl"
 METADATA_PATH = "metadata.pkl"
@@ -202,11 +201,6 @@ class KernelCache:
         if verbose:
             logger.debug(f"Saving wrapped kernel to {dest}")
         _try("wrapped kernel", lambda: dest.write_bytes(kernel.get_kernel_source()))
-
-        dest_utils = cache_path / SO_UTILS_PATH
-        if verbose:
-            logger.debug(f"Saving utils library to {dest_utils}")
-        _try("utils .so", lambda: shutil.copy(kernel.so_utils_path, dest_utils))
 
         dest_launcher = cache_path / SO_LAUNCHER_PATH
         if verbose:

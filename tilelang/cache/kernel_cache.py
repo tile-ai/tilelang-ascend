@@ -21,6 +21,8 @@ from tilelang import env
 from tilelang.version import __version__
 from typing import TYPE_CHECKING
 
+logger = logging.getLogger(__name__)
+
 if TYPE_CHECKING:
     from tilelang.autotuner.param import AutotuneResult
 
@@ -36,9 +38,7 @@ AUTOTUNE_LATENCY_PATH = "latency.json"
 # NPU kernel artefacts (written at the entry root, same level as GPU files)
 AUTOTUNE_KERNEL_MLIR_PATH = "kernel.mlir"
 AUTOTUNE_WRAPPED_KERNEL_PATH = "wrapped_kernel.o"
-AUTOTUNE_SO_UTILS_PATH = "npu_utils.so"
 AUTOTUNE_SO_LAUNCHER_PATH = "main.so"
-AUTOTUNE_PARAMS_PATH = "npu_params.pkl"
 AUTOTUNE_METADATA_PATH = "metadata.pkl"
 COMPILE_SUBDIR = "compile"
 
@@ -96,9 +96,6 @@ class KernelCache:
                     instance = super().__new__(cls)
                     instance.cache_dir = Path(cache_dir)
                     os.makedirs(instance.cache_dir, exist_ok=True)
-
-                    instance.logger = logging.getLogger(__name__)
-                    instance.logger.setLevel(logging.ERROR)
                     instance._memory_cache = {}  # Initialize memory cache
                     cls._instance = instance
         return cls._instance
@@ -248,7 +245,7 @@ class KernelCache:
         with self._lock:
             # First check in-memory cache
             if key in self._memory_cache:
-                self.logger.warning(
+                logger.warning(
                     "Found kernel in memory cache. For better performance,"
                     " consider using `@tilelang.jit` instead of direct kernel caching."
                 )
@@ -284,7 +281,7 @@ class KernelCache:
             pass_configs=pass_configs,
         )
         if execution_backend == "dlpack":
-            self.logger.warning("DLPack backend does not support cache saving to disk.")
+            logger.warning("DLPack backend does not support cache saving to disk.")
         else:
             with self._lock:
                 if env.is_cache_enabled():
@@ -292,6 +289,84 @@ class KernelCache:
 
         # Store in memory cache after compilation
         self._memory_cache[key] = kernel
+        return kernel
+
+    def cached_npu(
+        self,
+        func,
+        out_idx=None,
+        execution_backend="cython",
+        target="npuir",
+        target_host=None,
+        verbose=False,
+        pass_configs=None,
+    ):
+        """Compile *func* for the ``npuir`` target with memory+disk caching.
+
+        This is the NPU-side counterpart of :func:`tilelang.cache.cached` and owns
+        the full lookup → compile → store lifecycle:
+
+        1. In-memory cache  (``KernelCache._memory_cache``)  — cheapest, per-process.
+        2. Disk cache       (``KernelCache.load_compile_result``) — survives restarts.
+        3. Compile from scratch via ``compiler_npu().compile(func, out_idx)``.
+
+        Parameters
+        ----------
+        func:
+            The ``tvm.tir.PrimFunc`` to compile.
+        out_idx:
+            Index(es) of the output buffer(s) to expose to the caller.
+        execution_backend:
+            Forwarded to ``_generate_compile_key`` for cache-key stability only;
+            the NPU compiler does not use it directly.
+        target:
+            Must be ``"npuir"``; kept as a parameter so callers can forward their
+            ``target`` variable without an extra ``if`` branch.
+        target_host:
+            Forwarded to ``_generate_compile_key`` only.
+        verbose:
+            Enable debug-level cache-hit/miss logging.
+        pass_configs:
+            Forwarded to ``_generate_compile_key`` only.
+
+        Returns
+        -------
+        JitKernel_NPU
+            A compiled, ready-to-run NPU kernel wrapper.
+        """
+        from tilelang.jit.jit_npu import compiler_npu
+        from tilelang import env
+
+        _key = self._generate_compile_key(
+            func=func,
+            out_idx=out_idx,
+            target=target,
+            target_host=target_host,
+            execution_backend=execution_backend,
+            verbose=verbose,
+            pass_configs=pass_configs,
+        )
+        if env.is_cache_enabled():
+            mem_hit = self._memory_cache.get(_key)
+            if mem_hit is not None:
+                if verbose:
+                    logger.debug(f"cached_npu(): memory cache hit for key {_key[:8]}…")
+                return mem_hit
+
+            disk_hit = self.load_compile_result(
+                _key, func=func, out_idx=out_idx, verbose=verbose
+            )
+            if disk_hit is not None:
+                logger.debug(f"cached_npu(): disk cache hit for key {_key[:8]}…")
+                self._memory_cache[_key] = disk_hit
+                return disk_hit
+
+        kernel = compiler_npu().compile(func, out_idx)
+
+        if env.is_cache_enabled():
+            self.save_compile_result(_key, kernel, verbose=verbose)
+            self._memory_cache[_key] = kernel
+
         return kernel
 
     def set_cache_dir(self, cache_dir: str):
@@ -351,7 +426,7 @@ class KernelCache:
             with open(kernel_path, "w") as f:
                 f.write(kernel.artifact.kernel_source)
         except Exception as e:
-            self.logger.error(f"Error saving kernel source code to disk: {e}")
+            logger.error(f"Error saving kernel source code to disk: {e}")
 
         # Save wrapped kernel source code
         try:
@@ -359,7 +434,7 @@ class KernelCache:
             with open(wrapped_kernel_path, "w") as f:
                 f.write(kernel.adapter.get_kernel_source())
         except Exception as e:
-            self.logger.error(f"Error saving wrapped kernel source code to disk: {e}")
+            logger.error(f"Error saving wrapped kernel source code to disk: {e}")
 
         # Save kernel library
         try:
@@ -367,7 +442,7 @@ class KernelCache:
             src_lib_path = kernel.adapter.libpath
             shutil.copy(src_lib_path, kernel_lib_path)
         except Exception as e:
-            self.logger.error(f"Error saving kernel library to disk: {e}")
+            logger.error(f"Error saving kernel library to disk: {e}")
 
         # Save kernel parameters
         try:
@@ -375,7 +450,7 @@ class KernelCache:
             with open(params_path, "wb") as f:
                 cloudpickle.dump(kernel.params, f)
         except Exception as e:
-            self.logger.error(f"Error saving kernel parameters to disk: {e}")
+            logger.error(f"Error saving kernel parameters to disk: {e}")
 
     def _load_kernel_from_disk(
         self,
@@ -418,9 +493,7 @@ class KernelCache:
             with open(wrapped_kernel_path, "r") as f:
                 kernel_global_source = f.read()
         except Exception as e:
-            self.logger.error(
-                f"Error loading wrapped kernel source code from disk: {e}"
-            )
+            logger.error(f"Error loading wrapped kernel source code from disk: {e}")
 
         kernel_lib_path = os.path.join(cache_path, KERNEL_LIB_PATH)
 
@@ -430,7 +503,7 @@ class KernelCache:
             with open(params_path, "rb") as f:
                 kernel_params = cloudpickle.load(f)
         except Exception as e:
-            self.logger.error(f"Error loading kernel parameters from disk: {e}")
+            logger.error(f"Error loading kernel parameters from disk: {e}")
 
         if kernel_global_source and kernel_params:
             return JITKernel.from_database(
@@ -462,7 +535,7 @@ class KernelCache:
                 shutil.rmtree(self.cache_dir)  # Delete entire cache directory
             os.makedirs(self.cache_dir, exist_ok=True)  # Re-create cache directory
         except Exception as e:
-            self.logger.error(f"Error clearing disk cache: {e}")
+            logger.error(f"Error clearing disk cache: {e}")
 
     def save_compile_result(
         self,
@@ -493,7 +566,7 @@ class KernelCache:
         self._save_npu_kernel_to_disk(cache_path, kernel, verbose)
 
         if verbose:
-            self.logger.debug(f"Compile result saved to {cache_path}")
+            logger.debug(f"Compile result saved to {cache_path}")
 
     def load_compile_result(
         self,
@@ -514,7 +587,7 @@ class KernelCache:
 
         kernel = self._load_npu_kernel_from_disk(cache_path, func=func, out_idx=out_idx)
         if verbose and kernel is not None:
-            self.logger.debug(f"Compile result loaded from {cache_path}")
+            logger.debug(f"Compile result loaded from {cache_path}")
         return kernel
 
     def save_autotune_result(
@@ -559,7 +632,7 @@ class KernelCache:
         )
 
         if verbose:
-            self.logger.debug(f"Autotune result saved to {autotune_path}")
+            logger.debug(f"Autotune result saved to {autotune_path}")
 
     def load_autotune_result(
         self,
@@ -581,7 +654,7 @@ class KernelCache:
             )
             latency_data = _read_json(autotune_path / AUTOTUNE_LATENCY_PATH)
         except Exception as exc:
-            self.logger.error(
+            logger.error(
                 f"Failed to load autotune metadata from {autotune_path}: {exc}"
             )
             return None
@@ -623,24 +696,14 @@ class KernelCache:
                 kernel.get_kernel_source()
             ),
         )
-        self._try_save(
-            "npu_utils.so",
-            lambda: shutil.copy(
-                kernel.so_utils_path, cache_path / AUTOTUNE_SO_UTILS_PATH
-            ),
-        )
+
         self._try_save(
             "main.so",
             lambda: shutil.copy(
                 kernel.so_launcher_path, cache_path / AUTOTUNE_SO_LAUNCHER_PATH
             ),
         )
-        self._try_save(
-            "npu params",
-            lambda: (cache_path / AUTOTUNE_PARAMS_PATH).write_bytes(
-                cloudpickle.dumps(kernel.params)
-            ),
-        )
+
         metadata = {
             "symbolic": kernel.symbolic,
             "params": kernel.params,
@@ -675,44 +738,36 @@ class KernelCache:
 
         kernel_source: Optional[str] = None
         kernel_global_source: Optional[bytes] = None
-        kernel_params = None
         metadata: Optional[dict] = None
 
         try:
             kernel_source = (cache_path / AUTOTUNE_KERNEL_MLIR_PATH).read_text()
         except Exception as exc:
-            self.logger.error(f"Error loading kernel MLIR: {exc}")
+            logger.error(f"Error loading kernel MLIR: {exc}")
 
         try:
             kernel_global_source = (
                 cache_path / AUTOTUNE_WRAPPED_KERNEL_PATH
             ).read_bytes()
         except Exception as exc:
-            self.logger.error(f"Error loading wrapped kernel: {exc}")
-
-        try:
-            kernel_params = cloudpickle.loads(
-                (cache_path / AUTOTUNE_PARAMS_PATH).read_bytes()
-            )
-        except Exception as exc:
-            self.logger.error(f"Error loading npu kernel params: {exc}")
+            logger.error(f"Error loading wrapped kernel: {exc}")
 
         try:
             metadata = cloudpickle.loads(
                 (cache_path / AUTOTUNE_METADATA_PATH).read_bytes()
             )
         except Exception as exc:
-            self.logger.error(f"Error loading metadata: {exc}")
+            logger.error(f"Error loading metadata: {exc}")
 
-        if not (kernel_global_source and kernel_params and metadata):
-            self.logger.warning(f"Incomplete NPU kernel artefacts at {cache_path}.")
+        if not (kernel_global_source and metadata):
+            logger.warning(f"Incomplete NPU kernel artefacts at {cache_path}.")
             return None
 
         return JitKernel_NPU.from_database(
             mod=func,
             kernel_source=kernel_source,
             kernel_launcher_path=str(cache_path / AUTOTUNE_SO_LAUNCHER_PATH),
-            kernel_utils_path=str(cache_path / AUTOTUNE_SO_UTILS_PATH),
+            kernel_utils_path=None,
             metadata=metadata,
             out_idx=out_idx,
         )
@@ -721,7 +776,7 @@ class KernelCache:
         try:
             fn()
         except Exception as exc:
-            self.logger.error(f"Error saving {label}: {exc}")
+            logger.error(f"Error saving {label}: {exc}")
 
 
 def _write_json(path: Path, obj) -> None:
