@@ -59,7 +59,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: build-cache/
-          key: tilelang-build-${{ github.sha }}-${{ hashFiles('CMakeLists.txt', 'requirements.txt', 'install_ascend.sh') }}
+          key: tilelang-build-${{ hashFiles('CMakeLists.txt', 'requirements.txt', 'install_ascend.sh') }}
           restore-keys: |
             tilelang-build-
           save-always: true
@@ -89,7 +89,7 @@ jobs:
 
               # 如果有缓存，复制到 build 目录
               if [ -d build-cache ] && [ \"\$(ls -A build-cache)\" ]; then
-                echo \"Restoring cached build...\"
+                echo \"Copy build cache...\"
                 mkdir -p build
                 cp -r build-cache/* build/ 2>/dev/null || true
                 echo \"==============================\"
@@ -97,7 +97,6 @@ jobs:
               fi
 
               # 1. 增量编译项目
-              echo 'Building project...'
               bash install_ascend.sh \$INCREMENTAL_FLAG
               # 保存编译产物
               if [ -d \"build\" ]; then
