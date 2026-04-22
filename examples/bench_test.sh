@@ -1,5 +1,20 @@
 #!/bin/bash
 
+# ================= 参数解析 =================
+SKIP_PYTEST=false
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --skip-pytest)
+            SKIP_PYTEST=true
+            shift
+            ;;
+        *)
+            shift
+            ;;
+    esac
+done
+# ===========================================
+
 # ================= 配置区 =================
 # MAX_JOBS=8  # 同时并行执行的任务数，建议根据 NPU 负载调整
 CORES=$(nproc)
@@ -148,6 +163,13 @@ fi
 echo "====================================="
 
 # 4. 最后执行 pytest 自动发现并运行所有测试
+if [ "$SKIP_PYTEST" = true ]; then
+    echo -e "\n====================================="
+    echo "Skipping pytest (only examples/ .py/.md files modified)"
+    echo "====================================="
+    exit 0
+fi
+
 echo -e "\n====================================="
 echo "Running pytest tests"
 echo "====================================="

@@ -51,7 +51,36 @@ jobs:
         uses: actions/checkout@v4
         with:
           submodules: false
-          fetch-depth: 1
+          fetch-depth: 0
+
+      - name: Check if skip pytest
+        id: check_skip_pytest
+        if: github.event_name == 'pull_request'
+        run: |
+          git fetch origin ${{ github.base_ref }}
+          changed_files=$(git diff --name-only origin/${{ github.base_ref }} HEAD)
+          
+          skip_pytest=true
+          
+          for file in $changed_files; do
+            if [[ ! "$file" =~ ^examples/ ]]; then
+              echo "File outside examples/: $file"
+              skip_pytest=false
+              break
+            fi
+            if [[ ! "$file" =~ \.py$ ]] && [[ ! "$file" =~ \.md$ ]]; then
+              echo "File type not allowed: $file"
+              skip_pytest=false
+              break
+            fi
+          done
+          
+          echo "skip_pytest=${skip_pytest}" >> $GITHUB_OUTPUT
+          if [ "$skip_pytest" = true ]; then
+            echo "Will skip pytest: only .py/.md files in examples/ modified"
+          else
+            echo "Will run full tests"
+          fi
 
       # 缓存编译产物，除非关键文件变更
       - name: Restore build cache
@@ -75,13 +104,16 @@ jobs:
             INCREMENTAL_FLAG=""
           fi
           
-          echo 'run in existed container...'
+          SKIP_PYTEST_VALUE="${{ steps.check_skip_pytest.outputs.skip_pytest }}"
+          echo "run in existed container..."
+
           docker exec \
             -w $GITHUB_WORKSPACE \
             -e GITHUB_ENV=$GITHUB_ENV \
             -e GITHUB_OUTPUT=$GITHUB_OUTPUT \
             -e BASH_ENV=/root/.bashrc \
             -e INCREMENTAL_FLAG="$INCREMENTAL_FLAG" \
+            -e SKIP_PYTEST=$SKIP_PYTEST_VALUE \
             tilelang_x1 \
             bash -c "
               set -e
@@ -91,8 +123,6 @@ jobs:
                 echo \"Copy build cache...\"
                 mkdir -p build
                 cp -r build-cache/* build/ 2>/dev/null || true
-                echo \"==============================\"
-                ls -l build
               fi
 
               # 1. 增量编译项目
@@ -114,7 +144,11 @@ jobs:
               chmod +x bench_test.sh
               echo 'Running benchmark tests...'
               set +e
-              ./bench_test.sh 2>&1 | tee test_output.log
+              if [ \"\$SKIP_PYTEST\" = true ]; then
+                ./bench_test.sh --skip-pytest 2>&1 | tee test_output.log
+              else
+                ./bench_test.sh 2>&1 | tee test_output.log
+              fi
               TEST_EXIT_CODE=\${PIPESTATUS[0]}
               set -e
 
