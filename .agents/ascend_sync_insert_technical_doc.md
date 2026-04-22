@@ -1,6 +1,6 @@
 # Ascend Sync Insert Pass 技术说明文档
 
-**源码位置**：`src/transform/ascend_sync_insert.cc`（1576行）
+**源码位置**：`src/transform/ascend_sync_insert.cc`
 
 **核心功能**：为昇腾 NPU 自动插入同步指令（PipeBarrier/EventPair），通过数据依赖分析和图可达性优化，确保多流水线间正确同步。
 
@@ -93,22 +93,22 @@ Substitute 入口
 
 ### 4.1 核心结构体
 
-| 结构体 | 行号 | 关键字段 | 用途 |
-|-------|-----|---------|-----|
-| **BufferAccess** | 918-950 | buffer_name, is_write, pipeline (MTE2/MTE1/MTE3/M/V/S/FIX), sync_graph, pipe_barriers, physical_address, is_sliced | 访问分析核心 |
-| **SyncGraph** | 816-916 | graph: map<string, set<string>> | 同步优化核心 |
-| **LoopInfo** | 91-112 | loop_var, min, extent, kind, loop_id, depth | 循环重建 |
-| SyncRequirement | 952-964 | sync_type, buffer_name | 同步需求 |
-| BufferInfo | 966-982 | buffer_name, is_read, is_write, is_sliced | 缓冲区信息 |
+| 结构体 | 关键字段 | 用途 |
+|-------|---------|-----|
+| **BufferAccess** | buffer_name, is_write, pipeline (MTE2/MTE1/MTE3/M/V/S/FIX), sync_graph, pipe_barriers, physical_address, is_sliced | 访问分析核心 |
+| **SyncGraph** | graph: map<string, set<string>> | 同步优化核心 |
+| **LoopInfo** | loop_var, min, extent, kind, loop_id, depth | 循环重建 |
+| SyncRequirement | sync_type, buffer_name | 同步需求 |
+| BufferInfo | buffer_name, is_read, is_write, is_sliced | 缓冲区信息 |
 
 ### 4.2 SyncGraph 核心方法
 
-| 方法 | 行号 | 功能 |
-|-----|-----|-----|
-| AddSync("EventPair_X_Y") | 841-851 | 提取边 X→Y |
-| HasPath(src, dst) | 853-879 | DFS 判断可达 |
-| Merge(other) | 881-888 | 合并图的边 |
-| ComputeTransitiveClosure() | 890-915 | Floyd-Warshall 传递闭包 |
+| 方法 | 功能 |
+|-----|-----|
+| AddSync("EventPair_X_Y") | 提取边 X→Y |
+| HasPath(src, dst) | DFS 判断可达 |
+| Merge(other) | 合并图的边 |
+| ComputeTransitiveClosure() | Floyd-Warshall 传递闭包 |
 
 **用途示例**：已插入 EventPair_M_V → graph 有 M→V 边。若需 EventPair_M_MTE3 且存在 V→MTE3，则 M→MTE3 已传递满足，无需插入。
 
@@ -185,11 +185,11 @@ OptimizeSyncRequirements:
 
 ### 5.4 同步 IR 映射
 
-| sync_type | IR 语句 | 行号 |
-|----------|---------|-----|
-| PipeBarrier_ALL | `Evaluate(Call tl.ascend_auto_barrier, ["PIPE_ALL"])` | 1510-1511 |
-| PipeBarrier_X | `Evaluate(Call tl.ascend_auto_barrier, ["PIPE_X"])` | 1512-1518 |
-| EventPair_X_Y | `Evaluate(Call tl.ascend_auto_set_flag, ["X_Y", id])` + `Evaluate(Call tl.ascend_auto_wait_flag, ["X_Y", id])` | 1519-1524 |
+| sync_type | IR 语句 |
+|----------|---------|
+| PipeBarrier_ALL | `Evaluate(Call tl.ascend_auto_barrier, ["PIPE_ALL"])` |
+| PipeBarrier_X | `Evaluate(Call tl.ascend_auto_barrier, ["PIPE_X"])` |
+| EventPair_X_Y | `Evaluate(Call tl.ascend_auto_set_flag, ["X_Y", id])` + `Evaluate(Call tl.ascend_auto_wait_flag, ["X_Y", id])` |
 
 **EventPair 生成**：提取 event_type → 分配 event_id（模8）→ SetFlag + WaitFlag
 
@@ -270,15 +270,15 @@ OptimizeSyncRequirements:
 
 ## 7. 边界处理清单
 
-| 条件 | 处理方式 | 行号 |
-|-----|---------|-----|
-| platform="A5" + PIPE_V | 跳过 PipeBarrier_V | 1515-1517 |
-| Event 数量 > 8 | ID 模8循环，可能冲突 | 1527-1530 |
-| resource_scope | 进入时清空访问历史 | 199-208 |
-| IfThenElse | 前后插入 PipeBarrier_ALL | 253-271 |
-| is_sliced=true | 强制 PipeBarrier_ALL | 155-158 |
-| 嵌套循环 | depth 记录深度，先内后外重建 | 99 |
-| LetStmt + 切片 | 前插入 PipeBarrier_ALL | 221-251 |
+| 条件 | 处理方式 |
+|-----|---------|
+| platform="A5" + PIPE_V | 跳过 PipeBarrier_V |
+| Event 数量 > 8 | ID 模8循环，可能冲突 |
+| resource_scope | 进入时清空访问历史 |
+| IfThenElse | 前后插入 PipeBarrier_ALL |
+| is_sliced=true | 强制 PipeBarrier_ALL |
+| 嵌套循环 | depth 记录深度，先内后外重建 |
+| LetStmt + 切片 | 前插入 PipeBarrier_ALL |
 
 ---
 
@@ -286,34 +286,34 @@ OptimizeSyncRequirements:
 
 ### 8.1 按功能分类
 
-| 分类 | 方法 | 行号 |
+| 分类 | 方法 | 功能 |
 |-----|-----|-----|
-| **入口** | Substitute | 52-81 |
-| **预处理** | PreprocessUnrollForLoops | 128-133 |
-| **重建** | MergeAndRebuildForLoops | 273-277 |
-| **分析** | AnalyzeStmtAccesses | 1099-1217 |
-| | AnalyzeExprAccesses | 984-1005 |
-| | FindRelatedBuffers | 1361-1411 |
-| **检测** | HasDataDependency | 1272-1298 |
-| | GetRequiredSyncType | 1307-1321 |
-| **优化** | OptimizeSyncRequirements | 1413-1457 |
-| **生成** | InsertSynchronization | 1508-1524 |
-| | CreatePipeBarrier | 1532-1536 |
-| | CreateSetFlag/CreateWaitFlag | 1538-1550 |
-| **状态** | UpdateSyncStatesAfterSync | 1481-1506 |
-| | UpdateLatestAccessHistory | 1301-1305 |
-| **辅助** | GetPhysicalAddress | 1330-1339 |
-| | GetBufferSize | 1341-1350 |
-| | AllocateEventId | 1527-1530 |
+| **入口** | Substitute | 主入口，执行同步插入 |
+| **预处理** | PreprocessUnrollForLoops | 预处理，展开循环 |
+| **重建** | MergeAndRebuildForLoops | 循环重建阶段 |
+| **分析** | AnalyzeStmtAccesses | 分析 EvaluateNode 的缓冲区访问 |
+| | AnalyzeExprAccesses | 分析 PrimExpr 的缓冲区访问 |
+| | FindRelatedBuffers | 查找地址重叠的缓冲区 |
+| **检测** | HasDataDependency | 判断两 BufferAccess 是否有依赖 |
+| | GetRequiredSyncType | 根据流水线确定同步类型 |
+| **优化** | OptimizeSyncRequirements | 图可达性优化同步需求（核心）|
+| **生成** | InsertSynchronization | 生成同步 IR 节点 |
+| | CreatePipeBarrier | 创建 PipeBarrier 语句 |
+| | CreateSetFlag/CreateWaitFlag | 创建 EventPair 语句 |
+| **状态** | UpdateSyncStatesAfterSync | 同步插入后更新 sync_graph |
+| | UpdateLatestAccessHistory | 更新访问历史记录 |
+| **辅助** | GetPhysicalAddress | 获取缓冲区物理地址 |
+| | GetBufferSize | 获取缓冲区大小 |
+| | AllocateEventId | 分配事件 ID（模 8 循环）|
 
 ### 8.2 辅助类
 
-| 类 | 行号 | 功能 |
-|---|-----|-----|
-| ForLoopUnroller | 280-364 | 循环展开为两次迭代 |
-| LoopRebuilder | 366-813 | 合并同步并重建循环 |
-| StmtFlattener | 758-813 | 展平嵌套 SeqStmt |
-| ExprAccessAnalyzer | 1007-1053 | 提取表达式中的缓冲区访问 |
+| 类 | 功能 |
+|---|-----|
+| ForLoopUnroller | 循环展开为两次迭代 |
+| LoopRebuilder | 合并同步并重建循环 |
+| StmtFlattener | 展平嵌套 SeqStmt |
+| ExprAccessAnalyzer | 提取表达式中的缓冲区访问 |
 
 ---
 
@@ -333,24 +333,24 @@ OptimizeSyncRequirements:
 
 **关键 VisitStmt_ 重写**：
 
-| 方法 | 行号 | 功能 |
-|-----|-----|-----|
-| VisitStmt_(EvaluateNode) | 150-196 | 分析→检测→插入同步 |
-| VisitStmt_(AttrStmtNode) | 198-219 | resource_scope 清空历史 |
-| VisitStmt_(IfThenElseNode) | 253-271 | 分支前后全同步 |
-| VisitStmt_(LetStmtNode) | 221-251 | 切片访问处理 |
-| VisitStmt_(SeqStmtNode) | 135-148 | 递归处理序列 |
+| 方法 | 功能 |
+|-----|-----|
+| VisitStmt_(EvaluateNode) | 分析→检测→插入同步 |
+| VisitStmt_(AttrStmtNode) | resource_scope 清空历史 |
+| VisitStmt_(IfThenElseNode) | 分支前后全同步 |
+| VisitStmt_(LetStmtNode) | 切片访问处理 |
+| VisitStmt_(SeqStmtNode) | 递归处理序列 |
 
 ### 9.2 LoopRebuilder 类
 
 **核心方法**：
 
-| 方法 | 行号 | 功能 |
-|-----|-----|-----|
-| MergeIterations | 427-489 | 分离 iter1/iter2 |
-| MergeStatementSequences | 540-615 | 合并同步，去重 |
-| IsSyncStatement | 626-645 | 判断同步语句 |
-| IsSameSyncOperation | 656-749 | 判断同步等价 |
+| 方法 | 功能 |
+|-----|-----|
+| MergeIterations | 分离 iter1/iter2 |
+| MergeStatementSequences | 合并同步，去重 |
+| IsSyncStatement | 判断同步语句 |
+| IsSameSyncOperation | 判断同步等价 |
 
 ---
 

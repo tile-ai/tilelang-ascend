@@ -1,6 +1,6 @@
 # Ascend Memory Planning Pass 技术说明文档
 
-**源码位置**：`src/transform/ascend_memory_planning.cc`（890行）
+**源码位置**：`src/transform/ascend_memory_planning.cc`
 
 **核心功能**：为昇腾 NPU 进行专用内存规划，通过活跃度分析和线性扫描算法实现内存复用，输出 address_map/size_map 函数属性。
 
@@ -93,12 +93,12 @@ Substitute 入口
 
 ### 4.1 核心结构体
 
-| 结构体 | 行号 | 关键字段 | 用途 |
-|-------|-----|---------|-----|
-| **LiveInterval** | 553-561 | buffer, start, end, size | 活跃区间（GEN→KILL）|
-| **Allocation** | 563-568 | buffer, offset, size, is_reused | 分配结果 |
-| **StmtEntry** | 132-136 | stmt, scope_pair_offset, touched | 语句条目 |
-| **EventEntry** | 138-141 | gen, kill | GEN/KILL 集合 |
+| 结构体 | 关键字段 | 用途 |
+|-------|---------|-----|
+| **LiveInterval** | buffer, start, end, size | 活跃区间（GEN→KILL）|
+| **Allocation** | buffer, offset, size, is_reused | 分配结果 |
+| **StmtEntry** | stmt, scope_pair_offset, touched | 语句条目 |
+| **EventEntry** | gen, kill | GEN/KILL 集合 |
 
 ### 4.2 核心数据成员
 
@@ -152,13 +152,13 @@ vector<pair<size_t, size_t>> free_blocks_;               // 空闲块列表
 
 ### 5.3 线性扫描分配决策
 
-| 步骤 | 条件 | 操作 | 行号 |
-|-----|-----|-----|-----|
-| 释放过期 | `active.top().end < interval.start` | 移入 free_blocks，mergeFreeBlocks() | 583-594 |
-| 预分配 | `buffer in pre_alloc_buffer_` | 直接使用，CheckConflict() | 620-645 |
-| 新分配 | `free_blocks 无合适块` | `next_new_offset_ += align(size, 32)` | 646-670 |
-| 复用 | `findReusableBlock(size)` | 分割空闲块，is_reused=true | 675-690 |
-| 失败 | 所有尝试失败 | LOG(FATAL) | 670-675 |
+| 步骤 | 条件 | 操作 |
+|-----|-----|-----|
+| 释放过期 | `active.top().end < interval.start` | 移入 free_blocks，mergeFreeBlocks() |
+| 预分配 | `buffer in pre_alloc_buffer_` | 直接使用，CheckConflict() |
+| 新分配 | `free_blocks 无合适块` | `next_new_offset_ += align(size, 32)` |
+| 复用 | `findReusableBlock(size)` | 分割空闲块，is_reused=true |
+| 失败 | 所有尝试失败 | LOG(FATAL) |
 
 **分配优先级**：预分配 > 新内存 > 复用空闲块
 
@@ -305,13 +305,13 @@ AlignUp(addr, 32) = ((addr + 31) / 32) * 32
 
 ## 7. 边界处理清单
 
-| 条件 | 处理方式 | 行号 |
-|-----|---------|-----|
-| 重复缓冲区名 | LOG(FATAL) 要求唯一名称 | 176-178 |
-| 非整数 extent | ICHECK 要求 IntImmNode | 827-828 |
-| 预分配冲突 | CheckConflict() 检测重叠 | 705-724 |
-| 内存不足 | LOG(FATAL) 报告失败 | 670-675 |
-| 对齐要求 | AlignUp(value, 32) 强制对齐 | 50-52, 518, 634 |
+| 条件 | 处理方式 |
+|-----|---------|
+| 重复缓冲区名 | LOG(FATAL) 要求唯一名称 |
+| 非整数 extent | ICHECK 要求 IntImmNode |
+| 预分配冲突 | CheckConflict() 检测重叠 |
+| 内存不足 | LOG(FATAL) 报告失败 |
+| 对齐要求 | AlignUp(value, 32) 强制对齐 |
 
 ---
 
@@ -319,30 +319,30 @@ AlignUp(addr, 32) = ((addr + 31) / 32) * 32
 
 ### 8.1 按功能分类
 
-| 分类 | 方法 | 行号 | 功能 |
-|-----|-----|-----|-----|
-| **入口** | Substitute | 56-95 | 主入口 |
-| **构造** | AscendMemoryPlanner 构造 | 100-116 | 遍历+规划 |
-| | SetPreAllocBuffer | 271-281 | 处理预分配 |
-| | SetTmpBuffers | 283-291 | 处理临时缓冲区 |
-| **遍历** | VisitStmt_(Allocate) | 168-194 | 记录 scope/size |
-| | VisitStmt_(BufferStore) | 196-209 | 跟踪写访问 |
-| | VisitNewScope | 242-259 | 记录作用域 |
-| | TrackBufferTouch | 153-166 | 记录 touched |
-| **分析** | LivenessAnalysis | 316-357 | GEN/KILL 分析 |
-| | ReorderKillPoints | 359-429 | 调整 KILL 位置 |
-| | FindEventIndex | 431-446 | 查找事件索引 |
-| **规划** | PlanMemory | 293-314 | 主规划流程 |
-| | PlanMemoryForScope | 448-497 | 自动规划（复用）|
-| | PlanMemoryForScopeLinear | 499-551 | 顺序规划 |
-| **分配** | LinearScanAllocator::allocate | 578-702 | 线性扫描 |
-| | findReusableBlock | 752-787 | 查找可复用块 |
-| | mergeFreeBlocks | 726-750 | 合并空闲块 |
-| | CheckConflict | 705-724 | 预分配冲突检测 |
-| **辅助** | CalculateBufferSize | 824-835 | 计算大小 |
-| | IsNPUSharedMemory | 841-844 | 判断内存域 |
-| **输出** | GetAddressMap | 118-120 | 返回 address_map |
-| | GetBufferSizes | 122-124 | 返回 size_map |
+| 分类 | 方法 | 功能 |
+|-----|-----|-----|
+| **入口** | Substitute | 主入口 |
+| **构造** | AscendMemoryPlanner 构造 | 遍历+规划 |
+| | SetPreAllocBuffer | 处理预分配 |
+| | SetTmpBuffers | 处理临时缓冲区 |
+| **遍历** | VisitStmt_(Allocate) | 记录 scope/size |
+| | VisitStmt_(BufferStore) | 跟踪写访问 |
+| | VisitNewScope | 记录作用域 |
+| | TrackBufferTouch | 记录 touched |
+| **分析** | LivenessAnalysis | GEN/KILL 分析 |
+| | ReorderKillPoints | 调整 KILL 位置 |
+| | FindEventIndex | 查找事件索引 |
+| **规划** | PlanMemory | 主规划流程 |
+| | PlanMemoryForScope | 自动规划（复用）|
+| | PlanMemoryForScopeLinear | 顺序规划 |
+| **分配** | LinearScanAllocator::allocate | 线性扫描 |
+| | findReusableBlock | 查找可复用块 |
+| | mergeFreeBlocks | 合并空闲块 |
+| | CheckConflict | 预分配冲突检测 |
+| **辅助** | CalculateBufferSize | 计算大小 |
+| | IsNPUSharedMemory | 判断内存域 |
+| **输出** | GetAddressMap | 返回 address_map |
+| | GetBufferSizes | 返回 size_map |
 
 ---
 
