@@ -333,6 +333,140 @@ OptimizeSyncRequirements:
 
 ---
 
+## 10. 验证方案
+
+### 10.1 测试场景分类表
+
+| 类别 | 场景 | 流水线组合 | 依赖类型 | 预期同步 |
+|-----|-----|-----------|---------|---------|
+| 跨流水线 | RAW | MTE2→M, M→V | 读后写 | EventPair |
+| 跨流水线 | WAR | V→MTE2, V→MTE3 | 写后读 | EventPair |
+| 同流水线 | WAW | V→V, M→M | 写后写 | PipeBarrier |
+| 地址重叠 | 重叠检测 | MTE2→V（不同buffer重叠地址）| - | EventPair |
+
+### 10.2 测试用例设计
+
+#### 用例1: RAW 跨流水线（MTE2→M）
+
+**测试意图**：验证跨流水线 RAW 依赖正确插入 EventPair。
+
+**输入 IR**：
+```
+copy_gm_to_l1(A, a_l1);  // PIPE_MTE2 写 a_l1
+mma(c_l0c, a_l1, b_l1);  // PIPE_M 读 a_l1
+```
+
+**预期输出 IR**：
+```
+copy_gm_to_l1(A, a_l1);
+[EventPair_MTE2_M]
+mma(c_l0c, a_l1, b_l1);
+```
+
+**验证点**：
+- 同步类型正确（跨流水线用 EventPair）
+- 同步位置在写后读之间
+
+---
+
+#### 用例2: WAW 同流水线（V→V）
+
+**测试意图**：验证同流水线 WAW 依赖正确插入 PipeBarrier。
+
+**输入 IR**：
+```
+ascend_add(A, data1, tmp);  // PIPE_V 写 A
+ascend_mul(A, data2, tmp);  // PIPE_V 写 A
+```
+
+**预期输出 IR**：
+```
+ascend_add(A, data1, tmp);
+[PipeBarrier_V]
+ascend_mul(A, data2, tmp);
+```
+
+**验证点**：
+- 同步类型正确（同流水线用 PipeBarrier）
+- 同步位置在两个写操作之间
+
+---
+
+#### 用例3: WAR 跨流水线（V→MTE3）
+
+**测试意图**：验证跨流水线 WAR 依赖正确插入 EventPair。
+
+**输入 IR**：
+```
+ascend_add(A_ub, src, tmp);  // PIPE_V 写 A_ub
+copy_ub_to_gm(A_ub, Output); // PIPE_MTE3 读 A_ub
+```
+
+**预期输出 IR**：
+```
+ascend_add(A_ub, src, tmp);
+[EventPair_V_MTE3]
+copy_ub_to_gm(A_ub, Output);
+```
+
+**验证点**：
+- 同步类型正确（跨流水线用 EventPair）
+- 同步方向正确（V→MTE3）
+
+---
+
+#### 用例4: 地址重叠（不同buffer，物理地址重叠）
+
+**测试意图**：验证地址重叠检测生效，跨流水线同步正确插入。
+
+**输入 IR**：
+```
+copy_gm_to_ub(A_ub, data);    // PIPE_MTE2 写 A_ub，地址 [0, 1024]
+ascend_add(B_ub, src, tmp);   // PIPE_V 读 B_ub，地址 [512, 1536]（重叠）
+```
+
+**预期输出 IR**：
+```
+copy_gm_to_ub(A_ub, data);
+[EventPair_MTE2_V]
+ascend_add(B_ub, src, tmp);
+```
+
+**验证点**：
+- 地址重叠检测生效（[0,1024] 与 [512,1536] 重叠）
+- 跨流水线同步正确插入
+
+### 10.3 验证命令
+
+**IR dump 验证（查看同步插入后的 IR）**
+```python
+import tilelang
+import tilelang.language as T
+
+tilelang.cache.clear_cache()
+
+pass_configs = {
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
+}
+
+@tilelang.jit(out_idx=[1], pass_configs=pass_configs)
+def test_sync(M=256, N=256):
+    @T.prim_func
+    def main(A: T.Tensor((M, N), 'float'), B: T.Tensor((M, N), 'float')):
+        with T.Kernel(1, is_npu=True) as (cid, vid):
+            ub1 = T.alloc_ub((M, N), 'float')
+            ub2 = T.alloc_ub((M, N), 'float')
+            T.copy(A, ub1)
+            T.tile.add(ub2, ub1, ub1)
+            T.copy(ub2, B)
+    return main
+
+func = test_sync()
+print(func.ir_module['main'])
+```
+
+---
+
 ## 附录 A：循环展开原理
 
 ### 为什么需要展开？

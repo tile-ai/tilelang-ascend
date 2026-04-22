@@ -348,6 +348,172 @@ AlignUp(addr, 32) = ((addr + 31) / 32) * 32
 
 ---
 
+## 10. 验证方案
+
+### 10.1 测试场景分类表
+
+| 类别 | 场景 | 活跃区间关系 | 预期行为 |
+|-----|-----|------------|---------|
+| 顺序分配 | 不开优化or全重叠 | 所有buffer GEN=0, KILL=end | 紧邻排列，32字节对齐 |
+| 复用分配 | 不重叠 | 新buffer GEN > 旧buffer KILL | 复用已释放空间 |
+| 预分配 | 外部指定 | address_map 已提供 | 保留地址，跳过规划 |
+| 冲突检测 | 预分配重叠 | 预分配地址与其他分配重叠 | LOG(FATAL) |
+| 对齐验证 | 未对齐size | buffer size 非32倍数 | 自动对齐到32字节边界 |
+
+### 10.2 测试用例设计
+
+#### 用例1: 顺序分配
+
+**测试意图**：验证多个全重叠 buffer 正确顺序分配，32字节对齐。
+
+**输入 IR**：
+```
+Allocate(bufA, shared, 1024)
+Allocate(bufB, shared, 2048)
+Allocate(bufC, shared, 512)
+// 三者都在整个函数内活跃
+```
+
+**预期输出 address_map**：
+```
+{bufA: 0, bufB: 1024, bufC: 3072}
+```
+
+**内存布局**：
+```
+地址: 0     1024    3072    3584
+      |bufA |bufB   |bufC   |
+```
+
+**验证点**：紧邻排列，32字节对齐
+
+---
+
+#### 用例2: 复用分配
+
+**测试意图**：验证不重叠活跃区间正确复用已释放空间。
+
+**输入 IR（活跃区间）**：
+```
+bufA: GEN=0,  KILL=10, size=1024
+bufB: GEN=5,  KILL=15, size=2048
+bufC: GEN=12, KILL=20, size=512
+```
+
+**预期输出 address_map**：
+```
+{bufA: 0, bufB: 1024, bufC: 0}  // bufC 复用 bufA
+```
+
+**内存布局**：
+```
+时间0-10:  |bufA|bufB|
+时间11-20: |bufC|bufB|  // bufC 复用 bufA 位置
+```
+
+**验证点**：bufC.GEN(12) > bufA.KILL(10) → 复用生效
+
+---
+
+#### 用例3: 预分配
+
+**测试意图**：验证外部预分配地址保留，跳过规划。
+
+**输入配置**：
+```
+函数属性 address_map = {bufD: 5000}
+```
+
+**预期输出 address_map**：
+```
+{bufD: 5000}  // 保持不变
+```
+
+**验证点**：预分配地址保留，跳过规划
+
+---
+
+#### 用例4: 冲突检测
+
+**测试意图**：验证预分配地址与其他分配重叠时正确报错。
+
+**输入配置**：
+```
+预分配 bufD: 地址 5000, size=1024
+其他分配 bufE: 地址 4800, size=400 → 区间 [4800, 5200]
+```
+
+**预期行为**：
+```
+LOG(FATAL) - 地址重叠检测失败
+```
+
+**验证点**：冲突检测生效
+
+---
+
+#### 用例5: 对齐验证
+
+**测试意图**：验证 size 非32倍数时自动对齐到32字节边界。
+
+**输入 IR**：
+```
+Allocate(bufA, shared, 1000)  // size 非32倍数
+Allocate(bufB, shared, 512)
+```
+
+**预期输出 address_map**：
+```
+{bufA: 0, bufB: 1024}  // bufB 从1024开始（对齐后）
+```
+
+**内存布局**：
+```
+bufA: [0, 1000] → 对齐后结束地址 1024
+bufB: [1024, 1536]
+```
+
+**验证点**：32字节对齐生效
+
+### 10.3 验证命令
+
+**IR dump 验证（查看 address_map/size_map）**
+```python
+import tilelang
+import tilelang.language as T
+
+tilelang.cache.clear_cache()
+
+pass_configs = {
+    tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
+}
+
+@tilelang.jit(out_idx=[2], pass_configs=pass_configs)
+def test_memory(M=128, N=128, K=128):
+    @T.prim_func
+    def main(
+        A: T.Tensor((M, K), 'float16'),
+        B: T.Tensor((K, N), 'float16'),
+        C: T.Tensor((M, N), 'float16'),
+    ):
+        with T.Kernel(1, is_npu=True) as (cid, vid):
+            a_l1 = T.alloc_L1((M, K), 'float16')
+            b_l1 = T.alloc_L1((K, N), 'float16')
+            c_l0c = T.alloc_L0C((M, N), 'float')
+            T.copy(A, a_l1)
+            T.copy(B, b_l1)
+            T.gemm_v0(a_l1, b_l1, c_l0c)
+            T.copy(c_l0c, C)
+    return main
+
+func = test_memory()
+mod = func.ir_module
+print('address_map:', mod['main'].attrs.get('address_map'))
+print('size_map:', mod['main'].attrs.get('size_map'))
+```
+
+---
+
 ## 附录 A：内存限制常量
 
 ```
