@@ -62,7 +62,6 @@ jobs:
           key: tilelang-build-${{ hashFiles('CMakeLists.txt', 'requirements.txt', 'install_ascend.sh') }}
           restore-keys: |
             tilelang-build-
-          save-always: true
 
       - name: Build and Test in Local Container
         run: |
