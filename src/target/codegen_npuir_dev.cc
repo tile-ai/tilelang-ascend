@@ -2555,8 +2555,8 @@ void CodeGenTileLangNPUIRDEV::VcumsumCodegen(const CallNode *op) {
     return;
   }
   auto booleanAttr = mlir::BoolAttr::get(builder.getContext(), false);
-  auto newCumsumOp = builder.create<mlir::hivm::VCumsumOp>(
-      loc, result_tensors, src, dst,
+  auto newCumsumOp = builder.create<mlir::hfusion::CumsumOp>(
+      loc, result_tensors, src,
       builder.getDenseI64ArrayAttr(npuirop.cum_dims), booleanAttr);
   SetVarValue(npuirop.dst, newCumsumOp->getResult(0));
 }
@@ -2647,30 +2647,49 @@ void CodeGenTileLangNPUIRDEV::VinterleaveCodegen(const CallNode *op) {
     srcs.push_back(src);
   }
   mlir::ValueRange srcs_vr(srcs);
-  Value dst = GenSubviewFromRegion(npuirop.dst, npuirop.dst_range);
-  builder.create<mlir::hivm::VInterleaveOp>(
-      builder.getUnknownLoc(), TypeRange{}, srcs_vr, dst,
-      static_cast<int64_t>(npuirop.channel_nums));
+  mlir::Value dst_tensor = GenExtractSliceFromRegion(npuirop.dst, npuirop.dst_range);
+
+  auto interleaveOp = builder.create<mlir::hfusion::InterleaveOp>(
+    builder.getUnknownLoc(),
+    dst_tensor.getType(),
+    srcs_vr
+  );
+
+  mlir::Value result = ReshapeCastAndInsertSlice(
+    interleaveOp->getResult(0),
+    GetVarValue(npuirop.dst),
+    npuirop.dst_range
+  );
+
+  SetVarValue(npuirop.dst, result);
 }
 
 void CodeGenTileLangNPUIRDEV::VdeinterleaveCodegen(const CallNode *op) {
   tvm::tl::NpuirDeinterleave npuirop(op->args, this->vmap);
   Value src = GenSubviewFromRegion(npuirop.src, npuirop.src_range);
-  llvm::SmallVector<Value> dsts;
   size_t n_dsts = npuirop.dsts.size();
+
   for (size_t i = 0; i < n_dsts; i++) {
-    Value dst = GenSubviewFromRegion(npuirop.dsts[i], npuirop.dsts_range[i]);
-    dsts.push_back(dst);
+    mlir::Value dst_tensor = GenExtractSliceFromRegion(npuirop.dsts[i], npuirop.dsts_range[i]);
+
+    int64_t current_channel_idx = i;
+    auto channelIdxAttr = builder.getI64IntegerAttr(current_channel_idx);
+
+    auto deinterleaveOp = builder.create<mlir::hfusion::DeinterleaveOp>(
+        builder.getUnknownLoc(),
+        dst_tensor.getType(),
+        src,
+        channelIdxAttr
+    );
+
+    mlir::Value result = ReshapeCastAndInsertSlice(
+        deinterleaveOp->getResult(0),
+        GetVarValue(npuirop.dsts[i]),
+        npuirop.dsts_range[i]
+    );
+
+    SetVarValue(npuirop.dsts[i], result);
   }
-  mlir::ValueRange dsts_vr(dsts);
-  auto channel_nums = mlir::IntegerAttr::get(
-      builder.getI64Type(), static_cast<int64_t>(npuirop.channel_nums));
-  mlir::hivm::DeinterleaveModeAttr index_mode =
-      mlir::hivm::DeinterleaveModeAttr::get(
-          &context, NPUIR_STR_DEINTERLEAVEMODE[npuirop.index_mode]);
-  builder.create<mlir::hivm::VDeinterleaveOp>(builder.getUnknownLoc(),
-                                              TypeRange{}, src, dsts_vr,
-                                              channel_nums, index_mode);
 }
 
 /// Generate hivm.hir.varange for tl.npuir_arange.
