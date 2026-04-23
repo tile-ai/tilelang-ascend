@@ -75,7 +75,7 @@ jobs:
               skip_pytest=false
               break
             fi
-            if [[ ! "$file" =~ \.py$ ]] && [[ ! "$file" =~ \.md$ ]]; then
+            if [[ ! "$file" =~ \.py$ ]] && [[ ! "$file" =~ \.md$ ]] && [[ ! "$file" =~ \.png$ ]]; then
               echo "File type not allowed: $file"
               skip_pytest=false
               break
@@ -84,7 +84,7 @@ jobs:
           
           echo "skip_pytest=${skip_pytest}" >> $GITHUB_OUTPUT
           if [ "$skip_pytest" = true ]; then
-            echo "Will skip pytest: only .py/.md files in examples/ modified"
+            echo "Will skip pytest: only .py/.md/.png files in examples/ modified"
           else
             echo "Will run full tests"
           fi
