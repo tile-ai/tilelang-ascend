@@ -70,6 +70,9 @@ private:
   std::unordered_map<Buffer, Buffer, ObjectPtrHash, ObjectPtrEqual>
       origin_to_new_buffer_;
 
+  // Store vid-reduced NEW buffers (values in origin_to_new_buffer_)
+  std::unordered_set<Buffer, ObjectPtrHash, ObjectPtrEqual> vid_reduced_buffers_;
+
   // Store GM buffer offset info: GM buffer -> UB buffer
   std::unordered_map<Buffer, Buffer, ObjectPtrHash, ObjectPtrEqual>
       gm_buffer_offset_info_;
@@ -330,6 +333,7 @@ bool NeedsVidReduction(const Buffer &buffer) const {
         if (NeedsVidReduction(buffer)) {
           Buffer new_buffer = ModifyBufferShape(buffer);
           origin_to_new_buffer_[buffer] = new_buffer;
+          vid_reduced_buffers_.insert(new_buffer);  // Track vid-reduced NEW buffer
         }
       }
     }
@@ -840,12 +844,85 @@ bool NeedsVidReduction(const Buffer &buffer) const {
     return BufferStore(op->buffer, new_value, new_indices);
   }
 
+  // Check if loop variable is used in vid-reduced UB buffer's first dimension
+  // Analyze ORIGINAL body, check ORIGINAL buffers (keys in origin_to_new_buffer_)
+  bool LoopVarUsedInVidReducedUbFirstDim(const Var &loop_var, const Stmt &body) {
+    class LoopVarAnalyzer : public StmtExprVisitor {
+    public:
+      Var target_var;
+      // Check ORIGINAL buffers that WILL be vid-reduced
+      const std::unordered_map<Buffer, Buffer, ObjectPtrHash, ObjectPtrEqual> &origin_to_new_buffer;
+      bool found = false;
+
+      LoopVarAnalyzer(const Var &var,
+                      const std::unordered_map<Buffer, Buffer, ObjectPtrHash, ObjectPtrEqual> &buffers)
+          : target_var(var), origin_to_new_buffer(buffers) {}
+
+      void VisitExpr_(const BufferLoadNode *op) final {
+        // Check if ORIGINAL buffer will be vid-reduced (is a key in origin_to_new_buffer)
+        if (origin_to_new_buffer.count(op->buffer) > 0) {
+          if (!op->indices.empty()) {
+            const PrimExpr &first_idx = op->indices[0];
+            if (const VarNode *v = first_idx.as<VarNode>()) {
+              if (v == target_var.get()) {
+                found = true;
+                return;
+              }
+            }
+          }
+        }
+        StmtExprVisitor::VisitExpr_(op);
+      }
+
+      void VisitStmt_(const BufferStoreNode *op) final {
+        // Check if ORIGINAL buffer will be vid-reduced (is a key in origin_to_new_buffer)
+        if (origin_to_new_buffer.count(op->buffer) > 0) {
+          if (!op->indices.empty()) {
+            const PrimExpr &first_idx = op->indices[0];
+            if (const VarNode *v = first_idx.as<VarNode>()) {
+              if (v == target_var.get()) {
+                found = true;
+                return;
+              }
+            }
+          }
+        }
+        StmtExprVisitor::VisitStmt_(op);
+      }
+    };
+
+    LoopVarAnalyzer analyzer(loop_var, origin_to_new_buffer_);
+    analyzer(body);
+    return analyzer.found;
+  }
+
   Stmt VisitStmt_(const ForNode *op) final {
     if (threads_cnt_ == 2) {
-      current_loops_.push_back({op->loop_var, op->extent});
+      // Step 1: 先分析判断是否需要 reduce（分析原始 body）
+      bool need_reduce = LoopVarUsedInVidReducedUbFirstDim(op->loop_var, op->body);
+      
+      // Step 2: 计算正确的 extent
+      PrimExpr effective_extent = op->extent;
+      if (need_reduce) {
+        PrimExpr simplified = analyzer_->Simplify(op->extent);
+        if (const IntImmNode *int_imm = simplified.as<IntImmNode>()) {
+          int64_t new_value = int_imm->value / threads_cnt_;
+          if (new_value < 1) new_value = 1;
+          effective_extent = IntImm(op->extent.dtype(), new_value);
+        } else {
+          effective_extent = indexdiv(op->extent, threads_cnt_);
+        }
+      }
+
+      // Step 3: 用正确的 extent 加入 current_loops_
+      current_loops_.push_back({op->loop_var, effective_extent});
+      
+      // Step 4: 处理循环体
       Stmt new_body = VisitStmt(op->body);
       current_loops_.pop_back();
-      return For(op->loop_var, op->min, op->extent, op->kind, new_body,
+
+      // Step 5: 返回新的 ForNode
+      return For(op->loop_var, op->min, effective_extent, op->kind, new_body,
                  op->thread_binding, op->annotations);
     }
     return IRMutatorWithAnalyzer::VisitStmt_(op);
