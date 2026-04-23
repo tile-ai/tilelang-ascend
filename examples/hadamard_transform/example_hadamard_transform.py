@@ -21,8 +21,8 @@ pass_configs = {
 @tilelang.jit(out_idx=[1], pass_configs=pass_configs)
 def hadamard_block_intra(b, n, block_size, dtype="float"):
     """
-    执行块内蝶形操作（前 log2(block_size) 级）
-    每个 Block 处理一个 chunk
+    Execute in-block butterfly operations (first log2(block_size) stages)
+    Each block processes one chunk
     """
     assert is_pow_of_2(n), "n must be a power of 2"
     assert is_pow_of_2(block_size), "block_size must be a power of 2"
@@ -34,7 +34,6 @@ def hadamard_block_intra(b, n, block_size, dtype="float"):
 
     @T.prim_func
     def main(A: T.Tensor((b, n), dtype), B: T.Tensor((b, n), dtype)):
-        T.func_attr({"enable_auto_sync": True})
         with T.Kernel(total_blocks, is_npu=True) as (cid, vid):
             if vid == 0:
                 batch_id = cid // num_blocks_per_batch
@@ -69,10 +68,10 @@ def hadamard_block_intra(b, n, block_size, dtype="float"):
 @tilelang.jit(out_idx=[1], pass_configs=pass_configs)
 def hadamard_cross_block_pair(b, n, block_size, cross_stage, dtype="float"):
     """
-    执行跨块蝶形操作的一级（第 cross_stage 级）
-    处理 chunk_size = 2^(cross_stage+1) 的蝶形
+    Execute one level of cross-block butterfly operation (stage cross_stage)
+    Handles butterfly with chunk_size = 2^(cross_stage+1)
 
-    cross_stage >= log2(block_size) 时需要跨块蝶形
+    Cross-block butterfly is needed when cross_stage >= log2(block_size)
     """
     assert is_pow_of_2(n), "n must be a power of 2"
     assert is_pow_of_2(block_size), "block_size must be a power of 2"
@@ -89,7 +88,6 @@ def hadamard_cross_block_pair(b, n, block_size, cross_stage, dtype="float"):
 
     @T.prim_func
     def main(A: T.Tensor((b, n), dtype), B: T.Tensor((b, n), dtype)):
-        T.func_attr({"enable_auto_sync": True})
         with T.Kernel(total_chunks, is_npu=True) as (cid, vid):
             batch_id = cid // num_chunks_per_batch
             chunk_id_in_batch = cid % num_chunks_per_batch
@@ -123,9 +121,9 @@ def hadamard_cross_block_pair(b, n, block_size, cross_stage, dtype="float"):
 
 def hadamard_transform_complete(b, n, dtype="float", block_size=1024):
     """
-    完整 Hadamard 变换
-    - n <= block_size: 单 kernel 完成所有蝶形
-    - n > block_size: 块内蝶形 + 跨块蝶形（Host 协调）
+    Complete Hadamard transform
+    - n <= block_size: single kernel completes all butterfly operations
+    - n > block_size: in-block butterfly + cross-block butterfly (host coordinated)
     """
     if not is_pow_of_2(n):
         raise ValueError(f"n={n} must be a power of 2")
