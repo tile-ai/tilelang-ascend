@@ -25,7 +25,7 @@ def interleave_tensors(*tensors, dim=0):
     return stacked.view(shape)
 
 
-def vec_interleave(block_M, block_N, dtype="float16"):
+def vec_interleave_exp(block_M, block_N, dtype="float16"):
     BLOCK_SIZE = 1
 
     @T.prim_func
@@ -51,7 +51,7 @@ def vec_interleave(block_M, block_N, dtype="float16"):
 
 
 @pytest.mark.parametrize("dtype", DTYPES)
-def test_vec_interleave(dtype):
+def test_vec_interleave_exp(dtype):
     M, N = 32, 32
     torch.manual_seed(42)
     A = gen_tensor((M, N), dtype, kind="randn")
@@ -59,7 +59,7 @@ def test_vec_interleave(dtype):
     C = gen_tensor((M, 2 * N), dtype, kind="zeros")
     ref_C = interleave_tensors(A.cpu(), B.cpu(), dim=1)
 
-    func = vec_interleave(32, 32)
+    func = vec_interleave_exp(32, 32)
     compiled = tilelang.compile(func, target="npuir")
     compiled(A, B, C)
 

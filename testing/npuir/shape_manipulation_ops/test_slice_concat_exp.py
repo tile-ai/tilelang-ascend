@@ -17,7 +17,7 @@ pytestmark = [
 DTYPES = ["float16"]
 
 
-def vec_concat(block_M, block_N, dim, dtype="float16"):
+def vec_concat_exp(block_M, block_N, dim, dtype="float16"):
     BLOCK_SIZE = 1
 
     @T.prim_func
@@ -44,7 +44,7 @@ def vec_concat(block_M, block_N, dim, dtype="float16"):
 
 
 @pytest.mark.parametrize("dtype", DTYPES)
-def test_vec_concat(dtype):
+def test_vec_concat_exp(dtype):
     M, N = 32, 32
     torch.manual_seed(42)
     A = gen_tensor((M, N), dtype, kind="randn")
@@ -52,7 +52,7 @@ def test_vec_concat(dtype):
     C = gen_tensor((M, 2 * N), dtype, kind="zeros")
     ref_C = torch.cat((A.cpu(), B.cpu()), dim=1)
 
-    func = vec_concat(32, 32, dim=1)
+    func = vec_concat_exp(32, 32, dim=1)
     compiled = tilelang.compile(func, target="npuir")
     compiled(A, B, C)
 

@@ -17,7 +17,7 @@ pytestmark = [
 DTYPES = ["float16"]
 
 
-def vec_transpose(block_M, block_N, dtype="float16"):
+def vec_transpose_exp(block_M, block_N, dtype="float16"):
     BLOCK_SIZE = 1
 
     @T.prim_func
@@ -40,14 +40,14 @@ def vec_transpose(block_M, block_N, dtype="float16"):
 
 
 @pytest.mark.parametrize("dtype", DTYPES)
-def test_vec_transpose(dtype):
+def test_vec_transpose_exp(dtype):
     M, N = 32, 32
     torch.manual_seed(42)
     A = gen_tensor((M, N), dtype, kind="randn")
     C = gen_tensor((N, M), dtype, kind="zeros")
     ref_C = torch.transpose(A.cpu(), 0, 1)
 
-    func = vec_transpose(32, 32)
+    func = vec_transpose_exp(32, 32)
     compiled = tilelang.compile(func, target="npuir")
     compiled(A, C)
 
