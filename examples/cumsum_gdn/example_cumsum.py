@@ -25,7 +25,10 @@ reverse = args.reverse
 head_first = args.head_first
 use_fragment = args.use_fragment
 
-pass_configs = {tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True}
+pass_configs = {
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
+    tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
+}
 
 
 @tilelang.jit(out_idx=[-1], pass_configs=pass_configs)
@@ -45,45 +48,46 @@ def cumsum_ker(B, H, L, C, reverse=False, head_first=True, use_fragment=False, a
             by = (cid // chunk_num) % h_block_num * VEC_NUM + vid
             bz = (cid // chunk_num) // h_block_num
 
-            g_ub = tl.alloc_ub([C], accum_dtype)
-            s_ub = tl.alloc_ub([C], accum_dtype)
-            total_ub = tl.alloc_ub([1], accum_dtype)
-            fragment_ub = tl.alloc_ub([C], accum_dtype)
+            # Materialize logical 1D buffers as 2D shared tiles so the current
+            # Ascend shared-layout inference path always sees at least 2 dims.
+            g_ub = tl.alloc_shared([1, C], accum_dtype)
+            s_ub = tl.alloc_shared([1, C], accum_dtype)
+            total_ub = tl.alloc_shared([1, 1], accum_dtype)
+            fragment_ub = tl.alloc_shared([1, C], accum_dtype)
 
-            with tl.Scope("V"):
-                tl.tile.fill(s_ub, 0.0)
-                tl.copy(G[bz, by, bx * C], g_ub)
+            tl.tile.fill(s_ub, 0.0)
+            tl.copy(G[bz, by, bx * C], g_ub[0, :])
 
-                if use_fragment:
-                    tl.tile.fill(fragment_ub, 0.0)
+            if use_fragment:
+                tl.tile.fill(fragment_ub, 0.0)
 
+                for i in range(C):
+                    if i > 0:
+                        fragment_ub[0, i] = fragment_ub[0, i - 1]
+                    fragment_ub[0, i] = fragment_ub[0, i] + g_ub[0, i]
+
+                if reverse:
+                    tl.tile.fill(total_ub, 0.0)
                     for i in range(C):
-                        if i > 0:
-                            fragment_ub[i] = fragment_ub[i - 1]
-                        fragment_ub[i] = fragment_ub[i] + g_ub[i]
-
-                    if reverse:
-                        tl.tile.fill(total_ub, 0.0)
-                        for i in range(C):
-                            total_ub[0] = total_ub[0] + g_ub[i]
-                        for i in range(C):
-                            fragment_ub[i] = total_ub[0] - fragment_ub[i] + g_ub[i]
-
-                    tl.copy(fragment_ub, s_ub)
-                else:
+                        total_ub[0, 0] = total_ub[0, 0] + g_ub[0, i]
                     for i in range(C):
-                        if i > 0:
-                            s_ub[i] = s_ub[i - 1]
-                        s_ub[i] = s_ub[i] + g_ub[i]
+                        fragment_ub[0, i] = total_ub[0, 0] - fragment_ub[0, i] + g_ub[0, i]
 
-                    if reverse:
-                        tl.tile.fill(total_ub, 0.0)
-                        for i in range(C):
-                            total_ub[0] = total_ub[0] + g_ub[i]
-                        for i in range(C):
-                            s_ub[i] = total_ub[0] - s_ub[i] + g_ub[i]
+                tl.copy(fragment_ub[0, :], s_ub[0, :])
+            else:
+                for i in range(C):
+                    if i > 0:
+                        s_ub[0, i] = s_ub[0, i - 1]
+                    s_ub[0, i] = s_ub[0, i] + g_ub[0, i]
 
-                tl.copy(s_ub, S[bz, by, bx * C])
+                if reverse:
+                    tl.tile.fill(total_ub, 0.0)
+                    for i in range(C):
+                        total_ub[0, 0] = total_ub[0, 0] + g_ub[0, i]
+                    for i in range(C):
+                        s_ub[0, i] = total_ub[0, 0] - s_ub[0, i] + g_ub[0, i]
+
+            tl.copy(s_ub[0, :], S[bz, by, bx * C])
 
     return main
 

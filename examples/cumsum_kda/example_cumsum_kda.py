@@ -6,7 +6,10 @@ import torch
 
 tilelang.cache.clear_cache()
 
-pass_configs = {tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True}
+pass_configs = {
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
+    tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
+}
 
 
 def prepare_chunk_indices(cu_seqlens: torch.Tensor, chunk_size: int) -> torch.Tensor:
@@ -119,27 +122,26 @@ def chunk_local_cumsum_scalar_kernel(B, H, SEQ_LEN, BT, reverse=False, head_firs
             i_b = i_bh // h_block_num
             i_h = (i_bh % h_block_num) * VEC_NUM + vid
 
-            b_s = tl.alloc_ub([BT], dtype)
-            b_o = tl.alloc_ub([BT], dtype)
-            total_buf = tl.alloc_ub([1], dtype)
+            b_s = tl.alloc_shared([1, BT], dtype)
+            b_o = tl.alloc_shared([1, BT], dtype)
+            total_buf = tl.alloc_shared([1, 1], dtype)
 
-            with tl.Scope("V"):
-                tl.tile.fill(b_o, 0.0)
-                tl.copy(s[i_b, i_h, i_t * BT], b_s)
+            tl.tile.fill(b_o, 0.0)
+            tl.copy(s[i_b, i_h, i_t * BT], b_s[0, :])
 
+            for i in range(BT):
+                if i > 0:
+                    b_o[0, i] = b_o[0, i - 1]
+                b_o[0, i] = b_o[0, i] + b_s[0, i]
+
+            if reverse:
+                tl.tile.fill(total_buf, 0.0)
                 for i in range(BT):
-                    if i > 0:
-                        b_o[i] = b_o[i - 1]
-                    b_o[i] = b_o[i] + b_s[i]
+                    total_buf[0, 0] = total_buf[0, 0] + b_s[0, i]
+                for i in range(BT):
+                    b_o[0, i] = total_buf[0, 0] - b_o[0, i] + b_s[0, i]
 
-                if reverse:
-                    tl.tile.fill(total_buf, 0.0)
-                    for i in range(BT):
-                        total_buf[0] = total_buf[0] + b_s[i]
-                    for i in range(BT):
-                        b_o[i] = total_buf[0] - b_o[i] + b_s[i]
-
-                tl.copy(b_o, o[i_b, i_h, i_t * BT])
+            tl.copy(b_o[0, :], o[i_b, i_h, i_t * BT])
 
     return main
 
@@ -160,38 +162,37 @@ def chunk_global_cumsum_scalar_kernel(B, H, SEQ_LEN, BT, reverse=False, head_fir
             i_b = cid // h_block_num
             i_h = (cid % h_block_num) * VEC_NUM + vid
 
-            b_s = tl.alloc_ub([BT], dtype)
-            b_o = tl.alloc_ub([BT], dtype)
-            carry = tl.alloc_ub([1], dtype)
-            b_ss_buf = tl.alloc_ub([1], dtype)
+            b_s = tl.alloc_shared([1, BT], dtype)
+            b_o = tl.alloc_shared([1, BT], dtype)
+            carry = tl.alloc_shared([1, 1], dtype)
+            b_ss_buf = tl.alloc_shared([1, 1], dtype)
 
-            with tl.Scope("V"):
-                tl.tile.fill(carry, 0.0)
+            tl.tile.fill(carry, 0.0)
 
-                for k in range(chunk_num):
-                    i_t = chunk_num - 1 - k if reverse else k
+            for k in range(chunk_num):
+                i_t = chunk_num - 1 - k if reverse else k
 
-                    tl.tile.fill(b_o, 0.0)
-                    tl.tile.fill(b_ss_buf, 0.0)
-                    tl.copy(s[i_b, i_h, i_t * BT], b_s)
+                tl.tile.fill(b_o, 0.0)
+                tl.tile.fill(b_ss_buf, 0.0)
+                tl.copy(s[i_b, i_h, i_t * BT], b_s[0, :])
 
+                for i in range(BT):
+                    if i > 0:
+                        b_o[0, i] = b_o[0, i - 1]
+                    b_o[0, i] = b_o[0, i] + b_s[0, i]
+
+                for i in range(BT):
+                    b_ss_buf[0, 0] = b_ss_buf[0, 0] + b_s[0, i]
+
+                if reverse:
                     for i in range(BT):
-                        if i > 0:
-                            b_o[i] = b_o[i - 1]
-                        b_o[i] = b_o[i] + b_s[i]
+                        b_o[0, i] = b_ss_buf[0, 0] - b_o[0, i] + b_s[0, i]
 
-                    for i in range(BT):
-                        b_ss_buf[0] = b_ss_buf[0] + b_s[i]
+                for i in range(BT):
+                    b_o[0, i] = b_o[0, i] + carry[0, 0]
 
-                    if reverse:
-                        for i in range(BT):
-                            b_o[i] = b_ss_buf[0] - b_o[i] + b_s[i]
-
-                    for i in range(BT):
-                        b_o[i] = b_o[i] + carry[0]
-
-                    tl.copy(b_o, o[i_b, i_h, i_t * BT])
-                    carry[0] = carry[0] + b_ss_buf[0]
+                tl.copy(b_o[0, :], o[i_b, i_h, i_t * BT])
+                carry[0, 0] = carry[0, 0] + b_ss_buf[0, 0]
 
     return main
 
@@ -216,30 +217,29 @@ def chunk_local_cumsum_vector_kernel(B, H, SEQ_LEN, S_DIM, BT, BS, reverse=False
             i_b = i_bh // h_block_num
             i_h = (i_bh % h_block_num) * VEC_NUM + vid
 
-            b_s = tl.alloc_ub([BT, BS], dtype)
-            b_o = tl.alloc_ub([BT, BS], dtype)
-            total_buf = tl.alloc_ub([BS], dtype)
+            b_s = tl.alloc_shared([BT, BS], dtype)
+            b_o = tl.alloc_shared([BT, BS], dtype)
+            total_buf = tl.alloc_shared([1, BS], dtype)
 
-            with tl.Scope("V"):
-                tl.tile.fill(b_o, 0.0)
-                tl.copy(s[i_b, i_h, i_t * BT, i_s * BS], b_s)
+            tl.tile.fill(b_o, 0.0)
+            tl.copy(s[i_b, i_h, i_t * BT, i_s * BS], b_s)
 
+            for i in range(BT):
+                for j in range(BS):
+                    if i > 0:
+                        b_o[i, j] = b_o[i - 1, j]
+                    b_o[i, j] = b_o[i, j] + b_s[i, j]
+
+            if reverse:
+                tl.tile.fill(total_buf, 0.0)
                 for i in range(BT):
                     for j in range(BS):
-                        if i > 0:
-                            b_o[i, j] = b_o[i - 1, j]
-                        b_o[i, j] = b_o[i, j] + b_s[i, j]
+                        total_buf[0, j] = total_buf[0, j] + b_s[i, j]
+                for i in range(BT):
+                    for j in range(BS):
+                        b_o[i, j] = total_buf[0, j] - b_o[i, j] + b_s[i, j]
 
-                if reverse:
-                    tl.tile.fill(total_buf, 0.0)
-                    for i in range(BT):
-                        for j in range(BS):
-                            total_buf[j] = total_buf[j] + b_s[i, j]
-                    for i in range(BT):
-                        for j in range(BS):
-                            b_o[i, j] = total_buf[j] - b_o[i, j] + b_s[i, j]
-
-                tl.copy(b_o, o[i_b, i_h, i_t * BT, i_s * BS])
+            tl.copy(b_o, o[i_b, i_h, i_t * BT, i_s * BS])
 
     return main
 
@@ -263,44 +263,43 @@ def chunk_global_cumsum_vector_kernel(B, H, SEQ_LEN, S_DIM, BT, BS, reverse=Fals
             i_b = i_bh // h_block_num
             i_h = (i_bh % h_block_num) * VEC_NUM + vid
 
-            b_s = tl.alloc_ub([BT, BS], dtype)
-            b_o = tl.alloc_ub([BT, BS], dtype)
-            carry = tl.alloc_ub([BS], dtype)
-            b_ss_buf = tl.alloc_ub([BS], dtype)
+            b_s = tl.alloc_shared([BT, BS], dtype)
+            b_o = tl.alloc_shared([BT, BS], dtype)
+            carry = tl.alloc_shared([1, BS], dtype)
+            b_ss_buf = tl.alloc_shared([1, BS], dtype)
 
-            with tl.Scope("V"):
-                tl.tile.fill(carry, 0.0)
+            tl.tile.fill(carry, 0.0)
 
-                for k in range(chunk_num):
-                    i_t = chunk_num - 1 - k if reverse else k
+            for k in range(chunk_num):
+                i_t = chunk_num - 1 - k if reverse else k
 
-                    tl.tile.fill(b_o, 0.0)
-                    tl.tile.fill(b_ss_buf, 0.0)
-                    tl.copy(s[i_b, i_h, i_t * BT, i_s * BS], b_s)
+                tl.tile.fill(b_o, 0.0)
+                tl.tile.fill(b_ss_buf, 0.0)
+                tl.copy(s[i_b, i_h, i_t * BT, i_s * BS], b_s)
 
-                    for i in range(BT):
-                        for j in range(BS):
-                            if i > 0:
-                                b_o[i, j] = b_o[i - 1, j]
-                            b_o[i, j] = b_o[i, j] + b_s[i, j]
-
-                    for i in range(BT):
-                        for j in range(BS):
-                            b_ss_buf[j] = b_ss_buf[j] + b_s[i, j]
-
-                    if reverse:
-                        for i in range(BT):
-                            for j in range(BS):
-                                b_o[i, j] = b_ss_buf[j] - b_o[i, j] + b_s[i, j]
-
-                    for i in range(BT):
-                        for j in range(BS):
-                            b_o[i, j] = b_o[i, j] + carry[j]
-
-                    tl.copy(b_o, o[i_b, i_h, i_t * BT, i_s * BS])
-
+                for i in range(BT):
                     for j in range(BS):
-                        carry[j] = carry[j] + b_ss_buf[j]
+                        if i > 0:
+                            b_o[i, j] = b_o[i - 1, j]
+                        b_o[i, j] = b_o[i, j] + b_s[i, j]
+
+                for i in range(BT):
+                    for j in range(BS):
+                        b_ss_buf[0, j] = b_ss_buf[0, j] + b_s[i, j]
+
+                if reverse:
+                    for i in range(BT):
+                        for j in range(BS):
+                            b_o[i, j] = b_ss_buf[0, j] - b_o[i, j] + b_s[i, j]
+
+                for i in range(BT):
+                    for j in range(BS):
+                        b_o[i, j] = b_o[i, j] + carry[0, j]
+
+                tl.copy(b_o, o[i_b, i_h, i_t * BT, i_s * BS])
+
+                for j in range(BS):
+                    carry[0, j] = carry[0, j] + b_ss_buf[0, j]
 
     return main
 
