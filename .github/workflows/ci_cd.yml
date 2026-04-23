@@ -96,7 +96,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: build-cache/
-          key: tilelang-build-${{ github.head_ref || github.ref_name }}-${{ hashFiles('CMakeLists.txt', 'requirements.txt', 'install_ascend.sh') }}
+          key: tilelang-build-${{ github.base_ref || github.ref_name }}-${{ hashFiles('CMakeLists.txt', 'requirements.txt', 'install_ascend.sh') }}
       
       # 全量编译，清理所有残留编译产物
       - name: Clean build artifacts for full build
@@ -177,9 +177,9 @@ jobs:
                 exit 1
               fi
             "
-      # 如果之前精确命中了，先删除旧缓存，否则 save 会失败
+      # 全量编译下先删除旧缓存，否则 save 会失败
       - name: Delete old cache for overwrite
-        if: always() && steps.cache-build.outputs.cache-hit == 'true'
+        if: always() && env.FULL_BUILD == 'true' && steps.cache-build.outputs.cache-hit == 'true'
         run: |
           KEY="${{ steps.cache-build.outputs.cache-matched-key }}"
           echo "🗑️ Deleting old cache to allow overwrite: $KEY"
@@ -194,12 +194,12 @@ jobs:
       
       # 更新缓存
       - name: Save build cache
-        if: always()    # 即使前面步骤失败也保存，避免编译产物丢失
+        if: always()    
         continue-on-error: true    # key 已存在时不报错
         uses: actions/cache/save@v4
         with:
           path: build-cache/
-          key: tilelang-build-${{ github.head_ref || github.ref_name }}-${{ hashFiles('CMakeLists.txt', 'requirements.txt', 'install_ascend.sh') }}
+          key: tilelang-build-${{ github.base_ref || github.ref_name }}-${{ hashFiles('CMakeLists.txt', 'requirements.txt', 'install_ascend.sh') }}
           
       - name: Check pass rate
         id: check_results
