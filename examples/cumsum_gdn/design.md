@@ -190,7 +190,7 @@ pass_configs = {
 - odd-H：wrapper 级 fallback 保证语义一致
 - 尾块：wrapper 级 fallback 保证语义一致
 
-也就是说，当前版本是：
+该实现可概括为：
 
 - **语义完整**
 - **fast path 只覆盖对齐子集**
@@ -207,7 +207,7 @@ pass_configs = {
 - odd-H
 - 非整除尾块
 
-当前通过的结论应表述为：
+验证结果表明：
 
 - 对齐场景走 Developer-mode fast path
 - 非对齐场景走 PyTorch reference fallback
@@ -217,10 +217,10 @@ pass_configs = {
 
 ## 8. 当前实现边界
 
-这版文档对应的代码可以上库，但需要在 PR 描述里明确以下边界：
+当前实现具有以下边界：
 
 1. 当前不是“所有场景都由 Ascend kernel 直接处理”
 2. 当前是“Developer fast path + wrapper fallback”
 3. `T.cumsum` 已存在公开 API 与 shared 路径 lowering，但本算子暂未直接采用
 
-以上三点是**实现边界说明**，不是设计错误。
+以上三点用于说明当前实现的代码路径覆盖范围，不影响本文档中的算子语义定义。

@@ -253,7 +253,7 @@ pass_configs = {
 
 ## 8. 与主仓语义的对齐方式
 
-当前版本与主仓语义对齐方式如下：
+当前实现与主仓语义的对应关系如下：
 
 - `reverse`：kernel 内支持
 - `scale`：wrapper 后处理
@@ -263,7 +263,7 @@ pass_configs = {
 - `cu_seqlens`：wrapper 按序列切片复用 dense 路径
 - `chunk_indices`：仅接受 canonical 形式
 
-因此当前版本的准确表述应为：
+该实现可概括为：
 
 - **dense 对齐子集由 Ascend kernel fast path 处理**
 - **其余语义由 wrapper/reference 保底**
@@ -283,21 +283,21 @@ pass_configs = {
 - T/S 尾块
 - varlen wrapper
 
-当前通过结论可总结为：
+验证结果可总结为：
 
 1. fast path 对齐 dense 场景已跑通
 2. wrapper fallback 场景与 reference 对齐
-3. 当前代码已经达到“语义正确、边界清晰”的上库要求
+3. 在当前测试范围内，local/global、scalar/vector 以及 wrapper 路径都与 reference 对齐
 
 ---
 
 ## 10. 当前实现边界
 
-仍需在 PR 描述中说明以下事实：
+当前实现边界如下：
 
 1. 当前不是所有场景都由 Ascend kernel 直接覆盖
 2. 当前是 “Developer fast path + wrapper fallback”
 3. `T.cumsum` 已导出且存在 shared 路径 lowering，但本 example 仍采用显式循环实现
 4. global 路径的 `carry` 逻辑目前是手写的，不是 `T.cumsum` 一步替代
 
-以上都是实现边界说明，不属于文档错误。
+以上内容用于说明当前实现的覆盖范围与实现选择。
