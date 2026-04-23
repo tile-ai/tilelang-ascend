@@ -160,7 +160,7 @@ echo "====================================="
 # 4. 最后执行 pytest 自动发现并运行所有测试
 if [ "$SKIP_PYTEST" = true ]; then
     echo -e "\n====================================="
-    echo "Skipping pytest (only examples/ .py/.md files modified)"
+    echo "Skipping pytest (only examples/ .py/.md/.png files modified)"
     echo "====================================="
     exit 0
 fi
