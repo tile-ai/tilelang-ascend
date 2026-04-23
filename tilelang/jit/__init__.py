@@ -70,7 +70,7 @@ def compile(
         return cached_npu(
             func=func,
             out_idx=out_idx,
-            execution_backend=execution_backend,
+            execution_backend="None",
             target=target,
             target_host=target_host,
             verbose=True,
