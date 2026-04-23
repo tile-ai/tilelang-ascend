@@ -2647,34 +2647,48 @@ void CodeGenTileLangNPUIRDEV::VinterleaveCodegen(const CallNode *op) {
     srcs.push_back(src);
   }
   mlir::ValueRange srcs_vr(srcs);
-  Value dst = GenSubviewFromRegion(npuirop.dst, npuirop.dst_range);
-  mlir::Type outputType = dst.getType();
+  mlir::Value dst_tensor = GenExtractSliceFromRegion(npuirop.dst, npuirop.dst_range);
 
   auto interleaveOp = builder.create<mlir::hfusion::InterleaveOp>(
     builder.getUnknownLoc(),
-    outputType,
-    srcs_vr);
-  SetVarValue(npuirop.dst, interleaveOp->getResult(0));
+    dst_tensor.getType(),
+    srcs_vr
+  );
+
+  mlir::Value result = ReshapeCastAndInsertSlice(
+    interleaveOp->getResult(0),
+    GetVarValue(npuirop.dst),
+    npuirop.dst_range
+  );
+
+  SetVarValue(npuirop.dst, result);
 }
 
 void CodeGenTileLangNPUIRDEV::VdeinterleaveCodegen(const CallNode *op) {
   tvm::tl::NpuirDeinterleave npuirop(op->args, this->vmap);
   Value src = GenSubviewFromRegion(npuirop.src, npuirop.src_range);
-  llvm::SmallVector<Value> dsts;
   size_t n_dsts = npuirop.dsts.size();
+
   for (size_t i = 0; i < n_dsts; i++) {
-    Value dst = GenSubviewFromRegion(npuirop.dsts[i], npuirop.dsts_range[i]);
+    mlir::Value dst_tensor = GenExtractSliceFromRegion(npuirop.dsts[i], npuirop.dsts_range[i]);
 
     int64_t current_channel_idx = i;
     auto channelIdxAttr = builder.getI64IntegerAttr(current_channel_idx);
 
-    auto deinterleaveOp = builder.create<hfusion::DeinterleaveOp>(
+    auto deinterleaveOp = builder.create<mlir::hfusion::DeinterleaveOp>(
         builder.getUnknownLoc(),
-        dst.getType(),
+        dst_tensor.getType(),
         src,
         channelIdxAttr
     );
-    SetVarValue(npuirop.dsts[i], deinterleaveOp->getResult(0));
+
+    mlir::Value result = ReshapeCastAndInsertSlice(
+        deinterleaveOp->getResult(0),
+        GetVarValue(npuirop.dsts[i]),
+        npuirop.dsts_range[i]
+    );
+
+    SetVarValue(npuirop.dsts[i], result);
   }
 }
 
