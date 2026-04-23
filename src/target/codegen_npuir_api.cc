@@ -798,6 +798,8 @@ mlir::Value CodeGenTileLangNPUIRAPI::GenRankReducedSubviewFromRegion(
     extent stores the shape or size of region
     min stores the offset of the region
   */
+  ICHECK(!range.empty())
+      << "GenRankReducedSubviewFromRegion requires a non-scalar region.";
   Array<PrimExpr> region_shape, region_indices;
   for (Range r : range) {
     region_shape.push_back(r.get()->extent);
@@ -834,8 +836,6 @@ mlir::Value CodeGenTileLangNPUIRAPI::GenRankReducedSubviewFromRegion(
 
   auto baseTy = v_value.getType().cast<mlir::MemRefType>();
 
-  // Count non-static-1 slice dims so we know how many singleton dims have to
-  // be dropped to satisfy the caller's `min_rank` contract.
   int numNonStatic1 = 0;
   for (auto ofr : sizes) {
     if (!IsStaticIntOFR(ofr, 1))
@@ -845,13 +845,9 @@ mlir::Value CodeGenTileLangNPUIRAPI::GenRankReducedSubviewFromRegion(
   int static1ToKeep = std::max(0, min_rank - numNonStatic1);
   int static1ToDrop = std::max(0, totalStatic1 - static1ToKeep);
 
-  // Build the projected shape and the explicit kept-dim index list in a
-  // single pass. Tracking `keptDims` ourselves removes the ambiguity that
-  // `computeRankReductionMask` runs into when slice sizes contain multiple
-  // static-1 extents: e.g. sizes=[1,64,1] target=[64,1] can legally reduce
-  // to either kept=(0,1) or kept=(1,2), and the heuristic may pick the
-  // wrong one. Leading static-1 dims are dropped first so trailing
-  // singleton dims stay addressable for nd2nz / fixpipe consumers.
+  // Track keptDims explicitly; `inferRankReducedResultType`'s heuristic is
+  // ambiguous when sizes have multiple static-1 extents (e.g. [1,64,1] ->
+  // [64,1] vs [1,64]). Drop leading 1s, keep trailing ones.
   llvm::SmallVector<int64_t> projectedReducedShape;
   llvm::SmallVector<unsigned> keptDims;
   projectedReducedShape.reserve(sizes.size());
@@ -875,9 +871,7 @@ mlir::Value CodeGenTileLangNPUIRAPI::GenRankReducedSubviewFromRegion(
       projectedReducedShape.push_back(mlir::ShapedType::kDynamic);
     }
   }
-  // A memref must have rank >= 1. If every dim was a droppable static-1,
-  // reinstate the trailing one so the projected view still has a valid
-  // shape and stride entry.
+  // memref rank must be >= 1; reinstate the trailing dim if all were dropped.
   if (projectedReducedShape.empty()) {
     projectedReducedShape.push_back(1);
     keptDims.push_back(static_cast<unsigned>(sizes.size()) - 1);
@@ -891,9 +885,8 @@ mlir::Value CodeGenTileLangNPUIRAPI::GenRankReducedSubviewFromRegion(
     return v_value;
   }
 
-  // Compute the reduced result type ourselves from the explicit `keptDims`
-  // instead of calling `inferRankReducedResultType`, which relies on a
-  // shape-matching heuristic and can drop the wrong original dimension.
+  // Project the full-rank inferred type through `keptDims` ourselves so the
+  // kept dimensions are explicit rather than heuristic-inferred.
   auto fullSubviewTy =
       mlir::memref::SubViewOp::inferResultType(baseTy, offsets, sizes, strides)
           .cast<mlir::MemRefType>();
@@ -901,7 +894,10 @@ mlir::Value CodeGenTileLangNPUIRAPI::GenRankReducedSubviewFromRegion(
   if (static_cast<int64_t>(keptDims.size()) == fullSubviewTy.getRank()) {
     reducedTy = fullSubviewTy;
   } else {
-    auto fullLayout = fullSubviewTy.getLayout().cast<mlir::StridedLayoutAttr>();
+    auto fullLayout =
+        fullSubviewTy.getLayout().dyn_cast<mlir::StridedLayoutAttr>();
+    ICHECK(fullLayout)
+        << "rank-reduced subview requires a strided base layout.";
     llvm::SmallVector<int64_t> keptShape;
     llvm::SmallVector<int64_t> keptStrides;
     keptShape.reserve(keptDims.size());
