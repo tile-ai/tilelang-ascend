@@ -901,8 +901,7 @@ mlir::Value CodeGenTileLangNPUIRAPI::GenRankReducedSubviewFromRegion(
   if (static_cast<int64_t>(keptDims.size()) == fullSubviewTy.getRank()) {
     reducedTy = fullSubviewTy;
   } else {
-    auto fullLayout =
-        fullSubviewTy.getLayout().cast<mlir::StridedLayoutAttr>();
+    auto fullLayout = fullSubviewTy.getLayout().cast<mlir::StridedLayoutAttr>();
     llvm::SmallVector<int64_t> keptShape;
     llvm::SmallVector<int64_t> keptStrides;
     keptShape.reserve(keptDims.size());
