@@ -179,7 +179,7 @@ jobs:
             "
       # 全量编译下先删除旧缓存，否则 save 会失败
       - name: Delete old cache for overwrite
-        if: always() && env.FULL_BUILD == 'true' && steps.cache-build.outputs.cache-hit == 'true'
+        if: always() && env.FULL_BUILD == 'true'
         run: |
           KEY="${{ steps.cache-build.outputs.cache-matched-key }}"
           echo "🗑️ Deleting old cache to allow overwrite: $KEY"
