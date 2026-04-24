@@ -407,6 +407,11 @@ bool NeedsVidReduction(const Buffer &buffer) const {
 
   BufferLoad ModifyBufferLoadIndices(const BufferLoad &load, size_t ub_dims,
                                      const Buffer &ub_buf) {
+    // Check if the buffer is gm
+    Buffer buf = load->buffer;
+    if (buf.scope() != "global") {
+      return load;
+    }
     auto ub_it = origin_to_new_buffer_.find(ub_buf);
     if (ub_it == origin_to_new_buffer_.end()) {
       return load;
@@ -693,6 +698,9 @@ bool NeedsVidReduction(const Buffer &buffer) const {
     // Handle case where UB was not vid-reduced
     // Check if GM indices contain loop variable and needs vid offset
     if (!ub_was_vid_reduced) {
+      if (gm_buf.scope() != "global") {
+        return IRMutatorWithAnalyzer::VisitExpr_(op);
+      }
       Array<PrimExpr> new_gm_indices = gm_load->indices;
       bool indices_modified = false;
 
@@ -767,7 +775,7 @@ bool NeedsVidReduction(const Buffer &buffer) const {
     Array<PrimExpr> new_region_args = target_region->args;
     new_region_args.Set(0, VisitExpr(modified_load));
     for (size_t i = 1; i < new_region_args.size(); ++i) {
-      if (i != new_region_args.size() - ub_dims) {
+      if (i != new_region_args.size() - ub_dims || gm_buf.scope() != "global") {
         new_region_args.Set(i, VisitExpr(new_region_args[i]));
       } else {
         if (ExtentIsEqualOne(new_region_args[i])) {
@@ -898,7 +906,7 @@ bool NeedsVidReduction(const Buffer &buffer) const {
 
   Stmt VisitStmt_(const ForNode *op) final {
     if (threads_cnt_ == 2) {
-      // Step 1: 先分析判断是否需要 reduce（分析原始 body）
+      // Step 1: 分析判断是否需要 reduce（分析原始 body）
       bool need_reduce = LoopVarUsedInVidReducedUbFirstDim(op->loop_var, op->body);
       
       // Step 2: 计算正确的 extent
@@ -912,16 +920,20 @@ bool NeedsVidReduction(const Buffer &buffer) const {
         } else {
           effective_extent = indexdiv(op->extent, threads_cnt_);
         }
+        
+        // Step 3: 只有被 vid reduce 的循环才加入 current_loops_
+        current_loops_.push_back({op->loop_var, effective_extent});
       }
-
-      // Step 3: 用正确的 extent 加入 current_loops_
-      current_loops_.push_back({op->loop_var, effective_extent});
       
       // Step 4: 处理循环体
       Stmt new_body = VisitStmt(op->body);
-      current_loops_.pop_back();
+      
+      // Step 5: 退出时 pop（如果之前 push 了）
+      if (need_reduce) {
+        current_loops_.pop_back();
+      }
 
-      // Step 5: 返回新的 ForNode
+      // Step 6: 返回新的 ForNode
       return For(op->loop_var, op->min, effective_extent, op->kind, new_body,
                  op->thread_binding, op->annotations);
     }
