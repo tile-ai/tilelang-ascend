@@ -170,6 +170,7 @@ private:
           {"copy_l0c_to_gm", {true, "FIX"}},
           {"copy_gm_to_ub", {false, "MTE2"}},
           {"copy_ub_to_gm", {true, "MTE3"}},
+          {"atomic_add_ub_to_gm", {true, "MTE3"}},
       };
 
   std::optional<std::pair<bool, std::string>>
@@ -786,6 +787,7 @@ private:
       {"copy_l0c_to_gm", "cube"},
       {"copy_gm_to_ub", "vec"},
       {"copy_ub_to_gm", "vec"},
+      {"atomic_add_ub_to_gm", "vec"},
       {"copy_ub_to_ub", "vec"},
       {"wmma.matrix_a", "cube"},
       {"wmma.matrix_b", "cube"},

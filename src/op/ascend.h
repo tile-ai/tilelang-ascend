@@ -37,6 +37,23 @@ private:
   PrimExpr padValue;
 };
 
+class AscendAtomicAdd : public Operator {
+public:
+  AscendAtomicAdd(Array<PrimExpr> args, BufferMap vmap);
+  Stmt Lower(const LowerArgs &T, arith::Analyzer *analyzer) const final;
+  LayoutMap InferLayout(const LayoutInferArgs &T, InferLevel level) final;
+  static const Op &Get();
+
+private:
+  Array<PrimExpr> args_;
+
+  Buffer dst, src;
+  Array<Range> dst_range, src_range;
+  Array<PrimExpr> dst_extents, src_extents;
+};
+
+TVM_DLL const Op &ascend_atomic_add();
+
 TVM_DLL const Op &ascend_add();
 
 TVM_DLL const Op &ascend_sub();

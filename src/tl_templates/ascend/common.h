@@ -8,6 +8,12 @@
 #include "catlass/gemm/tile/tile_copy.hpp"
 #include "catlass/layout/layout.hpp"
 
+#if defined(__has_include)
+#if __has_include("version/cann_version.h")
+#include "version/cann_version.h"
+#endif
+#endif
+
 #include "shmem.h"
 
 #define CUDART_INF_F 1.0f / 0.0f
@@ -37,6 +43,14 @@ constexpr bool IsDuplicateSupported_v =
     std::is_same_v<T, half> || std::is_same_v<T, bfloat16_t> ||
     std::is_same_v<T, int32_t> || std::is_same_v<T, uint32_t> ||
     std::is_same_v<T, float>;
+
+CATLASS_DEVICE void disable_dma_atomic_compat() {
+#if defined(CANN_MAJOR) && CANN_MAJOR >= 9
+  AscendC::DisableDmaAtomic();
+#else
+  AscendC::SetAtomicNone();
+#endif
+}
 
 template <typename T, uint32_t dstM, uint32_t dstN>
 CATLASS_DEVICE void copy_gm_to_l1(LocalTensor<T> dstTensor,
@@ -213,6 +227,19 @@ copy_ub_to_gm(GlobalTensor<T> dstTensor, LocalTensor<T> srcTensor,
       maskShapeM, maskShapeN * sizeof(T), (srcN - maskShapeN) * sizeof(T) / 32,
       (realdstN - maskShapeN) * sizeof(T), 0);
   AscendC::DataCopyPad(dstTensor, srcTensor, dataCopyParams);
+}
+
+template <typename T, uint32_t srcN, uint32_t srcM = 1>
+CATLASS_DEVICE void
+atomic_add_ub_to_gm(GlobalTensor<T> dstTensor, LocalTensor<T> srcTensor,
+                    uint32_t realdstN = 1, uint32_t maskShapeM = srcM,
+                    uint32_t maskShapeN = srcN) {
+  AscendC::SetAtomicAdd<T>();
+  AscendC::DataCopyExtParams dataCopyParams(
+      maskShapeM, maskShapeN * sizeof(T), (srcN - maskShapeN) * sizeof(T) / 32,
+      (realdstN - maskShapeN) * sizeof(T), 0);
+  AscendC::DataCopyPad(dstTensor, srcTensor, dataCopyParams);
+  disable_dma_atomic_compat();
 }
 
 template <typename T1, typename T2, uint32_t len>

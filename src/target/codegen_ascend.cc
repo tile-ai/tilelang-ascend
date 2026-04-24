@@ -438,7 +438,8 @@ void CodeGenTileLangAscend::VisitStmt_(const BufferStoreNode *op) {
 void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
   if (op->op.same_as(builtin::call_extern())) {
     std::string op_name = Downcast<StringImm>(op->args[0])->value;
-    if (op_name.find("tl::ascend::copy") != std::string::npos) {
+    if (op_name.find("tl::ascend::copy") != std::string::npos ||
+        op_name.find("tl::ascend::atomic_add_ub_to_gm") != std::string::npos) {
       CopyCodegen(op);
     } else if (op_name == "npu.fill") {
       this->PrintIndent();
@@ -1160,7 +1161,8 @@ void CodeGenTileLangAscend::AddFunction(const GlobalVar &gvar,
     stream << ", ";
   }
   for (auto shape_var : shape_vars) {
-    stream << "int64_t" << " " << GetVarID(shape_var);
+    stream << "int64_t"
+           << " " << GetVarID(shape_var);
     if (index != shape_vars.size() - 1) {
       stream << ", ";
     }
@@ -2095,7 +2097,8 @@ void CodeGenTileLangAscend::PrintfOpCodegen(const CallNode *op,
 void CodeGenTileLangAscend::DumpTensorCodegen(const CallNode *op) {
   AddDeclStream(decl_stream, "#include \"tl_templates/ascend/printf.h\"\n");
   this->PrintIndent();
-  this->stream << "tl::ascend::DumpTensor" << "(";
+  this->stream << "tl::ascend::DumpTensor"
+               << "(";
 
   // 0. Bufferָ��
   this->stream << PrintBufferOffset(op->args[0].as<CallNode>()) << ",";
@@ -2158,7 +2161,8 @@ void CodeGenTileLangAscend::WholeReduceOpCodegen(const CallNode *op,
   for (int i = 2; i < op->args.size() - 1; i++) {
     this->stream << ", " << PrintExpr(op->args[i]);
   }
-  this->stream << ", " << "AscendC::ReduceOrder::"
+  this->stream << ", "
+               << "AscendC::ReduceOrder::"
                << Downcast<StringImm>(op->args[op->args.size() - 1])->value
                << ");\n";
 }
@@ -2250,9 +2254,9 @@ void CodeGenTileLangAscend::CopyCodegen(const CallNode *op) {
   auto dst_type = GetAccessPtrDtype(op->args[2].as<CallNode>());
 
   static const std::unordered_map<std::string, int> kCopyOpExtraArgs = {
-      {"copy_l0c_to_gm", 3}, {"copy_gm_to_l1", 3}, {"copy_l1_to_l0a", 2},
-      {"copy_l1_to_l0b", 2}, {"copy_gm_to_ub", 4}, {"copy_ub_to_gm", 3},
-      {"copy_ub_to_ub", 0}};
+      {"copy_l0c_to_gm", 3},      {"copy_gm_to_l1", 3}, {"copy_l1_to_l0a", 2},
+      {"copy_l1_to_l0b", 2},      {"copy_gm_to_ub", 4}, {"copy_ub_to_gm", 3},
+      {"atomic_add_ub_to_gm", 3}, {"copy_ub_to_ub", 0}};
 
   bool found = false;
   int extra_args = 0;
@@ -2343,11 +2347,12 @@ void CodeGenTileLangAscend::ReinterpretCastCodegen(const CallNode *op) {
     var_names.push_back(var_name);
   }
   this->PrintIndent();
-  this->stream << "AscendC::LocalTensor" << "<"
-               << Downcast<StringImm>(op->args[2])->value << "> "
+  this->stream << "AscendC::LocalTensor"
+               << "<" << Downcast<StringImm>(op->args[2])->value << "> "
                << var_names[0] << " = " << var_names[1] << "."
-               << "ReinterpretCast" << "<"
-               << Downcast<StringImm>(op->args[2])->value << ">" << "();\n";
+               << "ReinterpretCast"
+               << "<" << Downcast<StringImm>(op->args[2])->value << ">"
+               << "();\n";
 }
 
 void CodeGenTileLangAscend::CreateSubExperimentCodegen(
