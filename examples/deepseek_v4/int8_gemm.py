@@ -8,16 +8,12 @@
 # INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 # See LICENSE in the root of the software repository for the full text of the License.
 
-import os
-import sys
 import torch
 import logging
-from torch import nn
-from typing import Tuple, Optional, Literal
+from typing import Literal
 
 import tilelang
 import tilelang.language as T
-from tilelang import DataType
 
 
 torch.set_default_device("npu")
