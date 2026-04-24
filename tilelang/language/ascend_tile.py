@@ -1708,80 +1708,96 @@ def round(out: Buffer | BufferRegion, buffer: Buffer | BufferRegion, count: Prim
 
 
 def broadcast(
-    dst: Buffer | BufferRegion,  # noqa: F821, FA100
-    src: Buffer | BufferRegion,  # noqa: F821, FA100
-):  # noqa: F821, FA100
-    """Generates a TIR intrinsic call for the AscendC `Broadcast` operation.
+    dst: Buffer | BufferRegion,
+    src: Buffer | BufferRegion,
+    axis: int | None = None,
+):
+    """Generates a TIR intrinsic call for the Ascend `Broadcast` operation.
 
     This function performs a broadcast copy from the source buffer (`src`) to the
     destination buffer (`dst`). It automatically infers the broadcasting axis
-    based on the shapes of the input buffers.
+    based on the shapes of the input buffers, or uses the explicitly provided axis.
 
     Args:
-        dst (tvm.tir.Buffer): The destination buffer. Must be allocated in the
-            Unified Buffer (UB). Its shape determines the output size.
-        src (tvm.tir.Buffer): The source buffer. Must be allocated in the
-            Unified Buffer (UB). Its shape must be compatible with `dst` for broadcasting.
+        dst: Destination buffer (must be in UB).
+        src: Source buffer (must be in UB).
+        axis: Broadcasting axis (0 or 1). If None, auto-inferred.
 
     Returns:
-        tvm.tir.Call: A TIR intrinsic call node that maps to the C++ `AscendC::Broadcast` API.
+        tvm.tir.Call: Intrinsic call for AscendC Broadcast API.
 
     Raises:
-        AssertionError: If the input shapes violate the dimension constraints.
-
-    Constraints:
-        1. **Rank Consistency**: The number of dimensions (rank) of `src` and `dst` must be identical.
-        2. **Supported Dimensions**: Only 1D and 2D tensors are supported. The rank must be 1 or 2.
-        3. **Broadcasting Logic**:
-            - **Axis 0 (Row Broadcast)**: Inferred if `src.shape[0] == 1` and `dst.shape[0] > 1`.
-              The source row is replicated `dst.shape[0]` times.
-            - **Axis 1 (Column Broadcast)**: Inferred if `src.shape[1] == 1` and `dst.shape[1] > 1`.
-              The source column is replicated `dst.shape[1]` times.
-            - **No Broadcast (Copy)**: If shapes are identical, the axis defaults to 0.
+        ValueError: If shapes are incompatible for broadcasting.
     """
-    if isinstance(dst, BufferRegion):
-        dst_ptr, dst_extent = _handle_buffer_region(dst, "w")
-    else:
-        dst_ptr = dst.access_ptr("w")
-        dst_extent = dst.shape
-
-    if isinstance(src, BufferRegion):
-        src_ptr, src_extent = _handle_buffer_region(src, "r")
-    else:
-        src_ptr = src.access_ptr("r")
-        src_extent = src.shape
-
+    # --- 1. Extract pointers and shapes ---
+    dst_ptr, dst_extent = _handle_buffer_region(dst, "w") if isinstance(dst, BufferRegion) else (dst.access_ptr("w"), dst.shape)
+    src_ptr, src_extent = _handle_buffer_region(src, "r") if isinstance(src, BufferRegion) else (src.access_ptr("r"), src.shape)
     dtype = _dtype(src)
+    # 3D to 2D conversion
+    dst_extent = list(dst_extent)[-2:]
+    src_extent = list(src_extent)[-2:]
 
-    if len(dst_extent) == 3:
-        dst_extent = [dst_extent[1], dst_extent[2]]
-    if len(src_extent) == 3:
-        src_extent = [src_extent[1], src_extent[2]]
-    dim = len(dst_extent)
-    assert dim in [1, 2], "Ascend Broadcast only supports dim=1 or dim=2."
-    assert len(src_extent) == dim, "Source and Dest dimension must match."
+    dst_dim, src_dim = len(dst_extent), len(src_extent)
+    if dst_dim not in [1, 2] or src_dim not in [1, 2]:
+        raise ValueError(f"Ascend Broadcast only supports 1D or 2D: dst_dim={dst_dim}, src_dim={src_dim}")
 
-    axis = 0
-    if dim == 2:
-        if src_extent[0] == 1 and dst_extent[0] != 1:
-            axis = 0
-        elif src_extent[1] == 1 and dst_extent[1] != 1:
-            axis = 1
+    # --- 2. Normalize 1D src to 2D ---
+    if src_dim == 1 and dst_dim == 2:
+        if axis == 0 or (axis is None and dst_extent[1] == src_extent[0]):
+            src_extent, axis = [1, src_extent[0]], 0
+        elif axis == 1 or (axis is None and dst_extent[0] == src_extent[0]):
+            src_extent, axis = [src_extent[0], 1], 1
         else:
-            axis = 0
-    else:  # dim == 1
-        axis = 0
+            raise ValueError(f"Cannot broadcast 1D src {src_extent} to 2D dst {dst_extent}, axis={axis}")
+        src_dim = 2
 
-    op_name = "tl.ascend_broadcast"
-    template_args = f"{dtype}, {dim}, {axis}, false"
+    if src_dim != dst_dim:
+        raise ValueError(f"Dimension mismatch: dst_dim={dst_dim} != src_dim={src_dim}")
 
+    # --- 3. Auto-infer axis (2D case) ---
+    if axis is None:
+        if dst_dim == 2:
+            if src_extent[0] == 1 and dst_extent[0] != 1:
+                axis = 0
+            elif src_extent[1] == 1 and dst_extent[1] != 1:
+                axis = 1
+            else:
+                axis = 0  # No broadcast, default axis=0
+        else:
+            axis = 0  # 1D case
+
+    # --- 4. Shape validation ---
+    if dst_dim == 2:
+        if axis not in [0, 1]:
+            raise ValueError(f"axis must be 0 or 1, got {axis}")
+
+        if src_extent[axis] == 1:
+            # Broadcast case: validate non-broadcast dimension matches
+            other_axis = 1 - axis
+            if src_extent[other_axis] != dst_extent[other_axis]:
+                raise ValueError(
+                    f"Broadcast dimension mismatch: src[{other_axis}]={src_extent[other_axis]} "
+                    f"!= dst[{other_axis}]={dst_extent[other_axis]}"
+                )
+        elif src_extent != dst_extent:
+            # No broadcast: shapes must match exactly
+            raise ValueError(f"Shapes must match when src[{axis}] != 1: src={src_extent}, dst={dst_extent}")
+    elif dst_dim == 1:
+        # 1D case: axis must be 0
+        if axis != 0:
+            raise ValueError(f"1D broadcast requires axis=0, got axis={axis}")
+        # broadcast requires src[0] == 1, otherwise shapes must match
+        if src_extent[0] != 1 and src_extent != dst_extent:
+            raise ValueError(f"1D broadcast requires src[0]=1 or shapes must match: src={src_extent}, dst={dst_extent}")
+
+    # --- 5. Generate TIR intrinsic call ---
     return tir.call_intrin(
         "handle",
-        tir.op.Op.get(op_name),
-        f"Broadcast<{template_args}>",
+        tir.op.Op.get("tl.ascend_broadcast"),
+        f"Broadcast<{dtype}, {dst_dim}, {axis}, false>",
         dst_ptr,
         src_ptr,
-        dim,
+        dst_dim,
         *dst_extent,
         *src_extent,
     )

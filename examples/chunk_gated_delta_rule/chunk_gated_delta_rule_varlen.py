@@ -135,7 +135,6 @@ def chunk_gated_delta_rule_fwd_kernel_unified(
                         g_last_scalar = T.alloc_ub([1], accum_dtype)
                         g_exp_ub = T.alloc_ub([BT // 2], accum_dtype)
                         g_exp_ub_pad = T.alloc_ub([BT], accum_dtype)
-                        g_exp_ub_dim = T.alloc_ub([1, BT // 2], accum_dtype)
                         g_exp_ub_broc = T.alloc_ub([BT // 2, V], accum_dtype)
                         g_mask_ub_pad = T.alloc_ub([BT // 8], "uint8")
 
@@ -158,8 +157,7 @@ def chunk_gated_delta_rule_fwd_kernel_unified(
                         T.tile.exp(g_exp_ub, g_exp_ub)
 
                         # v_new = v_new * exp(g_last - g)
-                        T.copy(g_exp_ub, g_exp_ub_dim[0, :])
-                        T.tile.broadcast(g_exp_ub_broc, g_exp_ub_dim)
+                        T.tile.broadcast(g_exp_ub_broc, g_exp_ub, axis=1)
                         T.tile.mul(v_new_ub_float, v_new_ub_float, g_exp_ub_broc)
 
                         # 4. h = h * exp(g_last)
