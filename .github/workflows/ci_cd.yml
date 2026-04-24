@@ -192,9 +192,9 @@ jobs:
           echo "✅ Old cache deleted (if existed)"
         continue-on-error: true
       
-      # 更新缓存
+      # 全量编 | 增量编但无缓存，需要保存缓存
       - name: Save build cache
-        if: always()    
+        if: always() && (env.FULL_BUILD == 'true' || steps.cache-build.outputs.cache-hit == 'false')
         continue-on-error: true    # key 已存在时不报错
         uses: actions/cache/save@v4
         with:
