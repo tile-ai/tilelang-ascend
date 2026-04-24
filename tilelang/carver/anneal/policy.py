@@ -58,7 +58,7 @@ def _get_mem_caps(mem_caps, arch=None):
 
     _mem_caps = []
     for cap in mem_caps:
-        if cap in default_arch.mem_caps:
+        if cap in default_arch.mem_cap:
             _mem_caps.append(default_arch.mem_cap[cap])
         else:
             raise ValueError("Unsupported mem_caps!")
@@ -453,9 +453,9 @@ class AnnealTemplate:
                 [],
             ),  # matmul 1
         ]
-        mem_caps = ["l1"]
+
         annel_carver = AnnealCarver(
-            policy, custom_kernel, _get_mem_caps(mem_caps), self.annealparam
+            policy, custom_kernel, _get_mem_caps(self.mem_caps), self.annealparam
         )
 
         return annel_carver.get_configs_from_anneal()
