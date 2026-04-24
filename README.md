@@ -17,7 +17,7 @@ Within the TileLang ecosystem, we have developed an NPU Intermediate Representat
 
 
 ## Latest News
-- 4/24/2026 🚀: Released DeepSeek V4 kernels [DeepSeek-V4](./examples/deepseed_v4)
+- 4/24/2026 🚀: Released DeepSeek V4 kernels [DeepSeek-V4](./examples/deepseed_v4)!
 - 3/28/2026 🚀: We provide a free environment to facilitate user experience and development for TileLang [Pull Request#708](https://github.com/tile-ai/tilelang-ascend/pull/708).
 
 - 1/23/2026 🚀: TileLang now supports CANN 8.5. Check out [Pull Request#334](https://github.com/tile-ai/tilelang-ascend/pull/334) and [Pull Request#346](https://github.com/tile-ai/tilelang-ascend/pull/346) for details!
