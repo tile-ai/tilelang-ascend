@@ -148,15 +148,6 @@ def int8_gemm_torch_optimized(
 
 def test(custom_args=None):
     M, N, K = M, N, K = 1024, 1024, 1024
-    torch_dtype_map = {
-        "float16": torch.half,
-        "float32": torch.float32,
-        "bfloat16": torch.bfloat16,
-        "int8": torch.int8,
-        "int32": torch.int32,
-        "int64": torch.int64,
-        "uint64": torch.uint64,
-    }
     a_bf16 = torch.randn(M, K, dtype=torch.bfloat16)
     a_fp32 = a_bf16.float()
     a_abs_max = torch.max(torch.abs(a_fp32), dim=1, keepdim=True)[0]
