@@ -157,8 +157,6 @@ def test(custom_args=None):
         "int64": torch.int64,
         "uint64": torch.uint64,
     }
-    A = torch.randint(-128, 127, [M, K], dtype=torch_dtype_map["int8"])
-    B = torch.randint(-128, 127, [K, N], dtype=torch_dtype_map["int8"])
     a_bf16 = torch.randn(M, K, dtype=torch.bfloat16)
     a_fp32 = a_bf16.float()
     a_abs_max = torch.max(torch.abs(a_fp32), dim=1, keepdim=True)[0]
@@ -177,7 +175,6 @@ def test(custom_args=None):
     a_scales_npu = a_scales.npu()
     b_int8_npu = b_int8.npu()
     b_scales_npu = b_scales.npu()
-    output_npu = torch.empty(M, N, dtype=torch.bfloat16, device=a_int8_npu.device)
     kernel = int8_gemm_kernel_corrected(N, K, block_M=64, block_N=64, block_K=64, out_dtype=BF16)
     logging.info("init successful!")
 

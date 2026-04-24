@@ -42,8 +42,6 @@ def act_quant_kernel_int8_optimized(N: int, block_M: int = 32, block_N: int = 32
     VEC_NUM = 2
     CAST_MODE = "CAST_NONE"
 
-    int8_min = -128
-    int8_max = 127
     int8_abs_max = 127.0
 
     m_num = M // block_M
@@ -68,8 +66,6 @@ def act_quant_kernel_int8_optimized(N: int, block_M: int = 32, block_N: int = 32
             max_ub = T.alloc_ub([block_M_2], "float")
             scale_ub = T.alloc_ub([block_M_2], "float")
             x_ub_fp = T.alloc_ub([block_M_2, block_N], "float")
-            x_ub_fp_1 = T.alloc_ub([block_M_2, block_N], "float")
-            scale_global = T.alloc_ub([block_M_2, 1], "float")
 
             with T.Scope("V"):
                 T.copy(X[bm * block_M + vid * block_M_2, bn * block_N], x_ub)
