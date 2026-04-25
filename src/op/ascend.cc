@@ -21,6 +21,23 @@ namespace tl {
 
 using namespace tir;
 
+NpuirOperand NpuirOperand::FromExpr(const PrimExpr &expr,
+                                    const BufferMap &vmap) {
+  if (const auto *call = expr.as<CallNode>()) {
+    // CallNode should be a tensor
+    auto region = RegionOp(call->args, vmap);
+    return NpuirOperand::Tensor(region.GetBuffer(), region.GetRanges());
+  }
+  if (expr.as<IntImm>() || expr.as<FloatImm>() || expr.as<tir::VarNode>()) {
+    // If there are other types of nodes that need to be treated as scalars,
+    // please add them here.
+    return NpuirOperand::Scalar(expr);
+  }
+  LOG(FATAL) << "NpuirOperand::FromExpr cannot handle the expr with type of \""
+             << expr->GetTypeKey() << '\"';
+  __builtin_unreachable();
+}
+
 AscendCopy::AscendCopy(Array<PrimExpr> args, BufferMap vmap) : args_(args) {
   Array<Range> rgs[2];
   Buffer bf[2];
@@ -36,39 +53,30 @@ AscendCopy::AscendCopy(Array<PrimExpr> args, BufferMap vmap) : args_(args) {
   std::tie(this->src_range, this->dst_range) = std::tie(rgs[0], rgs[1]);
 }
 
-#define NPUIR_BINARY_OP_CTOR(OPNAME, opname)                                   \
-  Npuir##OPNAME::Npuir##OPNAME(Array<PrimExpr> args, BufferMap vmap) {         \
-    Array<Range> rgs[3];                                                       \
-    Buffer bf[3];                                                              \
-    for (int i = 0; i < 3; i++) {                                              \
-      auto expr = args[i];                                                     \
-      auto call = expr.as<CallNode>();                                         \
-      ICHECK(call);                                                            \
-      auto region = RegionOp(call->args, vmap);                                \
-      rgs[i] = region.GetRanges();                                             \
-      bf[i] = region.GetBuffer();                                              \
-    }                                                                          \
-    std::tie(this->src0, this->src1, this->dst) =                              \
-        std::tie(bf[0], bf[1], bf[2]);                                         \
-    std::tie(this->src0_range, this->src1_range, this->dst_range) =            \
-        std::tie(rgs[0], rgs[1], rgs[2]);                                      \
-  }                                                                            \
+NpuirBinaryOperator::NpuirBinaryOperator(Array<PrimExpr> args, BufferMap vmap) {
+  ICHECK_GE(args.size(), 3U) << "Binary operator expects at least 3 inputs";
+  src0_ = NpuirOperand::FromExpr(args[0], vmap);
+  src1_ = NpuirOperand::FromExpr(args[1], vmap);
+  dst_ = NpuirOperand::FromExpr(args[2], vmap);
+}
+
+#define NPUIR_BINARY_OP_REGISTER(OPNAME, opname)                               \
   TIR_REGISTER_TL_OP(Npuir##OPNAME, npuir_##opname)                            \
       .set_num_inputs(3)                                                       \
       .set_attr<TCallEffectKind>("TCallEffectKind",                            \
                                  Integer(CallEffectKind::kOpaque));
 
-NPUIR_BINARY_OP_CTOR(Add, add)
-NPUIR_BINARY_OP_CTOR(Sub, sub)
-NPUIR_BINARY_OP_CTOR(Mul, mul)
-NPUIR_BINARY_OP_CTOR(Div, div)
-NPUIR_BINARY_OP_CTOR(Max, max)
-NPUIR_BINARY_OP_CTOR(Min, min)
-NPUIR_BINARY_OP_CTOR(Or, or)
-NPUIR_BINARY_OP_CTOR(And, and)
-NPUIR_BINARY_OP_CTOR(Xor, xor)
-NPUIR_BINARY_OP_CTOR(Pow, pow)
-NPUIR_BINARY_OP_CTOR(Shl, shl)
+NPUIR_BINARY_OP_REGISTER(Add, add)
+NPUIR_BINARY_OP_REGISTER(Sub, sub)
+NPUIR_BINARY_OP_REGISTER(Mul, mul)
+NPUIR_BINARY_OP_REGISTER(Div, div)
+NPUIR_BINARY_OP_REGISTER(Max, max)
+NPUIR_BINARY_OP_REGISTER(Min, min)
+NPUIR_BINARY_OP_REGISTER(Or, or)
+NPUIR_BINARY_OP_REGISTER(And, and)
+NPUIR_BINARY_OP_REGISTER(Xor, xor)
+NPUIR_BINARY_OP_REGISTER(Pow, pow)
+NPUIR_BINARY_OP_REGISTER(Shl, shl)
 
 #define NPUIR_UNARY_OP_CTOR(OPNAME, opname)                                    \
   Npuir##OPNAME::Npuir##OPNAME(Array<PrimExpr> args, BufferMap vmap) {         \
@@ -99,7 +107,7 @@ NPUIR_UNARY_OP_CTOR(Sqrt, sqrt)
 NPUIR_UNARY_OP_CTOR(Rsqrt, rsqrt)
 NPUIR_UNARY_OP_CTOR(Abs, abs)
 NPUIR_UNARY_OP_CTOR(Rec, rec)
-NPUIR_UNARY_OP_CTOR(Not, not )
+NPUIR_UNARY_OP_CTOR(Not, not)
 
 NpuirBrc::NpuirBrc(Array<PrimExpr> args, BufferMap vmap) {
   in = args[0], out = args[1];
@@ -411,10 +419,10 @@ NpuirDevicePrintBuf::NpuirDevicePrintBuf(Array<PrimExpr> args, BufferMap vmap) {
 
 #define NPUIR_LIST_PARAM(list_param, arg_pos)                                  \
   std::string str_##list_param = args[arg_pos].as<StringImmNode>()->value;     \
-  std::stringstream ss_##list_param(str_##list_param);                                      \
-  std::string num_##list_param;                                                             \
-  while (std::getline(ss_##list_param, num_##list_param, ',')) {                                         \
-    list_param.push_back(std::stoi(num_##list_param));                                      \
+  std::stringstream ss_##list_param(str_##list_param);                         \
+  std::string num_##list_param;                                                \
+  while (std::getline(ss_##list_param, num_##list_param, ',')) {               \
+    list_param.push_back(std::stoi(num_##list_param));                         \
   }
 
 NpuirGather::NpuirGather(Array<PrimExpr> args, BufferMap vmap) {
@@ -483,7 +491,7 @@ NpuirPad::NpuirPad(Array<PrimExpr> args, BufferMap vmap) {
   }
 }
 
-NpuirFlip::NpuirFlip(Array<PrimExpr> args, BufferMap vmap){
+NpuirFlip::NpuirFlip(Array<PrimExpr> args, BufferMap vmap) {
   NPUIR_SRC_DST_BUF
 
   this->axis = args[2].as<IntImm>().value()->value;
@@ -511,13 +519,12 @@ NpuirReshape::NpuirReshape(Array<PrimExpr> args, BufferMap vmap) {
   std::tie(this->src, this->dst) = std::tie(bf[0], bf[1]);
   std::tie(this->src_range, this->dst_range) = std::tie(rgs[0], rgs[1]);
 
-  for (const auto& r : this->src_range) {
+  for (const auto &r : this->src_range) {
     src_shape.push_back(r->extent);
   }
-  for (const auto& r : this->dst_range) {
+  for (const auto &r : this->dst_range) {
     dst_shape.push_back(r->extent);
   }
-
 }
 
 NpuirTranspose::NpuirTranspose(Array<PrimExpr> args, BufferMap vmap){
@@ -777,6 +784,3 @@ TIR_REGISTER_TL_OP(NpuirReshape, npuir_reshape)
                                Integer(CallEffectKind::kOpaque));
 } // namespace tl
 } // namespace tvm
-
-
-
