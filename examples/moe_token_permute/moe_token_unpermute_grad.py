@@ -4,6 +4,7 @@ import torch
 try:
     import tilelang
     import tilelang.language as T
+
     HAS_TILELANG = True
 
     PASS_CONFIGS = {
@@ -25,8 +26,10 @@ except ImportError:
 CAST_LOW2HIGH = "CAST_NONE"
 CAST_HIGH2LOW = "CAST_RINT"
 
+
 def _is_fp32_dtype(dtype: str) -> bool:
     return dtype in ("float32", "float")
+
 
 def _auto_tile_h(hidden_size: int, dtype: str) -> int:
     dtype_scale = 2 if _is_fp32_dtype(dtype) else 1
@@ -35,6 +38,7 @@ def _auto_tile_h(hidden_size: int, dtype: str) -> int:
         if candidate > 0 and hidden_size % candidate == 0:
             return candidate
     return 256
+
 
 def _auto_tile_t(total: int, num_cores: int) -> int:
     if total < num_cores:
@@ -47,12 +51,14 @@ def _auto_tile_t(total: int, num_cores: int) -> int:
             return candidate
     return max(1, total // num_cores)
 
+
 def _auto_launch_cores_for_probs(num_tokens: int, hidden_size: int, num_cores: int) -> int:
     if num_tokens <= 64 and hidden_size <= 256:
         return 1
     if num_tokens <= 256 and hidden_size <= 512:
         return int(min(num_cores, max(1, num_tokens), 4))
     return int(min(num_cores, max(1, num_tokens)))
+
 
 def _pad_first_dim(tensor: torch.Tensor, target_rows: int) -> torch.Tensor:
     if tensor.shape[0] >= target_rows:
@@ -61,6 +67,7 @@ def _pad_first_dim(tensor: torch.Tensor, target_rows: int) -> torch.Tensor:
     out[: tensor.shape[0]] = tensor
     return out
 
+
 def _pad_last_dim(tensor: torch.Tensor, target_cols: int) -> torch.Tensor:
     if tensor.shape[-1] >= target_cols:
         return tensor
@@ -68,12 +75,19 @@ def _pad_last_dim(tensor: torch.Tensor, target_cols: int) -> torch.Tensor:
     out[..., : tensor.shape[-1]] = tensor
     return out
 
+
 def _build_scatter_kernel_no_probs(
-    E: int, hidden_size: int,
+    E: int,
+    hidden_size: int,
     padded_E: int,
-    n_etiles: int, tiles_per_core: int, actual_cores: int,
-    n_htiles: int, TILE_E: int, TILE_H: int,
-    dtype: str, idx_dtype: str,
+    n_etiles: int,
+    tiles_per_core: int,
+    actual_cores: int,
+    n_htiles: int,
+    TILE_E: int,
+    TILE_H: int,
+    dtype: str,
+    idx_dtype: str,
 ):
     HALF_H = TILE_H // 2
     if TILE_E >= 8:
@@ -87,10 +101,19 @@ def _build_scatter_kernel_no_probs(
 
     @tilelang.jit(out_idx=[2], pass_configs=PASS_CONFIGS_EXPERT)
     def _build(
-        E, hidden_size, padded_E,
-        n_etiles, tiles_per_core, actual_cores,
-        n_htiles, TILE_E, TILE_H, dtype, idx_dtype,
-        HALF_H, B,
+        E,
+        hidden_size,
+        padded_E,
+        n_etiles,
+        tiles_per_core,
+        actual_cores,
+        n_htiles,
+        TILE_E,
+        TILE_H,
+        dtype,
+        idx_dtype,
+        HALF_H,
+        B,
     ):
         @T.prim_func
         def moe_token_unpermute_grad(
@@ -144,19 +167,34 @@ def _build_scatter_kernel_no_probs(
 
     return _build(E, hidden_size, padded_E, n_etiles, tiles_per_core, actual_cores, n_htiles, TILE_E, TILE_H, dtype, idx_dtype, HALF_H, B)
 
+
 def _build_grad_kernel_with_probs(
-    num_tokens: int, topK: int, hidden_size: int,
-    E: int, padded_tokens: int, padded_E: int,
+    num_tokens: int,
+    topK: int,
+    hidden_size: int,
+    E: int,
+    padded_tokens: int,
+    padded_E: int,
     actual_cores: int,
-    n_htiles: int, TILE_H: int,
-    dtype: str, idx_dtype: str, acc_dtype: str,
+    n_htiles: int,
+    TILE_H: int,
+    dtype: str,
+    idx_dtype: str,
+    acc_dtype: str,
 ):
     if dtype == acc_dtype:
         return _build_grad_kernel_with_probs_f32(
-            num_tokens, topK, hidden_size,
-            E, padded_tokens, padded_E,
-            actual_cores, n_htiles, TILE_H,
-            dtype, idx_dtype,
+            num_tokens,
+            topK,
+            hidden_size,
+            E,
+            padded_tokens,
+            padded_E,
+            actual_cores,
+            n_htiles,
+            TILE_H,
+            dtype,
+            idx_dtype,
         )
 
     tokens_per_core = int(math.ceil(num_tokens / actual_cores))
@@ -174,18 +212,43 @@ def _build_grad_kernel_with_probs(
 
     @tilelang.jit(out_idx=[4, 5], pass_configs=PASS_CONFIGS_EXPERT)
     def _build_fast(
-        num_tokens, topK, hidden_size, E, padded_tokens, padded_E,
-        actual_cores, n_htiles, TILE_H, dtype, idx_dtype, acc_dtype,
-        tokens_per_core, HALF_H, B, n_groups, remainder,
+        num_tokens,
+        topK,
+        hidden_size,
+        E,
+        padded_tokens,
+        padded_E,
+        actual_cores,
+        n_htiles,
+        TILE_H,
+        dtype,
+        idx_dtype,
+        acc_dtype,
+        tokens_per_core,
+        HALF_H,
+        B,
+        n_groups,
+        remainder,
     ):
 
         perm_buf_shape = [B, 1, HALF_H]
 
         @T.macro
         def emit_lane(
-            k_idx, lane_idx, h_off,
-            idx_ub, probs_f32, grad_f32, perm_buf, perm_tmp, perm_f32,
-            mul_buf, out_tmp, reduce_dst, reduce_tmp, pg_acc,
+            k_idx,
+            lane_idx,
+            h_off,
+            idx_ub,
+            probs_f32,
+            grad_f32,
+            perm_buf,
+            perm_tmp,
+            perm_f32,
+            mul_buf,
+            out_tmp,
+            reduce_dst,
+            reduce_tmp,
+            pg_acc,
             perm_grad_gm,
         ):
             dst = idx_ub[0, k_idx]
@@ -261,9 +324,20 @@ def _build_grad_kernel_with_probs(
 
                                     for lane in T.serial(B):
                                         emit_lane(
-                                            k_base + lane, lane, h_off,
-                                            idx_ub, probs_f32, grad_f32, perm_buf, perm_tmp, perm_f32,
-                                            mul_buf, out_tmp, reduce_dst, reduce_tmp, pg_acc,
+                                            k_base + lane,
+                                            lane,
+                                            h_off,
+                                            idx_ub,
+                                            probs_f32,
+                                            grad_f32,
+                                            perm_buf,
+                                            perm_tmp,
+                                            perm_f32,
+                                            mul_buf,
+                                            out_tmp,
+                                            reduce_dst,
+                                            reduce_tmp,
+                                            pg_acc,
                                             perm_grad_gm,
                                         )
 
@@ -276,9 +350,20 @@ def _build_grad_kernel_with_probs(
                                         T.set_flag("mte2", "v", 3)
                                         T.wait_flag("mte2", "v", 3)
                                         emit_lane(
-                                            rk, 0, h_off,
-                                            idx_ub, probs_f32, grad_f32, perm_buf, perm_tmp, perm_f32,
-                                            mul_buf, out_tmp, reduce_dst, reduce_tmp, pg_acc,
+                                            rk,
+                                            0,
+                                            h_off,
+                                            idx_ub,
+                                            probs_f32,
+                                            grad_f32,
+                                            perm_buf,
+                                            perm_tmp,
+                                            perm_f32,
+                                            mul_buf,
+                                            out_tmp,
+                                            reduce_dst,
+                                            reduce_tmp,
+                                            pg_acc,
                                             perm_grad_gm,
                                         )
 
@@ -293,24 +378,54 @@ def _build_grad_kernel_with_probs(
         return moe_token_unpermute_grad
 
     return _build_fast(
-        num_tokens, topK, hidden_size, E, padded_tokens, padded_E,
-        actual_cores, n_htiles, TILE_H, dtype, idx_dtype, acc_dtype,
-        tokens_per_core, HALF_H, B, n_groups, remainder,
+        num_tokens,
+        topK,
+        hidden_size,
+        E,
+        padded_tokens,
+        padded_E,
+        actual_cores,
+        n_htiles,
+        TILE_H,
+        dtype,
+        idx_dtype,
+        acc_dtype,
+        tokens_per_core,
+        HALF_H,
+        B,
+        n_groups,
+        remainder,
     )
 
+
 def _build_grad_kernel_with_probs_f32(
-    num_tokens: int, topK: int, hidden_size: int,
-    E: int, padded_tokens: int, padded_E: int,
+    num_tokens: int,
+    topK: int,
+    hidden_size: int,
+    E: int,
+    padded_tokens: int,
+    padded_E: int,
     actual_cores: int,
-    n_htiles: int, TILE_H: int,
-    dtype: str, idx_dtype: str,
+    n_htiles: int,
+    TILE_H: int,
+    dtype: str,
+    idx_dtype: str,
 ):
     tokens_per_core = int(math.ceil(num_tokens / actual_cores))
 
     @tilelang.jit(out_idx=[4, 5], pass_configs=PASS_CONFIGS)
     def _build(
-        num_tokens, topK, hidden_size, E, padded_tokens, padded_E,
-        actual_cores, n_htiles, TILE_H, dtype, idx_dtype,
+        num_tokens,
+        topK,
+        hidden_size,
+        E,
+        padded_tokens,
+        padded_E,
+        actual_cores,
+        n_htiles,
+        TILE_H,
+        dtype,
+        idx_dtype,
         tokens_per_core,
     ):
         @T.prim_func
@@ -328,7 +443,7 @@ def _build_grad_kernel_with_probs_f32(
                 grad_buf = T.alloc_shared([1, TILE_H], dtype)
                 perm_buf = T.alloc_shared([1, TILE_H], dtype)
                 mul_buf = T.alloc_shared([1, TILE_H], dtype)
-                out_buf = T.alloc_shared([1, TILE_H], dtype)
+                T.alloc_shared([1, TILE_H], dtype)
                 reduce_tmp = T.alloc_shared((3 * 4 * TILE_H,), "uint8")
                 reduce_dst = T.alloc_shared([1, 1], dtype)
                 pg_acc = T.alloc_shared([1, topK], dtype)
@@ -363,14 +478,21 @@ def _build_grad_kernel_with_probs_f32(
 
         return moe_token_unpermute_grad
 
-    return _build(num_tokens, topK, hidden_size, E, padded_tokens, padded_E, actual_cores, n_htiles, TILE_H, dtype, idx_dtype, tokens_per_core)
+    return _build(
+        num_tokens, topK, hidden_size, E, padded_tokens, padded_E, actual_cores, n_htiles, TILE_H, dtype, idx_dtype, tokens_per_core
+    )
+
 
 def _compile_grad(
-    num_tokens: int, topK: int, hidden_size: int,
+    num_tokens: int,
+    topK: int,
+    hidden_size: int,
     has_probs: bool = True,
     NUM_CORES: int = 24,
-    TILE_T: int = None, TILE_H: int = None,
-    dtype: str = "float16", idx_dtype: str = "int32",
+    TILE_T: int = None,
+    TILE_H: int = None,
+    dtype: str = "float16",
+    idx_dtype: str = "int32",
     acc_dtype: str = "float32",
 ):
     if TILE_H is None:
@@ -380,7 +502,7 @@ def _compile_grad(
         TILE_T = _auto_tile_t(total, NUM_CORES)
 
     min_tile_h = 64 if _is_fp32_dtype(dtype) else 8
-    if TILE_H < min_tile_h:
+    if min_tile_h > TILE_H:
         TILE_H = min(hidden_size, min_tile_h)
     assert hidden_size % TILE_H == 0
     assert HAS_TILELANG
@@ -395,10 +517,18 @@ def _compile_grad(
         actual_cores = _auto_launch_cores_for_probs(num_tokens, hidden_size, NUM_CORES)
 
         compiled = _build_grad_kernel_with_probs(
-            num_tokens, topK, hidden_size,
-            E, padded_tokens, padded_E,
-            actual_cores, n_htiles, TILE_H,
-            dtype, idx_dtype, acc_dtype,
+            num_tokens,
+            topK,
+            hidden_size,
+            E,
+            padded_tokens,
+            padded_E,
+            actual_cores,
+            n_htiles,
+            TILE_H,
+            dtype,
+            idx_dtype,
+            acc_dtype,
         )
         return compiled, padded_tokens, padded_E, actual_cores
 
@@ -409,12 +539,20 @@ def _compile_grad(
     tiles_per_core = int(math.ceil(n_etiles / actual_cores))
 
     compiled = _build_scatter_kernel_no_probs(
-        E, hidden_size, padded_E,
-        n_etiles, tiles_per_core, actual_cores,
-        n_htiles, TILE_E, TILE_H,
-        dtype, idx_dtype,
+        E,
+        hidden_size,
+        padded_E,
+        n_etiles,
+        tiles_per_core,
+        actual_cores,
+        n_htiles,
+        TILE_E,
+        TILE_H,
+        dtype,
+        idx_dtype,
     )
     return compiled, 0, padded_E, actual_cores
+
 
 class MoeTokenUnpermuteGrad:
     def __init__(
@@ -442,8 +580,14 @@ class MoeTokenUnpermuteGrad:
         compile_tile_h = TILE_H if TILE_H is None else max(TILE_H, min_compile_h)
 
         self._kernel, self._padded_tokens, self._padded_E, self._actual_cores = _compile_grad(
-            num_tokens, topK, self._compile_hidden_size,
-            has_probs=has_probs, NUM_CORES=NUM_CORES, TILE_T=TILE_T, TILE_H=compile_tile_h, dtype=dtype
+            num_tokens,
+            topK,
+            self._compile_hidden_size,
+            has_probs=has_probs,
+            NUM_CORES=NUM_CORES,
+            TILE_T=TILE_T,
+            TILE_H=compile_tile_h,
+            dtype=dtype,
         )
 
     def __call__(self, permuted_tokens, unpermuted_tokens_grad, sorted_indices, probs=None):

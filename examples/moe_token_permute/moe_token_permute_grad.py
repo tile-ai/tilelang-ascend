@@ -22,28 +22,42 @@ CAST_HIGH2LOW = "CAST_RINT"
 
 
 def _build_gather_reduce_kernel_cast_group_pipelined(
-    num_tokens, topK, hidden_size,
-    E, padded_E,
-    actual_cores, tokens_per_core,
-    TILE_H, HALF_H,
-    BATCH_T, n_batches,
-    dtype, idx_dtype,
+    num_tokens,
+    topK,
+    hidden_size,
+    E,
+    padded_E,
+    actual_cores,
+    tokens_per_core,
+    TILE_H,
+    HALF_H,
+    BATCH_T,
+    n_batches,
+    dtype,
+    idx_dtype,
 ):
     stages = 2
 
     assert topK == 8, "group-pipelined kernel is specialized for topK == 8"
     assert dtype != CAL_DTYPE, "group-pipelined kernel is for non-fp32 dtypes"
-    assert TILE_H == hidden_size, "group-pipelined kernel assumes single h-tile"
+    assert hidden_size == TILE_H, "group-pipelined kernel assumes single h-tile"
     assert HALF_H * 2 == TILE_H, "HALF_H must be TILE_H/2"
 
     @tilelang.jit(out_idx=[2], pass_configs=PASS_CONFIGS_EXPERT)
     def _build(
-        num_tokens, topK, hidden_size,
-        E, padded_E,
-        actual_cores, tokens_per_core,
-        TILE_H, HALF_H,
-        BATCH_T, n_batches,
-        dtype, idx_dtype,
+        num_tokens,
+        topK,
+        hidden_size,
+        E,
+        padded_E,
+        actual_cores,
+        tokens_per_core,
+        TILE_H,
+        HALF_H,
+        BATCH_T,
+        n_batches,
+        dtype,
+        idx_dtype,
         stages,
     ):
         @T.prim_func
@@ -127,41 +141,63 @@ def _build_gather_reduce_kernel_cast_group_pipelined(
         return moe_token_permute_grad
 
     return _build(
-        num_tokens, topK, hidden_size,
-        E, padded_E,
-        actual_cores, tokens_per_core,
-        TILE_H, HALF_H,
-        BATCH_T, n_batches,
-        dtype, idx_dtype,
+        num_tokens,
+        topK,
+        hidden_size,
+        E,
+        padded_E,
+        actual_cores,
+        tokens_per_core,
+        TILE_H,
+        HALF_H,
+        BATCH_T,
+        n_batches,
+        dtype,
+        idx_dtype,
         stages,
     )
 
 
 def _build_gather_reduce_kernel_cast_pipelined(
-    num_tokens, topK, hidden_size,
-    E, padded_E,
-    actual_cores, tokens_per_core,
-    TILE_H, HALF_H,
-    BATCH_T, n_batches,
-    dtype, idx_dtype,
+    num_tokens,
+    topK,
+    hidden_size,
+    E,
+    padded_E,
+    actual_cores,
+    tokens_per_core,
+    TILE_H,
+    HALF_H,
+    BATCH_T,
+    n_batches,
+    dtype,
+    idx_dtype,
 ):
     stages = 8
     total_iters_per_batch = BATCH_T * topK
 
     assert topK <= 8
     assert dtype != CAL_DTYPE
-    assert TILE_H == hidden_size
+    assert hidden_size == TILE_H
     assert HALF_H * 2 == TILE_H
 
     @tilelang.jit(out_idx=[2], pass_configs=PASS_CONFIGS_EXPERT)
     def _build(
-        num_tokens, topK, hidden_size,
-        E, padded_E,
-        actual_cores, tokens_per_core,
-        TILE_H, HALF_H,
-        BATCH_T, n_batches,
-        dtype, idx_dtype,
-        stages, total_iters_per_batch,
+        num_tokens,
+        topK,
+        hidden_size,
+        E,
+        padded_E,
+        actual_cores,
+        tokens_per_core,
+        TILE_H,
+        HALF_H,
+        BATCH_T,
+        n_batches,
+        dtype,
+        idx_dtype,
+        stages,
+        total_iters_per_batch,
     ):
         @T.prim_func
         def moe_token_permute_grad(
@@ -285,34 +321,57 @@ def _build_gather_reduce_kernel_cast_pipelined(
         return moe_token_permute_grad
 
     return _build(
-        num_tokens, topK, hidden_size,
-        E, padded_E,
-        actual_cores, tokens_per_core,
-        TILE_H, HALF_H,
-        BATCH_T, n_batches,
-        dtype, idx_dtype,
-        stages, total_iters_per_batch,
+        num_tokens,
+        topK,
+        hidden_size,
+        E,
+        padded_E,
+        actual_cores,
+        tokens_per_core,
+        TILE_H,
+        HALF_H,
+        BATCH_T,
+        n_batches,
+        dtype,
+        idx_dtype,
+        stages,
+        total_iters_per_batch,
     )
 
 
 def _build_gather_reduce_kernel_cast(
-    num_tokens, topK, hidden_size,
-    E, padded_E,
-    actual_cores, tokens_per_core,
-    n_htiles, TILE_H,
-    BATCH_T, n_batches,
-    dtype, idx_dtype,
+    num_tokens,
+    topK,
+    hidden_size,
+    E,
+    padded_E,
+    actual_cores,
+    tokens_per_core,
+    n_htiles,
+    TILE_H,
+    BATCH_T,
+    n_batches,
+    dtype,
+    idx_dtype,
 ):
     HALF_H = TILE_H // 2
 
     @tilelang.jit(out_idx=[2], pass_configs=PASS_CONFIGS_EXPERT)
     def _build(
-        num_tokens, topK, hidden_size,
-        E, padded_E,
-        actual_cores, tokens_per_core,
-        n_htiles, TILE_H, HALF_H,
-        BATCH_T, n_batches,
-        dtype, idx_dtype,
+        num_tokens,
+        topK,
+        hidden_size,
+        E,
+        padded_E,
+        actual_cores,
+        tokens_per_core,
+        n_htiles,
+        TILE_H,
+        HALF_H,
+        BATCH_T,
+        n_batches,
+        dtype,
+        idx_dtype,
     ):
         @T.prim_func
         def moe_token_permute_grad(
@@ -407,31 +466,53 @@ def _build_gather_reduce_kernel_cast(
         return moe_token_permute_grad
 
     return _build(
-        num_tokens, topK, hidden_size,
-        E, padded_E,
-        actual_cores, tokens_per_core,
-        n_htiles, TILE_H, HALF_H,
-        BATCH_T, n_batches,
-        dtype, idx_dtype,
+        num_tokens,
+        topK,
+        hidden_size,
+        E,
+        padded_E,
+        actual_cores,
+        tokens_per_core,
+        n_htiles,
+        TILE_H,
+        HALF_H,
+        BATCH_T,
+        n_batches,
+        dtype,
+        idx_dtype,
     )
 
 
 def _build_gather_reduce_kernel_nocast(
-    num_tokens, topK, hidden_size,
-    E, padded_E,
-    actual_cores, tokens_per_core,
-    n_htiles, TILE_H,
-    BATCH_T, n_batches,
-    dtype, idx_dtype,
+    num_tokens,
+    topK,
+    hidden_size,
+    E,
+    padded_E,
+    actual_cores,
+    tokens_per_core,
+    n_htiles,
+    TILE_H,
+    BATCH_T,
+    n_batches,
+    dtype,
+    idx_dtype,
 ):
     @tilelang.jit(out_idx=[2], pass_configs=PASS_CONFIGS)
     def _build(
-        num_tokens, topK, hidden_size,
-        E, padded_E,
-        actual_cores, tokens_per_core,
-        n_htiles, TILE_H,
-        BATCH_T, n_batches,
-        dtype, idx_dtype,
+        num_tokens,
+        topK,
+        hidden_size,
+        E,
+        padded_E,
+        actual_cores,
+        tokens_per_core,
+        n_htiles,
+        TILE_H,
+        BATCH_T,
+        n_batches,
+        dtype,
+        idx_dtype,
     ):
         @T.prim_func
         def moe_token_permute_grad(
@@ -494,20 +575,31 @@ def _build_gather_reduce_kernel_nocast(
         return moe_token_permute_grad
 
     return _build(
-        num_tokens, topK, hidden_size,
-        E, padded_E,
-        actual_cores, tokens_per_core,
-        n_htiles, TILE_H,
-        BATCH_T, n_batches,
-        dtype, idx_dtype,
+        num_tokens,
+        topK,
+        hidden_size,
+        E,
+        padded_E,
+        actual_cores,
+        tokens_per_core,
+        n_htiles,
+        TILE_H,
+        BATCH_T,
+        n_batches,
+        dtype,
+        idx_dtype,
     )
 
 
 def _compile_gather_reduce(
-    num_tokens: int, topK: int, hidden_size: int,
-    E: int, NUM_CORES: int = 24,
+    num_tokens: int,
+    topK: int,
+    hidden_size: int,
+    E: int,
+    NUM_CORES: int = 24,
     TILE_H: int = None,
-    dtype: str = "float16", idx_dtype: str = "int32",
+    dtype: str = "float16",
+    idx_dtype: str = "int32",
 ):
     ALIGN_BYTES = 32
     dtype_bytes = 4 if dtype in ("float32", "float") else 2
@@ -522,11 +614,9 @@ def _compile_gather_reduce(
             TILE_H = align_elems
 
     assert TILE_H * dtype_bytes >= ALIGN_BYTES and (TILE_H * dtype_bytes) % ALIGN_BYTES == 0, (
-        f"TILE_H={TILE_H} * sizeof({dtype})={dtype_bytes} = {TILE_H * dtype_bytes}B; "
-        f"must be >= 32B and a multiple of 32B"
+        f"TILE_H={TILE_H} * sizeof({dtype})={dtype_bytes} = {TILE_H * dtype_bytes}B; must be >= 32B and a multiple of 32B"
     )
-    assert hidden_size % TILE_H == 0, \
-        f"hidden_size ({hidden_size}) must be divisible by TILE_H ({TILE_H})"
+    assert hidden_size % TILE_H == 0, f"hidden_size ({hidden_size}) must be divisible by TILE_H ({TILE_H})"
 
     n_htiles = int(hidden_size // TILE_H)
 
@@ -537,25 +627,12 @@ def _compile_gather_reduce(
 
     HALF_H_candidate = hidden_size // 2 if hidden_size % 2 == 0 else 0
     half_h_aligned = (
-        HALF_H_candidate > 0
-        and HALF_H_candidate * dtype_bytes >= ALIGN_BYTES
-        and (HALF_H_candidate * dtype_bytes) % ALIGN_BYTES == 0
+        HALF_H_candidate > 0 and HALF_H_candidate * dtype_bytes >= ALIGN_BYTES and (HALF_H_candidate * dtype_bytes) % ALIGN_BYTES == 0
     )
 
-    use_group_pipelined = (
-        dtype != CAL_DTYPE
-        and topK == 8
-        and TILE_H == hidden_size
-        and half_h_aligned
-    )
+    use_group_pipelined = dtype != CAL_DTYPE and topK == 8 and hidden_size == TILE_H and half_h_aligned
 
-    use_lane_pipelined = (
-        not use_group_pipelined
-        and dtype != CAL_DTYPE
-        and topK <= 8
-        and TILE_H == hidden_size
-        and half_h_aligned
-    )
+    use_lane_pipelined = not use_group_pipelined and dtype != CAL_DTYPE and topK <= 8 and hidden_size == TILE_H and half_h_aligned
 
     if use_group_pipelined:
         HALF_H = HALF_H_candidate
@@ -565,12 +642,19 @@ def _compile_gather_reduce(
         n_batches = int(math.ceil(tokens_per_core / BATCH_T))
 
         kernel = _build_gather_reduce_kernel_cast_group_pipelined(
-            num_tokens, topK, hidden_size,
-            E, padded_E,
-            actual_cores, tokens_per_core,
-            TILE_H, HALF_H,
-            BATCH_T, n_batches,
-            dtype, idx_dtype,
+            num_tokens,
+            topK,
+            hidden_size,
+            E,
+            padded_E,
+            actual_cores,
+            tokens_per_core,
+            TILE_H,
+            HALF_H,
+            BATCH_T,
+            n_batches,
+            dtype,
+            idx_dtype,
         )
     elif use_lane_pipelined:
         HALF_H = HALF_H_candidate
@@ -580,12 +664,19 @@ def _compile_gather_reduce(
         n_batches = int(math.ceil(tokens_per_core / BATCH_T))
 
         kernel = _build_gather_reduce_kernel_cast_pipelined(
-            num_tokens, topK, hidden_size,
-            E, padded_E,
-            actual_cores, tokens_per_core,
-            TILE_H, HALF_H,
-            BATCH_T, n_batches,
-            dtype, idx_dtype,
+            num_tokens,
+            topK,
+            hidden_size,
+            E,
+            padded_E,
+            actual_cores,
+            tokens_per_core,
+            TILE_H,
+            HALF_H,
+            BATCH_T,
+            n_batches,
+            dtype,
+            idx_dtype,
         )
     else:
         BATCH_T = min(tokens_per_core, max(1, 4096 // (topK * 10)))
@@ -595,21 +686,35 @@ def _compile_gather_reduce(
 
         if dtype != CAL_DTYPE:
             kernel = _build_gather_reduce_kernel_cast(
-                num_tokens, topK, hidden_size,
-                E, padded_E,
-                actual_cores, tokens_per_core,
-                n_htiles, TILE_H,
-                BATCH_T, n_batches,
-                dtype, idx_dtype,
+                num_tokens,
+                topK,
+                hidden_size,
+                E,
+                padded_E,
+                actual_cores,
+                tokens_per_core,
+                n_htiles,
+                TILE_H,
+                BATCH_T,
+                n_batches,
+                dtype,
+                idx_dtype,
             )
         else:
             kernel = _build_gather_reduce_kernel_nocast(
-                num_tokens, topK, hidden_size,
-                E, padded_E,
-                actual_cores, tokens_per_core,
-                n_htiles, TILE_H,
-                BATCH_T, n_batches,
-                dtype, idx_dtype,
+                num_tokens,
+                topK,
+                hidden_size,
+                E,
+                padded_E,
+                actual_cores,
+                tokens_per_core,
+                n_htiles,
+                TILE_H,
+                BATCH_T,
+                n_batches,
+                dtype,
+                idx_dtype,
             )
 
     return kernel, padded_E
@@ -639,19 +744,24 @@ class MoeTokenPermuteGrad:
         self._out_len = num_out_tokens if num_out_tokens > 0 else self.E
 
         self._kernel, self._padded_E = _compile_gather_reduce(
-            num_tokens, topK, hidden_size,
-            self.E, NUM_CORES=NUM_CORES,
-            TILE_H=TILE_H, dtype=dtype,
+            num_tokens,
+            topK,
+            hidden_size,
+            self.E,
+            NUM_CORES=NUM_CORES,
+            TILE_H=TILE_H,
+            dtype=dtype,
         )
 
         self._sorted_idx_buf = None
         self._perm_grad_pad_buf = None
 
     def _get_idx_buf(self, device):
-        if (self._sorted_idx_buf is None
-                or self._sorted_idx_buf.device != device):
+        if self._sorted_idx_buf is None or self._sorted_idx_buf.device != device:
             self._sorted_idx_buf = torch.zeros(
-                self._padded_E, dtype=torch.int32, device=device,
+                self._padded_E,
+                dtype=torch.int32,
+                device=device,
             )
         return self._sorted_idx_buf
 
@@ -660,12 +770,16 @@ class MoeTokenPermuteGrad:
         E = self.E
 
         if permuted_output_grad.shape[0] < E:
-            if (self._perm_grad_pad_buf is None
+            if (
+                self._perm_grad_pad_buf is None
                 or self._perm_grad_pad_buf.device != device
-                or self._perm_grad_pad_buf.dtype != permuted_output_grad.dtype):
+                or self._perm_grad_pad_buf.dtype != permuted_output_grad.dtype
+            ):
                 self._perm_grad_pad_buf = torch.zeros(
-                    E, self.hidden_size,
-                    dtype=permuted_output_grad.dtype, device=device,
+                    E,
+                    self.hidden_size,
+                    dtype=permuted_output_grad.dtype,
+                    device=device,
                 )
             perm_grad_padded = self._perm_grad_pad_buf
             perm_grad_padded[: permuted_output_grad.shape[0]].copy_(permuted_output_grad)
@@ -686,7 +800,4 @@ class MoeTokenPermuteGrad:
         return input_grad
 
     def __repr__(self):
-        return (
-            f"MoeTokenPermuteGrad(T={self.num_tokens}, K={self.topK}, "
-            f"H={self.hidden_size}, experts={self.num_experts})"
-        )
+        return f"MoeTokenPermuteGrad(T={self.num_tokens}, K={self.topK}, H={self.hidden_size}, experts={self.num_experts})"

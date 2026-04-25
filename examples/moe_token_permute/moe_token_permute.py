@@ -8,13 +8,22 @@ PASS_CONFIGS_EXPERT = {
     tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: False,
 }
 
+
 def _build_fused_permute_kernel(
-    num_tokens, topK, hidden_size,
-    E, padded_E, out_len, num_experts,
-    actual_cores, chunk_size,
+    num_tokens,
+    topK,
+    hidden_size,
+    E,
+    padded_E,
+    out_len,
+    num_experts,
+    actual_cores,
+    chunk_size,
     tokens_per_core,
-    TILE_H, n_htiles,
-    dtype, idx_dtype,
+    TILE_H,
+    n_htiles,
+    dtype,
+    idx_dtype,
 ):
     ws_total = actual_cores * num_experts
     HALF_H = TILE_H // 2
@@ -22,12 +31,23 @@ def _build_fused_permute_kernel(
 
     @tilelang.jit(out_idx=[2, 3], workspace_idx=[4], pass_configs=PASS_CONFIGS_EXPERT)
     def _build(
-        num_tokens, topK, hidden_size,
-        E, padded_E, out_len, num_experts,
-        actual_cores, chunk_size, tokens_per_core,
-        ws_total, TILE_H, n_htiles, HALF_H,
+        num_tokens,
+        topK,
+        hidden_size,
+        E,
+        padded_E,
+        out_len,
+        num_experts,
+        actual_cores,
+        chunk_size,
+        tokens_per_core,
+        ws_total,
+        TILE_H,
+        n_htiles,
+        HALF_H,
         total_iters,
-        dtype, idx_dtype,
+        dtype,
+        idx_dtype,
     ):
         stages = 2
 
@@ -177,20 +197,37 @@ def _build_fused_permute_kernel(
         return moe_token_permute
 
     return _build(
-        num_tokens, topK, hidden_size,
-        E, padded_E, out_len, num_experts,
-        actual_cores, chunk_size, tokens_per_core,
-        ws_total, TILE_H, n_htiles, HALF_H,
+        num_tokens,
+        topK,
+        hidden_size,
+        E,
+        padded_E,
+        out_len,
+        num_experts,
+        actual_cores,
+        chunk_size,
+        tokens_per_core,
+        ws_total,
+        TILE_H,
+        n_htiles,
+        HALF_H,
         total_iters,
-        dtype, idx_dtype,
+        dtype,
+        idx_dtype,
     )
 
+
 def _compile_fused(
-    num_tokens, topK, hidden_size,
-    E, out_len, num_experts,
+    num_tokens,
+    topK,
+    hidden_size,
+    E,
+    out_len,
+    num_experts,
     NUM_CORES=24,
     TILE_H=None,
-    dtype="float16", idx_dtype="int32",
+    dtype="float16",
+    idx_dtype="int32",
 ):
     actual_cores = min(NUM_CORES, max(1, num_tokens))
     tokens_per_core = math.ceil(num_tokens / actual_cores)
@@ -199,20 +236,35 @@ def _compile_fused(
     TILE_H = hidden_size if TILE_H is None else TILE_H
     n_htiles = hidden_size // TILE_H
     fused_func = _build_fused_permute_kernel(
-        num_tokens, topK, hidden_size,
-        E, padded_E, out_len, num_experts,
-        actual_cores, chunk_size,
+        num_tokens,
+        topK,
+        hidden_size,
+        E,
+        padded_E,
+        out_len,
+        num_experts,
+        actual_cores,
+        chunk_size,
         tokens_per_core,
-        TILE_H, n_htiles,
-        dtype, idx_dtype,
+        TILE_H,
+        n_htiles,
+        dtype,
+        idx_dtype,
     )
     return fused_func, padded_E
 
+
 class MoeTokenPermute:
     def __init__(
-        self, num_tokens, topK, hidden_size,
-        num_experts=64, num_out_tokens=0,
-        NUM_CORES=24, TILE_H=None, dtype="float16",
+        self,
+        num_tokens,
+        topK,
+        hidden_size,
+        num_experts=64,
+        num_out_tokens=0,
+        NUM_CORES=24,
+        TILE_H=None,
+        dtype="float16",
     ):
         self.num_tokens = num_tokens
         self.topK = topK
@@ -220,8 +272,12 @@ class MoeTokenPermute:
         self.E = num_tokens * topK
         self._out_len = num_out_tokens if num_out_tokens > 0 else self.E
         self._fused_func, self._padded_E = _compile_fused(
-            num_tokens, topK, hidden_size,
-            self.E, self._out_len, num_experts,
+            num_tokens,
+            topK,
+            hidden_size,
+            self.E,
+            self._out_len,
+            num_experts,
             NUM_CORES=NUM_CORES,
             TILE_H=TILE_H,
             dtype=dtype,
