@@ -19,6 +19,7 @@
 #include "./common/collector.h"
 
 #include <string>
+#include <sstream>
 #include <unordered_set>
 
 namespace tvm {
@@ -453,6 +454,8 @@ bool NeedsVidReduction(const Buffer &buffer) const {
   }
 
   // Extract buffer from access_ptr call argument
+  // Only check origin_to_new_buffer_ keys (original buffers)
+  // because first->data == second->data == vid_reduced_buffers_[i]->data
   Buffer ExtractBufferFromArg(const PrimExpr &arg) const {
     if (const CallNode *call = arg.as<CallNode>()) {
       if (call->op.same_as(builtin::tvm_access_ptr())) {
@@ -460,10 +463,10 @@ bool NeedsVidReduction(const Buffer &buffer) const {
         // buffer_data is usually at index 1
         if (call->args.size() >= 2) {
           if (const VarNode *var = call->args[1].as<VarNode>()) {
-            // Find buffer by data var in origin_to_new_buffer_
+            // Find buffer by data var in origin_to_new_buffer_ keys (original buffers)
             for (const auto &pair : origin_to_new_buffer_) {
               if (pair.first->data.get() == var) {
-                return pair.first;
+                return pair.first;  // Return original buffer
               }
             }
           }
@@ -552,6 +555,106 @@ bool NeedsVidReduction(const Buffer &buffer) const {
     return GetRef<BufferLoad>(load_node);
   }
 
+  // Modify tl.ascend_reduce: if buffer is vid-reduced, divide M dimension by 2
+  PrimExpr ModifyAscendReduce(const CallNode *op) {
+    Call ascend_reduce = GetRef<Call>(op);
+    
+    // args[0]: string like "reduce_sum<float, 64, 64, -1>"
+    // args[1]: out_ptr (tvm_access_ptr)
+    // args[2]: buffer_ptr (tvm_access_ptr)
+    // args[3]: tmp_ptr (tvm_access_ptr, optional)
+    
+    // Extract buffer from args[2] (tvm_access_ptr)
+    Buffer buffer = ExtractBufferFromArg(ascend_reduce->args[2]);
+    
+    if (!buffer.defined()) {
+      return IRMutatorWithAnalyzer::VisitExpr_(op);
+    }
+    
+    // Check if buffer is vid-reduced (only check origin_to_new_buffer_ keys)
+    bool buffer_is_vid_reduced = origin_to_new_buffer_.count(buffer) > 0;
+    if (!buffer_is_vid_reduced) {
+      return IRMutatorWithAnalyzer::VisitExpr_(op);
+    }
+    
+    // Parse string parameter: "reduce_sum<float, 64, 64, -1>"
+    if (!op->args[0].as<StringImmNode>()) {
+      return IRMutatorWithAnalyzer::VisitExpr_(op);
+    }
+    StringImm param_str = Downcast<StringImm>(op->args[0]);
+    std::string param = param_str->value;
+    
+    // Find <...> part
+    size_t start = param.find('<');
+    size_t end = param.find('>');
+    if (start == std::string::npos || end == std::string::npos) {
+      return IRMutatorWithAnalyzer::VisitExpr_(op);
+    }
+    
+    std::string content = param.substr(start + 1, end - start - 1);
+    
+    // Split by comma: dtype, M, N, dim
+    std::vector<std::string> parts;
+    std::stringstream ss(content);
+    std::string part;
+    while (std::getline(ss, part, ',')) {
+      parts.push_back(part);
+    }
+    
+    if (parts.size() < 4) {
+      return IRMutatorWithAnalyzer::VisitExpr_(op);
+    }
+    
+    // parts[0]: dtype (e.g., "float")
+    // parts[1]: M (e.g., "64")
+    // parts[2]: N (e.g., "64")
+    // parts[3]: dim (e.g., "-1")
+    
+    std::string dtype = parts[0];
+    std::string M_str = parts[1];
+    std::string N = parts[2];
+    std::string dim = parts[3];
+    
+    // Trim leading/trailing spaces
+    auto trim = [](std::string s) -> std::string {
+      size_t start = s.find_first_not_of(" \t");
+      if (start == std::string::npos) return std::string("");
+      size_t end = s.find_last_not_of(" \t");
+      return s.substr(start, end - start + 1);
+    };
+    dtype = trim(dtype);
+    M_str = trim(M_str);
+    N = trim(N);
+    dim = trim(dim);
+    
+    // Try to parse M as integer
+    long long M;
+    try {
+      M = std::stoll(M_str);
+    } catch (const std::exception &e) {
+      // M is not an integer (e.g., symbolic variable like "v_block")
+      // Skip modification for symbolic M
+      return IRMutatorWithAnalyzer::VisitExpr_(op);
+    }
+    
+    // Divide M by 2
+    long long new_M = M / threads_cnt_;
+    if (new_M < 1) new_M = 1;
+    
+    // Rebuild string: "reduce_sum<float, 32, 64, -1>"
+    std::string new_param = param.substr(0, start + 1) + dtype + ", " + 
+                            std::to_string(new_M) + ", " + N + ", " + dim + ">";
+    
+    // Build new Call
+    Array<PrimExpr> new_args = ascend_reduce->args;
+    new_args.Set(0, StringImm(new_param));
+    for (size_t i = 1; i < new_args.size(); ++i) {
+      new_args.Set(i, VisitExpr(new_args[i]));
+    }
+    
+    return Call(ascend_reduce->dtype, ascend_reduce->op, new_args, ascend_reduce->span);
+  }
+
   PrimExpr VisitExpr_(const CallNode *op) final {
     if (threads_cnt_ != 2) {
       return IRMutatorWithAnalyzer::VisitExpr_(op);
@@ -601,6 +704,11 @@ bool NeedsVidReduction(const Buffer &buffer) const {
 
     if (IsTileOp(op_name)) {
       return ModifyTileOpSize(op);
+    }
+
+    // Handle tl.ascend_reduce: modify M dimension if buffer is vid-reduced
+    if (op_name == "tl.ascend_reduce") {
+      return ModifyAscendReduce(op);
     }
 
     if (op_name != "tl.ascend_copy") {
