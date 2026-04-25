@@ -178,9 +178,7 @@ def run_tilelang_grouped_gemm(
     device = torch.device("npu")
     dtype = torch.float16
 
-    A, B, block_metadata = construct_inputs(
-        batch_sizes_list, K, M, trans_b, block_M, device, dtype
-    )
+    A, B, block_metadata = construct_inputs(batch_sizes_list, K, M, trans_b, block_M, device, dtype)
     out = kernel(A, B, block_metadata)
     ref_output = torch_gmm(A, B, block_metadata, trans_b)
     # print(out)
@@ -192,16 +190,16 @@ def run_tilelang_grouped_gemm(
 
 
 def test_grouped_gemm():
-    run_tilelang_grouped_gemm([64], 64, 64, 64, 64, 64, False)
     run_tilelang_grouped_gemm([64], 8192, 8192, 64, 64, 64, False)
     run_tilelang_grouped_gemm([64, 128, 256], 8192, 8192, 64, 64, 64, False)
+    run_tilelang_grouped_gemm([63], 8192, 8192, 64, 64, 64, False)
+    run_tilelang_grouped_gemm([100, 200, 300, 400], 8192, 8192, 64, 64, 64, False)
+    run_tilelang_grouped_gemm([63, 77, 111, 280], 8192, 8192, 64, 64, 64, False)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--batch_sizes", type=str, default="64, 128", help="comma-separated batch sizes"
-    )
+    parser.add_argument("--batch_sizes", type=str, default="64, 128", help="comma-separated batch sizes")
     parser.add_argument("--K", type=int, default=8192, help="reduce dim")
     parser.add_argument("--M", type=int, default=8192, help="output dim")
     parser.add_argument("--trans_b", action="store_true", help="transpose B")
