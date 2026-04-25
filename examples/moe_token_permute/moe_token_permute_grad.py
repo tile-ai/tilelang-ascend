@@ -2,6 +2,7 @@ import math
 import tilelang
 import tilelang.language as T
 import torch
+import torch_npu
 
 
 PASS_CONFIGS = {
@@ -801,3 +802,108 @@ class MoeTokenPermuteGrad:
 
     def __repr__(self):
         return f"MoeTokenPermuteGrad(T={self.num_tokens}, K={self.topK}, H={self.hidden_size}, experts={self.num_experts})"
+
+
+def test_permute_grad_parameterized(pt_dtype, tl_dtype_str):
+    print(f"\n{'=' * 65}")
+    print(f"开始测试 MoeTokenPermuteGrad, 数据类型: {tl_dtype_str.upper()}")
+    print(f"{'=' * 65}")
+
+    torch.manual_seed(42)
+
+    num_tokens = 16
+    hidden_size = 16
+    topk = 4
+    num_experts = 4
+
+    all_passed = True
+
+    print(">>> 测试用例 1: 标准 Backward 梯度对齐测试")
+
+    tokens = torch.randn(num_tokens, hidden_size, dtype=pt_dtype, device="npu", requires_grad=True)
+    indices = torch.randint(0, num_experts, (num_tokens, topk), dtype=torch.int32, device="npu")
+
+    npu_permuted, npu_sorted_idx = torch_npu.npu_moe_token_permute(tokens, indices)
+
+    grad_permuted_tokens = torch.randn_like(npu_permuted)
+
+    npu_permuted.backward(grad_permuted_tokens)
+    npu_input_grad = tokens.grad.clone()
+
+    tokens.grad.zero_()
+
+    tl_grad_op = MoeTokenPermuteGrad(
+        num_tokens=num_tokens,
+        topK=topk,
+        hidden_size=hidden_size,
+        num_experts=num_experts,
+        dtype=tl_dtype_str,
+    )
+    tl_input_grad = tl_grad_op(grad_permuted_tokens, npu_sorted_idx)
+    torch.npu.synchronize()
+
+    try:
+        torch.testing.assert_close(tl_input_grad, npu_input_grad)
+        print(f"    [PASS] {tl_dtype_str.upper()} 标准 Backward 精度测试通过！")
+    except AssertionError as e:
+        print(f"    [FAILED] {tl_dtype_str.upper()} 标准 Backward 精度测试失败！\n", e)
+        all_passed = False
+
+    print("\n>>> 测试用例 2: 带截断的 Clip Backward 梯度对齐测试")
+    num_out_tokens = 10
+
+    tokens_clip = torch.randn(num_tokens, hidden_size, dtype=pt_dtype, device="npu", requires_grad=True)
+    indices_clip = torch.randint(0, num_experts, (num_tokens, topk), dtype=torch.int32, device="npu")
+
+    npu_permuted_clip, npu_sorted_idx_clip = torch_npu.npu_moe_token_permute(
+        tokens_clip, indices_clip, num_out_tokens=num_out_tokens
+    )
+
+    grad_permuted_clip = torch.randn_like(npu_permuted_clip)
+    npu_permuted_clip.backward(grad_permuted_clip)
+    npu_input_grad_clip = tokens_clip.grad.clone()
+
+    tl_grad_op_clip = MoeTokenPermuteGrad(
+        num_tokens=num_tokens,
+        topK=topk,
+        hidden_size=hidden_size,
+        num_experts=num_experts,
+        num_out_tokens=num_out_tokens,
+        dtype=tl_dtype_str,
+    )
+    tl_input_grad_clip = tl_grad_op_clip(grad_permuted_clip, npu_sorted_idx_clip)
+    torch.npu.synchronize()
+
+    try:
+        torch.testing.assert_close(tl_input_grad_clip, npu_input_grad_clip)
+        print(f"    [PASS] {tl_dtype_str.upper()} Clip 截断 Backward 精度测试通过！")
+    except AssertionError as e:
+        print(f"    [FAILED] {tl_dtype_str.upper()} Clip 截断 Backward 精度测试失败！\n", e)
+        all_passed = False
+
+    return all_passed
+
+
+def test_permute_grad():
+    dtypes_to_test = [
+        (torch.float16, "float16"),
+        (torch.bfloat16, "bfloat16"),
+        (torch.float32, "float32"),
+    ]
+
+    overall_passed = True
+    for pt_type, tl_type_str in dtypes_to_test:
+        passed = test_permute_grad_parameterized(pt_dtype=pt_type, tl_dtype_str=tl_type_str)
+        if not passed:
+            overall_passed = False
+
+    print(f"\n{'=' * 65}")
+    if overall_passed:
+        print("Test passed!")
+    else:
+        print("Test failed! The precision is not correct!")
+    print(f"{'=' * 65}")
+
+
+if __name__ == "__main__":
+    test_permute_grad()

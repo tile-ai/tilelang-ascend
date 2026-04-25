@@ -1,5 +1,6 @@
 import math
 import torch
+import torch_npu
 
 try:
     import tilelang
@@ -638,3 +639,164 @@ class MoeTokenUnpermute:
 
     def __repr__(self):
         return f"MoeTokenUnpermute(T={self.num_tokens}, K={self.topK}, H={self.hidden_size}, probs={self.has_probs}, cores={self._actual_cores})"
+
+
+def test_unpermute_parameterized(pt_dtype, tl_dtype_str):
+    print(f"\n{'=' * 65}")
+    print(f"开始测试 MoeTokenUnpermute, 数据类型: {tl_dtype_str.upper()}")
+    print(f"{'=' * 65}")
+
+    torch.manual_seed(42)
+    all_passed = True
+
+    print(">>> 测试用例 1: 无 probs 正向对齐测试 (N=16, H=8, K=4) → 输出 [64, 8]")
+
+    num_tokens = 16
+    hidden_size = 8
+    topk = 4
+
+    permuted_tokens = torch.randn(
+        num_tokens * topk, hidden_size, dtype=pt_dtype, device="npu"
+    )
+    sorted_indices = torch.randperm(
+        num_tokens * topk, dtype=torch.int32, device="npu"
+    )
+
+    npu_tokens = torch_npu.npu_moe_token_unpermute(permuted_tokens, sorted_indices)
+
+    tl_op = MoeTokenUnpermute(
+        num_tokens=num_tokens,
+        topK=topk,
+        hidden_size=hidden_size,
+        has_probs=False,
+        TILE_T=16,
+        TILE_H=8,
+        dtype=tl_dtype_str,
+    )
+    tl_tokens = tl_op(permuted_tokens, sorted_indices)
+
+    print(f"    npu_tokens shape: {npu_tokens.shape}, tl_tokens shape: {tl_tokens.shape}")
+
+    try:
+        torch.testing.assert_close(tl_tokens, npu_tokens)
+        print(f"    [PASS] {tl_dtype_str.upper()} 无 probs 正向精度测试通过！")
+    except AssertionError as e:
+        print(f"    [FAILED] {tl_dtype_str.upper()} 无 probs 正向精度测试失败！")
+        max_diff = (tl_tokens - npu_tokens).abs().max().item()
+        print(f"    最大绝对误差: {max_diff}")
+        print(e)
+        all_passed = False
+
+    print("\n>>> 测试用例 2: 带 probs 加权正向对齐测试 (N=8, H=4, K=2) → 输出 [8, 4]")
+
+    torch.manual_seed(42)
+
+    num_tokens = 8
+    hidden_size = 4
+    topk = 2
+
+    permuted_tokens_2 = torch.randn(
+        num_tokens * topk, hidden_size, dtype=pt_dtype, device="npu"
+    )
+    sorted_indices_2 = torch.randperm(
+        num_tokens * topk, dtype=torch.int32, device="npu"
+    )
+    probs_2 = torch.randn(
+        num_tokens, topk, dtype=pt_dtype, device="npu"
+    )
+
+    npu_tokens_2 = torch_npu.npu_moe_token_unpermute(
+        permuted_tokens_2, sorted_indices_2, probs_2
+    )
+
+    tl_op_2 = MoeTokenUnpermute(
+        num_tokens=num_tokens,
+        topK=topk,
+        hidden_size=hidden_size,
+        has_probs=True,
+        TILE_T=8,
+        TILE_H=4,
+        dtype=tl_dtype_str,
+    )
+    tl_tokens_2 = tl_op_2(permuted_tokens_2, sorted_indices_2, probs_2)
+
+    print(f"    npu_tokens shape: {npu_tokens_2.shape}, tl_tokens shape: {tl_tokens_2.shape}")
+
+    try:
+        torch.testing.assert_close(tl_tokens_2, npu_tokens_2)
+        print(f"    [PASS] {tl_dtype_str.upper()} 带 probs 加权精度测试通过！")
+    except AssertionError as e:
+        print(f"    [FAILED] {tl_dtype_str.upper()} 带 probs 加权精度测试失败！")
+        max_diff = (tl_tokens_2 - npu_tokens_2).abs().max().item()
+        print(f"    最大绝对误差: {max_diff}")
+        print(e)
+        all_passed = False
+
+    print("\n>>> 测试用例 3: permute → unpermute 往返一致性测试 (N=16, H=8, K=4)")
+
+    torch.manual_seed(42)
+
+    num_tokens = 16
+    hidden_size = 8
+    topk = 4
+
+    tokens_3 = torch.randn(
+        num_tokens, hidden_size, dtype=pt_dtype, device="npu"
+    )
+    indices_3 = torch.randint(
+        0, 4, (num_tokens, topk), dtype=torch.int32, device="npu"
+    )
+
+    npu_permuted_3, npu_sorted_idx_3 = torch_npu.npu_moe_token_permute(tokens_3, indices_3)
+    npu_reconstruct_3 = torch_npu.npu_moe_token_unpermute(npu_permuted_3, npu_sorted_idx_3)
+
+    tl_op_3 = MoeTokenUnpermute(
+        num_tokens=num_tokens,
+        topK=topk,
+        hidden_size=hidden_size,
+        has_probs=False,
+        TILE_T=16,
+        TILE_H=8,
+        dtype=tl_dtype_str,
+    )
+    tl_reconstruct_3 = tl_op_3(npu_permuted_3, npu_sorted_idx_3)
+
+    print(f"    npu_reconstruct shape: {npu_reconstruct_3.shape}, "
+          f"tl_reconstruct shape: {tl_reconstruct_3.shape}")
+
+    try:
+        torch.testing.assert_close(tl_reconstruct_3, npu_reconstruct_3)
+        print(f"    [PASS] {tl_dtype_str.upper()} permute→unpermute 往返一致性测试通过！")
+    except AssertionError as e:
+        print(f"    [FAILED] {tl_dtype_str.upper()} permute→unpermute 往返一致性测试失败！")
+        max_diff = (tl_reconstruct_3 - npu_reconstruct_3).abs().max().item()
+        print(f"    最大绝对误差: {max_diff}")
+        print(e)
+        all_passed = False
+
+    return all_passed
+
+
+def test_unpermute():
+    dtypes_to_test = [
+        (torch.float16, "float16"),
+        (torch.bfloat16, "bfloat16"),
+        (torch.float32, "float32"),
+    ]
+
+    overall_passed = True
+    for pt_type, tl_type_str in dtypes_to_test:
+        passed = test_unpermute_parameterized(pt_dtype=pt_type, tl_dtype_str=tl_type_str)
+        if not passed:
+            overall_passed = False
+
+    print(f"\n{'=' * 65}")
+    if overall_passed:
+        print("Test passed!")
+    else:
+        print("Test failed! The precision is not correct!")
+    print(f"{'=' * 65}")
+
+
+if __name__ == "__main__":
+    test_unpermute()

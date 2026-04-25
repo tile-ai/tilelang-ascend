@@ -1,5 +1,6 @@
 import math
 import torch
+import torch_npu
 
 try:
     import tilelang
@@ -615,3 +616,159 @@ class MoeTokenUnpermuteGrad:
 
     def __repr__(self):
         return f"MoeTokenUnpermuteGrad(T={self.num_tokens}, K={self.topK}, H={self.hidden_size}, probs={self.has_probs}, cores={self._actual_cores})"
+
+
+def test_unpermute_grad_parameterized(pt_dtype, tl_dtype_str):
+    print(f"\n{'=' * 65}")
+    print(f"开始测试 MoeTokenUnpermuteGrad, 数据类型: {tl_dtype_str.upper()}")
+    print(f"{'=' * 65}")
+
+    torch.manual_seed(42)
+    all_passed = True
+
+    num_tokens = 8
+    hidden_size = 4
+    topk = 2
+
+    E = num_tokens * topk
+
+    permuted_tokens = torch.randn(
+        E, hidden_size, dtype=pt_dtype, device="npu", requires_grad=True,
+    )
+    sorted_indices = torch.randperm(
+        E, dtype=torch.int32, device="npu",
+    )
+    probs = torch.randn(
+        num_tokens, topk, dtype=pt_dtype, device="npu", requires_grad=True,
+    )
+
+    print(f"\n{'-' * 65}")
+    print(f"  Part 1: has_probs=True")
+    print(f"{'-' * 65}")
+
+    tokens_fwd = torch_npu.npu_moe_token_unpermute(
+        permuted_tokens, sorted_indices, probs,
+    )
+    grad_tokens = torch.ones_like(tokens_fwd, dtype=pt_dtype, device="npu")
+    tokens_fwd.backward(grad_tokens)
+
+    ref_permuted_tokens_grad = permuted_tokens.grad.clone()
+    ref_probs_grad = probs.grad.clone()
+
+    tl_op = MoeTokenUnpermuteGrad(
+        num_tokens=num_tokens,
+        topK=topk,
+        hidden_size=hidden_size,
+        has_probs=True,
+        NUM_CORES=24,
+        TILE_H=4,
+        dtype=tl_dtype_str,
+    )
+
+    tl_permuted_tokens_grad, tl_probs_grad = tl_op(
+        permuted_tokens.detach(),
+        grad_tokens,
+        sorted_indices,
+        probs=probs.detach(),
+    )
+
+    print(f"\n>>> 验证 permuted_tokens_grad (形状: [{E}, {hidden_size}])")
+    print(f"    ref shape: {ref_permuted_tokens_grad.shape}, "
+          f"tl shape: {tl_permuted_tokens_grad.shape}")
+
+    try:
+        torch.testing.assert_close(tl_permuted_tokens_grad, ref_permuted_tokens_grad)
+        print(f"    [PASS] {tl_dtype_str.upper()} permuted_tokens_grad 精度测试通过！")
+    except Exception as e:
+        print(f"    [FAILED] {tl_dtype_str.upper()} permuted_tokens_grad 精度测试失败！")
+        max_diff = (tl_permuted_tokens_grad - ref_permuted_tokens_grad).abs().max().item()
+        print(f"    最大绝对误差: {max_diff}")
+        print(e)
+        all_passed = False
+
+    print(f"\n>>> 验证 probs_grad (形状: [{num_tokens}, {topk}])")
+    print(f"    ref shape: {ref_probs_grad.shape}, tl shape: {tl_probs_grad.shape}")
+
+    try:
+        torch.testing.assert_close(tl_probs_grad, ref_probs_grad)
+        print(f"    [PASS] {tl_dtype_str.upper()} probs_grad 精度测试通过！")
+    except Exception as e:
+        print(f"    [FAILED] {tl_dtype_str.upper()} probs_grad 精度测试失败！")
+        max_diff = (tl_probs_grad - ref_probs_grad).abs().max().item()
+        print(f"    最大绝对误差: {max_diff}")
+        print(e)
+        all_passed = False
+
+    print(f"\n{'-' * 65}")
+    print(f"  Part 2: has_probs=False")
+    print(f"{'-' * 65}")
+
+    permuted_tokens_np = torch.randn(
+        E, hidden_size, dtype=pt_dtype, device="npu", requires_grad=True,
+    )
+
+    tokens_fwd_np = torch_npu.npu_moe_token_unpermute(
+        permuted_tokens_np, sorted_indices,
+    )
+    grad_tokens_np = torch.ones_like(tokens_fwd_np, dtype=pt_dtype, device="npu")
+    tokens_fwd_np.backward(grad_tokens_np)
+
+    ref_permuted_tokens_grad_np = permuted_tokens_np.grad.clone()
+
+    tl_op_np = MoeTokenUnpermuteGrad(
+        num_tokens=num_tokens,
+        topK=topk,
+        hidden_size=hidden_size,
+        has_probs=False,
+        NUM_CORES=24,
+        TILE_H=4,
+        dtype=tl_dtype_str,
+    )
+
+    tl_permuted_tokens_grad_np = tl_op_np(
+        permuted_tokens_np.detach(),
+        grad_tokens_np,
+        sorted_indices,
+    )
+
+    print(f"\n>>> 验证 permuted_tokens_grad (形状: ref {ref_permuted_tokens_grad_np.shape}, "
+          f"tl {tl_permuted_tokens_grad_np.shape})")
+
+    try:
+        torch.testing.assert_close(tl_permuted_tokens_grad_np, ref_permuted_tokens_grad_np)
+        print(f"    [PASS] {tl_dtype_str.upper()} no-probs permuted_tokens_grad 精度测试通过！")
+    except Exception as e:
+        print(f"    [FAILED] {tl_dtype_str.upper()} no-probs permuted_tokens_grad 精度测试失败！")
+        max_diff = (tl_permuted_tokens_grad_np - ref_permuted_tokens_grad_np).abs().max().item()
+        print(f"    最大绝对误差: {max_diff}")
+        print(f"    ref:\n{ref_permuted_tokens_grad_np}")
+        print(f"    tl:\n{tl_permuted_tokens_grad_np}")
+        print(e)
+        all_passed = False
+
+    return all_passed
+
+
+def test_unpermute_grad():
+    dtypes_to_test = [
+        (torch.float16, "float16"),
+        (torch.bfloat16, "bfloat16"),
+        (torch.float32, "float32"),
+    ]
+
+    overall_passed = True
+    for pt_type, tl_type_str in dtypes_to_test:
+        passed = test_unpermute_grad_parameterized(pt_dtype=pt_type, tl_dtype_str=tl_type_str)
+        if not passed:
+            overall_passed = False
+
+    print(f"\n{'=' * 65}")
+    if overall_passed:
+        print("Test passed!")
+    else:
+        print("Test failed! The precision is not correct!")
+    print(f"{'=' * 65}")
+
+
+if __name__ == "__main__":
+    test_unpermute_grad()
