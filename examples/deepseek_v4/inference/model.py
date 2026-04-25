@@ -836,17 +836,12 @@ if __name__ == "__main__":
     args = ModelArgs(n_hash_layers=0)
     x = torch.randint(0, args.vocab_size, (2, 128))
     model = Transformer(args)
-    y = model(x)  # torch.Size([2, 129280])
-    print(y.size())
-    if torch.isnan(y).any() or torch.isinf(y).any():
-        print("============ There are NaN in y\n", y.shape, '\n', y)
-    else:
-        print("============ There is no NaN in y\n", y.shape, '\n', y)
-    
-    # for i in range(128, 150):
-    #     print(i, model(x[:, 0:1], i).size())
 
-    # h = torch.randn(2, 128, args.hc_mult, args.dim)
-    # mtp = model.mtp[0]
-    # print(mtp(h, 0, x).size())
-    # print(mtp(h[:, 0:1], 1, x[:, 0:1]).size())
+    print(model(x).size())
+    for i in range(128, 150):
+        print(i, model(x[:, 0:1], i).size())
+
+    h = torch.randn(2, 128, args.hc_mult, args.dim)
+    mtp = model.mtp[0]
+    print(mtp(h, 0, x).size())
+    print(mtp(h[:, 0:1], 1, x[:, 0:1]).size())
