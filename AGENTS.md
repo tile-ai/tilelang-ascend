@@ -123,7 +123,7 @@ L0A / L0B（矩阵输入寄存器）→ L0C（矩阵输出寄存器）
 | 维度 | Developer（自动化） | Expert（手动控制） |
 | --- | --- | --- |
 | 内存分配 | `T.alloc_shared/fragment` 编译器自动映射 | `T.alloc_L1/ub/L0A/L0B/L0C` 显式指定 |
-| 计算 | `T.Parallel` + 符号运算 | `T.tile.add/exp/max` 等 |
+| 计算 | `T.Parallel` + 符号运算 | `T.tile.add/exp/max/atomic_add` 等 |
 | 作用域 | 编译器自动分离 Cube/Vector | 显式 `with T.Scope("C"/"V")` |
 | 同步 | 自动 | 手动 `T.barrier_all/set_flag/wait_flag` |
 | pass_configs | 全部开启 | 全部关闭或不设 |

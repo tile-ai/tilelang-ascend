@@ -49,6 +49,32 @@ we need to know the copy region.
 
 Zero will be padded if we detect the load is out of boundary.
 
+T.tile.atomic_add
+-----------------
+
+args: dst, src
+
+Atomically accumulates a local tensor tile into a GM destination tile on
+Ascend. This is an Ascend-specific tile primitive and is not the same as
+the main TileLang GPU-style `T.atomic_add`.
+
+- `dst` must be a GM/global buffer, buffer load, or buffer region.
+- `src` must be a local tensor tile, typically UB/shared.
+- `src` and `dst` must have the same dtype.
+- The current implementation targets local/UB to GM atomic add. It does
+  not support `return_prev`, `memory_order`, `use_tma`, scalar source
+  expressions, or non-GM destinations.
+- If the intended result is an accumulation from zero, initialize the GM
+  output before calling the kernel or before the atomic accumulation.
+
+Example:
+
+```python
+src_ub = T.alloc_ub((tile_n,), "float32")
+T.tile.fill(src_ub, 1.0)
+T.tile.atomic_add(C[0], src_ub)
+```
+
 T.gemm
 ------
 

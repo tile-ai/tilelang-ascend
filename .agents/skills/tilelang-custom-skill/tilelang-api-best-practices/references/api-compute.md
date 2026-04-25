@@ -163,9 +163,9 @@ for i in range(block_M // VEC_NUM):  # 行顺序
 
 ---
 
-## 4. Tile 扩展原语（Expert 模式 T.tile.xxx）
+## 4. Tile 扩展原语（Expert / 混合模式 T.tile.xxx）
 
-`T.tile.xxx` 系列接口直接触发 Tile 级的 Vector 操作指令。
+`T.tile.xxx` 系列接口直接触发 Tile 级的 Ascend 操作。它们既可用于全手动 Expert 模式，也可在 Developer pass_configs 下作为混合模式原语使用。
 
 ### 4.1 基础算术
 
@@ -280,7 +280,39 @@ T.tile.cast(b_ub, a_ub, "CAST_RINT", 4096)
 | `T.tile.gather(dst, src, src_offset, src_base_addr)` | 按偏移收集数据 |
 | `T.tile.arith_progression(buffer, first_value, diff_value, count)` | 生成等差数列 |
 
-### 4.10 排序操作
+### 4.10 原子累加写回
+
+#### T.tile.atomic_add(dst, src)
+
+将本地 tensor tile 原子累加到 GM 目标区域。该 API 是 Ascend 专属的 `T.tile` 原语，不等价于主仓 GPU 风格的全局 `T.atomic_add`。
+
+**V1 支持范围**：
+
+- `dst` 必须是 GM/global buffer、buffer load 或 region
+- `src` 必须是本地 tensor，当前主要面向 UB/shared buffer
+- `src` 与 `dst` dtype 必须一致
+- 支持 1D 和 2D tile region 的 local -> GM 原子累加
+- 不支持 `return_prev`、`memory_order`、`use_tma`、常量 src 或任意表达式 src
+
+**使用建议**：
+
+- 如果业务语义是从 0 开始累加，调用 kernel 前或 kernel 内需要显式清零 GM 输出。
+- 在混合模式下可配合自动同步和内存规划使用，不要求手写 `T.Scope("V")` 或 `T.barrier_all()`。
+
+```python
+pass_configs = {
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
+    tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
+}
+
+src_ub = T.alloc_ub((tile_n,), "float32")
+T.tile.fill(src_ub, 1.0)
+T.tile.atomic_add(C[0], src_ub)
+```
+
+底层会生成 Ascend C 的 DMA atomic add 语义：开启 `SetAtomicAdd<T>()`，执行 local -> GM 的 `DataCopyPad`，再通过兼容 helper 关闭 atomic 状态。
+
+### 4.11 排序操作
 
 #### T.tile.sort(dst, src, actual_num)
 
@@ -337,13 +369,13 @@ T.tile.topk(topk_global, sort_result, K, actual_num)
 **注意事项**：
   - `src` 的大小需要满足32或32的整数倍
 
-### 4.11 两种编程范式对比
+### 4.12 两种编程范式对比
 
 ```python
 # 方式一：T.Parallel + 符号 API（推荐，跨平台兼容）
 for i, j in T.Parallel(block_M // VEC_NUM, block_N):
     b_ub[i, j] = T.exp(a_ub[i, j])
 
-# 方式二：T.tile 扩展原语（Expert 模式，直接触发硬件指令）
+# 方式二：T.tile 扩展原语（Expert / 混合模式，直接触发硬件指令）
 T.tile.exp(b_ub, a_ub)
 ```

@@ -139,7 +139,7 @@ def flash_attention_fwd(...):
 
 ## 5. 混合模式 — Softmax
 
-混合模式典型场景：Developer pass_configs + Expert 计算原语（`T.tile.fill/max/sub/exp/div`）
+混合模式典型场景：Developer pass_configs + Ascend 专属 `T.tile` 原语（`T.tile.fill/max/sub/exp/div`）
 
 ```python
 pass_configs = {
@@ -160,4 +160,4 @@ with T.Kernel(m_num, is_npu=True) as (cid, vid):
     # 使用 Developer 的 pass_configs 自动处理同步
 ```
 
-**关键点**：`T.tile.xxx` 和 `T.reduce_*` 可以在 Developer pass_configs 下正常工作，无需手写同步。
+**关键点**：`T.tile.xxx` 和 `T.reduce_*` 可以在 Developer pass_configs 下正常工作，无需手写同步。`T.tile.atomic_add(dst_gm, src_local)` 属于带副作用的 local -> GM 原子累加写回，使用前要确认 GM 输出已按业务语义初始化。
