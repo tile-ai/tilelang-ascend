@@ -338,9 +338,7 @@ def test_permute_parameterized(pt_dtype, tl_dtype_str):
     tokens_clip = torch.randn(num_tokens, hidden_size, dtype=pt_dtype, device="npu")
     indices_clip = torch.randint(0, num_experts, (num_tokens, topk), dtype=torch.int32, device="npu")
 
-    npu_permuted_clip, npu_sorted_idx_clip = torch_npu.npu_moe_token_permute(
-        tokens_clip, indices_clip, num_out_tokens=num_out_tokens
-    )
+    npu_permuted_clip, npu_sorted_idx_clip = torch_npu.npu_moe_token_permute(tokens_clip, indices_clip, num_out_tokens=num_out_tokens)
 
     tl_op_clip = MoeTokenPermute(
         num_tokens=num_tokens,

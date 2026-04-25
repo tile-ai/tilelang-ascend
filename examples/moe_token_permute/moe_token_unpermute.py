@@ -654,12 +654,8 @@ def test_unpermute_parameterized(pt_dtype, tl_dtype_str):
     hidden_size = 8
     topk = 4
 
-    permuted_tokens = torch.randn(
-        num_tokens * topk, hidden_size, dtype=pt_dtype, device="npu"
-    )
-    sorted_indices = torch.randperm(
-        num_tokens * topk, dtype=torch.int32, device="npu"
-    )
+    permuted_tokens = torch.randn(num_tokens * topk, hidden_size, dtype=pt_dtype, device="npu")
+    sorted_indices = torch.randperm(num_tokens * topk, dtype=torch.int32, device="npu")
 
     npu_tokens = torch_npu.npu_moe_token_unpermute(permuted_tokens, sorted_indices)
 
@@ -694,19 +690,11 @@ def test_unpermute_parameterized(pt_dtype, tl_dtype_str):
     hidden_size = 4
     topk = 2
 
-    permuted_tokens_2 = torch.randn(
-        num_tokens * topk, hidden_size, dtype=pt_dtype, device="npu"
-    )
-    sorted_indices_2 = torch.randperm(
-        num_tokens * topk, dtype=torch.int32, device="npu"
-    )
-    probs_2 = torch.randn(
-        num_tokens, topk, dtype=pt_dtype, device="npu"
-    )
+    permuted_tokens_2 = torch.randn(num_tokens * topk, hidden_size, dtype=pt_dtype, device="npu")
+    sorted_indices_2 = torch.randperm(num_tokens * topk, dtype=torch.int32, device="npu")
+    probs_2 = torch.randn(num_tokens, topk, dtype=pt_dtype, device="npu")
 
-    npu_tokens_2 = torch_npu.npu_moe_token_unpermute(
-        permuted_tokens_2, sorted_indices_2, probs_2
-    )
+    npu_tokens_2 = torch_npu.npu_moe_token_unpermute(permuted_tokens_2, sorted_indices_2, probs_2)
 
     tl_op_2 = MoeTokenUnpermute(
         num_tokens=num_tokens,
@@ -739,12 +727,8 @@ def test_unpermute_parameterized(pt_dtype, tl_dtype_str):
     hidden_size = 8
     topk = 4
 
-    tokens_3 = torch.randn(
-        num_tokens, hidden_size, dtype=pt_dtype, device="npu"
-    )
-    indices_3 = torch.randint(
-        0, 4, (num_tokens, topk), dtype=torch.int32, device="npu"
-    )
+    tokens_3 = torch.randn(num_tokens, hidden_size, dtype=pt_dtype, device="npu")
+    indices_3 = torch.randint(0, 4, (num_tokens, topk), dtype=torch.int32, device="npu")
 
     npu_permuted_3, npu_sorted_idx_3 = torch_npu.npu_moe_token_permute(tokens_3, indices_3)
     npu_reconstruct_3 = torch_npu.npu_moe_token_unpermute(npu_permuted_3, npu_sorted_idx_3)
@@ -760,8 +744,7 @@ def test_unpermute_parameterized(pt_dtype, tl_dtype_str):
     )
     tl_reconstruct_3 = tl_op_3(npu_permuted_3, npu_sorted_idx_3)
 
-    print(f"    npu_reconstruct shape: {npu_reconstruct_3.shape}, "
-          f"tl_reconstruct shape: {tl_reconstruct_3.shape}")
+    print(f"    npu_reconstruct shape: {npu_reconstruct_3.shape}, tl_reconstruct shape: {tl_reconstruct_3.shape}")
 
     try:
         torch.testing.assert_close(tl_reconstruct_3, npu_reconstruct_3)

@@ -124,7 +124,7 @@ def _build_scatter_kernel_no_probs(
         ):
             with T.Kernel(actual_cores, is_npu=True) as (cid, vid):
                 idx_ub = T.alloc_ub([1, TILE_E], idx_dtype)
-                row_buf = T.alloc_ub([B, 1, HALF_H], dtype)
+                row_buf = T.alloc_ub([B, HALF_H], dtype)   # ← 改: 3D → 2D
 
                 with T.Scope("V"):
                     for t_local in T.serial(tiles_per_core):
@@ -142,13 +142,13 @@ def _build_scatter_kernel_no_probs(
                                     for lane in T.serial(B):
                                         row = e_base + ei + lane
                                         if row < E:
-                                            T.copy(out_grad_gm[row, h_off], row_buf[lane, :, :])
+                                            T.copy(out_grad_gm[row, h_off], row_buf[lane, :])   # ← 改
                                     T.barrier_all()
                                     for lane in T.serial(B):
                                         row = e_base + ei + lane
                                         if row < E:
                                             dst = idx_ub[0, ei + lane]
-                                            T.copy(row_buf[lane, :, :], perm_grad_gm[dst, h_off])
+                                            T.copy(row_buf[lane, :], perm_grad_gm[dst, h_off])   # ← 改
                                     T.barrier_all()
 
                             remainder = TILE_E % B
@@ -159,9 +159,9 @@ def _build_scatter_kernel_no_probs(
                                     dst = idx_ub[0, ei]
                                     for ht in T.serial(n_htiles):
                                         h_off = ht * TILE_H + vid * HALF_H
-                                        T.copy(out_grad_gm[row, h_off], row_buf[0, :, :])
+                                        T.copy(out_grad_gm[row, h_off], row_buf[0, :])   # ← 改
                                         T.barrier_all()
-                                        T.copy(row_buf[0, :, :], perm_grad_gm[dst, h_off])
+                                        T.copy(row_buf[0, :], perm_grad_gm[dst, h_off])   # ← 改
                                         T.barrier_all()
 
         return moe_token_unpermute_grad
@@ -232,7 +232,7 @@ def _build_grad_kernel_with_probs(
         remainder,
     ):
 
-        perm_buf_shape = [B, 1, HALF_H]
+        perm_buf_shape = [B, HALF_H]   # ← 改 1: 3D → 2D
 
         @T.macro
         def emit_lane(
@@ -248,8 +248,7 @@ def _build_grad_kernel_with_probs(
             mul_buf,
             out_tmp,
             reduce_dst,
-            reduce_tmp,
-            pg_acc,
+            pg_acc,                    # ← 改 2: 删掉 reduce_tmp 参数
             perm_grad_gm,
         ):
             dst = idx_ub[0, k_idx]
@@ -265,10 +264,10 @@ def _build_grad_kernel_with_probs(
             T.copy(out_tmp, perm_grad_gm[dst, h_off])
             T.set_flag("mte3", "v", 2)
 
-            T.copy(perm_buf[lane_idx, :, :], perm_tmp)
+            T.copy(perm_buf[lane_idx, :], perm_tmp)   # ← 改 3: [lane_idx,:,:] → [lane_idx,:]
             T.tile.cast(perm_f32, perm_tmp, CAST_LOW2HIGH, HALF_H)
             T.tile.mul(mul_buf, grad_f32, perm_f32)
-            T.reduce_sum(mul_buf, reduce_dst, reduce_tmp, dim=-1)
+            T.reduce_sum(mul_buf, reduce_dst, dim=-1)   # ← 改 4: 删掉 reduce_tmp 实参
             pg_acc[0, k_idx] = pg_acc[0, k_idx] + reduce_dst[0, 0]
 
         @T.prim_func
@@ -291,7 +290,7 @@ def _build_grad_kernel_with_probs(
                 perm_f32 = T.alloc_ub([1, HALF_H], acc_dtype)
                 mul_buf = T.alloc_ub([1, HALF_H], acc_dtype)
                 out_tmp = T.alloc_ub([1, HALF_H], dtype)
-                reduce_tmp = T.alloc_ub((3 * 4 * HALF_H,), "uint8")
+                # ← 改 5: 删除 reduce_tmp = T.alloc_ub((3 * 4 * HALF_H,), "uint8") 这一行
                 reduce_dst = T.alloc_ub([1, 1], acc_dtype)
                 pg_acc = T.alloc_ub([1, topK], acc_dtype)
 
@@ -319,7 +318,7 @@ def _build_grad_kernel_with_probs(
                                     k_base = g * B
                                     for lane in T.serial(B):
                                         dst = idx_ub[0, k_base + lane]
-                                        T.copy(perm_tokens_gm[dst, h_off], perm_buf[lane, :, :])
+                                        T.copy(perm_tokens_gm[dst, h_off], perm_buf[lane, :])   # ← 改 6
                                     T.set_flag("mte2", "v", 3)
                                     T.wait_flag("mte2", "v", 3)
 
@@ -337,8 +336,7 @@ def _build_grad_kernel_with_probs(
                                             mul_buf,
                                             out_tmp,
                                             reduce_dst,
-                                            reduce_tmp,
-                                            pg_acc,
+                                            pg_acc,                # ← 改 7: 删掉 reduce_tmp 实参
                                             perm_grad_gm,
                                         )
 
@@ -347,7 +345,7 @@ def _build_grad_kernel_with_probs(
                                     for r in T.serial(remainder):
                                         rk = r_base + r
                                         dst = idx_ub[0, rk]
-                                        T.copy(perm_tokens_gm[dst, h_off], perm_buf[0, :, :])
+                                        T.copy(perm_tokens_gm[dst, h_off], perm_buf[0, :])   # ← 改 8
                                         T.set_flag("mte2", "v", 3)
                                         T.wait_flag("mte2", "v", 3)
                                         emit_lane(
@@ -363,8 +361,7 @@ def _build_grad_kernel_with_probs(
                                             mul_buf,
                                             out_tmp,
                                             reduce_dst,
-                                            reduce_tmp,
-                                            pg_acc,
+                                            pg_acc,                # ← 改 9: 删掉 reduce_tmp 实参
                                             perm_grad_gm,
                                         )
 
@@ -444,7 +441,7 @@ def _build_grad_kernel_with_probs_f32(
                 grad_buf = T.alloc_shared([1, TILE_H], dtype)
                 perm_buf = T.alloc_shared([1, TILE_H], dtype)
                 mul_buf = T.alloc_shared([1, TILE_H], dtype)
-                reduce_tmp = T.alloc_shared((3 * 4 * TILE_H,), "uint8")
+                # ← 改: 删除 reduce_tmp = T.alloc_shared((3 * 4 * TILE_H,), "uint8") 这一行
                 reduce_dst = T.alloc_shared([1, 1], dtype)
                 pg_acc = T.alloc_shared([1, topK], dtype)
 
@@ -471,7 +468,7 @@ def _build_grad_kernel_with_probs_f32(
                                 T.copy(mul_buf, perm_grad_gm[dst_idx, h_off])
 
                                 T.tile.mul(mul_buf, grad_buf, perm_buf)
-                                T.reduce_sum(mul_buf, reduce_dst, reduce_tmp, dim=-1)
+                                T.reduce_sum(mul_buf, reduce_dst, dim=-1)   # ← 改: 删掉 reduce_tmp 实参
                                 pg_acc[0, k] = pg_acc[0, k] + reduce_dst[0, 0]
 
                         T.copy(pg_acc, probs_grad_gm[i, 0])
@@ -632,21 +629,33 @@ def test_unpermute_grad_parameterized(pt_dtype, tl_dtype_str):
     E = num_tokens * topk
 
     permuted_tokens = torch.randn(
-        E, hidden_size, dtype=pt_dtype, device="npu", requires_grad=True,
+        E,
+        hidden_size,
+        dtype=pt_dtype,
+        device="npu",
+        requires_grad=True,
     )
     sorted_indices = torch.randperm(
-        E, dtype=torch.int32, device="npu",
+        E,
+        dtype=torch.int32,
+        device="npu",
     )
     probs = torch.randn(
-        num_tokens, topk, dtype=pt_dtype, device="npu", requires_grad=True,
+        num_tokens,
+        topk,
+        dtype=pt_dtype,
+        device="npu",
+        requires_grad=True,
     )
 
     print(f"\n{'-' * 65}")
-    print(f"  Part 1: has_probs=True")
+    print("  Part 1: has_probs=True")
     print(f"{'-' * 65}")
 
     tokens_fwd = torch_npu.npu_moe_token_unpermute(
-        permuted_tokens, sorted_indices, probs,
+        permuted_tokens,
+        sorted_indices,
+        probs,
     )
     grad_tokens = torch.ones_like(tokens_fwd, dtype=pt_dtype, device="npu")
     tokens_fwd.backward(grad_tokens)
@@ -672,8 +681,7 @@ def test_unpermute_grad_parameterized(pt_dtype, tl_dtype_str):
     )
 
     print(f"\n>>> 验证 permuted_tokens_grad (形状: [{E}, {hidden_size}])")
-    print(f"    ref shape: {ref_permuted_tokens_grad.shape}, "
-          f"tl shape: {tl_permuted_tokens_grad.shape}")
+    print(f"    ref shape: {ref_permuted_tokens_grad.shape}, tl shape: {tl_permuted_tokens_grad.shape}")
 
     try:
         torch.testing.assert_close(tl_permuted_tokens_grad, ref_permuted_tokens_grad)
@@ -699,15 +707,20 @@ def test_unpermute_grad_parameterized(pt_dtype, tl_dtype_str):
         all_passed = False
 
     print(f"\n{'-' * 65}")
-    print(f"  Part 2: has_probs=False")
+    print("  Part 2: has_probs=False")
     print(f"{'-' * 65}")
 
     permuted_tokens_np = torch.randn(
-        E, hidden_size, dtype=pt_dtype, device="npu", requires_grad=True,
+        E,
+        hidden_size,
+        dtype=pt_dtype,
+        device="npu",
+        requires_grad=True,
     )
 
     tokens_fwd_np = torch_npu.npu_moe_token_unpermute(
-        permuted_tokens_np, sorted_indices,
+        permuted_tokens_np,
+        sorted_indices,
     )
     grad_tokens_np = torch.ones_like(tokens_fwd_np, dtype=pt_dtype, device="npu")
     tokens_fwd_np.backward(grad_tokens_np)
@@ -730,8 +743,7 @@ def test_unpermute_grad_parameterized(pt_dtype, tl_dtype_str):
         sorted_indices,
     )
 
-    print(f"\n>>> 验证 permuted_tokens_grad (形状: ref {ref_permuted_tokens_grad_np.shape}, "
-          f"tl {tl_permuted_tokens_grad_np.shape})")
+    print(f"\n>>> 验证 permuted_tokens_grad (形状: ref {ref_permuted_tokens_grad_np.shape}, tl {tl_permuted_tokens_grad_np.shape})")
 
     try:
         torch.testing.assert_close(tl_permuted_tokens_grad_np, ref_permuted_tokens_grad_np)
