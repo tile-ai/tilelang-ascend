@@ -444,7 +444,6 @@ def _build_grad_kernel_with_probs_f32(
                 grad_buf = T.alloc_shared([1, TILE_H], dtype)
                 perm_buf = T.alloc_shared([1, TILE_H], dtype)
                 mul_buf = T.alloc_shared([1, TILE_H], dtype)
-                T.alloc_shared([1, TILE_H], dtype)
                 reduce_tmp = T.alloc_shared((3 * 4 * TILE_H,), "uint8")
                 reduce_dst = T.alloc_shared([1, 1], dtype)
                 pg_acc = T.alloc_shared([1, topK], dtype)

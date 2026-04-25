@@ -315,7 +315,6 @@ def _build_gather_kernel_with_probs_f32(
                 probs_ub = T.alloc_shared([1, BATCH_T * topK], dtype)
                 row_buf = T.alloc_shared([3, 1, TILE_H], dtype)
                 acc_buf = T.alloc_shared([1, TILE_H], dtype)
-                T.alloc_shared([1, TILE_H], dtype)
 
                 for batch_id in T.serial(n_batches):
                     batch_base = cid * tokens_per_core + batch_id * BATCH_T
