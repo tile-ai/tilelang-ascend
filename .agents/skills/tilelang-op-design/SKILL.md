@@ -77,7 +77,8 @@ description: "根据算子需求生成 TileLang-Ascend 算子设计文档（desi
 1. 查阅 `examples/` 中同类算子实现
 2. 查阅 [tilelang-api-best-practices SKILL.md](../tilelang-custom-skill/tilelang-api-best-practices/SKILL.md) 确认 API 可用性和用法
 3. 查阅 [tilelang-expert-to-developer SKILL.md](../tilelang-custom-skill/tilelang-expert-to-developer/SKILL.md) 确认编程模式和 pass_configs 配置
-4. 如有参考实现，分析其计算步骤
+4. 判断 API 可用性时，必须同时核对公开导出路径（如 `tilelang/language/__init__.py`）与 lowering / codegen 实现（如 `src/op/`、`src/target/`），不能仅凭 `_ascend.py` / `_cuda.py` 文件名推断
+5. 如有参考实现，分析其计算步骤
 
 ### Phase 3：生成 design.md
 
@@ -175,8 +176,10 @@ description: "根据算子需求生成 TileLang-Ascend 算子设计文档（desi
 | 1 | `docs/TileLang-Ascend Programming Guide.md` | 权威 API 说明和编程指南 |
 | 2 | [tilelang-api-best-practices SKILL.md](../tilelang-custom-skill/tilelang-api-best-practices/SKILL.md) | API 用法速查和最佳实践 |
 | 3 | [tilelang-expert-to-developer SKILL.md](../tilelang-custom-skill/tilelang-expert-to-developer/SKILL.md) | 编程模式选择和 pass_configs 配置 |
-| 4 | `examples/` 示例代码 | 实际 API 用法和编程模式参考 |
-| 5 | `testing/python/language/` | 边界用法和测试模式参考 |
+| 4 | `tilelang/language/__init__.py` + `tilelang/language/*.py` | 公开 API 导出关系与前端定义 |
+| 5 | `src/op/` + `src/target/` | lowering 与后端实现状态 |
+| 6 | `examples/` 示例代码 | 实际 API 用法和编程模式参考 |
+| 7 | `testing/python/language/` | 边界用法和测试模式参考 |
 
 **冲突处理**：当信息源之间矛盾时，以 `docs/` 为准。若 `docs/` 未覆盖，以 `tilelang/language/` 源码实际实现为准。
 
