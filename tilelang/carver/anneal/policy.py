@@ -361,15 +361,14 @@ class AnnealTemplate:
         self.policy = policy
 
         if mem_caps is None:
-            match self.use_template:
-                case "Custom":
-                    raise ValueError("custom mem_caps is none!")
-                case "Elementwise":
-                    self.mem_caps = ["UB"]
-                case "Matmul":
-                    self.mem_caps = ["L1"]
-                case "FlashAttention":
-                    self.mem_caps = ["L1", "L1", "UB"]
+            if self.use_template == "Custom":
+                raise ValueError("custom mem_caps is none!")
+            elif self.use_template == "Elementwise":
+                self.mem_caps = ["UB"]
+            elif self.use_template == "Matmul":
+                self.mem_caps = ["L1"]
+            elif self.use_template == "FlashAttention":
+                self.mem_caps = ["L1", "L1", "UB"]
         else:
             self.mem_caps = mem_caps
 
@@ -616,12 +615,11 @@ class AnnealTemplate:
         return annel_carver.get_configs_from_anneal()
 
     def get_configs(self):
-        match self.use_template:
-            case "Custom":
-                return self.custom_template()
-            case "Elementwise":
-                return self.elementwise_template()
-            case "Matmul":
-                return self.matmul_template()
-            case "FlashAttention":
-                return self.flashattention_template()
+        if self.use_template == "Custom":
+            return self.custom_template()
+        elif self.use_template == "Elementwise":
+            return self.elementwise_template()
+        elif self.use_template == "Matmul":
+            return self.matmul_template()
+        elif self.use_template == "FlashAttention":
+            return self.flashattention_template()
