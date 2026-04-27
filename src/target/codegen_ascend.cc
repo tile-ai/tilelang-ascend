@@ -1842,9 +1842,16 @@ void CodeGenTileLangAscend::ReduceOpCodegen(const CallNode *op) {
       "tl::ascend::" + Downcast<StringImm>(op->args[0])->value;
 
   bool is_reduce_sum = (op_name.find("reduce_sum") != std::string::npos);
+  int buffer_arg_end = static_cast<int>(op->args.size());
+  bool clear = true;
+  if (buffer_arg_end > 0 && op->args[buffer_arg_end - 1].dtype().is_bool()) {
+    clear = !is_zero(op->args[buffer_arg_end - 1]);
+    buffer_arg_end--;
+  }
+  std::string clear_str = clear ? "true" : "false";
 
   std::vector<std::string> var_names;
-  for (int i = 1; i < op->args.size(); i++) {
+  for (int i = 1; i < buffer_arg_end; i++) {
     auto var_name = PrintBufferOffset(op->args[i].as<CallNode>());
     var_names.push_back(var_name);
   }
@@ -1873,7 +1880,7 @@ void CodeGenTileLangAscend::ReduceOpCodegen(const CallNode *op) {
     } catch (...) {
     }
 
-    if (dtype == "half") {
+    if (dtype == "half" && clear) {
       std::string mask, repeatTime, srcRepStride;
       constexpr int64_t ELE_NUM_PER_C0_FOR_HALF = 16;
       if (dim_val == -1) {
@@ -1907,7 +1914,10 @@ void CodeGenTileLangAscend::ReduceOpCodegen(const CallNode *op) {
           this->stream << ", ";
         }
       }
-      this->stream << ");\n";
+      if (!var_names.empty()) {
+        this->stream << ", ";
+      }
+      this->stream << clear_str << ");\n";
     }
   } else {
     this->stream << op_name << "(";
@@ -1917,7 +1927,10 @@ void CodeGenTileLangAscend::ReduceOpCodegen(const CallNode *op) {
         this->stream << ", ";
       }
     }
-    this->stream << ");\n";
+    if (!var_names.empty()) {
+      this->stream << ", ";
+    }
+    this->stream << clear_str << ");\n";
   }
 }
 
