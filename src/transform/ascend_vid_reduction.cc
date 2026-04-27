@@ -102,7 +102,6 @@ private:
 
   // Modify buffer shape
   Buffer ModifyBufferShape(const Buffer &buffer) {
-    return buffer;
     if (buffer->shape.empty()) {
       return buffer;
     }
