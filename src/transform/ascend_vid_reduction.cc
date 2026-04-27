@@ -476,14 +476,34 @@ bool NeedsVidReduction(const Buffer &buffer) const {
     return Buffer();
   }
 
+  // Check if tvm_access_ptr has offset == 0
+  bool AccessPtrOffsetIsZero(const PrimExpr &arg) const {
+    if (const CallNode *call = arg.as<CallNode>()) {
+      if (call->op.same_as(builtin::tvm_access_ptr())) {
+        if (call->args.size() >= 3) {
+          PrimExpr offset = call->args[2];
+          PrimExpr simplified = analyzer_->Simplify(offset);
+          if (const IntImmNode *offset_imm = simplified.as<IntImmNode>()) {
+            return offset_imm->value == 0;
+          }
+        }
+      }
+    }
+    return false;
+  }
+
   // Check if any buffer in the call args is in origin_to_new_buffer_
+  // AND has offset == 0 (for tvm_access_ptr)
   bool HasModifiedBuffer(const CallNode *op) const {
     for (const PrimExpr &arg : op->args) {
       Buffer buf = ExtractBufferFromArg(arg);
       if (buf.defined()) {
         auto it = origin_to_new_buffer_.find(buf);
         if (it != origin_to_new_buffer_.end()) {
-          return true;
+          // Check if this arg is tvm_access_ptr with offset == 0
+          if (AccessPtrOffsetIsZero(arg)) {
+            return true;
+          }
         }
       }
     }
@@ -676,7 +696,20 @@ bool NeedsVidReduction(const Buffer &buffer) const {
       }
 
       if (matched_buffer.defined()) {
-        // Modify extent (args[3]) by dividing by threads_cnt_
+        // Check offset (args[2]): only modify extent when offset == 0
+        PrimExpr offset = op->args[2];
+        PrimExpr simplified_offset = analyzer_->Simplify(offset);
+        bool offset_is_zero = false;
+        if (const IntImmNode *offset_imm = simplified_offset.as<IntImmNode>()) {
+          offset_is_zero = (offset_imm->value == 0);
+        }
+        
+        if (!offset_is_zero) {
+          // offset != 0: accessing different positions in loop, no need to modify extent
+          return IRMutatorWithAnalyzer::VisitExpr_(op);
+        }
+        
+        // offset == 0: modify extent (args[3]) by dividing by threads_cnt_
         PrimExpr extent = op->args[3];
         PrimExpr simplified = analyzer_->Simplify(extent);
         PrimExpr new_extent;
@@ -716,7 +749,7 @@ bool NeedsVidReduction(const Buffer &buffer) const {
     }
     Call ascend_copy = GetRef<Call>(op);
 
-    // Extract the two tl.region callNodes for src and dst
+    // Extract the two tl.region CallNodes for src and dst
     Call src_region = Downcast<Call>(ascend_copy->args[0]);
     Call dst_region = Downcast<Call>(ascend_copy->args[1]);
     ICHECK(Downcast<Op>(src_region->op)->name == "tl.region")

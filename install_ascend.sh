@@ -124,7 +124,7 @@ echo "Cloning TVM repository and initializing submodules..."
 # clone and build tvm
 git submodule update --init --recursive
 
-# 根据增量编译选项决定是否清理build目录
+# 根据增量编译选项决定是否清理 build 目录
 if $INCREMENTAL_BUILD; then
     if [ -d build ]; then
         echo "Using existing build directory for incremental build..."
