@@ -54,11 +54,22 @@ jobs:
     env:
       FULL_BUILD: ${{ github.event_name == 'schedule' || github.event.inputs.full_build == 'true' }}
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - name: Configure git for unstable network
+        run: |
+          git config --global http.postBuffer 524288000    # 500MB buffer
+          git config --global http.lowSpeedLimit 1000      # 低于 1KB/s 超时
+          git config --global http.lowSpeedTime 30         # 30秒低速超时
+          git config --global core.compression 0           # 传输时不压缩，减少 CPU 瓶颈
+
+      - name: Checkout code (with retry)
+        uses: Wandalen/wretry.action@v3
         with:
-          submodules: false
-          fetch-depth: 0
+          action: actions/checkout@v4
+          attempt_limit: 3          # 最多重试 3 次
+          attempt_delay: 30000      # 每次间隔 30 秒（毫秒）
+          with: |
+            submodules: false
+            fetch-depth: 0
 
       - name: Check if skip pytest
         id: check_skip_pytest
