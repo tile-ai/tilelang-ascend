@@ -58,6 +58,7 @@ private:
   // inner).
   std::vector<const VarNode *> current_loop_vars_;
   std::vector<int64_t> current_loop_extents_;
+  std::vector<PrimExpr> current_loop_mins_;
 
   // Statements that need to be hoisted before the outermost parallel loop
   // (copy / reshape / brc).
@@ -124,21 +125,45 @@ private:
     return expr.as<IntImmNode>() || expr.as<FloatImmNode>();
   }
 
+  bool UsesLoopVar(const PrimExpr &expr, const VarNode *loop_var) {
+    return tir::UsesVar(expr,
+                        [loop_var](const VarNode *v) { return v == loop_var; });
+  }
+
+  bool ContainsAnyLoopVar(const PrimExpr &expr,
+                          const std::vector<const VarNode *> &loop_vars) {
+    for (auto lv : loop_vars) {
+      if (UsesLoopVar(expr, lv))
+        return true;
+    }
+    return false;
+  }
+
+  int FindMappedLoopVar(const PrimExpr &expr,
+                        const std::vector<const VarNode *> &loop_vars) {
+    int mapped = -1;
+    for (int i = 0; i < static_cast<int>(loop_vars.size()); ++i) {
+      if (!UsesLoopVar(expr, loop_vars[i]))
+        continue;
+      if (mapped != -1)
+        return -2;
+      mapped = i;
+    }
+    return mapped;
+  }
+
   bool IsLoopInvariant(const Array<PrimExpr> &indices,
                        const std::vector<const VarNode *> &loop_vars) {
     for (const auto &idx : indices) {
-      if (auto var = idx.as<VarNode>()) {
-        for (auto lv : loop_vars) {
-          if (lv == var)
-            return false;
-        }
-      }
+      if (ContainsAnyLoopVar(idx, loop_vars))
+        return false;
     }
     return true;
   }
 
-  bool IsScalarLike(const PrimExpr &expr,
-                    const std::vector<const VarNode *> &loop_vars) {
+  bool
+  IsLoopInvariantScalarLike(const PrimExpr &expr,
+                            const std::vector<const VarNode *> &loop_vars) {
     if (IsScalar(expr))
       return true;
     if (auto var = expr.as<VarNode>()) {
@@ -152,17 +177,10 @@ private:
     return false;
   }
 
-  // Each component of indices must be either an integer constant or an integer
-  // variable.
   bool ValidBufferIndices(const Array<PrimExpr> &indices) {
     for (const auto &idx : indices) {
-      if (idx.as<IntImmNode>())
-        continue;
-      if (auto var = idx.as<VarNode>()) {
-        if (var->dtype.is_int())
-          continue;
-      }
-      return false;
+      if (!idx.dtype().is_int())
+        return false;
     }
     return true;
   }
@@ -287,6 +305,35 @@ private:
     return Call(DataType::Handle(), Op::Get("tl.region"), args);
   }
 
+  std::vector<PrimExpr> MakeZeroOffsets(int n) {
+    std::vector<PrimExpr> v;
+    v.reserve(n);
+    for (int i = 0; i < n; i++)
+      v.push_back(make_const(DataType::Int(32), 0));
+    return v;
+  }
+
+  Array<PrimExpr> ToShapeExpr(const std::vector<int64_t> &shape) {
+    Array<PrimExpr> arr;
+    for (auto v : shape)
+      arr.push_back(make_const(DataType::Int(32), v));
+    return arr;
+  }
+
+  std::vector<int64_t>
+  GetAlignedLoopShape(const BufferAccessInfo &ref,
+                      const std::vector<const VarNode *> &loop_vars,
+                      const std::vector<int64_t> &loop_extents) {
+    int ndim = ref.indices.size();
+    std::vector<int64_t> shape(ndim, 1);
+    for (int i = 0; i < ndim; ++i) {
+      int mapped = FindMappedLoopVar(ref.indices[i], loop_vars);
+      if (mapped >= 0)
+        shape[i] = loop_extents[mapped];
+    }
+    return shape;
+  }
+
   // ============================================================
   // NPUIR instruction construction
   // ============================================================
@@ -357,16 +404,8 @@ private:
     int N = loop_vars.size();
     info.index_to_loop.assign(load->indices.size(), -1);
 
-    for (int i = 0; i < (int)load->indices.size(); i++) {
-      if (auto var = load->indices[i].as<VarNode>()) {
-        for (int j = 0; j < N; j++) {
-          if (loop_vars[j] == var) {
-            info.index_to_loop[i] = j;
-            break;
-          }
-        }
-      }
-    }
+    for (int i = 0; i < (int)load->indices.size(); i++)
+      info.index_to_loop[i] = FindMappedLoopVar(load->indices[i], loop_vars);
 
     std::set<int> used(info.index_to_loop.begin(), info.index_to_loop.end());
     used.erase(-1);
@@ -420,7 +459,7 @@ private:
 
     // 1. local_buf: copy from the original buffer into a local-scope buffer.
     Buffer local_buf =
-        CreateTempBufferWithShape(to_shape_expr(rbi.src_sizes),
+        CreateTempBufferWithShape(ToShapeExpr(rbi.src_sizes),
                                   load->buffer->dtype, "local_src_buf", scope);
     tmp_buffers.push_back(local_buf);
 
@@ -431,7 +470,7 @@ private:
                                 ? make_const(DataType::Int(32), 0)
                                 : load->indices[i]);
 
-    auto local_offsets = make_zero_offsets((int)rbi.src_sizes.size());
+    auto local_offsets = MakeZeroOffsets((int)rbi.src_sizes.size());
 
     hoisted_stmts_.push_back(
         Evaluate(Call(DataType::Void(), Op::Get("tl.copy"),
@@ -460,7 +499,7 @@ private:
         "reshape_view_buf", scope);
     tmp_buffers.push_back(view_buf);
 
-    auto view_offsets = make_zero_offsets(out_dim);
+    auto view_offsets = MakeZeroOffsets(out_dim);
 
     hoisted_stmts_.push_back(Evaluate(
         Call(DataType::Void(), Op::Get("tl.npuir_reshape"),
@@ -487,18 +526,56 @@ private:
     }
 
     // 3. brc_buf: broadcast view_buf to aligned_brc_shape.
-    Buffer brc_buf = CreateTempBufferWithShape(to_shape_expr(aligned_brc_shape),
+    Buffer brc_buf = CreateTempBufferWithShape(ToShapeExpr(aligned_brc_shape),
                                                load->buffer->dtype, "brc_buf",
                                                scope, op_name);
     tmp_buffers.push_back(brc_buf);
 
-    auto brc_offsets = make_zero_offsets(out_dim);
+    auto brc_offsets = MakeZeroOffsets(out_dim);
     hoisted_stmts_.push_back(
         Evaluate(Call(DataType::Void(), Op::Get("tl.npuir_brc"),
                       {RegionND(view_buf, view_offsets, 1, aligned_view_shape),
                        RegionND(brc_buf, brc_offsets, 2, aligned_brc_shape)})));
 
     return {brc_buf, output_ref.indices, true};
+  }
+
+  std::optional<BufferAccessInfo>
+  EmitLoopVarArange(const VarNode *loop_var, const BufferAccessInfo &output_ref,
+                    const std::vector<const VarNode *> &loop_vars,
+                    const std::vector<int64_t> &loop_extents) {
+    int loop_idx = -1;
+    for (int i = 0; i < static_cast<int>(loop_vars.size()); ++i) {
+      if (loop_vars[i] == loop_var) {
+        loop_idx = i;
+        break;
+      }
+    }
+    if (loop_idx < 0)
+      return std::nullopt;
+
+    std::vector<int64_t> aligned_shape =
+        GetAlignedLoopShape(output_ref, loop_vars, loop_extents);
+    Buffer arange_buf =
+        CreateTempBufferWithShape(ToShapeExpr(aligned_shape), DataType::Int(32),
+                                  "arange_buf", output_ref.buffer.scope());
+    tmp_buffers.push_back(arange_buf);
+
+    auto zero_offsets = MakeZeroOffsets(static_cast<int>(aligned_shape.size()));
+    Array<PrimExpr> args = {
+        RegionND(arange_buf, zero_offsets, 2, aligned_shape)};
+    for (int i = 0; i < static_cast<int>(output_ref.indices.size()); ++i) {
+      int mapped = FindMappedLoopVar(output_ref.indices[i], loop_vars);
+      args.push_back(make_const(DataType::Int(32), mapped == loop_idx ? 1 : 0));
+    }
+
+    PrimExpr offset = loop_idx < static_cast<int>(current_loop_mins_.size())
+                          ? current_loop_mins_[loop_idx]
+                          : make_const(DataType::Int(32), 0);
+    args.push_back(offset);
+    hoisted_stmts_.push_back(
+        Evaluate(Call(DataType::Void(), Op::Get("tl.npuir_arange"), args)));
+    return BufferAccessInfo{arange_buf, output_ref.indices, true};
   }
 
   // ============================================================
@@ -516,12 +593,26 @@ private:
                  const std::vector<int64_t> &loop_extents, Array<Stmt> *stmts,
                  const std::string &op_name = "") {
 
-    if (IsScalarLike(operand, loop_vars))
+    if (IsLoopInvariantScalarLike(operand, loop_vars))
       return std::nullopt;
+
+    if (auto var = operand.as<VarNode>()) {
+      auto materialized =
+          EmitLoopVarArange(var, output_ref, loop_vars, loop_extents);
+      if (materialized) {
+        tmp_bufs->push_back(*materialized);
+        return materialized;
+      }
+      return std::nullopt;
+    }
 
     if (auto load = operand.as<BufferLoadNode>()) {
       if (!ValidBufferIndices(load->indices))
         return std::nullopt;
+      for (const auto &idx : load->indices) {
+        if (FindMappedLoopVar(idx, loop_vars) == -2)
+          return std::nullopt;
+      }
       auto rbi = CheckNeedsReshapeBrc(load, loop_vars, loop_extents,
                                       (int)output_ref.indices.size());
       if (rbi.needed) {
@@ -664,7 +755,7 @@ private:
                 "npuir_add") -> std::optional<BufferAccessInfo> {
       // Case 1: simple scalar (IntImm/FloatImm/VarNode/loop-invariant
       // BufferLoad)
-      if (IsScalarLike(e, loop_vars)) {
+      if (IsLoopInvariantScalarLike(e, loop_vars)) {
         auto tmp = CreateTempBuffer(output_ref, tmp_op);
         tmp_bufs->push_back(tmp);
         stmts->push_back(BuildUnaryStmt("Broadcast", e, tmp));
@@ -749,7 +840,20 @@ private:
       return true;
     }
 
-    if (IsScalarLike(expr, loop_vars)) {
+    if (expr.as<VarNode>()) {
+      DepthGuard guard(depth);
+      auto resolved = ResolveOperand(expr, output_ref, tmp_bufs, loop_vars,
+                                     loop_extents, stmts);
+      if (!resolved)
+        return false;
+      stmts->push_back(
+          BuildNpuirCall("Copy", {BuildRegionCall(*resolved, 1, 1),
+                                  BuildRegionCall(output_ref, 2, 1)}));
+      guard.commit();
+      return true;
+    }
+
+    if (IsLoopInvariantScalarLike(expr, loop_vars)) {
       DepthGuard guard(depth);
       stmts->push_back(BuildUnaryStmt("Broadcast", expr, output_ref));
       guard.commit();
@@ -862,6 +966,7 @@ private:
     bool is_outermost = current_loop_vars_.empty();
     current_loop_vars_.push_back(op->loop_var.get());
     current_loop_extents_.push_back(ext_imm->value);
+    current_loop_mins_.push_back(op->min);
 
     Stmt result;
     if (!op->body.as<BufferStoreNode>()) {
@@ -876,6 +981,7 @@ private:
 
     current_loop_vars_.pop_back();
     current_loop_extents_.pop_back();
+    current_loop_mins_.pop_back();
 
     // After processing the outermost parallel loop, prepend all hoisted
     // statements before it.
@@ -1287,11 +1393,8 @@ using namespace tir::transform;
 tvm::transform::Pass NpuLoopVectorize() {
   auto pass_func = [=](PrimFunc f, IRModule m, PassContext ctx) {
     auto *new_pf = f.CopyOnWrite();
-    LOG(INFO) << new_pf->body;
     new_pf->body = LoopDecompose()(std::move(new_pf->body));
-    LOG(INFO) << new_pf->body;
     new_pf->body = LoopVectorize()(std::move(new_pf->body));
-    LOG(INFO) << new_pf->body;
     return f;
   };
   return CreatePrimFuncPass(pass_func, 0, "tl.NpuLoopVectorize", {});
