@@ -177,19 +177,35 @@ jobs:
                 exit 1
               fi
             "
-      # 全量编译下先删除旧缓存，否则 save 会失败
       - name: Delete old cache for overwrite
         if: always() && env.FULL_BUILD == 'true'
         run: |
-          KEY="${{ steps.cache-build.outputs.cache-matched-key }}"
+          # 直接计算 key，而不是依赖可能不存在的 restore 步骤输出
+          KEY="tilelang-build-${{ github.base_ref || github.ref_name }}-${{ hashFiles('CMakeLists.txt', 'requirements.txt', 'install_ascend.sh') }}"
           echo "🗑️ Deleting old cache to allow overwrite: $KEY"
-          curl -s -L \
-            -X DELETE \
+          
+          # 先查询获取 cache ID
+          CACHE_LIST=$(curl -s -L \
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
-            "https://api.github.com/repos/${{ github.repository }}/actions/caches?key=$KEY&ref=${{ github.ref }}"
-          echo "✅ Old cache deleted (if existed)"
+            "https://api.github.com/repos/${{ github.repository }}/actions/caches?key=$KEY&ref=${{ github.ref }}")
+          
+          # 提取 cache ID 并删除
+          CACHE_ID=$(echo "$CACHE_LIST" | jq -r '.actions_caches[0].id // empty')
+          
+          if [ -n "$CACHE_ID" ]; then
+            echo "Found cache ID: $CACHE_ID, deleting..."
+            curl -s -L \
+              -X DELETE \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/${{ github.repository }}/actions/caches/$CACHE_ID"
+            echo "✅ Old cache deleted"
+          else
+            echo "ℹ️ No existing cache found for key: $KEY"
+          fi
         continue-on-error: true
       
       # 全量编 | 增量编但无缓存，需要保存缓存
