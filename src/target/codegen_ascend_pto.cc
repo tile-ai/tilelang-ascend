@@ -3022,7 +3022,7 @@ void CodeGenTileLangAscendPto::SelectCodegen(const CallNode *op) {
                    << temp_name << ");\n";
     } else {
       this->stream << op_name << "(" << dst_temp_name << ", " << mask_name
-                   << ", " << src0_temp_name << ", " << temp_name << ", " 
+                   << ", " << src0_temp_name << ", " << temp_name << ", "
                    << src1_name << ");\n";
     }
 
@@ -3030,12 +3030,12 @@ void CodeGenTileLangAscendPto::SelectCodegen(const CallNode *op) {
     this->PrintIndent();
     if (op_name == "TSEL") {
       this->stream << op_name << "(" << dst_shape_info.ub_name << ", "
-                << mask_name << ", " << src0_shape_info.ub_name << ", "
-                << src1_name << ", " << temp_name << ");\n";
+                   << mask_name << ", " << src0_shape_info.ub_name << ", "
+                   << src1_name << ", " << temp_name << ");\n";
     } else {
       this->stream << op_name << "(" << dst_shape_info.ub_name << ", "
-                << mask_name << ", " << src0_shape_info.ub_name << ", "
-                << temp_name << ", " << src1_name << ");\n";
+                   << mask_name << ", " << src0_shape_info.ub_name << ", "
+                   << temp_name << ", " << src1_name << ");\n";
     }
   }
 }
