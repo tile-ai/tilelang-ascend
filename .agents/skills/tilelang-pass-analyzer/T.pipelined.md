@@ -88,7 +88,7 @@ for i in T.Pipelined(cross_core_proc_num, num_stages=2):
 
 → **CrossCorePipeline** 按 Cube/Vector scope 拆分 stage，扩展 workspace buffer 维度。
 
-**详细设计见：** [pipeline_planning & Inject_pipeline_design.md](./pipeline_planning%20&%20inject_pipeline_design.md)
+**详细设计见：** [pipeline_planning & Inject_pipeline_design.md](./references/pass-designs/pipeline_planning%20&%20inject_pipeline_design.md)
 
 ### 核内流水线
 
@@ -103,7 +103,7 @@ for k in T.Pipelined(loop_k, num_stages=2):
 
 → **PipelinePlanning** 分配 stage/order → **InjectSoftwarePipeline** 生成 prologue/body/epilogue 三段式。
 
-**详细设计见：** [inter-core_pipeline.md](https://wiki.huawei.com/domains/3822/wiki/285455/WIKI2026042010832813)
+**详细设计见：** [pipeline_planning & inject_pipeline_design.md](./references/pass-designs/pipeline_planning%20&%20inject_pipeline_design.md)
 
 ---
 

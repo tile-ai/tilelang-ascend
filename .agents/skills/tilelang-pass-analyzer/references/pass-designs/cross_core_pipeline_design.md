@@ -480,7 +480,7 @@ def kernel(...):
 
 ### 与其他 Pass 的协作
 
-**整体 Pass 执行顺序见：** [T.Pipelined.md](./T.pipelined.md)
+**整体 Pass 执行顺序见：** [T.Pipelined.md](../../T.pipelined.md)
 
 CrossCorePipeline 输出信息及下游消费关系：
 
