@@ -139,7 +139,7 @@ jobs:
               if [ -d build-cache ] && [ \"\$(ls -A build-cache)\" ]; then
                 echo \"Copy build cache...\"
                 mkdir -p build
-                cp -r build-cache/* build/ 
+                cp -ra build-cache/* build/ 
               fi
 
               # 1. 增量编译项目
