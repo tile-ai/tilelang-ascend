@@ -2992,17 +2992,18 @@ void CodeGenTileLangAscendPto::SelectCodegen(const CallNode *op) {
   ShapeInfo dst_shape_info = GetSliceInfo(op->args[0].as<CallNode>());
 
   std::string mask_name = PrintBufferOffset(op->args[1].as<CallNode>());
+  std::string temp_name = PrintBufferOffset(op->args[3].as<CallNode>());
   std::string src1_name;
   std::string op_name;
 
   std::string src0_type = src0_shape_info.type;
 
-  int src1_type = std::stoi(PrintExpr(op->args[3]));
+  int src1_type = std::stoi(PrintExpr(op->args[4]));
   if (src1_type == 2) {
-    src1_name = PrintBufferOffset(op->args[4].as<CallNode>());
+    src1_name = PrintBufferOffset(op->args[5].as<CallNode>());
     op_name = "TSEL";
   } else if (src1_type == 1) {
-    src1_name = PrintExpr(op->args[4]);
+    src1_name = PrintExpr(op->args[5]);
     op_name = "TSELS";
   } else {
     LOG(FATAL) << "CodeGenAscendPto: Select currently only supports "
@@ -3015,13 +3016,25 @@ void CodeGenTileLangAscendPto::SelectCodegen(const CallNode *op) {
     CreateUbVariableND(src0_temp_name, src0_shape_info);
     CreateUbVariableND(dst_temp_name, dst_shape_info);
     this->PrintIndent();
-    this->stream << op_name << "(" << dst_temp_name << ", " << mask_name << ", "
-                 << src0_temp_name << ", " << src1_name << ");\n";
+    if (op_name == "TSEL") {
+        this->stream << op_name << "(" << dst_temp_name << ", " << mask_name << ", "
+           << src0_temp_name << ", " << src1_name << ", " << temp_name << ");\n";
+    } else {
+        this->stream << op_name << "(" << dst_temp_name << ", " << mask_name << ", "
+           << src0_temp_name << ", " << temp_name << ", " << src1_name << ");\n";
+    }
+
   } else {
     this->PrintIndent();
-    this->stream << op_name << "(" << dst_shape_info.ub_name << ", "
-                 << mask_name << ", " << src0_shape_info.ub_name << ", "
-                 << src1_name << ");\n";
+    if (op_name == "TSEL") {
+      this->stream << op_name << "(" << dst_shape_info.ub_name << ", "
+              << mask_name << ", " << src0_shape_info.ub_name << ", "
+              << src1_name << ", " << temp_name << ");\n";
+    } else {
+        this->stream << op_name << "(" << dst_shape_info.ub_name << ", "
+              << mask_name << ", " << src0_shape_info.ub_name << ", "
+              << temp_name << ", " << src1_name << ");\n";
+    }
   }
 }
 

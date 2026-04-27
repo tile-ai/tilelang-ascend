@@ -835,6 +835,22 @@ private:
           };
           shape_size = tmp_shape_size;
         }
+      } else if (call->op.same_as(tl::ascend_select())) {
+        const CallNode *src_access_ptr = Downcast<Call>(call->args[0]).get();
+        if (shape_size == 0) {
+          std::string src_buffer_name =
+              src_access_ptr->args[1].as<VarNode>()->name_hint;
+          const BufferNode *src_buffer_node =
+              GetBufferNodeByName_(alloc_buffers, src_buffer_name);
+          int64_t tmp_shape_size =
+              Downcast<IntImm>(src_access_ptr->args[3])->value *
+              src_buffer_node->dtype.bytes() / 2;
+          Array<PrimExpr> tmp_shape;
+          shape = {
+              IntImm(DataType::Int(32), tmp_shape_size),
+          };
+          shape_size = tmp_shape_size;
+        }
       }
     }
     return shape;
