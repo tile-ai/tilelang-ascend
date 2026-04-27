@@ -716,7 +716,7 @@ bool NeedsVidReduction(const Buffer &buffer) const {
     }
     Call ascend_copy = GetRef<Call>(op);
 
-    // Extract the two tl.region CallNodes for src and dst
+    // Extract the two tl.region callNodes for src and dst
     Call src_region = Downcast<Call>(ascend_copy->args[0]);
     Call dst_region = Downcast<Call>(ascend_copy->args[1]);
     ICHECK(Downcast<Op>(src_region->op)->name == "tl.region")
