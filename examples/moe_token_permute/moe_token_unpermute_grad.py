@@ -53,7 +53,9 @@ def _auto_tile_t(total: int, num_cores: int) -> int:
     return max(1, total // num_cores)
 
 
-def _auto_launch_cores_for_probs(num_tokens: int, hidden_size: int, num_cores: int) -> int:
+def _auto_launch_cores_for_probs(
+    num_tokens: int, hidden_size: int, num_cores: int
+) -> int:
     if num_tokens <= 64 and hidden_size <= 256:
         return 1
     if num_tokens <= 256 and hidden_size <= 512:
@@ -64,7 +66,9 @@ def _auto_launch_cores_for_probs(num_tokens: int, hidden_size: int, num_cores: i
 def _pad_first_dim(tensor: torch.Tensor, target_rows: int) -> torch.Tensor:
     if tensor.shape[0] >= target_rows:
         return tensor
-    out = torch.zeros((target_rows, *tensor.shape[1:]), dtype=tensor.dtype, device=tensor.device)
+    out = torch.zeros(
+        (target_rows, *tensor.shape[1:]), dtype=tensor.dtype, device=tensor.device
+    )
     out[: tensor.shape[0]] = tensor
     return out
 
@@ -72,7 +76,9 @@ def _pad_first_dim(tensor: torch.Tensor, target_rows: int) -> torch.Tensor:
 def _pad_last_dim(tensor: torch.Tensor, target_cols: int) -> torch.Tensor:
     if tensor.shape[-1] >= target_cols:
         return tensor
-    out = torch.zeros((*tensor.shape[:-1], target_cols), dtype=tensor.dtype, device=tensor.device)
+    out = torch.zeros(
+        (*tensor.shape[:-1], target_cols), dtype=tensor.dtype, device=tensor.device
+    )
     out[..., : tensor.shape[-1]] = tensor
     return out
 
@@ -124,7 +130,7 @@ def _build_scatter_kernel_no_probs(
         ):
             with T.Kernel(actual_cores, is_npu=True) as (cid, vid):
                 idx_ub = T.alloc_ub([1, TILE_E], idx_dtype)
-                row_buf = T.alloc_ub([B, HALF_H], dtype)  # ← 改: 3D → 2D
+                row_buf = T.alloc_ub([B, HALF_H], dtype)
 
                 with T.Scope("V"):
                     for t_local in T.serial(tiles_per_core):
@@ -142,13 +148,19 @@ def _build_scatter_kernel_no_probs(
                                     for lane in T.serial(B):
                                         row = e_base + ei + lane
                                         if row < E:
-                                            T.copy(out_grad_gm[row, h_off], row_buf[lane, :])  # ← 改
+                                            T.copy(
+                                                out_grad_gm[row, h_off],
+                                                row_buf[lane, :],
+                                            )
                                     T.barrier_all()
                                     for lane in T.serial(B):
                                         row = e_base + ei + lane
                                         if row < E:
                                             dst = idx_ub[0, ei + lane]
-                                            T.copy(row_buf[lane, :], perm_grad_gm[dst, h_off])  # ← 改
+                                            T.copy(
+                                                row_buf[lane, :],
+                                                perm_grad_gm[dst, h_off],
+                                            )
                                     T.barrier_all()
 
                             remainder = TILE_E % B
@@ -159,14 +171,28 @@ def _build_scatter_kernel_no_probs(
                                     dst = idx_ub[0, ei]
                                     for ht in T.serial(n_htiles):
                                         h_off = ht * TILE_H + vid * HALF_H
-                                        T.copy(out_grad_gm[row, h_off], row_buf[0, :])  # ← 改
+                                        T.copy(out_grad_gm[row, h_off], row_buf[0, :])
                                         T.barrier_all()
-                                        T.copy(row_buf[0, :], perm_grad_gm[dst, h_off])  # ← 改
+                                        T.copy(row_buf[0, :], perm_grad_gm[dst, h_off])
                                         T.barrier_all()
 
         return moe_token_unpermute_grad
 
-    return _build(E, hidden_size, padded_E, n_etiles, tiles_per_core, actual_cores, n_htiles, TILE_E, TILE_H, dtype, idx_dtype, HALF_H, B)
+    return _build(
+        E,
+        hidden_size,
+        padded_E,
+        n_etiles,
+        tiles_per_core,
+        actual_cores,
+        n_htiles,
+        TILE_E,
+        TILE_H,
+        dtype,
+        idx_dtype,
+        HALF_H,
+        B,
+    )
 
 
 def _build_grad_kernel_with_probs(
@@ -201,13 +227,7 @@ def _build_grad_kernel_with_probs(
     tokens_per_core = int(math.ceil(num_tokens / actual_cores))
     HALF_H = TILE_H // 2
 
-    if topK >= 8:
-        B = 8
-    elif topK >= 4:
-        B = 4
-    else:
-        B = 2
-    B = min(B, topK)
+    B = min(8, topK)
     n_groups = topK // B
     remainder = topK % B
 
@@ -232,7 +252,7 @@ def _build_grad_kernel_with_probs(
         remainder,
     ):
 
-        perm_buf_shape = [B, HALF_H]  # ← 改 1: 3D → 2D
+        perm_buf_shape = [B, HALF_H]
 
         @T.macro
         def emit_lane(
@@ -248,7 +268,7 @@ def _build_grad_kernel_with_probs(
             mul_buf,
             out_tmp,
             reduce_dst,
-            pg_acc,  # ← 改 2: 删掉 reduce_tmp 参数
+            pg_acc,
             perm_grad_gm,
         ):
             dst = idx_ub[0, k_idx]
@@ -264,10 +284,10 @@ def _build_grad_kernel_with_probs(
             T.copy(out_tmp, perm_grad_gm[dst, h_off])
             T.set_flag("mte3", "v", 2)
 
-            T.copy(perm_buf[lane_idx, :], perm_tmp)  # ← 改 3: [lane_idx,:,:] → [lane_idx,:]
+            T.copy(perm_buf[lane_idx, :], perm_tmp)
             T.tile.cast(perm_f32, perm_tmp, CAST_LOW2HIGH, HALF_H)
             T.tile.mul(mul_buf, grad_f32, perm_f32)
-            T.reduce_sum(mul_buf, reduce_dst, dim=-1)  # ← 改 4: 删掉 reduce_tmp 实参
+            T.reduce_sum(mul_buf, reduce_dst, dim=-1)
             pg_acc[0, k_idx] = pg_acc[0, k_idx] + reduce_dst[0, 0]
 
         @T.prim_func
@@ -290,7 +310,6 @@ def _build_grad_kernel_with_probs(
                 perm_f32 = T.alloc_ub([1, HALF_H], acc_dtype)
                 mul_buf = T.alloc_ub([1, HALF_H], acc_dtype)
                 out_tmp = T.alloc_ub([1, HALF_H], dtype)
-                # ← 改 5: 删除 reduce_tmp = T.alloc_ub((3 * 4 * HALF_H,), "uint8") 这一行
                 reduce_dst = T.alloc_ub([1, 1], acc_dtype)
                 pg_acc = T.alloc_ub([1, topK], acc_dtype)
 
@@ -318,7 +337,10 @@ def _build_grad_kernel_with_probs(
                                     k_base = g * B
                                     for lane in T.serial(B):
                                         dst = idx_ub[0, k_base + lane]
-                                        T.copy(perm_tokens_gm[dst, h_off], perm_buf[lane, :])  # ← 改 6
+                                        T.copy(
+                                            perm_tokens_gm[dst, h_off],
+                                            perm_buf[lane, :],
+                                        )
                                     T.set_flag("mte2", "v", 3)
                                     T.wait_flag("mte2", "v", 3)
 
@@ -336,7 +358,7 @@ def _build_grad_kernel_with_probs(
                                             mul_buf,
                                             out_tmp,
                                             reduce_dst,
-                                            pg_acc,  # ← 改 7: 删掉 reduce_tmp 实参
+                                            pg_acc,
                                             perm_grad_gm,
                                         )
 
@@ -345,7 +367,9 @@ def _build_grad_kernel_with_probs(
                                     for r in T.serial(remainder):
                                         rk = r_base + r
                                         dst = idx_ub[0, rk]
-                                        T.copy(perm_tokens_gm[dst, h_off], perm_buf[0, :])  # ← 改 8
+                                        T.copy(
+                                            perm_tokens_gm[dst, h_off], perm_buf[0, :]
+                                        )
                                         T.set_flag("mte2", "v", 3)
                                         T.wait_flag("mte2", "v", 3)
                                         emit_lane(
@@ -361,7 +385,7 @@ def _build_grad_kernel_with_probs(
                                             mul_buf,
                                             out_tmp,
                                             reduce_dst,
-                                            pg_acc,  # ← 改 9: 删掉 reduce_tmp 实参
+                                            pg_acc,
                                             perm_grad_gm,
                                         )
 
@@ -441,7 +465,6 @@ def _build_grad_kernel_with_probs_f32(
                 grad_buf = T.alloc_shared([1, TILE_H], dtype)
                 perm_buf = T.alloc_shared([1, TILE_H], dtype)
                 mul_buf = T.alloc_shared([1, TILE_H], dtype)
-                # ← 改: 删除 reduce_tmp = T.alloc_shared((3 * 4 * TILE_H,), "uint8") 这一行
                 reduce_dst = T.alloc_shared([1, 1], dtype)
                 pg_acc = T.alloc_shared([1, topK], dtype)
 
@@ -468,7 +491,7 @@ def _build_grad_kernel_with_probs_f32(
                                 T.copy(mul_buf, perm_grad_gm[dst_idx, h_off])
 
                                 T.tile.mul(mul_buf, grad_buf, perm_buf)
-                                T.reduce_sum(mul_buf, reduce_dst, dim=-1)  # ← 改: 删掉 reduce_tmp 实参
+                                T.reduce_sum(mul_buf, reduce_dst, dim=-1)
                                 pg_acc[0, k] = pg_acc[0, k] + reduce_dst[0, 0]
 
                         T.copy(pg_acc, probs_grad_gm[i, 0])
@@ -476,7 +499,18 @@ def _build_grad_kernel_with_probs_f32(
         return moe_token_unpermute_grad
 
     return _build(
-        num_tokens, topK, hidden_size, E, padded_tokens, padded_E, actual_cores, n_htiles, TILE_H, dtype, idx_dtype, tokens_per_core
+        num_tokens,
+        topK,
+        hidden_size,
+        E,
+        padded_tokens,
+        padded_E,
+        actual_cores,
+        n_htiles,
+        TILE_H,
+        dtype,
+        idx_dtype,
+        tokens_per_core,
     )
 
 
@@ -576,32 +610,44 @@ class MoeTokenUnpermuteGrad:
         self._compile_hidden_size = max(hidden_size, min_compile_h)
         compile_tile_h = TILE_H if TILE_H is None else max(TILE_H, min_compile_h)
 
-        self._kernel, self._padded_tokens, self._padded_E, self._actual_cores = _compile_grad(
-            num_tokens,
-            topK,
-            self._compile_hidden_size,
-            has_probs=has_probs,
-            NUM_CORES=NUM_CORES,
-            TILE_T=TILE_T,
-            TILE_H=compile_tile_h,
-            dtype=dtype,
+        self._kernel, self._padded_tokens, self._padded_E, self._actual_cores = (
+            _compile_grad(
+                num_tokens,
+                topK,
+                self._compile_hidden_size,
+                has_probs=has_probs,
+                NUM_CORES=NUM_CORES,
+                TILE_T=TILE_T,
+                TILE_H=compile_tile_h,
+                dtype=dtype,
+            )
         )
 
-    def __call__(self, permuted_tokens, unpermuted_tokens_grad, sorted_indices, probs=None):
+    def __call__(
+        self, permuted_tokens, unpermuted_tokens_grad, sorted_indices, probs=None
+    ):
         if self._kernel is None:
             raise RuntimeError("tilelang not installed")
 
         indices_padded_2d = _pad_first_dim(sorted_indices, self._padded_E).unsqueeze(0)
         permuted_tokens_in = _pad_last_dim(permuted_tokens, self._compile_hidden_size)
-        unperm_grad_in = _pad_last_dim(unpermuted_tokens_grad, self._compile_hidden_size)
+        unperm_grad_in = _pad_last_dim(
+            unpermuted_tokens_grad, self._compile_hidden_size
+        )
 
         if self.has_probs:
             assert probs is not None
             probs_padded = _pad_first_dim(probs, self._padded_tokens)
-            perm_grad, probs_grad_raw = self._kernel(permuted_tokens_in, unperm_grad_in, indices_padded_2d, probs_padded)
+            perm_grad, probs_grad_raw = self._kernel(
+                permuted_tokens_in, unperm_grad_in, indices_padded_2d, probs_padded
+            )
             perm_grad = perm_grad[:, : self.hidden_size].contiguous()
 
-            probs_grad = probs_grad_raw[0] + probs_grad_raw[1] if probs_grad_raw.dim() == 3 else probs_grad_raw
+            probs_grad = (
+                probs_grad_raw[0] + probs_grad_raw[1]
+                if probs_grad_raw.dim() == 3
+                else probs_grad_raw
+            )
             probs_grad = probs_grad[: self.num_tokens, : self.topK]
             if probs_grad.dtype != probs.dtype:
                 probs_grad = probs_grad.to(probs.dtype)
@@ -616,7 +662,7 @@ class MoeTokenUnpermuteGrad:
 
 def test_unpermute_grad_parameterized(pt_dtype, tl_dtype_str):
     print(f"\n{'=' * 65}")
-    print(f"开始测试 MoeTokenUnpermuteGrad, 数据类型: {tl_dtype_str.upper()}")
+    print(f"Testing MoeTokenUnpermuteGrad, dtype: {tl_dtype_str.upper()}")
     print(f"{'=' * 65}")
 
     torch.manual_seed(42)
@@ -680,29 +726,37 @@ def test_unpermute_grad_parameterized(pt_dtype, tl_dtype_str):
         probs=probs.detach(),
     )
 
-    print(f"\n>>> 验证 permuted_tokens_grad (形状: [{E}, {hidden_size}])")
-    print(f"    ref shape: {ref_permuted_tokens_grad.shape}, tl shape: {tl_permuted_tokens_grad.shape}")
+    print(f"\n>>> Verifying permuted_tokens_grad (shape: [{E}, {hidden_size}])")
+    print(
+        f"    ref shape: {ref_permuted_tokens_grad.shape}, tl shape: {tl_permuted_tokens_grad.shape}"
+    )
 
     try:
         torch.testing.assert_close(tl_permuted_tokens_grad, ref_permuted_tokens_grad)
-        print(f"    [PASS] {tl_dtype_str.upper()} permuted_tokens_grad 精度测试通过！")
+        print(
+            f"    [PASS] {tl_dtype_str.upper()} permuted_tokens_grad precision test passed!"
+        )
     except Exception as e:
-        print(f"    [FAILED] {tl_dtype_str.upper()} permuted_tokens_grad 精度测试失败！")
-        max_diff = (tl_permuted_tokens_grad - ref_permuted_tokens_grad).abs().max().item()
-        print(f"    最大绝对误差: {max_diff}")
+        print(
+            f"    [FAILED] {tl_dtype_str.upper()} permuted_tokens_grad precision test failed!"
+        )
+        max_diff = (
+            (tl_permuted_tokens_grad - ref_permuted_tokens_grad).abs().max().item()
+        )
+        print(f"    Max absolute error: {max_diff}")
         print(e)
         all_passed = False
 
-    print(f"\n>>> 验证 probs_grad (形状: [{num_tokens}, {topk}])")
+    print(f"\n>>> Verifying probs_grad (shape: [{num_tokens}, {topk}])")
     print(f"    ref shape: {ref_probs_grad.shape}, tl shape: {tl_probs_grad.shape}")
 
     try:
         torch.testing.assert_close(tl_probs_grad, ref_probs_grad)
-        print(f"    [PASS] {tl_dtype_str.upper()} probs_grad 精度测试通过！")
+        print(f"    [PASS] {tl_dtype_str.upper()} probs_grad precision test passed!")
     except Exception as e:
-        print(f"    [FAILED] {tl_dtype_str.upper()} probs_grad 精度测试失败！")
+        print(f"    [FAILED] {tl_dtype_str.upper()} probs_grad precision test failed!")
         max_diff = (tl_probs_grad - ref_probs_grad).abs().max().item()
-        print(f"    最大绝对误差: {max_diff}")
+        print(f"    Max absolute error: {max_diff}")
         print(e)
         all_passed = False
 
@@ -743,15 +797,28 @@ def test_unpermute_grad_parameterized(pt_dtype, tl_dtype_str):
         sorted_indices,
     )
 
-    print(f"\n>>> 验证 permuted_tokens_grad (形状: ref {ref_permuted_tokens_grad_np.shape}, tl {tl_permuted_tokens_grad_np.shape})")
+    print(
+        f"\n>>> Verifying permuted_tokens_grad (shape: ref {ref_permuted_tokens_grad_np.shape}, tl {tl_permuted_tokens_grad_np.shape})"
+    )
 
     try:
-        torch.testing.assert_close(tl_permuted_tokens_grad_np, ref_permuted_tokens_grad_np)
-        print(f"    [PASS] {tl_dtype_str.upper()} no-probs permuted_tokens_grad 精度测试通过！")
+        torch.testing.assert_close(
+            tl_permuted_tokens_grad_np, ref_permuted_tokens_grad_np
+        )
+        print(
+            f"    [PASS] {tl_dtype_str.upper()} no-probs permuted_tokens_grad precision test passed!"
+        )
     except Exception as e:
-        print(f"    [FAILED] {tl_dtype_str.upper()} no-probs permuted_tokens_grad 精度测试失败！")
-        max_diff = (tl_permuted_tokens_grad_np - ref_permuted_tokens_grad_np).abs().max().item()
-        print(f"    最大绝对误差: {max_diff}")
+        print(
+            f"    [FAILED] {tl_dtype_str.upper()} no-probs permuted_tokens_grad precision test failed!"
+        )
+        max_diff = (
+            (tl_permuted_tokens_grad_np - ref_permuted_tokens_grad_np)
+            .abs()
+            .max()
+            .item()
+        )
+        print(f"    Max absolute error: {max_diff}")
         print(f"    ref:\n{ref_permuted_tokens_grad_np}")
         print(f"    tl:\n{tl_permuted_tokens_grad_np}")
         print(e)
@@ -769,7 +836,9 @@ def test_unpermute_grad():
 
     overall_passed = True
     for pt_type, tl_type_str in dtypes_to_test:
-        passed = test_unpermute_grad_parameterized(pt_dtype=pt_type, tl_dtype_str=tl_type_str)
+        passed = test_unpermute_grad_parameterized(
+            pt_dtype=pt_type, tl_dtype_str=tl_type_str
+        )
         if not passed:
             overall_passed = False
 

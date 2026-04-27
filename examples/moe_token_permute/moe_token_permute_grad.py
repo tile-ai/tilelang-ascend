@@ -22,6 +22,20 @@ CAST_LOW2HIGH = "CAST_NONE"
 CAST_HIGH2LOW = "CAST_RINT"
 
 
+def _is_fp32(dtype: str) -> bool:
+    return dtype in ("float32", "float")
+
+
+def _pad_last_dim(tensor: torch.Tensor, target_cols: int) -> torch.Tensor:
+    if tensor.shape[-1] >= target_cols:
+        return tensor
+    out = torch.zeros(
+        (*tensor.shape[:-1], target_cols), dtype=tensor.dtype, device=tensor.device
+    )
+    out[..., : tensor.shape[-1]] = tensor
+    return out
+
+
 def _build_gather_reduce_kernel_cast_group_pipelined(
     num_tokens,
     topK,
@@ -69,7 +83,8 @@ def _build_gather_reduce_kernel_cast_group_pipelined(
         ):
             with T.Kernel(actual_cores, is_npu=True) as (cid, vid):
                 idx_ub = T.alloc_ub([1, BATCH_T * topK], idx_dtype)
-                row_buf = T.alloc_ub([stages, topK, HALF_H], dtype)
+
+                row_buf = T.alloc_ub([stages * topK, HALF_H], dtype)
                 row_tmp = T.alloc_ub([1, HALF_H], dtype)
                 row_f32 = T.alloc_ub([1, HALF_H], CAL_DTYPE)
                 acc_buf = T.alloc_ub([1, HALF_H], CAL_DTYPE)
@@ -95,7 +110,7 @@ def _build_gather_reduce_kernel_cast_group_pipelined(
                                 src_p = idx_ub[0, lane]
                                 T.copy(
                                     perm_grad_gm[src_p, h_off],
-                                    row_buf[0, lane, :],
+                                    row_buf[lane, :],
                                 )
                             T.set_flag("mte2", "v", 0)
 
@@ -111,7 +126,7 @@ def _build_gather_reduce_kernel_cast_group_pipelined(
                                     src_n = idx_ub[0, nxt_tk_off + lane]
                                     T.copy(
                                         perm_grad_gm[src_n, h_off],
-                                        row_buf[nxt_stage, lane, :],
+                                        row_buf[nxt_stage * topK + lane, :],
                                     )
                                 T.set_flag("mte2", "v", nxt_stage)
 
@@ -120,7 +135,7 @@ def _build_gather_reduce_kernel_cast_group_pipelined(
                             T.tile.fill(acc_buf, 0.0)
 
                             for lane in T.serial(topK):
-                                T.copy(row_buf[cur_stage, lane, :], row_tmp)
+                                T.copy(row_buf[cur_stage * topK + lane, :], row_tmp)
                                 T.tile.cast(row_f32, row_tmp, CAST_LOW2HIGH, HALF_H)
                                 T.tile.add(acc_buf, acc_buf, row_f32)
 
@@ -208,7 +223,8 @@ def _build_gather_reduce_kernel_cast_pipelined(
         ):
             with T.Kernel(actual_cores, is_npu=True) as (cid, vid):
                 idx_ub = T.alloc_ub([1, BATCH_T * topK], idx_dtype)
-                row_buf = T.alloc_ub([stages, 1, HALF_H], dtype)
+
+                row_buf = T.alloc_ub([stages, HALF_H], dtype)
                 row_tmp = T.alloc_ub([1, HALF_H], dtype)
                 row_f32 = T.alloc_ub([1, HALF_H], CAL_DTYPE)
                 acc_buf = T.alloc_ub([1, HALF_H], CAL_DTYPE)
@@ -237,37 +253,37 @@ def _build_gather_reduce_kernel_cast_pipelined(
                         if total_iters_per_batch > 0:
                             T.wait_flag("v", "mte2", 0)
                             src_p0 = idx_ub[0, 0]
-                            T.copy(perm_grad_gm[src_p0, h_off], row_buf[0, :, :])
+                            T.copy(perm_grad_gm[src_p0, h_off], row_buf[0, :])
                             T.set_flag("mte2", "v", 0)
                         if total_iters_per_batch > 1:
                             T.wait_flag("v", "mte2", 1)
                             src_p1 = idx_ub[0, 1]
-                            T.copy(perm_grad_gm[src_p1, h_off], row_buf[1, :, :])
+                            T.copy(perm_grad_gm[src_p1, h_off], row_buf[1, :])
                             T.set_flag("mte2", "v", 1)
                         if total_iters_per_batch > 2:
                             T.wait_flag("v", "mte2", 2)
                             src_p2 = idx_ub[0, 2]
-                            T.copy(perm_grad_gm[src_p2, h_off], row_buf[2, :, :])
+                            T.copy(perm_grad_gm[src_p2, h_off], row_buf[2, :])
                             T.set_flag("mte2", "v", 2)
                         if total_iters_per_batch > 3:
                             T.wait_flag("v", "mte2", 3)
                             src_p3 = idx_ub[0, 3]
-                            T.copy(perm_grad_gm[src_p3, h_off], row_buf[3, :, :])
+                            T.copy(perm_grad_gm[src_p3, h_off], row_buf[3, :])
                             T.set_flag("mte2", "v", 3)
                         if total_iters_per_batch > 4:
                             T.wait_flag("v", "mte2", 4)
                             src_p4 = idx_ub[0, 4]
-                            T.copy(perm_grad_gm[src_p4, h_off], row_buf[4, :, :])
+                            T.copy(perm_grad_gm[src_p4, h_off], row_buf[4, :])
                             T.set_flag("mte2", "v", 4)
                         if total_iters_per_batch > 5:
                             T.wait_flag("v", "mte2", 5)
                             src_p5 = idx_ub[0, 5]
-                            T.copy(perm_grad_gm[src_p5, h_off], row_buf[5, :, :])
+                            T.copy(perm_grad_gm[src_p5, h_off], row_buf[5, :])
                             T.set_flag("mte2", "v", 5)
                         if total_iters_per_batch > 6:
                             T.wait_flag("v", "mte2", 6)
                             src_p6 = idx_ub[0, 6]
-                            T.copy(perm_grad_gm[src_p6, h_off], row_buf[6, :, :])
+                            T.copy(perm_grad_gm[src_p6, h_off], row_buf[6, :])
                             T.set_flag("mte2", "v", 6)
 
                         for it in T.serial(total_iters_per_batch):
@@ -284,7 +300,7 @@ def _build_gather_reduce_kernel_cast_pipelined(
                                 src_n = idx_ub[0, next_it]
                                 T.copy(
                                     perm_grad_gm[src_n, h_off],
-                                    row_buf[next_stage, :, :],
+                                    row_buf[next_stage, :],
                                 )
                                 T.set_flag("mte2", "v", next_stage)
 
@@ -293,7 +309,7 @@ def _build_gather_reduce_kernel_cast_pipelined(
                             if cur_lane == 0:
                                 T.tile.fill(acc_buf, 0.0)
 
-                            T.copy(row_buf[cur_stage, :, :], row_tmp)
+                            T.copy(row_buf[cur_stage, :], row_tmp)
                             T.tile.cast(row_f32, row_tmp, CAST_LOW2HIGH, HALF_H)
                             T.tile.add(acc_buf, acc_buf, row_f32)
 
@@ -355,7 +371,17 @@ def _build_gather_reduce_kernel_cast(
     dtype,
     idx_dtype,
 ):
+    assert topK >= 1, "cast kernel requires topK >= 1"
     HALF_H = TILE_H // 2
+
+    dtype_bytes = 4 if dtype in ("float32", "float") else 2
+    ALIGN_BYTES = 32
+    if HALF_H * dtype_bytes >= ALIGN_BYTES:
+        LANES_PER_ITER = min(8, topK)
+    else:
+        LANES_PER_ITER = 1
+    n_iters = topK // LANES_PER_ITER
+    rem = topK % LANES_PER_ITER
 
     @tilelang.jit(out_idx=[2], pass_configs=PASS_CONFIGS_EXPERT)
     def _build(
@@ -373,6 +399,9 @@ def _build_gather_reduce_kernel_cast(
         n_batches,
         dtype,
         idx_dtype,
+        LANES_PER_ITER,
+        n_iters,
+        rem,
     ):
         @T.prim_func
         def moe_token_permute_grad(
@@ -382,14 +411,9 @@ def _build_gather_reduce_kernel_cast(
         ):
             with T.Kernel(actual_cores, is_npu=True) as (cid, vid):
                 idx_ub = T.alloc_ub([1, BATCH_T * topK], idx_dtype)
-                row_buf0 = T.alloc_ub([1, HALF_H], dtype)
-                row_buf1 = T.alloc_ub([1, HALF_H], dtype)
-                row_buf2 = T.alloc_ub([1, HALF_H], dtype)
-                row_buf3 = T.alloc_ub([1, HALF_H], dtype)
-                row_buf4 = T.alloc_ub([1, HALF_H], dtype)
-                row_buf5 = T.alloc_ub([1, HALF_H], dtype)
-                row_buf6 = T.alloc_ub([1, HALF_H], dtype)
-                row_buf7 = T.alloc_ub([1, HALF_H], dtype)
+
+                row_buf = T.alloc_ub([LANES_PER_ITER, HALF_H], dtype)
+                row_tmp = T.alloc_ub([1, HALF_H], dtype)
                 row_f32 = T.alloc_ub([1, HALF_H], CAL_DTYPE)
                 acc_buf = T.alloc_ub([1, HALF_H], CAL_DTYPE)
                 out_buf = T.alloc_ub([1, HALF_H], dtype)
@@ -410,52 +434,36 @@ def _build_gather_reduce_kernel_cast(
 
                                     T.tile.fill(acc_buf, 0.0)
 
-                                    n_octs = topK // 8
-                                    remainder = topK % 8
-
-                                    for j8 in T.serial(n_octs):
-                                        j = j8 * 8
-                                        src0 = idx_ub[0, tk_off + j]
-                                        src1 = idx_ub[0, tk_off + j + 1]
-                                        src2 = idx_ub[0, tk_off + j + 2]
-                                        src3 = idx_ub[0, tk_off + j + 3]
-                                        src4 = idx_ub[0, tk_off + j + 4]
-                                        src5 = idx_ub[0, tk_off + j + 5]
-                                        src6 = idx_ub[0, tk_off + j + 6]
-                                        src7 = idx_ub[0, tk_off + j + 7]
-                                        T.copy(perm_grad_gm[src0, h_off], row_buf0)
-                                        T.copy(perm_grad_gm[src1, h_off], row_buf1)
-                                        T.copy(perm_grad_gm[src2, h_off], row_buf2)
-                                        T.copy(perm_grad_gm[src3, h_off], row_buf3)
-                                        T.copy(perm_grad_gm[src4, h_off], row_buf4)
-                                        T.copy(perm_grad_gm[src5, h_off], row_buf5)
-                                        T.copy(perm_grad_gm[src6, h_off], row_buf6)
-                                        T.copy(perm_grad_gm[src7, h_off], row_buf7)
+                                    for jj in T.serial(n_iters):
+                                        base = jj * LANES_PER_ITER
+                                        for lane in T.serial(LANES_PER_ITER):
+                                            src = idx_ub[0, tk_off + base + lane]
+                                            T.copy(
+                                                perm_grad_gm[src, h_off],
+                                                row_buf[lane, :],
+                                            )
                                         T.barrier_all()
-                                        T.tile.cast(row_f32, row_buf0, CAST_LOW2HIGH, HALF_H)
-                                        T.tile.add(acc_buf, acc_buf, row_f32)
-                                        T.tile.cast(row_f32, row_buf1, CAST_LOW2HIGH, HALF_H)
-                                        T.tile.add(acc_buf, acc_buf, row_f32)
-                                        T.tile.cast(row_f32, row_buf2, CAST_LOW2HIGH, HALF_H)
-                                        T.tile.add(acc_buf, acc_buf, row_f32)
-                                        T.tile.cast(row_f32, row_buf3, CAST_LOW2HIGH, HALF_H)
-                                        T.tile.add(acc_buf, acc_buf, row_f32)
-                                        T.tile.cast(row_f32, row_buf4, CAST_LOW2HIGH, HALF_H)
-                                        T.tile.add(acc_buf, acc_buf, row_f32)
-                                        T.tile.cast(row_f32, row_buf5, CAST_LOW2HIGH, HALF_H)
-                                        T.tile.add(acc_buf, acc_buf, row_f32)
-                                        T.tile.cast(row_f32, row_buf6, CAST_LOW2HIGH, HALF_H)
-                                        T.tile.add(acc_buf, acc_buf, row_f32)
-                                        T.tile.cast(row_f32, row_buf7, CAST_LOW2HIGH, HALF_H)
-                                        T.tile.add(acc_buf, acc_buf, row_f32)
+                                        for lane in T.serial(LANES_PER_ITER):
+                                            T.copy(row_buf[lane, :], row_tmp)
+                                            T.tile.cast(
+                                                row_f32, row_tmp, CAST_LOW2HIGH, HALF_H
+                                            )
+                                            T.tile.add(acc_buf, acc_buf, row_f32)
 
-                                    if remainder > 0:
-                                        base = n_octs * 8
-                                        for r in T.serial(remainder):
-                                            src = idx_ub[0, tk_off + base + r]
-                                            T.copy(perm_grad_gm[src, h_off], row_buf0)
-                                            T.barrier_all()
-                                            T.tile.cast(row_f32, row_buf0, CAST_LOW2HIGH, HALF_H)
+                                    if rem > 0:
+                                        base = n_iters * LANES_PER_ITER
+                                        for lane in T.serial(rem):
+                                            src = idx_ub[0, tk_off + base + lane]
+                                            T.copy(
+                                                perm_grad_gm[src, h_off],
+                                                row_buf[lane, :],
+                                            )
+                                        T.barrier_all()
+                                        for lane in T.serial(rem):
+                                            T.copy(row_buf[lane, :], row_tmp)
+                                            T.tile.cast(
+                                                row_f32, row_tmp, CAST_LOW2HIGH, HALF_H
+                                            )
                                             T.tile.add(acc_buf, acc_buf, row_f32)
 
                                     T.barrier_all()
@@ -481,6 +489,9 @@ def _build_gather_reduce_kernel_cast(
         n_batches,
         dtype,
         idx_dtype,
+        LANES_PER_ITER,
+        n_iters,
+        rem,
     )
 
 
@@ -607,17 +618,33 @@ def _compile_gather_reduce(
     align_elems = ALIGN_BYTES // dtype_bytes
 
     if TILE_H is None:
-        for candidate in [hidden_size, 4096 // dtype_bytes, 2048 // dtype_bytes, 1024, 512, align_elems]:
-            if candidate > 0 and candidate >= align_elems and hidden_size % candidate == 0:
+        for candidate in [
+            hidden_size,
+            4096 // dtype_bytes,
+            2048 // dtype_bytes,
+            1024,
+            512,
+            align_elems,
+        ]:
+            if (
+                candidate > 0
+                and candidate >= align_elems
+                and hidden_size % candidate == 0
+            ):
                 TILE_H = candidate
                 break
         else:
             TILE_H = align_elems
 
-    assert TILE_H * dtype_bytes >= ALIGN_BYTES and (TILE_H * dtype_bytes) % ALIGN_BYTES == 0, (
+    assert (
+        TILE_H * dtype_bytes >= ALIGN_BYTES
+        and (TILE_H * dtype_bytes) % ALIGN_BYTES == 0
+    ), (
         f"TILE_H={TILE_H} * sizeof({dtype})={dtype_bytes} = {TILE_H * dtype_bytes}B; must be >= 32B and a multiple of 32B"
     )
-    assert hidden_size % TILE_H == 0, f"hidden_size ({hidden_size}) must be divisible by TILE_H ({TILE_H})"
+    assert hidden_size % TILE_H == 0, (
+        f"hidden_size ({hidden_size}) must be divisible by TILE_H ({TILE_H})"
+    )
 
     n_htiles = int(hidden_size // TILE_H)
 
@@ -627,13 +654,18 @@ def _compile_gather_reduce(
     padded_E = int(actual_cores * tokens_per_core * topK)
 
     HALF_H_candidate = hidden_size // 2 if hidden_size % 2 == 0 else 0
-    half_h_aligned = (
-        HALF_H_candidate > 0 and HALF_H_candidate * dtype_bytes >= ALIGN_BYTES and (HALF_H_candidate * dtype_bytes) % ALIGN_BYTES == 0
+
+    is_cast_path = dtype != CAL_DTYPE
+    single_htile = hidden_size == TILE_H
+    half_aligned = (
+        HALF_H_candidate > 0
+        and HALF_H_candidate * 2 == TILE_H
+        and HALF_H_candidate * dtype_bytes >= ALIGN_BYTES
     )
+    pipelined_eligible = is_cast_path and single_htile and half_aligned
 
-    use_group_pipelined = dtype != CAL_DTYPE and topK == 8 and hidden_size == TILE_H and half_h_aligned
-
-    use_lane_pipelined = not use_group_pipelined and dtype != CAL_DTYPE and topK <= 8 and hidden_size == TILE_H and half_h_aligned
+    use_group_pipelined = pipelined_eligible and topK == 8
+    use_lane_pipelined = pipelined_eligible and topK <= 8 and not use_group_pipelined
 
     if use_group_pipelined:
         HALF_H = HALF_H_candidate
@@ -744,13 +776,17 @@ class MoeTokenPermuteGrad:
         self.E = num_tokens * topK
         self._out_len = num_out_tokens if num_out_tokens > 0 else self.E
 
+        min_compile_h = 64 if _is_fp32(dtype) else 32
+        self._compile_hidden_size = max(hidden_size, min_compile_h)
+        compile_tile_h = TILE_H if TILE_H is None else max(TILE_H, min_compile_h)
+
         self._kernel, self._padded_E = _compile_gather_reduce(
             num_tokens,
             topK,
-            hidden_size,
+            self._compile_hidden_size,
             self.E,
             NUM_CORES=NUM_CORES,
-            TILE_H=TILE_H,
+            TILE_H=compile_tile_h,
             dtype=dtype,
         )
 
@@ -769,21 +805,28 @@ class MoeTokenPermuteGrad:
     def __call__(self, permuted_output_grad, sorted_indices):
         device = permuted_output_grad.device
         E = self.E
+        H = self._compile_hidden_size
 
-        if permuted_output_grad.shape[0] < E:
+        needs_pad = (
+            permuted_output_grad.shape[0] < E or permuted_output_grad.shape[1] < H
+        )
+        if needs_pad:
+            target_shape = (E, H)
             if (
                 self._perm_grad_pad_buf is None
                 or self._perm_grad_pad_buf.device != device
                 or self._perm_grad_pad_buf.dtype != permuted_output_grad.dtype
+                or tuple(self._perm_grad_pad_buf.shape) != target_shape
             ):
                 self._perm_grad_pad_buf = torch.zeros(
-                    E,
-                    self.hidden_size,
+                    *target_shape,
                     dtype=permuted_output_grad.dtype,
                     device=device,
                 )
             perm_grad_padded = self._perm_grad_pad_buf
-            perm_grad_padded[: permuted_output_grad.shape[0]].copy_(permuted_output_grad)
+            r = permuted_output_grad.shape[0]
+            c = permuted_output_grad.shape[1]
+            perm_grad_padded[:r, :c].copy_(permuted_output_grad)
         else:
             perm_grad_padded = permuted_output_grad
 
@@ -798,6 +841,9 @@ class MoeTokenPermuteGrad:
             sorted_idx_padded.unsqueeze(0),
         )
 
+        if H != self.hidden_size:
+            input_grad = input_grad[:, : self.hidden_size].contiguous()
+
         return input_grad
 
     def __repr__(self):
@@ -806,7 +852,7 @@ class MoeTokenPermuteGrad:
 
 def test_permute_grad_parameterized(pt_dtype, tl_dtype_str):
     print(f"\n{'=' * 65}")
-    print(f"开始测试 MoeTokenPermuteGrad, 数据类型: {tl_dtype_str.upper()}")
+    print(f"Testing MoeTokenPermuteGrad, dtype: {tl_dtype_str.upper()}")
     print(f"{'=' * 65}")
 
     torch.manual_seed(42)
@@ -818,10 +864,14 @@ def test_permute_grad_parameterized(pt_dtype, tl_dtype_str):
 
     all_passed = True
 
-    print(">>> 测试用例 1: 标准 Backward 梯度对齐测试")
+    print(">>> Test case 1: Standard Backward gradient alignment test")
 
-    tokens = torch.randn(num_tokens, hidden_size, dtype=pt_dtype, device="npu", requires_grad=True)
-    indices = torch.randint(0, num_experts, (num_tokens, topk), dtype=torch.int32, device="npu")
+    tokens = torch.randn(
+        num_tokens, hidden_size, dtype=pt_dtype, device="npu", requires_grad=True
+    )
+    indices = torch.randint(
+        0, num_experts, (num_tokens, topk), dtype=torch.int32, device="npu"
+    )
 
     npu_permuted, npu_sorted_idx = torch_npu.npu_moe_token_permute(tokens, indices)
 
@@ -844,18 +894,29 @@ def test_permute_grad_parameterized(pt_dtype, tl_dtype_str):
 
     try:
         torch.testing.assert_close(tl_input_grad, npu_input_grad)
-        print(f"    [PASS] {tl_dtype_str.upper()} 标准 Backward 精度测试通过！")
+        print(
+            f"    [PASS] {tl_dtype_str.upper()} Standard Backward precision test passed!"
+        )
     except AssertionError as e:
-        print(f"    [FAILED] {tl_dtype_str.upper()} 标准 Backward 精度测试失败！\n", e)
+        print(
+            f"    [FAILED] {tl_dtype_str.upper()} Standard Backward precision test failed!\n",
+            e,
+        )
         all_passed = False
 
-    print("\n>>> 测试用例 2: 带截断的 Clip Backward 梯度对齐测试")
+    print("\n>>> Test case 2: Clip Backward gradient alignment test with truncation")
     num_out_tokens = 10
 
-    tokens_clip = torch.randn(num_tokens, hidden_size, dtype=pt_dtype, device="npu", requires_grad=True)
-    indices_clip = torch.randint(0, num_experts, (num_tokens, topk), dtype=torch.int32, device="npu")
+    tokens_clip = torch.randn(
+        num_tokens, hidden_size, dtype=pt_dtype, device="npu", requires_grad=True
+    )
+    indices_clip = torch.randint(
+        0, num_experts, (num_tokens, topk), dtype=torch.int32, device="npu"
+    )
 
-    npu_permuted_clip, npu_sorted_idx_clip = torch_npu.npu_moe_token_permute(tokens_clip, indices_clip, num_out_tokens=num_out_tokens)
+    npu_permuted_clip, npu_sorted_idx_clip = torch_npu.npu_moe_token_permute(
+        tokens_clip, indices_clip, num_out_tokens=num_out_tokens
+    )
 
     grad_permuted_clip = torch.randn_like(npu_permuted_clip)
     npu_permuted_clip.backward(grad_permuted_clip)
@@ -874,9 +935,14 @@ def test_permute_grad_parameterized(pt_dtype, tl_dtype_str):
 
     try:
         torch.testing.assert_close(tl_input_grad_clip, npu_input_grad_clip)
-        print(f"    [PASS] {tl_dtype_str.upper()} Clip 截断 Backward 精度测试通过！")
+        print(
+            f"    [PASS] {tl_dtype_str.upper()} Clip truncation Backward precision test passed!"
+        )
     except AssertionError as e:
-        print(f"    [FAILED] {tl_dtype_str.upper()} Clip 截断 Backward 精度测试失败！\n", e)
+        print(
+            f"    [FAILED] {tl_dtype_str.upper()} Clip truncation Backward precision test failed!\n",
+            e,
+        )
         all_passed = False
 
     return all_passed
@@ -891,7 +957,9 @@ def test_permute_grad():
 
     overall_passed = True
     for pt_type, tl_type_str in dtypes_to_test:
-        passed = test_permute_grad_parameterized(pt_dtype=pt_type, tl_dtype_str=tl_type_str)
+        passed = test_permute_grad_parameterized(
+            pt_dtype=pt_type, tl_dtype_str=tl_type_str
+        )
         if not passed:
             overall_passed = False
 
