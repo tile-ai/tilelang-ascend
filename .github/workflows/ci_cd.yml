@@ -61,15 +61,11 @@ jobs:
           git config --global http.lowSpeedTime 30         # 30秒低速超时
           git config --global core.compression 0           # 传输时不压缩，减少 CPU 瓶颈
 
-      - name: Checkout code (with retry)
-        uses: Wandalen/wretry.action@v3
+      - name: Checkout code
+        uses: actions/checkout@v4
         with:
-          action: actions/checkout@v4
-          attempt_limit: 3          # 最多重试 3 次
-          attempt_delay: 30000      # 每次间隔 30 秒（毫秒）
-          with: |
-            submodules: false
-            fetch-depth: 0
+          submodules: false
+          fetch-depth: 0
 
       - name: Check if skip pytest
         id: check_skip_pytest
