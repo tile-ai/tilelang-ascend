@@ -124,7 +124,7 @@ def _build_scatter_kernel_no_probs(
         ):
             with T.Kernel(actual_cores, is_npu=True) as (cid, vid):
                 idx_ub = T.alloc_ub([1, TILE_E], idx_dtype)
-                row_buf = T.alloc_ub([B, HALF_H], dtype)   # ← 改: 3D → 2D
+                row_buf = T.alloc_ub([B, HALF_H], dtype)  # ← 改: 3D → 2D
 
                 with T.Scope("V"):
                     for t_local in T.serial(tiles_per_core):
@@ -142,13 +142,13 @@ def _build_scatter_kernel_no_probs(
                                     for lane in T.serial(B):
                                         row = e_base + ei + lane
                                         if row < E:
-                                            T.copy(out_grad_gm[row, h_off], row_buf[lane, :])   # ← 改
+                                            T.copy(out_grad_gm[row, h_off], row_buf[lane, :])  # ← 改
                                     T.barrier_all()
                                     for lane in T.serial(B):
                                         row = e_base + ei + lane
                                         if row < E:
                                             dst = idx_ub[0, ei + lane]
-                                            T.copy(row_buf[lane, :], perm_grad_gm[dst, h_off])   # ← 改
+                                            T.copy(row_buf[lane, :], perm_grad_gm[dst, h_off])  # ← 改
                                     T.barrier_all()
 
                             remainder = TILE_E % B
@@ -159,9 +159,9 @@ def _build_scatter_kernel_no_probs(
                                     dst = idx_ub[0, ei]
                                     for ht in T.serial(n_htiles):
                                         h_off = ht * TILE_H + vid * HALF_H
-                                        T.copy(out_grad_gm[row, h_off], row_buf[0, :])   # ← 改
+                                        T.copy(out_grad_gm[row, h_off], row_buf[0, :])  # ← 改
                                         T.barrier_all()
-                                        T.copy(row_buf[0, :], perm_grad_gm[dst, h_off])   # ← 改
+                                        T.copy(row_buf[0, :], perm_grad_gm[dst, h_off])  # ← 改
                                         T.barrier_all()
 
         return moe_token_unpermute_grad
@@ -232,7 +232,7 @@ def _build_grad_kernel_with_probs(
         remainder,
     ):
 
-        perm_buf_shape = [B, HALF_H]   # ← 改 1: 3D → 2D
+        perm_buf_shape = [B, HALF_H]  # ← 改 1: 3D → 2D
 
         @T.macro
         def emit_lane(
@@ -248,7 +248,7 @@ def _build_grad_kernel_with_probs(
             mul_buf,
             out_tmp,
             reduce_dst,
-            pg_acc,                    # ← 改 2: 删掉 reduce_tmp 参数
+            pg_acc,  # ← 改 2: 删掉 reduce_tmp 参数
             perm_grad_gm,
         ):
             dst = idx_ub[0, k_idx]
@@ -264,10 +264,10 @@ def _build_grad_kernel_with_probs(
             T.copy(out_tmp, perm_grad_gm[dst, h_off])
             T.set_flag("mte3", "v", 2)
 
-            T.copy(perm_buf[lane_idx, :], perm_tmp)   # ← 改 3: [lane_idx,:,:] → [lane_idx,:]
+            T.copy(perm_buf[lane_idx, :], perm_tmp)  # ← 改 3: [lane_idx,:,:] → [lane_idx,:]
             T.tile.cast(perm_f32, perm_tmp, CAST_LOW2HIGH, HALF_H)
             T.tile.mul(mul_buf, grad_f32, perm_f32)
-            T.reduce_sum(mul_buf, reduce_dst, dim=-1)   # ← 改 4: 删掉 reduce_tmp 实参
+            T.reduce_sum(mul_buf, reduce_dst, dim=-1)  # ← 改 4: 删掉 reduce_tmp 实参
             pg_acc[0, k_idx] = pg_acc[0, k_idx] + reduce_dst[0, 0]
 
         @T.prim_func
@@ -318,7 +318,7 @@ def _build_grad_kernel_with_probs(
                                     k_base = g * B
                                     for lane in T.serial(B):
                                         dst = idx_ub[0, k_base + lane]
-                                        T.copy(perm_tokens_gm[dst, h_off], perm_buf[lane, :])   # ← 改 6
+                                        T.copy(perm_tokens_gm[dst, h_off], perm_buf[lane, :])  # ← 改 6
                                     T.set_flag("mte2", "v", 3)
                                     T.wait_flag("mte2", "v", 3)
 
@@ -336,7 +336,7 @@ def _build_grad_kernel_with_probs(
                                             mul_buf,
                                             out_tmp,
                                             reduce_dst,
-                                            pg_acc,                # ← 改 7: 删掉 reduce_tmp 实参
+                                            pg_acc,  # ← 改 7: 删掉 reduce_tmp 实参
                                             perm_grad_gm,
                                         )
 
@@ -345,7 +345,7 @@ def _build_grad_kernel_with_probs(
                                     for r in T.serial(remainder):
                                         rk = r_base + r
                                         dst = idx_ub[0, rk]
-                                        T.copy(perm_tokens_gm[dst, h_off], perm_buf[0, :])   # ← 改 8
+                                        T.copy(perm_tokens_gm[dst, h_off], perm_buf[0, :])  # ← 改 8
                                         T.set_flag("mte2", "v", 3)
                                         T.wait_flag("mte2", "v", 3)
                                         emit_lane(
@@ -361,7 +361,7 @@ def _build_grad_kernel_with_probs(
                                             mul_buf,
                                             out_tmp,
                                             reduce_dst,
-                                            pg_acc,                # ← 改 9: 删掉 reduce_tmp 实参
+                                            pg_acc,  # ← 改 9: 删掉 reduce_tmp 实参
                                             perm_grad_gm,
                                         )
 
@@ -468,7 +468,7 @@ def _build_grad_kernel_with_probs_f32(
                                 T.copy(mul_buf, perm_grad_gm[dst_idx, h_off])
 
                                 T.tile.mul(mul_buf, grad_buf, perm_buf)
-                                T.reduce_sum(mul_buf, reduce_dst, dim=-1)   # ← 改: 删掉 reduce_tmp 实参
+                                T.reduce_sum(mul_buf, reduce_dst, dim=-1)  # ← 改: 删掉 reduce_tmp 实参
                                 pg_acc[0, k] = pg_acc[0, k] + reduce_dst[0, 0]
 
                         T.copy(pg_acc, probs_grad_gm[i, 0])
