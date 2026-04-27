@@ -53,9 +53,7 @@ def _auto_tile_t(total: int, num_cores: int) -> int:
     return max(1, total // num_cores)
 
 
-def _auto_launch_cores_for_probs(
-    num_tokens: int, hidden_size: int, num_cores: int
-) -> int:
+def _auto_launch_cores_for_probs(num_tokens: int, hidden_size: int, num_cores: int) -> int:
     if num_tokens <= 64 and hidden_size <= 256:
         return 1
     if num_tokens <= 256 and hidden_size <= 512:
@@ -66,9 +64,7 @@ def _auto_launch_cores_for_probs(
 def _pad_first_dim(tensor: torch.Tensor, target_rows: int) -> torch.Tensor:
     if tensor.shape[0] >= target_rows:
         return tensor
-    out = torch.zeros(
-        (target_rows, *tensor.shape[1:]), dtype=tensor.dtype, device=tensor.device
-    )
+    out = torch.zeros((target_rows, *tensor.shape[1:]), dtype=tensor.dtype, device=tensor.device)
     out[: tensor.shape[0]] = tensor
     return out
 
@@ -76,9 +72,7 @@ def _pad_first_dim(tensor: torch.Tensor, target_rows: int) -> torch.Tensor:
 def _pad_last_dim(tensor: torch.Tensor, target_cols: int) -> torch.Tensor:
     if tensor.shape[-1] >= target_cols:
         return tensor
-    out = torch.zeros(
-        (*tensor.shape[:-1], target_cols), dtype=tensor.dtype, device=tensor.device
-    )
+    out = torch.zeros((*tensor.shape[:-1], target_cols), dtype=tensor.dtype, device=tensor.device)
     out[..., : tensor.shape[-1]] = tensor
     return out
 
@@ -367,9 +361,7 @@ def _build_grad_kernel_with_probs(
                                     for r in T.serial(remainder):
                                         rk = r_base + r
                                         dst = idx_ub[0, rk]
-                                        T.copy(
-                                            perm_tokens_gm[dst, h_off], perm_buf[0, :]
-                                        )
+                                        T.copy(perm_tokens_gm[dst, h_off], perm_buf[0, :])
                                         T.set_flag("mte2", "v", 3)
                                         T.wait_flag("mte2", "v", 3)
                                         emit_lane(
@@ -610,44 +602,32 @@ class MoeTokenUnpermuteGrad:
         self._compile_hidden_size = max(hidden_size, min_compile_h)
         compile_tile_h = TILE_H if TILE_H is None else max(TILE_H, min_compile_h)
 
-        self._kernel, self._padded_tokens, self._padded_E, self._actual_cores = (
-            _compile_grad(
-                num_tokens,
-                topK,
-                self._compile_hidden_size,
-                has_probs=has_probs,
-                NUM_CORES=NUM_CORES,
-                TILE_T=TILE_T,
-                TILE_H=compile_tile_h,
-                dtype=dtype,
-            )
+        self._kernel, self._padded_tokens, self._padded_E, self._actual_cores = _compile_grad(
+            num_tokens,
+            topK,
+            self._compile_hidden_size,
+            has_probs=has_probs,
+            NUM_CORES=NUM_CORES,
+            TILE_T=TILE_T,
+            TILE_H=compile_tile_h,
+            dtype=dtype,
         )
 
-    def __call__(
-        self, permuted_tokens, unpermuted_tokens_grad, sorted_indices, probs=None
-    ):
+    def __call__(self, permuted_tokens, unpermuted_tokens_grad, sorted_indices, probs=None):
         if self._kernel is None:
             raise RuntimeError("tilelang not installed")
 
         indices_padded_2d = _pad_first_dim(sorted_indices, self._padded_E).unsqueeze(0)
         permuted_tokens_in = _pad_last_dim(permuted_tokens, self._compile_hidden_size)
-        unperm_grad_in = _pad_last_dim(
-            unpermuted_tokens_grad, self._compile_hidden_size
-        )
+        unperm_grad_in = _pad_last_dim(unpermuted_tokens_grad, self._compile_hidden_size)
 
         if self.has_probs:
             assert probs is not None
             probs_padded = _pad_first_dim(probs, self._padded_tokens)
-            perm_grad, probs_grad_raw = self._kernel(
-                permuted_tokens_in, unperm_grad_in, indices_padded_2d, probs_padded
-            )
+            perm_grad, probs_grad_raw = self._kernel(permuted_tokens_in, unperm_grad_in, indices_padded_2d, probs_padded)
             perm_grad = perm_grad[:, : self.hidden_size].contiguous()
 
-            probs_grad = (
-                probs_grad_raw[0] + probs_grad_raw[1]
-                if probs_grad_raw.dim() == 3
-                else probs_grad_raw
-            )
+            probs_grad = probs_grad_raw[0] + probs_grad_raw[1] if probs_grad_raw.dim() == 3 else probs_grad_raw
             probs_grad = probs_grad[: self.num_tokens, : self.topK]
             if probs_grad.dtype != probs.dtype:
                 probs_grad = probs_grad.to(probs.dtype)
@@ -727,22 +707,14 @@ def test_unpermute_grad_parameterized(pt_dtype, tl_dtype_str):
     )
 
     print(f"\n>>> Verifying permuted_tokens_grad (shape: [{E}, {hidden_size}])")
-    print(
-        f"    ref shape: {ref_permuted_tokens_grad.shape}, tl shape: {tl_permuted_tokens_grad.shape}"
-    )
+    print(f"    ref shape: {ref_permuted_tokens_grad.shape}, tl shape: {tl_permuted_tokens_grad.shape}")
 
     try:
         torch.testing.assert_close(tl_permuted_tokens_grad, ref_permuted_tokens_grad)
-        print(
-            f"    [PASS] {tl_dtype_str.upper()} permuted_tokens_grad precision test passed!"
-        )
+        print(f"    [PASS] {tl_dtype_str.upper()} permuted_tokens_grad precision test passed!")
     except Exception as e:
-        print(
-            f"    [FAILED] {tl_dtype_str.upper()} permuted_tokens_grad precision test failed!"
-        )
-        max_diff = (
-            (tl_permuted_tokens_grad - ref_permuted_tokens_grad).abs().max().item()
-        )
+        print(f"    [FAILED] {tl_dtype_str.upper()} permuted_tokens_grad precision test failed!")
+        max_diff = (tl_permuted_tokens_grad - ref_permuted_tokens_grad).abs().max().item()
         print(f"    Max absolute error: {max_diff}")
         print(e)
         all_passed = False
@@ -797,27 +769,14 @@ def test_unpermute_grad_parameterized(pt_dtype, tl_dtype_str):
         sorted_indices,
     )
 
-    print(
-        f"\n>>> Verifying permuted_tokens_grad (shape: ref {ref_permuted_tokens_grad_np.shape}, tl {tl_permuted_tokens_grad_np.shape})"
-    )
+    print(f"\n>>> Verifying permuted_tokens_grad (shape: ref {ref_permuted_tokens_grad_np.shape}, tl {tl_permuted_tokens_grad_np.shape})")
 
     try:
-        torch.testing.assert_close(
-            tl_permuted_tokens_grad_np, ref_permuted_tokens_grad_np
-        )
-        print(
-            f"    [PASS] {tl_dtype_str.upper()} no-probs permuted_tokens_grad precision test passed!"
-        )
+        torch.testing.assert_close(tl_permuted_tokens_grad_np, ref_permuted_tokens_grad_np)
+        print(f"    [PASS] {tl_dtype_str.upper()} no-probs permuted_tokens_grad precision test passed!")
     except Exception as e:
-        print(
-            f"    [FAILED] {tl_dtype_str.upper()} no-probs permuted_tokens_grad precision test failed!"
-        )
-        max_diff = (
-            (tl_permuted_tokens_grad_np - ref_permuted_tokens_grad_np)
-            .abs()
-            .max()
-            .item()
-        )
+        print(f"    [FAILED] {tl_dtype_str.upper()} no-probs permuted_tokens_grad precision test failed!")
+        max_diff = (tl_permuted_tokens_grad_np - ref_permuted_tokens_grad_np).abs().max().item()
         print(f"    Max absolute error: {max_diff}")
         print(f"    ref:\n{ref_permuted_tokens_grad_np}")
         print(f"    tl:\n{tl_permuted_tokens_grad_np}")
@@ -836,9 +795,7 @@ def test_unpermute_grad():
 
     overall_passed = True
     for pt_type, tl_type_str in dtypes_to_test:
-        passed = test_unpermute_grad_parameterized(
-            pt_dtype=pt_type, tl_dtype_str=tl_type_str
-        )
+        passed = test_unpermute_grad_parameterized(pt_dtype=pt_type, tl_dtype_str=tl_type_str)
         if not passed:
             overall_passed = False
 

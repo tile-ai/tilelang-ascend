@@ -17,9 +17,7 @@ def _is_fp32(dtype: str) -> bool:
 def _pad_last_dim(tensor: torch.Tensor, target_cols: int) -> torch.Tensor:
     if tensor.shape[-1] >= target_cols:
         return tensor
-    out = torch.zeros(
-        (*tensor.shape[:-1], target_cols), dtype=tensor.dtype, device=tensor.device
-    )
+    out = torch.zeros((*tensor.shape[:-1], target_cols), dtype=tensor.dtype, device=tensor.device)
     out[..., : tensor.shape[-1]] = tensor
     return out
 
@@ -336,9 +334,7 @@ def test_permute_parameterized(pt_dtype, tl_dtype_str):
     print(">>> Test case 1: Standard Forward test")
 
     tokens = torch.randn(num_tokens, hidden_size, dtype=pt_dtype, device="npu")
-    indices = torch.randint(
-        0, num_experts, (num_tokens, topk), dtype=torch.int32, device="npu"
-    )
+    indices = torch.randint(0, num_experts, (num_tokens, topk), dtype=torch.int32, device="npu")
 
     npu_permuted, npu_sorted_idx = torch_npu.npu_moe_token_permute(tokens, indices)
 
@@ -354,9 +350,7 @@ def test_permute_parameterized(pt_dtype, tl_dtype_str):
     try:
         torch.testing.assert_close(tl_permuted, npu_permuted)
         torch.testing.assert_close(tl_sorted_idx, npu_sorted_idx)
-        print(
-            f"    [PASS] {tl_dtype_str.upper()} Standard Forward precision test passed!"
-        )
+        print(f"    [PASS] {tl_dtype_str.upper()} Standard Forward precision test passed!")
     except AssertionError as e:
         print(
             f"    [FAILED] {tl_dtype_str.upper()} Standard Forward precision test failed!\n",
@@ -368,13 +362,9 @@ def test_permute_parameterized(pt_dtype, tl_dtype_str):
     num_out_tokens = 10
 
     tokens_clip = torch.randn(num_tokens, hidden_size, dtype=pt_dtype, device="npu")
-    indices_clip = torch.randint(
-        0, num_experts, (num_tokens, topk), dtype=torch.int32, device="npu"
-    )
+    indices_clip = torch.randint(0, num_experts, (num_tokens, topk), dtype=torch.int32, device="npu")
 
-    npu_permuted_clip, npu_sorted_idx_clip = torch_npu.npu_moe_token_permute(
-        tokens_clip, indices_clip, num_out_tokens=num_out_tokens
-    )
+    npu_permuted_clip, npu_sorted_idx_clip = torch_npu.npu_moe_token_permute(tokens_clip, indices_clip, num_out_tokens=num_out_tokens)
 
     tl_op_clip = MoeTokenPermute(
         num_tokens=num_tokens,
@@ -384,16 +374,12 @@ def test_permute_parameterized(pt_dtype, tl_dtype_str):
         num_out_tokens=num_out_tokens,
         dtype=tl_dtype_str,
     )
-    tl_permuted_clip, tl_sorted_idx_clip = tl_op_clip(
-        tokens_clip, indices_clip.view(-1)
-    )
+    tl_permuted_clip, tl_sorted_idx_clip = tl_op_clip(tokens_clip, indices_clip.view(-1))
 
     try:
         torch.testing.assert_close(tl_permuted_clip, npu_permuted_clip)
         torch.testing.assert_close(tl_sorted_idx_clip, npu_sorted_idx_clip)
-        print(
-            f"    [PASS] {tl_dtype_str.upper()} Clip truncation precision test passed!"
-        )
+        print(f"    [PASS] {tl_dtype_str.upper()} Clip truncation precision test passed!")
     except AssertionError as e:
         print(
             f"    [FAILED] {tl_dtype_str.upper()} Clip truncation precision test failed!\n",

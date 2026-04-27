@@ -29,9 +29,7 @@ def _is_fp32(dtype: str) -> bool:
 def _pad_last_dim(tensor: torch.Tensor, target_cols: int) -> torch.Tensor:
     if tensor.shape[-1] >= target_cols:
         return tensor
-    out = torch.zeros(
-        (*tensor.shape[:-1], target_cols), dtype=tensor.dtype, device=tensor.device
-    )
+    out = torch.zeros((*tensor.shape[:-1], target_cols), dtype=tensor.dtype, device=tensor.device)
     out[..., : tensor.shape[-1]] = tensor
     return out
 
@@ -445,9 +443,7 @@ def _build_gather_reduce_kernel_cast(
                                         T.barrier_all()
                                         for lane in T.serial(LANES_PER_ITER):
                                             T.copy(row_buf[lane, :], row_tmp)
-                                            T.tile.cast(
-                                                row_f32, row_tmp, CAST_LOW2HIGH, HALF_H
-                                            )
+                                            T.tile.cast(row_f32, row_tmp, CAST_LOW2HIGH, HALF_H)
                                             T.tile.add(acc_buf, acc_buf, row_f32)
 
                                     if rem > 0:
@@ -461,9 +457,7 @@ def _build_gather_reduce_kernel_cast(
                                         T.barrier_all()
                                         for lane in T.serial(rem):
                                             T.copy(row_buf[lane, :], row_tmp)
-                                            T.tile.cast(
-                                                row_f32, row_tmp, CAST_LOW2HIGH, HALF_H
-                                            )
+                                            T.tile.cast(row_f32, row_tmp, CAST_LOW2HIGH, HALF_H)
                                             T.tile.add(acc_buf, acc_buf, row_f32)
 
                                     T.barrier_all()
@@ -626,25 +620,16 @@ def _compile_gather_reduce(
             512,
             align_elems,
         ]:
-            if (
-                candidate > 0
-                and candidate >= align_elems
-                and hidden_size % candidate == 0
-            ):
+            if candidate > 0 and candidate >= align_elems and hidden_size % candidate == 0:
                 TILE_H = candidate
                 break
         else:
             TILE_H = align_elems
 
-    assert (
-        TILE_H * dtype_bytes >= ALIGN_BYTES
-        and (TILE_H * dtype_bytes) % ALIGN_BYTES == 0
-    ), (
+    assert TILE_H * dtype_bytes >= ALIGN_BYTES and (TILE_H * dtype_bytes) % ALIGN_BYTES == 0, (
         f"TILE_H={TILE_H} * sizeof({dtype})={dtype_bytes} = {TILE_H * dtype_bytes}B; must be >= 32B and a multiple of 32B"
     )
-    assert hidden_size % TILE_H == 0, (
-        f"hidden_size ({hidden_size}) must be divisible by TILE_H ({TILE_H})"
-    )
+    assert hidden_size % TILE_H == 0, f"hidden_size ({hidden_size}) must be divisible by TILE_H ({TILE_H})"
 
     n_htiles = int(hidden_size // TILE_H)
 
@@ -657,11 +642,7 @@ def _compile_gather_reduce(
 
     is_cast_path = dtype != CAL_DTYPE
     single_htile = hidden_size == TILE_H
-    half_aligned = (
-        HALF_H_candidate > 0
-        and HALF_H_candidate * 2 == TILE_H
-        and HALF_H_candidate * dtype_bytes >= ALIGN_BYTES
-    )
+    half_aligned = HALF_H_candidate > 0 and HALF_H_candidate * 2 == TILE_H and HALF_H_candidate * dtype_bytes >= ALIGN_BYTES
     pipelined_eligible = is_cast_path and single_htile and half_aligned
 
     use_group_pipelined = pipelined_eligible and topK == 8
@@ -807,9 +788,7 @@ class MoeTokenPermuteGrad:
         E = self.E
         H = self._compile_hidden_size
 
-        needs_pad = (
-            permuted_output_grad.shape[0] < E or permuted_output_grad.shape[1] < H
-        )
+        needs_pad = permuted_output_grad.shape[0] < E or permuted_output_grad.shape[1] < H
         if needs_pad:
             target_shape = (E, H)
             if (
@@ -841,7 +820,7 @@ class MoeTokenPermuteGrad:
             sorted_idx_padded.unsqueeze(0),
         )
 
-        if H != self.hidden_size:
+        if self.hidden_size != H:
             input_grad = input_grad[:, : self.hidden_size].contiguous()
 
         return input_grad
@@ -866,12 +845,8 @@ def test_permute_grad_parameterized(pt_dtype, tl_dtype_str):
 
     print(">>> Test case 1: Standard Backward gradient alignment test")
 
-    tokens = torch.randn(
-        num_tokens, hidden_size, dtype=pt_dtype, device="npu", requires_grad=True
-    )
-    indices = torch.randint(
-        0, num_experts, (num_tokens, topk), dtype=torch.int32, device="npu"
-    )
+    tokens = torch.randn(num_tokens, hidden_size, dtype=pt_dtype, device="npu", requires_grad=True)
+    indices = torch.randint(0, num_experts, (num_tokens, topk), dtype=torch.int32, device="npu")
 
     npu_permuted, npu_sorted_idx = torch_npu.npu_moe_token_permute(tokens, indices)
 
@@ -894,9 +869,7 @@ def test_permute_grad_parameterized(pt_dtype, tl_dtype_str):
 
     try:
         torch.testing.assert_close(tl_input_grad, npu_input_grad)
-        print(
-            f"    [PASS] {tl_dtype_str.upper()} Standard Backward precision test passed!"
-        )
+        print(f"    [PASS] {tl_dtype_str.upper()} Standard Backward precision test passed!")
     except AssertionError as e:
         print(
             f"    [FAILED] {tl_dtype_str.upper()} Standard Backward precision test failed!\n",
@@ -907,16 +880,10 @@ def test_permute_grad_parameterized(pt_dtype, tl_dtype_str):
     print("\n>>> Test case 2: Clip Backward gradient alignment test with truncation")
     num_out_tokens = 10
 
-    tokens_clip = torch.randn(
-        num_tokens, hidden_size, dtype=pt_dtype, device="npu", requires_grad=True
-    )
-    indices_clip = torch.randint(
-        0, num_experts, (num_tokens, topk), dtype=torch.int32, device="npu"
-    )
+    tokens_clip = torch.randn(num_tokens, hidden_size, dtype=pt_dtype, device="npu", requires_grad=True)
+    indices_clip = torch.randint(0, num_experts, (num_tokens, topk), dtype=torch.int32, device="npu")
 
-    npu_permuted_clip, npu_sorted_idx_clip = torch_npu.npu_moe_token_permute(
-        tokens_clip, indices_clip, num_out_tokens=num_out_tokens
-    )
+    npu_permuted_clip, npu_sorted_idx_clip = torch_npu.npu_moe_token_permute(tokens_clip, indices_clip, num_out_tokens=num_out_tokens)
 
     grad_permuted_clip = torch.randn_like(npu_permuted_clip)
     npu_permuted_clip.backward(grad_permuted_clip)
@@ -935,9 +902,7 @@ def test_permute_grad_parameterized(pt_dtype, tl_dtype_str):
 
     try:
         torch.testing.assert_close(tl_input_grad_clip, npu_input_grad_clip)
-        print(
-            f"    [PASS] {tl_dtype_str.upper()} Clip truncation Backward precision test passed!"
-        )
+        print(f"    [PASS] {tl_dtype_str.upper()} Clip truncation Backward precision test passed!")
     except AssertionError as e:
         print(
             f"    [FAILED] {tl_dtype_str.upper()} Clip truncation Backward precision test failed!\n",
@@ -957,9 +922,7 @@ def test_permute_grad():
 
     overall_passed = True
     for pt_type, tl_type_str in dtypes_to_test:
-        passed = test_permute_grad_parameterized(
-            pt_dtype=pt_type, tl_dtype_str=tl_type_str
-        )
+        passed = test_permute_grad_parameterized(pt_dtype=pt_type, tl_dtype_str=tl_type_str)
         if not passed:
             overall_passed = False
 
