@@ -27,8 +27,7 @@ def rope_fwd_kernel(M, block_M, num_blocks, sc_rows, hidden_size, rope_dim, head
     """Forward: out = x * cos + rotate(x) * sin
     rotate([x0,x1,x2,x3]) = [-x1, x0, -x3, x2]
     """
-    _, dim_start, row_per_vec, need_cast = _rope_kernel_base(
-        block_M, hidden_size, rope_dim, dtype)
+    _, dim_start, row_per_vec, need_cast = _rope_kernel_base(block_M, hidden_size, rope_dim, dtype)
     ACC_DTYPE = "float32"
     MASK_DTYPE = "uint32"
     x_elem_count = row_per_vec * rope_dim
@@ -61,7 +60,7 @@ def rope_fwd_kernel(M, block_M, num_blocks, sc_rows, hidden_size, rope_dim, head
                     row_sin_cos = (row_x // head_num) % sc_rows
 
                     if dim_start == 0:
-                        T.copy(x[row_x: row_x + row_per_vec, :], x_half_ub)
+                        T.copy(x[row_x : row_x + row_per_vec, :], x_half_ub)
                     else:
                         for i in T.serial(0, row_per_vec):
                             T.copy(x[row_x + i, dim_start:], x_half_ub[i, :])
@@ -93,7 +92,7 @@ def rope_fwd_kernel(M, block_M, num_blocks, sc_rows, hidden_size, rope_dim, head
                     else:
                         T.copy(x_ub, x_half_ub)
                     if dim_start == 0:
-                        T.copy(x_half_ub, x[row_x: row_x + row_per_vec, :])
+                        T.copy(x_half_ub, x[row_x : row_x + row_per_vec, :])
                     else:
                         for i in T.serial(0, row_per_vec):
                             T.copy(x_half_ub[i, :], x[row_x + i, dim_start:])
@@ -114,8 +113,7 @@ def rope_bwd_kernel(M, block_M, num_blocks, sc_rows, hidden_size, rope_dim, head
            dx[2k+1] = -sin[2k]*dy[2k]   + cos[2k+1]*dy[2k+1]
     Which is: dx = cos*dy + swap(sign_mask * sin * dy)
     """
-    _, dim_start, row_per_vec, need_cast = _rope_kernel_base(
-        block_M, hidden_size, rope_dim, dtype)
+    _, dim_start, row_per_vec, need_cast = _rope_kernel_base(block_M, hidden_size, rope_dim, dtype)
     ACC_DTYPE = "float32"
     MASK_DTYPE = "uint32"
     x_elem_count = row_per_vec * rope_dim
@@ -149,7 +147,7 @@ def rope_bwd_kernel(M, block_M, num_blocks, sc_rows, hidden_size, rope_dim, head
                     row_sin_cos = (row_x // head_num) % sc_rows
 
                     if dim_start == 0:
-                        T.copy(x[row_x: row_x + row_per_vec, :], x_half_ub)
+                        T.copy(x[row_x : row_x + row_per_vec, :], x_half_ub)
                     else:
                         for i in T.serial(0, row_per_vec):
                             T.copy(x[row_x + i, dim_start:], x_half_ub[i, :])
@@ -183,7 +181,7 @@ def rope_bwd_kernel(M, block_M, num_blocks, sc_rows, hidden_size, rope_dim, head
                     else:
                         T.copy(out_ub, x_half_ub)
                     if dim_start == 0:
-                        T.copy(x_half_ub, x[row_x: row_x + row_per_vec, :])
+                        T.copy(x_half_ub, x[row_x : row_x + row_per_vec, :])
                     else:
                         for i in T.serial(0, row_per_vec):
                             T.copy(x_half_ub[i, :], x[row_x + i, dim_start:])
@@ -204,7 +202,7 @@ tilelang_dtype_map = {
 }
 
 
-def _apply_rope_in_place(x, sin, cos, kernel_fn, rotary_mode='interleave'):
+def _apply_rope_in_place(x, sin, cos, kernel_fn, rotary_mode="interleave"):
     rope_dim = sin.shape[-1]
     org_shape = x.shape
     dtype_str = tilelang_dtype_map[x.dtype]
@@ -237,17 +235,19 @@ def _apply_rope_in_place(x, sin, cos, kernel_fn, rotary_mode='interleave'):
 
     half = rope_dim // 2
     row_idx = torch.arange(row_per_vec, dtype=torch.int64).unsqueeze(1) * rope_dim  # [row_per_vec, 1]
-    if rotary_mode == 'interleave':
+    if rotary_mode == "interleave":
         col_idx = torch.arange(rope_dim, dtype=torch.int64)
         col_idx[0::2], col_idx[1::2] = col_idx[1::2].clone(), col_idx[0::2].clone()
         sin_mask = torch.ones(rope_dim, dtype=sin.dtype, device=x.device)
         sin_mask[0::2] = -1
     else:  # 'half'
         col_idx = torch.cat([torch.arange(half, rope_dim), torch.arange(half)])
-        sin_mask = torch.cat([
-            -torch.ones(half, dtype=sin.dtype, device=x.device),
-             torch.ones(half, dtype=sin.dtype, device=x.device),
-        ])
+        sin_mask = torch.cat(
+            [
+                -torch.ones(half, dtype=sin.dtype, device=x.device),
+                torch.ones(half, dtype=sin.dtype, device=x.device),
+            ]
+        )
     mask = ((row_idx + col_idx.unsqueeze(0)).flatten() * 4).to(torch.uint32).to(x.device)
     sin = sin * sin_mask
 
@@ -274,26 +274,28 @@ class _RoPE(torch.autograd.Function):
         return dx, None, None, None
 
 
-def tilelang_rope(x, sin, cos, rotary_mode='interleave'):
+def tilelang_rope(x, sin, cos, rotary_mode="interleave"):
     return _RoPE.apply(x, sin, cos, rotary_mode)
 
 
 # --- Reference ---
 
-def torch_rope_partial(x, sin, cos, rotary_mode='interleave'):
+
+def torch_rope_partial(x, sin, cos, rotary_mode="interleave"):
     """Apply RoPE to the last rope_dim dimensions, keep the rest unchanged."""
     rope_dim = sin.shape[-1]
     dim_start = x.shape[-1] - rope_dim
 
     if dim_start == 0 and x.dim() == 3:
         import torch_npu
+
         return torch_npu.npu_rotary_mul(x, cos, sin, rotary_mode=rotary_mode)
 
     x_part = x[..., dim_start:].to(torch.float32)
     sin_f = sin.to(torch.float32)
     cos_f = cos.to(torch.float32)
 
-    if rotary_mode == 'interleave':
+    if rotary_mode == "interleave":
         # interleaved rotate: [-x1, x0, -x3, x2, ...]
         x_reshaped = x_part.reshape(*x_part.shape[:-1], -1, 2)
         x_rotated = torch.stack([-x_reshaped[..., 1], x_reshaped[..., 0]], dim=-1).flatten(-2)
@@ -310,13 +312,12 @@ def torch_rope_partial(x, sin, cos, rotary_mode='interleave'):
 
 # --- Main ---
 
-def check_case_tnd(batch_size, head_num, hidden_size, rope_dim, dtype_str="float16", rotary_mode='interleave'):
+
+def check_case_tnd(batch_size, head_num, hidden_size, rope_dim, dtype_str="float16", rotary_mode="interleave"):
     """Test TND input: x=[BS, N, D], sin/cos=[BS, 1, RD]"""
     torch_dtype = torch_dtype_map[dtype_str]
 
-    x = torch.randn(
-        (batch_size, head_num, hidden_size), device=device, dtype=torch_dtype
-    ).requires_grad_(True)
+    x = torch.randn((batch_size, head_num, hidden_size), device=device, dtype=torch_dtype).requires_grad_(True)
     sin = torch.randn((batch_size, 1, rope_dim), device=device, dtype=torch_dtype)
     cos = torch.randn((batch_size, 1, rope_dim), device=device, dtype=torch_dtype)
 
@@ -330,26 +331,15 @@ def check_case_tnd(batch_size, head_num, hidden_size, rope_dim, dtype_str="float
     out_tl.backward(dout)
     dx_tl = x.grad.clone()
 
-    fwd_ok = torch.allclose(out_tl, out_ref, rtol=1e-3, atol=1e-3)
-    bwd_ok = torch.allclose(dx_tl, dx_ref, rtol=1e-3, atol=1e-3)
-
-    tag = f"[tnd {dtype_str} {rotary_mode}]"
-    if fwd_ok and bwd_ok:
-        print(f"{tag} Forward and Backward Match!")
-    else:
-        if not fwd_ok:
-            print(f"{tag} Forward Mismatch! max diff: {(out_tl - out_ref).abs().max().item()}")
-        if not bwd_ok:
-            print(f"{tag} Backward Mismatch! max diff: {(dx_tl - dx_ref).abs().max().item()}")
+    torch.testing.assert_close(out_tl, out_ref, rtol=1e-3, atol=1e-3)
+    torch.testing.assert_close(dx_tl, dx_ref, rtol=1e-3, atol=1e-3)
 
 
-def check_case_bsnd(batch, seq_len, head_num, hidden_size, rope_dim, dtype_str="float16", rotary_mode='interleave'):
+def check_case_bsnd(batch, seq_len, head_num, hidden_size, rope_dim, dtype_str="float16", rotary_mode="interleave"):
     """Test BSND input: x=[B, S, N, D], sin/cos=[1, S, 1, RD]"""
     torch_dtype = torch_dtype_map[dtype_str]
 
-    x = torch.randn(
-        (batch, seq_len, head_num, hidden_size), device=device, dtype=torch_dtype
-    ).requires_grad_(True)
+    x = torch.randn((batch, seq_len, head_num, hidden_size), device=device, dtype=torch_dtype).requires_grad_(True)
     sin = torch.randn((1, seq_len, 1, rope_dim), device=device, dtype=torch_dtype)
     cos = torch.randn((1, seq_len, 1, rope_dim), device=device, dtype=torch_dtype)
 
@@ -363,23 +353,16 @@ def check_case_bsnd(batch, seq_len, head_num, hidden_size, rope_dim, dtype_str="
     out_tl.backward(dout)
     dx_tl = x.grad.clone()
 
-    fwd_ok = torch.allclose(out_tl, out_ref, rtol=1e-3, atol=1e-3)
-    bwd_ok = torch.allclose(dx_tl, dx_ref, rtol=1e-3, atol=1e-3)
-
-    tag = f"[bsnd {dtype_str} {rotary_mode}]"
-    if fwd_ok and bwd_ok:
-        print(f"{tag} Forward and Backward Match!")
-    else:
-        if not fwd_ok:
-            print(f"{tag} Forward Mismatch! max diff: {(out_tl - out_ref).abs().max().item()}")
-        if not bwd_ok:
-            print(f"{tag} Backward Mismatch! max diff: {(dx_tl - dx_ref).abs().max().item()}")
+    torch.testing.assert_close(out_tl, out_ref, rtol=1e-3, atol=1e-3)
+    torch.testing.assert_close(dx_tl, dx_ref, rtol=1e-3, atol=1e-3)
 
 
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument(
-        "--shape", type=int, nargs=4,
+        "--shape",
+        type=int,
+        nargs=4,
         metavar=("BS", "H", "HS", "RD"),
         default=[16, 64, 512, 256],
         help="batch_size head_num hidden_size rope_dim",
@@ -394,8 +377,8 @@ if __name__ == "__main__":
     args = parse_args()
     batch_size, head_num, hidden_size, rope_dim = args.shape
 
-    for rotary_mode in ['interleave', 'half']:
-        # Test TND: x=[BS, N, D], sin/cos=[BS, 1, RD]
+    for rotary_mode in ["interleave", "half"]:
+        # Test TND: x=[T, N, D], sin/cos=[T, 1, RD]
         for dtype_str in ["float16", "bfloat16", "float"]:
             check_case_tnd(batch_size, head_num, hidden_size, rope_dim, dtype_str, rotary_mode)
 
@@ -403,3 +386,5 @@ if __name__ == "__main__":
         B, S = 4, batch_size // 4 if batch_size >= 4 else batch_size
         for dtype_str in ["float16", "bfloat16", "float"]:
             check_case_bsnd(B, S, head_num, hidden_size, rope_dim, dtype_str, rotary_mode)
+
+    print("Kernel Output Match!")
