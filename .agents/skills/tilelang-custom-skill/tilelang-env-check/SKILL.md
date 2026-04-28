@@ -9,11 +9,15 @@ description: TileLang-Ascend 环境检查与配置验证技能。检查代码仓
 
 本技能用于验证 TileLang-Ascend 开发环境是否正确配置。包括：
 
-1. **代码仓库完整性检查**：验证代码和子模块是否完整拉取
-2. **编译安装检查**：验证是否已成功编译安装
-3. **环境变量检查**：验证必要的环境变量是否设置
+0. **Python 包依赖检查**：检查 torch 和 torch_npu 是否已安装（必须同时存在）
+1. **CANN 环境检查**：检查 ASCEND_HOME_PATH 环境变量是否设置
+2. **代码仓库完整性检查**：验证代码和子模块是否完整拉取
+3. **编译安装检查**：验证是否已成功编译安装
+4. **环境变量检查**：验证必要的环境变量是否设置
 
 **重要特性**：发现问题时，会自动调用相关 skill 进行修复，并按依赖顺序重新执行后续步骤，无需用户手动干预。
+
+**前置检查说明**：步骤 0-1 为前置检查，**只检查不修复**，检查完成后统一告知用户结果，然后继续后续检查流程。
 
 ## 触发条件
 
@@ -52,7 +56,60 @@ description: TileLang-Ascend 环境检查与配置验证技能。检查代码仓
 
 ## 检查流程
 
-### 第一步：检查代码仓库完整性
+### 前置步骤零：检查 Python 包依赖
+
+检查 torch 和 torch_npu 包是否已安装（两者必须同时存在）：
+
+```bash
+# 检查 torch 和 torch_npu
+pip list 2>/dev/null | grep -E "^torch\s|^torch_npu\s" || pip3 list 2>/dev/null | grep -E "^torch\s|^torch_npu\s"
+```
+
+**检查逻辑**：
+- 同时存在 torch 和 torch_npu：前置检查通过
+- 缺失 torch：告知用户 "未安装 torch 包"
+- 缺失 torch_npu：告知用户 "未安装 torch_npu 包"
+- 两者都缺失：告知用户 "未安装 torch 和 torch_npu 包"
+
+**重要**：此检查只报告结果，**不自动修复**。检查完成后继续下一步。
+
+### 前置步骤一：检查 CANN 环境变量
+
+检查 ASCEND_HOME_PATH 环境变量是否设置且不为空：
+
+```bash
+# 检查 ASCEND_HOME_PATH
+if [ -n "$ASCEND_HOME_PATH" ]; then
+    echo "✓ ASCEND_HOME_PATH 已设置: $ASCEND_HOME_PATH"
+else
+    echo "✗ ASCEND_HOME_PATH 未设置，请先 source CANN 环境变量"
+fi
+```
+
+**检查逻辑**：
+- ASCEND_HOME_PATH 存在且不为空：前置检查通过
+- ASCEND_HOME_PATH 未设置或为空：告知用户 "CANN 包路径未 source"
+
+**重要**：此检查只报告结果，**不自动修复**。检查完成后继续下一步。
+
+### 前置检查结果汇总
+
+在完成前置步骤 0 和 1 后，AI agent 应汇总结果告知用户：
+
+```
+========================================
+前置环境检查结果
+========================================
+[Python 包] torch: ✓ 已安装 / ✗ 未安装
+[Python 包] torch_npu: ✓ 已安装 / ✗ 未安装
+[CANN 环境] ASCEND_HOME_PATH: ✓ 已设置 / ✗ 未设置
+========================================
+```
+
+如果前置检查全部通过，告知用户 "前置环境检查通过，继续后续检查..."；
+如果前置检查存在问题，告知用户具体缺失项，然后询问用户是否继续后续检查。
+
+### 第二步：检查代码仓库完整性
 
 检查以下内容：
 - 主仓库是否存在
@@ -98,7 +155,7 @@ git submodule status
    source set_env.sh
    ```
 
-### 第二步：检查编译安装状态
+### 第三步：检查编译安装状态
 
 检查以下内容：
 - `build/` 目录是否存在
@@ -124,7 +181,7 @@ ls -la build/*.so 2>/dev/null || echo "No .so files found"
    source set_env.sh
    ```
 
-### 第三步：检查环境变量
+### 第四步：检查环境变量
 
 检查以下环境变量：
 - `TL_ROOT`：TileLang 根目录
@@ -186,6 +243,13 @@ bash .agents/skills/tilelang-custom-skill/tilelang-env-check/scripts/check_env.s
 TileLang-Ascend 环境检查
 ========================================
 
+[前置] 检查 Python 包依赖...
+✓ torch 已安装
+✓ torch_npu 已安装
+
+[前置] 检查 CANN 环境变量...
+✓ ASCEND_HOME_PATH 已设置
+
 [1/4] 检查代码仓库完整性...
 ✓ Git 仓库存在
 ✓ 子模块 tvm 存在
@@ -196,7 +260,7 @@ TileLang-Ascend 环境检查
 ✓ build 目录存在
 ✓ 编译产物存在
 
-[3/3] 检查环境变量...
+[3/4] 检查环境变量...
 ✓ TL_ROOT 已设置
 ✓ PYTHONPATH 已设置
 ✓ ACL_OP_INIT_MODE 已设置
@@ -211,21 +275,31 @@ TileLang-Ascend 环境检查
 ```
 开始
   ↓
-[1] 检查代码仓库完整性
+[前置0] 检查 Python 包依赖 (torch + torch_npu)
+  ├─ 缺失 → 告知用户，询问是否继续
+  └─ 正常 → 继续
+  ↓
+[前置1] 检查 CANN 环境变量 (ASCEND_HOME_PATH)
+  ├─ 未设置 → 告知用户，询问是否继续
+  └─ 正常 → 继续
+  ↓
+[前置结果汇总] 告知用户前置检查结果
+  ↓
+[2] 检查代码仓库完整性
   ├─ 失败 → 执行子模块修复流程 [A]
   │
   └─ 成功 → 继续
   ↓
-[2] 检查编译安装状态
+[3] 检查编译安装状态
   ├─ 失败 → 执行编译修复流程 [B]
   │
   └─ 成功 → 继续
   ↓
-[3] 检查环境变量
-  ├─ 失败 → 执行 source set_env.sh → 继续 [4]
+[4] 检查环境变量
+  ├─ 失败 → 执行 source set_env.sh → 继续 [5]
   └─ 成功 → 继续
   ↓
-[4] 运行测试验证
+[5] 运行测试验证
   ├─ 成功 → ✓ 环境正确，告知用户
   │
   └─ 失败 → 执行子模块修复流程 [A]（跳过检查，直接修复）
@@ -239,20 +313,66 @@ TileLang-Ascend 环境检查
     bash install_ascend.sh → 设置环境变量 → 测试
 ```
 
-**关键逻辑**：测试失败时，直接执行子模块修复流程 [A]，跳过重新检查，因为这样可以确保环境肯定正确。
+**关键逻辑**：
+1. 前置检查 [0-1] 只检查不修复，完成后统一告知用户结果
+2. 测试失败时，直接执行子模块修复流程 [A]，跳过重新检查，因为这样可以确保环境肯定正确。
 
 ## AI Agent 执行指南
 
 当触发此 skill 时，AI agent 应按以下步骤执行：
 
-### 步骤 1：执行检查
+### 步骤 0：检查 Python 包依赖
+
+使用 Bash 工具检查 torch 和 torch_npu：
+```bash
+pip list 2>/dev/null | grep -E "^torch\s|^torch_npu\s" || pip3 list 2>/dev/null | grep -E "^torch\s|^torch_npu\s"
+```
+
+**结果处理**：
+- 同时存在 torch 和 torch_npu：标记为通过
+- 缺失 torch：告知用户 "未安装 torch 包"
+- 缺失 torch_npu：告知用户 "未安装 torch_npu 包"
+- 两者都缺失：告知用户 "未安装 torch 和 torch_npu 包"
+
+**重要**：此检查只报告结果，**不自动修复**。
+
+### 步骤 1：检查 CANN 环境变量
+
+使用 Bash 工具检查 ASCEND_HOME_PATH：
+```bash
+echo "ASCEND_HOME_PATH: $ASCEND_HOME_PATH"
+```
+
+**结果处理**：
+- 存在且不为空：标记为通过
+- 未设置或为空：告知用户 "CANN 包路径未 source，请先 source CANN 环境变量"
+
+**重要**：此检查只报告结果，**不自动修复**。
+
+### 步骤 1.5：前置检查结果汇总
+
+汇总步骤 0 和 1 的结果，告知用户：
+
+```
+========================================
+前置环境检查结果
+========================================
+[Python 包] torch: ✓ 已安装 / ✗ 未安装
+[Python 包] torch_npu: ✓ 已安装 / ✗ 未安装
+[CANN 环境] ASCEND_HOME_PATH: ✓ 已设置 / ✗ 未设置
+========================================
+```
+
+如果前置检查存在问题，询问用户是否继续后续检查。
+
+### 步骤 2：执行代码仓库检查
 
 使用 Bash 工具运行检查脚本：
 ```bash
 bash .agents/skills/tilelang-custom-skill/tilelang-env-check/scripts/check_env.sh
 ```
 
-### 步骤 2：解析结果并按依赖顺序自动修复
+### 步骤 3：解析结果并按依赖顺序自动修复
 
 根据检查脚本的输出结果：
 
@@ -263,26 +383,26 @@ bash .agents/skills/tilelang-custom-skill/tilelang-env-check/scripts/check_env.s
 2. 等待子模块拉取完成
 3. **必须重新编译**：`bash install_ascend.sh`（即使之前有编译产物）
 4. **必须设置环境变量**：`source set_env.sh`
-5. 跳转到 **步骤 5** 运行测试验证
+5. 跳转到 **步骤 4** 运行测试验证
 
 **场景 B：编译产物不存在（子模块完整）**
 
 如果显示 build 目录不存在或编译产物不存在，但子模块完整：
 1. 执行编译：`bash install_ascend.sh`
 2. **必须设置环境变量**：`source set_env.sh`
-3. 跳转到 **步骤 5** 运行测试验证
+3. 跳转到 **步骤 4** 运行测试验证
 
 **场景 C：环境变量未设置**
 
 如果仅显示环境变量未设置：
 1. 执行：`source set_env.sh`
-2. 跳转到 **步骤 5** 运行测试验证
+2. 跳转到 **步骤 4** 运行测试验证
 
 **场景 D：所有检查通过**
 
-直接跳转到 **步骤 5** 运行测试验证。
+直接跳转到 **步骤 4** 运行测试验证。
 
-### 步骤 5：运行测试验证
+### 步骤 4：运行测试验证
 
 执行简单测试脚本验证环境是否真正可用：
 ```bash
@@ -305,32 +425,51 @@ python .agents/skills/tilelang-custom-skill/tilelang-env-check/scripts/quick_ver
 
 **重要**：测试失败时，不要重新检查代码仓库完整性，直接执行子模块修复流程，这样可以确保环境肯定正确。
 
-### 步骤 6：告知用户
+### 步骤 5：告知用户
 
 - 如果测试通过：告知用户 "环境已正确配置，可以开始使用"
 - 如果多次重试后仍失败：调用 `tilelang-error-fixer` skill 进行诊断
 
 ## 常见问题
 
-### 问题1：子模块拉取失败
+### 问题0：Python 包缺失（torch 或 torch_npu）
+
+**处理方式**：只报告结果，不自动修复。告知用户：
+- 缺失 torch："请安装 torch 包：pip install torch"
+- 缺失 torch_npu："请安装 torch_npu 包：pip install torch-npu"
+- 两者都缺失："请安装 torch 和 torch_npu 包"
+
+### 问题1：CANN 环境变量未设置
+
+**处理方式**：只报告结果，不自动修复。告知用户：
+- "请先 source CANN 环境变量（通常为 source /usr/local/Ascend/ascend-toolkit/set_env.sh）"
+
+### 问题2：子模块拉取失败
 
 **自动处理**：
 1. 调用 `tilelang-submodule-pull` skill
 2. 拉取成功后重新编译
 3. 设置环境变量
 
-### 问题2：编译失败
+### 问题2：子模块拉取失败
+
+**自动处理**：
+1. 调用 `tilelang-submodule-pull` skill
+2. 拉取成功后重新编译
+3. 设置环境变量
+
+### 问题3：编译失败
 
 **自动处理**：
 1. 执行 `bash install_ascend.sh`
 2. 如果失败则调用 `tilelang-error-fixer` skill 诊断
 3. 编译成功后设置环境变量
 
-### 问题3：环境变量未设置
+### 问题4：环境变量未设置
 
 **自动处理**：执行 `source set_env.sh`
 
-### 问题4：测试运行失败
+### 问题5：测试运行失败
 
 **自动处理**：
 1. **直接执行子模块修复流程**，跳过重新检查：
@@ -343,11 +482,12 @@ python .agents/skills/tilelang-custom-skill/tilelang-env-check/scripts/quick_ver
 
 ## 注意事项
 
-1. 每次新开终端都需要重新设置环境变量（运行 `source set_env.sh`）
-2. 编译安装只需执行一次，除非代码有更新
-3. **如果子模块缺失，必须重新编译，旧产物不可用**
-4. AI agent 应主动修复问题，无需等待用户手动操作
-5. 测试用例需要 NPU 设备可用
+1. 前置检查（Python 包、CANN 环境变量）只报告结果，**不自动修复**
+2. 每次新开终端都需要重新设置环境变量（运行 `source set_env.sh`）
+3. 编译安装只需执行一次，除非代码有更新
+4. **如果子模块缺失，必须重新编译，旧产物不可用**
+5. AI agent 应主动修复问题（前置检查除外），无需等待用户手动操作
+6. 测试用例需要 NPU 设备可用
 
 ## 相关 Skills
 
