@@ -5,7 +5,7 @@ name: TileLang-Ascend CI
 on:
   push:
     branches:
-      - ascendc_pto*                           # ascendc_pto 分支
+      - ascendc_pto                           # ascendc_pto 分支
     paths-ignore:                              # 以下路径的修改不触发 CI
       - '**.md'                                # Markdown 文件
       - '**.png'
@@ -14,21 +14,16 @@ on:
 
   pull_request:
     branches:
-      - ascendc_pto*
+      - ascendc_pto
     paths-ignore:
       - '**.md'
       - '**.png'
       - 'docs/**'
       - 'images/**'
 
-  # 手动触发（通过 GitHub Actions 页面点击）
+  # 手动触发（通过 GitHub Actions 页面点击，只能编当前分支最新的代码，不能编PR的）
   workflow_dispatch:
     inputs:
-      run_tests:
-        description: 'Run benchmark tests'     # 是否运行测试
-        required: false
-        default: true
-        type: boolean
       full_build:                          # 是否全量编译
         description: 'Force full build (no cache)'
         required: false
@@ -37,6 +32,9 @@ on:
 
   schedule:
     - cron: '0 18 * * *' # 每天 UTC 18:00 运行 (北京时间凌晨 2:00)
+
+  issue_comment:
+    types: [created]
 
 concurrency:
   # PR 场景：按 PR 分支名分组，同一 PR 的新 push 共享同一组
@@ -49,7 +47,11 @@ jobs:
   test:
     name: Benchmark Tests (Ascend NPU)
     runs-on: [self-hosted, Linux, X64, ascend_910b] 
-    if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.run_tests == 'true' }}
+    if: >-
+      github.event_name != 'issue_comment' ||  
+      (github.event_name == 'issue_comment' &&
+       github.event.issue.pull_request &&
+       contains(github.event.comment.body, 'FullBuildTest'))
     timeout-minutes: 60            # 1小时超时失败
     env:
       FULL_BUILD: ${{ github.event_name == 'schedule' || github.event.inputs.full_build == 'true' }}
