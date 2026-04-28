@@ -22,7 +22,7 @@ def kernel_embedding_1d(seq_len, table_len, dim, block_s):
     idx_dtype = "int32"
 
     @T.prim_func
-    def embedding1d(
+    def embedding1dIndexed(
         indices: T.Tensor((seq_len), idx_dtype),
         table: T.Tensor((table_len, dim), dtype),
         output: T.Tensor((seq_len, dim), dtype),
@@ -40,7 +40,7 @@ def kernel_embedding_1d(seq_len, table_len, dim, block_s):
 
             T.copy(output_shared, output[cid * block_s, 0])
 
-    return embedding1d
+    return embedding1dIndexed
 
 
 @pytest.mark.parametrize("seq_len, table_len, dim, block_s", INDEXED_LOAD_CASES)

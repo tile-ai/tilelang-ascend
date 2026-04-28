@@ -20,7 +20,7 @@ COPY_1D_CASES = [(1024, 256)]
 @tilelang.jit(target="npuir")
 def copy_1d_demo(L, block_L, dtype="bfloat16", calc_type="float32"):
     @T.prim_func
-    def simple_copy_1d(
+    def simple_copy_1d_demo(
         In: T.Tensor((L,), dtype),
         A: T.Tensor((L,), dtype),
         B: T.Tensor((L,), dtype),
@@ -43,13 +43,13 @@ def copy_1d_demo(L, block_L, dtype="bfloat16", calc_type="float32"):
             T.copy(B_frag, B[start_idx])
             T.copy(out_frag, C[start_idx])
 
-    return simple_copy_1d
+    return simple_copy_1d_demo
 
 
 @tilelang.jit(target="npuir")
 def copy_1d_bf16(L, block_L, dtype="bfloat16"):
     @T.prim_func
-    def simple_copy_1d(
+    def simple_copy_1d_bf16(
         In: T.Tensor((L,), dtype),
         A: T.Tensor((L,), dtype),
         B: T.Tensor((L,), dtype),
@@ -72,7 +72,7 @@ def copy_1d_bf16(L, block_L, dtype="bfloat16"):
             T.copy(B_frag, B[start_idx])
             T.copy(out_frag, C[start_idx])
 
-    return simple_copy_1d
+    return simple_copy_1d_bf16
 
 
 @pytest.mark.parametrize("dtype", DTYPES)

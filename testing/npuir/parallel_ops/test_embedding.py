@@ -34,10 +34,10 @@ def kernel_embedding_1d(dim, block):
     table_len = T.symbolic("tableLen")
 
     @T.prim_func
-    def embedding1d(
-            indices: T.Tensor((seq_len), idx_dtype),
-            table: T.Tensor((table_len, dim), dtype),
-            output: T.Tensor((seq_len, dim), dtype),
+    def embedding1dParallel(
+        indices: T.Tensor((seq_len), idx_dtype),
+        table: T.Tensor((table_len, dim), dtype),
+        output: T.Tensor((seq_len, dim), dtype),
     ):
         with T.Kernel(T.ceildiv(seq_len, block), is_npu=True) as (cid, _):
             real_block = T.min(block, seq_len - cid * block)
@@ -54,9 +54,12 @@ def kernel_embedding_1d(dim, block):
             for i, j in T.Parallel(real_block, dim):
                 output_shared[i, j] = table[indices_shared[i], j]
 
-            T.copy(output_shared[:real_block, :], output[cid * block:cid * block + real_block, :])
+            T.copy(
+                output_shared[:real_block, :],
+                output[cid * block : cid * block + real_block, :],
+            )
 
-    return embedding1d
+    return embedding1dParallel
 
 
 @pytest.mark.parametrize("seq_len, table_len, dim, block, seed", EMBEDDING_CASES)
@@ -70,7 +73,9 @@ def test_parallel_embedding_1d(seq_len, table_len, dim, block, seed):
     idx_dtype = torch.int32
     dtype = torch.float32
 
-    indices = torch.randint(size=(seq_len,), low=0, high=table_len, dtype=idx_dtype, device="npu")
+    indices = torch.randint(
+        size=(seq_len,), low=0, high=table_len, dtype=idx_dtype, device="npu"
+    )
     table = torch.randn(size=(table_len, dim), dtype=dtype, device="npu")
     output = torch.zeros(size=(seq_len, dim), dtype=dtype, device="npu")
 
