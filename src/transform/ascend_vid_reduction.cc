@@ -67,7 +67,6 @@ private:
 
   // Modify buffer shape
   Buffer ModifyBufferShape(const Buffer &buffer) {
-    return buffer;
     if (buffer->shape.empty()) {
       return buffer;
     }
@@ -526,5 +525,3 @@ TVM_REGISTER_GLOBAL("tl.transform.AscendVidReduction")
 
 } // namespace tl
 } // namespace tvm
-
-
