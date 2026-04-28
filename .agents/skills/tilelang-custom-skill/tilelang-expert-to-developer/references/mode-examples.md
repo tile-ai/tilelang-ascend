@@ -139,7 +139,7 @@ def flash_attention_fwd(...):
 
 ## 5. 混合模式 — Softmax
 
-混合模式典型场景：Developer pass_configs + Expert 计算原语（`T.tile.fill/max/sub/exp/div`）
+混合模式典型场景：Developer pass_configs + Ascend 专属 `T.tile` 原语（`T.tile.fill/max/sub/exp/div`）
 
 ```python
 pass_configs = {

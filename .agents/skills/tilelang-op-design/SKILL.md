@@ -147,8 +147,6 @@ description: "根据算子需求生成 TileLang-Ascend 算子设计文档（desi
     内存: GM→UB→GM
 ```
 
----
-
 ## 5. 质量自检清单
 
 生成 `design.md` 后，逐项检查：
