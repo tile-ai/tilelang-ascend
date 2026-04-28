@@ -19,7 +19,6 @@
 #include "../op/ascend.h"
 #include "common/operation_config.h"
 
-
 namespace tvm {
 namespace tl {
 

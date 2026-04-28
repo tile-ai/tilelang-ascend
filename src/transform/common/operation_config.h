@@ -5,9 +5,10 @@
  * \file operation_config.h
  * \brief Operation configuration
  */
+#include <tvm/tir/op.h>
+
 #include <sstream>
 #include <string>
-#include <tvm/tir/op.h>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -26,9 +27,8 @@ struct OperationConfig {
     oss << "OperationConfig{";
     oss << "buffer_accesses: [";
     bool first_access = true;
-    for (const auto &access : buffer_accesses) {
-      if (!first_access)
-        oss << ", ";
+    for (const auto& access : buffer_accesses) {
+      if (!first_access) oss << ", ";
       oss << "(" << access.first << ", '" << access.second << "')";
       first_access = false;
     }
@@ -39,7 +39,7 @@ struct OperationConfig {
   }
 };
 
-inline const std::unordered_map<std::string, OperationConfig> &
+inline const std::unordered_map<std::string, OperationConfig>&
 GetOperationConfig() {
   static std::unordered_map<std::string, OperationConfig> operation_config_ = {
       {"copy_gm_to_l1", {{{0, "read"}, {1, "write"}}, "PIPE_MTE2"}},
@@ -265,7 +265,7 @@ GetOperationConfig() {
   return operation_config_;
 }
 
-inline const std::unordered_map<std::string, std::string> &GetEventMapping() {
+inline const std::unordered_map<std::string, std::string>& GetEventMapping() {
   static std::unordered_map<std::string, std::string> event_mapping_ = {
       {"PIPE_MTE2_PIPE_MTE1", "MTE2_MTE1"},
       {"PIPE_MTE1_PIPE_MTE2", "MTE1_MTE2"},
@@ -314,7 +314,7 @@ const std::unordered_set<std::string> kScopesToFlatten = {
 const std::unordered_map<std::string, int> kScopeForAlignment = {
     {"shared", 32 * 8}};
 
-const std::unordered_map<const tvm::OpNode *, int64_t> ascendc_tmp_arg_ops = {
+const std::unordered_map<const tvm::OpNode*, int64_t> ascendc_tmp_arg_ops = {
     {tl::ascend_clamp().get(), 3},
     {tl::ascend_clamp_max().get(), 3},
     {tl::ascend_clamp_min().get(), 3},
@@ -338,7 +338,7 @@ const std::unordered_map<const tvm::OpNode *, int64_t> ascendc_tmp_arg_ops = {
 // However, among these, only the reduce and bitwise_xor operators actually
 // require tmp. For other APIs, tmp is retained to keep the codegen logic for
 // obtaining API arguments unchanged.
-const std::unordered_map<const tvm::OpNode *, int64_t> pto_tmp_arg_ops = {
+const std::unordered_map<const tvm::OpNode*, int64_t> pto_tmp_arg_ops = {
     {tl::ascend_clamp().get(), 3},       {tl::ascend_clamp_max().get(), 3},
     {tl::ascend_clamp_min().get(), 3},   {tl::ascend_reduce().get(), 3},
     {tl::ascend_sigmoid().get(), 2},     {tl::ascend_pow().get(), 3},
@@ -347,5 +347,5 @@ const std::unordered_map<const tvm::OpNode *, int64_t> pto_tmp_arg_ops = {
     {tl::ascend_select().get(), 3},      {tl::ascend_gather_mask().get(), 4},
 };
 
-} // namespace tl
-} // namespace tvm
+}  // namespace tl
+}  // namespace tvm

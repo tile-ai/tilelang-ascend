@@ -24,7 +24,6 @@
 #include "arith/pattern_match.h"
 #include "codegen_ascend_pto.h"
 
-
 #define DEC_STR_TO_HEX_STR(dec_str)                                    \
   ([](const std::string& s) {                                          \
     std::stringstream ss;                                              \
