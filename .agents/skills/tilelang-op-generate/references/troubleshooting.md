@@ -101,8 +101,6 @@ T.tile.max(dst, src0, src1)  # dst = max(src0, src1)
    T.tile.exp(a_ub, a_ub)
    ```
 
-   `T.tile.atomic_add(dst_gm, src_local)` 也可在 Developer / 混合模式下使用；重点检查 `dst` 是否为 GM、`src` 是否为本地 tensor，以及输出 GM 是否已经按语义初始化。
-
 2. 用小数据验证公式：
    ```python
    # 使用小shape测试

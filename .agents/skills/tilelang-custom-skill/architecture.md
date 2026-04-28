@@ -69,7 +69,6 @@ tilelang-ascend/
 | `T.alloc_L0A/L0B/L0C` | L0 寄存器 |
 | `T.gemm` / `T.mma` | 矩阵乘法加速器 |
 | `T.Parallel` | 向量化指令 |
-| `T.tile.atomic_add` | UB 到 GM 的 DMA 原子累加写回 |
 | `T.Pipelined` | 流水线调度 |
 
 ## 核心 API
@@ -77,7 +76,6 @@ tilelang-ascend/
 - `@tilelang.jit` — JIT 编译装饰器
 - `T.alloc_L1/ub/L0A/L0B/L0C` — 多级内存分配
 - `T.copy` — 数据搬运
-- `T.tile.atomic_add` — 本地 tensor 到 GM 的原子累加写回
 - `T.gemm` / `T.mma` — 矩阵计算
 - `T.Parallel` — 向量化
 - `T.Pipelined` — 流水线

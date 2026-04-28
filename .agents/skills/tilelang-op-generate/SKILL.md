@@ -203,4 +203,3 @@ torch.testing.assert_close(output.cpu(), ref_output.cpu(), rtol=rtol, atol=atol)
 | 5 | Developer 模式有对应的 `pass_configs` |
 | 6 | 测试包含至少 2 个配置（小规模 + 典型规模） |
 | 7 | golden 函数使用 PyTorch 标准实现 |
-| 8 | 若使用 `T.tile.atomic_add`，确认 `dst` 是 GM、`src` 是本地 tensor，并在测试中先清零输出 |

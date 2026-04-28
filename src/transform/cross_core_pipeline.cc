@@ -209,9 +209,8 @@ public:
     Call call;
   };
 
-  const std::vector<std::string> IS_WRITE_GM = {"copy_l0c_to_gm",
-                                                "copy_ub_to_gm",
-                                                "atomic_add_ub_to_gm"};
+  const std::vector<std::string> IS_WRITE_GM = {
+      "copy_l0c_to_gm", "copy_ub_to_gm", "atomic_add_ub_to_gm"};
 
   LoopAnalyzer(const ForNode *pipeline_loop,
                const Map<Var, String> location_map)

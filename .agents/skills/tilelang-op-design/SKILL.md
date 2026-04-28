@@ -111,7 +111,7 @@ description: "根据算子需求生成 TileLang-Ascend 算子设计文档（desi
 
 ## 4. 算子特征分析决策树
 
-**重要**：`T.reduce_sum/max/min` 和 `T.tile.*` 在 Developer 和 Expert 模式下**都可使用**。模式选择取决于是否需要手动控制内存层级和同步，而非使用了哪个 API。`T.tile.atomic_add` 是 Ascend 专属 local tensor -> GM 原子累加写回；不要把它当作主仓全局 `T.atomic_add` 使用。
+**重要**：`T.reduce_sum/max/min` 和 `T.tile.*` 在 Developer 和 Expert 模式下**都可使用**。模式选择取决于是否需要手动控制内存层级和同步，而非使用了哪个 API。
 
 ```
 算子数学公式
@@ -146,10 +146,6 @@ description: "根据算子需求生成 TileLang-Ascend 算子设计文档（desi
     API: T.reduce_sum / T.reduce_max / T.reduce_min
     内存: GM→UB→GM
 ```
-
-若多个 block/core 需要把本地 partial result 累加到同一 GM 输出，优先考虑 `T.tile.atomic_add(dst_gm, src_local)`。设计中需写明 GM 初始化策略，通常是 kernel 调用前或 kernel 内先清零输出。
-
----
 
 ## 5. 质量自检清单
 
