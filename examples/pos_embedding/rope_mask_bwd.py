@@ -204,7 +204,7 @@ tilelang_dtype_map = {
 }
 
 
-def _apply_rope_in_place(x, sin, cos, kernel_fn):
+def _apply_rope_in_place(x, sin, cos, kernel_fn, rotary_mode='interleave'):
     rope_dim = sin.shape[-1]
     org_shape = x.shape
     dtype_str = tilelang_dtype_map[x.dtype]
@@ -235,14 +235,20 @@ def _apply_rope_in_place(x, sin, cos, kernel_fn):
     m_num = total_rows // block_M
     num_blocks = min(m_num, NUM_CORES)
 
-    idx = torch.arange(rope_dim * row_per_vec, dtype=torch.int64, device="cpu")
-    mask = torch.empty(rope_dim * row_per_vec, dtype=torch.uint32, device="cpu")
-    mask[0::2] = idx[1::2].to(torch.uint32)
-    mask[1::2] = idx[0::2].to(torch.uint32)
-    mask = (mask * 4).to(x.device)
-
-    sin_mask = torch.ones(rope_dim, dtype=sin.dtype, device=x.device)
-    sin_mask[0::2] = -1
+    half = rope_dim // 2
+    row_idx = torch.arange(row_per_vec, dtype=torch.int64).unsqueeze(1) * rope_dim  # [row_per_vec, 1]
+    if rotary_mode == 'interleave':
+        col_idx = torch.arange(rope_dim, dtype=torch.int64)
+        col_idx[0::2], col_idx[1::2] = col_idx[1::2].clone(), col_idx[0::2].clone()
+        sin_mask = torch.ones(rope_dim, dtype=sin.dtype, device=x.device)
+        sin_mask[0::2] = -1
+    else:  # 'half'
+        col_idx = torch.cat([torch.arange(half, rope_dim), torch.arange(half)])
+        sin_mask = torch.cat([
+            -torch.ones(half, dtype=sin.dtype, device=x.device),
+             torch.ones(half, dtype=sin.dtype, device=x.device),
+        ])
+    mask = ((row_idx + col_idx.unsqueeze(0)).flatten() * 4).to(torch.uint32).to(x.device)
     sin = sin * sin_mask
 
     kernel = kernel_fn(total_rows, block_M, num_blocks, sc_rows, hidden_size, rope_dim, head_num, dtype=dtype_str)
@@ -253,46 +259,47 @@ def _apply_rope_in_place(x, sin, cos, kernel_fn):
 
 class _RoPE(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, x, sin, cos):
+    def forward(ctx, x, sin, cos, rotary_mode):
         x_out = x.clone()
-        _apply_rope_in_place(x_out, sin, cos, rope_fwd_kernel)
+        _apply_rope_in_place(x_out, sin, cos, rope_fwd_kernel, rotary_mode)
         ctx.save_for_backward(sin, cos)
+        ctx.rotary_mode = rotary_mode
         return x_out
 
     @staticmethod
     def backward(ctx, grad_output):
         sin, cos = ctx.saved_tensors
         dx = grad_output.clone()
-        _apply_rope_in_place(dx, sin, cos, rope_bwd_kernel)
-        return dx, None, None
+        _apply_rope_in_place(dx, sin, cos, rope_bwd_kernel, ctx.rotary_mode)
+        return dx, None, None, None
 
 
-def tilelang_rope(x, sin, cos):
-    return _RoPE.apply(x, sin, cos)
+def tilelang_rope(x, sin, cos, rotary_mode='interleave'):
+    return _RoPE.apply(x, sin, cos, rotary_mode)
 
 
 # --- Reference ---
 
-def torch_rope_partial(x, sin, cos):
+def torch_rope_partial(x, sin, cos, rotary_mode='interleave'):
     """Apply RoPE to the last rope_dim dimensions, keep the rest unchanged."""
     rope_dim = sin.shape[-1]
     dim_start = x.shape[-1] - rope_dim
 
     if dim_start == 0 and x.dim() == 3:
         import torch_npu
-        return torch_npu.npu_rotary_mul(x, cos, sin, rotary_mode='interleave')
+        return torch_npu.npu_rotary_mul(x, cos, sin, rotary_mode=rotary_mode)
 
     x_part = x[..., dim_start:].to(torch.float32)
     sin_f = sin.to(torch.float32)
     cos_f = cos.to(torch.float32)
 
-    # broadcast sin/cos to match x_part shape
-    # TND x: [BS, N, D], sin/cos: [BS, 1, RD]  -> already broadcastable
-    # BSND x: [B, S, N, D], sin/cos: [1, S, 1, RD] -> already broadcastable
-
-    # interleaved rotate: [-x1, x0, -x3, x2, ...]
-    x_reshaped = x_part.reshape(*x_part.shape[:-1], -1, 2)
-    x_rotated = torch.stack([-x_reshaped[..., 1], x_reshaped[..., 0]], dim=-1).flatten(-2)
+    if rotary_mode == 'interleave':
+        # interleaved rotate: [-x1, x0, -x3, x2, ...]
+        x_reshaped = x_part.reshape(*x_part.shape[:-1], -1, 2)
+        x_rotated = torch.stack([-x_reshaped[..., 1], x_reshaped[..., 0]], dim=-1).flatten(-2)
+    else:  # 'half'
+        half = rope_dim // 2
+        x_rotated = torch.cat([-x_part[..., half:], x_part[..., :half]], dim=-1)
 
     rope_out = (x_part * cos_f + x_rotated * sin_f).to(x.dtype)
 
@@ -303,7 +310,7 @@ def torch_rope_partial(x, sin, cos):
 
 # --- Main ---
 
-def check_case_tnd(batch_size, head_num, hidden_size, rope_dim, dtype_str="float16"):
+def check_case_tnd(batch_size, head_num, hidden_size, rope_dim, dtype_str="float16", rotary_mode='interleave'):
     """Test TND input: x=[BS, N, D], sin/cos=[BS, 1, RD]"""
     torch_dtype = torch_dtype_map[dtype_str]
 
@@ -314,19 +321,19 @@ def check_case_tnd(batch_size, head_num, hidden_size, rope_dim, dtype_str="float
     cos = torch.randn((batch_size, 1, rope_dim), device=device, dtype=torch_dtype)
 
     x_ref = x.clone().detach().requires_grad_(True)
-    out_ref = torch_rope_partial(x_ref, sin, cos)
+    out_ref = torch_rope_partial(x_ref, sin, cos, rotary_mode)
     dout = torch.randn_like(out_ref)
     out_ref.backward(dout)
     dx_ref = x_ref.grad.clone()
 
-    out_tl = tilelang_rope(x, sin, cos)
+    out_tl = tilelang_rope(x, sin, cos, rotary_mode)
     out_tl.backward(dout)
     dx_tl = x.grad.clone()
 
     fwd_ok = torch.allclose(out_tl, out_ref, rtol=1e-3, atol=1e-3)
     bwd_ok = torch.allclose(dx_tl, dx_ref, rtol=1e-3, atol=1e-3)
 
-    tag = f"[tnd {dtype_str}]"
+    tag = f"[tnd {dtype_str} {rotary_mode}]"
     if fwd_ok and bwd_ok:
         print(f"{tag} Forward and Backward Match!")
     else:
@@ -336,7 +343,7 @@ def check_case_tnd(batch_size, head_num, hidden_size, rope_dim, dtype_str="float
             print(f"{tag} Backward Mismatch! max diff: {(dx_tl - dx_ref).abs().max().item()}")
 
 
-def check_case_bsnd(batch, seq_len, head_num, hidden_size, rope_dim, dtype_str="float16"):
+def check_case_bsnd(batch, seq_len, head_num, hidden_size, rope_dim, dtype_str="float16", rotary_mode='interleave'):
     """Test BSND input: x=[B, S, N, D], sin/cos=[1, S, 1, RD]"""
     torch_dtype = torch_dtype_map[dtype_str]
 
@@ -347,19 +354,19 @@ def check_case_bsnd(batch, seq_len, head_num, hidden_size, rope_dim, dtype_str="
     cos = torch.randn((1, seq_len, 1, rope_dim), device=device, dtype=torch_dtype)
 
     x_ref = x.clone().detach().requires_grad_(True)
-    out_ref = torch_rope_partial(x_ref, sin, cos)
+    out_ref = torch_rope_partial(x_ref, sin, cos, rotary_mode)
     dout = torch.randn_like(out_ref)
     out_ref.backward(dout)
     dx_ref = x_ref.grad.clone()
 
-    out_tl = tilelang_rope(x, sin, cos)
+    out_tl = tilelang_rope(x, sin, cos, rotary_mode)
     out_tl.backward(dout)
     dx_tl = x.grad.clone()
 
     fwd_ok = torch.allclose(out_tl, out_ref, rtol=1e-3, atol=1e-3)
     bwd_ok = torch.allclose(dx_tl, dx_ref, rtol=1e-3, atol=1e-3)
 
-    tag = f"[bsnd {dtype_str}]"
+    tag = f"[bsnd {dtype_str} {rotary_mode}]"
     if fwd_ok and bwd_ok:
         print(f"{tag} Forward and Backward Match!")
     else:
@@ -387,11 +394,12 @@ if __name__ == "__main__":
     args = parse_args()
     batch_size, head_num, hidden_size, rope_dim = args.shape
 
-    # Test TND: x=[BS, N, D], sin/cos=[BS, 1, RD]
-    for dtype_str in ["float16", "bfloat16", "float"]:
-        check_case_tnd(batch_size, head_num, hidden_size, rope_dim, dtype_str)
+    for rotary_mode in ['interleave', 'half']:
+        # Test TND: x=[BS, N, D], sin/cos=[BS, 1, RD]
+        for dtype_str in ["float16", "bfloat16", "float"]:
+            check_case_tnd(batch_size, head_num, hidden_size, rope_dim, dtype_str, rotary_mode)
 
-    # Test BSND: x=[B, S, N, D], sin/cos=[1, S, 1, RD]
-    B, S = 4, batch_size // 4 if batch_size >= 4 else batch_size
-    for dtype_str in ["float16", "bfloat16", "float"]:
-        check_case_bsnd(B, S, head_num, hidden_size, rope_dim, dtype_str)
+        # Test BSND: x=[B, S, N, D], sin/cos=[1, S, 1, RD]
+        B, S = 4, batch_size // 4 if batch_size >= 4 else batch_size
+        for dtype_str in ["float16", "bfloat16", "float"]:
+            check_case_bsnd(B, S, head_num, hidden_size, rope_dim, dtype_str, rotary_mode)
