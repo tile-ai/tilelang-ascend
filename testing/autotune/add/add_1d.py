@@ -44,7 +44,7 @@ def run_single_shape(shape, log_dir: Path):
                 arch = Ascend()
 
                 # 1D template
-                carver_template = carver.ElementwiseFixTemplate(
+                carver_template = carver.ElementwiseTemplate(
                     shape=[M],
                     dtype="float16",
                 ).with_arch(arch)

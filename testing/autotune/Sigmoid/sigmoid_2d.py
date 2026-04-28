@@ -1,6 +1,4 @@
 import os
-import sys
-import argparse
 import traceback
 from contextlib import redirect_stdout, redirect_stderr
 from pathlib import Path
@@ -27,89 +25,90 @@ SHAPES = [
     (1024, 1048576),
 ]
 
+
 def run_single_shape(shape, log_dir: Path):
     tilelang.cache.clear_cache()
 
     log_dir.mkdir(parents=True, exist_ok=True)
     log_file = log_dir / "log.log"
 
-    with open(log_file, "w") as f:
-        with redirect_stdout(f), redirect_stderr(f):
-            print("=" * 80)
-            print("Running shape:", shape)
-            print("=" * 80)
+    with open(log_file, "w") as f, redirect_stdout(f), redirect_stderr(f):
+        print("=" * 80)
+        print("Running shape:", shape)
+        print("=" * 80)
 
-            try:
-                M, N = shape if len(shape) == 2 else (shape[0], 1)
+        try:
+            M, N = shape if len(shape) == 2 else (shape[0], 1)
 
-                def ref_prog(x):
-                    return torch.sigmoid(x)
+            def ref_prog(x):
+                return torch.sigmoid(x)
 
-                def get_config():
-                    arch = Ascend()
-                    carver_template = carver.ElementwiseFixTemplate(
-                        shape=[M, N],
-                        dtype="float16",
-                    ).with_arch(arch)
+            def get_config():
+                arch = Ascend()
+                carver_template = carver.ElementwiseTemplate(
+                    shape=[M, N],
+                    dtype="float16",
+                ).with_arch(arch)
 
-                    hints = carver_template.recommend_hints(topk=20)
-                    configs = []
+                hints = carver_template.recommend_hints(topk=20)
+                configs = []
 
-                    for hint in hints:
-                        print("Hint:", hint)
-                        configs.append({
+                for hint in hints:
+                    print("Hint:", hint)
+                    configs.append(
+                        {
                             "block_M": hint.block[0],
                             "block_N": hint.block[1],
-                        })
+                        }
+                    )
 
-                    return configs
+                return configs
 
-                def supply_prog(params):
-                    torch.manual_seed(0)
-                    return [
-                        torch.randn(M, N, dtype=torch.float16).npu(),
-                    ]
+            def supply_prog(params):
+                torch.manual_seed(0)
+                return [
+                    torch.randn(M, N, dtype=torch.float16).npu(),
+                ]
 
-                @tilelang.autotune(
-                    configs=get_config(),
-                    ref_prog=ref_prog,
-                    supply_prog=supply_prog,
-                    atol=1e-2,
-                    rtol=1e-2,
-                )
-                @tilelang.jit(out_idx=[-1], target="npuir")
-                def compute_sigmoid(M, N, block_M, block_N):
-                    @T.prim_func
-                    def sigmoid_2D(
-                        A: T.Tensor((M, N), "float16"),
-                        B: T.Tensor((M, N), "float16"),
-                    ):
-                        with T.Kernel(
-                            T.ceildiv(N, block_N) * T.ceildiv(M, block_M),
-                            is_npu=True,
-                        ) as (cid, _):
+            @tilelang.autotune(
+                configs=get_config(),
+                ref_prog=ref_prog,
+                supply_prog=supply_prog,
+                atol=1e-2,
+                rtol=1e-2,
+            )
+            @tilelang.jit(out_idx=[-1], target="npuir")
+            def compute_sigmoid(M, N, block_M, block_N):
+                @T.prim_func
+                def sigmoid_2D(
+                    A: T.Tensor((M, N), "float16"),
+                    B: T.Tensor((M, N), "float16"),
+                ):
+                    with T.Kernel(
+                        T.ceildiv(N, block_N) * T.ceildiv(M, block_M),
+                        is_npu=True,
+                    ) as (cid, _):
+                        by = cid // T.ceildiv(N, block_N)
+                        bx = cid % T.ceildiv(N, block_N)
 
-                            by = cid // T.ceildiv(N, block_N)
-                            bx = cid % T.ceildiv(N, block_N)
+                        A_shared = T.alloc_shared((block_M, block_N), "float16")
+                        B_local = T.alloc_fragment((block_M, block_N), "float16")
 
-                            A_shared = T.alloc_shared((block_M, block_N), "float16")
-                            B_local = T.alloc_fragment((block_M, block_N), "float16")
+                        T.copy(A[by * block_M, bx * block_N], A_shared)
+                        T.npuir_sigmoid(A_shared, B_local)
+                        T.copy(B_local, B[by * block_M, bx * block_N])
 
-                            T.copy(A[by * block_M, bx * block_N], A_shared)
-                            T.npuir_sigmoid(A_shared, B_local)
-                            T.copy(B_local, B[by * block_M, bx * block_N])
+                return sigmoid_2D
 
-                    return sigmoid_2D
+            func = compute_sigmoid(M, N)
 
-                func = compute_sigmoid(M, N)
+            print("\nBest Config:")
+            print(func.get_tuner_result())
+            print("\nTest passed!")
 
-                print("\nBest Config:")
-                print(func.get_tuner_result())
-                print("\nTest passed!")
-
-            except Exception:
-                print("\nERROR OCCURRED\n")
-                traceback.print_exc()
+        except Exception:
+            print("\nERROR OCCURRED\n")
+            traceback.print_exc()
 
     print(f"Finished shape {shape}, log saved to {log_file}")
 
@@ -122,6 +121,7 @@ def main():
         shape_str = "x".join(map(str, shape))
         log_dir = root_log_dir / shape_str
         run_single_shape(shape, log_dir)
+
 
 if __name__ == "__main__":
     main()

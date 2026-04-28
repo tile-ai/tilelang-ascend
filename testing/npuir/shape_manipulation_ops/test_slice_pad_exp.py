@@ -17,7 +17,7 @@ pytestmark = [
 DTYPES = ["float16"]
 
 
-def vec_pad(block_M, block_N, dtype="float16"):
+def vec_pad_exp(block_M, block_N, dtype="float16"):
     BLOCK_SIZE = 1
 
     @T.prim_func
@@ -42,14 +42,14 @@ def vec_pad(block_M, block_N, dtype="float16"):
 
 
 @pytest.mark.parametrize("dtype", DTYPES)
-def test_vec_pad(dtype):
+def test_vec_pad_exp(dtype):
     M, N = 32, 32
     torch.manual_seed(42)
     A = gen_tensor((M, N), dtype, kind="randn")
     C = gen_tensor((2 * M, N), dtype, kind="zeros")
     ref_C = torch.nn.functional.pad(A.cpu(), (0, 0, 16, 16), mode="constant", value=0)
 
-    func = vec_pad(32, 32)
+    func = vec_pad_exp(32, 32)
     compiled = tilelang.compile(func, target="npuir")
     compiled(A, C)
 

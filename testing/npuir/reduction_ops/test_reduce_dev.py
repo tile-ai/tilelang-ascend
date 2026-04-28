@@ -21,7 +21,7 @@ def row_reduce_sum_dev(M, N, block_M, dtype, accum_dtype):
     BLOCK_SIZE = 1
 
     @T.prim_func
-    def rowReduceSumDev(
+    def rowReduceSumDevSolo(
         A: T.Tensor((M, N), dtype),
         B: T.Tensor((M, N), dtype),
         C: T.Tensor((M, N), dtype),
@@ -44,7 +44,7 @@ def row_reduce_sum_dev(M, N, block_M, dtype, accum_dtype):
             T.reduce(d, s, dims=1, reduce_mode="sum", clear=False)
             T.copy(s, O)
 
-    return rowReduceSumDev
+    return rowReduceSumDevSolo
 
 
 def _ref_row_reduce(A, B, C, D):
@@ -56,7 +56,9 @@ def _ref_row_reduce(A, B, C, D):
     return res5 + torch.sum(D, dim=1, keepdim=True)
 
 
-@pytest.mark.parametrize("dtype,accum_dtype", list(zip(DTYPES, ACCUM_DTYPES)))
+@pytest.mark.parametrize(
+    "dtype,accum_dtype", list(zip(DTYPES, ACCUM_DTYPES, strict=True))
+)
 def test_row_reduce_sum_dev(dtype, accum_dtype):
     M, N = 16, 16
     shape = (M, N)
@@ -68,7 +70,9 @@ def test_row_reduce_sum_dev(dtype, accum_dtype):
     O = gen_tensor(shape2, accum_dtype, kind="zeros")
     ref = _ref_row_reduce(A.cpu(), B.cpu(), C.cpu(), D.cpu())
 
-    func = row_reduce_sum_dev(M=M, N=N, block_M=32, dtype=dtype, accum_dtype=accum_dtype)
+    func = row_reduce_sum_dev(
+        M=M, N=N, block_M=32, dtype=dtype, accum_dtype=accum_dtype
+    )
     compiled = tilelang.compile(func, target="npuir")
     compiled(A, B, C, D, O)
 

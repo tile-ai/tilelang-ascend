@@ -22,7 +22,7 @@ COPY_3D_CASES = [(64, 128, 256, 16, 32, 32)]
 @tilelang.jit(target="npuir")
 def simple_copy_1d(L, block_L, dtype="float16", accum_dtype="float32"):
     @T.prim_func
-    def simple_copy_1d(
+    def simple_copy_1d_basic(
         In: T.Tensor((L,), dtype),
         A: T.Tensor((L,), dtype),
         B: T.Tensor((L,), dtype),
@@ -44,7 +44,7 @@ def simple_copy_1d(L, block_L, dtype="float16", accum_dtype="float32"):
             T.copy(B_frag, B[start_idx])
             T.copy(C_frag, C[start_idx])
 
-    return simple_copy_1d
+    return simple_copy_1d_basic
 
 
 @tilelang.jit(target="npuir")
