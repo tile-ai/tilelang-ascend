@@ -736,8 +736,10 @@ class CMakeBuild(build_ext):
         # Run CMake to configure the project with the given arguments.
         subprocess.check_call(["cmake", ext.sourcedir] + cmake_args, cwd=build_temp)
 
-        # Build the project in "Release" mode with all available CPU cores ("-j").
-        subprocess.check_call(["cmake", "--build", ".", "--config", "Release", "-j"], cwd=build_temp)
+        # Build the project in "Release" mode with 50% of available CPU cores to avoid OOM.
+        # This matches the strategy used in install_ascend.sh
+        num_jobs = max(1, int(multiprocessing.cpu_count() * 0.5))
+        subprocess.check_call(["cmake", "--build", ".", "--config", "Release", f"-j{num_jobs}"], cwd=build_temp)
 
 
 setup(
