@@ -501,9 +501,7 @@ bool NeedsVidReduction(const Buffer &buffer) const {
         auto it = origin_to_new_buffer_.find(buf);
         if (it != origin_to_new_buffer_.end()) {
           // Check if this arg is tvm_access_ptr with offset == 0
-          if (AccessPtrOffsetIsZero(arg)) {
-            return true;
-          }
+          return AccessPtrOffsetIsZero(arg);
         }
       }
     }
@@ -995,20 +993,22 @@ bool NeedsVidReduction(const Buffer &buffer) const {
 
   // Check if loop variable is used in vid-reduced UB buffer's first dimension
   // Analyze ORIGINAL body, check ORIGINAL buffers (keys in origin_to_new_buffer_)
+  // Two cases:
+  // 1. Loop var directly used as first index in BufferLoad/BufferStore
+  // 2. Loop var used in tvm_access_ptr offset where offset/extent = loop_var
   bool LoopVarUsedInVidReducedUbFirstDim(const Var &loop_var, const Stmt &body) {
     class LoopVarAnalyzer : public StmtExprVisitor {
     public:
       Var target_var;
-      // Check ORIGINAL buffers that WILL be vid-reduced
+      arith::Analyzer *analyzer;
       const std::unordered_map<Buffer, Buffer, ObjectPtrHash, ObjectPtrEqual> &origin_to_new_buffer;
       bool found = false;
 
-      LoopVarAnalyzer(const Var &var,
+      LoopVarAnalyzer(const Var &var, arith::Analyzer *a,
                       const std::unordered_map<Buffer, Buffer, ObjectPtrHash, ObjectPtrEqual> &buffers)
-          : target_var(var), origin_to_new_buffer(buffers) {}
+          : target_var(var), analyzer(a), origin_to_new_buffer(buffers) {}
 
       void VisitExpr_(const BufferLoadNode *op) final {
-        // Check if ORIGINAL buffer will be vid-reduced (is a key in origin_to_new_buffer)
         if (origin_to_new_buffer.count(op->buffer) > 0) {
           if (!op->indices.empty()) {
             const PrimExpr &first_idx = op->indices[0];
@@ -1024,7 +1024,6 @@ bool NeedsVidReduction(const Buffer &buffer) const {
       }
 
       void VisitStmt_(const BufferStoreNode *op) final {
-        // Check if ORIGINAL buffer will be vid-reduced (is a key in origin_to_new_buffer)
         if (origin_to_new_buffer.count(op->buffer) > 0) {
           if (!op->indices.empty()) {
             const PrimExpr &first_idx = op->indices[0];
@@ -1038,9 +1037,50 @@ bool NeedsVidReduction(const Buffer &buffer) const {
         }
         StmtExprVisitor::VisitStmt_(op);
       }
+
+      void VisitExpr_(const CallNode *op) final {
+        // Handle tvm_access_ptr: check if offset/extent equals loop_var
+        if (op->op.same_as(builtin::tvm_access_ptr())) {
+          if (op->args.size() >= 4) {
+            // Extract buffer from args[1] (buffer_data)
+            const VarNode *buffer_var = op->args[1].as<VarNode>();
+            if (buffer_var) {
+              Buffer buffer;
+              for (const auto &pair : origin_to_new_buffer) {
+                if (pair.first->data.get() == buffer_var) {
+                  buffer = pair.first;
+                  break;
+                }
+              }
+              
+              // buffer.defined() implies buffer is vid-reduced UB (checked during BlockNode processing)
+              if (buffer.defined()) {
+                // Get offset and extent from access_ptr
+                PrimExpr offset = op->args[2];
+                PrimExpr extent = op->args[3];
+                
+                PrimExpr simplified_extent = analyzer->Simplify(extent);
+                if (const IntImmNode *extent_imm = simplified_extent.as<IntImmNode>()) {
+                  if (extent_imm->value != 0) {
+                    // Check if offset / extent simplifies to loop_var
+                    PrimExpr division = analyzer->Simplify(indexdiv(offset, extent));
+                    if (const VarNode *v = division.as<VarNode>()) {
+                      if (v == target_var.get()) {
+                        found = true;
+                        return;
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+        StmtExprVisitor::VisitExpr_(op);
+      }
     };
 
-    LoopVarAnalyzer analyzer(loop_var, origin_to_new_buffer_);
+    LoopVarAnalyzer analyzer(loop_var, analyzer_, origin_to_new_buffer_);
     analyzer(body);
     return analyzer.found;
   }
