@@ -9,13 +9,15 @@ description: TileLang-Ascend 环境检查与配置验证技能。检查代码仓
 
 本技能用于验证 TileLang-Ascend 开发环境是否正确配置。包括：
 
-0. **Python 包依赖检查**：检查 torch 和 torch_npu 是否已安装（必须同时存在）
-1. **CANN 环境检查**：检查 ASCEND_HOME_PATH 环境变量是否设置
+0. **Python 包依赖检查**：检查 torch 和 torch_npu 是否已安装且版本满足要求（torch/torch_npu >= 2.6.0）
+1. **CANN 环境检查**：检查 ASCEND_HOME_PATH 环境变量是否设置且版本满足要求（CANN >= 8.3）
 2. **代码仓库完整性检查**：验证代码和子模块是否完整拉取
 3. **编译安装检查**：验证是否已成功编译安装
 4. **环境变量检查**：验证必要的环境变量是否设置
 
-**重要特性**：发现问题时，会自动调用相关 skill 进行修复，并按依赖顺序重新执行后续步骤，无需用户手动干预。
+**重要特性**：
+- 发现问题时，会自动调用相关 skill 进行修复，并按依赖顺序重新执行后续步骤
+- **所有问题都会打印提示给用户**，包括会被自动修复的问题，让用户知道之前存在这个问题
 
 **前置检查说明**：步骤 0-1 为前置检查，**只检查不修复**，检查完成后统一告知用户结果，然后继续后续检查流程。
 
@@ -25,6 +27,14 @@ description: TileLang-Ascend 环境检查与配置验证技能。检查代码仓
 - 环境检查、检查环境、验证环境
 - 环境配置、环境搭建
 - env check、check environment、verify environment、setup environment
+
+## 版本要求
+
+| 检查项 | 最低版本要求 | 说明 |
+|-------|-------------|------|
+| torch | >= 2.6.0 | PyTorch 基础库 |
+| torch_npu | >= 2.6.0 | 昇腾 NPU 支持 |
+| CANN | >= 8.3 | 昇腾计算架构 |
 
 ## 依赖关系说明
 
@@ -54,41 +64,79 @@ description: TileLang-Ascend 环境检查与配置验证技能。检查代码仓
 | 编译产物不存在 | 执行 `bash install_ascend.sh` | 必须设置环境变量 |
 | 环境变量未设置 | 执行 `source set_env.sh` | 无 |
 
+**重要**：修复前必须告知用户问题存在，修复后再告知用户已修复。
+
 ## 检查流程
 
 ### 前置步骤零：检查 Python 包依赖
 
-检查 torch 和 torch_npu 包是否已安装（两者必须同时存在）：
+检查 torch 和 torch_npu 包是否已安装且版本满足要求：
 
 ```bash
-# 检查 torch 和 torch_npu
+# 检查 torch 和 torch_npu 版本
 pip list 2>/dev/null | grep -E "^torch\s|^torch_npu\s" || pip3 list 2>/dev/null | grep -E "^torch\s|^torch_npu\s"
 ```
 
 **检查逻辑**：
-- 同时存在 torch 和 torch_npu：前置检查通过
-- 缺失 torch：告知用户 "未安装 torch 包"
-- 缺失 torch_npu：告知用户 "未安装 torch_npu 包"
-- 两者都缺失：告知用户 "未安装 torch 和 torch_npu 包"
+- 同时存在 torch 和 torch_npu 且版本 >= 2.6.0：前置检查通过
+- 缺失 torch：告知用户 "✗ 未安装 torch 包"
+- 缺失 torch_npu：告知用户 "✗ 未安装 torch_npu 包"
+- torch 版本 < 2.6.0：告知用户 "✗ torch 版本过低 (当前版本: X.X.X)，需要 >= 2.6.0"
+- torch_npu 版本 < 2.6.0：告知用户 "✗ torch_npu 版本过低 (当前版本: X.X.X)，需要 >= 2.6.0"
+- 两者都缺失：告知用户 "✗ 未安装 torch 和 torch_npu 包"
+
+**版本比较方法**：
+使用 Python 进行版本比较：
+```bash
+python3 -c "
+import re
+def check_version(pkg_line, min_ver):
+    match = re.search(r'(\d+\.\d+\.\d+)', pkg_line)
+    if match:
+        ver = match.group(1)
+        parts = [int(x) for x in ver.split('.')]
+        min_parts = [int(x) for x in min_ver.split('.')]
+        return ver, parts >= min_parts[:len(parts)]
+    return None, False
+
+torch_line = 'torch                     2.5.0'  # 示例
+torch_npu_line = 'torch_npu                 2.5.0'  # 示例
+
+torch_ver, torch_ok = check_version(torch_line, '2.6.0')
+torch_npu_ver, torch_npu_ok = check_version(torch_npu_line, '2.6.0')
+
+if not torch_ok:
+    print(f'torch 版本过低: {torch_ver}')
+if not torch_npu_ok:
+    print(f'torch_npu 版本过低: {torch_npu_ver}')
+"
+```
 
 **重要**：此检查只报告结果，**不自动修复**。检查完成后继续下一步。
 
-### 前置步骤一：检查 CANN 环境变量
+### 前置步骤一：检查 CANN 环境变量和版本
 
-检查 ASCEND_HOME_PATH 环境变量是否设置且不为空：
+检查 ASCEND_HOME_PATH 环境变量是否设置且版本满足要求：
 
 ```bash
-# 检查 ASCEND_HOME_PATH
+# 检查 ASCEND_HOME_PATH 和版本
 if [ -n "$ASCEND_HOME_PATH" ]; then
-    echo "✓ ASCEND_HOME_PATH 已设置: $ASCEND_HOME_PATH"
+    echo "ASCEND_HOME_PATH: $ASCEND_HOME_PATH"
+    # 从路径中提取版本号（如 cann-8.5.0）
+    cann_ver=$(echo "$ASCEND_HOME_PATH" | grep -oP 'cann-\d+\.\d+' | sed 's/cann-//')
+    echo "CANN 版本: $cann_ver"
 else
-    echo "✗ ASCEND_HOME_PATH 未设置，请先 source CANN 环境变量"
+    echo "ASCEND_HOME_PATH 未设置"
 fi
 ```
 
 **检查逻辑**：
-- ASCEND_HOME_PATH 存在且不为空：前置检查通过
-- ASCEND_HOME_PATH 未设置或为空：告知用户 "CANN 包路径未 source"
+- ASCEND_HOME_PATH 存在且不为空，且 CANN 版本 >= 8.3：前置检查通过
+- ASCEND_HOME_PATH 未设置或为空：告知用户 "✗ CANN 包路径未 source"
+- CANN 版本 < 8.3：告知用户 "✗ CANN 版本过低 (当前版本: X.X)，需要 >= 8.3"
+
+**版本提取方法**：
+CANN 版本通常从 ASCEND_HOME_PATH 路径中提取，如 `/home/user/Ascend/cann-8.5.0` 中的 `8.5`。
 
 **重要**：此检查只报告结果，**不自动修复**。检查完成后继续下一步。
 
@@ -100,14 +148,14 @@ fi
 ========================================
 前置环境检查结果
 ========================================
-[Python 包] torch: ✓ 已安装 / ✗ 未安装
-[Python 包] torch_npu: ✓ 已安装 / ✗ 未安装
-[CANN 环境] ASCEND_HOME_PATH: ✓ 已设置 / ✗ 未设置
+[Python 包] torch: ✓ 已安装 (版本 X.X.X) / ✗ 未安装 / ✗ 版本过低 (X.X.X < 2.6.0)
+[Python 包] torch_npu: ✓ 已安装 (版本 X.X.X) / ✗ 未安装 / ✗ 版本过低 (X.X.X < 2.6.0)
+[CANN 环境] ASCEND_HOME_PATH: ✓ 已设置 (版本 X.X) / ✗ 未设置 / ✗ 版本过低 (X.X < 8.3)
 ========================================
 ```
 
 如果前置检查全部通过，告知用户 "前置环境检查通过，继续后续检查..."；
-如果前置检查存在问题，告知用户具体缺失项，然后询问用户是否继续后续检查。
+如果前置检查存在问题，告知用户具体问题项，然后询问用户是否继续后续检查。
 
 ### 第二步：检查代码仓库完整性
 
@@ -136,21 +184,31 @@ git submodule status
 - 目录存在但为空：已初始化但未检出
 - 无前缀且有内容：完整
 
-检查失败时统一标记为 `submodule_incomplete`，后续由 AI agent 调用 `tilelang-submodule-pull` skill 进行修复。
+**问题提示要求**：
+如果子模块不完整，**必须先告知用户问题存在**：
+```
+✗ 发现问题：子模块不完整，正在自动修复...
+```
+
+然后执行修复流程，修复完成后告知用户：
+```
+✓ 问题已修复：子模块已完整拉取
+```
 
 **如果子模块不完整，AI agent 应执行以下操作序列**：
 
-1. **立即调用 `tilelang-submodule-pull` skill 拉取子模块**：
+1. **告知用户问题存在**："✗ 发现问题：子模块不完整，正在自动修复..."
+2. **立即调用 `tilelang-submodule-pull` skill 拉取子模块**：
    ```
    skill(name="tilelang-submodule-pull")
    ```
-
-2. **子模块拉取完成后，必须重新编译**（即使之前有编译产物）：
+3. **告知用户修复结果**："✓ 问题已修复：子模块已完整拉取"
+4. **告知用户需要重新编译**："由于子模块更新，需要重新编译..."
+5. **子模块拉取完成后，必须重新编译**（即使之前有编译产物）：
    ```bash
    bash install_ascend.sh
    ```
-
-3. **编译完成后，必须设置环境变量**：
+6. **编译完成后，必须设置环境变量**：
    ```bash
    source set_env.sh
    ```
@@ -169,14 +227,26 @@ ls -la build/
 ls -la build/*.so 2>/dev/null || echo "No .so files found"
 ```
 
+**问题提示要求**：
+如果编译产物不存在，**必须先告知用户问题存在**：
+```
+✗ 发现问题：编译产物不存在，正在自动修复...
+```
+
+然后执行修复流程，修复完成后告知用户：
+```
+✓ 问题已修复：编译产物已生成
+```
+
 **如果检查失败，AI agent 应执行以下操作序列**：
 
-1. **执行编译安装**：
+1. **告知用户问题存在**："✗ 发现问题：编译产物不存在，正在自动修复..."
+2. **执行编译安装**：
    ```bash
    bash install_ascend.sh
    ```
-
-2. **编译完成后，必须设置环境变量**：
+3. **告知用户修复结果**："✓ 问题已修复：编译产物已生成"
+4. **编译完成后，必须设置环境变量**：
    ```bash
    source set_env.sh
    ```
@@ -194,10 +264,21 @@ echo "PYTHONPATH: $PYTHONPATH"
 echo "ACL_OP_INIT_MODE: $ACL_OP_INIT_MODE"
 ```
 
-**如果检查失败，AI agent 应执行环境设置**：
-```bash
-source set_env.sh
+**问题提示要求**：
+如果环境变量未设置，**必须先告知用户问题存在**：
 ```
+✗ 发现问题：环境变量未设置，正在自动修复...
+```
+
+然后执行修复流程，修复完成后告知用户：
+```
+✓ 问题已修复：环境变量已设置
+```
+
+**如果检查失败，AI agent 应执行环境设置**：
+1. **告知用户问题存在**："✗ 发现问题：环境变量未设置，正在自动修复..."
+2. 执行：`source set_env.sh`
+3. **告知用户修复结果**："✓ 问题已修复：环境变量已设置"
 
 ## 脚本路径
 
@@ -229,10 +310,12 @@ bash .agents/skills/tilelang-custom-skill/tilelang-env-check/scripts/check_env.s
 当用户请求环境检查时，AI agent 应：
 
 1. 运行检查脚本或手动执行检查步骤
-2. 根据检查结果，发现问题时主动调用相关 skill/执行命令进行修复
-3. **按依赖顺序执行修复**（子模块 → 编译 → 环境变量）
-4. 修复完成后重新检查，直到所有检查项通过
-5. 告知用户环境状态
+2. **发现问题时，先告知用户问题存在，再执行修复**
+3. 根据检查结果，发现问题时主动调用相关 skill/执行命令进行修复
+4. **按依赖顺序执行修复**（子模块 → 编译 → 环境变量）
+5. 修复完成后告知用户修复结果
+6. 修复完成后重新检查，直到所有检查项通过
+7. 告知用户环境状态
 
 ## 输出格式
 
@@ -244,11 +327,11 @@ TileLang-Ascend 环境检查
 ========================================
 
 [前置] 检查 Python 包依赖...
-✓ torch 已安装
-✓ torch_npu 已安装
+✓ torch 已安装 (版本 2.7.1 >= 2.6.0)
+✓ torch_npu 已安装 (版本 2.7.1 >= 2.6.0)
 
 [前置] 检查 CANN 环境变量...
-✓ ASCEND_HOME_PATH 已设置
+✓ ASCEND_HOME_PATH 已设置 (CANN 版本 8.5 >= 8.3)
 
 [1/4] 检查代码仓库完整性...
 ✓ Git 仓库存在
@@ -270,52 +353,89 @@ TileLang-Ascend 环境检查
 ========================================
 ```
 
+**发现问题时的输出格式**：
+
+```
+========================================
+TileLang-Ascend 环境检查
+========================================
+
+[前置] 检查 Python 包依赖...
+✓ torch 已安装 (版本 2.7.1 >= 2.6.0)
+✓ torch_npu 已安装 (版本 2.7.1 >= 2.6.0)
+
+[前置] 检查 CANN 环境变量...
+✓ ASCEND_HOME_PATH 已设置 (CANN 版本 8.5 >= 8.3)
+
+[1/4] 检查代码仓库完整性...
+✓ Git 仓库存在
+✗ 发现问题：子模块不完整，正在自动修复...
+[执行 tilelang-submodule-pull skill]
+✓ 问题已修复：子模块已完整拉取
+
+[2/4] 检查编译安装状态...
+✗ 发现问题：编译产物不存在，正在自动修复...
+[执行 bash install_ascend.sh]
+✓ 问题已修复：编译产物已生成
+
+[3/4] 检查环境变量...
+✗ 发现问题：环境变量未设置，正在自动修复...
+[执行 source set_env.sh]
+✓ 问题已修复：环境变量已设置
+
+========================================
+✓ 环境检查通过！所有配置已修复完成。
+========================================
+```
+
 ## 完整工作流（包含测试验证）
 
 ```
 开始
   ↓
-[前置0] 检查 Python 包依赖 (torch + torch_npu)
-  ├─ 缺失 → 告知用户，询问是否继续
+[前置0] 检查 Python 包依赖 (torch + torch_npu >= 2.6.0)
+  ├─ 缺失/版本过低 → 告知用户问题，询问是否继续
   └─ 正常 → 继续
   ↓
-[前置1] 检查 CANN 环境变量 (ASCEND_HOME_PATH)
-  ├─ 未设置 → 告知用户，询问是否继续
+[前置1] 检查 CANN 环境变量 (ASCEND_HOME_PATH, CANN >= 8.3)
+  ├─ 未设置/版本过低 → 告知用户问题，询问是否继续
   └─ 正常 → 继续
   ↓
 [前置结果汇总] 告知用户前置检查结果
   ↓
 [2] 检查代码仓库完整性
-  ├─ 失败 → 执行子模块修复流程 [A]
+  ├─ 失败 → 告知用户问题 → 执行子模块修复流程 [A] → 告知用户修复结果
   │
   └─ 成功 → 继续
   ↓
 [3] 检查编译安装状态
-  ├─ 失败 → 执行编译修复流程 [B]
+  ├─ 失败 → 告知用户问题 → 执行编译修复流程 [B] → 告知用户修复结果
   │
   └─ 成功 → 继续
   ↓
 [4] 检查环境变量
-  ├─ 失败 → 执行 source set_env.sh → 继续 [5]
+  ├─ 失败 → 告知用户问题 → 执行 source set_env.sh → 告知用户修复结果 → 继续 [5]
   └─ 成功 → 继续
   ↓
 [5] 运行测试验证
   ├─ 成功 → ✓ 环境正确，告知用户
   │
-  └─ 失败 → 执行子模块修复流程 [A]（跳过检查，直接修复）
+  └─ 失败 → 告知用户问题 → 执行子模块修复流程 [A]（跳过检查，直接修复）→ 告知用户修复结果
   ↓
 结束
 
 [A] 子模块修复流程（测试失败时直接执行此流程）：
-    调用 tilelang-submodule-pull → 编译 → 设置环境变量 → 测试
+    告知用户问题 → 调用 tilelang-submodule-pull → 编译 → 设置环境变量 → 测试 → 告知用户修复结果
 
 [B] 编译修复流程：
-    bash install_ascend.sh → 设置环境变量 → 测试
+    告知用户问题 → bash install_ascend.sh → 设置环境变量 → 测试 → 告知用户修复结果
 ```
 
 **关键逻辑**：
 1. 前置检查 [0-1] 只检查不修复，完成后统一告知用户结果
-2. 测试失败时，直接执行子模块修复流程 [A]，跳过重新检查，因为这样可以确保环境肯定正确。
+2. **所有问题都要告知用户**，包括会被自动修复的问题
+3. 修复前告知问题，修复后告知结果
+4. 测试失败时，直接执行子模块修复流程 [A]，跳过重新检查
 
 ## AI Agent 执行指南
 
@@ -329,23 +449,28 @@ pip list 2>/dev/null | grep -E "^torch\s|^torch_npu\s" || pip3 list 2>/dev/null 
 ```
 
 **结果处理**：
-- 同时存在 torch 和 torch_npu：标记为通过
-- 缺失 torch：告知用户 "未安装 torch 包"
-- 缺失 torch_npu：告知用户 "未安装 torch_npu 包"
-- 两者都缺失：告知用户 "未安装 torch 和 torch_npu 包"
+- 同时存在 torch 和 torch_npu 且版本 >= 2.6.0：标记为通过
+- 缺失 torch：告知用户 "✗ 未安装 torch 包"
+- 缺失 torch_npu：告知用户 "✗ 未安装 torch_npu 包"
+- torch 版本 < 2.6.0：告知用户 "✗ torch 版本过低 (当前版本: X.X.X)，需要 >= 2.6.0"
+- torch_npu 版本 < 2.6.0：告知用户 "✗ torch_npu 版本过低 (当前版本: X.X.X)，需要 >= 2.6.0"
+- 两者都缺失：告知用户 "✗ 未安装 torch 和 torch_npu 包"
 
 **重要**：此检查只报告结果，**不自动修复**。
 
-### 步骤 1：检查 CANN 环境变量
+### 步骤 1：检查 CANN 环境变量和版本
 
 使用 Bash 工具检查 ASCEND_HOME_PATH：
 ```bash
 echo "ASCEND_HOME_PATH: $ASCEND_HOME_PATH"
+# 从路径中提取版本号
+echo "$ASCEND_HOME_PATH" | grep -oP 'cann-\d+\.\d+' | sed 's/cann-//'
 ```
 
 **结果处理**：
-- 存在且不为空：标记为通过
-- 未设置或为空：告知用户 "CANN 包路径未 source，请先 source CANN 环境变量"
+- 存在且不为空，且版本 >= 8.3：标记为通过
+- 未设置或为空：告知用户 "✗ CANN 包路径未 source，请先 source CANN 环境变量"
+- CANN 版本 < 8.3：告知用户 "✗ CANN 版本过低 (当前版本: X.X)，需要 >= 8.3"
 
 **重要**：此检查只报告结果，**不自动修复**。
 
@@ -357,9 +482,9 @@ echo "ASCEND_HOME_PATH: $ASCEND_HOME_PATH"
 ========================================
 前置环境检查结果
 ========================================
-[Python 包] torch: ✓ 已安装 / ✗ 未安装
-[Python 包] torch_npu: ✓ 已安装 / ✗ 未安装
-[CANN 环境] ASCEND_HOME_PATH: ✓ 已设置 / ✗ 未设置
+[Python 包] torch: ✓ 已安装 (版本 X.X.X) / ✗ 未安装 / ✗ 版本过低 (X.X.X < 2.6.0)
+[Python 包] torch_npu: ✓ 已安装 (版本 X.X.X) / ✗ 未安装 / ✗ 版本过低 (X.X.X < 2.6.0)
+[CANN 环境] ASCEND_HOME_PATH: ✓ 已设置 (版本 X.X) / ✗ 未设置 / ✗ 版本过低 (X.X < 8.3)
 ========================================
 ```
 
@@ -379,24 +504,31 @@ bash .agents/skills/tilelang-custom-skill/tilelang-env-check/scripts/check_env.s
 **场景 A：子模块不完整**
 
 如果显示 "✗ 子模块不完整"：
-1. 立即使用 Skill 工具调用 `tilelang-submodule-pull`
-2. 等待子模块拉取完成
-3. **必须重新编译**：`bash install_ascend.sh`（即使之前有编译产物）
-4. **必须设置环境变量**：`source set_env.sh`
-5. 跳转到 **步骤 4** 运行测试验证
+1. **告知用户问题存在**："✗ 发现问题：子模块不完整，正在自动修复..."
+2. 立即使用 Skill 工具调用 `tilelang-submodule-pull`
+3. 等待子模块拉取完成
+4. **告知用户修复结果**："✓ 问题已修复：子模块已完整拉取"
+5. **告知用户需要重新编译**："由于子模块更新，需要重新编译..."
+6. **必须重新编译**：`bash install_ascend.sh`（即使之前有编译产物）
+7. **必须设置环境变量**：`source set_env.sh`
+8. 跳转到 **步骤 4** 运行测试验证
 
 **场景 B：编译产物不存在（子模块完整）**
 
 如果显示 build 目录不存在或编译产物不存在，但子模块完整：
-1. 执行编译：`bash install_ascend.sh`
-2. **必须设置环境变量**：`source set_env.sh`
-3. 跳转到 **步骤 4** 运行测试验证
+1. **告知用户问题存在**："✗ 发现问题：编译产物不存在，正在自动修复..."
+2. 执行编译：`bash install_ascend.sh`
+3. **告知用户修复结果**："✓ 问题已修复：编译产物已生成"
+4. **必须设置环境变量**：`source set_env.sh`
+5. 跳转到 **步骤 4** 运行测试验证
 
 **场景 C：环境变量未设置**
 
 如果仅显示环境变量未设置：
-1. 执行：`source set_env.sh`
-2. 跳转到 **步骤 4** 运行测试验证
+1. **告知用户问题存在**："✗ 发现问题：环境变量未设置，正在自动修复..."
+2. 执行：`source set_env.sh`
+3. **告知用户修复结果**："✓ 问题已修复：环境变量已设置"
+4. 跳转到 **步骤 4** 运行测试验证
 
 **场景 D：所有检查通过**
 
@@ -415,79 +547,88 @@ python .agents/skills/tilelang-custom-skill/tilelang-env-check/scripts/quick_ver
 | 测试结果 | 处理动作 |
 |---------|---------|
 | ✓ TileLang 环境验证通过! | 告知用户 "环境已正确配置，可以开始使用" |
-| 测试失败 | **直接执行子模块修复流程**，跳过重新检查 |
+| 测试失败 | **告知用户问题存在，然后执行子模块修复流程**，跳过重新检查 |
 
 **测试失败时的处理流程**：
-1. 调用 `tilelang-submodule-pull` skill 拉取子模块
-2. 编译：`bash install_ascend.sh`
-3. 设置环境变量：`source set_env.sh`
-4. 再次运行测试验证
+1. **告知用户问题存在**："✗ 发现问题：测试验证失败，正在自动修复..."
+2. 调用 `tilelang-submodule-pull` skill 拉取子模块
+3. 编译：`bash install_ascend.sh`
+4. 设置环境变量：`source set_env.sh`
+5. **告知用户修复结果**："✓ 问题已修复：环境已重新配置"
+6. 再次运行测试验证
 
 **重要**：测试失败时，不要重新检查代码仓库完整性，直接执行子模块修复流程，这样可以确保环境肯定正确。
 
 ### 步骤 5：告知用户
 
-- 如果测试通过：告知用户 "环境已正确配置，可以开始使用"
+- 如果测试通过：告知用户 "✓ 环境已正确配置，可以开始使用"
 - 如果多次重试后仍失败：调用 `tilelang-error-fixer` skill 进行诊断
 
 ## 常见问题
 
-### 问题0：Python 包缺失（torch 或 torch_npu）
+### 问题0：Python 包缺失或版本过低（torch 或 torch_npu）
 
 **处理方式**：只报告结果，不自动修复。告知用户：
-- 缺失 torch："请安装 torch 包：pip install torch"
-- 缺失 torch_npu："请安装 torch_npu 包：pip install torch-npu"
-- 两者都缺失："请安装 torch 和 torch_npu 包"
+- 缺失 torch："✗ 请安装 torch 包：pip install torch"
+- 缺失 torch_npu："✗ 请安装 torch_npu 包：pip install torch-npu"
+- 两者都缺失："✗ 请安装 torch 和 torch_npu 包"
+- torch 版本过低："✗ torch 版本过低 (当前: X.X.X)，请升级到 >= 2.6.0：pip install --upgrade torch"
+- torch_npu 版本过低："✗ torch_npu 版本过低 (当前: X.X.X)，请升级到 >= 2.6.0：pip install --upgrade torch-npu"
 
-### 问题1：CANN 环境变量未设置
+### 问题1：CANN 环境变量未设置或版本过低
 
 **处理方式**：只报告结果，不自动修复。告知用户：
-- "请先 source CANN 环境变量（通常为 source /usr/local/Ascend/ascend-toolkit/set_env.sh）"
+- 未设置："✗ 请先 source CANN 环境变量（通常为 source /usr/local/Ascend/ascend-toolkit/set_env.sh）"
+- 版本过低："✗ CANN 版本过低 (当前: X.X)，请升级到 >= 8.3"
 
-### 问题2：子模块拉取失败
+### 问题2：子模块不完整
 
-**自动处理**：
-1. 调用 `tilelang-submodule-pull` skill
-2. 拉取成功后重新编译
-3. 设置环境变量
+**处理方式**：
+1. **告知用户问题存在**："✗ 发现问题：子模块不完整"
+2. 自动修复：调用 `tilelang-submodule-pull` skill
+3. 拉取成功后重新编译
+4. 设置环境变量
+5. **告知用户修复结果**："✓ 问题已修复：子模块已完整拉取"
 
-### 问题2：子模块拉取失败
+### 问题3：编译产物不存在
 
-**自动处理**：
-1. 调用 `tilelang-submodule-pull` skill
-2. 拉取成功后重新编译
-3. 设置环境变量
-
-### 问题3：编译失败
-
-**自动处理**：
-1. 执行 `bash install_ascend.sh`
-2. 如果失败则调用 `tilelang-error-fixer` skill 诊断
-3. 编译成功后设置环境变量
+**处理方式**：
+1. **告知用户问题存在**："✗ 发现问题：编译产物不存在"
+2. 自动修复：执行 `bash install_ascend.sh`
+3. 如果失败则调用 `tilelang-error-fixer` skill 诊断
+4. 编译成功后设置环境变量
+5. **告知用户修复结果**："✓ 问题已修复：编译产物已生成"
 
 ### 问题4：环境变量未设置
 
-**自动处理**：执行 `source set_env.sh`
+**处理方式**：
+1. **告知用户问题存在**："✗ 发现问题：环境变量未设置"
+2. 自动修复：执行 `source set_env.sh`
+3. **告知用户修复结果**："✓ 问题已修复：环境变量已设置"
 
 ### 问题5：测试运行失败
 
-**自动处理**：
-1. **直接执行子模块修复流程**，跳过重新检查：
-2. 调用 `tilelang-submodule-pull` skill 拉取子模块
-3. 编译：`bash install_ascend.sh`
-4. 设置环境变量：`source set_env.sh`
-5. 再次运行测试验证
+**处理方式**：
+1. **告知用户问题存在**："✗ 发现问题：测试验证失败"
+2. **直接执行子模块修复流程**，跳过重新检查：
+3. 调用 `tilelang-submodule-pull` skill 拉取子模块
+4. 编译：`bash install_ascend.sh`
+5. 设置环境变量：`source set_env.sh`
+6. 再次运行测试验证
+7. **告知用户修复结果**："✓ 问题已修复：环境已重新配置"
 
 **注意**：测试失败时，不需要重新检查代码仓库完整性，直接执行修复流程即可确保环境正确。
 
 ## 注意事项
 
 1. 前置检查（Python 包、CANN 环境变量）只报告结果，**不自动修复**
-2. 每次新开终端都需要重新设置环境变量（运行 `source set_env.sh`）
-3. 编译安装只需执行一次，除非代码有更新
-4. **如果子模块缺失，必须重新编译，旧产物不可用**
-5. AI agent 应主动修复问题（前置检查除外），无需等待用户手动操作
-6. 测试用例需要 NPU 设备可用
+2. **所有问题都要告知用户**，包括会被自动修复的问题
+3. **修复前告知问题，修复后告知结果**
+4. 每次新开终端都需要重新设置环境变量（运行 `source set_env.sh`）
+5. 编译安装只需执行一次，除非代码有更新
+6. **如果子模块缺失，必须重新编译，旧产物不可用**
+7. AI agent 应主动修复问题（前置检查除外），无需等待用户手动操作
+8. 测试用例需要 NPU 设备可用
 
 ## 相关 Skills
 
