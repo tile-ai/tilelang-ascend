@@ -91,6 +91,39 @@ with T.Kernel(block_num, is_npu=True) as (cid, vid):
 
 ---
 
+## 3.5 技术约束确认
+
+### 3.5.1 本项目已知限制检查
+
+| 约束 | 本算子是否涉及 | 处理方案 |
+|------|---------------|----------|
+| 不支持三维 Kernel | {Yes/No} | {block_metadata 方案 / 不涉及} |
+| threads 参数限制（仅 1 或 2） | {Yes/No} | {threads=2 或移除 / 不涉及} |
+| 动态循环边界不支持 | {Yes/No} | {静态边界 + if 条件判断 / 不涉及} |
+| 流水线不支持动态边界 | {Yes/No} | {改用 T.serial / 不涉及} |
+
+### 3.5.2 参考实现差异说明
+
+**重要**：如果用户提供了外部参考实现（GPU 版），必须列出差异：
+
+| 差异项 | 参考实现（GPU） | 本项目（Ascend） | 转换方案 |
+|--------|----------------|-----------------|----------|
+| Kernel 维度 | {三维 T.Kernel(m, n, batch)} | {一维 + block_metadata} | {参考 examples/grouped_gemm/} |
+| 循环边界 | {动态 T.Pipelined(batch_sizes[bz])} | {静态 + if k < k_iters} | {预计算 max_iters} |
+| GEMM API | {T.gemm} | {T.gemm_v0} | {查阅 api-compute.md} |
+| 内存分配 | {T.alloc_shared 自动映射} | {T.alloc_L1 显式层级} | {Expert 模式} |
+| threads | {threads=128} | {threads=2 或移除} | {NPU 限制} |
+
+### 3.5.3 本项目同类实现参考
+
+**必须列出**：本项目 examples/ 中最相似的实现
+
+| 文件路径 | 相似度 | 关键参考点 |
+|----------|--------|-----------|
+| {examples/xxx/example_xxx.py} | {高度相似} | {Kernel 结构、API 用法、同步方式} |
+
+---
+
 ## 4. 数据规格与内存规划
 
 ### 4.1 输入张量
