@@ -83,7 +83,9 @@ def _ref_row_reduce(A, B, C, D):
 
 @pytest.mark.op("reduce")
 @pytest.mark.mode("Developer")
-@pytest.mark.parametrize("dtype,accum_dtype", list(zip(DTYPES, ACCUM_DTYPES, strict=True)))
+@pytest.mark.parametrize(
+    "dtype,accum_dtype", list(zip(DTYPES, ACCUM_DTYPES, strict=True))
+)
 def test_row_reduce_sum_dev_t(dtype, accum_dtype):
     M, N = 16, 16
     shape = (M, N)
@@ -106,7 +108,9 @@ def test_row_reduce_sum_dev_t(dtype, accum_dtype):
 
 @pytest.mark.op("reduce")
 @pytest.mark.mode("Expert")
-@pytest.mark.parametrize("dtype,accum_dtype", list(zip(DTYPES, ACCUM_DTYPES, strict=True)))
+@pytest.mark.parametrize(
+    "dtype,accum_dtype", list(zip(DTYPES, ACCUM_DTYPES, strict=True))
+)
 def test_row_reduce_sum_exp_t(dtype, accum_dtype):
     M, N = 16, 16
     shape = (M, N)

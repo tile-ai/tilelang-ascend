@@ -56,7 +56,9 @@ def _ref_row_reduce(A, B, C, D):
     return res5 + torch.sum(D, dim=1, keepdim=True)
 
 
-@pytest.mark.parametrize("dtype,accum_dtype", list(zip(DTYPES, ACCUM_DTYPES, strict=True)))
+@pytest.mark.parametrize(
+    "dtype,accum_dtype", list(zip(DTYPES, ACCUM_DTYPES, strict=True))
+)
 def test_row_reduce_sum_exp(dtype, accum_dtype):
     M, N = 16, 16
     shape = (M, N)
