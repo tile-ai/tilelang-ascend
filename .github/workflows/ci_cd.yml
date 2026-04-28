@@ -38,10 +38,13 @@ on:
   schedule:
     - cron: '0 18 * * *' # 每天 UTC 18:00 运行 (北京时间凌晨 2:00)
 
+  issue_comment:
+    types: [created]
+
 concurrency:
-  # PR 场景：按 PR 分支名分组，同一 PR 的新 push 共享同一组
-  # 手动/定时场景：head_ref 为空，退化为 github.run_id（每次唯一），互不干扰
-  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  # PR 场景（含 pull_request 和 /re-test）：统一按 PR 号分组，新运行自动取消旧运行
+  # 手动/定时/push 场景：退化为 github.run_id（每次唯一），互不干扰
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.event.issue.number || github.run_id }}
   # 同一组中有新运行时，自动取消旧的正在运行的 workflow 
   cancel-in-progress: true
   
@@ -49,23 +52,54 @@ jobs:
   test:
     name: Benchmark Tests (Ascend NPU)
     runs-on: [self-hosted, Linux, X64, ascend_910b] 
-    if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.run_tests == 'true' }}
+    if: |
+      (github.event_name != 'workflow_dispatch' || github.event.inputs.run_tests == 'true') &&
+      (github.event_name != 'issue_comment' || (github.event.issue.pull_request && contains(github.event.comment.body, '/re-test')))
     timeout-minutes: 60            # 1小时超时失败
     env:
       FULL_BUILD: ${{ github.event_name == 'schedule' || github.event.inputs.full_build == 'true' }}
     steps:
+      - name: Get PR info (for /re-test)
+        if: github.event_name == 'issue_comment'
+        id: pr_info
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number
+            });
+            core.setOutput('head_ref', pr.data.head.ref);
+            core.setOutput('head_sha', pr.data.head.sha);
+            core.setOutput('base_ref', pr.data.base.ref);
+
+      - name: React to /re-test comment
+        if: github.event_name == 'issue_comment'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.reactions.createForIssueComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: context.payload.comment.id,
+              content: 'rocket'
+            });
+
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           submodules: false
           fetch-depth: 0
+          ref: ${{ github.event_name == 'issue_comment' && steps.pr_info.outputs.head_ref || '' }}
 
       - name: Check if skip pytest
         id: check_skip_pytest
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' || github.event_name == 'issue_comment'
         run: |
-          git fetch origin ${{ github.base_ref }}
-          changed_files=$(git diff --name-only origin/${{ github.base_ref }} HEAD)
+          BASE_REF="${{ github.event_name == 'issue_comment' && steps.pr_info.outputs.base_ref || github.base_ref }}"
+          git fetch origin $BASE_REF
+          changed_files=$(git diff --name-only origin/$BASE_REF HEAD)
           
           skip_pytest=true
           
