@@ -9,23 +9,20 @@ tilelang.cache.clear_cache()
 DEFAULT_BLOCK_M = 128
 DEFAULT_BLOCK_N = 128
 DEFAULT_BLOCK_K = 32
-DEFAULT_NUM_STAGES = 2
 
 
 def get_configs():
     block_M = [64, 128, 256]
     block_N = [64, 128, 256]
     block_K = [32, 64]
-    num_stages = [1, 2, 3]
 
-    _configs = list(itertools.product(block_M, block_N, block_K, num_stages))
+    _configs = list(itertools.product(block_M, block_N, block_K))
 
     return [
         {
             "block_M": c[0],
             "block_N": c[1],
             "block_K": c[2],
-            "num_stages": c[3],
         }
         for c in _configs
     ]
@@ -58,8 +55,11 @@ pass_configs = {
 @tilelang.autotune(
     configs=get_configs(),
 )
-@tilelang.jit(out_idx=[-1], pass_configs=pass_configs)
-def blocksparse_matmul(M, N, K, block_M, block_N, block_K, num_stages, dtype="float16", accum_dtype="float"):
+@tilelang.jit(out_idx=[-1], pass_configs=pass_configs, target="auto")
+def blocksparse_matmul(M, N, K, block_M, block_N, block_K, dtype="float16", accum_dtype="float"):
+    assert M % block_M == 0, f"M={M} must be divisible by block_M={block_M}"
+    assert N % block_N == 0, f"N={N} must be divisible by block_N={block_N}"
+
     m_num = M // block_M
     n_num = N // block_N
     k_num = (K + block_K - 1) // block_K
@@ -93,7 +93,6 @@ def blocksparse_matmul(M, N, K, block_M, block_N, block_K, num_stages, dtype="fl
 def test_basic():
     M = N = K = 128
     block_M = block_N = block_K = 32
-    num_stages = 2
     sparsity = 0.5
 
     print(f"[Level 0] Testing M={M}, N={N}, K={K}, block_size=({block_M}, {block_N}, {block_K})")
@@ -102,7 +101,7 @@ def test_basic():
     a = torch.randn(M, K).half().npu()
     b = torch.randn(K, N).half().npu()
 
-    kernel = blocksparse_matmul(M, N, K, block_M, block_N, block_K, num_stages)
+    kernel = blocksparse_matmul(M, N, K, block_M, block_N, block_K)
 
     mask_shape = (M // block_M, N // block_N, K // block_K)
     block_mask = (torch.rand(mask_shape).npu() > sparsity).to(torch.int8)
@@ -121,7 +120,6 @@ def test_typical():
     block_M = DEFAULT_BLOCK_M
     block_N = DEFAULT_BLOCK_N
     block_K = DEFAULT_BLOCK_K
-    num_stages = DEFAULT_NUM_STAGES
     sparsity = 0.5
 
     print(f"[Level 1] Testing M={M}, N={N}, K={K}, block_size=({block_M}, {block_N}, {block_K})")
@@ -130,7 +128,7 @@ def test_typical():
     a = torch.randn(M, K).half().npu()
     b = torch.randn(K, N).half().npu()
 
-    kernel = blocksparse_matmul(M, N, K, block_M, block_N, block_K, num_stages)
+    kernel = blocksparse_matmul(M, N, K, block_M, block_N, block_K)
 
     mask_shape = (M // block_M, N // block_N, K // block_K)
     block_mask = (torch.rand(mask_shape).npu() > sparsity).to(torch.int8)
@@ -149,7 +147,6 @@ def test_boundary_dense():
     block_M = DEFAULT_BLOCK_M
     block_N = DEFAULT_BLOCK_N
     block_K = DEFAULT_BLOCK_K
-    num_stages = DEFAULT_NUM_STAGES
     sparsity = 0.0
 
     print(f"[Level 2] Testing dense (sparsity={sparsity})")
@@ -158,7 +155,7 @@ def test_boundary_dense():
     a = torch.randn(M, K).half().npu()
     b = torch.randn(K, N).half().npu()
 
-    kernel = blocksparse_matmul(M, N, K, block_M, block_N, block_K, num_stages)
+    kernel = blocksparse_matmul(M, N, K, block_M, block_N, block_K)
 
     mask_shape = (M // block_M, N // block_N, K // block_K)
     block_mask = torch.ones(mask_shape, dtype=torch.int8, device="npu")
@@ -176,7 +173,6 @@ def test_boundary_sparse():
     block_M = DEFAULT_BLOCK_M
     block_N = DEFAULT_BLOCK_N
     block_K = DEFAULT_BLOCK_K
-    num_stages = DEFAULT_NUM_STAGES
     sparsity = 0.99
 
     print(f"[Level 2] Testing extreme sparse (sparsity={sparsity})")
@@ -185,7 +181,7 @@ def test_boundary_sparse():
     a = torch.randn(M, K).half().npu()
     b = torch.randn(K, N).half().npu()
 
-    kernel = blocksparse_matmul(M, N, K, block_M, block_N, block_K, num_stages)
+    kernel = blocksparse_matmul(M, N, K, block_M, block_N, block_K)
 
     mask_shape = (M // block_M, N // block_N, K // block_K)
     block_mask = (torch.rand(mask_shape).npu() > sparsity).to(torch.int8)
@@ -266,7 +262,6 @@ def main():
             block_M=DEFAULT_BLOCK_M,
             block_N=DEFAULT_BLOCK_N,
             block_K=DEFAULT_BLOCK_K,
-            num_stages=DEFAULT_NUM_STAGES,
         )
         block_M, block_N, block_K = DEFAULT_BLOCK_M, DEFAULT_BLOCK_N, DEFAULT_BLOCK_K
         print(f"Using default config: block_size=({block_M}, {block_N}, {block_K})")

@@ -6,13 +6,12 @@ import tilelang.language as T
 tilelang.cache.clear_cache()
 
 
-def torch_grouped_gemm_bwd(A, B, block_metadata):
+def torch_grouped_gemm_bwd(A, B, block_metadata, batch_count, block_M, block_N):
     """
     Golden function: compute dB_i = A_i^T @ B_i for each group
     """
-    batch_count = A.shape[1]  # M dimension
-    N = B.shape[1]
     M = A.shape[1]
+    N = B.shape[1]
 
     output = torch.empty((batch_count, M, N), device=A.device, dtype=A.dtype)
 
@@ -28,18 +27,18 @@ def torch_grouped_gemm_bwd(A, B, block_metadata):
         if k_iters == 0:
             continue
 
-        m_start = m_block_idx * 64
-        n_start = n_block_idx * 64
+        m_start = m_block_idx * block_M
+        n_start = n_block_idx * block_N
 
-        # Compute: C[batch_idx, m_start:m_start+64, n_start:n_start+64] = A[batch_offset:batch_offset+k_iters*64, m_start:m_start+64]^T @ B[batch_offset:batch_offset+k_iters*64, n_start:n_start+64]
-        A_i = A[batch_offset : batch_offset + k_iters * 64, m_start : m_start + 64]
-        B_i = B[batch_offset : batch_offset + k_iters * 64, n_start : n_start + 64]
-        output[batch_idx, m_start : m_start + 64, n_start : n_start + 64] = torch.mm(A_i.T, B_i)
+        # Compute: C[batch_idx, m_start:m_start+block_M, n_start:n_start+block_N] = A[batch_offset:batch_offset+k_iters*block_K, m_start:m_start+block_M]^T @ B[batch_offset:batch_offset+k_iters*block_K, n_start:n_start+block_N]
+        A_i = A[batch_offset : batch_offset + k_iters * block_K, m_start : m_start + block_M]
+        B_i = B[batch_offset : batch_offset + k_iters * block_K, n_start : n_start + block_N]
+        output[batch_idx, m_start : m_start + block_M, n_start : n_start + block_N] = torch.mm(A_i.T, B_i)
 
     return output
 
 
-@tilelang.jit(out_idx=[2], target="pto")
+@tilelang.jit(out_idx=[2], target="auto")
 def grouped_gemm_bwd(batch_sum, batch_count, M, N, max_k_iters, block_M, block_N, block_K, total_blocks, dtype="float16"):
     """
     Grouped GEMM Backward with static loop bounds
