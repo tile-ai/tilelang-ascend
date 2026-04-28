@@ -525,3 +525,4 @@ TVM_REGISTER_GLOBAL("tl.transform.AscendVidReduction")
 
 } // namespace tl
 } // namespace tvm
+
