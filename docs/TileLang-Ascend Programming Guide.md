@@ -1963,10 +1963,10 @@ Expert编程模式可以复用Developer模式的Reduce类计算原语。
   **举例**：
 
   ```
-  T.tile.clear(ub)；
+  T.tile.clear(ub);
   ```
 
-###### 4.1.3.2.11 原子累加写回
+###### 4.1.3.2.11 原子操作
 
 - `T.tile.atomic_add(dst, src):`
 

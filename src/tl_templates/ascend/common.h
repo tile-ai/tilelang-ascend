@@ -235,10 +235,8 @@ atomic_add_ub_to_gm(GlobalTensor<T> dstTensor, LocalTensor<T> srcTensor,
                     uint32_t realdstN = 1, uint32_t maskShapeM = srcM,
                     uint32_t maskShapeN = srcN) {
   AscendC::SetAtomicAdd<T>();
-  AscendC::DataCopyExtParams dataCopyParams(
-      maskShapeM, maskShapeN * sizeof(T), (srcN - maskShapeN) * sizeof(T) / 32,
-      (realdstN - maskShapeN) * sizeof(T), 0);
-  AscendC::DataCopyPad(dstTensor, srcTensor, dataCopyParams);
+  copy_ub_to_gm<T, srcN, srcM>(dstTensor, srcTensor, realdstN, maskShapeM,
+                               maskShapeN);
   disable_dma_atomic_compat();
 }
 

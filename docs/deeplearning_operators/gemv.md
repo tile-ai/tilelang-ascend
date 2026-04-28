@@ -124,10 +124,6 @@ At this level, we only gain very little computation power from our GPU with arou
 
 To further increase the concurrency of our kernel, we can exploit finer thread-level parallelism. Instead of assigning each thread to compute a single output element in C, you can introduce parallelism along the K dimension. Each thread computes a partial accumulation, and you then combine these partial results. This approach requires primitives like `atomicAdd` in CUDA.
 
-:::{note}
-The split-K snippets in this section use the GPU/mainline-style `T.atomic_add` and are kept as part of this experimental GEMV tutorial. In `tilelang-ascend`, the supported Ascend atomic primitive is `T.tile.atomic_add(dst_gm, src_local)`, which only models local tensor to GM atomic accumulation. Do not treat the snippets below as examples of the Ascend `T.tile.atomic_add` API.
-:::
-
 Here’s a simplified version:
 ```python
 def naive_splitk_gemv(

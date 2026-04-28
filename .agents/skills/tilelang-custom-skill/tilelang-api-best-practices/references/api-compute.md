@@ -280,7 +280,7 @@ T.tile.cast(b_ub, a_ub, "CAST_RINT", 4096)
 | `T.tile.gather(dst, src, src_offset, src_base_addr)` | 按偏移收集数据 |
 | `T.tile.arith_progression(buffer, first_value, diff_value, count)` | 生成等差数列 |
 
-### 4.10 原子累加写回
+### 4.10 原子操作
 
 #### T.tile.atomic_add(dst, src)
 
@@ -309,6 +309,7 @@ src_ub = T.alloc_ub((tile_n,), "float32")
 T.tile.fill(src_ub, 1.0)
 T.tile.atomic_add(C[0], src_ub)
 ```
+示例中的pass_config只是最小用法。在混合模式或需要自动 C/V 分离时，可以同时开启 `TL_ASCEND_AUTO_CV_COMBINE`；如果存在 C/V 核间依赖，再配合 `TL_ASCEND_AUTO_CV_SYNC`。
 
 底层会生成 Ascend C 的 DMA atomic add 语义：开启 `SetAtomicAdd<T>()`，执行 local -> GM 的 `DataCopyPad`，再通过兼容 helper 关闭 atomic 状态。
 
