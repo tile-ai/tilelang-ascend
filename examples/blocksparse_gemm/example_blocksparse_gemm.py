@@ -288,7 +288,7 @@ def main():
 
 if __name__ == "__main__":
     import sys
-    
+
     if len(sys.argv) == 1:
         print("Running all test levels...\n")
         test_basic()

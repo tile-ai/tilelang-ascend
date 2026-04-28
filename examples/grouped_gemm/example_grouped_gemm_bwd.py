@@ -97,7 +97,6 @@ def construct_metadata(batch_sizes_list, M, N, block_M, block_N, block_K, device
     Construct block metadata for grouped_gemm_bwd
     Returns: metadata tensor and total_blocks count
     """
-    batch_count = len(batch_sizes_list)
     m_num = M // block_M
     n_num = N // block_N
 
@@ -143,7 +142,6 @@ def run_tilelang_grouped_gemm_bwd(batch_sizes_list, M, N, block_M, block_N, bloc
 
     A = torch.randn(batch_sum, M, device=device, dtype=dtype)
     B = torch.randn(batch_sum, N, device=device, dtype=dtype)
-    C = torch.empty(batch_count, M, N, device=device, dtype=dtype)
 
     kernel = grouped_gemm_bwd(batch_sum, batch_count, M, N, max_k_iters, block_M, block_N, block_K, total_blocks)
 
