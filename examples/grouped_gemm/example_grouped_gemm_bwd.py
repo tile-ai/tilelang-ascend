@@ -32,17 +32,15 @@ def torch_grouped_gemm_bwd(A, B, block_metadata):
         n_start = n_block_idx * 64
 
         # Compute: C[batch_idx, m_start:m_start+64, n_start:n_start+64] = A[batch_offset:batch_offset+k_iters*64, m_start:m_start+64]^T @ B[batch_offset:batch_offset+k_iters*64, n_start:n_start+64]
-        A_i = A[batch_offset:batch_offset + k_iters * 64, m_start:m_start + 64]
-        B_i = B[batch_offset:batch_offset + k_iters * 64, n_start:n_start + 64]
-        output[batch_idx, m_start:m_start + 64, n_start:n_start + 64] = torch.mm(A_i.T, B_i)
+        A_i = A[batch_offset : batch_offset + k_iters * 64, m_start : m_start + 64]
+        B_i = B[batch_offset : batch_offset + k_iters * 64, n_start : n_start + 64]
+        output[batch_idx, m_start : m_start + 64, n_start : n_start + 64] = torch.mm(A_i.T, B_i)
 
     return output
 
 
 @tilelang.jit(out_idx=[2], target="pto")
-def grouped_gemm_bwd(
-    batch_sum, batch_count, M, N, max_k_iters, block_M, block_N, block_K, total_blocks, dtype="float16"
-):
+def grouped_gemm_bwd(batch_sum, batch_count, M, N, max_k_iters, block_M, block_N, block_K, total_blocks, dtype="float16"):
     """
     Grouped GEMM Backward with static loop bounds
     Using block_metadata mechanism similar to grouped_gemm_fwd
@@ -107,13 +105,15 @@ def construct_metadata(batch_sizes_list, M, N, block_M, block_N, block_K, device
         k_iters = batch_size // block_K
         for m_block in range(m_num):
             for n_block in range(n_num):
-                metadata_list.append([
-                    batch_idx,
-                    m_block,
-                    n_block,
-                    batch_offset,
-                    k_iters,
-                ])
+                metadata_list.append(
+                    [
+                        batch_idx,
+                        m_block,
+                        n_block,
+                        batch_offset,
+                        k_iters,
+                    ]
+                )
         batch_offset += batch_size
 
     total_blocks = len(metadata_list)
@@ -134,9 +134,7 @@ def run_tilelang_grouped_gemm_bwd(batch_sizes_list, M, N, block_M, block_N, bloc
     for size in batch_sizes_list:
         assert size % block_K == 0, f"batch_size={size} must be divisible by block_K={block_K}"
 
-    block_metadata, total_blocks = construct_metadata(
-        batch_sizes_list, M, N, block_M, block_N, block_K, device
-    )
+    block_metadata, total_blocks = construct_metadata(batch_sizes_list, M, N, block_M, block_N, block_K, device)
 
     max_k_iters = max(size // block_K for size in batch_sizes_list)
 

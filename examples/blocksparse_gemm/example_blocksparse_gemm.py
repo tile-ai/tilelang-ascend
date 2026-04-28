@@ -54,13 +54,12 @@ pass_configs = {
     tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_SYNC: True,
 }
 
+
 @tilelang.autotune(
     configs=get_configs(),
 )
 @tilelang.jit(out_idx=[-1], pass_configs=pass_configs)
-def blocksparse_matmul(
-    M, N, K, block_M, block_N, block_K, num_stages, dtype="float16", accum_dtype="float"
-):
+def blocksparse_matmul(M, N, K, block_M, block_N, block_K, num_stages, dtype="float16", accum_dtype="float"):
     m_num = M // block_M
     n_num = N // block_N
     k_num = (K + block_K - 1) // block_K
@@ -261,7 +260,9 @@ def main():
         print(f"Best Config: {best_config}")
     else:
         kernel = blocksparse_matmul(
-            M, N, K,
+            M,
+            N,
+            K,
             block_M=DEFAULT_BLOCK_M,
             block_N=DEFAULT_BLOCK_N,
             block_K=DEFAULT_BLOCK_K,
