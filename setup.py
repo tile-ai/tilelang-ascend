@@ -1,7 +1,6 @@
 # Copyright (c) Tile-AI Organization.
 # Licensed under the MIT License.
 
-import io
 import subprocess
 import shutil
 from setuptools import setup, find_packages, Extension
@@ -9,7 +8,6 @@ from setuptools.command.build_py import build_py
 from setuptools.command.sdist import sdist
 from setuptools.command.develop import develop
 import distutils.dir_util
-from typing import List
 import re
 import tarfile
 from io import BytesIO
@@ -80,7 +78,7 @@ def get_path(*filepath) -> str:
     return os.path.join(ROOT_DIR, *filepath)
 
 
-def get_requirements(file_path: str = "requirements.txt") -> List[str]:
+def get_requirements(file_path: str = "requirements.txt") -> list[str]:
     """Get Python package dependencies from requirements.txt."""
     with open(get_path(file_path)) as f:
         requirements = f.read().strip().split("\n")
@@ -96,7 +94,7 @@ def find_version(version_file_path: str) -> str:
     # Use 'strip()' to remove any leading/trailing whitespace or newline characters
     if not os.path.exists(version_file_path):
         raise FileNotFoundError(f"Version file not found at {version_file_path}")
-    with open(version_file_path, "r") as version_file:
+    with open(version_file_path) as version_file:
         version = version_file.read().strip()
     return version
 
@@ -125,7 +123,7 @@ def get_rocm_version():
         rocm_path = os.environ.get("ROCM_PATH", "/opt/rocm")
         rocm_version_file = os.path.join(rocm_path, "lib", "cmake", "rocm", "rocm-config-version.cmake")
         if os.path.exists(rocm_version_file):
-            with open(rocm_version_file, "r") as f:
+            with open(rocm_version_file) as f:
                 content = f.read()
                 match = re.search(r'set\(PACKAGE_VERSION "(\d+\.\d+\.\d+)"', content)
                 if match:
@@ -139,7 +137,7 @@ def get_cann_version():
     ascend_home = os.environ.get("ASCEND_HOME_PATH") or os.environ.get("ASCEND_HOME", "/usr/local/Ascend/ascend-toolkit/latest")
     cann_version_file = os.path.join(ascend_home, "opp", "version.info")
     if os.path.exists(cann_version_file):
-        with open(cann_version_file, "r") as f:
+        with open(cann_version_file) as f:
             content = f.read()
             match = re.search(r"Version=(\d+\.\d+\.\d+)", content)
             if match:
@@ -206,7 +204,8 @@ def read_readme() -> str:
     """Read the README file if present."""
     p = get_path("README.md")
     if os.path.isfile(p):
-        return io.open(get_path("README.md"), "r", encoding="utf-8").read()
+        with open(get_path("README.md"), encoding="utf-8") as f:
+            return f.read()
     else:
         return ""
 
