@@ -139,7 +139,7 @@ jobs:
               if [ -d build-cache ] && [ \"\$(ls -A build-cache)\" ]; then
                 echo \"Copy build cache...\"
                 mkdir -p build
-                cp -r build-cache/* build/ 
+                cp -ra build-cache/* build/ 
               fi
 
               # 1. 增量编译项目
@@ -148,7 +148,7 @@ jobs:
               if [ -d \"build\" ]; then
                 echo \"Saving build artifacts...\"
                 rm -rf build-cache/*
-                cp -r build/* build-cache/
+                cp -ra build/* build-cache/
               fi
 
               # 2. 加载环境变量
@@ -181,7 +181,7 @@ jobs:
       - name: Delete old cache for overwrite
         if: always() && env.FULL_BUILD == 'true'
         run: |
-          KEY="${{ steps.cache-build.outputs.cache-matched-key }}"
+          KEY="tilelang-build-${{ github.base_ref || github.ref_name }}-${{ hashFiles('CMakeLists.txt', 'requirements.txt', 'install_ascend.sh') }}"
           echo "🗑️ Deleting old cache to allow overwrite: $KEY"
           curl -s -L \
             -X DELETE \
