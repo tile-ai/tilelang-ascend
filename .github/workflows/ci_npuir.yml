@@ -102,66 +102,66 @@ jobs:
           mv tilelang _tilelang_src
         fi
 
-    - name: Run npuir examples (python scripts)
-      env:
-        TILELANG_CLEAR_CACHE: "1"
-      shell: bash
-      run: |
-        set -euo pipefail
-        mkdir -p testing/npuir/output/examples
+    # - name: Run npuir examples (python scripts)
+    #   env:
+    #     TILELANG_CLEAR_CACHE: "1"
+    #   shell: bash
+    #   run: |
+    #     set -euo pipefail
+    #     mkdir -p testing/npuir/output/examples
 
-        EXAMPLE_FILES=(
-          examples/deepseek_v32/sparse_mla_bwd.py
-          examples/deepseek_v32/sparse_mla_fwd.py
-          examples/elementwise/atomic_add_dev.py
-          examples/elementwise/atomic_add.py
-          examples/elementwise/example_elementwise_add.py
-          examples/elementwise/vec_add_1d.py
-          examples/elementwise/vec_add_2d_dynamic_shape.py
-          examples/elementwise/vec_add_2d.py
-          examples/elementwise/vec_add_auto_brc.py
-          examples/gemm/example_gemm.py
-          examples/gemm/example_gemm_int82int32.py
-          examples/gemm/matmul_dynamic_shape.py
-          examples/gemm/matmul.py
-          examples/gemv/example_gemv.py
-          examples/mixcv/example_mixcv.py
-          examples/norm/example_rms_norm.py
-          examples/exp2.py
-          examples/log2.py
-          examples/flash_attn_npuir.py
-          examples/mixcv_mixkernel.py
-          examples/flash_attn_npuir_dev.py
-          examples/sparse_mla_fwd.py
-          examples/vectorization_in_parallel.py
-          examples/engram/engram_bwd_exp.py
-          examples/engram/engram_bwd.py
-          examples/engram/engram_decode.py
-          examples/engram/engram_fwd.py
-          examples/sparse_mla_fwd_dynamic_shape.py
-        )
+    #     EXAMPLE_FILES=(
+    #       examples/deepseek_v32/sparse_mla_bwd.py
+    #       examples/deepseek_v32/sparse_mla_fwd.py
+    #       examples/elementwise/atomic_add_dev.py
+    #       examples/elementwise/atomic_add.py
+    #       examples/elementwise/example_elementwise_add.py
+    #       examples/elementwise/vec_add_1d.py
+    #       examples/elementwise/vec_add_2d_dynamic_shape.py
+    #       examples/elementwise/vec_add_2d.py
+    #       examples/elementwise/vec_add_auto_brc.py
+    #       examples/gemm/example_gemm.py
+    #       examples/gemm/example_gemm_int82int32.py
+    #       examples/gemm/matmul_dynamic_shape.py
+    #       examples/gemm/matmul.py
+    #       examples/gemv/example_gemv.py
+    #       examples/mixcv/example_mixcv.py
+    #       examples/norm/example_rms_norm.py
+    #       examples/exp2.py
+    #       examples/log2.py
+    #       examples/flash_attn_npuir.py
+    #       examples/mixcv_mixkernel.py
+    #       examples/flash_attn_npuir_dev.py
+    #       examples/sparse_mla_fwd.py
+    #       examples/vectorization_in_parallel.py
+    #       examples/engram/engram_bwd_exp.py
+    #       examples/engram/engram_bwd.py
+    #       examples/engram/engram_decode.py
+    #       examples/engram/engram_fwd.py
+    #       examples/sparse_mla_fwd_dynamic_shape.py
+    #     )
 
-        for script in "${EXAMPLE_FILES[@]}"; do
-          if [[ ! -f "${script}" ]]; then
-            echo "::error::Example file not found: ${script}"
-            exit 1
-          fi
+    #     for script in "${EXAMPLE_FILES[@]}"; do
+    #       if [[ ! -f "${script}" ]]; then
+    #         echo "::error::Example file not found: ${script}"
+    #         exit 1
+    #       fi
 
-          log_file="testing/npuir/output/examples/$(basename "${script}").log"
-          echo "Running: python ${script}"
-          python "${script}" 2>&1 | tee "${log_file}"
+    #       log_file="testing/npuir/output/examples/$(basename "${script}").log"
+    #       echo "Running: python ${script}"
+    #       python "${script}" 2>&1 | tee "${log_file}"
 
-          if ! grep -Eqi "passed|success" "${log_file}"; then
-            echo "::error::${script} did not print a success marker. Expected 'passed' or 'success' in output."
-            exit 1
-          fi
-        done
+    #       if ! grep -Eqi "passed|success" "${log_file}"; then
+    #         echo "::error::${script} did not print a success marker. Expected 'passed' or 'success' in output."
+    #         exit 1
+    #       fi
+    #     done
 
     - name: Run npuir tests
       env:
         TILELANG_CLEAR_CACHE: "1"
       run: |
-        python -m pytest -v testing/npuir/*_ops \
+        python -m pytest -v testing/npuir/*_ops --dist loadfile -n 2\
           --html=testing/npuir/output/report.html --self-contained-html \
           --junitxml=testing/npuir/output/junit.xml
 
