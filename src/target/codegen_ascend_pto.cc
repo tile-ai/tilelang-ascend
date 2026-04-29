@@ -5,7 +5,6 @@
  * \file target/codegen_ascend_pto.cc
  */
 
-#include "codegen_ascend_pto.h"
 #include <tvm/arith/analyzer.h>
 #include <tvm/runtime/container/string.h>
 #include <tvm/runtime/registry.h>
@@ -22,8 +21,8 @@
 #include "../op/ascend.h"
 #include "../op/builtin.h"
 #include "../transform/common/attr.h"
-
 #include "arith/pattern_match.h"
+#include "codegen_ascend_pto.h"
 
 #define DEC_STR_TO_HEX_STR(dec_str)                                            \
   ([](const std::string &s) {                                                  \
@@ -1439,12 +1438,12 @@ void CodeGenTileLangAscendPto::GatherMaskCodegen(const CallNode *op,
                                                  const std::string &op_name) {
   BufferInfo dst_info = GetBufferInfo(op->args[1]);
   BufferInfo src_info = GetBufferInfo(op->args[2]);
-
+  auto temp_name = PrintBufferOffset(op->args[4].as<CallNode>());
   if (op->args[3].as<CallNode>()) {
     this->PrintIndent();
     std::string idx_name = PrintExpr(op->args[3].as<CallNode>()->args[1]);
     this->stream << op_name << "(" << dst_info.id << ", " << src_info.id << ", "
-                 << idx_name << ");\n";
+                 << idx_name << ", " << temp_name << ");\n";
   } else {
     std::string src1Pattern = Downcast<StringImm>(op->args[3])->value;
     this->PrintIndent();
@@ -1762,7 +1761,6 @@ void CodeGenTileLangAscendPto::SetDeqScaleCodegen(const CallNode *op) {
 
 void CodeGenTileLangAscendPto::BinaryVecOpCodegen(const CallNode *op,
                                                   const std::string &op_name) {
-
   ShapeInfo src0_shape_info = GetSliceInfo(op->args[1].as<CallNode>());
   ShapeInfo src1_shape_info = GetSliceInfo(op->args[2].as<CallNode>());
   ShapeInfo dst_shape_info = GetSliceInfo(op->args[0].as<CallNode>());
@@ -2361,7 +2359,6 @@ void CodeGenTileLangAscendPto::CodegenColReduce(const ReduceOpInfo &op_info,
                                                 const ShapeInfo &dst,
                                                 const ShapeInfo &src,
                                                 const ShapeInfo &tmp) {
-
   std::string op_name = GetReduceOpName(op_info.kind, ReduceDirection::COL);
 
   std::string dst_name = dst.ub_name;
@@ -2992,17 +2989,18 @@ void CodeGenTileLangAscendPto::SelectCodegen(const CallNode *op) {
   ShapeInfo dst_shape_info = GetSliceInfo(op->args[0].as<CallNode>());
 
   std::string mask_name = PrintBufferOffset(op->args[1].as<CallNode>());
+  std::string temp_name = PrintBufferOffset(op->args[3].as<CallNode>());
   std::string src1_name;
   std::string op_name;
 
   std::string src0_type = src0_shape_info.type;
 
-  int src1_type = std::stoi(PrintExpr(op->args[3]));
+  int src1_type = std::stoi(PrintExpr(op->args[4]));
   if (src1_type == 2) {
-    src1_name = PrintBufferOffset(op->args[4].as<CallNode>());
+    src1_name = PrintBufferOffset(op->args[5].as<CallNode>());
     op_name = "TSEL";
   } else if (src1_type == 1) {
-    src1_name = PrintExpr(op->args[4]);
+    src1_name = PrintExpr(op->args[5]);
     op_name = "TSELS";
   } else {
     LOG(FATAL) << "CodeGenAscendPto: Select currently only supports "
@@ -3015,13 +3013,27 @@ void CodeGenTileLangAscendPto::SelectCodegen(const CallNode *op) {
     CreateUbVariableND(src0_temp_name, src0_shape_info);
     CreateUbVariableND(dst_temp_name, dst_shape_info);
     this->PrintIndent();
-    this->stream << op_name << "(" << dst_temp_name << ", " << mask_name << ", "
-                 << src0_temp_name << ", " << src1_name << ");\n";
+    if (op_name == "TSEL") {
+      this->stream << op_name << "(" << dst_temp_name << ", " << mask_name
+                   << ", " << src0_temp_name << ", " << src1_name << ", "
+                   << temp_name << ");\n";
+    } else {
+      this->stream << op_name << "(" << dst_temp_name << ", " << mask_name
+                   << ", " << src0_temp_name << ", " << temp_name << ", "
+                   << src1_name << ");\n";
+    }
+
   } else {
     this->PrintIndent();
-    this->stream << op_name << "(" << dst_shape_info.ub_name << ", "
-                 << mask_name << ", " << src0_shape_info.ub_name << ", "
-                 << src1_name << ");\n";
+    if (op_name == "TSEL") {
+      this->stream << op_name << "(" << dst_shape_info.ub_name << ", "
+                   << mask_name << ", " << src0_shape_info.ub_name << ", "
+                   << src1_name << ", " << temp_name << ");\n";
+    } else {
+      this->stream << op_name << "(" << dst_shape_info.ub_name << ", "
+                   << mask_name << ", " << src0_shape_info.ub_name << ", "
+                   << temp_name << ", " << src1_name << ");\n";
+    }
   }
 }
 

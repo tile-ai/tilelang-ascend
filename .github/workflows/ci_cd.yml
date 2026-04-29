@@ -8,6 +8,7 @@ on:
       - ascendc_pto*                           # ascendc_pto 分支
     paths-ignore:                              # 以下路径的修改不触发 CI
       - '**.md'                                # Markdown 文件
+      - '**.png'
       - 'docs/**'                              # 文档目录
       - 'images/**'                            # 图片目录
 
@@ -16,6 +17,7 @@ on:
       - ascendc_pto*
     paths-ignore:
       - '**.md'
+      - '**.png'
       - 'docs/**'
       - 'images/**'
 
@@ -27,14 +29,22 @@ on:
         required: false
         default: true
         type: boolean
+      full_build:                          # 是否全量编译
+        description: 'Force full build (no cache)'
+        required: false
+        default: false        
+        type: boolean
 
   schedule:
     - cron: '0 18 * * *' # 每天 UTC 18:00 运行 (北京时间凌晨 2:00)
 
+  issue_comment:
+    types: [created]
+
 concurrency:
-  # PR 场景：按 PR 分支名分组，同一 PR 的新 push 共享同一组
-  # 手动/定时场景：head_ref 为空，退化为 github.run_id（每次唯一），互不干扰
-  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  # PR 场景（含 pull_request 和 /re-test）：统一按 PR 号分组，新运行自动取消旧运行
+  # 手动/定时/push 场景：退化为 github.run_id（每次唯一），互不干扰
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.event.issue.number || github.run_id }}
   # 同一组中有新运行时，自动取消旧的正在运行的 workflow 
   cancel-in-progress: true
   
@@ -42,30 +52,138 @@ jobs:
   test:
     name: Benchmark Tests (Ascend NPU)
     runs-on: [self-hosted, Linux, X64, ascend_910b] 
-    if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.run_tests == 'true' }}
+    if: |
+      (github.event_name != 'workflow_dispatch' || github.event.inputs.run_tests == 'true') &&
+      (github.event_name != 'issue_comment' || (github.event.issue.pull_request && contains(github.event.comment.body, '/re-test')))
     timeout-minutes: 60            # 1小时超时失败
+    env:
+      FULL_BUILD: ${{ github.event_name == 'schedule' || github.event.inputs.full_build == 'true' }}
     steps:
+      - name: Get PR info (for /re-test)
+        if: github.event_name == 'issue_comment'
+        id: pr_info
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number
+            });
+            core.setOutput('head_ref', pr.data.head.ref);
+            core.setOutput('head_sha', pr.data.head.sha);
+            core.setOutput('base_ref', pr.data.base.ref);
+
+      - name: React to /re-test comment
+        if: github.event_name == 'issue_comment'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.reactions.createForIssueComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: context.payload.comment.id,
+              content: 'rocket'
+            });
+
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           submodules: false
-          fetch-depth: 1
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'issue_comment' && format('refs/pull/{0}/head', github.event.issue.number) || '' }}
+
+      - name: Check if skip pytest
+        id: check_skip_pytest
+        if: github.event_name == 'pull_request' || github.event_name == 'issue_comment'
+        run: |
+          BASE_REF="${{ github.event_name == 'issue_comment' && steps.pr_info.outputs.base_ref || github.base_ref }}"
+          git fetch origin $BASE_REF
+          changed_files=$(git diff --name-only origin/$BASE_REF HEAD)
+          
+          skip_pytest=true
+          
+          for file in $changed_files; do
+            if [[ ! "$file" =~ ^examples/ ]]; then
+              echo "File outside examples/: $file"
+              skip_pytest=false
+              break
+            fi
+            if [[ ! "$file" =~ \.py$ ]] && [[ ! "$file" =~ \.md$ ]] && [[ ! "$file" =~ \.png$ ]]; then
+              echo "File type not allowed: $file"
+              skip_pytest=false
+              break
+            fi
+          done
+          
+          echo "skip_pytest=${skip_pytest}" >> $GITHUB_OUTPUT
+          if [ "$skip_pytest" = true ]; then
+            echo "Will skip pytest: only .py/.md/.png files in examples/ modified"
+          else
+            echo "Will run full tests"
+          fi
+
+      # 非全量编译，缓存编译产物，除非关键文件变更
+      - name: Restore build cache
+        if: env.FULL_BUILD != 'true'
+        id: cache-build
+        uses: actions/cache/restore@v4
+        with:
+          path: build-cache/
+          key: tilelang-build-${{ github.event_name == 'issue_comment' && steps.pr_info.outputs.base_ref || github.base_ref || github.ref_name }}-${{ hashFiles('CMakeLists.txt', 'requirements.txt', 'install_ascend.sh') }}
+      
+      # 全量编译，清理所有残留编译产物
+      - name: Clean build artifacts for full build
+        if: env.FULL_BUILD == 'true'
+        run: |
+          echo "🗑️ Full build mode: cleaning all build artifacts"
+          rm -rf build build-cache
+          echo "Clean completed. Will build from scratch."
 
       - name: Build and Test in Local Container
         run: |
-          echo 'run in existed container...'
+          # 准备缓存目录
+          mkdir -p build-cache
+          if [[ "${FULL_BUILD}" == "true" ]]; then
+            echo "📅 Full build (schedule/manual): NO cache, NO incremental"
+            INCREMENTAL_FLAG=""
+          elif [[ "${{ steps.cache-build.outputs.cache-hit }}" == 'true' ]]; then
+            echo "✅ Cache hit! Will use incremental build."
+            INCREMENTAL_FLAG="--enable-incremental"
+          else
+            echo "🔄 Cache miss. Performing clean build."
+            INCREMENTAL_FLAG=""
+          fi
+          
+          SKIP_PYTEST_VALUE="${{ steps.check_skip_pytest.outputs.skip_pytest }}"
+          echo "run in existed container..."
+
           docker exec \
             -w $GITHUB_WORKSPACE \
             -e GITHUB_ENV=$GITHUB_ENV \
             -e GITHUB_OUTPUT=$GITHUB_OUTPUT \
             -e BASH_ENV=/root/.bashrc \
+            -e INCREMENTAL_FLAG="$INCREMENTAL_FLAG" \
+            -e SKIP_PYTEST=$SKIP_PYTEST_VALUE \
             tilelang_x1 \
             bash -c "
               set -e
-          
-              # 1. 在容器内重新编译项目
-              echo 'Building project...'
-              bash install_ascend.sh
+
+              # 如果有缓存，复制到 build 目录
+              if [ -d build-cache ] && [ \"\$(ls -A build-cache)\" ]; then
+                echo \"Copy build cache...\"
+                mkdir -p build
+                cp -ra build-cache/* build/ 
+              fi
+
+              # 1. 增量编译项目
+              bash install_ascend.sh \$INCREMENTAL_FLAG
+              # 保存编译产物
+              if [ -d \"build\" ]; then
+                echo \"Saving build artifacts...\"
+                rm -rf build-cache/*
+                cp -ra build/* build-cache/
+              fi
 
               # 2. 加载环境变量
               echo 'Sourcing environment...'
@@ -77,7 +195,11 @@ jobs:
               chmod +x bench_test.sh
               echo 'Running benchmark tests...'
               set +e
-              ./bench_test.sh 2>&1 | tee test_output.log
+              if [ \"\$SKIP_PYTEST\" = true ]; then
+                ./bench_test.sh --skip-pytest 2>&1 | tee test_output.log
+              else
+                ./bench_test.sh 2>&1 | tee test_output.log
+              fi
               TEST_EXIT_CODE=\${PIPESTATUS[0]}
               set -e
 
@@ -89,7 +211,30 @@ jobs:
                 exit 1
               fi
             "
-
+      # 全量编译下先删除旧缓存，否则 save 会失败
+      - name: Delete old cache for overwrite
+        if: always() && env.FULL_BUILD == 'true'
+        run: |
+          KEY="tilelang-build-${{ github.base_ref || github.ref_name }}-${{ hashFiles('CMakeLists.txt', 'requirements.txt', 'install_ascend.sh') }}"
+          echo "🗑️ Deleting old cache to allow overwrite: $KEY"
+          curl -s -L \
+            -X DELETE \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/caches?key=$KEY&ref=${{ github.ref }}"
+          echo "✅ Old cache deleted (if existed)"
+        continue-on-error: true
+      
+      # 全量编 | 增量编但无缓存，需要保存缓存
+      - name: Save build cache
+        if: always() && (env.FULL_BUILD == 'true' || steps.cache-build.outputs.cache-hit == 'false')
+        continue-on-error: true    # key 已存在时不报错
+        uses: actions/cache/save@v4
+        with:
+          path: build-cache/
+          key: tilelang-build-${{ github.event_name == 'issue_comment' && steps.pr_info.outputs.base_ref || github.base_ref || github.ref_name }}-${{ hashFiles('CMakeLists.txt', 'requirements.txt', 'install_ascend.sh') }}
+          
       - name: Check pass rate
         id: check_results
         run: |
@@ -142,3 +287,21 @@ jobs:
             examples/*.log
             examples/*.json
           retention-days: 30
+
+      - name: Update PR commit status (for /re-test)
+        if: always() && github.event_name == 'issue_comment'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const sha = '${{ steps.pr_info.outputs.head_sha }}';
+            const jobStatus = '${{ job.status }}';
+            const status = jobStatus === 'success' ? 'success' : 'failure';
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: sha,
+              state: status,
+              context: '${{ github.workflow }} / test',
+              description: `Re-test: ${status}`,
+              target_url: `${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}`
+            });

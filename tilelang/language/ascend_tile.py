@@ -67,6 +67,134 @@ def _handle_buffer_region(br: BufferRegion, mask):
     return bf.access_ptr(mask, offset=offset, extent=size_extent), extent
 
 
+_ATOMIC_ADD_V1_ERR = "T.tile.atomic_add V1 only supports local tensor -> GM atomic add."
+
+
+def _tile_region(buffer: BufferLoad, access_type: str, *args: PrimExpr):
+    access_mask = {"r": 1, "w": 2, "rw": 3}[access_type]
+    return tir.call_intrin(
+        "handle",
+        tir.op.Op.get("tl.region"),
+        buffer,
+        access_mask,
+        *args,
+    )
+
+
+def _resolve_let_value(data):
+    if isinstance(data, tir.Var) and T.has_let_value(data):
+        return T.get_let_value(data)
+    return data
+
+
+def _atomic_add_buffer(data, arg_name: str) -> Buffer:
+    data = _resolve_let_value(data)
+    if isinstance(data, Buffer):
+        return data
+    if isinstance(data, BufferRegion):
+        return data.buffer
+    if isinstance(data, BufferLoad):
+        return data.buffer
+    raise TypeError(f"{_ATOMIC_ADD_V1_ERR} {arg_name} must be a Buffer, BufferRegion, or BufferLoad, got {type(data).__name__}.")
+
+
+def _atomic_add_scope(data, arg_name: str) -> str:
+    buffer = _atomic_add_buffer(data, arg_name)
+    scope_attr = getattr(buffer, "scope", None)
+    scope = scope_attr() if callable(scope_attr) else scope_attr
+    if not isinstance(scope, str):
+        raise TypeError(f"{_ATOMIC_ADD_V1_ERR} Cannot determine {arg_name} buffer scope.")
+    return scope
+
+
+def _atomic_add_extent(data):
+    data = _resolve_let_value(data)
+    if isinstance(data, Buffer):
+        return list(data.shape)
+    if isinstance(data, BufferRegion):
+        return [x.extent for x in data.region]
+    return None
+
+
+def _merge_atomic_add_extents(src_extent, dst_extent):
+    if not src_extent and not dst_extent:
+        raise ValueError(f"{_ATOMIC_ADD_V1_ERR} Cannot deduce atomic_add extents.")
+
+    src_extent = list(src_extent) if src_extent else [1] * len(dst_extent)
+    dst_extent = list(dst_extent) if dst_extent else [1] * len(src_extent)
+    if len(src_extent) != len(dst_extent):
+        max_len = max(len(src_extent), len(dst_extent))
+        src_extent = src_extent + [1] * (max_len - len(src_extent))
+        dst_extent = dst_extent + [1] * (max_len - len(dst_extent))
+
+    extent = []
+    for src_val, dst_val in zip(src_extent, dst_extent):
+        if isinstance(src_val, (int, float)) and isinstance(dst_val, (int, float)):
+            extent.append(max(src_val, dst_val))
+        else:
+            if not isinstance(src_val, PrimExpr):
+                src_val = tir.IntImm("int32", int(src_val))
+            if not isinstance(dst_val, PrimExpr):
+                dst_val = tir.IntImm("int32", int(dst_val))
+            extent.append(tir.max(src_val, dst_val))
+    return extent
+
+
+def _atomic_add_to_tile_region(data, access_type: str, extents: list[PrimExpr]):
+    data = _resolve_let_value(data)
+    if isinstance(data, Buffer):
+        mins = [0 for _ in data.shape]
+        return _tile_region(T.BufferLoad(data, mins), access_type, *data.shape)
+    if isinstance(data, BufferRegion):
+        mins = [x.min for x in data.region]
+        region_extents = [x.extent for x in data.region]
+        if len(region_extents) < len(extents):
+            raise ValueError(f"{_ATOMIC_ADD_V1_ERR} Region rank is smaller than inferred extent rank.")
+        return _tile_region(
+            T.BufferLoad(data.buffer, mins),
+            access_type,
+            *region_extents,
+        )
+    if isinstance(data, BufferLoad):
+        indices = data.indices
+        if len(indices) > len(extents):
+            extents = [1] * (len(indices) - len(extents)) + list(extents)
+        if len(indices) != len(extents):
+            raise ValueError(f"{_ATOMIC_ADD_V1_ERR} BufferLoad rank does not match inferred extents.")
+        return _tile_region(data, access_type, *extents)
+    raise TypeError(f"{_ATOMIC_ADD_V1_ERR} Expected a tensor region, got {type(data).__name__}.")
+
+
+def atomic_add(
+    dst: Buffer | BufferRegion | BufferLoad,
+    src: Buffer | BufferRegion | BufferLoad,
+):
+    """Atomically add a local tensor tile into a GM destination tile.
+
+    V1 intentionally models Ascend DMA atomic add only: the destination must be
+    GM, and the source must be a local tensor region that can be copied out.
+    """
+    dst_scope = _atomic_add_scope(dst, "dst")
+    src_scope = _atomic_add_scope(src, "src")
+    if dst_scope != "global":
+        raise ValueError(f"{_ATOMIC_ADD_V1_ERR} dst scope must be global, got {dst_scope}.")
+    if src_scope == "global":
+        raise ValueError(f"{_ATOMIC_ADD_V1_ERR} src scope must be local, got global.")
+
+    dst_extent = _atomic_add_extent(dst)
+    src_extent = _atomic_add_extent(src)
+    extent = _merge_atomic_add_extents(src_extent, dst_extent)
+    dst_region = _atomic_add_to_tile_region(dst, "w", extent)
+    src_region = _atomic_add_to_tile_region(src, "r", extent)
+
+    return tir.call_intrin(
+        "handle",
+        tir.op.Op.get("tl.ascend_atomic_add"),
+        dst_region,
+        src_region,
+    )
+
+
 def fill(buffer: Buffer | BufferRegion, value: PrimExpr):
     """Fill a buffer or buffer region with a specified value.
 
@@ -777,6 +905,42 @@ def sigmoid(dst: Buffer | BufferRegion, src: Buffer | BufferRegion):
     )
 
 
+def silu(dst: Buffer | BufferRegion, src: Buffer | BufferRegion):
+    """Performs element-wise SiLU (Swish) activation: dst = src * sigmoid(src).
+
+    SiLU (Sigmoid Linear Unit) is also known as Swish activation function.
+
+    Args:
+        dst: The destination buffer where the result will be stored.
+        src: The source buffer.
+
+    Returns:
+        A TVM intrinsic call that performs the Silu operation.
+
+    Note:
+        - Supports data types: half, float (Atlas A2/A3)
+        - SiLU = x * sigmoid(x) = x / (1 + exp(-x))
+    """
+    if isinstance(dst, BufferRegion):
+        dst_ptr, buffer_extent = _handle_buffer_region(dst, "w")
+        size = math.prod(buffer_extent)
+    else:
+        dst_ptr = dst.access_ptr("w")
+        size = math.prod(dst.shape)
+
+    if isinstance(src, BufferRegion):
+        src_ptr, _ = _handle_buffer_region(src, "r")
+    else:
+        src_ptr = src.access_ptr("r")
+    return tir.call_intrin(
+        "handle",
+        tir.op.Op.get("tl.ascend_silu"),
+        dst_ptr,
+        src_ptr,
+        size,
+    )
+
+
 def ln(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion):
     """Performs element-wise natural logarithm: dst = ln(src0).
 
@@ -904,6 +1068,64 @@ def axpy(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, scalar_value: 
         scalar_value: The scalar alpha.
     """
     return scalar_op(dst, src0, scalar_value, "axpy")
+
+
+def mul_add_dst(
+    dst: Buffer | BufferRegion,
+    src0: Buffer | BufferRegion,
+    src1: Buffer | BufferRegion,
+):
+    """Performs element-wise multiply-add: dst = src0 * src1 + dst.
+
+    This operation performs a fused multiply-add where src0 and src1 are multiplied,
+    then added to the existing values in dst, with the result stored back in dst.
+
+    Args:
+        dst: The destination buffer (also acts as the accumulator input).
+             Must be in UB (Unified Buffer) scope.
+        src0: The first source buffer for multiplication.
+        src1: The second source buffer for multiplication.
+
+    Returns:
+        A TVM intrinsic call that performs the MulAddDst operation.
+
+    Note:
+        - Supports data types: half, float (Atlas A2/A3)
+        - Also supports: int16_t, uint16_t, int32_t, uint32_t (Atlas 200I/500 A2)
+        - dst acts as both input (accumulator) and output
+    """
+    if isinstance(dst, BufferRegion):
+        dst_ptr, dst_extent = _handle_buffer_region(dst, "rw")
+    else:
+        dst_ptr = dst.access_ptr("rw")
+        dst_extent = dst.shape
+
+    if isinstance(src0, BufferRegion):
+        src0_ptr, src0_extent = _handle_buffer_region(src0, "r")
+    else:
+        src0_ptr = src0.access_ptr("r")
+        src0_extent = src0.shape
+
+    if isinstance(src1, BufferRegion):
+        src1_ptr, src1_extent = _handle_buffer_region(src1, "r")
+    else:
+        src1_ptr = src1.access_ptr("r")
+        src1_extent = src1.shape
+
+    size_dst = math.prod(dst_extent)
+    size_src0 = math.prod(src0_extent)
+    size_src1 = math.prod(src1_extent)
+
+    assert size_dst == size_src0 == size_src1, "dst, src0, and src1 must have the same size"
+
+    return tir.call_intrin(
+        "handle",
+        tir.op.Op.get("tl.ascend_mul_add_dst"),
+        dst_ptr,
+        src0_ptr,
+        src1_ptr,
+        size_dst,
+    )
 
 
 def bitwise_lshift(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, scalarValue: PrimExpr):  # noqa: F821
@@ -1708,80 +1930,96 @@ def round(out: Buffer | BufferRegion, buffer: Buffer | BufferRegion, count: Prim
 
 
 def broadcast(
-    dst: Buffer | BufferRegion,  # noqa: F821, FA100
-    src: Buffer | BufferRegion,  # noqa: F821, FA100
-):  # noqa: F821, FA100
-    """Generates a TIR intrinsic call for the AscendC `Broadcast` operation.
+    dst: Buffer | BufferRegion,
+    src: Buffer | BufferRegion,
+    axis: int | None = None,
+):
+    """Generates a TIR intrinsic call for the Ascend `Broadcast` operation.
 
     This function performs a broadcast copy from the source buffer (`src`) to the
     destination buffer (`dst`). It automatically infers the broadcasting axis
-    based on the shapes of the input buffers.
+    based on the shapes of the input buffers, or uses the explicitly provided axis.
 
     Args:
-        dst (tvm.tir.Buffer): The destination buffer. Must be allocated in the
-            Unified Buffer (UB). Its shape determines the output size.
-        src (tvm.tir.Buffer): The source buffer. Must be allocated in the
-            Unified Buffer (UB). Its shape must be compatible with `dst` for broadcasting.
+        dst: Destination buffer (must be in UB).
+        src: Source buffer (must be in UB).
+        axis: Broadcasting axis (0 or 1). If None, auto-inferred.
 
     Returns:
-        tvm.tir.Call: A TIR intrinsic call node that maps to the C++ `AscendC::Broadcast` API.
+        tvm.tir.Call: Intrinsic call for AscendC Broadcast API.
 
     Raises:
-        AssertionError: If the input shapes violate the dimension constraints.
-
-    Constraints:
-        1. **Rank Consistency**: The number of dimensions (rank) of `src` and `dst` must be identical.
-        2. **Supported Dimensions**: Only 1D and 2D tensors are supported. The rank must be 1 or 2.
-        3. **Broadcasting Logic**:
-            - **Axis 0 (Row Broadcast)**: Inferred if `src.shape[0] == 1` and `dst.shape[0] > 1`.
-              The source row is replicated `dst.shape[0]` times.
-            - **Axis 1 (Column Broadcast)**: Inferred if `src.shape[1] == 1` and `dst.shape[1] > 1`.
-              The source column is replicated `dst.shape[1]` times.
-            - **No Broadcast (Copy)**: If shapes are identical, the axis defaults to 0.
+        ValueError: If shapes are incompatible for broadcasting.
     """
-    if isinstance(dst, BufferRegion):
-        dst_ptr, dst_extent = _handle_buffer_region(dst, "w")
-    else:
-        dst_ptr = dst.access_ptr("w")
-        dst_extent = dst.shape
-
-    if isinstance(src, BufferRegion):
-        src_ptr, src_extent = _handle_buffer_region(src, "r")
-    else:
-        src_ptr = src.access_ptr("r")
-        src_extent = src.shape
-
+    # --- 1. Extract pointers and shapes ---
+    dst_ptr, dst_extent = _handle_buffer_region(dst, "w") if isinstance(dst, BufferRegion) else (dst.access_ptr("w"), dst.shape)
+    src_ptr, src_extent = _handle_buffer_region(src, "r") if isinstance(src, BufferRegion) else (src.access_ptr("r"), src.shape)
     dtype = _dtype(src)
+    # 3D to 2D conversion
+    dst_extent = list(dst_extent)[-2:]
+    src_extent = list(src_extent)[-2:]
 
-    if len(dst_extent) == 3:
-        dst_extent = [dst_extent[1], dst_extent[2]]
-    if len(src_extent) == 3:
-        src_extent = [src_extent[1], src_extent[2]]
-    dim = len(dst_extent)
-    assert dim in [1, 2], "Ascend Broadcast only supports dim=1 or dim=2."
-    assert len(src_extent) == dim, "Source and Dest dimension must match."
+    dst_dim, src_dim = len(dst_extent), len(src_extent)
+    if dst_dim not in [1, 2] or src_dim not in [1, 2]:
+        raise ValueError(f"Ascend Broadcast only supports 1D or 2D: dst_dim={dst_dim}, src_dim={src_dim}")
 
-    axis = 0
-    if dim == 2:
-        if src_extent[0] == 1 and dst_extent[0] != 1:
-            axis = 0
-        elif src_extent[1] == 1 and dst_extent[1] != 1:
-            axis = 1
+    # --- 2. Normalize 1D src to 2D ---
+    if src_dim == 1 and dst_dim == 2:
+        if axis == 0 or (axis is None and dst_extent[1] == src_extent[0]):
+            src_extent, axis = [1, src_extent[0]], 0
+        elif axis == 1 or (axis is None and dst_extent[0] == src_extent[0]):
+            src_extent, axis = [src_extent[0], 1], 1
         else:
-            axis = 0
-    else:  # dim == 1
-        axis = 0
+            raise ValueError(f"Cannot broadcast 1D src {src_extent} to 2D dst {dst_extent}, axis={axis}")
+        src_dim = 2
 
-    op_name = "tl.ascend_broadcast"
-    template_args = f"{dtype}, {dim}, {axis}, false"
+    if src_dim != dst_dim:
+        raise ValueError(f"Dimension mismatch: dst_dim={dst_dim} != src_dim={src_dim}")
 
+    # --- 3. Auto-infer axis (2D case) ---
+    if axis is None:
+        if dst_dim == 2:
+            if src_extent[0] == 1 and dst_extent[0] != 1:
+                axis = 0
+            elif src_extent[1] == 1 and dst_extent[1] != 1:
+                axis = 1
+            else:
+                axis = 0  # No broadcast, default axis=0
+        else:
+            axis = 0  # 1D case
+
+    # --- 4. Shape validation ---
+    if dst_dim == 2:
+        if axis not in [0, 1]:
+            raise ValueError(f"axis must be 0 or 1, got {axis}")
+
+        if src_extent[axis] == 1:
+            # Broadcast case: validate non-broadcast dimension matches
+            other_axis = 1 - axis
+            if src_extent[other_axis] != dst_extent[other_axis]:
+                raise ValueError(
+                    f"Broadcast dimension mismatch: src[{other_axis}]={src_extent[other_axis]} "
+                    f"!= dst[{other_axis}]={dst_extent[other_axis]}"
+                )
+        elif src_extent != dst_extent:
+            # No broadcast: shapes must match exactly
+            raise ValueError(f"Shapes must match when src[{axis}] != 1: src={src_extent}, dst={dst_extent}")
+    elif dst_dim == 1:
+        # 1D case: axis must be 0
+        if axis != 0:
+            raise ValueError(f"1D broadcast requires axis=0, got axis={axis}")
+        # broadcast requires src[0] == 1, otherwise shapes must match
+        if src_extent[0] != 1 and src_extent != dst_extent:
+            raise ValueError(f"1D broadcast requires src[0]=1 or shapes must match: src={src_extent}, dst={dst_extent}")
+
+    # --- 5. Generate TIR intrinsic call ---
     return tir.call_intrin(
         "handle",
-        tir.op.Op.get(op_name),
-        f"Broadcast<{template_args}>",
+        tir.op.Op.get("tl.ascend_broadcast"),
+        f"Broadcast<{dtype}, {dst_dim}, {axis}, false>",
         dst_ptr,
         src_ptr,
-        dim,
+        dst_dim,
         *dst_extent,
         *src_extent,
     )

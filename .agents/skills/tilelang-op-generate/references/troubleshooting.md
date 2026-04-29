@@ -84,13 +84,21 @@ T.tile.max(dst, src0, src1)  # dst = max(src0, src1)
 
 **解决方案**:
 
-1. 确保在T.tile操作间添加同步：
+1. 根据编程模式处理同步。Expert 手动模式需要显式同步；Developer / 混合模式开启 `TL_ASCEND_AUTO_SYNC` 后不要额外插入手动 barrier。
    ```python
+   # Expert 手动模式
    with T.Scope("V"):
        T.tile.exp(a_ub, a_ub)
        T.barrier_all()  # 必需
        T.tile.add(a_ub, a_ub, 1.0)
        T.barrier_all()  # 必需
+
+   # Developer / 混合模式
+   pass_configs = {
+       tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
+       tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
+   }
+   T.tile.exp(a_ub, a_ub)
    ```
 
 2. 用小数据验证公式：
