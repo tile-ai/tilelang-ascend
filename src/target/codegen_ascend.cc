@@ -515,6 +515,8 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
     ScalarOpCodegen(op, "AscendC::LeakyRelu");
   } else if (op->op.same_as(tl::ascend_axpy())) {
     ScalarOpCodegen(op, "AscendC::Axpy");
+  } else if (op->op.same_as(tl::ascend_mul_add_dst())) {
+    MulAddDstCodegen(op);
   } else if (op->op.same_as(tl::ascend_bitwise_lshift())) {
     ShiftOpCodegen(op, "AscendC::ShiftLeft");
   } else if (op->op.same_as(tl::ascend_bitwise_rshift())) {
@@ -601,6 +603,8 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
     MmaCodegen(op);
   } else if (op->op.same_as(tl::ascend_sigmoid())) {
     SigmoidCodegen(op, "AscendC::Sigmoid");
+  } else if (op->op.same_as(tl::ascend_silu())) {
+    SigmoidCodegen(op, "AscendC::Silu");
   } else if (op->op.same_as(tl::ascend_reinterpretcast())) {
     ReinterpretCastCodegen(op);
   } else if (op->op.same_as(tl::ascend_clamp_max())) {
@@ -2311,6 +2315,19 @@ void CodeGenTileLangAscend::RoundCodegen(const CallNode *op,
   auto var_name_2 = PrintBufferOffset(op->args[2].as<CallNode>());
   this->stream << op_name << "(" << var_name_0 << ", " << var_name_1 << ", "
                << var_name_2 << ", " << PrintExpr(op->args[3]) << ");\n";
+}
+
+void CodeGenTileLangAscend::MulAddDstCodegen(const CallNode *op) {
+  // AscendC::MulAddDst(dst, src0, src1, count)
+  // dst = src0 * src1 + dst (fused multiply-add)
+  auto dst = PrintBufferOffset(op->args[0].as<CallNode>());
+  auto src0 = PrintBufferOffset(op->args[1].as<CallNode>());
+  auto src1 = PrintBufferOffset(op->args[2].as<CallNode>());
+  auto count = PrintExpr(op->args[3]);
+
+  this->PrintIndent();
+  this->stream << "AscendC::MulAddDst(" << dst << ", " << src0 << ", " << src1
+               << ", " << count << ");\n";
 }
 
 void CodeGenTileLangAscend::ClampMaxMinCodegen(const CallNode *op) {

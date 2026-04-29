@@ -108,6 +108,8 @@ private:
 
   void SelectCodegen(const CallNode *op, const std::string &op_name);
 
+  void MulAddDstCodegen(const CallNode *op);
+
   void InitSortBufCodegen(const CallNode *op);
 
   void AddsAndMulsOpCodegen(const CallNode *op, const std::string &op_name);

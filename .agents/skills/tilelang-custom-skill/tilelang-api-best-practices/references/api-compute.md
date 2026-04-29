@@ -199,7 +199,23 @@ for i in range(block_M // VEC_NUM):  # 行顺序
 | `T.tile.sin(dst, src0)` | dst = sin(src0) |
 | `T.tile.cos(dst, src0)` | dst = cos(src0) |
 
-### 4.4 逻辑运算
+### 4.4 复合运算
+
+| API | 功能 |
+|-----|------|
+| `T.tile.mul_add_dst(dst, src0, src1)` | dst = src0 * src1 + dst（融合乘加） |
+| `T.tile.silu(dst, src0)` | dst = src0 * sigmoid(src0)（SiLU/Swish 激活） |
+
+**说明**：
+- `mul_add_dst` 执行融合乘加操作，将 src0 和 src1 相乘后加到 dst 上
+- dst 既作为输入（累加器）也作为输出
+- 支持 half、float 类型（Atlas A2/A3）
+- 也支持 int16_t、uint16_t、int32_t、uint32_t（Atlas 200I/500 A2）
+
+- `silu` 执行 SiLU (Swish) 激活函数: x * sigmoid(x)
+- 支持 half、float 类型（Atlas A2/A3）
+
+### 4.5 逻辑运算
 
 | API | 功能 |
 |-----|------|
@@ -211,7 +227,7 @@ for i in range(block_M // VEC_NUM):  # 行顺序
 | `T.tile.bitwise_rshift(dst, src0, scalar)` | 右移操作 |
 
 
-### 4.5 比较操作
+### 4.6 比较操作
 
 #### T.tile.compare(dst, src0, src1, mode)
 
@@ -224,7 +240,7 @@ T.tile.compare(c_ub, a_ub, b_ub, "EQ")   # tensor vs tensor
 T.tile.compare(c_ub, a_ub, 1.0, "GT")     # tensor vs scalar
 ```
 
-### 4.6 选择操作
+### 4.7 选择操作
 
 #### T.tile.select(dst, selMask, src0, src1, selMode)
 
@@ -242,7 +258,7 @@ T.tile.select(c_ub, selmask_ub, a_ub, 1.0, "VSEL_TENSOR_SCALAR_MODE")
 T.tile.select(c_ub, mask_ub, a_ub, b_ub, "VSEL_TENSOR_TENSOR_MODE")
 ```
 
-### 4.7 gather_mask
+### 4.8 gather_mask
 
 #### T.tile.gather_mask(dst, src, src1Pattern)
 
@@ -260,7 +276,7 @@ T.tile.select(c_ub, mask_ub, a_ub, b_ub, "VSEL_TENSOR_TENSOR_MODE")
 T.tile.gather_mask(b_ub, a_ub, "P0101")
 ```
 
-### 4.8 精度转换
+### 4.9 精度转换
 
 #### T.tile.cast(dst, src, mode, count)
 
@@ -270,7 +286,7 @@ T.tile.gather_mask(b_ub, a_ub, "P0101")
 T.tile.cast(b_ub, a_ub, "CAST_RINT", 4096)
 ```
 
-### 4.9 数据操作
+### 4.10 数据操作
 
 | API | 功能 |
 |-----|------|
@@ -312,7 +328,6 @@ T.tile.atomic_add(C[0], src_ub)
 示例中的pass_config只是最小用法。在混合模式或需要自动 C/V 分离时，可以同时开启 `TL_ASCEND_AUTO_CV_COMBINE`；如果存在 C/V 核间依赖，再配合 `TL_ASCEND_AUTO_CV_SYNC`。
 
 底层会生成 Ascend C 的 DMA atomic add 语义：开启 `SetAtomicAdd<T>()`，执行 local -> GM 的 `DataCopyPad`，再通过兼容 helper 关闭 atomic 状态。
-
 ### 4.11 排序操作
 
 #### T.tile.sort(dst, src, actual_num)

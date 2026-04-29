@@ -905,6 +905,42 @@ def sigmoid(dst: Buffer | BufferRegion, src: Buffer | BufferRegion):
     )
 
 
+def silu(dst: Buffer | BufferRegion, src: Buffer | BufferRegion):
+    """Performs element-wise SiLU (Swish) activation: dst = src * sigmoid(src).
+
+    SiLU (Sigmoid Linear Unit) is also known as Swish activation function.
+
+    Args:
+        dst: The destination buffer where the result will be stored.
+        src: The source buffer.
+
+    Returns:
+        A TVM intrinsic call that performs the Silu operation.
+
+    Note:
+        - Supports data types: half, float (Atlas A2/A3)
+        - SiLU = x * sigmoid(x) = x / (1 + exp(-x))
+    """
+    if isinstance(dst, BufferRegion):
+        dst_ptr, buffer_extent = _handle_buffer_region(dst, "w")
+        size = math.prod(buffer_extent)
+    else:
+        dst_ptr = dst.access_ptr("w")
+        size = math.prod(dst.shape)
+
+    if isinstance(src, BufferRegion):
+        src_ptr, _ = _handle_buffer_region(src, "r")
+    else:
+        src_ptr = src.access_ptr("r")
+    return tir.call_intrin(
+        "handle",
+        tir.op.Op.get("tl.ascend_silu"),
+        dst_ptr,
+        src_ptr,
+        size,
+    )
+
+
 def ln(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion):
     """Performs element-wise natural logarithm: dst = ln(src0).
 
@@ -1032,6 +1068,64 @@ def axpy(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, scalar_value: 
         scalar_value: The scalar alpha.
     """
     return scalar_op(dst, src0, scalar_value, "axpy")
+
+
+def mul_add_dst(
+    dst: Buffer | BufferRegion,
+    src0: Buffer | BufferRegion,
+    src1: Buffer | BufferRegion,
+):
+    """Performs element-wise multiply-add: dst = src0 * src1 + dst.
+
+    This operation performs a fused multiply-add where src0 and src1 are multiplied,
+    then added to the existing values in dst, with the result stored back in dst.
+
+    Args:
+        dst: The destination buffer (also acts as the accumulator input).
+             Must be in UB (Unified Buffer) scope.
+        src0: The first source buffer for multiplication.
+        src1: The second source buffer for multiplication.
+
+    Returns:
+        A TVM intrinsic call that performs the MulAddDst operation.
+
+    Note:
+        - Supports data types: half, float (Atlas A2/A3)
+        - Also supports: int16_t, uint16_t, int32_t, uint32_t (Atlas 200I/500 A2)
+        - dst acts as both input (accumulator) and output
+    """
+    if isinstance(dst, BufferRegion):
+        dst_ptr, dst_extent = _handle_buffer_region(dst, "rw")
+    else:
+        dst_ptr = dst.access_ptr("rw")
+        dst_extent = dst.shape
+
+    if isinstance(src0, BufferRegion):
+        src0_ptr, src0_extent = _handle_buffer_region(src0, "r")
+    else:
+        src0_ptr = src0.access_ptr("r")
+        src0_extent = src0.shape
+
+    if isinstance(src1, BufferRegion):
+        src1_ptr, src1_extent = _handle_buffer_region(src1, "r")
+    else:
+        src1_ptr = src1.access_ptr("r")
+        src1_extent = src1.shape
+
+    size_dst = math.prod(dst_extent)
+    size_src0 = math.prod(src0_extent)
+    size_src1 = math.prod(src1_extent)
+
+    assert size_dst == size_src0 == size_src1, "dst, src0, and src1 must have the same size"
+
+    return tir.call_intrin(
+        "handle",
+        tir.op.Op.get("tl.ascend_mul_add_dst"),
+        dst_ptr,
+        src0_ptr,
+        src1_ptr,
+        size_dst,
+    )
 
 
 def bitwise_lshift(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, scalarValue: PrimExpr):  # noqa: F821
