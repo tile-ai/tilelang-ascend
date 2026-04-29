@@ -1439,7 +1439,6 @@ void CodeGenTileLangAscendPto::GatherMaskCodegen(const CallNode *op,
   BufferInfo dst_info = GetBufferInfo(op->args[1]);
   BufferInfo src_info = GetBufferInfo(op->args[2]);
   auto temp_name = PrintBufferOffset(op->args[4].as<CallNode>());
-
   if (op->args[3].as<CallNode>()) {
     this->PrintIndent();
     std::string idx_name = PrintExpr(op->args[3].as<CallNode>()->args[1]);
