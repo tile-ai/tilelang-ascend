@@ -68,6 +68,7 @@ def compile(
     """
     if target == "npuir":
         print("<<<< line 70, target == npuir")
+        print("<<<< line 71, target == npuir")
         return cached_npu(
             func=func,
             out_idx=out_idx,
