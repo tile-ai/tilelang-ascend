@@ -258,7 +258,7 @@ grep "T.Scope\|T.barrier" examples/{同类实现}  # 同步方式
 
 | 类别 | Ascend 专用 API（推荐） | 通用 API（本项目不推荐/不支持） |
 |------|------------------------|-------------------------------|
-| GEMM | `T.gemm_v0` / `T.gemm_v1` | `T.gemm`（可能不支持） |
+| GEMM | `T.gemm_v0` | `T.gemm`（可能不支持） |
 | 内存分配（Expert）| `T.alloc_L1`, `T.alloc_L0C`, `T.alloc_ub` | - |
 | 内存分配（Developer）| `T.alloc_shared`, `T.alloc_fragment` | - |
 | Kernel | `T.Kernel(一维, is_npu=True)` | `T.Kernel(三维)` ❌ |
@@ -267,7 +267,7 @@ grep "T.Scope\|T.barrier" examples/{同类实现}  # 同步方式
 
 ---
 
-## 5. 质量自检清单（修订版）
+## 5. 质量自检清单
 
 生成 `design.md` 后，逐项检查：
 

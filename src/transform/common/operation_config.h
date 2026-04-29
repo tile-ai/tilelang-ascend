@@ -5,9 +5,10 @@
  * \file operation_config.h
  * \brief Operation configuration
  */
+#include <tvm/tir/op.h>
+
 #include <sstream>
 #include <string>
-#include <tvm/tir/op.h>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -49,6 +50,7 @@ GetOperationConfig() {
       {"copy_l1_to_l0a", {{{0, "read"}, {1, "write"}}, "PIPE_MTE1"}},
       {"copy_l1_to_l0b", {{{0, "read"}, {1, "write"}}, "PIPE_MTE1"}},
       {"copy_ub_to_gm", {{{0, "read"}, {1, "write"}}, "PIPE_MTE3"}},
+      {"atomic_add_ub_to_gm", {{{0, "read"}, {1, "write"}}, "PIPE_MTE3"}},
       {"copy_ub_to_l1", {{{0, "read"}, {1, "write"}}, "PIPE_MTE3"}},
       {"copy_l0c_to_gm", {{{0, "read"}, {1, "write"}}, "PIPE_FIX"}},
       {"copy_l0c_to_l1", {{{0, "read"}, {1, "write"}}, "PIPE_FIX"}},
@@ -94,6 +96,12 @@ GetOperationConfig() {
       {"AscendC::Cos", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
       {"AscendC::Cast", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
       {"AscendC::Sigmoid",
+       {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
+      {"AscendC::Silu", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
+      {"tl.ascend_silu", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
+      {"AscendC::MulAddDst",
+       {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
+      {"tl.ascend_mul_add_dst",
        {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
       {"AscendC::ShiftLeft",
        {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
@@ -344,6 +352,7 @@ const std::unordered_map<const tvm::OpNode *, int64_t> pto_tmp_arg_ops = {
     {tl::ascend_sigmoid().get(), 2},     {tl::ascend_pow().get(), 3},
     {tl::ascend_bitwise_xor().get(), 3}, {tl::ascend_round().get(), 2},
     {tl::ascend_broadcast().get(), 3},   {tl::ascend_merge_sort().get(), 3},
+    {tl::ascend_select().get(), 3},      {tl::ascend_gather_mask().get(), 4},
 };
 
 } // namespace tl

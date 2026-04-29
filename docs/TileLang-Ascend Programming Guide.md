@@ -552,6 +552,8 @@ fragment层级的存储对应偏上的寄存器级别的存储单元，一般用
 | UB   | UB   | 数据从Unified Buffer搬运到Unified Buffer          |
 | UB   | L1   | 数据从Unified Buffer搬运到L1 Buffer               |
 
+`T.tile.atomic_add(dst_gm, src_local)` 是 Ascend 专属的原子累加写回原语。它不是普通 `T.copy`，而是在 local tensor 到 GM 的写回过程中执行原子累加，适合多个 block/core 将 partial result 累加到同一 GM 输出的场景。若业务语义是从 0 开始累加，调用前或 kernel 内需要先清零 GM 输出。
+
 #### 4.1.3 计算原语
 
 ##### 4.1.3.1 矩阵计算
@@ -1246,6 +1248,7 @@ Expert编程模式可以复用Developer模式的Reduce类计算原语。
 | 异或       | T.tile.bitwise_xor(dst, src0, src1)      | element-wise bitwise XOR，dst = src0 ^ src1                  |
 | 左移       | T.tile.bitwise_lshift(dst, src0, scalar) | element-wise 左移操作                                        |
 | 右移       | T.tile.bitwise_rshift(dst, src0, scalar) | element-wise 右移操作                                        |
+| 原子累加   | T.tile.atomic_add(dst, src)              | 将本地 tensor 原子累加到 GM，V1 支持 local/UB → GM           |
 
 **(1) 基础算术**
 
@@ -1960,8 +1963,39 @@ Expert编程模式可以复用Developer模式的Reduce类计算原语。
   **举例**：
 
   ```
-  T.tile.clear(ub)；
+  T.tile.clear(ub);
   ```
+
+###### 4.1.3.2.11 原子操作
+
+- `T.tile.atomic_add(dst, src):`
+
+  **参数**：
+
+  - dst：GM 目标 buffer、buffer load 或 region
+  - src：本地 tensor，当前主要支持 UB/shared buffer
+
+  **功能**：将本地 tensor tile 原子累加到 GM 目标区域。该接口是 Ascend 专属的 `T.tile` 原语，不等价于主仓 GPU 风格的全局 `T.atomic_add`。V1 只支持 local/UB 到 GM 的原子累加，不支持 `return_prev`、`memory_order`、`use_tma`、常量 src 或任意表达式 src。
+
+  底层会生成 Ascend C 的 DMA atomic add 语义：开启 `SetAtomicAdd<T>()`，执行 local 到 GM 的 `DataCopyPad`，再通过兼容 helper 关闭 atomic 状态。CANN 9.x 使用 `DisableDmaAtomic()`，CANN 8.5 走 `SetAtomicNone()`。
+
+  **举例**：
+
+  ```python
+  pass_configs = {
+      tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
+      tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
+  }
+
+  src_ub = T.alloc_ub((tile_n,), "float32")
+  T.tile.fill(src_ub, 1.0)
+  T.tile.atomic_add(C[0], src_ub)
+  ```
+
+  **注意事项**：
+
+  - 如果期望结果从 0 开始累加，调用 kernel 前或 kernel 内必须先清零 GM 输出。
+  - 该接口可在 Developer pass_configs 下按混合模式使用，不要求额外手写 `T.Scope("V")` 或 `T.barrier_all()`。
 
 #### 4.1.4 同步原语
 
