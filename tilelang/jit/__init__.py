@@ -67,6 +67,7 @@ def compile(
         Additional keyword arguments to pass to the Compiler PassContext.
     """
     if target == "npuir":
+        print("<<<< line 70, target == npuir")
         return cached_npu(
             func=func,
             out_idx=out_idx,
