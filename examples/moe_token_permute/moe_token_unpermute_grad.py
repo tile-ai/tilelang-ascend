@@ -2,6 +2,8 @@ import math
 import torch
 import torch_npu
 
+from moe_token_utils import auto_tile_h, auto_tile_t, is_fp32_dtype, pad_first_dim, pad_last_dim
+
 try:
     import tilelang
     import tilelang.language as T
@@ -28,53 +30,12 @@ CAST_LOW2HIGH = "CAST_NONE"
 CAST_HIGH2LOW = "CAST_RINT"
 
 
-def _is_fp32_dtype(dtype: str) -> bool:
-    return dtype in ("float32", "float")
-
-
-def _auto_tile_h(hidden_size: int, dtype: str) -> int:
-    dtype_scale = 2 if _is_fp32_dtype(dtype) else 1
-    max_tile_h = 4096 // dtype_scale
-    for candidate in [hidden_size, max_tile_h, 2048 // dtype_scale, 1024, 512, 256]:
-        if candidate > 0 and hidden_size % candidate == 0:
-            return candidate
-    return 256
-
-
-def _auto_tile_t(total: int, num_cores: int) -> int:
-    if total < num_cores:
-        for candidate in [64, 32, 16, 8, 4, 2, 1]:
-            if candidate <= total and total % candidate == 0:
-                return candidate
-        return max(1, total)
-    for candidate in [64, 32, 16, 8, 4, 2, 1]:
-        if total // candidate >= num_cores:
-            return candidate
-    return max(1, total // num_cores)
-
-
 def _auto_launch_cores_for_probs(num_tokens: int, hidden_size: int, num_cores: int) -> int:
     if num_tokens <= 64 and hidden_size <= 256:
         return 1
     if num_tokens <= 256 and hidden_size <= 512:
         return int(min(num_cores, max(1, num_tokens), 4))
     return int(min(num_cores, max(1, num_tokens)))
-
-
-def _pad_first_dim(tensor: torch.Tensor, target_rows: int) -> torch.Tensor:
-    if tensor.shape[0] >= target_rows:
-        return tensor
-    out = torch.zeros((target_rows, *tensor.shape[1:]), dtype=tensor.dtype, device=tensor.device)
-    out[: tensor.shape[0]] = tensor
-    return out
-
-
-def _pad_last_dim(tensor: torch.Tensor, target_cols: int) -> torch.Tensor:
-    if tensor.shape[-1] >= target_cols:
-        return tensor
-    out = torch.zeros((*tensor.shape[:-1], target_cols), dtype=tensor.dtype, device=tensor.device)
-    out[..., : tensor.shape[-1]] = tensor
-    return out
 
 
 def _build_scatter_kernel_no_probs(
@@ -519,15 +480,15 @@ def _compile_grad(
     acc_dtype: str = "float32",
 ):
     if TILE_H is None:
-        TILE_H = _auto_tile_h(hidden_size, dtype)
+        TILE_H = auto_tile_h(hidden_size, dtype)
     if TILE_T is None:
         total = num_tokens if has_probs else int(num_tokens * topK)
-        TILE_T = _auto_tile_t(total, NUM_CORES)
+        TILE_T = auto_tile_t(total, NUM_CORES)
 
-    min_tile_h = 64 if _is_fp32_dtype(dtype) else 8
+    min_tile_h = 64 if is_fp32_dtype(dtype) else 8
     if min_tile_h > TILE_H:
         TILE_H = min(hidden_size, min_tile_h)
-    assert hidden_size % TILE_H == 0
+    assert hidden_size % TILE_H == 0, f"hidden_size ({hidden_size}) must be a multiple of TILE_H ({TILE_H})!"
     assert HAS_TILELANG
     assert topK <= 512
 
@@ -598,7 +559,7 @@ class MoeTokenUnpermuteGrad:
         self.has_probs = has_probs
         self.dtype = dtype
         self.E = num_tokens * topK
-        min_compile_h = 64 if _is_fp32_dtype(dtype) else 32
+        min_compile_h = 64 if is_fp32_dtype(dtype) else 32
         self._compile_hidden_size = max(hidden_size, min_compile_h)
         compile_tile_h = TILE_H if TILE_H is None else max(TILE_H, min_compile_h)
 
@@ -617,13 +578,13 @@ class MoeTokenUnpermuteGrad:
         if self._kernel is None:
             raise RuntimeError("tilelang not installed")
 
-        indices_padded_2d = _pad_first_dim(sorted_indices, self._padded_E).unsqueeze(0)
-        permuted_tokens_in = _pad_last_dim(permuted_tokens, self._compile_hidden_size)
-        unperm_grad_in = _pad_last_dim(unpermuted_tokens_grad, self._compile_hidden_size)
+        indices_padded_2d = pad_first_dim(sorted_indices, self._padded_E).unsqueeze(0)
+        permuted_tokens_in = pad_last_dim(permuted_tokens, self._compile_hidden_size)
+        unperm_grad_in = pad_last_dim(unpermuted_tokens_grad, self._compile_hidden_size)
 
         if self.has_probs:
-            assert probs is not None
-            probs_padded = _pad_first_dim(probs, self._padded_tokens)
+            assert probs is not None, "has_probs=True but probs is not provided"
+            probs_padded = pad_first_dim(probs, self._padded_tokens)
             perm_grad, probs_grad_raw = self._kernel(permuted_tokens_in, unperm_grad_in, indices_padded_2d, probs_padded)
             perm_grad = perm_grad[:, : self.hidden_size].contiguous()
 

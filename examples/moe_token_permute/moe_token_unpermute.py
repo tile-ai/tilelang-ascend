@@ -2,6 +2,8 @@ import math
 import torch
 import torch_npu
 
+from moe_token_utils import auto_tile_h, auto_tile_t, is_fp32_dtype, pad_first_dim, pad_last_dim
+
 try:
     import tilelang
     import tilelang.language as T
@@ -27,31 +29,6 @@ CAST_LOW2HIGH = "CAST_NONE"
 CAST_HIGH2LOW = "CAST_RINT"
 
 
-def is_fp32_dtype(dtype: str) -> bool:
-    return dtype in ("float32", "float")
-
-
-def auto_tile_h(hidden_size: int, dtype: str) -> int:
-    dtype_scale = 2 if is_fp32_dtype(dtype) else 1
-    max_tile_h = 4096 // dtype_scale
-    for candidate in [hidden_size, max_tile_h, 2048 // dtype_scale, 1024, 512, 256]:
-        if candidate > 0 and hidden_size % candidate == 0:
-            return candidate
-    return 256
-
-
-def auto_tile_t(total: int, num_cores: int, large_candidates):
-    if total < num_cores:
-        for candidate in [64, 32, 16, 8, 4, 2, 1]:
-            if candidate <= total and total % candidate == 0:
-                return candidate
-        return max(1, total)
-    for candidate in large_candidates:
-        if total // candidate >= num_cores:
-            return candidate
-    return max(1, total // num_cores)
-
-
 def auto_launch_cores(
     work_items: int,
     hidden_size: int,
@@ -67,22 +44,6 @@ def auto_launch_cores(
     if work_items <= mid_work and hidden_size <= mid_hidden:
         return int(min(num_cores, max(1, work_items), mid_cap))
     return int(min(num_cores, max(1, work_items)))
-
-
-def pad_first_dim(tensor: torch.Tensor, target_rows: int) -> torch.Tensor:
-    if tensor.shape[0] >= target_rows:
-        return tensor
-    out = torch.zeros((target_rows, *tensor.shape[1:]), dtype=tensor.dtype, device=tensor.device)
-    out[: tensor.shape[0]] = tensor
-    return out
-
-
-def pad_last_dim(tensor: torch.Tensor, target_cols: int) -> torch.Tensor:
-    if tensor.shape[-1] >= target_cols:
-        return tensor
-    out = torch.zeros((*tensor.shape[:-1], target_cols), dtype=tensor.dtype, device=tensor.device)
-    out[..., : tensor.shape[-1]] = tensor
-    return out
 
 
 def _build_gather_kernel_with_probs(
@@ -612,7 +573,7 @@ class MoeTokenUnpermute:
         dtype: str = "float16",
     ):
         if padded_mode:
-            raise NotImplementedError("paddedMode=True not supported.")
+            raise NotImplementedError("padded_mode=True not supported.")
         assert topK <= 512
         assert dtype in ("float16", "bfloat16", "float32", "float"), f"dtype must be float16/bfloat16/float32, got {dtype}"
 

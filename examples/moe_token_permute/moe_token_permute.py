@@ -4,22 +4,12 @@ import tilelang.language as T
 import torch
 import torch_npu
 
+from moe_token_utils import is_fp32_dtype, pad_last_dim
+
 PASS_CONFIGS_EXPERT = {
     tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
     tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: False,
 }
-
-
-def _is_fp32(dtype: str) -> bool:
-    return dtype in ("float32", "float")
-
-
-def _pad_last_dim(tensor: torch.Tensor, target_cols: int) -> torch.Tensor:
-    if tensor.shape[-1] >= target_cols:
-        return tensor
-    out = torch.zeros((*tensor.shape[:-1], target_cols), dtype=tensor.dtype, device=tensor.device)
-    out[..., : tensor.shape[-1]] = tensor
-    return out
 
 
 def _build_fused_permute_kernel(
@@ -289,7 +279,7 @@ class MoeTokenPermute:
         self.E = num_tokens * topK
         self._out_len = num_out_tokens if num_out_tokens > 0 else self.E
 
-        min_compile_h = 64 if _is_fp32(dtype) else 32
+        min_compile_h = 64 if is_fp32_dtype(dtype) else 32
         self._compile_hidden_size = max(hidden_size, min_compile_h)
         compile_tile_h = TILE_H if TILE_H is None else max(TILE_H, min_compile_h)
         self._fused_func, self._padded_E = _compile_fused(
@@ -307,7 +297,7 @@ class MoeTokenPermute:
     def __call__(self, tokens, indices):
         device = tokens.device
         E = self.E
-        tokens_in = _pad_last_dim(tokens, self._compile_hidden_size)
+        tokens_in = pad_last_dim(tokens, self._compile_hidden_size)
         indices_padded = torch.zeros(self._padded_E, dtype=torch.int32, device=device)
         indices_padded[:E] = indices
         perm_out, sio_padded = self._fused_func(tokens_in, indices_padded.unsqueeze(0))

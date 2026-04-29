@@ -4,6 +4,8 @@ import tilelang.language as T
 import torch
 import torch_npu
 
+from moe_token_utils import is_fp32_dtype
+
 
 PASS_CONFIGS = {
     tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
@@ -20,18 +22,6 @@ PASS_CONFIGS_EXPERT = {
 CAL_DTYPE = "float32"
 CAST_LOW2HIGH = "CAST_NONE"
 CAST_HIGH2LOW = "CAST_RINT"
-
-
-def _is_fp32(dtype: str) -> bool:
-    return dtype in ("float32", "float")
-
-
-def _pad_last_dim(tensor: torch.Tensor, target_cols: int) -> torch.Tensor:
-    if tensor.shape[-1] >= target_cols:
-        return tensor
-    out = torch.zeros((*tensor.shape[:-1], target_cols), dtype=tensor.dtype, device=tensor.device)
-    out[..., : tensor.shape[-1]] = tensor
-    return out
 
 
 def _build_gather_reduce_kernel_cast_group_pipelined(
@@ -248,41 +238,12 @@ def _build_gather_reduce_kernel_cast_pipelined(
                         T.set_flag("v", "mte2", 7)
                         T.set_flag("mte3", "v", 0)
 
-                        if total_iters_per_batch > 0:
-                            T.wait_flag("v", "mte2", 0)
-                            src_p0 = idx_ub[0, 0]
-                            T.copy(perm_grad_gm[src_p0, h_off], row_buf[0, :])
-                            T.set_flag("mte2", "v", 0)
-                        if total_iters_per_batch > 1:
-                            T.wait_flag("v", "mte2", 1)
-                            src_p1 = idx_ub[0, 1]
-                            T.copy(perm_grad_gm[src_p1, h_off], row_buf[1, :])
-                            T.set_flag("mte2", "v", 1)
-                        if total_iters_per_batch > 2:
-                            T.wait_flag("v", "mte2", 2)
-                            src_p2 = idx_ub[0, 2]
-                            T.copy(perm_grad_gm[src_p2, h_off], row_buf[2, :])
-                            T.set_flag("mte2", "v", 2)
-                        if total_iters_per_batch > 3:
-                            T.wait_flag("v", "mte2", 3)
-                            src_p3 = idx_ub[0, 3]
-                            T.copy(perm_grad_gm[src_p3, h_off], row_buf[3, :])
-                            T.set_flag("mte2", "v", 3)
-                        if total_iters_per_batch > 4:
-                            T.wait_flag("v", "mte2", 4)
-                            src_p4 = idx_ub[0, 4]
-                            T.copy(perm_grad_gm[src_p4, h_off], row_buf[4, :])
-                            T.set_flag("mte2", "v", 4)
-                        if total_iters_per_batch > 5:
-                            T.wait_flag("v", "mte2", 5)
-                            src_p5 = idx_ub[0, 5]
-                            T.copy(perm_grad_gm[src_p5, h_off], row_buf[5, :])
-                            T.set_flag("mte2", "v", 5)
-                        if total_iters_per_batch > 6:
-                            T.wait_flag("v", "mte2", 6)
-                            src_p6 = idx_ub[0, 6]
-                            T.copy(perm_grad_gm[src_p6, h_off], row_buf[6, :])
-                            T.set_flag("mte2", "v", 6)
+                        for i in T.serial(stages - 1):
+                            if i < total_iters_per_batch:
+                                T.wait_flag("v", "mte2", i)
+                                src_p = idx_ub[0, i]
+                                T.copy(perm_grad_gm[src_p, h_off], row_buf[i, :])
+                                T.set_flag("mte2", "v", i)
 
                         for it in T.serial(total_iters_per_batch):
                             cur_stage = it % stages
@@ -757,7 +718,7 @@ class MoeTokenPermuteGrad:
         self.E = num_tokens * topK
         self._out_len = num_out_tokens if num_out_tokens > 0 else self.E
 
-        min_compile_h = 64 if _is_fp32(dtype) else 32
+        min_compile_h = 64 if is_fp32_dtype(dtype) else 32
         self._compile_hidden_size = max(hidden_size, min_compile_h)
         compile_tile_h = TILE_H if TILE_H is None else max(TILE_H, min_compile_h)
 
