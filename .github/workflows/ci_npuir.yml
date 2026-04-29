@@ -161,7 +161,7 @@ jobs:
       env:
         TILELANG_CLEAR_CACHE: "1"
       run: |
-        python -m pytest -v testing/npuir/*_ops \
+        python -m pytest -v testing/npuir/*_ops --dist loadfile -n 2\
           --html=testing/npuir/output/report.html --self-contained-html \
           --junitxml=testing/npuir/output/junit.xml
 
