@@ -155,7 +155,7 @@ def run_tilelang_grouped_gemm_bwd(batch_sizes_list, M, N, block_M, block_N, bloc
         start = end
 
     if torch.allclose(out, ref_output, rtol=1e-2, atol=1e-2):
-        print(f"✅ TileLang and Torch match (batch_sizes={batch_sizes_list}, M={M}, N={N})")
+        print("Kernel Output Match!")
     else:
         print(f"❌ TileLang and Torch mismatch (batch_sizes={batch_sizes_list}, M={M}, N={N})")
         max_diff = torch.max(torch.abs(out - ref_output)).item()
