@@ -24,11 +24,11 @@
 #include "arith/pattern_match.h"
 #include "codegen_ascend_pto.h"
 
-#define DEC_STR_TO_HEX_STR(dec_str)                                    \
-  ([](const std::string& s) {                                          \
-    std::stringstream ss;                                              \
-    ss << std::showbase << std::hex << std::uppercase << std::stoi(s); \
-    return ss.str();                                                   \
+#define DEC_STR_TO_HEX_STR(dec_str)                                            \
+  ([](const std::string &s) {                                                  \
+    std::stringstream ss;                                                      \
+    ss << std::showbase << std::hex << std::uppercase << std::stoi(s);         \
+    return ss.str();                                                           \
   }(dec_str))
 
 namespace tvm {
@@ -41,7 +41,7 @@ using BufferInfo = CodeGenTileLangAscendPto::BufferInfo;
 
 namespace {
 
-bool ParseConstBoolArg(const PrimExpr& expr, bool default_value = true) {
+bool ParseConstBoolArg(const PrimExpr &expr, bool default_value = true) {
   if (!expr.defined() || !expr.dtype().is_bool()) {
     return default_value;
   }
@@ -50,20 +50,20 @@ bool ParseConstBoolArg(const PrimExpr& expr, bool default_value = true) {
 
 std::string GetReduceMergeOpName(CodeGenTileLangAscendPto::ReduceKind kind) {
   switch (kind) {
-    case CodeGenTileLangAscendPto::ReduceKind::SUM:
-      return "TADD";
-    case CodeGenTileLangAscendPto::ReduceKind::MAX:
-      return "TMAX";
-    case CodeGenTileLangAscendPto::ReduceKind::MIN:
-      return "TMIN";
+  case CodeGenTileLangAscendPto::ReduceKind::SUM:
+    return "TADD";
+  case CodeGenTileLangAscendPto::ReduceKind::MAX:
+    return "TMAX";
+  case CodeGenTileLangAscendPto::ReduceKind::MIN:
+    return "TMIN";
   }
   LOG(FATAL) << "Unsupported reduce kind";
   return "";
 }
 
-}  // namespace
+} // namespace
 
-static std::string getType(const DataType& dtype) {
+static std::string getType(const DataType &dtype) {
   if (dtype.is_float16()) {
     return "half";
   } else if (dtype.is_float()) {
@@ -93,7 +93,7 @@ static std::string getType(const DataType& dtype) {
   return "";
 }
 
-static DataType GetAccessPtrDtypePto(const CallNode* access_ptr) {
+static DataType GetAccessPtrDtypePto(const CallNode *access_ptr) {
   if (!access_ptr) {
     LOG(FATAL) << "access_ptr is nullptr";
   }
@@ -101,9 +101,9 @@ static DataType GetAccessPtrDtypePto(const CallNode* access_ptr) {
     LOG(FATAL) << "access_ptr has no arguments";
   }
   auto type_arg = access_ptr->args[0];
-  if (auto* call = type_arg.as<CallNode>()) {
+  if (auto *call = type_arg.as<CallNode>()) {
     return call->dtype;
-  } else if (auto* str = type_arg.as<StringImmNode>()) {
+  } else if (auto *str = type_arg.as<StringImmNode>()) {
     return DataType(runtime::String2DLDataType(str->value));
   } else {
     LOG(FATAL) << "Unexpected type for access_ptr first argument: "
@@ -152,7 +152,7 @@ std::string GetTypeLenString(std::string type) {
   return typeSize;
 }
 
-int GetValidShape(int shape, const std::string& dtype) {
+int GetValidShape(int shape, const std::string &dtype) {
   int dtype_len = GetTypeLen(dtype);
   int shape_mod = shape * GetTypeLen(dtype) % 32;
   if (shape_mod == 0) {
@@ -161,15 +161,15 @@ int GetValidShape(int shape, const std::string& dtype) {
   return shape + (32 - shape_mod) / dtype_len;
 }
 
-std::string CodeGenTileLangAscendPto::GetVarId(const Var& var) const {
+std::string CodeGenTileLangAscendPto::GetVarId(const Var &var) const {
   auto it = var_idmap_.find(var.get());
   return (it != var_idmap_.end() && !it->second.empty())
              ? it->second
              : std::string(var->name_hint);
 }
 
-BufferInfo CodeGenTileLangAscendPto::GetBufferInfo(const PrimExpr& arg) const {
-  auto* access_ptr = arg.as<CallNode>();
+BufferInfo CodeGenTileLangAscendPto::GetBufferInfo(const PrimExpr &arg) const {
+  auto *access_ptr = arg.as<CallNode>();
   ICHECK(access_ptr)
       << "Argument is not a CallNode representing a buffer access.";
 
@@ -185,14 +185,14 @@ BufferInfo CodeGenTileLangAscendPto::GetBufferInfo(const PrimExpr& arg) const {
   return info;
 }
 
-std::string CodeGenTileLangAscendPto::GetTempVarName(
-    const std::string& temp_name) {
+std::string
+CodeGenTileLangAscendPto::GetTempVarName(const std::string &temp_name) {
   return temp_name + "_" + "temp" + "_" +
          std::to_string(counters_[temp_name]++);
 }
 
-void CodeGenTileLangAscendPto::CreateUbVariableND(const std::string& temp_name,
-                                                  const ShapeInfo& shape_info) {
+void CodeGenTileLangAscendPto::CreateUbVariableND(const std::string &temp_name,
+                                                  const ShapeInfo &shape_info) {
   this->PrintIndent();
   this->stream << kAscendPtoScope << "TileUbDataND<" << shape_info.type << ", "
                << shape_info.slice_row << ", " << shape_info.slice_col << ", "
@@ -205,8 +205,8 @@ void CodeGenTileLangAscendPto::CreateUbVariableND(const std::string& temp_name,
                << GetTypeLen(shape_info.type) << ");\n";
 }
 
-void CodeGenTileLangAscendPto::CreateUbVariableDN(const std::string& temp_name,
-                                                  const ShapeInfo& shape_info) {
+void CodeGenTileLangAscendPto::CreateUbVariableDN(const std::string &temp_name,
+                                                  const ShapeInfo &shape_info) {
   this->PrintIndent();
   this->stream << kAscendPtoScope << "TileUbDataDN<" << shape_info.type << ", "
                << shape_info.slice_col << ", " << shape_info.slice_row << ", "
@@ -220,8 +220,8 @@ void CodeGenTileLangAscendPto::CreateUbVariableDN(const std::string& temp_name,
 }
 
 void CodeGenTileLangAscendPto::CreateCubeVariable(
-    const std::string& temp_name, const ShapeInfo& shape_info,
-    const std::string& tile_name) {
+    const std::string &temp_name, const ShapeInfo &shape_info,
+    const std::string &tile_name) {
   int32_t slice_row = shape_info.slice_row;
   int32_t slice_col = shape_info.slice_col;
 
@@ -236,7 +236,7 @@ void CodeGenTileLangAscendPto::CreateCubeVariable(
                << GetTypeLen(shape_info.type) << ");\n";
 }
 
-ShapeInfo CodeGenTileLangAscendPto::GetSliceInfo(const CallNode* op) {
+ShapeInfo CodeGenTileLangAscendPto::GetSliceInfo(const CallNode *op) {
   ICHECK(op);
   ICHECK(op->op.same_as(builtin::tvm_access_ptr()));
 
@@ -296,7 +296,7 @@ CodeGenTileLangAscendPto::CodeGenTileLangAscendPto(std::string platform) {
   platform_ = platform;
 }
 
-void CodeGenTileLangAscendPto::PrintFuncPrefix(std::ostream& os) {
+void CodeGenTileLangAscendPto::PrintFuncPrefix(std::ostream &os) {
   // os << "extern \"C\" CATLASS_GLOBAL\n";
 }
 
@@ -313,7 +313,7 @@ std::string CodeGenTileLangAscendPto::Finish() {
   return code.str();
 }
 
-void CodeGenTileLangAscendPto::VisitStmt_(const tir::ForNode* op) {
+void CodeGenTileLangAscendPto::VisitStmt_(const tir::ForNode *op) {
   auto flush = false;
   if (flush_out_) {
     flush = true;
@@ -347,7 +347,7 @@ void CodeGenTileLangAscendPto::VisitStmt_(const tir::ForNode* op) {
 }
 
 void CodeGenTileLangAscendPto::PrintType(DataType t,
-                                         std::ostream& os) {  // NOLINT(*)
+                                         std::ostream &os) { // NOLINT(*)
   int lanes = t.lanes();
   if (t.is_handle()) {
     ICHECK(t.is_scalar()) << "do not yet support vector types";
@@ -363,53 +363,55 @@ void CodeGenTileLangAscendPto::PrintType(DataType t,
   bool fail = false;
   if (t.is_float()) {
     switch (t.bits()) {
-      case 16:
-        enable_fp16_ = true;
-        if (t.is_scalar()) {
-          os << "half";
-        } else if (lanes <= 8) {
-          // Emit CUDA code to access fp16 vector elements.
-          //
-          // half4 is stored as uint2
-          //
-          // h4.x is emitted as *(half2*)(&(u2.x)).x
-          // h4.y is emitted as *(half2*)(&(u2.x)).y
-          // h4.z is emitted as *(half2*)(&(u2.y)).x
-          // h4.w is emitted as *(half2*)(&(u2.y)).y
-          //
-          ICHECK_EQ(lanes % 2, 0) << "only support even lane for half type";
-          os << "uint" << lanes / 2;
-        } else {
-          fail = true;
-        }
-        break;
-      case 32:
-        if (lanes <= 4) {
-          os << "float";
-        } else if (lanes <= 8) {
-          // Emit CUDA code to access fp32 vector elements for 4 < lanes <= 8.
-          //
-          // float8 is stored as ulonglong4
-          //
-          // f8.v1 is emitted as *(float2*)(&(ul4.x)).x
-          // f8.v2 is emitted as *(float2*)(&(ul4.x)).y
-          //
-          ICHECK_EQ(lanes % 2, 0)
-              << "only support even lane for float type with lanes > 4";
-          os << "ulonglong" << lanes / 2;
-        } else {
-          fail = true;
-        }
-        break;
-      case 64:
-        os << "double";
-        break;
-      default:
+    case 16:
+      enable_fp16_ = true;
+      if (t.is_scalar()) {
+        os << "half";
+      } else if (lanes <= 8) {
+        // Emit CUDA code to access fp16 vector elements.
+        //
+        // half4 is stored as uint2
+        //
+        // h4.x is emitted as *(half2*)(&(u2.x)).x
+        // h4.y is emitted as *(half2*)(&(u2.x)).y
+        // h4.z is emitted as *(half2*)(&(u2.y)).x
+        // h4.w is emitted as *(half2*)(&(u2.y)).y
+        //
+        ICHECK_EQ(lanes % 2, 0) << "only support even lane for half type";
+        os << "uint" << lanes / 2;
+      } else {
         fail = true;
-        break;
+      }
+      break;
+    case 32:
+      if (lanes <= 4) {
+        os << "float";
+      } else if (lanes <= 8) {
+        // Emit CUDA code to access fp32 vector elements for 4 < lanes <= 8.
+        //
+        // float8 is stored as ulonglong4
+        //
+        // f8.v1 is emitted as *(float2*)(&(ul4.x)).x
+        // f8.v2 is emitted as *(float2*)(&(ul4.x)).y
+        //
+        ICHECK_EQ(lanes % 2, 0)
+            << "only support even lane for float type with lanes > 4";
+        os << "ulonglong" << lanes / 2;
+      } else {
+        fail = true;
+      }
+      break;
+    case 64:
+      os << "double";
+      break;
+    default:
+      fail = true;
+      break;
     }
-    if (!fail && (t.is_scalar() || t.bits() == 16)) return;
-    if (!fail && (lanes > 4 && lanes <= 8 && t.bits() == 32)) return;
+    if (!fail && (t.is_scalar() || t.bits() == 16))
+      return;
+    if (!fail && (lanes > 4 && lanes <= 8 && t.bits() == 32))
+      return;
     if (!fail && (lanes >= 2 && lanes <= 4)) {
       os << lanes;
       return;
@@ -424,7 +426,8 @@ void CodeGenTileLangAscendPto::PrintType(DataType t,
     } else {
       fail = true;
     }
-    if (!fail) return;
+    if (!fail)
+      return;
   } else if (t.is_float8()) {
     // enable_fp8_ = true;
     // os << GetFP8Type(t);
@@ -445,138 +448,138 @@ void CodeGenTileLangAscendPto::PrintType(DataType t,
       os << "u";
     }
     switch (t.bits()) {
-      case 1: {
-        if (t.is_scalar()) {
-          os << "int";
-          return;
-        } else if (t.lanes() == 8) {
-          os << "int8_t";
-          return;
-        } else if (t.lanes() == 16) {
-          os << "int16_t";
-          return;
-        } else if (t.lanes() == 32) {
-          os << "int";
-          return;
-        } else {
-          LOG(FATAL) << "Cannot convert type " << t << " to CUDA type!";
-        }
+    case 1: {
+      if (t.is_scalar()) {
+        os << "int";
+        return;
+      } else if (t.lanes() == 8) {
+        os << "int8_t";
+        return;
+      } else if (t.lanes() == 16) {
+        os << "int16_t";
+        return;
+      } else if (t.lanes() == 32) {
+        os << "int";
+        return;
+      } else {
+        LOG(FATAL) << "Cannot convert type " << t << " to CUDA type!";
       }
-      case 4: {
-        if (t.is_scalar()) {
-          os << "int";
-          return;
-        } else if (t.lanes() == 4) {
-          os << "int16_t";
-          return;
-        } else if (t.lanes() == 8) {
-          // directly 8 4-bit int in integer.
-          os << "int";
-          return;
-        } else if (t.lanes() == 16) {
-          os << "int2";
-          return;
-        } else if (t.lanes() == 32) {
-          os << "int4";
-          return;
-        } else if (t.lanes() == 64) {
-          os << "int8";
-          return;
-        } else {
-          LOG(FATAL) << "Cannot convert type " << t << " to CUDA type!";
-        }
+    }
+    case 4: {
+      if (t.is_scalar()) {
+        os << "int";
+        return;
+      } else if (t.lanes() == 4) {
+        os << "int16_t";
+        return;
+      } else if (t.lanes() == 8) {
+        // directly 8 4-bit int in integer.
+        os << "int";
+        return;
+      } else if (t.lanes() == 16) {
+        os << "int2";
+        return;
+      } else if (t.lanes() == 32) {
+        os << "int4";
+        return;
+      } else if (t.lanes() == 64) {
+        os << "int8";
+        return;
+      } else {
+        LOG(FATAL) << "Cannot convert type " << t << " to CUDA type!";
       }
-      case 8: {
-        if (t.lanes() == 4) {
-          // directly 4 8 bit int in integer.
-          enable_int8_ = true;
+    }
+    case 8: {
+      if (t.lanes() == 4) {
+        // directly 4 8 bit int in integer.
+        enable_int8_ = true;
 
-          // We use int for int8x4 instead of char4 because using char4 is
-          // likely to produce extra instructions to pack four int8 elements
-          // into 32-bit data.
-          os << "int";
-          return;
-        } else if (t.lanes() == 8) {
-          enable_int8_ = true;
-          os << "int2";
-          return;
-        } else if (t.lanes() == 16) {
-          enable_int8_ = true;
-          os << "int4";
-          return;
-        } else if (!t.is_uint() && t.is_scalar()) {
-          os << "signed char";
-          break;
-        } else {
-          os << "char";
-          break;
-        }
-      }
-      case 16: {
-        if (t.is_scalar()) {
-          os << "short";
-        } else if (t.lanes() <= 4) {
-          os << "short" << lanes;
-        } else if (t.lanes() <= 8) {
-          // Emit CUDA code to access int16 vector elements.
-          //
-          // short4 is stored as int2
-          //
-          // s4.x is emitted as *(short2*)(&(i2.x)).x
-          // s4.y is emitted as *(short2*)(&(i2.x)).y
-          // s4.z is emitted as *(short2*)(&(i2.y)).x
-          // s4.w is emitted as *(short2*)(&(i2.y)).y
-          //
-          ICHECK_EQ(t.lanes() % 2, 0)
-              << "only support even lane for shorT type with lanes > 4";
-          os << "int" << t.lanes() / 2;
-        } else {
-          fail = true;
-        }
-        if (!fail) {
-          return;
-        }
+        // We use int for int8x4 instead of char4 because using char4 is
+        // likely to produce extra instructions to pack four int8 elements
+        // into 32-bit data.
+        os << "int";
+        return;
+      } else if (t.lanes() == 8) {
+        enable_int8_ = true;
+        os << "int2";
+        return;
+      } else if (t.lanes() == 16) {
+        enable_int8_ = true;
+        os << "int4";
+        return;
+      } else if (!t.is_uint() && t.is_scalar()) {
+        os << "signed char";
+        break;
+      } else {
+        os << "char";
         break;
       }
-      case 32: {
-        if (t.is_scalar()) {
-          os << "int32_t";
-        } else if (t.lanes() <= 4) {
-          os << "int" << t.lanes();
-        } else if (t.lanes() <= 8) {
-          // Emit CUDA code to access int32 vector elements for 4 < lanes <= 8.
-          //
-          // int8 is stored as longlong4
-          //
-          // i8.v1 is emitted as *(int2*)(&(l4.x)).x
-          // i8.v2 is emitted as *(int2*)(&(l4.x)).y
-          //
-          ICHECK_EQ(lanes % 2, 0)
-              << "only support even lane for int32 type with lanes > 4";
-          os << "longlong" << lanes / 2;
-        } else {
-          fail = true;
-        }
-        if (!fail) {
-          return;
-        }
-        break;
+    }
+    case 16: {
+      if (t.is_scalar()) {
+        os << "short";
+      } else if (t.lanes() <= 4) {
+        os << "short" << lanes;
+      } else if (t.lanes() <= 8) {
+        // Emit CUDA code to access int16 vector elements.
+        //
+        // short4 is stored as int2
+        //
+        // s4.x is emitted as *(short2*)(&(i2.x)).x
+        // s4.y is emitted as *(short2*)(&(i2.x)).y
+        // s4.z is emitted as *(short2*)(&(i2.y)).x
+        // s4.w is emitted as *(short2*)(&(i2.y)).y
+        //
+        ICHECK_EQ(t.lanes() % 2, 0)
+            << "only support even lane for shorT type with lanes > 4";
+        os << "int" << t.lanes() / 2;
+      } else {
+        fail = true;
       }
-      case 64: {
-        if (t.is_scalar()) {
-          os << "int64_t";
-        } else if (t.lanes() == 2) {
-          os << "longlong2";
-        } else if (t.lanes() == 3) {
-          os << "longlong3";
-        } else if (t.lanes() == 4) {
-          os << "longlong4";
-        }
+      if (!fail) {
         return;
       }
-      default:
+      break;
+    }
+    case 32: {
+      if (t.is_scalar()) {
+        os << "int32_t";
+      } else if (t.lanes() <= 4) {
+        os << "int" << t.lanes();
+      } else if (t.lanes() <= 8) {
+        // Emit CUDA code to access int32 vector elements for 4 < lanes <= 8.
+        //
+        // int8 is stored as longlong4
+        //
+        // i8.v1 is emitted as *(int2*)(&(l4.x)).x
+        // i8.v2 is emitted as *(int2*)(&(l4.x)).y
+        //
+        ICHECK_EQ(lanes % 2, 0)
+            << "only support even lane for int32 type with lanes > 4";
+        os << "longlong" << lanes / 2;
+      } else {
         fail = true;
-        break;
+      }
+      if (!fail) {
+        return;
+      }
+      break;
+    }
+    case 64: {
+      if (t.is_scalar()) {
+        os << "int64_t";
+      } else if (t.lanes() == 2) {
+        os << "longlong2";
+      } else if (t.lanes() == 3) {
+        os << "longlong3";
+      } else if (t.lanes() == 4) {
+        os << "longlong4";
+      }
+      return;
+    }
+    default:
+      fail = true;
+      break;
     }
     if (!fail && lanes == 1) {
       return;
@@ -590,12 +593,12 @@ void CodeGenTileLangAscendPto::PrintType(DataType t,
 }
 
 void CodeGenTileLangAscendPto::PrintStorageScope(
-    const std::string& scope,
-    std::ostream& os) {  // NOLINT(*)
+    const std::string &scope,
+    std::ostream &os) { // NOLINT(*)
 }
 
-void CodeGenTileLangAscendPto::VisitExpr_(const FloorDivNode* op,
-                                          std::ostream& os) {
+void CodeGenTileLangAscendPto::VisitExpr_(const FloorDivNode *op,
+                                          std::ostream &os) {
   os << "(";
   PrintExpr(op->a, os);
   os << " / ";
@@ -603,8 +606,8 @@ void CodeGenTileLangAscendPto::VisitExpr_(const FloorDivNode* op,
   os << ")";
 }
 
-void CodeGenTileLangAscendPto::VisitExpr_(const FloorModNode* op,
-                                          std::ostream& os) {
+void CodeGenTileLangAscendPto::VisitExpr_(const FloorModNode *op,
+                                          std::ostream &os) {
   os << "(";
   PrintExpr(op->a, os);
   os << " % ";
@@ -612,8 +615,8 @@ void CodeGenTileLangAscendPto::VisitExpr_(const FloorModNode* op,
   os << ")";
 }
 
-void CodeGenTileLangAscendPto::VisitExpr_(const BufferLoadNode* op,
-                                          std::ostream& os) {
+void CodeGenTileLangAscendPto::VisitExpr_(const BufferLoadNode *op,
+                                          std::ostream &os) {
   auto var_name = var_idmap_[op->buffer->data.get()];
   std::string scope = op->buffer.scope();
   if (scope == "" || scope == "global") {
@@ -626,7 +629,7 @@ void CodeGenTileLangAscendPto::VisitExpr_(const BufferLoadNode* op,
   }
 }
 
-void CodeGenTileLangAscendPto::VisitStmt_(const BufferStoreNode* op) {
+void CodeGenTileLangAscendPto::VisitStmt_(const BufferStoreNode *op) {
   auto var_name = var_idmap_[op->buffer->data.get()];
   this->PrintIndent();
   std::string scope = op->buffer.scope();
@@ -643,8 +646,8 @@ void CodeGenTileLangAscendPto::VisitStmt_(const BufferStoreNode* op) {
   }
 }
 
-std::map<std::string, std::string> extractTemplateParams(
-    const std::string& input) {
+std::map<std::string, std::string>
+extractTemplateParams(const std::string &input) {
   std::map<std::string, std::string> result;
   size_t start = input.find('<');
   size_t end = input.rfind('>');
@@ -674,8 +677,8 @@ std::map<std::string, std::string> extractTemplateParams(
   return result;
 }
 
-std::map<std::string, std::string> extractTemplateParams1(
-    const std::string& input) {
+std::map<std::string, std::string>
+extractTemplateParams1(const std::string &input) {
   std::map<std::string, std::string> result;
   size_t start = input.find('<');
   size_t end = input.rfind('>');
@@ -706,7 +709,7 @@ std::map<std::string, std::string> extractTemplateParams1(
   return result;
 }
 
-std::vector<std::string> extractShapeFromTemplate(const std::string& input) {
+std::vector<std::string> extractShapeFromTemplate(const std::string &input) {
   std::vector<std::string> numbers;
   size_t start = input.find('<');
   if (start == std::string::npos) {
@@ -735,8 +738,8 @@ std::vector<std::string> extractShapeFromTemplate(const std::string& input) {
   return numbers;
 }
 
-void CodeGenTileLangAscendPto::VisitExpr_(const CallNode* op,
-                                          std::ostream& os) {
+void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op,
+                                          std::ostream &os) {
   if (op->op.same_as(builtin::call_extern())) {
     CallExternCodegen(op);
   } else if (op->op.same_as(tl::loop_break())) {
@@ -917,35 +920,35 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode* op,
   }
 }
 
-std::string CodeGenTileLangAscendPto::PrintBufferOffset(const CallNode* op) {
+std::string CodeGenTileLangAscendPto::PrintBufferOffset(const CallNode *op) {
   auto _var = op->args[1].as<VarNode>();
   std::string _var_name = var_idmap_[_var];
   return _var_name;
 }
 
 // merge shape's lower dimensions based on srcN
-Array<PrimExpr> MergeShapeBySrcN(const Array<PrimExpr>& shape,
-                                 const PrimExpr& srcN,
-                                 tvm::arith::Analyzer* analyzer) {
+Array<PrimExpr> MergeShapeBySrcN(const Array<PrimExpr> &shape,
+                                 const PrimExpr &srcN,
+                                 tvm::arith::Analyzer *analyzer) {
   Array<PrimExpr> merged_shape;
   int count = 0;
-  const auto* srcN_imm = analyzer->Simplify(srcN).as<IntImmNode>();
+  const auto *srcN_imm = analyzer->Simplify(srcN).as<IntImmNode>();
   if (srcN_imm && !shape.empty()) {
     int64_t srcN_val = srcN_imm->value;
     int64_t tmp_val = srcN_val;
     // Divide from the lowest dimension, calculate how many dimensions srcN
     // covers
     for (int i = static_cast<int>(shape.size()) - 1; i >= 0; --i) {
-      const auto* dim_imm = analyzer->Simplify(shape[i]).as<IntImmNode>();
+      const auto *dim_imm = analyzer->Simplify(shape[i]).as<IntImmNode>();
       if (dim_imm && tmp_val > 1) {
         count++;
         tmp_val /= dim_imm->value;
         if (tmp_val == 1) {
-          break;  // Perfectly divided, stop merging
+          break; // Perfectly divided, stop merging
         }
       } else {
-        break;  // Encountered dynamic dimension or cannot divide evenly, stop
-                // merging
+        break; // Encountered dynamic dimension or cannot divide evenly, stop
+               // merging
       }
     }
     // If successfully merged more than 1 dimension and perfectly divided
@@ -967,7 +970,7 @@ Array<PrimExpr> MergeShapeBySrcN(const Array<PrimExpr>& shape,
   return merged_shape;
 }
 
-Array<PrimExpr> ComputeStrides(const Array<PrimExpr>& shape, PrimExpr srcN) {
+Array<PrimExpr> ComputeStrides(const Array<PrimExpr> &shape, PrimExpr srcN) {
   constexpr int kMaxDims = 5;
   tvm::arith::Analyzer analyzer;
   int count = 0;
@@ -998,14 +1001,14 @@ Array<PrimExpr> ComputeStrides(const Array<PrimExpr>& shape, PrimExpr srcN) {
 
   // Convert to TVM Array and return
   Array<PrimExpr> strides;
-  for (const auto& s : strides_vec) {
+  for (const auto &s : strides_vec) {
     strides.push_back(s);
   }
   return strides;
 }
 
-std::tuple<bool, std::string, std::string> FormatStrides(
-    const Array<PrimExpr>& shape, const Array<PrimExpr>& strides) {
+std::tuple<bool, std::string, std::string>
+FormatStrides(const Array<PrimExpr> &shape, const Array<PrimExpr> &strides) {
   bool is_dynamic = false;
   std::stringstream stride_ss;
 
@@ -1016,10 +1019,10 @@ std::tuple<bool, std::string, std::string> FormatStrides(
   size_t start_idx = total_strides > 5 ? total_strides - 5 : 0;
 
   for (size_t i = start_idx; i < total_strides; ++i) {
-    if (const auto* int_imm = strides[i].as<IntImmNode>()) {
+    if (const auto *int_imm = strides[i].as<IntImmNode>()) {
       stride_ss << int_imm->value;
     } else {
-      stride_ss << "-1";  // Has PrimExpr variable, set to -1
+      stride_ss << "-1"; // Has PrimExpr variable, set to -1
       is_dynamic = true;
     }
     if (i + 1 < total_strides) {
@@ -1048,7 +1051,7 @@ std::tuple<bool, std::string, std::string> FormatStrides(
       ctor_args_ss << shape[i];
       first = false;
       is_dynamic =
-          true;  // Mark as dynamic if any dynamic shapes in relevant range
+          true; // Mark as dynamic if any dynamic shapes in relevant range
     }
   }
 
@@ -1078,7 +1081,7 @@ std::string CodeGenTileLangAscendPto::GetPadEnum(const PrimExpr value) {
   return pad_value_enum;
 }
 
-void CodeGenTileLangAscendPto::GMCopyCall(const CallNode* call,
+void CodeGenTileLangAscendPto::GMCopyCall(const CallNode *call,
                                           std::string op_name) {
   static const std::unordered_map<std::string, bool> kIsGmToLocalOp = {
       {"copy_gm_to_ub", true},
@@ -1093,8 +1096,8 @@ void CodeGenTileLangAscendPto::GMCopyCall(const CallNode* call,
   BufferInfo src_info = GetBufferInfo(call->args[1]);
   BufferInfo dst_info = GetBufferInfo(call->args[2]);
 
-  const auto& gm_info = is_load ? src_info : dst_info;
-  const auto& local_info = is_load ? dst_info : src_info;
+  const auto &gm_info = is_load ? src_info : dst_info;
+  const auto &local_info = is_load ? dst_info : src_info;
 
   ShapeInfo slice_info = GetSliceInfo(local_info.access_ptr);
   int32_t shape4 =
@@ -1138,7 +1141,7 @@ void CodeGenTileLangAscendPto::GMCopyCall(const CallNode* call,
          << ", " << PrintExpr(call->args[5]) << ");\n";
 }
 
-void CodeGenTileLangAscendPto::CopyUBToUBCodegen(const CallNode* call) {
+void CodeGenTileLangAscendPto::CopyUBToUBCodegen(const CallNode *call) {
   BufferInfo src_info = GetBufferInfo(call->args[1]);
   BufferInfo dst_info = GetBufferInfo(call->args[2]);
 
@@ -1169,7 +1172,7 @@ void CodeGenTileLangAscendPto::CopyUBToUBCodegen(const CallNode* call) {
   this->stream << ");\n";
 }
 
-void CodeGenTileLangAscendPto::CopyL1ToL0Codegen(const CallNode* call,
+void CodeGenTileLangAscendPto::CopyL1ToL0Codegen(const CallNode *call,
                                                  bool is_a) {
   BufferInfo src_info = GetBufferInfo(call->args[1]);
   BufferInfo dst_info = GetBufferInfo(call->args[2]);
@@ -1210,7 +1213,7 @@ void CodeGenTileLangAscendPto::CopyL1ToL0Codegen(const CallNode* call,
                << ");\n";
 }
 
-void CodeGenTileLangAscendPto::CallExternCodegen(const CallNode* op) {
+void CodeGenTileLangAscendPto::CallExternCodegen(const CallNode *op) {
   std::string op_name = Downcast<StringImm>(op->args[0])->value;
 
   if (op_name.find("tl::ascend::copy_gm_to_ub") != std::string::npos) {
@@ -1230,7 +1233,7 @@ void CodeGenTileLangAscendPto::CallExternCodegen(const CallNode* op) {
   }
 }
 
-void CodeGenTileLangAscendPto::GemmV0Codegen(const CallNode* op) {
+void CodeGenTileLangAscendPto::GemmV0Codegen(const CallNode *op) {
   std::string template_args = Downcast<StringImm>(op->args[0])->value;
 
   ShapeInfo a_info = GetSliceInfo(op->args[1].as<CallNode>());
@@ -1240,9 +1243,9 @@ void CodeGenTileLangAscendPto::GemmV0Codegen(const CallNode* op) {
   std::map<std::string, std::string> params =
       extractTemplateParams(template_args);
   uint32_t K = std::stoi(params["K"]);
-  uint32_t kL0Size = 128;  // L0 slice size, adapted for 64K memory limit
-  uint32_t kL0split = (K + kL0Size - 1) / kL0Size;  // slice count
-  uint32_t kL0Tail = K - (kL0split - 1) * kL0Size;  // last block size
+  uint32_t kL0Size = 128; // L0 slice size, adapted for 64K memory limit
+  uint32_t kL0split = (K + kL0Size - 1) / kL0Size; // slice count
+  uint32_t kL0Tail = K - (kL0split - 1) * kL0Size; // last block size
 
   std::string a_name = a_info.ub_name;
   std::string b_name = b_info.ub_name;
@@ -1277,18 +1280,18 @@ void CodeGenTileLangAscendPto::GemmV0Codegen(const CallNode* op) {
                << PrintExpr(op->args[4]) << ");\n";
 }
 
-void CodeGenTileLangAscendPto::SyncAllCodegen(const CallNode* op) {
+void CodeGenTileLangAscendPto::SyncAllCodegen(const CallNode *op) {
   LOG(FATAL) << "Unsupport SyncAll in pto backend.";
 }
 
-void CodeGenTileLangAscendPto::PipeBarrierCodegen(const CallNode* op) {
+void CodeGenTileLangAscendPto::PipeBarrierCodegen(const CallNode *op) {
   std::string pipe = Downcast<StringImm>(op->args[0])->value;
   this->PrintIndent();
   this->stream << "pipe_barrier(PIPE_" << pipe << ");\n";
 }
 
 void CodeGenTileLangAscendPto::SetAndWaitFlagCodegen(
-    const CallNode* op, const std::string& op_name) {
+    const CallNode *op, const std::string &op_name) {
   std::string src = Downcast<StringImm>(op->args[0])->value;
   std::string dst = Downcast<StringImm>(op->args[1])->value;
   std::string event_id = PrintExpr(op->args[2]);
@@ -1297,8 +1300,8 @@ void CodeGenTileLangAscendPto::SetAndWaitFlagCodegen(
                << "PIPE_" << dst << "> (" << event_id << ");\n";
 }
 
-void CodeGenTileLangAscendPto::HandleA5Flag(const std::string& op,
-                                            const std::string& pipe, int flag) {
+void CodeGenTileLangAscendPto::HandleA5Flag(const std::string &op,
+                                            const std::string &pipe, int flag) {
   if (this->current_resource_scope_ == "CUBE") {
     this->PrintIndent();
     this->stream << op << "(" << "PIPE_" << pipe << ", " << flag << ");\n";
@@ -1312,7 +1315,7 @@ void CodeGenTileLangAscendPto::HandleA5Flag(const std::string& op,
   }
 }
 
-void CodeGenTileLangAscendPto::SetCrossFlagCodegen(const CallNode* op) {
+void CodeGenTileLangAscendPto::SetCrossFlagCodegen(const CallNode *op) {
   std::string pipe = Downcast<StringImm>(op->args[0])->value;
   std::string flag = PrintExpr(op->args[1]);
   std::string mode = PrintExpr(op->args[2]);
@@ -1337,7 +1340,7 @@ void CodeGenTileLangAscendPto::SetCrossFlagCodegen(const CallNode* op) {
   }
 }
 
-void CodeGenTileLangAscendPto::AutoSetCrossFlagCodegen(const CallNode* op) {
+void CodeGenTileLangAscendPto::AutoSetCrossFlagCodegen(const CallNode *op) {
   auto pipe = op->args[1].as<StringImmNode>()->value;
   auto flag = op->args[2].as<IntImmNode>()->value;
   if (this->platform_ == "A5") {
@@ -1351,7 +1354,7 @@ void CodeGenTileLangAscendPto::AutoSetCrossFlagCodegen(const CallNode* op) {
   }
 }
 
-void CodeGenTileLangAscendPto::WaitCrossFlagCodegen(const CallNode* op) {
+void CodeGenTileLangAscendPto::WaitCrossFlagCodegen(const CallNode *op) {
   std::string pipe = Downcast<StringImm>(op->args[1])->value;
   std::string flag = PrintExpr(op->args[0]);
 
@@ -1392,7 +1395,7 @@ void CodeGenTileLangAscendPto::WaitCrossFlagCodegen(const CallNode* op) {
   }
 }
 
-void CodeGenTileLangAscendPto::FillCodegen(const CallNode* op) {
+void CodeGenTileLangAscendPto::FillCodegen(const CallNode *op) {
   this->PrintIndent();
   this->stream << "set_flag(PIPE_V, PIPE_S, EVENT_ID0);\n";
   this->PrintIndent();
@@ -1404,13 +1407,13 @@ void CodeGenTileLangAscendPto::FillCodegen(const CallNode* op) {
 }
 
 void CodeGenTileLangAscendPto::CreateVecIndexCodegen(
-    const CallNode* op, const std::string& op_name) {
+    const CallNode *op, const std::string &op_name) {
   BufferInfo dst_info = GetBufferInfo(op->args[1]);
   ShapeInfo dst_slice_info = GetSliceInfo(op->args[1].as<CallNode>());
   std::string first_value = PrintExpr(op->args[2]);
 
-  const auto& M = dst_info.shape[0];
-  const auto& N = dst_info.shape[1];
+  const auto &M = dst_info.shape[0];
+  const auto &N = dst_info.shape[1];
 
   this->PrintIndent();
   this->stream << kAscendPtoScope << "tci" << "<" << getType(dst_info.dtype)
@@ -1421,8 +1424,8 @@ void CodeGenTileLangAscendPto::CreateVecIndexCodegen(
                << ");\n";
 }
 
-void CodeGenTileLangAscendPto::GatherbCodegen(const CallNode* op,
-                                              const std::string& op_name) {
+void CodeGenTileLangAscendPto::GatherbCodegen(const CallNode *op,
+                                              const std::string &op_name) {
   this->PrintIndent();
   std::string dst_name = PrintExpr(op->args[1].as<CallNode>()->args[1]);
   std::string src_name = PrintExpr(op->args[2].as<CallNode>()->args[1]);
@@ -1431,8 +1434,8 @@ void CodeGenTileLangAscendPto::GatherbCodegen(const CallNode* op,
                << idx_name << ");\n";
 }
 
-void CodeGenTileLangAscendPto::GatherMaskCodegen(const CallNode* op,
-                                                 const std::string& op_name) {
+void CodeGenTileLangAscendPto::GatherMaskCodegen(const CallNode *op,
+                                                 const std::string &op_name) {
   BufferInfo dst_info = GetBufferInfo(op->args[1]);
   BufferInfo src_info = GetBufferInfo(op->args[2]);
   auto temp_name = PrintBufferOffset(op->args[4].as<CallNode>());
@@ -1457,7 +1460,7 @@ void CodeGenTileLangAscendPto::GatherMaskCodegen(const CallNode* op,
   }
 }
 
-void CodeGenTileLangAscendPto::PowCodegen(const CallNode* op) {
+void CodeGenTileLangAscendPto::PowCodegen(const CallNode *op) {
   ShapeInfo src0_shape_info = GetSliceInfo(op->args[1].as<CallNode>());
   ShapeInfo src1_shape_info = GetSliceInfo(op->args[2].as<CallNode>());
   ShapeInfo dst_shape_info = GetSliceInfo(op->args[0].as<CallNode>());
@@ -1487,8 +1490,8 @@ void CodeGenTileLangAscendPto::PowCodegen(const CallNode* op) {
   }
 }
 
-void CodeGenTileLangAscendPto::Sort32Codegen(const CallNode* op,
-                                             const std::string& op_name) {
+void CodeGenTileLangAscendPto::Sort32Codegen(const CallNode *op,
+                                             const std::string &op_name) {
   this->PrintIndent();
   std::string dst_name = PrintExpr(op->args[0].as<CallNode>()->args[1]);
   std::string src_name = PrintExpr(op->args[1].as<CallNode>()->args[1]);
@@ -1497,8 +1500,8 @@ void CodeGenTileLangAscendPto::Sort32Codegen(const CallNode* op,
                << idx_name << ");\n";
 }
 
-void CodeGenTileLangAscendPto::MergeSortCodegen(const CallNode* op,
-                                                const std::string& op_name) {
+void CodeGenTileLangAscendPto::MergeSortCodegen(const CallNode *op,
+                                                const std::string &op_name) {
   // args: [func_name, num_ways, dst, tmp, src0, src1, ..., blockLens...]
   // TMRGSORT API: TMRGSORT(dst, executedNumList, tmp, src0, src1, ...)
   // tmp buffer is passed from caller, executedNumList is managed internally by
@@ -1567,14 +1570,14 @@ void CodeGenTileLangAscendPto::MergeSortCodegen(const CallNode* op,
   this->PrintIndent();
   this->stream << kAscendPtoScope << "MergeSort<" << dst_type << ", " << src_col
                << ", " << dst_col << ">(" << dst_name << ", " << tmp_name;
-  for (const auto& src_name : src_names) {
+  for (const auto &src_name : src_names) {
     this->stream << ", " << src_name;
   }
   this->stream << ");\n";
 }
 
-void CodeGenTileLangAscendPto::TransposeCodegen(const CallNode* op,
-                                                const std::string& op_name) {
+void CodeGenTileLangAscendPto::TransposeCodegen(const CallNode *op,
+                                                const std::string &op_name) {
   this->PrintIndent();
   std::string dst_name = PrintExpr(op->args[0].as<CallNode>()->args[1]);
   std::string src_name = PrintExpr(op->args[1].as<CallNode>()->args[1]);
@@ -1594,8 +1597,8 @@ void CodeGenTileLangAscendPto::TransposeCodegen(const CallNode* op,
   this->stream << "}\n";
 }
 
-void CodeGenTileLangAscendPto::XorCodegen(const CallNode* op,
-                                          const std::string& op_name) {
+void CodeGenTileLangAscendPto::XorCodegen(const CallNode *op,
+                                          const std::string &op_name) {
   ShapeInfo src0_shape_info = GetSliceInfo(op->args[1].as<CallNode>());
   ShapeInfo src1_shape_info = GetSliceInfo(op->args[2].as<CallNode>());
   ShapeInfo dst_shape_info = GetSliceInfo(op->args[0].as<CallNode>());
@@ -1620,8 +1623,8 @@ void CodeGenTileLangAscendPto::XorCodegen(const CallNode* op,
   }
 }
 
-void CodeGenTileLangAscendPto::CompareCodegen(const CallNode* op,
-                                              const std::string& op_name) {
+void CodeGenTileLangAscendPto::CompareCodegen(const CallNode *op,
+                                              const std::string &op_name) {
   ShapeInfo src0_shape_info = GetSliceInfo(op->args[1].as<CallNode>());
   ShapeInfo src1_shape_info = GetSliceInfo(op->args[2].as<CallNode>());
   ShapeInfo dst_shape_info = GetSliceInfo(op->args[0].as<CallNode>());
@@ -1648,7 +1651,7 @@ void CodeGenTileLangAscendPto::CompareCodegen(const CallNode* op,
 }
 
 void CodeGenTileLangAscendPto::CompareScalarCodegen(
-    const CallNode* op, const std::string& op_name) {
+    const CallNode *op, const std::string &op_name) {
   ShapeInfo src0_shape_info = GetSliceInfo(op->args[1].as<CallNode>());
   ShapeInfo dst_shape_info = GetSliceInfo(op->args[0].as<CallNode>());
   auto src1_name = PrintExpr(op->args[2]);
@@ -1680,8 +1683,8 @@ void CodeGenTileLangAscendPto::CompareScalarCodegen(
   }
 }
 
-void CodeGenTileLangAscendPto::TshCodegen(const CallNode* op,
-                                          const std::string& op_name) {
+void CodeGenTileLangAscendPto::TshCodegen(const CallNode *op,
+                                          const std::string &op_name) {
   this->PrintIndent();
   ShapeInfo src0_shape_info = GetSliceInfo(op->args[1].as<CallNode>());
   ShapeInfo dst_shape_info = GetSliceInfo(op->args[0].as<CallNode>());
@@ -1709,7 +1712,7 @@ void CodeGenTileLangAscendPto::TshCodegen(const CallNode* op,
 }
 
 void CodeGenTileLangAscendPto::ArithProgressionCodegen(
-    const CallNode* op, const std::string& op_name) {
+    const CallNode *op, const std::string &op_name) {
   this->PrintIndent();
   std::string buffer_name = PrintExpr(op->args[1].as<CallNode>()->args[1]);
   std::string template_str = Downcast<StringImm>(op->args[0])->value;
@@ -1719,7 +1722,7 @@ void CodeGenTileLangAscendPto::ArithProgressionCodegen(
   std::string first_value = PrintExpr(op->args[2]);
   std::string diff_value = PrintExpr(op->args[3]);
   int descending = 0;
-  if (const auto* diff_int = op->args[3].as<IntImmNode>()) {
+  if (const auto *diff_int = op->args[3].as<IntImmNode>()) {
     if (diff_int->value < 0) {
       descending = 1;
     }
@@ -1729,8 +1732,8 @@ void CodeGenTileLangAscendPto::ArithProgressionCodegen(
                << ", " << first_value << ");\n";
 }
 
-void CodeGenTileLangAscendPto::PrintfOpCodegen(const CallNode* op,
-                                               const std::string& op_name) {
+void CodeGenTileLangAscendPto::PrintfOpCodegen(const CallNode *op,
+                                               const std::string &op_name) {
   this->PrintIndent();
   this->stream << op_name << "(";
   for (size_t i = 0; i < op->args.size(); ++i) {
@@ -1742,23 +1745,23 @@ void CodeGenTileLangAscendPto::PrintfOpCodegen(const CallNode* op,
   this->stream << ");\n";
 }
 
-void CodeGenTileLangAscendPto::DumpTensorCodegen(const CallNode* op,
-                                                 const std::string& op_name) {
+void CodeGenTileLangAscendPto::DumpTensorCodegen(const CallNode *op,
+                                                 const std::string &op_name) {
   this->PrintIndent();
   this->stream << "TPRINT" << "(";
   this->stream << PrintBufferOffset(op->args[0].as<CallNode>());
   this->stream << ");\n";
 }
 
-void CodeGenTileLangAscendPto::SetDeqScaleCodegen(const CallNode* op) {
+void CodeGenTileLangAscendPto::SetDeqScaleCodegen(const CallNode *op) {
   this->PrintIndent();
   this->stream << "set_deqscale(static_cast<half>(";
   this->stream << PrintExpr(op->args[0]);
   this->stream << "));\n";
 }
 
-void CodeGenTileLangAscendPto::BinaryVecOpCodegen(const CallNode* op,
-                                                  const std::string& op_name) {
+void CodeGenTileLangAscendPto::BinaryVecOpCodegen(const CallNode *op,
+                                                  const std::string &op_name) {
   ShapeInfo src0_shape_info = GetSliceInfo(op->args[1].as<CallNode>());
   ShapeInfo src1_shape_info = GetSliceInfo(op->args[2].as<CallNode>());
   ShapeInfo dst_shape_info = GetSliceInfo(op->args[0].as<CallNode>());
@@ -1805,7 +1808,7 @@ void CodeGenTileLangAscendPto::BinaryVecOpCodegen(const CallNode* op,
   }
 }
 
-std::string extractBroadCastAxis(const std::string& input) {
+std::string extractBroadCastAxis(const std::string &input) {
   std::string axis;
   size_t start = input.find('<');
   if (start == std::string::npos) {
@@ -1827,8 +1830,8 @@ std::string extractBroadCastAxis(const std::string& input) {
   return parts[2];
 }
 
-void CodeGenTileLangAscendPto::CodegenRowBroadcast(const ShapeInfo& dst,
-                                                   const ShapeInfo& src) {
+void CodeGenTileLangAscendPto::CodegenRowBroadcast(const ShapeInfo &dst,
+                                                   const ShapeInfo &src) {
   std::string dst_name = dst.ub_name;
   std::string src_name = src.ub_name;
 
@@ -1845,8 +1848,8 @@ void CodeGenTileLangAscendPto::CodegenRowBroadcast(const ShapeInfo& dst,
   this->stream << "TROWEXPAND" << "(" << dst_name << ", " << src_name << ");\n";
 }
 
-void CodeGenTileLangAscendPto::CodegenColBroadcast(const ShapeInfo& dst,
-                                                   const ShapeInfo& src) {
+void CodeGenTileLangAscendPto::CodegenColBroadcast(const ShapeInfo &dst,
+                                                   const ShapeInfo &src) {
   std::string dst_name = dst.ub_name;
   std::string src_name = src.ub_name;
 
@@ -1865,7 +1868,7 @@ void CodeGenTileLangAscendPto::CodegenColBroadcast(const ShapeInfo& dst,
                << "(" << dst_name << ", " << src_name << ");\n";
 }
 
-void CodeGenTileLangAscendPto::BroadcastOpCodegen(const CallNode* op) {
+void CodeGenTileLangAscendPto::BroadcastOpCodegen(const CallNode *op) {
   std::string template_args = PrintExpr(op->args[0]);
 
   ShapeInfo dst_shape_info = GetSliceInfo(op->args[1].as<CallNode>());
@@ -1881,15 +1884,15 @@ void CodeGenTileLangAscendPto::BroadcastOpCodegen(const CallNode* op) {
   }
 }
 
-std::string getValueOrProcess(const std::map<std::string, std::string>& myMap,
-                              const std::string& key) {
+std::string getValueOrProcess(const std::map<std::string, std::string> &myMap,
+                              const std::string &key) {
   auto it = myMap.find(key);
   if (it != myMap.end()) {
     return it->second;
   } else {
     std::string bestMatchValue = "";
     size_t bestMatchLength = 0;
-    for (const auto& pair : myMap) {
+    for (const auto &pair : myMap) {
       size_t pos = key.find(pair.first);
       if (pos != std::string::npos) {
         if (pair.first.length() > bestMatchLength) {
@@ -1902,7 +1905,7 @@ std::string getValueOrProcess(const std::map<std::string, std::string>& myMap,
   }
 }
 
-bool IsComplexExpression(const PrimExpr& expr) {
+bool IsComplexExpression(const PrimExpr &expr) {
   if (expr.as<tir::AddNode>()) {
     return true;
   }
@@ -1924,8 +1927,8 @@ bool IsComplexExpression(const PrimExpr& expr) {
   return false;
 }
 
-void CodeGenTileLangAscendPto::BinaryVecOpsCodegen(const CallNode* op,
-                                                   const std::string& op_name) {
+void CodeGenTileLangAscendPto::BinaryVecOpsCodegen(const CallNode *op,
+                                                   const std::string &op_name) {
   std::vector<std::string> var_names;
   for (int i = 0; i < (int)op->args.size() - 2; i++) {
     auto var_name = PrintBufferOffset(op->args[i].as<CallNode>());
@@ -1940,7 +1943,7 @@ void CodeGenTileLangAscendPto::BinaryVecOpsCodegen(const CallNode* op,
       (is_subs || is_divs) ? (is_subs ? "TADDS" : "TMULS") : op_name;
   std::string index = PrintExpr(op->args[op->args.size() - 2]);
 
-  auto apply_scalar_for_half = [&](const std::string& expr) -> std::string {
+  auto apply_scalar_for_half = [&](const std::string &expr) -> std::string {
     if (is_subs) {
       return is_half ? "half(-(float)" + expr + ")" : "-" + expr;
     } else if (is_divs) {
@@ -1955,7 +1958,7 @@ void CodeGenTileLangAscendPto::BinaryVecOpsCodegen(const CallNode* op,
     std::string scalar = apply_scalar_for_half(index);
     this->PrintIndent();
     this->stream << operation << "(";
-    for (const auto& name : var_names) {
+    for (const auto &name : var_names) {
       this->stream << name << ", ";
     }
     this->stream << scalar << ");\n";
@@ -1993,8 +1996,8 @@ void CodeGenTileLangAscendPto::BinaryVecOpsCodegen(const CallNode* op,
   }
 }
 
-void CodeGenTileLangAscendPto::UnaryVecOpCodegen(const CallNode* op,
-                                                 const std::string& op_name) {
+void CodeGenTileLangAscendPto::UnaryVecOpCodegen(const CallNode *op,
+                                                 const std::string &op_name) {
   std::vector<std::string> var_names;
   for (int i = 0; i < op->args.size() - 1; i++) {
     auto var_name = PrintBufferOffset(op->args[i].as<CallNode>());
@@ -2024,8 +2027,8 @@ void CodeGenTileLangAscendPto::UnaryVecOpCodegen(const CallNode* op,
   }
 }
 
-void CodeGenTileLangAscendPto::ScalarOpCodegen(const CallNode* op,
-                                               const std::string& op_name) {
+void CodeGenTileLangAscendPto::ScalarOpCodegen(const CallNode *op,
+                                               const std::string &op_name) {
   ShapeInfo src_shape_info = GetSliceInfo(op->args[1].as<CallNode>());
   ShapeInfo dst_shape_info = GetSliceInfo(op->args[0].as<CallNode>());
 
@@ -2045,7 +2048,7 @@ void CodeGenTileLangAscendPto::ScalarOpCodegen(const CallNode* op,
   }
 }
 
-void CodeGenTileLangAscendPto::AxpyCodegen(const CallNode* op) {
+void CodeGenTileLangAscendPto::AxpyCodegen(const CallNode *op) {
   ShapeInfo src_shape_info = GetSliceInfo(op->args[1].as<CallNode>());
   ShapeInfo dst_shape_info = GetSliceInfo(op->args[0].as<CallNode>());
   auto scalar = PrintExpr(op->args[2]);
@@ -2081,7 +2084,7 @@ void CodeGenTileLangAscendPto::AxpyCodegen(const CallNode* op) {
 }
 
 void CodeGenTileLangAscendPto::BinaryVecClampMaxMinOpsCodegen(
-    const CallNode* op, const std::string& op_name) {
+    const CallNode *op, const std::string &op_name) {
   std::vector<std::string> var_names;
   std::string operation = op_name;
   for (int i = 1; i < op->args.size() - 3; i++) {
@@ -2130,7 +2133,7 @@ void CodeGenTileLangAscendPto::BinaryVecClampMaxMinOpsCodegen(
 }
 
 void CodeGenTileLangAscendPto::BinaryVecClampOpsCodegen(
-    const CallNode* op, const std::string& op_name) {
+    const CallNode *op, const std::string &op_name) {
   // Extract shape information
   ShapeInfo src_shape_info = GetSliceInfo(op->args[2].as<CallNode>());
   ShapeInfo dst_shape_info = GetSliceInfo(op->args[1].as<CallNode>());
@@ -2142,7 +2145,7 @@ void CodeGenTileLangAscendPto::BinaryVecClampOpsCodegen(
   // Collect variable names (skip first arg and last 3 args: scalar_min,
   // scalar_max, and one more)
   std::vector<std::string> var_names;
-  var_names.reserve(op->args.size() - 5);  // Pre-allocate memory
+  var_names.reserve(op->args.size() - 5); // Pre-allocate memory
   for (size_t i = 1; i < op->args.size() - 4; ++i) {
     var_names.push_back(PrintBufferOffset(op->args[i].as<CallNode>()));
   }
@@ -2170,8 +2173,8 @@ void CodeGenTileLangAscendPto::BinaryVecClampOpsCodegen(
   }
 }
 
-void CodeGenTileLangAscendPto::SigmoidCodegen(const CallNode* op,
-                                              const std::string& op_name) {
+void CodeGenTileLangAscendPto::SigmoidCodegen(const CallNode *op,
+                                              const std::string &op_name) {
   std::vector<std::string> var_names;
   for (int i = 0; i < op->args.size() - 2; i++) {
     auto var_name = PrintBufferOffset(op->args[i].as<CallNode>());
@@ -2205,8 +2208,8 @@ void CodeGenTileLangAscendPto::SigmoidCodegen(const CallNode* op,
   }
 }
 
-void CodeGenTileLangAscendPto::CastCodegen(const CallNode* op,
-                                           const std::string& op_type) {
+void CodeGenTileLangAscendPto::CastCodegen(const CallNode *op,
+                                           const std::string &op_type) {
   std::vector<std::string> var_names;
   for (int i = 0; i < op->args.size() - 2; i++) {
     auto var_name = PrintBufferOffset(op->args[i].as<CallNode>());
@@ -2239,8 +2242,8 @@ void CodeGenTileLangAscendPto::CastCodegen(const CallNode* op,
   }
 }
 
-std::tuple<int, int, int, bool> ExtractTemplateParamsForSliceBuffer(
-    const std::string& op_name) {
+std::tuple<int, int, int, bool>
+ExtractTemplateParamsForSliceBuffer(const std::string &op_name) {
   int second_param = 0;
   int third_param = 0;
   int forth_param = 0;
@@ -2275,7 +2278,7 @@ std::tuple<int, int, int, bool> ExtractTemplateParamsForSliceBuffer(
       third_param = std::stoi(params[2]);
       forth_param = std::stoi(params[3]);
       return std::make_tuple(second_param, third_param, forth_param, true);
-    } catch (const std::exception& e) {
+    } catch (const std::exception &e) {
       return std::make_tuple(second_param, third_param, forth_param, false);
     }
   } else {
@@ -2285,7 +2288,7 @@ std::tuple<int, int, int, bool> ExtractTemplateParamsForSliceBuffer(
 }
 
 CodeGenTileLangAscendPto::ReduceOpInfo
-CodeGenTileLangAscendPto::ParseReduceOpInfo(const std::string& op_name) {
+CodeGenTileLangAscendPto::ParseReduceOpInfo(const std::string &op_name) {
   auto [slice_row, slice_col, direction_val, success] =
       ExtractTemplateParamsForSliceBuffer(op_name);
 
@@ -2312,8 +2315,9 @@ CodeGenTileLangAscendPto::ParseReduceOpInfo(const std::string& op_name) {
   return info;
 }
 
-std::string CodeGenTileLangAscendPto::GetReduceOpName(
-    ReduceKind kind, ReduceDirection direction) {
+std::string
+CodeGenTileLangAscendPto::GetReduceOpName(ReduceKind kind,
+                                          ReduceDirection direction) {
   static const std::unordered_map<
       ReduceKind, std::unordered_map<ReduceDirection, std::string>>
       kOpNames = {
@@ -2330,10 +2334,10 @@ std::string CodeGenTileLangAscendPto::GetReduceOpName(
   return kOpNames.at(kind).at(direction);
 }
 
-void CodeGenTileLangAscendPto::CodegenRowReduce(const ReduceOpInfo& op_info,
-                                                const ShapeInfo& dst,
-                                                const ShapeInfo& src,
-                                                const ShapeInfo& tmp) {
+void CodeGenTileLangAscendPto::CodegenRowReduce(const ReduceOpInfo &op_info,
+                                                const ShapeInfo &dst,
+                                                const ShapeInfo &src,
+                                                const ShapeInfo &tmp) {
   std::string op_name = GetReduceOpName(op_info.kind, ReduceDirection::ROW);
   std::string dst_name = dst.ub_name;
   std::string src_name = src.ub_name;
@@ -2352,10 +2356,10 @@ void CodeGenTileLangAscendPto::CodegenRowReduce(const ReduceOpInfo& op_info,
                << tmp.ub_name << ");\n";
 }
 
-void CodeGenTileLangAscendPto::CodegenColReduce(const ReduceOpInfo& op_info,
-                                                const ShapeInfo& dst,
-                                                const ShapeInfo& src,
-                                                const ShapeInfo& tmp) {
+void CodeGenTileLangAscendPto::CodegenColReduce(const ReduceOpInfo &op_info,
+                                                const ShapeInfo &dst,
+                                                const ShapeInfo &src,
+                                                const ShapeInfo &tmp) {
   std::string op_name = GetReduceOpName(op_info.kind, ReduceDirection::COL);
 
   std::string dst_name = dst.ub_name;
@@ -2401,7 +2405,7 @@ void CodeGenTileLangAscendPto::CodegenColReduce(const ReduceOpInfo& op_info,
   this->stream << ");\n";
 }
 
-void CodeGenTileLangAscendPto::ReduceOpCodegen(const CallNode* op) {
+void CodeGenTileLangAscendPto::ReduceOpCodegen(const CallNode *op) {
   std::string op_name_str = Downcast<StringImm>(op->args[0])->value;
 
   ReduceOpInfo op_info = ParseReduceOpInfo(op_name_str);
@@ -2421,7 +2425,7 @@ void CodeGenTileLangAscendPto::ReduceOpCodegen(const CallNode* op) {
   }
 
   ShapeInfo tmp = GetSliceInfo(op->args[3].as<CallNode>());
-  auto emit_merge = [&](const ShapeInfo& reduce_dst) {
+  auto emit_merge = [&](const ShapeInfo &reduce_dst) {
     std::string dst_name = dst.ub_name;
     if (dst.is_slice) {
       dst_name = GetTempVarName(dst.ub_name);
@@ -2436,7 +2440,7 @@ void CodeGenTileLangAscendPto::ReduceOpCodegen(const CallNode* op) {
                  << ", " << dst_name << ", " << reduce_dst_name << ");\n";
   };
 
-  auto build_reduce_tmp_dst = [&](const ShapeInfo& tmp_dst_raw) {
+  auto build_reduce_tmp_dst = [&](const ShapeInfo &tmp_dst_raw) {
     ShapeInfo tmp_dst = dst;
     tmp_dst.first_addr = tmp_dst_raw.first_addr;
     tmp_dst.offset = "0";
@@ -2485,10 +2489,10 @@ void CodeGenTileLangAscendPto::ReduceOpCodegen(const CallNode* op) {
   }
 }
 
-void CodeGenTileLangAscendPto::VisitStmt_(const AttrStmtNode* op) {
+void CodeGenTileLangAscendPto::VisitStmt_(const AttrStmtNode *op) {
   if (op->attr_key == "threadblock_swizzle_pattern") {
     this->PrintIndent();
-    const StringImmNode* pattern = op->value.as<StringImmNode>();
+    const StringImmNode *pattern = op->value.as<StringImmNode>();
     ICHECK(pattern);
     this->stream << this->block_id_ << " = " << pattern->value << "("
                  << this->block_id_ << ");\n";
@@ -2521,7 +2525,7 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AttrStmtNode* op) {
     }
     this->VisitStmt(op->body);
     return;
-  } else if (op->attr_key == "resource_scope") {  // other core
+  } else if (op->attr_key == "resource_scope") { // other core
     auto resource_id = Downcast<IntImm>(op->value)->value;
     auto resource_name = resource_id == 0 ? "CUBE" : "VEC";
     std::string arch_name = (this->platform_ == "A5") ? "C310" : "C220";
@@ -2557,8 +2561,8 @@ const std::unordered_map<std::string, std::string> scope_to_tile = {
     {"shared", kAscendPtoScope + "TileUbDataND"},
 };
 
-void CodeGenTileLangAscendPto::AllocateLocalVar(const AllocateNode* op,
-                                                std::string& vid,
+void CodeGenTileLangAscendPto::AllocateLocalVar(const AllocateNode *op,
+                                                std::string &vid,
                                                 std::string dtype) {
   PrimExpr init = tir::make_const(op->dtype, 0);
 
@@ -2577,11 +2581,11 @@ void CodeGenTileLangAscendPto::AllocateLocalVar(const AllocateNode* op,
   stream << dtype + " " << vid << " = " << PrintExpr(init) << ";\n";
 }
 
-void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode* op) {
+void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
   ICHECK(!is_zero(op->condition)) << "Allocation condition must not be zero.";
 
   // 1. Extract basic allocation info
-  std::string vid = AllocVarID(op->buffer_var.get());  // var_name
+  std::string vid = AllocVarID(op->buffer_var.get()); // var_name
   std::string type = getType(op->dtype);
   std::string scope = GetPtrStorageScope(op->buffer_var);
 
@@ -2597,20 +2601,20 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode* op) {
   ICHECK(scope_to_tile.count(scope))
       << "Unsupported storage scope for PTO allocation: " << scope
       << ", variable: " << op->buffer_var->name_hint;
-  const std::string& op_name = scope_to_tile.at(scope);
+  const std::string &op_name = scope_to_tile.at(scope);
 
   // 3. Retrieve and validate the 4D physical layout [M, N, Valid_M, Valid_N]
   ICHECK(buffer_shapess_.count(op->buffer_var))
       << "Buffer shape not found for variable: " << op->buffer_var->name_hint;
-  const auto& shape = buffer_shapess_.at(op->buffer_var);
+  const auto &shape = buffer_shapess_.at(op->buffer_var);
 
   ICHECK(shape.size() == 4)
       << "Expected a 4D shape [M, N, Valid_M, Valid_N] for PTO, but got "
       << shape.size() << "D for " << op->buffer_var->name_hint;
-  const auto& M = shape[0];
-  const auto& N = shape[1];
-  const auto& valid_M = shape[2];
-  const auto& valid_N = shape[3];
+  const auto &M = shape[0];
+  const auto &N = shape[1];
+  const auto &valid_M = shape[2];
+  const auto &valid_N = shape[3];
 
   // Print the Tile object declaration
   this->PrintIndent();
@@ -2619,7 +2623,7 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode* op) {
 
   // address_map, use name_hint as key
   Map<String, PrimExpr> address_map_name_hint;
-  for (const auto& [var, address] : address_map_) {
+  for (const auto &[var, address] : address_map_) {
     address_map_name_hint.Set(var->name_hint, address);
   }
 
@@ -2644,8 +2648,8 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode* op) {
   this->PrintStmt(op->body);
 }
 
-inline void PrintConst(const FloatImmNode* op, std::ostream& os,
-                       CodeGenTileLangAscendPto* p) {  // NOLINT(*)
+inline void PrintConst(const FloatImmNode *op, std::ostream &os,
+                       CodeGenTileLangAscendPto *p) { // NOLINT(*)
   // Type code is kBFloat
   if (op->dtype.is_bfloat16()) {
     os << "bfloat16_t";
@@ -2660,44 +2664,45 @@ inline void PrintConst(const FloatImmNode* op, std::ostream& os,
   }
   // Type code is kFloat
   switch (op->dtype.bits()) {
-    case 64:
-    case 32: {
-      std::ostringstream temp;
-      if (std::isinf(op->value)) {
-        if (op->value < 0) {
-          temp << "-";
-        }
-        temp << ((op->dtype.bits() == 32) ? "CUDART_INF_F" : "CUDART_INF");
-        p->need_math_constants_h_ = true;
-      } else if (std::isnan(op->value)) {
-        temp << ((op->dtype.bits() == 32) ? "CUDART_NAN_F" : "CUDART_NAN");
-        p->need_math_constants_h_ = true;
-      } else {
-        temp << std::scientific << op->value;
-        if (op->dtype.bits() == 32) temp << 'f';
+  case 64:
+  case 32: {
+    std::ostringstream temp;
+    if (std::isinf(op->value)) {
+      if (op->value < 0) {
+        temp << "-";
       }
-      p->MarkConst(temp.str());
-      os << temp.str();
-      break;
+      temp << ((op->dtype.bits() == 32) ? "CUDART_INF_F" : "CUDART_INF");
+      p->need_math_constants_h_ = true;
+    } else if (std::isnan(op->value)) {
+      temp << ((op->dtype.bits() == 32) ? "CUDART_NAN_F" : "CUDART_NAN");
+      p->need_math_constants_h_ = true;
+    } else {
+      temp << std::scientific << op->value;
+      if (op->dtype.bits() == 32)
+        temp << 'f';
     }
-    case 16: {
-      os << "half_t" << '(';
-      FloatImm const_f32 = FloatImm(DataType::Float(32), op->value);
-      PrintConst(const_f32.get(), os, p);
-      os << ')';
-      break;
-    }
-    default:
-      LOG(FATAL) << "Bad bit-width for float: " << op->dtype << "\n";
+    p->MarkConst(temp.str());
+    os << temp.str();
+    break;
+  }
+  case 16: {
+    os << "half_t" << '(';
+    FloatImm const_f32 = FloatImm(DataType::Float(32), op->value);
+    PrintConst(const_f32.get(), os, p);
+    os << ')';
+    break;
+  }
+  default:
+    LOG(FATAL) << "Bad bit-width for float: " << op->dtype << "\n";
   }
 }
 
-void CodeGenTileLangAscendPto::VisitExpr_(const FloatImmNode* op,
-                                          std::ostream& os) {  // NOLINT(*)
+void CodeGenTileLangAscendPto::VisitExpr_(const FloatImmNode *op,
+                                          std::ostream &os) { // NOLINT(*)
   PrintConst(op, os, this);
 }
 
-void CodeGenTileLangAscendPto::PreFunctionBody(const PrimFunc& f) {
+void CodeGenTileLangAscendPto::PreFunctionBody(const PrimFunc &f) {
   int func_scope = this->BeginScope();
   // this->PrintIndent();
 
@@ -2712,8 +2717,8 @@ void CodeGenTileLangAscendPto::PreFunctionBody(const PrimFunc& f) {
   this->EndScope(func_scope);
 }
 
-void CodeGenTileLangAscendPto::VisitExpr_(const SelectNode* op,
-                                          std::ostream& os) {
+void CodeGenTileLangAscendPto::VisitExpr_(const SelectNode *op,
+                                          std::ostream &os) {
   auto condition = PrintExpr(op->condition);
   auto true_value = PrintExpr(op->true_value);
   auto false_value = PrintExpr(op->false_value);
@@ -2722,9 +2727,9 @@ void CodeGenTileLangAscendPto::VisitExpr_(const SelectNode* op,
      << "" << true_value << " : " << false_value << ")";
 }
 
-static void ProcessHostInput(std::ostream& os,
-                             std::vector<std::string>& arg_names,
-                             std::vector<const tir::VarNode*>& shape_vars,
+static void ProcessHostInput(std::ostream &os,
+                             std::vector<std::string> &arg_names,
+                             std::vector<const tir::VarNode *> &shape_vars,
                              bool add_args = true) {
   for (auto shape_var : shape_vars) {
     os << ", "
@@ -2736,18 +2741,18 @@ static void ProcessHostInput(std::ostream& os,
 }
 
 void CodeGenTileLangAscendPto::CallTilingInput(
-    std::ostream& os, std::string func_name,
-    std::vector<std::string>& tiling_args,
-    std::vector<const tir::VarNode*>& shape_vars) {}
+    std::ostream &os, std::string func_name,
+    std::vector<std::string> &tiling_args,
+    std::vector<const tir::VarNode *> &shape_vars) {}
 
 void CodeGenTileLangAscendPto::ProcessTilingInput(
-    std::ostream& os, std::string func_name,
-    std::vector<std::string>& tiling_args,
-    std::vector<const tir::VarNode*>& shape_vars) {}
+    std::ostream &os, std::string func_name,
+    std::vector<std::string> &tiling_args,
+    std::vector<const tir::VarNode *> &shape_vars) {}
 
 void CodeGenTileLangAscendPto::PrintHostFunc(
-    const PrimFunc& f, const std::string& name, std::ostringstream& os,
-    std::string& core, std::vector<const tir::VarNode*>& shape_vars) {
+    const PrimFunc &f, const std::string &name, std::ostringstream &os,
+    std::string &core, std::vector<const tir::VarNode *> &shape_vars) {
   std::vector<std::string> tiling_args;
   std::string tiling_func_name = name;
   // ProcessTilingInput(os, tiling_func_name, tiling_args, shape_vars);
@@ -2755,7 +2760,7 @@ void CodeGenTileLangAscendPto::PrintHostFunc(
   // launch kernel
   os << "extern \"C\" __global__ AICORE void launch_kernel(";
   std::vector<std::string> arg_names;
-  for (size_t i = 0; i < f->params.size(); ++i) {  // params
+  for (size_t i = 0; i < f->params.size(); ++i) { // params
     auto v = f->params[i];
     if (i != 0) {
       os << ", ";
@@ -2773,7 +2778,7 @@ void CodeGenTileLangAscendPto::PrintHostFunc(
   this->PrintIndent();
   // template function
   os << name << "(";
-  for (size_t i = 0; i < f->params.size(); ++i) {  // params
+  for (size_t i = 0; i < f->params.size(); ++i) { // params
     auto v = f->params[i];
     if (i != 0) {
       os << ",\n     ";
@@ -2793,7 +2798,7 @@ void CodeGenTileLangAscendPto::PrintHostFunc(
 
   // call kernel
   os << "extern \"C\" void call(";
-  for (size_t i = 0; i < f->params.size(); ++i) {  // params
+  for (size_t i = 0; i < f->params.size(); ++i) { // params
     auto v = f->params[i];
     if (i != 0) {
       os << ", ";
@@ -2812,7 +2817,7 @@ void CodeGenTileLangAscendPto::PrintHostFunc(
   this->PrintIndent();
   os << "  launch_kernel" << "<<<" << core << ", nullptr, stream>>>(";
 
-  for (auto& arg_name : arg_names) {
+  for (auto &arg_name : arg_names) {
     os << arg_name;
     if (arg_name != arg_names.back()) {
       os << ", ";
@@ -2821,7 +2826,7 @@ void CodeGenTileLangAscendPto::PrintHostFunc(
   if (!tiling_args.empty()) {
     os << ", ";
   }
-  for (auto& tiling_data : tiling_args) {
+  for (auto &tiling_data : tiling_args) {
     os << tiling_data;
     if (tiling_data != tiling_args.back()) {
       os << ", ";
@@ -2832,8 +2837,8 @@ void CodeGenTileLangAscendPto::PrintHostFunc(
   std::string content = os.str();
 }
 
-void CodeGenTileLangAscendPto::AddFunction(const GlobalVar& gvar,
-                                           const PrimFunc& f) {
+void CodeGenTileLangAscendPto::AddFunction(const GlobalVar &gvar,
+                                           const PrimFunc &f) {
   CodeGenC::DeclareFunction(gvar, f);
   // clear previous generated state.
   this->InitFuncState(f);
@@ -2861,7 +2866,7 @@ void CodeGenTileLangAscendPto::AddFunction(const GlobalVar& gvar,
 
   auto func_name = static_cast<std::string>(global_symbol.value()) + "_kernel";
   this->stream << " " << func_name << "(";
-  std::vector<const tir::VarNode*> shape_vars;
+  std::vector<const tir::VarNode *> shape_vars;
 
   for (size_t i = 0; i < f->params.size(); ++i) {
     tir::Var v = f->params[i];
@@ -2879,7 +2884,8 @@ void CodeGenTileLangAscendPto::AddFunction(const GlobalVar& gvar,
       }
     }
 
-    if (i != 0) stream << ", ";
+    if (i != 0)
+      stream << ", ";
     if (v.dtype().is_handle()) {
       auto real_v = f->buffer_map[v]->data;
       this->para_.push_back(vid);
@@ -2891,7 +2897,8 @@ void CodeGenTileLangAscendPto::AddFunction(const GlobalVar& gvar,
       for (size_t i = 0; i < f->buffer_map[v]->shape.size(); i++) {
         std::string shape_info = PrintExpr(f->buffer_map[v]->shape[i]);
         copy_tmp_shape.push_back(shape_info);
-        if (shape_info[0] < '1' || shape_info[0] > '9') shape_type = "dynamic";
+        if (shape_info[0] < '1' || shape_info[0] > '9')
+          shape_type = "dynamic";
       }
       global_tensor gt = {shape_type, String(getType(f->buffer_map[v]->dtype)),
                           copy_tmp_shape};
@@ -2904,8 +2911,8 @@ void CodeGenTileLangAscendPto::AddFunction(const GlobalVar& gvar,
         PrintStorageScope(it->second, stream);
       }
 
-      if (auto* ptr = v->type_annotation.as<PointerTypeNode>()) {
-        if (auto* prim = ptr->element_type.as<PrimTypeNode>()) {
+      if (auto *ptr = v->type_annotation.as<PointerTypeNode>()) {
+        if (auto *prim = ptr->element_type.as<PrimTypeNode>()) {
           RegisterHandleType(v.get(), prim->dtype);
         }
       }
@@ -2941,7 +2948,7 @@ void CodeGenTileLangAscendPto::AddFunction(const GlobalVar& gvar,
   std::string content = stream.str();
 }
 
-void CodeGenTileLangAscendPto::AutoBarrierCodegen(const CallNode* op) {
+void CodeGenTileLangAscendPto::AutoBarrierCodegen(const CallNode *op) {
   this->PrintIndent();
   std::string pipeline = "PIPE_ALL";
   if (op->args.size() >= 1) {
@@ -2952,7 +2959,7 @@ void CodeGenTileLangAscendPto::AutoBarrierCodegen(const CallNode* op) {
   this->stream << "pipe_barrier(" << pipeline << ");\n";
 }
 
-void CodeGenTileLangAscendPto::AutoFlagOpCodegen(const CallNode* op,
+void CodeGenTileLangAscendPto::AutoFlagOpCodegen(const CallNode *op,
                                                  std::string op_name) {
   this->PrintIndent();
 
@@ -2978,7 +2985,7 @@ void CodeGenTileLangAscendPto::AutoFlagOpCodegen(const CallNode* op,
                << "EVENT_ID" << event_id << ");\n";
 }
 
-void CodeGenTileLangAscendPto::SelectCodegen(const CallNode* op) {
+void CodeGenTileLangAscendPto::SelectCodegen(const CallNode *op) {
   ShapeInfo src0_shape_info = GetSliceInfo(op->args[2].as<CallNode>());
   ShapeInfo dst_shape_info = GetSliceInfo(op->args[0].as<CallNode>());
 
@@ -3031,7 +3038,7 @@ void CodeGenTileLangAscendPto::SelectCodegen(const CallNode* op) {
   }
 }
 
-void CodeGenTileLangAscendPto::MmaCodegen(const CallNode* op) {
+void CodeGenTileLangAscendPto::MmaCodegen(const CallNode *op) {
   auto k = PrintExpr(op->args[5]);
 
   // mma<..., M, N> -> mma<..., M, N, K>
@@ -3083,5 +3090,5 @@ void CodeGenTileLangAscendPto::MmaCodegen(const CallNode* op) {
                << ", " << PrintExpr(op->args[4]) << ");\n";
 }
 
-}  // namespace codegen
-}  // namespace tvm
+} // namespace codegen
+} // namespace tvm
