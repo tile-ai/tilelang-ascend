@@ -2,7 +2,10 @@ import math
 import torch
 import torch_npu
 
-from moe_token_utils import auto_tile_h, auto_tile_t, is_fp32_dtype, pad_first_dim, pad_last_dim
+try:
+    from .moe_token_utils import auto_tile_h, auto_tile_t, is_fp32_dtype, pad_first_dim, pad_last_dim
+except ImportError:
+    from moe_token_utils import auto_tile_h, auto_tile_t, is_fp32_dtype, pad_first_dim, pad_last_dim
 
 try:
     import tilelang
@@ -480,7 +483,7 @@ def _compile_grad(
     acc_dtype: str = "float32",
 ):
     if TILE_H is None:
-        TILE_H = auto_tile_h(hidden_size, dtype)
+        TILE_H = auto_tile_h(hidden_size)
     if TILE_T is None:
         total = num_tokens if has_probs else int(num_tokens * topK)
         TILE_T = auto_tile_t(total, NUM_CORES)

@@ -4,7 +4,10 @@ import tilelang.language as T
 import torch
 import torch_npu
 
-from moe_token_utils import is_fp32_dtype, pad_last_dim
+try:
+    from .moe_token_utils import is_fp32_dtype, pad_last_dim
+except ImportError:
+    from moe_token_utils import is_fp32_dtype, pad_last_dim
 
 PASS_CONFIGS_EXPERT = {
     tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
