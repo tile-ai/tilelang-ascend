@@ -46,7 +46,7 @@ def flash_attention_fwd(
             workspace_2: T.Tensor([block_num, block_M, block_N], dtype),
             workspace_3: T.Tensor([block_num, block_M, dim], accum_dtype),
     ):
-        with T.Kernel(block_num, is_npu=True) as (cid, vid):
+        with T.Kernel(block_num, threads=2, is_npu=True) as (cid):
             bx = cid % (seq_len // block_M)
             by = cid // (seq_len // block_M) % heads
             bz = cid // (seq_len // block_M) // heads % batch
@@ -60,17 +60,17 @@ def flash_attention_fwd(
             acc_s_l0c = T.alloc_fragment([block_M, block_N], accum_dtype)
             acc_o_l0c = T.alloc_fragment([block_M, dim], accum_dtype)
 
-            acc_o = T.alloc_shared([block_M // 2, dim], accum_dtype)
-            sumexp = T.alloc_shared([block_M // 2], accum_dtype)
-            m_i = T.alloc_shared([block_M // 2], accum_dtype)
+            acc_o = T.alloc_shared([block_M, dim], accum_dtype)
+            sumexp = T.alloc_shared([block_M], accum_dtype)
+            m_i = T.alloc_shared([block_M], accum_dtype)
 
-            acc_s_ub = T.alloc_shared([block_M // 2, block_N], accum_dtype)
-            m_i_prev = T.alloc_shared([block_M // 2], accum_dtype)
-            acc_s_ub_ = T.alloc_shared([block_M // 2, block_N], accum_dtype)
-            sumexp_i_ub = T.alloc_shared([block_M // 2], accum_dtype)
-            acc_s_half = T.alloc_shared([block_M // 2, block_N], dtype)
-            acc_o_ub = T.alloc_shared([block_M // 2, dim], accum_dtype)
-            acc_o_half = T.alloc_shared([block_M // 2, dim], dtype)
+            acc_s_ub = T.alloc_shared([block_M, block_N], accum_dtype)
+            m_i_prev = T.alloc_shared([block_M], accum_dtype)
+            acc_s_ub_ = T.alloc_shared([block_M, block_N], accum_dtype)
+            sumexp_i_ub = T.alloc_shared([block_M], accum_dtype)
+            acc_s_half = T.alloc_shared([block_M, block_N], dtype)
+            acc_o_ub = T.alloc_shared([block_M, dim], accum_dtype)
+            acc_o_half = T.alloc_shared([block_M, dim], dtype)
 
             T.tile.fill(acc_o, 0.0)
             T.tile.fill(sumexp, 0.0)
@@ -86,7 +86,7 @@ def flash_attention_fwd(
                 T.tile.fill(acc_s_ub, 0.0)
                 T.copy(m_i, m_i_prev)
                 T.copy(
-                    workspace_1[cid, vid * block_M // 2:vid * block_M // 2 + block_M // 2, :],
+                    workspace_1[cid, 0:block_M, :],
                     acc_s_ub_)
                 T.tile.add(acc_s_ub, acc_s_ub, acc_s_ub_)
                 # scale
@@ -98,7 +98,7 @@ def flash_attention_fwd(
                 T.tile.exp(m_i_prev, m_i_prev)
 
                 # current sumexp
-                for h_i in range(block_M // 2):
+                for h_i in range(block_M):
                     T.tile.sub(acc_s_ub[h_i, :], acc_s_ub[h_i, :], m_i[h_i])
                 T.tile.exp(acc_s_ub, acc_s_ub)
                 # update history sumexp
@@ -110,7 +110,7 @@ def flash_attention_fwd(
                 T.copy(acc_s_ub, acc_s_half)
                 T.copy(
                     acc_s_half,
-                    workspace_2[cid, vid * block_M // 2:vid * block_M // 2 + block_M // 2, :])
+                    workspace_2[cid, 0:block_M, :])
 
                 T.copy(workspace_2[cid, :, :], acc_s_l1)
                 T.copy(V[bz, by, k * block_N:(k + 1) * block_N, :], v_l1)
@@ -118,21 +118,21 @@ def flash_attention_fwd(
                 T.copy(acc_o_l0c, workspace_3[cid, :, :])
 
                 # update history acc_o
-                for h_i in range(block_M // 2):
+                for h_i in range(block_M):
                     T.tile.mul(acc_o[h_i, :], acc_o[h_i, :], m_i_prev[h_i])
                 T.copy(
-                    workspace_3[cid, vid * block_M // 2:vid * block_M // 2 + block_M // 2, :],
+                    workspace_3[cid, 0:block_M, :],
                     acc_o_ub)
                 T.tile.add(acc_o, acc_o, acc_o_ub)
 
             # normalization
-            for h_i in range(block_M // 2):
+            for h_i in range(block_M):
                 T.tile.div(acc_o[h_i, :], acc_o[h_i, :], sumexp[h_i])
 
             T.copy(acc_o, acc_o_half)
             T.copy(
-                acc_o_half, Output[bz, by, bx * block_M + vid * block_M // 2:bx * block_M +
-                                    vid * block_M // 2 + block_M // 2, :])
+                acc_o_half, Output[bz, by, bx * block_M:bx * block_M +
+                                    block_M, :])
 
     return main
 

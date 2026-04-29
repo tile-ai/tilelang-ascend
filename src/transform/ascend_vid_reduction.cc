@@ -71,9 +71,6 @@ private:
   std::unordered_map<Buffer, Buffer, ObjectPtrHash, ObjectPtrEqual>
       origin_to_new_buffer_;
 
-  // Store vid-reduced NEW buffers (values in origin_to_new_buffer_)
-  std::unordered_set<Buffer, ObjectPtrHash, ObjectPtrEqual> vid_reduced_buffers_;
-
   // Store GM buffer offset info: GM buffer -> UB buffer
   std::unordered_map<Buffer, Buffer, ObjectPtrHash, ObjectPtrEqual>
       gm_buffer_offset_info_;
@@ -140,38 +137,19 @@ private:
     return new_extents;
   }
 
-  bool ExprContainsUbBufferLoad(
-      const PrimExpr &expr,
-      const std::unordered_set<Buffer, ObjectPtrHash, ObjectPtrEqual> &ub_set) {
-    if (const auto *load = expr.as<BufferLoadNode>()) {
-      if (ub_set.count(load->buffer) > 0) {
-        return true;
-      }
-    }
-    if (const auto *add = expr.as<AddNode>()) {
-      return ExprContainsUbBufferLoad(add->a, ub_set) ||
-             ExprContainsUbBufferLoad(add->b, ub_set);
-    }
-    if (const auto *mul = expr.as<MulNode>()) {
-      return ExprContainsUbBufferLoad(mul->a, ub_set) ||
-             ExprContainsUbBufferLoad(mul->b, ub_set);
-    }
-    if (const auto *sub = expr.as<SubNode>()) {
-      return ExprContainsUbBufferLoad(sub->a, ub_set) ||
-             ExprContainsUbBufferLoad(sub->b, ub_set);
-    }
-    return false;
-  }
-
+// Check if indices directly contain BufferLoad from UB buffers
+  // BufferLoad appears directly in indices, not nested in expressions
   bool IndicesContainUbBufferLoad(
       const Array<PrimExpr> &indices,
       const std::unordered_set<Buffer, ObjectPtrHash, ObjectPtrEqual> &ub_set) {
     for (const PrimExpr &idx : indices) {
-      if (ExprContainsUbBufferLoad(idx, ub_set)) {
-        return true;
+      if (const auto *load = idx.as<BufferLoadNode>()) {
+        if (ub_set.count(load->buffer) > 0) {
+          return true;
+        }
       }
     }
-return false;
+    return false;
   }
 
   // Find loop variable dimension in GM indices (exact match only)
@@ -268,14 +246,14 @@ return false;
       bool dst_is_ub = is_ub_checker(dst_buf);
 
       if (src_is_ub && !dst_is_ub) {
-        // UB -> GM: src is UB, dst is GM
-        // Check if GM indices contain UB buffer load
+        // UB -> target: src is UB
+        // Check if target indices contain UB buffer load
         if (indices_contain_ub_checker(dst_load->indices, ub_buffers)) {
           buffers_skip_vid_reduction.insert(src_buf);
         }
       } else if (!src_is_ub && dst_is_ub) {
-        // GM -> UB: src is GM, dst is UB
-        // Check if GM indices contain UB buffer load
+        // src -> UB: dst is UB
+        // Check if src indices contain UB buffer load
         if (indices_contain_ub_checker(src_load->indices, ub_buffers)) {
           buffers_skip_vid_reduction.insert(dst_buf);
         }
@@ -334,7 +312,6 @@ bool NeedsVidReduction(const Buffer &buffer) const {
         if (NeedsVidReduction(buffer)) {
           Buffer new_buffer = ModifyBufferShape(buffer);
           origin_to_new_buffer_[buffer] = new_buffer;
-          vid_reduced_buffers_.insert(new_buffer);  // Track vid-reduced NEW buffer
         }
       }
     }
@@ -408,8 +385,8 @@ bool NeedsVidReduction(const Buffer &buffer) const {
 
   BufferLoad ModifyBufferLoadIndices(const BufferLoad &load, size_t ub_dims,
                                      const Buffer &ub_buf) {
-    // Check if the buffer is gm
     Buffer buf = load->buffer;
+    // If it's not a ub buffer, it could be L1/L0C. If it's not a GM buffer, no action is needed.
     if (buf.scope() != "global") {
       return load;
     }
@@ -455,7 +432,8 @@ bool NeedsVidReduction(const Buffer &buffer) const {
 
   // Extract buffer from access_ptr call argument
   // Only check origin_to_new_buffer_ keys (original buffers)
-  // because first->data == second->data == vid_reduced_buffers_[i]->data
+  // Note: origin_to_new_buffer_ keys and values share the same data (Var),
+  // so we can match by buffer.data
   Buffer ExtractBufferFromArg(const PrimExpr &arg) const {
     if (const CallNode *call = arg.as<CallNode>()) {
       if (call->op.same_as(builtin::tvm_access_ptr())) {
@@ -819,7 +797,7 @@ bool NeedsVidReduction(const Buffer &buffer) const {
     if (!only_one_ub) {
       return IRMutatorWithAnalyzer::VisitExpr_(op);
     }
-    // Locate the non-UB region(GM region) and modify the indices of its
+    // Locate the non-UB region and modify the indices of its
     // BufferLoad
     Buffer ub_buf = src_is_ub ? src_buf : dst_buf;
     Buffer gm_buf = src_is_ub ? dst_buf : src_buf;
@@ -908,12 +886,12 @@ bool NeedsVidReduction(const Buffer &buffer) const {
     // Record GM buffer offset info for later use in BlockNode reads/writes
     gm_buffer_offset_info_[gm_buf] = ub_buf;
 
-    // Refactor GM Region
     Call target_region =
-        src_is_ub ? dst_region : src_region; // target region is gm
+        src_is_ub ? dst_region : src_region;
     Array<PrimExpr> new_region_args = target_region->args;
     new_region_args.Set(0, VisitExpr(modified_load));
     for (size_t i = 1; i < new_region_args.size(); ++i) {
+      // If it's not a ub buffer, it could be L1/L0C. If it's not a GM buffer, no action is needed.
       if (i != new_region_args.size() - ub_dims || gm_buf.scope() != "global") {
         new_region_args.Set(i, VisitExpr(new_region_args[i]));
       } else {
@@ -952,9 +930,9 @@ bool NeedsVidReduction(const Buffer &buffer) const {
     Array<PrimExpr> new_copy_args = ascend_copy->args;
     if (src_is_ub) {
       new_copy_args.Set(0, VisitExpr(modified_ub_region)); // replace ub region
-      new_copy_args.Set(1, VisitExpr(modified_region));    // replace gm region
+      new_copy_args.Set(1, VisitExpr(modified_region));    // replace target region
     } else {
-      new_copy_args.Set(0, VisitExpr(modified_region));    // replace gm region
+      new_copy_args.Set(0, VisitExpr(modified_region));    // replace src region
       new_copy_args.Set(1, VisitExpr(modified_ub_region)); // replace ub region
     }
 
@@ -1087,10 +1065,10 @@ bool NeedsVidReduction(const Buffer &buffer) const {
 
   Stmt VisitStmt_(const ForNode *op) final {
     if (threads_cnt_ == 2) {
-      // Step 1: 分析判断是否需要 reduce（分析原始 body）
+      // Step 1: Analyze whether vid reduction is needed (analyze original body)
       bool need_reduce = LoopVarUsedInVidReducedUbFirstDim(op->loop_var, op->body);
       
-      // Step 2: 计算正确的 extent
+      // Step 2: Calculate the correct extent
       PrimExpr effective_extent = op->extent;
       if (need_reduce) {
         PrimExpr simplified = analyzer_->Simplify(op->extent);
@@ -1102,19 +1080,19 @@ bool NeedsVidReduction(const Buffer &buffer) const {
           effective_extent = indexdiv(op->extent, threads_cnt_);
         }
         
-        // Step 3: 只有被 vid reduce 的循环才加入 current_loops_
+        // Step 3: Only add vid-reduced loops to current_loops_
         current_loops_.push_back({op->loop_var, effective_extent});
       }
       
-      // Step 4: 处理循环体
+      // Step 4: Process the loop body
       Stmt new_body = VisitStmt(op->body);
       
-      // Step 5: 退出时 pop（如果之前 push 了）
+      // Step 5: Pop on exit (if previously pushed)
       if (need_reduce) {
         current_loops_.pop_back();
       }
 
-      // Step 6: 返回新的 ForNode
+      // Step 6: Return the new ForNode
       return For(op->loop_var, op->min, effective_extent, op->kind, new_body,
                  op->thread_binding, op->annotations);
     }
