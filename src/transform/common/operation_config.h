@@ -5,9 +5,10 @@
  * \file operation_config.h
  * \brief Operation configuration
  */
+#include <tvm/tir/op.h>
+
 #include <sstream>
 #include <string>
-#include <tvm/tir/op.h>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -345,6 +346,7 @@ const std::unordered_map<const tvm::OpNode *, int64_t> pto_tmp_arg_ops = {
     {tl::ascend_sigmoid().get(), 2},     {tl::ascend_pow().get(), 3},
     {tl::ascend_bitwise_xor().get(), 3}, {tl::ascend_round().get(), 2},
     {tl::ascend_broadcast().get(), 3},   {tl::ascend_merge_sort().get(), 3},
+    {tl::ascend_select().get(), 3},      {tl::ascend_gather_mask().get(), 4},
 };
 
 } // namespace tl
