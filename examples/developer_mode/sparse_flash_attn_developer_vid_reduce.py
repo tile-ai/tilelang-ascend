@@ -1,5 +1,5 @@
 import tilelang
-from tilelang import DataType, language as T
+from tilelang import language as T
 import torch
 
 torch.set_default_device("npu")
@@ -155,7 +155,7 @@ def sparse_attention_fwd(
 
                 T.copy(m_i, m_i_prev)
 
-                T.copy(workspace_3[cid, 0 : v_block, :], acc_s_ub_)
+                T.copy(workspace_3[cid, 0:v_block, :], acc_s_ub_)
 
                 for i, j in T.Parallel(v_block, BI):
                     acc_s_ub[i, j] = acc_s_ub[i, j] + acc_s_ub_[i, j]
@@ -185,9 +185,9 @@ def sparse_attention_fwd(
 
                 T.copy(acc_s_ub, acc_s_half)
 
-                T.copy(acc_s_half, workspace_4[cid, 0 : v_block, :])
+                T.copy(acc_s_half, workspace_4[cid, 0:v_block, :])
 
-                T.copy(workspace_5[cid, 0 : v_block, :], acc_o_ub)
+                T.copy(workspace_5[cid, 0:v_block, :], acc_o_ub)
 
                 for i, j in T.Parallel(v_block, D):
                     acc_o[i, j] += acc_o_ub[i, j]

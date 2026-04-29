@@ -18,8 +18,8 @@
 #include "../op/builtin.h"
 #include "./common/collector.h"
 
-#include <string>
 #include <sstream>
+#include <string>
 #include <unordered_set>
 
 namespace tvm {
@@ -33,12 +33,12 @@ public:
   static PrimFunc Substitute(PrimFunc f, PassContext ctx) {
     arith::Analyzer analyzer;
     AscendVidReduction substituter(&analyzer);
-    
+
     PrimFuncNode *fptr = f.CopyOnWrite();
-    
+
     // Apply transformation (buffers_skip_vid_reduction_ collected internally)
     fptr->body = substituter.VisitStmt(f->body);
-    
+
     // Store skip buffer names as PrimFunc attrs for downstream passes
     // Only set attrs if there are buffers to skip (avoid empty attrs)
     if (!substituter.buffers_skip_vid_reduction_.empty()) {
@@ -46,7 +46,7 @@ public:
       for (const Buffer &buf : substituter.buffers_skip_vid_reduction_) {
         skip_buffer_names.push_back(buf->name);
       }
-      
+
       Map<String, ObjectRef> attrs_map;
       if (fptr->attrs.defined()) {
         attrs_map = fptr->attrs->dict;
@@ -54,7 +54,7 @@ public:
       attrs_map.Set("buffers_skip_vid_reduction", skip_buffer_names);
       fptr->attrs = DictAttrs(attrs_map);
     }
-    
+
     return f;
   }
 
@@ -137,7 +137,7 @@ private:
     return new_extents;
   }
 
-// Check if indices directly contain BufferLoad from UB buffers
+  // Check if indices directly contain BufferLoad from UB buffers
   // BufferLoad appears directly in indices, not nested in expressions
   bool IndicesContainUbBufferLoad(
       const Array<PrimExpr> &indices,
@@ -153,7 +153,8 @@ private:
   }
 
   // Find loop variable dimension in GM indices (exact match only)
-  int FindLoopVarDimInGmIndices(const Array<PrimExpr> &indices, const Var &loop_var) {
+  int FindLoopVarDimInGmIndices(const Array<PrimExpr> &indices,
+                                const Var &loop_var) {
     for (size_t i = 0; i < indices.size(); i++) {
       if (const VarNode *v = indices[i].as<VarNode>()) {
         if (v == loop_var.get()) {
@@ -164,12 +165,14 @@ private:
     return -1;
   }
 
-  // Check if GM dimension needs vid offset (loop_extent * threads_cnt <= gm_dim_size)
-  bool GmDimNeedsVidOffset(const PrimExpr &gm_dim_size, const PrimExpr &loop_extent) {
+  // Check if GM dimension needs vid offset (loop_extent * threads_cnt <=
+  // gm_dim_size)
+  bool GmDimNeedsVidOffset(const PrimExpr &gm_dim_size,
+                           const PrimExpr &loop_extent) {
     PrimExpr total_extent = loop_extent * threads_cnt_;
     PrimExpr simplified_total = analyzer_->Simplify(total_extent);
     PrimExpr simplified_gm = analyzer_->Simplify(gm_dim_size);
-    
+
     return analyzer_->CanProve(simplified_total <= simplified_gm);
   }
 
@@ -263,12 +266,12 @@ private:
     }
   };
 
-bool NeedsVidReduction(const Buffer &buffer) const {
+  bool NeedsVidReduction(const Buffer &buffer) const {
     return IsUbBuffer(buffer) && buffers_skip_vid_reduction_.count(buffer) == 0;
   }
 
   void AnalyzeBlockBuffers(const Array<Buffer> &alloc_buffers,
-                            const Stmt &body) {
+                           const Stmt &body) {
     // First, collect UB buffers from current Block's alloc_buffers
     for (const Buffer &buffer : alloc_buffers) {
       if (IsUbBuffer(buffer)) {
@@ -386,7 +389,8 @@ bool NeedsVidReduction(const Buffer &buffer) const {
   BufferLoad ModifyBufferLoadIndices(const BufferLoad &load, size_t ub_dims,
                                      const Buffer &ub_buf) {
     Buffer buf = load->buffer;
-    // If it's not a ub buffer, it could be L1/L0C. If it's not a GM buffer, no action is needed.
+    // If it's not a ub buffer, it could be L1/L0C. If it's not a GM buffer, no
+    // action is needed.
     if (buf.scope() != "global") {
       return load;
     }
@@ -441,10 +445,11 @@ bool NeedsVidReduction(const Buffer &buffer) const {
         // buffer_data is usually at index 1
         if (call->args.size() >= 2) {
           if (const VarNode *var = call->args[1].as<VarNode>()) {
-            // Find buffer by data var in origin_to_new_buffer_ keys (original buffers)
+            // Find buffer by data var in origin_to_new_buffer_ keys (original
+            // buffers)
             for (const auto &pair : origin_to_new_buffer_) {
               if (pair.first->data.get() == var) {
-                return pair.first;  // Return original buffer
+                return pair.first; // Return original buffer
               }
             }
           }
@@ -554,41 +559,41 @@ bool NeedsVidReduction(const Buffer &buffer) const {
   // Modify tl.ascend_reduce: if buffer is vid-reduced, divide M dimension by 2
   PrimExpr ModifyAscendReduce(const CallNode *op) {
     Call ascend_reduce = GetRef<Call>(op);
-    
+
     // args[0]: string like "reduce_sum<float, 64, 64, -1>"
     // args[1]: out_ptr (tvm_access_ptr)
     // args[2]: buffer_ptr (tvm_access_ptr)
     // args[3]: tmp_ptr (tvm_access_ptr, optional)
-    
+
     // Extract buffer from args[2] (tvm_access_ptr)
     Buffer buffer = ExtractBufferFromArg(ascend_reduce->args[2]);
-    
+
     if (!buffer.defined()) {
       return IRMutatorWithAnalyzer::VisitExpr_(op);
     }
-    
+
     // Check if buffer is vid-reduced (only check origin_to_new_buffer_ keys)
     bool buffer_is_vid_reduced = origin_to_new_buffer_.count(buffer) > 0;
     if (!buffer_is_vid_reduced) {
       return IRMutatorWithAnalyzer::VisitExpr_(op);
     }
-    
+
     // Parse string parameter: "reduce_sum<float, 64, 64, -1>"
     if (!op->args[0].as<StringImmNode>()) {
       return IRMutatorWithAnalyzer::VisitExpr_(op);
     }
     StringImm param_str = Downcast<StringImm>(op->args[0]);
     std::string param = param_str->value;
-    
+
     // Find <...> part
     size_t start = param.find('<');
     size_t end = param.find('>');
     if (start == std::string::npos || end == std::string::npos) {
       return IRMutatorWithAnalyzer::VisitExpr_(op);
     }
-    
+
     std::string content = param.substr(start + 1, end - start - 1);
-    
+
     // Split by comma: dtype, M, N, dim
     std::vector<std::string> parts;
     std::stringstream ss(content);
@@ -596,25 +601,26 @@ bool NeedsVidReduction(const Buffer &buffer) const {
     while (std::getline(ss, part, ',')) {
       parts.push_back(part);
     }
-    
+
     if (parts.size() < 4) {
       return IRMutatorWithAnalyzer::VisitExpr_(op);
     }
-    
+
     // parts[0]: dtype (e.g., "float")
     // parts[1]: M (e.g., "64")
     // parts[2]: N (e.g., "64")
     // parts[3]: dim (e.g., "-1")
-    
+
     std::string dtype = parts[0];
     std::string M_str = parts[1];
     std::string N = parts[2];
     std::string dim = parts[3];
-    
+
     // Trim leading/trailing spaces
     auto trim = [](std::string s) -> std::string {
       size_t start = s.find_first_not_of(" \t");
-      if (start == std::string::npos) return std::string("");
+      if (start == std::string::npos)
+        return std::string("");
       size_t end = s.find_last_not_of(" \t");
       return s.substr(start, end - start + 1);
     };
@@ -622,7 +628,7 @@ bool NeedsVidReduction(const Buffer &buffer) const {
     M_str = trim(M_str);
     N = trim(N);
     dim = trim(dim);
-    
+
     // Try to parse M as integer
     long long M;
     try {
@@ -632,23 +638,25 @@ bool NeedsVidReduction(const Buffer &buffer) const {
       // Skip modification for symbolic M
       return IRMutatorWithAnalyzer::VisitExpr_(op);
     }
-    
+
     // Divide M by 2
     long long new_M = M / threads_cnt_;
-    if (new_M < 1) new_M = 1;
-    
+    if (new_M < 1)
+      new_M = 1;
+
     // Rebuild string: "reduce_sum<float, 32, 64, -1>"
-    std::string new_param = param.substr(0, start + 1) + dtype + ", " + 
+    std::string new_param = param.substr(0, start + 1) + dtype + ", " +
                             std::to_string(new_M) + ", " + N + ", " + dim + ">";
-    
+
     // Build new Call
     Array<PrimExpr> new_args = ascend_reduce->args;
     new_args.Set(0, StringImm(new_param));
     for (size_t i = 1; i < new_args.size(); ++i) {
       new_args.Set(i, VisitExpr(new_args[i]));
     }
-    
-    return Call(ascend_reduce->dtype, ascend_reduce->op, new_args, ascend_reduce->span);
+
+    return Call(ascend_reduce->dtype, ascend_reduce->op, new_args,
+                ascend_reduce->span);
   }
 
   PrimExpr VisitExpr_(const CallNode *op) final {
@@ -679,12 +687,13 @@ bool NeedsVidReduction(const Buffer &buffer) const {
         if (const IntImmNode *offset_imm = simplified_offset.as<IntImmNode>()) {
           offset_is_zero = (offset_imm->value == 0);
         }
-        
+
         if (!offset_is_zero) {
-          // offset != 0: accessing different positions in loop, no need to modify extent
+          // offset != 0: accessing different positions in loop, no need to
+          // modify extent
           return IRMutatorWithAnalyzer::VisitExpr_(op);
         }
-        
+
         // offset == 0: modify extent (args[3]) by dividing by threads_cnt_
         PrimExpr extent = op->args[3];
         PrimExpr simplified = analyzer_->Simplify(extent);
@@ -758,13 +767,15 @@ bool NeedsVidReduction(const Buffer &buffer) const {
           if (ExtentIsEqualOne(src_region_args[i])) {
             src_region_args.Set(i, VisitExpr(src_region_args[i]));
           } else {
-            src_region_args.Set(i, VisitExpr(indexdiv(src_region_args[i], threads_cnt_)));
+            src_region_args.Set(
+                i, VisitExpr(indexdiv(src_region_args[i], threads_cnt_)));
           }
         } else {
           src_region_args.Set(i, VisitExpr(src_region_args[i]));
         }
       }
-      Call modified_src_region = Call(src_region->dtype, src_region->op, src_region_args, src_region->span);
+      Call modified_src_region = Call(src_region->dtype, src_region->op,
+                                      src_region_args, src_region->span);
 
       // Refactor dst UB Region
       Array<PrimExpr> dst_region_args = dst_region->args;
@@ -774,13 +785,15 @@ bool NeedsVidReduction(const Buffer &buffer) const {
           if (ExtentIsEqualOne(dst_region_args[i])) {
             dst_region_args.Set(i, VisitExpr(dst_region_args[i]));
           } else {
-            dst_region_args.Set(i, VisitExpr(indexdiv(dst_region_args[i], threads_cnt_)));
+            dst_region_args.Set(
+                i, VisitExpr(indexdiv(dst_region_args[i], threads_cnt_)));
           }
         } else {
           dst_region_args.Set(i, VisitExpr(dst_region_args[i]));
         }
       }
-      Call modified_dst_region = Call(dst_region->dtype, dst_region->op, dst_region_args, dst_region->span);
+      Call modified_dst_region = Call(dst_region->dtype, dst_region->op,
+                                      dst_region_args, dst_region->span);
 
       // Refactor tl.ascend_copy
       Array<PrimExpr> new_copy_args = ascend_copy->args;
@@ -790,7 +803,8 @@ bool NeedsVidReduction(const Buffer &buffer) const {
         new_copy_args.Set(i, VisitExpr(new_copy_args[i]));
       }
 
-      return Call(ascend_copy->dtype, ascend_copy->op, new_copy_args, ascend_copy->span);
+      return Call(ascend_copy->dtype, ascend_copy->op, new_copy_args,
+                  ascend_copy->span);
     }
 
     bool only_one_ub = (src_is_ub && !dst_is_ub) || (!src_is_ub && dst_is_ub);
@@ -848,7 +862,7 @@ bool NeedsVidReduction(const Buffer &buffer) const {
           gm_region_args.Set(i, VisitExpr(gm_region_args[i]));
         }
         Call modified_gm_region = Call(gm_region->dtype, gm_region->op,
-                                        gm_region_args, gm_region->span);
+                                       gm_region_args, gm_region->span);
 
         // Refactor UB Region (no changes needed since UB was not vid-reduced)
         Call ub_region = src_is_ub ? src_region : dst_region;
@@ -857,7 +871,7 @@ bool NeedsVidReduction(const Buffer &buffer) const {
           ub_region_args.Set(i, VisitExpr(ub_region_args[i]));
         }
         Call modified_ub_region = Call(ub_region->dtype, ub_region->op,
-                                        ub_region_args, ub_region->span);
+                                       ub_region_args, ub_region->span);
 
         // Refactor tl.ascend_copy
         Array<PrimExpr> new_copy_args = ascend_copy->args;
@@ -886,12 +900,12 @@ bool NeedsVidReduction(const Buffer &buffer) const {
     // Record GM buffer offset info for later use in BlockNode reads/writes
     gm_buffer_offset_info_[gm_buf] = ub_buf;
 
-    Call target_region =
-        src_is_ub ? dst_region : src_region;
+    Call target_region = src_is_ub ? dst_region : src_region;
     Array<PrimExpr> new_region_args = target_region->args;
     new_region_args.Set(0, VisitExpr(modified_load));
     for (size_t i = 1; i < new_region_args.size(); ++i) {
-      // If it's not a ub buffer, it could be L1/L0C. If it's not a GM buffer, no action is needed.
+      // If it's not a ub buffer, it could be L1/L0C. If it's not a GM buffer,
+      // no action is needed.
       if (i != new_region_args.size() - ub_dims || gm_buf.scope() != "global") {
         new_region_args.Set(i, VisitExpr(new_region_args[i]));
       } else {
@@ -930,7 +944,7 @@ bool NeedsVidReduction(const Buffer &buffer) const {
     Array<PrimExpr> new_copy_args = ascend_copy->args;
     if (src_is_ub) {
       new_copy_args.Set(0, VisitExpr(modified_ub_region)); // replace ub region
-      new_copy_args.Set(1, VisitExpr(modified_region));    // replace target region
+      new_copy_args.Set(1, VisitExpr(modified_region)); // replace target region
     } else {
       new_copy_args.Set(0, VisitExpr(modified_region));    // replace src region
       new_copy_args.Set(1, VisitExpr(modified_ub_region)); // replace ub region
@@ -970,20 +984,23 @@ bool NeedsVidReduction(const Buffer &buffer) const {
   }
 
   // Check if loop variable is used in vid-reduced UB buffer's first dimension
-  // Analyze ORIGINAL body, check ORIGINAL buffers (keys in origin_to_new_buffer_)
-  // Two cases:
+  // Analyze ORIGINAL body, check ORIGINAL buffers (keys in
+  // origin_to_new_buffer_) Two cases:
   // 1. Loop var directly used as first index in BufferLoad/BufferStore
   // 2. Loop var used in tvm_access_ptr offset where offset/extent = loop_var
-  bool LoopVarUsedInVidReducedUbFirstDim(const Var &loop_var, const Stmt &body) {
+  bool LoopVarUsedInVidReducedUbFirstDim(const Var &loop_var,
+                                         const Stmt &body) {
     class LoopVarAnalyzer : public StmtExprVisitor {
     public:
       Var target_var;
       arith::Analyzer *analyzer;
-      const std::unordered_map<Buffer, Buffer, ObjectPtrHash, ObjectPtrEqual> &origin_to_new_buffer;
+      const std::unordered_map<Buffer, Buffer, ObjectPtrHash, ObjectPtrEqual>
+          &origin_to_new_buffer;
       bool found = false;
 
       LoopVarAnalyzer(const Var &var, arith::Analyzer *a,
-                      const std::unordered_map<Buffer, Buffer, ObjectPtrHash, ObjectPtrEqual> &buffers)
+                      const std::unordered_map<Buffer, Buffer, ObjectPtrHash,
+                                               ObjectPtrEqual> &buffers)
           : target_var(var), analyzer(a), origin_to_new_buffer(buffers) {}
 
       void VisitExpr_(const BufferLoadNode *op) final {
@@ -1030,18 +1047,21 @@ bool NeedsVidReduction(const Buffer &buffer) const {
                   break;
                 }
               }
-              
-              // buffer.defined() implies buffer is vid-reduced UB (checked during BlockNode processing)
+
+              // buffer.defined() implies buffer is vid-reduced UB (checked
+              // during BlockNode processing)
               if (buffer.defined()) {
                 // Get offset and extent from access_ptr
                 PrimExpr offset = op->args[2];
                 PrimExpr extent = op->args[3];
-                
+
                 PrimExpr simplified_extent = analyzer->Simplify(extent);
-                if (const IntImmNode *extent_imm = simplified_extent.as<IntImmNode>()) {
+                if (const IntImmNode *extent_imm =
+                        simplified_extent.as<IntImmNode>()) {
                   if (extent_imm->value != 0) {
                     // Check if offset / extent simplifies to loop_var
-                    PrimExpr division = analyzer->Simplify(indexdiv(offset, extent));
+                    PrimExpr division =
+                        analyzer->Simplify(indexdiv(offset, extent));
                     if (const VarNode *v = division.as<VarNode>()) {
                       if (v == target_var.get()) {
                         found = true;
@@ -1066,27 +1086,29 @@ bool NeedsVidReduction(const Buffer &buffer) const {
   Stmt VisitStmt_(const ForNode *op) final {
     if (threads_cnt_ == 2) {
       // Step 1: Analyze whether vid reduction is needed (analyze original body)
-      bool need_reduce = LoopVarUsedInVidReducedUbFirstDim(op->loop_var, op->body);
-      
+      bool need_reduce =
+          LoopVarUsedInVidReducedUbFirstDim(op->loop_var, op->body);
+
       // Step 2: Calculate the correct extent
       PrimExpr effective_extent = op->extent;
       if (need_reduce) {
         PrimExpr simplified = analyzer_->Simplify(op->extent);
         if (const IntImmNode *int_imm = simplified.as<IntImmNode>()) {
           int64_t new_value = int_imm->value / threads_cnt_;
-          if (new_value < 1) new_value = 1;
+          if (new_value < 1)
+            new_value = 1;
           effective_extent = IntImm(op->extent.dtype(), new_value);
         } else {
           effective_extent = indexdiv(op->extent, threads_cnt_);
         }
-        
+
         // Step 3: Only add vid-reduced loops to current_loops_
         current_loops_.push_back({op->loop_var, effective_extent});
       }
-      
+
       // Step 4: Process the loop body
       Stmt new_body = VisitStmt(op->body);
-      
+
       // Step 5: Pop on exit (if previously pushed)
       if (need_reduce) {
         current_loops_.pop_back();
