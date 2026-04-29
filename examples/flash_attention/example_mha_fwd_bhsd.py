@@ -1,5 +1,5 @@
 import tilelang
-from tilelang import DataType, language as T
+import tilelang.language as T
 import torch
 import argparse
 
