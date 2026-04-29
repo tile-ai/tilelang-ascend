@@ -27,7 +27,8 @@ def flash_attention_fwd(batch, heads, seq_len, dim):
 
     shape = [batch, heads, seq_len, dim]
 
-    block_num = seq_len // block_M * heads * batch
+    m_num = T.ceildiv(seq_len, block_M)
+    block_num = m_num * heads * batch
 
     @T.prim_func
     def main(
@@ -40,9 +41,9 @@ def flash_attention_fwd(batch, heads, seq_len, dim):
         workspace_3: T.Tensor([block_num, block_M, dim], accum_dtype),
     ):
         with T.Kernel(block_num, is_npu=True) as (cid, vid):
-            bx = cid % (seq_len // block_M)
-            by = cid // (seq_len // block_M) % heads
-            bz = cid // (seq_len // block_M) // heads % batch
+            bx = cid % m_num
+            by = cid // m_num % heads
+            bz = cid // m_num // heads % batch
 
             q_l1 = T.alloc_L1([block_M, dim], dtype)
             k_l1 = T.alloc_L1([block_N, dim], dtype)
