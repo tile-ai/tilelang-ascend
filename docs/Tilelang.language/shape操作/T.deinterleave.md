@@ -21,6 +21,7 @@ T.deinterleave(src, *dsts, channel_nums=2, index_mode="ALL_CHANNELS", size=[])
 | `size`         | `List[int]` | `[]`             | 源张量参与运算区域形状        |
 
 约束：
+
 - `src` 和 `*dsts` 应具有相同的数据类型
 - `src` 的最后一维必须能被 `channel_nums` 整除
 - `index_mode` 参数候选列表如下： `"CHANNEL_0", "CHANNEL_1", "ALL_CHANNELS"`
@@ -46,7 +47,7 @@ T.deinterleave(src, *dsts, channel_nums=2, index_mode="ALL_CHANNELS", size=[])
 以下示例实现了将源张量 `Input` 解交织到两个目的张量中：
 
 ```python
-@tilelang.jit(target='npuir')
+@tilelang.jit(target="npuir")
 def deinterleave_c2(M, N, block_M, dtype="float16"):
     assert N % 2 == 0
     m_num = M // block_M
@@ -54,9 +55,9 @@ def deinterleave_c2(M, N, block_M, dtype="float16"):
 
     @T.prim_func
     def main(
-            Input: T.Tensor((M, N), dtype),
-            Output0: T.Tensor((M, N_half), dtype),
-            Output1: T.Tensor((M, N_half), dtype),
+        Input: T.Tensor((M, N), dtype),
+        Output0: T.Tensor((M, N_half), dtype),
+        Output1: T.Tensor((M, N_half), dtype),
     ):
         with T.Kernel(m_num, is_npu=True) as (cid, _):
             offset = cid * block_M
@@ -65,10 +66,10 @@ def deinterleave_c2(M, N, block_M, dtype="float16"):
             ub_output0 = T.alloc_ub((block_M, N_half), dtype)
             ub_output1 = T.alloc_ub((block_M, N_half), dtype)
 
-            T.copy(Input[offset:offset + block_M, :], ub_input)
+            T.copy(Input[offset : offset + block_M, :], ub_input)
             T.deinterleave(ub_input, ub_output0, ub_output1, channel_nums=2)
-            T.copy(ub_output0, Output0[offset:offset + block_M, :])
-            T.copy(ub_output1, Output1[offset:offset + block_M, :])
+            T.copy(ub_output0, Output0[offset : offset + block_M, :])
+            T.copy(ub_output1, Output1[offset : offset + block_M, :])
 
     return main
 ```

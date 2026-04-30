@@ -4,7 +4,7 @@
 
 简介：`tilelang.language.vshr` 对输入张量`A`执行按位右移（bitwise right shift），移位位数由另一个输入`B`指定，结果写入输出`C`
 
-```
+```python
 T.vshr(A, B, C)
 ```
 
@@ -41,14 +41,10 @@ T.vshr(A, B, C)
 
 示例1：B和A有相同的shape
 
-```
-import torch
-import torch_npu
-import tilelang
-import tilelang.language as T
-
+```python
+@tilelang.jit(target="npuir")
 def vshr_kernel(M, N, dtype):
-    BLOCK_SIZE=1
+    BLOCK_SIZE = 1
 
     @T.prim_func
     def main(
@@ -57,9 +53,8 @@ def vshr_kernel(M, N, dtype):
         Out: T.Tensor((N,), dtype),
     ):
         with T.Kernel(BLOCK_SIZE, is_npu=True) as (cid, _):
-
-            acc_A  = T.alloc_shared((N,), dtype)
-            acc_B  = T.alloc_shared((N,), dtype)
+            acc_A = T.alloc_shared((N,), dtype)
+            acc_B = T.alloc_shared((N,), dtype)
             out_ub = T.alloc_shared((N,), dtype)
 
             T.copy(A, acc_A)
@@ -73,7 +68,7 @@ def vshr_kernel(M, N, dtype):
 
 示例2：B是标量
 
-```
+```python
 def vshr_kernel(M, N):
     BLOCK_SIZE=1
 

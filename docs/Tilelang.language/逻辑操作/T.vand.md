@@ -38,17 +38,17 @@ def vec_and(block_M, block_N, dtype="float16"):
 
     @T.prim_func
     def main(
-            A: T.Tensor((block_M, block_N), dtype),
-			B: T.Tensor((block_M, block_N), dtype),
-            C: T.Tensor((block_M, block_N), dtype),
+        A: T.Tensor((block_M, block_N), dtype),
+        B: T.Tensor((block_M, block_N), dtype),
+        C: T.Tensor((block_M, block_N), dtype),
     ):
         with T.Kernel(BLOCK_SIZE, is_npu=True) as (cid, _):
             A_VEC = T.alloc_ub((block_M, block_N), dtype)
-	        B_VEC = T.alloc_ub((block_M, block_N), dtype)
+            B_VEC = T.alloc_ub((block_M, block_N), dtype)
             C_VEC = T.alloc_ub((block_M, block_N), dtype)
 
             T.copy(A, A_VEC)
-	        T.copy(B, B_VEC)
+            T.copy(B, B_VEC)
             T.vand(A_VEC, B_VEC, C_VEC)
             T.copy(C_VEC, C)
 

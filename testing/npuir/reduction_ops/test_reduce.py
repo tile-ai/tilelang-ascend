@@ -12,11 +12,11 @@ DTYPES = ["float16"]
 ACCUM_DTYPES = ["float16"]
 
 
-def row_reduce_sum_exp(M, N, block_M, dtype, accum_dtype):
+def row_reduce_sum_exp_combined(M, N, block_M, dtype, accum_dtype):
     BLOCK_SIZE = 1
 
     @T.prim_func
-    def rowReduceSumExp(
+    def rowReduceSumExpCombined(
         A: T.Tensor((M, N), dtype),
         B: T.Tensor((M, N), dtype),
         C: T.Tensor((M, N), dtype),
@@ -39,14 +39,14 @@ def row_reduce_sum_exp(M, N, block_M, dtype, accum_dtype):
             T.reduce(d, s, dims=1, reduce_mode="sum", clear=False)
             T.copy(s, O)
 
-    return rowReduceSumExp
+    return rowReduceSumExpCombined
 
 
-def row_reduce_sum_dev(M, N, block_M, dtype, accum_dtype):
+def row_reduce_sum_dev_combined(M, N, block_M, dtype, accum_dtype):
     BLOCK_SIZE = 1
 
     @T.prim_func
-    def rowReduceSumDev(
+    def rowReduceSumDevCombined(
         A: T.Tensor((M, N), dtype),
         B: T.Tensor((M, N), dtype),
         C: T.Tensor((M, N), dtype),
@@ -69,7 +69,7 @@ def row_reduce_sum_dev(M, N, block_M, dtype, accum_dtype):
             T.reduce(d, s, dims=1, reduce_mode="sum", clear=False)
             T.copy(s, O)
 
-    return rowReduceSumDev
+    return rowReduceSumDevCombined
 
 
 def _ref_row_reduce(A, B, C, D):
@@ -83,8 +83,10 @@ def _ref_row_reduce(A, B, C, D):
 
 @pytest.mark.op("reduce")
 @pytest.mark.mode("Developer")
-@pytest.mark.parametrize("dtype,accum_dtype", list(zip(DTYPES, ACCUM_DTYPES)))
-def test_row_reduce_sum_dev(dtype, accum_dtype):
+@pytest.mark.parametrize(
+    "dtype,accum_dtype", list(zip(DTYPES, ACCUM_DTYPES, strict=True))
+)
+def test_row_reduce_sum_dev_t(dtype, accum_dtype):
     M, N = 16, 16
     shape = (M, N)
     shape2 = (M, 1)
@@ -95,7 +97,9 @@ def test_row_reduce_sum_dev(dtype, accum_dtype):
     O = gen_tensor(shape2, accum_dtype, kind="zeros")
     ref = _ref_row_reduce(A.cpu(), B.cpu(), C.cpu(), D.cpu())
 
-    func = row_reduce_sum_dev(M=M, N=N, block_M=32, dtype=dtype, accum_dtype=accum_dtype)
+    func = row_reduce_sum_dev_combined(
+        M=M, N=N, block_M=32, dtype=dtype, accum_dtype=accum_dtype
+    )
     compiled = tilelang.compile(func, target="npuir")
     compiled(A, B, C, D, O)
 
@@ -104,8 +108,10 @@ def test_row_reduce_sum_dev(dtype, accum_dtype):
 
 @pytest.mark.op("reduce")
 @pytest.mark.mode("Expert")
-@pytest.mark.parametrize("dtype,accum_dtype", list(zip(DTYPES, ACCUM_DTYPES)))
-def test_row_reduce_sum_exp(dtype, accum_dtype):
+@pytest.mark.parametrize(
+    "dtype,accum_dtype", list(zip(DTYPES, ACCUM_DTYPES, strict=True))
+)
+def test_row_reduce_sum_exp_t(dtype, accum_dtype):
     M, N = 16, 16
     shape = (M, N)
     shape2 = (M, 1)
@@ -116,7 +122,9 @@ def test_row_reduce_sum_exp(dtype, accum_dtype):
     O = gen_tensor(shape2, accum_dtype, kind="zeros")
     ref = _ref_row_reduce(A.cpu(), B.cpu(), C.cpu(), D.cpu())
 
-    func = row_reduce_sum_exp(M=M, N=N, block_M=32, dtype=dtype, accum_dtype=accum_dtype)
+    func = row_reduce_sum_exp_combined(
+        M=M, N=N, block_M=32, dtype=dtype, accum_dtype=accum_dtype
+    )
     compiled = tilelang.compile(func, target="npuir")
     compiled(A, B, C, D, O)
 

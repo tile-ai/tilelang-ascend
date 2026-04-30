@@ -16,7 +16,7 @@ pytestmark = [
 DTYPES = ["float16"]
 
 
-def vec_brc(M, N, K, block_M, block_N):
+def vec_brc_exp(M, N, K, block_M, block_N):
     m_num = M // block_M
     n_num = N // block_N
     dtype = "float16"
@@ -42,13 +42,13 @@ def vec_brc(M, N, K, block_M, block_N):
 
 
 @pytest.mark.parametrize("dtype", DTYPES)
-def test_vec_brc(dtype):
+def test_vec_brc_exp(dtype):
     M, N, K = 512, 512, 512
     shape = (M, K)
     a = gen_tensor(shape, dtype, kind="randn")
     ref = torch.full(shape, 3.0, dtype=torch.float16, device="npu")
 
-    func = vec_brc(M=M, N=N, K=K, block_M=128, block_N=256)
+    func = vec_brc_exp(M=M, N=N, K=K, block_M=128, block_N=256)
     compiled = tilelang.compile(func, target="npuir")
     compiled(a)
 

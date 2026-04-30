@@ -798,6 +798,8 @@ mlir::Value CodeGenTileLangNPUIRAPI::GenRankReducedSubviewFromRegion(
     extent stores the shape or size of region
     min stores the offset of the region
   */
+  ICHECK(!range.empty())
+      << "GenRankReducedSubviewFromRegion requires a non-scalar region.";
   Array<PrimExpr> region_shape, region_indices;
   for (Range r : range) {
     region_shape.push_back(r.get()->extent);
@@ -834,42 +836,45 @@ mlir::Value CodeGenTileLangNPUIRAPI::GenRankReducedSubviewFromRegion(
 
   auto baseTy = v_value.getType().cast<mlir::MemRefType>();
 
-  // Build projected reduced shape by dropping static-1 dims from slice sizes.
-  // When min_rank > 0, keep leading static-1 dims as needed to satisfy the
-  // minimum rank requirement. This ensures GM operands for Cube nd2nz/fixpipe
-  // maintain consistent rank (2D) across all calls in the same function.
-
-  // 1. Count non-static-1 dims
   int numNonStatic1 = 0;
   for (auto ofr : sizes) {
     if (!IsStaticIntOFR(ofr, 1))
       numNonStatic1++;
   }
-  // 2. How many static-1 dims must we keep to satisfy min_rank?
+  int totalStatic1 = sizes.size() - numNonStatic1;
   int static1ToKeep = std::max(0, min_rank - numNonStatic1);
+  int static1ToDrop = std::max(0, totalStatic1 - static1ToKeep);
 
-  // 3. Build projected shape, keeping leading static-1 dims as needed
+  // Track keptDims explicitly; `inferRankReducedResultType`'s heuristic is
+  // ambiguous when sizes have multiple static-1 extents (e.g. [1,64,1] ->
+  // [64,1] vs [1,64]). Drop leading 1s, keep trailing ones.
   llvm::SmallVector<int64_t> projectedReducedShape;
+  llvm::SmallVector<unsigned> keptDims;
   projectedReducedShape.reserve(sizes.size());
-  int static1Kept = 0;
-  for (auto ofr : sizes) {
+  keptDims.reserve(sizes.size());
+  int static1Dropped = 0;
+  for (unsigned i = 0; i < sizes.size(); ++i) {
+    auto ofr = sizes[i];
     if (IsStaticIntOFR(ofr, 1)) {
-      if (static1Kept < static1ToKeep) {
-        projectedReducedShape.push_back(1);
-        static1Kept++;
+      if (static1Dropped < static1ToDrop) {
+        static1Dropped++;
+        continue;
       }
-      continue; // drop this static-1 dim
+      projectedReducedShape.push_back(1);
+      keptDims.push_back(i);
+      continue;
     }
-    // non-static-1 dim: always keep
+    keptDims.push_back(i);
     if (auto attr = ofr.dyn_cast<mlir::Attribute>()) {
       projectedReducedShape.push_back(attr.cast<mlir::IntegerAttr>().getInt());
     } else {
       projectedReducedShape.push_back(mlir::ShapedType::kDynamic);
     }
   }
-  // Fallback: if all dims are static-1 and min_rank <= 1, keep one dim=1
+  // memref rank must be >= 1; reinstate the trailing dim if all were dropped.
   if (projectedReducedShape.empty()) {
     projectedReducedShape.push_back(1);
+    keptDims.push_back(static_cast<unsigned>(sizes.size()) - 1);
   }
 
   // Fast path: only reuse the original memref when no rank reduction is needed.
@@ -880,10 +885,33 @@ mlir::Value CodeGenTileLangNPUIRAPI::GenRankReducedSubviewFromRegion(
     return v_value;
   }
 
-  // Infer the rank-reduced memref type and create the SubViewOp.
-  auto reducedTy = mlir::memref::SubViewOp::inferRankReducedResultType(
-                       projectedReducedShape, baseTy, offsets, sizes, strides)
-                       .cast<mlir::MemRefType>();
+  // Project the full-rank inferred type through `keptDims` ourselves so the
+  // kept dimensions are explicit rather than heuristic-inferred.
+  auto fullSubviewTy =
+      mlir::memref::SubViewOp::inferResultType(baseTy, offsets, sizes, strides)
+          .cast<mlir::MemRefType>();
+  mlir::MemRefType reducedTy;
+  if (static_cast<int64_t>(keptDims.size()) == fullSubviewTy.getRank()) {
+    reducedTy = fullSubviewTy;
+  } else {
+    auto fullLayout =
+        fullSubviewTy.getLayout().dyn_cast<mlir::StridedLayoutAttr>();
+    ICHECK(fullLayout)
+        << "rank-reduced subview requires a strided base layout.";
+    llvm::SmallVector<int64_t> keptShape;
+    llvm::SmallVector<int64_t> keptStrides;
+    keptShape.reserve(keptDims.size());
+    keptStrides.reserve(keptDims.size());
+    for (unsigned d : keptDims) {
+      keptShape.push_back(fullSubviewTy.getShape()[d]);
+      keptStrides.push_back(fullLayout.getStrides()[d]);
+    }
+    auto reducedLayout = mlir::StridedLayoutAttr::get(
+        baseTy.getContext(), fullLayout.getOffset(), keptStrides);
+    reducedTy =
+        mlir::MemRefType::get(keptShape, fullSubviewTy.getElementType(),
+                              reducedLayout, fullSubviewTy.getMemorySpace());
+  }
 
   return builder.create<mlir::memref::SubViewOp>(
       builder.getUnknownLoc(), reducedTy, v_value, offsets, sizes, strides);
@@ -1888,25 +1916,17 @@ void CodeGenTileLangNPUIRAPI::BitcastCodegen(const CallNode *op) {
 }
 
 mlir::Value
-CodeGenTileLangNPUIRAPI::GenMemrefLoadFromRegion(const BufferLoadNode *op) {
-  auto buffer = op->buffer;
-  auto indices = op->indices;
-
-  // Check pre-conditions
-  if (op->dtype.lanes() != 1) {
-    LOG(FATAL) << "lanes not one";
-  }
-  if (op->dtype != buffer->dtype) {
-    LOG(FATAL) << "The load type and buffer element type do not match";
-  }
-
+CodeGenTileLangNPUIRAPI::GenMemrefLoadFromRegion(Buffer buffer_data,
+                                                 Array<Range> range) {
   // Convert buffer from Buffer in TIR 2 memref in MLIR
-  auto mem = GetVarValue(buffer->data.get());
+  auto mem = GetVarValue(buffer_data->data.get());
 
   // Convert index from PrimExpr in TIR 2 index type in MLIR
   SmallVector<mlir::Value> convert_inds;
-  for (auto index : indices) {
-    mlir::Value indexVal = CreateIndexCastOp(MakeValue(index));
+  for (auto r : range) {
+    ICHECK(analyzer_->CanProveEqual(r->extent, 1))
+        << "Extent of range must be 1 or the memref.load should not be used.";
+    mlir::Value indexVal = CreateIndexCastOp(MakeValue(r->min));
     convert_inds.push_back(indexVal);
   }
 
@@ -1917,59 +1937,107 @@ CodeGenTileLangNPUIRAPI::GenMemrefLoadFromRegion(const BufferLoadNode *op) {
 
 template <typename T>
 void CodeGenTileLangNPUIRAPI::CreateHIVMBinaryVectorOp(const CallNode *op) {
-  auto processImm = [&](mlir::Value &src, int arg_id,
-                        Array<PrimExpr> &buffer_shape) {
-    if (op->args[arg_id].as<IntImm>() || op->args[arg_id].as<FloatImm>() ||
-        op->args[arg_id].as<tir::VarNode>()) {
+  tvm::tl::NpuirBinaryOperator binaryOp(op->args, this->vmap);
+  ICHECK(binaryOp.Dst().IsTensor())
+      << "The dst of a binary vector operator cannot be a scalar.";
+  // `enableScaler{Name}` is a flag used to determine whether to allow
+  // optimizing a 1x1 tensor into a scalar. If the Op does not accept this
+  // operand as a scalar or another operand is already a scalar, then this
+  // flag should be set to false.
+  bool enableScalerSrc0 = binaryOp.Src1().IsTensor();
+  if constexpr (T::template hasTrait<OpTrait::VectorOnlyTrait<0>::Impl>()) {
+    ICHECK(binaryOp.Src0().IsTensor())
+        << "The first operand of \"" << T::getOperationName().str()
+        << "\" cannot be a scalar.";
+    enableScalerSrc0 = false;
+  }
+  bool enableScalerSrc1 = binaryOp.Src0().IsTensor();
+  if constexpr (T::template hasTrait<OpTrait::VectorOnlyTrait<1>::Impl>()) {
+    ICHECK(binaryOp.Src1().IsTensor())
+        << "The second operand of \"" << T::getOperationName().str()
+        << "\" cannot be a scalar.";
+    enableScalerSrc1 = false;
+  }
+  ICHECK(binaryOp.Src0().IsTensor() || binaryOp.Src1().IsTensor())
+      << "Binary Vector Ops does not support cases where both input operands "
+         "are scalars.";
+  // src_dtype is used to unify the type of input operands.
+  DataType src_dtype;
+  if (binaryOp.Src0().IsTensor()) {
+    src_dtype = binaryOp.Src0().GetBuffer()->dtype;
+    if constexpr (T::template hasTrait<OpTrait::SameOperandsElementType>()) {
+      if (binaryOp.Src1().IsTensor()) {
+        ICHECK(src_dtype == binaryOp.Src1().GetBuffer()->dtype)
+            << "The element types of two operands should be the same for \""
+            << T::getOperationName().str() << '\"';
+      }
+    }
+  } else {
+    src_dtype = binaryOp.Src1().GetBuffer()->dtype;
+  }
+
+  mlir::Value src0, src1, dst;
+  llvm::ArrayRef<long int> shapeSrc0, shapeSrc1;
+  // rank_min is used to record the minimum rank of tensor type operands.
+  size_t rank_min = binaryOp.Dst().GetRanges().size();
+  auto PreProcessInput = [this, &rank_min, &src_dtype](
+                             mlir::Value &v, const tl::NpuirOperand &operand,
+                             const bool enableScaler) -> bool {
+    if (operand.IsScalar()) {
       // Scalar case
-      const CallNode *region_node = op->args[1 - arg_id].as<CallNode>();
-      const BufferLoadNode *buffer_load_node =
-          region_node->args[0].as<BufferLoadNode>();
-      if (op->args[arg_id]->dtype != buffer_load_node->buffer->dtype) {
-        src = ScalarConvertType(op->args[arg_id],
-                                buffer_load_node->buffer->dtype);
+      auto this_dtype = operand.GetExpr()->dtype;
+      if (this_dtype != src_dtype) {
+        v = ScalarConvertType(operand.GetExpr(), src_dtype);
       } else {
-        src = MakeValue(op->args[arg_id]);
+        v = MakeValue(operand.GetExpr());
       }
     } else {
       // Vector case
-      const CallNode *region_node = op->args[arg_id].as<CallNode>();
-      auto buffer_node = region_node->args[0].as<BufferLoadNode>();
-      buffer_shape = buffer_node->buffer->shape;
-      bool is_scalar_load = true;
-      for (int i = 0; i < buffer_shape.size(); i++) {
-        const IntImmNode *int_imm = region_node->args[2 + i].as<IntImmNode>();
-        if (!int_imm || int_imm->value != 1) {
-          is_scalar_load = false;
+      bool is_scalar_load = enableScaler;
+      for (auto arrRanges = operand.GetRanges(); auto range : arrRanges) {
+        if (!is_scalar_load) {
           break;
         }
+        if (!analyzer_->CanProveEqual(range->extent, 1)) {
+          is_scalar_load = false;
+        }
       }
-      const IntImmNode *int_imm = region_node->args[2].as<IntImmNode>();
-      // If load only one element, do not use memref.subview, use memref.load as
-      // a scalar
-      if (is_scalar_load && arg_id == 1) {
-        src = GenMemrefLoadFromRegion(buffer_node);
-        // clear buffer_shape to unable broadcast
-        buffer_shape.clear();
+      if (is_scalar_load) {
+        v = GenMemrefLoadFromRegion(operand.GetBuffer(), operand.GetRanges());
       } else {
-        src = GenSubviewFromRegion(region_node);
+        rank_min = std::min(rank_min, operand.GetRanges().size());
+        return true;
       }
     }
+    return false;
   };
-  // src0 src1
-  mlir::Value src0, src1;
-  Array<PrimExpr> buffer_shape0, buffer_shape1;
-  processImm(src0, 0, buffer_shape0);
-  processImm(src1, 1, buffer_shape1);
-  // dst
-  const CallNode *region_node_dst = op->args[2].as<CallNode>();
-  // Result will always be a vector. No need to add scalar check.
-  mlir::Value dst = GenSubviewFromRegion(region_node_dst);
+  auto ProcessTensor = [this, &rank_min](mlir::Value &v,
+                                         const tl::NpuirOperand &operand) {
+    if (rank_min != operand.GetRanges().size()) {
+      v = GenRankReducedSubviewFromRegion(operand.GetBuffer(),
+                                          operand.GetRanges(), rank_min);
+    } else {
+      v = GenSubviewFromRegion(operand.GetBuffer(), operand.GetRanges());
+    }
+  };
+  auto flag_src0_is_vec =
+      PreProcessInput(src0, binaryOp.Src0(), enableScalerSrc0);
+  auto flag_src1_is_vec =
+      PreProcessInput(src1, binaryOp.Src1(), enableScalerSrc1);
+  if (flag_src0_is_vec) {
+    ProcessTensor(src0, binaryOp.Src0());
+    shapeSrc0 = src0.getType().cast<MemRefType>().getShape();
+  }
+  if (flag_src1_is_vec) {
+    ProcessTensor(src1, binaryOp.Src1());
+    shapeSrc1 = src1.getType().cast<MemRefType>().getShape();
+  }
+  ProcessTensor(dst, binaryOp.Dst());
+
   // transpose
   mlir::DenseI64ArrayAttr transpose = builder.getDenseI64ArrayAttr({});
   // broadcast
-  llvm::SmallVector<int64_t> dims =
-      getBroadcastDim(buffer_shape0, buffer_shape1);
+  llvm::SmallVector<int64_t> dims = getBroadcastDim(shapeSrc0, shapeSrc1);
   mlir::DenseI64ArrayAttr broadcast = builder.getDenseI64ArrayAttr(dims);
   // Create hivm::op
   auto loc = builder.getUnknownLoc();

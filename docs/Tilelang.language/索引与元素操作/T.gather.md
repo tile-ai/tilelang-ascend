@@ -12,7 +12,6 @@ T.gather(src, dst, indices,[m,n])
 
 ### 2.1 参数说明
 
-
 | 参数名    | 类型         | 说明                     |
 | --------- | ------------ | ------------------------ |
 | `src`     | `tensor`     | 输入tensor               |
@@ -24,7 +23,6 @@ T.gather(src, dst, indices,[m,n])
 
 #### 2.2.1 DataType支持
 
-
 |        | uint8 | int8 | uint16 | int16 | uint32 | int32 | uint64 | int64 | fp16 | fp32 | bf16 | bool/int1 |
 | ------ | ----- | ---- | ------ | ----- | ------ | ----- | ------ | ----- | ---- | ---- | ---- | --------- |
 | Ascend | ×    | ×   | ×     | √    | ×     | √    | ×     | ×    | √   | √   | √   | ×        |
@@ -33,29 +31,24 @@ T.gather(src, dst, indices,[m,n])
 
 以下示例实现了对输入矩阵沿最后一维做gather操作，indices固定为1的结果。
 
-```markup
-import tilelang
-import tilelang.language as T
-
-dtype = "float16"
-
-def gather_dev(M, N):
+```python
+@tilelang.jit(target="npuir")
+def gather_dev(M, N, dtype="float16"):
     BLOCK_SIZE = 1
 
     @T.prim_func
     def main(
-            A: T.Tensor((M, N), dtype),
-            B: T.Tensor((M, N), dtype),
+        A: T.Tensor((M, N), dtype),
+        B: T.Tensor((M, N), dtype),
     ):
         with T.Kernel(BLOCK_SIZE, is_npu=True) as (cid, _):
-
             A_VEC = T.alloc_shared((M, N), dtype)
             B_VEC = T.alloc_shared((M, N), dtype)
             indices = T.alloc_shared((M, N), "int32")
             value_one = 1
             T.npuir_brc(value_one, indices)
             T.copy(A, A_VEC)
-            T.gather(A_VEC, B_VEC, indices, [M,N])
+            T.gather(A_VEC, B_VEC, indices, [M, N])
             T.copy(B_VEC, B)
 
     return main

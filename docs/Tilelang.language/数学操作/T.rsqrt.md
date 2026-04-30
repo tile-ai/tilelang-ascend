@@ -5,7 +5,7 @@
 简介：`tilelang.language.vrsqrt` 返回输入向量/标量基于输出形状的rsqrt计算结果
 rsqrt计算公式: 1/ x^0.5
 
-```
+```python
 T.vrsqrt(src, dst)
 ```
 
@@ -36,21 +36,15 @@ T.vrsqrt(src, dst)
 
 ### 2.4 使用方法
 
-```
-import torch
-import torch_npu
-import tilelang
-import tilelang.language as T
-
+```python
+@tilelang.jit(target="npuir")
 def rsqrt_kernel(M, N, dtype):
     BLOCK_SIZE = 1
 
     @T.prim_func
-    def main(src: T.Tensor((M, N), dtype),
-             dst: T.Tensor((M, N), dtype)):
+    def main(src: T.Tensor((M, N), dtype), dst: T.Tensor((M, N), dtype)):
 
         with T.Kernel(BLOCK_SIZE, is_npu=True) as (cid, _):
-
             src_ub = T.alloc_shared((M, N), dtype)
             dst_ub = T.alloc_shared((M, N), dtype)
 

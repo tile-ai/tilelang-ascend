@@ -17,6 +17,7 @@ Within the TileLang ecosystem, we have developed an NPU Intermediate Representat
 
 
 ## Latest News
+- 4/24/2026 🚀: Released DeepSeek V4 kernels [DeepSeek-V4](./examples/deepseek_v4)!
 - 3/28/2026 🚀: We provide a free environment to facilitate user experience and development for TileLang [Pull Request#708](https://github.com/tile-ai/tilelang-ascend/pull/708).
 
 - 1/23/2026 🚀: TileLang now supports CANN 8.5. Check out [Pull Request#334](https://github.com/tile-ai/tilelang-ascend/pull/334) and [Pull Request#346](https://github.com/tile-ai/tilelang-ascend/pull/346) for details!
@@ -102,11 +103,11 @@ export ACL_OP_INIT_MODE=1
 ```
   <!-- 注意：如果用户需要新的编译器安装包，请联系社区管理员zhaojiqiao@huawei.com,yangsichan@huawei.com TEL:15901269653 -->
 
-  Note: If you require a new compiler installation package, please contact the community administrators:  
-**zhaojiqiao@huawei.com**, **yangsichan@huawei.com**  
+  Note: If you require a new compiler installation package, please contact the community administrators:
+**zhaojiqiao@huawei.com**, **yangsichan@huawei.com**
 
 
-   
+
 
 #### Build
 
@@ -160,12 +161,12 @@ seq_len = 4096  # Length of the vectors to be added
 def vec_add(N, block_N, dtype="float32"):
     """
     Define a vector addition kernel using TileLang.
-    
+
     Parameters:
     - N: Total length of the vectors.
     - block_N: Number of elements processed per kernel thread/block.
     - dtype: Data type of the tensors (default: "float32").
-    
+
     Returns:
     - A TileLang prim_func representing the vector addition kernel.
     """
@@ -254,14 +255,14 @@ def matmul(M, N, K, block_M, block_N, block_K, dtype="float16", accum_dtype="flo
         C: T.Tensor((M, N), dtype), # Output matrix C
     ):
         with T.Kernel(T.ceildiv(N, block_N) * T.ceildiv(M, block_M), is_npu=True) as (cid, _):
-          
+
             by = cid // T.ceildiv(N, block_N) # Block row index
             bx = cid % T.ceildiv(N, block_N)  # Block column index
 
             # Alloc shared memory for inputs
             A_shared = T.alloc_shared((block_M, block_K), dtype)
             B_shared = T.alloc_shared((block_K, block_N), dtype)
-          
+
             # Alloc local fragment for accumulation
             C_local = T.alloc_fragment((block_M, block_N), accum_dtype)
 
@@ -270,7 +271,7 @@ def matmul(M, N, K, block_M, block_N, block_K, dtype="float16", accum_dtype="flo
                 # Copy the data from global memory to shared memory
                 T.copy(A[by * block_M, k * block_K], A_shared)
                 T.copy(B[k * block_K, bx * block_N], B_shared)
-              
+
                 # Perform matrix multiplication with accumulation
                 # If 'initC' is true, the result matrix will be initialized to zero before accumulation
                 T.gemm(A_shared, B_shared, C_local, initC=(k == 0))

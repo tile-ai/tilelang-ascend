@@ -14,7 +14,7 @@ DTYPES = ["int32"]
 BINARY_CASES = [(4, 32, 4)]
 
 
-def binary_kernel(M, N, block_M, op_name):
+def binary_bit_kernel(M, N, block_M, op_name):
     grid_M = (M + block_M - 1) // block_M
 
     @T.prim_func
@@ -31,7 +31,7 @@ def binary_kernel(M, N, block_M, op_name):
             T.copy(A, acc_A)
             T.copy(B, acc_B)
 
-            for i in T.serial(block_M):
+            for _i in T.serial(block_M):
                 if op_name == "max":
                     T.npuir_max(acc_A, acc_B, out_ub)
                 elif op_name == "min":
@@ -117,14 +117,18 @@ def run_binary_case(M, N, block_M, dtype, op_name):
     B = gen_tensor((N,), dtype, kind="randint", low=0, high=10)
 
     out_full = gen_tensor((N,), dtype, kind="zeros")
-    full_kernel = tilelang.compile(binary_kernel(M, N, block_M, op_name), target="npuir")
+    full_kernel = tilelang.compile(
+        binary_bit_kernel(M, N, block_M, op_name), target="npuir"
+    )
     full_kernel(A, B, out_full)
 
     expected_full = compute_expected(A.cpu(), B.cpu(), op_name)
     assert_close(out_full.cpu(), expected_full.cpu(), dtype=dtype)
 
     out_partial = gen_tensor((M, N), dtype, kind="zeros")
-    partial_kernel = tilelang.compile(binary_partial_kernel(M, N, block_M, op_name), target="npuir")
+    partial_kernel = tilelang.compile(
+        binary_partial_kernel(M, N, block_M, op_name), target="npuir"
+    )
     partial_kernel(A, B, out_partial)
 
     expected_partial = expected_full[None, :].expand(M, -1)

@@ -4,7 +4,7 @@
 
 简介：`tilelang.language.gemm` 返回输入tensor的矩阵乘计算结果
 
-```
+```python
 T.gemm(src1, src2, dst, size=[], initC=False, a_transpose=False, b_transpose=False) [Developer mode]
 T.npuir_dot(src1, src2, dst, size=[], initC=False, a_transpose=False, b_transpose=False) [Expert mode]
 ```
@@ -45,12 +45,8 @@ T.npuir_dot(src1, src2, dst, size=[], initC=False, a_transpose=False, b_transpos
 
 以下示例实现了一个形状为(M,K)的tensor和一个形状为(K,N)的tensor矩阵乘
 
-```
-import torch
-import torch_npu
-import tilelang
-import tilelang.language as T
-
+```python
+@tilelang.jit(target="npuir")
 def matmul(M, N, K, block_M, block_N, block_K, dtype="float16", accum_dtype="float32"):
     @T.prim_func
     def gemm(
@@ -58,7 +54,10 @@ def matmul(M, N, K, block_M, block_N, block_K, dtype="float16", accum_dtype="flo
         B: T.Tensor((K, N), dtype),
         C: T.Tensor((M, N), accum_dtype),
     ):
-        with T.Kernel(T.ceildiv(N, block_N) * T.ceildiv(M, block_M), is_npu=True) as (cid, _):
+        with T.Kernel(T.ceildiv(N, block_N) * T.ceildiv(M, block_M), is_npu=True) as (
+            cid,
+            _,
+        ):
             by = cid // T.ceildiv(N, block_N)
             bx = cid % T.ceildiv(N, block_N)
 
@@ -74,7 +73,6 @@ def matmul(M, N, K, block_M, block_N, block_K, dtype="float16", accum_dtype="flo
             T.copy(C_local, C[by * block_M, bx * block_N])
 
     return gemm
-
 ```
 
 ## 3. Tilelang Op到Ascend NPU IR Op的转换

@@ -1,5 +1,4 @@
 import torch
-import torch_npu
 import argparse
 import tilelang
 import tilelang.language as T
@@ -12,34 +11,38 @@ tilelang.cache.clear_cache()
 parser = argparse.ArgumentParser(description="NPU Kernel Compilation")
 parser.add_argument("--M", type=int, default=4, help="Size of dimension M")
 parser.add_argument("--N", type=int, default=4, help="Size of dimension N")
-parser.add_argument("--dim", type=int, default=0, help="Dimension to perform cumulative sum on")
-parser.add_argument("--reverse", action="store_true", help="Perform reverse cumulative sum")
+parser.add_argument(
+    "--dim", type=int, default=0, help="Dimension to perform cumulative sum on"
+)
+parser.add_argument(
+    "--reverse", action="store_true", help="Perform reverse cumulative sum"
+)
 
 dtype = "float16"
-accum_dtype = "float16"
+
 
 def cumsum_kernel(M, N, dim, reverse):
     BLOCK_SIZE = 1
 
     @T.prim_func
-    def main(src: T.Tensor((M, N), dtype),
-             dst: T.Tensor((M, N), accum_dtype)):
-        
+    def main(src: T.Tensor((M, N), dtype), dst: T.Tensor((M, N), dtype)):
+
         with T.Kernel(BLOCK_SIZE, is_npu=True) as (cid, _):
             # Allocate UB memory
             src_ub = T.alloc_ub((M, N), dtype)
-            dst_ub = T.alloc_ub((M, N), accum_dtype)
-            
+            dst_ub = T.alloc_ub((M, N), dtype)
+
             # Copy data from GM to UB
             T.copy(src, src_ub)
-            
+
             # Perform cumulative sum
             T.cumsum(src_ub, dst_ub, dim=dim, reverse=reverse)
-            
+
             # Copy results back to GM
             T.copy(dst_ub, dst)
-    
+
     return main
+
 
 def generate_tensor(shape, dtype, clear=False):
     """Generate a tensor"""
@@ -53,30 +56,27 @@ def generate_tensor(shape, dtype, clear=False):
         return torch.randint(low=0, high=127, size=shape, dtype=eval("torch." + dtype))
     if dtype == "bool":
         return torch.randint(low=0, high=2, size=shape).bool()
-    raise ValueError(f'Invalid dtype parameter: {dtype}')
+    raise ValueError(f"Invalid dtype parameter: {dtype}")
+
 
 def test_vec_cumsum():
-    os.environ['TILELANG_ASCEND_MODE'] = 'Expert'
+    os.environ["TILELANG_ASCEND_MODE"] = "Expert"
     main_args = parser.parse_args([])
     # Compile the cumsum kernel
-    func = cumsum_kernel(
-        main_args.M,
-        main_args.N,
-        main_args.dim,
-        main_args.reverse
-    )
-    kernel = tilelang.engine.lower(func, target='npuir')
+    func = cumsum_kernel(main_args.M, main_args.N, main_args.dim, main_args.reverse)
+    kernel = tilelang.engine.lower(func, target="npuir")
     curr_name = os.path.splitext(os.path.basename(__file__))[0][5:] + ".mlir"
     # Export to .mlir file
-    output_file = './output/' + curr_name
-    with open(output_file, 'w') as f:
+    output_file = "./output/" + curr_name
+    with open(output_file, "w") as f:
         f.write(kernel)
-    
+
     ref_file = "./mlir_files/" + curr_name
     # filecmp.cmp returns True if files are identical, False otherwise
-    are_identical = filecmp.cmp(output_file, ref_file , shallow=False)
+    are_identical = filecmp.cmp(output_file, ref_file, shallow=False)
     # assertion for pytest
     assert are_identical, f"'{output_file}' and '{ref_file}' are not identical"
+
 
 if __name__ == "__main__":
     test_vec_cumsum()

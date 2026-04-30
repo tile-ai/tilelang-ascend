@@ -17,7 +17,7 @@ pytestmark = [
 DTYPES = ["float16"]
 
 
-def vec_add(M, N, K, block_M, block_N, dtype="float16"):
+def vec_add_sync_exp(M, N, K, block_M, block_N, dtype="float16"):
     m_num = M // block_M
     n_num = N // block_N
 
@@ -58,7 +58,7 @@ def test_vec_add_manual_sync(dtype):
     C = gen_tensor((M, N), dtype, kind="randn")
     ref = torch.add(A.cpu(), B.cpu())
 
-    func = vec_add(M=M, N=N, K=K, block_M=128, block_N=256, dtype=dtype)
+    func = vec_add_sync_exp(M=M, N=N, K=K, block_M=128, block_N=256, dtype=dtype)
     compiled = tilelang.compile(func, target="npuir")
     compiled(A, B, C)
 

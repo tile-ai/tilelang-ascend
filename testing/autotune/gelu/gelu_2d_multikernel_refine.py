@@ -46,7 +46,7 @@ def run_single_shape(shape, log_dir: Path):
 
             def get_config():
                 arch = Ascend()
-                carver_template = carver.ElementwiseFixTemplate(
+                carver_template = carver.ElementwiseTemplate(
                     shape=[M, N],
                     dtype="float32",
                 ).with_arch(arch)

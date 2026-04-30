@@ -11,6 +11,56 @@ class AscendArch:
     def __init__(self, name: str):
         self.name = name
 
+        try:
+            from tilelang.utils import NPUUtils
+
+            npuutils = NPUUtils()
+            self.aicube_core_num = npuutils.get_aicube_core_num()
+            self.aivector_core_num = npuutils.get_aivector_core_num()
+
+        except Exception as e:
+            # We don't want to crash on non-Ascend machines, but silent pass is bad for debugging
+            logging.getLogger(__name__).warning(
+                f"Failed to get Ascend arch from NPUUtils: {e}. "
+                "Please set TILELANG_ASCEND_DEVICE_NAME environment variable."
+                "Otherwise we will fallback to Ascend910B."
+            )
+
+            self.aicube_core_num = 24
+            self.aivector_core_num = 48
+
+        chip_name_map = ["Ascend910A", "Ascend910B", "Ascend310P"]
+        if self.name not in chip_name_map:
+            self.name = "Ascend910B"
+
+        if self.name == "Ascend910A":
+            self.mem_cap = {
+                "UB": 256 * 1024,
+                "L1": 1024 * 1024,
+                "L0A": 64 * 1024,
+                "L0B": 64 * 1024,
+                "L0C": 256 * 1024,
+                "L2": 16 * 1024 * 1024,
+            }
+        elif self.name == "Ascend910B":
+            self.mem_cap = {
+                "UB": 192 * 1024,  # 910B UB size
+                "L1": 1024 * 1024,
+                "L0A": 64 * 1024,
+                "L0B": 64 * 1024,
+                "L0C": 512 * 1024,
+                "L2": 16 * 1024 * 1024,
+            }
+        elif self.name == "Ascend950":
+            self.mem_cap = {
+                "UB": 248 * 1024,
+                "L1": 512 * 1024,
+                "L0A": 64 * 1024,
+                "L0B": 64 * 1024,
+                "L0C": 256 * 1024,
+                "L2": 112 * 1024 * 1024,
+            }
+
     @property
     def supports_native_bf16(self) -> bool:
         # Currently, all supported chips require legalization for BF16.

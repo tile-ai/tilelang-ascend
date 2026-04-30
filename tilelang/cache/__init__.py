@@ -9,12 +9,12 @@ from tvm.tir import PrimFunc
 from tilelang.jit import JITKernel
 
 # from .kernel_cache import KernelCache
-from .tuner_cache import AutoTunerCache
+from .kernel_cache import KernelCache
 from tilelang import env
 
 # Create singleton instance of KernelCache
 # _kernel_cache_instance = KernelCache()
-_kernel_cache_instance = AutoTunerCache()
+_kernel_cache_instance = KernelCache()
 
 
 def cached(
@@ -35,11 +35,34 @@ def cached(
     return _kernel_cache_instance.cached(
         func,
         out_idx,
-        # workspace_idx,
+        workspace_idx,
         *args,
         target=target,
         target_host=target_host,
-        # platform=platform,
+        platform=platform,
+        execution_backend=execution_backend,
+        verbose=verbose,
+        pass_configs=pass_configs,
+    )
+
+
+def cached_npu(
+    func: PrimFunc = None,
+    out_idx: List[int] = None,
+    target: Union[str, Target] = "auto",
+    target_host: Union[str, Target] = None,
+    execution_backend: Optional[Literal["dlpack", "ctypes", "cython"]] = "cython",
+    verbose: Optional[bool] = True,
+    pass_configs: Optional[dict] = None,
+) -> JITKernel:
+    """
+    Caches and reuses compiled kerne(ls (using KernelCache class).
+    """
+    return _kernel_cache_instance.cached_npu(
+        func,
+        out_idx,
+        target=target,
+        target_host=target_host,
         execution_backend=execution_backend,
         verbose=verbose,
         pass_configs=pass_configs,

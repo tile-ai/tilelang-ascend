@@ -4,7 +4,7 @@
 
 简介： `tilelang.language.vLn`用于计算张量以欧拉数`e`为底的对数
 
-```
+```python
 T.vLn(src, dst)
 ```
 
@@ -36,15 +36,15 @@ T.vLn(src, dst)
 以下示例实现了计算输入张量`input`中每个元素以`e`为底的对数并输出到张量`output`中：
 
 ```python
-@tilelang.jit(target='npuir')
+@tilelang.jit(target="npuir")
 def vec_ln(M, N, block_M, block_N, dtype="float16"):
     m_num = M // block_M
     n_num = N // block_N
 
     @T.prim_func
     def main(
-            Input: T.Tensor((M, N), dtype),
-            Output: T.Tensor((M, N), dtype),
+        Input: T.Tensor((M, N), dtype),
+        Output: T.Tensor((M, N), dtype),
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, _):
             bx = cid // n_num

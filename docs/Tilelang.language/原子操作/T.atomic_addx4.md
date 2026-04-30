@@ -38,15 +38,18 @@ T.atomic_addx4(dst, src, size=[])
 
 以下示例展示了一个二维张量的原子加法计算：
 
-```
+```python
+@tilelang.jit(target="npuir")
 def run_atomic_addx4(M, N, block_M, block_N, dtype="float32"):
     m_num = M // block_M
     n_num = N // block_N
+
     @T.prim_func
     def atomicAddx4Program(
-            A: T.Tensor((M, N), dtype),
-            B: T.Tensor((M, N), dtype),
-            shape_M: T.int32, shape_N: T.int32,
+        A: T.Tensor((M, N), dtype),
+        B: T.Tensor((M, N), dtype),
+        shape_M: T.int32,
+        shape_N: T.int32,
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, _):
             blockx = cid // n_num
@@ -58,10 +61,9 @@ def run_atomic_addx4(M, N, block_M, block_N, dtype="float32"):
                 by = blocky * block_N + j * 4
 
                 T.copy(A[bx, by], A_VEC, [1, 4])
-                T.atomic_addx4(B[bx, by], A_VEC, [1, 4])            
+                T.atomic_addx4(B[bx, by], A_VEC, [1, 4])
 
     return atomicAddx4Program
-​
 ```
 
 ## 3. Tilelang Op到Ascend NPU IR Op的转换

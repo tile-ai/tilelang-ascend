@@ -22,7 +22,7 @@ def vec_atomic_add_1d(N, block_size, dtype="float32"):
     n_blocks = N // block_size
 
     @T.prim_func
-    def vecAtomicAdd1D(
+    def vecAtomicAdd1DDev(
         A: T.Tensor((N,), dtype),
         B: T.Tensor((N,), dtype),
         shape: T.int32,
@@ -32,10 +32,10 @@ def vec_atomic_add_1d(N, block_size, dtype="float32"):
             start = bid * block_size
             t0 = shape - start
             tail_size = T.min(block_size, t0)
-            T.copy(A[start:start + tail_size], A_VEC[0:tail_size])
+            T.copy(A[start : start + tail_size], A_VEC[0:tail_size])
             T.npuir_atomic_add(B[start], A_VEC, [tail_size])
 
-    return vecAtomicAdd1D
+    return vecAtomicAdd1DDev
 
 
 def vec_atomic_add_2d(M, N, block_M, block_N, dtype="float32"):
@@ -43,7 +43,7 @@ def vec_atomic_add_2d(M, N, block_M, block_N, dtype="float32"):
     n_num = N // block_N
 
     @T.prim_func
-    def vecAtomicAdd2D(
+    def vecAtomicAdd2DDev(
         A: T.Tensor((M, N), dtype),
         B: T.Tensor((M, N), dtype),
         shape_M: T.int32,
@@ -62,12 +62,12 @@ def vec_atomic_add_2d(M, N, block_M, block_N, dtype="float32"):
             t0 = shape_N - by
             tile_size_N = T.min(block_N, t0)
             T.copy(
-                A[bx:bx + tile_size_M, by:by + tile_size_N],
+                A[bx : bx + tile_size_M, by : by + tile_size_N],
                 A_VEC[0:tile_size_M, 0:tile_size_N],
             )
             T.npuir_atomic_add(B[bx, by], A_VEC, [tile_size_M, tile_size_N])
 
-    return vecAtomicAdd2D
+    return vecAtomicAdd2DDev
 
 
 @pytest.mark.parametrize("dtype", DTYPES)

@@ -4,7 +4,7 @@
 
 简介：`tilelang.language.Parallel` 实现并行语义，循环体内要求标量计算。
 
-```
+```python
 T.Parallel(ub_0, ub_1, ...,  ub_N)
 ```
 
@@ -43,15 +43,18 @@ T.Parallel(ub_0, ub_1, ...,  ub_N)
 以下示例实现了一个形状为(M,N)的tensor的并行加法计算
 
 ```python
-@tilelang.jit(out_idx=[-1], target="npuir")
+@tilelang.jit(target="npuir")
 def elementwise_add(M, N, block_M, block_N, in_dtype="float32", out_dtype="float32"):
     @T.prim_func
     def elemAdd(
-            A: T.Tensor((M, N), in_dtype),
-            B: T.Tensor((M, N), in_dtype),
-            C: T.Tensor((M, N), out_dtype)
+        A: T.Tensor((M, N), in_dtype),
+        B: T.Tensor((M, N), in_dtype),
+        C: T.Tensor((M, N), out_dtype),
     ):
-        with T.Kernel(T.ceildiv(N, block_N) * T.ceildiv(M, block_M), is_npu=True) as (cid, _):
+        with T.Kernel(T.ceildiv(N, block_N) * T.ceildiv(M, block_M), is_npu=True) as (
+            cid,
+            _,
+        ):
             by = cid // T.ceildiv(N, block_N)
             bx = cid % T.ceildiv(N, block_N)
             A_shared = T.alloc_shared((block_M, block_N), in_dtype)
@@ -61,8 +64,11 @@ def elementwise_add(M, N, block_M, block_N, in_dtype="float32", out_dtype="float
             T.copy(A[by * block_M, bx * block_N], A_shared)
             T.copy(B[by * block_M, bx * block_N], B_shared)
             for local_y, local_x in T.Parallel(block_M, block_N):
-                C_local[local_y, local_x] = A_shared[local_y, local_x] + B_shared[local_y, local_x]
+                C_local[local_y, local_x] = (
+                    A_shared[local_y, local_x] + B_shared[local_y, local_x]
+                )
             T.copy(C_local, C_shared)
             T.copy(C_shared, C[by * block_M, bx * block_N])
+
     return elemAdd
 ```

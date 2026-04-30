@@ -4,7 +4,7 @@
 
 简介：`tilelang.language.mul` 返回给定向量/变量的乘法计算结果
 
-```
+```python
 T.vmul(src1, src2, dst)
 ```
 
@@ -48,19 +48,16 @@ T.vmul(src1, src2, dst)
 
 以下示例展示了两个形状为(M,N)的输入tensor进行mul计算：
 
-```
-import torch
-import torch_npu
-import tilelang
-import tilelang.language as T
+```python
+@tilelang.jit(target="npuir")
 def vec_mul(M, N, dtype):
     BLOCK_SIZE = 20
 
     @T.prim_func
     def main(
-            A: T.Tensor((M, N), dtype),
-            B: T.Tensor((M, N), dtype),
-            C: T.Tensor((M, N), dtype),
+        A: T.Tensor((M, N), dtype),
+        B: T.Tensor((M, N), dtype),
+        C: T.Tensor((M, N), dtype),
     ):
         with T.Kernel(BLOCK_SIZE, is_npu=True) as (cid, _):
             A_VEC = T.alloc_ub((M, N), dtype)

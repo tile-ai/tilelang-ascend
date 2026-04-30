@@ -4,7 +4,7 @@
 
 简介：`tilelang.language.sync_block_wait`用于Block内部的同步。让当前的执行处于等待状态，直到指定的事件标志位被对应的sync_block_set指令激活
 
-```
+```python
 T.sync_block_wait(id)
 ```
 

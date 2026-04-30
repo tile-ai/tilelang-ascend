@@ -15,7 +15,6 @@ T.reduce_sum(src, dst, dim=0, clear = False)
 
 ### 2.1 参数说明
 
-
 | 参数名        | 类型         | 说明                                                    |
 | ------------- | ------------ | ------------------------------------------------------- |
 | `src`         | `tensor`     | 输入tensor                                              |
@@ -28,7 +27,6 @@ T.reduce_sum(src, dst, dim=0, clear = False)
 ### 2.2 支持规格
 
 #### 2.2.1 DataType支持
-
 
 |        | uint8 | int8 | uint16 | int16 | uint32 | int32 | uint64 | int64 | fp16 | fp32 | bf16 | bool/int1 |
 | ------ | ----- | ---- | ------ | ----- | ------ | ----- | ------ | ----- | ---- | ---- | ---- | --------- |
@@ -50,27 +48,25 @@ T.reduce_sum(src, dst, dim=0, clear = False)
 
 以下示例实现了对输入矩阵沿第 1 维执行  sum 归约，最终得到形状为 (M,1) 的结果。
 
-```markup
-import torch
-import torch_npu
-import tilelang
-import tilelang.language as T
-
-def reduce(M, N, dtype = "float16"):
+```python
+@tilelang.jit(target="npuir")
+def reduce(M, N, dtype="float16"):
     BLOCK_SIZE = 1
 
     @T.prim_func
-    def main(A: T.Tensor((M, N), dtype),
-                   B: T.Tensor((M, 1), dtype)):
-  
-        with T.Kernel(BLOCK_SIZE, is_npu=True) as (cid, _):
-            a = T.alloc_shared((M,N), dtype)
-            b = T.alloc_shared((M,1), dtype)
-            T.copy(A, a)
-  
-            T.reduce(a, b, dims=[1], reduce_mode="sum", clear = False)
+    def main(
+        A: T.Tensor((M, N), dtype),
+        B: T.Tensor((M, 1), dtype),
+    ):
 
-            T.copy(s, O)
+        with T.Kernel(BLOCK_SIZE, is_npu=True) as (cid, _):
+            a = T.alloc_shared((M, N), dtype)
+            b = T.alloc_shared((M, 1), dtype)
+            T.copy(A, a)
+
+            T.reduce(a, b, dims=[1], reduce_mode="sum", clear=False)
+
+            T.copy(b, B)
 
     return main
 ```

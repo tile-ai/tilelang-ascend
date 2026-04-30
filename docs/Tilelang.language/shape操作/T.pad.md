@@ -4,7 +4,7 @@
 
 简介：`tilelang.language.pad` 用于对张量按指定维度在首尾添加元素。
 
-```
+```python
 T.pad(src, dst, pad_value, low, high, size)
 ```
 
@@ -42,7 +42,7 @@ T.pad(src, dst, pad_value, low, high, size)
 @T.prim_func
 def main(
     A: T.Tensor((M, N), src_dtype),
-    B: T.Tensor((2*M, 2*N), dst_dtype),
+    B: T.Tensor((2 * M, 2 * N), dst_dtype),
     C: T.Tensor((M, N), dst_dtype),
 ):
     m_num = M // block_M

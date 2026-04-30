@@ -4,7 +4,7 @@
 
 简介：`tilelang.language.sigmoid` 返回给定向量/变量的sigmoid计算结果
 
-```
+```python
 T.vsigmoid(src, dst)
 ```
 
@@ -37,28 +37,22 @@ T.vsigmoid(src, dst)
 
 以下示例实现了一个形状为(M,N)的tensor的Sigmoid计算
 
-```
-import torch
-import torch_npu
-import tilelang
-import tilelang.language as T
-
+```python
+@tilelang.jit(target="npuir")
 def sigmoid_kernel(M, N, dtype):
     BLOCK_SIZE = 1
 
     @T.prim_func
-    def main(src: T.Tensor((M, N), dtype),
-             dst: T.Tensor((M, N), dtype)):
-        
+    def main(src: T.Tensor((M, N), dtype), dst: T.Tensor((M, N), dtype)):
+
         with T.Kernel(BLOCK_SIZE, is_npu=True) as (cid, _):
- 
             src_ub = T.alloc_shared((M, N), dtype)
             dst_ub = T.alloc_shared((M, N), dtype)
-            
+
             T.copy(src, src_ub)
             T.vsigmoid(src_ub, dst_ub)
             T.copy(dst_ub, dst)
-    
+
     return main
 ```
 

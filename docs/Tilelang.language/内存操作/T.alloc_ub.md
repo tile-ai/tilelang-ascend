@@ -4,7 +4,7 @@
 
 简介：`tilelang.language.alloc_ub` 申请一块Ascend ub上的内存
 
-```
+```python
 T.alloc_shared(shape, dtype) [Developer mode]
 T.alloc_ub(shape, dtype) [Expert mode]
 ```
@@ -38,12 +38,8 @@ T.alloc_ub(shape, dtype) [Expert mode]
 
 已下示例实现了一个形状为(M,N)的tensor和一个形状为(M,N)的tensor向量减，其中`T.alloc_ub`申请了Ascend UB内存
 
-```
-import torch
-import torch_npu
-import tilelang
-import tilelang.language as T
-
+```python
+@tilelang.jit(target="npuir")
 def vecsub(M, N, block_M, block_N, dtype="float16"):
     @T.prim_func
     def vecsub_(
@@ -51,7 +47,10 @@ def vecsub(M, N, block_M, block_N, dtype="float16"):
         B: T.Tensor((M, N), dtype),
         C: T.Tensor((M, N), dtype),
     ):
-        with T.Kernel(T.ceildiv(N, block_N) * T.ceildiv(M, block_M), is_npu=True) as (cid, _):
+        with T.Kernel(T.ceildiv(N, block_N) * T.ceildiv(M, block_M), is_npu=True) as (
+            cid,
+            _,
+        ):
             by = cid // T.ceildiv(N, block_N)
             bx = cid % T.ceildiv(N, block_N)
 
@@ -65,7 +64,6 @@ def vecsub(M, N, block_M, block_N, dtype="float16"):
             T.copy(C_BUF, C[by * block_M, bx * block_N])
 
     return vecsub_
-
 ```
 
 ## 3. Tilelang Op到Ascend NPU IR Op的转换

@@ -50,17 +50,19 @@ T.vadd(src0, src1, dst)
 
 以下示例实现了一个形状为(M,N)的tensor的逐元素加法计算
 
-```
+```python
+@tilelang.jit(target="npuir")
 def sub_kernel(M, N, dtype):
     BLOCK_SIZE = 1
 
     @T.prim_func
-    def main(src0: T.Tensor((M, N), dtype),
-             src1: T.Tensor((M, N), dtype),
-             dst: T.Tensor((M, N), dtype)):
+    def main(
+        src0: T.Tensor((M, N), dtype),
+        src1: T.Tensor((M, N), dtype),
+        dst: T.Tensor((M, N), dtype),
+    ):
 
         with T.Kernel(BLOCK_SIZE, is_npu=True) as (cid, _):
-
             src0_ub = T.alloc_shared((M, N), dtype)
             src1_ub = T.alloc_shared((M, N), dtype)
             dst_ub = T.alloc_shared((M, N), dtype)

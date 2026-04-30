@@ -4,7 +4,7 @@
 
 简介：`tilelang.language.debug_print_var` 和`tilelang.language.debug_print_buffer_value` 分别用于打印特定变量或缓冲区的值：
 
-```
+```python
 T.print(obj, msg, hex)
 ```
 
@@ -38,19 +38,22 @@ T.print(obj, msg, hex)
 
 以下示例通过T.print实现了指定缓冲区的打印：
 
-```
-import tilelang
-import tilelang.language as T
+```python
+@tilelang.jit(target="npuir")
 def vec_add_2d(block_M, block_N, dtype="float32"):
     M = T.symbolic("M")
     N = T.symbolic("N")
+
     @T.prim_func
     def vecAdd2D(
-            A: T.Tensor((M, N), dtype),
-            B: T.Tensor((M, N), dtype),
-            C: T.Tensor((M, N), dtype)
+        A: T.Tensor((M, N), dtype),
+        B: T.Tensor((M, N), dtype),
+        C: T.Tensor((M, N), dtype),
     ):
-        with T.Kernel(T.ceildiv(N, block_N) * T.ceildiv(M, block_M), is_npu=True) as (cid, _):
+        with T.Kernel(T.ceildiv(N, block_N) * T.ceildiv(M, block_M), is_npu=True) as (
+            cid,
+            _,
+        ):
             blockx = cid % T.ceildiv(N, block_N)
             bx = blockx * block_M
             blocky = cid // T.ceildiv(N, block_N)
@@ -58,13 +61,13 @@ def vec_add_2d(block_M, block_N, dtype="float32"):
             A_VEC = T.alloc_shared([block_M, block_N], dtype)
             B_VEC = T.alloc_shared([block_M, block_N], dtype)
             C_VEC = T.alloc_shared([block_M, block_N], dtype)
-            T.copy(A[bx:bx + block_M, by:by + block_N], A_VEC[:block_M, :block_N])
-            T.copy(B[bx:bx + block_M, by:by + block_N], B_VEC[:block_M, :block_N])
+            T.copy(A[bx : bx + block_M, by : by + block_N], A_VEC[:block_M, :block_N])
+            T.copy(B[bx : bx + block_M, by : by + block_N], B_VEC[:block_M, :block_N])
             T.vadd(A_VEC, B_VEC, C_VEC)
-            T.print(C_VEC[:4,:4])
-            T.copy(C_VEC[:block_M, :block_N], C[bx:bx + block_M, by:by + block_N])
+            T.print(C_VEC[:4, :4])
+            T.copy(C_VEC[:block_M, :block_N], C[bx : bx + block_M, by : by + block_N])
+
     return vecAdd2D
-​
 ```
 
 ## 3. Tilelang Op到Ascend NPU IR Op的转换

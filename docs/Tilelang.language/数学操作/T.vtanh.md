@@ -4,7 +4,7 @@
 
 简介：`tilelang.language.tanh` 返回输入向量/标量基于输出形状的tanh计算结果
 
-```
+```python
 T.vtanh(src, dst)
 ```
 
@@ -35,25 +35,25 @@ T.vtanh(src, dst)
 
 ### 2.4 使用方法
 
-```
+```python
+@tilelang.jit(target="npuir")
 def vec_tanh(M, N, dtype):
     BLOCK_SIZE = 8
 
     @T.prim_func
     def main(
-            src: T.Tensor((M, N), dtype),
-            dst: T.Tensor((M, N), dtype),
+        src: T.Tensor((M, N), dtype),
+        dst: T.Tensor((M, N), dtype),
     ):
         with T.Kernel(BLOCK_SIZE, is_npu=True) as (cid, _):
-            src_ub = T.alloc_ub ((M, N), dtype)
-            dst_ub = T.alloc_ub ((M, N), dtype)
+            src_ub = T.alloc_ub((M, N), dtype)
+            dst_ub = T.alloc_ub((M, N), dtype)
 
             T.copy(src, src_ub)
             T.vtanh(src_ub, dst_ub)
             T.copy(src_ub, dst)
 
     return main
-
 ```
 
 ## 3. Tilelang Op到Ascend NPU IR Op的转换

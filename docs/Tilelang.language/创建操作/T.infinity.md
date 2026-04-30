@@ -4,7 +4,7 @@
 
 简介：`tilelang.language.infinity`根据给定的数据类型创建一个表示无穷大的值。
 
-```
+```python
 T.infinity(dtype)
 ```
 
@@ -29,12 +29,18 @@ T.infinity(dtype)
 返回标量
 
 ### 2.3 使用方法
+
 以下示例实现了将一个二维张量B的所有元素都设置为负无穷大(-inf)
+
 ```python
+@tilelang.jit(target="npuir")
+def npuir_brc(M, N, block_M, block_N, m_num, n_num, dtype="float32"):
+    BLOCK_SIZE = 1
+
     @T.prim_func
     def main(
-            A: T.Tensor((M, 1), dtype),
-            B: T.Tensor((M, N), dtype),
+        A: T.Tensor((M, 1), dtype),
+        B: T.Tensor((M, N), dtype),
     ):
         with T.Kernel(BLOCK_SIZE, is_npu=True) as (cid, _):
             bx_ = cid // n_num
@@ -53,8 +59,9 @@ T.infinity(dtype)
                 by = block_id_n * block_N
                 T.npuir_brc(A_SCALAR, B_VEC)
                 T.copy(B_VEC, B[bx, by])
-```
 
+    return main
+```
 
 ## 3. Tilelang Op到Ascend NPU IR Op的转换
 
