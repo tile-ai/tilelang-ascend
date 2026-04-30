@@ -69,6 +69,7 @@ jobs:
       run_examples: ${{ steps.detect_changes.outputs.run_examples }}
       run_pytest_only: ${{ steps.detect_changes.outputs.run_pytest_only }}
       should_skip: ${{ steps.detect_changes.outputs.should_skip }}
+      status_comment_id: ${{ steps.post_queued_status.outputs.comment_id }}
     steps:
       - name: Get PR info
         if: github.event_name == 'issue_comment'
@@ -111,6 +112,22 @@ jobs:
               issue_number: context.issue.number,
               body: '⚠️ This PR has been merged. Skipping tests.'
             });
+
+      - name: Post queued status for /re-test
+        if: github.event_name == 'issue_comment' && steps.pr_info.outputs.merged != 'true' && contains(github.event.comment.body, '/re-test')
+        id: post_queued_status
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const runUrl = `${process.env.GITHUB_SERVER_URL}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const body = `⏳ **Task submitted and queued**\n\nWorkflow run: [View details](<${runUrl}>)\n\n_This message will be updated when the task starts._`;
+            const comment = await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: body
+            });
+            core.setOutput('comment_id', comment.data.id);
 
       - name: Checkout code
         if: steps.pr_info.outputs.merged != 'true' || github.event_name == 'pull_request'
@@ -328,6 +345,21 @@ jobs:
               repo: context.repo.repo,
               comment_id: context.payload.comment.id,
               content: 'rocket'
+            });
+
+      - name: Update status comment to running
+        if: github.event_name == 'issue_comment' && needs.check_changes.outputs.status_comment_id != ''
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const commentId = '${{ needs.check_changes.outputs.status_comment_id }}';
+            const runUrl = `${process.env.GITHUB_SERVER_URL}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const body = `🚀 **Task is now running**\n\nWorkflow run: [View details](<${runUrl}>)\n\n_This message will be updated when the task completes._`;
+            await github.rest.issues.updateComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: parseInt(commentId),
+              body: body
             });
 
       - name: React to merged PR comment
@@ -702,6 +734,29 @@ jobs:
               context: '${{ github.workflow }} / test',
               description: `Re-test: ${status}`,
               target_url: `${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}`
+            });
+
+      - name: Update status comment with final results
+        if: always() && github.event_name == 'issue_comment' && needs.check_changes.outputs.status_comment_id != ''
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const jobStatus = '${{ job.status }}';
+            const passRate = '${{ steps.check_results.outputs.pass_rate }}' || '0';
+            const testSummary = '${{ steps.check_results.outputs.test_summary }}' || 'No summary available';
+            const commentId = '${{ needs.check_changes.outputs.status_comment_id }}';
+            const runUrl = `${process.env.GITHUB_SERVER_URL}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            
+            const statusEmoji = jobStatus === 'success' ? '✅' : (jobStatus === 'failure' ? '❌' : '⚠️');
+            const statusText = jobStatus === 'success' ? 'Completed successfully' : (jobStatus === 'failure' ? 'Failed' : 'Completed with issues');
+            
+            const body = `${statusEmoji} **Task ${statusText}**\n\n**Summary:** ${testSummary}\n\nWorkflow run: [View details](<${runUrl}>)`;
+            
+            await github.rest.issues.updateComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: parseInt(commentId),
+              body: body
             });
 
   notify:
