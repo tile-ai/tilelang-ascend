@@ -56,16 +56,42 @@ collect_test_scripts() {
     local dir="$1"
     local scripts=()
     
-    # 搜索 maxdepth 2 的 py 文件（排除特殊文件）
+    # 特殊目录：排除整个目录，不收集任何 py 文件
+    case "$dir" in
+        "./gemm_aot"|"./torch_tl_ascend"|"./dispatch_combine"|"./shmem")
+            # 只收集特定 bash 脚本
+            if [[ "$dir" == "./gemm_aot" ]]; then
+                scripts+=("./gemm_aot/run_example_gemm_aot.sh")
+            elif [[ "$dir" == "./torch_tl_ascend" ]]; then
+                scripts+=("./torch_tl_ascend/test_example.sh")
+            fi
+            echo "${scripts[@]}"
+            return
+            ;;
+        "./flash_attention")
+            # 收集主目录的 py 文件（排除 fa_opt）
+            local py_files=$(find "$dir" -maxdepth 1 -name "*.py" \
+                -not -name "__init__.py" \
+                -not -name "*_golden.py" \
+                | sort)
+            for f in $py_files; do scripts+=("$f"); done
+            
+            echo "${scripts[@]}"
+            return
+            ;;
+    esac
+    
+    # 搜索 maxdepth 2 的 py 文件（排除特殊文件和 bench_sfa 子目录）
     local py_files=$(find "$dir" -maxdepth 2 -name "*.py" \
         -not -name "__init__.py" \
         -not -name "*_golden.py" \
         -not -name "sfa_golden.py" \
+        -not -path "*/bench_sfa/*" \
         | sort)
     for f in $py_files; do scripts+=("$f"); done
     
     # 搜索 bash 脚本（特定命名模式）
-    local sh_files=$(find "$dir" -maxdepth 2 -name "run_*.sh" -o -name "test_*.sh" | sort)
+    local sh_files=$(find "$dir" -maxdepth 2 \( -name "run_*.sh" -o -name "test_*.sh" \) | sort)
     for f in $sh_files; do scripts+=("$f"); done
     
     echo "${scripts[@]}"
@@ -92,17 +118,28 @@ if [ -n "$TEST_DIRS" ]; then
         fi
     done
     
-    # sparse_flash_attention 的 EXTRA_TASKS（bench_sfa.py 驱动多配置）
+    # sparse_flash_attention 的 EXTRA_TASKS
     if [[ " ${DIR_ARRAY[*]} " =~ " sparse_flash_attention " ]]; then
         for extra_task in "${EXTRA_TASKS[@]}"; do
             all_scripts+=("CUSTOM_TASK::${extra_task}")
         done
     fi
+    
+    # flash_attention/fa_opt 单独处理
+    if [[ " ${DIR_ARRAY[*]} " =~ " flash_attention " ]]; then
+        fa_dir="./flash_attention/fa_opt"
+        if [ -d "$fa_dir" ]; then
+            fa_python_files=$(find "$fa_dir" -maxdepth 1 -name "flash_*.py" | sort)
+            if [ -n "$fa_python_files" ]; then
+                for file in $fa_python_files; do all_scripts+=("$file"); done
+            fi
+        fi
+    fi
 else
-    # 全量测试：搜索所有目录
+    # 全量测试：使用 collect_test_scripts 遍历所有目录
     echo "Full test mode - scanning all directories"
     
-    # 搜索所有一级目录
+    # 遍历所有一级目录
     for dir in $(find . -maxdepth 1 -type d -not -name "." -not -name "dispatch_combine" -not -name "shmem" | sort); do
         collected=$(collect_test_scripts "$dir")
         if [ -n "$collected" ]; then
@@ -112,10 +149,19 @@ else
         fi
     done
     
-    # 全量测试也添加 EXTRA_TASKS
+    # EXTRA_TASKS
     for extra_task in "${EXTRA_TASKS[@]}"; do
         all_scripts+=("CUSTOM_TASK::${extra_task}")
     done
+    
+    # flash_attention/fa_opt 单独处理
+    fa_dir="./flash_attention/fa_opt"
+    if [ -d "$fa_dir" ]; then
+        fa_python_files=$(find "$fa_dir" -maxdepth 1 -name "flash_*.py" | sort)
+        if [ -n "$fa_python_files" ]; then
+            for file in $fa_python_files; do all_scripts+=("$file"); done
+        fi
+    fi
 fi
 
 echo "Total scripts to run: ${#all_scripts[@]}"
