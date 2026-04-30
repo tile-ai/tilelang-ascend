@@ -1,0 +1,26 @@
+[run]
+source =
+    tilelang
+    examples
+omit =
+    tilelang/3rdparty/*
+    tilelang/__pycache__/*
+    tilelang/lib/*
+    examples/gemm_aot/*
+    examples/dispatch_combine/*
+    examples/shmem/*
+    examples/torch_tl_ascend/*
+    examples/sparse_flash_attention/bench_sfa.py
+    */__init__.py
+
+[report]
+exclude_lines =
+    pragma: no cover
+    def __repr__
+    raise NotImplementedError
+    if TYPE_CHECKING:
+    @abstractmethod
+    pass
+
+[html]
+directory = htmlcov_combined
