@@ -46,6 +46,7 @@ permissions:
   pull-requests: write
   statuses: write
   actions: write
+  issues: write
 
 concurrency:
   # PR 场景（含 pull_request 和 /re-test）：统一按 PR 号分组，新运行自动取消旧运行
@@ -244,6 +245,10 @@ jobs:
     name: Benchmark Tests (Ascend NPU)
     runs-on: [self-hosted, Linux, X64, ascend_910b]
     needs: check_changes
+    outputs:
+      pass_rate: ${{ steps.check_results.outputs.pass_rate }}
+      test_status: ${{ steps.check_results.outputs.test_status }}
+      test_summary: ${{ steps.check_results.outputs.test_summary }}
     if: |
       (github.event_name != 'workflow_dispatch' || github.event.inputs.run_tests == 'true') &&
       (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') ||
@@ -516,14 +521,22 @@ jobs:
           
           cd examples
           if [ -f test_output.log ]; then
+            # 提取失败测试列表
+            FAILED_TESTS=$(grep -E "^\[FAILED\]" test_output.log || echo "")
+            
             # 检查是否是 pytest only 的输出
             if grep -q "pytest" test_output.log && ! grep -q "Pass rate:" test_output.log; then
               # pytest only 模式
               if grep -q "passed" test_output.log && grep -q "failed" test_output.log; then
                 PASSED=$(grep -o "[0-9]* passed" test_output.log | head -1 | grep -o "[0-9]*" || echo "0")
                 FAILED=$(grep -o "[0-9]* failed" test_output.log | head -1 | grep -o "[0-9]*" || echo "0")
+                TOTAL=$((PASSED + FAILED))
                 echo "pytest results: ${PASSED} passed, ${FAILED} failed"
                 echo "pass_rate=${PASSED}" >> $GITHUB_OUTPUT
+                
+                # 构建摘要
+                SUMMARY="Total: ${TOTAL} | Passed: ${PASSED} | Failed: ${FAILED}"
+                echo "test_summary=${SUMMARY}" >> $GITHUB_OUTPUT
                 
                 if [ "$FAILED" -eq 0 ]; then
                   echo "✅ All pytest tests passed"
@@ -531,33 +544,63 @@ jobs:
                 else
                   echo "❌ Pytest tests failed (${FAILED} failures)"
                   echo "test_status=failed" >> $GITHUB_OUTPUT
+                  if [ -n "$FAILED_TESTS" ]; then
+                    echo "Failed tests:"
+                    echo "$FAILED_TESTS"
+                  fi
                   exit 1
                 fi
               elif grep -q "passed" test_output.log; then
                 PASSED=$(grep -o "[0-9]* passed" test_output.log | head -1 | grep -o "[0-9]*" || echo "0")
                 echo "pytest results: ${PASSED} passed, 0 failed"
                 echo "pass_rate=${PASSED}" >> $GITHUB_OUTPUT
+                echo "test_summary=Total: ${PASSED} | Passed: ${PASSED} | Failed: 0" >> $GITHUB_OUTPUT
                 echo "✅ All pytest tests passed"
                 echo "test_status=passed" >> $GITHUB_OUTPUT
               elif grep -q "failed" test_output.log; then
                 FAILED=$(grep -o "[0-9]* failed" test_output.log | head -1 | grep -o "[0-9]*" || echo "0")
                 echo "❌ Pytest tests failed (${FAILED} failures)"
                 echo "pass_rate=0" >> $GITHUB_OUTPUT
+                echo "test_summary=Total: ${FAILED} | Passed: 0 | Failed: ${FAILED}" >> $GITHUB_OUTPUT
                 echo "test_status=failed" >> $GITHUB_OUTPUT
+                if [ -n "$FAILED_TESTS" ]; then
+                  echo "Failed tests:"
+                  echo "$FAILED_TESTS"
+                fi
                 exit 1
               elif grep -q "error" test_output.log; then
                 echo "⚠️ Pytest encountered errors"
                 echo "pass_rate=0" >> $GITHUB_OUTPUT
+                echo "test_summary=Pytest encountered errors" >> $GITHUB_OUTPUT
                 echo "test_status=error" >> $GITHUB_OUTPUT
                 exit 1
               fi
             else
               # bench_test.sh 模式
               PASS_RATE_LINE=$(grep -i "Pass rate:" test_output.log || echo "")
+              EXEC_SUMMARY=$(grep -i "Execution Summary" -A 2 test_output.log || echo "")
+              
               if [ -n "$PASS_RATE_LINE" ]; then             
                 PASS_RATE=$(echo "$PASS_RATE_LINE" | grep -o '[0-9]*%' | tr -d '%')
+                TOTAL_LINE=$(grep -i "Total:" test_output.log || grep -i "Total" test_output.log || echo "")
+                
+                if [ -n "$TOTAL_LINE" ]; then
+                  TOTAL=$(echo "$TOTAL_LINE" | grep -o "Total: [0-9]*" | grep -o "[0-9]*" || echo "0")
+                  PASSED=$(echo "$TOTAL_LINE" | grep -o "Passed: [0-9]*" | grep -o "[0-9]*" || echo "0")
+                  FAILED=$(echo "$TOTAL_LINE" | grep -o "Failed: [0-9]*" | grep -o "[0-9]*" || echo "0")
+                else
+                  # 从 Pass rate 推算
+                  PASSED=$(grep -i "passed_scripts=" test_output.log || grep -c "[PASSED]" test_output.log || echo "0")
+                  FAILED=$(grep -i "failed_scripts=" test_output.log || grep -c "[FAILED]" test_output.log || echo "0")
+                  TOTAL=$((PASSED + FAILED))
+                fi
+                
                 echo "Found Pass rate: ${PASS_RATE}%"
                 echo "pass_rate=${PASS_RATE}" >> $GITHUB_OUTPUT
+                
+                # 构建摘要
+                SUMMARY="Total: ${TOTAL} | Passed: ${PASSED} | Failed: ${FAILED} (Pass rate: ${PASS_RATE}%)"
+                echo "test_summary=${SUMMARY}" >> $GITHUB_OUTPUT
                 
                 if [ "$PASS_RATE" = "100" ]; then
                   echo "✅ All tests passed (Pass rate: 100%)"
@@ -565,17 +608,21 @@ jobs:
                 else
                   echo "❌ Tests failed (Pass rate: ${PASS_RATE}%)"
                   echo "test_status=failed" >> $GITHUB_OUTPUT
+                  if [ -n "$FAILED_TESTS" ]; then
+                    echo "Failed tests:"
+                    echo "$FAILED_TESTS"
+                  fi
                   echo "Failing step because Pass rate is not 100%"
                   exit 1
                 fi
               else
                 echo "⚠️ Could not find 'Pass rate:' in test output"
                 echo "pass_rate=0" >> $GITHUB_OUTPUT
+                echo "test_summary=No pass rate found in test output" >> $GITHUB_OUTPUT
                 echo "test_status=error" >> $GITHUB_OUTPUT
                 exit 1
               fi
               
-              EXEC_SUMMARY=$(grep -i "Execution Summary" -A 2 test_output.log || echo "")
               if [ -n "$EXEC_SUMMARY" ]; then
                 echo "Execution Summary:"
                 echo "$EXEC_SUMMARY"
@@ -584,6 +631,7 @@ jobs:
           else
             echo "⚠️ Test output file not found"
             echo "pass_rate=0" >> $GITHUB_OUTPUT
+            echo "test_summary=Test output file not found" >> $GITHUB_OUTPUT
             echo "test_status=error" >> $GITHUB_OUTPUT
             exit 1
           fi
@@ -615,4 +663,95 @@ jobs:
               context: '${{ github.workflow }} / test',
               description: `Re-test: ${status}`,
               target_url: `${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}`
+            });
+
+  notify:
+    name: Notify Daily Test Results
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.event_name == 'schedule'
+    permissions:
+      issues: write
+    steps:
+      - name: Get test artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: test-results
+          path: test-results/
+        continue-on-error: true
+
+      - name: Extract failed tests
+        id: extract_failed
+        run: |
+          if [ -f test-results/examples/test_output.log ]; then
+            FAILED_TESTS=$(grep -E "^\[FAILED\]" test-results/examples/test_output.log | head -20 || echo "")
+            if [ -n "$FAILED_TESTS" ]; then
+              echo "failed_tests<<EOF" >> $GITHUB_OUTPUT
+              echo "$FAILED_TESTS" >> $GITHUB_OUTPUT
+              echo "EOF" >> $GITHUB_OUTPUT
+            else
+              echo "failed_tests=" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "failed_tests=" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create notification issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const testStatus = '${{ needs.test.outputs.test_status }}';
+            const passRate = '${{ needs.test.outputs.pass_rate }}';
+            const testSummary = '${{ needs.test.outputs.test_summary }}';
+            const failedTests = `${{ steps.extract_failed.outputs.failed_tests }}`;
+            const runDate = new Date().toLocaleString('zh-CN', { 
+              timeZone: 'Asia/Shanghai',
+              year: 'numeric',
+              month: '2-digit',
+              day: '2-digit',
+              hour: '2-digit',
+              minute: '2-digit'
+            });
+            
+            const statusEmoji = testStatus === 'passed' ? '✅' : (testStatus === 'failed' ? '❌' : '⚠️');
+            const statusText = testStatus === 'passed' ? 'All tests passed' : (testStatus === 'failed' ? 'Some tests failed' : 'Tests encountered errors');
+            
+            let body = `## 📊 Daily Test Report - ${runDate}
+            
+            **Status:** ${statusEmoji} ${statusText}
+            
+            **Summary:** ${testSummary}
+            
+            **Workflow Run:** [View Details](https://github.com/${context.repository.owner}/${context.repository.repo}/actions/runs/${context.runId})
+            
+            ---
+            
+            `;
+            
+            if (testStatus === 'failed' && failedTests) {
+              body += `### ❌ Failed Tests (showing first 20)
+            
+            ${failedTests}
+            
+            `;
+            }
+            
+            body += `### 📁 Artifacts
+            
+            - [test-results](https://github.com/${context.repository.owner}/${context.repository.repo}/actions/runs/${context.runId}) (available for 30 days)
+            
+            ---
+            
+            *This issue was automatically created by the daily scheduled test.*
+            *Assignees: @benyang0506, @fuhouyu-hw, @z00520135, @lwwangcgz*`;
+            
+            const title = `[Daily Test] ${statusEmoji} ${testSummary} - ${runDate}`;
+            
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: title,
+              body: body,
+              assignees: ['benyang0506', 'fuhouyu-hw', 'z00520135', 'lwwangcgz'],
+              labels: ['daily-test', testStatus === 'passed' ? 'test-passed' : 'test-failed']
             });
