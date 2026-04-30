@@ -62,7 +62,8 @@ jobs:
     outputs:
       merged: ${{ steps.pr_info.outputs.merged }}
       test_dirs: ${{ steps.detect_changes.outputs.test_dirs }}
-      run_full_tests: ${{ steps.detect_changes.outputs.run_full_tests }}
+      run_examples: ${{ steps.detect_changes.outputs.run_examples }}
+      run_pytest_only: ${{ steps.detect_changes.outputs.run_pytest_only }}
       should_skip: ${{ steps.detect_changes.outputs.should_skip }}
     steps:
       - name: Get PR info
@@ -125,20 +126,34 @@ jobs:
           echo "Changed files:"
           echo "$changed_files"
           
-          run_full_tests=false
+          run_examples=false
+          run_pytest_only=false
+          should_skip=true
           test_dirs_array=()
           
           for file in $changed_files; do
-            # 核心文件修改 → 全量测试
-            if [[ "$file" =~ ^tilelang/ ]] || [[ "$file" =~ ^src/ ]] || [[ "$file" =~ ^testing/ ]] || \
-               [[ "$file" =~ CMakeLists\.txt ]] || [[ "$file" =~ requirements ]] || [[ "$file" =~ install_ascend\.sh ]]; then
-              echo "Core file modified: $file - will run full tests"
-              run_full_tests=true
+            # testing/ 修改 → 只跑 pytest
+            if [[ "$file" =~ ^testing/ ]]; then
+              echo "Testing file modified: $file - will run pytest only"
+              run_examples=false
+              run_pytest_only=true
+              should_skip=false
               test_dirs_array=()
               break
             fi
             
-            # examples 文件 → 提取一级目录名
+            # 核心文件修改 → 全量 examples + pytest
+            if [[ "$file" =~ ^tilelang/ ]] || [[ "$file" =~ ^src/ ]] || \
+               [[ "$file" =~ CMakeLists\.txt ]] || [[ "$file" =~ requirements ]] || [[ "$file" =~ install_ascend\.sh ]]; then
+              echo "Core file modified: $file - will run full examples + pytest"
+              run_examples=true
+              run_pytest_only=false
+              should_skip=false
+              test_dirs_array=()
+              break
+            fi
+            
+            # examples 文件 → 增量 examples + pytest
             if [[ "$file" =~ ^examples/([^/]+)/ ]]; then
               test_dir="${BASH_REMATCH[1]}"
               # 排除非测试目录
@@ -147,25 +162,42 @@ jobs:
                   test_dirs_array+=("$test_dir")
                   echo "Mapped $file → $test_dir"
                 fi
+                run_examples=true
+                run_pytest_only=false
+                should_skip=false
               fi
+            fi
+            
+            # 其他文件（非 docs/images）-> 需要测试
+            if [[ ! "$file" =~ \.md$ ]] && [[ ! "$file" =~ \.png$ ]] && \
+               [[ ! "$file" =~ ^docs/ ]] && [[ ! "$file" =~ ^images/ ]] && \
+               [[ ! "$file" =~ ^testing/ ]] && [[ ! "$file" =~ ^tilelang/ ]] && \
+               [[ ! "$file" =~ ^src/ ]] && [[ ! "$file" =~ ^examples/ ]]; then
+              echo "Other file modified: $file - will run full tests"
+              run_examples=true
+              run_pytest_only=false
+              should_skip=false
+              test_dirs_array=()
+              break
             fi
           done
           
           test_dirs="${test_dirs_array[*]}"
-          echo "run_full_tests=${run_full_tests}" >> $GITHUB_OUTPUT
+          echo "run_examples=${run_examples}" >> $GITHUB_OUTPUT
+          echo "run_pytest_only=${run_pytest_only}" >> $GITHUB_OUTPUT
           echo "test_dirs=${test_dirs}" >> $GITHUB_OUTPUT
+          echo "should_skip=${should_skip}" >> $GITHUB_OUTPUT
           
-          if [[ "$run_full_tests" == "true" ]]; then
-            echo "Will run full tests (core files modified)"
-            echo "should_skip=false" >> $GITHUB_OUTPUT
-          elif [[ -n "$test_dirs" ]]; then
-            echo "Will run incremental tests for directories: $test_dirs"
-            echo "should_skip=false" >> $GITHUB_OUTPUT
-          else
-            echo "No testable files modified (docs/images only)"
-            echo "run_full_tests=false" >> $GITHUB_OUTPUT
-            echo "test_dirs=" >> $GITHUB_OUTPUT
-            echo "should_skip=true" >> $GITHUB_OUTPUT
+          if [[ "$run_pytest_only" == "true" ]]; then
+            echo "Will run pytest only (testing/ modified)"
+          elif [[ "$run_examples" == "true" ]]; then
+            if [[ -n "$test_dirs" ]]; then
+              echo "Will run incremental examples + pytest for: $test_dirs"
+            else
+              echo "Will run full examples + pytest (core files modified)"
+            fi
+          elif [[ "$should_skip" == "true" ]]; then
+            echo "No testable files modified (docs/images only) - will skip"
           fi
 
   test:
@@ -303,22 +335,30 @@ jobs:
           
           SKIP_PYTEST_VALUE="${{ steps.check_skip_pytest.outputs.skip_pytest }}"
           
-          # 确定 TEST_DIRS 参数
+          # 确定 TEST_DIRS 参数和测试策略
           # push/schedule/workflow_dispatch 事件：全量测试
           # PR/issue_comment 事件：根据 check_changes outputs
           if [[ "$GITHUB_EVENT_NAME" == "push" ]] || [[ "$GITHUB_EVENT_NAME" == "schedule" ]] || [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
             TEST_DIRS_ARG=""
+            RUN_EXAMPLES="true"
+            RUN_PYTEST_ONLY="false"
             echo "Event: $GITHUB_EVENT_NAME - running full tests"
           else
             TEST_DIRS_VALUE="${{ needs.check_changes.outputs.test_dirs }}"
-            RUN_FULL_TESTS="${{ needs.check_changes.outputs.run_full_tests }}"
+            RUN_EXAMPLES="${{ needs.check_changes.outputs.run_examples }}"
+            RUN_PYTEST_ONLY="${{ needs.check_changes.outputs.run_pytest_only }}"
             
-            if [[ "$RUN_FULL_TESTS" == "true" ]] || [[ -z "$TEST_DIRS_VALUE" ]]; then
+            if [[ "$RUN_PYTEST_ONLY" == "true" ]]; then
               TEST_DIRS_ARG=""
-              echo "Running full tests (core files modified or no test dirs)"
-            else
-              TEST_DIRS_ARG="--dirs ${TEST_DIRS_VALUE}"
-              echo "Running incremental tests for: $TEST_DIRS_VALUE"
+              echo "Running pytest only (testing/ modified)"
+            elif [[ "$RUN_EXAMPLES" == "true" ]]; then
+              if [[ -z "$TEST_DIRS_VALUE" ]]; then
+                TEST_DIRS_ARG=""
+                echo "Running full examples + pytest (core files modified)"
+              else
+                TEST_DIRS_ARG="--dirs ${TEST_DIRS_VALUE}"
+                echo "Running incremental examples + pytest for: $TEST_DIRS_VALUE"
+              fi
             fi
           fi
 
@@ -330,6 +370,8 @@ jobs:
             -e INCREMENTAL_FLAG="$INCREMENTAL_FLAG" \
             -e SKIP_PYTEST=$SKIP_PYTEST_VALUE \
             -e TEST_DIRS_ARG="$TEST_DIRS_ARG" \
+            -e RUN_EXAMPLES="$RUN_EXAMPLES" \
+            -e RUN_PYTEST_ONLY="$RUN_PYTEST_ONLY" \
             tilelang_x1 \
             bash -c "
               set -e
@@ -358,15 +400,26 @@ jobs:
               # 3. 运行测试用例
               cd examples
               chmod +x bench_test.sh
-              echo 'Running benchmark tests with args: '\$TEST_DIRS_ARG
-              set +e
-              if [ \"\$SKIP_PYTEST\" = true ]; then
-                ./bench_test.sh --skip-pytest \$TEST_DIRS_ARG 2>&1 | tee test_output.log
-              else
-                ./bench_test.sh \$TEST_DIRS_ARG 2>&1 | tee test_output.log
+              
+              if [ \"\$RUN_PYTEST_ONLY\" = true ]; then
+                # 只跑 pytest（testing/ 修改）
+                echo 'Running pytest only (testing/ modified)'
+                set +e
+                pytest --forked ../testing/python/ -v -n 8 2>&1 | tee test_output.log
+                TEST_EXIT_CODE=\${PIPESTATUS[0]}
+                set -e
+              elif [ \"\$RUN_EXAMPLES\" = true ]; then
+                # 跑 examples + pytest
+                echo 'Running benchmark tests with args: '\$TEST_DIRS_ARG
+                set +e
+                if [ \"\$SKIP_PYTEST\" = true ]; then
+                  ./bench_test.sh --skip-pytest \$TEST_DIRS_ARG 2>&1 | tee test_output.log
+                else
+                  ./bench_test.sh \$TEST_DIRS_ARG 2>&1 | tee test_output.log
+                fi
+                TEST_EXIT_CODE=\${PIPESTATUS[0]}
+                set -e
               fi
-              TEST_EXIT_CODE=\${PIPESTATUS[0]}
-              set -e
 
               echo 'Test exit code: '\$TEST_EXIT_CODE
               echo \"test_exit_code=\$TEST_EXIT_CODE\" >> \$GITHUB_OUTPUT
@@ -405,35 +458,72 @@ jobs:
         run: |
           echo "Checking test results..."
           
-          # 此时已经在宿主机上，且 checkout 的工作目录中已经生成了容器内的 log
           cd examples
           if [ -f test_output.log ]; then
-            PASS_RATE_LINE=$(grep -i "Pass rate:" test_output.log || echo "")
-            if [ -n "$PASS_RATE_LINE" ]; then             
-              PASS_RATE=$(echo "$PASS_RATE_LINE" | grep -o '[0-9]*%' | tr -d '%')
-              echo "Found Pass rate: ${PASS_RATE}%"
-              echo "pass_rate=${PASS_RATE}" >> $GITHUB_OUTPUT
-              
-              if [ "$PASS_RATE" = "100" ]; then
-                echo "✅ All tests passed (Pass rate: 100%)"
+            # 检查是否是 pytest only 的输出
+            if grep -q "pytest" test_output.log && ! grep -q "Pass rate:" test_output.log; then
+              # pytest only 模式
+              if grep -q "passed" test_output.log && grep -q "failed" test_output.log; then
+                PASSED=$(grep -o "[0-9]* passed" test_output.log | head -1 | grep -o "[0-9]*" || echo "0")
+                FAILED=$(grep -o "[0-9]* failed" test_output.log | head -1 | grep -o "[0-9]*" || echo "0")
+                echo "pytest results: ${PASSED} passed, ${FAILED} failed"
+                echo "pass_rate=${PASSED}" >> $GITHUB_OUTPUT
+                
+                if [ "$FAILED" -eq 0 ]; then
+                  echo "✅ All pytest tests passed"
+                  echo "test_status=passed" >> $GITHUB_OUTPUT
+                else
+                  echo "❌ Pytest tests failed (${FAILED} failures)"
+                  echo "test_status=failed" >> $GITHUB_OUTPUT
+                  exit 1
+                fi
+              elif grep -q "passed" test_output.log; then
+                PASSED=$(grep -o "[0-9]* passed" test_output.log | head -1 | grep -o "[0-9]*" || echo "0")
+                echo "pytest results: ${PASSED} passed, 0 failed"
+                echo "pass_rate=${PASSED}" >> $GITHUB_OUTPUT
+                echo "✅ All pytest tests passed"
                 echo "test_status=passed" >> $GITHUB_OUTPUT
-              else
-                echo "❌ Tests failed (Pass rate: ${PASS_RATE}%)"
+              elif grep -q "failed" test_output.log; then
+                FAILED=$(grep -o "[0-9]* failed" test_output.log | head -1 | grep -o "[0-9]*" || echo "0")
+                echo "❌ Pytest tests failed (${FAILED} failures)"
+                echo "pass_rate=0" >> $GITHUB_OUTPUT
                 echo "test_status=failed" >> $GITHUB_OUTPUT
-                echo "Failing step because Pass rate is not 100%"
+                exit 1
+              elif grep -q "error" test_output.log; then
+                echo "⚠️ Pytest encountered errors"
+                echo "pass_rate=0" >> $GITHUB_OUTPUT
+                echo "test_status=error" >> $GITHUB_OUTPUT
                 exit 1
               fi
             else
-              echo "⚠️ Could not find 'Pass rate:' in test output"
-              echo "pass_rate=0" >> $GITHUB_OUTPUT
-              echo "test_status=error" >> $GITHUB_OUTPUT
-              exit 1
-            fi
-            
-            EXEC_SUMMARY=$(grep -i "Execution Summary" -A 2 test_output.log || echo "")
-            if [ -n "$EXEC_SUMMARY" ]; then
-              echo "Execution Summary:"
-              echo "$EXEC_SUMMARY"
+              # bench_test.sh 模式
+              PASS_RATE_LINE=$(grep -i "Pass rate:" test_output.log || echo "")
+              if [ -n "$PASS_RATE_LINE" ]; then             
+                PASS_RATE=$(echo "$PASS_RATE_LINE" | grep -o '[0-9]*%' | tr -d '%')
+                echo "Found Pass rate: ${PASS_RATE}%"
+                echo "pass_rate=${PASS_RATE}" >> $GITHUB_OUTPUT
+                
+                if [ "$PASS_RATE" = "100" ]; then
+                  echo "✅ All tests passed (Pass rate: 100%)"
+                  echo "test_status=passed" >> $GITHUB_OUTPUT
+                else
+                  echo "❌ Tests failed (Pass rate: ${PASS_RATE}%)"
+                  echo "test_status=failed" >> $GITHUB_OUTPUT
+                  echo "Failing step because Pass rate is not 100%"
+                  exit 1
+                fi
+              else
+                echo "⚠️ Could not find 'Pass rate:' in test output"
+                echo "pass_rate=0" >> $GITHUB_OUTPUT
+                echo "test_status=error" >> $GITHUB_OUTPUT
+                exit 1
+              fi
+              
+              EXEC_SUMMARY=$(grep -i "Execution Summary" -A 2 test_output.log || echo "")
+              if [ -n "$EXEC_SUMMARY" ]; then
+                echo "Execution Summary:"
+                echo "$EXEC_SUMMARY"
+              fi
             fi
           else
             echo "⚠️ Test output file not found"
