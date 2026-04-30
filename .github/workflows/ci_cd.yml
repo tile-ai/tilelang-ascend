@@ -184,6 +184,18 @@ jobs:
               continue
             fi
             
+            # examples 根目录文件（如 bench_test.sh）→ 全量测试
+            if [[ "$file" =~ ^examples/[^/]+$ ]]; then
+              echo "Examples root file modified: $file - will run full examples + pytest"
+              run_examples=true
+              run_pytest_only=false
+              should_skip=false
+              test_dirs_array=()
+              pytest_files_array=()
+              pytest_dirs_array=()
+              break
+            fi
+            
             # 其他文件（非 docs/images）-> 需要测试
             if [[ ! "$file" =~ \.md$ ]] && [[ ! "$file" =~ \.png$ ]] && \
                [[ ! "$file" =~ ^docs/ ]] && [[ ! "$file" =~ ^images/ ]] && \
