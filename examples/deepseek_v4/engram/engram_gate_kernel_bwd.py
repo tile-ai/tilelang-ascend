@@ -22,10 +22,8 @@ def get_engram_gate_bwd_kernel(
     NPU-specific correctness differences:
       - logical warp/lane are expanded as serial loops
       - x/k/w tile loop is outside lane loops
-      - grad_w uses a separate UB tile reduction pass to avoid GM +=
+      - grad_w is accumulated during Pass 2 to avoid redundant GM reads
     """
-    assert hc_mult == 4
-
     warp_size = 32
     warps_per_head = 2
     num_warps = hc_mult * warps_per_head
@@ -109,7 +107,7 @@ def get_engram_gate_bwd_kernel(
             w_fused_local = T.alloc_shared((x_vec_size,), accum_dtype)
 
             grad_v_partial = T.alloc_shared((v_vec_size,), accum_dtype)
-            grad_w_tile = T.alloc_shared((x_blk_d,), accum_dtype)
+            grad_w_tile = T.alloc_shared((hc_mult, hidden_size), accum_dtype)
 
             xw_val = T.alloc_shared((x_vec_size,), accum_dtype)
             kdotk_val = T.alloc_shared((x_vec_size,), accum_dtype)
@@ -136,14 +134,15 @@ def get_engram_gate_bwd_kernel(
 
             x_smem = T.alloc_shared((2, hc_mult, x_blk_d), dtype)
             k_smem = T.alloc_shared((2, hc_mult, x_blk_d), dtype)
-            w_smem = T.alloc_shared((2, hc_mult, x_blk_d), accum_dtype)
+            w_smem = T.alloc_shared((hc_mult, x_blk_d), accum_dtype)
 
             dldg_smem = T.alloc_shared((hc_mult, warps_per_head), accum_dtype)
-            dldg_r_cache = T.alloc_shared((per_block_static, hc_mult), accum_dtype)
 
             per_block = T.ceildiv(num_tokens, num_persistent_blocks)
             t_start = T.min(per_block * pid_p, num_tokens)
             t_end = T.min(per_block * (pid_p + 1), num_tokens)
+
+            T.clear(grad_w_tile)
 
             for i_off in T.serial(per_block_static):
                 i_s = t_start + i_off
@@ -237,7 +236,7 @@ def get_engram_gate_bwd_kernel(
                                     i * threads * v_vec_size + tid * v_vec_size + i_k,
                                 ] = grad_v_partial[i_k]
 
-                    # === Pass 2: grad_x / grad_k ===
+                    # === Pass 2: grad_x / grad_k / grad_w_partial accumulation ===
                     for head_id in T.serial(hc_mult):
                         gate_local_hc[0] = gate_in[i_s, head_id]
                         rstd_x_local[0] = rstd_x_in[i_s, head_id]
@@ -252,15 +251,9 @@ def get_engram_gate_bwd_kernel(
                         T.clear(sqrt_in)
                         T.clear(sqrt_out)
 
-                        if dot_in_abs[0] < 1.0e-30:
-                            sqrt_in[0] = 0.0
-                        else:
-                            sqrt_in[0] = (
-                                scalar
-                                * rstd_x_local[0]
-                                * rstd_k_local[0]
-                                / dot_in_abs[0]
-                            )
+                        sqrt_in[0] = (
+                            scalar * rstd_x_local[0] * rstd_k_local[0] / dot_in_abs[0]
+                        )
 
                         T.vsqrt(sqrt_in, sqrt_out)
 
@@ -278,8 +271,6 @@ def get_engram_gate_bwd_kernel(
                                 * sqrt_out[0]
                             )
 
-                        dldg_r_cache[i_off, head_id] = dldg_r[0]
-
                         dot_x_local[0] = (
                             dot_in_local[0]
                             * rstd_x_local[0]
@@ -295,10 +286,17 @@ def get_engram_gate_bwd_kernel(
 
                         T.copy(hidden_states[i_s, :, 0:x_blk_d], x_smem[0, :, :])
                         T.copy(k[i_s, :, 0:x_blk_d], k_smem[0, :, :])
-                        T.copy(weight_fused[:, 0:x_blk_d], w_smem[0, :, :])
 
                         for tile_id in T.serial(num_x_tiles):
                             cur_phase = tile_id % 2
+
+                            T.copy(
+                                weight_fused[
+                                    :,
+                                    tile_id * x_blk_d : (tile_id + 1) * x_blk_d,
+                                ],
+                                w_smem[:, :],
+                            )
 
                             if tile_id + 1 < num_x_tiles:
                                 next_tile = tile_id + 1
@@ -319,13 +317,6 @@ def get_engram_gate_bwd_kernel(
                                         next_tile * x_blk_d : (next_tile + 1) * x_blk_d,
                                     ],
                                     k_smem[next_phase, :, :],
-                                )
-                                T.copy(
-                                    weight_fused[
-                                        :,
-                                        next_tile * x_blk_d : (next_tile + 1) * x_blk_d,
-                                    ],
-                                    w_smem[next_phase, :, :],
                                 )
 
                             for sub_warp_id in T.serial(warps_per_head):
@@ -349,7 +340,7 @@ def get_engram_gate_bwd_kernel(
                                                 cur_phase, head_id, local_base + i_k
                                             ]
                                             w_fused_local[i_k] = w_smem[
-                                                cur_phase, head_id, local_base + i_k
+                                                head_id, local_base + i_k
                                             ]
 
                                         for i_k in T.Parallel(x_vec_size):
@@ -375,51 +366,13 @@ def get_engram_gate_bwd_kernel(
                                             grad_k[i_s, head_id, global_base + i_k] = (
                                                 gk_val[i_k]
                                             )
-
-            # === Pass 3: grad_w_partial ===
-            for head_id in T.serial(hc_mult):
-                for tile_id in T.serial(num_x_tiles):
-                    T.clear(grad_w_tile)
-
-                    for i_off in T.serial(per_block_static):
-                        i_s = t_start + i_off
-
-                        if i_s < t_end:
-                            T.copy(
-                                hidden_states[
-                                    i_s, :, tile_id * x_blk_d : (tile_id + 1) * x_blk_d
-                                ],
-                                x_smem[0, :, :],
-                            )
-                            T.copy(
-                                k[i_s, :, tile_id * x_blk_d : (tile_id + 1) * x_blk_d],
-                                k_smem[0, :, :],
-                            )
-
-                            for sub_warp_id in T.serial(warps_per_head):
-                                for lane_id in T.serial(warp_size):
-                                    for i_sub in T.serial(x_sub_blks):
-                                        sub_off = (
-                                            i_sub * threads_per_head * x_vec_size
-                                            + sub_warp_id * warp_size * x_vec_size
-                                        )
-                                        local_base = sub_off + lane_id * x_vec_size
-
-                                        for i_k in T.Parallel(x_vec_size):
-                                            x_local[i_k] = x_smem[
-                                                0, head_id, local_base + i_k
-                                            ]
-                                            k_local[i_k] = k_smem[
-                                                0, head_id, local_base + i_k
-                                            ]
-
-                                        for i_k in T.Parallel(x_vec_size):
-                                            grad_w_tile[local_base + i_k] += (
-                                                dldg_r_cache[i_off, head_id]
-                                                * x_local[i_k]
-                                                * k_local[i_k]
+                                            grad_w_tile[head_id, global_base + i_k] += (
+                                                dldg_r[0] * x_local[i_k] * k_local[i_k]
                                             )
 
+            # === Write grad_w_partial ===
+            for head_id in T.serial(hc_mult):
+                for tile_id in T.serial(num_x_tiles):
                     for sub_warp_id in T.serial(warps_per_head):
                         for lane_id in T.serial(warp_size):
                             for i_sub in T.serial(x_sub_blks):
@@ -433,7 +386,7 @@ def get_engram_gate_bwd_kernel(
                                 for i_k in T.Parallel(x_vec_size):
                                     grad_w_partial[
                                         pid_p, head_id, global_base + i_k
-                                    ] = grad_w_tile[local_base + i_k]
+                                    ] = grad_w_tile[head_id, global_base + i_k]
 
     return engram_gate_bwd_kernel
 
@@ -576,7 +529,7 @@ def run_test():
 
     device = "npu"
 
-    num_tokens = 16
+    num_tokens = 4001
     hc_mult = 4
     hidden_size = 4096
     clamp_value = 1e-6

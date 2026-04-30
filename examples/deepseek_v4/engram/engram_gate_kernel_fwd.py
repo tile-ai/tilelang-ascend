@@ -13,6 +13,7 @@ def get_engram_gate_fwd_kernel(
     hidden_size: int,
     eps: float,
     scalar: float,
+    num_persistent_blocks: int,
     clamp_value: float = 1e-6,
     hc_mult: int = 4,
     save_for_backward: bool = True,
@@ -29,7 +30,6 @@ def get_engram_gate_fwd_kernel(
         raise ValueError(f"No valid blk_d for hidden_size={hidden_size}")
 
     blk_d = _choose_blk_d(hidden_size)
-    num_persistent_blocks = 6
 
     assert hidden_size % blk_d == 0
     assert hidden_size >= 2 * blk_d
@@ -77,6 +77,10 @@ def get_engram_gate_fwd_kernel(
             t_end = T.min(per_block * (pid_b + 1), num_tokens)
 
             tmp_val = T.alloc_shared((vec_size,), accum_dtype)
+
+            gate_raw = T.alloc_shared((1,), accum_dtype)
+            gate_abs = T.alloc_shared((1,), accum_dtype)
+            gate_sqrt = T.alloc_shared((1,), accum_dtype)
 
             for i_s in T.serial(t_start, t_end):
                 # === Pass 1: Reduction with cp.async pipeline ===
@@ -171,9 +175,6 @@ def get_engram_gate_fwd_kernel(
                 )
 
                 # gate_score_reducer[0] = T.sigmoid(T.copysign(T.sqrt(T.clamp(T.abs(gate_score_reducer[0]), clamp_value, float('inf'))), gate_score_reducer[0]))
-                gate_raw = T.alloc_shared((1,), accum_dtype)
-                gate_abs = T.alloc_shared((1,), accum_dtype)
-                gate_sqrt = T.alloc_shared((1,), accum_dtype)
                 gate_raw[0] = gate_score_reducer[0]
                 T.vabs(gate_raw, gate_abs)
                 T.vclamp(gate_abs, gate_abs, clamp_value, float("inf"))
@@ -296,8 +297,17 @@ def engram_gate_fwd(
     num_tokens, hc_mult, hidden_size = hidden_states.shape
     scalar = hidden_size**-0.5
 
+    num_persistent_blocks = 6
+
     kernel = get_engram_gate_fwd_kernel(
-        num_tokens, hidden_size, eps, scalar, clamp_value, hc_mult, save_for_backward
+        num_tokens,
+        hidden_size,
+        eps,
+        scalar,
+        num_persistent_blocks,
+        clamp_value,
+        hc_mult,
+        save_for_backward,
     )
 
     output = torch.empty_like(hidden_states)
@@ -367,8 +377,8 @@ def run_test():
 
     device = "npu"
     hc_mult = 4
-    num_tokens = 7
-    hidden_size = 512
+    num_tokens = 4001
+    hidden_size = 4096
 
     eps = 1e-20
     clamp_value = 1e-6
