@@ -11,6 +11,7 @@ on:
       - '**.png'
       - 'docs/**'                              # 文档目录
       - 'images/**'                            # 图片目录
+      - '.agents/**'                           # Agent skill 目录
 
   pull_request:
     branches:
@@ -20,6 +21,7 @@ on:
       - '**.png'
       - 'docs/**'
       - 'images/**'
+      - '.agents/**'
 
   # 手动触发（通过 GitHub Actions 页面点击）
   workflow_dispatch:
@@ -38,34 +40,364 @@ on:
   schedule:
     - cron: '0 18 * * *' # 每天 UTC 18:00 运行 (北京时间凌晨 2:00)
 
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  pull-requests: write
+  statuses: write
+  actions: write
+  issues: write
+
 concurrency:
-  # PR 场景：按 PR 分支名分组，同一 PR 的新 push 共享同一组
-  # 手动/定时场景：head_ref 为空，退化为 github.run_id（每次唯一），互不干扰
-  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  # PR 场景（含 pull_request 和 /re-test）：统一按 PR 号分组，新运行自动取消旧运行
+  # 手动/定时/push 场景：退化为 github.run_id（每次唯一），互不干扰
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.event.issue.number || github.run_id }}
   # 同一组中有新运行时，自动取消旧的正在运行的 workflow 
   cancel-in-progress: true
   
 jobs:
+  check_changes:
+    name: Check PR Status and Changes
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' || github.event_name == 'issue_comment'
+    outputs:
+      merged: ${{ steps.pr_info.outputs.merged }}
+      test_dirs: ${{ steps.detect_changes.outputs.test_dirs }}
+      pytest_files: ${{ steps.detect_changes.outputs.pytest_files }}
+      run_examples: ${{ steps.detect_changes.outputs.run_examples }}
+      run_pytest_only: ${{ steps.detect_changes.outputs.run_pytest_only }}
+      should_skip: ${{ steps.detect_changes.outputs.should_skip }}
+      status_comment_id: ${{ steps.post_queued_status.outputs.comment_id }}
+    steps:
+      - name: Get PR info
+        if: github.event_name == 'issue_comment'
+        id: pr_info
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number
+            });
+            core.setOutput('head_ref', pr.data.head.ref);
+            core.setOutput('head_sha', pr.data.head.sha);
+            core.setOutput('base_ref', pr.data.base.ref);
+            core.setOutput('merged', pr.data.merged ? 'true' : 'false');
+            core.setOutput('state', pr.data.state);
+
+      - name: Set merged status for PR event
+        if: github.event_name == 'pull_request'
+        id: pr_status
+        run: |
+          echo "merged=false" >> $GITHUB_OUTPUT
+          echo "base_ref=${{ github.base_ref }}" >> $GITHUB_OUTPUT
+
+      - name: React to merged PR comment
+        if: github.event_name == 'issue_comment' && steps.pr_info.outputs.merged == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.reactions.createForIssueComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: context.payload.comment.id,
+              content: 'confused'
+            });
+            github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: '⚠️ This PR has been merged. Skipping tests.'
+            });
+
+      - name: Post queued status for /re-test
+        if: github.event_name == 'issue_comment' && steps.pr_info.outputs.merged != 'true' && contains(github.event.comment.body, '/re-test')
+        id: post_queued_status
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const runUrl = `${process.env.GITHUB_SERVER_URL}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const body = `⏳ **Task submitted and queued**\n\nWorkflow run: [View details](<${runUrl}>)\n\n_This message will be updated when the task starts._`;
+            const comment = await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: body
+            });
+            core.setOutput('comment_id', comment.data.id);
+
+      - name: Checkout code
+        if: steps.pr_info.outputs.merged != 'true' || github.event_name == 'pull_request'
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'issue_comment' && format('refs/pull/{0}/head', github.event.issue.number) || '' }}
+
+      - name: Detect changed files
+        if: steps.pr_info.outputs.merged != 'true' || github.event_name == 'pull_request'
+        id: detect_changes
+        run: |
+          BASE_REF="${{ github.event_name == 'issue_comment' && steps.pr_info.outputs.base_ref || github.base_ref }}"
+          git fetch origin $BASE_REF --depth=1
+          changed_files=$(git diff --name-only origin/$BASE_REF HEAD)
+          echo "Changed files:"
+          echo "$changed_files"
+          
+          run_examples=false
+          run_pytest_only=false
+          should_skip=true
+          test_dirs_array=()
+          pytest_files_array=()
+          pytest_dirs_array=()
+          
+          for file in $changed_files; do
+            # 排除 .agents 目录（skill 配置，无需测试）
+            if [[ "$file" =~ ^\.agents/ ]]; then
+              echo "Agents skill file: $file - will skip"
+              continue
+            fi
+            
+            # 排除文档/图片文件
+            if [[ "$file" =~ \.md$ ]] || [[ "$file" =~ \.png$ ]]; then
+              echo "Doc/image file: $file - will skip"
+              continue
+            fi
+            
+            # testing/ 修改 → 收集 pytest 文件/目录
+            if [[ "$file" =~ ^testing/python/ ]]; then
+              if [[ "$file" =~ \.py$ ]]; then
+                pytest_files_array+=("$file")
+                # 提取子目录
+                if [[ "$file" =~ ^testing/python/([^/]+)/ ]]; then
+                  pytest_subdir="${BASH_REMATCH[1]}"
+                  if [[ ! " ${pytest_dirs_array[*]} " =~ " $pytest_subdir " ]]; then
+                    pytest_dirs_array+=("$pytest_subdir")
+                    echo "Mapped $file → pytest subdir: $pytest_subdir"
+                  fi
+                fi
+              fi
+              run_examples=false
+              run_pytest_only=true
+              should_skip=false
+              continue
+            fi
+            
+            # 核心文件修改 → 全量 examples + pytest
+            # 排除文档/图片文件
+            if [[ "$file" =~ \.md$ ]] || [[ "$file" =~ \.png$ ]]; then
+              echo "Doc/image file: $file - will skip"
+              continue
+            fi
+            
+            if [[ "$file" =~ ^tilelang/ ]] || [[ "$file" =~ ^src/ ]] || \
+               [[ "$file" =~ CMakeLists\.txt ]] || [[ "$file" =~ requirements ]] || [[ "$file" =~ install_ascend\.sh ]]; then
+              echo "Core file modified: $file - will run full examples + pytest"
+              run_examples=true
+              run_pytest_only=false
+              should_skip=false
+              test_dirs_array=()
+              pytest_files_array=()
+              pytest_dirs_array=()
+              break
+            fi
+            
+            # examples 文件 → 增量 examples + pytest
+            if [[ "$file" =~ ^examples/([^/]+)/ ]]; then
+              test_dir="${BASH_REMATCH[1]}"
+              # 排除非测试目录
+              if [[ "$test_dir" != "dispatch_combine" ]] && [[ "$test_dir" != "shmem" ]]; then
+                if [[ ! " ${test_dirs_array[*]} " =~ " $test_dir " ]]; then
+                  test_dirs_array+=("$test_dir")
+                  echo "Mapped $file → example dir: $test_dir"
+                fi
+                run_examples=true
+                run_pytest_only=false
+                should_skip=false
+              fi
+              continue
+            fi
+            
+            # examples 根目录文件（如 bench_test.sh）→ 判断是否需要测试
+            if [[ "$file" =~ ^examples/[^/]+$ ]]; then
+              # 排除文档文件
+              if [[ "$file" =~ \.md$ ]] || [[ "$file" =~ \.png$ ]] || \
+                 [[ "$file" =~ \.gitignore ]] || [[ "$file" =~ LICENSE ]]; then
+                echo "Examples root doc file: $file - will skip"
+                continue
+              fi
+              # 关键文件（bench_test.sh 等）→ 全量测试
+              echo "Examples root file modified: $file - will run full examples + pytest"
+              run_examples=true
+              run_pytest_only=false
+              should_skip=false
+              test_dirs_array=()
+              pytest_files_array=()
+              pytest_dirs_array=()
+              break
+            fi
+            
+            # 其他文件（非 docs/images）-> 需要测试
+            if [[ ! "$file" =~ \.md$ ]] && [[ ! "$file" =~ \.png$ ]] && \
+               [[ ! "$file" =~ ^docs/ ]] && [[ ! "$file" =~ ^images/ ]] && \
+               [[ ! "$file" =~ ^testing/ ]] && [[ ! "$file" =~ ^tilelang/ ]] && \
+               [[ ! "$file" =~ ^src/ ]] && [[ ! "$file" =~ ^examples/ ]]; then
+              echo "Other file modified: $file - will run full tests"
+              run_examples=true
+              run_pytest_only=false
+              should_skip=false
+              test_dirs_array=()
+              pytest_files_array=()
+              pytest_dirs_array=()
+              break
+            fi
+          done
+          
+          # 决定 pytest 测试范围
+          pytest_files=""
+          if [[ ${#pytest_files_array[@]} -gt 0 ]]; then
+            # 如果所有修改在同一个子目录，只跑该子目录
+            if [[ ${#pytest_dirs_array[@]} -eq 1 ]]; then
+              pytest_files="testing/python/${pytest_dirs_array[0]}/"
+              echo "All testing files in same subdir: ${pytest_dirs_array[0]}"
+            elif [[ ${#pytest_files_array[@]} -le 3 ]]; then
+              # 少量文件（≤3），只跑具体文件
+              pytest_files="${pytest_files_array[*]}"
+              echo "Few testing files modified: ${pytest_files_array[*]}"
+            else
+              # 多文件散布不同目录，跑全量 pytest
+              pytest_files=""
+              echo "Many testing files scattered, will run full pytest"
+            fi
+          fi
+          
+          test_dirs="${test_dirs_array[*]}"
+          echo "run_examples=${run_examples}" >> $GITHUB_OUTPUT
+          echo "run_pytest_only=${run_pytest_only}" >> $GITHUB_OUTPUT
+          echo "test_dirs=${test_dirs}" >> $GITHUB_OUTPUT
+          echo "pytest_files=${pytest_files}" >> $GITHUB_OUTPUT
+          echo "should_skip=${should_skip}" >> $GITHUB_OUTPUT
+          
+          if [[ "$run_pytest_only" == "true" ]]; then
+            if [[ -n "$pytest_files" ]]; then
+              echo "Will run incremental pytest for: $pytest_files"
+            else
+              echo "Will run full pytest (testing/ modified)"
+            fi
+          elif [[ "$run_examples" == "true" ]]; then
+            if [[ -n "$test_dirs" ]]; then
+              echo "Will run incremental examples + pytest for: $test_dirs"
+            else
+              echo "Will run full examples + pytest (core files modified)"
+            fi
+          elif [[ "$should_skip" == "true" ]]; then
+            echo "No testable files modified (docs/images only) - will skip"
+          fi
+
   test:
     name: Benchmark Tests (Ascend NPU)
-    runs-on: [self-hosted, Linux, X64, ascend_910b] 
-    if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.run_tests == 'true' }}
-    timeout-minutes: 60            # 1小时超时失败
+    runs-on: [self-hosted, Linux, X64, ascend_910b]
+    needs: check_changes
+    outputs:
+      pass_rate: ${{ steps.check_results.outputs.pass_rate }}
+      test_status: ${{ steps.check_results.outputs.test_status }}
+      test_summary: ${{ steps.check_results.outputs.test_summary }}
+    if: |
+      (github.event_name != 'workflow_dispatch' || github.event.inputs.run_tests == 'true') &&
+      (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') ||
+      (
+        (github.event_name == 'pull_request' || github.event_name == 'issue_comment') &&
+        (github.event_name != 'issue_comment' || (github.event.issue.pull_request && contains(github.event.comment.body, '/re-test'))) &&
+        needs.check_changes.outputs.merged != 'true' &&
+        needs.check_changes.outputs.should_skip != 'true'
+      )
+    timeout-minutes: 60
     env:
       FULL_BUILD: ${{ github.event_name == 'schedule' || github.event.inputs.full_build == 'true' }}
     steps:
+      - name: Get PR info and check merged status
+        if: github.event_name == 'issue_comment'
+        id: pr_info
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number
+            });
+            core.setOutput('head_ref', pr.data.head.ref);
+            core.setOutput('head_sha', pr.data.head.sha);
+            core.setOutput('base_ref', pr.data.base.ref);
+            core.setOutput('merged', pr.data.merged);
+            core.setOutput('state', pr.data.state);
+
+      - name: React to /re-test comment
+        if: github.event_name == 'issue_comment' && steps.pr_info.outputs.merged != 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.reactions.createForIssueComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: context.payload.comment.id,
+              content: 'rocket'
+            });
+
+      - name: Update status comment to running
+        if: github.event_name == 'issue_comment' && needs.check_changes.outputs.status_comment_id != ''
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const commentId = '${{ needs.check_changes.outputs.status_comment_id }}';
+            if (!commentId || commentId === '') {
+              console.log('No status comment ID, skipping update');
+              return;
+            }
+            const runUrl = `${process.env.GITHUB_SERVER_URL}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const body = `🚀 **Task is now running**\n\nWorkflow run: [View details](<${runUrl}>)\n\n_This message will be updated when the task completes._`;
+            await github.rest.issues.updateComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: parseInt(commentId),
+              body: body
+            });
+
+      - name: React to merged PR comment
+        if: github.event_name == 'issue_comment' && steps.pr_info.outputs.merged == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.reactions.createForIssueComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: context.payload.comment.id,
+              content: 'confused'
+            });
+            github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: '⚠️ This PR has been merged. Skipping tests.'
+            });
+
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           submodules: false
           fetch-depth: 0
+          ref: ${{ github.event_name == 'issue_comment' && format('refs/pull/{0}/head', github.event.issue.number) || '' }}
 
       - name: Check if skip pytest
         id: check_skip_pytest
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' || github.event_name == 'issue_comment'
         run: |
-          git fetch origin ${{ github.base_ref }}
-          changed_files=$(git diff --name-only origin/${{ github.base_ref }} HEAD)
+          BASE_REF="${{ github.event_name == 'issue_comment' && steps.pr_info.outputs.base_ref || github.base_ref }}"
+          git fetch origin $BASE_REF
+          changed_files=$(git diff --name-only origin/$BASE_REF HEAD)
           
           skip_pytest=true
           
@@ -96,7 +428,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: build-cache/
-          key: tilelang-build-${{ github.base_ref || github.ref_name }}-${{ hashFiles('CMakeLists.txt', 'requirements.txt', 'install_ascend.sh') }}
+          key: tilelang-build-${{ github.event_name == 'issue_comment' && steps.pr_info.outputs.base_ref || github.base_ref || github.ref_name }}-${{ hashFiles('CMakeLists.txt', 'requirements.txt', 'install_ascend.sh') }}
       
       # 全量编译，清理所有残留编译产物
       - name: Clean build artifacts for full build
@@ -122,7 +454,42 @@ jobs:
           fi
           
           SKIP_PYTEST_VALUE="${{ steps.check_skip_pytest.outputs.skip_pytest }}"
-          echo "run in existed container..."
+          
+          # 确定 TEST_DIRS 参数和测试策略
+          # push/schedule/workflow_dispatch 事件：全量测试
+          # PR/issue_comment 事件：根据 check_changes outputs
+          if [[ "$GITHUB_EVENT_NAME" == "push" ]] || [[ "$GITHUB_EVENT_NAME" == "schedule" ]] || [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            TEST_DIRS_ARG=""
+            PYTEST_FILES_ARG=""
+            RUN_EXAMPLES="true"
+            RUN_PYTEST_ONLY="false"
+            echo "Event: $GITHUB_EVENT_NAME - running full tests"
+          else
+            TEST_DIRS_VALUE="${{ needs.check_changes.outputs.test_dirs }}"
+            PYTEST_FILES_VALUE="${{ needs.check_changes.outputs.pytest_files }}"
+            RUN_EXAMPLES="${{ needs.check_changes.outputs.run_examples }}"
+            RUN_PYTEST_ONLY="${{ needs.check_changes.outputs.run_pytest_only }}"
+            
+            if [[ "$RUN_PYTEST_ONLY" == "true" ]]; then
+              TEST_DIRS_ARG=""
+              if [[ -n "$PYTEST_FILES_VALUE" ]]; then
+                PYTEST_FILES_ARG="$PYTEST_FILES_VALUE"
+                echo "Running incremental pytest for: $PYTEST_FILES_VALUE"
+              else
+                PYTEST_FILES_ARG=""
+                echo "Running full pytest (testing/ modified)"
+              fi
+            elif [[ "$RUN_EXAMPLES" == "true" ]]; then
+              PYTEST_FILES_ARG=""
+              if [[ -z "$TEST_DIRS_VALUE" ]]; then
+                TEST_DIRS_ARG=""
+                echo "Running full examples + pytest (core files modified)"
+              else
+                TEST_DIRS_ARG="--dirs ${TEST_DIRS_VALUE}"
+                echo "Running incremental examples + pytest for: $TEST_DIRS_VALUE"
+              fi
+            fi
+          fi
 
           docker exec \
             -w $GITHUB_WORKSPACE \
@@ -131,6 +498,10 @@ jobs:
             -e BASH_ENV=/root/.bashrc \
             -e INCREMENTAL_FLAG="$INCREMENTAL_FLAG" \
             -e SKIP_PYTEST=$SKIP_PYTEST_VALUE \
+            -e TEST_DIRS_ARG="$TEST_DIRS_ARG" \
+            -e PYTEST_FILES_ARG="$PYTEST_FILES_ARG" \
+            -e RUN_EXAMPLES="$RUN_EXAMPLES" \
+            -e RUN_PYTEST_ONLY="$RUN_PYTEST_ONLY" \
             tilelang_x1 \
             bash -c "
               set -e
@@ -139,7 +510,7 @@ jobs:
               if [ -d build-cache ] && [ \"\$(ls -A build-cache)\" ]; then
                 echo \"Copy build cache...\"
                 mkdir -p build
-                cp -r build-cache/* build/ 
+                cp -ra build-cache/* build/ 
               fi
 
               # 1. 增量编译项目
@@ -148,7 +519,7 @@ jobs:
               if [ -d \"build\" ]; then
                 echo \"Saving build artifacts...\"
                 rm -rf build-cache/*
-                cp -r build/* build-cache/
+                cp -ra build/* build-cache/
               fi
 
               # 2. 加载环境变量
@@ -159,15 +530,32 @@ jobs:
               # 3. 运行测试用例
               cd examples
               chmod +x bench_test.sh
-              echo 'Running benchmark tests...'
-              set +e
-              if [ \"\$SKIP_PYTEST\" = true ]; then
-                ./bench_test.sh --skip-pytest 2>&1 | tee test_output.log
-              else
-                ./bench_test.sh 2>&1 | tee test_output.log
+              
+              if [ \"\$RUN_PYTEST_ONLY\" = true ]; then
+                # 只跑 pytest（testing/ 修改）
+                if [ -n \"\$PYTEST_FILES_ARG\" ]; then
+                  echo 'Running incremental pytest for: '\$PYTEST_FILES_ARG
+                  set +e
+                  pytest --forked ../\$PYTEST_FILES_ARG -v -n 4 2>&1 | tee test_output.log
+                else
+                  echo 'Running full pytest (testing/ modified)'
+                  set +e
+                  pytest --forked ../testing/python/ -v -n 8 2>&1 | tee test_output.log
+                fi
+                TEST_EXIT_CODE=\${PIPESTATUS[0]}
+                set -e
+              elif [ \"\$RUN_EXAMPLES\" = true ]; then
+                # 跑 examples + pytest
+                echo 'Running benchmark tests with args: '\$TEST_DIRS_ARG
+                set +e
+                if [ \"\$SKIP_PYTEST\" = true ]; then
+                  ./bench_test.sh --skip-pytest \$TEST_DIRS_ARG 2>&1 | tee test_output.log
+                else
+                  ./bench_test.sh \$TEST_DIRS_ARG 2>&1 | tee test_output.log
+                fi
+                TEST_EXIT_CODE=\${PIPESTATUS[0]}
+                set -e
               fi
-              TEST_EXIT_CODE=\${PIPESTATUS[0]}
-              set -e
 
               echo 'Test exit code: '\$TEST_EXIT_CODE
               echo \"test_exit_code=\$TEST_EXIT_CODE\" >> \$GITHUB_OUTPUT
@@ -181,7 +569,7 @@ jobs:
       - name: Delete old cache for overwrite
         if: always() && env.FULL_BUILD == 'true'
         run: |
-          KEY="${{ steps.cache-build.outputs.cache-matched-key }}"
+          KEY="tilelang-build-${{ github.base_ref || github.ref_name }}-${{ hashFiles('CMakeLists.txt', 'requirements.txt', 'install_ascend.sh') }}"
           echo "🗑️ Deleting old cache to allow overwrite: $KEY"
           curl -s -L \
             -X DELETE \
@@ -199,46 +587,126 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: build-cache/
-          key: tilelang-build-${{ github.base_ref || github.ref_name }}-${{ hashFiles('CMakeLists.txt', 'requirements.txt', 'install_ascend.sh') }}
+          key: tilelang-build-${{ github.event_name == 'issue_comment' && steps.pr_info.outputs.base_ref || github.base_ref || github.ref_name }}-${{ hashFiles('CMakeLists.txt', 'requirements.txt', 'install_ascend.sh') }}
           
       - name: Check pass rate
         id: check_results
         run: |
           echo "Checking test results..."
           
-          # 此时已经在宿主机上，且 checkout 的工作目录中已经生成了容器内的 log
           cd examples
           if [ -f test_output.log ]; then
-            PASS_RATE_LINE=$(grep -i "Pass rate:" test_output.log || echo "")
-            if [ -n "$PASS_RATE_LINE" ]; then             
-              PASS_RATE=$(echo "$PASS_RATE_LINE" | grep -o '[0-9]*%' | tr -d '%')
-              echo "Found Pass rate: ${PASS_RATE}%"
-              echo "pass_rate=${PASS_RATE}" >> $GITHUB_OUTPUT
-              
-              if [ "$PASS_RATE" = "100" ]; then
-                echo "✅ All tests passed (Pass rate: 100%)"
+            # 提取失败测试列表
+            FAILED_TESTS=$(grep -E "^\[FAILED\]" test_output.log || echo "")
+            
+            # 检查是否是 pytest only 的输出
+            if grep -q "pytest" test_output.log && ! grep -q "Pass rate:" test_output.log; then
+              # pytest only 模式
+              if grep -q "passed" test_output.log && grep -q "failed" test_output.log; then
+                PASSED=$(grep -o "[0-9]* passed" test_output.log | head -1 | grep -o "[0-9]*" || echo "0")
+                FAILED=$(grep -o "[0-9]* failed" test_output.log | head -1 | grep -o "[0-9]*" || echo "0")
+                TOTAL=$((PASSED + FAILED))
+                echo "pytest results: ${PASSED} passed, ${FAILED} failed"
+                echo "pass_rate=${PASSED}" >> $GITHUB_OUTPUT
+                
+                # 构建摘要
+                SUMMARY="Total: ${TOTAL} | Passed: ${PASSED} | Failed: ${FAILED}"
+                echo "test_summary=${SUMMARY}" >> $GITHUB_OUTPUT
+                
+                if [ "$FAILED" -eq 0 ]; then
+                  echo "✅ All pytest tests passed"
+                  echo "test_status=passed" >> $GITHUB_OUTPUT
+                else
+                  echo "❌ Pytest tests failed (${FAILED} failures)"
+                  echo "test_status=failed" >> $GITHUB_OUTPUT
+                  if [ -n "$FAILED_TESTS" ]; then
+                    echo "Failed tests:"
+                    echo "$FAILED_TESTS"
+                  fi
+                  exit 1
+                fi
+              elif grep -q "passed" test_output.log; then
+                PASSED=$(grep -o "[0-9]* passed" test_output.log | head -1 | grep -o "[0-9]*" || echo "0")
+                echo "pytest results: ${PASSED} passed, 0 failed"
+                echo "pass_rate=${PASSED}" >> $GITHUB_OUTPUT
+                echo "test_summary=Total: ${PASSED} | Passed: ${PASSED} | Failed: 0" >> $GITHUB_OUTPUT
+                echo "✅ All pytest tests passed"
                 echo "test_status=passed" >> $GITHUB_OUTPUT
-              else
-                echo "❌ Tests failed (Pass rate: ${PASS_RATE}%)"
+              elif grep -q "failed" test_output.log; then
+                FAILED=$(grep -o "[0-9]* failed" test_output.log | head -1 | grep -o "[0-9]*" || echo "0")
+                echo "❌ Pytest tests failed (${FAILED} failures)"
+                echo "pass_rate=0" >> $GITHUB_OUTPUT
+                echo "test_summary=Total: ${FAILED} | Passed: 0 | Failed: ${FAILED}" >> $GITHUB_OUTPUT
                 echo "test_status=failed" >> $GITHUB_OUTPUT
-                echo "Failing step because Pass rate is not 100%"
+                if [ -n "$FAILED_TESTS" ]; then
+                  echo "Failed tests:"
+                  echo "$FAILED_TESTS"
+                fi
+                exit 1
+              elif grep -q "error" test_output.log; then
+                echo "⚠️ Pytest encountered errors"
+                echo "pass_rate=0" >> $GITHUB_OUTPUT
+                echo "test_summary=Pytest encountered errors" >> $GITHUB_OUTPUT
+                echo "test_status=error" >> $GITHUB_OUTPUT
                 exit 1
               fi
             else
-              echo "⚠️ Could not find 'Pass rate:' in test output"
-              echo "pass_rate=0" >> $GITHUB_OUTPUT
-              echo "test_status=error" >> $GITHUB_OUTPUT
-              exit 1
-            fi
-            
-            EXEC_SUMMARY=$(grep -i "Execution Summary" -A 2 test_output.log || echo "")
-            if [ -n "$EXEC_SUMMARY" ]; then
-              echo "Execution Summary:"
-              echo "$EXEC_SUMMARY"
+              # bench_test.sh 模式
+              PASS_RATE_LINE=$(grep -i "Pass rate:" test_output.log || echo "")
+              EXEC_SUMMARY=$(grep -i "Execution Summary" -A 2 test_output.log || echo "")
+              
+              if [ -n "$PASS_RATE_LINE" ]; then             
+                PASS_RATE=$(echo "$PASS_RATE_LINE" | grep -o '[0-9]*%' | tr -d '%')
+                TOTAL_LINE=$(grep -i "Total:" test_output.log || grep -i "Total" test_output.log || echo "")
+                
+                if [ -n "$TOTAL_LINE" ]; then
+                  TOTAL=$(echo "$TOTAL_LINE" | grep -o "Total: [0-9]*" | grep -o "[0-9]*" || echo "0")
+                  PASSED=$(echo "$TOTAL_LINE" | grep -o "Passed: [0-9]*" | grep -o "[0-9]*" || echo "0")
+                  FAILED=$(echo "$TOTAL_LINE" | grep -o "Failed: [0-9]*" | grep -o "[0-9]*" || echo "0")
+                else
+                  # 从 Pass rate 推算
+                  PASSED=$(grep -i "passed_scripts=" test_output.log || grep -c "[PASSED]" test_output.log || echo "0")
+                  FAILED=$(grep -i "failed_scripts=" test_output.log || grep -c "[FAILED]" test_output.log || echo "0")
+                  TOTAL=$((PASSED + FAILED))
+                fi
+                
+                echo "Found Pass rate: ${PASS_RATE}%"
+                echo "pass_rate=${PASS_RATE}" >> $GITHUB_OUTPUT
+                
+                # 构建摘要
+                SUMMARY="Total: ${TOTAL} | Passed: ${PASSED} | Failed: ${FAILED} (Pass rate: ${PASS_RATE}%)"
+                echo "test_summary=${SUMMARY}" >> $GITHUB_OUTPUT
+                
+                if [ "$PASS_RATE" = "100" ]; then
+                  echo "✅ All tests passed (Pass rate: 100%)"
+                  echo "test_status=passed" >> $GITHUB_OUTPUT
+                else
+                  echo "❌ Tests failed (Pass rate: ${PASS_RATE}%)"
+                  echo "test_status=failed" >> $GITHUB_OUTPUT
+                  if [ -n "$FAILED_TESTS" ]; then
+                    echo "Failed tests:"
+                    echo "$FAILED_TESTS"
+                  fi
+                  echo "Failing step because Pass rate is not 100%"
+                  exit 1
+                fi
+              else
+                echo "⚠️ Could not find 'Pass rate:' in test output"
+                echo "pass_rate=0" >> $GITHUB_OUTPUT
+                echo "test_summary=No pass rate found in test output" >> $GITHUB_OUTPUT
+                echo "test_status=error" >> $GITHUB_OUTPUT
+                exit 1
+              fi
+              
+              if [ -n "$EXEC_SUMMARY" ]; then
+                echo "Execution Summary:"
+                echo "$EXEC_SUMMARY"
+              fi
             fi
           else
             echo "⚠️ Test output file not found"
             echo "pass_rate=0" >> $GITHUB_OUTPUT
+            echo "test_summary=Test output file not found" >> $GITHUB_OUTPUT
             echo "test_status=error" >> $GITHUB_OUTPUT
             exit 1
           fi
@@ -253,3 +721,141 @@ jobs:
             examples/*.log
             examples/*.json
           retention-days: 30
+
+      - name: Update PR commit status (for /re-test)
+        if: always() && github.event_name == 'issue_comment'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const sha = '${{ steps.pr_info.outputs.head_sha }}';
+            const jobStatus = '${{ job.status }}';
+            const status = jobStatus === 'success' ? 'success' : 'failure';
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: sha,
+              state: status,
+              context: '${{ github.workflow }} / test',
+              description: `Re-test: ${status}`,
+              target_url: `${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}`
+            });
+
+      - name: Update status comment with final results
+        if: always() && github.event_name == 'issue_comment' && needs.check_changes.outputs.status_comment_id != ''
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const jobStatus = '${{ job.status }}';
+            const passRate = '${{ steps.check_results.outputs.pass_rate }}' || '0';
+            const testSummary = '${{ steps.check_results.outputs.test_summary }}' || 'No summary available';
+            const commentId = '${{ needs.check_changes.outputs.status_comment_id }}';
+            
+            if (!commentId || commentId === '') {
+              console.log('No status comment ID, skipping final update');
+              return;
+            }
+            
+            const runUrl = `${process.env.GITHUB_SERVER_URL}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            
+            const statusEmoji = jobStatus === 'success' ? '✅' : (jobStatus === 'failure' ? '❌' : '⚠️');
+            const statusText = jobStatus === 'success' ? 'Completed successfully' : (jobStatus === 'failure' ? 'Failed' : 'Completed with issues');
+            
+            const body = `${statusEmoji} **Task ${statusText}**\n\n**Summary:** ${testSummary}\n\nWorkflow run: [View details](<${runUrl}>)`;
+            
+            await github.rest.issues.updateComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: parseInt(commentId),
+              body: body
+            });
+
+  notify:
+    name: Notify Daily Test Results
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.event_name == 'schedule'
+    permissions:
+      issues: write
+    steps:
+      - name: Get test artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: test-results
+          path: test-results/
+        continue-on-error: true
+
+      - name: Extract failed tests
+        id: extract_failed
+        run: |
+          if [ -f test-results/examples/test_output.log ]; then
+            FAILED_TESTS=$(grep -E "^\[FAILED\]" test-results/examples/test_output.log | head -20 || echo "")
+            if [ -n "$FAILED_TESTS" ]; then
+              echo "failed_tests<<EOF" >> $GITHUB_OUTPUT
+              echo "$FAILED_TESTS" >> $GITHUB_OUTPUT
+              echo "EOF" >> $GITHUB_OUTPUT
+            else
+              echo "failed_tests=" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "failed_tests=" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create notification issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const testStatus = '${{ needs.test.outputs.test_status }}';
+            const passRate = '${{ needs.test.outputs.pass_rate }}';
+            const testSummary = '${{ needs.test.outputs.test_summary }}';
+            const failedTests = `${{ steps.extract_failed.outputs.failed_tests }}`;
+            const runDate = new Date().toLocaleString('zh-CN', { 
+              timeZone: 'Asia/Shanghai',
+              year: 'numeric',
+              month: '2-digit',
+              day: '2-digit',
+              hour: '2-digit',
+              minute: '2-digit'
+            });
+            
+            const statusEmoji = testStatus === 'passed' ? '✅' : (testStatus === 'failed' ? '❌' : '⚠️');
+            const statusText = testStatus === 'passed' ? 'All tests passed' : (testStatus === 'failed' ? 'Some tests failed' : 'Tests encountered errors');
+            
+            let body = `## 📊 Daily Test Report - ${runDate}
+            
+            **Status:** ${statusEmoji} ${statusText}
+            
+            **Summary:** ${testSummary}
+            
+            **Workflow Run:** [View Details](https://github.com/${context.repository.owner}/${context.repository.repo}/actions/runs/${context.runId})
+            
+            ---
+            
+            `;
+            
+            if (testStatus === 'failed' && failedTests) {
+              body += `### ❌ Failed Tests (showing first 20)
+            
+            ${failedTests}
+            
+            `;
+            }
+            
+            body += `### 📁 Artifacts
+            
+            - [test-results](https://github.com/${context.repository.owner}/${context.repository.repo}/actions/runs/${context.runId}) (available for 30 days)
+            
+            ---
+            
+            *This issue was automatically created by the daily scheduled test.*
+            *Assignees: @benyang0506, @fuhouyu-hw, @z00520135, @lwwangcgz*`;
+            
+            const title = `[Daily Test] ${statusEmoji} ${testSummary} - ${runDate}`;
+            
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: title,
+              body: body,
+              assignees: ['benyang0506', 'fuhouyu-hw', 'z00520135', 'lwwangcgz'],
+              labels: ['daily-test', testStatus === 'passed' ? 'test-passed' : 'test-failed']
+            });

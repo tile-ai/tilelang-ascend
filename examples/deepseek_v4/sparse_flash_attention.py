@@ -3,7 +3,6 @@
 
 import torch
 import logging
-from torch import nn
 
 import tilelang
 from tilelang import DataType, language as T
@@ -169,35 +168,43 @@ def sparse_attn_kernel(h: int, d: int, scale=None):
 
 
 # golden
+def gather_sparse_kv(kv_states: torch.Tensor, topk_idxs: torch.Tensor) -> torch.Tensor:
+    batch_size, seq_len, topk = topk_idxs.shape
+    batch_idx = torch.arange(batch_size, device=kv_states.device).view(batch_size, 1, 1).expand(-1, seq_len, topk)
+    safe_topk_idxs = torch.where(topk_idxs == -1, 0, topk_idxs).long()
+    gathered = kv_states[batch_idx, safe_topk_idxs, :]
+    gathered_mask = (topk_idxs != -1).unsqueeze(-1).to(gathered.dtype)
+    return gathered * gathered_mask
+
+
+def sparse_softmax_with_sink(scores: torch.Tensor, attn_sink: torch.Tensor, head_dim: int, softmax_dim: int = -1) -> torch.Tensor:
+    max_vals = torch.max(scores, dim=softmax_dim, keepdim=True).values
+    exp_scores = torch.exp(scores - max_vals)
+    sum_exp = torch.sum(exp_scores, dim=softmax_dim, keepdim=True)
+
+    sink_view_shape = [1] * scores.dim()
+    sink_view_shape[head_dim if head_dim >= 0 else scores.dim() + head_dim] = scores.shape[head_dim]
+    sink_term = torch.exp(attn_sink.view(sink_view_shape) - max_vals)
+    return exp_scores / (sum_exp + sink_term)
+
+
 def sparse_attn(
     query_states: torch.Tensor, kv_states: torch.Tensor, attn_sink: torch.Tensor, topk_idxs: torch.Tensor, softmax_scale: float
 ):
-    pattern_query_list = query_states.split(64, dim=2)
-    pattern_sink_list = attn_sink.split(64)
-    kv_states = kv_states.unsqueeze(1)
-    res = []
-    for i in range(len(pattern_query_list)):
-        pattern_query_states = pattern_query_list[i]
-        pattern_attn_sink = pattern_sink_list[i]
-        pattern_query_states = pattern_query_states.transpose(1, 2)
-        attn_weights = torch.matmul(pattern_query_states, kv_states.transpose(2, 3)) * softmax_scale
-        topk_idxs = topk_idxs.to(pattern_query_states.device)
-        index_mask = torch.full(
-            (pattern_query_states.shape[0], 1, pattern_query_states.shape[2], kv_states.shape[2] + 1),
-            fill_value=torch.finfo(torch.float32).min,
-            dtype=torch.float32,
-            device="npu",
-        ).scatter_(-1, topk_idxs.unsqueeze(1), 0)
-        attn_weights = attn_weights + index_mask[..., :-1]
-        sinks = pattern_attn_sink.reshape(1, -1, 1, 1).expand(pattern_query_states.shape[0], -1, pattern_query_states.shape[-2], -1)
-        combined_logits = torch.cat([attn_weights, sinks], dim=-1)
-        combined_logits = combined_logits - combined_logits.max(dim=-1, keepdim=True).values
-        probs = nn.functional.softmax(combined_logits, dim=-1, dtype=combined_logits.dtype)
-        scores = probs[..., :-1]
-        attn_output = torch.matmul(scores, kv_states)
-        attn_output = attn_output.transpose(1, 2).contiguous()
-        res.append(attn_output)
-    return torch.cat(res, dim=2)
+    sparse_kv = gather_sparse_kv(kv_states, topk_idxs)
+    score_mask = torch.where((topk_idxs == -1).unsqueeze(-2), -torch.inf, 0.0).to(device=query_states.device, dtype=torch.float32)
+    scores = torch.matmul(query_states, sparse_kv.transpose(-2, -1)).to(torch.float32)
+    probs = sparse_softmax_with_sink(scores * softmax_scale + score_mask, attn_sink, head_dim=-2)
+    return torch.matmul(probs, sparse_kv.to(torch.float32))
+
+
+def make_random_test_inputs(b: int, m: int, n: int, h: int, d: int, topk: int, dtype: torch.dtype):
+    return {
+        "q": torch.randn((b, m, h, d), dtype=dtype),
+        "kv": torch.randn((b, n, d), dtype=dtype),
+        "attn_sink": torch.randn((h,), dtype=torch.float32),
+        "topk_idxs": torch.randint(0, n, (b, m, topk), dtype=torch.int32, device="npu"),
+    }
 
 
 def test():
@@ -206,10 +213,11 @@ def test():
     b, m, n, h, d, topk = 1, 256, 256, 64, 512, 128  # Shape 1
     # b, m, n, h, d, topk = 1, 6, 6, 16, 512, 6  # Shape 2
 
-    q = torch.rand((b, m, h, d), dtype=dtype)
-    kv = torch.rand((b, n, d), dtype=dtype)
-    attn_sink = torch.rand((h), dtype=torch.float32)
-    topk_idxs = torch.rand((b, m, topk), dtype=torch.int32)
+    inputs = make_random_test_inputs(b, m, n, h, d, topk, dtype)
+    q = inputs["q"]
+    kv = inputs["kv"]
+    attn_sink = inputs["attn_sink"]
+    topk_idxs = inputs["topk_idxs"]
     output_golden = torch.zeros((b, m, h, d), dtype=dtype)
     softmax_scale = 512**-0.5
 

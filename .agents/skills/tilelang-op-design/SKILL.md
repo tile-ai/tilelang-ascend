@@ -64,8 +64,8 @@ description: "根据算子需求生成 TileLang-Ascend 算子设计文档（desi
 3. 分析算子特征：
    - **计算类型判定**：
      - 纯 Vector（element-wise / reduction）→ 仅需 UB
-     - 纯 Cube（含 matmul）→ 需要 L1 + L0A/L0B/L0C
-     - 混合（matmul + element-wise 后处理）→ 核间流水线
+     - 纯 Cube（仅 matmul）→ 需要 L1 + L0A/L0B/L0C
+     - 混合（matmul + element-wise 后处理）→ 核间流水线，需要 CV 融合
    - **复杂度级别**：
      - 单步（如 element-wise add）→ 无循环、单次搬运
      - 多步（如 softmax = max + sub + exp + sum + div）→ 多次计算、可能需要中间缓冲
@@ -91,9 +91,10 @@ description: "根据算子需求生成 TileLang-Ascend 算子设计文档（desi
 5. Tiling 策略
 6. 循环与调度结构
 7. 同步策略
-8. 验证方案
-9. 风险点与注意事项
-10. 交付清单
+8. CV 融合设计（如有）
+9. 验证方案
+10. 风险点与注意事项
+11. 交付清单
 
 ### Phase 4：质量自检
 
@@ -122,10 +123,13 @@ description: "根据算子需求生成 TileLang-Ascend 算子设计文档（desi
 │   │   内存: GM→L1→L0A/L0B→L0C→UB→GM
 │   │
 │   └─ matmul + element-wise 后处理 → 混合（融合算子）
-│       模式: Expert + 核间流水线
-│       API: T.gemm + T.tile.* / T.Parallel
-│       内存: Cube 核 L0C→UB 交给 Vector 核处理
-│       同步: T.set_cross_flag / T.wait_cross_flag
+│       模式: Developer + 自动同步（推荐）或 Expert + 手动同步
+│       API: T.gemm_v0 + T.tile.* / T.Parallel + workspace
+│       内存: GM→L1→L0A/L0B→L0C→workspace→UB→GM
+│       workspace: 数量/shape/dtype 自动推断，位于 GM
+│       pass_configs: AUTO_CV_COMBINE:True + AUTO_CV_SYNC:True + AUTO_SYNC:True
+│       同步: 自动（AUTO_CV_SYNC）或手动（T.set_cross_flag / T.wait_cross_flag）
+│       参考示例: examples/flash_attention/flash_attn_bhsd_cc_sync.py
 │
 ├─ 纯 element-wise（逐元素运算）
 │   ├─ 单步运算 → Developer 模式优先
@@ -147,8 +151,6 @@ description: "根据算子需求生成 TileLang-Ascend 算子设计文档（desi
     内存: GM→UB→GM
 ```
 
----
-
 ## 5. 质量自检清单
 
 生成 `design.md` 后，逐项检查：
@@ -162,6 +164,9 @@ description: "根据算子需求生成 TileLang-Ascend 算子设计文档（desi
 | 5 | **同步策略与编程模式匹配**：Developer 用自动同步、Expert 标明手动同步点 | ⭕ 推荐 |
 | 6 | **验证方案覆盖典型配置**：不是「待补充」 | ⭕ 推荐 |
 | 7 | **无占位符或模糊描述**：无 `{placeholder}`、TODO、「待补充」（已确认的除外） | ✅ 必须 |
+| 8 | **参考实现分析完整**（如有参考实现）：记录了内存层级 API、同步策略、pass_configs 等技术决策 | ⭕ 推荐 |
+| 9 | **CV 融合设计完整**（如需）：workspace 规格、数据流、pass_configs | ⭕ 推荐 |
+| 10 | **workspace_idx 配置正确**（如需 CV 融合）：与 workspace 参数位置一致 | ✅ 必须 |
 
 **通过条件**：必须项全部通过，推荐项至少通过 2/3。
 
