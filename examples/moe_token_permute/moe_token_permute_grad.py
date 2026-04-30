@@ -748,6 +748,7 @@ class MoeTokenPermuteGrad:
         return self._sorted_idx_buf
 
     def __call__(self, permuted_output_grad, sorted_indices):
+        torch_npu.npu.synchronize()
         device = permuted_output_grad.device
         E = self.E
         H = self._compile_hidden_size
