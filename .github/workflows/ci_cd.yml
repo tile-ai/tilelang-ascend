@@ -353,6 +353,10 @@ jobs:
         with:
           script: |
             const commentId = '${{ needs.check_changes.outputs.status_comment_id }}';
+            if (!commentId || commentId === '') {
+              console.log('No status comment ID, skipping update');
+              return;
+            }
             const runUrl = `${process.env.GITHUB_SERVER_URL}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             const body = `🚀 **Task is now running**\n\nWorkflow run: [View details](<${runUrl}>)\n\n_This message will be updated when the task completes._`;
             await github.rest.issues.updateComment({
@@ -745,6 +749,12 @@ jobs:
             const passRate = '${{ steps.check_results.outputs.pass_rate }}' || '0';
             const testSummary = '${{ steps.check_results.outputs.test_summary }}' || 'No summary available';
             const commentId = '${{ needs.check_changes.outputs.status_comment_id }}';
+            
+            if (!commentId || commentId === '') {
+              console.log('No status comment ID, skipping final update');
+              return;
+            }
+            
             const runUrl = `${process.env.GITHUB_SERVER_URL}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             
             const statusEmoji = jobStatus === 'success' ? '✅' : (jobStatus === 'failure' ? '❌' : '⚠️');
