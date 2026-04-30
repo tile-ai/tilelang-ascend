@@ -831,6 +831,8 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op,
     SigmoidCodegen(op, "TSIGMOID");
   } else if (op->op.same_as(tl::ascend_gather_mask())) {
     GatherMaskCodegen(op, "TGATHER");
+  } else if (op->op.same_as(tl::ascend_gather())) {
+    GatherCodegen(op, "TGATHERB");
   } else if (op->op.same_as(tl::ascend_round())) {
     CastCodegen(op, "RoundMode::CAST_ROUND");
   } else if (op->op.same_as(tl::ascend_cast())) {
@@ -1432,6 +1434,29 @@ void CodeGenTileLangAscendPto::GatherbCodegen(const CallNode *op,
   std::string idx_name = PrintExpr(op->args[3].as<CallNode>()->args[1]);
   this->stream << op_name << "(" << dst_name << ", " << src_name << ", "
                << idx_name << ");\n";
+}
+
+void CodeGenTileLangAscendPto::GatherCodegen(const CallNode *op,
+                                             const std::string &op_name) {
+  ShapeInfo dst_info = GetSliceInfo(op->args[0].as<CallNode>());
+  ShapeInfo src_info = GetSliceInfo(op->args[1].as<CallNode>());
+  ShapeInfo idx_info = GetSliceInfo(op->args[2].as<CallNode>());
+
+  if (dst_info.is_slice || src_info.is_slice || idx_info.is_slice) {
+    auto dst_temp_name = GetTempVarName(dst_info.ub_name);
+    auto src_temp_name = GetTempVarName(src_info.ub_name);
+    auto idx_temp_name = GetTempVarName(idx_info.ub_name);
+    CreateUbVariableND(dst_temp_name, dst_info);
+    CreateUbVariableND(src_temp_name, src_info);
+    CreateUbVariableND(idx_temp_name, idx_info);
+    this->PrintIndent();
+    this->stream << op_name << "(" << dst_temp_name << ", " << src_temp_name << ", "
+                 << idx_temp_name << ");\n";
+  } else {
+    this->PrintIndent();
+    this->stream << op_name << "(" << dst_info.ub_name << ", " << src_info.ub_name
+                 << ", " << idx_info.ub_name << ");\n";
+  }
 }
 
 void CodeGenTileLangAscendPto::GatherMaskCodegen(const CallNode *op,

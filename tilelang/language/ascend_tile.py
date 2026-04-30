@@ -704,6 +704,7 @@ def binary_op(
     src0: Buffer | BufferRegion,
     src1: Buffer | BufferRegion | BufferLoad | PrimExpr | float,
     op: str,
+    count: PrimExpr | None = None,
 ):
     if isinstance(dst, BufferRegion):
         dst_ptr, dst_extent = _handle_buffer_region(dst, "w")
@@ -716,8 +717,8 @@ def binary_op(
         src0_ptr = src0.access_ptr("r")
         src0_extent = src0.shape
 
-    size_0 = math.prod(dst_extent)
-    size_1 = math.prod(src0_extent)
+    size_0 = math.prod(dst_extent) if count is None else count
+    size_1 = math.prod(src0_extent) if count is None else count
     assert size_0 == size_1, "size must be same"
     if isinstance(src1, BufferLoad):
         buffer_1 = src1.buffer
@@ -736,7 +737,7 @@ def binary_op(
         return T.call_intrin("handle", tir.op.Op.get(f"tl.ascend_{op}s"), dst_ptr, src0_ptr, src1, size_0)
     elif isinstance(src1, BufferRegion):
         src1_ptr, src1_extent = _handle_buffer_region(src1, "r")
-        size_2 = math.prod(src1_extent)
+        size_2 = math.prod(src1_extent) if count is None else count
         assert size_0 == size_2, "size must be same"
 
         return T.call_intrin(
@@ -1382,7 +1383,7 @@ def gather(dst: Buffer | BufferRegion, src: Buffer | BufferRegion, src_offset: B
         src_ptr = src.access_ptr("r")
         size = math.prod(src.shape)
 
-    if isinstance(src, BufferRegion):
+    if isinstance(src_offset, BufferRegion):
         src_offset_ptr, _ = _handle_buffer_region(src_offset, "r")
     else:
         src_offset_ptr = src_offset.access_ptr("r")
