@@ -2,17 +2,30 @@
 
 # ================= 参数解析 =================
 SKIP_PYTEST=false
+TEST_DIRS=""
 while [[ $# -gt 0 ]]; do
     case $1 in
         --skip-pytest)
             SKIP_PYTEST=true
             shift
             ;;
+        --dirs)
+            TEST_DIRS="$2"
+            shift 2
+            ;;
         *)
             shift
             ;;
     esac
 done
+
+# 解析 TEST_DIRS 为数组
+if [ -n "$TEST_DIRS" ]; then
+    IFS=' ' read -ra DIR_ARRAY <<< "$TEST_DIRS"
+    echo "Running incremental tests for directories: ${DIR_ARRAY[*]}"
+else
+    echo "Running full tests (all directories)"
+fi
 # ===========================================
 
 # ================= 配置区 =================
@@ -38,42 +51,74 @@ total_scripts=0
 passed_scripts=0
 all_scripts=()
 
-# 1. 收集脚本逻辑 (保持原样)
-python_files=$(find . -maxdepth 2 -name "*.py" -not -path "./gemm_aot/*" -not -path "./dispatch_combine/*" -not -path "./shmem/*" -not -path "./torch_tl_ascend/*" -not -name "sfa_golden.py" -not -name "__init__.py" | sort)
-if [ -n "$python_files" ]; then
-    for file in $python_files; do all_scripts+=("$file"); done
-fi
+# 函数：收集单个目录下的测试脚本
+collect_test_scripts() {
+    local dir="$1"
+    local scripts=()
+    
+    # 搜索 maxdepth 2 的 py 文件（排除特殊文件）
+    local py_files=$(find "$dir" -maxdepth 2 -name "*.py" \
+        -not -name "__init__.py" \
+        -not -name "*_golden.py" \
+        -not -name "sfa_golden.py" \
+        | sort)
+    for f in $py_files; do scripts+=("$f"); done
+    
+    # 搜索 bash 脚本（特定命名模式）
+    local sh_files=$(find "$dir" -maxdepth 2 -name "run_*.sh" -o -name "test_*.sh" | sort)
+    for f in $sh_files; do scripts+=("$f"); done
+    
+    echo "${scripts[@]}"
+}
 
-# ===== add examples/flash_attention/fa_opt/flash_*.py =====
-fa_dir="./flash_attention/fa_opt"
-if [ -d "$fa_dir" ]; then
-    fa_python_files=$(find "$fa_dir" -maxdepth 1 -name "flash_*.py" | sort)
-    if [ -n "$fa_python_files" ]; then
-        for file in $fa_python_files; do all_scripts+=("$file"); done
+# 1. 收集脚本逻辑
+if [ -n "$TEST_DIRS" ]; then
+    # 增量测试：只运行指定目录
+    echo "Incremental test mode - directories: ${DIR_ARRAY[*]}"
+    
+    for dir in "${DIR_ARRAY[@]}"; do
+        test_dir="./$dir"
+        if [ ! -d "$test_dir" ]; then
+            echo "Warning: directory $test_dir not found, skipping"
+            continue
+        fi
+        
+        collected=$(collect_test_scripts "$test_dir")
+        if [ -n "$collected" ]; then
+            for script in $collected; do
+                all_scripts+=("$script")
+            done
+            echo "Collected scripts from $dir: $(echo $collected | wc -w) files"
+        fi
+    done
+    
+    # sparse_flash_attention 的 EXTRA_TASKS（bench_sfa.py 驱动多配置）
+    if [[ " ${DIR_ARRAY[*]} " =~ " sparse_flash_attention " ]]; then
+        for extra_task in "${EXTRA_TASKS[@]}"; do
+            all_scripts+=("CUSTOM_TASK::${extra_task}")
+        done
     fi
+else
+    # 全量测试：搜索所有目录
+    echo "Full test mode - scanning all directories"
+    
+    # 搜索所有一级目录
+    for dir in $(find . -maxdepth 1 -type d -not -name "." -not -name "dispatch_combine" -not -name "shmem" | sort); do
+        collected=$(collect_test_scripts "$dir")
+        if [ -n "$collected" ]; then
+            for script in $collected; do
+                all_scripts+=("$script")
+            done
+        fi
+    done
+    
+    # 全量测试也添加 EXTRA_TASKS
+    for extra_task in "${EXTRA_TASKS[@]}"; do
+        all_scripts+=("CUSTOM_TASK::${extra_task}")
+    done
 fi
 
-
-if [ -d "./gemm_aot" ]; then
-    bash_scripts=$(find ./gemm_aot -maxdepth 1 -name "run_example_gemm_aot.sh" | sort)
-    if [ -n "$bash_scripts" ]; then
-        for script in $bash_scripts; do all_scripts+=("$script"); done
-    fi
-fi
-
-# ===== add examples/torch_tl_ascend/test_example.sh =====
-if [ -d "./torch_tl_ascend" ]; then
-    bash_scripts=$(find ./torch_tl_ascend -maxdepth 1 -name "test_example.sh" | sort)
-    if [ -n "$bash_scripts" ]; then
-        for script in $bash_scripts; do all_scripts+=("$script"); done
-    fi
-fi
-
-# ====== 新增：将特定目录任务逐个加入测试队列 ======
-for extra_task in "${EXTRA_TASKS[@]}"; do
-    # 使用特殊前缀标记，格式: CUSTOM_TASK::目录|命令|显示名称
-    all_scripts+=("CUSTOM_TASK::${extra_task}")
-done
+echo "Total scripts to run: ${#all_scripts[@]}"
 # =================================================
 
 if [ ${#all_scripts[@]} -eq 0 ]; then

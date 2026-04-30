@@ -55,17 +55,17 @@ concurrency:
   cancel-in-progress: true
   
 jobs:
-  test:
-    name: Benchmark Tests (Ascend NPU)
-    runs-on: [self-hosted, Linux, X64, ascend_910b] 
-    if: |
-      (github.event_name != 'workflow_dispatch' || github.event.inputs.run_tests == 'true') &&
-      (github.event_name != 'issue_comment' || (github.event.issue.pull_request && contains(github.event.comment.body, '/re-test')))
-    timeout-minutes: 60            # 1小时超时失败
-    env:
-      FULL_BUILD: ${{ github.event_name == 'schedule' || github.event.inputs.full_build == 'true' }}
+  check_changes:
+    name: Check PR Status and Changes
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' || github.event_name == 'issue_comment'
+    outputs:
+      merged: ${{ steps.pr_info.outputs.merged }}
+      test_dirs: ${{ steps.detect_changes.outputs.test_dirs }}
+      run_full_tests: ${{ steps.detect_changes.outputs.run_full_tests }}
+      should_skip: ${{ steps.detect_changes.outputs.should_skip }}
     steps:
-      - name: Get PR info (for /re-test)
+      - name: Get PR info
         if: github.event_name == 'issue_comment'
         id: pr_info
         uses: actions/github-script@v7
@@ -79,9 +79,131 @@ jobs:
             core.setOutput('head_ref', pr.data.head.ref);
             core.setOutput('head_sha', pr.data.head.sha);
             core.setOutput('base_ref', pr.data.base.ref);
+            core.setOutput('merged', pr.data.merged ? 'true' : 'false');
+            core.setOutput('state', pr.data.state);
+
+      - name: Set merged status for PR event
+        if: github.event_name == 'pull_request'
+        id: pr_status
+        run: |
+          echo "merged=false" >> $GITHUB_OUTPUT
+          echo "base_ref=${{ github.base_ref }}" >> $GITHUB_OUTPUT
+
+      - name: React to merged PR comment
+        if: github.event_name == 'issue_comment' && steps.pr_info.outputs.merged == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.reactions.createForIssueComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: context.payload.comment.id,
+              content: 'confused'
+            });
+            github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: '⚠️ This PR has been merged. Skipping tests.'
+            });
+
+      - name: Checkout code
+        if: steps.pr_info.outputs.merged != 'true' || github.event_name == 'pull_request'
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'issue_comment' && format('refs/pull/{0}/head', github.event.issue.number) || '' }}
+
+      - name: Detect changed files
+        if: steps.pr_info.outputs.merged != 'true' || github.event_name == 'pull_request'
+        id: detect_changes
+        run: |
+          BASE_REF="${{ github.event_name == 'issue_comment' && steps.pr_info.outputs.base_ref || github.base_ref }}"
+          git fetch origin $BASE_REF --depth=1
+          changed_files=$(git diff --name-only origin/$BASE_REF HEAD)
+          echo "Changed files:"
+          echo "$changed_files"
+          
+          run_full_tests=false
+          test_dirs_array=()
+          
+          for file in $changed_files; do
+            # 核心文件修改 → 全量测试
+            if [[ "$file" =~ ^tilelang/ ]] || [[ "$file" =~ ^src/ ]] || [[ "$file" =~ ^testing/ ]] || \
+               [[ "$file" =~ CMakeLists\.txt ]] || [[ "$file" =~ requirements ]] || [[ "$file" =~ install_ascend\.sh ]]; then
+              echo "Core file modified: $file - will run full tests"
+              run_full_tests=true
+              test_dirs_array=()
+              break
+            fi
+            
+            # examples 文件 → 提取一级目录名
+            if [[ "$file" =~ ^examples/([^/]+)/ ]]; then
+              test_dir="${BASH_REMATCH[1]}"
+              # 排除非测试目录
+              if [[ "$test_dir" != "dispatch_combine" ]] && [[ "$test_dir" != "shmem" ]]; then
+                if [[ ! " ${test_dirs_array[*]} " =~ " $test_dir " ]]; then
+                  test_dirs_array+=("$test_dir")
+                  echo "Mapped $file → $test_dir"
+                fi
+              fi
+            fi
+          done
+          
+          test_dirs="${test_dirs_array[*]}"
+          echo "run_full_tests=${run_full_tests}" >> $GITHUB_OUTPUT
+          echo "test_dirs=${test_dirs}" >> $GITHUB_OUTPUT
+          
+          if [[ "$run_full_tests" == "true" ]]; then
+            echo "Will run full tests (core files modified)"
+            echo "should_skip=false" >> $GITHUB_OUTPUT
+          elif [[ -n "$test_dirs" ]]; then
+            echo "Will run incremental tests for directories: $test_dirs"
+            echo "should_skip=false" >> $GITHUB_OUTPUT
+          else
+            echo "No testable files modified (docs/images only)"
+            echo "run_full_tests=false" >> $GITHUB_OUTPUT
+            echo "test_dirs=" >> $GITHUB_OUTPUT
+            echo "should_skip=true" >> $GITHUB_OUTPUT
+          fi
+
+  test:
+    name: Benchmark Tests (Ascend NPU)
+    runs-on: [self-hosted, Linux, X64, ascend_910b]
+    needs: check_changes
+    if: |
+      (github.event_name != 'workflow_dispatch' || github.event.inputs.run_tests == 'true') &&
+      (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') ||
+      (
+        (github.event_name == 'pull_request' || github.event_name == 'issue_comment') &&
+        (github.event_name != 'issue_comment' || (github.event.issue.pull_request && contains(github.event.comment.body, '/re-test'))) &&
+        needs.check_changes.outputs.merged != 'true' &&
+        needs.check_changes.outputs.should_skip != 'true'
+      )
+    timeout-minutes: 60
+    env:
+      FULL_BUILD: ${{ github.event_name == 'schedule' || github.event.inputs.full_build == 'true' }}
+    steps:
+      - name: Get PR info and check merged status
+        if: github.event_name == 'issue_comment'
+        id: pr_info
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number
+            });
+            core.setOutput('head_ref', pr.data.head.ref);
+            core.setOutput('head_sha', pr.data.head.sha);
+            core.setOutput('base_ref', pr.data.base.ref);
+            core.setOutput('merged', pr.data.merged);
+            core.setOutput('state', pr.data.state);
 
       - name: React to /re-test comment
-        if: github.event_name == 'issue_comment'
+        if: github.event_name == 'issue_comment' && steps.pr_info.outputs.merged != 'true'
         uses: actions/github-script@v7
         with:
           script: |
@@ -90,6 +212,24 @@ jobs:
               repo: context.repo.repo,
               comment_id: context.payload.comment.id,
               content: 'rocket'
+            });
+
+      - name: React to merged PR comment
+        if: github.event_name == 'issue_comment' && steps.pr_info.outputs.merged == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.reactions.createForIssueComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: context.payload.comment.id,
+              content: 'confused'
+            });
+            github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: '⚠️ This PR has been merged. Skipping tests.'
             });
 
       - name: Checkout code
@@ -162,7 +302,25 @@ jobs:
           fi
           
           SKIP_PYTEST_VALUE="${{ steps.check_skip_pytest.outputs.skip_pytest }}"
-          echo "run in existed container..."
+          
+          # 确定 TEST_DIRS 参数
+          # push/schedule/workflow_dispatch 事件：全量测试
+          # PR/issue_comment 事件：根据 check_changes outputs
+          if [[ "$GITHUB_EVENT_NAME" == "push" ]] || [[ "$GITHUB_EVENT_NAME" == "schedule" ]] || [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            TEST_DIRS_ARG=""
+            echo "Event: $GITHUB_EVENT_NAME - running full tests"
+          else
+            TEST_DIRS_VALUE="${{ needs.check_changes.outputs.test_dirs }}"
+            RUN_FULL_TESTS="${{ needs.check_changes.outputs.run_full_tests }}"
+            
+            if [[ "$RUN_FULL_TESTS" == "true" ]] || [[ -z "$TEST_DIRS_VALUE" ]]; then
+              TEST_DIRS_ARG=""
+              echo "Running full tests (core files modified or no test dirs)"
+            else
+              TEST_DIRS_ARG="--dirs ${TEST_DIRS_VALUE}"
+              echo "Running incremental tests for: $TEST_DIRS_VALUE"
+            fi
+          fi
 
           docker exec \
             -w $GITHUB_WORKSPACE \
@@ -171,6 +329,7 @@ jobs:
             -e BASH_ENV=/root/.bashrc \
             -e INCREMENTAL_FLAG="$INCREMENTAL_FLAG" \
             -e SKIP_PYTEST=$SKIP_PYTEST_VALUE \
+            -e TEST_DIRS_ARG="$TEST_DIRS_ARG" \
             tilelang_x1 \
             bash -c "
               set -e
@@ -199,12 +358,12 @@ jobs:
               # 3. 运行测试用例
               cd examples
               chmod +x bench_test.sh
-              echo 'Running benchmark tests...'
+              echo 'Running benchmark tests with args: '\$TEST_DIRS_ARG
               set +e
               if [ \"\$SKIP_PYTEST\" = true ]; then
-                ./bench_test.sh --skip-pytest 2>&1 | tee test_output.log
+                ./bench_test.sh --skip-pytest \$TEST_DIRS_ARG 2>&1 | tee test_output.log
               else
-                ./bench_test.sh 2>&1 | tee test_output.log
+                ./bench_test.sh \$TEST_DIRS_ARG 2>&1 | tee test_output.log
               fi
               TEST_EXIT_CODE=\${PIPESTATUS[0]}
               set -e
