@@ -1,22 +1,22 @@
 #!/bin/bash
 
-# TileLang-Ascend 环境检查脚本
-# 用于验证开发环境是否正确配置
+# TileLang-Ascend environment check script
+# Used to verify if the development environment is correctly configured
 
 set -e
 
-# 颜色定义
+# Color definitions
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-# 获取项目根目录
+# Get project root directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../../../.." && pwd)"
 
-# 进入项目根目录
+# Enter project root directory
 cd "$PROJECT_ROOT"
 
 echo "========================================"
@@ -24,12 +24,12 @@ echo "TileLang-Ascend 环境检查"
 echo "========================================"
 echo ""
 
-# 检查结果统计
+# Check result statistics
 TOTAL_CHECKS=4
 PASSED_CHECKS=0
 FAILED_ITEMS=()
 
-# 检查函数
+# Check functions
 check_pass() {
     echo -e "${GREEN}✓${NC} $1"
     PASSED_CHECKS=$((PASSED_CHECKS + 1))
@@ -44,7 +44,7 @@ check_warn() {
     echo -e "${YELLOW}!${NC} $1"
 }
 
-# [1/4] 检查代码仓库完整性
+# [1/4] Check repository integrity
 echo "[1/4] 检查代码仓库完整性..."
 echo ""
 
@@ -54,7 +54,7 @@ else
     check_fail "Git 仓库不存在" "git_repo"
 fi
 
-# 检查关键子模块
+# Check critical submodules
 SUBMODULES=("tvm" "cutlass" "composable_kernel" "pto-isa" "shmem" "catlass")
 MISSING_SUBMODULES=()
 INCOMPLETE_SUBMODULES=()
@@ -95,7 +95,7 @@ fi
 
 echo ""
 
-# [2/4] 检查编译安装状态
+# [2/4] Check compilation status
 echo "[2/4] 检查编译安装状态..."
 echo ""
 
@@ -114,7 +114,7 @@ fi
 
 echo ""
 
-# [3/4] 检查环境变量并自动修复
+# [3/4] Check environment variables and auto-fix
 echo "[3/4] 检查环境变量..."
 echo ""
 
@@ -143,10 +143,10 @@ check_and_fix_env() {
     fi
 }
 
-# 先检查并修复环境变量
+# First check and fix environment variables
 check_and_fix_env
 
-# 重新检查环境变量状态
+# Re-check environment variable status
 if [ -n "$TL_ROOT" ]; then
     check_pass "TL_ROOT 已设置: $TL_ROOT"
 else
@@ -167,22 +167,22 @@ fi
 
 echo ""
 
-# [4/4] 运行验证测试
+# [4/4] Run verification test
 echo "[4/4] 运行验证测试..."
 echo ""
 
-# 检查 Python 是否可用
+# Check if Python is available
 if ! command -v python &> /dev/null; then
     check_fail "Python 未安装" "python_not_found"
 else
     PYTHON_VERSION=$(python --version 2>&1)
     check_pass "Python 可用: $PYTHON_VERSION"
     
-    # 检查 tilelang 是否可导入
+    # Check if tilelang can be imported
     if python -c "import tilelang" 2> /dev/null; then
         check_pass "tilelang 模块可导入"
         
-        # 运行简单测试
+        # Run simple test
         if [ -f "$SCRIPT_DIR/quick_verify.py" ]; then
             echo ""
             echo "运行验证测试..."
@@ -201,7 +201,7 @@ fi
 
 echo ""
 
-# 输出总结
+# Output summary
 echo "========================================"
 if [ ${#FAILED_ITEMS[@]} -eq 0 ]; then
     echo -e "${GREEN}✓ 环境检查通过！所有配置正确。${NC}"
@@ -245,7 +245,7 @@ else
 fi
 echo "========================================"
 
-# 返回适当的退出码
+# Return appropriate exit code
 if [ ${#FAILED_ITEMS[@]} -eq 0 ]; then
     exit 0
 else

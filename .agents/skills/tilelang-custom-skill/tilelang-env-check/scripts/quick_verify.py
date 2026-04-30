@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-TileLang-Ascend 简单测试脚本
-用于验证环境是否正确配置
+TileLang-Ascend simple test script
+Used to verify if the environment is correctly configured
 """
 
 import torch
