@@ -156,6 +156,12 @@ jobs:
             fi
             
             # 核心文件修改 → 全量 examples + pytest
+            # 排除文档/图片文件
+            if [[ "$file" =~ \.md$ ]] || [[ "$file" =~ \.png$ ]]; then
+              echo "Doc/image file: $file - will skip"
+              continue
+            fi
+            
             if [[ "$file" =~ ^tilelang/ ]] || [[ "$file" =~ ^src/ ]] || \
                [[ "$file" =~ CMakeLists\.txt ]] || [[ "$file" =~ requirements ]] || [[ "$file" =~ install_ascend\.sh ]]; then
               echo "Core file modified: $file - will run full examples + pytest"
@@ -170,6 +176,12 @@ jobs:
             
             # examples 文件 → 增量 examples + pytest
             if [[ "$file" =~ ^examples/([^/]+)/ ]]; then
+              # 排除文档/图片文件
+              if [[ "$file" =~ \.md$ ]] || [[ "$file" =~ \.png$ ]]; then
+                echo "Examples doc/image file: $file - will skip"
+                continue
+              fi
+              
               test_dir="${BASH_REMATCH[1]}"
               # 排除非测试目录
               if [[ "$test_dir" != "dispatch_combine" ]] && [[ "$test_dir" != "shmem" ]]; then
