@@ -56,33 +56,25 @@ collect_test_scripts() {
     local dir="$1"
     local scripts=()
     
-    # 特殊目录处理：不收集 py 文件，只收集 bash 脚本
+    # 特殊目录：排除整个目录，不收集任何 py 文件
     case "$dir" in
         "./gemm_aot"|"./torch_tl_ascend"|"./dispatch_combine"|"./shmem")
-            # 这些目录不收集 py 文件，但收集 bash 脚本
-            local sh_files=$(find "$dir" -maxdepth 2 \( -name "run_*.sh" -o -name "test_*.sh" \) | sort)
-            for f in $sh_files; do scripts+=("$f"); done
+            # 只收集特定 bash 脚本
+            if [[ "$dir" == "./gemm_aot" ]]; then
+                scripts+=("./gemm_aot/run_example_gemm_aot.sh")
+            elif [[ "$dir" == "./torch_tl_ascend" ]]; then
+                scripts+=("./torch_tl_ascend/test_example.sh")
+            fi
             echo "${scripts[@]}"
             return
             ;;
         "./flash_attention")
-            # 收集主目录的py文件（排除特殊文件）
-            local py_files=$(find "$dir" -maxdepth 2 -name "*.py" \
+            # 收集主目录的 py 文件（排除 fa_opt）
+            local py_files=$(find "$dir" -maxdepth 1 -name "*.py" \
                 -not -name "__init__.py" \
                 -not -name "*_golden.py" \
-                -not -name "plot.py" \
-                -not -name "run.py" \
-                -not -path "*/fa_opt/*" \
                 | sort)
             for f in $py_files; do scripts+=("$f"); done
-            
-            # 收集 fa_opt 下的 flash_*.py
-            local fa_opt_files=$(find "$dir/fa_opt" -maxdepth 1 -name "flash_*.py" | sort)
-            for f in $fa_opt_files; do scripts+=("$f"); done
-            
-            # 收集 bash 脚本
-            local sh_files=$(find "$dir" -maxdepth 2 \( -name "run_*.sh" -o -name "test_*.sh" \) | sort)
-            for f in $sh_files; do scripts+=("$f"); done
             
             echo "${scripts[@]}"
             return
@@ -94,8 +86,6 @@ collect_test_scripts() {
         -not -name "__init__.py" \
         -not -name "*_golden.py" \
         -not -name "sfa_golden.py" \
-        -not -name "plot.py" \
-        -not -name "run.py" \
         -not -path "*/bench_sfa/*" \
         | sort)
     for f in $py_files; do scripts+=("$f"); done
@@ -128,27 +118,66 @@ if [ -n "$TEST_DIRS" ]; then
         fi
     done
     
-    # sparse_flash_attention 的 EXTRA_TASKS（bench_sfa.py 驱动多配置）
+    # sparse_flash_attention 的 EXTRA_TASKS
     if [[ " ${DIR_ARRAY[*]} " =~ " sparse_flash_attention " ]]; then
         for extra_task in "${EXTRA_TASKS[@]}"; do
             all_scripts+=("CUSTOM_TASK::${extra_task}")
         done
     fi
+    
+    # flash_attention/fa_opt 单独处理
+    if [[ " ${DIR_ARRAY[*]} " =~ " flash_attention " ]]; then
+        fa_dir="./flash_attention/fa_opt"
+        if [ -d "$fa_dir" ]; then
+            fa_python_files=$(find "$fa_dir" -maxdepth 1 -name "flash_*.py" | sort)
+            if [ -n "$fa_python_files" ]; then
+                for file in $fa_python_files; do all_scripts+=("$file"); done
+            fi
+        fi
+    fi
 else
-    # 全量测试：使用 collect_test_scripts 统一逻辑
+    # 全量测试：恢复原始逻辑
     echo "Full test mode - scanning all directories"
     
-    # 搜索所有一级目录
-    for dir in $(find . -maxdepth 1 -type d -not -name "." -not -name "dispatch_combine" -not -name "shmem" | sort); do
-        collected=$(collect_test_scripts "$dir")
-        if [ -n "$collected" ]; then
-            for script in $collected; do
-                all_scripts+=("$script")
-            done
-        fi
-    done
+    # 1. 收集 py 文件（排除特殊目录）
+    python_files=$(find . -maxdepth 2 -name "*.py" \
+        -not -path "./gemm_aot/*" \
+        -not -path "./dispatch_combine/*" \
+        -not -path "./shmem/*" \
+        -not -path "./torch_tl_ascend/*" \
+        -not -name "sfa_golden.py" \
+        -not -name "__init__.py" \
+        | sort)
+    if [ -n "$python_files" ]; then
+        for file in $python_files; do all_scripts+=("$file"); done
+    fi
     
-    # EXTRA_TASKS
+    # 2. flash_attention/fa_opt/flash_*.py
+    fa_dir="./flash_attention/fa_opt"
+    if [ -d "$fa_dir" ]; then
+        fa_python_files=$(find "$fa_dir" -maxdepth 1 -name "flash_*.py" | sort)
+        if [ -n "$fa_python_files" ]; then
+            for file in $fa_python_files; do all_scripts+=("$file"); done
+        fi
+    fi
+    
+    # 3. gemm_aot bash 脚本
+    if [ -d "./gemm_aot" ]; then
+        bash_scripts=$(find ./gemm_aot -maxdepth 1 -name "run_example_gemm_aot.sh" | sort)
+        if [ -n "$bash_scripts" ]; then
+            for script in $bash_scripts; do all_scripts+=("$script"); done
+        fi
+    fi
+    
+    # 4. torch_tl_ascend bash 脚本
+    if [ -d "./torch_tl_ascend" ]; then
+        bash_scripts=$(find ./torch_tl_ascend -maxdepth 1 -name "test_example.sh" | sort)
+        if [ -n "$bash_scripts" ]; then
+            for script in $bash_scripts; do all_scripts+=("$script"); done
+        fi
+    fi
+    
+    # 5. EXTRA_TASKS
     for extra_task in "${EXTRA_TASKS[@]}"; do
         all_scripts+=("CUSTOM_TASK::${extra_task}")
     done
