@@ -135,48 +135,20 @@ if [ -n "$TEST_DIRS" ]; then
         done
     fi
 else
-    # 全量测试：恢复原始逻辑
+    # 全量测试：使用 collect_test_scripts 统一逻辑
     echo "Full test mode - scanning all directories"
     
-    # 1. 收集 py 文件（排除特殊目录）
-    python_files=$(find . -maxdepth 2 -name "*.py" \
-        -not -path "./gemm_aot/*" \
-        -not -path "./dispatch_combine/*" \
-        -not -path "./shmem/*" \
-        -not -path "./torch_tl_ascend/*" \
-        -not -name "sfa_golden.py" \
-        -not -name "__init__.py" \
-        | sort)
-    if [ -n "$python_files" ]; then
-        for file in $python_files; do all_scripts+=("$file"); done
-    fi
-    
-    # 2. flash_attention/fa_opt/flash_*.py
-    fa_dir="./flash_attention/fa_opt"
-    if [ -d "$fa_dir" ]; then
-        fa_python_files=$(find "$fa_dir" -maxdepth 1 -name "flash_*.py" | sort)
-        if [ -n "$fa_python_files" ]; then
-            for file in $fa_python_files; do all_scripts+=("$file"); done
+    # 搜索所有一级目录
+    for dir in $(find . -maxdepth 1 -type d -not -name "." -not -name "dispatch_combine" -not -name "shmem" | sort); do
+        collected=$(collect_test_scripts "$dir")
+        if [ -n "$collected" ]; then
+            for script in $collected; do
+                all_scripts+=("$script")
+            done
         fi
-    fi
+    done
     
-    # 3. gemm_aot bash 脚本
-    if [ -d "./gemm_aot" ]; then
-        bash_scripts=$(find ./gemm_aot -maxdepth 1 -name "run_example_gemm_aot.sh" | sort)
-        if [ -n "$bash_scripts" ]; then
-            for script in $bash_scripts; do all_scripts+=("$script"); done
-        fi
-    fi
-    
-    # 4. torch_tl_ascend bash 脚本
-    if [ -d "./torch_tl_ascend" ]; then
-        bash_scripts=$(find ./torch_tl_ascend -maxdepth 1 -name "test_example.sh" | sort)
-        if [ -n "$bash_scripts" ]; then
-            for script in $bash_scripts; do all_scripts+=("$script"); done
-        fi
-    fi
-    
-    # 5. EXTRA_TASKS
+    # EXTRA_TASKS
     for extra_task in "${EXTRA_TASKS[@]}"; do
         all_scripts+=("CUSTOM_TASK::${extra_task}")
     done

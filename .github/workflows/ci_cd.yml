@@ -184,8 +184,15 @@ jobs:
               continue
             fi
             
-            # examples 根目录文件（如 bench_test.sh）→ 全量测试
+            # examples 根目录文件（如 bench_test.sh）→ 判断是否需要测试
             if [[ "$file" =~ ^examples/[^/]+$ ]]; then
+              # 排除文档文件
+              if [[ "$file" =~ \.md$ ]] || [[ "$file" =~ \.png$ ]] || \
+                 [[ "$file" =~ \.gitignore ]] || [[ "$file" =~ LICENSE ]]; then
+                echo "Examples root doc file: $file - will skip"
+                continue
+              fi
+              # 关键文件（bench_test.sh 等）→ 全量测试
               echo "Examples root file modified: $file - will run full examples + pytest"
               run_examples=true
               run_pytest_only=false
