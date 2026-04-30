@@ -61,21 +61,23 @@ def hc_split_sinkhorn(hc, sinkhorn_iters, eps):
             tmp_shared = T.alloc_shared(hc_pad, dtype)
 
             row_sum = T.alloc_shared(hc_pad, dtype)
-            col_sum = T.alloc_shared(hc_pad, dtype)
+            col_sum = T.alloc_shared((1, hc_pad), dtype)
             row_max = T.alloc_shared(hc_pad, dtype)
+
+            col_broadcast = T.alloc_shared((hc, hc_pad), dtype)
+            row_div = T.alloc_shared((hc, hc_pad), dtype)
 
             if cid * block_M + vid * block_M // VEC_NUM < n:
                 alpha_0 = hc_scale[0]
                 alpha_1 = hc_scale[1]
                 alpha_2 = hc_scale[2]
 
-                for i in T.serial(mix_hc):
-                    if i < hc:
-                        hc_scale_shared[i] = alpha_0
-                    elif i < 2 * hc:
-                        hc_scale_shared[i] = alpha_1
-                    else:
-                        hc_scale_shared[i] = alpha_2
+                for i in T.serial(hc):
+                    hc_scale_shared[i] = alpha_0
+                for i in T.serial(hc):
+                    hc_scale_shared[hc + i] = alpha_1
+                for i in T.serial(hc * hc):
+                    hc_scale_shared[2 * hc + i] = alpha_2
                 T.copy(hc_base, hc_base_shared)
                 T.copy(mixes[cid * block_M + vid * block_M // VEC_NUM, :], mixes_shared)
 
@@ -105,30 +107,33 @@ def hc_split_sinkhorn(hc, sinkhorn_iters, eps):
                 # comb = comb.softmax(-1) + eps
                 T.reduce_max(comb_shared, row_max, dim=-1, real_shape=[hc, hc])
                 for i in T.serial(hc):
-                    T.tile.sub(comb_shared[i, :], comb_shared[i, :], row_max[i])
+                    T.tile.fill(row_div[i, :], row_max[i])
+                T.tile.sub(comb_shared, comb_shared, row_div)
                 T.tile.exp(comb_shared, comb_shared)
                 T.reduce_sum(comb_shared, row_sum, dim=-1, real_shape=[hc, hc])
                 for i in T.serial(hc):
-                    T.tile.div(comb_shared[i, :], comb_shared[i, :], row_sum[i])
+                    T.tile.fill(row_div[i, :], row_sum[i])
+                T.tile.div(comb_shared, comb_shared, row_div)
                 T.tile.add(comb_shared, comb_shared, eps)
 
                 # comb = comb / (comb.sum(-2) + eps)
                 T.reduce_sum(comb_shared, col_sum, dim=0, real_shape=[hc, hc_pad])
                 T.tile.add(col_sum, col_sum, eps)
-                for i in T.serial(hc):
-                    T.tile.div(comb_shared[i, :], comb_shared[i, :], col_sum)
+                T.tile.broadcast(col_broadcast, col_sum)
+                T.tile.div(comb_shared, comb_shared, col_broadcast)
 
                 for _ in T.serial(sinkhorn_iters - 1):
                     # comb = comb / (comb.sum(-1) + eps)
                     T.reduce_sum(comb_shared, row_sum, dim=-1, real_shape=[hc, hc])
                     T.tile.add(row_sum, row_sum, eps)
                     for i in T.serial(hc):
-                        T.tile.div(comb_shared[i, :], comb_shared[i, :], row_sum[i])
+                        T.tile.fill(row_div[i, :], row_sum[i])
+                    T.tile.div(comb_shared, comb_shared, row_div)
                     # comb = comb / (comb.sum(-2) + eps)
                     T.reduce_sum(comb_shared, col_sum, dim=0, real_shape=[hc, hc_pad])
                     T.tile.add(col_sum, col_sum, eps)
-                    for i in T.serial(hc):
-                        T.tile.div(comb_shared[i, :], comb_shared[i, :], col_sum)
+                    T.tile.broadcast(col_broadcast, col_sum)
+                    T.tile.div(comb_shared, comb_shared, col_broadcast)
 
                 for i in T.serial(hc):
                     T.copy(comb_shared[i, :hc], comb[cid * block_M + vid * block_M // VEC_NUM, i, :])
