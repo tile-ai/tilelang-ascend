@@ -65,6 +65,28 @@ collect_test_scripts() {
             echo "${scripts[@]}"
             return
             ;;
+        "./flash_attention")
+            # 收集主目录的py文件（排除特殊文件）
+            local py_files=$(find "$dir" -maxdepth 2 -name "*.py" \
+                -not -name "__init__.py" \
+                -not -name "*_golden.py" \
+                -not -name "plot.py" \
+                -not -name "run.py" \
+                -not -path "*/fa_opt/*" \
+                | sort)
+            for f in $py_files; do scripts+=("$f"); done
+            
+            # 收集 fa_opt 下的 flash_*.py
+            local fa_opt_files=$(find "$dir/fa_opt" -maxdepth 1 -name "flash_*.py" | sort)
+            for f in $fa_opt_files; do scripts+=("$f"); done
+            
+            # 收集 bash 脚本
+            local sh_files=$(find "$dir" -maxdepth 2 \( -name "run_*.sh" -o -name "test_*.sh" \) | sort)
+            for f in $sh_files; do scripts+=("$f"); done
+            
+            echo "${scripts[@]}"
+            return
+            ;;
     esac
     
     # 搜索 maxdepth 2 的 py 文件（排除特殊文件和 bench_sfa 子目录）
@@ -72,6 +94,8 @@ collect_test_scripts() {
         -not -name "__init__.py" \
         -not -name "*_golden.py" \
         -not -name "sfa_golden.py" \
+        -not -name "plot.py" \
+        -not -name "run.py" \
         -not -path "*/bench_sfa/*" \
         | sort)
     for f in $py_files; do scripts+=("$f"); done
@@ -109,17 +133,6 @@ if [ -n "$TEST_DIRS" ]; then
         for extra_task in "${EXTRA_TASKS[@]}"; do
             all_scripts+=("CUSTOM_TASK::${extra_task}")
         done
-    fi
-    
-    # flash_attention/fa_opt 增量测试时需要单独处理
-    if [[ " ${DIR_ARRAY[*]} " =~ " flash_attention " ]]; then
-        fa_dir="./flash_attention/fa_opt"
-        if [ -d "$fa_dir" ]; then
-            fa_python_files=$(find "$fa_dir" -maxdepth 1 -name "flash_*.py" | sort)
-            if [ -n "$fa_python_files" ]; then
-                for file in $fa_python_files; do all_scripts+=("$file"); done
-            fi
-        fi
     fi
 else
     # 全量测试：恢复原始逻辑
