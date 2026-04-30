@@ -11,6 +11,7 @@ on:
       - '**.png'
       - 'docs/**'                              # 文档目录
       - 'images/**'                            # 图片目录
+      - '.agents/**'                           # Agent skill 目录
 
   pull_request:
     branches:
@@ -20,6 +21,7 @@ on:
       - '**.png'
       - 'docs/**'
       - 'images/**'
+      - '.agents/**'
 
   # 手动触发（通过 GitHub Actions 页面点击）
   workflow_dispatch:
@@ -136,6 +138,18 @@ jobs:
           pytest_dirs_array=()
           
           for file in $changed_files; do
+            # 排除 .agents 目录（skill 配置，无需测试）
+            if [[ "$file" =~ ^\.agents/ ]]; then
+              echo "Agents skill file: $file - will skip"
+              continue
+            fi
+            
+            # 排除文档/图片文件
+            if [[ "$file" =~ \.md$ ]] || [[ "$file" =~ \.png$ ]]; then
+              echo "Doc/image file: $file - will skip"
+              continue
+            fi
+            
             # testing/ 修改 → 收集 pytest 文件/目录
             if [[ "$file" =~ ^testing/python/ ]]; then
               if [[ "$file" =~ \.py$ ]]; then
@@ -176,12 +190,6 @@ jobs:
             
             # examples 文件 → 增量 examples + pytest
             if [[ "$file" =~ ^examples/([^/]+)/ ]]; then
-              # 排除文档/图片文件
-              if [[ "$file" =~ \.md$ ]] || [[ "$file" =~ \.png$ ]]; then
-                echo "Examples doc/image file: $file - will skip"
-                continue
-              fi
-              
               test_dir="${BASH_REMATCH[1]}"
               # 排除非测试目录
               if [[ "$test_dir" != "dispatch_combine" ]] && [[ "$test_dir" != "shmem" ]]; then
