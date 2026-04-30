@@ -62,6 +62,7 @@ jobs:
     outputs:
       merged: ${{ steps.pr_info.outputs.merged }}
       test_dirs: ${{ steps.detect_changes.outputs.test_dirs }}
+      pytest_files: ${{ steps.detect_changes.outputs.pytest_files }}
       run_examples: ${{ steps.detect_changes.outputs.run_examples }}
       run_pytest_only: ${{ steps.detect_changes.outputs.run_pytest_only }}
       should_skip: ${{ steps.detect_changes.outputs.should_skip }}
@@ -130,16 +131,27 @@ jobs:
           run_pytest_only=false
           should_skip=true
           test_dirs_array=()
+          pytest_files_array=()
+          pytest_dirs_array=()
           
           for file in $changed_files; do
-            # testing/ 修改 → 只跑 pytest
-            if [[ "$file" =~ ^testing/ ]]; then
-              echo "Testing file modified: $file - will run pytest only"
+            # testing/ 修改 → 收集 pytest 文件/目录
+            if [[ "$file" =~ ^testing/python/ ]]; then
+              if [[ "$file" =~ \.py$ ]]; then
+                pytest_files_array+=("$file")
+                # 提取子目录
+                if [[ "$file" =~ ^testing/python/([^/]+)/ ]]; then
+                  pytest_subdir="${BASH_REMATCH[1]}"
+                  if [[ ! " ${pytest_dirs_array[*]} " =~ " $pytest_subdir " ]]; then
+                    pytest_dirs_array+=("$pytest_subdir")
+                    echo "Mapped $file → pytest subdir: $pytest_subdir"
+                  fi
+                fi
+              fi
               run_examples=false
               run_pytest_only=true
               should_skip=false
-              test_dirs_array=()
-              break
+              continue
             fi
             
             # 核心文件修改 → 全量 examples + pytest
@@ -150,6 +162,8 @@ jobs:
               run_pytest_only=false
               should_skip=false
               test_dirs_array=()
+              pytest_files_array=()
+              pytest_dirs_array=()
               break
             fi
             
@@ -160,12 +174,13 @@ jobs:
               if [[ "$test_dir" != "dispatch_combine" ]] && [[ "$test_dir" != "shmem" ]]; then
                 if [[ ! " ${test_dirs_array[*]} " =~ " $test_dir " ]]; then
                   test_dirs_array+=("$test_dir")
-                  echo "Mapped $file → $test_dir"
+                  echo "Mapped $file → example dir: $test_dir"
                 fi
                 run_examples=true
                 run_pytest_only=false
                 should_skip=false
               fi
+              continue
             fi
             
             # 其他文件（非 docs/images）-> 需要测试
@@ -178,18 +193,43 @@ jobs:
               run_pytest_only=false
               should_skip=false
               test_dirs_array=()
+              pytest_files_array=()
+              pytest_dirs_array=()
               break
             fi
           done
+          
+          # 决定 pytest 测试范围
+          pytest_files=""
+          if [[ ${#pytest_files_array[@]} -gt 0 ]]; then
+            # 如果所有修改在同一个子目录，只跑该子目录
+            if [[ ${#pytest_dirs_array[@]} -eq 1 ]]; then
+              pytest_files="testing/python/${pytest_dirs_array[0]}/"
+              echo "All testing files in same subdir: ${pytest_dirs_array[0]}"
+            elif [[ ${#pytest_files_array[@]} -le 3 ]]; then
+              # 少量文件（≤3），只跑具体文件
+              pytest_files="${pytest_files_array[*]}"
+              echo "Few testing files modified: ${pytest_files_array[*]}"
+            else
+              # 多文件散布不同目录，跑全量 pytest
+              pytest_files=""
+              echo "Many testing files scattered, will run full pytest"
+            fi
+          fi
           
           test_dirs="${test_dirs_array[*]}"
           echo "run_examples=${run_examples}" >> $GITHUB_OUTPUT
           echo "run_pytest_only=${run_pytest_only}" >> $GITHUB_OUTPUT
           echo "test_dirs=${test_dirs}" >> $GITHUB_OUTPUT
+          echo "pytest_files=${pytest_files}" >> $GITHUB_OUTPUT
           echo "should_skip=${should_skip}" >> $GITHUB_OUTPUT
           
           if [[ "$run_pytest_only" == "true" ]]; then
-            echo "Will run pytest only (testing/ modified)"
+            if [[ -n "$pytest_files" ]]; then
+              echo "Will run incremental pytest for: $pytest_files"
+            else
+              echo "Will run full pytest (testing/ modified)"
+            fi
           elif [[ "$run_examples" == "true" ]]; then
             if [[ -n "$test_dirs" ]]; then
               echo "Will run incremental examples + pytest for: $test_dirs"
@@ -340,18 +380,27 @@ jobs:
           # PR/issue_comment 事件：根据 check_changes outputs
           if [[ "$GITHUB_EVENT_NAME" == "push" ]] || [[ "$GITHUB_EVENT_NAME" == "schedule" ]] || [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
             TEST_DIRS_ARG=""
+            PYTEST_FILES_ARG=""
             RUN_EXAMPLES="true"
             RUN_PYTEST_ONLY="false"
             echo "Event: $GITHUB_EVENT_NAME - running full tests"
           else
             TEST_DIRS_VALUE="${{ needs.check_changes.outputs.test_dirs }}"
+            PYTEST_FILES_VALUE="${{ needs.check_changes.outputs.pytest_files }}"
             RUN_EXAMPLES="${{ needs.check_changes.outputs.run_examples }}"
             RUN_PYTEST_ONLY="${{ needs.check_changes.outputs.run_pytest_only }}"
             
             if [[ "$RUN_PYTEST_ONLY" == "true" ]]; then
               TEST_DIRS_ARG=""
-              echo "Running pytest only (testing/ modified)"
+              if [[ -n "$PYTEST_FILES_VALUE" ]]; then
+                PYTEST_FILES_ARG="$PYTEST_FILES_VALUE"
+                echo "Running incremental pytest for: $PYTEST_FILES_VALUE"
+              else
+                PYTEST_FILES_ARG=""
+                echo "Running full pytest (testing/ modified)"
+              fi
             elif [[ "$RUN_EXAMPLES" == "true" ]]; then
+              PYTEST_FILES_ARG=""
               if [[ -z "$TEST_DIRS_VALUE" ]]; then
                 TEST_DIRS_ARG=""
                 echo "Running full examples + pytest (core files modified)"
@@ -370,6 +419,7 @@ jobs:
             -e INCREMENTAL_FLAG="$INCREMENTAL_FLAG" \
             -e SKIP_PYTEST=$SKIP_PYTEST_VALUE \
             -e TEST_DIRS_ARG="$TEST_DIRS_ARG" \
+            -e PYTEST_FILES_ARG="$PYTEST_FILES_ARG" \
             -e RUN_EXAMPLES="$RUN_EXAMPLES" \
             -e RUN_PYTEST_ONLY="$RUN_PYTEST_ONLY" \
             tilelang_x1 \
@@ -403,9 +453,15 @@ jobs:
               
               if [ \"\$RUN_PYTEST_ONLY\" = true ]; then
                 # 只跑 pytest（testing/ 修改）
-                echo 'Running pytest only (testing/ modified)'
-                set +e
-                pytest --forked ../testing/python/ -v -n 8 2>&1 | tee test_output.log
+                if [ -n \"\$PYTEST_FILES_ARG\" ]; then
+                  echo 'Running incremental pytest for: '\$PYTEST_FILES_ARG
+                  set +e
+                  pytest --forked ../\$PYTEST_FILES_ARG -v -n 4 2>&1 | tee test_output.log
+                else
+                  echo 'Running full pytest (testing/ modified)'
+                  set +e
+                  pytest --forked ../testing/python/ -v -n 8 2>&1 | tee test_output.log
+                fi
                 TEST_EXIT_CODE=\${PIPESTATUS[0]}
                 set -e
               elif [ \"\$RUN_EXAMPLES\" = true ]; then
