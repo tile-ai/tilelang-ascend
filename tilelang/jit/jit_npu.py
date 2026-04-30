@@ -855,7 +855,7 @@ class JitKernel_NPU:
     ):
         if isinstance(out_idx, int):
             out_idx = [out_idx]
-
+        metadata["so_launcher_path"] = kernel_launcher_path 
         instance = cls(metadata)
         instance.so_launcher_path = kernel_launcher_path
         instance.so_utils_path = kernel_utils_path
