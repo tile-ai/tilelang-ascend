@@ -56,16 +56,58 @@ collect_test_scripts() {
     local dir="$1"
     local scripts=()
     
+    # 特殊目录处理
+    case "$dir" in
+        "./torch_tl_ascend")
+            # 只收集 test_example.sh，不收集 py 文件（需要安装 torch_tl_ascend 模块）
+            scripts+=("./torch_tl_ascend/test_example.sh")
+            echo "${scripts[@]}"
+            return
+            ;;
+        "./gemm_aot")
+            # 只收集 run_example_gemm_aot.sh，不收集 py 文件（需要 AOT 编译）
+            scripts+=("./gemm_aot/run_example_gemm_aot.sh")
+            echo "${scripts[@]}"
+            return
+            ;;
+        "./sparse_flash_attention")
+            # 收集 example_*.py，不收集 bench_sfa 下的文件（已在 EXTRA_TASKS）
+            local py_files=$(find "$dir" -maxdepth 2 -name "*.py" \
+                -not -name "__init__.py" \
+                -not -name "sfa_golden.py" \
+                -not -path "*/bench_sfa/*" \
+                | sort)
+            for f in $py_files; do scripts+=("$f"); done
+            echo "${scripts[@]}"
+            return
+            ;;
+        "./flash_attention")
+            # 收集 flash_attn*.py 和 paged_flash_attn*.py，排除 fa_opt 下的 plot.py run.py
+            local py_files=$(find "$dir" -maxdepth 2 -name "*.py" \
+                -not -name "__init__.py" \
+                -not -name "plot.py" \
+                -not -name "run.py" \
+                | sort)
+            for f in $py_files; do scripts+=("$f"); done
+            echo "${scripts[@]}"
+            return
+            ;;
+    esac
+    
     # 搜索 maxdepth 2 的 py 文件（排除特殊文件）
     local py_files=$(find "$dir" -maxdepth 2 -name "*.py" \
         -not -name "__init__.py" \
         -not -name "*_golden.py" \
         -not -name "sfa_golden.py" \
+        -not -name "plot.py" \
+        -not -name "run.py" \
+        -not -name "setup.py" \
+        -not -name "prepare.py" \
         | sort)
     for f in $py_files; do scripts+=("$f"); done
     
     # 搜索 bash 脚本（特定命名模式）
-    local sh_files=$(find "$dir" -maxdepth 2 -name "run_*.sh" -o -name "test_*.sh" | sort)
+    local sh_files=$(find "$dir" -maxdepth 2 \( -name "run_*.sh" -o -name "test_*.sh" \) | sort)
     for f in $sh_files; do scripts+=("$f"); done
     
     echo "${scripts[@]}"
