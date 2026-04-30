@@ -41,6 +41,12 @@ on:
   issue_comment:
     types: [created]
 
+permissions:
+  contents: read
+  pull-requests: write
+  statuses: write
+  actions: write
+
 concurrency:
   # PR 场景（含 pull_request 和 /re-test）：统一按 PR 号分组，新运行自动取消旧运行
   # 手动/定时/push 场景：退化为 github.run_id（每次唯一），互不干扰
