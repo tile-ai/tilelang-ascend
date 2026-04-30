@@ -39,7 +39,7 @@ def get_config() -> list[dict]:
     return configs
 
 def ref_prog(a):
-    return torch.min(a, dim=-1, keepdim= True).values
+    return torch.min(a, dim=-1, keepdim=True).values
     
 def supply_prog(params):
     torch.manual_seed(0)
