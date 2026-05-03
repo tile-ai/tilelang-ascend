@@ -101,3 +101,13 @@ examples/torch_tl_ascend/demo_libtorch/lib/*.so
 docs/notebook/*.so
 docs/notebook/*.cpp
 
+# TensorPulse private hardware specs (do not commit)
+AIACC*.docx
+AIACC*.xlsx
+AIACC*.doc
+AIACC*.xls
+AIACC*.pdf
+
+# Claude Code local config
+.claude/
+

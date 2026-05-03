@@ -63,9 +63,24 @@ def _find_ascend_home() -> str:
     return ascend_home if ascend_home is not None else ""
 
 
+def _find_tensorpulse_home() -> str:
+    """Find the TensorPulse toolchain install path."""
+    tensorpulse_home = os.environ.get("TENSORPULSE_HOME_PATH") or os.environ.get("TENSORPULSE_HOME")
+    if tensorpulse_home is None:
+        potential_paths = [
+            "/usr/local/TensorPulse/latest",
+        ]
+        for path in potential_paths:
+            if os.path.exists(path):
+                tensorpulse_home = path
+                break
+    return tensorpulse_home if tensorpulse_home is not None else ""
+
+
 CUDA_HOME = _find_cuda_home()
 ROCM_HOME = _find_rocm_home()
 ASCEND_HOME = _find_ascend_home()
+TENSORPULSE_HOME = _find_tensorpulse_home()
 
 CUTLASS_INCLUDE_DIR: str | None = os.environ.get("TL_CUTLASS_PATH", None)
 COMPOSABLE_KERNEL_INCLUDE_DIR: str | None = os.environ.get("TL_COMPOSABLE_KERNEL_PATH", None)
@@ -222,6 +237,7 @@ __all__ = [
     "CUDA_HOME",
     "ROCM_HOME",
     "ASCEND_HOME",
+    "TENSORPULSE_HOME",
     "TILELANG_CACHE_DIR",
     "TILELANG_AUTO_TUNING_CPU_UTILITIES",
     "TILELANG_AUTO_TUNING_CPU_COUNTS",

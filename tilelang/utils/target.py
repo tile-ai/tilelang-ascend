@@ -56,47 +56,66 @@ def check_npu_availability() -> bool:
         return False
 
 
+def check_tensorpulse_availability() -> bool:
+    """
+    Check if TensorPulse hardware/toolchain is available on the system.
+
+    Detection priority:
+      1. TENSORPULSE_HOME / TENSORPULSE_HOME_PATH env var set;
+      2. torch.tensorpulse module present and reporting is_available().
+    """
+    import os
+    if os.environ.get("TENSORPULSE_HOME") or os.environ.get("TENSORPULSE_HOME_PATH"):
+        return True
+    try:
+        import torch
+        return hasattr(torch, 'tensorpulse') and torch.tensorpulse.is_available()
+    except Exception:
+        return False
+
+
 def determine_target(target: Union[str, Target, Literal["auto"]] = "auto",
                      return_object: bool = False) -> Union[str, Target]:
     """
-    Determine the appropriate target for compilation (CUDA, HIP, or manual selection).
+    Determine the appropriate target for compilation
+    (CUDA, HIP, NPU/Ascend, TensorPulse, or manual selection).
 
     Args:
         target (Union[str, Target, Literal["auto"]]): User-specified target.
-            - If "auto", the system will automatically detect whether CUDA or HIP is available.
+            - If "auto", the system will auto-detect available hardware.
             - If a string or Target, it is directly validated.
 
     Returns:
-        Union[str, Target]: The selected target ("cuda", "hip", or a valid Target object).
+        Union[str, Target]: The selected target.
 
     Raises:
-        ValueError: If no CUDA or HIP is available and the target is "auto".
+        ValueError: If no supported hardware is available and the target is "auto".
         AssertionError: If the target is invalid.
     """
 
     return_var: Union[str, Target] = target
 
     if target == "auto":
-        # Check for CUDA and HIP availability
         is_cuda_available = check_cuda_availability()
         is_hip_available = check_hip_availability()
         is_npu_available = check_npu_availability()
+        is_tensorpulse_available = check_tensorpulse_availability()
 
-        # Determine the target based on availability
         if is_cuda_available:
             return_var = "cuda"
         elif is_hip_available:
             return_var = "hip"
         elif is_npu_available:
-            # NPU (Ascend) is available, use llvm as the TVM target
-            # tilelang will handle Ascend-specific compilation internally
             return_var = "llvm --keys=ascend"
+        elif is_tensorpulse_available:
+            return_var = "llvm --keys=tensorpulse"
         else:
-            raise ValueError("No CUDA, HIP, or NPU available on this system.")
+            raise ValueError("No CUDA, HIP, NPU, or TensorPulse available on this system.")
     elif target in ["ascendc", "pto"]:
         return_var = "llvm --keys=ascend"
+    elif target == "tensorpulse":
+        return_var = "llvm --keys=tensorpulse"
     else:
-        # Validate the target if it's not "auto"
         assert isinstance(
             target, Target) or target in AVALIABLE_TARGETS, f"Target {target} is not supported"
         return_var = target
