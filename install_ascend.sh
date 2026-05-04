@@ -6,6 +6,7 @@
 # Add command line option parsing
 USE_LLVM=false
 USE_SHMEM=false
+USE_TENSORPULSE=false
 INCREMENTAL_BUILD=false  # 增量编译选项
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -17,13 +18,17 @@ while [[ $# -gt 0 ]]; do
             USE_SHMEM=true
             shift
             ;;
+        --enable-tensorpulse)
+            USE_TENSORPULSE=true
+            shift
+            ;;
         --enable-incremental)
             INCREMENTAL_BUILD=true
             shift
             ;;
         *)
             echo "Unknown option: $1"
-            echo "Usage: $0 [--enable-llvm] [--enable-shmem] [--enable-incremental]"
+            echo "Usage: $0 [--enable-llvm] [--enable-shmem] [--enable-tensorpulse] [--enable-incremental]"
             exit 1
             ;;
     esac
@@ -42,7 +47,23 @@ fi
 echo "Starting installation script..."
 echo "LLVM enabled: $USE_LLVM"
 echo "SHMEM enabled: $USE_SHMEM"
+echo "TensorPulse enabled: $USE_TENSORPULSE"
 echo "Incremental build: $INCREMENTAL_BUILD"
+
+if $USE_TENSORPULSE; then
+    if [ -z "${TENSORPULSE_HOME}" ] && [ -n "${TENSORPULSE_HOME_PATH}" ]; then
+        export TENSORPULSE_HOME="${TENSORPULSE_HOME_PATH}"
+    fi
+    if [ -z "${TENSORPULSE_HOME}" ]; then
+        echo "[ERROR] --enable-tensorpulse requires TENSORPULSE_HOME (or TENSORPULSE_HOME_PATH) to be set."
+        exit 1
+    fi
+    if [ ! -f "${TENSORPULSE_HOME}/iq/iq_api.h" ]; then
+        echo "[ERROR] ${TENSORPULSE_HOME}/iq/iq_api.h not found."
+        exit 1
+    fi
+    echo "TENSORPULSE_HOME: ${TENSORPULSE_HOME}"
+fi
 
 # Step 1: Install Python requirements
 echo "Installing Python requirements from requirements.txt..."
@@ -145,6 +166,10 @@ cd build
 if ! $INCREMENTAL_BUILD; then
     echo "set(USE_ASCEND ON)" >> config.cmake
     echo 'set(USE_GTEST OFF)' >> config.cmake
+    if $USE_TENSORPULSE; then
+        echo "set(USE_TENSORPULSE ON)" >> config.cmake
+        echo "set(TENSORPULSE_HOME \"${TENSORPULSE_HOME}\")" >> config.cmake
+    fi
     cmake ..
     if [ $? -ne 0 ]; then
         echo "Error: CMake configuration failed."

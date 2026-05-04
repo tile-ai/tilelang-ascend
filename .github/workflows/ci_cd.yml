@@ -510,11 +510,18 @@ jobs:
               if [ -d build-cache ] && [ \"\$(ls -A build-cache)\" ]; then
                 echo \"Copy build cache...\"
                 mkdir -p build
-                cp -ra build-cache/* build/ 
+                cp -ra build-cache/* build/
               fi
 
-              # 1. 增量编译项目
-              bash install_ascend.sh \$INCREMENTAL_FLAG
+              # 1a. 铺 SMI_IQ stub 让 USE_TENSORPULSE=ON 的 cmake 检查通过；
+              # codegen_tensorpulse.cc / rt_mod_tensorpulse.cc 不直接 include 这个 header，
+              # 只在运行时通过 TILELANG_TENSORPULSE_HOME 宏向 kernel 编译命令注入 -I 。
+              mkdir -p .tensorpulse_stub/iq
+              : > .tensorpulse_stub/iq/iq_api.h
+              export TENSORPULSE_HOME=\$PWD/.tensorpulse_stub
+
+              # 1b. 增量编译项目（同时启用 ascend + tensorpulse 后端）
+              bash install_ascend.sh \$INCREMENTAL_FLAG --enable-tensorpulse
               # 保存编译产物
               if [ -d \"build\" ]; then
                 echo \"Saving build artifacts...\"
@@ -526,6 +533,10 @@ jobs:
               echo 'Sourcing environment...'
               source set_env.sh
               echo 'TILELANG_PATH='\$PWD >> \$GITHUB_ENV
+
+              # 2a. TensorPulse target 注册 smoke test（秒级，build 完即跑）
+              echo 'Running tensorpulse target smoke test...'
+              TVM_LIBRARY_PATH=\$PWD/build/tvm python3 testing/python/test_tensorpulse_target_smoke.py
 
               # 3. 运行测试用例
               cd examples
