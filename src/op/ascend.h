@@ -75,6 +75,18 @@ NPUIR_UNARY_OP_CLASS(Rsqrt)
 NPUIR_UNARY_OP_CLASS(Abs)
 NPUIR_UNARY_OP_CLASS(Rec)
 NPUIR_UNARY_OP_CLASS(Not)
+NPUIR_UNARY_OP_CLASS(Floor)
+
+class NpuirFloorDiv : public Operator {
+public:
+  NpuirFloorDiv(Array<PrimExpr> args, BufferMap vmap);
+
+  static const Op &Get();
+
+  Buffer src0, src1, dst;
+
+  Array<Range> src0_range, src1_range, dst_range;
+};
 
 class NpuirDot : public Operator {
 public:

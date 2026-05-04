@@ -227,6 +227,13 @@ def npuir_rec(A, B):
 def npuir_not(A, B):
     return AscendUnaryOp("not", A, B).buildTirCall()
 
+"""npuir floor at tile-level."""
+def npuir_floor(A, B):
+    return AscendUnaryOp("floor", A, B).buildTirCall()
+"""npuir floordiv at tile-level."""
+def npuir_floordiv(A, B, C):
+    return AscendBinaryOp("floordiv", A, B, C).buildTirCall()
+
 def npuir_exp2(A, B, Tmp):
     """
     npuir exp2 at tile-level.
