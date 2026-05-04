@@ -280,9 +280,11 @@ private:
   Map<Var, PrimExpr> local_var_init_map_;
 };
 
+namespace {
 PrimFunc LowerOpaqueBlock(PrimFunc f) {
   return OpaqueBlockLower::Rewrite(std::move(f));
 }
+} // namespace
 
 namespace transform {
 using namespace tir::transform;

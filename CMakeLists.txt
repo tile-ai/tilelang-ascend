@@ -213,7 +213,14 @@ target_compile_definitions(tilelang_objs PRIVATE -DTILE_LANG_EXPORTS)
 
 # Shared library
 add_library(tilelang SHARED $<TARGET_OBJECTS:tilelang_objs>)
-target_link_libraries(tilelang PUBLIC tvm_runtime)
+if(APPLE)
+  # macOS arm64 ld defaults to -undefined error, so tilelang must resolve
+  # the TVM compile-time IR symbols (tvm::PrimExpr, tvm::tir::*) at link time.
+  # Those live in libtvm, not libtvm_runtime.
+  target_link_libraries(tilelang PUBLIC tvm)
+else()
+  target_link_libraries(tilelang PUBLIC tvm_runtime)
+endif()
 
 # Static library
 add_library(tilelang_static STATIC $<TARGET_OBJECTS:tilelang_objs>)
