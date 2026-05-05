@@ -116,8 +116,8 @@ description: "根据算子需求生成 TileLang-Ascend 算子设计文档（desi
 3. 分析算子特征：
    - **计算类型判定**：
      - 纯 Vector（element-wise / reduction）→ 仅需 UB
-     - 纯 Cube（含 matmul）→ 需要 L1 + L0A/L0B/L0C
-     - 混合（matmul + element-wise 后处理）→ 核间流水线
+     - 纯 Cube（仅 matmul）→ 需要 L1 + L0A/L0B/L0C
+     - 混合（matmul + element-wise 后处理）→ 核间流水线，需要 CV 融合
    - **复杂度级别**：
      - 单步（如 element-wise add）→ 无循环、单次搬运
      - 多步（如 softmax = max + sub + exp + sum + div）→ 多次计算、可能需要中间缓冲
@@ -171,9 +171,10 @@ grep "T.Scope\|T.barrier" examples/{同类实现}  # 同步方式
 5. Tiling 策略
 6. 循环与调度结构
 7. 同步策略
-8. 验证方案
-9. 风险点与注意事项
-10. 交付清单
+8. CV 融合设计（如有）
+9. 验证方案
+10. 风险点与注意事项
+11. 交付清单
 
 ### Phase 4：质量自检
 
@@ -223,9 +224,13 @@ grep "T.Scope\|T.barrier" examples/{同类实现}  # 同步方式
 │   │   Kernel: T.Kernel(一维, is_npu=True) as (cid, _)
 │   │
 │   └─ matmul + element-wise 后处理 → 混合（融合算子）
-│       参考: examples/flash_attention/*.py
-│       模式: Expert + 核间流水线
-│       同步: T.set_cross_flag / T.wait_cross_flag
+│       模式: Developer + 自动同步（推荐）或 Expert + 手动同步
+│       API: T.gemm_v0 + T.tile.* / T.Parallel + workspace
+│       内存: GM→L1→L0A/L0B→L0C→workspace→UB→GM
+│       workspace: 数量/shape/dtype 自动推断，位于 GM
+│       pass_configs: AUTO_CV_COMBINE:True + AUTO_CV_SYNC:True + AUTO_SYNC:True
+│       同步: 自动（AUTO_CV_SYNC）或手动（T.set_cross_flag / T.wait_cross_flag）
+│       参考示例: examples/flash_attention/flash_attn_bhsd_cc_sync.py
 │
 ├─ 纯 element-wise（逐元素运算）
 │   参考: examples/elementwise/*.py, examples/activation/*.py
@@ -283,6 +288,9 @@ grep "T.Scope\|T.barrier" examples/{同类实现}  # 同步方式
 | 8 | **技术约束已确认**：三维 Kernel、threads、动态边界等问题已处理 | ✅ 必须 |
 | 9 | **本项目同类实现已列出**：有具体的 examples/ 文件路径参考 | ✅ 必须 |
 | 10 | **参考实现差异已说明**：如果有外部参考，列出 API/结构差异 | ⭕ 推荐 |
+| 11 | **参考实现分析完整**（如有参考实现）：记录了内存层级 API、同步策略、pass_configs 等技术决策 | ⭕ 推荐 |
+| 12 | **CV 融合设计完整**（如需）：workspace 规格、数据流、pass_configs | ⭕ 推荐 |
+| 13 | **workspace_idx 配置正确**（如需 CV 融合）：与 workspace 参数位置一致 | ✅ 必须 |
 
 **通过条件**：必须项（1, 2, 3, 7, 8, 9）全部通过，推荐项（4, 5, 6, 10）至少通过 3/4。
 
