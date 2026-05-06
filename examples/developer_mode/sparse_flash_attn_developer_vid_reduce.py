@@ -92,29 +92,29 @@ def sparse_attention_fwd(
             by = cid // (seq_len * REPLICATE_H) % batch
             bz = cid // (seq_len * REPLICATE_H) // batch % kv_group
 
-            q_l1 = T.alloc_L1([H_per_block, D], dtype)
-            q_tail_l1 = T.alloc_L1([H_per_block, D_tail], dtype)
-            kv_l1 = T.alloc_L1([BI, D], dtype)
-            kv_tail_l1 = T.alloc_L1([BI, D_tail], dtype)
-            acc_s_l1 = T.alloc_L1([H_per_block, BI], dtype)
+            q_l1 = T.alloc_shared([H_per_block, D], dtype)
+            q_tail_l1 = T.alloc_shared([H_per_block, D_tail], dtype)
+            kv_l1 = T.alloc_shared([BI, D], dtype)
+            kv_tail_l1 = T.alloc_shared([BI, D_tail], dtype)
+            acc_s_l1 = T.alloc_shared([H_per_block, BI], dtype)
 
-            acc_s_l0c = T.alloc_L0C([H_per_block, BI], accum_dtype)
-            acc_o_l0c = T.alloc_L0C([H_per_block, D], accum_dtype)
+            acc_s_l0c = T.alloc_fragment([H_per_block, BI], accum_dtype)
+            acc_o_l0c = T.alloc_fragment([H_per_block, D], accum_dtype)
 
             ## 2. Vector
-            acc_o = T.alloc_ub([v_block, D], accum_dtype)
-            sumexp = T.alloc_ub([v_block], accum_dtype)
-            m_i = T.alloc_ub([v_block], accum_dtype)
-            indices_ub_ = T.alloc_ub([BI], indices_dtype)
-            kv_ub = T.alloc_ub([D], dtype)
-            kv_tail_ub = T.alloc_ub([D_tail], dtype)
-            acc_s_ub = T.alloc_ub([v_block, BI], accum_dtype)
-            m_i_prev = T.alloc_ub([v_block], accum_dtype)
-            acc_s_ub_ = T.alloc_ub([v_block, BI], accum_dtype)
-            sumexp_i_ub = T.alloc_ub([v_block], accum_dtype)
-            acc_s_half = T.alloc_ub([v_block, BI], dtype)
-            acc_o_ub = T.alloc_ub([v_block, D], accum_dtype)
-            acc_o_half = T.alloc_ub([v_block, D], dtype)
+            acc_o = T.alloc_shared([v_block, D], accum_dtype)
+            sumexp = T.alloc_shared([v_block], accum_dtype)
+            m_i = T.alloc_shared([v_block], accum_dtype)
+            indices_ub_ = T.alloc_shared([BI], indices_dtype)
+            kv_ub = T.alloc_shared([D], dtype)
+            kv_tail_ub = T.alloc_shared([D_tail], dtype)
+            acc_s_ub = T.alloc_shared([v_block, BI], accum_dtype)
+            m_i_prev = T.alloc_shared([v_block], accum_dtype)
+            acc_s_ub_ = T.alloc_shared([v_block, BI], accum_dtype)
+            sumexp_i_ub = T.alloc_shared([v_block], accum_dtype)
+            acc_s_half = T.alloc_shared([v_block, BI], dtype)
+            acc_o_ub = T.alloc_shared([v_block, D], accum_dtype)
+            acc_o_half = T.alloc_shared([v_block, D], dtype)
 
             b_i = by
             g_i = bz

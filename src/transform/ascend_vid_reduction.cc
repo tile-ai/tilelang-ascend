@@ -1035,45 +1035,53 @@ private:
 
       void VisitExpr_(const CallNode *op) final {
         // Handle tvm_access_ptr: check if offset/extent equals loop_var
-        if (op->op.same_as(builtin::tvm_access_ptr())) {
-          if (op->args.size() >= 4) {
-            // Extract buffer from args[1] (buffer_data)
-            const VarNode *buffer_var = op->args[1].as<VarNode>();
-            if (buffer_var) {
-              Buffer buffer;
-              for (const auto &pair : origin_to_new_buffer) {
-                if (pair.first->data.get() == buffer_var) {
-                  buffer = pair.first;
-                  break;
-                }
-              }
+        if (!op->op.same_as(builtin::tvm_access_ptr()) || op->args.size() < 4) {
+          StmtExprVisitor::VisitExpr_(op);
+          return;
+        }
 
-              // buffer.defined() implies buffer is vid-reduced UB (checked
-              // during BlockNode processing)
-              if (buffer.defined()) {
-                // Get offset and extent from access_ptr
-                PrimExpr offset = op->args[2];
-                PrimExpr extent = op->args[3];
+        // Extract buffer from args[1] (buffer_data)
+        const VarNode *buffer_var = op->args[1].as<VarNode>();
+        if (!buffer_var) {
+          StmtExprVisitor::VisitExpr_(op);
+          return;
+        }
 
-                PrimExpr simplified_extent = analyzer->Simplify(extent);
-                if (const IntImmNode *extent_imm =
-                        simplified_extent.as<IntImmNode>()) {
-                  if (extent_imm->value != 0) {
-                    // Check if offset / extent simplifies to loop_var
-                    PrimExpr division =
-                        analyzer->Simplify(indexdiv(offset, extent));
-                    if (const VarNode *v = division.as<VarNode>()) {
-                      if (v == target_var.get()) {
-                        found = true;
-                        return;
-                      }
-                    }
-                  }
-                }
-              }
-            }
+        // Find buffer in origin_to_new_buffer
+        Buffer buffer;
+        for (const auto &pair : origin_to_new_buffer) {
+          if (pair.first->data.get() == buffer_var) {
+            buffer = pair.first;
+            break;
           }
         }
+
+        // buffer.defined() implies buffer is vid-reduced UB (checked
+        // during BlockNode processing)
+        if (!buffer.defined()) {
+          StmtExprVisitor::VisitExpr_(op);
+          return;
+        }
+
+        // Get offset and extent from access_ptr
+        PrimExpr offset = op->args[2];
+        PrimExpr extent = op->args[3];
+
+        PrimExpr simplified_extent = analyzer->Simplify(extent);
+        const IntImmNode *extent_imm = simplified_extent.as<IntImmNode>();
+        if (!extent_imm || extent_imm->value == 0) {
+          StmtExprVisitor::VisitExpr_(op);
+          return;
+        }
+
+        // Check if offset / extent simplifies to loop_var
+        PrimExpr division = analyzer->Simplify(indexdiv(offset, extent));
+        const VarNode *v = division.as<VarNode>();
+        if (v && v == target_var.get()) {
+          found = true;
+          return;
+        }
+
         StmtExprVisitor::VisitExpr_(op);
       }
     };
