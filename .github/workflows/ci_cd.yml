@@ -9,6 +9,7 @@ on:
     paths-ignore:                              # 以下路径的修改不触发 CI
       - '**.md'                                # Markdown 文件
       - '**.png'
+      - '.gitignore'
       - 'docs/**'                              # 文档目录
       - 'images/**'                            # 图片目录
       - '.agents/**'                           # Agent skill 目录
@@ -19,6 +20,7 @@ on:
     paths-ignore:
       - '**.md'
       - '**.png'
+      - '.gitignore'
       - 'docs/**'
       - 'images/**'
       - '.agents/**'
@@ -62,6 +64,9 @@ jobs:
   check_changes:
     name: Check PR Status and Changes
     runs-on: ubuntu-latest
+    if: |
+      github.event_name != 'push' ||
+      !contains(github.event.head_commit.message, 'Merge pull request')
     outputs:
       merged: ${{ steps.pr_info.outputs.merged || steps.pr_status.outputs.merged || steps.default_changes.outputs.merged }}
       test_dirs: ${{ steps.detect_changes.outputs.test_dirs || steps.default_changes.outputs.test_dirs }}
@@ -69,9 +74,6 @@ jobs:
       run_examples: ${{ steps.detect_changes.outputs.run_examples || steps.default_changes.outputs.run_examples }}
       run_pytest_only: ${{ steps.detect_changes.outputs.run_pytest_only || steps.default_changes.outputs.run_pytest_only }}
       should_skip: ${{ steps.detect_changes.outputs.should_skip || steps.default_changes.outputs.should_skip }}
-      status_comment_id: ${{ steps.post_queued_status.outputs.comment_id }}
-      retest_check_run_id: ${{ steps.post_queued_status.outputs.check_run_id }}
-      head_sha: ${{ steps.pr_info.outputs.head_sha }}
     steps:
       - name: Set default changes for full test events
         if: github.event_name != 'pull_request' && (github.event_name != 'issue_comment' || !github.event.issue.pull_request)
@@ -126,44 +128,63 @@ jobs:
               body: '⚠️ This PR has been merged. Skipping tests.'
             });
 
-      - name: Post queued status for /re-test
+      - name: Rerun failed jobs for /re-test
         if: github.event_name == 'issue_comment' && github.event.issue.pull_request && steps.pr_info.outputs.merged != 'true' && contains(github.event.comment.body, '/re-test')
-        id: post_queued_status
         uses: actions/github-script@v7
         with:
           script: |
-            const runUrl = `${process.env.GITHUB_SERVER_URL}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-            const statusContext = `${context.workflow} / Re-test Benchmark Tests (Ascend NPU)`;
-            const checkRun = await github.rest.checks.create({
+            // Add reaction to comment
+            await github.rest.reactions.createForIssueComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              name: 'Re-test Benchmark Tests (Ascend NPU)',
+              comment_id: context.payload.comment.id,
+              content: 'rocket'
+            });
+            
+            // Find original workflow run by head_sha
+            const runs = await github.rest.actions.listWorkflowRunsForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'ci_cd.yml',
               head_sha: '${{ steps.pr_info.outputs.head_sha }}',
-              status: 'queued',
-              details_url: runUrl,
-              output: {
-                title: 'Re-test queued',
-                summary: `Re-test workflow run: [View details](${runUrl})`
-              }
+              event: 'pull_request'
             });
-            core.setOutput('check_run_id', checkRun.data.id);
-            await github.rest.repos.createCommitStatus({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              sha: '${{ steps.pr_info.outputs.head_sha }}',
-              state: 'pending',
-              context: statusContext,
-              description: 'Re-test queued',
-              target_url: runUrl
-            });
-            const body = `⏳ **Task submitted and queued**\n\nWorkflow run: [View details](<${runUrl}>)\n\n_This message will be updated when the task starts._`;
-            const comment = await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              body: body
-            });
-            core.setOutput('comment_id', comment.data.id);
+            
+            if (runs.data.workflow_runs.length === 0) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: '⚠️ No previous workflow run found for this PR. Cannot re-run failed jobs.'
+              });
+              return;
+            }
+            
+            const originalRun = runs.data.workflow_runs[0];
+            const runUrl = `${process.env.GITHUB_SERVER_URL}/${context.repo.owner}/${context.repo.repo}/actions/runs/${originalRun.id}`;
+            
+            // Rerun failed jobs
+            try {
+              await github.rest.actions.reRunWorkflowFailedJobs({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                run_id: originalRun.id
+              });
+              
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: `🔄 **Re-running failed jobs**\n\nOriginal workflow run: [View details](<${runUrl}>)\n\nOnly the failed jobs will be re-executed.`
+              });
+            } catch (error) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: `❌ Failed to re-run jobs: ${error.message}\n\nYou may need to re-run manually from the Actions page: [View workflow](<${runUrl}>)`
+              });
+            }
 
       - name: Checkout code
         if: (github.event_name == 'pull_request' || (github.event_name == 'issue_comment' && github.event.issue.pull_request)) && (steps.pr_info.outputs.merged != 'true' || github.event_name == 'pull_request')
@@ -343,123 +364,26 @@ jobs:
       test_summary: ${{ steps.check_results.outputs.test_summary }}
     if: |
       (
-        (
-          (github.event_name != 'workflow_dispatch' || github.event.inputs.run_tests == 'true') &&
-          (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
-        ) ||
-        (
-          (github.event_name == 'pull_request' || github.event_name == 'issue_comment') &&
-          (github.event_name != 'issue_comment' || (github.event.issue.pull_request && contains(github.event.comment.body, '/re-test'))) &&
-          needs.check_changes.outputs.merged != 'true' &&
-          needs.check_changes.outputs.should_skip != 'true'
-        )
+        (github.event_name != 'workflow_dispatch' || github.event.inputs.run_tests == 'true') &&
+        (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request') &&
+        needs.check_changes.outputs.merged != 'true' &&
+        needs.check_changes.outputs.should_skip != 'true'
       )
     timeout-minutes: 60
     env:
       FULL_BUILD: ${{ github.event_name == 'schedule' || github.event.inputs.full_build == 'true' }}
     steps:
-      - name: Get PR info and check merged status
-        if: github.event_name == 'issue_comment'
-        id: pr_info
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const pr = await github.rest.pulls.get({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: context.issue.number
-            });
-            core.setOutput('head_ref', pr.data.head.ref);
-            core.setOutput('head_sha', pr.data.head.sha);
-            core.setOutput('base_ref', pr.data.base.ref);
-            core.setOutput('merged', pr.data.merged);
-            core.setOutput('state', pr.data.state);
-
-      - name: React to /re-test comment
-        if: github.event_name == 'issue_comment' && steps.pr_info.outputs.merged != 'true'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            github.rest.reactions.createForIssueComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              comment_id: context.payload.comment.id,
-              content: 'rocket'
-            });
-
-      - name: Update status comment to running
-        if: github.event_name == 'issue_comment' && needs.check_changes.outputs.status_comment_id != ''
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const commentId = '${{ needs.check_changes.outputs.status_comment_id }}';
-            if (!commentId || commentId === '') {
-              console.log('No status comment ID, skipping update');
-              return;
-            }
-            const runUrl = `${process.env.GITHUB_SERVER_URL}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-            const statusContext = `${context.workflow} / Re-test Benchmark Tests (Ascend NPU)`;
-            const checkRunId = '${{ needs.check_changes.outputs.retest_check_run_id }}';
-            if (checkRunId) {
-              await github.rest.checks.update({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                check_run_id: parseInt(checkRunId, 10),
-                status: 'in_progress',
-                details_url: runUrl,
-                output: {
-                  title: 'Re-test running',
-                  summary: `Re-test workflow run: [View details](${runUrl})`
-                }
-              });
-            }
-            await github.rest.repos.createCommitStatus({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              sha: '${{ steps.pr_info.outputs.head_sha }}',
-              state: 'pending',
-              context: statusContext,
-              description: 'Re-test running',
-              target_url: runUrl
-            });
-            const body = `🚀 **Task is now running**\n\nWorkflow run: [View details](<${runUrl}>)\n\n_This message will be updated when the task completes._`;
-            await github.rest.issues.updateComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              comment_id: parseInt(commentId),
-              body: body
-            });
-
-      - name: React to merged PR comment
-        if: github.event_name == 'issue_comment' && steps.pr_info.outputs.merged == 'true'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            github.rest.reactions.createForIssueComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              comment_id: context.payload.comment.id,
-              content: 'confused'
-            });
-            github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              body: '⚠️ This PR has been merged. Skipping tests.'
-            });
-
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           submodules: false
           fetch-depth: 0
-          ref: ${{ github.event_name == 'issue_comment' && format('refs/pull/{0}/head', github.event.issue.number) || '' }}
 
       - name: Check if skip pytest
         id: check_skip_pytest
-        if: github.event_name == 'pull_request' || github.event_name == 'issue_comment'
+        if: github.event_name == 'pull_request'
         run: |
-          BASE_REF="${{ github.event_name == 'issue_comment' && steps.pr_info.outputs.base_ref || github.base_ref }}"
+          BASE_REF="${{ github.base_ref }}"
           git fetch origin $BASE_REF
           changed_files=$(git diff --name-only origin/$BASE_REF HEAD)
           
@@ -492,7 +416,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: build-cache/
-          key: tilelang-build-${{ github.event_name == 'issue_comment' && steps.pr_info.outputs.base_ref || github.base_ref || github.ref_name }}-${{ hashFiles('CMakeLists.txt', 'requirements.txt', 'install_ascend.sh') }}
+          key: tilelang-build-${{ github.base_ref || github.ref_name }}-${{ hashFiles('CMakeLists.txt', 'requirements.txt', 'install_ascend.sh') }}
       
       # 全量编译，清理所有残留编译产物
       - name: Clean build artifacts for full build
@@ -521,14 +445,14 @@ jobs:
           
           # 确定 TEST_DIRS 参数和测试策略
           # push/schedule/workflow_dispatch 事件：全量测试
-          # PR/issue_comment 事件：根据 check_changes outputs
+          # PR 事件：根据 check_changes outputs
           if [[ "$GITHUB_EVENT_NAME" == "push" ]] || [[ "$GITHUB_EVENT_NAME" == "schedule" ]] || [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
             TEST_DIRS_ARG=""
             PYTEST_FILES_ARG=""
             RUN_EXAMPLES="true"
             RUN_PYTEST_ONLY="false"
             echo "Event: $GITHUB_EVENT_NAME - running full tests"
-          else
+          elif [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
             TEST_DIRS_VALUE="${{ needs.check_changes.outputs.test_dirs }}"
             PYTEST_FILES_VALUE="${{ needs.check_changes.outputs.pytest_files }}"
             RUN_EXAMPLES="${{ needs.check_changes.outputs.run_examples }}"
@@ -651,7 +575,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: build-cache/
-          key: tilelang-build-${{ github.event_name == 'issue_comment' && steps.pr_info.outputs.base_ref || github.base_ref || github.ref_name }}-${{ hashFiles('CMakeLists.txt', 'requirements.txt', 'install_ascend.sh') }}
+          key: tilelang-build-${{ github.base_ref || github.ref_name }}-${{ hashFiles('CMakeLists.txt', 'requirements.txt', 'install_ascend.sh') }}
           
       - name: Check pass rate
         id: check_results
@@ -785,124 +709,6 @@ jobs:
             examples/*.log
             examples/*.json
           retention-days: 30
-
-      - name: Update PR commit status (for /re-test)
-        if: always() && github.event_name == 'issue_comment'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const sha = '${{ steps.pr_info.outputs.head_sha }}';
-            const jobStatus = '${{ job.status }}';
-            const status = jobStatus === 'success' ? 'success' : 'failure';
-            const statusContext = `${context.workflow} / Re-test Benchmark Tests (Ascend NPU)`;
-            const checkRunId = '${{ needs.check_changes.outputs.retest_check_run_id }}';
-            if (checkRunId) {
-              await github.rest.checks.update({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                check_run_id: parseInt(checkRunId, 10),
-                status: 'completed',
-                conclusion: status,
-                completed_at: new Date().toISOString(),
-                details_url: `${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}`,
-                output: {
-                  title: `Re-test: ${status}`,
-                  summary: `Re-test workflow run: [View details](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})`
-                }
-              });
-            }
-            await github.rest.repos.createCommitStatus({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              sha: sha,
-              state: status,
-              context: statusContext,
-              description: `Re-test: ${status}`,
-              target_url: `${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}`
-            });
-
-      - name: Update status comment with final results
-        if: always() && github.event_name == 'issue_comment' && needs.check_changes.outputs.status_comment_id != ''
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const jobStatus = '${{ job.status }}';
-            const passRate = '${{ steps.check_results.outputs.pass_rate }}' || '0';
-            const testSummary = '${{ steps.check_results.outputs.test_summary }}' || 'No summary available';
-            const commentId = '${{ needs.check_changes.outputs.status_comment_id }}';
-            
-            if (!commentId || commentId === '') {
-              console.log('No status comment ID, skipping final update');
-              return;
-            }
-            
-            const runUrl = `${process.env.GITHUB_SERVER_URL}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-            
-            const statusEmoji = jobStatus === 'success' ? '✅' : (jobStatus === 'failure' ? '❌' : '⚠️');
-            const statusText = jobStatus === 'success' ? 'Completed successfully' : (jobStatus === 'failure' ? 'Failed' : 'Completed with issues');
-            
-            const body = `${statusEmoji} **Task ${statusText}**\n\n**Summary:** ${testSummary}\n\nWorkflow run: [View details](<${runUrl}>)`;
-            
-            await github.rest.issues.updateComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              comment_id: parseInt(commentId),
-              body: body
-            });
-
-  finalize_skipped_retest:
-    name: Finalize Skipped Re-test
-    runs-on: ubuntu-latest
-    needs: check_changes
-    if: |
-      github.event_name == 'issue_comment' &&
-      github.event.issue.pull_request &&
-      contains(github.event.comment.body, '/re-test') &&
-      needs.check_changes.outputs.should_skip == 'true' &&
-      needs.check_changes.outputs.retest_check_run_id != ''
-    steps:
-      - name: Mark skipped re-test complete
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const runUrl = `${process.env.GITHUB_SERVER_URL}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-            const statusContext = `${context.workflow} / Re-test Benchmark Tests (Ascend NPU)`;
-            const checkRunId = '${{ needs.check_changes.outputs.retest_check_run_id }}';
-            await github.rest.checks.update({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              check_run_id: parseInt(checkRunId, 10),
-              status: 'completed',
-              conclusion: 'skipped',
-              completed_at: new Date().toISOString(),
-              details_url: runUrl,
-              output: {
-                title: 'Re-test skipped',
-                summary: 'No testable files were modified, so the re-test was skipped.'
-              }
-            });
-            await github.rest.repos.createCommitStatus({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              sha: '${{ needs.check_changes.outputs.head_sha }}',
-              state: 'success',
-              context: statusContext,
-              description: 'Re-test skipped: no testable changes',
-              target_url: runUrl
-            });
-
-      - name: Update skipped re-test comment
-        if: needs.check_changes.outputs.status_comment_id != ''
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const commentId = '${{ needs.check_changes.outputs.status_comment_id }}';
-            await github.rest.issues.updateComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              comment_id: parseInt(commentId, 10),
-              body: 'ℹ️ **Re-test skipped**\n\nNo testable files were modified.'
-            });
 
   notify:
     name: Notify Daily Test Results
