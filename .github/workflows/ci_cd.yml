@@ -71,6 +71,7 @@ jobs:
       should_skip: ${{ steps.detect_changes.outputs.should_skip || steps.default_changes.outputs.should_skip }}
       status_comment_id: ${{ steps.post_queued_status.outputs.comment_id }}
       retest_check_run_id: ${{ steps.post_queued_status.outputs.check_run_id }}
+      head_sha: ${{ steps.pr_info.outputs.head_sha }}
     steps:
       - name: Set default changes for full test events
         if: github.event_name != 'pull_request' && (github.event_name != 'issue_comment' || !github.event.issue.pull_request)
@@ -136,7 +137,7 @@ jobs:
             const checkRun = await github.rest.checks.create({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              name: 'Benchmark Tests (Ascend NPU)',
+              name: 'Re-test Benchmark Tests (Ascend NPU)',
               head_sha: '${{ steps.pr_info.outputs.head_sha }}',
               status: 'queued',
               details_url: runUrl,
@@ -847,6 +848,60 @@ jobs:
               repo: context.repo.repo,
               comment_id: parseInt(commentId),
               body: body
+            });
+
+  finalize_skipped_retest:
+    name: Finalize Skipped Re-test
+    runs-on: ubuntu-latest
+    needs: check_changes
+    if: |
+      github.event_name == 'issue_comment' &&
+      github.event.issue.pull_request &&
+      contains(github.event.comment.body, '/re-test') &&
+      needs.check_changes.outputs.should_skip == 'true' &&
+      needs.check_changes.outputs.retest_check_run_id != ''
+    steps:
+      - name: Mark skipped re-test complete
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const runUrl = `${process.env.GITHUB_SERVER_URL}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const statusContext = `${context.workflow} / Re-test Benchmark Tests (Ascend NPU)`;
+            const checkRunId = '${{ needs.check_changes.outputs.retest_check_run_id }}';
+            await github.rest.checks.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              check_run_id: parseInt(checkRunId, 10),
+              status: 'completed',
+              conclusion: 'skipped',
+              completed_at: new Date().toISOString(),
+              details_url: runUrl,
+              output: {
+                title: 'Re-test skipped',
+                summary: 'No testable files were modified, so the re-test was skipped.'
+              }
+            });
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: '${{ needs.check_changes.outputs.head_sha }}',
+              state: 'success',
+              context: statusContext,
+              description: 'Re-test skipped: no testable changes',
+              target_url: runUrl
+            });
+
+      - name: Update skipped re-test comment
+        if: needs.check_changes.outputs.status_comment_id != ''
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const commentId = '${{ needs.check_changes.outputs.status_comment_id }}';
+            await github.rest.issues.updateComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: parseInt(commentId, 10),
+              body: 'ℹ️ **Re-test skipped**\n\nNo testable files were modified.'
             });
 
   notify:
