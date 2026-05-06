@@ -99,63 +99,62 @@ def chunk_gated_delta_rule(
 
             T.copy(h0[i_n, i_h, K // 2 * vid : K // 2 * vid + K // 2, :], h_state_ub)
 
-            for i in T.serial(NT_max):
-                if i < NT_i:
-                    g_start = bos + i * BT
-                    # 1: save h[t]
-                    T.copy(h_state_ub, h[i_n, i, i_h, K // 2 * vid : K // 2 * vid + K // 2, :])
+            for i in T.serial(NT_i):
+                g_start = bos + i * BT
+                # 1: save h[t]
+                T.copy(h_state_ub, h[i_n, i, i_h, K // 2 * vid : K // 2 * vid + K // 2, :])
 
-                    # 2: W @ h
-                    T.copy(h_state_ub, workspace_h[i_n, i_h, K // 2 * vid : K // 2 * vid + K // 2, :])
+                # 2: W @ h
+                T.copy(h_state_ub, workspace_h[i_n, i_h, K // 2 * vid : K // 2 * vid + K // 2, :])
 
-                    T.copy(workspace_h[i_n, i_h, :, :], h_state_l1)
-                    T.copy(w[g_start : g_start + BT, i_h, :], w_chunk_l1)
-                    T.gemm_v0(w_chunk_l1, h_state_l1, wh_frag, init=True)
-                    T.copy(wh_frag, workspace_wh[i_n, i_h, :, :])
+                T.copy(workspace_h[i_n, i_h, :, :], h_state_l1)
+                T.copy(w[g_start : g_start + BT, i_h, :], w_chunk_l1)
+                T.gemm_v0(w_chunk_l1, h_state_l1, wh_frag, init=True)
+                T.copy(wh_frag, workspace_wh[i_n, i_h, :, :])
 
-                    T.copy(workspace_wh[i_n, i_h, BT // 2 * vid : BT // 2 * vid + BT // 2, :], wh_ub_float)
+                T.copy(workspace_wh[i_n, i_h, BT // 2 * vid : BT // 2 * vid + BT // 2, :], wh_ub_float)
 
-                    # 3: v_new = v - wh
-                    T.copy(v[g_start + BT // 2 * vid : g_start + BT // 2 * vid + BT // 2, i_h, :], v_chunk_ub)
-                    T.copy(v_chunk_ub, v_chunk_ub_float)
-                    T.tile.sub(v_new_ub_float, v_chunk_ub_float, wh_ub_float)
-                    if SAVE_NEW_VALUE:
-                        T.copy(v_new_ub_float, v_new_ub)
-                        T.copy(v_new_ub, v_new[g_start + BT // 2 * vid : g_start + BT // 2 * vid + BT // 2, i_h, :])
-
-                    # 4: gated
-                    if USE_G:
-                        g_last = T.if_then_else(i * BT + BT <= T_len, g[i_h, g_start + BT - 1], g[i_h, g_start + T_len - i * BT - 1])
-                        # exp(g_last - g)
-                        T.copy(g[i_h, g_start + BT // 2 * vid : g_start + BT // 2 * vid + BT // 2], g_chunk_ub)
-                        T.tile.fill(g_exp_ub, g_last)
-                        T.tile.sub(g_exp_ub, g_exp_ub, g_chunk_ub)
-                        T.tile.exp(g_exp_ub, g_exp_ub)
-                        T.tile.broadcast(g_exp_ub_broc, g_exp_ub, axis=1)
-                        # v_new = v_new * exp(g_last - g)
-                        T.tile.mul(v_new_ub_float, v_new_ub_float, g_exp_ub_broc)
-                        # h = h * exp(g_last)
-                        T.tile.fill(g_last_ub, g_last)
-                        T.tile.exp(g_last_ub, g_last_ub)
-                        T.copy(h_state_ub, h_state_ub_float)
-                        T.tile.mul(h_state_ub_float, h_state_ub_float, g_last_ub[0])
-                    else:
-                        T.copy(h_state_ub, h_state_ub_float)
-
-                    # 5: k @ v_new
+                # 3: v_new = v - wh
+                T.copy(v[g_start + BT // 2 * vid : g_start + BT // 2 * vid + BT // 2, i_h, :], v_chunk_ub)
+                T.copy(v_chunk_ub, v_chunk_ub_float)
+                T.tile.sub(v_new_ub_float, v_chunk_ub_float, wh_ub_float)
+                if SAVE_NEW_VALUE:
                     T.copy(v_new_ub_float, v_new_ub)
-                    T.copy(v_new_ub, workspace_vnew[i_n, i_h, BT // 2 * vid : BT // 2 * vid + BT // 2, :])
+                    T.copy(v_new_ub, v_new[g_start + BT // 2 * vid : g_start + BT // 2 * vid + BT // 2, i_h, :])
 
-                    T.copy(workspace_vnew[i_n, i_h, :, :], v_new_l1)
-                    T.copy(k[g_start : g_start + BT, k_head, :], k_chunk_l1)
-                    T.gemm_v0(k_chunk_l1, v_new_l1, hupd_frag, transpose_A=True, init=True)
-                    T.copy(hupd_frag, workspace_hupd[i_n, i_h, :, :])
+                # 4: gated
+                if USE_G:
+                    g_last = T.if_then_else(i * BT + BT <= T_len, g[i_h, g_start + BT - 1], g[i_h, g_start + T_len - i * BT - 1])
+                    # exp(g_last - g)
+                    T.copy(g[i_h, g_start + BT // 2 * vid : g_start + BT // 2 * vid + BT // 2], g_chunk_ub)
+                    T.tile.fill(g_exp_ub, g_last)
+                    T.tile.sub(g_exp_ub, g_exp_ub, g_chunk_ub)
+                    T.tile.exp(g_exp_ub, g_exp_ub)
+                    T.tile.broadcast(g_exp_ub_broc, g_exp_ub, axis=1)
+                    # v_new = v_new * exp(g_last - g)
+                    T.tile.mul(v_new_ub_float, v_new_ub_float, g_exp_ub_broc)
+                    # h = h * exp(g_last)
+                    T.tile.fill(g_last_ub, g_last)
+                    T.tile.exp(g_last_ub, g_last_ub)
+                    T.copy(h_state_ub, h_state_ub_float)
+                    T.tile.mul(h_state_ub_float, h_state_ub_float, g_last_ub[0])
+                else:
+                    T.copy(h_state_ub, h_state_ub_float)
 
-                    T.copy(workspace_hupd[i_n, i_h, K // 2 * vid : K // 2 * vid + K // 2, :], hupd_ub_float)
+                # 5: k @ v_new
+                T.copy(v_new_ub_float, v_new_ub)
+                T.copy(v_new_ub, workspace_vnew[i_n, i_h, BT // 2 * vid : BT // 2 * vid + BT // 2, :])
 
-                    # 6: h = h + k @ v_new
-                    T.tile.add(h_state_ub_float, h_state_ub_float, hupd_ub_float)
-                    T.copy(h_state_ub_float, h_state_ub)
+                T.copy(workspace_vnew[i_n, i_h, :, :], v_new_l1)
+                T.copy(k[g_start : g_start + BT, k_head, :], k_chunk_l1)
+                T.gemm_v0(k_chunk_l1, v_new_l1, hupd_frag, transpose_A=True, init=True)
+                T.copy(hupd_frag, workspace_hupd[i_n, i_h, :, :])
+
+                T.copy(workspace_hupd[i_n, i_h, K // 2 * vid : K // 2 * vid + K // 2, :], hupd_ub_float)
+
+                # 6: h = h + k @ v_new
+                T.tile.add(h_state_ub_float, h_state_ub_float, hupd_ub_float)
+                T.copy(h_state_ub_float, h_state_ub)
 
             if STORE_FINAL_STATE:
                 T.copy(h_state_ub, ht[i_n, i_h, K // 2 * vid : K // 2 * vid + K // 2, :])
