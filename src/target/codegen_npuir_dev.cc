@@ -2869,24 +2869,16 @@ void CodeGenTileLangNPUIRDEV::FixpipeCodegen(const CallNode *op) {
   builder.create<mlir::hivm::FixpipeOp>(unknown_loc, result, src, dst);
 }
 
-/// Generate hivm.hir.mmadL1 for tl.npuir_dot.
+/// Generate linalg.matmul for tl.npuir_dot.
 /// before:
 ///   T.npuir_dot(T.region(A_BUF[0, 0], 1, 128, 1024),
 ///               T.region(B_BUF[0, 0], 1, 1024, 256),
 ///               T.region(C_BUF[0, 0], 3, 128, 256), T.bool(True))
 /// after:
-///   %.* = hivm.hir.mmadL1 ins(%.*,  %.*,  %.*,  %.*,  %.*,  %.* :
-///                             tensor<128x64xf16>, tensor<64x64xf16>,
-///                             i1,  index,  index,  index)
-///                         outs(%.* : tensor<128x64xf32>)
-///                         ->  tensor<128x64xf32>
+///   %0 = linalg.matmul ins(%A_BUF, %B_BUF) outs(%C_BUF)
+///   // with optional transpose and fill operations based on attributes                       
 void CodeGenTileLangNPUIRDEV::DotCodegen(const CallNode *op) {
   tvm::tl::NpuirDot npuirop(op->args, this->vmap);
-  Array<PrimExpr> a_region_shape, b_region_shape;
-  for (int i = 0; i < npuirop.src0_range.size(); i++) {
-    a_region_shape.push_back(npuirop.src0_range[i].get()->extent);
-    b_region_shape.push_back(npuirop.src1_range[i].get()->extent);
-  }
 
   mlir::Location unknown_loc = builder.getUnknownLoc();
   mlir::IndexType idx_ty = builder.getIndexType();
@@ -2894,22 +2886,76 @@ void CodeGenTileLangNPUIRDEV::DotCodegen(const CallNode *op) {
   mlir::Value b = GenExtractSliceFromRegion(op->args[1].as<CallNode>());
   mlir::Value c = GetVarValue(npuirop.dst);
   mlir::Type c_type = c.getType();
-  mlir::TypeRange result_tensors(&c_type, 1);
-  mlir::Value init_condition = MakeValue(npuirop.initC);
-  mlir::Value real_m = CreateIndexCastOp(MakeValue(a_region_shape[0]));
-  mlir::Value real_k = CreateIndexCastOp(MakeValue(b_region_shape[0]));
-  mlir::Value real_n = CreateIndexCastOp(MakeValue(b_region_shape[1]));
-  mlir::Value per_channel_bias = mlir::Value{};
-  mlir::UnitAttr a_transpose =
-      npuirop.a_transpose ? builder.getUnitAttr() : mlir::UnitAttr();
-  mlir::UnitAttr b_transpose =
-      npuirop.b_transpose ? builder.getUnitAttr() : mlir::UnitAttr();
-  mlir::UnitAttr enable_HF32 = mlir::UnitAttr();
-  auto newMmadL1Op = builder.create<mlir::hivm::MmadL1Op>(
-      unknown_loc, result_tensors, a, b, init_condition, real_m, real_k, real_n,
-      c, per_channel_bias, a_transpose, b_transpose, enable_HF32);
-  // mmadl1 has only one output, so use getResult(0)
-  mlir::Value newMmadL1OpValue = newMmadL1Op->getResult(0);
+
+  // Support a_transpose
+  mlir::Value a_input = a;
+  if (npuirop.a_transpose) {
+      auto aType = a.getType().cast<mlir::RankedTensorType>();
+      ICHECK(aType.getRank() == 2)<<"Only 2D input is supported, but got "<<aType.getRank()
+      auto shape = aType.getShape();
+
+      llvm::SmallVector<int64_t, 2> transpShapeA = {shape[1], shape[0]};
+
+      mlir::Value initTensorA = builder.create<mlir::tensor::EmptyOp>(
+          unknown_loc, transpShapeA, aType.getElementType());
+
+      auto transpOpA = builder.create<mlir::linalg::TransposeOp>(
+          unknown_loc,
+          a,
+          initTensorA,
+          llvm::ArrayRef<int64_t>{1, 0}
+      );
+
+      a_input = transpOpA->getResult(0);
+  }
+
+  // Support b_transpose
+  mlir::Value b_input = b;
+  if (npuirop.b_transpose) {
+      auto bType = b.getType().cast<mlir::RankedTensorType>();
+      ICHECK(bType.getRank() == 2)<<"Only 2D input is supported, but got "<<bType.getRank()
+      auto shape = bType.getShape();
+
+      llvm::SmallVector<int64_t, 2> transpShapeB = {shape[1], shape[0]};
+
+      mlir::Value initTensorB = builder.create<mlir::tensor::EmptyOp>(
+          unknown_loc, transpShapeB, bType.getElementType());
+
+      auto transpOpB = builder.create<mlir::linalg::TransposeOp>(
+          unknown_loc,
+          b,
+          initTensorB,
+          llvm::ArrayRef<int64_t>{1, 0}
+      );
+
+      b_input = transpOpB->getResult(0);
+  }  
+
+  // Support initC
+  mlir::Value acc_c = c;
+  if (tvm::tir::is_one(npuirop.initC)) {
+      auto c_tensor_type = c_type.cast<mlir::RankedTensorType>();
+      auto elem_type = c_tensor_type.getElementType();
+
+      auto zero_attr = builder.getZeroAttr(elem_type).cast<mlir::TypedAttr>();
+      mlir::Value zero_val = builder.create<mlir::arith::ConstantOp>(unknown_loc, zero_attr);
+
+      auto fillOp = builder.create<mlir::linalg::FillOp>(
+          unknown_loc,
+          mlir::ValueRange{zero_val},
+          mlir::ValueRange{c}
+      );
+      acc_c = fillOp.getResult(0);
+  }
+
+  auto matmulOp = builder.create<mlir::linalg::MatmulOp>(
+      unknown_loc,
+      mlir::TypeRange{c_type},
+      mlir::ValueRange{a_input, b_input},
+      mlir::ValueRange{acc_c}
+  );
+
+  mlir::Value newMmadL1OpValue = matmulOp->getResult(0);
   SetVarValue(npuirop.dst, newMmadL1OpValue);
 }
 
