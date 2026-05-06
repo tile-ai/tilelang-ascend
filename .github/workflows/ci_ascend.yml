@@ -1,6 +1,14 @@
 name: AscendC-PTO CI
 
-on: [pull_request]
+on:
+  pull_request:
+    paths-ignore:
+      - '**.md'
+      - '**.png'
+      - 'docs/**'
+      - 'images/**'
+      - '.agents/**'
+      - '.gitignore'
 
 jobs:
   format-check:

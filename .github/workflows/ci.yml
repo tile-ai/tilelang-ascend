@@ -1,6 +1,7 @@
 name: CI
 
-on: [pull_request]
+on:
+  workflow_dispatch:
 
 jobs:
   format-check:
