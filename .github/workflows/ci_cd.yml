@@ -54,7 +54,7 @@ permissions:
 concurrency:
   # PR 场景（含 pull_request 和 /re-test）：统一按 PR 号分组，新运行自动取消旧运行
   # 定时任务按分支分组避免积压；手动/push 场景退化为 github.run_id（每次唯一），互不干扰
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.event.issue.number || (github.event_name == 'schedule' && github.ref_name) || github.run_id }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.event.issue.number || (github.event_name == 'schedule' && github.ref_name) || github.run_id }}
   # 同一组中有新运行时，自动取消旧的正在运行的 workflow 
   cancel-in-progress: true
   
