@@ -221,7 +221,7 @@ jobs:
         with:
           submodules: false
           fetch-depth: 0
-          ref: ${{ github.event_name == 'pull_request' && github.head_ref || '' }}
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || '' }}
 
       - name: Detect changed files
         if: github.event_name == 'pull_request'
@@ -412,7 +412,7 @@ jobs:
         with:
           submodules: false
           fetch-depth: 0
-          ref: ${{ github.event_name == 'pull_request' && github.head_ref || '' }}
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || '' }}
 
       - name: Check if skip pytest
         id: check_skip_pytest
