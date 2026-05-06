@@ -2713,6 +2713,22 @@ void CodeGenTileLangNPUIRAPI::VisitStmt_(const AttrStmtNode *op) {
       mlir::Value indexOp = GetAndCastIndexOp<mlir::hivm::GetBlockIdxOp>(iv);
       var_map_[iv->var.get()] = indexOp;
     } else if (iv->thread_tag == "blockIdx.y" && iv->var->name_hint != "_") {
+      auto extent_y = iv->dom->extent;
+      mlir::Value upperBound = MakeValue(extent_y);
+      mlir::Type indexType = upperBound.getType();
+      mlir::Location loc = mlir::UnknownLoc::get(&context);
+      auto lowerBound = builder.create<mlir::arith::ConstantOp>(
+          loc, indexType, builder.getIntegerAttr(indexType, 0));
+      auto step = builder.create<mlir::arith::ConstantOp>(
+          loc, indexType, builder.getIntegerAttr(indexType, 1));
+      auto forOp =
+          builder.create<mlir::scf::ForOp>(loc, lowerBound, upperBound, step);
+      mlir::OpBuilder::InsertionGuard insertGuard(builder);
+      builder.setInsertionPointToStart(forOp.getBody());
+      var_map_[iv->var.get()] = forOp.getInductionVar();
+      this->VisitStmt(op->body);
+      return;
+    } else if (iv->thread_tag == "blockIdx.z" && iv->var->name_hint != "_") {
       mlir::Value indexOp = GetAndCastIndexOp<mlir::hivm::GetSubBlockIdxOp>(iv);
       var_map_[iv->var.get()] = indexOp;
     }

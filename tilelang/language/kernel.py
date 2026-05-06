@@ -90,16 +90,21 @@ class KernelLaunchFrame(TIRFrame):
             return self.frames[0].iter_var.var
 
         last_block_frame = self.frames[-1]
-        assert isinstance(last_block_frame,
-                          BlockFrame), f"Last frame must be a block frame, got {last_block_frame}"
+        assert isinstance(last_block_frame, BlockFrame), (
+            f"Last frame must be a block frame, got {last_block_frame}"
+        )
 
-        maybe_cpu = last_block_frame.annotations.get("tilelang.is_cpu_kernel_frame", False)
-        maybe_npu = last_block_frame.annotations.get("tilelang.is_npu_kernel_frame", False)
+        maybe_cpu = last_block_frame.annotations.get(
+            "tilelang.is_cpu_kernel_frame", False
+        )
+        maybe_npu = last_block_frame.annotations.get(
+            "tilelang.is_npu_kernel_frame", False
+        )
         if maybe_cpu:
             # CPU kernel frame, return a list of for frame items.
             return [frame.vars[0] for frame in self.frames[0:-1]]
         elif maybe_npu:
-            return [self.frames[i].iter_var.var for i in range(2)]
+            return [frame.iter_var.var for frame in self.frames[0:-1]]
         else:
             # Otherwise, return a list of iter_var.var objects (excluding the last 4 frames).
             # As 4 frames for threadIdx.x, threadIdx.y, threadIdx.z and block frame with attributes
@@ -243,7 +248,7 @@ def Kernel(
     """
     attrs: dict = {}
     if is_npu:
-        assert len(blocks) == 1, "NPU kernel must have exactly one block dimension"
+        assert len(blocks) <= 2, "NPU kernel only supports up to 2D blocks"
         attrs["tilelang.is_npu_kernel_frame"] = True
         return _ffi_api.KernelLaunch(blocks, threads, attrs)
 
@@ -269,48 +274,40 @@ def Kernel(
 
 
 def get_thread_binding(dim: int = 0) -> Var:
-    """Returns the thread binding for the given dimension.
-    """
+    """Returns the thread binding for the given dimension."""
     return KernelLaunchFrame.Current().get_thread_binding(dim)
 
 
 def get_thread_bindings() -> List[Var]:
-    """Returns all three thread bindings.
-    """
+    """Returns all three thread bindings."""
     return KernelLaunchFrame.Current().get_thread_bindings()
 
 
 def get_block_binding(dim: int = 0) -> Var:
-    """Returns the block binding for the given dimension.
-    """
+    """Returns the block binding for the given dimension."""
     return KernelLaunchFrame.Current().get_block_binding(dim)
 
 
 def get_block_bindings() -> List[Var]:
-    """Returns all three block bindings.
-    """
+    """Returns all three block bindings."""
     return KernelLaunchFrame.Current().get_block_bindings()
 
 
 def get_thread_extent(dim: int = 0) -> int:
-    """Returns the thread extent for the given dimension.
-    """
+    """Returns the thread extent for the given dimension."""
     return KernelLaunchFrame.Current().get_thread_extent(dim)
 
 
 def get_thread_extents() -> List[int]:
-    """Returns all three thread extents.
-    """
+    """Returns all three thread extents."""
     return KernelLaunchFrame.Current().get_thread_extents()
 
 
 def get_block_extent(dim: int = 0) -> int:
-    """Returns the block extent for the given dimension.
-    """
+    """Returns the block extent for the given dimension."""
     return KernelLaunchFrame.Current().get_block_extent(dim)
 
 
 def get_block_extents() -> List[int]:
-    """Returns all three block extents.
-    """
+    """Returns all three block extents."""
     return KernelLaunchFrame.Current().get_block_extents()
