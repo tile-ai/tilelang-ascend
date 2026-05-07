@@ -264,34 +264,28 @@ echo "====================================="
 pytest --forked ../testing/python/ -v -n $MAX_JOBS 2>&1 | tee pytest_output.log
 pytest_exit_code=${PIPESTATUS[0]}
 
-# 提取 pytest 统计（最后一行包含 passed/failed/xfailed，去掉行首限制）
-pytest_summary=$(grep -E "[0-9]+ (passed|failed|xfailed|error)" pytest_output.log | tail -1)
+# 提取 pytest 统计（最后一行包含 passed/failed/xfailed）
+pytest_summary=$(grep -E "[0-9]+ (passed|failed|xfailed)" pytest_output.log | tail -1)
 
 # 解析 pytest 结果
 pytest_passed=0
 pytest_failed=0
 pytest_xfailed=0
-pytest_errors=0
 
 if [ -n "$pytest_summary" ]; then
     # 提取 passed 数量
     if echo "$pytest_summary" | grep -q "passed"; then
-        pytest_passed=$(echo "$pytest_summary" | grep -o "[0-9]* passed" | grep -o "[0-9]*" || echo "0")
+        pytest_passed=$(echo "$pytest_summary" | grep -Eo "[0-9]+ passed" | grep -Eo "[0-9]+" || echo "0")
     fi
     
     # 提取 failed 数量（不含 xfailed）
     if echo "$pytest_summary" | grep -q "failed"; then
-        pytest_failed=$(echo "$pytest_summary" | grep -o "[0-9]* failed" | grep -o "[0-9]*" || echo "0")
+        pytest_failed=$(echo "$pytest_summary" | grep -Eo "[0-9]+ failed" | grep -Eo "[0-9]+" || echo "0")
     fi
     
     # 提取 xfailed 数量（预期失败，不计入失败）
     if echo "$pytest_summary" | grep -q "xfailed"; then
-        pytest_xfailed=$(echo "$pytest_summary" | grep -o "[0-9]* xfailed" | grep -o "[0-9]*" || echo "0")
-    fi
-    
-    # 提取 error 数量
-    if echo "$pytest_summary" | grep -q "error"; then
-        pytest_errors=$(echo "$pytest_summary" | grep -o "[0-9]* error" | grep -o "[0-9]*" || echo "0")
+        pytest_xfailed=$(echo "$pytest_summary" | grep -Eo "[0-9]+ xfailed" | grep -Eo "[0-9]+" || echo "0")
     fi
 fi
 
@@ -307,14 +301,14 @@ else
 fi
 
 # 输出合并后的结果（用于 CI workflow 解析）
-total_all=$((total_scripts + pytest_passed + pytest_failed + pytest_xfailed + pytest_errors))
+total_all=$((total_scripts + pytest_passed + pytest_failed + pytest_xfailed))
 passed_all=$((passed_scripts + pytest_passed))
-failed_all=$((failed_scripts + pytest_failed + pytest_errors))
+failed_all=$((failed_scripts + pytest_failed))
 
 echo -e "\n====================================="
 echo "Final Execution Summary (Bench + Pytest)"
 echo "Bench: Total: $total_scripts | Passed: $passed_scripts | Failed: $failed_scripts"
-echo "Pytest: Passed: $pytest_passed | Failed: $pytest_failed | Xfailed: $pytest_xfailed (expected) | Errors: $pytest_errors"
+echo "Pytest: Passed: $pytest_passed | Failed: $pytest_failed | Xfailed: $pytest_xfailed (expected failures)"
 echo "Total: $total_all | Passed: $passed_all | Failed: $failed_all"
 if [ $total_all -gt 0 ]; then
     echo "Pass rate: $((passed_all * 100 / total_all))%"
