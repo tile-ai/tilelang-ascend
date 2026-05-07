@@ -142,7 +142,9 @@ jobs:
             });
             
             // Find original workflow run by head_sha
-            const runs = await github.rest.actions.listWorkflowRunsForRepo({
+            // Use numeric workflow ID (261026938) to ensure only ci_cd.yml runs are returned
+            // Using filename 'ci_cd.yml' in listWorkflowRunsForRepo may return runs from other workflows
+            const runs = await github.rest.actions.listWorkflowRuns({
               owner: context.repo.owner,
               repo: context.repo.repo,
               workflow_id: 'ci_cd.yml',
