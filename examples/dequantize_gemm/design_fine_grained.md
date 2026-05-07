@@ -13,7 +13,7 @@ dequantize_gemm (Unsigned INT4)
 - **FP16 模式**：A:FP16, B:INT4→FP16, C:FP16（FP32 累加）
 - **INT8 模式**：A:INT8, B:INT4→INT8, C:INT32（INT32 累加）
 
-### 1.3 数学公式 
+### 1.3 数学公式
 
 #### 主公式
 
