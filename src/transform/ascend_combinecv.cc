@@ -171,6 +171,7 @@ private:
           {"copy_gm_to_ub", {false, "MTE2"}},
           {"copy_ub_to_gm", {true, "MTE3"}},
           {"atomic_add_ub_to_gm", {true, "MTE3"}},
+          {"atomic_add_l0c_to_gm", {true, "FIX"}},
       };
 
   std::optional<std::pair<bool, std::string>>
@@ -787,13 +788,21 @@ private:
   bool current_proccess_switch_ = false;
   Map<Var, String> &location_map_;
   std::unordered_map<std::string, std::string> callnodeMapPos_ = {
-      {"copy_gm_to_l1", "cube"},  {"gemm_v0", "cube"},
-      {"copy_11_to_l0a", "cube"}, {"copy_11_to_l0b", "cube"},
-      {"copy_l0c_to_gm", "cube"}, {"copy_gm_to_ub", "vec"},
-      {"copy_ub_to_gm", "vec"},   {"atomic_add_ub_to_gm", "vec"},
-      {"copy_ub_to_ub", "vec"},   {"wmma.matrix_a", "cube"},
-      {"wmma.matrix_b", "cube"},  {"wmma.accumulator", "cube"},
-      {"shared.dyn", "cube"},     {"shared", "vec"}};
+      {"copy_gm_to_l1", "cube"},
+      {"gemm_v0", "cube"},
+      {"copy_11_to_l0a", "cube"},
+      {"copy_11_to_l0b", "cube"},
+      {"copy_l0c_to_gm", "cube"},
+      {"copy_gm_to_ub", "vec"},
+      {"copy_ub_to_gm", "vec"},
+      {"atomic_add_ub_to_gm", "vec"},
+      {"atomic_add_l0c_to_gm", "cube"},
+      {"copy_ub_to_ub", "vec"},
+      {"wmma.matrix_a", "cube"},
+      {"wmma.matrix_b", "cube"},
+      {"wmma.accumulator", "cube"},
+      {"shared.dyn", "cube"},
+      {"shared", "vec"}};
 };
 
 class CombineCV : public arith::IRMutatorWithAnalyzer {
