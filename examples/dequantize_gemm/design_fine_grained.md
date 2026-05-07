@@ -67,8 +67,8 @@ i8 = int8(u4)         // 范围 0-15
 
 | 模式 | FP16 GEMM | INT8 GEMM |
 |------|-----------|-----------|
-| **编程模式** | Developer | Expert |
-| **理由** | 纯 Cube 计算，编译器自动优化 | 需手动同步控制 |
+| **编程模式** | Developer | Developer |
+| **理由** | 纯 Cube 计算，编译器自动优化 | 纯 Cube 计算，编译器自动优化 |
 
 ### 3.2 pass_configs 配置
 
@@ -76,17 +76,21 @@ i8 = int8(u4)         // 范围 0-15
 
 ```python
 pass_configs={
+    tl.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
     tl.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
     tl.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
+    tl.PassConfigKey.TL_ASCEND_AUTO_CV_SYNC: True,
 }
 ```
 
-#### INT8 模式（Expert）
+#### INT8 模式（Developer）
 
 ```python
 pass_configs={
-    tl.PassConfigKey.TL_ASCEND_AUTO_SYNC: False,
-    tl.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: False,
+    tl.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
+    tl.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
+    tl.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
+    tl.PassConfigKey.TL_ASCEND_AUTO_CV_SYNC: True,
 }
 ```
 
@@ -98,9 +102,9 @@ pass_configs={
 
 | 操作 | FP16 模式 | INT8 模式 |
 |------|----------|----------|
-| A 缓冲区 | `T.alloc_shared((block_M, block_K), "float16")` | `T.alloc_L1((block_M, block_K), "int8")` |
-| B 缓冲区 | `T.alloc_shared((block_K, block_N), "float16")` | `T.alloc_L1((block_K, block_N), "int8")` |
-| C 缓冲区 | `T.alloc_fragment((block_M, block_N), "float")` | `T.alloc_L0C((block_M, block_N), "int32")` |
+| A 缓冲区 | `T.alloc_shared((block_M, block_K), "float16")` | `T.alloc_shared((block_M, block_K), "int8")` |
+| B 缓冲区 | `T.alloc_shared((block_K, block_N), "float16")` | `T.alloc_shared((block_K, block_N), "int8")` |
+| C 缓冲区 | `T.alloc_fragment((block_M, block_N), "float")` | `T.alloc_fragment((block_M, block_N), "int32")` |
 
 ### 4.2 数据搬运
 
@@ -114,12 +118,6 @@ pass_configs={
 | 操作 | FP16 模式 | INT8 模式 |
 |------|----------|----------|
 | GEMM | `T.gemm_v0(A_L1, B_L1, C_L0, init=(k==0))` | `T.gemm_v0(A_L1, B_L1, C_L0, init=(k==0))` |
-
-### 4.4 同步（INT8 模式）
-
-| 操作 | API |
-|------|-----|
-| 全核同步 | `T.barrier_all()` |
 
 ---
 
@@ -209,7 +207,7 @@ def main(A: T.Tensor((M, K), "float16"),
         T.copy(C_L0, C[bx * block_M, by * block_N])
 ```
 
-#### INT8 GEMM (Expert 模式)
+#### INT8 GEMM (Developer 模式)
 
 ```python
 @T.prim_func
@@ -217,19 +215,16 @@ def main(A: T.Tensor((M, K), "int8"),
          B: T.Tensor((K, N), "int8"),
          C: T.Tensor((M, N), "int32")):
     with T.Kernel(m_num * n_num, is_npu=True) as (cid, _):
-        A_L1 = T.alloc_L1((block_M, block_K), "int8")
-        B_L1 = T.alloc_L1((block_K, block_N), "int8")
-        C_L0 = T.alloc_L0C((block_M, block_N), "int32")
+        A_L1 = T.alloc_shared((block_M, block_K), "int8")
+        B_L1 = T.alloc_shared((block_K, block_N), "int8")
+        C_L0 = T.alloc_fragment((block_M, block_N), "int32")
         
-        with T.Scope("C"):
-            for k in T.serial(K // block_K):
-                T.copy(A[bx * block_M, k * block_K], A_L1)
-                T.copy(B[k * block_K, by * block_N], B_L1)
-                T.barrier_all()
-                T.gemm_v0(A_L1, B_L1, C_L0, init=(k == 0))
-                T.barrier_all()
-            
-            T.copy(C_L0, C[bx * block_M, by * block_N])
+        for k in T.serial(K // block_K):
+            T.copy(A[bx * block_M, k * block_K], A_L1)
+            T.copy(B[k * block_K, by * block_N], B_L1)
+            T.gemm_v0(A_L1, B_L1, C_L0, init=(k == 0))
+        
+        T.copy(C_L0, C[bx * block_M, by * block_N])
 ```
 
 ---
