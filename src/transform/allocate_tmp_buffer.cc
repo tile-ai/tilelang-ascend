@@ -651,7 +651,7 @@ private:
             GetBufferNodeByName_(alloc_buffers, src_buffer_name);
         int64_t tmp_shape_size =
             Downcast<IntImm>(src_access_ptr->args[3])->value *
-            src_buffer_node->dtype.bytes() / 2;
+            src_buffer_node->dtype.bytes();
         if (tmp_shape_size > shape_size) {
           shape = {
               IntImm(DataType::Int(32), tmp_shape_size),
