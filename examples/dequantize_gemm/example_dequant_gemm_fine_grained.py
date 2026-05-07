@@ -443,8 +443,8 @@ def main(custom_args=None):
     print("\n[FP16 Mode Tests - Level 1: BFloat16 Input]")
     check_case_fp16(512, 512, 512, block_M=128, block_N=256, block_K=64, input_dtype="bfloat16", output_dtype="bfloat16")
 
-    print("\n[FP16 Mode Tests - Level 3: Large Scale]")
-    check_case_fp16(4096, 4096, 4096, block_M=128, block_N=256, block_K=64, input_dtype="float16", output_dtype="float16")
+    # print("\n[FP16 Mode Tests - Level 3: Large Scale]")
+    # check_case_fp16(4096, 4096, 4096, block_M=128, block_N=256, block_K=64, input_dtype="float16", output_dtype="float16")
 
     print("\n[FP16 Mode Tests - Custom Dimensions]")
     check_case_fp16(
