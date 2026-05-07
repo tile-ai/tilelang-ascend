@@ -1,6 +1,5 @@
 import torch
 import torch.nn.functional as F
-import argparse
 import itertools
 
 import tilelang
@@ -134,7 +133,7 @@ def conv_im2col_gemm(
 ) -> torch.Tensor:
     B, C, H, W = input_tensor.shape
     OC, C_k, KH, KW = kernel.shape
-    assert C == C_k, "input channels mismatch: %d vs %d" % (C, C_k)
+    assert C_k == C, "input channels mismatch: %d vs %d" % (C, C_k)
     HO = (H + 2 * padding - KH) // stride + 1
     WO = (W + 2 * padding - KW) // stride + 1
 
