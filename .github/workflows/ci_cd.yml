@@ -768,7 +768,7 @@ jobs:
             
             **Summary:** ${testSummary}
             
-            **Workflow Run:** [View Details](https://github.com/${context.repository.owner}/${context.repository.repo}/actions/runs/${context.runId})
+            **Workflow Run:** [View Details](https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})
             
             ---
             
@@ -784,7 +784,7 @@ jobs:
             
             body += `### 📁 Artifacts
             
-            - [test-results](https://github.com/${context.repository.owner}/${context.repository.repo}/actions/runs/${context.runId}) (available for 30 days)
+            - [test-results](https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}) (available for 30 days)
             
             ---
             
