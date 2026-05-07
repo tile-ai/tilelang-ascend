@@ -3,7 +3,6 @@ import torch.nn.functional as F
 
 import tilelang
 import tilelang.language as T
-import torch
 
 tilelang.cache.clear_cache()
 
@@ -84,7 +83,7 @@ def im2col(input_tensor: torch.Tensor, KH: int, KW: int, stride: int, padding: i
 def conv_im2col_gemm(input_tensor: torch.Tensor, kernel: torch.Tensor, stride: int = 1, padding: int = 0) -> torch.Tensor:
     B, C, H, W = input_tensor.shape
     OC, C_k, KH, KW = kernel.shape
-    assert C == C_k, "input channels mismatch: %d vs %d" % (C, C_k)
+    assert C_k == C, "input channels mismatch: %d vs %d" % (C, C_k)
     HO = (H + 2 * padding - KH) // stride + 1
     WO = (W + 2 * padding - KW) // stride + 1
 
