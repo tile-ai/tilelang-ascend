@@ -70,7 +70,6 @@ def indexer(B, N2, G, S1, S2, D, TOP_K, VECTOR_BASEN, VECTOR_BASEG, BLOCK_M, BLO
                 topk_index_ub = T.alloc_ub(TOP_K, calc_dtype)
                 output_ub = T.alloc_ub(TOP_K, "int")
 
-
                 s1_start_idx = vid * each_core_process_num
                 s1_end_idx = s1_start_idx + each_core_process_num
 
