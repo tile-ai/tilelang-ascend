@@ -301,21 +301,19 @@ else
 fi
 
 # 输出合并后的结果（用于 CI workflow 解析）
-# xfailed 是预期失败，不计入失败统计，只显示信息
-total_all=$((total_scripts + pytest_passed + pytest_failed))
-passed_all=$((passed_scripts + pytest_passed))
+# xfailed 是预期失败的测试，在 pytest 视角下属于"成功"状态（符合预期）
+# 应计入 passed_all，而不应计入 failed_all
+total_all=$((total_scripts + pytest_passed + pytest_failed + pytest_xfailed))
+passed_all=$((passed_scripts + pytest_passed + pytest_xfailed))
 failed_all=$((failed_scripts + pytest_failed))
 
 echo -e "\n====================================="
 echo "Final Execution Summary (Bench + Pytest)"
 echo "Bench: Total: $total_scripts | Passed: $passed_scripts | Failed: $failed_scripts"
-echo "Pytest: Passed: $pytest_passed | Failed: $pytest_failed | Xfailed: $pytest_xfailed (expected failures)"
+echo "Pytest: Passed: $pytest_passed | Failed: $pytest_failed | Xfailed: $pytest_xfailed (expected failures, counted as passed)"
 echo "Total: $total_all | Passed: $passed_all | Failed: $failed_all"
 if [ $total_all -gt 0 ]; then
     echo "Pass rate: $((passed_all * 100 / total_all))%"
-fi
-if [ $pytest_xfailed -gt 0 ]; then
-    echo "Note: $pytest_xfailed xfailed tests are expected failures and not counted in failed count"
 fi
 echo "====================================="
 
