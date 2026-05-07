@@ -36,6 +36,8 @@
 #include <tvm/tir/stmt_functor.h>
 #include <tvm/tir/transform.h>
 
+#include <sstream>
+
 #include "arith/scalable_expression.h"
 #include "tir/analysis/check_contains.h"
 
@@ -72,6 +74,7 @@ private:
       {"tir.exp", "tl.npuir_exp"},
       {"tir.fabs", "tl.npuir_abs"},
       {"tir.sigmoid", "tl.npuir_sigmoid"},
+      {"Cast", "tl.npuir_cast"},
       {"tir.if_then_else", "tl.npuir_select"},
       {"Add", "tl.npuir_add"},
       {"Mul", "tl.npuir_mul"},
@@ -88,7 +91,7 @@ private:
   };
 
   // ============================================================
-  // RAII depth management — prevents forgetting to reset depth to 0 on return.
+  // RAII depth management: prevents forgetting to reset depth to 0 on return.
   // ============================================================
 
   struct DepthGuard {
@@ -190,6 +193,8 @@ private:
   // ============================================================
 
   bool IsUnaryOp(const PrimExpr &expr) {
+    if (expr.as<CastNode>())
+      return true;
     if (auto call = expr.as<CallNode>()) {
       if (auto op = call->op.as<OpNode>()) {
         return op->name == "tir.exp" || op->name == "tir.fabs" ||
@@ -264,14 +269,18 @@ private:
     return Buffer(buf_var, dtype, shape, {}, PrimExpr(0), name, 0, 0, kDefault);
   }
 
+  std::string NextTempBufferName(const std::string &prefix = "tmp") {
+    static int tmp_id = 0;
+    return prefix + "_" + std::to_string(tmp_id++) + "_buf";
+  }
+
   // Create a temporary buffer with the same shape / scope as the reference
   // BufferAccessInfo and register it in tmp_buffers.
   BufferAccessInfo CreateTempBuffer(const BufferAccessInfo &ref,
                                     const std::string &op_name = "npuir_add") {
-    static int tmp_id = 0;
     const Buffer &ref_buf = ref.buffer;
     DataType dtype = IsCmpOp(op_name) ? DataType::Bool() : ref_buf->dtype;
-    std::string name = "tmp_" + std::to_string(tmp_id++) + "_buf";
+    std::string name = NextTempBufferName();
     Buffer buf(Var(name, PointerType(PrimType(dtype), ref_buf.scope())), dtype,
                ref_buf->shape, {}, PrimExpr(0), name, 0, 0, kDefault);
     tmp_buffers.push_back(buf);
@@ -357,6 +366,13 @@ private:
   // Unary: region_in -> out
   Stmt BuildUnaryStmt(const std::string &op_name, const PrimExpr &region_in,
                       const BufferAccessInfo &out) {
+    if (op_name == "Cast") {
+      // Parallel cast lowering currently uses the default npuir round mode.
+      // CastNode itself does not carry alternative floor/trunc round metadata
+      // here.
+      return BuildNpuirCall(
+          op_name, {region_in, BuildRegionCall(out, 2, 1), StringImm("rint")});
+    }
     return BuildNpuirCall(op_name, {region_in, BuildRegionCall(out, 2, 1)});
   }
 
@@ -648,11 +664,30 @@ private:
                              Array<Stmt> *stmts) {
     DepthGuard guard(depth);
 
-    auto *call = expr.as<CallNode>();
-    std::string op_name = call->op.as<OpNode>()->name;
+    PrimExpr operand;
+    std::string op_name;
+    if (auto *cast = expr.as<CastNode>()) {
+      op_name = "Cast";
+      operand = cast->value;
 
-    auto resolved = ResolveOperand(call->args[0], output_ref, tmp_bufs,
-                                   loop_vars, loop_extents, stmts, op_name);
+      std::ostringstream os;
+      os << expr;
+      static std::unordered_set<std::string> warned_parallel_cast_exprs;
+      std::string expr_str = os.str();
+      if (warned_parallel_cast_exprs.insert(expr_str).second) {
+        LOG(WARNING) << "Parallel cast lowering uses fixed round mode 'rint'; "
+                     << "non-default floor/trunc cast expectations are not "
+                        "preserved for cast expr: "
+                     << expr_str;
+      }
+    } else {
+      auto *call = expr.as<CallNode>();
+      op_name = call->op.as<OpNode>()->name;
+      operand = call->args[0];
+    }
+
+    auto resolved = ResolveOperand(operand, output_ref, tmp_bufs, loop_vars,
+                                   loop_extents, stmts, op_name);
     if (!resolved)
       return false;
 
@@ -660,7 +695,13 @@ private:
     // result in a temporary buffer.
     BufferAccessInfo output = output_ref;
     if (depth > 1) {
-      output = CreateTempBuffer(*resolved);
+      std::string name = NextTempBufferName();
+      Buffer buf(Var(name, PointerType(PrimType(expr.dtype()),
+                                       resolved->buffer.scope())),
+                 expr.dtype(), resolved->buffer->shape, {}, PrimExpr(0), name,
+                 0, 0, kDefault);
+      tmp_buffers.push_back(buf);
+      output = {buf, resolved->indices, true};
       tmp_bufs->push_back(output);
     }
 
@@ -682,7 +723,7 @@ private:
                                      loop_vars, loop_extents, stmts, op_name);
     auto resolved_b = ResolveOperand(operands[1], output_ref, tmp_bufs,
                                      loop_vars, loop_extents, stmts, op_name);
-    // Both operands are scalar — cannot vectorize.
+    // Both operands are scalar; cannot vectorize.
     if (!resolved_a && !resolved_b)
       return false;
 
@@ -768,7 +809,7 @@ private:
       if (resolved)
         return resolved;
 
-      // Case 3: ResolveOperand failed — e is a pure scalar compound expression
+      // Case 3: ResolveOperand failed - e is a pure scalar compound expression
       // (e.g. `1 <= cid`, neither side contains a loop variable).
       // Verify that e contains no loop variables before broadcasting.
       bool contains_loop_var = false;
@@ -1003,7 +1044,7 @@ private:
   inline static std::unordered_set<std::string> CandidateVectorizationOps = {
       "tl.copy",      "tl.npuir_exp", "tl.npuir_abs",    "tl.npuir_add",
       "tl.npuir_mul", "tl.npuir_sub", "tl.npuir_div",    "tl.npuir_sigmoid",
-      "tl.npuir_brc", "tl.npuir_cmp", "tl.npuir_select",
+      "tl.npuir_brc", "tl.npuir_cmp", "tl.npuir_select", "tl.npuir_cast",
   };
 
   bool IsScalar(const PrimExpr &expr) {
