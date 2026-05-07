@@ -1,9 +1,10 @@
 import torch
 import torch.nn.functional as F
+import argparse
+import itertools
 
 import tilelang
 import tilelang.language as T
-import torch
 
 tilelang.cache.clear_cache()
 
@@ -17,8 +18,39 @@ pass_configs = {
 }
 
 
+def get_configs(key_args, _key_kwargs=None):
+    M, N, K = key_args
+    block_M = [bs for bs in [64, 128] if bs <= M]
+    block_N = [bs for bs in [64, 128] if bs <= N]
+    K_L1 = [bs for bs in [64, 128] if bs <= K]
+    _configs = list(itertools.product(block_M, block_N, K_L1))
+    configs = [{"block_M": c[0], "block_N": c[1], "K_L1": c[2]} for c in _configs]
+    return configs
+
+
+def supply_prog(params):
+    M_val, K_val = int(params[0].shape[0]), int(params[0].shape[1])
+    _, N_val = int(params[1].shape[0]), int(params[1].shape[1])
+    torch.manual_seed(42)
+    return [
+        torch.randn(M_val, K_val).half().npu(),
+        torch.randn(K_val, N_val).half().npu(),
+    ]
+
+
+def ref_prog(A, B):
+    return A @ B
+
+
+@tilelang.autotune(
+    configs=get_configs,
+    ref_prog=ref_prog,
+    supply_prog=supply_prog,
+    atol=1e-2,
+    rtol=1e-2,
+)
 @tilelang.jit(out_idx=[-1], pass_configs=pass_configs)
-def matmul(M, N, K, block_M=128, block_N=256, block_K=64, dtype="float16", accum_dtype="float"):
+def matmul(M, N, K, block_M, block_N, K_L1, dtype="float16", accum_dtype="float"):
     m_num = M // block_M
     n_num = N // block_N
 
@@ -32,15 +64,15 @@ def matmul(M, N, K, block_M=128, block_N=256, block_K=64, dtype="float16", accum
             bx = cid // n_num
             by = cid % n_num
 
-            A_L1 = T.alloc_shared((block_M, block_K), dtype)
-            B_L1 = T.alloc_shared((block_K, block_N), dtype)
+            A_L1 = T.alloc_shared((block_M, K_L1), dtype)
+            B_L1 = T.alloc_shared((K_L1, block_N), dtype)
 
             C_L0 = T.alloc_fragment((block_M, block_N), accum_dtype)
 
-            loop_k = T.ceildiv(K, block_K)
+            loop_k = T.ceildiv(K, K_L1)
             for k in T.serial(loop_k):
-                T.copy(A[bx * block_M, k * block_K], A_L1)
-                T.copy(B[k * block_K, by * block_N], B_L1)
+                T.copy(A[bx * block_M, k * K_L1], A_L1)
+                T.copy(B[k * K_L1, by * block_N], B_L1)
 
                 T.gemm_v0(A_L1, B_L1, C_L0, init=(k == 0))
 
@@ -81,7 +113,9 @@ def im2col(input_tensor: torch.Tensor, KH: int, KW: int, stride: int, padding: i
     return input_flat
 
 
-def conv_im2col_gemm(input_tensor: torch.Tensor, kernel: torch.Tensor, stride: int = 1, padding: int = 0) -> torch.Tensor:
+def conv_im2col_gemm(
+    input_tensor: torch.Tensor, kernel: torch.Tensor, stride: int = 1, padding: int = 0, use_autotune: bool = False
+) -> torch.Tensor:
     B, C, H, W = input_tensor.shape
     OC, C_k, KH, KW = kernel.shape
     assert C == C_k, "input channels mismatch: %d vs %d" % (C, C_k)
@@ -116,8 +150,14 @@ def conv_im2col_gemm(input_tensor: torch.Tensor, kernel: torch.Tensor, stride: i
             input_padded[:K, :N] = input_flat
             input_flat = input_padded.contiguous()
 
-    func = matmul(M_pad, N_pad, K_pad, block_M, block_N, block_K)
-    print("    GEMM(M=%d->%d, N=%d->%d, K=%d->%d)" % (M, M_pad, N, N_pad, K, K_pad))
+    if use_autotune:
+        func = matmul(M_pad, N_pad, K_pad)
+        print("    GEMM(M=%d->%d, N=%d->%d, K=%d->%d) [autotune]" % (M, M_pad, N, N_pad, K, K_pad))
+        print("    Best config:", func.get_tuner_result())
+    else:
+        func = matmul(M_pad, N_pad, K_pad, block_M=128, block_N=128, K_L1=128)
+        print("    GEMM(M=%d->%d, N=%d->%d, K=%d->%d)" % (M, M_pad, N, N_pad, K, K_pad))
+
     print("    init successful!")
     output = func(kernel_flat, input_flat)
 
@@ -127,13 +167,13 @@ def conv_im2col_gemm(input_tensor: torch.Tensor, kernel: torch.Tensor, stride: i
     return output
 
 
-def run_test(name, B_val, C_val, H_val, W_val, OC_val, KH_val, KW_val, stride_val=1, padding_val=0):
+def run_test(name, B_val, C_val, H_val, W_val, OC_val, KH_val, KW_val, stride_val=1, padding_val=0, use_autotune=False):
     torch.manual_seed(seed)
 
     input_t = torch.randn(B_val, C_val, H_val, W_val).half().npu()
     kernel_t = torch.randn(OC_val, C_val, KH_val, KW_val).half().npu()
 
-    result = conv_im2col_gemm(input_t, kernel_t, stride_val, padding_val)
+    result = conv_im2col_gemm(input_t, kernel_t, stride_val, padding_val, use_autotune=use_autotune)
     ref = F.conv2d(input_t.cpu(), kernel_t.cpu(), stride=stride_val, padding=padding_val).npu()
 
     torch.testing.assert_close(result, ref, rtol=1e-2, atol=1e-2)
@@ -141,8 +181,8 @@ def run_test(name, B_val, C_val, H_val, W_val, OC_val, KH_val, KW_val, stride_va
 
 
 if __name__ == "__main__":
+    use_autotune = True
     tests = [
-        # 1. Original: all dims perfectly aligned to block size 128
         dict(
             name="Case 1: Perfect alignment (M=N=K=128)",
             B=2,
@@ -155,7 +195,6 @@ if __name__ == "__main__":
             stride=1,
             padding=0,
         ),
-        # 2. OC not multiple of 128 -> M padding needed
         dict(
             name="Case 2: M padding (OC=50 < 128)",
             B=1,
@@ -168,9 +207,8 @@ if __name__ == "__main__":
             stride=1,
             padding=0,
         ),
-        # 3. N not multiple of 128 (spatial output wraps partially)
         dict(
-            name="Case 3: N padding",
+            name="Case 3: N padding (N=225 from B=1 C=4 H=17 W=17 KH=3 KW=3)",
             B=1,
             C=4,
             H=17,
@@ -181,9 +219,8 @@ if __name__ == "__main__":
             stride=1,
             padding=0,
         ),
-        # 4. K not multiple of 128 (small kernel channels)
         dict(
-            name="Case 4: K padding",
+            name="Case 4: K padding (K=27 from C=3 KH=3 KW=3, stride=2 pad=1)",
             B=2,
             C=3,
             H=28,
@@ -194,7 +231,6 @@ if __name__ == "__main__":
             stride=2,
             padding=1,
         ),
-        # 5. M, N, K all need padding simultaneously
         dict(
             name="Case 5: All-dim padding (M=64 N=225 K=27)",
             B=1,
@@ -207,7 +243,6 @@ if __name__ == "__main__":
             stride=1,
             padding=0,
         ),
-        # 6. Multi-block: dims significantly larger than block size 128
         dict(
             name="Case 6: Multi-block (M=256 N=2304 K=200)",
             B=4,
@@ -222,12 +257,25 @@ if __name__ == "__main__":
         ),
     ]
 
+    mode = "Autotune" if use_autotune else "Fixed Config"
     print("=" * 60)
-    print("TileLang Ascend 2D Convolution Test Suite (6 scenarios)")
+    print("TileLang Ascend 2D Convolution Test Suite (%s, 6 scenarios)" % mode)
     print("=" * 60)
     for i, tc in enumerate(tests, 1):
         print("[%d/6] %s" % (i, tc["name"]))
-        run_test(tc["name"], tc["B"], tc["C"], tc["H"], tc["W"], tc["OC"], tc["KH"], tc["KW"], tc.get("stride", 1), tc.get("padding", 0))
+        run_test(
+            tc["name"],
+            tc["B"],
+            tc["C"],
+            tc["H"],
+            tc["W"],
+            tc["OC"],
+            tc["KH"],
+            tc["KW"],
+            tc.get("stride", 1),
+            tc.get("padding", 0),
+            use_autotune=use_autotune,
+        )
     print("=" * 60)
     print("TEST PASSED!")
     print("=" * 60)
