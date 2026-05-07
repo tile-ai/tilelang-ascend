@@ -602,7 +602,9 @@ Stmt AscendAtomicAdd::Lower(const LowerArgs &T,
     ss << ">";
   } else if (src.scope() == "wmma.accumulator") {
     ss << "tl::ascend::atomic_add_l0c_to_gm<";
-    ss << get_dtype(src) << ", " << get_dtype(dst) << ", layout::RowMajor";
+    ss << get_dtype(src) << ", " << get_dtype(dst) << ", "
+       << (T.layout_map.count(src) ? T.layout_map[src]->AscendLayoutStr()
+                                   : "layout::RowMajor");
     if (src->shape.size() > 1) {
       ss << ", " << compute_blocklen(src, src_extents) << ", "
          << src_extents[src->shape.size() - 1];
