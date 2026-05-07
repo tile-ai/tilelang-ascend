@@ -292,7 +292,6 @@ Output_flat_pad --slice[:M,:N]--> Output_flat(M, N) --view--> Output(OC, B, HO, 
 | **L1 总计** | (A_L1 + B_L1) | | **65,536 (64KB)** | L1 |
 | **L0C 总计** | C_L0 | | **65,536 (64KB)** | L0C |
 
-> 注：L1 总使用量为 64KB（以 block_M=128, block_N=128, K_L1=128 为例）。autotune 配置中 `block_M, block_N, K_L1 ∈ {64, 128}`，最大配置下 L1 占用不超过 64KB，L0C 占用不超过 64KB，均远在硬件容量范围内。
 
 ### 4.7 动态轴定义
 
@@ -325,10 +324,22 @@ def matmul(M, N, K, block_M, block_N, K_L1, dtype="float16", accum_dtype="float"
 ### 5.2 Block 划分
 
 ```python
-# autotune 搜索空间
-block_M  ∈ [64, 128] ∩ {bs | bs ≤ M}  # M 维分块（输出通道方向）
-block_N  ∈ [64, 128] ∩ {bs | bs ≤ N}  # N 维分块（空间输出方向）
-K_L1     ∈ [64, 128] ∩ {bs | bs ≤ K}  # K 维分块（通道展开 × 卷积核窗口）
+# autotune 搜索空间（含维度过滤）
+block_M_pool = [64, 128]        # M 维候选池
+block_N_pool = [64, 128]        # N 维候选池
+K_L1_pool   = [32, 64, 128]     # K 维候选池
+
+block_M = [bs for bs in block_M_pool if bs <= M]   # 过滤 ≤ M 的候选
+block_N = [bs for bs in block_N_pool if bs <= N]   # 过滤 ≤ N 的候选
+K_L1    = [bs for bs in K_L1_pool   if bs <= K]    # 过滤 ≤ K 的候选
+
+# 退化兜底：当某维度所有候选均 > 实际维度时，使用 max(1, dim) 作为唯一候选
+if not block_M: block_M = [max(1, M)]
+if not block_N: block_N = [max(1, N)]
+if not K_L1:    K_L1    = [max(1, K)]
+
+# 笛卡尔积生成所有配置组合
+configs = list(itertools.product(block_M, block_N, K_L1))
 
 # Block 布局
 m_num = M // block_M   # M 维 block 个数
@@ -341,10 +352,11 @@ by = cid % n_num    # block 在 N 维的索引
 ```
 
 **选择理由**：
-- `block_M`、`block_N`、`K_L1` 从 {64, 128} 中选取，与 Ascend 910B 的 Cube 计算单元对齐（128 为最优 tile 尺寸）
+- `block_M`、`block_N` 从 {64, 128} 中选取，`K_L1` 从 {32, 64, 128} 中选取，与 Ascend 910B 的 Cube 计算单元对齐（128 为最优 tile 尺寸）
 - 每个维度至少 ≤ 原始维度，避免无效搜索
+- 当实际维度小于所有候选时（如 M=16），兜底使用 `max(1, M)` 作为唯一候选，确保始终有至少一种配置
 - `block_M × block_N × sizeof(float32)` = 128×128×4 = 64KB，在 L0C 容量范围内
-- `(block_M × K_L1 + K_L1 × block_N) × sizeof(float16)` = 128×128×2×2 = 64KB，在 L1 容量范围内
+- `(block_M × K_L1 + K_L1 × block_N) × sizeof(float16)` = 128×128×2×2 = 64KB（取 block_M=128, K_L1=128, block_N=128），在 L1 容量范围内
 
 ### 5.3 约束分析
 
@@ -492,7 +504,7 @@ def golden_conv2d(input_tensor, kernel, stride=1, padding=0):
 
 - im2col 矩阵膨胀比 = `C·KH·KW / C = KH·KW`，当 kernel 尺寸较大时（如 7×7），中间矩阵显存占用显著增加
 - 零填充在非整除时引入额外计算，但影响可忽略（< 1%）
-- autotune 搜索空间为 `{64, 128}^3`，最多 2³=8 种配置，搜索开销小
+- autotune 搜索空间为 `block_M × block_N × K_L1 ∈ {64,128} × {64,128} × {32,64,128}`，最多 2×2×3=12 种配置，搜索开销小
 - 当前不支持 dilation 参数（dilated convolution）
 
 ### 10.2 常见错误
@@ -501,13 +513,15 @@ def golden_conv2d(input_tensor, kernel, stride=1, padding=0):
 |------|----------|------|----------|
 | M/N/K 为 0 | 输入尺寸 < kernel 尺寸且无 padding | Kernel 编译失败 | 确保 `HO > 0` 且 `WO > 0`，或添加足够的 padding |
 | im2col 内存爆炸 | 大 batch + 大 HW + 大 kernel | NPU OOM | 使用分块 im2col 或切换到 direct convolution |
-| autotune 无有效配置 | block_M > M 且 block_N > N 且 K_L1 > K 同时成立 | `get_configs` 返回空列表 | 添加 fallback 的最小 block size（如 32） |
+| autotune 已添加了错误处理逻辑：`block_M = [max(1, M)]` 确保始终有至少一种配置 |
+| 输入维度非法 | key_args 非 tuple/list、维度 ≤0 | 抛出 `ValueError`，autotune 提前终止 | 调用方确保传参正确，padding 后维度 > 0 |
 | stride > KH 或 stride > KW | stride 大于 kernel 尺寸 | im2col 窗口越界（已处理为 0 填充） | 正常，符合卷积语义 |
 
 ### 10.3 特殊场景处理
 
+- **输入校验**: `get_configs` 在入口处校验 `key_args` 类型（必须为 tuple/list 且长度 ≥ 3）和维度的有效性（M, N, K > 0），非法输入直接抛出 `ValueError`
 - **非整除分块**: 通过 PyTorch 端零填充对齐，GEMM 结果切片恢复原始尺寸
-- **极小 shape**（如 1×1 kernel、1×1 输入）: im2col 后矩阵极小（K=1 或 N=1），autotune 会自动选择 ≤ 实际尺寸的 block size
+- **极小 shape**（如 1×1 kernel、1×1 输入）: im2col 后矩阵极小（K=1 或 N=1），autotune 退化兜底 `block_M = [max(1, M)]` 确保始终有至少一种候选配置
 - **混合精度**: 输入/输出为 float16，累加器为 float32（K 维累加精度保护）
 - **autotune 编译缓存**: `tilelang.cache.clear_cache()` 在脚本开头清除缓存，确保每次运行重新编译
 - **im2col 在 NPU 上执行**: im2col 和 padding 均在 `torch.Tensor.npu()` 上执行，相对于 CPU 端 im2col 避免了 CPU↔NPU 数据传输
@@ -530,7 +544,7 @@ examples/convolution/
 | 文件 | 状态 | 说明 |
 |------|------|------|
 | `example_convolution.py` | ✅ 已完成 | 非 autotune 版本，固定 block_M=128, block_N=256, block_K=64 |
-| `example_convolution_autotune.py` | ✅ 已完成 | autotune 版本，自动在 {64,128}³ 搜索最优 block size |
+| `example_convolution_autotune.py` | ✅ 已完成 | autotune 版本，block_M/N ∈ {64,128}、K_L1 ∈ {32,64,128}，含维度校验和退化兜底 |
 | `convolution_autotune_design.md` | ✅ 已完成 | 本设计文档 |
 
 ### 11.3 命名规范

@@ -1,5 +1,6 @@
 import torch
 import torch.nn.functional as F
+import argparse
 import itertools
 
 import tilelang
@@ -18,11 +19,27 @@ pass_configs = {
 
 
 def get_configs(key_args, _key_kwargs=None):
-    M, N, K = key_args
+    if not isinstance(key_args, (tuple, list)) or len(key_args) < 3:
+        raise ValueError(f"get_configs: key_args must be (M, N, K), got {key_args}")
+    M, N, K = int(key_args[0]), int(key_args[1]), int(key_args[2])
+    if M <= 0 or N <= 0 or K <= 0:
+        raise ValueError(f"get_configs: dimensions must be > 0, got M={M}, N={N}, K={K}")
+
     block_M = [bs for bs in [64, 128] if bs <= M]
     block_N = [bs for bs in [64, 128] if bs <= N]
-    K_L1 = [bs for bs in [64, 128] if bs <= K]
+    K_L1 = [bs for bs in [32, 64, 128] if bs <= K]
+
+    if not block_M:
+        block_M = [max(1, M)]
+    if not block_N:
+        block_N = [max(1, N)]
+    if not K_L1:
+        K_L1 = [max(1, K)]
+
     _configs = list(itertools.product(block_M, block_N, K_L1))
+    if not _configs:
+        return []
+
     configs = [{"block_M": c[0], "block_N": c[1], "K_L1": c[2]} for c in _configs]
     return configs
 
@@ -117,7 +134,7 @@ def conv_im2col_gemm(
 ) -> torch.Tensor:
     B, C, H, W = input_tensor.shape
     OC, C_k, KH, KW = kernel.shape
-    assert C_k == C, "input channels mismatch: %d vs %d" % (C, C_k)
+    assert C == C_k, "input channels mismatch: %d vs %d" % (C, C_k)
     HO = (H + 2 * padding - KH) // stride + 1
     WO = (W + 2 * padding - KW) // stride + 1
 
