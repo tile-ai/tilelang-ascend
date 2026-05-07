@@ -353,6 +353,7 @@ const std::unordered_map<const tvm::OpNode *, int64_t> pto_tmp_arg_ops = {
     {tl::ascend_bitwise_xor().get(), 3}, {tl::ascend_round().get(), 2},
     {tl::ascend_broadcast().get(), 3},   {tl::ascend_merge_sort().get(), 3},
     {tl::ascend_select().get(), 3},      {tl::ascend_gather_mask().get(), 4},
+    {tl::ascend_sort().get(), 3},        {tl::ascend_topk().get(), 3},
 };
 
 } // namespace tl
