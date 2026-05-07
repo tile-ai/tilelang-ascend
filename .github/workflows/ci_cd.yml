@@ -639,23 +639,25 @@ jobs:
                 exit 1
               fi
             else
-              # bench_test.sh 模式
-              PASS_RATE_LINE=$(grep -i "Pass rate:" test_output.log || echo "")
-              EXEC_SUMMARY=$(grep -i "Execution Summary" -A 2 test_output.log || echo "")
+              # bench_test.sh 模式（或 bench + pytest 模式）
+              # 使用 tail -1 提取最后一次 Pass rate（合并后的结果）
+              PASS_RATE_LINE=$(grep -i "Pass rate:" test_output.log | tail -1 || echo "")
+              FINAL_SUMMARY=$(grep -i "Final Execution Summary" -A 4 test_output.log || echo "")
               
               if [ -n "$PASS_RATE_LINE" ]; then             
                 PASS_RATE=$(echo "$PASS_RATE_LINE" | grep -o '[0-9]*%' | tr -d '%')
-                TOTAL_LINE=$(grep -i "Total:" test_output.log || grep -i "Total" test_output.log || echo "")
                 
-                if [ -n "$TOTAL_LINE" ]; then
+                # 从 Final Execution Summary 提取合并后的统计数据
+                if [ -n "$FINAL_SUMMARY" ]; then
+                  TOTAL=$(echo "$FINAL_SUMMARY" | grep -o "Total: [0-9]*" | tail -1 | grep -o "[0-9]*" || echo "0")
+                  PASSED=$(echo "$FINAL_SUMMARY" | grep -o "Passed: [0-9]*" | tail -1 | grep -o "[0-9]*" || echo "0")
+                  FAILED=$(echo "$FINAL_SUMMARY" | grep -o "Failed: [0-9]*" | tail -1 | grep -o "[0-9]*" || echo "0")
+                else
+                  # 没有 Final Summary，可能是 bench only 模式
+                  TOTAL_LINE=$(grep -i "Execution Summary" -A 2 test_output.log | head -3 || echo "")
                   TOTAL=$(echo "$TOTAL_LINE" | grep -o "Total: [0-9]*" | grep -o "[0-9]*" || echo "0")
                   PASSED=$(echo "$TOTAL_LINE" | grep -o "Passed: [0-9]*" | grep -o "[0-9]*" || echo "0")
                   FAILED=$(echo "$TOTAL_LINE" | grep -o "Failed: [0-9]*" | grep -o "[0-9]*" || echo "0")
-                else
-                  # 从 Pass rate 推算
-                  PASSED=$(grep -i "passed_scripts=" test_output.log || grep -c "[PASSED]" test_output.log || echo "0")
-                  FAILED=$(grep -i "failed_scripts=" test_output.log || grep -c "[FAILED]" test_output.log || echo "0")
-                  TOTAL=$((PASSED + FAILED))
                 fi
                 
                 echo "Found Pass rate: ${PASS_RATE}%"
@@ -686,9 +688,9 @@ jobs:
                 exit 1
               fi
               
-              if [ -n "$EXEC_SUMMARY" ]; then
-                echo "Execution Summary:"
-                echo "$EXEC_SUMMARY"
+              if [ -n "$FINAL_SUMMARY" ]; then
+                echo "Final Execution Summary:"
+                echo "$FINAL_SUMMARY"
               fi
             fi
           else
