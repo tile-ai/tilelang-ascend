@@ -513,7 +513,7 @@ def golden_conv2d(input_tensor, kernel, stride=1, padding=0):
 |------|----------|------|----------|
 | M/N/K 为 0 | 输入尺寸 < kernel 尺寸且无 padding | Kernel 编译失败 | 确保 `HO > 0` 且 `WO > 0`，或添加足够的 padding |
 | im2col 内存爆炸 | 大 batch + 大 HW + 大 kernel | NPU OOM | 使用分块 im2col 或切换到 direct convolution |
-| autotune 已添加了错误处理逻辑：`block_M = [max(1, M)]` 确保始终有至少一种配置 |
+| autotune 已添加了错误处理逻辑：`block_M = [max(1, M)]` 确保始终有至少一种配置可用 |
 | 输入维度非法 | key_args 非 tuple/list、维度 ≤0 | 抛出 `ValueError`，autotune 提前终止 | 调用方确保传参正确，padding 后维度 > 0 |
 | stride > KH 或 stride > KW | stride 大于 kernel 尺寸 | im2col 窗口越界（已处理为 0 填充） | 正常，符合卷积语义 |
 
