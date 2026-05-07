@@ -12,7 +12,7 @@ pass_configs = {
 }
 
 
-@tilelang.jit(out_idx=[-1], pass_configs=pass_configs)
+@tilelang.jit(pass_configs=pass_configs)
 def gemm_splitk(M, N, K, block_M, block_N, block_K, split_k, dtype="float16", accum_dtype="float"):
     n_num = (N + block_N - 1) // block_N
     m_num = (M + block_M - 1) // block_M
@@ -59,8 +59,9 @@ def test(M, N, K, split_k):
 
     a = torch.randn(M, K).half().npu()
     b = torch.randn(K, N).half().npu()
+    c = torch.zeros(M, N, dtype=torch.float).npu()
 
-    c = kernel(a, b)
+    kernel(a, b, c)
 
     ref_c = a @ b
 
