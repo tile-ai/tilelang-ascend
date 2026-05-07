@@ -273,9 +273,8 @@ def ref_program_int8(A: torch.Tensor, B_packed: torch.Tensor):
 
 | 文件 | 说明 |
 |------|------|
-| `design_uint4.md` | 本设计文档 |
-| `example_dequant_gemm_uint4.py` | 算子实现（FP16 + INT8 双模式） |
-| `test_dequant_gemm_uint4.py` | 单元测试 |
+| `design_fine_grained.md` | 本设计文档 |
+| `example_dequant_gemm_fine_grained.py` | 算子实现（FP16 + INT8 双模式） |
 
 ---
 
@@ -286,11 +285,8 @@ def ref_program_int8(A: torch.Tensor, B_packed: torch.Tensor):
 source set_env.sh
 
 # 运行主程序
-python examples/dequantize_gemm/example_dequant_gemm_uint4.py
-
-# 运行测试
-python examples/dequantize_gemm/test_dequant_gemm_uint4.py
+python examples/dequantize_gemm/example_dequant_gemm_fine_grained.py
 
 # 自定义维度
-python examples/dequantize_gemm/example_dequant_gemm_uint4.py --m 1024 --n 1024 --k 1024
+python examples/dequantize_gemm/example_dequant_gemm_fine_grained.py --m 1024 --n 1024 --k 1024
 ```
