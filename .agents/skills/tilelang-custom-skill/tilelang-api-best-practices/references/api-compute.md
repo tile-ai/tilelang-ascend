@@ -208,7 +208,7 @@ for i in range(block_M // VEC_NUM):  # 行顺序
 |------|-------------|------|
 | 简单赋值 | `a[i] = b[i]` | 等价于 T.copy |
 | 简单运算 | `c[i] = a[i] + b[i]` | 等价于 T.tile.add |
-| 标量运算 | `c[i] = a[i] + scalar` | 等价于 T.tile.adds |
+| 标量运算 | `c[i] = a[i] + scalar` | 等价于 T.tile.add |
 | 广播运算 | `c[i,j] = a[i,j] * b[j]` | 自动广播处理 |
 | 复合表达式 | `c[i] = a[i] * b[i] + d[i]` | 自动分解为多步操作 |
 
