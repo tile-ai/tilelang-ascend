@@ -37,15 +37,6 @@ def indexer(B, N2, G, S1, S2, D, TOP_K, VECTOR_BASEN, VECTOR_BASEG, BLOCK_M, BLO
 
                 C_L0 = T.alloc_L0C((BLOCK_M, BLOCK_N), calc_dtype)
 
-                # T.annotate_address(
-                #     {
-                #         # L1 address
-                #         Q_L1: 0,
-                #         K_L1: 16384,
-                #         # L0C address
-                #         C_L0: 0,
-                #     }
-                # )
                 T.barrier_all()
                 for n2 in T.serial(N2):
                     for g in T.serial(G):
@@ -79,22 +70,6 @@ def indexer(B, N2, G, S1, S2, D, TOP_K, VECTOR_BASEN, VECTOR_BASEG, BLOCK_M, BLO
                 topk_index_ub = T.alloc_ub(TOP_K, calc_dtype)
                 output_ub = T.alloc_ub(TOP_K, "int")
 
-                # T.annotate_address(
-                #     {
-                #         # ub address
-                #         mm_res_ub: 0,
-                #         mm_res_ub_flat: 0,
-                #         mm_res_ub_uint8: 0,
-                #         weight_ub: 32768,
-                #         weight_brcb_ub: 32832,
-                #         reduce_tmp_ub: 33344,
-                #         reduce_g_ub: 66112,
-                #         score_accum_ub: 67136,
-                #         topk_dst_ub: 83520,
-                #         topk_index_ub: 91712,
-                #         output_ub: 95808,
-                #     }
-                # )
 
                 s1_start_idx = vid * each_core_process_num
                 s1_end_idx = s1_start_idx + each_core_process_num
