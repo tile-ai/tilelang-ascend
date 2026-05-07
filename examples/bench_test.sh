@@ -275,17 +275,17 @@ pytest_xfailed=0
 if [ -n "$pytest_summary" ]; then
     # 提取 passed 数量
     if echo "$pytest_summary" | grep -q "passed"; then
-        pytest_passed=$(echo "$pytest_summary" | grep -o "[0-9]* passed" | grep -o "[0-9]*")
+        pytest_passed=$(echo "$pytest_summary" | grep -o "[0-9]* passed" | grep -o "[0-9]*" || echo "0")
     fi
     
     # 提取 failed 数量（不含 xfailed）
     if echo "$pytest_summary" | grep -q "failed"; then
-        pytest_failed=$(echo "$pytest_summary" | grep -o "[0-9]* failed" | grep -o "[0-9]*")
+        pytest_failed=$(echo "$pytest_summary" | grep -o "[0-9]* failed" | grep -o "[0-9]*" || echo "0")
     fi
     
     # 提取 xfailed 数量（预期失败，不计入失败）
     if echo "$pytest_summary" | grep -q "xfailed"; then
-        pytest_xfailed=$(echo "$pytest_summary" | grep -o "[0-9]* xfailed" | grep -o "[0-9]*")
+        pytest_xfailed=$(echo "$pytest_summary" | grep -o "[0-9]* xfailed" | grep -o "[0-9]*" || echo "0")
     fi
 fi
 
