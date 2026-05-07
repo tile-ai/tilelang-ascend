@@ -301,7 +301,8 @@ else
 fi
 
 # 输出合并后的结果（用于 CI workflow 解析）
-total_all=$((total_scripts + pytest_passed + pytest_failed + pytest_xfailed))
+# xfailed 是预期失败，不计入失败统计，只显示信息
+total_all=$((total_scripts + pytest_passed + pytest_failed))
 passed_all=$((passed_scripts + pytest_passed))
 failed_all=$((failed_scripts + pytest_failed))
 
@@ -312,6 +313,9 @@ echo "Pytest: Passed: $pytest_passed | Failed: $pytest_failed | Xfailed: $pytest
 echo "Total: $total_all | Passed: $passed_all | Failed: $failed_all"
 if [ $total_all -gt 0 ]; then
     echo "Pass rate: $((passed_all * 100 / total_all))%"
+fi
+if [ $pytest_xfailed -gt 0 ]; then
+    echo "Note: $pytest_xfailed xfailed tests are expected failures and not counted in failed count"
 fi
 echo "====================================="
 
