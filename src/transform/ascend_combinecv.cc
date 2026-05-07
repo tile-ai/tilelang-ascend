@@ -790,8 +790,8 @@ private:
   std::unordered_map<std::string, std::string> callnodeMapPos_ = {
       {"copy_gm_to_l1", "cube"},
       {"gemm_v0", "cube"},
-      {"copy_11_to_l0a", "cube"},
-      {"copy_11_to_l0b", "cube"},
+      {"copy_l1_to_l0a", "cube"},
+      {"copy_l1_to_l0b", "cube"},
       {"copy_l0c_to_gm", "cube"},
       {"copy_gm_to_ub", "vec"},
       {"copy_ub_to_gm", "vec"},
