@@ -36,7 +36,7 @@ def prepare_chunk_offsets(cu_seqlens: torch.Tensor, chunk_size: int) -> torch.Te
 def chunk_gated_delta_rule_fwd_kernel(
     N,
     H,
-    T_total_pad,
+    T_total,
     Hg,
     K,
     V,
@@ -58,11 +58,11 @@ def chunk_gated_delta_rule_fwd_kernel(
     @T.prim_func
     def main(
         h: T.Tensor([N, NT_max, H, K, V], dtype),  # type: ignore
-        k: T.Tensor([T_total_pad, Hg, K], dtype),  # type: ignore
-        v: T.Tensor([T_total_pad, H, V], dtype),  # type: ignore
-        w: T.Tensor([T_total_pad, H, K], dtype),  # type: ignore
-        g: T.Tensor([H, T_total_pad], accum_dtype),  # type: ignore
-        v_new: T.Tensor([T_total_pad, H, V], dtype),  # type: ignore
+        k: T.Tensor([T_total, Hg, K], dtype),  # type: ignore
+        v: T.Tensor([T_total, H, V], dtype),  # type: ignore
+        w: T.Tensor([T_total, H, K], dtype),  # type: ignore
+        g: T.Tensor([H, T_total], accum_dtype),  # type: ignore
+        v_new: T.Tensor([T_total, H, V], dtype),  # type: ignore
         h0: T.Tensor([N, H, K, V], dtype),  # type: ignore
         ht: T.Tensor([N, H, K, V], dtype),  # type: ignore
         cu_seqlens: T.Tensor([N + 1], "int32"),  # type: ignore
@@ -104,46 +104,48 @@ def chunk_gated_delta_rule_fwd_kernel(
                 T_len = eos - bos
                 NT_i = T.ceildiv(T_len, BT)
 
-                if NT_i > 0:
-                    T.copy(w[bos : bos + BT, i_h, :], w_chunk_l1[0, :, :])
-                    T.copy(k[bos : bos + BT, k_head, :], k_chunk_l1[0, :, :])
-                    T.set_flag("mte2", "m", 0)
+                actual_len = T.if_then_else(T_len < BT, T_len, BT)
+                T.copy(w[bos : bos + actual_len, i_h, :], w_chunk_l1[0, :, :])
+                T.copy(k[bos : bos + actual_len, k_head, :], k_chunk_l1[0, :, :])
+                T.set_flag("mte2", "m", 0)
 
-                for i in T.serial(NT_max):
-                    if i < NT_i:
-                        pid = i % 2
-                        next_pid = (i + 1) % 2
-                        g_start_next = bos + (i + 1) * BT
+                for i in T.serial(NT_i):
+                    pid = i % 2
+                    next_pid = (i + 1) % 2
+                    chunk_start_next = bos + (i + 1) * BT
 
-                        if i + 1 < NT_i:
-                            T.copy(w[g_start_next : g_start_next + BT, i_h, :], w_chunk_l1[next_pid, :, :])
-                            T.copy(k[g_start_next : g_start_next + BT, k_head, :], k_chunk_l1[next_pid, :, :])
-                            T.set_flag("mte2", "m", next_pid)
+                    chunk_len = T.if_then_else(i * BT + BT > T_len, T_len - i * BT, BT)
 
-                        # w @ h
-                        T.wait_flag("mte2", "m", pid)
-                        for j in T.serial(2):
-                            T.wait_cross_flag(SEM_H_V2C + j)
-                            T.copy(ws_h[i_n, i_h, j, :, :], h_state_l1[j, :, :])
-                            T.set_flag("mte2", "m", 2)
-                            T.wait_flag("mte2", "m", 2)
-                            T.gemm_v0(w_chunk_l1[pid, :, :], h_state_l1[j, :, :], wh_frag[j, :, :], init=True)
-                            T.set_flag("m", "fix", 3)
-                            T.wait_flag("m", "fix", 3)
-                            T.copy(wh_frag[j, :, :], ws_wh[i_n, i_h, j, :, :])
-                            T.set_cross_flag("FIX", SEM_WH_C2V + j)
+                    if i + 1 < NT_i:
+                        next_len = T.if_then_else((i + 1) * BT + BT > T_len, T_len - (i + 1) * BT, BT)
+                        T.copy(w[chunk_start_next : chunk_start_next + next_len, i_h, :], w_chunk_l1[next_pid, :, :])
+                        T.copy(k[chunk_start_next : chunk_start_next + next_len, k_head, :], k_chunk_l1[next_pid, :, :])
+                        T.set_flag("mte2", "m", next_pid)
 
-                        # k @ v_new
-                        for j in T.serial(2):
-                            T.wait_cross_flag(SEM_VNEW_V2C + j)
-                            T.copy(ws_vnew[i_n, i_h, j, :, :], v_new_l1[j, :, :])
-                            T.set_flag("mte2", "m", 4)
-                            T.wait_flag("mte2", "m", 4)
-                            T.gemm_v0(k_chunk_l1[pid, :, :], v_new_l1[j, :, :], hupd_frag[j, :, :], transpose_A=True, init=True)
-                            T.set_flag("m", "fix", 5)
-                            T.wait_flag("m", "fix", 5)
-                            T.copy(hupd_frag[j, :, :], ws_hupd[i_n, i_h, j, :, :])
-                            T.set_cross_flag("FIX", SEM_HUPD_C2V + j)
+                    # w @ h
+                    T.wait_flag("mte2", "m", pid)
+                    for j in T.serial(2):
+                        T.wait_cross_flag(SEM_H_V2C + j)
+                        T.copy(ws_h[i_n, i_h, j, :, :], h_state_l1[j, :, :])
+                        T.set_flag("mte2", "m", 2)
+                        T.wait_flag("mte2", "m", 2)
+                        T.gemm_v0(w_chunk_l1[pid, :, :], h_state_l1[j, :, :], wh_frag[j, :, :], init=True)
+                        T.set_flag("m", "fix", 3)
+                        T.wait_flag("m", "fix", 3)
+                        T.copy(wh_frag[j, :, :], ws_wh[i_n, i_h, j, :, :])
+                        T.set_cross_flag("FIX", SEM_WH_C2V + j)
+
+                    # k @ v_new
+                    for j in T.serial(2):
+                        T.wait_cross_flag(SEM_VNEW_V2C + j)
+                        T.copy(ws_vnew[i_n, i_h, j, :chunk_len, :], v_new_l1[j, :, :])
+                        T.set_flag("mte2", "m", 4)
+                        T.wait_flag("mte2", "m", 4)
+                        T.gemm_v0(k_chunk_l1[pid, :, :], v_new_l1[j, :, :], hupd_frag[j, :, :], transpose_A=True, init=True)
+                        T.set_flag("m", "fix", 5)
+                        T.wait_flag("m", "fix", 5)
+                        T.copy(hupd_frag[j, :, :], ws_hupd[i_n, i_h, j, :, :])
+                        T.set_cross_flag("FIX", SEM_HUPD_C2V + j)
 
             with T.Scope("V"):
                 bos = cu_seqlens[i_n]
@@ -154,115 +156,123 @@ def chunk_gated_delta_rule_fwd_kernel(
                 for j in T.serial(2):
                     T.copy(h0[i_n, i_h, K // 2 * vid : K // 2 * vid + K // 2, j * V_half : (j + 1) * V_half], h_state_ub[j, :, :])
 
-                if NT_i > 0:
-                    for j in T.serial(2):
-                        T.copy(
-                            v[bos + BT // 2 * vid : bos + BT // 2 * vid + BT // 2, i_h, j * V_half : (j + 1) * V_half],
-                            v_chunk_ub[0, j, :, :],
-                        )
-                    if USE_G:
-                        T.copy(g[i_h, bos + BT // 2 * vid : bos + BT // 2 * vid + BT // 2], g_chunk_ub[0, :])
-                    T.set_flag("mte2", "v", 2)
+                chunk_len = T.if_then_else(T_len < BT, T_len, BT)
+                vec_chunk_len = T.if_then_else(vid == 0, T.min(BT // 2, chunk_len), T.max(chunk_len - BT // 2, 0))
+                vec_start_in_chunk = T.if_then_else(vid == 0, 0, BT // 2)
+                vec_global_start = bos + vec_start_in_chunk
 
-                for i in T.serial(NT_max):
-                    if i < NT_i:
-                        pid = i % 2
-                        next_pid = (i + 1) % 2
-                        v_flag_pid = pid + 2
-                        v_flag_next = next_pid + 2
-                        g_start = bos + i * BT
-                        g_start_next = bos + (i + 1) * BT
+                for j in T.serial(2):
+                    T.copy(
+                        v[vec_global_start : vec_global_start + vec_chunk_len, i_h, j * V_half : (j + 1) * V_half],
+                        v_chunk_ub[0, j, :, :],
+                    )
+                if USE_G:
+                    T.copy(g[i_h, vec_global_start : vec_global_start + vec_chunk_len], g_chunk_ub[0, :])
+                T.set_flag("mte2", "v", 2)
 
-                        # v[t+1], g[t+1]
-                        if i + 1 < NT_i:
-                            for j in T.serial(2):
-                                T.copy(
-                                    v[
-                                        g_start_next + BT // 2 * vid : g_start_next + BT // 2 * vid + BT // 2,
-                                        i_h,
-                                        j * V_half : (j + 1) * V_half,
-                                    ],
-                                    v_chunk_ub[next_pid, j, :, :],
-                                )
-                            if USE_G:
-                                T.copy(
-                                    g[i_h, g_start_next + BT // 2 * vid : g_start_next + BT // 2 * vid + BT // 2], g_chunk_ub[next_pid, :]
-                                )
-                            T.set_flag("mte2", "v", v_flag_next)
+                for i in T.serial(NT_i):
+                    pid = i % 2
+                    next_pid = (i + 1) % 2
+                    v_flag_pid = pid + 2
+                    v_flag_next = next_pid + 2
+                    g_start = bos + i * BT
+                    g_start_next = bos + (i + 1) * BT
 
-                        # h to cube
+                    chunk_len = T.if_then_else(i * BT + BT > T_len, T_len - i * BT, BT)
+                    vec_chunk_len = T.if_then_else(vid == 0, T.min(BT // 2, chunk_len), T.max(chunk_len - BT // 2, 0))
+                    vec_start_in_chunk = T.if_then_else(vid == 0, 0, BT // 2)
+
+                    # v[t+1], g[t+1]
+                    if i + 1 < NT_i:
+                        next_chunk_len = T.if_then_else((i + 1) * BT + BT > T_len, T_len - (i + 1) * BT, BT)
+                        next_vec_start_in_chunk = T.if_then_else(vid == 0, 0, BT // 2)
+                        next_vec_chunk_len = T.if_then_else(vid == 0, T.min(BT // 2, next_chunk_len), T.max(next_chunk_len - BT // 2, 0))
+                        next_vec_global_start = g_start_next + next_vec_start_in_chunk
+
                         for j in T.serial(2):
-                            T.copy(h_state_ub[j, :, :], ws_h[i_n, i_h, j, K // 2 * vid : K // 2 * vid + K // 2, :])
-                            T.set_cross_flag("MTE3", SEM_H_V2C + j)
-
-                        # save h[t]
-                        for j in T.serial(2):
-                            T.copy(h_state_ub[j, :, :], h[i_n, i, i_h, K // 2 * vid : K // 2 * vid + K // 2, j * V_half : (j + 1) * V_half])
-
-                        T.wait_flag("mte2", "v", v_flag_pid)
-                        # prepare gating
+                            T.copy(
+                                v[next_vec_global_start : next_vec_global_start + next_vec_chunk_len, i_h, j * V_half : (j + 1) * V_half],
+                                v_chunk_ub[next_pid, j, :, :],
+                            )
                         if USE_G:
-                            g_last = T.if_then_else(i * BT + BT <= T_len, g[i_h, g_start + BT - 1], g[i_h, g_start + T_len - i * BT - 1])
+                            T.copy(g[i_h, next_vec_global_start : next_vec_global_start + next_vec_chunk_len], g_chunk_ub[next_pid, :])
+                        T.set_flag("mte2", "v", v_flag_next)
 
-                            T.tile.fill(g_exp_ub, g_last)
-                            T.set_flag("mte2", "v", 4)
-                            T.wait_flag("mte2", "v", 4)
-                            T.tile.sub(g_exp_ub, g_exp_ub, g_chunk_ub[pid, :])
-                            T.tile.exp(g_exp_ub, g_exp_ub)
-                            T.tile.broadcast(g_exp_ub_broc, g_exp_ub, axis=1)
+                    # h to cube
+                    for j in T.serial(2):
+                        T.copy(h_state_ub[j, :, :], ws_h[i_n, i_h, j, K // 2 * vid : K // 2 * vid + K // 2, :])
+                        T.set_cross_flag("MTE3", SEM_H_V2C + j)
 
-                            T.tile.fill(g_last_scalar, g_last)
-                            T.tile.exp(g_last_scalar, g_last_scalar)
+                    # save h[t]
+                    for j in T.serial(2):
+                        T.copy(h_state_ub[j, :, :], h[i_n, i, i_h, K // 2 * vid : K // 2 * vid + K // 2, j * V_half : (j + 1) * V_half])
 
-                        for j in T.serial(2):
-                            T.copy(v_chunk_ub[pid, j, :, :], v_chunk_ub_float[j, :, :])
+                    T.wait_flag("mte2", "v", v_flag_pid)
+                    # prepare gating
+                    if USE_G:
+                        g_last = T.if_then_else(i * BT + BT <= T_len, g[i_h, g_start + BT - 1], g[i_h, g_start + T_len - i * BT - 1])
 
-                            # v_new = v - w @ h
-                            T.wait_cross_flag(SEM_WH_C2V + j)
-                            T.copy(ws_wh[i_n, i_h, j, BT // 2 * vid : BT // 2 * vid + BT // 2, :], wh_ub_float[j, :, :])
-                            T.set_flag("mte2", "v", 5)
-                            T.wait_flag("mte2", "v", 5)
-                            T.tile.sub(v_chunk_ub_float[j, :, :], v_chunk_ub_float[j, :, :], wh_ub_float[j, :, :])
+                        T.tile.fill(g_exp_ub, g_last)
+                        T.set_flag("mte2", "v", 4)
+                        T.wait_flag("mte2", "v", 4)
+                        T.tile.sub(g_exp_ub, g_exp_ub, g_chunk_ub[pid, :])
+                        T.tile.exp(g_exp_ub, g_exp_ub)
+                        T.tile.broadcast(g_exp_ub_broc, g_exp_ub, axis=1)
 
-                            if SAVE_NEW_VALUE:
-                                T.copy(v_chunk_ub_float[j, :, :], v_chunk_ub[pid, j, :, :])
-                                T.set_flag("v", "mte3", 6)
-                                T.wait_flag("v", "mte3", 6)
-                                T.copy(
-                                    v_chunk_ub[pid, j, :, :],
-                                    v_new[
-                                        g_start + BT // 2 * vid : g_start + BT // 2 * vid + BT // 2, i_h, j * V_half : j * V_half + V_half
-                                    ],
-                                )
+                        T.tile.fill(g_last_scalar, g_last)
+                        T.tile.exp(g_last_scalar, g_last_scalar)
 
-                            if USE_G:
-                                # v_new *= exp(g_last - g)
-                                T.tile.mul(v_chunk_ub_float[j, :, :], v_chunk_ub_float[j, :, :], g_exp_ub_broc)
-                                # h *= exp(g_last)
-                                T.copy(h_state_ub[j, :, :], h_state_ub_float[j, :, :])
-                                T.tile.mul(h_state_ub_float[j, :, :], h_state_ub_float[j, :, :], g_last_scalar[0])
-                            else:
-                                T.copy(h_state_ub[j, :, :], h_state_ub_float[j, :, :])
+                    for j in T.serial(2):
+                        T.copy(v_chunk_ub[pid, j, :, :], v_chunk_ub_float[j, :, :])
 
-                            T.set_flag("mte3", "v", 7)
-                            T.wait_flag("mte3", "v", 7)
+                        # v_new = v - w @ h
+                        T.wait_cross_flag(SEM_WH_C2V + j)
+                        T.copy(ws_wh[i_n, i_h, j, vec_start_in_chunk : vec_start_in_chunk + BT // 2, :], wh_ub_float[j, :, :])
+                        T.set_flag("mte2", "v", 5)
+                        T.wait_flag("mte2", "v", 5)
+                        T.tile.sub(v_chunk_ub_float[j, :, :], v_chunk_ub_float[j, :, :], wh_ub_float[j, :, :])
+
+                        if SAVE_NEW_VALUE:
                             T.copy(v_chunk_ub_float[j, :, :], v_chunk_ub[pid, j, :, :])
-                            T.set_flag("v", "mte3", 8)
-                            T.wait_flag("v", "mte3", 8)
-                            T.copy(v_chunk_ub[pid, j, :, :], ws_vnew[i_n, i_h, j, BT // 2 * vid : BT // 2 * vid + BT // 2, :])
-                            T.set_cross_flag("MTE3", SEM_VNEW_V2C + j)
+                            T.set_flag("v", "mte3", 6)
+                            T.wait_flag("v", "mte3", 6)
+                            T.copy(
+                                v_chunk_ub[pid, j, :vec_chunk_len, :],
+                                v_new[
+                                    g_start + vec_start_in_chunk : g_start + vec_start_in_chunk + vec_chunk_len,
+                                    i_h,
+                                    j * V_half : j * V_half + V_half,
+                                ],
+                            )
 
-                        for j in T.serial(2):
-                            # h += k @ v_new
-                            T.wait_cross_flag(SEM_HUPD_C2V + j)
-                            T.copy(ws_hupd[i_n, i_h, j, K // 2 * vid : K // 2 * vid + K // 2, :], hupd_ub_float[j, :, :])
-                            T.set_flag("mte2", "v", 9)
-                            T.wait_flag("mte2", "v", 9)
-                            T.tile.add(h_state_ub_float[j, :, :], h_state_ub_float[j, :, :], hupd_ub_float[j, :, :])
-                            T.copy(h_state_ub_float[j, :, :], h_state_ub[j, :, :])
+                        if USE_G:
+                            # v_new *= exp(g_last - g)
+                            T.tile.mul(v_chunk_ub_float[j, :, :], v_chunk_ub_float[j, :, :], g_exp_ub_broc)
+                            # h *= exp(g_last)
+                            T.copy(h_state_ub[j, :, :], h_state_ub_float[j, :, :])
+                            T.tile.mul(h_state_ub_float[j, :, :], h_state_ub_float[j, :, :], g_last_scalar[0])
+                        else:
+                            T.copy(h_state_ub[j, :, :], h_state_ub_float[j, :, :])
 
-                        T.set_flag("v", "mte3", 10)
-                        T.wait_flag("v", "mte3", 10)
+                        T.set_flag("mte3", "v", 7)
+                        T.wait_flag("mte3", "v", 7)
+                        T.copy(v_chunk_ub_float[j, :, :], v_chunk_ub[pid, j, :, :])
+                        T.set_flag("v", "mte3", 8)
+                        T.wait_flag("v", "mte3", 8)
+                        T.copy(v_chunk_ub[pid, j, :, :], ws_vnew[i_n, i_h, j, vec_start_in_chunk : vec_start_in_chunk + BT // 2, :])
+                        T.set_cross_flag("MTE3", SEM_VNEW_V2C + j)
+
+                    for j in T.serial(2):
+                        # h += k @ v_new
+                        T.wait_cross_flag(SEM_HUPD_C2V + j)
+                        T.copy(ws_hupd[i_n, i_h, j, K // 2 * vid : K // 2 * vid + K // 2, :], hupd_ub_float[j, :, :])
+                        T.set_flag("mte2", "v", 9)
+                        T.wait_flag("mte2", "v", 9)
+                        T.tile.add(h_state_ub_float[j, :, :], h_state_ub_float[j, :, :], hupd_ub_float[j, :, :])
+                        T.copy(h_state_ub_float[j, :, :], h_state_ub[j, :, :])
+
+                    T.set_flag("v", "mte3", 10)
+                    T.wait_flag("v", "mte3", 10)
 
                 if STORE_FINAL_STATE:
                     for j in T.serial(2):
@@ -310,19 +320,12 @@ def chunk_gated_delta_rule_fwd_h(
         NT_max = max(NT_max, NT)
         NT_total += NT
 
-    T_total_pad = T_total + BT
     if USE_G:
         g_c_t = g_flat.float().transpose(0, 1).contiguous()  # [H, T_total] — transpose required
-        g_pad = torch.cat([g_c_t, torch.zeros((g_c_t.shape[0], BT), dtype=torch.float32, device=k.device)], dim=1)
     else:
-        g_pad = torch.empty((H, T_total_pad), dtype=torch.float32, device=k.device)
+        g_c_t = torch.empty((H, T_total), dtype=torch.float32, device=k.device)
 
     v_new_flat = torch.empty((T_total, H, V), dtype=torch.float16, device=k.device)
-
-    k_pad = torch.cat([k_flat, torch.zeros((BT, Hg, K), dtype=torch.float16, device=k.device)], dim=0)
-    w_pad = torch.cat([w_flat, torch.zeros((BT, H, K), dtype=torch.float16, device=k.device)], dim=0)
-    u_pad = torch.cat([u_flat, torch.zeros((BT, H, V), dtype=torch.float16, device=k.device)], dim=0)
-    v_new_pad = torch.cat([v_new_flat, torch.zeros((BT, H, V), dtype=torch.float16, device=k.device)], dim=0)
 
     # Allocate state outputs
     h_out = torch.zeros((N, NT_max, H, K, V), dtype=torch.float16, device=k.device)
@@ -335,7 +338,7 @@ def chunk_gated_delta_rule_fwd_h(
     ker = chunk_gated_delta_rule_fwd_kernel(
         N,
         H,
-        T_total_pad,
+        T_total,
         Hg,
         K,
         V,
@@ -345,9 +348,8 @@ def chunk_gated_delta_rule_fwd_h(
         STORE_FINAL_STATE=output_final_state,
         SAVE_NEW_VALUE=save_new_value,
     )
-    ker(h_out, k_pad, u_pad, w_pad, g_pad, v_new_pad, h0, ht, cu_seqlens.to(torch.int32))
+    ker(h_out, k_flat, u_flat, w_flat, g_c_t, v_new_flat, h0, ht, cu_seqlens.to(torch.int32))
 
-    v_new_flat = v_new_pad[:T_total, :, :]  # [T_total, H, V]
     v_new_ret = v_new_flat.unsqueeze(0)  # [1, T_total, H, V]
 
     h_ret = torch.zeros((NT_total, H, K, V), dtype=torch.float16, device=k.device)
