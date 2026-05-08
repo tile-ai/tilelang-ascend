@@ -793,7 +793,7 @@ jobs:
             ---
             
             *This issue was automatically created by the daily scheduled test.*
-            *Assignees: @benyang0506, @fuhouyu-hw, @z00520135, @lwwangcgz*`;
+            *Assignees: @benyang0506, @fuhouyu-hw, @z00520135*`;
             
             const title = `[Daily Test] ${statusEmoji} ${testSummary} - ${runDate}`;
             
@@ -802,6 +802,6 @@ jobs:
               repo: context.repo.repo,
               title: title,
               body: body,
-              assignees: ['benyang0506', 'fuhouyu-hw', 'z00520135', 'lwwangcgz'],
+              assignees: ['benyang0506', 'fuhouyu-hw', 'z00520135'],
               labels: ['daily-test', testStatus === 'passed' ? 'test-passed' : 'test-failed']
             });
