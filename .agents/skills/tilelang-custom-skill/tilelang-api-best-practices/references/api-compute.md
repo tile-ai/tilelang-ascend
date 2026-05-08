@@ -206,11 +206,12 @@ for i in range(block_M // VEC_NUM):  # 行顺序
 
 | 类型 | 支持的表达式 | 备注 |
 |------|-------------|------|
-| 简单赋值 | `a[i] = b[i]` | 等价于 T.copy |
-| 简单运算 | `c[i] = a[i] + b[i]` | 等价于 T.tile.add |
-| 标量运算 | `c[i] = a[i] + scalar` | 等价于 T.tile.add |
-| 广播运算 | `c[i,j] = a[i,j] * b[j]` | 自动广播处理 |
+| 简单赋值 | `a[i] = b[i]` | 等价于 `T.copy` |
+| 简单运算 | `c[i] = a[i] + b[i]` | 等价于 `T.tile.add` |
+| 标量运算 | `c[i] = a[i] + scalar` | 等价于 `T.tile.add` |
+| 广播运算 | `c[i,j] = a[i,j] * b[j]` | 自动广播处理（仅支持 1D→2D，索引必须是简单变量） |
 | 复合表达式 | `c[i] = a[i] * b[i] + d[i]` | 自动分解为多步操作 |
+| 离散索引  | 非简单变量索引，如 `a[idx[i]]` | 编译器退回到 `T.serial` 循环 |
 
 #### 不支持的表达式
 
@@ -218,11 +219,16 @@ for i in range(block_M // VEC_NUM):  # 行顺序
 
 | 不支持的表达式 | 错误类型 | 替代方案 |
 |---------------|---------|---------|
+| `if-else` 条件分支 | 编译错误（SIMD 架构不支持元素级条件判断） | 使用 `T.tile.compare` + `T.tile.select` |
 | `T.if_then_else(...)` | 编译错误 ("undefined Variable v_thread") | 使用 `T.tile.compare` + `T.tile.select` |
 | `tir.reinterpret("int8", ...)` | 运行时错误 | 使用 `T.reinterpretcast`（整个 buffer） |
 | `T.int8(expr)` 或 `.astype("int8")` | 编译错误或数据异常 | 使用 `T.tile.cast`（整个 buffer） |
-| 非线性索引 `a[i*i]` | 未实现 | 使用 T.tile.xxx + 手动索引计算 |
+| 非线性索引 `a[i*i]` | 未实现 | 使用 `T.tile.xxx` + 手动索引计算 |
 | 动态 shift `a[i] >> shift[i]` | 不支持（shift 必须是 scalar） | 使用固定 scalar shift |
+
+#### 循环范围要求
+
+`T.Parallel` 的循环范围必须是编译期可确定的常量值（IntImm），不支持动态变量作为循环边界。
 
 #### 从 CUDA TileLang 迁移注意事项
 
@@ -247,6 +253,8 @@ T.tile.select(b_ub, mask_ub, a_scaled_ub, a_ub, "VSEL_CMPMASK_SPR")
 ```
 
 详细用法参考 `docs/tutorials/t_parallel.md`。
+
+Pass 设计详见 `.agents/skills/tilelang-pass-analyzer/references/pass-designs/ascend_lower_parallel_to_vector_design.md`。
 
 ---
 
