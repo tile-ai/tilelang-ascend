@@ -70,7 +70,7 @@ description: "根据算子需求生成 TileLang-Ascend 算子设计文档（desi
 | **流水线不支持动态边界** | `T.Pipelined` 的循环次数必须静态 | 动态批次无法流水线 | 改用 `T.serial` 或预计算固定迭代次数 |
 | **部分 GPU API 不可用** | CUDA 专用 API 在 Ascend 不存在 | 直接移植 GPU 代码失败 | 查阅本项目 `examples/` 确认 Ascend API |
 | **GEMM 要求 M,N 为 block 整数倍** | `M // block_M` 整除依赖；`M < block_M` 时零 block 启动 | 输出全零或除零编译崩溃 | 设计文档 §4/§5 必须明确处理策略：host 侧 padding+crop 或 Kernel 动态 block |
-| **L0C 容量上限** | A2/A3 设备 L0C = 64KB | `block_M × block_N × sizeof(accum) > 64KB` 导致 segfault | 设计 block 时满足 `block_M × block_N ≤ 16384`（float32 accum） |
+| **L0C 容量上限** | A2/A3 设备 L0C = 128KB | `block_M × block_N × sizeof(accum) > 128KB` 导致 segfault | 设计 block 时满足 `block_M × block_N ≤ 16384`（float32 accum） |
 
 ### 2.5.2 强制检测规则
 
@@ -83,7 +83,7 @@ description: "根据算子需求生成 TileLang-Ascend 算子设计文档（desi
 | 动态循环边界 | 循环边界依赖 tensor 值 | **立即警告**，提出静态边界 + 条件判断方案 |
 | GPU 专用 API | CUDA 相关 API（如 `T.gemm` 通用版） | **立即警告**，查阅本项目确认 Ascend API |
 | GEMM 非整除风险 | `M` 或 `N` 不被 block size 整除（即 `M % block_M ≠ 0` 或 `N % block_N ≠ 0`） | **立即警告**，要求 design 中明确 padding 策略 |
-| L0C 溢出风险 | block_M × block_N × sizeof(accum_dtype) > 65536 (64KB) | **立即警告**，建议减小 block 或拆分 |
+| L0C 溢出风险 | block_M × block_N × sizeof(accum_dtype) > 131072 (128KB) | **立即警告**，建议减小 block 或拆分 |
 
 ### 2.5.3 警告输出格式
 
@@ -303,7 +303,7 @@ grep "T.Scope\|T.barrier" examples/{同类实现}  # 同步方式
 | 12 | **CV 融合设计完整**（如需）：workspace 规格、数据流、pass_configs | ⭕ 推荐 |
 | 13 | **workspace_idx 配置正确**（如需 CV 融合）：与 workspace 参数位置一致 | ✅ 必须 |
 | 14 | **非整除处理策略明确**（GEMM 类必含）：主机侧 padding+crop 或 Kernel 内动态 block，说明溢出/下溢处理 | ✅ 必须 |
-| 15 | **L0C 容量约束已验证**（GEMM 类必含）：`block_M × block_N × sizeof(accum_dtype) ≤ L0C_capacity (64KB)` | ⭕ 推荐 |
+| 15 | **L0C 容量约束已验证**（GEMM 类必含）：`block_M × block_N × sizeof(accum_dtype) ≤ L0C_capacity (128KB)` | ⭕ 推荐 |
 | 16 | **函数无全局变量依赖**：维度参数从 tensor shape 或函数参数获取，支持多场景顺序测试 | ⭕ 推荐 |
 
 **通过条件**：必须项（1, 2, 3, 7, 8, 9, 14）全部通过，推荐项至少通过 4/9。
