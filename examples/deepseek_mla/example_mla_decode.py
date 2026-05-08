@@ -39,7 +39,7 @@ def flashattn(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, block_N, block_
             workspace_1: T.Tensor([block_num, VALID_BLOCK_H, block_N], accum_dtype),
             workspace_2: T.Tensor([block_num, VALID_BLOCK_H, dim], accum_dtype),
     ):
-        with T.Kernel(batch * (heads // VALID_BLOCK_H), is_npu=True) as (cid, vid):
+        with T.Kernel(batch * (heads // VALID_BLOCK_H), threads=2, is_npu=True) as (cid, vid):
             bid = cid // (heads // VALID_BLOCK_H)
             hid = cid % (heads // VALID_BLOCK_H)
 
@@ -61,8 +61,9 @@ def flashattn(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, block_N, block_
             scores_scale = T.alloc_shared([VALID_BLOCK_H], accum_dtype)
             scores_sum = T.alloc_shared([VALID_BLOCK_H], accum_dtype)
             logsum = T.alloc_shared([VALID_BLOCK_H], accum_dtype)
+            logsum_2d = T.alloc_shared([VALID_BLOCK_H, dim], accum_dtype)
 
-            cur_kv_head = 0
+            cur_kv_head = hid // (heads // kv_head_num)
 
             T.copy(Q[bid, hid * VALID_BLOCK_H:(hid + 1) * VALID_BLOCK_H, :], Q_shared)
             T.copy(Q_pe[bid, hid * VALID_BLOCK_H:(hid + 1) * VALID_BLOCK_H, :], Q_pe_shared)
@@ -79,8 +80,13 @@ def flashattn(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, block_N, block_
 
                 T.gemm_v0(Q_shared, KV_shared, acc_s_l0c, transpose_B=True, init=True)
                 T.gemm_v0(Q_pe_shared, K_pe_shared, acc_s_l0c, transpose_B=True)
-                T.copy(acc_s_l0c, workspace_1[cid, :, :])
 
+                # NOTE: Workspace buffer workaround for L0C->UB copy
+                # Current backend doesn't support direct L0C->UB transfers,
+                # so we use L0C->Global Memory(workspace)->UB pattern.
+                # This is a performance bottleneck that should be optimized
+                # once the backend supports direct transfers.
+                T.copy(acc_s_l0c, workspace_1[cid, :, :])
                 T.copy(workspace_1[cid, :, :], acc_s)
 
                 T.copy(scores_max, scores_max_prev)
@@ -105,13 +111,14 @@ def flashattn(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, block_N, block_
 
                 T.copy(acc_s, acc_s_half)
                 T.gemm_v0(acc_s_half, KV_shared, acc_o_l0c, init=True)
-                T.copy(acc_o_l0c, workspace_2[cid, :, :])
 
+                # NOTE: Same L0C->Global Memory->UB workaround for output accumulator
+                T.copy(acc_o_l0c, workspace_2[cid, :, :])
                 T.copy(workspace_2[cid, :, :], acc_o_ub)
                 T.tile.add(acc_o, acc_o, acc_o_ub)
 
-            for i, j in T.Parallel(VALID_BLOCK_H, dim):
-                acc_o[i, j] /= logsum[i]
+            T.tile.broadcast(logsum_2d, logsum)
+            T.tile.div(acc_o, acc_o, logsum_2d)
 
             T.copy(acc_o, acc_o_half)
             T.copy(acc_o_half, Output[bid, hid * VALID_BLOCK_H:(hid + 1) * VALID_BLOCK_H, :])
