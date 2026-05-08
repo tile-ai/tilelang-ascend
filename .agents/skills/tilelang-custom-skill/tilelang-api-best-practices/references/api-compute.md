@@ -305,15 +305,21 @@ T.tile.cast(b_ub, a_ub, "CAST_RINT", 4096)
 **V1 支持范围**：
 
 - `dst` 必须是 GM/global buffer、buffer load 或 region
-- `src` 必须是本地 tensor，当前主要面向 UB/shared buffer
+- `src` 必须是本地 tensor，当前主要面向 UB/shared buffer 和 L0C/fragment buffer
 - `src` 与 `dst` dtype 必须一致
 - 支持 1D 和 2D tile region 的 local -> GM 原子累加
 - 不支持 `return_prev`、`memory_order`、`use_tma`、常量 src 或任意表达式 src
+
+**支持的数据类型**：
+
+int8, int16, float16, bfloat16, int32, float32
 
 **使用建议**：
 
 - 如果业务语义是从 0 开始累加，调用 kernel 前或 kernel 内需要显式清零 GM 输出。
 - 在混合模式下可配合自动同步和内存规划使用，不要求手写 `T.Scope("V")` 或 `T.barrier_all()`。
+
+**UB -> GM 示例**：
 
 ```python
 pass_configs = {
@@ -326,6 +332,18 @@ T.tile.fill(src_ub, 1.0)
 T.tile.atomic_add(C[0], src_ub)
 ```
 示例中的pass_config只是最小用法。在混合模式或需要自动 C/V 分离时，可以同时开启 `TL_ASCEND_AUTO_CV_COMBINE`；如果存在 C/V 核间依赖，再配合 `TL_ASCEND_AUTO_CV_SYNC`。
+
+**L0C -> GM 示例**：
+
+适用于矩阵计算结果需要原子累加到 GM 的场景，如多 block/core 的 GEMM 累加。
+
+```python
+src_l0c = T.alloc_L0C((block_M, block_N), dtype)
+T.gemm_v0(..., ..., src_l0c, init=True)
+T.tile.atomic_add(C[..., ...], src_l0c)
+```
+
+**底层实现**：
 
 底层会生成 Ascend C 的 DMA atomic add 语义：开启 `SetAtomicAdd<T>()`，执行 local -> GM 的 `DataCopyPad`，再通过兼容 helper 关闭 atomic 状态。
 ### 4.11 排序操作

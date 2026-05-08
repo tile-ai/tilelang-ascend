@@ -1285,7 +1285,7 @@ Expert编程模式可以复用Developer模式的Reduce类计算原语。
 | 异或       | T.tile.bitwise_xor(dst, src0, src1)      | element-wise bitwise XOR，dst = src0 ^ src1                  |
 | 左移       | T.tile.bitwise_lshift(dst, src0, scalar) | element-wise 左移操作                                        |
 | 右移       | T.tile.bitwise_rshift(dst, src0, scalar) | element-wise 右移操作                                        |
-| 原子累加   | T.tile.atomic_add(dst, src)              | 将本地 tensor 原子累加到 GM，V1 支持 local/UB → GM           |
+| 原子累加   | T.tile.atomic_add(dst, src)              | 将本地 tensor 原子累加到 GM，V1 支持 UB → GM 和 L0C -> GM        |
 
 **(1) 基础算术**
 
@@ -2010,7 +2010,7 @@ Expert编程模式可以复用Developer模式的Reduce类计算原语。
   **参数**：
 
   - dst：GM 目标 buffer、buffer load 或 region
-  - src：本地 tensor，当前主要支持 UB/shared buffer
+  - src：本地 tensor，当前支持 UB/shared buffer 和 L0C/fragment buffer 
 
   **功能**：将本地 tensor tile 原子累加到 GM 目标区域。该接口是 Ascend 专属的 `T.tile` 原语，不等价于主仓 GPU 风格的全局 `T.atomic_add`。V1 只支持 local/UB 到 GM 的原子累加，不支持 `return_prev`、`memory_order`、`use_tma`、常量 src 或任意表达式 src。
 
@@ -2018,6 +2018,7 @@ Expert编程模式可以复用Developer模式的Reduce类计算原语。
 
   **举例**：
 
+  - UB -> GM
   ```python
   pass_configs = {
       tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
@@ -2027,6 +2028,13 @@ Expert编程模式可以复用Developer模式的Reduce类计算原语。
   src_ub = T.alloc_ub((tile_n,), "float32")
   T.tile.fill(src_ub, 1.0)
   T.tile.atomic_add(C[0], src_ub)
+  ```
+  
+  - L0C -> GM
+  ```python
+  src_l0c = T.alloc_L0C((block_M, block_N), dtype)
+  T.gemm_v0(..., ..., src_l0c, init=True)
+  T.tile.atomic_add(C[..., ...], src_l0c)
   ```
 
   **注意事项**：
