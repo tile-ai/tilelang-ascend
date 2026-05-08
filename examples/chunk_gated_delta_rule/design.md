@@ -98,7 +98,7 @@ pass_configs = {
 | 加载 w | `w_chunk = w[t_start:t_end]` | `T.copy(w[g_start:g_start+BT, i_h, :], w_chunk_l1[pid, :, :])` |
 | 加载 k | `k_chunk = k[t_start:t_end]` | `T.copy(k[g_start:g_start+BT, k_head, :], k_chunk_l1[pid, :, :])` |
 | 加载 v | `v_chunk = v[t_start:t_end]` | `T.copy(v[g_start+BT//2*vid:..., i_h, j*V_half:(j+1)*V_half], v_chunk_ub[pid, j])` |
-| 加载 g | `g_chunk = g[t_start:t_end]` | `T.copy(g[g_start+BT//2*vid:..., i_h], g_chunk_ub[pid])` |
+| 加载 g | `g_chunk = g[t_start:t_end]` | `T.copy(g[i_h, g_start+BT//2*vid:g_start+BT//2*vid+BT//2], g_chunk_ub[pid])` |
 | **GEMM: w @ h** | `torch.matmul(w, h)` | `T.gemm_v0(w_chunk_l1[pid], h_state_l1[j], wh_frag[j], init=True)` |
 | **v_new = v - wh** | `v - torch.matmul(w, h)` | `T.copy(v_chunk_ub[pid, j], v_chunk_ub_float[j])` → `T.tile.sub(v_chunk_ub_float[j], v_chunk_ub_float[j], wh_ub_float[j])` |
 | **exp(g_last - g)** | `torch.exp(g_last - g)` | `T.tile.sub(g_exp_ub, g_exp_ub, g_chunk_ub[pid])` → `T.tile.exp(g_exp_ub, g_exp_ub)` |
@@ -311,8 +311,8 @@ def chunk_gated_delta_rule_fwd_kernel(
 
                 # 预取 chunk 0 的 w/k 到 L1
                 if NT_i > 0:
-                    T.copy(w[i_h, bos : bos + BT, :], w_chunk_l1[0, :, :])
-                    T.copy(k[k_head, bos : bos + BT, :], k_chunk_l1[0, :, :])
+                    T.copy(w[bos : bos + BT, i_h, :], w_chunk_l1[0, :, :])
+                    T.copy(k[bos : bos + BT, k_head, :], k_chunk_l1[0, :, :])
                     T.set_flag("mte2", "m", 0)
 
                 for i in T.serial(NT_max):
@@ -323,8 +323,8 @@ def chunk_gated_delta_rule_fwd_kernel(
 
                         # 提前搬运 chunk i+1 的 w/k
                         if i + 1 < NT_i:
-                            T.copy(w[i_h, g_start_next : g_start_next + BT, :], w_chunk_l1[next_pid, :, :])
-                            T.copy(k[k_head, g_start_next : g_start_next + BT, :], k_chunk_l1[next_pid, :, :])
+                            T.copy(w[g_start_next : g_start_next + BT, i_h, :], w_chunk_l1[next_pid, :, :])
+                            T.copy(k[g_start_next : g_start_next + BT, k_head, :], k_chunk_l1[next_pid, :, :])
                             T.set_flag("mte2", "m", next_pid)
 
                         # GEMM 1: w @ h_state → wh_frag → ws_wh
@@ -371,8 +371,8 @@ def chunk_gated_delta_rule_fwd_kernel(
                 # 预取 chunk 0 的 v/g
                 if NT_i > 0:
                     for j in T.serial(2):
-                        T.copy(v[i_h, bos + BT // 2 * vid : bos + BT // 2 * vid + BT // 2,
-                                 j * V_half : (j + 1) * V_half], v_chunk_ub[0, j, :, :])
+                        T.copy(v[bos + BT // 2 * vid : bos + BT // 2 * vid + BT // 2,
+                                 i_h, j * V_half : (j + 1) * V_half], v_chunk_ub[0, j, :, :])
                     if USE_G:
                         T.copy(g[i_h, bos + BT // 2 * vid : bos + BT // 2 * vid + BT // 2],
                                g_chunk_ub[0, :])
@@ -391,9 +391,9 @@ def chunk_gated_delta_rule_fwd_kernel(
                         if i + 1 < NT_i:
                             for j in T.serial(2):
                                 T.copy(
-                                    v[i_h, g_start_next + BT // 2 * vid :
+                                    v[g_start_next + BT // 2 * vid :
                                           g_start_next + BT // 2 * vid + BT // 2,
-                                      j * V_half : (j + 1) * V_half],
+                                      i_h, j * V_half : (j + 1) * V_half],
                                     v_chunk_ub[next_pid, j, :, :],
                                 )
                             if USE_G:
@@ -458,9 +458,9 @@ def chunk_gated_delta_rule_fwd_kernel(
                                 T.wait_flag("v", "mte3", 6)
                                 T.copy(
                                     v_chunk_ub[pid, j, :, :],
-                                    v_new[i_h, g_start + BT // 2 * vid :
+                                    v_new[g_start + BT // 2 * vid :
                                               g_start + BT // 2 * vid + BT // 2,
-                                          j * V_half : j * V_half + V_half],
+                                          i_h, j * V_half : j * V_half + V_half],
                                 )
 
                             if USE_G:
