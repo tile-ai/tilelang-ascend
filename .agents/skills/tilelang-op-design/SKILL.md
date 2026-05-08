@@ -128,7 +128,7 @@ description: "根据算子需求生成 TileLang-Ascend 算子设计文档（desi
      - 多步（如 softmax = max + sub + exp + sum + div）→ 多次计算、可能需要中间缓冲
      - 融合（如 flash attention = GEMM + softmax + GEMM）→ 核间协作、流水线
    - **动态 shape 判定**：是否存在运行时才确定的维度
-4. **非整除场景预判**：检查输入 shape 是否可能不被 block size 整除。GEMM 类算子的 `M // block_M` 和 `N // block_N` 在 M<N 时产生零 block 或不完整 tile，必须在设计中明确处理策略（host 侧 zero-padding + crop，或 Kernel 内动态 block size）
+4. **非整除场景预判**：检查输入 shape 是否可能不被 block size 整除。GEMM 类算子的 `M // block_M` 和 `N // block_N` 在 `M < block_M` 或 `N < block_N` 时产生零 block 或不完整 tile，必须在设计中明确处理策略（host 侧 zero-padding + crop，或 Kernel 内动态 block size）
 
 ### Phase 2：信息收集
 
