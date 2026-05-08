@@ -14,8 +14,8 @@ pass_configs = {
 
 @tilelang.jit(pass_configs=pass_configs)
 def gemm_splitk(M, N, K, block_M, block_N, block_K, split_k, dtype="float16", accum_dtype="float"):
-    n_num = (N + block_N - 1) // block_N
-    m_num = (M + block_M - 1) // block_M
+    n_num = T.ceildiv(N, block_N)
+    m_num = T.ceildiv(M, block_M)
     splitK = K // split_k
     m_split_blocks = m_num * split_k
 
