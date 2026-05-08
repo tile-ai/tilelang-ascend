@@ -613,11 +613,18 @@ c_ub = T.alloc_shared((block_M, block_N), dtype)
 T.copy(c_ub, C[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
 # New form after UB transport elimination
 T.copy(c_ub, C[bx * block_M, by * block_N])
+# for loop original form
+for h_i, j in T.Parallel(v_block // VEC_NUM, BI):
+    acc_s_ub[h_i, j] = acc_s_ub[h_i, j] - m_i[h_i]
+# New form after UB transport elimination
+for h_i, j in T.Parallel(v_block, BI):
+    acc_s_ub[h_i, j] = acc_s_ub[h_i, j] - m_i[h_i]
 
 ```
 
-Here is an example:
+Here is some examples:
 - [MatmulAddDeveloper](./examples/developer_mode/matmul_add_developer.py)
+- [SparseFlashAttnDeveloperVidReduce](./examples/developer_mode/sparse_flash_attn_developer_vid_reduce.py)
 
 For a more detailed feature introduction, please see:
 - [vid_reduction_and_auto_cv_ratio.md](./docs/tutorials/vid_reduction_and_auto_cv_ratio.md)

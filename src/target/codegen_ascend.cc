@@ -2274,12 +2274,19 @@ void CodeGenTileLangAscend::CopyCodegen(const CallNode *op) {
   }
 
   if (found) {
+    std::vector<std::string> var_names;
+    for (int i = 0; i < extra_args; ++i) {
+      auto expr = op->args[3 + i];
+      std::string var_name = PrintExpr(expr);
+      var_names.push_back(var_name);
+    }
+
     this->PrintIndent();
     this->stream << op_name << "(" << dst_var_id << "[" << dst_offset << "], "
                  << src_var_id << "[" << src_offset << "]";
 
     for (int i = 0; i < extra_args; ++i) {
-      this->stream << ", " << PrintExpr(op->args[3 + i]);
+      this->stream << ", " << var_names[i];
     }
 
     this->stream << ");\n";

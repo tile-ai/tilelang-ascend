@@ -39,9 +39,11 @@ It's very simple. You only need to use the parameter `threads=VECNUM` to control
 ```
 
 ## 3. Important Limitations
-Currently, this feature is based on static dimensional rules and is suitable for data transfer between the GM and the complete ub_buffer. Elimination involves data chunking; if multiple VID cores have different responsibilities, such as index array movement, then this elimination mode is not suitable.
+Currently, this feature is based on static dimensional rules and is suitable for data transfer between the GM and the complete ub_buffer. Elimination involves data chunking.
 
 automatic reduction range：
 - UB allocation processing: Only UBs are processed.
+- UB transfer processing: Suitable for copying GM to UB and UB to GM, it performs parameter offset processing on the starting position of parameters in GM, supports GM slicing, multi-dimensional, etc. UB needs to be a complete buffer. In some special scenarios, such as the complete ub determined by the index in the SFA operator, no splitting is required.
 - UB transfer processing: Suitable for copying GM to UB and UB to GM, it performs parameter offset processing on the starting position of parameters in GM, supports GM slicing, multi-dimensional, etc. UB needs to be a complete buffer.
+- For loop variable handling: If the variable is used in the 0th dimension of the eliminated ub, then the loop variable is split.
 
