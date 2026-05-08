@@ -392,6 +392,14 @@ jobs:
           skip_pytest=true
           
           for file in $changed_files; do
+            if [[ "$file" =~ ^\.agents/ ]]; then
+              echo "Agents skill file: $file - ignored for pytest skip check"
+              continue
+            fi
+            if [[ "$file" =~ \.md$ ]] || [[ "$file" =~ \.png$ ]]; then
+              echo "Doc/image file: $file - ignored for pytest skip check"
+              continue
+            fi
             if [[ ! "$file" =~ ^examples/ ]]; then
               echo "File outside examples/: $file"
               skip_pytest=false
