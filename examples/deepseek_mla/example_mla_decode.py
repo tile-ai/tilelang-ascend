@@ -31,13 +31,13 @@ def flashattn(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, block_N, block_
 
     @T.prim_func
     def main(
-            Q: T.Tensor([batch, heads, dim], dtype),
-            Q_pe: T.Tensor([batch, heads, pe_dim], dtype),
-            KV: T.Tensor([batch, seqlen_kv, kv_head_num, dim], dtype),
-            K_pe: T.Tensor([batch, seqlen_kv, kv_head_num, pe_dim], dtype),
-            Output: T.Tensor([batch, heads, dim], dtype),
-            workspace_1: T.Tensor([block_num, VALID_BLOCK_H, block_N], accum_dtype),
-            workspace_2: T.Tensor([block_num, VALID_BLOCK_H, dim], accum_dtype),
+        Q: T.Tensor([batch, heads, dim], dtype),
+        Q_pe: T.Tensor([batch, heads, pe_dim], dtype),
+        KV: T.Tensor([batch, seqlen_kv, kv_head_num, dim], dtype),
+        K_pe: T.Tensor([batch, seqlen_kv, kv_head_num, pe_dim], dtype),
+        Output: T.Tensor([batch, heads, dim], dtype),
+        workspace_1: T.Tensor([block_num, VALID_BLOCK_H, block_N], accum_dtype),
+        workspace_2: T.Tensor([block_num, VALID_BLOCK_H, dim], accum_dtype),
     ):
         with T.Kernel(batch * (heads // VALID_BLOCK_H), threads=2, is_npu=True) as (cid, vid):
             bid = cid // (heads // VALID_BLOCK_H)
@@ -65,8 +65,8 @@ def flashattn(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, block_N, block_
 
             cur_kv_head = hid // (heads // kv_head_num)
 
-            T.copy(Q[bid, hid * VALID_BLOCK_H:(hid + 1) * VALID_BLOCK_H, :], Q_shared)
-            T.copy(Q_pe[bid, hid * VALID_BLOCK_H:(hid + 1) * VALID_BLOCK_H, :], Q_pe_shared)
+            T.copy(Q[bid, hid * VALID_BLOCK_H : (hid + 1) * VALID_BLOCK_H, :], Q_shared)
+            T.copy(Q_pe[bid, hid * VALID_BLOCK_H : (hid + 1) * VALID_BLOCK_H, :], Q_pe_shared)
             T.tile.fill(acc_o, 0.0)
             T.tile.fill(logsum, 0.0)
             T.tile.fill(scores_max, -(2.0**30))
@@ -121,7 +121,7 @@ def flashattn(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, block_N, block_
             T.tile.div(acc_o, acc_o, logsum_2d)
 
             T.copy(acc_o, acc_o_half)
-            T.copy(acc_o_half, Output[bid, hid * VALID_BLOCK_H:(hid + 1) * VALID_BLOCK_H, :])
+            T.copy(acc_o_half, Output[bid, hid * VALID_BLOCK_H : (hid + 1) * VALID_BLOCK_H, :])
 
     return main
 
@@ -130,7 +130,7 @@ def ref_program(q, q_pe, kv, k_pe):
     dim = q.shape[-1]
     pe_dim = q_pe.shape[-1]
     num_head_groups = q.shape[1] // kv.shape[2]
-    scale = (dim + pe_dim)**0.5
+    scale = (dim + pe_dim) ** 0.5
     q = rearrange(q, "b (h g) d -> b g h d", g=num_head_groups)
     q_pe = rearrange(q_pe, "b (h g) d -> b g h d", g=num_head_groups)
     kv = rearrange(kv, "b n h d -> b h n d")
@@ -154,7 +154,7 @@ def main(
 ):
     BLOCK_N = 64
     BLOCK_H = min(64, heads // kv_heads)
-    softmax_scale = (dim + pe_dim)**-0.5
+    softmax_scale = (dim + pe_dim) ** -0.5
 
     kernel = flashattn(batch, heads, kv_heads, kv_ctx, dim, pe_dim, BLOCK_N, BLOCK_H, softmax_scale)
 
