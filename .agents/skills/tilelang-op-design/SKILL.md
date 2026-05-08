@@ -69,6 +69,8 @@ description: "根据算子需求生成 TileLang-Ascend 算子设计文档（desi
 | **动态循环边界不支持** | 循环次数不能依赖 tensor 值（如 `batch_sizes[bz]`） | `T.Pipelined(batch_sizes[bz])` 报错 | 预计算最大循环次数，用 `T.serial(max_iters)` + 条件判断 |
 | **流水线不支持动态边界** | `T.Pipelined` 的循环次数必须静态 | 动态批次无法流水线 | 改用 `T.serial` 或预计算固定迭代次数 |
 | **部分 GPU API 不可用** | CUDA 专用 API 在 Ascend 不存在 | 直接移植 GPU 代码失败 | 查阅本项目 `examples/` 确认 Ascend API |
+| **GEMM 要求 M,N 为 block 整数倍** | `M // block_M` 整除依赖；`M < block_M` 时零 block 启动 | 输出全零或除零编译崩溃 | 设计文档 §4/§5 必须明确处理策略：host 侧 padding+crop 或 Kernel 动态 block |
+| **L0C 容量上限** | A2/A3 设备 L0C = 64KB | `block_M × block_N × sizeof(accum) > 64KB` 导致 segfault | 设计 block 时满足 `block_M × block_N ≤ 16384`（float32 accum） |
 
 ### 2.5.2 强制检测规则
 
@@ -80,6 +82,8 @@ description: "根据算子需求生成 TileLang-Ascend 算子设计文档（desi
 | threads 参数 | 参考实现 threads > 2 | **立即警告**，建议 threads=2 或移除 |
 | 动态循环边界 | 循环边界依赖 tensor 值 | **立即警告**，提出静态边界 + 条件判断方案 |
 | GPU 专用 API | CUDA 相关 API（如 `T.gemm` 通用版） | **立即警告**，查阅本项目确认 Ascend API |
+| GEMM 非整除风险 | `M` 或 `N` 不被 block size 整除（即 `M % block_M ≠ 0` 或 `N % block_N ≠ 0`） | **立即警告**，要求 design 中明确 padding 策略 |
+| L0C 溢出风险 | block_M × block_N × sizeof(accum_dtype) > 65536 (64KB) | **立即警告**，建议减小 block 或拆分 |
 
 ### 2.5.3 警告输出格式
 
@@ -118,11 +122,13 @@ description: "根据算子需求生成 TileLang-Ascend 算子设计文档（desi
      - 纯 Vector（element-wise / reduction）→ 仅需 UB
      - 纯 Cube（仅 matmul）→ 需要 L1 + L0A/L0B/L0C
      - 混合（matmul + element-wise 后处理）→ 核间流水线，需要 CV 融合
+     - **Host 预处理**：如 im2col 等 Python 侧预处理步骤，标明在 design 的 §1 和 §4 中
    - **复杂度级别**：
      - 单步（如 element-wise add）→ 无循环、单次搬运
      - 多步（如 softmax = max + sub + exp + sum + div）→ 多次计算、可能需要中间缓冲
      - 融合（如 flash attention = GEMM + softmax + GEMM）→ 核间协作、流水线
    - **动态 shape 判定**：是否存在运行时才确定的维度
+4. **非整除场景预判**：检查输入 shape 是否可能不被 block size 整除。GEMM 类算子的 `M // block_M` 和 `N // block_N` 在 M<N 时产生零 block 或不完整 tile，必须在设计中明确处理策略（host 侧 zero-padding + crop，或 Kernel 内动态 block size）
 
 ### Phase 2：信息收集
 
@@ -168,10 +174,10 @@ grep "T.Scope\|T.barrier" examples/{同类实现}  # 同步方式
 2. 编程模式选型
 3. API 映射设计
 4. 数据规格与内存规划
-5. Tiling 策略
+5. Tiling 策略（**必含：非整除时 padding+crop 策略，或 Kernel 内动态 block 方案**）
 6. 循环与调度结构
 7. 同步策略
-8. CV 融合设计（如有）
+8. CV 融合设计
 9. 验证方案
 10. 风险点与注意事项
 11. 交付清单
@@ -192,7 +198,12 @@ grep "T.Scope\|T.barrier" examples/{同类实现}  # 同步方式
 
 ## 4. 算子特征分析决策树（修订版）
 
-### 4.0 平台识别
+### 4.0 函数设计原则
+
+1. **维度参数自推导**：算子调用函数（如 `conv_im2col_gemm`）应从输入 tensor shape 提取 B/C/H/W 等维度，不依赖模块级全局变量。这保证多场景顺序测试时不发生变量污染。
+2. **Host 预处理显式声明**：若计算的一部分在 Python 侧完成（如 im2col），必须在 §1 算法描述和 §4 数据流中明确标注。
+
+### 4.1 平台识别
 
 **本项目为 TileLang-Ascend（昇腾 NPU）**，与 GPU 版 TileLang 有差异：
 
@@ -283,7 +294,7 @@ grep "T.Scope\|T.barrier" examples/{同类实现}  # 同步方式
 | 3 | **内存搬运路径完整**：从 GM 到计算再到 GM 的每一步都有说明 | ✅ 必须 |
 | 4 | **Tiling 策略有约束分析**：解释了为什么选择该 Block/Tile 大小 | ⭕ 推荐 |
 | 5 | **同步策略与编程模式匹配**：Developer 用自动同步、Expert 标明手动同步点 | ⭕ 推荐 |
-| 6 | **验证方案覆盖典型配置**：不是「待补充」 | ⭕ 推荐 |
+| 6 | **验证方案覆盖 4 类典型配置**：完美对齐 + 单维 padding + 全维 padding + 多 block（GEMM 类必含），不是「待补充」 | ⭕ 推荐 |
 | 7 | **无占位符或模糊描述**：无 `{placeholder}`、TODO、「待补充」（已确认的除外） | ✅ 必须 |
 | 8 | **技术约束已确认**：三维 Kernel、threads、动态边界等问题已处理 | ✅ 必须 |
 | 9 | **本项目同类实现已列出**：有具体的 examples/ 文件路径参考 | ✅ 必须 |
@@ -291,8 +302,11 @@ grep "T.Scope\|T.barrier" examples/{同类实现}  # 同步方式
 | 11 | **参考实现分析完整**（如有参考实现）：记录了内存层级 API、同步策略、pass_configs 等技术决策 | ⭕ 推荐 |
 | 12 | **CV 融合设计完整**（如需）：workspace 规格、数据流、pass_configs | ⭕ 推荐 |
 | 13 | **workspace_idx 配置正确**（如需 CV 融合）：与 workspace 参数位置一致 | ✅ 必须 |
+| 14 | **非整除处理策略明确**（GEMM 类必含）：主机侧 padding+crop 或 Kernel 内动态 block，说明溢出/下溢处理 | ✅ 必须 |
+| 15 | **L0C 容量约束已验证**（GEMM 类必含）：`block_M × block_N × sizeof(accum_dtype) ≤ L0C_capacity (64KB)` | ⭕ 推荐 |
+| 16 | **函数无全局变量依赖**：维度参数从 tensor shape 或函数参数获取，支持多场景顺序测试 | ⭕ 推荐 |
 
-**通过条件**：必须项（1, 2, 3, 7, 8, 9）全部通过，推荐项（4, 5, 6, 10）至少通过 3/4。
+**通过条件**：必须项（1, 2, 3, 7, 8, 9, 14）全部通过，推荐项至少通过 4/9。
 
 ---
 
@@ -352,11 +366,14 @@ grep "T.Scope\|T.barrier" examples/{同类实现}  # 同步方式
 3. 内存搬运完整性: ✅ / ❌
 4. Tiling 约束分析: ✅ / ❌
 5. 同步策略匹配: ✅ / ❌
-6. 验证方案覆盖: ✅ / ❌
+6. 验证方案覆盖（4 类）: ✅ / ❌
 7. 无占位符: ✅ / ❌
 8. 技术约束确认: ✅ / ❌
 9. 本项目同类实现列出: ✅ / ❌
 10. 参考实现差异说明: ✅ / ❌ / N/A
+11. 非整除处理策略: ✅ / ❌ / N/A
+12. L0C 容量约束: ✅ / ❌ / N/A
+13. 无全局变量依赖: ✅ / ❌
 
 ### 待确认项
 - {列出需要用户进一步确认的内容}
