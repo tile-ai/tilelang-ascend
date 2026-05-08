@@ -504,6 +504,7 @@ private:
     // once
     while (cube_loop_idx < cube_sp.parent_for_nodes.size() ||
            vec_loop_idx < vec_sp.parent_for_nodes.size()) {
+      bool cube_idx_updated = false;
       while (
           cube_loop_idx < cube_sp.parent_for_nodes.size() &&
           (cube_loop_times <= vec_loop_times ||
@@ -518,6 +519,7 @@ private:
         const ForNode *cube_loop = cube_sp.parent_for_nodes.at(cube_loop_idx);
         cube_loop_times *= GetLoopIterTimesWithSkip(cube_loop, skip_loop_ids);
         cube_loop_idx++;
+        cube_idx_updated = true;
       }
 
       if (cube_loop_times < vec_loop_times) {
@@ -530,6 +532,7 @@ private:
                      << vec_sp.ToString() << "\n";
       }
 
+      bool vec_idx_updated = false;
       while (vec_loop_idx < vec_sp.parent_for_nodes.size() &&
              (vec_loop_times <= cube_loop_times ||
               GetLoopIterTimesWithSkip(vec_sp.parent_for_nodes.at(vec_loop_idx),
@@ -543,6 +546,7 @@ private:
         const ForNode *vec_loop = vec_sp.parent_for_nodes.at(vec_loop_idx);
         vec_loop_times *= GetLoopIterTimesWithSkip(vec_loop, skip_loop_ids);
         vec_loop_idx++;
+        vec_idx_updated = true;
 
         if (vec_loop_times == last_pair_loop_times) {
           // cube_loop_times steps beyond last_pair_loop_times && vec_loop_times
@@ -559,6 +563,10 @@ private:
                      << vec_sp.ToString() << "\n"
                      << "Cube Sync Point:\n"
                      << cube_sp.ToString() << "\n";
+      }
+
+      if (!(cube_idx_updated || vec_idx_updated)) {
+        break;
       }
     }
 

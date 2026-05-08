@@ -813,11 +813,11 @@ TileLang提供了多种元素级操作算符，并结合调度原语**T.Parallel
 
 
 
-#### 4.1.2 调度原语
+#### 4.1.4 调度原语
 
-##### 4.1.2.1 T.Parallel
+##### 4.1.4.1 T.Parallel
 
-###### 4.1.2.1.1 功能介绍
+###### 4.1.4.1.1 功能介绍
 
 在TileLang中，`T.Parallel` 是用于表达Tile内元素级并行计算的基本原语。在IR层面，它抽象出表示数据并行语义的并行循环，同时隐藏硬件细节，从而简化内核开发并提高其可移植性。
 
@@ -848,7 +848,7 @@ TileLang提供了多种元素级操作算符，并结合调度原语**T.Parallel
   - 向量原语被包装为 T.tile.xxx 形式
   - 用户可以灵活选择使用带有`T.Parallel`的符号化API（例如 +、*、T.max 等）或显式的向量内联函数（例如 `T.tile.add` 等）。
 
-###### 4.1.2.1.2 语法格式
+###### 4.1.4.1.2 语法格式
 
 下面重点介绍`T.Parallel`的语法格式。
 
@@ -892,7 +892,7 @@ TileLang提供了多种元素级操作算符，并结合调度原语**T.Parallel
 
   目前，临时缓冲区的大小将与Tile大小相同。因此，我们强烈建议开启自动缓冲区复用功能，以避免空间浪费。
 
-###### 4.1.2.1.3 使用场景
+###### 4.1.4.1.3 使用场景
 
 - 单目操作
 
@@ -944,7 +944,7 @@ TileLang提供了多种元素级操作算符，并结合调度原语**T.Parallel
       c_ub[i, j] = b_ub[j] + 5 # b_ud is 1d and c_ub is 2d
   ``` 
 
-###### 4.1.2.1.4 两种编程范式的说明
+###### 4.1.4.1.4 两种编程范式的说明
 
 在Ascend平台上，对于Tile级别的操作，`T.Parallel`和`T.tile.xxx`两种编程范式都支持。
 
@@ -980,13 +980,13 @@ TileLang提供了多种元素级操作算符，并结合调度原语**T.Parallel
           T.copy(b_ub, B)
   ```
 
-##### 4.1.2.2 T.Pipelined
+##### 4.1.4.2 T.Pipelined
 
-###### 4.1.2.2.1 功能介绍
+###### 4.1.4.2.1 功能介绍
 
 `T.pipelined` 是 TileLang中的一个高级抽象，旨在表达和优化 Ascend AI 加速器上的流水线并行计算。它能够实现细粒度的计算重叠、单核内（intra-core）的内存访问重叠，以及多核之间（inter-core）的跨执行同步。
 
-###### 4.1.2.2.2 语法格式
+###### 4.1.4.2.2 语法格式
 
 **语法格式**：
 
@@ -996,7 +996,7 @@ for var in T.Pipelined(range: int, num_stages: int):
 
 假设某些操作需要循环迭代执行，该语句能够为这些循环内的操作开启流水线，通过设置`num_stages`的不同取值（`num_stages`是一个小于`range-1`的正整数）来控制重叠度。
 
-###### 4.1.2.2.2 使用场景
+###### 4.1.4.2.3 使用场景
 
 - **Intra-core case**
 
@@ -1089,13 +1089,13 @@ Cube和Vector的操作在t1~t3之间存在相互重叠。
 - 核间流水线与核内流水线不能同时开启。
 - 使用核间流水线时，必须开启自动CV分离和自动CV间同步插入功能：`"tl.ascend_auto_cv_combine": True, "tl.ascend_auto_cross_core_sync": True`
 
-##### 4.1.2.3 T.Persistent
+##### 4.1.4.3 T.Persistent
 
-###### 4.1.2.3.1 功能介绍
+###### 4.1.4.3.1 功能介绍
 
 通常情况下，大的数据会被切分成多个小的块来处理，但对这些数据块的调度处理不同可能带来的性能也会不同。例如，如果这些数据块是分批次来调度，即一组相邻的数据块交由相同的AI core来处理，这样让加载的数据更容易命中缓存；相反，如果随机调度，则会导致缓存数据的反复换入换出，从而导致cache带宽的浪费。T.Persistent原语就是通过对数据块在AI core间的调度策略进行了优化处理，从而对缓存更友好。
 
-4.1.2.3.2 使用举例
+###### 4.1.4.3.2 使用举例
 
 ```
 with T.Kernel(m_num * n_num, is_npu=True) as (cid, _):
@@ -1113,6 +1113,43 @@ with T.Kernel(m_num * n_num, is_npu=True) as (cid, _):
             T.copy(C_L0, C[bx * block_M, by * block_N])
      ...
 ```
+ 
+#### 4.1.5 CV分离
+
+##### 4.1.5.1 Vid消除与CV自动配比
+
+参数`threads`必须被设置（只允许设置1或2），当设置了`threads`参数返回值只能包含cid，不能有vid：
+
+```python
+with T.Kernel(m_num * n_num, threads=2, is_npu=True) as (cid):
+```
+
+因此ub申请核传递不在需要考虑内核排布，前端的写法如下：
+
+```python
+# UB申请原始形式
+c_ub = T.alloc_shared((block_M // VEC_NUM, block_N), dtype) 
+# vid消除后的新形式
+c_ub = T.alloc_shared((block_M, block_N), dtype)
+# UB拷贝原始形式
+T.copy(c_ub, C[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
+# vid消除后的新形式
+T.copy(c_ub, C[bx * block_M, by * block_N])
+# for循环原始形式
+for h_i, j in T.Parallel(v_block // VEC_NUM, BI):
+    acc_s_ub[h_i, j] = acc_s_ub[h_i, j] - m_i[h_i]
+# vid消除后的新形式
+for h_i, j in T.Parallel(v_block, BI):
+    acc_s_ub[h_i, j] = acc_s_ub[h_i, j] - m_i[h_i]
+
+```
+
+这里有些例子:
+- [MatmulAddDeveloper](./examples/developer_mode/matmul_add_developer.py)
+- [SparseFlashAttnDeveloperVidReduce](./examples/developer_mode/sparse_flash_attn_developer_vid_reduce.py)
+
+更多的细节，可以参考:
+- [vid_reduction_and_auto_cv_ratio.md](./docs/tutorials/vid_reduction_and_auto_cv_ratio.md)
 
 ### 4.2 Expert模式
 
