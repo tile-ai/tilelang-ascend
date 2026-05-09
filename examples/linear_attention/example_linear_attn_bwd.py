@@ -327,13 +327,14 @@ def ref_bwd_program(q: Tensor, k: Tensor, v: Tensor, dO: Tensor, scale: Optional
         scale = float(q_cpu.shape[-1] ** -0.5)
     chunk_size = 64
     B, S, H, D = q_cpu.shape
+    DV = v_cpu.shape[-1]
     NT = S // chunk_size
     q_s = q_cpu * scale
     # q: [B, S, H, D]. Permute H to before S, then reshape S into NT*C
-    q_chunks = q_s.permute(0, 2, 1, 3).reshape(B, H, NT, chunk_size, D)  # [B,H,NT,C,D]
-    k_chunks = k_cpu.permute(0, 2, 1, 3).reshape(B, H, NT, chunk_size, D)  # [B,H,NT,C,D]
-    v_chunks = v_cpu.permute(0, 2, 1, 3).reshape(B, H, NT, chunk_size, D)  # [B,H,NT,C,D]
-    kv = k_chunks.transpose(-1, -2) @ v_chunks  # [B, H, NT, D, D]
+    q_chunks = q_s.permute(0, 2, 1, 3).reshape(B, H, NT, chunk_size, D)  # [B,H,NT,C,DK]
+    k_chunks = k_cpu.permute(0, 2, 1, 3).reshape(B, H, NT, chunk_size, D)  # [B,H,NT,C,DK]
+    v_chunks = v_cpu.permute(0, 2, 1, 3).reshape(B, H, NT, chunk_size, DV)  # [B,H,NT,C,DV]
+    kv = k_chunks.transpose(-1, -2) @ v_chunks  # [B, H, NT, DK, DV]
     kv = kv.cumsum(2)
     kv_shifted = torch.cat([torch.zeros_like(kv[:, :, :1]), kv[:, :, :-1]], dim=2)
     inter = q_chunks @ kv_shifted  # [B, H, NT, C, D]
