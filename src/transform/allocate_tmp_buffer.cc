@@ -172,9 +172,7 @@ private:
           }
         }
       }
-    } else if ("pto" == target_ &&
-               (op->op.same_as(tl::ascend_bitwise_xor()) ||
-                op->op.same_as(tl::ascend_merge_sort())) &&
+    } else if ("pto" == target_ && op->op.same_as(tl::ascend_bitwise_xor()) &&
                tmp_bufs_.size() > 0) {
       const CallNode *src_access_ptr = Downcast<Call>(op->args[1]).get();
       DataType dtype = src_access_ptr->args[0].as<CallNode>()->dtype;
@@ -184,6 +182,20 @@ private:
         for (const Buffer &xor_tmp_buffer : tmp_bufs_) {
           if (xor_tmp_buffer.get()->dtype == dtype) {
             tmp_buffer = xor_tmp_buffer;
+            break;
+          }
+        }
+      }
+    } else if ("pto" == target_ && op->op.same_as(tl::ascend_merge_sort()) &&
+               tmp_bufs_.size() > 0) {
+      const CallNode *dst_access_ptr = Downcast<Call>(op->args[2]).get();
+      DataType dtype = dst_access_ptr->args[0].as<CallNode>()->dtype;
+      if (dtype == DataType::UInt(8)) {
+        tmp_buffer = tmp_buf_;
+      } else {
+        for (const Buffer &merge_sort_tmp_buffer : tmp_bufs_) {
+          if (merge_sort_tmp_buffer.get()->dtype == dtype) {
+            tmp_buffer = merge_sort_tmp_buffer;
             break;
           }
         }
@@ -862,6 +874,22 @@ private:
           int64_t tmp_shape_size =
               Downcast<IntImm>(src_access_ptr->args[3])->value *
               src_buffer_node->dtype.bytes() / 2;
+          Array<PrimExpr> tmp_shape;
+          shape = {
+              IntImm(DataType::Int(32), tmp_shape_size),
+          };
+          shape_size = tmp_shape_size;
+        }
+      } else if (call->op.same_as(tl::ascend_merge_sort())) {
+        const CallNode *dst_access_ptr = Downcast<Call>(call->args[2]).get();
+        std::string dst_buffer_name =
+            dst_access_ptr->args[1].as<VarNode>()->name_hint;
+        const BufferNode *dst_buffer_node =
+            GetBufferNodeByName_(alloc_buffers, dst_buffer_name);
+        DataType dtype = dst_buffer_node->dtype;
+        if (dtype == DataType::UInt(8)) {
+          int64_t tmp_shape_size =
+              Downcast<IntImm>(dst_access_ptr->args[3])->value * 4;
           Array<PrimExpr> tmp_shape;
           shape = {
               IntImm(DataType::Int(32), tmp_shape_size),
