@@ -178,7 +178,7 @@ private:
                (op->op.same_as(tl::ascend_bitwise_xor()) ||
                 op->op.same_as(tl::ascend_sort()) ||
                 op->op.same_as(tl::ascend_topk())) &&
-                tmp_bufs_.size() > 0) {
+               tmp_bufs_.size() > 0) {
       const CallNode *src_access_ptr = Downcast<Call>(op->args[1]).get();
       DataType dtype = src_access_ptr->args[0].as<CallNode>()->dtype;
       if (dtype == DataType::UInt(8)) {
