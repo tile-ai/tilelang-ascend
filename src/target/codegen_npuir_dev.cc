@@ -2186,12 +2186,15 @@ void CodeGenTileLangNPUIRDEV::VselectCodegen(const CallNode *op) {
   mlir::Value src1_data_name = GetVarValue(npuirop.src1);
   mlir::Value dst_data_name = GetVarValue(npuirop.dst);
 
-  if (!dst_data_name.getType().isa<mlir::TensorType>()) {
+  auto src0Ty = src0_data_name.getType().dyn_cast<mlir::TensorType>();
+  auto src1Ty = src1_data_name.getType().dyn_cast<mlir::TensorType>();
+  auto dstTy = dst_data_name.getType().dyn_cast<mlir::TensorType>();
+
+  if (!src0Ty || !src1Ty || !dstTy) {
     return;
   }
 
-  auto srcTensorTy = src0_data_name.getType().cast<mlir::TensorType>();
-  auto srcShape = srcTensorTy.getShape();
+  auto srcShape = src0Ty.getShape();
 
   mlir::Value insertBase = NeedGenInsertSlice(npuirop.dst, npuirop.dst_range, src0_data_name);
   bool needInsertSlice = (insertBase != GetVarValue(npuirop.dst));
@@ -2214,6 +2217,51 @@ void CodeGenTileLangNPUIRDEV::VselectCodegen(const CallNode *op) {
   mlir::Value result = needInsertSlice
     ? ReshapeCastAndInsertSlice(selOutput, dst_data_name, npuirop.dst_range)
     : selOutput;
+
+  SetVarValue(npuirop.dst, result);
+}
+
+// VselectCodegen for A5
+void CodeGenTileLangNPUIRDEV::VselectCodegenA5(const CallNode *op) {
+
+  tvm::tl::NpuirSelect npuirop(op->args, this->vmap);
+
+  mlir::Value cond_data_name = GetVarValue(npuirop.cond);
+  mlir::Value src0_data_name = GetVarValue(npuirop.src0);
+  mlir::Value src1_data_name = GetVarValue(npuirop.src1);
+  mlir::Value dst_data_name = GetVarValue(npuirop.dst);
+
+  auto condTy = cond_data_name.getType().dyn_cast<mlir::TensorType>();
+  auto src0Ty = src0_data_name.getType().dyn_cast<mlir::TensorType>();
+  auto src1Ty = src1_data_name.getType().dyn_cast<mlir::TensorType>();
+  auto dstTy = dst_data_name.getType().dyn_cast<mlir::TensorType>();
+
+  if (!condTy || !src0Ty || !src1Ty || !dstTy) {
+    return;
+  }
+
+  mlir::Value insertBase = NeedGenInsertSlice(npuirop.dst, npuirop.dst_range, src0_data_name);
+  bool needInsertSlice = (insertBase != GetVarValue(npuirop.dst));
+
+  auto targetShapeVec = insertBase.getType().cast<mlir::ShapedType>().getShape().vec();
+
+  auto condDims = getBroadcastDim(npuirop.cond->shape, targetShapeVec);
+  auto src0Dims = getBroadcastDim(npuirop.src0->shape, targetShapeVec);
+  auto src1Dims = getBroadcastDim(npuirop.src1->shape, targetShapeVec);
+  
+  auto loc = builder.getUnknownLoc();
+  auto targetTy = insertBase.getType().cast<mlir::ShapedType>();
+  auto condEmpty = builder.create<mlir::tensor::EmptyOp>(loc, targetTy.getShape(), builder.getI1Type());
+
+  mlir::Value cond_b = broadcast(cond_data_name, condEmpty, builder.getDenseI64ArrayAttr(condDims), builder);
+  mlir::Value src0_b = broadcast(src0_data_name, insertBase, builder.getDenseI64ArrayAttr(src0Dims), builder);
+  mlir::Value src1_b = broadcast(src1_data_name, insertBase, builder.getDenseI64ArrayAttr(src1Dims), builder);
+
+  mlir::Value selOp = builder.create<mlir::arith::SelectOp>(loc, cond_b, src0_b, src1_b);
+
+  mlir::Value result = needInsertSlice
+    ? ReshapeCastAndInsertSlice(selOp, dst_data_name, npuirop.dst_range)
+    : selOp;
 
   SetVarValue(npuirop.dst, result);
 }
@@ -2255,12 +2303,8 @@ void CodeGenTileLangNPUIRDEV::VbrcCodegen(const CallNode *op) {
     auto outBufferShape = outTensor.getType().getShape();
     auto broadcastDim = getBroadcastDim(inBufferShape, outBufferShape);
     auto broadcastDimAttr = builder.getDenseI64ArrayAttr(broadcastDim);
-    mlir::Type dst_type = dst.getType();
-    mlir::TypeRange result_tensors(&dst_type, 1);
-    newCastOp = builder
-                    .create<mlir::linalg::BroadcastOp>(
-                        builder.getUnknownLoc(), src, dst, broadcastDimAttr)
-                    ->getResult(0);
+
+    newCastOp = broadcast(src, dst, broadcastDimAttr, builder);
   }
   SetVarValue(npuirop.dst, newCastOp);
 }
@@ -2987,6 +3031,29 @@ Value CodeGenTileLangNPUIRDEV::broadcastOrTranspose(Value input, Value output,
   return result;
 }
 
+mlir::arith::CmpFPredicate GetFPredicate(std::string mode) {
+    if (mode == "eq") return mlir::arith::CmpFPredicate::OEQ;
+    if (mode == "ne") return mlir::arith::CmpFPredicate::ONE;
+    if (mode == "lt") return mlir::arith::CmpFPredicate::OLT;
+    if (mode == "le") return mlir::arith::CmpFPredicate::OLE;
+    if (mode == "gt") return mlir::arith::CmpFPredicate::OGT;
+    if (mode == "ge") return mlir::arith::CmpFPredicate::OGE;
+    LOG(FATAL) << "Unsupported comparison mode: " << mode;
+    return mlir::arith::CmpFPredicate::OEQ;
+}
+
+mlir::arith::CmpIPredicate GetIPredicate(std::string mode, mlir::Type srcType) {
+    bool isUnsigned = srcType.isUnsignedInteger();
+    if (mode == "eq") return mlir::arith::CmpIPredicate::eq;
+    if (mode == "ne") return mlir::arith::CmpIPredicate::ne;
+    if (mode == "lt") return isUnsigned ? mlir::arith::CmpIPredicate::ult : mlir::arith::CmpIPredicate::slt;
+    if (mode == "le") return isUnsigned ? mlir::arith::CmpIPredicate::ule : mlir::arith::CmpIPredicate::sle;
+    if (mode == "gt") return isUnsigned ? mlir::arith::CmpIPredicate::ugt : mlir::arith::CmpIPredicate::sgt;
+    if (mode == "ge") return isUnsigned ? mlir::arith::CmpIPredicate::uge : mlir::arith::CmpIPredicate::sge;
+    LOG(FATAL) << "Unsupported comparison mode: " << mode;
+    return mlir::arith::CmpIPredicate::eq;
+}
+
 /// Generate hivm.hir.vadd for tl.npuir_add.
 /// Generate hivm.hir.vcmp for tl.npuir_cmp.
 /// Generate hivm.hir.vdiv for tl.npuir_div.
@@ -3063,10 +3130,6 @@ void CodeGenTileLangNPUIRDEV::CreateHIVMBinaryVectorOp(const CallNode *op) {
   tvm::tl::RegionOp region_dst_tmp(region_node_dst->args, vmap);
   Array<Range> dst_range = region_dst_tmp.GetRanges();
 
-
-  auto srcTensorTy = src0.getType().cast<mlir::TensorType>();
-  auto srcShape = srcTensorTy.getShape();
-
   mlir::Value insertBase = NeedGenInsertSlice(region_dst_tmp.GetBuffer(), dst_range, src0);
   bool needInsertSlice = (insertBase != GetVarValue(region_node_dst));
 
@@ -3127,56 +3190,78 @@ void CodeGenTileLangNPUIRDEV::CreateHIVMBinaryVectorOp(const CallNode *op) {
     // type in npuir. We need to find a better way to dispatch different int
     // types to the correct op
     mlir::Type srcType = getElementTypeOrSelf(src0.getType());
-    do {
-      if constexpr (!std::is_void_v<T>)
-        // If only T is provided, always build T
-        // If not only T is provided, T will be float op, check if dst element
-        // type is float, if yes, build T
-        if ((std::is_void_v<U> && std::is_void_v<V>) ||
-            isa<FloatType>(srcType)) {
-          newOpValue =
-              builder
-                  .create<typename T::Op>(
-                      loc, insertBase.getType(), ValueRange{src0, src1},
-                      ValueRange{insertBase},
-                      ArrayRef{builder.getNamedAttr(
-                          "fun", builder.getAttr<typename T::FnAttr>(T::Fn))})
-                  .getResult(0);
-          break;
-        }
-      if constexpr (!std::is_void_v<U>)
-        // If only T, U are provided, U will be int op, check if dst element
-        // type is int, if yes, build U If T, U, V are provided, U will be int
-        // signed op, check if dst element type is int unsigned (or signless),
-        // if yes, build U
-        if (auto maybeIntType = dyn_cast<IntegerType>(srcType);
-            maybeIntType && (std::is_void_v<V> || !maybeIntType.isUnsigned())) {
-          newOpValue =
-              builder
-                  .create<typename U::Op>(
-                      loc, insertBase.getType(), ValueRange{src0, src1},
-                      ValueRange{insertBase},
-                      ArrayRef{builder.getNamedAttr(
-                          "fun", builder.getAttr<typename U::FnAttr>(U::Fn))})
-                  .getResult(0);
-          break;
-        }
-      if constexpr (!std::is_void_v<V>)
-        // V will be int unsigned op, check if dst element type is int unsigned
-        // (or signless), if yes, build V
-        if (!srcType.isSignedInteger()) {
-          newOpValue =
-              builder
-                  .create<typename V::Op>(
-                      loc, insertBase.getType(), ValueRange{src0, src1},
-                      ValueRange{insertBase},
-                      ArrayRef{builder.getNamedAttr(
-                          "fun", builder.getAttr<typename V::FnAttr>(V::Fn))})
-                  .getResult(0);
-          break;
-        }
-      assert(false && "Unsupported element type for binary op");
-    } while (false);
+    
+    // CmpOp for A5
+    if constexpr (std::is_same_v<T, mlir::arith::CmpFOp> || std::is_same_v<U, mlir::arith::CmpIOp>) {
+      std::string mode = op->args[3].as<tvm::tir::StringImmNode>()->value;
+      auto dstType = insertBase.getType().cast<mlir::ShapedType>();
+
+      mlir::Value cmpOp;
+      if (srcType.isa<mlir::FloatType>()) {
+          cmpOp = builder.create<mlir::arith::CmpFOp>(loc, GetFPredicate(mode), src0, src1);
+      } else {
+          cmpOp = builder.create<mlir::arith::CmpIOp>(loc, GetIPredicate(mode, srcType), src0, src1);
+      }
+      if (cmpOp.getType() == dstType) {
+        newOpValue = cmpOp;
+      } else {
+          if (dstType.getElementType().isa<mlir::FloatType>())
+              newOpValue = builder.create<mlir::arith::UIToFPOp>(loc, dstType, cmpOp);
+          else
+              newOpValue = builder.create<mlir::arith::ExtUIOp>(loc, dstType, cmpOp);
+      }
+    } else {
+      do {
+        if constexpr (!std::is_void_v<T>)
+          // If only T is provided, always build T
+          // If not only T is provided, T will be float op, check if dst element
+          // type is float, if yes, build T
+          if ((std::is_void_v<U> && std::is_void_v<V>) ||
+              isa<FloatType>(srcType)) {
+            newOpValue =
+                builder
+                    .create<typename T::Op>(
+                        loc, insertBase.getType(), ValueRange{src0, src1},
+                        ValueRange{insertBase},
+                        ArrayRef{builder.getNamedAttr(
+                            "fun", builder.getAttr<typename T::FnAttr>(T::Fn))})
+                    .getResult(0);
+            break;
+          }
+        if constexpr (!std::is_void_v<U>)
+          // If only T, U are provided, U will be int op, check if dst element
+          // type is int, if yes, build U If T, U, V are provided, U will be int
+          // signed op, check if dst element type is int unsigned (or signless),
+          // if yes, build U
+          if (auto maybeIntType = dyn_cast<IntegerType>(srcType);
+              maybeIntType && (std::is_void_v<V> || !maybeIntType.isUnsigned())) {
+            newOpValue =
+                builder
+                    .create<typename U::Op>(
+                        loc, insertBase.getType(), ValueRange{src0, src1},
+                        ValueRange{insertBase},
+                        ArrayRef{builder.getNamedAttr(
+                            "fun", builder.getAttr<typename U::FnAttr>(U::Fn))})
+                    .getResult(0);
+            break;
+          }
+        if constexpr (!std::is_void_v<V>)
+          // V will be int unsigned op, check if dst element type is int unsigned
+          // (or signless), if yes, build V
+          if (!srcType.isSignedInteger()) {
+            newOpValue =
+                builder
+                    .create<typename V::Op>(
+                        loc, insertBase.getType(), ValueRange{src0, src1},
+                        ValueRange{insertBase},
+                        ArrayRef{builder.getNamedAttr(
+                            "fun", builder.getAttr<typename V::FnAttr>(V::Fn))})
+                    .getResult(0);
+            break;
+          }
+        assert(false && "Unsupported element type for binary op");
+      } while (false);
+    }
   }
 
   mlir::Value result = needInsertSlice
@@ -3540,9 +3625,9 @@ mlir::Value CodeGenTileLangNPUIRDEV::VisitExpr_(const CallNode *op) {
     UnaryVecOpCodegen<tvm::tl::NpuirNot, ElemwiseOp<hfusion::UnaryFn::vnot>>(
         op);
   } else if (op->op.same_as(Op::Get("tl.npuir_select"))) {
-    VselectCodegen(op);
+    VselectCodegenA5(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_cmp"))) {
-    CreateHIVMBinaryVectorOp<mlir::hivm::VCmpOp>(op);
+    CreateHIVMBinaryVectorOp<mlir::arith::CmpFOp, mlir::arith::CmpIOp>(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_load_nd2nz"))) {
     Nd2NzCodegen(op);
   } else if (op->op.same_as(Op::Get("tl.npuir_store_nz2nd"))) {
