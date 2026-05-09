@@ -110,7 +110,7 @@ def main(custom_args=None):
     torch.manual_seed(0)
 
     check_case(N, K, 128, 128)
-    check_case(N, K, 128, 128, dtype="float32")
+    check_case(N, K, 64, 64, dtype="float32")
     check_case(64, 64, 16, 16)
 
     print("GEMV example passed!")

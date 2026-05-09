@@ -1187,6 +1187,9 @@ void CodeGenTileLangAscendPto::CopyL1ToL0Codegen(const CallNode *call,
   ShapeInfo src_shape_info = GetSliceInfo(src_info.access_ptr);
   ShapeInfo dst_shape_info = GetSliceInfo(dst_info.access_ptr);
 
+  std::string op_name = Downcast<StringImm>(call->args[0])->value;
+  bool transpose = (op_name.find(", true>") != std::string::npos);
+
   PrimExpr index_row = floordiv(src_info.offset, src_info.shape[1]);
   PrimExpr index_col = floormod(src_info.offset, src_info.shape[1]);
 
@@ -1196,6 +1199,20 @@ void CodeGenTileLangAscendPto::CopyL1ToL0Codegen(const CallNode *call,
     std::string src_temp_name = GetTempVarName(src_shape_info.ub_name);
     CreateCubeVariable(src_temp_name, src_shape_info,
                        kAscendPtoScope + "TileMatL1");
+    src_name = src_temp_name;
+  }
+  if (transpose) {
+    std::string src_temp_name = GetTempVarName(src_shape_info.ub_name + "_zn");
+    this->PrintIndent();
+    this->stream << kAscendPtoScope << "TileMatL1ZN" << "<"
+                 << src_shape_info.type << ", " << src_shape_info.slice_col
+                 << ", " << src_shape_info.slice_row << ", "
+                 << src_shape_info.slice_col << ", " << src_shape_info.slice_row
+                 << "> " << src_temp_name << ";\n";
+    this->PrintIndent();
+    this->stream << "TASSIGN(" << src_temp_name << ", "
+                 << src_shape_info.first_addr << " + " << src_shape_info.offset
+                 << " * " << GetTypeLen(src_shape_info.type) << ");\n";
     src_name = src_temp_name;
   }
 
@@ -1209,8 +1226,15 @@ void CodeGenTileLangAscendPto::CopyL1ToL0Codegen(const CallNode *call,
   this->PrintIndent();
   this->stream << kAscendPtoScope << api_name << "<" << src_shape_info.type
                << ", " << dst_shape_info.slice_row << ", "
-               << dst_shape_info.slice_col << ", " << src_shape_info.slice_row
-               << ", " << src_shape_info.slice_col << ">";
+               << dst_shape_info.slice_col;
+  if (transpose) {
+    this->stream << ", " << src_shape_info.slice_col << ", "
+                 << src_shape_info.slice_row << ", true";
+  } else {
+    this->stream << ", " << src_shape_info.slice_row << ", "
+                 << src_shape_info.slice_col;
+  }
+  this->stream << ">";
 
   this->stream << "(" << dst_name << ", " << src_name << ", "
                << PrintExpr(index_row) << ", " << PrintExpr(index_col)

@@ -162,9 +162,69 @@ python examples/{op}/example_{op}.py
 2. **运行错误** → 检查索引越界、同步缺失
 3. **精度错误** → 检查计算公式、数据类型、容差设置
 
+### 步骤 5：校验原有实现正确性
+
+**生成代码前必须先用默认参数跑通原有实现**，确认 baseline 正确后再扩展新功能/测试。
+
+```bash
+python examples/{op}/example_{op}.py  # 确认默认参数通过
+```
+
+### 步骤 6：设计测试用例的覆盖原则
+
+测试用例必须覆盖以下 4 类场景：
+
+| 类别 | 场景 | 说明 |
+|------|------|------|
+| 完美对齐 | M/N/K 均为 block 大小整数倍 | 验证零 padding 路径 |
+| 单维 padding | 仅 M 或 N 或 K 不足 block 大小时 | 验证单边 padding+裁剪 |
+| 全维 padding | M/N/K 同时需要 padding | 验证组合 padding |
+| 多 block | 维度数倍于 block 大小 | 验证多 block 并行正确性 |
+
+### 步骤 7：函数解耦全局变量
+
+为实现多场景顺序测试，算子函数应**从 tensor shape 自推导所有维度参数**，而非依赖模块级全局变量：
+
+```python
+# ✅ 推荐：从 tensor 自推导
+def conv_im2col_gemm(input_tensor, kernel, stride=1, padding=0):
+    B, C, H, W = input_tensor.shape
+    OC, C_k, KH, KW = kernel.shape
+
+# ❌ 避免：依赖全局变量
+def conv_im2col_gemm(...):
+    C = globals()['C']  # 多测试场景会互相污染
+```
+
 ---
 
 ## 4. 关键编码规范
+
+### GEMM 算子：非整除维度处理
+
+GEMM kernel 内部使用 `M // block_M` 和 `N // block_N`，要求 M、N 为 block 大小整数倍。非整除时需在调用的 Python 层 zero-padding 后裁剪：
+
+```python
+# padding
+M_pad = ((M + block_M - 1) // block_M) * block_M
+N_pad = ((N + block_N - 1) // block_N) * block_N
+K_pad = ((K + block_K - 1) // block_K) * block_K
+
+if M_pad > M or K_pad > K:
+    kernel_padded = torch.zeros(M_pad, K_pad, ...)
+    kernel_padded[:M, :K] = kernel_flat
+
+# GEMM 后裁剪
+output = output[:M, :N]
+```
+
+**关键约束**: 不 padding 时 `M // block_M = 0`（当 M < block_M）会导致零 block 启动（输出全零）或除零编译崩溃。
+
+### Autotune 算子: supply_prog 与 get_configs 接口约定
+
+- **`supply_prog(params)`**: `params` 仅含输入 tensor 描述符（不含输出 param）。从 `params[0].shape` / `params[1].shape` 提取维度，不可访问 `params[2]`。
+- **`get_configs` 作为 callable**: autotuner 调用形式为 `get_configs(key_args_tuple, key_kwargs_tuple)`，须签名为 `get_configs(key_args, _key_kwargs=None)`，从 `key_args` 提取 M/N/K。
+- **config 过滤**: 必须在 `get_configs` 中过滤 `block > dimension` 的无效组合（避免除零编译错误），及 `block_M * block_N * sizeof(accum) > L0C_capacity` 的组合（避免 L0C 溢出 segfault）。
 
 ### Buffer 分配
 
