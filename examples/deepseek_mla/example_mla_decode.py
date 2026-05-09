@@ -39,7 +39,7 @@ def flashattn(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, block_N, block_
         workspace_1: T.Tensor([block_num, VALID_BLOCK_H, block_N], accum_dtype),
         workspace_2: T.Tensor([block_num, VALID_BLOCK_H, dim], accum_dtype),
     ):
-        with T.Kernel(batch * (heads // VALID_BLOCK_H), threads=2, is_npu=True) as (cid, vid):
+        with T.Kernel(batch * (heads // VALID_BLOCK_H), threads=2, is_npu=True) as (cid):
             bid = cid // (heads // VALID_BLOCK_H)
             hid = cid % (heads // VALID_BLOCK_H)
 
@@ -61,7 +61,6 @@ def flashattn(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, block_N, block_
             scores_scale = T.alloc_shared([VALID_BLOCK_H], accum_dtype)
             scores_sum = T.alloc_shared([VALID_BLOCK_H], accum_dtype)
             logsum = T.alloc_shared([VALID_BLOCK_H], accum_dtype)
-            logsum_2d = T.alloc_shared([VALID_BLOCK_H, dim], accum_dtype)
 
             cur_kv_head = hid // (heads // kv_head_num)
 
@@ -117,8 +116,8 @@ def flashattn(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, block_N, block_
                 T.copy(workspace_2[cid, :, :], acc_o_ub)
                 T.tile.add(acc_o, acc_o, acc_o_ub)
 
-            T.tile.broadcast(logsum_2d, logsum)
-            T.tile.div(acc_o, acc_o, logsum_2d)
+            for h_i in range(VALID_BLOCK_H):
+                T.tile.div(acc_o[h_i, :], acc_o[h_i, :], logsum[h_i])
 
             T.copy(acc_o, acc_o_half)
             T.copy(acc_o_half, Output[bid, hid * VALID_BLOCK_H : (hid + 1) * VALID_BLOCK_H, :])
@@ -153,7 +152,7 @@ def main(
     pe_dim=64,
 ):
     BLOCK_N = 64
-    BLOCK_H = min(64, heads // kv_heads)
+    BLOCK_H = min(32, heads // kv_heads)
     softmax_scale = (dim + pe_dim) ** -0.5
 
     kernel = flashattn(batch, heads, kv_heads, kv_ctx, dim, pe_dim, BLOCK_N, BLOCK_H, softmax_scale)
@@ -164,8 +163,16 @@ def main(
     k_pe = torch.randn(batch, kv_ctx, kv_heads, pe_dim, dtype=torch.float16)
 
     output = kernel(q, q_pe, kv, k_pe)
+    print(f"Kernel output shape: {output.shape}")
+    print(f"Kernel output stats: min={output.min()}, max={output.max()}, mean={output.mean()}")
 
     ref_output = ref_program(q.cpu(), q_pe.cpu(), kv.cpu(), k_pe.cpu())
+    print(f"Ref output shape: {ref_output.shape}")
+    print(f"Ref output stats: min={ref_output.min()}, max={ref_output.max()}, mean={ref_output.mean()}")
+    
+    diff = (output.cpu() - ref_output).abs()
+    print(f"Max diff: {diff.max()}, Mean diff: {diff.mean()}")
+    
     torch.testing.assert_close(output.cpu(), ref_output, rtol=1e-2, atol=1e-2)
 
     print("Test passed!")
