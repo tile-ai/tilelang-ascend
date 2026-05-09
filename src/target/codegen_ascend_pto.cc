@@ -1012,12 +1012,16 @@ Array<PrimExpr> ComputeStrides(const Array<PrimExpr> &shape, PrimExpr srcN) {
 }
 
 std::tuple<bool, std::string, std::string>
-FormatStrides(const Array<PrimExpr> &shape, const Array<PrimExpr> &strides) {
+FormatStrides(CodeGenTileLangAscendPto *codegen, const Array<PrimExpr> &shape,
+              const Array<PrimExpr> &strides) {
   bool is_dynamic = false;
   std::stringstream stride_ss;
+  std::stringstream ctor_args_ss;
+  bool first_ctor_arg = true;
 
   // =====================================================================
-  // 1) Generate stride string: take last 5 strides (contiguous memory layout)
+  // Generate stride template and constructor arguments from stride values
+  // For each stride position: if dynamic (-1), also output as ctor argument
   // =====================================================================
   size_t total_strides = strides.size();
   size_t start_idx = total_strides > 5 ? total_strides - 5 : 0;
@@ -1028,34 +1032,15 @@ FormatStrides(const Array<PrimExpr> &shape, const Array<PrimExpr> &strides) {
     } else {
       stride_ss << "-1"; // Has PrimExpr variable, set to -1
       is_dynamic = true;
+      // Output the stride expression as constructor argument
+      if (!first_ctor_arg) {
+        ctor_args_ss << ", ";
+      }
+      ctor_args_ss << codegen->PrintExpr(strides[i]);
+      first_ctor_arg = false;
     }
     if (i + 1 < total_strides) {
       stride_ss << ", ";
-    }
-  }
-
-  // =====================================================================
-  // 2) Generate bracket parameter string: traverse shape to decide
-  // =====================================================================
-  std::stringstream ctor_args_ss;
-  bool first = true;
-
-  // Core insight: bottom 5 strides only depend on last 4 dimensions of shape!
-  // (e.g., for 7D tensor, first 3 dimensions don't participate in stride
-  // computation) Therefore, only dynamic variables in these last dimensions
-  // need template parameters
-  int shape_size = static_cast<int>(shape.size());
-  int shape_start = std::max(0, shape_size - 4);
-
-  for (int i = shape_start; i < shape_size; ++i) {
-    if (!shape[i]->IsInstance<IntImmNode>()) {
-      if (!first) {
-        ctor_args_ss << ", ";
-      }
-      ctor_args_ss << shape[i];
-      first = false;
-      is_dynamic =
-          true; // Mark as dynamic if any dynamic shapes in relevant range
     }
   }
 
@@ -1113,7 +1098,7 @@ void CodeGenTileLangAscendPto::GMCopyCall(const CallNode *call,
 
   auto strides = ComputeStrides(gm_info.shape, call->args[3]);
   auto [is_dynamic, stride_tmpl, stride_param] =
-      FormatStrides(gm_info.shape, strides);
+      FormatStrides(this, gm_info.shape, strides);
   if (is_dynamic) {
     op_name += "_dynamic";
   }
