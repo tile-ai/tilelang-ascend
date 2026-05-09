@@ -858,6 +858,10 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op,
     PowCodegen(op);
   } else if (op->op.same_as(tl::ascend_sort32())) {
     Sort32Codegen(op, "TSORT32");
+  } else if (op->op.same_as(tl::ascend_sort())) {
+    SortCodegen(op);
+  } else if (op->op.same_as(tl::ascend_topk())) {
+    TopKCodegen(op);
   } else if (op->op.same_as(tl::ascend_merge_sort())) {
     MergeSortCodegen(op, "TMRGSORT");
   } else if (op->op.same_as(tl::ascend_transpose())) {
@@ -1597,6 +1601,112 @@ void CodeGenTileLangAscendPto::MergeSortCodegen(const CallNode *op,
     this->stream << ", " << src_name;
   }
   this->stream << ");\n";
+}
+
+void CodeGenTileLangAscendPto::SortCodegen(const CallNode *op) {
+  // After tmp injection, args layout:
+  //   [0] func_name (e.g. "Sort<float>")
+  //   [1] dst access_ptr   -- 2*alignedCount user_T elements
+  //   [2] src access_ptr   -- alignedCount user_T elements (may be mutated)
+  //   [3] tmp access_ptr   -- internal workspace allocated by
+  //   allocate_tmp_buffer [4] repeatTimes (constant) [5] actual_num (constant)
+  ICHECK(op->args.size() == 6)
+      << "ascend_sort expects 6 args after tmp injection, got "
+      << op->args.size();
+
+  auto dst_call = op->args[1].as<CallNode>();
+  auto src_call = op->args[2].as<CallNode>();
+  auto tmp_call = op->args[3].as<CallNode>();
+  ICHECK(dst_call && dst_call->op.same_as(builtin::tvm_access_ptr()));
+  ICHECK(src_call && src_call->op.same_as(builtin::tvm_access_ptr()));
+  ICHECK(tmp_call && tmp_call->op.same_as(builtin::tvm_access_ptr()));
+
+  int32_t repeat_times = Downcast<IntImm>(op->args[4])->value;
+  int32_t actual_num = Downcast<IntImm>(op->args[5])->value;
+
+  EmitSortAlgorithm(dst_call, src_call, tmp_call, repeat_times, actual_num,
+                    /*top_k=*/-1);
+}
+
+void CodeGenTileLangAscendPto::TopKCodegen(const CallNode *op) {
+  // After tmp injection, args layout:
+  //   [0] func_name (e.g. "TopK<float>")
+  //   [1] dst access_ptr   -- 2*K user_T elements (UB-rounded)
+  //   [2] src access_ptr   -- alignedCount user_T elements
+  //   [3] tmp access_ptr   -- internal workspace
+  //   [4] K (constant)
+  //   [5] repeatTimes (constant)
+  //   [6] actual_num (constant)
+  ICHECK(op->args.size() == 7)
+      << "ascend_topk expects 7 args after tmp injection, got "
+      << op->args.size();
+
+  auto dst_call = op->args[1].as<CallNode>();
+  auto src_call = op->args[2].as<CallNode>();
+  auto tmp_call = op->args[3].as<CallNode>();
+  ICHECK(dst_call && dst_call->op.same_as(builtin::tvm_access_ptr()));
+  ICHECK(src_call && src_call->op.same_as(builtin::tvm_access_ptr()));
+  ICHECK(tmp_call && tmp_call->op.same_as(builtin::tvm_access_ptr()));
+
+  int32_t k = Downcast<IntImm>(op->args[4])->value;
+  int32_t repeat_times = Downcast<IntImm>(op->args[5])->value;
+  int32_t actual_num = Downcast<IntImm>(op->args[6])->value;
+  ICHECK(k > 0) << "TopK requires K > 0, got " << k;
+
+  EmitSortAlgorithm(dst_call, src_call, tmp_call, repeat_times, actual_num,
+                    /*top_k=*/k);
+}
+
+// =============================================================================
+// Sort/TopK pipeline: thin codegen wrapper
+// =============================================================================
+//
+// The full algorithm (pad, sort32, merge tree, finalize) lives in
+// pto/common.h as the device template tl::ascend_pto::Sort. This codegen
+// just forwards parsed parameters and emits a single template call.
+
+void CodeGenTileLangAscendPto::EmitSortAlgorithm(const CallNode *dst_call,
+                                                 const CallNode *src_call,
+                                                 const CallNode *tmp_call,
+                                                 int32_t repeat_times,
+                                                 int32_t actual_num,
+                                                 int32_t top_k) {
+  int32_t aligned_count = repeat_times * 32;
+
+  DataType dtype = src_call->args[0].dtype();
+  bool is_half = dtype.is_float() && dtype.bits() == 16;
+  bool is_float = dtype.is_float() && dtype.bits() == 32;
+  ICHECK(is_half || is_float)
+      << "PTO Sort/TopK supports float32 / float16 input, got " << dtype;
+  std::string user_T = is_half ? "half" : "float";
+  int32_t user_T_bytes = is_half ? 2 : 4;
+
+  Var dst_var = Downcast<Var>(dst_call->args[1]);
+  Var src_var = Downcast<Var>(src_call->args[1]);
+  Var tmp_var = Downcast<Var>(tmp_call->args[1]);
+  ICHECK(buffer_address_map_.count(dst_var))
+      << "Buffer address not found for dst: " << dst_var->name_hint;
+  ICHECK(buffer_address_map_.count(src_var))
+      << "Buffer address not found for src: " << src_var->name_hint;
+  ICHECK(buffer_address_map_.count(tmp_var))
+      << "Buffer address not found for tmp: " << tmp_var->name_hint;
+
+  // Emit "<base> + ((offset) * elem_bytes)" as a runtime byte address.
+  auto byte_addr = [this](Var var, PrimExpr offset, int32_t elem_bytes) {
+    std::string base = PrintExpr(buffer_address_map_.at(var));
+    std::string off = PrintExpr(offset);
+    return base + " + ((" + off + ") * " + std::to_string(elem_bytes) + ")";
+  };
+
+  std::string dst_addr = byte_addr(dst_var, dst_call->args[2], user_T_bytes);
+  std::string src_addr = byte_addr(src_var, src_call->args[2], user_T_bytes);
+  std::string tmp_addr =
+      byte_addr(tmp_var, tmp_call->args[2], /*elem_bytes=*/4);
+
+  this->PrintIndent();
+  this->stream << kAscendPtoScope << "Sort<" << user_T << ", " << aligned_count
+               << ", " << actual_num << ", " << top_k << ">(" << dst_addr
+               << ", " << src_addr << ", " << tmp_addr << ");\n";
 }
 
 void CodeGenTileLangAscendPto::TransposeCodegen(const CallNode *op,

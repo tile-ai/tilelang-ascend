@@ -107,7 +107,9 @@ private:
         if (op->op.same_as(tl::ascend_sigmoid()) ||
             op->op.same_as(tl::ascend_pow()) ||
             op->op.same_as(tl::ascend_bitwise_xor()) ||
-            op->op.same_as(tl::ascend_merge_sort())) {
+            op->op.same_as(tl::ascend_merge_sort()) ||
+            ("pto" == target_ && (op->op.same_as(tl::ascend_sort()) ||
+                                  op->op.same_as(tl::ascend_topk())))) {
           return CallNodeAddTmp(op, tmp_buffer_param_offset, 2);
         } else {
           return CallNodeAddTmp(op, tmp_buffer_param_offset, 1);
@@ -172,7 +174,10 @@ private:
           }
         }
       }
-    } else if ("pto" == target_ && op->op.same_as(tl::ascend_bitwise_xor()) &&
+    } else if ("pto" == target_ &&
+               (op->op.same_as(tl::ascend_bitwise_xor()) ||
+                op->op.same_as(tl::ascend_sort()) ||
+                op->op.same_as(tl::ascend_topk())) &&
                tmp_bufs_.size() > 0) {
       const CallNode *src_access_ptr = Downcast<Call>(op->args[1]).get();
       DataType dtype = src_access_ptr->args[0].as<CallNode>()->dtype;
@@ -201,7 +206,11 @@ private:
         }
       }
     } else if ("pto" == target_ && op->op.same_as(tl::ascend_gather_mask()) &&
-               tmp_bufs_.size() > 0) {
+               tmp_bufs_.size() > 0 && op->args[3].as<CallNode>()) {
+      // gather_mask args[3] is the src1 pattern: either a Call (Buffer
+      // pattern) or a StringImm ("P1010" etc.). Only the Buffer-pattern
+      // form needs a dtype-keyed tmp; the string-pattern form falls through
+      // to the generic uint8 tmp_buf_ below.
       const CallNode *src_access_ptr = Downcast<Call>(op->args[3]).get();
       DataType dtype = src_access_ptr->args[0].as<CallNode>()->dtype;
       if (dtype == DataType::UInt(8)) {
@@ -545,6 +554,50 @@ private:
             tmp_shape.push_back(
                 IntImm(DataType::Int(32),
                        Downcast<IntImm>(dst_access_ptr->args[3])->value * 4));
+            shapes[dtype] = tmp_shape;
+          }
+        }
+      } else if (call->op.same_as(tl::ascend_sort()) ||
+                 call->op.same_as(tl::ascend_topk())) {
+        const CallNode *src_access_ptr = Downcast<Call>(call->args[2]).get();
+        std::string src_buffer_name =
+            src_access_ptr->args[1].as<VarNode>()->name_hint;
+        const BufferNode *src_buffer_node =
+            GetBufferNodeByName_(alloc_buffers, src_buffer_name);
+        DataType dtype = src_buffer_node->dtype;
+        if (dtype != DataType::UInt(8)) {
+          // sort:  bufA (2*alignedCount) + bufC (2*alignedCount) for float
+          //        (dst doubles as bufB). Half: also a float cast scratch.
+          // topk:  must fit bufA + bufB + bufC = 6*alignedCount float since
+          //        user dst (size 2*K) is too small to host bufB ping-pong.
+          // Both paths share this allocation; use the larger (topk) sizing
+          // when topk is present so the same tmp pool serves both ops.
+          bool is_topk = call->op.same_as(tl::ascend_topk());
+          int64_t multiplier;
+          if (dtype.bytes() == 2) {
+            multiplier = 16; // half: reserve enough for cast-to-float pool
+          } else {
+            multiplier = is_topk ? 6 : 4;
+          }
+          int64_t tmp_shape_size =
+              Downcast<IntImm>(src_access_ptr->args[3])->value * multiplier;
+          if (shapes.count(dtype) > 0) {
+            int64_t shape_size = 0;
+            for (size_t k = 0; k < shapes.at(dtype).size(); k++) {
+              if (shape_size == 0) {
+                shape_size = shapes.at(dtype)[k].as<IntImmNode>()->value;
+              } else {
+                shape_size *= shapes.at(dtype)[k].as<IntImmNode>()->value;
+              }
+            }
+            if (tmp_shape_size > shape_size) {
+              Array<PrimExpr> tmp_shape;
+              tmp_shape.push_back(IntImm(DataType::Int(32), tmp_shape_size));
+              shapes[dtype] = tmp_shape;
+            }
+          } else {
+            Array<PrimExpr> tmp_shape;
+            tmp_shape.push_back(IntImm(DataType::Int(32), tmp_shape_size));
             shapes[dtype] = tmp_shape;
           }
         }
