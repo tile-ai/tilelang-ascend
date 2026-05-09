@@ -15,7 +15,7 @@ pass_configs = {
 }
 
 
-@tilelang.jit(out_idx=[3], workspace_idx=[4, 5, 6, 7, 8], pass_configs=pass_configs)
+@tilelang.jit(out_idx=[3], workspace_idx=[4, 5, 6, 7, 8], pass_configs=pass_configs, target="pto")
 def sparse_attention_fwd(
     heads,
     dim,

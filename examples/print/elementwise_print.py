@@ -77,6 +77,7 @@ torch.npu.synchronize()
 print("init successful!")
 
 c = func(a, b)
+print(func.get_kernel_source())
 print(f"*******c:")
 print(c)
 ref_c = a & b
