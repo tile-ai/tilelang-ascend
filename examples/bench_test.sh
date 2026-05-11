@@ -87,6 +87,7 @@ collect_test_scripts() {
         -not -name "*_golden.py" \
         -not -name "sfa_golden.py" \
         -not -path "*/bench_sfa/*" \
+        -not -path "*/moe_pytorch_reference/*" \
         | sort)
     for f in $py_files; do scripts+=("$f"); done
     
