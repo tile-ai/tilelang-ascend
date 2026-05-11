@@ -8,19 +8,19 @@ from moe_pytorch_reference.example_fusedmoe_torch import *
 
 tilelang.cache.clear_cache()
 
-# Expert mode: no auto-CV-combine, manual C/V scopes
-pass_configs_expert = {
-    tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
+pass_configs = {
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_SYNC: True,
     tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
+    tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
 }
 
 
-@tilelang.jit(pass_configs=pass_configs_expert)
+@tilelang.jit(out_idx=[5], workspace_idx=[3, 4], pass_configs=pass_configs)
 def moe_shared_gate_up_ascend(num_tokens, dhidden, dexpert, block_M=128, block_N=128, K_L1=64, dtype="float16", accum_dtype="float"):
-    """Shared expert: GEMM gate+up then SiLU fusion using Expert mode C/V scopes."""
+    """Shared expert: GEMM gate+up then SiLU fusion with auto CV combine + sync."""
     m_num = T.ceildiv(num_tokens, block_M)
     n_num = T.ceildiv(dexpert, block_N)
-    VEC_NUM = 2
     BLOCKS = m_num * n_num
 
     @T.prim_func
@@ -32,57 +32,50 @@ def moe_shared_gate_up_ascend(num_tokens, dhidden, dexpert, block_M=128, block_N
         ws_up_logits: T.Tensor((num_tokens, dexpert), dtype),
         up_logits: T.Tensor((num_tokens, dexpert), dtype),
     ):
-        with T.Kernel(BLOCKS, is_npu=True) as (cid, vid):
+        with T.Kernel(BLOCKS, is_npu=True) as (cid, _):
             bx = cid // n_num
             by = cid % n_num
-            sub_row_start = bx * block_M + vid * block_M // VEC_NUM
-            col_start = by * block_N
 
-            with T.Scope("C"):
-                A_L1 = T.alloc_L1((block_M, K_L1), dtype)
-                B_gate_L1 = T.alloc_L1((block_N, K_L1), dtype)
-                B_up_L1 = T.alloc_L1((block_N, K_L1), dtype)
-                C_gate_L0C = T.alloc_L0C((block_M, block_N), accum_dtype)
-                C_up_L0C = T.alloc_L0C((block_M, block_N), accum_dtype)
+            A_shared = T.alloc_shared((block_M, K_L1), dtype)
+            B_gate_shared = T.alloc_shared((block_N, K_L1), dtype)
+            B_up_shared = T.alloc_shared((block_N, K_L1), dtype)
+            C_gate_frag = T.alloc_fragment((block_M, block_N), accum_dtype)
+            C_up_frag = T.alloc_fragment((block_M, block_N), accum_dtype)
+            gate_shared = T.alloc_shared((block_M, block_N), dtype)
+            up_shared = T.alloc_shared((block_M, block_N), dtype)
+            denom_shared = T.alloc_shared((block_M, block_N), dtype)
+            zero_shared = T.alloc_shared((block_M, block_N), dtype)
 
-                loop_k = T.ceildiv(dhidden, K_L1)
-                for k in T.serial(loop_k):
-                    T.copy(input[bx * block_M : (bx + 1) * block_M, k * K_L1 : (k + 1) * K_L1], A_L1)
-                    T.copy(W_gate[by * block_N : (by + 1) * block_N, k * K_L1 : (k + 1) * K_L1], B_gate_L1)
-                    T.copy(W_up[by * block_N : (by + 1) * block_N, k * K_L1 : (k + 1) * K_L1], B_up_L1)
-                    T.gemm_v0(A_L1, B_gate_L1, C_gate_L0C, transpose_B=True, init=(k == 0))
-                    T.gemm_v0(A_L1, B_up_L1, C_up_L0C, transpose_B=True, init=(k == 0))
+            loop_k = T.ceildiv(dhidden, K_L1)
+            for k in T.serial(loop_k):
+                T.copy(input[bx * block_M : (bx + 1) * block_M, k * K_L1 : (k + 1) * K_L1], A_shared)
+                T.copy(W_gate[by * block_N : (by + 1) * block_N, k * K_L1 : (k + 1) * K_L1], B_gate_shared)
+                T.copy(W_up[by * block_N : (by + 1) * block_N, k * K_L1 : (k + 1) * K_L1], B_up_shared)
+                T.gemm_v0(A_shared, B_gate_shared, C_gate_frag, transpose_B=True, init=(k == 0))
+                T.gemm_v0(A_shared, B_up_shared, C_up_frag, transpose_B=True, init=(k == 0))
 
-                T.copy(C_gate_L0C, ws_gate_logits[bx * block_M : (bx + 1) * block_M, col_start : col_start + block_N])
-                T.copy(C_up_L0C, ws_up_logits[bx * block_M : (bx + 1) * block_M, col_start : col_start + block_N])
-                T.set_cross_flag("FIX", 0)
+            T.copy(C_gate_frag, ws_gate_logits[bx * block_M : (bx + 1) * block_M, by * block_N : (by + 1) * block_N])
+            T.copy(C_up_frag, ws_up_logits[bx * block_M : (bx + 1) * block_M, by * block_N : (by + 1) * block_N])
 
-            with T.Scope("V"):
-                gate_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
-                up_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
-                denom_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
-                zero_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
+            T.copy(ws_gate_logits[bx * block_M : (bx + 1) * block_M, by * block_N : (by + 1) * block_N], gate_shared)
 
-                T.wait_cross_flag(0)
-                T.copy(ws_gate_logits[sub_row_start : sub_row_start + block_M // VEC_NUM, col_start : col_start + block_N], gate_ub)
+            T.tile.fill(zero_shared, 0.0)
+            T.tile.sub(denom_shared, zero_shared, gate_shared)
+            T.tile.exp(denom_shared, denom_shared)
+            T.tile.add(denom_shared, denom_shared, 1.0)
+            T.tile.div(gate_shared, gate_shared, denom_shared)
 
-                T.tile.fill(zero_ub, 0.0)
-                T.tile.sub(denom_ub, zero_ub, gate_ub)
-                T.tile.exp(denom_ub, denom_ub)
-                T.tile.add(denom_ub, denom_ub, 1.0)
-                T.tile.div(gate_ub, gate_ub, denom_ub)
+            T.copy(ws_up_logits[bx * block_M : (bx + 1) * block_M, by * block_N : (by + 1) * block_N], up_shared)
+            T.tile.mul(up_shared, up_shared, gate_shared)
 
-                T.copy(ws_up_logits[sub_row_start : sub_row_start + block_M // VEC_NUM, col_start : col_start + block_N], up_ub)
-                T.tile.mul(up_ub, up_ub, gate_ub)
-
-                T.copy(up_ub, up_logits[sub_row_start : sub_row_start + block_M // VEC_NUM, col_start : col_start + block_N])
+            T.copy(up_shared, up_logits[bx * block_M : (bx + 1) * block_M, by * block_N : (by + 1) * block_N])
 
     return main
 
 
-@tilelang.jit(pass_configs=pass_configs_expert)
+@tilelang.jit(out_idx=[2], pass_configs=pass_configs)
 def moe_shared_down_ascend(num_tokens, dhidden, dexpert, block_M=128, block_N=128, K_L1=64, dtype="float16", accum_dtype="float"):
-    """Shared expert: down projection GEMM (Cube only)."""
+    """Shared expert: down projection GEMM (Cube only) with auto CV combine."""
     m_num = T.ceildiv(num_tokens, block_M)
     n_num = T.ceildiv(dhidden, block_N)
     BLOCKS = m_num * n_num
@@ -97,18 +90,17 @@ def moe_shared_down_ascend(num_tokens, dhidden, dexpert, block_M=128, block_N=12
             bx = cid // n_num
             by = cid % n_num
 
-            with T.Scope("C"):
-                A_L1 = T.alloc_L1((block_M, K_L1), dtype)
-                B_L1 = T.alloc_L1((block_N, K_L1), dtype)
-                C_L0C = T.alloc_L0C((block_M, block_N), accum_dtype)
+            A_shared = T.alloc_shared((block_M, K_L1), dtype)
+            B_shared = T.alloc_shared((block_N, K_L1), dtype)
+            C_frag = T.alloc_fragment((block_M, block_N), accum_dtype)
 
-                loop_k = T.ceildiv(dexpert, K_L1)
-                for k in T.serial(loop_k):
-                    T.copy(up_logits[bx * block_M : (bx + 1) * block_M, k * K_L1 : (k + 1) * K_L1], A_L1)
-                    T.copy(W_down[by * block_N : (by + 1) * block_N, k * K_L1 : (k + 1) * K_L1], B_L1)
-                    T.gemm_v0(A_L1, B_L1, C_L0C, transpose_B=True, init=(k == 0))
+            loop_k = T.ceildiv(dexpert, K_L1)
+            for k in T.serial(loop_k):
+                T.copy(up_logits[bx * block_M : (bx + 1) * block_M, k * K_L1 : (k + 1) * K_L1], A_shared)
+                T.copy(W_down[by * block_N : (by + 1) * block_N, k * K_L1 : (k + 1) * K_L1], B_shared)
+                T.gemm_v0(A_shared, B_shared, C_frag, transpose_B=True, init=(k == 0))
 
-                T.copy(C_L0C, output[bx * block_M : (bx + 1) * block_M, by * block_N : (by + 1) * block_N])
+            T.copy(C_frag, output[bx * block_M : (bx + 1) * block_M, by * block_N : (by + 1) * block_N])
 
     return main
 
@@ -307,8 +299,11 @@ def _precompile_kernels(n_tokens_list, dhidden, dexpert):
 
 def custom_kernel(data):
     input_tensor, weights, config = data
+
     moe = MoE(config, weights, padding_M=128)
-    return moe(input_tensor)
+    output = moe(input_tensor)
+
+    return output
 
 
 def main(d_hidden=7168, d_expert=2048, n_routed_experts=8, n_shared_experts=1, n_experts_per_token=4, batch_size=1, seq_len=8192):
@@ -344,7 +339,7 @@ def main(d_hidden=7168, d_expert=2048, n_routed_experts=8, n_shared_experts=1, n
 
     torch.testing.assert_close(ref_output, out, atol=1e-2, rtol=1e-2)
     print("TileLang Ascend and Torch match!")
-    print("Test passed!")
+    print("FusedMOE E-2-E Model Test passed!")
 
 
 if __name__ == "__main__":
