@@ -4,7 +4,7 @@ import torch.nn as nn
 import tilelang
 import tilelang.language as T
 
-from example_fusedmoe_torch import *
+from moe_pytorch_reference.example_fusedmoe_torch import *
 
 tilelang.cache.clear_cache()
 
