@@ -259,6 +259,8 @@ CATLASS_DEVICE void copy_ub_to_ub(LocalTensor<T1> dstTensor,
     AscendC::DataCopy(dstTensor, srcTensor, len);
   } else {
     if constexpr ((std::is_same_v<T1, float> && std::is_same_v<T2, half>) ||
+                  (std::is_same_v<T1, float> &&
+                   std::is_same_v<T2, bfloat16_t>) ||
                   (std::is_same_v<T1, float> && std::is_same_v<T2, int16_t>) ||
                   (std::is_same_v<T1, half> && std::is_same_v<T2, int8_t>) ||
                   (std::is_same_v<T1, int16_t> &&
