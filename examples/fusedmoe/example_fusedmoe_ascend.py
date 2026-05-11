@@ -1,8 +1,5 @@
-import math
-
 import torch
 import torch.nn as nn
-from typing import Dict, Tuple, Optional
 
 import tilelang
 import tilelang.language as T
@@ -347,7 +344,7 @@ def main(d_hidden=7168, d_expert=2048, n_routed_experts=8, n_shared_experts=1, n
 
     torch.testing.assert_close(ref_output, out, atol=1e-2, rtol=1e-2)
     print("TileLang Ascend and Torch match!")
-    print("All Test passed.")
+    print("Test passed!")
 
 
 if __name__ == "__main__":

@@ -146,7 +146,7 @@ def ref_kernel_npu(data):
     scores = logits.softmax(-1)
     tk, ti = torch.topk(scores, k=config["n_experts_per_token"], dim=-1, sorted=False)
 
-    sd = config["d_expert"] * config["n_shared_experts"]
+    # sd = config["d_expert"] * config["n_shared_experts"]
     # Weight format in kernel: [dexpert, dhidden]
     # gemm_v0(x [M, dhidden], W [dexpert, dhidden], C, transpose_B=True):
     #   C[M, dexpert] = x @ W^T = x[M, dhidden] @ [dhidden, dexpert]
