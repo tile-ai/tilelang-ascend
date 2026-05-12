@@ -1175,36 +1175,86 @@ void CodeGenTileLangAscendPto::CopyL1ToL0Codegen(const CallNode *call,
   std::string op_name = Downcast<StringImm>(call->args[0])->value;
   bool transpose = (op_name.find(", true>") != std::string::npos);
 
-  PrimExpr index_row = floordiv(src_info.offset, src_info.shape[1]);
-  PrimExpr index_col = floormod(src_info.offset, src_info.shape[1]);
+  // Compute tile dimensions: for persistent buffering A_L1(S1, block_M, K_L1),
+  // the flattened shape is (S1*block_M, K_L1) but tile shape is (block_M, K_L1).
+  int32_t tile_row, tile_col, num_tiles;
+  if (is_a) {
+    tile_row = dst_shape_info.slice_row;
+    tile_col = src_shape_info.col;
+    num_tiles = src_shape_info.row / tile_row;
+    if (num_tiles < 1) num_tiles = 1;
+  } else {
+    tile_col = src_shape_info.col;
+    int32_t src_row = src_shape_info.row;
+    int32_t min_row = dst_shape_info.slice_row;
+    tile_row = min_row;
+    for (int32_t d = 2; d * d <= src_row; ++d) {
+      if (src_row % d == 0) {
+        int32_t cand1 = src_row / d;
+        int32_t cand2 = d;
+        if (cand1 < src_row && cand1 >= min_row && cand1 > tile_row) {
+          tile_row = cand1;
+        }
+        if (cand2 < src_row && cand2 >= min_row && cand2 > tile_row) {
+          tile_row = cand2;
+        }
+      }
+    }
+    num_tiles = src_row / tile_row;
+    if (num_tiles < 1) num_tiles = 1;
+  }
+
+  int32_t tile_size = tile_row * tile_col;
+
+  // TEXTRACT expects logical coordinates. For zN layout, convert offset:
+  // A buffer: zN_offset ≈ logical_K * tile_row
+  // B buffer: zN_offset ≈ logical_K * 16 (ELE_NUM_PER_C0)
+  constexpr int32_t ELE_NUM_PER_C0 = 16;
+  PrimExpr inner_offset = floormod(src_info.offset, tile_size);
+  PrimExpr logical_K = is_a ? floordiv(inner_offset, tile_row)
+                            : floordiv(inner_offset, ELE_NUM_PER_C0);
+  PrimExpr index_row = is_a ? 0 : logical_K;
+  PrimExpr index_col = is_a ? logical_K : 0;
+
+  PrimExpr outer_tile_idx = floordiv(src_info.offset, tile_size);
 
   auto src_name = src_shape_info.ub_name;
   auto dst_name = dst_shape_info.ub_name;
+
   if (src_shape_info.is_slice) {
     std::string src_temp_name = GetTempVarName(src_shape_info.ub_name);
-    CreateCubeVariable(src_temp_name, src_shape_info,
-                       kAscendPtoScope + "TileMatL1");
+    this->PrintIndent();
+    this->stream << kAscendPtoScope << "TileMatL1<" << src_shape_info.type
+                 << ", " << tile_row << ", " << tile_col
+                 << ", " << tile_row << ", " << tile_col
+                 << "> " << src_temp_name << ";\n";
+    PrimExpr tile_base_offset = outer_tile_idx * tile_size;
+    this->PrintIndent();
+    this->stream << "TASSIGN(" << src_temp_name << ", "
+                 << src_shape_info.first_addr << " + "
+                 << PrintExpr(tile_base_offset) << " * "
+                 << GetTypeLen(src_shape_info.type) << ");\n";
     src_name = src_temp_name;
   }
+
   if (transpose) {
     std::string src_temp_name = GetTempVarName(src_shape_info.ub_name + "_zn");
     this->PrintIndent();
     this->stream << kAscendPtoScope << "TileMatL1ZN" << "<"
-                 << src_shape_info.type << ", " << src_shape_info.slice_col
-                 << ", " << src_shape_info.slice_row << ", "
-                 << src_shape_info.slice_col << ", " << src_shape_info.slice_row
+                 << dst_shape_info.type << ", " << dst_shape_info.slice_col
+                 << ", " << dst_shape_info.slice_row << ", "
+                 << dst_shape_info.slice_col << ", " << dst_shape_info.slice_row
                  << "> " << src_temp_name << ";\n";
     this->PrintIndent();
     this->stream << "TASSIGN(" << src_temp_name << ", "
                  << src_shape_info.first_addr << " + " << src_shape_info.offset
-                 << " * " << GetTypeLen(src_shape_info.type) << ");\n";
+                 << " * " << GetTypeLen(dst_shape_info.type) << ");\n";
     src_name = src_temp_name;
   }
 
   if (dst_shape_info.is_slice) {
     std::string dst_temp_name = GetTempVarName(dst_shape_info.ub_name);
-    CreateCubeVariable(dst_temp_name, dst_shape_info,
-                       kAscendPtoScope + tile_name);
+    CreateCubeVariable(dst_temp_name, dst_shape_info, kAscendPtoScope + tile_name);
     dst_name = dst_temp_name;
   }
 
@@ -1213,11 +1263,9 @@ void CodeGenTileLangAscendPto::CopyL1ToL0Codegen(const CallNode *call,
                << ", " << dst_shape_info.slice_row << ", "
                << dst_shape_info.slice_col;
   if (transpose) {
-    this->stream << ", " << src_shape_info.slice_col << ", "
-                 << src_shape_info.slice_row << ", true";
+    this->stream << ", " << tile_col << ", " << tile_row << ", true";
   } else {
-    this->stream << ", " << src_shape_info.slice_row << ", "
-                 << src_shape_info.slice_col;
+    this->stream << ", " << tile_row << ", " << tile_col;
   }
   this->stream << ">";
 
