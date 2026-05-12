@@ -1176,13 +1176,15 @@ void CodeGenTileLangAscendPto::CopyL1ToL0Codegen(const CallNode *call,
   bool transpose = (op_name.find(", true>") != std::string::npos);
 
   // Compute tile dimensions: for persistent buffering A_L1(S1, block_M, K_L1),
-  // the flattened shape is (S1*block_M, K_L1) but tile shape is (block_M, K_L1).
+  // the flattened shape is (S1*block_M, K_L1) but tile shape is (block_M,
+  // K_L1).
   int32_t tile_row, tile_col, num_tiles;
   if (is_a) {
     tile_row = dst_shape_info.slice_row;
     tile_col = src_shape_info.col;
     num_tiles = src_shape_info.row / tile_row;
-    if (num_tiles < 1) num_tiles = 1;
+    if (num_tiles < 1)
+      num_tiles = 1;
   } else {
     tile_col = src_shape_info.col;
     int32_t src_row = src_shape_info.row;
@@ -1201,7 +1203,8 @@ void CodeGenTileLangAscendPto::CopyL1ToL0Codegen(const CallNode *call,
       }
     }
     num_tiles = src_row / tile_row;
-    if (num_tiles < 1) num_tiles = 1;
+    if (num_tiles < 1)
+      num_tiles = 1;
   }
 
   int32_t tile_size = tile_row * tile_col;
@@ -1225,9 +1228,8 @@ void CodeGenTileLangAscendPto::CopyL1ToL0Codegen(const CallNode *call,
     std::string src_temp_name = GetTempVarName(src_shape_info.ub_name);
     this->PrintIndent();
     this->stream << kAscendPtoScope << "TileMatL1<" << src_shape_info.type
-                 << ", " << tile_row << ", " << tile_col
-                 << ", " << tile_row << ", " << tile_col
-                 << "> " << src_temp_name << ";\n";
+                 << ", " << tile_row << ", " << tile_col << ", " << tile_row
+                 << ", " << tile_col << "> " << src_temp_name << ";\n";
     PrimExpr tile_base_offset = outer_tile_idx * tile_size;
     this->PrintIndent();
     this->stream << "TASSIGN(" << src_temp_name << ", "
@@ -1254,7 +1256,8 @@ void CodeGenTileLangAscendPto::CopyL1ToL0Codegen(const CallNode *call,
 
   if (dst_shape_info.is_slice) {
     std::string dst_temp_name = GetTempVarName(dst_shape_info.ub_name);
-    CreateCubeVariable(dst_temp_name, dst_shape_info, kAscendPtoScope + tile_name);
+    CreateCubeVariable(dst_temp_name, dst_shape_info,
+                       kAscendPtoScope + tile_name);
     dst_name = dst_temp_name;
   }
 
