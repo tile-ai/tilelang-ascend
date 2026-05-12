@@ -425,6 +425,7 @@ def AscendVidReduction():
     """
     return _ffi_api.AscendVidReduction()  # type: ignore
 
+
 def AscendWorkspaceReduction():
     """Reduction Workspace for Ascend.
 

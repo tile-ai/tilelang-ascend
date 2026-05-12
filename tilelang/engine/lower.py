@@ -2,11 +2,12 @@
 # Licensed under the MIT License.
 """The compiler for TL programs."""
 
-from typing import Literal
+from __future__ import annotations
+
 
 import os
 import os.path as osp
-from typing import Union, Optional, Callable, List
+from typing import Callable
 import tilelang.transform
 from tilelang import tvm as tvm
 from tvm import tir
@@ -27,8 +28,7 @@ def is_cpu_device_backend(target: Target):
 
 def has_device_kernel_launch(attrs) -> bool:
     """Check if the attributes indicate a device kernel launch."""
-    return bool(attrs and "calling_conv" in attrs and
-                attrs["calling_conv"] == CallingConv.DEVICE_KERNEL_LAUNCH)
+    return bool(attrs and "calling_conv" in attrs and attrs["calling_conv"] == CallingConv.DEVICE_KERNEL_LAUNCH)
 
 
 def is_device_call_c_device(func: tir.PrimFunc):
@@ -121,7 +121,7 @@ def tilelang_callback_hip_compile(code, target):
     return hsaco
 
 
-def extrac_params(func: tir.PrimFunc) -> List[KernelParam]:
+def extrac_params(func: tir.PrimFunc) -> list[KernelParam]:
     tensor_types = []
     for var in func.params:
         if var in func.buffer_map:
@@ -131,8 +131,7 @@ def extrac_params(func: tir.PrimFunc) -> List[KernelParam]:
     return tensor_types
 
 
-def canon_target_host(target: Union[str, Target], target_host: Optional[Union[str, Target]]):
-
+def canon_target_host(target: str | Target, target_host: str | Target | None):
     if not target_host:
         target_host = "llvm" if tvm.runtime.enabled("llvm") else "stackvm"
 
@@ -176,11 +175,9 @@ def device_codegen_without_compile(device_mod: tvm.IRModule, target: Target) -> 
     device_mod = tir.transform.LowerIntrin()(device_mod)
     device_mod = tir.transform.Simplify()(device_mod)
     if target.kind.name == "cuda":
-        device_mod = tvm._ffi.get_global_func("target.build.tilelang_cuda_without_compile")(
-            device_mod, target)
+        device_mod = tvm._ffi.get_global_func("target.build.tilelang_cuda_without_compile")(device_mod, target)
     elif target.kind.name == "hip":
-        device_mod = tvm._ffi.get_global_func("target.build.tilelang_hip_without_compile")(
-            device_mod, target)
+        device_mod = tvm._ffi.get_global_func("target.build.tilelang_hip_without_compile")(device_mod, target)
     elif target.kind.name == "c":
         device_mod = tvm._ffi.get_global_func("target.build.tilelang_cpp")(device_mod, target)
     elif target.kind.name == "llvm":
@@ -194,22 +191,23 @@ def device_codegen_without_compile(device_mod: tvm.IRModule, target: Target) -> 
 
 
 def lower(
-    func_or_mod: Union[tir.PrimFunc, tvm.IRModule],
-    target: Union[str, Target] = "auto",
-    target_host: Optional[Union[str, Target]] = None,
+    func_or_mod: tir.PrimFunc | tvm.IRModule,
+    target: str | Target = "auto",
+    target_host: str | Target | None = None,
     platform: str = "auto",
     runtime_only=False,
     enable_host_codegen=False,
     enable_device_compile=False,
 ) -> CompiledArtifact:
-    '''
-        enable_host_codegen: whether to enable host codegen, default is False, as we have our
-        own host codegen implementation in jit.
-        enable_device_compile: whether to enable device codegen, default is False, as we have our
-        own device codegen implementation in jit.
-    '''
-    
+    """
+    enable_host_codegen: whether to enable host codegen, default is False, as we have our
+    own host codegen implementation in jit.
+    enable_device_compile: whether to enable device codegen, default is False, as we have our
+    own device codegen implementation in jit.
+    """
+
     from tilelang.utils.target import determine_platform
+
     platform = determine_platform(platform)
 
     mod = func_or_mod
@@ -219,10 +217,7 @@ def lower(
         params = extrac_params(func) if not runtime_only else None
         mod = tvm.IRModule({func.attrs["global_symbol"]: func})
 
-    target = tvm.target.Target({
-        "kind": "llvm",
-        "model": target
-    })
+    target = tvm.target.Target({"kind": "llvm", "model": target})
 
     # Phase 1: Lower and legalize the IR
     mod = LowerAndLegalize(mod, target)

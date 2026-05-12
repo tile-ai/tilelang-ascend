@@ -145,7 +145,6 @@ def sparse_attention_fwd(
 
                 T.copy(m_i, m_i_prev)
 
-
                 for i, j in T.Parallel(v_block, BI):
                     acc_s_ub[i, j] = acc_s_ub[i, j] + acc_s_ub_[i, j]
 
