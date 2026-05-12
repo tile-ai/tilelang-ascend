@@ -801,8 +801,12 @@ private:
       {"wmma.matrix_a", "cube"},
       {"wmma.matrix_b", "cube"},
       {"wmma.accumulator", "cube"},
-      {"shared.l1", "cube"},
-      {"shared.ub", "vec"}};
+      {"shared.dyn", "cube"},
+      {"shared", "vec"},
+      {"copy_ub_to_pipe", "vec"},    // UB → Pipe (V-core writes)
+      {"copy_pipe_to_l1", "cube"},   // Pipe → L1 (C-core reads)
+      {"copy_l0c_to_pipe", "cube"},  // L0C → Pipe (C-core writes)
+      {"copy_pipe_to_ub", "vec"}};   // Pipe → UB (V-core reads)
 };
 
 class CombineCV : public arith::IRMutatorWithAnalyzer {
