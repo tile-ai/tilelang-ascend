@@ -1486,7 +1486,7 @@ void CodeGenTileLangAscendPto::GatherCodegen(const CallNode *op,
     int r = 0;
     while (x > 1) {
       ICHECK_EQ(x & 1, 0) << "ascend_gather PTO lowering requires power-of-2 "
-                             "elem_size, got: " 
+                             "elem_size, got: "
                           << x;
       x >>= 1;
       ++r;
