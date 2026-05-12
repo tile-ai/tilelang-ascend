@@ -439,7 +439,8 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
   if (op->op.same_as(builtin::call_extern())) {
     std::string op_name = Downcast<StringImm>(op->args[0])->value;
     if (op_name.find("tl::ascend::copy") != std::string::npos ||
-        op_name.find("tl::ascend::atomic_add_ub_to_gm") != std::string::npos) {
+        op_name.find("tl::ascend::atomic_add_ub_to_gm") != std::string::npos ||
+        op_name.find("tl::ascend::atomic_add_l0c_to_gm") != std::string::npos) {
       CopyCodegen(op);
     } else if (op_name == "npu.fill") {
       this->PrintIndent();
@@ -2258,9 +2259,11 @@ void CodeGenTileLangAscend::CopyCodegen(const CallNode *op) {
   auto dst_type = GetAccessPtrDtype(op->args[2].as<CallNode>());
 
   static const std::unordered_map<std::string, int> kCopyOpExtraArgs = {
-      {"copy_l0c_to_gm", 3},      {"copy_gm_to_l1", 3}, {"copy_l1_to_l0a", 2},
-      {"copy_l1_to_l0b", 2},      {"copy_gm_to_ub", 4}, {"copy_ub_to_gm", 3},
-      {"atomic_add_ub_to_gm", 3}, {"copy_ub_to_ub", 0}};
+      {"copy_l0c_to_gm", 3},      {"copy_gm_to_l1", 3},
+      {"copy_l1_to_l0a", 2},      {"copy_l1_to_l0b", 2},
+      {"copy_gm_to_ub", 4},       {"copy_ub_to_gm", 3},
+      {"atomic_add_ub_to_gm", 3}, {"atomic_add_l0c_to_gm", 3},
+      {"copy_ub_to_ub", 0}};
 
   bool found = false;
   int extra_args = 0;

@@ -153,6 +153,17 @@ private:
 
   void MergeSortCodegen(const CallNode *op, const std::string &op_name);
 
+  void SortCodegen(const CallNode *op);
+
+  void TopKCodegen(const CallNode *op);
+
+  // Emits a single tl::ascend_pto::Sort<UserT, N, ActualCount, TopK>(...)
+  // call. The full algorithm (pad, sort32, merge tree, finalize) lives in
+  // pto/common.h.
+  void EmitSortAlgorithm(const CallNode *dst_call, const CallNode *src_call,
+                         const CallNode *tmp_call, int32_t repeat_times,
+                         int32_t actual_num, int32_t top_k);
+
   void TransposeCodegen(const CallNode *op, const std::string &op_name);
 
   void XorCodegen(const CallNode *op, const std::string &op_name);

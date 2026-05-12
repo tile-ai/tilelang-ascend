@@ -117,12 +117,15 @@ TypeError: get_configs() missing 1 required positional argument: 'K'
 
 **现象**: autotune 编译通过但 benchmark 时进程直接 crash（Segfault），无 Python 异常。
 
-**原因**: `block_M * block_N * sizeof(accum_dtype) > L0C_capacity`（A2/A3 设备 L0C=64KB，float32 cum元素≤16384）。如 `block_M=256, block_N=256 → 256KB > 64KB`。
+**Segfault类似问题排查建议**: Segment fault 需要通过 gdb 等工具定位具体 crash 位置和调用栈，再结合 kernel 配置、访存范围、片上内存使用量等因素判断根因。
+可能原因之一：当 `block_M * block_N * sizeof(accum_dtype) > L0C_capacity` 时，可能导致片上 buffer 使用超过硬件限制。例如 A2/A3 设备 L0C 为 128KB，float32 accum 元素数不应超过 32768；
 
 **解决方案**: autotune 的 `get_configs` 中过滤超大 block：
 ```python
 block_M = [bs for bs in [64, 128] if bs <= M]  # 排除 256
 ```
+
+
 
 ## 运行时错误
 

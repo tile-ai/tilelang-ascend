@@ -8,9 +8,16 @@ import tilelang.language as T
 tilelang.disable_cache()
 
 
-@tilelang.jit(out_idx=[-1], workspace_idx=[-3])  # for jit
-def indexer(B, N2, G, S1, S2, D, TOP_K, VECTOR_BASEN, VECTOR_BASEG, BLOCK_M, BLOCK_N, BLOCK_K, input_dtype="float16", calc_dtype="float"):
+# Memory planning is the "address reuse" pass: it lets non-overlapping
+# buffers (and the auto-injected sort/topk tmp buffers that aren't in
+# T.annotate_address) share UB space.
+pass_configs = {
+    tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
+}
 
+
+@tilelang.jit(out_idx=[-1], workspace_idx=[-3], pass_configs=pass_configs)
+def indexer(B, N2, G, S1, S2, D, TOP_K, VECTOR_BASEN, VECTOR_BASEG, BLOCK_M, BLOCK_N, BLOCK_K, input_dtype="float16", calc_dtype="float"):
     @T.prim_func
     def main(
         Query: T.Tensor((B, S1, N2, G * D), input_dtype),
@@ -30,15 +37,6 @@ def indexer(B, N2, G, S1, S2, D, TOP_K, VECTOR_BASEN, VECTOR_BASEG, BLOCK_M, BLO
 
                 C_L0 = T.alloc_L0C((BLOCK_M, BLOCK_N), calc_dtype)
 
-                T.annotate_address(
-                    {
-                        # L1 address
-                        Q_L1: 0,
-                        K_L1: 16384,
-                        # L0C address
-                        C_L0: 0,
-                    }
-                )
                 T.barrier_all()
                 for n2 in T.serial(N2):
                     for g in T.serial(G):
@@ -63,10 +61,7 @@ def indexer(B, N2, G, S1, S2, D, TOP_K, VECTOR_BASEN, VECTOR_BASEG, BLOCK_M, BLO
 
             with T.Scope("V"):
                 mm_res_ub = T.alloc_ub((VECTOR_BASEG, VECTOR_BASEN), calc_dtype)
-                mm_res_ub_flat = T.alloc_ub((VECTOR_BASEG * VECTOR_BASEN), calc_dtype)
-                mm_res_ub_uint8 = T.alloc_ub((VECTOR_BASEG, VECTOR_BASEN), "uint8")
                 weight_ub = T.alloc_ub(VECTOR_BASEG, calc_dtype)
-                weight_brcb_ub = T.alloc_ub((VECTOR_BASEG, 8), calc_dtype)
                 reduce_tmp_ub = T.alloc_ub((VECTOR_BASEG, VECTOR_BASEN), calc_dtype)
                 reduce_g_ub = T.alloc_ub(VECTOR_BASEN, calc_dtype)
                 # Accumulate all S2 scores, then topk once
@@ -74,23 +69,6 @@ def indexer(B, N2, G, S1, S2, D, TOP_K, VECTOR_BASEN, VECTOR_BASEG, BLOCK_M, BLO
                 topk_dst_ub = T.alloc_ub(2 * TOP_K, calc_dtype)
                 topk_index_ub = T.alloc_ub(TOP_K, calc_dtype)
                 output_ub = T.alloc_ub(TOP_K, "int")
-
-                T.annotate_address(
-                    {
-                        # ub address
-                        mm_res_ub: 0,
-                        mm_res_ub_flat: 0,
-                        mm_res_ub_uint8: 0,
-                        weight_ub: 32768,
-                        weight_brcb_ub: 32832,
-                        reduce_tmp_ub: 33344,
-                        reduce_g_ub: 66112,
-                        score_accum_ub: 67136,
-                        topk_dst_ub: 83520,
-                        topk_index_ub: 91712,
-                        output_ub: 95808,
-                    }
-                )
 
                 s1_start_idx = vid * each_core_process_num
                 s1_end_idx = s1_start_idx + each_core_process_num
