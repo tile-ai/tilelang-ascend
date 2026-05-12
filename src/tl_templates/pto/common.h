@@ -32,9 +32,10 @@ using TileMatL0A = pto::Tile<pto::TileType::Left, T, Rows, Cols,
 
 template <typename T, int Rows, int Cols, int RowValid = Rows,
           int ColValid = Cols>
-using TileMatL0A_a5 = pto::Tile<pto::TileType::Left, T, Rows, Cols,
-                                pto::BLayout::ColMajor, RowValid, ColValid,
-                                pto::SLayout::RowMajor, 512, pto::PadValue::Zero>;
+using TileMatL0A_a5 =
+    pto::Tile<pto::TileType::Left, T, Rows, Cols, pto::BLayout::ColMajor,
+              RowValid, ColValid, pto::SLayout::RowMajor, 512,
+              pto::PadValue::Zero>;
 
 template <typename T, int Rows, int Cols, int RowValid = Rows,
           int ColValid = Cols>

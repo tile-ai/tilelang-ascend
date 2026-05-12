@@ -1187,7 +1187,8 @@ void CodeGenTileLangAscendPto::CopyL1ToL0Codegen(const CallNode *call,
   std::string api_name = is_a ? "copy_l1_to_l0a" : "copy_l1_to_l0b";
   std::string tile_name_a5 = is_a ? "TileMatL0A_a5" : "TileMatL0B";
   std::string tile_name_not_a5 = is_a ? "TileMatL0A" : "TileMatL0B";
-  std::string tile_name = (this->platform_ == "A5") ? tile_name_a5 : tile_name_not_a5;
+  std::string tile_name =
+      (this->platform_ == "A5") ? tile_name_a5 : tile_name_not_a5;
 
   ShapeInfo src_shape_info = GetSliceInfo(src_info.access_ptr);
   ShapeInfo dst_shape_info = GetSliceInfo(dst_info.access_ptr);
@@ -3212,7 +3213,9 @@ void CodeGenTileLangAscendPto::MmaCodegen(const CallNode *op) {
   if (a_shape_info.is_slice) {
     std::string a_temp_name = GetTempVarName(a_name);
     CreateCubeVariable(a_temp_name, a_shape_info,
-                       kAscendPtoScope + ((this->platform_ == "A5") ? "TileMatL0A_a5" : "TileMatL0A"));
+                       kAscendPtoScope + ((this->platform_ == "A5")
+                                              ? "TileMatL0A_a5"
+                                              : "TileMatL0A"));
     a_name = a_temp_name;
   }
 
