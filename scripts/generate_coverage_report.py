@@ -6,7 +6,7 @@ Generates comprehensive coverage reports including Python and C++ coverage
 Key fixes:
 - Uses build_dir (not tilelang_objs_dir) to collect all .gcda files
 - Timeout=300 to avoid timeout issues
-- Absolute paths to avoid nested directory issues
+- Dynamic project root detection (no hardcoded paths)
 """
 
 import json
@@ -16,7 +16,7 @@ from typing import Dict, List, Any
 
 class CoverageReportGenerator:
     def __init__(self):
-        self.project_root = Path("/mnt/workspace/tilelangvidcommit0507/tilelang-ascend")
+        self.project_root = Path(__file__).resolve().parent.parent
         self.coverage_data_dir = self.project_root / "coverage_data"
         self.report_dir = self.project_root / "coverage_reports"
         self.coverage_json = self.coverage_data_dir / "coverage.json"

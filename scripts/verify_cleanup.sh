@@ -5,7 +5,7 @@ echo "======================================="
 echo "Coverage Cleanup Verification"
 echo "======================================="
 
-cd /mnt/workspace/tilelangvidcommit0507/tilelang-ascend
+cd "$(dirname "$0")/.."
 
 echo ""
 echo "检查 bench_test.sh 清除逻辑："

@@ -17,7 +17,6 @@ while [[ $# -gt 0 ]]; do
             ;;
         --enable-cpp-coverage)
             ENABLE_CPP_COVERAGE=true
-            SKIP_PYTEST=true
             shift
             ;;
         --dirs)
@@ -114,6 +113,9 @@ if [ "$ENABLE_COVERAGE" = true ] || [ "$ENABLE_CPP_COVERAGE" = true ]; then
 fi
 echo "Starting parallel unified test execution (Live Output)..."
 echo "====================================="
+
+# 定义 PROJECT_ROOT 用于 coverage 运行
+PROJECT_ROOT="$(cd .. && pwd)"
 
 total_scripts=0
 passed_scripts=0
@@ -269,8 +271,16 @@ for script in "${all_scripts[@]}"; do
 
             # 执行脚本并捕获输出到变量，不在磁盘生成日志文件
             if [[ "$script" == *.py ]]; then
-                output=$(cd "$script_dir" && python "$script_name" 2>&1)
-                exit_code=$?
+                if [ "$ENABLE_COVERAGE" = true ]; then
+                    # 使用 coverage run 统计 examples 执行的 Python 代码覆盖率
+                    # 每个脚本使用独立的 coverage 文件名，避免并行冲突
+                    safe_name=$(echo "$script" | sed 's/[\/\.]/_/g')
+                    output=$(cd "$script_dir" && COVERAGE_FILE="${PROJECT_ROOT}/coverage_data/.coverage_${safe_name}" coverage run --rcfile="${PROJECT_ROOT}/.coveragerc" "$script_name" 2>&1)
+                    exit_code=$?
+                else
+                    output=$(cd "$script_dir" && python "$script_name" 2>&1)
+                    exit_code=$?
+                fi
             else
                 output=$(cd "$script_dir" && bash "$script_name" 2>&1)
                 exit_code=$?
@@ -369,9 +379,12 @@ if [ "$ENABLE_COVERAGE" = true ] || [ "$ENABLE_CPP_COVERAGE" = true ]; then
         # Combine
         coverage_files=$(find "${PROJECT_ROOT}/coverage_data" -name ".coverage*" -type f)
         if [ -n "$coverage_files" ]; then
+            cd "${PROJECT_ROOT}"
             export COVERAGE_FILE="${PROJECT_ROOT}/coverage_data/.coverage"
             coverage combine --keep $coverage_files 2>&1 || true
             coverage json -o "${PROJECT_ROOT}/coverage_data/coverage.json" --include=tilelang/*,examples/* 2>&1 || true
+            unset COVERAGE_FILE
+            cd "${PROJECT_ROOT}/examples"
             echo "✓ Python coverage collected"
         fi
     fi
@@ -379,13 +392,19 @@ if [ "$ENABLE_COVERAGE" = true ] || [ "$ENABLE_CPP_COVERAGE" = true ]; then
     # C++ coverage
     if [ "$ENABLE_CPP_COVERAGE" = true ]; then
         echo "Collecting C++ coverage..."
-        lcov --capture --directory "${PROJECT_ROOT}/build" --output-file "${PROJECT_ROOT}/coverage_data/coverage.info" --no-checksum --ignore-errors source,graph 2>&1 || true
-        [ -f "${PROJECT_ROOT}/coverage_data/coverage.info" ] && echo "✓ C++ coverage collected"
+        # Step 1: Capture all coverage data
+        lcov --capture --directory "${PROJECT_ROOT}/build" --output-file "${PROJECT_ROOT}/coverage_data/coverage_raw.info" --no-checksum --ignore-errors source,graph 2>&1 || true
+        # Step 2: Extract only tilelang-ascend/src (exclude 3rdparty)
+        if [ -f "${PROJECT_ROOT}/coverage_data/coverage_raw.info" ]; then
+            lcov --extract "${PROJECT_ROOT}/coverage_data/coverage_raw.info" "*/tilelang-ascend/src/*" --output-file "${PROJECT_ROOT}/coverage_data/coverage.info" 2>&1 || true
+            rm -f "${PROJECT_ROOT}/coverage_data/coverage_raw.info"
+            echo "✓ C++ coverage collected (tilelang-ascend/src only)"
+        fi
     fi
     
     # Generate report
-    if [ -f scripts/generate_coverage_report.py ]; then
-        python scripts/generate_coverage_report.py
+    if [ -f "${PROJECT_ROOT}/scripts/generate_coverage_report.py" ]; then
+        python "${PROJECT_ROOT}/scripts/generate_coverage_report.py"
         echo "✓ Coverage report generated: coverage_report.md"
     fi
 fi
