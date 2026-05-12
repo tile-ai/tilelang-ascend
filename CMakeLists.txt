@@ -44,6 +44,9 @@ endif()
 # include cmake modules
 include(CheckCXXCompilerFlag)
 
+# Include code coverage module
+include(${CMAKE_SOURCE_DIR}/cmake/modules/CodeCoverage.cmake)
+
 # Enable static runtime build if required
 if(TILE_LANG_INSTALL_STATIC_LIB)
   set(BUILD_STATIC_RUNTIME ON)
@@ -205,12 +208,14 @@ target_compile_definitions(tilelang_objs PRIVATE -DTILE_LANG_EXPORTS)
 
 # Shared library
 add_library(tilelang SHARED $<TARGET_OBJECTS:tilelang_objs>)
+add_coverage_target(tilelang)
 target_link_libraries(tilelang PUBLIC tvm_runtime)
 
 # Static library
 add_library(tilelang_static STATIC $<TARGET_OBJECTS:tilelang_objs>)
 add_dependencies(tilelang_static tvm_runtime)
 set_target_properties(tilelang_static PROPERTIES OUTPUT_NAME tilelang)
+add_coverage_target(tilelang_static)
 
 # Debug build type-specific definitions
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")

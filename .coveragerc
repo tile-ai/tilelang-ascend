@@ -1,0 +1,24 @@
+[run]
+branch = True
+source = tilelang, examples
+omit = 
+    */3rdparty/*
+    */__pycache__/*
+    */test_*.py
+    */tests/*
+    */.agents/*
+    */build/*
+    */dist/*
+parallel = True
+
+[report]
+precision = 2
+show_missing = True
+skip_covered = False
+
+[html]
+directory = coverage_reports/htmlcov
+
+[json]
+show_contexts = True
+pretty_print = True

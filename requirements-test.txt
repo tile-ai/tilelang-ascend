@@ -1,32 +1,5 @@
-# lint requirements
--r requirements-lint.txt
-# build requirements
-cmake>=3.26
-# runtime requirements
-cffi
-cpplint
-Cython
-docutils
-dtlib
-numpy>=1.23.5
-pytest>=6.2.4
-pytest_xdist>=2.2.1
-packaging>=21.0
-PyYAML
-tqdm>=4.62.3
-typing_extensions>=4.10.0
-requests
-cloudpickle
-ml_dtypes
-psutil
-torch
-thefuzz
-tabulate
-wheel
-setuptools
-einops
-attrs
-decorator
-flash-attn
-scipy
-tornado
+pytest>=7.0
+pytest-xdist>=3.0
+pytest-timeout>=2.0
+pytest-cov>=4.0
+coverage>=7.0

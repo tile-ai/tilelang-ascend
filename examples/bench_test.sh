@@ -2,10 +2,19 @@
 
 # ================= 参数解析 =================
 SKIP_PYTEST=false
+ENABLE_COVERAGE=false
+ENABLE_CPP_COVERAGE=false
 TEST_DIRS=""
 while [[ $# -gt 0 ]]; do
     case $1 in
         --skip-pytest)
+        --coverage)
+            ENABLE_COVERAGE=true
+            shift
+            ;;
+        --enable-cpp-coverage)
+            ENABLE_CPP_COVERAGE=true
+            shift
             SKIP_PYTEST=true
             shift
             ;;
@@ -44,6 +53,63 @@ EXTRA_TASKS=(
 )
 # ==========================================
 
+
+# ================= Coverage 清除逻辑（确保纯净结果）=================
+# 在每次测试开始前清除旧的 coverage 数据，确保结果只包含本次执行的数据
+if [ "$ENABLE_COVERAGE" = true ] || [ "$ENABLE_CPP_COVERAGE" = true ]; then
+    echo ""
+    echo "====================================="
+    echo "Cleaning old coverage data..."
+    echo "====================================="
+    
+    PROJECT_ROOT="$(cd .. && pwd)"
+    
+    # 1. 清除 Python coverage 数据
+    echo "Removing Python coverage files..."
+    rm -rf "${PROJECT_ROOT}/coverage_data/.coverage*" 2>/dev/null || true
+    rm -f "${PROJECT_ROOT}/coverage_data/*.json" 2>/dev/null || true
+    
+    # 清除 examples 子目录的 coverage 文件（可能遗漏）
+    find "${PROJECT_ROOT}/examples" -name ".coverage*" -type f -delete 2>/dev/null || true
+    
+    # 清除 testing/python 目录的 coverage 文件
+    find "${PROJECT_ROOT}/testing/python" -name ".coverage*" -type f -delete 2>/dev/null || true
+    
+    # 清除项目根目录的 coverage 文件
+    rm -f "${PROJECT_ROOT}/.coverage" "${PROJECT_ROOT}/.coverage.*" 2>/dev/null || true
+    
+    echo "  ✓ Python coverage files cleaned"
+    
+    # 2. 清除 C++ coverage 数据（如果启用）
+    if [ "$ENABLE_CPP_COVERAGE" = true ]; then
+        echo "Removing C++ coverage files..."
+        
+        # 清除 build 目录的 .gcda 文件（运行时覆盖率数据）
+        find "${PROJECT_ROOT}/build" -name "*.gcda" -type f -delete 2>/dev/null || true
+        
+        # 清除旧的 coverage.info
+        rm -f "${PROJECT_ROOT}/coverage_data/coverage.info" 2>/dev/null || true
+        
+        echo "  ✓ C++ coverage files cleaned"
+    fi
+    
+    # 3. 清除旧的报告
+    echo "Removing old coverage reports..."
+    rm -f "${PROJECT_ROOT}/coverage_report.md" 2>/dev/null || true
+    rm -rf "${PROJECT_ROOT}/coverage_reports/htmlcov" 2>/dev/null || true
+    rm -rf "${PROJECT_ROOT}/coverage_reports/cpp_html" 2>/dev/null || true
+    
+    echo "  ✓ Old reports cleaned"
+    
+    # 4. 创建干净的目录
+    mkdir -p "${PROJECT_ROOT}/coverage_data"
+    mkdir -p "${PROJECT_ROOT}/coverage_reports"
+    
+    echo ""
+    echo "✓ Coverage cleanup completed. Ready for fresh test."
+    echo "====================================="
+    echo ""
+fi
 echo "Starting parallel unified test execution (Live Output)..."
 echo "====================================="
 
@@ -261,7 +327,14 @@ echo "Running pytest tests"
 echo "====================================="
 
 # 自动发现并运行 testing/python/ 目录下的所有测试文件（包括所有子目录）
-pytest --forked ../testing/python/ -v -n $MAX_JOBS
+PROJECT_ROOT="$(cd .. && pwd)"
+if [ "$ENABLE_COVERAGE" = true ]; then
+    export COVERAGE_FILE="${PROJECT_ROOT}/coverage_data/.coverage_pytest"
+    pytest --forked "${PROJECT_ROOT}/testing/python/" -v -n $MAX_JOBS         --cov=tilelang         --cov=examples         --cov-report=term         --cov-report=json:${PROJECT_ROOT}/coverage_data/pytest_coverage.json         --cov-config=${PROJECT_ROOT}/.coveragerc
+    unset COVERAGE_FILE
+else
+    pytest --forked "${PROJECT_ROOT}/testing/python/" -v -n $MAX_JOBS
+fi
 pytest_exit_code=$?
 
 # 统计 pytest 结果
@@ -276,3 +349,43 @@ else
 fi
 
 exit $pytest_exit_code
+
+# ================= Coverage Collection and Report =================
+if [ "$ENABLE_COVERAGE" = true ] || [ "$ENABLE_CPP_COVERAGE" = true ]; then
+    echo -e "\n====================================="
+    echo "Collecting Coverage Data"
+    echo "====================================="
+    
+    PROJECT_ROOT="$(pwd)"
+    mkdir -p "${PROJECT_ROOT}/coverage_data" coverage_reports
+    
+    # Python coverage
+    if [ "$ENABLE_COVERAGE" = true ]; then
+        echo "Collecting Python coverage..."
+        
+        # Collect from examples subdirectories
+        find "${PROJECT_ROOT}/examples" -name ".coverage*" -type f -exec cp -f {} "${PROJECT_ROOT}/coverage_data/" \; 2>/dev/null || true
+        
+        # Combine
+        coverage_files=$(find "${PROJECT_ROOT}/coverage_data" -name ".coverage*" -type f)
+        if [ -n "$coverage_files" ]; then
+            export COVERAGE_FILE="${PROJECT_ROOT}/coverage_data/.coverage"
+            coverage combine --keep $coverage_files 2>&1 || true
+            coverage json -o "${PROJECT_ROOT}/coverage_data/coverage.json" --include=tilelang/*,examples/* 2>&1 || true
+            echo "✓ Python coverage collected"
+        fi
+    fi
+    
+    # C++ coverage
+    if [ "$ENABLE_CPP_COVERAGE" = true ]; then
+        echo "Collecting C++ coverage..."
+        lcov --capture --directory "${PROJECT_ROOT}/build" --output-file "${PROJECT_ROOT}/coverage_data/coverage.info" --no-checksum --ignore-errors source,graph 2>&1 || true
+        [ -f "${PROJECT_ROOT}/coverage_data/coverage.info" ] && echo "✓ C++ coverage collected"
+    fi
+    
+    # Generate report
+    if [ -f scripts/generate_coverage_report.py ]; then
+        python scripts/generate_coverage_report.py
+        echo "✓ Coverage report generated: coverage_report.md"
+    fi
+fi
