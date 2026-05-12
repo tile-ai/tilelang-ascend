@@ -1425,6 +1425,87 @@ void CodeGenTileLangAscendPto::CopyL1ToL0Codegen(const CallNode *call,
                << ");\n";
 }
 
+void CodeGenTileLangAscendPto::CopyPipeCodegen(const CallNode *op,
+                                                bool is_producer) {
+  std::string op_name = Downcast<StringImm>(op->args[0])->value;
+  BufferInfo src_info = GetBufferInfo(op->args[1]);
+  BufferInfo dst_info = GetBufferInfo(op->args[2]);
+
+  int flag_id = Downcast<IntImm>(op->args[3])->value;
+  int dir_type = Downcast<IntImm>(op->args[4])->value;
+  int slot_size = Downcast<IntImm>(op->args[5])->value;
+  int slot_num = Downcast<IntImm>(op->args[6])->value;
+  std::string pipe_id = Downcast<StringImm>(op->args[7])->value;
+
+  std::string dir_str = (dir_type == 2) ? "V2C" : "C2V";
+
+  std::string pipe_type_name;
+  {
+    size_t last_underscore = pipe_id.rfind('_');
+    pipe_type_name = pipe_id.substr(0, last_underscore + 1) + dir_str;
+    pipe_type_name[0] = 'P';
+  }
+
+  if (declared_pipes_.count(pipe_id) == 0 ||
+      declared_pipes_[pipe_id] != current_resource_scope_) {
+    std::string dir_full;
+    if (dir_type == 2) {
+      dir_full = "pto::Direction::DIR_V2C";
+    } else {
+      dir_full = "pto::Direction::DIR_C2V";
+    }
+
+    std::string src_base = PrintExpr(buffer_address_map_.at(src_info.var));
+    std::string dst_base = PrintExpr(buffer_address_map_.at(dst_info.var));
+
+    std::string c2v_buf = (dir_type == 1) ? dst_base : "0";
+    std::string v2c_buf = (dir_type == 2) ? dst_base : "0";
+
+    this->PrintIndent();
+    this->stream << "using " << pipe_type_name << " = TPipe<"
+                 << flag_id << ", " << dir_full << ", "
+                 << slot_size << ", " << slot_num << ">;\n";
+
+    this->PrintIndent();
+    this->stream << pipe_type_name << " " << pipe_id << "(nullptr, "
+                 << c2v_buf << ", " << v2c_buf << ");\n";
+
+    declared_pipes_[pipe_id] = current_resource_scope_;
+  }
+
+  ShapeInfo src_shape_info = GetSliceInfo(src_info.access_ptr);
+  ShapeInfo dst_shape_info = GetSliceInfo(dst_info.access_ptr);
+
+  std::string src_name = src_shape_info.ub_name;
+  std::string dst_name = dst_shape_info.ub_name;
+
+  if (src_shape_info.is_slice) {
+    src_name = GetTempVarName(src_shape_info.ub_name);
+    CreateUbVariableND(src_name, src_shape_info);
+  }
+  if (dst_shape_info.is_slice) {
+    dst_name = GetTempVarName(dst_shape_info.ub_name);
+    CreateUbVariableND(dst_name, dst_shape_info);
+  }
+
+  std::string func_call = op_name;
+  size_t pos = func_call.find("tl::ascend::");
+  if (pos != std::string::npos) {
+    func_call.replace(pos, 12, kAscendPtoScope);
+  }
+  size_t template_start = func_call.find('<');
+  if (template_start != std::string::npos) {
+    func_call = func_call.substr(0, template_start);
+  }
+
+  this->PrintIndent();
+  if (is_producer) {
+    this->stream << func_call << "(" << pipe_id << ", " << src_name << ");\n";
+  } else {
+    this->stream << func_call << "(" << pipe_id << ", " << dst_name << ");\n";
+  }
+}
+
 void CodeGenTileLangAscendPto::CallExternCodegen(const CallNode *op) {
   std::string op_name = Downcast<StringImm>(op->args[0])->value;
 
@@ -1448,6 +1529,14 @@ void CodeGenTileLangAscendPto::CallExternCodegen(const CallNode *op) {
   } else if (op_name.find("tl::ascend::atomic_add_ub_to_gm") !=
              std::string::npos) {
     GMCopyCall(op, "atomic_add_ub_to_gm");
+  } else if (op_name.find("tl::ascend::copy_ub_to_pipe") != std::string::npos) {
+    CopyPipeCodegen(op, true);
+  } else if (op_name.find("tl::ascend::copy_pipe_to_l1") != std::string::npos) {
+    CopyPipeCodegen(op, false);
+  } else if (op_name.find("tl::ascend::copy_l0c_to_pipe") != std::string::npos) {
+    CopyPipeCodegen(op, true);
+  } else if (op_name.find("tl::ascend::copy_pipe_to_ub") != std::string::npos) {
+    CopyPipeCodegen(op, false);
   }
 }
 

@@ -197,6 +197,152 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
     ss << "copy_l0c_to_gm";
     config.l0c2gm = true;
     config.print_gm_layout = true;
+  } else if (src.scope() == "shared" && dst.scope() == "shared.dyn") {
+    // UB→L1: route through TPipe (copy_ub_to_pipe + copy_pipe_to_l1)
+    {
+      static int pipe_flag_id_counter = 0;
+      int flag_id = pipe_flag_id_counter++;
+      if (pipe_flag_id_counter > 16) {
+        LOG(FATAL) << "Too many cross-core T.copy operations, flag_id overflow (>16)";
+      }
+
+      std::string dtype_str = get_dtype(src);
+
+      PrimExpr N_expr = dst_extents[dst->shape.size() - 1];
+      PrimExpr M_expr = compute_blocklen(dst, dst_extents);
+
+      int dtype_bytes = src->dtype.bytes();
+      int slot_size = Downcast<IntImm>(M_expr)->value *
+                      Downcast<IntImm>(N_expr)->value * dtype_bytes;
+      int dir_type = 2;  // DIR_V2C
+      int slot_num = 2;
+      std::string pipe_id =
+          "pipe_" + std::to_string(flag_id) + "_" + std::to_string(dir_type);
+
+      auto src_indices = build_indices(src_range);
+      auto dst_indices = build_indices(dst_range);
+
+      auto src_new_indices = T.layout_map.count(src)
+                                 ? T.layout_map[src]->Forward(src_indices)
+                                 : src_indices;
+      auto dst_new_indices = T.layout_map.count(dst)
+                                 ? T.layout_map[dst]->Forward(dst_indices)
+                                 : dst_indices;
+
+      auto src_new_buffer = T.buffer_remap.count(src) ? T.buffer_remap[src] : src;
+      auto dst_new_buffer = T.buffer_remap.count(dst) ? T.buffer_remap[dst] : dst;
+
+      PrimExpr src_len = 1;
+      for (auto &shape : src_extents) src_len *= shape;
+
+      PrimExpr dst_len = 1;
+      for (auto &shape : dst_extents) dst_len *= shape;
+
+      auto src_ptr = src_new_buffer.access_ptr(
+          1, src_new_buffer->dtype, 1,
+          src_new_buffer.OffsetOf(src_new_indices).back(), src_len);
+      auto dst_ptr = dst_new_buffer.access_ptr(
+          2, dst_new_buffer->dtype, 1,
+          dst_new_buffer.OffsetOf(dst_new_indices).back(), dst_len);
+
+      {
+        std::stringstream ss1;
+        ss1 << "tl::ascend::copy_ub_to_pipe<" << dtype_str << ", " << M_expr
+            << ", " << N_expr << ">";
+        Array<PrimExpr> args1 = {StringImm(ss1.str()), src_ptr, dst_ptr,
+                                 Integer(flag_id), Integer(dir_type),
+                                 Integer(slot_size), Integer(slot_num),
+                                 StringImm(pipe_id)};
+        auto call1 = Call(DataType::Handle(), builtin::call_extern(), args1);
+
+        std::stringstream ss2;
+        ss2 << "tl::ascend::copy_pipe_to_l1<" << dtype_str << ", " << M_expr
+            << ", " << N_expr << ">";
+        // copy_pipe_to_l1 only needs Pipe + L1 buffer, NOT UB buffer
+        // Pass dst_ptr as both args[1] and args[2] to avoid UB buffer being
+        // referenced in Cube scope (which causes duplicate declaration error)
+        Array<PrimExpr> args2 = {StringImm(ss2.str()), dst_ptr, dst_ptr,
+                                 Integer(flag_id), Integer(dir_type),
+                                 Integer(slot_size), Integer(slot_num),
+                                 StringImm(pipe_id)};
+        auto call2 = Call(DataType::Handle(), builtin::call_extern(), args2);
+
+        return SeqStmt({Evaluate(call1), Evaluate(call2)});
+      }
+    }
+  } else if (src.scope() == "wmma.accumulator" && dst.scope() == "shared") {
+    // L0C→UB: route through TPipe (copy_l0c_to_pipe + copy_pipe_to_ub)
+    {
+      static int pipe_flag_id_counter = 0;
+      int flag_id = pipe_flag_id_counter++;
+      if (pipe_flag_id_counter > 16) {
+        LOG(FATAL) << "Too many cross-core T.copy operations, flag_id overflow (>16)";
+      }
+
+      std::string dtype_str = get_dtype(src);
+
+      PrimExpr N_expr = src_extents[src->shape.size() - 1];
+      PrimExpr M_expr = compute_blocklen(src, src_extents);
+
+      int dtype_bytes = src->dtype.bytes();
+      int slot_size = Downcast<IntImm>(M_expr)->value *
+                      Downcast<IntImm>(N_expr)->value * dtype_bytes;
+      int dir_type = 1;  // DIR_C2V
+      int slot_num = 2;
+      std::string pipe_id =
+          "pipe_" + std::to_string(flag_id) + "_" + std::to_string(dir_type);
+
+      auto src_indices = build_indices(src_range);
+      auto dst_indices = build_indices(dst_range);
+
+      auto src_new_indices = T.layout_map.count(src)
+                                 ? T.layout_map[src]->Forward(src_indices)
+                                 : src_indices;
+      auto dst_new_indices = T.layout_map.count(dst)
+                                 ? T.layout_map[dst]->Forward(dst_indices)
+                                 : dst_indices;
+
+      auto src_new_buffer = T.buffer_remap.count(src) ? T.buffer_remap[src] : src;
+      auto dst_new_buffer = T.buffer_remap.count(dst) ? T.buffer_remap[dst] : dst;
+
+      PrimExpr src_len = 1;
+      for (auto &shape : src_extents) src_len *= shape;
+
+      PrimExpr dst_len = 1;
+      for (auto &shape : dst_extents) dst_len *= shape;
+
+      auto src_ptr = src_new_buffer.access_ptr(
+          1, src_new_buffer->dtype, 1,
+          src_new_buffer.OffsetOf(src_new_indices).back(), src_len);
+      auto dst_ptr = dst_new_buffer.access_ptr(
+          2, dst_new_buffer->dtype, 1,
+          dst_new_buffer.OffsetOf(dst_new_indices).back(), dst_len);
+
+      {
+        std::stringstream ss1;
+        ss1 << "tl::ascend::copy_l0c_to_pipe<" << dtype_str << ", " << M_expr
+            << ", " << N_expr << ">";
+        Array<PrimExpr> args1 = {StringImm(ss1.str()), src_ptr, dst_ptr,
+                                 Integer(flag_id), Integer(dir_type),
+                                 Integer(slot_size), Integer(slot_num),
+                                 StringImm(pipe_id)};
+        auto call1 = Call(DataType::Handle(), builtin::call_extern(), args1);
+
+        std::stringstream ss2;
+        ss2 << "tl::ascend::copy_pipe_to_ub<" << dtype_str << ", " << M_expr
+            << ", " << N_expr << ">";
+        // copy_pipe_to_ub only needs Pipe + UB buffer, NOT L0C buffer
+        // Pass dst_ptr as args[1] to avoid L0C buffer being referenced
+        // in Vector scope (which causes duplicate declaration error)
+        Array<PrimExpr> args2 = {StringImm(ss2.str()), dst_ptr, dst_ptr,
+                                 Integer(flag_id), Integer(dir_type),
+                                 Integer(slot_size), Integer(slot_num),
+                                 StringImm(pipe_id)};
+        auto call2 = Call(DataType::Handle(), builtin::call_extern(), args2);
+
+        return SeqStmt({Evaluate(call1), Evaluate(call2)});
+      }
+    }
   } else if (src.scope() == "shared" || dst.scope() == "shared") {
     config.print_ub = true;
 

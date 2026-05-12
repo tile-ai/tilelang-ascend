@@ -12,6 +12,7 @@
 #include <tvm/tir/expr.h>
 #include <tvm/tir/op.h>
 
+#include <set>
 #include <string>
 #include <unordered_map>
 
@@ -216,6 +217,8 @@ private:
 
   void CopyL1ToL0Codegen(const CallNode *call, bool is_a);
 
+  void CopyPipeCodegen(const CallNode *call, bool is_producer);
+
   std::string PrintBufferOffset(const CallNode *op);
 
   std::string GetTempVarName(const std::string &temp_name);
@@ -314,6 +317,8 @@ private:
   std::unordered_map<String, global_tensor> global_tensor_template;
 
   std::unordered_map<std::string, int32_t> counters_;
+
+  std::map<std::string, std::string> declared_pipes_;
 
   bool use_swizzle_{false};
 
