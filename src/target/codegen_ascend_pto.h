@@ -62,6 +62,8 @@ public:
                                       const std::string &op_name);
   void BinaryVecClampOpsCodegen(const CallNode *op, const std::string &op_name);
   void SigmoidCodegen(const CallNode *op, const std::string &op_type);
+  void SiluCodegen(const CallNode *op);
+  void MulAddDstCodegen(const CallNode *op);
   void CastCodegen(const CallNode *op, const std::string &op_type);
   void ReduceOpCodegen(const CallNode *op);
 
