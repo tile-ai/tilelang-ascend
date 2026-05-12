@@ -2338,8 +2338,10 @@ void CodeGenTileLangAscendPto::SiluCodegen(const CallNode *op) {
   std::string src_name = PrintBufferOffset(op->args[1].as<CallNode>());
 
   std::string tmp_name = GetTempVarName(dst_shape_info.ub_name) + "_silu_tmp";
-  int32_t row = dst_shape_info.is_slice ? dst_shape_info.slice_row : dst_shape_info.row;
-  int32_t col = dst_shape_info.is_slice ? dst_shape_info.slice_col : dst_shape_info.col;
+  int32_t row =
+      dst_shape_info.is_slice ? dst_shape_info.slice_row : dst_shape_info.row;
+  int32_t col =
+      dst_shape_info.is_slice ? dst_shape_info.slice_col : dst_shape_info.col;
 
   if (dst_shape_info.is_slice || src_shape_info.is_slice) {
     std::string dst_temp_name = GetTempVarName(dst_shape_info.ub_name);
@@ -2347,16 +2349,16 @@ void CodeGenTileLangAscendPto::SiluCodegen(const CallNode *op) {
     CreateUbVariableND(dst_temp_name, dst_shape_info);
     CreateUbVariableND(src_temp_name, src_shape_info);
     this->PrintIndent();
-    this->stream << "tl::ascend_pto::TileUbDataND<" << dst_shape_info.type << ", "
-                 << row << ", " << col << "> " << tmp_name << ";\n";
+    this->stream << "tl::ascend_pto::TileUbDataND<" << dst_shape_info.type
+                 << ", " << row << ", " << col << "> " << tmp_name << ";\n";
     this->PrintIndent();
     this->stream << kAscendPtoScope << "TSILU<" << dst_shape_info.type << ", "
                  << row << ", " << col << ">(" << dst_temp_name << ", "
                  << src_temp_name << ", " << tmp_name << ");\n";
   } else {
     this->PrintIndent();
-    this->stream << "tl::ascend_pto::TileUbDataND<" << dst_shape_info.type << ", "
-                 << row << ", " << col << "> " << tmp_name << ";\n";
+    this->stream << "tl::ascend_pto::TileUbDataND<" << dst_shape_info.type
+                 << ", " << row << ", " << col << "> " << tmp_name << ";\n";
     this->PrintIndent();
     this->stream << kAscendPtoScope << "TSILU<" << dst_shape_info.type << ", "
                  << row << ", " << col << ">(" << dst_name << ", " << src_name
@@ -2373,11 +2375,15 @@ void CodeGenTileLangAscendPto::MulAddDstCodegen(const CallNode *op) {
   std::string src0_name = PrintBufferOffset(op->args[1].as<CallNode>());
   std::string src1_name = PrintBufferOffset(op->args[2].as<CallNode>());
 
-  std::string tmp_name = GetTempVarName(dst_shape_info.ub_name) + "_muladddst_tmp";
-  int32_t row = dst_shape_info.is_slice ? dst_shape_info.slice_row : dst_shape_info.row;
-  int32_t col = dst_shape_info.is_slice ? dst_shape_info.slice_col : dst_shape_info.col;
+  std::string tmp_name =
+      GetTempVarName(dst_shape_info.ub_name) + "_muladddst_tmp";
+  int32_t row =
+      dst_shape_info.is_slice ? dst_shape_info.slice_row : dst_shape_info.row;
+  int32_t col =
+      dst_shape_info.is_slice ? dst_shape_info.slice_col : dst_shape_info.col;
 
-  if (dst_shape_info.is_slice || src0_shape_info.is_slice || src1_shape_info.is_slice) {
+  if (dst_shape_info.is_slice || src0_shape_info.is_slice ||
+      src1_shape_info.is_slice) {
     std::string dst_temp_name = GetTempVarName(dst_shape_info.ub_name);
     std::string src0_temp_name = GetTempVarName(src0_shape_info.ub_name);
     std::string src1_temp_name = GetTempVarName(src1_shape_info.ub_name);
@@ -2385,20 +2391,22 @@ void CodeGenTileLangAscendPto::MulAddDstCodegen(const CallNode *op) {
     CreateUbVariableND(src0_temp_name, src0_shape_info);
     CreateUbVariableND(src1_temp_name, src1_shape_info);
     this->PrintIndent();
-    this->stream << "tl::ascend_pto::TileUbDataND<" << dst_shape_info.type << ", "
-                 << row << ", " << col << "> " << tmp_name << ";\n";
+    this->stream << "tl::ascend_pto::TileUbDataND<" << dst_shape_info.type
+                 << ", " << row << ", " << col << "> " << tmp_name << ";\n";
     this->PrintIndent();
-    this->stream << kAscendPtoScope << "MulAddDst<" << dst_shape_info.type << ", "
-                 << row << ", " << col << ">(" << dst_temp_name << ", "
-                 << src0_temp_name << ", " << src1_temp_name << ", " << tmp_name << ");\n";
+    this->stream << kAscendPtoScope << "MulAddDst<" << dst_shape_info.type
+                 << ", " << row << ", " << col << ">(" << dst_temp_name << ", "
+                 << src0_temp_name << ", " << src1_temp_name << ", " << tmp_name
+                 << ");\n";
   } else {
     this->PrintIndent();
-    this->stream << "tl::ascend_pto::TileUbDataND<" << dst_shape_info.type << ", "
-                 << row << ", " << col << "> " << tmp_name << ";\n";
+    this->stream << "tl::ascend_pto::TileUbDataND<" << dst_shape_info.type
+                 << ", " << row << ", " << col << "> " << tmp_name << ";\n";
     this->PrintIndent();
-    this->stream << kAscendPtoScope << "MulAddDst<" << dst_shape_info.type << ", "
-                 << row << ", " << col << ">(" << dst_name << ", " << src0_name
-                 << ", " << src1_name << ", " << tmp_name << ");\n";
+    this->stream << kAscendPtoScope << "MulAddDst<" << dst_shape_info.type
+                 << ", " << row << ", " << col << ">(" << dst_name << ", "
+                 << src0_name << ", " << src1_name << ", " << tmp_name
+                 << ");\n";
   }
 }
 
