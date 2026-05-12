@@ -79,8 +79,8 @@ def get_cached_lib(source_code: str) -> Tuple[Optional[ctypes.CDLL], Path]:
     """Try to load cached library or return None if not found."""
     code_hash = hashlib.sha256(source_code.encode()).hexdigest()
     cache_path = get_cache_dir() / f"{code_hash}.so"
-    lock_file = cache_path.with_suffix('.lock')
-    with open(lock_file, 'w') as lock:
+    lock_file = cache_path.with_suffix(".lock")
+    with open(lock_file, "w") as lock:
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
         try:
             if cache_path.exists():
@@ -109,7 +109,7 @@ with open(cython_wrapper_path, "r") as f:
     md5_path = cache_dir / "md5.txt"
     code_hash = hashlib.sha256(cython_wrapper_code.encode()).hexdigest()
     cache_path = cache_dir / f"{code_hash}.so"
-    lock_file = cache_path.with_suffix('.lock')
+    lock_file = cache_path.with_suffix(".lock")
 
     # Check if cached version exists and is valid
     need_compile = True
@@ -126,7 +126,7 @@ with open(cython_wrapper_path, "r") as f:
 
     if need_compile:
         logger.info("Waiting for lock to compile cython jit adapter...")
-        with open(lock_file, 'w') as lock:
+        with open(lock_file, "w") as lock:
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
             try:
                 # After acquiring the lock, check again if the file has been compiled by another process
@@ -134,8 +134,7 @@ with open(cython_wrapper_path, "r") as f:
                     with open(md5_path, "r") as f:
                         cached_hash = f.read().strip()
                         if cached_hash == code_hash:
-                            logger.info(
-                                "Another process has already compiled the file, using it...")
+                            logger.info("Another process has already compiled the file, using it...")
                             need_compile = False
 
                 if need_compile:
@@ -158,7 +157,7 @@ with open(cython_wrapper_path, "r") as f:
                     # rename the temp file to the library file
                     temp_path.rename(library_path)
             except Exception as e:
-                if 'temp_path' in locals() and temp_path.exists():
+                if "temp_path" in locals() and temp_path.exists():
                     temp_path.unlink()
                 raise Exception(f"Failed to compile cython jit adapter: {e}") from e
             finally:
@@ -175,7 +174,7 @@ from cython_wrapper import CythonKernelWrapper
 
 class CythonKernelAdapter(BaseKernelAdapter):
     """Adapter class that converts TVM/TIR functions to callable CUDA kernels using ctypes.
-    
+
     This adapter handles:
     1. Converting TIR functions to compiled CUDA libraries
     2. Managing dynamic shapes in tensor operations
@@ -206,20 +205,23 @@ class CythonKernelAdapter(BaseKernelAdapter):
     # Pass configs for the compiler
     pass_configs: Optional[Dict[str, Any]] = None
 
-    def __init__(self,
-                 params: List[KernelParam],
-                 result_idx: List[int],
-                 workspace_idx: List[int],
-                 target: Union[str, Target],
-                 platform: str,
-                 func_or_mod: Union[tir.PrimFunc, tvm.IRModule],
-                 host_mod: Optional[tvm.IRModule] = None,
-                 device_mod: Optional[tvm.IRModule] = None,
-                 kernel_global_source: Optional[str] = None,
-                 verbose: bool = False,
-                 pass_configs: Optional[Dict[str, Any]] = None):
+    def __init__(
+        self,
+        params: List[KernelParam],
+        result_idx: List[int],
+        workspace_idx: List[int],
+        auto_gm_idx: List[int],
+        target: Union[str, Target],
+        platform: str,
+        func_or_mod: Union[tir.PrimFunc, tvm.IRModule],
+        host_mod: Optional[tvm.IRModule] = None,
+        device_mod: Optional[tvm.IRModule] = None,
+        kernel_global_source: Optional[str] = None,
+        verbose: bool = False,
+        pass_configs: Optional[Dict[str, Any]] = None,
+    ):
         """Initialize the adapter with the given TIR function or module.
-        
+
         Args:
             params: List of tensor types for inputs/outputs
             result_idx: Indices of output tensors
@@ -232,6 +234,7 @@ class CythonKernelAdapter(BaseKernelAdapter):
         self.params = params
         self.result_idx = self._legalize_auto_memory_idx(result_idx, "result_idx")
         self.workspace_idx = self._legalize_auto_memory_idx(workspace_idx, "workspace_idx")
+        self.auto_gm_idx = self._legalize_auto_memory_idx(auto_gm_idx, "auto_gm_idx")
         self.kernel_global_source = kernel_global_source
 
         if isinstance(func_or_mod, tir.PrimFunc):
@@ -270,7 +273,7 @@ class CythonKernelAdapter(BaseKernelAdapter):
         #     error_msg += f"\n{self.lib_code}"
         #     raise RuntimeError(f"Initialization failed: {error_msg}")
 
-        self.cython_wrapper = CythonKernelWrapper(self.result_idx, self.workspace_idx, self.params, self.lib)
+        self.cython_wrapper = CythonKernelWrapper(self.result_idx, self.workspace_idx, self.auto_gm_idx, self.params, self.lib)
         self.cython_wrapper.set_dynamic_symbolic_map(self.dynamic_symbolic_map)
         self.cython_wrapper.set_buffer_dtype_map(self.buffer_dtype_map)
         self.cython_wrapper.set_static_shape_map(self.static_shape_map)
@@ -279,21 +282,25 @@ class CythonKernelAdapter(BaseKernelAdapter):
         self._post_init()
 
     @classmethod
-    def from_database(cls,
-                      params: List[TensorType],
-                      result_idx: List[int],
-                      workspace_idx: List[int],
-                      target: str,
-                      platform: str,
-                      func_or_mod: Union[tir.PrimFunc, tvm.IRModule],
-                      kernel_global_source: str,
-                      kernel_lib_path: str,
-                      verbose: bool = False,
-                      pass_configs: Optional[Dict[str, Any]] = None):
+    def from_database(
+        cls,
+        params: List[TensorType],
+        result_idx: List[int],
+        workspace_idx: List[int],
+        auto_gm_idx: List[int],
+        target: str,
+        platform: str,
+        func_or_mod: Union[tir.PrimFunc, tvm.IRModule],
+        kernel_global_source: str,
+        kernel_lib_path: str,
+        verbose: bool = False,
+        pass_configs: Optional[Dict[str, Any]] = None,
+    ):
         adapter = cls.__new__(cls)
         adapter.params = params
         adapter.result_idx = adapter._legalize_auto_memory_idx(result_idx, "result_idx")
         adapter.workspace_idx = adapter._legalize_auto_memory_idx(workspace_idx, "workspace_idx")
+        adapter.auto_gm_idx = adapter._legalize_auto_memory_idx(auto_gm_idx, "auto_gm_idx")
         adapter.kernel_global_source = kernel_global_source
         adapter.wrapped_source = kernel_global_source
         adapter.pass_configs = pass_configs
@@ -322,8 +329,9 @@ class CythonKernelAdapter(BaseKernelAdapter):
         #     error_msg = adapter.lib.get_last_error().decode('utf-8')
         #     raise RuntimeError(f"Initialization failed: {error_msg}")
 
-        adapter.cython_wrapper = CythonKernelWrapper(adapter.result_idx, adapter.workspace_idx, adapter.params,
-                                                     adapter.lib)
+        adapter.cython_wrapper = CythonKernelWrapper(
+            adapter.result_idx, adapter.workspace_idx, adapter.auto_gm_idx, adapter.params, adapter.lib
+        )
         adapter.cython_wrapper.set_dynamic_symbolic_map(adapter.dynamic_symbolic_map)
         adapter.cython_wrapper.set_buffer_dtype_map(adapter.buffer_dtype_map)
         adapter.cython_wrapper.set_static_shape_map(adapter.static_shape_map)
@@ -335,7 +343,7 @@ class CythonKernelAdapter(BaseKernelAdapter):
 
     def _process_dynamic_symbolic(self) -> Dict[tir.Var, Tuple[int, int]]:
         """Extract information about dynamic shapes from the TIR function.
-        
+
         Maps symbolic variables to their corresponding (buffer_index, shape_dimension)
         for runtime shape resolution.
         """
@@ -351,14 +359,13 @@ class CythonKernelAdapter(BaseKernelAdapter):
             if param in buffer_map:
                 buffer = buffer_map[param]
                 for j, shape in enumerate(buffer.shape):
-                    if (isinstance(shape, tir.Var) and (shape not in dynamic_symbolic_map) and
-                        (shape not in params)):
+                    if isinstance(shape, tir.Var) and (shape not in dynamic_symbolic_map) and (shape not in params):
                         dynamic_symbolic_map[shape] = (i - temp, j)
         return dynamic_symbolic_map
 
     def _process_buffer_dtype(self) -> Dict[tir.Var, Tuple[int, torch.dtype]]:
         """Extract information about buffer dtypes from the TIR function.
-        
+
         Maps buffer variables to their corresponding dtypes.
         """
         func = self.prim_func
@@ -374,7 +381,7 @@ class CythonKernelAdapter(BaseKernelAdapter):
 
     def _process_ptr_map(self) -> Dict[int, str]:
         """Extract information about pointer arguments from the TIR function.
-        
+
         Maps pointer arguments to their corresponding (buffer_index, shape_dimension)
         for runtime shape resolution.
         """
@@ -382,13 +389,13 @@ class CythonKernelAdapter(BaseKernelAdapter):
         params = func.params
         ptr_map = {}
         for i, param in enumerate(params):
-            if param.dtype == 'handle':
+            if param.dtype == "handle":
                 ptr_map[i] = param.name
         return ptr_map
 
     def _process_static_shape(self) -> Dict[tir.Var, List[Tuple[int, int]]]:
         """Extract information about static shapes from the TIR function.
-        
+
         Maps buffer variables to their corresponding static shapes.
         """
         func = self.prim_func
@@ -409,7 +416,7 @@ class CythonKernelAdapter(BaseKernelAdapter):
 
     def _process_buffer_device(self) -> Dict[tir.Var, Tuple[int, torch.device]]:
         """Extract information about buffer devices from the TIR function.
-        
+
         Maps buffer variables to their corresponding devices.
         """
         func = self.prim_func
@@ -427,12 +434,10 @@ class CythonKernelAdapter(BaseKernelAdapter):
 
     def _forward_from_prebuild_lib(self, *args, stream: Optional[int] = None):
         """Low-level function to call the compiled CUDA kernel.
-        
+
         Converts PyTorch tensor pointers to C void pointers for ctypes interface.
         """
-        ctypes_args = [
-            ctypes.c_void_p(arr.data_ptr()) if not isinstance(arr, int) else arr for arr in args
-        ]
+        ctypes_args = [ctypes.c_void_p(arr.data_ptr()) if not isinstance(arr, int) else arr for arr in args]
         ctypes_args.append(ctypes.c_void_p(stream))
         self.lib.call(*ctypes_args)
 
@@ -467,7 +472,7 @@ class CythonKernelAdapter(BaseKernelAdapter):
     @property
     def is_dynamic(self):
         """Indicates whether the kernel handles dynamic shapes."""
-        return (self.dynamic_symbolic_map is not None and len(self.dynamic_symbolic_map) > 0)
+        return self.dynamic_symbolic_map is not None and len(self.dynamic_symbolic_map) > 0
 
     def get_kernel_source(self, kernel_only: bool = False):
         """Returns the source code of the compiled kernel."""

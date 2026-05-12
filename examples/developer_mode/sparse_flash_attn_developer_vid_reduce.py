@@ -15,7 +15,7 @@ pass_configs = {
 }
 
 
-@tilelang.jit(out_idx=[3], workspace_idx=[4, 5, 6, 7, 8], pass_configs=pass_configs)
+@tilelang.jit(out_idx=[3], pass_configs=pass_configs)
 def sparse_attention_fwd(
     heads,
     dim,
@@ -80,12 +80,6 @@ def sparse_attention_fwd(
         KV: T.Tensor(kv_shape, dtype),  # type: ignore
         Indices: T.Tensor(indices_shape, indices_dtype),  # type: ignore
         Output: T.Tensor(o_shape, dtype),  # type: ignore
-        # TODO: implement automatically
-        workspace_1: T.Tensor([block_num, BI, D], dtype),
-        workspace_2: T.Tensor([block_num, BI, D_tail], dtype),
-        workspace_3: T.Tensor([block_num, H_per_block, BI], accum_dtype),
-        workspace_4: T.Tensor([block_num, H_per_block, BI], dtype),
-        workspace_5: T.Tensor([block_num, H_per_block, D], accum_dtype),
     ):
         with T.Kernel(block_num, threads=2, is_npu=True) as (cid):
             bx = cid % (seq_len * REPLICATE_H)
@@ -130,32 +124,27 @@ def sparse_attention_fwd(
             T.tile.fill(sumexp, 0.0)
             T.tile.fill(m_i, -(2.0**30))
             for i_i in T.serial(NI):
-                T.copy(workspace_1[cid, 0:BI, 0:D], kv_l1)
-                T.copy(workspace_2[cid, 0:BI, 0:D_tail], kv_tail_l1)
-
                 T.gemm_v0(q_l1, kv_l1, acc_s_l0c, transpose_B=True, init=True)
                 T.gemm_v0(q_tail_l1, kv_tail_l1, acc_s_l0c, transpose_B=True)
 
-                T.copy(acc_s_l0c, workspace_3[cid, 0:H_per_block, 0:BI])
-                T.copy(workspace_4[cid, 0:H_per_block, 0:BI], acc_s_l1)
+                T.copy(acc_s_l0c, acc_s_ub_)
 
                 T.gemm_v0(acc_s_l1, kv_l1, acc_o_l0c, init=True)
 
-                T.copy(acc_o_l0c, workspace_5[cid, 0:H_per_block, 0:D])
+                T.copy(acc_o_l0c, acc_o_ub)
 
                 T.copy(Indices[b_i, s_i, g_i, i_i * BI : i_i * BI + BI], indices_ub_)
 
                 for bi_i in range(BI):
                     T.copy(KV[b_i, indices_ub_[bi_i], g_i, :D], kv_ub)
                     T.copy(KV[b_i, indices_ub_[bi_i], g_i, D:], kv_tail_ub)
-                    T.copy(kv_ub, workspace_1[cid, bi_i, :])
-                    T.copy(kv_tail_ub, workspace_2[cid, bi_i, :])
+                    T.copy(kv_ub, kv_l1[bi_i, :])
+                    T.copy(kv_tail_ub, kv_tail_l1[bi_i, :])
 
                 T.tile.fill(acc_s_ub, 0.0)
 
                 T.copy(m_i, m_i_prev)
 
-                T.copy(workspace_3[cid, 0:v_block, :], acc_s_ub_)
 
                 for i, j in T.Parallel(v_block, BI):
                     acc_s_ub[i, j] = acc_s_ub[i, j] + acc_s_ub_[i, j]
@@ -185,9 +174,7 @@ def sparse_attention_fwd(
 
                 T.copy(acc_s_ub, acc_s_half)
 
-                T.copy(acc_s_half, workspace_4[cid, 0:v_block, :])
-
-                T.copy(workspace_5[cid, 0:v_block, :], acc_o_ub)
+                T.copy(acc_s_half, acc_s_l1)
 
                 for i, j in T.Parallel(v_block, D):
                     acc_o[i, j] += acc_o_ub[i, j]

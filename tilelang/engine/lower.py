@@ -235,4 +235,4 @@ def lower(
     func = mod.functions_items()[0][1]
     params = extrac_params(func)
 
-    return CompiledArtifact(None, None, params, codegen_mod.get_source())
+    return CompiledArtifact(None, mod, params, codegen_mod.get_source())
