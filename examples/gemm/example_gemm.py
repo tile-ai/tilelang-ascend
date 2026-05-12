@@ -7,9 +7,9 @@ import torch
 tilelang.cache.clear_cache()
 
 parser = argparse.ArgumentParser(description="NPU Kernel Compilation")
-parser.add_argument("--m", type=int, default=64, help="Matrix M dimension")
-parser.add_argument("--n", type=int, default=64, help="Matrix N dimension")
-parser.add_argument("--k", type=int, default=64, help="Matrix K dimension")
+parser.add_argument("--m", type=int, default=1024, help="Matrix M dimension")
+parser.add_argument("--n", type=int, default=1024, help="Matrix N dimension")
+parser.add_argument("--k", type=int, default=1024, help="Matrix K dimension")
 args = parser.parse_args()
 
 M = args.m
@@ -36,7 +36,6 @@ def matmul(M, N, K, block_M, block_N, K_L1, dtype="float16", accum_dtype="float"
             B_L1 = T.alloc_L1((K_L1, block_N), dtype)
 
             C_L0 = T.alloc_L0C((block_M, block_N), accum_dtype)
-            # T.dump_tensor(A_L1, 222, block_M* K_L1, (block_M, K_L1))
 
             with T.Scope("C"):
                 loop_k = T.ceildiv(K, K_L1)
@@ -50,12 +49,11 @@ def matmul(M, N, K, block_M, block_N, K_L1, dtype="float16", accum_dtype="float"
                     T.barrier_all()
 
                 T.copy(C_L0, C[bx * block_M, by * block_N])
-                T.dump_tensor(C_L0, 222, block_M* block_N, (block_M, block_N))
 
     return main
 
 
-func = matmul(M, N, K, 64, 64, 64)
+func = matmul(M, N, K, 128, 256, 64)
 
 torch.manual_seed(0)
 

@@ -229,7 +229,6 @@ def lower(
 
     # Phase 2: Optimize the IR for the target
     mod = OptimizeForTarget(mod, target, platform)
-    # print(mod)
 
     codegen_mod = device_codegen(mod, target, platform)
 
