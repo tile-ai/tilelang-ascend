@@ -854,6 +854,8 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op,
     CreateVecIndexCodegen(op, "TCI");
   } else if (op->op.same_as(tl::ascend_gatherb())) {
     GatherbCodegen(op, "TGATHERB");
+  } else if (op->op.same_as(tl::ascend_gather())) {
+    GatherCodegen(op, "TGATHER");
   } else if (op->op.same_as(tl::ascend_pow())) {
     PowCodegen(op);
   } else if (op->op.same_as(tl::ascend_sort32())) {
@@ -1445,6 +1447,64 @@ void CodeGenTileLangAscendPto::GatherbCodegen(const CallNode *op,
   std::string idx_name = PrintExpr(op->args[3].as<CallNode>()->args[1]);
   this->stream << op_name << "(" << dst_name << ", " << src_name << ", "
                << idx_name << ");\n";
+}
+
+void CodeGenTileLangAscendPto::GatherCodegen(const CallNode *op,
+                                             const std::string &op_name) {
+  // tl.ascend_gather args after InjectTmpBuffer (PTO):
+  //   [0] dst access_ptr
+  //   [1] src access_ptr
+  //   [2] offset access_ptr (global byte offsets, uint32)
+  //   [3] src_base_addr  (ignored here, assumed 0)
+  //   [4] size           (ignored here, derived from buffer shape)
+  //   [5] tmp access_ptr (injected uint32 tmp from tmp_bufs_; dtype must
+  //                       match indices per TGather.hpp static_assert)
+  //
+  // PTO has no per-element byte-offset gather like AscendC::Gather. TGATHERB
+  // is block gather (8 elements per offset). TGATHER is per-element gather
+  // and indexes src as a flat buffer (verified empirically: with per-row
+  // converted indices only row 0 was correct, ~3.7% match in the rotated
+  // half, exactly 1/32 rows).
+  //
+  // The user-provided offset buffer is already a global byte offset (e.g.,
+  // examples/pos_embedding/rope_mask.py builds it as element_idx * 4). To
+  // match TGATHER's expectation of element indices, we only need to divide
+  // by elem_size in place:
+  //   mask >>= log2(elem_size)
+  // After this, TGATHER produces dst[i, j] = src_flat[mask[i, j]], which is
+  // the per-element semantic AscendC::Gather provides on the ascend target.
+  // The mask buffer is overwritten (assumed dead after the gather).
+  std::string dst_name = PrintExpr(op->args[0].as<CallNode>()->args[1]);
+  std::string src_name = PrintExpr(op->args[1].as<CallNode>()->args[1]);
+  std::string idx_name = PrintExpr(op->args[2].as<CallNode>()->args[1]);
+  std::string tmp_name = PrintExpr(op->args[5].as<CallNode>()->args[1]);
+
+  BufferInfo dst_info = GetBufferInfo(op->args[0]);
+  int elem_size = dst_info.dtype.bytes();
+
+  auto log2_int = [](int x) {
+    int r = 0;
+    while (x > 1) {
+      ICHECK_EQ(x & 1, 0) << "ascend_gather PTO lowering requires power-of-2 "
+                             "elem_size, got: " << x;
+      x >>= 1;
+      ++r;
+    }
+    return r;
+  };
+  int shift_div = log2_int(elem_size);
+
+  // mask /= elem_size  (byte offset -> element offset; TGATHER reads indices
+  // as element indices into src_flat)
+  if (shift_div > 0) {
+    this->PrintIndent();
+    this->stream << "TSHRS(" << idx_name << ", " << idx_name << ", "
+                 << shift_div << ");\n";
+  }
+
+  this->PrintIndent();
+  this->stream << op_name << "(" << dst_name << ", " << src_name << ", "
+               << idx_name << ", " << tmp_name << ");\n";
 }
 
 void CodeGenTileLangAscendPto::GatherMaskCodegen(const CallNode *op,

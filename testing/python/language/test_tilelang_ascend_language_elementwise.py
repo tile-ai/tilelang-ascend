@@ -2336,7 +2336,7 @@ def run_test_gather(M, N, block_M, block_N, dtype, target):
 
 
 @pytest.mark.parametrize("dtype", ["int16", "int32", "uint16", "uint32", "float", "float16", "bfloat16"])
-@pytest.mark.parametrize("target", ["ascendc"])
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("shape", [(128, 1024)])
 def test_gather(dtype, target, shape):
     M, N = shape
