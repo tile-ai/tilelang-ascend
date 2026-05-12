@@ -8,13 +8,15 @@ TEST_DIRS=""
 while [[ $# -gt 0 ]]; do
     case $1 in
         --skip-pytest)
+            SKIP_PYTEST=true
+            shift
+            ;;
         --coverage)
             ENABLE_COVERAGE=true
             shift
             ;;
         --enable-cpp-coverage)
             ENABLE_CPP_COVERAGE=true
-            shift
             SKIP_PYTEST=true
             shift
             ;;
@@ -348,16 +350,14 @@ else
     echo "====================================="
 fi
 
-exit $pytest_exit_code
-
 # ================= Coverage Collection and Report =================
 if [ "$ENABLE_COVERAGE" = true ] || [ "$ENABLE_CPP_COVERAGE" = true ]; then
     echo -e "\n====================================="
     echo "Collecting Coverage Data"
     echo "====================================="
     
-    PROJECT_ROOT="$(pwd)"
-    mkdir -p "${PROJECT_ROOT}/coverage_data" coverage_reports
+    PROJECT_ROOT="$(cd .. && pwd)"
+    mkdir -p "${PROJECT_ROOT}/coverage_data" "${PROJECT_ROOT}/coverage_reports"
     
     # Python coverage
     if [ "$ENABLE_COVERAGE" = true ]; then
@@ -389,3 +389,5 @@ if [ "$ENABLE_COVERAGE" = true ] || [ "$ENABLE_CPP_COVERAGE" = true ]; then
         echo "✓ Coverage report generated: coverage_report.md"
     fi
 fi
+
+exit $pytest_exit_code
