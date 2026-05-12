@@ -836,7 +836,9 @@ private:
     if (call_node->op.as<OpNode>()) {
       std::string op_name = call_node->op.as<OpNode>()->name;
 
-      // Check for set_flag/wait_flag operations
+      // Match set_flag / wait_flag synchronization intrinsics.
+      // Signature: op(src_pipe, dst_pipe, event_id) — the first three args
+      // encode the source pipeline, destination pipeline, and event handle.
       static const char *kSyncOps[] = {
           "tl.ascend_set_flag",      "tl.ascend_wait_flag",
           "tl.ascend_auto_set_flag", "tl.ascend_auto_wait_flag",
@@ -859,8 +861,9 @@ private:
                 bool src_is_vector = IsVectorPipeline(src);
                 bool dst_is_vector = IsVectorPipeline(dst);
 
-                // When both cube and vector pipelines match, use current scope
-                // to determine which one should be retained
+                // MTE2/MTE3 belong to both Cube and Vector pipelines. When
+                // the src and dst both fall into this overlap, resolve the
+                // ambiguity using the current resource_scope annotation.
                 if (src_is_cube && dst_is_cube && src_is_vector &&
                     dst_is_vector) {
                   if (current_resource_scope_ == "VEC") {
@@ -872,6 +875,9 @@ private:
                   }
                 }
 
+                // Retain the sync only when both src and dst belong to the
+                // execution unit this pass is processing (Vector for AIV,
+                // Cube for AIC).
                 if (is_aiv) {
                   return src_is_vector && dst_is_vector;
                 } else {
@@ -883,7 +889,9 @@ private:
         }
       }
 
-      // Check for pipe_barrier operations
+      // Match pipe_barrier / barrier_all synchronization intrinsics.
+      // Signature: op(pipe_name) — pipe_name is "M" (Cube), "V" (Vector),
+      // or "ALL" (both). Keep the barrier that belongs to the current side.
       static const char *kSyncPatterns[] = {
           "ascend_pipe_barrier",
           "pipe_barrier",
@@ -896,9 +904,12 @@ private:
                       })) {
         if (const auto *pipe = call_node->args[0].as<StringImmNode>()) {
           std::string pipe_name = pipe->value;
+          // "ALL" barriers synchronize both sides — always retain.
           if (pipe_name == "ALL") {
             return true;
           }
+          // "V" barrier is relevant to the Vector (AIV) side,
+          // "M" barrier is relevant to the Cube (AIC) side.
           if (is_aiv) {
             return pipe_name == "V";
           } else {
@@ -910,14 +921,19 @@ private:
     return false;
   }
 
-  // Check if the pipeline name belongs to Cube unit (M, MTE1, MTE2, MTE3, FIX)
+  // Cube pipelines: M (main Cube pipe) and its sub-pipes MTE1/MTE2/MTE3,
+  // plus FIX (fixed-function Cube pipe).
+  // MTE2/MTE3 also appear in the Vector set — they serve both units and are
+  // disambiguated by the caller using current_resource_scope_.
   bool IsCubePipeline(const std::string &pipe) {
     static const std::unordered_set<std::string> cube_pipelines = {
         "M", "MTE1", "MTE2", "MTE3", "FIX"};
     return cube_pipelines.find(pipe) != cube_pipelines.end();
   }
 
-  // Check if the pipeline name belongs to Vector unit (V, MTE2, MTE3)
+  // Vector pipelines: V (main Vector pipe) and shared MTE2/MTE3 sub-pipes.
+  // MTE2/MTE3 overlap with the Cube set — the caller resolves the ambiguity
+  // via current_resource_scope_ when both classifications match.
   bool IsVectorPipeline(const std::string &pipe) {
     static const std::unordered_set<std::string> vector_pipelines = {
         "V", "MTE2", "MTE3"};
