@@ -301,6 +301,9 @@ void CodeGenTileLangAscendPto::PrintFuncPrefix(std::ostream &os) {
 }
 
 std::string CodeGenTileLangAscendPto::Finish() {
+  if (this->platform_ == "A5") {
+    decl_stream << "#define PTO_PLATFORM_A5\n";
+  }
   decl_stream << "#include \"tl_templates/pto/common.h\"\n";
   decl_stream << "#include <pto/pto-inst.hpp>\n";
   decl_stream << "#include \"acl/acl.h\"\n";
@@ -1182,7 +1185,9 @@ void CodeGenTileLangAscendPto::CopyL1ToL0Codegen(const CallNode *call,
   BufferInfo dst_info = GetBufferInfo(call->args[2]);
 
   std::string api_name = is_a ? "copy_l1_to_l0a" : "copy_l1_to_l0b";
-  std::string tile_name = is_a ? "TileMatL0A" : "TileMatL0B";
+  std::string tile_name_a5 = is_a ? "TileMatL0A_a5" : "TileMatL0B";
+  std::string tile_name_not_a5 = is_a ? "TileMatL0A" : "TileMatL0B";
+  std::string tile_name = (this->platform_ == "A5") ? tile_name_a5 : tile_name_not_a5;
 
   ShapeInfo src_shape_info = GetSliceInfo(src_info.access_ptr);
   ShapeInfo dst_shape_info = GetSliceInfo(dst_info.access_ptr);
@@ -1314,6 +1319,9 @@ void CodeGenTileLangAscendPto::SyncAllCodegen(const CallNode *op) {
 
 void CodeGenTileLangAscendPto::PipeBarrierCodegen(const CallNode *op) {
   std::string pipe = Downcast<StringImm>(op->args[0])->value;
+  if (this->platform_ == "A5" && pipe == "V") {
+    return;
+  }
   this->PrintIndent();
   this->stream << "pipe_barrier(PIPE_" << pipe << ");\n";
 }
@@ -2734,7 +2742,10 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
   ICHECK(scope_to_tile.count(scope))
       << "Unsupported storage scope for PTO allocation: " << scope
       << ", variable: " << op->buffer_var->name_hint;
-  const std::string &op_name = scope_to_tile.at(scope);
+  std::string op_name = scope_to_tile.at(scope);
+  if (scope == "wmma.matrix_a" && this->platform_ == "A5") {
+    op_name = kAscendPtoScope + "TileMatL0A_a5";
+  }
 
   // 3. Retrieve and validate the 4D physical layout [M, N, Valid_M, Valid_N]
   ICHECK(buffer_shapess_.count(op->buffer_var))
@@ -3201,7 +3212,7 @@ void CodeGenTileLangAscendPto::MmaCodegen(const CallNode *op) {
   if (a_shape_info.is_slice) {
     std::string a_temp_name = GetTempVarName(a_name);
     CreateCubeVariable(a_temp_name, a_shape_info,
-                       kAscendPtoScope + "TileMatL0A");
+                       kAscendPtoScope + ((this->platform_ == "A5") ? "TileMatL0A_a5" : "TileMatL0A"));
     a_name = a_temp_name;
   }
 
