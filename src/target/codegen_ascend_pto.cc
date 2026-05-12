@@ -2334,19 +2334,16 @@ void CodeGenTileLangAscendPto::CastCodegen(const CallNode *op,
     var_names.push_back(var_name);
   }
 
-  ShapeInfo src_shape_info = GetSliceInfo(op->args[0].as<CallNode>());
-  ShapeInfo dst_shape_info = GetSliceInfo(op->args[1].as<CallNode>());
+  ShapeInfo src_shape_info = GetSliceInfo(op->args[1].as<CallNode>());
+  ShapeInfo dst_shape_info = GetSliceInfo(op->args[0].as<CallNode>());
   if (src_shape_info.is_slice || dst_shape_info.is_slice) {
-    this->PrintIndent();
-    this->stream << "set_flag(PIPE_MTE2, PIPE_MTE3, EVENT_ID1);\n";
-    this->stream << "wait_flag(PIPE_MTE2, PIPE_MTE3, EVENT_ID1);\n";
     std::string src_temp_name = GetTempVarName(src_shape_info.ub_name);
     std::string dst_temp_name = GetTempVarName(dst_shape_info.ub_name);
     CreateUbVariableND(src_temp_name, src_shape_info);
     CreateUbVariableND(dst_temp_name, dst_shape_info);
     this->PrintIndent();
     this->stream << "TCVT" << "(" << dst_temp_name << ", " << src_temp_name
-                 << ", " << "pto::RoundMode::CAST_NONE" << ");\n";
+                 << ", " << op_type << ");\n";
   } else {
     this->stream << "TCVT" << "(";
     var_names.push_back(op_type);
