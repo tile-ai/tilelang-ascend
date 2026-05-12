@@ -1,0 +1,898 @@
+#include "../op/builtin.h"
+#include "arith/ir_mutator_with_analyzer.h"
+#include <tvm/tir/builtin.h>
+#include <tvm/tir/transform.h>
+
+namespace tvm {
+namespace tl {
+
+enum class DstBufferScope { L1, Ub };
+
+enum class CopyDirection { None, UbToL1, L0cToUb };
+
+struct WorkspaceInfo {
+  DataType dtype;
+  std::string dtype_str;
+  std::string workspace_name;
+  std::string associated_dst_buffer_name;
+  Buffer workspace_buffer;
+  Array<PrimExpr> shapes;
+  PrimExpr offset;
+  PrimExpr extent;
+  PrimExpr dim;
+  int64_t per_block_ele_nums = 0;
+  PrimExpr dst_l1_row_offset; // Only used for skip UB scenario to store the row
+                              // offset for in-place UB to workspace copy
+                              // transformation
+};
+
+struct CoreMetaInfo {
+  Var cid_var;
+  Var vid_var;
+  PrimExpr total_core_nums;
+  int vector_cnt = 1;
+};
+
+struct CopyGlobalContext {
+  // Maps workspace name to the corresponding detailed workspace information
+  std::map<std::string, WorkspaceInfo> workspace_map_;
+  // Tracks the total number of existing workspaces
+  size_t workspace_num_ = 0;
+  // Maps source buffer name to the associated workspace name
+  std::unordered_map<std::string, std::string> src_to_workspace_map_;
+  // Maps destination buffer name to the associated workspace name
+  std::unordered_map<std::string, std::string> dst_to_workspace_map_;
+  // Maps destination buffer name to its corresponding access Call object
+  std::unordered_map<std::string, Call> dst_to_access_map_;
+  // Stores the set of all buffers that are currently being tracked
+  std::unordered_set<std::string> tracked_buffers_;
+  // Maps source buffer name to its corresponding destination buffer name
+  std::unordered_map<std::string, std::string> src_to_dst_map_;
+  // Maps destination buffer name to its corresponding scope information
+  std::unordered_map<std::string, DstBufferScope> dst_to_scope_map_;
+  // Core meta info for vid offset calculation (threads=2 scenario)
+  CoreMetaInfo core_meta_info_;
+  // UB buffers that skipped VidReduction (from PrimFunc attrs)
+  std::unordered_set<std::string> buffers_skip_vid_reduction_;
+  // Buffer shapes (from PrimFunc attrs)
+  std::unordered_map<std::string, Array<PrimExpr>> buffer_shapes_;
+};
+
+class CopyInfoCollector : public StmtExprVisitor {
+private:
+  CopyGlobalContext context_;
+
+  static const std::unordered_map<std::string, DataType> type_map_;
+
+  std::unordered_set<std::string> target_copy_stmts_ = {"copy_ub_to_l1",
+                                                        "copy_l0c_to_ub"};
+  std::unordered_map<std::string, DstBufferScope> scope_table_ = {
+      {"copy_ub_to_l1", DstBufferScope::L1},
+      {"copy_l0c_to_ub", DstBufferScope::Ub}};
+
+public:
+  const CopyGlobalContext &GetCopyGlobalContext() const { return context_; }
+
+  explicit CopyInfoCollector(
+      const std::unordered_set<std::string> &target_copy_stmts = {},
+      const std::unordered_map<std::string, DstBufferScope> &scope_table = {}) {
+    if (!target_copy_stmts.empty()) {
+      this->target_copy_stmts_ = target_copy_stmts;
+    }
+    if (!scope_table.empty()) {
+      this->scope_table_ = scope_table;
+    }
+  }
+
+  void SetSkipBuffers(const std::unordered_set<std::string> &skip_buffers) {
+    context_.buffers_skip_vid_reduction_ = skip_buffers;
+  }
+
+  void SetBufferShapes(
+      const std::unordered_map<std::string, Array<PrimExpr>> &shapes) {
+    context_.buffer_shapes_ = shapes;
+  }
+
+  DataType ConvertStringToDataType(const std::string &type_str) {
+    auto it = type_map_.find(type_str);
+
+    ICHECK(it != type_map_.end())
+        << "[Error]<WorkspaceReduction>: Not supported type: " << type_str
+        << ", maybe you need to update type_map_.";
+
+    return it->second;
+  }
+
+  std::string IsTargetCopyExpr(const CallNode *call_node) {
+    if (!call_node || call_node->op != tir::builtin::call_extern()) {
+      return "";
+    }
+
+    if (call_node->args.empty() || !call_node->args[0].as<StringImmNode>()) {
+      return "";
+    }
+    std::string copy_stmt = Downcast<StringImm>(call_node->args[0])->value;
+    for (const auto &target_substr : target_copy_stmts_) {
+      size_t pos = copy_stmt.find(target_substr);
+      if (pos != std::string::npos) {
+        return copy_stmt;
+      }
+    }
+    return "";
+  }
+
+  void WorkspaceInfoCollector(const std::string &copy_stmt,
+                              const CallNode *src_access_ptr,
+                              const CallNode *dst_access_ptr) {
+    ICHECK(src_access_ptr != nullptr && dst_access_ptr != nullptr)
+        << "[Error]<WorkspaceReduction>: src_access_ptr or "
+           "dst_access_ptr is nullptr!";
+    for (auto &target_copy_stmt : target_copy_stmts_) {
+      std::vector<std::string> params_vec;
+      if (copy_stmt.find(target_copy_stmt) != std::string::npos) {
+        CopyDirection copy_direction = CopyDirection::None;
+        std::string current_param;
+        std::string src_buffer_name =
+            src_access_ptr->args[1].as<VarNode>()->name_hint;
+        std::string dst_buffer_name =
+            dst_access_ptr->args[1].as<VarNode>()->name_hint;
+        if (target_copy_stmt == "copy_ub_to_l1") {
+          copy_direction = CopyDirection::UbToL1;
+        } else if (target_copy_stmt == "copy_l0c_to_ub") {
+          copy_direction = CopyDirection::L0cToUb;
+        }
+        size_t left_bracket = copy_stmt.find('<');
+        size_t right_bracket = copy_stmt.rfind('>');
+        ICHECK(left_bracket != std::string::npos &&
+               right_bracket != std::string::npos &&
+               left_bracket < right_bracket)
+            << "[Error]<WorkspaceReduction>: illegal template "
+               "parameters scope!"
+            << std::endl;
+        std::string template_content = copy_stmt.substr(
+            left_bracket + 1, right_bracket - left_bracket - 1);
+        for (auto &c : template_content) {
+          if (c == ',') {
+            ICHECK(!current_param.empty())
+                << "[Error]<WorkspaceReduction>: Empty parameter found in "
+                   "template!";
+            params_vec.push_back(current_param); // [type N M] or [type1 type2
+                                                 // LayoutGM M N enRelu]
+            current_param = "";
+            continue;
+          }
+          if (std::isspace(c)) {
+            continue;
+          }
+          current_param.push_back(c);
+        }
+        params_vec.push_back(current_param);
+        // Only swap for normal UbToL1 with 3+ params (skip UB has only 2
+        // params)
+        if (copy_direction == CopyDirection::UbToL1 && params_vec.size() >= 3) {
+          std::swap(params_vec[1], params_vec[2]);
+        }
+        ++context_.workspace_num_;
+        WorkspaceInfo ws_info;
+        std::stringstream ss;
+        ss << "workspace_" << context_.workspace_num_;
+        ws_info.workspace_name = ss.str();
+
+        ws_info.associated_dst_buffer_name = dst_buffer_name;
+
+        // Check if src_buffer is in skip set (must be defined before switch)
+        bool is_skip_ub =
+            context_.buffers_skip_vid_reduction_.count(src_buffer_name) > 0;
+
+        switch (copy_direction) {
+        case CopyDirection::UbToL1:
+          ws_info.dtype_str = params_vec[0]; // UbToL1: [dtype, M, N]
+          ws_info.dtype = ConvertStringToDataType(ws_info.dtype_str);
+
+          if (is_skip_ub) {
+            // Skip UB scenario: use full L1 shape from buffer_shapess
+            // Template params for skip UB: [dtype, size] (no M, N)
+
+            // dst_access_ptr args: [type_annotation, var, offset, extent, ...]
+            // args.size() should be at least 4
+
+            // Check args size before accessing
+            ICHECK(dst_access_ptr->args.size() >= 4)
+                << "[ERROR]<WorkspaceReduction>: dst_access_ptr args size "
+                   "should be at least 4, got "
+                << dst_access_ptr->args.size();
+
+            PrimExpr dst_offset = dst_access_ptr->args[2]; // row offset
+
+            // Get dst buffer full shape from buffer_shapes_
+            auto shape_it = context_.buffer_shapes_.find(dst_buffer_name);
+            ICHECK(shape_it != context_.buffer_shapes_.end())
+                << "[ERROR]<WorkspaceReduction>: dst_buffer " << dst_buffer_name
+                << " not found in buffer_shapes_";
+            Array<PrimExpr> dst_full_shape = shape_it->second;
+
+            // Shape must be 2D [M, N] for current Skip UB UbToL1 scenario
+            // Future: Extend to support multi-dimensional shapes based on
+            // buffer scope
+            ICHECK(dst_full_shape.size() == 2)
+                << "[ERROR]<WorkspaceReduction>: Skip UB UbToL1 expects "
+                   "dst_full_shape to be 2D, "
+                   "got "
+                << dst_full_shape.size();
+
+            PrimExpr M = dst_full_shape[0]; // rows
+            PrimExpr N = dst_full_shape[1]; // cols
+
+            ws_info.shapes.push_back(M);
+            ws_info.shapes.push_back(N);
+
+            // per_block_ele_nums = M * N
+            int64_t M_val = 0, N_val = 0;
+            if (const IntImmNode *M_imm = M.as<IntImmNode>()) {
+              M_val = M_imm->value;
+            }
+            if (const IntImmNode *N_imm = N.as<IntImmNode>()) {
+              N_val = N_imm->value;
+            }
+            ws_info.per_block_ele_nums = M_val * N_val;
+
+            // dst_extent for workspace = M * N (full L1 size)
+            PrimExpr dst_full_extent = M * N;
+
+            // base offset: cid * dst_full_extent (for workspace declaration,
+            // excludes dst_offset) workspace declaration)
+            ws_info.offset = context_.core_meta_info_.cid_var * dst_full_extent;
+
+            // Store row offset separately, added during UbToL1 in-place
+            // transform
+            ws_info.dst_l1_row_offset = dst_offset;
+
+            // extent: total_core_nums * dst_full_extent - base_offset
+            ws_info.extent =
+                context_.core_meta_info_.total_core_nums * dst_full_extent -
+                ws_info.offset;
+
+          } else {
+            // Normal UB scenario: use M, N from template params
+            for (int i = 1; i < params_vec.size(); ++i) {
+              int shapeI = std::stoi(params_vec[i]);
+              // UbToL1 scenario: UB is halved by VidReduction (due to two
+              // vector cores), but GM workspace needs to store complete data,
+              // first dim needs to multiply vector_cnt
+              if (i == 1 && context_.core_meta_info_.vid_var.defined() &&
+                  context_.core_meta_info_.vector_cnt > 1) {
+                shapeI *= context_.core_meta_info_.vector_cnt;
+              }
+              ws_info.shapes.push_back(IntImm(DataType::Int(32), shapeI));
+            }
+
+            ws_info.per_block_ele_nums = 1;
+            for (auto &i : ws_info.shapes) {
+              const IntImmNode *i_node = i.as<IntImmNode>();
+              ICHECK(i_node != nullptr)
+                  << "[Error]<WorkspaceReduction>: Shape dimension is not "
+                     "a "
+                     "valid IntImm, cannot extract value\n";
+              ws_info.per_block_ele_nums *= i_node->value;
+            }
+
+            ws_info.offset =
+                context_.core_meta_info_.cid_var *
+                IntImm(DataType::Int(64), ws_info.per_block_ele_nums);
+
+            ws_info.extent =
+                context_.core_meta_info_.total_core_nums *
+                    IntImm(DataType::Int(64), ws_info.per_block_ele_nums) -
+                ws_info.offset;
+          }
+          break;
+        case CopyDirection::L0cToUb:
+          ws_info.dtype_str = params_vec[1]; // L0cToUb: [src_dtype, dst_dtype,
+                                             // LayoutGM, M, N, enRelu]
+          ws_info.dtype = ConvertStringToDataType(ws_info.dtype_str);
+          int shapeM = std::stoi(params_vec[3]);
+          int shapeN = std::stoi(params_vec[4]);
+          ws_info.shapes.push_back(IntImm(DataType::Int(32), shapeM));
+          ws_info.shapes.push_back(IntImm(DataType::Int(32), shapeN));
+
+          ws_info.per_block_ele_nums = shapeM * shapeN;
+
+          ws_info.offset =
+              context_.core_meta_info_.cid_var *
+              IntImm(DataType::Int(64), ws_info.per_block_ele_nums);
+
+          ws_info.extent =
+              context_.core_meta_info_.total_core_nums *
+                  IntImm(DataType::Int(64), ws_info.per_block_ele_nums) -
+              ws_info.offset;
+          break;
+        }
+
+        ws_info.dim = IntImm(DataType::Int(64), ws_info.shapes.size());
+
+        Array<PrimExpr> real_shapes{context_.core_meta_info_.total_core_nums};
+        for (const auto &shape : ws_info.shapes) {
+          real_shapes.push_back(shape);
+        }
+        ws_info.workspace_buffer = decl_buffer(
+            real_shapes, ws_info.dtype, ws_info.workspace_name, "global");
+
+        context_.workspace_map_[ws_info.workspace_name] = ws_info;
+        context_.src_to_workspace_map_[src_buffer_name] =
+            ws_info.workspace_name;
+        context_.dst_to_workspace_map_[dst_buffer_name] =
+            ws_info.workspace_name;
+      }
+    }
+  }
+
+  void VisitStmt(const Stmt &stmt) final { StmtExprVisitor::VisitStmt(stmt); }
+
+  void VisitStmt_(const EvaluateNode *op) final {
+    const CallNode *call_node = op->value.as<CallNode>();
+    if (!call_node) {
+      return StmtExprVisitor::VisitStmt_(op);
+    }
+
+    std::string copy_stmt_name = IsTargetCopyExpr(call_node);
+    if (!copy_stmt_name.empty()) {
+      Array<PrimExpr> call_node_args = call_node->args;
+
+      const CallNode *src_ptr = call_node_args[1].as<CallNode>();
+      const CallNode *dst_ptr = call_node_args[2].as<CallNode>();
+      ICHECK(src_ptr != nullptr && dst_ptr != nullptr)
+          << "[Error]<WorkspaceReduction>: src_ptr or dst_ptr is nullptr!";
+      ICHECK(src_ptr->op.same_as(tvm::tir::builtin::tvm_access_ptr()) &&
+             src_ptr->args.size() >= 2)
+          << "[Error]<WorkspaceReduction>: src is not access ptr or its "
+             "size of args is too small";
+      ICHECK(dst_ptr->op.same_as(tvm::tir::builtin::tvm_access_ptr()) &&
+             dst_ptr->args.size() >= 2)
+          << "[Error]<WorkspaceReduction>: dst is not access ptr or its "
+             "size of args is too small";
+      const VarNode *src_name_var_node = (src_ptr->args[1].as<VarNode>());
+      const VarNode *dst_name_var_node = (dst_ptr->args[1].as<VarNode>());
+      ICHECK(src_name_var_node != nullptr && dst_name_var_node != nullptr)
+          << "[Error]<WorkspaceReduction>: src or dst args[1] is not VarNode!";
+
+      WorkspaceInfoCollector(copy_stmt_name, src_ptr, dst_ptr);
+
+      const std::string src_buffer_name = src_name_var_node->name_hint;
+      const std::string dst_buffer_name = dst_name_var_node->name_hint;
+      context_.tracked_buffers_.insert(src_buffer_name);
+      context_.src_to_dst_map_[src_buffer_name] = dst_buffer_name;
+
+      // skip UB + UbToL1: reconstruct dst_access_ptr
+      bool is_skip_ub =
+          context_.buffers_skip_vid_reduction_.count(src_buffer_name) > 0;
+      bool is_ub_to_l1 =
+          (copy_stmt_name.find("copy_ub_to_l1") != std::string::npos);
+
+      if (is_skip_ub && is_ub_to_l1) {
+        // Get dst full shape [M, N] from buffer_shapes_
+        auto shape_it = context_.buffer_shapes_.find(dst_buffer_name);
+        if (shape_it != context_.buffer_shapes_.end()) {
+          Array<PrimExpr> dst_full_shape = shape_it->second;
+          PrimExpr M = dst_full_shape[0]; // rows
+          PrimExpr N = dst_full_shape[1]; // cols
+          PrimExpr full_extent = M * N;
+
+          // Construct new dst_access_ptr: offset=0, extent=M*N
+          Array<PrimExpr> new_args = {
+              dst_ptr->args[0],             // type_annotation
+              dst_ptr->args[1],             // var
+              IntImm(DataType::Int(64), 0), // offset = 0
+              full_extent,                  // extent = M * N
+              dst_ptr->args[4]              // rw_mask
+          };
+
+          Call new_dst_access(dst_ptr->dtype, dst_ptr->op, new_args);
+          context_.dst_to_access_map_[dst_buffer_name] = new_dst_access;
+        } else {
+          context_.dst_to_access_map_[dst_buffer_name] = GetRef<Call>(dst_ptr);
+        }
+      } else {
+        context_.dst_to_access_map_[dst_buffer_name] = GetRef<Call>(dst_ptr);
+      }
+
+      std::string copy_func_name = call_node_args[0].as<StringImmNode>()->value;
+      for (auto &target_copy_stmt : target_copy_stmts_) {
+        if (copy_func_name.find(target_copy_stmt) != std::string::npos) {
+          context_.dst_to_scope_map_[dst_buffer_name] =
+              scope_table_[target_copy_stmt];
+        }
+      }
+    }
+  }
+
+  void VisitStmt_(const AttrStmtNode *op) override {
+
+    if (op->attr_key == tvm::tir::attr::thread_extent) {
+      if (const IterVarNode *iter_var_node = op->node.as<IterVarNode>()) {
+        IterVar iter_var = GetRef<IterVar>(iter_var_node);
+        if (/*!context_.core_meta_info_.is_valid &&*/
+            iter_var->thread_tag == "blockIdx.x") {
+          context_.core_meta_info_.cid_var = iter_var->var;
+          context_.core_meta_info_.total_core_nums = op->value;
+          // context_.core_meta_info_.is_valid = true;
+        }
+        if (iter_var->thread_tag == "threadIdx.x") {
+          context_.core_meta_info_.vid_var = iter_var->var;
+          context_.core_meta_info_.vector_cnt =
+              Downcast<IntImm>(op->value)->value;
+        }
+      }
+    }
+
+    StmtVisitor::VisitStmt_(op);
+  }
+};
+
+const std::unordered_map<std::string, DataType> CopyInfoCollector::type_map_ = {
+    {"half", tvm::runtime::DataType::Float(16)},
+    {"float16", tvm::runtime::DataType::Float(16)},
+    {"float", tvm::runtime::DataType::Float(32)},
+    {"float32", tvm::runtime::DataType::Float(32)},
+    {"float64", tvm::runtime::DataType::Float(64)},
+    {"int8", tvm::runtime::DataType::Int(8)},
+    {"int16", tvm::runtime::DataType::Int(16)},
+    {"int", tvm::runtime::DataType::Int(32)},
+    {"int32", tvm::runtime::DataType::Int(32)},
+    {"int64", tvm::runtime::DataType::Int(64)},
+    {"uint8", tvm::runtime::DataType::UInt(8)},
+    {"uint16", tvm::runtime::DataType::UInt(16)},
+    {"uint32", tvm::runtime::DataType::UInt(32)},
+    {"uint64", tvm::runtime::DataType::UInt(64)}};
+
+class AscendWorkspaceReductionPass : public arith::IRMutatorWithAnalyzer {
+public:
+  static PrimFunc Substitute(PrimFunc f) {
+    arith::Analyzer analyzer;
+
+    // Read buffers_skip_vid_reduction from PrimFunc attrs
+    std::unordered_set<std::string> skip_buffer_names;
+    std::unordered_map<std::string, Array<PrimExpr>> buffer_shapes;
+    if (f->attrs.defined()) {
+      auto attrs_dict = f->attrs->dict;
+
+      // Read buffers_skip_vid_reduction
+      auto it_skip = attrs_dict.find("buffers_skip_vid_reduction");
+      if (it_skip != attrs_dict.end()) {
+        auto skip_array = Downcast<Array<String>>((*it_skip).second);
+        for (const auto &name : skip_array) {
+          skip_buffer_names.insert(name);
+        }
+      }
+
+      // Read buffer_shapess for skip UB scenario
+      auto it_shapes = attrs_dict.find("buffer_shapess");
+      if (it_shapes != attrs_dict.end()) {
+        auto shapes_map =
+            Downcast<Map<Var, Array<PrimExpr>>>((*it_shapes).second);
+        for (const auto &pair : shapes_map) {
+          std::string buf_name = pair.first->name_hint;
+          buffer_shapes[buf_name] = pair.second;
+        }
+      }
+    }
+
+    CopyInfoCollector info_collector;
+    info_collector.SetSkipBuffers(skip_buffer_names);
+    info_collector.SetBufferShapes(buffer_shapes);
+    info_collector.VisitStmt(f->body);
+    const CopyGlobalContext &context = info_collector.GetCopyGlobalContext();
+    AscendWorkspaceReductionPass substituter(&analyzer, context);
+
+    auto *f_mut = f.CopyOnWrite();
+    f_mut->body = substituter.VisitStmt(f->body);
+
+    Array<Var> new_params = f_mut->params;
+    Array<IntImm> auto_gm_idx;
+    for (const auto &[ws_name, ws_info] : context.workspace_map_) {
+      if (ws_info.workspace_buffer.defined()) {
+        Var ws_handle(ws_name + "_handle", DataType::Handle());
+        if (!f_mut->buffer_map.count(ws_handle)) {
+          f_mut->buffer_map.Set(ws_handle, ws_info.workspace_buffer);
+          new_params.push_back(ws_handle);
+          auto_gm_idx.push_back(
+              IntImm(DataType::UInt(32), new_params.size() - 1));
+        }
+      }
+    }
+
+    f_mut->params = new_params;
+    tvm::tir::PrimFunc prim_func_with_new_attr =
+        GetRef<tvm::tir::PrimFunc>(f_mut);
+    prim_func_with_new_attr = tvm::WithAttr(std::move(prim_func_with_new_attr),
+                                            "auto_gm_indices", auto_gm_idx);
+
+    return prim_func_with_new_attr;
+  }
+
+private:
+  AscendWorkspaceReductionPass(arith::Analyzer *analyzer,
+                               const CopyGlobalContext &context)
+      : arith::IRMutatorWithAnalyzer(analyzer), context_(context),
+        core_meta_info__(context.core_meta_info_) {}
+
+  const CopyGlobalContext &context_;
+  const CoreMetaInfo core_meta_info__; // For vid offset calculation
+
+  std::unordered_set<std::string> inserted_buffers_;
+
+  std::unordered_set<std::string> copy_stmt_table_ = {
+      "copy_gm_to_l1",  "copy_l1_to_l0a", "copy_l1_to_l0b",
+      "copy_l0c_to_gm", "copy_gm_to_ub",  "copy_ub_to_gm",
+      "copy_ub_to_l1",  "copy_l0c_to_ub", "copy_ub_to_ub"};
+
+  std::unordered_map<std::string, std::string> copy_replace_table_ = {
+      {"copy_ub_to_l1", "copy_ub_to_gm"}, {"copy_l0c_to_ub", "copy_l0c_to_gm"}};
+
+  std::string PrintDstScope(const DstBufferScope &dst_scope) {
+    switch (dst_scope) {
+    case DstBufferScope::L1:
+      return "l1";
+      break;
+    case DstBufferScope::Ub:
+      return "ub";
+      break;
+    default:
+      return "UnknownScope";
+    }
+  }
+
+  bool IsTargetCopyExpr(const CallNode *call_node) {
+
+    if (!call_node || call_node->op != tir::builtin::call_extern()) {
+      return false;
+    }
+
+    if (call_node->args.empty() || !call_node->args[0].as<StringImmNode>()) {
+      return false;
+    }
+    std::string func_name = Downcast<StringImm>(call_node->args[0])->value;
+    for (const auto &[target_substr, replace_substr] : copy_replace_table_) {
+      size_t pos = func_name.find(target_substr);
+      if (pos != std::string::npos) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  StringImm ReplaceCopyFuncName(const StringImm &orig_name) {
+    std::string new_name = orig_name->value;
+    std::string original_name = new_name;
+
+    for (const auto &[target_substr, replace_substr] : copy_replace_table_) {
+      size_t pos = new_name.find(target_substr);
+      if (pos != std::string::npos) {
+        new_name.replace(pos, target_substr.length(), replace_substr);
+        break;
+      }
+    }
+
+    return StringImm(new_name);
+  }
+
+  std::vector<std::string> IsTargetAccessNode(const CallNode *call_node) {
+
+    static const std::vector<std::string> EMPTY_BUFFER_LIST;
+    std::vector<std::string> dst_buffers_vec;
+    if (!call_node) {
+      return EMPTY_BUFFER_LIST;
+    }
+
+    if (call_node->args.empty()) {
+      return EMPTY_BUFFER_LIST;
+    }
+
+    Array<PrimExpr> call_node_args = call_node->args;
+    if (call_node_args.empty()) {
+      return EMPTY_BUFFER_LIST;
+    }
+
+    const StringImmNode *call_node_name = call_node_args[0].as<StringImmNode>();
+    if (call_node_name != nullptr) {
+      const std::string call_node_name_str = call_node_name->value;
+      for (const auto &copy_stmt : copy_stmt_table_) {
+        // Skip copy statements: only insert copy-back before data consumers,
+        // not producers(copy stmts).
+        if (call_node_name_str.find(copy_stmt) != std::string::npos) {
+          return EMPTY_BUFFER_LIST;
+        }
+      }
+    }
+
+    for (int i = 0; i < call_node_args.size(); ++i) {
+      const PrimExpr &arg = call_node_args[i];
+      const CallNode *access_ptr = arg.as<CallNode>();
+
+      if (!access_ptr || !access_ptr->op.same_as(builtin::tvm_access_ptr())) {
+        continue;
+      }
+
+      Array<PrimExpr> access_args = access_ptr->args;
+      ICHECK(!access_args.empty())
+          << "[Error]<WorkspaceReduction>: access ptr args is empty!";
+      ICHECK(access_args.size() >= 2)
+          << "[Error]<WorkspaceReduction>: access ptr args size too small!";
+
+      const VarNode *buffer_var = access_args[1].as<VarNode>();
+      ICHECK(buffer_var != nullptr)
+          << "[Error]<WorkspaceReduction>: access ptr args[1] is not VarNode!";
+
+      std::string buffer_name = buffer_var->name_hint;
+
+      for (const auto &[src_buffer_name, dst_buffer_name] :
+           context_.src_to_dst_map_) {
+        if (!inserted_buffers_.count(buffer_name) &&
+            buffer_name == dst_buffer_name) {
+          dst_buffers_vec.push_back(buffer_name);
+          inserted_buffers_.insert(buffer_name);
+        } else if (inserted_buffers_.count(buffer_name) &&
+                   buffer_name == dst_buffer_name) {
+          continue;
+        }
+      }
+    }
+    return dst_buffers_vec;
+  }
+
+  Call CreateWorkspaceAccessPtr(const WorkspaceInfo &ws_info, int rw_mask,
+                                bool other_side_is_ub) {
+    DataType dtype = DataType::Handle();
+    const Op &op = builtin::tvm_access_ptr();
+
+    PrimExpr offset = ws_info.offset; // Base offset: cid * M * N
+
+    // skip UB UbToL1 in-place: add row offset
+    // Condition: dst_l1_row_offset exists and workspace as dst (rw_mask=2,
+    // write) workspace restore (rw_mask=1, read) doesn't need this
+    if (ws_info.dst_l1_row_offset.defined() && rw_mask == 2) {
+      offset = offset + ws_info.dst_l1_row_offset;
+    }
+
+    // Check if vid offset needed: GM's other side is UB (UB halved by
+    // VidReduction)
+    bool need_vid_offset = other_side_is_ub &&
+                           core_meta_info__.vid_var.defined() &&
+                           core_meta_info__.vector_cnt > 1;
+
+    if (need_vid_offset) {
+      // vid offset: vid * per_block_ele_nums / vector_cnt
+      PrimExpr vid_offset =
+          core_meta_info__.vid_var *
+          IntImm(DataType::Int(64), ws_info.per_block_ele_nums) /
+          IntImm(DataType::Int(64), core_meta_info__.vector_cnt);
+      offset = offset + vid_offset;
+    }
+
+    Array<PrimExpr> args = {TypeAnnotation(ws_info.dtype),
+                            ws_info.workspace_buffer->data, offset,
+                            ws_info.extent, IntImm(DataType::Int(32), rw_mask)};
+
+    Call access_ptr_call(dtype, op, args);
+    return access_ptr_call;
+  }
+
+  Stmt CreateGmToDstStmt(const Call &src_access, const Call &dst_access,
+                         const DstBufferScope &buffer_scope,
+                         PrimExpr &strideN) {
+    Array<PrimExpr> args;
+    const CallNode *gm_access_ptr = src_access.as<CallNode>();
+    const VarNode *gm_var = gm_access_ptr->args[1].as<VarNode>();
+    std::string gm_name = gm_var->name_hint;
+    WorkspaceInfo ws_info = context_.workspace_map_.at(gm_name);
+
+    std::stringstream ss;
+    ss << "tl::ascend::copy_gm_to_" << PrintDstScope(buffer_scope) << "<"
+       << ws_info.dtype_str;
+    if (buffer_scope == DstBufferScope::L1) {
+      for (auto &shape : ws_info.shapes) {
+        // gm_to_l1 : M N
+        ss << ", " << shape.as<IntImmNode>()->value;
+      }
+      ss << ">";
+    } else if (buffer_scope == DstBufferScope::Ub) {
+      // gm_to_ub: N M (reversed order)
+      // threads=2: first dim (M) divided by vector_cnt, each vidcopieshalf
+      int idx = 0;
+      for (auto it = ws_info.shapes.rbegin(); it != ws_info.shapes.rend();
+           ++it, ++idx) {
+        int shape_val = (*it).as<IntImmNode>()->value;
+        // Last element is original shapes[0] (M), needs division by vector_cnt
+        if (idx == ws_info.shapes.size() - 1 &&
+            core_meta_info__.vid_var.defined() &&
+            core_meta_info__.vector_cnt > 1) {
+          shape_val /= core_meta_info__.vector_cnt;
+        }
+        ss << ", " << shape_val;
+      }
+      ss << ">";
+    }
+
+    std::string stmt_name_str = ss.str();
+
+    StringImm stmt_name(stmt_name_str);
+    args.push_back(stmt_name);
+    args.push_back(src_access);
+    args.push_back(dst_access);
+    args.push_back(strideN);
+
+    // Add extra parameters for codegen
+    if (buffer_scope == DstBufferScope::L1) {
+      // copy_gm_to_l1: add realTailM=0, realTailN=0
+      args.push_back(IntImm(DataType::Int(32), 0));
+      args.push_back(IntImm(DataType::Int(32), 0));
+    } else if (buffer_scope == DstBufferScope::Ub) {
+      // copy_gm_to_ub: add maskShapeM, maskShapeN, padValue=0
+      // ws_info.shapes = [M, N] (workspace shape, M includes vector_cnt)
+      // Template params: dstN=N, dstM=M/vector_cnt (from reversed shapes)
+      // So maskShapeM=M/vector_cnt, maskShapeN=N
+      ICHECK(ws_info.shapes.size() >= 2);
+      // Extract M and N from ws_info.shapes
+      int M_val = ws_info.shapes[0].as<IntImmNode>()->value;
+      int N_val = ws_info.shapes[1].as<IntImmNode>()->value;
+      // maskShapeM considers vector_cnt (threads=2 scenario)
+      if (core_meta_info__.vid_var.defined() &&
+          core_meta_info__.vector_cnt > 1) {
+        M_val /= core_meta_info__.vector_cnt;
+      }
+      args.push_back(IntImm(DataType::Int(32), M_val)); // maskShapeM
+      args.push_back(IntImm(DataType::Int(32), N_val)); // maskShapeN
+      args.push_back(IntImm(DataType::Int(32), 0));     // padValue
+    }
+
+    Call new_call_node(DataType::Handle(), tvm::tir::builtin::call_extern(),
+                       args);
+
+    return Evaluate(new_call_node);
+  }
+
+  Stmt VisitStmt_(const EvaluateNode *op) final {
+    Stmt orig_stmt = arith::IRMutatorWithAnalyzer::VisitStmt_(op);
+    const EvaluateNode *orig_eval_node = orig_stmt.as<EvaluateNode>();
+    if (!orig_eval_node) {
+      return orig_stmt;
+    }
+
+    const CallNode *orig_call = orig_eval_node->value.as<CallNode>();
+    if (!orig_call) {
+      return orig_stmt;
+    }
+
+    // In-place transform
+    if (IsTargetCopyExpr(orig_call)) {
+      Array<PrimExpr> new_args = orig_call->args;
+      StringImm orig_func_name = Downcast<StringImm>(new_args[0]);
+      const CallNode *src_access_ptr = new_args[1].as<CallNode>();
+      std::string src_buffer_name =
+          (src_access_ptr->args[1]).as<VarNode>()->name_hint;
+
+      // copyA (in-place): GM's other side is source, check if source is UB
+      // ub_to_l1 source is UB; l0c_to_ub source is L0C
+      std::string orig_func_name_str = orig_func_name->value;
+      bool other_side_is_ub =
+          (orig_func_name_str.find("copy_ub_to_l1") != std::string::npos);
+
+      StringImm new_func_name = ReplaceCopyFuncName(orig_func_name);
+      new_args.Set(0, new_func_name);
+      std::string ws_name = context_.src_to_workspace_map_.at(src_buffer_name);
+      WorkspaceInfo ws_info = context_.workspace_map_.at(ws_name);
+      new_args.Set(2, CreateWorkspaceAccessPtr(ws_info, 2, other_side_is_ub));
+
+      // Add extra parameters for codegen
+      if (orig_func_name_str.find("copy_ub_to_l1") != std::string::npos) {
+        // copy_ub_to_gm: add maskShapeM, maskShapeN
+
+        // Check if src_buffer is in skip_vid_reduction set
+        bool is_skip_ub =
+            context_.buffers_skip_vid_reduction_.count(src_buffer_name) > 0;
+
+        if (is_skip_ub) {
+          // Skip UB: use original UB shape from buffer_shapes_
+          // These UB buffers not processed by VidReduction, vector split in
+          // index array
+
+          auto shape_it = context_.buffer_shapes_.find(src_buffer_name);
+          ICHECK(shape_it != context_.buffer_shapes_.end());
+
+          // buffer_shapes_ can be 1D [N] or 2D [M, N]
+          int M_val = 1; // colsefault value
+          int N_val = 1;
+          if (shape_it->second.size() >= 1) {
+            N_val = shape_it->second[shape_it->second.size() - 1]
+                        .as<IntImmNode>()
+                        ->value;
+          }
+          if (shape_it->second.size() >= 2) {
+            M_val = shape_it->second[shape_it->second.size() - 2]
+                        .as<IntImmNode>()
+                        ->value;
+          }
+
+          new_args.push_back(IntImm(DataType::Int(32), M_val)); // maskShapeM
+          new_args.push_back(IntImm(DataType::Int(32), N_val)); // maskShapeN
+        } else {
+          // Normal UB: use ws_info.shapes, considering vector_cnt
+          // ws_info.shapes = [M * vector_cnt, N] (workspace stores complete
+          // data) maskShapeM = M = ws_info.shapes[0] / vector_cnt (each
+          // vidcopieshalf maskShapeN = N = ws_info.shapes[1]
+          ICHECK(ws_info.shapes.size() >= 2);
+          int M_val = ws_info.shapes[0].as<IntImmNode>()->value;
+          int N_val = ws_info.shapes[1].as<IntImmNode>()->value;
+          // threads=2: each vidcopies M/vector_cnt
+          if (core_meta_info__.vid_var.defined() &&
+              core_meta_info__.vector_cnt > 1) {
+            M_val /= core_meta_info__.vector_cnt;
+          }
+          new_args.push_back(IntImm(DataType::Int(32), M_val)); // maskShapeM
+          new_args.push_back(IntImm(DataType::Int(32), N_val)); // maskShapeN
+        }
+      } else if (orig_func_name_str.find("copy_l0c_to_ub") !=
+                 std::string::npos) {
+        // copy_l0c_to_gm: add realTailM=0, realTailN=0
+        new_args.push_back(IntImm(DataType::Int(32), 0));
+        new_args.push_back(IntImm(DataType::Int(32), 0));
+      }
+
+      Call new_call =
+          Call(orig_call->dtype, orig_call->op, new_args, orig_call->span);
+      return Evaluate(new_call);
+    }
+
+    // Insert copy-back statements
+    std::vector<std::string> buffer_names_vec = IsTargetAccessNode(orig_call);
+    if (!buffer_names_vec.empty()) {
+      Array<Stmt> seq_stmts_array;
+      for (const auto &buffer_name : buffer_names_vec) {
+
+        auto buffer_scope_it = context_.dst_to_scope_map_.find(buffer_name);
+
+        ICHECK(buffer_scope_it != context_.dst_to_scope_map_.end())
+            << "[Error]<WorkspaceReduction>: Dst scope is not found for "
+               "buffer: "
+            << buffer_name << "\n";
+
+        DstBufferScope buffer_scope =
+            context_.dst_to_scope_map_.at(buffer_name);
+        const std::string workspace_name =
+            context_.dst_to_workspace_map_.at(buffer_name);
+        WorkspaceInfo ws_info = context_.workspace_map_.at(workspace_name);
+
+        // copyB (copy-back): GM's other side is destination, check if dst is UB
+        // gm_to_ub destination is UB; gm_to_l1 destination is L1
+        bool other_side_is_ub = (buffer_scope == DstBufferScope::Ub);
+        Call workspace_access =
+            CreateWorkspaceAccessPtr(ws_info, 1, other_side_is_ub);
+        PrimExpr strideN = ws_info.shapes[ws_info.shapes.size() - 1];
+        Stmt insert_eval_stmt = this->CreateGmToDstStmt(
+            workspace_access, context_.dst_to_access_map_.at(buffer_name),
+            buffer_scope, strideN);
+        seq_stmts_array.push_back(insert_eval_stmt);
+      }
+      seq_stmts_array.push_back(orig_stmt);
+      return SeqStmt(seq_stmts_array);
+    }
+    return orig_stmt;
+  }
+};
+
+namespace transform {
+
+using namespace tir::transform;
+
+tvm::transform::Pass AscendWorkspaceReduction() {
+  auto pass_func = [=](PrimFunc f, IRModule m, PassContext ctx) {
+    return AscendWorkspaceReductionPass::Substitute(std::move(f));
+  };
+  return CreatePrimFuncPass(pass_func, 0, "tl.AscendWorkspaceReduction", {});
+}
+
+TVM_REGISTER_GLOBAL("tl.transform.AscendWorkspaceReduction")
+    .set_body_typed(AscendWorkspaceReduction);
+} // namespace transform
+
+} // namespace tl
+} // namespace tvm
