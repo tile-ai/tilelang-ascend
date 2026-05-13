@@ -10,6 +10,7 @@
 #include <tvm/runtime/registry.h>
 #include <tvm/tir/index_map.h>
 #include <tvm/tir/op.h>
+#include <tvm/tir/stmt_functor.h>
 
 #include <algorithm>
 #include <sstream>
@@ -1431,47 +1432,7 @@ void CodeGenTileLangAscendPto::CopyPipeCodegen(const CallNode *op,
   BufferInfo src_info = GetBufferInfo(op->args[1]);
   BufferInfo dst_info = GetBufferInfo(op->args[2]);
 
-  int flag_id = Downcast<IntImm>(op->args[3])->value;
-  int dir_type = Downcast<IntImm>(op->args[4])->value;
-  int slot_size = Downcast<IntImm>(op->args[5])->value;
-  int slot_num = Downcast<IntImm>(op->args[6])->value;
   std::string pipe_id = Downcast<StringImm>(op->args[7])->value;
-
-  std::string dir_str = (dir_type == 2) ? "V2C" : "C2V";
-
-  std::string pipe_type_name;
-  {
-    size_t last_underscore = pipe_id.rfind('_');
-    pipe_type_name = pipe_id.substr(0, last_underscore + 1) + dir_str;
-    pipe_type_name[0] = 'P';
-  }
-
-  if (declared_pipes_.count(pipe_id) == 0 ||
-      declared_pipes_[pipe_id] != current_resource_scope_) {
-    std::string dir_full;
-    if (dir_type == 2) {
-      dir_full = "pto::Direction::DIR_V2C";
-    } else {
-      dir_full = "pto::Direction::DIR_C2V";
-    }
-
-    std::string src_base = PrintExpr(buffer_address_map_.at(src_info.var));
-    std::string dst_base = PrintExpr(buffer_address_map_.at(dst_info.var));
-
-    std::string c2v_buf = (dir_type == 1) ? dst_base : "0";
-    std::string v2c_buf = (dir_type == 2) ? dst_base : "0";
-
-    this->PrintIndent();
-    this->stream << "using " << pipe_type_name << " = TPipe<"
-                 << flag_id << ", " << dir_full << ", "
-                 << slot_size << ", " << slot_num << ">;\n";
-
-    this->PrintIndent();
-    this->stream << pipe_type_name << " " << pipe_id << "(nullptr, "
-                 << c2v_buf << ", " << v2c_buf << ");\n";
-
-    declared_pipes_[pipe_id] = current_resource_scope_;
-  }
 
   ShapeInfo src_shape_info = GetSliceInfo(src_info.access_ptr);
   ShapeInfo dst_shape_info = GetSliceInfo(dst_info.access_ptr);
@@ -1504,6 +1465,105 @@ void CodeGenTileLangAscendPto::CopyPipeCodegen(const CallNode *op,
   } else {
     this->stream << func_call << "(" << pipe_id << ", " << dst_name << ");\n";
   }
+}
+
+void CodeGenTileLangAscendPto::PreScanPipes(const PrimFunc &f) {
+  // Local state for pre-scan (don't modify member state since
+  // PrintStmt will re-populate buffer_address_map_ and address_offset_).
+  Map<String, PrimExpr> local_address_offset;
+  Map<Var, PrimExpr> local_buffer_address_map;
+
+  // Build address_map_name_hint once from the function attribute
+  Map<String, PrimExpr> address_map_name_hint;
+  for (const auto &[var, address] : address_map_) {
+    address_map_name_hint.Set(var->name_hint, address);
+  }
+
+  tir::PreOrderVisit(f->body, [&](const ObjectRef &node) -> bool {
+    if (auto *allocate = node.as<AllocateNode>()) {
+      std::string scope = GetPtrStorageScope(allocate->buffer_var);
+
+      // Skip local variables
+      if (scope == "local.var") {
+        return true;
+      }
+
+      // Resolve buffer base address (same logic as VisitStmt_ AllocateNode)
+      PrimExpr target_address;
+      if (address_map_name_hint.count(allocate->buffer_var->name_hint)) {
+        target_address =
+            address_map_name_hint.at(allocate->buffer_var->name_hint);
+      } else {
+        PrimExpr current_offset =
+            local_address_offset.Get(String(scope)).value_or(Integer(0));
+        target_address = current_offset;
+        int64_t alloc_bytes =
+            allocate->ConstantAllocationSize() * allocate->dtype.bytes();
+        local_address_offset.Set(String(scope),
+                                 current_offset + Integer(alloc_bytes));
+      }
+      local_buffer_address_map.Set(allocate->buffer_var, target_address);
+      return true;
+    } else if (auto *call = node.as<CallNode>()) {
+      if (call->op.same_as(builtin::call_extern())) {
+        auto *op_name_node = call->args[0].as<StringImmNode>();
+        if (op_name_node) {
+          std::string name = op_name_node->value;
+          if (name.find("copy_ub_to_pipe") != std::string::npos ||
+              name.find("copy_pipe_to_l1") != std::string::npos ||
+              name.find("copy_l0c_to_pipe") != std::string::npos ||
+              name.find("copy_pipe_to_ub") != std::string::npos) {
+            int flag_id = Downcast<IntImm>(call->args[3])->value;
+
+            // Deduplicate by flag_id
+            if (pipe_registry_.count(flag_id) == 0) {
+              int dir_type = Downcast<IntImm>(call->args[4])->value;
+              int slot_size = Downcast<IntImm>(call->args[5])->value;
+              int slot_num = Downcast<IntImm>(call->args[6])->value;
+              std::string pipe_id =
+                  Downcast<StringImm>(call->args[7])->value;
+
+              PipeInfo info;
+              info.flag_id = flag_id;
+              info.dir_type = dir_type;
+              info.slot_size = slot_size;
+              info.slot_num = slot_num;
+              info.pipe_id = pipe_id;
+
+              std::string dir_str = (dir_type == 2) ? "V2C" : "C2V";
+              size_t last_underscore = pipe_id.rfind('_');
+              info.pipe_type_name =
+                  pipe_id.substr(0, last_underscore + 1) + dir_str;
+              info.pipe_type_name[0] = 'P';
+
+              if (dir_type == 2) {
+                info.dir_full = "pto::Direction::DIR_V2C";
+              } else {
+                info.dir_full = "pto::Direction::DIR_C2V";
+              }
+
+              // Get the destination buffer address for the pipe
+              BufferInfo dst_info = GetBufferInfo(call->args[2]);
+              std::string dst_base =
+                  PrintExpr(local_buffer_address_map.at(dst_info.var));
+
+              if (dir_type == 1) {
+                info.c2v_buf = dst_base;
+                info.v2c_buf = "0";
+              } else {
+                info.c2v_buf = "0";
+                info.v2c_buf = dst_base;
+              }
+
+              pipe_registry_[flag_id] = info;
+            }
+          }
+        }
+      }
+      return true;
+    }
+    return true;
+  });
 }
 
 void CodeGenTileLangAscendPto::CallExternCodegen(const CallNode *op) {
@@ -3478,6 +3538,21 @@ void CodeGenTileLangAscendPto::AddFunction(const GlobalVar &gvar,
     }
   }
   this->PreFunctionBody(f);
+
+  this->PreScanPipes(f);
+  if (!pipe_registry_.empty()) {
+    for (const auto &[flag_id, info] : pipe_registry_) {
+      this->PrintIndent();
+      this->stream << "using " << info.pipe_type_name << " = TPipe<"
+                   << info.flag_id << ", " << info.dir_full << ", "
+                   << info.slot_size << ", " << info.slot_num << ">;\n";
+      this->PrintIndent();
+      this->stream << info.pipe_type_name << " " << info.pipe_id
+                   << "(nullptr, " << info.c2v_buf << ", " << info.v2c_buf
+                   << ");\n";
+    }
+  }
+
   int func_scope = this->BeginScope();
   this->PrintStmt(f->body);
   this->EndScope(func_scope);

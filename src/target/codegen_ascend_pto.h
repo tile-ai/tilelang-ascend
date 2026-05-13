@@ -12,7 +12,6 @@
 #include <tvm/tir/expr.h>
 #include <tvm/tir/op.h>
 
-#include <set>
 #include <string>
 #include <unordered_map>
 
@@ -105,6 +104,18 @@ public:
     PrimExpr offset;
     DataType dtype;
     Array<PrimExpr> shape;
+  };
+
+  struct PipeInfo {
+    int flag_id;
+    int dir_type;
+    int slot_size;
+    int slot_num;
+    std::string pipe_id;
+    std::string pipe_type_name;
+    std::string dir_full;
+    std::string c2v_buf;
+    std::string v2c_buf;
   };
 
 private:
@@ -219,6 +230,8 @@ private:
 
   void CopyPipeCodegen(const CallNode *call, bool is_producer);
 
+  void PreScanPipes(const PrimFunc &f);
+
   std::string PrintBufferOffset(const CallNode *op);
 
   std::string GetTempVarName(const std::string &temp_name);
@@ -318,7 +331,7 @@ private:
 
   std::unordered_map<std::string, int32_t> counters_;
 
-  std::map<std::string, std::string> declared_pipes_;
+  std::map<int, PipeInfo> pipe_registry_;
 
   bool use_swizzle_{false};
 
