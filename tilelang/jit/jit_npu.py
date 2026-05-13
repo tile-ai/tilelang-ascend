@@ -1,5 +1,4 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2025.
-import ctypes
 import os
 import re
 import subprocess
@@ -17,6 +16,7 @@ from ..utils import (
     get_runtime_file_cache,
     get_npu_launcher_header,
     safe_copy,
+    _NpuSoHostProbe,
 )
 
 from tvm import tir
@@ -1105,45 +1105,6 @@ class compiler_npu:
     def __init__(self) -> None:
         pass
 
-    def _get_workspace_size(self, lib_path, suffix, default=32768):
-        # Try to get the infer_workspace_shape_function in the kernel, then use the return value as workspace_size
-        # Use default to avoid except
-        # If you have set the os env "TILELANG_ASCEND_WORKSPACE_SIZE", "TILELANG_ASCEND_WORKSPACE_SIZE" has a higher priority
-        if not os.path.exists(lib_path):
-            return default
-        symbols = []
-        # Try to get the kernel symbol table and match function name "***_infer_workspace_shape_function"
-        try:
-            result = subprocess.run(
-                ["nm", "-D", lib_path], capture_output=True, text=True, timeout=2
-            )
-            if result.returncode == 0:
-                for line in result.stdout.split("\n"):
-                    parts = line.strip().split()
-                    if len(parts) >= 3:
-                        sym_name = parts[2]
-                        if sym_name.endswith(suffix):
-                            symbols.append(sym_name)
-        except (subprocess.SubprocessError, FileNotFoundError, OSError, TimeoutError):
-            pass
-
-        if not symbols:
-            return default
-        # Load the lib
-        try:
-            lib = ctypes.CDLL(lib_path)
-        except OSError:
-            return default
-        # Get the return value
-        for func_name in symbols:
-            try:
-                func = getattr(lib, func_name)
-                func.restype = ctypes.c_int
-                return func()
-            except (AttributeError, OSError, TypeError):
-                continue
-        return default
-
     def compile(self, mod: PrimFunc, out_idx=None) -> JitKernel_NPU:
         self.original_mod = mod
         # extract_param_info
@@ -1169,10 +1130,6 @@ class compiler_npu:
         else:
             self.mlir_content = mlir_path
         self.constants = {}
-        # get signature information
-        self.signature = self._parse_signature()
-
-        self.metadata["signature"] = self.signature
         self.metadata["primfunc"] = self.mod
         self.metadata["mlir_content"] = self.mlir_content
 
@@ -1180,6 +1137,8 @@ class compiler_npu:
         self.lock_ini_val = 0
         self._parse_npuir_metadata()
         self.metadata["kernel_src"] = self._npuir_to_bin_enable_npu_compile()
+        self.metadata["signature"] = self.signature
+
         self.header_path = get_npu_launcher_header()
         self.wrapper_src = generate_npu_wrapper_src(
             self.constants,
@@ -1306,127 +1265,17 @@ class compiler_npu:
 
     def _parse_npuir_metadata(self) -> None:
         """
-        Parse NPU IR to extract metadata required for NPU compilation.
-        Extracts and updates the following fields in metadata:
-          - mix_mode
-          - kernel_name
-          - tensor_kinds (currently hardcoded)
-          - shared (currently hardcoded)
-          - name (combined kernel_name and mix_mode)
-
-        Additionally, removes the mix_mode attribute from the IR.
+        Parse NPU IR to extract mix_mode from module-level attribute.
+        Other metadata (kernel_name, name, signature) are extracted from
+        the compiled .so via the WrapHostFunction pass.
         """
-        # --- Regular expressions and examples ---
-        # Example: func.func @gather_sorted_kernel(%arg0: ...) -> gather_sorted_kernel
-        KERNEL_NAME_REGEX = r"func\.func\s+@(\w+)"
-
-        # Example：hivm.module_core_type<MIX> -> MIX
         MIX_MODE_REGEX = r"#hivm\.module_core_type<([^>]+)>"
 
-        # Example: test_mix_aic -> test
-        MIX_SUFFIX_REGEX = r"_(mix_aic|mix_aiv)$"
-
-        # Note: Compiled Kernel requires to estimate size of shared memory to occupy
-        # Currently, NPU backend does not limit on shared memory
         self.metadata["shared"] = 1
-        # the mix mode is also encoded into metadata['name'] for runtime to distinguish
-        kernel_name = re.search(KERNEL_NAME_REGEX, self.mlir_content).group(1)
-        self.metadata["kernel_name"] = kernel_name
-        # matching the end of the _mix_aic or _mix_aiv
-        self.metadata["name"] = re.sub(MIX_SUFFIX_REGEX, "", kernel_name)
         self.metadata["tensor_kinds"] = []
         self.metadata["mix_mode"] = (
             re.search(MIX_MODE_REGEX, self.mlir_content).group(1).lower()
         )
-
-    def _parse_signature(self) -> dict:
-        """
-        Parse parameter types from MLIR text and return a dictionary.
-        """
-        # Define the data types of concern
-        target_types = {
-            "i1",
-            "i8",
-            "i16",
-            "i32",
-            "i64",
-            "u32",
-            "u64",
-            "fp16",
-            "bf16",
-            "fp32",
-            "f32",
-            "fp64",
-            "f16",
-        }
-
-        # Extract the function signature part (the content within the parentheses)
-        pattern = r"func\.func\s*@[^(]*\(([^)]*)\)"
-        match = re.search(pattern, self.mlir_content)
-
-        if not match:
-            return {}
-
-        params_str = match.group(1)
-
-        # Segmentation parameters
-        params = []
-        current_param = ""
-        brace_count = 0
-        angle_count = 0
-
-        for char in params_str:
-            if char == "," and brace_count == 0 and angle_count == 0:
-                params.append(current_param.strip())
-                current_param = ""
-            else:
-                current_param += char
-                if char == "{":
-                    brace_count += 1
-                elif char == "}":
-                    brace_count -= 1
-                elif char == "<":
-                    angle_count += 1
-                elif char == ">":
-                    angle_count -= 1
-
-        if current_param:
-            params.append(current_param.strip())
-
-        result = {}
-        index = 0
-
-        # Skip parameters insert by compiler
-        for param in params[3:-6]:
-            # Check if the type includes the target type
-            found_type = None
-            for t_type in target_types:
-                # Check for types with an x prefix (e.g., xf16)
-                x_pattern = r"\bx" + t_type + r"\b"
-                if re.search(x_pattern, param):
-                    found_type = "*" + t_type
-                    break
-                # Check the common type (such as i32)
-                elif re.search(r"\b" + t_type + r"\b", param):
-                    found_type = t_type
-                    break
-
-            if found_type:
-                # Special handling: f16 should be mapped to fp16,
-                # and f32 should be mapped to fp32.
-                if found_type == "f16":
-                    found_type = "fp16"
-                elif found_type == "*f16":
-                    found_type = "*fp16"
-                elif found_type == "f32":
-                    found_type = "fp32"
-                elif found_type == "*f32":
-                    found_type = "*fp32"
-
-                result[index] = found_type
-                index += 1
-
-        return result
 
     def _npuir_to_bin_enable_npu_compile(self):
         linalg = self.mlir_content
@@ -1474,10 +1323,19 @@ class compiler_npu:
                 raise RuntimeError(f"NPU IR opt failed: {e.stderr}") from e
             except Exception as e:
                 raise RuntimeError(f"NPU IR opt failed: {e.stderr}") from e
-            result = self._get_workspace_size(
-                so_path, "_infer_workspace_shape_function"
-            )
-            self.workspace_size = result
+            
+            self.workspace_size = _NpuSoHostProbe._get_workspace_size(so_path)
+
+            # Extract kernel signature & base name from host functions
+            # generated by the WrapHostFunction pass.
+            kernel_name, base_name, sig = _NpuSoHostProbe._get_kernel_signature(so_path)
+            if kernel_name is None or base_name is None or sig is None:
+                raise RuntimeError(
+                    "Failed to extract kernel metadata from compiled .so. "
+                )
+            self.metadata["name"] = base_name
+            self.metadata["kernel_name"] = kernel_name
+            self.signature = sig
 
             if not Path(bin_path).exists():
                 err_lines = [

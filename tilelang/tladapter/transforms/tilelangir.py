@@ -6,3 +6,4 @@ from tilelang.tladapter.utils import pass_fn
 
 cv_split = pass_fn("tilelangir-cv-split")
 vectorize = pass_fn("tilelangir-vectorize")
+wrap_host_function = pass_fn("tilelangir-wrap-host-function")
