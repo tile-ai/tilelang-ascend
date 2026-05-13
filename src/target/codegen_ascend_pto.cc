@@ -2857,7 +2857,8 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
       int64_t size = op->ConstantAllocationSize() * op->dtype.bytes();
       int64_t end_addr = addr_int->value + size;
       end_addr = ((end_addr + 31) / 32) * 32;
-      if (end_addr > max_ub_addr_) max_ub_addr_ = end_addr;
+      if (end_addr > max_ub_addr_)
+        max_ub_addr_ = end_addr;
     }
   }
 
