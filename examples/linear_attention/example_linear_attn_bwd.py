@@ -45,12 +45,12 @@ def fla_fused_chunk_bwd_kernel(
         dQ: T.Tensor((B, S, H, DK), accum_dtype),
         dK: T.Tensor((B, S, H, DK), accum_dtype),
         dV: T.Tensor((B, S, H, DV), accum_dtype),
-        ws_s: T.Tensor((total_blocks * NK * NV, chunk_size, chunk_size), accum_dtype),
-        ws_h: T.Tensor((total_blocks * NK * NV, BV, BK), accum_dtype),
-        ws_dh: T.Tensor((total_blocks * NK * NV, BK, BV), accum_dtype),
-        ws_s2: T.Tensor((total_blocks * NK * NV, chunk_size, chunk_size), dtype),
-        ws_h2: T.Tensor((total_blocks * NK * NV, BV, BK), dtype),
-        ws_dh2: T.Tensor((total_blocks * NK * NV, BK, BV), dtype),
+        workspace1: T.Tensor((total_blocks * NK * NV, chunk_size, chunk_size), accum_dtype),
+        workspace2: T.Tensor((total_blocks * NK * NV, BV, BK), accum_dtype),
+        workspace3: T.Tensor((total_blocks * NK * NV, BK, BV), accum_dtype),
+        workspace4: T.Tensor((total_blocks * NK * NV, chunk_size, chunk_size), dtype),
+        workspace5: T.Tensor((total_blocks * NK * NV, BV, BK), dtype),
+        workspace6: T.Tensor((total_blocks * NK * NV, BK, BV), dtype),
     ):
         with T.Kernel(total_blocks, is_npu=True) as (cid, vid):
             i_bh = cid
@@ -59,19 +59,19 @@ def fla_fused_chunk_bwd_kernel(
             blk_off = cid * NK * NV
 
             with T.Scope("C"):
-                k_l1 = T.alloc_L1([chunk_size, BK], dtype)
-                v_l1 = T.alloc_L1([chunk_size, BV], dtype)
-                do_l1 = T.alloc_L1([chunk_size, BV], dtype)
-                q_l1 = T.alloc_L1([chunk_size, BK], dtype)
-                ds_l1 = T.alloc_L1([chunk_size, chunk_size], dtype)
-                h_l1 = T.alloc_L1([BV, BK], dtype)
-                dh_l1 = T.alloc_L1([BK, BV], dtype)
-                ds = T.alloc_L0C([chunk_size, chunk_size], accum_dtype)
-                dq = T.alloc_L0C([chunk_size, BK], accum_dtype)
-                dk = T.alloc_L0C([chunk_size, BK], accum_dtype)
-                dv = T.alloc_L0C([chunk_size, BV], accum_dtype)
-                h = T.alloc_L0C([BV, BK], accum_dtype)
-                dh = T.alloc_L0C([BK, BV], accum_dtype)
+                k_l1 = T.alloc_shared([chunk_size, BK], dtype)
+                v_l1 = T.alloc_shared([chunk_size, BV], dtype)
+                do_l1 = T.alloc_shared([chunk_size, BV], dtype)
+                q_l1 = T.alloc_shared([chunk_size, BK], dtype)
+                ds_l1 = T.alloc_shared([chunk_size, chunk_size], dtype)
+                h_l1 = T.alloc_shared([BV, BK], dtype)
+                dh_l1 = T.alloc_shared([BK, BV], dtype)
+                ds = T.alloc_fragment([chunk_size, chunk_size], accum_dtype)
+                dq = T.alloc_fragment([chunk_size, BK], accum_dtype)
+                dk = T.alloc_fragment([chunk_size, BK], accum_dtype)
+                dv = T.alloc_fragment([chunk_size, BV], accum_dtype)
+                h = T.alloc_fragment([BV, BK], accum_dtype)
+                dh = T.alloc_fragment([BK, BV], accum_dtype)
 
                 T.set_cross_flag("FIX", 0)
 
@@ -87,16 +87,16 @@ def fla_fused_chunk_bwd_kernel(
                             T.copy(V[i_b, i * chunk_size : (i + 1) * chunk_size, i_h, i_v * BV : (i_v + 1) * BV], v_l1)
                             T.copy(dO[i_b, i * chunk_size : (i + 1) * chunk_size, i_h, i_v * BV : (i_v + 1) * BV], do_l1)
                             T.gemm_v0(do_l1, v_l1, ds, transpose_B=True, init=True)
-                            T.copy(ds, ws_s[bv_idx, :, :])
+                            T.copy(ds, workspace1[bv_idx, :, :])
                             T.set_cross_flag("FIX", 2)
                             T.wait_cross_flag(3)
-                            T.copy(ws_s2[bv_idx, :, :], ds_l1)
+                            T.copy(workspace4[bv_idx, :, :], ds_l1)
                             T.gemm_v0(ds_l1, k_l1, dq, init=True)
-                            T.copy(ws_h2[bv_idx, :, :], h_l1)
+                            T.copy(workspace5[bv_idx, :, :], h_l1)
                             T.gemm_v0(do_l1, h_l1, dq, init=False)
                             T.gemm_v0(v_l1, k_l1, h, transpose_A=True, init=(i == 0))
-                            T.copy(h, ws_h[bv_idx, :, :])
-                            T.copy(dq, ws_s[bv_idx, :, :])
+                            T.copy(h, workspace2[bv_idx, :, :])
+                            T.copy(dq, workspace1[bv_idx, :, :])
                             T.set_cross_flag("FIX", 4)
 
                         T.wait_cross_flag(1)
@@ -107,55 +107,55 @@ def fla_fused_chunk_bwd_kernel(
                             start = NT - 1 - i
                             T.set_cross_flag("FIX", 6)
                             T.wait_cross_flag(7)
-                            T.copy(ws_s2[bv_idx, :, :], q_l1)
+                            T.copy(workspace4[bv_idx, :, :], q_l1)
                             T.copy(K[i_b, start * chunk_size : (start + 1) * chunk_size, i_h, i_k * BK : (i_k + 1) * BK], k_l1)
                             T.copy(V[i_b, start * chunk_size : (start + 1) * chunk_size, i_h, i_v * BV : (i_v + 1) * BV], v_l1)
                             T.copy(dO[i_b, start * chunk_size : (start + 1) * chunk_size, i_h, i_v * BV : (i_v + 1) * BV], do_l1)
                             T.gemm_v0(v_l1, do_l1, ds, transpose_B=True, init=True)
-                            T.copy(ds, ws_s[bv_idx, :, :])
+                            T.copy(ds, workspace1[bv_idx, :, :])
                             T.set_cross_flag("FIX", 8)
                             T.wait_cross_flag(9)
-                            T.copy(ws_s2[bv_idx, :, :], ds_l1)
+                            T.copy(workspace4[bv_idx, :, :], ds_l1)
                             T.gemm_v0(ds_l1, q_l1, dk, init=True)
-                            T.copy(ws_dh2[bv_idx, :, :], dh_l1)
+                            T.copy(workspace6[bv_idx, :, :], dh_l1)
                             T.gemm_v0(v_l1, dh_l1, dk, transpose_B=True, init=False)
                             T.gemm_v0(k_l1, q_l1, ds, transpose_B=True, init=True)
-                            T.copy(ds, ws_s[bv_idx, :, :])
+                            T.copy(ds, workspace1[bv_idx, :, :])
                             T.set_cross_flag("FIX", 10)
                             T.wait_cross_flag(11)
-                            T.copy(ws_s2[bv_idx, :, :], ds_l1)
+                            T.copy(workspace4[bv_idx, :, :], ds_l1)
                             T.gemm_v0(ds_l1, do_l1, dv, init=True)
-                            T.copy(ws_dh2[bv_idx, :, :], dh_l1)
+                            T.copy(workspace6[bv_idx, :, :], dh_l1)
                             T.gemm_v0(k_l1, dh_l1, dv, init=False)
                             T.gemm_v0(q_l1, do_l1, dh, transpose_A=True, init=(i == 0))
-                            T.copy(dh, ws_dh[bv_idx, :, :])
-                            T.copy(dk, ws_s[bv_idx, :, :])
-                            T.copy(dv, ws_h[bv_idx, :, :])
+                            T.copy(dh, workspace3[bv_idx, :, :])
+                            T.copy(dk, workspace1[bv_idx, :, :])
+                            T.copy(dv, workspace2[bv_idx, :, :])
                             T.set_cross_flag("FIX", 12)
 
                         T.wait_cross_flag(5)
 
             with T.Scope("V"):
-                ds_ub = T.alloc_ub([sub_C, chunk_size], accum_dtype)
-                ds_half = T.alloc_ub([sub_C, chunk_size], dtype)
-                dq_ub = T.alloc_ub([sub_C, BK], accum_dtype)
-                dk_ub = T.alloc_ub([sub_C, BK], accum_dtype)
-                dv_ub = T.alloc_ub([sub_C, BV], accum_dtype)
-                q_ub = T.alloc_ub([sub_C, BK], dtype)
-                q_cal = T.alloc_ub([sub_C, BK], accum_dtype)
-                dq_tmp = T.alloc_ub([sub_C, BK], accum_dtype)
-                dk_tmp = T.alloc_ub([sub_C, BK], accum_dtype)
-                dv_tmp = T.alloc_ub([sub_C, BV], accum_dtype)
+                ds_ub = T.alloc_shared([sub_C, chunk_size], accum_dtype)
+                ds_half = T.alloc_shared([sub_C, chunk_size], dtype)
+                dq_ub = T.alloc_shared([sub_C, BK], accum_dtype)
+                dk_ub = T.alloc_shared([sub_C, BK], accum_dtype)
+                dv_ub = T.alloc_shared([sub_C, BV], accum_dtype)
+                q_ub = T.alloc_shared([sub_C, BK], dtype)
+                q_cal = T.alloc_shared([sub_C, BK], accum_dtype)
+                dq_tmp = T.alloc_shared([sub_C, BK], accum_dtype)
+                dk_tmp = T.alloc_shared([sub_C, BK], accum_dtype)
+                dv_tmp = T.alloc_shared([sub_C, BV], accum_dtype)
 
                 T.wait_cross_flag(0)
 
                 T.tile.fill(ds_ub, 0.0)
                 T.tile.fill(ds_half, 0.0)
                 for init_i in T.serial(NK * NV):
-                    T.copy(ds_ub, ws_h[blk_off + init_i, vid * sub_C : (vid + 1) * sub_C, :])
-                    T.copy(ds_half, ws_h2[blk_off + init_i, vid * sub_C : (vid + 1) * sub_C, :])
-                    T.copy(ds_ub, ws_dh[blk_off + init_i, vid * sub_C : (vid + 1) * sub_C, :])
-                    T.copy(ds_half, ws_dh2[blk_off + init_i, vid * sub_C : (vid + 1) * sub_C, :])
+                    T.copy(ds_ub, workspace2[blk_off + init_i, vid * sub_C : (vid + 1) * sub_C, :])
+                    T.copy(ds_half, workspace5[blk_off + init_i, vid * sub_C : (vid + 1) * sub_C, :])
+                    T.copy(ds_ub, workspace3[blk_off + init_i, vid * sub_C : (vid + 1) * sub_C, :])
+                    T.copy(ds_half, workspace6[blk_off + init_i, vid * sub_C : (vid + 1) * sub_C, :])
 
                 T.pipe_barrier("mte3")
                 T.set_cross_flag("MTE3", 1)
@@ -168,21 +168,21 @@ def fla_fused_chunk_bwd_kernel(
                         # === Pass 1: mask ds, scale dq, RMW to dQ ===
                         for chk in T.serial(NT):
                             T.wait_cross_flag(2)
-                            T.copy(ws_s[bv_idx, vid * sub_C : (vid + 1) * sub_C, :], ds_ub)
+                            T.copy(workspace1[bv_idx, vid * sub_C : (vid + 1) * sub_C, :], ds_ub)
                             for r in range(sub_C):
                                 for c in range(chunk_size):
                                     if r + vid * sub_C < c:
                                         ds_ub[r, c] = 0.0
                             T.copy(ds_ub, ds_half)
-                            T.copy(ds_half, ws_s2[bv_idx, vid * sub_C : (vid + 1) * sub_C, :])
+                            T.copy(ds_half, workspace4[bv_idx, vid * sub_C : (vid + 1) * sub_C, :])
                             T.set_cross_flag("MTE3", 3)
 
-                            T.copy(ws_h[bv_idx, vid * sub_C : (vid + 1) * sub_C, :], ds_ub)
+                            T.copy(workspace2[bv_idx, vid * sub_C : (vid + 1) * sub_C, :], ds_ub)
                             T.copy(ds_ub, ds_half)
-                            T.copy(ds_half, ws_h2[bv_idx, vid * sub_C : (vid + 1) * sub_C, :])
+                            T.copy(ds_half, workspace5[bv_idx, vid * sub_C : (vid + 1) * sub_C, :])
 
                             T.wait_cross_flag(4)
-                            T.copy(ws_s[bv_idx, vid * sub_C : (vid + 1) * sub_C, :], dq_ub)
+                            T.copy(workspace1[bv_idx, vid * sub_C : (vid + 1) * sub_C, :], dq_ub)
                             for r, c in T.Parallel(sub_C, BK):
                                 dq_ub[r, c] = dq_ub[r, c] * scale
                             T.copy(
@@ -226,35 +226,35 @@ def fla_fused_chunk_bwd_kernel(
                             for r, c in T.Parallel(sub_C, BK):
                                 q_cal[r, c] = q_cal[r, c] * scale
                             T.copy(q_cal, ds_half)
-                            T.copy(ds_half, ws_s2[bv_idx, vid * sub_C : (vid + 1) * sub_C, :])
+                            T.copy(ds_half, workspace4[bv_idx, vid * sub_C : (vid + 1) * sub_C, :])
                             T.set_cross_flag("MTE3", 7)
 
                             T.wait_cross_flag(8)
-                            T.copy(ws_s[bv_idx, vid * sub_C : (vid + 1) * sub_C, :], ds_ub)
+                            T.copy(workspace1[bv_idx, vid * sub_C : (vid + 1) * sub_C, :], ds_ub)
                             for r in range(sub_C):
                                 for c in range(chunk_size):
                                     if r + vid * sub_C > c:
                                         ds_ub[r, c] = 0.0
                             T.copy(ds_ub, ds_half)
-                            T.copy(ds_half, ws_s2[bv_idx, vid * sub_C : (vid + 1) * sub_C, :])
+                            T.copy(ds_half, workspace4[bv_idx, vid * sub_C : (vid + 1) * sub_C, :])
                             T.set_cross_flag("MTE3", 9)
 
-                            T.copy(ws_dh[bv_idx, vid * sub_C : (vid + 1) * sub_C, :], ds_ub)
+                            T.copy(workspace3[bv_idx, vid * sub_C : (vid + 1) * sub_C, :], ds_ub)
                             T.copy(ds_ub, ds_half)
-                            T.copy(ds_half, ws_dh2[bv_idx, vid * sub_C : (vid + 1) * sub_C, :])
+                            T.copy(ds_half, workspace6[bv_idx, vid * sub_C : (vid + 1) * sub_C, :])
 
                             T.wait_cross_flag(10)
-                            T.copy(ws_s[bv_idx, vid * sub_C : (vid + 1) * sub_C, :], ds_ub)
+                            T.copy(workspace1[bv_idx, vid * sub_C : (vid + 1) * sub_C, :], ds_ub)
                             for r in range(sub_C):
                                 for c in range(chunk_size):
                                     if r + vid * sub_C > c:
                                         ds_ub[r, c] = 0.0
                             T.copy(ds_ub, ds_half)
-                            T.copy(ds_half, ws_s2[bv_idx, vid * sub_C : (vid + 1) * sub_C, :])
+                            T.copy(ds_half, workspace4[bv_idx, vid * sub_C : (vid + 1) * sub_C, :])
                             T.set_cross_flag("MTE3", 11)
 
                             T.wait_cross_flag(12)
-                            T.copy(ws_s[bv_idx, vid * sub_C : (vid + 1) * sub_C, :], dk_ub)
+                            T.copy(workspace1[bv_idx, vid * sub_C : (vid + 1) * sub_C, :], dk_ub)
                             T.copy(
                                 dK[
                                     i_b,
@@ -275,7 +275,7 @@ def fla_fused_chunk_bwd_kernel(
                                     i_k * BK : (i_k + 1) * BK,
                                 ],
                             )
-                            T.copy(ws_h[bv_idx, vid * sub_C : (vid + 1) * sub_C, :], dv_ub)
+                            T.copy(workspace2[bv_idx, vid * sub_C : (vid + 1) * sub_C, :], dv_ub)
                             T.copy(
                                 dV[
                                     i_b,
