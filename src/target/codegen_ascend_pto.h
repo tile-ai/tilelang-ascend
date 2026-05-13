@@ -263,6 +263,7 @@ private:
 
   Map<String, PrimExpr> address_offset_;
   Map<Var, PrimExpr> buffer_address_map_;
+  int64_t max_ub_addr_{0};
 
   Map<String, String> copy_tmplte_map_;
   Map<String, String> copy_base_addr_map_;

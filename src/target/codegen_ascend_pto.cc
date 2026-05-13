@@ -2352,6 +2352,8 @@ void CodeGenTileLangAscendPto::SiluCodegen(const CallNode *op) {
     this->stream << "tl::ascend_pto::TileUbDataND<" << dst_shape_info.type
                  << ", " << row << ", " << col << "> " << tmp_name << ";\n";
     this->PrintIndent();
+    this->stream << "TASSIGN(" << tmp_name << ", " << max_ub_addr_ << ");\n";
+    this->PrintIndent();
     this->stream << kAscendPtoScope << "TSILU<" << dst_shape_info.type << ", "
                  << row << ", " << col << ">(" << dst_temp_name << ", "
                  << src_temp_name << ", " << tmp_name << ");\n";
@@ -2359,6 +2361,8 @@ void CodeGenTileLangAscendPto::SiluCodegen(const CallNode *op) {
     this->PrintIndent();
     this->stream << "tl::ascend_pto::TileUbDataND<" << dst_shape_info.type
                  << ", " << row << ", " << col << "> " << tmp_name << ";\n";
+    this->PrintIndent();
+    this->stream << "TASSIGN(" << tmp_name << ", " << max_ub_addr_ << ");\n";
     this->PrintIndent();
     this->stream << kAscendPtoScope << "TSILU<" << dst_shape_info.type << ", "
                  << row << ", " << col << ">(" << dst_name << ", " << src_name
@@ -2394,6 +2398,8 @@ void CodeGenTileLangAscendPto::MulAddDstCodegen(const CallNode *op) {
     this->stream << "tl::ascend_pto::TileUbDataND<" << dst_shape_info.type
                  << ", " << row << ", " << col << "> " << tmp_name << ";\n";
     this->PrintIndent();
+    this->stream << "TASSIGN(" << tmp_name << ", " << max_ub_addr_ << ");\n";
+    this->PrintIndent();
     this->stream << kAscendPtoScope << "MulAddDst<" << dst_shape_info.type
                  << ", " << row << ", " << col << ">(" << dst_temp_name << ", "
                  << src0_temp_name << ", " << src1_temp_name << ", " << tmp_name
@@ -2402,6 +2408,8 @@ void CodeGenTileLangAscendPto::MulAddDstCodegen(const CallNode *op) {
     this->PrintIndent();
     this->stream << "tl::ascend_pto::TileUbDataND<" << dst_shape_info.type
                  << ", " << row << ", " << col << "> " << tmp_name << ";\n";
+    this->PrintIndent();
+    this->stream << "TASSIGN(" << tmp_name << ", " << max_ub_addr_ << ");\n";
     this->PrintIndent();
     this->stream << kAscendPtoScope << "MulAddDst<" << dst_shape_info.type
                  << ", " << row << ", " << col << ">(" << dst_name << ", "
@@ -2842,6 +2850,16 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
     address_offset_.Set(String(scope), current_offset + Integer(alloc_bytes));
   }
   buffer_address_map_.Set(op->buffer_var, target_address);
+
+  // Track max UB end address for internal scratch buffer allocation
+  if (scope == "shared") {
+    if (auto *addr_int = target_address.as<IntImmNode>()) {
+      int64_t size = op->ConstantAllocationSize() * op->dtype.bytes();
+      int64_t end_addr = addr_int->value + size;
+      end_addr = ((end_addr + 31) / 32) * 32;
+      if (end_addr > max_ub_addr_) max_ub_addr_ = end_addr;
+    }
+  }
 
   // Print the address assignment (TASSIGN)
   this->PrintIndent();
