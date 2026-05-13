@@ -3875,7 +3875,7 @@ def run_test_sort(M, N, block_M, block_N, dtype, target):
     func = sort(M, N, block_M, block_N, dtype)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
 
-    torch_dtype = torch.float if dtype == "float" else torch.float16
+    torch_dtype = torch.float if dtype in ("float", "float32") else torch.float16
     a = torch.arange(0, M * N, dtype=torch_dtype).reshape(M, N).npu()
     b = func(a)
 
@@ -3891,8 +3891,8 @@ def run_test_sort(M, N, block_M, block_N, dtype, target):
     torch.testing.assert_close(out_indices, ref_index.float(), rtol=1e-3, atol=1e-3)
 
 
-@pytest.mark.parametrize("dtype", ["float16", "float"])
-@pytest.mark.parametrize("target", ["ascendc"])
+@pytest.mark.parametrize("dtype", ["float16", "float32"])
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("shape", [(1, 131)])
 def test_sort(dtype, target, shape):
     M, N = shape
@@ -4034,7 +4034,7 @@ def run_test_topk(M, N, K, block_M, block_N, dtype, target):
     func = topk(M, N, K, block_M, block_N, dtype)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
 
-    torch_dtype = torch.float if dtype == "float" else torch.float16
+    torch_dtype = torch.float if dtype in ("float", "float32") else torch.float16
     a = torch.arange(0, M * N, dtype=torch_dtype).reshape(M, N).npu()
     b = func(a)
 
@@ -4052,8 +4052,8 @@ def run_test_topk(M, N, K, block_M, block_N, dtype, target):
     torch.testing.assert_close(out_indices, ref_indices.float(), rtol=1e-3, atol=1e-3)
 
 
-@pytest.mark.parametrize("dtype", ["float16", "float"])
-@pytest.mark.parametrize("target", ["ascendc"])
+@pytest.mark.parametrize("dtype", ["float16", "float32"])
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("shape", [(1, 51)])
 def test_topk(dtype, target, shape):
     M, N = shape

@@ -142,7 +142,9 @@ jobs:
             });
             
             // Find original workflow run by head_sha
-            const runs = await github.rest.actions.listWorkflowRunsForRepo({
+            // Use numeric workflow ID (261026938) to ensure only ci_cd.yml runs are returned
+            // Using filename 'ci_cd.yml' in listWorkflowRunsForRepo may return runs from other workflows
+            const runs = await github.rest.actions.listWorkflowRuns({
               owner: context.repo.owner,
               repo: context.repo.repo,
               workflow_id: 'ci_cd.yml',
@@ -390,6 +392,14 @@ jobs:
           skip_pytest=true
           
           for file in $changed_files; do
+            if [[ "$file" =~ ^\.agents/ ]]; then
+              echo "Agents skill file: $file - ignored for pytest skip check"
+              continue
+            fi
+            if [[ "$file" =~ \.md$ ]] || [[ "$file" =~ \.png$ ]]; then
+              echo "Doc/image file: $file - ignored for pytest skip check"
+              continue
+            fi
             if [[ ! "$file" =~ ^examples/ ]]; then
               echo "File outside examples/: $file"
               skip_pytest=false
@@ -639,23 +649,25 @@ jobs:
                 exit 1
               fi
             else
-              # bench_test.sh 模式
-              PASS_RATE_LINE=$(grep -i "Pass rate:" test_output.log || echo "")
-              EXEC_SUMMARY=$(grep -i "Execution Summary" -A 2 test_output.log || echo "")
+              # bench_test.sh 模式（或 bench + pytest 模式）
+              # 使用 tail -1 提取最后一次 Pass rate（合并后的结果）
+              PASS_RATE_LINE=$(grep -i "Pass rate:" test_output.log | tail -1 || echo "")
+              FINAL_SUMMARY=$(grep -i "Final Execution Summary" -A 4 test_output.log || echo "")
               
               if [ -n "$PASS_RATE_LINE" ]; then             
                 PASS_RATE=$(echo "$PASS_RATE_LINE" | grep -o '[0-9]*%' | tr -d '%')
-                TOTAL_LINE=$(grep -i "Total:" test_output.log || grep -i "Total" test_output.log || echo "")
                 
-                if [ -n "$TOTAL_LINE" ]; then
+                # 从 Final Execution Summary 提取合并后的统计数据
+                if [ -n "$FINAL_SUMMARY" ]; then
+                  TOTAL=$(echo "$FINAL_SUMMARY" | grep -o "Total: [0-9]*" | tail -1 | grep -o "[0-9]*" || echo "0")
+                  PASSED=$(echo "$FINAL_SUMMARY" | grep -o "Passed: [0-9]*" | tail -1 | grep -o "[0-9]*" || echo "0")
+                  FAILED=$(echo "$FINAL_SUMMARY" | grep -o "Failed: [0-9]*" | tail -1 | grep -o "[0-9]*" || echo "0")
+                else
+                  # 没有 Final Summary，可能是 bench only 模式
+                  TOTAL_LINE=$(grep -i "Execution Summary" -A 2 test_output.log | head -3 || echo "")
                   TOTAL=$(echo "$TOTAL_LINE" | grep -o "Total: [0-9]*" | grep -o "[0-9]*" || echo "0")
                   PASSED=$(echo "$TOTAL_LINE" | grep -o "Passed: [0-9]*" | grep -o "[0-9]*" || echo "0")
                   FAILED=$(echo "$TOTAL_LINE" | grep -o "Failed: [0-9]*" | grep -o "[0-9]*" || echo "0")
-                else
-                  # 从 Pass rate 推算
-                  PASSED=$(grep -i "passed_scripts=" test_output.log || grep -c "[PASSED]" test_output.log || echo "0")
-                  FAILED=$(grep -i "failed_scripts=" test_output.log || grep -c "[FAILED]" test_output.log || echo "0")
-                  TOTAL=$((PASSED + FAILED))
                 fi
                 
                 echo "Found Pass rate: ${PASS_RATE}%"
@@ -686,9 +698,9 @@ jobs:
                 exit 1
               fi
               
-              if [ -n "$EXEC_SUMMARY" ]; then
-                echo "Execution Summary:"
-                echo "$EXEC_SUMMARY"
+              if [ -n "$FINAL_SUMMARY" ]; then
+                echo "Final Execution Summary:"
+                echo "$FINAL_SUMMARY"
               fi
             fi
           else
@@ -768,7 +780,7 @@ jobs:
             
             **Summary:** ${testSummary}
             
-            **Workflow Run:** [View Details](https://github.com/${context.repository.owner}/${context.repository.repo}/actions/runs/${context.runId})
+            **Workflow Run:** [View Details](https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})
             
             ---
             
@@ -784,12 +796,12 @@ jobs:
             
             body += `### 📁 Artifacts
             
-            - [test-results](https://github.com/${context.repository.owner}/${context.repository.repo}/actions/runs/${context.runId}) (available for 30 days)
+            - [test-results](https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}) (available for 30 days)
             
             ---
             
             *This issue was automatically created by the daily scheduled test.*
-            *Assignees: @benyang0506, @fuhouyu-hw, @z00520135, @lwwangcgz*`;
+            *Assignees: @benyang0506, @fuhouyu-hw, @z00520135*`;
             
             const title = `[Daily Test] ${statusEmoji} ${testSummary} - ${runDate}`;
             
@@ -798,6 +810,6 @@ jobs:
               repo: context.repo.repo,
               title: title,
               body: body,
-              assignees: ['benyang0506', 'fuhouyu-hw', 'z00520135', 'lwwangcgz'],
+              assignees: ['benyang0506', 'fuhouyu-hw', 'z00520135'],
               labels: ['daily-test', testStatus === 'passed' ? 'test-passed' : 'test-failed']
             });

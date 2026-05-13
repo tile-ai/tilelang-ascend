@@ -599,8 +599,10 @@ Stmt AscendAtomicAdd::Lower(const LowerArgs &T,
 
   ICHECK(dst.scope() == "global")
       << "tl.ascend_atomic_add V1 requires global dst, got " << dst.scope();
-  ICHECK(src.scope() == "shared")
-      << "tl.ascend_atomic_add V1 requires UB/shared src, got " << src.scope();
+  ICHECK(src.scope() == "shared" || src.scope() == "wmma.accumulator")
+      << "tl.ascend_atomic_add V1 requires UB/shared or L0C/wmma.accumulator "
+         "src, got "
+      << src.scope();
   ICHECK(src->dtype == dst->dtype)
       << "tl.ascend_atomic_add requires src and dst dtype to match, got src "
       << src->dtype << " and dst " << dst->dtype;
@@ -616,12 +618,26 @@ Stmt AscendAtomicAdd::Lower(const LowerArgs &T,
       << src_extents.size() << " and dst " << dst_extents.size();
 
   std::stringstream ss;
-  ss << "tl::ascend::atomic_add_ub_to_gm<";
-  ss << get_dtype(dst) << ", " << src_extents[src->shape.size() - 1];
-  if (src->shape.size() > 1) {
-    ss << ", " << compute_blocklen(src, src_extents);
+  if (src.scope() == "shared") {
+    ss << "tl::ascend::atomic_add_ub_to_gm<";
+    ss << get_dtype(dst) << ", " << src_extents[src->shape.size() - 1];
+    if (src->shape.size() > 1) {
+      ss << ", " << compute_blocklen(src, src_extents);
+    }
+    ss << ">";
+  } else if (src.scope() == "wmma.accumulator") {
+    ss << "tl::ascend::atomic_add_l0c_to_gm<";
+    ss << get_dtype(src) << ", " << get_dtype(dst) << ", "
+       << (T.layout_map.count(src) ? T.layout_map[src]->AscendLayoutStr()
+                                   : "layout::RowMajor");
+    if (src->shape.size() > 1) {
+      ss << ", " << compute_blocklen(src, src_extents) << ", "
+         << src_extents[src->shape.size() - 1];
+    } else {
+      ss << ", 1, " << src_extents[src->shape.size() - 1];
+    }
+    ss << ">";
   }
-  ss << ">";
 
   auto src_indices = build_indices(src_range);
   auto dst_indices = build_indices(dst_range);

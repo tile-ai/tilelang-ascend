@@ -73,6 +73,60 @@ T.tile.max(dst, src0, src1, src2)  # 参数过多
 T.tile.max(dst, src0, src1)  # dst = max(src0, src1)
 ```
 
+### 4. GEMM 除零编译错误
+
+**错误信息**:
+```
+InternalError: Check failed: pb->value != 0 (0 vs. 0) : Divide by zero
+ --> ...py:65:18  bx = cid // n_num
+```
+
+**原因**: `n_num = N // block_N = 0`（当 `block_N > N`），导致 `cid // 0`。
+
+**解决方案**: 在调用 GEMM 前确保 M, N ≥ block size。如果 `M < block_M` 或 `N < block_N`，zero-padding 矩阵到 block 倍数再调用 GEMM，完成后裁剪。
+
+### 5. Autotune supply_prog IndexError
+
+**错误信息**:
+```
+An error occurred while testing config {...}
+```
+
+**原因**: `supply_prog(params)` 中 `params` 仅含输入 tensor 描述符（不含输出），`params[2]` 访问越界。
+
+**解决方案**: 从 `params[0].shape` 和 `params[1].shape` 提取维度：
+```python
+def supply_prog(params):
+    M_val, K_val = int(params[0].shape[0]), int(params[0].shape[1])
+    _, N_val = int(params[1].shape[0]), int(params[1].shape[1])
+    return [torch.randn(M_val, K_val).half().npu(), torch.randn(K_val, N_val).half().npu()]
+```
+
+### 6. Autotune get_configs 参数格式错误
+
+**错误信息**:
+```
+TypeError: get_configs() missing 1 required positional argument: 'K'
+```
+
+**原因**: autotuner 调用 `get_configs` 时传参为 `(key_args_tuple, key_kwargs_tuple)`，即 `((M,N,K), ())`。直接声明 `get_configs(M, N, K)` 会收到 tuple 而非 3 个 int。
+
+**解决方案**: 签名为 `get_configs(key_args, _key_kwargs=None)`，从 `key_args` 解包 M, N, K。调用时传递 callable 引用（`configs=get_configs`），而非调用结果（`configs=get_configs()`）。
+
+### 7. L0C 溢出 Segfault
+
+**现象**: autotune 编译通过但 benchmark 时进程直接 crash（Segfault），无 Python 异常。
+
+**Segfault类似问题排查建议**: Segment fault 需要通过 gdb 等工具定位具体 crash 位置和调用栈，再结合 kernel 配置、访存范围、片上内存使用量等因素判断根因。
+可能原因之一：当 `block_M * block_N * sizeof(accum_dtype) > L0C_capacity` 时，可能导致片上 buffer 使用超过硬件限制。例如 A2/A3 设备 L0C 为 128KB，float32 accum 元素数不应超过 32768；
+
+**解决方案**: autotune 的 `get_configs` 中过滤超大 block：
+```python
+block_M = [bs for bs in [64, 128] if bs <= M]  # 排除 256
+```
+
+
+
 ## 运行时错误
 
 ### 1. 结果不正确
@@ -149,6 +203,38 @@ T.tile.max(dst, src0, src1)  # dst = max(src0, src1)
 2. 合并连续的同类操作，减少同步次数
 
 3. 确保数据访问是连续的
+
+### 4. Autotune 全部配置 benchmark 失败
+
+**现象**: autotune 编译全部/部分完成，但所有编译成功的配置都在 benchmark 阶段报 `An error occurred`，最终 `RuntimeError: No configuration successfully compiled and passed benchmarking/validation.`
+
+**排查顺序**:
+1. 检查 `supply_prog` 是否正确提取维度（见编译错误 §5）
+2. 检查 `ref_prog` 签名是否正确，输入输出 shape 是否匹配 GEMM
+3. 检查 `get_configs` 是否过滤了 `block > dimension` 的配置（见编译错误 §4, §6）
+
+## 测试设计原则
+
+### GEMM 类算子测试覆盖
+
+GEMM 类算子（含 im2col+GEMM 卷积）必须覆盖以下 4 类场景：
+
+| 序号 | 类型 | M | N | K | 验证点 |
+|------|------|---|---|---|--------|
+| 1 | 完美对齐 | block 整数倍 | block 整数倍 | block 整数倍 | 零 padding 路径 |
+| 2 | 单维 padding | < block | block 整数倍 | block 整数倍 | M padding+裁剪 |
+| 3 | 单维 padding | block 整数倍 | < block | < block | N/K padding+裁剪 |
+| 4 | 全维 padding | < block | < block | < block | 组合 padding+裁剪 |
+| 5 | 多 block | 数倍 block | 数倍 block | — | 多 block 并行 |
+| 6 | stride/padding | — | — | — | im2col 边界条件 |
+
+### 检查原有逻辑正确性
+
+生成新代码或修改现有实现后，**必须先用原有默认参数跑通**，确认 baseline 无回归：
+```bash
+python examples/{op}/example_{op}.py  # 默认参数测试
+```
+确认通过后，再用 `--b/--c/...` 扩维参数测试新场景。
 
 ## 调试技巧
 
