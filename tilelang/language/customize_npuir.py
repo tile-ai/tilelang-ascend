@@ -2,19 +2,24 @@
 
 import tilelang.language as T
 from tilelang.language import get_let_value, has_let_value
-from tvm.tir import PrimExpr, Buffer, BufferRegion, BufferLoad, Var
-from typing import List, Union, Optional
-from tvm import ir, tir
+from tvm.tir import PrimExpr, BufferRegion, BufferLoad
+from typing import Union, Optional
+from tvm import tir
 from tvm import runtime
 from tvm.script.ir_builder.tir.frame import TIRFrame
 from tvm._ffi import register_object
 from tilelang import _ffi_api
-from .kernel import get_thread_bindings, get_thread_extents, FrameStack
+from .kernel import FrameStack
 import threading
-import os
 import math
+from tilelang.env import env
 
-from tilelang.language.copy import buffer_region_to_tile_region, buffer_load_to_tile_region, region
+from tilelang.language.copy import (
+    buffer_region_to_tile_region,
+    buffer_load_to_tile_region,
+    region,
+)
+
 
 def _get_extent(data):
     if isinstance(data, tir.Var) and T.has_let_value(data):
@@ -27,15 +32,16 @@ def _get_extent(data):
     elif isinstance(data, tir.BufferLoad):
         indices = data.indices
         for idx in indices:
-            if isinstance(idx, tir.expr.Var):
-                result.append(tir.IntImm("int32", 1))
-            elif isinstance(idx, tir.IntImm):
+            if isinstance(idx, (tir.expr.Var, tir.IntImm)):
                 result.append(tir.IntImm("int32", 1))
             elif isinstance(idx, tir.expr.Ramp):
                 result.append(idx.lanes)
     return result
 
-def _buffer_to_tile_region_with_extent(buffer: tir.Buffer, access_type: str, extent:[]):
+
+def _buffer_to_tile_region_with_extent(
+    buffer: tir.Buffer, access_type: str, extent: list
+):
     """Convert a TVM buffer to a tile region descriptor.
 
     Args:
@@ -49,6 +55,7 @@ def _buffer_to_tile_region_with_extent(buffer: tir.Buffer, access_type: str, ext
     mins = [0 for _ in buffer.shape]
     return region(T.BufferLoad(buffer, mins), access_type, *extent)
 
+
 def _to_region(data, access_type, extent):
     if isinstance(data, tir.Var) and T.has_let_value(data):
         data = T.get_let_value(data)
@@ -56,11 +63,16 @@ def _to_region(data, access_type, extent):
     if isinstance(data, tir.Buffer):
         return _buffer_to_tile_region_with_extent(data, access_type, extent)
     elif isinstance(data, tir.BufferRegion):
-        return buffer_region_to_tile_region(data, access_type, extent[-len(data.buffer.shape):])
-    elif isinstance(data, tir.IntImm) or isinstance(data, tir.FloatImm):
+        return buffer_region_to_tile_region(
+            data, access_type, extent[-len(data.buffer.shape) :]
+        )
+    elif isinstance(data, (tir.IntImm, tir.FloatImm)):
         return data
     else:
-        return buffer_load_to_tile_region(data, access_type, extent[-len(data.buffer.shape):])
+        return buffer_load_to_tile_region(
+            data, access_type, extent[-len(data.buffer.shape) :]
+        )
+
 
 def _legalize_dim(buffer: tir.Buffer, dim: int):
     if dim < 0:
@@ -77,13 +89,15 @@ class AscendBinaryOp(object):
     Returns:
         tir.Call: A handle to the npuir binary operation
     """
+
     def __init__(self, opName, src0, src1, dst):
         self.__opName = opName
         self.__src0 = src0
         self.__src1 = src1
         self.__dst = dst
+
     def buildTirCall(self):
-        
+
         src0 = _to_region(self.__src0, "r", _get_extent(self.__src0))
         if isinstance(self.__src1, (int, float)):
             src1 = tir.const(self.__src1, self.__dst.dtype)
@@ -92,9 +106,11 @@ class AscendBinaryOp(object):
         else:
             src1 = _to_region(self.__src1, "r", _get_extent(self.__src1))
         dst = _to_region(self.__dst, "w", _get_extent(self.__dst))
-        return tir.call_intrin("handle", tir.op.Op.get("tl.npuir_" + self.__opName), src0, src1, dst)
+        return tir.call_intrin(
+            "handle", tir.op.Op.get("tl.npuir_" + self.__opName), src0, src1, dst
+        )
 
-"""npuir add at tile-level."""
+
 def npuir_add(A, B, C):
     """Element-wise addition: C = A + B.
 
@@ -108,7 +124,7 @@ def npuir_add(A, B, C):
     """
     return AscendBinaryOp("add", A, B, C).buildTirCall()
 
-"""npuir sub at tile-level."""
+
 def npuir_sub(A, B, C):
     """Element-wise subtraction: C = A - B.
 
@@ -122,7 +138,7 @@ def npuir_sub(A, B, C):
     """
     return AscendBinaryOp("sub", A, B, C).buildTirCall()
 
-"""npuir mul at tile-level."""
+
 def npuir_mul(A, B, C):
     """Element-wise multiplication: C = A * B.
 
@@ -136,7 +152,7 @@ def npuir_mul(A, B, C):
     """
     return AscendBinaryOp("mul", A, B, C).buildTirCall()
 
-"""npuir div at tile-level."""
+
 def npuir_div(A, B, C):
     """Element-wise division: C = A / B.
 
@@ -150,31 +166,31 @@ def npuir_div(A, B, C):
     """
     return AscendBinaryOp("div", A, B, C).buildTirCall()
 
-"""npuir max at tile-level."""
+
 def npuir_max(A, B, C):
     return AscendBinaryOp("max", A, B, C).buildTirCall()
 
-"""npuir min at tile-level."""
+
 def npuir_min(A, B, C):
     return AscendBinaryOp("min", A, B, C).buildTirCall()
 
-"""npuir or at tile-level."""
+
 def npuir_or(A, B, C):
     return AscendBinaryOp("or", A, B, C).buildTirCall()
 
-"""npuir and at tile-level."""
+
 def npuir_and(A, B, C):
     return AscendBinaryOp("and", A, B, C).buildTirCall()
 
-"""npuir xor at tile-level."""
+
 def npuir_xor(A, B, C):
     return AscendBinaryOp("xor", A, B, C).buildTirCall()
 
-"""npuir pow at tile-level."""
+
 def npuir_pow(A, B, C):
     return AscendBinaryOp("pow", A, B, C).buildTirCall()
 
-"""npuir shl at tile-level."""
+
 def npuir_shl(A, B, C):
     return AscendBinaryOp("shl", A, B, C).buildTirCall()
 
@@ -187,50 +203,55 @@ class AscendUnaryOp(object):
     Returns:
         tir.Call: A handle to the npuir unary operation
     """
+
     def __init__(self, opName, src, dst):
         self.__opName = opName
         self.__src = src
         self.__dst = dst
+
     def buildTirCall(self):
         src = _to_region(self.__src, "r", _get_extent(self.__src))
         dst = _to_region(self.__dst, "w", _get_extent(self.__dst))
-        return tir.call_intrin("handle", tir.op.Op.get("tl.npuir_" + self.__opName), src, dst)
+        return tir.call_intrin(
+            "handle", tir.op.Op.get("tl.npuir_" + self.__opName), src, dst
+        )
 
-"""npuir exp at tile-level."""
+
 def npuir_exp(A, B):
     return AscendUnaryOp("exp", A, B).buildTirCall()
 
-"""npuir relu at tile-level."""
+
 def npuir_relu(A, B):
     return AscendUnaryOp("relu", A, B).buildTirCall()
 
-"""npuir sigmoid at tile-level."""
+
 def npuir_sigmoid(A, B):
     return AscendUnaryOp("sigmoid", A, B).buildTirCall()
 
-"""npuir ln at tile-level."""
+
 def npuir_ln(A, B):
     return AscendUnaryOp("ln", A, B).buildTirCall()
 
-"""npuir sqrt at tile-level."""
+
 def npuir_sqrt(A, B):
     return AscendUnaryOp("sqrt", A, B).buildTirCall()
 
-"""npuir rsqrt at tile-level."""
+
 def npuir_rsqrt(A, B):
     return AscendUnaryOp("rsqrt", A, B).buildTirCall()
 
-"""npuir abs at tile-level."""
+
 def npuir_abs(A, B):
     return AscendUnaryOp("abs", A, B).buildTirCall()
 
-"""npuir rec at tile-level."""
+
 def npuir_rec(A, B):
     return AscendUnaryOp("rec", A, B).buildTirCall()
 
-"""npuir not at tile-level."""
+
 def npuir_not(A, B):
     return AscendUnaryOp("not", A, B).buildTirCall()
+
 
 def npuir_exp2(A, B, Tmp):
     """
@@ -238,8 +259,8 @@ def npuir_exp2(A, B, Tmp):
     exp2(A) = exp(A * ln(2))
 
     Args:
-        A (Union[tir.Buffer, tir.Var]): Input 
-        B (Union[tir.Buffer, tir.Var]): Output 
+        A (Union[tir.Buffer, tir.Var]): Input
+        B (Union[tir.Buffer, tir.Var]): Output
         Tmp (Union[tir.Buffer, tir.Var]): Temp buffer
     Returns:
         tir.Stmt
@@ -253,14 +274,15 @@ def npuir_exp2(A, B, Tmp):
     T.evaluate(mul_call)
     T.evaluate(exp_call)
 
+
 def npuir_log2(A, B, Tmp):
     """
     npuir log2 at tile-level.
     log2(A) = log(A) * (1 / ln(2))
 
     Args:
-        A (Union[tir.Buffer, tir.Var]): Input 
-        B (Union[tir.Buffer, tir.Var]): Output 
+        A (Union[tir.Buffer, tir.Var]): Input
+        B (Union[tir.Buffer, tir.Var]): Output
         Tmp (Union[tir.Buffer, tir.Var]): Temp buffer
     Returns:
         tir.Stmt
@@ -273,6 +295,7 @@ def npuir_log2(A, B, Tmp):
 
     T.evaluate(log_call)
     T.evaluate(mul_call)
+
 
 def npuir_select(Cond, A, B, Out):
     """npuir select at tile-level.
@@ -312,6 +335,7 @@ def npuir_cmp(A, B, C, cmp_mod):
     C = _to_region(C, "w", _get_extent(C))
     return tir.call_intrin("handle", tir.op.Op.get("tl.npuir_cmp"), A, B, C, cmp_mod)
 
+
 def npuir_shr(A, B, C, round: bool = True):
     """npuir shift right at tile-level.
 
@@ -329,10 +353,15 @@ def npuir_shr(A, B, C, round: bool = True):
     return tir.call_intrin("handle", tir.op.Op.get("tl.npuir_shr"), A, B, C, round)
 
 
-def npuir_dot(A: Union[tir.Buffer, tir.Var],
+def npuir_dot(
+    A: Union[tir.Buffer, tir.Var],
     B: Union[tir.Buffer, tir.Var],
     C: Union[tir.Buffer, tir.Var],
-    size: [] = [], initC: bool = False, a_transpose: bool = False, b_transpose: bool = False):
+    size: Optional[list] = None,
+    initC: bool = False,
+    a_transpose: bool = False,
+    b_transpose: bool = False,
+):
     """npuir dot at tile-level. C = C + A * B.
 
     Args:
@@ -346,6 +375,7 @@ def npuir_dot(A: Union[tir.Buffer, tir.Var],
         tir.Call: A handle to the npuir_dot operation
     """
 
+    size = [] if size is None else size
     if size == []:
         A_extent = _get_extent(A)
         B_extent = _get_extent(B)
@@ -360,10 +390,19 @@ def npuir_dot(A: Union[tir.Buffer, tir.Var],
     B = _to_region(B, "r", B_extent)
     C = _to_region(C, "rw", C_extent)
 
-    return tir.call_intrin("handle", tir.op.Op.get("tl.npuir_dot"), A, B, C, initC, a_transpose, b_transpose)
+    return tir.call_intrin(
+        "handle",
+        tir.op.Op.get("tl.npuir_dot"),
+        A,
+        B,
+        C,
+        initC,
+        a_transpose,
+        b_transpose,
+    )
 
 
-def npuir_load_nd2nz(src, dst, size = []):
+def npuir_load_nd2nz(src, dst, size=None):
     """npuir nd2nz-load data from OUT to L1 at tile-level.
 
     Args:
@@ -374,14 +413,18 @@ def npuir_load_nd2nz(src, dst, size = []):
         tir.Call: A handle to the npuir_load_nd2nz operation
     """
 
-    src = _to_region(src, "r", _get_extent(src) if size is [] else size)
-    dst = _to_region(dst, "w", _get_extent(dst) if size is [] else size)
+    size = [] if size is None else size
+    src = _to_region(src, "r", _get_extent(src) if size == [] else size)
+    dst = _to_region(dst, "w", _get_extent(dst) if size == [] else size)
     # dst_continuous: whether the source data is stored continuously in the destination buffer.
     # It is good to always set dst_continuous to True.
     dst_continuous = True
-    return tir.call_intrin("handle", tir.op.Op.get("tl.npuir_load_nd2nz"), src, dst, dst_continuous)
+    return tir.call_intrin(
+        "handle", tir.op.Op.get("tl.npuir_load_nd2nz"), src, dst, dst_continuous
+    )
 
-def npuir_store_nz2nd(src, dst, size=[]):
+
+def npuir_store_nz2nd(src, dst, size=None):
     """npuir nz2nd-store data from L1 to gm at tile-level.
 
     Args:
@@ -392,12 +435,15 @@ def npuir_store_nz2nd(src, dst, size=[]):
         tir.Call: A handle to the npuir_load_nd2nz operation
     """
 
-    src = _to_region(src, "r", _get_extent(src) if size is [] else size)
-    dst = _to_region(dst, "w", _get_extent(dst) if size is [] else size)
+    size = [] if size is None else size
+    src = _to_region(src, "r", _get_extent(src) if size == [] else size)
+    dst = _to_region(dst, "w", _get_extent(dst) if size == [] else size)
     return tir.call_intrin("handle", tir.op.Op.get("tl.npuir_store_nz2nd"), src, dst)
 
 
-def npuir_store_fixpipe(src, dst, size = [], enable_nz2nd = False, channel_split = False, pre_relu_mode = ""):
+def npuir_store_fixpipe(
+    src, dst, size=None, enable_nz2nd=False, channel_split=False, pre_relu_mode=""
+):
     """npuir nd2nz-load data from OUT to L1 at tile-level.
 
     Args:
@@ -411,17 +457,27 @@ def npuir_store_fixpipe(src, dst, size = [], enable_nz2nd = False, channel_split
         tir.Call: A handle to the npuir_store_fixpipe operation
     """
 
-    assert((src.dtype == dst.dtype)
-           or (src.dtype == "float32" and dst.dtype == "float16")
-           or (src.dtype == "float32" and dst.dtype == "bfloat16")
-           or (src.dtype == "int32" and dst.dtype == "int8")), \
-            "Unexpected pre-quant mode in npuir_store_fixpipe"
+    size = [] if size is None else size
+    assert (
+        (src.dtype == dst.dtype)
+        or (src.dtype == "float32" and dst.dtype == "float16")
+        or (src.dtype == "float32" and dst.dtype == "bfloat16")
+        or (src.dtype == "int32" and dst.dtype == "int8")
+    ), "Unexpected pre-quant mode in npuir_store_fixpipe"
 
-    src = _to_region(src, "r", _get_extent(src) if size is [] else size)
-    dst = _to_region(dst, "w", _get_extent(dst) if size is [] else size)
+    src = _to_region(src, "r", _get_extent(src) if size == [] else size)
+    dst = _to_region(dst, "w", _get_extent(dst) if size == [] else size)
     pre_relu_map = {"": 0, "relu": 1, "leaky_relu": 2, "prelu": 3}
-    return tir.call_intrin("handle", tir.op.Op.get("tl.npuir_store_fixpipe"), src, dst,
-                           enable_nz2nd, channel_split, pre_relu_map[pre_relu_mode])
+    return tir.call_intrin(
+        "handle",
+        tir.op.Op.get("tl.npuir_store_fixpipe"),
+        src,
+        dst,
+        enable_nz2nd,
+        channel_split,
+        pre_relu_map[pre_relu_mode],
+    )
+
 
 def npuir_brc(src, dst):
     """Broadcast a vector or a scalar according to the broadcast axes array
@@ -434,31 +490,28 @@ def npuir_brc(src, dst):
     dst_extent = _get_extent(dst)
 
     if not isinstance(src, tir.PrimExpr):
-        assert len(src_extent) == len(
-            dst_extent), "The input vector and output vector must have same rank."
+        assert len(src_extent) == len(dst_extent), (
+            "The input vector and output vector must have same rank."
+        )
         for i in range(len(src_extent)):
             if src_extent[i] != 1:
-                assert src_extent[i] == dst_extent[i], \
+                assert src_extent[i] == dst_extent[i], (
                     "The input and output shapes do not match for broadcast."
+                )
 
-    if not src_extent:
-        src_region = src
-    else:
-        src_region = _to_region(src, "r", src_extent)
+    src_region = src if not src_extent else _to_region(src, "r", src_extent)
     dst_region = _to_region(dst, "w", dst_extent)
 
     return tir.call_intrin(
-        "handle",
-        tir.op.Op.get("tl.npuir_brc"),
-        src_region,
-        dst_region
+        "handle", tir.op.Op.get("tl.npuir_brc"), src_region, dst_region
     )
+
 
 def npuir_fill(buffer, value):
     """Fill a buffer or buffer region with a specified value.
        Use broadcast to fill the specified buffer or buffer region with the required values.
 
-    
+
     Args:
         buffer (Union[tir.Buffer, tir.BufferRegion]): Either a TVM buffer or buffer region to be filled
         value (tir.PrimExpr): The value to fill the buffer with
@@ -475,15 +528,16 @@ def npuir_fill(buffer, value):
     fill_call = npuir_brc(value, buffer)
     return fill_call
 
+
 def npuir_clear(buffer):
     """Clear a buffer by filling it with zeros.
-    
+
     Args:
         buffer (Union[tir.Buffer, tir.Var]): Either a TVM buffer or a variable that contains a buffer region
-    
+
     Returns:
         A fill operation that sets the buffer contents to zero
-        
+
     Raises:
         ValueError: If the buffer variable contains an invalid buffer region
     """
@@ -491,7 +545,9 @@ def npuir_clear(buffer):
     zero = tir.const(0, "int32")
 
     if isinstance(buffer, tir.Var) and has_let_value(buffer):
-        buffer_region = get_let_value(buffer)  # Get the actual buffer region from variable
+        buffer_region = get_let_value(
+            buffer
+        )  # Get the actual buffer region from variable
         if isinstance(buffer_region, tir.BufferRegion):
             return npuir_fill(buffer_region, zero)
         else:
@@ -499,7 +555,7 @@ def npuir_clear(buffer):
     return npuir_fill(buffer, zero)
 
 
-def npuir_cast(src, dst, size=[], round_mode="rint"):
+def npuir_cast(src, dst, size=None, round_mode="rint"):
     """Performs element-wise operation on N operands and produces a single result.
 
     Args:
@@ -516,24 +572,29 @@ def npuir_cast(src, dst, size=[], round_mode="rint"):
     Returns:
         tir.Call: A handle to the npuir_cast operation
     """
-    broadcast_dims = []
+    size = [] if size is None else size
     valid_round_mode = {"round", "rint", "floor", "ceil", "trunc", "odd"}
     src_extent = _get_extent(src) if size == [] else size
     dst_extent = _get_extent(dst) if size == [] else size
 
     assert not isinstance(src, tir.Var), "The first input is vector-only."
-    assert len(src_extent) == len(
-        dst_extent), "The input/init operands and result have the same rank."
+    assert len(src_extent) == len(dst_extent), (
+        "The input/init operands and result have the same rank."
+    )
     assert round_mode in valid_round_mode, "Round mode is invalid."
 
     for i in range(0, len(src_extent)):
         if src_extent[i] != 1:
-            assert src_extent[i] == dst_extent[
-                i], "The input and output shapes do not match for broadcast."
+            assert src_extent[i] == dst_extent[i], (
+                "The input and output shapes do not match for broadcast."
+            )
 
     src = _to_region(src, "r", src_extent)
     dst = _to_region(dst, "w", dst_extent)
-    return tir.call_intrin("handle", tir.op.Op.get("tl.npuir_cast"), src, dst, round_mode)
+    return tir.call_intrin(
+        "handle", tir.op.Op.get("tl.npuir_cast"), src, dst, round_mode
+    )
+
 
 def _get_tmp_buffer_exp(data):
     if isinstance(data, tir.Buffer):
@@ -542,6 +603,7 @@ def _get_tmp_buffer_exp(data):
         return T.alloc_ub(data.buffer.shape, data.dtype)
     else:
         raise TypeError(f"Unsupported dst type: {type(data)}")
+
 
 def _get_tmp_buffer_dev(data):
     if isinstance(data, tir.Buffer):
@@ -553,7 +615,15 @@ def _get_tmp_buffer_dev(data):
     else:
         raise TypeError(f"Unsupported dst type: {type(data)}")
 
-def npuir_reduce(src, dst, dims:Union[list, tuple, int], reduce_mode, size=[], clear: bool = True):
+
+def npuir_reduce(
+    src,
+    dst,
+    dims: Union[list, tuple, int],
+    reduce_mode,
+    size=None,
+    clear: bool = True,
+):
     """Reduce one or more axes of the source vector according to the reduction axes array, starting from an init value.
 
     Args:
@@ -571,7 +641,24 @@ def npuir_reduce(src, dst, dims:Union[list, tuple, int], reduce_mode, size=[], c
     Returns:
         tir.Call: A handle to the npuir_reduce operation
     """
-    valid_reduce_mode = {"sum", "prod", "max", "min", "max_with_index_left", "max_with_index_right", "min_with_index_left", "min_with_index_right", "any", "all", "xori", "ori", "abssum", "absmax", "none"}
+    size = [] if size is None else size
+    valid_reduce_mode = {
+        "sum",
+        "prod",
+        "max",
+        "min",
+        "max_with_index_left",
+        "max_with_index_right",
+        "min_with_index_left",
+        "min_with_index_right",
+        "any",
+        "all",
+        "xori",
+        "ori",
+        "abssum",
+        "absmax",
+        "none",
+    }
     valid_reduce_clear_false_mode = {"sum", "max", "min", "abssum", "absmax"}
     valid_reduce_abs_mode = {"abssum", "absmax"}
     reduce_abs_mode_map = {
@@ -590,39 +677,61 @@ def npuir_reduce(src, dst, dims:Union[list, tuple, int], reduce_mode, size=[], c
         for dim in dims:
             size[dim] = 1
     dst_extent = _get_extent(dst) if size == [] else size.copy()
-    assert len(src_extent) == len(
-        dst_extent), "The input vector and output vector must have same rank."
+    assert len(src_extent) == len(dst_extent), (
+        "The input vector and output vector must have same rank."
+    )
     assert reduce_mode in valid_reduce_mode, "Reduce mode is invalid."
     assert len(dims) != 0, "The reduction indices array cannot be empty."
 
     src_region = _to_region(src, "r", src_extent)
     dst_region = _to_region(dst, "w", dst_extent)
-    reduce_dims = ','.join(str(dim) for dim in dims)
-    if clear == False:
+    reduce_dims = ",".join(str(dim) for dim in dims)
+    if not clear:
         redeuce_op_for_clear_map = {
             "sum": "add",
             "max": "max",
             "min": "min",
         }
-        TILELANG_ASCEND_MODE = os.environ.get('TILELANG_ASCEND_MODE')
-        if TILELANG_ASCEND_MODE is None or \
-            TILELANG_ASCEND_MODE.lower().strip() in ['expert', 'exp', 'e']:
+        if env.is_expert_mode():
             tmp = _get_tmp_buffer_exp(dst)
         else:
             tmp = _get_tmp_buffer_dev(dst)
         tmp_extent = _get_extent(tmp)
-        assert len(dst_extent) == len(tmp_extent), "The out vector and tmp vector must have same rank."
-        assert reduce_mode in valid_reduce_clear_false_mode, "This mode is not supported when clear is false."
+        assert len(dst_extent) == len(tmp_extent), (
+            "The out vector and tmp vector must have same rank."
+        )
+        assert reduce_mode in valid_reduce_clear_false_mode, (
+            "This mode is not supported when clear is false."
+        )
         tmp_region = _to_region(tmp, "w", tmp_extent)
-        reduce_call = tir.call_intrin("handle", tir.op.Op.get("tl.npuir_reduce"), src_region, tmp_region, reduce_dims, reduce_mode)
+        reduce_call = tir.call_intrin(
+            "handle",
+            tir.op.Op.get("tl.npuir_reduce"),
+            src_region,
+            tmp_region,
+            reduce_dims,
+            reduce_mode,
+        )
         T.evaluate(reduce_call)
-        binary_call = AscendBinaryOp(redeuce_op_for_clear_map[reduce_mode], dst, tmp, dst).buildTirCall()
+        binary_call = AscendBinaryOp(
+            redeuce_op_for_clear_map[reduce_mode], dst, tmp, dst
+        ).buildTirCall()
         T.evaluate(binary_call)
     else:
-        reduce_call = tir.call_intrin("handle", tir.op.Op.get("tl.npuir_reduce"), src_region, dst_region, reduce_dims, reduce_mode)
+        reduce_call = tir.call_intrin(
+            "handle",
+            tir.op.Op.get("tl.npuir_reduce"),
+            src_region,
+            dst_region,
+            reduce_dims,
+            reduce_mode,
+        )
         T.evaluate(reduce_call)
 
-def reduce_max(buffer: tir.Buffer, out: tir.Buffer, dim: int = -1, size=[], clear: bool = True):
+
+def reduce_max(
+    buffer: tir.Buffer, out: tir.Buffer, dim: int = -1, size=None, clear: bool = True
+):
     """Perform reduce max on input buffer, store the result to output buffer
 
     Parameters
@@ -640,9 +749,14 @@ def reduce_max(buffer: tir.Buffer, out: tir.Buffer, dim: int = -1, size=[], clea
     handle : PrimExpr
     """
     dim = _legalize_dim(buffer, dim)
-    return npuir_reduce(buffer, out, reduce_mode="max", dims=dim, size=size, clear=clear)
+    return npuir_reduce(
+        buffer, out, reduce_mode="max", dims=dim, size=size, clear=clear
+    )
 
-def reduce_min(buffer: tir.Buffer, out: tir.Buffer, dim: int = -1, size=[], clear: bool = True):
+
+def reduce_min(
+    buffer: tir.Buffer, out: tir.Buffer, dim: int = -1, size=None, clear: bool = True
+):
     """Perform reduce min on input buffer, store the result to output buffer.
 
     Args:
@@ -655,9 +769,14 @@ def reduce_min(buffer: tir.Buffer, out: tir.Buffer, dim: int = -1, size=[], clea
         tir.Call: Handle to the reduction operation
     """
     dim = _legalize_dim(buffer, dim)
-    return npuir_reduce(buffer, out, reduce_mode="min", dims=dim, size=size, clear=clear)
+    return npuir_reduce(
+        buffer, out, reduce_mode="min", dims=dim, size=size, clear=clear
+    )
 
-def reduce_sum(buffer: tir.Buffer, out: tir.Buffer, dim: int = -1, size=[], clear: bool = True):
+
+def reduce_sum(
+    buffer: tir.Buffer, out: tir.Buffer, dim: int = -1, size=None, clear: bool = True
+):
     """Perform reduce sum on input buffer, store the result to output buffer.
 
     Args:
@@ -667,8 +786,8 @@ def reduce_sum(buffer: tir.Buffer, out: tir.Buffer, dim: int = -1, size=[], clea
         clear (bool, optional): If True, output buffer will be cleared before reduction.
                               If False, results will be accumulated on existing values.
                               Defaults to True.
-    Note: When clear=True, reduce_sum will not compute directly on the output buffer. This is because 
-          during warp reduction, the same value would be accumulated multiple times (number of threads 
+    Note: When clear=True, reduce_sum will not compute directly on the output buffer. This is because
+          during warp reduction, the same value would be accumulated multiple times (number of threads
           in the warp). Therefore, the implementation with clear=True follows these steps:
         1. create a temp buffer with same shape and dtype as out
         2. copy out to temp buffer
@@ -679,7 +798,10 @@ def reduce_sum(buffer: tir.Buffer, out: tir.Buffer, dim: int = -1, size=[], clea
         tir.Call: Handle to the reduction operation
     """
     dim = _legalize_dim(buffer, dim)
-    return npuir_reduce(buffer, out, reduce_mode="sum", dims=dim, size=size, clear=clear)
+    return npuir_reduce(
+        buffer, out, reduce_mode="sum", dims=dim, size=size, clear=clear
+    )
+
 
 def reduce_abssum(buffer: tir.Buffer, out: tir.Buffer, dim: int = -1):
     """Perform reduce absolute sum on input buffer, store the result to output buffer.
@@ -695,7 +817,10 @@ def reduce_abssum(buffer: tir.Buffer, out: tir.Buffer, dim: int = -1):
     dim = _legalize_dim(buffer, dim)
     return npuir_reduce(buffer, out, reduce_mode="abssum", dims=dim, clear=True)
 
-def reduce_absmax(buffer: tir.Buffer, out: tir.Buffer, dim: int = -1, clear: bool = True):
+
+def reduce_absmax(
+    buffer: tir.Buffer, out: tir.Buffer, dim: int = -1, clear: bool = True
+):
     """Perform reduce absolute max on input buffer, store the result to output buffer.
 
     Args:
@@ -709,7 +834,13 @@ def reduce_absmax(buffer: tir.Buffer, out: tir.Buffer, dim: int = -1, clear: boo
     dim = _legalize_dim(buffer, dim)
     return npuir_reduce(buffer, out, reduce_mode="absmax", dims=dim, clear=clear)
 
-def npuir_cumsum(src: tir.Buffer, dst: Optional[tir.Buffer] = None, dim: int = 0, reverse: bool = False):
+
+def npuir_cumsum(
+    src: tir.Buffer,
+    dst: Optional[tir.Buffer] = None,
+    dim: int = 0,
+    reverse: bool = False,
+):
     """Perform cumulative sum on input buffer, store the result to output buffer.
 
     Args:
@@ -724,13 +855,15 @@ def npuir_cumsum(src: tir.Buffer, dst: Optional[tir.Buffer] = None, dim: int = 0
 
     shape = src.shape
     if dim >= len(shape) or dim <= -len(shape):
-        raise ValueError(f"Dimension {dim} is out of bounds for buffer with shape {shape}")
+        raise ValueError(
+            f"Dimension {dim} is out of bounds for buffer with shape {shape}"
+        )
     if dim < 0:
         dim = len(shape) + dim
 
     if dst is None:
         dst = src
-    
+
     src_extent = src.shape
     out_extent = dst.shape
     src_tmp = _to_region(src, "r", src_extent)
@@ -744,15 +877,18 @@ def npuir_cumsum(src: tir.Buffer, dst: Optional[tir.Buffer] = None, dim: int = 0
         str(dim),
         reverse,
     )
-    
-def npuir_clamp(src: tir.Buffer, dst: Optional[tir.Buffer], min_val: PrimExpr, max_val: PrimExpr):
+
+
+def npuir_clamp(
+    src: tir.Buffer, dst: Optional[tir.Buffer], min_val: PrimExpr, max_val: PrimExpr
+):
     """Clamps the input value dst between [min_val, max_val], implemented by min and max
-    
+
     Args:
         dst: Input value to be clamped
         min_val: Minimum value
         max_val: Maximum value
-    
+
     Returns:
         Value clamped to the specified range
     """
@@ -771,16 +907,12 @@ def npuir_clamp(src: tir.Buffer, dst: Optional[tir.Buffer], min_val: PrimExpr, m
 
     # Ensure value is not less than minimum
     max_call = tir.call_intrin(
-        "handle",
-        tir.op.Op.get("tl.npuir_max"),
-        src_tmp,
-        min_ub_tmp,
-        dst_tmp
+        "handle", tir.op.Op.get("tl.npuir_max"), src_tmp, min_ub_tmp, dst_tmp
     )
 
     T.evaluate(max_call)
 
-    #Handle max_val
+    # Handle max_val
     if isinstance(max_val, tir.Buffer):
         max_ub_tmp = _to_region(max_val, "rw", max_val.shape)
     else:
@@ -788,16 +920,13 @@ def npuir_clamp(src: tir.Buffer, dst: Optional[tir.Buffer], min_val: PrimExpr, m
 
     # Ensure value is not greater than maximum
     min_call = tir.call_intrin(
-        "handle",
-        tir.op.Op.get("tl.npuir_min"),
-        dst_tmp,
-        max_ub_tmp,
-        dst_tmp
+        "handle", tir.op.Op.get("tl.npuir_min"), dst_tmp, max_ub_tmp, dst_tmp
     )
 
     T.evaluate(min_call)
-    
-def npuir_atomic_add(dst, src, size=[]):
+
+
+def npuir_atomic_add(dst, src, size=None):
     """Perform atomic add operation on the NPU.
 
     Args:
@@ -808,15 +937,17 @@ def npuir_atomic_add(dst, src, size=[]):
     Returns:
         tir.Call: A handle to the npuir_atomic_add operation
     """
+    size = [] if size is None else size
     src_extent = _get_extent(src) if size == [] else size.copy()
     dst_extent = _get_extent(dst) if size == [] else size.copy()
 
     src = _to_region(src, "r", src_extent)
     dst = _to_region(dst, "w", dst_extent)
 
-    return tir.call_intrin("handle", tir.op.Op.get("tl.npuir_atomic_add"), dst, src)    
+    return tir.call_intrin("handle", tir.op.Op.get("tl.npuir_atomic_add"), dst, src)
 
-def npuir_atomic_addx4(dst, src, size=[]):
+
+def npuir_atomic_addx4(dst, src, size=None):
     """Perform atomic add operation with quad-width operands on the NPU.
 
     Args:
@@ -827,6 +958,7 @@ def npuir_atomic_addx4(dst, src, size=[]):
     Returns:
         tir.Call: A handle to the npuir_atomic_addx4 operation
     """
+    size = [] if size is None else size
     src_extent = _get_extent(src) if size == [] else size.copy()
     dst_extent = _get_extent(dst) if size == [] else size.copy()
 
@@ -834,173 +966,205 @@ def npuir_atomic_addx4(dst, src, size=[]):
     dst = _to_region(dst, "w", dst_extent)
 
     return tir.call_intrin("handle", tir.op.Op.get("tl.npuir_atomic_add"), dst, src)
-    
-def npuir_gather(src, dst, indices:Union[list, tuple], size=[]):
+
+
+def npuir_gather(src, dst, indices: Union[list, tuple], size=None):
     """Retrieve elements from a tensor/memref according to given indices, and store these elements in another tensor/memref. The gather axis is the last dimension.
- 
+
     Args:
         src (Union[tir.Buffer, tir.BufferLoad, tir.BufferRegion]): Source vector
         dst (Union[tir.Buffer, tir.BufferLoad]): Destination vector
         indices: The gather indices array
- 
+
     Returns:
         tir.Call: A handle to the npuir_gather operation
     """
+    size = [] if size is None else size
     src_extent = _get_extent(src) if size == [] else size.copy()
     indices_extent = _get_extent(indices) if size == [] else size.copy()
     dst_extent = _get_extent(dst) if size == [] else size.copy()
- 
+
     src = _to_region(src, "r", src_extent)
     indices = _to_region(indices, "r", indices_extent)
     dst = _to_region(dst, "w", dst_extent)
- 
-    return tir.call_intrin("handle", tir.op.Op.get("tl.npuir_gather"), src, dst, indices)
- 
-def npuir_interleave(*args, channel_nums: int = 2, size = []):
+
+    return tir.call_intrin(
+        "handle", tir.op.Op.get("tl.npuir_gather"), src, dst, indices
+    )
+
+
+def npuir_interleave(*args, channel_nums: int = 2, size=None):
     """Interleaves the values of N tensors along their last dimension. All tensors must have the same shape.
- 
+
     Args:
         srcs (Union[tir.Buffer, tir.BufferLoad, tir.BufferRegion]): Source vectors
         dst (Union[tir.Buffer, tir.BufferLoad]): Destination vector
         channel_nums: The number of channels each input participates in during each interleaving
-    
+
     Raises:
         AssertionError: If input vector and output vector have different shapes.
         AssertionError: If the channel nums array is empty.
- 
+
     Returns:
         tir.Call: A handle to the npuir_interleave operation
-    
+
     Notes:
         Due to hardware limitations, only two vectors are currently supported for interleaving.
     """
     *srcs, dst = args
     srcs_arr = []
- 
-    dst_size = size[:-1] + [size[-1] * 2] if size !=[] else []
+    size = [] if size is None else size
+
+    dst_size = size[:-1] + [size[-1] * 2] if size != [] else []
     dst_extent = _get_extent(dst) if size == [] else dst_size.copy()
     dst = _to_region(dst, "w", dst_extent)
- 
-    for i, src in enumerate(srcs):
+
+    for _i, src in enumerate(srcs):
         src_extent = _get_extent(src) if size == [] else size.copy()
-        assert len(src_extent) == len(
-        dst_extent), "The input vector and output vector must have same rank."
+        assert len(src_extent) == len(dst_extent), (
+            "The input vector and output vector must have same rank."
+        )
         src = _to_region(src, "r", src_extent)
         srcs_arr.append(src)
- 
+
     def _tir_call_intrin(channel_nums, dst, *srcs: tir.PrimExpr):
-        return tir.call_intrin("handle", tir.op.Op.get("tl.npuir_interleave"), channel_nums, dst, *srcs)
- 
+        return tir.call_intrin(
+            "handle", tir.op.Op.get("tl.npuir_interleave"), channel_nums, dst, *srcs
+        )
+
     return _tir_call_intrin(channel_nums, dst, *srcs_arr)
- 
-def npuir_deinterleave(*args, channel_nums: int = 2, index_mode: str = "ALL_CHANNELS", size=[]):
+
+
+def npuir_deinterleave(
+    *args, channel_nums: int = 2, index_mode: str = "ALL_CHANNELS", size=None
+):
     """Deinterleave one tensor along the last dimension.
     Args:
         src (Union[tir.Buffer, tir.BufferLoad, tir.BufferRegion]): Source vector
         dsts (Union[tir.Buffer, tir.BufferLoad]): Destination vectors
         channel_nums: The number of channels each input participates in during each interleaving
         index_mode: HIVM deinterleave mode
-    
+
     Raises:
         AssertionError: If deinterleave mode is invalid.
         AssertionError: If the last dimension of the input tensor is not the multiple of channel_nums.
         AssertionError: If input vector and output vector have different ranks.
         AssertionError: If the channel nums array is empty.
- 
+
     Returns:
         tir.Call: A handle to the npuir_deinterleave operation
     """
     src, *dsts = args
     dsts_arr = []
- 
+    size = [] if size is None else size
+
     valid_index_mode = {"CHANNEL_0", "CHANNEL_1", "ALL_CHANNELS"}
     assert index_mode in valid_index_mode, "Deinterleave mode is invalid."
     src_extent = _get_extent(src) if size == [] else size.copy()
-    assert src_extent[-1] % channel_nums == 0, "The last dimension of the input tensor must be multiple of channel_nums."
+    assert src_extent[-1] % channel_nums == 0, (
+        "The last dimension of the input tensor must be multiple of channel_nums."
+    )
     src = _to_region(src, "r", src_extent)
- 
-    dst_size = size[:-1] + [size[-1] * 0.5] if size !=[] else []
-    for i, dst in enumerate(dsts):
+
+    dst_size = size[:-1] + [size[-1] * 0.5] if size != [] else []
+    for _i, dst in enumerate(dsts):
         dst_extent = _get_extent(dst) if size == [] else dst_size.copy()
-        assert len(src_extent) == len(
-            dst_extent), "The input vector and output vector must have same rank."
+        assert len(src_extent) == len(dst_extent), (
+            "The input vector and output vector must have same rank."
+        )
         dst = _to_region(dst, "w", dst_extent)
         dsts_arr.append(dst)
- 
+
     def _tir_call_intrin(channel_nums, index_mode, src, *dsts: tir.PrimExpr):
-        return tir.call_intrin("handle", tir.op.Op.get("tl.npuir_deinterleave"), channel_nums, index_mode, src, *dsts)
- 
+        return tir.call_intrin(
+            "handle",
+            tir.op.Op.get("tl.npuir_deinterleave"),
+            channel_nums,
+            index_mode,
+            src,
+            *dsts,
+        )
+
     return _tir_call_intrin(channel_nums, index_mode, src, *dsts_arr)
 
-def npuir_transpose(src, dst, permutation = Union[list, tuple], size=[]):
+
+def npuir_transpose(src, dst, permutation=Union[list, tuple], size=None):
     """Permutes the dimensions of src according to the given permutation. In other words: dim(dst, i) = dim(src, permutation[i]).
- 
+
     Args:
         src (Union[tir.Buffer, tir.BufferLoad, tir.BufferRegion]): Source vector
         dst (Union[tir.Buffer, tir.BufferLoad]): Destination vector
-    
+
     Raises:
         AssertionError: If input vector and output vector have different ranks.
- 
+
     Returns:
         tir.Call: A handle to the npuir_transpose operation
     """
+    size = [] if size is None else size
     src_extent = _get_extent(src) if size == [] else size.copy()
-    dst_size = []
-    if size != []:
-        for i in range(len(size)):
-            dst_size[i] = size[permutation[i]]
+    dst_size = [size[pm] for pm in permutation] if size != [] else []
     dst_extent = _get_extent(dst) if size == [] else dst_size.copy()
-    assert len(src_extent) == len(
-        dst_extent), "The input vector and output vector must have same rank."
-    
+    assert len(src_extent) == len(dst_extent), (
+        "The input vector and output vector must have same rank."
+    )
+
     src = _to_region(src, "r", src_extent)
     dst = _to_region(dst, "w", dst_extent)
-    permutation_str = ','.join(str(pm) for pm in permutation)
- 
-    return tir.call_intrin("handle", tir.op.Op.get("tl.npuir_transpose"), src, dst, permutation_str)
+    permutation_str = ",".join(str(pm) for pm in permutation)
+
+    return tir.call_intrin(
+        "handle", tir.op.Op.get("tl.npuir_transpose"), src, dst, permutation_str
+    )
+
 
 def npuir_arange(dst, strides: Union[list, tuple], offset=0):
     """Fill a vector with range 0,1,2... based on strides and offset.
     e.g. offset = 1, strides = [1, 2], tensor/memref shape = [2x4xi32],
     the result is [[1, 3, 5, 7,
                     2, 4, 6, 8]].
- 
+
     Args:
         dst (Union[tir.Buffer, tir.BufferLoad]): Destination vector
         strides (Union[list, tuple]): Stride list
- 
+
     Returns:
         tir.Call: A handle to the npuir_arange operation
     """
     dst_extent = _get_extent(dst)
     dst = _to_region(dst, "w", dst_extent)
 
-    return tir.call_intrin("handle", tir.op.Op.get("tl.npuir_arange"), dst, *strides, offset)
+    return tir.call_intrin(
+        "handle", tir.op.Op.get("tl.npuir_arange"), dst, *strides, offset
+    )
 
-def npuir_concat(*args, size=[]):
+
+def npuir_concat(*args, size=None):
     """The concat operation constructs a tensor out of a variadic list of input
     tensors, concatenated along a static dimension number.
- 
+
     Args:
         srcs (Union[tir.Buffer, tir.BufferLoad, tir.BufferRegion]): Source vectors
         dst (Union[tir.Buffer, tir.BufferLoad]): Destination vector
         dim: Specifies the dimension along which to concatenate
-    
+
     Raises:
         AssertionError: If input vector and output vector have different ranks.
- 
+
     Returns:
         tir.Call: A handle to the npuir_concat operation
     """
     *srcs, dst, dim = args
     srcs_arr = []
-    dst_size = size
+    size = [] if size is None else size
+    dst_size = size.copy()
 
     for i, src in enumerate(srcs):
         src_extent = _get_extent(src) if size == [] else size.copy()
         if size == []:
-            assert len(src_extent) == len(_get_extent(dst)), "The input vector and output vector must have same rank."
+            assert len(src_extent) == len(_get_extent(dst)), (
+                "The input vector and output vector must have same rank."
+            )
         src = _to_region(src, "r", src_extent)
         srcs_arr.append(src)
         if i == dim and size != []:
@@ -1010,13 +1174,23 @@ def npuir_concat(*args, size=[]):
     dst = _to_region(dst, "w", dst_extent)
 
     def _tir_call_intrin(dim, dst, *srcs: tir.PrimExpr):
-        return tir.call_intrin("handle", tir.op.Op.get("tl.npuir_concat"), dim, dst, *srcs)
- 
+        return tir.call_intrin(
+            "handle", tir.op.Op.get("tl.npuir_concat"), dim, dst, *srcs
+        )
+
     return _tir_call_intrin(dim, dst, *srcs_arr)
 
-def npuir_pad(src, dst, pad_value, low: Union[list, tuple], high: Union[list, tuple], size=[]):
+
+def npuir_pad(
+    src,
+    dst,
+    pad_value,
+    low: Union[list, tuple],
+    high: Union[list, tuple],
+    size=None,
+):
     """Pads the input operand.
- 
+
     Args:
         src (Union[tir.Buffer, tir.BufferLoad, tir.BufferRegion]): Source vector
         dst (Union[tir.Buffer, tir.BufferLoad]): Destination vector
@@ -1025,26 +1199,34 @@ def npuir_pad(src, dst, pad_value, low: Union[list, tuple], high: Union[list, tu
         high: The padding lengths along the end of each dimension(Dynamic)
         static_low: The padding lengths along the start of each dimension(Static)
         static_high: The padding lengths along the end of each dimension(Static)
- 
+
     Returns:
         tir.Call: A handle to the npuir_pad operation
-    
+
     Notes:
         1. Both low/static_low and high/staitc_high can be negative, but the result tensor dimensions are all non-negative
         2. Not support decomposing multi-dim padding for now.
     """
+    size = [] if size is None else size
     src_extent = _get_extent(src) if size == [] else size.copy()
-    dst_size = []
+    dst_size = [0] * len(size) if size != [] else []
     if size != []:
         for i in range(len(size)):
             dst_size[i] = size[i] + low[i] + high[i]
-            assert dst_sze[i] >= 0, "The result tensor dimensions should be non-negative."
+            assert dst_size[i] >= 0, (
+                "The result tensor dimensions should be non-negative."
+            )
     dst_extent = _get_extent(dst) if size == [] else dst_size.copy()
-    assert len(src_extent) == len(
-        dst_extent), "The input vector and output vector must have same rank."
+    assert len(src_extent) == len(dst_extent), (
+        "The input vector and output vector must have same rank."
+    )
 
-    assert len(src_extent) == len(low), "Low pad array should have the same length with input vector."
-    assert len(src_extent) == len(high), "High pad array should have the same length with input vector."
+    assert len(src_extent) == len(low), (
+        "Low pad array should have the same length with input vector."
+    )
+    assert len(src_extent) == len(high), (
+        "High pad array should have the same length with input vector."
+    )
 
     src = _to_region(src, "r", src_extent)
     dst = _to_region(dst, "w", dst_extent)
@@ -1054,11 +1236,11 @@ def npuir_pad(src, dst, pad_value, low: Union[list, tuple], high: Union[list, tu
     static_low = []
     static_high = []
     pad_dim = -1
-    for idx, (l, h) in enumerate(zip(low, high)):
+    for idx, (l, h) in enumerate(zip(low, high, strict=True)):
         if isinstance(l, tir.Var) or isinstance(h, tir.Var) or l != 0 or h != 0:
             if pad_dim < 0:
                 pad_dim = idx
-            else: 
+            else:
                 raise ValueError("Not support decomposing multi-dim padding for now.")
 
         if isinstance(l, tir.Var):
@@ -1067,62 +1249,93 @@ def npuir_pad(src, dst, pad_value, low: Union[list, tuple], high: Union[list, tu
             num_dynamic_low += 1
         else:
             static_low.append(l)
-        
+
         if isinstance(h, tir.Var):
             dynamic.append(h)
             static_high.append(0)
         else:
             static_high.append(h)
 
-    s_low_str = ','.join(str(s_l) for s_l in static_low)
-    s_high_str = ','.join(str(s_h) for s_h in static_high)
+    s_low_str = ",".join(str(s_l) for s_l in static_low)
+    s_high_str = ",".join(str(s_h) for s_h in static_high)
 
-    def _tir_call_intrin(src, dst, pad_value, pad_dim, s_low_str, s_high_str, num_dynamic_low, *dynamic: tir.PrimExpr):
-        return tir.call_intrin("handle", tir.op.Op.get("tl.npuir_pad"), src, dst, pad_value, pad_dim, s_low_str, s_high_str, num_dynamic_low, *dynamic)
- 
-    return _tir_call_intrin(src, dst, pad_value, pad_dim, s_low_str, s_high_str, num_dynamic_low, *dynamic)
+    def _tir_call_intrin(
+        src,
+        dst,
+        pad_value,
+        pad_dim,
+        s_low_str,
+        s_high_str,
+        num_dynamic_low,
+        *dynamic: tir.PrimExpr,
+    ):
+        return tir.call_intrin(
+            "handle",
+            tir.op.Op.get("tl.npuir_pad"),
+            src,
+            dst,
+            pad_value,
+            pad_dim,
+            s_low_str,
+            s_high_str,
+            num_dynamic_low,
+            *dynamic,
+        )
 
-def npuir_flip(src, dst, axis: int, size=[]):
+    return _tir_call_intrin(
+        src, dst, pad_value, pad_dim, s_low_str, s_high_str, num_dynamic_low, *dynamic
+    )
+
+
+def npuir_flip(src, dst, axis: int, size=None):
     """Flips a tensor along the last dimension.
- 
+
     Args:
         src (Union[tir.Buffer, tir.BufferLoad, tir.BufferRegion]): Source vector
         dst (Union[tir.Buffer, tir.BufferLoad]): Destination vector
- 
+
     Returns:
         tir.Call: A handle to the npuir_flip operation
     """
+    size = [] if size is None else size
     src_extent = _get_extent(src) if size == [] else size.copy()
     dst_extent = _get_extent(dst) if size == [] else size.copy()
- 
+
     src = _to_region(src, "r", src_extent)
     dst = _to_region(dst, "w", dst_extent)
- 
+
     return tir.call_intrin("handle", tir.op.Op.get("tl.npuir_flip"), src, dst, axis)
 
-def npuir_bitcast(src, dtype, size = []):
+
+def npuir_bitcast(src, dtype, size=None):
     """Reinterprets the bits of a shaped value without changing data.
- 
+
     Args:
         src (Union[tir.Buffer, tir.BufferLoad, tir.BufferRegion]): Source vector
         dtype (str): Data type in the result vector
- 
+
     Raises:
         AssertionError: If src vector data type and converted data type have different bit widths.
 
     Returns:
         tir.Call: A handle to the npuir_bitcast operation
     """
-    src_dtype = runtime.DataType(src.dtype if isinstance(src, tir.Buffer) else src.buffer.dtype)
+    src_dtype = runtime.DataType(
+        src.dtype if isinstance(src, tir.Buffer) else src.buffer.dtype
+    )
+    size = [] if size is None else size
     src_extent = _get_extent(src) if size == [] else size.copy()
     src = _to_region(src, "rw", src_extent)
 
     tir_dtype = runtime.DataType(dtype)
-    assert (tir_dtype.bits == src_dtype.bits), "The converted data type should have the same bit width with the src data type."
+    assert tir_dtype.bits == src_dtype.bits, (
+        "The converted data type should have the same bit width with the src data type."
+    )
 
     return tir.call_intrin("handle", tir.op.Op.get("tl.npuir_bitcast"), src, dtype)
 
-def npuir_vcos(*args, size=[]):
+
+def npuir_vcos(*args, size=None):
     """Compute the cosine of a tensor.
     Args:
         src (Union[tir.Buffer, tir.BufferLoad, tir.BufferRegion]): Source vector
@@ -1132,12 +1345,14 @@ def npuir_vcos(*args, size=[]):
     """
     *srcs, dst = args
     srcs_arr = []
-    dst_size = size
+    size = [] if size is None else size
 
     for src in srcs:
         src_extent = _get_extent(src) if size == [] else size.copy()
         if size == []:
-            assert len(src_extent) == len(_get_extent(dst)), "The input vector and output vector must have same rank."
+            assert len(src_extent) == len(_get_extent(dst)), (
+                "The input vector and output vector must have same rank."
+            )
         src = _to_region(src, "r", src_extent)
         srcs_arr.append(src)
 
@@ -1149,7 +1364,8 @@ def npuir_vcos(*args, size=[]):
 
     return _tir_call_intrin(dst, *srcs_arr)
 
-def npuir_vsin(*args, size=[]):
+
+def npuir_vsin(*args, size=None):
     """Compute the sin of a tensor.
     Args:
         src (Union[tir.Buffer, tir.BufferLoad, tir.BufferRegion]): Source vector
@@ -1159,12 +1375,14 @@ def npuir_vsin(*args, size=[]):
     """
     *srcs, dst = args
     srcs_arr = []
-    dst_size = size
+    size = [] if size is None else size
 
     for src in srcs:
         src_extent = _get_extent(src) if size == [] else size.copy()
         if size == []:
-            assert len(src_extent) == len(_get_extent(dst)), "The input vector and output vector must have same rank."
+            assert len(src_extent) == len(_get_extent(dst)), (
+                "The input vector and output vector must have same rank."
+            )
         src = _to_region(src, "r", src_extent)
         srcs_arr.append(src)
 
@@ -1176,7 +1394,8 @@ def npuir_vsin(*args, size=[]):
 
     return _tir_call_intrin(dst, *srcs_arr)
 
-def npuir_verf(*args, size=[]):
+
+def npuir_verf(*args, size=None):
     """Compute the erf of a tensor.
     Args:
         src (Union[tir.Buffer, tir.BufferLoad, tir.BufferRegion]): Source vector
@@ -1186,12 +1405,14 @@ def npuir_verf(*args, size=[]):
     """
     *srcs, dst = args
     srcs_arr = []
-    dst_size = size
+    size = [] if size is None else size
 
     for src in srcs:
         src_extent = _get_extent(src) if size == [] else size.copy()
         if size == []:
-            assert len(src_extent) == len(_get_extent(dst)), "The input vector and output vector must have same rank."
+            assert len(src_extent) == len(_get_extent(dst)), (
+                "The input vector and output vector must have same rank."
+            )
         src = _to_region(src, "r", src_extent)
         srcs_arr.append(src)
 
@@ -1203,7 +1424,8 @@ def npuir_verf(*args, size=[]):
 
     return _tir_call_intrin(dst, *srcs_arr)
 
-def npuir_vtanh(*args, size=[]):
+
+def npuir_vtanh(*args, size=None):
     """Compute the tanh of a tensor.
     Args:
         src (Union[tir.Buffer, tir.BufferLoad, tir.BufferRegion]): Source vector
@@ -1213,12 +1435,14 @@ def npuir_vtanh(*args, size=[]):
     """
     *srcs, dst = args
     srcs_arr = []
-    dst_size = size
+    size = [] if size is None else size
 
     for src in srcs:
         src_extent = _get_extent(src) if size == [] else size.copy()
         if size == []:
-            assert len(src_extent) == len(_get_extent(dst)), "The input vector and output vector must have same rank."
+            assert len(src_extent) == len(_get_extent(dst)), (
+                "The input vector and output vector must have same rank."
+            )
         src = _to_region(src, "r", src_extent)
         srcs_arr.append(src)
 
@@ -1230,7 +1454,10 @@ def npuir_vtanh(*args, size=[]):
 
     return _tir_call_intrin(dst, *srcs_arr)
 
-def npuir_print(obj: Union[tir.PrimExpr, tir.Buffer], msg: str = "", hex: bool = False) -> tir.PrimExpr:
+
+def npuir_print(
+    obj: Union[tir.PrimExpr, tir.Buffer], msg: str = "", hex: bool = False
+) -> tir.PrimExpr:
     """
     A generic print function that handles both TIR buffers and primitive expressions.
 
@@ -1252,11 +1479,15 @@ def npuir_print(obj: Union[tir.PrimExpr, tir.Buffer], msg: str = "", hex: bool =
         ValueError: If the input object type is unsupported.
     """
     if isinstance(obj, tir.Var):
-        assert ("int" in obj.dtype or "float" in obj.dtype), "Only support printing integer/float variables."
+        assert "int" in obj.dtype or "float" in obj.dtype, (
+            "Only support printing integer/float variables."
+        )
         if not msg:
             msg = f"expr<{obj}>"
         # Directly print primitive expressions.
-        return tir.call_intrin("handle", tir.op.Op.get("tl.npuir_debug_print_var"), obj, msg, hex)
+        return tir.call_intrin(
+            "handle", tir.op.Op.get("tl.npuir_debug_print_var"), obj, msg, hex
+        )
 
     elif isinstance(obj, tir.Buffer):
         scope = obj.scope()
@@ -1265,29 +1496,42 @@ def npuir_print(obj: Union[tir.PrimExpr, tir.Buffer], msg: str = "", hex: bool =
                 msg = f"buffer<{obj.name}, {obj.dtype}>"
             obj_extent = _get_extent(obj)
             obj = _to_region(obj, "r", obj_extent)
-            return tir.call_intrin("handle", tir.op.Op.get("tl.npuir_debug_print_buffer_value"), obj, msg, hex)
+            return tir.call_intrin(
+                "handle",
+                tir.op.Op.get("tl.npuir_debug_print_buffer_value"),
+                obj,
+                msg,
+                hex,
+            )
         else:
             # Unsupported buffer scope.
             raise ValueError(
-                f"Unexpected buffer scope: {scope}. Supported scopes are share, share.dyn and global.")
-    elif isinstance(obj, BufferLoad) or isinstance(obj, BufferRegion):
+                f"Unexpected buffer scope: {scope}. Supported scopes are share, share.dyn and global."
+            )
+    elif isinstance(obj, (BufferLoad, BufferRegion)):
         if not msg:
             msg = f"subview<{obj.buffer.name}, {obj.buffer.dtype}>"
         obj_extent = _get_extent(obj)
         obj = _to_region(obj, "r", obj_extent)
-        return tir.call_intrin("handle", tir.op.Op.get("tl.npuir_debug_print_buffer_value"), obj, msg, hex)
+        return tir.call_intrin(
+            "handle", tir.op.Op.get("tl.npuir_debug_print_buffer_value"), obj, msg, hex
+        )
 
     else:
         # Unsupported object type.
         raise ValueError(
-            f"Unexpected type: {type(obj)}. Supported types are tir.Buffer, tir.BufferLoad, tir.BufferRegion and tir.PrimExpr.")
+            f"Unexpected type: {type(obj)}. Supported types are tir.Buffer, tir.BufferLoad, tir.BufferRegion and tir.PrimExpr."
+        )
+
 
 def npuir_reshape(src, dst):
     src = _to_region(src, "w", _get_extent(src))
     dst = _to_region(dst, "r", _get_extent(dst))
     return tir.call_intrin("handle", tir.op.Op.get("tl.npuir_reshape"), src, dst)
 
+
 _local = threading.local()
+
 
 def _get_current_stack() -> FrameStack:
     if not hasattr(_local, "resource_specialize_frame_stack"):
@@ -1297,7 +1541,6 @@ def _get_current_stack() -> FrameStack:
 
 @register_object("tl.ResourceSpecializeFrame")
 class ResourceSpecializeFrame(TIRFrame):
-
     def __enter__(self):
         super().__enter__()
         _get_current_stack().push(self)
@@ -1319,10 +1562,14 @@ class ResourceSpecializeFrame(TIRFrame):
         return stack.top() if stack else None
 
     def set(self, other, event_id: int = 0):
-        return tir.call_intrin("handle", tir.op.Op.get("tl.npuir_set_flag"), self.name, other, event_id)
+        return tir.call_intrin(
+            "handle", tir.op.Op.get("tl.npuir_set_flag"), self.name, other, event_id
+        )
 
     def wait(self, other, event_id: int = 0):
-        return tir.call_intrin("handle", tir.op.Op.get("tl.npuir_wait_flag"), other, self.name, event_id)
+        return tir.call_intrin(
+            "handle", tir.op.Op.get("tl.npuir_wait_flag"), other, self.name, event_id
+        )
 
     def block_barrier(self, id):
         """npuir inter block barrier at tile-level.
@@ -1332,7 +1579,9 @@ class ResourceSpecializeFrame(TIRFrame):
         Returns:
             tir.Call: A handle to the npuir_sync_block operation
         """
-        return tir.call_intrin("handle", tir.op.Op.get("tl.npuir_sync_block"), 0, self.name, id)
+        return tir.call_intrin(
+            "handle", tir.op.Op.get("tl.npuir_sync_block"), 0, self.name, id
+        )
 
     def subblock_barrier(self, id):
         """npuir inter subblock barrier at tile-level.
@@ -1342,7 +1591,9 @@ class ResourceSpecializeFrame(TIRFrame):
         Returns:
             tir.Call: A handle to the npuir_sync_block operation
         """
-        return tir.call_intrin("handle", tir.op.Op.get("tl.npuir_sync_block"), 1, self.name, id)
+        return tir.call_intrin(
+            "handle", tir.op.Op.get("tl.npuir_sync_block"), 1, self.name, id
+        )
 
     def sync_block_set(self, id):
         """npuir intra block sync at tile-level.
@@ -1352,7 +1603,9 @@ class ResourceSpecializeFrame(TIRFrame):
         Returns:
             tir.Call: A handle to the npuir_sync_block_set operation
         """
-        return tir.call_intrin("handle", tir.op.Op.get("tl.npuir_sync_block_set"), 2, self.name, id)
+        return tir.call_intrin(
+            "handle", tir.op.Op.get("tl.npuir_sync_block_set"), 2, self.name, id
+        )
 
     def sync_block_wait(self, id):
         """npuir intra block sync at tile-level.
@@ -1362,7 +1615,10 @@ class ResourceSpecializeFrame(TIRFrame):
         Returns:
             tir.Call: A handle to the npuir_sync_block_wait operation
         """
-        return tir.call_intrin("handle", tir.op.Op.get("tl.npuir_sync_block_wait"), self.name, id)
+        return tir.call_intrin(
+            "handle", tir.op.Op.get("tl.npuir_sync_block_wait"), self.name, id
+        )
+
 
 def ResourceSpecialize(resource: str):
     return _ffi_api.ResourceSpecialize(resource)
@@ -1378,20 +1634,26 @@ def set_flag(other, event_id: int = 0):
 def wait_flag(other, event_id: int = 0):
     return ResourceSpecializeFrame.Current().wait(other, event_id)
 
+
 def pipe_barrier(pipe):
     return tir.call_intrin("handle", tir.op.Op.get("tl.npuir_pipe_barrier"), pipe)
+
 
 def block_barrier(id):
     return ResourceSpecializeFrame.Current().block_barrier(id)
 
+
 def subblock_barrier(id):
     return ResourceSpecializeFrame.Current().subblock_barrier(id)
+
 
 def sync_block_set(id):
     return ResourceSpecializeFrame.Current().sync_block_set(id)
 
+
 def sync_block_wait(id):
     return ResourceSpecializeFrame.Current().sync_block_wait(id)
+
 
 @register_object("tl.ScopeFrame")
 class ScopeFrame(TIRFrame):

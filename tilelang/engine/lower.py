@@ -19,6 +19,7 @@ from tilelang.engine.phase import (
 )
 from tilelang.tladapter import transforms
 from tilelang.tladapter.utils import Pipeline
+from tilelang.env import env
 
 
 def is_cpu_device_backend(target: Target):
@@ -167,12 +168,7 @@ def host_codegen(host_mod: tvm.IRModule, target_host: Target) -> tvm.IRModule:
 def device_codegen(device_mod: tvm.IRModule, target: Target) -> tvm.IRModule:
     if target.kind.name == "npuir":
         # device_mod = tvm._ffi.get_global_func("target.build.tilelang_npuir")(device_mod, target)
-        TILELANG_ASCEND_MODE = os.environ.get("TILELANG_ASCEND_MODE")
-        if TILELANG_ASCEND_MODE is None or TILELANG_ASCEND_MODE.lower().strip() in [
-            "expert",
-            "exp",
-            "e",
-        ]:
+        if env.is_expert_mode():
             device_mod = tvm._ffi.get_global_func("target.build.tilelang_npuir_apis")(
                 device_mod, target
             )
@@ -266,8 +262,7 @@ def lower(
     # Phase 2: Optimize the IR for the target
     mod = OptimizeForTarget(mod, target)
 
-    TILELANG_DUMP_IR = os.environ.get("TILELANG_DUMP_IR", "").lower()
-    dump_ir = TILELANG_DUMP_IR in ("true", "1", "yes", "on")
+    dump_ir = env.is_dump_ir_enabled()
     if dump_ir:
         print("====== TVM IR ======")
         print(mod)

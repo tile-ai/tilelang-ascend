@@ -23,6 +23,7 @@ from tvm import tir
 from tvm.tir import PrimFunc
 
 from tilelang.profiler import Profiler, TensorSupplyType
+from tilelang.env import env
 
 
 class LaunchThreadExtractor:
@@ -1195,9 +1196,7 @@ class compiler_npu:
         )
         self.metadata["so_launcher_path"] = self.so_launcher_path
 
-        TILELANG_ASCEND_WORKSPACE_SIZE = os.environ.get(
-            "TILELANG_ASCEND_WORKSPACE_SIZE"
-        )
+        TILELANG_ASCEND_WORKSPACE_SIZE = env.TILELANG_ASCEND_WORKSPACE_SIZE
         if TILELANG_ASCEND_WORKSPACE_SIZE is not None:
             try:
                 self.workspace_size = int(TILELANG_ASCEND_WORKSPACE_SIZE)
@@ -1446,12 +1445,7 @@ class compiler_npu:
                 "--enable-hivm-compile=true",
             ]
 
-            TILELANG_ASCEND_MODE = os.environ.get("TILELANG_ASCEND_MODE")
-            if TILELANG_ASCEND_MODE is None or TILELANG_ASCEND_MODE.lower().strip() in [
-                "expert",
-                "exp",
-                "e",
-            ]:
+            if env.is_expert_mode():
                 _compile_option_list.append("--disable-hivm-tensor-compile=true")
 
             cmd_list = (

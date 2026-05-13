@@ -333,6 +333,29 @@ class Environment:
     SKIP_LOADING_TILELANG_SO = EnvVar("SKIP_LOADING_TILELANG_SO", "0")
     TVM_IMPORT_PYTHON_PATH = EnvVar("TVM_IMPORT_PYTHON_PATH", None)
 
+    # Ascend-specific settings
+    TILELANG_ASCEND_MODE = EnvVar(
+        "TILELANG_ASCEND_MODE", "exp"
+    )  # default to "expert" mode for Ascend
+    TILELANG_DUMP_IR = EnvVar(
+        "TILELANG_DUMP_IR", "0"
+    )  # whether to dump the generated IR for debugging
+    TILELANG_ASCEND_WORKSPACE_SIZE = EnvVar(
+        "TILELANG_ASCEND_WORKSPACE_SIZE", "32768"
+    )  # 32KB default workspace size for Ascend kernels, can be overridden by env var
+
+    def is_expert_mode(self) -> bool:
+        """Return True if we are in expert mode (Ascend-specific)."""
+        return (
+            self.TILELANG_ASCEND_MODE.lower() == "expert"
+            or self.TILELANG_ASCEND_MODE.lower() == "exp"
+            or self.TILELANG_ASCEND_MODE.lower() == "e"
+        )
+
+    def is_dump_ir_enabled(self) -> bool:
+        """Return True if IR dumping is enabled (Ascend-specific)."""
+        return self.TILELANG_DUMP_IR.lower() in ("1", "true", "yes", "on")
+
     def _initialize_torch_cuda_arch_flags(self) -> None:
         """
         Detect target CUDA architecture and set TORCH_CUDA_ARCH_LIST
