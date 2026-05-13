@@ -324,6 +324,7 @@ def ref_bwd_program(q: Tensor, k: Tensor, v: Tensor, dO: Tensor, scale: Optional
         scale = float(q_cpu.shape[-1] ** -0.5)
     chunk_size = 64
     B, S, H, D = q_cpu.shape
+    DV = v_cpu.shape[-1]
     NT = S // chunk_size
     q_s = q_cpu * scale
     q_chunks = q_s.permute(0, 2, 1, 3).reshape(B, H, NT, chunk_size, D)
