@@ -1170,10 +1170,7 @@ void CodeGenTileLangAscendPto::CopyL1ToL0Codegen(const CallNode *call,
   BufferInfo dst_info = GetBufferInfo(call->args[2]);
 
   std::string api_name = is_a ? "copy_l1_to_l0a" : "copy_l1_to_l0b";
-  std::string tile_name_a5 = is_a ? "TileMatL0A_a5" : "TileMatL0B";
-  std::string tile_name_not_a5 = is_a ? "TileMatL0A" : "TileMatL0B";
-  std::string tile_name =
-      (this->platform_ == "A5") ? tile_name_a5 : tile_name_not_a5;
+  std::string tile_name = is_a ? "TileMatL0A" : "TileMatL0B";
 
   ShapeInfo src_shape_info = GetSliceInfo(src_info.access_ptr);
   ShapeInfo dst_shape_info = GetSliceInfo(dst_info.access_ptr);
@@ -2726,9 +2723,6 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
       << "Unsupported storage scope for PTO allocation: " << scope
       << ", variable: " << op->buffer_var->name_hint;
   std::string op_name = scope_to_tile.at(scope);
-  if (scope == "wmma.matrix_a" && this->platform_ == "A5") {
-    op_name = kAscendPtoScope + "TileMatL0A_a5";
-  }
 
   // 3. Retrieve and validate the 4D physical layout [M, N, Valid_M, Valid_N]
   ICHECK(buffer_shapess_.count(op->buffer_var))
@@ -3195,9 +3189,7 @@ void CodeGenTileLangAscendPto::MmaCodegen(const CallNode *op) {
   if (a_shape_info.is_slice) {
     std::string a_temp_name = GetTempVarName(a_name);
     CreateCubeVariable(a_temp_name, a_shape_info,
-                       kAscendPtoScope + ((this->platform_ == "A5")
-                                              ? "TileMatL0A_a5"
-                                              : "TileMatL0A"));
+                       kAscendPtoScope + "TileMatL0A");
     a_name = a_temp_name;
   }
 
