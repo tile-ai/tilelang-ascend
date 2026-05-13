@@ -24,7 +24,7 @@ _kernel_cache = {}
 # ======================== Kernel ========================
 
 
-@tilelang.jit(out_idx=[-1], pass_configs=pass_configs_config)
+@tilelang.jit(out_idx=[-1], pass_configs=pass_configs_config, target="pto")
 def _build_kernel(
     width: int,
     dim_num: int,
