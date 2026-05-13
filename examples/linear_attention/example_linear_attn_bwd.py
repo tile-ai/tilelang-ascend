@@ -12,7 +12,6 @@ pass_configs = {tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True}
 
 
 @tilelang.jit(
-    out_idx=[4, 5, 6],
     workspace_idx=[7, 8, 9, 10, 11, 12],
     pass_configs=pass_configs,
 )
@@ -39,19 +38,19 @@ def fla_fused_chunk_bwd_kernel(
 
     @T.prim_func
     def main(
-        Q: T.Tensor([B, S, H, DK], dtype),
-        K: T.Tensor([B, S, H, DK], dtype),
-        V: T.Tensor([B, S, H, DV], dtype),
-        dO: T.Tensor([B, S, H, DV], dtype),
-        dQ: T.Tensor([B, S, H, DK], accum_dtype),
-        dK: T.Tensor([B, S, H, DK], accum_dtype),
-        dV: T.Tensor([B, S, H, DV], accum_dtype),
-        ws_s: T.Tensor([total_blocks * NK * NV, chunk_size, chunk_size], accum_dtype),
-        ws_h: T.Tensor([total_blocks * NK * NV, BV, BK], accum_dtype),
-        ws_dh: T.Tensor([total_blocks * NK * NV, BK, BV], accum_dtype),
-        ws_s2: T.Tensor([total_blocks * NK * NV, chunk_size, chunk_size], dtype),
-        ws_h2: T.Tensor([total_blocks * NK * NV, BV, BK], dtype),
-        ws_dh2: T.Tensor([total_blocks * NK * NV, BK, BV], dtype),
+        Q: T.Tensor((B, S, H, DK), dtype),
+        K: T.Tensor((B, S, H, DK), dtype),
+        V: T.Tensor((B, S, H, DV), dtype),
+        dO: T.Tensor((B, S, H, DV), dtype),
+        dQ: T.Tensor((B, S, H, DK), accum_dtype),
+        dK: T.Tensor((B, S, H, DK), accum_dtype),
+        dV: T.Tensor((B, S, H, DV), accum_dtype),
+        ws_s: T.Tensor((total_blocks * NK * NV, chunk_size, chunk_size), accum_dtype),
+        ws_h: T.Tensor((total_blocks * NK * NV, BV, BK), accum_dtype),
+        ws_dh: T.Tensor((total_blocks * NK * NV, BK, BV), accum_dtype),
+        ws_s2: T.Tensor((total_blocks * NK * NV, chunk_size, chunk_size), dtype),
+        ws_h2: T.Tensor((total_blocks * NK * NV, BV, BK), dtype),
+        ws_dh2: T.Tensor((total_blocks * NK * NV, BK, BV), dtype),
     ):
         with T.Kernel(total_blocks, is_npu=True) as (cid, vid):
             i_bh = cid
@@ -147,19 +146,16 @@ def fla_fused_chunk_bwd_kernel(
                 dq_tmp = T.alloc_ub([sub_C, BK], accum_dtype)
                 dk_tmp = T.alloc_ub([sub_C, BK], accum_dtype)
                 dv_tmp = T.alloc_ub([sub_C, BV], accum_dtype)
-                h_half = T.alloc_ub([sub_C, chunk_size], dtype)
-                dh_half = T.alloc_ub([sub_C, chunk_size], dtype)
 
                 T.wait_cross_flag(0)
 
-                # Init h, dh workspaces
-                T.tile.fill(ds_ub, 0)
-                T.tile.fill(h_half, 0)
+                T.tile.fill(ds_ub, 0.0)
+                T.tile.fill(ds_half, 0.0)
                 for init_i in T.serial(NK * NV):
                     T.copy(ds_ub, ws_h[blk_off + init_i, vid * sub_C : (vid + 1) * sub_C, :])
-                    T.copy(h_half, ws_h2[blk_off + init_i, vid * sub_C : (vid + 1) * sub_C, :])
+                    T.copy(ds_half, ws_h2[blk_off + init_i, vid * sub_C : (vid + 1) * sub_C, :])
                     T.copy(ds_ub, ws_dh[blk_off + init_i, vid * sub_C : (vid + 1) * sub_C, :])
-                    T.copy(h_half, ws_dh2[blk_off + init_i, vid * sub_C : (vid + 1) * sub_C, :])
+                    T.copy(ds_half, ws_dh2[blk_off + init_i, vid * sub_C : (vid + 1) * sub_C, :])
 
                 T.pipe_barrier("mte3")
                 T.set_cross_flag("MTE3", 1)
@@ -176,15 +172,14 @@ def fla_fused_chunk_bwd_kernel(
                             for r in range(sub_C):
                                 for c in range(chunk_size):
                                     if r + vid * sub_C < c:
-                                        ds_ub[r, c] = 0
+                                        ds_ub[r, c] = 0.0
                             T.copy(ds_ub, ds_half)
                             T.copy(ds_half, ws_s2[bv_idx, vid * sub_C : (vid + 1) * sub_C, :])
                             T.set_cross_flag("MTE3", 3)
 
-                            # Cast h for GEMM read
                             T.copy(ws_h[bv_idx, vid * sub_C : (vid + 1) * sub_C, :], ds_ub)
-                            T.copy(ds_ub, h_half)
-                            T.copy(h_half, ws_h2[bv_idx, vid * sub_C : (vid + 1) * sub_C, :])
+                            T.copy(ds_ub, ds_half)
+                            T.copy(ds_half, ws_h2[bv_idx, vid * sub_C : (vid + 1) * sub_C, :])
 
                             T.wait_cross_flag(4)
                             T.copy(ws_s[bv_idx, vid * sub_C : (vid + 1) * sub_C, :], dq_ub)
@@ -239,22 +234,21 @@ def fla_fused_chunk_bwd_kernel(
                             for r in range(sub_C):
                                 for c in range(chunk_size):
                                     if r + vid * sub_C > c:
-                                        ds_ub[r, c] = 0
+                                        ds_ub[r, c] = 0.0
                             T.copy(ds_ub, ds_half)
                             T.copy(ds_half, ws_s2[bv_idx, vid * sub_C : (vid + 1) * sub_C, :])
                             T.set_cross_flag("MTE3", 9)
 
-                            # Cast dh for GEMM read
                             T.copy(ws_dh[bv_idx, vid * sub_C : (vid + 1) * sub_C, :], ds_ub)
-                            T.copy(ds_ub, dh_half)
-                            T.copy(dh_half, ws_dh2[bv_idx, vid * sub_C : (vid + 1) * sub_C, :])
+                            T.copy(ds_ub, ds_half)
+                            T.copy(ds_half, ws_dh2[bv_idx, vid * sub_C : (vid + 1) * sub_C, :])
 
                             T.wait_cross_flag(10)
                             T.copy(ws_s[bv_idx, vid * sub_C : (vid + 1) * sub_C, :], ds_ub)
                             for r in range(sub_C):
                                 for c in range(chunk_size):
                                     if r + vid * sub_C > c:
-                                        ds_ub[r, c] = 0
+                                        ds_ub[r, c] = 0.0
                             T.copy(ds_ub, ds_half)
                             T.copy(ds_half, ws_s2[bv_idx, vid * sub_C : (vid + 1) * sub_C, :])
                             T.set_cross_flag("MTE3", 11)
@@ -314,8 +308,11 @@ def fla_fused_chunk_bwd(q: Tensor, k: Tensor, v: Tensor, dO: Tensor) -> Tuple[Te
     B, S, H, DK = q.shape
     DV = v.shape[-1]
     kernel = fla_fused_chunk_bwd_kernel(B, S, H, DK, DV)
-    dQ, dK, dV = kernel(q, k, v, dO)
-    return dQ, dK, dV
+    dQ = torch.zeros(B, S, H, DK, device=q.device, dtype=torch.float32)
+    dK = torch.zeros(B, S, H, DK, device=q.device, dtype=torch.float32)
+    dV = torch.zeros(B, S, H, DV, device=q.device, dtype=torch.float32)
+    kernel(q, k, v, dO, dQ, dK, dV)
+    return dQ.to(q.dtype), dK.to(q.dtype), dV.to(q.dtype)
 
 
 def ref_bwd_program(q: Tensor, k: Tensor, v: Tensor, dO: Tensor, scale: Optional[float] = None) -> Tuple[Tensor, Tensor, Tensor]:
@@ -329,20 +326,19 @@ def ref_bwd_program(q: Tensor, k: Tensor, v: Tensor, dO: Tensor, scale: Optional
     B, S, H, D = q_cpu.shape
     NT = S // chunk_size
     q_s = q_cpu * scale
-    # q: [B, S, H, D]. Permute H to before S, then reshape S into NT*C
-    q_chunks = q_s.permute(0, 2, 1, 3).reshape(B, H, NT, chunk_size, D)  # [B,H,NT,C,D]
-    k_chunks = k_cpu.permute(0, 2, 1, 3).reshape(B, H, NT, chunk_size, D)  # [B,H,NT,C,D]
-    v_chunks = v_cpu.permute(0, 2, 1, 3).reshape(B, H, NT, chunk_size, D)  # [B,H,NT,C,D]
-    kv = k_chunks.transpose(-1, -2) @ v_chunks  # [B, H, NT, D, D]
+    q_chunks = q_s.permute(0, 2, 1, 3).reshape(B, H, NT, chunk_size, D)
+    k_chunks = k_cpu.permute(0, 2, 1, 3).reshape(B, H, NT, chunk_size, D)
+    v_chunks = v_cpu.permute(0, 2, 1, 3).reshape(B, H, NT, chunk_size, D)
+    kv = k_chunks.transpose(-1, -2) @ v_chunks
     kv = kv.cumsum(2)
     kv_shifted = torch.cat([torch.zeros_like(kv[:, :, :1]), kv[:, :, :-1]], dim=2)
-    inter = q_chunks @ kv_shifted  # [B, H, NT, C, D]
-    intra_attn = q_chunks @ k_chunks.transpose(-1, -2)  # [B, H, NT, C, C]
+    inter = q_chunks @ kv_shifted
+    intra_attn = q_chunks @ k_chunks.transpose(-1, -2)
     mask = torch.triu(torch.ones(chunk_size, chunk_size, dtype=torch.float32), diagonal=1)
     intra_attn.masked_fill_(mask.bool(), 0)
-    intra = intra_attn @ v_chunks  # [B, H, NT, C, D]
+    intra = intra_attn @ v_chunks
     o_chunks = inter + intra
-    o = o_chunks.reshape(B, H, S, D).permute(0, 2, 1, 3)  # [B,S,H,D]
+    o = o_chunks.reshape(B, H, S, D).permute(0, 2, 1, 3)
     o.backward(dO_cpu, retain_graph=True)
     return q_cpu.grad, k_cpu.grad, v_cpu.grad
 
@@ -363,7 +359,7 @@ def main(B=1, S=128, H=1, D=64):
     ref_dq, ref_dk, ref_dv = ref_bwd_program(q, k, v, dO)
 
     def check(name, a, b):
-        ok = torch.allclose(a.cpu().float(), b, atol=5e-2, rtol=5e-2)
+        ok = torch.allclose(a.cpu().float(), b, atol=1e-2, rtol=1e-2)
         if not ok:
             err = (a.cpu().float() - b).abs()
             print(f"{name} mismatch: max_err={err.max():.6f}, mean_err={err.mean():.6f}")
@@ -372,16 +368,10 @@ def main(B=1, S=128, H=1, D=64):
     assert check("dQ", dq, ref_dq), "dQ mismatch"
     assert check("dK", dk, ref_dk), "dK mismatch"
     assert check("dV", dv, ref_dv), "dV mismatch"
-    print("All Test Passed!")
+    print("Linear Attention Backward Test Passed!")
 
 
 if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--B", type=int, default=8, help="Batch size")
-    parser.add_argument("--S", type=int, default=1024, help="Seq len")
-    parser.add_argument("--H", type=int, default=32, help="Num heads")
-    parser.add_argument("--D", type=int, default=128, help="Head dim")
-    args = parser.parse_args()
-    main(args.B, args.S, args.H, args.D)
+    for B, S, H, D in [(1, 128, 8, 64), (2, 1024, 16, 128), (8, 1024, 32, 128)]:
+        print(f"Testing B={B}, S={S}, H={H}, D={D}...")
+        main(B, S, H, D)
