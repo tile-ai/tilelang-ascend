@@ -2,10 +2,12 @@
 #include "acl/acl.h"
 #include <runtime/rt_ffts.h>
 using namespace Catlass;
+using uint = unsigned int;
+using uchar = unsigned char;
+using ushort = unsigned short;
 
-extern "C" CATLASS_GLOBAL
-void main_kernel( GM_ADDR A_handle,  GM_ADDR B_handle,  GM_ADDR C_handle, uint64_t fftsAddr) {
-  AscendC::SetSyncBaseAddr(fftsAddr);
+extern "C" __global__ __aicore__ void main_kernel( GM_ADDR A_handle,  GM_ADDR B_handle,  GM_ADDR C_handle, uint64_t fftsAddr) {
+  KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_MIX_AIC_1_2);
   AscendC::TPipe pipe;
 
   AscendC::GlobalTensor<half> A;
@@ -27,9 +29,9 @@ void main_kernel( GM_ADDR A_handle,  GM_ADDR B_handle,  GM_ADDR C_handle, uint64
   if ASCEND_IS_AIV {
     cid = cid / 2;
   }
+  auto C_L0 = ascend_l0c.GetWithOffset<float>(32768,0);
   auto A_L1 = ascend_l1.GetWithOffset<half>(8192,0);
   auto B_L1 = ascend_l1.GetWithOffset<half>(16384,16384);
-  auto C_L0 = ascend_l0c.GetWithOffset<float>(32768,0);
   if ASCEND_IS_AIC {
     for (int32_t k = 0; k < 128; ++k) {
       tl::ascend::copy_gm_to_l1<half, 128, 64>(A_L1[0], A[(((cid / 4) * 1048576) + (k * 64))], 8192);
@@ -38,7 +40,7 @@ void main_kernel( GM_ADDR A_handle,  GM_ADDR B_handle,  GM_ADDR C_handle, uint64
       tl::ascend::gemm_v0<half, float, 128, 256, 64, false, false>(A_L1[0], B_L1[0], C_L0[0], ascend_l0a, ascend_l0b, (k == 0));
       AscendC::PipeBarrier<PIPE_ALL>();
     }
-    tl::ascend::copy_l0c_to_gm<float, half, layout::RowMajor, 128, 256>(C[(((cid / 4) * 131072) + ((cid % 4) * 256))], C_L0[0], 1024, 0);
+    tl::ascend::copy_l0c_to_gm<float, half, layout::RowMajor, 128, 256, 0>(C[(((cid / 4) * 131072) + ((cid % 4) * 256))], C_L0[0], 1024);
   }
 }
 
