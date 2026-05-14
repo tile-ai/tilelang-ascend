@@ -1,0 +1,18 @@
+"""Ascend NPU adapted quant kernels for TileKernels.
+
+All GPU quant kernels adapted to run on Ascend A3/A5 NPU
+via tilelang-ascend with NPU-specific pass configs.
+"""
+
+from .cast_back_kernel import cast_back, per_token_cast_back
+from .cast_back_e5m6_kernel import cast_back_e5m6
+from .per_token_cast_kernel import per_token_cast, per_token_cast_with_sf_only, per_token_cast_with_precomputed_sf
+from .per_block_cast_kernel import per_block_cast, per_block_cast_with_sf_only, per_block_cast_with_precomputed_sf
+from .per_block_cast_lossless_kernel import per_block_cast_lossless
+from .per_channel_cast_kernel import per_channel_cast
+from .per_channel_cast_fused_kernel import per_channel_cast_fused
+from .per_channel_cast_and_transpose_kernel import per_channel_cast_and_transpose
+from .per_token_cast_to_e5m6_kernel import per_token_cast_to_e5m6
+from .swiglu_forward_and_per_token_cast_kernel import swiglu_forward_and_per_token_cast
+from .swiglu_backward_and_per_token_cast_kernel import swiglu_backward_and_per_token_cast
+from .swiglu_forward_and_per_channel_cast_and_transpose_kernel import swiglu_forward_and_per_channel_cast_and_transpose
