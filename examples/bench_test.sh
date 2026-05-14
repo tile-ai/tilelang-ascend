@@ -29,6 +29,14 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# ================= 全局环境变量设置 =================
+# TILELANG_LIBRARY_PATH 需要在所有操作前设置，确保子进程继承
+if [ "$ENABLE_CPP_COVERAGE" = true ]; then
+    PROJECT_ROOT="$(cd .. && pwd)"
+    export TILELANG_LIBRARY_PATH="${PROJECT_ROOT}/build"
+    echo "TILELANG_LIBRARY_PATH set to: ${TILELANG_LIBRARY_PATH}"
+fi
+
 # 解析 TEST_DIRS 为数组
 if [ -n "$TEST_DIRS" ]; then
     IFS=' ' read -ra DIR_ARRAY <<< "$TEST_DIRS"
@@ -340,9 +348,15 @@ echo "====================================="
 
 # 自动发现并运行 testing/python/ 目录下的所有测试文件（包括所有子目录）
 PROJECT_ROOT="$(cd .. && pwd)"
+
 if [ "$ENABLE_COVERAGE" = true ]; then
     export COVERAGE_FILE="${PROJECT_ROOT}/coverage_data/.coverage_pytest"
-    pytest --forked "${PROJECT_ROOT}/testing/python/" -v -n $MAX_JOBS         --cov=tilelang         --cov=examples         --cov-report=term         --cov-report=json:${PROJECT_ROOT}/coverage_data/pytest_coverage.json         --cov-config=${PROJECT_ROOT}/.coveragerc
+    # C++ coverage 时不使用 --forked，避免环境变量继承问题
+    if [ "$ENABLE_CPP_COVERAGE" = true ]; then
+        pytest "${PROJECT_ROOT}/testing/python/" -v         --cov=tilelang         --cov=examples         --cov-report=term         --cov-report=json:${PROJECT_ROOT}/coverage_data/pytest_coverage.json         --cov-config=${PROJECT_ROOT}/.coveragerc
+    else
+        pytest --forked "${PROJECT_ROOT}/testing/python/" -v -n $MAX_JOBS         --cov=tilelang         --cov=examples         --cov-report=term         --cov-report=json:${PROJECT_ROOT}/coverage_data/pytest_coverage.json         --cov-config=${PROJECT_ROOT}/.coveragerc
+    fi
     unset COVERAGE_FILE
 else
     pytest --forked "${PROJECT_ROOT}/testing/python/" -v -n $MAX_JOBS
@@ -392,12 +406,11 @@ if [ "$ENABLE_COVERAGE" = true ] || [ "$ENABLE_CPP_COVERAGE" = true ]; then
     # C++ coverage
     if [ "$ENABLE_CPP_COVERAGE" = true ]; then
         echo "Collecting C++ coverage..."
-        # Step 1: Capture all coverage data
-        lcov --capture --directory "${PROJECT_ROOT}/build" --output-file "${PROJECT_ROOT}/coverage_data/coverage_raw.info" --no-checksum --ignore-errors source,graph 2>&1 || true
-        # Step 2: Extract only tilelang-ascend/src (exclude 3rdparty)
-        if [ -f "${PROJECT_ROOT}/coverage_data/coverage_raw.info" ]; then
-            lcov --extract "${PROJECT_ROOT}/coverage_data/coverage_raw.info" "*/tilelang-ascend/src/*" --output-file "${PROJECT_ROOT}/coverage_data/coverage.info" 2>&1 || true
-            rm -f "${PROJECT_ROOT}/coverage_data/coverage_raw.info"
+        # Only collect from tilelang_objs.dir (contains only tilelang-ascend/src)
+        # This is faster and avoids timeout issues with collecting entire build directory
+        lcov --capture --directory "${PROJECT_ROOT}/build/CMakeFiles/tilelang_objs.dir" --output-file "${PROJECT_ROOT}/coverage_data/coverage.info" --no-checksum --ignore-errors source,graph 2>&1 || true
+        
+        if [ -f "${PROJECT_ROOT}/coverage_data/coverage.info" ]; then
             echo "✓ C++ coverage collected (tilelang-ascend/src only)"
         fi
     fi

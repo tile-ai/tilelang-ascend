@@ -3,16 +3,17 @@
 Coverage Report Generator for TileLang-Ascend
 Generates comprehensive coverage reports including Python and C++ coverage
 
-Key fixes:
-- Uses build_dir (not tilelang_objs_dir) to collect all .gcda files
-- Timeout=300 to avoid timeout issues
-- Dynamic project root detection (no hardcoded paths)
+Key features:
+- Correctly handles duplicate DA lines in coverage.info (takes max execution count)
+- Filters only tilelang-ascend/src for accurate C++ coverage
+- Provides detailed per-file coverage breakdown
 """
 
 import json
+import re
 import subprocess
 from pathlib import Path
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Tuple
 
 class CoverageReportGenerator:
     def __init__(self):
@@ -20,7 +21,7 @@ class CoverageReportGenerator:
         self.coverage_data_dir = self.project_root / "coverage_data"
         self.report_dir = self.project_root / "coverage_reports"
         self.coverage_json = self.coverage_data_dir / "coverage.json"
-        self.coverage_info = self.coverage_data_dir / "coverage.info"
+        self.coverage_info = self.project_root / "coverage_data" / "coverage.info"
         
         self.coverage_data_dir.mkdir(exist_ok=True)
         self.report_dir.mkdir(exist_ok=True)
@@ -29,73 +30,22 @@ class CoverageReportGenerator:
         """Generate complete coverage report"""
         print("Generating coverage report...")
         
-        # Collect C++ coverage first (if not exists)
-        if not self.coverage_info.exists():
-            self._collect_cpp_coverage()
-        
-        # Collect Python coverage
+        # Parse Python coverage
         python_data = self._collect_python_coverage()
         
-        # Parse C++ coverage
+        # Parse C++ coverage (only tilelang-ascend/src)
         cpp_data = self._parse_cpp_coverage()
         
         # Generate Markdown report
         self._generate_markdown_report(python_data, cpp_data)
         
-        print("✓ Coverage report generated")
-    
-    def _collect_cpp_coverage(self):
-        """Collect C++ coverage from build directory"""
-        print("Collecting C++ coverage data...")
-        
-        build_dir = self.project_root / "build"
-        if not build_dir.exists():
-            print("Warning: Build directory not found")
-            return
-        
-        # Key fix: Use build_dir (not tilelang_objs_dir) to collect ALL .gcda files
-        cmd_capture = [
-            "lcov",
-            "--capture",
-            "--directory", str(build_dir),  # Key fix: entire build directory
-            "--output-file", str(self.coverage_info),
-            "--rc", "lcov_branch_coverage=0",
-            "--ignore-errors", "source,graph",
-            "--no-checksum"
-        ]
-        
-        print(f"Running: lcov --capture --directory {build_dir}")
-        result = subprocess.run(
-            cmd_capture,
-            capture_output=True,
-            text=True,
-            cwd=self.project_root,
-            timeout=300  # Key fix: 300 seconds timeout
-        )
-        
-        if result.returncode != 0:
-            print(f"Warning: lcov capture failed: {result.stderr}")
-            return
-        
-        print(f"✓ Captured C++ coverage: {self.coverage_info.stat().st_size} bytes")
+        print("✓ Markdown report saved to coverage_report.md")
     
     def _collect_python_coverage(self) -> Dict:
         """Collect Python coverage from coverage.json"""
         if not self.coverage_json.exists():
-            print("Warning: coverage.json not found, generating from .coverage file")
-            
-            # Try to generate from .coverage file
-            coverage_file = self.coverage_data_dir / ".coverage"
-            if coverage_file.exists():
-                cmd = [
-                    "coverage", "json",
-                    "-o", str(self.coverage_json),
-                    "--include=tilelang/*,examples/*"
-                ]
-                subprocess.run(cmd, cwd=self.project_root)
-            
-            if not self.coverage_json.exists():
-                return {}
+            print("Warning: coverage.json not found")
+            return {}
         
         try:
             data = json.load(open(self.coverage_json))
@@ -128,32 +78,68 @@ class CoverageReportGenerator:
             return {}
     
     def _parse_cpp_coverage(self) -> Dict:
-        """Parse C++ coverage from coverage.info"""
+        """Parse C++ coverage from coverage.info, filtering only tilelang-ascend/src
+        
+        Key fix: Correctly handle duplicate DA lines by taking max execution count
+        """
         if not self.coverage_info.exists():
+            print("Warning: coverage.info not found")
             return {}
         
         try:
-            # Parse lcov .info file
-            result = subprocess.run(
-                ["lcov", "--summary", str(self.coverage_info)],
-                capture_output=True, text=True
-            )
+            content = self.coverage_info.read_text()
             
-            # Parse summary
-            lines_info = {}
-            for line in result.stdout.split('\n'):
-                if 'lines' in line and '%' in line:
-                    # Parse: "lines......: 75.2% (419 of 557 lines)"
-                    import re
-                    match = re.search(r'(\d+\.\d+)% \((\d+) of (\d+) lines\)', line)
-                    if match:
-                        lines_info = {
-                            'percent': float(match.group(1)),
-                            'covered': int(match.group(2)),
-                            'total': int(match.group(3))
-                        }
+            # Parse all source files
+            files_data = {}
+            pattern = r'SF:(.+?\.cc)\n(.*?)end_of_record'
+            matches = re.findall(pattern, content, re.DOTALL)
             
-            return {'lines': lines_info}
+            for source_file, file_content in matches:
+                # Filter only tilelang-ascend/src files
+                if 'tilelang-ascend/src' not in source_file:
+                    continue
+                
+                # Parse line coverage data
+                # Key fix: Handle duplicate DA lines by taking max execution count
+                line_exec = {}
+                
+                da_matches = re.findall(r'DA:(\d+),(\d+)', file_content)
+                for line_num_str, exec_count_str in da_matches:
+                    line_num = int(line_num_str)
+                    exec_count = int(exec_count_str)
+                    
+                    # Take max execution count for duplicate lines
+                    if line_num in line_exec:
+                        line_exec[line_num] = max(line_exec[line_num], exec_count)
+                    else:
+                        line_exec[line_num] = exec_count
+                
+                # Calculate coverage
+                covered_lines = sum(1 for count in line_exec.values() if count > 0)
+                total_lines = len(line_exec)
+                
+                if total_lines > 0:
+                    percent = covered_lines / total_lines * 100
+                    rel_path = source_file.split('tilelang-ascend/')[-1] if 'tilelang-ascend/' in source_file else source_file
+                    files_data[rel_path] = {
+                        "covered": covered_lines,
+                        "total": total_lines,
+                        "percent": percent,
+                        "line_exec": line_exec
+                    }
+            
+            # Calculate overall summary
+            total_covered = sum(f["covered"] for f in files_data.values())
+            total_lines = sum(f["total"] for f in files_data.values())
+            
+            overall_percent = (total_covered / total_lines * 100) if total_lines > 0 else 0
+            
+            return {
+                "total_lines": total_lines,
+                "covered_lines": total_covered,
+                "percent": overall_percent,
+                "files": files_data
+            }
         except Exception as e:
             print(f"Error parsing coverage.info: {e}")
             return {}
@@ -166,31 +152,49 @@ class CoverageReportGenerator:
             f.write("# TileLang Coverage Report\n\n")
             
             # Python coverage
-            if python_data:
+            if python_data and python_data.get('total_lines', 0) > 0:
                 f.write("## Python Coverage\n\n")
                 f.write(f"**Overall Coverage**: {python_data['percent']:.2f}%\n\n")
                 f.write(f"- Total Lines: {python_data['total_lines']}\n")
                 f.write(f"- Covered Lines: {python_data['covered_lines']}\n\n")
                 
-                # Top files by coverage
+                # Files with low coverage
                 f.write("### Files with Low Coverage (< 50%)\n\n")
                 low_cov = [(k, v) for k, v in python_data['files'].items() if v['percent'] < 50]
                 low_cov.sort(key=lambda x: x[1]['percent'], reverse=True)
                 
                 for file_path, data in low_cov[:20]:
-                    f.write(f"- {file_path}: {data['percent']:.2f}% ({data['covered']}/{data['total']})\n")
+                    rel_path = file_path.replace(str(self.project_root) + '/', '')
+                    f.write(f"- {rel_path}: {data['percent']:.2f}% ({data['covered']}/{data['total']})\n")
+                f.write("\n")
             
             # C++ coverage
-            if cpp_data and cpp_data.get('lines'):
-                f.write("\n## C++ Coverage\n\n")
-                lines = cpp_data['lines']
-                f.write(f"**Overall Coverage**: {lines['percent']:.2f}%\n\n")
-                f.write(f"- Total Lines: {lines['total']}\n")
-                f.write(f"- Covered Lines: {lines['covered']}\n\n")
+            if cpp_data and cpp_data.get('total_lines', 0) > 0:
+                f.write("## C++ Coverage\n\n")
+                f.write(f"**Overall Coverage**: {cpp_data['percent']:.2f}%\n\n")
+                f.write(f"- Total Lines: {cpp_data['total_lines']}\n")
+                f.write(f"- Covered Lines: {cpp_data['covered_lines']}\n\n")
+                
+                # Files with low coverage
+                f.write("### Files with Low Coverage (< 50%)\n\n")
+                low_cov = [(k, v) for k, v in cpp_data['files'].items() if v['percent'] < 50]
+                low_cov.sort(key=lambda x: x[1]['percent'], reverse=True)
+                
+                for file_path, data in low_cov[:20]:
+                    f.write(f"- {file_path}: {data['percent']:.2f}% ({data['covered']}/{data['total']})\n")
+                f.write("\n")
+                
+                # Files with high coverage
+                f.write("### Files with High Coverage (> 80%)\n\n")
+                high_cov = [(k, v) for k, v in cpp_data['files'].items() if v['percent'] > 80]
+                high_cov.sort(key=lambda x: x[1]['percent'], reverse=True)
+                
+                for file_path, data in high_cov[:10]:
+                    f.write(f"- {file_path}: {data['percent']:.2f}% ({data['covered']}/{data['total']})\n")
+                f.write("\n")
             
-            f.write("\n---\nGenerated by `scripts/generate_coverage_report.py`\n")
-        
-        print(f"✓ Markdown report saved to {report_path}")
+            f.write("---\nGenerated by `scripts/generate_coverage_report.py`\n")
+
 
 if __name__ == "__main__":
     generator = CoverageReportGenerator()
