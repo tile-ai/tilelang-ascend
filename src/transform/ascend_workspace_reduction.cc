@@ -62,6 +62,8 @@ class CopyInfoCollector : public StmtExprVisitor {
 private:
   CopyGlobalContext context_;
   bool is_pto_;
+  std::string platform_;
+  bool needs_gm_workspace_;
 
   std::unordered_set<std::string> target_copy_stmts_ = {"copy_ub_to_l1",
                                                         "copy_l0c_to_ub"};
@@ -77,7 +79,9 @@ public:
   explicit CopyInfoCollector(
       const std::unordered_set<std::string> &target_copy_stmts = {},
       const std::unordered_map<std::string, DstBufferScope> &scope_table = {},
-      bool is_pto = false) {
+      bool is_pto = false,
+      const std::string &platform = "A3")
+      : platform_(platform), needs_gm_workspace_(false) {
     if (!target_copy_stmts.empty()) {
       this->target_copy_stmts_ = target_copy_stmts;
     }
@@ -85,6 +89,7 @@ public:
       this->scope_table_ = scope_table;
     }
     this->is_pto_ = is_pto;
+    this->needs_gm_workspace_ = (is_pto && platform != "A5");
   }
 
   void SetSkipBuffers(const std::unordered_set<std::string> &skip_buffers) {
@@ -122,6 +127,25 @@ public:
       }
     }
     return "";
+  }
+
+  std::pair<const CallNode*, const CallNode*> ExtractCopyAccessPtrs(
+      const CallNode *call_node) {
+    Array<PrimExpr> call_node_args = call_node->args;
+    const CallNode *src_ptr = call_node_args[1].as<CallNode>();
+    const CallNode *dst_ptr = call_node_args[2].as<CallNode>();
+    ICHECK(src_ptr != nullptr && dst_ptr != nullptr)
+        << "[Error]<WorkspaceReduction>: src_ptr or dst_ptr is "
+           "nullptr!";
+    ICHECK(src_ptr->op.same_as(tvm::tir::builtin::tvm_access_ptr()) &&
+           src_ptr->args.size() >= 2)
+        << "[Error]<WorkspaceReduction>: src is not access ptr or "
+           "its size of args is too small";
+    ICHECK(dst_ptr->op.same_as(tvm::tir::builtin::tvm_access_ptr()) &&
+           dst_ptr->args.size() >= 2)
+        << "[Error]<WorkspaceReduction>: dst is not access ptr or "
+           "its size of args is too small";
+    return {src_ptr, dst_ptr};
   }
 
   void WorkspaceInfoCollector(const std::string &copy_stmt,
@@ -311,12 +335,22 @@ public:
           break;
         }
 
-        ws_info.dim = IntImm(DataType::Int(64), ws_info.shapes.size());
-
-        Array<PrimExpr> real_shapes{context_.core_meta_info_.total_core_nums};
-        for (const auto &shape : ws_info.shapes) {
-          real_shapes.push_back(shape);
+        Array<PrimExpr> real_shapes;
+        if (needs_gm_workspace_) {
+          // A2 PTO: flat 1D buffer with 2x size for FIFO double-buffering
+          PrimExpr total_elems = context_.core_meta_info_.total_core_nums;
+          for (const auto &shape : ws_info.shapes) {
+            total_elems = total_elems * shape;
+          }
+          total_elems = total_elems * IntImm(DataType::Int(64), 2);
+          real_shapes.push_back(total_elems);
+        } else {
+          real_shapes.push_back(context_.core_meta_info_.total_core_nums);
+          for (const auto &shape : ws_info.shapes) {
+            real_shapes.push_back(shape);
+          }
         }
+        ws_info.dim = IntImm(DataType::Int(64), real_shapes.size());
         ws_info.workspace_buffer = decl_buffer(
             real_shapes, ws_info.dtype, ws_info.workspace_name, "global");
 
@@ -339,24 +373,19 @@ public:
 
     std::string copy_stmt_name = IsTargetCopyExpr(call_node);
     if (!copy_stmt_name.empty()) {
-      // For PTO, skip workspace buffer collection entirely (pipe-based instead)
+      // For PTO (both A2 and A5): skip copy-back bookkeeping.
+      // A2 PTO additionally collects workspace info for GM buffer allocation.
       if (is_pto_) {
+        if (needs_gm_workspace_) {
+          // A2 PTO: collect workspace info for GM buffer allocation,
+          // but skip copy-back bookkeeping (tracked_buffers_,
+          // src_to_dst_map_, dst_to_access_map_, etc.)
+          auto [src_ptr, dst_ptr] = ExtractCopyAccessPtrs(call_node);
+          WorkspaceInfoCollector(copy_stmt_name, src_ptr, dst_ptr);
+        }
         return;
       }
-      Array<PrimExpr> call_node_args = call_node->args;
-
-      const CallNode *src_ptr = call_node_args[1].as<CallNode>();
-      const CallNode *dst_ptr = call_node_args[2].as<CallNode>();
-      ICHECK(src_ptr != nullptr && dst_ptr != nullptr)
-          << "[Error]<WorkspaceReduction>: src_ptr or dst_ptr is nullptr!";
-      ICHECK(src_ptr->op.same_as(tvm::tir::builtin::tvm_access_ptr()) &&
-             src_ptr->args.size() >= 2)
-          << "[Error]<WorkspaceReduction>: src is not access ptr or its "
-             "size of args is too small";
-      ICHECK(dst_ptr->op.same_as(tvm::tir::builtin::tvm_access_ptr()) &&
-             dst_ptr->args.size() >= 2)
-          << "[Error]<WorkspaceReduction>: dst is not access ptr or its "
-             "size of args is too small";
+      auto [src_ptr, dst_ptr] = ExtractCopyAccessPtrs(call_node);
       const VarNode *src_name_var_node = (src_ptr->args[1].as<VarNode>());
       const VarNode *dst_name_var_node = (dst_ptr->args[1].as<VarNode>());
       ICHECK(src_name_var_node != nullptr && dst_name_var_node != nullptr)
@@ -402,7 +431,7 @@ public:
         context_.dst_to_access_map_[dst_buffer_name] = GetRef<Call>(dst_ptr);
       }
 
-      std::string copy_func_name = call_node_args[0].as<StringImmNode>()->value;
+      std::string copy_func_name = call_node->args[0].as<StringImmNode>()->value;
       for (auto &target_copy_stmt : target_copy_stmts_) {
         if (copy_func_name.find(target_copy_stmt) != std::string::npos) {
           context_.dst_to_scope_map_[dst_buffer_name] =
@@ -457,7 +486,7 @@ const std::unordered_map<std::string, DataType> CopyInfoCollector::type_map_ = {
 
 class AscendWorkspaceReductionPass : public arith::IRMutatorWithAnalyzer {
 public:
-  static PrimFunc Substitute(PrimFunc f, bool is_pto = false) {
+  static PrimFunc Substitute(PrimFunc f, bool is_pto = false, const std::string &platform = "A3") {
     arith::Analyzer analyzer;
 
     // Read buffers_skip_vid_reduction from PrimFunc attrs
@@ -487,12 +516,12 @@ public:
       }
     }
 
-    CopyInfoCollector info_collector({}, {}, is_pto);
+    CopyInfoCollector info_collector({}, {}, is_pto, platform);
     info_collector.SetSkipBuffers(skip_buffer_names);
     info_collector.SetBufferShapes(buffer_shapes);
     info_collector.VisitStmt(f->body);
     const CopyGlobalContext &context = info_collector.GetCopyGlobalContext();
-    AscendWorkspaceReductionPass substituter(&analyzer, context, is_pto);
+    AscendWorkspaceReductionPass substituter(&analyzer, context, is_pto, platform);
 
     auto *f_mut = f.CopyOnWrite();
     f_mut->body = substituter.VisitStmt(f->body);
@@ -522,14 +551,16 @@ public:
 
 private:
   AscendWorkspaceReductionPass(arith::Analyzer *analyzer,
-                               const CopyGlobalContext &context,
-                               bool is_pto = false)
+                                const CopyGlobalContext &context,
+                                bool is_pto = false,
+                                const std::string &platform = "A3")
       : arith::IRMutatorWithAnalyzer(analyzer), context_(context),
-        core_meta_info__(context.core_meta_info_), is_pto_(is_pto) {}
+        core_meta_info__(context.core_meta_info_), is_pto_(is_pto), platform_(platform) {}
 
   const CopyGlobalContext &context_;
   const CoreMetaInfo core_meta_info__; // For vid offset calculation
   bool is_pto_;
+  std::string platform_;
   static int pipe_flag_id_counter_;
 
   std::unordered_set<std::string> inserted_buffers_;
@@ -1027,7 +1058,12 @@ tvm::transform::Pass AscendWorkspaceReduction() {
         }
       }
     }
-    return AscendWorkspaceReductionPass::Substitute(std::move(f), is_pto);
+    std::string platform = "A3";
+    auto platform_attr = f->GetAttr<String>("npu_platform");
+    if (platform_attr.defined()) {
+      platform = platform_attr.value();
+    }
+    return AscendWorkspaceReductionPass::Substitute(std::move(f), is_pto, platform);
   };
   return CreatePrimFuncPass(pass_func, 0, "tl.AscendWorkspaceReduction", {});
 }

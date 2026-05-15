@@ -116,11 +116,13 @@ public:
     std::string dir_full;
     std::string c2v_buf;
     std::string v2c_buf;
+    std::string gm_fifo_addr;  // GM workspace address for A2 (empty for A5)
   };
 
 private:
   void AutoBarrierCodegen(const CallNode *op);
   void AutoFlagOpCodegen(const CallNode *op, std::string op_name);
+  void PrintPipeDeclarations();
 
 private:
   // Whether scope such as "__shared__" or "__constant__"  is part of type.
