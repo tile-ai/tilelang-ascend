@@ -589,44 +589,33 @@ Vector 核:
 1. **使用多缓冲流水线**
    - 参数：`num_stages=8-16`，`cross_interval=2-4`
    - 批量处理 K/V 分块，减少同步开销
-
 2. **实现细粒度 Flag 同步**
    - Intra-core Flag：控制 MTE2 → MTE1 → M → FIX 流水线
    - Cross-core Semaphore：Cube ↔ Vector 批量同步
    - 初始化 Flag：模拟消费者已释放，避免初始等待
-
 3. **使用 MMA Intrinsic**
    - `T.mma` 替代 `T.gemm_v0`
    - L0 双缓冲：`l0a/l0b/l0c` 各分配 2 个缓冲
    - Flag 双缓冲基址：`SIG_L0AB` 和 `SIG_L0C` 使用连续编号
-
 4. **优化数据布局**
    - `make_zn_layout`：适配矩阵乘输入（Q, P, V）
    - `make_nz_layout`：适配 transpose 操作（K）
    - 使用 `T.annotate_layout` 标注布局
-
 5. **静态任务分配**
    - 固定物理核数（NUM_CORES=24）
    - 均匀分配任务，避免核调度开销
    - 循环多任务，提高核利用率
-
 6. **批量 Softmax 计算**
    - 预计算 `r_factors` 和 `sumexp_is`
    - 使用双缓冲存储最大值历史（`neg_sm[cur/prv]`）
    - 批量累加，减少同步开销
-
 7. **优化 Workspace 结构**
    - 按 `NUM_CORES * num_stages` 分配
    - 支持多缓冲流水线
    - 减少内存占用
-
 8. **内存复用**
    - 使用 `io_buf`、`work_ub`、`buf_2d` 复用缓冲
    - 减少内存占用，简化数据流
-
-9. **支持 MQA/GQA**
-   - `heads_q` 和 `heads_kv` 可不同
-   - 计算对应的 KV head 索引
 
 ### ❌ 避免做法
 
