@@ -1445,7 +1445,6 @@ void CodeGenTileLangAscendPto::GatherbCodegen(const CallNode *op,
                << idx_name << ");\n";
 }
 
-
 void CodeGenTileLangAscendPto::GatherMaskCodegen(const CallNode *op,
                                                  const std::string &op_name) {
   BufferInfo dst_info = GetBufferInfo(op->args[1]);
@@ -2365,10 +2364,18 @@ void CodeGenTileLangAscendPto::CodegenRowReduce(const ReduceOpInfo &op_info,
   if (src.type != tmp.type) {
     temp_name = GetTempVarName(temp_name);
     int tmp_col = GetRowReduceTmpCol(src.slice_valid_col, src.type);
-    ShapeInfo tmp_cast =
-        ShapeInfo{src.slice_valid_row, tmp_col, src.slice_valid_row, tmp_col,
-                  src.slice_valid_row, tmp_col, tmp.extent, tmp.first_addr,
-                  "0", src.type, tmp.ub_name, false};
+    ShapeInfo tmp_cast = ShapeInfo{src.slice_valid_row,
+                                   tmp_col,
+                                   src.slice_valid_row,
+                                   tmp_col,
+                                   src.slice_valid_row,
+                                   tmp_col,
+                                   tmp.extent,
+                                   tmp.first_addr,
+                                   "0",
+                                   src.type,
+                                   tmp.ub_name,
+                                   false};
     CreateUbVariableND(temp_name, tmp_cast);
   }
 
