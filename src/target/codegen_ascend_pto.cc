@@ -1610,6 +1610,24 @@ void CodeGenTileLangAscendPto::PreScanPipes(const PrimFunc &f) {
     }
     return true;
   });
+
+  // For A2/A3 platform, assign GM workspace buffer addresses to pipes.
+  // Workspace buffers are added as PrimFunc params by AscendWorkspaceReduction
+  // with names like "workspace_0_handle".
+  if (this->platform_ != "A5") {
+    std::vector<std::string> gm_workspace_names;
+    for (const auto &param : f->params) {
+      if (std::string(param->name_hint).find("workspace_") == 0) {
+        gm_workspace_names.push_back(GetVarId(param));
+      }
+    }
+    size_t ws_idx = 0;
+    for (auto &[flag_id, info] : pipe_registry_) {
+      if (ws_idx < gm_workspace_names.size()) {
+        info.gm_fifo_addr = gm_workspace_names[ws_idx++];
+      }
+    }
+  }
 }
 
 void CodeGenTileLangAscendPto::CallExternCodegen(const CallNode *op) {
@@ -3408,6 +3426,10 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AttrStmtNode *op) {
       this->PrintIndent();
       stream << "set_ffts_base_addr(ffts_Addr);\n\n";
 
+      // Emit TPipe declarations AFTER ffts is initialized
+      // (TPipe constructor calls ffts_cross_core_sync which requires FFTS)
+      this->PrintPipeDeclarations();
+
       this->core_num_ = PrintExpr(op->value);
     } else if (iv->thread_tag == "blockIdx.y" && iv->var->name_hint != "_") {
       this->vec_id_ = AllocVarID(iv->var.get());
@@ -3823,8 +3845,20 @@ void CodeGenTileLangAscendPto::AddFunction(const GlobalVar &gvar,
     }
   }
   this->PreFunctionBody(f);
-
+  int func_scope = this->BeginScope();
+  
   this->PreScanPipes(f);
+
+  this->PrintStmt(f->body);
+  this->EndScope(func_scope);
+  this->PrintIndent();
+  this->stream << "}\n\n";
+
+  PrintHostFunc(f, func_name, stream, this->core_num_, shape_vars);
+  std::string content = stream.str();
+}
+
+void CodeGenTileLangAscendPto::PrintPipeDeclarations() {
   if (!pipe_registry_.empty()) {
     for (const auto &[flag_id, info] : pipe_registry_) {
       this->PrintIndent();
@@ -3833,18 +3867,11 @@ void CodeGenTileLangAscendPto::AddFunction(const GlobalVar &gvar,
                    << info.slot_size << ", " << info.slot_num << ">;\n";
       this->PrintIndent();
       this->stream << info.pipe_type_name << " " << info.pipe_id
-                   << "(nullptr, " << info.c2v_buf << ", " << info.v2c_buf
+                   << "(" << (info.gm_fifo_addr.empty() ? "nullptr" : info.gm_fifo_addr)
+                   << ", " << info.c2v_buf << ", " << info.v2c_buf
                    << ");\n";
     }
   }
-
-  int func_scope = this->BeginScope();
-  this->PrintStmt(f->body);
-  this->EndScope(func_scope);
-  this->PrintIndent();
-  this->stream << "}\n\n";
-
-  PrintHostFunc(f, func_name, stream, this->core_num_, shape_vars);
 }
 
 void CodeGenTileLangAscendPto::AutoBarrierCodegen(const CallNode *op) {
