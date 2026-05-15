@@ -59,6 +59,7 @@ def _ub_to_l1_kernel(M=128, N=128, K=128, dtype="float16"):
 
             # UB → L1 (TPUSH): Expected to fail in RED phase
             T.copy(A_ub, A_l1)
+            T.copy(B, B_l1)
 
             # L1 → GEMM → L0C (Cube computation)
             T.gemm_v0(A_l1, B_l1, C_l0c, init=True)
@@ -76,13 +77,13 @@ def _l0c_to_ub_kernel(M=128, N=128, K=128, dtype="float16"):
     def main(
         A: T.Tensor((M, K), dtype),
         B: T.Tensor((K, N), dtype),
-        C: T.Tensor((M, N), dtype),
+        C: T.Tensor((M, N), "float"),
     ):
         with T.Kernel(1, is_npu=True) as (cid, vid):
             A_l1 = T.alloc_L1((M, K), dtype)
             B_l1 = T.alloc_L1((K, N), dtype)
             C_l0c = T.alloc_L0C((M, N), "float")
-            C_ub = T.alloc_ub((M, N), dtype)
+            C_ub = T.alloc_ub((M, N), "float")
 
             # GM → L1
             T.copy(A, A_l1)
@@ -218,14 +219,14 @@ def test_l0c_to_ub_pto(dtype):
 
     a = torch.randn((M, K), dtype=torch_dtype, device="npu")
     b = torch.randn((K, N), dtype=torch_dtype, device="npu")
-    c = torch.empty((M, N), dtype=torch_dtype, device="npu")
+    c = torch.empty((M, N), dtype=torch.float32, device="npu")
     torch.npu.synchronize()
 
     kernel(a, b, c)
     torch.npu.synchronize()
 
     ref_c = a @ b
-    torch.testing.assert_close(c, ref_c, rtol=1e-2, atol=1e-2)
+    torch.testing.assert_close(c, ref_c.astype(torch.float32), rtol=1e-2, atol=1e-2)
 
 
 # @pytest.mark.xfail(reason="PTO UB↔L1 and L0C↔UB copy not yet implemented")
