@@ -647,6 +647,27 @@ TSIGMOID(TileUbDataND<T, row, col, row, col> &dst_addr,
 }
 
 template <typename T, int32_t row, int32_t col>
+AICORE PTO_INLINE void TSILU(TileUbDataND<T, row, col, row, col> &dst,
+                             TileUbDataND<T, row, col, row, col> &src,
+                             TileUbDataND<T, row, col, row, col> &tmp) {
+  TMOV(tmp, src);
+  pipe_barrier(PIPE_V);
+  TSIGMOID(dst, src);
+  pipe_barrier(PIPE_V);
+  TMUL(dst, tmp, dst);
+}
+
+template <typename T, int32_t row, int32_t col>
+AICORE PTO_INLINE void MulAddDst(TileUbDataND<T, row, col, row, col> &dst,
+                                 TileUbDataND<T, row, col, row, col> &src0,
+                                 TileUbDataND<T, row, col, row, col> &src1,
+                                 TileUbDataND<T, row, col, row, col> &tmp) {
+  TMUL(tmp, src0, src1);
+  pipe_barrier(PIPE_V);
+  TADD(dst, dst, tmp);
+}
+
+template <typename T, int32_t row, int32_t col>
 AICORE PTO_INLINE void axpy(TileUbDataND<T, row, col, row, col> &dst,
                             TileUbDataND<T, row, col, row, col> &src0,
                             float scalar_value) {
