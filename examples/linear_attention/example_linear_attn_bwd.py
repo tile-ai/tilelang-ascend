@@ -8,7 +8,10 @@ import torch.nn.functional as F
 
 tilelang.cache.clear_cache()
 
-pass_configs = {tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True}
+pass_configs = {
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
+    tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
+}
 
 
 @tilelang.jit(
@@ -150,12 +153,12 @@ def fla_fused_chunk_bwd_kernel(
                 T.wait_cross_flag(0)
 
                 T.tile.fill(ds_ub, 0.0)
+                T.tile.fill(dv_ub, 0.0)
                 T.tile.fill(ds_half, 0.0)
-                for init_i in T.serial(NK * NV):
-                    T.copy(ds_ub, workspace2[blk_off + init_i, vid * sub_C : (vid + 1) * sub_C, :])
-                    T.copy(ds_half, workspace5[blk_off + init_i, vid * sub_C : (vid + 1) * sub_C, :])
-                    T.copy(ds_ub, workspace3[blk_off + init_i, vid * sub_C : (vid + 1) * sub_C, :])
-                    T.copy(ds_half, workspace6[blk_off + init_i, vid * sub_C : (vid + 1) * sub_C, :])
+
+                # for init_i in T.serial(NK * NV):
+                #     T.copy(ds_ub, workspace2[blk_off + init_i, vid * sub_C : (vid + 1) * sub_C, :])
+                #     T.copy(ds_ub, workspace3[blk_off + init_i, vid * sub_C : (vid + 1) * sub_C, :])
 
                 T.pipe_barrier("mte3")
                 T.set_cross_flag("MTE3", 1)
@@ -183,28 +186,38 @@ def fla_fused_chunk_bwd_kernel(
 
                             T.wait_cross_flag(4)
                             T.copy(workspace1[bv_idx, vid * sub_C : (vid + 1) * sub_C, :], dq_ub)
-                            for r, c in T.Parallel(sub_C, BK):
-                                dq_ub[r, c] = dq_ub[r, c] * scale
+
+                            T.tile.mul(dq_ub, dq_ub, scale)
+
                             T.copy(
                                 dQ[
                                     i_b,
-                                    chk * chunk_size + vid * sub_C : chk * chunk_size + vid * sub_C + sub_C,
+                                    chk * chunk_size + vid * sub_C : chk * chunk_size + (vid + 1) * sub_C,
                                     i_h,
                                     i_k * BK : (i_k + 1) * BK,
                                 ],
                                 dq_tmp,
                             )
-                            for r, c in T.Parallel(sub_C, BK):
-                                dq_tmp[r, c] = dq_tmp[r, c] + dq_ub[r, c]
+                            T.tile.add(dq_tmp, dq_tmp, dq_ub)
                             T.copy(
                                 dq_tmp,
                                 dQ[
                                     i_b,
-                                    chk * chunk_size + vid * sub_C : chk * chunk_size + vid * sub_C + sub_C,
+                                    chk * chunk_size + vid * sub_C : chk * chunk_size + (vid + 1) * sub_C,
                                     i_h,
                                     i_k * BK : (i_k + 1) * BK,
                                 ],
                             )
+                            # dQ
+                            # T.tile.atomic_add(
+                            #     dQ[
+                            #         i_b,
+                            #         chk * chunk_size + vid * sub_C : chk * chunk_size + (vid + 1) * sub_C,
+                            #         i_h,
+                            #         i_k * BK : (i_k + 1) * BK,
+                            #     ],
+                            #     dq_ub,
+                            # )
                             T.set_cross_flag("MTE3", 1)
 
                         # === Pass 2: scale q, mask s, RMW dk/dv ===
@@ -216,15 +229,16 @@ def fla_fused_chunk_bwd_kernel(
                             T.copy(
                                 Q[
                                     i_b,
-                                    rev * chunk_size + vid * sub_C : rev * chunk_size + vid * sub_C + sub_C,
+                                    rev * chunk_size + vid * sub_C : rev * chunk_size + (vid + 1) * sub_C,
                                     i_h,
                                     i_k * BK : (i_k + 1) * BK,
                                 ],
                                 q_ub,
                             )
                             T.tile.cast(q_cal, q_ub, "CAST_NONE", sub_C * BK)
-                            for r, c in T.Parallel(sub_C, BK):
-                                q_cal[r, c] = q_cal[r, c] * scale
+
+                            T.tile.mul(q_cal, q_cal, scale)
+
                             T.copy(q_cal, ds_half)
                             T.copy(ds_half, workspace4[bv_idx, vid * sub_C : (vid + 1) * sub_C, :])
                             T.set_cross_flag("MTE3", 7)
@@ -254,44 +268,56 @@ def fla_fused_chunk_bwd_kernel(
                             T.set_cross_flag("MTE3", 11)
 
                             T.wait_cross_flag(12)
+
+                            # dK
                             T.copy(workspace1[bv_idx, vid * sub_C : (vid + 1) * sub_C, :], dk_ub)
                             T.copy(
                                 dK[
                                     i_b,
-                                    rev * chunk_size + vid * sub_C : rev * chunk_size + vid * sub_C + sub_C,
+                                    rev * chunk_size + vid * sub_C : rev * chunk_size + (vid + 1) * sub_C,
                                     i_h,
                                     i_k * BK : (i_k + 1) * BK,
                                 ],
                                 dk_tmp,
                             )
-                            for r, c in T.Parallel(sub_C, BK):
-                                dk_tmp[r, c] = dk_tmp[r, c] + dk_ub[r, c]
+                            T.tile.add(dk_tmp, dk_tmp, dk_ub)
                             T.copy(
                                 dk_tmp,
                                 dK[
                                     i_b,
-                                    rev * chunk_size + vid * sub_C : rev * chunk_size + vid * sub_C + sub_C,
+                                    rev * chunk_size + vid * sub_C : rev * chunk_size + (vid + 1) * sub_C,
                                     i_h,
                                     i_k * BK : (i_k + 1) * BK,
                                 ],
                             )
+                            # fixme
+                            # T.tile.atomic_add(
+                            #     dK[
+                            #         i_b,
+                            #         rev * chunk_size + vid * sub_C : rev * chunk_size + (vid + 1) * sub_C,
+                            #         i_h,
+                            #         i_k * BK : (i_k + 1) * BK,
+                            #     ],
+                            #     dk_ub,
+                            # )
+
+                            # dV
                             T.copy(workspace2[bv_idx, vid * sub_C : (vid + 1) * sub_C, :], dv_ub)
                             T.copy(
                                 dV[
                                     i_b,
-                                    rev * chunk_size + vid * sub_C : rev * chunk_size + vid * sub_C + sub_C,
+                                    rev * chunk_size + vid * sub_C : rev * chunk_size + (vid + 1) * sub_C,
                                     i_h,
                                     i_v * BV : (i_v + 1) * BV,
                                 ],
                                 dv_tmp,
                             )
-                            for r, c in T.Parallel(sub_C, BV):
-                                dv_tmp[r, c] = dv_tmp[r, c] + dv_ub[r, c]
+                            T.tile.add(dv_tmp, dv_tmp, dv_ub)
                             T.copy(
                                 dv_tmp,
                                 dV[
                                     i_b,
-                                    rev * chunk_size + vid * sub_C : rev * chunk_size + vid * sub_C + sub_C,
+                                    rev * chunk_size + vid * sub_C : rev * chunk_size + (vid + 1) * sub_C,
                                     i_h,
                                     i_v * BV : (i_v + 1) * BV,
                                 ],
@@ -307,11 +333,16 @@ def fla_fused_chunk_bwd_kernel(
 def fla_fused_chunk_bwd(q: Tensor, k: Tensor, v: Tensor, dO: Tensor) -> Tuple[Tensor, Tensor, Tensor]:
     B, S, H, DK = q.shape
     DV = v.shape[-1]
+
     kernel = fla_fused_chunk_bwd_kernel(B, S, H, DK, DV)
-    dQ = torch.zeros(B, S, H, DK, device=q.device, dtype=torch.float32)
-    dK = torch.zeros(B, S, H, DK, device=q.device, dtype=torch.float32)
-    dV = torch.zeros(B, S, H, DV, device=q.device, dtype=torch.float32)
+
+    dQ = torch.zeros(B, S, H, DK, dtype=torch.float32).npu()
+    dK = torch.zeros(B, S, H, DK, dtype=torch.float32).npu()
+    dV = torch.zeros(B, S, H, DV, dtype=torch.float32).npu()
+    torch.npu.synchronize()
+
     kernel(q, k, v, dO, dQ, dK, dV)
+
     return dQ.to(q.dtype), dK.to(q.dtype), dV.to(q.dtype)
 
 
