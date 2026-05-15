@@ -254,19 +254,47 @@ private:
     std::vector<Stmt> stmts;
     InsertSynchronization("PipeBarrier_ALL", stmts);
 
+    // Save access history before entering the if-block.
+    // Only buffers written inside the if-block should have their
+    // history cleared; buffers untouched by the conditional code
+    // must retain their history so that cross-iteration dependencies
+    // (e.g. V -> MTE2 on s_ub) can still be detected.
+    auto saved_history = current_access_history_;
     current_access_history_.clear();
     Stmt then_case = VisitStmt(op->then_case);
+
+    // Collect buffers written inside the then-branch.
+    std::unordered_set<std::string> written_in_if;
+    for (const auto &pair : current_access_history_) {
+      if (pair.second.is_write) {
+        written_in_if.insert(pair.first);
+      }
+    }
 
     Optional<Stmt> else_case;
     if (op->else_case.defined()) {
       current_access_history_.clear();
       else_case = VisitStmt(op->else_case.value());
+      // Collect buffers written inside the else-branch.
+      for (const auto &pair : current_access_history_) {
+        if (pair.second.is_write) {
+          written_in_if.insert(pair.first);
+        }
+      }
     }
 
     stmts.push_back(IfThenElse(op->condition, then_case, else_case));
 
     InsertSynchronization("PipeBarrier_ALL", stmts);
-    current_access_history_.clear();
+
+    // Restore history for buffers NOT written inside the if-block.
+    // Buffers written inside the if-block have uncertain state
+    // (conditional write) and are covered by PipeBarrier_ALL.
+    current_access_history_ = saved_history;
+    for (const auto &buf_name : written_in_if) {
+      current_access_history_.erase(buf_name);
+    }
+
     return SeqStmt(stmts);
   }
 
