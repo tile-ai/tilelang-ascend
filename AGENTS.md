@@ -32,7 +32,8 @@
 | 技能                           | 触发时机            | 说明                                                                                                  |
 | ---------------------------- | --------------- | --------------------------------------------------------------------------------------------------- |
 | tilelang-custom-skill  | 需要时触发     | 通用skill |
-| tilelang-op-design | 设计算子时 | 算子方案设计，生成 design.md |
+| tilelang-op-design | **设计算子时立即触发** | 算子方案设计，生成 design.md。**强制执行技术约束检测**：三维 Kernel、threads 参数、动态循环边界等。关键词："设计算子"、"生成 design.md"、"算子方案" |
+| tilelang-ascend-tile-api | 新增或封装 `T.tile.xxx` 小 API 时 | 端到端打通 `ascend_tile.py` 前端、C++ lowering/codegen、Ascend C helper、测试与文档 |
 | tilelang-op-generate | 实现算子时 | 基于 design.md 生成算子代码 |
 | tilelang-pass-analyzer       | **查询 Pass 功能时立即触发**  | Pass 功能分析、对比、分类查询。关键词："XX pass 是干什么的"、"分析 XX pass"、"XX 和 YY pass 的区别" |
 | tilelang-pass-workflow-analyzer | **查询 Pass 工作流时立即触发** | Pass 工作流分析、执行顺序、依赖关系、新 Pass 定位。关键词："pass 的工作流程"、"Pass 执行顺序"、"Pass 依赖关系"、"如何添加新 Pass" |

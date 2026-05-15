@@ -8,7 +8,7 @@ from tilelang.profiler import do_bench
 tilelang.cache.clear_cache()
 
 
-@tilelang.jit(out_idx=[-1])
+@tilelang.jit(out_idx=[-1], target="ascendc")
 def matmul(M, N, K, block_M, block_N, block_K, K_L1, S1, S2, dtype="float16", accum_dtype="float"):
     core_num = 20
 

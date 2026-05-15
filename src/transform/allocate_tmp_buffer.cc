@@ -2,7 +2,6 @@
 // Licensed under the MIT License.
 
 #include <tvm/ir/op.h>
-
 #include <tvm/runtime/registry.h>
 #include <tvm/tir/builtin.h>
 #include <tvm/tir/op.h>
@@ -108,7 +107,9 @@ private:
         if (op->op.same_as(tl::ascend_sigmoid()) ||
             op->op.same_as(tl::ascend_pow()) ||
             op->op.same_as(tl::ascend_bitwise_xor()) ||
-            op->op.same_as(tl::ascend_merge_sort())) {
+            op->op.same_as(tl::ascend_merge_sort()) ||
+            ("pto" == target_ && (op->op.same_as(tl::ascend_sort()) ||
+                                  op->op.same_as(tl::ascend_topk())))) {
           return CallNodeAddTmp(op, tmp_buffer_param_offset, 2);
         } else {
           return CallNodeAddTmp(op, tmp_buffer_param_offset, 1);
@@ -173,9 +174,44 @@ private:
           }
         }
       }
-    } else if ("pto" == target_ && op->op.same_as(tl::ascend_bitwise_xor()) &&
+    } else if ("pto" == target_ &&
+               (op->op.same_as(tl::ascend_bitwise_xor()) ||
+                op->op.same_as(tl::ascend_sort()) ||
+                op->op.same_as(tl::ascend_topk())) &&
                tmp_bufs_.size() > 0) {
       const CallNode *src_access_ptr = Downcast<Call>(op->args[1]).get();
+      DataType dtype = src_access_ptr->args[0].as<CallNode>()->dtype;
+      if (dtype == DataType::UInt(8)) {
+        tmp_buffer = tmp_buf_;
+      } else {
+        for (const Buffer &xor_tmp_buffer : tmp_bufs_) {
+          if (xor_tmp_buffer.get()->dtype == dtype) {
+            tmp_buffer = xor_tmp_buffer;
+            break;
+          }
+        }
+      }
+    } else if ("pto" == target_ && op->op.same_as(tl::ascend_merge_sort()) &&
+               tmp_bufs_.size() > 0) {
+      const CallNode *dst_access_ptr = Downcast<Call>(op->args[2]).get();
+      DataType dtype = dst_access_ptr->args[0].as<CallNode>()->dtype;
+      if (dtype == DataType::UInt(8)) {
+        tmp_buffer = tmp_buf_;
+      } else {
+        for (const Buffer &merge_sort_tmp_buffer : tmp_bufs_) {
+          if (merge_sort_tmp_buffer.get()->dtype == dtype) {
+            tmp_buffer = merge_sort_tmp_buffer;
+            break;
+          }
+        }
+      }
+    } else if ("pto" == target_ && op->op.same_as(tl::ascend_gather_mask()) &&
+               tmp_bufs_.size() > 0 && op->args[3].as<CallNode>()) {
+      // gather_mask args[3] is the src1 pattern: either a Call (Buffer
+      // pattern) or a StringImm ("P1010" etc.). Only the Buffer-pattern
+      // form needs a dtype-keyed tmp; the string-pattern form falls through
+      // to the generic uint8 tmp_buf_ below.
+      const CallNode *src_access_ptr = Downcast<Call>(op->args[3]).get();
       DataType dtype = src_access_ptr->args[0].as<CallNode>()->dtype;
       if (dtype == DataType::UInt(8)) {
         tmp_buffer = tmp_buf_;
@@ -265,7 +301,8 @@ private:
         if (reduce_out_tmp_buf_.defined()) {
           new_alloc_buffers.push_back(reduce_out_tmp_buf_);
         }
-        tmp_bufs_ = createPTOXORAndMergeSortTmpBuffer_(op->alloc_buffers);
+        tmp_bufs_ =
+            createPTOXORAndMergeSortAndGatherMaskTmpBuffer_(op->alloc_buffers);
         for (const Buffer &tmp_buffer : tmp_bufs_) {
           new_alloc_buffers.push_back(tmp_buffer);
         }
@@ -443,7 +480,7 @@ private:
   }
 
   Array<Buffer>
-  createPTOXORAndMergeSortTmpBuffer_(Array<Buffer> alloc_buffers) {
+  createPTOXORAndMergeSortAndGatherMaskTmpBuffer_(Array<Buffer> alloc_buffers) {
     std::unordered_map<DataType, Array<PrimExpr>> shapes;
     // Iterate over the stored CallNodes, find the corresponding xor and
     // merge_sort and allocate tmp_ub for them (requires tmp_ub of the
@@ -509,21 +546,100 @@ private:
                 Downcast<IntImm>(dst_access_ptr->args[3])->value * 4;
             if (tmp_shape_size > shape_size) {
               Array<PrimExpr> tmp_shape;
-              for (size_t k = 0; k < dst_buffer_node->shape.size(); k++) {
-                tmp_shape.push_back(
-                    IntImm(DataType::Int(32),
-                           dst_buffer_node->shape[k].as<IntImmNode>()->value));
-              }
+              tmp_shape.push_back(IntImm(DataType::Int(32), tmp_shape_size));
               shapes[dtype] = tmp_shape;
             }
           } else {
             Array<PrimExpr> tmp_shape;
-            for (size_t k = 0; k < dst_buffer_node->shape.size(); k++) {
+            tmp_shape.push_back(
+                IntImm(DataType::Int(32),
+                       Downcast<IntImm>(dst_access_ptr->args[3])->value * 4));
+            shapes[dtype] = tmp_shape;
+          }
+        }
+      } else if (call->op.same_as(tl::ascend_sort()) ||
+                 call->op.same_as(tl::ascend_topk())) {
+        const CallNode *src_access_ptr = Downcast<Call>(call->args[2]).get();
+        std::string src_buffer_name =
+            src_access_ptr->args[1].as<VarNode>()->name_hint;
+        const BufferNode *src_buffer_node =
+            GetBufferNodeByName_(alloc_buffers, src_buffer_name);
+        DataType dtype = src_buffer_node->dtype;
+        if (dtype != DataType::UInt(8)) {
+          // sort:  bufA (2*alignedCount) + bufC (2*alignedCount) for float
+          //        (dst doubles as bufB). Half: also a float cast scratch.
+          // topk:  must fit bufA + bufB + bufC = 6*alignedCount float since
+          //        user dst (size 2*K) is too small to host bufB ping-pong.
+          // Both paths share this allocation; use the larger (topk) sizing
+          // when topk is present so the same tmp pool serves both ops.
+          bool is_topk = call->op.same_as(tl::ascend_topk());
+          int64_t multiplier;
+          if (dtype.bytes() == 2) {
+            multiplier = 16; // half: reserve enough for cast-to-float pool
+          } else {
+            multiplier = is_topk ? 6 : 4;
+          }
+          int64_t tmp_shape_size =
+              Downcast<IntImm>(src_access_ptr->args[3])->value * multiplier;
+          if (shapes.count(dtype) > 0) {
+            int64_t shape_size = 0;
+            for (size_t k = 0; k < shapes.at(dtype).size(); k++) {
+              if (shape_size == 0) {
+                shape_size = shapes.at(dtype)[k].as<IntImmNode>()->value;
+              } else {
+                shape_size *= shapes.at(dtype)[k].as<IntImmNode>()->value;
+              }
+            }
+            if (tmp_shape_size > shape_size) {
+              Array<PrimExpr> tmp_shape;
+              tmp_shape.push_back(IntImm(DataType::Int(32), tmp_shape_size));
+              shapes[dtype] = tmp_shape;
+            }
+          } else {
+            Array<PrimExpr> tmp_shape;
+            tmp_shape.push_back(IntImm(DataType::Int(32), tmp_shape_size));
+            shapes[dtype] = tmp_shape;
+          }
+        }
+      } else if (call->op.same_as(tl::ascend_gather_mask())) {
+        if (call->args[3].as<CallNode>()) {
+          const CallNode *dst_access_ptr = Downcast<Call>(call->args[1]).get();
+          std::string dst_buffer_name =
+              dst_access_ptr->args[1].as<VarNode>()->name_hint;
+          const BufferNode *src0_buffer_node =
+              GetBufferNodeByName_(alloc_buffers, dst_buffer_name);
+          const CallNode *src1_pattern_access_ptr =
+              Downcast<Call>(call->args[3]).get();
+          std::string src1_pattern_buffer_name =
+              src1_pattern_access_ptr->args[1].as<VarNode>()->name_hint;
+          const BufferNode *src1_pattern_buffer;
+          src1_pattern_buffer =
+              GetBufferNodeByName_(alloc_buffers, src1_pattern_buffer_name);
+          DataType dtype = src1_pattern_buffer->dtype;
+          if (dtype != DataType::UInt(8)) {
+            if (shapes.count(dtype) > 0) {
+              int64_t shape_size = 0;
+              for (size_t k = 0; k < shapes.at(dtype).size(); k++) {
+                if (shape_size == 0) {
+                  shape_size = shapes.at(dtype)[k].as<IntImmNode>()->value;
+                } else {
+                  shape_size *= shapes.at(dtype)[k].as<IntImmNode>()->value;
+                }
+              }
+              int64_t tmp_shape_size =
+                  Downcast<IntImm>(dst_access_ptr->args[3])->value;
+              if (tmp_shape_size > shape_size) {
+                Array<PrimExpr> tmp_shape;
+                tmp_shape.push_back(IntImm(DataType::Int(32), tmp_shape_size));
+                shapes[dtype] = tmp_shape;
+              }
+            } else {
+              Array<PrimExpr> tmp_shape;
               tmp_shape.push_back(
                   IntImm(DataType::Int(32),
-                         dst_buffer_node->shape[k].as<IntImmNode>()->value));
+                         Downcast<IntImm>(dst_access_ptr->args[3])->value));
+              shapes[dtype] = tmp_shape;
             }
-            shapes[dtype] = tmp_shape;
           }
         }
       }
@@ -600,7 +716,7 @@ private:
             GetBufferNodeByName_(alloc_buffers, src_buffer_name);
         int64_t tmp_shape_size =
             Downcast<IntImm>(src_access_ptr->args[3])->value *
-            src_buffer_node->dtype.bytes() / 2;
+            src_buffer_node->dtype.bytes();
         if (tmp_shape_size > shape_size) {
           shape = {
               IntImm(DataType::Int(32), tmp_shape_size),
@@ -817,6 +933,22 @@ private:
           };
           shape_size = tmp_shape_size;
         }
+      } else if (call->op.same_as(tl::ascend_merge_sort())) {
+        const CallNode *dst_access_ptr = Downcast<Call>(call->args[2]).get();
+        std::string dst_buffer_name =
+            dst_access_ptr->args[1].as<VarNode>()->name_hint;
+        const BufferNode *dst_buffer_node =
+            GetBufferNodeByName_(alloc_buffers, dst_buffer_name);
+        DataType dtype = dst_buffer_node->dtype;
+        if (dtype == DataType::UInt(8)) {
+          int64_t tmp_shape_size =
+              Downcast<IntImm>(dst_access_ptr->args[3])->value * 4;
+          Array<PrimExpr> tmp_shape;
+          shape = {
+              IntImm(DataType::Int(32), tmp_shape_size),
+          };
+          shape_size = tmp_shape_size;
+        }
       } else if (call->op.same_as(tl::ascend_clamp()) ||
                  call->op.same_as(tl::ascend_clamp_max()) ||
                  call->op.same_as(tl::ascend_clamp_min())) {
@@ -834,6 +966,61 @@ private:
               IntImm(DataType::Int(32), tmp_shape_size),
           };
           shape_size = tmp_shape_size;
+        }
+      } else if (call->op.same_as(tl::ascend_select())) {
+        const CallNode *src_access_ptr = Downcast<Call>(call->args[0]).get();
+        std::string src_buffer_name =
+            src_access_ptr->args[1].as<VarNode>()->name_hint;
+        const BufferNode *src_buffer_node =
+            GetBufferNodeByName_(alloc_buffers, src_buffer_name);
+        int64_t tmp_shape_size =
+            Downcast<IntImm>(src_access_ptr->args[3])->value *
+            src_buffer_node->dtype.bytes();
+        Array<PrimExpr> tmp_shape;
+        if (tmp_shape_size > shape_size) {
+          shape = {
+              IntImm(DataType::Int(32), tmp_shape_size),
+          };
+          shape_size = tmp_shape_size;
+        }
+      } else if (call->op.same_as(tl::ascend_gather_mask())) {
+        if (call->args[3].as<CallNode>()) {
+          const CallNode *src0_access_ptr = Downcast<Call>(call->args[1]).get();
+          const CallNode *src1_pattern_access_ptr =
+              Downcast<Call>(call->args[3]).get();
+          std::string src1_pattern_buffer_name =
+              src1_pattern_access_ptr->args[1].as<VarNode>()->name_hint;
+          const BufferNode *src1_pattern_buffer;
+          src1_pattern_buffer =
+              GetBufferNodeByName_(alloc_buffers, src1_pattern_buffer_name);
+          DataType dtype = src1_pattern_buffer->dtype;
+          if (dtype == DataType::UInt(8)) {
+            std::string src0_buffer_name =
+                src0_access_ptr->args[1].as<VarNode>()->name_hint;
+            const BufferNode *src0_buffer_node =
+                GetBufferNodeByName_(alloc_buffers, src0_buffer_name);
+            int64_t tmp_shape_size =
+                Downcast<IntImm>(src0_access_ptr->args[3])->value *
+                src0_buffer_node->dtype.bytes();
+            Array<PrimExpr> tmp_shape;
+            if (tmp_shape_size > shape_size) {
+              shape = {
+                  IntImm(DataType::Int(32), tmp_shape_size),
+              };
+              shape_size = tmp_shape_size;
+            }
+          }
+        } else {
+          if (shape_size == 0) {
+            shape = {
+                IntImm(DataType::Int(32), 1),
+            };
+            shape_size = 1;
+          } else {
+            shape = {
+                IntImm(DataType::Int(32), shape_size),
+            };
+          }
         }
       }
     }

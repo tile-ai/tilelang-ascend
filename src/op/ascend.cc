@@ -9,6 +9,10 @@
 
 #include "ascend.h"
 
+#include <sstream>
+#include <tuple>
+#include <vector>
+
 #include <tvm/tir/builtin.h>
 #include <tvm/tir/op.h>
 #include <tvm/tir/op_attr_types.h>
@@ -58,6 +62,30 @@ AscendCopy::AscendCopy(Array<PrimExpr> args, BufferMap vmap) : args_(args) {
   std::tie(this->src_extents, this->dst_extents) = std::tie(ets[0], ets[1]);
 }
 
+AscendAtomicAdd::AscendAtomicAdd(Array<PrimExpr> args, BufferMap vmap)
+    : args_(args) {
+  ICHECK_EQ(args.size(), 2U) << "tl.ascend_atomic_add expects dst and src";
+
+  auto dst_call = args[0].as<CallNode>();
+  auto src_call = args[1].as<CallNode>();
+  ICHECK(dst_call) << "tl.ascend_atomic_add dst must be a tl.region call";
+  ICHECK(src_call) << "tl.ascend_atomic_add src must be a tl.region call";
+
+  auto dst_region = RegionOp(dst_call->args, vmap);
+  auto src_region = RegionOp(src_call->args, vmap);
+  ICHECK(dst_region.GetAccessMask() & 2)
+      << "tl.ascend_atomic_add dst region must be writable";
+  ICHECK(src_region.GetAccessMask() & 1)
+      << "tl.ascend_atomic_add src region must be readable";
+
+  this->dst = dst_region.GetBuffer();
+  this->src = src_region.GetBuffer();
+  this->dst_range = dst_region.GetRanges();
+  this->src_range = src_region.GetRanges();
+  this->dst_extents = dst_region.GetExtents();
+  this->src_extents = src_region.GetExtents();
+}
+
 Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
   auto get_dtype = [](const Buffer &buf) -> std::string {
     auto dtype = buf->dtype;
@@ -95,8 +123,8 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
     PrimExpr strideN = buf->shape[buf->shape.size() - 1];
     if (extents.size() > 1) {
       for (int i = extents.size() - 2; i >= 0; --i) {
-        auto extend = static_cast<int>(extents[i].as<IntImmNode>()->value);
-        if (extend != 1) {
+        auto *extent = extents[i].as<IntImmNode>();
+        if (!extent || extent->value != 1) {
           break;
         }
         strideN = strideN * buf->shape[i];
@@ -138,6 +166,7 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
     bool print_dst_layout = false;
     bool print_ub = false;
     bool l0_dst_split = false;
+    bool virtual_channel = false;
     bool gm2ub = false;
     bool ub2gm = false;
   } config;
@@ -176,7 +205,7 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
       ss << dst_extents[dst->shape.size() - 1];
       // ss << dst->shape[dst->shape.size() - 1];
       if (dst->shape.size() > 1) {
-        ss << ", " << compute_blocklen(dst, src_extents);
+        ss << ", " << compute_blocklen(dst, dst_extents);
       }
       ss << ">";
     } else if (dst.scope() == "global") {
@@ -189,9 +218,27 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
       ss << src_extents[src->shape.size() - 1];
       // ss << src->shape[src->shape.size() - 1];
       if (src->shape.size() > 1) {
-        ss << ", " << compute_blocklen(src, dst_extents);
+        ss << ", " << compute_blocklen(src, src_extents);
       }
       ss << ">";
+    } else if (dst.scope() == "shared.dyn") {
+      config.virtual_channel = true;
+      ss << "copy_ub_to_l1<"; // real channel is "ub -> gm -> l1"
+      ss << get_dtype(dst) << ", ";
+      ss << src->shape[src->shape.size() - 1];
+      if (src->shape.size() > 1) {
+        ss << ", " << src->shape[src->shape.size() - 2];
+      }
+      ss << ">";
+    } else if (src.scope() == "wmma.accumulator") {
+      config.virtual_channel = true;
+      ss << "copy_l0c_to_ub<";
+      ss << get_dtype(src) << ", " << get_dtype(dst) << ", ";
+      ss << "layout::RowMajor, "; // real channel is "ub -> gm -> l1", so gm is
+                                  // always row major
+      ss << src->shape[src->shape.size() - 2] << ", "
+         << src->shape[src->shape.size() - 1];
+      ss << ", " << enRelu << ">";
     } else {
       PrimExpr len = 1;
       for (auto &shape : dst_extents) {
@@ -287,113 +334,78 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
                   Select(remaining > 0, remaining, 0));
   };
 
-  int src_ndim = src->shape.size();
-  int dst_ndim = dst->shape.size();
-  PrimExpr validRow_src, validCol_src, validRow_dst, validCol_dst;
-
-  // Find indices of active dimensions (extent > 2), compatible data dimensions
-  // are discontinuous like this T.copy(Query[cid, m * BLOCK_M: (m + 1) *
-  // BLOCK_M, n2, g * D: (g + 1) * D], Q_L1)
   auto find_active_dim_indices =
       [](const Array<PrimExpr> &extents) -> std::vector<int> {
     std::vector<int> active_indices;
-    for (int i = 0; i < static_cast<int>(extents.size()); ++i) {
+    int size = static_cast<int>(extents.size());
+
+    // Traverse from 0 to size-1, find dimensions where extent != 1
+    for (int i = 0; i < size; ++i) {
       if (auto *int_imm = extents[i].as<IntImmNode>()) {
-        // The extent of non-1 is valid
         if (int_imm->value != 1) {
           active_indices.push_back(i);
         }
       } else {
-        // Non-const expression, treat as potentially active
         active_indices.push_back(i);
       }
     }
+
+    // The last dimension must always be included in the result
+    if (size >= 1 &&
+        (active_indices.empty() || active_indices.back() != size - 1)) {
+      active_indices.push_back(size - 1);
+    }
+
+    // Special: If extents.size() >= 2 and active_indices.size() == 1,
+    // insert size-2 at the second-to-last position
+    if (size >= 2 && active_indices.size() == 1) {
+      active_indices.insert(active_indices.begin(), size - 2);
+    }
+
     return active_indices;
   };
 
-  if (src_ndim > 2) {
-    std::vector<int> src_active = find_active_dim_indices(src_extents);
-    if (src_active.size() >= 2) {
-      // if src_active.size > 2, select the last two active dimensions
-      int row_idx = src_active[src_active.size() - 2];
-      int col_idx = src_active.back();
-      validRow_src =
-          compute_valid_extent(src_range[row_idx]->min,
-                               src_range[row_idx]->extent, src->shape[row_idx]);
-      validCol_src =
-          compute_valid_extent(src_range[col_idx]->min,
-                               src_range[col_idx]->extent, src->shape[col_idx]);
-    } else if (src_active.size() == 1) {
-      // if src_active.size = 1, select the last active dimensions
-      int col_idx = src_active[0];
-      validRow_src = Integer(1);
-      validCol_src =
-          compute_valid_extent(src_range[col_idx]->min,
-                               src_range[col_idx]->extent, src->shape[col_idx]);
-    } else {
-      // else use the origin extents last two dimensions
-      validRow_src = compute_valid_extent(src_range[src_ndim - 2]->min,
-                                          src_range[src_ndim - 2]->extent,
-                                          src->shape[src_ndim - 2]);
-      validCol_src = compute_valid_extent(src_range[src_ndim - 1]->min,
-                                          src_range[src_ndim - 1]->extent,
-                                          src->shape[src_ndim - 1]);
-    }
-  } else if (src_ndim == 2) {
-    validRow_src = compute_valid_extent(src_range[src_ndim - 2]->min,
-                                        src_range[src_ndim - 2]->extent,
-                                        src->shape[src_ndim - 2]);
-    validCol_src = compute_valid_extent(src_range[src_ndim - 1]->min,
-                                        src_range[src_ndim - 1]->extent,
-                                        src->shape[src_ndim - 1]);
-  } else if (src_ndim == 1) {
+  PrimExpr validRow_src, validCol_src, validRow_dst, validCol_dst;
+
+  // src: compute validRow and validCol using active dimension indices
+  std::vector<int> src_active = find_active_dim_indices(src_extents);
+  if (src_active.size() >= 2) {
+    int row_idx = src_active[src_active.size() - 2];
+    int col_idx = src_active.back();
+    validRow_src =
+        compute_valid_extent(src_range[row_idx]->min,
+                             src_range[row_idx]->extent, src->shape[row_idx]);
+    validCol_src =
+        compute_valid_extent(src_range[col_idx]->min,
+                             src_range[col_idx]->extent, src->shape[col_idx]);
+  } else if (src_active.size() == 1) {
+    int col_idx = src_active[0];
     validRow_src = Integer(1);
-    validCol_src = compute_valid_extent(src_range[0]->min, src_range[0]->extent,
-                                        src->shape[0]);
+    validCol_src =
+        compute_valid_extent(src_range[col_idx]->min,
+                             src_range[col_idx]->extent, src->shape[col_idx]);
   } else {
     validRow_src = 0;
     validCol_src = 0;
   }
 
-  if (dst_ndim > 2) {
-    std::vector<int> dst_active = find_active_dim_indices(dst_extents);
-    if (dst_active.size() >= 2) {
-      // if dst_active.size > 2, select the last two active dimensions
-      int row_idx = dst_active[dst_active.size() - 2];
-      int col_idx = dst_active.back();
-      validRow_dst =
-          compute_valid_extent(dst_range[row_idx]->min,
-                               dst_range[row_idx]->extent, dst->shape[row_idx]);
-      validCol_dst =
-          compute_valid_extent(dst_range[col_idx]->min,
-                               dst_range[col_idx]->extent, dst->shape[col_idx]);
-    } else if (dst_active.size() == 1) {
-      // if dst_active.size = 1, select the last active dimensions
-      int col_idx = dst_active[0];
-      validRow_dst = Integer(1);
-      validCol_dst =
-          compute_valid_extent(dst_range[col_idx]->min,
-                               dst_range[col_idx]->extent, dst->shape[col_idx]);
-    } else {
-      // else use the origin extents last two dimensions
-      validRow_dst = compute_valid_extent(dst_range[dst_ndim - 2]->min,
-                                          dst_range[dst_ndim - 2]->extent,
-                                          dst->shape[dst_ndim - 2]);
-      validCol_dst = compute_valid_extent(dst_range[dst_ndim - 1]->min,
-                                          dst_range[dst_ndim - 1]->extent,
-                                          dst->shape[dst_ndim - 1]);
-    }
-  } else if (dst_ndim == 2) {
-    validRow_dst = compute_valid_extent(dst_range[dst_ndim - 2]->min,
-                                        dst_range[dst_ndim - 2]->extent,
-                                        dst->shape[dst_ndim - 2]);
-    validCol_dst = compute_valid_extent(dst_range[dst_ndim - 1]->min,
-                                        dst_range[dst_ndim - 1]->extent,
-                                        dst->shape[dst_ndim - 1]);
-  } else if (dst_ndim == 1) {
+  // dst: compute validRow and validCol using active dimension indices
+  std::vector<int> dst_active = find_active_dim_indices(dst_extents);
+  if (dst_active.size() >= 2) {
+    int row_idx = dst_active[dst_active.size() - 2];
+    int col_idx = dst_active.back();
+    validRow_dst =
+        compute_valid_extent(dst_range[row_idx]->min,
+                             dst_range[row_idx]->extent, dst->shape[row_idx]);
+    validCol_dst =
+        compute_valid_extent(dst_range[col_idx]->min,
+                             dst_range[col_idx]->extent, dst->shape[col_idx]);
+  } else if (dst_active.size() == 1) {
+    int col_idx = dst_active[0];
     validRow_dst = Integer(1);
-    validCol_dst = compute_valid_extent(dst_range[0]->min, dst_range[0]->extent,
-                                        dst->shape[0]);
+    validCol_dst =
+        compute_valid_extent(dst_range[col_idx]->min,
+                             dst_range[col_idx]->extent, dst->shape[col_idx]);
   } else {
     validRow_dst = 0;
     validCol_dst = 0;
@@ -453,6 +465,12 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
     new_args.push_back(src->shape[src->shape.size() - 1]);
   }
 
+  if (config.virtual_channel) {
+    new_args.push_back(
+        src->shape[src->shape.size() -
+                   1]); // ub/l0c -> gm need realdstN which is equal to srcN in
+                        // virtural channel scenario
+  }
   // if (config.l12l0) {
   //   ICHECK(src->shape.size() == dst->shape.size());
   //   bool is_extract = false;
@@ -481,9 +499,217 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
   return Evaluate(new_call);
 }
 
+Stmt AscendAtomicAdd::Lower(const LowerArgs &T,
+                            arith::Analyzer *analyzer) const {
+  auto get_dtype = [](const Buffer &buf) -> std::string {
+    auto dtype = buf->dtype;
+    if (dtype.is_float16()) {
+      return "half";
+    } else if (dtype.is_float() && dtype.bits() == 32) {
+      return "float";
+    } else if (dtype.is_int() && dtype.bits() == 8) {
+      return "int8_t";
+    } else if (dtype.is_int() && dtype.bits() == 16) {
+      return "int16_t";
+    } else if (dtype.is_int() && dtype.bits() == 32) {
+      return "int";
+    } else if (dtype.is_int() && dtype.bits() == 64) {
+      return "int64_t";
+    } else if (dtype.is_uint() && dtype.bits() == 8) {
+      return "uint8_t";
+    } else if (dtype.is_uint() && dtype.bits() == 16) {
+      return "uint16_t";
+    } else if (dtype.is_uint() && dtype.bits() == 32) {
+      return "uint32_t";
+    } else if (dtype.is_uint() && dtype.bits() == 64) {
+      return "uint64_t";
+    } else if (dtype.is_bfloat16()) {
+      return "bfloat16_t";
+    }
+    LOG(FATAL) << "Unsupported data type for tl.ascend_atomic_add: " << dtype;
+    return "";
+  };
+
+  auto compute_strideN = [](const Buffer &buf,
+                            const Array<PrimExpr> &extents) -> PrimExpr {
+    PrimExpr strideN = buf->shape[buf->shape.size() - 1];
+    if (extents.size() > 1) {
+      for (int i = extents.size() - 2; i >= 0; --i) {
+        auto *extent = extents[i].as<IntImmNode>();
+        if (!extent || extent->value != 1) {
+          break;
+        }
+        strideN = strideN * buf->shape[i];
+      }
+    }
+    return strideN;
+  };
+
+  auto compute_blocklen = [](const Buffer &buf,
+                             const Array<PrimExpr> &extents) -> PrimExpr {
+    PrimExpr res = buf->shape[buf->shape.size() - 2];
+    auto ext_size = extents.size();
+    if (ext_size > 1 && extents[ext_size - 2]->IsInstance<IntImmNode>() &&
+        res->IsInstance<IntImmNode>()) {
+      auto extent =
+          static_cast<int>(extents[ext_size - 2].as<IntImmNode>()->value);
+      auto shape = static_cast<int>(res.as<IntImmNode>()->value);
+      res = shape < extent ? res : extents[ext_size - 2];
+    }
+    return res;
+  };
+
+  auto build_indices = [](const Array<Range> &range) -> Array<PrimExpr> {
+    Array<PrimExpr> indices;
+    for (size_t i = 0; i < range.size(); i++) {
+      indices.push_back(range[i]->min);
+    }
+    return indices;
+  };
+
+  auto compute_valid_extent = [](PrimExpr min_val, PrimExpr extent,
+                                 PrimExpr shape) -> PrimExpr {
+    PrimExpr remaining = shape - min_val;
+    return Select(remaining >= extent, extent,
+                  Select(remaining > 0, remaining, 0));
+  };
+
+  auto find_active_dim_indices =
+      [](const Array<PrimExpr> &extents) -> std::vector<int> {
+    std::vector<int> active_indices;
+    int size = static_cast<int>(extents.size());
+    for (int i = 0; i < size; ++i) {
+      if (auto *int_imm = extents[i].as<IntImmNode>()) {
+        if (int_imm->value != 1) {
+          active_indices.push_back(i);
+        }
+      } else {
+        active_indices.push_back(i);
+      }
+    }
+    if (size >= 1 &&
+        (active_indices.empty() || active_indices.back() != size - 1)) {
+      active_indices.push_back(size - 1);
+    }
+    if (size >= 2 && active_indices.size() == 1) {
+      active_indices.insert(active_indices.begin(), size - 2);
+    }
+    return active_indices;
+  };
+
+  ICHECK(dst.scope() == "global")
+      << "tl.ascend_atomic_add V1 requires global dst, got " << dst.scope();
+  ICHECK(src.scope() == "shared" || src.scope() == "wmma.accumulator")
+      << "tl.ascend_atomic_add V1 requires UB/shared or L0C/wmma.accumulator "
+         "src, got "
+      << src.scope();
+  ICHECK(src->dtype == dst->dtype)
+      << "tl.ascend_atomic_add requires src and dst dtype to match, got src "
+      << src->dtype << " and dst " << dst->dtype;
+  ICHECK_EQ(src_extents.size(), src->shape.size())
+      << "tl.ascend_atomic_add source region rank must match source buffer "
+         "rank";
+  ICHECK_EQ(dst_extents.size(), dst->shape.size())
+      << "tl.ascend_atomic_add destination region rank must match "
+         "destination buffer rank";
+  ICHECK_EQ(src_extents.size(), dst_extents.size())
+      << "tl.ascend_atomic_add requires src and dst regions to have the same "
+         "rank, got src "
+      << src_extents.size() << " and dst " << dst_extents.size();
+
+  std::stringstream ss;
+  if (src.scope() == "shared") {
+    ss << "tl::ascend::atomic_add_ub_to_gm<";
+    ss << get_dtype(dst) << ", " << src_extents[src->shape.size() - 1];
+    if (src->shape.size() > 1) {
+      ss << ", " << compute_blocklen(src, src_extents);
+    }
+    ss << ">";
+  } else if (src.scope() == "wmma.accumulator") {
+    ss << "tl::ascend::atomic_add_l0c_to_gm<";
+    ss << get_dtype(src) << ", " << get_dtype(dst) << ", "
+       << (T.layout_map.count(src) ? T.layout_map[src]->AscendLayoutStr()
+                                   : "layout::RowMajor");
+    if (src->shape.size() > 1) {
+      ss << ", " << compute_blocklen(src, src_extents) << ", "
+         << src_extents[src->shape.size() - 1];
+    } else {
+      ss << ", 1, " << src_extents[src->shape.size() - 1];
+    }
+    ss << ">";
+  }
+
+  auto src_indices = build_indices(src_range);
+  auto dst_indices = build_indices(dst_range);
+  auto src_new_indices = T.layout_map.count(src)
+                             ? T.layout_map[src]->Forward(src_indices)
+                             : src_indices;
+  auto dst_new_indices = T.layout_map.count(dst)
+                             ? T.layout_map[dst]->Forward(dst_indices)
+                             : dst_indices;
+
+  auto src_new_buffer = T.buffer_remap.count(src) ? T.buffer_remap[src] : src;
+  auto dst_new_buffer = T.buffer_remap.count(dst) ? T.buffer_remap[dst] : dst;
+
+  PrimExpr src_len = 1;
+  for (auto &shape : src_extents) {
+    src_len *= shape;
+  }
+  PrimExpr dst_len = 1;
+  for (auto &shape : dst_extents) {
+    dst_len *= shape;
+  }
+
+  auto src_ptr = src_new_buffer.access_ptr(
+      1, src_new_buffer->dtype, 1,
+      src_new_buffer.OffsetOf(src_new_indices).back(), src_len);
+  auto dst_ptr = dst_new_buffer.access_ptr(
+      2, dst_new_buffer->dtype, 1,
+      dst_new_buffer.OffsetOf(dst_new_indices).back(), dst_len);
+
+  PrimExpr validRow_dst, validCol_dst;
+  std::vector<int> dst_active = find_active_dim_indices(dst_extents);
+  if (dst_active.size() >= 2) {
+    int row_idx = dst_active[dst_active.size() - 2];
+    int col_idx = dst_active.back();
+    validRow_dst =
+        compute_valid_extent(dst_range[row_idx]->min,
+                             dst_range[row_idx]->extent, dst->shape[row_idx]);
+    validCol_dst =
+        compute_valid_extent(dst_range[col_idx]->min,
+                             dst_range[col_idx]->extent, dst->shape[col_idx]);
+  } else if (dst_active.size() == 1) {
+    int col_idx = dst_active[0];
+    validRow_dst = Integer(1);
+    validCol_dst =
+        compute_valid_extent(dst_range[col_idx]->min,
+                             dst_range[col_idx]->extent, dst->shape[col_idx]);
+  } else {
+    validRow_dst = Integer(0);
+    validCol_dst = Integer(0);
+  }
+
+  Array<PrimExpr> new_args;
+  new_args.push_back(StringImm(ss.str()));
+  new_args.push_back(src_ptr);
+  new_args.push_back(dst_ptr);
+  new_args.push_back(compute_strideN(dst, dst_extents));
+  new_args.push_back(validRow_dst);
+  new_args.push_back(validCol_dst);
+
+  auto new_call = Call(DataType::Handle(), builtin::call_extern(), new_args);
+  return Evaluate(new_call);
+}
+
 LayoutMap AscendCopy::InferLayout(const LayoutInferArgs &T, InferLevel level) {
   LayoutMap results;
   // TODO: add logic to infer layout for AscendCopy
+  return results;
+}
+
+LayoutMap AscendAtomicAdd::InferLayout(const LayoutInferArgs &T,
+                                       InferLevel level) {
+  LayoutMap results;
   return results;
 }
 
@@ -491,6 +717,13 @@ TIR_REGISTER_TL_OP(AscendCopy, ascend_copy)
     .set_num_inputs(2)
     .set_attr<TCallEffectKind>("TCallEffectKind",
                                Integer(CallEffectKind::kOpaque));
+
+TIR_REGISTER_TL_OP(AscendAtomicAdd, ascend_atomic_add)
+    .set_num_inputs(2)
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
+
+const Op &ascend_atomic_add() { return AscendAtomicAdd::Get(); }
 
 TIR_DEFINE_TL_BUILTIN(ascend_add)
     .set_num_inputs(4)
@@ -622,6 +855,11 @@ TIR_DEFINE_TL_BUILTIN(ascend_leaky_relu)
 
 TIR_DEFINE_TL_BUILTIN(ascend_axpy)
     .set_num_inputs(5)
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
+
+TIR_DEFINE_TL_BUILTIN(ascend_mul_add_dst)
+    .set_num_inputs(4)
     .set_attr<TCallEffectKind>("TCallEffectKind",
                                Integer(CallEffectKind::kOpaque));
 
@@ -877,6 +1115,11 @@ TIR_DEFINE_TL_BUILTIN(ascend_mma)
 
 TIR_DEFINE_TL_BUILTIN(ascend_sigmoid)
     .set_num_inputs(4)
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
+
+TIR_DEFINE_TL_BUILTIN(ascend_silu)
+    .set_num_inputs(3)
     .set_attr<TCallEffectKind>("TCallEffectKind",
                                Integer(CallEffectKind::kOpaque));
 

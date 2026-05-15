@@ -54,7 +54,7 @@ design.md 可能很长，**只提取以下字段，忽略其余内容**：
 | 归约运算（reduce_sum/max/min） | `examples/reduce/` |
 | 归一化（softmax/layernorm/rmsnorm） | `examples/softmax/`、`examples/normalization/` |
 | GEMM | `examples/gemm/`、`examples/developer_mode/gemm_developer.py` |
-| 融合算子 | `examples/flash_attention/` |
+| 融合算子 | `examples/flash_attention/`、`examples/pipeline/`、`examples/developer_mode/matmul_add_developer.py` |
 | Developer 模式 | `examples/developer_mode/` |
 
 查阅示例时关注：
@@ -62,6 +62,7 @@ design.md 可能很长，**只提取以下字段，忽略其余内容**：
 2. **Buffer 分配方式**：shape 和 dtype
 3. **pass_configs 配置**：该类算子实际使用哪些开关
 4. **数据搬运**：`T.copy` 的索引写法
+5. **workspace 配置**（融合算子）：workspace_idx、数量、shape
 
 ---
 
@@ -73,7 +74,31 @@ design.md 可能很长，**只提取以下字段，忽略其余内容**：
 
 ### 步骤 2：查找参考示例
 
-在 `examples/` 中找到最相似的算子实现，**完整阅读其代码**。
+在 `examples/` 中找到最相似的算子实现，**完整阅读其代码并记录技术决策**：
+
+**必须记录的技术决策**（从参考实现中提取）：
+
+| 决策项 | 示例值 | 说明 |
+|--------|--------|------|
+| 内存层级 API | `alloc_L1/L0C/ub`（显式）或 `alloc_shared/fragment`（自动） | 决定内存分配方式 |
+| 同步策略 | 手动 `barrier_all/set_flag` 或自动同步 | 决定同步代码 |
+| pass_configs | `AUTO_SYNC: True`，融合算子需 `AUTO_CV_COMBINE: True + AUTO_CV_SYNC: True` | 决定 JIT 配置 |
+| 核分离方式 | `T.Scope("C"/"V")` 或无显式分离 | 决定核间协作方式 |
+| workspace 配置（融合算子） | `{数量: 3, shape: [block_num, block_M, block_N], idx: [4,5,6]}` | 决定 workspace 参数 |
+
+**对比差异分析**（如有 design.md）：
+
+| 项目 | design.md 方案 | 参考实现方案 | 选择理由 |
+|------|---------------|-------------|---------|
+| 内存层级 API | | | |
+| 同步策略 | | | |
+| pass_configs | | | |
+| workspace 配置 ⭐ | | | |
+
+**冲突处理**：当 design.md 与参考实现冲突时：
+- **优先参考实现**：参考实现已验证通过，可信度高
+- **记录差异**：在代码注释中说明为何偏离 design.md
+- **询问用户**：重大差异需确认
 
 ### 步骤 3：生成实现代码
 
@@ -122,6 +147,10 @@ if __name__ == "__main__":
     print("All tests passed!")
 ```
 
+**融合算子注意事项**：
+- 函数签名需包含 workspace 参数，`workspace_idx` 指定索引位置
+- Cube 核输出通过 `T.copy` 写入 workspace，Vector 核从 workspace 读取
+
 ### 步骤 4：运行验证
 
 ```bash
@@ -133,9 +162,69 @@ python examples/{op}/example_{op}.py
 2. **运行错误** → 检查索引越界、同步缺失
 3. **精度错误** → 检查计算公式、数据类型、容差设置
 
+### 步骤 5：校验原有实现正确性
+
+**生成代码前必须先用默认参数跑通原有实现**，确认 baseline 正确后再扩展新功能/测试。
+
+```bash
+python examples/{op}/example_{op}.py  # 确认默认参数通过
+```
+
+### 步骤 6：设计测试用例的覆盖原则
+
+测试用例必须覆盖以下 4 类场景：
+
+| 类别 | 场景 | 说明 |
+|------|------|------|
+| 完美对齐 | M/N/K 均为 block 大小整数倍 | 验证零 padding 路径 |
+| 单维 padding | 仅 M 或 N 或 K 不足 block 大小时 | 验证单边 padding+裁剪 |
+| 全维 padding | M/N/K 同时需要 padding | 验证组合 padding |
+| 多 block | 维度数倍于 block 大小 | 验证多 block 并行正确性 |
+
+### 步骤 7：函数解耦全局变量
+
+为实现多场景顺序测试，算子函数应**从 tensor shape 自推导所有维度参数**，而非依赖模块级全局变量：
+
+```python
+# ✅ 推荐：从 tensor 自推导
+def conv_im2col_gemm(input_tensor, kernel, stride=1, padding=0):
+    B, C, H, W = input_tensor.shape
+    OC, C_k, KH, KW = kernel.shape
+
+# ❌ 避免：依赖全局变量
+def conv_im2col_gemm(...):
+    C = globals()['C']  # 多测试场景会互相污染
+```
+
 ---
 
 ## 4. 关键编码规范
+
+### GEMM 算子：非整除维度处理
+
+GEMM kernel 内部使用 `M // block_M` 和 `N // block_N`，要求 M、N 为 block 大小整数倍。非整除时需在调用的 Python 层 zero-padding 后裁剪：
+
+```python
+# padding
+M_pad = ((M + block_M - 1) // block_M) * block_M
+N_pad = ((N + block_N - 1) // block_N) * block_N
+K_pad = ((K + block_K - 1) // block_K) * block_K
+
+if M_pad > M or K_pad > K:
+    kernel_padded = torch.zeros(M_pad, K_pad, ...)
+    kernel_padded[:M, :K] = kernel_flat
+
+# GEMM 后裁剪
+output = output[:M, :N]
+```
+
+**关键约束**: 不 padding 时 `M // block_M = 0`（当 M < block_M）会导致零 block 启动（输出全零）或除零编译崩溃。
+
+### Autotune 算子: supply_prog 与 get_configs 接口约定
+
+- **`supply_prog(params)`**: `params` 仅含输入 tensor 描述符（不含输出 param）。从 `params[0].shape` / `params[1].shape` 提取维度，不可访问 `params[2]`。
+- **`get_configs` 作为 callable**: autotuner 调用形式为 `get_configs(key_args_tuple, key_kwargs_tuple)`，须签名为 `get_configs(key_args, _key_kwargs=None)`，从 `key_args` 提取 M/N/K。
+- **config 过滤**: 必须在 `get_configs` 中过滤 `block > dimension` 的无效组合（避免除零编译错误），及 `block_M * block_N * sizeof(accum) > L0C_capacity` 的组合（避免 L0C 溢出 segfault）。
 
 ### Buffer 分配
 
@@ -194,6 +283,8 @@ torch.testing.assert_close(output.cpu(), ref_output.cpu(), rtol=rtol, atol=atol)
 
 生成代码后逐项检查：
 
+### 基础检查
+
 | # | 检查项 |
 |---|--------|
 | 1 | `out_idx` 与函数签名中的输出参数位置一致 |
@@ -203,3 +294,22 @@ torch.testing.assert_close(output.cpu(), ref_output.cpu(), rtol=rtol, atol=atol)
 | 5 | Developer 模式有对应的 `pass_configs` |
 | 6 | 测试包含至少 2 个配置（小规模 + 典型规模） |
 | 7 | golden 函数使用 PyTorch 标准实现 |
+
+### 融合算子检查
+
+| # | 检查项 | 说明 |
+|---|--------|------|
+| 8 | **workspace_idx 与函数签名一致** | workspace 参数位置正确 |
+| 9 | **AUTO_CV_COMBINE / AUTO_CV_SYNC 配置** | Developer 模式需开启 |
+| 10 | **Cube → workspace → Vector 数据流正确** | T.copy 搬运路径完整 |
+| 11 | **核分离方式与 pass_configs 匹配** | Developer 模式无需显式 T.Scope |
+
+### 融合算子常见错误排查
+
+| 错误类型 | 排查方向 |
+|---------|---------|
+| workspace 未正确搬运 | 检查 Cube 输出 T.copy 和 Vector 输入 T.copy 的索引 |
+| 核间同步缺失 | 检查 AUTO_CV_SYNC 是否开启，或手动同步是否正确 |
+| workspace shape 不匹配 | 检查 block_num 计算是否正确 |
+| 核分离方式错误 | Developer + 自动同步模式应无显式 T.Scope("C"/"V") |
+| 精度误差超过 1% | 优先检查内存层级 API 选择和 pass_configs 配置 |

@@ -552,6 +552,8 @@ fragment层级的存储对应偏上的寄存器级别的存储单元，一般用
 | UB   | UB   | 数据从Unified Buffer搬运到Unified Buffer          |
 | UB   | L1   | 数据从Unified Buffer搬运到L1 Buffer               |
 
+`T.tile.atomic_add(dst_gm, src_local)` 是 Ascend 专属的原子累加写回原语。它不是普通 `T.copy`，而是在 local tensor 到 GM 的写回过程中执行原子累加，适合多个 block/core 将 partial result 累加到同一 GM 输出的场景。若业务语义是从 0 开始累加，调用前或 kernel 内需要先清零 GM 输出。
+
 #### 4.1.3 计算原语
 
 ##### 4.1.3.1 矩阵计算
@@ -811,11 +813,11 @@ TileLang提供了多种元素级操作算符，并结合调度原语**T.Parallel
 
 
 
-#### 4.1.2 调度原语
+#### 4.1.4 调度原语
 
-##### 4.1.2.1 T.Parallel
+##### 4.1.4.1 T.Parallel
 
-###### 4.1.2.1.1 功能介绍
+###### 4.1.4.1.1 功能介绍
 
 在TileLang中，`T.Parallel` 是用于表达Tile内元素级并行计算的基本原语。在IR层面，它抽象出表示数据并行语义的并行循环，同时隐藏硬件细节，从而简化内核开发并提高其可移植性。
 
@@ -846,7 +848,7 @@ TileLang提供了多种元素级操作算符，并结合调度原语**T.Parallel
   - 向量原语被包装为 T.tile.xxx 形式
   - 用户可以灵活选择使用带有`T.Parallel`的符号化API（例如 +、*、T.max 等）或显式的向量内联函数（例如 `T.tile.add` 等）。
 
-###### 4.1.2.1.2 语法格式
+###### 4.1.4.1.2 语法格式
 
 下面重点介绍`T.Parallel`的语法格式。
 
@@ -890,7 +892,7 @@ TileLang提供了多种元素级操作算符，并结合调度原语**T.Parallel
 
   目前，临时缓冲区的大小将与Tile大小相同。因此，我们强烈建议开启自动缓冲区复用功能，以避免空间浪费。
 
-###### 4.1.2.1.3 使用场景
+###### 4.1.4.1.3 使用场景
 
 - 单目操作
 
@@ -942,7 +944,7 @@ TileLang提供了多种元素级操作算符，并结合调度原语**T.Parallel
       c_ub[i, j] = b_ub[j] + 5 # b_ud is 1d and c_ub is 2d
   ``` 
 
-###### 4.1.2.1.4 两种编程范式的说明
+###### 4.1.4.1.4 两种编程范式的说明
 
 在Ascend平台上，对于Tile级别的操作，`T.Parallel`和`T.tile.xxx`两种编程范式都支持。
 
@@ -978,13 +980,13 @@ TileLang提供了多种元素级操作算符，并结合调度原语**T.Parallel
           T.copy(b_ub, B)
   ```
 
-##### 4.1.2.2 T.Pipelined
+##### 4.1.4.2 T.Pipelined
 
-###### 4.1.2.2.1 功能介绍
+###### 4.1.4.2.1 功能介绍
 
 `T.pipelined` 是 TileLang中的一个高级抽象，旨在表达和优化 Ascend AI 加速器上的流水线并行计算。它能够实现细粒度的计算重叠、单核内（intra-core）的内存访问重叠，以及多核之间（inter-core）的跨执行同步。
 
-###### 4.1.2.2.2 语法格式
+###### 4.1.4.2.2 语法格式
 
 **语法格式**：
 
@@ -994,7 +996,7 @@ for var in T.Pipelined(range: int, num_stages: int):
 
 假设某些操作需要循环迭代执行，该语句能够为这些循环内的操作开启流水线，通过设置`num_stages`的不同取值（`num_stages`是一个小于`range-1`的正整数）来控制重叠度。
 
-###### 4.1.2.2.2 使用场景
+###### 4.1.4.2.3 使用场景
 
 - **Intra-core case**
 
@@ -1087,13 +1089,13 @@ Cube和Vector的操作在t1~t3之间存在相互重叠。
 - 核间流水线与核内流水线不能同时开启。
 - 使用核间流水线时，必须开启自动CV分离和自动CV间同步插入功能：`"tl.ascend_auto_cv_combine": True, "tl.ascend_auto_cross_core_sync": True`
 
-##### 4.1.2.3 T.Persistent
+##### 4.1.4.3 T.Persistent
 
-###### 4.1.2.3.1 功能介绍
+###### 4.1.4.3.1 功能介绍
 
 通常情况下，大的数据会被切分成多个小的块来处理，但对这些数据块的调度处理不同可能带来的性能也会不同。例如，如果这些数据块是分批次来调度，即一组相邻的数据块交由相同的AI core来处理，这样让加载的数据更容易命中缓存；相反，如果随机调度，则会导致缓存数据的反复换入换出，从而导致cache带宽的浪费。T.Persistent原语就是通过对数据块在AI core间的调度策略进行了优化处理，从而对缓存更友好。
 
-4.1.2.3.2 使用举例
+###### 4.1.4.3.2 使用举例
 
 ```
 with T.Kernel(m_num * n_num, is_npu=True) as (cid, _):
@@ -1111,6 +1113,43 @@ with T.Kernel(m_num * n_num, is_npu=True) as (cid, _):
             T.copy(C_L0, C[bx * block_M, by * block_N])
      ...
 ```
+ 
+#### 4.1.5 CV分离
+
+##### 4.1.5.1 Vid消除与CV自动配比
+
+参数`threads`必须被设置（只允许设置1或2），当设置了`threads`参数返回值只能包含cid，不能有vid：
+
+```python
+with T.Kernel(m_num * n_num, threads=2, is_npu=True) as (cid):
+```
+
+因此ub申请核传递不在需要考虑内核排布，前端的写法如下：
+
+```python
+# UB申请原始形式
+c_ub = T.alloc_shared((block_M // VEC_NUM, block_N), dtype) 
+# vid消除后的新形式
+c_ub = T.alloc_shared((block_M, block_N), dtype)
+# UB拷贝原始形式
+T.copy(c_ub, C[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
+# vid消除后的新形式
+T.copy(c_ub, C[bx * block_M, by * block_N])
+# for循环原始形式
+for h_i, j in T.Parallel(v_block // VEC_NUM, BI):
+    acc_s_ub[h_i, j] = acc_s_ub[h_i, j] - m_i[h_i]
+# vid消除后的新形式
+for h_i, j in T.Parallel(v_block, BI):
+    acc_s_ub[h_i, j] = acc_s_ub[h_i, j] - m_i[h_i]
+
+```
+
+这里有些例子:
+- [MatmulAddDeveloper](./examples/developer_mode/matmul_add_developer.py)
+- [SparseFlashAttnDeveloperVidReduce](./examples/developer_mode/sparse_flash_attn_developer_vid_reduce.py)
+
+更多的细节，可以参考:
+- [vid_reduction_and_auto_cv_ratio.md](./docs/tutorials/vid_reduction_and_auto_cv_ratio.md)
 
 ### 4.2 Expert模式
 
@@ -1246,6 +1285,7 @@ Expert编程模式可以复用Developer模式的Reduce类计算原语。
 | 异或       | T.tile.bitwise_xor(dst, src0, src1)      | element-wise bitwise XOR，dst = src0 ^ src1                  |
 | 左移       | T.tile.bitwise_lshift(dst, src0, scalar) | element-wise 左移操作                                        |
 | 右移       | T.tile.bitwise_rshift(dst, src0, scalar) | element-wise 右移操作                                        |
+| 原子累加   | T.tile.atomic_add(dst, src)              | 将本地 tensor 原子累加到 GM，V1 支持 UB → GM 和 L0C -> GM        |
 
 **(1) 基础算术**
 
@@ -1960,8 +2000,47 @@ Expert编程模式可以复用Developer模式的Reduce类计算原语。
   **举例**：
 
   ```
-  T.tile.clear(ub)；
+  T.tile.clear(ub);
   ```
+
+###### 4.1.3.2.11 原子操作
+
+- `T.tile.atomic_add(dst, src):`
+
+  **参数**：
+
+  - dst：GM 目标 buffer、buffer load 或 region
+  - src：本地 tensor，当前支持 UB/shared buffer 和 L0C/fragment buffer 
+
+  **功能**：将本地 tensor tile 原子累加到 GM 目标区域。该接口是 Ascend 专属的 `T.tile` 原语，不等价于主仓 GPU 风格的全局 `T.atomic_add`。V1 只支持 local/UB 到 GM 的原子累加，不支持 `return_prev`、`memory_order`、`use_tma`、常量 src 或任意表达式 src。
+
+  底层会生成 Ascend C 的 DMA atomic add 语义：开启 `SetAtomicAdd<T>()`，执行 local 到 GM 的 `DataCopyPad`，再通过兼容 helper 关闭 atomic 状态。CANN 9.x 使用 `DisableDmaAtomic()`，CANN 8.5 走 `SetAtomicNone()`。
+
+  **举例**：
+
+  - UB -> GM
+  ```python
+  pass_configs = {
+      tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
+      tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
+  }
+
+  src_ub = T.alloc_ub((tile_n,), "float32")
+  T.tile.fill(src_ub, 1.0)
+  T.tile.atomic_add(C[0], src_ub)
+  ```
+  
+  - L0C -> GM
+  ```python
+  src_l0c = T.alloc_L0C((block_M, block_N), dtype)
+  T.gemm_v0(..., ..., src_l0c, init=True)
+  T.tile.atomic_add(C[..., ...], src_l0c)
+  ```
+
+  **注意事项**：
+
+  - 如果期望结果从 0 开始累加，调用 kernel 前或 kernel 内必须先清零 GM 输出。
+  - 该接口可在 Developer pass_configs 下按混合模式使用，不要求额外手写 `T.Scope("V")` 或 `T.barrier_all()`。
 
 #### 4.1.4 同步原语
 

@@ -17,6 +17,7 @@ Tile Language Ascend (**tilelang-ascend**) is a specialized variant of the tile-
 </p>
 
 ## Latest News
+- 04/24/2026 🚀: Released DeepSeek V4 kernels [DeepSeek-V4](./examples/deepseek_v4/)
 - 03/28/2026 🚀: Released high-performance [Flash Attention](./examples/flash_attention/) & [Sparse Flash Attention](./examples/sparse_flash_attention/) benchmark and optimization guide, see [PR#698](https://github.com/tile-ai/tilelang-ascend/pull/698) and [PR#665](https://github.com/tile-ai/tilelang-ascend/pull/665).
 - 03/16/2026 🚀: Introduced [wheel package installation](https://github.com/tile-ai/tilelang-ascend?tab=readme-ov-file#installation), enabling easy setup via `pip install`!
 - 03/12/2026 ✨: New [ACLGraph](./examples/aclgraph/) integration example for graph-level optimization on Ascend NPU.
@@ -612,11 +613,18 @@ c_ub = T.alloc_shared((block_M, block_N), dtype)
 T.copy(c_ub, C[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
 # New form after UB transport elimination
 T.copy(c_ub, C[bx * block_M, by * block_N])
+# for loop original form
+for h_i, j in T.Parallel(v_block // VEC_NUM, BI):
+    acc_s_ub[h_i, j] = acc_s_ub[h_i, j] - m_i[h_i]
+# New form after UB transport elimination
+for h_i, j in T.Parallel(v_block, BI):
+    acc_s_ub[h_i, j] = acc_s_ub[h_i, j] - m_i[h_i]
 
 ```
 
-Here is an example:
+Here is some examples:
 - [MatmulAddDeveloper](./examples/developer_mode/matmul_add_developer.py)
+- [SparseFlashAttnDeveloperVidReduce](./examples/developer_mode/sparse_flash_attn_developer_vid_reduce.py)
 
 For a more detailed feature introduction, please see:
 - [vid_reduction_and_auto_cv_ratio.md](./docs/tutorials/vid_reduction_and_auto_cv_ratio.md)

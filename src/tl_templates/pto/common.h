@@ -4,6 +4,12 @@
 #ifdef __CCE_AICORE__
 #define CUDART_INF_F 1.0f / 0.0f
 
+#ifdef PTO_PLATFORM_A5
+#define TL_PIPE_V_BARRIER() ((void)0)
+#else
+#define TL_PIPE_V_BARRIER() pipe_barrier(PIPE_V)
+#endif
+
 namespace tl::ascend_pto {
 
 template <typename T, int Rows, int Cols, int RowValid = Rows,
@@ -18,11 +24,19 @@ using TileMatL1ZN = pto::Tile<pto::TileType::Mat, T, Rows, Cols,
                               pto::BLayout::RowMajor, RowValid, ColValid,
                               pto::SLayout::ColMajor, 512, pto::PadValue::Zero>;
 
+#ifdef PTO_PLATFORM_A5
+template <typename T, int Rows, int Cols, int RowValid = Rows,
+          int ColValid = Cols>
+using TileMatL0A = pto::Tile<pto::TileType::Left, T, Rows, Cols,
+                             pto::BLayout::ColMajor, RowValid, ColValid,
+                             pto::SLayout::RowMajor, 512, pto::PadValue::Zero>;
+#else
 template <typename T, int Rows, int Cols, int RowValid = Rows,
           int ColValid = Cols>
 using TileMatL0A = pto::Tile<pto::TileType::Left, T, Rows, Cols,
                              pto::BLayout::RowMajor, RowValid, ColValid,
                              pto::SLayout::RowMajor, 512, pto::PadValue::Zero>;
+#endif
 
 template <typename T, int Rows, int Cols, int RowValid = Rows,
           int ColValid = Cols>
@@ -322,7 +336,7 @@ AICORE PTO_INLINE void copy_gm_to_ub_dynamic(
         wait_flag(PIPE_V, PIPE_MTE2, EVENT_ID0);
         set_flag(PIPE_V, PIPE_MTE3, EVENT_ID0);
         wait_flag(PIPE_V, PIPE_MTE3, EVENT_ID0);
-        pipe_barrier(PIPE_V);
+        TL_PIPE_V_BARRIER();
       }
     }
   } else {
@@ -483,7 +497,7 @@ AICORE PTO_INLINE void copy_gm_to_ub(__gm__ T1 *handle, int32_t ub_shape_addr,
         wait_flag(PIPE_V, PIPE_MTE2, EVENT_ID0);
         set_flag(PIPE_V, PIPE_MTE3, EVENT_ID0);
         wait_flag(PIPE_V, PIPE_MTE3, EVENT_ID0);
-        pipe_barrier(PIPE_V);
+        TL_PIPE_V_BARRIER();
       }
     }
   } else {
@@ -624,11 +638,11 @@ AICORE PTO_INLINE void
 TSIGMOID(TileUbDataND<T, row, col, row, col> &dst_addr,
          TileUbDataND<T, row, col, row, col> &src0_addr) {
   TMULS(src0_addr, src0_addr, -1);
-  pipe_barrier(PIPE_V);
+  TL_PIPE_V_BARRIER();
   TEXP(src0_addr, src0_addr);
-  pipe_barrier(PIPE_V);
+  TL_PIPE_V_BARRIER();
   TADDS(src0_addr, src0_addr, 1);
-  pipe_barrier(PIPE_V);
+  TL_PIPE_V_BARRIER();
   TRECIP(dst_addr, src0_addr);
 }
 
@@ -637,9 +651,9 @@ AICORE PTO_INLINE void axpy(TileUbDataND<T, row, col, row, col> &dst,
                             TileUbDataND<T, row, col, row, col> &src0,
                             float scalar_value) {
   TMULS(src0, src0, static_cast<T>(scalar_value));
-  pipe_barrier(PIPE_V);
+  TL_PIPE_V_BARRIER();
   TADD(dst, dst, src0);
-  pipe_barrier(PIPE_V);
+  TL_PIPE_V_BARRIER();
   TMULS(src0, src0, static_cast<T>(1.0f / scalar_value));
 }
 
@@ -753,9 +767,9 @@ pow(TileUbDataND<T, row, col, row, col> &dst,
     TileUbDataND<T, row, col, row, col> &src0,
     TileUbDataND<T, row, col, row, col> &src1) {
   TLOG(src0, src0);
-  pipe_barrier(PIPE_V);
+  TL_PIPE_V_BARRIER();
   TMUL(dst, src0, src1);
-  pipe_barrier(PIPE_V);
+  TL_PIPE_V_BARRIER();
   TEXP(dst, dst);
 }
 
@@ -912,7 +926,7 @@ MergeSort(TileUbDataND<T, 1, DstCols, 1, DstCols> &dst,
                 TileUbDataND<T, 1, SrcCols, 1, SrcCols>,
                 TileUbDataND<T, 1, SrcCols, 1, SrcCols>, false>(
       dst, executedNumList, tmp, src0, src1);
-  pipe_barrier(PIPE_V);
+  TL_PIPE_V_BARRIER();
 }
 
 // 3-way merge sort
@@ -931,7 +945,7 @@ MergeSort(TileUbDataND<T, 1, DstCols, 1, DstCols> &dst,
                 TileUbDataND<T, 1, SrcCols, 1, SrcCols>,
                 TileUbDataND<T, 1, SrcCols, 1, SrcCols>, false>(
       dst, executedNumList, tmp, src0, src1, src2);
-  pipe_barrier(PIPE_V);
+  TL_PIPE_V_BARRIER();
 }
 
 // 4-way merge sort
@@ -952,7 +966,392 @@ MergeSort(TileUbDataND<T, 1, DstCols, 1, DstCols> &dst,
                 TileUbDataND<T, 1, SrcCols, 1, SrcCols>,
                 TileUbDataND<T, 1, SrcCols, 1, SrcCols>, false>(
       dst, executedNumList, tmp, src0, src1, src2, src3);
-  pipe_barrier(PIPE_V);
+  TL_PIPE_V_BARRIER();
+}
+
+// 2-way merge sort with asymmetric source sizes (used by Sort recursion).
+template <typename T, int32_t Src0Cols, int32_t Src1Cols, int32_t DstCols>
+AICORE PTO_INLINE void
+MergeSortVar(TileUbDataND<T, 1, DstCols, 1, DstCols> &dst,
+             TileUbDataND<T, 1, DstCols, 1, DstCols> &tmp,
+             TileUbDataND<T, 1, Src0Cols, 1, Src0Cols> &src0,
+             TileUbDataND<T, 1, Src1Cols, 1, Src1Cols> &src1) {
+  pto::MrgSortExecutedNumList executedNumList;
+  pto::TMRGSORT<TileUbDataND<T, 1, DstCols, 1, DstCols>,
+                TileUbDataND<T, 1, DstCols, 1, DstCols>,
+                TileUbDataND<T, 1, Src0Cols, 1, Src0Cols>,
+                TileUbDataND<T, 1, Src1Cols, 1, Src1Cols>, false>(
+      dst, executedNumList, tmp, src0, src1);
+  TL_PIPE_V_BARRIER();
+}
+
+// 3-way merge sort with asymmetric source sizes.
+template <typename T, int32_t Src0Cols, int32_t Src1Cols, int32_t Src2Cols,
+          int32_t DstCols>
+AICORE PTO_INLINE void
+MergeSortVar(TileUbDataND<T, 1, DstCols, 1, DstCols> &dst,
+             TileUbDataND<T, 1, DstCols, 1, DstCols> &tmp,
+             TileUbDataND<T, 1, Src0Cols, 1, Src0Cols> &src0,
+             TileUbDataND<T, 1, Src1Cols, 1, Src1Cols> &src1,
+             TileUbDataND<T, 1, Src2Cols, 1, Src2Cols> &src2) {
+  pto::MrgSortExecutedNumList executedNumList;
+  pto::TMRGSORT<TileUbDataND<T, 1, DstCols, 1, DstCols>,
+                TileUbDataND<T, 1, DstCols, 1, DstCols>,
+                TileUbDataND<T, 1, Src0Cols, 1, Src0Cols>,
+                TileUbDataND<T, 1, Src1Cols, 1, Src1Cols>,
+                TileUbDataND<T, 1, Src2Cols, 1, Src2Cols>, false>(
+      dst, executedNumList, tmp, src0, src1, src2);
+  TL_PIPE_V_BARRIER();
+}
+
+// 4-way merge sort with asymmetric source sizes.
+template <typename T, int32_t Src0Cols, int32_t Src1Cols, int32_t Src2Cols,
+          int32_t Src3Cols, int32_t DstCols>
+AICORE PTO_INLINE void
+MergeSortVar(TileUbDataND<T, 1, DstCols, 1, DstCols> &dst,
+             TileUbDataND<T, 1, DstCols, 1, DstCols> &tmp,
+             TileUbDataND<T, 1, Src0Cols, 1, Src0Cols> &src0,
+             TileUbDataND<T, 1, Src1Cols, 1, Src1Cols> &src1,
+             TileUbDataND<T, 1, Src2Cols, 1, Src2Cols> &src2,
+             TileUbDataND<T, 1, Src3Cols, 1, Src3Cols> &src3) {
+  pto::MrgSortExecutedNumList executedNumList;
+  pto::TMRGSORT<TileUbDataND<T, 1, DstCols, 1, DstCols>,
+                TileUbDataND<T, 1, DstCols, 1, DstCols>,
+                TileUbDataND<T, 1, Src0Cols, 1, Src0Cols>,
+                TileUbDataND<T, 1, Src1Cols, 1, Src1Cols>,
+                TileUbDataND<T, 1, Src2Cols, 1, Src2Cols>,
+                TileUbDataND<T, 1, Src3Cols, 1, Src3Cols>, false>(
+      dst, executedNumList, tmp, src0, src1, src2, src3);
+  TL_PIPE_V_BARRIER();
+}
+
+// ============================================================================
+// Full Sort / TopK: device-side template implementation
+// ============================================================================
+//
+// Layout in tmp (interpreted as float):
+//   bufA: tmp[0 .. 2N)         sort32 output / ping-pong A
+//   bufB: dst (float full sort) OR tmp[2N .. 4N) (half OR topk)
+//   bufC: tmp[2N .. 4N) when bufB == dst; tmp[4N .. 6N) when bufB lives in tmp
+//
+// Indices live in bufB low half before sort32 consumes them. For half input,
+// the casted float source lives in bufB high half before sort32. Both regions
+// are then free for use as bufB ping-pong during the merge tree.
+
+namespace sort_detail {
+
+// All constexpr helpers below are tagged AICORE so the CCE compiler lets
+// them be called from [aicore]-attributed templates. They're still pure
+// compile-time computations -- the attribute is purely a visibility hint.
+
+// Length of the i-th segment in a level given (NumSegs, FullSize, LastSize).
+// Returns 0 when i is out of range so callers can use a uniform 4-element
+// length tuple.
+AICORE constexpr int32_t seg_length(int32_t num_segs, int32_t full_size,
+                                    int32_t last_size, int32_t i) {
+  if (i >= num_segs)
+    return 0;
+  if (i == num_segs - 1)
+    return last_size;
+  return full_size;
+}
+
+// Length of the (single) last segment after one level of up-to-4-way merging.
+AICORE constexpr int32_t next_last_size(int32_t num_segs, int32_t full_size,
+                                        int32_t last_size) {
+  int32_t last_group_start = ((num_segs - 1) / 4) * 4;
+  int32_t last_group_count = num_segs - last_group_start;
+  return (last_group_count - 1) * full_size + last_size;
+}
+
+// Length of a "full" segment after one level. If only one segment remains
+// after this level (tree converged) "full" equals the single remaining size.
+AICORE constexpr int32_t next_full_size(int32_t num_segs, int32_t full_size,
+                                        int32_t last_size) {
+  int32_t new_num = (num_segs + 3) / 4;
+  if (new_num <= 1) {
+    return next_last_size(num_segs, full_size, last_size);
+  }
+  return 4 * full_size;
+}
+
+// Number of merge-tree levels needed to reduce BlockNum segments to 1.
+AICORE constexpr int32_t compute_levels(int32_t block_num) {
+  int32_t n = block_num;
+  int32_t levels = 0;
+  while (n > 1) {
+    n = (n + 3) / 4;
+    levels++;
+  }
+  return levels;
+}
+
+// Whether the final result lives in bufA after the merge tree finishes.
+// read_from_a starts true and toggles every level, so result_in_bufA equals
+// (levels % 2 == 0). For BlockNum == 1 (zero levels) this is also true.
+template <int32_t BlockNum>
+constexpr bool result_in_bufA_v = (compute_levels(BlockNum) % 2 == 0);
+
+// Number of float pair-elements the finalize step has to copy. For full sort
+// it's 2*N; for topk it's 2*K rounded up to user_T's block alignment so the
+// generated TMOV/TCVT lands on aligned bytes (matches AscendC's DataCopy).
+AICORE constexpr int32_t output_pairs(int32_t n, int32_t top_k,
+                                      int32_t user_t_bytes) {
+  if (top_k < 0)
+    return 2 * n;
+  int32_t elems_per_block = 32 / user_t_bytes;
+  int32_t topk_elems = 2 * top_k;
+  return ((topk_elems + elems_per_block - 1) / elems_per_block) *
+         elems_per_block;
+}
+
+// One sorted segment moved from a read buffer to a write buffer (no merging
+// needed because the segment is alone in its 4-group).
+template <typename T, int32_t Len>
+AICORE PTO_INLINE void merge_group_copy(int32_t src_addr, int32_t dst_addr) {
+  constexpr int32_t copy_floats = Len * 2;
+  TileUbDataND<T, 1, copy_floats, 1, copy_floats> sort_cs;
+  TASSIGN(sort_cs, src_addr);
+  TileUbDataND<T, 1, copy_floats, 1, copy_floats> sort_cd;
+  TASSIGN(sort_cd, dst_addr);
+  TMOV(sort_cd, sort_cs);
+}
+
+template <typename T, int32_t Len0, int32_t Len1>
+AICORE PTO_INLINE void merge_group_2way(int32_t s0, int32_t s1, int32_t md,
+                                        int32_t mt) {
+  constexpr int32_t dst_floats = (Len0 + Len1) * 2;
+  TileUbDataND<T, 1, Len0 * 2, 1, Len0 * 2> sort_s0;
+  TASSIGN(sort_s0, s0);
+  TileUbDataND<T, 1, Len1 * 2, 1, Len1 * 2> sort_s1;
+  TASSIGN(sort_s1, s1);
+  TileUbDataND<T, 1, dst_floats, 1, dst_floats> sort_md;
+  TASSIGN(sort_md, md);
+  TileUbDataND<T, 1, dst_floats, 1, dst_floats> sort_mt;
+  TASSIGN(sort_mt, mt);
+  if constexpr (Len0 == Len1) {
+    MergeSort<T, Len0 * 2, dst_floats>(sort_md, sort_mt, sort_s0, sort_s1);
+  } else {
+    MergeSortVar<T, Len0 * 2, Len1 * 2, dst_floats>(sort_md, sort_mt, sort_s0,
+                                                    sort_s1);
+  }
+}
+
+template <typename T, int32_t Len0, int32_t Len1, int32_t Len2>
+AICORE PTO_INLINE void merge_group_3way(int32_t s0, int32_t s1, int32_t s2,
+                                        int32_t md, int32_t mt) {
+  constexpr int32_t dst_floats = (Len0 + Len1 + Len2) * 2;
+  TileUbDataND<T, 1, Len0 * 2, 1, Len0 * 2> sort_s0;
+  TASSIGN(sort_s0, s0);
+  TileUbDataND<T, 1, Len1 * 2, 1, Len1 * 2> sort_s1;
+  TASSIGN(sort_s1, s1);
+  TileUbDataND<T, 1, Len2 * 2, 1, Len2 * 2> sort_s2;
+  TASSIGN(sort_s2, s2);
+  TileUbDataND<T, 1, dst_floats, 1, dst_floats> sort_md;
+  TASSIGN(sort_md, md);
+  TileUbDataND<T, 1, dst_floats, 1, dst_floats> sort_mt;
+  TASSIGN(sort_mt, mt);
+  if constexpr (Len0 == Len1 && Len1 == Len2) {
+    MergeSort<T, Len0 * 2, dst_floats>(sort_md, sort_mt, sort_s0, sort_s1,
+                                       sort_s2);
+  } else {
+    MergeSortVar<T, Len0 * 2, Len1 * 2, Len2 * 2, dst_floats>(
+        sort_md, sort_mt, sort_s0, sort_s1, sort_s2);
+  }
+}
+
+template <typename T, int32_t Len0, int32_t Len1, int32_t Len2, int32_t Len3>
+AICORE PTO_INLINE void merge_group_4way(int32_t s0, int32_t s1, int32_t s2,
+                                        int32_t s3, int32_t md, int32_t mt) {
+  constexpr int32_t dst_floats = (Len0 + Len1 + Len2 + Len3) * 2;
+  TileUbDataND<T, 1, Len0 * 2, 1, Len0 * 2> sort_s0;
+  TASSIGN(sort_s0, s0);
+  TileUbDataND<T, 1, Len1 * 2, 1, Len1 * 2> sort_s1;
+  TASSIGN(sort_s1, s1);
+  TileUbDataND<T, 1, Len2 * 2, 1, Len2 * 2> sort_s2;
+  TASSIGN(sort_s2, s2);
+  TileUbDataND<T, 1, Len3 * 2, 1, Len3 * 2> sort_s3;
+  TASSIGN(sort_s3, s3);
+  TileUbDataND<T, 1, dst_floats, 1, dst_floats> sort_md;
+  TASSIGN(sort_md, md);
+  TileUbDataND<T, 1, dst_floats, 1, dst_floats> sort_mt;
+  TASSIGN(sort_mt, mt);
+  if constexpr (Len0 == Len1 && Len1 == Len2 && Len2 == Len3) {
+    MergeSort<T, Len0 * 2, dst_floats>(sort_md, sort_mt, sort_s0, sort_s1,
+                                       sort_s2, sort_s3);
+  } else {
+    MergeSortVar<T, Len0 * 2, Len1 * 2, Len2 * 2, Len3 * 2, dst_floats>(
+        sort_md, sort_mt, sort_s0, sort_s1, sort_s2, sort_s3);
+  }
+}
+
+// Walk the groups within one merge-tree level. Recurses on group index G.
+template <typename T, int32_t NumSegs, int32_t FullSize, int32_t LastSize,
+          bool ReadFromA, int32_t G = 0, int32_t InOff = 0, int32_t OutOff = 0>
+AICORE PTO_INLINE void merge_groups_loop(int32_t bufA_addr, int32_t bufB_addr,
+                                         int32_t bufC_addr) {
+  if constexpr (G < NumSegs) {
+    constexpr int32_t len0 = seg_length(NumSegs, FullSize, LastSize, G);
+    constexpr int32_t len1 = seg_length(NumSegs, FullSize, LastSize, G + 1);
+    constexpr int32_t len2 = seg_length(NumSegs, FullSize, LastSize, G + 2);
+    constexpr int32_t len3 = seg_length(NumSegs, FullSize, LastSize, G + 3);
+    constexpr int32_t group_count =
+        (len0 > 0) + (len1 > 0) + (len2 > 0) + (len3 > 0);
+    constexpr int32_t total_elems = len0 + len1 + len2 + len3;
+    constexpr int32_t T_BYTES = sizeof(T); // sort runs in float
+
+    const int32_t read_base = ReadFromA ? bufA_addr : bufB_addr;
+    const int32_t write_base = ReadFromA ? bufB_addr : bufA_addr;
+    const int32_t in_byte_off = InOff * T_BYTES;
+    const int32_t out_byte_off = OutOff * T_BYTES;
+
+    if constexpr (group_count == 1) {
+      merge_group_copy<T, len0>(read_base + in_byte_off,
+                                write_base + out_byte_off);
+    } else if constexpr (group_count == 2) {
+      merge_group_2way<T, len0, len1>(
+          read_base + in_byte_off, read_base + in_byte_off + len0 * 2 * T_BYTES,
+          write_base + out_byte_off, bufC_addr);
+    } else if constexpr (group_count == 3) {
+      merge_group_3way<T, len0, len1, len2>(
+          read_base + in_byte_off, read_base + in_byte_off + len0 * 2 * T_BYTES,
+          read_base + in_byte_off + (len0 + len1) * 2 * T_BYTES,
+          write_base + out_byte_off, bufC_addr);
+    } else { // group_count == 4
+      merge_group_4way<T, len0, len1, len2, len3>(
+          read_base + in_byte_off, read_base + in_byte_off + len0 * 2 * T_BYTES,
+          read_base + in_byte_off + (len0 + len1) * 2 * T_BYTES,
+          read_base + in_byte_off + (len0 + len1 + len2) * 2 * T_BYTES,
+          write_base + out_byte_off, bufC_addr);
+    }
+
+    merge_groups_loop<T, NumSegs, FullSize, LastSize, ReadFromA, G + 4,
+                      InOff + total_elems * 2, OutOff + total_elems * 2>(
+        bufA_addr, bufB_addr, bufC_addr);
+  }
+}
+
+// Drive one level of the merge tree, then recurse to the next level.
+template <typename T, int32_t NumSegs, int32_t FullSize, int32_t LastSize,
+          bool ReadFromA>
+AICORE PTO_INLINE void merge_levels(int32_t bufA_addr, int32_t bufB_addr,
+                                    int32_t bufC_addr) {
+  if constexpr (NumSegs > 1) {
+    merge_groups_loop<T, NumSegs, FullSize, LastSize, ReadFromA>(
+        bufA_addr, bufB_addr, bufC_addr);
+    TL_PIPE_V_BARRIER();
+
+    constexpr int32_t new_num_segs = (NumSegs + 3) / 4;
+    constexpr int32_t new_full = next_full_size(NumSegs, FullSize, LastSize);
+    constexpr int32_t new_last = next_last_size(NumSegs, FullSize, LastSize);
+
+    merge_levels<T, new_num_segs, new_full, new_last, !ReadFromA>(
+        bufA_addr, bufB_addr, bufC_addr);
+  }
+}
+
+} // namespace sort_detail
+
+// Top-level entry point. UserT is the user-facing dtype (float or half),
+// internally everything sorts in float (matches AscendC's B16 workaround).
+// TopK == -1 means "full sort", TopK >= 0 means "topk; emit only 2*K pairs".
+template <typename UserT, int32_t N, int32_t ActualCount, int32_t TopK = -1>
+AICORE PTO_INLINE void Sort(int32_t dst_addr, int32_t src_addr,
+                            int32_t tmp_addr) {
+  static_assert(N % 32 == 0, "Sort: N must be a multiple of 32");
+  static_assert(ActualCount > 0 && ActualCount <= N,
+                "Sort: 0 < ActualCount <= N");
+
+  constexpr bool is_topk = (TopK >= 0);
+  constexpr bool is_half = std::is_same_v<UserT, half>;
+  constexpr bool buf_b_in_tmp = is_half || is_topk;
+
+  constexpr int32_t T_BYTES = 4;                  // float internally
+  constexpr int32_t USER_T_BYTES = sizeof(UserT); // 4 or 2
+  constexpr int32_t BLOCK_NUM = N / 32;
+  constexpr int32_t PAD_COUNT = N - ActualCount;
+
+  const int32_t bufA = tmp_addr;
+  const int32_t bufB = buf_b_in_tmp ? (tmp_addr + 2 * N * T_BYTES) : dst_addr;
+  const int32_t bufC = tmp_addr + (buf_b_in_tmp ? 4 : 2) * N * T_BYTES;
+  const int32_t indices_addr = bufB; // bufB low half before sort32
+  const int32_t sort_src_addr =
+      is_half ? (bufB + N * T_BYTES) : src_addr; // bufB high half for half
+
+  // Phase 0 (half only): cast user src(half) -> float at bufB high half.
+  if constexpr (is_half) {
+    TileUbDataND<half, 1, N, 1, N> sort_h_src;
+    TASSIGN(sort_h_src, src_addr);
+    TileUbDataND<float, 1, N, 1, N> sort_f_src;
+    TASSIGN(sort_f_src, sort_src_addr);
+    pto::TCVT(sort_f_src, sort_h_src, pto::RoundMode::CAST_NONE);
+    TL_PIPE_V_BARRIER();
+  }
+
+  // Phase 1: pad sort_src tail with -inf for [ActualCount, N).
+  if constexpr (PAD_COUNT > 0) {
+    TileUbDataND<float, 1, N, 1, ActualCount, pto::PadValue::Min> sort_src_v;
+    TASSIGN(sort_src_v, sort_src_addr);
+    TileUbDataND<float, 1, N, 1, N, pto::PadValue::Min> sort_src_f;
+    TASSIGN(sort_src_f, sort_src_addr);
+    pto::TFILLPAD_INPLACE(sort_src_f, sort_src_v);
+    TL_PIPE_V_BARRIER();
+  }
+
+  // Phase 2: generate ascending indices in bufB low half (float values 0..N-1
+  // that sort32 will reinterpret as uint32 in the value-index pair output).
+  {
+    TileUbDataND<float, 1, N, 1, N> sort_idx;
+    TASSIGN(sort_idx, indices_addr);
+    TCI<decltype(sort_idx), float, /*descending=*/0>(sort_idx, (float)0);
+  }
+  TL_PIPE_V_BARRIER();
+
+  // Phase 3: sort32 (float src + uint32 indices -> bufA, 32-block sorted pairs)
+  {
+    TileUbDataND<float, 1, N, 1, N> sort_src;
+    TASSIGN(sort_src, sort_src_addr);
+    TileUbDataND<uint32_t, 1, N, 1, N> sort_idx_u;
+    TASSIGN(sort_idx_u, indices_addr);
+    TileUbDataND<float, 1, 2 * N, 1, 2 * N> sort_buf_a;
+    TASSIGN(sort_buf_a, bufA);
+    TSORT32(sort_buf_a, sort_src, sort_idx_u);
+  }
+  TL_PIPE_V_BARRIER();
+
+  // Phase 4: merge tree (compile-time unrolled by sort_detail::merge_levels).
+  sort_detail::merge_levels<float, BLOCK_NUM, 32, 32, true>(bufA, bufB, bufC);
+
+  // Phase 5: finalize into dst.
+  constexpr bool result_in_bufA = sort_detail::result_in_bufA_v<BLOCK_NUM>;
+  constexpr int32_t OUTPUT_PAIRS =
+      sort_detail::output_pairs(N, TopK, USER_T_BYTES);
+
+  const int32_t result_addr = result_in_bufA ? bufA : bufB;
+
+  if constexpr (is_half) {
+    // Cast 2*K (or 2*N) float pairs -> halves at dst. CAST_RINT keeps the
+    // integer indices exact since they were generated as 0..N-1.
+    TileUbDataND<float, 1, OUTPUT_PAIRS, 1, OUTPUT_PAIRS> sort_fs;
+    TASSIGN(sort_fs, result_addr);
+    TileUbDataND<half, 1, OUTPUT_PAIRS, 1, OUTPUT_PAIRS> sort_fd;
+    TASSIGN(sort_fd, dst_addr);
+    pto::TCVT(sort_fd, sort_fs, pto::RoundMode::CAST_RINT);
+    TL_PIPE_V_BARRIER();
+  } else {
+    // Float full sort: dst is bufB when bufB lives in dst, so the TMOV is
+    // only needed when the final write landed in bufA. For topk bufB is
+    // always in tmp, so we always have to copy.
+    constexpr bool need_copy = is_topk || result_in_bufA;
+    if constexpr (need_copy) {
+      TileUbDataND<float, 1, OUTPUT_PAIRS, 1, OUTPUT_PAIRS> sort_fs;
+      TASSIGN(sort_fs, result_addr);
+      TileUbDataND<float, 1, OUTPUT_PAIRS, 1, OUTPUT_PAIRS> sort_fd;
+      TASSIGN(sort_fd, dst_addr);
+      TMOV(sort_fd, sort_fs);
+      TL_PIPE_V_BARRIER();
+    }
+  }
 }
 
 template <typename T, int32_t Rows, int32_t Cols>

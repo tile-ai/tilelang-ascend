@@ -8,6 +8,12 @@
 #include "catlass/gemm/tile/tile_copy.hpp"
 #include "catlass/layout/layout.hpp"
 
+#if defined(__has_include)
+#if __has_include("version/cann_version.h")
+#include "version/cann_version.h"
+#endif
+#endif
+
 #include "shmem.h"
 
 #define CUDART_INF_F 1.0f / 0.0f
@@ -37,6 +43,14 @@ constexpr bool IsDuplicateSupported_v =
     std::is_same_v<T, half> || std::is_same_v<T, bfloat16_t> ||
     std::is_same_v<T, int32_t> || std::is_same_v<T, uint32_t> ||
     std::is_same_v<T, float>;
+
+CATLASS_DEVICE void disable_dma_atomic_compat() {
+#if defined(CANN_MAJOR) && CANN_MAJOR >= 9
+  AscendC::DisableDmaAtomic();
+#else
+  AscendC::SetAtomicNone();
+#endif
+}
 
 template <typename T, uint32_t dstM, uint32_t dstN>
 CATLASS_DEVICE void copy_gm_to_l1(LocalTensor<T> dstTensor,
@@ -215,6 +229,29 @@ copy_ub_to_gm(GlobalTensor<T> dstTensor, LocalTensor<T> srcTensor,
   AscendC::DataCopyPad(dstTensor, srcTensor, dataCopyParams);
 }
 
+template <typename T, uint32_t srcN, uint32_t srcM = 1>
+CATLASS_DEVICE void
+atomic_add_ub_to_gm(GlobalTensor<T> dstTensor, LocalTensor<T> srcTensor,
+                    uint32_t realdstN = 1, uint32_t maskShapeM = srcM,
+                    uint32_t maskShapeN = srcN) {
+  AscendC::SetAtomicAdd<T>();
+  copy_ub_to_gm<T, srcN, srcM>(dstTensor, srcTensor, realdstN, maskShapeM,
+                               maskShapeN);
+  disable_dma_atomic_compat();
+}
+
+template <typename T1, typename T2, typename LayoutGM, uint32_t srcM,
+          uint32_t srcN, bool enRelu = false>
+CATLASS_DEVICE void
+atomic_add_l0c_to_gm(GlobalTensor<T2> dstTensor, LocalTensor<T1> srcTensor,
+                     uint32_t realDstN = 1, uint32_t realTailM = 0,
+                     uint32_t realTailN = 0) {
+  AscendC::SetAtomicAdd<T2>();
+  copy_l0c_to_gm<T1, T2, LayoutGM, srcM, srcN, enRelu>(
+      dstTensor, srcTensor, realDstN, realTailM, realTailN);
+  disable_dma_atomic_compat();
+}
+
 template <typename T1, typename T2, uint32_t len>
 CATLASS_DEVICE void copy_ub_to_ub(LocalTensor<T1> dstTensor,
                                   LocalTensor<T2> srcTensor) {
@@ -222,6 +259,8 @@ CATLASS_DEVICE void copy_ub_to_ub(LocalTensor<T1> dstTensor,
     AscendC::DataCopy(dstTensor, srcTensor, len);
   } else {
     if constexpr ((std::is_same_v<T1, float> && std::is_same_v<T2, half>) ||
+                  (std::is_same_v<T1, float> &&
+                   std::is_same_v<T2, bfloat16_t>) ||
                   (std::is_same_v<T1, float> && std::is_same_v<T2, int16_t>) ||
                   (std::is_same_v<T1, half> && std::is_same_v<T2, int8_t>) ||
                   (std::is_same_v<T1, int16_t> &&
