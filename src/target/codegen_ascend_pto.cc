@@ -1443,11 +1443,6 @@ void CodeGenTileLangAscendPto::WaitCrossFlagCodegen(const CallNode *op) {
                         "unknown scope";
       }
     }
-  } else {
-    if (!pipe.empty()) {
-      LOG(FATAL) << "Pipe argument for wait_cross_flag is only supported on A5 "
-                    "architecture.";
-    }
   }
 
   if (this->platform_ == "A5") {
