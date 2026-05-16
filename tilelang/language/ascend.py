@@ -446,6 +446,22 @@ def printf(format_str: str, *args):
     return tir.call_intrin("handle", tir.op.Op.get("tl.ascend_printf"), *all_args)
 
 
+def _srcCode(source_code: str):
+    """
+    Inject raw source code directly into the generated C++ kernel.
+
+    This allows expert users to write arbitrary AscendC/C++ code that
+    will be inserted verbatim at the call site in the compiled output.
+
+    Args:
+        source_code (str): Raw C++/AscendC source code to inject.
+
+    Returns:
+        tvm.tir.Call: A TIR intrinsic call to ``tl.ascend_src_code``.
+    """
+    return tir.call_intrin("handle", tir.op.Op.get("tl.ascend_src_code"), source_code)
+
+
 def dump_tensor(tensor: Buffer, desc: int, dump_size: int, shape_info: tuple = ()):
     """
     Dumps the data of a specific tensor to the host for debugging.

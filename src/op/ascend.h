@@ -192,6 +192,8 @@ TVM_DLL const Op &ascend_printf();
 
 TVM_DLL const Op &ascend_dump_tensor();
 
+TVM_DLL const Op &ascend_src_code();
+
 TVM_DLL const Op &ascend_bilinear_interpolation();
 
 TVM_DLL const Op &ascend_wholereducemax();
