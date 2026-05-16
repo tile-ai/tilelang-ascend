@@ -4,13 +4,13 @@ import pytest
 import tilelang
 import tilelang.language as T
 
-OUTPUT_DIR = "/mnt/workspace/gitCode/cann/whiteday/tmp_cpp_src"
+OUTPUT_DIR = "./tmp_cpp_src"
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="session", autouse=True)
 def clear_cache():
     """Clear tilelang cache before tests"""
-    tilelang.cache.clear_cache()
+    tilelang.disable_cache()
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     yield
 

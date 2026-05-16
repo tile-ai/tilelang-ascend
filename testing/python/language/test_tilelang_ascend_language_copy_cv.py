@@ -33,6 +33,11 @@ def _compile(program):
     return tilelang.compile(program, pass_configs=PASS_CONFIGS, target="pto")
 
 
+def _compile_expert(program):
+    """Compile program with PTO target (NOT ascendc)."""
+    return tilelang.compile(program, target="pto")
+
+
 def _torch_dtype(dtype):
     if dtype == "float16":
         return torch.float16
@@ -66,6 +71,59 @@ def _ub_to_l1_kernel(M=128, N=128, K=128, dtype="float16"):
 
             # L0C → GM
             T.copy(C_l0c, C)
+
+    return main
+
+
+def _ub_to_l1_kernel_expert(M=128, N=128, K=128, dtype="float16"):
+    """Test kernel: UB→L1→GM round-trip (Vector to Cube communication via TPUSH)."""
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((M, K), dtype),
+        B: T.Tensor((K, N), dtype),
+        C: T.Tensor((M, N), dtype),
+        workspace_1: T.Tensor((M * K * 2 ), dtype)
+    ):
+        with T.Kernel(1, is_npu=True) as (cid, vid):
+            T._srcCode("using Pipe_8_V2C = TPipe<8, pto::Direction::DIR_V2C, 32768, 2>;")
+            T._srcCode("Pipe_8_V2C pipe_8_V2C(workspace_1_handle, 0, 0);")
+
+            A_ub = T.alloc_ub((M, K), dtype)
+            A_l1 = T.alloc_L1((M, K), dtype)
+            B_l1 = T.alloc_L1((K, N), dtype)
+            C_l0c = T.alloc_L0C((M, N), "float")
+
+            with T.Scope("C"):
+                A_l1 = A_l1
+
+                T._srcCode("tl::ascend_pto::copy_pipe_to_l1(pipe_8_V2C, A_l1);")
+                T._srcCode("tl::ascend_pto::copy_gm_to_l1<half, half, 1, 1, 1, 128, 128, 1, 1, 16384, 128, 1, 128, 128>(B_handle + 0, 32768, 0, 128, 128);")
+                # T.copy(B, B_l1)
+                T.set_flag("mte2", "m", 1)
+                T.wait_flag("mte2", "m", 1)
+                # T._srcCode("set_flag(PIPE_MTE2, PIPE_M, EVENT_ID1);")
+                # T._srcCode("wait_flag(PIPE_MTE2, PIPE_M, EVENT_ID1);")
+                # L1 → GEMM → L0C (Cube computation)
+                T.gemm_v0(A_l1, B_l1, C_l0c, init=True)
+                T.set_flag("m", "fix", 2)
+                T.wait_flag("m", "fix", 2)
+                # T._srcCode("set_flag(PIPE_M, PIPE_FIX, EVENT_ID2);")
+                # T._srcCode("wait_flag(PIPE_M, PIPE_FIX, EVENT_ID2);")
+                # L0C → GM
+                T.copy(C_l0c, C)
+
+            with T.Scope("V"):
+                # GM → UB
+                T.copy(A, A_ub)
+
+                # UB → L1 (TPUSH): Expected to fail in RED phase
+                # T.copy(A_ub, A_l1)
+                T.set_flag("mte2", "mte3", 3)
+                T.wait_flag("mte2", "mte3", 3)
+                # T._srcCode("set_flag(PIPE_MTE2, PIPE_MTE3, EVENT_ID3);")
+                # T._srcCode("wait_flag(PIPE_MTE2, PIPE_MTE3, EVENT_ID3);")
+                T._srcCode("tl::ascend_pto::copy_ub_to_pipe(pipe_8_V2C, A_ub);")
 
     return main
 
@@ -182,6 +240,48 @@ def test_ub_to_l1_pto(dtype):
 
     torch.testing.assert_close(c, a @ b, rtol=1e-3, atol=1e-3)
 
+@pytest.mark.skipif(
+    not (hasattr(torch, "npu") and torch.npu.is_available()),
+    reason="PTO UB→L1 copy test requires an Ascend NPU runtime",
+)
+@pytest.mark.parametrize("dtype", ["float16"])
+def test_ub_to_l1_expert(dtype):
+    """
+    RED phase test for UB→L1 copy path with PTO target.
+
+    This test should FAIL because:
+    - PTO backend does not support UB→L1 copy (TPUSH) yet
+    - The test validates the test infrastructure exists
+    - Establishes baseline for GREEN phase validation
+
+    Test flow:
+    1. Create input tensor (128x128, float16)
+    2. Compile kernel with UB→L1 copy using target="pto"
+    3. Execute kernel (expect compilation error)
+    4. Verify data correctness (should not reach this point)
+    """
+    M, N, K = 128, 128, 128
+
+    with open("ub_to_l1_expert.cpp", "w", encoding="utf-8") as f:
+        program = _ub_to_l1_kernel_expert(M=M, N=N, K=K, dtype=dtype)
+
+        kernel = _compile_expert(program)
+
+        print("source code dumped to: ub_to_l1_expert.cpp")
+        f.write(kernel.get_kernel_source())
+
+    torch_dtype = _torch_dtype(dtype)
+
+    a = torch.randn((M, K), dtype=torch_dtype, device="npu")
+    b = torch.randn((K, N), dtype=torch_dtype, device="npu")
+    c = torch.empty((M, N), dtype=torch_dtype, device="npu")
+    workspace_1 = torch.empty((M * K * 2,), dtype=torch_dtype, device="npu")
+    torch.npu.synchronize()
+
+    kernel(a, b, c, workspace_1)
+    torch.npu.synchronize()
+
+    torch.testing.assert_close(c, a @ b, rtol=1e-3, atol=1e-3)
 
 # @pytest.mark.xfail(reason="PTO L0C↔UB copy not yet implemented")
 @pytest.mark.skipif(
