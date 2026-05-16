@@ -81,7 +81,8 @@ from .builtin import *  # noqa: F401
 
 from .memscope import *  # noqa: F401
 
-from .ascend import *
+from .ascend import *  # noqa: F401, F403
+from .ascend import _srcCode  # explicit export: underscore names not in *
 from .reduce_ascend import *  # noqa: F401, F403
 from . import ascend_tile as tile  # noqa: F401
 

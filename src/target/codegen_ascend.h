@@ -152,6 +152,8 @@ private:
 
   void DumpTensorCodegen(const CallNode *op);
 
+  void SrcCodeCodegen(const CallNode *op);
+
   void BilinearInterpolationCodegen(const CallNode *op);
 
   void WholeReduceOpCodegen(const CallNode *op, const std::string &op_name);

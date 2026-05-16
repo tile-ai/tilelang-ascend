@@ -962,6 +962,8 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op,
     // --- debug / print ---
   } else if (op->op.same_as(tl::ascend_dump_tensor())) {
     DumpTensorCodegen(op, "TPRINT");
+  } else if (op->op.same_as(tl::ascend_src_code())) {
+    SrcCodeCodegen(op);
   } else if (op->op.same_as(tl::ascend_printf())) {
     PrintfOpCodegen(op, "cce::printf");
 
@@ -2354,6 +2356,18 @@ void CodeGenTileLangAscendPto::DumpTensorCodegen(const CallNode *op,
   }
 
   this->stream << ");\n";
+}
+
+void CodeGenTileLangAscendPto::SrcCodeCodegen(const CallNode *op) {
+  auto *str = op->args[0].as<StringImmNode>();
+  ICHECK(str) << "T._srcCode() expects a string literal argument";
+  std::string code = str->value;
+  std::istringstream iss(code);
+  std::string line;
+  while (std::getline(iss, line)) {
+    this->PrintIndent();
+    this->stream << line << "\n";
+  }
 }
 
 void CodeGenTileLangAscendPto::SetDeqScaleCodegen(const CallNode *op) {
