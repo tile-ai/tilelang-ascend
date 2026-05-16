@@ -226,7 +226,7 @@ def test_l0c_to_ub_pto(dtype):
     torch.npu.synchronize()
 
     ref_c = a @ b
-    torch.testing.assert_close(c, ref_c.astype(torch.float32), rtol=1e-2, atol=1e-2)
+    torch.testing.assert_close(c, ref_c.to(torch.float32), rtol=1e-2, atol=1e-2)
 
 
 # @pytest.mark.xfail(reason="PTO UB↔L1 and L0C↔UB copy not yet implemented")
