@@ -9,13 +9,15 @@ import torch.nn.functional as F
 tilelang.cache.clear_cache()
 
 pass_configs = {
+    # tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
     tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
     tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
+    # tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_SYNC: True,
 }
 
 
 @tilelang.jit(
-    workspace_idx=[7, 8, 9, 10, 11, 12],
+    workspace_idx=[7, 10, 11, 12],
     pass_configs=pass_configs,
 )
 def fla_fused_chunk_bwd_kernel(
@@ -128,7 +130,6 @@ def fla_fused_chunk_bwd_kernel(
                             T.wait_cross_flag(11)
                             T.copy(workspace4[bv_idx, :, :], ds_l1)
                             T.gemm_v0(ds_l1, do_l1, dv, init=True)
-                            T.copy(workspace6[bv_idx, :, :], dh_l1)
                             T.gemm_v0(k_l1, dh_l1, dv, init=False)
                             T.gemm_v0(q_l1, do_l1, dh, transpose_A=True, init=(i == 0))
                             T.copy(dh, workspace3[bv_idx, :, :])
@@ -156,11 +157,7 @@ def fla_fused_chunk_bwd_kernel(
                 T.tile.fill(dv_ub, 0.0)
                 T.tile.fill(ds_half, 0.0)
 
-                # for init_i in T.serial(NK * NV):
-                #     T.copy(ds_ub, workspace2[blk_off + init_i, vid * sub_C : (vid + 1) * sub_C, :])
-                #     T.copy(ds_ub, workspace3[blk_off + init_i, vid * sub_C : (vid + 1) * sub_C, :])
-
-                T.pipe_barrier("mte3")
+                # T.pipe_barrier("mte3")
                 T.set_cross_flag("MTE3", 1)
 
                 for i_k in T.serial(NK):
@@ -178,17 +175,18 @@ def fla_fused_chunk_bwd_kernel(
                                         ds_ub[r, c] = 0.0
                             T.copy(ds_ub, ds_half)
                             T.copy(ds_half, workspace4[bv_idx, vid * sub_C : (vid + 1) * sub_C, :])
-                            T.set_cross_flag("MTE3", 3)
-
                             T.copy(workspace2[bv_idx, vid * sub_C : (vid + 1) * sub_C, :], ds_ub)
                             T.copy(ds_ub, ds_half)
                             T.copy(ds_half, workspace5[bv_idx, vid * sub_C : (vid + 1) * sub_C, :])
+
+                            T.set_cross_flag("MTE3", 3)
 
                             T.wait_cross_flag(4)
                             T.copy(workspace1[bv_idx, vid * sub_C : (vid + 1) * sub_C, :], dq_ub)
 
                             T.tile.mul(dq_ub, dq_ub, scale)
 
+                            # dQ
                             T.copy(
                                 dQ[
                                     i_b,
@@ -208,16 +206,7 @@ def fla_fused_chunk_bwd_kernel(
                                     i_k * BK : (i_k + 1) * BK,
                                 ],
                             )
-                            # dQ
-                            # T.tile.atomic_add(
-                            #     dQ[
-                            #         i_b,
-                            #         chk * chunk_size + vid * sub_C : chk * chunk_size + (vid + 1) * sub_C,
-                            #         i_h,
-                            #         i_k * BK : (i_k + 1) * BK,
-                            #     ],
-                            #     dq_ub,
-                            # )
+
                             T.set_cross_flag("MTE3", 1)
 
                         # === Pass 2: scale q, mask s, RMW dk/dv ===
@@ -244,6 +233,9 @@ def fla_fused_chunk_bwd_kernel(
                             T.set_cross_flag("MTE3", 7)
 
                             T.wait_cross_flag(8)
+                            T.copy(workspace3[bv_idx, vid * sub_C : (vid + 1) * sub_C, :], ds_ub)
+                            T.copy(ds_ub, ds_half)
+                            T.copy(ds_half, workspace6[bv_idx, vid * sub_C : (vid + 1) * sub_C, :])
                             T.copy(workspace1[bv_idx, vid * sub_C : (vid + 1) * sub_C, :], ds_ub)
                             for r in range(sub_C):
                                 for c in range(chunk_size):
@@ -252,10 +244,6 @@ def fla_fused_chunk_bwd_kernel(
                             T.copy(ds_ub, ds_half)
                             T.copy(ds_half, workspace4[bv_idx, vid * sub_C : (vid + 1) * sub_C, :])
                             T.set_cross_flag("MTE3", 9)
-
-                            T.copy(workspace3[bv_idx, vid * sub_C : (vid + 1) * sub_C, :], ds_ub)
-                            T.copy(ds_ub, ds_half)
-                            T.copy(ds_half, workspace6[bv_idx, vid * sub_C : (vid + 1) * sub_C, :])
 
                             T.wait_cross_flag(10)
                             T.copy(workspace1[bv_idx, vid * sub_C : (vid + 1) * sub_C, :], ds_ub)
@@ -290,16 +278,6 @@ def fla_fused_chunk_bwd_kernel(
                                     i_k * BK : (i_k + 1) * BK,
                                 ],
                             )
-                            # fixme
-                            # T.tile.atomic_add(
-                            #     dK[
-                            #         i_b,
-                            #         rev * chunk_size + vid * sub_C : rev * chunk_size + (vid + 1) * sub_C,
-                            #         i_h,
-                            #         i_k * BK : (i_k + 1) * BK,
-                            #     ],
-                            #     dk_ub,
-                            # )
 
                             # dV
                             T.copy(workspace2[bv_idx, vid * sub_C : (vid + 1) * sub_C, :], dv_ub)
@@ -339,9 +317,11 @@ def fla_fused_chunk_bwd(q: Tensor, k: Tensor, v: Tensor, dO: Tensor) -> Tuple[Te
     dQ = torch.zeros(B, S, H, DK, dtype=torch.float32).npu()
     dK = torch.zeros(B, S, H, DK, dtype=torch.float32).npu()
     dV = torch.zeros(B, S, H, DV, dtype=torch.float32).npu()
+    workspace2 = torch.zeros(B * H * tilelang.cdiv(DK, 64) * tilelang.cdiv(DV, 64), 64, 64, dtype=torch.float32).npu()
+    workspace3 = torch.zeros(B * H * tilelang.cdiv(DK, 64) * tilelang.cdiv(DV, 64), 64, 64, dtype=torch.float32).npu()
     torch.npu.synchronize()
 
-    kernel(q, k, v, dO, dQ, dK, dV)
+    kernel(q, k, v, dO, dQ, dK, dV, workspace2, workspace3)
 
     return dQ.to(q.dtype), dK.to(q.dtype), dV.to(q.dtype)
 
