@@ -59,7 +59,7 @@ GetOperationConfig() {
       {"copy_ub_to_pipe", {{{0, "read"}, {1, "write"}}, "PIPE_MTE3"}},
       {"copy_pipe_to_l1", {{{0, "read"}, {1, "write"}}, "PIPE_MTE3"}},
       {"copy_l0c_to_pipe", {{{0, "read"}, {1, "write"}}, "PIPE_FIX"}},
-      {"copy_pipe_to_ub", {{{0, "read"}, {1, "write"}}, "PIPE_FIX"}},
+      {"copy_pipe_to_ub", {{{0, "read"}, {1, "write"}}, "PIPE_MTE2"}},
       {"mma", {{{0, "read"}, {1, "read"}, {2, "write"}}, "PIPE_M"}},
       {"gemm_v0", {{{0, "read"}, {1, "read"}, {2, "write"}}, "PIPE_M"}},
       {"gemm_v1", {{{0, "read"}, {1, "read"}, {2, "write"}}, "PIPE_M"}},
