@@ -330,6 +330,9 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
   auto compute_valid_extent = [](PrimExpr min_val, PrimExpr extent,
                                  PrimExpr shape) -> PrimExpr {
     PrimExpr remaining = shape - min_val;
+    if (remaining.dtype().lanes() > 1) {
+      return extent;
+    }
     return Select(remaining >= extent, extent,
                   Select(remaining > 0, remaining, 0));
   };
@@ -570,6 +573,9 @@ Stmt AscendAtomicAdd::Lower(const LowerArgs &T,
   auto compute_valid_extent = [](PrimExpr min_val, PrimExpr extent,
                                  PrimExpr shape) -> PrimExpr {
     PrimExpr remaining = shape - min_val;
+    if (remaining.dtype().lanes() > 1) {
+      return extent;
+    }
     return Select(remaining >= extent, extent,
                   Select(remaining > 0, remaining, 0));
   };
@@ -612,10 +618,6 @@ Stmt AscendAtomicAdd::Lower(const LowerArgs &T,
   ICHECK_EQ(dst_extents.size(), dst->shape.size())
       << "tl.ascend_atomic_add destination region rank must match "
          "destination buffer rank";
-  ICHECK_EQ(src_extents.size(), dst_extents.size())
-      << "tl.ascend_atomic_add requires src and dst regions to have the same "
-         "rank, got src "
-      << src_extents.size() << " and dst " << dst_extents.size();
 
   std::stringstream ss;
   if (src.scope() == "shared") {
