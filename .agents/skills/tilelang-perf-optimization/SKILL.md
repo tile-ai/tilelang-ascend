@@ -75,6 +75,23 @@ print(func.get_kernel_source())
 
 - 调用 `/tilelang-api-best-practices` 查阅相关 API 用法
 
+#### 最佳实践案例参考
+
+参考以下算子的优化实践文档，学习具体优化技巧：
+
+| 算子类型 | 最佳实践文档 | 核心优化技术 |
+|---------|-------------|-------------|
+| **Vector 型** | [RoPE 优化实践](references/best-practices/rope-developer-mode.md) | NPU 内动态生成 Mask、Tile API 向量化、参数简化 |
+| **Cube 型** | [GEMM Intrinsic 优化](references/best-practices/gemm_intrinsic_optimize.md) | 多缓冲流水线、细粒度 Flag 同步、MMA intrinsic、L0 分块、负载均衡 |
+| **CV 融合型** | [Flash Attention 优化](references/best-practices/flash_attn_optimize.md) | num_stages 流水线、批量 Softmax、Cross-core Semaphore、数据布局优化 |
+
+**文档内容涵盖**：
+- 优化前后对比（代码示例）
+- 性能收益量化分析
+- 关键 API 使用方法
+- 参数配置指南
+- 适用场景说明
+
 ### Step 5: 精度再验证
 
 - 运行命令：`python examples/{op_name}/<script_name>.py`（`<script_name>` 为 `examples/{op_name}/` 目录下的 Python 脚本文件名）
