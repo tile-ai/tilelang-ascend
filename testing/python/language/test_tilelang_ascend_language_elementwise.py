@@ -1298,7 +1298,7 @@ def cast(M, N, block_M, block_N, mode, count):
     m_num = M // block_M
     n_num = N // block_N
 
-    VEC_NUM = 2
+    VEC_NUM = 1
 
     @T.prim_func
     def main(
@@ -1349,7 +1349,7 @@ def cast_slice(M, N, block_M, block_N, mode, count):
     m_num = M // block_M
     n_num = N // block_N
 
-    VEC_NUM = 2
+    VEC_NUM = 1
 
     @T.prim_func
     def main(
@@ -1400,7 +1400,7 @@ def cast_scale(M, N, block_M, block_N, mode, count, scale):
     m_num = M // block_M
     n_num = N // block_N
 
-    VEC_NUM = 2
+    VEC_NUM = 1
 
     @T.prim_func
     def main(
@@ -1991,7 +1991,7 @@ def createvecindex(M, N, block_M, block_N, firstValue, dtype="int32"):
     m_num = M // block_M
     n_num = N // block_N
 
-    VEC_NUM = 2
+    VEC_NUM = 1
 
     @T.prim_func
     def main(
@@ -2003,7 +2003,7 @@ def createvecindex(M, N, block_M, block_N, firstValue, dtype="int32"):
 
             c_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
 
-            T.tile.createvecindex(c_ub, firstValue + vid * block_M // VEC_NUM)
+            T.tile.createvecindex(c_ub, firstValue)
 
             T.copy(c_ub, C[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
 
