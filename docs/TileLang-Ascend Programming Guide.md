@@ -2126,6 +2126,14 @@ Expert编程模式可以复用Developer模式的Reduce类计算原语。
 TileLang-ascend 引入了新的调试接口：T.printf 和 T.dump_tensor。目前支持 Ascend 端的全量转储功能。基本类型、指针、ub_buffer、l1_buffer、l0c_buffer 和 global_buffer 均可打印。
 注意：T.printf 和 T.dump_tensor 是设备端的调试工具；对于主机端，请直接使用 Python 内置的 print 即可。
 
+**环境配置**：要使 T.printf 和 T.dump_tensor 的输出在运行时生效，需要在编译时启用调试打印支持。设置环境变量 `TL_PTO_DEBUG=1` 后，编译器会追加 `-D_DEBUG` 和 `--cce-enable-print` 编译选项，开启设备端 printf 功能：
+
+```bash
+TL_PTO_DEBUG=1 python your_script.py
+```
+
+> **注意**：`TL_PTO_DEBUG` 常态不开启。开启后设备端 printf/PRINTF/DumpTensor 等调试接口会对算子的实际运行性能产生明显影响（每条打印/断言都会引入额外的硬件交互开销），同时每个核上所有 dump 接口使用的总空间上限为 1 MB。因此该选项仅建议在调测阶段使用，调测完成后应关闭以恢复正常性能。
+
 #### 5.1.1 T.printf
 
 **接口定义**：
