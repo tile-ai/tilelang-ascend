@@ -654,8 +654,9 @@ Stmt AscendAtomicAdd::Lower(const LowerArgs &T,
   auto dst_new_buffer = T.buffer_remap.count(dst) ? T.buffer_remap[dst] : dst;
 
   // Scalarize indices: extract base from Ramp expressions to avoid vector lane
-  // mismatches when Ramp lanes differ across dimensions (e.g. int32x32 vs int32x64).
-  // The Ramp lanes already contribute to the access extent (src_len / dst_len).
+  // mismatches when Ramp lanes differ across dimensions (e.g. int32x32 vs
+  // int32x64). The Ramp lanes already contribute to the access extent (src_len
+  // / dst_len).
   auto scalarize = [](const PrimExpr &idx) -> PrimExpr {
     if (const auto *ramp = idx.as<RampNode>()) {
       return ramp->base;
@@ -682,12 +683,10 @@ Stmt AscendAtomicAdd::Lower(const LowerArgs &T,
   auto src_offset = src_new_buffer.OffsetOf(src_scalar_indices).back();
   auto dst_offset = dst_new_buffer.OffsetOf(dst_scalar_indices).back();
 
-  auto src_ptr = src_new_buffer.access_ptr(
-      1, src_new_buffer->dtype, 1,
-      src_offset, src_len);
-  auto dst_ptr = dst_new_buffer.access_ptr(
-      2, dst_new_buffer->dtype, 1,
-      dst_offset, dst_len);
+  auto src_ptr = src_new_buffer.access_ptr(1, src_new_buffer->dtype, 1,
+                                           src_offset, src_len);
+  auto dst_ptr = dst_new_buffer.access_ptr(2, dst_new_buffer->dtype, 1,
+                                           dst_offset, dst_len);
 
   // Compute effective extents accounting for lanes in Ramp indices,
   // so that find_active_dim_indices correctly identifies the 2D access pattern.
@@ -742,7 +741,8 @@ Stmt AscendAtomicAdd::Lower(const LowerArgs &T,
     validCol_dst =
         compute_valid_extent(col_min, col_extent, dst->shape[col_ramp_idx]);
   } else {
-    std::vector<int> dst_active = find_active_dim_indices(effective_dst_extents);
+    std::vector<int> dst_active =
+        find_active_dim_indices(effective_dst_extents);
     if (dst_active.size() >= 2) {
       int row_idx = dst_active[dst_active.size() - 2];
       int col_idx = dst_active.back();
@@ -772,8 +772,8 @@ Stmt AscendAtomicAdd::Lower(const LowerArgs &T,
   PrimExpr strideN;
   if (row_ramp_idx >= 0 && col_ramp_idx >= 0) {
     strideN = Integer(1);
-    for (int i = row_ramp_idx + 1;
-         i < static_cast<int>(dst->shape.size()); ++i) {
+    for (int i = row_ramp_idx + 1; i < static_cast<int>(dst->shape.size());
+         ++i) {
       strideN = strideN * dst->shape[i];
     }
   } else {
