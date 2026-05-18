@@ -4499,16 +4499,18 @@ def test_wholereducesum(target):
 def generate_arithmetic_progression(N, block_size, dtype="int32"):
     num_blocks = N // block_size
 
+    VEC_NUM = 2
+
     @T.prim_func
     def main(
         output: T.Tensor((N,), dtype),  # type: ignore
     ):
-        with T.Kernel(num_blocks, is_npu=True) as (cid, _):
-            start_idx = cid * block_size
+        with T.Kernel(num_blocks, is_npu=True) as (cid, vid):
+            start_idx = cid * block_size + vid * block_size // VEC_NUM
 
-            seq_ub = T.alloc_shared((block_size,), dtype)
+            seq_ub = T.alloc_shared((block_size // VEC_NUM,), dtype)
 
-            T.tile.arith_progression(seq_ub, start_idx, 1, block_size)
+            T.tile.arith_progression(seq_ub, start_idx, 1, block_size // VEC_NUM)
 
             T.copy(seq_ub, output[start_idx])
 

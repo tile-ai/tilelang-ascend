@@ -301,6 +301,9 @@ void CodeGenTileLangAscendPto::PrintFuncPrefix(std::ostream &os) {
 }
 
 std::string CodeGenTileLangAscendPto::Finish() {
+  if (this->platform_ == "A5") {
+    decl_stream << "#define PTO_PLATFORM_A5\n";
+  }
   decl_stream << "#include \"tl_templates/pto/common.h\"\n";
   decl_stream << "#include <pto/pto-inst.hpp>\n";
   decl_stream << "#include \"acl/acl.h\"\n";
@@ -829,6 +832,10 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op,
     BinaryVecClampOpsCodegen(op, "TCLAMP");
   } else if (op->op.same_as(tl::ascend_sigmoid())) {
     SigmoidCodegen(op, "TSIGMOID");
+  } else if (op->op.same_as(tl::ascend_silu())) {
+    SiluCodegen(op);
+  } else if (op->op.same_as(tl::ascend_mul_add_dst())) {
+    MulAddDstCodegen(op);
   } else if (op->op.same_as(tl::ascend_gather_mask())) {
     GatherMaskCodegen(op, "TGATHER");
   } else if (op->op.same_as(tl::ascend_round())) {
@@ -1175,29 +1182,82 @@ void CodeGenTileLangAscendPto::CopyL1ToL0Codegen(const CallNode *call,
   std::string op_name = Downcast<StringImm>(call->args[0])->value;
   bool transpose = (op_name.find(", true>") != std::string::npos);
 
-  PrimExpr index_row = floordiv(src_info.offset, src_info.shape[1]);
-  PrimExpr index_col = floormod(src_info.offset, src_info.shape[1]);
+  // Compute tile dimensions: for persistent buffering A_L1(S1, block_M, K_L1),
+  // the flattened shape is (S1*block_M, K_L1) but tile shape is (block_M,
+  // K_L1).
+  int32_t tile_row, tile_col, num_tiles;
+  if (is_a) {
+    tile_row = dst_shape_info.slice_row;
+    tile_col = src_shape_info.col;
+    num_tiles = src_shape_info.row / tile_row;
+    if (num_tiles < 1)
+      num_tiles = 1;
+  } else {
+    tile_col = src_shape_info.col;
+    int32_t src_row = src_shape_info.row;
+    int32_t min_row = dst_shape_info.slice_row;
+    tile_row = min_row;
+    for (int32_t d = 2; d * d <= src_row; ++d) {
+      if (src_row % d == 0) {
+        int32_t cand1 = src_row / d;
+        int32_t cand2 = d;
+        if (cand1 < src_row && cand1 >= min_row && cand1 > tile_row) {
+          tile_row = cand1;
+        }
+        if (cand2 < src_row && cand2 >= min_row && cand2 > tile_row) {
+          tile_row = cand2;
+        }
+      }
+    }
+    num_tiles = src_row / tile_row;
+    if (num_tiles < 1)
+      num_tiles = 1;
+  }
+
+  int32_t tile_size = tile_row * tile_col;
+
+  // TEXTRACT expects logical coordinates. For zN layout, convert offset:
+  // A buffer: zN_offset ≈ logical_K * tile_row
+  // B buffer: zN_offset ≈ logical_K * 16 (ELE_NUM_PER_C0)
+  constexpr int32_t ELE_NUM_PER_C0 = 16;
+  PrimExpr inner_offset = floormod(src_info.offset, tile_size);
+  PrimExpr logical_K = is_a ? floordiv(inner_offset, tile_row)
+                            : floordiv(inner_offset, ELE_NUM_PER_C0);
+  PrimExpr index_row = is_a ? 0 : logical_K;
+  PrimExpr index_col = is_a ? logical_K : 0;
+
+  PrimExpr outer_tile_idx = floordiv(src_info.offset, tile_size);
 
   auto src_name = src_shape_info.ub_name;
   auto dst_name = dst_shape_info.ub_name;
+
   if (src_shape_info.is_slice) {
     std::string src_temp_name = GetTempVarName(src_shape_info.ub_name);
-    CreateCubeVariable(src_temp_name, src_shape_info,
-                       kAscendPtoScope + "TileMatL1");
+    this->PrintIndent();
+    this->stream << kAscendPtoScope << "TileMatL1<" << src_shape_info.type
+                 << ", " << tile_row << ", " << tile_col << ", " << tile_row
+                 << ", " << tile_col << "> " << src_temp_name << ";\n";
+    PrimExpr tile_base_offset = outer_tile_idx * tile_size;
+    this->PrintIndent();
+    this->stream << "TASSIGN(" << src_temp_name << ", "
+                 << src_shape_info.first_addr << " + "
+                 << PrintExpr(tile_base_offset) << " * "
+                 << GetTypeLen(src_shape_info.type) << ");\n";
     src_name = src_temp_name;
   }
+
   if (transpose) {
     std::string src_temp_name = GetTempVarName(src_shape_info.ub_name + "_zn");
     this->PrintIndent();
     this->stream << kAscendPtoScope << "TileMatL1ZN" << "<"
-                 << src_shape_info.type << ", " << src_shape_info.slice_col
-                 << ", " << src_shape_info.slice_row << ", "
-                 << src_shape_info.slice_col << ", " << src_shape_info.slice_row
+                 << dst_shape_info.type << ", " << dst_shape_info.slice_col
+                 << ", " << dst_shape_info.slice_row << ", "
+                 << dst_shape_info.slice_col << ", " << dst_shape_info.slice_row
                  << "> " << src_temp_name << ";\n";
     this->PrintIndent();
     this->stream << "TASSIGN(" << src_temp_name << ", "
                  << src_shape_info.first_addr << " + " << src_shape_info.offset
-                 << " * " << GetTypeLen(src_shape_info.type) << ");\n";
+                 << " * " << GetTypeLen(dst_shape_info.type) << ");\n";
     src_name = src_temp_name;
   }
 
@@ -1213,11 +1273,9 @@ void CodeGenTileLangAscendPto::CopyL1ToL0Codegen(const CallNode *call,
                << ", " << dst_shape_info.slice_row << ", "
                << dst_shape_info.slice_col;
   if (transpose) {
-    this->stream << ", " << src_shape_info.slice_col << ", "
-                 << src_shape_info.slice_row << ", true";
+    this->stream << ", " << tile_col << ", " << tile_row << ", true";
   } else {
-    this->stream << ", " << src_shape_info.slice_row << ", "
-                 << src_shape_info.slice_col;
+    this->stream << ", " << tile_row << ", " << tile_col;
   }
   this->stream << ">";
 
@@ -1299,6 +1357,9 @@ void CodeGenTileLangAscendPto::SyncAllCodegen(const CallNode *op) {
 
 void CodeGenTileLangAscendPto::PipeBarrierCodegen(const CallNode *op) {
   std::string pipe = Downcast<StringImm>(op->args[0])->value;
+  if (this->platform_ == "A5" && pipe == "V") {
+    return;
+  }
   this->PrintIndent();
   this->stream << "pipe_barrier(PIPE_" << pipe << ");\n";
 }
@@ -2326,6 +2387,94 @@ void CodeGenTileLangAscendPto::SigmoidCodegen(const CallNode *op,
   }
 }
 
+void CodeGenTileLangAscendPto::SiluCodegen(const CallNode *op) {
+  ShapeInfo dst_shape_info = GetSliceInfo(op->args[0].as<CallNode>());
+  ShapeInfo src_shape_info = GetSliceInfo(op->args[1].as<CallNode>());
+
+  std::string dst_name = PrintBufferOffset(op->args[0].as<CallNode>());
+  std::string src_name = PrintBufferOffset(op->args[1].as<CallNode>());
+
+  std::string tmp_name = GetTempVarName(dst_shape_info.ub_name) + "_silu_tmp";
+  int32_t row =
+      dst_shape_info.is_slice ? dst_shape_info.slice_row : dst_shape_info.row;
+  int32_t col =
+      dst_shape_info.is_slice ? dst_shape_info.slice_col : dst_shape_info.col;
+
+  if (dst_shape_info.is_slice || src_shape_info.is_slice) {
+    std::string dst_temp_name = GetTempVarName(dst_shape_info.ub_name);
+    std::string src_temp_name = GetTempVarName(src_shape_info.ub_name);
+    CreateUbVariableND(dst_temp_name, dst_shape_info);
+    CreateUbVariableND(src_temp_name, src_shape_info);
+    this->PrintIndent();
+    this->stream << "tl::ascend_pto::TileUbDataND<" << dst_shape_info.type
+                 << ", " << row << ", " << col << "> " << tmp_name << ";\n";
+    this->PrintIndent();
+    this->stream << "TASSIGN(" << tmp_name << ", " << max_ub_addr_ << ");\n";
+    this->PrintIndent();
+    this->stream << kAscendPtoScope << "TSILU<" << dst_shape_info.type << ", "
+                 << row << ", " << col << ">(" << dst_temp_name << ", "
+                 << src_temp_name << ", " << tmp_name << ");\n";
+  } else {
+    this->PrintIndent();
+    this->stream << "tl::ascend_pto::TileUbDataND<" << dst_shape_info.type
+                 << ", " << row << ", " << col << "> " << tmp_name << ";\n";
+    this->PrintIndent();
+    this->stream << "TASSIGN(" << tmp_name << ", " << max_ub_addr_ << ");\n";
+    this->PrintIndent();
+    this->stream << kAscendPtoScope << "TSILU<" << dst_shape_info.type << ", "
+                 << row << ", " << col << ">(" << dst_name << ", " << src_name
+                 << ", " << tmp_name << ");\n";
+  }
+}
+
+void CodeGenTileLangAscendPto::MulAddDstCodegen(const CallNode *op) {
+  ShapeInfo dst_shape_info = GetSliceInfo(op->args[0].as<CallNode>());
+  ShapeInfo src0_shape_info = GetSliceInfo(op->args[1].as<CallNode>());
+  ShapeInfo src1_shape_info = GetSliceInfo(op->args[2].as<CallNode>());
+
+  std::string dst_name = PrintBufferOffset(op->args[0].as<CallNode>());
+  std::string src0_name = PrintBufferOffset(op->args[1].as<CallNode>());
+  std::string src1_name = PrintBufferOffset(op->args[2].as<CallNode>());
+
+  std::string tmp_name =
+      GetTempVarName(dst_shape_info.ub_name) + "_muladddst_tmp";
+  int32_t row =
+      dst_shape_info.is_slice ? dst_shape_info.slice_row : dst_shape_info.row;
+  int32_t col =
+      dst_shape_info.is_slice ? dst_shape_info.slice_col : dst_shape_info.col;
+
+  if (dst_shape_info.is_slice || src0_shape_info.is_slice ||
+      src1_shape_info.is_slice) {
+    std::string dst_temp_name = GetTempVarName(dst_shape_info.ub_name);
+    std::string src0_temp_name = GetTempVarName(src0_shape_info.ub_name);
+    std::string src1_temp_name = GetTempVarName(src1_shape_info.ub_name);
+    CreateUbVariableND(dst_temp_name, dst_shape_info);
+    CreateUbVariableND(src0_temp_name, src0_shape_info);
+    CreateUbVariableND(src1_temp_name, src1_shape_info);
+    this->PrintIndent();
+    this->stream << "tl::ascend_pto::TileUbDataND<" << dst_shape_info.type
+                 << ", " << row << ", " << col << "> " << tmp_name << ";\n";
+    this->PrintIndent();
+    this->stream << "TASSIGN(" << tmp_name << ", " << max_ub_addr_ << ");\n";
+    this->PrintIndent();
+    this->stream << kAscendPtoScope << "MulAddDst<" << dst_shape_info.type
+                 << ", " << row << ", " << col << ">(" << dst_temp_name << ", "
+                 << src0_temp_name << ", " << src1_temp_name << ", " << tmp_name
+                 << ");\n";
+  } else {
+    this->PrintIndent();
+    this->stream << "tl::ascend_pto::TileUbDataND<" << dst_shape_info.type
+                 << ", " << row << ", " << col << "> " << tmp_name << ";\n";
+    this->PrintIndent();
+    this->stream << "TASSIGN(" << tmp_name << ", " << max_ub_addr_ << ");\n";
+    this->PrintIndent();
+    this->stream << kAscendPtoScope << "MulAddDst<" << dst_shape_info.type
+                 << ", " << row << ", " << col << ">(" << dst_name << ", "
+                 << src0_name << ", " << src1_name << ", " << tmp_name
+                 << ");\n";
+  }
+}
+
 void CodeGenTileLangAscendPto::CastCodegen(const CallNode *op,
                                            const std::string &op_type) {
   std::vector<std::string> var_names;
@@ -2334,19 +2483,16 @@ void CodeGenTileLangAscendPto::CastCodegen(const CallNode *op,
     var_names.push_back(var_name);
   }
 
-  ShapeInfo src_shape_info = GetSliceInfo(op->args[0].as<CallNode>());
-  ShapeInfo dst_shape_info = GetSliceInfo(op->args[1].as<CallNode>());
+  ShapeInfo src_shape_info = GetSliceInfo(op->args[1].as<CallNode>());
+  ShapeInfo dst_shape_info = GetSliceInfo(op->args[0].as<CallNode>());
   if (src_shape_info.is_slice || dst_shape_info.is_slice) {
-    this->PrintIndent();
-    this->stream << "set_flag(PIPE_MTE2, PIPE_MTE3, EVENT_ID1);\n";
-    this->stream << "wait_flag(PIPE_MTE2, PIPE_MTE3, EVENT_ID1);\n";
     std::string src_temp_name = GetTempVarName(src_shape_info.ub_name);
     std::string dst_temp_name = GetTempVarName(dst_shape_info.ub_name);
     CreateUbVariableND(src_temp_name, src_shape_info);
     CreateUbVariableND(dst_temp_name, dst_shape_info);
     this->PrintIndent();
     this->stream << "TCVT" << "(" << dst_temp_name << ", " << src_temp_name
-                 << ", " << "pto::RoundMode::CAST_NONE" << ");\n";
+                 << ", " << op_type << ");\n";
   } else {
     this->stream << "TCVT" << "(";
     var_names.push_back(op_type);
@@ -2719,7 +2865,7 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
   ICHECK(scope_to_tile.count(scope))
       << "Unsupported storage scope for PTO allocation: " << scope
       << ", variable: " << op->buffer_var->name_hint;
-  const std::string &op_name = scope_to_tile.at(scope);
+  std::string op_name = scope_to_tile.at(scope);
 
   // 3. Retrieve and validate the 4D physical layout [M, N, Valid_M, Valid_N]
   ICHECK(buffer_shapess_.count(op->buffer_var))
@@ -2758,6 +2904,17 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
     address_offset_.Set(String(scope), current_offset + Integer(alloc_bytes));
   }
   buffer_address_map_.Set(op->buffer_var, target_address);
+
+  // Track max UB end address for internal scratch buffer allocation
+  if (scope == "shared") {
+    if (auto *addr_int = target_address.as<IntImmNode>()) {
+      int64_t size = op->ConstantAllocationSize() * op->dtype.bytes();
+      int64_t end_addr = addr_int->value + size;
+      end_addr = ((end_addr + 31) / 32) * 32;
+      if (end_addr > max_ub_addr_)
+        max_ub_addr_ = end_addr;
+    }
+  }
 
   // Print the address assignment (TASSIGN)
   this->PrintIndent();

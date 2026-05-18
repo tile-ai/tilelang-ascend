@@ -166,6 +166,7 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
     bool print_dst_layout = false;
     bool print_ub = false;
     bool l0_dst_split = false;
+    bool virtual_channel = false;
     bool gm2ub = false;
     bool ub2gm = false;
   } config;
@@ -220,6 +221,24 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
         ss << ", " << compute_blocklen(src, src_extents);
       }
       ss << ">";
+    } else if (dst.scope() == "shared.dyn") {
+      config.virtual_channel = true;
+      ss << "copy_ub_to_l1<"; // real channel is "ub -> gm -> l1"
+      ss << get_dtype(dst) << ", ";
+      ss << src->shape[src->shape.size() - 1];
+      if (src->shape.size() > 1) {
+        ss << ", " << src->shape[src->shape.size() - 2];
+      }
+      ss << ">";
+    } else if (src.scope() == "wmma.accumulator") {
+      config.virtual_channel = true;
+      ss << "copy_l0c_to_ub<";
+      ss << get_dtype(src) << ", " << get_dtype(dst) << ", ";
+      ss << "layout::RowMajor, "; // real channel is "ub -> gm -> l1", so gm is
+                                  // always row major
+      ss << src->shape[src->shape.size() - 2] << ", "
+         << src->shape[src->shape.size() - 1];
+      ss << ", " << enRelu << ">";
     } else {
       PrimExpr len = 1;
       for (auto &shape : dst_extents) {
@@ -446,6 +465,12 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
     new_args.push_back(src->shape[src->shape.size() - 1]);
   }
 
+  if (config.virtual_channel) {
+    new_args.push_back(
+        src->shape[src->shape.size() -
+                   1]); // ub/l0c -> gm need realdstN which is equal to srcN in
+                        // virtural channel scenario
+  }
   // if (config.l12l0) {
   //   ICHECK(src->shape.size() == dst->shape.size());
   //   bool is_extract = false;

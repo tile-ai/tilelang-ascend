@@ -426,6 +426,18 @@ def AscendVidReduction():
     return _ffi_api.AscendVidReduction()  # type: ignore
 
 
+def AscendWorkspaceReduction():
+    """Reduction Workspace for Ascend.
+
+    Returns
+    -------
+    fpass : tvm.transform.Pass
+        The result pass
+    ----
+    """
+    return _ffi_api.AscendWorkspaceReduction()  # type: ignore
+
+
 def AscendInferBufferScope():
     """Infer Buffer Scope for Ascend.
 

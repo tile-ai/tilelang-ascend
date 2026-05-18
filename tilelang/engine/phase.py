@@ -68,6 +68,8 @@ def LowerAndLegalize(mod: IRModule, target: Target) -> IRModule:
     mod = tilelang.transform.CollectBufferShapes()(mod)
     # Lower high-level tile operations to low-level operations
     mod = tilelang.transform.LowerTileOp()(mod)
+    # Erase manual workspace allocations for virtual CV copy in Ascend
+    mod = tilelang.transform.AscendWorkspaceReduction()(mod)
     # Legalize vectorized loops to ensure they are valid
     mod = tilelang.transform.LegalizeVectorizedLoop()(mod)
     # Add safety checks for memory accesses
@@ -97,6 +99,8 @@ def OptimizeForTarget(mod: IRModule, target: Target, platform: str) -> IRModule:
     mod = tilelang.transform.FlattenBuffer()(mod)
     mod = tir.transform.Simplify()(mod)
     mod = tilelang.transform.VectorizeLoop(enable_vectorize=allow_vectorize(pass_ctx=pass_ctx))(mod)
+    # print("[PHASE] OptimizeForTarget - Before AscendStorageRewrite")
+    # print(mod)
     mod = tilelang.transform.AscendStorageRewrite(is_npu=check_npu_availability())(mod)
     mod = tir.transform.UnrollLoop()(mod)
     mod = tir.transform.RenormalizeSplitPattern()(mod)
