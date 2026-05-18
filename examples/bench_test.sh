@@ -387,10 +387,7 @@ if [ "$ENABLE_COVERAGE" = true ] || [ "$ENABLE_CPP_COVERAGE" = true ]; then
     if [ "$ENABLE_COVERAGE" = true ]; then
         echo "Collecting Python coverage..."
         
-        # Collect from examples subdirectories
-        find "${PROJECT_ROOT}/examples" -name ".coverage*" -type f -exec cp -f {} "${PROJECT_ROOT}/coverage_data/" \; 2>/dev/null || true
-        
-        # Combine
+        # Combine all coverage files in coverage_data (examples + pytest already write here)
         coverage_files=$(find "${PROJECT_ROOT}/coverage_data" -name ".coverage*" -type f)
         if [ -n "$coverage_files" ]; then
             cd "${PROJECT_ROOT}"
