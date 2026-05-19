@@ -9,10 +9,8 @@ import torch.nn.functional as F
 tilelang.cache.clear_cache()
 
 pass_configs = {
-    # tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
     tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
     tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
-    # tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_SYNC: True,
 }
 
 
@@ -157,7 +155,6 @@ def fla_fused_chunk_bwd_kernel(
                 T.tile.fill(dv_ub, 0.0)
                 T.tile.fill(ds_half, 0.0)
 
-                # T.pipe_barrier("mte3")
                 T.set_cross_flag("MTE3", 1)
 
                 for i_k in T.serial(NK):
@@ -182,29 +179,18 @@ def fla_fused_chunk_bwd_kernel(
                             T.set_cross_flag("MTE3", 3)
 
                             T.wait_cross_flag(4)
-                            T.copy(workspace1[bv_idx, vid * sub_C : (vid + 1) * sub_C, :], dq_ub)
-
-                            T.tile.mul(dq_ub, dq_ub, scale)
 
                             # dQ
-                            T.copy(
+                            T.copy(workspace1[bv_idx, vid * sub_C : (vid + 1) * sub_C, :], dq_ub)
+                            T.tile.mul(dq_ub, dq_ub, scale)
+                            T.tile.atomic_add(
                                 dQ[
                                     i_b,
                                     chk * chunk_size + vid * sub_C : chk * chunk_size + (vid + 1) * sub_C,
                                     i_h,
                                     i_k * BK : (i_k + 1) * BK,
                                 ],
-                                dq_tmp,
-                            )
-                            T.tile.add(dq_tmp, dq_tmp, dq_ub)
-                            T.copy(
-                                dq_tmp,
-                                dQ[
-                                    i_b,
-                                    chk * chunk_size + vid * sub_C : chk * chunk_size + (vid + 1) * sub_C,
-                                    i_h,
-                                    i_k * BK : (i_k + 1) * BK,
-                                ],
+                                dq_ub,
                             )
 
                             T.set_cross_flag("MTE3", 1)
@@ -259,46 +245,26 @@ def fla_fused_chunk_bwd_kernel(
 
                             # dK
                             T.copy(workspace1[bv_idx, vid * sub_C : (vid + 1) * sub_C, :], dk_ub)
-                            T.copy(
+                            T.tile.atomic_add(
                                 dK[
                                     i_b,
                                     rev * chunk_size + vid * sub_C : rev * chunk_size + (vid + 1) * sub_C,
                                     i_h,
                                     i_k * BK : (i_k + 1) * BK,
                                 ],
-                                dk_tmp,
-                            )
-                            T.tile.add(dk_tmp, dk_tmp, dk_ub)
-                            T.copy(
-                                dk_tmp,
-                                dK[
-                                    i_b,
-                                    rev * chunk_size + vid * sub_C : rev * chunk_size + (vid + 1) * sub_C,
-                                    i_h,
-                                    i_k * BK : (i_k + 1) * BK,
-                                ],
+                                dk_ub,
                             )
 
                             # dV
                             T.copy(workspace2[bv_idx, vid * sub_C : (vid + 1) * sub_C, :], dv_ub)
-                            T.copy(
+                            T.tile.atomic_add(
                                 dV[
                                     i_b,
                                     rev * chunk_size + vid * sub_C : rev * chunk_size + (vid + 1) * sub_C,
                                     i_h,
                                     i_v * BV : (i_v + 1) * BV,
                                 ],
-                                dv_tmp,
-                            )
-                            T.tile.add(dv_tmp, dv_tmp, dv_ub)
-                            T.copy(
-                                dv_tmp,
-                                dV[
-                                    i_b,
-                                    rev * chunk_size + vid * sub_C : rev * chunk_size + (vid + 1) * sub_C,
-                                    i_h,
-                                    i_v * BV : (i_v + 1) * BV,
-                                ],
+                                dv_ub,
                             )
                             T.set_cross_flag("MTE3", 5)
 
