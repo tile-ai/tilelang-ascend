@@ -885,6 +885,8 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op,
     TshCodegen(op, "TSHRS");
   } else if (op->op.same_as(tl::ascend_arith_progression())) {
     ArithProgressionCodegen(op, "TCI");
+  } else if (op->op.same_as(tl::ascend_row_expand_mul())) {
+    RowExpandMulCodegen(op);
   } else if (op->op.same_as(tl::ascend_broadcast())) {
     BroadcastOpCodegen(op);
   } else if (op->op.same_as(tl::ascend_select())) {
@@ -2056,6 +2058,52 @@ void CodeGenTileLangAscendPto::BroadcastOpCodegen(const CallNode *op) {
   } else {
     CodegenColBroadcast(dst_shape_info, src_shape_info);
   }
+}
+
+void CodeGenTileLangAscendPto::RowExpandMulCodegen(const CallNode *op) {
+  ShapeInfo dst = GetSliceInfo(op->args[1].as<CallNode>());
+  ShapeInfo src0 = GetSliceInfo(op->args[2].as<CallNode>());
+  ShapeInfo src1 = GetSliceInfo(op->args[3].as<CallNode>());
+
+  bool has_tmp = (op->args.size() >= 5);
+  ShapeInfo tmp;
+  if (has_tmp) {
+    tmp = GetSliceInfo(op->args[4].as<CallNode>());
+  }
+
+  // Handle ND slices; src1 stays ND — the helper in common.h creates the DN
+  // column-vector tile in-place.
+  std::string src1_name = src1.ub_name;
+  if (src1.is_slice) {
+    src1_name = GetTempVarName(src1.ub_name);
+    CreateUbVariableND(src1_name, src1);
+  }
+
+  std::string dst_name = dst.ub_name;
+  if (dst.is_slice) {
+    dst_name = GetTempVarName(dst.ub_name);
+    CreateUbVariableND(dst_name, dst);
+  }
+
+  std::string src0_name = src0.ub_name;
+  if (src0.is_slice) {
+    src0_name = GetTempVarName(src0.ub_name);
+    CreateUbVariableND(src0_name, src0);
+  }
+
+  int32_t src1_len = src1.is_slice ? src1.slice_valid_col : src1.col;
+  int32_t dst_rows = dst.is_slice ? dst.slice_valid_row : dst.row;
+  int32_t dst_cols = dst.is_slice ? dst.slice_valid_col : dst.col;
+
+  this->PrintIndent();
+  this->stream << kAscendPtoScope << "TROWEXPANDMUL_row_vec<" << src1.type
+               << ", " << dst_rows << ", " << dst_cols << ", " << src1_len
+               << ">(" << dst_name << ", " << src0_name << ", " << src1_name
+               << ", " << PrintExpr(src1.first_addr) << ", " << src1.offset;
+  if (has_tmp) {
+    this->stream << ", " << tmp.ub_name;
+  }
+  this->stream << ");\n";
 }
 
 std::string getValueOrProcess(const std::map<std::string, std::string> &myMap,

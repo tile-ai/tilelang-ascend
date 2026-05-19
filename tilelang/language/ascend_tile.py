@@ -2025,6 +2025,98 @@ def broadcast(
     )
 
 
+def row_expand_mul(
+    dst: Buffer | BufferRegion,
+    src0: Buffer | BufferRegion,
+    src1: Buffer | BufferRegion,
+    tmp: Buffer | BufferRegion | None = None,
+):
+    """Performs row-wise broadcast multiply: dst[i, j] = src0[i, j] * src1[i].
+
+    This is a fused row-broadcast and multiply operation backed by the PTO
+    TROWEXPANDMUL instruction.  Each element in src1 is broadcast across all
+    columns of the corresponding row in src0.
+
+    Args:
+        dst: Destination buffer (UB, shape [rows, cols]).
+        src0: Source data buffer (UB, shape [rows, cols]).
+        src1: Per-row scalars. Accepts 1D [R] or 2D [1, R] (row vector);
+              both are treated as R scalars matching dst rows.
+        tmp: Optional temporary buffer for internal workspace.
+
+    Returns:
+        A TVM intrinsic call for the TROWEXPANDMUL operation.
+    """
+    if isinstance(dst, BufferRegion):
+        dst_ptr, dst_shape = _handle_buffer_region(dst, "w")
+    else:
+        dst_ptr = dst.access_ptr("w")
+        dst_shape = list(dst.shape[-2:])
+
+    if isinstance(src0, BufferRegion):
+        src0_ptr, src0_shape = _handle_buffer_region(src0, "r")
+    else:
+        src0_ptr = src0.access_ptr("r")
+        src0_shape = list(src0.shape[-2:])
+
+    if isinstance(src1, BufferRegion):
+        src1_ptr, src1_full_shape = _handle_buffer_region(src1, "r")
+    else:
+        src1_ptr = src1.access_ptr("r")
+        src1_full_shape = list(src1.shape)
+
+    if len(src1_full_shape) == 1:
+        # 1D [R] → R per-row scalars
+        src1_len = src1_full_shape[0]
+    elif len(src1_full_shape) == 2:
+        s0, s1 = src1_full_shape[-2], src1_full_shape[-1]
+        if s0 == 1:
+            src1_len = s1  # [1, R]
+        elif s1 == 1:
+            src1_len = s0  # [R, 1]
+        else:
+            raise ValueError(
+                f"src1 must be 1D [R], [1, R], or [R, 1]; got {src1_full_shape}"
+            )
+    else:
+        raise ValueError(
+            f"src1 must be 1D or 2D, got shape {src1_full_shape}"
+        )
+
+    if len(dst_shape) != 2 or len(src0_shape) != 2:
+        raise ValueError("row_expand_mul requires 2D buffers for dst and src0.")
+
+    if dst_shape != src0_shape:
+        raise ValueError(
+            f"dst and src0 shapes must match: dst={dst_shape}, src0={src0_shape}"
+        )
+
+    if src1_len != dst_shape[0]:
+        raise ValueError(
+            f"src1 scalar count must match dst rows: src1={src1_len}, dst[0]={dst_shape[0]}"
+        )
+
+    dtype = _dtype(src0)
+    args = [
+        f"RowExpandMul<{dtype}>",
+        dst_ptr,
+        src0_ptr,
+        src1_ptr,
+    ]
+    if tmp is not None:
+        if isinstance(tmp, BufferRegion):
+            tmp_ptr, _ = _handle_buffer_region(tmp, "rw")
+        else:
+            tmp_ptr = tmp.access_ptr("rw")
+        args.append(tmp_ptr)
+
+    return tir.call_intrin(
+        "handle",
+        tir.op.Op.get("tl.ascend_row_expand_mul"),
+        *args,
+    )
+
+
 def sub_experiment(dst: Buffer, src0: Buffer, src1: Buffer, count: PrimExpr):
     """Performs element-wise subtraction(with count function): dst = src0 - src1.
 
