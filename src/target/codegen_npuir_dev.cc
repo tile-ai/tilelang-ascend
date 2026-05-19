@@ -2791,10 +2791,14 @@ void CodeGenTileLangNPUIRDEV::VpadCodegen(const CallNode *op) {
 
 void CodeGenTileLangNPUIRDEV::VflipCodegen(const CallNode *op) {
   tvm::tl::NpuirFlip npuirop(op->args, this->vmap);
-  Value src = GenSubviewFromRegion(npuirop.src, npuirop.src_range);
-  Value dst = GenSubviewFromRegion(npuirop.dst, npuirop.dst_range);
-  builder.create<mlir::hivm::VFlipOp>(builder.getUnknownLoc(), TypeRange{}, src,
-                                      dst, npuirop.axis);
+  Value src = GetVarValue(npuirop.src);
+  Value dst = GetVarValue(npuirop.dst);
+  ICHECK(npuirop.axis >= 0)
+  auto loc = builder.getUnknownLoc();
+  auto srcTy = src.getType().cast<RankedTensorType>();
+
+  auto flipOp = builder.create<mlir::hfusion::FlipOp>(loc, srcTy, src, static_cast<uint64_t>(npuirop.axis));
+  SetVarValue(npuirop.dst, flipOp.getResult());
 }
 
 void CodeGenTileLangNPUIRDEV::Nd2NzCodegen(const CallNode *op) {
