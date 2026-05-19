@@ -138,6 +138,8 @@ private:
 
   void BroadcastOpCodegen(const CallNode *op);
 
+  void RowExpandMulCodegen(const CallNode *op);
+
   void SetCrossFlagCodegen(const CallNode *op);
 
   void FlagOpCodegen(const CallNode *op, std::string op_name);

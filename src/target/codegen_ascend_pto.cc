@@ -885,6 +885,8 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op,
     TshCodegen(op, "TSHRS");
   } else if (op->op.same_as(tl::ascend_arith_progression())) {
     ArithProgressionCodegen(op, "TCI");
+  } else if (op->op.same_as(tl::ascend_row_expand_mul())) {
+    RowExpandMulCodegen(op);
   } else if (op->op.same_as(tl::ascend_broadcast())) {
     BroadcastOpCodegen(op);
   } else if (op->op.same_as(tl::ascend_select())) {
@@ -2056,6 +2058,60 @@ void CodeGenTileLangAscendPto::BroadcastOpCodegen(const CallNode *op) {
   } else {
     CodegenColBroadcast(dst_shape_info, src_shape_info);
   }
+}
+
+void CodeGenTileLangAscendPto::RowExpandMulCodegen(const CallNode *op) {
+  ShapeInfo dst = GetSliceInfo(op->args[1].as<CallNode>());
+  ShapeInfo src0 = GetSliceInfo(op->args[2].as<CallNode>());
+  ShapeInfo src1 = GetSliceInfo(op->args[3].as<CallNode>());
+
+  // Detect 1D src1 [R] and treat it as column vector [R, 1].
+  // GetSliceInfo maps 1D [R] → row=1, col=R; we need row=R, col=1.
+  {
+    Var src1_var = Downcast<Var>(op->args[3].as<CallNode>()->args[1]);
+    if (buffer_shapess_.count(src1_var)) {
+      auto src1_shape = buffer_shapess_.at(src1_var);
+      if (src1_shape.size() == 1) {
+        int32_t r = src1.col;
+        src1.row = r;
+        src1.col = 1;
+        src1.slice_row = r;
+        src1.slice_col = GetValidShape(1, src1.type);
+        src1.slice_valid_row = src1.slice_valid_col;
+        src1.slice_valid_col = 1;
+      }
+    }
+  }
+
+  bool has_tmp = (op->args.size() >= 5);
+  ShapeInfo tmp;
+  if (has_tmp) {
+    tmp = GetSliceInfo(op->args[4].as<CallNode>());
+  }
+
+  // src1 (per-row scalars, shape [rows, 1]): ND -> DN (ColMajor)
+  std::string src1_name = GetTempVarName(src1.ub_name);
+  CreateUbVariableDN(src1_name, src1);
+
+  std::string dst_name = dst.ub_name;
+  if (dst.is_slice) {
+    dst_name = GetTempVarName(dst.ub_name);
+    CreateUbVariableND(dst_name, dst);
+  }
+
+  std::string src0_name = src0.ub_name;
+  if (src0.is_slice) {
+    src0_name = GetTempVarName(src0.ub_name);
+    CreateUbVariableND(src0_name, src0);
+  }
+
+  this->PrintIndent();
+  this->stream << "TROWEXPANDMUL(" << dst_name << ", " << src0_name
+               << ", " << src1_name;
+  if (has_tmp) {
+    this->stream << ", " << tmp.ub_name;
+  }
+  this->stream << ");\n";
 }
 
 std::string getValueOrProcess(const std::map<std::string, std::string> &myMap,

@@ -4848,6 +4848,59 @@ def test_reduce_slice_buffer_physical_output_shape_is_accepted(input_shape, real
     assert result.op.same_as(tir.op.Op.get("tl.ascend_reduce"))
 
 
+def row_expand_mul_kernel(M, N, block_M, block_N, dtype="float"):
+    m_num = M // block_M
+    n_num = N // block_N
+    VEC_NUM = 2
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((M, N), dtype),
+        B: T.Tensor((M, 1), dtype),
+        C: T.Tensor((M, N), dtype),
+    ):
+        with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
+            bx = cid // n_num
+            by = cid % n_num
+
+            sub_block_M = block_M // VEC_NUM
+            a_ub = T.alloc_ub((sub_block_M, block_N), dtype)
+            b_ub = T.alloc_ub((sub_block_M, 1), dtype)
+            c_ub = T.alloc_ub((sub_block_M, block_N), dtype)
+
+            T.copy(A[bx * block_M + vid * sub_block_M, by * block_N], a_ub)
+            T.copy(B[bx * block_M + vid * sub_block_M, 0], b_ub)
+            T.barrier_all()
+            T.tile.row_expand_mul(c_ub, a_ub, b_ub)
+            T.barrier_all()
+            T.copy(c_ub, C[bx * block_M + vid * sub_block_M, by * block_N])
+
+    return main
+
+
+def run_test_row_expand_mul(M, N, block_M, block_N, dtype, target):
+    func = row_expand_mul_kernel(M, N, block_M, block_N, dtype)
+    func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
+
+    torch_dtype = torch.float32 if dtype == "float" else torch.float16
+    a = torch.randn(M, N, dtype=torch_dtype).npu()
+    b = torch.randn(M, 1, dtype=torch_dtype).npu()
+
+    torch.npu.synchronize()
+
+    c = func(a, b)
+
+    ref = a * b
+    torch.testing.assert_close(c, ref, rtol=1e-2, atol=1e-2)
+
+
+@pytest.mark.parametrize("dtype", ["float", "float16"])
+@pytest.mark.parametrize("target", ["pto"])
+def test_row_expand_mul(dtype, target):
+    M, N = 256, 128
+    run_test_row_expand_mul(M, N, 64, 64, dtype, target)
+
+
 if __name__ == "__main__":
     current_dir = os.path.dirname(os.path.abspath(__file__))
     elementwise_test_path = os.path.join(current_dir, "test_tilelang_ascend_language_elementwise.py")

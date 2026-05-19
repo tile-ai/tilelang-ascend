@@ -2025,6 +2025,103 @@ def broadcast(
     )
 
 
+def row_expand_mul(
+    dst: Buffer | BufferRegion,
+    src0: Buffer | BufferRegion,
+    src1: Buffer | BufferRegion,
+    tmp: Buffer | BufferRegion | None = None,
+):
+    """Performs row-wise broadcast multiply: dst[i, j] = src0[i, j] * src1[i, 0].
+
+    This is a fused row-broadcast and multiply operation backed by the PTO
+    TROWEXPANDMUL instruction.  Each element in src1 is broadcast across all
+    columns of the corresponding row in src0.
+
+    Args:
+        dst: Destination buffer (UB, shape [rows, cols]).
+        src0: Source data buffer (UB, shape [rows, cols]).
+        src1: Per-row scalars: either a 2D column vector (UB, shape [rows, 1])
+              or a 1D buffer (UB, shape [rows]) which is treated as [rows, 1].
+        tmp: Optional temporary buffer for internal workspace.
+
+    Returns:
+        A TVM intrinsic call for the TROWEXPANDMUL operation.
+    """
+    if isinstance(dst, BufferRegion):
+        dst_ptr, dst_shape = _handle_buffer_region(dst, "w")
+    else:
+        dst_ptr = dst.access_ptr("w")
+        dst_shape = list(dst.shape[-2:])
+
+    if isinstance(src0, BufferRegion):
+        src0_ptr, src0_shape = _handle_buffer_region(src0, "r")
+    else:
+        src0_ptr = src0.access_ptr("r")
+        src0_shape = list(src0.shape[-2:])
+
+    if isinstance(src1, BufferRegion):
+        src1_ptr, src1_full_shape = _handle_buffer_region(src1, "r")
+        src1_is_1d = len(src1_full_shape) == 1
+        if not src1_is_1d:
+            src1_shape_2d = list(src1_full_shape[-2:])
+    else:
+        src1_ptr = src1.access_ptr("r")
+        src1_full_shape = list(src1.shape)
+        src1_is_1d = len(src1_full_shape) == 1
+        if not src1_is_1d:
+            src1_shape_2d = list(src1_full_shape[-2:])
+
+    if src1_is_1d:
+        src1_rows = src1_full_shape[0]
+    else:
+        src1_rows = src1_shape_2d[0]
+
+    if len(dst_shape) != 2 or len(src0_shape) != 2:
+        raise ValueError("row_expand_mul requires 2D buffers for dst and src0.")
+
+    if dst_shape != src0_shape:
+        raise ValueError(
+            f"dst and src0 shapes must match: dst={dst_shape}, src0={src0_shape}"
+        )
+
+    if not src1_is_1d:
+        if len(src1_shape_2d) != 2:
+            raise ValueError("src1 must be 2D [rows, 1] or 1D [rows].")
+        if src1_shape_2d[1] != 1:
+            raise ValueError(
+                f"src1 must be a column vector [rows, 1], got {src1_shape_2d}"
+            )
+        if src1_shape_2d[0] != dst_shape[0]:
+            raise ValueError(
+                f"src1 rows must match dst rows: src1[0]={src1_shape_2d[0]}, dst[0]={dst_shape[0]}"
+            )
+    else:
+        if src1_rows != dst_shape[0]:
+            raise ValueError(
+                f"src1 rows must match dst rows: src1[0]={src1_rows}, dst[0]={dst_shape[0]}"
+            )
+
+    dtype = _dtype(src0)
+    args = [
+        f"RowExpandMul<{dtype}>",
+        dst_ptr,
+        src0_ptr,
+        src1_ptr,
+    ]
+    if tmp is not None:
+        if isinstance(tmp, BufferRegion):
+            tmp_ptr, _ = _handle_buffer_region(tmp, "rw")
+        else:
+            tmp_ptr = tmp.access_ptr("rw")
+        args.append(tmp_ptr)
+
+    return tir.call_intrin(
+        "handle",
+        tir.op.Op.get("tl.ascend_row_expand_mul"),
+        *args,
+    )
+
+
 def sub_experiment(dst: Buffer, src0: Buffer, src1: Buffer, count: PrimExpr):
     """Performs element-wise subtraction(with count function): dst = src0 - src1.
 
