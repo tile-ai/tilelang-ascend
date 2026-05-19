@@ -26,15 +26,3 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} --coverage -fprofile-arcs -ftest-coverag
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} --coverage -fprofile-arcs -ftest-coverage")
 set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} --coverage")
 set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} --coverage")
-
-# Function to add coverage target
-function(add_coverage_target target_name)
-    add_custom_target(${target_name}_coverage
-        COMMAND ${LCOV_PATH} --capture --directory ${CMAKE_BINARY_DIR} --output-file ${target_name}_coverage.info
-        COMMAND ${LCOV_PATH} --extract ${target_name}_coverage.info "*/src/*" --output-file ${target_name}_coverage.info
-        WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
-        COMMENT "Generating coverage data for ${target_name}"
-    )
-    
-    add_dependencies(${target_name}_coverage ${target_name})
-endfunction()
