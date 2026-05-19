@@ -239,3 +239,58 @@ python examples/<算子>.py
 - 优先使用 Glob 工具通过文件名模式搜索
 - 文档中的路径可能是相对路径，需用 Glob 在整个项目中搜索
 - 使用 Explore Agent 查找资料，使用 Plan Agent 进行方案设计
+
+## 算子开发编排体系
+
+本仓库提供基于 OpenCode 框架的多代理协作体系，用于端到端的算子开发。代理定义位于 [.opencode/agents/](.opencode/agents/)，状态机由 `state_transition` 工具维护。
+
+### 代理拓扑
+
+| 代理 | 角色 | 职责 |
+|------|------|------|
+| [tilelang-op-orchestrator](.opencode/agents/tilelang-op-orchestrator.md) | Primary | 4 阶段状态机、工件门禁、Subagent 调度、状态持久化、设计回退控制 |
+| [tilelang-op-analyst](.opencode/agents/tilelang-op-analyst.md) | Subagent | Stage 1 算子设计（含需求理解与设计回退，调用 `tilelang-op-design`） |
+| [tilelang-op-developer](.opencode/agents/tilelang-op-developer.md) | Subagent | Stage 2 实现 + Stage 3 精度修复（调用 `tilelang-op-generate`，含设计错误识别） |
+| [tilelang-op-perf-tuner](.opencode/agents/tilelang-op-perf-tuner.md) | Subagent | Stage 4 性能调优（调用 `tilelang-perf-optimization`） |
+
+### 四阶段流程
+
+| Stage | 名称 | 执行方 | 复用 Skill | 产物 |
+|-------|------|--------|-----------|------|
+| 1 | 算子设计（含需求理解） | `@tilelang-op-analyst` | `tilelang-op-design` | `DESIGN.md` |
+| 2 | 代码实现（含 golden） | `@tilelang-op-developer` | `tilelang-op-generate` | `example_{op}.py`、`test_{op}.py` |
+| 3 | 精度修复 | `@tilelang-op-developer` | （暂无专属 skill，依赖 agent 自身能力） | 修复后 impl + `history_version/` 备份 |
+| 4 | 性能调优 | `@tilelang-op-perf-tuner` | `tilelang-perf-optimization` | `perf_tuning/` |
+
+### 设计回退机制
+
+`DESIGN.md` 不视为不可质疑的硬性约束。当 Stage 2 / Stage 3 的 Subagent 在执行中发现设计层面错误（API 不可用、tiling 不可行、内存层级冲突等）时，可在输出加 `[DESIGN_ERROR]` 标记，Orchestrator 据此回退到 Stage 1 重做设计。**不设次数上限**，以最终算子精度通过为准；死循环风险由 Stage 2 / Stage 3 自身的 5 次重试上限兜底（仍旧失败会触发 `BLOCKED_IMPL` / `BLOCKED_ACCURACY` 自然终止）。每次回退前会备份旧 design 到 `history_version/design_rev{N}.md` 并将历史摘要传给 analyst，避免重复出错。
+
+### 产物目录约定
+
+```
+examples/{op}/
+├── DESIGN.md
+├── example_{op}.py
+├── test_{op}.py
+├── perf_tuning/
+├── history_version/             # 含 design_rev{N}.md 设计回退备份 + impl 精度修复备份
+└── .orchestrator_state.json     # 唯一可写者：orchestrator
+```
+
+### 环境预检（Stage 1 启动前置）
+
+Orchestrator 在进入 Stage 1 之前会自动调用 [tilelang-env-check](.agents/skills/tilelang-custom-skill/tilelang-env-check/) 完成一次性环境验证：
+
+- 检查 torch / torch_npu (>= 2.6.0)、CANN (>= 8.3)、子模块完整性、编译产物、环境变量
+- 部分问题（子模块、编译、`set_env.sh`）会自动修复；torch / torch_npu / CANN 版本问题需用户手动处理
+- 通过后写入 `env_check_passed: true`，续跑/设计回退不重复执行
+- 后续阶段若报 `ImportError` 等环境错误，会触发一次重新预检
+
+不达标时置 `BLOCKED_ENVIRONMENT`，并在报告中给出用户应执行的修复命令。
+
+### 使用入口
+
+- 新建算子：直接对 `@tilelang-op-orchestrator` 描述需求，由其驱动环境预检 + Stage 1→4。
+- 单独调用 skill：仍可直接 `/tilelang-op-design`、`/tilelang-op-generate`、`/tilelang-perf-optimization`、`/tilelang-env-check`，跳过编排层。
+- 续跑/恢复：再次对 `@tilelang-op-orchestrator` 提及算子名，它从 `.orchestrator_state.json` 自动续跑（环境预检不重复执行）。
