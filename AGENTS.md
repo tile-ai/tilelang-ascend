@@ -260,7 +260,13 @@ python examples/<算子>.py
 | 1 | 算子设计（含需求理解） | `@tilelang-op-analyst` | `tilelang-op-design` | `DESIGN.md` |
 | 2 | 代码实现（含 golden） | `@tilelang-op-developer` | `tilelang-op-generate` | `example_{op}.py`、`test_{op}.py` |
 | 3 | 精度修复 | `@tilelang-op-developer` | （暂无专属 skill，依赖 agent 自身能力） | 修复后 impl + `history_version/` 备份 |
-| 4 | 性能调优 | `@tilelang-op-perf-tuner` | `tilelang-perf-optimization` | `perf_tuning/` |
+| 4 | 性能调优（**可选**） | `@tilelang-op-perf-tuner` | `tilelang-perf-optimization` | `perf_tuning/` |
+
+### Stage 4 用户确认
+
+精度通过（无论 Stage 2 直接 PASS 还是 Stage 3 修复后 PASS）后，Orchestrator **主动询问用户是否需要性能调优**：
+- 用户表示不需要 → 直接置 `SUCCESS`，不进入 Stage 4
+- 用户表示需要 → Orchestrator 询问性能调优必要信息（目标类型、目标数值、baseline 路径、测试 shape、噪声阈值、最大迭代数），追加写入 DESIGN.md 的"性能目标"章节，然后进入 Stage 4
 
 ### 设计回退机制
 
