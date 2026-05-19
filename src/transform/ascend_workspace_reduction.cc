@@ -56,6 +56,19 @@ struct CopyGlobalContext {
   std::unordered_set<std::string> buffers_skip_vid_reduction_;
   // Buffer shapes (from PrimFunc attrs)
   std::unordered_map<std::string, Array<PrimExpr>> buffer_shapes_;
+  // PTO pipe metadata: maps dst buffer name to pipe info for deferred pop emission
+  struct PipeInfo {
+    int flag_id;         // pipe flag token
+    int dir_type;        // 1=C2V, 2=V2C
+    int slot_size;       // M * N * dtype_bytes
+    int slot_num;        // 2 (double buffering)
+    std::string pipe_id; // "pipe_X_V2C" or "pipe_X_C2V"
+    std::string op_name; // "copy_pipe_to_l1" or "copy_pipe_to_ub"
+    std::string dtype_str;
+    int M_val;
+    int N_val;
+  };
+  std::unordered_map<std::string, PipeInfo> pipe_info_map_;
 };
 
 class CopyInfoCollector : public StmtExprVisitor {
@@ -64,6 +77,7 @@ private:
   bool is_pto_;
   std::string platform_;
   bool needs_gm_workspace_;
+  int pipe_flag_id_counter_ = 8;
 
   std::unordered_set<std::string> target_copy_stmts_ = {"copy_ub_to_l1",
                                                         "copy_l0c_to_ub"};
@@ -363,6 +377,34 @@ public:
     }
   }
 
+  std::vector<std::string> ParseTemplateParams(const std::string &func_name) {
+    std::vector<std::string> params;
+    size_t left = func_name.find('<');
+    size_t right = func_name.rfind('>');
+    if (left == std::string::npos || right == std::string::npos ||
+        left >= right)
+      return params;
+    std::string content = func_name.substr(left + 1, right - left - 1);
+    std::string current;
+    for (auto &c : content) {
+      if (c == ',') {
+        if (!current.empty()) params.push_back(current);
+        current = "";
+        continue;
+      }
+      if (!std::isspace(c)) current.push_back(c);
+    }
+    if (!current.empty()) params.push_back(current);
+    return params;
+  }
+
+  int GetDtypeBytes(const std::string &dtype_str) {
+    auto it = type_map_.find(dtype_str);
+    ICHECK(it != type_map_.end())
+        << "[Error]<WorkspaceReduction> PTO: Unsupported dtype: " << dtype_str;
+    return it->second.bytes();
+  }
+
   void VisitStmt(const Stmt &stmt) final { StmtExprVisitor::VisitStmt(stmt); }
 
   void VisitStmt_(const EvaluateNode *op) final {
@@ -373,25 +415,22 @@ public:
 
     std::string copy_stmt_name = IsTargetCopyExpr(call_node);
     if (!copy_stmt_name.empty()) {
-      // For PTO (both A2 and A5): skip copy-back bookkeeping.
-      // A2 PTO additionally collects workspace info for GM buffer allocation.
-      if (is_pto_) {
-        if (needs_gm_workspace_) {
-          // A2 PTO: collect workspace info for GM buffer allocation,
-          // but skip copy-back bookkeeping (tracked_buffers_,
-          // src_to_dst_map_, dst_to_access_map_, etc.)
-          auto [src_ptr, dst_ptr] = ExtractCopyAccessPtrs(call_node);
-          WorkspaceInfoCollector(copy_stmt_name, src_ptr, dst_ptr);
-        }
-        return;
-      }
+      // Extract copy access ptrs ONCE (shared by workspace collection,
+      // copy-back tracking, and PTO pipe metadata)
       auto [src_ptr, dst_ptr] = ExtractCopyAccessPtrs(call_node);
+
+      // Layer 1: Workspace collection (differs per backend)
+      // A2 Ascend C || PTO: collect workspace info for GM buffer allocation
+      // A5 PTO: skip workspace collection
+      if (!is_pto_ || needs_gm_workspace_) {
+        WorkspaceInfoCollector(copy_stmt_name, src_ptr, dst_ptr);
+      }
+
+      // Layer 2: Shared copy-back tracking (AscendC + PTO both need this)
       const VarNode *src_name_var_node = (src_ptr->args[1].as<VarNode>());
       const VarNode *dst_name_var_node = (dst_ptr->args[1].as<VarNode>());
       ICHECK(src_name_var_node != nullptr && dst_name_var_node != nullptr)
           << "[Error]<WorkspaceReduction>: src or dst args[1] is not VarNode!";
-
-      WorkspaceInfoCollector(copy_stmt_name, src_ptr, dst_ptr);
 
       const std::string src_buffer_name = src_name_var_node->name_hint;
       const std::string dst_buffer_name = dst_name_var_node->name_hint;
@@ -438,6 +477,41 @@ public:
               scope_table_[target_copy_stmt];
         }
       }
+
+      // Layer 3: PTO pipe metadata collection (for deferred pop emission)
+      if (is_pto_) {
+        auto params = ParseTemplateParams(copy_stmt_name);
+
+        CopyGlobalContext::PipeInfo info;
+        if (is_ub_to_l1) {
+          ICHECK(params.size() >= 3)
+              << "[Error]<WorkspaceReduction> PTO: copy_ub_to_l1 template expects 3+ params, got "
+              << params.size();
+          info.dtype_str = params[0];
+          info.N_val = std::stoi(params[1]);
+          info.M_val = std::stoi(params[2]);
+          info.dir_type = 2;
+          info.op_name = "copy_pipe_to_l1";
+        } else {
+          ICHECK(params.size() >= 5)
+              << "[Error]<WorkspaceReduction> PTO: copy_l0c_to_ub template expects 5+ params, got "
+              << params.size();
+          info.dtype_str = params[0];
+          info.M_val = std::stoi(params[3]);
+          info.N_val = std::stoi(params[4]);
+          info.dir_type = 1;
+          info.op_name = "copy_pipe_to_ub";
+        }
+        // info.flag_id = pipe_flag_id_counter_++;
+        info.flag_id = pipe_flag_id_counter_;
+        pipe_flag_id_counter_ += 2; // one pipe needs 2 flagID
+        int dtype_bytes = GetDtypeBytes(info.dtype_str);
+        info.slot_size = info.M_val * info.N_val * dtype_bytes;
+        info.slot_num = 2;
+        info.pipe_id = "pipe_" + std::to_string(info.flag_id) + "_"
+                       + (info.dir_type == 2 ? "V2C" : "C2V");
+        context_.pipe_info_map_[dst_buffer_name] = info;
+      }
     }
   }
 
@@ -455,7 +529,12 @@ public:
         if (iter_var->thread_tag == "threadIdx.x") {
           context_.core_meta_info_.vid_var = iter_var->var;
           context_.core_meta_info_.vector_cnt =
-              Downcast<IntImm>(op->value)->value;
+              Downcast<IntImm>(op->value)->value;  // 1 or 2
+        }
+        if (iter_var->thread_tag == "blockIdx.y") {
+          context_.core_meta_info_.vid_var = iter_var->var;
+          context_.core_meta_info_.vector_cnt =
+              Downcast<IntImm>(op->value)->value;  // 2
         }
       }
     }
@@ -561,7 +640,6 @@ private:
   const CoreMetaInfo core_meta_info__; // For vid offset calculation
   bool is_pto_;
   std::string platform_;
-  static int pipe_flag_id_counter_;
 
   std::unordered_set<std::string> inserted_buffers_;
 
@@ -573,105 +651,59 @@ private:
   std::unordered_map<std::string, std::string> copy_replace_table_ = {
       {"copy_ub_to_l1", "copy_ub_to_gm"}, {"copy_l0c_to_ub", "copy_l0c_to_gm"}};
 
-  std::vector<std::string> ParseTemplateParams(const std::string &func_name) {
-    std::vector<std::string> params;
-    size_t left = func_name.find('<');
-    size_t right = func_name.rfind('>');
-    if (left == std::string::npos || right == std::string::npos ||
-        left >= right)
-      return params;
-    std::string content = func_name.substr(left + 1, right - left - 1);
-    std::string current;
-    for (auto &c : content) {
-      if (c == ',') {
-        if (!current.empty()) params.push_back(current);
-        current = "";
-        continue;
-      }
-      if (!std::isspace(c)) current.push_back(c);
-    }
-    if (!current.empty()) params.push_back(current);
-    return params;
-  }
-
-  int GetDtypeBytes(const std::string &dtype_str) {
-    auto it = CopyInfoCollector::type_map_.find(dtype_str);
-    ICHECK(it != CopyInfoCollector::type_map_.end())
-        << "[PTO Pipe] Unsupported dtype: " << dtype_str;
-    return it->second.bytes();
-  }
-
-  Stmt GeneratePipePair(const CallNode *orig_call,
+  Stmt GenerateCopyToPipe(const CallNode *orig_call,
                         const std::string &func_name_str) {
     Array<PrimExpr> args = orig_call->args;
     PrimExpr src_ptr = args[1];
     PrimExpr dst_ptr = args[2];
 
-    auto params = ParseTemplateParams(func_name_str);
+    // Get dst buffer name for pipe_info_map_ lookup
+    const CallNode *dst_access = dst_ptr.as<CallNode>();
+    ICHECK(dst_access && dst_access->args.size() >= 2);
+    const VarNode *dst_var = dst_access->args[1].as<VarNode>();
+    ICHECK(dst_var);
+    std::string dst_buffer_name = dst_var->name_hint;
+
+    auto pipe_it = context_.pipe_info_map_.find(dst_buffer_name);
+    ICHECK(pipe_it != context_.pipe_info_map_.end())
+        << "[Error]<WorkspaceReduction> PTO: No pipe info found for: " << dst_buffer_name;
+    const auto &pipe = pipe_it->second;
 
     bool is_ub_to_l1 =
         (func_name_str.find("copy_ub_to_l1") != std::string::npos);
+    std::string pipe_op1 =
+        is_ub_to_l1 ? "copy_ub_to_pipe" : "copy_l0c_to_pipe";
 
-    std::string dtype_str;
-    int M_val, N_val;
-    int dir_type;
-    std::string pipe_op1, pipe_op2;
-
-    if (is_ub_to_l1) {
-      // copy_ub_to_l1<dtype, N, M> → params: [dtype, N, M]
-      ICHECK(params.size() >= 3)
-          << "[PTO Pipe] copy_ub_to_l1 template expects 3+ params, got "
-          << params.size();
-      dtype_str = params[0];
-      N_val = std::stoi(params[1]);
-      M_val = std::stoi(params[2]);
-      dir_type = 2;
-      pipe_op1 = "copy_ub_to_pipe";
-      pipe_op2 = "copy_pipe_to_l1";
-    } else {
-      // copy_l0c_to_ub<src_dtype, dst_dtype, LayoutGM, M, N, enRelu>
-      // params: [src_dtype, dst_dtype, LayoutGM, M, N, enRelu]
-      ICHECK(params.size() >= 5)
-          << "[PTO Pipe] copy_l0c_to_ub template expects 5+ params, got "
-          << params.size();
-      dtype_str = params[0];
-      M_val = std::stoi(params[3]);
-      N_val = std::stoi(params[4]);
-      dir_type = 1;
-      pipe_op1 = "copy_l0c_to_pipe";
-      pipe_op2 = "copy_pipe_to_ub";
-    }
-
-    int flag_id = pipe_flag_id_counter_++;
-    int dtype_bytes = GetDtypeBytes(dtype_str);
-    int slot_size = M_val * N_val * dtype_bytes;
-    int slot_num = 2;
-    std::string pipe_id =
-        "pipe_" + std::to_string(flag_id) + "_" + (dir_type == 2 ? "V2C" : "C2V");
-
-    // Build call1: copy_src_to_pipe
     std::stringstream ss1;
-    ss1 << "tl::ascend::" << pipe_op1 << "<" << dtype_str << ", " << M_val
-        << ", " << N_val << ">";
+    ss1 << "tl::ascend::" << pipe_op1 << "<" << pipe.dtype_str << ", "
+        << pipe.M_val << ", " << pipe.N_val << ">";
     Array<PrimExpr> args1 = {StringImm(ss1.str()), src_ptr, dst_ptr,
-                             Integer(flag_id),      Integer(dir_type),
-                             Integer(slot_size),    Integer(slot_num),
-                             StringImm(pipe_id)};
+                             Integer(pipe.flag_id), Integer(pipe.dir_type),
+                             Integer(pipe.slot_size), Integer(pipe.slot_num),
+                             StringImm(pipe.pipe_id)};
     Call call1(DataType::Handle(), tir::builtin::call_extern(), args1);
 
-    // Build call2: copy_pipe_to_dst
-    // Pass dst_ptr as both src and dst to avoid buffer reference in the other
-    // scope which would cause duplicate declaration errors during codegen
-    std::stringstream ss2;
-    ss2 << "tl::ascend::" << pipe_op2 << "<" << dtype_str << ", " << M_val
-        << ", " << N_val << ">";
-    Array<PrimExpr> args2 = {StringImm(ss2.str()), dst_ptr, dst_ptr,
-                             Integer(flag_id),      Integer(dir_type),
-                             Integer(slot_size),    Integer(slot_num),
-                             StringImm(pipe_id)};
-    Call call2(DataType::Handle(), tir::builtin::call_extern(), args2);
+    return Evaluate(call1);
+  }
 
-    return SeqStmt({Evaluate(call1), Evaluate(call2)});
+  Stmt GenerateCopyFromPipe(const CopyGlobalContext::PipeInfo &pipe,
+                         const Call &dst_access) {
+    std::stringstream ss;
+    ss << "tl::ascend::" << pipe.op_name << "<" << pipe.dtype_str << ", "
+       << pipe.M_val << ", " << pipe.N_val << ">";
+
+    Array<PrimExpr> args = {
+        StringImm(ss.str()),
+        dst_access,
+        dst_access,
+        Integer(pipe.flag_id),
+        Integer(pipe.dir_type),
+        Integer(pipe.slot_size),
+        Integer(pipe.slot_num),
+        StringImm(pipe.pipe_id)
+    };
+    Call call(DataType::Handle(), tir::builtin::call_extern(), args);
+    return Evaluate(call);
   }
 
   std::string PrintDstScope(const DstBufferScope &dst_scope) {
@@ -916,7 +948,7 @@ private:
           Downcast<StringImm>(orig_call->args[0])->value;
       if (func_name_str.find("copy_ub_to_l1") != std::string::npos ||
           func_name_str.find("copy_l0c_to_ub") != std::string::npos) {
-        return GeneratePipePair(orig_call, func_name_str);
+        return GenerateCopyToPipe(orig_call, func_name_str);
       }
     }
 
@@ -1000,47 +1032,57 @@ private:
       return Evaluate(new_call);
     }
 
-    // Insert copy-back statements (AscendC GM path only)
-    if (!is_pto_) {
-      std::vector<std::string> buffer_names_vec =
-          IsTargetAccessNode(orig_call);
-      if (!buffer_names_vec.empty()) {
-        Array<Stmt> seq_stmts_array;
-        for (const auto &buffer_name : buffer_names_vec) {
+    // Insert copy-back statements (for both AscendC and PTO)
+    std::vector<std::string> buffer_names_vec =
+        IsTargetAccessNode(orig_call);
+    if (buffer_names_vec.empty()) {
+      return orig_stmt;
+    }
+    Array<Stmt> seq_stmts_array;
+    for (const auto &buffer_name : buffer_names_vec) {
+      if (is_pto_) {
+        // PTO: generate copy_pipe_to_xx from PipeInfo
+        auto pipe_it = context_.pipe_info_map_.find(buffer_name);
+        ICHECK(pipe_it != context_.pipe_info_map_.end())
+            << "[Error]<WorkspaceReduction> PTO: No pipe metadata found for buffer: "
+            << buffer_name;
+        seq_stmts_array.push_back(
+            GenerateCopyFromPipe(pipe_it->second,
+                              context_.dst_to_access_map_.at(buffer_name)));
+      } else {
+        // AscendC: existing copy_gm_to_dst logic
+        auto buffer_scope_it =
+            context_.dst_to_scope_map_.find(buffer_name);
+        ICHECK(buffer_scope_it != context_.dst_to_scope_map_.end())
+            << "[Error]<WorkspaceReduction>: Dst scope is not found for "
+              "buffer: "
+            << buffer_name << "\n";
 
-          auto buffer_scope_it = context_.dst_to_scope_map_.find(buffer_name);
-
-          ICHECK(buffer_scope_it != context_.dst_to_scope_map_.end())
-              << "[Error]<WorkspaceReduction>: Dst scope is not found for "
-                "buffer: "
-              << buffer_name << "\n";
-
-          DstBufferScope buffer_scope =
-              context_.dst_to_scope_map_.at(buffer_name);
-          const std::string workspace_name =
-              context_.dst_to_workspace_map_.at(buffer_name);
-          WorkspaceInfo ws_info = context_.workspace_map_.at(workspace_name);
+        DstBufferScope buffer_scope =
+            context_.dst_to_scope_map_.at(buffer_name);
+        const std::string workspace_name =
+            context_.dst_to_workspace_map_.at(buffer_name);
+        WorkspaceInfo ws_info =
+            context_.workspace_map_.at(workspace_name);
 
           // copyB (copy-back): GM's other side is destination, check if dst is UB
           // gm_to_ub destination is UB; gm_to_l1 destination is L1
-          bool other_side_is_ub = (buffer_scope == DstBufferScope::Ub);
-          Call workspace_access =
-              CreateWorkspaceAccessPtr(ws_info, 1, other_side_is_ub);
-          PrimExpr strideN = ws_info.shapes[ws_info.shapes.size() - 1];
-          Stmt insert_eval_stmt = this->CreateGmToDstStmt(
-              workspace_access, context_.dst_to_access_map_.at(buffer_name),
-              buffer_scope, strideN);
-          seq_stmts_array.push_back(insert_eval_stmt);
-        }
-        seq_stmts_array.push_back(orig_stmt);
-        return SeqStmt(seq_stmts_array);
+        bool other_side_is_ub = (buffer_scope == DstBufferScope::Ub);
+        Call workspace_access =
+            CreateWorkspaceAccessPtr(ws_info, 1, other_side_is_ub);
+        PrimExpr strideN = ws_info.shapes[ws_info.shapes.size() - 1];
+        Stmt insert_eval_stmt = this->CreateGmToDstStmt(
+            workspace_access,
+            context_.dst_to_access_map_.at(buffer_name), buffer_scope,
+            strideN);
+        seq_stmts_array.push_back(insert_eval_stmt);
       }
     }
-    return orig_stmt;
+    seq_stmts_array.push_back(orig_stmt);
+    return SeqStmt(seq_stmts_array);
   }
 };
 
-int AscendWorkspaceReductionPass::pipe_flag_id_counter_ = 8;
 
 namespace transform {
 
