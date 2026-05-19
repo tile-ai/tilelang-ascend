@@ -201,6 +201,8 @@ private:
 
   void CopyUBToUBCodegen(const CallNode *call);
 
+  void CopyL0cToUbCodegen(const CallNode *call);
+
   void CopyL1ToL0Codegen(const CallNode *call, bool is_a);
 
   std::string PrintBufferOffset(const CallNode *op);

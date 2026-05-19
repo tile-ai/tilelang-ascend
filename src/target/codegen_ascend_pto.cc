@@ -1170,6 +1170,50 @@ void CodeGenTileLangAscendPto::CopyUBToUBCodegen(const CallNode *call) {
   this->stream << ");\n";
 }
 
+void CodeGenTileLangAscendPto::CopyL0cToUbCodegen(const CallNode *call) {
+  // T.copy(l0c, s_ub) → TMOV<DstUbType, SrcAccType>(dst, src)
+  // L0C→UB direct copy uses the TMOV instruction (A5).
+  BufferInfo src_info = GetBufferInfo(call->args[1]);
+  BufferInfo dst_info = GetBufferInfo(call->args[2]);
+
+  ShapeInfo src_si = GetSliceInfo(src_info.access_ptr);
+  ShapeInfo dst_si = GetSliceInfo(dst_info.access_ptr);
+
+  std::string src_name = src_info.id;
+  std::string dst_name = dst_info.id;
+  if (src_si.is_slice) {
+    src_name = GetTempVarName(src_si.ub_name);
+    CreateUbVariableND(src_name, src_si);
+  }
+  if (dst_si.is_slice) {
+    dst_name = GetTempVarName(dst_si.ub_name);
+    CreateUbVariableND(dst_name, dst_si);
+  }
+
+  int32_t M = src_si.is_slice ? src_si.slice_row : src_si.row;
+  int32_t N = src_si.is_slice ? src_si.slice_col : src_si.col;
+  std::string dt_src = getType(src_info.dtype);
+  std::string dt_dst = getType(dst_info.dtype);
+
+  // Build TMOV type params: TileUbDataND<dtype, M, N, M, N> and
+  // TileAcc<dtype, M, N, M, N>
+  auto tile_vec = [&](const std::string &dt, int m, int n) {
+    return kAscendPtoScope + "TileUbDataND<" + dt + ", " +
+           std::to_string(m) + ", " + std::to_string(n) + ", " +
+           std::to_string(m) + ", " + std::to_string(n) + ">";
+  };
+  auto tile_acc = [&](const std::string &dt, int m, int n) {
+    return "TileAcc<" + dt + ", " +
+           std::to_string(m) + ", " + std::to_string(n) + ", " +
+           std::to_string(m) + ", " + std::to_string(n) + ">";
+  };
+
+  this->PrintIndent();
+  this->stream << "TMOV<" << tile_vec(dt_dst, M, N) << ", "
+               << tile_acc(dt_src, M, N) << ">(" << dst_name << ", " << src_name
+               << ");\n";
+}
+
 void CodeGenTileLangAscendPto::CopyL1ToL0Codegen(const CallNode *call,
                                                  bool is_a) {
   BufferInfo src_info = GetBufferInfo(call->args[1]);
@@ -1297,6 +1341,8 @@ void CodeGenTileLangAscendPto::CallExternCodegen(const CallNode *op) {
     GMCopyCall(op, "copy_gm_to_l1");
   } else if (op_name.find("tl::ascend::copy_l0c_to_gm") != std::string::npos) {
     GMCopyCall(op, "copy_l0c_to_gm");
+  } else if (op_name.find("tl::ascend::copy_l0c_to_ub") != std::string::npos) {
+    CopyL0cToUbCodegen(op);
   } else if (op_name.find("tl::ascend::copy_ub_to_ub") != std::string::npos) {
     CopyUBToUBCodegen(op);
   } else if (op_name.find("tl::ascend::copy_l1_to_l0a") != std::string::npos) {

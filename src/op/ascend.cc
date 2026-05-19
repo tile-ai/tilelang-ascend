@@ -234,8 +234,7 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
       config.virtual_channel = true;
       ss << "copy_l0c_to_ub<";
       ss << get_dtype(src) << ", " << get_dtype(dst) << ", ";
-      ss << "layout::RowMajor, "; // real channel is "ub -> gm -> l1", so gm is
-                                  // always row major
+      ss << "layout::RowMajor, "; // L0C→UB direct copy via TMOV (A5)
       ss << src->shape[src->shape.size() - 2] << ", "
          << src->shape[src->shape.size() - 1];
       ss << ", " << enRelu << ">";
