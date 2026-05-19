@@ -145,9 +145,6 @@ def fla_fused_chunk_bwd_kernel(
                 dv_ub = T.alloc_shared([sub_C, BV], accum_dtype)
                 q_ub = T.alloc_shared([sub_C, BK], dtype)
                 q_cal = T.alloc_shared([sub_C, BK], accum_dtype)
-                dq_tmp = T.alloc_shared([sub_C, BK], accum_dtype)
-                dk_tmp = T.alloc_shared([sub_C, BK], accum_dtype)
-                dv_tmp = T.alloc_shared([sub_C, BV], accum_dtype)
 
                 T.wait_cross_flag(0)
 
