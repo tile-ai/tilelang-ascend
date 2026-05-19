@@ -123,7 +123,7 @@ cdef class CythonKernelWrapper:
                         raise TypeError(f"Unsupported shape dim type: {type(s)} ({str(s)})")
                     shape.append(res)
                 device = inputs[0].device if len(inputs) > 0 else torch.npu.current_device()
-                tensor = torch.zeros(*shape, dtype=dtype, device=device)
+                tensor = torch.empty(*shape, dtype=dtype, device=device)
             else:
                 tensor = inputs[ins_idx]
                 ins_idx += 1
