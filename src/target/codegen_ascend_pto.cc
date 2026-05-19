@@ -1352,7 +1352,9 @@ void CodeGenTileLangAscendPto::GemmV0Codegen(const CallNode *op) {
 }
 
 void CodeGenTileLangAscendPto::SyncAllCodegen(const CallNode *op) {
-  LOG(FATAL) << "Unsupport SyncAll in pto backend.";
+  std::string core_type = Downcast<StringImm>(op->args[0])->value;
+  this->PrintIndent();
+  this->stream << "SYNCALL<pto::SyncCoreType::" << core_type << ">();\n";
 }
 
 void CodeGenTileLangAscendPto::PipeBarrierCodegen(const CallNode *op) {

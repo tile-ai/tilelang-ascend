@@ -10,6 +10,57 @@
 #define TL_PIPE_V_BARRIER() pipe_barrier(PIPE_V)
 #endif
 
+#ifndef SYNC_AIC_FLAG
+#define SYNC_AIC_FLAG 11
+#endif
+#ifndef SYNC_AIV_FLAG
+#define SYNC_AIV_FLAG 12
+#endif
+#ifndef SYNC_AIC_AIV_FLAG
+#define SYNC_AIC_AIV_FLAG 13
+#endif
+#ifndef SYNC_AIV_ONLY_ALL
+#define SYNC_AIV_ONLY_ALL 14
+#endif
+#ifndef SYNC_FLAG_ID_MAX
+#define SYNC_FLAG_ID_MAX 16
+#endif
+
+#ifndef PTO_SYNCALL_DEFINED
+#define TL_FFTS_MSG(mode, eventId) \
+    ((0x1 & 0xf) + (((mode) & 0x3) << 4) + (((eventId) & 0xf) << 8))
+
+namespace pto {
+template <SyncCoreType CoreType = SyncCoreType::AIVOnly>
+AICORE PTO_INLINE void SYNCALL() {
+  pipe_barrier(PIPE_ALL);
+  if constexpr (CoreType == SyncCoreType::AIVOnly) {
+#if defined(__DAV_VEC__)
+    ffts_cross_core_sync(PIPE_MTE3, TL_FFTS_MSG(0x0, SYNC_AIV_ONLY_ALL));
+    wait_flag_dev(SYNC_AIV_ONLY_ALL);
+#endif
+    return;
+  } else if constexpr (CoreType == SyncCoreType::AICOnly) {
+#if defined(__DAV_CUBE__)
+    ffts_cross_core_sync(PIPE_FIX, TL_FFTS_MSG(0x0, SYNC_AIC_FLAG));
+    wait_flag_dev(SYNC_AIC_FLAG);
+#endif
+    return;
+  }
+#if defined(__DAV_CUBE__)
+  wait_flag_dev(SYNC_AIV_FLAG);
+  ffts_cross_core_sync(PIPE_FIX, TL_FFTS_MSG(0x0, SYNC_AIC_FLAG));
+  wait_flag_dev(SYNC_AIC_FLAG);
+  ffts_cross_core_sync(PIPE_MTE3, TL_FFTS_MSG(0x2, SYNC_AIC_AIV_FLAG));
+#elif defined(__DAV_VEC__)
+  ffts_cross_core_sync(PIPE_MTE3, TL_FFTS_MSG(0x2, SYNC_AIV_FLAG));
+  wait_flag_dev(SYNC_AIC_AIV_FLAG);
+#endif
+}
+} // namespace pto
+#define PTO_SYNCALL_DEFINED
+#endif // PTO_SYNCALL_DEFINED
+
 namespace tl::ascend_pto {
 
 template <typename T, int Rows, int Cols, int RowValid = Rows,
