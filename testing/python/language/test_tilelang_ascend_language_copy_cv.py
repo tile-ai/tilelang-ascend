@@ -166,7 +166,7 @@ def _combined_kernel(M=128, N=128, K=128, dtype="float16"):
     def main(
         A: T.Tensor((M, K), dtype),
         B: T.Tensor((K, N), dtype),
-        C: T.Tensor((M, N), dtype),
+        C: T.Tensor((M, N), "float"),
         D: T.Tensor((M, N), dtype),
     ):
         with T.Kernel(1, is_npu=True) as (cid, vid):
@@ -177,7 +177,7 @@ def _combined_kernel(M=128, N=128, K=128, dtype="float16"):
             # L0C↔UB path buffers
             B_l1 = T.alloc_L1((K, N), dtype)
             C_l0c = T.alloc_L0C((M, N), "float")
-            C_ub = T.alloc_ub((M, N), dtype)
+            C_ub = T.alloc_ub((M, N), "float")
 
             # Path 1: GM → UB → L1 (TPUSH)
             T.copy(A, A_ub)
@@ -238,7 +238,8 @@ def test_ub_to_l1_pto(dtype):
     kernel(a, b, c)
     torch.npu.synchronize()
 
-    torch.testing.assert_close(c, a @ b, rtol=1e-3, atol=1e-3)
+    ref_c = a @ b
+    torch.testing.assert_close(c, ref_c, rtol=1e-3, atol=1e-3)
 
 @pytest.mark.skipif(
     not (hasattr(torch, "npu") and torch.npu.is_available()),
@@ -281,7 +282,8 @@ def test_ub_to_l1_expert(dtype):
     kernel(a, b, c, workspace_1)
     torch.npu.synchronize()
 
-    torch.testing.assert_close(c, a @ b, rtol=1e-3, atol=1e-3)
+    ref_c = a @ b
+    torch.testing.assert_close(c, ref_c, rtol=1e-3, atol=1e-3)
 
 # @pytest.mark.xfail(reason="PTO L0C↔UB copy not yet implemented")
 @pytest.mark.skipif(
@@ -366,8 +368,8 @@ def test_combined_pto(dtype):
 
     a = torch.randn((M, K), dtype=torch_dtype, device="npu")
     b = torch.randn((K, N), dtype=torch_dtype, device="npu")
-    c = torch.empty((M, N), dtype=torch_dtype, device="npu")
-    d = torch.empty((M, K), dtype=torch_dtype, device="npu")
+    c = torch.empty((M, N), dtype=torch.float32, device="npu")
+    d = torch.empty((M, N), dtype=torch_dtype, device="npu")
     torch.npu.synchronize()
 
     kernel(a, b, c, d)
@@ -375,7 +377,7 @@ def test_combined_pto(dtype):
 
     # Verify GEMM result (C = A @ B)
     ref_c = a @ b
-    torch.testing.assert_close(c, ref_c, rtol=1e-2, atol=1e-2)
+    torch.testing.assert_close(c, ref_c.to(torch.float32), rtol=1e-2, atol=1e-2)
 
     # Verify L0C→UB round-trip (D = C)
-    torch.testing.assert_close(d, c, rtol=1e-3, atol=1e-3)
+    torch.testing.assert_close(d, ref_c, rtol=1e-3, atol=1e-3)
