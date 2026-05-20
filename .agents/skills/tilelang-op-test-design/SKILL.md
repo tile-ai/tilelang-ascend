@@ -494,23 +494,97 @@ irregular_shapes = [
 
 ---
 
-## 9. 技能文件结构
+## 9. 测试代码结构示例
 
+### 9.1 标准测试结构
+
+```python
+import tilelang
+import tilelang.language as T
+import torch
+
+# ========== 精度标准定义 ==========
+def get_precision(dtype):
+    precision_map = {
+        "float16": (1e-3, 1e-3),
+        "float32": (1e-5, 1e-5),
+        "bfloat16": (1e-2, 5e-3),
+    }
+    return precision_map.get(dtype, (1e-3, 1e-3))
+
+# ========== Golden 函数定义 ==========
+def golden_{op}(input_data):
+    # 根据算子数学公式实现
+    pass
+
+# ========== L0 测试：门槛测试（规则 shape）==========
+def test_{op}_l0():
+    """L0 门槛测试：快速冒烟"""
+    # 规则 shape 配置（block size 整除）
+    test_configs = [
+        ("float16", {shape}, {block}),
+        ("float32", {shape}, {block}),
+    ]
+    for dtype, shape, block in test_configs:
+        # 运行 kernel + 验证精度
+        pass
+
+# ========== L1 测试：功能测试（规则 + 不规则 shape）==========
+def test_{op}_l1():
+    """L1 功能测试：参数组合覆盖"""
+    # dtype 组合
+    dtypes = ["float16", "float32", "bfloat16"]
+    
+    # shape 组合（规则 + 不规则）⭐ 自然包含尾块
+    shapes = [
+        (128, 128),      # 规则 shape
+        (512, 512),      # 规则 shape
+        (100, 100),      # 不规则 shape（余数4）
+        (32*3+30, 32*2), # 不规则 shape（余数30）
+    ]
+    
+    for dtype in dtypes:
+        for shape in shapes:
+            # 运行 kernel + 验证精度
+            pass
+
+# ========== L2 测试：异常测试 ==========
+def test_{op}_l2():
+    """L2 异常测试"""
+    # 不支持的 dtype
+    # 不合法的 shape
+    pass
+
+# ========== Boundary 测试：边界测试 ==========
+def test_{op}_boundary():
+    """Boundary 边界测试"""
+    # 极值（min/max）
+    # 空 tensor（可选）
+    pass
+
+# ========== 主函数 ==========
+def main():
+    test_{op}_l0()
+    test_{op}_l1()  # 自然包含规则和不规则 shape
+    test_{op}_l2()
+    test_{op}_boundary()
+
+if __name__ == "__main__":
+    main()
 ```
-tilelang-op-test-design/
-├── SKILL.md                    # 主文档（多场景 + 判断）
-├── references/
-│   ├── operator-category.md    # 算子类别划分依据（详细）
-│   ├── scenario-workflow.md    # 各场景工作流程详解
-│   ├── user-interaction.md     # 用户交互流程参考
-│   └── test-templates.md       # 各类算子测试模板
-│
-└── templates/
-    ├── gemm_test_template.py       # GEMM 类测试模板
-    ├── softmax_test_template.py    # Softmax 类测试模板
-    ├── activation_test_template.py # Activation 类测试模板
-    └─ fusion_test_template.py      # Fusion 类测试模板
-```
+
+---
+
+### 9.2 关键设计要点
+
+| 要点 | 说明 |
+|------|------|
+| **精度标准** | 根据算子类别和 dtype 定义 rtol/atol |
+| **Golden 函数** | 根据数学公式实现，可用 PyTorch 标准实现 |
+| **L0 测试** | 规则 shape，快速冒烟（≤10 用例） |
+| **L1 测试** | 规则 + 不规则 shape，自然包含尾块（100-200 用例） |
+| **L2 测试** | 异常场景（≤20 用例） |
+| **Boundary 测试** | 极值、空 tensor（≤10 用例） |
 
 ---
 
@@ -522,3 +596,18 @@ tilelang-op-test-design/
 2. **算子类别划分依据科学**：基于硬件特性、计算步骤、数学公式三个维度
 3. **算子类别识别方法正确**：理解实现逻辑后判断
 4. **不规则 shape 自然包含**：在 L1 中自然包含，不特殊强调
+
+### 技能文件结构
+
+```
+tilelang-op-test-design/
+├── SKILL.md                    # 主文档（多场景 + 判断）
+└── references/
+    ├── operator-category.md    # 算子类别划分依据（详细）
+    └── precision-standard.md   # 精度标准体系
+```
+
+**说明**：
+- SKILL.md 包含完整方法论和测试代码结构示例（§9）
+- references/operator-category.md 提供算子类别划分详细说明
+- references/precision-standard.md 提供精度标准体系（不同 dtype/算子类别的 rtol/atol）
