@@ -248,40 +248,38 @@ python examples/<算子>.py
 
 | 代理 | 角色 | 职责 |
 |------|------|------|
-| [tilelang-op-orchestrator](.opencode/agents/tilelang-op-orchestrator.md) | Primary | 4 阶段状态机、工件门禁、Subagent 调度、状态持久化、设计回退控制 |
+| [tilelang-op-orchestrator](.opencode/agents/tilelang-op-orchestrator.md) | Primary | 3 阶段状态机、工件门禁、Subagent 调度、状态持久化、设计回退控制 |
 | [tilelang-op-analyst](.opencode/agents/tilelang-op-analyst.md) | Subagent | Stage 1 算子设计（含需求理解与设计回退，调用 `tilelang-op-design`） |
-| [tilelang-op-developer](.opencode/agents/tilelang-op-developer.md) | Subagent | Stage 2 实现 + Stage 3 精度修复（调用 `tilelang-op-generate`，含设计错误识别） |
-| [tilelang-op-perf-tuner](.opencode/agents/tilelang-op-perf-tuner.md) | Subagent | Stage 4 性能调优（调用 `tilelang-perf-optimization`） |
+| [tilelang-op-developer](.opencode/agents/tilelang-op-developer.md) | Subagent | Stage 2 一站式：代码实现 + 测试 + 精度调试（调用 `tilelang-op-generate`，通过 mode 区分 first_impl / retry_impl / precision_fix，含设计错误识别） |
+| [tilelang-op-perf-tuner](.opencode/agents/tilelang-op-perf-tuner.md) | Subagent | Stage 3 性能调优（调用 `tilelang-perf-optimization`） |
 
-### 四阶段流程
+### 三阶段流程
 
 | Stage | 名称 | 执行方 | 复用 Skill | 产物 |
 |-------|------|--------|-----------|------|
 | 1 | 算子设计（含需求理解） | `@tilelang-op-analyst` | `tilelang-op-design` | `DESIGN.md` |
-| 2 | 代码实现（含 golden） | `@tilelang-op-developer` | `tilelang-op-generate` | `example_{op}.py`、`test_{op}.py` |
-| 3 | 精度修复 | `@tilelang-op-developer` | （暂无专属 skill，依赖 agent 自身能力） | 修复后 impl + `history_version/` 备份 |
-| 4 | 性能调优（**可选**） | `@tilelang-op-perf-tuner` | `tilelang-perf-optimization` | `perf_tuning/` |
+| 2 | 代码实现 + 测试 + 精度调试（一站式）| `@tilelang-op-developer` | `tilelang-op-generate` + 内置精度调试方法学 | `example_{op}.py`（含 kernel + golden + test 用例）+ `history_version/` 精度调试备份 |
+| 3 | 性能调优（**可选**） | `@tilelang-op-perf-tuner` | `tilelang-perf-optimization` | `perf_tuning/` |
 
-### Stage 4 用户确认
+### Stage 3 用户确认
 
-精度通过（无论 Stage 2 直接 PASS 还是 Stage 3 修复后 PASS）后，Orchestrator **主动询问用户是否需要性能调优**：
-- 用户表示不需要 → 直接置 `SUCCESS`，不进入 Stage 4
-- 用户表示需要 → Orchestrator 询问性能调优必要信息（目标类型、目标数值、baseline 路径、测试 shape、噪声阈值、最大迭代数），追加写入 DESIGN.md 的"性能目标"章节，然后进入 Stage 4
+Stage 2 返回 `[PRECISION_PASS]` 后，Orchestrator **主动询问用户是否需要性能调优**：
+- 用户表示不需要 → 直接置 `SUCCESS`，不进入 Stage 3
+- 用户表示需要 → Orchestrator 询问性能调优必要信息（目标类型、目标数值、baseline 路径、测试 shape、噪声阈值、最大迭代数），追加写入 DESIGN.md 的"性能目标"章节，然后进入 Stage 3
 
 ### 设计回退机制
 
-`DESIGN.md` 不视为不可质疑的硬性约束。当 Stage 2 / Stage 3 的 Subagent 在执行中发现设计层面错误（API 不可用、tiling 不可行、内存层级冲突等）时，可在输出加 `[DESIGN_ERROR]` 标记，Orchestrator 据此回退到 Stage 1 重做设计。**不设次数上限**，以最终算子精度通过为准；死循环风险由 Stage 2 / Stage 3 自身的 5 次重试上限兜底（仍旧失败会触发 `BLOCKED_IMPL` / `BLOCKED_ACCURACY` 自然终止）。每次回退前会备份旧 design 到 `history_version/design_rev{N}.md` 并将历史摘要传给 analyst，避免重复出错。
+`DESIGN.md` 不视为不可质疑的硬性约束。当 Stage 2 的 Subagent 在实施或调试中发现设计层面错误（API 不可用、tiling 不可行、内存层级冲突等）时，可在输出加 `[DESIGN_ERROR]` 标记，Orchestrator 据此回退到 Stage 1 重做设计。**不设次数上限**，以最终算子精度通过为准；死循环风险由 Stage 2 自身的 5 次 attempt 上限兜底（仍旧失败会触发 `BLOCKED_IMPL` / `BLOCKED_ACCURACY` 自然终止）。每次回退前会备份旧 design 到 `history_version/design_rev{N}.md` 并将历史摘要传给 analyst，避免重复出错。
 
 ### 产物目录约定
 
 ```
 examples/{op}/
 ├── DESIGN.md
-├── example_{op}.py
-├── test_{op}.py
+├── example_{op}.py                 # 单一交付文件：kernel + golden + test 用例
 ├── perf_tuning/
-├── history_version/             # 含 design_rev{N}.md 设计回退备份 + impl 精度修复备份
-└── .orchestrator_state.json     # 唯一可写者：orchestrator
+├── history_version/                # 含 design_rev{N}.md 设计回退备份 + {op}_impl_s2_attempt{N}.py 精度调试备份
+└── .orchestrator_state.json        # 唯一可写者：orchestrator
 ```
 
 ### 环境预检（Stage 1 启动前置）

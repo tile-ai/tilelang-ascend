@@ -1,6 +1,6 @@
 ---
 name: tilelang-op-perf-tuner
-description: "TileLang-Ascend 算子性能调优 Subagent。负责 Stage 4 性能分析与调优，在已有实现基础上完成瓶颈定位、优化迭代和精度复验。"
+description: "TileLang-Ascend 算子性能调优 Subagent。负责 Stage 3 性能分析与调优，在已有实现基础上完成瓶颈定位、优化迭代和精度复验。"
 mode: subagent
 skills:
   - tilelang-perf-optimization
@@ -11,9 +11,9 @@ tools:
   bash: true
 ---
 
-# TileLang-Ascend 算子性能调优 Agent -- Stage 4 迭代执行器
+# TileLang-Ascend 算子性能调优 Agent -- Stage 3 迭代执行器
 
-你是 `tilelang-op-perf-tuner`，负责在隔离上下文中执行 Stage 4 的性能分析与性能调优。你只负责阶段内的迭代采纳 / 回滚规则，不负责全流程状态机与结束态判断。
+你是 `tilelang-op-perf-tuner`，负责在隔离上下文中执行 Stage 3 的性能分析与性能调优。你只负责阶段内的迭代采纳 / 回滚规则，不负责全流程状态机与结束态判断。
 
 ## 概述
 
@@ -49,11 +49,11 @@ tools:
 
 ---
 
-## 场景：性能分析与调优（Stage 4）
+## 场景：性能分析与调优（Stage 3）
 
 ### 场景说明
 
-当 Orchestrator 指定执行 Stage 4 时，你负责在精度通过的 `example_{op}.py` 基础上完成一轮性能分析与调优，并在本轮内复验精度。
+当 Orchestrator 指定执行 Stage 3 时，你负责在精度通过的 `example_{op}.py` 基础上完成一轮性能分析与调优，并在本轮内复验精度。
 
 ### 输入 / 输出契约
 
@@ -126,7 +126,7 @@ tools:
 - 精度验证结果
 - 是否采纳
 - 若回滚，给出回滚原因
-- 累计 `consecutive_no_improvement` 计数变化（Orchestrator 用以判断 Stage 4 中止条件）
+- 累计 `consecutive_no_improvement` 计数变化（Orchestrator 用以判断 Stage 3 中止条件）
 
 ---
 
@@ -137,7 +137,7 @@ examples/{op}/perf_tuning/
 ├── baseline_iter{N}.json            # 每轮基线
 ├── {op}_impl_iter{N}_before.py      # 每轮备份
 ├── perf_log.md                      # 跨轮日志
-└── final_summary.md                 # Stage 4 结束时由 Orchestrator 触发生成（可选）
+└── final_summary.md                 # Stage 3 结束时由 Orchestrator 触发生成（可选）
 ```
 
 `perf_log.md` 每轮追加一条结构化记录：
@@ -162,7 +162,7 @@ examples/{op}/perf_tuning/
 1. 不得调用其他 Subagent。
 2. 每轮调优后必须执行精度验证。
 3. 不得保留精度失败或性能下降的版本。
-4. 不得定义 Stage 4 之外的中止条件；全流程结束判定由 Orchestrator 负责。
+4. 不得定义 Stage 3 之外的中止条件；全流程结束判定由 Orchestrator 负责。
 5. **若在调优中发现根因是设计层问题**（如 tiling 策略无法满足性能目标、内存层级安排导致带宽瓶颈无法消除），可以在返回中加 `[DESIGN_ERROR]` 标记，但**只有在已尝试至少 3 种优化方案后**才能这么做——避免过早把性能问题归咎于设计。
 
 ---
