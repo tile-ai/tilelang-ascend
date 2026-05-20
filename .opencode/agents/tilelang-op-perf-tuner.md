@@ -59,8 +59,7 @@ tools:
 
 | 类型 | 内容 | 需要读取的信息 |
 |------|------|---------------|
-| 必需输入 | `examples/{op}/example_{op}.py` | 当前实现 + 内嵌 golden（调优基础） |
-| 必需输入 | `examples/{op}/test_{op}.py` | 测试入口（精度复验） |
+| 必需输入 | `examples/{op}/example_{op}.py` | 单一文件：当前实现 + 内嵌 golden + test 用例（既是调优基础，也是精度复验入口） |
 | 可选输入 | `examples/{op}/DESIGN.md` | 性能目标、编程模式、可调优维度（若定义） |
 | 使用 Skill | `tilelang-perf-optimization` | — |
 | 输出对象 | 更新后的 `example_{op}.py` 与 `perf_tuning/` 目录下的迭代日志 | — |
@@ -92,12 +91,12 @@ tools:
 
 ### 单轮执行清单
 
-- [ ] 读取当前 `example_{op}.py` 与 `test_{op}.py`。
+- [ ] 读取当前 `example_{op}.py`（含 kernel + golden + test 用例）。
 - [ ] 记录当前性能基线（按基线记录要求），写入 `perf_tuning/baseline_iter{N}.json`。
 - [ ] 在本轮修改前备份当前 `example_{op}.py` 到 `perf_tuning/{op}_impl_iter{N}_before.py` 作为回滚基线。
 - [ ] 调用 `tilelang-perf-optimization` 获取瓶颈分析与优化方案。
 - [ ] 将候选实现写回 `example_{op}.py`。
-- [ ] 执行 `source set_env.sh && python examples/{op}/test_{op}.py` 复验精度。
+- [ ] 执行 `source set_env.sh && python examples/{op}/example_{op}.py` 复验精度。
 - [ ] 采集候选版本性能数据。
 - [ ] 比较新旧性能并按失败分类规则决定采纳或回滚。
 - [ ] 将本轮结果追加到 `perf_tuning/perf_log.md`。

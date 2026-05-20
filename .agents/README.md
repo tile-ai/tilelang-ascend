@@ -221,7 +221,7 @@ Stage 2: 代码实现 → @tilelang-op-developer
 
 **你需要提供**：design.md 路径（或由 Orchestrator 自动传入）
 
-**你会得到**：`example_{op}.py`（含 `@tilelang.jit` kernel + 内嵌 PyTorch golden + main 块），`test_{op}.py`（多规模测试）
+**你会得到**：单一文件 `example_{op}.py`（含 `@tilelang.jit` kernel + 内嵌 PyTorch golden + 几个常用 shape 的 test 用例 + main 块）
 
 **关键约束**：优先复用 `examples/` 同类实现，冲突时以 examples > design.md > docs 为准
 
@@ -352,8 +352,7 @@ Stage 2: 代码实现 → @tilelang-op-developer
 ```
 examples/{op}/
 ├── DESIGN.md                              # Stage 1
-├── example_{op}.py                        # Stage 2-4（含 @tilelang.jit kernel + 内嵌 golden）
-├── test_{op}.py                           # Stage 2
+├── example_{op}.py                        # Stage 2-4 单一交付文件（@tilelang.jit kernel + 内嵌 golden + 几个常用 shape 的 test 用例 + main）
 ├── README.md                              # Stage 2（可选）
 ├── debug_log.md                           # 每次 Subagent 调度追加一条记录
 ├── perf_tuning/                           # Stage 4（仅当用户启用）

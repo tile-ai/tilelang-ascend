@@ -40,7 +40,7 @@
 [Stage 1] 算子设计       analyst + tilelang-op-design
     ↓                    产物：DESIGN.md
 [Stage 2] 代码实现       developer + tilelang-op-generate
-    ↓                    产物：example_{op}.py / test_{op}.py
+    ↓                    产物：example_{op}.py（含 kernel + golden + test 用例）
     ├─ PRECISION_PASS ─┐
     ├─ PRECISION_FAIL ─┐
     │                  ↓
@@ -64,7 +64,7 @@
 |-------|------|--------|-----------|---------|
 | 0 | 环境预检 | ✅ 一次性 | `tilelang-env-check` | `env_check_passed=true` |
 | 1 | 算子设计 | ✅ | `tilelang-op-design` | `DESIGN.md` |
-| 2 | 代码实现 | ✅ | `tilelang-op-generate` | `example_{op}.py`、`test_{op}.py` |
+| 2 | 代码实现 | ✅ | `tilelang-op-generate` | `example_{op}.py`（单一交付文件） |
 | 3 | 精度修复 | ⭕ 仅当 PRECISION_FAIL | — | 修复后 impl + 备份 |
 | 4 | 性能调优 | ⭕ 用户确认 | `tilelang-perf-optimization` | `perf_tuning/` |
 
@@ -159,8 +159,7 @@ Orchestrator 唯一会反向询问的关键信息：
 ```
 examples/{op}/
 ├── DESIGN.md                              # Stage 1
-├── example_{op}.py                        # Stage 2 / 3 / 4（含 @tilelang.jit kernel + 内嵌 golden）
-├── test_{op}.py                           # Stage 2
+├── example_{op}.py                        # Stage 2 / 3 / 4 单一交付文件（@tilelang.jit kernel + 内嵌 golden + 几个常用 shape 的 test 用例 + main）
 ├── README.md                              # Stage 2（可选）
 ├── debug_log.md                           # Stage 2 / 3 每次调度追加一条记录
 ├── perf_tuning/                           # Stage 4（仅当用户启用）
@@ -173,15 +172,14 @@ examples/{op}/
 └── .orchestrator_state.json               # 状态文件（仅 orchestrator 可写）
 ```
 
-### 三文件分离原则
+### 单文件交付原则
 
 | 文件 | 内容 |
 |------|------|
-| `example_{op}.py` | 含 `@tilelang.jit` kernel + 内嵌 golden（PyTorch 参考实现）+ main 块（三态标记输出） |
-| `test_{op}.py` | 多规模测试入口，调用 example 中的 kernel 与 golden 做精度对比 |
+| `example_{op}.py` | **单一交付文件**：`@tilelang.jit` kernel + 内嵌 PyTorch golden + 几个常用 shape 的 test 用例 + main 块（含三态标记输出） |
 | `DESIGN.md` | 设计文档（11 章节：编程模式 / API 映射 / 内存规划 / Tiling / Loop / 同步 / 验证方案 / 风险点 等） |
 
-> Golden 函数**内嵌**在 `example_{op}.py` 内，不单独成文件（符合 TileLang-Ascend 现有 examples 惯例）。
+> Golden 函数和 test 用例**全部内嵌**在 `example_{op}.py` 内，不单独成文件（符合 TileLang-Ascend 现有 examples 惯例）。Test 用例覆盖基础 / 典型 / 边界三类常用 shape。
 
 ## 状态文件
 
