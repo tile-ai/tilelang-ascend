@@ -110,8 +110,6 @@ import tilelang
 from tilelang import DataType, language as T
 import torch
 
-tilelang.cache.clear_cache()
-
 # ========== 算子实现 ==========
 @tilelang.jit(out_idx=[...], pass_configs={...})
 def op_name(M, N, block_M, block_N, dtype="float"):
@@ -133,7 +131,8 @@ def op_name(M, N, block_M, block_N, dtype="float"):
 
 # ========== 测试 ==========
 if __name__ == "__main__":
-    torch.manual_seed(0)
+    tilelang.disable_cache()  # 在 __main__ 中禁用编译缓存
+    torch.manual_seed(...)
     test_configs = [...]  # 来自 design.md §8
 
     for config in test_configs:
@@ -144,7 +143,7 @@ if __name__ == "__main__":
         # 5. 精度检查
         pass
 
-    print("All tests passed!")
+    print("Test Passed!")
 ```
 
 **融合算子注意事项**：
@@ -157,10 +156,13 @@ if __name__ == "__main__":
 python examples/{op}/example_{op}.py
 ```
 
-如果报错，按以下顺序排查：
-1. **编译错误** → 检查 buffer 大小、API 参数、对齐
-2. **运行错误** → 检查索引越界、同步缺失
-3. **精度错误** → 检查计算公式、数据类型、容差设置
+如果报错，查阅 [troubleshooting.md](references/troubleshooting.md) 进行排查：
+
+| 错误类型 | 排查方向 | 详细参考 |
+|---------|---------|---------|
+| 编译错误 | buffer 大小、API 参数、对齐 | troubleshooting.md §编译时错误 |
+| 运行错误 | 索引越界、同步缺失 | troubleshooting.md §运行时错误 |
+| 精度错误 | Golden 实现、输出形状 | troubleshooting.md §精度问题 |
 
 ### 步骤 5：校验原有实现正确性
 
@@ -196,7 +198,20 @@ def conv_im2col_gemm(...):
     C = globals()['C']  # 多测试场景会互相污染
 ```
 
----
+### 步骤 8：上库前检查清单
+
+运行通过后，必须按 §8 Checklist 检查所有项目。重点注意：
+
+| # | 关键项 | 说明 |
+|---|--------|------|
+| 1 | **Golden 实现一致** | 迁移算子必须使用原算子的 golden 实现 |
+| 2 | **tilelang.disable_cache()** | 放在 `__main__` 下方或 `main()` 内部 |
+| 3 | **最后一行输出** | `"Test Passed!"` 或 `"Kernel Output Match!"` |
+| 4 | **代码格式** | `ruff check` + `ruff format --check` |
+
+详见：
+- [pr-ready-guide.md](references/pr-ready-guide.md) - 上库前收尾工作完整指南
+- §8 Checklist - 完整检查清单
 
 ## 4. 关键编码规范
 
@@ -233,19 +248,49 @@ output = output[:M, :N]
 a_ub = T.alloc_ub([block_M // VEC_NUM, block_N], dtype)
 ```
 
+Developer 模式下：
+```python
+# Vector 核 buffer（编译器映射到 UB）
+packed_ub = T.alloc_shared([block_M // VEC_NUM, block_N], dtype)
+
+# Cube 核 buffer（编译器映射到 L1/L0）
+A_L1 = T.alloc_shared([block_M, block_K], dtype)
+B_L1 = T.alloc_shared([block_N, block_K], dtype)
+C_L0 = T.alloc_fragment([block_M, block_N], accum_dtype)
+```
+
 ### 数据搬运索引
 
 ```python
-# 标准索引模式
+# 标准索引模式（纯 Vector 算子）
 row_start = bx * block_M + vid * block_M // VEC_NUM
 T.copy(A[row_start, by * block_N], a_ub)
 T.copy(a_ub, B[row_start, by * block_N])
 ```
 
+**⚠️ CV 融合场景（workspace 索引一致性）**：
+```python
+VEC_NUM = 2
+block_N_2 = block_N // VEC_NUM
+
+for row in T.serial(block_N_2):
+    actual_row = bn * block_N + vid * block_N_2 + row  # 关键索引
+    
+    # 读数据和写 workspace 都必须用 actual_row
+    T.copy(B_packed[actual_row, chunk_offset], packed_ub)  # ✓
+    # ... 处理 ...
+    T.copy(output_ub, workspace[actual_row, chunk_offset * 2])  # ✓（必须一致）
+
+# Cube 核读取完整 block_N（不涉及 vid）
+T.copy(workspace[bn * block_N, k_offset], B_L1)  # 完整 block_N
+```
+
+**易错点**：workspace 写入时忘记使用 `actual_row`，导致数据错乱。
+
 ### 同步
 
 ```python
-# Expert 模式：手��同步
+# Expert 模式：手动同步
 with T.Scope("V"):
     T.copy(A[...], a_ub)
     T.barrier_all()
@@ -279,30 +324,151 @@ torch.testing.assert_close(output.cpu(), ref_output.cpu(), rtol=rtol, atol=atol)
 
 ---
 
-## 5. Checklist
+## 5. V 核并行化编码规范
+
+Ascend NPU C:V = 1:2，默认两个 V 核执行相同工作。正确使用 `vid` 可让两个 V 核分担任务。
+
+### 按行切分
+
+```python
+VEC_NUM = 2
+block_M_2 = block_M // VEC_NUM
+
+with T.Kernel(grid_size, is_npu=True) as (cid, vid):
+    row_start = cid * block_M + vid * block_M_2
+    
+    # Buffer 分配：只需分配 V 核负责的行数
+    data_ub = T.alloc_shared((block_M_2, block_N), dtype)
+    
+    # 读入数据
+    T.copy(A[row_start, by * block_N], data_ub)
+    
+    # 计算
+    ...
+    
+    # 写出数据（索引必须与读一致）
+    T.copy(data_ub, B[row_start, by * block_N])
+```
+
+### 中间 buffer 索引一致性
+
+当 V 核读写中间 buffer（workspace、临时 buffer）时，必须保持索引一致：
+
+```python
+# 错误：读写索引不一致
+for row in T.serial(block_N_2):
+    actual_row = bn * block_N + vid * block_N_2 + row
+    T.copy(src[actual_row, ...], temp_ub)
+    T.copy(temp_ub, dst[bn * block_N + row, ...])  # ❌ 索引不一致
+
+# 正确：读写索引一致
+for row in T.serial(block_N_2):
+    actual_row = bn * block_N + vid * block_N_2 + row
+    T.copy(src[actual_row, ...], temp_ub)
+    T.copy(temp_ub, dst[actual_row, ...])  # ✓ 索引一致
+```
+
+### 模式三：CV 融合中的 V 核并行化
+
+CV 融合算子中，V 核负责预处理，Cube 核负责 GEMM：
+
+```python
+VEC_NUM = 2
+block_N_2 = block_N // VEC_NUM
+
+# Vector 核部分：使用 vid 分配任务
+for row in T.serial(block_N_2):
+    actual_row = bn * block_N + vid * block_N_2 + row
+    T.copy(B_packed[actual_row, ...], ...)
+    T.copy(..., workspace[actual_row, ...])
+
+# Cube 核部分：读取完整 block_N（不涉及 vid）
+T.copy(workspace[bn * block_N, ...], B_L1)
+T.gemm_v0(A_L1, B_L1, C_L0, ...)
+```
+
+---
+
+## 6. GEMM 编码规范
+
+### gemm_v0 初始化
+
+第一次调用必须清零 C_L0：
+
+```python
+for k_chunk in T.serial(k_num):
+    T.gemm_v0(A_L1, B_L1, C_L0, transpose_B=True, init=(k_chunk == 0))
+```
+
+### NPU 分形限制
+
+GEMM 的 block size 必须满足 L0A/L0B/L0C 分形限制（详见 [api-compute.md](../tilelang-custom-skill/tilelang-api-best-practices/references/api-compute.md)）：
+
+- int8 GEMM：`block_M ≥ 16`, `block_N ≥ 16`, `block_K ≥ 32`
+- float16 GEMM：`block_M ≥ 16`, `block_N ≥ 16`, `block_K ≥ 16`
+
+---
+
+## 7. CV 融合 pass_configs
+
+CV 融合算子必须开启全部 4 个 pass_configs：
+
+```python
+PASS_CONFIGS = {
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_SYNC: True,
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,  # 自动分离 Cube/Vector
+    tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
+}
+```
+
+---
+
+## 8. Checklist
 
 生成代码后逐项检查：
 
-### 基础检查
+### 功能验证
 
 | # | 检查项 |
 |---|--------|
 | 1 | `out_idx` 与函数签名中的输出参数位置一致 |
-| 2 | `block_M // VEC_NUM` 在 buffer 分配和索引中一致使用 |
+| 2 | V 核并行化：`block_M // VEC_NUM` 在 buffer 分配和索引中一致使用（详见 §5） |
 | 3 | 所有 `T.alloc_ub` 的 shape 乘积不超 UB 容量 |
 | 4 | Expert 模式有 `T.Scope("V")` 和 `T.barrier_all()` |
 | 5 | Developer 模式有对应的 `pass_configs` |
 | 6 | 测试包含至少 2 个配置（小规模 + 典型规模） |
-| 7 | golden 函数使用 PyTorch 标准实现 |
+| 7 | 含 GEMM：`gemm_v0` 第一次调用有 `init=True`（详见 §6） |
+| 8 | 含 GEMM：block size 满足分形限制（详见 §6） |
 
-### 融合算子检查
+### Golden 与精度验证
 
 | # | 检查项 | 说明 |
 |---|--------|------|
-| 8 | **workspace_idx 与函数签名一致** | workspace 参数位置正确 |
-| 9 | **AUTO_CV_COMBINE / AUTO_CV_SYNC 配置** | Developer 模式需开启 |
-| 10 | **Cube → workspace → Vector 数据流正确** | T.copy 搬运路径完整 |
-| 11 | **核分离方式与 pass_configs 匹配** | Developer 模式无需显式 T.Scope |
+| 9 | **Golden 实现一致** | 迁移算子必须使用原算子的 golden 实现（详见 [pr-ready-guide.md](references/pr-ready-guide.md) §1） |
+| 10 | **输出形状匹配** | 检查是否需要 transpose 来匹配原算子输出 shape |
+
+### 上库前收尾检查（详见 [pr-ready-guide.md](references/pr-ready-guide.md)）
+
+| # | 检查项 | 方法 |
+|---|--------|------|
+| 11 | **tilelang.disable_cache()** | 放在 `__main__` 下方或 `main()` 内部 |
+| 12 | **注释转英文** | 人工检查所有注释 |
+| 13 | **`# type: ignore`** | 添加到所有 `T.Tensor` 参数定义 |
+| 14 | **移除 try-catch** | 测试代码中不应有异常捕获 |
+| 15 | **每组测试提示** | `print(f"Test passed: M={M}, N={N}, K={K}")` |
+| 16 | **最终输出格式** | `"Test Passed!"` 或 `"Kernel Output Match!"` |
+| 17 | **参数处理灵活** | 支持自定义参数 + 默认多组测试 |
+| 18 | **代码格式检查** | `ruff check` + `ruff format --check` 通过 |
+
+### 融合算子专项检查
+
+| # | 检查项 | 说明 |
+|---|--------|------|
+| 19 | **workspace_idx 与函数签名一致** | workspace 参数位置正确 |
+| 20 | **AUTO_CV_COMBINE / AUTO_CV_SYNC 配置** | Developer 模式需开启 |
+| 21 | **Cube → workspace → Vector 数据流正确** | T.copy 搬运路径完整 |
+| 22 | **核分离方式与 pass_configs 匹配** | Developer 模式无需显式 T.Scope |
 
 ### 融合算子常见错误排查
 

@@ -32,6 +32,10 @@ description: "根据算子需求生成 TileLang-Ascend 算子设计文档（desi
 | 输入张量规格 | shape、dtype |
 | 输出张量规格 | shape、dtype |
 | 编程模式偏好 | Developer / Expert / 混合 |
+| **迁移算子路径** ⭐ | 原算子文件路径（迁移时必需），用于获取 golden 实现 |
+| **输出形状** ⭐ | 原算子输出 shape（迁移时必需），如 `(N, M)` 或 `(M, N)` |
+
+**迁移算子时必须提供原算子路径和输出形状**，否则无法证明迁移正确性。详见 [tilelang-op-generate/references/pr-ready-guide.md §1](../tilelang-op-generate/references/pr-ready-guide.md)。
 
 **提问规则（必须严格遵守）**：
 1. **每次只询问一个字段**：使用 `question` 工具时，`questions` 数组中只包含一个元素
@@ -225,23 +229,26 @@ grep "T.Scope\|T.barrier" examples/{同类实现}  # 同步方式
 算子数学公式
 ├─ 含 matmul / @ / 矩阵乘
 │   ├─ 仅 matmul → 纯 Cube
-│   │   参考: examples/gemm/example_gemm.py
-│   │   模式: Expert（手动管理 L0）
-│   │   API（Ascend 专用）: T.gemm_v0(A_L1, B_L1, C_L0C, transpose_A, init)
-│   │   API（通用版，本项目不推荐）: T.gemm
-│   │   内存（Expert）: T.alloc_L1 → T.alloc_L0C
-│   │   内存（Developer）: T.alloc_shared → T.alloc_fragment
-│   │   同步: T.barrier_all() + T.Scope("C")
-│   │   Kernel: T.Kernel(一维, is_npu=True) as (cid, _)
+│   │   模式: Developer (推荐) 或 Expert
+│   │   API: T.gemm_v0 / T.mma
+│   │   内存: GM→L1→L0A/L0B→L0C→GM
+│   │   pass_configs: 全开启（Developer）
+│   │   Kernel: T.Kernel(任务数, is_npu=True) as (cid, _)
 │   │
-│   └─ matmul + element-wise 后处理 → 混合（融合算子）
-│       模式: Developer + 自动同步（推荐）或 Expert + 手动同步
-│       API: T.gemm_v0 + T.tile.* / T.Parallel + workspace
-│       内存: GM→L1→L0A/L0B→L0C→workspace→UB→GM
-│       workspace: 数量/shape/dtype 自动推断，位于 GM
-│       pass_configs: AUTO_CV_COMBINE:True + AUTO_CV_SYNC:True + AUTO_SYNC:True
-│       同步: 自动（AUTO_CV_SYNC）或手动（T.set_cross_flag / T.wait_cross_flag）
-│       参考示例: examples/flash_attention/flash_attn_bhsd_cc_sync.py
+│   └─ matmul + element-wise 前处理/后处理 → CV 融合算子
+│       ├─ Developer 模式（推荐）
+│       │   模式: Developer + AUTO_CV_COMBINE
+│       │   API: T.tile.* (Vector) + T.gemm_v0 (Cube)
+│       │   内存: GM→L1→L0C→workspace→UB→GM
+│       │   pass_configs: AUTO_SYNC + AUTO_CV_COMBINE + AUTO_CV_SYNC
+│       │   同步: AUTO_SYNC + AUTO_CV_SYNC 自动处理
+│       │   V 核: 可用 vid 并行化（每个 V 核处理 block_N // VEC_NUM 行）
+│       │
+│       ├─ Expert 模式（极致性能）
+│       │   模式: Expert + T.Scope("C"/"V") + T.set_cross_flag
+│       │   同步: 手动核间同步（T.set_cross_flag / T.wait_cross_flag）
+│       │
+│    典型算子: W4A8 GEMM, Flash Attention, 量化 GEMM
 │
 ├─ 纯 element-wise（逐元素运算）
 │   参考: examples/elementwise/*.py, examples/activation/*.py
@@ -270,6 +277,25 @@ grep "T.Scope\|T.barrier" examples/{同类实现}  # 同步方式
     强制步骤: 先搜索本项目 examples/
 ```
 
+**⚠️ NPU 硬件约束（必查）**：
+
+设计 Tiling 策略时，必须考虑：
+1. **分形限制**（Fractal Limits）：
+   - L0A: M ≥ 16, K ≥ 32
+   - L0B: K ≥ 32, N ≥ 16
+   - L0C: M ≥ 16, N ≥ 16
+2. **对齐要求**：
+   - UB/L1: 32 Byte
+   - L0A/L0B: 512 Byte
+   - L0C: 64 Byte
+3. **存储大小上限**：
+   - L0A/L0B: 64KB
+   - L0C: 128KB
+   - L1: 512KB
+   - UB: 192KB
+
+违反约束会导致编译错误或运行时错误。详见 [tilelang-api-best-practices](../tilelang-custom-skill/tilelang-api-best-practices/references/api-kernel-memory.md)。
+
 ### 4.2 API 映射规则
 
 | 类别 | Ascend 专用 API（推荐） | 通用 API（本项目不推荐/不支持） |
@@ -297,14 +323,17 @@ grep "T.Scope\|T.barrier" examples/{同类实现}  # 同步方式
 | 6 | **验证方案覆盖 4 类典型配置**：完美对齐 + 单维 padding + 全维 padding + 多 block（GEMM 类必含），不是「待补充」 | ⭕ 推荐 |
 | 7 | **无占位符或模糊描述**：无 `{placeholder}`、TODO、「待补充」（已确认的除外） | ✅ 必须 |
 | 8 | **技术约束已确认**：三维 Kernel、threads、动态边界等问题已处理 | ✅ 必须 |
-| 9 | **本项目同类实现已列出**：有具体的 examples/ 文件路径参考 | ✅ 必须 |
-| 10 | **参考实现差异已说明**：如果有外部参考，列出 API/结构差异 | ⭕ 推荐 |
-| 11 | **参考实现分析完整**（如有参考实现）：记录了内存层级 API、同步策略、pass_configs 等技术决策 | ⭕ 推荐 |
-| 12 | **CV 融合设计完整**（如需）：workspace 规格、数据流、pass_configs | ⭕ 推荐 |
-| 13 | **workspace_idx 配置正确**（如需 CV 融合）：与 workspace 参数位置一致 | ✅ 必须 |
-| 14 | **非整除处理策略明确**（GEMM 类必含）：主机侧 padding+crop 或 Kernel 内动态 block，说明溢出/下溢处理 | ✅ 必须 |
-| 15 | **L0C 容量约束已验证**（GEMM 类必含）：`block_M × block_N × sizeof(accum_dtype) ≤ L0C_capacity (128KB)` | ⭕ 推荐 |
-| 16 | **函数无全局变量依赖**：维度参数从 tensor shape 或函数参数获取，支持多场景顺序测试 | ⭕ 推荐 |
+| 9 | **含 GEMM 场景**：Tiling 策略满足 NPU 分形限制（block_M ≥ 16, block_N ≥ 16） | ✅ 必须 |
+| 10 | **含 GEMM 场景 L0C 容量约束验证**：`block_M × block_N × sizeof(accum_dtype) ≤ L0C_capacity (128KB)` | ⭕ 推荐 |
+| 11 | **含 GEMM 场景非整除处理策略明确**：主机侧 padding+crop 或 Kernel 内动态 block，说明溢出 / 下溢处理 | ✅ 必须 |
+| 12 | **含 CV 融合场景**：workspace 规格、数据流、pass_configs 设计完整| ✅ 必须 |
+| 13 | **含 CV 融合场景 workspace_idx 配置正确**：与 workspace 参数位置一致 | ✅ 必须 |
+| 14 | **本项目同类实现已列出**：有具体的 examples/ 文件路径参考 | ✅ 必须 |
+| 15 | **参考实现差异已说明**：如有外部参考，列出 API/结构差异 | ⭕ 推荐 |
+| 16 | **参考实现分析完整**：如有外部参考，记录内存层级 API、同步策略、pass_configs 等技术决策 | ⭕ 推荐 |
+| 17 | **参考实现标注原算子路径**：如有外部参考，标注文件路径，用于获取 golden 实现 | ⭕ 推荐 |
+| 18 | **参考实现标注输出形状**：如有外部参考，说明输出形状是否需要 transpose | ⭕ 推荐 |
+| 19 | **函数无全局变量依赖**：维度参数从 tensor shape 或函数参数获取，支持多场景顺序测试 | ⭕ 推荐 |
 
 **通过条件**：必须项（1, 2, 3, 7, 8, 9, 14）全部通过，推荐项至少通过 4/9。
 

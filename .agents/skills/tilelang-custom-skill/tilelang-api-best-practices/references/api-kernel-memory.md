@@ -6,7 +6,7 @@
 
 ### @T.prim_func
 
-定义一个 TileLang kernel 函数。参数类型为 `T.Tensor` 或 `T.Buffer`。
+定义一个 TileLang kernel 函数。参数类型为 `T.Tensor`。
 
 ```python
 @T.prim_func
@@ -18,7 +18,10 @@ def add_kernel(
     ...
 ```
 
-**支持的 dtype**：`float16, float32, bfloat16, int8, int16, int32, int64, uint8, uint16, uint32, uint64`
+**支持的 dtype**：
+- `float16`, `float32`, `bfloat16`
+- `int8`, `int16`, `int32`, `int64`
+- `uint8`, `uint16`, `uint32`, `uint64`
 
 ### 动态 shape 符号
 
@@ -54,8 +57,7 @@ with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
 ```
 
 - **cid**：计算任务 ID，范围 [0, block_num)
-- **vid**：Vector 单元索引（0 或 1），A2/A3 架构 CV 核配比可为 1:2 或 1:1
-- **VEC_NUM**：通常设为 2，表示每个 AI Core 有 2 个 Vector 计算单元
+- **vid**：Vector 单元索引（0 或 1），C、V 核配比为 1:2
 
 ### @jit 装饰器
 
@@ -72,23 +74,61 @@ def tile_add(M, N, block_M, block_N, dtype='float'):
 
 **参数**：
 - `out_idx`：指定输出参数索引，如 `[-1]` 表示最后一个参数为输出
-- `workspace_idx`：工作空间参数索引（如 Flash Attention 中 `workspace_idx=[4,5,6]`）
+- `workspace_idx`：工作空间参数索引（详见下方 workspace 机制）
 - `pass_configs`：编译配置选项
 
 **常用 pass_configs**：
 ```python
 pass_configs = {
-    tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,         # 自动同步插入
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,         # 自动同步插入（核内）
     tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,   # 自动内存规划
     tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,   # 自动CV分离（核间流水线需要）
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_SYNC: True,      # 自动同步插入（CV核间）
 }
 ```
 
+#### workspace 机制
+
+**作用**：workspace buffer 用于 Cube 核（L1）和 Vector 核（UB）之间的数据中转。
+
+由于 Ascend 硬件限制，UB 和 L1 不能直接互通，必须通过 Global Memory 中转：
+
+```
+L0C → workspace(GM) → UB   # Cube 输出到 Vector 处理
+UB → workspace(GM) → L1    # Vector 输出到 Cube
+```
+
+**使用方式**：
+
+1. 在 `@jit` 中指定 `workspace_idx`：
+```python
+@jit(out_idx=[-1], workspace_idx=[3])  # workspace 是第 3 个参数
+def kernel(M, N, K, ...):
+    @T.prim_func
+    def main(
+        A: T.Tensor((M, K), dtype),
+        B: T.Tensor((K, N), dtype),
+        C: T.Tensor((M, N), dtype),
+        workspace: T.Tensor((M, N), accum_dtype),  # workspace_idx=[3]
+    ):
+        ...
+```
+> 注意：定义 workspace buffer 时，名称也应包含 "workspace"
+
+2. 数据流示例（来自 `examples/quant_batch_matmul`）：
+```python
+# GEMM 输出 (L0C) → workspace → Vector 核处理
+T.copy(C_L0, workspace[bm * block_M, bn * block_N])
+T.copy(workspace[bm * block_M + vid * block_M_2, bn * block_N], c_ub)
+
+# Vector 核处理后输出
+T.copy(c_out, C[bm * block_M + vid * block_M_2, bn * block_N])
+```
 ### 查看生成的 AscendC 代码
 
 ```python
-func = tile_add(M, N, block_M, block_N)
-print(f"{func.get_kernel_source()}")
+kernel = tile_add(M, N, block_M, block_N)
+print(kernel.get_kernel_source())
 ```
 
 ---
@@ -97,7 +137,7 @@ print(f"{func.get_kernel_source()}")
 
 ### Developer 模式
 
-TileLang 对存储层级进行了抽象，分为 Global、shared 和 fragment 三个级别。在 Ascend 平台中，shared 层级对应 L1 Buffer 和 Unified Buffer，fragment 层级对应 L0A/L0B/L0C Buffer。用户无需指定具体硬件存储，TileLang 编译器会根据程序上下文自动识别。
+TileLang 对存储层级进行了抽象，分为 global、shared 和 fragment 三个级别。在 Ascend 平台中，shared 层级对应 L1 Buffer 和 Unified Buffer (UB)，fragment 层级对应 L0A/L0B/L0C Buffer。用户无需指定具体硬件存储，TileLang 编译器会根据程序上下文自动识别。
 
 #### T.alloc_shared(shape, dtype)
 
@@ -129,13 +169,13 @@ b = T.alloc_var("int32", init=a)  # 用另一个变量的值初始化
 
 显式指定存储位置，适用于需要精确控制内存分配的场景。
 
-| API | 存储层级 | 说明 |
-|-----|---------|------|
-| `T.alloc_ub(shape, dtype)` | Unified Buffer (UB) | Vector 计算 |
-| `T.alloc_L1(shape, dtype)` | L1 Buffer | 片上缓存 |
-| `T.alloc_L0A(shape, dtype)` | L0A Buffer | Cube 左矩阵 |
-| `T.alloc_L0B(shape, dtype)` | L0B Buffer | Cube 右矩阵 |
-| `T.alloc_L0C(shape, dtype)` | L0C Buffer | Cube 输出/累加 |
+| API | 存储层级 | 抽象层级 | 说明 |
+|-----|---------|---------|-----|
+| `T.alloc_ub(shape, dtype)` | Unified Buffer | shared | Vector 存储单元 |
+| `T.alloc_L1(shape, dtype)` | L1 Buffer | shared | Cube 存储单元 |
+| `T.alloc_L0A(shape, dtype)` | L0A Buffer | fragment | Cube 左矩阵 |
+| `T.alloc_L0B(shape, dtype)` | L0B Buffer | fragment | Cube 右矩阵 |
+| `T.alloc_L0C(shape, dtype)` | L0C Buffer | fragment | Cube 输出/累加 |
 
 **实际使用示例**（来自 `examples/gemm/example_gemm.py`）：
 
@@ -144,6 +184,35 @@ A_L1 = T.alloc_L1([block_M, block_K], dtype)
 B_L1 = T.alloc_L1([block_K, block_N], dtype)
 C_L0 = T.alloc_L0C([block_M, block_N], accum_dtype)
 ```
+
+**⚠️ 重要：存储单元对齐要求**
+
+Ascend NPU 不同存储单元有不同的对齐要求：
+
+| 存储单元 | 对齐要求 |
+|---------|---------|
+| Global Memory (GM) | 无对齐要求 |
+| Unified Buffer (UB) | 32 Byte |
+| L1 Buffer | 32 Byte |
+| L0A Buffer | 512 Byte |
+| L0B Buffer | 512 Byte |
+| L0C Buffer | 64 Byte |
+
+**⚠️ 重要：存储单元大小限制**
+
+根据 Ascend910B3 平台配置：
+
+| 存储单元 | 大小上限 |
+|---------|---------|
+| L0A | 65536 Byte |
+| L0B | 65536 Byte |
+| L0C | 131072 Byte |
+| L1 | 524288 Byte |
+| UB | 196608 Byte |
+
+> 更多参数参见：`$ASCEND_HOME_PATH/$(uname -m)-linux/data/platform_config/Ascend910B3.ini`
+
+分配 Buffer 时需确保不超出上限，并满足对齐要求。
 
 ---
 
@@ -164,7 +233,8 @@ C_L0 = T.alloc_L0C([block_M, block_N], accum_dtype)
 | GM | UB | Global Memory → Unified Buffer |
 | UB | GM | Unified Buffer → Global Memory |
 | UB | UB | Unified Buffer → Unified Buffer |
-| UB | L1 | Unified Buffer → L1 Buffer |
+
+> **注意**：UB 和 L1 之间**不能直接搬运**。Cube 核（L1）和 Vector 核（UB）的数据传递需要通过 workspace buffer（GM）中转。
 
 **使用示例**：
 
@@ -187,7 +257,104 @@ T.copy(K[bz, by, k * block_N:(k + 1) * block_N, :], k_l1)
 
 ---
 
-## 4. 完整示例
+## 4. V 核并行化
+
+### 4.1 基本原理
+
+Ascend NPU 每个 AI Core 有 1 个 Cube 核和 2 个 Vector 核（C:V = 1:2）：
+
+- `cid`：计算任务 ID，范围 `[0, block_num)`
+- `vid`：Vector 核索引，取值 0 或 1
+- `VEC_NUM`：常量，通常设为 2
+
+**默认行为**：两个 V 核（vid=0 和 vid=1）执行完全相同的代码，算力浪费。
+
+**正确做法**：利用 `vid` 让两个 V 核分担任务。
+
+### 4.2 V 核分担任务的模式
+
+#### 模式一：按行切分（最常见）
+
+每个 V 核处理 `block_dim // VEC_NUM` 行：
+
+```python
+VEC_NUM = 2
+block_M_2 = block_M // VEC_NUM  # 每个 V 核处理一半行数
+
+with T.Kernel(grid_size, is_npu=True) as (cid, vid):
+    # 计算 V 核负责的起始行
+    row_start = cid * block_M + vid * block_M_2
+    
+    # 分配 buffer（只需分配 V 核负责的行数）
+    data_ub = T.alloc_shared((block_M_2, block_N), dtype)
+    
+    # 读入数据
+    T.copy(A[row_start, by * block_N], data_ub)
+    
+    # 计算
+    ...
+    
+    # 写出数据
+    T.copy(data_ub, B[row_start, by * block_N])
+```
+
+**关键点**：读写索引必须一致，都使用 `row_start` 或基于 `vid` 计算的索引。
+
+#### 模式二：按任务切分
+
+每个 V 核处理不同的计算任务：
+
+```python
+VEC_NUM = 2
+
+with T.Kernel(num_tasks, is_npu=True) as (cid, vid):
+    # 每个 V 核处理不同的任务
+    task_id = cid * VEC_NUM + vid
+    
+    if task_id < total_tasks:
+        # 处理 task_id
+        ...
+```
+
+### 4.3 workspace 索引一致性（易错点）
+
+当 V 核读写 workspace（或任何中间 buffer）时，**必须保持索引逻辑一致**：
+
+```python
+# 错误：读写索引不一致
+for row in T.serial(block_N_2):
+    actual_row = bn * block_N + vid * block_N_2 + row
+    T.copy(src[actual_row, ...], temp_ub)   # 读用 actual_row ✓
+    # ... 处理 ...
+    T.copy(temp_ub, dst[bn * block_N + row, ...])  # ❌ 写没用 actual_row
+
+# 正确：读写索引一致
+for row in T.serial(block_N_2):
+    actual_row = bn * block_N + vid * block_N_2 + row
+    T.copy(src[actual_row, ...], temp_ub)   # 读用 actual_row ✓
+    # ... 处理 ...
+    T.copy(temp_ub, dst[actual_row, ...])   # 写也用 actual_row ✓
+```
+
+**原则**：同一数据在不同阶段的索引必须基于相同的计算逻辑。
+
+### 4.4 Cube 核不涉及 vid
+
+Cube 核做 GEMM 时，不使用 vid 切分，读取完整的 block：
+
+```python
+# Cube 核部分（不涉及 vid）
+A_L1 = T.alloc_shared((block_M, block_K), dtype)  # 完整 block_M
+B_L1 = T.alloc_shared((block_N, block_K), dtype)  # 完整 block_N
+
+T.copy(A[bm * block_M, k_offset], A_L1)   # 完整 block_M
+T.copy(B[bn * block_N, k_offset], B_L1)   # 完整 block_N
+T.gemm_v0(A_L1, B_L1, C_L0, ...)
+```
+
+---
+
+## 5. 完整示例
 
 来自 `docs/TileLang-Ascend Programming Guide.md` §2.2：
 
