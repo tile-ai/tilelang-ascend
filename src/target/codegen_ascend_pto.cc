@@ -12,8 +12,6 @@
 #include <tvm/tir/op.h>
 
 #include <algorithm>
-#include <cmath>
-#include <iomanip>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -24,13 +22,6 @@
 #include "../transform/common/attr.h"
 #include "arith/pattern_match.h"
 #include "codegen_ascend_pto.h"
-
-#define DEC_STR_TO_HEX_STR(dec_str)                                            \
-  ([](const std::string &s) {                                                  \
-    std::stringstream ss;                                                      \
-    ss << std::showbase << std::hex << std::uppercase << std::stoi(s);         \
-    return ss.str();                                                           \
-  }(dec_str))
 
 namespace tvm {
 namespace codegen {
@@ -127,26 +118,6 @@ int32_t GetTypeLen(std::string type) {
     typeSize = 2;
   } else if (type == "int" || type == "uint32_t") {
     typeSize = 4;
-  } else {
-    ICHECK(false) << "Unsupported datatype";
-  }
-  return typeSize;
-}
-
-std::string GetTypeLenString(std::string type) {
-  std::string typeSize = "1";
-  if (type == "float") {
-    typeSize = "4";
-  } else if (type == "bfloat16_t") {
-    typeSize = "2";
-  } else if (type == "half") {
-    typeSize = "2";
-  } else if (type == "int8_t" || type == "uint8_t") {
-    typeSize = "1";
-  } else if (type == "int16_t" || type == "uint16_t") {
-    typeSize = "2";
-  } else if (type == "int" || type == "uint32_t") {
-    typeSize = "4";
   } else {
     ICHECK(false) << "Unsupported datatype";
   }
@@ -689,67 +660,6 @@ extractTemplateParams(const std::string &input) {
         params[i];
   }
   return result;
-}
-
-std::map<std::string, std::string>
-extractTemplateParams1(const std::string &input) {
-  std::map<std::string, std::string> result;
-  size_t start = input.find('<');
-  size_t end = input.rfind('>');
-
-  if (start == std::string::npos || end == std::string::npos || start >= end) {
-    return result;
-  }
-  std::string inner = input.substr(start + 1, end - start - 1);
-  std::vector<std::string> params;
-  std::stringstream ss(inner);
-  std::string param;
-  while (std::getline(ss, param, ',')) {
-    param.erase(0, param.find_first_not_of(" \t"));
-    param.erase(param.find_last_not_of(" \t") + 1);
-    params.push_back(param);
-  }
-  std::vector<std::string> paramNames = {
-      "data_type_input", "data_type_output", "L1_BLOCK_M", "L1_BLOCK_N",
-      "L1_BLOCK_K",      "BLOCK_M",          "BLOCK_N",    "L1_BLOCK_K",
-      "transpose_A",     "transpose_B"};
-  for (size_t i = 0; i < params.size() && i < paramNames.size(); ++i) {
-    result[paramNames[i]] = params[i];
-  }
-  for (size_t i = paramNames.size(); i < params.size(); ++i) {
-    result["extra_param_" + std::to_string(i - paramNames.size() + 1)] =
-        params[i];
-  }
-  return result;
-}
-
-std::vector<std::string> extractShapeFromTemplate(const std::string &input) {
-  std::vector<std::string> numbers;
-  size_t start = input.find('<');
-  if (start == std::string::npos) {
-    return numbers;
-  }
-  size_t end = input.find('>', start);
-  if (end == std::string::npos) {
-    return numbers;
-  }
-  std::string templatePart = input.substr(start + 1, end - start - 1);
-  templatePart.erase(std::remove(templatePart.begin(), templatePart.end(), ' '),
-                     templatePart.end());
-  std::vector<std::string> parts;
-  std::stringstream ss(templatePart);
-  std::string token;
-  while (std::getline(ss, token, ',')) {
-    parts.push_back(token);
-  }
-  for (size_t i = 1; i < parts.size(); ++i) {
-    bool isNumber = !parts[i].empty() &&
-                    std::all_of(parts[i].begin(), parts[i].end(), ::isdigit);
-    if (isNumber) {
-      numbers.push_back(parts[i]);
-    }
-  }
-  return numbers;
 }
 
 void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op,
@@ -2188,11 +2098,6 @@ void CodeGenTileLangAscendPto::UnaryVecOpCodegen(const CallNode *op,
 
   ShapeInfo src_shape_info = GetSliceInfo(op->args[1].as<CallNode>());
   ShapeInfo dst_shape_info = GetSliceInfo(op->args[0].as<CallNode>());
-
-  bool is_src_slice =
-      src_shape_info.extent != src_shape_info.row * src_shape_info.col;
-  bool is_dst_slice =
-      dst_shape_info.extent != dst_shape_info.row * dst_shape_info.col;
 
   if (src_shape_info.is_slice || dst_shape_info.is_slice) {
     std::string src_temp_name = GetTempVarName(src_shape_info.ub_name);
