@@ -2,12 +2,14 @@
 # Licensed under the MIT License.
 """The cache utils with class and database persistence - KernelCache Class"""
 
+from __future__ import annotations
+
 import os
 import json
 import shutil
 from pathlib import Path
 from hashlib import sha256
-from typing import Callable, List, Literal, Union, Optional
+from typing import Callable, Literal
 from tvm.target import Target
 from tvm.tir import PrimFunc
 from tilelang.jit import JITKernel
@@ -68,12 +70,13 @@ class KernelCache:
     def _generate_key(
         self,
         func: Callable,
-        out_idx: List[int],
-        workspace_idx: List[int],
+        out_idx: list[int],
+        workspace_idx: list[int],
+        auto_gm_idx: list[int],
         execution_backend: Literal["dlpack", "ctypes", "cython"] = "cython",
         args=None,
-        target: Union[str, Target] = "auto",
-        target_host: Union[str, Target] = None,
+        target: str | Target = "auto",
+        target_host: str | Target = None,
         platform: str = "auto",
         pass_configs: dict = None,
     ) -> str:
@@ -84,6 +87,7 @@ class KernelCache:
             func (Callable): The function to be compiled.
             out_idx (List[int]): Indices specifying which outputs to return.
             workspace_idx (List[int]): Indices specifying auto-allocated workspace tensors.
+            auto_gm_idx (List[int]): Indices specifying workspace tensors which virtual channels(ub/l0c->l1/ub) need.
             execution_backend (Literal): Backend type for execution. Defaults to "cython".
             args: Arguments passed to the function.
             target (Union[str, Target]): Compilation target platform. Defaults to "auto".
@@ -100,9 +104,8 @@ class KernelCache:
             "func": sha256(func_binary).hexdigest(),  # Use SHA256 to generate hash key
             "out_idx": (tuple(out_idx) if isinstance(out_idx, (list, tuple)) else [out_idx]),
             "workspace_idx": (tuple(workspace_idx) if isinstance(workspace_idx, (list, tuple)) else [workspace_idx]),
-            "args_repr": tuple(
-                repr(arg) for arg in args
-            ),  # Use repr to serialize arguments, may need more robust serialization
+            "auto_gm_idx": (tuple(auto_gm_idx) if isinstance(auto_gm_idx, (list, tuple)) else [auto_gm_idx]),
+            "args_repr": tuple(repr(arg) for arg in args),  # Use repr to serialize arguments, may need more robust serialization
             "target": str(target),
             "target_host": str(target_host) if target_host else None,
             "platform": str(platform),
@@ -115,11 +118,12 @@ class KernelCache:
     def cached(
         self,
         func: PrimFunc = None,
-        out_idx: List[int] = None,
-        workspace_idx: List[int] = None,
+        out_idx: list[int] = None,
+        workspace_idx: list[int] = None,
+        auto_gm_idx: list[int] = None,
         *args,
-        target: Union[str, Target] = "auto",
-        target_host: Union[str, Target] = None,
+        target: str | Target = "auto",
+        target_host: str | Target = None,
         platform: str = "auto",
         execution_backend: Literal["dlpack", "ctypes", "cython"] = "cython",
         verbose: bool = False,
@@ -132,6 +136,7 @@ class KernelCache:
             func: Function to be compiled or a prepared PrimFunc
             out_idx: Indices specifying which outputs to return
             workspace_idx: Indices specifying auto-allocated workspace tensors
+            auto_gm_idx: Indices specifying workspace tensors which virtual channels(ub/l0c->l1/ub) need
             target: Compilation target platform
             target_host: Host target platform
             platform: Specifies the target hardware platform generation. Defaults to "A3".
@@ -159,6 +164,7 @@ class KernelCache:
             func=func,
             out_idx=out_idx,
             workspace_idx=workspace_idx,
+            auto_gm_idx=auto_gm_idx,
             execution_backend=execution_backend,
             args=args,
             target=target,
@@ -169,13 +175,15 @@ class KernelCache:
         with self._lock:
             # First check in-memory cache
             if key in self._memory_cache:
-                self.logger.warning("Found kernel in memory cache. For better performance," \
-                                    " consider using `@tilelang.jit` instead of direct kernel caching.")
+                self.logger.warning(
+                    "Found kernel in memory cache. For better performance, consider using `@tilelang.jit` instead of direct kernel caching."
+                )
                 return self._memory_cache[key]
 
             # Then check disk cache
-            kernel = self._load_kernel_from_disk(key, target, target_host, platform, out_idx, workspace_idx,
-                                                 execution_backend, pass_configs, func)
+            kernel = self._load_kernel_from_disk(
+                key, target, target_host, platform, out_idx, workspace_idx, auto_gm_idx, execution_backend, pass_configs, func
+            )
             if kernel is not None:
                 # Populate memory cache with disk result
                 self._memory_cache[key] = kernel
@@ -290,11 +298,12 @@ class KernelCache:
     def _load_kernel_from_disk(
         self,
         key: str,
-        target: Union[str, Target] = "auto",
-        target_host: Union[str, Target] = None,
+        target: str | Target = "auto",
+        target_host: str | Target = None,
         platform: str = "auto",
-        out_idx: List[int] = None,
-        workspace_idx: List[int] = None,
+        out_idx: list[int] = None,
+        workspace_idx: list[int] = None,
+        auto_gm_idx: list[int] = None,
         execution_backend: Literal["dlpack", "ctypes", "cython"] = "cython",
         pass_configs: dict = None,
         func: Callable = None,
@@ -309,6 +318,7 @@ class KernelCache:
             platform (Literal): Specifies the target hardware platform generation. Defaults to "A3".
             out_idx (List[int], optional): Indices specifying which outputs to return.
             workspace_idx (List[int], optional): Indices specifying auto-allocated workspace tensors.
+            auto_gm_idx (List[int], optional): Indices specifying workspace tensors which virtual channels(ub/l0c->l1/ub) need.
             execution_backend (Literal): Backend type for execution. Defaults to "cython".
             pass_configs (dict, optional): Configuration for compiler passes.
             func (Callable, optional): The original function.
@@ -321,12 +331,12 @@ class KernelCache:
         if not os.path.exists(cache_path):
             return None
 
-        kernel_global_source: Optional[str] = None
-        kernel_params: Optional[List[KernelParam]] = None
+        kernel_global_source: str | None = None
+        kernel_params: list[KernelParam] | None = None
 
         try:
             wrapped_kernel_path = os.path.join(cache_path, WRAPPED_KERNEL_PATH)
-            with open(wrapped_kernel_path, "r") as f:
+            with open(wrapped_kernel_path) as f:
                 kernel_global_source = f.read()
         except Exception as e:
             self.logger.error(f"Error loading wrapped kernel source code from disk: {e}")
@@ -352,6 +362,7 @@ class KernelCache:
                 platform=platform,
                 out_idx=out_idx,
                 workspace_idx=workspace_idx,
+                auto_gm_idx=auto_gm_idx,
                 execution_backend=execution_backend,
                 pass_configs=pass_configs,
             )
@@ -361,7 +372,7 @@ class KernelCache:
     def _clear_disk_cache(self):
         """
         Removes all cached kernels from disk.
-        
+
         Note:
             This operation will delete the entire cache directory and recreate it empty.
             Use with caution as this operation cannot be undone.

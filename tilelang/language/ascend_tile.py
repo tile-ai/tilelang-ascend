@@ -1382,7 +1382,7 @@ def gather(dst: Buffer | BufferRegion, src: Buffer | BufferRegion, src_offset: B
         src_ptr = src.access_ptr("r")
         size = math.prod(src.shape)
 
-    if isinstance(src, BufferRegion):
+    if isinstance(src_offset, BufferRegion):
         src_offset_ptr, _ = _handle_buffer_region(src_offset, "r")
     else:
         src_offset_ptr = src_offset.access_ptr("r")

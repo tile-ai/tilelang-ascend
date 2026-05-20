@@ -5,7 +5,7 @@ from typing import Union, Literal  # noqa: F401, UP035
 from tvm import tir
 
 
-_pipe = Literal["fix", "mte1", "mte2", "mte3", "m", "v"]
+_pipe = Literal["fix", "mte1", "mte2", "mte3", "m", "v", "s"]
 
 
 def _dtype(buf):

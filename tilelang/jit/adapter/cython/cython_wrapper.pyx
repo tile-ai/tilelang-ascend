@@ -21,17 +21,19 @@ cdef class CythonKernelWrapper:
         object static_shape_map     # Maps buffer variables to their corresponding static shapes
         object ptr_map              # Maps pointer arguments to their corresponding buffer indices
         list result_idx             # Indices of output tensors in the params list
-        list workspace_idx          # Indices of auto-allocated workspace tensors in the params list
+        list workspace_idx          # Indices of workspace in the params list
+        list auto_gm_idx            # Indices of auto-allocated GM workspace
         list params                 # List of parameter specifications (includes both inputs and outputs)
         object lib                  # Reference to the compiled library containing the kernel
         # Add new cache attributes
         list param_dtypes    # Cache for parameter dtypes
         list param_shapes    # Cache for parameter shapes as native Python lists
         object get_current_device
-    def __cinit__(self, result_idx, workspace_idx, params, lib):
+    def __cinit__(self, result_idx, workspace_idx, auto_gm_idx, params, lib):
         # Initialize wrapper with kernel configuration
         self.result_idx = result_idx
         self.workspace_idx = workspace_idx
+        self.auto_gm_idx = auto_gm_idx
         self.params = params
         self.lib = lib
         # Convert TVM types to native Python types during initialization
@@ -76,6 +78,7 @@ cdef class CythonKernelWrapper:
         cdef int total_inputs = len(inputs)
         cdef int total_result_idx = len(self.result_idx)
         cdef int total_workspace_idx = len(self.workspace_idx)
+        cdef int total_auto_gm_idx = len(self.auto_gm_idx)
         cdef int total_dynamic_symbolics = len(self.dynamic_symbolic_map)
 
         # Ensure the number of inputs matches expected parameter count
@@ -122,6 +125,14 @@ cdef class CythonKernelWrapper:
                     else:
                         raise TypeError(f"Unsupported shape dim type: {type(s)} ({str(s)})")
                     shape.append(res)
+                device = inputs[0].device if len(inputs) > 0 else torch.npu.current_device()
+                tensor = torch.empty(*shape, dtype=dtype, device=device)
+            elif i in self.auto_gm_idx:
+                dtype = self.param_dtypes[i]
+                shape = []
+                # Auto GM: Dynamic shape scenarios are not supported currently  
+                for dim_name in self.param_shapes[i]:
+                    shape.append(dim_name)
                 device = inputs[0].device if len(inputs) > 0 else torch.npu.current_device()
                 tensor = torch.empty(*shape, dtype=dtype, device=device)
             else:

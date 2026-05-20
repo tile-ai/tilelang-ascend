@@ -62,6 +62,8 @@ public:
                                       const std::string &op_name);
   void BinaryVecClampOpsCodegen(const CallNode *op, const std::string &op_name);
   void SigmoidCodegen(const CallNode *op, const std::string &op_type);
+  void SiluCodegen(const CallNode *op);
+  void MulAddDstCodegen(const CallNode *op);
   void CastCodegen(const CallNode *op, const std::string &op_type);
   void ReduceOpCodegen(const CallNode *op);
 
@@ -261,6 +263,7 @@ private:
 
   Map<String, PrimExpr> address_offset_;
   Map<Var, PrimExpr> buffer_address_map_;
+  int64_t max_ub_addr_{0};
 
   Map<String, String> copy_tmplte_map_;
   Map<String, String> copy_base_addr_map_;

@@ -1460,9 +1460,13 @@ public:
     // vectorized pointer types (e.g. float16x4*).  Once they do, this if
     // statement should instead be replaced by the below ICHECK_EQ.
     if (index_lanes * var_info.element_dtype.lanes() != value_dtype.lanes()) {
-      ICHECK_EQ(index_lanes, value_dtype.lanes());
-      lanes_used = 1;
-      var_info.element_dtype = var_info.element_dtype.with_lanes(1);
+      if (index_lanes > 1 && value_dtype.lanes() == 1) {
+        lanes_used = 1;
+      } else {
+        ICHECK_EQ(index_lanes, value_dtype.lanes());
+        lanes_used = 1;
+        var_info.element_dtype = var_info.element_dtype.with_lanes(1);
+      }
     }
 
     // TODO(Lunderberg): Uncomment this check once it can be applied.
