@@ -11,6 +11,7 @@
 #include <tvm/tir/index_map.h>
 #include <tvm/tir/op.h>
 
+#include <algorithm>
 #include <cmath>
 #include <iomanip>
 #include <sstream>
@@ -159,6 +160,16 @@ int GetValidShape(int shape, const std::string &dtype) {
     return shape;
   }
   return shape + (32 - shape_mod) / dtype_len;
+}
+
+int GetRowReduceTmpCol(int valid_col, const std::string &dtype) {
+  constexpr int kVectorRepeatBytes = 256;
+  int dtype_len = GetTypeLen(dtype);
+  int elem_per_repeat = kVectorRepeatBytes / dtype_len;
+  int tmp_col = valid_col <= elem_per_repeat
+                    ? 1
+                    : std::max(valid_col / 2, elem_per_repeat);
+  return GetValidShape(tmp_col, dtype);
 }
 
 std::string CodeGenTileLangAscendPto::GetVarId(const Var &var) const {
@@ -1130,8 +1141,8 @@ void CodeGenTileLangAscendPto::GMCopyCall(const CallNode *call,
   stream << copy_base_addr_map_.at(gm_info.id) << " + " << gm_offset_string;
 
   if (is_dynamic) {
-    stream << ", pto::Shape<" << shape_tmpl << ">()"
-           << ", pto::Stride<" << stride_tmpl << ">(" << stride_param << ")";
+    stream << ", pto::Shape<" << shape_tmpl << ">()" << ", pto::Stride<"
+           << stride_tmpl << ">(" << stride_param << ")";
   }
 
   stream << ", " << PrintExpr(buffer_address_map_.at(local_info.var)) << ", "
@@ -1534,8 +1545,8 @@ void CodeGenTileLangAscendPto::CreateVecIndexCodegen(
 
   this->PrintIndent();
   this->stream << kAscendPtoScope << "tci" << "<" << getType(dst_info.dtype)
-               << ", " << PrintExpr(M) << ", " << PrintExpr(N) << ">"
-               << "(" << PrintExpr(dst_slice_info.first_addr) << ", "
+               << ", " << PrintExpr(M) << ", " << PrintExpr(N) << ">" << "("
+               << PrintExpr(dst_slice_info.first_addr) << ", "
                << dst_slice_info.offset << ", "
                << GetTypeLen(dst_slice_info.type) << ", " << first_value
                << ");\n";
@@ -1592,15 +1603,13 @@ void CodeGenTileLangAscendPto::PowCodegen(const CallNode *op) {
     this->PrintIndent();
     this->stream << kAscendPtoScope << "pow" << "<" << dst_shape_info.type
                  << ", " << dst_shape_info.slice_row << ", "
-                 << dst_shape_info.slice_col << ">"
-                 << "(" << dst_temp_name << ", " << src0_temp_name << ", "
-                 << src1_temp_name << ");\n";
+                 << dst_shape_info.slice_col << ">" << "(" << dst_temp_name
+                 << ", " << src0_temp_name << ", " << src1_temp_name << ");\n";
   } else {
     this->PrintIndent();
     this->stream << kAscendPtoScope << "pow" << "<" << dst_shape_info.type
                  << ", " << dst_shape_info.row << ", " << dst_shape_info.col
-                 << ">"
-                 << "(" << dst_shape_info.ub_name << ", "
+                 << ">" << "(" << dst_shape_info.ub_name << ", "
                  << src0_shape_info.ub_name << ", " << src1_shape_info.ub_name
                  << ");\n";
   }
@@ -2086,8 +2095,7 @@ void CodeGenTileLangAscendPto::CodegenColBroadcast(const ShapeInfo &dst,
   }
 
   this->PrintIndent();
-  this->stream << "TCOLEXPAND"
-               << "(" << dst_name << ", " << src_name << ");\n";
+  this->stream << "TCOLEXPAND" << "(" << dst_name << ", " << src_name << ");\n";
 }
 
 void CodeGenTileLangAscendPto::BroadcastOpCodegen(const CallNode *op) {
@@ -2353,8 +2361,7 @@ void CodeGenTileLangAscendPto::AxpyCodegen(const CallNode *op) {
     this->PrintIndent();
     this->stream << kAscendPtoScope << "axpy" << "<" << dst_shape_info.type
                  << ", " << dst_shape_info.row << ", " << dst_shape_info.col
-                 << ">"
-                 << "(" << dst_shape_info.ub_name << ", "
+                 << ">" << "(" << dst_shape_info.ub_name << ", "
                  << src_shape_info.ub_name << ", " << scalar << ");\n";
   }
 }
@@ -2712,9 +2719,31 @@ void CodeGenTileLangAscendPto::CodegenRowReduce(const ReduceOpInfo &op_info,
     CreateUbVariableND(src_name, src);
   }
 
+  ICHECK(dst.type == src.type)
+      << "Row reduce input dtype must be consistent with the output dtype.";
+
+  std::string temp_name = tmp.ub_name;
+  if (src.type != tmp.type) {
+    temp_name = GetTempVarName(temp_name);
+    int tmp_col = GetRowReduceTmpCol(src.slice_valid_col, src.type);
+    ShapeInfo tmp_cast = ShapeInfo{src.slice_valid_row,
+                                   tmp_col,
+                                   src.slice_valid_row,
+                                   tmp_col,
+                                   src.slice_valid_row,
+                                   tmp_col,
+                                   tmp.extent,
+                                   tmp.first_addr,
+                                   "0",
+                                   src.type,
+                                   tmp.ub_name,
+                                   false};
+    CreateUbVariableND(temp_name, tmp_cast);
+  }
+
   this->PrintIndent();
   this->stream << op_name << "(" << dst_name << ", " << src_name << ", "
-               << tmp.ub_name << ");\n";
+               << temp_name << ");\n";
 }
 
 void CodeGenTileLangAscendPto::CodegenColReduce(const ReduceOpInfo &op_info,
@@ -3095,8 +3124,8 @@ void CodeGenTileLangAscendPto::VisitExpr_(const SelectNode *op,
   auto true_value = PrintExpr(op->true_value);
   auto false_value = PrintExpr(op->false_value);
 
-  os << "(" << condition << " ? "
-     << "" << true_value << " : " << false_value << ")";
+  os << "(" << condition << " ? " << "" << true_value << " : " << false_value
+     << ")";
 }
 
 static void ProcessHostInput(std::ostream &os,
@@ -3104,8 +3133,7 @@ static void ProcessHostInput(std::ostream &os,
                              std::vector<const tir::VarNode *> &shape_vars,
                              bool add_args = true) {
   for (auto shape_var : shape_vars) {
-    os << ", "
-       << "int64_t " << shape_var->name_hint;
+    os << ", " << "int64_t " << shape_var->name_hint;
     if (add_args) {
       arg_names.push_back(shape_var->name_hint);
     }

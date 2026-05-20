@@ -29,6 +29,7 @@ tmp/
 venv/
 .vscode/
 .vs/
+.arts/
 
 # VisualGDB files
 VisualGDB/
@@ -100,4 +101,6 @@ examples/torch_tl_ascend/demo_libtorch/lib/*.so
 
 docs/notebook/*.so
 docs/notebook/*.cpp
+
+.agents/reports
 

@@ -36,6 +36,15 @@ int64_t AlignReduceOutputCols(int64_t valid_col, int64_t dtype_bytes) {
   return aligned_bytes / dtype_bytes;
 }
 
+int64_t GetPtoRowReduceTmpCols(int64_t valid_col, int64_t dtype_bytes) {
+  constexpr int64_t kVectorRepeatBytes = 256;
+  const int64_t elem_per_repeat = kVectorRepeatBytes / dtype_bytes;
+  const int64_t tmp_col = valid_col <= elem_per_repeat
+                              ? 1
+                              : std::max(valid_col / 2, elem_per_repeat);
+  return AlignReduceOutputCols(tmp_col, dtype_bytes);
+}
+
 } // namespace
 
 class CallNodeCollector : public ExprVisitor, public StmtVisitor {
@@ -872,14 +881,20 @@ private:
           valid_row = src_buffer_node->shape[1].as<IntImmNode>()->value;
           valid_col = src_buffer_node->shape[2].as<IntImmNode>()->value;
         }
-        if (op_name == "TROWMAX" || op_name == "TROWMIN") {
-          int64_t tmp_shape_size = valid_row;
-          if (valid_row > shape_size) {
-            Array<PrimExpr> tmp_shape = {IntImm(DataType::Int(32), valid_row)};
+        if (op_name == "TROWMAX" || op_name == "TROWMIN" ||
+            op_name == "TROWSUM") {
+          const int64_t dtype_bytes = src_buffer_node->dtype.bytes();
+          const int64_t tmp_col =
+              GetPtoRowReduceTmpCols(valid_col, dtype_bytes);
+          const int64_t tmp_shape_size = valid_row * tmp_col * dtype_bytes;
+          if (tmp_shape_size > shape_size) {
+            Array<PrimExpr> tmp_shape = {
+                IntImm(DataType::Int(32), tmp_shape_size),
+            };
             shape = tmp_shape;
             shape_size = tmp_shape_size;
           }
-        } else if (op_name == "TROWSUM" || op_name == "TCOLSUM") {
+        } else if (op_name == "TCOLSUM") {
           int64_t tmp_shape_size = valid_row * valid_col / 2;
           if (tmp_shape_size > shape_size) {
             Array<PrimExpr> tmp_shape = {

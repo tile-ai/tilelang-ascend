@@ -329,6 +329,9 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
   auto compute_valid_extent = [](PrimExpr min_val, PrimExpr extent,
                                  PrimExpr shape) -> PrimExpr {
     PrimExpr remaining = shape - min_val;
+    if (remaining.dtype().lanes() > 1) {
+      return extent;
+    }
     return Select(remaining >= extent, extent,
                   Select(remaining > 0, remaining, 0));
   };
@@ -569,6 +572,9 @@ Stmt AscendAtomicAdd::Lower(const LowerArgs &T,
   auto compute_valid_extent = [](PrimExpr min_val, PrimExpr extent,
                                  PrimExpr shape) -> PrimExpr {
     PrimExpr remaining = shape - min_val;
+    if (remaining.dtype().lanes() > 1) {
+      return extent;
+    }
     return Select(remaining >= extent, extent,
                   Select(remaining > 0, remaining, 0));
   };
@@ -611,10 +617,6 @@ Stmt AscendAtomicAdd::Lower(const LowerArgs &T,
   ICHECK_EQ(dst_extents.size(), dst->shape.size())
       << "tl.ascend_atomic_add destination region rank must match "
          "destination buffer rank";
-  ICHECK_EQ(src_extents.size(), dst_extents.size())
-      << "tl.ascend_atomic_add requires src and dst regions to have the same "
-         "rank, got src "
-      << src_extents.size() << " and dst " << dst_extents.size();
 
   std::stringstream ss;
   if (src.scope() == "shared") {
@@ -650,49 +652,138 @@ Stmt AscendAtomicAdd::Lower(const LowerArgs &T,
   auto src_new_buffer = T.buffer_remap.count(src) ? T.buffer_remap[src] : src;
   auto dst_new_buffer = T.buffer_remap.count(dst) ? T.buffer_remap[dst] : dst;
 
+  // Scalarize indices: extract base from Ramp expressions to avoid vector lane
+  // mismatches when Ramp lanes differ across dimensions (e.g. int32x32 vs
+  // int32x64). The Ramp lanes already contribute to the access extent (src_len
+  // / dst_len).
+  auto scalarize = [](const PrimExpr &idx) -> PrimExpr {
+    if (const auto *ramp = idx.as<RampNode>()) {
+      return ramp->base;
+    }
+    return idx;
+  };
+  auto src_scalar_indices = src_new_indices.Map(scalarize);
+  auto dst_scalar_indices = dst_new_indices.Map(scalarize);
+
   PrimExpr src_len = 1;
   for (auto &shape : src_extents) {
     src_len *= shape;
   }
+  // dst_len must also account for lanes in Ramp indices
   PrimExpr dst_len = 1;
-  for (auto &shape : dst_extents) {
-    dst_len *= shape;
+  for (size_t i = 0; i < dst_extents.size(); ++i) {
+    PrimExpr dim_len = dst_extents[i];
+    if (const auto *ramp = dst_new_indices[i].as<RampNode>()) {
+      dim_len = dim_len * ramp->lanes;
+    }
+    dst_len = dst_len * dim_len;
   }
 
-  auto src_ptr = src_new_buffer.access_ptr(
-      1, src_new_buffer->dtype, 1,
-      src_new_buffer.OffsetOf(src_new_indices).back(), src_len);
-  auto dst_ptr = dst_new_buffer.access_ptr(
-      2, dst_new_buffer->dtype, 1,
-      dst_new_buffer.OffsetOf(dst_new_indices).back(), dst_len);
+  auto src_offset = src_new_buffer.OffsetOf(src_scalar_indices).back();
+  auto dst_offset = dst_new_buffer.OffsetOf(dst_scalar_indices).back();
+
+  auto src_ptr = src_new_buffer.access_ptr(1, src_new_buffer->dtype, 1,
+                                           src_offset, src_len);
+  auto dst_ptr = dst_new_buffer.access_ptr(2, dst_new_buffer->dtype, 1,
+                                           dst_offset, dst_len);
+
+  // Compute effective extents accounting for lanes in Ramp indices,
+  // so that find_active_dim_indices correctly identifies the 2D access pattern.
+  Array<PrimExpr> effective_dst_extents;
+  for (size_t i = 0; i < dst_extents.size(); ++i) {
+    PrimExpr eff = dst_extents[i];
+    if (const auto *ramp = dst_new_indices[i].as<RampNode>()) {
+      // When a dimension was vectorized from extent N to 1 vector with N lanes,
+      // the true element count is the Ramp lanes.  When the extent already
+      // reflects the total element count (extent == Ramp lanes), keep it as-is.
+      if (is_one(dst_extents[i])) {
+        eff = ramp->lanes;
+      }
+    }
+    effective_dst_extents.push_back(eff);
+  }
+
+  // Identify row/col Ramp dimensions for stride and boundary computation.
+  // When vectorized, Ramps with different lane counts (e.g. 32, 64) mark the
+  // true 2D access pattern, bypassing scrambled extents.
+  auto get_ramp_lanes = [](const PrimExpr &idx) -> int {
+    if (const auto *ramp = idx.as<RampNode>()) {
+      if (auto *imm = ramp->lanes.as<IntImmNode>()) {
+        return static_cast<int>(imm->value);
+      }
+    }
+    return 0;
+  };
+  int row_ramp_idx = -1, col_ramp_idx = -1;
+  for (size_t i = 0; i < dst_new_indices.size(); ++i) {
+    int lanes = get_ramp_lanes(dst_new_indices[i]);
+    if (lanes > 1) {
+      if (row_ramp_idx < 0 ||
+          lanes < get_ramp_lanes(dst_new_indices[row_ramp_idx])) {
+        col_ramp_idx = row_ramp_idx >= 0 ? row_ramp_idx : col_ramp_idx;
+        row_ramp_idx = static_cast<int>(i);
+      } else {
+        col_ramp_idx = static_cast<int>(i);
+      }
+    }
+  }
 
   PrimExpr validRow_dst, validCol_dst;
-  std::vector<int> dst_active = find_active_dim_indices(dst_extents);
-  if (dst_active.size() >= 2) {
-    int row_idx = dst_active[dst_active.size() - 2];
-    int col_idx = dst_active.back();
+  if (row_ramp_idx >= 0 && col_ramp_idx >= 0) {
+    // Use Ramp-identified dimensions for boundary checks
+    PrimExpr row_min = dst_scalar_indices[row_ramp_idx];
+    PrimExpr col_min = dst_scalar_indices[col_ramp_idx];
+    PrimExpr row_extent = effective_dst_extents[row_ramp_idx];
+    PrimExpr col_extent = effective_dst_extents[col_ramp_idx];
     validRow_dst =
-        compute_valid_extent(dst_range[row_idx]->min,
-                             dst_range[row_idx]->extent, dst->shape[row_idx]);
+        compute_valid_extent(row_min, row_extent, dst->shape[row_ramp_idx]);
     validCol_dst =
-        compute_valid_extent(dst_range[col_idx]->min,
-                             dst_range[col_idx]->extent, dst->shape[col_idx]);
-  } else if (dst_active.size() == 1) {
-    int col_idx = dst_active[0];
-    validRow_dst = Integer(1);
-    validCol_dst =
-        compute_valid_extent(dst_range[col_idx]->min,
-                             dst_range[col_idx]->extent, dst->shape[col_idx]);
+        compute_valid_extent(col_min, col_extent, dst->shape[col_ramp_idx]);
   } else {
-    validRow_dst = Integer(0);
-    validCol_dst = Integer(0);
+    std::vector<int> dst_active =
+        find_active_dim_indices(effective_dst_extents);
+    if (dst_active.size() >= 2) {
+      int row_idx = dst_active[dst_active.size() - 2];
+      int col_idx = dst_active.back();
+      PrimExpr row_min = dst_scalar_indices[row_idx];
+      PrimExpr col_min = dst_scalar_indices[col_idx];
+      PrimExpr row_extent = effective_dst_extents[row_idx];
+      PrimExpr col_extent = effective_dst_extents[col_idx];
+      validRow_dst =
+          compute_valid_extent(row_min, row_extent, dst->shape[row_idx]);
+      validCol_dst =
+          compute_valid_extent(col_min, col_extent, dst->shape[col_idx]);
+    } else if (dst_active.size() == 1) {
+      int col_idx = dst_active[0];
+      PrimExpr col_min = dst_scalar_indices[col_idx];
+      PrimExpr col_extent = effective_dst_extents[col_idx];
+      validRow_dst = Integer(1);
+      validCol_dst =
+          compute_valid_extent(col_min, col_extent, dst->shape[col_idx]);
+    } else {
+      validRow_dst = Integer(0);
+      validCol_dst = Integer(0);
+    }
+  }
+
+  // Compute strideN: when Ramp dimensions are identified, use buffer shape
+  // to compute the inter-row stride. Otherwise fall back to extent-based logic.
+  PrimExpr strideN;
+  if (row_ramp_idx >= 0 && col_ramp_idx >= 0) {
+    strideN = Integer(1);
+    for (int i = row_ramp_idx + 1; i < static_cast<int>(dst->shape.size());
+         ++i) {
+      strideN = strideN * dst->shape[i];
+    }
+  } else {
+    strideN = compute_strideN(dst, dst_extents);
   }
 
   Array<PrimExpr> new_args;
   new_args.push_back(StringImm(ss.str()));
   new_args.push_back(src_ptr);
   new_args.push_back(dst_ptr);
-  new_args.push_back(compute_strideN(dst, dst_extents));
+  new_args.push_back(strideN);
   new_args.push_back(validRow_dst);
   new_args.push_back(validCol_dst);
 
