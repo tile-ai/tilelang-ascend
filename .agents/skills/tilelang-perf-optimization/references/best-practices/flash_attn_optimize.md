@@ -10,7 +10,7 @@
 |--------|--------------------------------|----------------------------------------------------------|---------|
 | 流水线深度 | 单缓冲，逐块处理 | 多缓冲流水线（num_stages=14） | 隐藏搬运延迟 |
 | 同步机制 | `barrier_all` + 简单 cross_flag | 细粒度 Flag + cross_interval 批量同步 | 减少同步开销 |
-| 计算指令 | `T.gemm_v0` 高层抽象 | `T.mma` intrinsic + L0 双缓冲 | 硬件最优 |
+| 计算指令 | `T.gemm_v0` 高层抽象 | `T.mma` intrinsic + L0 双缓冲 | 流水排布更优 |
 | 数据布局 | 默认布局 | `make_zn_layout/nz_layout` 优化 | 提高带宽利用率 |
 | 任务分配 | 简单 block_num 映射 | 静态任务分配 + NUM_CORES | 负载均衡 |
 | Softmax 计算 | 逐块计算 | 批量 Softmax（num_stages 批次） | 减少同步 |
@@ -80,7 +80,6 @@ for k in T.serial(num_outer):
 **收益**：
 - 批量处理减少同步次数（从 `seq_len/block_N` 次减少到 `num_outer` 次）
 - 流水线并行：数据搬运和计算重叠
-- 典型性能提升：50-100%
 
 **关键参数**：
 - `num_stages`：流水线深度（推荐 8-16）
@@ -152,7 +151,6 @@ T.set_flag("M", "MTE1", SIG_L0AB + side)  # 通知 L0 缓冲可重用
 - 精确控制数据流，避免不必要的等待
 - 实现 GM → MTE2 → L1 → MTE1 → L0 → M → FIX 的完整流水线
 - 批量跨核同步（每 `cross_interval` 次），减少同步开销
-- 典型性能提升：30-50%
 
 **关键概念**：
 - **Intra-core Flag**：核内部流水线同步（MTE2 ↔ MTE1 ↔ M ↔ FIX）
@@ -207,7 +205,6 @@ T.set_flag("FIX", "M", SIG_L0C + side)
 - `T.mma` 更贴近 Ascend NPU 硬件的 MMA 指令
 - L0 双缓冲实现流水线并行
 - 精细控制 L0A/L0B/L0C 的数据流
-- 典型性能提升：20-30%
 
 **关键 API**：
 
@@ -255,7 +252,6 @@ T.annotate_layout({
 - `make_zn_layout`：采用ZN layout，适配矩阵乘输入
 - `make_nz_layout`：采用NZ layout，适配 transpose 操作
 - 提高数据搬运和矩阵乘效率
-- 典型性能提升：10-20%
 
 **关键概念**：
 - **ZN layout**：分形矩阵内部是列主序，适配矩阵乘的输入布局
@@ -315,7 +311,6 @@ with T.Kernel(NUM_CORES, is_npu=True) as (cid, vid):
 - 固定物理核数（NUM_CORES=24），避免核调度开销
 - 均匀分配任务，前 `r_tasks` 个核多处理一个任务
 - 支持循环多任务（每个核处理 `my_count` 个任务）
-- 典型性能提升：10-30%（当 `block_num` 远大于核数时）
 
 **关键概念**：
 - `q_tasks`：每个核的基础任务数
@@ -413,7 +408,6 @@ for k in T.serial(num_outer):
 - 批量计算减少同步次数
 - 预计算 `r_factors` 和 `sumexp_is`，避免重复计算
 - 使用 `neg_sm` 双缓冲存储最大值历史
-- 典型性能提升：20-40%
 
 **关键变量**：
 - `r_factors[i]`：第 i 个分块的修正因子 `exp(m_prev - m_cur)`
@@ -453,7 +447,6 @@ T.copy(l0c[side, :, :], workspace_1[cid, i, :, :])  # cid: 核 ID，i: 分块索
 - 内存占用：`NUM_CORES * num_stages` vs `block_num`
 - 支持多缓冲流水线（num_stages 批次）
 - 每个核独立管理自己的 workspace
-- 典型内存节省：50-80%
 
 ---
 
@@ -491,7 +484,6 @@ T.copy(work_ub, acc_s_half)               # 结果存储
 **收益**：
 - 减少内存占用
 - 简化数据流管理
-- 典型内存节省：30-50%
 
 ---
 
@@ -522,20 +514,6 @@ pass_configs = {
 - 完全手动控制流水线和同步
 - 避免编译器优化干扰手动优化
 - 适用于 Expert 模式的高性能 kernel
-
----
-
-## 性能对比总结
-
-| 维度 | 基础实现 | Expert 优化 | 提升 |
-|------|---------|-----------|------|
-| **流水线效率** | 单缓冲，串行处理 | 多缓冲流水线（num_stages=14） | ↑ 50-100% |
-| **同步开销** | 每次 K/V 分块同步 | 批量同步（cross_interval=2） | ↓ 70-80% |
-| **计算指令** | `gemm_v0` 高层抽象 | `mma` intrinsic + L0 双缓冲 | ↑ 20-30% |
-| **数据布局** | 默认布局 | ZN/NZ layout 优化 | ↑ 10-20% |
-| **任务分配** | 简单映射 | 静态任务分配 + NUM_CORES | ↑ 10-30% |
-| **Softmax 效率** | 逐块计算 | 批量 Softmax | ↑ 20-40% |
-| **内存占用** | block_num workspace | NUM_CORES*num_stages workspace | ↓ 50-80% |
 
 ---
 
@@ -663,7 +641,11 @@ Vector 核:
 
 | 参数 | 推荐值 | 说明 |
 |------|-------|------|
-| `NUM_CORES` | 24 | 910B 物理核数 |
+| `NUM_CORES` | 通过torch.npu接口查询获取 | 芯片物理核数 |
+
+NUM_CORES可以通过torch.npu的接口获取：
+
+NUM_CORES = torch.npu.get_device_properties(0).cube_core_num
 
 ---
 
