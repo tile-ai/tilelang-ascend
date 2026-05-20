@@ -9,7 +9,6 @@
 | 优化项 | 原始实现 (`rope_mask.py`) | 优化实现 (`rope.py`) | 性能收益 |
 |--------|---------------------------|---------------------|---------|
 | Mask 生成方式 | CPU 预计算 + GM 搬运 | NPU 动态生成 | 减少 GM 访问 |
-| Kernel 参数 | 5 个张量参数 | 3 个张量参数 | 减少参数传递开销 |
 | 数据布局 | 外部生成索引 | 内联生成索引 | 消除外部依赖 |
 | 内存访问 | 需额外搬运 mask/sin_mask | 零额外搬运 | 降低内存带宽压力 |
 
@@ -107,40 +106,7 @@ for i in T.serial(0, rope_dim // 2):
 
 ---
 
-### 3. Kernel 参数简化
-
-#### 原始实现
-
-```python
-def kernel(
-    x: T.Tensor([M, hidden_size], dtype),
-    sin: T.Tensor([batch_size, rope_dim], dtype),
-    cos: T.Tensor([batch_size, rope_dim], dtype),
-    mask: T.Tensor([row_per_vec, rope_dim], MASK_DTYPE),      # 外部传入
-    sin_mask: T.Tensor([rope_dim], ACC_DTYPE),                # 外部传入
-):
-```
-
-**问题**：需要传递 5 个张量参数，增加函数调用开销。
-
-#### 优化实现
-
-```python
-def kernel(
-    x: T.Tensor([M, hidden_size], dtype),
-    sin: T.Tensor([batch_size, rope_dim], dtype),
-    cos: T.Tensor([batch_size, rope_dim], dtype),
-):
-```
-
-**收益**：
-- 参数从 5 个减少到 3 个
-- 消除外部依赖，kernel 自包含
-- 简化调用接口
-
----
-
-### 4. 数据类型转换优化
+### 3. 数据类型转换优化
 
 #### 原始实现
 
@@ -173,15 +139,14 @@ T.reinterpretcast(mask_ub, mask_ub_i32, "uint32_t")
 
 ---
 
-## 性能对比总结
+## 性能优化总结
 
-| 维度 | 原始实现 | 优化实现 | 提升 |
-|------|---------|---------|------|
-| **GM 访问次数** | 3 次（x + mask + sin_mask） | 1 次（仅 x） | ↓ 66% |
-| **参数传递** | 5 个张量 | 3 个张量 | ↓ 40% |
-| **外部依赖** | 需要 CPU 预计算 | 无外部依赖 | ↑ 可移植性 |
-| **内存带宽** | 需搬运额外 mask | 零额外搬运 | ↑ 带宽利用率 |
-| **代码复杂度** | CPU+NPU 混合逻辑 | 纯 NPU 逻辑 | ↓ 维护成本 |
+| 维度 | 原始实现 | 优化实现 |
+|------|---------|---------|
+| **GM 访问次数** | 3 次（x + mask + sin_mask） | 1 次（仅 x） |
+| **外部依赖** | 需要 CPU 预计算 | 无外部依赖 |
+| **内存带宽** | 需搬运额外 mask | 零额外搬运 |
+| **代码复杂度** | CPU+NPU 混合逻辑 | 纯 NPU 逻辑 |
 
 ---
 
