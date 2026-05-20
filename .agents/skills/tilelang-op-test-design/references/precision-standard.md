@@ -142,7 +142,7 @@ def verify_special_values(actual, expected, dtype):
     elif torch.isnan(expected):
         assert torch.isnan(actual), "NAN mismatch"
     elif abs(expected) < 1e-5:
-        assert abs(actual - expected) < 1e-7, "Small value mismatch"
+        torch.testing.assert_close(actual, expected, atol=1e-7, rtol=0)
     else:
         atol, rtol = get_precision(dtype)
         torch.testing.assert_close(actual, expected, atol=atol, rtol=rtol)
