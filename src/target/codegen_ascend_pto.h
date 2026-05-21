@@ -60,7 +60,7 @@ public:
   void AxpyCodegen(const CallNode *op);
   void BinaryVecClampMaxMinOpsCodegen(const CallNode *op,
                                       const std::string &op_name);
-  void BinaryVecClampOpsCodegen(const CallNode *op);
+  void BinaryVecClampOpsCodegen(const CallNode *op, const std::string &op_name);
   void SigmoidCodegen(const CallNode *op, const std::string &op_type);
   void SiluCodegen(const CallNode *op);
   void MulAddDstCodegen(const CallNode *op);
@@ -147,6 +147,8 @@ private:
 
   void GatherbCodegen(const CallNode *op, const std::string &op_name);
 
+  void GatherCodegen(const CallNode *op, const std::string &op_name);
+
   void GatherMaskCodegen(const CallNode *op, const std::string &op_name);
 
   void PowCodegen(const CallNode *op);
@@ -211,9 +213,6 @@ private:
   void CreateCubeVariable(const std::string &temp_name,
                           const ShapeInfo &shape_info,
                           const std::string &tile_name);
-  std::string ResolveSliceName(const ShapeInfo &info);
-  std::string ResolveCubeSliceName(const ShapeInfo &info,
-                                   const std::string &tile_name);
   ShapeInfo GetSliceInfo(const CallNode *op);
 
   ReduceOpInfo ParseReduceOpInfo(const std::string &op_name);
