@@ -189,6 +189,7 @@ examples/{op}/perf_tuning/
 - design_error: yes / no
 - design_error_reason: <若 design_error=yes，给出原因>
 - perf_log_appended: true
+- skills_consulted: <本次实际查阅 / 引用过的 skill 路径列表，相对 .agents/skills/；如 tilelang-perf-optimization>
 - summary: <一句话说明>
 - issues: <若无则写 none>
 ```

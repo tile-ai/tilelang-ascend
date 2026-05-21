@@ -97,7 +97,7 @@ cp -r .agents/skills/* .claude/skills/
 cp -r .opencode/agents/* .claude/agents/
 ```
 
-> **注意**：本仓库目前尚未配置 Claude Code 的 hook/lint 机制（pypto 仓库的 `.agents/settings.json` 在 tilelang-ascend 还不可用）。Claude Code 下的状态机维护与门禁校验都由 Orchestrator 自身的 Read/Write 操作完成。
+> **注意**：本仓库目前尚未配置 Claude Code 的 hook/lint 机制（无 `.claude/settings.json` 自动化钩子），状态机维护与门禁校验都由 Orchestrator 自身的 Read/Write 操作完成。
 
 启动后直接在对话中使用斜杠命令或自然语言：
 
@@ -449,7 +449,8 @@ Developer 在 Stage 2 中识别到这些情形时，会在输出加 `[DESIGN_ERR
   "env_check_passed": true,
   "current_stage": 2,
   "stage_status": {"1": "completed", "2": "in_progress"},
-  "stage_retry_count": {"1": 0, "2": 1, "3": 0},
+  "stage_retry_count": {"1": 0, "2": 1},
+  "stage2_failure_breakdown": {"runtime_fail": 0, "precision_fail": 1},
   "design_revision_count": 0,
   "perf_tuning_requested": null,
   "last_updated": "2026-05-19T..."
@@ -479,7 +480,7 @@ Developer 在 Stage 2 中识别到这些情形时，会在输出加 `[DESIGN_ERR
 | Agents | `.opencode/agents/` | `.claude/agents/` |
 
 **当前已知差异**：
-- 本仓库目前**未配置 hook/plugin**（pypto 仓库的 `.opencode/plugins/` 在 tilelang-ascend 还没有），状态机维护、门禁校验、Stage 备份均由 Orchestrator 自身的 Read/Write 完成
+- 本仓库目前**未配置 hook/plugin**（`.opencode/plugins/` 目录不存在），状态机维护、门禁校验、Stage 备份均由 Orchestrator 自身的 Read/Write 完成
 - 对 Subagent 输出的三态判定（`[PRECISION_PASS]` / `[PRECISION_FAIL]` / `[DESIGN_ERROR]`）依赖 Orchestrator 主动检查标准输出
 
 </details>

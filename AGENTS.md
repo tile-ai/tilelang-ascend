@@ -295,6 +295,6 @@ Orchestrator 在进入 Stage 1 之前会自动调用 [tilelang-env-check](.agent
 
 ### 使用入口
 
-- 新建算子：直接对 `@tilelang-op-orchestrator` 描述需求，由其驱动环境预检 + Stage 1→4。
+- 新建算子：直接对 `@tilelang-op-orchestrator` 描述需求，由其驱动环境预检 + Stage 1→3。
 - 单独调用 skill：仍可直接 `/tilelang-op-design`、`/tilelang-op-generate`、`/tilelang-perf-optimization`、`/tilelang-env-check`，跳过编排层。
 - 续跑/恢复：再次对 `@tilelang-op-orchestrator` 提及算子名，它从 `.orchestrator_state.json` 自动续跑（环境预检不重复执行）。

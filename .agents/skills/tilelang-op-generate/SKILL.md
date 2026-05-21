@@ -256,9 +256,20 @@ torch.testing.assert_close(output.cpu(), ref_output.cpu(), rtol=rtol, atol=atol)
 
 ---
 
-## 6. Skill 反馈采集（强制，算子调试通过后执行）
+## 6. Skill 反馈采集
 
-本节是 **skill 自适应更新机制**的采集端。每次算子开发流程跑完后，必须把"哪些 skill 没讲清楚 / 被现实打脸 / 凭经验补的内容"写到 `.agents/skill-journal/`，由 `/tilelang-skill-review` 后续聚合评审。
+> **本节的触发权归属取决于调用模式：**
+>
+> | 调用模式 | 由谁负责 skill 反馈采集 |
+> |---------|----------------------|
+> | 通过 `tilelang-op-orchestrator` 编排（推荐） | **由 orchestrator 在流程结束（SUCCESS / BLOCKED_*）时统一执行**，本 skill 不主动触发。详见 [.opencode/agents/tilelang-op-orchestrator.md §流程结束反思采集](../../../.opencode/agents/tilelang-op-orchestrator.md) |
+> | 单独调用本 skill（`/tilelang-op-generate`，跳过编排） | **由调用者在算子调试通过后手动触发**，按下文 §6.1-6.6 流程执行 |
+>
+> 为什么分开：orchestrator 模式下本 skill 在 Subagent 隔离上下文中被多次调度，单次调度结束 ≠ "全流程结束"。让本 skill 自己触发反思会导致 ① 每次调用都做一次 → 浪费；② 看不到其他 Subagent 用过什么 skill → 反思不全。因此 orchestrator 模式下交给 orchestrator 在全流程视野下统一采集。
+>
+> **若你（developer subagent）在 orchestrator 模式下被调度本 skill，直接跳过本节即可**——orchestrator 会在最终阶段做反思。但你**仍然应该在 `debug_log.md` 里如实记录本次调度的 changes / error_summary / next_hint**，这是 orchestrator 反思的核心数据源。
+
+本节（以下 §6.1-6.6）是 **skill 自适应更新机制**的采集端，**仅在单独调用模式下适用**。每次算子开发流程跑完后，必须把"哪些 skill 没讲清楚 / 被现实打脸 / 凭经验补的内容"写到 `.agents/skill-journal/`，由 `/tilelang-skill-review` 后续聚合评审。
 
 **注意**：本节覆盖**整个开发链路**用到的所有 skill，不只是 op-design / op-generate。
 
