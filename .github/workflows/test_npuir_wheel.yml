@@ -22,6 +22,14 @@ jobs:
     container:
       image: swr.cn-southwest-2.myhuaweicloud.com/base_image/ascend-ci/cann:8.5.0-a3-ubuntu22.04-py3.11
     timeout-minutes: 120
+    env:
+      UV_INDEX_URL: "http://cache-service.nginx-pypi-cache.svc.cluster.local/pypi/simple"
+      UV_EXTRA_INDEX_URL: "http://cache-service.nginx-pypi-cache.svc.cluster.local/whl/cpu https://repo.huaweicloud.com/ascend/repos/pypi"
+      UV_INDEX_STRATEGY: "unsafe-best-match"
+      UV_INSECURE_HOST: "cache-service.nginx-pypi-cache.svc.cluster.local"
+      UV_HTTP_TIMEOUT: 120
+      UV_NO_CACHE: 1
+      UV_SYSTEM_PYTHON: 1
 
     steps:
 
@@ -38,18 +46,16 @@ jobs:
         path: dist/
 
     - name: Install tilelang and test dependencies
-      env:
-        TORCH_CACHE_URL: "http://cache-service.nginx-pypi-cache.svc.cluster.local/whl/cpu"
-        PYPI_CACHE_URL: "http://cache-service.nginx-pypi-cache.svc.cluster.local/pypi/simple"
       run: |
         CACHING_URL="cache-service.nginx-pypi-cache.svc.cluster.local"
         sed -Ei "s@(ports|archive).ubuntu.com@${CACHING_URL}:8081@g" /etc/apt/sources.list
         pip config set global.index-url http://${CACHING_URL}/pypi/simple
         pip config set global.trusted-host "${CACHING_URL}"
-        pip install torch==2.7.1 -i ${TORCH_CACHE_URL} --extra-index-url ${PYPI_CACHE_URL}
-        pip install torch-npu==2.7.1
-        pip install dist/*.whl
-        pip install pytest pytest-xdist pytest-html numpy
+        pip install uv
+        uv pip install torch==2.7.1
+        uv pip install torch-npu==2.7.1
+        uv pip install dist/*.whl
+        uv pip install pytest pytest-xdist pytest-html numpy
 
     - name: Install clang
       run: |
