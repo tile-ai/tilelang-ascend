@@ -72,7 +72,7 @@ COMPOSABLE_KERNEL_INCLUDE_DIR: str | None = os.environ.get("TL_COMPOSABLE_KERNEL
 TVM_PYTHON_PATH: str | None = os.environ.get("TVM_IMPORT_PYTHON_PATH", None)
 TVM_LIBRARY_PATH: str | None = os.environ.get("TVM_LIBRARY_PATH", None)
 TILELANG_TEMPLATE_PATH: str | None = os.environ.get("TL_TEMPLATE_PATH", None)
-TILELANG_PACKAGE_PATH: str = pathlib.Path(__file__).resolve().parents[0]
+TILELANG_PACKAGE_PATH = pathlib.Path(__file__).resolve().parents[0]
 
 TILELANG_CACHE_DIR: str = os.environ.get("TILELANG_CACHE_DIR", os.path.expanduser("~/.tilelang/cache"))
 

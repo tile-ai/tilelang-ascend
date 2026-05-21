@@ -12,12 +12,27 @@ from tilelang.env import TILELANG_TEMPLATE_PATH, TILELANG_PACKAGE_PATH
 logger = logging.getLogger(__name__)
 
 
-def _get_tl_root() -> str:
+def _get_tl_root(third_party_name="3rdparty") -> str:
     """Get TL_ROOT path, fallback to package path if not set."""
     tl_root = os.environ.get("TL_ROOT")
-    if tl_root is None:
-        tl_root = str(TILELANG_PACKAGE_PATH)
-    return tl_root
+    if tl_root is not None:
+        return tl_root
+
+    tl_root = TILELANG_PACKAGE_PATH
+    third_party_root = tl_root / third_party_name
+    if third_party_root.exists():
+        return str(tl_root)
+
+    tl_root = tl_root.parent
+    third_party_root = tl_root / third_party_name
+    if not third_party_root.exists():
+        # In most situations, third_party_root should exists. Otherwise, "import tvm" will fail before
+        # reaching this point.
+        raise ValueError(
+            f"TL_ROOT is not set and {third_party_name}/ directory not found in {TILELANG_PACKAGE_PATH} and {tl_root}. "
+            "Please set the TL_ROOT environment variable."
+        )
+    return str(tl_root)
 
 
 def _get_ascend_home_path() -> str:
@@ -59,6 +74,8 @@ class LibraryGenerator:
         libpath = src.name.replace(".cpp", ".so")
         ASCEND_HOME_PATH = _get_ascend_home_path()
         TL_ROOT = _get_tl_root()
+        if not os.path.exists(os.path.join(TL_ROOT, "3rdparty")):
+            raise ValueError(f"3rdparty dependencies not found. {TL_ROOT = }")
         if self.target == "ascendc" or self.target == "auto":
             command = [
                 "bisheng",
