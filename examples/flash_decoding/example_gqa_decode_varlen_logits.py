@@ -5,7 +5,7 @@ Optimization Strategy:
 1. Larger block_size (256) to reduce loop iterations (64 -> 32 for 8192 seqlen)
 2. Keep all other code unchanged for correctness
 
-Performance: 
+Performance:
 - Original (block_size=128): 231us
 - Optimized (block_size=256): ~173us
 """
@@ -15,10 +15,8 @@ import tilelang.language as T
 import torch
 import argparse
 import math
-from einops import rearrange, einsum
-import torch.nn.functional as F
 
-torch.set_default_device('npu')
+torch.set_default_device("npu")
 torch.manual_seed(0)
 
 tilelang.disable_cache()
@@ -89,7 +87,7 @@ def flashattn(batch_size, q_heads, kv_heads, max_seqlen_kv, head_size, block_siz
 
             T.tile.fill(acc_o, 0.0)
             T.tile.fill(sumexp, 0.0)
-            T.tile.fill(m_i, -2**30)
+            T.tile.fill(m_i, -(2**30))
             T.copy(Q[bid, group_start : group_start + valid_block_H, :], q_l1)
 
             loop_range = T.ceildiv(cur_seqlen_k, block_size)
@@ -136,7 +134,10 @@ def flashattn(batch_size, q_heads, kv_heads, max_seqlen_kv, head_size, block_siz
                 T.tile.div(acc_o[h_i, :], acc_o[h_i, :], sumexp[h_i])
 
             T.copy(acc_o, acc_o_half)
-            T.copy(acc_o_half, Output[bid, group_start + vid * valid_block_H // 2 : group_start + vid * valid_block_H // 2 + valid_block_H // 2, :])
+            T.copy(
+                acc_o_half,
+                Output[bid, group_start + vid * valid_block_H // 2 : group_start + vid * valid_block_H // 2 + valid_block_H // 2, :],
+            )
 
     return main
 
@@ -190,7 +191,7 @@ def test_optimized(args):
     tl_kernel = flashattn(batch_size, q_heads, kv_heads, max_k_seqlen, head_size, block_size, valid_block_H)
 
     torch.npu.synchronize()
-    
+
     separator = "=" * 80
     info_msg = f"""
 {separator}
@@ -222,7 +223,7 @@ init successful!
     print("Shape: TL output=", O_tl.shape, "Ref output=", O_ref.shape)
     max_diff = (O_tl - O_ref).abs().max().item()
     print("Max diff:", max_diff)
-    
+
     assert torch.allclose(O_tl, O_ref, atol=1e-1, rtol=1e-1), f"Output mismatch: {max_diff}"
     print("Tests passed!")
 
@@ -247,7 +248,7 @@ if __name__ == "__main__":
 
     kv_group_num = args.q_heads // args.kv_heads
     if kv_group_num < 16:
-        print(f"ERROR: kv_group_num >= 16 required")
+        print("ERROR: kv_group_num >= 16 required")
         sys.exit(1)
 
     if kv_group_num < args.block_H:

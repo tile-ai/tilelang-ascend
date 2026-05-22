@@ -1,3 +1,13 @@
+"""
+GQA Decode Attention Example
+
+Demonstrates Grouped Query Attention (GQA) decode pattern for inference.
+Uses TileLang to optimize attention computation on Ascend NPU with:
+- Tile-based memory access for efficient KV cache handling
+- Vector/Cube parallel execution
+- Hardware constraint validation
+"""
+
 import tilelang
 import tilelang.language as T
 import torch
@@ -5,7 +15,7 @@ import argparse
 from einops import rearrange, einsum
 import torch.nn.functional as F
 
-torch.set_default_device('npu')
+torch.set_default_device("npu")
 torch.manual_seed(0)
 
 tilelang.disable_cache()
@@ -74,7 +84,7 @@ def flashattn_gqa_decode(batch, heads, groups, seqlen_kv, dim, block_H=16, block
 
             T.tile.fill(acc_o, 0.0)
             T.tile.fill(sumexp, 0.0)
-            T.tile.fill(m_i, -2**30)
+            T.tile.fill(m_i, -(2**30))
             T.copy(Q[bid, group_start : group_start + H_per_block, :], q_l1)
 
             loop_range = T.ceildiv(seqlen_kv, block_N)
@@ -84,9 +94,7 @@ def flashattn_gqa_decode(batch, heads, groups, seqlen_kv, dim, block_H=16, block
                 T.copy(acc_s_l0c, workspace_1[cid, :, :])
 
                 T.copy(m_i, m_i_prev)
-                T.copy(
-                    workspace_1[cid, vid * H_per_block // 2 : vid * H_per_block // 2 + H_per_block // 2, :],
-                    acc_s_ub)
+                T.copy(workspace_1[cid, vid * H_per_block // 2 : vid * H_per_block // 2 + H_per_block // 2, :], acc_s_ub)
 
                 T.tile.mul(acc_s_ub, acc_s_ub, scale)
 
@@ -105,9 +113,7 @@ def flashattn_gqa_decode(batch, heads, groups, seqlen_kv, dim, block_H=16, block
                 T.tile.add(sumexp, sumexp, sumexp_i_ub)
 
                 T.copy(acc_s_ub, acc_s_half)
-                T.copy(
-                    acc_s_half,
-                    workspace_2[cid, vid * H_per_block // 2 : vid * H_per_block // 2 + H_per_block // 2, :])
+                T.copy(acc_s_half, workspace_2[cid, vid * H_per_block // 2 : vid * H_per_block // 2 + H_per_block // 2, :])
 
                 T.copy(workspace_2[cid, :, :], acc_s_l1)
                 T.copy(V[bid, k * block_N : (k + 1) * block_N, gid, :], v_l1)
@@ -116,9 +122,7 @@ def flashattn_gqa_decode(batch, heads, groups, seqlen_kv, dim, block_H=16, block
 
                 for h_i in range(H_per_block // 2):
                     T.tile.mul(acc_o[h_i, :], acc_o[h_i, :], m_i_prev[h_i])
-                T.copy(
-                    workspace_3[cid, vid * H_per_block // 2 : vid * H_per_block // 2 + H_per_block // 2, :],
-                    acc_o_ub)
+                T.copy(workspace_3[cid, vid * H_per_block // 2 : vid * H_per_block // 2 + H_per_block // 2, :], acc_o_ub)
                 T.tile.add(acc_o, acc_o, acc_o_ub)
 
             for h_i in range(H_per_block // 2):
@@ -126,8 +130,8 @@ def flashattn_gqa_decode(batch, heads, groups, seqlen_kv, dim, block_H=16, block
 
             T.copy(acc_o, acc_o_half)
             T.copy(
-                acc_o_half,
-                Output[bid, group_start + vid * H_per_block // 2 : group_start + vid * H_per_block // 2 + H_per_block // 2, :])
+                acc_o_half, Output[bid, group_start + vid * H_per_block // 2 : group_start + vid * H_per_block // 2 + H_per_block // 2, :]
+            )
 
     return main
 
@@ -162,7 +166,7 @@ if __name__ == "__main__":
     batch, heads, groups, kv_seqlen, dim, block_H = args.batch, args.heads, args.groups, args.kv_seqlen, args.dim, args.block_H
 
     kv_group_num = heads // groups
-    
+
     # Hardware constraint check
     # Ascend vector unit requires H_per_block // 2 >= 8 for reduce operations
     MIN_V_BLOCK = 8
@@ -193,19 +197,20 @@ Solutions:
 """
         print(error_msg)
         import sys
+
         sys.exit(1)
-    
+
     # Ensure block_H does not exceed kv_group_num
     if block_H > kv_group_num:
         block_H = kv_group_num
         print(f"INFO: Adjusted block_H to {block_H} (kv_group_num={kv_group_num})")
-    
+
     assert kv_group_num % block_H == 0, f"kv_group_num ({kv_group_num}) must be divisible by block_H ({block_H})"
 
     block_N = 128
-    
+
     print(f"INFO: kv_group_num={kv_group_num}, block_H={block_H}, block_N={block_N}")
-    print(f"      H_per_block={block_H}, H_per_block//2={block_H//2} >= {MIN_V_BLOCK} ✓")
+    print(f"      H_per_block={block_H}, H_per_block//2={block_H // 2} >= {MIN_V_BLOCK} ✓")
 
     func = flashattn_gqa_decode(batch, heads, groups, kv_seqlen, dim, block_H, block_N)
 
