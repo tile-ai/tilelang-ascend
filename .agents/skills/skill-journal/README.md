@@ -49,6 +49,7 @@ skills_consulted:
 
 ## Entry e1
 - **target_skill**: tilelang-op-design
+- **target_artifact**: skill
 - **target_section**: §2.5.1 已知限制
 - **type**: missing_constraint
 - **severity**: high
@@ -89,6 +90,7 @@ source: developer
 
 ## Entry e1
 - **target_skill**: tilelang-custom-skill/tilelang-api-best-practices
+- **target_artifact**: skill
 - **target_section**: T.gemm_v0 用法示例
 - **type**: wrong_api_signature
 - **severity**: high
@@ -117,7 +119,8 @@ source: developer
 | 字段 | 说明 |
 |------|------|
 | `target_skill` | 目标 skill 路径（相对 `.agents/skills/`），可指向任意 skill |
-| `target_section` | 目标章节（用 `§N.N` 或具体小节标题）|
+| `target_artifact` | **`skill` / `troubleshooting`**，决定本条 entry 在 apply 时改哪个文件（详见下方「Artifact 分流准则」），缺省 `skill` |
+| `target_section` | 目标章节标识：`target_artifact=skill` 用 `§N.N` 或具体小节标题；`target_artifact=troubleshooting` 用具体故障条目标题（如 `"编译时错误.内存分配失败"`） |
 | `type` | 见下方"类型词表" |
 | `severity` | `high` / `medium` / `low` |
 | `status` | `pending` / `applied` / `rejected`，由 review skill 维护 |
@@ -128,16 +131,38 @@ source: developer
 
 ### 类型词表
 
-| type | 含义 | 例子 |
-|------|------|------|
-| `missing_constraint` | skill 没讲到的硬约束 | UB 容量、对齐要求、不支持的形参组合 |
-| `wrong_api_signature` | API 签名/参数描述与实际不符 | `T.gemm_v0` 参数顺序错 |
-| `outdated_example` | 示例代码已经跑不通或不是最佳写法 | broadcast 索引示例 shape 写错 |
-| `missing_api_doc` | 完全没提到的 API | `T.tile.exp` 没收录 |
-| `unclear_workflow` | 工作流步骤模糊或漏检查 | 没说"先搜 examples/" 的强制顺序 |
-| `mode_misjudgment` | 编程模式选型描述误导 | 把混合算子说成可用 Developer 单模式 |
-| `pass_config_gap` | pass_configs 配置说明不全 | 没提 `AUTO_CV_SYNC` 必须配 `AUTO_CV_COMBINE` |
-| `other` | 不属于以上 | |
+| type | 默认 artifact | 含义 | 例子 |
+|------|--------------|------|------|
+| `missing_constraint` | `skill` | skill 没讲到的硬约束 | UB 容量、对齐要求、不支持的形参组合 |
+| `wrong_api_signature` | `skill` | API 签名/参数描述与实际不符 | `T.gemm_v0` 参数顺序错 |
+| `outdated_example` | `skill` | 示例代码已经跑不通或不是最佳写法 | broadcast 索引示例 shape 写错 |
+| `missing_api_doc` | `skill` | 完全没提到的 API | `T.tile.exp` 没收录 |
+| `unclear_workflow` | `skill` | 工作流步骤模糊或漏检查 | 没说"先搜 examples/" 的强制顺序 |
+| `mode_misjudgment` | `skill` | 编程模式选型描述误导 | 把混合算子说成可用 Developer 单模式 |
+| `pass_config_gap` | `skill` | pass_configs 配置说明不全 | 没提 `AUTO_CV_SYNC` 必须配 `AUTO_CV_COMBINE` |
+| `runtime_error_recipe` | `troubleshooting` | 具体错误信息有可复用的解决方案 | `Memory allocation failed required: 245760` → 减小 block_M |
+| `error_code_workaround` | `troubleshooting` | 具体错误码 / 异常的规避方法 | `aicore error code 0x80004001` → 检查 tile 对齐 |
+| `known_bug_avoidance` | `troubleshooting` | 已知框架 bug 的规避手法 | view 后 `inplace=True` 精度异常 → 改 `inplace=False` |
+| `other` | `skill` | 不属于以上 | |
+
+### Artifact 分流准则
+
+每条 entry 必须显式或隐式指定 `target_artifact`：
+
+| 取值 | 改动目标文件 | 内容形式 |
+|------|-------------|---------|
+| `skill`（默认） | `.agents/skills/{target_skill}/SKILL.md` | 规则 / 流程 / 决策树 / 代码示例修订 |
+| `troubleshooting` | `.agents/skills/{target_skill}/references/troubleshooting.md`（不存在则自动创建） | "症状 → 原因 → 解决"型独立故障条目 |
+
+**判定方法**（同时满足才填 `troubleshooting`）：
+
+1. `observation` 含**具体的错误信息 / 错误码 / 错误堆栈片段**
+2. `proposed_change` 形如"症状 X → 改动 Y"，可以独立成条目
+3. 改动**不依赖 SKILL.md 上下文**就能被未来读者查阅
+
+否则一律填 `skill`（默认值）。
+
+**简化判别**：能不能形成"症状—原因—解决"三段式独立条目？能 → `troubleshooting`；不能（修的是规则、原则、流程描述、代码示例） → `skill`。
 
 ### 严重度判定
 

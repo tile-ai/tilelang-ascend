@@ -162,6 +162,8 @@ python examples/{op}/example_{op}.py
 2. **运行错误** → 检查索引越界、同步缺失
 3. **精度错误** → 检查计算公式、数据类型、容差设置
 
+> **遇到具体错误信息时**，先查 [references/troubleshooting.md](references/troubleshooting.md) ——本 skill 配套的疑难解答手册，覆盖编译错误（UB 内存不足 / threads / 动态循环边界）、运行错误（index OOB / valid_shape）、精度错误（dtype / atol 阈值）等常见场景的具体解决方案。
+
 ---
 
 ## 4. 关键编码规范
@@ -318,10 +320,16 @@ torch.testing.assert_close(output.cpu(), ref_output.cpu(), rtol=rtol, atol=atol)
 
 frontmatter 的 `skills_consulted` 字段必须包含步骤 1 的完整列表。
 
-每条 entry 包含 `target_skill / target_section / type / severity / status:pending / observation / evidence / proposed_change`，字段含义见 README。
+每条 entry 包含 `target_skill / target_artifact / target_section / type / severity / status:pending / observation / evidence / proposed_change`，字段含义见 [skill-journal README](../skill-journal/README.md)。
+
+**关于 `target_artifact`**（决定 apply 时改哪个文件）：
+- 默认值 `skill`：反馈针对规则/流程/决策树/代码示例，改 SKILL.md
+- 取值 `troubleshooting`：反馈是"具体错误 → 具体解决方案"，改 `references/troubleshooting.md`
+- 同时满足三条才选 `troubleshooting`：① observation 含具体错误信息/错误码；② proposed_change 形如"症状 X → 改动 Y"；③ 改动可独立成"症状-原因-解决"条目，不依赖 SKILL.md 上下文
 
 **禁止**：
 - ❌ 把 `target_skill` 全部填成 op-generate（懒得分类的常见错误）
+- ❌ 把所有 entry 全填 `target_artifact: skill`（懒得分流的常见错误）；带具体错误码的 entry 几乎都应该是 `troubleshooting`
 - ❌ 在 journal 里直接写完整修订后的 SKILL.md 段落（review skill 在 apply 阶段才生成具体修改文本）
 - ❌ 漏写 evidence（无证据的提案会被 review 阶段直接拒）
 
@@ -334,7 +342,7 @@ frontmatter 的 `skills_consulted` 字段必须包含步骤 1 的完整列表。
 | 1 | `skills_consulted` 包含本次查阅的所有 skill | ✅ |
 | 2 | 至少 50% 的 `skills_consulted` 在 entries 中至少出现一次（避免只反思 op-generate 自己）| ✅ |
 | 3 | 每条 entry 的 `evidence` 都有具体报错/代码/文件引用 | ✅ |
-| 4 | 没有重复 entry（同 `target_skill + target_section + type` 只出现一次） | ✅ |
+| 4 | 没有重复 entry（同 `target_skill + target_artifact + target_section + type` 只出现一次） | ✅ |
 | 5 | `severity=high` 的 entry 都附带了具体踩坑过程 | ⭕ |
 
 ### 6.6 完成报告
