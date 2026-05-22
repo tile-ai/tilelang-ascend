@@ -56,31 +56,41 @@ std::string GetReduceMergeOpName(CodeGenTileLangAscendPto::ReduceKind kind) {
 } // namespace
 
 static std::string getType(const DataType &dtype) {
-  if (dtype.is_float16()) {
+  if (dtype.is_float16())
     return "half";
-  } else if (dtype.is_float()) {
+  if (dtype.is_float())
     return "float";
-  } else if (dtype.is_int() && dtype.bits() == 4) {
-    return "int4b_t";
-  } else if (dtype.is_int() && dtype.bits() == 8) {
-    return "int8_t";
-  } else if (dtype.is_int() && dtype.bits() == 16) {
-    return "int16_t";
-  } else if (dtype.is_int() && dtype.bits() == 32) {
-    return "int";
-  } else if (dtype.is_int() && dtype.bits() == 64) {
-    return "int64_t";
-  } else if (dtype.is_uint() && dtype.bits() == 8) {
-    return "uint8_t";
-  } else if (dtype.is_uint() && dtype.bits() == 16) {
-    return "uint16_t";
-  } else if (dtype.is_uint() && dtype.bits() == 32) {
-    return "uint32_t";
-  } else if (dtype.is_uint() && dtype.bits() == 64) {
-    return "uint64_t";
-  } else if (dtype.is_bfloat16()) {
+  if (dtype.is_bfloat16())
     return "bfloat16_t";
+
+  if (dtype.is_int()) {
+    switch (dtype.bits()) {
+    case 4:
+      return "int4b_t";
+    case 8:
+      return "int8_t";
+    case 16:
+      return "int16_t";
+    case 32:
+      return "int";
+    case 64:
+      return "int64_t";
+    }
   }
+
+  if (dtype.is_uint()) {
+    switch (dtype.bits()) {
+    case 8:
+      return "uint8_t";
+    case 16:
+      return "uint16_t";
+    case 32:
+      return "uint32_t";
+    case 64:
+      return "uint64_t";
+    }
+  }
+
   LOG(FATAL) << "Unsupported data type: " << dtype;
   return "";
 }
@@ -199,6 +209,15 @@ void CodeGenTileLangAscendPto::CreateUbVariableDN(const std::string &temp_name,
   this->stream << "TASSIGN(" << temp_name << ", " << shape_info.first_addr
                << " + " << shape_info.offset << " * "
                << GetTypeLen(shape_info.type) << ");\n";
+}
+
+std::string
+CodeGenTileLangAscendPto::ResolveUbSliceName(const ShapeInfo &info) {
+  if (!info.is_slice)
+    return info.ub_name;
+  std::string temp = GetTempVarName(info.ub_name);
+  CreateUbVariableND(temp, info);
+  return temp;
 }
 
 void CodeGenTileLangAscendPto::CreateCubeVariable(
@@ -664,6 +683,7 @@ extractTemplateParams(const std::string &input) {
 
 void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op,
                                           std::ostream &os) {
+  // --- top-level builtins ---
   if (op->op.same_as(builtin::call_extern())) {
     CallExternCodegen(op);
   } else if (op->op.same_as(tl::loop_break())) {
@@ -673,6 +693,8 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op,
     GemmV0Codegen(op);
   } else if (op->op.same_as(tl::ascend_fill())) {
     FillCodegen(op);
+
+    // --- unary vector ops ---
   } else if (op->op.same_as(tl::ascend_exp())) {
     UnaryVecOpCodegen(op, "TEXP");
   } else if (op->op.same_as(tl::ascend_ln())) {
@@ -689,12 +711,16 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op,
     UnaryVecOpCodegen(op, "TRELU");
   } else if (op->op.same_as(tl::ascend_bitwise_not())) {
     UnaryVecOpCodegen(op, "TNOT");
+
+    // --- scalar-arg ops ---
   } else if (op->op.same_as(tl::ascend_leaky_relu())) {
     ScalarOpCodegen(op, "TLRELU");
   } else if (op->op.same_as(tl::ascend_axpy())) {
     AxpyCodegen(op);
   } else if (op->op.same_as(tl::ascend_reduce())) {
     ReduceOpCodegen(op);
+
+    // --- binary vector ops ---
   } else if (op->op.same_as(tl::ascend_add())) {
     BinaryVecOpCodegen(op, "TADD");
   } else if (op->op.same_as(tl::ascend_sub())) {
@@ -711,6 +737,8 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op,
     BinaryVecOpCodegen(op, "tand");
   } else if (op->op.same_as(tl::ascend_bitwise_or())) {
     BinaryVecOpCodegen(op, "tor");
+
+    // --- binary vector-scalar ops ---
   } else if (op->op.same_as(tl::ascend_adds())) {
     BinaryVecOpsCodegen(op, "TADDS");
   } else if (op->op.same_as(tl::ascend_subs())) {
@@ -723,6 +751,8 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op,
     BinaryVecOpsCodegen(op, "TMAXS");
   } else if (op->op.same_as(tl::ascend_mins())) {
     BinaryVecOpsCodegen(op, "TMINS");
+
+    // --- sync / barrier ---
   } else if (op->op.same_as(tl::ascend_sync_all())) {
     SyncAllCodegen(op);
   } else if (op->op.same_as(tl::ascend_pipe_barrier())) {
@@ -745,47 +775,59 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op,
     WaitCrossFlagCodegen(op);
   } else if (op->op.same_as(tl::ascend_auto_barrier())) {
     AutoBarrierCodegen(op);
+
+    // --- clamp ---
   } else if (op->op.same_as(tl::ascend_clamp_max())) {
     BinaryVecClampMaxMinOpsCodegen(op, "TMINS");
   } else if (op->op.same_as(tl::ascend_clamp_min())) {
     BinaryVecClampMaxMinOpsCodegen(op, "TMAXS");
   } else if (op->op.same_as(tl::ascend_clamp())) {
     BinaryVecClampOpsCodegen(op, "TCLAMP");
+
+    // --- activation ---
   } else if (op->op.same_as(tl::ascend_sigmoid())) {
     SigmoidCodegen(op, "TSIGMOID");
   } else if (op->op.same_as(tl::ascend_silu())) {
     SiluCodegen(op);
   } else if (op->op.same_as(tl::ascend_mul_add_dst())) {
     MulAddDstCodegen(op);
+
+    // --- gather / select ---
   } else if (op->op.same_as(tl::ascend_gather_mask())) {
     GatherMaskCodegen(op, "TGATHER");
-  } else if (op->op.same_as(tl::ascend_round())) {
-    CastCodegen(op, "RoundMode::CAST_ROUND");
-  } else if (op->op.same_as(tl::ascend_cast())) {
-    std::string cast_type = op->args[2].as<StringImmNode>()->value;
-    if (cast_type == "CAST_NONE") {
-      CastCodegen(op, "RoundMode::CAST_NONE");
-    } else if (cast_type == "CAST_RINT") {
-      CastCodegen(op, "RoundMode::CAST_RINT");
-    } else if (cast_type == "CAST_FLOOR") {
-      CastCodegen(op, "RoundMode::CAST_FLOOR");
-    } else if (cast_type == "CAST_CEIL") {
-      CastCodegen(op, "RoundMode::CAST_CEIL");
-    } else if (cast_type == "CAST_ROUND") {
-      CastCodegen(op, "RoundMode::CAST_ROUND");
-    } else if (cast_type == "CAST_TRUNC") {
-      CastCodegen(op, "RoundMode::CAST_TRUNC");
-    } else if (cast_type == "CAST_ODD") {
-      CastCodegen(op, "RoundMode::CAST_ODD");
-    }
-  } else if (op->op.same_as(tl::ascend_createvecindex())) {
-    CreateVecIndexCodegen(op, "TCI");
   } else if (op->op.same_as(tl::ascend_gatherb())) {
     GatherbCodegen(op, "TGATHERB");
   } else if (op->op.same_as(tl::ascend_gather())) {
     GatherCodegen(op, "TGATHER");
+
+    // --- cast ---
+  } else if (op->op.same_as(tl::ascend_round())) {
+    CastCodegen(op, "RoundMode::CAST_ROUND");
+  } else if (op->op.same_as(tl::ascend_cast())) {
+    static const std::unordered_map<std::string, std::string> kCastRoundModes =
+        {
+            {"CAST_NONE", "RoundMode::CAST_NONE"},
+            {"CAST_RINT", "RoundMode::CAST_RINT"},
+            {"CAST_FLOOR", "RoundMode::CAST_FLOOR"},
+            {"CAST_CEIL", "RoundMode::CAST_CEIL"},
+            {"CAST_ROUND", "RoundMode::CAST_ROUND"},
+            {"CAST_TRUNC", "RoundMode::CAST_TRUNC"},
+            {"CAST_ODD", "RoundMode::CAST_ODD"},
+        };
+    std::string cast_type = op->args[2].as<StringImmNode>()->value;
+    CastCodegen(op, kCastRoundModes.at(cast_type));
+
+    // --- index / create ---
+  } else if (op->op.same_as(tl::ascend_createvecindex())) {
+    CreateVecIndexCodegen(op, "TCI");
+  } else if (op->op.same_as(tl::ascend_arith_progression())) {
+    ArithProgressionCodegen(op, "TCI");
+
+    // --- pow ---
   } else if (op->op.same_as(tl::ascend_pow())) {
     PowCodegen(op);
+
+    // --- sort / top-k ---
   } else if (op->op.same_as(tl::ascend_sort32())) {
     Sort32Codegen(op, "TSORT32");
   } else if (op->op.same_as(tl::ascend_sort())) {
@@ -794,6 +836,8 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op,
     TopKCodegen(op);
   } else if (op->op.same_as(tl::ascend_merge_sort())) {
     MergeSortCodegen(op, "TMRGSORT");
+
+    // --- transpose / compare / shift ---
   } else if (op->op.same_as(tl::ascend_transpose())) {
     TransposeCodegen(op, "TTRANS");
   } else if (op->op.same_as(tl::ascend_bitwise_xor())) {
@@ -806,20 +850,25 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op,
     TshCodegen(op, "TSHLS");
   } else if (op->op.same_as(tl::ascend_bitwise_rshift())) {
     TshCodegen(op, "TSHRS");
-  } else if (op->op.same_as(tl::ascend_arith_progression())) {
-    ArithProgressionCodegen(op, "TCI");
+
+    // --- broadcast / select ---
   } else if (op->op.same_as(tl::ascend_broadcast())) {
     BroadcastOpCodegen(op);
   } else if (op->op.same_as(tl::ascend_select())) {
     SelectCodegen(op);
+
+    // --- debug / print ---
   } else if (op->op.same_as(tl::ascend_dump_tensor())) {
     DumpTensorCodegen(op, "TPRINT");
   } else if (op->op.same_as(tl::ascend_printf())) {
     PrintfOpCodegen(op, "cce::printf");
+
+    // --- dequant / mma ---
   } else if (op->op.same_as(tl::ascend_set_deq_scale())) {
     SetDeqScaleCodegen(op);
   } else if (op->op.same_as(tl::ascend_mma())) {
     MmaCodegen(op);
+
   } else if (op->op.same_as(builtin::if_then_else())) {
     // conditional that skips eval if cond evals to false
     // std::cout<<"here"<<std::endl;
@@ -1070,17 +1119,8 @@ void CodeGenTileLangAscendPto::CopyUBToUBCodegen(const CallNode *call) {
   ShapeInfo src_shape_info = GetSliceInfo(src_info.access_ptr);
   ShapeInfo dst_shape_info = GetSliceInfo(dst_info.access_ptr);
 
-  std::string src_name = src_info.id;
-  std::string dst_name = dst_info.id;
-  if (src_shape_info.is_slice) {
-    src_name = GetTempVarName(src_shape_info.ub_name);
-    CreateUbVariableND(src_name, src_shape_info);
-  }
-
-  if (dst_shape_info.is_slice) {
-    dst_name = GetTempVarName(dst_shape_info.ub_name);
-    CreateUbVariableND(dst_name, dst_shape_info);
-  }
+  std::string src_name = ResolveUbSliceName(src_shape_info);
+  std::string dst_name = ResolveUbSliceName(dst_shape_info);
 
   this->PrintIndent();
   this->stream << api_name << "(" << dst_name << ", " << src_name;
@@ -1089,6 +1129,23 @@ void CodeGenTileLangAscendPto::CopyUBToUBCodegen(const CallNode *call) {
     this->stream << ", pto::RoundMode::CAST_NONE";
   }
   this->stream << ");\n";
+}
+
+// Returns the largest divisor of src_row that is >= min_row and < src_row.
+// Falls back to min_row if no suitable divisor is found.
+static int32_t FindBestTileRowB(int32_t src_row, int32_t min_row) {
+  int32_t best = min_row;
+  for (int32_t d = 2; d * d <= src_row; ++d) {
+    if (src_row % d == 0) {
+      int32_t cand1 = src_row / d;
+      int32_t cand2 = d;
+      if (cand1 < src_row && cand1 >= min_row && cand1 > best)
+        best = cand1;
+      if (cand2 < src_row && cand2 >= min_row && cand2 > best)
+        best = cand2;
+    }
+  }
+  return best;
 }
 
 void CodeGenTileLangAscendPto::CopyL1ToL0Codegen(const CallNode *call,
@@ -1105,43 +1162,18 @@ void CodeGenTileLangAscendPto::CopyL1ToL0Codegen(const CallNode *call,
   std::string op_name = Downcast<StringImm>(call->args[0])->value;
   bool transpose = (op_name.find(", true>") != std::string::npos);
 
-  // Compute tile dimensions: for persistent buffering A_L1(S1, block_M, K_L1),
-  // the flattened shape is (S1*block_M, K_L1) but tile shape is (block_M,
-  // K_L1).
-  int32_t tile_row, tile_col, num_tiles;
-  if (is_a) {
-    tile_row = dst_shape_info.slice_row;
-    tile_col = src_shape_info.col;
-    num_tiles = src_shape_info.row / tile_row;
-    if (num_tiles < 1)
-      num_tiles = 1;
-  } else {
-    tile_col = src_shape_info.col;
-    int32_t src_row = src_shape_info.row;
-    int32_t min_row = dst_shape_info.slice_row;
-    tile_row = min_row;
-    for (int32_t d = 2; d * d <= src_row; ++d) {
-      if (src_row % d == 0) {
-        int32_t cand1 = src_row / d;
-        int32_t cand2 = d;
-        if (cand1 < src_row && cand1 >= min_row && cand1 > tile_row) {
-          tile_row = cand1;
-        }
-        if (cand2 < src_row && cand2 >= min_row && cand2 > tile_row) {
-          tile_row = cand2;
-        }
-      }
-    }
-    num_tiles = src_row / tile_row;
-    if (num_tiles < 1)
-      num_tiles = 1;
-  }
+  int32_t tile_col = src_shape_info.col;
+  int32_t tile_row =
+      is_a ? dst_shape_info.slice_row
+           : FindBestTileRowB(src_shape_info.row, dst_shape_info.slice_row);
+  int32_t num_tiles =
+      is_a ? src_shape_info.row / tile_row : src_shape_info.row / tile_row;
+  if (num_tiles < 1)
+    num_tiles = 1;
 
   int32_t tile_size = tile_row * tile_col;
 
-  // TEXTRACT expects logical coordinates. For zN layout, convert offset:
-  // A buffer: zN_offset ≈ logical_K * tile_row
-  // B buffer: zN_offset ≈ logical_K * 16 (ELE_NUM_PER_C0)
+  // zN layout: compute logical (row, col) from flat offset
   constexpr int32_t ELE_NUM_PER_C0 = 16;
   PrimExpr inner_offset = floormod(src_info.offset, tile_size);
   PrimExpr logical_K = is_a ? floordiv(inner_offset, tile_row)
@@ -1172,11 +1204,11 @@ void CodeGenTileLangAscendPto::CopyL1ToL0Codegen(const CallNode *call,
   if (transpose) {
     std::string src_temp_name = GetTempVarName(src_shape_info.ub_name + "_zn");
     this->PrintIndent();
-    this->stream << kAscendPtoScope << "TileMatL1ZN" << "<"
-                 << dst_shape_info.type << ", " << dst_shape_info.slice_col
-                 << ", " << dst_shape_info.slice_row << ", "
-                 << dst_shape_info.slice_col << ", " << dst_shape_info.slice_row
-                 << "> " << src_temp_name << ";\n";
+    this->stream << kAscendPtoScope << "TileMatL1ZN<" << dst_shape_info.type
+                 << ", " << dst_shape_info.slice_col << ", "
+                 << dst_shape_info.slice_row << ", " << dst_shape_info.slice_col
+                 << ", " << dst_shape_info.slice_row << "> " << src_temp_name
+                 << ";\n";
     this->PrintIndent();
     this->stream << "TASSIGN(" << src_temp_name << ", "
                  << src_shape_info.first_addr << " + " << src_shape_info.offset
@@ -1515,27 +1547,19 @@ void CodeGenTileLangAscendPto::PowCodegen(const CallNode *op) {
   ShapeInfo src1_shape_info = GetSliceInfo(op->args[2].as<CallNode>());
   ShapeInfo dst_shape_info = GetSliceInfo(op->args[0].as<CallNode>());
 
-  if (src0_shape_info.is_slice || src1_shape_info.is_slice ||
-      dst_shape_info.is_slice) {
-    auto src0_temp_name = GetTempVarName(src0_shape_info.ub_name);
-    auto src1_temp_name = GetTempVarName(src1_shape_info.ub_name);
-    auto dst_temp_name = GetTempVarName(dst_shape_info.ub_name);
-    CreateUbVariableND(src0_temp_name, src0_shape_info);
-    CreateUbVariableND(src1_temp_name, src1_shape_info);
-    CreateUbVariableND(dst_temp_name, dst_shape_info);
-    this->PrintIndent();
-    this->stream << kAscendPtoScope << "pow" << "<" << dst_shape_info.type
-                 << ", " << dst_shape_info.slice_row << ", "
-                 << dst_shape_info.slice_col << ">" << "(" << dst_temp_name
-                 << ", " << src0_temp_name << ", " << src1_temp_name << ");\n";
-  } else {
-    this->PrintIndent();
-    this->stream << kAscendPtoScope << "pow" << "<" << dst_shape_info.type
-                 << ", " << dst_shape_info.row << ", " << dst_shape_info.col
-                 << ">" << "(" << dst_shape_info.ub_name << ", "
-                 << src0_shape_info.ub_name << ", " << src1_shape_info.ub_name
-                 << ");\n";
-  }
+  bool use_slice = src0_shape_info.is_slice || src1_shape_info.is_slice ||
+                   dst_shape_info.is_slice;
+  int32_t tpl_row = use_slice ? dst_shape_info.slice_row : dst_shape_info.row;
+  int32_t tpl_col = use_slice ? dst_shape_info.slice_col : dst_shape_info.col;
+
+  std::string src0_name = ResolveUbSliceName(src0_shape_info);
+  std::string src1_name = ResolveUbSliceName(src1_shape_info);
+  std::string dst_name = ResolveUbSliceName(dst_shape_info);
+
+  this->PrintIndent();
+  this->stream << kAscendPtoScope << "pow<" << dst_shape_info.type << ", "
+               << tpl_row << ", " << tpl_col << ">(" << dst_name << ", "
+               << src0_name << ", " << src1_name << ");\n";
 }
 
 void CodeGenTileLangAscendPto::Sort32Codegen(const CallNode *op,
@@ -1758,23 +1782,13 @@ void CodeGenTileLangAscendPto::XorCodegen(const CallNode *op,
   ShapeInfo dst_shape_info = GetSliceInfo(op->args[0].as<CallNode>());
   auto tmp_name = PrintExpr(op->args[3].as<CallNode>()->args[1]);
 
-  if (src0_shape_info.is_slice || src1_shape_info.is_slice ||
-      dst_shape_info.is_slice) {
-    auto src0_temp_name = GetTempVarName(src0_shape_info.ub_name);
-    auto src1_temp_name = GetTempVarName(src1_shape_info.ub_name);
-    auto dst_temp_name = GetTempVarName(dst_shape_info.ub_name);
-    CreateUbVariableND(src0_temp_name, src0_shape_info);
-    CreateUbVariableND(src1_temp_name, src1_shape_info);
-    CreateUbVariableND(dst_temp_name, dst_shape_info);
-    this->PrintIndent();
-    this->stream << op_name << "(" << dst_temp_name << ", " << src0_temp_name
-                 << ", " << src1_temp_name << ", " << tmp_name << ");\n";
-  } else {
-    this->PrintIndent();
-    this->stream << op_name << "(" << dst_shape_info.ub_name << ", "
-                 << src0_shape_info.ub_name << ", " << src1_shape_info.ub_name
-                 << ", " << tmp_name << ");\n";
-  }
+  std::string src0_name = ResolveUbSliceName(src0_shape_info);
+  std::string src1_name = ResolveUbSliceName(src1_shape_info);
+  std::string dst_name = ResolveUbSliceName(dst_shape_info);
+
+  this->PrintIndent();
+  this->stream << op_name << "(" << dst_name << ", " << src0_name << ", "
+               << src1_name << ", " << tmp_name << ");\n";
 }
 
 void CodeGenTileLangAscendPto::CompareCodegen(const CallNode *op,
@@ -1783,25 +1797,15 @@ void CodeGenTileLangAscendPto::CompareCodegen(const CallNode *op,
   ShapeInfo src1_shape_info = GetSliceInfo(op->args[2].as<CallNode>());
   ShapeInfo dst_shape_info = GetSliceInfo(op->args[0].as<CallNode>());
   auto mode = Downcast<StringImm>(op->args[3])->value;
-  if (src0_shape_info.is_slice || src1_shape_info.is_slice ||
-      dst_shape_info.is_slice) {
-    auto src0_temp_name = GetTempVarName(src0_shape_info.ub_name);
-    auto src1_temp_name = GetTempVarName(src1_shape_info.ub_name);
-    auto dst_temp_name = GetTempVarName(dst_shape_info.ub_name);
-    CreateUbVariableND(src0_temp_name, src0_shape_info);
-    CreateUbVariableND(src1_temp_name, src1_shape_info);
-    CreateUbVariableND(dst_temp_name, dst_shape_info);
-    this->PrintIndent();
-    this->stream << kAscendPtoScope << "compare(" << dst_temp_name << ", "
-                 << src0_temp_name << ", " << src1_temp_name << ", "
-                 << "CmpMode::" << mode << ");\n";
-  } else {
-    this->PrintIndent();
-    this->stream << kAscendPtoScope << "compare(" << dst_shape_info.ub_name
-                 << ", " << src0_shape_info.ub_name << ", "
-                 << src1_shape_info.ub_name << ", " << "CmpMode::" << mode
-                 << ");\n";
-  }
+
+  std::string src0_name = ResolveUbSliceName(src0_shape_info);
+  std::string src1_name = ResolveUbSliceName(src1_shape_info);
+  std::string dst_name = ResolveUbSliceName(dst_shape_info);
+
+  this->PrintIndent();
+  this->stream << kAscendPtoScope << "compare(" << dst_name << ", " << src0_name
+               << ", " << src1_name << ", "
+               << "CmpMode::" << mode << ");\n";
 }
 
 void CodeGenTileLangAscendPto::CompareScalarCodegen(
@@ -1811,58 +1815,39 @@ void CodeGenTileLangAscendPto::CompareScalarCodegen(
   auto src1_name = PrintExpr(op->args[2]);
   auto mode = Downcast<StringImm>(op->args[3])->value;
 
-  std::string dst_name = PrintExpr(op->args[0].as<CallNode>()->args[1]);
-  std::string src0_name = PrintExpr(op->args[1].as<CallNode>()->args[1]);
-
   DataType src_dtype = GetAccessPtrDtypePto(op->args[1].as<CallNode>());
   DataType scalar_dtype = op->args[2].dtype();
   if (scalar_dtype != src_dtype) {
-    std::string target_type = getType(src_dtype);
-    src1_name = target_type + "(" + src1_name + ")";
+    src1_name = getType(src_dtype) + "(" + src1_name + ")";
   }
-  if (src0_shape_info.is_slice || dst_shape_info.is_slice) {
-    auto src0_temp_name = GetTempVarName(src0_shape_info.ub_name);
-    auto dst_temp_name = GetTempVarName(dst_shape_info.ub_name);
-    CreateUbVariableND(src0_temp_name, src0_shape_info);
-    CreateUbVariableND(dst_temp_name, dst_shape_info);
-    this->PrintIndent();
-    this->stream << kAscendPtoScope << "compare_scalar(" << dst_temp_name
-                 << ", " << src0_temp_name << ", " << src1_name << ", "
-                 << "CmpMode::" << mode << ");\n";
-  } else {
-    this->PrintIndent();
-    this->stream << kAscendPtoScope << "compare_scalar("
-                 << dst_shape_info.ub_name << ", " << src0_shape_info.ub_name
-                 << ", " << src1_name << ", " << "CmpMode::" << mode << ");\n";
-  }
+
+  std::string src0_name = ResolveUbSliceName(src0_shape_info);
+  std::string dst_name = ResolveUbSliceName(dst_shape_info);
+
+  this->PrintIndent();
+  this->stream << kAscendPtoScope << "compare_scalar(" << dst_name << ", "
+               << src0_name << ", " << src1_name << ", "
+               << "CmpMode::" << mode << ");\n";
 }
 
 void CodeGenTileLangAscendPto::TshCodegen(const CallNode *op,
                                           const std::string &op_name) {
-  this->PrintIndent();
   ShapeInfo src0_shape_info = GetSliceInfo(op->args[1].as<CallNode>());
   ShapeInfo dst_shape_info = GetSliceInfo(op->args[0].as<CallNode>());
   auto src1_name = PrintExpr(op->args[2]);
 
   DataType src_dtype = GetAccessPtrDtypePto(op->args[1].as<CallNode>());
   DataType scalar_dtype = op->args[2].dtype();
-
   if (scalar_dtype != src_dtype) {
-    std::string target_type = getType(src_dtype);
-    src1_name = target_type + "(" + src1_name + ")";
+    src1_name = getType(src_dtype) + "(" + src1_name + ")";
   }
-  if (src0_shape_info.is_slice || dst_shape_info.is_slice) {
-    auto src_temp_name = GetTempVarName(src0_shape_info.ub_name);
-    auto dst_temp_name = GetTempVarName(dst_shape_info.ub_name);
-    CreateUbVariableND(src_temp_name, src0_shape_info);
-    CreateUbVariableND(dst_temp_name, dst_shape_info);
-    this->PrintIndent();
-    this->stream << op_name << "(" << dst_temp_name << ", " << src_temp_name
-                 << ", " << src1_name << ");\n";
-  } else {
-    this->stream << op_name << "(" << dst_shape_info.ub_name << ", "
-                 << src0_shape_info.ub_name << ", " << src1_name << ");\n";
-  }
+
+  std::string src_name = ResolveUbSliceName(src0_shape_info);
+  std::string dst_name = ResolveUbSliceName(dst_shape_info);
+
+  this->PrintIndent();
+  this->stream << op_name << "(" << dst_name << ", " << src_name << ", "
+               << src1_name << ");\n";
 }
 
 void CodeGenTileLangAscendPto::ArithProgressionCodegen(
@@ -1920,46 +1905,16 @@ void CodeGenTileLangAscendPto::BinaryVecOpCodegen(const CallNode *op,
   ShapeInfo src1_shape_info = GetSliceInfo(op->args[2].as<CallNode>());
   ShapeInfo dst_shape_info = GetSliceInfo(op->args[0].as<CallNode>());
 
-  std::string src0_offset = src0_shape_info.offset;
-  std::string src1_offset = src1_shape_info.offset;
-  std::string dst_offset = dst_shape_info.offset;
+  std::string ns_prefix =
+      (op_name == "tand" || op_name == "tor") ? kAscendPtoScope : "";
 
-  int32_t src0_extent = src0_shape_info.extent;
-  int32_t src1_extent = src1_shape_info.extent;
-  int32_t dst_extent = dst_shape_info.extent;
+  std::string src0_name = ResolveUbSliceName(src0_shape_info);
+  std::string src1_name = ResolveUbSliceName(src1_shape_info);
+  std::string dst_name = ResolveUbSliceName(dst_shape_info);
 
-  std::string ns_prefix = "";
-  if (op_name == "tand" || op_name == "tor") {
-    ns_prefix = kAscendPtoScope;
-  }
-
-  std::vector<std::string> var_names;
-  for (int i = 0; i < op->args.size() - 1; i++) {
-    auto var_name = PrintBufferOffset(op->args[i].as<CallNode>());
-    var_names.push_back(var_name);
-  }
-  if (src0_shape_info.is_slice || src1_shape_info.is_slice ||
-      dst_shape_info.is_slice) {
-    std::string src0_temp_name = GetTempVarName(src0_shape_info.ub_name);
-    std::string src1_temp_name = GetTempVarName(src1_shape_info.ub_name);
-    std::string dst_temp_name = GetTempVarName(dst_shape_info.ub_name);
-    CreateUbVariableND(src0_temp_name, src0_shape_info);
-    CreateUbVariableND(src1_temp_name, src1_shape_info);
-    CreateUbVariableND(dst_temp_name, dst_shape_info);
-    this->PrintIndent();
-    this->stream << ns_prefix << op_name << "(" << dst_temp_name << ", "
-                 << src0_temp_name << ", " << src1_temp_name << ");\n";
-  } else {
-    this->PrintIndent();
-    this->stream << ns_prefix << op_name << "(";
-    for (int i = 0; i < var_names.size(); i++) {
-      this->stream << var_names[i];
-      if (i != var_names.size() - 1) {
-        this->stream << ", ";
-      }
-    }
-    this->stream << ");\n";
-  }
+  this->PrintIndent();
+  this->stream << ns_prefix << op_name << "(" << dst_name << ", " << src0_name
+               << ", " << src1_name << ");\n";
 }
 
 std::string extractBroadCastAxis(const std::string &input) {
@@ -2151,28 +2106,14 @@ void CodeGenTileLangAscendPto::BinaryVecOpsCodegen(const CallNode *op,
 
 void CodeGenTileLangAscendPto::UnaryVecOpCodegen(const CallNode *op,
                                                  const std::string &op_name) {
-  std::vector<std::string> var_names;
-  for (int i = 0; i < op->args.size() - 1; i++) {
-    auto var_name = PrintBufferOffset(op->args[i].as<CallNode>());
-    var_names.push_back(var_name);
-  }
-
   ShapeInfo src_shape_info = GetSliceInfo(op->args[1].as<CallNode>());
   ShapeInfo dst_shape_info = GetSliceInfo(op->args[0].as<CallNode>());
 
-  if (src_shape_info.is_slice || dst_shape_info.is_slice) {
-    std::string src_temp_name = GetTempVarName(src_shape_info.ub_name);
-    std::string dst_temp_name = GetTempVarName(dst_shape_info.ub_name);
-    CreateUbVariableND(src_temp_name, src_shape_info);
-    CreateUbVariableND(dst_temp_name, dst_shape_info);
-    this->PrintIndent();
-    this->stream << op_name << "(" << dst_temp_name << ", " << src_temp_name
-                 << ");\n";
-  } else {
-    this->PrintIndent();
-    this->stream << op_name << "(" << var_names[0] << ", " << var_names[1]
-                 << ");\n";
-  }
+  std::string src_name = ResolveUbSliceName(src_shape_info);
+  std::string dst_name = ResolveUbSliceName(dst_shape_info);
+
+  this->PrintIndent();
+  this->stream << op_name << "(" << dst_name << ", " << src_name << ");\n";
 }
 
 void CodeGenTileLangAscendPto::ScalarOpCodegen(const CallNode *op,
@@ -2180,20 +2121,12 @@ void CodeGenTileLangAscendPto::ScalarOpCodegen(const CallNode *op,
   ShapeInfo src_shape_info = GetSliceInfo(op->args[1].as<CallNode>());
   ShapeInfo dst_shape_info = GetSliceInfo(op->args[0].as<CallNode>());
 
-  if (src_shape_info.is_slice || dst_shape_info.is_slice) {
-    auto src_temp_name = GetTempVarName(src_shape_info.ub_name);
-    auto dst_temp_name = GetTempVarName(dst_shape_info.ub_name);
-    CreateUbVariableND(src_temp_name, src_shape_info);
-    CreateUbVariableND(dst_temp_name, dst_shape_info);
-    this->PrintIndent();
-    this->stream << op_name << "(" << dst_temp_name << ", " << src_temp_name
-                 << "," << PrintExpr(op->args[2]) << ");\n";
-  } else {
-    this->PrintIndent();
-    this->stream << op_name << "(" << dst_shape_info.ub_name << ", "
-                 << src_shape_info.ub_name << ", " << PrintExpr(op->args[2])
-                 << ");\n";
-  }
+  std::string src_name = ResolveUbSliceName(src_shape_info);
+  std::string dst_name = ResolveUbSliceName(dst_shape_info);
+
+  this->PrintIndent();
+  this->stream << op_name << "(" << dst_name << ", " << src_name << ", "
+               << PrintExpr(op->args[2]) << ");\n";
 }
 
 void CodeGenTileLangAscendPto::AxpyCodegen(const CallNode *op) {
@@ -2211,188 +2144,104 @@ void CodeGenTileLangAscendPto::AxpyCodegen(const CallNode *op) {
     }
   }
 
-  if (src_shape_info.is_slice || dst_shape_info.is_slice) {
-    auto src_temp_name = GetTempVarName(src_shape_info.ub_name);
-    auto dst_temp_name = GetTempVarName(dst_shape_info.ub_name);
-    CreateUbVariableND(src_temp_name, src_shape_info);
-    CreateUbVariableND(dst_temp_name, dst_shape_info);
-    this->PrintIndent();
-    this->stream << kAscendPtoScope << "axpy" << "<" << src_shape_info.type
-                 << ", " << src_shape_info.slice_row << ", "
-                 << src_shape_info.slice_col << ">" << "(" << dst_temp_name
-                 << ", " << src_temp_name << ", " << scalar << ");\n";
-  } else {
-    this->PrintIndent();
-    this->stream << kAscendPtoScope << "axpy" << "<" << dst_shape_info.type
-                 << ", " << dst_shape_info.row << ", " << dst_shape_info.col
-                 << ">" << "(" << dst_shape_info.ub_name << ", "
-                 << src_shape_info.ub_name << ", " << scalar << ");\n";
-  }
+  bool use_slice = src_shape_info.is_slice || dst_shape_info.is_slice;
+  std::string tpl_type = use_slice ? src_shape_info.type : dst_shape_info.type;
+  int32_t tpl_row = use_slice ? src_shape_info.slice_row : dst_shape_info.row;
+  int32_t tpl_col = use_slice ? src_shape_info.slice_col : dst_shape_info.col;
+
+  std::string src_name = ResolveUbSliceName(src_shape_info);
+  std::string dst_name = ResolveUbSliceName(dst_shape_info);
+
+  this->PrintIndent();
+  this->stream << kAscendPtoScope << "axpy<" << tpl_type << ", " << tpl_row
+               << ", " << tpl_col << ">(" << dst_name << ", " << src_name
+               << ", " << scalar << ");\n";
 }
 
 void CodeGenTileLangAscendPto::BinaryVecClampMaxMinOpsCodegen(
     const CallNode *op, const std::string &op_name) {
-  std::vector<std::string> var_names;
-  std::string operation = op_name;
-  for (int i = 1; i < op->args.size() - 3; i++) {
-    auto var_name = PrintBufferOffset(op->args[i].as<CallNode>());
-    var_names.push_back(var_name);
-  }
   ShapeInfo src_shape_info = GetSliceInfo(op->args[2].as<CallNode>());
   ShapeInfo dst_shape_info = GetSliceInfo(op->args[1].as<CallNode>());
+
+  std::string src_name = ResolveUbSliceName(src_shape_info);
+  std::string dst_name = ResolveUbSliceName(dst_shape_info);
 
   if (op->args[4].as<CallNode>()) {
     this->PrintIndent();
     auto var_name = PrintBufferOffset(op->args[4].as<CallNode>());
-    std::string index = PrintExpr(op->args[op->args.size() - 2]);
     std::string scalar_name = var_name + "_scalar";
+    std::string index = PrintExpr(op->args[op->args.size() - 2]);
     this->stream << "auto " << scalar_name << "= " << var_name << ".GetValue("
                  << index << ");\n";
-    if (src_shape_info.is_slice || dst_shape_info.is_slice) {
-      auto src_temp_name = GetTempVarName(src_shape_info.ub_name);
-      auto dst_temp_name = GetTempVarName(dst_shape_info.ub_name);
-      CreateUbVariableND(src_temp_name, src_shape_info);
-      CreateUbVariableND(dst_temp_name, dst_shape_info);
-      this->PrintIndent();
-      this->stream << operation << "(" << dst_temp_name << ", " << src_temp_name
-                   << ", " << scalar_name << ");\n";
-    } else {
-      this->PrintIndent();
-      this->stream << operation << "(" << dst_shape_info.ub_name << ", "
-                   << src_shape_info.ub_name << ", " << scalar_name << ");\n";
-    }
+    this->PrintIndent();
+    this->stream << op_name << "(" << dst_name << ", " << src_name << ", "
+                 << scalar_name << ");\n";
   } else {
     auto scalar = PrintExpr(op->args[op->args.size() - 2]);
-    if (src_shape_info.is_slice || dst_shape_info.is_slice) {
-      auto src_temp_name = GetTempVarName(src_shape_info.ub_name);
-      auto dst_temp_name = GetTempVarName(dst_shape_info.ub_name);
-      CreateUbVariableND(src_temp_name, src_shape_info);
-      CreateUbVariableND(dst_temp_name, dst_shape_info);
-      this->PrintIndent();
-      this->stream << operation << "(" << dst_temp_name << ", " << src_temp_name
-                   << ", " << scalar << ");\n";
-    } else {
-      this->PrintIndent();
-      this->stream << operation << "(" << dst_shape_info.ub_name << ", "
-                   << src_shape_info.ub_name << ", " << scalar << ");\n";
-    }
+    this->PrintIndent();
+    this->stream << op_name << "(" << dst_name << ", " << src_name << ", "
+                 << scalar << ");\n";
   }
 }
 
 void CodeGenTileLangAscendPto::BinaryVecClampOpsCodegen(
     const CallNode *op, const std::string &op_name) {
-  // Extract shape information
   ShapeInfo src_shape_info = GetSliceInfo(op->args[2].as<CallNode>());
   ShapeInfo dst_shape_info = GetSliceInfo(op->args[1].as<CallNode>());
 
-  // Get scalar bounds (last two arguments)
   auto scalar_min = PrintExpr(op->args[op->args.size() - 3]);
   auto scalar_max = PrintExpr(op->args[op->args.size() - 2]);
 
-  // Collect variable names (skip first arg and last 3 args: scalar_min,
-  // scalar_max, and one more)
-  std::vector<std::string> var_names;
-  var_names.reserve(op->args.size() - 5); // Pre-allocate memory
-  for (size_t i = 1; i < op->args.size() - 4; ++i) {
-    var_names.push_back(PrintBufferOffset(op->args[i].as<CallNode>()));
-  }
-  if (src_shape_info.is_slice || dst_shape_info.is_slice) {
-    // Handle slice case with temporary variables
-    std::string src_temp_name = GetTempVarName(src_shape_info.ub_name);
-    std::string dst_temp_name = GetTempVarName(dst_shape_info.ub_name);
+  std::string src_name = ResolveUbSliceName(src_shape_info);
+  std::string dst_name = ResolveUbSliceName(dst_shape_info);
 
-    CreateUbVariableND(src_temp_name, src_shape_info);
-    CreateUbVariableND(dst_temp_name, dst_shape_info);
-
-    this->PrintIndent();
-    this->stream << "TMAXS(" << dst_temp_name << ", " << src_temp_name << ", "
-                 << scalar_min << ");\n";
-    this->PrintIndent();
-    this->stream << "TMINS(" << dst_temp_name << ", " << dst_temp_name << ", "
-                 << scalar_max << ");\n";
-  } else {
-    this->PrintIndent();
-    this->stream << "TMAXS(" << dst_shape_info.ub_name << ", "
-                 << src_shape_info.ub_name << ", " << scalar_min << ");\n";
-    this->PrintIndent();
-    this->stream << "TMINS(" << dst_shape_info.ub_name << ", "
-                 << dst_shape_info.ub_name << ", " << scalar_max << ");\n";
-  }
+  this->PrintIndent();
+  this->stream << "TMAXS(" << dst_name << ", " << src_name << ", " << scalar_min
+               << ");\n";
+  this->PrintIndent();
+  this->stream << "TMINS(" << dst_name << ", " << dst_name << ", " << scalar_max
+               << ");\n";
 }
 
 void CodeGenTileLangAscendPto::SigmoidCodegen(const CallNode *op,
                                               const std::string &op_name) {
-  std::vector<std::string> var_names;
-  for (int i = 0; i < op->args.size() - 2; i++) {
-    auto var_name = PrintBufferOffset(op->args[i].as<CallNode>());
-    var_names.push_back(var_name);
-  }
   ShapeInfo src_shape_info = GetSliceInfo(op->args[1].as<CallNode>());
   ShapeInfo dst_shape_info = GetSliceInfo(op->args[0].as<CallNode>());
 
-  if (src_shape_info.is_slice || dst_shape_info.is_slice) {
-    auto src_temp_name = GetTempVarName(src_shape_info.ub_name);
-    auto dst_temp_name = GetTempVarName(dst_shape_info.ub_name);
-    CreateUbVariableND(src_temp_name, src_shape_info);
-    CreateUbVariableND(dst_temp_name, dst_shape_info);
-    this->PrintIndent();
-    this->stream << kAscendPtoScope << op_name << "<" << src_shape_info.type
-                 << ", " << src_shape_info.slice_row << ", "
-                 << src_shape_info.slice_col << ">" << "(" << dst_temp_name
-                 << ", " << src_temp_name << ");\n";
-  } else {
-    this->PrintIndent();
-    this->stream << kAscendPtoScope << op_name << "<" << dst_shape_info.type
-                 << ", " << dst_shape_info.row << ", " << dst_shape_info.col
-                 << ">" << "(";
-    for (int i = 0; i < var_names.size(); i++) {
-      this->stream << var_names[i];
-      if (i != var_names.size() - 1) {
-        this->stream << ", ";
-      }
-    }
-    this->stream << ");\n";
-  }
+  bool use_slice = src_shape_info.is_slice || dst_shape_info.is_slice;
+  int32_t tpl_row = use_slice ? dst_shape_info.slice_row : dst_shape_info.row;
+  int32_t tpl_col = use_slice ? dst_shape_info.slice_col : dst_shape_info.col;
+
+  std::string src_name = ResolveUbSliceName(src_shape_info);
+  std::string dst_name = ResolveUbSliceName(dst_shape_info);
+
+  this->PrintIndent();
+  this->stream << kAscendPtoScope << op_name << "<" << dst_shape_info.type
+               << ", " << tpl_row << ", " << tpl_col << ">(" << dst_name << ", "
+               << src_name << ");\n";
 }
 
 void CodeGenTileLangAscendPto::SiluCodegen(const CallNode *op) {
   ShapeInfo dst_shape_info = GetSliceInfo(op->args[0].as<CallNode>());
   ShapeInfo src_shape_info = GetSliceInfo(op->args[1].as<CallNode>());
 
-  std::string dst_name = PrintBufferOffset(op->args[0].as<CallNode>());
-  std::string src_name = PrintBufferOffset(op->args[1].as<CallNode>());
+  bool use_slice = dst_shape_info.is_slice || src_shape_info.is_slice;
+  int32_t row = use_slice ? dst_shape_info.slice_row : dst_shape_info.row;
+  int32_t col = use_slice ? dst_shape_info.slice_col : dst_shape_info.col;
 
+  std::string dst_name = ResolveUbSliceName(dst_shape_info);
+  std::string src_name = ResolveUbSliceName(src_shape_info);
   std::string tmp_name = GetTempVarName(dst_shape_info.ub_name) + "_silu_tmp";
-  int32_t row =
-      dst_shape_info.is_slice ? dst_shape_info.slice_row : dst_shape_info.row;
-  int32_t col =
-      dst_shape_info.is_slice ? dst_shape_info.slice_col : dst_shape_info.col;
 
-  if (dst_shape_info.is_slice || src_shape_info.is_slice) {
-    std::string dst_temp_name = GetTempVarName(dst_shape_info.ub_name);
-    std::string src_temp_name = GetTempVarName(src_shape_info.ub_name);
-    CreateUbVariableND(dst_temp_name, dst_shape_info);
-    CreateUbVariableND(src_temp_name, src_shape_info);
-    this->PrintIndent();
-    this->stream << "tl::ascend_pto::TileUbDataND<" << dst_shape_info.type
-                 << ", " << row << ", " << col << "> " << tmp_name << ";\n";
-    this->PrintIndent();
-    this->stream << "TASSIGN(" << tmp_name << ", " << max_ub_addr_ << ");\n";
-    this->PrintIndent();
-    this->stream << kAscendPtoScope << "TSILU<" << dst_shape_info.type << ", "
-                 << row << ", " << col << ">(" << dst_temp_name << ", "
-                 << src_temp_name << ", " << tmp_name << ");\n";
-  } else {
-    this->PrintIndent();
-    this->stream << "tl::ascend_pto::TileUbDataND<" << dst_shape_info.type
-                 << ", " << row << ", " << col << "> " << tmp_name << ";\n";
-    this->PrintIndent();
-    this->stream << "TASSIGN(" << tmp_name << ", " << max_ub_addr_ << ");\n";
-    this->PrintIndent();
-    this->stream << kAscendPtoScope << "TSILU<" << dst_shape_info.type << ", "
-                 << row << ", " << col << ">(" << dst_name << ", " << src_name
-                 << ", " << tmp_name << ");\n";
-  }
+  this->PrintIndent();
+  this->stream << "tl::ascend_pto::TileUbDataND<" << dst_shape_info.type << ", "
+               << row << ", " << col << "> " << tmp_name << ";\n";
+  this->PrintIndent();
+  this->stream << "TASSIGN(" << tmp_name << ", " << max_ub_addr_ << ");\n";
+  this->PrintIndent();
+  this->stream << kAscendPtoScope << "TSILU<" << dst_shape_info.type << ", "
+               << row << ", " << col << ">(" << dst_name << ", " << src_name
+               << ", " << tmp_name << ");\n";
 }
 
 void CodeGenTileLangAscendPto::MulAddDstCodegen(const CallNode *op) {
@@ -2400,78 +2249,39 @@ void CodeGenTileLangAscendPto::MulAddDstCodegen(const CallNode *op) {
   ShapeInfo src0_shape_info = GetSliceInfo(op->args[1].as<CallNode>());
   ShapeInfo src1_shape_info = GetSliceInfo(op->args[2].as<CallNode>());
 
-  std::string dst_name = PrintBufferOffset(op->args[0].as<CallNode>());
-  std::string src0_name = PrintBufferOffset(op->args[1].as<CallNode>());
-  std::string src1_name = PrintBufferOffset(op->args[2].as<CallNode>());
+  bool use_slice = dst_shape_info.is_slice || src0_shape_info.is_slice ||
+                   src1_shape_info.is_slice;
+  int32_t row = use_slice ? dst_shape_info.slice_row : dst_shape_info.row;
+  int32_t col = use_slice ? dst_shape_info.slice_col : dst_shape_info.col;
 
+  std::string dst_name = ResolveUbSliceName(dst_shape_info);
+  std::string src0_name = ResolveUbSliceName(src0_shape_info);
+  std::string src1_name = ResolveUbSliceName(src1_shape_info);
   std::string tmp_name =
       GetTempVarName(dst_shape_info.ub_name) + "_muladddst_tmp";
-  int32_t row =
-      dst_shape_info.is_slice ? dst_shape_info.slice_row : dst_shape_info.row;
-  int32_t col =
-      dst_shape_info.is_slice ? dst_shape_info.slice_col : dst_shape_info.col;
 
-  if (dst_shape_info.is_slice || src0_shape_info.is_slice ||
-      src1_shape_info.is_slice) {
-    std::string dst_temp_name = GetTempVarName(dst_shape_info.ub_name);
-    std::string src0_temp_name = GetTempVarName(src0_shape_info.ub_name);
-    std::string src1_temp_name = GetTempVarName(src1_shape_info.ub_name);
-    CreateUbVariableND(dst_temp_name, dst_shape_info);
-    CreateUbVariableND(src0_temp_name, src0_shape_info);
-    CreateUbVariableND(src1_temp_name, src1_shape_info);
-    this->PrintIndent();
-    this->stream << "tl::ascend_pto::TileUbDataND<" << dst_shape_info.type
-                 << ", " << row << ", " << col << "> " << tmp_name << ";\n";
-    this->PrintIndent();
-    this->stream << "TASSIGN(" << tmp_name << ", " << max_ub_addr_ << ");\n";
-    this->PrintIndent();
-    this->stream << kAscendPtoScope << "MulAddDst<" << dst_shape_info.type
-                 << ", " << row << ", " << col << ">(" << dst_temp_name << ", "
-                 << src0_temp_name << ", " << src1_temp_name << ", " << tmp_name
-                 << ");\n";
-  } else {
-    this->PrintIndent();
-    this->stream << "tl::ascend_pto::TileUbDataND<" << dst_shape_info.type
-                 << ", " << row << ", " << col << "> " << tmp_name << ";\n";
-    this->PrintIndent();
-    this->stream << "TASSIGN(" << tmp_name << ", " << max_ub_addr_ << ");\n";
-    this->PrintIndent();
-    this->stream << kAscendPtoScope << "MulAddDst<" << dst_shape_info.type
-                 << ", " << row << ", " << col << ">(" << dst_name << ", "
-                 << src0_name << ", " << src1_name << ", " << tmp_name
-                 << ");\n";
-  }
+  this->PrintIndent();
+  this->stream << "tl::ascend_pto::TileUbDataND<" << dst_shape_info.type << ", "
+               << row << ", " << col << "> " << tmp_name << ";\n";
+  this->PrintIndent();
+  this->stream << "TASSIGN(" << tmp_name << ", " << max_ub_addr_ << ");\n";
+  this->PrintIndent();
+  this->stream << kAscendPtoScope << "MulAddDst<" << dst_shape_info.type << ", "
+               << row << ", " << col << ">(" << dst_name << ", " << src0_name
+               << ", " << src1_name << ", " << tmp_name << ");\n";
 }
 
 void CodeGenTileLangAscendPto::CastCodegen(const CallNode *op,
                                            const std::string &op_type) {
-  std::vector<std::string> var_names;
-  for (int i = 0; i < op->args.size() - 2; i++) {
-    auto var_name = PrintBufferOffset(op->args[i].as<CallNode>());
-    var_names.push_back(var_name);
-  }
-
   ShapeInfo src_shape_info = GetSliceInfo(op->args[1].as<CallNode>());
   ShapeInfo dst_shape_info = GetSliceInfo(op->args[0].as<CallNode>());
-  if (src_shape_info.is_slice || dst_shape_info.is_slice) {
-    std::string src_temp_name = GetTempVarName(src_shape_info.ub_name);
-    std::string dst_temp_name = GetTempVarName(dst_shape_info.ub_name);
-    CreateUbVariableND(src_temp_name, src_shape_info);
-    CreateUbVariableND(dst_temp_name, dst_shape_info);
-    this->PrintIndent();
-    this->stream << "TCVT" << "(" << dst_temp_name << ", " << src_temp_name
-                 << ", " << op_type << ");\n";
-  } else {
-    this->stream << "TCVT" << "(";
-    var_names.push_back(op_type);
-    for (int i = 0; i < var_names.size(); i++) {
-      this->stream << var_names[i];
-      if (i != var_names.size() - 1) {
-        this->stream << ", ";
-      }
-    }
-    this->stream << ");\n";
-  }
+
+  std::string src_name = ResolveUbSliceName(src_shape_info);
+  std::string dst_name = ResolveUbSliceName(dst_shape_info);
+
+  this->PrintIndent();
+  this->stream << "TCVT(" << dst_name << ", " << src_name << ", " << op_type
+               << ");\n";
 }
 
 std::tuple<int, int, int, bool>
@@ -3258,8 +3068,6 @@ void CodeGenTileLangAscendPto::SelectCodegen(const CallNode *op) {
   std::string src1_name;
   std::string op_name;
 
-  std::string src0_type = src0_shape_info.type;
-
   int src1_type = std::stoi(PrintExpr(op->args[4]));
   if (src1_type == 2) {
     src1_name = PrintBufferOffset(op->args[5].as<CallNode>());
@@ -3272,33 +3080,19 @@ void CodeGenTileLangAscendPto::SelectCodegen(const CallNode *op) {
                   "src1_type=2 (Tensor-Tensor mode). "
                << "Got type=" << src1_type;
   }
-  if (src0_shape_info.is_slice || dst_shape_info.is_slice) {
-    std::string src0_temp_name = GetTempVarName(src0_shape_info.ub_name);
-    std::string dst_temp_name = GetTempVarName(dst_shape_info.ub_name);
-    CreateUbVariableND(src0_temp_name, src0_shape_info);
-    CreateUbVariableND(dst_temp_name, dst_shape_info);
-    this->PrintIndent();
-    if (op_name == "TSEL") {
-      this->stream << op_name << "(" << dst_temp_name << ", " << mask_name
-                   << ", " << src0_temp_name << ", " << src1_name << ", "
-                   << temp_name << ");\n";
-    } else {
-      this->stream << op_name << "(" << dst_temp_name << ", " << mask_name
-                   << ", " << src0_temp_name << ", " << temp_name << ", "
-                   << src1_name << ");\n";
-    }
 
+  std::string src0_name = ResolveUbSliceName(src0_shape_info);
+  std::string dst_name = ResolveUbSliceName(dst_shape_info);
+
+  this->PrintIndent();
+  if (op_name == "TSEL") {
+    this->stream << op_name << "(" << dst_name << ", " << mask_name << ", "
+                 << src0_name << ", " << src1_name << ", " << temp_name
+                 << ");\n";
   } else {
-    this->PrintIndent();
-    if (op_name == "TSEL") {
-      this->stream << op_name << "(" << dst_shape_info.ub_name << ", "
-                   << mask_name << ", " << src0_shape_info.ub_name << ", "
-                   << src1_name << ", " << temp_name << ");\n";
-    } else {
-      this->stream << op_name << "(" << dst_shape_info.ub_name << ", "
-                   << mask_name << ", " << src0_shape_info.ub_name << ", "
-                   << temp_name << ", " << src1_name << ");\n";
-    }
+    this->stream << op_name << "(" << dst_name << ", " << mask_name << ", "
+                 << src0_name << ", " << temp_name << ", " << src1_name
+                 << ");\n";
   }
 }
 
