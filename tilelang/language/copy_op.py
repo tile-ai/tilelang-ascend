@@ -3,6 +3,7 @@
 """The language interface for tl programs."""
 
 from __future__ import annotations
+from enum import IntEnum
 from tilelang import language as T
 from tvm import arith, ir, tir
 
@@ -356,3 +357,46 @@ def npu_copy_v2(
         tmp_region = _to_region(tmp, "rw")
 
     return tir.call_intrin("handle", tir.op.Op.get("tl.ascend_copy"), src, dst, enable_relu, transpose, pad_value_expr, tmp_region)
+
+
+class CopyCVMode(IntEnum):
+    SingleVec0 = 0
+    SingleVec1 = 1
+    DualSplitM = 2
+    DualSplitN = 3
+
+
+def copy_cv_experiment(dst: tir.Buffer, src: tir.Buffer, mode: int | CopyCVMode = CopyCVMode.DualSplitM):
+    """L0C to UB direct copy using TMOV (PTO A5 only).
+
+    Args:
+        dst: Destination buffer (UB, 'shared' scope)
+        src: Source buffer (L0C, 'wmma.accumulator' scope)
+        mode: CopyCVMode (TMOV AccToVecMode)  (default CopyCVMode.DualSplitM)
+    """
+    return tir.call_intrin(
+        "handle",
+        tir.op.Op.get("tl.ascend_copy_cv_experiment"),
+        dst.access_ptr("w"),
+        src.access_ptr("r"),
+        int(mode),
+    )
+
+
+def copy_vc_experiment(dst: tir.Buffer, src: tir.Buffer, tmp: tir.Buffer, mode: int = 0):
+    """UB to L1 direct copy using TINSERT with ND→NZ conversion (PTO A5 only).
+
+    Args:
+        dst: Destination buffer (L1, 'shared.dyn' scope)
+        src: Source buffer (UB, 'shared' scope) — ND format
+        tmp: Temporary buffer (UB, 'shared' scope) — scratch for NZ conversion
+        mode: TINSERT TInsertMode (0=default, 2=SPLIT2, 3=SPLIT4)
+    """
+    return tir.call_intrin(
+        "handle",
+        tir.op.Op.get("tl.ascend_copy_vc_experiment"),
+        dst.access_ptr("w"),
+        src.access_ptr("r"),
+        tmp.access_ptr("rw"),
+        mode,
+    )

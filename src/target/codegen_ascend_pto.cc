@@ -974,6 +974,10 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op,
     MmaCodegen(op);
   } else if (op->op.same_as(tl::ascend_use_swizzle())) {
     os << PrintExpr(op->args[1]);
+  } else if (op->op.same_as(tl::ascend_copy_cv_experiment())) {
+    CopyCVExperimentCodegen(op);
+  } else if (op->op.same_as(tl::ascend_copy_vc_experiment())) {
+    CopyVCExperimentCodegen(op);
   } else if (op->op.same_as(builtin::if_then_else())) {
     std::string result = name_supply_->FreshName("condval");
     std::string cond = PrintExpr(op->args[0]);
@@ -1651,6 +1655,57 @@ void CodeGenTileLangAscendPto::PreScanPipes(const PrimFunc &f) {
       }
     }
   }
+}
+
+void CodeGenTileLangAscendPto::CopyCVExperimentCodegen(const CallNode *op) {
+  auto dtype = GetAccessPtrDtypePto(op->args[0].as<CallNode>());
+  BufferInfo src_info = GetBufferInfo(op->args[1]);
+
+  auto &shape = src_info.shape;
+  int32_t rows, cols;
+  if (shape.size() == 1) {
+    rows = 1;
+    cols = Downcast<IntImm>(shape[0])->value;
+  } else {
+    rows = Downcast<IntImm>(shape[0])->value;
+    cols = Downcast<IntImm>(shape[1])->value;
+  }
+
+  int mode = Downcast<IntImm>(op->args[2])->value;
+
+  std::string dst_name = PrintBufferOffset(op->args[0].as<CallNode>());
+  std::string src_name = PrintBufferOffset(op->args[1].as<CallNode>());
+
+  this->PrintIndent();
+  stream << kAscendPtoScope << "copy_cv_experiment<" << getType(dtype)
+         << ", " << rows << ", " << cols << ", " << mode << ">("
+         << dst_name << ", " << src_name << ");\n";
+}
+
+void CodeGenTileLangAscendPto::CopyVCExperimentCodegen(const CallNode *op) {
+  auto dtype = GetAccessPtrDtypePto(op->args[0].as<CallNode>());
+  BufferInfo src_info = GetBufferInfo(op->args[1]);
+
+  auto &shape = src_info.shape;
+  int32_t rows, cols;
+  if (shape.size() == 1) {
+    rows = 1;
+    cols = Downcast<IntImm>(shape[0])->value;
+  } else {
+    rows = Downcast<IntImm>(shape[0])->value;
+    cols = Downcast<IntImm>(shape[1])->value;
+  }
+
+  int mode = Downcast<IntImm>(op->args[3])->value;
+
+  std::string dst_name = PrintBufferOffset(op->args[0].as<CallNode>());
+  std::string src_name = PrintBufferOffset(op->args[1].as<CallNode>());
+  std::string tmp_name = PrintBufferOffset(op->args[2].as<CallNode>());
+
+  this->PrintIndent();
+  stream << kAscendPtoScope << "copy_vc_experiment<" << getType(dtype)
+         << ", " << rows << ", " << cols << ", " << mode << ">("
+         << dst_name << ", " << src_name << ", " << tmp_name << ", 0, 0);\n";
 }
 
 void CodeGenTileLangAscendPto::CallExternCodegen(const CallNode *op) {

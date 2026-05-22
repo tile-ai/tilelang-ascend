@@ -51,7 +51,7 @@ from .allocate import (
     alloc_L1,  # noqa: F401
     alloc_ub,  # noqa: F401
 )
-from .copy import copy, c2d_im2col, npu_copy_v2 as copy  # noqa: F401, F811
+from .copy_op import copy, c2d_im2col, npu_copy_v2 as copy  # noqa: F401, F811
 from .gemm import GemmWarpPolicy, gemm  # noqa: F401
 
 # from .fill import fill, clear  # noqa: F401
