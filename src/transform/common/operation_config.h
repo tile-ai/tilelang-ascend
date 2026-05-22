@@ -57,7 +57,8 @@ GetOperationConfig() {
       {"copy_l0c_to_l1", {{{0, "read"}, {1, "write"}}, "PIPE_FIX"}},
       {"copy_ub_to_ub", {{{0, "read"}, {1, "write"}}, "PIPE_V"}},
       {"copy_ub_to_ub_Nz", {{{0, "read"}, {1, "write"}}, "PIPE_V"}},
-      {"copy_ub_to_pipe", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_MTE3"}},
+      {"copy_ub_to_pipe",
+       {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_MTE3"}},
       {"copy_pipe_to_l1", {{{0, "read"}, {1, "write"}}, "PIPE_MTE3"}},
       {"copy_l0c_to_pipe", {{{0, "write"}, {1, "read"}}, "PIPE_FIX"}},
       {"copy_pipe_to_ub", {{{0, "read"}, {1, "write"}}, "PIPE_MTE2"}},
@@ -292,6 +293,9 @@ GetOperationConfig() {
       {"tl.ascend_tail_scalar", {{{1, "write"}, {2, "read"}}, "PIPE_V"}},
       {"tl.ascend_tail_reduce",
        {{{1, "write"}, {2, "read"}, {3, "read"}}, "PIPE_V"}},
+      {"tl.ascend_copy_cv_experiment",
+       {{{0, "write"}, {1, "read"}}, "PIPE_FIX"}},
+      {"tl.ascend_copy_vc_experiment", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
   };
 
   return operation_config_;

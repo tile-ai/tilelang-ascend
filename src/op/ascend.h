@@ -273,6 +273,9 @@ TVM_DLL const Op &ascend_tail_scalar();
 
 TVM_DLL const Op &ascend_tail_reduce();
 
+TVM_DLL const Op &ascend_copy_cv_experiment();
+
+TVM_DLL const Op &ascend_copy_vc_experiment();
 } // namespace tl
 } // namespace tvm
 

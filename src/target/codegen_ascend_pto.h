@@ -259,6 +259,10 @@ private:
 
   void PreScanPipes(const PrimFunc &f);
 
+  void CopyCVExperimentCodegen(const CallNode *op);
+
+  void CopyVCExperimentCodegen(const CallNode *op);
+
   std::string PrintBufferOffset(const CallNode *op);
 
   std::string GetTempVarName(const std::string &temp_name);
