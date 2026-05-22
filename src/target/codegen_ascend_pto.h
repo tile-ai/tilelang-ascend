@@ -215,6 +215,11 @@ private:
                           const std::string &tile_name);
   ShapeInfo GetSliceInfo(const CallNode *op);
 
+  std::string ResolveUbSliceName(const ShapeInfo &info);
+
+  std::string ResolveCubeSliceName(const ShapeInfo &info,
+                                   const std::string &tile_name);
+
   ReduceOpInfo ParseReduceOpInfo(const std::string &op_name);
   std::string GetReduceOpName(ReduceKind kind, ReduceDirection direction);
   void CodegenRowReduce(const ReduceOpInfo &op_info, const ShapeInfo &dst,
