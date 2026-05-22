@@ -372,15 +372,6 @@ void CodeGenTileLangAscendPto::PrintType(DataType t,
       if (t.is_scalar()) {
         os << "half";
       } else if (lanes <= 8) {
-        // Emit CUDA code to access fp16 vector elements.
-        //
-        // half4 is stored as uint2
-        //
-        // h4.x is emitted as *(half2*)(&(u2.x)).x
-        // h4.y is emitted as *(half2*)(&(u2.x)).y
-        // h4.z is emitted as *(half2*)(&(u2.y)).x
-        // h4.w is emitted as *(half2*)(&(u2.y)).y
-        //
         ICHECK_EQ(lanes % 2, 0) << "only support even lane for half type";
         os << "uint" << lanes / 2;
       } else {
@@ -391,13 +382,6 @@ void CodeGenTileLangAscendPto::PrintType(DataType t,
       if (lanes <= 4) {
         os << "float";
       } else if (lanes <= 8) {
-        // Emit CUDA code to access fp32 vector elements for 4 < lanes <= 8.
-        //
-        // float8 is stored as ulonglong4
-        //
-        // f8.v1 is emitted as *(float2*)(&(ul4.x)).x
-        // f8.v2 is emitted as *(float2*)(&(ul4.x)).y
-        //
         ICHECK_EQ(lanes % 2, 0)
             << "only support even lane for float type with lanes > 4";
         os << "ulonglong" << lanes / 2;
@@ -440,8 +424,6 @@ void CodeGenTileLangAscendPto::PrintType(DataType t,
     os << "bool";
     return;
   } else if (t.is_vector_bool()) {
-    // CUDA does not support bool vectors.
-    // Use ushort vectors to represent instead.
     int n = t.lanes();
     if (n <= 4) {
       os << "ushort" << n;
@@ -466,7 +448,7 @@ void CodeGenTileLangAscendPto::PrintType(DataType t,
         os << "int";
         return;
       } else {
-        LOG(FATAL) << "Cannot convert type " << t << " to CUDA type!";
+        LOG(FATAL) << "Cannot convert type " << t << " to NPU type!";
       }
     }
     case 4: {
@@ -490,7 +472,7 @@ void CodeGenTileLangAscendPto::PrintType(DataType t,
         os << "int8";
         return;
       } else {
-        LOG(FATAL) << "Cannot convert type " << t << " to CUDA type!";
+        LOG(FATAL) << "Cannot convert type " << t << " to NPU type!";
       }
     }
     case 8: {
@@ -525,15 +507,6 @@ void CodeGenTileLangAscendPto::PrintType(DataType t,
       } else if (t.lanes() <= 4) {
         os << "short" << lanes;
       } else if (t.lanes() <= 8) {
-        // Emit CUDA code to access int16 vector elements.
-        //
-        // short4 is stored as int2
-        //
-        // s4.x is emitted as *(short2*)(&(i2.x)).x
-        // s4.y is emitted as *(short2*)(&(i2.x)).y
-        // s4.z is emitted as *(short2*)(&(i2.y)).x
-        // s4.w is emitted as *(short2*)(&(i2.y)).y
-        //
         ICHECK_EQ(t.lanes() % 2, 0)
             << "only support even lane for shorT type with lanes > 4";
         os << "int" << t.lanes() / 2;
@@ -551,13 +524,6 @@ void CodeGenTileLangAscendPto::PrintType(DataType t,
       } else if (t.lanes() <= 4) {
         os << "int" << t.lanes();
       } else if (t.lanes() <= 8) {
-        // Emit CUDA code to access int32 vector elements for 4 < lanes <= 8.
-        //
-        // int8 is stored as longlong4
-        //
-        // i8.v1 is emitted as *(int2*)(&(l4.x)).x
-        // i8.v2 is emitted as *(int2*)(&(l4.x)).y
-        //
         ICHECK_EQ(lanes % 2, 0)
             << "only support even lane for int32 type with lanes > 4";
         os << "longlong" << lanes / 2;
@@ -593,7 +559,7 @@ void CodeGenTileLangAscendPto::PrintType(DataType t,
       return;
     }
   }
-  LOG(FATAL) << "Cannot convert type " << t << " to CUDA type";
+  LOG(FATAL) << "Cannot convert type " << t << " to NPU type";
 }
 
 void CodeGenTileLangAscendPto::PrintStorageScope(
