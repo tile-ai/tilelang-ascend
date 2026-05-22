@@ -348,22 +348,19 @@ echo "====================================="
 
 # 自动发现并运行 testing/python/ 目录下的所有测试文件（包括所有子目录）
 PROJECT_ROOT="$(cd .. && pwd)"
-
+# 运行 pytest 并捕获输出（使用 tee 同时显示和保存）
 if [ "$ENABLE_COVERAGE" = true ]; then
     export COVERAGE_FILE="${PROJECT_ROOT}/coverage_data/.coverage_pytest"
     # C++ coverage 时不使用 --forked，避免环境变量继承问题
     if [ "$ENABLE_CPP_COVERAGE" = true ]; then
-        pytest "${PROJECT_ROOT}/testing/python/" -v         --cov=tilelang         --cov=examples         --cov-report=term         --cov-report=json:${PROJECT_ROOT}/coverage_data/pytest_coverage.json         --cov-config=${PROJECT_ROOT}/.coveragerc
+        pytest "${PROJECT_ROOT}/testing/python/" -v         --cov=tilelang         --cov=examples         --cov-report=term         --cov-report=json:${PROJECT_ROOT}/coverage_data/pytest_coverage.json         --cov-config=${PROJECT_ROOT}/.coveragerc 2>&1 | tee pytest_output.log
     else
-        pytest --forked "${PROJECT_ROOT}/testing/python/" -v -n $MAX_JOBS         --cov=tilelang         --cov=examples         --cov-report=term         --cov-report=json:${PROJECT_ROOT}/coverage_data/pytest_coverage.json         --cov-config=${PROJECT_ROOT}/.coveragerc
+        pytest --forked "${PROJECT_ROOT}/testing/python/" -v -n $MAX_JOBS         --cov=tilelang         --cov=examples         --cov-report=term         --cov-report=json:${PROJECT_ROOT}/coverage_data/pytest_coverage.json         --cov-config=${PROJECT_ROOT}/.coveragerc 2>&1 | tee pytest_output.log
     fi
     unset COVERAGE_FILE
 else
-    pytest --forked "${PROJECT_ROOT}/testing/python/" -v -n $MAX_JOBS
+    pytest --forked "${PROJECT_ROOT}/testing/python/" -v -n $MAX_JOBS 2>&1 | tee pytest_output.log
 fi
-pytest_exit_code=$?
-# 运行 pytest 并捕获输出（使用 tee 同时显示和保存）
-pytest --forked ../testing/python/ -v -n $MAX_JOBS 2>&1 | tee pytest_output.log
 pytest_exit_code=${PIPESTATUS[0]}
 
 # 提取 pytest 统计（最后一行包含 passed/failed/xfailed）
