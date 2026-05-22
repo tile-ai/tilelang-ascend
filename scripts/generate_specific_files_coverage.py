@@ -48,6 +48,7 @@ FILES_TO_ANALYZE = [
     "tilelang/language/reduce_ascend.py",
     "tilelang/language/ascend_tile.py",
     "tilelang/jit/kernel.py",
+    "tilelang/env.py",
     "tilelang/cache/kernel_cache.py",
     "tilelang/jit/adapter/libgen.py",
     "tilelang/engine/phase.py",
