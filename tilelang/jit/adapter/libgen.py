@@ -138,6 +138,8 @@ class LibraryGenerator:
                 "--shared",
                 src.name,
             ]
+            if os.environ.get("TL_PTO_DEBUG") == "1":
+                command += ["-D_DEBUG", "--cce-enable-print"]
         command += ["-o", libpath]
 
         src.write(self.lib_code)

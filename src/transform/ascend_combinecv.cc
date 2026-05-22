@@ -171,6 +171,7 @@ private:
           {"copy_gm_to_ub", {false, "MTE2"}},
           {"copy_ub_to_gm", {true, "MTE3"}},
           {"atomic_add_ub_to_gm", {true, "MTE3"}},
+          {"atomic_add_l0c_to_gm", {true, "FIX"}},
       };
 
   std::optional<std::pair<bool, std::string>>
@@ -335,7 +336,7 @@ private:
                          Op::Get("tl.ascend_auto_wait_cross_flag"),
                          {
                              Integer(sp.sync_flag_id),
-                             StringImm(""),
+                             StringImm(sp.pipe),
                          }));
   }
 };
@@ -504,6 +505,7 @@ private:
     // once
     while (cube_loop_idx < cube_sp.parent_for_nodes.size() ||
            vec_loop_idx < vec_sp.parent_for_nodes.size()) {
+      bool cube_idx_updated = false;
       while (
           cube_loop_idx < cube_sp.parent_for_nodes.size() &&
           (cube_loop_times <= vec_loop_times ||
@@ -518,6 +520,7 @@ private:
         const ForNode *cube_loop = cube_sp.parent_for_nodes.at(cube_loop_idx);
         cube_loop_times *= GetLoopIterTimesWithSkip(cube_loop, skip_loop_ids);
         cube_loop_idx++;
+        cube_idx_updated = true;
       }
 
       if (cube_loop_times < vec_loop_times) {
@@ -530,6 +533,7 @@ private:
                      << vec_sp.ToString() << "\n";
       }
 
+      bool vec_idx_updated = false;
       while (vec_loop_idx < vec_sp.parent_for_nodes.size() &&
              (vec_loop_times <= cube_loop_times ||
               GetLoopIterTimesWithSkip(vec_sp.parent_for_nodes.at(vec_loop_idx),
@@ -543,6 +547,7 @@ private:
         const ForNode *vec_loop = vec_sp.parent_for_nodes.at(vec_loop_idx);
         vec_loop_times *= GetLoopIterTimesWithSkip(vec_loop, skip_loop_ids);
         vec_loop_idx++;
+        vec_idx_updated = true;
 
         if (vec_loop_times == last_pair_loop_times) {
           // cube_loop_times steps beyond last_pair_loop_times && vec_loop_times
@@ -559,6 +564,10 @@ private:
                      << vec_sp.ToString() << "\n"
                      << "Cube Sync Point:\n"
                      << cube_sp.ToString() << "\n";
+      }
+
+      if (!(cube_idx_updated || vec_idx_updated)) {
+        break;
       }
     }
 
@@ -779,13 +788,21 @@ private:
   bool current_proccess_switch_ = false;
   Map<Var, String> &location_map_;
   std::unordered_map<std::string, std::string> callnodeMapPos_ = {
-      {"copy_gm_to_l1", "cube"},  {"gemm_v0", "cube"},
-      {"copy_11_to_l0a", "cube"}, {"copy_11_to_l0b", "cube"},
-      {"copy_l0c_to_gm", "cube"}, {"copy_gm_to_ub", "vec"},
-      {"copy_ub_to_gm", "vec"},   {"atomic_add_ub_to_gm", "vec"},
-      {"copy_ub_to_ub", "vec"},   {"wmma.matrix_a", "cube"},
-      {"wmma.matrix_b", "cube"},  {"wmma.accumulator", "cube"},
-      {"shared.dyn", "cube"},     {"shared", "vec"}};
+      {"copy_gm_to_l1", "cube"},
+      {"gemm_v0", "cube"},
+      {"copy_l1_to_l0a", "cube"},
+      {"copy_l1_to_l0b", "cube"},
+      {"copy_l0c_to_gm", "cube"},
+      {"copy_gm_to_ub", "vec"},
+      {"copy_ub_to_gm", "vec"},
+      {"atomic_add_ub_to_gm", "vec"},
+      {"atomic_add_l0c_to_gm", "cube"},
+      {"copy_ub_to_ub", "vec"},
+      {"wmma.matrix_a", "cube"},
+      {"wmma.matrix_b", "cube"},
+      {"wmma.accumulator", "cube"},
+      {"shared.dyn", "cube"},
+      {"shared", "vec"}};
 };
 
 class CombineCV : public arith::IRMutatorWithAnalyzer {

@@ -2336,7 +2336,7 @@ def run_test_gather(M, N, block_M, block_N, dtype, target):
 
 
 @pytest.mark.parametrize("dtype", ["int16", "int32", "uint16", "uint32", "float", "float16", "bfloat16"])
-@pytest.mark.parametrize("target", ["ascendc"])
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("shape", [(128, 1024)])
 def test_gather(dtype, target, shape):
     M, N = shape
@@ -3875,7 +3875,7 @@ def run_test_sort(M, N, block_M, block_N, dtype, target):
     func = sort(M, N, block_M, block_N, dtype)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
 
-    torch_dtype = torch.float if dtype == "float" else torch.float16
+    torch_dtype = torch.float if dtype in ("float", "float32") else torch.float16
     a = torch.arange(0, M * N, dtype=torch_dtype).reshape(M, N).npu()
     b = func(a)
 
@@ -3891,8 +3891,8 @@ def run_test_sort(M, N, block_M, block_N, dtype, target):
     torch.testing.assert_close(out_indices, ref_index.float(), rtol=1e-3, atol=1e-3)
 
 
-@pytest.mark.parametrize("dtype", ["float16", "float"])
-@pytest.mark.parametrize("target", ["ascendc"])
+@pytest.mark.parametrize("dtype", ["float16", "float32"])
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("shape", [(1, 131)])
 def test_sort(dtype, target, shape):
     M, N = shape
@@ -4034,7 +4034,7 @@ def run_test_topk(M, N, K, block_M, block_N, dtype, target):
     func = topk(M, N, K, block_M, block_N, dtype)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
 
-    torch_dtype = torch.float if dtype == "float" else torch.float16
+    torch_dtype = torch.float if dtype in ("float", "float32") else torch.float16
     a = torch.arange(0, M * N, dtype=torch_dtype).reshape(M, N).npu()
     b = func(a)
 
@@ -4052,8 +4052,8 @@ def run_test_topk(M, N, K, block_M, block_N, dtype, target):
     torch.testing.assert_close(out_indices, ref_indices.float(), rtol=1e-3, atol=1e-3)
 
 
-@pytest.mark.parametrize("dtype", ["float16", "float"])
-@pytest.mark.parametrize("target", ["ascendc"])
+@pytest.mark.parametrize("dtype", ["float16", "float32"])
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("shape", [(1, 51)])
 def test_topk(dtype, target, shape):
     M, N = shape
@@ -4499,16 +4499,18 @@ def test_wholereducesum(target):
 def generate_arithmetic_progression(N, block_size, dtype="int32"):
     num_blocks = N // block_size
 
+    VEC_NUM = 2
+
     @T.prim_func
     def main(
         output: T.Tensor((N,), dtype),  # type: ignore
     ):
-        with T.Kernel(num_blocks, is_npu=True) as (cid, _):
-            start_idx = cid * block_size
+        with T.Kernel(num_blocks, is_npu=True) as (cid, vid):
+            start_idx = cid * block_size + vid * block_size // VEC_NUM
 
-            seq_ub = T.alloc_shared((block_size,), dtype)
+            seq_ub = T.alloc_shared((block_size // VEC_NUM,), dtype)
 
-            T.tile.arith_progression(seq_ub, start_idx, 1, block_size)
+            T.tile.arith_progression(seq_ub, start_idx, 1, block_size // VEC_NUM)
 
             T.copy(seq_ub, output[start_idx])
 

@@ -51,6 +51,7 @@ GetOperationConfig() {
       {"copy_l1_to_l0b", {{{0, "read"}, {1, "write"}}, "PIPE_MTE1"}},
       {"copy_ub_to_gm", {{{0, "read"}, {1, "write"}}, "PIPE_MTE3"}},
       {"atomic_add_ub_to_gm", {{{0, "read"}, {1, "write"}}, "PIPE_MTE3"}},
+      {"atomic_add_l0c_to_gm", {{{0, "read"}, {1, "write"}}, "PIPE_FIX"}},
       {"copy_ub_to_l1", {{{0, "read"}, {1, "write"}}, "PIPE_MTE3"}},
       {"copy_l0c_to_gm", {{{0, "read"}, {1, "write"}}, "PIPE_FIX"}},
       {"copy_l0c_to_l1", {{{0, "read"}, {1, "write"}}, "PIPE_FIX"}},
@@ -194,7 +195,8 @@ GetOperationConfig() {
        {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
       {"tl.ascend_sort32",
        {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
-      {"tl.ascend_createvecindex", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
+      {"tl.ascend_createvecindex", {{{1, "write"}}, "PIPE_V"}},
+      {"tl.ascend_arith_progression", {{{1, "write"}}, "PIPE_V"}},
       {"tl.ascend_sin", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
       {"tl.ascend_cos", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
       {"tl.ascend_transpose", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
@@ -353,6 +355,8 @@ const std::unordered_map<const tvm::OpNode *, int64_t> pto_tmp_arg_ops = {
     {tl::ascend_bitwise_xor().get(), 3}, {tl::ascend_round().get(), 2},
     {tl::ascend_broadcast().get(), 3},   {tl::ascend_merge_sort().get(), 3},
     {tl::ascend_select().get(), 3},      {tl::ascend_gather_mask().get(), 4},
+    {tl::ascend_sort().get(), 3},        {tl::ascend_topk().get(), 3},
+    {tl::ascend_gather().get(), 5},
 };
 
 } // namespace tl

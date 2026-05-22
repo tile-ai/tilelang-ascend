@@ -439,7 +439,8 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
   if (op->op.same_as(builtin::call_extern())) {
     std::string op_name = Downcast<StringImm>(op->args[0])->value;
     if (op_name.find("tl::ascend::copy") != std::string::npos ||
-        op_name.find("tl::ascend::atomic_add_ub_to_gm") != std::string::npos) {
+        op_name.find("tl::ascend::atomic_add_ub_to_gm") != std::string::npos ||
+        op_name.find("tl::ascend::atomic_add_l0c_to_gm") != std::string::npos) {
       CopyCodegen(op);
     } else if (op_name == "npu.fill") {
       this->PrintIndent();
@@ -2251,16 +2252,29 @@ void CodeGenTileLangAscend::CopyCodegen(const CallNode *op) {
     dst_var_id = dst_var->name_hint;
   }
 
-  auto src_offset = PrintExpr(op->args[1].as<CallNode>()->args[2]);
-  auto dst_offset = PrintExpr(op->args[2].as<CallNode>()->args[2]);
+  auto src_offset_expr = op->args[1].as<CallNode>()->args[2];
+  auto dst_offset_expr = op->args[2].as<CallNode>()->args[2];
+  // AscendLowerParallelToVector may produce Ramp offsets (e.g. vid * stride).
+  // AscendC GlobalTensor/LocalTensor operator[] expects a scalar start offset;
+  // per-element strides within a tile are handled by DataCopyExtParams / DMA.
+  if (const auto *ramp = src_offset_expr.as<RampNode>()) {
+    src_offset_expr = ramp->base;
+  }
+  if (const auto *ramp = dst_offset_expr.as<RampNode>()) {
+    dst_offset_expr = ramp->base;
+  }
+  auto src_offset = PrintExpr(src_offset_expr);
+  auto dst_offset = PrintExpr(dst_offset_expr);
 
   auto src_type = GetAccessPtrDtype(op->args[1].as<CallNode>());
   auto dst_type = GetAccessPtrDtype(op->args[2].as<CallNode>());
 
   static const std::unordered_map<std::string, int> kCopyOpExtraArgs = {
-      {"copy_l0c_to_gm", 3},      {"copy_gm_to_l1", 3}, {"copy_l1_to_l0a", 2},
-      {"copy_l1_to_l0b", 2},      {"copy_gm_to_ub", 4}, {"copy_ub_to_gm", 3},
-      {"atomic_add_ub_to_gm", 3}, {"copy_ub_to_ub", 0}};
+      {"copy_l0c_to_gm", 3},      {"copy_gm_to_l1", 3},
+      {"copy_l1_to_l0a", 2},      {"copy_l1_to_l0b", 2},
+      {"copy_gm_to_ub", 4},       {"copy_ub_to_gm", 3},
+      {"atomic_add_ub_to_gm", 3}, {"atomic_add_l0c_to_gm", 3},
+      {"copy_ub_to_ub", 0}};
 
   bool found = false;
   int extra_args = 0;
@@ -2274,12 +2288,19 @@ void CodeGenTileLangAscend::CopyCodegen(const CallNode *op) {
   }
 
   if (found) {
+    std::vector<std::string> var_names;
+    for (int i = 0; i < extra_args; ++i) {
+      auto expr = op->args[3 + i];
+      std::string var_name = PrintExpr(expr);
+      var_names.push_back(var_name);
+    }
+
     this->PrintIndent();
     this->stream << op_name << "(" << dst_var_id << "[" << dst_offset << "], "
                  << src_var_id << "[" << src_offset << "]";
 
     for (int i = 0; i < extra_args; ++i) {
-      this->stream << ", " << PrintExpr(op->args[3 + i]);
+      this->stream << ", " << var_names[i];
     }
 
     this->stream << ");\n";

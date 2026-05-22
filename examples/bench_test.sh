@@ -362,6 +362,34 @@ else
     pytest --forked "${PROJECT_ROOT}/testing/python/" -v -n $MAX_JOBS
 fi
 pytest_exit_code=$?
+# 运行 pytest 并捕获输出（使用 tee 同时显示和保存）
+pytest --forked ../testing/python/ -v -n $MAX_JOBS 2>&1 | tee pytest_output.log
+pytest_exit_code=${PIPESTATUS[0]}
+
+# 提取 pytest 统计（最后一行包含 passed/failed/xfailed）
+pytest_summary=$(grep -E "[0-9]+ (passed|failed|xfailed)" pytest_output.log | tail -1)
+
+# 解析 pytest 结果
+pytest_passed=0
+pytest_failed=0
+pytest_xfailed=0
+
+if [ -n "$pytest_summary" ]; then
+    # 提取 passed 数量
+    if echo "$pytest_summary" | grep -q "passed"; then
+        pytest_passed=$(echo "$pytest_summary" | grep -Eo "[0-9]+ passed" | grep -Eo "[0-9]+" || echo "0")
+    fi
+    
+    # 提取 failed 数量（不含 xfailed）
+    if echo "$pytest_summary" | grep -q "failed"; then
+        pytest_failed=$(echo "$pytest_summary" | grep -Eo "[0-9]+ failed" | grep -Eo "[0-9]+" || echo "0")
+    fi
+    
+    # 提取 xfailed 数量（预期失败，不计入失败）
+    if echo "$pytest_summary" | grep -q "xfailed"; then
+        pytest_xfailed=$(echo "$pytest_summary" | grep -Eo "[0-9]+ xfailed" | grep -Eo "[0-9]+" || echo "0")
+    fi
+fi
 
 # 统计 pytest 结果
 if [ $pytest_exit_code -eq 0 ]; then
@@ -418,5 +446,24 @@ if [ "$ENABLE_COVERAGE" = true ] || [ "$ENABLE_CPP_COVERAGE" = true ]; then
         echo "✓ Coverage report generated: coverage_report.md"
     fi
 fi
+# 输出合并后的结果（用于 CI workflow 解析）
+# xfailed 是预期失败的测试，在 pytest 视角下属于"成功"状态（符合预期）
+# 应计入 passed_all，而不应计入 failed_all
+total_all=$((total_scripts + pytest_passed + pytest_failed + pytest_xfailed))
+passed_all=$((passed_scripts + pytest_passed + pytest_xfailed))
+failed_all=$((failed_scripts + pytest_failed))
+
+echo -e "\n====================================="
+echo "Final Execution Summary (Bench + Pytest)"
+echo "Bench: Total: $total_scripts | Passed: $passed_scripts | Failed: $failed_scripts"
+echo "Pytest: Passed: $pytest_passed | Failed: $pytest_failed | Xfailed: $pytest_xfailed (expected failures, counted as passed)"
+echo "Total: $total_all | Passed: $passed_all | Failed: $failed_all"
+if [ $total_all -gt 0 ]; then
+    echo "Pass rate: $((passed_all * 100 / total_all))%"
+fi
+echo "====================================="
+
+# 清理临时文件
+rm -f pytest_output.log
 
 exit $pytest_exit_code
