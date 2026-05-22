@@ -276,8 +276,8 @@ GetOperationConfig() {
       {"tl.ascend_sum_experiment", {{{1, "write"}, {2, "read"}}, "PIPE_V"}},
       {"tl.ascend_datacachecleanandinvalid_experiment",
        {{{1, "write"}}, "PIPE_V"}},
-      {"tl.ascend_copy_cv_experiment", {{{0, "write"}, {1, "read"}}, "PIPE_FIX"}},
-      {"tl.ascend_copy_vc_experiment", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
+      {"tl.ascend_copy_cv_experiment", {{{0, "read"}, {1, "write"}}, "PIPE_FIX"}},
+      {"tl.ascend_copy_vc_experiment", {{{0, "read"}, {1, "write"}}, "PIPE_V"}},
   };
 
   return operation_config_;

@@ -366,7 +366,7 @@ class CopyCVMode(IntEnum):
     DualSplitN = 3
 
 
-def copy_cv_experiment(dst: tir.Buffer, src: tir.Buffer, mode: int | CopyCVMode = CopyCVMode.DualSplitM):
+def copy_cv_experiment(src: tir.Buffer, dst: tir.Buffer, mode: int | CopyCVMode = CopyCVMode.DualSplitM):
     """L0C to UB direct copy using TMOV (PTO A5 only).
 
     Args:
@@ -377,13 +377,13 @@ def copy_cv_experiment(dst: tir.Buffer, src: tir.Buffer, mode: int | CopyCVMode 
     return tir.call_intrin(
         "handle",
         tir.op.Op.get("tl.ascend_copy_cv_experiment"),
-        dst.access_ptr("w"),
         src.access_ptr("r"),
+        dst.access_ptr("w"),
         int(mode),
     )
 
 
-def copy_vc_experiment(dst: tir.Buffer, src: tir.Buffer, tmp: tir.Buffer, mode: int = 0):
+def copy_vc_experiment(src: tir.Buffer, dst: tir.Buffer, tmp: tir.Buffer, mode: int = 0):
     """UB to L1 direct copy using TINSERT with ND→NZ conversion (PTO A5 only).
 
     Args:
@@ -395,8 +395,8 @@ def copy_vc_experiment(dst: tir.Buffer, src: tir.Buffer, tmp: tir.Buffer, mode: 
     return tir.call_intrin(
         "handle",
         tir.op.Op.get("tl.ascend_copy_vc_experiment"),
-        dst.access_ptr("w"),
         src.access_ptr("r"),
+        dst.access_ptr("w"),
         tmp.access_ptr("rw"),
-        mode,
+        int(mode),
     )
