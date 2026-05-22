@@ -31,6 +31,26 @@ using ShapeInfo = CodeGenTileLangAscendPto::ShapeInfo;
 
 using BufferInfo = CodeGenTileLangAscendPto::BufferInfo;
 
+// ---------------------------------------------------------------------------
+// Hardware / platform constants
+// ---------------------------------------------------------------------------
+constexpr int kUbAlignmentBytes = 32;
+constexpr int kUbAlignmentMask = kUbAlignmentBytes - 1;
+constexpr int kVectorRepeatBytes = 256;
+constexpr int kEleNumPerC0 = 16;
+constexpr int kL0SliceSize = 128;
+constexpr int kL0CSliceElements = 256;
+constexpr int kSortBlockSize = 32;
+constexpr int kTransposeTileSize = 16;
+constexpr int kTransposeScratchAddr = 2048;
+constexpr int kA5CubeFlagOffset = 16;
+constexpr int kFftsBaseConfig = 1;
+constexpr int kFftsModeShift = 4;
+constexpr int kFftsFlagShift = 8;
+constexpr int kSelectTensorSrc = 2;
+constexpr int kSelectScalarSrc = 1;
+constexpr int kMaxDimsForStride = 5;
+
 namespace {
 
 bool ParseConstBoolArg(const PrimExpr &expr, bool default_value = true) {
@@ -54,6 +74,17 @@ std::string GetReduceMergeOpName(CodeGenTileLangAscendPto::ReduceKind kind) {
 }
 
 } // namespace
+
+// Returns floor(log2(x)). Asserts x is a power of 2.
+static int Log2AssertPowerOf2(int x) {
+  int r = 0;
+  while (x > 1) {
+    ICHECK_EQ(x & 1, 0) << "log2 expects power-of-2 input, got: " << x;
+    x >>= 1;
+    ++r;
+  }
+  return r;
+}
 
 static std::string getType(const DataType &dtype) {
   if (dtype.is_float16())
@@ -136,15 +167,14 @@ int32_t GetTypeLen(std::string type) {
 
 int GetValidShape(int shape, const std::string &dtype) {
   int dtype_len = GetTypeLen(dtype);
-  int shape_mod = shape * GetTypeLen(dtype) % 32;
+  int shape_mod = shape * dtype_len % kUbAlignmentBytes;
   if (shape_mod == 0) {
     return shape;
   }
-  return shape + (32 - shape_mod) / dtype_len;
+  return shape + (kUbAlignmentBytes - shape_mod) / dtype_len;
 }
 
 int GetRowReduceTmpCol(int valid_col, const std::string &dtype) {
-  constexpr int kVectorRepeatBytes = 256;
   int dtype_len = GetTypeLen(dtype);
   int elem_per_repeat = kVectorRepeatBytes / dtype_len;
   int tmp_col = valid_col <= elem_per_repeat
@@ -217,6 +247,16 @@ CodeGenTileLangAscendPto::ResolveUbSliceName(const ShapeInfo &info) {
     return info.ub_name;
   std::string temp = GetTempVarName(info.ub_name);
   CreateUbVariableND(temp, info);
+  return temp;
+}
+
+std::string
+CodeGenTileLangAscendPto::ResolveCubeSliceName(const ShapeInfo &info,
+                                               const std::string &tile_name) {
+  if (!info.is_slice)
+    return info.ub_name;
+  std::string temp = GetTempVarName(info.ub_name);
+  CreateCubeVariable(temp, info, tile_name);
   return temp;
 }
 
@@ -836,8 +876,6 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op,
     MmaCodegen(op);
 
   } else if (op->op.same_as(builtin::if_then_else())) {
-    // conditional that skips eval if cond evals to false
-    // std::cout<<"here"<<std::endl;
     std::string result = name_supply_->FreshName("condval");
     std::string cond = PrintExpr(op->args[0]);
     this->PrintIndent();
@@ -920,22 +958,12 @@ Array<PrimExpr> MergeShapeBySrcN(const Array<PrimExpr> &shape,
 }
 
 Array<PrimExpr> ComputeStrides(const Array<PrimExpr> &shape, PrimExpr srcN) {
-  constexpr int kMaxDims = 5;
   tvm::arith::Analyzer analyzer;
-  int count = 0;
 
-  // =====================================================================
-  // 1. Dimension Merging Logic (Shape Flattening)
-  // If srcN spans multiple inner dimensions, merge them logically
-  // =====================================================================
   Array<PrimExpr> merged_shape = MergeShapeBySrcN(shape, srcN, &analyzer);
 
-  // =====================================================================
-  // 2. Standard Stride Computation (based on merged_shape)
-  // =====================================================================
   int ndim = static_cast<int>(merged_shape.size());
-  // Ensure at least 5 outputs for safe truncation later
-  int out_dims = std::max(kMaxDims, ndim + 1);
+  int out_dims = std::max(kMaxDimsForStride, ndim + 1);
   std::vector<PrimExpr> strides_vec(out_dims, Integer(1));
 
   PrimExpr current_stride = Integer(1);
@@ -969,7 +997,8 @@ FormatStrides(CodeGenTileLangAscendPto *codegen, const Array<PrimExpr> &shape,
   // For each stride position: if dynamic (-1), also output as ctor argument
   // =====================================================================
   size_t total_strides = strides.size();
-  size_t start_idx = total_strides > 5 ? total_strides - 5 : 0;
+  size_t start_idx =
+      total_strides > kMaxDimsForStride ? total_strides - kMaxDimsForStride : 0;
 
   for (size_t i = start_idx; i < total_strides; ++i) {
     if (const auto *int_imm = strides[i].as<IntImmNode>()) {
@@ -1140,10 +1169,9 @@ void CodeGenTileLangAscendPto::CopyL1ToL0Codegen(const CallNode *call,
   int32_t tile_size = tile_row * tile_col;
 
   // zN layout: compute logical (row, col) from flat offset
-  constexpr int32_t ELE_NUM_PER_C0 = 16;
   PrimExpr inner_offset = floormod(src_info.offset, tile_size);
   PrimExpr logical_K = is_a ? floordiv(inner_offset, tile_row)
-                            : floordiv(inner_offset, ELE_NUM_PER_C0);
+                            : floordiv(inner_offset, kEleNumPerC0);
   PrimExpr index_row = is_a ? 0 : logical_K;
   PrimExpr index_col = is_a ? logical_K : 0;
 
@@ -1182,12 +1210,7 @@ void CodeGenTileLangAscendPto::CopyL1ToL0Codegen(const CallNode *call,
     src_name = src_temp_name;
   }
 
-  if (dst_shape_info.is_slice) {
-    std::string dst_temp_name = GetTempVarName(dst_shape_info.ub_name);
-    CreateCubeVariable(dst_temp_name, dst_shape_info,
-                       kAscendPtoScope + tile_name);
-    dst_name = dst_temp_name;
-  }
+  dst_name = ResolveCubeSliceName(dst_shape_info, kAscendPtoScope + tile_name);
 
   this->PrintIndent();
   this->stream << kAscendPtoScope << api_name << "<" << src_shape_info.type
@@ -1235,27 +1258,14 @@ void CodeGenTileLangAscendPto::GemmV0Codegen(const CallNode *op) {
   std::map<std::string, std::string> params =
       extractTemplateParams(template_args);
   uint32_t K = std::stoi(params["K"]);
-  uint32_t kL0Size = 128; // L0 slice size, adapted for 64K memory limit
-  uint32_t kL0split = (K + kL0Size - 1) / kL0Size; // slice count
-  uint32_t kL0Tail = K - (kL0split - 1) * kL0Size; // last block size
+  uint32_t kL0split = (K + kL0SliceSize - 1) / kL0SliceSize;
+  uint32_t kL0Tail = K - (kL0split - 1) * kL0SliceSize;
 
-  std::string a_name = a_info.ub_name;
-  std::string b_name = b_info.ub_name;
-  std::string c_name = c_info.ub_name;
-  if (a_info.is_slice) {
-    a_name = GetTempVarName(a_name);
-    CreateCubeVariable(a_name, a_info, kAscendPtoScope + "TileMatL1");
-  }
-
-  if (b_info.is_slice) {
-    b_name = GetTempVarName(b_name);
-    CreateCubeVariable(b_name, b_info, kAscendPtoScope + "TileMatL1");
-  }
-
-  if (c_info.is_slice) {
-    c_name = GetTempVarName(c_name);
-    CreateCubeVariable(c_name, c_info, "pto::TileAcc");
-  }
+  std::string a_name =
+      ResolveCubeSliceName(a_info, kAscendPtoScope + "TileMatL1");
+  std::string b_name =
+      ResolveCubeSliceName(b_info, kAscendPtoScope + "TileMatL1");
+  std::string c_name = ResolveCubeSliceName(c_info, "pto::TileAcc");
 
   this->PrintIndent();
   std::string data_type_input = params["data_type_input"];
@@ -1301,7 +1311,8 @@ void CodeGenTileLangAscendPto::HandleA5Flag(const std::string &op,
     this->PrintIndent();
     this->stream << op << "(" << "PIPE_" << pipe << ", " << flag << ");\n";
     this->PrintIndent();
-    this->stream << op << "(" << "PIPE_" << pipe << ", " << flag + 16 << ");\n";
+    this->stream << op << "(" << "PIPE_" << pipe << ", "
+                 << flag + kA5CubeFlagOffset << ");\n";
   } else if (this->current_resource_scope_ == "VEC") {
     this->PrintIndent();
     this->stream << op << "(" << "PIPE_" << pipe << ", " << flag << ");\n";
@@ -1342,7 +1353,8 @@ void CodeGenTileLangAscendPto::AutoSetCrossFlagCodegen(const CallNode *op) {
     HandleA5Flag("set_intra_block", pipe, flag);
   } else {
     auto mode = op->args[0].as<IntImmNode>()->value;
-    int config = 1 | (mode << 4) | (flag << 8);
+    int config =
+        kFftsBaseConfig | (mode << kFftsModeShift) | (flag << kFftsFlagShift);
     this->PrintIndent();
     this->stream << "ffts_cross_core_sync" << "(" << "PIPE_" << pipe << ", "
                  << config << ");\n";
@@ -1456,19 +1468,7 @@ void CodeGenTileLangAscendPto::GatherCodegen(const CallNode *op,
 
   BufferInfo dst_info = GetBufferInfo(op->args[0]);
   int elem_size = dst_info.dtype.bytes();
-
-  auto log2_int = [](int x) {
-    int r = 0;
-    while (x > 1) {
-      ICHECK_EQ(x & 1, 0) << "ascend_gather PTO lowering requires power-of-2 "
-                             "elem_size, got: "
-                          << x;
-      x >>= 1;
-      ++r;
-    }
-    return r;
-  };
-  int shift_div = log2_int(elem_size);
+  int shift_div = Log2AssertPowerOf2(elem_size);
 
   // mask /= elem_size  (byte offset -> element offset; TGATHER reads indices
   // as element indices into src_flat)
@@ -1682,7 +1682,7 @@ void CodeGenTileLangAscendPto::EmitSortAlgorithm(const CallNode *dst_call,
                                                  int32_t repeat_times,
                                                  int32_t actual_num,
                                                  int32_t top_k) {
-  int32_t aligned_count = repeat_times * 32;
+  int32_t aligned_count = repeat_times * kSortBlockSize;
 
   DataType dtype = src_call->args[0].dtype();
   bool is_half = dtype.is_float() && dtype.bits() == 16;
@@ -1730,12 +1730,15 @@ void CodeGenTileLangAscendPto::TransposeCodegen(const CallNode *op,
 
   this->stream << "{\n";
   this->PrintIndent();
-  this->stream << "  tl::ascend_pto::TileUbDataND<" << type
-               << ", 16, 16, 16, 16> tmp_ub;\n";
+  this->stream << "  tl::ascend_pto::TileUbDataND<" << type << ", "
+               << kTransposeTileSize << ", " << kTransposeTileSize << ", "
+               << kTransposeTileSize << ", " << kTransposeTileSize
+               << "> tmp_ub;\n";
   this->PrintIndent();
-  this->stream << "  pto::TASSIGN(tmp_ub, 2048);\n";
+  this->stream << "  pto::TASSIGN(tmp_ub, " << kTransposeScratchAddr << ");\n";
   this->PrintIndent();
-  this->stream << "  tl::ascend_pto::transpose<" << type << ", 16, 16>("
+  this->stream << "  tl::ascend_pto::transpose<" << type << ", "
+               << kTransposeTileSize << ", " << kTransposeTileSize << ">("
                << dst_name << ", " << src_name << ", tmp_ub);\n";
   this->PrintIndent();
   this->stream << "}\n";
@@ -2676,7 +2679,8 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
     if (auto *addr_int = target_address.as<IntImmNode>()) {
       int64_t size = op->ConstantAllocationSize() * op->dtype.bytes();
       int64_t end_addr = addr_int->value + size;
-      end_addr = ((end_addr + 31) / 32) * 32;
+      end_addr = ((end_addr + kUbAlignmentMask) / kUbAlignmentBytes) *
+                 kUbAlignmentBytes;
       if (end_addr > max_ub_addr_)
         max_ub_addr_ = end_addr;
     }
@@ -2793,10 +2797,7 @@ void CodeGenTileLangAscendPto::ProcessTilingInput(
 void CodeGenTileLangAscendPto::PrintHostFunc(
     const PrimFunc &f, const std::string &name, std::ostringstream &os,
     std::string &core, std::vector<const tir::VarNode *> &shape_vars) {
-  std::vector<std::string> tiling_args;
-  std::string tiling_func_name = name;
-  // ProcessTilingInput(os, tiling_func_name, tiling_args, shape_vars);
-
+  std::vector<std::string> tiling_args; // reserved for future tiling support
   // launch kernel
   os << "extern \"C\" __global__ AICORE void launch_kernel(";
   std::vector<std::string> arg_names;
@@ -2874,7 +2875,6 @@ void CodeGenTileLangAscendPto::PrintHostFunc(
   }
   os << ", fftsAddr);\n}\n";
   this->EndScope(func_scope);
-  std::string content = os.str();
 }
 
 void CodeGenTileLangAscendPto::AddFunction(const GlobalVar &gvar,
@@ -2898,8 +2898,6 @@ void CodeGenTileLangAscendPto::AddFunction(const GlobalVar &gvar,
   var_sequence_ = f->GetAttr<Array<Var>>("var_sequence").value_or(Array<Var>());
   ICHECK(global_symbol.defined())
       << "CodeGenC: Expect PrimFunc to have the global_symbol attribute";
-  bool no_alias = f->HasNonzeroAttr(tir::attr::kNoAlias);
-
   this->PrintFuncPrefix(stream);
   this->stream << "AICORE ";
   CodeGenC::PrintType(f->ret_type, stream);
@@ -2929,13 +2927,12 @@ void CodeGenTileLangAscendPto::AddFunction(const GlobalVar &gvar,
     if (v.dtype().is_handle()) {
       auto real_v = f->buffer_map[v]->data;
       this->para_.push_back(vid);
-      // vid = AllocVarID(real_v.get());
       this->para_.push_back(AllocVarID(real_v.get()));
       this->para_.push_back(getType(f->buffer_map[v]->dtype));
       Array<String> copy_tmp_shape = {};
       String shape_type = "static";
-      for (size_t i = 0; i < f->buffer_map[v]->shape.size(); i++) {
-        std::string shape_info = PrintExpr(f->buffer_map[v]->shape[i]);
+      for (size_t k = 0; k < f->buffer_map[v]->shape.size(); k++) {
+        std::string shape_info = PrintExpr(f->buffer_map[v]->shape[k]);
         copy_tmp_shape.push_back(shape_info);
         if (shape_info[0] < '1' || shape_info[0] > '9')
           shape_type = "dynamic";
@@ -2985,7 +2982,6 @@ void CodeGenTileLangAscendPto::AddFunction(const GlobalVar &gvar,
   this->stream << "}\n\n";
 
   PrintHostFunc(f, func_name, stream, this->core_num_, shape_vars);
-  std::string content = stream.str();
 }
 
 void CodeGenTileLangAscendPto::AutoBarrierCodegen(const CallNode *op) {
@@ -3035,15 +3031,15 @@ void CodeGenTileLangAscendPto::SelectCodegen(const CallNode *op) {
   std::string op_name;
 
   int src1_type = std::stoi(PrintExpr(op->args[4]));
-  if (src1_type == 2) {
+  if (src1_type == kSelectTensorSrc) {
     src1_name = PrintBufferOffset(op->args[5].as<CallNode>());
     op_name = "TSEL";
-  } else if (src1_type == 1) {
+  } else if (src1_type == kSelectScalarSrc) {
     src1_name = PrintExpr(op->args[5]);
     op_name = "TSELS";
   } else {
     LOG(FATAL) << "CodeGenAscendPto: Select currently only supports "
-                  "src1_type=2 (Tensor-Tensor mode). "
+                  "tensor mode (2) or scalar mode (1). "
                << "Got type=" << src1_type;
   }
 
@@ -3073,41 +3069,15 @@ void CodeGenTileLangAscendPto::MmaCodegen(const CallNode *op) {
   }
   std::string op_name = kAscendPtoScope + s;
 
-  auto a_var = op->args[1].as<CallNode>()->args[1].as<VarNode>();
-  auto b_var = op->args[2].as<CallNode>()->args[1].as<VarNode>();
-  auto c_var = op->args[3].as<CallNode>()->args[1].as<VarNode>();
+  ShapeInfo a_shape_info = GetSliceInfo(op->args[1].as<CallNode>());
+  ShapeInfo b_shape_info = GetSliceInfo(op->args[2].as<CallNode>());
+  ShapeInfo c_shape_info = GetSliceInfo(op->args[3].as<CallNode>());
 
-  BufferInfo a_info = GetBufferInfo(op->args[1]);
-  BufferInfo b_info = GetBufferInfo(op->args[2]);
-  BufferInfo c_info = GetBufferInfo(op->args[3]);
-
-  ShapeInfo a_shape_info = GetSliceInfo(a_info.access_ptr);
-  ShapeInfo b_shape_info = GetSliceInfo(b_info.access_ptr);
-  ShapeInfo c_shape_info = GetSliceInfo(c_info.access_ptr);
-
-  auto a_name = a_shape_info.ub_name;
-  auto b_name = b_shape_info.ub_name;
-  auto c_name = c_shape_info.ub_name;
-
-  if (a_shape_info.is_slice) {
-    std::string a_temp_name = GetTempVarName(a_name);
-    CreateCubeVariable(a_temp_name, a_shape_info,
-                       kAscendPtoScope + "TileMatL0A");
-    a_name = a_temp_name;
-  }
-
-  if (b_shape_info.is_slice) {
-    std::string b_temp_name = GetTempVarName(b_name);
-    CreateCubeVariable(b_temp_name, b_shape_info,
-                       kAscendPtoScope + "TileMatL0B");
-    b_name = b_temp_name;
-  }
-
-  if (c_shape_info.is_slice) {
-    std::string c_temp_name = GetTempVarName(c_name);
-    CreateCubeVariable(c_temp_name, c_shape_info, "TileAcc");
-    c_name = c_temp_name;
-  }
+  std::string a_name =
+      ResolveCubeSliceName(a_shape_info, kAscendPtoScope + "TileMatL0A");
+  std::string b_name =
+      ResolveCubeSliceName(b_shape_info, kAscendPtoScope + "TileMatL0B");
+  std::string c_name = ResolveCubeSliceName(c_shape_info, "TileAcc");
 
   this->PrintIndent();
   this->stream << op_name << "(" << a_name << ", " << b_name << ", " << c_name
