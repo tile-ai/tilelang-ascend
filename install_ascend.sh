@@ -61,7 +61,50 @@ else
     echo "Python requirements installed successfully."
 fi
 
-# Step 2: Define LLVM version and architecture
+# Step 2: Check and install lcov if coverage enabled
+if $ENABLE_COVERAGE; then
+    echo "Checking lcov installation for C++ coverage..."
+    
+    # Check if lcov is installed
+    if ! command -v lcov &> /dev/null; then
+        echo "lcov not found, installing..."
+        
+        # Detect package manager
+        if command -v apt-get &> /dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -y lcov
+        elif command -v yum &> /dev/null; then
+            sudo yum install -y lcov
+        elif command -v dnf &> /dev/null; then
+            sudo dnf install -y lcov
+        elif command -v brew &> /dev/null; then
+            brew install lcov
+        else
+            echo "[WARNING] Cannot install lcov automatically. Please install manually."
+            echo "  Ubuntu/Debian: sudo apt install lcov"
+            echo "  CentOS/RHEL:   sudo yum install lcov"
+            echo "  macOS:         brew install lcov"
+        fi
+        
+        # Verify installation
+        if command -v lcov &> /dev/null; then
+            echo "lcov installed successfully: $(lcov --version | head -1)"
+        else
+            echo "[WARNING] lcov installation failed. C++ coverage may not work."
+        fi
+    else
+        echo "lcov already installed: $(lcov --version | head -1)"
+    fi
+    
+    # Also check gcov (usually comes with GCC)
+    if ! command -v gcov &> /dev/null; then
+        echo "[WARNING] gcov not found. Please ensure GCC is installed."
+    else
+        echo "gcov available: $(gcov --version | head -1)"
+    fi
+fi
+
+# Step 3: Define LLVM version and architecture
 if $USE_LLVM; then
     LLVM_VERSION="10.0.1"
     IS_AARCH64=false
@@ -125,7 +168,7 @@ if $USE_LLVM; then
     echo "LLVM config path determined as: $LLVM_CONFIG_PATH"
 fi
 
-# Step 9: Clone and build TVM
+# Step 10: Clone and build TVM
 echo "Cloning TVM repository and initializing submodules..."
 # clone and build tvm
 git submodule update --init --recursive
