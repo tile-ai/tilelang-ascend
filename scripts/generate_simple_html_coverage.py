@@ -21,7 +21,8 @@ def generate_simple_html(coverage_json: Path, file_path: str, output_dir: Path):
     """Generate a simple HTML coverage report for a single file"""
 
     # 1. Read coverage data from coverage.json
-    data = json.load(open(coverage_json))
+    with open(coverage_json) as f:
+        data = json.load(f)
 
     if file_path not in data["files"]:
         print(f"❌ File not found in coverage data: {file_path}")
@@ -99,7 +100,8 @@ def generate_simple_html(coverage_json: Path, file_path: str, output_dir: Path):
 def generate_all_below_threshold(coverage_json: Path, output_dir: Path, threshold: float = 80.0):
     """Generate HTML for all files below coverage threshold"""
 
-    data = json.load(open(coverage_json))
+    with open(coverage_json) as f:
+        data = json.load(f)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     count = 0
