@@ -225,7 +225,7 @@ init successful!
     print("Max diff:", max_diff)
 
     assert torch.allclose(O_tl, O_ref, atol=1e-1, rtol=1e-1), f"Output mismatch: {max_diff}"
-    print("Tests passed!")
+    print("Test Passed!")
 
 
 if __name__ == "__main__":

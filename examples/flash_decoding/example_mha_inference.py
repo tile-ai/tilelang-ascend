@@ -29,6 +29,7 @@ pass_configs = {
     tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_SYNC: True,
 }
 
+
 @tilelang.jit(out_idx=[3], workspace_idx=[4, 5, 6], pass_configs=pass_configs)
 def flashattn(batch, heads, seqlen_q, seqlen_kv, dim, block_M=128, block_N=128):
     dtype = "float16"

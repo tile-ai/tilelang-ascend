@@ -20,3 +20,4 @@ attrs
 scipy 
 tornado
 torch-npu
+einops
