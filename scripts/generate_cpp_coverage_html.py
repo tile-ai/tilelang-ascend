@@ -113,9 +113,7 @@ def generate_cpp_html_report(source_file: str, line_exec: dict, output_file: Pat
 
         # 转义 HTML（避免显示原始 coverage.info 文本）
         escaped = line.rstrip().replace("<", "&lt;").replace(">", "&gt;")
-        html.append(
-            f'<span class="line {css}"><span class="lineno">{i}</span><span class="count">{count:>8}</span>{escaped}</span>'
-        )
+        html.append(f'<span class="line {css}"><span class="lineno">{i}</span><span class="count">{count:>8}</span>{escaped}</span>')
 
     html.extend(["</pre>", "</body>", "</html>"])
 
