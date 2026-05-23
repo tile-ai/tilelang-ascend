@@ -1,4 +1,3 @@
-
 from typing import Literal
 import argparse
 
@@ -11,17 +10,21 @@ from torch import nn
 
 tl.cache.clear_cache()
 
+
 @tl.jit(
     out_idx=[-2, -1],
     pass_configs={
         tl.PassConfigKey.TIR_MERGE_STATIC_SMEM: True,
         tl.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
-    }
+    },
 )
 def cross_entropy(
-    N:int, C:int, block_N:int, block_C:int,
+    N: int,
+    C: int,
+    block_N: int,
+    block_C: int,
     x_dtype: Literal["float16", "bfloat16", "float32"] = "float16",
-    y_dtype: Literal["int32", "int64"] = "int32"
+    y_dtype: Literal["int32", "int64"] = "int32",
 ):
 
     VEC_NUM = 2
@@ -48,9 +51,9 @@ def cross_entropy(
 
     @T.prim_func
     def main(
-        x: T.Tensor([N, C], x_dtype),         # type: ignore
-        y: T.Tensor([N], y_dtype),            # type: ignore
-        loss: T.Tensor([N], x_dtype),         # type: ignore
+        x: T.Tensor([N, C], x_dtype),  # type: ignore
+        y: T.Tensor([N], y_dtype),  # type: ignore
+        loss: T.Tensor([N], x_dtype),  # type: ignore
         log_prob: T.Tensor([N, C], x_dtype),  # type: ignore
     ):
         with T.Kernel(n_num, is_npu=True) as (cid, vid):
@@ -67,6 +70,8 @@ def cross_entropy(
             y_ub = T.alloc_ub([block_N_2], y_dtype)
             l_n_32 = T.alloc_ub([block_N_2], CAL_DTYPE)
             l_n = T.alloc_ub([block_N_2], x_dtype)
+
+            offset_1d = T.alloc_ub([block_N_2], CAL_DTYPE)
 
             with T.Scope("V"):
                 T.tile.fill(prev_max, -T.infinity(CAL_DTYPE))
@@ -91,13 +96,15 @@ def cross_entropy(
 
                 T.copy(y[bn * block_N_2], y_ub)
                 T.tile.ln(prev_sum, prev_sum)  # log(sum e^{x_c - x_max})
+                # Precompute offset = max + log(sum) into buffer
+                T.tile.add(offset_1d, prev_max, prev_sum)
                 # log(e^{x_c - x_max} / sum e^{x_c - x_max}) = x_c - x_max - log(sum e^{x_c - x_max})
                 for bc in T.serial(c_num):
                     T.copy(x[bn * block_N_2, bc * block_C], x_ub)
                     cast_or_copy(x_32, x_ub, CAST_MODE_LOW2HIGH, block_N_2 * block_C)
 
                     for n_idx in T.serial(block_N_2):
-                        T.tile.sub(x_32[n_idx, :], x_32[n_idx, :], prev_max[n_idx] + prev_sum[n_idx])  # x_c - (x_max + log(sum e^{x_c - x_max}))
+                        T.tile.sub(x_32[n_idx, :], x_32[n_idx, :], offset_1d[n_idx])  # x_c - (x_max + log(sum e^{x_c - x_max}))
 
                     cast_or_copy(x_ub, x_32, CAST_MODE_HIGH2LOW, block_N_2 * block_C)
                     T.copy(x_ub, log_prob[bn * block_N_2, bc * block_C])
@@ -112,22 +119,29 @@ def cross_entropy(
 
     return main
 
+
 def ref_program(x, y):
     cross_entropy_loss = nn.CrossEntropyLoss(reduction="none")
     loss = cross_entropy_loss(x, y)
     log_prob = nn.functional.log_softmax(x, dim=-1)
     return loss, log_prob
 
+
 def ref_program_npu(x, y):
     import torch_npu
+
     loss, log_prob, _, _ = torch_npu.npu_cross_entropy_loss(x, y, reduction="none")
     return loss, log_prob
 
 
-def check_case(N:int, C:int, block_N: int = 128, block_C: int = 128, x_dtype="float16", y_dtype="int32"):
+def check_case(N: int, C: int, block_N: int = 128, block_C: int = 128, x_dtype="float16", y_dtype="int32"):
     torch_dtype_map = {
-        "float16": torch.half, "float32": torch.float32, "float": torch.float32, "bfloat16": torch.bfloat16,
-        "int32": torch.int32, "int64": torch.int64
+        "float16": torch.half,
+        "float32": torch.float32,
+        "float": torch.float32,
+        "bfloat16": torch.bfloat16,
+        "int32": torch.int32,
+        "int64": torch.int64,
     }
     x = torch.randn(N, C).to(torch_dtype_map[x_dtype]).npu()
     y = torch.randint(0, C, (N,)).to(torch_dtype_map[y_dtype]).npu()
@@ -139,6 +153,7 @@ def check_case(N:int, C:int, block_N: int = 128, block_C: int = 128, x_dtype="fl
 
     torch.testing.assert_close(loss, ref_loss, rtol=1e-2, atol=1e-2)
     torch.testing.assert_close(log_prob, ref_log_prob, rtol=1e-2, atol=1e-2)
+    print(f"Test passed for N={N}, C={C}, block_N={block_N}, block_C={block_C}, x_dtype={x_dtype}, y_dtype={y_dtype}!")
 
 
 def main(custom_args=None):
@@ -159,6 +174,7 @@ def main(custom_args=None):
 
     print("cross_entropy_loss example passed!")
     print("Kernel Output Match!")
+
 
 if __name__ == "__main__":
     main()

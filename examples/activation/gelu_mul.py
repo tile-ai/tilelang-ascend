@@ -10,28 +10,24 @@ pass_configs = {
     tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
 }
 
+
 @tilelang.jit(out_idx=[1], pass_configs=pass_configs)
 def gelu_mul(M, N, block_M, block_N, dtype="float"):
     m_num = T.ceildiv(M, block_M)
-    # The `gelu_mul` operator splits the input tensor into two tensors, x1 and x2, based on the last dimension. 
+    # The `gelu_mul` operator splits the input tensor into two tensors, x1 and x2, based on the last dimension.
     # It performs a GELU operation on x1 and multiplies the result by x2. Therefore, the kernel splitting is only relative to the dimension of x1.
     n_num = T.ceildiv(N // 2, block_N)
-    
+
     VEC_NUM = 2
 
-
     @T.prim_func
-    def main(
-            A: T.Tensor((M, N), dtype),
-            B: T.Tensor((M, N // 2), dtype)
-    ):
+    def main(A: T.Tensor((M, N), dtype), B: T.Tensor((M, N // 2), dtype)):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
             by = cid % n_num
             a1_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
             a2_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
             b_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
-            T.printf("-----outer cid:%d-------------vid:%d--------------------------------------\n", cid, vid)
             temp_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
 
             ## [In vector]
@@ -75,7 +71,7 @@ for M, N, block_M, block_N in test_configs:
     print("Init successful!")
     a = torch.randn(M, N, dtype=torch.float).npu()
     b = func(a)
-    gelu = nn.GELU(approximate='tanh')
+    gelu = nn.GELU(approximate="tanh")
     a1, a2 = torch.split(a, N // 2, dim=1)
     ref_b = gelu(a1) * a2
     torch.testing.assert_close(b.cpu(), ref_b.cpu(), rtol=1e-2, atol=1e-2)
