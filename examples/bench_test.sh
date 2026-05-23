@@ -30,12 +30,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 # ================= 全局环境变量设置 =================
-# TILELANG_LIBRARY_PATH 需要在所有操作前设置，确保子进程继承
-if [ "$ENABLE_CPP_COVERAGE" = true ]; then
-    PROJECT_ROOT="$(cd .. && pwd)"
-    export TILELANG_LIBRARY_PATH="${PROJECT_ROOT}/build"
-    echo "TILELANG_LIBRARY_PATH set to: ${TILELANG_LIBRARY_PATH}"
-fi
+PROJECT_ROOT="$(cd .. && pwd)"
 
 # 解析 TEST_DIRS 为数组
 if [ -n "$TEST_DIRS" ]; then
@@ -70,22 +65,11 @@ if [ "$ENABLE_COVERAGE" = true ] || [ "$ENABLE_CPP_COVERAGE" = true ]; then
     echo "====================================="
     echo "Cleaning old coverage data..."
     echo "====================================="
-    
-    PROJECT_ROOT="$(cd .. && pwd)"
-    
+      
     # 1. 清除 Python coverage 数据
     echo "Removing Python coverage files..."
     rm -rf "${PROJECT_ROOT}/coverage_data/.coverage*" 2>/dev/null || true
     rm -f "${PROJECT_ROOT}/coverage_data/*.json" 2>/dev/null || true
-    
-    # 清除 examples 子目录的 coverage 文件（可能遗漏）
-    find "${PROJECT_ROOT}/examples" -name ".coverage*" -type f -delete 2>/dev/null || true
-    
-    # 清除 testing/python 目录的 coverage 文件
-    find "${PROJECT_ROOT}/testing/python" -name ".coverage*" -type f -delete 2>/dev/null || true
-    
-    # 清除项目根目录的 coverage 文件
-    rm -f "${PROJECT_ROOT}/.coverage" "${PROJECT_ROOT}/.coverage.*" 2>/dev/null || true
     
     echo "  ✓ Python coverage files cleaned"
     
@@ -105,8 +89,7 @@ if [ "$ENABLE_COVERAGE" = true ] || [ "$ENABLE_CPP_COVERAGE" = true ]; then
     # 3. 清除旧的报告
     echo "Removing old coverage reports..."
     rm -f "${PROJECT_ROOT}/coverage_report.md" 2>/dev/null || true
-    rm -rf "${PROJECT_ROOT}/coverage_reports/htmlcov" 2>/dev/null || true
-    rm -rf "${PROJECT_ROOT}/coverage_reports/cpp_html" 2>/dev/null || true
+    rm -rf "${PROJECT_ROOT}/coverage_reports" 2>/dev/null || true
     
     echo "  ✓ Old reports cleaned"
     
@@ -121,9 +104,6 @@ if [ "$ENABLE_COVERAGE" = true ] || [ "$ENABLE_CPP_COVERAGE" = true ]; then
 fi
 echo "Starting parallel unified test execution (Live Output)..."
 echo "====================================="
-
-# 定义 PROJECT_ROOT 用于 coverage 运行
-PROJECT_ROOT="$(cd .. && pwd)"
 
 total_scripts=0
 passed_scripts=0
@@ -347,11 +327,10 @@ echo "Running pytest tests"
 echo "====================================="
 
 # 自动发现并运行 testing/python/ 目录下的所有测试文件（包括所有子目录）
-PROJECT_ROOT="$(cd .. && pwd)"
 # 运行 pytest 并捕获输出（使用 tee 同时显示和保存）
 if [ "$ENABLE_COVERAGE" = true ]; then
     export COVERAGE_FILE="${PROJECT_ROOT}/coverage_data/.coverage_pytest"
-    # C++ coverage 时不使用 --forked，避免环境变量继承问题
+    # C++ coverage 时不使用 --forked，避免多进程并发写入 .gcda 文件冲突
     if [ "$ENABLE_CPP_COVERAGE" = true ]; then
         pytest "${PROJECT_ROOT}/testing/python/" -v         --cov=tilelang         --cov=examples         --cov-report=term         --cov-report=json:${PROJECT_ROOT}/coverage_data/pytest_coverage.json         --cov-config=${PROJECT_ROOT}/.coveragerc 2>&1 | tee pytest_output.log
     else
@@ -405,7 +384,6 @@ if [ "$ENABLE_COVERAGE" = true ] || [ "$ENABLE_CPP_COVERAGE" = true ]; then
     echo "Collecting Coverage Data"
     echo "====================================="
     
-    PROJECT_ROOT="$(cd .. && pwd)"
     mkdir -p "${PROJECT_ROOT}/coverage_data" "${PROJECT_ROOT}/coverage_reports"
     
     # Python coverage

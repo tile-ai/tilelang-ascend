@@ -20,3 +20,5 @@ attrs
 scipy 
 tornado
 torch-npu
+pytest-cov>=4.0
+coverage>=7.0
