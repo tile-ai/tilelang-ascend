@@ -29,7 +29,6 @@ def cross_entropy(
 
     VEC_NUM = 2
     CAL_DTYPE = "float32"
-    TEMP_DTYPE = "uint8"
     CAST_MODE_LOW2HIGH = "CAST_NONE"
     CAST_MODE_HIGH2LOW = "CAST_RINT"
 
@@ -110,7 +109,7 @@ def cross_entropy(
                     T.copy(x_ub, log_prob[bn * block_N_2, bc * block_C])
 
                     for n_idx in T.serial(block_N_2):
-                        if 0 <= y_ub[n_idx] and y_ub[n_idx] < block_C:
+                        if y_ub[n_idx] >= 0 and y_ub[n_idx] < block_C:
                             l_n_32[n_idx] = -x_32[n_idx, y_ub[n_idx]]  # -(x_c - x_max - log(sum e^{x_c - x_max}))
                     T.tile.sub(y_ub, y_ub, block_C)
 
