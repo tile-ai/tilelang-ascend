@@ -88,7 +88,7 @@ if [ "$ENABLE_COVERAGE" = true ] || [ "$ENABLE_CPP_COVERAGE" = true ]; then
     
     # 3. 清除旧的报告
     echo "Removing old coverage reports..."
-    rm -f "${PROJECT_ROOT}/coverage_report.md" 2>/dev/null || true
+    rm -f "${PROJECT_ROOT}/core_files_coverage_report.md" 2>/dev/null || true
     rm -rf "${PROJECT_ROOT}/coverage_reports" 2>/dev/null || true
     
     echo "  ✓ Old reports cleaned"
@@ -416,9 +416,9 @@ if [ "$ENABLE_COVERAGE" = true ] || [ "$ENABLE_CPP_COVERAGE" = true ]; then
     fi
     
     # Generate report
-    if [ -f "${PROJECT_ROOT}/scripts/generate_coverage_report.py" ]; then
-        python "${PROJECT_ROOT}/scripts/generate_coverage_report.py"
-        echo "✓ Coverage report generated: coverage_report.md"
+    if [ -f "${PROJECT_ROOT}/scripts/generate_coverage_stats_report.py" ]; then
+        python "${PROJECT_ROOT}/scripts/generate_coverage_stats_report.py"
+        echo "✓ Coverage report generated"
     fi
 fi
 # 输出合并后的结果（用于 CI workflow 解析）

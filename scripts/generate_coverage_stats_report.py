@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-Generate coverage report for specific files or all files
+Generate coverage stats report for core files or all files
 
 Usage:
-    python3 scripts/generate_specific_files_coverage.py          # 默认统计 FILES_TO_ANALYZE 中的核心文件
-    python3 scripts/generate_specific_files_coverage.py all      # 统计src/中所有.cc文件和tilelang/中所有.py文件
+    python3 scripts/generate_coverage_stats_report.py          # 默认统计 FILES_TO_ANALYZE 中的核心文件
+    python3 scripts/generate_coverage_stats_report.py all      # 统计src/中所有.cc文件和tilelang/中所有.py文件
 """
 
 import argparse
@@ -332,10 +332,10 @@ def main():
     coverage_info = project_root / "coverage_data" / "coverage.info"
 
     if all_mode:
-        output_path = project_root / "全部文件覆盖率统计.md"
+        output_path = project_root / "all_files_coverage_report.md"
         title = "全部文件覆盖率统计报告"
     else:
-        output_path = project_root / "核心文件覆盖率统计.md"
+        output_path = project_root / "core_files_coverage_report.md"
         title = "核心文件覆盖率统计报告"
 
     mode_desc = "所有文件" if all_mode else "核心文件"
