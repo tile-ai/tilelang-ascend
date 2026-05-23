@@ -1,6 +1,6 @@
 [run]
 branch = True
-source = tilelang, examples
+source = tilelang
 omit = 
     */3rdparty/*
     */__pycache__/*

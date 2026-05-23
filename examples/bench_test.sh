@@ -332,9 +332,9 @@ if [ "$ENABLE_COVERAGE" = true ]; then
     export COVERAGE_FILE="${PROJECT_ROOT}/coverage_data/.coverage_pytest"
     # C++ coverage 时不使用 --forked，避免多进程并发写入 .gcda 文件冲突
     if [ "$ENABLE_CPP_COVERAGE" = true ]; then
-        pytest "${PROJECT_ROOT}/testing/python/" -v         --cov=tilelang         --cov=examples         --cov-report=term         --cov-report=json:${PROJECT_ROOT}/coverage_data/pytest_coverage.json         --cov-config=${PROJECT_ROOT}/.coveragerc 2>&1 | tee pytest_output.log
+        pytest "${PROJECT_ROOT}/testing/python/" -v         --cov=tilelang         --cov-report=term         --cov-report=json:${PROJECT_ROOT}/coverage_data/pytest_coverage.json         --cov-config=${PROJECT_ROOT}/.coveragerc 2>&1 | tee pytest_output.log
     else
-        pytest --forked "${PROJECT_ROOT}/testing/python/" -v -n $MAX_JOBS         --cov=tilelang         --cov=examples         --cov-report=term         --cov-report=json:${PROJECT_ROOT}/coverage_data/pytest_coverage.json         --cov-config=${PROJECT_ROOT}/.coveragerc 2>&1 | tee pytest_output.log
+        pytest --forked "${PROJECT_ROOT}/testing/python/" -v -n $MAX_JOBS         --cov=tilelang         --cov-report=term         --cov-report=json:${PROJECT_ROOT}/coverage_data/pytest_coverage.json         --cov-config=${PROJECT_ROOT}/.coveragerc 2>&1 | tee pytest_output.log
     fi
     unset COVERAGE_FILE
 else
@@ -396,7 +396,7 @@ if [ "$ENABLE_COVERAGE" = true ] || [ "$ENABLE_CPP_COVERAGE" = true ]; then
             cd "${PROJECT_ROOT}"
             export COVERAGE_FILE="${PROJECT_ROOT}/coverage_data/.coverage"
             coverage combine --keep $coverage_files 2>&1 || true
-            coverage json -o "${PROJECT_ROOT}/coverage_data/coverage.json" --include=tilelang/*,examples/* 2>&1 || true
+            coverage json -o "${PROJECT_ROOT}/coverage_data/coverage.json" --include=tilelang/* 2>&1 || true
             unset COVERAGE_FILE
             cd "${PROJECT_ROOT}/examples"
             echo "✓ Python coverage collected"
