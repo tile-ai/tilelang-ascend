@@ -147,6 +147,8 @@ private:
 
   void GatherbCodegen(const CallNode *op, const std::string &op_name);
 
+  void GatherCodegen(const CallNode *op, const std::string &op_name);
+
   void GatherMaskCodegen(const CallNode *op, const std::string &op_name);
 
   void PowCodegen(const CallNode *op);
@@ -212,6 +214,11 @@ private:
                           const ShapeInfo &shape_info,
                           const std::string &tile_name);
   ShapeInfo GetSliceInfo(const CallNode *op);
+
+  std::string ResolveUbSliceName(const ShapeInfo &info);
+
+  std::string ResolveCubeSliceName(const ShapeInfo &info,
+                                   const std::string &tile_name);
 
   ReduceOpInfo ParseReduceOpInfo(const std::string &op_name);
   std::string GetReduceOpName(ReduceKind kind, ReduceDirection direction);

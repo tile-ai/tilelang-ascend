@@ -651,9 +651,9 @@ AICORE PTO_INLINE void TSILU(TileUbDataND<T, row, col, row, col> &dst,
                              TileUbDataND<T, row, col, row, col> &src,
                              TileUbDataND<T, row, col, row, col> &tmp) {
   TMOV(tmp, src);
-  pipe_barrier(PIPE_V);
+  TL_PIPE_V_BARRIER();
   TSIGMOID(dst, src);
-  pipe_barrier(PIPE_V);
+  TL_PIPE_V_BARRIER();
   TMUL(dst, tmp, dst);
 }
 
@@ -663,7 +663,7 @@ AICORE PTO_INLINE void MulAddDst(TileUbDataND<T, row, col, row, col> &dst,
                                  TileUbDataND<T, row, col, row, col> &src1,
                                  TileUbDataND<T, row, col, row, col> &tmp) {
   TMUL(tmp, src0, src1);
-  pipe_barrier(PIPE_V);
+  TL_PIPE_V_BARRIER();
   TADD(dst, dst, tmp);
 }
 
