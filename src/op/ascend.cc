@@ -1511,7 +1511,7 @@ TIR_DEFINE_TL_BUILTIN(ascend_copy_cv_experiment)
                                Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_copy_vc_experiment)
-    .set_num_inputs(4)
+    .set_num_inputs(6)
     .set_attr<TCallEffectKind>("TCallEffectKind",
                                Integer(CallEffectKind::kOpaque));
 } // namespace tl
