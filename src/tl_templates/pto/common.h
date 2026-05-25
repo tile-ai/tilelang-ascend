@@ -1474,8 +1474,9 @@ template <typename T, int DstRows, int DstCols, int SrcRows, int SrcCols,
 AICORE PTO_INLINE void copy_cv_experiment(
     TileUbDataND<T, DstRows, DstCols, DstRows, DstCols> &dst_ub,
     pto::TileAcc<T, SrcRows, SrcCols, SrcRows, SrcCols> &src_l0c) {
-  pto::TMOV<decltype(dst_ub), decltype(src_l0c),
-            static_cast<pto::AccToVecMode>(mode)>(dst_ub, src_l0c);
+  using DstT = TileUbDataND<T, DstRows, DstCols, DstRows, DstCols>;
+  using SrcT = pto::TileAcc<T, SrcRows, SrcCols, SrcRows, SrcCols>;
+  pto::TMOV<DstT, SrcT, static_cast<pto::AccToVecMode>(mode)>(dst_ub, src_l0c);
 }
 #endif
 
