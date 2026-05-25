@@ -331,10 +331,11 @@ echo "====================================="
 if [ "$ENABLE_COVERAGE" = true ]; then
     export COVERAGE_FILE="${PROJECT_ROOT}/coverage_data/.coverage_pytest"
     # C++ coverage 时不使用 --forked，避免多进程并发写入 .gcda 文件冲突
+    COV_ARGS="--cov=tilelang --cov-report=term --cov-report=json:${PROJECT_ROOT}/coverage_data/pytest_coverage.json --cov-config=${PROJECT_ROOT}/.coveragerc"
     if [ "$ENABLE_CPP_COVERAGE" = true ]; then
-        pytest "${PROJECT_ROOT}/testing/python/" -v         --cov=tilelang         --cov-report=term         --cov-report=json:${PROJECT_ROOT}/coverage_data/pytest_coverage.json         --cov-config=${PROJECT_ROOT}/.coveragerc 2>&1 | tee pytest_output.log
+        pytest "${PROJECT_ROOT}/testing/python/" -v $COV_ARGS 2>&1 | tee pytest_output.log
     else
-        pytest --forked "${PROJECT_ROOT}/testing/python/" -v -n $MAX_JOBS         --cov=tilelang         --cov-report=term         --cov-report=json:${PROJECT_ROOT}/coverage_data/pytest_coverage.json         --cov-config=${PROJECT_ROOT}/.coveragerc 2>&1 | tee pytest_output.log
+        pytest --forked "${PROJECT_ROOT}/testing/python/" -v -n $MAX_JOBS $COV_ARGS 2>&1 | tee pytest_output.log
     fi
     unset COVERAGE_FILE
 else
