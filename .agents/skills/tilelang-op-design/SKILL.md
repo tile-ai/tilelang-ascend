@@ -35,7 +35,7 @@ description: "根据算子需求生成 TileLang-Ascend 算子设计文档（desi
 | **迁移算子路径** ⭐ | 原算子文件路径（迁移时必需），用于获取 golden 实现 |
 | **输出形状** ⭐ | 原算子输出 shape（迁移时必需），如 `(N, M)` 或 `(M, N)` |
 
-**迁移算子时必须提供原算子路径和输出形状**，否则无法证明迁移正确性。详见 [tilelang-op-generate/references/pr-ready-guide.md §1](../tilelang-op-generate/references/pr-ready-guide.md)。
+**迁移算子时必须提供原算子路径和输出形状**，否则无法证明迁移正确性。Golden 实现一致性要求详见 [tilelang-op-generate SKILL.md §8 Checklist #9-#10](../tilelang-op-generate/SKILL.md)。
 
 **提问规则（必须严格遵守）**：
 1. **每次只询问一个字段**：使用 `question` 工具时，`questions` 数组中只包含一个元素

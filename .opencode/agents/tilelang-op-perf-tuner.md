@@ -94,6 +94,7 @@ tools:
 - [ ] 读取当前 `example_{op}.py`（含 kernel + golden + test 用例）。
 - [ ] 记录当前性能基线（按基线记录要求），写入 `perf_tuning/baseline_iter{N}.json`。
 - [ ] 在本轮修改前备份当前 `example_{op}.py` 到 `perf_tuning/{op}_impl_iter{N}_before.py` 作为回滚基线。
+- [ ] **对照** [tilelang-perf-optimization/references/performance-antipatterns.md](../../.agents/skills/tilelang-perf-optimization/references/performance-antipatterns.md) 检查当前实现是否存在性能反模式；若存在但**有意保留**，须在 `perf_tuning/perf_log.md` 写明保留原因。
 - [ ] 调用 `tilelang-perf-optimization` 获取瓶颈分析与优化方案。
 - [ ] 将候选实现写回 `example_{op}.py`。
 - [ ] 执行 `source set_env.sh && python examples/{op}/example_{op}.py` 复验精度。

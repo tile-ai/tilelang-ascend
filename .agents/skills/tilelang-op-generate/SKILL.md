@@ -168,18 +168,16 @@ python examples/{op}/example_{op}.py
 
 ### 步骤 8：上库前检查清单
 
-运行通过后，必须按 §8 Checklist 检查所有项目。重点注意：
+运行通过后，必须按 §8 Checklist 检查所有项目。**最容易踩坑的 4 项重点提醒**：
 
-| # | 关键项 | 说明 |
-|---|--------|------|
-| 1 | **Golden 实现一致** | 迁移算子必须使用原算子的 golden 实现 |
-| 2 | **tilelang.disable_cache()** | 放在 `__main__` 下方或 `main()` 内部 |
-| 3 | **最后一行输出** | `"Test Passed!"` 或 `"Kernel Output Match!"` |
-| 4 | **代码格式** | `ruff check` + `ruff format --check` |
+| 关键项 | 说明 | §8 编号 |
+|--------|------|---------|
+| **Golden 实现一致** | 迁移算子必须使用原算子的 golden 实现 | #9 |
+| **tilelang.disable_cache()** | 放在 `__main__` 下方或 `main()` 内部 | #11 |
+| **最后一行输出** | `"Test Passed!"` 或 `"Kernel Output Match!"` | #16 |
+| **代码格式** | `ruff check` + `ruff format --check` 通过 | #18 |
 
-详见：
-- [pr-ready-guide.md](references/pr-ready-guide.md) - 上库前收尾工作完整指南
-- §8 Checklist - 完整检查清单
+完整 22 项检查清单见下文 §8。
 
 ## 4. 关键编码规范
 
@@ -387,21 +385,21 @@ PASS_CONFIGS = {
 
 | # | 检查项 | 说明 |
 |---|--------|------|
-| 9 | **Golden 实现一致** | 迁移算子必须使用原算子的 golden 实现（详见 [pr-ready-guide.md](references/pr-ready-guide.md) §1） |
+| 9 | **Golden 实现一致** | 迁移算子必须使用原算子的 golden 实现 |
 | 10 | **输出形状匹配** | 检查是否需要 transpose 来匹配原算子输出 shape |
 
-### 上库前收尾检查（详见 [pr-ready-guide.md](references/pr-ready-guide.md)）
+### 上库前收尾检查
 
 | # | 检查项 | 方法 |
 |---|--------|------|
-| 11 | **tilelang.disable_cache()** | 放在 `__main__` 下方或 `main()` 内部 |
-| 12 | **注释转英文** | 人工检查所有注释 |
-| 13 | **`# type: ignore`** | 添加到所有 `T.Tensor` 参数定义 |
-| 14 | **移除 try-catch** | 测试代码中不应有异常捕获 |
-| 15 | **每组测试提示** | `print(f"Test passed: M={M}, N={N}, K={K}")` |
-| 16 | **最终输出格式** | `"Test Passed!"` 或 `"Kernel Output Match!"` |
-| 17 | **参数处理灵活** | 支持自定义参数 + 默认多组测试 |
-| 18 | **代码格式检查** | `ruff check` + `ruff format --check` 通过 |
+| 11 | **tilelang.disable_cache()** | 放在 `__main__` 下方或 `main()` 内部，避免编译缓存影响测试。**禁止**放在文件顶部全局调用、或用 `cache.clear_cache()`（会影响其他算子） |
+| 12 | **注释转英文** | 人工检查所有注释，移除调试期临时中文注释 |
+| 13 | **`# type: ignore`** | `T.Tensor` 参数定义后追加，避免 Pylance 报错 |
+| 14 | **移除 try-catch** | 测试代码中不应有异常捕获，fail fast 更利于暴露问题 |
+| 15 | **每组测试提示** | 每个用例打印 `print(f"Test passed: M={M}, N={N}, K={K}")`，避免看似卡住 |
+| 16 | **最终输出格式** | 最后一行 `print("Test Passed!")` 或 `print("Kernel Output Match!")`，bench_test.sh 据此判定 |
+| 17 | **参数处理灵活** | `argparse` 接收自定义参数 + 不传参数时跑默认多组测试 |
+| 18 | **代码格式检查** | `ruff check examples/{op}/example_{op}.py` + `ruff format --check examples/{op}/example_{op}.py` 通过 |
 
 ### 融合算子专项检查
 

@@ -194,7 +194,7 @@ expected = ref_program(A, B)  # (N, M)
 torch.testing.assert_close(result.cpu().transpose(0, 1), expected)
 ```
 
-**详细参考**：[pr-ready-guide.md](pr-ready-guide.md) §1
+**详细参考**：[tilelang-op-generate SKILL.md §8 Checklist #9-#10](../SKILL.md)（Golden 一致性 / 输出形状匹配）
 
 #### 2. float16 精度问题
 
