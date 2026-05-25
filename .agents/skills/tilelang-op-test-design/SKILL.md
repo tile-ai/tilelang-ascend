@@ -53,7 +53,7 @@ description: "TileLang-Ascend 算子测试设计技能。支持多种场景：(1
 |---------|--------------|-------------|---------|
 | **纯 Cube** | Cube 核（矩阵乘单元） | 仅含 matmul / @ | 矩阵维度组合、block size |
 | **纯 Vector** | Vector 核（向量单元） | 无 matmul，仅 element-wise/reduction | dtype 组合、shape 组合 |
-| **混合（CV 融合）** | Cube + Vector 核 | matmul + element-wise 后处理 | workspace 配置、核间协作 |
+| **混合（CV 融合）** | Cube + Vector 核 | matmul + element-wise 后处理 | A2/A3：workspace（GM 中转）+ 跨核同步；A5：L0C→UB / UB→L1 直连 + 核间协作 |
 
 **判断方法**：理解算子实现逻辑后判断
 
