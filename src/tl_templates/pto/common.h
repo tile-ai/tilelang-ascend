@@ -671,11 +671,7 @@ template <typename T, int32_t row, int32_t col>
 AICORE PTO_INLINE void axpy(TileUbDataND<T, row, col, row, col> &dst,
                             TileUbDataND<T, row, col, row, col> &src0,
                             float scalar_value) {
-  TMULS(src0, src0, static_cast<T>(scalar_value));
-  TL_PIPE_V_BARRIER();
-  TADD(dst, dst, src0);
-  TL_PIPE_V_BARRIER();
-  TMULS(src0, src0, static_cast<T>(1.0f / scalar_value));
+  pto::TAXPY(dst, src0, static_cast<T>(scalar_value));
 }
 
 template <typename T1, typename T2, typename T3, int32_t rows_src,
