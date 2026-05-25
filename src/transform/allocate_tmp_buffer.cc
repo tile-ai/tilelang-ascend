@@ -36,6 +36,15 @@ int64_t AlignReduceOutputCols(int64_t valid_col, int64_t dtype_bytes) {
   return aligned_bytes / dtype_bytes;
 }
 
+int64_t GetPtoRowReduceTmpCols(int64_t valid_col, int64_t dtype_bytes) {
+  constexpr int64_t kVectorRepeatBytes = 256;
+  const int64_t elem_per_repeat = kVectorRepeatBytes / dtype_bytes;
+  const int64_t tmp_col = valid_col <= elem_per_repeat
+                              ? 1
+                              : std::max(valid_col / 2, elem_per_repeat);
+  return AlignReduceOutputCols(tmp_col, dtype_bytes);
+}
+
 } // namespace
 
 class CallNodeCollector : public ExprVisitor, public StmtVisitor {
@@ -221,6 +230,19 @@ private:
             tmp_buffer = xor_tmp_buffer;
             break;
           }
+        }
+      }
+    } else if ("pto" == target_ && op->op.same_as(tl::ascend_gather()) &&
+               tmp_bufs_.size() > 0) {
+      // TGATHER requires tmp buffer dtype == indices dtype (static_assert
+      // in TGather.hpp). The indices are at op->args[2]; pick the matching
+      // dtype buffer from tmp_bufs_.
+      const CallNode *idx_access_ptr = Downcast<Call>(op->args[2]).get();
+      DataType dtype = idx_access_ptr->args[0].as<CallNode>()->dtype;
+      for (const Buffer &gather_tmp_buffer : tmp_bufs_) {
+        if (gather_tmp_buffer.get()->dtype == dtype) {
+          tmp_buffer = gather_tmp_buffer;
+          break;
         }
       }
     } else {
@@ -642,6 +664,24 @@ private:
             }
           }
         }
+      } else if (call->op.same_as(tl::ascend_gather())) {
+        // TGATHER requires tmp dtype == indices dtype (TGather.hpp
+        // static_assert). Allocate a dtype-keyed tmp in tmp_bufs_. PTO
+        // doesn't actually consume this tmp (see operation_config.h
+        // comment), so 8 elements is enough placeholder.
+        const CallNode *idx_access_ptr = Downcast<Call>(call->args[2]).get();
+        std::string idx_buffer_name =
+            idx_access_ptr->args[1].as<VarNode>()->name_hint;
+        const BufferNode *idx_buffer_node =
+            GetBufferNodeByName_(alloc_buffers, idx_buffer_name);
+        DataType dtype = idx_buffer_node->dtype;
+        if (shapes.count(dtype) == 0) {
+          Array<PrimExpr> tmp_shape;
+          tmp_shape.push_back(IntImm(DataType::Int(32), 8));
+          shapes[dtype] = tmp_shape;
+        }
+        // If something else (e.g. xor) already requested this dtype with a
+        // larger size, keep that — we only need 8 elements minimum.
       }
     }
     // Create an xor_tmp_buffer of the required type
@@ -872,14 +912,20 @@ private:
           valid_row = src_buffer_node->shape[1].as<IntImmNode>()->value;
           valid_col = src_buffer_node->shape[2].as<IntImmNode>()->value;
         }
-        if (op_name == "TROWMAX" || op_name == "TROWMIN") {
-          int64_t tmp_shape_size = valid_row;
-          if (valid_row > shape_size) {
-            Array<PrimExpr> tmp_shape = {IntImm(DataType::Int(32), valid_row)};
+        if (op_name == "TROWMAX" || op_name == "TROWMIN" ||
+            op_name == "TROWSUM") {
+          const int64_t dtype_bytes = src_buffer_node->dtype.bytes();
+          const int64_t tmp_col =
+              GetPtoRowReduceTmpCols(valid_col, dtype_bytes);
+          const int64_t tmp_shape_size = valid_row * tmp_col * dtype_bytes;
+          if (tmp_shape_size > shape_size) {
+            Array<PrimExpr> tmp_shape = {
+                IntImm(DataType::Int(32), tmp_shape_size),
+            };
             shape = tmp_shape;
             shape_size = tmp_shape_size;
           }
-        } else if (op_name == "TROWSUM" || op_name == "TCOLSUM") {
+        } else if (op_name == "TCOLSUM") {
           int64_t tmp_shape_size = valid_row * valid_col / 2;
           if (tmp_shape_size > shape_size) {
             Array<PrimExpr> tmp_shape = {
@@ -924,9 +970,7 @@ private:
               src_access_ptr->args[1].as<VarNode>()->name_hint;
           const BufferNode *src_buffer_node =
               GetBufferNodeByName_(alloc_buffers, src_buffer_name);
-          int64_t tmp_shape_size =
-              Downcast<IntImm>(src_access_ptr->args[3])->value *
-              src_buffer_node->dtype.bytes() / 2;
+          int64_t tmp_shape_size = 1;
           Array<PrimExpr> tmp_shape;
           shape = {
               IntImm(DataType::Int(32), tmp_shape_size),

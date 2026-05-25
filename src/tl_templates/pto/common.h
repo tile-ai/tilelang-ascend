@@ -651,9 +651,9 @@ AICORE PTO_INLINE void TSILU(TileUbDataND<T, row, col, row, col> &dst,
                              TileUbDataND<T, row, col, row, col> &src,
                              TileUbDataND<T, row, col, row, col> &tmp) {
   TMOV(tmp, src);
-  pipe_barrier(PIPE_V);
+  TL_PIPE_V_BARRIER();
   TSIGMOID(dst, src);
-  pipe_barrier(PIPE_V);
+  TL_PIPE_V_BARRIER();
   TMUL(dst, tmp, dst);
 }
 
@@ -663,7 +663,7 @@ AICORE PTO_INLINE void MulAddDst(TileUbDataND<T, row, col, row, col> &dst,
                                  TileUbDataND<T, row, col, row, col> &src1,
                                  TileUbDataND<T, row, col, row, col> &tmp) {
   TMUL(tmp, src0, src1);
-  pipe_barrier(PIPE_V);
+  TL_PIPE_V_BARRIER();
   TADD(dst, dst, tmp);
 }
 
@@ -1096,9 +1096,9 @@ AICORE constexpr int32_t next_full_size(int32_t num_segs, int32_t full_size,
   return 4 * full_size;
 }
 
-// Number of merge-tree levels needed to reduce BlockNum segments to 1.
-AICORE constexpr int32_t compute_levels(int32_t block_num) {
-  int32_t n = block_num;
+// Number of merge-tree levels needed to reduce N blocks to 1.
+AICORE constexpr int32_t compute_levels(int32_t blk_num) {
+  int32_t n = blk_num;
   int32_t levels = 0;
   while (n > 1) {
     n = (n + 3) / 4;
@@ -1109,9 +1109,9 @@ AICORE constexpr int32_t compute_levels(int32_t block_num) {
 
 // Whether the final result lives in bufA after the merge tree finishes.
 // read_from_a starts true and toggles every level, so result_in_bufA equals
-// (levels % 2 == 0). For BlockNum == 1 (zero levels) this is also true.
-template <int32_t BlockNum>
-constexpr bool result_in_bufA_v = (compute_levels(BlockNum) % 2 == 0);
+// (levels % 2 == 0). For kBlockNum == 1 (zero levels) this is also true.
+template <int32_t kBlockNum>
+constexpr bool result_in_bufA_v = (compute_levels(kBlockNum) % 2 == 0);
 
 // Number of float pair-elements the finalize step has to copy. For full sort
 // it's 2*N; for topk it's 2*K rounded up to user_T's block alignment so the
