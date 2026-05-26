@@ -875,6 +875,10 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op,
   } else if (op->op.same_as(tl::ascend_mma())) {
     MmaCodegen(op);
 
+  // --- swizzle (PTO does not support swizzle, fall back to original cid) ---
+  } else if (op->op.same_as(tl::ascend_use_swizzle())) {
+    // Return the original cid value (args[1]) without applying swizzle transformation
+    os << PrintExpr(op->args[1]);
   } else if (op->op.same_as(builtin::if_then_else())) {
     std::string result = name_supply_->FreshName("condval");
     std::string cond = PrintExpr(op->args[0]);
