@@ -565,7 +565,7 @@ private:
               }
             }
             int64_t tmp_shape_size =
-                Downcast<IntImm>(dst_access_ptr->args[3])->value * 4;
+                Downcast<IntImm>(dst_access_ptr->args[3])->value;
             if (tmp_shape_size > shape_size) {
               Array<PrimExpr> tmp_shape;
               tmp_shape.push_back(IntImm(DataType::Int(32), tmp_shape_size));
@@ -575,7 +575,7 @@ private:
             Array<PrimExpr> tmp_shape;
             tmp_shape.push_back(
                 IntImm(DataType::Int(32),
-                       Downcast<IntImm>(dst_access_ptr->args[3])->value * 4));
+                       Downcast<IntImm>(dst_access_ptr->args[3])->value));
             shapes[dtype] = tmp_shape;
           }
         }
