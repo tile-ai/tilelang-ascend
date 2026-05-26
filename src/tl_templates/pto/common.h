@@ -1492,9 +1492,9 @@ copy_vc_experiment(TileMatL1<T, DstRows, DstCols, DstRows, DstCols> &dst_l1,
   TileUbDataNz<T, SrcRows, SrcCols, SrcRows, SrcCols> nz_tmp;
   TASSIGN(nz_tmp, reinterpret_cast<uint64_t>(tmp.data()));
   // TMOV: copy + ND → Nz format conversion
+  TMOV(nz_tmp, src_ub);
   set_flag(PIPE_V, PIPE_MTE3, EVENT_ID0);
   wait_flag(PIPE_V, PIPE_MTE3, EVENT_ID0);
-  TMOV(nz_tmp, src_ub);
   // TINSERT: Nz UB → L1
   if constexpr (mode == 0) {
     pto::TINSERT(dst_l1, nz_tmp, indexRow, indexCol);
