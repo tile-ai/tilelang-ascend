@@ -38,13 +38,19 @@ description: "根据算子需求生成 TileLang-Ascend 算子设计文档（desi
 **迁移算子时必须提供原算子路径和输出形状**，否则无法证明迁移正确性。Golden 实现一致性要求详见 [tilelang-op-generate SKILL.md §8 Checklist #9-#10](../tilelang-op-generate/SKILL.md)。
 
 **提问规则（必须严格遵守）**：
-1. **每次只询问一个字段**：使用 `question` 工具时，`questions` 数组中只包含一个元素
-2. **按表格顺序依次询问**：算子名称 → 数学公式 → 输入张量规格 → 输出张量规格 → 编程模式偏好
-3. **已提供的字段跳过**：如果用户在初始请求中已提供某个字段的值，跳过该字段继续下一个
-4. **示例**：
+1. **优先使用调用方传入的字段**：若调用方（如 `@tilelang-op-orchestrator` 通过 analyst 传入 `op_requirements` 结构）已经提供了字段值，**全部跳过提问**，直接进入技术约束检测和 design 生成
+2. **每次只询问一个字段**：使用 `question` 工具时，`questions` 数组中只包含一个元素
+3. **按表格顺序依次询问**：算子名称 → 数学公式 → 输入张量规格 → 输出张量规格 → 编程模式偏好
+4. **已提供的字段跳过**：如果用户在初始请求中已提供某个字段的值，跳过该字段继续下一个
+5. **示例**：
    - 第 1 次询问：只问"数学公式"
    - 用户回答后，第 2 次询问：只问"输入张量规格"
    - 以此类推
+
+**⚠️ 当被 orchestrator → analyst Subagent 链路调度时**：
+- analyst 会把 orchestrator 在 Primary 上下文预检收集到的 `op_requirements` 完整传入
+- 此时 5 个必需字段应当全部已 provided，跳过整个提问环节
+- 若 skill 仍发现字段歧义或缺漏，**不要**在当前 Subagent 上下文调用 `AskUserQuestion`（透传不到真实用户），而是让 analyst 返回 `partial_input` + 缺失字段名给 orchestrator，由 orchestrator 在 Primary 上下文追问
 
 ### 推荐信息
 
