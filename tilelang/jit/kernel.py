@@ -1,7 +1,8 @@
 # Copyright (c) Tile-AI Corporation.
 # Licensed under the MIT License.
+from __future__ import annotations
 
-from typing import List, Union, Any, Callable, Literal, Optional, Dict
+from typing import Any, Callable, Literal
 from tvm.target import Target
 import tilelang
 from tilelang import tvm as tvm
@@ -18,7 +19,7 @@ from tilelang.profiler import Profiler, TensorSupplyType
 from tilelang.engine.param import KernelParam, CompiledArtifact
 
 
-class JITKernel(object):
+class JITKernel:
     """
     A wrapper class for compiling and invoking TileLang (TVM TIR) functions as PyTorch-compatible functions.
 
@@ -31,6 +32,7 @@ class JITKernel(object):
     torch_function : Callable
         The compiled function that can be invoked as a PyTorch-compatible function.
     """
+
     prim_func: PrimFunc = None
     artifact: CompiledArtifact = None
     adapter: BaseKernelAdapter = None
@@ -38,20 +40,20 @@ class JITKernel(object):
 
     # tuner result
     latency: float = None
-    config: Dict[str, Any] = None
+    config: dict[str, Any] = None
     ref_latency: float = None
 
     def __init__(
         self,
         func: PrimFunc = None,
-        out_idx: Union[List[int], int] = None,
-        workspace_idx: Union[List[int], int] = None,
+        out_idx: list[int] | int = None,
+        workspace_idx: list[int] | int = None,
         execution_backend: Literal["dlpack", "ctypes", "cython"] = "cython",
-        target: Union[str, Target] = "auto",
-        target_host: Union[str, Target] = None,
+        target: str | Target = "auto",
+        target_host: str | Target = None,
         platform: str = "auto",
         verbose: bool = False,
-        pass_configs: Optional[Dict[str, Any]] = None,
+        pass_configs: dict[str, Any] | None = None,
         from_database: bool = False,
     ):
         """
@@ -92,7 +94,6 @@ class JITKernel(object):
         self.platform = platform
         self.verbose = verbose
 
-
         if pass_configs is None:
             pass_configs = {}
         self.pass_configs = pass_configs
@@ -106,9 +107,7 @@ class JITKernel(object):
         if execution_backend == "cython":
             from tilelang.contrib.cc import get_cplus_compiler
 
-            assert (
-                get_cplus_compiler() is not None
-            ), "Cython backend requires a C++ compiler, please install or use other backends."
+            assert get_cplus_compiler() is not None, "Cython backend requires a C++ compiler, please install or use other backends."
 
         if from_database:
             return
@@ -126,14 +125,15 @@ class JITKernel(object):
         func: PrimFunc,
         kernel_global_source: str,
         kernel_lib_path: str,
-        params: List[KernelParam],
-        target: Union[str, Target],
-        target_host: Union[str, Target],
+        params: list[KernelParam],
+        target: str | Target,
+        target_host: str | Target,
         platform: str,
-        out_idx: Union[List[int], int],
-        workspace_idx: Union[List[int], int],
+        out_idx: list[int] | int,
+        workspace_idx: list[int] | int,
+        auto_gm_idx: list[int] | int,
         execution_backend: Literal["dlpack", "ctypes", "cython"],
-        pass_configs: Optional[Dict[str, Any]] = None,
+        pass_configs: dict[str, Any] | None = None,
     ):
         """
         Alternative constructor to create a TorchFunction directly from a database.
@@ -155,6 +155,7 @@ class JITKernel(object):
             params=params,
             result_idx=out_idx,
             workspace_idx=workspace_idx,
+            auto_gm_idx=auto_gm_idx,
             target=target,
             platform=platform,
             kernel_global_source=kernel_global_source,
@@ -194,9 +195,7 @@ class JITKernel(object):
         """
         return self.torch_function(*modify_args, **kwds)
 
-    def _compile_and_create_adapter(self, tilelang_func: PrimFunc,
-                                    out_idx: List[int],
-                                    workspace_idx: List[int]) -> BaseKernelAdapter:
+    def _compile_and_create_adapter(self, tilelang_func: PrimFunc, out_idx: list[int], workspace_idx: list[int]) -> BaseKernelAdapter:
         """
         Compiles the given TileLang PrimFunc using TVM and creates a kernel adapter.
 
@@ -227,18 +226,31 @@ class JITKernel(object):
                 target_host=target_host,
                 platform=self.platform,
                 enable_host_codegen=enable_host_codegen,
-                enable_device_compile=enable_device_compile)
+                enable_device_compile=enable_device_compile,
+            )
 
         self.artifact = artifact
+
+        # Check for auto_gm_indices attribute in the compiled PrimFunc and store it if available.
+        self._auto_gm_idx = None
+        target_prim_func = None
+        mod = artifact.device_mod
+        if mod is not None and isinstance(mod, tvm.ir.module.IRModule):
+            for _global_symbol, prim_func in mod.functions_items():
+                if isinstance(prim_func, tvm.tir.PrimFunc):
+                    target_prim_func = prim_func
+                    break
+            if target_prim_func is not None and "auto_gm_indices" in target_prim_func.attrs:
+                self._auto_gm_idx = target_prim_func.attrs["auto_gm_indices"]
+                self._auto_gm_idx = [int(item.value) for item in self._auto_gm_idx]
 
         # Create an adapter based on the specified execution backend.
         if execution_backend == "dlpack":
             # Use TorchDLPackKernelAdapter for interoperability with PyTorch via DLPack.
             # But we need to ensure that the runtime is enabled and the runtime module is not None.
             assert tvm.runtime.enabled("llvm"), "DLPack backend requires LLVM runtime."
-            assert (artifact.rt_mod is not None), "DLPack backend requires a runtime module."
-            adapter = TorchDLPackKernelAdapter(
-                artifact.rt_mod, params=artifact.params, result_idx=out_idx)
+            assert artifact.rt_mod is not None, "DLPack backend requires a runtime module."
+            adapter = TorchDLPackKernelAdapter(artifact.rt_mod, params=artifact.params, result_idx=out_idx)
         elif execution_backend == "ctypes":
             adapter = CtypesKernelAdapter(
                 params=artifact.params,
@@ -256,6 +268,7 @@ class JITKernel(object):
                 params=artifact.params,
                 result_idx=out_idx,
                 workspace_idx=workspace_idx,
+                auto_gm_idx=self._auto_gm_idx,
                 target=target,
                 platform=self.platform,
                 func_or_mod=tilelang_func,
@@ -273,15 +286,16 @@ class JITKernel(object):
 
     def _create_adapter_from_database(
         self,
-        params: List[KernelParam],
-        result_idx: Union[List[int], int],
-        workspace_idx: Union[List[int], int],
-        target: Union[str, Target],
+        params: list[KernelParam],
+        result_idx: list[int] | int,
+        workspace_idx: list[int] | int,
+        auto_gm_idx: list[int] | int,
+        target: str | Target,
         platform: str,
-        func_or_mod: Union[PrimFunc, tvm.runtime.Module],
+        func_or_mod: PrimFunc | tvm.runtime.Module,
         kernel_global_source: str,
         kernel_lib_path: str,
-        pass_configs: Optional[Dict[str, Any]] = None,
+        pass_configs: dict[str, Any] | None = None,
     ) -> BaseKernelAdapter:
         target = self.target
         execution_backend = self.execution_backend
@@ -304,6 +318,7 @@ class JITKernel(object):
                 params=params,
                 result_idx=result_idx,
                 workspace_idx=workspace_idx,
+                auto_gm_idx=auto_gm_idx,
                 target=target,
                 platform=platform,
                 func_or_mod=func_or_mod,
@@ -336,8 +351,7 @@ class JITKernel(object):
         """
         return cls(func=tilelang_func, **kwargs)
 
-    def get_profiler(self,
-                     tensor_supply_type: TensorSupplyType = TensorSupplyType.Auto) -> Profiler:
+    def get_profiler(self, tensor_supply_type: TensorSupplyType = TensorSupplyType.Auto) -> Profiler:
         """
         Creates a profiler to benchmark the compiled runtime module.
 
@@ -351,8 +365,7 @@ class JITKernel(object):
         Profiler
             A Profiler instance for benchmarking the runtime module.
         """
-        return Profiler(self.params, self.out_idx, self.workspace_idx,
-                        tensor_supply_type).with_default_adapter(self.adapter)
+        return Profiler(self.params, self.out_idx, self.workspace_idx, tensor_supply_type).with_default_adapter(self.adapter)
 
     def get_kernel_source(self) -> str:
         """
@@ -373,11 +386,10 @@ class JITKernel(object):
         """
         return str(self.artifact.host_mod)
 
-    def run_once(self, func: Optional[Callable] = None) -> None:
+    def run_once(self, func: Callable | None = None) -> None:
         return self.get_profiler().run_once(func)
 
-    def update_tuner_result(self, latency: float, config: Dict[str, Any],
-                            ref_latency: float) -> "JITKernel":
+    def update_tuner_result(self, latency: float, config: dict[str, Any], ref_latency: float) -> JITKernel:
         """
         Updates the tuning results for this kernel.
 
@@ -400,7 +412,7 @@ class JITKernel(object):
 
         return self
 
-    def get_tuner_result(self) -> Dict[str, Any]:
+    def get_tuner_result(self) -> dict[str, Any]:
         """
         Gets the tuning results for this kernel.
 
@@ -422,15 +434,19 @@ class JITKernel(object):
         }
 
     @property
-    def out_idx(self) -> List[int]:
+    def out_idx(self) -> list[int]:
         return self.adapter.result_idx
-    
+
     @property
-    def workspace_idx(self) -> List[int]:
+    def workspace_idx(self) -> list[int]:
         return self.adapter.workspace_idx
 
     @property
-    def params(self) -> List[KernelParam]:
+    def auto_gm_idx(self) -> list[int]:
+        return self.adapter.auto_gm_idx
+
+    @property
+    def params(self) -> list[KernelParam]:
         return self.artifact.params if self.artifact else self.adapter.params
 
     @property

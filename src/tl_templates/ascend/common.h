@@ -240,6 +240,18 @@ atomic_add_ub_to_gm(GlobalTensor<T> dstTensor, LocalTensor<T> srcTensor,
   disable_dma_atomic_compat();
 }
 
+template <typename T1, typename T2, typename LayoutGM, uint32_t srcM,
+          uint32_t srcN, bool enRelu = false>
+CATLASS_DEVICE void
+atomic_add_l0c_to_gm(GlobalTensor<T2> dstTensor, LocalTensor<T1> srcTensor,
+                     uint32_t realDstN = 1, uint32_t realTailM = 0,
+                     uint32_t realTailN = 0) {
+  AscendC::SetAtomicAdd<T2>();
+  copy_l0c_to_gm<T1, T2, LayoutGM, srcM, srcN, enRelu>(
+      dstTensor, srcTensor, realDstN, realTailM, realTailN);
+  disable_dma_atomic_compat();
+}
+
 template <typename T1, typename T2, uint32_t len>
 CATLASS_DEVICE void copy_ub_to_ub(LocalTensor<T1> dstTensor,
                                   LocalTensor<T2> srcTensor) {
@@ -247,6 +259,8 @@ CATLASS_DEVICE void copy_ub_to_ub(LocalTensor<T1> dstTensor,
     AscendC::DataCopy(dstTensor, srcTensor, len);
   } else {
     if constexpr ((std::is_same_v<T1, float> && std::is_same_v<T2, half>) ||
+                  (std::is_same_v<T1, float> &&
+                   std::is_same_v<T2, bfloat16_t>) ||
                   (std::is_same_v<T1, float> && std::is_same_v<T2, int16_t>) ||
                   (std::is_same_v<T1, half> && std::is_same_v<T2, int8_t>) ||
                   (std::is_same_v<T1, int16_t> &&

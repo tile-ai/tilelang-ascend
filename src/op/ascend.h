@@ -108,6 +108,8 @@ TVM_DLL const Op &ascend_leaky_relu();
 
 TVM_DLL const Op &ascend_axpy();
 
+TVM_DLL const Op &ascend_mul_add_dst();
+
 TVM_DLL const Op &ascend_bitwise_lshift();
 
 TVM_DLL const Op &ascend_bitwise_rshift();
@@ -211,6 +213,8 @@ TVM_DLL const Op &ascend_use_swizzle();
 TVM_DLL const Op &ascend_mma();
 
 TVM_DLL const Op &ascend_sigmoid();
+
+TVM_DLL const Op &ascend_silu();
 
 TVM_DLL const Op &ascend_clamp_max();
 

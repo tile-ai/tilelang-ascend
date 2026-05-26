@@ -424,6 +424,112 @@ def axpy_slice(M, N, block_M, block_N, dtype="float"):
     return main
 
 
+def vec_silu(M, N, block_M, block_N, dtype="float"):
+    m_num = M // block_M
+    n_num = N // block_N
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((M, N), dtype),
+        B: T.Tensor((M, N), dtype),
+    ):
+        with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
+            bx = cid // n_num
+            by = cid % n_num
+
+            a_ub = T.alloc_ub((block_M, block_N), dtype)
+            b_ub = T.alloc_ub((block_M, block_N), dtype)
+
+            T.copy(A[bx * block_M, by * block_N], a_ub)
+
+            T.tile.silu(b_ub, a_ub)
+
+            T.copy(b_ub, B[bx * block_M, by * block_N])
+
+    return main
+
+
+def run_test_silu(M, N, block_M, block_N, dtype, target):
+    func = vec_silu(M, N, block_M, block_N, dtype)
+    func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
+
+    torch_dtype = torch.float32 if dtype == "float" else torch.float16
+    a = torch.randn(M, N, dtype=torch_dtype).npu()
+
+    torch.npu.synchronize()
+
+    result = func(a)
+
+    ref_result = torch.nn.functional.silu(a)
+    torch.testing.assert_close(result, ref_result, rtol=1e-2, atol=1e-2)
+
+
+@pytest.mark.parametrize("dtype", ["float", "float16"])
+@pytest.mark.parametrize("target", ["ascendc"])
+@pytest.mark.parametrize("shape", [(256, 256), (512, 512)])
+def test_silu(dtype, target, shape):
+    M, N = shape
+    run_test_silu(M, N, 128, 128, dtype, target)
+
+
+def vec_mul_add_dst(M, N, block_M, block_N, dtype="float"):
+    m_num = M // block_M
+    n_num = N // block_N
+
+    VEC_NUM = 2
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((M, N), dtype),
+        B: T.Tensor((M, N), dtype),
+        C: T.Tensor((M, N), dtype),
+        D: T.Tensor((M, N), dtype),
+    ):
+        with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
+            bx = cid // n_num
+            by = cid % n_num
+
+            a_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
+            b_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
+            c_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
+
+            T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a_ub)
+            T.copy(B[bx * block_M + vid * block_M // VEC_NUM, by * block_N], b_ub)
+            T.copy(C[bx * block_M + vid * block_M // VEC_NUM, by * block_N], c_ub)
+
+            T.tile.mul_add_dst(c_ub, a_ub, b_ub)
+
+            T.copy(c_ub, D[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
+
+    return main
+
+
+def run_test_mul_add_dst(M, N, block_M, block_N, dtype, target):
+    func = vec_mul_add_dst(M, N, block_M, block_N, dtype)
+    func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
+
+    torch_dtype = torch.float32 if dtype == "float" else torch.float16
+    a = torch.randn(M, N, dtype=torch_dtype).npu()
+    b = torch.randn(M, N, dtype=torch_dtype).npu()
+    c = torch.randn(M, N, dtype=torch_dtype).npu()
+    d = torch.zeros(M, N, dtype=torch_dtype).npu()
+
+    torch.npu.synchronize()
+
+    result = func(a, b, c, d)
+
+    ref_result = a * b + c
+    torch.testing.assert_close(result, ref_result, rtol=1e-2, atol=1e-2)
+
+
+@pytest.mark.parametrize("dtype", ["float", "float16"])
+@pytest.mark.parametrize("target", ["ascendc"])
+@pytest.mark.parametrize("shape", [(1024, 1024)])
+def test_mul_add_dst(dtype, target, shape):
+    M, N = shape
+    run_test_mul_add_dst(M, N, 64, 128, dtype, target)
+
+
 def run_test_axpy_slice(M, N, block_M, block_N, target):
     func = axpy_slice(M, N, block_M, block_N)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
@@ -2230,7 +2336,7 @@ def run_test_gather(M, N, block_M, block_N, dtype, target):
 
 
 @pytest.mark.parametrize("dtype", ["int16", "int32", "uint16", "uint32", "float", "float16", "bfloat16"])
-@pytest.mark.parametrize("target", ["ascendc"])
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("shape", [(128, 1024)])
 def test_gather(dtype, target, shape):
     M, N = shape
@@ -3769,7 +3875,7 @@ def run_test_sort(M, N, block_M, block_N, dtype, target):
     func = sort(M, N, block_M, block_N, dtype)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
 
-    torch_dtype = torch.float if dtype == "float" else torch.float16
+    torch_dtype = torch.float if dtype in ("float", "float32") else torch.float16
     a = torch.arange(0, M * N, dtype=torch_dtype).reshape(M, N).npu()
     b = func(a)
 
@@ -3785,8 +3891,8 @@ def run_test_sort(M, N, block_M, block_N, dtype, target):
     torch.testing.assert_close(out_indices, ref_index.float(), rtol=1e-3, atol=1e-3)
 
 
-@pytest.mark.parametrize("dtype", ["float16", "float"])
-@pytest.mark.parametrize("target", ["ascendc"])
+@pytest.mark.parametrize("dtype", ["float16", "float32"])
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("shape", [(1, 131)])
 def test_sort(dtype, target, shape):
     M, N = shape
@@ -3928,7 +4034,7 @@ def run_test_topk(M, N, K, block_M, block_N, dtype, target):
     func = topk(M, N, K, block_M, block_N, dtype)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
 
-    torch_dtype = torch.float if dtype == "float" else torch.float16
+    torch_dtype = torch.float if dtype in ("float", "float32") else torch.float16
     a = torch.arange(0, M * N, dtype=torch_dtype).reshape(M, N).npu()
     b = func(a)
 
@@ -3946,8 +4052,8 @@ def run_test_topk(M, N, K, block_M, block_N, dtype, target):
     torch.testing.assert_close(out_indices, ref_indices.float(), rtol=1e-3, atol=1e-3)
 
 
-@pytest.mark.parametrize("dtype", ["float16", "float"])
-@pytest.mark.parametrize("target", ["ascendc"])
+@pytest.mark.parametrize("dtype", ["float16", "float32"])
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("shape", [(1, 51)])
 def test_topk(dtype, target, shape):
     M, N = shape
@@ -4393,16 +4499,18 @@ def test_wholereducesum(target):
 def generate_arithmetic_progression(N, block_size, dtype="int32"):
     num_blocks = N // block_size
 
+    VEC_NUM = 2
+
     @T.prim_func
     def main(
         output: T.Tensor((N,), dtype),  # type: ignore
     ):
-        with T.Kernel(num_blocks, is_npu=True) as (cid, _):
-            start_idx = cid * block_size
+        with T.Kernel(num_blocks, is_npu=True) as (cid, vid):
+            start_idx = cid * block_size + vid * block_size // VEC_NUM
 
-            seq_ub = T.alloc_shared((block_size,), dtype)
+            seq_ub = T.alloc_shared((block_size // VEC_NUM,), dtype)
 
-            T.tile.arith_progression(seq_ub, start_idx, 1, block_size)
+            T.tile.arith_progression(seq_ub, start_idx, 1, block_size // VEC_NUM)
 
             T.copy(seq_ub, output[start_idx])
 

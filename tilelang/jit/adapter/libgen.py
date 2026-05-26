@@ -7,17 +7,30 @@ import os
 import tempfile
 import subprocess
 import logging
+from pathlib import Path
 from tilelang.env import TILELANG_TEMPLATE_PATH, TILELANG_PACKAGE_PATH
 
 logger = logging.getLogger(__name__)
 
 
-def _get_tl_root() -> str:
+def _get_tl_root(third_party_name="3rdparty") -> str:
     """Get TL_ROOT path, fallback to package path if not set."""
     tl_root = os.environ.get("TL_ROOT")
-    if tl_root is None:
-        tl_root = str(TILELANG_PACKAGE_PATH)
-    return tl_root
+    if tl_root is not None:
+        if not (Path(tl_root) / third_party_name).exists():
+            raise ValueError(f"3rdparty dependencies not found. TL_ROOT is {tl_root!r}")
+        return tl_root
+
+    for path in [TILELANG_PACKAGE_PATH, TILELANG_PACKAGE_PATH.parent]:
+        if (path / third_party_name).exists():
+            return str(path)
+    # In most situations, (path / third_party_name) should exists.
+    # Otherwise, "import tvm" will fail before reaching this point.
+    raise ValueError(
+        f"TL_ROOT is not set and {third_party_name}/ directory not found in "
+        f"{TILELANG_PACKAGE_PATH} or {TILELANG_PACKAGE_PATH.parent}. "
+        "Please set the TL_ROOT environment variable."
+    )
 
 
 def _get_ascend_home_path() -> str:
@@ -138,6 +151,8 @@ class LibraryGenerator:
                 "--shared",
                 src.name,
             ]
+            if os.environ.get("TL_PTO_DEBUG") == "1":
+                command += ["-D_DEBUG", "--cce-enable-print"]
         command += ["-o", libpath]
 
         src.write(self.lib_code)

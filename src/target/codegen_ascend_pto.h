@@ -62,6 +62,8 @@ public:
                                       const std::string &op_name);
   void BinaryVecClampOpsCodegen(const CallNode *op, const std::string &op_name);
   void SigmoidCodegen(const CallNode *op, const std::string &op_type);
+  void SiluCodegen(const CallNode *op);
+  void MulAddDstCodegen(const CallNode *op);
   void CastCodegen(const CallNode *op, const std::string &op_type);
   void ReduceOpCodegen(const CallNode *op);
 
@@ -145,6 +147,8 @@ private:
 
   void GatherbCodegen(const CallNode *op, const std::string &op_name);
 
+  void GatherCodegen(const CallNode *op, const std::string &op_name);
+
   void GatherMaskCodegen(const CallNode *op, const std::string &op_name);
 
   void PowCodegen(const CallNode *op);
@@ -152,6 +156,17 @@ private:
   void Sort32Codegen(const CallNode *op, const std::string &op_name);
 
   void MergeSortCodegen(const CallNode *op, const std::string &op_name);
+
+  void SortCodegen(const CallNode *op);
+
+  void TopKCodegen(const CallNode *op);
+
+  // Emits a single tl::ascend_pto::Sort<UserT, N, ActualCount, TopK>(...)
+  // call. The full algorithm (pad, sort32, merge tree, finalize) lives in
+  // pto/common.h.
+  void EmitSortAlgorithm(const CallNode *dst_call, const CallNode *src_call,
+                         const CallNode *tmp_call, int32_t repeat_times,
+                         int32_t actual_num, int32_t top_k);
 
   void TransposeCodegen(const CallNode *op, const std::string &op_name);
 
@@ -199,6 +214,11 @@ private:
                           const ShapeInfo &shape_info,
                           const std::string &tile_name);
   ShapeInfo GetSliceInfo(const CallNode *op);
+
+  std::string ResolveUbSliceName(const ShapeInfo &info);
+
+  std::string ResolveCubeSliceName(const ShapeInfo &info,
+                                   const std::string &tile_name);
 
   ReduceOpInfo ParseReduceOpInfo(const std::string &op_name);
   std::string GetReduceOpName(ReduceKind kind, ReduceDirection direction);
@@ -250,6 +270,7 @@ private:
 
   Map<String, PrimExpr> address_offset_;
   Map<Var, PrimExpr> buffer_address_map_;
+  int64_t max_ub_addr_{0};
 
   Map<String, String> copy_tmplte_map_;
   Map<String, String> copy_base_addr_map_;

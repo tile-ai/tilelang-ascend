@@ -18,7 +18,7 @@ N = args.n
 K = args.k
 
 
-@tilelang.jit(out_idx=[-1])
+@tilelang.jit(out_idx=[-1], target="ascendc")
 def matmul(M, N, K, block_M, block_N, block_K, K_L1, S1, S2, dtype="float16", accum_dtype="float"):
     m_num = M // block_M
     n_num = N // block_N

@@ -91,6 +91,39 @@ with T.Kernel(block_num, is_npu=True) as (cid, vid):
 
 ---
 
+## 3.5 技术约束确认
+
+### 3.5.1 本项目已知限制检查
+
+| 约束 | 本算子是否涉及 | 处理方案 |
+|------|---------------|----------|
+| 不支持三维 Kernel | {Yes/No} | {block_metadata 方案 / 不涉及} |
+| threads 参数限制（仅 1 或 2） | {Yes/No} | {threads=2 或移除 / 不涉及} |
+| 动态循环边界不支持 | {Yes/No} | {静态边界 + if 条件判断 / 不涉及} |
+| 流水线不支持动态边界 | {Yes/No} | {改用 T.serial / 不涉及} |
+
+### 3.5.2 参考实现差异说明
+
+**重要**：如果用户提供了外部参考实现（GPU 版），必须列出差异：
+
+| 差异项 | 参考实现（GPU） | 本项目（Ascend） | 转换方案 |
+|--------|----------------|-----------------|----------|
+| Kernel 维度 | {三维 T.Kernel(m, n, batch)} | {一维 + block_metadata} | {参考 examples/grouped_gemm/} |
+| 循环边界 | {动态 T.Pipelined(batch_sizes[bz])} | {静态 + if k < k_iters} | {预计算 max_iters} |
+| GEMM API | {T.gemm} | {T.gemm_v0} | {查阅 api-compute.md} |
+| 内存分配 | {T.alloc_shared 自动映射} | {T.alloc_L1 显式层级} | {Expert 模式} |
+| threads | {threads=128} | {threads=2 或移除} | {NPU 限制} |
+
+### 3.5.3 本项目同类实现参考
+
+**必须列出**：本项目 examples/ 中最相似的实现
+
+| 文件路径 | 相似度 | 关键参考点 |
+|----------|--------|-----------|
+| {examples/xxx/example_xxx.py} | {高度相似} | {Kernel 结构、API 用法、同步方式} |
+
+---
+
 ## 4. 数据规格与内存规划
 
 ### 4.1 输入张量
@@ -240,9 +273,64 @@ pass_configs = {
 
 ---
 
-## 8. 验证方案
+## 8. 融合算子设计（如有）
 
-### 8.1 Golden 函数
+{仅融合算子需要填写本章节。融合算子指包含 GEMM + element-wise 后处理的算子。}
+
+### 8.1 融合算子判定
+
+**判定结果**: {是 / 否}
+
+**判定依据**: {如: 算子包含 GEMM 计算，输出需 element-wise 后处理，判定为融合算子}
+
+### 8.2 workspace 设计
+
+| workspace | Shape | dtype | 用途 |
+|-----------|-------|-------|------|
+| workspace_1 | {[block_num, block_M, block_N]} | {accum_dtype} | {用途} |
+| workspace_2 | {...} | {...} | {用途} |
+
+**workspace_idx**: {[4, 5, 6]}  # 根据函数签名参数位置确定
+
+### 8.3 Cube 核计算流程
+
+```python
+# Cube 核：GEMM 计算
+T.copy({输入}, {buffer})
+T.gemm_v0({a}, {b}, {c}, transpose_B={True/False})
+T.copy({c}, workspace_1[cid, :, :])  # 输出到 workspace
+```
+
+### 8.4 Vector 核计算流程
+
+```python
+# Vector 核：element-wise 后处理
+T.copy(workspace_1[cid, ...], {buffer})  # 从 workspace 读取
+{element-wise 计算}
+T.copy({output}, Output[...])  # 输出
+```
+
+### 8.5 pass_configs 配置
+
+```python
+pass_configs = {
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: {True/False},  # 自动 CV 分离
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_SYNC: {True/False},     # 自动核间同步
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: {True/False},        # 自动同步
+    tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: {True/False},  # 内存规划
+}
+```
+
+### 8.6 注意事项
+
+- {如: 核间流水线与核内流水线不能同时开启}
+- {如: workspace_idx 与函数签名参数位置必须一致}
+
+---
+
+## 9. 验证方案
+
+### 9.1 Golden 函数
 
 ```python
 def golden_{算子名}({参数}):
@@ -250,7 +338,7 @@ def golden_{算子名}({参数}):
     {参考实现代码}
 ```
 
-### 8.2 测试用例
+### 9.2 测试用例
 
 | 用例名 | 级别 | Shape | dtype | 说明 |
 |--------|------|-------|-------|------|
@@ -259,7 +347,7 @@ def golden_{算子名}({参数}):
 | {boundary} | Level 2 | {(1, 1)} | {float16} | {边界值测试} |
 | {large_scale} | Level 3 | {(8192, 8192)} | {float16} | {性能测试} |
 
-### 8.3 精度标准
+### 9.3 精度标准
 
 | dtype | atol | rtol |
 |-------|------|------|
@@ -268,28 +356,28 @@ def golden_{算子名}({参数}):
 
 ---
 
-## 9. 风险点与注意事项
+## 10. 风险点与注意事项
 
-### 9.1 已知约束
+### 10.1 已知约束
 
 {列出本算子在 TileLang-Ascend 上的已知限制}
 
-### 9.2 常见错误
+### 10.2 常见错误
 
 | 错误 | 触发场景 | 影响 | 解决方案 |
 |------|----------|------|----------|
 | {UB 溢出} | {block 过大} | {编译失败} | {减小 block size} |
 | ... | ... | ... | ... |
 
-### 9.3 特殊场景处理
+### 10.3 特殊场景处理
 
 {如: 非整除分块、极小 shape、混合精度等}
 
 ---
 
-## 10. 交付清单
+## 11. 交付清单
 
-### 10.1 目录结构
+### 11.1 目录结构
 
 ```
 examples/{算子名}/
@@ -298,7 +386,7 @@ examples/{算子名}/
 └── README.md               # 使用说明（可选）
 ```
 
-### 10.2 文件清单
+### 11.2 文件清单
 
 | 文件 | 状态 | 说明 |
 |------|------|------|
@@ -306,13 +394,13 @@ examples/{算子名}/
 | `example_{算子名}.py` | {待实现} | 算子实现 |
 | `test_{算子名}.py` | {待实现} | 测试文件（可选，放入 testing/） |
 
-### 10.3 命名规范
+### 11.3 命名规范
 
 - 目录名: `{算子名}`（snake_case）
 - 实现文件: `example_{算子名}.py`
 - 测试文件: `test_{算子名}.py`
 
-### 10.4 实现顺序
+### 11.4 实现顺序
 
 1. ✅ 设计文档（design.md）
 2. ⬜ Golden 函数（验证基准）

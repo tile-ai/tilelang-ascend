@@ -2,17 +2,30 @@
 
 # ================= 参数解析 =================
 SKIP_PYTEST=false
+TEST_DIRS=""
 while [[ $# -gt 0 ]]; do
     case $1 in
         --skip-pytest)
             SKIP_PYTEST=true
             shift
             ;;
+        --dirs)
+            TEST_DIRS="$2"
+            shift 2
+            ;;
         *)
             shift
             ;;
     esac
 done
+
+# 解析 TEST_DIRS 为数组
+if [ -n "$TEST_DIRS" ]; then
+    IFS=' ' read -ra DIR_ARRAY <<< "$TEST_DIRS"
+    echo "Running incremental tests for directories: ${DIR_ARRAY[*]}"
+else
+    echo "Running full tests (all directories)"
+fi
 # ===========================================
 
 # ================= 配置区 =================
@@ -38,42 +51,120 @@ total_scripts=0
 passed_scripts=0
 all_scripts=()
 
-# 1. 收集脚本逻辑 (保持原样)
-python_files=$(find . -maxdepth 2 -name "*.py" -not -path "./gemm_aot/*" -not -path "./dispatch_combine/*" -not -path "./shmem/*" -not -path "./torch_tl_ascend/*" -not -name "sfa_golden.py" -not -name "__init__.py" | sort)
-if [ -n "$python_files" ]; then
-    for file in $python_files; do all_scripts+=("$file"); done
-fi
+# 函数：收集单个目录下的测试脚本
+collect_test_scripts() {
+    local dir="$1"
+    local scripts=()
+    
+    # 特殊目录：排除整个目录，不收集任何 py 文件
+    case "$dir" in
+        "./gemm_aot"|"./torch_tl_ascend"|"./dispatch_combine"|"./shmem")
+            # 只收集特定 bash 脚本
+            if [[ "$dir" == "./gemm_aot" ]]; then
+                scripts+=("./gemm_aot/run_example_gemm_aot.sh")
+            elif [[ "$dir" == "./torch_tl_ascend" ]]; then
+                scripts+=("./torch_tl_ascend/test_example.sh")
+            fi
+            echo "${scripts[@]}"
+            return
+            ;;
+        "./flash_attention")
+            # 收集主目录的 py 文件（排除 fa_opt）
+            local py_files=$(find "$dir" -maxdepth 1 -name "*.py" \
+                -not -name "__init__.py" \
+                -not -name "*_golden.py" \
+                | sort)
+            for f in $py_files; do scripts+=("$f"); done
+            
+            echo "${scripts[@]}"
+            return
+            ;;
+    esac
+    
+    # 搜索 maxdepth 2 的 py 文件（排除特殊文件和 bench_sfa 子目录）
+    local py_files=$(find "$dir" -maxdepth 2 -name "*.py" \
+        -not -name "__init__.py" \
+        -not -name "*_golden.py" \
+        -not -name "sfa_golden.py" \
+        -not -path "*/bench_sfa/*" \
+        | sort)
+    for f in $py_files; do scripts+=("$f"); done
+    
+    # 搜索 bash 脚本（特定命名模式）
+    local sh_files=$(find "$dir" -maxdepth 2 \( -name "run_*.sh" -o -name "test_*.sh" \) | sort)
+    for f in $sh_files; do scripts+=("$f"); done
+    
+    echo "${scripts[@]}"
+}
 
-# ===== add examples/flash_attention/fa_opt/flash_*.py =====
-fa_dir="./flash_attention/fa_opt"
-if [ -d "$fa_dir" ]; then
-    fa_python_files=$(find "$fa_dir" -maxdepth 1 -name "flash_*.py" | sort)
-    if [ -n "$fa_python_files" ]; then
-        for file in $fa_python_files; do all_scripts+=("$file"); done
+# 1. 收集脚本逻辑
+if [ -n "$TEST_DIRS" ]; then
+    # 增量测试：只运行指定目录
+    echo "Incremental test mode - directories: ${DIR_ARRAY[*]}"
+    
+    for dir in "${DIR_ARRAY[@]}"; do
+        test_dir="./$dir"
+        if [ ! -d "$test_dir" ]; then
+            echo "Warning: directory $test_dir not found, skipping"
+            continue
+        fi
+        
+        collected=$(collect_test_scripts "$test_dir")
+        if [ -n "$collected" ]; then
+            for script in $collected; do
+                all_scripts+=("$script")
+            done
+            echo "Collected scripts from $dir: $(echo $collected | wc -w) files"
+        fi
+    done
+    
+    # sparse_flash_attention 的 EXTRA_TASKS
+    if [[ " ${DIR_ARRAY[*]} " =~ " sparse_flash_attention " ]]; then
+        for extra_task in "${EXTRA_TASKS[@]}"; do
+            all_scripts+=("CUSTOM_TASK::${extra_task}")
+        done
+    fi
+    
+    # flash_attention/fa_opt 单独处理
+    if [[ " ${DIR_ARRAY[*]} " =~ " flash_attention " ]]; then
+        fa_dir="./flash_attention/fa_opt"
+        if [ -d "$fa_dir" ]; then
+            fa_python_files=$(find "$fa_dir" -maxdepth 1 -name "flash_*.py" | sort)
+            if [ -n "$fa_python_files" ]; then
+                for file in $fa_python_files; do all_scripts+=("$file"); done
+            fi
+        fi
+    fi
+else
+    # 全量测试：使用 collect_test_scripts 遍历所有目录
+    echo "Full test mode - scanning all directories"
+    
+    # 遍历所有一级目录
+    for dir in $(find . -maxdepth 1 -type d -not -name "." -not -name "dispatch_combine" -not -name "shmem" | sort); do
+        collected=$(collect_test_scripts "$dir")
+        if [ -n "$collected" ]; then
+            for script in $collected; do
+                all_scripts+=("$script")
+            done
+        fi
+    done
+    
+    # EXTRA_TASKS
+    for extra_task in "${EXTRA_TASKS[@]}"; do
+        all_scripts+=("CUSTOM_TASK::${extra_task}")
+    done
+    
+    # flash_attention/fa_opt 单独处理
+    fa_dir="./flash_attention/fa_opt"
+    if [ -d "$fa_dir" ]; then
+        fa_python_files=$(find "$fa_dir" -maxdepth 1 -name "flash_*.py" | sort)
+        if [ -n "$fa_python_files" ]; then
+            for file in $fa_python_files; do all_scripts+=("$file"); done
+        fi
     fi
 fi
 
-
-if [ -d "./gemm_aot" ]; then
-    bash_scripts=$(find ./gemm_aot -maxdepth 1 -name "run_example_gemm_aot.sh" | sort)
-    if [ -n "$bash_scripts" ]; then
-        for script in $bash_scripts; do all_scripts+=("$script"); done
-    fi
-fi
-
-# ===== add examples/torch_tl_ascend/test_example.sh =====
-if [ -d "./torch_tl_ascend" ]; then
-    bash_scripts=$(find ./torch_tl_ascend -maxdepth 1 -name "test_example.sh" | sort)
-    if [ -n "$bash_scripts" ]; then
-        for script in $bash_scripts; do all_scripts+=("$script"); done
-    fi
-fi
-
-# ====== 新增：将特定目录任务逐个加入测试队列 ======
-for extra_task in "${EXTRA_TASKS[@]}"; do
-    # 使用特殊前缀标记，格式: CUSTOM_TASK::目录|命令|显示名称
-    all_scripts+=("CUSTOM_TASK::${extra_task}")
-done
+echo "Total scripts to run: ${#all_scripts[@]}"
 # =================================================
 
 if [ ${#all_scripts[@]} -eq 0 ]; then
@@ -169,9 +260,34 @@ echo -e "\n====================================="
 echo "Running pytest tests"
 echo "====================================="
 
-# 自动发现并运行 testing/python/ 目录下的所有测试文件（包括所有子目录）
-pytest --forked ../testing/python/ -v -n $MAX_JOBS
-pytest_exit_code=$?
+# 运行 pytest 并捕获输出（使用 tee 同时显示和保存）
+pytest --forked ../testing/python/ -v -n $MAX_JOBS 2>&1 | tee pytest_output.log
+pytest_exit_code=${PIPESTATUS[0]}
+
+# 提取 pytest 统计（最后一行包含 passed/failed/xfailed）
+pytest_summary=$(grep -E "[0-9]+ (passed|failed|xfailed)" pytest_output.log | tail -1)
+
+# 解析 pytest 结果
+pytest_passed=0
+pytest_failed=0
+pytest_xfailed=0
+
+if [ -n "$pytest_summary" ]; then
+    # 提取 passed 数量
+    if echo "$pytest_summary" | grep -q "passed"; then
+        pytest_passed=$(echo "$pytest_summary" | grep -Eo "[0-9]+ passed" | grep -Eo "[0-9]+" || echo "0")
+    fi
+    
+    # 提取 failed 数量（不含 xfailed）
+    if echo "$pytest_summary" | grep -q "failed"; then
+        pytest_failed=$(echo "$pytest_summary" | grep -Eo "[0-9]+ failed" | grep -Eo "[0-9]+" || echo "0")
+    fi
+    
+    # 提取 xfailed 数量（预期失败，不计入失败）
+    if echo "$pytest_summary" | grep -q "xfailed"; then
+        pytest_xfailed=$(echo "$pytest_summary" | grep -Eo "[0-9]+ xfailed" | grep -Eo "[0-9]+" || echo "0")
+    fi
+fi
 
 # 统计 pytest 结果
 if [ $pytest_exit_code -eq 0 ]; then
@@ -183,5 +299,25 @@ else
     echo "Some pytest tests FAILED!"
     echo "====================================="
 fi
+
+# 输出合并后的结果（用于 CI workflow 解析）
+# xfailed 是预期失败的测试，在 pytest 视角下属于"成功"状态（符合预期）
+# 应计入 passed_all，而不应计入 failed_all
+total_all=$((total_scripts + pytest_passed + pytest_failed + pytest_xfailed))
+passed_all=$((passed_scripts + pytest_passed + pytest_xfailed))
+failed_all=$((failed_scripts + pytest_failed))
+
+echo -e "\n====================================="
+echo "Final Execution Summary (Bench + Pytest)"
+echo "Bench: Total: $total_scripts | Passed: $passed_scripts | Failed: $failed_scripts"
+echo "Pytest: Passed: $pytest_passed | Failed: $pytest_failed | Xfailed: $pytest_xfailed (expected failures, counted as passed)"
+echo "Total: $total_all | Passed: $passed_all | Failed: $failed_all"
+if [ $total_all -gt 0 ]; then
+    echo "Pass rate: $((passed_all * 100 / total_all))%"
+fi
+echo "====================================="
+
+# 清理临时文件
+rm -f pytest_output.log
 
 exit $pytest_exit_code
