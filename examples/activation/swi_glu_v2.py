@@ -6,7 +6,7 @@ tilelang.cache.clear_cache()
 torch.set_default_device("npu")
 
 pass_configs = {
-    # tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
     # tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_SYNC: True,
     tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
     # tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
@@ -104,8 +104,7 @@ def swi_glu(block_M, block_N, split_dim, dtype="bfloat16"):
                     T.tile.sub(temp_ub, zero_ub, a0_ub[cur, :, :])
                     T.tile.exp(temp_ub, temp_ub)
                     T.tile.add(temp_ub, temp_ub, 1.0)
-                    T.tile.reciprocal(temp_ub, temp_ub)
-                    T.tile.mul(temp_ub, a0_ub[cur, :, :], temp_ub)
+                    T.tile.div(temp_ub, a0_ub[cur, :, :], temp_ub)
                     T.set_flag("mte3", "v", cur)
                     T.wait_flag("mte3", "v", cur)
                     T.tile.mul(b_ub[cur, :, :], temp_ub, a1_ub[cur, :, :])

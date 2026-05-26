@@ -7,7 +7,7 @@ tilelang.cache.clear_cache()
 torch.set_default_device("npu")
 
 pass_configs = {
-    # tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
     # tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_SYNC: True,
     tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
     # tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
@@ -123,8 +123,7 @@ def swi_glu_backward_db(block_M, block_N, split_dim, dtype="float"):
                     T.tile.sub(temp1[cur, :, :], zero_ub, x1_ub[cur, :, :])
                     T.tile.exp(temp1[cur, :, :], temp1[cur, :, :])
                     T.tile.add(temp1[cur, :, :], temp1[cur, :, :], 1.0)
-                    T.tile.reciprocal(temp1[cur, :, :], temp1[cur, :, :])
-                    T.tile.mul(sigmoid_ub[cur, :, :], one_ub, temp1[cur, :, :])
+                    T.tile.div(sigmoid_ub[cur, :, :], one_ub, temp1[cur, :, :])
 
                     ## silu(x1) = x1 * sigmoid(x1)
                     T.tile.mul(temp1[cur, :, :], x1_ub[cur, :, :], sigmoid_ub[cur, :, :])
