@@ -1401,9 +1401,12 @@ void CodeGenTileLangAscendPto::FillCodegen(const CallNode *op) {
   this->stream << "set_flag(PIPE_V, PIPE_S, EVENT_ID0);\n";
   this->PrintIndent();
   this->stream << "wait_flag(PIPE_V, PIPE_S, EVENT_ID0);\n";
+
+  ShapeInfo dst_shape_info = GetSliceInfo(op->args[1].as<CallNode>());
+  std::string dst_name = ResolveUbSliceName(dst_shape_info);
+
   this->PrintIndent();
-  this->stream << "TEXPANDS" << "("
-               << PrintBufferOffset(op->args[1].as<CallNode>()) << ", "
+  this->stream << "TEXPANDS" << "(" << dst_name << ", "
                << PrintExpr(op->args[2]) << ");\n";
 }
 
