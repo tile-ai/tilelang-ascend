@@ -66,9 +66,6 @@ def swi_glu(block_M, block_N, split_dim, dtype="bfloat16"):
             tmp_bf16_2 = T.alloc_ub((rows_per_vec, block_N), dtype)
             tmp_bf16_3 = T.alloc_ub((rows_per_vec, block_N), dtype)
 
-            for s in T.serial(stages):
-                T.set_flag("v", "mte2", s)
-
             for i in T.serial(num_iters):
                 cur = i % stages
 
@@ -81,56 +78,30 @@ def swi_glu(block_M, block_N, split_dim, dtype="bfloat16"):
                     row2 = row + m_offset
                     col2 = col + n_offset
 
-                    T.wait_flag("v", "mte2", cur)
-
-                    T.set_flag("v", "mte2", 3)
-                    T.wait_flag("v", "mte2", 3)
                     if need_cast:
                         T.copy(A[row, col], tmp_bf16_1)
                         T.copy(A[row2, col2], tmp_bf16_2)
-                        T.set_flag("mte2", "v", cur)
-                        T.wait_flag("mte2", "v", cur)
                         T.tile.cast(a0_ub[cur, :, :], tmp_bf16_1, "CAST_NONE", elem_num)
                         T.tile.cast(a1_ub[cur, :, :], tmp_bf16_2, "CAST_NONE", elem_num)
                     else:
                         T.copy(A[row, col], a0_ub[cur, :, :])
                         T.copy(A[row2, col2], a1_ub[cur, :, :])
-                    T.pipe_barrier("mte2")
-
-                    T.set_flag("mte2", "v", cur)
 
                     # compute
-                    T.wait_flag("mte2", "v", cur)
                     T.tile.sub(temp_ub, zero_ub, a0_ub[cur, :, :])
                     T.tile.exp(temp_ub, temp_ub)
                     T.tile.add(temp_ub, temp_ub, 1.0)
                     T.tile.div(temp_ub, a0_ub[cur, :, :], temp_ub)
-                    T.set_flag("mte3", "v", cur)
-                    T.wait_flag("mte3", "v", cur)
                     T.tile.mul(b_ub[cur, :, :], temp_ub, a1_ub[cur, :, :])
-
-                    T.set_flag("v", "mte2", cur)
-
-                    T.set_flag("v", "mte3", cur)
-
-                    T.wait_flag("v", "mte3", cur)
-                    T.pipe_barrier("mte3")
 
                     out_row = bx * block_M + vid * rows_per_vec
                     out_col = by * block_N
 
                     if need_cast:
-                        T.set_flag("mte3", "v", cur)
-                        T.wait_flag("mte3", "v", cur)
                         T.tile.cast(tmp_bf16_3, b_ub[cur, :, :], "CAST_RINT", elem_num)
                         T.copy(tmp_bf16_3, B[out_row, out_col])
                     else:
                         T.copy(b_ub[cur, :, :], B[out_row, out_col])
-
-                    T.pipe_barrier("mte3")
-
-            T.wait_flag("v", "mte2", 0)
-            T.wait_flag("v", "mte2", 1)
 
     return swiglu
 

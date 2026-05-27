@@ -80,8 +80,6 @@ def swi_glu_backward_db(block_M, block_N, split_dim, dtype="float"):
 
             T.tile.fill(zero_ub, 0.0)
             T.tile.fill(one_ub, 1.0)
-            for s in T.serial(stages):
-                T.set_flag("v", "mte2", s)
 
             for i in T.serial(num_iters):
                 cur = i % stages
@@ -95,17 +93,11 @@ def swi_glu_backward_db(block_M, block_N, split_dim, dtype="float"):
                     row_start = bx * block_M + vid * rows_per_vec
                     col_start = by * block_N
 
-                    T.wait_flag("v", "mte2", cur)
-
                     ## load
-                    T.set_flag("v", "mte2", 3)
-                    T.wait_flag("v", "mte2", 3)
                     if need_cast:
                         T.copy(A[row_start, col_start], tmp_bf16_1)
                         T.copy(A[row_start + m_offset, col_start + n_offset], tmp_bf16_2)
                         T.copy(dY[row_start, col_start], tmp_bf16_3)
-                        T.set_flag("mte2", "v", cur)
-                        T.wait_flag("mte2", "v", cur)
                         T.tile.cast(x1_ub[cur, :, :], tmp_bf16_1, "CAST_NONE", elem_num)
                         T.tile.cast(x2_ub[cur, :, :], tmp_bf16_2, "CAST_NONE", elem_num)
                         T.tile.cast(dy_ub[cur, :, :], tmp_bf16_3, "CAST_NONE", elem_num)
@@ -114,11 +106,6 @@ def swi_glu_backward_db(block_M, block_N, split_dim, dtype="float"):
                         T.copy(A[row_start + m_offset, col_start + n_offset], x2_ub[cur, :, :])
                         T.copy(dY[row_start, col_start], dy_ub[cur, :, :])
 
-                    T.pipe_barrier("mte2")
-
-                    T.set_flag("mte2", "v", cur)
-
-                    T.wait_flag("mte2", "v", cur)
                     ## sigmoid(x1)
                     T.tile.sub(temp1[cur, :, :], zero_ub, x1_ub[cur, :, :])
                     T.tile.exp(temp1[cur, :, :], temp1[cur, :, :])
@@ -143,21 +130,11 @@ def swi_glu_backward_db(block_M, block_N, split_dim, dtype="float"):
 
                     ## dx1 = dy * x2 * derivative
                     T.tile.mul(dx1_ub[cur, :, :], dy_ub[cur, :, :], x2_ub[cur, :, :])
-                    T.set_flag("mte3", "v", cur)
-                    T.wait_flag("mte3", "v", cur)
                     T.tile.mul(dx1_ub[cur, :, :], dx1_ub[cur, :, :], temp2[cur, :, :])
-
-                    T.set_flag("v", "mte3", cur)
-                    T.set_flag("v", "mte2", cur)
-
-                    T.wait_flag("v", "mte3", cur)
-                    T.pipe_barrier("mte3")
 
                     ## store
                     if row_start + m_offset < M and col_start + n_offset < N:
                         if need_cast:
-                            T.set_flag("mte3", "v", cur)
-                            T.wait_flag("mte3", "v", cur)
                             T.tile.cast(tmp_bf16_4, dx2_ub[cur, :, :], "CAST_RINT", elem_num)
                             T.tile.cast(tmp_bf16_5, dx1_ub[cur, :, :], "CAST_RINT", elem_num)
                             T.copy(tmp_bf16_4, dA[row_start + m_offset, col_start + n_offset])
@@ -165,9 +142,6 @@ def swi_glu_backward_db(block_M, block_N, split_dim, dtype="float"):
                         else:
                             T.copy(dx2_ub[cur, :, :], dA[row_start + m_offset, col_start + n_offset])
                             T.copy(dx1_ub[cur, :, :], dA[row_start, col_start])
-
-            T.wait_flag("v", "mte2", 0)
-            T.wait_flag("v", "mte2", 1)
 
     return main
 
