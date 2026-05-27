@@ -1482,14 +1482,13 @@ AICORE PTO_INLINE void copy_cv_experiment(
 
 #ifdef PTO_PLATFORM_A5
 template <typename T, int DstRows, int DstCols, int SrcRows, int SrcCols,
-          int mode = 0>
+          int TmpRows, int TmpCols, int mode = 0>
 AICORE PTO_INLINE void
 copy_vc_experiment(TileMatL1<T, DstRows, DstCols, DstRows, DstCols> &dst_l1,
                    TileUbDataND<T, SrcRows, SrcCols, SrcRows, SrcCols> &src_ub,
-                   TileUbDataND<T, SrcRows, SrcCols, SrcRows, SrcCols> &tmp,
+                   TileUbDataND<T, TmpRows, TmpCols, TmpRows, TmpCols> &tmp,
                    uint16_t indexRow = 0, uint16_t indexCol = 0) {
-  // Create Nz alias using tmp's buffer address
-  TileUbDataNz<T, SrcRows, SrcCols, SrcRows, SrcCols> nz_tmp;
+  TileUbDataNz<T, TmpRows, TmpCols, SrcRows, SrcCols> nz_tmp;
   TASSIGN(nz_tmp, reinterpret_cast<uint64_t>(tmp.data()));
   // TMOV: copy + ND → Nz format conversion
   TMOV(nz_tmp, src_ub);

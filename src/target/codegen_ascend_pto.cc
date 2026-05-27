@@ -1688,22 +1688,26 @@ void CodeGenTileLangAscendPto::CopyVCExperimentCodegen(const CallNode *op) {
   auto dtype = GetAccessPtrDtypePto(op->args[0].as<CallNode>());
   BufferInfo src_info = GetBufferInfo(op->args[0]);
   BufferInfo dst_info = GetBufferInfo(op->args[1]);
+  BufferInfo tmp_info = GetBufferInfo(op->args[2]);
 
   auto [src_rows, src_cols] = GetShapeFromBufferInfo(src_info);
   auto [dst_rows, dst_cols] = GetShapeFromBufferInfo(dst_info);
+  auto [tmp_rows, tmp_cols] = GetShapeFromBufferInfo(tmp_info);
 
   int mode = Downcast<IntImm>(op->args[5])->value;
 
   std::string src_name = PrintBufferOffset(op->args[0].as<CallNode>());
   std::string dst_name = PrintBufferOffset(op->args[1].as<CallNode>());
   std::string tmp_name = PrintBufferOffset(op->args[2].as<CallNode>());
+  std::string index_row = PrintExpr(op->args[3]);
+  std::string index_col = PrintExpr(op->args[4]);
 
   this->PrintIndent();
   stream << kAscendPtoScope << "copy_vc_experiment<" << getType(dtype) << ", "
          << dst_rows << ", " << dst_cols << ", " << src_rows << ", " << src_cols
-         << ", " << mode << ">(" << dst_name << ", " << src_name << ", "
-         << tmp_name << ", " << PrintExpr(op->args[3]) << ", "
-         << PrintExpr(op->args[4]) << ");\n";
+         << ", " << tmp_rows << ", " << tmp_cols << ", " << mode << ">("
+         << dst_name << ", " << src_name << ", " << tmp_name << ", "
+         << index_row << ", " << index_col << ");\n";
 }
 
 void CodeGenTileLangAscendPto::CallExternCodegen(const CallNode *op) {
