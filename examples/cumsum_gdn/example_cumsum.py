@@ -32,7 +32,7 @@ pass_configs = {
 }
 
 
-@tilelang.jit(out_idx=[-1], target="pto", pass_configs=pass_configs)
+@tilelang.jit(out_idx=[-1], target="ascendc", pass_configs=pass_configs)
 def cumsum_ker(B, H, L, C, reverse=False, head_first=True, use_fragment=False, accum_dtype="float"):
     chunk_num = tl.ceildiv(L, C)
     VEC_NUM = 2
@@ -67,10 +67,9 @@ def cumsum_ker(B, H, L, C, reverse=False, head_first=True, use_fragment=False, a
                         fragment_ub[0, i] = fragment_ub[0, i - 1]
                     fragment_ub[0, i] = fragment_ub[0, i] + g_ub[0, i]
                     # tl.set_flag("s", "v", 0)
-                    # tl.wait_flag("s", "v", 0)
-                tl.tile.fill(total_ub, 0.0)
+                    # tl.wait_flag("s", "v", 0)        
                 if reverse:
-                    # tl.tile.fill(s_ub, 0.0)
+                    tl.tile.fill(total_ub, 0.0)
                     tl.reduce_sum(g_ub, total_ub)
                     # for i in range(C):
                         # total_ub[0, 0] = total_ub[0, 0] + g_ub[0, i]
@@ -118,7 +117,7 @@ def chunk_cumsum(g, C, reverse=False, head_first=False, use_fragment=False):
         return ref_chunk_cumsum(g, C, reverse=reverse, head_first=head_first)
 
     ker = cumsum_ker(B, H, L, C, reverse=reverse, head_first=True, use_fragment=use_fragment)
-    print(ker.get_kernel_source())
+    # print(ker.get_kernel_source())
     g_sum = ker(g)
     return g_sum
 

@@ -42,7 +42,7 @@ def hadamard_block_intra(b, n, block_size, dtype="float"):
                 offset = block_id_in_batch * block_size
 
                 data_ub = T.alloc_ub((block_size,), dtype)
-                tmp_ub = T.alloc_ub((block_size,), dtype)
+                # tmp_ub = T.alloc_ub((block_size,), dtype)
 
                 T.copy(A[batch_id, offset : offset + block_size], data_ub)
 
@@ -57,20 +57,20 @@ def hadamard_block_intra(b, n, block_size, dtype="float"):
                         for k in T.serial(half):
                             a_val = data_ub[base + k]
                             b_val = data_ub[base + k + half]
-                            tmp_ub[base + k] = a_val + b_val
+                            data_ub[base + k] = a_val + b_val
                             # T.set_flag("s", "v", 0)
                             # T.wait_flag("s", "v", 0)
-                            tmp_ub[base + k + half] = a_val - b_val
-                    T.set_flag("s", "v", 0)
-                    T.wait_flag("s", "v", 0)        
-                    T.copy(tmp_ub, data_ub)
+                            data_ub[base + k + half] = a_val - b_val
+                    # T.set_flag("s", "v", 0)
+                    # T.wait_flag("s", "v", 0)        
+                    # T.copy(tmp_ub, data_ub)
 
                 T.copy(data_ub, B[batch_id, offset : offset + block_size])
 
     return main
 
 
-@tilelang.jit(out_idx=[1], pass_configs=pass_configs)
+@tilelang.jit(out_idx=[1], target = "pto", pass_configs=pass_configs)
 def hadamard_cross_block_pair(b, n, block_size, cross_stage, dtype="float"):
     """
     Execute one level of cross-block butterfly operation (stage cross_stage)
