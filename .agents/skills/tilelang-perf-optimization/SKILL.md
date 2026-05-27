@@ -1,6 +1,6 @@
 ---
 name: tilelang-perf-optimization
-description: TileLang 算子性能调优。提供性能数据采集、瓶颈诊断、优化实施、效果验证能力。触发：算子精度通过后需要优化性能时，或性能不及预期时。
+description: TileLang 算子性能调优与潜在性能劣化模式检查。提供性能数据采集、瓶颈诊断、优化实施、效果验证能力；也用于生成或评审算子时对照常见性能劣化模式示例检查当前 kernel 代码。触发：算子精度通过后需要优化性能、性能不及预期时。
 ---
 
 # TileLang 性能优化
@@ -57,6 +57,11 @@ print(func.get_kernel_source())
 
 根据算子类型选择优化手段（详见 [optimization-guide](references/optimization-guide.md)）：
 
+**生成/改写算子前的性能关注项检查**：
+
+- 若正在生成、改写或评审 kernel，先阅读 [performance-antipatterns](references/performance-antipatterns.md)，对照其中的常见性能劣化模式示例检查当前代码是否存在类似 pattern
+- 文档中的 pattern 不是正确性错误，而是需要重点关注的性能风险点；确需临时保留时，在 `optimization_log.md` 中记录 shape、dtype、保留原因和后续替换方案
+
 | 优化方向 | 说明 | 典型手段 |
 |---------|------|---------|
 | pass_configs 调优 | 调整编译器 pass 行为 | 关闭自动同步、关闭内存规划 |
@@ -74,6 +79,23 @@ print(func.get_kernel_source())
 如无法满足性能要求，再使用 **Expert 模式**手动控制（显式指定 L1/UB/L0 层级、手动同步、细粒度调度），参考同一文档。
 
 - 调用 `/tilelang-api-best-practices` 查阅相关 API 用法
+
+#### 最佳实践案例参考
+
+参考以下算子的优化实践文档，学习具体优化技巧：
+
+| 算子类型 | 最佳实践文档 | 核心优化技术 |
+|---------|-------------|-------------|
+| **Vector 型** | [RoPE 优化实践](references/best-practices/rope-developer-mode.md) | NPU 内动态生成 Mask、Tile API 向量化、参数简化 |
+| **Cube 型** | [GEMM Intrinsic 优化](references/best-practices/gemm_intrinsic_optimize.md) | 多缓冲流水线、细粒度 Flag 同步、MMA intrinsic、L0 分块、负载均衡 |
+| **CV 融合型** | [Flash Attention 优化](references/best-practices/flash_attn_optimize.md) | num_stages 流水线、批量 Softmax、Cross-core Semaphore、数据布局优化 |
+
+**文档内容涵盖**：
+- 优化前后对比（代码示例）
+- 性能收益量化分析
+- 关键 API 使用方法
+- 参数配置指南
+- 适用场景说明
 
 ### Step 5: 精度再验证
 
