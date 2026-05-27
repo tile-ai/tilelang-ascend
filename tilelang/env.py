@@ -111,6 +111,9 @@ TL_TEMPLATE_NOT_FOUND_MESSAGE = "TileLang is not installed or found in the expec
 ", which may lead to compilation bugs when utilize tilelang backend."
 TVM_LIBRARY_NOT_FOUND_MESSAGE = "TVM is not installed or found in the expected path"
 
+# Override jit target when it is "auto"
+TILELANG_JIT_TARGET = os.environ.get("TILELANG_JIT_TARGET", None)
+
 SKIP_LOADING_TILELANG_SO = os.environ.get("SKIP_LOADING_TILELANG_SO", "0")
 
 # Handle TVM_IMPORT_PYTHON_PATH to import tvm from the specified path
@@ -224,6 +227,7 @@ __all__ = [
     "ROCM_HOME",
     "ASCEND_HOME",
     "TILELANG_CACHE_DIR",
+    "TILELANG_JIT_TARGET",
     "TILELANG_AUTO_TUNING_CPU_UTILITIES",
     "TILELANG_AUTO_TUNING_CPU_COUNTS",
     "TILELANG_AUTO_TUNING_MAX_CPU_COUNT",

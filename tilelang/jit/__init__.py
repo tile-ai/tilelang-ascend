@@ -17,6 +17,7 @@ from typing import (
     Dict,  # For type hinting dicts
     Optional,
 )
+from tilelang import env
 from tilelang import tvm as tvm
 from tvm.tir import PrimFunc
 from tvm.target import Target
@@ -275,6 +276,7 @@ def jit(  # This is the new public interface
         Index(es) of the auto-allocated workspace tensors.
     target : Union[str, Target], optional
         Compilation target for TVM (e.g., "cuda", "llvm"). Defaults to "auto".
+        Can be overridden by TILELANG_JIT_TARGET env var when target is "auto".
     target_host : Union[str, Target], optional
         Target host for cross-compilation. Defaults to None.
     platform : Literal
@@ -294,6 +296,9 @@ def jit(  # This is the new public interface
         Either a JIT-compiled wrapper around the input function, or a configured decorator
         instance that can then be applied to a function.
     """
+    env_target = env.TILELANG_JIT_TARGET
+    if env_target and (target == "auto"):
+        target = env_target
     if callable(func):
         # Case 1: Used as @jit (func_or_out_idx is the function, others are defaults)
         # Create a default _JitImplementation instance and apply it to the function.
