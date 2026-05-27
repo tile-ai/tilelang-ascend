@@ -1091,14 +1091,14 @@ std::string CodeGenTileLangAscendPto::GetPadEnum(const PrimExpr value) {
 void CodeGenTileLangAscendPto::GMCopyCall(const CallNode *call,
                                           std::string op_name) {
   static const std::unordered_map<std::string, bool> kIsGmToLocalOp = {
-      {"copy_gm_to_ub", true},
-      {"copy_ub_to_gm", false},
-      {"copy_gm_to_l1", true},
-      {"copy_l0c_to_gm", false}};
+      {"copy_gm_to_ub", true},         {"copy_ub_to_gm", false},
+      {"copy_gm_to_l1", true},         {"copy_l0c_to_gm", false},
+      {"atomic_add_l0c_to_gm", false}, {"atomic_add_ub_to_gm", false}};
 
   ICHECK(kIsGmToLocalOp.count(op_name))
       << "Unsupported GM copy op: " << op_name;
   bool is_load = kIsGmToLocalOp.at(op_name);
+  bool is_atomic_add = op_name.find("atomic_add") != std::string::npos;
 
   BufferInfo src_info = GetBufferInfo(call->args[1]);
   BufferInfo dst_info = GetBufferInfo(call->args[2]);
@@ -1117,7 +1117,10 @@ void CodeGenTileLangAscendPto::GMCopyCall(const CallNode *call,
   auto strides = ComputeStrides(gm_info.shape, call->args[3]);
   auto [is_dynamic, stride_tmpl, stride_param] =
       FormatStrides(this, gm_info.shape, strides);
-  if (is_dynamic) {
+
+  // atomic_add always uses dynamic version, others only when stride is dynamic
+  bool need_dynamic = is_dynamic || is_atomic_add;
+  if (need_dynamic) {
     op_name += "_dynamic";
   }
   auto gm_offset_string = PrintExpr(gm_info.offset);
@@ -1128,9 +1131,12 @@ void CodeGenTileLangAscendPto::GMCopyCall(const CallNode *call,
   if (op_name.rfind("copy_gm_to_ub", 0) == 0) {
     stream << slice_info.slice_row << ", " << slice_info.slice_col << ", ";
     stream << GetPadEnum(call->args[6]);
-  } else if (op_name.rfind("copy_ub_to_gm", 0) == 0) {
+  } else if (op_name.rfind("copy_ub_to_gm", 0) == 0 ||
+             op_name.find("atomic_add_ub_to_gm") != std::string::npos) {
+    // copy_ub_to_gm and atomic_add_ub_to_gm use slice_row, slice_col
     stream << slice_info.slice_row << ", " << slice_info.slice_col;
   } else {
+    // copy_l0c_to_gm / copy_gm_to_l1 / atomic_add_l0c_to_gm use valid size
     stream << slice_info.slice_valid_row << ", " << slice_info.slice_valid_col;
   }
   stream << ">(";
@@ -1138,7 +1144,7 @@ void CodeGenTileLangAscendPto::GMCopyCall(const CallNode *call,
   // gm addr
   stream << copy_base_addr_map_.at(gm_info.id) << " + " << gm_offset_string;
 
-  if (is_dynamic) {
+  if (need_dynamic) {
     stream << ", pto::Shape<" << shape_tmpl << ">()" << ", pto::Stride<"
            << stride_tmpl << ">(" << stride_param << ")";
   }
@@ -1312,6 +1318,12 @@ void CodeGenTileLangAscendPto::CallExternCodegen(const CallNode *op) {
     CopyL1ToL0Codegen(op, true);
   } else if (op_name.find("tl::ascend::copy_l1_to_l0b") != std::string::npos) {
     CopyL1ToL0Codegen(op, false);
+  } else if (op_name.find("tl::ascend::atomic_add_l0c_to_gm") !=
+             std::string::npos) {
+    GMCopyCall(op, "atomic_add_l0c_to_gm");
+  } else if (op_name.find("tl::ascend::atomic_add_ub_to_gm") !=
+             std::string::npos) {
+    GMCopyCall(op, "atomic_add_ub_to_gm");
   }
 }
 
