@@ -37,6 +37,7 @@
 | tilelang-op-generate | 实现算子时 | 基于 design.md 生成算子代码 |
 | tilelang-pass-analyzer       | **查询 Pass 功能时立即触发**  | Pass 功能分析、对比、分类查询。关键词："XX pass 是干什么的"、"分析 XX pass"、"XX 和 YY pass 的区别" |
 | tilelang-pass-workflow-analyzer | **查询 Pass 工作流时立即触发** | Pass 工作流分析、执行顺序、依赖关系、新 Pass 定位。关键词："pass 的工作流程"、"Pass 执行顺序"、"Pass 依赖关系"、"如何添加新 Pass" |
+| tilelang-run-examples | 运行 examples 时触发 | 运行 examples 目录下算子脚本，支持选择后端（pto/auto）、是否运行 aclgraph。关键词："运行样例"、"运行示例"、"run examples"、"跑所有算子"、"批量测试"、"全量测试" |
 | skill-creator      | 创建skill时          | 用于创建skill  |
 
 ## Skill 自动调用规则 ⭐⭐⭐
@@ -68,6 +69,7 @@
 | "VectorizeLoop pass 的作用" | Pass 功能查询 | tilelang-pass-analyzer | 立即调用 |
 | "同步相关的 pass 有哪些" | Pass 分类查询 | tilelang-pass-analyzer | 立即调用 |
 | "pass 的工作流程" | Pass 工作流查询 | tilelang-pass-workflow-analyzer | 立即调用 |
+| "运行 examples" | 批量测试算子 | tilelang-run-examples | 立即调用 |
 | "创建一个新的 skill" | Skill 创建 | skill-creator | 立即调用 |
 
 ## 核心原则 ⭐⭐⭐
