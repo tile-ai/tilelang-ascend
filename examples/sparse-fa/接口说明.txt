@@ -1,0 +1,178 @@
+假设一个 batch 里有 2 条请求，规则统一是四段式：
+
+  rules: [0, 1, 0, 2]
+  0 = causal  (下三角)
+  1 = full    (全算)
+  2 = diag    (对角线)
+                                                                                                                   
+  两条请求如下：
+                            
+  request 0: no_match
+  logical segments = [history=4, context=2, realtime=3, target=2]
+  total logical len = 11                                                                                           
+  matched_prefix = 0                                                                                               
+  live tokens = 11                                                                                                 
+
+  request 1: partial_match                                                                                         
+  logical segments = [history=4, context=2, realtime=3, target=2]
+  total logical len = 11                                                                                           
+  matched_prefix = 7                                                                                               
+  live tokens = 4
+                                                                                                                   
+  request 1 的 matched_prefix=7 表示前 7 个 token 已经在 KV cache 里，也就是：
+                                                         
+  matched: history 4 + context 2 + realtime 前 1 个 = 7
+  live: realtime 剩余 2 个 + target 2 个 = 4                                                                       
+                                                         
+  因此 batch 里总 live token 数是：
+                                                                                                                   
+  total_live_q = 11 + 4 = 15 
+                                                         
+  核心 tensor 形状如下：
+                            
+  query_snd: [15, num_heads, head_dim]      // bf16，packed live query
+  key_snd:   [15, num_heads, head_dim]      // bf16，packed live key
+  value_snd: [15, num_heads, head_dim]      // bf16，packed live value  
+                                                         
+  这里 query/key/value 只包含 live tokens，不包含已经 matched 的 prefix。 
+
+  逻辑段边界：
+segment_offsets_i32 = [                                                                                          
+    [0, 4, 6, 9, 11],   // request 0: history/context/realtime/target 边界                                       
+    [0, 4, 6, 9, 11],   // request 1: 逻辑边界仍然写完整序列
+  ]; // shape [batch=2, num_segments+1=5], int32
+
+  segment_rules_i32 = [0, 1, 0, 2]; // shape [num_segments=4], int32
+
+  物理 packed live 起点：
+
+  q_seq_starts_i32 = [0, 11]; // shape [batch=2], int32
+
+  含义是：
+
+  request 0 的 live tokens 在 query_snd[0:11]
+  request 1 的 live tokens 在 query_snd[11:15]
+
+  matched prefix 长度：
+
+  matched_prefix_lens_i32 = [0, 7]; // shape [batch=2], int32
+
+  含义是：
+
+  request 0: no_match，不读 prefix cache
+  request 1: 前 7 个 logical token 从 kv_cache + block_table 读
+
+  match mode：
+
+  match_mode = 2; // kMixed
+
+  三种 mode：
+
+  0 = kNoMatchOnly   // 整个 batch 都 no_match，走 no_match fast path
+  1 = kPartialOnly   // 整个 batch 都 partial_match，走 partial-only 实例
+  2 = kMixed         // batch 内 no_match / partial_match 混合，按 request 判断
+
+  KV cache 相关：
+
+  key_cache:   [num_blocks, block_size, num_heads, head_dim] // bf16
+  value_cache: [num_blocks, block_size, num_heads, head_dim] // bf16
+
+  block_table_i32 = [
+    [0],  // request 0，不使用 cache；可以填合法 dummy
+    [1],  // request 1 的 logical block 0 映射到 physical block 1
+  ]; // shape [batch=2, max_blocks], int32
+
+  block_size = 128;
+
+  对于 request 1，kernel 读 prefix token 的方式是：
+
+  logical token 0..6
+  通过 block_table_i32[1] 找到对应 physical block
+  从 key_cache/value_cache 读 prefix KV
+
+  其他参数：
+
+  max_request_len = 11;              // 当前 batch 中最大 live token 数
+  sm_scale = 1.0 / sqrt(head_dim);   // attention scale
+
+  output_snd: [15, num_heads, head_dim] // bf16，输出 live token 的 attention 结果
+
+  完整调用形态：
+
+  mtgr_ragged_segment_attention_hopper_unified_research_cuda(
+      query_snd,                 // [15, H, D], bf16, packed live Q
+      key_snd,                   // [15, H, D], bf16, packed live K
+      value_snd,                 // [15, H, D], bf16, packed live V
+
+      segment_offsets_i32,       // [2, 5], logical segment offsets
+      segment_rules_i32,         // [4], mask rules
+      q_seq_starts_i32,          // [2], physical live start per request
+      matched_prefix_lens_i32,   // [2], cached logical prefix len per request
+
+      match_mode,                // 0 no_match, 1 partial_only, 2 mixed
+
+      key_cache,                 // paged K cache
+      value_cache,               // paged V cache
+      block_table_i32,           // request -> physical cache blocks
+      block_size,                // e.g. 128
+
+      max_request_len,           // max live length in this batch
+      sm_scale,
+      output_snd);               // [15, H, D], bf16
+
+  一句话总结接口语义：
+
+  segment_offsets/rules/matched_prefix 描述完整逻辑序列和 mask；
+  q_seq_starts/query_snd/key_snd/value_snd 描述物理 packed live tokens；
+  kv_cache/block_table 提供 matched prefix 的历史 KV；
+  match_mode 决定整批走 no_match、partial-only，还是 request-level mixed。
+
+================================================================================
+接口限制与规格约束
+================================================================================
+
+1. S1/S2 长度关系：
+   (a) 等长场景：投影下来的内存连续，性能最优
+   (b) Q截断场景：至多截断到第三段最后位置，blockSize 连续（需先评估工作量）
+
+2. 序列表达方式：采用长度 + 前缀模式 => 任意表达，性能为主
+
+3. 输入规格范围（530前先支持第三段只有1个子段，后续需泛化）：
+   (a) SeqNum>=4（四段式）：
+       - 第1段（history）：长度>=1500，mask=下三角(causal)
+       - 第2段（context）：固定8，mask=全算(full)
+       - 第3段（realtime）：每个子段>=100，mask=对角线(diag)/下三角(causal)
+         [当前版本先支持1个子段，后续泛化多子段]
+       - 第4段（target）：长度>=1000，mask=对角线(diag)
+
+   (b) SeqNum>=3（三段式，第1、2段合并）：
+       - 第1段（history+context合并）：长度>=1500，mask=全算(full)
+       - 第2段（realtime）：每个子段>=100，mask=对角线(diag)/下三角(causal)
+         [当前版本先支持1个子段，后续泛化多子段]
+       - 第3段（target）：长度>=1000，mask=对角线(diag)
+
+4. 基线对比：
+   - FlashAttention：使用 AscendC 实现作为基准
+   - Mask：使用 AscendC 实现（由 agent 生成）
+
+5. 性能诉求：不与 GPU 横向对比（GPU 加速比 4-8 倍为参考）
+
+6. Q截断场景：至多截断到第三段最后位置，blockSize 连续
+
+7. 对角线宽度：宽度>1 的场景需额外评估工作量
+
+================================================================================
+客户提供规格
+================================================================================
+
+  batch: 1/2/4/8/16
+
+  长度大小：
+  - 第1段（history）：约2000
+  - 第2段（context）：固定8
+  - 第3段（realtime）：1个子段，约100/200/400
+  - 第4段（target）：约1000
+
+  若第1段与第2段合并：直接取约2000
+
+  多batch时：每个batch的长度不应设为相同（模拟真实 ragged 场景）
