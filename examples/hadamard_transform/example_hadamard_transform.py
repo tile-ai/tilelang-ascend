@@ -13,12 +13,13 @@ def is_pow_of_2(n):
 
 
 pass_configs = {
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
     tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
     tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
 }
 
 
-@tilelang.jit(out_idx=[1], pass_configs=pass_configs)
+@tilelang.jit(out_idx=[1], target = "pto", pass_configs=pass_configs)
 def hadamard_block_intra(b, n, block_size, dtype="float"):
     """
     Execute in-block butterfly operations (first log2(block_size) stages)
@@ -57,7 +58,11 @@ def hadamard_block_intra(b, n, block_size, dtype="float"):
                             a_val = data_ub[base + k]
                             b_val = data_ub[base + k + half]
                             tmp_ub[base + k] = a_val + b_val
+                            # T.set_flag("s", "v", 0)
+                            # T.wait_flag("s", "v", 0)
                             tmp_ub[base + k + half] = a_val - b_val
+                    T.set_flag("s", "v", 0)
+                    T.wait_flag("s", "v", 0)        
                     T.copy(tmp_ub, data_ub)
 
                 T.copy(data_ub, B[batch_id, offset : offset + block_size])
@@ -130,12 +135,14 @@ def hadamard_transform_complete(b, n, dtype="float", block_size=1024):
 
     if n <= block_size:
         kernel = hadamard_block_intra(b, n, n, dtype)
+        print(kernel.get_kernel_source())
         return lambda x: kernel(x)
 
     log_n = int(math.log2(n))
     log_block = int(math.log2(block_size))
 
     kernel_intra = hadamard_block_intra(b, n, block_size, dtype)
+    print(kernel_intra.get_kernel_source())
 
     cross_kernels = []
     for cross_stage in range(log_block, log_n):

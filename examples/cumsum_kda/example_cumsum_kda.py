@@ -7,6 +7,7 @@ import torch
 tilelang.cache.clear_cache()
 
 pass_configs = {
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
     tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
     tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
 }
@@ -104,7 +105,7 @@ def _pad_vector_head_first(s: torch.Tensor, block_t: int, block_s: int) -> tuple
     return s_padded, H, T, S
 
 
-@tilelang.jit(out_idx=[-1], pass_configs=pass_configs)
+@tilelang.jit(out_idx=[-1], target="pto", pass_configs=pass_configs)
 def chunk_local_cumsum_scalar_kernel(B, H, SEQ_LEN, BT, reverse=False, head_first=True, dtype="float"):
     chunk_num = tl.ceildiv(SEQ_LEN, BT)
     VEC_NUM = 2
@@ -136,17 +137,21 @@ def chunk_local_cumsum_scalar_kernel(B, H, SEQ_LEN, BT, reverse=False, head_firs
 
             if reverse:
                 tl.tile.fill(total_buf, 0.0)
-                for i in range(BT):
-                    total_buf[0, 0] = total_buf[0, 0] + b_s[0, i]
+                # for i in range(BT):
+                #     total_buf[0, 0] = total_buf[0, 0] + b_s[0, i]
+                #     tl.set_flag("s", "v", 0)
+                #     tl.wait_flag("s", "v", 0)
+                tl.reduce_sum(b_s, total_buf)
                 for i in range(BT):
                     b_o[0, i] = total_buf[0, 0] - b_o[0, i] + b_s[0, i]
-
+            # tl.set_flag("s", "v", 0)
+            # tl.wait_flag("s", "v", 0)
             tl.copy(b_o[0, :], o[i_b, i_h, i_t * BT])
 
     return main
 
 
-@tilelang.jit(out_idx=[-1], pass_configs=pass_configs)
+@tilelang.jit(out_idx=[-1], target="pto", pass_configs=pass_configs)
 def chunk_global_cumsum_scalar_kernel(B, H, SEQ_LEN, BT, reverse=False, head_first=True, dtype="float"):
     chunk_num = tl.ceildiv(SEQ_LEN, BT)
     VEC_NUM = 2
@@ -197,7 +202,7 @@ def chunk_global_cumsum_scalar_kernel(B, H, SEQ_LEN, BT, reverse=False, head_fir
     return main
 
 
-@tilelang.jit(out_idx=[-1], pass_configs=pass_configs)
+@tilelang.jit(out_idx=[-1], target="pto", pass_configs=pass_configs)
 def chunk_local_cumsum_vector_kernel(B, H, SEQ_LEN, S_DIM, BT, BS, reverse=False, head_first=True, dtype="float"):
     chunk_num = tl.ceildiv(SEQ_LEN, BT)
     s_block_num = tl.ceildiv(S_DIM, BS)
@@ -232,9 +237,12 @@ def chunk_local_cumsum_vector_kernel(B, H, SEQ_LEN, S_DIM, BT, BS, reverse=False
 
             if reverse:
                 tl.tile.fill(total_buf, 0.0)
-                for i in range(BT):
-                    for j in range(BS):
-                        total_buf[0, j] = total_buf[0, j] + b_s[i, j]
+                # for i in range(BT):
+                #     for j in range(BS):
+                #         total_buf[0, j] = total_buf[0, j] + b_s[i, j]
+                #         tl.set_flag("s", "v", 0)
+                #         tl.wait_flag("s", "v", 0)
+                tl.reduce_sum(b_s, total_buf, dim=0)
                 for i in range(BT):
                     for j in range(BS):
                         b_o[i, j] = total_buf[0, j] - b_o[i, j] + b_s[i, j]
@@ -244,7 +252,7 @@ def chunk_local_cumsum_vector_kernel(B, H, SEQ_LEN, S_DIM, BT, BS, reverse=False
     return main
 
 
-@tilelang.jit(out_idx=[-1], pass_configs=pass_configs)
+@tilelang.jit(out_idx=[-1], target="pto", pass_configs=pass_configs)
 def chunk_global_cumsum_vector_kernel(B, H, SEQ_LEN, S_DIM, BT, BS, reverse=False, head_first=True, dtype="float"):
     chunk_num = tl.ceildiv(SEQ_LEN, BT)
     s_block_num = tl.ceildiv(S_DIM, BS)

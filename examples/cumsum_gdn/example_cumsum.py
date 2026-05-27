@@ -26,12 +26,13 @@ head_first = args.head_first
 use_fragment = args.use_fragment
 
 pass_configs = {
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
     tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
     tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
 }
 
 
-@tilelang.jit(out_idx=[-1], pass_configs=pass_configs)
+@tilelang.jit(out_idx=[-1], target="pto", pass_configs=pass_configs)
 def cumsum_ker(B, H, L, C, reverse=False, head_first=True, use_fragment=False, accum_dtype="float"):
     chunk_num = tl.ceildiv(L, C)
     VEC_NUM = 2
@@ -65,13 +66,20 @@ def cumsum_ker(B, H, L, C, reverse=False, head_first=True, use_fragment=False, a
                     if i > 0:
                         fragment_ub[0, i] = fragment_ub[0, i - 1]
                     fragment_ub[0, i] = fragment_ub[0, i] + g_ub[0, i]
+                    # tl.set_flag("s", "v", 0)
+                    # tl.wait_flag("s", "v", 0)
 
                 if reverse:
                     tl.tile.fill(total_ub, 0.0)
                     for i in range(C):
-                        total_ub[0, 0] = total_ub[0, 0] + g_ub[0, i]
+                        tl.reduce_sum(g_ub, total_ub)
+                        # total_ub[0, 0] = total_ub[0, 0] + g_ub[0, i]
+                        # tl.set_flag("s", "v", 0)
+                        # tl.wait_flag("s", "v", 0)
                     for i in range(C):
                         fragment_ub[0, i] = total_ub[0, 0] - fragment_ub[0, i] + g_ub[0, i]
+                        tl.set_flag("s", "v", 0)
+                        tl.wait_flag("s", "v", 0)
 
                 tl.copy(fragment_ub[0, :], s_ub[0, :])
             else:
@@ -79,11 +87,16 @@ def cumsum_ker(B, H, L, C, reverse=False, head_first=True, use_fragment=False, a
                     if i > 0:
                         s_ub[0, i] = s_ub[0, i - 1]
                     s_ub[0, i] = s_ub[0, i] + g_ub[0, i]
+                    # tl.set_flag("s", "v", 0)
+                    # tl.wait_flag("s", "v", 0)
 
                 if reverse:
                     tl.tile.fill(total_ub, 0.0)
-                    for i in range(C):
-                        total_ub[0, 0] = total_ub[0, 0] + g_ub[0, i]
+                    # for i in range(C):
+                    #     total_ub[0, 0] = total_ub[0, 0] + g_ub[0, i]
+                    #     tl.set_flag("s", "v", 0)
+                    #     tl.wait_flag("s", "v", 0)
+                    tl.reduce_sum(g_ub, total_ub)
                     for i in range(C):
                         s_ub[0, i] = total_ub[0, 0] - s_ub[0, i] + g_ub[0, i]
 
