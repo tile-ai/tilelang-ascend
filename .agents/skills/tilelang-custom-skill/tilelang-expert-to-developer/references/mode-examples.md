@@ -1,5 +1,14 @@
 # Developer vs Expert 模式代码对比
 
+## 目录
+
+- [1. GEMM — Developer 模式](#1-gemm--developer-模式)
+- [2. GEMM — Expert 模式](#2-gemm--expert-模式)
+- [3. Flash Attention — Expert 模式 pass_configs](#3-flash-attention--expert-模式-pass_configs)
+- [4. Flash Attention — Developer 核间流水线 pass_configs](#4-flash-attention--developer-核间流水线-pass_configs)
+- [5. 混合模式 — Softmax](#5-混合模式--softmax)
+- [6. CV 融合 — Developer 模式（W4A8 GEMM）](#6-cv-融合--developer-模式w4a8-gemm)
+
 ---
 
 ## 1. GEMM — Developer 模式

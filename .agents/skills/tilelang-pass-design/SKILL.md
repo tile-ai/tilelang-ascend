@@ -232,7 +232,7 @@ description: "根据 Pass 需求生成 TileLang-Ascend Pass 设计文档（pass-
 ### 后续步骤建议
 1. 查看详细 Pass 工作流：使用 **tilelang-pass-workflow-analyzer** skill
 2. 查看类似 Pass 实现：使用 **tilelang-pass-analyzer** skill
-3. 开始实现 Pass：使用 **tilelang-pass-generate** skill
+3. 开始实现 Pass：使用 **tilelang-pass-generate** skill（待创建）
 ```
 
 ---
@@ -258,4 +258,4 @@ description: "根据 Pass 需求生成 TileLang-Ascend Pass 设计文档（pass-
 |------|------|----------|
 | `tilelang-pass-workflow-analyzer` | 依赖 | 查阅 Pipeline 架构、Pass 定位、依赖关系 |
 | `tilelang-pass-analyzer` | 依赖 | 查阅现有 Pass 实现细节、IR 变换示例 |
-| `tilelang-pass-generate` | 后续 | 根据设计文档生成 Pass 代码（先输出 `pass-impl-skeleton.md` 框架，再落 C++/Python/Pipeline/测试） |
+| `tilelang-pass-generate`（待创建） | 后续 | 根据设计文档生成 Pass 代码 |
