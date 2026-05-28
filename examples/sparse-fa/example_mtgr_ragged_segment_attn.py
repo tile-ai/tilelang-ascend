@@ -18,7 +18,7 @@ PASS_CONFIGS = {
 
 @tilelang.jit(
     out_idx=[3],
-    workspace_idx=[11, 12, 13],
+    workspace_idx=[11, 12, 13, 14],
     pass_configs=PASS_CONFIGS,
 )
 def mtgr_ragged_segment_attention_fwd_pa(
@@ -60,6 +60,7 @@ def mtgr_ragged_segment_attention_fwd_pa(
         workspace_s: T.Tensor([core_num, block_M, block_N], accum_dtype),
         workspace_p: T.Tensor([core_num, block_M, block_N], dtype),
         workspace_o: T.Tensor([core_num, block_M, dim], accum_dtype),
+        workspace_kv: T.Tensor([core_num, block_N, dim], dtype),
     ):
         with T.Kernel(core_num, is_npu=True) as (cid, vid):
             q_l1 = T.alloc_L1([block_M, dim], dtype)
@@ -73,13 +74,18 @@ def mtgr_ragged_segment_attention_fwd_pa(
             acc_o = T.alloc_ub([v_block, dim], accum_dtype)
             sumexp = T.alloc_ub([v_block], accum_dtype)
             m_i = T.alloc_ub([v_block], accum_dtype)
+            m_i_broadcast = T.alloc_ub([v_block, block_N], accum_dtype)
             m_i_prev = T.alloc_ub([v_block], accum_dtype)
+            m_i_prev_broadcast = T.alloc_ub([v_block, dim], accum_dtype)
+
             acc_s_ub = T.alloc_ub([v_block, block_N], accum_dtype)
             acc_s_ub_ = T.alloc_ub([v_block, block_N], accum_dtype)
             sumexp_i_ub = T.alloc_ub([v_block], accum_dtype)
             acc_s_half = T.alloc_ub([v_block, block_N], dtype)
             acc_o_ub = T.alloc_ub([v_block, dim], accum_dtype)
             acc_o_half = T.alloc_ub([v_block, dim], dtype)
+
+            kv_ub = T.alloc_ub([block_N, dim], dtype)
 
             visible_end_ub = T.alloc_ub([block_M], accum_dtype)
             diag_col_ub = T.alloc_ub([block_M], accum_dtype)
@@ -151,24 +157,41 @@ def mtgr_ragged_segment_attention_fwd_pa(
                             0,
                         )
 
-                        # Cache segment: GM→L1 directly
-                        if tile_cache_len > 0:
+                        if tile_cache_len > 0 and tile_live_len > 0:
                             cache_block_idx = kv_local_start // block_size
                             physical_block = block_table[b_i, cache_block_idx]
                             block_offset_start = kv_local_start % block_size
                             T.copy(
-                                key_cache[physical_block, block_offset_start:block_offset_start + tile_cache_len, h_kv, :],
-                                k_l1[0 : tile_cache_len, :],
+                                key_cache[physical_block, block_offset_start : block_offset_start + tile_cache_len, h_kv, :],
+                                kv_ub[0:tile_cache_len, :],
                             )
-
-                        # Live segment: GM→L1 directly
-                        if tile_live_len > 0:
                             kv_packed_start = q_seq_starts[b_i] + kv_local_start + tile_cache_len - prefix_len_b
                             T.copy(
                                 K[kv_packed_start : kv_packed_start + tile_live_len, h_kv, :],
-                                k_l1[tile_cache_len : tile_cache_len + tile_live_len, :],
+                                kv_ub[tile_cache_len : tile_cache_len + tile_live_len, :],
                             )
-                        # Padding rows: not filled, masked out by valid_cols in softmax
+                            T.copy(
+                                kv_ub,
+                                workspace_kv[cid, :, :],
+                            )
+                            T.copy(
+                                workspace_kv[cid, :, :],
+                                k_l1,
+                            )
+                        elif tile_cache_len > 0:
+                            cache_block_idx = kv_local_start // block_size
+                            physical_block = block_table[b_i, cache_block_idx]
+                            block_offset_start = kv_local_start % block_size
+                            T.copy(
+                                key_cache[physical_block, block_offset_start : block_offset_start + tile_cache_len, h_kv, :],
+                                k_l1[0:tile_cache_len, :],
+                            )
+                        elif tile_live_len > 0:
+                            kv_packed_start = q_seq_starts[b_i] + kv_local_start - prefix_len_b
+                            T.copy(
+                                K[kv_packed_start : kv_packed_start + tile_live_len, h_kv, :],
+                                k_l1[0:tile_live_len, :],
+                            )
 
                         T.gemm_v0(q_l1, k_l1, acc_s_l0c, transpose_B=True, init=True)
                         T.copy(acc_s_l0c, workspace_s[cid, :, :])
@@ -233,23 +256,15 @@ def mtgr_ragged_segment_attention_fwd_pa(
                         T.tile.sub(m_i_prev, m_i_prev, m_i)
                         T.tile.exp(m_i_prev, m_i_prev)
 
-                        for row in T.serial(v_block):
-                            T.tile.sub(
-                                acc_s_ub[row, :],
-                                acc_s_ub[row, :],
-                                m_i[row],
-                            )
+                        T.tile.broadcast(m_i_broadcast, m_i, axis=1)
+                        T.tile.sub(acc_s_ub, acc_s_ub, m_i_broadcast)
                         T.tile.exp(acc_s_ub, acc_s_ub)
                         T.reduce_sum(acc_s_ub, sumexp_i_ub, dim=-1)
                         T.tile.mul(sumexp, sumexp, m_i_prev)
                         T.tile.add(sumexp, sumexp, sumexp_i_ub)
 
-                        for row in T.serial(v_block):
-                            T.tile.mul(
-                                acc_o[row, :],
-                                acc_o[row, :],
-                                m_i_prev[row],
-                            )
+                        T.tile.broadcast(m_i_prev_broadcast, m_i_prev, axis=1)
+                        T.tile.mul(acc_o, acc_o, m_i_prev_broadcast)
 
                         T.copy(acc_s_ub, acc_s_half)
                         T.copy(
@@ -263,22 +278,41 @@ def mtgr_ragged_segment_attention_fwd_pa(
 
                         T.copy(workspace_p[cid, :, :], acc_s_l1)
 
-                        if tile_cache_len > 0:
+                        if tile_cache_len > 0 and tile_live_len > 0:
                             cache_block_idx = kv_local_start // block_size
                             physical_block = block_table[b_i, cache_block_idx]
                             block_offset_start = kv_local_start % block_size
                             T.copy(
-                                value_cache[physical_block, block_offset_start:block_offset_start + tile_cache_len, h_kv, :],
-                                v_l1[0 : tile_cache_len, :],
+                                value_cache[physical_block, block_offset_start : block_offset_start + tile_cache_len, h_kv, :],
+                                kv_ub[0:tile_cache_len, :],
                             )
-
-                        if tile_live_len > 0:
                             kv_packed_start = q_seq_starts[b_i] + kv_local_start + tile_cache_len - prefix_len_b
                             T.copy(
                                 V[kv_packed_start : kv_packed_start + tile_live_len, h_kv, :],
-                                v_l1[tile_cache_len : tile_cache_len + tile_live_len, :],
+                                kv_ub[tile_cache_len : tile_cache_len + tile_live_len, :],
                             )
-                        # Padding rows: not filled, masked out
+                            T.copy(
+                                kv_ub,
+                                workspace_kv[cid, :, :],
+                            )
+                            T.copy(
+                                workspace_kv[cid, :, :],
+                                v_l1,
+                            )
+                        elif tile_cache_len > 0:
+                            cache_block_idx = kv_local_start // block_size
+                            physical_block = block_table[b_i, cache_block_idx]
+                            block_offset_start = kv_local_start % block_size
+                            T.copy(
+                                value_cache[physical_block, block_offset_start : block_offset_start + tile_cache_len, h_kv, :],
+                                v_l1[0:tile_cache_len, :],
+                            )
+                        elif tile_live_len > 0:
+                            kv_packed_start = q_seq_starts[b_i] + kv_local_start - prefix_len_b
+                            T.copy(
+                                V[kv_packed_start : kv_packed_start + tile_live_len, h_kv, :],
+                                v_l1[0:tile_live_len, :],
+                            )
 
                         T.gemm_v0(acc_s_l1, v_l1, acc_o_l0c, init=True)
                         T.copy(acc_o_l0c, workspace_o[cid, :, :])
@@ -299,7 +333,7 @@ def mtgr_ragged_segment_attention_fwd_pa(
                             T.tile.div(
                                 acc_o[row, :],
                                 acc_o[row, :],
-                                sumexp[row_i],
+                                sumexp[row],
                             )
 
                     T.copy(acc_o, acc_o_half)
@@ -345,7 +379,6 @@ def build_attention_mask(visible_end, diag_col, S_kv):
     return mask_val
 
 
-
 def mtgr_ragged_segment_attention_wrapper(
     query_snd,
     key_snd,
@@ -374,15 +407,15 @@ def mtgr_ragged_segment_attention_wrapper(
 
     print("start compile kernel")
     func = mtgr_ragged_segment_attention_fwd_pa(
-            heads=H,
-            dim=D,
-            kv_group=kv_group,
-            sm_scale=sm_scale,
-            block_M=block_M,
-            block_N=block_N,
-            block_size=block_size,
-            core_num=core_num,
-        )
+        heads=H,
+        dim=D,
+        kv_group=kv_group,
+        sm_scale=sm_scale,
+        block_M=block_M,
+        block_N=block_N,
+        block_size=block_size,
+        core_num=core_num,
+    )
     print(func.get_kernel_source())
 
     total_live_q = query_snd.size(0)
@@ -416,6 +449,7 @@ def mtgr_ragged_segment_attention_wrapper(
     ws = torch.zeros(core_num, block_M, block_N, dtype=torch.float32)
     wp = torch.zeros(core_num, block_M, block_N, dtype=torch.bfloat16)
     wo = torch.zeros(core_num, block_M, D, dtype=torch.float32)
+    wkv = torch.zeros(core_num, block_N, D, dtype=torch.bfloat16)
 
     output = func(
         query_snd,
@@ -431,6 +465,7 @@ def mtgr_ragged_segment_attention_wrapper(
         ws,
         wp,
         wo,
+        wkv,
     )
     torch.npu.synchronize()
     return output
@@ -664,29 +699,47 @@ def test(
 
 
 if __name__ == "__main__":
-    B = 2
-    H = 4
-    D = 128
-    kv_group = 1
-    block_M = 128
-    block_N = 128
-    block_size = 128
-    core_num = 24
+    test_configs = [
+        # {
+        #     "B": 1,
+        #     "H": 8,
+        #     "D": 64,
+        #     "kv_group": 1,
+        #     "block_M": 128,
+        #     "block_N": 128,
+        #     "block_size": 128,
+        #     "core_num": 24,
+        #     "seg_lengths": [[1600, 8, 200, 1200]],
+        #     "rules": [0, 1, 2, 2],
+        #     "matched_prefix_arr": [0, 0],
+        # },
+        {
+            "B": 2,
+            "H": 8,
+            "D": 64,
+            "kv_group": 1,
+            "block_M": 128,
+            "block_N": 128,
+            "block_size": 128,
+            "core_num": 24,
+            "seg_lengths": [[100, 50, 150, 200], [128, 256, 256, 128]],
+            "rules": [0, 1, 2, 2],
+            "matched_prefix_arr": [0, 0],
+        },
+        # {
+        #     "B": 2,
+        #     "H": 8,
+        #     "D": 64,
+        #     "kv_group": 1,
+        #     "block_M": 128,
+        #     "block_N": 128,
+        #     "block_size": 128,
+        #     "core_num": 24,
+        #     "seg_lengths": [[100, 50, 150, 200], [128, 256, 256, 128]],
+        #     "rules": [0, 1, 2, 2],
+        #     "matched_prefix_arr": [0, 140],
+        # },
+    ]
 
-    seg_lengths = [[64, 8, 32, 24], [128, 8, 32, 64]]
-    rules = [0, 1, 0, 2]
-    matched_prefix_arr = [0, 140]
-
-    test(
-        B=B,
-        H=H,
-        D=D,
-        kv_group=kv_group,
-        block_M=block_M,
-        block_N=block_N,
-        block_size=block_size,
-        core_num=core_num,
-        seg_lengths=seg_lengths,
-        rules=rules,
-        matched_prefix_arr=matched_prefix_arr,
-    )
+    for config in test_configs:
+        test(**config)
