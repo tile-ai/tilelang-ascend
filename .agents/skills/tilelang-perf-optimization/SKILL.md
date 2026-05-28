@@ -1,6 +1,6 @@
 ---
 name: tilelang-perf-optimization
-description: TileLang 算子性能调优。提供性能数据采集、瓶颈诊断、优化实施、效果验证能力。触发：算子精度通过后需要优化性能时，或性能不及预期时。
+description: TileLang 算子性能调优与潜在性能劣化模式检查。提供性能数据采集、瓶颈诊断、优化实施、效果验证能力；也用于生成或评审算子时对照常见性能劣化模式示例检查当前 kernel 代码。触发：算子精度通过后需要优化性能、性能不及预期时。
 ---
 
 # TileLang 性能优化
@@ -56,6 +56,11 @@ print(func.get_kernel_source())
 ### Step 4: 优化实施
 
 根据算子类型选择优化手段（详见 [optimization-guide](references/optimization-guide.md)）：
+
+**生成/改写算子前的性能关注项检查**：
+
+- 若正在生成、改写或评审 kernel，先阅读 [performance-antipatterns](references/performance-antipatterns.md)，对照其中的常见性能劣化模式示例检查当前代码是否存在类似 pattern
+- 文档中的 pattern 不是正确性错误，而是需要重点关注的性能风险点；确需临时保留时，在 `optimization_log.md` 中记录 shape、dtype、保留原因和后续替换方案
 
 | 优化方向 | 说明 | 典型手段 |
 |---------|------|---------|
