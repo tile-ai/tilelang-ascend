@@ -140,6 +140,7 @@ def chunk_local_cumsum_scalar_kernel(B, H, SEQ_LEN, BT, reverse=False, head_firs
                 tl.reduce_sum(b_s, total_buf)
                 for i in range(BT):
                     b_o[0, i] = total_buf[0, 0] - b_o[0, i] + b_s[0, i]
+
             tl.copy(b_o[0, :], o[i_b, i_h, i_t * BT])
 
     return main
