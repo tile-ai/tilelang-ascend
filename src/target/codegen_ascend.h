@@ -247,6 +247,8 @@ private:
   bool use_swizzle_{false};
 
   std::string platform_;
+
+  bool has_cube_op_{false};
 };
 
 } // namespace codegen
