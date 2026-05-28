@@ -32,7 +32,7 @@ pass_configs = {
 }
 
 
-@tilelang.jit(out_idx=[-1], target="ascendc", pass_configs=pass_configs)
+@tilelang.jit(out_idx=[-1], pass_configs=pass_configs)
 def cumsum_ker(B, H, L, C, reverse=False, head_first=True, use_fragment=False, accum_dtype="float"):
     chunk_num = tl.ceildiv(L, C)
     VEC_NUM = 2
@@ -56,7 +56,6 @@ def cumsum_ker(B, H, L, C, reverse=False, head_first=True, use_fragment=False, a
             total_ub = tl.alloc_shared([1, 1], accum_dtype)
             fragment_ub = tl.alloc_shared([1, C], accum_dtype)
 
-            # tl.tile.fill(s_ub, 0.0)
             tl.copy(G[bz, by, bx * C], g_ub[0, :])
 
             if use_fragment:
@@ -65,38 +64,23 @@ def cumsum_ker(B, H, L, C, reverse=False, head_first=True, use_fragment=False, a
                 for i in range(C):
                     if i > 0:
                         fragment_ub[0, i] = fragment_ub[0, i - 1]
-                    fragment_ub[0, i] = fragment_ub[0, i] + g_ub[0, i]
-                    # tl.set_flag("s", "v", 0)
-                    # tl.wait_flag("s", "v", 0)        
+                    fragment_ub[0, i] = fragment_ub[0, i] + g_ub[0, i]     
                 if reverse:
                     tl.tile.fill(total_ub, 0.0)
                     tl.reduce_sum(g_ub, total_ub)
-                    # for i in range(C):
-                        # total_ub[0, 0] = total_ub[0, 0] + g_ub[0, i]
-                        # tl.set_flag("s", "v", 0)
-                        # tl.wait_flag("s", "v", 0)
                     for i in range(C):
                         fragment_ub[0, i] = total_ub[0, 0] - fragment_ub[0, i] + g_ub[0, i]
-                        # tl.set_flag("s", "v", 0)
-                        # tl.wait_flag("s", "v", 0)
                 tl.tile.fill(s_ub, 0.0)
                 tl.copy(fragment_ub[0, :], s_ub[0, :])
-                # tl.copy(fragment_ub[0, :], S[bz, by, bx * C])
             else:
                 tl.tile.fill(s_ub, 0.0)
                 for i in range(C):
                     if i > 0:
                         s_ub[0, i] = s_ub[0, i - 1]
                     s_ub[0, i] = s_ub[0, i] + g_ub[0, i]
-                    # tl.set_flag("s", "v", 0)
-                    # tl.wait_flag("s", "v", 0)
 
                 if reverse:
                     tl.tile.fill(total_ub, 0.0)
-                    # for i in range(C):
-                    #     total_ub[0, 0] = total_ub[0, 0] + g_ub[0, i]
-                    #     tl.set_flag("s", "v", 0)
-                    #     tl.wait_flag("s", "v", 0)
                     tl.reduce_sum(g_ub, total_ub)
                     for i in range(C):
                         s_ub[0, i] = total_ub[0, 0] - s_ub[0, i] + g_ub[0, i]
@@ -117,7 +101,6 @@ def chunk_cumsum(g, C, reverse=False, head_first=False, use_fragment=False):
         return ref_chunk_cumsum(g, C, reverse=reverse, head_first=head_first)
 
     ker = cumsum_ker(B, H, L, C, reverse=reverse, head_first=True, use_fragment=use_fragment)
-    # print(ker.get_kernel_source())
     g_sum = ker(g)
     return g_sum
 
