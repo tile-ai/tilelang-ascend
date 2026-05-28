@@ -43,7 +43,7 @@ After modifying CMakeLists.txt, rebuild the project to apply the changes:
 
 ```bash
 cd build
-cmakeake clean
+make clean
 cmake ..
 make -j$(nproc)
 ```
