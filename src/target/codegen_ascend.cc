@@ -692,10 +692,6 @@ void CodeGenTileLangAscend::VisitStmt_(const AttrStmtNode *op) {
       }
       this->stream << "auto " << current_block_id
                    << " = AscendC::GetBlockIdx();\n";
-      if (!has_cube_op_ && cv_ratio_ != cv_1_1) {
-        this->PrintIndent();
-        this->stream << "auto __raw_cid__ = " << current_block_id << ";\n";
-      }
       this->PrintIndent();
       this->stream << "if ASCEND_IS_AIV {\n";
       this->PrintIndent();
@@ -714,7 +710,7 @@ void CodeGenTileLangAscend::VisitStmt_(const AttrStmtNode *op) {
       auto vec_id_ = AllocVarID(iv->var.get());
       this->PrintIndent();
       if (!has_cube_op_ && cv_ratio_ != cv_1_1) {
-        this->stream << "auto " << vec_id_ << " = __raw_cid__ % 2;\n";
+        this->stream << "auto " << vec_id_ << " = AscendC::GetBlockIdx() % 2;\n";
       } else {
         this->stream << "auto " << vec_id_ << " = AscendC::GetSubBlockIdx();\n";
       }
