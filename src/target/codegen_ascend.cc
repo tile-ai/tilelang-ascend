@@ -35,7 +35,15 @@ public:
   }
 
 private:
+  void VisitStmt(const Stmt &stmt) final {
+    if (has_cube_op_)
+      return;
+    StmtExprVisitor::VisitStmt(stmt);
+  }
+
   void VisitExpr_(const CallNode *op) final {
+    if (has_cube_op_)
+      return;
     if (op->op.same_as(tl::ascend_gemm_v0()) ||
         op->op.same_as(tl::ascend_gemm_v1()) ||
         op->op.same_as(tl::ascend_mma())) {
@@ -708,8 +716,7 @@ void CodeGenTileLangAscend::VisitStmt_(const AttrStmtNode *op) {
       if (!has_cube_op_ && cv_ratio_ != cv_1_1) {
         this->stream << "auto " << vec_id_ << " = __raw_cid__ % 2;\n";
       } else {
-        this->stream << "auto " << vec_id_
-                     << " = AscendC::GetSubBlockIdx();\n";
+        this->stream << "auto " << vec_id_ << " = AscendC::GetSubBlockIdx();\n";
       }
     }
     this->VisitStmt(op->body);
@@ -1100,7 +1107,7 @@ void CodeGenTileLangAscend::PrintHostFunc(
   this->PrintIndent();
 
   if (!has_cube_op_ && cv_ratio_ != cv_1_1) {
-    os << name << "<<<" << core << " * 2"
+    os << name << "<<<(" << core << ") * 2"
        << ", nullptr, stream>>>(";
   } else {
     os << name << "<<<" << core << ", nullptr, stream>>>(";
