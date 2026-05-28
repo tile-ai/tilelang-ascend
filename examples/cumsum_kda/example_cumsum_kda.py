@@ -7,6 +7,7 @@ import torch
 tilelang.cache.clear_cache()
 
 pass_configs = {
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
     tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
     tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
 }
@@ -136,8 +137,7 @@ def chunk_local_cumsum_scalar_kernel(B, H, SEQ_LEN, BT, reverse=False, head_firs
 
             if reverse:
                 tl.tile.fill(total_buf, 0.0)
-                for i in range(BT):
-                    total_buf[0, 0] = total_buf[0, 0] + b_s[0, i]
+                tl.reduce_sum(b_s, total_buf)
                 for i in range(BT):
                     b_o[0, i] = total_buf[0, 0] - b_o[0, i] + b_s[0, i]
 
@@ -232,9 +232,7 @@ def chunk_local_cumsum_vector_kernel(B, H, SEQ_LEN, S_DIM, BT, BS, reverse=False
 
             if reverse:
                 tl.tile.fill(total_buf, 0.0)
-                for i in range(BT):
-                    for j in range(BS):
-                        total_buf[0, j] = total_buf[0, j] + b_s[i, j]
+                tl.reduce_sum(b_s, total_buf, dim=0)
                 for i in range(BT):
                     for j in range(BS):
                         b_o[i, j] = total_buf[0, j] - b_o[i, j] + b_s[i, j]
