@@ -1271,9 +1271,9 @@ void CodeGenTileLangAscendPto::GemmV0Codegen(const CallNode *op) {
   this->stream << kAscendPtoScope << "gemm_v0" << "<"
                << params["data_type_input"] << ", "
                << params["data_type_output"] << ", "
-               << GetValidShape(std::stoi(params["M"]), data_type_input) << ", "
-               << GetValidShape(std::stoi(params["N"]), data_type_input) << ", "
-               << GetValidShape(std::stoi(params["K"]), data_type_input) << ", "
+               << params["M"] << ", "
+               << params["N"] << ", "
+               << params["K"] << ", "
                << params["M"] << ", " << params["N"] << ", " << params["K"]
                << ", " << kL0Tail << ", " << params["transpose_A"] << ", "
                << params["transpose_B"] << ">" << "(";
@@ -2733,7 +2733,7 @@ inline void PrintConst(const FloatImmNode *op, std::ostream &os,
     break;
   }
   case 16: {
-    os << "half_t" << '(';
+    os << "half" << '(';
     FloatImm const_f32 = FloatImm(DataType::Float(32), op->value);
     PrintConst(const_f32.get(), os, p);
     os << ')';

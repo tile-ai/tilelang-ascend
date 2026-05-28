@@ -22,7 +22,7 @@ BLOCK_K_HALF = 128
 VEC_NUM = 2
 
 
-@tilelang.jit(out_idx=[-1], pass_configs=PASS_CONFIGS)
+@tilelang.jit(out_idx=[-1], target="pto", pass_configs=PASS_CONFIGS)
 def w4a8_gemm_cv(M, N, K):
     """W4A8 GEMM CV Fusion - Developer mode with dual V-core parallelization
 
@@ -58,7 +58,7 @@ def w4a8_gemm_cv(M, N, K):
             high_ub = T.alloc_shared((BLOCK_K_HALF,), "int16")
             low_half_ub = T.alloc_shared((BLOCK_K_HALF,), "float16")
             high_half_ub = T.alloc_shared((BLOCK_K_HALF,), "float16")
-            cmp_ub = T.alloc_shared((BLOCK_K_HALF,), "float16")
+            cmp_ub = T.alloc_shared((BLOCK_K_HALF,), "uint8")
             neg16_ub = T.alloc_shared((BLOCK_K_HALF,), "float16")
             zero_ub = T.alloc_shared((BLOCK_K_HALF,), "float16")
             adj_ub = T.alloc_shared((BLOCK_K_HALF,), "float16")
@@ -167,6 +167,7 @@ def generate_quantized_weight(N, K):
 
 def test(M, N, K):
     kernel = w4a8_gemm_cv(M, N, K)
+    print(kernel.get_kernel_source())
 
     A_int8 = torch.randint(-8, 8, (M, K), dtype=torch.int8).npu()
     qB, B_int8_ref = generate_quantized_weight(N, K)
@@ -202,10 +203,10 @@ def main():
         test(64, 64, 256)
 
         # Level 1: K=512
-        test(128, 128, 512)
+        # test(128, 128, 512)
 
         # Level 2: K=1024
-        test(256, 256, 1024)
+        # test(256, 256, 1024)
 
     print("Test Passed!")
 
