@@ -710,7 +710,8 @@ void CodeGenTileLangAscend::VisitStmt_(const AttrStmtNode *op) {
       auto vec_id_ = AllocVarID(iv->var.get());
       this->PrintIndent();
       if (!has_cube_op_ && cv_ratio_ != cv_1_1) {
-        this->stream << "auto " << vec_id_ << " = AscendC::GetBlockIdx() % 2;\n";
+        this->stream << "auto " << vec_id_
+                     << " = AscendC::GetBlockIdx() % 2;\n";
       } else {
         this->stream << "auto " << vec_id_ << " = AscendC::GetSubBlockIdx();\n";
       }
