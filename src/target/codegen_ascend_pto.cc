@@ -1487,11 +1487,33 @@ void CodeGenTileLangAscendPto::CopyPipeCodegen(const CallNode *op,
   }
 
   this->PrintIndent();
-  this->stream << func_call << "<" << pipe_type << ", " << dtype_str << ", "
-               << M_val << ", " << N_val << ", "
-               << "pto::TileSplitAxis::" << SplitAxisToEnumStr(split_axis_val)
-               << ">(" << pipe_id << ", "
-               << (is_producer ? src_name : dst_name) << ");\n";
+  bool has_tmp = is_producer && op->args.size() > 12 && op->args[12].as<CallNode>();
+  if (has_tmp) {
+    int tmp_M_val = Downcast<IntImm>(op->args[13])->value;
+    int tmp_N_val = Downcast<IntImm>(op->args[14])->value;
+    BufferInfo tmp_info = GetBufferInfo(op->args[12]);
+    ShapeInfo tmp_shape_info = GetSliceInfo(tmp_info.access_ptr);
+    std::string tmp_name = tmp_shape_info.ub_name;
+    if (tmp_shape_info.is_slice) {
+      tmp_name = GetTempVarName(tmp_shape_info.ub_name);
+      CreateUbVariableND(tmp_name, tmp_shape_info);
+    }
+    this->stream << func_call << "<" << pipe_type << ", " << dtype_str << ", "
+                 << M_val << ", " << N_val << ", "
+                 << tmp_M_val << ", " << tmp_N_val << ", "
+                 << "pto::TileSplitAxis::" << SplitAxisToEnumStr(split_axis_val)
+                 << ">(" << pipe_id << ", " << src_name << ", " << tmp_name << ");\n";
+  } else if (is_producer) {
+    this->stream << func_call << "<" << pipe_type << ", " << dtype_str << ", "
+                 << M_val << ", " << N_val << ", "
+                 << "pto::TileSplitAxis::" << SplitAxisToEnumStr(split_axis_val)
+                 << ">(" << pipe_id << ", " << src_name << ");\n";
+  } else {
+    this->stream << func_call << "<" << pipe_type << ", " << dtype_str << ", "
+                 << M_val << ", " << N_val << ", "
+                 << "pto::TileSplitAxis::" << SplitAxisToEnumStr(split_axis_val)
+                 << ">(" << pipe_id << ", " << dst_name << ");\n";
+  }
 }
 
 void CodeGenTileLangAscendPto::PreScanPipes(const PrimFunc &f) {

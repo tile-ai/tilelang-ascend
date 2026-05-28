@@ -1419,5 +1419,24 @@ AICORE PTO_INLINE void copy_pipe_to_l1(Pipe &pipe, TileMatL1<T, M, N> &l1_tile) 
   pto::TPOP<Pipe, TileMatL1<T, M, N>, SplitAxis>(pipe, l1_tile);
 }
 
+// A5 overload with tmp buffer for ND->NZ conversion
+// M_tmp, N_tmp: tmp buffer shape (may differ from ub_tile shape)
+template <typename Pipe, typename T, int32_t M, int32_t N, int32_t M_tmp, int32_t N_tmp,
+          pto::TileSplitAxis SplitAxis = pto::TileSplitAxis::TILE_UP_DOWN>
+AICORE PTO_INLINE void copy_ub_to_pipe(Pipe &pipe,
+                                        TileUbDataND<T, M, N> &ub_tile,
+                                        TileUbDataND<T, M_tmp, N_tmp> &tmp_tile) {
+  using SrcTile = TileUbDataND<T, M, N>;
+  using DstTile = pto::Tile<pto::TileType::Vec, T, M_tmp, N_tmp,
+                            pto::BLayout::ColMajor, M_tmp, N_tmp,
+                            pto::SLayout::RowMajor, 512, pto::PadValue::Null>;
+
+  pto::TMOV<DstTile, SrcTile>(reinterpret_cast<DstTile&>(tmp_tile), ub_tile);
+  TL_PIPE_V_BARRIER();
+
+  pto::TPUSH<Pipe, DstTile, SplitAxis>(
+      pipe, reinterpret_cast<DstTile&>(tmp_tile));
+}
+
 } // namespace tl::ascend_pto
 #endif
