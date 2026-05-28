@@ -35,6 +35,9 @@ private:
   bool enRelu;
   bool transposeL1;
   PrimExpr padValue;
+  Buffer tmp;
+  Array<Range> tmp_range;
+  Array<PrimExpr> tmp_extents;
 };
 
 class AscendAtomicAdd : public Operator {

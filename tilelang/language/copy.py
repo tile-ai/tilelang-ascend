@@ -259,6 +259,7 @@ def npu_copy_v2(
     enable_relu: bool = False,
     transpose: bool | None = False,  # for copy_l1_to_l0 param: transpose l1
     pad_value: float | int | tir.PrimExpr | None = None,
+    tmp: tir.Buffer | tir.BufferLoad | None = None,
 ):
     """Copy data between memory regions.
 
@@ -273,6 +274,9 @@ def npu_copy_v2(
             ops (which read the full tile) observe a defined value; AscendTailMaskPropagation
             additionally rewrites unary / binary / scalar ops to compute only over the valid
             region so the pad value is preserved in the gap.
+        tmp (Optional[Union[tir.Buffer, tir.BufferLoad]]): Temporary buffer for UB->L1 copy
+            on A5 platform. Used for ND->NZ format conversion. Defaults to None.
+            Only required when copying from UB to L1 on A5.
 
     Raises:
         TypeError: If copy extents cannot be deduced from arguments
@@ -348,4 +352,19 @@ def npu_copy_v2(
     else:
         pad_value_expr = tir.IntImm("int32", int(pad_value))
 
-    return tir.call_intrin("handle", tir.op.Op.get("tl.ascend_copy"), src, dst, enable_relu, transpose, pad_value_expr)
+    # Handle tmp parameter (for UB->L1 copy on A5)
+    if tmp is None:
+        tmp_region = tir.IntImm("int32", 0)
+    else:
+        tmp_extent = get_extent(tmp)
+        if tmp_extent is None:
+            tmp_extent = extent
+        else:
+            tmp_extent = list(tmp_extent)
+            if len(tmp_extent) != len(extent):
+                max_len = max(len(tmp_extent), len(extent))
+                if len(tmp_extent) < max_len:
+                    tmp_extent = tmp_extent + [1] * (max_len - len(tmp_extent))
+        tmp_region = _to_region(tmp, "rw")
+
+    return tir.call_intrin("handle", tir.op.Op.get("tl.ascend_copy"), src, dst, enable_relu, transpose, pad_value_expr, tmp_region)
