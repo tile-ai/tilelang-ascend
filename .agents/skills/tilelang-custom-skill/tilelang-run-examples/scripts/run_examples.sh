@@ -316,12 +316,12 @@ for script in "${all_scripts[@]}"; do
         if [[ "$output" =~ [Kk][Ee][Rr][Nn][Ee][Ll][[:space:]][Oo][Uu][Tt][Pp][Uu][Tt][[:space:]][Mm][Aa][Tt][Cc][Hh] ]] || \
            [[ "$output" =~ [Tt][Ee][Ss][Tt][[:space:]][Pp][Aa][Ss][Ss][Ee][Dd][!] ]] || \
            [[ "$script" == CUSTOM_TASK::* && $exit_code -eq 0 ]]; then
-            echo "[PASSED] $current_script_ref"
+            printf "[PASSED] %s\n" "$current_script_ref"
             touch "$temp_dir/pass_$total_scripts"
         else
-            echo "[FAILED] $current_script_ref (Exit: $exit_code)"
-            echo "  Last line: $last_line"
-            echo "$output" | tail -n 5 | sed 's/^/  /'
+            local details
+            details=$(echo "$output" | tail -n 5 | sed 's/^/  /')
+            printf "[FAILED] %s (Exit: %d)\n  Last line: %s\n%s\n" "$current_script_ref" "$exit_code" "$last_line" "$details"
         fi
     } &
 
