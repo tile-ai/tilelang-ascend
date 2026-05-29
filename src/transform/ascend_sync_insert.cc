@@ -195,31 +195,6 @@ private:
     }
   }
 
-  Stmt VisitStmt_(const BufferStoreNode *op) override {
-    // Only handle BufferStore in PTO mode
-    auto model = target_->GetAttr<String>("model").value_or("auto");
-    if (model != "pto") {
-      return GetRef<Stmt>(op);
-    }
-
-    // BufferStore is a scalar pipe write operation (e.g., SetValue)
-    BufferAccess current;
-    current.buffer_name = op->buffer->data->name_hint;
-    current.is_write = true;
-    current.pipeline = "PIPE_S";
-    current.operation = "buffer_store";
-    current.is_sliced = false;
-    current.sync_graph = SyncGraph();
-    current.pipe_barriers = {};
-    current.physical_address = GetPhysicalAddress(current.buffer_name);
-
-    // Only update access history, don't insert sync before BufferStore
-    // The sync will be inserted when the next operation reads this buffer
-    UpdateLatestAccessHistory({current});
-
-    return GetRef<Stmt>(op);
-  }
-
   Stmt VisitStmt_(const AttrStmtNode *op) override {
     if (op->attr_key == "resource_scope") {
       auto saved_access_history = current_access_history_;
