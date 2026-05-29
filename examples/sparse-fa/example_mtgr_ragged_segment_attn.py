@@ -18,7 +18,7 @@ PASS_CONFIGS = {
 
 @tilelang.jit(
     out_idx=[3],
-    workspace_idx=[11, 12, 13, 14],
+    workspace_idx=[9, 10, 11, 12],
     pass_configs=PASS_CONFIGS,
 )
 def mtgr_ragged_segment_attention_fwd_pa(
@@ -30,6 +30,7 @@ def mtgr_ragged_segment_attention_fwd_pa(
     block_N=128,
     block_size=128,
     core_num=24,
+    max_splits=16,
 ):
     sm_scale = (1.0 / dim) ** 0.5 if sm_scale is None else sm_scale
     dtype = "bfloat16"
@@ -37,9 +38,10 @@ def mtgr_ragged_segment_attention_fwd_pa(
 
     batch = T.symbolic("batch")
     total_live_q = T.symbolic("total_live_q")
-    max_request_len = T.symbolic("max_request_len")
     num_blocks = T.symbolic("num_blocks")
     max_blocks = T.symbolic("max_blocks")
+    total_seq_tiles = T.symbolic("total_seq_tiles")
+    max_q_tiles = T.symbolic("max_q_tiles")
 
     kv_heads = heads // kv_group
     v_block = block_M // 2
@@ -52,8 +54,6 @@ def mtgr_ragged_segment_attention_fwd_pa(
         Output: T.Tensor([total_live_q, heads, dim], dtype),
         q_seq_starts: T.Tensor([batch + 1], "int32"),
         matched_prefix_lens: T.Tensor([batch], "int32"),
-        visible_end: T.Tensor([batch, max_request_len], "float32"),
-        diag_col: T.Tensor([batch, max_request_len], "float32"),
         block_table: T.Tensor([batch, max_blocks], "int32"),
         key_cache: T.Tensor([num_blocks, block_size, kv_heads, dim], dtype),
         value_cache: T.Tensor([num_blocks, block_size, kv_heads, dim], dtype),
@@ -61,6 +61,14 @@ def mtgr_ragged_segment_attention_fwd_pa(
         workspace_p: T.Tensor([core_num, block_M, block_N], dtype),
         workspace_o: T.Tensor([core_num, block_M, dim], accum_dtype),
         workspace_kv: T.Tensor([core_num, block_N, dim], dtype),
+        mask_causal: T.Tensor([block_M, block_N], accum_dtype),
+        mask_diag: T.Tensor([block_M, block_N], accum_dtype),
+        q_seg_rule: T.Tensor([batch, max_q_tiles], "int32"),
+        split_points: T.Tensor([batch, max_splits], "int32"),
+        split_count: T.Tensor([batch], "int32"),
+        tile_seg_id: T.Tensor([batch, max_q_tiles], "int32"),
+        task_batch_map: T.Tensor([total_seq_tiles], "int32"),
+        tiles_prefix_sum: T.Tensor([batch + 1], "int32"),
     ):
         with T.Kernel(core_num, is_npu=True) as (cid, vid):
             q_l1 = T.alloc_L1([block_M, dim], dtype)
@@ -86,297 +94,254 @@ def mtgr_ragged_segment_attention_fwd_pa(
             acc_o_half = T.alloc_ub([v_block, dim], dtype)
 
             kv_ub = T.alloc_ub([block_N, dim], dtype)
+            mask_ub = T.alloc_ub([v_block, block_N], accum_dtype)
 
-            visible_end_ub = T.alloc_ub([block_M], accum_dtype)
-            diag_col_ub = T.alloc_ub([block_M], accum_dtype)
-            kv_col_base_ub = T.alloc_ub([block_N], accum_dtype)
-            kv_col_float_ub = T.alloc_ub([block_N], accum_dtype)
-            mask_vis_ub = T.alloc_ub([block_N // 8], "uint8")
-            mask_diag_ub = T.alloc_ub([block_N // 8], "uint8")
-            mask_valid_ub = T.alloc_ub([block_N // 8], "uint8")
-            mask_combined_ub = T.alloc_ub([block_N // 8], "uint8")
-
-            total_tasks = batch * heads
+            total_tasks = total_seq_tiles * heads
             my_iters = T.if_then_else(cid < total_tasks, T.ceildiv(total_tasks - cid, core_num), 0)
             for core_index in T.serial(my_iters):
                 pid = cid + core_index * core_num
-                b_i = pid // heads
+                tile_id = pid // heads
                 h_i = pid % heads
                 h_kv = h_i // kv_group
 
+                b_i = task_batch_map[tile_id]
+                s_local = tile_id - tiles_prefix_sum[b_i]
+
                 q_len_b = q_seq_starts[b_i + 1] - q_seq_starts[b_i]
-                q_tiles_b = T.ceildiv(q_len_b, block_M)
                 prefix_len_b = matched_prefix_lens[b_i]
                 kv_len_b = prefix_len_b + q_len_b
-                kv_tiles_b = T.ceildiv(kv_len_b, block_N)
 
-                for s_local in T.serial(q_tiles_b):
-                    q_packed_start = q_seq_starts[b_i] + s_local * block_M
+                rule = q_seg_rule[b_i, s_local]
+                q_start = split_points[b_i, s_local]
+                q_end = split_points[b_i, s_local + 1]
+                q_tile_size = q_end - q_start
+                num_splits = split_count[b_i]
+
+                q_packed_start = q_seq_starts[b_i] + (q_start - prefix_len_b)
+                T.copy(
+                    Q[
+                        q_packed_start : q_packed_start + q_tile_size,
+                        h_i,
+                        :,
+                    ],
+                    q_l1[0:q_tile_size, :],
+                )
+
+                T.tile.fill(acc_o, 0.0)
+                T.tile.fill(sumexp, 0.0)
+                T.tile.fill(m_i, -(2.0**30))
+
+                seg_id = tile_seg_id[b_i, s_local]
+                kv_iter_start = 0
+                kv_iter_end = T.if_then_else(
+                    rule == 0,
+                    s_local + 1,
+                    seg_id + 1,
+                )
+
+                for k_i in T.serial(kv_iter_start, kv_iter_end):
+                    kv_start = split_points[b_i, k_i]
+                    kv_end = split_points[b_i, k_i + 1]
+                    kv_size = kv_end - kv_start
+
+                    is_overlap = T.if_then_else(kv_start == q_start, 1, 0)
+
+                    tile_cache_len = T.if_then_else(
+                        kv_start < prefix_len_b,
+                        T.min(prefix_len_b, kv_end) - kv_start,
+                        0,
+                    )
+                    tile_live_len = T.if_then_else(
+                        kv_start + tile_cache_len < kv_end,
+                        kv_end - kv_start - tile_cache_len,
+                        0,
+                    )
+
+                    if tile_cache_len > 0 and tile_live_len > 0:
+                        cache_block_idx = kv_start // block_size
+                        physical_block = block_table[b_i, cache_block_idx]
+                        block_offset_start = kv_start % block_size
+                        T.copy(
+                            key_cache[physical_block, block_offset_start : block_offset_start + tile_cache_len, h_kv, :],
+                            kv_ub[0:tile_cache_len, :],
+                        )
+                        kv_packed_start = q_seq_starts[b_i] + kv_start + tile_cache_len - prefix_len_b
+                        T.copy(
+                            K[kv_packed_start : kv_packed_start + tile_live_len, h_kv, :],
+                            kv_ub[tile_cache_len : tile_cache_len + tile_live_len, :],
+                        )
+                        T.copy(
+                            kv_ub,
+                            workspace_kv[cid, :, :],
+                        )
+                        T.copy(
+                            workspace_kv[cid, :, :],
+                            k_l1,
+                        )
+                    elif tile_cache_len > 0:
+                        cache_block_idx = kv_start // block_size
+                        physical_block = block_table[b_i, cache_block_idx]
+                        block_offset_start = kv_start % block_size
+                        T.copy(
+                            key_cache[physical_block, block_offset_start : block_offset_start + tile_cache_len, h_kv, :],
+                            k_l1[0:tile_cache_len, :],
+                        )
+                    elif tile_live_len > 0:
+                        kv_packed_start = q_seq_starts[b_i] + kv_start - prefix_len_b
+                        T.copy(
+                            K[kv_packed_start : kv_packed_start + tile_live_len, h_kv, :],
+                            k_l1[0:tile_live_len, :],
+                        )
+
+                    T.gemm_v0(q_l1, k_l1, acc_s_l0c, transpose_B=True, init=True)
+                    T.copy(acc_s_l0c, workspace_s[cid, :, :])
+
+                    T.tile.fill(acc_s_ub, 0.0)
                     T.copy(
-                        Q[
-                            q_packed_start : q_packed_start + block_M,
-                            h_i,
+                        workspace_s[
+                            cid,
+                            vid * v_block : vid * v_block + v_block,
                             :,
                         ],
-                        q_l1,
+                        acc_s_ub_,
                     )
+                    T.tile.add(acc_s_ub, acc_s_ub, acc_s_ub_)
+                    T.tile.mul(acc_s_ub, acc_s_ub, sm_scale)
 
-                    T.tile.fill(acc_o, 0.0)
-                    T.tile.fill(sumexp, 0.0)
-                    T.tile.fill(m_i, -(2.0**30))
+                    if is_overlap == 1:
+                        if rule == 0:
+                            T.copy(
+                                mask_causal[
+                                    vid * v_block : vid * v_block + v_block,
+                                    0:block_N,
+                                ],
+                                mask_ub,
+                            )
+                        elif rule == 2:
+                            T.copy(
+                                mask_diag[
+                                    vid * v_block : vid * v_block + v_block,
+                                    0:block_N,
+                                ],
+                                mask_ub,
+                            )
+                        T.tile.add(acc_s_ub, acc_s_ub, mask_ub)
 
-                    ve_start = s_local * block_M
+                    T.copy(m_i, m_i_prev)
+                    T.reduce_max(acc_s_ub, m_i, dim=-1)
+                    T.tile.max(m_i, m_i, m_i_prev)
+                    T.tile.sub(m_i_prev, m_i_prev, m_i)
+                    T.tile.exp(m_i_prev, m_i_prev)
+
+                    T.tile.broadcast(m_i_broadcast, m_i, axis=1)
+                    T.tile.sub(acc_s_ub, acc_s_ub, m_i_broadcast)
+                    T.tile.exp(acc_s_ub, acc_s_ub)
+                    T.reduce_sum(acc_s_ub, sumexp_i_ub, dim=-1)
+                    T.tile.mul(sumexp, sumexp, m_i_prev)
+                    T.tile.add(sumexp, sumexp, sumexp_i_ub)
+
+                    T.tile.broadcast(m_i_prev_broadcast, m_i_prev, axis=1)
+                    T.tile.mul(acc_o, acc_o, m_i_prev_broadcast)
+
+                    T.copy(acc_s_ub, acc_s_half)
                     T.copy(
-                        visible_end[b_i, ve_start : ve_start + block_M],
-                        visible_end_ub,
-                    )
-                    T.copy(
-                        diag_col[b_i, ve_start : ve_start + block_M],
-                        diag_col_ub,
-                    )
-
-                    for k_i in T.serial(kv_tiles_b):
-                        kv_local_start = k_i * block_N
-
-                        valid_cols = T.if_then_else(
-                            kv_local_start + block_N > kv_len_b,
-                            kv_len_b - kv_local_start,
-                            block_N,
-                        )
-
-                        # Cache/Live segment lengths for the entire tile (block_N rows)
-                        # GM→L1 copy is Cube-core operation, vid-independent
-                        tile_cache_len = T.if_then_else(
-                            kv_local_start < prefix_len_b,
-                            T.min(prefix_len_b, kv_local_start + block_N) - kv_local_start,
-                            0,
-                        )
-                        tile_live_len = T.if_then_else(
-                            kv_local_start + tile_cache_len < kv_len_b,
-                            T.min(kv_len_b, kv_local_start + block_N) - kv_local_start - tile_cache_len,
-                            0,
-                        )
-
-                        if tile_cache_len > 0 and tile_live_len > 0:
-                            cache_block_idx = kv_local_start // block_size
-                            physical_block = block_table[b_i, cache_block_idx]
-                            block_offset_start = kv_local_start % block_size
-                            T.copy(
-                                key_cache[physical_block, block_offset_start : block_offset_start + tile_cache_len, h_kv, :],
-                                kv_ub[0:tile_cache_len, :],
-                            )
-                            kv_packed_start = q_seq_starts[b_i] + kv_local_start + tile_cache_len - prefix_len_b
-                            T.copy(
-                                K[kv_packed_start : kv_packed_start + tile_live_len, h_kv, :],
-                                kv_ub[tile_cache_len : tile_cache_len + tile_live_len, :],
-                            )
-                            T.copy(
-                                kv_ub,
-                                workspace_kv[cid, :, :],
-                            )
-                            T.copy(
-                                workspace_kv[cid, :, :],
-                                k_l1,
-                            )
-                        elif tile_cache_len > 0:
-                            cache_block_idx = kv_local_start // block_size
-                            physical_block = block_table[b_i, cache_block_idx]
-                            block_offset_start = kv_local_start % block_size
-                            T.copy(
-                                key_cache[physical_block, block_offset_start : block_offset_start + tile_cache_len, h_kv, :],
-                                k_l1[0:tile_cache_len, :],
-                            )
-                        elif tile_live_len > 0:
-                            kv_packed_start = q_seq_starts[b_i] + kv_local_start - prefix_len_b
-                            T.copy(
-                                K[kv_packed_start : kv_packed_start + tile_live_len, h_kv, :],
-                                k_l1[0:tile_live_len, :],
-                            )
-
-                        T.gemm_v0(q_l1, k_l1, acc_s_l0c, transpose_B=True, init=True)
-                        T.copy(acc_s_l0c, workspace_s[cid, :, :])
-
-                        T.tile.fill(acc_s_ub, 0.0)
-                        T.copy(
-                            workspace_s[
-                                cid,
-                                vid * v_block : vid * v_block + v_block,
-                                :,
-                            ],
-                            acc_s_ub_,
-                        )
-                        T.tile.add(acc_s_ub, acc_s_ub, acc_s_ub_)
-                        T.tile.mul(acc_s_ub, acc_s_ub, sm_scale)
-
-                        T.tile.arith_progression(kv_col_base_ub, 0.0, 1.0, block_N)
-                        T.tile.add(
-                            kv_col_float_ub,
-                            kv_col_base_ub,
-                            T.float32(kv_local_start),
-                        )
-
-                        T.tile.compare(
-                            mask_valid_ub,
-                            kv_col_base_ub,
-                            T.float32(valid_cols),
-                            "LT",
-                        )
-
-                        for row in T.serial(v_block):
-                            row_i = vid * v_block + row
-                            T.tile.compare(
-                                mask_vis_ub,
-                                kv_col_float_ub,
-                                visible_end_ub[row_i],
-                                "LT",
-                            )
-                            T.tile.compare(
-                                mask_diag_ub,
-                                kv_col_float_ub,
-                                diag_col_ub[row_i],
-                                "EQ",
-                            )
-                            T.tile.bitwise_or(mask_combined_ub, mask_vis_ub, mask_diag_ub)
-                            T.tile.bitwise_and(
-                                mask_combined_ub,
-                                mask_combined_ub,
-                                mask_valid_ub,
-                            )
-                            T.tile.select(
-                                acc_s_ub[row, :],
-                                mask_combined_ub,
-                                acc_s_ub[row, :],
-                                -T.infinity(accum_dtype),
-                                "VSEL_TENSOR_SCALAR_MODE",
-                            )
-
-                        T.copy(m_i, m_i_prev)
-                        T.reduce_max(acc_s_ub, m_i, dim=-1)
-                        T.tile.max(m_i, m_i, m_i_prev)
-                        T.tile.sub(m_i_prev, m_i_prev, m_i)
-                        T.tile.exp(m_i_prev, m_i_prev)
-
-                        T.tile.broadcast(m_i_broadcast, m_i, axis=1)
-                        T.tile.sub(acc_s_ub, acc_s_ub, m_i_broadcast)
-                        T.tile.exp(acc_s_ub, acc_s_ub)
-                        T.reduce_sum(acc_s_ub, sumexp_i_ub, dim=-1)
-                        T.tile.mul(sumexp, sumexp, m_i_prev)
-                        T.tile.add(sumexp, sumexp, sumexp_i_ub)
-
-                        T.tile.broadcast(m_i_prev_broadcast, m_i_prev, axis=1)
-                        T.tile.mul(acc_o, acc_o, m_i_prev_broadcast)
-
-                        T.copy(acc_s_ub, acc_s_half)
-                        T.copy(
-                            acc_s_half,
-                            workspace_p[
-                                cid,
-                                vid * v_block : vid * v_block + v_block,
-                                :,
-                            ],
-                        )
-
-                        T.copy(workspace_p[cid, :, :], acc_s_l1)
-
-                        if tile_cache_len > 0 and tile_live_len > 0:
-                            cache_block_idx = kv_local_start // block_size
-                            physical_block = block_table[b_i, cache_block_idx]
-                            block_offset_start = kv_local_start % block_size
-                            T.copy(
-                                value_cache[physical_block, block_offset_start : block_offset_start + tile_cache_len, h_kv, :],
-                                kv_ub[0:tile_cache_len, :],
-                            )
-                            kv_packed_start = q_seq_starts[b_i] + kv_local_start + tile_cache_len - prefix_len_b
-                            T.copy(
-                                V[kv_packed_start : kv_packed_start + tile_live_len, h_kv, :],
-                                kv_ub[tile_cache_len : tile_cache_len + tile_live_len, :],
-                            )
-                            T.copy(
-                                kv_ub,
-                                workspace_kv[cid, :, :],
-                            )
-                            T.copy(
-                                workspace_kv[cid, :, :],
-                                v_l1,
-                            )
-                        elif tile_cache_len > 0:
-                            cache_block_idx = kv_local_start // block_size
-                            physical_block = block_table[b_i, cache_block_idx]
-                            block_offset_start = kv_local_start % block_size
-                            T.copy(
-                                value_cache[physical_block, block_offset_start : block_offset_start + tile_cache_len, h_kv, :],
-                                v_l1[0:tile_cache_len, :],
-                            )
-                        elif tile_live_len > 0:
-                            kv_packed_start = q_seq_starts[b_i] + kv_local_start - prefix_len_b
-                            T.copy(
-                                V[kv_packed_start : kv_packed_start + tile_live_len, h_kv, :],
-                                v_l1[0:tile_live_len, :],
-                            )
-
-                        T.gemm_v0(acc_s_l1, v_l1, acc_o_l0c, init=True)
-                        T.copy(acc_o_l0c, workspace_o[cid, :, :])
-
-                        T.copy(
-                            workspace_o[
-                                cid,
-                                vid * v_block : vid * v_block + v_block,
-                                :,
-                            ],
-                            acc_o_ub,
-                        )
-                        T.tile.add(acc_o, acc_o, acc_o_ub)
-
-                    for row in T.serial(v_block):
-                        row_i = vid * v_block + row
-                        if visible_end_ub[row_i] >= 0.0:
-                            T.tile.div(
-                                acc_o[row, :],
-                                acc_o[row, :],
-                                sumexp[row],
-                            )
-
-                    T.copy(acc_o, acc_o_half)
-                    output_packed_start = q_packed_start + vid * v_block
-                    T.copy(
-                        acc_o_half,
-                        Output[
-                            output_packed_start : output_packed_start + v_block,
-                            h_i,
+                        acc_s_half,
+                        workspace_p[
+                            cid,
+                            vid * v_block : vid * v_block + v_block,
                             :,
                         ],
                     )
+
+                    T.copy(workspace_p[cid, :, :], acc_s_l1)
+
+                    if tile_cache_len > 0 and tile_live_len > 0:
+                        cache_block_idx = kv_start // block_size
+                        physical_block = block_table[b_i, cache_block_idx]
+                        block_offset_start = kv_start % block_size
+                        T.copy(
+                            value_cache[physical_block, block_offset_start : block_offset_start + tile_cache_len, h_kv, :],
+                            kv_ub[0:tile_cache_len, :],
+                        )
+                        kv_packed_start = q_seq_starts[b_i] + kv_start + tile_cache_len - prefix_len_b
+                        T.copy(
+                            V[kv_packed_start : kv_packed_start + tile_live_len, h_kv, :],
+                            kv_ub[tile_cache_len : tile_cache_len + tile_live_len, :],
+                        )
+                        T.copy(
+                            kv_ub,
+                            workspace_kv[cid, :, :],
+                        )
+                        T.copy(
+                            workspace_kv[cid, :, :],
+                            v_l1,
+                        )
+                    elif tile_cache_len > 0:
+                        cache_block_idx = kv_start // block_size
+                        physical_block = block_table[b_i, cache_block_idx]
+                        block_offset_start = kv_start % block_size
+                        T.copy(
+                            value_cache[physical_block, block_offset_start : block_offset_start + tile_cache_len, h_kv, :],
+                            v_l1[0:tile_cache_len, :],
+                        )
+                    elif tile_live_len > 0:
+                        kv_packed_start = q_seq_starts[b_i] + kv_start - prefix_len_b
+                        T.copy(
+                            V[kv_packed_start : kv_packed_start + tile_live_len, h_kv, :],
+                            v_l1[0:tile_live_len, :],
+                        )
+
+                    T.gemm_v0(acc_s_l1, v_l1, acc_o_l0c, init=True)
+                    T.copy(acc_o_l0c, workspace_o[cid, :, :])
+
+                    T.copy(
+                        workspace_o[
+                            cid,
+                            vid * v_block : vid * v_block + v_block,
+                            :,
+                        ],
+                        acc_o_ub,
+                    )
+                    T.tile.add(acc_o, acc_o, acc_o_ub)
+
+                for row in T.serial(v_block):
+                    row_i = vid * v_block + row
+                    if row_i < q_tile_size:
+                        T.tile.div(
+                            acc_o[row, :],
+                            acc_o[row, :],
+                            sumexp[row],
+                        )
+
+                T.copy(acc_o, acc_o_half)
+                output_packed_start = q_packed_start + vid * v_block
+                T.copy(
+                    acc_o_half,
+                    Output[
+                        output_packed_start : output_packed_start + v_block,
+                        h_i,
+                        :,
+                    ],
+                )
 
     return main
 
 
-def compute_visible_end_diag_col(offsets, rules, seq_len, matched_prefix=0):
-    visible_end = torch.full((seq_len,), -1.0, dtype=torch.float32)
-    diag_col = torch.full((seq_len,), -1.0, dtype=torch.float32)
-    for s in range(seq_len):
-        logical_pos = matched_prefix + s
-        for seg_id in range(len(rules)):
-            if logical_pos < offsets[seg_id + 1]:
-                r = rules[seg_id]
-                if r == 0:
-                    visible_end[s] = float(logical_pos + 1)
-                elif r == 1:
-                    visible_end[s] = float(offsets[seg_id + 1])
-                elif r == 2:
-                    visible_end[s] = float(offsets[seg_id])
-                    diag_col[s] = float(logical_pos)
-                break
-    return visible_end, diag_col
-
-
-def build_attention_mask(visible_end, diag_col, S_kv):
-    mask_val = torch.zeros(S_kv, dtype=torch.float32)
-    for k in range(S_kv):
-        ve = visible_end.item()
-        dc = diag_col.item()
-        if k < ve or k == dc:
-            mask_val[k] = 1.0
-    return mask_val
+def compute_split_points(seg_lengths, rules, block_M):
+    splits = [0]
+    tile_seg_ids = []
+    for seg_id, (length, rule) in enumerate(zip(seg_lengths, rules)):
+        seg_start = splits[-1]
+        seg_end = seg_start + length
+        pos = seg_start
+        while pos < seg_end:
+            next_pos = min(pos + block_M, seg_end)
+            if next_pos not in splits:
+                splits.append(next_pos)
+                tile_seg_ids.append(seg_id)
+            pos = next_pos
+    q_seg_rule = [rules[sid] for sid in tile_seg_ids]
+    return splits, q_seg_rule, tile_seg_ids
 
 
 def mtgr_ragged_segment_attention_wrapper(
@@ -405,7 +370,79 @@ def mtgr_ragged_segment_attention_wrapper(
     D = query_snd.size(2)
     kv_heads = H // kv_group
 
-    print("start compile kernel")
+    total_live_q = query_snd.size(0)
+    q_starts = q_seq_starts_i32.cpu().tolist()
+    matched_prefix_list = matched_prefix_lens_i32.cpu().tolist()
+    seg_lengths_list = []
+    for b in range(B):
+        offsets = segment_offsets_i32[b].cpu().tolist()
+        lengths = [offsets[i + 1] - offsets[i] for i in range(len(offsets) - 1)]
+        seg_lengths_list.append(lengths)
+
+    actual_q_len_arr = []
+    for b in range(B):
+        next_start = q_starts[b + 1] if b + 1 < len(q_starts) else total_live_q
+        actual_q_len_arr.append(next_start - q_starts[b])
+
+    max_splits = 0
+    all_split_points = []
+    all_q_seg_rule = []
+    all_tile_seg_id = []
+
+    for b in range(B):
+        splits, q_rule, t_seg_id = compute_split_points(seg_lengths_list[b], segment_rules_i32.cpu().tolist(), block_M)
+        all_split_points.append(splits)
+        all_q_seg_rule.append(q_rule)
+        all_tile_seg_id.append(t_seg_id)
+        max_splits = max(max_splits, len(splits))
+
+    max_q_tiles = max(len(r) for r in all_q_seg_rule)
+
+    split_points_padded = []
+    for splits in all_split_points:
+        padded = splits + [0] * (max_splits - len(splits))
+        split_points_padded.append(padded)
+    split_points_i32 = torch.tensor(split_points_padded, dtype=torch.int32)
+
+    split_count_i32 = torch.tensor([len(s) for s in all_split_points], dtype=torch.int32)
+
+    q_seg_rule_padded = []
+    for rules in all_q_seg_rule:
+        padded = rules + [-1] * (max_q_tiles - len(rules))
+        q_seg_rule_padded.append(padded)
+    q_seg_rule_i32 = torch.tensor(q_seg_rule_padded, dtype=torch.int32)
+
+    tile_seg_id_padded = []
+    for seg_ids in all_tile_seg_id:
+        padded = seg_ids + [-1] * (max_q_tiles - len(seg_ids))
+        tile_seg_id_padded.append(padded)
+    tile_seg_id_i32 = torch.tensor(tile_seg_id_padded, dtype=torch.int32)
+
+    tiles_per_batch = [len(r) for r in all_q_seg_rule]
+    total_seq_tiles = sum(tiles_per_batch)
+
+    tiles_prefix_sum_list = [0]
+    for t in tiles_per_batch:
+        tiles_prefix_sum_list.append(tiles_prefix_sum_list[-1] + t)
+    tiles_prefix_sum_i32 = torch.tensor(tiles_prefix_sum_list, dtype=torch.int32)
+
+    task_batch_map_list = []
+    for b in range(B):
+        task_batch_map_list.extend([b] * tiles_per_batch[b])
+    task_batch_map_i32 = torch.tensor(task_batch_map_list, dtype=torch.int32)
+
+    mask_causal = torch.full((block_M, block_N), float("-inf"), dtype=torch.float32)
+    for i in range(block_M):
+        for j in range(block_N):
+            if j <= i:
+                mask_causal[i, j] = 0.0
+
+    mask_diag = torch.full((block_M, block_N), float("-inf"), dtype=torch.float32)
+    for i in range(block_M):
+        for j in range(block_N):
+            if j == i:
+                mask_diag[i, j] = 0.0
+
     func = mtgr_ragged_segment_attention_fwd_pa(
         heads=H,
         dim=D,
@@ -415,41 +452,9 @@ def mtgr_ragged_segment_attention_wrapper(
         block_N=block_N,
         block_size=block_size,
         core_num=core_num,
+        max_splits=max_splits,
     )
     print(func.get_kernel_source())
-
-    total_live_q = query_snd.size(0)
-
-    q_starts = q_seq_starts_i32.cpu().tolist()
-    matched_prefix_list = matched_prefix_lens_i32.cpu().tolist()
-
-    actual_q_len_arr = []
-    for b in range(B):
-        next_start = q_starts[b + 1] if b + 1 < len(q_starts) else total_live_q
-        actual_q_len_arr.append(next_start - q_starts[b])
-
-    max_req_len_padded = ((max(actual_q_len_arr) + block_M - 1) // block_M) * block_M
-
-    visible_end_list = []
-    diag_col_list = []
-    for b in range(B):
-        offset_list = segment_offsets_i32[b].cpu().tolist()
-        rule_list = segment_rules_i32.cpu().tolist()
-        ve, dc = compute_visible_end_diag_col(offset_list, rule_list, actual_q_len_arr[b], matched_prefix_list[b])
-        ve_padded = torch.full((max_req_len_padded,), -1.0, dtype=torch.float32)
-        dc_padded = torch.full((max_req_len_padded,), -1.0, dtype=torch.float32)
-        ve_padded[: actual_q_len_arr[b]] = ve
-        dc_padded[: actual_q_len_arr[b]] = dc
-        visible_end_list.append(ve_padded)
-        diag_col_list.append(dc_padded)
-
-    visible_end_tensor = torch.stack(visible_end_list)
-    diag_col_tensor = torch.stack(diag_col_list)
-
-    ws = torch.zeros(core_num, block_M, block_N, dtype=torch.float32)
-    wp = torch.zeros(core_num, block_M, block_N, dtype=torch.bfloat16)
-    wo = torch.zeros(core_num, block_M, D, dtype=torch.float32)
-    wkv = torch.zeros(core_num, block_N, D, dtype=torch.bfloat16)
 
     output = func(
         query_snd,
@@ -457,15 +462,17 @@ def mtgr_ragged_segment_attention_wrapper(
         value_snd,
         q_seq_starts_i32,
         matched_prefix_lens_i32,
-        visible_end_tensor,
-        diag_col_tensor,
         block_table_i32,
         key_cache,
         value_cache,
-        ws,
-        wp,
-        wo,
-        wkv,
+        mask_causal,
+        mask_diag,
+        q_seg_rule_i32,
+        split_points_i32,
+        split_count_i32,
+        tile_seg_id_i32,
+        task_batch_map_i32,
+        tiles_prefix_sum_i32,
     )
     torch.npu.synchronize()
     return output
@@ -494,56 +501,58 @@ def golden_attention(
     q_starts = q_seq_starts_i32.cpu().tolist()
     matched_prefix_list = matched_prefix_lens_i32.cpu().tolist()
 
-    actual_q_len_arr = []
-    for b in range(B):
-        next_start = q_starts[b + 1] if b + 1 < B else total_live_q
-        actual_q_len_arr.append(next_start - q_starts[b])
+    q_lens = [q_starts[b + 1] - q_starts[b] for b in range(B)]
 
     ref_outputs = []
     for b in range(B):
         q_start = q_starts[b]
-        q_len = actual_q_len_arr[b]
+        q_len = q_lens[b]
         q_b = query_snd[q_start : q_start + q_len].float()
 
         prefix_len = matched_prefix_list[b]
 
-        k_prefix_b_list = []
-        v_prefix_b_list = []
-        for p in range(prefix_len):
-            block_idx = p // block_size
-            block_offset = p % block_size
-            phys_block = block_table_i32[b, block_idx].item()
-            k_prefix_b_list.append(key_cache[phys_block, block_offset].float().unsqueeze(0))
-            v_prefix_b_list.append(value_cache[phys_block, block_offset].float().unsqueeze(0))
+        if prefix_len > 0:
+            num_prefix_blocks = (prefix_len + block_size - 1) // block_size
+            phys_blocks = block_table_i32[b, :num_prefix_blocks]
+            k_prefix_b = key_cache[phys_blocks].reshape(-1, kv_heads, D)[:prefix_len].float()
+            v_prefix_b = value_cache[phys_blocks].reshape(-1, kv_heads, D)[:prefix_len].float()
 
-        kv_start = q_starts[b]
-        kv_len = q_len
-        k_live_b = key_snd[kv_start : kv_start + kv_len].float()
-        v_live_b = value_snd[kv_start : kv_start + kv_len].float()
+        k_live_b = key_snd[q_start : q_start + q_len].float()
+        v_live_b = value_snd[q_start : q_start + q_len].float()
 
         if prefix_len > 0:
-            k_prefix_b = torch.cat(k_prefix_b_list, dim=0)
-            v_prefix_b = torch.cat(v_prefix_b_list, dim=0)
             k_full_b = torch.cat([k_prefix_b, k_live_b], dim=0)
             v_full_b = torch.cat([v_prefix_b, v_live_b], dim=0)
         else:
             k_full_b = k_live_b
             v_full_b = v_live_b
 
-        total_kv_len_b = prefix_len + kv_len
+        total_kv_len_b = prefix_len + q_len
 
-        offset_list = segment_offsets_i32[b].cpu().tolist()
-        rule_list = segment_rules_i32.cpu().tolist()
-        ve_b, dc_b = compute_visible_end_diag_col(offset_list, rule_list, q_len, prefix_len)
-        if isinstance(ve_b, torch.Tensor):
-            ve_b = ve_b.cpu()
-            dc_b = dc_b.cpu()
+        offsets = segment_offsets_i32[b].cpu().tolist()
+        rules = segment_rules_i32.cpu().tolist()
 
-        masks_b = []
-        for s in range(q_len):
-            mask_row = build_attention_mask(ve_b[s], dc_b[s], total_kv_len_b)
-            masks_b.append(mask_row)
-        mask_b = torch.stack(masks_b)
+        logical_positions = prefix_len + torch.arange(q_len)
+        offsets_tensor = torch.tensor(offsets, dtype=torch.int32)
+        seg_ids = torch.searchsorted(offsets_tensor[1:], logical_positions)
+
+        mask_b = torch.zeros(q_len, total_kv_len_b, dtype=torch.float32)
+        for seg_id_val in range(len(rules)):
+            rule = rules[seg_id_val]
+            q_indices = (seg_ids == seg_id_val).nonzero().squeeze(-1)
+            if q_indices.numel() == 0:
+                continue
+            if rule == 0:
+                k_range = torch.arange(total_kv_len_b)
+                causal_mask = k_range.unsqueeze(0) <= logical_positions[q_indices].unsqueeze(1)
+                mask_b[q_indices] = causal_mask.float()
+            elif rule == 1:
+                end = offsets[seg_id_val + 1]
+                mask_b[q_indices, :end] = 1.0
+            elif rule == 2:
+                start = offsets[seg_id_val]
+                mask_b[q_indices, :start] = 1.0
+                mask_b[q_indices, logical_positions[q_indices]] = 1.0
 
         scores = torch.einsum("qhd,khd->hqk", q_b, k_full_b) * sm_scale
         scores = scores.masked_fill(
@@ -700,21 +709,8 @@ def test(
 
 if __name__ == "__main__":
     test_configs = [
-        # {
-        #     "B": 1,
-        #     "H": 8,
-        #     "D": 64,
-        #     "kv_group": 1,
-        #     "block_M": 128,
-        #     "block_N": 128,
-        #     "block_size": 128,
-        #     "core_num": 24,
-        #     "seg_lengths": [[1600, 8, 200, 1200]],
-        #     "rules": [0, 1, 2, 2],
-        #     "matched_prefix_arr": [0, 0],
-        # },
         {
-            "B": 2,
+            "B": 1,
             "H": 8,
             "D": 64,
             "kv_group": 1,
@@ -722,23 +718,10 @@ if __name__ == "__main__":
             "block_N": 128,
             "block_size": 128,
             "core_num": 24,
-            "seg_lengths": [[100, 50, 150, 200], [128, 256, 256, 128]],
+            "seg_lengths": [[1600, 8, 200, 1200]],
             "rules": [0, 1, 2, 2],
-            "matched_prefix_arr": [0, 0],
+            "matched_prefix_arr": [0],
         },
-        # {
-        #     "B": 2,
-        #     "H": 8,
-        #     "D": 64,
-        #     "kv_group": 1,
-        #     "block_M": 128,
-        #     "block_N": 128,
-        #     "block_size": 128,
-        #     "core_num": 24,
-        #     "seg_lengths": [[100, 50, 150, 200], [128, 256, 256, 128]],
-        #     "rules": [0, 1, 2, 2],
-        #     "matched_prefix_arr": [0, 140],
-        # },
     ]
 
     for config in test_configs:
