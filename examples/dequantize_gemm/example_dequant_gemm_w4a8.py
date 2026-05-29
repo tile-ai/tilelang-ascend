@@ -167,7 +167,6 @@ def generate_quantized_weight(N, K):
 
 def test(M, N, K):
     kernel = w4a8_gemm_cv(M, N, K)
-    # print(kernel.get_kernel_source())
 
     A_int8 = torch.randint(-8, 8, (M, K), dtype=torch.int8).npu()
     qB, B_int8_ref = generate_quantized_weight(N, K)
