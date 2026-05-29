@@ -1,11 +1,5 @@
 """
-PTO RED-phase test file for UB↔L1 and L0C↔UB copy paths.
-
-This is a TDD test file - tests are expected to FAIL initially because:
-- PTO backend does not yet support UB↔L1 copy (TPUSH)
-- PTO backend does not yet support L0C↔UB copy
-
-These tests establish the baseline for GREEN phase validation.
+Test file for UB↔L1 and L0C↔UB copy paths
 """
 
 import pytest
@@ -19,23 +13,20 @@ PASS_CONFIGS = {
     tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
     tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
     tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_SYNC: True,
 }
 
 
 @pytest.fixture(scope="session", autouse=True)
-def clear_cache():
+def disable_cache():
     tilelang.disable_cache()
     yield
 
 
-def _compile(program):
-    """Compile program with PTO target (NOT ascendc)."""
-    return tilelang.compile(program, pass_configs=PASS_CONFIGS, target="pto")
-
-
-def _compile_expert(program):
-    """Compile program with PTO target (NOT ascendc)."""
-    return tilelang.compile(program, target="pto")
+def _compile(program, target="pto", expert=False):
+    """Compile program with target and developing mode."""
+    pass_config = None if expert else PASS_CONFIGS
+    return tilelang.compile(program, pass_configs=pass_config, target=target)
 
 
 def _torch_dtype(dtype):
@@ -44,29 +35,33 @@ def _torch_dtype(dtype):
     return torch.float32
 
 
-def _ub_to_l1_kernel(M=128, N=128, K=128, dtype="float16"):
-    """Test kernel: UB→L1→GM round-trip (Vector to Cube communication via TPUSH)."""
+def _ub_to_l1_kernel(M=128, N=128, K=128, dtype="float16", accum_dtype="float"):
+    """Test kernel: GM→UB→L1→GM"""
+    VEC_NUM = 2
+    M_half = M // VEC_NUM
 
     @T.prim_func
     def main(
-        A: T.Tensor((M, K), dtype),
-        B: T.Tensor((K, N), dtype),
-        C: T.Tensor((M, N), dtype),
+        A: T.Tensor((M, K), dtype), # type: ignore
+        B: T.Tensor((K, N), dtype), # type: ignore
+        C: T.Tensor((M, N), dtype), # type: ignore
     ):
         with T.Kernel(1, is_npu=True) as (cid, vid):
-            A_ub = T.alloc_ub((M, K), dtype)
+            A_ub = T.alloc_ub((M_half, K), dtype)
             A_l1 = T.alloc_L1((M, K), dtype)
             B_l1 = T.alloc_L1((K, N), dtype)
-            C_l0c = T.alloc_L0C((M, N), "float")
+            C_l0c = T.alloc_L0C((M, N), accum_dtype)
 
             # GM → UB
-            T.copy(A, A_ub)
+            T.copy(A[vid * M_half: (vid + 1) * M_half, :], A_ub)
 
-            # UB → L1 (TPUSH): Expected to fail in RED phase
+            # UB → L1
             T.copy(A_ub, A_l1)
+
+            # GM → L1
             T.copy(B, B_l1)
 
-            # L1 → GEMM → L0C (Cube computation)
+            # L1 → GEMM → L0C
             T.gemm_v0(A_l1, B_l1, C_l0c, init=True)
 
             # L0C → GM
@@ -75,82 +70,146 @@ def _ub_to_l1_kernel(M=128, N=128, K=128, dtype="float16"):
     return main
 
 
-def _ub_to_l1_kernel_expert(M=128, N=128, K=128, dtype="float16"):
-    """Test kernel: UB→L1→GM round-trip (Vector to Cube communication via TPUSH)."""
+def _ub_to_l1_kernel_drop_vid(M=128, N=128, K=128, dtype="float16", accum_dtype="float"):
+    """Test kernel: GM→UB→L1→GM with vid reduction"""
 
     @T.prim_func
     def main(
-        A: T.Tensor((M, K), dtype),
-        B: T.Tensor((K, N), dtype),
-        C: T.Tensor((M, N), dtype),
-        workspace_1: T.Tensor((M * K * 2 ), dtype)
+        A: T.Tensor((M, K), dtype), # type: ignore
+        B: T.Tensor((K, N), dtype), # type: ignore
+        C: T.Tensor((M, N), dtype), # type: ignore
     ):
-        with T.Kernel(1, is_npu=True) as (cid, vid):
-            T._srcCode("using Pipe_8_V2C = TPipe<8, pto::Direction::DIR_V2C, 32768, 2>;")
-            T._srcCode("Pipe_8_V2C pipe_8_V2C(workspace_1_handle, 0, 0);")
-
+        with T.Kernel(1, threads=2, is_npu=True) as _cid:
             A_ub = T.alloc_ub((M, K), dtype)
             A_l1 = T.alloc_L1((M, K), dtype)
             B_l1 = T.alloc_L1((K, N), dtype)
-            C_l0c = T.alloc_L0C((M, N), "float")
+            C_l0c = T.alloc_L0C((M, N), accum_dtype)
+
+            # GM → UB
+            T.copy(A, A_ub)
+
+            # UB → L1
+            T.copy(A_ub, A_l1)
+
+            # GM → L1
+            T.copy(B, B_l1)
+
+            # L1 → GEMM → L0C
+            T.gemm_v0(A_l1, B_l1, C_l0c, init=True)
+
+            # L0C → GM
+            T.copy(C_l0c, C)
+
+    return main
+
+
+def _ub_to_l1_kernel_expert(M=128, N=128, K=128, dtype="float16", accum_dtype="float"):
+    """Test kernel: GM→UB→L1→GM with hand-crafted copy_ub_to_pipe & copy_pipe_to_l1 calls"""
+    VEC_NUM = 2
+    M_half = M // VEC_NUM
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((M, K), dtype), # type: ignore
+        B: T.Tensor((K, N), dtype), # type: ignore
+        C: T.Tensor((M, N), dtype), # type: ignore
+        workspace_1: T.Tensor((M * K * 2 ), dtype) # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (cid, vid):
+            T._srcCode("using Pipe_8_V2C = TPipe<8, pto::Direction::DIR_V2C, 32768, 2>;")
+            T._srcCode("Pipe_8_V2C pipe_8_V2C(workspace_1_handle, 0, 32768);")
+
+            A_ub = T.alloc_ub((M_half, K), dtype)
+            A_l1 = T.alloc_L1((M, K), dtype)
+            B_l1 = T.alloc_L1((K, N), dtype)
+            C_l0c = T.alloc_L0C((M, N), accum_dtype)
 
             with T.Scope("C"):
-                A_l1 = A_l1
+                # GM → L1
+                T.copy(B, B_l1)
 
-                T._srcCode("tl::ascend_pto::copy_pipe_to_l1(pipe_8_V2C, A_l1);")
-                T._srcCode("tl::ascend_pto::copy_gm_to_l1<half, half, 1, 1, 1, 128, 128, 1, 1, 16384, 128, 1, 128, 128>(B_handle + 0, 32768, 0, 128, 128);")
-                # T.copy(B, B_l1)
+                # UB → L1
+                T._srcCode("tl::ascend_pto::copy_pipe_to_l1<Pipe_8_V2C, half, 128, 128, pto::TileSplitAxis::TILE_UP_DOWN>(pipe_8_V2C, A_l1);")
                 T.set_flag("mte2", "m", 1)
                 T.wait_flag("mte2", "m", 1)
-                # T._srcCode("set_flag(PIPE_MTE2, PIPE_M, EVENT_ID1);")
-                # T._srcCode("wait_flag(PIPE_MTE2, PIPE_M, EVENT_ID1);")
-                # L1 → GEMM → L0C (Cube computation)
+
+                # L1 → GEMM → L0C
                 T.gemm_v0(A_l1, B_l1, C_l0c, init=True)
                 T.set_flag("m", "fix", 2)
                 T.wait_flag("m", "fix", 2)
-                # T._srcCode("set_flag(PIPE_M, PIPE_FIX, EVENT_ID2);")
-                # T._srcCode("wait_flag(PIPE_M, PIPE_FIX, EVENT_ID2);")
+
                 # L0C → GM
                 T.copy(C_l0c, C)
 
             with T.Scope("V"):
                 # GM → UB
-                T.copy(A, A_ub)
+                T.copy(A[vid * M_half: (vid + 1) * M_half, :], A_ub)
 
-                # UB → L1 (TPUSH): Expected to fail in RED phase
+                # UB → L1
                 # T.copy(A_ub, A_l1)
                 T.set_flag("mte2", "mte3", 3)
                 T.wait_flag("mte2", "mte3", 3)
-                # T._srcCode("set_flag(PIPE_MTE2, PIPE_MTE3, EVENT_ID3);")
-                # T._srcCode("wait_flag(PIPE_MTE2, PIPE_MTE3, EVENT_ID3);")
-                T._srcCode("tl::ascend_pto::copy_ub_to_pipe(pipe_8_V2C, A_ub);")
+                T._srcCode("tl::ascend_pto::copy_ub_to_pipe<Pipe_8_V2C, half, 64, 128, pto::TileSplitAxis::TILE_UP_DOWN>(pipe_8_V2C, A_ub);")
 
     return main
 
 
-def _l0c_to_ub_kernel(M=128, N=128, K=128, dtype="float16"):
-    """Test kernel: GM→L1→GEMM→L0C→UB→GM (Cube to Vector communication)."""
+def _l0c_to_ub_kernel(M=128, N=128, K=128, dtype="float16", accum_dtype="float"):
+    """Test kernel: GM→L1→GEMM→L0C→UB→GM"""
+    VEC_NUM = 2
+    M_half = M // VEC_NUM
 
     @T.prim_func
     def main(
-        A: T.Tensor((M, K), dtype),
-        B: T.Tensor((K, N), dtype),
-        C: T.Tensor((M, N), "float"),
+        A: T.Tensor((M, K), dtype), # type: ignore
+        B: T.Tensor((K, N), dtype), # type: ignore
+        C: T.Tensor((M, N), accum_dtype), # type: ignore
     ):
         with T.Kernel(1, is_npu=True) as (cid, vid):
             A_l1 = T.alloc_L1((M, K), dtype)
             B_l1 = T.alloc_L1((K, N), dtype)
-            C_l0c = T.alloc_L0C((M, N), "float")
-            C_ub = T.alloc_ub((M, N), "float")
+            C_l0c = T.alloc_L0C((M, N), accum_dtype)
+            C_ub = T.alloc_ub((M_half, N), accum_dtype)
 
             # GM → L1
             T.copy(A, A_l1)
             T.copy(B, B_l1)
 
-            # L1 → GEMM → L0C (Cube computation)
+            # L1 → GEMM → L0C
             T.gemm_v0(A_l1, B_l1, C_l0c, init=True)
 
-            # L0C → UB (Cube to Vector): Expected to fail in RED phase
+            # L0C → UB
+            T.copy(C_l0c, C_ub)
+
+            # UB → GM
+            T.copy(C_ub, C[vid * M_half: (vid + 1) * M_half, :])
+
+    return main
+
+
+def _l0c_to_ub_kernel_drop_vid(M=128, N=128, K=128, dtype="float16", accum_dtype="float"):
+    """Test kernel: GM→L1→GEMM→L0C→UB→GM with vid reduction"""
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((M, K), dtype), # type: ignore
+        B: T.Tensor((K, N), dtype), # type: ignore
+        C: T.Tensor((M, N), accum_dtype), # type: ignore
+    ):
+        with T.Kernel(1, threads=2, is_npu=True) as _cid:
+            A_l1 = T.alloc_L1((M, K), dtype)
+            B_l1 = T.alloc_L1((K, N), dtype)
+            C_l0c = T.alloc_L0C((M, N), accum_dtype)
+            C_ub = T.alloc_ub((M, N), accum_dtype)
+
+            # GM → L1
+            T.copy(A, A_l1)
+            T.copy(B, B_l1)
+
+            # L1 → GEMM → L0C
+            T.gemm_v0(A_l1, B_l1, C_l0c, init=True)
+
+            # L0C → UB
             T.copy(C_l0c, C_ub)
 
             # UB → GM
@@ -159,37 +218,39 @@ def _l0c_to_ub_kernel(M=128, N=128, K=128, dtype="float16"):
     return main
 
 
-def _combined_kernel(M=128, N=128, K=128, dtype="float16"):
-    """Test kernel: Combined UB↔L1 and L0C↔UB paths in single kernel."""
+def _combined_kernel(M=128, N=128, K=128, dtype="float16", accum_dtype="float"):
+    """Test kernel: Combined UB↔L1 and L0C↔UB paths in single kernel"""
+    VEC_NUM = 2
+    M_half = M // VEC_NUM
 
     @T.prim_func
     def main(
-        A: T.Tensor((M, K), dtype),
-        B: T.Tensor((K, N), dtype),
-        C: T.Tensor((M, N), "float"),
-        D: T.Tensor((M, N), dtype),
+        A: T.Tensor((M, K), dtype), # type: ignore
+        B: T.Tensor((K, N), dtype), # type: ignore
+        C: T.Tensor((M, N), accum_dtype), # type: ignore
+        D: T.Tensor((M, N), dtype), # type: ignore
     ):
         with T.Kernel(1, is_npu=True) as (cid, vid):
             # UB↔L1 path buffers
-            A_ub = T.alloc_ub((M, K), dtype)
+            A_ub = T.alloc_ub((M_half, K), dtype)
             A_l1 = T.alloc_L1((M, K), dtype)
 
             # L0C↔UB path buffers
             B_l1 = T.alloc_L1((K, N), dtype)
-            C_l0c = T.alloc_L0C((M, N), "float")
-            C_ub = T.alloc_ub((M, N), "float")
+            C_l0c = T.alloc_L0C((M, N), accum_dtype)
+            C_ub = T.alloc_ub((M_half, N), accum_dtype)
 
-            # Path 1: GM → UB → L1 (TPUSH)
-            T.copy(A, A_ub)
+            # Path A: GM → UB → L1
+            T.copy(A[vid * M_half: (vid + 1) * M_half, :], A_ub)
             T.copy(A_ub, A_l1)
 
-            # Path 2: GM → L1 → GEMM → L0C → UB
+            # Path B: GM → L1 → GEMM → L0C → UB
             T.copy(B, B_l1)
             T.gemm_v0(A_l1, B_l1, C_l0c, init=True)
             T.copy(C_l0c, C_ub)
 
             # Output: UB → GM
-            T.copy(C_ub, C)
+            T.copy(C_ub, C[vid * M_half: (vid + 1) * M_half, :])
 
             # Output: L0C → GM
             T.copy(C_l0c, D)
@@ -197,36 +258,10 @@ def _combined_kernel(M=128, N=128, K=128, dtype="float16"):
     return main
 
 
-@pytest.mark.skipif(
-    not (hasattr(torch, "npu") and torch.npu.is_available()),
-    reason="PTO UB→L1 copy test requires an Ascend NPU runtime",
-)
-@pytest.mark.parametrize("dtype", ["float16"])
-def test_ub_to_l1_pto(dtype):
-    """
-    RED phase test for UB→L1 copy path with PTO target.
-
-    This test should FAIL because:
-    - PTO backend does not support UB→L1 copy (TPUSH) yet
-    - The test validates the test infrastructure exists
-    - Establishes baseline for GREEN phase validation
-
-    Test flow:
-    1. Create input tensor (128x128, float16)
-    2. Compile kernel with UB→L1 copy using target="pto"
-    3. Execute kernel (expect compilation error)
-    4. Verify data correctness (should not reach this point)
-    """
-    M, N, K = 128, 128, 128
-
-    with open("ub_to_l1.cpp", "w", encoding="utf-8") as f:
-
-        program = _ub_to_l1_kernel(M=M, N=N, K=K, dtype=dtype)
-
-        kernel = _compile(program)
-
-        print("source code dumped to: ub_to_l1.cpp")
-        f.write(kernel.get_kernel_source())
+def _ub_to_l1_case(kernel_func, M=128, N=128, K=128, target="pto", expert=False):
+    dtype = "float16"
+    program = kernel_func(M=M, N=N, K=K, dtype=dtype)
+    kernel = _compile(program, target=target, expert=expert)
 
     torch_dtype = _torch_dtype(dtype)
 
@@ -235,140 +270,84 @@ def test_ub_to_l1_pto(dtype):
     c = torch.empty((M, N), dtype=torch_dtype, device="npu")
     torch.npu.synchronize()
 
-    kernel(a, b, c)
+    if not expert:
+        kernel(a, b, c)
+    else:
+        workspace_1 = torch.empty((M * K * 2,), dtype=torch_dtype, device="npu")
+        kernel(a, b, c, workspace_1)
     torch.npu.synchronize()
 
     ref_c = a @ b
     torch.testing.assert_close(c, ref_c, rtol=1e-3, atol=1e-3)
 
-@pytest.mark.skipif(
-    not (hasattr(torch, "npu") and torch.npu.is_available()),
-    reason="PTO UB→L1 copy test requires an Ascend NPU runtime",
-)
-@pytest.mark.parametrize("dtype", ["float16"])
-def test_ub_to_l1_expert(dtype):
-    """
-    RED phase test for UB→L1 copy path with PTO target.
 
-    This test should FAIL because:
-    - PTO backend does not support UB→L1 copy (TPUSH) yet
-    - The test validates the test infrastructure exists
-    - Establishes baseline for GREEN phase validation
-
-    Test flow:
-    1. Create input tensor (128x128, float16)
-    2. Compile kernel with UB→L1 copy using target="pto"
-    3. Execute kernel (expect compilation error)
-    4. Verify data correctness (should not reach this point)
-    """
-    M, N, K = 128, 128, 128
-
-    with open("ub_to_l1_expert.cpp", "w", encoding="utf-8") as f:
-        program = _ub_to_l1_kernel_expert(M=M, N=N, K=K, dtype=dtype)
-
-        kernel = _compile_expert(program)
-
-        print("source code dumped to: ub_to_l1_expert.cpp")
-        f.write(kernel.get_kernel_source())
+def _l0c_to_ub_case(kernel_func, M=128, N=128, K=128, target="pto", expert=False):
+    dtype = "float16"
+    accum_dtype = "float"
+    program = kernel_func(M=M, N=N, K=K, dtype=dtype, accum_dtype=accum_dtype)
+    kernel = _compile(program, target=target, expert=expert)
 
     torch_dtype = _torch_dtype(dtype)
+    torch_accum_dtype = _torch_dtype(accum_dtype)
 
     a = torch.randn((M, K), dtype=torch_dtype, device="npu")
     b = torch.randn((K, N), dtype=torch_dtype, device="npu")
-    c = torch.empty((M, N), dtype=torch_dtype, device="npu")
-    workspace_1 = torch.empty((M * K * 2,), dtype=torch_dtype, device="npu")
+    c = torch.empty((M, N), dtype=torch_accum_dtype, device="npu")
     torch.npu.synchronize()
 
-    kernel(a, b, c, workspace_1)
+    if not expert:
+        kernel(a, b, c)
+    else:
+        workspace_1 = torch.empty((M * K * 2,), dtype=torch_dtype, device="npu")
+        kernel(a, b, c, workspace_1)
     torch.npu.synchronize()
 
-    ref_c = a @ b
+    ref_c = (a @ b).to(torch_accum_dtype)
     torch.testing.assert_close(c, ref_c, rtol=1e-3, atol=1e-3)
 
-# @pytest.mark.xfail(reason="PTO L0C↔UB copy not yet implemented")
-@pytest.mark.skipif(
-    not (hasattr(torch, "npu") and torch.npu.is_available()),
-    reason="PTO L0C→UB copy test requires an Ascend NPU runtime",
-)
-@pytest.mark.parametrize("dtype", ["float16"])
-def test_l0c_to_ub_pto(dtype):
-    """
-    RED phase test for L0C→UB copy path with PTO target.
 
-    This test should FAIL because:
-    - PTO backend does not support L0C→UB copy yet
-    - The test validates the test infrastructure exists
-    - Establishes baseline for GREEN phase validation
-
-    Test flow:
-    1. Create input tensors (128x128, float16)
-    2. Compile kernel with L0C→UB copy using target="pto"
-    3. Execute kernel (expect compilation error)
-    4. Verify GEMM result correctness (should not reach this point)
-    """
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+def test_ub_to_l1(target):
     M, N, K = 128, 128, 128
+    _ub_to_l1_case(_ub_to_l1_kernel, M=M, N=N, K=K, target=target, expert=False)
 
-    with open("l0c_to_ub.cpp", "w", encoding="utf-8") as f:
 
-        program = _l0c_to_ub_kernel(M=M, N=N, K=K, dtype=dtype)
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+def test_ub_to_l1_drop_vid(target):
+    M, N, K = 128, 128, 128
+    _ub_to_l1_case(_ub_to_l1_kernel_drop_vid, M=M, N=N, K=K, target=target, expert=False)
 
-        kernel = _compile(program)
 
-        print("source code dumped to: l0c_to_ub.cpp")
-        f.write(kernel.get_kernel_source())
+@pytest.mark.parametrize("target", ["pto"])
+def test_ub_to_l1_expert(target):
+    M, N, K = 128, 128, 128
+    _ub_to_l1_case(_ub_to_l1_kernel_expert, M=M, N=N, K=K, target=target, expert=True)
+
+
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+def test_l0c_to_ub(target):
+    M, N, K = 128, 128, 128
+    _l0c_to_ub_case(_l0c_to_ub_kernel, M=M, N=N, K=K, target=target, expert=False)
+
+
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+def test_l0c_to_ub_drop_vid(target):
+    M, N, K = 128, 128, 128
+    _l0c_to_ub_case(_l0c_to_ub_kernel_drop_vid, M=M, N=N, K=K, target=target, expert=False)
+
+
+def _combined_case(kernel_func, M=128, N=128, K=128, target="pto"):
+    dtype = "float16"
+    accum_dtype = "float"
+    program = kernel_func(M=M, N=N, K=K, dtype=dtype, accum_dtype=accum_dtype)
+    kernel = _compile(program, target=target)
 
     torch_dtype = _torch_dtype(dtype)
+    torch_accum_dtype = _torch_dtype(accum_dtype)
 
     a = torch.randn((M, K), dtype=torch_dtype, device="npu")
     b = torch.randn((K, N), dtype=torch_dtype, device="npu")
-    c = torch.empty((M, N), dtype=torch.float32, device="npu")
-    torch.npu.synchronize()
-
-    kernel(a, b, c)
-    torch.npu.synchronize()
-
-    ref_c = a @ b
-    torch.testing.assert_close(c, ref_c.to(torch.float32), rtol=1e-2, atol=1e-2)
-
-
-# @pytest.mark.xfail(reason="PTO UB↔L1 and L0C↔UB copy not yet implemented")
-@pytest.mark.skipif(
-    not (hasattr(torch, "npu") and torch.npu.is_available()),
-    reason="PTO combined copy test requires an Ascend NPU runtime",
-)
-@pytest.mark.parametrize("dtype", ["float16"])
-def test_combined_pto(dtype):
-    """
-    RED phase test for combined UB↔L1 and L0C↔UB paths with PTO target.
-
-    This test should FAIL because:
-    - PTO backend does not support UB↔L1 copy (TPUSH) yet
-    - PTO backend does not support L0C→UB copy yet
-    - The test validates the test infrastructure exists
-    - Establishes baseline for GREEN phase validation
-
-    Test flow:
-    1. Create input tensors (128x128, float16)
-    2. Compile kernel with both copy paths using target="pto"
-    3. Execute kernel (expect compilation error)
-    4. Verify both paths correctness (should not reach this point)
-    """
-    M, N, K = 128, 128, 128
-
-    with open("combined.cpp", "w", encoding="utf-8") as f:
-
-        program = _combined_kernel(M=M, N=N, K=K, dtype=dtype)
-
-        kernel = _compile(program)
-
-        print("source code dumped to: combined.cpp")
-        f.write(kernel.get_kernel_source())
-
-    torch_dtype = _torch_dtype(dtype)
-
-    a = torch.randn((M, K), dtype=torch_dtype, device="npu")
-    b = torch.randn((K, N), dtype=torch_dtype, device="npu")
-    c = torch.empty((M, N), dtype=torch.float32, device="npu")
+    c = torch.empty((M, N), dtype=torch_accum_dtype, device="npu")
     d = torch.empty((M, N), dtype=torch_dtype, device="npu")
     torch.npu.synchronize()
 
@@ -376,8 +355,15 @@ def test_combined_pto(dtype):
     torch.npu.synchronize()
 
     # Verify GEMM result (C = A @ B)
-    ref_c = a @ b
-    torch.testing.assert_close(c, ref_c.to(torch.float32), rtol=1e-2, atol=1e-2)
+    ref_d = a @ b
+    ref_c = ref_d.to(torch_accum_dtype)
+    torch.testing.assert_close(c, ref_c, rtol=1e-3, atol=1e-3)
 
     # Verify L0C→UB round-trip (D = C)
-    torch.testing.assert_close(d, ref_c, rtol=1e-3, atol=1e-3)
+    torch.testing.assert_close(d, ref_d, rtol=1e-3, atol=1e-3)
+
+
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+def test_combined(target):
+    M, N, K = 128, 128, 128
+    _combined_case(_combined_kernel, M=M, N=N, K=K, target=target)
