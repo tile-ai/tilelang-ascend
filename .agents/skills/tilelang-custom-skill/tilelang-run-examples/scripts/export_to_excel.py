@@ -109,7 +109,7 @@ def parse_log(log_path):
             lines = remaining.split("\n")
             for line in lines[:5]:
                 stripped = line.strip()
-                if stripped and not stripped.startswith("["):
+                if stripped and not (stripped.startswith("[PASSED]") or stripped.startswith("[FAILED]")):
                     subsequent_lines.append(stripped)
                 else:
                     break
