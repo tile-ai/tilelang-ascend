@@ -270,6 +270,67 @@ private:
     return SeqStmt(stmts);
   }
 
+  Stmt VisitStmt_(const BufferStoreNode *op) override {
+    BufferAccess access;
+    access.buffer_name = op->buffer->data->name_hint;
+    access.is_write = true;
+    access.pipeline = "PIPE_S";
+    access.operation = "BufferStore";
+    access.sync_graph = SyncGraph();
+    access.pipe_barriers = {};
+    access.physical_address = GetPhysicalAddress(access.buffer_name);
+    access.is_sliced = true;
+
+    auto value_accesses = AnalyzeExprAccesses(op->value);
+
+    std::vector<BufferAccess> current_accesses = value_accesses;
+    current_accesses.push_back(access);
+
+    std::vector<SyncRequirement> sync_requirements;
+    for (const auto &current_access : current_accesses) {
+      if (current_access.is_sliced) {
+        sync_requirements.push_back(
+            {"PipeBarrier_ALL", current_access.buffer_name});
+      }
+
+      std::vector<std::string> related_buffers =
+          FindRelatedBuffers(current_access.buffer_name);
+      for (const auto &buffer_name : related_buffers) {
+        auto it = current_access_history_.find(buffer_name);
+        if (it != current_access_history_.end()) {
+          const auto &latest_access = it->second;
+          if (HasDataDependency(latest_access, current_access)) {
+            std::string required_sync_type =
+                GetRequiredSyncType(latest_access, current_access);
+            if (!required_sync_type.empty()) {
+              sync_requirements.push_back(
+                  {required_sync_type, current_access.buffer_name});
+            }
+          }
+        }
+      }
+    }
+
+    auto optimized_syncs = OptimizeSyncRequirements(sync_requirements);
+
+    std::vector<Stmt> stmts;
+    for (const auto &sync_type : optimized_syncs) {
+      InsertSynchronization(sync_type, stmts);
+    }
+
+    UpdateSyncStatesAfterSync(optimized_syncs);
+
+    stmts.push_back(GetRef<Stmt>(op));
+
+    UpdateLatestAccessHistory(current_accesses);
+
+    if (stmts.size() == 1) {
+      return stmts[0];
+    } else {
+      return SeqStmt(stmts);
+    }
+  }
+
   Stmt MergeAndRebuildForLoops(const Stmt &processed_stmt,
                                const std::vector<LoopInfo> &loop_infos) {
     LoopRebuilder rebuilder(loop_infos);
