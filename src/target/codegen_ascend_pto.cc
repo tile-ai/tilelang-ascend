@@ -822,6 +822,8 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op,
         };
     std::string cast_type = op->args[2].as<StringImmNode>()->value;
     CastCodegen(op, kCastRoundModes.at(cast_type));
+  } else if (op->op.same_as(tl::ascend_reinterpretcast())) {
+    ReinterpretCastCodegen(op);
 
     // --- index / create ---
   } else if (op->op.same_as(tl::ascend_createvecindex())) {
@@ -1430,10 +1432,11 @@ void CodeGenTileLangAscendPto::CreateVecIndexCodegen(
 
   const auto &M = dst_info.shape[0];
   const auto &N = dst_info.shape[1];
+  auto total_elems = M * N;
 
   this->PrintIndent();
   this->stream << kAscendPtoScope << "tci" << "<" << getType(dst_info.dtype)
-               << ", " << PrintExpr(M) << ", " << PrintExpr(N) << ">" << "("
+               << ", 1, " << PrintExpr(total_elems) << ">" << "("
                << PrintExpr(dst_slice_info.first_addr) << ", "
                << dst_slice_info.offset << ", "
                << GetTypeLen(dst_slice_info.type) << ", " << first_value
@@ -2280,6 +2283,23 @@ void CodeGenTileLangAscendPto::CastCodegen(const CallNode *op,
   this->PrintIndent();
   this->stream << "TCVT(" << dst_name << ", " << src_name << ", " << op_type
                << ");\n";
+}
+
+void CodeGenTileLangAscendPto::ReinterpretCastCodegen(const CallNode *op) {
+  ShapeInfo src_shape_info = GetSliceInfo(op->args[1].as<CallNode>());
+  ShapeInfo dst_shape_info = GetSliceInfo(op->args[0].as<CallNode>());
+
+  std::string src_name = ResolveUbSliceName(src_shape_info);
+  std::string dst_name = ResolveUbSliceName(dst_shape_info);
+
+  this->PrintIndent();
+  this->stream << "TRESHAPE(" << dst_name << ", " << src_name << ");\n";
+
+  Var dst_var = Downcast<Var>(op->args[0].as<CallNode>()->args[1]);
+  Var src_var = Downcast<Var>(op->args[1].as<CallNode>()->args[1]);
+  if (buffer_address_map_.count(src_var)) {
+    buffer_address_map_.Set(dst_var, buffer_address_map_.at(src_var));
+  }
 }
 
 std::tuple<int, int, int, bool>

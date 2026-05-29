@@ -65,6 +65,8 @@ public:
   void SiluCodegen(const CallNode *op);
   void MulAddDstCodegen(const CallNode *op);
   void CastCodegen(const CallNode *op, const std::string &op_type);
+
+  void ReinterpretCastCodegen(const CallNode *op);
   void ReduceOpCodegen(const CallNode *op);
 
   enum class ReduceKind { SUM, MAX, MIN };
