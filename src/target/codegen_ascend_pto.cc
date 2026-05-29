@@ -35,6 +35,7 @@ using BufferInfo = CodeGenTileLangAscendPto::BufferInfo;
 // Hardware / platform constants
 // ---------------------------------------------------------------------------
 constexpr int kUbAlignmentBytes = 32;
+constexpr int kUbAlignment16Bytes = 16;
 constexpr int kUbAlignmentMask = kUbAlignmentBytes - 1;
 constexpr int kVectorRepeatBytes = 256;
 constexpr int kEleNumPerC0 = 16;
@@ -172,6 +173,14 @@ int GetValidShape(int shape, const std::string &dtype) {
     return shape;
   }
   return shape + (kUbAlignmentBytes - shape_mod) / dtype_len;
+}
+
+int GetValid16BytesShape(int shape) {
+  int shape_mod = shape % kUbAlignment16Bytes;
+  if (shape_mod == 0) {
+    return shape;
+  }
+  return shape + (kUbAlignment16Bytes - shape_mod);
 }
 
 int GetRowReduceTmpCol(int valid_col, const std::string &dtype) {
@@ -1271,9 +1280,9 @@ void CodeGenTileLangAscendPto::GemmV0Codegen(const CallNode *op) {
   this->stream << kAscendPtoScope << "gemm_v0" << "<"
                << params["data_type_input"] << ", "
                << params["data_type_output"] << ", "
-               << params["M"] << ", "
-               << params["N"] << ", "
-               << params["K"] << ", "
+               << GetValid16BytesShape(std::stoi(params["M"])) << ", "
+               << GetValid16BytesShape(std::stoi(params["N"])) << ", "
+               << GetValidShape(std::stoi(params["K"]), data_type_input) << ", "
                << params["M"] << ", " << params["N"] << ", " << params["K"]
                << ", " << kL0Tail << ", " << params["transpose_A"] << ", "
                << params["transpose_B"] << ">" << "(";
