@@ -35,7 +35,7 @@ using BufferInfo = CodeGenTileLangAscendPto::BufferInfo;
 // Hardware / platform constants
 // ---------------------------------------------------------------------------
 constexpr int kUbAlignmentBytes = 32;
-constexpr int kUbAlignment16Bytes = 16;
+constexpr int kAlignment16Bytes = 16;
 constexpr int kUbAlignmentMask = kUbAlignmentBytes - 1;
 constexpr int kVectorRepeatBytes = 256;
 constexpr int kEleNumPerC0 = 16;
@@ -176,11 +176,11 @@ int GetValidShape(int shape, const std::string &dtype) {
 }
 
 int GetValid16BytesShape(int shape) {
-  int shape_mod = shape % kUbAlignment16Bytes;
+  int shape_mod = shape % kAlignment16Bytes;
   if (shape_mod == 0) {
     return shape;
   }
-  return shape + (kUbAlignment16Bytes - shape_mod);
+  return shape + (kAlignment16Bytes - shape_mod);
 }
 
 int GetRowReduceTmpCol(int valid_col, const std::string &dtype) {
