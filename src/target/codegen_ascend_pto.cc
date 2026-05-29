@@ -2047,6 +2047,21 @@ void CodeGenTileLangAscendPto::BinaryVecOpsCodegen(const CallNode *op,
 
   if (!buffer) {
     std::string scalar = apply_scalar_for_half(index);
+
+    auto src_call = op->args[1].as<CallNode>();
+    auto dst_call = op->args[0].as<CallNode>();
+    if (src_call && dst_call) {
+      ShapeInfo src_info = GetSliceInfo(src_call);
+      ShapeInfo dst_info = GetSliceInfo(dst_call);
+      if (src_info.is_slice || dst_info.is_slice) {
+        std::string src_name = ResolveUbSliceName(src_info);
+        std::string dst_name = ResolveUbSliceName(dst_info);
+        this->PrintIndent();
+        this->stream << operation << "(" << dst_name << ", " << src_name << ", "
+                     << scalar << ");\n";
+        return;
+      }
+    }
     this->PrintIndent();
     this->stream << operation << "(";
     for (const auto &name : var_names) {
@@ -2507,16 +2522,8 @@ void CodeGenTileLangAscendPto::ReduceOpCodegen(const CallNode *op) {
     ShapeInfo tmp_dst_raw = GetSliceInfo(op->args[4].as<CallNode>());
     ShapeInfo tmp_dst = build_reduce_tmp_dst(tmp_dst_raw);
     if (op_info.direction == ReduceDirection::ROW) {
-      if (is_slice) {
-        dst.slice_valid_col = op_info.buffer_slice_row;
-        tmp_dst.slice_valid_col = op_info.buffer_slice_row;
-      }
       CodegenRowReduce(op_info, tmp_dst, src, tmp);
     } else {
-      if (is_slice) {
-        dst.slice_valid_col = op_info.buffer_slice_col;
-        tmp_dst.slice_valid_col = op_info.buffer_slice_col;
-      }
       CodegenColReduce(op_info, tmp_dst, src, tmp);
     }
     emit_merge(tmp_dst);
