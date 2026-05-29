@@ -103,6 +103,41 @@ def _ub_to_l1_kernel_drop_vid(M=128, N=128, K=128, dtype="float16", accum_dtype=
     return main
 
 
+def _ub_to_l1_kernel_lr(M=128, N=128, K=128, dtype="float16", accum_dtype="float"):
+    """Test kernel: GM→UB→L1→GM"""
+    VEC_NUM = 2
+    K_half = K // VEC_NUM
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((M, K), dtype), # type: ignore
+        B: T.Tensor((K, N), dtype), # type: ignore
+        C: T.Tensor((M, N), dtype), # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (cid, vid):
+            A_ub = T.alloc_ub((M, K_half), dtype)
+            A_l1 = T.alloc_L1((M, K), dtype)
+            B_l1 = T.alloc_L1((K, N), dtype)
+            C_l0c = T.alloc_L0C((M, N), accum_dtype)
+
+            # GM → UB
+            T.copy(A[:, vid * K_half: (vid + 1) * K_half], A_ub)
+
+            # UB → L1
+            T.copy(A_ub, A_l1)
+
+            # GM → L1
+            T.copy(B, B_l1)
+
+            # L1 → GEMM → L0C
+            T.gemm_v0(A_l1, B_l1, C_l0c, init=True)
+
+            # L0C → GM
+            T.copy(C_l0c, C)
+
+    return main
+
+
 def _ub_to_l1_kernel_expert(M=128, N=128, K=128, dtype="float16", accum_dtype="float"):
     """Test kernel: GM→UB→L1→GM with hand-crafted copy_ub_to_pipe & copy_pipe_to_l1 calls"""
     VEC_NUM = 2
@@ -218,6 +253,39 @@ def _l0c_to_ub_kernel_drop_vid(M=128, N=128, K=128, dtype="float16", accum_dtype
     return main
 
 
+def _l0c_to_ub_kernel_lr(M=128, N=128, K=128, dtype="float16", accum_dtype="float"):
+    """Test kernel: GM→L1→GEMM→L0C→UB→GM"""
+    VEC_NUM = 2
+    N_half = N // VEC_NUM
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((M, K), dtype), # type: ignore
+        B: T.Tensor((K, N), dtype), # type: ignore
+        C: T.Tensor((M, N), accum_dtype), # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (cid, vid):
+            A_l1 = T.alloc_L1((M, K), dtype)
+            B_l1 = T.alloc_L1((K, N), dtype)
+            C_l0c = T.alloc_L0C((M, N), accum_dtype)
+            C_ub = T.alloc_ub((M, N_half), accum_dtype)
+
+            # GM → L1
+            T.copy(A, A_l1)
+            T.copy(B, B_l1)
+
+            # L1 → GEMM → L0C
+            T.gemm_v0(A_l1, B_l1, C_l0c, init=True)
+
+            # L0C → UB
+            T.copy(C_l0c, C_ub)
+
+            # UB → GM
+            T.copy(C_ub, C[:, vid * N_half: (vid + 1) * N_half])
+
+    return main
+
+
 def _combined_kernel(M=128, N=128, K=128, dtype="float16", accum_dtype="float"):
     """Test kernel: Combined UB↔L1 and L0C↔UB paths in single kernel"""
     VEC_NUM = 2
@@ -319,6 +387,12 @@ def test_ub_to_l1_drop_vid(target):
 
 
 @pytest.mark.parametrize("target", ["pto"])
+def test_ub_to_l1_lr(target):
+    M, N, K = 128, 128, 128
+    _ub_to_l1_case(_ub_to_l1_kernel_lr, M=M, N=N, K=K, target=target, expert=False)
+
+
+@pytest.mark.parametrize("target", ["pto"])
 def test_ub_to_l1_expert(target):
     M, N, K = 128, 128, 128
     _ub_to_l1_case(_ub_to_l1_kernel_expert, M=M, N=N, K=K, target=target, expert=True)
@@ -334,6 +408,12 @@ def test_l0c_to_ub(target):
 def test_l0c_to_ub_drop_vid(target):
     M, N, K = 128, 128, 128
     _l0c_to_ub_case(_l0c_to_ub_kernel_drop_vid, M=M, N=N, K=K, target=target, expert=False)
+
+
+@pytest.mark.parametrize("target", ["pto"])
+def test_l0c_to_ub_lr(target):
+    M, N, K = 128, 128, 128
+    _l0c_to_ub_case(_l0c_to_ub_kernel_lr, M=M, N=N, K=K, target=target, expert=False)
 
 
 def _combined_case(kernel_func, M=128, N=128, K=128, target="pto"):
