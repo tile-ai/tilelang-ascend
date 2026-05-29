@@ -1,5 +1,6 @@
 import argparse
 
+import os
 import tilelang
 import tilelang.language as T
 import torch
@@ -17,6 +18,8 @@ N = 16
 block_M = 2
 block_N = 16
 
+os.environ["TL_PTO_DEBUG"] = "1"
+
 
 @tilelang.jit(out_idx=[-1])
 def bitwise_and(M, N, block_M, block_N, dtype="int16"):
@@ -27,9 +30,9 @@ def bitwise_and(M, N, block_M, block_N, dtype="int16"):
 
     @T.prim_func
     def main(
-            A: T.Tensor((M, N), dtype),
-            B: T.Tensor((M, N), dtype),
-            C: T.Tensor((M, N), dtype),
+        A: T.Tensor((M, N), dtype),
+        B: T.Tensor((M, N), dtype),
+        C: T.Tensor((M, N), dtype),
     ):
         T.printf("===========A:\n")
         T.dump_tensor(A, 111, M * N, (M, N))
@@ -65,6 +68,7 @@ def bitwise_and(M, N, block_M, block_N, dtype="int16"):
 
         T.printf("===========C:\n")
         T.dump_tensor(C, 111, M * N, (M, N))
+
     return main
 
 
@@ -77,7 +81,7 @@ torch.npu.synchronize()
 print("init successful!")
 
 c = func(a, b)
-print(f"*******c:")
+print("*******c:")
 print(c)
 ref_c = a & b
 
