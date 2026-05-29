@@ -2036,25 +2036,26 @@ void CodeGenTileLangAscendPto::BinaryVecOpsCodegen(const CallNode *op,
   if (!buffer) {
     std::string scalar = apply_scalar_for_half(index);
 
-    ShapeInfo src_info = GetSliceInfo(op->args[1].as<CallNode>());
-    ShapeInfo dst_info = GetSliceInfo(op->args[0].as<CallNode>());
-
-    if (src_info.is_slice || dst_info.is_slice) {
-      std::string src_name = GetTempVarName(src_info.ub_name);
-      std::string dst_name = GetTempVarName(dst_info.ub_name);
-      CreateUbVariableND(src_name, src_info);
-      CreateUbVariableND(dst_name, dst_info);
-      this->PrintIndent();
-      this->stream << operation << "(" << dst_name << ", " << src_name << ", "
-                   << scalar << ");\n";
-    } else {
-      this->PrintIndent();
-      this->stream << operation << "(";
-      for (const auto &name : var_names) {
-        this->stream << name << ", ";
+    auto src_call = op->args[1].as<CallNode>();
+    auto dst_call = op->args[0].as<CallNode>();
+    if (src_call && dst_call) {
+      ShapeInfo src_info = GetSliceInfo(src_call);
+      ShapeInfo dst_info = GetSliceInfo(dst_call);
+      if (src_info.is_slice || dst_info.is_slice) {
+        std::string src_name = ResolveUbSliceName(src_info);
+        std::string dst_name = ResolveUbSliceName(dst_info);
+        this->PrintIndent();
+        this->stream << operation << "(" << dst_name << ", " << src_name << ", "
+                     << scalar << ");\n";
+        return;
       }
-      this->stream << scalar << ");\n";
     }
+    this->PrintIndent();
+    this->stream << operation << "(";
+    for (const auto &name : var_names) {
+      this->stream << name << ", ";
+    }
+    this->stream << scalar << ");\n";
     return;
   }
 
