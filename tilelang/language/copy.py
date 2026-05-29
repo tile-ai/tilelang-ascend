@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 from tilelang import language as T
-from tvm import ir, tir
+from tvm import arith, ir, tir
 
 
 def region(buffer: tir.BufferLoad, access_type: str, *args: tir.PrimExpr):
@@ -193,6 +193,66 @@ def c2d_im2col(
     )
 
 
+def _is_cross_cv_copy(src: tir.Buffer, dst: tir.Buffer) -> bool:
+    """Check if this is a cross-CV copy (UB→L1 or L0C→UB only)."""
+    src_scope: str = src.scope()
+    dst_scope: str = dst.scope()
+    return (
+        (src_scope == "shared" and dst_scope == "shared.dyn")  # UB → L1
+        or (src_scope == "wmma.accumulator" and dst_scope == "shared")  # L0C → UB
+    )
+
+
+def _is_almost_zero(expr: tir.PrimExpr) -> bool:
+    """Check if simplified expression represents a value in [0, 1].
+
+    True if IntImm(0) (exact 2x) or FloorMod(X, 2) (~2x for symbolic M vs M//2).
+    """
+    if isinstance(expr, tir.IntImm):
+        return int(expr.value) == 0
+    if isinstance(expr, tir.FloorMod):
+        return isinstance(expr.b, tir.IntImm) and int(expr.b.value) == 2
+    return False
+
+
+def _has_2x_ratio(s: tir.PrimExpr, d: tir.PrimExpr) -> bool:
+    """Check if s and d have approximately 2x ratio.
+
+    Instead of proving s == d*2 (requires divisibility info TVM can't track),
+    computes the difference and checks if it simplifies to something bounded
+    to [0, 1]. Works for both IntImm and symbolic PrimExpr.
+    """
+    analyzer: arith.Analyzer = arith.Analyzer()
+    two: tir.IntImm = tir.IntImm("int32", 2)
+    return _is_almost_zero(analyzer.simplify(s - d * two)) or _is_almost_zero(analyzer.simplify(d - s * two))
+
+
+def _is_equal_dim(s: tir.PrimExpr, d: tir.PrimExpr) -> bool:
+    """Check if two shape dims are equal, handling both int and PrimExpr."""
+    if isinstance(s, (int, tir.IntImm)) and isinstance(d, (int, tir.IntImm)):
+        return int(s) == int(d)
+    analyzer: arith.Analyzer = arith.Analyzer()
+    diff: tir.PrimExpr = analyzer.simplify(s - d)
+    return isinstance(diff, tir.IntImm) and int(diff.value) == 0
+
+
+def _check_cross_cv_shapes(src_shape: list[tir.PrimExpr], dst_shape: list[tir.PrimExpr]) -> None:
+    """Check shapes for cross-CV copy, allowing one dim to differ by 2x."""
+    if len(src_shape) != len(dst_shape):
+        raise ValueError(f"Shape dimension mismatch: {src_shape} vs {dst_shape}")
+
+    diff_count: int = 0
+    for s, d in zip(src_shape, dst_shape):
+        if _is_equal_dim(s, d):
+            continue
+        if not _has_2x_ratio(s, d):
+            raise ValueError(f"Shape mismatch: {src_shape} vs {dst_shape} (dimension differs, not 2x ratio)")
+        diff_count += 1
+
+    if diff_count > 1:
+        raise ValueError(f"More than one dimension differs: {src_shape} vs {dst_shape}")
+
+
 def npu_copy_v2(
     src: tir.Buffer | tir.BufferLoad | tir.BufferRegion,
     dst: tir.Buffer | tir.BufferLoad,
@@ -218,7 +278,10 @@ def npu_copy_v2(
         tir.Call: A handle to the copy operation
     """
     if isinstance(src, tir.Buffer) and isinstance(dst, tir.Buffer) and not transpose:
-        ir.assert_structural_equal(src.shape, dst.shape)
+        if _is_cross_cv_copy(src, dst):
+            _check_cross_cv_shapes(src.shape, dst.shape)
+        else:
+            ir.assert_structural_equal(src.shape, dst.shape)
 
     # src_shape = src.shape if isinstance(src, tir.Buffer) else src.buffer.shape
 

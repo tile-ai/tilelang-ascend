@@ -1428,6 +1428,26 @@ void CodeGenTileLangAscendPto::CopyL1ToL0Codegen(const CallNode *call,
                << ");\n";
 }
 
+static std::string DirTypeToStr(int dir_type) {
+  return (dir_type == 2) ? "V2C" : "C2V";
+}
+
+static std::string GetPipeTypeName(const std::string &pipe_id, int dir_type) {
+  std::string dir_str = DirTypeToStr(dir_type);
+  size_t last_underscore = pipe_id.rfind('_');
+  std::string type_name = pipe_id.substr(0, last_underscore + 1) + dir_str;
+  type_name[0] = 'P';
+  return type_name;
+}
+
+static std::string SplitAxisToEnumStr(int split_axis) {
+  switch (split_axis) {
+    case 0: return "TILE_NO_SPLIT";
+    case 2: return "TILE_LEFT_RIGHT";
+    default: return "TILE_UP_DOWN";
+  }
+}
+
 void CodeGenTileLangAscendPto::CopyPipeCodegen(const CallNode *op,
                                                 bool is_producer) {
   std::string op_name = Downcast<StringImm>(op->args[0])->value;
@@ -1451,22 +1471,27 @@ void CodeGenTileLangAscendPto::CopyPipeCodegen(const CallNode *op,
     CreateUbVariableND(dst_name, dst_shape_info);
   }
 
+  std::string dtype_str = Downcast<StringImm>(op->args[8])->value;
+  int M_val = Downcast<IntImm>(op->args[9])->value;
+  int N_val = Downcast<IntImm>(op->args[10])->value;
+  int split_axis_val = Downcast<IntImm>(op->args[11])->value;
+
+  int flag_id = Downcast<IntImm>(op->args[3])->value;
+  const auto &pipe_info = pipe_registry_.at(flag_id);
+  std::string pipe_type = pipe_info.pipe_type_name;
+
   std::string func_call = op_name;
   size_t pos = func_call.find("tl::ascend::");
   if (pos != std::string::npos) {
     func_call.replace(pos, 12, kAscendPtoScope);
   }
-  size_t template_start = func_call.find('<');
-  if (template_start != std::string::npos) {
-    func_call = func_call.substr(0, template_start);
-  }
 
   this->PrintIndent();
-  if (is_producer) {
-    this->stream << func_call << "(" << pipe_id << ", " << src_name << ");\n";
-  } else {
-    this->stream << func_call << "(" << pipe_id << ", " << dst_name << ");\n";
-  }
+  this->stream << func_call << "<" << pipe_type << ", " << dtype_str << ", "
+               << M_val << ", " << N_val << ", "
+               << "pto::TileSplitAxis::" << SplitAxisToEnumStr(split_axis_val)
+               << ">(" << pipe_id << ", "
+               << (is_producer ? src_name : dst_name) << ");\n";
 }
 
 void CodeGenTileLangAscendPto::PreScanPipes(const PrimFunc &f) {
@@ -1532,17 +1557,9 @@ void CodeGenTileLangAscendPto::PreScanPipes(const PrimFunc &f) {
               info.slot_num = slot_num;
               info.pipe_id = pipe_id;
 
-              std::string dir_str = (dir_type == 2) ? "V2C" : "C2V";
-              size_t last_underscore = pipe_id.rfind('_');
-              info.pipe_type_name =
-                  pipe_id.substr(0, last_underscore + 1) + dir_str;
-              info.pipe_type_name[0] = 'P';
+              info.pipe_type_name = GetPipeTypeName(pipe_id, dir_type);
 
-              if (dir_type == 2) {
-                info.dir_full = "pto::Direction::DIR_V2C";
-              } else {
-                info.dir_full = "pto::Direction::DIR_C2V";
-              }
+              info.dir_full = "pto::Direction::DIR_" + DirTypeToStr(dir_type);
 
               // Get the destination buffer address for the pipe
               BufferInfo dst_info = GetBufferInfo(call->args[2]);

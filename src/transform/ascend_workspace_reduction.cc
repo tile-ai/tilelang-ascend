@@ -1,3 +1,4 @@
+#include <algorithm>
 #include "../op/builtin.h"
 #include "arith/ir_mutator_with_analyzer.h"
 #include <tvm/tir/builtin.h>
@@ -60,13 +61,16 @@ struct CopyGlobalContext {
   struct PipeInfo {
     int flag_id;         // pipe flag token
     int dir_type;        // 1=C2V, 2=V2C
-    int slot_size;       // M * N * dtype_bytes
+    int slot_size;       // max(src_elems, dst_elems) * dtype_bytes
     int slot_num;        // 2 (double buffering)
     std::string pipe_id; // "pipe_X_V2C" or "pipe_X_C2V"
     std::string op_name; // "copy_pipe_to_l1" or "copy_pipe_to_ub"
     std::string dtype_str;
-    int M_val;
-    int N_val;
+    int src_M_val;
+    int src_N_val;
+    int dst_M_val;
+    int dst_N_val;
+    int split_axis = 1;  // 0=TILE_NO_SPLIT, 1=TILE_UP_DOWN, 2=TILE_LEFT_RIGHT
   };
   std::unordered_map<std::string, PipeInfo> pipe_info_map_;
 };
@@ -77,7 +81,7 @@ private:
   bool is_pto_;
   std::string platform_;
   bool needs_gm_workspace_;
-  int pipe_flag_id_counter_ = 8;
+  int pipe_flag_id_counter_ = 0;  // FlagID starts from 0
 
   std::unordered_set<std::string> target_copy_stmts_ = {"copy_ub_to_l1",
                                                         "copy_l0c_to_ub"};
@@ -405,6 +409,17 @@ public:
     return it->second.bytes();
   }
 
+  // Returns: 
+  //   0 = TILE_NO_SPLIT (shapes equal)
+  //   1 = TILE_UP_DOWN (M differs by 2x)
+  //   2 = TILE_LEFT_RIGHT (N differs by 2x)
+  static int ComputeSplitAxis(int src_M, int src_N, int dst_M, int dst_N) {
+    if (src_M == dst_M && src_N == dst_N) return 0;
+    if (src_M * 2 == dst_M || dst_M * 2 == src_M) return 1;
+    if (src_N * 2 == dst_N || dst_N * 2 == src_N) return 2;
+    return 1;
+  }
+
   void VisitStmt(const Stmt &stmt) final { StmtExprVisitor::VisitStmt(stmt); }
 
   void VisitStmt_(const EvaluateNode *op) final {
@@ -488,8 +503,6 @@ public:
               << "[Error]<WorkspaceReduction> PTO: copy_ub_to_l1 template expects 3+ params, got "
               << params.size();
           info.dtype_str = params[0];
-          info.N_val = std::stoi(params[1]);
-          info.M_val = std::stoi(params[2]);
           info.dir_type = 2;
           info.op_name = "copy_pipe_to_l1";
         } else {
@@ -497,19 +510,27 @@ public:
               << "[Error]<WorkspaceReduction> PTO: copy_l0c_to_ub template expects 5+ params, got "
               << params.size();
           info.dtype_str = params[0];
-          info.M_val = std::stoi(params[3]);
-          info.N_val = std::stoi(params[4]);
           info.dir_type = 1;
           info.op_name = "copy_pipe_to_ub";
         }
-        // info.flag_id = pipe_flag_id_counter_++;
+
+        // Read src/dst extents from runtime args (pushed by ascend.cc virtual_channel)
+        info.src_N_val = Downcast<IntImm>(call_node->args[3])->value;
+        info.src_M_val = Downcast<IntImm>(call_node->args[4])->value;
+        info.dst_M_val = Downcast<IntImm>(call_node->args[5])->value;
+        info.dst_N_val = Downcast<IntImm>(call_node->args[6])->value;
+
         info.flag_id = pipe_flag_id_counter_;
-        pipe_flag_id_counter_ += 2; // one pipe needs 2 flagID
+        pipe_flag_id_counter_ += 2; // one pipe needs 2 FlagID
         int dtype_bytes = GetDtypeBytes(info.dtype_str);
-        info.slot_size = info.M_val * info.N_val * dtype_bytes;
+        int src_elems = info.src_M_val * info.src_N_val;
+        int dst_elems = info.dst_M_val * info.dst_N_val;
+        info.slot_size = std::max(src_elems, dst_elems) * dtype_bytes;
         info.slot_num = 2;
         info.pipe_id = "pipe_" + std::to_string(info.flag_id) + "_"
                        + (info.dir_type == 2 ? "V2C" : "C2V");
+        info.split_axis = ComputeSplitAxis(info.src_M_val, info.src_N_val,
+                                           info.dst_M_val, info.dst_N_val);
         context_.pipe_info_map_[dst_buffer_name] = info;
       }
     }
@@ -653,14 +674,14 @@ private:
 
   Stmt GenerateCopyToPipe(const CallNode *orig_call,
                         const std::string &func_name_str) {
-    Array<PrimExpr> args = orig_call->args;
-    PrimExpr src_ptr = args[1];
-    PrimExpr dst_ptr = args[2];
+    Array<PrimExpr> orig_args = orig_call->args;
+    PrimExpr src_access = orig_args[1];
+    PrimExpr dst_access = orig_args[2];
 
     // Get dst buffer name for pipe_info_map_ lookup
-    const CallNode *dst_access = dst_ptr.as<CallNode>();
-    ICHECK(dst_access && dst_access->args.size() >= 2);
-    const VarNode *dst_var = dst_access->args[1].as<VarNode>();
+    const CallNode *dst_access_ptr = dst_access.as<CallNode>();
+    ICHECK(dst_access_ptr && dst_access_ptr->args.size() >= 2);
+    const VarNode *dst_var = dst_access_ptr->args[1].as<VarNode>();
     ICHECK(dst_var);
     std::string dst_buffer_name = dst_var->name_hint;
 
@@ -674,23 +695,30 @@ private:
     std::string pipe_op1 =
         is_ub_to_l1 ? "copy_ub_to_pipe" : "copy_l0c_to_pipe";
 
-    std::stringstream ss1;
-    ss1 << "tl::ascend::" << pipe_op1 << "<" << pipe.dtype_str << ", "
-        << pipe.M_val << ", " << pipe.N_val << ">";
-    Array<PrimExpr> args1 = {StringImm(ss1.str()), src_ptr, dst_ptr,
-                             Integer(pipe.flag_id), Integer(pipe.dir_type),
-                             Integer(pipe.slot_size), Integer(pipe.slot_num),
-                             StringImm(pipe.pipe_id)};
-    Call call1(DataType::Handle(), tir::builtin::call_extern(), args1);
-
-    return Evaluate(call1);
+    std::stringstream ss;
+    ss << "tl::ascend::" << pipe_op1;
+    Array<PrimExpr> args = {
+        StringImm(ss.str()), 
+        src_access, 
+        dst_access,
+        Integer(pipe.flag_id), 
+        Integer(pipe.dir_type),
+        Integer(pipe.slot_size), 
+        Integer(pipe.slot_num),
+        StringImm(pipe.pipe_id),
+        StringImm(pipe.dtype_str),
+        Integer(pipe.src_M_val),
+        Integer(pipe.src_N_val),
+        Integer(pipe.split_axis)
+    };
+    Call call(DataType::Handle(), tir::builtin::call_extern(), args);
+    return Evaluate(call);
   }
 
   Stmt GenerateCopyFromPipe(const CopyGlobalContext::PipeInfo &pipe,
                          const Call &dst_access) {
     std::stringstream ss;
-    ss << "tl::ascend::" << pipe.op_name << "<" << pipe.dtype_str << ", "
-       << pipe.M_val << ", " << pipe.N_val << ">";
+    ss << "tl::ascend::" << pipe.op_name;
 
     Array<PrimExpr> args = {
         StringImm(ss.str()),
@@ -700,7 +728,11 @@ private:
         Integer(pipe.dir_type),
         Integer(pipe.slot_size),
         Integer(pipe.slot_num),
-        StringImm(pipe.pipe_id)
+        StringImm(pipe.pipe_id),
+        StringImm(pipe.dtype_str),
+        Integer(pipe.dst_M_val),
+        Integer(pipe.dst_N_val),
+        Integer(pipe.split_axis)
     };
     Call call(DataType::Handle(), tir::builtin::call_extern(), args);
     return Evaluate(call);
@@ -954,7 +986,15 @@ private:
 
     // In-place transform (AscendC path)
     if (IsTargetCopyExpr(orig_call)) {
-      Array<PrimExpr> new_args = orig_call->args;
+      // Build new_args from scratch keeping only the first 4 original args.
+      // Extra runtime args (src_M/dst_M/dst_N at orig_call->args[4..6])
+      // from ascend.cc are dropped here. AscendC codegen expects positional
+      // args[3..5] = (count, maskShapeM, maskShapeN) appended via push_back below.
+      Array<PrimExpr> new_args;
+      new_args.push_back(orig_call->args[0]);  // function name string
+      new_args.push_back(orig_call->args[1]);  // src access_ptr
+      new_args.push_back(orig_call->args[2]);  // dst access_ptr (replaced below)
+      new_args.push_back(orig_call->args[3]);  // src_N (element count, used as count in codegen)
       StringImm orig_func_name = Downcast<StringImm>(new_args[0]);
       const CallNode *src_access_ptr = new_args[1].as<CallNode>();
       std::string src_buffer_name =

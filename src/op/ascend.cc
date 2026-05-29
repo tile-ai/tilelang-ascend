@@ -378,9 +378,9 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
       config.virtual_channel = true;
       ss << "copy_ub_to_l1<"; // real channel is "ub -> gm -> l1"
       ss << get_dtype(dst) << ", ";
-      ss << src->shape[src->shape.size() - 1];
+      ss << src_extents[src->shape.size() - 1];
       if (src->shape.size() > 1) {
-        ss << ", " << src->shape[src->shape.size() - 2];
+        ss << ", " << compute_blocklen(src, src_extents);
       }
       ss << ">";
     } else if (src.scope() == "wmma.accumulator") {
@@ -624,10 +624,10 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
   }
 
   if (config.virtual_channel) {
-    new_args.push_back(
-        src->shape[src->shape.size() -
-                   1]); // ub/l0c -> gm need realdstN which is equal to srcN in
-                        // virtural channel scenario
+    new_args.push_back(src_extents[src_extents.size() - 1]);
+    new_args.push_back(src_extents[src_extents.size() - 2]);
+    new_args.push_back(dst_extents[dst_extents.size() - 2]);
+    new_args.push_back(dst_extents[dst_extents.size() - 1]);
   }
 
   if (config.ub2ub) {

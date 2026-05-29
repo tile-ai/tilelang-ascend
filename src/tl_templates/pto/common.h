@@ -1389,36 +1389,34 @@ AICORE PTO_INLINE void sync_all_aiv() {
   pto::SYNCALL<pto::SyncCoreType::AIVOnly>();
 }
 
-template <typename Pipe, typename T, int32_t M, int32_t N>
+
+template <typename Pipe, typename T, int32_t M, int32_t N,
+          pto::TileSplitAxis SplitAxis = pto::TileSplitAxis::TILE_UP_DOWN>
 AICORE PTO_INLINE void copy_l0c_to_pipe(Pipe &pipe,
                                         pto::TileAcc<T, M, N> &acc_tile) {
-  pto::TPUSH<Pipe, pto::TileAcc<T, M, N>,
-             pto::TileSplitAxis::TILE_NO_SPLIT>(pipe, acc_tile);
+  pto::TPUSH<Pipe, pto::TileAcc<T, M, N>, SplitAxis>(pipe, acc_tile);
 }
 
-// Only valid for A5 target with TPipe hardware FIFO.
-// A2/A3 platforms do not support TPUSH/TPOP; use GM workspace instead.
-template <typename Pipe, typename T, int32_t M, int32_t N>
+
+template <typename Pipe, typename T, int32_t M, int32_t N,
+          pto::TileSplitAxis SplitAxis = pto::TileSplitAxis::TILE_UP_DOWN>
 AICORE PTO_INLINE void copy_pipe_to_ub(Pipe &pipe,
                                        TileUbDataND<T, M, N> &ub_tile) {
-  pto::TPOP<Pipe, TileUbDataND<T, M, N>,
-            pto::TileSplitAxis::TILE_NO_SPLIT>(pipe, ub_tile);
+  pto::TPOP<Pipe, TileUbDataND<T, M, N>, SplitAxis>(pipe, ub_tile);
 }
 
-// Only valid for A5 target with TPipe hardware FIFO.
-// A2/A3 platforms do not support TPUSH/TPOP; use GM workspace instead.
-template <typename Pipe, typename T, int32_t M, int32_t N>
+
+template <typename Pipe, typename T, int32_t M, int32_t N,
+          pto::TileSplitAxis SplitAxis = pto::TileSplitAxis::TILE_UP_DOWN>
 AICORE PTO_INLINE void copy_ub_to_pipe(Pipe &pipe, TileUbDataND<T, M, N> &ub_tile) {
-  pto::TPUSH<Pipe, TileUbDataND<T, M, N>, pto::TileSplitAxis::TILE_NO_SPLIT>(
-      pipe, ub_tile);
+  pto::TPUSH<Pipe, TileUbDataND<T, M, N>, SplitAxis>(pipe, ub_tile);
 }
 
-// Only valid for A5 target with TPipe hardware FIFO.
-// A2/A3 platforms do not support TPUSH/TPOP; use GM workspace instead.
-template <typename Pipe, typename T, int32_t M, int32_t N>
+
+template <typename Pipe, typename T, int32_t M, int32_t N,
+          pto::TileSplitAxis SplitAxis = pto::TileSplitAxis::TILE_UP_DOWN>
 AICORE PTO_INLINE void copy_pipe_to_l1(Pipe &pipe, TileMatL1<T, M, N> &l1_tile) {
-  pto::TPOP<Pipe, TileMatL1<T, M, N>, pto::TileSplitAxis::TILE_NO_SPLIT>(
-      pipe, l1_tile);
+  pto::TPOP<Pipe, TileMatL1<T, M, N>, SplitAxis>(pipe, l1_tile);
 }
 
 } // namespace tl::ascend_pto
