@@ -1,9 +1,22 @@
 #ifndef TL_TEMPLATES_PTO_PRINTF_H_
 #define TL_TEMPLATES_PTO_PRINTF_H_
 
+#include <cstdint>
 #include <type_traits>
 
 namespace tl::ascend_pto {
+
+// Common data-type list: each entry is X(CppType, NameString).
+// Add or remove types here — all consumers update automatically.
+#define TL_PTO_DTYPE_LIST(X)                                                   \
+  X(float, "float32")                                                          \
+  X(half, "float16")                                                           \
+  X(int32_t, "int32")                                                          \
+  X(uint32_t, "uint32")                                                        \
+  X(int16_t, "int16")                                                          \
+  X(uint16_t, "uint16")                                                        \
+  X(int8_t, "int8")                                                            \
+  X(uint8_t, "uint8")
 
 #if defined(_DEBUG) || defined(__CPU_SIM)
 
@@ -28,30 +41,12 @@ template <typename T> __aicore__ inline void PrintScalar(T val, uint32_t col) {
 template <typename T> __aicore__ inline const __gm__ char *TypeName() {
   return "unknown";
 }
-template <> __aicore__ inline const __gm__ char *TypeName<float>() {
-  return "float32";
-}
-template <> __aicore__ inline const __gm__ char *TypeName<half>() {
-  return "float16";
-}
-template <> __aicore__ inline const __gm__ char *TypeName<int32_t>() {
-  return "int32";
-}
-template <> __aicore__ inline const __gm__ char *TypeName<uint32_t>() {
-  return "uint32";
-}
-template <> __aicore__ inline const __gm__ char *TypeName<int16_t>() {
-  return "int16";
-}
-template <> __aicore__ inline const __gm__ char *TypeName<uint16_t>() {
-  return "uint16";
-}
-template <> __aicore__ inline const __gm__ char *TypeName<int8_t>() {
-  return "int8";
-}
-template <> __aicore__ inline const __gm__ char *TypeName<uint8_t>() {
-  return "uint8";
-}
+#define TL_PTO_TYPENAME_SPECIALIZE(CppType, NameStr)                           \
+  template <> __aicore__ inline const __gm__ char *TypeName<CppType>() {       \
+    return NameStr;                                                            \
+  }
+TL_PTO_DTYPE_LIST(TL_PTO_TYPENAME_SPECIALIZE)
+#undef TL_PTO_TYPENAME_SPECIALIZE
 
 } // namespace detail
 
@@ -68,6 +63,8 @@ template <typename T>
 __aicore__ inline void DumpTensor(__gm__ T *src, uint32_t desc,
                                   uint32_t dumpSize, uint8_t dim,
                                   const uint32_t shapeInfo[]) {
+  if (dumpSize == 0)
+    return;
   pipe_barrier(PIPE_ALL);
   cce::printf("=== DumpTensor [desc=%u] GM tensor, dtype=%s, dumpSize=%u, "
               "dim=%u ===\n",
@@ -77,14 +74,15 @@ __aicore__ inline void DumpTensor(__gm__ T *src, uint32_t desc,
     uint32_t cols = shapeInfo[dim - 1];
     if (cols == 0)
       cols = dumpSize;
-    uint32_t rows = dumpSize / cols;
-    if (rows == 0)
-      rows = 1;
+    uint32_t rows = (dumpSize + cols - 1) / cols;
 
     for (uint32_t r = 0; r < rows; ++r) {
       for (uint32_t c = 0; c < cols; ++c) {
-        T val = src[r * cols + c];
-        detail::PrintScalar<T>(val, c);
+        uint32_t idx = r * cols + c;
+        if (idx < dumpSize) {
+          T val = src[idx];
+          detail::PrintScalar<T>(val, c);
+        }
       }
       cce::printf("\n");
     }
@@ -110,6 +108,8 @@ __aicore__ inline void DumpTensor(__gm__ T *, uint32_t, uint32_t, uint8_t,
                                   const uint32_t[]) {}
 
 #endif // defined(_DEBUG) || defined(__CPU_SIM)
+
+#undef TL_PTO_DTYPE_LIST
 
 } // namespace tl::ascend_pto
 

@@ -1867,9 +1867,10 @@ void CodeGenTileLangAscendPto::DumpTensorCodegen(const CallNode *op,
   this->stream << "tl::ascend_pto::DumpTensor(";
 
   // arg 0: buffer pointer or tile reference
-  // For GM buffers: var_idmap_ returns e.g. "A" but C++ param is "A_handle".
-  // copy_base_addr_map_ maps buf_name → handle_name for GM buffers.
+  // For GM buffers: var_idmap_ returns e.g. "A_handle" but C++ param is "A".
+  // copy_base_addr_map_ maps handle_name → buf_name for GM buffers.
   auto call = op->args[0].as<CallNode>();
+  ICHECK(call) << "Expected CallNode for DumpTensor argument 0";
   std::string buf_name = PrintBufferOffset(call);
   auto it = copy_base_addr_map_.find(String(buf_name));
   if (it != copy_base_addr_map_.end()) {
