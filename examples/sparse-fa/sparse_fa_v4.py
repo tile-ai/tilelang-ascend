@@ -81,7 +81,6 @@ def mtgr_sparse_attn_kernel(
             acc_s_ub = T.alloc_ub([v_block, block_N], accum_dtype)
             acc_s_ub_ = T.alloc_ub([v_block, block_N], accum_dtype)
             mask_ub = T.alloc_ub([v_block, block_N], accum_dtype)
-            mask_zero_ub = T.alloc_ub([v_block, block_N], accum_dtype)
             sumexp_i_ub = T.alloc_ub([v_block], accum_dtype)
             acc_s_half = T.alloc_ub([v_block, block_N], dtype)
             acc_o_ub = T.alloc_ub([v_block, dim], accum_dtype)
@@ -90,7 +89,6 @@ def mtgr_sparse_attn_kernel(
             sumexp_broadcast = T.alloc_ub([v_block, dim], accum_dtype)
 
             total_tasks = total_seq_tiles * heads
-            T.tile.fill(mask_zero_ub, 0.0)
             my_iters = T.if_then_else(
                 cid < total_tasks,
                 T.ceildiv(total_tasks - cid, core_num),
@@ -197,21 +195,21 @@ def mtgr_sparse_attn_kernel(
                                 fill_len = T.if_then_else(raw_len < kv_size, raw_len, kv_size)
                                 fill_len = T.if_then_else(fill_len > 0, fill_len, 0)
                                 if fill_len > 0:
-                                    T.copy(mask_zero_ub[row, 0:fill_len], mask_ub[row, 0:fill_len])
+                                    T.tile.fill(mask_ub[row, 0:fill_len], 0.0)
 
                             elif rule == 1:
                                 raw_len = seg_end - kv_start
                                 fill_len = T.if_then_else(raw_len < kv_size, raw_len, kv_size)
                                 fill_len = T.if_then_else(fill_len > 0, fill_len, 0)
                                 if fill_len > 0:
-                                    T.copy(mask_zero_ub[row, 0:fill_len], mask_ub[row, 0:fill_len])
+                                    T.tile.fill(mask_ub[row, 0:fill_len], 0.0)
 
                             elif rule == 2:
                                 raw_len = seg_start - kv_start
                                 fill_len = T.if_then_else(raw_len < kv_size, raw_len, kv_size)
                                 fill_len = T.if_then_else(fill_len > 0, fill_len, 0)
                                 if fill_len > 0:
-                                    T.copy(mask_zero_ub[row, 0:fill_len], mask_ub[row, 0:fill_len])
+                                    T.tile.fill(mask_ub[row, 0:fill_len], 0.0)
                                 diag_col = row_abs_pos - kv_start
                                 if (diag_col >= 0) & (diag_col < kv_size):
                                     mask_ub[row, diag_col] = 0.0

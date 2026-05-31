@@ -5,6 +5,10 @@ from tvm import tir
 from tilelang.language.ascend import _dtype
 import functools
 import warnings
+from functools import reduce
+import operator
+from tvm.tir.expr import PrimExpr
+
 
 import math
 
@@ -63,7 +67,10 @@ def _handle_buffer_region(br: BufferRegion, mask):
     indices = [x.min for x in br.region]
     offset = bf.offset_of(indices)[0]
     extent = [x.extent for x in br.region]
-    size_extent = math.prod(extent)
+    if any(isinstance(e, PrimExpr) for e in extent):
+        size_extent = reduce(operator.mul, extent)
+    else:
+        size_extent = math.prod(extent)
     return bf.access_ptr(mask, offset=offset, extent=size_extent), extent
 
 
@@ -207,7 +214,10 @@ def fill(buffer: Buffer | BufferRegion, value: PrimExpr):
     """
     if isinstance(buffer, BufferRegion):
         buffer_ptr, buffer_extent = _handle_buffer_region(buffer, "w")
-        size = math.prod(buffer_extent)
+        if any(isinstance(e, PrimExpr) for e in buffer_extent):
+            size = reduce(operator.mul, buffer_extent)
+        else:
+            size = math.prod(buffer_extent)
     else:
         buffer_ptr = buffer.access_ptr("w")
         size = math.prod(buffer.shape)
