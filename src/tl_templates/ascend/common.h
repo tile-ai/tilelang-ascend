@@ -252,9 +252,10 @@ atomic_add_l0c_to_gm(GlobalTensor<T2> dstTensor, LocalTensor<T1> srcTensor,
   disable_dma_atomic_compat();
 }
 
-template <typename T1, typename T2, uint32_t len>
+template <typename T1, typename T2>
 CATLASS_DEVICE void copy_ub_to_ub(LocalTensor<T1> dstTensor,
-                                  LocalTensor<T2> srcTensor) {
+                                  LocalTensor<T2> srcTensor,
+                                  uint32_t len) {
   if constexpr (std::is_same_v<T1, T2>) {
     AscendC::DataCopy(dstTensor, srcTensor, len);
   } else {

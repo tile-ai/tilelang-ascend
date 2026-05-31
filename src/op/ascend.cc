@@ -169,6 +169,8 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
     bool virtual_channel = false;
     bool gm2ub = false;
     bool ub2gm = false;
+    bool ub2ub = false;
+    PrimExpr ub2ub_len;
   } config;
 
   std::stringstream ss;
@@ -240,12 +242,13 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
          << src->shape[src->shape.size() - 1];
       ss << ", " << enRelu << ">";
     } else {
+      config.ub2ub = true;
       PrimExpr len = 1;
       for (auto &shape : dst_extents) {
         len *= shape;
       }
-      ss << "copy_ub_to_ub<" << get_dtype(dst) << ", " << get_dtype(src) << ", "
-         << len << ">";
+      config.ub2ub_len = len;
+      ss << "copy_ub_to_ub<" << get_dtype(dst) << ", " << get_dtype(src) << ">";
     }
   } else {
     LOG(FATAL) << "Unsupported scope: src = " << src.scope()
@@ -466,6 +469,10 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
       new_args.push_back(src->shape[src->shape.size() - 2]);
     }
     new_args.push_back(src->shape[src->shape.size() - 1]);
+  }
+
+  if (config.ub2ub) {
+    new_args.push_back(config.ub2ub_len);
   }
 
   if (config.virtual_channel) {
