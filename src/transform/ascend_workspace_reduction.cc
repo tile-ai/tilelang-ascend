@@ -509,7 +509,7 @@ public:
           info.dir_type = 2;
           info.op_name = "copy_pipe_to_l1";
 
-          // Check if tmp buffer is provided for A5 (ND->NZ conversion)
+          // Check if tmp buffer is provided for A5 (ND->Nz conversion)
           // After AscendCopy::Lower, args layout: [0]=func_name, [1]=src_ptr, [2]=dst_ptr,
           // [3]=srcN, [4]=srcM, [5]=dstM, [6]=dstN, [7]=tmp_ptr, [8]=tmpN, [9]=tmpM
           if (call_node->args.size() > 9) {
