@@ -273,6 +273,7 @@ def flash_attention_fwd(
 
                             T.reduce_max(work_ub, neg_sm[cur, :, :], dim=-1)
                             T.tile.mul(neg_sm[cur, :, :], neg_sm[cur, :, :], -sm_scale)
+                            T.pipe_barrier("V")
                             T.tile.min(neg_sm[cur, :, :], neg_sm[cur, :, :], neg_sm[prv, :, :])
                             T.tile.broadcast(buf_2d, neg_sm[cur, :, :])
                             T.tile.axpy(buf_2d, work_ub, sm_scale)
@@ -297,7 +298,9 @@ def flash_attention_fwd(
                         # --- O accumulation batch ---
                         for i in T.serial(batch_iters):
                             T.tile.exp(r_factors[i, :, :], r_factors[i, :, :])
+                            T.pipe_barrier("V")
                             T.tile.mul(sumexp, sumexp, r_factors[i, :, :])
+                            T.pipe_barrier("V")
                             T.tile.add(sumexp, sumexp, sumexp_is[i, :, :])
                             T.tile.broadcast(buf_2d, r_factors[i, :, :])
                             T.tile.mul(acc_o, acc_o, buf_2d)
