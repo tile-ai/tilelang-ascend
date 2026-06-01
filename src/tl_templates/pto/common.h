@@ -56,6 +56,12 @@ using TileUbDataDN =
     pto::Tile<pto::TileType::Vec, T, Rows, Cols, pto::BLayout::ColMajor,
               RowValid, ColValid, pto::SLayout::NoneBox, 512, PadVal>;
 
+template <typename T, int Rows, int Cols, int RowValid = Rows,
+          int ColValid = Cols, pto::PadValue PadVal = pto::PadValue::Null>
+using TileUbDataNz =
+    pto::Tile<pto::TileType::Vec, T, Rows, Cols, pto::BLayout::ColMajor,
+              RowValid, ColValid, pto::SLayout::RowMajor, 512, PadVal>;
+
 template <typename T, int32_t shape>
 AICORE PTO_INLINE void mov_tile(int32_t src_addr, int32_t dst_addr,
                                 int32_t src_offset, int32_t dst_offset,
@@ -1419,7 +1425,8 @@ AICORE PTO_INLINE void copy_pipe_to_l1(Pipe &pipe, TileMatL1<T, M, N> &l1_tile) 
   pto::TPOP<Pipe, TileMatL1<T, M, N>, SplitAxis>(pipe, l1_tile);
 }
 
-// A5 overload with tmp buffer for ND->NZ conversion
+#ifdef PTO_PLATFORM_A5
+// A5 overload with tmp buffer for ND->Nz conversion
 // M_tmp, N_tmp: tmp buffer shape (may differ from ub_tile shape)
 template <typename Pipe, typename T, int32_t M, int32_t N, int32_t M_tmp, int32_t N_tmp,
           pto::TileSplitAxis SplitAxis = pto::TileSplitAxis::TILE_UP_DOWN>
@@ -1427,16 +1434,26 @@ AICORE PTO_INLINE void copy_ub_to_pipe(Pipe &pipe,
                                         TileUbDataND<T, M, N> &ub_tile,
                                         TileUbDataND<T, M_tmp, N_tmp> &tmp_tile) {
   using SrcTile = TileUbDataND<T, M, N>;
-  using DstTile = pto::Tile<pto::TileType::Vec, T, M_tmp, N_tmp,
-                            pto::BLayout::ColMajor, M_tmp, N_tmp,
-                            pto::SLayout::RowMajor, 512, pto::PadValue::Null>;
-
-  pto::TMOV<DstTile, SrcTile>(reinterpret_cast<DstTile&>(tmp_tile), ub_tile);
-  TL_PIPE_V_BARRIER();
-
+  using DstTile = TileUbDataNz<T, M_tmp, N_tmp, M, N>;
+  DstTile tmp_tile_Nz;
+  pto::TASSIGN(tmp_tile_Nz, reinterpret_cast<uint64_t>(tmp_tile.data()));
+  // TMOV: copy + ND → Nz format conversion
+  pto::TMOV(tmp_tile_Nz, ub_tile);
+  set_flag(PIPE_V, PIPE_MTE3, EVENT_ID0);
+  wait_flag(PIPE_V, PIPE_MTE3, EVENT_ID0);
+  // Nz UB → L1
   pto::TPUSH<Pipe, DstTile, SplitAxis>(
-      pipe, reinterpret_cast<DstTile&>(tmp_tile));
+      pipe, tmp_tile_Nz);
 }
+#else
+template <typename Pipe, typename T, int32_t M, int32_t N, int32_t M_tmp, int32_t N_tmp,
+          pto::TileSplitAxis SplitAxis = pto::TileSplitAxis::TILE_UP_DOWN>
+AICORE PTO_INLINE void copy_ub_to_pipe(Pipe &pipe,
+                                        TileUbDataND<T, M, N> &ub_tile,
+                                        TileUbDataND<T, M_tmp, N_tmp> &tmp_tile) {
+  copy_ub_to_pipe<Pipe, T, M, N, SplitAxis>(pipe, ub_tile);
+}
+#endif
 
 } // namespace tl::ascend_pto
 #endif

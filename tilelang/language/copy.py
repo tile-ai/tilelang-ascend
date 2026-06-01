@@ -353,15 +353,6 @@ def npu_copy_v2(
     if tmp is None:
         tmp_region = tir.IntImm("int32", 0)
     else:
-        tmp_extent = get_extent(tmp)
-        if tmp_extent is None:
-            tmp_extent = extent
-        else:
-            tmp_extent = list(tmp_extent)
-            if len(tmp_extent) != len(extent):
-                max_len = max(len(tmp_extent), len(extent))
-                if len(tmp_extent) < max_len:
-                    tmp_extent = tmp_extent + [1] * (max_len - len(tmp_extent))
         tmp_region = _to_region(tmp, "rw")
 
     return tir.call_intrin("handle", tir.op.Op.get("tl.ascend_copy"), src, dst, enable_relu, transpose, pad_value_expr, tmp_region)

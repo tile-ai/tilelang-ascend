@@ -658,6 +658,8 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
     // Add tmp buffer for UB->L1 copy on A5 (for ND->NZ conversion)
     if (tmp.defined()) {
       new_args.push_back(tmp_ptr);
+      new_args.push_back(tmp_extents[tmp_extents.size() - 1]);  // tmp_N
+      new_args.push_back(tmp_extents[tmp_extents.size() - 2]);  // tmp_M
     }
   }
 
