@@ -272,7 +272,7 @@ def npu_copy_v2(
             Supports float, int, tir.FloatImm, tir.IntImm, tir.PrimExpr (e.g., -T.infinity(dtype)).
             Defaults to 0.
         tmp (Optional[Union[tir.Buffer, tir.BufferLoad]]): Temporary buffer for UB->L1 copy
-            on A5 platform. Used for ND->NZ format conversion. Defaults to None.
+            on A5 platform. Used for ND->Nz format conversion. Defaults to None.
             Only required when copying from UB to L1 on A5.
 
     Raises:

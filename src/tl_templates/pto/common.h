@@ -1426,7 +1426,7 @@ AICORE PTO_INLINE void copy_pipe_to_l1(Pipe &pipe, TileMatL1<T, M, N> &l1_tile) 
 }
 
 
-// ND→NZ conversion via TMOV (V pipe, no pipe push)
+// ND→Nz conversion via TMOV (V pipe, no pipe push)
 template <typename T, int32_t M, int32_t N, int32_t M_tmp, int32_t N_tmp>
 AICORE PTO_INLINE void copy_ub_to_ub_Nz(
     TileUbDataND<T, M, N> &ub_tile,
@@ -1446,7 +1446,7 @@ AICORE PTO_INLINE void copy_pipe_to_ub_V(Pipe &pipe, TileUbDataND<T, M, N> &ub_t
 
 
 #ifdef PTO_PLATFORM_A5
-// A5 overload: push NZ-converted tile from tmp buffer into pipe
+// A5 overload: push Nz-converted tile from tmp buffer into pipe
 template <typename Pipe, typename T, int32_t M, int32_t N, int32_t M_tmp, int32_t N_tmp,
           pto::TileSplitAxis SplitAxis = pto::TileSplitAxis::TILE_UP_DOWN>
 AICORE PTO_INLINE void copy_ub_to_pipe(Pipe &pipe,
