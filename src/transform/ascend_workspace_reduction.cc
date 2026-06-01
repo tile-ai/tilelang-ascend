@@ -735,13 +735,26 @@ private:
       }
     }
     Call call(DataType::Handle(), tir::builtin::call_extern(), args);
+
+    if (is_ub_to_l1 && pipe.has_tmp && platform_ == "A5" &&
+        orig_args.size() > 7 && orig_args[7].as<CallNode>()) {
+      Array<PrimExpr> args_nz = {StringImm("tl::ascend::copy_ub_to_ub_Nz"),
+                                 src_access, orig_args[7]};
+      Call call_nz(DataType::Handle(), tir::builtin::call_extern(), args_nz);
+      return SeqStmt({Evaluate(call_nz), Evaluate(call)});
+    }
+
     return Evaluate(call);
   }
 
   Stmt GenerateCopyFromPipe(const CopyGlobalContext::PipeInfo &pipe,
                          const Call &dst_access) {
+    std::string op_name = pipe.op_name;
+    if (platform_ == "A5" && op_name == "copy_pipe_to_ub") {
+      op_name = "copy_pipe_to_ub_V";
+    }
     std::stringstream ss;
-    ss << "tl::ascend::" << pipe.op_name;
+    ss << "tl::ascend::" << op_name;
 
     Array<PrimExpr> args = {
         StringImm(ss.str()),

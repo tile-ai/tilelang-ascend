@@ -1243,6 +1243,34 @@ void CodeGenTileLangAscendPto::GMCopyCall(const CallNode *call,
          << valid_rows_str << ", " << valid_cols_str << ");\n";
 }
 
+void CodeGenTileLangAscendPto::CopyUBToUBNzCodegen(const CallNode *call) {
+  std::string func_call = Downcast<StringImm>(call->args[0])->value;
+  size_t pos = func_call.find("tl::ascend::");
+  if (pos != std::string::npos) {
+    func_call.replace(pos, 12, kAscendPtoScope);
+  }
+
+  BufferInfo src_info = GetBufferInfo(call->args[1]);
+  BufferInfo dst_info = GetBufferInfo(call->args[2]);
+
+  ShapeInfo src_shape_info = GetSliceInfo(src_info.access_ptr);
+  ShapeInfo dst_shape_info = GetSliceInfo(dst_info.access_ptr);
+
+  std::string src_name = src_info.id;
+  std::string dst_name = dst_info.id;
+  if (src_shape_info.is_slice) {
+    src_name = GetTempVarName(src_shape_info.ub_name);
+    CreateUbVariableND(src_name, src_shape_info);
+  }
+  if (dst_shape_info.is_slice) {
+    dst_name = GetTempVarName(dst_shape_info.ub_name);
+    CreateUbVariableND(dst_name, dst_shape_info);
+  }
+
+  this->PrintIndent();
+  this->stream << func_call << "(" << src_name << ", " << dst_name << ");\n";
+}
+
 void CodeGenTileLangAscendPto::CopyUBToUBCodegen(const CallNode *call) {
   BufferInfo src_info = GetBufferInfo(call->args[1]);
   BufferInfo dst_info = GetBufferInfo(call->args[2]);
@@ -1636,6 +1664,8 @@ void CodeGenTileLangAscendPto::CallExternCodegen(const CallNode *op) {
     GMCopyCall(op, "copy_gm_to_l1");
   } else if (op_name.find("tl::ascend::copy_l0c_to_gm") != std::string::npos) {
     GMCopyCall(op, "copy_l0c_to_gm");
+  } else if (op_name.find("tl::ascend::copy_ub_to_ub_Nz") != std::string::npos) {
+    CopyUBToUBNzCodegen(op);
   } else if (op_name.find("tl::ascend::copy_ub_to_ub") != std::string::npos) {
     CopyUBToUBCodegen(op);
   } else if (op_name.find("tl::ascend::copy_l1_to_l0a") != std::string::npos) {
@@ -1654,6 +1684,8 @@ void CodeGenTileLangAscendPto::CallExternCodegen(const CallNode *op) {
     CopyPipeCodegen(op, false);
   } else if (op_name.find("tl::ascend::copy_l0c_to_pipe") != std::string::npos) {
     CopyPipeCodegen(op, true);
+  } else if (op_name.find("tl::ascend::copy_pipe_to_ub_V") != std::string::npos) {
+    CopyPipeCodegen(op, false);
   } else if (op_name.find("tl::ascend::copy_pipe_to_ub") != std::string::npos) {
     CopyPipeCodegen(op, false);
   }

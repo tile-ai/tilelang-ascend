@@ -1425,27 +1425,40 @@ AICORE PTO_INLINE void copy_pipe_to_l1(Pipe &pipe, TileMatL1<T, M, N> &l1_tile) 
   pto::TPOP<Pipe, TileMatL1<T, M, N>, SplitAxis>(pipe, l1_tile);
 }
 
+
+// ND→NZ conversion via TMOV (V pipe, no pipe push)
+template <typename T, int32_t M, int32_t N, int32_t M_tmp, int32_t N_tmp>
+AICORE PTO_INLINE void copy_ub_to_ub_Nz(
+    TileUbDataND<T, M, N> &ub_tile,
+    TileUbDataND<T, M_tmp, N_tmp> &tmp_tile) {
+  using DstTile = TileUbDataNz<T, M_tmp, N_tmp, M, N>;
+  DstTile tmp_tile_Nz;
+  pto::TASSIGN(tmp_tile_Nz, reinterpret_cast<uint64_t>(tmp_tile.data()));
+  pto::TMOV(tmp_tile_Nz, ub_tile);
+}
+
+
+template <typename Pipe, typename T, int32_t M, int32_t N,
+          pto::TileSplitAxis SplitAxis = pto::TileSplitAxis::TILE_UP_DOWN>
+AICORE PTO_INLINE void copy_pipe_to_ub_V(Pipe &pipe, TileUbDataND<T, M, N> &ub_tile) {
+  pto::TPOP<Pipe, TileUbDataND<T, M, N>, SplitAxis>(pipe, ub_tile);
+}
+
+
 #ifdef PTO_PLATFORM_A5
-// A5 overload with tmp buffer for ND->Nz conversion
-// M_tmp, N_tmp: tmp buffer shape (may differ from ub_tile shape)
+// A5 overload: push NZ-converted tile from tmp buffer into pipe
 template <typename Pipe, typename T, int32_t M, int32_t N, int32_t M_tmp, int32_t N_tmp,
           pto::TileSplitAxis SplitAxis = pto::TileSplitAxis::TILE_UP_DOWN>
 AICORE PTO_INLINE void copy_ub_to_pipe(Pipe &pipe,
                                         TileUbDataND<T, M, N> &ub_tile,
                                         TileUbDataND<T, M_tmp, N_tmp> &tmp_tile) {
-  using SrcTile = TileUbDataND<T, M, N>;
   using DstTile = TileUbDataNz<T, M_tmp, N_tmp, M, N>;
   DstTile tmp_tile_Nz;
   pto::TASSIGN(tmp_tile_Nz, reinterpret_cast<uint64_t>(tmp_tile.data()));
-  // TMOV: copy + ND → Nz format conversion
-  pto::TMOV(tmp_tile_Nz, ub_tile);
-  set_flag(PIPE_V, PIPE_MTE3, EVENT_ID0);
-  wait_flag(PIPE_V, PIPE_MTE3, EVENT_ID0);
-  // Nz UB → L1
-  pto::TPUSH<Pipe, DstTile, SplitAxis>(
-      pipe, tmp_tile_Nz);
+  pto::TPUSH<Pipe, DstTile, SplitAxis>(pipe, tmp_tile_Nz);
 }
 #else
+// Non-A5: fallback — ignore tmp and call regular copy_ub_to_pipe
 template <typename Pipe, typename T, int32_t M, int32_t N, int32_t M_tmp, int32_t N_tmp,
           pto::TileSplitAxis SplitAxis = pto::TileSplitAxis::TILE_UP_DOWN>
 AICORE PTO_INLINE void copy_ub_to_pipe(Pipe &pipe,

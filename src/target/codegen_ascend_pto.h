@@ -228,6 +228,8 @@ private:
 
   void GMCopyCall(const CallNode *call, std::string op_name);
 
+  void CopyUBToUBNzCodegen(const CallNode *call);
+
   void CopyUBToUBCodegen(const CallNode *call);
 
   void CopyL1ToL0Codegen(const CallNode *call, bool is_a);
