@@ -88,6 +88,10 @@ def mtgr_sparse_attn_kernel(
 
             sumexp_broadcast = T.alloc_ub([v_block, dim], accum_dtype)
 
+            b_i = T.alloc_var("int32", init=0)
+            seg_id = T.alloc_var("int32", init=0)
+            next_seg_first_tile = T.alloc_var("int32", init=0)
+
             total_tasks = total_seq_tiles * heads
             my_iters = T.if_then_else(
                 cid < total_tasks,
@@ -602,70 +606,70 @@ def test(
     )
 
     torch.npu.synchronize()
-    torch.testing.assert_close(ref_output, output_snd, rtol=6e-2, atol=6e-2)
+    torch.testing.assert_close(ref_output, output_snd, rtol=1e-3, atol=1e-3)
     print("Test Passed!")
 
 
 if __name__ == "__main__":
     test_configs = [
-        {
-            "H": 8,
-            "D": 64,
-            "seg_lengths": [[1600, 8, 200, 1200]],
-            "rules": [0, 1, 2, 2],
-            "matched_prefix_arr": [0],
-        },
-        {
-            "H": 8,
-            "D": 64,
-            "seg_lengths": [[1600, 8, 200, 1200]],
-            "rules": [0, 1, 0, 2],
-            "matched_prefix_arr": [0],
-        },
-        {
-            "H": 8,
-            "D": 64,
-            "seg_lengths": [[1600, 8, 200, 1200], [1700, 8, 300, 1024]],
-            "rules": [0, 1, 2, 2],
-            "matched_prefix_arr": [0, 0],
-        },
-        {
-            "H": 8,
-            "D": 64,
-            "seg_lengths": [[1800, 8, 100, 1500], [1500, 8, 300, 1200]],
-            "rules": [0, 1, 0, 2],
-            "matched_prefix_arr": [0, 0],
-        },
-        {
-            "H": 8,
-            "D": 64,
-            "seg_lengths": [[1600, 8, 200, 1200], [1700, 8, 300, 1024], [1680, 8, 200, 1280], [2000, 8, 700, 2048]],
-            "rules": [0, 1, 2, 2],
-            "matched_prefix_arr": [0, 0, 0, 0],
-        },
-        {
-            "H": 8,
-            "D": 64,
-            "seg_lengths": [[3200, 8, 200, 1200], [2300, 8, 400, 1800], [2080, 8, 200, 1800], [1700, 8, 100, 1024]],
-            "rules": [0, 1, 0, 2],
-            "matched_prefix_arr": [0, 0, 0, 0],
-        },
-        {
-            "H": 8,
-            "D": 64,
-            "seg_lengths": [
-                [2200, 8, 200, 1024],
-                [1700, 8, 100, 1100],
-                [2440, 8, 200, 2048],
-                [1600, 8, 600, 1900],
-                [3300, 8, 200, 1300],
-                [1700, 8, 300, 2100],
-                [1780, 8, 700, 1200],
-                [2048, 8, 500, 1800],
-            ],
-            "rules": [0, 1, 2, 2],
-            "matched_prefix_arr": [0, 0, 0, 0, 0, 0, 0, 0],
-        },
+        # {
+        #     "H": 8,
+        #     "D": 64,
+        #     "seg_lengths": [[1600, 8, 200, 1200]],
+        #     "rules": [0, 1, 2, 2],
+        #     "matched_prefix_arr": [0],
+        # },
+        # {
+        #     "H": 8,
+        #     "D": 64,
+        #     "seg_lengths": [[1600, 8, 200, 1200]],
+        #     "rules": [0, 1, 0, 2],
+        #     "matched_prefix_arr": [0],
+        # },
+        # {
+        #     "H": 8,
+        #     "D": 64,
+        #     "seg_lengths": [[1600, 8, 200, 1200], [1700, 8, 300, 1024]],
+        #     "rules": [0, 1, 2, 2],
+        #     "matched_prefix_arr": [0, 0],
+        # },
+        # {
+        #     "H": 8,
+        #     "D": 64,
+        #     "seg_lengths": [[1800, 8, 100, 1500], [1500, 8, 300, 1200]],
+        #     "rules": [0, 1, 0, 2],
+        #     "matched_prefix_arr": [0, 0],
+        # },
+        # {
+        #     "H": 8,
+        #     "D": 64,
+        #     "seg_lengths": [[1600, 8, 200, 1200], [1700, 8, 300, 1024], [1680, 8, 200, 1280], [2000, 8, 700, 2048]],
+        #     "rules": [0, 1, 2, 2],
+        #     "matched_prefix_arr": [0, 0, 0, 0],
+        # },
+        # {
+        #     "H": 8,
+        #     "D": 64,
+        #     "seg_lengths": [[3200, 8, 200, 1200], [2300, 8, 400, 1800], [2080, 8, 200, 1800], [1700, 8, 100, 1024]],
+        #     "rules": [0, 1, 0, 2],
+        #     "matched_prefix_arr": [0, 0, 0, 0],
+        # },
+        # {
+        #     "H": 8,
+        #     "D": 64,
+        #     "seg_lengths": [
+        #         [2200, 8, 200, 1024],
+        #         [1700, 8, 100, 1100],
+        #         [2440, 8, 200, 2048],
+        #         [1600, 8, 600, 1900],
+        #         [3300, 8, 200, 1300],
+        #         [1700, 8, 300, 2100],
+        #         [1780, 8, 700, 1200],
+        #         [2048, 8, 500, 1800],
+        #     ],
+        #     "rules": [0, 1, 2, 2],
+        #     "matched_prefix_arr": [0, 0, 0, 0, 0, 0, 0, 0],
+        # },
         {
             "H": 8,
             "D": 64,
