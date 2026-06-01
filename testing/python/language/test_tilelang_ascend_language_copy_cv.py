@@ -48,6 +48,7 @@ def _ub_to_l1_kernel(M=128, N=128, K=128, dtype="float16", accum_dtype="float"):
     ):
         with T.Kernel(1, is_npu=True) as (cid, vid):
             A_ub = T.alloc_ub((M_half, K), dtype)
+            A_ub_Nz = T.alloc_ub((M_half, K), dtype)
             A_l1 = T.alloc_L1((M, K), dtype)
             B_l1 = T.alloc_L1((K, N), dtype)
             C_l0c = T.alloc_L0C((M, N), accum_dtype)
@@ -56,7 +57,7 @@ def _ub_to_l1_kernel(M=128, N=128, K=128, dtype="float16", accum_dtype="float"):
             T.copy(A[vid * M_half: (vid + 1) * M_half, :], A_ub)
 
             # UB → L1
-            T.copy(A_ub, A_l1)
+            T.copy(A_ub, A_l1, tmp=A_ub_Nz)
 
             # GM → L1
             T.copy(B, B_l1)
@@ -81,6 +82,7 @@ def _ub_to_l1_kernel_drop_vid(M=128, N=128, K=128, dtype="float16", accum_dtype=
     ):
         with T.Kernel(1, threads=2, is_npu=True) as _cid:
             A_ub = T.alloc_ub((M, K), dtype)
+            A_ub_Nz = T.alloc_ub((M, K), dtype)
             A_l1 = T.alloc_L1((M, K), dtype)
             B_l1 = T.alloc_L1((K, N), dtype)
             C_l0c = T.alloc_L0C((M, N), accum_dtype)
@@ -89,7 +91,7 @@ def _ub_to_l1_kernel_drop_vid(M=128, N=128, K=128, dtype="float16", accum_dtype=
             T.copy(A, A_ub)
 
             # UB → L1
-            T.copy(A_ub, A_l1)
+            T.copy(A_ub, A_l1, tmp=A_ub_Nz)
 
             # GM → L1
             T.copy(B, B_l1)
@@ -116,6 +118,7 @@ def _ub_to_l1_kernel_lr(M=128, N=128, K=128, dtype="float16", accum_dtype="float
     ):
         with T.Kernel(1, is_npu=True) as (cid, vid):
             A_ub = T.alloc_ub((M, K_half), dtype)
+            A_ub_Nz = T.alloc_ub((M, K_half), dtype)
             A_l1 = T.alloc_L1((M, K), dtype)
             B_l1 = T.alloc_L1((K, N), dtype)
             C_l0c = T.alloc_L0C((M, N), accum_dtype)
@@ -124,7 +127,7 @@ def _ub_to_l1_kernel_lr(M=128, N=128, K=128, dtype="float16", accum_dtype="float
             T.copy(A[:, vid * K_half: (vid + 1) * K_half], A_ub)
 
             # UB → L1
-            T.copy(A_ub, A_l1)
+            T.copy(A_ub, A_l1, tmp=A_ub_Nz)
 
             # GM → L1
             T.copy(B, B_l1)
@@ -301,6 +304,7 @@ def _combined_kernel(M=128, N=128, K=128, dtype="float16", accum_dtype="float"):
         with T.Kernel(1, is_npu=True) as (cid, vid):
             # UB↔L1 path buffers
             A_ub = T.alloc_ub((M_half, K), dtype)
+            A_ub_Nz = T.alloc_ub((M_half, K), dtype)
             A_l1 = T.alloc_L1((M, K), dtype)
 
             # L0C↔UB path buffers
@@ -310,7 +314,7 @@ def _combined_kernel(M=128, N=128, K=128, dtype="float16", accum_dtype="float"):
 
             # Path A: GM → UB → L1
             T.copy(A[vid * M_half: (vid + 1) * M_half, :], A_ub)
-            T.copy(A_ub, A_l1)
+            T.copy(A_ub, A_l1, tmp=A_ub_Nz)
 
             # Path B: GM → L1 → GEMM → L0C → UB
             T.copy(B, B_l1)
