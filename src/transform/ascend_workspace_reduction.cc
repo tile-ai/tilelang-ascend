@@ -110,7 +110,7 @@ public:
       this->scope_table_ = scope_table;
     }
     this->is_pto_ = is_pto;
-    this->needs_gm_workspace_ = (is_pto && platform != "A5");
+    this->needs_gm_workspace_ = (platform != "A5");
   }
 
   void SetSkipBuffers(const std::unordered_set<std::string> &skip_buffers) {
@@ -357,7 +357,7 @@ public:
         }
 
         Array<PrimExpr> real_shapes;
-        if (needs_gm_workspace_) {
+        if (is_pto_) {
           // A2 PTO: flat 1D buffer with 2x size for FIFO double-buffering
           PrimExpr total_elems = context_.core_meta_info_.total_core_nums;
           for (const auto &shape : ws_info.shapes) {
@@ -440,7 +440,7 @@ public:
       // Layer 1: Workspace collection (differs per backend)
       // A2 Ascend C || PTO: collect workspace info for GM buffer allocation
       // A5 PTO: skip workspace collection
-      if (!is_pto_ || needs_gm_workspace_) {
+      if (needs_gm_workspace_) {
         WorkspaceInfoCollector(copy_stmt_name, src_ptr, dst_ptr);
       }
 
