@@ -44,5 +44,13 @@ if __name__ == "__main__":
 ```
 
 **融合算子注意事项**：
-- 函数签名需包含 workspace 参数，`workspace_idx` 指定索引位置
-- Cube 核输出通过 `T.copy` 写入 workspace，Vector 核从 workspace 读取
+
+**Developer 模式（推荐，默认消除 workspace/vid）**：
+- 装饰器无 `workspace_idx`，函数签名无 workspace 参数
+- `T.Kernel(block_num, threads=2, is_npu=True) as (cid)`（单轴 + `threads=2`）
+- Cube↔Vector 用 `alloc_shared/alloc_fragment` 片上 `T.copy` 直连，无 GM 往返、无 `vid` 偏移
+- 完整骨架/映射表见 [tilelang-expert-to-developer mode-examples.md §6](../../tilelang-custom-skill/tilelang-expert-to-developer/references/mode-examples.md#6-cv-融合--推荐写法消除-workspace--vidthreads2)
+
+**回退（Expert/混合或复杂同步场景）**：
+- 函数签名包含 workspace 参数，`workspace_idx` 指定索引位置
+- Cube 核输出通过 `T.copy` 写入 workspace，Vector 核从 workspace 读取（见 mode-examples.md §7）

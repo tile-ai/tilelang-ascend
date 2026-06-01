@@ -31,13 +31,14 @@
 │   │   Kernel: T.Kernel(任务数, is_npu=True) as (cid, _)
 │   │
 │   └─ matmul + element-wise 前处理/后处理 → CV 融合算子
-│       ├─ Developer 模式（推荐）
+│       ├─ Developer 模式（推荐，默认消除 workspace/vid）
 │       │   模式: Developer + AUTO_CV_COMBINE
 │       │   API: T.tile.* (Vector) + T.gemm_v0 (Cube)
-│       │   内存: GM→L1→L0C→workspace→UB→GM
+│       │   内存: GM→L1→L0C→片上直连→UB→GM（默认无 workspace 中转）
 │       │   pass_configs: AUTO_SYNC + AUTO_CV_COMBINE + AUTO_CV_SYNC
 │       │   同步: AUTO_SYNC + AUTO_CV_SYNC 自动处理
-│       │   V 核: 可用 vid 并行化（每个 V 核处理 block_N // VEC_NUM 行）
+│       │   V 核: threads=2 自动并行（消 vid）；复杂场景才回退 workspace+vid
+│       │   写法: 见 tilelang-expert-to-developer mode-examples.md §6
 │       │
 │       ├─ Expert 模式（极致性能）
 │       │   模式: Expert + T.Scope("C"/"V") + T.set_cross_flag

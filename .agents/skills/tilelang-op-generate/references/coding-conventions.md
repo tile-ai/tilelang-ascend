@@ -37,7 +37,18 @@ T.copy(A[row_start, by * block_N], a_ub)
 T.copy(a_ub, B[row_start, by * block_N])
 ```
 
-**⚠️ CV 融合场景（workspace 索引一致性）**：
+**✅ CV 融合场景 — Developer 模式（推荐，默认消除 workspace/vid）**：
+```python
+# T.Kernel(block_num, threads=2, is_npu=True) as (cid)  —— threads=2，无 vid 轴
+for bi_i in range(BI):                       # 整程，无 vid 偏移
+    T.copy(KV[..., idx[bi_i], ...], kv_ub)
+    T.copy(kv_ub, kv_l1[bi_i, :])            # gather 直连片上 L1，无 workspace
+...
+T.copy(acc_s_l0c, acc_s_ub_)                 # L0C → shared 直连，无 GM 往返
+```
+前提链：`threads=2` → 消 vid → 消 workspace；完整映射表见 [mode-examples.md §6](../../tilelang-custom-skill/tilelang-expert-to-developer/references/mode-examples.md#6-cv-融合--推荐写法消除-workspace--vidthreads2)。
+
+**⚠️ 回退写法 — workspace 索引一致性（Expert/混合或复杂场景）**：
 ```python
 VEC_NUM = 2
 block_N_2 = block_N // VEC_NUM
@@ -54,7 +65,7 @@ for row in T.serial(block_N_2):
 T.copy(workspace[bn * block_N, k_offset], B_L1)  # 完整 block_N
 ```
 
-**易错点**：workspace 写入时忘记使用 `actual_row`，导致数据错乱。
+**易错点（仅回退写法）**：workspace 写入时忘记使用 `actual_row`，导致数据错乱。
 
 ## 3. 同步
 

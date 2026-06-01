@@ -7,7 +7,8 @@
 - [3. Flash Attention — Expert 模式 pass_configs](#3-flash-attention--expert-模式-pass_configs)
 - [4. Flash Attention — Developer 核间流水线 pass_configs](#4-flash-attention--developer-核间流水线-pass_configs)
 - [5. 混合模式 — Softmax](#5-混合模式--softmax)
-- [6. CV 融合 — Developer 模式（W4A8 GEMM）](#6-cv-融合--developer-模式w4a8-gemm)
+- [6. CV 融合 — 推荐写法：消除 workspace / vid（threads=2）](#6-cv-融合--推荐写法消除-workspace--vidthreads2)
+- [7. CV 融合 — workspace + vid 写法（复杂场景兜底）](#7-cv-融合--workspace--vid-写法复杂场景兜底)
 
 ---
 
@@ -173,7 +174,109 @@ with T.Kernel(m_num, is_npu=True) as (cid, vid):
 
 ---
 
-## 6. CV 融合 — Developer 模式（W4A8 GEMM）
+## 6. CV 融合 — 推荐写法：消除 workspace / vid（threads=2）
+
+> **这是 Developer 模式 CV 交互的首选写法。** 把 Cube↔Vector 的数据中转交给编译器（`alloc_shared/fragment` + 四个 `TL_ASCEND_*` pass），不再手写 GM `workspace` 与手动 `vid` 二分。
+> 仅当编译器无法自动覆盖的复杂同步/多版本流水场景，才回退到 [§7 的 workspace+vid 写法](#7-cv-融合--workspace--vid-写法复杂场景兜底)。
+
+**已验证参考实现**（旧 vs 新，逐行对照）：
+- 旧（workspace+vid）：`examples/developer_mode/sparse_flash_attn_developer.py`
+- 新（消除）：`examples/developer_mode/sparse_flash_attn_developer_vid_reduce.py`
+
+### 6.1 核心前提链（必须按序成立，不可跳级）
+
+```
+threads=2  ──►  vid 消除  ──►  workspace 消除
+（T.Kernel 加 threads=2）（去掉手动 vid 轴/偏移）（删 workspace_idx + 片上直连）
+```
+
+1. **`threads=2`**：在 `T.Kernel` 上声明，由编译器自动把 Vector 工作并行到 2 个核——**这是去掉手动 `vid` 轴的前提**。
+2. **vid 消除**：不再用第二个 kernel 轴手动二分 V 核工作；`v_block` 用整块，索引去掉所有 `vid * ...` 偏移。
+3. **workspace 消除**：在 vid 消除的基础上，Cube↔Vector 改为片上 buffer 直连，删除所有 `workspace_*` 参数与 GM 往返。
+
+### 6.2 改造清单（逐项对照）
+
+| 项 | 旧（workspace+vid） | 新（消除） |
+|----|---------------------|------------|
+| jit 装饰器 | `@tilelang.jit(out_idx=[N], workspace_idx=[...], pass_configs=...)` | `@tilelang.jit(out_idx=[N], pass_configs=...)`（删 `workspace_idx`） |
+| kernel 签名 | 含 `workspace_1..k: T.Tensor(...)` 参数 | 只剩真实 I/O，无 workspace 参数 |
+| Kernel 启动 | `T.Kernel(block_num, is_npu=True) as (cid, vid)` | `T.Kernel(block_num, threads=2, is_npu=True) as (cid)` |
+| 内存原语 | `alloc_L1` / `alloc_ub` / `alloc_L0C` | `alloc_shared`（L1/UB） / `alloc_fragment`（L0C） |
+| V 块大小 | `v_block = H_per_block // 2` | `v_block = H_per_block` |
+| 循环/索引 | `range(BI//2)`、`... + vid * BI//2`、`vid * v_block : ...` | `range(BI)`、去掉全部 `vid` 偏移 |
+| CV 交互 | 两跳 GM 往返（见下表） | 片上 buffer 一跳直连 |
+
+**workspace 往返 → 片上直连映射**（凡「片上 buffer ↔ `workspace[cid,...]` ↔ 另一片上 buffer」两跳，合并为片上一跳）：
+
+| 语义角色 | 旧（GM 往返） | 新（片上直连） |
+|----------|---------------|----------------|
+| Cube 输出 QK^T | `T.copy(acc_s_l0c, ws3[cid,...])` + `T.copy(ws3[cid,vid*..], acc_s_ub_)` | `T.copy(acc_s_l0c, acc_s_ub_)` |
+| Cube 输出 PV | `T.copy(acc_o_l0c, ws5[cid,...])` + `T.copy(ws5[cid,vid*..], acc_o_ub)` | `T.copy(acc_o_l0c, acc_o_ub)` |
+| gather 后 KV | `T.copy(kv_ub, ws1[cid, bi_i+vid*..])` | `T.copy(kv_ub, kv_l1[bi_i, :])` |
+| Vector 回写概率 | `T.copy(acc_s_half, ws4[cid, vid*..])` | `T.copy(acc_s_half, acc_s_l1)` |
+
+中转所需的暂存/双缓冲/同步，交给 `AUTO_CV_COMBINE / AUTO_CV_SYNC / AUTO_SYNC / MEMORY_PLANNING` 自动完成。
+
+### 6.3 代码骨架（消除写法）
+
+```python
+pass_configs = {
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_SYNC: True,
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
+    tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
+}
+
+@tilelang.jit(out_idx=[3], pass_configs=pass_configs)   # 无 workspace_idx
+def attn_fwd(...):
+    v_block = H_per_block                                # 不再 // 2
+
+    @T.prim_func
+    def main(Q, KV, Indices, Output):                    # 无 workspace 参数
+        with T.Kernel(block_num, threads=2, is_npu=True) as (cid):   # threads=2 + 单轴
+            # alloc_shared（原 L1/UB）/ alloc_fragment（原 L0C）
+            kv_l1     = T.alloc_shared([BI, D], dtype)
+            acc_s_l0c = T.alloc_fragment([H_per_block, BI], accum_dtype)
+            acc_s_ub_ = T.alloc_shared([v_block, BI], accum_dtype)
+            ...
+            for i_i in T.serial(NI):
+                T.gemm_v0(q_l1, kv_l1, acc_s_l0c, transpose_B=True, init=True)
+                T.copy(acc_s_l0c, acc_s_ub_)             # L0C → shared 直连（原 ws3 往返）
+                ...
+                for bi_i in range(BI):                   # 整程，无 vid
+                    T.copy(KV[..., indices_ub_[bi_i], ...], kv_ub)
+                    T.copy(kv_ub, kv_l1[bi_i, :])        # gather 直连 L1（原 ws1）
+                ...
+                T.copy(acc_s_half, acc_s_l1)             # softmax → L1 直连（原 ws4）
+            T.copy(acc_o_half, Output[..., H0 : H0 + v_block, :])   # 无 vid 偏移
+    return main
+```
+
+### 6.4 不变量（改造前后必须一致）
+
+- 算法主体：`QK^T → online softmax(max/exp/sum 累积) → PV`。
+- 所有 UB 中间张量（`acc_s_ub / m_i / sumexp / acc_o ...`）的逻辑语义。
+- 测试与参考实现（`ref_*`、`assert_close`）。
+
+### 6.5 自检清单
+
+- [ ] `T.Kernel` 含 `threads=2` 且只剩 `cid` 一个轴
+- [ ] 装饰器无 `workspace_idx`，签名无 `workspace_*`
+- [ ] 无 `alloc_L1 / alloc_L0C / alloc_ub`，已全部换为 `alloc_shared / alloc_fragment`
+- [ ] 全文 grep `vid` 无残留偏移；grep `workspace` 无残留
+- [ ] `v_block == H_per_block`，循环为整程 `range(BI)`
+
+### 6.6 何时回退到 workspace+vid（§7）
+
+- 需要手动控制多版本/`num_stages` 核间流水缓冲（编译器自动版本化不满足时）。
+- 需要细粒度信号量（`SEM_*` set/wait）精确编排 Cube/Vector 时序。
+- 编译器报错提示无法自动分离/同步且无法通过调整 buffer 解决时。
+
+---
+
+## 7. CV 融合 — workspace + vid 写法（复杂场景兜底）
+
+> **兜底写法**：仅用于 [§6.6](#66-何时回退到-workspacevid7) 所列复杂场景。常规 Developer CV 融合请优先用 [§6 消除写法](#6-cv-融合--推荐写法消除-workspace--vidthreads2)。
 
 CV 融合典型场景：Vector 核解量化 + Cube 核 GEMM。
 
@@ -267,7 +370,7 @@ def w4a8_gemm_cv(M, N, K):
 - `AUTO_CV_COMBINE`：编译器识别 Vector 解量化 + Cube GEMM 并自动分离
 - `AUTO_CV_SYNC`：编译器自动在 Vector 写完 workspace 后通知 Cube 读取
 
-### 6.1 CV 融合算子特征
+### 7.1 CV 融合算子特征
 
 **CV 融合算子** = Vector 核预处理/后处理 + Cube 核 GEMM
 
@@ -276,14 +379,16 @@ def w4a8_gemm_cv(M, N, K):
 - **Flash Attention**：Vector 核 Softmax，Cube 核做两次 GEMM
 - **量化 GEMM**：Vector 核反量化/量化，Cube 核做 GEMM
 
-### 6.2 Developer 模式下 CV 融合的关键点
+### 7.2 Developer 模式下 CV 融合的关键点（兜底写法）
+
+> 注：以下为保留 workspace+vid 的写法要点；常规场景请用 [§6 消除写法](#6-cv-融合--推荐写法消除-workspace--vidthreads2)。
 
 **必须开启 4 个 pass_configs**：
 - `AUTO_CV_COMBINE`：编译器自动识别 Cube/Vector 操作并分离到不同核
 - `AUTO_CV_SYNC`：编译器自动在 Cube/Vector 写入 workspace 后插入核间同步
 - **不要手写 `T.Scope("C")` / `T.Scope("V")`**（会与 AUTO_CV_COMBINE 冲突）
 
-### 6.3 V 核并行化（避免算力浪费）
+### 7.3 V 核并行化（避免算力浪费）
 
 Ascend NPU C:V = 1:2，两个 V 核默认执行相同工作。正确使用 `vid` 可让两个 V 核分担任务。
 
@@ -291,7 +396,7 @@ Ascend NPU C:V = 1:2，两个 V 核默认执行相同工作。正确使用 `vid`
 - workspace 写入时忘记使用 `actual_row`（导致数据错乱）
 - Cube 核读取时使用 vid 切分（Cube 不涉及 vid）
 
-### 6.4 编译器警告解读
+### 7.4 编译器警告解读
 
 Developer 模式下可能出现：
 ```

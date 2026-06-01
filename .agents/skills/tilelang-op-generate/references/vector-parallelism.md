@@ -1,6 +1,9 @@
 # V 核并行化编码规范
 
-Ascend NPU C:V = 1:2，默认两个 V 核执行相同工作。正确使用 `vid` 可让两个 V 核分担任务。
+Ascend NPU C:V = 1:2，默认两个 V 核执行相同工作。
+
+> **Developer 模式（推荐）默认用 `threads=2` 让编译器自动并行两个 V 核，不手动写 `vid`**——`T.Kernel(block_num, threads=2, is_npu=True) as (cid)`，循环整程、无 `vid` 偏移、CV 交互片上直连。详见 [mode-examples.md §6](../../tilelang-custom-skill/tilelang-expert-to-developer/references/mode-examples.md#6-cv-融合--推荐写法消除-workspace--vidthreads2)。
+> 本文以下手动 `vid` 切分写法用于 **Expert/混合或复杂场景回退**；正确使用 `vid` 可让两个 V 核分担任务。
 
 ## 目录
 
@@ -52,7 +55,10 @@ for row in T.serial(block_N_2):
 
 ## 3. 模式三：CV 融合中的 V 核并行化
 
-CV 融合算子中，V 核负责预处理，Cube 核负责 GEMM：
+> **Developer 模式（推荐）默认消除 workspace/vid**：用 `T.Kernel(block_num, threads=2, is_npu=True) as (cid)` 让编译器自动并行两个 V 核，循环用整程 `range(BI)`、无 `vid` 偏移，Cube↔Vector 片上直连、无 workspace。前提链与映射表见 [mode-examples.md §6](../../tilelang-custom-skill/tilelang-expert-to-developer/references/mode-examples.md#6-cv-融合--推荐写法消除-workspace--vidthreads2)。
+> 下面是**回退写法**（手动 vid + workspace），仅用于复杂同步/多版本流水场景。
+
+CV 融合算子中（回退写法），V 核负责预处理，Cube 核负责 GEMM：
 
 ```python
 VEC_NUM = 2

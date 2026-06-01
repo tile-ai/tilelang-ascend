@@ -62,7 +62,7 @@ design.md 可能很长，**只提取以下字段，忽略其余内容**：
 2. **Buffer 分配方式**：shape 和 dtype
 3. **pass_configs 配置**：该类算子实际使用哪些开关
 4. **数据搬运**：`T.copy` 的索引写法
-5. **workspace 配置**（融合算子）：workspace_idx、数量、shape
+5. **CV 交互**（融合算子，按模式）：Developer 默认 `threads=2` + 片上直连（无 workspace_idx）；Expert/混合或回退才看 workspace_idx、数量、shape
 
 ---
 
@@ -84,7 +84,7 @@ design.md 可能很长，**只提取以下字段，忽略其余内容**：
 | 同步策略 | 手动 `barrier_all/set_flag` 或自动同步 | 决定同步代码 |
 | pass_configs | `AUTO_SYNC: True`，融合算子需 `AUTO_CV_COMBINE: True + AUTO_CV_SYNC: True` | 决定 JIT 配置 |
 | 核分离方式 | `T.Scope("C"/"V")` 或无显式分离 | 决定核间协作方式 |
-| workspace 配置（融合算子） | `{数量: 3, shape: [block_num, block_M, block_N], idx: [4,5,6]}` | 决定 workspace 参数 |
+| CV 交互（融合算子，按模式） | Developer：`threads=2` + 单 `cid` 轴 + 片上直连（无 workspace_idx）；Expert/混合/回退：`{数量: 3, shape: [block_num, block_M, block_N], idx: [4,5,6]}` | Developer 默认消除 workspace/vid，见 mode-examples.md §6 |
 
 **对比差异分析**（如有 design.md）：
 
@@ -93,7 +93,7 @@ design.md 可能很长，**只提取以下字段，忽略其余内容**：
 | 内存层级 API | | | |
 | 同步策略 | | | |
 | pass_configs | | | |
-| workspace 配置 ⭐ | | | |
+| CV 交互 ⭐（Developer 默认 threads=2 片上直连 / 回退 workspace+vid） | | | |
 
 **冲突处理**：当 design.md 与参考实现冲突时：
 - **优先参考实现**：参考实现已验证通过，可信度高

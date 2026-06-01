@@ -107,7 +107,7 @@ description: "根据算子需求生成 TileLang-Ascend 算子设计文档（desi
 5. Tiling 策略（**必含：非整除时 padding+crop 策略，或 Kernel 内动态 block 方案**）
 6. 循环与调度结构
 7. 同步策略
-8. CV 融合设计
+8. CV 融合设计（**按模式分支**：Developer 默认消除 workspace/vid——`threads=2` + 片上直连，不产出 workspace 规格；仅 Expert/混合或复杂场景回退才设计 workspace + `workspace_idx`。详见 design-template.md §8.2）
 9. 验证方案
 10. 风险点与注意事项
 11. 交付清单

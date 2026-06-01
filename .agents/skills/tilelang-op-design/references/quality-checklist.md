@@ -15,8 +15,8 @@
 | 9 | **含 GEMM 场景**：Tiling 策略满足 NPU 分形限制（block_M ≥ 16, block_N ≥ 16） | ✅ 必须 |
 | 10 | **含 GEMM 场景 L0C 容量约束验证**：`block_M × block_N × sizeof(accum_dtype) ≤ L0C_capacity (128KB)` | ⭕ 推荐 |
 | 11 | **含 GEMM 场景非整除处理策略明确**：主机侧 padding+crop 或 Kernel 内动态 block，说明溢出 / 下溢处理 | ✅ 必须 |
-| 12 | **含 CV 融合场景**：workspace 规格、数据流、pass_configs 设计完整| ✅ 必须 |
-| 13 | **含 CV 融合场景 workspace_idx 配置正确**：与 workspace 参数位置一致 | ✅ 必须 |
+| 12 | **含 CV 融合场景**（按模式）：Developer 默认无 workspace，校验 `threads=2` + 单 `cid` 轴 + 片上直连 + pass_configs 完整；Expert/混合或显式回退才校验 workspace 规格与数据流 | ✅ 必须 |
+| 13 | **含 CV 融合场景**（按模式）：Developer 模式装饰器/签名无 `workspace_idx`、无 `vid` 偏移；Expert/混合或回退时 `workspace_idx` 与参数位置一致 | ✅ 必须 |
 | 14 | **本项目同类实现已列出**：有具体的 examples/ 文件路径参考 | ✅ 必须 |
 | 15 | **参考实现差异已说明**：如有外部参考，列出 API/结构差异 | ⭕ 推荐 |
 | 16 | **参考实现分析完整**：如有外部参考，记录内存层级 API、同步策略、pass_configs 等技术决策 | ⭕ 推荐 |
