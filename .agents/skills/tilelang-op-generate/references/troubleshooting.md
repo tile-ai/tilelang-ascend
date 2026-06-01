@@ -1,5 +1,16 @@
 # 算子疑难解答
 
+## 目录
+
+- [编译时错误](#编译时错误)
+- [运行时错误](#运行时错误)
+- [测试设计原则](#测试设计原则)
+- [调试技巧](#调试技巧)
+- [常见模式问题](#常见模式问题)
+- [性能调优清单](#性能调优清单)
+
+---
+
 ## 编译时错误
 
 ### 1. 内存分配失败
@@ -194,7 +205,7 @@ expected = ref_program(A, B)  # (N, M)
 torch.testing.assert_close(result.cpu().transpose(0, 1), expected)
 ```
 
-**详细参考**：[pr-ready-guide.md](pr-ready-guide.md) §1
+**详细参考**：[tilelang-op-generate SKILL.md §8 Checklist #9-#10](../SKILL.md)（Golden 一致性 / 输出形状匹配）
 
 #### 2. float16 精度问题
 

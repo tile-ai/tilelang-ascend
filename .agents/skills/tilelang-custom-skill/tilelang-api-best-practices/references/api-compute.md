@@ -1,5 +1,12 @@
 # 计算原语：GEMM、归约与 Tile 扩展操作
 
+## 目录
+
+- [1. 矩阵计算（GEMM）](#1-矩阵计算gemm)
+- [2. 归约操作](#2-归约操作)
+- [3. Element-wise 运算（Developer 模式 T.Parallel）](#3-element-wise-运算developer-模式-tparallel)
+- [4. Tile 扩展原语（T.tile.xxx Buffer 级 SIMD 操作）](#4-tile-扩展原语ttilexxx-buffer-级-simd-操作)
+
 ---
 
 ## 1. 矩阵计算（GEMM）
