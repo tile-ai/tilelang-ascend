@@ -49,6 +49,36 @@ def _get_ascend_home_path() -> str:
     return ascend_home
 
 
+def _get_simulator_lib_path(ascend_home: str, platform: str) -> str:
+    """Get the camodel simulator library path for the given platform.
+
+    Returns the directory containing libruntime_camodel.so.
+    """
+    sim_base = os.path.join(ascend_home, "tools", "simulator")
+    if not os.path.isdir(sim_base):
+        sim_base = os.path.join(ascend_home, "simulator")
+
+    if platform == "A5":
+        soc_candidates = ["Ascend950PR_9599", "Ascend910_9599"]
+    else:
+        soc_candidates = ["Ascend910B1", "Ascend910_9599"]
+
+    for soc in soc_candidates:
+        soc_dir = os.path.join(sim_base, soc)
+        if not os.path.isdir(soc_dir):
+            continue
+        # The lib/ directory contains required config.json + *.toml files.
+        # The camodel/ directory lacks these configs, causing TMultiRing crash.
+        candidate = os.path.join(soc_dir, "lib")
+        if os.path.isdir(candidate):
+            return candidate
+
+    raise FileNotFoundError(
+        f"Simulator library not found for platform {platform}. "
+        f"Searched: {sim_base}/<soc>/lib and {sim_base}/<soc>/camodel"
+    )
+
+
 class LibraryGenerator:
     srcpath: str | None = None
     libpath: str | None = None
@@ -65,6 +95,13 @@ class LibraryGenerator:
     def load_lib(self, lib_path: str | None = None):
         if lib_path is None:
             lib_path = self.libpath
+        run_mode = os.environ.get("TL_RUN_MODE", "npu")
+        if run_mode == "sim":
+            ascend_home = _get_ascend_home_path()
+            sim_lib_path = _get_simulator_lib_path(ascend_home, self.platform)
+            ld_path = os.environ.get("LD_LIBRARY_PATH", "")
+            if sim_lib_path not in ld_path.split(":"):
+                os.environ["LD_LIBRARY_PATH"] = f"{sim_lib_path}:{ld_path}"
         return ctypes.CDLL(lib_path)
 
     def compile_lib(self, timeout: float = None):
@@ -153,6 +190,33 @@ class LibraryGenerator:
             ]
             if os.environ.get("TL_PTO_DEBUG") == "1":
                 command += ["-D_DEBUG", "--cce-enable-print"]
+
+        # --- camodel (simulator) support ---
+        run_mode = os.environ.get("TL_RUN_MODE", "npu")
+        if run_mode == "sim":
+            sim_lib_path = _get_simulator_lib_path(ASCEND_HOME_PATH, self.platform)
+            # Insert simulator library path before ASCEND_HOME_PATH/lib64 so
+            # libruntime_camodel.so takes precedence over libruntime.so.
+            # --disable-new-dtags makes -rpath set DT_RPATH (transitive) instead
+            # of DT_RUNPATH (non-transitive), so that libruntime_camodel.so's
+            # own dependencies (e.g. libnpu_drv_camodel.so) are also resolved.
+            try:
+                ascend_lib_idx = command.index(f"-L{ASCEND_HOME_PATH}/lib64")
+                command.insert(ascend_lib_idx, f"-L{sim_lib_path}")
+                command.insert(ascend_lib_idx + 1, f"-Wl,-rpath,{sim_lib_path}")
+                command.insert(ascend_lib_idx + 2, "-Wl,--disable-new-dtags")
+            except ValueError:
+                command.insert(1, f"-L{sim_lib_path}")
+                command.insert(2, f"-Wl,-rpath,{sim_lib_path}")
+                command.insert(3, "-Wl,--disable-new-dtags")
+            # Replace '-lruntime' with '-lruntime_camodel'
+            try:
+                rt_idx = command.index("-lruntime")
+                command[rt_idx] = "-lruntime_camodel"
+            except ValueError:
+                pass
+            logger.info("camodel sim mode: using %s", sim_lib_path)
+
         command += ["-o", libpath]
 
         src.write(self.lib_code)

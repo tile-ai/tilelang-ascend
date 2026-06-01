@@ -1,6 +1,7 @@
 # Copyright (c) Tile-AI Corporation.
 # Licensed under the MIT License.
 
+import os
 from typing import Literal, Union
 from tilelang import tvm as tvm
 from tvm.target import Target
@@ -111,7 +112,8 @@ def determine_platform(platform: str = "auto") -> str:
 
     Args:
         platform (str): User-specified platform.
-            - If "auto", the system will automatically detect the platform based on the device properties.
+            - If "auto", the system will first check TL_PLATFORM env var,
+              then automatically detect the platform based on the device properties.
             - If a string, it is directly validated.
 
     Returns:
@@ -119,6 +121,11 @@ def determine_platform(platform: str = "auto") -> str:
     """
     if platform != "auto":
         return platform
+
+    # Allow explicit platform override via environment variable (useful for sim mode)
+    env_platform = os.environ.get("TL_PLATFORM")
+    if env_platform:
+        return env_platform
 
     # Detect platform based on NPU device properties
     try:
