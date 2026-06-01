@@ -9,8 +9,8 @@ torch.manual_seed(0)
 tilelang.disable_cache()
 
 PASS_CONFIGS = {
-    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
-    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_SYNC: True,
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: False,
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_SYNC: False,
     tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
     tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
 }
@@ -123,16 +123,7 @@ def mtgr_sparse_attn_kernel(
                     )
 
                 rule = segment_rules[seg_id]
-
                 q_packed_start = q_seq_starts[b_i] + q_start
-                T.copy(
-                    Q[q_packed_start : q_packed_start + q_tile_size, h_i, :],
-                    q_l1[0:q_tile_size, :],
-                )
-
-                T.tile.fill(acc_o, 0.0)
-                T.tile.fill(sumexp, 0.0)
-                T.tile.fill(m_i, NEG_INF)
 
                 seg_end_offset = segment_offsets[b_i, seg_id + 1]
                 next_seg_first_tile = s_local
@@ -155,138 +146,188 @@ def mtgr_sparse_attn_kernel(
                     s_local + 1,
                 )
 
-                for k_i in T.serial(kv_iter_end):
-                    kv_start = split_points[b_i, k_i]
-                    kv_end_pos = split_points[b_i, k_i + 1]
-                    kv_size = kv_end_pos - kv_start
+                with T.Scope("C"):
+                    T.copy(
+                        Q[q_packed_start : q_packed_start + q_tile_size, h_i, :],
+                        q_l1[0:q_tile_size, :],
+                    )
 
-                    seg_start = segment_offsets[b_i, seg_id]
-                    seg_end = segment_offsets[b_i, seg_id + 1]
-                    max_row_pos = q_start + q_tile_size - 1
+                    for k_i in T.serial(kv_iter_end):
+                        kv_start = split_points[b_i, k_i]
+                        kv_end_pos = split_points[b_i, k_i + 1]
+                        kv_size = kv_end_pos - kv_start
 
-                    process_rule0 = (rule == 0) & (kv_start <= max_row_pos)
-                    process_rule1 = (rule == 1) & (kv_start < seg_end)
-                    process_rule2 = (rule == 2) & ((kv_start <= seg_start) | (kv_start <= max_row_pos))
-                    process_cond = process_rule0 | process_rule1 | process_rule2
+                        seg_start = segment_offsets[b_i, seg_id]
+                        seg_end = segment_offsets[b_i, seg_id + 1]
+                        max_row_pos = q_start + q_tile_size - 1
 
-                    if process_cond:
-                        kv_packed_start = q_seq_starts[b_i] + kv_start
-                        T.copy(
-                            K[kv_packed_start : kv_packed_start + kv_size, h_kv, :],
-                            k_l1[0:kv_size, :],
+                        process_rule0 = (rule == 0) & (kv_start <= max_row_pos)
+                        process_rule1 = (rule == 1) & (kv_start < seg_end)
+                        process_rule2 = (rule == 2) & (
+                            (kv_start <= seg_start) | (kv_start <= max_row_pos)
                         )
+                        process_cond = process_rule0 | process_rule1 | process_rule2
 
-                        T.gemm_v0(q_l1, k_l1, acc_s_l0c, transpose_B=True, init=True)
-                        T.copy(acc_s_l0c, workspace_s[cid, :, :])
+                        if process_cond:
+                            kv_packed_start = q_seq_starts[b_i] + kv_start
+                            T.copy(
+                                K[kv_packed_start : kv_packed_start + kv_size, h_kv, :],
+                                k_l1[0:kv_size, :],
+                            )
 
-                        T.copy(
-                            workspace_s[
-                                cid,
-                                vid * v_block : vid * v_block + v_block,
-                                :,
-                            ],
-                            acc_s_ub_,
+                            T.gemm_v0(q_l1, k_l1, acc_s_l0c, transpose_B=True, init=True)
+                            T.copy(acc_s_l0c, workspace_s[cid, :, :])
+                            T.set_cross_flag("FIX", 0)
+
+                            T.wait_cross_flag(1)
+
+                            T.copy(workspace_p[cid, :, :], acc_s_l1)
+
+                            kv_packed_start_v = q_seq_starts[b_i] + kv_start
+                            T.copy(
+                                V[kv_packed_start_v : kv_packed_start_v + kv_size, h_kv, :],
+                                v_l1[0:kv_size, :],
+                            )
+
+                            T.gemm_v0(acc_s_l1, v_l1, acc_o_l0c, init=True)
+                            T.copy(acc_o_l0c, workspace_o[cid, :, :])
+                            T.set_cross_flag("FIX", 2)
+
+                            T.wait_cross_flag(3)
+
+                with T.Scope("V"):
+                    T.tile.fill(acc_o, 0.0)
+                    T.tile.fill(sumexp, 0.0)
+                    T.tile.fill(m_i, NEG_INF)
+
+                    for k_i in T.serial(kv_iter_end):
+                        kv_start = split_points[b_i, k_i]
+                        kv_end_pos = split_points[b_i, k_i + 1]
+                        kv_size = kv_end_pos - kv_start
+
+                        seg_start = segment_offsets[b_i, seg_id]
+                        seg_end = segment_offsets[b_i, seg_id + 1]
+                        max_row_pos = q_start + q_tile_size - 1
+
+                        process_rule0 = (rule == 0) & (kv_start <= max_row_pos)
+                        process_rule1 = (rule == 1) & (kv_start < seg_end)
+                        process_rule2 = (rule == 2) & (
+                            (kv_start <= seg_start) | (kv_start <= max_row_pos)
                         )
-                        T.tile.mul(acc_s_ub_, acc_s_ub_, sm_scale)
+                        process_cond = process_rule0 | process_rule1 | process_rule2
 
-                        T.tile.fill(mask_ub, NEG_INF)
+                        if process_cond:
+                            T.wait_cross_flag(0)
 
-                        for row in T.serial(v_block):
-                            row_abs_pos = q_start + vid * v_block + row
+                            T.copy(
+                                workspace_s[
+                                    cid,
+                                    vid * v_block : vid * v_block + v_block,
+                                    :,
+                                ],
+                                acc_s_ub_,
+                            )
+                            T.tile.mul(acc_s_ub_, acc_s_ub_, sm_scale)
 
-                            if rule == 0:
-                                raw_len = row_abs_pos - kv_start + 1
-                                fill_len = T.if_then_else(raw_len < kv_size, raw_len, kv_size)
-                                fill_len = T.if_then_else(fill_len > 0, fill_len, 0)
-                                if fill_len > 0:
-                                    T.tile.fill(mask_ub[row, 0:fill_len], 0.0)
+                            T.tile.fill(mask_ub, NEG_INF)
 
-                            elif rule == 1:
-                                raw_len = seg_end - kv_start
-                                fill_len = T.if_then_else(raw_len < kv_size, raw_len, kv_size)
-                                fill_len = T.if_then_else(fill_len > 0, fill_len, 0)
-                                if fill_len > 0:
-                                    T.tile.fill(mask_ub[row, 0:fill_len], 0.0)
+                            for row in T.serial(v_block):
+                                row_abs_pos = q_start + vid * v_block + row
 
-                            elif rule == 2:
-                                raw_len = seg_start - kv_start
-                                fill_len = T.if_then_else(raw_len < kv_size, raw_len, kv_size)
-                                fill_len = T.if_then_else(fill_len > 0, fill_len, 0)
-                                if fill_len > 0:
-                                    T.tile.fill(mask_ub[row, 0:fill_len], 0.0)
-                                diag_col = row_abs_pos - kv_start
-                                if (diag_col >= 0) & (diag_col < kv_size):
-                                    mask_ub[row, diag_col] = 0.0
+                                if rule == 0:
+                                    raw_len = row_abs_pos - kv_start + 1
+                                    fill_len = T.if_then_else(
+                                        raw_len < kv_size, raw_len, kv_size
+                                    )
+                                    fill_len = T.if_then_else(fill_len > 0, fill_len, 0)
+                                    if fill_len > 0:
+                                        T.tile.fill(mask_ub[row, 0:fill_len], 0.0)
 
-                        T.tile.add(acc_s_ub, acc_s_ub_, mask_ub)
+                                elif rule == 1:
+                                    raw_len = seg_end - kv_start
+                                    fill_len = T.if_then_else(
+                                        raw_len < kv_size, raw_len, kv_size
+                                    )
+                                    fill_len = T.if_then_else(fill_len > 0, fill_len, 0)
+                                    if fill_len > 0:
+                                        T.tile.fill(mask_ub[row, 0:fill_len], 0.0)
 
-                        T.copy(m_i, m_i_prev)
-                        T.reduce_max(acc_s_ub, m_i, dim=-1)
-                        T.tile.max(m_i, m_i, m_i_prev)
-                        T.tile.sub(m_i_prev, m_i_prev, m_i)
-                        T.tile.exp(m_i_prev, m_i_prev)
+                                elif rule == 2:
+                                    raw_len = seg_start - kv_start
+                                    fill_len = T.if_then_else(
+                                        raw_len < kv_size, raw_len, kv_size
+                                    )
+                                    fill_len = T.if_then_else(fill_len > 0, fill_len, 0)
+                                    if fill_len > 0:
+                                        T.tile.fill(mask_ub[row, 0:fill_len], 0.0)
+                                    diag_col = row_abs_pos - kv_start
+                                    if (diag_col >= 0) & (diag_col < kv_size):
+                                        mask_ub[row, diag_col] = 0.0
 
-                        T.tile.broadcast(m_i_broadcast, m_i, axis=1)
-                        T.tile.sub(acc_s_ub, acc_s_ub, m_i_broadcast)
-                        T.tile.exp(acc_s_ub, acc_s_ub)
-                        T.reduce_sum(acc_s_ub, sumexp_i_ub, dim=-1)
-                        T.tile.mul(sumexp, sumexp, m_i_prev)
-                        T.tile.add(sumexp, sumexp, sumexp_i_ub)
+                            T.tile.add(acc_s_ub, acc_s_ub_, mask_ub)
 
-                        T.tile.broadcast(m_i_prev_broadcast, m_i_prev, axis=1)
-                        T.tile.mul(acc_o, acc_o, m_i_prev_broadcast)
+                            T.copy(m_i, m_i_prev)
+                            T.reduce_max(acc_s_ub, m_i, dim=-1)
+                            T.tile.max(m_i, m_i, m_i_prev)
+                            T.tile.sub(m_i_prev, m_i_prev, m_i)
+                            T.tile.exp(m_i_prev, m_i_prev)
 
-                        T.copy(acc_s_ub, acc_s_half)
-                        T.copy(
-                            acc_s_half,
-                            workspace_p[
-                                cid,
-                                vid * v_block : vid * v_block + v_block,
-                                :,
-                            ],
-                        )
+                            T.tile.broadcast(m_i_broadcast, m_i, axis=1)
+                            T.tile.sub(acc_s_ub, acc_s_ub, m_i_broadcast)
+                            T.tile.exp(acc_s_ub, acc_s_ub)
+                            T.reduce_sum(acc_s_ub, sumexp_i_ub, dim=-1)
+                            T.tile.mul(sumexp, sumexp, m_i_prev)
+                            T.tile.add(sumexp, sumexp, sumexp_i_ub)
 
-                        T.copy(workspace_p[cid, :, :], acc_s_l1)
+                            T.tile.broadcast(m_i_prev_broadcast, m_i_prev, axis=1)
+                            T.tile.mul(acc_o, acc_o, m_i_prev_broadcast)
 
-                        kv_packed_start_v = q_seq_starts[b_i] + kv_start
-                        T.copy(
-                            V[kv_packed_start_v : kv_packed_start_v + kv_size, h_kv, :],
-                            v_l1[0:kv_size, :],
-                        )
+                            T.copy(acc_s_ub, acc_s_half)
+                            T.copy(
+                                acc_s_half,
+                                workspace_p[
+                                    cid,
+                                    vid * v_block : vid * v_block + v_block,
+                                    :,
+                                ],
+                            )
+                            T.set_cross_flag("MTE3", 1)
 
-                        T.gemm_v0(acc_s_l1, v_l1, acc_o_l0c, init=True)
-                        T.copy(acc_o_l0c, workspace_o[cid, :, :])
+                            T.wait_cross_flag(2)
 
-                        T.copy(
-                            workspace_o[
-                                cid,
-                                vid * v_block : vid * v_block + v_block,
-                                :,
-                            ],
-                            acc_o_ub,
-                        )
-                        T.tile.add(acc_o, acc_o, acc_o_ub)
+                            T.copy(
+                                workspace_o[
+                                    cid,
+                                    vid * v_block : vid * v_block + v_block,
+                                    :,
+                                ],
+                                acc_o_ub,
+                            )
+                            T.tile.add(acc_o, acc_o, acc_o_ub)
+                            T.set_cross_flag("MTE3", 3)
 
-                valid_rows = T.if_then_else(
-                    q_tile_size >= (vid + 1) * v_block,
-                    v_block,
-                    T.if_then_else(q_tile_size > vid * v_block, q_tile_size - vid * v_block, 0),
-                )
+                    valid_rows = T.if_then_else(
+                        q_tile_size >= (vid + 1) * v_block,
+                        v_block,
+                        T.if_then_else(
+                            q_tile_size > vid * v_block, q_tile_size - vid * v_block, 0
+                        ),
+                    )
 
-                T.tile.max(sumexp, sumexp, 1.0)
-                T.tile.broadcast(sumexp_broadcast, sumexp, axis=1)
-                T.tile.div(acc_o, acc_o, sumexp_broadcast)
+                    T.tile.max(sumexp, sumexp, 1.0)
+                    T.tile.broadcast(sumexp_broadcast, sumexp, axis=1)
+                    T.tile.div(acc_o, acc_o, sumexp_broadcast)
 
-                T.copy(acc_o, acc_o_half)
-                output_packed_start = q_packed_start + vid * v_block
-                T.copy(
-                    acc_o_half[0:valid_rows, :],
-                    Output[
-                        output_packed_start : output_packed_start + valid_rows,
-                        h_i,
-                        :,
-                    ],
-                )
+                    T.copy(acc_o, acc_o_half)
+                    output_packed_start = q_packed_start + vid * v_block
+                    T.copy(
+                        acc_o_half[0:valid_rows, :],
+                        Output[
+                            output_packed_start : output_packed_start + valid_rows,
+                            h_i,
+                            :,
+                        ],
+                    )
 
     return main
 
