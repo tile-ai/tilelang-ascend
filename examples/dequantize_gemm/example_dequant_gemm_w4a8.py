@@ -58,7 +58,7 @@ def w4a8_gemm_cv(M, N, K):
             high_ub = T.alloc_shared((BLOCK_K_HALF,), "int16")
             low_half_ub = T.alloc_shared((BLOCK_K_HALF,), "float16")
             high_half_ub = T.alloc_shared((BLOCK_K_HALF,), "float16")
-            cmp_ub = T.alloc_shared((BLOCK_K_HALF,), "float16")
+            cmp_ub = T.alloc_shared((BLOCK_K_HALF,), "uint8")
             neg16_ub = T.alloc_shared((BLOCK_K_HALF,), "float16")
             zero_ub = T.alloc_shared((BLOCK_K_HALF,), "float16")
             adj_ub = T.alloc_shared((BLOCK_K_HALF,), "float16")

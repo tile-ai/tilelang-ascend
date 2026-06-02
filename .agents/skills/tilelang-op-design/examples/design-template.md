@@ -283,31 +283,44 @@ pass_configs = {
 
 **判定依据**: {如: 算子包含 GEMM 计算，输出需 element-wise 后处理，判定为融合算子}
 
-### 8.2 workspace 设计
+### 8.2 CV 交互设计（按编程模式）
+
+**Developer 模式（推荐，默认消除 workspace/vid）**：不产出 workspace 规格，记录以下即可——
+- `T.Kernel(block_num, threads=2, is_npu=True) as (cid)`（单轴 + `threads=2`）
+- 装饰器无 `workspace_idx`，签名无 `workspace_*` 参数
+- Cube↔Vector 改片上 `alloc_shared/alloc_fragment` 直连，中转/同步交给四个 pass
+- 模板见 [tilelang-expert-to-developer mode-examples.md §6](../../tilelang-custom-skill/tilelang-expert-to-developer/references/mode-examples.md#6-cv-融合--推荐写法消除-workspace--vidthreads2)
+
+**Expert / 混合 / Developer 复杂场景回退**：填写 workspace 表——
 
 | workspace | Shape | dtype | 用途 |
 |-----------|-------|-------|------|
 | workspace_1 | {[block_num, block_M, block_N]} | {accum_dtype} | {用途} |
 | workspace_2 | {...} | {...} | {用途} |
 
-**workspace_idx**: {[4, 5, 6]}  # 根据函数签名参数位置确定
+**workspace_idx**: {[4, 5, 6]}  # 根据函数签名参数位置确定（仅回退写法）
 
 ### 8.3 Cube 核计算流程
 
 ```python
-# Cube 核：GEMM 计算
+# Developer（推荐）：Cube 输出直连片上 buffer，无 workspace
 T.copy({输入}, {buffer})
 T.gemm_v0({a}, {b}, {c}, transpose_B={True/False})
-T.copy({c}, workspace_1[cid, :, :])  # 输出到 workspace
+T.copy({c}, {vector_side_buffer})       # L0C → alloc_shared 直连
+
+# 回退（Expert/混合）：经 workspace 中转
+# T.copy({c}, workspace_1[cid, :, :])
 ```
 
 ### 8.4 Vector 核计算流程
 
 ```python
-# Vector 核：element-wise 后处理
-T.copy(workspace_1[cid, ...], {buffer})  # 从 workspace 读取
+# Developer（推荐）：从片上 buffer 直读，无 workspace、无 vid 偏移
 {element-wise 计算}
-T.copy({output}, Output[...])  # 输出
+T.copy({output}, Output[...])           # 输出
+
+# 回退（Expert/混合）：从 workspace 读取
+# T.copy(workspace_1[cid, ...], {buffer})
 ```
 
 ### 8.5 pass_configs 配置
@@ -324,7 +337,8 @@ pass_configs = {
 ### 8.6 注意事项
 
 - {如: 核间流水线与核内流水线不能同时开启}
-- {如: workspace_idx 与函数签名参数位置必须一致}
+- {Developer 模式默认消除 workspace/vid：`threads=2` 是消 vid 前提，消 vid 是消 workspace 前提}
+- {如: workspace_idx 与函数签名参数位置必须一致（仅 Expert/混合或回退写法）}
 
 ---
 

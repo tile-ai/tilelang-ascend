@@ -1,5 +1,16 @@
 # 算子疑难解答
 
+## 目录
+
+- [编译时错误](#编译时错误)
+- [运行时错误](#运行时错误)
+- [测试设计原则](#测试设计原则)
+- [调试技巧](#调试技巧)
+- [常见模式问题](#常见模式问题)
+- [性能调优清单](#性能调优清单)
+
+---
+
 ## 编译时错误
 
 ### 1. 内存分配失败
@@ -166,16 +177,46 @@ block_M = [bs for bs in [64, 128] if bs <= M]  # 排除 256
 
 ### 2. 精度问题
 
-**现象**: 输出与参考实现有微小差异
+**现象**: 输出与参考实现有差异
 
-**原因**: float16精度较低，累积误差
+**可能原因**:
+1. **Golden 实现不一致** ⭐（最常见）
+2. float16 精度较低，累积误差
+3. 输出形状不匹配
 
 **解决方案**:
-1. 使用float32进行计算
-2. 调整测试容差：
-   ```python
-   torch.testing.assert_close(b.cpu(), ref_b.cpu(), rtol=1e-2, atol=1e-2)
-   ```
+
+#### 1. Golden 实现不一致（迁移算子时最常见）
+
+**症状**：测试失败，精度误差很大（如 98% 的元素不匹配）
+
+**排查步骤**：
+1. 检查是否使用了原算子的 golden 实现
+2. 对比原算子代码，确保算法逻辑一致
+3. 检查输出形状是否需要 transpose
+
+**示例**：
+```python
+# 原算子输出 (N, M)，你的 kernel 输出 (M, N)
+# 需要 transpose 来匹配
+result = kernel(A, B, workspace, C)  # (M, N)
+expected = ref_program(A, B)  # (N, M)
+
+torch.testing.assert_close(result.cpu().transpose(0, 1), expected)
+```
+
+**详细参考**：[tilelang-op-generate SKILL.md §8 Checklist #9-#10](../SKILL.md)（Golden 一致性 / 输出形状匹配）
+
+#### 2. float16 精度问题
+
+使用 float32 进行计算或调整容差：
+```python
+torch.testing.assert_close(b.cpu(), ref_b.cpu(), rtol=1e-2, atol=1e-2)
+```
+
+#### 3. 输出形状不匹配
+
+检查原算子输出 shape，可能需要 transpose 或 reshape。
 
 ### 3. 性能问题
 

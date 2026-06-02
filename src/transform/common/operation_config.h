@@ -195,7 +195,8 @@ GetOperationConfig() {
        {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
       {"tl.ascend_sort32",
        {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
-      {"tl.ascend_createvecindex", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
+      {"tl.ascend_createvecindex", {{{1, "write"}}, "PIPE_V"}},
+      {"tl.ascend_arith_progression", {{{1, "write"}}, "PIPE_V"}},
       {"tl.ascend_sin", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
       {"tl.ascend_cos", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
       {"tl.ascend_transpose", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
@@ -355,6 +356,7 @@ const std::unordered_map<const tvm::OpNode *, int64_t> pto_tmp_arg_ops = {
     {tl::ascend_broadcast().get(), 3},   {tl::ascend_merge_sort().get(), 3},
     {tl::ascend_select().get(), 3},      {tl::ascend_gather_mask().get(), 4},
     {tl::ascend_sort().get(), 3},        {tl::ascend_topk().get(), 3},
+    {tl::ascend_gather().get(), 5},
 };
 
 } // namespace tl

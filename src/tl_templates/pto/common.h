@@ -651,9 +651,9 @@ AICORE PTO_INLINE void TSILU(TileUbDataND<T, row, col, row, col> &dst,
                              TileUbDataND<T, row, col, row, col> &src,
                              TileUbDataND<T, row, col, row, col> &tmp) {
   TMOV(tmp, src);
-  pipe_barrier(PIPE_V);
+  TL_PIPE_V_BARRIER();
   TSIGMOID(dst, src);
-  pipe_barrier(PIPE_V);
+  TL_PIPE_V_BARRIER();
   TMUL(dst, tmp, dst);
 }
 
@@ -663,7 +663,7 @@ AICORE PTO_INLINE void MulAddDst(TileUbDataND<T, row, col, row, col> &dst,
                                  TileUbDataND<T, row, col, row, col> &src1,
                                  TileUbDataND<T, row, col, row, col> &tmp) {
   TMUL(tmp, src0, src1);
-  pipe_barrier(PIPE_V);
+  TL_PIPE_V_BARRIER();
   TADD(dst, dst, tmp);
 }
 
@@ -671,11 +671,7 @@ template <typename T, int32_t row, int32_t col>
 AICORE PTO_INLINE void axpy(TileUbDataND<T, row, col, row, col> &dst,
                             TileUbDataND<T, row, col, row, col> &src0,
                             float scalar_value) {
-  TMULS(src0, src0, static_cast<T>(scalar_value));
-  TL_PIPE_V_BARRIER();
-  TADD(dst, dst, src0);
-  TL_PIPE_V_BARRIER();
-  TMULS(src0, src0, static_cast<T>(1.0f / scalar_value));
+  pto::TAXPY(dst, src0, static_cast<T>(scalar_value));
 }
 
 template <typename T1, typename T2, typename T3, int32_t rows_src,
@@ -1096,9 +1092,9 @@ AICORE constexpr int32_t next_full_size(int32_t num_segs, int32_t full_size,
   return 4 * full_size;
 }
 
-// Number of merge-tree levels needed to reduce BlockNum segments to 1.
-AICORE constexpr int32_t compute_levels(int32_t block_num) {
-  int32_t n = block_num;
+// Number of merge-tree levels needed to reduce N blocks to 1.
+AICORE constexpr int32_t compute_levels(int32_t blk_num) {
+  int32_t n = blk_num;
   int32_t levels = 0;
   while (n > 1) {
     n = (n + 3) / 4;
@@ -1109,9 +1105,9 @@ AICORE constexpr int32_t compute_levels(int32_t block_num) {
 
 // Whether the final result lives in bufA after the merge tree finishes.
 // read_from_a starts true and toggles every level, so result_in_bufA equals
-// (levels % 2 == 0). For BlockNum == 1 (zero levels) this is also true.
-template <int32_t BlockNum>
-constexpr bool result_in_bufA_v = (compute_levels(BlockNum) % 2 == 0);
+// (levels % 2 == 0). For kBlockNum == 1 (zero levels) this is also true.
+template <int32_t kBlockNum>
+constexpr bool result_in_bufA_v = (compute_levels(kBlockNum) % 2 == 0);
 
 // Number of float pair-elements the finalize step has to copy. For full sort
 // it's 2*N; for topk it's 2*K rounded up to user_T's block alignment so the
@@ -1481,6 +1477,67 @@ tor(TileUbDataND<uint8_t, Rows, Cols, RowValid, ColValid> &dst,
   auto &src1_u16 = reinterpret_cast<
       TileUbDataND<uint16_t, Rows, Cols / 2, RowValid, ColValid / 2> &>(src1);
   pto::TOR(dst_u16, src0_u16, src1_u16);
+}
+
+template <typename T1, typename T2, int32_t shape1, int32_t shape2,
+          int32_t shape3, int32_t shape4, int32_t shape5, int32_t stride1,
+          int32_t stride2, int32_t stride3, int32_t stride4, int32_t stride5,
+          uint32_t ub_shape1, uint32_t ub_shape2>
+AICORE PTO_INLINE void atomic_add_ub_to_gm_dynamic(
+    __gm__ T1 *handle,
+    const pto::Shape<shape1, shape2, shape3, shape4, shape5> &shape,
+    const pto::Stride<stride1, stride2, stride3, stride4, stride5> &stride,
+    int32_t ub_shape_addr, int32_t ub_offset, int32_t valid_row,
+    int32_t valid_col) {
+  pto::Shape<shape1, shape2, shape3, pto::DYNAMIC, pto::DYNAMIC> dynamic_shape;
+  dynamic_shape.shape[3] = valid_row;
+  dynamic_shape.shape[4] = valid_col;
+  pto::GlobalTensor<
+      T1, pto::Shape<shape1, shape2, shape3, pto::DYNAMIC, pto::DYNAMIC>,
+      pto::Stride<stride1, stride2, stride3, stride4, stride5>>
+      global_tensor(handle, dynamic_shape, stride);
+  constexpr uint8_t len = sizeof(T2);
+  constexpr bool use_nd = (static_cast<uint64_t>(ub_shape2) * len) >= 32;
+
+  if constexpr (use_nd) {
+    TileUbDataND<T2, ub_shape1, ub_shape2, pto::DYNAMIC, pto::DYNAMIC> temp_ub(
+        valid_row, valid_col);
+    pto::TASSIGN(temp_ub, ub_shape_addr + ub_offset * len);
+    pto::TSTORE<decltype(temp_ub), decltype(global_tensor),
+                pto::AtomicType::AtomicAdd>(global_tensor, temp_ub);
+  } else {
+    TileUbDataDN<T2, ub_shape1, ub_shape2, pto::DYNAMIC, pto::DYNAMIC> temp_ub(
+        valid_row, valid_col);
+    pto::TASSIGN(temp_ub, ub_shape_addr + ub_offset * len);
+    pto::TSTORE<decltype(temp_ub), decltype(global_tensor),
+                pto::AtomicType::AtomicAdd>(global_tensor, temp_ub);
+  }
+}
+
+template <typename T1, typename T2, int32_t shape1, int32_t shape2,
+          int32_t shape3, int32_t shape4, int32_t shape5, int32_t stride1,
+          int32_t stride2, int32_t stride3, int32_t stride4, int32_t stride5,
+          uint32_t l0c_shape1, uint32_t l0c_shape2>
+AICORE PTO_INLINE void atomic_add_l0c_to_gm_dynamic(
+    __gm__ T1 *handle,
+    const pto::Shape<shape1, shape2, shape3, shape4, shape5> &shape,
+    const pto::Stride<stride1, stride2, stride3, stride4, stride5> &stride,
+    int32_t l0c_shape_addr, int32_t l0c_offset, int32_t valid_row,
+    int32_t valid_col) {
+  pto::Shape<shape1, shape2, shape3, pto::DYNAMIC, pto::DYNAMIC> dynamic_shape;
+  dynamic_shape.shape[3] = valid_row;
+  dynamic_shape.shape[4] = valid_col;
+  pto::GlobalTensor<
+      T1, pto::Shape<shape1, shape2, shape3, pto::DYNAMIC, pto::DYNAMIC>,
+      pto::Stride<stride1, stride2, stride3, stride4, stride5>>
+      global_tensor(handle, dynamic_shape, stride);
+  constexpr uint8_t len = sizeof(T2);
+
+  pto::TileAcc<T2, l0c_shape1, l0c_shape2, pto::DYNAMIC, pto::DYNAMIC> temp_l0c(
+      valid_row, valid_col);
+  pto::TASSIGN(temp_l0c, l0c_shape_addr + l0c_offset * len);
+  pto::TSTORE<decltype(temp_l0c), decltype(global_tensor),
+              pto::AtomicType::AtomicAdd>(global_tensor, temp_l0c);
 }
 
 } // namespace tl::ascend_pto

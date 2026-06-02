@@ -1,5 +1,15 @@
 # 调度、同步与调试
 
+## 目录
+
+- [1. 循环原语](#1-循环原语)
+- [2. T.Pipelined](#2-tpipelined)
+- [3. T.Persistent](#3-tpersistent)
+- [4. 同步原语](#4-同步原语)
+- [5. T.Scope](#5-tscope)
+- [6. 调试工具](#6-调试工具)
+- [7. 性能调优工具](#7-性能调优工具)
+
 ---
 
 ## 1. 循环原语
@@ -165,10 +175,22 @@ T.wait_flag("mte2", "v", 0)
 | `T.wait_cross_flag(flag)` | 等待核间同步标志 |
 
 ```python
-# Cube 核完成后通知 Vector 核
-T.set_cross_flag("MTE3", 0)
+# Vector 核完成后通知 Cube 核（从 UB → GM 的数据通路）
+T.copy(output_ub, workspace[...])  # UB → GM
+T.set_cross_flag("MTE3", 0)        # Vector 核使用 MTE3 通路
+
+# Cube 核等待 Vector 核完成
 T.wait_cross_flag(0)
 ```
+
+**⚠️ 重要：数据通路选择**
+
+| 核类型 | 数据通路 | 说明 |
+|-------|---------|------|
+| Vector (V) | `"MTE3"` | UB → GM 的写入通路 |
+| Cube (C) | `"FIX"` | L0C → GM 的写入通路 |
+
+**常见错误**：在 Vector 核执行逻辑中使用 `"FIX"` 会导致 `Illegal instruction (unaligned UUB addresses)` 错误。
 
 > `set_cross_flag` 源码（`ascend.py:114`）还支持第三个参数 `mode`（默认 2），控制同步范围：0=所有 AIC/AIV 之间，1=同组 AIV 之间，2=同组 AIC 和 AIV 之间。
 
@@ -196,7 +218,7 @@ with T.Scope("V"):   # Vector 域
 **格式说明符**：`%d`/`%i`（整数）, `%f`（浮点）, `%x`（十六进制）, `%s`（字符串）, `%p`（指针，建议使用 `%x`）
 
 ```python
-T.printf("fmt %s %d\n", "string", 0x123)
+T.printf("fmt %s %d\n", "string", cid)
 ```
 
 ### T.dump_tensor(tensor, desc, dump_size, shape_info=())
