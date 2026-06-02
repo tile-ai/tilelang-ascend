@@ -1479,5 +1479,66 @@ tor(TileUbDataND<uint8_t, Rows, Cols, RowValid, ColValid> &dst,
   pto::TOR(dst_u16, src0_u16, src1_u16);
 }
 
+template <typename T1, typename T2, int32_t shape1, int32_t shape2,
+          int32_t shape3, int32_t shape4, int32_t shape5, int32_t stride1,
+          int32_t stride2, int32_t stride3, int32_t stride4, int32_t stride5,
+          uint32_t ub_shape1, uint32_t ub_shape2>
+AICORE PTO_INLINE void atomic_add_ub_to_gm_dynamic(
+    __gm__ T1 *handle,
+    const pto::Shape<shape1, shape2, shape3, shape4, shape5> &shape,
+    const pto::Stride<stride1, stride2, stride3, stride4, stride5> &stride,
+    int32_t ub_shape_addr, int32_t ub_offset, int32_t valid_row,
+    int32_t valid_col) {
+  pto::Shape<shape1, shape2, shape3, pto::DYNAMIC, pto::DYNAMIC> dynamic_shape;
+  dynamic_shape.shape[3] = valid_row;
+  dynamic_shape.shape[4] = valid_col;
+  pto::GlobalTensor<
+      T1, pto::Shape<shape1, shape2, shape3, pto::DYNAMIC, pto::DYNAMIC>,
+      pto::Stride<stride1, stride2, stride3, stride4, stride5>>
+      global_tensor(handle, dynamic_shape, stride);
+  constexpr uint8_t len = sizeof(T2);
+  constexpr bool use_nd = (static_cast<uint64_t>(ub_shape2) * len) >= 32;
+
+  if constexpr (use_nd) {
+    TileUbDataND<T2, ub_shape1, ub_shape2, pto::DYNAMIC, pto::DYNAMIC> temp_ub(
+        valid_row, valid_col);
+    pto::TASSIGN(temp_ub, ub_shape_addr + ub_offset * len);
+    pto::TSTORE<decltype(temp_ub), decltype(global_tensor),
+                pto::AtomicType::AtomicAdd>(global_tensor, temp_ub);
+  } else {
+    TileUbDataDN<T2, ub_shape1, ub_shape2, pto::DYNAMIC, pto::DYNAMIC> temp_ub(
+        valid_row, valid_col);
+    pto::TASSIGN(temp_ub, ub_shape_addr + ub_offset * len);
+    pto::TSTORE<decltype(temp_ub), decltype(global_tensor),
+                pto::AtomicType::AtomicAdd>(global_tensor, temp_ub);
+  }
+}
+
+template <typename T1, typename T2, int32_t shape1, int32_t shape2,
+          int32_t shape3, int32_t shape4, int32_t shape5, int32_t stride1,
+          int32_t stride2, int32_t stride3, int32_t stride4, int32_t stride5,
+          uint32_t l0c_shape1, uint32_t l0c_shape2>
+AICORE PTO_INLINE void atomic_add_l0c_to_gm_dynamic(
+    __gm__ T1 *handle,
+    const pto::Shape<shape1, shape2, shape3, shape4, shape5> &shape,
+    const pto::Stride<stride1, stride2, stride3, stride4, stride5> &stride,
+    int32_t l0c_shape_addr, int32_t l0c_offset, int32_t valid_row,
+    int32_t valid_col) {
+  pto::Shape<shape1, shape2, shape3, pto::DYNAMIC, pto::DYNAMIC> dynamic_shape;
+  dynamic_shape.shape[3] = valid_row;
+  dynamic_shape.shape[4] = valid_col;
+  pto::GlobalTensor<
+      T1, pto::Shape<shape1, shape2, shape3, pto::DYNAMIC, pto::DYNAMIC>,
+      pto::Stride<stride1, stride2, stride3, stride4, stride5>>
+      global_tensor(handle, dynamic_shape, stride);
+  constexpr uint8_t len = sizeof(T2);
+
+  pto::TileAcc<T2, l0c_shape1, l0c_shape2, pto::DYNAMIC, pto::DYNAMIC> temp_l0c(
+      valid_row, valid_col);
+  pto::TASSIGN(temp_l0c, l0c_shape_addr + l0c_offset * len);
+  pto::TSTORE<decltype(temp_l0c), decltype(global_tensor),
+              pto::AtomicType::AtomicAdd>(global_tensor, temp_l0c);
+}
+
 } // namespace tl::ascend_pto
 #endif
