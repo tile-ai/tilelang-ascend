@@ -118,6 +118,7 @@ def _atomic_add_extent(data):
 
 def _merge_atomic_add_extents(src_extent, dst_extent):
     import builtins
+
     if not src_extent and not dst_extent:
         raise ValueError(f"{_ATOMIC_ADD_V1_ERR} Cannot deduce atomic_add extents.")
 
