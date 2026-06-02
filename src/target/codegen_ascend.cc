@@ -426,10 +426,12 @@ void CodeGenTileLangAscend::VisitExpr_(const BufferLoadNode *op,
 void CodeGenTileLangAscend::VisitStmt_(const BufferStoreNode *op) {
   auto var_name = var_idmap_[op->buffer->data.get()];
   std::string scope = GetPtrStorageScope(op->buffer->data);
-  this->PrintIndent();
   if (scope == "local.var") {
-    this->stream << var_name << " = " << PrintExpr(op->value) << ";\n";
+    std::string name = PrintExpr(op->value);
+    this->PrintIndent();
+    this->stream << var_name << " = " << name << ";\n";
   } else {
+    this->PrintIndent();
     this->stream << var_name << ".SetValue(" << PrintExpr(op->indices.back())
                  << ", " << PrintExpr(op->value) << ");\n";
   }
@@ -774,7 +776,8 @@ void CodeGenTileLangAscend::VisitStmt_(const AllocateNode *op) {
       init = user_init;
     }
     this->PrintIndent();
-    stream << init_type + " " << vid << " = " << PrintExpr(init) << ";\n";
+    std::string init_str = PrintExpr(init);
+    stream << init_type + " " << vid << " = " << init_str << ";\n";
   }
   this->PrintStmt(op->body);
 }
