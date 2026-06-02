@@ -2,6 +2,21 @@
 
 本文件用于生成、改写或评审 TileLang Ascend 算子时快速排查常见潜在性能劣化模式。遇到性能关注项时，优先按“替代写法”调整；如果必须临时保留，需要记录 shape、dtype、原因和后续优化计划。
 
+## 目录
+
+- [使用方式](#使用方式)
+- [硬件 buffer size 信息表（A2/A3，用于评估内存）](#硬件-buffer-size-信息表a2a3用于评估内存)
+- [launch core 数需要重点关注](#launch-core-数需要重点关注)
+- [Vector Core 内逐元素/逐行 for loop 计算](#vector-core-内逐元素逐行-for-loop-计算)
+- [冗余全局同步](#冗余全局同步)
+- [基础指令拼接未融合](#基础指令拼接未融合)
+- [tile size 过小导致片上内存浪费](#tile-size-过小导致片上内存浪费)
+- [AIC/AIV 混合算子未开启 CV overlap](#aicaiv-混合算子未开启-cv-overlap)
+- [纯 AIV memory bound 算子未做流水/双 buffer](#纯-aiv-memory-bound-算子未做流水双-buffer)
+- [评审记录模板](#评审记录模板)
+
+---
+
 ## 使用方式
 
 - 写新算子前先扫一遍本清单，尽量避免为了功能正确引入明显性能风险。
