@@ -438,9 +438,9 @@ public:
       auto [src_ptr, dst_ptr] = ExtractCopyAccessPtrs(call_node);
 
       // Layer 1: Workspace collection (differs per backend)
-      // A2 Ascend C || PTO: collect workspace info for GM buffer allocation
+      // Ascend C || A2 PTO: collect workspace info for GM buffer allocation
       // A5 PTO: skip workspace collection
-      if (needs_gm_workspace_) {
+      if (needs_gm_workspace_ || !is_pto_) {
         WorkspaceInfoCollector(copy_stmt_name, src_ptr, dst_ptr);
       }
 
