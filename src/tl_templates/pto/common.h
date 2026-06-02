@@ -539,12 +539,16 @@ AICORE PTO_INLINE void binarys_tile(int32_t dst_addr, int32_t src_addr,
 
 template <pipe_t pipe, pipe_t tpipe>
 AICORE PTO_INLINE void set_flag_pipeline(int32_t pipeID) {
-  set_flag(pipe, tpipe, static_cast<event_t>(EVENT_ID0 + pipeID));
+  if (pipeID >= 0 && pipeID <= 7) {
+    set_flag(pipe, tpipe, static_cast<event_t>(EVENT_ID0 + pipeID));
+  }
 }
 
 template <pipe_t pipe, pipe_t tpipe>
 AICORE PTO_INLINE void wait_flag_pipeline(int32_t pipeID) {
-  wait_flag(pipe, tpipe, static_cast<event_t>(EVENT_ID0 + pipeID));
+  if (pipeID >= 0 && pipeID <= 7) {
+    wait_flag(pipe, tpipe, static_cast<event_t>(EVENT_ID0 + pipeID));
+  }
 }
 
 template <typename dstT, int32_t dstRow, int32_t dstCol, int32_t dstRowValid,
