@@ -549,9 +549,9 @@ def _normalize_buffer_arg(obj: Buffer | BufferRegion | BufferLoad) -> Buffer | B
 
 
 def select(
-    dst: Buffer | BufferRegion,
+    dst: Buffer | BufferRegion | BufferLoad,
     selMask: Buffer,
-    src0: Buffer | BufferRegion,
+    src0: Buffer | BufferRegion | BufferLoad,
     src1: Buffer | BufferLoad | PrimExpr,
     selMode: str,
 ):
@@ -575,6 +575,9 @@ def select(
     Returns:
         A TVM intrinsic call that performs the Select operation.
     """
+
+    dst = _normalize_buffer_arg(dst)
+    src0 = _normalize_buffer_arg(src0)
 
     def retrieve_shape(object: Buffer | BufferRegion) -> list[int]:
         if isinstance(object, Buffer):
