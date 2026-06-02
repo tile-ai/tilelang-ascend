@@ -113,6 +113,59 @@ AICORE PTO_INLINE void mma(TileMatL0A<T1, M, K> l0a, TileMatL0B<T1, K, N> l0b,
 }
 
 template <typename T1, typename T2, uint32_t M, uint32_t N, uint32_t K,
+          uint32_t validM, uint32_t validN, uint32_t validK, uint32_t CurrentK,
+          bool transpose_A, bool transpose_B>
+AICORE PTO_INLINE void gemm_v0_inner(
+    std::conditional_t<transpose_A, TileMatL1<T1, K, M, validK, validM>,
+                       TileMatL1<T1, M, K, validM, validK>> &A,
+    std::conditional_t<transpose_B, TileMatL1<T1, N, K, validN, validK>,
+                       TileMatL1<T1, K, N, validK, validN>> &B,
+    pto::TileAcc<T2, M, N, validM, validN> &C, uint32_t kL0Idx, bool initflag,
+    event_t war_event_id, bool is_tail_block) {
+  TileMatL0A<T1, M, CurrentK, M, CurrentK> l0a;
+  TileMatL0B<T1, CurrentK, N, CurrentK, N> l0b;
+  pto::TASSIGN(l0a, 0x0);
+  pto::TASSIGN(l0b, 0x0);
+
+  set_flag(PIPE_M, PIPE_MTE1, war_event_id);
+  wait_flag(PIPE_M, PIPE_MTE1, war_event_id);
+
+  if (!is_tail_block) {
+    set_flag(PIPE_FIX, PIPE_M, war_event_id);
+    wait_flag(PIPE_FIX, PIPE_M, war_event_id);
+  }
+
+  if constexpr (!transpose_A) {
+    copy_l1_to_l0a<T1, M, CurrentK, M, K, false>(l0a, A, 0, kL0Idx * CurrentK);
+  } else {
+    TileMatL1ZN<T1, M, K, validM, validK> A_t;
+    pto::TRESHAPE(A_t, A);
+    copy_l1_to_l0a<T1, M, CurrentK, M, K, true>(l0a, A_t, 0, kL0Idx * CurrentK);
+  }
+  if constexpr (!transpose_B) {
+    copy_l1_to_l0b<T1, CurrentK, N, K, N, false>(l0b, B, kL0Idx * CurrentK, 0);
+  } else {
+    TileMatL1ZN<T1, K, N, validK, validN> B_t;
+    pto::TRESHAPE(B_t, B);
+    copy_l1_to_l0b<T1, CurrentK, N, K, N, true>(l0b, B_t, kL0Idx * CurrentK, 0);
+  }
+
+  set_flag(PIPE_MTE1, PIPE_M, war_event_id);
+  wait_flag(PIPE_MTE1, PIPE_M, war_event_id);
+
+  if (initflag) {
+    pto::TMATMUL(C, l0a, l0b);
+  } else {
+    pto::TMATMUL_ACC(C, C, l0a, l0b);
+  }
+
+  if (!is_tail_block) {
+    set_flag(PIPE_MTE1, PIPE_MTE2, war_event_id);
+    wait_flag(PIPE_MTE1, PIPE_MTE2, war_event_id);
+  }
+}
+
+template <typename T1, typename T2, uint32_t M, uint32_t N, uint32_t K,
           uint32_t validM = M, uint32_t validN = N, uint32_t validK = K,
           uint32_t K_tail, bool transpose_A = false, bool transpose_B = false>
 AICORE PTO_INLINE void
@@ -124,108 +177,23 @@ gemm_v0(std::conditional_t<transpose_A, TileMatL1<T1, K, M, validK, validM>,
   constexpr uint32_t kL0Size =
       128; // L0 slice size, adapted to 64K memory limit
   const uint32_t kL0split = (K + kL0Size - 1) / kL0Size; // Number of slices
-  bool initflag = false;
-
-  TileMatL0A<T1, M, kL0Size, M, kL0Size> l0a;
-  pto::TASSIGN(l0a, 0x0);
-  TileMatL0B<T1, kL0Size, N, kL0Size, N> l0b;
-  pto::TASSIGN(l0b, 0x0);
-
   auto war_event_id = (event_t)(((int)EVENT_ID0 + 1) % 8);
 
   set_flag(PIPE_MTE2, PIPE_MTE1, war_event_id);
   wait_flag(PIPE_MTE2, PIPE_MTE1, war_event_id);
 
   for (uint32_t kL0Idx = 0; kL0Idx < kL0split; kL0Idx++) {
-    initflag = (clear && (kL0Idx == 0));
-    const bool is_tail_block =
-        (kL0Idx == kL0split - 1); // Determine whether it is a tail block
+    const bool initflag = (clear && (kL0Idx == 0));
+    const bool is_tail_block = (kL0Idx == kL0split - 1);
 
-    // Dynamically define the L0 cache size based on whether the tile is an end
-    // tile.
     if (is_tail_block) {
-      TileMatL0A<T1, M, K_tail, M, K_tail> l0a;
-      TileMatL0B<T1, K_tail, N, K_tail, N> l0b;
-      pto::TASSIGN(l0a, 0x0);
-      pto::TASSIGN(l0b, 0x0);
-
-      /**
-       * Added synchronization logic: Write-After-Read (WAR) protection
-       * Objective: Prevent MTE1 (data transfer) from overwriting L0 before M
-       * (Cube) completes processing the previous round of data
-       * TODO: Support Ping-Pong buffer.
-       */
-      set_flag(PIPE_M, PIPE_MTE1, war_event_id);
-      wait_flag(PIPE_M, PIPE_MTE1, war_event_id);
-
-      if constexpr (!transpose_A) {
-        copy_l1_to_l0a<T1, M, K_tail, M, K, false>(l0a, A, 0, kL0Idx * K_tail);
-      } else {
-        TileMatL1ZN<T1, M, K, validM, validK> A_t;
-        pto::TRESHAPE(A_t, A);
-        copy_l1_to_l0a<T1, M, K_tail, M, K, true>(l0a, A_t, 0, kL0Idx * K_tail);
-      }
-      if constexpr (!transpose_B) {
-        copy_l1_to_l0b<T1, K_tail, N, K, N, false>(l0b, B, kL0Idx * K_tail, 0);
-      } else {
-        TileMatL1ZN<T1, K, N, validK, validN> B_t;
-        pto::TRESHAPE(B_t, B);
-        copy_l1_to_l0b<T1, K_tail, N, K, N, true>(l0b, B_t, kL0Idx * K_tail, 0);
-      }
-
-      set_flag(PIPE_MTE1, PIPE_M, war_event_id);
-      wait_flag(PIPE_MTE1, PIPE_M, war_event_id);
-
-      if (initflag) {
-        pto::TMATMUL(C, l0a, l0b);
-      } else {
-        pto::TMATMUL_ACC(C, C, l0a, l0b);
-      }
-
+      gemm_v0_inner<T1, T2, M, N, K, validM, validN, validK, K_tail,
+                    transpose_A, transpose_B>(A, B, C, kL0Idx, initflag,
+                                              war_event_id, true);
     } else {
-      // Non-tail block: The L0 cache is defined at the standard size
-      // (current_kSize = kL0Size=128).
-      TileMatL0A<T1, M, kL0Size, M, kL0Size> l0a;
-      TileMatL0B<T1, kL0Size, N, kL0Size, N> l0b;
-      pto::TASSIGN(l0a, 0x0);
-      pto::TASSIGN(l0b, 0x0);
-
-      set_flag(PIPE_M, PIPE_MTE1, war_event_id);
-      wait_flag(PIPE_M, PIPE_MTE1, war_event_id);
-
-      set_flag(PIPE_FIX, PIPE_M, war_event_id);
-      wait_flag(PIPE_FIX, PIPE_M, war_event_id);
-
-      if constexpr (!transpose_A) {
-        copy_l1_to_l0a<T1, M, kL0Size, M, K, false>(l0a, A, 0,
-                                                    kL0Idx * kL0Size);
-      } else {
-        TileMatL1ZN<T1, M, K, validM, validK> A_t;
-        pto::TRESHAPE(A_t, A);
-        copy_l1_to_l0a<T1, M, kL0Size, M, K, true>(l0a, A_t, 0,
-                                                   kL0Idx * kL0Size);
-      }
-      if constexpr (!transpose_B) {
-        copy_l1_to_l0b<T1, kL0Size, N, K, N, false>(l0b, B, kL0Idx * kL0Size,
-                                                    0);
-      } else {
-        TileMatL1ZN<T1, K, N, validK, validN> B_t;
-        pto::TRESHAPE(B_t, B);
-        copy_l1_to_l0b<T1, kL0Size, N, K, N, true>(l0b, B_t, kL0Idx * kL0Size,
-                                                   0);
-      }
-
-      set_flag(PIPE_MTE1, PIPE_M, war_event_id);
-      wait_flag(PIPE_MTE1, PIPE_M, war_event_id);
-
-      if (initflag) {
-        pto::TMATMUL(C, l0a, l0b);
-      } else {
-        pto::TMATMUL_ACC(C, C, l0a, l0b);
-      }
-
-      set_flag(PIPE_MTE1, PIPE_MTE2, war_event_id);
-      wait_flag(PIPE_MTE1, PIPE_MTE2, war_event_id);
+      gemm_v0_inner<T1, T2, M, N, K, validM, validN, validK, kL0Size,
+                    transpose_A, transpose_B>(A, B, C, kL0Idx, initflag,
+                                              war_event_id, false);
     }
   }
 
@@ -342,8 +310,7 @@ AICORE PTO_INLINE void copy_gm_to_ub_dynamic(
   } else {
     TileUbDataND<T1, ub_shape1, ub_shape2, pto::DYNAMIC, pto::DYNAMIC>
         temp_src_ub(valid_row, valid_col);
-    pto::TASSIGN(temp_src_ub,
-                 ub_shape_addr + ub_offset * sizeof(T1) / sizeof(T1) * len);
+    pto::TASSIGN(temp_src_ub, ub_shape_addr + ub_offset * len);
     pto::TLOAD(temp_src_ub, global_tensor);
     TileUbDataND<T2, ub_shape1, ub_shape2, pto::DYNAMIC, pto::DYNAMIC>
         temp_dst_ub(valid_row, valid_col);
@@ -503,8 +470,7 @@ AICORE PTO_INLINE void copy_gm_to_ub(__gm__ T1 *handle, int32_t ub_shape_addr,
   } else {
     TileUbDataND<T1, ub_shape1, ub_shape2, pto::DYNAMIC, pto::DYNAMIC>
         temp_src_ub(valid_row, valid_col);
-    pto::TASSIGN(temp_src_ub,
-                 ub_shape_addr + ub_offset * sizeof(T1) / sizeof(T1) * len);
+    pto::TASSIGN(temp_src_ub, ub_shape_addr + ub_offset * len);
     pto::TLOAD(temp_src_ub, global_tensor);
     TileUbDataND<T2, ub_shape1, ub_shape2, pto::DYNAMIC, pto::DYNAMIC>
         temp_dst_ub(valid_row, valid_col);
@@ -674,92 +640,6 @@ AICORE PTO_INLINE void axpy(TileUbDataND<T, row, col, row, col> &dst,
   pto::TAXPY(dst, src0, static_cast<T>(scalar_value));
 }
 
-template <typename T1, typename T2, typename T3, int32_t rows_src,
-          int32_t cols_src, int32_t validRow_src, int32_t validCol_src,
-          int32_t cols_dst, int32_t row_tmp, int32_t col_tmp>
-AICORE PTO_INLINE void
-TROWMAX_with_slice_buffer(uint64_t handle_src, uint64_t handle_dst,
-                          TileUbDataDN<T2, cols_dst, 1, validRow_src, 1> ub_DN,
-                          TileUbDataND<T3, row_tmp, col_tmp> tmp_ub) {
-  tl::ascend_pto::TileUbDataND<T1, rows_src, cols_src, validRow_src,
-                               validCol_src>
-      tileUbWithValid;
-  pto::TASSIGN(tileUbWithValid, handle_src);
-  pto::TROWMAX(ub_DN, tileUbWithValid, tmp_ub);
-}
-
-template <typename T1, typename T2, typename T3, int32_t rows_src,
-          int32_t cols_src, int32_t validRow_src, int32_t validCol_src,
-          int32_t cols_dst, int32_t row_tmp, int32_t col_tmp>
-AICORE PTO_INLINE void
-TROWMIN_with_slice_buffer(uint64_t handle_src, uint64_t handle_dst,
-                          TileUbDataDN<T2, cols_dst, 1, validRow_src, 1> ub_DN,
-                          TileUbDataND<T3, row_tmp, col_tmp> tmp_ub) {
-  tl::ascend_pto::TileUbDataND<T1, rows_src, cols_src, validRow_src,
-                               validCol_src>
-      tileUbWithValid;
-  pto::TASSIGN(tileUbWithValid, handle_src);
-  pto::TROWMIN(ub_DN, tileUbWithValid, tmp_ub);
-}
-
-template <typename T1, typename T2, typename T3, int32_t rows_src,
-          int32_t cols_src, int32_t validRow_src, int32_t validCol_src,
-          int32_t cols_dst, int32_t row_tmp, int32_t col_tmp>
-AICORE PTO_INLINE void
-TROWSUM_with_slice_buffer(uint64_t handle_src, uint64_t handle_dst,
-                          TileUbDataDN<T2, cols_dst, 1, validRow_src, 1> ub_DN,
-                          TileUbDataND<T3, row_tmp, col_tmp> tmp_ub) {
-  tl::ascend_pto::TileUbDataND<T1, rows_src, cols_src, validRow_src,
-                               validCol_src>
-      tileUbWithValid;
-  pto::TASSIGN(tileUbWithValid, handle_src);
-  pto::TROWSUM(ub_DN, tileUbWithValid, tmp_ub);
-}
-
-template <typename T1, typename T2, typename T3, int32_t rows_src,
-          int32_t cols_src, int32_t validRow_src, int32_t validCol_src,
-          int32_t cols_dst, int32_t row_tmp, int32_t col_tmp>
-AICORE PTO_INLINE void
-TCOLMAX_with_slice_buffer(uint64_t handle_src, uint64_t handle_dst,
-                          TileUbDataND<T2, 1, cols_src, 1, validCol_src> ub,
-                          TileUbDataND<T3, row_tmp, col_tmp> tmp_ub) {
-  tl::ascend_pto::TileUbDataND<T1, rows_src, cols_src, validRow_src,
-                               validCol_src>
-      tileUbWithValid;
-  pto::TASSIGN(tileUbWithValid, handle_src);
-  pto::TCOLMAX(ub, tileUbWithValid);
-}
-
-template <typename T1, typename T2, typename T3, int32_t rows_src,
-          int32_t cols_src, int32_t validRow_src, int32_t validCol_src,
-          int32_t cols_dst, int32_t row_tmp, int32_t col_tmp>
-AICORE PTO_INLINE void
-TCOLMIN_with_slice_buffer(uint64_t handle_src, uint64_t handle_dst,
-                          TileUbDataND<T2, 1, cols_src, 1, validCol_src> ub,
-                          TileUbDataND<T3, row_tmp, col_tmp> tmp_ub) {
-  tl::ascend_pto::TileUbDataND<T1, rows_src, cols_src, validRow_src,
-                               validCol_src>
-      tileUbWithValid;
-  pto::TASSIGN(tileUbWithValid, handle_src);
-  pto::TCOLMIN(ub, tileUbWithValid);
-}
-
-template <typename T1, typename T2, int32_t rows_src, int32_t cols_src,
-          int32_t validRow_src, int32_t validCol_src, int32_t cols_dst,
-          int32_t row_tmp, int32_t col_tmp>
-AICORE PTO_INLINE void
-TCOLSUM_with_slice_buffer(uint64_t handle_src, uint64_t handle_dst,
-                          TileUbDataND<T2, 1, cols_src, 1, validCol_src> ub,
-                          uint64_t tmp_addr) {
-  tl::ascend_pto::TileUbDataND<T1, rows_src, cols_src, validRow_src,
-                               validCol_src>
-      tileUbWithValid;
-  pto::TASSIGN(tileUbWithValid, handle_src);
-  TileUbDataND<T1, row_tmp, col_tmp> tmp_ub;
-  pto::TASSIGN(tmp_ub, tmp_addr);
-  pto::TCOLSUM(ub, tileUbWithValid, tmp_ub, true);
-}
-
 template <typename TileType, typename DataType>
 void TCI(TileType &tile, DataType firstValue);
 
@@ -817,66 +697,12 @@ AICORE PTO_INLINE void binarys_tile(int32_t dst_addr, int32_t src_addr,
 
 template <pipe_t pipe, pipe_t tpipe>
 AICORE PTO_INLINE void set_flag_pipeline(int32_t pipeID) {
-  switch (pipeID) {
-  case 0:
-    set_flag(pipe, tpipe, EVENT_ID0);
-    break;
-  case 1:
-    set_flag(pipe, tpipe, EVENT_ID1);
-    break;
-  case 2:
-    set_flag(pipe, tpipe, EVENT_ID2);
-    break;
-  case 3:
-    set_flag(pipe, tpipe, EVENT_ID3);
-    break;
-  case 4:
-    set_flag(pipe, tpipe, EVENT_ID4);
-    break;
-  case 5:
-    set_flag(pipe, tpipe, EVENT_ID5);
-    break;
-  case 6:
-    set_flag(pipe, tpipe, EVENT_ID6);
-    break;
-  case 7:
-    set_flag(pipe, tpipe, EVENT_ID7);
-    break;
-  default:
-    break;
-  }
+  set_flag(pipe, tpipe, static_cast<event_t>(EVENT_ID0 + pipeID));
 }
 
 template <pipe_t pipe, pipe_t tpipe>
 AICORE PTO_INLINE void wait_flag_pipeline(int32_t pipeID) {
-  switch (pipeID) {
-  case 0:
-    wait_flag(pipe, tpipe, EVENT_ID0);
-    break;
-  case 1:
-    wait_flag(pipe, tpipe, EVENT_ID1);
-    break;
-  case 2:
-    wait_flag(pipe, tpipe, EVENT_ID2);
-    break;
-  case 3:
-    wait_flag(pipe, tpipe, EVENT_ID3);
-    break;
-  case 4:
-    wait_flag(pipe, tpipe, EVENT_ID4);
-    break;
-  case 5:
-    wait_flag(pipe, tpipe, EVENT_ID5);
-    break;
-  case 6:
-    wait_flag(pipe, tpipe, EVENT_ID6);
-    break;
-  case 7:
-    wait_flag(pipe, tpipe, EVENT_ID7);
-    break;
-  default:
-    break;
-  }
+  wait_flag(pipe, tpipe, static_cast<event_t>(EVENT_ID0 + pipeID));
 }
 
 template <typename dstT, int32_t dstRow, int32_t dstCol, int32_t dstRowValid,
