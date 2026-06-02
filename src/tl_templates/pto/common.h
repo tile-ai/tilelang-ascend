@@ -601,15 +601,15 @@ AICORE PTO_INLINE void unary_tile(int32_t dst_addr, int32_t src_addr,
 
 template <typename T, int32_t row, int32_t col>
 AICORE PTO_INLINE void
-TSIGMOID(TileUbDataND<T, row, col, row, col> &dst_addr,
-         TileUbDataND<T, row, col, row, col> &src0_addr) {
-  TMULS(src0_addr, src0_addr, -1);
+TSIGMOID(TileUbDataND<T, row, col, row, col> &dst,
+         TileUbDataND<T, row, col, row, col> &src0) {
+  TMULS(src0, src0, -1);
   TL_PIPE_V_BARRIER();
-  TEXP(src0_addr, src0_addr);
+  TEXP(src0, src0);
   TL_PIPE_V_BARRIER();
-  TADDS(src0_addr, src0_addr, 1);
+  TADDS(src0, src0, 1);
   TL_PIPE_V_BARRIER();
-  TRECIP(dst_addr, src0_addr);
+  TRECIP(dst, src0);
 }
 
 template <typename T, int32_t row, int32_t col>
