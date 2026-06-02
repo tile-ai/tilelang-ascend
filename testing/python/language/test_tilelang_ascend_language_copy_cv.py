@@ -7,6 +7,7 @@ import torch
 
 import tilelang
 import tilelang.language as T
+from tilelang.utils.target import determine_platform
 
 
 PASS_CONFIGS = {
@@ -141,7 +142,7 @@ def _ub_to_l1_kernel_lr(M=128, N=128, K=128, dtype="float16", accum_dtype="float
     return main
 
 
-def _ub_to_l1_kernel_expert(M=128, N=128, K=128, dtype="float16", accum_dtype="float"):
+def _ub_to_l1_kernel_expert_A2(M=128, N=128, K=128, dtype="float16", accum_dtype="float"):
     """Test kernel: GM→UB→L1→GM with hand-crafted copy_ub_to_pipe & copy_pipe_to_l1 calls"""
     VEC_NUM = 2
     M_half = M // VEC_NUM
@@ -188,6 +189,60 @@ def _ub_to_l1_kernel_expert(M=128, N=128, K=128, dtype="float16", accum_dtype="f
                 T.set_flag("mte2", "mte3", 3)
                 T.wait_flag("mte2", "mte3", 3)
                 T._srcCode("tl::ascend_pto::copy_ub_to_pipe<Pipe_8_V2C, half, 64, 128, pto::TileSplitAxis::TILE_UP_DOWN>(pipe_8_V2C, A_ub);")
+
+    return main
+
+
+def _ub_to_l1_kernel_expert_A5(M=128, N=128, K=128, dtype="float16", accum_dtype="float"):
+    """Test kernel: GM→UB→L1→GM with hand-crafted copy_ub_to_pipe & copy_pipe_to_l1 calls"""
+    VEC_NUM = 2
+    M_half = M // VEC_NUM
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((M, K), dtype), # type: ignore
+        B: T.Tensor((K, N), dtype), # type: ignore
+        C: T.Tensor((M, N), dtype), # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (cid, vid):
+            T._srcCode("using Pipe_0_V2C = TPipe<0, pto::Direction::DIR_V2C, 32768, 2>;")
+            T._srcCode("Pipe_0_V2C pipe_0_V2C(nullptr, 0, 32768);")
+
+            A_ub = T.alloc_ub((M_half, K), dtype)
+            A_ub_Nz = T.alloc_ub((M_half, K), dtype)
+            A_l1 = T.alloc_L1((M, K), dtype)
+            B_l1 = T.alloc_L1((K, N), dtype)
+            C_l0c = T.alloc_L0C((M, N), accum_dtype)
+
+            with T.Scope("C"):
+                # GM → L1
+                T.copy(B, B_l1)
+
+                # UB → L1
+                T._srcCode("tl::ascend_pto::copy_pipe_to_l1<Pipe_0_V2C, half, 128, 128, pto::TileSplitAxis::TILE_UP_DOWN>(pipe_0_V2C, A_l1);")
+                T.set_flag("mte2", "m", 1)
+                T.wait_flag("mte2", "m", 1)
+
+                # L1 → GEMM → L0C
+                T.gemm_v0(A_l1, B_l1, C_l0c, init=True)
+                T.set_flag("m", "fix", 2)
+                T.wait_flag("m", "fix", 2)
+
+                # L0C → GM
+                T.copy(C_l0c, C)
+
+            with T.Scope("V"):
+                # GM → UB
+                T.copy(A[vid * M_half: (vid + 1) * M_half, :], A_ub)
+
+                # UB → L1
+                # T.copy(A_ub, A_l1)
+                T.set_flag("mte2", "v", 3)
+                T.wait_flag("mte2", "v", 3)
+                T._srcCode("tl::ascend_pto::copy_ub_to_ub_Nz(A_ub, A_ub_Nz);", A_ub_Nz)
+                T.set_flag("v", "mte3", 4)
+                T.wait_flag("v", "mte3", 4)
+                T._srcCode("tl::ascend_pto::copy_ub_to_pipe<Pipe_0_V2C, half, 64, 128, 64, 128, pto::TileSplitAxis::TILE_UP_DOWN>(pipe_0_V2C, A_ub, A_ub_Nz);")
 
     return main
 
@@ -396,10 +451,18 @@ def test_ub_to_l1_lr(target):
     _ub_to_l1_case(_ub_to_l1_kernel_lr, M=M, N=N, K=K, target=target, expert=False)
 
 
+@pytest.mark.skipif(determine_platform() == "A5", reason="Only test for non-A5 platform")
 @pytest.mark.parametrize("target", ["pto"])
-def test_ub_to_l1_expert(target):
+def test_ub_to_l1_expert_A2(target):
     M, N, K = 128, 128, 128
-    _ub_to_l1_case(_ub_to_l1_kernel_expert, M=M, N=N, K=K, target=target, expert=True)
+    _ub_to_l1_case(_ub_to_l1_kernel_expert_A2, M=M, N=N, K=K, target=target, expert=True)
+
+
+@pytest.mark.skipif(determine_platform() != "A5", reason="Only test for A5 platform")
+@pytest.mark.parametrize("target", ["pto"])
+def test_ub_to_l1_expert_A5(target):
+    M, N, K = 128, 128, 128
+    _ub_to_l1_case(_ub_to_l1_kernel_expert_A5, M=M, N=N, K=K, target=target, expert=True)
 
 
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
