@@ -77,7 +77,7 @@ for k in T.serial(loop_k):
   - Vector 核：切分后每个数据块元素数应 ≥ 128
   - Cube 核：切分后每个数据块元素数应 ≥ 256
 - 实现方式：手写 Double Buffer（手动分配双份 buffer，通过 `side = k % 2` 交替使用）
-- 同步方式：手写双缓冲时可先开启 `TL_ASCEND_AUTO_SYNC: True` 让编译器自动插入同步，若翻译结果不符合预期再改为手动 `set_flag` / `wait_flag`
+- 同步方式：Vector/Cube 核内流水当前需要手动控制不同流之间的同步。手写双缓冲时可先开启 `TL_ASCEND_AUTO_SYNC: True` 让编译器自动插入同步，若翻译结果不符合预期再改为手动 `set_flag` / `wait_flag`
 
 **原理**：
 ```
@@ -173,6 +173,16 @@ for k in T.serial(loop_k):
     T.tile.exp(result_buf[side, :], ub_buf[side, :])
     T.copy(result_buf[side, :], GM_out[k])
 ```
+
+**Vector 核内三阶段流水 reference**：
+
+完整说明见 [vector_add_pipeline](best-practices/vector_add_pipeline.md)。该模板使用两个 UB stage 和 `mte3 -> mte2`、`mte2 -> v`、`v -> mte3` 事件，把 Vector 算子组织为：
+
+- prefetch：预取第 0 个 tile 到 stage 0
+- main body：预取 `tile + 1`，同时消费并写回 `tile`
+- epilogue：消费并写回最后一个已预取 tile
+
+编写 Vector pipeline 时优先保持这三个阶段的边界清晰，再替换 main body 中的 `T.tile.add` 为目标算子的 Vector 计算。
 
 ### 2.3 MTE2 预取优化（Cube 核）
 
