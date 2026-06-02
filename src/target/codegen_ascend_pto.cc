@@ -1254,14 +1254,16 @@ void CodeGenTileLangAscendPto::CopyL1ToL0Codegen(const CallNode *call,
     std::string src_temp_name = GetTempVarName(src_shape_info.ub_name + "_zn");
     this->PrintIndent();
     this->stream << kAscendPtoScope << "TileMatL1ZN" << "<"
-                 << dst_shape_info.type << ", " << dst_shape_info.slice_col
-                 << ", " << dst_shape_info.slice_row << ", "
-                 << dst_shape_info.slice_col << ", " << dst_shape_info.slice_row
+                 << dst_shape_info.type << ", " << tile_col
+                 << ", " << tile_row << ", "
+                 << tile_col << ", " << tile_row
                  << "> " << src_temp_name << ";\n";
+    PrimExpr tile_base_offset = outer_tile_idx * tile_size;
     this->PrintIndent();
     this->stream << "TASSIGN(" << src_temp_name << ", "
-                 << src_shape_info.first_addr << " + " << src_shape_info.offset
-                 << " * " << GetTypeLen(dst_shape_info.type) << ");\n";
+                 << src_shape_info.first_addr << " + "
+                 << PrintExpr(tile_base_offset) << " * "
+                 << GetTypeLen(dst_shape_info.type) << ");\n";
     src_name = src_temp_name;
   }
 
