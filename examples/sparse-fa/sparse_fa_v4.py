@@ -22,7 +22,6 @@ NEG_INF = -(2.0**30)
     out_idx=[3],
     workspace_idx=[9, 10, 11],
     pass_configs=PASS_CONFIGS,
-    debug_root_path="/tmp/sparse_fa_v4_debug",
 )
 def mtgr_sparse_attn_kernel(
     heads,
@@ -163,9 +162,7 @@ def mtgr_sparse_attn_kernel(
 
                         process_rule0 = (rule == 0) & (kv_start <= max_row_pos)
                         process_rule1 = (rule == 1) & (kv_start < seg_end)
-                        process_rule2 = (rule == 2) & (
-                            (kv_start <= seg_start) | (kv_start <= max_row_pos)
-                        )
+                        process_rule2 = (rule == 2) & ((kv_start <= seg_start) | (kv_start <= max_row_pos))
                         process_cond = process_rule0 | process_rule1 | process_rule2
 
                         if process_cond:
@@ -211,12 +208,39 @@ def mtgr_sparse_attn_kernel(
 
                         process_rule0 = (rule == 0) & (kv_start <= max_row_pos)
                         process_rule1 = (rule == 1) & (kv_start < seg_end)
-                        process_rule2 = (rule == 2) & (
-                            (kv_start <= seg_start) | (kv_start <= max_row_pos)
-                        )
+                        process_rule2 = (rule == 2) & ((kv_start <= seg_start) | (kv_start <= max_row_pos))
                         process_cond = process_rule0 | process_rule1 | process_rule2
 
                         if process_cond:
+                            T.tile.fill(mask_ub, NEG_INF)
+
+                            for row in T.serial(v_block):
+                                row_abs_pos = q_start + vid * v_block + row
+
+                                if rule == 0:
+                                    raw_len = row_abs_pos - kv_start + 1
+                                    fill_len = T.if_then_else(raw_len < kv_size, raw_len, kv_size)
+                                    fill_len = T.if_then_else(fill_len > 0, fill_len, 0)
+                                    if fill_len > 0:
+                                        T.tile.fill(mask_ub[row, 0:fill_len], 0.0)
+
+                                elif rule == 1:
+                                    raw_len = seg_end - kv_start
+                                    fill_len = T.if_then_else(raw_len < kv_size, raw_len, kv_size)
+                                    fill_len = T.if_then_else(fill_len > 0, fill_len, 0)
+                                    if fill_len > 0:
+                                        T.tile.fill(mask_ub[row, 0:fill_len], 0.0)
+
+                                elif rule == 2:
+                                    raw_len = seg_start - kv_start
+                                    fill_len = T.if_then_else(raw_len < kv_size, raw_len, kv_size)
+                                    fill_len = T.if_then_else(fill_len > 0, fill_len, 0)
+                                    if fill_len > 0:
+                                        T.tile.fill(mask_ub[row, 0:fill_len], 0.0)
+                                    diag_col = row_abs_pos - kv_start
+                                    if (diag_col >= 0) & (diag_col < kv_size):
+                                        mask_ub[row, diag_col] = 0.0
+
                             T.wait_cross_flag(0)
 
                             T.copy(
@@ -228,41 +252,6 @@ def mtgr_sparse_attn_kernel(
                                 acc_s_ub_,
                             )
                             T.tile.mul(acc_s_ub_, acc_s_ub_, sm_scale)
-
-                            T.tile.fill(mask_ub, NEG_INF)
-
-                            for row in T.serial(v_block):
-                                row_abs_pos = q_start + vid * v_block + row
-
-                                if rule == 0:
-                                    raw_len = row_abs_pos - kv_start + 1
-                                    fill_len = T.if_then_else(
-                                        raw_len < kv_size, raw_len, kv_size
-                                    )
-                                    fill_len = T.if_then_else(fill_len > 0, fill_len, 0)
-                                    if fill_len > 0:
-                                        T.tile.fill(mask_ub[row, 0:fill_len], 0.0)
-
-                                elif rule == 1:
-                                    raw_len = seg_end - kv_start
-                                    fill_len = T.if_then_else(
-                                        raw_len < kv_size, raw_len, kv_size
-                                    )
-                                    fill_len = T.if_then_else(fill_len > 0, fill_len, 0)
-                                    if fill_len > 0:
-                                        T.tile.fill(mask_ub[row, 0:fill_len], 0.0)
-
-                                elif rule == 2:
-                                    raw_len = seg_start - kv_start
-                                    fill_len = T.if_then_else(
-                                        raw_len < kv_size, raw_len, kv_size
-                                    )
-                                    fill_len = T.if_then_else(fill_len > 0, fill_len, 0)
-                                    if fill_len > 0:
-                                        T.tile.fill(mask_ub[row, 0:fill_len], 0.0)
-                                    diag_col = row_abs_pos - kv_start
-                                    if (diag_col >= 0) & (diag_col < kv_size):
-                                        mask_ub[row, diag_col] = 0.0
 
                             T.tile.add(acc_s_ub, acc_s_ub_, mask_ub)
 
@@ -309,9 +298,7 @@ def mtgr_sparse_attn_kernel(
                     valid_rows = T.if_then_else(
                         q_tile_size >= (vid + 1) * v_block,
                         v_block,
-                        T.if_then_else(
-                            q_tile_size > vid * v_block, q_tile_size - vid * v_block, 0
-                        ),
+                        T.if_then_else(q_tile_size > vid * v_block, q_tile_size - vid * v_block, 0),
                     )
 
                     T.tile.max(sumexp, sumexp, 1.0)
@@ -414,7 +401,7 @@ def mtgr_sparse_attn_wrapper(
         max_segs=max_segs,
     )
 
-    # print(func.get_kernel_source())
+    print(func.get_kernel_source())
 
     dummy_tensor = torch.empty(total_seq_tiles, dtype=torch.int32, device=query.device)
     output = func(
@@ -647,7 +634,7 @@ def test(
     )
 
     torch.npu.synchronize()
-    torch.testing.assert_close(ref_output, output_snd, rtol=1e-2, atol=1e-2)
+    torch.testing.assert_close(ref_output, output_snd, rtol=1e-3, atol=1e-3)
     print("Test Passed!")
 
 
