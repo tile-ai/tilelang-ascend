@@ -385,7 +385,7 @@ def _combined_kernel(M=128, N=128, K=128, dtype="float16", accum_dtype="float"):
     return main
 
 
-def _ub_to_l1_case(kernel_func, M=128, N=128, K=128, target="pto", expert=False):
+def _ub_to_l1_case(kernel_func, M=128, N=128, K=128, target="pto", expert=False, manual_workspace=False):
     dtype = "float16"
     program = kernel_func(M=M, N=N, K=K, dtype=dtype)
     kernel = _compile(program, target=target, expert=expert)
@@ -397,7 +397,7 @@ def _ub_to_l1_case(kernel_func, M=128, N=128, K=128, target="pto", expert=False)
     c = torch.empty((M, N), dtype=torch_dtype, device="npu")
     torch.npu.synchronize()
 
-    if not expert:
+    if not manual_workspace:
         kernel(a, b, c)
     else:
         workspace_1 = torch.empty((M * K * 2,), dtype=torch_dtype, device="npu")
@@ -408,7 +408,7 @@ def _ub_to_l1_case(kernel_func, M=128, N=128, K=128, target="pto", expert=False)
     torch.testing.assert_close(c, ref_c, rtol=1e-3, atol=1e-3)
 
 
-def _l0c_to_ub_case(kernel_func, M=128, N=128, K=128, target="pto", expert=False):
+def _l0c_to_ub_case(kernel_func, M=128, N=128, K=128, target="pto", expert=False, manual_workspace=False):
     dtype = "float16"
     accum_dtype = "float"
     program = kernel_func(M=M, N=N, K=K, dtype=dtype, accum_dtype=accum_dtype)
@@ -422,7 +422,7 @@ def _l0c_to_ub_case(kernel_func, M=128, N=128, K=128, target="pto", expert=False
     c = torch.empty((M, N), dtype=torch_accum_dtype, device="npu")
     torch.npu.synchronize()
 
-    if not expert:
+    if not manual_workspace:
         kernel(a, b, c)
     else:
         workspace_1 = torch.empty((M * K * 2,), dtype=torch_dtype, device="npu")
@@ -455,7 +455,7 @@ def test_ub_to_l1_lr(target):
 @pytest.mark.parametrize("target", ["pto"])
 def test_ub_to_l1_expert_A2(target):
     M, N, K = 128, 128, 128
-    _ub_to_l1_case(_ub_to_l1_kernel_expert_A2, M=M, N=N, K=K, target=target, expert=True)
+    _ub_to_l1_case(_ub_to_l1_kernel_expert_A2, M=M, N=N, K=K, target=target, expert=True, manual_workspace=True)
 
 
 @pytest.mark.skipif(determine_platform() != "A5", reason="Only test for A5 platform")
