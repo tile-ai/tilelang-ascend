@@ -2243,3 +2243,114 @@ def datacachecleanandinvalid_experiment(dst: Buffer, CacheLine: str, DcciDst: st
         f"AscendC::DataCacheCleanAndInvalid<{_dtype(dst)}, AscendC::CacheLine::{CacheLine}, AscendC::DcciDst::{DcciDst}>",
         dst.access_ptr("w"),
     )
+
+
+def _get_buffer(obj, access_type: str = "r"):
+    """Resolve a Buffer or BufferRegion into an access_ptr PrimExpr.
+
+    This mirrors `npu_gemm_mx.retrieve_ptr` so tile primitives can accept
+    both Buffer and BufferRegion interchangeably.
+    """
+    import math as _math
+
+    if isinstance(obj, BufferRegion):
+        buf, region = obj.buffer, obj.region
+        indices = [r.min for r in region]
+        strides = []
+        stride = 1
+        for s in reversed(buf.shape):
+            strides.insert(0, stride)
+            stride *= s
+        offset = 0
+        for i in range(len(indices)):
+            offset += indices[i] * strides[i]
+        extents = [r.extent for r in region]
+        extent_total = _math.prod(extents) if extents else 1
+        return buf.access_ptr(access_mask=access_type, offset=offset, extent=extent_total)
+    elif isinstance(obj, Buffer):
+        return obj.access_ptr(access_type)
+    raise ValueError(f"Unsupported argument type: {type(obj)} for tquant/tdequant operand")
+
+
+def tquant_mxfp8(
+    dst,
+    src,
+    exp_out,
+    max_buf=None,
+    scaling_buf=None,
+):
+    """Online MXFP8 quantization primitive. Maps to pto::TQUANT<MXFP8>.
+
+    Converts FP32/BF16/FP16 data in `src` to MXFP8 (E4M3 or E5M2) data in
+    `dst`, with E8M0 block-scale exponents written to `exp_out`. Two scratch
+    tiles (`max_buf` and `scaling_buf`, same dtype as `src`) are required
+    internally by the pto-isa hardware instruction.
+
+    Args:
+        dst          : Destination buffer (uint8 storage for FP8 values).
+        src          : Source buffer (float, bfloat16, or half).
+        exp_out      : E8M0 exponent output (uint8 storage).
+        max_buf      : Scratch buffer for block-wise max values
+                       (same dtype as src; pass None to skip).
+        scaling_buf  : Scratch buffer for intermediate scaling factors
+                       (same dtype as src; pass None to skip).
+
+    Notes:
+        * A5-only hardware instruction.
+        * Block scale factor is 32 along the K axis.
+        * The generated template call is:
+            tl::ascend_pto::tquant_mxfp8<dtype_src, dtype_dst>(
+                dst, src, exp, max_buf, scaling_buf);
+    """
+
+    src_ctype = _dtype(src)
+    dst_ctype = _dtype(dst)
+
+    dst_ptr    = _get_buffer(dst, "w")
+    src_ptr    = _get_buffer(src, "r")
+    exp_ptr    = _get_buffer(exp_out, "w")
+    max_ptr    = _get_buffer(max_buf, "rw") if max_buf is not None else tir.IntImm("int32", 0)
+    scaling_ptr = _get_buffer(scaling_buf, "rw") if scaling_buf is not None else tir.IntImm("int32", 0)
+
+    return tir.call_intrin(
+        "handle",
+        tir.op.Op.get("tl.ascend_tquant"),
+        f"tquant_mxfp8<{src_ctype}, {dst_ctype}>",
+        dst_ptr,
+        src_ptr,
+        exp_ptr,
+        max_ptr,
+        scaling_ptr,
+    )
+
+
+def tdequant(dst, src, scale, offset=None):
+    """Integer dequantization primitive. Maps to pto::TDEQUANT.
+
+    Computes: dst = (src - offset) * scale, where src is INT8 or INT16
+    and dst is float32. Available on A2/A3 platforms only.
+
+    Args:
+        dst    : Destination buffer (dtype=float32).
+        src    : Source buffer (dtype=int8 or int16).
+        scale  : Per-element scale buffer (dtype=float32).
+        offset : Per-element zero-point buffer (dtype=float32; optional).
+    """
+
+    src_ctype = _dtype(src)
+    dst_ctype = _dtype(dst)
+
+    dst_ptr    = _get_buffer(dst, "w")
+    src_ptr    = _get_buffer(src, "r")
+    scale_ptr  = _get_buffer(scale, "r")
+    offset_ptr = _get_buffer(offset, "r") if offset is not None else tir.IntImm("int32", 0)
+
+    return tir.call_intrin(
+        "handle",
+        tir.op.Op.get("tl.ascend_tdequant"),
+        f"tdequant<{src_ctype}, {dst_ctype}>",
+        dst_ptr,
+        src_ptr,
+        scale_ptr,
+        offset_ptr,
+    )

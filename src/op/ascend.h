@@ -186,6 +186,14 @@ TVM_DLL const Op &ascend_gemm_v0();
 
 TVM_DLL const Op &ascend_gemm_v1();
 
+TVM_DLL const Op &ascend_gemm_mx();
+
+TVM_DLL const Op &ascend_mma_mx();
+
+TVM_DLL const Op &ascend_tquant();
+
+TVM_DLL const Op &ascend_tdequant();
+
 TVM_DLL const Op &ascend_printf();
 
 TVM_DLL const Op &ascend_dump_tensor();

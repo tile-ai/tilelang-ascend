@@ -466,8 +466,20 @@ void CodeGenTileLangAscendPto::PrintType(DataType t,
     if (!fail)
       return;
   } else if (t.is_float8()) {
-    // enable_fp8_ = true;
-    // os << GetFP8Type(t);
+    if (t.code() == DataType::kFloat8_e4m3fn) {
+      os << "float8_e4m3_t";
+    } else if (t.code() == DataType::kFloat8_e5m2) {
+      os << "float8_e5m2_t";
+    } else {
+      LOG(FATAL) << "Unsupported FP8 type in PTO codegen: " << t;
+    }
+    return;
+  } else if (t.is_float4()) {
+    if (t.code() == DataType::kFloat4_e2m1fn) {
+      os << "float4_e2m1x2_t";
+    } else {
+      LOG(FATAL) << "Unsupported FP4 type in PTO codegen: " << t;
+    }
     return;
   } else if (t == DataType::Bool()) {
     os << "bool";
@@ -885,6 +897,12 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op,
     SetDeqScaleCodegen(op);
   } else if (op->op.same_as(tl::ascend_mma())) {
     MmaCodegen(op);
+  } else if (op->op.same_as(tl::ascend_mma_mx())) {
+    MmaMxCodegen(op);
+  } else if (op->op.same_as(tl::ascend_tquant())) {
+    TQuantCodegen(op);
+  } else if (op->op.same_as(tl::ascend_tdequant())) {
+    TDequantCodegen(op);
 
   } else if (op->op.same_as(builtin::if_then_else())) {
     std::string result = name_supply_->FreshName("condval");
@@ -3132,6 +3150,151 @@ void CodeGenTileLangAscendPto::MmaCodegen(const CallNode *op) {
   this->PrintIndent();
   this->stream << op_name << "(" << a_name << ", " << b_name << ", " << c_name
                << ", " << PrintExpr(op->args[4]) << ");\n";
+}
+
+// ============================================================================
+// MXFP (Microscaling Floating Point) GEMM support
+// ============================================================================
+//
+// mma_mx: MXFP MMA primitive that wraps pto::TMATMUL_MX.
+//
+// Template string from Python:
+//     "mma_mx<dtype_A, dtype_C, dtype_S, M, N, K>"
+//
+// IR args (7 total, registered as ascend_mma_mx):
+//     args[0] = template string
+//     args[1] = A (L0A) access_ptr
+//     args[2] = B (L0B) access_ptr
+//     args[3] = C (accumulator) access_ptr
+//     args[4] = scale_A access_ptr
+//     args[5] = scale_B access_ptr
+//     args[6] = init (bool)
+//
+// Generated code:
+//     tl::ascend_pto::mma_mxfp<dtype_A, dtype_C, dtype_S, M, N, K>(a, b, c, sa, sb, init);
+// ============================================================================
+
+void CodeGenTileLangAscendPto::MmaMxCodegen(const CallNode *op) {
+  // Resolve the five operand slice names
+  ShapeInfo a_info = GetSliceInfo(op->args[1].as<CallNode>());
+  ShapeInfo b_info = GetSliceInfo(op->args[2].as<CallNode>());
+  ShapeInfo c_info = GetSliceInfo(op->args[3].as<CallNode>());
+  ShapeInfo sa_info = GetSliceInfo(op->args[4].as<CallNode>());
+  ShapeInfo sb_info = GetSliceInfo(op->args[5].as<CallNode>());
+
+  std::string a_name =
+      ResolveCubeSliceName(a_info, kAscendPtoScope + "TileMatL0A");
+  std::string b_name =
+      ResolveCubeSliceName(b_info, kAscendPtoScope + "TileMatL0B");
+  std::string c_name = ResolveCubeSliceName(c_info, "TileAcc");
+  std::string sa_name =
+      ResolveCubeSliceName(sa_info, kAscendPtoScope + "TileScaleA");
+  std::string sb_name =
+      ResolveCubeSliceName(sb_info, kAscendPtoScope + "TileScaleB");
+
+  // Build the op name: tl::ascend_pto::mma_mxfp<...>
+  std::string template_str = Downcast<StringImm>(op->args[0])->value;
+  std::string op_name = kAscendPtoScope + template_str;
+
+  this->PrintIndent();
+  this->stream << op_name << "(" << a_name << ", " << b_name << ", " << c_name
+               << ", " << sa_name << ", " << sb_name << ", "
+               << PrintExpr(op->args[6]) << ");\n";
+}
+
+// ============================================================================
+// tquant_mxfp8: online FP32/BF16/FP16 -> MXFP8 quantization.
+//
+// Template string from Python:
+//     "tquant_mxfp8<dtype_src, dtype_dst>"
+//
+// IR args (registered as ascend_tquant, variable inputs):
+//     args[0] = template string
+//     args[1] = dst (FP8) access_ptr
+//     args[2] = src (FP32/BF16/FP16) access_ptr
+//     args[3] = exp (E8M0) access_ptr
+//     args[4] = max_buf scratch access_ptr (optional, emit nullptr if omitted)
+//     args[5] = scaling_buf scratch access_ptr (optional)
+//
+// Generated code:
+//     tl::ascend_pto::tquant_mxfp8<dtype_src, dtype_dst>(dst, src, exp, max_buf, scaling_buf);
+// ============================================================================
+
+void CodeGenTileLangAscendPto::TQuantCodegen(const CallNode *op) {
+  std::string template_str = Downcast<StringImm>(op->args[0])->value;
+  std::string op_name = kAscendPtoScope + template_str;
+
+  auto resolve_or_null = [&](size_t idx,
+                             const std::string &tile_name) -> std::string {
+    if (idx >= op->args.size()) {
+      return "nullptr";
+    }
+    const CallNode *access_call = op->args[idx].as<CallNode>();
+    if (!access_call) {
+      // Integer literal 0 used as null pointer sentinel
+      return "nullptr";
+    }
+    ShapeInfo info = GetSliceInfo(access_call);
+    return ResolveCubeSliceName(info, tile_name);
+  };
+
+  std::string dst_name = resolve_or_null(1, kAscendPtoScope + "TileUbDataND");
+  std::string src_name = resolve_or_null(2, kAscendPtoScope + "TileUbDataND");
+  std::string exp_name = resolve_or_null(3, kAscendPtoScope + "TileUbDataND");
+  std::string max_name = resolve_or_null(4, kAscendPtoScope + "TileUbDataND");
+  std::string scaling_name =
+      resolve_or_null(5, kAscendPtoScope + "TileUbDataND");
+
+  this->PrintIndent();
+  this->stream << op_name << "(" << dst_name << ", " << src_name << ", "
+               << exp_name << ", " << max_name << ", " << scaling_name
+               << ");\n";
+}
+
+// ============================================================================
+// tdequant: integer dequantization (dst = (src - offset) * scale). A2/A3 only.
+//
+// Template string from Python:
+//     "tdequant<dtype_src, dtype_dst>"
+//
+// IR args (registered as ascend_tdequant, variable inputs):
+//     args[0] = template string
+//     args[1] = dst access_ptr
+//     args[2] = src access_ptr
+//     args[3] = scale access_ptr
+//     args[4] = offset access_ptr (optional)
+//
+// Generated code:
+//     tl::ascend_pto::tdequant<dtype_src, dtype_dst>(dst, src, scale, offset);
+// ============================================================================
+
+void CodeGenTileLangAscendPto::TDequantCodegen(const CallNode *op) {
+  std::string template_str = Downcast<StringImm>(op->args[0])->value;
+  std::string op_name = kAscendPtoScope + template_str;
+
+  auto resolve_or_null = [&](size_t idx,
+                             const std::string &tile_name) -> std::string {
+    if (idx >= op->args.size()) {
+      return "nullptr";
+    }
+    const CallNode *access_call = op->args[idx].as<CallNode>();
+    if (!access_call) {
+      return "nullptr";
+    }
+    ShapeInfo info = GetSliceInfo(access_call);
+    return ResolveCubeSliceName(info, tile_name);
+  };
+
+  std::string dst_name = resolve_or_null(1, kAscendPtoScope + "TileUbDataND");
+  std::string src_name = resolve_or_null(2, kAscendPtoScope + "TileUbDataND");
+  std::string scale_name =
+      resolve_or_null(3, kAscendPtoScope + "TileUbDataND");
+  std::string offset_name =
+      resolve_or_null(4, kAscendPtoScope + "TileUbDataND");
+
+  this->PrintIndent();
+  this->stream << op_name << "(" << dst_name << ", " << src_name << ", "
+               << scale_name << ", " << offset_name << ");\n";
 }
 
 } // namespace codegen
