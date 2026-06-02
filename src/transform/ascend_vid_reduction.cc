@@ -893,6 +893,25 @@ private:
       return IRMutatorWithAnalyzer::VisitExpr_(op);
     }
 
+    // Lambda: divide the extent at target_idx by threads_cnt_ when it is not 1.
+    // All other args are just visited.  Pass target_idx = static_cast<size_t>(-1)
+    // to skip extent reduction entirely.  An optional arg0_override replaces
+    // args[0] (typically a modified BufferLoad) before visiting.
+    auto reduce_region_extents = [&](const Call &region, size_t target_idx,
+                                     PrimExpr arg0_override = PrimExpr()) -> Call {
+      Array<PrimExpr> args = region->args;
+      for (size_t i = 0; i < args.size(); i++) {
+        if (i == 0 && arg0_override.defined()) {
+          args.Set(i, VisitExpr(arg0_override));
+        } else if (i == target_idx && !ExtentIsEqualOne(args[i])) {
+          args.Set(i, VisitExpr(indexdiv(args[i], threads_cnt_)));
+        } else {
+          args.Set(i, VisitExpr(args[i]));
+        }
+      }
+      return Call(region->dtype, region->op, args, region->span);
+    };
+
     int ub_dims = ub_buf->shape.size();
     BufferLoad modified_load =
         ModifyBufferLoadIndices(gm_load, ub_dims, ub_buf);
@@ -901,44 +920,16 @@ private:
     gm_buffer_offset_info_[gm_buf] = ub_buf;
 
     Call target_region = src_is_ub ? dst_region : src_region;
-    Array<PrimExpr> new_region_args = target_region->args;
-    new_region_args.Set(0, VisitExpr(modified_load));
-    for (size_t i = 1; i < new_region_args.size(); ++i) {
-      // If it's not a ub buffer, it could be L1/L0C. If it's not a GM buffer,
-      // no action is needed.
-      if (i != new_region_args.size() - ub_dims || gm_buf.scope() != "global") {
-        new_region_args.Set(i, VisitExpr(new_region_args[i]));
-      } else {
-        if (ExtentIsEqualOne(new_region_args[i])) {
-          new_region_args.Set(i, VisitExpr(new_region_args[i]));
-        } else {
-          new_region_args.Set(
-              i, VisitExpr(indexdiv(new_region_args[i], threads_cnt_)));
-        }
-      }
-    }
-    Call modified_region = Call(target_region->dtype, target_region->op,
-                                new_region_args, target_region->span);
+    size_t target_idx = (gm_buf.scope() == "global")
+                            ? (target_region->args.size() - ub_dims)
+                            : static_cast<size_t>(-1);
+    Call modified_region =
+        reduce_region_extents(target_region, target_idx, modified_load);
 
     // Refactor UB Region
     Call ub_region = src_is_ub ? src_region : dst_region;
-    Array<PrimExpr> ub_region_args = ub_region->args;
-    size_t target_idx = ub_region_args.size() - ub_dims;
-    for (size_t i = 0; i < ub_region_args.size(); i++) {
-      if (i != target_idx) {
-        ub_region_args.Set(i, VisitExpr(ub_region_args[i]));
-      } else {
-        if (ExtentIsEqualOne(ub_region_args[i])) {
-          ub_region_args.Set(i, VisitExpr(ub_region_args[i]));
-        } else {
-          ub_region_args.Set(
-              i, VisitExpr(indexdiv(ub_region_args[i], threads_cnt_)));
-        }
-      }
-    }
-
-    Call modified_ub_region =
-        Call(ub_region->dtype, ub_region->op, ub_region_args, ub_region->span);
+    size_t ub_target_idx = ub_region->args.size() - ub_dims;
+    Call modified_ub_region = reduce_region_extents(ub_region, ub_target_idx);
 
     // Refactor tl.ascend_copy
     Array<PrimExpr> new_copy_args = ascend_copy->args;
@@ -952,6 +943,22 @@ private:
 
     for (size_t i = 2; i < new_copy_args.size(); ++i) {
       new_copy_args.Set(i, VisitExpr(new_copy_args[i]));
+    }
+
+    if (new_copy_args.size() > 5) {
+      auto tmp_expr = ascend_copy->args[5];
+      if (auto *tmp_call = tmp_expr.as<CallNode>();
+          tmp_call && Downcast<Op>(tmp_call->op)->name == "tl.region") {
+        Call tmp_region = Downcast<Call>(tmp_expr);
+        BufferLoad tmp_load = ExtractBufferLoadFromRegion(tmp_region);
+        if (IsUbBuffer(tmp_load->buffer) &&
+            origin_to_new_buffer_.count(tmp_load->buffer) > 0) {
+          int tmp_dims = tmp_load->buffer->shape.size();
+          size_t tmp_target_idx = tmp_region->args.size() - tmp_dims;
+          Call reduced_tmp = reduce_region_extents(tmp_region, tmp_target_idx);
+          new_copy_args.Set(5, VisitExpr(reduced_tmp));
+        }
+      }
     }
 
     return Call(ascend_copy->dtype, ascend_copy->op, new_copy_args,
