@@ -117,20 +117,21 @@ def _atomic_add_extent(data):
 
 
 def _merge_atomic_add_extents(src_extent, dst_extent):
+    import builtins
     if not src_extent and not dst_extent:
         raise ValueError(f"{_ATOMIC_ADD_V1_ERR} Cannot deduce atomic_add extents.")
 
     src_extent = list(src_extent) if src_extent else [1] * len(dst_extent)
     dst_extent = list(dst_extent) if dst_extent else [1] * len(src_extent)
     if len(src_extent) != len(dst_extent):
-        max_len = max(len(src_extent), len(dst_extent))
+        max_len = builtins.max(len(src_extent), len(dst_extent))
         src_extent = src_extent + [1] * (max_len - len(src_extent))
         dst_extent = dst_extent + [1] * (max_len - len(dst_extent))
 
     extent = []
     for src_val, dst_val in zip(src_extent, dst_extent):
         if isinstance(src_val, (int, float)) and isinstance(dst_val, (int, float)):
-            extent.append(max(src_val, dst_val))
+            extent.append(builtins.max(src_val, dst_val))
         else:
             if not isinstance(src_val, PrimExpr):
                 src_val = tir.IntImm("int32", int(src_val))
