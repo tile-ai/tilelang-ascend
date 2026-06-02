@@ -507,6 +507,47 @@ def gatherb(
     )
 
 
+def _buffer_load_to_buffer_region(load: BufferLoad) -> BufferRegion:
+    """Convert a contiguous buffer load to an equivalent BufferRegion.
+
+    The TVM script parser injects step=1 into subscript slices with explicit
+    bounds (e.g., ``buf[0, 0*B:1*B]``), which causes ``Buffer.__getitem__`` to
+    produce a BufferLoad with Ramp indices instead of a BufferRegion.  This
+    helper converts such contiguous loads back to BufferRegion so that routines
+    accepting sliced buffers can handle the parser-generated form transparently.
+    """
+    from tvm.tir import Ramp, IntImm
+    from tvm.ir import Range
+
+    buffer = load.buffer
+    indices = load.indices
+
+    region = []
+    for idx in indices:
+        if isinstance(idx, Ramp):
+            stride_is_one = (
+                (isinstance(idx.stride, int) and idx.stride == 1)
+                or (isinstance(idx.stride, IntImm) and idx.stride.value == 1)
+            )
+            if idx.lanes > 1 and not stride_is_one:
+                raise ValueError(
+                    f"Cannot convert non-contiguous Ramp to BufferRegion: "
+                    f"stride={idx.stride}, only stride=1 is supported"
+                )
+            region.append(Range.from_min_extent(idx.base, idx.lanes))
+        else:
+            extent = IntImm(idx.dtype, 1) if isinstance(idx, PrimExpr) else 1
+            region.append(Range.from_min_extent(idx, extent))
+    return BufferRegion(buffer, region)
+
+
+def _normalize_buffer_arg(obj: Buffer | BufferRegion | BufferLoad) -> Buffer | BufferRegion:
+    """Normalize Buffer / BufferRegion / BufferLoad into Buffer or BufferRegion."""
+    if isinstance(obj, BufferLoad):
+        return _buffer_load_to_buffer_region(obj)
+    return obj
+
+
 def select(
     dst: Buffer | BufferRegion,
     selMask: Buffer,
