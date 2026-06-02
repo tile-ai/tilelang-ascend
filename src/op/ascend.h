@@ -104,6 +104,8 @@ TVM_DLL const Op &ascend_bitwise_not();
 
 TVM_DLL const Op &ascend_select();
 
+TVM_DLL const Op &ascend_pto_select_tensor();
+
 TVM_DLL const Op &ascend_leaky_relu();
 
 TVM_DLL const Op &ascend_axpy();

@@ -688,6 +688,73 @@ def select(
         )
 
 
+def pto_select_tensor(
+    dst: Buffer | BufferRegion,
+    mask: Buffer,
+    src0: Buffer | BufferRegion,
+    src1: Buffer | BufferRegion,
+    tmp: Buffer | BufferRegion,
+):
+    """Performs a PTO tensor-tensor select (TSEL) operation.
+
+    Semantics: mask[i]==1 → dst[i]=src0[i]; mask[i]==0 → dst[i]=src1[i].
+
+    This is a PTO-backend-specific API that directly invokes the TSEL
+    hardware instruction with the correct argument layout.
+
+    Args:
+        dst: Destination buffer or buffer region (output).
+        mask: Mask buffer (uint8 bit-packed, [32] or [64]).
+        src0: Source buffer selected when mask bit is 1.
+        src1: Source buffer selected when mask bit is 0.
+        tmp: Temporary buffer required by hardware (may alias dst/src0/src1).
+
+    Returns:
+        A TVM intrinsic call for the PTO TSEL operation.
+    """
+
+    def _get_ptr(obj: Buffer | BufferRegion, access_type: str):
+        if isinstance(obj, BufferRegion):
+            ptr, _ = _handle_buffer_region(obj, access_type)
+            return ptr
+        return obj.access_ptr(access_type)
+
+    def _get_shape(obj: Buffer | BufferRegion):
+        if isinstance(obj, BufferRegion):
+            return [x.extent for x in obj.region]
+        return list(obj.shape)
+
+    dst_shape = _get_shape(dst)
+    src0_shape = _get_shape(src0)
+
+    if dst_shape != src0_shape:
+        raise ValueError(
+            f"pto_select_tensor: dst and src0 must have the same shape. "
+            f"Got dst={dst_shape}, src0={src0_shape}"
+        )
+
+    dst_ptr = _get_ptr(dst, "w")
+    mask_ptr = mask.access_ptr("r")
+    src0_ptr = _get_ptr(src0, "r")
+    tmp_ptr = _get_ptr(tmp, "r")
+    src1_ptr = _get_ptr(src1, "r")
+
+    size = math.prod(src0_shape)
+
+    return tir.call_intrin(
+        "handle",
+        tir.op.Op.get("tl.ascend_pto_select_tensor"),
+        dst_ptr,                     # args[0]
+        mask_ptr,                    # args[1]
+        src0_ptr,                    # args[2]
+        tmp_ptr,                     # args[3]
+        2,                           # args[4]: src1_type=2 (tensor-tensor)
+        src1_ptr,                    # args[5]
+        "VSEL_TENSOR_TENSOR_MODE",   # args[6]
+        size,                        # args[7]
+    )
+
+
 def init_sort_buf(buffer: Buffer, num: PrimExpr, rsv: PrimExpr):
     """Initializes a buffer for sorting operations.
 

@@ -848,6 +848,11 @@ TIR_DEFINE_TL_BUILTIN(ascend_select)
     .set_attr<TCallEffectKind>("TCallEffectKind",
                                Integer(CallEffectKind::kOpaque));
 
+TIR_DEFINE_TL_BUILTIN(ascend_pto_select_tensor)
+    .set_num_inputs(-1)
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
+
 TIR_DEFINE_TL_BUILTIN(ascend_leaky_relu)
     .set_num_inputs(5)
     .set_attr<TCallEffectKind>("TCallEffectKind",

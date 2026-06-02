@@ -188,6 +188,8 @@ private:
 
   void SelectCodegen(const CallNode *op);
 
+  void PtoSelectTensorCodegen(const CallNode *op);
+
   void SetDeqScaleCodegen(const CallNode *op);
 
   void MmaCodegen(const CallNode *op);

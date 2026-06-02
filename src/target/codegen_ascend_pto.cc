@@ -891,6 +891,8 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op,
     BroadcastOpCodegen(op);
   } else if (op->op.same_as(tl::ascend_select())) {
     SelectCodegen(op);
+  } else if (op->op.same_as(tl::ascend_pto_select_tensor())) {
+    PtoSelectTensorCodegen(op);
   } else if (op->op.same_as(tl::ascend_dump_tensor())) {
     DumpTensorCodegen(op, "TPRINT");
   } else if (op->op.same_as(tl::ascend_printf())) {
@@ -3353,6 +3355,31 @@ void CodeGenTileLangAscendPto::SelectCodegen(const CallNode *op) {
                    << mask_name << ", " << src0_shape_info.ub_name << ", "
                    << temp_name << ", " << src1_name << ");\n";
     }
+  }
+}
+
+void CodeGenTileLangAscendPto::PtoSelectTensorCodegen(const CallNode *op) {
+  ShapeInfo src0_shape_info = GetSliceInfo(op->args[2].as<CallNode>());
+  ShapeInfo dst_shape_info = GetSliceInfo(op->args[0].as<CallNode>());
+
+  std::string mask_name = PrintBufferOffset(op->args[1].as<CallNode>());
+  std::string temp_name = PrintBufferOffset(op->args[3].as<CallNode>());
+  std::string src1_name = PrintBufferOffset(op->args[5].as<CallNode>());
+
+  if (src0_shape_info.is_slice || dst_shape_info.is_slice) {
+    std::string src0_temp_name = GetTempVarName(src0_shape_info.ub_name);
+    std::string dst_temp_name = GetTempVarName(dst_shape_info.ub_name);
+    CreateUbVariableND(src0_temp_name, src0_shape_info);
+    CreateUbVariableND(dst_temp_name, dst_shape_info);
+    this->PrintIndent();
+    this->stream << "TSEL(" << dst_temp_name << ", " << mask_name << ", "
+                 << src0_temp_name << ", " << src1_name << ", " << temp_name
+                 << ");\n";
+  } else {
+    this->PrintIndent();
+    this->stream << "TSEL(" << dst_shape_info.ub_name << ", " << mask_name
+                 << ", " << src0_shape_info.ub_name << ", " << src1_name << ", "
+                 << temp_name << ");\n";
   }
 }
 
