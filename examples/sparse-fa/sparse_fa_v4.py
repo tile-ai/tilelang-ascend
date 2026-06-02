@@ -72,10 +72,11 @@ def mtgr_sparse_attn_kernel(
 
             acc_o = T.alloc_ub([v_block, dim], accum_dtype)
             sumexp = T.alloc_ub([v_block], accum_dtype)
-            m_i = T.alloc_ub([v_block], accum_dtype)
-            m_i_broadcast = T.alloc_ub([v_block, block_N], accum_dtype)
-            m_i_prev = T.alloc_ub([v_block], accum_dtype)
-            m_i_prev_broadcast = T.alloc_ub([v_block, dim], accum_dtype)
+            neg_sm_cur = T.alloc_ub([v_block], accum_dtype)
+            neg_sm_broadcast = T.alloc_ub([v_block, block_N], accum_dtype)
+            neg_sm_prv = T.alloc_ub([v_block], accum_dtype)
+            r_factor = T.alloc_ub([v_block], accum_dtype)
+            r_factor_broadcast = T.alloc_ub([v_block, dim], accum_dtype)
 
             acc_s_ub = T.alloc_ub([v_block, block_N], accum_dtype)
             acc_s_ub_ = T.alloc_ub([v_block, block_N], accum_dtype)
@@ -205,7 +206,8 @@ def mtgr_sparse_attn_kernel(
                 with T.Scope("V"):
                     T.tile.fill(acc_o, 0.0)
                     T.tile.fill(sumexp, 0.0)
-                    T.tile.fill(m_i, NEG_INF)
+                    T.tile.fill(neg_sm_cur, -(NEG_INF))
+                    T.tile.fill(neg_sm_prv, -(NEG_INF))
 
                     for k_i in T.serial(kv_iter_end):
                         kv_start = split_points[b_i, k_i]
@@ -264,34 +266,32 @@ def mtgr_sparse_attn_kernel(
                             T.set_flag("mte2", "v", 1)
                             T.wait_flag("mte2", "v", 1)
 
-                            T.tile.mul(acc_s_ub_, acc_s_ub_, sm_scale)
+                            T.tile.add(acc_s_ub_, acc_s_ub_, mask_ub)
 
-                            T.tile.add(acc_s_ub, acc_s_ub_, mask_ub)
+                            T.copy(neg_sm_cur, neg_sm_prv)
 
-                            T.copy(m_i, m_i_prev)
+                            T.reduce_max(acc_s_ub_, neg_sm_cur, dim=-1)
 
-                            T.reduce_max(acc_s_ub, m_i, dim=-1)
+                            T.tile.mul(neg_sm_cur, neg_sm_cur, -sm_scale)
 
-                            T.tile.max(m_i, m_i, m_i_prev)
+                            T.tile.min(neg_sm_cur, neg_sm_cur, neg_sm_prv)
 
-                            T.tile.sub(m_i_prev, m_i_prev, m_i)
+                            T.tile.sub(r_factor, neg_sm_cur, neg_sm_prv)
+                            T.tile.exp(r_factor, r_factor)
 
-                            T.tile.exp(m_i_prev, m_i_prev)
+                            T.tile.broadcast(neg_sm_broadcast, neg_sm_cur, axis=1)
+                            T.tile.axpy(neg_sm_broadcast, acc_s_ub_, sm_scale)
 
-                            T.tile.broadcast(m_i_broadcast, m_i, axis=1)
-
-                            T.tile.sub(acc_s_ub, acc_s_ub, m_i_broadcast)
-
-                            T.tile.exp(acc_s_ub, acc_s_ub)
+                            T.tile.exp(acc_s_ub, neg_sm_broadcast)
 
                             T.reduce_sum(acc_s_ub, sumexp_i_ub, dim=-1)
-                            T.tile.mul(sumexp, sumexp, m_i_prev)
+                            T.tile.mul(sumexp, sumexp, r_factor)
 
                             T.tile.add(sumexp, sumexp, sumexp_i_ub)
 
-                            T.tile.broadcast(m_i_prev_broadcast, m_i_prev, axis=1)
+                            T.tile.broadcast(r_factor_broadcast, r_factor, axis=1)
 
-                            T.tile.mul(acc_o, acc_o, m_i_prev_broadcast)
+                            T.tile.mul(acc_o, acc_o, r_factor_broadcast)
 
                             T.copy(acc_s_ub, acc_s_half)
                             T.set_flag("v", "mte3", 2)
