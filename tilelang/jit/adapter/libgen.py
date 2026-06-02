@@ -74,8 +74,7 @@ def _get_simulator_lib_path(ascend_home: str, platform: str) -> str:
             return candidate
 
     raise FileNotFoundError(
-        f"Simulator library not found for platform {platform}. "
-        f"Searched: {sim_base}/<soc>/lib and {sim_base}/<soc>/camodel"
+        f"Simulator library not found for platform {platform}. Searched: {sim_base}/<soc>/lib and {sim_base}/<soc>/camodel"
     )
 
 

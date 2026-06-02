@@ -1,8 +1,10 @@
 # Copyright (c) Tile-AI Corporation.
 # Licensed under the MIT License.
 
+from __future__ import annotations
+
 import os
-from typing import Literal, Union
+from typing import Literal
 from tilelang import tvm as tvm
 from tvm.target import Target
 from tvm.contrib import rocm
@@ -52,13 +54,13 @@ def check_npu_availability() -> bool:
     """
     try:
         import torch
-        return hasattr(torch, 'npu') and torch.npu.is_available()
+
+        return hasattr(torch, "npu") and torch.npu.is_available()
     except Exception:
         return False
 
 
-def determine_target(target: Union[str, Target, Literal["auto"]] = "auto",
-                     return_object: bool = False) -> Union[str, Target]:
+def determine_target(target: str | Target | Literal["auto"] = "auto", return_object: bool = False) -> str | Target:
     """
     Determine the appropriate target for compilation (CUDA, HIP, or manual selection).
 
@@ -75,7 +77,7 @@ def determine_target(target: Union[str, Target, Literal["auto"]] = "auto",
         AssertionError: If the target is invalid.
     """
 
-    return_var: Union[str, Target] = target
+    return_var: str | Target = target
 
     if target == "auto":
         # Check for CUDA and HIP availability
@@ -98,13 +100,13 @@ def determine_target(target: Union[str, Target, Literal["auto"]] = "auto",
         return_var = "llvm --keys=ascend"
     else:
         # Validate the target if it's not "auto"
-        assert isinstance(
-            target, Target) or target in AVALIABLE_TARGETS, f"Target {target} is not supported"
+        assert isinstance(target, Target) or target in AVALIABLE_TARGETS, f"Target {target} is not supported"
         return_var = target
 
     if return_object:
         return Target(return_var)
     return return_var
+
 
 def determine_platform(platform: str = "auto") -> str:
     """
@@ -137,13 +139,9 @@ def determine_platform(platform: str = "auto") -> str:
 
             if "910B" in name:
                 return "A2"
-            elif "910_93" in name:
+            elif "910_93" in name or "910C" in name:
                 return "A3"
-            elif "910C" in name:
-                return "A3"
-            elif "950" in name:
-                return "A5"
-            elif "910_95" in name:
+            elif "950" in name or "910_95" in name:
                 return "A5"
             elif "910" in name:  # Covers 910A
                 return "A2"

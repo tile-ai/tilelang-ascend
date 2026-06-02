@@ -5,10 +5,12 @@ Usage: python parse_example.py <script_path>
 Output: JSON with kernel shapes, dtypes, and the kernel function name.
 """
 
+import contextlib
 import sys
 import os
 import json
 import importlib.util
+
 
 def parse(script_path):
     script_path = os.path.abspath(script_path)
@@ -17,12 +19,11 @@ def parse(script_path):
 
     # --- Mock torch.npu before import ---
     import torch as _torch
+
     _orig_tensor_npu = getattr(_torch.Tensor, "npu", None)
     _torch.Tensor.npu = lambda self, *a, **kw: self
-    try:
+    with contextlib.suppress(Exception):
         _torch.nn.Module.npu = lambda self, *a, **kw: self
-    except Exception:
-        pass
 
     # --- Protect sys.argv ---
     _saved_argv = sys.argv
@@ -32,7 +33,7 @@ def parse(script_path):
     mod = importlib.util.module_from_spec(spec)
     try:
         spec.loader.exec_module(mod)
-    except Exception as e:
+    except Exception:
         # Non-fatal: script's torch.npu calls failed but kernel was defined
         pass
     finally:
@@ -43,7 +44,6 @@ def parse(script_path):
     # --- Find kernel ---
     prim_func = None
     kernel_name = None
-    wrapped_args = None
 
     # Try make_kernel()
     if hasattr(mod, "make_kernel"):
@@ -57,6 +57,7 @@ def parse(script_path):
                 kernel_name = name
                 # Try calling with minimal args
                 import inspect
+
                 sig = inspect.signature(obj.__wrapped__)
                 params = list(sig.parameters.keys())
                 # Provide sensible defaults based on param count
@@ -68,7 +69,7 @@ def parse(script_path):
                 else:
                     prim_func = obj.__wrapped__()
                 break
-            elif isinstance(obj, __import__('tilelang').tvm.tir.PrimFunc):
+            elif isinstance(obj, __import__("tilelang").tvm.tir.PrimFunc):
                 prim_func = obj
                 kernel_name = name
                 break
@@ -76,6 +77,7 @@ def parse(script_path):
     # Fallback: search all module attributes
     if prim_func is None:
         import tilelang
+
         for name in dir(mod):
             obj = getattr(mod, name)
             if hasattr(obj, "__wrapped__"):
@@ -98,10 +100,12 @@ def parse(script_path):
     for p in prim_func.params:
         buf = prim_func.buffer_map.get(p)
         if buf is not None:
-            buffers.append({
-                "shape": [int(s) for s in buf.shape],
-                "dtype": str(buf.dtype),
-            })
+            buffers.append(
+                {
+                    "shape": [int(s) for s in buf.shape],
+                    "dtype": str(buf.dtype),
+                }
+            )
 
     result = {
         "script_path": script_path,
@@ -117,6 +121,7 @@ def parse(script_path):
     result["original_lines"] = len(original_source.splitlines())
 
     return result
+
 
 if __name__ == "__main__":
     result = parse(sys.argv[1])

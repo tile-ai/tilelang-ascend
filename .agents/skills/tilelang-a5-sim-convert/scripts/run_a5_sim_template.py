@@ -22,10 +22,9 @@ import numpy as np
 # Phase 0 — Environment auto-setup (runs BEFORE import tilelang / torch)
 # =============================================================================
 
+
 def _find_ascend_home():
-    for d in [os.environ.get("ASCEND_HOME_PATH", ""),
-              os.environ.get("ASCEND_HOME", ""),
-              "/usr/local/Ascend/ascend-toolkit/latest"]:
+    for d in [os.environ.get("ASCEND_HOME_PATH", ""), os.environ.get("ASCEND_HOME", ""), "/usr/local/Ascend/ascend-toolkit/latest"]:
         if d and os.path.isdir(d):
             return d
     for base in ["/usr/local/CANN", "/usr/local/Ascend"]:
@@ -45,8 +44,10 @@ def _source_cann(ascend_home):
         return
     r = subprocess.run(
         f"source {setenv} && env",
-        shell=True, executable=shutil.which("bash") or "bash",
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        shell=True,
+        executable=shutil.which("bash") or "bash",
+        capture_output=True,
+        text=True,
     )
     for line in r.stdout.splitlines():
         if "=" in line:
@@ -100,6 +101,7 @@ def setup(log_dir=None):
 # Phase 1 — Load camodel runtime (rt APIs)
 # =============================================================================
 
+
 def load_runtime(sim_lib):
     sys.setdlopenflags(os.RTLD_LAZY | os.RTLD_GLOBAL)
     # Load by full path — LD_LIBRARY_PATH changes from within Python
@@ -137,8 +139,10 @@ def dev_malloc(rt, size):
 # Phase 2 — Kernel definition (add your own here)
 # =============================================================================
 
+
 def make_gemm(M=1024, N=512, K=256, block_M=128, block_N=256, K_L1=64):
     import tilelang.language as T
+
     m_num, n_num = M // block_M, N // block_N
 
     @T.prim_func
@@ -160,6 +164,7 @@ def make_gemm(M=1024, N=512, K=256, block_M=128, block_N=256, K_L1=64):
                     T.gemm_v0(A_L1, B_L1, C_L0, init=(k == 0))
                     T.barrier_all()
                 T.copy(C_L0, C[bx * block_M, by * block_N])
+
     return main
 
 
@@ -170,12 +175,11 @@ KERNELS = {"gemm": make_gemm}
 # main
 # =============================================================================
 
+
 def main():
     parser = argparse.ArgumentParser(description="A5 camodel simulator — one-command runner")
-    parser.add_argument("-t", "--kernel", default="gemm", choices=list(KERNELS.keys()),
-                        help="Built-in kernel name")
-    parser.add_argument("--log-dir", default=None,
-                        help="Camodel log output directory (default: ./camodel_log)")
+    parser.add_argument("-t", "--kernel", default="gemm", choices=list(KERNELS.keys()), help="Built-in kernel name")
+    parser.add_argument("--log-dir", default=None, help="Camodel log output directory (default: ./camodel_log)")
     args = parser.parse_args()
 
     # ---- 0. auto env setup ----
@@ -188,6 +192,7 @@ def main():
     # ---- 2. import tilelang (now env is ready) ----
     import tilelang
     from tilelang.jit.adapter.libgen import LibraryGenerator
+
     tilelang.cache.clear_cache()
 
     # ---- 3. generate kernel source ----
@@ -250,8 +255,11 @@ def main():
         print("FAILED")
         sys.exit(1)
 
-    rt.rtFree(d_A); rt.rtFree(d_B); rt.rtFree(d_C)
-    rt.rtStreamDestroy(stream); rt.rtDeviceReset(0)
+    rt.rtFree(d_A)
+    rt.rtFree(d_B)
+    rt.rtFree(d_C)
+    rt.rtStreamDestroy(stream)
+    rt.rtDeviceReset(0)
     libgen.remove_lib()
     print("Done!")
 
