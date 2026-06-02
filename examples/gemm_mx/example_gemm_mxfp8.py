@@ -75,6 +75,12 @@ def mxfp8_gemm_kernel(M: int, N: int, K: int, block_M: int = 64, block_N: int = 
                     B_l0b = T.alloc_L0B((block_K, block_N), FP8_E4M3)
                     C_l0c = T.alloc_L0C((block_M, block_N), "float32")
 
+                    # L1 intermediates: required for GM → L0A / L0B transfer
+                    # (Ascend NPU does not support direct GM → L0 copy;
+                    # the data must pass through L1 first.)
+                    A_l1 = T.alloc_L1((block_M, block_K), FP8_E4M3)
+                    B_l1 = T.alloc_L1((block_K, block_N), FP8_E4M3)
+
                     # Slice of scale_A: (block_M, block_K/32)
                     Sa_buf = T.alloc_shared((block_M, local_sa_cols), SCALE_DTYPE)
                     # Slice of scale_B: (block_K/32, block_N)
@@ -85,8 +91,13 @@ def mxfp8_gemm_kernel(M: int, N: int, K: int, block_M: int = 64, block_N: int = 
                     # following in `for k_idx in T.serial(K // block_K)` and
                     # update the GM indices accordingly.
                     k_idx = 0
-                    T.copy(A[bm * block_M, k_idx * block_K], A_l0a)
-                    T.copy(B[k_idx * block_K, bn * block_N], B_l0b)
+                    # GM → L1
+                    T.copy(A[bm * block_M, k_idx * block_K], A_l1)
+                    T.copy(B[k_idx * block_K, bn * block_N], B_l1)
+                    # L1 → L0A / L0B
+                    T.copy(A_l1, A_l0a)
+                    T.copy(B_l1, B_l0b)
+                    # GM → L1 (scale buffers, already L1-scoped via alloc_shared)
                     T.copy(scale_A[bm * block_M, k_idx * local_sa_cols], Sa_buf)
                     T.copy(scale_B[k_idx * local_sb_rows, bn * block_N], Sb_buf)
 
