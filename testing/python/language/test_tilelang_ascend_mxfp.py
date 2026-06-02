@@ -110,9 +110,9 @@ def test_mma_mx_happy_path_ir():
 
     call = cz.npu_gemm_mx(a_buf, b_buf, c_buf, sa_buf, sb_buf, init=False)
     assert isinstance(call, Call)
-    # The template string should include "mma_mx<...>"
+    # The template string should include "mma_mxfp<...>"
     template = str(call.args[0])
-    assert "mma_mx<" in template
+    assert "mma_mxfp<" in template
     assert "float8_e4m3_t" in template
     assert "float, " in template
 

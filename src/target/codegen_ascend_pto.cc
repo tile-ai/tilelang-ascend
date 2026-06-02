@@ -3159,7 +3159,7 @@ void CodeGenTileLangAscendPto::MmaCodegen(const CallNode *op) {
 // mma_mx: MXFP MMA primitive that wraps pto::TMATMUL_MX.
 //
 // Template string from Python:
-//     "mma_mx<dtype_A, dtype_C, dtype_S, M, N, K>"
+//     "mma_mxfp<dtype_A, dtype_C, dtype_S, M, N, K>"
 //
 // IR args (7 total, registered as ascend_mma_mx):
 //     args[0] = template string
@@ -3171,7 +3171,8 @@ void CodeGenTileLangAscendPto::MmaCodegen(const CallNode *op) {
 //     args[6] = init (bool)
 //
 // Generated code:
-//     tl::ascend_pto::mma_mxfp<dtype_A, dtype_C, dtype_S, M, N, K>(a, b, c, sa, sb, init);
+//     tl::ascend_pto::mma_mxfp<dtype_A, dtype_C, dtype_S, M, N, K>(a, b, c, sa,
+//     sb, init);
 // ============================================================================
 
 void CodeGenTileLangAscendPto::MmaMxCodegen(const CallNode *op) {
@@ -3217,15 +3218,15 @@ void CodeGenTileLangAscendPto::MmaMxCodegen(const CallNode *op) {
 //     args[5] = scaling_buf scratch access_ptr (optional)
 //
 // Generated code:
-//     tl::ascend_pto::tquant_mxfp8<dtype_src, dtype_dst>(dst, src, exp, max_buf, scaling_buf);
+//     tl::ascend_pto::tquant_mxfp8<dtype_src, dtype_dst>(dst, src, exp,
+//     max_buf, scaling_buf);
 // ============================================================================
 
 void CodeGenTileLangAscendPto::TQuantCodegen(const CallNode *op) {
   std::string template_str = Downcast<StringImm>(op->args[0])->value;
   std::string op_name = kAscendPtoScope + template_str;
 
-  auto resolve_or_null = [&](size_t idx,
-                             const std::string &tile_name) -> std::string {
+  auto resolve_or_null = [&](size_t idx) -> std::string {
     if (idx >= op->args.size()) {
       return "nullptr";
     }
@@ -3235,15 +3236,14 @@ void CodeGenTileLangAscendPto::TQuantCodegen(const CallNode *op) {
       return "nullptr";
     }
     ShapeInfo info = GetSliceInfo(access_call);
-    return ResolveCubeSliceName(info, tile_name);
+    return ResolveUbSliceName(info);
   };
 
-  std::string dst_name = resolve_or_null(1, kAscendPtoScope + "TileUbDataND");
-  std::string src_name = resolve_or_null(2, kAscendPtoScope + "TileUbDataND");
-  std::string exp_name = resolve_or_null(3, kAscendPtoScope + "TileUbDataND");
-  std::string max_name = resolve_or_null(4, kAscendPtoScope + "TileUbDataND");
-  std::string scaling_name =
-      resolve_or_null(5, kAscendPtoScope + "TileUbDataND");
+  std::string dst_name = resolve_or_null(1);
+  std::string src_name = resolve_or_null(2);
+  std::string exp_name = resolve_or_null(3);
+  std::string max_name = resolve_or_null(4);
+  std::string scaling_name = resolve_or_null(5);
 
   this->PrintIndent();
   this->stream << op_name << "(" << dst_name << ", " << src_name << ", "
@@ -3272,8 +3272,7 @@ void CodeGenTileLangAscendPto::TDequantCodegen(const CallNode *op) {
   std::string template_str = Downcast<StringImm>(op->args[0])->value;
   std::string op_name = kAscendPtoScope + template_str;
 
-  auto resolve_or_null = [&](size_t idx,
-                             const std::string &tile_name) -> std::string {
+  auto resolve_or_null = [&](size_t idx) -> std::string {
     if (idx >= op->args.size()) {
       return "nullptr";
     }
@@ -3282,15 +3281,13 @@ void CodeGenTileLangAscendPto::TDequantCodegen(const CallNode *op) {
       return "nullptr";
     }
     ShapeInfo info = GetSliceInfo(access_call);
-    return ResolveCubeSliceName(info, tile_name);
+    return ResolveUbSliceName(info);
   };
 
-  std::string dst_name = resolve_or_null(1, kAscendPtoScope + "TileUbDataND");
-  std::string src_name = resolve_or_null(2, kAscendPtoScope + "TileUbDataND");
-  std::string scale_name =
-      resolve_or_null(3, kAscendPtoScope + "TileUbDataND");
-  std::string offset_name =
-      resolve_or_null(4, kAscendPtoScope + "TileUbDataND");
+  std::string dst_name = resolve_or_null(1);
+  std::string src_name = resolve_or_null(2);
+  std::string scale_name = resolve_or_null(3);
+  std::string offset_name = resolve_or_null(4);
 
   this->PrintIndent();
   this->stream << op_name << "(" << dst_name << ", " << src_name << ", "

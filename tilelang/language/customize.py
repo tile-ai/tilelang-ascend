@@ -253,20 +253,23 @@ def npu_gemm_mx(A, B, C, scale_A, scale_B, init=False,
     K = A_shape[-1]     # L0A: (M, K)
     K_B = B_shape[-2]   # L0B: (K, N)
     assert K == K_B, f"MXFP GEMM K shape mismatch: K_A={K}, K_B={K_B}"
-    assert int(K) % 64 == 0, (
-        f"MXFP GEMM requires K to be a multiple of 64, got K={K}"
-    )
     kMXScaleFactor = 32
-    expected_sa_cols = int(K) // kMXScaleFactor
-    expected_sb_rows = int(K) // kMXScaleFactor
-    assert int(Sa_shape[-1]) == expected_sa_cols, (
-        f"scale_A column mismatch: expected {expected_sa_cols} (K/{kMXScaleFactor}), "
-        f"got {Sa_shape[-1]}"
-    )
-    assert int(Sb_shape[-2]) == expected_sb_rows, (
-        f"scale_B row mismatch: expected {expected_sb_rows} (K/{kMXScaleFactor}), "
-        f"got {Sb_shape[-2]}"
-    )
+    if isinstance(K, tir.IntImm):
+        assert K.value % 64 == 0, (
+            f"MXFP GEMM requires K to be a multiple of 64, got K={K.value}"
+        )
+        expected_sa_cols = K.value // kMXScaleFactor
+        expected_sb_rows = K.value // kMXScaleFactor
+        if isinstance(Sa_shape[-1], tir.IntImm):
+            assert Sa_shape[-1].value == expected_sa_cols, (
+                f"scale_A column mismatch: expected {expected_sa_cols} (K/{kMXScaleFactor}), "
+                f"got {Sa_shape[-1].value}"
+            )
+        if isinstance(Sb_shape[-2], tir.IntImm):
+            assert Sb_shape[-2].value == expected_sb_rows, (
+                f"scale_B row mismatch: expected {expected_sb_rows} (K/{kMXScaleFactor}), "
+                f"got {Sb_shape[-2].value}"
+            )
 
     def retrieve_ptr(object, access_type="r"):
         if isinstance(object, Buffer):
@@ -308,7 +311,7 @@ def npu_gemm_mx(A, B, C, scale_A, scale_B, init=False,
     scale_ctype = scale_type_map[scale_dtype]
 
     template = (
-        f"mma_mx<{_dtype(A)}, {_dtype(C)}, {scale_ctype}, "
+        f"mma_mxfp<{_dtype(A)}, {_dtype(C)}, {scale_ctype}, "
         f"{M}, {N}, {K}>"
     )
     return tir.call_intrin(

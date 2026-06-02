@@ -2253,6 +2253,9 @@ def _get_buffer(obj, access_type: str = "r"):
     """
     import math as _math
 
+    if isinstance(obj, tir.Var) and T.has_let_value(obj):
+        obj = T.get_let_value(obj)
+
     if isinstance(obj, BufferRegion):
         buf, region = obj.buffer, obj.region
         indices = [r.min for r in region]

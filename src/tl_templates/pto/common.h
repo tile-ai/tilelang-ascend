@@ -1570,8 +1570,8 @@ using TileScaleB = pto::Tile<pto::TileType::ScaleRight, T, Rows, Cols,
 //   T1    : data type for A and B (float8_e4m3_t / float8_e5m2_t /
 //           float4_e2m1x2_t / float4_e1m2x2_t)
 //   T2    : accumulator type (typically float)
-//   TS    : scale type (typically float8_e8m0_t, represented as uint8_t storage)
-//   M/N/K : tile dimensions in elements (K must be a multiple of 64)
+//   TS    : scale type (typically float8_e8m0_t, represented as uint8_t
+//   storage) M/N/K : tile dimensions in elements (K must be a multiple of 64)
 //
 // Scale tiles have dimensions:
 //   Sa: (M, K/32)
@@ -1580,12 +1580,11 @@ using TileScaleB = pto::Tile<pto::TileType::ScaleRight, T, Rows, Cols,
 
 template <typename T1, typename T2, typename TS, int M, int N, int K,
           int validM = M, int validN = N>
-AICORE PTO_INLINE void mma_mxfp(TileMatL0A<T1, M, K> l0a,
-                                TileMatL0B<T1, K, N> l0b,
-                                pto::TileAcc<T2, M, N, validM, validN> &C,
-                                TileScaleA<TS, M, K / 32, validM, K / 32> sa,
-                                TileScaleB<TS, K / 32, N, K / 32, validN> sb,
-                                bool init) {
+AICORE PTO_INLINE void
+mma_mxfp(TileMatL0A<T1, M, K> l0a, TileMatL0B<T1, K, N> l0b,
+         pto::TileAcc<T2, M, N, validM, validN> &C,
+         TileScaleA<TS, M, K / 32, validM, K / 32> sa,
+         TileScaleB<TS, K / 32, N, K / 32, validN> sb, bool init) {
   if (init) {
     pto::TMATMUL_MX(C, l0a, sa, l0b, sb);
   } else {
@@ -1605,33 +1604,48 @@ template <typename T> AICORE PTO_INLINE uint64_t get_scale_addr(T *data_ptr) {
 // block scales). Wraps pto::TQUANT<QuantType::MXFP8>.
 //
 // Args:
-//   dst       : output FP8 data tile (T: uint8_t storage of float8_e4m3/float8_e5m2)
-//   src       : input tile (T: float / bfloat16_t / half)
-//   exp       : output E8M0 exponent tile (uint8_t)
+//   dst       : output FP8 data tile (T: uint8_t storage of
+//   float8_e4m3/float8_e5m2) src       : input tile (T: float / bfloat16_t /
+//   half) exp       : output E8M0 exponent tile (uint8_t) max_buf   : scratch
 //   max_buf   : scratch tile (same dtype as src) for block-max values
-//   scaling   : scratch tile (same dtype as src) for intermediate scaling factors
+//   (nullable) scaling   : scratch tile (same dtype as src) for intermediate
+//   scaling factors
+//               (nullable)
 // ============================================================================
 
-template <typename TSrc, typename TDst>
-AICORE PTO_INLINE void tquant_mxfp8(TileUbDataND<TDst, 1, 1, 1, 1> &dst,
-                                    TileUbDataND<TSrc, 1, 1, 1, 1> &src,
-                                    TileUbDataND<uint8_t, 1, 1, 1, 1> &exp,
-                                    TileUbDataND<TSrc, 1, 1, 1, 1> &max_buf,
-                                    TileUbDataND<TSrc, 1, 1, 1, 1> &scaling) {
-  pto::TQUANT<pto::QuantType::MXFP8>(dst, src, &exp, &max_buf, &scaling);
+template <typename T, typename = std::enable_if_t<
+                          !std::is_same_v<std::decay_t<T>, std::nullptr_t>>>
+AICORE PTO_INLINE T *get_ptr(T &val) {
+  return &val;
+}
+
+AICORE PTO_INLINE std::nullptr_t get_ptr(std::nullptr_t) { return nullptr; }
+
+template <typename TDstTile, typename TSrcTile, typename TExpParam,
+          typename TMaxParam, typename TScaleParam>
+AICORE PTO_INLINE void tquant_mxfp8(TDstTile &dst, TSrcTile &src, TExpParam exp,
+                                    TMaxParam max_buf, TScaleParam scaling) {
+  pto::TQUANT<pto::QuantType::MXFP8>(dst, src, get_ptr(exp), get_ptr(max_buf),
+                                     get_ptr(scaling));
 }
 
 // tdequant: Integer dequantization (INT8/INT16 -> float32). Wraps
 // pto::TDEQUANT. Available on A2/A3 platforms only.
 //
 // dst = (src - offset) * scale
+// Two overloads: one with offset, one without (nullptr).
 // ============================================================================
 
-template <typename TSrc, typename TDst>
-AICORE PTO_INLINE void tdequant(TileUbDataND<TDst, 1, 1, 1, 1> &dst,
-                                TileUbDataND<TSrc, 1, 1, 1, 1> &src,
-                                TileUbDataND<TDst, 1, 1, 1, 1> &scale,
-                                TileUbDataND<TDst, 1, 1, 1, 1> &offset) {
+template <typename TDstTile, typename TSrcTile, typename TScaleTile>
+AICORE PTO_INLINE void tdequant(TDstTile &dst, TSrcTile &src, TScaleTile &scale,
+                                std::nullptr_t) {
+  pto::TDEQUANT(dst, src, scale);
+}
+
+template <typename TDstTile, typename TSrcTile, typename TScaleTile,
+          typename TOffsetTile>
+AICORE PTO_INLINE void tdequant(TDstTile &dst, TSrcTile &src, TScaleTile &scale,
+                                TOffsetTile &offset) {
   pto::TDEQUANT(dst, src, scale, offset);
 }
 
