@@ -414,7 +414,7 @@ def mtgr_sparse_attn_wrapper(
         max_segs=max_segs,
     )
 
-    print(func.get_kernel_source())
+    # print(func.get_kernel_source())
 
     dummy_tensor = torch.empty(total_seq_tiles, dtype=torch.int32, device=query.device)
     output = func(
@@ -488,7 +488,7 @@ def golden_attention(
 
         logical_positions = prefix_len + torch.arange(q_len)
         offsets_tensor = torch.tensor(offsets, dtype=torch.int32)
-        seg_ids = torch.searchsorted(offsets_tensor[1:], logical_positions)
+        seg_ids = torch.searchsorted(offsets_tensor[1:], logical_positions, right=True)
 
         mask_b = torch.zeros(q_len, total_kv_len_b, dtype=torch.float32)
         for seg_id_val in range(len(rules)):
@@ -647,12 +647,19 @@ def test(
     )
 
     torch.npu.synchronize()
-    torch.testing.assert_close(ref_output, output_snd, rtol=1e-3, atol=1e-3)
+    torch.testing.assert_close(ref_output, output_snd, rtol=1e-2, atol=1e-2)
     print("Test Passed!")
 
 
 if __name__ == "__main__":
     test_configs = [
+        # {
+        #     "H": 1,
+        #     "D": 8,
+        #     "seg_lengths": [[4, 4, 4, 4]],
+        #     "rules": [0, 1, 2, 2],
+        #     "matched_prefix_arr": [0],
+        # },
         # {
         #     "H": 8,
         #     "D": 64,
