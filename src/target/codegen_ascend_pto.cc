@@ -2073,6 +2073,37 @@ void CodeGenTileLangAscendPto::RowExpandMulCodegen(const CallNode *op) {
     tmp = GetSliceInfo(op->args[4].as<CallNode>());
   }
 
+  // Fix ND→2D flattening for 3D+ buffers.
+  // GetSliceInfo only handles up to 2D shapes; for 3D+ buffers it drops
+  // trailing dimensions, swapping rows/cols.  Re-derive the correct 2D
+  // dimensions from the access extent and the innermost buffer dimension.
+  auto fix_nd_2d = [&](ShapeInfo &info, const CallNode *access_ptr) {
+    if (!info.is_slice) return;
+    Var buf_var = Downcast<Var>(access_ptr->args[1]);
+    auto shape = buffer_shapess_.at(buf_var);
+    if (shape.size() >= 3) {
+      int32_t last_dim = shape.back().as<IntImmNode>()->value;
+      info.slice_col = GetValidShape(last_dim, info.type);
+      info.slice_row = info.extent / last_dim;
+      info.slice_valid_col = last_dim;
+      info.slice_valid_row = info.slice_row;
+    }
+  };
+  fix_nd_2d(dst, op->args[1].as<CallNode>());
+  fix_nd_2d(src0, op->args[2].as<CallNode>());
+
+  // src1: for a sliced 1D row-vector from a 2D+ buffer, pick the last
+  // dimension size as the vector length.
+  auto fix_src1_nd = [&](ShapeInfo &info, const CallNode *access_ptr) {
+    if (!info.is_slice) return;
+    Var buf_var = Downcast<Var>(access_ptr->args[1]);
+    auto shape = buffer_shapess_.at(buf_var);
+    if (shape.size() >= 3) {
+      info.slice_valid_col = shape.back().as<IntImmNode>()->value;
+    }
+  };
+  fix_src1_nd(src1, op->args[3].as<CallNode>());
+
   // Handle ND slices; src1 stays ND — the helper in common.h creates the DN
   // column-vector tile in-place.
   std::string src1_name = src1.ub_name;
