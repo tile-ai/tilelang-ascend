@@ -2309,10 +2309,10 @@ def tquant_mxfp8(
     src_ctype = _dtype(src)
     dst_ctype = _dtype(dst)
 
-    dst_ptr    = _get_buffer(dst, "w")
-    src_ptr    = _get_buffer(src, "r")
-    exp_ptr    = _get_buffer(exp_out, "w")
-    max_ptr    = _get_buffer(max_buf, "rw") if max_buf is not None else tir.IntImm("int32", 0)
+    dst_ptr = _get_buffer(dst, "w")
+    src_ptr = _get_buffer(src, "r")
+    exp_ptr = _get_buffer(exp_out, "w")
+    max_ptr = _get_buffer(max_buf, "rw") if max_buf is not None else tir.IntImm("int32", 0)
     scaling_ptr = _get_buffer(scaling_buf, "rw") if scaling_buf is not None else tir.IntImm("int32", 0)
 
     return tir.call_intrin(
@@ -2343,9 +2343,9 @@ def tdequant(dst, src, scale, offset=None):
     src_ctype = _dtype(src)
     dst_ctype = _dtype(dst)
 
-    dst_ptr    = _get_buffer(dst, "w")
-    src_ptr    = _get_buffer(src, "r")
-    scale_ptr  = _get_buffer(scale, "r")
+    dst_ptr = _get_buffer(dst, "w")
+    src_ptr = _get_buffer(src, "r")
+    scale_ptr = _get_buffer(scale, "r")
     offset_ptr = _get_buffer(offset, "r") if offset is not None else tir.IntImm("int32", 0)
 
     return tir.call_intrin(

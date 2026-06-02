@@ -7,9 +7,10 @@ without crashing. It does **not** execute on NPU hardware.
 Run with:
     pytest testing/python/language/test_tilelang_ascend_mxfp.py -v
 """
+
 import pytest  # noqa: F401
 
-import tilelang
+import tilelang  # noqa: F401
 import tilelang.language as T
 
 FP8 = "e4m3_float8"
@@ -20,6 +21,7 @@ SCALE = "uint8"
 # T.mma_mx
 # ---------------------------------------------------------------------------
 
+
 def test_mma_mx_ir_generation():
     """Calling T.mma_mx inside a prim_func should not raise."""
     M, N, K = 64, 64, 64
@@ -28,28 +30,31 @@ def test_mma_mx_ir_generation():
 
     @T.prim_func
     def main(
-        A:   T.Tensor((M, K),         FP8),
-        B:   T.Tensor((K, N),         FP8),
-        Sa:  T.Tensor((M, sa_cols),   SCALE),
-        Sb:  T.Tensor((sb_rows, N),   SCALE),
-        C:   T.Tensor((M, N),         "float32"),
+        A: T.Tensor((M, K), FP8),
+        B: T.Tensor((K, N), FP8),
+        Sa: T.Tensor((M, sa_cols), SCALE),
+        Sb: T.Tensor((sb_rows, N), SCALE),
+        C: T.Tensor((M, N), "float32"),
     ):
-        with T.Kernel(1, is_npu=True) as (cid, _):
-            with T.Scope("C"):
-                A_l0a = T.alloc_L0A((M, K), FP8)
-                B_l0b = T.alloc_L0B((K, N), FP8)
-                C_l0c = T.alloc_L0C((M, N), "float32")
-                Sa_ub = T.alloc_shared((M, sa_cols), SCALE)
-                Sb_ub = T.alloc_shared((sb_rows, N), SCALE)
-                T.mma_mx(
-                    A_l0a, B_l0b, C_l0c,
-                    Sa_ub, Sb_ub,
-                    init=True,
-                    scale_dtype=SCALE,
-                )
+        with T.Kernel(1, is_npu=True) as (cid, _), T.Scope("C"):
+            A_l0a = T.alloc_L0A((M, K), FP8)
+            B_l0b = T.alloc_L0B((K, N), FP8)
+            C_l0c = T.alloc_L0C((M, N), "float32")
+            Sa_ub = T.alloc_shared((M, sa_cols), SCALE)
+            Sb_ub = T.alloc_shared((sb_rows, N), SCALE)
+            T.mma_mx(
+                A_l0a,
+                B_l0b,
+                C_l0c,
+                Sa_ub,
+                Sb_ub,
+                init=True,
+                scale_dtype=SCALE,
+            )
 
     # Basic IR sanity: the function is a tvm.tir.PrimFunc
     from tvm.tir import PrimFunc  # local import to avoid import-time cost
+
     assert isinstance(main, PrimFunc)
 
 
@@ -88,8 +93,7 @@ def test_mma_mx_scale_dtype_validation():
     sb_buf = tir.decl_buffer((sb_rows, N), "uint8", name="sb")
 
     with pytest.raises(ValueError):
-        cz.npu_gemm_mx(a_buf, b_buf, c_buf, sa_buf, sb_buf, init=False,
-                       scale_dtype="bogus_scale_dtype")
+        cz.npu_gemm_mx(a_buf, b_buf, c_buf, sa_buf, sb_buf, init=False, scale_dtype="bogus_scale_dtype")
 
 
 def test_mma_mx_happy_path_ir():
@@ -124,6 +128,7 @@ def test_mma_mx_happy_path_ir():
 # which would trigger the ScriptCompleter and fail on opaque access_ptr
 # calls.)
 # ---------------------------------------------------------------------------
+
 
 def test_tile_tquant_mxfp8_call():
     """tquant_mxfp8 on plain Buffers returns a tir.Call intrinsic."""

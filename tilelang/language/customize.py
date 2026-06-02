@@ -153,19 +153,19 @@ def npu_gemm(A, B, C, init=False):
     assert len(B_shape) >= 2, "current only support B as a 2D or higher-order tensor"
     if len(C_shape) > 2:
         for i in range(len(C_shape) - 2):
-            assert C_shape[i] == 1, (
-                "current only support C as a 2D or higher-order tensor with the last two dimensions being the matrix dimensions"
-            )
+            assert (
+                C_shape[i] == 1
+            ), "current only support C as a 2D or higher-order tensor with the last two dimensions being the matrix dimensions"
     if len(A_shape) > 2:
         for i in range(len(A_shape) - 2):
-            assert A_shape[i] == 1, (
-                "current only support A as a 2D or higher-order tensor with the last two dimensions being the matrix dimensions"
-            )
+            assert (
+                A_shape[i] == 1
+            ), "current only support A as a 2D or higher-order tensor with the last two dimensions being the matrix dimensions"
     if len(B_shape) > 2:
         for i in range(len(B_shape) - 2):
-            assert B_shape[i] == 1, (
-                "current only support B as a 2D or higher-order tensor with the last two dimensions being the matrix dimensions"
-            )
+            assert (
+                B_shape[i] == 1
+            ), "current only support B as a 2D or higher-order tensor with the last two dimensions being the matrix dimensions"
 
     M, N = C_shape[-2], C_shape[-1]
     K = A_shape[-1]
@@ -201,8 +201,7 @@ def npu_gemm(A, B, C, init=False):
     return tir.call_intrin("handle", tir.op.Op.get("tl.ascend_mma"), f"mma<{_dtype(A)}, {_dtype(C)}, {M}, {N}>", Aptr, Bptr, Cptr, init, K)
 
 
-def npu_gemm_mx(A, B, C, scale_A, scale_B, init=False,
-                scale_dtype: str = "uint8"):
+def npu_gemm_mx(A, B, C, scale_A, scale_B, init=False, scale_dtype: str = "uint8"):
     """NPU MXFP GEMM intrinsic that wraps pto::TMATMUL_MX.
 
     Args:
@@ -250,25 +249,21 @@ def npu_gemm_mx(A, B, C, scale_A, scale_B, init=False,
 
     M = C_shape[-2]
     N = C_shape[-1]
-    K = A_shape[-1]     # L0A: (M, K)
-    K_B = B_shape[-2]   # L0B: (K, N)
+    K = A_shape[-1]  # L0A: (M, K)
+    K_B = B_shape[-2]  # L0B: (K, N)
     assert K == K_B, f"MXFP GEMM K shape mismatch: K_A={K}, K_B={K_B}"
     kMXScaleFactor = 32
     if isinstance(K, tir.IntImm):
-        assert K.value % 64 == 0, (
-            f"MXFP GEMM requires K to be a multiple of 64, got K={K.value}"
-        )
+        assert K.value % 64 == 0, f"MXFP GEMM requires K to be a multiple of 64, got K={K.value}"
         expected_sa_cols = K.value // kMXScaleFactor
         expected_sb_rows = K.value // kMXScaleFactor
         if isinstance(Sa_shape[-1], tir.IntImm):
             assert Sa_shape[-1].value == expected_sa_cols, (
-                f"scale_A column mismatch: expected {expected_sa_cols} (K/{kMXScaleFactor}), "
-                f"got {Sa_shape[-1].value}"
+                f"scale_A column mismatch: expected {expected_sa_cols} (K/{kMXScaleFactor}), " f"got {Sa_shape[-1].value}"
             )
         if isinstance(Sb_shape[-2], tir.IntImm):
             assert Sb_shape[-2].value == expected_sb_rows, (
-                f"scale_B row mismatch: expected {expected_sb_rows} (K/{kMXScaleFactor}), "
-                f"got {Sb_shape[-2].value}"
+                f"scale_B row mismatch: expected {expected_sb_rows} (K/{kMXScaleFactor}), " f"got {Sb_shape[-2].value}"
             )
 
     def retrieve_ptr(object, access_type="r"):
@@ -287,39 +282,34 @@ def npu_gemm_mx(A, B, C, scale_A, scale_B, init=False,
                 offset += indices[i] * strides[i]
             extent = [x.extent for x in object.region]
             size_extent = math.prod(extent)
-            return buffer.access_ptr(
-                access_mask=access_type, offset=offset, extent=size_extent
-            )
+            return buffer.access_ptr(access_mask=access_type, offset=offset, extent=size_extent)
         raise ValueError(f"Unsupported argument type: {type(object)} for buffer {object}")
 
-    Aptr  = retrieve_ptr(A, "r")
-    Bptr  = retrieve_ptr(B, "r")
-    Cptr  = retrieve_ptr(C, "w" if init is True else "rw")
+    Aptr = retrieve_ptr(A, "r")
+    Bptr = retrieve_ptr(B, "r")
+    Cptr = retrieve_ptr(C, "w" if init is True else "rw")
     SaPtr = retrieve_ptr(scale_A, "r")
     SbPtr = retrieve_ptr(scale_B, "r")
 
     # Map scale_dtype to the C++ type name used in the template string.
     scale_type_map = {
-        "uint8": "uint8_t",           # storage type; pto-isa treats as float8_e8m0_t
+        "uint8": "uint8_t",  # storage type; pto-isa treats as float8_e8m0_t
         "float8_e8m0": "float8_e8m0_t",
     }
     if scale_dtype not in scale_type_map:
-        raise ValueError(
-            f"Unsupported scale_dtype: {scale_dtype}. "
-            f"Expected one of {list(scale_type_map.keys())}"
-        )
+        raise ValueError(f"Unsupported scale_dtype: {scale_dtype}. " f"Expected one of {list(scale_type_map.keys())}")
     scale_ctype = scale_type_map[scale_dtype]
 
-    template = (
-        f"mma_mxfp<{_dtype(A)}, {_dtype(C)}, {scale_ctype}, "
-        f"{M}, {N}, {K}>"
-    )
+    template = f"mma_mxfp<{_dtype(A)}, {_dtype(C)}, {scale_ctype}, " f"{M}, {N}, {K}>"
     return tir.call_intrin(
         "handle",
         tir.op.Op.get("tl.ascend_mma_mx"),
         template,
-        Aptr, Bptr, Cptr,
-        SaPtr, SbPtr,
+        Aptr,
+        Bptr,
+        Cptr,
+        SaPtr,
+        SbPtr,
         init,
     )
 
