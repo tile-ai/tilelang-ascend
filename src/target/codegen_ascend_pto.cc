@@ -1063,7 +1063,6 @@ void CodeGenTileLangAscendPto::GMCopyCall(const CallNode *call,
   ICHECK(kIsGmToLocalOp.count(op_name))
       << "Unsupported GM copy op: " << op_name;
   bool is_load = kIsGmToLocalOp.at(op_name);
-  bool is_atomic_add = op_name.find("atomic_add") != std::string::npos;
 
   BufferInfo src_info = GetBufferInfo(call->args[1]);
   BufferInfo dst_info = GetBufferInfo(call->args[2]);
@@ -1083,11 +1082,9 @@ void CodeGenTileLangAscendPto::GMCopyCall(const CallNode *call,
   auto [is_dynamic, stride_tmpl, stride_param] =
       FormatStrides(this, gm_info.shape, strides);
 
-  // atomic_add always uses dynamic version, others only when stride is dynamic
-  bool need_dynamic = is_dynamic || is_atomic_add;
-  if (need_dynamic) {
-    op_name += "_dynamic";
-  }
+  // Always use dynamic version for unified codegen
+  (void)is_dynamic; // stride dynamic-ness no longer affects dispatch
+  op_name += "_dynamic";
   auto gm_offset_string = PrintExpr(gm_info.offset);
   this->PrintIndent();
   stream << kAscendPtoScope << op_name << "<" << getType(gm_info.dtype) << ", "
@@ -1109,10 +1106,8 @@ void CodeGenTileLangAscendPto::GMCopyCall(const CallNode *call,
   // gm addr
   stream << copy_base_addr_map_.at(gm_info.id) << " + " << gm_offset_string;
 
-  if (need_dynamic) {
-    stream << ", pto::Shape<" << shape_tmpl << ">()" << ", pto::Stride<"
-           << stride_tmpl << ">(" << stride_param << ")";
-  }
+  stream << ", pto::Shape<" << shape_tmpl << ">()" << ", pto::Stride<"
+         << stride_tmpl << ">(" << stride_param << ")";
 
   stream << ", " << PrintExpr(buffer_address_map_.at(local_info.var)) << ", "
          << PrintExpr(local_info.offset) << ", " << PrintExpr(call->args[4])
