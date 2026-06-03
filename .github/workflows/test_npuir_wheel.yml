@@ -115,6 +115,7 @@ jobs:
           examples/deepseek_v4/example_sparse_attn_bwd_kernel.py
           examples/norm/layer_norm.py
           examples/norm/rms_norm.py
+          examples/norm/group_norm.py
         )
 
         for script in "${EXAMPLE_FILES[@]}"; do
