@@ -1,5 +1,6 @@
 import tilelang
 from tilelang import language as T
+from tilelang.intrinsics import make_zn_layout, make_nz_layout
 import torch
 import math
 
@@ -67,6 +68,13 @@ def mtgr_sparse_attn_kernel(
             v_l1 = T.alloc_L1([block_N, dim], dtype)
             acc_s_l1 = T.alloc_L1([block_M, block_N], dtype)
 
+            T.annotate_layout({
+                q_l1: make_zn_layout(q_l1),
+                k_l1: make_nz_layout(k_l1),
+                v_l1: make_zn_layout(v_l1),
+                acc_s_l1: make_zn_layout(acc_s_l1),
+            })
+
             acc_s_l0c = T.alloc_L0C([block_M, block_N], accum_dtype)
             acc_o_l0c = T.alloc_L0C([block_M, dim], accum_dtype)
 
@@ -79,14 +87,11 @@ def mtgr_sparse_attn_kernel(
             r_factor_broadcast = T.alloc_ub([v_block, dim], accum_dtype)
 
             acc_s_ub = T.alloc_ub([v_block, block_N], accum_dtype)
-            acc_s_ub_ = T.alloc_ub([v_block, block_N], accum_dtype)
             mask_ub = T.alloc_ub([v_block, block_N], accum_dtype)
             sumexp_i_ub = T.alloc_ub([v_block], accum_dtype)
             acc_s_half = T.alloc_ub([v_block, block_N], dtype)
             acc_o_ub = T.alloc_ub([v_block, dim], accum_dtype)
             acc_o_half = T.alloc_ub([v_block, dim], dtype)
-
-            sumexp_broadcast = T.alloc_ub([v_block, dim], accum_dtype)
 
             b_i = T.alloc_var("int32", init=0)
             seg_id = T.alloc_var("int32", init=0)
@@ -261,16 +266,16 @@ def mtgr_sparse_attn_kernel(
                                     vid * v_block : vid * v_block + v_block,
                                     :,
                                 ],
-                                acc_s_ub_,
+                                acc_s_ub,
                             )
                             T.set_flag("mte2", "v", 1)
                             T.wait_flag("mte2", "v", 1)
 
-                            T.tile.add(acc_s_ub_, acc_s_ub_, mask_ub)
+                            T.tile.add(acc_s_ub, acc_s_ub, mask_ub)
 
                             T.copy(neg_sm_cur, neg_sm_prv)
 
-                            T.reduce_max(acc_s_ub_, neg_sm_cur, dim=-1)
+                            T.reduce_max(acc_s_ub, neg_sm_cur, dim=-1)
 
                             T.tile.mul(neg_sm_cur, neg_sm_cur, -sm_scale)
 
@@ -280,7 +285,7 @@ def mtgr_sparse_attn_kernel(
                             T.tile.exp(r_factor, r_factor)
 
                             T.tile.broadcast(neg_sm_broadcast, neg_sm_cur, axis=1)
-                            T.tile.axpy(neg_sm_broadcast, acc_s_ub_, sm_scale)
+                            T.tile.axpy(neg_sm_broadcast, acc_s_ub, sm_scale)
 
                             T.tile.exp(acc_s_ub, neg_sm_broadcast)
 
@@ -337,9 +342,9 @@ def mtgr_sparse_attn_kernel(
 
                     T.tile.max(sumexp, sumexp, 1.0)
 
-                    T.tile.broadcast(sumexp_broadcast, sumexp, axis=1)
+                    T.tile.broadcast(r_factor_broadcast, sumexp, axis=1)
 
-                    T.tile.div(acc_o, acc_o, sumexp_broadcast)
+                    T.tile.div(acc_o, acc_o, r_factor_broadcast)
 
                     T.copy(acc_o, acc_o_half)
                     T.set_flag("v", "mte3", 3)
