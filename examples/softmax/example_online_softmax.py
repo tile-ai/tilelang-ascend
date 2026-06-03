@@ -127,4 +127,4 @@ for M, N, block_M, block_N, dtype in test_configs:
     torch.testing.assert_close(b, ref_b, rtol=rtol, atol=atol)
     print("Test pass!")
 
-print("\nAll tests passed!")
+print("\nKernel Output Match!")
