@@ -131,6 +131,6 @@ for M, N, block_M, block_N, dtype in test_configs:
     b = func(a)
     ref_b = torch.layer_norm(a, normalized_shape=[N])
     torch.testing.assert_close(b.cpu(), ref_b.cpu(), rtol=1e-2, atol=1e-2)
-    print("Test passed!")
+    print("Test pass!")
 
 print("Kernel Output Match!")

@@ -125,6 +125,6 @@ for M, N, block_M, block_N, dtype in test_configs:
     rtol = 1e-2 if dtype in ["float16", "bfloat16"] else 1e-4
     atol = 1e-3 if dtype in ["float16", "bfloat16"] else 1e-4
     torch.testing.assert_close(b, ref_b, rtol=rtol, atol=atol)
-    print("Test passed!")
+    print("Test pass!")
 
 print("\nAll tests passed!")
