@@ -99,7 +99,9 @@ def cross_entropy(
                     cast_or_copy(x_32, x_ub, CAST_MODE_LOW2HIGH, block_N_2 * block_C)
 
                     for n_idx in T.serial(block_N_2):
-                        T.tile.sub(x_32[n_idx, :], x_32[n_idx, :], prev_max[n_idx] + prev_sum[n_idx])  # x_c - (x_max + log(sum e^{x_c - x_max}))
+                        T.tile.sub(
+                            x_32[n_idx, :], x_32[n_idx, :], prev_max[n_idx] + prev_sum[n_idx]
+                        )  # x_c - (x_max + log(sum e^{x_c - x_max}))
 
                     cast_or_copy(x_ub, x_32, CAST_MODE_HIGH2LOW, block_N_2 * block_C)
                     T.copy(x_ub, log_prob[bn * block_N_2, bc * block_C])
