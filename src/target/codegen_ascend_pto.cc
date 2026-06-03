@@ -1488,6 +1488,10 @@ static std::string SplitAxisToEnumStr(int split_axis) {
   }
 }
 
+static std::string WorkspaceHandleSuffix(const std::string &name) {
+  return name.empty() ? "nullptr" : name + "_handle";
+}
+
 void CodeGenTileLangAscendPto::CopyPipeCodegen(const CallNode *op,
                                                 bool is_producer) {
   std::string op_name = Downcast<StringImm>(op->args[0])->value;
@@ -1527,11 +1531,11 @@ void CodeGenTileLangAscendPto::CopyPipeCodegen(const CallNode *op,
   }
 
   this->PrintIndent();
-  bool has_tmp = is_producer && op->args.size() > 12 && op->args[12].as<CallNode>();
+  bool has_tmp = is_producer && op->args.size() > 13 && op->args[13].as<CallNode>();
   if (has_tmp) {
-    int tmp_M_val = Downcast<IntImm>(op->args[13])->value;
-    int tmp_N_val = Downcast<IntImm>(op->args[14])->value;
-    BufferInfo tmp_info = GetBufferInfo(op->args[12]);
+    int tmp_M_val = Downcast<IntImm>(op->args[14])->value;
+    int tmp_N_val = Downcast<IntImm>(op->args[15])->value;
+    BufferInfo tmp_info = GetBufferInfo(op->args[13]);
     ShapeInfo tmp_shape_info = GetSliceInfo(tmp_info.access_ptr);
     std::string tmp_name = tmp_shape_info.ub_name;
     if (tmp_shape_info.is_slice) {
@@ -1622,6 +1626,7 @@ void CodeGenTileLangAscendPto::PreScanPipes(const PrimFunc &f) {
               info.pipe_type_name = GetPipeTypeName(pipe_id, dir_type);
 
               info.dir_full = "pto::Direction::DIR_" + DirTypeToStr(dir_type);
+              info.workspace_name = Downcast<StringImm>(call->args[12])->value;
 
               // Get the destination buffer address for the pipe
               BufferInfo dst_info = GetBufferInfo(call->args[2]);
@@ -1646,23 +1651,6 @@ void CodeGenTileLangAscendPto::PreScanPipes(const PrimFunc &f) {
     return true;
   });
 
-  // For A2/A3 platform, assign GM workspace buffer addresses to pipes.
-  // Workspace buffers are added as PrimFunc params by AscendWorkspaceReduction
-  // with names like "workspace_0_handle".
-  if (this->platform_ != "A5") {
-    std::vector<std::string> gm_workspace_names;
-    for (const auto &param : f->params) {
-      if (std::string(param->name_hint).find("workspace_") == 0) {
-        gm_workspace_names.push_back(GetVarId(param));
-      }
-    }
-    size_t ws_idx = 0;
-    for (auto &[flag_id, info] : pipe_registry_) {
-      if (ws_idx < gm_workspace_names.size()) {
-        info.gm_fifo_addr = gm_workspace_names[ws_idx++];
-      }
-    }
-  }
 }
 
 void CodeGenTileLangAscendPto::CopyCVExperimentCodegen(const CallNode *op) {
@@ -3712,7 +3700,6 @@ void CodeGenTileLangAscendPto::AddFunction(const GlobalVar &gvar,
   this->stream << "}\n\n";
 
   PrintHostFunc(f, func_name, stream, this->core_num_, shape_vars);
-  std::string content = stream.str();
 }
 
 void CodeGenTileLangAscendPto::PrintPipeDeclarations() {
@@ -3724,7 +3711,7 @@ void CodeGenTileLangAscendPto::PrintPipeDeclarations() {
                    << info.slot_size << ", " << info.slot_num << ">;\n";
       this->PrintIndent();
       this->stream << info.pipe_type_name << " " << info.pipe_id
-                   << "(" << (info.gm_fifo_addr.empty() ? "nullptr" : info.gm_fifo_addr)
+                   << "(" << WorkspaceHandleSuffix(info.workspace_name)
                    << ", " << info.c2v_buf << ", " << info.v2c_buf
                    << ");\n";
     }

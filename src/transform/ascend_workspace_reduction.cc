@@ -71,6 +71,7 @@ struct CopyGlobalContext {
     int dst_M_val;
     int dst_N_val;
     int split_axis = 1; // 0=TILE_NO_SPLIT, 1=TILE_UP_DOWN, 2=TILE_LEFT_RIGHT
+    std::string workspace_name;
     bool has_tmp = false;
     int tmp_M_val = 0;
     int tmp_N_val = 0;
@@ -546,6 +547,9 @@ public:
                        + (info.dir_type == 2 ? "V2C" : "C2V");
         info.split_axis = ComputeSplitAxis(info.src_M_val, info.src_N_val,
                                            info.dst_M_val, info.dst_N_val);
+        info.workspace_name = needs_gm_workspace_
+            ? context_.src_to_workspace_map_.at(src_buffer_name)
+            : "";
         context_.pipe_info_map_[dst_buffer_name] = info;
       }
     }
@@ -724,7 +728,8 @@ private:
         StringImm(pipe.dtype_str),
         Integer(pipe.src_M_val),
         Integer(pipe.src_N_val),
-        Integer(pipe.split_axis)
+        Integer(pipe.split_axis),
+        StringImm(pipe.workspace_name)
     };
     if (is_ub_to_l1 && pipe.has_tmp && orig_args.size() > 7) {
       PrimExpr tmp_expr = orig_args[7];
@@ -768,7 +773,8 @@ private:
         StringImm(pipe.dtype_str),
         Integer(pipe.dst_M_val),
         Integer(pipe.dst_N_val),
-        Integer(pipe.split_axis)
+        Integer(pipe.split_axis),
+        StringImm(pipe.workspace_name)
     };
     Call call(DataType::Handle(), tir::builtin::call_extern(), args);
     return Evaluate(call);

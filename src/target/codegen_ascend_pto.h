@@ -116,7 +116,7 @@ public:
     std::string dir_full;
     std::string c2v_buf;
     std::string v2c_buf;
-    std::string gm_fifo_addr;  // GM workspace address for A2 (empty for A5)
+    std::string workspace_name;  // e.g. "workspace_0" for A2 PTO, empty for A5
   };
 
 private:
