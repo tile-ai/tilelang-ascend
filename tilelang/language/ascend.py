@@ -455,7 +455,7 @@ def _srcCode(source_code: str, *args):
 
     Args:
         source_code (str): Raw C++/AscendC source code to inject.
-        *args: Additional arguments that serves as placeholders.
+        *args: Additional arguments that serve as placeholders.
 
     Returns:
         tvm.tir.Call: A TIR intrinsic call to ``tl.ascend_src_code``.

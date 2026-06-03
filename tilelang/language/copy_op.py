@@ -265,14 +265,14 @@ def npu_copy_v2(
     """Copy data between memory regions.
 
     Args:
-        src (Union[tir.Buffer, tir.BufferLoad, tir.BufferRegion]): Source memory region
-        dst (Union[tir.Buffer, tir.BufferLoad]): Destination memory region
+        src (tir.Buffer | tir.BufferLoad | tir.BufferRegion): Source memory region
+        dst (tir.Buffer | tir.BufferLoad): Destination memory region
         enable_relu (bool): Whether to enable ReLU. Defaults to False.
-        transpose (Optional[bool]): Whether to transpose for copy_l1_to_l0. Defaults to False.
-        pad_value (Optional[Union[float, int, tir.PrimExpr]]): Value to fill in UB unused area.
+        transpose (bool | None): Whether to transpose for copy_l1_to_l0. Defaults to False.
+        pad_value (float | int | tir.PrimExpr | None): Value to fill in UB unused area.
             Supports float, int, tir.FloatImm, tir.IntImm, tir.PrimExpr (e.g., -T.infinity(dtype)).
             Defaults to 0.
-        tmp (Optional[Union[tir.Buffer, tir.BufferLoad]]): Temporary buffer for UB->L1 copy
+        tmp (tir.Buffer | tir.BufferLoad | None): Temporary buffer for UB->L1 copy
             on A5 platform. Used for ND->Nz format conversion. Defaults to None.
             Only required when copying from UB to L1 on A5.
 

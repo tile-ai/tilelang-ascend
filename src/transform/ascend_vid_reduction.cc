@@ -893,10 +893,11 @@ private:
       return IRMutatorWithAnalyzer::VisitExpr_(op);
     }
 
-    // Lambda: divide the extent at target_idx by threads_cnt_ when it is not 1.
-    // All other args are just visited.  Pass target_idx = static_cast<size_t>(-1)
-    // to skip extent reduction entirely.  An optional arg0_override replaces
-    // args[0] (typically a modified BufferLoad) before visiting.
+    // Divide the extent at target_idx by threads_cnt_ when it is not 1.
+    // All other args are just visited.  
+    //   target_idx = static_cast<size_t>(-1) skip extent reduction entirely
+    //   arg0_override (optional) replaces args[0] (typically a modified 
+    //     BufferLoad) before visiting.
     auto reduce_region_extents = [&](const Call &region, size_t target_idx,
                                      PrimExpr arg0_override = PrimExpr()) -> Call {
       Array<PrimExpr> args = region->args;
@@ -919,6 +920,8 @@ private:
     // Record GM buffer offset info for later use in BlockNode reads/writes
     gm_buffer_offset_info_[gm_buf] = ub_buf;
 
+    // If it's not a UB buffer, it could be L1/L0C.
+    // If it's not a GM buffer, no action is needed.
     Call target_region = src_is_ub ? dst_region : src_region;
     size_t target_idx = (gm_buf.scope() == "global")
                             ? (target_region->args.size() - ub_dims)
