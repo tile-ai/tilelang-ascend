@@ -196,7 +196,7 @@ copy_gm_to_ub(LocalTensor<T> dstTensor, GlobalTensor<T> srcTensor,
 
   bool isPad = true;
   uint32_t rightPadding = 1;
-  if (maskShapeN == dstN) {
+  if (maskShapeN == dstN || (maskShapeN * sizeof(T)) % 32 == 0) {
     isPad = false;
     rightPadding = 0;
   }
