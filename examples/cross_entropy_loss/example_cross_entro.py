@@ -70,8 +70,6 @@ def cross_entropy(
             l_n_32 = T.alloc_ub([block_N_2], CAL_DTYPE)
             l_n = T.alloc_ub([block_N_2], x_dtype)
 
-            offset_1d = T.alloc_ub([block_N_2], CAL_DTYPE)
-
             with T.Scope("V"):
                 T.tile.fill(prev_max, -T.infinity(CAL_DTYPE))
                 T.tile.fill(prev_sum, 0.0)
@@ -95,15 +93,13 @@ def cross_entropy(
 
                 T.copy(y[bn * block_N_2], y_ub)
                 T.tile.ln(prev_sum, prev_sum)  # log(sum e^{x_c - x_max})
-                # Precompute offset = max + log(sum) into buffer
-                T.tile.add(offset_1d, prev_max, prev_sum)
                 # log(e^{x_c - x_max} / sum e^{x_c - x_max}) = x_c - x_max - log(sum e^{x_c - x_max})
                 for bc in T.serial(c_num):
                     T.copy(x[bn * block_N_2, bc * block_C], x_ub)
                     cast_or_copy(x_32, x_ub, CAST_MODE_LOW2HIGH, block_N_2 * block_C)
 
                     for n_idx in T.serial(block_N_2):
-                        T.tile.sub(x_32[n_idx, :], x_32[n_idx, :], offset_1d[n_idx])  # x_c - (x_max + log(sum e^{x_c - x_max}))
+                        T.tile.sub(x_32[n_idx, :], x_32[n_idx, :], prev_max[n_idx] + prev_sum[n_idx])  # x_c - (x_max + log(sum e^{x_c - x_max}))
 
                     cast_or_copy(x_ub, x_32, CAST_MODE_HIGH2LOW, block_N_2 * block_C)
                     T.copy(x_ub, log_prob[bn * block_N_2, bc * block_C])
@@ -152,7 +148,7 @@ def check_case(N: int, C: int, block_N: int = 128, block_C: int = 128, x_dtype="
 
     torch.testing.assert_close(loss, ref_loss, rtol=1e-2, atol=1e-2)
     torch.testing.assert_close(log_prob, ref_log_prob, rtol=1e-2, atol=1e-2)
-    print(f"Test passed for N={N}, C={C}, block_N={block_N}, block_C={block_C}, x_dtype={x_dtype}, y_dtype={y_dtype}!")
+    print(f"Test N={N}, C={C}, block_N={block_N}, block_C={block_C}, x_dtype={x_dtype}, y_dtype={y_dtype} passed!")
 
 
 def main(custom_args=None):

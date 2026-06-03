@@ -2053,7 +2053,19 @@ void CodeGenTileLangAscendPto::BinaryVecOpsCodegen(const CallNode *op,
   auto buffer = op->args[2].as<CallNode>();
 
   if (!buffer) {
-    std::string scalar = apply_scalar_for_half(index);
+    std::string scalar_expr = index;
+    if (IsComplexExpression(op->args[op->args.size() - 2])) {
+      std::string temp_name = GetTempVarName("complex_scalar");
+      this->PrintIndent();
+      this->stream << "set_flag(PIPE_V, PIPE_S, EVENT_ID0);\n";
+      this->PrintIndent();
+      this->stream << "wait_flag(PIPE_V, PIPE_S, EVENT_ID0);\n";
+      this->PrintIndent();
+      this->stream << "auto " << temp_name << " = " << index << ";\n";
+      scalar_expr = temp_name;
+    }
+
+    std::string scalar = apply_scalar_for_half(scalar_expr);
 
     auto src_call = op->args[1].as<CallNode>();
     auto dst_call = op->args[0].as<CallNode>();
