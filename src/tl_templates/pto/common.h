@@ -1,20 +1,3 @@
-// Forward declarations of TCVT_IMPL so the pto::TCVT template body
-// compiles even when TCVT full headers are not included.  The actual
-// implementations are in npu/a5/TCvt.hpp (included via pto_instr_impl.hpp
-// when __DAV_VEC__ is defined).
-namespace pto {
-enum class RoundMode : uint8_t;
-enum class SaturationMode : uint8_t;
-template <typename D, typename S>
-void TCVT_IMPL(D &dst, S &src, RoundMode mode);
-template <typename D, typename S>
-void TCVT_IMPL(D &dst, S &src, RoundMode mode, SaturationMode sat);
-template <typename D, typename S, typename T>
-void TCVT_IMPL(D &dst, S &src, T &tmp, RoundMode mode);
-template <typename D, typename S, typename T>
-void TCVT_IMPL(D &dst, S &src, T &tmp, RoundMode mode, SaturationMode sat);
-} // namespace pto
-
 #include <pto/pto-inst.hpp>
 #include <type_traits>
 
