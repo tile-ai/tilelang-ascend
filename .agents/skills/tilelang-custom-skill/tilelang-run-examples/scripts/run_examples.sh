@@ -12,7 +12,7 @@
 #   --skip-pytest[=true|false]    Skip pytest phase (default: true)
 #   --dirs <dirs...>       Only run specified directories (incremental mode)
 #   --max-jobs N           Max parallel jobs (default: 8)
-#   --project-root <path>  Project root directory (auto-detected if omitted)
+#   --project-root <path>  Project root directory (defaults to cwd if omitted)
 # ================= ========== =================
 
 BACKEND="auto"
@@ -87,7 +87,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [ -n "$PROJECT_ROOT_ARG" ]; then
     PROJECT_ROOT="$(cd "$PROJECT_ROOT_ARG" && pwd)"
 else
-    PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../../../.." && pwd)"
+    PROJECT_ROOT="$(pwd)"
 fi
 
 if [ ! -f "$PROJECT_ROOT/set_env.sh" ]; then
