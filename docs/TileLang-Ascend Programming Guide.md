@@ -191,6 +191,89 @@ TileLang还支持JIT（Just-in-time，即时编译）。JIT是一种动态编译
 
 在TileLang kernel开发中，通过 **@jit** 装饰器来触发调用时的即时编译。
 
+### 2.4 A5 Camodel 仿真运行
+
+如果需要在 **无真实 A5 NPU 硬件** 的环境下开发和验证 A5 kernel，可以使用 CANN 提供的 **camodel（Cycle-Accurate Model，节拍精确模型）** 进行软件仿真。只要安装了包含 A5 simulator 镜像（`Ascend950PR_9599`）的 CANN 包，即可在任意 x86/Linux 机器上模拟 A5 平台运行 TileLang kernel，完成正确性验证和指令级分析。
+
+#### 2.4.1 为什么需要 camodel 仿真
+
+- **无 NPU 硬件时开发和验证**：在只有 CPU 的服务器或开发机上运行和调试 kernel
+- **指令级 trace 分析**：camodel 可以输出每个 AIC core 的指令日志（`core*.instr_log.dump`）、UB 读写 dump（`core*.ub.rd_log.dump`/`core*.ub.wr_log.dump`），用于分析 kernel 执行细节
+- **快速迭代**：不需要排队等待 NPU 资源，本地即可验证 kernel 逻辑正确性
+
+#### 2.4.2 原理
+
+原始 kernel 运行流程：`DSL 定义 → JIT 编译 → torch.npu 分配 NPU 内存 → 真实 NPU 执行`
+
+camodel 仿真流程：`DSL 定义 → 链接 libruntime_camodel.so 编译 → rtMalloc 分配模拟内存 → CPU 模拟 NPU 执行`
+
+核心区别在于编译时**用 `libruntime_camodel.so` 替代 `libruntime.so`**——前者是一个用软件模拟 NPU 行为的库，对外接口与真实运行时库完全一致。
+
+#### 2.4.3 一条命令运行内置示例
+
+TileLang-Ascend 提供了开箱即用的仿真运行脚本，位于 `.agents/skills/tilelang-a5-sim-convert/` 目录下。运行前需要确保基础环境已就绪（CANN 已安装、`bisheng` 编译器可用、`tilelang` 可 import）。脚本会自动完成 camodel 相关的环境设置（库路径、设备初始化、`os.execve` 重启等），无需手动配置 `TL_RUN_MODE`、`LD_LIBRARY_PATH` 等仿真专用变量：
+
+```bash
+python .agents/skills/tilelang-a5-sim-convert/scripts/run_a5_sim_template.py
+```
+
+成功输出：
+```
+KERNEL OUTPUT MATCH!
+Done!
+```
+
+脚本会自动完成：查找 CANN 安装路径 → 设置 camodel 库路径 → 加载软件模拟 NPU → 编译 kernel → 分配模拟内存 → 启动 kernel → 验证结果。
+
+可通过 `--log-dir` 指定 camodel 日志输出目录：
+
+```bash
+python .agents/skills/tilelang-a5-sim-convert/scripts/run_a5_sim_template.py --log-dir ./my_sim_logs
+```
+
+#### 2.4.4 将已有脚本转换为仿真版本
+
+使用 `/tilelang-a5-sim-convert` skill（位于 `.agents/skills/tilelang-a5-sim-convert/`），输入一个 tilelang DSL 脚本路径，自动生成对应的 `*_sim.py` 仿真脚本（不覆盖原始文件）：
+
+```
+/tilelang-a5-sim-convert examples/gemm/example_gemm.py
+```
+
+转换的核心改动（人工转换时也遵循相同规则）：
+
+| 原始脚本 | 仿真脚本 |
+|---------|---------|
+| `import torch` | 删除（用 `numpy` 替代） |
+| `torch.randn(...).half().npu()` | `np.zeros(...)` + `rtMalloc` + `rtMemcpy` |
+| `@tilelang.jit(out_idx=[-1])` | `def make_kernel(): return main`（DSL 逻辑不变） |
+| `T.Tensor((M, K), dtype)` | `T.Tensor((1024, 256), "float16")`（替换为具体数值） |
+| `T.alloc_L0C(..., "float16")` | `T.alloc_L0C(..., "float")`（A5 pto-isa 要求 float32 累积器） |
+| `c = func(a, b)` | `kl.call(d_A, d_B, d_C, stream)`（RT API 调用） |
+| `torch.testing.assert_close` | `np.abs(got - ref).max()` |
+
+详细模板和逐行说明见 `.agents/skills/tilelang-a5-sim-convert/`。
+
+#### 2.4.5 环境变量说明
+
+仿真运行依赖以下环境变量（由 `run_a5_sim.py` 自动设置，手动运行时需自行配置）：
+
+| 变量 | 值 | 作用 |
+|------|------|------|
+| `TL_RUN_MODE` | `sim` | 触发 camodel 编译路径（替换 `-lruntime` → `-lruntime_camodel`） |
+| `TL_PLATFORM` | `A5` | 指定目标平台（仅在 `TL_RUN_MODE=sim` 时生效，不影响真实 NPU 硬件检测） |
+| `LD_LIBRARY_PATH` | 需在最前面包含 `<CANN>/tools/simulator/Ascend950PR_9599/lib` | 让动态链接器优先找到 camodel 库 |
+| `TORCH_DEVICE_BACKEND_AUTOLOAD` | `0` | 阻止 `torch_npu` 自动初始化（camodel 环境下会失败） |
+| `CAMODEL_LOG_PATH` | 任意目录路径 | camodel 日志输出目录（包含 instruction trace、UB dump 等） |
+
+#### 2.4.6 局限性
+
+- 仅支持 PTO 后端（`target="pto"`）的 A5 平台仿真
+- camodel 模拟器的执行速度远慢于真实 NPU（约 1000 倍以上），仅适用于功能验证，不适用于性能测试
+- 不支持 `torch.npu` 接口，数据管理需通过 `rtMalloc`/`rtMemcpy` 等 RT API
+- 需要 CANN 9.0.0 及以上版本（包含 `Ascend950PR_9599` simulator 镜像）
+
+---
+
 ## 3. TileLang语法基础
 
 本节介绍TileLang（tile-lang）领域特定语言（DSL）的核心语法基础，你将使用这种语言编写高性能的内核。重点介绍如何定义内核、表达迭代操作、在内存域之间移动数据，以及如何通过即时编译（JIT）运行内核。
@@ -2327,3 +2410,4 @@ g.replay()
 | 2026.1.22 | Initial release | Chaoyang Ji |
 | 2026.2.03 | MsProf update   | Yuhan Zhang |
 | 2026.3.12 | aclgraph        |   Di He     |
+| 2026.6.04 | A5 Camodel      | Jiajun Wu   |
