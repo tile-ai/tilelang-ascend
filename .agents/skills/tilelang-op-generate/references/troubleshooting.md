@@ -282,6 +282,17 @@ python examples/{op}/example_{op}.py  # 默认参数测试
 
 ### 1. 打印中间值
 
+> **前提条件**（PTO 后端）：`T.printf` 和 `T.dump_tensor` 需要设置
+> 环境变量 `TL_PTO_DEBUG=1` 后才会生效，否则编译器会将其优化掉。
+> 该变量必须在 kernel 编译**之前**设置：
+> ```python
+> import os
+> os.environ["TL_PTO_DEBUG"] = "1"  # 必须在 @tilelang.jit 之前
+> tilelang.cache.clear_cache()  # 清除缓存以确保重新编译
+> ```
+> **注意**：仅用于调试，开启后会影响算子性能（每条打印/断言引入额外硬件交互开销），
+> 每个核的 dump 缓冲区上限为 1 MB。调试完成后请关闭。
+
 在kernel中添加：
 ```python
 T.printf("value = %f\n", buffer[0])
@@ -315,6 +326,32 @@ test_configs = [
     (256, 256, 64, 64), # 中
 ]
 ```
+
+### 5. PTO 后端调试输出无效
+
+**现象**: kernel 中使用了 `T.printf` 或 `T.dump_tensor`，但运行时报错 `no member named 'printf' in namespace 'cce'`。
+
+**原因**: 未设置 `TL_PTO_DEBUG=1` 环境变量。编译器默认不会添加 `-D_DEBUG`
+和 `--cce-enable-print` 编译选项，设备端 printf/dump_tensor 功能被编译移除以获得最佳性能。
+
+**解决方案**:
+```python
+import os
+os.environ["TL_PTO_DEBUG"] = "1"  # 在 @tilelang.jit 编译之前设置
+tilelang.cache.clear_cache()  # 清除缓存以确保重新编译
+
+@tilelang.jit(out_idx=[-1])
+def my_kernel(...):
+    ...
+    T.printf("debug: value = %f\n", buf[0])
+    T.dump_tensor(buf, 0, 64)
+```
+
+**补充说明**:
+- `desc` 参数（`dump_tensor` 第 2 个参数）为用户自定义附加信息（如行号），类型为 `uint32_t`
+- `dump_size` 为要 dump 的元素数量
+- 输出示例：`DumpTensor: desc=111, addr=0, data_type=float16, position=UB, dump_size=32`
+- 详细接口说明参见 `docs/tutorials/print.md`
 
 ## 常见模式问题
 
