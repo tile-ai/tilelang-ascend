@@ -10,6 +10,7 @@ pass_configs = {
     tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
 }
 
+
 @tilelang.jit(out_idx=[2], pass_configs=pass_configs)
 def gelu_grad(M, N, block_M, block_N, dtype="float"):
     m_num = T.ceildiv(M, block_M)
@@ -23,11 +24,7 @@ def gelu_grad(M, N, block_M, block_N, dtype="float"):
     BETA = 1.595769121605730711759
 
     @T.prim_func
-    def main(
-            dy: T.Tensor((M, N), dtype),
-            x: T.Tensor((M, N), dtype),
-            grad_input: T.Tensor((M, N), dtype)
-    ):
+    def main(dy: T.Tensor((M, N), dtype), x: T.Tensor((M, N), dtype), grad_input: T.Tensor((M, N), dtype)):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
             by = cid % n_num
@@ -56,16 +53,16 @@ def gelu_grad(M, N, block_M, block_N, dtype="float"):
 
             T.tile.add(xsqr_ub, px_ub, 1.0)
 
-            T.tile.fill(x_ub, 1.0) # reuse x_ub
+            T.tile.fill(x_ub, 1.0)  # reuse x_ub
             T.tile.div(div_ub, x_ub, xsqr_ub)
 
-            T.tile.mul(x_ub, px_ub, div_ub) # reuse x_ub as resp_ub
+            T.tile.mul(x_ub, px_ub, div_ub)  # reuse x_ub as resp_ub
             T.tile.mul(x_ub, x_ub, res0_ub)
             T.tile.mul(x_ub, x_ub, div_ub)
 
             T.tile.compare(cmp_ub, x_ub, x_ub, "EQ")
 
-            T.tile.fill(px_ub, 0.0) # reuse px_ub as zero_ub
+            T.tile.fill(px_ub, 0.0)  # reuse px_ub as zero_ub
             T.tile.select(xsqr_ub, cmp_ub, x_ub, px_ub, "VSEL_CMPMASK_SPR")
 
             T.tile.add(x_ub, xsqr_ub, div_ub)
@@ -101,6 +98,6 @@ for M, N, block_M, block_N in test_configs:
     ref_grad_input = torch_npu.npu_gelu_backward(dy, x, approximate="none")
 
     torch.testing.assert_close(grad_input.cpu(), ref_grad_input.cpu(), rtol=1e-3, atol=1e-2)
-    print("Test passed!")
+    print("Test pass!")
 
 print("Kernel Output Match!")
