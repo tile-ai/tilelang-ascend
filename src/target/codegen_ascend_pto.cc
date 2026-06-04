@@ -890,7 +890,8 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op,
     SetDeqScaleCodegen(op);
   } else if (op->op.same_as(tl::ascend_mma())) {
     MmaCodegen(op);
-
+  } else if (op->op.same_as(tl::ascend_use_swizzle())) {
+    os << PrintExpr(op->args[1]);
   } else if (op->op.same_as(builtin::if_then_else())) {
     std::string result = name_supply_->FreshName("condval");
     std::string cond = PrintExpr(op->args[0]);
