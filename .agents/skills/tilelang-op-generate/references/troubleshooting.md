@@ -288,7 +288,6 @@ python examples/{op}/example_{op}.py  # 默认参数测试
 > ```python
 > import os
 > os.environ["TL_PTO_DEBUG"] = "1"  # 必须在 @tilelang.jit 之前
-> tilelang.cache.clear_cache()  # 清除缓存以确保重新编译
 > ```
 > **注意**：仅用于调试，开启后会影响算子性能（每条打印/断言引入额外硬件交互开销），
 > 每个核的 dump 缓冲区上限为 1 MB。调试完成后请关闭。
@@ -338,7 +337,6 @@ test_configs = [
 ```python
 import os
 os.environ["TL_PTO_DEBUG"] = "1"  # 在 @tilelang.jit 编译之前设置
-tilelang.cache.clear_cache()  # 清除缓存以确保重新编译
 
 @tilelang.jit(out_idx=[-1])
 def my_kernel(...):
