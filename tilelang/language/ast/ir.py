@@ -1442,6 +1442,44 @@ e5m2_float8x16 = func_gen(("E5M2Float8x16"))
 e5m2_float8x32 = func_gen(("E5M2Float8x32"))
 e5m2_float8x64 = func_gen(("E5M2Float8x64"))
 
+
+def _gen_bfloat(dtype: str):
+    """Build a bfloat16 type helper (pure-Python, no C++ FFI required).
+
+    TVM's TIR script builder registers ``Float16``, ``E4M3Float8`` etc. via the
+    C++ FFI layer but does not register an equivalent entry for ``bfloat16``.
+    TVM's runtime *does* understand the ``bfloat16`` dtype string natively, so
+    we can construct Var / FloatImm / SizeVar directly without going through the
+    missing ``script.ir_builder.tir.Bfloat16`` FFI endpoint.
+    """
+
+    def func(
+        expr: Union[
+            None,
+            PrimExpr,
+            Literal["inf", "-inf", "nan"],
+            int,
+            float,
+        ] = None,
+        *,
+        is_size_var: bool = False,
+    ) -> PrimExpr:
+        if isinstance(expr, str):
+            expr = float(expr)
+        if expr is None:
+            return SizeVar("", dtype=dtype) if is_size_var else Var("", dtype=dtype)
+        return FloatImm(dtype, expr)
+
+    return func
+
+
+bfloat16 = _gen_bfloat("bfloat16")
+bfloat16x4 = _gen_bfloat("bfloat16x4")
+bfloat16x8 = _gen_bfloat("bfloat16x8")
+bfloat16x16 = _gen_bfloat("bfloat16x16")
+bfloat16x32 = _gen_bfloat("bfloat16x32")
+bfloat16x64 = _gen_bfloat("bfloat16x64")
+
 # pylint: enable=invalid-name
 
 
@@ -1969,31 +2007,37 @@ __all__ = [
     "float16",
     "float32",
     "float64",
+    "bfloat16",
     "e4m3_float8x4",
     "e5m2_float8x4",
     "float16x4",
     "float32x4",
     "float64x4",
+    "bfloat16x4",
     "e4m3_float8x8",
     "e5m2_float8x8",
     "float16x8",
     "float32x8",
     "float64x8",
+    "bfloat16x8",
     "e4m3_float8x16",
     "e5m2_float8x16",
     "float16x16",
     "float32x16",
     "float64x16",
+    "bfloat16x16",
     "e4m3_float8x32",
     "e5m2_float8x32",
     "float16x32",
     "float32x32",
     "float64x32",
+    "bfloat16x32",
     "e4m3_float8x64",
     "e5m2_float8x64",
     "float16x64",
     "float32x64",
     "float64x64",
+    "bfloat16x64",
     "buffer",
     "buffer_decl",
     "prim_func",
@@ -2030,7 +2074,6 @@ __all__ = [
     "env_thread",
     "buffer_store",
     "prefetch",
-    "customized_code",
     "evaluate",
     "boolean",
     "handle",
