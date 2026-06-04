@@ -308,6 +308,10 @@ private:
 
   std::string platform_;
 
+  // Whether dump_tensor has been used (controls conditional include of
+  // printf.h)
+  bool has_dump_tensor_{false};
+
   std::string current_resource_scope_ =
       ""; // Identifies whether it's CUBE or VEC
 };

@@ -358,6 +358,11 @@ std::string CodeGenTileLangAscendPto::Finish() {
   decl_stream << "#include <pto/pto-inst.hpp>\n";
   decl_stream << "#include \"acl/acl.h\"\n";
   decl_stream << "#include <runtime/rt_ffts.h>\n";
+
+  if (has_dump_tensor_) {
+    decl_stream << "#include \"tl_templates/pto/printf.h\"\n";
+  }
+
   decl_stream << "using namespace pto;\n";
   decl_stream << "\n";
   std::ostringstream code;
@@ -1876,9 +1881,44 @@ void CodeGenTileLangAscendPto::PrintfOpCodegen(const CallNode *op,
 
 void CodeGenTileLangAscendPto::DumpTensorCodegen(const CallNode *op,
                                                  const std::string &op_name) {
+  has_dump_tensor_ = true;
   this->PrintIndent();
-  this->stream << "TPRINT" << "(";
-  this->stream << PrintBufferOffset(op->args[0].as<CallNode>());
+  this->stream << "tl::ascend_pto::DumpTensor(";
+
+  // arg 0: buffer pointer or tile reference
+  // For GM buffers: var_idmap_ returns e.g. "A_handle" but C++ param is "A".
+  // copy_base_addr_map_ maps handle_name → buf_name for GM buffers.
+  auto call = op->args[0].as<CallNode>();
+  ICHECK(call) << "Expected CallNode for DumpTensor argument 0";
+  std::string buf_name = PrintBufferOffset(call);
+  auto it = copy_base_addr_map_.find(String(buf_name));
+  if (it != copy_base_addr_map_.end()) {
+    buf_name = static_cast<std::string>((*it).second);
+  }
+  this->stream << buf_name << ", ";
+
+  // arg 1: desc
+  this->stream << PrintExpr(op->args[1]) << ", ";
+
+  // arg 2: dumpSize
+  this->stream << PrintExpr(op->args[2]) << ", ";
+
+  // arg 3: dim (number of shape dimensions)
+  this->stream << PrintExpr(op->args[3]) << ", ";
+
+  // arg 4: shapeInfo[] array
+  if (op->args.size() > 4) {
+    this->stream << "(uint32_t[]){";
+    for (size_t i = 4; i < op->args.size(); ++i) {
+      if (i > 4)
+        this->stream << ", ";
+      this->stream << PrintExpr(op->args[i]);
+    }
+    this->stream << "}";
+  } else {
+    this->stream << "nullptr";
+  }
+
   this->stream << ");\n";
 }
 
