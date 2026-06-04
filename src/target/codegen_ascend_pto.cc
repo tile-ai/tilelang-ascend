@@ -2959,7 +2959,7 @@ void CodeGenTileLangAscendPto::AddFunction(const GlobalVar &gvar,
   ICHECK(global_symbol.defined())
       << "CodeGenC: Expect PrimFunc to have the global_symbol attribute";
   this->PrintFuncPrefix(stream);
-  this->stream << "extern \"C\" __global__ __aicore__ ";
+  this->stream << "extern \"C\" __global__ AICORE ";
   CodeGenC::PrintType(f->ret_type, stream);
 
   auto func_name = static_cast<std::string>(global_symbol.value()) + "_kernel";
