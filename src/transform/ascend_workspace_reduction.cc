@@ -431,6 +431,8 @@ public:
 const std::unordered_map<std::string, DataType> CopyInfoCollector::type_map_ = {
     {"half", tvm::runtime::DataType::Float(16)},
     {"float16", tvm::runtime::DataType::Float(16)},
+    {"bfloat16", tvm::runtime::DataType::BFloat(16)},
+    {"bfloat16_t", tvm::runtime::DataType::BFloat(16)},
     {"float", tvm::runtime::DataType::Float(32)},
     {"float32", tvm::runtime::DataType::Float(32)},
     {"float64", tvm::runtime::DataType::Float(64)},
