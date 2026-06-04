@@ -76,10 +76,10 @@
 **硬件需求**：
 - 需要 L1/L0A/L0B/L0C（Cube）
 - 需要 UB（Vector）
-- 需要 workspace（核间数据传递）
+- 核间数据传递：Developer 模式默认片上直连（无显式 workspace）；Expert/混合或回退才用 workspace（GM 中转）
 
 **测试重点**：
-- workspace 配置
+- CV 交互正确性（Developer：`threads=2` + 片上直连，无 workspace；回退：workspace 配置）
 - Developer vs Expert 模式对比
 - 核间协作验证
 
@@ -147,7 +147,7 @@
 **测试特点**：
 - 配置复杂
 - 需要 Developer vs Expert 模式对比
-- 需要验证 workspace 配置
+- 需要验证 CV 交互（Developer 默认无 workspace；回退写法才验证 workspace 配置）
 - 需要验证核间协作
 
 ---
@@ -374,7 +374,7 @@ ReduceMax: max(x, dim=-1)
     "shape_count": 3,
     "block_count": 2,
     "Developer_vs_Expert": True,  # 需对比两种模式
-    "workspace配置": True,  # workspace 重要
+    "workspace配置": True,  # 仅 Expert/混合或回退写法；Developer 模式默认消除 workspace，此项为 False
     "精度标准": {
         "float16": (1e-3, 1e-3),
     }

@@ -65,6 +65,8 @@ public:
   void SiluCodegen(const CallNode *op);
   void MulAddDstCodegen(const CallNode *op);
   void CastCodegen(const CallNode *op, const std::string &op_type);
+
+  void ReinterpretCastCodegen(const CallNode *op);
   void ReduceOpCodegen(const CallNode *op);
 
   enum class ReduceKind { SUM, MAX, MIN };
@@ -305,6 +307,10 @@ private:
   bool use_swizzle_{false};
 
   std::string platform_;
+
+  // Whether dump_tensor has been used (controls conditional include of
+  // printf.h)
+  bool has_dump_tensor_{false};
 
   std::string current_resource_scope_ =
       ""; // Identifies whether it's CUBE or VEC

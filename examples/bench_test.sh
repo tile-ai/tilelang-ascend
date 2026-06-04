@@ -2,11 +2,21 @@
 
 # ================= 参数解析 =================
 SKIP_PYTEST=false
+ENABLE_COVERAGE=false
+ENABLE_CPP_COVERAGE=false
 TEST_DIRS=""
 while [[ $# -gt 0 ]]; do
     case $1 in
         --skip-pytest)
             SKIP_PYTEST=true
+            shift
+            ;;
+        --coverage)
+            ENABLE_COVERAGE=true
+            shift
+            ;;
+        --enable-cpp-coverage)
+            ENABLE_CPP_COVERAGE=true
             shift
             ;;
         --dirs)
@@ -18,6 +28,9 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+# ================= 全局环境变量设置 =================
+PROJECT_ROOT="$(cd .. && pwd)"
 
 # 解析 TEST_DIRS 为数组
 if [ -n "$TEST_DIRS" ]; then
@@ -44,6 +57,51 @@ EXTRA_TASKS=(
 )
 # ==========================================
 
+
+# ================= Coverage 清除逻辑（确保纯净结果）=================
+# 在每次测试开始前清除旧的 coverage 数据，确保结果只包含本次执行的数据
+if [ "$ENABLE_COVERAGE" = true ] || [ "$ENABLE_CPP_COVERAGE" = true ]; then
+    echo ""
+    echo "====================================="
+    echo "Cleaning old coverage data..."
+    echo "====================================="
+      
+    # 1. 清除 Python coverage 数据
+    echo "Removing Python coverage files..."
+    rm -rf "${PROJECT_ROOT}/coverage_data/.coverage*" 2>/dev/null || true
+    rm -f "${PROJECT_ROOT}/coverage_data/*.json" 2>/dev/null || true
+    
+    echo "  ✓ Python coverage files cleaned"
+    
+    # 2. 清除 C++ coverage 数据（如果启用）
+    if [ "$ENABLE_CPP_COVERAGE" = true ]; then
+        echo "Removing C++ coverage files..."
+        
+        # 清除 build 目录的 .gcda 文件（运行时覆盖率数据）
+        find "${PROJECT_ROOT}/build" -name "*.gcda" -type f -delete 2>/dev/null || true
+        
+        # 清除旧的 coverage.info
+        rm -f "${PROJECT_ROOT}/coverage_data/coverage.info" 2>/dev/null || true
+        
+        echo "  ✓ C++ coverage files cleaned"
+    fi
+    
+    # 3. 清除旧的报告
+    echo "Removing old coverage reports..."
+    rm -f "${PROJECT_ROOT}/core_files_coverage_report.md" 2>/dev/null || true
+    rm -rf "${PROJECT_ROOT}/coverage_reports" 2>/dev/null || true
+    
+    echo "  ✓ Old reports cleaned"
+    
+    # 4. 创建干净的目录
+    mkdir -p "${PROJECT_ROOT}/coverage_data"
+    mkdir -p "${PROJECT_ROOT}/coverage_reports"
+    
+    echo ""
+    echo "✓ Coverage cleanup completed. Ready for fresh test."
+    echo "====================================="
+    echo ""
+fi
 echo "Starting parallel unified test execution (Live Output)..."
 echo "====================================="
 
@@ -201,8 +259,16 @@ for script in "${all_scripts[@]}"; do
 
             # 执行脚本并捕获输出到变量，不在磁盘生成日志文件
             if [[ "$script" == *.py ]]; then
-                output=$(cd "$script_dir" && python "$script_name" 2>&1)
-                exit_code=$?
+                if [ "$ENABLE_COVERAGE" = true ]; then
+                    # 使用 coverage run 统计 examples 执行的 Python 代码覆盖率
+                    # 每个脚本使用独立的 coverage 文件名，避免并行冲突
+                    safe_name=$(echo "$script" | sed 's/[\/\.]/_/g')
+                    output=$(cd "$script_dir" && COVERAGE_FILE="${PROJECT_ROOT}/coverage_data/.coverage_${safe_name}" coverage run --rcfile="${PROJECT_ROOT}/.coveragerc" "$script_name" 2>&1)
+                    exit_code=$?
+                else
+                    output=$(cd "$script_dir" && python "$script_name" 2>&1)
+                    exit_code=$?
+                fi
             else
                 output=$(cd "$script_dir" && bash "$script_name" 2>&1)
                 exit_code=$?
@@ -260,8 +326,21 @@ echo -e "\n====================================="
 echo "Running pytest tests"
 echo "====================================="
 
+# 自动发现并运行 testing/python/ 目录下的所有测试文件（包括所有子目录）
 # 运行 pytest 并捕获输出（使用 tee 同时显示和保存）
-pytest --forked ../testing/python/ -v -n $MAX_JOBS 2>&1 | tee pytest_output.log
+if [ "$ENABLE_COVERAGE" = true ]; then
+    export COVERAGE_FILE="${PROJECT_ROOT}/coverage_data/.coverage_pytest"
+    # C++ coverage 时不使用 --forked，避免多进程并发写入 .gcda 文件冲突
+    COV_ARGS="--cov=tilelang --cov-report=term --cov-report=json:${PROJECT_ROOT}/coverage_data/pytest_coverage.json --cov-config=${PROJECT_ROOT}/.coveragerc"
+    if [ "$ENABLE_CPP_COVERAGE" = true ]; then
+        pytest "${PROJECT_ROOT}/testing/python/" -v $COV_ARGS 2>&1 | tee pytest_output.log
+    else
+        pytest --forked "${PROJECT_ROOT}/testing/python/" -v -n $MAX_JOBS $COV_ARGS 2>&1 | tee pytest_output.log
+    fi
+    unset COVERAGE_FILE
+else
+    pytest --forked "${PROJECT_ROOT}/testing/python/" -v -n $MAX_JOBS 2>&1 | tee pytest_output.log
+fi
 pytest_exit_code=${PIPESTATUS[0]}
 
 # 提取 pytest 统计（最后一行包含 passed/failed/xfailed）
@@ -300,6 +379,49 @@ else
     echo "====================================="
 fi
 
+# ================= Coverage Collection and Report =================
+if [ "$ENABLE_COVERAGE" = true ] || [ "$ENABLE_CPP_COVERAGE" = true ]; then
+    echo -e "\n====================================="
+    echo "Collecting Coverage Data"
+    echo "====================================="
+    
+    mkdir -p "${PROJECT_ROOT}/coverage_data" "${PROJECT_ROOT}/coverage_reports"
+    
+    # Python coverage
+    if [ "$ENABLE_COVERAGE" = true ]; then
+        echo "Collecting Python coverage..."
+        
+        # Combine all coverage files in coverage_data (examples + pytest already write here)
+        coverage_files=$(find "${PROJECT_ROOT}/coverage_data" -name ".coverage*" -type f)
+        if [ -n "$coverage_files" ]; then
+            cd "${PROJECT_ROOT}"
+            export COVERAGE_FILE="${PROJECT_ROOT}/coverage_data/.coverage"
+            coverage combine --keep $coverage_files 2>&1 || true
+            coverage json -o "${PROJECT_ROOT}/coverage_data/coverage.json" --include=tilelang/* 2>&1 || true
+            unset COVERAGE_FILE
+            cd "${PROJECT_ROOT}/examples"
+            echo "✓ Python coverage collected"
+        fi
+    fi
+    
+    # C++ coverage
+    if [ "$ENABLE_CPP_COVERAGE" = true ]; then
+        echo "Collecting C++ coverage..."
+        # Only collect from tilelang_objs.dir (contains only tilelang-ascend/src)
+        # This is faster and avoids timeout issues with collecting entire build directory
+        lcov --capture --directory "${PROJECT_ROOT}/build/CMakeFiles/tilelang_objs.dir" --output-file "${PROJECT_ROOT}/coverage_data/coverage.info" --no-checksum --ignore-errors source,graph 2>&1 || true
+        
+        if [ -f "${PROJECT_ROOT}/coverage_data/coverage.info" ]; then
+            echo "✓ C++ coverage collected (tilelang-ascend/src only)"
+        fi
+    fi
+    
+    # Generate report
+    if [ -f "${PROJECT_ROOT}/scripts/generate_coverage_stats_report.py" ]; then
+        python "${PROJECT_ROOT}/scripts/generate_coverage_stats_report.py"
+        echo "✓ Coverage report generated"
+    fi
+fi
 # 输出合并后的结果（用于 CI workflow 解析）
 # xfailed 是预期失败的测试，在 pytest 视角下属于"成功"状态（符合预期）
 # 应计入 passed_all，而不应计入 failed_all

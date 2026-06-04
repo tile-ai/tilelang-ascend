@@ -7,6 +7,7 @@
 USE_LLVM=false
 USE_SHMEM=false
 INCREMENTAL_BUILD=false  # 增量编译选项
+ENABLE_COVERAGE=false    # 代码覆盖率选项
 while [[ $# -gt 0 ]]; do
     case $1 in
         --enable-llvm)
@@ -21,9 +22,13 @@ while [[ $# -gt 0 ]]; do
             INCREMENTAL_BUILD=true
             shift
             ;;
+        --enable-coverage)
+            ENABLE_COVERAGE=true
+            shift
+            ;;
         *)
             echo "Unknown option: $1"
-            echo "Usage: $0 [--enable-llvm] [--enable-shmem] [--enable-incremental]"
+            echo "Usage: $0 [--enable-llvm] [--enable-shmem] [--enable-incremental] [--enable-coverage]"
             exit 1
             ;;
     esac
@@ -43,6 +48,7 @@ echo "Starting installation script..."
 echo "LLVM enabled: $USE_LLVM"
 echo "SHMEM enabled: $USE_SHMEM"
 echo "Incremental build: $INCREMENTAL_BUILD"
+echo "Coverage enabled: $ENABLE_COVERAGE"
 
 # Step 1: Install Python requirements
 echo "Installing Python requirements from requirements.txt..."
@@ -53,6 +59,49 @@ if [ $? -ne 0 ]; then
     exit 1
 else
     echo "Python requirements installed successfully."
+fi
+
+# Check and install lcov if coverage enabled
+if $ENABLE_COVERAGE; then
+    echo "Checking lcov installation for C++ coverage..."
+    
+    # Check if lcov is installed
+    if ! command -v lcov &> /dev/null; then
+        echo "lcov not found, installing..."
+        
+        # Detect package manager
+        if command -v apt-get &> /dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -y lcov
+        elif command -v yum &> /dev/null; then
+            sudo yum install -y lcov
+        elif command -v dnf &> /dev/null; then
+            sudo dnf install -y lcov
+        elif command -v brew &> /dev/null; then
+            brew install lcov
+        else
+            echo "[WARNING] Cannot install lcov automatically. Please install manually."
+            echo "  Ubuntu/Debian: sudo apt install lcov"
+            echo "  CentOS/RHEL:   sudo yum install lcov"
+            echo "  macOS:         brew install lcov"
+        fi
+        
+        # Verify installation
+        if command -v lcov &> /dev/null; then
+            echo "lcov installed successfully: $(lcov --version | head -1)"
+        else
+            echo "[WARNING] lcov installation failed. C++ coverage may not work."
+        fi
+    else
+        echo "lcov already installed: $(lcov --version | head -1)"
+    fi
+    
+    # Also check gcov (usually comes with GCC)
+    if ! command -v gcov &> /dev/null; then
+        echo "[WARNING] gcov not found. Please ensure GCC is installed."
+    else
+        echo "gcov available: $(gcov --version | head -1)"
+    fi
 fi
 
 # Step 2: Define LLVM version and architecture
@@ -145,6 +194,13 @@ cd build
 if ! $INCREMENTAL_BUILD; then
     echo "set(USE_ASCEND ON)" >> config.cmake
     echo 'set(USE_GTEST OFF)' >> config.cmake
+    
+    # Enable coverage if requested
+    if $ENABLE_COVERAGE; then
+        echo "Enabling code coverage for C++ code..."
+        echo 'set(ENABLE_COVERAGE ON)' >> config.cmake
+    fi
+    
     cmake ..
     if [ $? -ne 0 ]; then
         echo "Error: CMake configuration failed."

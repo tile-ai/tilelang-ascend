@@ -4,6 +4,26 @@ TileLang-ascend introduces new debugging API interfaces: `T.printf` and `T.dump_
 
 *Note: `T.printf` and `T.dump_tensor` are device-side debugging tools; for the host side, use Python's built-in print directly.*
 
+## Prerequisites
+
+To enable `T.printf` and `T.dump_tensor` output at runtime, the environment
+variable `TL_PTO_DEBUG` must be set to `"1"` **before** kernel compilation:
+
+```python
+import os
+os.environ["TL_PTO_DEBUG"] = "1"
+```
+
+This appends the compiler flags `-D_DEBUG` and `--cce-enable-print`,
+which activate the device-side printf infrastructure that is otherwise compiled
+out for performance reasons.
+
+> **Warning**: `TL_PTO_DEBUG` is intended for **debugging only**. Leaving it
+> enabled degrades kernel performance and each tile's printf/dump buffer is
+> capped at 1 MB.
+
+See the *TileLang-Ascend Programming Guide* for full details.
+
 ## Printf
 ### Interface Prototype
     ```python
