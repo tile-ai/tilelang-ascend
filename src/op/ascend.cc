@@ -1139,6 +1139,29 @@ TIR_DEFINE_TL_BUILTIN(ascend_gemm_v1)
     .set_attr<TCallEffectKind>("TCallEffectKind",
                                Integer(CallEffectKind::kOpaque));
 
+TIR_DEFINE_TL_BUILTIN(ascend_gemm_mx)
+    .set_num_inputs(7) // template_str, Aptr, Bptr, Cptr, SaPtr, SbPtr, init
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
+
+TIR_DEFINE_TL_BUILTIN(ascend_mma_mx)
+    .set_num_inputs(
+        7) // template_str, A_l0a_ptr, B_l0b_ptr, Cptr, SaPtr, SbPtr, init
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
+
+TIR_DEFINE_TL_BUILTIN(ascend_tquant)
+    .set_num_inputs(-1) // template_str, DstPtr, SrcPtr, ExpPtr, [Optional:
+                        // MaxPtr, ScalingPtr...]
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
+
+TIR_DEFINE_TL_BUILTIN(ascend_tdequant)
+    .set_num_inputs(
+        -1) // template_str, DstPtr, SrcPtr, ScalePtr, [Optional: OffsetPtr]
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
+
 TIR_DEFINE_TL_BUILTIN(ascend_printf)
     .set_num_inputs(-1)
     .set_attr<TCallEffectKind>("TCallEffectKind",

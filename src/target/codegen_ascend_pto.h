@@ -194,6 +194,12 @@ private:
 
   void MmaCodegen(const CallNode *op);
 
+  void MmaMxCodegen(const CallNode *op);
+
+  void TQuantCodegen(const CallNode *op);
+
+  void TDequantCodegen(const CallNode *op);
+
   std::vector<std::string> GetGlobalTensorShapes(const CallNode *op,
                                                  std::string tensor_addr);
 
