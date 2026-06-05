@@ -1482,9 +1482,12 @@ static std::string GetPipeTypeName(const std::string &pipe_id, int dir_type) {
 
 static std::string SplitAxisToEnumStr(int split_axis) {
   switch (split_axis) {
-    case 0: return "TILE_NO_SPLIT";
-    case 2: return "TILE_LEFT_RIGHT";
-    default: return "TILE_UP_DOWN";
+  case 0:
+    return "TILE_NO_SPLIT";
+  case 2:
+    return "TILE_LEFT_RIGHT";
+  default:
+    return "TILE_UP_DOWN";
   }
 }
 
@@ -1498,7 +1501,10 @@ void CodeGenTileLangAscendPto::CopyPipeCodegen(const CallNode *op,
   BufferInfo src_info = GetBufferInfo(op->args[1]);
   BufferInfo dst_info = GetBufferInfo(op->args[2]);
 
-  std::string pipe_id = Downcast<StringImm>(op->args[7])->value;
+  int flag_id = Downcast<IntImm>(op->args[3])->value;
+  ICHECK(pipe_registry_.count(flag_id)) << "Flag not found: " << flag_id;
+  const auto &pipe_info = pipe_registry_.at(flag_id);
+  std::string pipe_id = pipe_info.pipe_id;
 
   ShapeInfo src_shape_info = GetSliceInfo(src_info.access_ptr);
   ShapeInfo dst_shape_info = GetSliceInfo(dst_info.access_ptr);
@@ -1515,14 +1521,7 @@ void CodeGenTileLangAscendPto::CopyPipeCodegen(const CallNode *op,
     CreateUbVariableND(dst_name, dst_shape_info);
   }
 
-  std::string dtype_str = Downcast<StringImm>(op->args[8])->value;
-  int M_val = Downcast<IntImm>(op->args[9])->value;
-  int N_val = Downcast<IntImm>(op->args[10])->value;
-  int split_axis_val = Downcast<IntImm>(op->args[11])->value;
-
-  int flag_id = Downcast<IntImm>(op->args[3])->value;
-  const auto &pipe_info = pipe_registry_.at(flag_id);
-  std::string pipe_type = pipe_info.pipe_type_name;
+  int split_axis_val = pipe_info.split_axis;
 
   std::string func_call = op_name;
   size_t pos = func_call.find("tl::ascend::");
@@ -1531,30 +1530,26 @@ void CodeGenTileLangAscendPto::CopyPipeCodegen(const CallNode *op,
   }
 
   this->PrintIndent();
-  bool has_tmp = is_producer && op->args.size() > 13 && op->args[13].as<CallNode>();
+  bool has_tmp =
+      is_producer && pipe_info.has_tmp && op->args.size() > 4 && op->args[4].as<CallNode>();
   if (has_tmp) {
-    int tmp_M_val = Downcast<IntImm>(op->args[14])->value;
-    int tmp_N_val = Downcast<IntImm>(op->args[15])->value;
-    BufferInfo tmp_info = GetBufferInfo(op->args[13]);
+    BufferInfo tmp_info = GetBufferInfo(op->args[4]);
     ShapeInfo tmp_shape_info = GetSliceInfo(tmp_info.access_ptr);
     std::string tmp_name = tmp_shape_info.ub_name;
     if (tmp_shape_info.is_slice) {
       tmp_name = GetTempVarName(tmp_shape_info.ub_name);
       CreateUbVariableND(tmp_name, tmp_shape_info);
     }
-    this->stream << func_call << "<" << pipe_type << ", " << dtype_str << ", "
-                 << M_val << ", " << N_val << ", "
-                 << tmp_M_val << ", " << tmp_N_val << ", "
+    this->stream << func_call << "<"
                  << "pto::TileSplitAxis::" << SplitAxisToEnumStr(split_axis_val)
-                 << ">(" << pipe_id << ", " << src_name << ", " << tmp_name << ");\n";
+                 << ">(" << pipe_id << ", " << src_name << ", " << tmp_name
+                 << ");\n";
   } else if (is_producer) {
-    this->stream << func_call << "<" << pipe_type << ", " << dtype_str << ", "
-                 << M_val << ", " << N_val << ", "
+    this->stream << func_call << "<"
                  << "pto::TileSplitAxis::" << SplitAxisToEnumStr(split_axis_val)
                  << ">(" << pipe_id << ", " << src_name << ");\n";
   } else {
-    this->stream << func_call << "<" << pipe_type << ", " << dtype_str << ", "
-                 << M_val << ", " << N_val << ", "
+    this->stream << func_call << "<"
                  << "pto::TileSplitAxis::" << SplitAxisToEnumStr(split_axis_val)
                  << ">(" << pipe_id << ", " << dst_name << ");\n";
   }
@@ -1570,6 +1565,36 @@ void CodeGenTileLangAscendPto::PreScanPipes(const PrimFunc &f) {
   Map<String, PrimExpr> address_map_name_hint;
   for (const auto &[var, address] : address_map_) {
     address_map_name_hint.Set(var->name_hint, address);
+  }
+
+  // Populate pipe metadata from PrimFunc attr
+  if (auto opt = f->GetAttr<Map<IntImm, Map<String, ObjectRef>>>("pipe_infos")) {
+    auto pipe_infos = opt.value();
+    for (const auto &[flag_id_key, fields] : pipe_infos) {
+      int flag_id = flag_id_key->value;
+      PipeInfo info;
+      info.flag_id = flag_id;
+      info.dir_type = Downcast<IntImm>(fields.at("dir_type"))->value;
+      info.slot_size = Downcast<IntImm>(fields.at("slot_size"))->value;
+      info.slot_num = Downcast<IntImm>(fields.at("slot_num"))->value;
+      info.pipe_id = Downcast<String>(fields.at("pipe_id"));
+      info.op_name = Downcast<String>(fields.at("op_name"));
+      info.dtype_str = Downcast<String>(fields.at("dtype_str"));
+      info.src_M_val = Downcast<IntImm>(fields.at("src_M_val"))->value;
+      info.src_N_val = Downcast<IntImm>(fields.at("src_N_val"))->value;
+      info.dst_M_val = Downcast<IntImm>(fields.at("dst_M_val"))->value;
+      info.dst_N_val = Downcast<IntImm>(fields.at("dst_N_val"))->value;
+      info.split_axis = Downcast<IntImm>(fields.at("split_axis"))->value;
+      info.workspace_name = Downcast<String>(fields.at("workspace_name"));
+      info.has_tmp = Downcast<IntImm>(fields.at("has_tmp"))->value != 0;
+      info.tmp_M_val = Downcast<IntImm>(fields.at("tmp_M_val"))->value;
+      info.tmp_N_val = Downcast<IntImm>(fields.at("tmp_N_val"))->value;
+
+      info.pipe_type_name = GetPipeTypeName(info.pipe_id, info.dir_type);
+      info.dir_full = "pto::Direction::DIR_" + DirTypeToStr(info.dir_type);
+
+      pipe_registry_[info.flag_id] = info;
+    }
   }
 
   tir::PreOrderVisit(f->body, [&](const ObjectRef &node) -> bool {
@@ -1608,40 +1633,20 @@ void CodeGenTileLangAscendPto::PreScanPipes(const PrimFunc &f) {
               name.find("copy_pipe_to_ub") != std::string::npos) {
             int flag_id = Downcast<IntImm>(call->args[3])->value;
 
-            // Deduplicate by flag_id
-            if (pipe_registry_.count(flag_id) == 0) {
-              int dir_type = Downcast<IntImm>(call->args[4])->value;
-              int slot_size = Downcast<IntImm>(call->args[5])->value;
-              int slot_num = Downcast<IntImm>(call->args[6])->value;
-              std::string pipe_id =
-                  Downcast<StringImm>(call->args[7])->value;
-
-              PipeInfo info;
-              info.flag_id = flag_id;
-              info.dir_type = dir_type;
-              info.slot_size = slot_size;
-              info.slot_num = slot_num;
-              info.pipe_id = pipe_id;
-
-              info.pipe_type_name = GetPipeTypeName(pipe_id, dir_type);
-
-              info.dir_full = "pto::Direction::DIR_" + DirTypeToStr(dir_type);
-              info.workspace_name = Downcast<StringImm>(call->args[12])->value;
-
-              // Get the destination buffer address for the pipe
+            auto it = pipe_registry_.find(flag_id);
+            if (it != pipe_registry_.end() && it->second.c2v_buf.empty()) {
+              auto &pinfo = it->second;
               BufferInfo dst_info = GetBufferInfo(call->args[2]);
               std::string dst_base =
                   PrintExpr(local_buffer_address_map.at(dst_info.var));
 
-              if (dir_type == 1) {
-                info.c2v_buf = dst_base;
-                info.v2c_buf = "0";
+              if (pinfo.dir_type == 1) {
+                pinfo.c2v_buf = dst_base;
+                pinfo.v2c_buf = "0";
               } else {
-                info.c2v_buf = "0";
-                info.v2c_buf = dst_base;
+                pinfo.c2v_buf = "0";
+                pinfo.v2c_buf = dst_base;
               }
-
-              pipe_registry_[flag_id] = info;
             }
           }
         }
@@ -1650,52 +1655,31 @@ void CodeGenTileLangAscendPto::PreScanPipes(const PrimFunc &f) {
     }
     return true;
   });
-
 }
 
 void CodeGenTileLangAscendPto::CopyCVExperimentCodegen(const CallNode *op) {
-  auto dtype = GetAccessPtrDtypePto(op->args[0].as<CallNode>());
   BufferInfo src_info = GetBufferInfo(op->args[0]);
   BufferInfo dst_info = GetBufferInfo(op->args[1]);
-
-  auto [src_rows, src_cols] = GetShapeFromBufferInfo(src_info);
-  auto [dst_rows, dst_cols] = GetShapeFromBufferInfo(dst_info);
-
   int mode = Downcast<IntImm>(op->args[2])->value;
-
   std::string src_name = PrintBufferOffset(op->args[0].as<CallNode>());
   std::string dst_name = PrintBufferOffset(op->args[1].as<CallNode>());
-
   this->PrintIndent();
-  stream << kAscendPtoScope << "copy_cv_experiment<" << getType(dtype) << ", "
-         << dst_rows << ", " << dst_cols << ", " << src_rows << ", " << src_cols
-         << ", " << mode << ">(" << dst_name << ", " << src_name << ");\n";
+  stream << kAscendPtoScope << "copy_cv_experiment<" << mode << ">(" << dst_name
+         << ", " << src_name << ");\n";
 }
 
 void CodeGenTileLangAscendPto::CopyVCExperimentCodegen(const CallNode *op) {
-  auto dtype = GetAccessPtrDtypePto(op->args[0].as<CallNode>());
-  BufferInfo src_info = GetBufferInfo(op->args[0]);
-  BufferInfo dst_info = GetBufferInfo(op->args[1]);
   BufferInfo tmp_info = GetBufferInfo(op->args[2]);
-
-  auto [src_rows, src_cols] = GetShapeFromBufferInfo(src_info);
-  auto [dst_rows, dst_cols] = GetShapeFromBufferInfo(dst_info);
-  auto [tmp_rows, tmp_cols] = GetShapeFromBufferInfo(tmp_info);
-
   int mode = Downcast<IntImm>(op->args[5])->value;
-
   std::string src_name = PrintBufferOffset(op->args[0].as<CallNode>());
   std::string dst_name = PrintBufferOffset(op->args[1].as<CallNode>());
   std::string tmp_name = PrintBufferOffset(op->args[2].as<CallNode>());
   std::string index_row = PrintExpr(op->args[3]);
   std::string index_col = PrintExpr(op->args[4]);
-
   this->PrintIndent();
-  stream << kAscendPtoScope << "copy_vc_experiment<" << getType(dtype) << ", "
-         << dst_rows << ", " << dst_cols << ", " << src_rows << ", " << src_cols
-         << ", " << tmp_rows << ", " << tmp_cols << ", " << mode << ">("
-         << dst_name << ", " << src_name << ", " << tmp_name << ", "
-         << index_row << ", " << index_col << ");\n";
+  stream << kAscendPtoScope << "copy_vc_experiment<" << mode << ">(" << dst_name
+         << ", " << src_name << ", " << tmp_name << ", " << index_row << ", "
+         << index_col << ");\n";
 }
 
 void CodeGenTileLangAscendPto::CallExternCodegen(const CallNode *op) {
@@ -1709,7 +1693,8 @@ void CodeGenTileLangAscendPto::CallExternCodegen(const CallNode *op) {
     GMCopyCall(op, "copy_gm_to_l1");
   } else if (op_name.find("tl::ascend::copy_l0c_to_gm") != std::string::npos) {
     GMCopyCall(op, "copy_l0c_to_gm");
-  } else if (op_name.find("tl::ascend::copy_ub_to_ub_Nz") != std::string::npos) {
+  } else if (op_name.find("tl::ascend::copy_ub_to_ub_Nz") !=
+             std::string::npos) {
     CopyUBToUBNzCodegen(op);
   } else if (op_name.find("tl::ascend::copy_ub_to_ub") != std::string::npos) {
     CopyUBToUBCodegen(op);
@@ -1727,9 +1712,11 @@ void CodeGenTileLangAscendPto::CallExternCodegen(const CallNode *op) {
     CopyPipeCodegen(op, true);
   } else if (op_name.find("tl::ascend::copy_pipe_to_l1") != std::string::npos) {
     CopyPipeCodegen(op, false);
-  } else if (op_name.find("tl::ascend::copy_l0c_to_pipe") != std::string::npos) {
+  } else if (op_name.find("tl::ascend::copy_l0c_to_pipe") !=
+             std::string::npos) {
     CopyPipeCodegen(op, true);
-  } else if (op_name.find("tl::ascend::copy_pipe_to_ub_V") != std::string::npos) {
+  } else if (op_name.find("tl::ascend::copy_pipe_to_ub_V") !=
+             std::string::npos) {
     CopyPipeCodegen(op, false);
   } else if (op_name.find("tl::ascend::copy_pipe_to_ub") != std::string::npos) {
     CopyPipeCodegen(op, false);
@@ -3710,10 +3697,9 @@ void CodeGenTileLangAscendPto::PrintPipeDeclarations() {
                    << info.flag_id << ", " << info.dir_full << ", "
                    << info.slot_size << ", " << info.slot_num << ">;\n";
       this->PrintIndent();
-      this->stream << info.pipe_type_name << " " << info.pipe_id
-                   << "(" << WorkspaceHandleSuffix(info.workspace_name)
-                   << ", " << info.c2v_buf << ", " << info.v2c_buf
-                   << ");\n";
+      this->stream << info.pipe_type_name << " " << info.pipe_id << "("
+                   << WorkspaceHandleSuffix(info.workspace_name) << ", "
+                   << info.c2v_buf << ", " << info.v2c_buf << ");\n";
     }
   }
 }

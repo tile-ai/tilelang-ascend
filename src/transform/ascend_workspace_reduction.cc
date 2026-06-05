@@ -665,6 +665,33 @@ public:
     prim_func_with_new_attr = tvm::WithAttr(std::move(prim_func_with_new_attr),
                                             "auto_gm_indices", auto_gm_idx);
 
+    // Serialize pipe metadata as PrimFunc attr for codegen access
+    if (is_pto && !context.pipe_info_map_.empty()) {
+      Map<IntImm, Map<String, ObjectRef>> pipe_infos;
+      for (const auto &[dst_buf_name, info] : context.pipe_info_map_) {
+        Map<String, ObjectRef> fields;
+        fields.Set("flag_id",   IntImm(DataType::Int(32), info.flag_id));
+        fields.Set("dir_type",  IntImm(DataType::Int(32), info.dir_type));
+        fields.Set("slot_size", IntImm(DataType::Int(32), info.slot_size));
+        fields.Set("slot_num",  IntImm(DataType::Int(32), info.slot_num));
+        fields.Set("pipe_id",   String(info.pipe_id));
+        fields.Set("op_name",   String(info.op_name));
+        fields.Set("dtype_str", String(info.dtype_str));
+        fields.Set("src_M_val", IntImm(DataType::Int(32), info.src_M_val));
+        fields.Set("src_N_val", IntImm(DataType::Int(32), info.src_N_val));
+        fields.Set("dst_M_val", IntImm(DataType::Int(32), info.dst_M_val));
+        fields.Set("dst_N_val", IntImm(DataType::Int(32), info.dst_N_val));
+        fields.Set("split_axis",    IntImm(DataType::Int(32), info.split_axis));
+        fields.Set("workspace_name", String(info.workspace_name));
+        fields.Set("has_tmp",   IntImm(DataType::Int(32), info.has_tmp ? 1 : 0));
+        fields.Set("tmp_M_val", IntImm(DataType::Int(32), info.tmp_M_val));
+        fields.Set("tmp_N_val", IntImm(DataType::Int(32), info.tmp_N_val));
+        pipe_infos.Set(IntImm(DataType::Int(32), info.flag_id), fields);
+      }
+      prim_func_with_new_attr = WithAttr(std::move(prim_func_with_new_attr),
+                                         "pipe_infos", pipe_infos);
+    }
+
     return prim_func_with_new_attr;
   }
 
@@ -720,23 +747,12 @@ private:
         StringImm(ss.str()),
         src_access,
         dst_access,
-        Integer(pipe.flag_id),
-        Integer(pipe.dir_type),
-        Integer(pipe.slot_size),
-        Integer(pipe.slot_num),
-        StringImm(pipe.pipe_id),
-        StringImm(pipe.dtype_str),
-        Integer(pipe.src_M_val),
-        Integer(pipe.src_N_val),
-        Integer(pipe.split_axis),
-        StringImm(pipe.workspace_name)
+        IntImm(DataType::Int(32), pipe.flag_id)
     };
     if (is_ub_to_l1 && pipe.has_tmp && orig_args.size() > 7) {
       PrimExpr tmp_expr = orig_args[7];
       if (tmp_expr.as<CallNode>()) {
         args.push_back(tmp_expr);
-        args.push_back(Integer(pipe.tmp_M_val));
-        args.push_back(Integer(pipe.tmp_N_val));
       }
     }
     Call call(DataType::Handle(), tir::builtin::call_extern(), args);
@@ -765,16 +781,7 @@ private:
         StringImm(ss.str()),
         dst_access,
         dst_access,
-        Integer(pipe.flag_id),
-        Integer(pipe.dir_type),
-        Integer(pipe.slot_size),
-        Integer(pipe.slot_num),
-        StringImm(pipe.pipe_id),
-        StringImm(pipe.dtype_str),
-        Integer(pipe.dst_M_val),
-        Integer(pipe.dst_N_val),
-        Integer(pipe.split_axis),
-        StringImm(pipe.workspace_name)
+        IntImm(DataType::Int(32), pipe.flag_id)
     };
     Call call(DataType::Handle(), tir::builtin::call_extern(), args);
     return Evaluate(call);

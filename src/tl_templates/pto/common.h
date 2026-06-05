@@ -1395,100 +1395,119 @@ AICORE PTO_INLINE void sync_all_aiv() {
   pto::SYNCALL<pto::SyncCoreType::AIVOnly>();
 }
 
-
-template <typename Pipe, typename T, int32_t M, int32_t N,
-          pto::TileSplitAxis SplitAxis = pto::TileSplitAxis::TILE_UP_DOWN>
-AICORE PTO_INLINE void copy_l0c_to_pipe(Pipe &pipe,
-                                        pto::TileAcc<T, M, N> &acc_tile) {
-  pto::TPUSH<Pipe, pto::TileAcc<T, M, N>, SplitAxis>(pipe, acc_tile);
+template <pto::TileSplitAxis SplitAxis, typename Pipe, typename T, int Rows,
+          int Cols, int RowValid = Rows, int ColValid = Cols>
+AICORE PTO_INLINE void
+copy_l0c_to_pipe(Pipe &pipe,
+                 pto::TileAcc<T, Rows, Cols, RowValid, ColValid> &acc_tile) {
+  pto::TPUSH<Pipe, pto::TileAcc<T, Rows, Cols, RowValid, ColValid>, SplitAxis>(
+      pipe, acc_tile);
 }
 
-
-template <typename Pipe, typename T, int32_t M, int32_t N,
-          pto::TileSplitAxis SplitAxis = pto::TileSplitAxis::TILE_UP_DOWN>
-AICORE PTO_INLINE void copy_pipe_to_ub(Pipe &pipe,
-                                       TileUbDataND<T, M, N> &ub_tile) {
-  pto::TPOP<Pipe, TileUbDataND<T, M, N>, SplitAxis>(pipe, ub_tile);
+template <pto::TileSplitAxis SplitAxis, typename Pipe, typename T, int Rows,
+          int Cols, int RowValid = Rows, int ColValid = Cols>
+AICORE PTO_INLINE void
+copy_pipe_to_ub(Pipe &pipe,
+                TileUbDataND<T, Rows, Cols, RowValid, ColValid> &ub_tile) {
+  pto::TPOP<Pipe, TileUbDataND<T, Rows, Cols, RowValid, ColValid>, SplitAxis>(
+      pipe, ub_tile);
 }
 
-
-template <typename Pipe, typename T, int32_t M, int32_t N,
-          pto::TileSplitAxis SplitAxis = pto::TileSplitAxis::TILE_UP_DOWN>
-AICORE PTO_INLINE void copy_ub_to_pipe(Pipe &pipe, TileUbDataND<T, M, N> &ub_tile) {
-  pto::TPUSH<Pipe, TileUbDataND<T, M, N>, SplitAxis>(pipe, ub_tile);
+template <pto::TileSplitAxis SplitAxis, typename Pipe, typename T, int Rows,
+          int Cols, int RowValid = Rows, int ColValid = Cols>
+AICORE PTO_INLINE void
+copy_ub_to_pipe(Pipe &pipe,
+                TileUbDataND<T, Rows, Cols, RowValid, ColValid> &ub_tile) {
+  pto::TPUSH<Pipe, TileUbDataND<T, Rows, Cols, RowValid, ColValid>, SplitAxis>(
+      pipe, ub_tile);
 }
 
-
-template <typename Pipe, typename T, int32_t M, int32_t N,
-          pto::TileSplitAxis SplitAxis = pto::TileSplitAxis::TILE_UP_DOWN>
-AICORE PTO_INLINE void copy_pipe_to_l1(Pipe &pipe, TileMatL1<T, M, N> &l1_tile) {
-  pto::TPOP<Pipe, TileMatL1<T, M, N>, SplitAxis>(pipe, l1_tile);
+template <pto::TileSplitAxis SplitAxis, typename Pipe, typename T, int Rows,
+          int Cols, int RowValid = Rows, int ColValid = Cols>
+AICORE PTO_INLINE void
+copy_pipe_to_l1(Pipe &pipe,
+                TileMatL1<T, Rows, Cols, RowValid, ColValid> &l1_tile) {
+  pto::TPOP<Pipe, TileMatL1<T, Rows, Cols, RowValid, ColValid>, SplitAxis>(
+      pipe, l1_tile);
 }
-
 
 // ND→Nz conversion via TMOV
-template <typename T, int32_t M, int32_t N, int32_t M_tmp, int32_t N_tmp>
+template <typename T, int SrcRows, int SrcCols, int DstRows, int DstCols,
+          int SrcRowValid = SrcRows, int SrcColValid = SrcCols,
+          int DstRowValid = DstRows, int DstColValid = DstCols>
 AICORE PTO_INLINE void copy_ub_to_ub_Nz(
-    TileUbDataND<T, M, N> &ub_tile,
-    TileUbDataND<T, M_tmp, N_tmp> &tmp_tile) {
-  using DstTile = TileUbDataNz<T, M_tmp, N_tmp, M, N>;
+    TileUbDataND<T, SrcRows, SrcCols, SrcRowValid, SrcColValid> &ub_tile,
+    TileUbDataND<T, DstRows, DstCols, DstRowValid, DstColValid> &tmp_tile) {
+  using DstTile = TileUbDataNz<T, DstRows, DstCols, SrcRowValid, SrcColValid>;
   DstTile tmp_tile_Nz;
   pto::TASSIGN(tmp_tile_Nz, reinterpret_cast<uint64_t>(tmp_tile.data()));
   pto::TMOV(tmp_tile_Nz, ub_tile);
 }
 
-
-template <typename Pipe, typename T, int32_t M, int32_t N,
-          pto::TileSplitAxis SplitAxis = pto::TileSplitAxis::TILE_UP_DOWN>
-AICORE PTO_INLINE void copy_pipe_to_ub_V(Pipe &pipe, TileUbDataND<T, M, N> &ub_tile) {
-  pto::TPOP<Pipe, TileUbDataND<T, M, N>, SplitAxis>(pipe, ub_tile);
+template <pto::TileSplitAxis SplitAxis, typename Pipe, typename T, int Rows,
+          int Cols, int RowValid = Rows, int ColValid = Cols>
+AICORE PTO_INLINE void
+copy_pipe_to_ub_V(Pipe &pipe,
+                  TileUbDataND<T, Rows, Cols, RowValid, ColValid> &ub_tile) {
+  pto::TPOP<Pipe, TileUbDataND<T, Rows, Cols, RowValid, ColValid>, SplitAxis>(
+      pipe, ub_tile);
 }
-
 
 #ifdef PTO_PLATFORM_A5
 // A5 overload: push Nz-converted tile from tmp buffer into pipe
-template <typename Pipe, typename T, int32_t M, int32_t N, int32_t M_tmp, int32_t N_tmp,
-          pto::TileSplitAxis SplitAxis = pto::TileSplitAxis::TILE_UP_DOWN>
-AICORE PTO_INLINE void copy_ub_to_pipe(Pipe &pipe,
-                                        TileUbDataND<T, M, N> &ub_tile,
-                                        TileUbDataND<T, M_tmp, N_tmp> &tmp_tile) {
-  using DstTile = TileUbDataNz<T, M_tmp, N_tmp, M, N>;
+template <pto::TileSplitAxis SplitAxis, typename Pipe, typename T, int SrcRows,
+          int SrcCols, int DstRows, int DstCols, int SrcRowValid = SrcRows,
+          int SrcColValid = SrcCols, int DstRowValid = DstRows,
+          int DstColValid = DstCols>
+AICORE PTO_INLINE void copy_ub_to_pipe(
+    Pipe &pipe,
+    TileUbDataND<T, SrcRows, SrcCols, SrcRowValid, SrcColValid> &ub_tile,
+    TileUbDataND<T, DstRows, DstCols, DstRowValid, DstColValid> &tmp_tile) {
+  using DstTile = TileUbDataNz<T, DstRows, DstCols, SrcRowValid, SrcColValid>;
   DstTile tmp_tile_Nz;
   pto::TASSIGN(tmp_tile_Nz, reinterpret_cast<uint64_t>(tmp_tile.data()));
   pto::TPUSH<Pipe, DstTile, SplitAxis>(pipe, tmp_tile_Nz);
 }
 #else
-// Non-A5: fallback — ignore tmp and call regular copy_ub_to_pipe
-template <typename Pipe, typename T, int32_t M, int32_t N, int32_t M_tmp, int32_t N_tmp,
-          pto::TileSplitAxis SplitAxis = pto::TileSplitAxis::TILE_UP_DOWN>
-AICORE PTO_INLINE void copy_ub_to_pipe(Pipe &pipe,
-                                        TileUbDataND<T, M, N> &ub_tile,
-                                        TileUbDataND<T, M_tmp, N_tmp> &tmp_tile) {
-  copy_ub_to_pipe<Pipe, T, M, N, SplitAxis>(pipe, ub_tile);
+// Non-A5 fallback — ignore tmp
+template <pto::TileSplitAxis SplitAxis, typename Pipe, typename T, int SrcRows,
+          int SrcCols, int DstRows, int DstCols, int SrcRowValid = SrcRows,
+          int SrcColValid = SrcCols, int DstRowValid = DstRows,
+          int DstColValid = DstCols>
+AICORE PTO_INLINE void copy_ub_to_pipe(
+    Pipe &pipe,
+    TileUbDataND<T, SrcRows, SrcCols, SrcRowValid, SrcColValid> &ub_tile,
+    TileUbDataND<T, DstRows, DstCols, DstRowValid, DstColValid> &tmp_tile) {
+  copy_ub_to_pipe<SplitAxis, Pipe, T, SrcRows, SrcCols, SrcRowValid,
+                  SrcColValid>(pipe, ub_tile);
 }
 #endif
 
 #ifdef PTO_PLATFORM_A5
-template <typename T, int DstRows, int DstCols, int SrcRows, int SrcCols,
-          int mode = 2>
+template <int mode, typename T, int DstRows, int DstCols, int SrcRows,
+          int SrcCols, int DstRowValid = DstRows, int DstColValid = DstCols,
+          int SrcRowValid = SrcRows, int SrcColValid = SrcCols>
 AICORE PTO_INLINE void copy_cv_experiment(
-    TileUbDataND<T, DstRows, DstCols, DstRows, DstCols> &dst_ub,
-    pto::TileAcc<T, SrcRows, SrcCols, SrcRows, SrcCols> &src_l0c) {
-  using DstT = TileUbDataND<T, DstRows, DstCols, DstRows, DstCols>;
-  using SrcT = pto::TileAcc<T, SrcRows, SrcCols, SrcRows, SrcCols>;
+    TileUbDataND<T, DstRows, DstCols, DstRowValid, DstColValid> &dst_ub,
+    pto::TileAcc<T, SrcRows, SrcCols, SrcRowValid, SrcColValid> &src_l0c) {
+  using DstT = TileUbDataND<T, DstRows, DstCols, DstRowValid, DstColValid>;
+  using SrcT = pto::TileAcc<T, SrcRows, SrcCols, SrcRowValid, SrcColValid>;
   pto::TMOV<DstT, SrcT, static_cast<pto::AccToVecMode>(mode)>(dst_ub, src_l0c);
 }
 #endif
 
 #ifdef PTO_PLATFORM_A5
-template <typename T, int DstRows, int DstCols, int SrcRows, int SrcCols,
-          int TmpRows, int TmpCols, int mode = 0>
-AICORE PTO_INLINE void
-copy_vc_experiment(TileMatL1<T, DstRows, DstCols, DstRows, DstCols> &dst_l1,
-                   TileUbDataND<T, SrcRows, SrcCols, SrcRows, SrcCols> &src_ub,
-                   TileUbDataND<T, TmpRows, TmpCols, TmpRows, TmpCols> &tmp,
-                   uint16_t indexRow = 0, uint16_t indexCol = 0) {
-  TileUbDataNz<T, TmpRows, TmpCols, SrcRows, SrcCols> nz_tmp;
+template <int mode, typename T, int DstRows, int DstCols, int SrcRows,
+          int SrcCols, int TmpRows, int TmpCols, int DstRowValid = DstRows,
+          int DstColValid = DstCols, int SrcRowValid = SrcRows,
+          int SrcColValid = SrcCols, int TmpRowValid = TmpRows,
+          int TmpColValid = TmpCols>
+AICORE PTO_INLINE void copy_vc_experiment(
+    TileMatL1<T, DstRows, DstCols, DstRowValid, DstColValid> &dst_l1,
+    TileUbDataND<T, SrcRows, SrcCols, SrcRowValid, SrcColValid> &src_ub,
+    TileUbDataND<T, TmpRows, TmpCols, TmpRowValid, TmpColValid> &tmp,
+    uint16_t indexRow = 0, uint16_t indexCol = 0) {
+  TileUbDataNz<T, TmpRows, TmpCols, SrcRowValid, SrcColValid> nz_tmp;
   TASSIGN(nz_tmp, reinterpret_cast<uint64_t>(tmp.data()));
   // TMOV: copy + ND → Nz format conversion
   TMOV(nz_tmp, src_ub);
