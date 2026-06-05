@@ -413,10 +413,10 @@ def topk(dst: Buffer, src: Buffer, K: PrimExpr, actual_num: PrimExpr):
         A TVM intrinsic call that performs the TopK operation.
     """
     from tvm.arith import Analyzer
-    
+
     analyzer = Analyzer()
     max_actual_num = 0
-    
+
     for dim in src.shape:
         dim_simplified = analyzer.simplify(dim)
         if isinstance(dim_simplified, tir.IntImm):

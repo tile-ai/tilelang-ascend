@@ -11,6 +11,7 @@ pass_configs = {
     tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
 }
 
+
 @tilelang.jit(out_idx=[-1], workspace_idx=[-3], pass_configs=pass_configs)
 def indexer(N2, G, D, TOP_K, VECTOR_BASEN, VECTOR_BASEG, BLOCK_M, BLOCK_N, BLOCK_K, MAX_S2=4096, input_dtype="float16", calc_dtype="float"):
 
@@ -62,10 +63,7 @@ def indexer(N2, G, D, TOP_K, VECTOR_BASEN, VECTOR_BASEG, BLOCK_M, BLOCK_N, BLOCK
 
             with T.Scope("V"):
                 mm_res_ub = T.alloc_ub((VECTOR_BASEG, VECTOR_BASEN), calc_dtype)
-                mm_res_ub_flat = T.alloc_ub((VECTOR_BASEG * VECTOR_BASEN), calc_dtype)
-                mm_res_ub_uint8 = T.alloc_ub((VECTOR_BASEG, VECTOR_BASEN), "uint8")
                 weight_ub = T.alloc_ub(VECTOR_BASEG, calc_dtype)
-                weight_brcb_ub = T.alloc_ub((VECTOR_BASEG, 8), calc_dtype)
                 reduce_tmp_ub = T.alloc_ub((VECTOR_BASEG, VECTOR_BASEN), calc_dtype)
                 reduce_g_ub = T.alloc_ub(VECTOR_BASEN, calc_dtype)
                 # Accumulate all S2 scores, then topk once

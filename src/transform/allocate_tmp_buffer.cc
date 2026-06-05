@@ -601,10 +601,11 @@ private:
           } else {
             multiplier = is_topk ? 6 : 4;
           }
-          
+
           // For dynamic-shape topk, use max_actual_num (args[7]) if available.
           // args layout after Python frontend change:
-          // [4] K, [5] repeatTimes, [6] actual_num (runtime), [7] max_actual_num (compile-time)
+          // [4] K, [5] repeatTimes, [6] actual_num (runtime), [7]
+          // max_actual_num (compile-time)
           int64_t aligned_count = 0;
           if (is_topk && call->args.size() >= 8) {
             // New API: use max_actual_num for buffer sizing

@@ -1050,7 +1050,8 @@ template <typename UserT, int32_t N, int32_t TopK = -1>
 AICORE PTO_INLINE void SortDynamic(int32_t dst_addr, int32_t src_addr,
                                    int32_t tmp_addr, int32_t actual_count) {
   static_assert(N % 32 == 0, "SortDynamic: N must be a multiple of 32");
-  // Note: actual_count is a runtime parameter; caller must ensure 0 < actual_count <= N
+  // Note: actual_count is a runtime parameter; caller must ensure 0 <
+  // actual_count <= N
 
   constexpr bool is_topk = (TopK >= 0);
   constexpr bool is_half = std::is_same_v<UserT, half>;
@@ -1065,8 +1066,7 @@ AICORE PTO_INLINE void SortDynamic(int32_t dst_addr, int32_t src_addr,
   const int32_t bufB = buf_b_in_tmp ? (tmp_addr + 2 * N * T_BYTES) : dst_addr;
   const int32_t bufC = tmp_addr + (buf_b_in_tmp ? 4 : 2) * N * T_BYTES;
   const int32_t indices_addr = bufB;
-  const int32_t sort_src_addr =
-      is_half ? (bufB + N * T_BYTES) : src_addr;
+  const int32_t sort_src_addr = is_half ? (bufB + N * T_BYTES) : src_addr;
 
   // Phase 0 (half only): cast user src(half) -> float at bufB high half.
   if constexpr (is_half) {

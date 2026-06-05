@@ -170,11 +170,12 @@ private:
                          const CallNode *tmp_call, int32_t repeat_times,
                          int32_t actual_num, int32_t top_k);
 
-  void EmitSortAlgorithmDynamic(const CallNode *dst_call, const CallNode *src_call,
+  void EmitSortAlgorithmDynamic(const CallNode *dst_call,
+                                const CallNode *src_call,
                                 const CallNode *tmp_call, int32_t repeat_times,
-                                int32_t max_actual_num, PrimExpr actual_num_expr,
-                                int32_t top_k);
-  
+                                int32_t max_actual_num,
+                                PrimExpr actual_num_expr, int32_t top_k);
+
   void TransposeCodegen(const CallNode *op, const std::string &op_name);
 
   void XorCodegen(const CallNode *op, const std::string &op_name);

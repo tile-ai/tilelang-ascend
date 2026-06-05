@@ -1707,7 +1707,8 @@ void CodeGenTileLangAscendPto::TopKCodegen(const CallNode *op) {
     EmitSortAlgorithmDynamic(dst_call, src_call, tmp_call, repeat_times,
                              max_actual_num, actual_num_expr, /*top_k=*/k);
   } else {
-    EmitSortAlgorithm(dst_call, src_call, tmp_call, repeat_times, actual_num_const,
+    EmitSortAlgorithm(dst_call, src_call, tmp_call, repeat_times,
+                      actual_num_const,
                       /*top_k=*/k);
   }
 }
@@ -1718,7 +1719,8 @@ void CodeGenTileLangAscendPto::TopKCodegen(const CallNode *op) {
 //
 // The full algorithm (pad, sort32, merge tree, finalize) lives in
 // pto/common.h as the device template tl::ascend_pto::Sort/SortDynamic.
-// This codegen just forwards parsed parameters and emits a single template call.
+// This codegen just forwards parsed parameters and emits a single template
+// call.
 
 void CodeGenTileLangAscendPto::EmitSortAlgorithm(const CallNode *dst_call,
                                                  const CallNode *src_call,
@@ -1766,9 +1768,9 @@ void CodeGenTileLangAscendPto::EmitSortAlgorithm(const CallNode *dst_call,
 
 // Dynamic-shape version: emits SortDynamic with runtime actual_num expression.
 void CodeGenTileLangAscendPto::EmitSortAlgorithmDynamic(
-    const CallNode *dst_call, const CallNode *src_call, const CallNode *tmp_call,
-    int32_t repeat_times, int32_t max_actual_num, PrimExpr actual_num_expr,
-    int32_t top_k) {
+    const CallNode *dst_call, const CallNode *src_call,
+    const CallNode *tmp_call, int32_t repeat_times, int32_t max_actual_num,
+    PrimExpr actual_num_expr, int32_t top_k) {
   int32_t aligned_count = repeat_times * kSortBlockSize;
 
   DataType dtype = src_call->args[0].dtype();
