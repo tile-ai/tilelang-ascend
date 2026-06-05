@@ -316,6 +316,8 @@ ShapeInfo CodeGenTileLangAscendPto::GetSliceInfo(const CallNode *op) {
 
   int32_t row = 1;
   int32_t col = 1;
+  int32_t valid_row = 1;
+  int32_t valid_col = 1;
   if (shape.size() == 1) {
     row = 1;
     col = shape[0].as<IntImmNode>()->value;
@@ -332,12 +334,25 @@ ShapeInfo CodeGenTileLangAscendPto::GetSliceInfo(const CallNode *op) {
     col = shape[1].as<IntImmNode>()->value;
   }
 
+  if (shape.size() == 4) {
+    // 4-element shape from Flatten2DPass: {M, N_aligned, valid_M, valid_N}
+    ICHECK(shape[2]->IsInstance<IntImmNode>()) << "Shape[2] is not IntImm!";
+    ICHECK(shape[3]->IsInstance<IntImmNode>()) << "Shape[3] is not IntImm!";
+    valid_row = shape[2].as<IntImmNode>()->value;
+    valid_col = shape[3].as<IntImmNode>()->value;
+  } else {
+    valid_row = row;
+    valid_col = col;
+  }
+
   const auto *extent_imm = op->args[3].as<IntImmNode>();
   bool has_dynamic_extent = (extent_imm == nullptr);
   int32_t extent = extent_imm ? static_cast<int32_t>(extent_imm->value)
                               : static_cast<int32_t>(row * col);
-  int32_t slice_valid_row = (extent / col) > 1 ? (extent / col) : 1;
-  int32_t slice_valid_col = extent > col ? col : extent;
+  // Use valid_col (logical column width) for slice dimension computation,
+  // not col (which may be alignment-padded by Flatten2DPass).
+  int32_t slice_valid_row = (extent / valid_col) > 1 ? (extent / valid_col) : 1;
+  int32_t slice_valid_col = extent > valid_col ? valid_col : extent;
 
   ICHECK(buffer_address_map_.count(buffer_var))
       << "Buffer address not found: " << buffer_var->name_hint;
@@ -346,13 +361,15 @@ ShapeInfo CodeGenTileLangAscendPto::GetSliceInfo(const CallNode *op) {
 
   auto type = getType(op->args[0].dtype());
 
+  // Use valid dimensions for is_slice comparison, since extent reflects
+  // the logical (unpadded) access size.
   bool is_slice;
   if (has_dynamic_extent) {
-    is_slice = true;
+    is_slice = true;  
   } else if (shape.size() == 1) {
-    is_slice = extent != col;
+    is_slice = extent != valid_col;
   } else {
-    is_slice = extent != row * col;
+    is_slice = extent != valid_row * valid_col;
   }
 
   int32_t slice_row = slice_valid_row;
