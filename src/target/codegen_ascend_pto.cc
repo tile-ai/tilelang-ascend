@@ -1120,9 +1120,16 @@ void CodeGenTileLangAscendPto::GMCopyCall(const CallNode *call,
   // Use buffer's full shape (row/col) for UB tile to ensure correct
   // physical stride. The valid dims (call->args[4/5]) control how much
   // data is actually transferred. Fixes column-slice DMA stride mismatch.
+  // For sliced accesses, disable padding: TFILLPAD_INPLACE would write
+  // zeros to the full tile's non-valid region (cols beyond the slice),
+  // corrupting adjacent column data or crossing buffer boundaries.
   if (op_name.rfind("copy_gm_to_ub", 0) == 0) {
     stream << slice_info.row << ", " << slice_info.col << ", ";
-    stream << GetPadEnum(call->args[6]);
+    if (slice_info.is_slice) {
+      stream << "pto::PadValue::Null";
+    } else {
+      stream << GetPadEnum(call->args[6]);
+    }
   } else if (op_name.rfind("copy_ub_to_gm", 0) == 0) {
     stream << slice_info.row << ", " << slice_info.col;
   } else {
