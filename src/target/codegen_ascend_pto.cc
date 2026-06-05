@@ -1667,29 +1667,17 @@ void CodeGenTileLangAscendPto::SortCodegen(const CallNode *op) {
 }
 
 void CodeGenTileLangAscendPto::TopKCodegen(const CallNode *op) {
-  // After tmp injection, args layout (new API with dynamic shape support):
+  // After tmp injection, args layout:
   //   [0] func_name (e.g. "TopK<float>")
   //   [1] dst access_ptr   -- 2*K user_T elements (UB-rounded)
   //   [2] src access_ptr   -- alignedCount user_T elements
   //   [3] tmp access_ptr   -- internal workspace
   //   [4] K (constant)
-  //   [5] repeatTimes (constant, computed from max_actual_num)
-  //   [6] actual_num (may be symbolic for dynamic shapes)
-  //   [7] max_actual_num (compile-time constant for buffer sizing)
-
-  bool is_dynamic = false;
-  PrimExpr actual_num_expr;
-  int32_t actual_num_const = 0;
-
-  // Try to detect if actual_num (args[6]) is a compile-time constant
-  if (auto *int_imm = op->args[6].as<IntImmNode>()) {
-    actual_num_const = int_imm->value;
-    is_dynamic = false;
-  } else {
-    // Symbolic expression - use dynamic version
-    is_dynamic = true;
-    actual_num_expr = op->args[6];
-  }
+  //   [5] repeatTimes (constant)
+  //   [6] actual_num (constant)
+  ICHECK(op->args.size() == 7)
+      << "ascend_topk expects 7 args after tmp injection, got "
+      << op->args.size();
 
   auto dst_call = op->args[1].as<CallNode>();
   auto src_call = op->args[2].as<CallNode>();
@@ -1700,16 +1688,11 @@ void CodeGenTileLangAscendPto::TopKCodegen(const CallNode *op) {
 
   int32_t k = Downcast<IntImm>(op->args[4])->value;
   int32_t repeat_times = Downcast<IntImm>(op->args[5])->value;
-  int32_t max_actual_num = Downcast<IntImm>(op->args[7])->value;
+  int32_t actual_num = Downcast<IntImm>(op->args[6])->value;
   ICHECK(k > 0) << "TopK requires K > 0, got " << k;
 
-  if (is_dynamic) {
-    EmitSortAlgorithmDynamic(dst_call, src_call, tmp_call, repeat_times,
-                             max_actual_num, actual_num_expr, /*top_k=*/k);
-  } else {
-    EmitSortAlgorithm(dst_call, src_call, tmp_call, repeat_times, actual_num_const,
-                      /*top_k=*/k);
-  }
+  EmitSortAlgorithm(dst_call, src_call, tmp_call, repeat_times, actual_num,
+                    /*top_k=*/k);
 }
 
 // =============================================================================
@@ -1717,8 +1700,8 @@ void CodeGenTileLangAscendPto::TopKCodegen(const CallNode *op) {
 // =============================================================================
 //
 // The full algorithm (pad, sort32, merge tree, finalize) lives in
-// pto/common.h as the device template tl::ascend_pto::Sort/SortDynamic.
-// This codegen just forwards parsed parameters and emits a single template call.
+// pto/common.h as the device template tl::ascend_pto::Sort. This codegen
+// just forwards parsed parameters and emits a single template call.
 
 void CodeGenTileLangAscendPto::EmitSortAlgorithm(const CallNode *dst_call,
                                                  const CallNode *src_call,
@@ -1762,51 +1745,6 @@ void CodeGenTileLangAscendPto::EmitSortAlgorithm(const CallNode *dst_call,
   this->stream << kAscendPtoScope << "Sort<" << user_T << ", " << aligned_count
                << ", " << actual_num << ", " << top_k << ">(" << dst_addr
                << ", " << src_addr << ", " << tmp_addr << ");\n";
-}
-
-// Dynamic-shape version: emits SortDynamic with runtime actual_num expression.
-void CodeGenTileLangAscendPto::EmitSortAlgorithmDynamic(
-    const CallNode *dst_call, const CallNode *src_call, const CallNode *tmp_call,
-    int32_t repeat_times, int32_t max_actual_num, PrimExpr actual_num_expr,
-    int32_t top_k) {
-  int32_t aligned_count = repeat_times * kSortBlockSize;
-
-  DataType dtype = src_call->args[0].dtype();
-  bool is_half = dtype.is_float() && dtype.bits() == 16;
-  bool is_float = dtype.is_float() && dtype.bits() == 32;
-  ICHECK(is_half || is_float)
-      << "PTO SortDynamic supports float32 / float16 input, got " << dtype;
-  std::string user_T = is_half ? "half" : "float";
-  int32_t user_T_bytes = is_half ? 2 : 4;
-
-  Var dst_var = Downcast<Var>(dst_call->args[1]);
-  Var src_var = Downcast<Var>(src_call->args[1]);
-  Var tmp_var = Downcast<Var>(tmp_call->args[1]);
-  ICHECK(buffer_address_map_.count(dst_var))
-      << "Buffer address not found for dst: " << dst_var->name_hint;
-  ICHECK(buffer_address_map_.count(src_var))
-      << "Buffer address not found for src: " << src_var->name_hint;
-  ICHECK(buffer_address_map_.count(tmp_var))
-      << "Buffer address not found for tmp: " << tmp_var->name_hint;
-
-  auto byte_addr = [this](Var var, PrimExpr offset, int32_t elem_bytes) {
-    std::string base = PrintExpr(buffer_address_map_.at(var));
-    std::string off = PrintExpr(offset);
-    return base + " + ((" + off + ") * " + std::to_string(elem_bytes) + ")";
-  };
-
-  std::string dst_addr = byte_addr(dst_var, dst_call->args[2], user_T_bytes);
-  std::string src_addr = byte_addr(src_var, src_call->args[2], user_T_bytes);
-  std::string tmp_addr =
-      byte_addr(tmp_var, tmp_call->args[2], /*elem_bytes=*/4);
-
-  std::string actual_num_str = PrintExpr(actual_num_expr);
-
-  this->PrintIndent();
-  this->stream << kAscendPtoScope << "SortDynamic<" << user_T << ", "
-               << aligned_count << ", " << top_k << ">(" << dst_addr << ", "
-               << src_addr << ", " << tmp_addr << ", " << actual_num_str
-               << ");\n";
 }
 
 void CodeGenTileLangAscendPto::TransposeCodegen(const CallNode *op,
