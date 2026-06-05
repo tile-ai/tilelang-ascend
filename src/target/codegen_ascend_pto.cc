@@ -1100,10 +1100,9 @@ void CodeGenTileLangAscendPto::GMCopyCall(const CallNode *call,
   const auto &local_info = is_load ? dst_info : src_info;
 
   ShapeInfo slice_info = GetSliceInfo(local_info.access_ptr);
-  int32_t shape4 =
-      slice_info.is_slice ? slice_info.slice_valid_row : slice_info.row;
-  int32_t shape5 =
-      slice_info.is_slice ? slice_info.slice_valid_col : slice_info.col;
+  // Use buffer's full shape for GM tensor bounds (>= valid dims)
+  int32_t shape4 = slice_info.row;
+  int32_t shape5 = slice_info.col;
   std::string shape_tmpl =
       "1, 1, 1, " + std::to_string(shape4) + ", " + std::to_string(shape5);
 
@@ -1118,11 +1117,14 @@ void CodeGenTileLangAscendPto::GMCopyCall(const CallNode *call,
   stream << kAscendPtoScope << op_name << "<" << getType(gm_info.dtype) << ", "
          << getType(local_info.dtype) << ", " << shape_tmpl << ", "
          << stride_tmpl << ", ";
+  // Use buffer's full shape (row/col) for UB tile to ensure correct
+  // physical stride. The valid dims (call->args[4/5]) control how much
+  // data is actually transferred. Fixes column-slice DMA stride mismatch.
   if (op_name.rfind("copy_gm_to_ub", 0) == 0) {
-    stream << slice_info.slice_row << ", " << slice_info.slice_col << ", ";
+    stream << slice_info.row << ", " << slice_info.col << ", ";
     stream << GetPadEnum(call->args[6]);
   } else if (op_name.rfind("copy_ub_to_gm", 0) == 0) {
-    stream << slice_info.slice_row << ", " << slice_info.slice_col;
+    stream << slice_info.row << ", " << slice_info.col;
   } else {
     stream << slice_info.slice_valid_row << ", " << slice_info.slice_valid_col;
   }
