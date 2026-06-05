@@ -2887,46 +2887,16 @@ void CodeGenTileLangAscendPto::PrintHostFunc(
     const PrimFunc &f, const std::string &name, std::ostringstream &os,
     std::string &core, std::vector<const tir::VarNode *> &shape_vars) {
   std::vector<std::string> tiling_args; // reserved for future tiling support
-  // launch kernel
-  os << "extern \"C\" __global__ AICORE void launch_kernel(";
   std::vector<std::string> arg_names;
-  for (size_t i = 0; i < f->params.size(); ++i) { // params
+  for (size_t i = 0; i < f->params.size(); ++i) {
     auto v = f->params[i];
-    if (i != 0) {
-      os << ", ";
-    }
     arg_names.push_back(v->name_hint);
-    if (v.dtype() == DataType::Handle()) {
-      os << "__gm__ uint8_t *" << v->name_hint;
-    } else {
-      os << getType(v.dtype()) << " " << v->name_hint;
-    }
-  }
-  ProcessHostInput(os, arg_names, shape_vars);
-  int func_scope = this->BeginScope();
-  os << ", uint64_t fftsAddr)\n{\n  ";
-  this->PrintIndent();
-  // template function
-  os << name << "(";
-  for (size_t i = 0; i < f->params.size(); ++i) { // params
-    auto v = f->params[i];
-    if (i != 0) {
-      os << ",\n     ";
-    }
-    if (v.dtype() == DataType::Handle()) {
-      os << "reinterpret_cast<__gm__ "
-         << global_tensor_template[String(v->name_hint)].dtype << " *>("
-         << v->name_hint << ")";
-    } else {
-      os << v->name_hint;
-    }
   }
   for (auto shape_var : shape_vars) {
-    os << ", " << shape_var->name_hint;
+    arg_names.push_back(shape_var->name_hint);
   }
-  os << ",\n     reinterpret_cast<uint64_t>(fftsAddr));\n}\n\n";
 
-  // call kernel
+  // call kernel directly (no launch_kernel wrapper)
   os << "extern \"C\" void call(";
   for (size_t i = 0; i < f->params.size(); ++i) { // params
     auto v = f->params[i];
@@ -2940,12 +2910,13 @@ void CodeGenTileLangAscendPto::PrintHostFunc(
     }
   }
   ProcessHostInput(os, arg_names, shape_vars, false);
+  int func_scope = this->BeginScope();
   os << ", void *stream)\n{\n  ";
   os << "  uint32_t fftsLen{0};\n  ";
   os << "  uint64_t fftsAddr{0};\n  ";
   os << "  rtGetC2cCtrlAddr(&fftsAddr, &fftsLen);\n";
   this->PrintIndent();
-  os << "  launch_kernel" << "<<<" << core << ", nullptr, stream>>>(";
+  os << "  " << name << "<<<" << core << ", nullptr, stream>>>(";
 
   for (auto &arg_name : arg_names) {
     os << arg_name;
@@ -2988,7 +2959,7 @@ void CodeGenTileLangAscendPto::AddFunction(const GlobalVar &gvar,
   ICHECK(global_symbol.defined())
       << "CodeGenC: Expect PrimFunc to have the global_symbol attribute";
   this->PrintFuncPrefix(stream);
-  this->stream << "AICORE ";
+  this->stream << "extern \"C\" __global__ AICORE ";
   CodeGenC::PrintType(f->ret_type, stream);
 
   auto func_name = static_cast<std::string>(global_symbol.value()) + "_kernel";
@@ -3047,7 +3018,7 @@ void CodeGenTileLangAscendPto::AddFunction(const GlobalVar &gvar,
       stream << " " << vid;
     }
     if (v.dtype() == DataType::Handle()) {
-      stream << "__gm__ " << getType(f->buffer_map[v]->dtype) << " *" << vid;
+      stream << "__gm__ uint8_t *" << vid << "_raw";
     }
   }
   size_t index = 0;
@@ -3063,6 +3034,15 @@ void CodeGenTileLangAscendPto::AddFunction(const GlobalVar &gvar,
   }
 
   stream << ", uint64_t ffts_Addr) {\n";
+  for (size_t i = 0; i < f->params.size(); ++i) {
+    tir::Var v = f->params[i];
+    if (v.dtype() == DataType::Handle()) {
+      std::string vid = GetVarID(v.get());
+      stream << "  __gm__ " << getType(f->buffer_map[v]->dtype) << " *" << vid
+             << " = reinterpret_cast<__gm__ "
+             << getType(f->buffer_map[v]->dtype) << " *>(" << vid << "_raw);\n";
+    }
+  }
   this->PreFunctionBody(f);
   int func_scope = this->BeginScope();
   this->PrintStmt(f->body);
