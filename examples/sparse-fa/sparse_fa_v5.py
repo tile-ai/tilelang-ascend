@@ -35,7 +35,7 @@ def high_perf_mtgr_sparse_attn_kernel(
     block_M=128,
     block_N=128,
     core_num=24,
-    num_stages=4,  # 适当减小 stage 数量以防止 L1/UB 压力溢出
+    num_stages=14,
     cross_interval=2,
     max_splits=32,
     max_segs=4,
@@ -112,8 +112,8 @@ def high_perf_mtgr_sparse_attn_kernel(
             io_buf = T.alloc_ub([half_M, block_N], dtype)
             acc_s_half = T.alloc_ub([half_M, block_N], dtype)
             work_ub = T.alloc_ub([half_M, block_N], accum_dtype)
-            buf_2d = T.alloc_ub([half_M, block_N], accum_dtype)
-            mask_ub = T.alloc_ub([half_M, block_N], accum_dtype)
+            buf_2d = T.alloc_ub([half_M, block_N], accum_dtype) # mask_ub
+            # buf_2d = T.alloc_ub([half_M, block_N], accum_dtype)
 
             # 用于存储平铺流水线的真实有效 k 索引
             valid_k_indices = T.alloc_ub([max_splits], "int32")
@@ -210,7 +210,7 @@ def high_perf_mtgr_sparse_attn_kernel(
                             kv_packed_start = q_seq_starts[b_i] + kv_start
 
                             T.wait_flag("MTE1", "MTE2", SIG_K_L1)
-                            T.copy(K[kv_packed_start : kv_packed_start + kv_size, h_kv, :], k_l1[0:kv_size, :])
+                            T.copy(K[kv_packed_start : kv_packed_start + kv_size, h_kv, :], k_l1[:, :])
                             T.set_flag("MTE2", "MTE1", SIG_K_L1)
 
                             T.wait_flag("M", "MTE1", SIG_L0AB + side)
@@ -247,7 +247,7 @@ def high_perf_mtgr_sparse_attn_kernel(
                             kv_packed_start = q_seq_starts[b_i] + kv_start
 
                             T.wait_flag("MTE1", "MTE2", SIG_V_L1)
-                            T.copy(V[kv_packed_start : kv_packed_start + kv_size, h_kv, :], v_l1[0:kv_size, :])
+                            T.copy(V[kv_packed_start : kv_packed_start + kv_size, h_kv, :], v_l1[:, :])
                             T.set_flag("MTE2", "MTE1", SIG_V_L1)
 
                             T.wait_flag("MTE1", "MTE2", SIG_P_L1)
@@ -368,7 +368,7 @@ def high_perf_mtgr_sparse_attn_kernel(
                             seg_end = segment_offsets[b_i, seg_id + 1]
 
                             # 【核心优化】计算掩盖 (Hiding Computation)：在等 Cube 前利用算力资源提前生成 MASK
-                            T.tile.fill(mask_ub, NEG_INF)
+                            T.tile.fill(buf_2d, NEG_INF)
                             for row in T.serial(half_M):
                                 row_abs_pos = q_start + vid * half_M + row
                                 if rule == 0:
@@ -376,22 +376,22 @@ def high_perf_mtgr_sparse_attn_kernel(
                                     fill_len = T.if_then_else(raw_len < kv_size, raw_len, kv_size)
                                     fill_len = T.if_then_else(fill_len > 0, fill_len, 0)
                                     if fill_len > 0:
-                                        T.tile.fill(mask_ub[row, 0:fill_len], 0.0)
+                                        T.tile.fill(buf_2d[row, 0:fill_len], 0.0)
                                 elif rule == 1:
                                     raw_len = seg_end - kv_start
                                     fill_len = T.if_then_else(raw_len < kv_size, raw_len, kv_size)
                                     fill_len = T.if_then_else(fill_len > 0, fill_len, 0)
                                     if fill_len > 0:
-                                        T.tile.fill(mask_ub[row, 0:fill_len], 0.0)
+                                        T.tile.fill(buf_2d[row, 0:fill_len], 0.0)
                                 elif rule == 2:
                                     raw_len = seg_start - kv_start
                                     fill_len = T.if_then_else(raw_len < kv_size, raw_len, kv_size)
                                     fill_len = T.if_then_else(fill_len > 0, fill_len, 0)
                                     if fill_len > 0:
-                                        T.tile.fill(mask_ub[row, 0:fill_len], 0.0)
+                                        T.tile.fill(buf_2d[row, 0:fill_len], 0.0)
                                     diag_col = row_abs_pos - kv_start
                                     if (diag_col >= 0) & (diag_col < kv_size):
-                                        mask_ub[row, diag_col] = 0.0
+                                        buf_2d[row, diag_col] = 0.0
 
                             T.wait_flag("V", "MTE2", SIG_IO_UB)
                             if i % cross_interval == 0:
@@ -405,7 +405,7 @@ def high_perf_mtgr_sparse_attn_kernel(
                             T.set_flag("V", "MTE2", SIG_IO_UB)
 
                             # 施加 Mask 到矩阵 S
-                            T.tile.add(work_ub, work_ub, mask_ub)
+                            T.tile.add(work_ub, work_ub, buf_2d)
 
                             T.reduce_max(work_ub, neg_sm[cur, :, :], dim=-1)
                             T.tile.mul(neg_sm[cur, :, :], neg_sm[cur, :, :], -sm_scale)
@@ -696,7 +696,7 @@ def test(
     block_N=128,
     block_size=128,
     core_num=24,
-    num_stages=4,
+    num_stages=14,
     cross_interval=2,
 ):
     B = len(seg_lengths)
@@ -823,7 +823,7 @@ if __name__ == "__main__":
     test_configs = [
         {
             "H": 8,
-            "D": 64,
+            "D": 128,
             "seg_lengths": [
                 [2200, 8, 200, 1024],
                 [1700, 8, 300, 1100],
