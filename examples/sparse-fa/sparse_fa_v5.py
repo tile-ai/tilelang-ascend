@@ -121,6 +121,8 @@ def high_perf_mtgr_sparse_attn_kernel(
             seg_id = T.alloc_var("int32", init=0)
             next_seg_first_tile = T.alloc_var("int32", init=0)
             valid_k_total = T.alloc_var("int32", init=0)
+            scan_count = T.alloc_var("int32", init=0)
+            scan_k_idx = T.alloc_var("int32", init=-1)
 
             total_tasks = total_seq_tiles * heads
             my_iters = T.if_then_else(
@@ -173,25 +175,23 @@ def high_perf_mtgr_sparse_attn_kernel(
                     next_seg_first_tile = T.if_then_else(next_seg_first_tile == s_local, tiles_this_batch, next_seg_first_tile)
                     kv_iter_end = T.if_then_else(rule == 1, next_seg_first_tile, s_local + 1)
 
-                    # 提取有效的 K 切片索引（Macro-Sparsity）
+                    # 计算有效 K 切片数量（Cube 无法读写 UB，仅计数）
+                    seg_start = segment_offsets[b_i, seg_id]
+                    seg_end = segment_offsets[b_i, seg_id + 1]
+                    max_row_pos = q_start + q_tile_size - 1
                     valid_k_total = 0
                     for k_i in T.serial(kv_iter_end):
-                        kv_start = split_points[b_i, k_i]
-                        seg_start = segment_offsets[b_i, seg_id]
-                        seg_end = segment_offsets[b_i, seg_id + 1]
-                        max_row_pos = q_start + q_tile_size - 1
-
+                        kv_start_k = split_points[b_i, k_i]
                         process_cond = (
-                            ((rule == 0) & (kv_start <= max_row_pos))
-                            | ((rule == 1) & (kv_start < seg_end))
-                            | ((rule == 2) & ((kv_start <= seg_start) | (kv_start <= max_row_pos)))
+                            ((rule == 0) & (kv_start_k <= max_row_pos))
+                            | ((rule == 1) & (kv_start_k < seg_end))
+                            | ((rule == 2) & ((kv_start_k <= seg_start) | (kv_start_k <= max_row_pos)))
                         )
                         if process_cond:
-                            valid_k_indices[valid_k_total] = k_i
                             valid_k_total += 1
 
                     # 载入 Q
-                    T.copy(Q[q_packed_start : q_packed_start + q_tile_size, h_i, :], q_l1[0:q_tile_size, :])
+                    T.copy(Q[q_packed_start : q_packed_start + q_tile_size, h_i, :], q_l1[:, :])
                     num_outer = T.ceildiv(valid_k_total, num_stages)
 
                     for k_outer in T.serial(num_outer):
@@ -204,9 +204,20 @@ def high_perf_mtgr_sparse_attn_kernel(
                         T.wait_cross_flag(SEM_WS1_V2C)
                         for i in T.serial(batch_iters):
                             side = i % 2
-                            k_idx = valid_k_indices[k_outer * num_stages + i]
-                            kv_start = split_points[b_i, k_idx]
-                            kv_size = split_points[b_i, k_idx + 1] - kv_start
+                            scan_count = 0
+                            scan_k_idx = -1
+                            target = k_outer * num_stages + i
+                            for k_scan in T.serial(kv_iter_end):
+                                kv_scan_start = split_points[b_i, k_scan]
+                                process_cond_scan = (
+                                    ((rule == 0) & (kv_scan_start <= max_row_pos))
+                                    | ((rule == 1) & (kv_scan_start < seg_end))
+                                    | ((rule == 2) & ((kv_scan_start <= seg_start) | (kv_scan_start <= max_row_pos)))
+                                )
+                                scan_k_idx = T.if_then_else(process_cond_scan & (scan_count == target), k_scan, scan_k_idx)
+                                scan_count = T.if_then_else(process_cond_scan, scan_count + 1, scan_count)
+                            kv_start = split_points[b_i, scan_k_idx]
+                            kv_size = split_points[b_i, scan_k_idx + 1] - kv_start
                             kv_packed_start = q_seq_starts[b_i] + kv_start
 
                             T.wait_flag("MTE1", "MTE2", SIG_K_L1)
@@ -241,9 +252,20 @@ def high_perf_mtgr_sparse_attn_kernel(
                         T.wait_cross_flag(SEM_WS3_V2C)
                         for i in T.serial(batch_iters):
                             side = i % 2
-                            k_idx = valid_k_indices[k_outer * num_stages + i]
-                            kv_start = split_points[b_i, k_idx]
-                            kv_size = split_points[b_i, k_idx + 1] - kv_start
+                            scan_count = 0
+                            scan_k_idx = -1
+                            target = k_outer * num_stages + i
+                            for k_scan in T.serial(kv_iter_end):
+                                kv_scan_start = split_points[b_i, k_scan]
+                                process_cond_scan = (
+                                    ((rule == 0) & (kv_scan_start <= max_row_pos))
+                                    | ((rule == 1) & (kv_scan_start < seg_end))
+                                    | ((rule == 2) & ((kv_scan_start <= seg_start) | (kv_scan_start <= max_row_pos)))
+                                )
+                                scan_k_idx = T.if_then_else(process_cond_scan & (scan_count == target), k_scan, scan_k_idx)
+                                scan_count = T.if_then_else(process_cond_scan, scan_count + 1, scan_count)
+                            kv_start = split_points[b_i, scan_k_idx]
+                            kv_size = split_points[b_i, scan_k_idx + 1] - kv_start
                             kv_packed_start = q_seq_starts[b_i] + kv_start
 
                             T.wait_flag("MTE1", "MTE2", SIG_V_L1)
