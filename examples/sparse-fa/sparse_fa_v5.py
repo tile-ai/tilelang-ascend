@@ -192,6 +192,7 @@ def high_perf_mtgr_sparse_attn_kernel(
 
                     # 载入 Q
                     T.copy(Q[q_packed_start : q_packed_start + q_tile_size, h_i, :], q_l1[:, :])
+                    T.barrier_all()
                     num_outer = T.ceildiv(valid_k_total, num_stages)
 
                     for k_outer in T.serial(num_outer):
