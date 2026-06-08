@@ -774,6 +774,7 @@ public:
     // and should be retained in both generated code paths (e.g. printf).
     static const std::vector<std::string> kBothScopesApis = {
         "tl.ascend_printf",
+        "tl.ascend_sync_all",
     };
     for (const auto &target_api : kBothScopesApis) {
       if (api_name.find(target_api) != std::string::npos) {

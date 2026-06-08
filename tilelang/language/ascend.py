@@ -224,17 +224,23 @@ def pipe_barrier(pipe: _pipe):
     return tir.call_intrin("handle", tir.op.Op.get("tl.ascend_pipe_barrier"), pipe.upper())
 
 
-def sync_all():
+def sync_all(core_type="Mix"):
     """
     Performs a global synchronization across the compute unit (block/core).
 
     This generally ensures memory consistency and execution synchronization
     across the entire block/core scope.
 
+    Args:
+        core_type: The core type for synchronization. Options: "Mix", "AIVOnly", "AICOnly".
+            "Mix" synchronizes both AIC and AIV cores.
+            "AIVOnly" synchronizes only AIV cores.
+            "AICOnly" synchronizes only AIC cores.
+
     Returns:
         tvm.tir.Call: A TIR intrinsic call node.
     """
-    return tir.call_intrin("handle", tir.op.Op.get("tl.ascend_sync_all"))
+    return tir.call_intrin("handle", tir.op.Op.get("tl.ascend_sync_all"), core_type)
 
 
 def shmem_put_nbi(dst: Buffer, src: Buffer, nelems: PrimExpr, newPe: PrimExpr):
