@@ -405,13 +405,29 @@ def topk(dst: Buffer, src: Buffer, K: PrimExpr, actual_num: PrimExpr):
         dst: Destination buffer for top K interleaved (value, index) pairs.
              Must have at least 2*K elements.
         src: Source buffer containing the data to find top K from.
+             Assumes src has static shape for buffer sizing.
         K: Number of top elements to extract.
-        actual_num: The number of valid elements in src.
+        actual_num: The number of valid elements in src (can be symbolic for dynamic shapes).
 
     Returns:
         A TVM intrinsic call that performs the TopK operation.
     """
-    repeatTimes = (actual_num + 31) // 32
+    from tvm.arith import Analyzer
+
+    analyzer = Analyzer()
+    max_actual_num = 0
+
+    for dim in src.shape:
+        dim_simplified = analyzer.simplify(dim)
+        if isinstance(dim_simplified, tir.IntImm):
+            max_actual_num += dim_simplified.value
+        else:
+            raise ValueError(
+                f"topk requires src buffer with static shape for buffer sizing. "
+                f"Found dynamic dimension: {dim}. Please ensure src buffer has compile-time constant shape."
+            )
+
+    repeatTimes = (max_actual_num + 31) // 32
     return tir.call_intrin(
         "handle",
         tir.op.Op.get("tl.ascend_topk"),
@@ -421,6 +437,7 @@ def topk(dst: Buffer, src: Buffer, K: PrimExpr, actual_num: PrimExpr):
         K,
         repeatTimes,
         actual_num,
+        max_actual_num,
     )
 
 

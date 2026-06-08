@@ -601,8 +601,22 @@ private:
           } else {
             multiplier = is_topk ? 6 : 4;
           }
-          int64_t tmp_shape_size =
-              Downcast<IntImm>(src_access_ptr->args[3])->value * multiplier;
+
+          // For dynamic-shape topk, use max_actual_num (args[7]) if available.
+          // args layout after Python frontend change:
+          // [4] K, [5] repeatTimes, [6] actual_num (runtime), [7]
+          // max_actual_num (compile-time)
+          int64_t aligned_count = 0;
+          if (is_topk && call->args.size() >= 8) {
+            // New API: use max_actual_num for buffer sizing
+            int64_t max_actual_num = Downcast<IntImm>(call->args[7])->value;
+            aligned_count = ((max_actual_num + 31) / 32) * 32;
+          } else {
+            // Legacy API or sort: use src_access_ptr extent
+            aligned_count = Downcast<IntImm>(src_access_ptr->args[3])->value;
+          }
+
+          int64_t tmp_shape_size = aligned_count * multiplier;
           if (shapes.count(dtype) > 0) {
             int64_t shape_size = 0;
             for (size_t k = 0; k < shapes.at(dtype).size(); k++) {
