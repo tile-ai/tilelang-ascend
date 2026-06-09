@@ -26,6 +26,36 @@
 namespace tvm {
 namespace codegen {
 
+class CubeOpDetector : public StmtExprVisitor {
+public:
+  bool Detect(const Stmt &stmt) {
+    has_cube_op_ = false;
+    VisitStmt(stmt);
+    return has_cube_op_;
+  }
+
+private:
+  void VisitStmt(const Stmt &stmt) final {
+    if (has_cube_op_)
+      return;
+    StmtExprVisitor::VisitStmt(stmt);
+  }
+
+  void VisitExpr_(const CallNode *op) final {
+    if (has_cube_op_)
+      return;
+    if (op->op.same_as(tl::ascend_gemm_v0()) ||
+        op->op.same_as(tl::ascend_gemm_v1()) ||
+        op->op.same_as(tl::ascend_mma())) {
+      has_cube_op_ = true;
+      return;
+    }
+    StmtExprVisitor::VisitExpr_(op);
+  }
+
+  bool has_cube_op_{false};
+};
+
 #define ASCEND_A2A3_L0A_SIZE (65536)
 #define ASCEND_A2A3_L0B_SIZE (65536)
 #define ASCEND_A2A3_L1_SIZE (524032)
@@ -573,7 +603,9 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
   } else if (op->op.same_as(tl::ascend_pipe_barrier())) {
     PipeBarrierCodegen(op);
   } else if (op->op.same_as(tl::ascend_sync_all())) {
-    PrintOpCall(op, "AscendC::SyncAll<false>", {0, 0}, {0, 0});
+    std::string sync_call =
+        !has_cube_op_ ? "AscendC::SyncAll<true>" : "AscendC::SyncAll<false>";
+    PrintOpCall(op, sync_call, {0, 0}, {0, 0});
   } else if (op->op.same_as(tl::ascend_gemm_v0())) {
     GemmOpCodegen(op);
   } else if (op->op.same_as(tl::ascend_printf())) {
@@ -672,14 +704,17 @@ void CodeGenTileLangAscend::VisitStmt_(const AttrStmtNode *op) {
       this->stream << "}\n";
 
       this->core_num_ = PrintExpr(op->value);
-    } else if (iv->thread_tag == "blockIdx.y" && iv->var->name_hint != "_") {
+    } else if ((iv->thread_tag == "blockIdx.y" ||
+                iv->thread_tag == "threadIdx.x") &&
+               iv->var->name_hint != "_") {
       auto vec_id_ = AllocVarID(iv->var.get());
       this->PrintIndent();
-      this->stream << "auto " << vec_id_ << " = AscendC::GetSubBlockIdx();\n";
-    } else if (iv->thread_tag == "threadIdx.x") {
-      auto vec_id_ = AllocVarID(iv->var.get());
-      this->PrintIndent();
-      this->stream << "auto " << vec_id_ << " = AscendC::GetSubBlockIdx();\n";
+      if (!has_cube_op_ && cv_ratio_ != cv_1_1) {
+        this->stream << "auto " << vec_id_
+                     << " = AscendC::GetBlockIdx() % 2;\n";
+      } else {
+        this->stream << "auto " << vec_id_ << " = AscendC::GetSubBlockIdx();\n";
+      }
     }
     this->VisitStmt(op->body);
     return;
@@ -881,7 +916,9 @@ void CodeGenTileLangAscend::VisitExpr_(const MulNode *op,
 void CodeGenTileLangAscend::PreFunctionBody(const PrimFunc &f) {
   int func_scope = this->BeginScope();
   this->PrintIndent();
-  if (cv_ratio_ == cv_1_1) {
+  if (!has_cube_op_) {
+    stream << "KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_AIV_ONLY);\n";
+  } else if (cv_ratio_ == cv_1_1) {
     stream << "KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_MIX_AIC_1_1);\n";
   } else {
     stream << "KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_MIX_AIC_1_2);\n";
@@ -1066,7 +1103,12 @@ void CodeGenTileLangAscend::PrintHostFunc(
   CallTilingInput(os, tiling_func_name, tiling_args, shape_vars);
   this->PrintIndent();
 
-  os << name << "<<<" << core << ", nullptr, stream>>>(";
+  if (!has_cube_op_ && cv_ratio_ != cv_1_1) {
+    os << name << "<<<(" << core << ") * 2"
+       << ", nullptr, stream>>>(";
+  } else {
+    os << name << "<<<" << core << ", nullptr, stream>>>(";
+  }
   for (auto &arg_name : arg_names) {
     os << arg_name;
     if (arg_name != arg_names.back()) {
@@ -1095,6 +1137,9 @@ void CodeGenTileLangAscend::AddFunction(const GlobalVar &gvar,
   CodeGenC::DeclareFunction(gvar, f);
   // clear previous generated state.
   this->InitFuncState(f);
+
+  CubeOpDetector detector;
+  has_cube_op_ = detector.Detect(f->body);
 
   auto global_symbol = f->GetAttr<String>(tvm::attr::kGlobalSymbol);
 
