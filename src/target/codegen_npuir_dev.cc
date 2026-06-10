@@ -2495,13 +2495,17 @@ void CodeGenTileLangNPUIRDEV::VconcatCodegen(const CallNode *op) {
   llvm::SmallVector<Value> srcs;
   size_t n_srcs = npuirop.srcs.size();
   for (size_t i = 0; i < n_srcs; i++) {
-    Value src = GenSubviewFromRegion(npuirop.srcs[i], npuirop.srcs_range[i]);
+    Value src = GenExtractSliceFromRegion(npuirop.srcs[i], npuirop.srcs_range[i]);
     srcs.push_back(src);
   }
   mlir::ValueRange srcs_vr(srcs);
-  Value dst = GenSubviewFromRegion(npuirop.dst, npuirop.dst_range);
-  builder.create<mlir::hivm::VConcatOp>(builder.getUnknownLoc(), TypeRange{},
-                                        dim, srcs_vr, dst);
+  mlir::Value insertBase = NeedGenInsertSlice(npuirop.dst, npuirop.dst_range, srcs[0]);
+  mlir::Type dst_type = insertBase.getType();
+  mlir::TypeRange result_tensors(&dst_type, 1);
+  auto concatOp = builder.create<mlir::hivm::VConcatOp>(builder.getUnknownLoc(),
+                                                        result_tensors, dim,
+                                                        srcs_vr, insertBase);
+  SetVarValue(npuirop.dst, concatOp->getResult(0));
 }
 
 void CodeGenTileLangNPUIRDEV::VpadCodegen(const CallNode *op) {
@@ -2533,10 +2537,14 @@ void CodeGenTileLangNPUIRDEV::VpadCodegen(const CallNode *op) {
 
 void CodeGenTileLangNPUIRDEV::VflipCodegen(const CallNode *op) {
   tvm::tl::NpuirFlip npuirop(op->args, this->vmap);
-  Value src = GenSubviewFromRegion(npuirop.src, npuirop.src_range);
-  Value dst = GenSubviewFromRegion(npuirop.dst, npuirop.dst_range);
-  builder.create<mlir::hivm::VFlipOp>(builder.getUnknownLoc(), TypeRange{}, src,
-                                      dst, npuirop.axis);
+  Value src = GenExtractSliceFromRegion(npuirop.src, npuirop.src_range);
+  mlir::Value insertBase = NeedGenInsertSlice(npuirop.dst, npuirop.dst_range, src);
+  mlir::Type dst_type = insertBase.getType();
+  mlir::TypeRange result_tensors(&dst_type, 1);
+  auto flipOp = builder.create<mlir::hivm::VFlipOp>(builder.getUnknownLoc(),
+                                                    result_tensors, src, insertBase,
+                                                    npuirop.axis);
+  SetVarValue(npuirop.dst, flipOp->getResult(0));
 }
 
 void CodeGenTileLangNPUIRDEV::Nd2NzCodegen(const CallNode *op) {
