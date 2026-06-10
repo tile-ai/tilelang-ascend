@@ -481,26 +481,17 @@ def gemm_mx(A, B, C, scale_a, scale_b, init=False, format=None):
             format = "e5m2"
         else:
             format = "e5m2"
-    assert format in _MX_FORMAT_TO_CTYPE, (
-        f"T.gemm_mx unknown format {format!r}; expected one of "
-        f"{sorted(_MX_FORMAT_TO_CTYPE.keys())}"
-    )
+    assert format in _MX_FORMAT_TO_CTYPE, f"T.gemm_mx unknown format {format!r}; expected one of {sorted(_MX_FORMAT_TO_CTYPE.keys())}"
 
     M, N = C_shape
     K = A_shape[-1]
     K_B = B_shape[-2]
     assert K == K_B, f"T.gemm_mx K shape check failed: K_A = {K}, K_B = {K_B}"
     if format in _MX_FP4_FORMATS:
-        assert K % 2 == 0, (
-            f"T.gemm_mx MXFP4 requires K divisible by 2 (packed bytes), got K={K}"
-        )
+        assert K % 2 == 0, f"T.gemm_mx MXFP4 requires K divisible by 2 (packed bytes), got K={K}"
     assert K % 64 == 0, f"T.gemm_mx requires K divisible by 64, got K={K}"
-    assert tuple(sA_shape) == (M, K // 32), (
-        f"scale_a shape must be (M={M}, K//32={K // 32}), got {sA_shape}"
-    )
-    assert tuple(sB_shape) == (K // 32, N), (
-        f"scale_b shape must be (K//32={K // 32}, N={N}), got {sB_shape}"
-    )
+    assert tuple(sA_shape) == (M, K // 32), f"scale_a shape must be (M={M}, K//32={K // 32}), got {sA_shape}"
+    assert tuple(sB_shape) == (K // 32, N), f"scale_b shape must be (K//32={K // 32}, N={N}), got {sB_shape}"
 
     Aptr = _retrieve_ptr(A, "r")
     Bptr = _retrieve_ptr(B, "r")

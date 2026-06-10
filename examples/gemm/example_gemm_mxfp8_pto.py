@@ -10,6 +10,7 @@ tilelang.cache.clear_cache()
 # MXFP8 GEMM (OCP Microscaling with e8m0 block scale + TMATMUL_MX) requires
 # the A5 Cube core. A2/A3 devices (C220) don't provide TMATMUL_MX at all.
 from tilelang.utils.target import determine_platform
+
 if determine_platform() != "A5":
     print(f"[SKIP] MXFP8 GEMM requires A5 platform; detected: {determine_platform()}")
     sys.exit(0)
@@ -32,9 +33,7 @@ N = args.n
 K = args.k
 MX_SCALE_BLOCK = 32
 
-assert M % 128 == 0 and N % 128 == 0 and K % 64 == 0, (
-    "M, N must be multiples of 128; K must be a multiple of 64"
-)
+assert M % 128 == 0 and N % 128 == 0 and K % 64 == 0, "M, N must be multiples of 128; K must be a multiple of 64"
 
 fp8_dtype = T.e4m3_float8 if args.fp8 == "e4m3" else T.e5m2_float8
 torch_fp8_dtype = torch.float8_e4m3fn if args.fp8 == "e4m3" else torch.float8_e5m2
@@ -87,11 +86,11 @@ def mxfp8_matmul(M, N, K, block_M, block_N, K_L1):
 
     @T.prim_func
     def main(
-            A: T.Tensor((M, K), input_dtype_str),
-            B: T.Tensor((K, N), input_dtype_str),
-            sA: T.Tensor((M, K // MX_SCALE_BLOCK), "uint8"),
-            sB: T.Tensor((K // MX_SCALE_BLOCK, N), "uint8"),
-            C: T.Tensor((M, N), "float32"),
+        A: T.Tensor((M, K), input_dtype_str),
+        B: T.Tensor((K, N), input_dtype_str),
+        sA: T.Tensor((M, K // MX_SCALE_BLOCK), "uint8"),
+        sB: T.Tensor((K // MX_SCALE_BLOCK, N), "uint8"),
+        C: T.Tensor((M, N), "float32"),
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, _):
             bx = cid // n_num
@@ -99,12 +98,8 @@ def mxfp8_matmul(M, N, K, block_M, block_N, K_L1):
 
             A_L1 = T.alloc_L1((block_M, K_L1), input_dtype_str)
             B_L1 = T.alloc_L1((K_L1, block_N), input_dtype_str)
-            sA_L1 = T.alloc_L1(
-                (block_M, K_SLABS_PER_CHUNK), "uint8"
-            )
-            sB_L1 = T.alloc_L1(
-                (K_SLABS_PER_CHUNK, block_N // MX_SCALE_BLOCK), "uint8"
-            )
+            sA_L1 = T.alloc_L1((block_M, K_SLABS_PER_CHUNK), "uint8")
+            sB_L1 = T.alloc_L1((K_SLABS_PER_CHUNK, block_N // MX_SCALE_BLOCK), "uint8")
             C_L0 = T.alloc_L0C((block_M, block_N), "float32")
 
             with T.Scope("C"):

@@ -250,7 +250,8 @@ gemm_v0(std::conditional_t<transpose_A, TileMatL1<T1, K, M, validK, validM>,
 //
 // Computes C += (A * scale_a) @ (B * scale_b) where:
 //   - A, B are MXFP8 (float8_e4m3_t / float8_e5m2_t) or MXFP4 data tiles in L1
-//   - scale_a, scale_b are e8m0 per-32-K-block exponents (stored as uint8) in L1
+//   - scale_a, scale_b are e8m0 per-32-K-block exponents (stored as uint8) in
+//   L1
 //   - C is the float32 L0C accumulator
 //
 // Scale layout:
@@ -265,15 +266,14 @@ constexpr uint32_t kMxScaleBlock = 32; // e8m0 block granularity (OCP MX spec)
 
 template <typename T1, typename T2, uint32_t M, uint32_t N, uint32_t K,
           uint32_t validM, uint32_t validN, uint32_t validK, uint32_t K_tail>
-AICORE PTO_INLINE void
-gemm_mx(TileMatL1<T1, M, K, validM, validK> &A,
-        TileMatL1<T1, K, N, validK, validN> &B,
-        pto::TileAcc<T2, M, N, validM, validN> &C,
-        TileScaleL1<uint8_t, M, K / kMxScaleBlock, validM,
-                    validK / kMxScaleBlock> &sA,
-        TileScaleL1<uint8_t, K / kMxScaleBlock, N, validK / kMxScaleBlock,
-                    validN> &sB,
-        bool clear) {
+AICORE PTO_INLINE void gemm_mx(TileMatL1<T1, M, K, validM, validK> &A,
+                               TileMatL1<T1, K, N, validK, validN> &B,
+                               pto::TileAcc<T2, M, N, validM, validN> &C,
+                               TileScaleL1<uint8_t, M, K / kMxScaleBlock,
+                                           validM, validK / kMxScaleBlock> &sA,
+                               TileScaleL1<uint8_t, K / kMxScaleBlock, N,
+                                           validK / kMxScaleBlock, validN> &sB,
+                               bool clear) {
   constexpr uint32_t kL0Size = 128;
   const uint32_t kL0split = (K + kL0Size - 1) / kL0Size;
   auto war_event_id = (event_t)(((int)EVENT_ID0 + 2) % 8);
@@ -294,10 +294,8 @@ gemm_mx(TileMatL1<T1, M, K, validM, validK> &A,
     set_flag(PIPE_M, PIPE_MTE1, war_event_id);
     wait_flag(PIPE_M, PIPE_MTE1, war_event_id);
 
-    copy_l1_to_l0a<T1, M, CurrentK, M, K, false>(l0a, A, 0,
-                                                  kL0Idx * CurrentK);
-    copy_l1_to_l0b<T1, CurrentK, N, K, N, false>(l0b, B, kL0Idx * CurrentK,
-                                                  0);
+    copy_l1_to_l0a<T1, M, CurrentK, M, K, false>(l0a, A, 0, kL0Idx * CurrentK);
+    copy_l1_to_l0b<T1, CurrentK, N, K, N, false>(l0b, B, kL0Idx * CurrentK, 0);
 
     pto::Tile<pto::TileType::ScaleLeft, uint8_t, M, CurrentK / kMxScaleBlock,
               pto::BLayout::RowMajor, validM, CurrentK / kMxScaleBlock,
@@ -332,28 +330,27 @@ gemm_mx(TileMatL1<T1, M, K, validM, validK> &A,
   wait_flag(PIPE_M, PIPE_FIX, war_event_id);
 }
 
-#else  // !PTO_PLATFORM_A5
+#else // !PTO_PLATFORM_A5
 
 // A2/A3 stub: keeps common.h parseable on all platforms and issues a clear
 // compile-time error if a user actually tries to instantiate an MX GEMM.
 template <typename T1, typename T2, uint32_t M, uint32_t N, uint32_t K,
           uint32_t validM, uint32_t validN, uint32_t validK, uint32_t K_tail>
-AICORE PTO_INLINE void
-gemm_mx(TileMatL1<T1, M, K, validM, validK> &,
-        TileMatL1<T1, K, N, validK, validN> &,
-        pto::TileAcc<T2, M, N, validM, validN> &,
-        TileScaleL1<uint8_t, M, K / kMxScaleBlock, validM,
-                    validK / kMxScaleBlock> &,
-        TileScaleL1<uint8_t, K / kMxScaleBlock, N, validK / kMxScaleBlock,
-                    validN> &,
-        bool) {
+AICORE PTO_INLINE void gemm_mx(TileMatL1<T1, M, K, validM, validK> &,
+                               TileMatL1<T1, K, N, validK, validN> &,
+                               pto::TileAcc<T2, M, N, validM, validN> &,
+                               TileScaleL1<uint8_t, M, K / kMxScaleBlock,
+                                           validM, validK / kMxScaleBlock> &,
+                               TileScaleL1<uint8_t, K / kMxScaleBlock, N,
+                                           validK / kMxScaleBlock, validN> &,
+                               bool) {
   static_assert(sizeof(T1) == 0,
                 "gemm_mx (TMATMUL_MX) is only supported on the A5 platform "
                 "(PTO_PLATFORM_A5). A2/A3 (C220) does not provide the MX Cube "
                 "instruction.");
 }
 
-#endif  // PTO_PLATFORM_A5
+#endif // PTO_PLATFORM_A5
 
 template <typename T1, typename T2, int32_t shape1, int32_t shape2,
           int32_t shape3, int32_t shape4, int32_t shape5, int32_t stride1,

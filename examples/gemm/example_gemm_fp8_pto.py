@@ -11,6 +11,7 @@ tilelang.cache.clear_cache()
 # Cube core. A2/A3 devices (C220) don't provide the FP8 TMATMUL path, so we
 # skip gracefully on non-A5 hardware rather than failing at CCE compile time.
 from tilelang.utils.target import determine_platform
+
 if determine_platform() != "A5":
     print(f"[SKIP] FP8 GEMM requires A5 platform; detected: {determine_platform()}")
     sys.exit(0)
@@ -32,14 +33,10 @@ M = args.m
 N = args.n
 K = args.k
 fp8_dtype = T.e4m3_float8 if args.fp8 == "e4m3" else T.e5m2_float8
-torch_fp8_dtype = (
-    torch.float8_e4m3fn if args.fp8 == "e4m3" else torch.float8_e5m2
-)
+torch_fp8_dtype = torch.float8_e4m3fn if args.fp8 == "e4m3" else torch.float8_e5m2
 input_dtype_str = "e4m3_float8" if args.fp8 == "e4m3" else "e5m2_float8"
 
-assert M % 128 == 0 and N % 128 == 0 and K % 128 == 0, (
-    "M, N, K must be multiples of 128 for FP8 GEMM tiling"
-)
+assert M % 128 == 0 and N % 128 == 0 and K % 128 == 0, "M, N, K must be multiples of 128 for FP8 GEMM tiling"
 
 pass_configs = {
     tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
@@ -54,9 +51,9 @@ def fp8_matmul(M, N, K, block_M, block_N, K_L1):
 
     @T.prim_func
     def main(
-            A: T.Tensor((M, K), input_dtype_str),
-            B: T.Tensor((K, N), input_dtype_str),
-            C: T.Tensor((M, N), "float32"),
+        A: T.Tensor((M, K), input_dtype_str),
+        B: T.Tensor((K, N), input_dtype_str),
+        C: T.Tensor((M, N), "float32"),
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, _):
             bx = cid // n_num

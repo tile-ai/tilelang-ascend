@@ -11,6 +11,7 @@ tilelang.cache.clear_cache()
 # data) requires the A5 Cube core. A2/A3 devices (C220) don't provide
 # TMATMUL_MX at all.
 from tilelang.utils.target import determine_platform
+
 if determine_platform() != "A5":
     print(f"[SKIP] MXFP4 GEMM requires A5 platform; detected: {determine_platform()}")
     sys.exit(0)
@@ -19,7 +20,9 @@ parser = argparse.ArgumentParser(description="NPU MXFP4 GEMM Kernel (A5 PTO)")
 parser.add_argument("--m", type=int, default=1024, help="Matrix M dimension")
 parser.add_argument("--n", type=int, default=1024, help="Matrix N dimension")
 parser.add_argument(
-    "--k", type=int, default=1024,
+    "--k",
+    type=int,
+    default=1024,
     help="Matrix K dimension (must be multiple of 64 and even for FP4 packing)",
 )
 parser.add_argument(
@@ -49,13 +52,11 @@ def pack_fp4_x2(values: torch.Tensor) -> torch.Tensor:
     flat = values.contiguous().view(-1)
     assert flat.numel() % 2 == 0, "FP4 packing requires even number of elements"
     lo = (flat[0::2].to(torch.int8) & 0x0F).to(torch.uint8)
-    hi = ((flat[1::2].to(torch.int8) & 0x0F).to(torch.uint8) << 4)
+    hi = (flat[1::2].to(torch.int8) & 0x0F).to(torch.uint8) << 4
     return (lo | hi).reshape(values.shape[0], values.shape[1] // 2).to(torch.uint8)
 
 
-def quantize_mxfp4_host(
-    x_fp16: torch.Tensor, block: int = MX_SCALE_BLOCK, fmt: str = "e2m1x2"
-):
+def quantize_mxfp4_host(x_fp16: torch.Tensor, block: int = MX_SCALE_BLOCK, fmt: str = "e2m1x2"):
     """
     Quantize a float16 tensor to MXFP4 (twin/packed) with e8m0 per-block exponents.
     x_fp16 : (rows, K) float16 tensor
@@ -116,7 +117,6 @@ def fake_mxfp4_matmul_ref(a_q, b_q, a_scale, b_scale, block: int = MX_SCALE_BLOC
         a_unpacked[:, 2 * i] = byte_val & 0x0F
         a_unpacked[:, 2 * i + 1] = (byte_val >> 4) & 0x0F
 
-    n_blocks_a = K_logical // block
     a_scale_expanded = a_scale.repeat_interleave(block, dim=1)
     a_dequant = a_unpacked * (2.0 ** (a_scale_expanded.float() - 127))
 
@@ -126,7 +126,6 @@ def fake_mxfp4_matmul_ref(a_q, b_q, a_scale, b_scale, block: int = MX_SCALE_BLOC
         b_unpacked[2 * i, :] = byte_val & 0x0F
         b_unpacked[2 * i + 1, :] = (byte_val >> 4) & 0x0F
 
-    n_blocks_b = K_logical // block
     b_scale_expanded = b_scale.repeat_interleave(block, dim=0)
     b_dequant = b_unpacked * (2.0 ** (b_scale_expanded.float() - 127))
 
@@ -147,14 +146,14 @@ def mxfp4_matmul(M, N, K, block_M, block_N, K_L1, fmt: str):
 
     @T.prim_func
     def main(
-            # A, B declared as uint8 with shape (M, K) — K is *logical* K.
-            # Each row actually stores K/2 packed MXFP4 bytes followed by
-            # K/2 zero-padding (see quantize_mxfp4_host).
-            A: T.Tensor((M, K), "uint8"),
-            B: T.Tensor((K, N), "uint8"),
-            sA: T.Tensor((M, K // MX_SCALE_BLOCK), "uint8"),
-            sB: T.Tensor((K // MX_SCALE_BLOCK, N), "uint8"),
-            C: T.Tensor((M, N), "float32"),
+        # A, B declared as uint8 with shape (M, K) — K is *logical* K.
+        # Each row actually stores K/2 packed MXFP4 bytes followed by
+        # K/2 zero-padding (see quantize_mxfp4_host).
+        A: T.Tensor((M, K), "uint8"),
+        B: T.Tensor((K, N), "uint8"),
+        sA: T.Tensor((M, K // MX_SCALE_BLOCK), "uint8"),
+        sB: T.Tensor((K // MX_SCALE_BLOCK, N), "uint8"),
+        C: T.Tensor((M, N), "float32"),
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, _):
             bx = cid // n_num
@@ -164,9 +163,7 @@ def mxfp4_matmul(M, N, K, block_M, block_N, K_L1, fmt: str):
             A_L1 = T.alloc_L1((block_M, K_L1), "uint8")
             B_L1 = T.alloc_L1((K_L1, block_N), "uint8")
             sA_L1 = T.alloc_L1((block_M, K_SLABS_PER_CHUNK), "uint8")
-            sB_L1 = T.alloc_L1(
-                (K_SLABS_PER_CHUNK, block_N // MX_SCALE_BLOCK), "uint8"
-            )
+            sB_L1 = T.alloc_L1((K_SLABS_PER_CHUNK, block_N // MX_SCALE_BLOCK), "uint8")
             C_L0 = T.alloc_L0C((block_M, block_N), "float32")
 
             with T.Scope("C"):
@@ -174,16 +171,18 @@ def mxfp4_matmul(M, N, K, block_M, block_N, K_L1, fmt: str):
                 for k in T.serial(loop_k):
                     T.copy(A[bx * block_M, k * K_L1], A_L1)
                     T.copy(B[k * K_L1, by * block_N], B_L1)
-                    T.copy(
-                        sA[bx * block_M, k * K_SLABS_PER_CHUNK], sA_L1
-                    )
+                    T.copy(sA[bx * block_M, k * K_SLABS_PER_CHUNK], sA_L1)
                     T.copy(
                         sB[k * K_SLABS_PER_CHUNK, by * block_N // MX_SCALE_BLOCK],
                         sB_L1,
                     )
 
                     T.gemm_mx(
-                        A_L1, B_L1, C_L0, sA_L1, sB_L1,
+                        A_L1,
+                        B_L1,
+                        C_L0,
+                        sA_L1,
+                        sB_L1,
                         init=(k == 0),
                         format=fmt,
                     )

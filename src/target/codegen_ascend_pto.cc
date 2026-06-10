@@ -158,9 +158,9 @@ int32_t GetTypeLen(std::string type) {
     typeSize = 2;
   } else if (type == "half") {
     typeSize = 2;
-  } else if (type == "int8_t" || type == "uint8_t" ||
-             type == "float8_e4m3_t" || type == "float8_e5m2_t" ||
-             type == "float4_e2m1x2_t" || type == "float4_e1m2x2_t") {
+  } else if (type == "int8_t" || type == "uint8_t" || type == "float8_e4m3_t" ||
+             type == "float8_e5m2_t" || type == "float4_e2m1x2_t" ||
+             type == "float4_e1m2x2_t") {
     // float4_e{2m1,e1m2}x2_t are uint8 aliases: each byte packs two FP4
     // elements, so byte-level address math still sees them as 1-byte units.
     typeSize = 1;
@@ -491,7 +491,8 @@ void CodeGenTileLangAscendPto::PrintType(DataType t,
     } else {
       fail = true;
     }
-    if (!fail) return;
+    if (!fail)
+      return;
   } else if (t == DataType::Bool()) {
     os << "bool";
     return;
@@ -1361,9 +1362,8 @@ void CodeGenTileLangAscendPto::GemmMxCodegen(const CallNode *op) {
                << params["M"] << ", " << params["N"] << ", " << params["K"]
                << ", " << kL0Tail << ">"
                << "(";
-  this->stream << a_name << ", " << b_name << ", " << c_name << ", "
-               << sa_name << ", " << sb_name << ", "
-               << PrintExpr(op->args[6]) << ");\n";
+  this->stream << a_name << ", " << b_name << ", " << c_name << ", " << sa_name
+               << ", " << sb_name << ", " << PrintExpr(op->args[6]) << ");\n";
 }
 
 void CodeGenTileLangAscendPto::SyncAllCodegen(const CallNode *op) {
