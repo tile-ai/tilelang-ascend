@@ -1508,12 +1508,20 @@ static std::string SplitAxisToEnumStr(int split_axis) {
   }
 }
 
-static std::string WorkspaceHandleSuffix(const std::string &name) {
-  return name.empty() ? "nullptr" : name + "_handle";
+static std::string
+WorkspaceHandleExpr(const CodeGenTileLangAscendPto::PipeInfo &info,
+                    const std::string &block_id) {
+  if (info.workspace_name.empty()) {
+    return "nullptr";
+  }
+  // Byte offset: each core gets its own slice of slot_size * slot_num bytes
+  return "(__gm__ void*)((__gm__ uint8_t*)" + info.workspace_name +
+         "_handle + " + block_id + " * " + std::to_string(info.slot_size) +
+         " * " + std::to_string(info.slot_num) + ")";
 }
 
 void CodeGenTileLangAscendPto::CopyPipeCodegen(const CallNode *op,
-                                                bool is_producer) {
+                                               bool is_producer) {
   std::string op_name = Downcast<StringImm>(op->args[0])->value;
   BufferInfo src_info = GetBufferInfo(op->args[1]);
   BufferInfo dst_info = GetBufferInfo(op->args[2]);
@@ -3281,7 +3289,7 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AttrStmtNode *op) {
 
       // Emit TPipe declarations AFTER ffts is initialized
       // (TPipe constructor calls ffts_cross_core_sync which requires FFTS)
-      this->PrintPipeDeclarations();
+      this->PrintPipeDeclarations(current_block_id);
 
       this->core_num_ = PrintExpr(op->value);
     } else if (iv->thread_tag == "blockIdx.y" && iv->var->name_hint != "_") {
@@ -3695,7 +3703,7 @@ void CodeGenTileLangAscendPto::AddFunction(const GlobalVar &gvar,
   }
   this->PreFunctionBody(f);
   int func_scope = this->BeginScope();
-  
+
   this->PreScanPipes(f);
 
   this->PrintStmt(f->body);
@@ -3706,7 +3714,8 @@ void CodeGenTileLangAscendPto::AddFunction(const GlobalVar &gvar,
   PrintHostFunc(f, func_name, stream, this->core_num_, shape_vars);
 }
 
-void CodeGenTileLangAscendPto::PrintPipeDeclarations() {
+void CodeGenTileLangAscendPto::PrintPipeDeclarations(
+    const std::string &block_id) {
   if (!pipe_registry_.empty()) {
     for (const auto &[flag_id, info] : pipe_registry_) {
       this->PrintIndent();
@@ -3715,7 +3724,7 @@ void CodeGenTileLangAscendPto::PrintPipeDeclarations() {
                    << info.slot_size << ", " << info.slot_num << ">;\n";
       this->PrintIndent();
       this->stream << info.pipe_type_name << " " << info.pipe_id << "("
-                   << WorkspaceHandleSuffix(info.workspace_name) << ", "
+                   << WorkspaceHandleExpr(info, block_id) << ", "
                    << info.c2v_buf << ", " << info.v2c_buf << ");\n";
     }
   }

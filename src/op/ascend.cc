@@ -504,14 +504,18 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
 
   if (config.virtual_channel) {
     new_args.push_back(src_extents[src_extents.size() - 1]);   // src_N
-    new_args.push_back(src_extents[src_extents.size() - 2]);   // src_M
+    if (src_extents.size() >= 2) {
+      new_args.push_back(src_extents[src_extents.size() - 2]); // src_M
+    } else {
+      new_args.push_back(IntImm(DataType::Int(32), 0));        // 1D: no M dim
+    }
     new_args.push_back(dst_extents[dst_extents.size() - 2]);   // dst_M
     new_args.push_back(dst_extents[dst_extents.size() - 1]);   // dst_N
     // Add tmp buffer for UB->L1 copy on A5 (for ND->Nz conversion)
     if (tmp.defined()) {
       new_args.push_back(tmp_ptr);
-      new_args.push_back(tmp_extents[tmp_extents.size() - 1]);  // tmp_N
       new_args.push_back(tmp_extents[tmp_extents.size() - 2]);  // tmp_M
+      new_args.push_back(tmp_extents[tmp_extents.size() - 1]);  // tmp_N
     }
   }
 
