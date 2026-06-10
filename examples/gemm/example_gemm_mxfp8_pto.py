@@ -1,10 +1,18 @@
 import argparse
+import sys
 
 import tilelang
 import tilelang.language as T
 import torch
 
 tilelang.cache.clear_cache()
+
+# MXFP8 GEMM (OCP Microscaling with e8m0 block scale + TMATMUL_MX) requires
+# the A5 Cube core. A2/A3 devices (C220) don't provide TMATMUL_MX at all.
+from tilelang.utils.target import determine_platform
+if determine_platform() != "A5":
+    print(f"[SKIP] MXFP8 GEMM requires A5 platform; detected: {determine_platform()}")
+    sys.exit(0)
 
 parser = argparse.ArgumentParser(description="NPU MXFP8 GEMM Kernel (A5 PTO)")
 parser.add_argument("--m", type=int, default=1024, help="Matrix M dimension")

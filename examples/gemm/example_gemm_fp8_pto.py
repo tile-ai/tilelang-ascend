@@ -1,10 +1,19 @@
 import argparse
+import sys
 
 import tilelang
 import tilelang.language as T
 import torch
 
 tilelang.cache.clear_cache()
+
+# FP8 GEMM (TMATMUL accepting float8_e4m3 / float8_e5m2) requires the A5
+# Cube core. A2/A3 devices (C220) don't provide the FP8 TMATMUL path, so we
+# skip gracefully on non-A5 hardware rather than failing at CCE compile time.
+from tilelang.utils.target import determine_platform
+if determine_platform() != "A5":
+    print(f"[SKIP] FP8 GEMM requires A5 platform; detected: {determine_platform()}")
+    sys.exit(0)
 
 parser = argparse.ArgumentParser(description="NPU FP8 GEMM Kernel (A5 PTO)")
 parser.add_argument("--m", type=int, default=1024, help="Matrix M dimension")

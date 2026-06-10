@@ -1,6 +1,27 @@
 #include <pto/pto-inst.hpp>
 #include <type_traits>
 
+// On A5, the CCE compiler exposes float8_e4m3_t / float8_e5m2_t as built-in
+// types. On A2/A3 (and elsewhere), these names are not provided by the CCE.
+// PTO-ISA's internal headers `#define ... int8_t` inside `<pto/pto-inst.hpp>`
+// but `#undef` them afterwards, so user code cannot rely on those macros.
+// We therefore install byte-compatible aliases (int8_t, 1 byte per element)
+// on any platform that doesn't already define them, so that generated C++
+// code parses. Real FP8 TMATMUL is still A5-only (guarded by
+// `PTO_PLATFORM_A5` in CheckMadValid / TMATMUL_MX_IMPL).
+#ifndef PTO_PLATFORM_A5
+#include <cstdint>
+#ifndef __FLOAT8_E4M3_T__
+using float8_e4m3_t = int8_t;
+#endif
+#ifndef __FLOAT8_E5M2_T__
+using float8_e5m2_t = int8_t;
+#endif
+#ifndef __FLOAT8_E8M0_T__
+using float8_e8m0_t = int8_t;
+#endif
+#endif // !PTO_PLATFORM_A5
+
 #ifdef __CCE_AICORE__
 #define CUDART_INF_F 1.0f / 0.0f
 
@@ -229,6 +250,8 @@ gemm_v0(std::conditional_t<transpose_A, TileMatL1<T1, K, M, validK, validM>,
 // ---------------------------------------------------------------------------
 constexpr uint32_t kMxScaleBlock = 32; // e8m0 block granularity (OCP MX spec)
 
+#ifdef PTO_PLATFORM_A5
+
 template <typename T1, typename T2, uint32_t M, uint32_t N, uint32_t K,
           uint32_t validM, uint32_t validN, uint32_t validK, uint32_t K_tail>
 AICORE PTO_INLINE void
@@ -297,6 +320,29 @@ gemm_mx(TileMatL1<T1, M, K, validM, validK> &A,
   set_flag(PIPE_M, PIPE_FIX, war_event_id);
   wait_flag(PIPE_M, PIPE_FIX, war_event_id);
 }
+
+#else  // !PTO_PLATFORM_A5
+
+// A2/A3 stub: keeps common.h parseable on all platforms and issues a clear
+// compile-time error if a user actually tries to instantiate an MX GEMM.
+template <typename T1, typename T2, uint32_t M, uint32_t N, uint32_t K,
+          uint32_t validM, uint32_t validN, uint32_t validK, uint32_t K_tail>
+AICORE PTO_INLINE void
+gemm_mx(TileMatL1<T1, M, K, validM, validK> &,
+        TileMatL1<T1, K, N, validK, validN> &,
+        pto::TileAcc<T2, M, N, validM, validN> &,
+        TileScaleL1<uint8_t, M, K / kMxScaleBlock, validM,
+                    validK / kMxScaleBlock> &,
+        TileScaleL1<uint8_t, K / kMxScaleBlock, N, validK / kMxScaleBlock,
+                    validN> &,
+        bool) {
+  static_assert(sizeof(T1) == 0,
+                "gemm_mx (TMATMUL_MX) is only supported on the A5 platform "
+                "(PTO_PLATFORM_A5). A2/A3 (C220) does not provide the MX Cube "
+                "instruction.");
+}
+
+#endif  // PTO_PLATFORM_A5
 
 template <typename T1, typename T2, int32_t shape1, int32_t shape2,
           int32_t shape3, int32_t shape4, int32_t shape5, int32_t stride1,
