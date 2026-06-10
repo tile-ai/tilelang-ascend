@@ -341,6 +341,86 @@ def shmem_ub_get_nbi(dst: Buffer, src: Buffer, nelems: PrimExpr, newPe: PrimExpr
     )
 
 
+def gemm_v0_mxfp(
+    A,
+    B,
+    C,
+    scale_A,
+    scale_B,
+    transpose_A=False,
+    transpose_B=False,
+    clear=False,
+    scale_dtype: str = "uint8",
+):
+    """
+    Block-level MXFP GEMM with K-split: C = op(A) * op(B) using pto-isa mxfp8.
+
+    Wraps tl::ascend_pto::gemm_v0_mxfp. Handles K-split loop internally.
+
+    Args:
+        A (Buffer/BufferRegion): Data tile in L1 buffer.
+        B (Buffer/BufferRegion): Data tile in L1 buffer.
+        C (Buffer/BufferRegion): Accumulator in L0C (float32).
+        scale_A (Buffer/BufferRegion): E8M0 block-scale tile for A, (M, K/32).
+        scale_B (Buffer/BufferRegion): E8M0 block-scale tile for B, (K/32, N).
+        transpose_A (bool): Whether to transpose A.
+        transpose_B (bool): Whether to transpose B.
+        clear (bool): If True, initialize accumulator to zero on first K-slice.
+        scale_dtype (str): C++ type for scale tile (default "uint8").
+    """
+    A = _legalize_arguments(A)
+    B = _legalize_arguments(B)
+    C = _legalize_arguments(C)
+    scale_A = _legalize_arguments(scale_A)
+    scale_B = _legalize_arguments(scale_B)
+
+    A_shape = _retrieve_shape(A)
+    B_shape = _retrieve_shape(B)
+    C_shape = _retrieve_shape(C)
+    Sa_shape = _retrieve_shape(scale_A)
+    Sb_shape = _retrieve_shape(scale_B)
+
+    M, N = C_shape[-2], C_shape[-1]
+    K = A_shape[-2] if transpose_A else A_shape[-1]
+    K_B = B_shape[-1] if transpose_B else B_shape[-2]
+    assert K == K_B, f"gemm_v0_mxfp K mismatch: K_A={K}, K_B={K_B}"
+    Sa_cols = Sa_shape[-1]
+    assert Sb_shape[-1] == N, (
+        f"gemm_v0_mxfp N mismatch: C_cols={N}, scale_B_cols={Sb_shape[-1]}"
+    )
+    kL0Size = 128
+    kL0split = (K + kL0Size - 1) // kL0Size
+    K_tail = K - (kL0split - 1) * kL0Size
+
+    Aptr = _retrieve_ptr(A, "r")
+    Bptr = _retrieve_ptr(B, "r")
+    Cptr = _retrieve_ptr(C, "w" if clear is True else "rw")
+    SaPtr = _retrieve_ptr(scale_A, "r")
+    SbPtr = _retrieve_ptr(scale_B, "r")
+
+    scale_type_map = {"uint8": "uint8_t", "float8_e8m0": "float8_e8m0_t"}
+    if scale_dtype not in scale_type_map:
+        raise ValueError(f"Unsupported scale_dtype: {scale_dtype}")
+    scale_ctype = scale_type_map[scale_dtype]
+
+    template = (
+        f"gemm_v0_mxfp<{_dtype(A)}, {_dtype(C)}, {scale_ctype}, "
+        f"{M}, {N}, {K}, {K_tail}, {Sa_cols}, "
+        f"{str(transpose_A).lower()}, {str(transpose_B).lower()}>"
+    )
+    return T.call_intrin(
+        "handle",
+        tir.op.Op.get("tl.ascend_gemm_v0_mxfp"),
+        template,
+        Aptr,
+        Bptr,
+        Cptr,
+        SaPtr,
+        SbPtr,
+        clear,
+    )
+
+
 def gemm_v0(A, B, C, transpose_A=False, transpose_B=False, init=False):
     """
     Performs a block-level General Matrix Multiplication (GEMM).

@@ -190,6 +190,16 @@ TVM_DLL const Op &ascend_gemm_mx();
 
 TVM_DLL const Op &ascend_mma_mx();
 
+TVM_DLL const Op &ascend_gemm_v0_mxfp();
+
+TVM_DLL const Op &ascend_mma_mx_bias();
+
+TVM_DLL const Op &ascend_gemv_mx();
+
+TVM_DLL const Op &ascend_gemv_mx_acc();
+
+TVM_DLL const Op &ascend_gemv_mx_bias();
+
 TVM_DLL const Op &ascend_tquant();
 
 TVM_DLL const Op &ascend_tdequant();

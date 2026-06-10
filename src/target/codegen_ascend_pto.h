@@ -196,6 +196,16 @@ private:
 
   void MmaMxCodegen(const CallNode *op);
 
+  void GemmV0MxfpCodegen(const CallNode *op);
+
+  void MmaMxBiasCodegen(const CallNode *op);
+
+  void GemvMxCodegen(const CallNode *op);
+
+  void GemvMxAccCodegen(const CallNode *op);
+
+  void GemvMxBiasCodegen(const CallNode *op);
+
   void TQuantCodegen(const CallNode *op);
 
   void TDequantCodegen(const CallNode *op);

@@ -314,6 +314,333 @@ def npu_gemm_mx(A, B, C, scale_A, scale_B, init=False, scale_dtype: str = "uint8
     )
 
 
+def npu_mma_mx_bias(
+    A, B, C, scale_A, scale_B, bias, init=False, scale_dtype: str = "uint8"
+):
+    """NPU MXFP MMA intrinsic with fused bias addition.
+
+    Wraps pto::TMATMUL_MX with bias: C = A*B + bias (init=True) or C += A*B (init=False).
+
+    Args:
+        A: FP8/FP4 data tile in L0A.
+        B: FP8/FP4 data tile in L0B.
+        C: float accumulator in L0C (dtype=float32).
+        scale_A: E8M0 block-scale tile for A, (M, K/32), typically uint8.
+        scale_B: E8M0 block-scale tile for B, (K/32, N), typically uint8.
+        bias: Bias tile, (1, N), dtype=float32.
+        init: If True, initialize accumulator; if False, accumulate.
+        scale_dtype: C++ type name for scale template arg.
+    """
+
+    def legalize_arguments(arg):
+        if isinstance(arg, Var) and T.has_let_value(arg):
+            return T.get_let_value(arg).buffer
+        return arg
+
+    A = legalize_arguments(A)
+    B = legalize_arguments(B)
+    C = legalize_arguments(C)
+    scale_A = legalize_arguments(scale_A)
+    scale_B = legalize_arguments(scale_B)
+    bias = legalize_arguments(bias)
+
+    def retrieve_shape(obj):
+        if isinstance(obj, Buffer):
+            return obj.shape
+        elif isinstance(obj, BufferRegion):
+            return [r.extent for r in obj.region]
+        raise ValueError(f"Unsupported argument type: {type(obj)}")
+
+    def retrieve_ptr(obj, access_type="r"):
+        if isinstance(obj, Buffer):
+            return obj.access_ptr(access_type)
+        elif isinstance(obj, BufferRegion):
+            buffer, region = obj.buffer, obj.region
+            indices = [r.min for r in region]
+            strides = []
+            stride = 1
+            for s in reversed(buffer.shape):
+                strides.insert(0, stride)
+                stride *= s
+            offset = sum(indices[i] * strides[i] for i in range(len(indices)))
+            extent = [x.extent for x in obj.region]
+            size_extent = math.prod(extent)
+            return buffer.access_ptr(
+                access_mask=access_type, offset=offset, extent=size_extent
+            )
+        raise ValueError(f"Unsupported argument type: {type(obj)}")
+
+    A_shape = retrieve_shape(A)
+    B_shape = retrieve_shape(B)
+    C_shape = retrieve_shape(C)
+
+    M, K = A_shape[-2], A_shape[-1]
+    N = C_shape[-1]
+    assert B_shape[-2] == K, f"mma_mx_bias K mismatch: A_cols={K}, B_rows={B_shape[-2]}"
+
+    Aptr = retrieve_ptr(A, "r")
+    Bptr = retrieve_ptr(B, "r")
+    Cptr = retrieve_ptr(C, "w" if init is True else "rw")
+    SaPtr = retrieve_ptr(scale_A, "r")
+    SbPtr = retrieve_ptr(scale_B, "r")
+    BiasPtr = retrieve_ptr(bias, "r")
+
+    scale_type_map = {"uint8": "uint8_t", "float8_e8m0": "float8_e8m0_t"}
+    if scale_dtype not in scale_type_map:
+        raise ValueError(f"Unsupported scale_dtype: {scale_dtype}")
+    scale_ctype = scale_type_map[scale_dtype]
+
+    template = f"mma_mx_bias<{_dtype(A)}, {_dtype(C)}, {scale_ctype}, {M}, {N}, {K}>"
+    return tir.call_intrin(
+        "handle",
+        tir.op.Op.get("tl.ascend_mma_mx_bias"),
+        template,
+        Aptr,
+        Bptr,
+        Cptr,
+        SaPtr,
+        SbPtr,
+        BiasPtr,
+        init,
+    )
+
+
+def npu_gemv_mx(A, B, C, scale_A, scale_B, scale_dtype: str = "uint8"):
+    """NPU MXFP GEMV intrinsic (clear C, then C = A*B).
+
+    Args:
+        A: FP8/FP4 data tile in L0A (M x K).
+        B: FP8/FP4 data tile in L0B (K x N).
+        C: float accumulator in L0C.
+        scale_A: E8M0 block-scale tile for A.
+        scale_B: E8M0 block-scale tile for B.
+        scale_dtype: C++ type for scale template arg.
+    """
+
+    def legalize(arg):
+        if isinstance(arg, Var) and T.has_let_value(arg):
+            return T.get_let_value(arg).buffer
+        return arg
+
+    A = legalize(A)
+    B = legalize(B)
+    C = legalize(C)
+    scale_A = legalize(scale_A)
+    scale_B = legalize(scale_B)
+
+    def retrieve_ptr(obj, access_type="r"):
+        if isinstance(obj, Buffer):
+            return obj.access_ptr(access_type)
+        elif isinstance(obj, BufferRegion):
+            buf, region = obj.buffer, obj.region
+            indices = [r.min for r in region]
+            strides, stride = [], 1
+            for s in reversed(buf.shape):
+                strides.insert(0, stride)
+                stride *= s
+            offset = sum(indices[i] * strides[i] for i in range(len(indices)))
+            extent = [x.extent for x in region]
+            return buf.access_ptr(
+                access_mask=access_type, offset=offset, extent=math.prod(extent)
+            )
+        raise ValueError(f"Unsupported argument type: {type(obj)}")
+
+    def retrieve_shape(obj):
+        if isinstance(obj, Buffer):
+            return obj.shape
+        elif isinstance(obj, BufferRegion):
+            return [r.extent for r in obj.region]
+        raise ValueError(f"Unsupported argument type: {type(obj)}")
+
+    A_shape = retrieve_shape(A)
+    C_shape = retrieve_shape(C)
+    M, K = A_shape[-2], A_shape[-1]
+    N = C_shape[-1]
+
+    Aptr = retrieve_ptr(A, "r")
+    Bptr = retrieve_ptr(B, "r")
+    Cptr = retrieve_ptr(C, "w")
+    SaPtr = retrieve_ptr(scale_A, "r")
+    SbPtr = retrieve_ptr(scale_B, "r")
+
+    scale_type_map = {"uint8": "uint8_t", "float8_e8m0": "float8_e8m0_t"}
+    if scale_dtype not in scale_type_map:
+        raise ValueError(f"Unsupported scale_dtype: {scale_dtype}")
+    scale_ctype = scale_type_map[scale_dtype]
+
+    template = f"gemv_mx<{_dtype(A)}, {_dtype(C)}, {scale_ctype}, {M}, {N}, {K}>"
+    return tir.call_intrin(
+        "handle",
+        tir.op.Op.get("tl.ascend_gemv_mx"),
+        template,
+        Aptr,
+        Bptr,
+        Cptr,
+        SaPtr,
+        SbPtr,
+    )
+
+
+def npu_gemv_mx_acc(A, B, C_out, C_in, scale_A, scale_B, scale_dtype: str = "uint8"):
+    """NPU MXFP GEMV with accumulate: C_out = C_in + A*B.
+
+    Args:
+        A: FP8/FP4 data tile in L0A (M x K).
+        B: FP8/FP4 data tile in L0B (K x N).
+        C_out: output accumulator in L0C.
+        C_in: input accumulator in L0C.
+        scale_A: E8M0 block-scale tile for A.
+        scale_B: E8M0 block-scale tile for B.
+        scale_dtype: C++ type for scale template arg.
+    """
+
+    def legalize(arg):
+        if isinstance(arg, Var) and T.has_let_value(arg):
+            return T.get_let_value(arg).buffer
+        return arg
+
+    A = legalize(A)
+    B = legalize(B)
+    C_out = legalize(C_out)
+    C_in = legalize(C_in)
+    scale_A = legalize(scale_A)
+    scale_B = legalize(scale_B)
+
+    def retrieve_ptr(obj, access_type="r"):
+        if isinstance(obj, Buffer):
+            return obj.access_ptr(access_type)
+        elif isinstance(obj, BufferRegion):
+            buf, region = obj.buffer, obj.region
+            indices = [r.min for r in region]
+            strides, stride = [], 1
+            for s in reversed(buf.shape):
+                strides.insert(0, stride)
+                stride *= s
+            offset = sum(indices[i] * strides[i] for i in range(len(indices)))
+            extent = [x.extent for x in region]
+            return buf.access_ptr(
+                access_mask=access_type, offset=offset, extent=math.prod(extent)
+            )
+        raise ValueError(f"Unsupported argument type: {type(obj)}")
+
+    def retrieve_shape(obj):
+        if isinstance(obj, Buffer):
+            return obj.shape
+        elif isinstance(obj, BufferRegion):
+            return [r.extent for r in obj.region]
+        raise ValueError(f"Unsupported argument type: {type(obj)}")
+
+    A_shape = retrieve_shape(A)
+    C_shape = retrieve_shape(C_out)
+    M, K = A_shape[-2], A_shape[-1]
+    N = C_shape[-1]
+
+    Aptr = retrieve_ptr(A, "r")
+    Bptr = retrieve_ptr(B, "r")
+    C_out_ptr = retrieve_ptr(C_out, "w")
+    C_in_ptr = retrieve_ptr(C_in, "r")
+    SaPtr = retrieve_ptr(scale_A, "r")
+    SbPtr = retrieve_ptr(scale_B, "r")
+
+    scale_type_map = {"uint8": "uint8_t", "float8_e8m0": "float8_e8m0_t"}
+    if scale_dtype not in scale_type_map:
+        raise ValueError(f"Unsupported scale_dtype: {scale_dtype}")
+    scale_ctype = scale_type_map[scale_dtype]
+
+    template = f"gemv_mx_acc<{_dtype(A)}, {_dtype(C_out)}, {scale_ctype}, {M}, {N}, {K}>"
+    return tir.call_intrin(
+        "handle",
+        tir.op.Op.get("tl.ascend_gemv_mx_acc"),
+        template,
+        Aptr,
+        Bptr,
+        C_out_ptr,
+        C_in_ptr,
+        SaPtr,
+        SbPtr,
+    )
+
+
+def npu_gemv_mx_bias(A, B, C, scale_A, scale_B, bias, scale_dtype: str = "uint8"):
+    """NPU MXFP GEMV with fused bias: C = A*B + bias.
+
+    Args:
+        A: FP8/FP4 data tile in L0A (M x K).
+        B: FP8/FP4 data tile in L0B (K x N).
+        C: float accumulator in L0C.
+        scale_A: E8M0 block-scale tile for A.
+        scale_B: E8M0 block-scale tile for B.
+        bias: Bias tile (1 x N), dtype=float32.
+        scale_dtype: C++ type for scale template arg.
+    """
+
+    def legalize(arg):
+        if isinstance(arg, Var) and T.has_let_value(arg):
+            return T.get_let_value(arg).buffer
+        return arg
+
+    A = legalize(A)
+    B = legalize(B)
+    C = legalize(C)
+    scale_A = legalize(scale_A)
+    scale_B = legalize(scale_B)
+    bias = legalize(bias)
+
+    def retrieve_ptr(obj, access_type="r"):
+        if isinstance(obj, Buffer):
+            return obj.access_ptr(access_type)
+        elif isinstance(obj, BufferRegion):
+            buf, region = obj.buffer, obj.region
+            indices = [r.min for r in region]
+            strides, stride = [], 1
+            for s in reversed(buf.shape):
+                strides.insert(0, stride)
+                stride *= s
+            offset = sum(indices[i] * strides[i] for i in range(len(indices)))
+            extent = [x.extent for x in region]
+            return buf.access_ptr(
+                access_mask=access_type, offset=offset, extent=math.prod(extent)
+            )
+        raise ValueError(f"Unsupported argument type: {type(obj)}")
+
+    def retrieve_shape(obj):
+        if isinstance(obj, Buffer):
+            return obj.shape
+        elif isinstance(obj, BufferRegion):
+            return [r.extent for r in obj.region]
+        raise ValueError(f"Unsupported argument type: {type(obj)}")
+
+    A_shape = retrieve_shape(A)
+    C_shape = retrieve_shape(C)
+    M, K = A_shape[-2], A_shape[-1]
+    N = C_shape[-1]
+
+    Aptr = retrieve_ptr(A, "r")
+    Bptr = retrieve_ptr(B, "r")
+    Cptr = retrieve_ptr(C, "w")
+    SaPtr = retrieve_ptr(scale_A, "r")
+    SbPtr = retrieve_ptr(scale_B, "r")
+    BiasPtr = retrieve_ptr(bias, "r")
+
+    scale_type_map = {"uint8": "uint8_t", "float8_e8m0": "float8_e8m0_t"}
+    if scale_dtype not in scale_type_map:
+        raise ValueError(f"Unsupported scale_dtype: {scale_dtype}")
+    scale_ctype = scale_type_map[scale_dtype]
+
+    template = f"gemv_mx_bias<{_dtype(A)}, {_dtype(C)}, {scale_ctype}, {M}, {N}, {K}>"
+    return tir.call_intrin(
+        "handle",
+        tir.op.Op.get("tl.ascend_gemv_mx_bias"),
+        template,
+        Aptr,
+        Bptr,
+        Cptr,
+        SaPtr,
+        SbPtr,
+        BiasPtr,
+    )
+
+
 def loop_break():
     """Break out of the innermost loop."""
     return T.call_intrin("handle", op.Op.get("tl.loop_break"))  # noqa: F821

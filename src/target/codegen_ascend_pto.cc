@@ -899,6 +899,16 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op,
     MmaCodegen(op);
   } else if (op->op.same_as(tl::ascend_mma_mx())) {
     MmaMxCodegen(op);
+  } else if (op->op.same_as(tl::ascend_gemm_v0_mxfp())) {
+    GemmV0MxfpCodegen(op);
+  } else if (op->op.same_as(tl::ascend_mma_mx_bias())) {
+    MmaMxBiasCodegen(op);
+  } else if (op->op.same_as(tl::ascend_gemv_mx())) {
+    GemvMxCodegen(op);
+  } else if (op->op.same_as(tl::ascend_gemv_mx_acc())) {
+    GemvMxAccCodegen(op);
+  } else if (op->op.same_as(tl::ascend_gemv_mx_bias())) {
+    GemvMxBiasCodegen(op);
   } else if (op->op.same_as(tl::ascend_tquant())) {
     TQuantCodegen(op);
   } else if (op->op.same_as(tl::ascend_tdequant())) {
@@ -3292,6 +3302,220 @@ void CodeGenTileLangAscendPto::TDequantCodegen(const CallNode *op) {
   this->PrintIndent();
   this->stream << op_name << "(" << dst_name << ", " << src_name << ", "
                << scale_name << ", " << offset_name << ");\n";
+}
+
+// ============================================================================
+// gemm_v0_mxfp: K-split MXFP GEMM with full-K data + scale tiles in L1.
+//
+// Template string from Python:
+//     "gemm_v0_mxfp<dtype_A, dtype_C, dtype_S, M, N, K, K_tail, Sa_cols,
+//      transpose_A, transpose_B>"
+//
+// IR args (registered as ascend_gemm_v0_mxfp, 7 inputs):
+//     args[0] = template string
+//     args[1] = A (L1) access_ptr
+//     args[2] = B (L1) access_ptr
+//     args[3] = C (accumulator) access_ptr
+//     args[4] = scale_A (L1) access_ptr
+//     args[5] = scale_B (L1) access_ptr
+//     args[6] = clear (bool)
+//
+// Generated code:
+//     tl::ascend_pto::gemm_v0_mxfp<...>(a, b, c, sa, sb, clear);
+// ============================================================================
+
+void CodeGenTileLangAscendPto::GemmV0MxfpCodegen(const CallNode *op) {
+  ShapeInfo a_info = GetSliceInfo(op->args[1].as<CallNode>());
+  ShapeInfo b_info = GetSliceInfo(op->args[2].as<CallNode>());
+  ShapeInfo c_info = GetSliceInfo(op->args[3].as<CallNode>());
+  ShapeInfo sa_info = GetSliceInfo(op->args[4].as<CallNode>());
+  ShapeInfo sb_info = GetSliceInfo(op->args[5].as<CallNode>());
+
+  std::string a_name =
+      ResolveCubeSliceName(a_info, kAscendPtoScope + "TileMatL1");
+  std::string b_name =
+      ResolveCubeSliceName(b_info, kAscendPtoScope + "TileMatL1");
+  std::string c_name = ResolveCubeSliceName(c_info, "pto::TileAcc");
+  std::string sa_name =
+      ResolveCubeSliceName(sa_info, kAscendPtoScope + "TileMatL1");
+  std::string sb_name =
+      ResolveCubeSliceName(sb_info, kAscendPtoScope + "TileMatL1");
+
+  std::string template_str = Downcast<StringImm>(op->args[0])->value;
+  std::string op_name = kAscendPtoScope + template_str;
+
+  this->PrintIndent();
+  this->stream << op_name << "(" << a_name << ", " << b_name << ", " << c_name
+               << ", " << sa_name << ", " << sb_name << ", "
+               << PrintExpr(op->args[6]) << ");\n";
+}
+
+// ============================================================================
+// mma_mx_bias: MXFP MMA with fused bias addition.
+//
+// Template string from Python:
+//     "mma_mx_bias<dtype_A, dtype_C, dtype_S, M, N, K>"
+//
+// IR args (registered as ascend_mma_mx_bias, 8 inputs):
+//     args[0] = template string
+//     args[1] = A (L0A) access_ptr
+//     args[2] = B (L0B) access_ptr
+//     args[3] = C (accumulator) access_ptr
+//     args[4] = scale_A access_ptr
+//     args[5] = scale_B access_ptr
+//     args[6] = bias access_ptr
+//     args[7] = init (bool)
+//
+// Generated code:
+//     tl::ascend_pto::mma_mx_bias<...>(a, b, c, sa, sb, bias, init);
+// ============================================================================
+
+void CodeGenTileLangAscendPto::MmaMxBiasCodegen(const CallNode *op) {
+  ShapeInfo a_info = GetSliceInfo(op->args[1].as<CallNode>());
+  ShapeInfo b_info = GetSliceInfo(op->args[2].as<CallNode>());
+  ShapeInfo c_info = GetSliceInfo(op->args[3].as<CallNode>());
+  ShapeInfo sa_info = GetSliceInfo(op->args[4].as<CallNode>());
+  ShapeInfo sb_info = GetSliceInfo(op->args[5].as<CallNode>());
+  ShapeInfo bias_info = GetSliceInfo(op->args[6].as<CallNode>());
+
+  std::string a_name =
+      ResolveCubeSliceName(a_info, kAscendPtoScope + "TileMatL0A");
+  std::string b_name =
+      ResolveCubeSliceName(b_info, kAscendPtoScope + "TileMatL0B");
+  std::string c_name = ResolveCubeSliceName(c_info, "TileAcc");
+  std::string sa_name =
+      ResolveCubeSliceName(sa_info, kAscendPtoScope + "TileScaleA");
+  std::string sb_name =
+      ResolveCubeSliceName(sb_info, kAscendPtoScope + "TileScaleB");
+  std::string bias_name =
+      ResolveCubeSliceName(bias_info, kAscendPtoScope + "TileBiasData");
+
+  std::string template_str = Downcast<StringImm>(op->args[0])->value;
+  std::string op_name = kAscendPtoScope + template_str;
+
+  this->PrintIndent();
+  this->stream << op_name << "(" << a_name << ", " << b_name << ", " << c_name
+               << ", " << sa_name << ", " << sb_name << ", " << bias_name
+               << ", " << PrintExpr(op->args[7]) << ");\n";
+}
+
+// ============================================================================
+// gemv_mx: MXFP GEMV basic (clear C).
+//
+// Template string: "gemv_mx<dtype_A, dtype_C, dtype_S, M, N, K>"
+// IR args (registered as ascend_gemv_mx, 6 inputs):
+//     args[0] = template string
+//     args[1..5] = a, b, c, sa, sb access_ptrs
+//
+// Generated code: tl::ascend_pto::gemv_mx<...>(a, b, c, sa, sb);
+// ============================================================================
+
+void CodeGenTileLangAscendPto::GemvMxCodegen(const CallNode *op) {
+  ShapeInfo a_info = GetSliceInfo(op->args[1].as<CallNode>());
+  ShapeInfo b_info = GetSliceInfo(op->args[2].as<CallNode>());
+  ShapeInfo c_info = GetSliceInfo(op->args[3].as<CallNode>());
+  ShapeInfo sa_info = GetSliceInfo(op->args[4].as<CallNode>());
+  ShapeInfo sb_info = GetSliceInfo(op->args[5].as<CallNode>());
+
+  std::string a_name =
+      ResolveCubeSliceName(a_info, kAscendPtoScope + "TileMatL0A");
+  std::string b_name =
+      ResolveCubeSliceName(b_info, kAscendPtoScope + "TileMatL0B");
+  std::string c_name = ResolveCubeSliceName(c_info, "TileAcc");
+  std::string sa_name =
+      ResolveCubeSliceName(sa_info, kAscendPtoScope + "TileScaleA");
+  std::string sb_name =
+      ResolveCubeSliceName(sb_info, kAscendPtoScope + "TileScaleB");
+
+  std::string template_str = Downcast<StringImm>(op->args[0])->value;
+  std::string op_name = kAscendPtoScope + template_str;
+
+  this->PrintIndent();
+  this->stream << op_name << "(" << a_name << ", " << b_name << ", " << c_name
+               << ", " << sa_name << ", " << sb_name << ");\n";
+}
+
+// ============================================================================
+// gemv_mx_acc: MXFP GEMV accumulate (C_out = C_in + A*B).
+//
+// Template: "gemv_mx_acc<dtype_A, dtype_C, dtype_S, M, N, K>"
+// IR args (registered as ascend_gemv_mx_acc, 7 inputs):
+//     args[0] = template string
+//     args[1..2] = a, b access_ptrs
+//     args[3] = C_out access_ptr
+//     args[4] = C_in access_ptr
+//     args[5..6] = sa, sb access_ptrs
+//
+// Generated code: tl::ascend_pto::gemv_mx_acc<...>(a, b, c_out, c_in, sa, sb);
+// ============================================================================
+
+void CodeGenTileLangAscendPto::GemvMxAccCodegen(const CallNode *op) {
+  ShapeInfo a_info = GetSliceInfo(op->args[1].as<CallNode>());
+  ShapeInfo b_info = GetSliceInfo(op->args[2].as<CallNode>());
+  ShapeInfo c_out_info = GetSliceInfo(op->args[3].as<CallNode>());
+  ShapeInfo c_in_info = GetSliceInfo(op->args[4].as<CallNode>());
+  ShapeInfo sa_info = GetSliceInfo(op->args[5].as<CallNode>());
+  ShapeInfo sb_info = GetSliceInfo(op->args[6].as<CallNode>());
+
+  std::string a_name =
+      ResolveCubeSliceName(a_info, kAscendPtoScope + "TileMatL0A");
+  std::string b_name =
+      ResolveCubeSliceName(b_info, kAscendPtoScope + "TileMatL0B");
+  std::string c_out_name = ResolveCubeSliceName(c_out_info, "TileAcc");
+  std::string c_in_name = ResolveCubeSliceName(c_in_info, "TileAcc");
+  std::string sa_name =
+      ResolveCubeSliceName(sa_info, kAscendPtoScope + "TileScaleA");
+  std::string sb_name =
+      ResolveCubeSliceName(sb_info, kAscendPtoScope + "TileScaleB");
+
+  std::string template_str = Downcast<StringImm>(op->args[0])->value;
+  std::string op_name = kAscendPtoScope + template_str;
+
+  this->PrintIndent();
+  this->stream << op_name << "(" << a_name << ", " << b_name << ", "
+               << c_out_name << ", " << c_in_name << ", " << sa_name << ", "
+               << sb_name << ");\n";
+}
+
+// ============================================================================
+// gemv_mx_bias: MXFP GEMV with fused bias addition.
+//
+// Template: "gemv_mx_bias<dtype_A, dtype_C, dtype_S, M, N, K>"
+// IR args (registered as ascend_gemv_mx_bias, 7 inputs):
+//     args[0] = template string
+//     args[1..5] = a, b, c, sa, sb access_ptrs
+//     args[6] = bias access_ptr
+//
+// Generated code: tl::ascend_pto::gemv_mx_bias<...>(a, b, c, sa, sb, bias);
+// ============================================================================
+
+void CodeGenTileLangAscendPto::GemvMxBiasCodegen(const CallNode *op) {
+  ShapeInfo a_info = GetSliceInfo(op->args[1].as<CallNode>());
+  ShapeInfo b_info = GetSliceInfo(op->args[2].as<CallNode>());
+  ShapeInfo c_info = GetSliceInfo(op->args[3].as<CallNode>());
+  ShapeInfo sa_info = GetSliceInfo(op->args[4].as<CallNode>());
+  ShapeInfo sb_info = GetSliceInfo(op->args[5].as<CallNode>());
+  ShapeInfo bias_info = GetSliceInfo(op->args[6].as<CallNode>());
+
+  std::string a_name =
+      ResolveCubeSliceName(a_info, kAscendPtoScope + "TileMatL0A");
+  std::string b_name =
+      ResolveCubeSliceName(b_info, kAscendPtoScope + "TileMatL0B");
+  std::string c_name = ResolveCubeSliceName(c_info, "TileAcc");
+  std::string sa_name =
+      ResolveCubeSliceName(sa_info, kAscendPtoScope + "TileScaleA");
+  std::string sb_name =
+      ResolveCubeSliceName(sb_info, kAscendPtoScope + "TileScaleB");
+  std::string bias_name =
+      ResolveCubeSliceName(bias_info, kAscendPtoScope + "TileBiasData");
+
+  std::string template_str = Downcast<StringImm>(op->args[0])->value;
+  std::string op_name = kAscendPtoScope + template_str;
+
+  this->PrintIndent();
+  this->stream << op_name << "(" << a_name << ", " << b_name << ", " << c_name
+               << ", " << sa_name << ", " << sb_name << ", " << bias_name
+               << ");\n";
 }
 
 } // namespace codegen

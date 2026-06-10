@@ -75,6 +75,10 @@ from .customize import (
     view,  # noqa: F401
     npu_gemm as mma,  # noqa: F401, F811
     npu_gemm_mx as mma_mx,  # noqa: F401, F811
+    npu_mma_mx_bias as mma_mx_bias,  # noqa: F401, F811
+    npu_gemv_mx as gemv_mx,  # noqa: F401, F811
+    npu_gemv_mx_acc as gemv_mx_acc,  # noqa: F401, F811
+    npu_gemv_mx_bias as gemv_mx_bias,  # noqa: F401, F811
     loop_break,  # noqa: F401
 )
 from .logical import any_of, all_of  # noqa: F401

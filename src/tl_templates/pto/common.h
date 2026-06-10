@@ -1649,5 +1649,238 @@ AICORE PTO_INLINE void tdequant(TDstTile &dst, TSrcTile &src, TScaleTile &scale,
   pto::TDEQUANT(dst, src, scale, offset);
 }
 
+template <typename T, int32_t N, int32_t validN = N>
+using TileBiasData =
+    pto::Tile<pto::TileType::Mat, T, 1, N, pto::BLayout::RowMajor, 1, validN>;
+
+template <typename T, int32_t N, int32_t validN = N>
+using TileBias =
+    pto::Tile<pto::TileType::Bias, T, 1, N, pto::BLayout::RowMajor, 1, validN>;
+
+template <typename T1, typename T2, typename TS, int M, int N, int K>
+AICORE PTO_INLINE void mma_mx_bias(TileMatL0A<T1, M, K> l0a,
+                                    TileMatL0B<T1, K, N> l0b,
+                                    pto::TileAcc<T2, M, N> &C,
+                                    TileScaleA<TS, M, K / 32> sa,
+                                    TileScaleB<TS, K / 32, N> sb,
+                                    TileBiasData<float, N> &bias, bool init) {
+  TileBias<float, N> biasTile;
+  pto::TASSIGN(biasTile, 0x0);
+  pto::TMOV(biasTile, bias);
+  if (init) {
+    pto::TMATMUL_MX(C, l0a, sa, l0b, sb, biasTile);
+  } else {
+    pto::TMATMUL_MX(C, C, l0a, sa, l0b, sb, biasTile);
+  }
+}
+
+template <typename T1, typename T2, typename TS, uint32_t M, uint32_t N,
+          uint32_t K, uint32_t K_tail, uint32_t Sa_cols,
+          bool transpose_A = false, bool transpose_B = false>
+AICORE PTO_INLINE void gemm_v0_mxfp(
+    std::conditional_t<transpose_A, TileMatL1<T1, K, M>,
+                       TileMatL1<T1, M, K>> &A,
+    std::conditional_t<transpose_B, TileMatL1<T1, N, K>,
+                       TileMatL1<T1, K, N>> &B,
+    pto::TileAcc<T2, M, N> &C,
+    TileMatL1<TS, M, Sa_cols> &scale_A_l1,
+    TileMatL1<TS, K / 32, N> &scale_B_l1, bool clear) {
+
+  constexpr uint32_t kL0Size = 128;
+  constexpr uint32_t kL0split = (K + kL0Size - 1) / kL0Size;
+  constexpr uint32_t sa_local_cols = kL0Size / 32;
+  constexpr uint32_t sa_tail_cols = K_tail / 32;
+  constexpr bool has_tail = (K % kL0Size != 0);
+
+  bool initflag = false;
+  auto war_event_id = (event_t)(((int)EVENT_ID0 + 2) % 8);
+
+  set_flag(PIPE_MTE2, PIPE_MTE1, war_event_id);
+  wait_flag(PIPE_MTE2, PIPE_MTE1, war_event_id);
+
+  set_flag(PIPE_M, PIPE_MTE1, war_event_id);
+  wait_flag(PIPE_M, PIPE_MTE1, war_event_id);
+
+  for (uint32_t kL0Idx = 0; kL0Idx < kL0split; kL0Idx++) {
+    initflag = (clear && (kL0Idx == 0));
+    const bool is_tail_block = has_tail && (kL0Idx == kL0split - 1);
+
+    if (is_tail_block) {
+      TileMatL0A<T1, M, K_tail, M, K_tail> l0a;
+      TileMatL0B<T1, K_tail, N, K_tail, N> l0b;
+      pto::TASSIGN(l0a, 0x0);
+      pto::TASSIGN(l0b, 0x0);
+
+      using SaSliceTail =
+          TileScaleA<TS, M, sa_tail_cols, M, sa_tail_cols>;
+      using SbSliceTail =
+          TileScaleB<TS, sa_tail_cols, N, sa_tail_cols, N>;
+      SaSliceTail sa_local;
+      SbSliceTail sb_local;
+
+      set_flag(PIPE_MTE1, PIPE_M, war_event_id);
+      wait_flag(PIPE_MTE1, PIPE_M, war_event_id);
+
+      if constexpr (!transpose_A) {
+        copy_l1_to_l0a<T1, M, K_tail, M, K, false>(l0a, A, 0,
+                                                    kL0Idx * kL0Size);
+      } else {
+        TileMatL1ZN<T1, M, K> A_t;
+        pto::TRESHAPE(A_t, A);
+        copy_l1_to_l0a<T1, M, K_tail, M, K, true>(l0a, A_t, 0,
+                                                   kL0Idx * kL0Size);
+      }
+      if constexpr (!transpose_B) {
+        copy_l1_to_l0b<T1, K_tail, N, K, N, false>(l0b, B,
+                                                    kL0Idx * kL0Size, 0);
+      } else {
+        TileMatL1ZN<T1, K, N> B_t;
+        pto::TRESHAPE(B_t, B);
+        copy_l1_to_l0b<T1, K_tail, N, K, N, true>(l0b, B_t,
+                                                   kL0Idx * kL0Size, 0);
+      }
+
+      pto::TEXTRACT(sa_local, scale_A_l1, 0, kL0Idx * sa_local_cols);
+      pto::TEXTRACT(sb_local, scale_B_l1, kL0Idx * sa_local_cols, 0);
+
+      uint64_t scale_a_addr = pto::GetScaleAddr(l0a.data());
+      uint64_t scale_b_addr = pto::GetScaleAddr(l0b.data());
+      pto::TASSIGN(sa_local, scale_a_addr);
+      pto::TASSIGN(sb_local, scale_b_addr);
+
+      set_flag(PIPE_MTE1, PIPE_M, war_event_id);
+      wait_flag(PIPE_MTE1, PIPE_M, war_event_id);
+
+      if (initflag) {
+        pto::TMATMUL_MX(C, l0a, sa_local, l0b, sb_local);
+      } else {
+        pto::TMATMUL_MX(C, C, l0a, sa_local, l0b, sb_local);
+      }
+
+      set_flag(PIPE_M, PIPE_MTE1, war_event_id);
+      wait_flag(PIPE_M, PIPE_MTE1, war_event_id);
+
+    } else {
+      TileMatL0A<T1, M, kL0Size, M, kL0Size> l0a;
+      TileMatL0B<T1, kL0Size, N, kL0Size, N> l0b;
+      pto::TASSIGN(l0a, 0x0);
+      pto::TASSIGN(l0b, 0x0);
+
+      using SaSlice =
+          TileScaleA<TS, M, sa_local_cols, M, sa_local_cols>;
+      using SbSlice =
+          TileScaleB<TS, sa_local_cols, N, sa_local_cols, N>;
+      SaSlice sa_local;
+      SbSlice sb_local;
+
+      set_flag(PIPE_M, PIPE_MTE1, war_event_id);
+      wait_flag(PIPE_M, PIPE_MTE1, war_event_id);
+
+      if constexpr (!transpose_A) {
+        copy_l1_to_l0a<T1, M, kL0Size, M, K, false>(l0a, A, 0,
+                                                     kL0Idx * kL0Size);
+      } else {
+        TileMatL1ZN<T1, M, K> A_t;
+        pto::TRESHAPE(A_t, A);
+        copy_l1_to_l0a<T1, M, kL0Size, M, K, true>(l0a, A_t, 0,
+                                                    kL0Idx * kL0Size);
+      }
+      if constexpr (!transpose_B) {
+        copy_l1_to_l0b<T1, kL0Size, N, K, N, false>(l0b, B,
+                                                     kL0Idx * kL0Size, 0);
+      } else {
+        TileMatL1ZN<T1, K, N> B_t;
+        pto::TRESHAPE(B_t, B);
+        copy_l1_to_l0b<T1, kL0Size, N, K, N, true>(l0b, B_t,
+                                                    kL0Idx * kL0Size, 0);
+      }
+
+      pto::TEXTRACT(sa_local, scale_A_l1, 0, kL0Idx * sa_local_cols);
+      pto::TEXTRACT(sb_local, scale_B_l1, kL0Idx * sa_local_cols, 0);
+
+      uint64_t scale_a_addr = pto::GetScaleAddr(l0a.data());
+      uint64_t scale_b_addr = pto::GetScaleAddr(l0b.data());
+      pto::TASSIGN(sa_local, scale_a_addr);
+      pto::TASSIGN(sb_local, scale_b_addr);
+
+      set_flag(PIPE_MTE1, PIPE_M, war_event_id);
+      wait_flag(PIPE_MTE1, PIPE_M, war_event_id);
+
+      if (initflag) {
+        pto::TMATMUL_MX(C, l0a, sa_local, l0b, sb_local);
+      } else {
+        pto::TMATMUL_MX(C, C, l0a, sa_local, l0b, sb_local);
+      }
+
+      set_flag(PIPE_MTE1, PIPE_MTE2, war_event_id);
+      wait_flag(PIPE_MTE1, PIPE_MTE2, war_event_id);
+    }
+  }
+
+  set_flag(PIPE_MTE1, PIPE_MTE2, war_event_id);
+  wait_flag(PIPE_MTE1, PIPE_MTE2, war_event_id);
+
+  set_flag(PIPE_M, PIPE_FIX, war_event_id);
+  wait_flag(PIPE_M, PIPE_FIX, war_event_id);
+}
+
+// gemv_mx: MXFP GEMV primitive (C = A*B, clear accumulator).
+// Scale parameters (sa, sb) are accepted for compile-time type checking
+// but are not explicitly passed to the underlying mad_mx instruction;
+// the hardware handles scale values implicitly (consistent with
+// pto-isa TGEMV_MX_IMPL design).
+template <typename T1, typename T2, typename TS, int M, int N, int K>
+AICORE PTO_INLINE void gemv_mx(TileMatL0A<T1, M, K> &a,
+                               TileMatL0B<T1, K, N> &b,
+                               pto::TileAcc<T2, M, N> &c,
+                               TileScaleA<TS, M, K / 32> &sa,
+                               TileScaleB<TS, K / 32, N> &sb) {
+  uint16_t k = K;
+  uint16_t n = N;
+  pto::TMatmulMx<pto::AccPhase::Unspecified,
+                 pto::TileAcc<T2, M, N>, TileMatL0A<T1, M, K>,
+                 TileMatL0B<T1, K, N>, false, true, false>(
+      c.data(), a.data(), b.data(), 1, k, n);
+}
+
+// gemv_mx_acc: MXFP GEMV with in-place accumulation (C += A*B).
+// c_out must be the same tile as c_in for correct results; the
+// hardware accumulates into c_out only (c_in exists for API/type
+// consistency, matching pto-isa TGEMV_MX_ACC_IMPL).
+template <typename T1, typename T2, typename TS, int M, int N, int K>
+AICORE PTO_INLINE void gemv_mx_acc(TileMatL0A<T1, M, K> &a,
+                                   TileMatL0B<T1, K, N> &b,
+                                   pto::TileAcc<T2, M, N> &c_out,
+                                   pto::TileAcc<T2, M, N> &c_in,
+                                   TileScaleA<TS, M, K / 32> &sa,
+                                   TileScaleB<TS, K / 32, N> &sb) {
+  uint16_t k = K;
+  uint16_t n = N;
+  pto::TMatmulMx<pto::AccPhase::Unspecified,
+                 pto::TileAcc<T2, M, N>, TileMatL0A<T1, M, K>,
+                 TileMatL0B<T1, K, N>, false, false, false>(
+      c_out.data(), a.data(), b.data(), 1, k, n);
+}
+
+// gemv_mx_bias: MXFP GEMV with fused bias (C = A*B + bias).
+template <typename T1, typename T2, typename TS, int M, int N, int K,
+          int validN = N>
+AICORE PTO_INLINE void gemv_mx_bias(TileMatL0A<T1, M, K> &a,
+                                    TileMatL0B<T1, K, N> &b,
+                                    pto::TileAcc<T2, M, N> &c,
+                                    TileScaleA<TS, M, K / 32> &sa,
+                                    TileScaleB<TS, K / 32, N> &sb,
+                                    TileBiasData<float, N, validN> &bias) {
+  TileBias<float, N, validN> biasTile;
+  pto::TASSIGN(biasTile, 0x0);
+  pto::TMOV(biasTile, bias);
+  uint16_t k = K;
+  uint16_t n = N;
+  pto::TMatmulMxBias<pto::AccPhase::Unspecified,
+                     pto::TileAcc<T2, M, N>, TileMatL0A<T1, M, K>,
+                     TileMatL0B<T1, K, N>, true, false, false>(
+      c.data(), a.data(), b.data(), biasTile.data(), 1, k, n);
+}
+
 } // namespace tl::ascend_pto
 #endif
