@@ -20,6 +20,17 @@ using float8_e5m2_t = int8_t;
 #ifndef __FLOAT8_E8M0_T__
 using float8_e8m0_t = int8_t;
 #endif
+// MXFP4 "x2" twin types: each byte packs two FP4 elements. For type-system
+// purposes on non-A5 (where the CCE does not expose these types), we alias
+// them to uint8_t. This lets generated code parse; actual MXFP4 TMATMUL_MX
+// is only correct on A5 (guarded by the `#ifdef PTO_PLATFORM_A5` on
+// gemm_mx below).
+#ifndef __FLOAT4_E2M1X2_T__
+using float4_e2m1x2_t = uint8_t;
+#endif
+#ifndef __FLOAT4_E1M2X2_T__
+using float4_e1m2x2_t = uint8_t;
+#endif
 #endif // !PTO_PLATFORM_A5
 
 #ifdef __CCE_AICORE__

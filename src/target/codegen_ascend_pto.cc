@@ -159,7 +159,10 @@ int32_t GetTypeLen(std::string type) {
   } else if (type == "half") {
     typeSize = 2;
   } else if (type == "int8_t" || type == "uint8_t" ||
-             type == "float8_e4m3_t" || type == "float8_e5m2_t") {
+             type == "float8_e4m3_t" || type == "float8_e5m2_t" ||
+             type == "float4_e2m1x2_t" || type == "float4_e1m2x2_t") {
+    // float4_e{2m1,e1m2}x2_t are uint8 aliases: each byte packs two FP4
+    // elements, so byte-level address math still sees them as 1-byte units.
     typeSize = 1;
   } else if (type == "int16_t" || type == "uint16_t") {
     typeSize = 2;
