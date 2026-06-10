@@ -44,6 +44,9 @@ endif()
 # include cmake modules
 include(CheckCXXCompilerFlag)
 
+# Include code coverage module
+include(${CMAKE_SOURCE_DIR}/cmake/modules/CodeCoverage.cmake)
+
 # Enable static runtime build if required
 if(TILE_LANG_INSTALL_STATIC_LIB)
   set(BUILD_STATIC_RUNTIME ON)

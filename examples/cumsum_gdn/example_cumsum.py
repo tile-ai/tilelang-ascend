@@ -26,6 +26,7 @@ head_first = args.head_first
 use_fragment = args.use_fragment
 
 pass_configs = {
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
     tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
     tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
 }
@@ -55,7 +56,6 @@ def cumsum_ker(B, H, L, C, reverse=False, head_first=True, use_fragment=False, a
             total_ub = tl.alloc_shared([1, 1], accum_dtype)
             fragment_ub = tl.alloc_shared([1, C], accum_dtype)
 
-            tl.tile.fill(s_ub, 0.0)
             tl.copy(G[bz, by, bx * C], g_ub[0, :])
 
             if use_fragment:
@@ -68,13 +68,14 @@ def cumsum_ker(B, H, L, C, reverse=False, head_first=True, use_fragment=False, a
 
                 if reverse:
                     tl.tile.fill(total_ub, 0.0)
-                    for i in range(C):
-                        total_ub[0, 0] = total_ub[0, 0] + g_ub[0, i]
+                    tl.reduce_sum(g_ub, total_ub)
                     for i in range(C):
                         fragment_ub[0, i] = total_ub[0, 0] - fragment_ub[0, i] + g_ub[0, i]
+                tl.tile.fill(s_ub, 0.0)
 
                 tl.copy(fragment_ub[0, :], s_ub[0, :])
             else:
+                tl.tile.fill(s_ub, 0.0)
                 for i in range(C):
                     if i > 0:
                         s_ub[0, i] = s_ub[0, i - 1]
@@ -82,8 +83,7 @@ def cumsum_ker(B, H, L, C, reverse=False, head_first=True, use_fragment=False, a
 
                 if reverse:
                     tl.tile.fill(total_ub, 0.0)
-                    for i in range(C):
-                        total_ub[0, 0] = total_ub[0, 0] + g_ub[0, i]
+                    tl.reduce_sum(g_ub, total_ub)
                     for i in range(C):
                         s_ub[0, i] = total_ub[0, 0] - s_ub[0, i] + g_ub[0, i]
 

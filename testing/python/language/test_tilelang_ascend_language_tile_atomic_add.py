@@ -20,8 +20,8 @@ def clear_cache():
     yield
 
 
-def _compile(program):
-    return tilelang.compile(program, pass_configs=PASS_CONFIGS, target="ascendc")
+def _compile(program, target):
+    return tilelang.compile(program, pass_configs=PASS_CONFIGS, target=target)
 
 
 def _torch_dtype(dtype):
@@ -54,8 +54,8 @@ def _tile_atomic_add_2d_kernel(num_blocks=4, tile_m=4, tile_n=32, dtype="float32
     return main
 
 
-def _run_atomic_add_case(program, shape, dtype, num_blocks):
-    kernel = _compile(program)
+def _run_atomic_add_case(program, shape, dtype, num_blocks, target):
+    kernel = _compile(program, target)
     torch_dtype = _torch_dtype(dtype)
 
     out = torch.empty(shape, dtype=torch_dtype, device="npu")
@@ -78,8 +78,9 @@ def _run_atomic_add_case(program, shape, dtype, num_blocks):
     not (hasattr(torch, "npu") and torch.npu.is_available()),
     reason="tile atomic_add correctness requires an Ascend NPU runtime",
 )
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("dtype", ["float32", "float16"])
-def test_tile_atomic_add_1d_accumulates_multiple_blocks_after_zeroing_gm(dtype):
+def test_tile_atomic_add_1d_accumulates_multiple_blocks_after_zeroing_gm(target, dtype):
     num_blocks = 4
     tile_n = 32
     program = _tile_atomic_add_1d_kernel(
@@ -87,14 +88,15 @@ def test_tile_atomic_add_1d_accumulates_multiple_blocks_after_zeroing_gm(dtype):
         tile_n=tile_n,
         dtype=dtype,
     )
-    _run_atomic_add_case(program, (tile_n,), dtype, num_blocks)
+    _run_atomic_add_case(program, (tile_n,), dtype, num_blocks, target)
 
 
 @pytest.mark.skipif(
     not (hasattr(torch, "npu") and torch.npu.is_available()),
     reason="tile atomic_add correctness requires an Ascend NPU runtime",
 )
-def test_tile_atomic_add_2d_region_accumulates_multiple_blocks_after_zeroing_gm():
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+def test_tile_atomic_add_2d_region_accumulates_multiple_blocks_after_zeroing_gm(target):
     num_blocks = 4
     tile_m, tile_n = 4, 32
     dtype = "float32"
@@ -104,7 +106,7 @@ def test_tile_atomic_add_2d_region_accumulates_multiple_blocks_after_zeroing_gm(
         tile_n=tile_n,
         dtype=dtype,
     )
-    _run_atomic_add_case(program, (tile_m, tile_n), dtype, num_blocks)
+    _run_atomic_add_case(program, (tile_m, tile_n), dtype, num_blocks, target)
 
 
 def _tile_atomic_add_l0c_gemm_kernel(num_blocks=4, block_M=16, block_N=16, block_K=16, dtype="float16", accum_dtype="float"):
@@ -131,8 +133,8 @@ def _tile_atomic_add_l0c_gemm_kernel(num_blocks=4, block_M=16, block_N=16, block
     return main
 
 
-def _run_atomic_add_l0c_gemm_case(program, block_M, block_N, block_K, dtype, accum_dtype, num_blocks):
-    kernel = _compile(program)
+def _run_atomic_add_l0c_gemm_case(program, block_M, block_N, block_K, dtype, accum_dtype, num_blocks, target):
+    kernel = _compile(program, target)
     torch_dtype = _torch_dtype(dtype)
     torch_accum_dtype = _torch_dtype(accum_dtype)
 
@@ -157,14 +159,14 @@ def _run_atomic_add_l0c_gemm_case(program, block_M, block_N, block_K, dtype, acc
     not (hasattr(torch, "npu") and torch.npu.is_available()),
     reason="tile atomic_add correctness requires an Ascend NPU runtime",
 )
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("dtype", ["float16"])
-def test_tile_atomic_add_l0c_gemm_accumulates_multiple_blocks(dtype):
+def test_tile_atomic_add_l0c_gemm_accumulates_multiple_blocks(target, dtype):
     num_blocks = 4
     block_M = 16
     block_N = 16
     block_K = 16
     accum_dtype = "float"
-
     program = _tile_atomic_add_l0c_gemm_kernel(
         num_blocks=num_blocks,
         block_M=block_M,
@@ -173,4 +175,8 @@ def test_tile_atomic_add_l0c_gemm_accumulates_multiple_blocks(dtype):
         dtype=dtype,
         accum_dtype=accum_dtype,
     )
-    _run_atomic_add_l0c_gemm_case(program, block_M, block_N, block_K, dtype, accum_dtype, num_blocks)
+    _run_atomic_add_l0c_gemm_case(program, block_M, block_N, block_K, dtype, accum_dtype, num_blocks, target)
+
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-v", "-n", "8"])

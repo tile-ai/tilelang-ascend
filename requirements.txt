@@ -11,6 +11,8 @@ pybind11
 pytest
 pytest-xdist
 pytest-forked
+pytest-cov>=4.0
+coverage>=7.0
 pandas
 matplotlib
 PyYAML

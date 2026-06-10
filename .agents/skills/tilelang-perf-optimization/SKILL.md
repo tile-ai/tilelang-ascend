@@ -16,6 +16,7 @@ Step 4: 优化实施 → Step 5: 精度再验证 → Step 6: 效果验证
 ## 核心约束
 
 - **精度优先**：精度未通过禁止性能优化；每次优化后必须重新验证精度
+- **性能验证口径**：验证性能必须使用 `msprof op`，禁止使用 Python 或 Torch 中的接口计时作为性能验证依据
 - **迭代验证**：每次只修改一个参数/配置，修改后立即验证，性能回退则回退
 - **记录可追溯**：中间文件保存在 `examples/{op_name}/perf_tuning/` 目录
 
@@ -31,7 +32,7 @@ Step 4: 优化实施 → Step 5: 精度再验证 → Step 6: 效果验证
 ### Step 2: 性能数据采集
 
 ```bash
-msprof op --kernel-name="main_kernel" --output=./msprof_output ./examples/{op_name}/<script_name>.py
+msprof op --kernel-name="main_kernel" --output=./msprof_output python ./examples/{op_name}/<script_name>.py
 ```
 
 ### Step 3: 算子类型判断
@@ -61,6 +62,7 @@ print(func.get_kernel_source())
 
 - 若正在生成、改写或评审 kernel，先阅读 [performance-antipatterns](references/performance-antipatterns.md)，对照其中的常见性能劣化模式示例检查当前代码是否存在类似 pattern
 - 文档中的 pattern 不是正确性错误，而是需要重点关注的性能风险点；确需临时保留时，在 `optimization_log.md` 中记录 shape、dtype、保留原因和后续替换方案
+- Vector 算子需要手写 MTE2/V/MTE3 核内流水时，优先参考 [vector_add_pipeline](references/best-practices/vector_add_pipeline.md)，按 prefetch → main body → epilogue 三阶段组织代码
 
 | 优化方向 | 说明 | 典型手段 |
 |---------|------|---------|

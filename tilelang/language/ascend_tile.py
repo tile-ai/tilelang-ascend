@@ -117,20 +117,22 @@ def _atomic_add_extent(data):
 
 
 def _merge_atomic_add_extents(src_extent, dst_extent):
+    import builtins
+
     if not src_extent and not dst_extent:
         raise ValueError(f"{_ATOMIC_ADD_V1_ERR} Cannot deduce atomic_add extents.")
 
     src_extent = list(src_extent) if src_extent else [1] * len(dst_extent)
     dst_extent = list(dst_extent) if dst_extent else [1] * len(src_extent)
     if len(src_extent) != len(dst_extent):
-        max_len = max(len(src_extent), len(dst_extent))
+        max_len = builtins.max(len(src_extent), len(dst_extent))
         src_extent = src_extent + [1] * (max_len - len(src_extent))
         dst_extent = dst_extent + [1] * (max_len - len(dst_extent))
 
     extent = []
     for src_val, dst_val in zip(src_extent, dst_extent):
         if isinstance(src_val, (int, float)) and isinstance(dst_val, (int, float)):
-            extent.append(max(src_val, dst_val))
+            extent.append(builtins.max(src_val, dst_val))
         else:
             if not isinstance(src_val, PrimExpr):
                 src_val = tir.IntImm("int32", int(src_val))
@@ -403,13 +405,29 @@ def topk(dst: Buffer, src: Buffer, K: PrimExpr, actual_num: PrimExpr):
         dst: Destination buffer for top K interleaved (value, index) pairs.
              Must have at least 2*K elements.
         src: Source buffer containing the data to find top K from.
+             Assumes src has static shape for buffer sizing.
         K: Number of top elements to extract.
-        actual_num: The number of valid elements in src.
+        actual_num: The number of valid elements in src (can be symbolic for dynamic shapes).
 
     Returns:
         A TVM intrinsic call that performs the TopK operation.
     """
-    repeatTimes = (actual_num + 31) // 32
+    from tvm.arith import Analyzer
+
+    analyzer = Analyzer()
+    max_actual_num = 0
+
+    for dim in src.shape:
+        dim_simplified = analyzer.simplify(dim)
+        if isinstance(dim_simplified, tir.IntImm):
+            max_actual_num += dim_simplified.value
+        else:
+            raise ValueError(
+                f"topk requires src buffer with static shape for buffer sizing. "
+                f"Found dynamic dimension: {dim}. Please ensure src buffer has compile-time constant shape."
+            )
+
+    repeatTimes = (max_actual_num + 31) // 32
     return tir.call_intrin(
         "handle",
         tir.op.Op.get("tl.ascend_topk"),
@@ -419,6 +437,7 @@ def topk(dst: Buffer, src: Buffer, K: PrimExpr, actual_num: PrimExpr):
         K,
         repeatTimes,
         actual_num,
+        max_actual_num,
     )
 
 

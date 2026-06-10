@@ -113,6 +113,59 @@ AICORE PTO_INLINE void mma(TileMatL0A<T1, M, K> l0a, TileMatL0B<T1, K, N> l0b,
 }
 
 template <typename T1, typename T2, uint32_t M, uint32_t N, uint32_t K,
+          uint32_t validM, uint32_t validN, uint32_t validK, uint32_t CurrentK,
+          bool transpose_A, bool transpose_B>
+AICORE PTO_INLINE void gemm_v0_inner(
+    std::conditional_t<transpose_A, TileMatL1<T1, K, M, validK, validM>,
+                       TileMatL1<T1, M, K, validM, validK>> &A,
+    std::conditional_t<transpose_B, TileMatL1<T1, N, K, validN, validK>,
+                       TileMatL1<T1, K, N, validK, validN>> &B,
+    pto::TileAcc<T2, M, N, validM, validN> &C, uint32_t kL0Idx, bool initflag,
+    event_t war_event_id, bool is_tail_block) {
+  TileMatL0A<T1, M, CurrentK, M, CurrentK> l0a;
+  TileMatL0B<T1, CurrentK, N, CurrentK, N> l0b;
+  pto::TASSIGN(l0a, 0x0);
+  pto::TASSIGN(l0b, 0x0);
+
+  set_flag(PIPE_M, PIPE_MTE1, war_event_id);
+  wait_flag(PIPE_M, PIPE_MTE1, war_event_id);
+
+  if (!is_tail_block) {
+    set_flag(PIPE_FIX, PIPE_M, war_event_id);
+    wait_flag(PIPE_FIX, PIPE_M, war_event_id);
+  }
+
+  if constexpr (!transpose_A) {
+    copy_l1_to_l0a<T1, M, CurrentK, M, K, false>(l0a, A, 0, kL0Idx * CurrentK);
+  } else {
+    TileMatL1ZN<T1, M, K, validM, validK> A_t;
+    pto::TRESHAPE(A_t, A);
+    copy_l1_to_l0a<T1, M, CurrentK, M, K, true>(l0a, A_t, 0, kL0Idx * CurrentK);
+  }
+  if constexpr (!transpose_B) {
+    copy_l1_to_l0b<T1, CurrentK, N, K, N, false>(l0b, B, kL0Idx * CurrentK, 0);
+  } else {
+    TileMatL1ZN<T1, K, N, validK, validN> B_t;
+    pto::TRESHAPE(B_t, B);
+    copy_l1_to_l0b<T1, CurrentK, N, K, N, true>(l0b, B_t, kL0Idx * CurrentK, 0);
+  }
+
+  set_flag(PIPE_MTE1, PIPE_M, war_event_id);
+  wait_flag(PIPE_MTE1, PIPE_M, war_event_id);
+
+  if (initflag) {
+    pto::TMATMUL(C, l0a, l0b);
+  } else {
+    pto::TMATMUL_ACC(C, C, l0a, l0b);
+  }
+
+  if (!is_tail_block) {
+    set_flag(PIPE_MTE1, PIPE_MTE2, war_event_id);
+    wait_flag(PIPE_MTE1, PIPE_MTE2, war_event_id);
+  }
+}
+
+template <typename T1, typename T2, uint32_t M, uint32_t N, uint32_t K,
           uint32_t validM = M, uint32_t validN = N, uint32_t validK = K,
           uint32_t K_tail, bool transpose_A = false, bool transpose_B = false>
 AICORE PTO_INLINE void
@@ -124,108 +177,23 @@ gemm_v0(std::conditional_t<transpose_A, TileMatL1<T1, K, M, validK, validM>,
   constexpr uint32_t kL0Size =
       128; // L0 slice size, adapted to 64K memory limit
   const uint32_t kL0split = (K + kL0Size - 1) / kL0Size; // Number of slices
-  bool initflag = false;
-
-  TileMatL0A<T1, M, kL0Size, M, kL0Size> l0a;
-  pto::TASSIGN(l0a, 0x0);
-  TileMatL0B<T1, kL0Size, N, kL0Size, N> l0b;
-  pto::TASSIGN(l0b, 0x0);
-
   auto war_event_id = (event_t)(((int)EVENT_ID0 + 1) % 8);
 
   set_flag(PIPE_MTE2, PIPE_MTE1, war_event_id);
   wait_flag(PIPE_MTE2, PIPE_MTE1, war_event_id);
 
   for (uint32_t kL0Idx = 0; kL0Idx < kL0split; kL0Idx++) {
-    initflag = (clear && (kL0Idx == 0));
-    const bool is_tail_block =
-        (kL0Idx == kL0split - 1); // Determine whether it is a tail block
+    const bool initflag = (clear && (kL0Idx == 0));
+    const bool is_tail_block = (kL0Idx == kL0split - 1);
 
-    // Dynamically define the L0 cache size based on whether the tile is an end
-    // tile.
     if (is_tail_block) {
-      TileMatL0A<T1, M, K_tail, M, K_tail> l0a;
-      TileMatL0B<T1, K_tail, N, K_tail, N> l0b;
-      pto::TASSIGN(l0a, 0x0);
-      pto::TASSIGN(l0b, 0x0);
-
-      /**
-       * Added synchronization logic: Write-After-Read (WAR) protection
-       * Objective: Prevent MTE1 (data transfer) from overwriting L0 before M
-       * (Cube) completes processing the previous round of data
-       * TODO: Support Ping-Pong buffer.
-       */
-      set_flag(PIPE_M, PIPE_MTE1, war_event_id);
-      wait_flag(PIPE_M, PIPE_MTE1, war_event_id);
-
-      if constexpr (!transpose_A) {
-        copy_l1_to_l0a<T1, M, K_tail, M, K, false>(l0a, A, 0, kL0Idx * K_tail);
-      } else {
-        TileMatL1ZN<T1, M, K, validM, validK> A_t;
-        pto::TRESHAPE(A_t, A);
-        copy_l1_to_l0a<T1, M, K_tail, M, K, true>(l0a, A_t, 0, kL0Idx * K_tail);
-      }
-      if constexpr (!transpose_B) {
-        copy_l1_to_l0b<T1, K_tail, N, K, N, false>(l0b, B, kL0Idx * K_tail, 0);
-      } else {
-        TileMatL1ZN<T1, K, N, validK, validN> B_t;
-        pto::TRESHAPE(B_t, B);
-        copy_l1_to_l0b<T1, K_tail, N, K, N, true>(l0b, B_t, kL0Idx * K_tail, 0);
-      }
-
-      set_flag(PIPE_MTE1, PIPE_M, war_event_id);
-      wait_flag(PIPE_MTE1, PIPE_M, war_event_id);
-
-      if (initflag) {
-        pto::TMATMUL(C, l0a, l0b);
-      } else {
-        pto::TMATMUL_ACC(C, C, l0a, l0b);
-      }
-
+      gemm_v0_inner<T1, T2, M, N, K, validM, validN, validK, K_tail,
+                    transpose_A, transpose_B>(A, B, C, kL0Idx, initflag,
+                                              war_event_id, true);
     } else {
-      // Non-tail block: The L0 cache is defined at the standard size
-      // (current_kSize = kL0Size=128).
-      TileMatL0A<T1, M, kL0Size, M, kL0Size> l0a;
-      TileMatL0B<T1, kL0Size, N, kL0Size, N> l0b;
-      pto::TASSIGN(l0a, 0x0);
-      pto::TASSIGN(l0b, 0x0);
-
-      set_flag(PIPE_M, PIPE_MTE1, war_event_id);
-      wait_flag(PIPE_M, PIPE_MTE1, war_event_id);
-
-      set_flag(PIPE_FIX, PIPE_M, war_event_id);
-      wait_flag(PIPE_FIX, PIPE_M, war_event_id);
-
-      if constexpr (!transpose_A) {
-        copy_l1_to_l0a<T1, M, kL0Size, M, K, false>(l0a, A, 0,
-                                                    kL0Idx * kL0Size);
-      } else {
-        TileMatL1ZN<T1, M, K, validM, validK> A_t;
-        pto::TRESHAPE(A_t, A);
-        copy_l1_to_l0a<T1, M, kL0Size, M, K, true>(l0a, A_t, 0,
-                                                   kL0Idx * kL0Size);
-      }
-      if constexpr (!transpose_B) {
-        copy_l1_to_l0b<T1, kL0Size, N, K, N, false>(l0b, B, kL0Idx * kL0Size,
-                                                    0);
-      } else {
-        TileMatL1ZN<T1, K, N, validK, validN> B_t;
-        pto::TRESHAPE(B_t, B);
-        copy_l1_to_l0b<T1, kL0Size, N, K, N, true>(l0b, B_t, kL0Idx * kL0Size,
-                                                   0);
-      }
-
-      set_flag(PIPE_MTE1, PIPE_M, war_event_id);
-      wait_flag(PIPE_MTE1, PIPE_M, war_event_id);
-
-      if (initflag) {
-        pto::TMATMUL(C, l0a, l0b);
-      } else {
-        pto::TMATMUL_ACC(C, C, l0a, l0b);
-      }
-
-      set_flag(PIPE_MTE1, PIPE_MTE2, war_event_id);
-      wait_flag(PIPE_MTE1, PIPE_MTE2, war_event_id);
+      gemm_v0_inner<T1, T2, M, N, K, validM, validN, validK, kL0Size,
+                    transpose_A, transpose_B>(A, B, C, kL0Idx, initflag,
+                                              war_event_id, false);
     }
   }
 
@@ -342,8 +310,7 @@ AICORE PTO_INLINE void copy_gm_to_ub_dynamic(
   } else {
     TileUbDataND<T1, ub_shape1, ub_shape2, pto::DYNAMIC, pto::DYNAMIC>
         temp_src_ub(valid_row, valid_col);
-    pto::TASSIGN(temp_src_ub,
-                 ub_shape_addr + ub_offset * sizeof(T1) / sizeof(T1) * len);
+    pto::TASSIGN(temp_src_ub, ub_shape_addr + ub_offset * len);
     pto::TLOAD(temp_src_ub, global_tensor);
     TileUbDataND<T2, ub_shape1, ub_shape2, pto::DYNAMIC, pto::DYNAMIC>
         temp_dst_ub(valid_row, valid_col);
@@ -369,164 +336,6 @@ AICORE PTO_INLINE void copy_ub_to_gm_dynamic(
       T1, pto::Shape<shape1, shape2, shape3, pto::DYNAMIC, pto::DYNAMIC>,
       pto::Stride<stride1, stride2, stride3, stride4, stride5>>
       global_tensor(handle, dynamic_shape, stride);
-  constexpr uint8_t len = sizeof(T2);
-  constexpr bool use_nd = (static_cast<uint64_t>(ub_shape2) * len) >= 32;
-  if constexpr (std::is_same_v<T1, T2>) {
-    if constexpr (use_nd) {
-      TileUbDataND<T2, ub_shape1, ub_shape2, pto::DYNAMIC, pto::DYNAMIC>
-          temp_ub(valid_row, valid_col);
-      pto::TASSIGN(temp_ub, ub_shape_addr + ub_offset * len);
-      pto::TSTORE(global_tensor, temp_ub);
-    } else {
-      TileUbDataDN<T2, ub_shape1, ub_shape2, pto::DYNAMIC, pto::DYNAMIC>
-          temp_ub(valid_row, valid_col);
-      pto::TASSIGN(temp_ub, ub_shape_addr + ub_offset * len);
-      pto::TSTORE(global_tensor, temp_ub);
-    }
-  } else {
-    if constexpr (use_nd) {
-      TileUbDataND<T2, ub_shape1, ub_shape2, pto::DYNAMIC, pto::DYNAMIC>
-          temp_src_ub(valid_row, valid_col);
-      pto::TASSIGN(temp_src_ub, ub_shape_addr + ub_offset * len);
-      TileUbDataND<T1, ub_shape1, ub_shape2, pto::DYNAMIC, pto::DYNAMIC>
-          temp_dst_ub(valid_row, valid_col);
-      pto::TASSIGN(temp_dst_ub, ub_shape_addr + ub_offset * sizeof(T1));
-      pto::TCVT(temp_dst_ub, temp_src_ub, pto::RoundMode::CAST_NONE);
-      pto::TSTORE(global_tensor, temp_dst_ub);
-    } else {
-      TileUbDataDN<T2, ub_shape1, ub_shape2, pto::DYNAMIC, pto::DYNAMIC>
-          temp_src_ub(valid_row, valid_col);
-      pto::TASSIGN(temp_src_ub, ub_shape_addr + ub_offset * len);
-      TileUbDataDN<T1, ub_shape1, ub_shape2, pto::DYNAMIC, pto::DYNAMIC>
-          temp_dst_ub(valid_row, valid_col);
-      pto::TASSIGN(temp_dst_ub, ub_shape_addr + ub_offset * sizeof(T1));
-      pto::TCVT(temp_dst_ub, temp_src_ub, pto::RoundMode::CAST_NONE);
-      pto::TSTORE(global_tensor, temp_dst_ub);
-    }
-  }
-}
-
-template <typename T1, typename T2, int32_t shape1, int32_t shape2,
-          int32_t shape3, int32_t shape4, int32_t shape5, int32_t stride1,
-          int32_t stride2, int32_t stride3, int32_t stride4, int32_t stride5,
-          uint32_t valid1, uint32_t valid2>
-AICORE PTO_INLINE void copy_gm_to_l1(__gm__ T1 *handle, int32_t buffer_addr,
-                                     int32_t offset, int32_t actualTailM = 0,
-                                     int32_t actualTailN = 0) {
-  constexpr uint8_t len = sizeof(T2);
-  bool useTail = shape4 == valid1 && shape5 == valid2;
-  int tailM = (useTail && actualTailM != 0) ? actualTailM : valid1;
-  int tailN = (useTail && actualTailN != 0) ? actualTailN : valid2;
-  TileMatL1<T2, shape4, shape5, pto::DYNAMIC, pto::DYNAMIC> L1(tailM, tailN);
-  pto::TASSIGN(L1, buffer_addr + offset * len);
-  pto::Shape<shape1, shape2, shape3, pto::DYNAMIC, pto::DYNAMIC> dynamic_shape;
-  dynamic_shape.shape[3] = useTail ? tailM : shape4;
-  dynamic_shape.shape[4] = useTail ? tailN : shape5;
-  pto::GlobalTensor<
-      T1, pto::Shape<shape1, shape2, shape3, pto::DYNAMIC, pto::DYNAMIC>,
-      pto::Stride<stride1, stride2, stride3, stride4, stride5>>
-      global_tensor(handle, dynamic_shape);
-  pto::TLOAD(L1, global_tensor);
-  if (useTail && (tailM != shape4 || tailN != shape5)) {
-    pto::TFILLPAD(L1, L1);
-  }
-}
-
-template <typename T1, typename T2, int32_t shape1, int32_t shape2,
-          int32_t shape3, int32_t shape4, int32_t shape5, int32_t stride1,
-          int32_t stride2, int32_t stride3, int32_t stride4, int32_t stride5,
-          uint32_t valid1, uint32_t valid2>
-AICORE PTO_INLINE void copy_l0c_to_gm(__gm__ T1 *handle, int32_t buffer_addr,
-                                      int32_t offset, int32_t actualTailM = 0,
-                                      int32_t actualTailN = 0) {
-  constexpr uint8_t len = sizeof(T2);
-  bool useTail = shape4 == valid1 && shape5 == valid2;
-  int tailM = (useTail && actualTailM != 0) ? actualTailM : valid1;
-  int tailN = (useTail && actualTailN != 0) ? actualTailN : valid2;
-  pto::TileAcc<T2, shape4, shape5, pto::DYNAMIC, pto::DYNAMIC> L0c(tailM,
-                                                                   tailN);
-  pto::TASSIGN(L0c, buffer_addr + offset * len);
-  pto::Shape<shape1, shape2, shape3, pto::DYNAMIC, pto::DYNAMIC> dynamic_shape;
-  dynamic_shape.shape[3] = useTail ? tailM : shape4;
-  dynamic_shape.shape[4] = useTail ? tailN : shape5;
-  pto::GlobalTensor<
-      T1, pto::Shape<shape1, shape2, shape3, pto::DYNAMIC, pto::DYNAMIC>,
-      pto::Stride<stride1, stride2, stride3, stride4, stride5>>
-      global_tensor(handle, dynamic_shape);
-  pto::TSTORE(global_tensor, L0c);
-}
-
-template <typename T1, typename T2, int32_t shape1, int32_t shape2,
-          int32_t shape3, int32_t shape4, int32_t shape5, int32_t stride1,
-          int32_t stride2, int32_t stride3, int32_t stride4, int32_t stride5,
-          uint32_t ub_shape1, uint32_t ub_shape2,
-          pto::PadValue PadVal = pto::PadValue::Null>
-AICORE PTO_INLINE void copy_gm_to_ub(__gm__ T1 *handle, int32_t ub_shape_addr,
-                                     int32_t ub_offset, int32_t valid_row,
-                                     int32_t valid_col) {
-  constexpr uint8_t len = sizeof(T2);
-  pto::Shape<shape1, shape2, shape3, pto::DYNAMIC, pto::DYNAMIC> dynamic_shape;
-  dynamic_shape.shape[3] = valid_row;
-  dynamic_shape.shape[4] = valid_col;
-  pto::GlobalTensor<
-      T1, pto::Shape<shape1, shape2, shape3, pto::DYNAMIC, pto::DYNAMIC>,
-      pto::Stride<stride1, stride2, stride3, stride4, stride5>>
-      global_tensor(handle, dynamic_shape);
-  if constexpr (std::is_same_v<T1, T2>) {
-    // Source Tile: dynamic valid, PadVal for TLOAD 32-byte alignment
-    using SrcTile = TileUbDataND<T2, ub_shape1, ub_shape2, pto::DYNAMIC,
-                                 pto::DYNAMIC, PadVal>;
-    SrcTile src_tile(valid_row, valid_col);
-    pto::TASSIGN(src_tile, ub_shape_addr + ub_offset * len);
-    pto::TLOAD(src_tile, global_tensor);
-
-    // TFILLPAD_INPLACE: fill outside valid region with PadVal (only for tail
-    // blocks with valid PadVal)
-    if constexpr (PadVal != pto::PadValue::Null) {
-      if (valid_row != static_cast<int32_t>(ub_shape1) ||
-          valid_col != static_cast<int32_t>(ub_shape2)) {
-        using DstTile = pto::Tile<pto::TileType::Vec, T2, ub_shape1, ub_shape2,
-                                  pto::BLayout::RowMajor, ub_shape1, ub_shape2,
-                                  pto::SLayout::NoneBox, 512, PadVal>;
-        DstTile dst_tile;
-        set_flag(PIPE_MTE2, PIPE_V, EVENT_ID0);
-        wait_flag(PIPE_MTE2, PIPE_V, EVENT_ID0);
-        pto::TASSIGN(dst_tile, ub_shape_addr + ub_offset * len);
-        pto::TFILLPAD_INPLACE(dst_tile, src_tile);
-        set_flag(PIPE_V, PIPE_MTE2, EVENT_ID0);
-        wait_flag(PIPE_V, PIPE_MTE2, EVENT_ID0);
-        set_flag(PIPE_V, PIPE_MTE3, EVENT_ID0);
-        wait_flag(PIPE_V, PIPE_MTE3, EVENT_ID0);
-        TL_PIPE_V_BARRIER();
-      }
-    }
-  } else {
-    TileUbDataND<T1, ub_shape1, ub_shape2, pto::DYNAMIC, pto::DYNAMIC>
-        temp_src_ub(valid_row, valid_col);
-    pto::TASSIGN(temp_src_ub,
-                 ub_shape_addr + ub_offset * sizeof(T1) / sizeof(T1) * len);
-    pto::TLOAD(temp_src_ub, global_tensor);
-    TileUbDataND<T2, ub_shape1, ub_shape2, pto::DYNAMIC, pto::DYNAMIC>
-        temp_dst_ub(valid_row, valid_col);
-    pto::TASSIGN(temp_dst_ub, ub_shape_addr + ub_offset * len);
-    pto::TCVT(temp_dst_ub, temp_src_ub, pto::RoundMode::CAST_NONE);
-  }
-}
-
-template <typename T1, typename T2, int32_t shape1, int32_t shape2,
-          int32_t shape3, int32_t shape4, int32_t shape5, int32_t stride1,
-          int32_t stride2, int32_t stride3, int32_t stride4, int32_t stride5,
-          uint32_t ub_shape1, uint32_t ub_shape2>
-AICORE PTO_INLINE void copy_ub_to_gm(__gm__ T1 *handle, int32_t ub_shape_addr,
-                                     int32_t ub_offset, int32_t valid_row,
-                                     int32_t valid_col) {
-  pto::Shape<shape1, shape2, shape3, pto::DYNAMIC, pto::DYNAMIC> dynamic_shape;
-  dynamic_shape.shape[3] = valid_row;
-  dynamic_shape.shape[4] = valid_col;
-  pto::GlobalTensor<
-      T1, pto::Shape<shape1, shape2, shape3, pto::DYNAMIC, pto::DYNAMIC>,
-      pto::Stride<stride1, stride2, stride3, stride4, stride5>>
-      global_tensor(handle, dynamic_shape);
   constexpr uint8_t len = sizeof(T2);
   constexpr bool use_nd = (static_cast<uint64_t>(ub_shape2) * len) >= 32;
   if constexpr (std::is_same_v<T1, T2>) {
@@ -634,16 +443,15 @@ AICORE PTO_INLINE void unary_tile(int32_t dst_addr, int32_t src_addr,
 }
 
 template <typename T, int32_t row, int32_t col>
-AICORE PTO_INLINE void
-TSIGMOID(TileUbDataND<T, row, col, row, col> &dst_addr,
-         TileUbDataND<T, row, col, row, col> &src0_addr) {
-  TMULS(src0_addr, src0_addr, -1);
+AICORE PTO_INLINE void TSIGMOID(TileUbDataND<T, row, col, row, col> &dst,
+                                TileUbDataND<T, row, col, row, col> &src0) {
+  TMULS(src0, src0, -1);
   TL_PIPE_V_BARRIER();
-  TEXP(src0_addr, src0_addr);
+  TEXP(src0, src0);
   TL_PIPE_V_BARRIER();
-  TADDS(src0_addr, src0_addr, 1);
+  TADDS(src0, src0, 1);
   TL_PIPE_V_BARRIER();
-  TRECIP(dst_addr, src0_addr);
+  TRECIP(dst, src0);
 }
 
 template <typename T, int32_t row, int32_t col>
@@ -672,92 +480,6 @@ AICORE PTO_INLINE void axpy(TileUbDataND<T, row, col, row, col> &dst,
                             TileUbDataND<T, row, col, row, col> &src0,
                             float scalar_value) {
   pto::TAXPY(dst, src0, static_cast<T>(scalar_value));
-}
-
-template <typename T1, typename T2, typename T3, int32_t rows_src,
-          int32_t cols_src, int32_t validRow_src, int32_t validCol_src,
-          int32_t cols_dst, int32_t row_tmp, int32_t col_tmp>
-AICORE PTO_INLINE void
-TROWMAX_with_slice_buffer(uint64_t handle_src, uint64_t handle_dst,
-                          TileUbDataDN<T2, cols_dst, 1, validRow_src, 1> ub_DN,
-                          TileUbDataND<T3, row_tmp, col_tmp> tmp_ub) {
-  tl::ascend_pto::TileUbDataND<T1, rows_src, cols_src, validRow_src,
-                               validCol_src>
-      tileUbWithValid;
-  pto::TASSIGN(tileUbWithValid, handle_src);
-  pto::TROWMAX(ub_DN, tileUbWithValid, tmp_ub);
-}
-
-template <typename T1, typename T2, typename T3, int32_t rows_src,
-          int32_t cols_src, int32_t validRow_src, int32_t validCol_src,
-          int32_t cols_dst, int32_t row_tmp, int32_t col_tmp>
-AICORE PTO_INLINE void
-TROWMIN_with_slice_buffer(uint64_t handle_src, uint64_t handle_dst,
-                          TileUbDataDN<T2, cols_dst, 1, validRow_src, 1> ub_DN,
-                          TileUbDataND<T3, row_tmp, col_tmp> tmp_ub) {
-  tl::ascend_pto::TileUbDataND<T1, rows_src, cols_src, validRow_src,
-                               validCol_src>
-      tileUbWithValid;
-  pto::TASSIGN(tileUbWithValid, handle_src);
-  pto::TROWMIN(ub_DN, tileUbWithValid, tmp_ub);
-}
-
-template <typename T1, typename T2, typename T3, int32_t rows_src,
-          int32_t cols_src, int32_t validRow_src, int32_t validCol_src,
-          int32_t cols_dst, int32_t row_tmp, int32_t col_tmp>
-AICORE PTO_INLINE void
-TROWSUM_with_slice_buffer(uint64_t handle_src, uint64_t handle_dst,
-                          TileUbDataDN<T2, cols_dst, 1, validRow_src, 1> ub_DN,
-                          TileUbDataND<T3, row_tmp, col_tmp> tmp_ub) {
-  tl::ascend_pto::TileUbDataND<T1, rows_src, cols_src, validRow_src,
-                               validCol_src>
-      tileUbWithValid;
-  pto::TASSIGN(tileUbWithValid, handle_src);
-  pto::TROWSUM(ub_DN, tileUbWithValid, tmp_ub);
-}
-
-template <typename T1, typename T2, typename T3, int32_t rows_src,
-          int32_t cols_src, int32_t validRow_src, int32_t validCol_src,
-          int32_t cols_dst, int32_t row_tmp, int32_t col_tmp>
-AICORE PTO_INLINE void
-TCOLMAX_with_slice_buffer(uint64_t handle_src, uint64_t handle_dst,
-                          TileUbDataND<T2, 1, cols_src, 1, validCol_src> ub,
-                          TileUbDataND<T3, row_tmp, col_tmp> tmp_ub) {
-  tl::ascend_pto::TileUbDataND<T1, rows_src, cols_src, validRow_src,
-                               validCol_src>
-      tileUbWithValid;
-  pto::TASSIGN(tileUbWithValid, handle_src);
-  pto::TCOLMAX(ub, tileUbWithValid);
-}
-
-template <typename T1, typename T2, typename T3, int32_t rows_src,
-          int32_t cols_src, int32_t validRow_src, int32_t validCol_src,
-          int32_t cols_dst, int32_t row_tmp, int32_t col_tmp>
-AICORE PTO_INLINE void
-TCOLMIN_with_slice_buffer(uint64_t handle_src, uint64_t handle_dst,
-                          TileUbDataND<T2, 1, cols_src, 1, validCol_src> ub,
-                          TileUbDataND<T3, row_tmp, col_tmp> tmp_ub) {
-  tl::ascend_pto::TileUbDataND<T1, rows_src, cols_src, validRow_src,
-                               validCol_src>
-      tileUbWithValid;
-  pto::TASSIGN(tileUbWithValid, handle_src);
-  pto::TCOLMIN(ub, tileUbWithValid);
-}
-
-template <typename T1, typename T2, int32_t rows_src, int32_t cols_src,
-          int32_t validRow_src, int32_t validCol_src, int32_t cols_dst,
-          int32_t row_tmp, int32_t col_tmp>
-AICORE PTO_INLINE void
-TCOLSUM_with_slice_buffer(uint64_t handle_src, uint64_t handle_dst,
-                          TileUbDataND<T2, 1, cols_src, 1, validCol_src> ub,
-                          uint64_t tmp_addr) {
-  tl::ascend_pto::TileUbDataND<T1, rows_src, cols_src, validRow_src,
-                               validCol_src>
-      tileUbWithValid;
-  pto::TASSIGN(tileUbWithValid, handle_src);
-  TileUbDataND<T1, row_tmp, col_tmp> tmp_ub;
-  pto::TASSIGN(tmp_ub, tmp_addr);
-  pto::TCOLSUM(ub, tileUbWithValid, tmp_ub, true);
 }
 
 template <typename TileType, typename DataType>
@@ -817,65 +539,15 @@ AICORE PTO_INLINE void binarys_tile(int32_t dst_addr, int32_t src_addr,
 
 template <pipe_t pipe, pipe_t tpipe>
 AICORE PTO_INLINE void set_flag_pipeline(int32_t pipeID) {
-  switch (pipeID) {
-  case 0:
-    set_flag(pipe, tpipe, EVENT_ID0);
-    break;
-  case 1:
-    set_flag(pipe, tpipe, EVENT_ID1);
-    break;
-  case 2:
-    set_flag(pipe, tpipe, EVENT_ID2);
-    break;
-  case 3:
-    set_flag(pipe, tpipe, EVENT_ID3);
-    break;
-  case 4:
-    set_flag(pipe, tpipe, EVENT_ID4);
-    break;
-  case 5:
-    set_flag(pipe, tpipe, EVENT_ID5);
-    break;
-  case 6:
-    set_flag(pipe, tpipe, EVENT_ID6);
-    break;
-  case 7:
-    set_flag(pipe, tpipe, EVENT_ID7);
-    break;
-  default:
-    break;
+  if (pipeID >= 0 && pipeID <= 7) {
+    set_flag(pipe, tpipe, static_cast<event_t>(EVENT_ID0 + pipeID));
   }
 }
 
 template <pipe_t pipe, pipe_t tpipe>
 AICORE PTO_INLINE void wait_flag_pipeline(int32_t pipeID) {
-  switch (pipeID) {
-  case 0:
-    wait_flag(pipe, tpipe, EVENT_ID0);
-    break;
-  case 1:
-    wait_flag(pipe, tpipe, EVENT_ID1);
-    break;
-  case 2:
-    wait_flag(pipe, tpipe, EVENT_ID2);
-    break;
-  case 3:
-    wait_flag(pipe, tpipe, EVENT_ID3);
-    break;
-  case 4:
-    wait_flag(pipe, tpipe, EVENT_ID4);
-    break;
-  case 5:
-    wait_flag(pipe, tpipe, EVENT_ID5);
-    break;
-  case 6:
-    wait_flag(pipe, tpipe, EVENT_ID6);
-    break;
-  case 7:
-    wait_flag(pipe, tpipe, EVENT_ID7);
-    break;
-  default:
-    break;
+  if (pipeID >= 0 && pipeID <= 7) {
+    wait_flag(pipe, tpipe, static_cast<event_t>(EVENT_ID0 + pipeID));
   }
 }
 
@@ -1371,6 +1043,103 @@ AICORE PTO_INLINE void Sort(int32_t dst_addr, int32_t src_addr,
   }
 }
 
+// Dynamic-shape version: actual_count is a runtime parameter.
+// N must be a compile-time constant (max_actual_num rounded to multiple of 32).
+// Uses pto::DYNAMIC for valid region size, enabling runtime actual_count.
+template <typename UserT, int32_t N, int32_t TopK = -1>
+AICORE PTO_INLINE void SortDynamic(int32_t dst_addr, int32_t src_addr,
+                                   int32_t tmp_addr, int32_t actual_count) {
+  static_assert(N % 32 == 0, "SortDynamic: N must be a multiple of 32");
+  // Note: actual_count is a runtime parameter; caller must ensure 0 <
+  // actual_count <= N
+
+  constexpr bool is_topk = (TopK >= 0);
+  constexpr bool is_half = std::is_same_v<UserT, half>;
+  constexpr bool buf_b_in_tmp = is_half || is_topk;
+
+  constexpr int32_t T_BYTES = 4;
+  constexpr int32_t USER_T_BYTES = sizeof(UserT);
+  constexpr int32_t BLOCK_NUM = N / 32;
+  const int32_t pad_count = N - actual_count;
+
+  const int32_t bufA = tmp_addr;
+  const int32_t bufB = buf_b_in_tmp ? (tmp_addr + 2 * N * T_BYTES) : dst_addr;
+  const int32_t bufC = tmp_addr + (buf_b_in_tmp ? 4 : 2) * N * T_BYTES;
+  const int32_t indices_addr = bufB;
+  const int32_t sort_src_addr = is_half ? (bufB + N * T_BYTES) : src_addr;
+
+  // Phase 0 (half only): cast user src(half) -> float at bufB high half.
+  if constexpr (is_half) {
+    TileUbDataND<half, 1, N, 1, N> sort_h_src;
+    TASSIGN(sort_h_src, src_addr);
+    TileUbDataND<float, 1, N, 1, N> sort_f_src;
+    TASSIGN(sort_f_src, sort_src_addr);
+    pto::TCVT(sort_f_src, sort_h_src, pto::RoundMode::CAST_NONE);
+    TL_PIPE_V_BARRIER();
+  }
+
+  // Phase 1: pad sort_src tail with -inf for [actual_count, N).
+  // Use DYNAMIC tile with runtime valid_col, then fill padding.
+  if (pad_count > 0) {
+    TileUbDataND<float, 1, N, pto::DYNAMIC, pto::DYNAMIC, pto::PadValue::Min>
+        sort_src_v(1, actual_count);
+    TASSIGN(sort_src_v, sort_src_addr);
+    TileUbDataND<float, 1, N, 1, N, pto::PadValue::Min> sort_src_f;
+    TASSIGN(sort_src_f, sort_src_addr);
+    pto::TFILLPAD_INPLACE(sort_src_f, sort_src_v);
+    TL_PIPE_V_BARRIER();
+  }
+
+  // Phase 2: generate ascending indices.
+  {
+    TileUbDataND<float, 1, N, 1, N> sort_idx;
+    TASSIGN(sort_idx, indices_addr);
+    TCI<decltype(sort_idx), float, /*descending=*/0>(sort_idx, (float)0);
+  }
+  TL_PIPE_V_BARRIER();
+
+  // Phase 3: sort32.
+  {
+    TileUbDataND<float, 1, N, 1, N> sort_src;
+    TASSIGN(sort_src, sort_src_addr);
+    TileUbDataND<uint32_t, 1, N, 1, N> sort_idx_u;
+    TASSIGN(sort_idx_u, indices_addr);
+    TileUbDataND<float, 1, 2 * N, 1, 2 * N> sort_buf_a;
+    TASSIGN(sort_buf_a, bufA);
+    TSORT32(sort_buf_a, sort_src, sort_idx_u);
+  }
+  TL_PIPE_V_BARRIER();
+
+  // Phase 4: merge tree.
+  sort_detail::merge_levels<float, BLOCK_NUM, 32, 32, true>(bufA, bufB, bufC);
+
+  // Phase 5: finalize into dst.
+  constexpr bool result_in_bufA = sort_detail::result_in_bufA_v<BLOCK_NUM>;
+  constexpr int32_t OUTPUT_PAIRS =
+      sort_detail::output_pairs(N, TopK, USER_T_BYTES);
+
+  const int32_t result_addr = result_in_bufA ? bufA : bufB;
+
+  if constexpr (is_half) {
+    TileUbDataND<float, 1, OUTPUT_PAIRS, 1, OUTPUT_PAIRS> sort_fs;
+    TASSIGN(sort_fs, result_addr);
+    TileUbDataND<half, 1, OUTPUT_PAIRS, 1, OUTPUT_PAIRS> sort_fd;
+    TASSIGN(sort_fd, dst_addr);
+    pto::TCVT(sort_fd, sort_fs, pto::RoundMode::CAST_RINT);
+    TL_PIPE_V_BARRIER();
+  } else {
+    constexpr bool need_copy = is_topk || result_in_bufA;
+    if constexpr (need_copy) {
+      TileUbDataND<float, 1, OUTPUT_PAIRS, 1, OUTPUT_PAIRS> sort_fs;
+      TASSIGN(sort_fs, result_addr);
+      TileUbDataND<float, 1, OUTPUT_PAIRS, 1, OUTPUT_PAIRS> sort_fd;
+      TASSIGN(sort_fd, dst_addr);
+      TMOV(sort_fd, sort_fs);
+      TL_PIPE_V_BARRIER();
+    }
+  }
+}
+
 template <typename T, int32_t Rows, int32_t Cols>
 AICORE PTO_INLINE void transpose(TileUbDataND<T, Rows, Cols, Rows, Cols> &dst,
                                  TileUbDataND<T, Rows, Cols, Rows, Cols> &src,
@@ -1477,6 +1246,67 @@ tor(TileUbDataND<uint8_t, Rows, Cols, RowValid, ColValid> &dst,
   auto &src1_u16 = reinterpret_cast<
       TileUbDataND<uint16_t, Rows, Cols / 2, RowValid, ColValid / 2> &>(src1);
   pto::TOR(dst_u16, src0_u16, src1_u16);
+}
+
+template <typename T1, typename T2, int32_t shape1, int32_t shape2,
+          int32_t shape3, int32_t shape4, int32_t shape5, int32_t stride1,
+          int32_t stride2, int32_t stride3, int32_t stride4, int32_t stride5,
+          uint32_t ub_shape1, uint32_t ub_shape2>
+AICORE PTO_INLINE void atomic_add_ub_to_gm_dynamic(
+    __gm__ T1 *handle,
+    const pto::Shape<shape1, shape2, shape3, shape4, shape5> &shape,
+    const pto::Stride<stride1, stride2, stride3, stride4, stride5> &stride,
+    int32_t ub_shape_addr, int32_t ub_offset, int32_t valid_row,
+    int32_t valid_col) {
+  pto::Shape<shape1, shape2, shape3, pto::DYNAMIC, pto::DYNAMIC> dynamic_shape;
+  dynamic_shape.shape[3] = valid_row;
+  dynamic_shape.shape[4] = valid_col;
+  pto::GlobalTensor<
+      T1, pto::Shape<shape1, shape2, shape3, pto::DYNAMIC, pto::DYNAMIC>,
+      pto::Stride<stride1, stride2, stride3, stride4, stride5>>
+      global_tensor(handle, dynamic_shape, stride);
+  constexpr uint8_t len = sizeof(T2);
+  constexpr bool use_nd = (static_cast<uint64_t>(ub_shape2) * len) >= 32;
+
+  if constexpr (use_nd) {
+    TileUbDataND<T2, ub_shape1, ub_shape2, pto::DYNAMIC, pto::DYNAMIC> temp_ub(
+        valid_row, valid_col);
+    pto::TASSIGN(temp_ub, ub_shape_addr + ub_offset * len);
+    pto::TSTORE<decltype(temp_ub), decltype(global_tensor),
+                pto::AtomicType::AtomicAdd>(global_tensor, temp_ub);
+  } else {
+    TileUbDataDN<T2, ub_shape1, ub_shape2, pto::DYNAMIC, pto::DYNAMIC> temp_ub(
+        valid_row, valid_col);
+    pto::TASSIGN(temp_ub, ub_shape_addr + ub_offset * len);
+    pto::TSTORE<decltype(temp_ub), decltype(global_tensor),
+                pto::AtomicType::AtomicAdd>(global_tensor, temp_ub);
+  }
+}
+
+template <typename T1, typename T2, int32_t shape1, int32_t shape2,
+          int32_t shape3, int32_t shape4, int32_t shape5, int32_t stride1,
+          int32_t stride2, int32_t stride3, int32_t stride4, int32_t stride5,
+          uint32_t l0c_shape1, uint32_t l0c_shape2>
+AICORE PTO_INLINE void atomic_add_l0c_to_gm_dynamic(
+    __gm__ T1 *handle,
+    const pto::Shape<shape1, shape2, shape3, shape4, shape5> &shape,
+    const pto::Stride<stride1, stride2, stride3, stride4, stride5> &stride,
+    int32_t l0c_shape_addr, int32_t l0c_offset, int32_t valid_row,
+    int32_t valid_col) {
+  pto::Shape<shape1, shape2, shape3, pto::DYNAMIC, pto::DYNAMIC> dynamic_shape;
+  dynamic_shape.shape[3] = valid_row;
+  dynamic_shape.shape[4] = valid_col;
+  pto::GlobalTensor<
+      T1, pto::Shape<shape1, shape2, shape3, pto::DYNAMIC, pto::DYNAMIC>,
+      pto::Stride<stride1, stride2, stride3, stride4, stride5>>
+      global_tensor(handle, dynamic_shape, stride);
+  constexpr uint8_t len = sizeof(T2);
+
+  pto::TileAcc<T2, l0c_shape1, l0c_shape2, pto::DYNAMIC, pto::DYNAMIC> temp_l0c(
+      valid_row, valid_col);
+  pto::TASSIGN(temp_l0c, l0c_shape_addr + l0c_offset * len);
+  pto::TSTORE<decltype(temp_l0c), decltype(global_tensor),
+              pto::AtomicType::AtomicAdd>(global_tensor, temp_l0c);
 }
 
 } // namespace tl::ascend_pto
