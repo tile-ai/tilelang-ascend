@@ -22,6 +22,8 @@ def _dtype(buf):
         "int16": "int16_t",
         "int64": "int64_t",
         "uint64": "uint64_t",
+        "e4m3_float8": "float8_e4m3_t",
+        "e5m2_float8": "float8_e5m2_t",
     }
     if isinstance(buf, BufferRegion):
         buf = buf.buffer
@@ -409,6 +411,74 @@ def gemm_v0(A, B, C, transpose_A=False, transpose_B=False, init=False):
         Aptr,
         Bptr,
         Cptr,
+        init,
+    )
+
+
+def gemm_mx(A, B, C, scale_a, scale_b, init=False):
+    """
+    OCP MX (Microscaling) block GEMM on the A5 Cube unit.
+
+    Computes C = (A * scale_a) @ (B * scale_b) where A, B are per-element low-precision
+    data (MXFP8 / MXFP4), and scale_a / scale_b are per-32-K-block e8m0 exponents.
+
+    Args:
+        A (Buffer | BufferRegion): MXFP data matrix (M, K). Allowed dtypes: e4m3_float8, e5m2_float8,
+            and (phase C) float4 variants.
+        B (Buffer | BufferRegion): MXFP data matrix (K, N). Allowed dtypes: same as A.
+        C (Buffer | BufferRegion): Accumulator matrix (M, N), dtype must be float32.
+        scale_a (Buffer | BufferRegion): Per-row-per-32-K scale buffer (M, K/32), dtype uint8 (e8m0).
+        scale_b (Buffer | BufferRegion): Per-32-K-per-col scale buffer (K/32, N), dtype uint8 (e8m0).
+        init (bool, optional): When True, clears the C L0C accumulator on first use.
+
+    Returns:
+        tvm.tir.Call: A TIR intrinsic call to `tl.ascend_gemm_mx`.
+    """
+    A = _legalize_arguments(A)
+    B = _legalize_arguments(B)
+    C = _legalize_arguments(C)
+    scale_a = _legalize_arguments(scale_a)
+    scale_b = _legalize_arguments(scale_b)
+
+    A_shape = _retrieve_shape(A)
+    B_shape = _retrieve_shape(B)
+    C_shape = _retrieve_shape(C)
+    sA_shape = _retrieve_shape(scale_a)
+    sB_shape = _retrieve_shape(scale_b)
+
+    assert len(C_shape) == 2, "gemm_mx only supports C as a 2D tensor"
+    assert len(A_shape) == 2, "gemm_mx only supports A as a 2D tensor"
+    assert len(B_shape) == 2, "gemm_mx only supports B as a 2D tensor"
+    assert len(sA_shape) == 2, "gemm_mx only supports scale_a as a 2D tensor"
+    assert len(sB_shape) == 2, "gemm_mx only supports scale_b as a 2D tensor"
+
+    M, N = C_shape
+    K = A_shape[-1]
+    K_B = B_shape[-2]
+    assert K == K_B, f"T.gemm_mx K shape check failed: K_A = {K}, K_B = {K_B}"
+    assert K % 64 == 0, f"T.gemm_mx requires K divisible by 64, got K={K}"
+    assert sA_shape == (M, K // 32), (
+        f"scale_a shape must be ({M}, {K // 32}), got {sA_shape}"
+    )
+    assert sB_shape == (K // 32, N), (
+        f"scale_b shape must be ({K // 32}, {N}), got {sB_shape}"
+    )
+
+    Aptr = _retrieve_ptr(A, "r")
+    Bptr = _retrieve_ptr(B, "r")
+    Cptr = _retrieve_ptr(C, "w" if init is True else "rw")
+    sAptr = _retrieve_ptr(scale_a, "r")
+    sBptr = _retrieve_ptr(scale_b, "r")
+
+    return T.call_intrin(
+        "handle",
+        tir.op.Op.get("tl.ascend_gemm_mx"),
+        f"gemm_mx<{_dtype(A)}, {_dtype(C)}, {M}, {N}, {K}>",
+        Aptr,
+        Bptr,
+        Cptr,
+        sAptr,
+        sBptr,
         init,
     )
 

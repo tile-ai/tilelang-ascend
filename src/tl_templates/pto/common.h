@@ -44,6 +44,15 @@ using TileMatL0B = pto::Tile<pto::TileType::Right, T, Rows, Cols,
                              pto::BLayout::RowMajor, RowValid, ColValid,
                              pto::SLayout::ColMajor, 512, pto::PadValue::Zero>;
 
+// MX microscaling scale tile stored in L1 (e8m0 exponents stored as uint8).
+// Tiled in L1 just like a regular matrix; the MX-specific rebinding to
+// ScaleLeft / ScaleRight happens inside the gemm_mx template.
+template <typename T, int Rows, int Cols, int RowValid = Rows,
+          int ColValid = Cols>
+using TileScaleL1 = pto::Tile<pto::TileType::Mat, T, Rows, Cols,
+                              pto::BLayout::RowMajor, RowValid, ColValid,
+                              pto::SLayout::RowMajor, 512, pto::PadValue::Zero>;
+
 template <typename T, int Rows, int Cols, int RowValid = Rows,
           int ColValid = Cols, pto::PadValue PadVal = pto::PadValue::Null>
 using TileUbDataND =
@@ -194,6 +203,91 @@ gemm_v0(std::conditional_t<transpose_A, TileMatL1<T1, K, M, validK, validM>,
       gemm_v0_inner<T1, T2, M, N, K, validM, validN, validK, kL0Size,
                     transpose_A, transpose_B>(A, B, C, kL0Idx, initflag,
                                               war_event_id, false);
+    }
+  }
+
+  set_flag(PIPE_MTE1, PIPE_MTE2, war_event_id);
+  wait_flag(PIPE_MTE1, PIPE_MTE2, war_event_id);
+
+  set_flag(PIPE_M, PIPE_FIX, war_event_id);
+  wait_flag(PIPE_M, PIPE_FIX, war_event_id);
+}
+
+// ---------------------------------------------------------------------------
+// gemm_mx: OCP Microscaling GEMM (A5 only).
+//
+// Computes C += (A * scale_a) @ (B * scale_b) where:
+//   - A, B are MXFP8 (float8_e4m3_t / float8_e5m2_t) or MXFP4 data tiles in L1
+//   - scale_a, scale_b are e8m0 per-32-K-block exponents (stored as uint8) in L1
+//   - C is the float32 L0C accumulator
+//
+// Scale layout:
+//   scale_a : (M, K/32) — one e8m0 exponent per row per 32-element K slab
+//   scale_b : (K/32, N) — one e8m0 exponent per 32-element K slab per column
+//
+// Requires K divisible by 64.
+// ---------------------------------------------------------------------------
+constexpr uint32_t kMxScaleBlock = 32; // e8m0 block granularity (OCP MX spec)
+
+template <typename T1, typename T2, uint32_t M, uint32_t N, uint32_t K,
+          uint32_t validM, uint32_t validN, uint32_t validK, uint32_t K_tail>
+AICORE PTO_INLINE void
+gemm_mx(TileMatL1<T1, M, K, validM, validK> &A,
+        TileMatL1<T1, K, N, validK, validN> &B,
+        pto::TileAcc<T2, M, N, validM, validN> &C,
+        TileScaleL1<uint8_t, M, K / kMxScaleBlock, validM,
+                    validK / kMxScaleBlock> &sA,
+        TileScaleL1<uint8_t, K / kMxScaleBlock, N, validK / kMxScaleBlock,
+                    validN> &sB,
+        bool clear) {
+  constexpr uint32_t kL0Size = 128;
+  const uint32_t kL0split = (K + kL0Size - 1) / kL0Size;
+  auto war_event_id = (event_t)(((int)EVENT_ID0 + 2) % 8);
+
+  set_flag(PIPE_MTE2, PIPE_MTE1, war_event_id);
+  wait_flag(PIPE_MTE2, PIPE_MTE1, war_event_id);
+
+  for (uint32_t kL0Idx = 0; kL0Idx < kL0split; kL0Idx++) {
+    const bool initflag = (clear && (kL0Idx == 0));
+    const bool is_tail_block = (kL0Idx == kL0split - 1);
+    constexpr uint32_t CurrentK = kL0Size; // tail dispatch happens in codegen
+
+    TileMatL0A<T1, M, CurrentK, M, CurrentK> l0a;
+    TileMatL0B<T1, CurrentK, N, CurrentK, N> l0b;
+    pto::TASSIGN(l0a, 0x0);
+    pto::TASSIGN(l0b, 0x0);
+
+    set_flag(PIPE_M, PIPE_MTE1, war_event_id);
+    wait_flag(PIPE_M, PIPE_MTE1, war_event_id);
+
+    copy_l1_to_l0a<T1, M, CurrentK, M, K, false>(l0a, A, 0,
+                                                  kL0Idx * CurrentK);
+    copy_l1_to_l0b<T1, CurrentK, N, K, N, false>(l0b, B, kL0Idx * CurrentK,
+                                                  0);
+
+    pto::Tile<pto::TileType::ScaleLeft, uint8_t, M, CurrentK / kMxScaleBlock,
+              pto::BLayout::RowMajor, validM, CurrentK / kMxScaleBlock,
+              pto::SLayout::RowMajor, 512, pto::PadValue::Zero>
+        l0sa;
+    pto::Tile<pto::TileType::ScaleRight, uint8_t, CurrentK / kMxScaleBlock, N,
+              pto::BLayout::RowMajor, CurrentK / kMxScaleBlock, validN,
+              pto::SLayout::RowMajor, 512, pto::PadValue::Zero>
+        l0sb;
+    pto::TEXTRACT(l0sa, sA, 0, kL0Idx * (CurrentK / kMxScaleBlock));
+    pto::TEXTRACT(l0sb, sB, kL0Idx * (CurrentK / kMxScaleBlock), 0);
+
+    set_flag(PIPE_MTE1, PIPE_M, war_event_id);
+    wait_flag(PIPE_MTE1, PIPE_M, war_event_id);
+
+    if (initflag) {
+      pto::TMATMUL_MX(C, l0a, l0sa, l0b, l0sb);
+    } else {
+      pto::TMATMUL_MX(C, C, l0a, l0sa, l0b, l0sb);
+    }
+
+    if (!is_tail_block) {
+      set_flag(PIPE_MTE1, PIPE_MTE2, war_event_id);
+      wait_flag(PIPE_MTE1, PIPE_MTE2, war_event_id);
     }
   }
 

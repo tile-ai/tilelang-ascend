@@ -1139,6 +1139,11 @@ TIR_DEFINE_TL_BUILTIN(ascend_gemm_v1)
     .set_attr<TCallEffectKind>("TCallEffectKind",
                                Integer(CallEffectKind::kOpaque));
 
+TIR_DEFINE_TL_BUILTIN(ascend_gemm_mx)
+    .set_num_inputs(7)
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
+
 TIR_DEFINE_TL_BUILTIN(ascend_printf)
     .set_num_inputs(-1)
     .set_attr<TCallEffectKind>("TCallEffectKind",
