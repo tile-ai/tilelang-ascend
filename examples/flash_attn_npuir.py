@@ -207,7 +207,7 @@ def flash_attn_kernel(dtype, accum_dtype, seq_len, dim, block_m, block_n, block_
 
                     T.vmul(cross_kernel_f32_N, acc_c_scale, cross_kernel_f32_N)
                     T.reduce(
-                        cross_kernel_f32_N, scores_max, dims=[1], reduce_mode="max"
+                        cross_kernel_f32_N, scores_max, dims=[1], reduce_mode="max", size=[real_m, tail_size_n]
                     )
                     if i != 0:
                         T.vmax(scores_max_prev, scores_max, scores_max)
@@ -235,7 +235,7 @@ def flash_attn_kernel(dtype, accum_dtype, seq_len, dim, block_m, block_n, block_
                         T.sync_block_set(i)
 
                     T.reduce(
-                        cross_kernel_f32_N, scores_sum, dims=[1], reduce_mode="sum"
+                        cross_kernel_f32_N, scores_sum, dims=[1], reduce_mode="sum", size=[real_m, tail_size_n]
                     )
                     T.vmul(logsum, scores_scale, logsum)
                     T.vadd(logsum, scores_sum, logsum)
