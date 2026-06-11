@@ -247,6 +247,8 @@ private:
   bool use_swizzle_{false};
 
   std::string platform_;
+
+  Map<Var, Array<PrimExpr>> buffer_shapes_;
 };
 
 } // namespace codegen

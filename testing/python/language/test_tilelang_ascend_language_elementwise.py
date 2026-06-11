@@ -4245,11 +4245,11 @@ def transpose(M, N, block_M, block_N, dtype="int16"):
     @T.prim_func
     def main(
         A: T.Tensor((M, N), dtype),  # type: ignore
-        B: T.Tensor((M, N), dtype),  # type: ignore
+        B: T.Tensor((N, M), dtype),  # type: ignore
     ):
         with T.Kernel(1, is_npu=True) as (cid, vid):
             a_ub = T.alloc_ub((M, N), dtype)
-            b_ub = T.alloc_ub((M, N), dtype)
+            b_ub = T.alloc_ub((N, M), dtype)
 
             T.copy(A, a_ub)
 
@@ -4285,7 +4285,7 @@ def run_test_transpose(M, N, block_M, block_N, dtype, target):
 
     b = func(a)
 
-    ref_b = a.T
+    ref_b = a.T.contiguous()
 
     assert_close_npu(b, ref_b, dtype, rtol=1e-2, atol=1e-2)
 
@@ -4296,6 +4296,14 @@ def run_test_transpose(M, N, block_M, block_N, dtype, target):
 def test_transpose(dtype, target, shape):
     M, N = shape
     run_test_transpose(M, N, 16, 16, dtype, target)
+
+
+@pytest.mark.parametrize("dtype", ["float16", "float", "int16", "int32"])
+@pytest.mark.parametrize("target", ["ascendc"])
+@pytest.mark.parametrize("shape", [(32, 32), (64, 64), (32, 16), (16, 32), (64, 32), (32, 64)])
+def test_transpose_tiled(dtype, target, shape):
+    M, N = shape
+    run_test_transpose(M, N, M, N, dtype, target)
 
 
 def wholereducemax(M, N, block_M, block_N, mask, repeatTimes, dstRepStride, srcBlkStride, srcRepStride, dtype="float16"):

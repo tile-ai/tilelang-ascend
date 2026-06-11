@@ -1156,15 +1156,28 @@ CATLASS_DEVICE void transpose_16x16(LocalTensor<T> const &dst,
   AscendC::PipeBarrier<PIPE_V>();
 }
 
-template <typename T>
+template <typename T, uint32_t FullM = 16, uint32_t FullN = 16>
 CATLASS_DEVICE void transpose(LocalTensor<T> const &dst,
                               LocalTensor<T> const &src) {
-  if constexpr (sizeof(T) == 2) {
-    AscendC::Transpose(dst, src);
+  if constexpr (FullM == 16 && FullN == 16) {
+    if constexpr (sizeof(T) == 2) {
+      AscendC::Transpose(dst, src);
+    } else {
+      for (int i = 0; i < 16; i++) {
+        for (int j = 0; j < 16; j++) {
+          dst.SetValue(i * 16 + j, src.GetValue(j * 16 + i));
+        }
+      }
+    }
   } else {
-    for (int i = 0; i < 16; i++) {
-      for (int j = 0; j < 16; j++) {
-        dst.SetValue(i * 16 + j, src.GetValue(j * 16 + i));
+    for (uint32_t ti = 0; ti < FullM / 16; ti++) {
+      for (uint32_t tj = 0; tj < FullN / 16; tj++) {
+        for (int i = 0; i < 16; i++) {
+          for (int j = 0; j < 16; j++) {
+            dst.SetValue((tj * 16 + j) * FullM + (ti * 16 + i),
+                         src.GetValue((ti * 16 + i) * FullN + (tj * 16 + j)));
+          }
+        }
       }
     }
   }
