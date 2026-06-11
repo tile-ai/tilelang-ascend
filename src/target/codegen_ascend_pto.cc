@@ -1820,24 +1820,55 @@ void CodeGenTileLangAscendPto::EmitSortAlgorithmDynamic(
 
 void CodeGenTileLangAscendPto::TransposeCodegen(const CallNode *op,
                                                 const std::string &op_name) {
-  this->PrintIndent();
-  std::string dst_name = PrintExpr(op->args[0].as<CallNode>()->args[1]);
-  std::string src_name = PrintExpr(op->args[1].as<CallNode>()->args[1]);
-  DataType dtype = GetAccessPtrDtypePto(op->args[1].as<CallNode>());
-  std::string type = getType(dtype);
+  ShapeInfo src_info = GetSliceInfo(op->args[1].as<CallNode>());
+  ShapeInfo dst_info = GetSliceInfo(op->args[0].as<CallNode>());
 
+  std::string src_name =
+      src_info.is_slice ? ResolveUbSliceName(src_info) : src_info.ub_name;
+  std::string dst_name =
+      dst_info.is_slice ? ResolveUbSliceName(dst_info) : dst_info.ub_name;
+
+  int32_t M = src_info.row;
+  int32_t N = src_info.col;
+  int32_t elem_bytes = GetTypeLen(src_info.type);
+  std::string type = src_info.type;
+
+  int32_t dst_tile_w = (M * elem_bytes + kUbAlignmentBytes - 1) /
+                       kUbAlignmentBytes * kUbAlignmentBytes / elem_bytes;
+  int32_t y_tile_size_elem = (elem_bytes == 1) ? 32 : 16;
+  int32_t tmp_tile_w =
+      (dst_tile_w + y_tile_size_elem - 1) / y_tile_size_elem * y_tile_size_elem;
+
+  int64_t src_bytes = static_cast<int64_t>(M) * N * elem_bytes;
+  int64_t dst_bytes = static_cast<int64_t>(N) * dst_tile_w * elem_bytes;
+
+  auto src_addr_imm = src_info.first_addr.as<IntImmNode>();
+  auto dst_addr_imm = dst_info.first_addr.as<IntImmNode>();
+
+  std::string tmp_addr_str;
+  if (src_addr_imm && dst_addr_imm) {
+    int64_t src_end = src_addr_imm->value + src_bytes;
+    int64_t dst_end = dst_addr_imm->value + dst_bytes;
+    tmp_addr_str = std::to_string(std::max(src_end, dst_end));
+  } else {
+    std::string src_addr = PrintExpr(src_info.first_addr);
+    std::string dst_addr = PrintExpr(dst_info.first_addr);
+    tmp_addr_str = "std::max(static_cast<int64_t>(" + src_addr + ") + " +
+                   std::to_string(src_bytes) + ", static_cast<int64_t>(" +
+                   dst_addr + ") + " + std::to_string(dst_bytes) + ")";
+  }
+
+  this->PrintIndent();
   this->stream << "{\n";
   this->PrintIndent();
-  this->stream << "  tl::ascend_pto::TileUbDataND<" << type << ", "
-               << kTransposeTileSize << ", " << kTransposeTileSize << ", "
-               << kTransposeTileSize << ", " << kTransposeTileSize
-               << "> tmp_ub;\n";
+  this->stream << "  " << kAscendPtoScope << "TileUbDataND<" << type << ", "
+               << N << ", " << tmp_tile_w << ", " << N << ", " << tmp_tile_w
+               << "> __ttrans_tmp;\n";
   this->PrintIndent();
-  this->stream << "  pto::TASSIGN(tmp_ub, " << kTransposeScratchAddr << ");\n";
+  this->stream << "  pto::TASSIGN(__ttrans_tmp, " << tmp_addr_str << ");\n";
   this->PrintIndent();
-  this->stream << "  tl::ascend_pto::transpose<" << type << ", "
-               << kTransposeTileSize << ", " << kTransposeTileSize << ">("
-               << dst_name << ", " << src_name << ", tmp_ub);\n";
+  this->stream << "  pto::TTRANS(" << dst_name << ", " << src_name
+               << ", __ttrans_tmp);\n";
   this->PrintIndent();
   this->stream << "}\n";
 }

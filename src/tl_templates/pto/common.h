@@ -1140,10 +1140,14 @@ AICORE PTO_INLINE void SortDynamic(int32_t dst_addr, int32_t src_addr,
   }
 }
 
-template <typename T, int32_t Rows, int32_t Cols>
-AICORE PTO_INLINE void transpose(TileUbDataND<T, Rows, Cols, Rows, Cols> &dst,
-                                 TileUbDataND<T, Rows, Cols, Rows, Cols> &src,
-                                 TileUbDataND<T, Rows, Cols, Rows, Cols> &tmp) {
+template <typename T, int32_t SrcRows, int32_t SrcCols, int32_t DstRows,
+          int32_t DstCols, int32_t DstRowValid, int32_t DstColValid,
+          int32_t TmpRows, int32_t TmpCols, int32_t TmpRowValid,
+          int32_t TmpColValid>
+AICORE PTO_INLINE void
+transpose(TileUbDataND<T, DstRows, DstCols, DstRowValid, DstColValid> &dst,
+          TileUbDataND<T, SrcRows, SrcCols, SrcRows, SrcCols> &src,
+          TileUbDataND<T, TmpRows, TmpCols, TmpRowValid, TmpColValid> &tmp) {
   pto::TTRANS(dst, src, tmp);
 }
 
