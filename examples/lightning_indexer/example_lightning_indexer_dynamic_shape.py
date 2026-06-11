@@ -12,7 +12,7 @@ pass_configs = {
 }
 
 
-@tilelang.jit(out_idx=[-1], workspace_idx=[-3], pass_configs=pass_configs)
+@tilelang.jit(out_idx=[-1], workspace_idx=[-3], pass_configs=pass_configs, target="ascendc")
 def indexer(N2, G, D, TOP_K, VECTOR_BASEN, VECTOR_BASEG, BLOCK_M, BLOCK_N, BLOCK_K, MAX_S2=4096, input_dtype="float16", calc_dtype="float"):
 
     B = T.symbolic("B")

@@ -1108,6 +1108,21 @@ void CodeGenTileLangAscendPto::GMCopyCall(const CallNode *call,
   } else {
     // copy_l0c_to_gm / copy_gm_to_l1 / atomic_add_l0c_to_gm use valid size
     stream << slice_info.slice_valid_row << ", " << slice_info.slice_valid_col;
+    // Add enable_relu template parameter for copy_l0c_to_gm and
+    // atomic_add_l0c_to_gm
+    if (op_name.find("copy_l0c_to_gm") != std::string::npos ||
+        op_name.find("atomic_add_l0c_to_gm") != std::string::npos) {
+      // args[8] contains the enable_relu boolean value (added in
+      // src/op/ascend.cc:438)
+      bool en_relu_value = false;
+      if (call->args.size() > 8) {
+        auto *en_relu_imm = call->args[8].as<IntImmNode>();
+        if (en_relu_imm) {
+          en_relu_value = (en_relu_imm->value != 0);
+        }
+      }
+      stream << ", " << (en_relu_value ? "true" : "false");
+    }
   }
   stream << ">(";
 
