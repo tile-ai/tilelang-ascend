@@ -449,7 +449,7 @@ def _build_grad_kernel_with_probs_f32(
                                 T.reduce_sum(mul_buf, reduce_dst, dim=-1)
                                 pg_acc[0, k] = pg_acc[0, k] + reduce_dst[0, 0]
 
-                        T.copy(pg_acc, probs_grad_gm[i, :])
+                        T.copy(pg_acc, probs_grad_gm[i, 0])
 
         return moe_token_unpermute_grad
 
