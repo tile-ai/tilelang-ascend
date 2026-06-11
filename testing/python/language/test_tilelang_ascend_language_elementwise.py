@@ -4299,7 +4299,7 @@ def test_transpose(dtype, target, shape):
 
 
 @pytest.mark.parametrize("dtype", ["float16", "float", "int16", "int32"])
-@pytest.mark.parametrize("target", ["ascendc"])
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("shape", [(32, 32), (64, 64), (32, 16), (16, 32), (64, 32), (32, 64)])
 def test_transpose_tiled(dtype, target, shape):
     M, N = shape
