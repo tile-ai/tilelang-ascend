@@ -196,22 +196,95 @@ private:
   }
 
   Stmt VisitStmt_(const BufferStoreNode *op) override {
-    // BufferStore is a scalar pipe write operation (e.g., SetValue)
-    BufferAccess current;
-    current.buffer_name = op->buffer->data->name_hint;
-    current.is_write = true;
-    current.pipeline = "PIPE_S";
-    current.operation = "buffer_store";
-    current.is_sliced = false;
-    current.sync_graph = SyncGraph();
-    current.pipe_barriers = {};
-    current.physical_address = GetPhysicalAddress(current.buffer_name);
+    // BufferStore is a scalar pipe operation (e.g., SetValue)
+    // It writes to a buffer on S pipeline, and may read from buffers in the
+    // value expression
 
-    // Only update access history, don't insert sync before BufferStore
-    // The sync will be inserted when the next operation reads this buffer
-    UpdateLatestAccessHistory({current});
+    // Step 1: Analyze reads in the value expression (S pipeline reads)
+    auto value_accesses = AnalyzeExprAccesses(op->value);
 
-    return GetRef<Stmt>(op);
+    // Step 2: Check if any read buffer needs sync (was last written by
+    // different pipeline)
+    std::vector<SyncRequirement> sync_requirements;
+    for (const auto &read_access : value_accesses) {
+      BufferAccess current_read = read_access;
+      current_read.pipeline = "PIPE_S"; // BufferStore reads are on S pipeline
+      current_read.is_write = false;
+      current_read.operation = "buffer_load";
+
+      std::vector<std::string> related_buffers =
+          FindRelatedBuffers(current_read.buffer_name);
+      for (const auto &buffer_name : related_buffers) {
+        auto it = current_access_history_.find(buffer_name);
+        if (it != current_access_history_.end()) {
+          const auto &latest_access = it->second;
+          if (HasDataDependency(latest_access, current_read)) {
+            // Check if the sync has already been inserted
+            std::string required_sync_type =
+                GetRequiredSyncType(latest_access, current_read);
+            if (!required_sync_type.empty()) {
+              // Check if this sync type is already in the sync graph
+              bool already_synced = false;
+              if (required_sync_type.find("EventPair_") == 0) {
+                std::string event_type = required_sync_type.substr(10);
+                size_t pos = event_type.find('_');
+                if (pos != std::string::npos) {
+                  std::string src = event_type.substr(0, pos);
+                  std::string dst = event_type.substr(pos + 1);
+                  already_synced = latest_access.sync_graph.HasPath(src, dst);
+                }
+              } else if (required_sync_type.find("PipeBarrier_") == 0) {
+                std::string pipeline = required_sync_type.substr(12);
+                already_synced = latest_access.pipe_barriers.find(
+                                     "PipeBarrier_" + pipeline) !=
+                                 latest_access.pipe_barriers.end();
+              }
+
+              if (!already_synced) {
+                sync_requirements.push_back(
+                    {required_sync_type, current_read.buffer_name});
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // Step 3: Optimize and insert syncs before the BufferStore
+    auto optimized_syncs = OptimizeSyncRequirements(sync_requirements);
+    std::vector<Stmt> stmts;
+    for (const auto &sync_type : optimized_syncs) {
+      InsertSynchronization(sync_type, stmts);
+    }
+
+    // Step 4: Record the write (S pipeline write)
+    BufferAccess current_write;
+    current_write.buffer_name = op->buffer->data->name_hint;
+    current_write.is_write = true;
+    current_write.pipeline = "PIPE_S";
+    current_write.operation = "buffer_store";
+    current_write.is_sliced = false;
+    current_write.sync_graph = SyncGraph();
+    current_write.pipe_barriers = {};
+    current_write.physical_address =
+        GetPhysicalAddress(current_write.buffer_name);
+
+    // Update access history for both reads and writes
+    UpdateLatestAccessHistory(value_accesses);
+    UpdateLatestAccessHistory({current_write});
+
+    // Update sync states AFTER updating access history, so that the new
+    // accesses get the updated sync graph
+    UpdateSyncStatesAfterSync(optimized_syncs);
+
+    // Step 5: Add the BufferStore statement
+    stmts.push_back(GetRef<Stmt>(op));
+
+    if (stmts.size() == 1) {
+      return stmts[0];
+    } else {
+      return SeqStmt(stmts);
+    }
   }
 
   Stmt VisitStmt_(const AttrStmtNode *op) override {
