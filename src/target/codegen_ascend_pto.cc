@@ -1306,7 +1306,14 @@ void CodeGenTileLangAscendPto::GemmV0Codegen(const CallNode *op) {
 }
 
 void CodeGenTileLangAscendPto::SyncAllCodegen(const CallNode *op) {
-  LOG(FATAL) << "Unsupport SyncAll in pto backend.";
+  this->PrintIndent();
+  if (this->current_resource_scope_ == "CUBE") {
+    this->stream << kAscendPtoScope << "sync_all_aic();\n";
+  } else if (this->current_resource_scope_ == "VEC") {
+    this->stream << kAscendPtoScope << "sync_all_aiv();\n";
+  } else {
+    this->stream << kAscendPtoScope << "sync_all();\n";
+  }
 }
 
 void CodeGenTileLangAscendPto::PipeBarrierCodegen(const CallNode *op) {

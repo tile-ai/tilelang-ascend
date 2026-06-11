@@ -35,7 +35,7 @@ def _build_fused_permute_kernel(
     HALF_H = TILE_H // 2
     total_iters = tokens_per_core * n_htiles
 
-    @tilelang.jit(out_idx=[2, 3], workspace_idx=[4], pass_configs=PASS_CONFIGS_EXPERT)
+    @tilelang.jit(out_idx=[2, 3], workspace_idx=[4], pass_configs=PASS_CONFIGS_EXPERT, target="pto")
     def _build(
         num_tokens,
         topK,
@@ -103,6 +103,8 @@ def _build_fused_permute_kernel(
 
                     for i in T.Pipelined(chunk_size):
                         if my_start + i < E:
+                            T.set_flag("mte2", "s", 4)
+                            T.wait_flag("mte2", "s", 4)
                             expert = idx_ub[0, i]
                             hist_ub[0, expert] = hist_ub[0, expert] + 1
 
@@ -124,6 +126,8 @@ def _build_fused_permute_kernel(
                         acc_ub[0] = 0
                         cpre_ub[0] = 0
                         for c in T.Pipelined(actual_cores):
+                            T.set_flag("mte2", "s", 4)
+                            T.wait_flag("mte2", "s", 4)
                             acc_ub[0] = acc_ub[0] + ws_ub[0, c * num_experts + e]
                             if c < cid:
                                 cpre_ub[0] = cpre_ub[0] + ws_ub[0, c * num_experts + e]
@@ -182,6 +186,8 @@ def _build_fused_permute_kernel(
 
                         if cur_src < num_tokens:
                             for k in T.serial(topK):
+                                T.set_flag("mte2", "s", 4)
+                                T.wait_flag("mte2", "s", 4)
                                 wp_ub[0] = sio_chunk_ub[0, cur_base + k]
                                 if wp_ub[0] < out_len:
                                     T.copy(

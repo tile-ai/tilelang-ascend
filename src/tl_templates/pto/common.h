@@ -1309,5 +1309,15 @@ AICORE PTO_INLINE void atomic_add_l0c_to_gm_dynamic(
               pto::AtomicType::AtomicAdd>(global_tensor, temp_l0c);
 }
 
+AICORE PTO_INLINE void sync_all() { pto::SYNCALL<pto::SyncCoreType::Mix>(); }
+
+AICORE PTO_INLINE void sync_all_aic() {
+  pto::SYNCALL<pto::SyncCoreType::AICOnly>();
+}
+
+AICORE PTO_INLINE void sync_all_aiv() {
+  pto::SYNCALL<pto::SyncCoreType::AIVOnly>();
+}
+
 } // namespace tl::ascend_pto
 #endif
