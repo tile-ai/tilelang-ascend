@@ -283,7 +283,6 @@ copy_ub_to_ub(LocalTensor<T1> dstTensor, LocalTensor<T2> srcTensor,
     for (uint32_t i = 0; i < src_rows; i++) {
       AscendC::DataCopy(dstTensor[i * dst_stride], srcTensor[i * src_stride],
                         src_cols);
-      AscendC::PipeBarrier<PIPE_ALL>();
     }
   }
 }
@@ -1184,7 +1183,6 @@ CATLASS_DEVICE void transpose(LocalTensor<T> const &dst,
           dst.SetValue(i * 16 + j, src.GetValue(j * 16 + i));
         }
       }
-      AscendC::PipeBarrier<PIPE_ALL>();
     }
   } else {
     for (uint32_t ti = 0; ti < FullM / 16; ti++) {
@@ -1197,7 +1195,6 @@ CATLASS_DEVICE void transpose(LocalTensor<T> const &dst,
         }
       }
     }
-    AscendC::PipeBarrier<PIPE_ALL>();
   }
 }
 
