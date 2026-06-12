@@ -281,8 +281,13 @@ copy_ub_to_ub(LocalTensor<T1> dstTensor, LocalTensor<T2> srcTensor,
     copy_ub_to_ub<T1, T2, len>(dstTensor, srcTensor);
   } else {
     for (uint32_t i = 0; i < src_rows; i++) {
-      AscendC::DataCopy(dstTensor[i * dst_stride], srcTensor[i * src_stride],
-                        src_cols);
+      if constexpr (std::is_same_v<T1, T2>) {
+        AscendC::DataCopy(dstTensor[i * dst_stride], srcTensor[i * src_stride],
+                          src_cols);
+      } else {
+        AscendC::Cast(dstTensor[i * dst_stride], srcTensor[i * src_stride],
+                      AscendC::RoundMode::CAST_NONE, src_cols);
+      }
     }
   }
 }
