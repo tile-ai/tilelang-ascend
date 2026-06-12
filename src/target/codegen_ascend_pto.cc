@@ -1129,19 +1129,112 @@ void CodeGenTileLangAscendPto::CopyUBToUBCodegen(const CallNode *call) {
   bool is_cast = src_info.dtype != dst_info.dtype;
   std::string api_name = is_cast ? "TCVT" : "TMOV";
 
-  ShapeInfo src_shape_info = GetSliceInfo(src_info.access_ptr);
-  ShapeInfo dst_shape_info = GetSliceInfo(dst_info.access_ptr);
+  if (call->args.size() > 6) {
+    auto src_tile_rows = Downcast<IntImm>(call->args[3])->value;
+    auto src_tile_cols = Downcast<IntImm>(call->args[4])->value;
+    auto src_buf_cols = Downcast<IntImm>(call->args[5])->value;
+    auto dst_tile_rows = Downcast<IntImm>(call->args[6])->value;
+    auto dst_tile_cols = Downcast<IntImm>(call->args[7])->value;
+    auto dst_buf_cols = Downcast<IntImm>(call->args[8])->value;
 
-  std::string src_name = ResolveUbSliceName(src_shape_info);
-  std::string dst_name = ResolveUbSliceName(dst_shape_info);
+    bool src_strided = (src_tile_cols != src_buf_cols);
+    bool dst_strided = (dst_tile_cols != dst_buf_cols);
 
-  this->PrintIndent();
-  this->stream << api_name << "(" << dst_name << ", " << src_name;
+    if (!src_strided && !dst_strided) {
+      ShapeInfo src_shape_info = GetSliceInfo(src_info.access_ptr);
+      ShapeInfo dst_shape_info = GetSliceInfo(dst_info.access_ptr);
 
-  if (is_cast) {
-    this->stream << ", pto::RoundMode::CAST_NONE";
+      src_shape_info.slice_valid_row = src_tile_rows;
+      src_shape_info.slice_valid_col = src_tile_cols;
+      src_shape_info.slice_row = src_tile_rows;
+      src_shape_info.slice_col =
+          GetValidShape(src_tile_cols, getType(src_info.dtype));
+      src_shape_info.is_slice = (src_tile_rows * src_tile_cols !=
+                                 src_shape_info.row * src_shape_info.col);
+
+      dst_shape_info.slice_valid_row = dst_tile_rows;
+      dst_shape_info.slice_valid_col = dst_tile_cols;
+      dst_shape_info.slice_row = dst_tile_rows;
+      dst_shape_info.slice_col =
+          GetValidShape(dst_tile_cols, getType(dst_info.dtype));
+      dst_shape_info.is_slice = (dst_tile_rows * dst_tile_cols !=
+                                 dst_shape_info.row * dst_shape_info.col);
+
+      std::string src_name = ResolveUbSliceName(src_shape_info);
+      std::string dst_name = ResolveUbSliceName(dst_shape_info);
+
+      this->PrintIndent();
+      this->stream << api_name << "(" << dst_name << ", " << src_name;
+      if (is_cast) {
+        this->stream << ", pto::RoundMode::CAST_NONE";
+      }
+      this->stream << ");\n";
+    } else {
+      auto src_type = getType(src_info.dtype);
+      auto dst_type = getType(dst_info.dtype);
+      int32_t tile_cols = src_tile_cols;
+      int32_t tile_rows = src_tile_rows;
+      int32_t src_aligned_cols = GetValidShape(tile_cols, src_type);
+      int32_t dst_aligned_cols = GetValidShape(tile_cols, dst_type);
+
+      std::string src_row_name = GetTempVarName("ub_row_src");
+      std::string dst_row_name = GetTempVarName("ub_row_dst");
+
+      this->PrintIndent();
+      this->stream << kAscendPtoScope << "TileUbDataND<" << src_type << ", 1, "
+                   << src_aligned_cols << ", 1, " << tile_cols << "> "
+                   << src_row_name << ";\n";
+      this->PrintIndent();
+      this->stream << kAscendPtoScope << "TileUbDataND<" << dst_type << ", 1, "
+                   << dst_aligned_cols << ", 1, " << tile_cols << "> "
+                   << dst_row_name << ";\n";
+
+      this->PrintIndent();
+      this->stream << "for (int __i = 0; __i < " << tile_rows << "; ++__i) {\n";
+      int loop_scope = BeginScope();
+
+      std::string src_offset_str = PrintExpr(src_info.offset);
+      std::string dst_offset_str = PrintExpr(dst_info.offset);
+      auto src_addr = buffer_address_map_.at(src_info.var);
+      auto dst_addr = buffer_address_map_.at(dst_info.var);
+      int src_type_len = GetTypeLen(src_type);
+      int dst_type_len = GetTypeLen(dst_type);
+
+      this->PrintIndent();
+      this->stream << "TASSIGN(" << src_row_name << ", " << PrintExpr(src_addr)
+                   << " + (" << src_offset_str << " + __i * " << src_buf_cols
+                   << ") * " << src_type_len << ");\n";
+
+      this->PrintIndent();
+      this->stream << "TASSIGN(" << dst_row_name << ", " << PrintExpr(dst_addr)
+                   << " + (" << dst_offset_str << " + __i * " << dst_buf_cols
+                   << ") * " << dst_type_len << ");\n";
+
+      this->PrintIndent();
+      this->stream << api_name << "(" << dst_row_name << ", " << src_row_name;
+      if (is_cast) {
+        this->stream << ", pto::RoundMode::CAST_NONE";
+      }
+      this->stream << ");\n";
+
+      this->EndScope(loop_scope);
+      this->PrintIndent();
+      this->stream << "}\n";
+    }
+  } else {
+    ShapeInfo src_shape_info = GetSliceInfo(src_info.access_ptr);
+    ShapeInfo dst_shape_info = GetSliceInfo(dst_info.access_ptr);
+
+    std::string src_name = ResolveUbSliceName(src_shape_info);
+    std::string dst_name = ResolveUbSliceName(dst_shape_info);
+
+    this->PrintIndent();
+    this->stream << api_name << "(" << dst_name << ", " << src_name;
+    if (is_cast) {
+      this->stream << ", pto::RoundMode::CAST_NONE";
+    }
+    this->stream << ");\n";
   }
-  this->stream << ");\n";
 }
 
 // Returns the largest divisor of src_row that is >= min_row and < src_row.
@@ -1820,55 +1913,156 @@ void CodeGenTileLangAscendPto::EmitSortAlgorithmDynamic(
 
 void CodeGenTileLangAscendPto::TransposeCodegen(const CallNode *op,
                                                 const std::string &op_name) {
-  ShapeInfo src_info = GetSliceInfo(op->args[1].as<CallNode>());
-  ShapeInfo dst_info = GetSliceInfo(op->args[0].as<CallNode>());
+  auto *src_access = op->args[1].as<CallNode>();
+  auto *dst_access = op->args[0].as<CallNode>();
+  DataType dtype = GetAccessPtrDtypePto(src_access);
+  std::string type = getType(dtype);
+  int type_len = GetTypeLen(type);
 
-  std::string src_name =
-      src_info.is_slice ? ResolveUbSliceName(src_info) : src_info.ub_name;
-  std::string dst_name =
-      dst_info.is_slice ? ResolveUbSliceName(dst_info) : dst_info.ub_name;
+  Var src_var = Downcast<Var>(src_access->args[1]);
+  Var dst_var = Downcast<Var>(dst_access->args[1]);
+
+  ShapeInfo src_info = GetSliceInfo(src_access);
+  ShapeInfo dst_info = GetSliceInfo(dst_access);
 
   int32_t M = src_info.row;
   int32_t N = src_info.col;
-  int32_t elem_bytes = GetTypeLen(src_info.type);
-  std::string type = src_info.type;
+  int32_t num_tiles_m = M / kTransposeTileSize;
+  int32_t num_tiles_n = N / kTransposeTileSize;
 
-  int32_t dst_tile_w = (M * elem_bytes + kUbAlignmentBytes - 1) /
-                       kUbAlignmentBytes * kUbAlignmentBytes / elem_bytes;
-  int32_t y_tile_size_elem = (elem_bytes == 1) ? 32 : 16;
-  int32_t tmp_tile_w =
-      (dst_tile_w + y_tile_size_elem - 1) / y_tile_size_elem * y_tile_size_elem;
+  if (num_tiles_m <= 0)
+    num_tiles_m = 1;
+  if (num_tiles_n <= 0)
+    num_tiles_n = 1;
 
-  int64_t src_bytes = static_cast<int64_t>(M) * N * elem_bytes;
-  int64_t dst_bytes = static_cast<int64_t>(N) * dst_tile_w * elem_bytes;
-
-  auto src_addr_imm = src_info.first_addr.as<IntImmNode>();
-  auto dst_addr_imm = dst_info.first_addr.as<IntImmNode>();
-
-  std::string tmp_addr_str;
-  if (src_addr_imm && dst_addr_imm) {
-    int64_t src_end = src_addr_imm->value + src_bytes;
-    int64_t dst_end = dst_addr_imm->value + dst_bytes;
-    tmp_addr_str = std::to_string(std::max(src_end, dst_end));
-  } else {
-    std::string src_addr = PrintExpr(src_info.first_addr);
-    std::string dst_addr = PrintExpr(dst_info.first_addr);
-    tmp_addr_str = "std::max(static_cast<int64_t>(" + src_addr + ") + " +
-                   std::to_string(src_bytes) + ", static_cast<int64_t>(" +
-                   dst_addr + ") + " + std::to_string(dst_bytes) + ")";
-  }
+  std::string src_addr = PrintExpr(buffer_address_map_.at(src_var));
+  std::string dst_addr = PrintExpr(buffer_address_map_.at(dst_var));
 
   this->PrintIndent();
   this->stream << "{\n";
+  int blk_scope = BeginScope();
+
+  int32_t tmp_base = max_ub_addr_;
+  int32_t tmp_size = kTransposeTileSize * kTransposeTileSize * type_len;
+  int32_t src_tile_base = tmp_base + tmp_size;
+  int32_t dst_tile_base = src_tile_base + tmp_size;
+
   this->PrintIndent();
-  this->stream << "  " << kAscendPtoScope << "TileUbDataND<" << type << ", "
-               << N << ", " << tmp_tile_w << ", " << N << ", " << tmp_tile_w
-               << "> __ttrans_tmp;\n";
+  this->stream << kAscendPtoScope << "TileUbDataND<" << type << ", "
+               << kTransposeTileSize << ", " << kTransposeTileSize << ", "
+               << kTransposeTileSize << ", " << kTransposeTileSize
+               << "> __trans_tmp;\n";
   this->PrintIndent();
-  this->stream << "  pto::TASSIGN(__ttrans_tmp, " << tmp_addr_str << ");\n";
+  this->stream << "pto::TASSIGN(__trans_tmp, " << tmp_base << ");\n";
+
   this->PrintIndent();
-  this->stream << "  pto::TTRANS(" << dst_name << ", " << src_name
-               << ", __ttrans_tmp);\n";
+  this->stream << kAscendPtoScope << "TileUbDataND<" << type << ", "
+               << kTransposeTileSize << ", " << kTransposeTileSize << ", "
+               << kTransposeTileSize << ", " << kTransposeTileSize
+               << "> __trans_src_tile;\n";
+  this->PrintIndent();
+  this->stream << kAscendPtoScope << "TileUbDataND<" << type << ", "
+               << kTransposeTileSize << ", " << kTransposeTileSize << ", "
+               << kTransposeTileSize << ", " << kTransposeTileSize
+               << "> __trans_dst_tile;\n";
+
+  if (num_tiles_m == 1 && num_tiles_n == 1) {
+    this->PrintIndent();
+    this->stream << "pto::TASSIGN(__trans_src_tile, " << src_addr << ");\n";
+    this->PrintIndent();
+    this->stream << "pto::TASSIGN(__trans_dst_tile, " << dst_addr << ");\n";
+    this->PrintIndent();
+    this->stream << "tl::ascend_pto::transpose<" << type << ", "
+                 << kTransposeTileSize << ", " << kTransposeTileSize
+                 << ">(__trans_dst_tile, __trans_src_tile, __trans_tmp);\n";
+  } else {
+    this->PrintIndent();
+    this->stream << "for (int __ti = 0; __ti < " << num_tiles_m
+                 << "; ++__ti) {\n";
+    int i_scope = BeginScope();
+    this->PrintIndent();
+    this->stream << "for (int __tj = 0; __tj < " << num_tiles_n
+                 << "; ++__tj) {\n";
+    int j_scope = BeginScope();
+
+    this->PrintIndent();
+    this->stream << "for (int __r = 0; __r < " << kTransposeTileSize
+                 << "; ++__r) {\n";
+    int r_scope = BeginScope();
+    this->PrintIndent();
+    this->stream << kAscendPtoScope << "TileUbDataND<" << type << ", 1, "
+                 << kTransposeTileSize << ", 1, " << kTransposeTileSize
+                 << "> __row_src;\n";
+    this->PrintIndent();
+    this->stream << "pto::TASSIGN(__row_src, " << src_addr << " + (__ti * "
+                 << kTransposeTileSize << " * " << N << " + __tj * "
+                 << kTransposeTileSize << " + __r * " << N << ") * " << type_len
+                 << ");\n";
+    this->PrintIndent();
+    this->stream << kAscendPtoScope << "TileUbDataND<" << type << ", 1, "
+                 << kTransposeTileSize << ", 1, " << kTransposeTileSize
+                 << "> __row_dst;\n";
+    this->PrintIndent();
+    this->stream << "pto::TASSIGN(__row_dst, " << src_tile_base << " + __r * "
+                 << kTransposeTileSize << " * " << type_len << ");\n";
+    this->PrintIndent();
+    this->stream << "TMOV(__row_dst, __row_src);\n";
+    this->EndScope(r_scope);
+    this->PrintIndent();
+    this->stream << "}\n";
+    this->PrintIndent();
+    this->stream << "pipe_barrier(PIPE_V);\n";
+
+    this->PrintIndent();
+    this->stream << "pto::TASSIGN(__trans_src_tile, " << src_tile_base
+                 << ");\n";
+    this->PrintIndent();
+    this->stream << "pto::TASSIGN(__trans_dst_tile, " << dst_tile_base
+                 << ");\n";
+    this->PrintIndent();
+    this->stream << "tl::ascend_pto::transpose<" << type << ", "
+                 << kTransposeTileSize << ", " << kTransposeTileSize
+                 << ">(__trans_dst_tile, __trans_src_tile, __trans_tmp);\n";
+    this->PrintIndent();
+    this->stream << "pipe_barrier(PIPE_V);\n";
+
+    this->PrintIndent();
+    this->stream << "for (int __r = 0; __r < " << kTransposeTileSize
+                 << "; ++__r) {\n";
+    r_scope = BeginScope();
+    this->PrintIndent();
+    this->stream << kAscendPtoScope << "TileUbDataND<" << type << ", 1, "
+                 << kTransposeTileSize << ", 1, " << kTransposeTileSize
+                 << "> __row_src2;\n";
+    this->PrintIndent();
+    this->stream << "pto::TASSIGN(__row_src2, " << dst_tile_base << " + __r * "
+                 << kTransposeTileSize << " * " << type_len << ");\n";
+    this->PrintIndent();
+    this->stream << kAscendPtoScope << "TileUbDataND<" << type << ", 1, "
+                 << kTransposeTileSize << ", 1, " << kTransposeTileSize
+                 << "> __row_dst2;\n";
+    this->PrintIndent();
+    this->stream << "pto::TASSIGN(__row_dst2, " << dst_addr << " + (__tj * "
+                 << kTransposeTileSize << " * " << M << " + __ti * "
+                 << kTransposeTileSize << " + __r * " << M << ") * " << type_len
+                 << ");\n";
+    this->PrintIndent();
+    this->stream << "TMOV(__row_dst2, __row_src2);\n";
+    this->EndScope(r_scope);
+    this->PrintIndent();
+    this->stream << "}\n";
+    this->PrintIndent();
+    this->stream << "pipe_barrier(PIPE_V);\n";
+
+    this->EndScope(j_scope);
+    this->PrintIndent();
+    this->stream << "}\n";
+    this->EndScope(i_scope);
+    this->PrintIndent();
+    this->stream << "}\n";
+  }
+
+  this->EndScope(blk_scope);
   this->PrintIndent();
   this->stream << "}\n";
 }
