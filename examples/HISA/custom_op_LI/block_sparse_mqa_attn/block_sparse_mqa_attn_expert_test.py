@@ -62,18 +62,23 @@ def block_sparse_mqa_attn_return_logits(
     topk_groups = topk // 4
 
     # ---------- Signal IDs ----------
-    # C scope
-    SIG_Q_L1 = 0    # Q L1 buffer: MTE1↔MTE2
-    SIG_K_L1 = 1    # K L1 buffer: MTE1↔MTE2
-    SIG_L0AB = 2    # L0A/L0B: M↔MTE1
-    SIG_L0C = 3     # L0C: FIX↔M
+    # C scope: MTE1↔MTE2
+    SIG_Q_L1 = 0       # Q L1 buffer (single)
+    SIG_K_L1_0 = 1     # K L1 buffer ping
+    SIG_K_L1_1 = 2     # K L1 buffer pong
+    # C scope: M↔MTE1
+    SIG_L0AB_0 = 0     # L0A/L0B ping
+    SIG_L0AB_1 = 1     # L0A/L0B pong
+    # C scope: FIX↔M
+    SIG_L0C_0 = 0      # L0C ping
+    SIG_L0C_1 = 1      # L0C pong
     # V scope
-    SIG_S_UB = 4    # s_ub: V↔MTE2
-    SIG_W_UB = 5    # weights_ub: V↔MTE2
-    SIG_LOGITS = 6  # logits: V↔MTE3
-    # Cross-scope (ping-pong flags for pair-level pipelining)
-    CROSS_FLAG_C2V_0 = 0  # C→V for even pairs
-    CROSS_FLAG_C2V_1 = 1  # C→V for odd pairs
+    SIG_S_UB = 0       # s_ub: V↔MTE2
+    SIG_W_UB = 1       # weights_ub: V↔MTE2
+    SIG_LOGITS = 0     # logits: V↔MTE3
+    # Cross-scope (ping-pong flags for n_outer-level pipelining)
+    CROSS_FLAG_C2V_0 = 0  # C→V for even n_outer
+    CROSS_FLAG_C2V_1 = 1  # C→V for odd n_outer
 
     @T.prim_func
     def kernel(
@@ -103,124 +108,305 @@ def block_sparse_mqa_attn_return_logits(
 
             # ---- C scope: L1 / L0A / L0B / L0C allocations ----
             q_l1 = T.alloc_L1([H_per_block, index_dim], dtype)
-            k_l1 = T.alloc_L1([kv_block_size, index_dim], dtype)
+            # Double-buffered K L1
+            k_l1_0 = T.alloc_L1([kv_block_size, index_dim], dtype)
+            k_l1_1 = T.alloc_L1([kv_block_size, index_dim], dtype)
             l0a = T.alloc_L0A([H_per_block, index_dim], dtype)
-            l0b = T.alloc_L0B([index_dim, kv_block_size], dtype)
-            l0c = T.alloc_L0C([H_per_block, kv_block_size], accum_dtype)
+            # Double-buffered L0B
+            l0b_0 = T.alloc_L0B([index_dim, kv_block_size], dtype)
+            l0b_1 = T.alloc_L0B([index_dim, kv_block_size], dtype)
+            # Double-buffered L0C
+            l0c_0 = T.alloc_L0C([H_per_block, kv_block_size], accum_dtype)
+            l0c_1 = T.alloc_L0C([H_per_block, kv_block_size], accum_dtype)
 
             # ================================================================
-            # C scope: DMA → L1 → L0A/L0B → MMA → L0C → workspace
+            # C scope: double-buffered L0B/L0C/k_l1 4-stage SW pipeline
             # ================================================================
             with T.Scope("C"):
-                # Init: all buffers start free
-                T.set_flag("MTE1", "MTE2", SIG_Q_L1)   # Q L1 free
-                T.set_flag("MTE1", "MTE2", SIG_K_L1)   # K L1 free
-                T.set_flag("M", "MTE1", SIG_L0AB)       # L0A/L0B free
-                T.set_flag("FIX", "M", SIG_L0C)         # L0C free
+                # Init: all buffers start free (ping + pong)
+                T.set_flag("MTE1", "MTE2", SIG_Q_L1)
+                T.set_flag("MTE1", "MTE2", SIG_K_L1_0)
+                T.set_flag("MTE1", "MTE2", SIG_K_L1_1)
+                T.set_flag("M", "MTE1", SIG_L0AB_0)
+                T.set_flag("M", "MTE1", SIG_L0AB_1)
+                T.set_flag("FIX", "M", SIG_L0C_0)
+                T.set_flag("FIX", "M", SIG_L0C_1)
 
                 for pair_i in T.serial(num_pairs):
                     for n_outer in T.serial(topk_groups):
-                        # ========================================================
-                        # token_a: one n_outer group (4 blocks)
-                        # ========================================================
+                        n_i0 = n_outer * 4 + 0
+                        n_i1 = n_outer * 4 + 1
+                        n_i2 = n_outer * 4 + 2
+                        n_i3 = n_outer * 4 + 3
+
+                        # ====================================================
+                        # token_a: 4 blocks, double-buffered pipeline
+                        # ====================================================
                         t_a = pair_i * 2
                         token_a = bx * num_tokens_per_kernel + t_a
                         if token_a < seq_len:
-                            for n_inner in T.serial(4):
-                                n_i = n_outer * 4 + n_inner
-                                # -- DMA K → L1 --
-                                T.wait_flag("MTE1", "MTE2", SIG_K_L1)
-                                T.copy(
-                                    IndexK[
-                                        TopKBlockIndex[token_a, n_i]
-                                        * kv_block_size : TopKBlockIndex[token_a, n_i]
-                                        * kv_block_size
-                                        + kv_block_size,
-                                        :,
-                                    ],
-                                    k_l1,
-                                )
-                                T.set_flag("MTE2", "MTE1", SIG_K_L1)
 
-                                # -- Stage to L0A/L0B --
-                                # Reload Q at n_inner==0 since L0A may hold
-                                # a different token's Q from the previous n_outer.
-                                T.wait_flag("MTE2", "MTE1", SIG_K_L1)
-                                T.wait_flag("M", "MTE1", SIG_L0AB)
-                                if n_inner == 0:
-                                    T.wait_flag("MTE1", "MTE2", SIG_Q_L1)
-                                    T.copy(
-                                        IndexQ[token_a, :, :],
-                                        q_l1,
-                                    )
-                                    T.set_flag("MTE2", "MTE1", SIG_Q_L1)
-                                    T.wait_flag("MTE2", "MTE1", SIG_Q_L1)
-                                    T.copy(q_l1, l0a)
-                                    T.set_flag("MTE1", "MTE2", SIG_Q_L1)
-                                T.copy(k_l1, l0b, transpose=True)
-                                T.set_flag("MTE1", "MTE2", SIG_K_L1)
-                                T.set_flag("MTE1", "M", SIG_L0AB)
+                            # ---- Wave 0: DMA K[0] → k_l1_0 ----
+                            T.wait_flag("MTE1", "MTE2", SIG_K_L1_0)
+                            T.copy(
+                                IndexK[
+                                    TopKBlockIndex[token_a, n_i0]
+                                    * kv_block_size : TopKBlockIndex[token_a, n_i0]
+                                    * kv_block_size + kv_block_size,
+                                    :,
+                                ],
+                                k_l1_0,
+                            )
+                            T.set_flag("MTE2", "MTE1", SIG_K_L1_0)
 
-                                # -- MMA: S = Q @ K^T --
-                                T.wait_flag("MTE1", "M", SIG_L0AB)
-                                T.wait_flag("FIX", "M", SIG_L0C)
-                                T.mma(l0a, l0b, l0c, init=True)
-                                T.set_flag("M", "MTE1", SIG_L0AB)
-                                T.set_flag("M", "FIX", SIG_L0C)
+                            # ---- Wave 1: DMA K[1]→k_l1_1 | Stage K[0]→l0b_0 ----
+                            T.wait_flag("MTE1", "MTE2", SIG_K_L1_1)
+                            T.copy(
+                                IndexK[
+                                    TopKBlockIndex[token_a, n_i1]
+                                    * kv_block_size : TopKBlockIndex[token_a, n_i1]
+                                    * kv_block_size + kv_block_size,
+                                    :,
+                                ],
+                                k_l1_1,
+                            )
+                            T.set_flag("MTE2", "MTE1", SIG_K_L1_1)
 
-                                # -- Copy L0C → workspace --
-                                T.wait_flag("M", "FIX", SIG_L0C)
-                                T.copy(l0c, workspace_1[token_a, n_i, :, :])
-                                T.set_flag("FIX", "M", SIG_L0C)
+                            T.wait_flag("MTE2", "MTE1", SIG_K_L1_0)
+                            T.wait_flag("M", "MTE1", SIG_L0AB_0)
+                            T.wait_flag("MTE1", "MTE2", SIG_Q_L1)
+                            T.copy(IndexQ[token_a, :, :], q_l1)
+                            T.set_flag("MTE2", "MTE1", SIG_Q_L1)
+                            T.wait_flag("MTE2", "MTE1", SIG_Q_L1)
+                            T.copy(q_l1, l0a)
+                            T.set_flag("MTE1", "MTE2", SIG_Q_L1)
+                            T.copy(k_l1_0, l0b_0, transpose=True)
+                            T.set_flag("MTE1", "MTE2", SIG_K_L1_0)
+                            T.set_flag("MTE1", "M", SIG_L0AB_0)
 
-                        # ========================================================
-                        # token_b: one n_outer group (4 blocks)
-                        # ========================================================
+                            # ---- Wave 2: DMA K[2]→k_l1_0 | Stage K[1]→l0b_1 | MMA K[0]→l0c_0 ----
+                            T.wait_flag("MTE1", "MTE2", SIG_K_L1_0)
+                            T.copy(
+                                IndexK[
+                                    TopKBlockIndex[token_a, n_i2]
+                                    * kv_block_size : TopKBlockIndex[token_a, n_i2]
+                                    * kv_block_size + kv_block_size,
+                                    :,
+                                ],
+                                k_l1_0,
+                            )
+                            T.set_flag("MTE2", "MTE1", SIG_K_L1_0)
+
+                            T.wait_flag("MTE2", "MTE1", SIG_K_L1_1)
+                            T.wait_flag("M", "MTE1", SIG_L0AB_1)
+                            T.copy(k_l1_1, l0b_1, transpose=True)
+                            T.set_flag("MTE1", "MTE2", SIG_K_L1_1)
+                            T.set_flag("MTE1", "M", SIG_L0AB_1)
+
+                            T.wait_flag("MTE1", "M", SIG_L0AB_0)
+                            T.wait_flag("FIX", "M", SIG_L0C_0)
+                            T.mma(l0a, l0b_0, l0c_0, init=True)
+                            T.set_flag("M", "MTE1", SIG_L0AB_0)
+                            T.set_flag("M", "FIX", SIG_L0C_0)
+
+                            # ---- Wave 3: DMA K[3]→k_l1_1 | Stage K[2]→l0b_0 | MMA K[1]→l0c_1 | Copy l0c_0→ws ----
+                            T.wait_flag("MTE1", "MTE2", SIG_K_L1_1)
+                            T.copy(
+                                IndexK[
+                                    TopKBlockIndex[token_a, n_i3]
+                                    * kv_block_size : TopKBlockIndex[token_a, n_i3]
+                                    * kv_block_size + kv_block_size,
+                                    :,
+                                ],
+                                k_l1_1,
+                            )
+                            T.set_flag("MTE2", "MTE1", SIG_K_L1_1)
+
+                            T.wait_flag("MTE2", "MTE1", SIG_K_L1_0)
+                            T.wait_flag("M", "MTE1", SIG_L0AB_0)
+                            T.copy(k_l1_0, l0b_0, transpose=True)
+                            T.set_flag("MTE1", "MTE2", SIG_K_L1_0)
+                            T.set_flag("MTE1", "M", SIG_L0AB_0)
+
+                            T.wait_flag("MTE1", "M", SIG_L0AB_1)
+                            T.wait_flag("FIX", "M", SIG_L0C_1)
+                            T.mma(l0a, l0b_1, l0c_1, init=True)
+                            T.set_flag("M", "MTE1", SIG_L0AB_1)
+                            T.set_flag("M", "FIX", SIG_L0C_1)
+
+                            T.wait_flag("M", "FIX", SIG_L0C_0)
+                            T.copy(l0c_0, workspace_1[token_a, n_i0, :, :])
+                            T.set_flag("FIX", "M", SIG_L0C_0)
+
+                            # ---- Wave 4: Stage K[3]→l0b_1 | MMA K[2]→l0c_0 | Copy l0c_1→ws ----
+                            T.wait_flag("MTE2", "MTE1", SIG_K_L1_1)
+                            T.wait_flag("M", "MTE1", SIG_L0AB_1)
+                            T.copy(k_l1_1, l0b_1, transpose=True)
+                            T.set_flag("MTE1", "MTE2", SIG_K_L1_1)
+                            T.set_flag("MTE1", "M", SIG_L0AB_1)
+
+                            T.wait_flag("MTE1", "M", SIG_L0AB_0)
+                            T.wait_flag("FIX", "M", SIG_L0C_0)
+                            T.mma(l0a, l0b_0, l0c_0, init=True)
+                            T.set_flag("M", "MTE1", SIG_L0AB_0)
+                            T.set_flag("M", "FIX", SIG_L0C_0)
+
+                            T.wait_flag("M", "FIX", SIG_L0C_1)
+                            T.copy(l0c_1, workspace_1[token_a, n_i1, :, :])
+                            T.set_flag("FIX", "M", SIG_L0C_1)
+
+                            # ---- Wave 5: MMA K[3]→l0c_1 | Copy l0c_0→ws (drain) ----
+                            T.wait_flag("MTE1", "M", SIG_L0AB_1)
+                            T.wait_flag("FIX", "M", SIG_L0C_1)
+                            T.mma(l0a, l0b_1, l0c_1, init=True)
+                            T.set_flag("M", "MTE1", SIG_L0AB_1)
+                            T.set_flag("M", "FIX", SIG_L0C_1)
+
+                            T.wait_flag("M", "FIX", SIG_L0C_0)
+                            T.copy(l0c_0, workspace_1[token_a, n_i2, :, :])
+                            T.set_flag("FIX", "M", SIG_L0C_0)
+
+                            # ---- Wave 6: Copy l0c_1→ws (drain) ----
+                            T.wait_flag("M", "FIX", SIG_L0C_1)
+                            T.copy(l0c_1, workspace_1[token_a, n_i3, :, :])
+                            T.set_flag("FIX", "M", SIG_L0C_1)
+
+                        # ====================================================
+                        # token_b: 4 blocks, double-buffered pipeline
+                        # ====================================================
                         t_b = pair_i * 2 + 1
                         token_b = bx * num_tokens_per_kernel + t_b
                         if token_b < seq_len:
-                            for n_inner in T.serial(4):
-                                n_i = n_outer * 4 + n_inner
-                                T.wait_flag("MTE1", "MTE2", SIG_K_L1)
-                                T.copy(
-                                    IndexK[
-                                        TopKBlockIndex[token_b, n_i]
-                                        * kv_block_size : TopKBlockIndex[token_b, n_i]
-                                        * kv_block_size
-                                        + kv_block_size,
-                                        :,
-                                    ],
-                                    k_l1,
-                                )
-                                T.set_flag("MTE2", "MTE1", SIG_K_L1)
+                            n_i1 = n_outer * 4 + 1
+                            n_i2 = n_outer * 4 + 2
+                            n_i3 = n_outer * 4 + 3
 
-                                T.wait_flag("MTE2", "MTE1", SIG_K_L1)
-                                T.wait_flag("M", "MTE1", SIG_L0AB)
-                                if n_inner == 0:
-                                    T.wait_flag("MTE1", "MTE2", SIG_Q_L1)
-                                    T.copy(
-                                        IndexQ[token_b, :, :],
-                                        q_l1,
-                                    )
-                                    T.set_flag("MTE2", "MTE1", SIG_Q_L1)
-                                    T.wait_flag("MTE2", "MTE1", SIG_Q_L1)
-                                    T.copy(q_l1, l0a)
-                                    T.set_flag("MTE1", "MTE2", SIG_Q_L1)
-                                T.copy(k_l1, l0b, transpose=True)
-                                T.set_flag("MTE1", "MTE2", SIG_K_L1)
-                                T.set_flag("MTE1", "M", SIG_L0AB)
+                            # ---- Wave 0: DMA K[0] → k_l1_0 ----
+                            T.wait_flag("MTE1", "MTE2", SIG_K_L1_0)
+                            T.copy(
+                                IndexK[
+                                    TopKBlockIndex[token_b, n_i0]
+                                    * kv_block_size : TopKBlockIndex[token_b, n_i0]
+                                    * kv_block_size + kv_block_size,
+                                    :,
+                                ],
+                                k_l1_0,
+                            )
+                            T.set_flag("MTE2", "MTE1", SIG_K_L1_0)
 
-                                T.wait_flag("MTE1", "M", SIG_L0AB)
-                                T.wait_flag("FIX", "M", SIG_L0C)
-                                T.mma(l0a, l0b, l0c, init=True)
-                                T.set_flag("M", "MTE1", SIG_L0AB)
-                                T.set_flag("M", "FIX", SIG_L0C)
+                            # ---- Wave 1: DMA K[1]→k_l1_1 | Stage K[0]→l0b_0 ----
+                            T.wait_flag("MTE1", "MTE2", SIG_K_L1_1)
+                            T.copy(
+                                IndexK[
+                                    TopKBlockIndex[token_b, n_i1]
+                                    * kv_block_size : TopKBlockIndex[token_b, n_i1]
+                                    * kv_block_size + kv_block_size,
+                                    :,
+                                ],
+                                k_l1_1,
+                            )
+                            T.set_flag("MTE2", "MTE1", SIG_K_L1_1)
 
-                                T.wait_flag("M", "FIX", SIG_L0C)
-                                T.copy(l0c, workspace_1[token_b, n_i, :, :])
-                                T.set_flag("FIX", "M", SIG_L0C)
+                            T.wait_flag("MTE2", "MTE1", SIG_K_L1_0)
+                            T.wait_flag("M", "MTE1", SIG_L0AB_0)
+                            T.wait_flag("MTE1", "MTE2", SIG_Q_L1)
+                            T.copy(IndexQ[token_b, :, :], q_l1)
+                            T.set_flag("MTE2", "MTE1", SIG_Q_L1)
+                            T.wait_flag("MTE2", "MTE1", SIG_Q_L1)
+                            T.copy(q_l1, l0a)
+                            T.set_flag("MTE1", "MTE2", SIG_Q_L1)
+                            T.copy(k_l1_0, l0b_0, transpose=True)
+                            T.set_flag("MTE1", "MTE2", SIG_K_L1_0)
+                            T.set_flag("MTE1", "M", SIG_L0AB_0)
 
-                        # Per-n_outer sync: 8 blocks → signal V
+                            # ---- Wave 2: DMA K[2]→k_l1_0 | Stage K[1]→l0b_1 | MMA K[0]→l0c_0 ----
+                            T.wait_flag("MTE1", "MTE2", SIG_K_L1_0)
+                            T.copy(
+                                IndexK[
+                                    TopKBlockIndex[token_b, n_i2]
+                                    * kv_block_size : TopKBlockIndex[token_b, n_i2]
+                                    * kv_block_size + kv_block_size,
+                                    :,
+                                ],
+                                k_l1_0,
+                            )
+                            T.set_flag("MTE2", "MTE1", SIG_K_L1_0)
+
+                            T.wait_flag("MTE2", "MTE1", SIG_K_L1_1)
+                            T.wait_flag("M", "MTE1", SIG_L0AB_1)
+                            T.copy(k_l1_1, l0b_1, transpose=True)
+                            T.set_flag("MTE1", "MTE2", SIG_K_L1_1)
+                            T.set_flag("MTE1", "M", SIG_L0AB_1)
+
+                            T.wait_flag("MTE1", "M", SIG_L0AB_0)
+                            T.wait_flag("FIX", "M", SIG_L0C_0)
+                            T.mma(l0a, l0b_0, l0c_0, init=True)
+                            T.set_flag("M", "MTE1", SIG_L0AB_0)
+                            T.set_flag("M", "FIX", SIG_L0C_0)
+
+                            # ---- Wave 3: DMA K[3]→k_l1_1 | Stage K[2]→l0b_0 | MMA K[1]→l0c_1 | Copy l0c_0→ws ----
+                            T.wait_flag("MTE1", "MTE2", SIG_K_L1_1)
+                            T.copy(
+                                IndexK[
+                                    TopKBlockIndex[token_b, n_i3]
+                                    * kv_block_size : TopKBlockIndex[token_b, n_i3]
+                                    * kv_block_size + kv_block_size,
+                                    :,
+                                ],
+                                k_l1_1,
+                            )
+                            T.set_flag("MTE2", "MTE1", SIG_K_L1_1)
+
+                            T.wait_flag("MTE2", "MTE1", SIG_K_L1_0)
+                            T.wait_flag("M", "MTE1", SIG_L0AB_0)
+                            T.copy(k_l1_0, l0b_0, transpose=True)
+                            T.set_flag("MTE1", "MTE2", SIG_K_L1_0)
+                            T.set_flag("MTE1", "M", SIG_L0AB_0)
+
+                            T.wait_flag("MTE1", "M", SIG_L0AB_1)
+                            T.wait_flag("FIX", "M", SIG_L0C_1)
+                            T.mma(l0a, l0b_1, l0c_1, init=True)
+                            T.set_flag("M", "MTE1", SIG_L0AB_1)
+                            T.set_flag("M", "FIX", SIG_L0C_1)
+
+                            T.wait_flag("M", "FIX", SIG_L0C_0)
+                            T.copy(l0c_0, workspace_1[token_b, n_i0, :, :])
+                            T.set_flag("FIX", "M", SIG_L0C_0)
+
+                            # ---- Wave 4: Stage K[3]→l0b_1 | MMA K[2]→l0c_0 | Copy l0c_1→ws ----
+                            T.wait_flag("MTE2", "MTE1", SIG_K_L1_1)
+                            T.wait_flag("M", "MTE1", SIG_L0AB_1)
+                            T.copy(k_l1_1, l0b_1, transpose=True)
+                            T.set_flag("MTE1", "MTE2", SIG_K_L1_1)
+                            T.set_flag("MTE1", "M", SIG_L0AB_1)
+
+                            T.wait_flag("MTE1", "M", SIG_L0AB_0)
+                            T.wait_flag("FIX", "M", SIG_L0C_0)
+                            T.mma(l0a, l0b_0, l0c_0, init=True)
+                            T.set_flag("M", "MTE1", SIG_L0AB_0)
+                            T.set_flag("M", "FIX", SIG_L0C_0)
+
+                            T.wait_flag("M", "FIX", SIG_L0C_1)
+                            T.copy(l0c_1, workspace_1[token_b, n_i1, :, :])
+                            T.set_flag("FIX", "M", SIG_L0C_1)
+
+                            # ---- Wave 5: MMA K[3]→l0c_1 | Copy l0c_0→ws (drain) ----
+                            T.wait_flag("MTE1", "M", SIG_L0AB_1)
+                            T.wait_flag("FIX", "M", SIG_L0C_1)
+                            T.mma(l0a, l0b_1, l0c_1, init=True)
+                            T.set_flag("M", "MTE1", SIG_L0AB_1)
+                            T.set_flag("M", "FIX", SIG_L0C_1)
+
+                            T.wait_flag("M", "FIX", SIG_L0C_0)
+                            T.copy(l0c_0, workspace_1[token_b, n_i2, :, :])
+                            T.set_flag("FIX", "M", SIG_L0C_0)
+
+                            # ---- Wave 6: Copy l0c_1→ws (drain) ----
+                            T.wait_flag("M", "FIX", SIG_L0C_1)
+                            T.copy(l0c_1, workspace_1[token_b, n_i3, :, :])
+                            T.set_flag("FIX", "M", SIG_L0C_1)
+
+                        # Per-n_outer sync: both token_a and token_b ready
                         if n_outer % 2 == 0:
                             T.set_cross_flag("FIX", CROSS_FLAG_C2V_0)
                         else:
@@ -228,9 +414,12 @@ def block_sparse_mqa_attn_return_logits(
 
                 # Destroy: consume outstanding init-direction flags
                 T.wait_flag("MTE1", "MTE2", SIG_Q_L1)
-                T.wait_flag("MTE1", "MTE2", SIG_K_L1)
-                T.wait_flag("M", "MTE1", SIG_L0AB)
-                T.wait_flag("FIX", "M", SIG_L0C)
+                T.wait_flag("MTE1", "MTE2", SIG_K_L1_0)
+                T.wait_flag("MTE1", "MTE2", SIG_K_L1_1)
+                T.wait_flag("M", "MTE1", SIG_L0AB_0)
+                T.wait_flag("M", "MTE1", SIG_L0AB_1)
+                T.wait_flag("FIX", "M", SIG_L0C_0)
+                T.wait_flag("FIX", "M", SIG_L0C_1)
 
             # ================================================================
             # V scope: workspace → s_ub → ReLU → mul weights → reduce → Logits
@@ -306,75 +495,55 @@ def block_sparse_mqa_attn_return_logits(
                             # (1) create position vectors (4 different block_start)
                             T.tile.createvecindex(
                                 kvpi_a, TopKBlockIndex[token_idx, n_i_0] * kv)
-                            # T.barrier_all()
                             T.tile.createvecindex(
                                 kvpi_b, TopKBlockIndex[token_idx, n_i_1] * kv)
-                            # T.barrier_all()
                             T.tile.createvecindex(
                                 kvpi_c, TopKBlockIndex[token_idx, n_i_2] * kv)
-                            # T.barrier_all()
                             T.tile.createvecindex(
                                 kvpi_d, TopKBlockIndex[token_idx, n_i_3] * kv)
-                            # T.barrier_all()
                             # (2) copy int32→float32, concatenate into [4*kv]
                             T.copy(kvpi_a, kvpf_4x[0 * kv : 1 * kv])
-                            # T.barrier_all()
                             T.copy(kvpi_b, kvpf_4x[1 * kv : 2 * kv])
-                            # T.barrier_all()
                             T.copy(kvpi_c, kvpf_4x[2 * kv : 3 * kv])
-                            # T.barrier_all()
                             T.copy(kvpi_d, kvpf_4x[3 * kv : 4 * kv])
-                            # T.barrier_all()
                             T.pipe_barrier("v")
 
                             # (3) compare: GE cu_seqlen_ks, LT cu_seqlen_ke
                             cu_k_s_min = CuSeqLenKS[token_idx]
-                            # T.barrier_all()
                             cu_k_e_max = CuSeqLenKE[token_idx]
-                            # T.barrier_all()
                             T.tile.compare(mask1_ub, kvpf_4x,
                                            T.float32(cu_k_s_min), "GE")
-                            # T.barrier_all()
                             T.tile.compare(mask2_ub, kvpf_4x,
                                            T.float32(cu_k_e_max), "LT")
-                            # T.barrier_all()
                             T.pipe_barrier("v")
                             T.tile.bitwise_and(mask1_ub, mask1_ub, mask2_ub)
 
                             # (4) select: mask out-of-range → -inf
-                            # T.barrier_all()
                             T.tile.select(logits_4x[0, :], mask1_ub,
                                           logits_4x[0, :],
                                           -T.infinity(accum_dtype),
                                           "VSEL_TENSOR_SCALAR_MODE")
 
-                            # T.barrier_all()
                             T.set_flag("V", "MTE3", SIG_LOGITS)
 
                             # -- DMA logits → output: 4 × [kv] slices --
-                            # T.barrier_all()
                             T.wait_flag("V", "MTE3", SIG_LOGITS)
-                            # T.barrier_all()
                             T.copy(
                                 logits_4x[0, 0 * kv : 1 * kv],
                                 Logits[token_idx, n_i_base + 0, :],
                             )
-                            # T.barrier_all()
                             T.copy(
                                 logits_4x[0, 1 * kv : 2 * kv],
                                 Logits[token_idx, n_i_base + 1, :],
                             )
-                            # T.barrier_all()
                             T.copy(
                                 logits_4x[0, 2 * kv : 3 * kv],
                                 Logits[token_idx, n_i_base + 2, :],
                             )
-                            # T.barrier_all()
                             T.copy(
                                 logits_4x[0, 3 * kv : 4 * kv],
                                 Logits[token_idx, n_i_base + 3, :],
                             )
-                            # T.barrier_all()
                             T.set_flag("MTE3", "V", SIG_LOGITS)
 
                 # Destroy: consume outstanding init-direction flags
@@ -494,7 +663,7 @@ def test_block_sparse_mqa_attn(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Block Sparse MQA Attention Kernel Test")
-    parser.add_argument("--seq_len", type=int, default=1024, help="Query sequence length")
+    parser.add_argument("--seq_len", type=int, default=32, help="Query sequence length")
     parser.add_argument("--seq_len_kv", type=int, default=128 * 1024, help="KV sequence length")
     parser.add_argument("--heads", type=int, default=32, help="Number of attention heads")
     parser.add_argument("--index_dim", type=int, default=128, help="Index dimension")
