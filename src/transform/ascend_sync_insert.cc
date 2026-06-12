@@ -205,6 +205,8 @@ private:
 
     // Step 2: Check if any read buffer needs sync (was last written by
     // different pipeline)
+    // Note: Skip same-pipeline dependencies (S→S) because scalar pipeline
+    // is in-order and doesn't need explicit sync
     std::vector<SyncRequirement> sync_requirements;
     for (const auto &read_access : value_accesses) {
       BufferAccess current_read = read_access;
@@ -218,6 +220,10 @@ private:
         auto it = current_access_history_.find(buffer_name);
         if (it != current_access_history_.end()) {
           const auto &latest_access = it->second;
+          // Skip same-pipeline dependencies (S→S)
+          if (latest_access.pipeline == "PIPE_S") {
+            continue;
+          }
           if (HasDataDependency(latest_access, current_read)) {
             // Check if the sync has already been inserted
             std::string required_sync_type =
