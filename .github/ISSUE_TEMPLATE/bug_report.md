@@ -1,38 +1,74 @@
 ---
 name: Bug report
 about: Create a report to help us improve
-title: ''
-labels: ''
+title: '[Bug] '
+labels: 'bug'
 assignees: ''
-
 ---
 
-**Describe the bug**
+## Bug Description
 A clear and concise description of what the bug is.
 
-**To Reproduce**
-Steps to reproduce the behavior:
-1. Go to '...'
-2. Click on '....'
-3. Scroll down to '....'
-4. See error
+## Environment
 
-**Expected behavior**
+**Hardware:**
+- NPU Device: [e.g. Ascend A2, A3]
+- Other hardware info: [e.g. CPU, memory]
+
+**Software:**
+- OS: [e.g. Ubuntu 20.04, EulerOS]
+- CANN version: [e.g. 8.3.RC1]
+- torch-npu version: [e.g. 2.6.0.RC1]
+- Python version: [e.g. 3.10]
+- TileLang-Ascend version: [e.g. commit hash or tag]
+- Installation method: [wheel package / build from source]
+
+## Code to Reproduce
+
+```python
+# Minimal reproducible code
+import tilelang
+import torch
+
+# Your code here
+```
+
+## Error Message
+
+```
+Paste the full error message here
+```
+
+## Expected Behavior
 A clear and concise description of what you expected to happen.
 
-**Screenshots**
-If applicable, add screenshots to help explain your problem.
+## Actual Behavior
+A clear and concise description of what actually happened.
 
-**Desktop (please complete the following information):**
- - OS: [e.g. iOS]
- - Browser [e.g. chrome, safari]
- - Version [e.g. 22]
+## Additional Context
 
-**Smartphone (please complete the following information):**
- - Device: [e.g. iPhone6]
- - OS: [e.g. iOS8.1]
- - Browser [e.g. stock browser, safari]
- - Version [e.g. 22]
+**Programming Mode:**
+- [ ] Developer mode (automatic sync/buffer management)
+- [ ] Expert mode (manual T.Scope/T.barrier_all)
+- [ ] Mixed mode
 
-**Additional context**
-Add any other context about the problem here.
+**Backend:**
+- [ ] Ascend C & PTO backend
+- [ ] AscendNPU IR backend
+
+**Pass Configs (if applicable):**
+```python
+pass_configs = {
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: ...,
+    tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: ...,
+    # ...
+}
+```
+
+**Operator Type:**
+[e.g. GEMM, Flash Attention, Softmax, Convolution, etc.]
+
+**Additional Information:**
+- Have you checked the [Programming Guide](../docs/TileLang-Ascend%20Programming%20Guide.md)?
+- Have you searched existing issues?
+- Any other context or screenshots?
