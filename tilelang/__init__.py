@@ -110,3 +110,11 @@ from .transform import PassConfigKey  # noqa: F401
 from .engine import lower, register_cuda_postproc, register_hip_postproc  # noqa: F401
 
 from .math import *  # noqa: F403
+
+# Auto-activate IR pass tracing when TILELANG_DUMP_PASSES is set.
+# Usage: TILELANG_DUMP_PASSES=1 python your_kernel.py  →  generates ir_dump/ir_trace.html
+import os as _os
+if _os.environ.get("TILELANG_DUMP_PASSES", "") not in ("", "0", "off", "false"):
+    from .engine.pass_trace import patch as _pass_trace_patch
+    _pass_trace_patch()
+del _os
