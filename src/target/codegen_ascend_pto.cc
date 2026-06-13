@@ -1230,10 +1230,8 @@ void CodeGenTileLangAscendPto::CopyL1ToL0Codegen(const CallNode *call,
     std::string src_temp_name = GetTempVarName(src_shape_info.ub_name + "_zn");
     this->PrintIndent();
     this->stream << kAscendPtoScope << "TileMatL1ZN<" << dst_shape_info.type
-                 << ", " << tile_col
-                 << ", " << tile_row << ", "
-                 << tile_col << ", " << tile_row
-                 << "> " << src_temp_name << ";\n";
+                 << ", " << tile_col << ", " << tile_row << ", " << tile_col
+                 << ", " << tile_row << "> " << src_temp_name << ";\n";
     PrimExpr tile_base_offset = outer_tile_idx * tile_size;
     this->PrintIndent();
     this->stream << "TASSIGN(" << src_temp_name << ", "
@@ -2141,7 +2139,8 @@ void CodeGenTileLangAscendPto::RowExpandMulCodegen(const CallNode *op) {
   // trailing dimensions, swapping rows/cols.  Re-derive the correct 2D
   // dimensions from the access extent and the innermost buffer dimension.
   auto fix_nd_2d = [&](ShapeInfo &info, const CallNode *access_ptr) {
-    if (!info.is_slice) return;
+    if (!info.is_slice)
+      return;
     Var buf_var = Downcast<Var>(access_ptr->args[1]);
     auto shape = buffer_shapess_.at(buf_var);
     if (shape.size() >= 3) {
@@ -2158,7 +2157,8 @@ void CodeGenTileLangAscendPto::RowExpandMulCodegen(const CallNode *op) {
   // src1: for a sliced 1D row-vector from a 2D+ buffer, pick the last
   // dimension size as the vector length.
   auto fix_src1_nd = [&](ShapeInfo &info, const CallNode *access_ptr) {
-    if (!info.is_slice) return;
+    if (!info.is_slice)
+      return;
     Var buf_var = Downcast<Var>(access_ptr->args[1]);
     auto shape = buffer_shapess_.at(buf_var);
     if (shape.size() >= 3) {

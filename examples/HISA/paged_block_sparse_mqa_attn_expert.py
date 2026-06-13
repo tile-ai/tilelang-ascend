@@ -141,7 +141,10 @@ def paged_block_sparse_mqa_attn_return_logits(
                     T.wait_flag("MTE1", "MTE2", SIG_K_L1_0)
                     T.copy(
                         KvCache[
-                            BlockTables[b, TopKBlockIndex[token, n_i0]], :, 0, :,
+                            BlockTables[b, TopKBlockIndex[token, n_i0]],
+                            :,
+                            0,
+                            :,
                         ],
                         k_l1_0,
                     )
@@ -151,7 +154,10 @@ def paged_block_sparse_mqa_attn_return_logits(
                     T.wait_flag("MTE1", "MTE2", SIG_K_L1_1)
                     T.copy(
                         KvCache[
-                            BlockTables[b, TopKBlockIndex[token, n_i1]], :, 0, :,
+                            BlockTables[b, TopKBlockIndex[token, n_i1]],
+                            :,
+                            0,
+                            :,
                         ],
                         k_l1_1,
                     )
@@ -173,7 +179,10 @@ def paged_block_sparse_mqa_attn_return_logits(
                     T.wait_flag("MTE1", "MTE2", SIG_K_L1_0)
                     T.copy(
                         KvCache[
-                            BlockTables[b, TopKBlockIndex[token, n_i2]], :, 0, :,
+                            BlockTables[b, TopKBlockIndex[token, n_i2]],
+                            :,
+                            0,
+                            :,
                         ],
                         k_l1_0,
                     )
@@ -195,7 +204,10 @@ def paged_block_sparse_mqa_attn_return_logits(
                     T.wait_flag("MTE1", "MTE2", SIG_K_L1_1)
                     T.copy(
                         KvCache[
-                            BlockTables[b, TopKBlockIndex[token, n_i3]], :, 0, :,
+                            BlockTables[b, TopKBlockIndex[token, n_i3]],
+                            :,
+                            0,
+                            :,
                         ],
                         k_l1_1,
                     )
@@ -311,27 +323,19 @@ def paged_block_sparse_mqa_attn_return_logits(
                     T.set_flag("V", "MTE2", SIG_S_UB)
 
                     # Mask: 2 blocks merged
-                    T.tile.createvecindex(
-                        kvpi_a,
-                        TopKBlockIndex[token, n_i_base + start_n + 0] * kv)
-                    T.tile.createvecindex(
-                        kvpi_b,
-                        TopKBlockIndex[token, n_i_base + start_n + 1] * kv)
+                    T.tile.createvecindex(kvpi_a, TopKBlockIndex[token, n_i_base + start_n + 0] * kv)
+                    T.tile.createvecindex(kvpi_b, TopKBlockIndex[token, n_i_base + start_n + 1] * kv)
                     T.copy(kvpi_a, kvpf_2x[0 * kv : 1 * kv])
                     T.copy(kvpi_b, kvpf_2x[1 * kv : 2 * kv])
                     T.pipe_barrier("v")
 
                     cu_k_e_max = ContextLens[b_v]
                     T.tile.compare(mask1_ub, kvpf_2x, T.float32(0), "GE")
-                    T.tile.compare(mask2_ub, kvpf_2x,
-                                   T.float32(cu_k_e_max), "LT")
+                    T.tile.compare(mask2_ub, kvpf_2x, T.float32(cu_k_e_max), "LT")
                     T.pipe_barrier("v")
                     T.tile.bitwise_and(mask1_ub, mask1_ub, mask2_ub)
 
-                    T.tile.select(logits_2x[0, :], mask1_ub,
-                                  logits_2x[0, :],
-                                  -T.infinity(accum_dtype),
-                                  "VSEL_TENSOR_SCALAR_MODE")
+                    T.tile.select(logits_2x[0, :], mask1_ub, logits_2x[0, :], -T.infinity(accum_dtype), "VSEL_TENSOR_SCALAR_MODE")
 
                     T.set_flag("V", "MTE3", SIG_LOGITS)
 
@@ -374,7 +378,8 @@ def ref_paged_block_sparse_mqa_attn(
 
     logits_out = torch.zeros(
         (batch, seq_len, topk, kv_block_size),
-        dtype=torch.float32, device=q.device,
+        dtype=torch.float32,
+        device=q.device,
     )
 
     for b in range(batch):
@@ -432,16 +437,13 @@ def test_paged_block_sparse_mqa_attn(
     kv_cache = torch.rand((num_phys_blocks, kv_block_size, 1, index_dim), dtype=torch.float16).to(device)
     weights = torch.rand((batch, seq_len, heads), dtype=torch.float16).to(device)
 
-    context_lens = torch.randint(kv_block_size, num_phys_blocks * kv_block_size + 1,
-                                 (batch,), dtype=torch.int32).to(device)
+    context_lens = torch.randint(kv_block_size, num_phys_blocks * kv_block_size + 1, (batch,), dtype=torch.int32).to(device)
 
-    block_tables = (torch.arange(max_blocks, dtype=torch.int32)
-                    .unsqueeze(0).expand(batch, -1).contiguous().to(device))
+    block_tables = torch.arange(max_blocks, dtype=torch.int32).unsqueeze(0).expand(batch, -1).contiguous().to(device)
 
     max_logical_block = (context_lens.max().item() + kv_block_size - 1) // kv_block_size
     max_logical_block = min(max_logical_block, max_blocks)
-    topk_block_indices = torch.randint(0, max_logical_block, (batch, seq_len, topk),
-                                       dtype=torch.int32).to(device)
+    topk_block_indices = torch.randint(0, max_logical_block, (batch, seq_len, topk), dtype=torch.int32).to(device)
 
     # Flatten batch×seq_len
     q_flat = q.reshape(total_tokens, heads, index_dim).contiguous()
@@ -460,8 +462,13 @@ def test_paged_block_sparse_mqa_attn(
     torch.npu.synchronize()
 
     ref_logits = ref_paged_block_sparse_mqa_attn(
-        q, kv_cache, topk_block_indices, kv_block_size,
-        weights, context_lens, block_tables,
+        q,
+        kv_cache,
+        topk_block_indices,
+        kv_block_size,
+        weights,
+        context_lens,
+        block_tables,
     )
     torch.npu.synchronize()
 
@@ -505,10 +512,13 @@ if __name__ == "__main__":
     print()
 
     test_paged_block_sparse_mqa_attn(
-        batch=args.batch, seq_len=args.seq_len,
+        batch=args.batch,
+        seq_len=args.seq_len,
         num_phys_blocks=args.num_phys_blocks,
-        heads=args.heads, index_dim=args.index_dim,
-        kv_block_size=args.kv_block_size, topk=args.topk,
+        heads=args.heads,
+        index_dim=args.index_dim,
+        kv_block_size=args.kv_block_size,
+        topk=args.topk,
         max_blocks=args.max_blocks,
     )
     print("All tests passed!")

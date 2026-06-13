@@ -63,19 +63,19 @@ def block_sparse_mqa_attn_return_logits(
 
     # ---------- Signal IDs ----------
     # C scope: MTE1↔MTE2
-    SIG_Q_L1 = 0       # Q L1 buffer (single)
-    SIG_K_L1_0 = 1     # K L1 buffer ping
-    SIG_K_L1_1 = 2     # K L1 buffer pong
+    SIG_Q_L1 = 0  # Q L1 buffer (single)
+    SIG_K_L1_0 = 1  # K L1 buffer ping
+    SIG_K_L1_1 = 2  # K L1 buffer pong
     # C scope: M↔MTE1
-    SIG_L0AB_0 = 0     # L0A/L0B ping
-    SIG_L0AB_1 = 1     # L0A/L0B pong
+    SIG_L0AB_0 = 0  # L0A/L0B ping
+    SIG_L0AB_1 = 1  # L0A/L0B pong
     # C scope: FIX↔M
-    SIG_L0C_0 = 0      # L0C ping
-    SIG_L0C_1 = 1      # L0C pong
+    SIG_L0C_0 = 0  # L0C ping
+    SIG_L0C_1 = 1  # L0C pong
     # V scope
-    SIG_S_UB = 0       # s_ub: V↔MTE2
-    SIG_W_UB = 1       # weights_ub: V↔MTE2
-    SIG_LOGITS = 0     # logits: V↔MTE3
+    SIG_S_UB = 0  # s_ub: V↔MTE2
+    SIG_W_UB = 1  # weights_ub: V↔MTE2
+    SIG_LOGITS = 0  # logits: V↔MTE3
     # Cross-scope (ping-pong flags for n_outer-level pipelining)
     CROSS_FLAG_C2V_0 = 0  # C→V for even n_outer
     CROSS_FLAG_C2V_1 = 1  # C→V for odd n_outer
@@ -145,14 +145,12 @@ def block_sparse_mqa_attn_return_logits(
                         t_a = pair_i * 2
                         token_a = bx * num_tokens_per_kernel + t_a
                         if token_a < seq_len:
-
                             # ---- Wave 0: DMA K[0] → k_l1_0 ----
                             T.wait_flag("MTE1", "MTE2", SIG_K_L1_0)
                             T.copy(
                                 IndexK[
-                                    TopKBlockIndex[token_a, n_i0]
-                                    * kv_block_size : TopKBlockIndex[token_a, n_i0]
-                                    * kv_block_size + kv_block_size,
+                                    TopKBlockIndex[token_a, n_i0] * kv_block_size : TopKBlockIndex[token_a, n_i0] * kv_block_size
+                                    + kv_block_size,
                                     :,
                                 ],
                                 k_l1_0,
@@ -163,9 +161,8 @@ def block_sparse_mqa_attn_return_logits(
                             T.wait_flag("MTE1", "MTE2", SIG_K_L1_1)
                             T.copy(
                                 IndexK[
-                                    TopKBlockIndex[token_a, n_i1]
-                                    * kv_block_size : TopKBlockIndex[token_a, n_i1]
-                                    * kv_block_size + kv_block_size,
+                                    TopKBlockIndex[token_a, n_i1] * kv_block_size : TopKBlockIndex[token_a, n_i1] * kv_block_size
+                                    + kv_block_size,
                                     :,
                                 ],
                                 k_l1_1,
@@ -188,9 +185,8 @@ def block_sparse_mqa_attn_return_logits(
                             T.wait_flag("MTE1", "MTE2", SIG_K_L1_0)
                             T.copy(
                                 IndexK[
-                                    TopKBlockIndex[token_a, n_i2]
-                                    * kv_block_size : TopKBlockIndex[token_a, n_i2]
-                                    * kv_block_size + kv_block_size,
+                                    TopKBlockIndex[token_a, n_i2] * kv_block_size : TopKBlockIndex[token_a, n_i2] * kv_block_size
+                                    + kv_block_size,
                                     :,
                                 ],
                                 k_l1_0,
@@ -213,9 +209,8 @@ def block_sparse_mqa_attn_return_logits(
                             T.wait_flag("MTE1", "MTE2", SIG_K_L1_1)
                             T.copy(
                                 IndexK[
-                                    TopKBlockIndex[token_a, n_i3]
-                                    * kv_block_size : TopKBlockIndex[token_a, n_i3]
-                                    * kv_block_size + kv_block_size,
+                                    TopKBlockIndex[token_a, n_i3] * kv_block_size : TopKBlockIndex[token_a, n_i3] * kv_block_size
+                                    + kv_block_size,
                                     :,
                                 ],
                                 k_l1_1,
@@ -285,9 +280,8 @@ def block_sparse_mqa_attn_return_logits(
                             T.wait_flag("MTE1", "MTE2", SIG_K_L1_0)
                             T.copy(
                                 IndexK[
-                                    TopKBlockIndex[token_b, n_i0]
-                                    * kv_block_size : TopKBlockIndex[token_b, n_i0]
-                                    * kv_block_size + kv_block_size,
+                                    TopKBlockIndex[token_b, n_i0] * kv_block_size : TopKBlockIndex[token_b, n_i0] * kv_block_size
+                                    + kv_block_size,
                                     :,
                                 ],
                                 k_l1_0,
@@ -298,9 +292,8 @@ def block_sparse_mqa_attn_return_logits(
                             T.wait_flag("MTE1", "MTE2", SIG_K_L1_1)
                             T.copy(
                                 IndexK[
-                                    TopKBlockIndex[token_b, n_i1]
-                                    * kv_block_size : TopKBlockIndex[token_b, n_i1]
-                                    * kv_block_size + kv_block_size,
+                                    TopKBlockIndex[token_b, n_i1] * kv_block_size : TopKBlockIndex[token_b, n_i1] * kv_block_size
+                                    + kv_block_size,
                                     :,
                                 ],
                                 k_l1_1,
@@ -323,9 +316,8 @@ def block_sparse_mqa_attn_return_logits(
                             T.wait_flag("MTE1", "MTE2", SIG_K_L1_0)
                             T.copy(
                                 IndexK[
-                                    TopKBlockIndex[token_b, n_i2]
-                                    * kv_block_size : TopKBlockIndex[token_b, n_i2]
-                                    * kv_block_size + kv_block_size,
+                                    TopKBlockIndex[token_b, n_i2] * kv_block_size : TopKBlockIndex[token_b, n_i2] * kv_block_size
+                                    + kv_block_size,
                                     :,
                                 ],
                                 k_l1_0,
@@ -348,9 +340,8 @@ def block_sparse_mqa_attn_return_logits(
                             T.wait_flag("MTE1", "MTE2", SIG_K_L1_1)
                             T.copy(
                                 IndexK[
-                                    TopKBlockIndex[token_b, n_i3]
-                                    * kv_block_size : TopKBlockIndex[token_b, n_i3]
-                                    * kv_block_size + kv_block_size,
+                                    TopKBlockIndex[token_b, n_i3] * kv_block_size : TopKBlockIndex[token_b, n_i3] * kv_block_size
+                                    + kv_block_size,
                                     :,
                                 ],
                                 k_l1_1,
@@ -493,14 +484,10 @@ def block_sparse_mqa_attn_return_logits(
                             n_i_3 = n_i_base + 3
 
                             # (1) create position vectors (4 different block_start)
-                            T.tile.createvecindex(
-                                kvpi_a, TopKBlockIndex[token_idx, n_i_0] * kv)
-                            T.tile.createvecindex(
-                                kvpi_b, TopKBlockIndex[token_idx, n_i_1] * kv)
-                            T.tile.createvecindex(
-                                kvpi_c, TopKBlockIndex[token_idx, n_i_2] * kv)
-                            T.tile.createvecindex(
-                                kvpi_d, TopKBlockIndex[token_idx, n_i_3] * kv)
+                            T.tile.createvecindex(kvpi_a, TopKBlockIndex[token_idx, n_i_0] * kv)
+                            T.tile.createvecindex(kvpi_b, TopKBlockIndex[token_idx, n_i_1] * kv)
+                            T.tile.createvecindex(kvpi_c, TopKBlockIndex[token_idx, n_i_2] * kv)
+                            T.tile.createvecindex(kvpi_d, TopKBlockIndex[token_idx, n_i_3] * kv)
                             # (2) copy int32→float32, concatenate into [4*kv]
                             T.copy(kvpi_a, kvpf_4x[0 * kv : 1 * kv])
                             T.copy(kvpi_b, kvpf_4x[1 * kv : 2 * kv])
@@ -511,18 +498,13 @@ def block_sparse_mqa_attn_return_logits(
                             # (3) compare: GE cu_seqlen_ks, LT cu_seqlen_ke
                             cu_k_s_min = CuSeqLenKS[token_idx]
                             cu_k_e_max = CuSeqLenKE[token_idx]
-                            T.tile.compare(mask1_ub, kvpf_4x,
-                                           T.float32(cu_k_s_min), "GE")
-                            T.tile.compare(mask2_ub, kvpf_4x,
-                                           T.float32(cu_k_e_max), "LT")
+                            T.tile.compare(mask1_ub, kvpf_4x, T.float32(cu_k_s_min), "GE")
+                            T.tile.compare(mask2_ub, kvpf_4x, T.float32(cu_k_e_max), "LT")
                             T.pipe_barrier("v")
                             T.tile.bitwise_and(mask1_ub, mask1_ub, mask2_ub)
 
                             # (4) select: mask out-of-range → -inf
-                            T.tile.select(logits_4x[0, :], mask1_ub,
-                                          logits_4x[0, :],
-                                          -T.infinity(accum_dtype),
-                                          "VSEL_TENSOR_SCALAR_MODE")
+                            T.tile.select(logits_4x[0, :], mask1_ub, logits_4x[0, :], -T.infinity(accum_dtype), "VSEL_TENSOR_SCALAR_MODE")
 
                             T.set_flag("V", "MTE3", SIG_LOGITS)
 
@@ -623,7 +605,7 @@ def test_block_sparse_mqa_attn(
     weights = torch.rand((seq_len, heads), dtype=torch.float16)
 
     cu_seqlen_ks = torch.zeros(seq_len, dtype=torch.int32)
-    cu_seqlen_ke = (torch.arange(1, seq_len + 1, dtype=torch.int32) * (seq_len_kv // seq_len))
+    cu_seqlen_ke = torch.arange(1, seq_len + 1, dtype=torch.int32) * (seq_len_kv // seq_len)
     cu_seqlen_ke = cu_seqlen_ke.clamp(max=seq_len_kv)
 
     max_block_id = seq_len_kv // kv_block_size
@@ -683,7 +665,7 @@ if __name__ == "__main__":
     print("=" * 60)
     print("Block Sparse MQA Attention Kernel Test")
     print("=" * 60)
-    print(f"Configuration:")
+    print("Configuration:")
     print(f"  seq_len: {args.seq_len}")
     print(f"  seq_len_kv: {args.seq_len_kv}")
     print(f"  heads: {args.heads}")

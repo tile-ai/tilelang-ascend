@@ -2115,26 +2115,18 @@ def row_expand_mul(
         elif s1 == 1:
             src1_len = s0  # [R, 1]
         else:
-            raise ValueError(
-                f"src1 must be 1D [R], [1, R], or [R, 1]; got {src1_full_shape}"
-            )
+            raise ValueError(f"src1 must be 1D [R], [1, R], or [R, 1]; got {src1_full_shape}")
     else:
-        raise ValueError(
-            f"src1 must be 1D or 2D, got shape {src1_full_shape}"
-        )
+        raise ValueError(f"src1 must be 1D or 2D, got shape {src1_full_shape}")
 
     if len(dst_shape) != 2 or len(src0_shape) != 2:
         raise ValueError("row_expand_mul requires 2D buffers for dst and src0.")
 
     if dst_shape != src0_shape:
-        raise ValueError(
-            f"dst and src0 shapes must match: dst={dst_shape}, src0={src0_shape}"
-        )
+        raise ValueError(f"dst and src0 shapes must match: dst={dst_shape}, src0={src0_shape}")
 
     if src1_len != dst_shape[0]:
-        raise ValueError(
-            f"src1 scalar count must match dst rows: src1={src1_len}, dst[0]={dst_shape[0]}"
-        )
+        raise ValueError(f"src1 scalar count must match dst rows: src1={src1_len}, dst[0]={dst_shape[0]}")
 
     dtype = _dtype(src0)
     args = [
