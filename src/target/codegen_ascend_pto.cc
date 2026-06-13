@@ -94,6 +94,10 @@ static std::string getType(const DataType &dtype) {
     return "float";
   if (dtype.is_bfloat16())
     return "bfloat16_t";
+  if (dtype.is_float8_e4m3fn())
+    return "float8_e4m3_t";
+  if (dtype.is_float8_e5m2())
+    return "float8_e5m2_t";
 
   if (dtype.is_int()) {
     switch (dtype.bits()) {
@@ -154,7 +158,8 @@ int32_t GetTypeLen(std::string type) {
     typeSize = 2;
   } else if (type == "half") {
     typeSize = 2;
-  } else if (type == "int8_t" || type == "uint8_t") {
+  } else if (type == "int8_t" || type == "uint8_t" || type == "float8_e4m3_t" ||
+             type == "float8_e5m2_t") {
     typeSize = 1;
   } else if (type == "int16_t" || type == "uint16_t") {
     typeSize = 2;
@@ -471,9 +476,20 @@ void CodeGenTileLangAscendPto::PrintType(DataType t,
     if (!fail)
       return;
   } else if (t.is_float8()) {
-    // enable_fp8_ = true;
-    // os << GetFP8Type(t);
-    return;
+    enable_fp8_ = true;
+    if (t.is_scalar()) {
+      if (t.is_float8_e4m3fn()) {
+        os << "float8_e4m3_t";
+      } else if (t.is_float8_e5m2()) {
+        os << "float8_e5m2_t";
+      } else {
+        fail = true;
+      }
+    } else {
+      fail = true;
+    }
+    if (!fail)
+      return;
   } else if (t == DataType::Bool()) {
     os << "bool";
     return;
