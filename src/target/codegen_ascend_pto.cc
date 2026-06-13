@@ -872,6 +872,10 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op,
     TshCodegen(op, "TSHLS");
   } else if (op->op.same_as(tl::ascend_bitwise_rshift())) {
     TshCodegen(op, "TSHRS");
+  } else if (op->op.same_as(tl::ascend_arith_progression())) {
+    ArithProgressionCodegen(op, "TCI");
+  } else if (op->op.same_as(tl::ascend_row_expand_mul())) {
+    RowExpandMulCodegen(op);
 
     // --- broadcast / select ---
   } else if (op->op.same_as(tl::ascend_broadcast())) {
@@ -1079,10 +1083,9 @@ void CodeGenTileLangAscendPto::GMCopyCall(const CallNode *call,
   const auto &local_info = is_load ? dst_info : src_info;
 
   ShapeInfo slice_info = GetSliceInfo(local_info.access_ptr);
-  int32_t shape4 =
-      slice_info.is_slice ? slice_info.slice_valid_row : slice_info.row;
-  int32_t shape5 =
-      slice_info.is_slice ? slice_info.slice_valid_col : slice_info.col;
+  // Use buffer's full shape for GM tensor bounds (>= valid dims)
+  int32_t shape4 = slice_info.row;
+  int32_t shape5 = slice_info.col;
   std::string shape_tmpl =
       "1, 1, 1, " + std::to_string(shape4) + ", " + std::to_string(shape5);
 
@@ -1098,13 +1101,23 @@ void CodeGenTileLangAscendPto::GMCopyCall(const CallNode *call,
   stream << kAscendPtoScope << op_name << "<" << getType(gm_info.dtype) << ", "
          << getType(local_info.dtype) << ", " << shape_tmpl << ", "
          << stride_tmpl << ", ";
+  // Use buffer's full shape (row/col) for UB tile to ensure correct
+  // physical stride. The valid dims (call->args[4/5]) control how much
+  // data is actually transferred. Fixes column-slice DMA stride mismatch.
+  // For sliced accesses, disable padding: TFILLPAD_INPLACE would write
+  // zeros to the full tile's non-valid region (cols beyond the slice),
+  // corrupting adjacent column data or crossing buffer boundaries.
   if (op_name.rfind("copy_gm_to_ub", 0) == 0) {
-    stream << slice_info.slice_row << ", " << slice_info.slice_col << ", ";
-    stream << GetPadEnum(call->args[6]);
+    stream << slice_info.row << ", " << slice_info.col << ", ";
+    if (slice_info.is_slice) {
+      stream << "pto::PadValue::Null";
+    } else {
+      stream << GetPadEnum(call->args[6]);
+    }
   } else if (op_name.rfind("copy_ub_to_gm", 0) == 0 ||
              op_name.find("atomic_add_ub_to_gm") != std::string::npos) {
-    // copy_ub_to_gm and atomic_add_ub_to_gm use slice_row, slice_col
-    stream << slice_info.slice_row << ", " << slice_info.slice_col;
+    // copy_ub_to_gm and atomic_add_ub_to_gm use full buffer row, col
+    stream << slice_info.row << ", " << slice_info.col;
   } else {
     // copy_l0c_to_gm / copy_gm_to_l1 / atomic_add_l0c_to_gm use valid size
     stream << slice_info.slice_valid_row << ", " << slice_info.slice_valid_col;
@@ -1217,13 +1230,14 @@ void CodeGenTileLangAscendPto::CopyL1ToL0Codegen(const CallNode *call,
     std::string src_temp_name = GetTempVarName(src_shape_info.ub_name + "_zn");
     this->PrintIndent();
     this->stream << kAscendPtoScope << "TileMatL1ZN<" << dst_shape_info.type
-                 << ", " << tile_col << ", " << src_shape_info.row << ", "
-                 << tile_col << ", " << src_shape_info.row << "> "
-                 << src_temp_name << ";\n";
+                 << ", " << tile_col << ", " << tile_row << ", " << tile_col
+                 << ", " << tile_row << "> " << src_temp_name << ";\n";
+    PrimExpr tile_base_offset = outer_tile_idx * tile_size;
     this->PrintIndent();
     this->stream << "TASSIGN(" << src_temp_name << ", "
-                 << src_shape_info.first_addr << " + " << src_shape_info.offset
-                 << " * " << GetTypeLen(dst_shape_info.type) << ");\n";
+                 << src_shape_info.first_addr << " + "
+                 << PrintExpr(tile_base_offset) << " * "
+                 << GetTypeLen(dst_shape_info.type) << ");\n";
     src_name = src_temp_name;
   }
 
@@ -2107,6 +2121,85 @@ void CodeGenTileLangAscendPto::CodegenColBroadcast(const ShapeInfo &dst,
 
   this->PrintIndent();
   this->stream << "TCOLEXPAND" << "(" << dst_name << ", " << src_name << ");\n";
+}
+
+void CodeGenTileLangAscendPto::RowExpandMulCodegen(const CallNode *op) {
+  ShapeInfo dst = GetSliceInfo(op->args[1].as<CallNode>());
+  ShapeInfo src0 = GetSliceInfo(op->args[2].as<CallNode>());
+  ShapeInfo src1 = GetSliceInfo(op->args[3].as<CallNode>());
+
+  bool has_tmp = (op->args.size() >= 5);
+  ShapeInfo tmp;
+  if (has_tmp) {
+    tmp = GetSliceInfo(op->args[4].as<CallNode>());
+  }
+
+  // Fix ND→2D flattening for 3D+ buffers.
+  // GetSliceInfo only handles up to 2D shapes; for 3D+ buffers it drops
+  // trailing dimensions, swapping rows/cols.  Re-derive the correct 2D
+  // dimensions from the access extent and the innermost buffer dimension.
+  auto fix_nd_2d = [&](ShapeInfo &info, const CallNode *access_ptr) {
+    if (!info.is_slice)
+      return;
+    Var buf_var = Downcast<Var>(access_ptr->args[1]);
+    auto shape = buffer_shapess_.at(buf_var);
+    if (shape.size() >= 3) {
+      int32_t last_dim = shape.back().as<IntImmNode>()->value;
+      info.slice_col = GetValidShape(last_dim, info.type);
+      info.slice_row = info.extent / last_dim;
+      info.slice_valid_col = last_dim;
+      info.slice_valid_row = info.slice_row;
+    }
+  };
+  fix_nd_2d(dst, op->args[1].as<CallNode>());
+  fix_nd_2d(src0, op->args[2].as<CallNode>());
+
+  // src1: for a sliced 1D row-vector from a 2D+ buffer, pick the last
+  // dimension size as the vector length.
+  auto fix_src1_nd = [&](ShapeInfo &info, const CallNode *access_ptr) {
+    if (!info.is_slice)
+      return;
+    Var buf_var = Downcast<Var>(access_ptr->args[1]);
+    auto shape = buffer_shapess_.at(buf_var);
+    if (shape.size() >= 3) {
+      info.slice_valid_col = shape.back().as<IntImmNode>()->value;
+    }
+  };
+  fix_src1_nd(src1, op->args[3].as<CallNode>());
+
+  // Handle ND slices; src1 stays ND — the helper in common.h creates the DN
+  // column-vector tile in-place.
+  std::string src1_name = src1.ub_name;
+  if (src1.is_slice) {
+    src1_name = GetTempVarName(src1.ub_name);
+    CreateUbVariableND(src1_name, src1);
+  }
+
+  std::string dst_name = dst.ub_name;
+  if (dst.is_slice) {
+    dst_name = GetTempVarName(dst.ub_name);
+    CreateUbVariableND(dst_name, dst);
+  }
+
+  std::string src0_name = src0.ub_name;
+  if (src0.is_slice) {
+    src0_name = GetTempVarName(src0.ub_name);
+    CreateUbVariableND(src0_name, src0);
+  }
+
+  int32_t src1_len = src1.is_slice ? src1.slice_valid_col : src1.col;
+  int32_t dst_rows = dst.is_slice ? dst.slice_valid_row : dst.row;
+  int32_t dst_cols = dst.is_slice ? dst.slice_valid_col : dst.col;
+
+  this->PrintIndent();
+  this->stream << kAscendPtoScope << "TROWEXPANDMUL_row_vec<" << src1.type
+               << ", " << dst_rows << ", " << dst_cols << ", " << src1_len
+               << ">(" << dst_name << ", " << src0_name << ", " << src1_name
+               << ", " << PrintExpr(src1.first_addr) << ", " << src1.offset;
+  if (has_tmp) {
+    this->stream << ", " << tmp.ub_name;
+  }
+  this->stream << ");\n";
 }
 
 void CodeGenTileLangAscendPto::BroadcastOpCodegen(const CallNode *op) {
