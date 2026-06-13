@@ -1083,10 +1083,9 @@ void CodeGenTileLangAscendPto::GMCopyCall(const CallNode *call,
   const auto &local_info = is_load ? dst_info : src_info;
 
   ShapeInfo slice_info = GetSliceInfo(local_info.access_ptr);
-  int32_t shape4 =
-      slice_info.is_slice ? slice_info.slice_valid_row : slice_info.row;
-  int32_t shape5 =
-      slice_info.is_slice ? slice_info.slice_valid_col : slice_info.col;
+  // Use buffer's full shape for GM tensor bounds (>= valid dims)
+  int32_t shape4 = slice_info.row;
+  int32_t shape5 = slice_info.col;
   std::string shape_tmpl =
       "1, 1, 1, " + std::to_string(shape4) + ", " + std::to_string(shape5);
 
@@ -1102,13 +1101,23 @@ void CodeGenTileLangAscendPto::GMCopyCall(const CallNode *call,
   stream << kAscendPtoScope << op_name << "<" << getType(gm_info.dtype) << ", "
          << getType(local_info.dtype) << ", " << shape_tmpl << ", "
          << stride_tmpl << ", ";
+  // Use buffer's full shape (row/col) for UB tile to ensure correct
+  // physical stride. The valid dims (call->args[4/5]) control how much
+  // data is actually transferred. Fixes column-slice DMA stride mismatch.
+  // For sliced accesses, disable padding: TFILLPAD_INPLACE would write
+  // zeros to the full tile's non-valid region (cols beyond the slice),
+  // corrupting adjacent column data or crossing buffer boundaries.
   if (op_name.rfind("copy_gm_to_ub", 0) == 0) {
-    stream << slice_info.slice_row << ", " << slice_info.slice_col << ", ";
-    stream << GetPadEnum(call->args[6]);
+    stream << slice_info.row << ", " << slice_info.col << ", ";
+    if (slice_info.is_slice) {
+      stream << "pto::PadValue::Null";
+    } else {
+      stream << GetPadEnum(call->args[6]);
+    }
   } else if (op_name.rfind("copy_ub_to_gm", 0) == 0 ||
              op_name.find("atomic_add_ub_to_gm") != std::string::npos) {
-    // copy_ub_to_gm and atomic_add_ub_to_gm use slice_row, slice_col
-    stream << slice_info.slice_row << ", " << slice_info.slice_col;
+    // copy_ub_to_gm and atomic_add_ub_to_gm use full buffer row, col
+    stream << slice_info.row << ", " << slice_info.col;
   } else {
     // copy_l0c_to_gm / copy_gm_to_l1 / atomic_add_l0c_to_gm use valid size
     stream << slice_info.slice_valid_row << ", " << slice_info.slice_valid_col;
@@ -1221,13 +1230,16 @@ void CodeGenTileLangAscendPto::CopyL1ToL0Codegen(const CallNode *call,
     std::string src_temp_name = GetTempVarName(src_shape_info.ub_name + "_zn");
     this->PrintIndent();
     this->stream << kAscendPtoScope << "TileMatL1ZN<" << dst_shape_info.type
-                 << ", " << tile_col << ", " << src_shape_info.row << ", "
-                 << tile_col << ", " << src_shape_info.row << "> "
-                 << src_temp_name << ";\n";
+                 << ", " << tile_col
+                 << ", " << tile_row << ", "
+                 << tile_col << ", " << tile_row
+                 << "> " << src_temp_name << ";\n";
+    PrimExpr tile_base_offset = outer_tile_idx * tile_size;
     this->PrintIndent();
     this->stream << "TASSIGN(" << src_temp_name << ", "
-                 << src_shape_info.first_addr << " + " << src_shape_info.offset
-                 << " * " << GetTypeLen(dst_shape_info.type) << ");\n";
+                 << src_shape_info.first_addr << " + "
+                 << PrintExpr(tile_base_offset) << " * "
+                 << GetTypeLen(dst_shape_info.type) << ");\n";
     src_name = src_temp_name;
   }
 
