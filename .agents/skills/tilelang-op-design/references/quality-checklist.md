@@ -9,7 +9,7 @@
 | 3 | **内存搬运路径完整**：从 GM 到计算再到 GM 的每一步都有说明 | ✅ 必须 |
 | 4 | **Tiling 策略有约束分析**：解释了为什么选择该 Block/Tile 大小 | ⭕ 推荐 |
 | 5 | **同步策略与编程模式匹配**：Developer 用自动同步、Expert 标明手动同步点 | ⭕ 推荐 |
-| 6 | **验证方案覆盖 4 类典型配置**：完美对齐 + 单维 padding + 全维 padding + 多 block（GEMM 类必含），不是「待补充」 | ⭕ 推荐 |
+| 6 | **验证方案含 Golden + L0 门槛测试计划**：Golden 参考实现完整，且给出 L0 规则 shape 用例（block 整除）；完整分层套件（L1/L2/Boundary）交由 `tilelang-op-test-design`，不在此枚举，也不写「待补充」 | ⭕ 推荐 |
 | 7 | **无占位符或模糊描述**：无 `{placeholder}`、TODO、「待补充」（已确认的除外） | ✅ 必须 |
 | 8 | **技术约束已确认**：三维 Kernel、threads、动态边界等问题已处理 | ✅ 必须 |
 | 9 | **含 GEMM 场景**：Tiling 策略满足 NPU 分形限制（block_M ≥ 16, block_N ≥ 16） | ✅ 必须 |
