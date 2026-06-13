@@ -208,14 +208,13 @@ private:
     // Note: Skip same-pipeline dependencies (S→S) because scalar pipeline
     // is in-order and doesn't need explicit sync
     std::vector<SyncRequirement> sync_requirements;
-    for (const auto &read_access : value_accesses) {
-      BufferAccess current_read = read_access;
-      current_read.pipeline = "PIPE_S"; // BufferStore reads are on S pipeline
-      current_read.is_write = false;
-      current_read.operation = "buffer_load";
+    for (auto &read_access : value_accesses) {
+      read_access.pipeline = "PIPE_S";
+      read_access.is_write = false;
+      read_access.operation = "buffer_load";
 
       std::vector<std::string> related_buffers =
-          FindRelatedBuffers(current_read.buffer_name);
+          FindRelatedBuffers(read_access.buffer_name);
       for (const auto &buffer_name : related_buffers) {
         auto it = current_access_history_.find(buffer_name);
         if (it != current_access_history_.end()) {
@@ -224,10 +223,10 @@ private:
           if (latest_access.pipeline == "PIPE_S") {
             continue;
           }
-          if (HasDataDependency(latest_access, current_read)) {
+          if (HasDataDependency(latest_access, read_access)) {
             // Check if the sync has already been inserted
             std::string required_sync_type =
-                GetRequiredSyncType(latest_access, current_read);
+                GetRequiredSyncType(latest_access, read_access);
             if (!required_sync_type.empty()) {
               // Check if this sync type is already in the sync graph
               bool already_synced = false;
@@ -248,7 +247,7 @@ private:
 
               if (!already_synced) {
                 sync_requirements.push_back(
-                    {required_sync_type, current_read.buffer_name});
+                    {required_sync_type, read_access.buffer_name});
               }
             }
           }
