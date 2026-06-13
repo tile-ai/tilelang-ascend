@@ -1,8 +1,8 @@
 """
 Paged Block Sparse MQA Attention Kernel — Decode, Flat Grid
 
-每个 kernel block 处理: 1 token × 1 n_outer group (4 K blocks)。
-Grid: batch * topk_groups (1D) — bx // topk_groups → token, bx % topk_groups → n_outer。
+Each kernel block processes: 1 token × 1 n_outer group (4 K blocks).
+Grid: batch * topk_groups (1D) — bx // topk_groups → token, bx % topk_groups → n_outer.
 """
 
 import tilelang
@@ -14,12 +14,6 @@ tilelang.disable_cache()
 
 
 @tilelang.jit(
-    pass_configs={
-        tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: False,
-        tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: False,
-        tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: False,
-        tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_SYNC: False,
-    },
     out_idx=[3],
     workspace_idx=[-1],
     target="pto",
@@ -33,8 +27,8 @@ def paged_block_sparse_mqa_attn_return_logits(
     heads: int,
     index_dim: int,
     max_blocks: int,
-    num_stages: int = 2,
-    threads: int = 2,
+    num_stages: int = 2,  # noqa: ARG001
+    threads: int = 2,  # noqa: ARG001
 ):
     dtype = "float16"
     accum_dtype = "float32"

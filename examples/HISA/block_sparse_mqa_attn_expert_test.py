@@ -1,12 +1,10 @@
 """
-该脚本用于在expert模式下直接开始修改
 Block Sparse MQA Attention Kernel (Expert Mode)
 
 Manual CV scope, manual sync, explicit L0A/L0B/MMA.
-Four auto passes disabled: no auto CV combine, no auto sync,
-no memory planning, no auto CV sync.
+Pure expert mode: all auto passes disabled.
 
-Follows flash_attn_bhsd_expert_h16_d128.py flag conventions:
+Flag conventions:
   - MTE1↔MTE2 for L1 buffer management
   - M↔MTE1 for L0A/L0B management
   - M↔FIX for L0C management
@@ -23,12 +21,6 @@ tilelang.disable_cache()
 
 
 @tilelang.jit(
-    pass_configs={
-        tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: False,
-        tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: False,
-        tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: False,
-        tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_SYNC: False,
-    },
     out_idx=[3],
     workspace_idx=[-1],
     target="pto",
@@ -41,8 +33,8 @@ def block_sparse_mqa_attn_return_logits(
     heads: int,
     index_dim: int,
     block_N: int = 8,
-    num_stages: int = 2,
-    threads: int = 2,
+    num_stages: int = 2,  # noqa: ARG001
+    threads: int = 2,  # noqa: ARG001
     num_pairs: int = 20,
 ):
     dtype = "float16"
