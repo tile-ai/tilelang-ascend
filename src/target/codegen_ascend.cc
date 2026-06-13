@@ -563,6 +563,8 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
     PrintOpCall(op, "AscendC::Xor", {0, op->args.size() - 1}, {0, 0});
   } else if (op->op.same_as(tl::ascend_broadcast())) {
     BroadcastOpCodegen(op);
+  } else if (op->op.same_as(tl::ascend_row_expand_mul())) {
+    RowExpandMulCodegen(op);
   } else if (op->op.same_as(tl::ascend_wait_cross_flag())) {
     PrintOpCall(op, "AscendC::CrossCoreWaitFlag", {0, 0}, {0, 1});
   } else if (op->op.same_as(tl::ascend_set_cross_flag())) {
@@ -2024,6 +2026,10 @@ void CodeGenTileLangAscend::SetDeqScaleCodegen(const CallNode *op,
 void CodeGenTileLangAscend::PowerOpCodegen(const CallNode *op,
                                            const std::string &op_name) {
   PrintOpCall(op, op_name, {0, op->args.size()}, {0, 0});
+}
+
+void CodeGenTileLangAscend::RowExpandMulCodegen(const CallNode *op) {
+  LOG(FATAL) << "TROWEXPANDMUL is only supported in the PTO codegen path.";
 }
 
 void CodeGenTileLangAscend::BroadcastOpCodegen(const CallNode *op) {

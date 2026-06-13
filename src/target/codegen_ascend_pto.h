@@ -194,6 +194,8 @@ private:
 
   void BroadcastOpCodegen(const CallNode *op);
 
+  void RowExpandMulCodegen(const CallNode *op);
+
   void SelectCodegen(const CallNode *op);
 
   void SetDeqScaleCodegen(const CallNode *op);

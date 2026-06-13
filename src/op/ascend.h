@@ -168,6 +168,8 @@ TVM_DLL const Op &ascend_bitwise_xor();
 
 TVM_DLL const Op &ascend_broadcast();
 
+TVM_DLL const Op &ascend_row_expand_mul();
+
 TVM_DLL const Op &ascend_reinterpretcast();
 
 TVM_DLL const Op &ascend_wait_cross_flag();
