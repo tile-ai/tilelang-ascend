@@ -679,4 +679,4 @@ if __name__ == "__main__":
         num_pairs=args.num_pairs,
         dtype=args.dtype,
     )
-    print("All tests passed!")
+    print("Kernel Output Match!")

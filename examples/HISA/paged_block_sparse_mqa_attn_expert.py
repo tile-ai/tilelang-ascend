@@ -45,10 +45,6 @@ def paged_block_sparse_mqa_attn_return_logits(
     topk_index_shape = [total_tokens, topk]
     logits_shape = [total_tokens, topk, kv_block_size]
     weights_shape = [total_tokens, heads]
-    index_q_shape = [total_tokens, heads, index_dim]
-    topk_index_shape = [total_tokens, topk]
-    logits_shape = [total_tokens, topk, kv_block_size]
-    weights_shape = [total_tokens, heads]
 
     kv_cache_shape = [num_phys_blocks, kv_block_size, 1, index_dim]
     block_tables_shape = [batch, max_blocks]
@@ -515,4 +511,4 @@ if __name__ == "__main__":
         topk=args.topk,
         max_blocks=args.max_blocks,
     )
-    print("All tests passed!")
+    print("Kernel Output Match!")
