@@ -59,13 +59,13 @@ Toolbar buttons:
 from __future__ import annotations
 import os
 import difflib
-from dataclasses import dataclass, field
-from typing import List
+from dataclasses import dataclass
 
 
 @dataclass
 class PassRecord:
     """Result of running a single pass."""
+
     phase: str
     name: str
     index: int
@@ -79,7 +79,7 @@ class PassRecord:
 # ---------------------------------------------------------------------------
 # Global state: records collected during compilation
 # ---------------------------------------------------------------------------
-_records: List[PassRecord] = []
+_records: list[PassRecord] = []
 
 
 # ---------------------------------------------------------------------------
@@ -123,6 +123,7 @@ def _ensure_dump_dir() -> str:
     else:
         from datetime import datetime
         import sys
+
         script_name = os.path.splitext(os.path.basename(sys.argv[0]))[0] or "kernel"
         timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
         _dump_dir = os.path.join(".", "tmp", "ir_dump", f"{script_name}_{timestamp}")
@@ -295,11 +296,17 @@ def debug_OptimizeForTarget(mod, target, platform):
     mod = run_pass(tir.transform.Simplify(), mod, "Simplify", phase, 10)
     mod = run_pass(
         tilelang.transform.VectorizeLoop(enable_vectorize=allow_vectorize(pass_ctx=pass_ctx)),
-        mod, "VectorizeLoop", phase, 11,
+        mod,
+        "VectorizeLoop",
+        phase,
+        11,
     )
     mod = run_pass(
         tilelang.transform.AscendStorageRewrite(is_npu=check_npu_availability()),
-        mod, "AscendStorageRewrite", phase, 12,
+        mod,
+        "AscendStorageRewrite",
+        phase,
+        12,
     )
     mod = run_pass(tir.transform.UnrollLoop(), mod, "UnrollLoop", phase, 13)
     mod = run_pass(tir.transform.RenormalizeSplitPattern(), mod, "RenormalizeSplitPattern", phase, 14)
@@ -1284,7 +1291,6 @@ def _merge_whitespace_diffs(opcodes: list, before_lines: list, after_lines: list
             pairs = []
 
             for di, d_idx in enumerate(del_lines):
-                d_stripped = before_lines[d_idx].strip()
                 for ii, i_idx in enumerate(ins_lines):
                     if ii in matched_ins:
                         continue
@@ -1334,7 +1340,6 @@ def _merge_whitespace_diffs(opcodes: list, before_lines: list, after_lines: list
             pairs = []
 
             for ii, i_idx in enumerate(ins_lines):
-                i_stripped = after_lines[i_idx].strip()
                 for di, d_idx in enumerate(del_lines):
                     if di in matched_del:
                         continue
@@ -1438,7 +1443,6 @@ def _make_diff_html(before_text: str, after_text: str, context: int = 3) -> str:
             used_right = set()
 
             for li in left_indices:
-                left_stripped = before_lines[li].strip()
                 for ri in right_indices:
                     if ri in used_right:
                         continue
@@ -1566,31 +1570,34 @@ def _make_diff_html(before_text: str, after_text: str, context: int = 3) -> str:
     # One "↑↓ Expand" button after each run, expanding hidden rows in both directions.
     # Insertions are applied from bottom to top so indices stay valid.
     insertions = []
-    for ri, (r1, r2) in enumerate(run_list):
-        insertions.append((r2, (
-            f'<tr class="btn-row">'
-            f'<td colspan="6" data-run="{ri}" '
-            f'onclick="expand(this,20,event)">'
-            f'<span class="exp-arrow">↑↓</span>'
-            f'<span class="exp-label">Expand</span>'
-            f'</td></tr>'
-        )))
+    for ri, (_r1, r2) in enumerate(run_list):
+        insertions.append(
+            (
+                r2,
+                (
+                    f'<tr class="btn-row">'
+                    f'<td colspan="6" data-run="{ri}" '
+                    f'onclick="expand(this,20,event)">'
+                    f'<span class="exp-arrow">↑↓</span>'
+                    f'<span class="exp-label">Expand</span>'
+                    f"</td></tr>"
+                ),
+            )
+        )
 
     for pos, html in sorted(insertions, key=lambda x: x[0], reverse=True):
         rows.insert(pos, html)
 
     return (
         '<div class="diff-table-wrap">'
-        '<table><colgroup>'
+        "<table><colgroup>"
         '<col style="width:50px"><col style="width:20px"><col>'
         '<col style="width:50px"><col style="width:20px"><col>'
-        '</colgroup>'
-        + "\n".join(rows)
-        + "</table></div>"
+        "</colgroup>" + "\n".join(rows) + "</table></div>"
     )
 
 
-def generate_html(records: List[PassRecord], output_path: str):
+def generate_html(records: list[PassRecord], output_path: str):
     """Generate a self-contained HTML file with pass trace visualization.
 
     Args:
@@ -1613,7 +1620,7 @@ def generate_html(records: List[PassRecord], output_path: str):
     for pi, (phase_name, phase_records) in enumerate(phases.items()):
         is_active = pi == 0
         active_cls = " active" if is_active else ""
-        active_style = "" if is_active else " style=\"display:none\""
+        active_style = "" if is_active else ' style="display:none"'
 
         pretty_phase = phase_name.replace("_", " ").replace("phase1", "Phase 1:").replace("phase2", "Phase 2:")
 
@@ -1622,10 +1629,7 @@ def generate_html(records: List[PassRecord], output_path: str):
         n_noop = n_total - n_changed
 
         # Tab
-        phase_tabs_html.append(
-            f'<div class="phase-tab{active_cls}" '
-            f'onclick="showPhase(this, \'{phase_name}\')">{pretty_phase}</div>'
-        )
+        phase_tabs_html.append(f'<div class="phase-tab{active_cls}" onclick="showPhase(this, \'{phase_name}\')">{pretty_phase}</div>')
 
         # Summary bar
         summaries_html.append(
@@ -1633,7 +1637,7 @@ def generate_html(records: List[PassRecord], output_path: str):
             f'<span class="badge badge-total">{n_total} passes</span>'
             f'<span class="badge badge-changed">{n_changed} changed</span>'
             f'<span class="badge badge-noop">{n_noop} no-op</span>'
-            f'</div>'
+            f"</div>"
         )
 
         # Sidebar
@@ -1647,23 +1651,21 @@ def generate_html(records: List[PassRecord], output_path: str):
                     f'<span class="pass-stats">'
                     f'<span class="st-add">+{rec.add_lines}</span> '
                     f'<span class="st-del">−{rec.del_lines}</span>'
-                    f'</span>'
+                    f"</span>"
                 )
             links.append(
                 f'<a class="pass-link" data-phase="{rec.phase}" data-target="{sid}" '
-                f'onclick="showPass(this, \'{sid}\')">'
+                f"onclick=\"showPass(this, '{sid}')\">"
                 f'<span class="pass-idx">{rec.index:02d}</span>'
                 f'<span class="pass-dot {dot_cls}"></span>'
                 f'<span class="pass-label">{rec.name}</span>'
-                f'{stats_html}'
-                f'</a>'
+                f"{stats_html}"
+                f"</a>"
             )
         sidebars_html.append(
             f'<div class="sidebar" id="sb-{phase_name}"{active_style}>'
             f'<button class="sidebar-toggle-btn inside" onclick="toggleSidebar(this)" title="Collapse sidebar"><span class="chevron"></span></button>'
-            f'<div class="section-title">Passes</div>'
-            + "\n".join(links)
-            + "</div>"
+            f'<div class="section-title">Passes</div>' + "\n".join(links) + "</div>"
         )
 
         # Main sections
@@ -1682,8 +1684,8 @@ def generate_html(records: List[PassRecord], output_path: str):
                     f'<span class="copy-spacer"></span>'
                     f'<button class="btn-copy" onclick="copyIr(this,\'before\')">📋 Copy Before</button>'
                     f'<button class="btn-copy" onclick="copyIr(this,\'after\')">📋 Copy After</button>'
-                    f'</div>'
-                    f'{diff_html}'
+                    f"</div>"
+                    f"{diff_html}"
                 )
                 status_html = '<span class="status status-changed">CHANGED</span>'
                 _safe_before = rec.before_text.replace("</script>", r"<\/script>")
@@ -1692,13 +1694,13 @@ def generate_html(records: List[PassRecord], output_path: str):
                     f'<div class="pass-section" id="{sid}">'
                     f'<div class="pass-header collapsible" onclick="toggleCollapse(this)">'
                     f'<span class="pass-toggle"></span>'
-                    f'<h2>{rec.index:02d}. {rec.name}</h2>'
-                    f'{status_html}'
-                    f'</div>'
-                    f'{diff_content}'
+                    f"<h2>{rec.index:02d}. {rec.name}</h2>"
+                    f"{status_html}"
+                    f"</div>"
+                    f"{diff_content}"
                     f'<script type="text/plain" class="ir-data-before">{_safe_before}</script>'
                     f'<script type="text/plain" class="ir-data-after">{_safe_after}</script>'
-                    f'</div>'
+                    f"</div>"
                 )
             else:
                 diff_content = (
@@ -1712,12 +1714,12 @@ def generate_html(records: List[PassRecord], output_path: str):
                 sections_html.append(
                     f'<div class="pass-section" id="{sid}">'
                     f'<div class="pass-header">'
-                    f'<h2>{rec.index:02d}. {rec.name}</h2>'
-                    f'{status_html}'
-                    f'</div>'
-                    f'{diff_content}'
+                    f"<h2>{rec.index:02d}. {rec.name}</h2>"
+                    f"{status_html}"
+                    f"</div>"
+                    f"{diff_content}"
                     f'<script type="text/plain" class="ir-data-after">{_safe_after}</script>'
-                    f'</div>'
+                    f"</div>"
                 )
 
     # Auto-show first pass + keyboard shortcuts
@@ -1893,13 +1895,7 @@ def generate_html(records: List[PassRecord], output_path: str):
 
 def _esc(text: str) -> str:
     """Escape HTML special characters."""
-    return (
-        text
-        .replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-        .replace('"', "&quot;")
-    )
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
 
 
 def _inline_diff(line_before: str, line_after: str) -> tuple[str, str, bool]:
