@@ -395,17 +395,26 @@ body {
     display: flex;
     flex: 1;
     overflow: hidden;
+    position: relative;
 }
 
 /* ---- Sidebar ---- */
 .sidebar {
     width: 270px;
-    min-width: 270px;
+    min-width: 0;
     background: white;
     border-right: 1px solid #e2e8f0;
     overflow-y: auto;
+    overflow-x: hidden;
     padding: 8px 0;
     flex-shrink: 0;
+    transition: width 0.2s ease;
+    position: relative;
+}
+.sidebar.collapsed {
+    width: 0 !important;
+    padding: 0;
+    border-right: none;
 }
 .sidebar .section-title {
     padding: 8px 14px 4px;
@@ -414,6 +423,74 @@ body {
     letter-spacing: 0.06em;
     color: #94a3b8;
     font-weight: 700;
+    white-space: nowrap;
+}
+
+/* Sidebar resize handle */
+.sidebar-resize {
+    width: 5px;
+    cursor: col-resize;
+    background: transparent;
+    flex-shrink: 0;
+    position: relative;
+    z-index: 20;
+    margin-left: -3px;
+    margin-right: -2px;
+}
+.sidebar-resize:hover,
+.sidebar-resize.active { background: #3b82f6; }
+
+/* Sidebar toggle button */
+.sidebar-toggle-btn {
+    position: absolute;
+    top: 8px;
+    z-index: 30;
+    width: 28px;
+    height: 28px;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    background: white;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    transition: background 0.15s, box-shadow 0.15s;
+    user-select: none;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+}
+.sidebar-toggle-btn:hover { background: #f1f5f9; box-shadow: 0 1px 4px rgba(0,0,0,0.12); }
+
+/* Chevron arrow via CSS borders */
+.sidebar-toggle-btn .chevron {
+    display: block;
+    width: 7px;
+    height: 7px;
+    border-right: 2px solid #64748b;
+    border-bottom: 2px solid #64748b;
+    transition: transform 0.25s ease;
+}
+.sidebar-toggle-btn:hover .chevron { border-color: #1e293b; }
+
+/* Inside sidebar: chevron-left (rotate 135°) */
+.sidebar-toggle-btn.inside {
+    left: auto;
+    right: 10px;
+    box-shadow: none;
+    border-color: #e2e8f0;
+}
+.sidebar-toggle-btn.inside .chevron {
+    transform: rotate(135deg);
+    margin-left: 2px;
+}
+
+/* Open button: chevron-right (rotate -45°) */
+#sidebar-open-btn {
+    left: 4px;
+}
+#sidebar-open-btn .chevron {
+    transform: rotate(-45deg);
+    margin-right: 2px;
 }
 
 .pass-link {
@@ -1118,6 +1195,64 @@ function alignRows(leftTd, rightTd) {
 
     leftRow.classList.add('row-aligned');
 }
+
+/* ---- Sidebar resize & collapse ---- */
+function initSidebarResize() {
+    var handle = document.getElementById('sidebar-resize');
+    var openBtn = document.getElementById('sidebar-open-btn');
+    if (!handle) return;
+
+    var sidebar = document.querySelector('.sidebar:not([style*="display: none"])') || document.querySelector('.sidebar');
+    if (!sidebar) return;
+
+    var dragging = false, startX = 0, startW = 0;
+
+    handle.addEventListener('mousedown', function(e) {
+        if (sidebar.classList.contains('collapsed')) return;
+        dragging = true;
+        startX = e.clientX;
+        startW = sidebar.offsetWidth;
+        handle.classList.add('active');
+        document.body.style.cursor = 'col-resize';
+        document.body.style.userSelect = 'none';
+        e.preventDefault();
+    });
+
+    document.addEventListener('mousemove', function(e) {
+        if (!dragging) return;
+        var w = Math.max(150, Math.min(600, startW + e.clientX - startX));
+        sidebar.style.width = w + 'px';
+    });
+
+    document.addEventListener('mouseup', function() {
+        if (!dragging) return;
+        dragging = false;
+        handle.classList.remove('active');
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+    });
+}
+
+function toggleSidebar(btn) {
+    var sidebars = document.querySelectorAll('.sidebar');
+    var handle = document.getElementById('sidebar-resize');
+    var openBtn = document.getElementById('sidebar-open-btn');
+    sidebars.forEach(function(s) { s.classList.add('collapsed'); });
+    if (handle) handle.style.display = 'none';
+    if (openBtn) openBtn.style.display = '';
+    // Hide inside toggle buttons
+    document.querySelectorAll('.sidebar-toggle-btn.inside').forEach(function(b) { b.style.display = 'none'; });
+}
+
+function openSidebar() {
+    var sidebars = document.querySelectorAll('.sidebar');
+    var handle = document.getElementById('sidebar-resize');
+    var openBtn = document.getElementById('sidebar-open-btn');
+    sidebars.forEach(function(s) { s.classList.remove('collapsed'); s.style.width = ''; });
+    if (handle) handle.style.display = '';
+    if (openBtn) openBtn.style.display = 'none';
+    document.querySelectorAll('.sidebar-toggle-btn.inside').forEach(function(b) { b.style.display = ''; });
+}
 """
 
 
@@ -1525,6 +1660,7 @@ def generate_html(records: List[PassRecord], output_path: str):
             )
         sidebars_html.append(
             f'<div class="sidebar" id="sb-{phase_name}"{active_style}>'
+            f'<button class="sidebar-toggle-btn inside" onclick="toggleSidebar(this)" title="Collapse sidebar"><span class="chevron"></span></button>'
             f'<div class="section-title">Passes</div>'
             + "\n".join(links)
             + "</div>"
@@ -1594,6 +1730,7 @@ def generate_html(records: List[PassRecord], output_path: str):
             "  var el = document.querySelector('[data-target=\"' + first_sid + '\"]');\n"
             "  if (el) showPass(el, first_sid);\n"
             "  _alignStatus = document.getElementById('align-status');\n"
+            "  if (typeof initSidebarResize === 'function') initSidebarResize();\n"
             "\n"
             "  // --- P1: j/k keyboard navigation + Shift+E global expand ---\n"
             "  var passLinks = document.getElementsByClassName('pass-link');\n"
@@ -1737,6 +1874,8 @@ def generate_html(records: List[PassRecord], output_path: str):
 {"".join(summaries_html)}
 <div class="main">
   {"".join(sidebars_html)}
+  <div class="sidebar-resize" id="sidebar-resize"></div>
+  <button class="sidebar-toggle-btn" id="sidebar-open-btn" onclick="openSidebar()" style="display:none" title="Show sidebar"><span class="chevron"></span></button>
   <div class="content">
     {"".join(sections_html)}
   </div>
