@@ -37,7 +37,6 @@ class PassRecord:
     before_text: str
     after_text: str
     changed: bool
-    diff_line_count: int = 0
     add_lines: int = 0
     del_lines: int = 0
 
@@ -130,16 +129,9 @@ def run_pass(pass_obj, mod, pass_name: str, phase_name: str, pass_index: int):
         after_text = str(mod)
         changed = before_text != after_text
 
-        diff_lines = []
         add_count = 0
         del_count = 0
         if changed:
-            diff_lines = list(difflib.unified_diff(
-                before_text.splitlines(keepends=True),
-                after_text.splitlines(keepends=True),
-                fromfile=f"before {pass_name}",
-                tofile=f"after {pass_name}",
-            ))
             # Compute add/del counts via SequenceMatcher
             sm = difflib.SequenceMatcher(None, before_text.splitlines(), after_text.splitlines())
             for tag, i1, i2, j1, j2 in sm.get_opcodes():
@@ -158,7 +150,6 @@ def run_pass(pass_obj, mod, pass_name: str, phase_name: str, pass_index: int):
             before_text=before_text,
             after_text=after_text,
             changed=changed,
-            diff_line_count=len(diff_lines),
             add_lines=add_count,
             del_lines=del_count,
         )
@@ -170,9 +161,6 @@ def run_pass(pass_obj, mod, pass_name: str, phase_name: str, pass_index: int):
         # Console progress
         tag = "CHANGED" if changed else "NO-OP"
         print(f"  [pass_trace] {phase_name}/{pass_index:02d}_{pass_name}: {tag}")
-    else:
-        # No dumping, just run the pass silently
-        pass
 
     return mod
 
@@ -201,6 +189,9 @@ def debug_LowerAndLegalize(mod, target):
 
     Pass sequence is identical to tilelang.engine.phase.LowerAndLegalize.
     """
+    # Reset state for a fresh compilation
+    reset()
+
     import tilelang.transform
     from tilelang import tvm as tvm
     from tvm import tir
@@ -600,6 +591,13 @@ body {
 .diff-table-wrap .add { background: #dafbe1; color: #24292f; }
 .diff-table-wrap .add-word { background: #acf2bd; border-radius: 2px; }
 
+/* Whitespace-only changes (subtle styling, closer to equal) */
+.diff-table-wrap .ln-ws { background: #e8e8f8; color: #4040a0; }
+.diff-table-wrap .sg-ws { background: #e8e8f8; color: #6060b0; }
+.diff-table-wrap .ws { background: #f0f0ff; color: #24292f; }
+.diff-table-wrap .ws .del-word { background: #d8d8f0; border-radius: 2px; }
+.diff-table-wrap .ws .add-word { background: #d8d8f0; border-radius: 2px; }
+
 /* Hidden (collapsible) rows */
 .diff-table-wrap tr.row-hidden { display: none; }
 
@@ -736,20 +734,38 @@ function copyIr(btn, side) {
     var sec = btn.closest('.pass-section');
     var el = sec.querySelector('.ir-data-' + side);
     if (!el) return;
-    navigator.clipboard.writeText(el.textContent).then(function() {
+    var text = el.textContent;
+    var label = side === 'before' ? 'Before' : side === 'after' ? 'After' : 'IR';
+    function showToast() {
         var toast = document.createElement('div');
         toast.className = 'copy-toast';
-        toast.textContent = 'Copied ' + (side === 'before' ? 'Before' : side === 'after' ? 'After' : 'IR') + ' IR';
+        toast.textContent = 'Copied ' + label + ' IR';
         document.body.appendChild(toast);
         setTimeout(function() { toast.remove(); }, 1600);
-    });
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(showToast).catch(function() {
+            fallbackCopy(text, showToast);
+        });
+    } else {
+        fallbackCopy(text, showToast);
+    }
+}
+function fallbackCopy(text, cb) {
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.cssText = 'position:fixed;left:-9999px';
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand('copy'); if (cb) cb(); } catch(e) {}
+    ta.remove();
 }
 
-function expand(el, n) {
+function expand(el, n, evt) {
     var run = el.dataset.run;
     var tr = el.closest('tr');
     var table = tr.closest('table');
-    var limit = (event && event.altKey) ? 999999 : n;
+    var limit = (evt && evt.altKey) ? 999999 : n;
     var shown = 0, r;
     r = tr.previousElementSibling;
     while (r && shown < limit) {
@@ -815,6 +831,123 @@ function updBtns(table) {
 """
 
 
+def _merge_whitespace_diffs(opcodes: list, before_lines: list, after_lines: list) -> list:
+    """Post-process opcodes to merge adjacent delete+insert into replace.
+
+    When lines differ only by leading/trailing whitespace, SequenceMatcher
+    treats them as separate delete and insert operations. This function
+    merges such pairs into replace operations so they get inline diff
+    highlighting (showing the whitespace difference).
+
+    Matching criteria: lines are equal after stripping whitespace.
+    """
+    result = []
+    i = 0
+    while i < len(opcodes):
+        tag, i1, i2, j1, j2 = opcodes[i]
+
+        # Check if this is a delete followed by insert (or vice versa)
+        if tag == "delete" and i + 1 < len(opcodes) and opcodes[i + 1][0] == "insert":
+            # delete + insert pattern
+            _, _, _, j1_next, j2_next = opcodes[i + 1]
+            del_lines = list(range(i1, i2))
+            ins_lines = list(range(j1_next, j2_next))
+
+            # Match lines that are equal after stripping
+            matched_del = set()
+            matched_ins = set()
+            pairs = []
+
+            for di, d_idx in enumerate(del_lines):
+                d_stripped = before_lines[d_idx].strip()
+                for ii, i_idx in enumerate(ins_lines):
+                    if ii in matched_ins:
+                        continue
+                    if before_lines[d_idx].strip() == after_lines[i_idx].strip():
+                        pairs.append((d_idx, i_idx))
+                        matched_del.add(di)
+                        matched_ins.add(ii)
+                        break
+
+            if pairs:
+                # Sort pairs by original order
+                pairs.sort()
+                # Emit unmatched deletes before first pair
+                prev_d = i1
+                prev_i = j1_next
+                for d_idx, i_idx in pairs:
+                    # Unmatched deletes before this pair
+                    while prev_d < d_idx:
+                        result.append(("delete", prev_d, prev_d + 1, prev_i, prev_i))
+                        prev_d += 1
+                    # Unmatched inserts before this pair
+                    while prev_i < i_idx:
+                        result.append(("insert", d_idx, d_idx, prev_i, prev_i + 1))
+                        prev_i += 1
+                    # The replace pair
+                    result.append(("replace", d_idx, d_idx + 1, i_idx, i_idx + 1))
+                    prev_d = d_idx + 1
+                    prev_i = i_idx + 1
+                # Remaining unmatched deletes
+                for d_idx in range(prev_d, i2):
+                    result.append(("delete", d_idx, d_idx + 1, prev_i, prev_i))
+                # Remaining unmatched inserts
+                for i_idx in range(prev_i, j2_next):
+                    result.append(("insert", i2, i2, i_idx, i_idx + 1))
+
+                i += 2  # Skip both delete and insert
+                continue
+
+        elif tag == "insert" and i + 1 < len(opcodes) and opcodes[i + 1][0] == "delete":
+            # insert + delete pattern (same logic, reversed)
+            _, i1_next, i2_next, _, _ = opcodes[i + 1]
+            ins_lines = list(range(j1, j2))
+            del_lines = list(range(i1_next, i2_next))
+
+            matched_ins = set()
+            matched_del = set()
+            pairs = []
+
+            for ii, i_idx in enumerate(ins_lines):
+                i_stripped = after_lines[i_idx].strip()
+                for di, d_idx in enumerate(del_lines):
+                    if di in matched_del:
+                        continue
+                    if after_lines[i_idx].strip() == before_lines[d_idx].strip():
+                        pairs.append((d_idx, i_idx))
+                        matched_ins.add(ii)
+                        matched_del.add(di)
+                        break
+
+            if pairs:
+                pairs.sort()
+                prev_d = i1_next
+                prev_i = j1
+                for d_idx, i_idx in pairs:
+                    while prev_i < i_idx:
+                        result.append(("insert", prev_d, prev_d, prev_i, prev_i + 1))
+                        prev_i += 1
+                    while prev_d < d_idx:
+                        result.append(("delete", prev_d, prev_d + 1, prev_i, prev_i))
+                        prev_d += 1
+                    result.append(("replace", d_idx, d_idx + 1, i_idx, i_idx + 1))
+                    prev_d = d_idx + 1
+                    prev_i = i_idx + 1
+                for i_idx in range(prev_i, j2):
+                    result.append(("insert", prev_d, prev_d, i_idx, i_idx + 1))
+                for d_idx in range(prev_d, i2_next):
+                    result.append(("delete", d_idx, d_idx + 1, j2, j2))
+
+                i += 2
+                continue
+
+        # No merge needed, keep original opcode
+        result.append((tag, i1, i2, j1, j2))
+        i += 1
+
+    return result
+
+
 def _make_diff_html(before_text: str, after_text: str, context: int = 3) -> str:
     """Generate a GitHub-style side-by-side diff HTML table.
 
@@ -827,6 +960,10 @@ def _make_diff_html(before_text: str, after_text: str, context: int = 3) -> str:
 
     sm = difflib.SequenceMatcher(None, before_lines, after_lines)
     opcodes = sm.get_opcodes()
+
+    # Post-process: merge adjacent delete+insert into replace when lines
+    # differ only by whitespace (so they get inline diff highlighting)
+    opcodes = _merge_whitespace_diffs(opcodes, before_lines, after_lines)
 
     if all(tag == "equal" for tag, *_ in opcodes):
         return '<p class="noop-msg">No differences.</p>'
@@ -866,34 +1003,100 @@ def _make_diff_html(before_text: str, after_text: str, context: int = 3) -> str:
                     f'<td class="sg"></td><td class="eq">{_esc(after_lines[j])}</td></tr>'
                 )
         elif tag == "replace":
-            left = list(range(i1, i2))
-            right = list(range(j1, j2))
-            for k in range(max(len(left), len(right))):
-                if k < len(left) and k < len(right):
-                    i, j = left[k], right[k]
-                    ln_l = f'<td class="ln ln-del" data-line="l">{i + 1}</td>'
-                    ln_r = f'<td class="ln ln-add" data-line="r">{j + 1}</td>'
+            # Smart pairing: match lines by stripped content first, then by position
+            left_indices = list(range(i1, i2))
+            right_indices = list(range(j1, j2))
+
+            # Phase 1: Match lines that are identical after stripping whitespace
+            pairs = []
+            used_left = set()
+            used_right = set()
+
+            for li in left_indices:
+                left_stripped = before_lines[li].strip()
+                for ri in right_indices:
+                    if ri in used_right:
+                        continue
+                    if before_lines[li].strip() == after_lines[ri].strip():
+                        pairs.append((li, ri))
+                        used_left.add(li)
+                        used_right.add(ri)
+                        break
+
+            # Phase 2: For remaining lines, use positional pairing
+            remaining_left = [i for i in left_indices if i not in used_left]
+            remaining_right = [j for j in right_indices if j not in used_right]
+
+            # Merge pairs with positional pairing of remaining lines
+            # Create a unified list of (left_idx, right_idx, is_paired) tuples
+            # sorted by the order they should appear
+            all_rows = []
+
+            # Add matched pairs
+            for li, ri in pairs:
+                all_rows.append((li, ri, True))
+
+            # Add positional pairs for remaining
+            for k in range(max(len(remaining_left), len(remaining_right))):
+                if k < len(remaining_left) and k < len(remaining_right):
+                    all_rows.append((remaining_left[k], remaining_right[k], False))
+                elif k < len(remaining_left):
+                    all_rows.append((remaining_left[k], None, False))
+                else:
+                    all_rows.append((None, remaining_right[k], False))
+
+            # Sort by the minimum of left/right indices to maintain visual order
+            def sort_key(row):
+                li, ri, _ = row
+                if li is not None and ri is not None:
+                    return min(li * 1000, ri * 1000)
+                elif li is not None:
+                    return li * 1000
+                else:
+                    return ri * 1000
+
+            all_rows.sort(key=sort_key)
+
+            # Render rows
+            for li, ri, is_matched in all_rows:
+                if li is not None and ri is not None:
+                    # Paired line: use inline diff
+                    left_html, right_html, is_ws_only = _inline_diff(before_lines[li], after_lines[ri])
+                    if is_ws_only and is_matched:
+                        # Whitespace-only change: use subtle styling
+                        ln_l = f'<td class="ln ln-ws" data-line="l">{li + 1}</td>'
+                        ln_r = f'<td class="ln ln-ws" data-line="r">{ri + 1}</td>'
+                        rows.append(
+                            f"<tr>{ln_l}"
+                            f'<td class="sg sg-ws">~</td><td class="ws">{left_html}</td>'
+                            f"{ln_r}"
+                            f'<td class="sg sg-ws">~</td><td class="ws">{right_html}</td></tr>'
+                        )
+                    else:
+                        # Content change: use red/green styling
+                        ln_l = f'<td class="ln ln-del" data-line="l">{li + 1}</td>'
+                        ln_r = f'<td class="ln ln-add" data-line="r">{ri + 1}</td>'
+                        rows.append(
+                            f"<tr>{ln_l}"
+                            f'<td class="sg sg-del">−</td><td class="del">{left_html}</td>'
+                            f"{ln_r}"
+                            f'<td class="sg sg-add">+</td><td class="add">{right_html}</td></tr>'
+                        )
+                elif li is not None:
+                    # Unpaired left line (deletion only)
+                    ln_l = f'<td class="ln ln-del" data-line="l">{li + 1}</td>'
                     rows.append(
                         f"<tr>{ln_l}"
-                        f'<td class="sg sg-del">−</td><td class="del">{_esc(before_lines[i])}</td>'
-                        f"{ln_r}"
-                        f'<td class="sg sg-add">+</td><td class="add">{_esc(after_lines[j])}</td></tr>'
-                    )
-                elif k < len(left):
-                    i = left[k]
-                    ln_l = f'<td class="ln ln-del" data-line="l">{i + 1}</td>'
-                    rows.append(
-                        f"<tr>{ln_l}"
-                        f'<td class="sg sg-del">−</td><td class="del">{_esc(before_lines[i])}</td>'
+                        f'<td class="sg sg-del">−</td><td class="del">{_esc(before_lines[li])}</td>'
                         f'<td class="ln"></td><td class="sg"></td><td></td></tr>'
                     )
                 else:
-                    j = right[k]
-                    ln_r = f'<td class="ln ln-add" data-line="r">{j + 1}</td>'
+                    # Unpaired right line (insertion only)
+                    ln_r = f'<td class="ln ln-add" data-line="r">{ri + 1}</td>'
                     rows.append(
                         f'<tr><td class="ln"></td><td class="sg"></td><td></td>'
                         f"{ln_r}"
-                        f'<td class="sg sg-add">+</td><td class="add">{_esc(after_lines[j])}</td></tr>'
+                        f'<td class="sg sg-add">+</td><td class="add">{_esc(after_lines[ri])}</td></tr>'
                     )
         elif tag == "delete":
             for i in range(i1, i2):
@@ -942,7 +1145,7 @@ def _make_diff_html(before_text: str, after_text: str, context: int = 3) -> str:
         insertions.append((r2, (
             f'<tr class="btn-row">'
             f'<td colspan="6" data-run="{ri}" '
-            f'onclick="expand(this,20)">'
+            f'onclick="expand(this,20,event)">'
             f'<span class="exp-arrow">↑↓</span>'
             f'<span class="exp-label">Expand</span>'
             f'</td></tr>'
@@ -1057,6 +1260,8 @@ def generate_html(records: List[PassRecord], output_path: str):
                     f'{diff_html}'
                 )
                 status_html = '<span class="status status-changed">CHANGED</span>'
+                _safe_before = rec.before_text.replace("</script>", r"<\/script>")
+                _safe_after = rec.after_text.replace("</script>", r"<\/script>")
                 sections_html.append(
                     f'<div class="pass-section" id="{sid}">'
                     f'<div class="pass-header collapsible" onclick="toggleCollapse(this)">'
@@ -1065,8 +1270,8 @@ def generate_html(records: List[PassRecord], output_path: str):
                     f'{status_html}'
                     f'</div>'
                     f'{diff_content}'
-                    f'<script type="text/plain" class="ir-data-before">{rec.before_text}</script>'
-                    f'<script type="text/plain" class="ir-data-after">{rec.after_text}</script>'
+                    f'<script type="text/plain" class="ir-data-before">{_safe_before}</script>'
+                    f'<script type="text/plain" class="ir-data-after">{_safe_after}</script>'
                     f'</div>'
                 )
             else:
@@ -1077,6 +1282,7 @@ def generate_html(records: List[PassRecord], output_path: str):
                     f'<div class="ir-block"><pre>{_esc(rec.after_text)}</pre></div>'
                 )
                 status_html = '<span class="status status-noop">NO-OP</span>'
+                _safe_after = rec.after_text.replace("</script>", r"<\/script>")
                 sections_html.append(
                     f'<div class="pass-section" id="{sid}">'
                     f'<div class="pass-header">'
@@ -1084,7 +1290,7 @@ def generate_html(records: List[PassRecord], output_path: str):
                     f'{status_html}'
                     f'</div>'
                     f'{diff_content}'
-                    f'<script type="text/plain" class="ir-data-after">{rec.after_text}</script>'
+                    f'<script type="text/plain" class="ir-data-after">{_safe_after}</script>'
                     f'</div>'
                 )
 
@@ -1167,7 +1373,7 @@ def generate_html(records: List[PassRecord], output_path: str):
 <body>
 <div class="header">
   <h1>TileLang IR Pass Trace</h1>
-  <div class="sub">Compilation pipeline visualization &middet; {len(records)} passes recorded</div>
+  <div class="sub">Compilation pipeline visualization &middot; {len(records)} passes recorded</div>
 </div>
 <div class="phase-tabs">
   {"".join(phase_tabs_html)}
@@ -1199,6 +1405,45 @@ def _esc(text: str) -> str:
         .replace(">", "&gt;")
         .replace('"', "&quot;")
     )
+
+
+def _inline_diff(line_before: str, line_after: str) -> tuple[str, str, bool]:
+    """Compute character-level inline diff between two lines.
+
+    Returns:
+        - left_html: HTML string for the before line with highlights
+        - right_html: HTML string for the after line with highlights
+        - is_ws_only: True if the only differences are whitespace
+
+    Used in `replace` blocks to show exactly which characters changed,
+    similar to GitHub's inline word diff.
+    """
+    sm = difflib.SequenceMatcher(None, line_before, line_after)
+    left_parts = []
+    right_parts = []
+    is_ws_only = True
+
+    for tag, i1, i2, j1, j2 in sm.get_opcodes():
+        if tag == "equal":
+            eq = _esc(line_before[i1:i2])
+            left_parts.append(eq)
+            right_parts.append(eq)
+        else:
+            # Check if this non-equal part is only whitespace
+            left_chunk = line_before[i1:i2] if i2 > i1 else ""
+            right_chunk = line_after[j1:j2] if j2 > j1 else ""
+            if left_chunk.strip() != "" or right_chunk.strip() != "":
+                is_ws_only = False
+
+            if tag == "replace":
+                left_parts.append(f'<span class="del-word">{_esc(left_chunk)}</span>')
+                right_parts.append(f'<span class="add-word">{_esc(right_chunk)}</span>')
+            elif tag == "delete":
+                left_parts.append(f'<span class="del-word">{_esc(left_chunk)}</span>')
+            elif tag == "insert":
+                right_parts.append(f'<span class="add-word">{_esc(right_chunk)}</span>')
+
+    return "".join(left_parts), "".join(right_parts), is_ws_only
 
 
 # ---------------------------------------------------------------------------
