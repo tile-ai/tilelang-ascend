@@ -115,6 +115,6 @@ from .math import *  # noqa: F403
 # Usage: TILELANG_DUMP_PASSES=1 python your_kernel.py  →  generates ir_dump/ir_trace.html
 import os as _os
 if _os.environ.get("TILELANG_DUMP_PASSES", "") not in ("", "0", "off", "false"):
-    from .engine.pass_trace import patch as _pass_trace_patch
+    from .tools.pass_trace import patch as _pass_trace_patch
     _pass_trace_patch()
 del _os

@@ -8,17 +8,52 @@ pipeline with side-by-side IR diff for each pass.
 
 Usage:
     import tilelang
-    import tilelang.engine.pass_trace; tilelang.engine.pass_trace.patch()
+    import tilelang.tools.pass_trace; tilelang.tools.pass_trace.patch()
 
     # Then run your kernel as normal:
     TILELANG_DUMP_PASSES=1 python my_kernel.py
 
     # Open the generated HTML:
-    open ir_dump/ir_trace.html
+    open ./tmp/ir_dump/{kernel_name}_{timestamp}/ir_trace.html
 
 Environment variables:
     TILELANG_DUMP_PASSES: 0/unset=off, 1/all=all phases, phase1, phase2
     TILELANG_DUMP_DIR:    output directory (default: ./tmp/ir_dump/{kernel_name}_{timestamp}/)
+
+HTML page features:
+    - Phase tabs: switch between LowerAndLegalize / OptimizeForTarget
+    - Sidebar: list all passes, green dot = changed, gray dot = no-op
+    - Diff table: GitHub-style side-by-side diff with inline character-level highlighting
+    - Smart pairing: lines differing only by whitespace are aligned and shown in light blue
+    - Collapsible context: unchanged lines are hidden by default, click to expand
+
+Keyboard shortcuts:
+    j / k           Navigate to next/previous pass
+    Shift+E         Expand all hidden context lines across all passes
+    Escape          Cancel alignment mode / clear selection
+
+Manual alignment (Beyond Compare style):
+    Used when the automatic diff pairing is wrong — e.g., a left line should match
+    a different right line than what SequenceMatcher chose.
+
+    Workflow:
+        1. Press F7            → Enter alignment mode, status bar: "Click a left line number"
+        2. Click left line #   → Line highlighted orange, status bar shows selected line
+        3. Press F7            → Lock left selection (turns blue), status bar: "Click a right line number"
+        4. Click right line #  → Rows aligned: content merged, inline diff computed, orange left border
+        Esc                    → Cancel at any step
+
+    The aligned row shows the character-level diff between the two selected lines.
+    Any displaced content (from the original pairings) is preserved as orphan rows.
+
+Pass header interactions:
+    Click header    Collapse/expand the pass diff (changed passes only)
+    Click line #    Highlight the row in yellow (toggle)
+
+Toolbar buttons:
+    ⊞ Show all context   Expand all hidden lines in this pass
+    ⊟ Collapse           Re-hide context lines
+    📋 Copy Before/After  Copy the full before/after IR text to clipboard
 """
 
 from __future__ import annotations
@@ -1779,7 +1814,7 @@ def patch():
     will transparently use the debug versions.
 
     Call this ONCE at the top of your kernel script:
-        import tilelang.engine.pass_trace; tilelang.engine.pass_trace.patch()
+        import tilelang.tools.pass_trace; tilelang.tools.pass_trace.patch()
     """
     import sys
 
