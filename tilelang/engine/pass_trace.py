@@ -606,6 +606,68 @@ body {
 .diff-table-wrap td.ln:not(:empty) { cursor: pointer; }
 .diff-table-wrap td.ln:not(:empty):hover { text-decoration: underline; }
 
+/* ---- Manual alignment mode (Beyond Compare style) ---- */
+.align-status {
+    display: none;
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 999;
+    padding: 8px 20px;
+    font-size: 13px;
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    text-align: center;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+}
+.align-status.active { display: block; }
+.align-status.mode-left { background: #fff3cd; color: #664d03; }
+.align-status.mode-right { background: #cfe2ff; color: #084298; }
+.align-status kbd {
+    display: inline-block;
+    padding: 1px 6px;
+    font-size: 11px;
+    font-family: inherit;
+    background: rgba(0,0,0,0.08);
+    border: 1px solid rgba(0,0,0,0.15);
+    border-radius: 3px;
+    margin: 0 2px;
+}
+
+/* Left line selected (step 1) */
+.diff-table-wrap td.align-pending {
+    outline: 2px solid #f59e0b;
+    outline-offset: -2px;
+    background: #fef3c7 !important;
+}
+.diff-table-wrap td.align-pending-sibling {
+    background: #fef3c7 !important;
+}
+
+/* Waiting for right click (step 2, after F7) */
+.diff-table-wrap td.align-locked {
+    outline: 2px solid #3b82f6;
+    outline-offset: -2px;
+    background: #dbeafe !important;
+}
+.diff-table-wrap td.align-locked-sibling {
+    background: #dbeafe !important;
+}
+
+/* Right line candidate hover */
+.diff-table-wrap.waiting-right td[data-side="r"]:not(:empty) {
+    cursor: crosshair;
+}
+.diff-table-wrap.waiting-right td[data-side="r"]:not(:empty):hover {
+    outline: 2px dashed #3b82f6;
+    outline-offset: -2px;
+}
+
+/* Successfully aligned row */
+.diff-table-wrap tr.row-aligned {
+    border-left: 3px solid #f59e0b;
+}
+
 /* Context expand toolbar */
 .diff-toolbar {
     display: flex;
@@ -689,12 +751,37 @@ body {
 """
 
 _JS = """
+/* ---- P4: Alignment mode global state ---- */
+var _alignMode = null;      // null | 'left' | 'right'
+var _pendingLeft = null;    // left td element selected
+var _alignStatus = null;    // status bar element (initialized on DOMContentLoaded)
+
+function cancelAlign() {
+    if (_pendingLeft) {
+        var row = _pendingLeft.closest('tr');
+        if (row) row.querySelectorAll('.align-pending,.align-pending-sibling,.align-locked,.align-locked-sibling')
+            .forEach(function(c){ c.classList.remove('align-pending','align-pending-sibling','align-locked','align-locked-sibling'); });
+    }
+    document.querySelectorAll('.align-locked,.align-locked-sibling').forEach(function(c){ c.classList.remove('align-locked','align-locked-sibling'); });
+    document.querySelectorAll('.waiting-right').forEach(function(c){ c.classList.remove('waiting-right'); });
+    _pendingLeft = null;
+    _alignMode = null;
+    if (_alignStatus) { _alignStatus.className = 'align-status'; _alignStatus.innerHTML = ''; }
+}
+
+function showAlignStatus(mode, msg) {
+    if (!_alignStatus) return;
+    _alignStatus.className = 'align-status active mode-' + mode;
+    _alignStatus.innerHTML = msg;
+}
+
 function showPass(el, id) {
     document.querySelectorAll('.pass-section').forEach(s => s.classList.remove('active'));
     document.querySelectorAll('.pass-link').forEach(l => l.classList.remove('active'));
     var sec = document.getElementById(id);
     if (sec) sec.classList.add('active');
     if (el) el.classList.add('active');
+    if (typeof cancelAlign === 'function') cancelAlign();
 }
 
 function showPhase(el, phase) {
@@ -827,6 +914,174 @@ function updBtns(table) {
         tr.style.display = hasHidden ? '' : 'none';
     });
     if (ba) ba.disabled = false;
+}
+
+/* ---- P4: Manual alignment (Beyond Compare style) ---- */
+
+function escHtml(text) {
+    return text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function jsInlineDiff(before, after) {
+    var m = before.length, n = after.length;
+    var left = [], right = [], isWsOnly = true;
+    var sm = [];
+    for (var i = 0; i <= m; i++) {
+        sm[i] = [];
+        for (var j = 0; j <= n; j++) sm[i][j] = 0;
+    }
+    for (var i = m - 1; i >= 0; i--) {
+        for (var j = n - 1; j >= 0; j--) {
+            if (before[i] === after[j]) sm[i][j] = sm[i+1][j+1] + 1;
+            else sm[i][j] = Math.max(sm[i+1][j], sm[i][j+1]);
+        }
+    }
+    var i = 0, j = 0;
+    while (i < m && j < n) {
+        if (before[i] === after[j]) {
+            left.push(escHtml(before[i]));
+            right.push(escHtml(after[j]));
+            i++; j++;
+        } else if (sm[i+1][j] >= sm[i][j+1]) {
+            var chunk = before[i];
+            var start = i;
+            i++;
+            while (i < m && (j >= n || sm[i+1] && sm[i+1][j] >= sm[i][j+1]) && before[i] !== after[j]) {
+                chunk += before[i]; i++;
+            }
+            if (chunk.trim() !== '') isWsOnly = false;
+            left.push('<span class="del-word">' + escHtml(chunk) + '</span>');
+        } else {
+            var chunk = after[j];
+            var start = j;
+            j++;
+            while (j < n && (i >= m || sm[i][j+1] > sm[i+1][j]) && before[i] !== after[j]) {
+                chunk += after[j]; j++;
+            }
+            if (chunk.trim() !== '') isWsOnly = false;
+            right.push('<span class="add-word">' + escHtml(chunk) + '</span>');
+        }
+    }
+    if (i < m) {
+        var rest = before.slice(i);
+        if (rest.trim() !== '') isWsOnly = false;
+        left.push('<span class="del-word">' + escHtml(rest) + '</span>');
+    }
+    if (j < n) {
+        var rest = after.slice(j);
+        if (rest.trim() !== '') isWsOnly = false;
+        right.push('<span class="add-word">' + escHtml(rest) + '</span>');
+    }
+    return { left: left.join(''), right: right.join(''), isWsOnly: isWsOnly };
+}
+
+function getBeforeLines(section) {
+    var el = section.querySelector('.ir-data-before');
+    return el ? el.textContent.split('\\n') : [];
+}
+function getAfterLines(section) {
+    var el = section.querySelector('.ir-data-after');
+    return el ? el.textContent.split('\\n') : [];
+}
+
+function alignRows(leftTd, rightTd) {
+    var leftRow = leftTd.closest('tr');
+    var rightRow = rightTd.closest('tr');
+    if (leftRow === rightRow) return;
+
+    var lIdx = parseInt(leftTd.getAttribute('data-idx'), 10);
+    var rIdx = parseInt(rightTd.getAttribute('data-idx'), 10);
+    var section = leftRow.closest('.pass-section');
+    var beforeLines = getBeforeLines(section);
+    var afterLines = getAfterLines(section);
+
+    var leftBeforeLine = beforeLines[lIdx] || '';
+    var rightAfterLine = afterLines[rIdx] || '';
+
+    // Collect cell references from both rows (3 cells each side, 6 total per row)
+    var lCells = Array.from(leftRow.children);   // [ln, sg, code, ln, sg, code]
+    var rCells = Array.from(rightRow.children);
+
+    // Helper: read a cell's text content
+    function cellText(cells, side, pos) {
+        // side: 0=left(0-2), 1=right(3-5); pos: 0=ln, 1=sg, 2=code
+        var idx = side * 3 + pos;
+        return cells[idx] ? cells[idx].textContent : '';
+    }
+
+    // Save content from both rows before any modification
+    var leftContent = {
+        ln: cellText(lCells, 0, 0), sg: cellText(lCells, 0, 1), code: lCells[2] ? lCells[2].innerHTML : '',
+        lnCls: lCells[0] ? lCells[0].className : '', sgCls: lCells[1] ? lCells[1].className : '', codeCls: lCells[2] ? lCells[2].className : ''
+    };
+    var rightContent = {
+        ln: cellText(rCells, 1, 0), sg: cellText(rCells, 1, 1), code: rCells[5] ? rCells[5].innerHTML : '',
+        lnCls: rCells[3] ? rCells[3].className : '', sgCls: rCells[4] ? rCells[4].className : '', codeCls: rCells[5] ? rCells[5].className : ''
+    };
+
+    // Check if leftRow's right side has content that will be displaced
+    var leftRowHasRight = cellText(lCells, 1, 0) !== '' || cellText(lCells, 1, 1) !== '' || cellText(lCells, 1, 2) !== '';
+    // Check if rightRow's left side has content that will be displaced
+    var rightRowHasLeft = cellText(rCells, 0, 0) !== '' || cellText(rCells, 0, 1) !== '' || cellText(rCells, 0, 2) !== '';
+
+    // Create orphan rows for displaced content (by cloning, before modifying originals)
+    if (leftRowHasRight) {
+        var orphanRow = document.createElement('tr');
+        // Empty left side
+        orphanRow.innerHTML = '<td class="ln"></td><td class="sg"></td><td></td>';
+        // Clone right side from leftRow
+        for (var k = 3; k < 6; k++) {
+            if (lCells[k]) orphanRow.appendChild(lCells[k].cloneNode(true));
+        }
+        leftRow.parentNode.insertBefore(orphanRow, leftRow.nextSibling);
+    }
+    if (rightRowHasLeft) {
+        var orphanRow = document.createElement('tr');
+        // Clone left side from rightRow
+        for (var k = 0; k < 3; k++) {
+            if (rCells[k]) orphanRow.appendChild(rCells[k].cloneNode(true));
+        }
+        // Empty right side
+        var emptyR = document.createElement('td'); emptyR.className = 'ln'; orphanRow.appendChild(emptyR);
+        var emptyS = document.createElement('td'); emptyS.className = 'sg'; orphanRow.appendChild(emptyS);
+        orphanRow.appendChild(document.createElement('td'));
+        rightRow.parentNode.insertBefore(orphanRow, rightRow);
+    }
+
+    // Now update leftRow: set left side from leftContent, right side from rightContent
+    // Left side of leftRow stays as the aligned left
+    if (lCells[0]) { lCells[0].className = leftContent.lnCls; lCells[0].textContent = leftContent.ln; }
+    if (lCells[1]) { lCells[1].className = leftContent.sgCls; lCells[1].textContent = leftContent.sg; }
+    if (lCells[2]) { lCells[2].className = leftContent.codeCls; lCells[2].innerHTML = leftContent.code; }
+    // Right side of leftRow gets the right content
+    if (lCells[3]) { lCells[3].className = rightContent.lnCls; lCells[3].textContent = rightContent.ln; }
+    if (lCells[4]) { lCells[4].className = rightContent.sgCls; lCells[4].textContent = rightContent.sg; }
+    if (lCells[5]) { lCells[5].className = rightContent.codeCls; lCells[5].innerHTML = rightContent.code; }
+
+    // Remove rightRow (its content is now in leftRow)
+    if (rightRow.parentNode) rightRow.parentNode.removeChild(rightRow);
+
+    // Compute inline diff and update cell styling on leftRow
+    var diff = jsInlineDiff(leftBeforeLine, rightAfterLine);
+
+    // leftRow cells: [0]=leftLn, [1]=leftSg, [2]=leftCode, [3]=rightLn, [4]=rightSg, [5]=rightCode
+    if (diff.isWsOnly) {
+        lCells[0].className = 'ln ln-ws';
+        lCells[1].className = 'sg sg-ws'; lCells[1].textContent = '~';
+        lCells[2].className = 'ws'; lCells[2].innerHTML = diff.left;
+        lCells[3].className = 'ln ln-ws';
+        lCells[4].className = 'sg sg-ws'; lCells[4].textContent = '~';
+        lCells[5].className = 'ws'; lCells[5].innerHTML = diff.right;
+    } else {
+        lCells[0].className = 'ln ln-del';
+        lCells[1].className = 'sg sg-del'; lCells[1].textContent = '−';
+        lCells[2].className = 'del'; lCells[2].innerHTML = diff.left;
+        lCells[3].className = 'ln ln-add';
+        lCells[4].className = 'sg sg-add'; lCells[4].textContent = '+';
+        lCells[5].className = 'add'; lCells[5].innerHTML = diff.right;
+    }
+
+    leftRow.classList.add('row-aligned');
 }
 """
 
@@ -994,8 +1249,8 @@ def _make_diff_html(before_text: str, after_text: str, context: int = 3) -> str:
             for i, j in zip(range(i1, i2), range(j1, j2)):
                 collapsed = before_collapse[i]
                 hidden_attr = ' class="row-hidden" data-collapse="1"' if collapsed else ""
-                ln_l = f'<td class="ln ln-eq" data-line="l">{i + 1}</td>'
-                ln_r = f'<td class="ln ln-eq" data-line="r">{j + 1}</td>'
+                ln_l = f'<td class="ln ln-eq" data-side="l" data-idx="{i}">{i + 1}</td>'
+                ln_r = f'<td class="ln ln-eq" data-side="r" data-idx="{j}">{j + 1}</td>'
                 rows.append(
                     f"<tr{hidden_attr}>{ln_l}"
                     f'<td class="sg"></td><td class="eq">{_esc(before_lines[i])}</td>'
@@ -1064,8 +1319,8 @@ def _make_diff_html(before_text: str, after_text: str, context: int = 3) -> str:
                     left_html, right_html, is_ws_only = _inline_diff(before_lines[li], after_lines[ri])
                     if is_ws_only and is_matched:
                         # Whitespace-only change: use subtle styling
-                        ln_l = f'<td class="ln ln-ws" data-line="l">{li + 1}</td>'
-                        ln_r = f'<td class="ln ln-ws" data-line="r">{ri + 1}</td>'
+                        ln_l = f'<td class="ln ln-ws" data-side="l" data-idx="{li}">{li + 1}</td>'
+                        ln_r = f'<td class="ln ln-ws" data-side="r" data-idx="{ri}">{ri + 1}</td>'
                         rows.append(
                             f"<tr>{ln_l}"
                             f'<td class="sg sg-ws">~</td><td class="ws">{left_html}</td>'
@@ -1074,8 +1329,8 @@ def _make_diff_html(before_text: str, after_text: str, context: int = 3) -> str:
                         )
                     else:
                         # Content change: use red/green styling
-                        ln_l = f'<td class="ln ln-del" data-line="l">{li + 1}</td>'
-                        ln_r = f'<td class="ln ln-add" data-line="r">{ri + 1}</td>'
+                        ln_l = f'<td class="ln ln-del" data-side="l" data-idx="{li}">{li + 1}</td>'
+                        ln_r = f'<td class="ln ln-add" data-side="r" data-idx="{ri}">{ri + 1}</td>'
                         rows.append(
                             f"<tr>{ln_l}"
                             f'<td class="sg sg-del">−</td><td class="del">{left_html}</td>'
@@ -1084,7 +1339,7 @@ def _make_diff_html(before_text: str, after_text: str, context: int = 3) -> str:
                         )
                 elif li is not None:
                     # Unpaired left line (deletion only)
-                    ln_l = f'<td class="ln ln-del" data-line="l">{li + 1}</td>'
+                    ln_l = f'<td class="ln ln-del" data-side="l" data-idx="{li}">{li + 1}</td>'
                     rows.append(
                         f"<tr>{ln_l}"
                         f'<td class="sg sg-del">−</td><td class="del">{_esc(before_lines[li])}</td>'
@@ -1092,7 +1347,7 @@ def _make_diff_html(before_text: str, after_text: str, context: int = 3) -> str:
                     )
                 else:
                     # Unpaired right line (insertion only)
-                    ln_r = f'<td class="ln ln-add" data-line="r">{ri + 1}</td>'
+                    ln_r = f'<td class="ln ln-add" data-side="r" data-idx="{ri}">{ri + 1}</td>'
                     rows.append(
                         f'<tr><td class="ln"></td><td class="sg"></td><td></td>'
                         f"{ln_r}"
@@ -1100,7 +1355,7 @@ def _make_diff_html(before_text: str, after_text: str, context: int = 3) -> str:
                     )
         elif tag == "delete":
             for i in range(i1, i2):
-                ln_l = f'<td class="ln ln-del" data-line="l">{i + 1}</td>'
+                ln_l = f'<td class="ln ln-del" data-side="l" data-idx="{i}">{i + 1}</td>'
                 rows.append(
                     f"<tr>{ln_l}"
                     f'<td class="sg sg-del">−</td><td class="del">{_esc(before_lines[i])}</td>'
@@ -1108,7 +1363,7 @@ def _make_diff_html(before_text: str, after_text: str, context: int = 3) -> str:
                 )
         elif tag == "insert":
             for j in range(j1, j2):
-                ln_r = f'<td class="ln ln-add" data-line="r">{j + 1}</td>'
+                ln_r = f'<td class="ln ln-add" data-side="r" data-idx="{j}">{j + 1}</td>'
                 rows.append(
                     f'<tr><td class="ln"></td><td class="sg"></td><td></td>'
                     f"{ln_r}"
@@ -1303,6 +1558,7 @@ def generate_html(records: List[PassRecord], output_path: str):
             f"  var first_sid = '{first_sid}';\n"
             "  var el = document.querySelector('[data-target=\"' + first_sid + '\"]');\n"
             "  if (el) showPass(el, first_sid);\n"
+            "  _alignStatus = document.getElementById('align-status');\n"
             "\n"
             "  // --- P1: j/k keyboard navigation + Shift+E global expand ---\n"
             "  var passLinks = document.getElementsByClassName('pass-link');\n"
@@ -1311,6 +1567,36 @@ def generate_html(records: List[PassRecord], output_path: str):
             "  document.addEventListener('keydown', function(e) {\n"
             "    var tag = (e.target.tagName || '').toLowerCase();\n"
             "    if (tag === 'input' || tag === 'textarea' || tag === 'select') return;\n"
+            "\n"
+            "    // --- P4: F7 alignment flow ---\n"
+            "    if (e.key === 'F7') {\n"
+            "      e.preventDefault();\n"
+            "      if (_alignMode === null) {\n"
+            "        _alignMode = 'left';\n"
+            "        showAlignStatus('left', 'Align: Click a <b>left</b> (before) line number &nbsp; <kbd>F7</kbd> to confirm &nbsp; <kbd>Esc</kbd> to cancel');\n"
+            "      } else if (_alignMode === 'left' && _pendingLeft) {\n"
+            "        _alignMode = 'right';\n"
+            "        _pendingLeft.classList.remove('align-pending');\n"
+            "        _pendingLeft.classList.add('align-locked');\n"
+            "        var sib = _pendingLeft.nextElementSibling;\n"
+            "        while (sib && sib.getAttribute('data-side') !== 'r') {\n"
+            "          if (sib.getAttribute('data-side') === 'l') sib.classList.add('align-locked-sibling');\n"
+            "          sib = sib.nextElementSibling;\n"
+            "        }\n"
+            "        var wrap = _pendingLeft.closest('.diff-table-wrap');\n"
+            "        if (wrap) wrap.classList.add('waiting-right');\n"
+            "        showAlignStatus('right', 'Align: Click a <b>right</b> (after) line number to align &nbsp; <kbd>Esc</kbd> to cancel');\n"
+            "      } else if (_alignMode === 'right') {\n"
+            "        cancelAlign();\n"
+            "      }\n"
+            "      return;\n"
+            "    }\n"
+            "\n"
+            "    if (e.key === 'Escape' && _alignMode) {\n"
+            "      e.preventDefault();\n"
+            "      cancelAlign();\n"
+            "      return;\n"
+            "    }\n"
             "\n"
             "    if (e.key === 'j' || e.key === 'k') {\n"
             "      e.preventDefault();\n"
@@ -1350,9 +1636,43 @@ def generate_html(records: List[PassRecord], output_path: str):
             "    }\n"
             "  });\n"
             "\n"
+            "  // --- P4: Alignment click handler (capture phase, before P2 highlight) ---\n"
+            "  document.addEventListener('click', function(e) {\n"
+            "    if (!_alignMode) return;\n"
+            "    var td = e.target.closest('td[data-side]');\n"
+            "    if (!td) return;\n"
+            "    var section = td.closest('.pass-section.active');\n"
+            "    if (!section) return;\n"
+            "\n"
+            "    if (_alignMode === 'left' && td.getAttribute('data-side') === 'l' && td.textContent.trim() !== '') {\n"
+            "      e.stopPropagation();\n"
+            "      if (_pendingLeft) {\n"
+            "        var oldRow = _pendingLeft.closest('tr');\n"
+            "        if (oldRow) oldRow.querySelectorAll('.align-pending,.align-pending-sibling')\n"
+            "          .forEach(function(c){ c.classList.remove('align-pending','align-pending-sibling'); });\n"
+            "      }\n"
+            "      _pendingLeft = td;\n"
+            "      td.classList.add('align-pending');\n"
+            "      var sib = td.nextElementSibling;\n"
+            "      while (sib && sib.getAttribute('data-side') !== 'r') {\n"
+            "        if (sib.getAttribute('data-side') === 'l') sib.classList.add('align-pending-sibling');\n"
+            "        sib = sib.nextElementSibling;\n"
+            "      }\n"
+            "      showAlignStatus('left', 'Left line <b>' + td.textContent.trim() + '</b> selected &nbsp; Press <kbd>F7</kbd> to confirm &nbsp; <kbd>Esc</kbd> to cancel');\n"
+            "      return;\n"
+            "    }\n"
+            "\n"
+            "    if (_alignMode === 'right' && td.getAttribute('data-side') === 'r' && td.textContent.trim() !== '' && _pendingLeft) {\n"
+            "      e.stopPropagation();\n"
+            "      alignRows(_pendingLeft, td);\n"
+            "      cancelAlign();\n"
+            "      return;\n"
+            "    }\n"
+            "  }, true);\n"
+            "\n"
             "  // --- P2: Click line number to highlight row ---\n"
             "  document.addEventListener('click', function(e) {\n"
-            "    var td = e.target.closest('td[data-line]');\n"
+            "    var td = e.target.closest('td[data-side]');\n"
             "    if (!td) return;\n"
             "    var tr = td.closest('tr');\n"
             "    if (!tr || tr.closest('.pass-section.active') === null) return;\n"
@@ -1371,6 +1691,7 @@ def generate_html(records: List[PassRecord], output_path: str):
 <style>{_CSS}</style>
 </head>
 <body>
+<div class="align-status" id="align-status"></div>
 <div class="header">
   <h1>TileLang IR Pass Trace</h1>
   <div class="sub">Compilation pipeline visualization &middot; {len(records)} passes recorded</div>
