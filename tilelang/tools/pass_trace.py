@@ -59,6 +59,7 @@ Toolbar buttons:
 from __future__ import annotations
 import os
 import difflib
+import functools
 from dataclasses import dataclass
 
 
@@ -80,6 +81,11 @@ class PassRecord:
 # Global state: records collected during compilation
 # ---------------------------------------------------------------------------
 _records: list[PassRecord] = []
+
+# Pass.__call__ interception state
+_original_pass_call = None          # Saved original Pass.__call__ (None = not yet patched)
+_current_phase: str | None = None   # Active phase name during execution
+_pass_index: int = 0                # Auto-incrementing pass counter within a phase
 
 
 # ---------------------------------------------------------------------------
@@ -218,112 +224,105 @@ def _save_raw_files(record: PassRecord):
 
 
 # ---------------------------------------------------------------------------
-# Debug phase functions (re-implementations of phase.py with dump wrappers)
+# Pass.__call__ interception (automatic — no pass list needed)
 # ---------------------------------------------------------------------------
-def debug_LowerAndLegalize(mod, target):
-    """Debug version of LowerAndLegalize with IR dump per pass.
+def _get_pass_display_name(pass_obj) -> str:
+    """Extract display name from pass_info.name, e.g. 'tir.Simplify' → 'Simplify'."""
+    try:
+        name = str(pass_obj.info.name)
+        return name.split(".")[-1] if "." in name else name
+    except Exception:
+        return type(pass_obj).__name__
 
-    Pass sequence is identical to tilelang.engine.phase.LowerAndLegalize.
+
+def _traced_pass_call(self, mod):
+    """Intercept all Pass.__call__ invocations to record before/after IR.
+
+    Replaces tvm.ir.transform.Pass.__call__ at runtime.  When no phase
+    context is active (normal compilation without dump), it simply
+    delegates to the original __call__ with zero overhead.
     """
-    # Reset state for a fresh compilation
-    reset()
+    global _pass_index
 
-    import tilelang.transform
-    from tilelang import tvm as tvm
-    from tvm import tir
+    if not _current_phase or not _is_dump_enabled_for_phase(_current_phase):
+        return _original_pass_call(self, mod)
 
-    phase = "phase1_LowerAndLegalize"
+    _ensure_dump_dir()
+    before_text = str(mod)
 
-    # allocate the tmp buffer for vector api
-    mod = run_pass(tilelang.transform.InjectTmpBuffer(target), mod, "InjectTmpBuffer", phase, 0)
-    mod = run_pass(tilelang.transform.AscendInferBufferScope(), mod, "AscendInferBufferScope", phase, 1)
-    # Vid reduction
-    mod = run_pass(tilelang.transform.AscendVidReduction(), mod, "AscendVidReduction", phase, 2)
-    # Collect buffer shape
-    mod = run_pass(tilelang.transform.BufferShapeCollector(), mod, "BufferShapeCollector", phase, 3)
-    # Bind the target device information to the module
-    mod = run_pass(tir.transform.BindTarget(target), mod, "BindTarget", phase, 4)
-    # Identify and filter host tiling data for npu
-    mod = run_pass(tilelang.transform.HostProcesser(), mod, "HostProcesser", phase, 5)
-    # Simplify the IR expressions
-    mod = run_pass(tir.transform.Simplify(), mod, "Simplify", phase, 6)
-    # Lower parallel loops to vector instructions for Ascend.
-    mod = run_pass(tilelang.transform.AscendLowerParallelToVector(), mod, "AscendLowerParallelToVector", phase, 7)
-    # Infer memory layouts for fragments and shared memory
-    mod = run_pass(tilelang.transform.LayoutInference(), mod, "LayoutInference", phase, 8)
-    mod = run_pass(tilelang.transform.CollectBufferShapes(), mod, "CollectBufferShapes", phase, 9)
-    # Lower high-level tile operations to low-level operations
-    mod = run_pass(tilelang.transform.LowerTileOp(), mod, "LowerTileOp", phase, 10)
-    # Erase manual workspace allocations for virtual CV copy in Ascend
-    mod = run_pass(tilelang.transform.AscendWorkspaceReduction(), mod, "AscendWorkspaceReduction", phase, 11)
-    # Legalize vectorized loops to ensure they are valid
-    mod = run_pass(tilelang.transform.LegalizeVectorizedLoop(), mod, "LegalizeVectorizedLoop", phase, 12)
-    # Add safety checks for memory accesses
-    mod = run_pass(tilelang.transform.LegalizeSafeMemoryAccess(), mod, "LegalizeSafeMemoryAccess", phase, 13)
-    # Simplify again to clean up any duplicated conditions
-    mod = run_pass(tir.transform.Simplify(), mod, "Simplify", phase, 14)
+    result = _original_pass_call(self, mod)
 
-    return mod
+    after_text = str(result)
+    changed = before_text != after_text
+
+    pass_name = _get_pass_display_name(self)
+
+    add_count = del_count = 0
+    if changed:
+        sm = difflib.SequenceMatcher(None, before_text.splitlines(), after_text.splitlines())
+        for tag, i1, i2, j1, j2 in sm.get_opcodes():
+            if tag == "insert":
+                add_count += j2 - j1
+            elif tag == "delete":
+                del_count += i2 - i1
+            elif tag == "replace":
+                add_count += j2 - j1
+                del_count += i2 - i1
+
+    record = PassRecord(
+        phase=_current_phase,
+        name=pass_name,
+        index=_pass_index,
+        before_text=before_text,
+        after_text=after_text,
+        changed=changed,
+        add_lines=add_count,
+        del_lines=del_count,
+    )
+    _records.append(record)
+    _pass_index += 1
+
+    _save_raw_files(record)
+
+    tag = "CHANGED" if changed else "NO-OP"
+    print(f"  [pass_trace] {_current_phase}/{record.index:02d}_{pass_name}: {tag}")
+
+    return result
 
 
-def debug_OptimizeForTarget(mod, target, platform):
-    """Debug version of OptimizeForTarget with IR dump per pass.
+# ---------------------------------------------------------------------------
+# Phase wrappers (thin — set context, trigger reporting)
+# ---------------------------------------------------------------------------
+def _wrap_phase(original_func, phase_name):
+    """Wrap an original phase function to set tracing context.
 
-    Pass sequence is identical to tilelang.engine.phase.OptimizeForTarget.
+    Does NOT modify the pass list — the original phase function runs
+    unchanged.  Per-pass capture is handled by _traced_pass_call.
     """
-    import tilelang.transform
-    from tilelang import tvm as tvm
-    from tvm import tir
 
-    # Lazy imports to avoid circular dependency
-    from tilelang.engine.phase import allow_vectorize
-    from tilelang.utils.target import check_npu_availability
+    @functools.wraps(original_func)
+    def wrapper(*args, **kwargs):
+        global _current_phase, _pass_index
 
-    phase = "phase2_OptimizeForTarget"
-    pass_ctx = tilelang.transform.get_pass_context()
+        if phase_name == "phase1_LowerAndLegalize":
+            reset()  # Clear state for a fresh compilation (BEFORE setting context)
 
-    mod = run_pass(tir.transform.PlanAndUpdateBufferAllocationLocation(), mod, "PlanAndUpdateBufferAllocationLocation", phase, 0)
-    mod = run_pass(tilelang.transform.CrossCorePipeline(), mod, "CrossCorePipeline", phase, 1)
-    mod = run_pass(tilelang.transform.CombineCV(), mod, "CombineCV", phase, 2)
-    mod = run_pass(tilelang.transform.PipelinePlanning(), mod, "PipelinePlanning", phase, 3)
-    mod = run_pass(tilelang.transform.InjectSoftwarePipeline(), mod, "InjectSoftwarePipeline", phase, 4)
-    mod = run_pass(tilelang.transform.AscendLowerOpaqueBlock(), mod, "AscendLowerOpaqueBlock", phase, 5)
-    mod = run_pass(tir.transform.NarrowDataType(32), mod, "NarrowDataType", phase, 6)
-    mod = run_pass(tilelang.transform.ConfigIndexBitwidth(), mod, "ConfigIndexBitwidth", phase, 7)
-    # Collect buffer shape and flatten buffer shape to 2D
-    mod = run_pass(tilelang.transform.Flatten2DBuffer(), mod, "Flatten2DBuffer", phase, 8)
-    mod = run_pass(tilelang.transform.FlattenBuffer(), mod, "FlattenBuffer", phase, 9)
-    mod = run_pass(tir.transform.Simplify(), mod, "Simplify", phase, 10)
-    mod = run_pass(
-        tilelang.transform.VectorizeLoop(enable_vectorize=allow_vectorize(pass_ctx=pass_ctx)),
-        mod,
-        "VectorizeLoop",
-        phase,
-        11,
-    )
-    mod = run_pass(
-        tilelang.transform.AscendStorageRewrite(is_npu=check_npu_availability()),
-        mod,
-        "AscendStorageRewrite",
-        phase,
-        12,
-    )
-    mod = run_pass(tir.transform.UnrollLoop(), mod, "UnrollLoop", phase, 13)
-    mod = run_pass(tir.transform.RenormalizeSplitPattern(), mod, "RenormalizeSplitPattern", phase, 14)
-    mod = run_pass(tir.transform.Simplify(), mod, "Simplify", phase, 15)
-    mod = run_pass(tir.transform.RemoveNoOp(), mod, "RemoveNoOp", phase, 16)
-    mod = run_pass(tir.transform.RewriteUnsafeSelect(), mod, "RewriteUnsafeSelect", phase, 17)
-    mod = run_pass(tir.transform.HoistIfThenElse(), mod, "HoistIfThenElse", phase, 18)
-    mod = run_pass(tilelang.transform.AscendMemoryPlanning(), mod, "AscendMemoryPlanning", phase, 19)
-    mod = run_pass(tilelang.transform.AscendSyncInsert(target, platform), mod, "AscendSyncInsert", phase, 20)
+        _current_phase = phase_name
+        _pass_index = 0
 
-    # After all passes complete, generate the HTML report
-    if _records and _dump_dir:
-        html_path = os.path.join(_dump_dir, "ir_trace.html")
-        generate_html(_records, html_path)
-        print(f"  [pass_trace] HTML report written to: {html_path}")
+        result = original_func(*args, **kwargs)
 
-    return mod
+        _current_phase = None
+
+        # Generate HTML report after Phase 2 completes
+        if phase_name == "phase2_OptimizeForTarget" and _records and _dump_dir:
+            html_path = os.path.join(_dump_dir, "ir_trace.html")
+            generate_html(_records, html_path)
+            print(f"  [pass_trace] HTML report written to: {html_path}")
+
+        return result
+
+    return wrapper
 
 
 # ---------------------------------------------------------------------------
@@ -1943,28 +1942,46 @@ def _inline_diff(line_before: str, line_after: str) -> tuple[str, str, bool]:
 def patch():
     """Activate IR pass tracing via monkey-patching.
 
-    Replaces LowerAndLegalize and OptimizeForTarget in the
-    tilelang.engine.lower module namespace.  Because the lower() function
-    resolves these names through its __globals__ (the module dict), it
-    will transparently use the debug versions.
+    Two-level interception:
+    1. Pass.__call__: captures per-pass before/after IR (automatic, no pass list needed)
+    2. Phase wrappers: set phase context and trigger report generation
+
+    Because the lower() function resolves LowerAndLegalize/OptimizeForTarget
+    through its __globals__ (the module dict), replacing them with wrappers
+    transparently adds tracing context without modifying phase.py.
 
     Call this ONCE at the top of your kernel script:
         import tilelang.tools.pass_trace; tilelang.tools.pass_trace.patch()
     """
     import sys
+    from tvm.ir.transform import Pass
 
-    # tilelang.engine.__init__.py does `from .lower import lower` which
-    # shadows the module with the function.  Use sys.modules to get the
-    # actual module object.
+    # 1. Patch Pass.__call__ — intercept ALL pass executions (guard against double-patch)
+    global _original_pass_call
+    if _original_pass_call is None:
+        _original_pass_call = Pass.__call__
+        Pass.__call__ = _traced_pass_call
+
+    # 2. Wrap phase functions — set context, trigger reporting
+    #    tilelang.engine.__init__.py does `from .lower import lower` which
+    #    shadows the module with the function.  Use sys.modules to get the
+    #    actual module object.
     _lower_mod = sys.modules["tilelang.engine.lower"]
 
-    _lower_mod.LowerAndLegalize = debug_LowerAndLegalize
-    _lower_mod.OptimizeForTarget = debug_OptimizeForTarget
+    _lower_mod.LowerAndLegalize = _wrap_phase(
+        _lower_mod.LowerAndLegalize, "phase1_LowerAndLegalize"
+    )
+    _lower_mod.OptimizeForTarget = _wrap_phase(
+        _lower_mod.OptimizeForTarget, "phase2_OptimizeForTarget"
+    )
+
     print("[pass_trace] IR pass tracing patched. Set TILELANG_DUMP_PASSES=1 to enable.")
 
 
 def reset():
     """Clear collected records and cached dump dir (useful between multiple compilations)."""
-    global _records, _dump_dir
+    global _records, _dump_dir, _current_phase, _pass_index
     _records = []
     _dump_dir = None
+    _current_phase = None
+    _pass_index = 0
