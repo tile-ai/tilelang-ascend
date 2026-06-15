@@ -241,6 +241,8 @@ TVM_DLL const Op &ascend_fill_experiment();
 TVM_DLL const Op &ascend_sum_experiment();
 
 TVM_DLL const Op &ascend_datacachecleanandinvalid_experiment();
+
+TVM_DLL const Op &ascend_brcb();
 } // namespace tl
 } // namespace tvm
 

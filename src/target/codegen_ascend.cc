@@ -634,6 +634,8 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
     SumExperimentCodegen(op);
   } else if (op->op.same_as(tl::ascend_datacachecleanandinvalid_experiment())) {
     CreateDatacacheExperimentCodegen(op);
+  } else if (op->op.same_as(tl::ascend_brcb())) {
+    BrcbCodegen(op);
   } else {
     // tvm::Dump(op);
     CodeGenC::VisitExpr_(op, os);
@@ -1556,6 +1558,12 @@ void CodeGenTileLangAscend::GatherbCodegen(const CallNode *op) {
   std::string op_name =
       "tl::ascend::" + Downcast<StringImm>(op->args[0])->value;
   PrintOpCall(op, op_name, {1, 4}, {4, 7});
+}
+
+void CodeGenTileLangAscend::BrcbCodegen(const CallNode *op) {
+  std::string op_name =
+      "tl::ascend::" + Downcast<StringImm>(op->args[0])->value;
+  PrintOpCall(op, op_name, {1, 3}, {3, 6});
 }
 
 void CodeGenTileLangAscend::InitSortBufCodegen(const CallNode *op) {

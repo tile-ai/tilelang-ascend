@@ -670,33 +670,39 @@ def init_sort_buf(buffer: Buffer, num: PrimExpr, rsv: PrimExpr):
     )
 
 
-@deprecated()
 def brcb(dst: Buffer, src: Buffer, repeat_times: PrimExpr, dst_blk_stride: PrimExpr, dst_repeat_stride: PrimExpr):
-    """Broadcast repeat copy block intrinsic.
+    """Broadcast repeat copy block (BRCB) intrinsic.
 
-    .. warning::
-        **NOT IMPLEMENTED**: The backend code generation (codegen) for this interface
-        has **NOT** been implemented yet. **DO NOT USE** this function, as it will
-        result in compilation or runtime errors.
+    Each iteration reads 8 elements from src and fills them into 8 data blocks
+    (32 Bytes each) in dst, one element per data block.
 
     Args:
-        dst (Buffer): The destination buffer.
-        src (Buffer): The source buffer.
-        repeat_times (PrimExpr): The number of times to repeat the operation.
-        dst_blk_stride (PrimExpr): The stride between blocks in the destination.
-        dst_repeat_stride (PrimExpr): The stride between repetitions in the destination.
+        dst: The destination buffer (VECIN/VECCALC/VECOUT). Start address must
+             be 32-byte aligned.
+        src: The source buffer (VECIN/VECCALC/VECOUT). Start address must be
+             32-byte aligned. Must contain at least ``8 * repeat_times`` elements.
+        repeat_times: Number of iterations. Each iteration fills 8 data blocks.
+                      Range: [0, 255].
+        dst_blk_stride: Stride between data blocks within one iteration.
+                        When set to 0, defaults to 1.
+        dst_repeat_stride: Stride between iterations for the same data block.
 
     Returns:
-        tvm.tir.Call: A TIR external call node representing the operation.
+        A TVM intrinsic call that performs the BRCB operation.
     """
-
     src_size = math.prod(src.shape)
-    assert src_size >= (repeat_times * 8), "src size must be not less then repeat_times * 8"
+    assert src_size >= (repeat_times * 8), "src size must be not less than repeat_times * 8"
 
-    src_ptr = src.access_ptr("r")
-    dst_ptr = dst.access_ptr("w")
-
-    return T.call_extern("handle", f"tl::ascend::brcb<{_dtype(src)}>", dst_ptr, src_ptr, repeat_times, dst_blk_stride, dst_repeat_stride)
+    return tir.call_intrin(
+        "handle",
+        tir.op.Op.get("tl.ascend_brcb"),
+        f"brcb<{_dtype(src)}>",
+        dst.access_ptr("w"),
+        src.access_ptr("r"),
+        repeat_times,
+        dst_blk_stride,
+        dst_repeat_stride,
+    )
 
 
 def binary_op(
