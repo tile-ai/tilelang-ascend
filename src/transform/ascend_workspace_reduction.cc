@@ -592,18 +592,6 @@ private:
       return EMPTY_BUFFER_LIST;
     }
 
-    const StringImmNode *call_node_name = call_node_args[0].as<StringImmNode>();
-    if (call_node_name != nullptr) {
-      const std::string call_node_name_str = call_node_name->value;
-      for (const auto &copy_stmt : copy_stmt_table_) {
-        // Skip copy statements: only insert copy-back before data consumers,
-        // not producers(copy stmts).
-        if (call_node_name_str.find(copy_stmt) != std::string::npos) {
-          return EMPTY_BUFFER_LIST;
-        }
-      }
-    }
-
     for (int i = 0; i < call_node_args.size(); ++i) {
       const PrimExpr &arg = call_node_args[i];
       const CallNode *access_ptr = arg.as<CallNode>();
@@ -623,6 +611,17 @@ private:
           << "[Error]<WorkspaceReduction>: access ptr args[1] is not VarNode!";
 
       std::string buffer_name = buffer_var->name_hint;
+
+      // access_args layout: [type_annotation, var, offset, extent, rw_mask]
+      // Only consider buffer as a "consumer" if rw_mask has read bit set.
+      // Skip write-only access (rw_mask == 2) since no copy-back needed before a write.
+      ICHECK(access_args.size() >= 5)
+          << "[Error]<WorkspaceReduction>: access ptr args size too small for rw_mask!";
+      int rw_mask = Downcast<IntImm>(access_args[4])->value;
+      if (!(rw_mask & 1)) {
+        // write-only access → this buffer is a producer, not a consumer
+        continue;
+      }
 
       for (const auto &[src_buffer_name, dst_buffer_name] :
            context_.src_to_dst_map_) {
