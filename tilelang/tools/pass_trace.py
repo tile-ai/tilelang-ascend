@@ -58,6 +58,7 @@ Toolbar buttons:
 
 from __future__ import annotations
 import os
+import dis
 import difflib
 import functools
 from dataclasses import dataclass
@@ -86,6 +87,8 @@ _records: list[PassRecord] = []
 _original_pass_call = None          # Saved original Pass.__call__ (None = not yet patched)
 _current_phase: str | None = None   # Active phase name during execution
 _pass_index: int = 0                # Auto-incrementing pass counter within a phase
+_phase_call_count: int = 0          # Tracks which phase is executing (1=first, 2=second, ...)
+_num_phases: int = 0                # Total number of phases discovered at patch time
 
 
 # ---------------------------------------------------------------------------
@@ -291,21 +294,28 @@ def _traced_pass_call(self, mod):
 
 
 # ---------------------------------------------------------------------------
-# Phase wrappers (thin — set context, trigger reporting)
+# Phase wrappers (generic — auto-numbered, no hardcoded names)
 # ---------------------------------------------------------------------------
-def _wrap_phase(original_func, phase_name):
-    """Wrap an original phase function to set tracing context.
+def _wrap_phase(original_func, phase_index, total_phases):
+    """Wrap a phase function to set tracing context.
+
+    - phase_index: 1-based position among all phases (1=first, 2=second, ...)
+    - total_phases: total number of phases in the compilation pipeline
 
     Does NOT modify the pass list — the original phase function runs
     unchanged.  Per-pass capture is handled by _traced_pass_call.
     """
+    phase_name = f"phase{phase_index}_{original_func.__name__}"
 
     @functools.wraps(original_func)
     def wrapper(*args, **kwargs):
-        global _current_phase, _pass_index
+        global _current_phase, _pass_index, _phase_call_count
 
-        if phase_name == "phase1_LowerAndLegalize":
-            reset()  # Clear state for a fresh compilation (BEFORE setting context)
+        _phase_call_count += 1
+
+        # First phase of each compilation: reset state
+        if phase_index == 1:
+            reset()
 
         _current_phase = phase_name
         _pass_index = 0
@@ -314,11 +324,15 @@ def _wrap_phase(original_func, phase_name):
 
         _current_phase = None
 
-        # Generate HTML report after Phase 2 completes
-        if phase_name == "phase2_OptimizeForTarget" and _records and _dump_dir:
+        # Last phase: generate HTML report
+        if phase_index == total_phases and _records and _dump_dir:
             html_path = os.path.join(_dump_dir, "ir_trace.html")
             generate_html(_records, html_path)
             print(f"  [pass_trace] HTML report written to: {html_path}")
+
+        # Reset counter after last phase so next compilation starts fresh
+        if phase_index == total_phases:
+            _phase_call_count = 0
 
         return result
 
@@ -1939,6 +1953,34 @@ def _inline_diff(line_before: str, line_after: str) -> tuple[str, str, bool]:
 # ---------------------------------------------------------------------------
 # Monkey-patch entry point
 # ---------------------------------------------------------------------------
+def _discover_phases(lower_mod, lower_func):
+    """Discover phase functions by inspecting lower()'s bytecode.
+
+    Scans LOAD_GLOBAL instructions in the lower() function to find which
+    module-level functions it calls as compilation phases.  Only functions
+    imported from ``tilelang.engine.phase`` are considered phases — this
+    excludes helpers like ``extrac_params``, ``device_codegen``, and
+    classes like ``CompiledArtifact``.
+
+    Returns an ordered list of (name, function) tuples.
+    """
+    phase_module = "tilelang.engine.phase"
+    phases = []
+    seen = set()
+    for instr in dis.get_instructions(lower_func):
+        if instr.opname == "LOAD_GLOBAL" and instr.argval not in seen:
+            name = instr.argval
+            func = getattr(lower_mod, name, None)
+            if (
+                func is not None
+                and callable(func)
+                and getattr(func, "__module__", None) == phase_module
+            ):
+                phases.append((name, func))
+                seen.add(name)
+    return phases
+
+
 def patch():
     """Activate IR pass tracing via monkey-patching.
 
@@ -1946,9 +1988,7 @@ def patch():
     1. Pass.__call__: captures per-pass before/after IR (automatic, no pass list needed)
     2. Phase wrappers: set phase context and trigger report generation
 
-    Because the lower() function resolves LowerAndLegalize/OptimizeForTarget
-    through its __globals__ (the module dict), replacing them with wrappers
-    transparently adds tracing context without modifying phase.py.
+    Phase functions are auto-discovered from lower()'s bytecode — no hardcoded names.
 
     Call this ONCE at the top of your kernel script:
         import tilelang.tools.pass_trace; tilelang.tools.pass_trace.patch()
@@ -1957,29 +1997,35 @@ def patch():
     from tvm.ir.transform import Pass
 
     # 1. Patch Pass.__call__ — intercept ALL pass executions (guard against double-patch)
-    global _original_pass_call
+    global _original_pass_call, _num_phases
     if _original_pass_call is None:
         _original_pass_call = Pass.__call__
         Pass.__call__ = _traced_pass_call
 
-    # 2. Wrap phase functions — set context, trigger reporting
+    # 2. Auto-discover phase functions from lower()'s bytecode
     #    tilelang.engine.__init__.py does `from .lower import lower` which
     #    shadows the module with the function.  Use sys.modules to get the
     #    actual module object.
     _lower_mod = sys.modules["tilelang.engine.lower"]
+    _lower_func = _lower_mod.lower
 
-    _lower_mod.LowerAndLegalize = _wrap_phase(
-        _lower_mod.LowerAndLegalize, "phase1_LowerAndLegalize"
-    )
-    _lower_mod.OptimizeForTarget = _wrap_phase(
-        _lower_mod.OptimizeForTarget, "phase2_OptimizeForTarget"
-    )
+    phases = _discover_phases(_lower_mod, _lower_func)
+    _num_phases = len(phases)
 
-    print("[pass_trace] IR pass tracing patched. Set TILELANG_DUMP_PASSES=1 to enable.")
+    for i, (name, func) in enumerate(phases, 1):
+        setattr(_lower_mod, name, _wrap_phase(func, i, _num_phases))
+
+    phase_names = ", ".join(name for name, _ in phases)
+    print(f"[pass_trace] IR pass tracing patched ({_num_phases} phases: {phase_names}). "
+          f"Set TILELANG_DUMP_PASSES=1 to enable.")
 
 
 def reset():
-    """Clear collected records and cached dump dir (useful between multiple compilations)."""
+    """Clear collected records and cached dump dir (useful between multiple compilations).
+
+    Note: does NOT reset _phase_call_count — that tracks compilation boundaries
+    and is managed by the phase wrappers.
+    """
     global _records, _dump_dir, _current_phase, _pass_index
     _records = []
     _dump_dir = None
