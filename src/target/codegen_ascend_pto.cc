@@ -1932,24 +1932,7 @@ void CodeGenTileLangAscendPto::TransposeCodegen(const CallNode *op,
   int32_t tmp_tile_w =
       (dst_tile_w + y_tile_size_elem - 1) / y_tile_size_elem * y_tile_size_elem;
 
-  int64_t src_bytes = static_cast<int64_t>(M) * N * elem_bytes;
-  int64_t dst_bytes = static_cast<int64_t>(N) * dst_tile_w * elem_bytes;
-
-  auto src_addr_imm = src_info.first_addr.as<IntImmNode>();
-  auto dst_addr_imm = dst_info.first_addr.as<IntImmNode>();
-
-  std::string tmp_addr_str;
-  if (src_addr_imm && dst_addr_imm) {
-    int64_t src_end = src_addr_imm->value + src_bytes;
-    int64_t dst_end = dst_addr_imm->value + dst_bytes;
-    tmp_addr_str = std::to_string(std::max(src_end, dst_end));
-  } else {
-    std::string src_addr = PrintExpr(src_info.first_addr);
-    std::string dst_addr = PrintExpr(dst_info.first_addr);
-    tmp_addr_str = "std::max(static_cast<int64_t>(" + src_addr + ") + " +
-                   std::to_string(src_bytes) + ", static_cast<int64_t>(" +
-                   dst_addr + ") + " + std::to_string(dst_bytes) + ")";
-  }
+  std::string tmp_addr_str = std::to_string(max_ub_addr_);
 
   this->PrintIndent();
   this->stream << "{\n";
