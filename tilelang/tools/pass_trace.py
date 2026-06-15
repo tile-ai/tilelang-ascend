@@ -649,15 +649,34 @@ body {
 .ir-block.show { display: block; }
 
 .ir-block pre {
-    background: #0f172a;
-    color: #e2e8f0;
+    background: #ffffff;
+    color: #24292f;
     padding: 14px;
     border-radius: 6px;
-    font-size: 11.5px;
+    border: 1px solid #d0d7de;
+    font-size: 12px;
     font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
-    line-height: 1.55;
+    line-height: 20px;
     white-space: pre;
     tab-size: 2;
+}
+.ir-block .ir-line {
+    display: block;
+}
+.ir-block .ir-line.hl {
+    background: #fff8c5;
+}
+.ir-block .ir-ln {
+    display: inline-block;
+    width: 50px;
+    text-align: right;
+    padding-right: 12px;
+    color: #8c959f;
+    user-select: none;
+    cursor: pointer;
+}
+.ir-block .ir-ln:hover {
+    text-decoration: underline;
 }
 
 /* ---- GitHub-style diff table ---- */
@@ -936,12 +955,22 @@ function showPhase(el, phase) {
 }
 
 function toggleIr(btn) {
-    var block = btn.nextElementSibling;
+    var section = btn.closest('.pass-section');
+    var block = section ? section.querySelector('.ir-block') : null;
     if (block) {
         block.classList.toggle('show');
         btn.textContent = block.classList.contains('show')
             ? '\\u25BC Collapse IR' : '\\u25B6 Show full IR';
     }
+}
+
+function toggleIrLine(ln) {
+    var line = ln.closest('.ir-line');
+    var block = ln.closest('.ir-block');
+    if (!line || !block) return;
+    var wasHl = line.classList.contains('hl');
+    block.querySelectorAll('.ir-line.hl').forEach(function(l) { l.classList.remove('hl'); });
+    if (!wasHl) line.classList.add('hl');
 }
 
 function toggleCollapse(el) {
@@ -1716,11 +1745,18 @@ def generate_html(records: list[PassRecord], output_path: str):
                     f"</div>"
                 )
             else:
+                # Generate IR with line numbers
+                _ir_lines = rec.after_text.splitlines()
+                _ln_width = len(str(len(_ir_lines)))
+                _ir_with_ln = "".join(
+                    f'<span class="ir-line"><span class="ir-ln" onclick="toggleIrLine(this)">{str(i + 1).rjust(_ln_width)}</span>{_esc(line)}</span>'
+                    for i, line in enumerate(_ir_lines)
+                )
                 diff_content = (
                     '<p class="noop-msg">This pass did not modify the IR.</p>'
                     '<button class="ir-toggle" onclick="toggleIr(this)">&#9654; Show full IR</button>'
                     '<button class="btn-copy" onclick="copyIr(this,\'after\')">📋 Copy IR</button>'
-                    f'<div class="ir-block"><pre>{_esc(rec.after_text)}</pre></div>'
+                    f'<div class="ir-block"><pre>{_ir_with_ln}</pre></div>'
                 )
                 status_html = '<span class="status status-noop">NO-OP</span>'
                 _safe_after = rec.after_text.replace("</script>", r"<\/script>")
