@@ -341,8 +341,9 @@ ShapeInfo CodeGenTileLangAscendPto::GetSliceInfo(const CallNode *op) {
       extent, src_addr, offset,    type,      ub_name,         is_slice};
 }
 
-ShapeInfo CodeGenTileLangAscendPto::GetCompareMaskInfo(
-    const CallNode *dst_call, const ShapeInfo &src_info) {
+ShapeInfo
+CodeGenTileLangAscendPto::GetCompareMaskInfo(const CallNode *dst_call,
+                                             const ShapeInfo &src_info) {
   ICHECK(dst_call);
   ICHECK(dst_call->op.same_as(builtin::tvm_access_ptr()));
 
@@ -1914,8 +1915,7 @@ void CodeGenTileLangAscendPto::CompareCodegen(const CallNode *op,
 
   this->PrintIndent();
   this->stream << kAscendPtoScope << "compare(" << dst_name << ", " << src0_name
-               << ", " << src1_name << ", "
-               << "CmpMode::" << mode << ");\n";
+               << ", " << src1_name << ", " << "CmpMode::" << mode << ");\n";
 }
 
 void CodeGenTileLangAscendPto::CompareScalarCodegen(
@@ -1937,8 +1937,8 @@ void CodeGenTileLangAscendPto::CompareScalarCodegen(
 
   this->PrintIndent();
   this->stream << kAscendPtoScope << "compare_scalar(" << dst_name << ", "
-               << src0_name << ", " << src1_name << ", "
-               << "CmpMode::" << mode << ");\n";
+               << src0_name << ", " << src1_name << ", " << "CmpMode::" << mode
+               << ");\n";
 }
 
 void CodeGenTileLangAscendPto::TshCodegen(const CallNode *op,
