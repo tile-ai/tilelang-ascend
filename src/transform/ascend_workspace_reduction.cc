@@ -616,9 +616,10 @@ private:
 
       // access_args layout: [type_annotation, var, offset, extent, rw_mask]
       // Only consider buffer as a "consumer" if rw_mask has read bit set.
-      // Skip write-only access (rw_mask == 2) since no copy-back needed before a write.
-      ICHECK(access_args.size() >= 5)
-          << "[Error]<WorkspaceReduction>: access ptr args size too small for rw_mask!";
+      // Skip write-only access (rw_mask == 2) since no copy-back needed before
+      // a write.
+      ICHECK(access_args.size() >= 5) << "[Error]<WorkspaceReduction>: access "
+                                         "ptr args size too small for rw_mask!";
       int rw_mask = Downcast<IntImm>(access_args[4])->value;
       if (!(rw_mask & 1)) {
         // write-only access → this buffer is a producer, not a consumer
