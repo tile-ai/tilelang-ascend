@@ -138,6 +138,8 @@ private:
 
   void BroadcastOpCodegen(const CallNode *op);
 
+  void RowExpandMulCodegen(const CallNode *op);
+
   void SetCrossFlagCodegen(const CallNode *op);
 
   void FlagOpCodegen(const CallNode *op, std::string op_name);
@@ -247,6 +249,8 @@ private:
   bool use_swizzle_{false};
 
   std::string platform_;
+
+  Map<Var, Array<PrimExpr>> buffer_shapes_;
 };
 
 } // namespace codegen
