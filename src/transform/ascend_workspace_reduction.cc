@@ -188,7 +188,33 @@ public:
     return {src_ptr, dst_ptr};
   }
 
-  CrossCoreCopyInfo CollectCrossCoreCopyInfo(
+  std::vector<std::string> ParseTemplateParams(const std::string &func_name) {
+    std::vector<std::string> params;
+    size_t left = func_name.find('<');
+    size_t right = func_name.rfind('>');
+    ICHECK(left != std::string::npos && right != std::string::npos &&
+           left < right)
+        << "[Error]<WorkspaceReduction>: illegal template parameters scope!";
+    std::string content = func_name.substr(left + 1, right - left - 1);
+    std::string current;
+    for (auto &c : content) {
+      if (c == ',') {
+        ICHECK(!current.empty())
+            << "[Error]<WorkspaceReduction>: Empty parameter found in template!";
+        params.push_back(current);  // [type N M] or 
+                                    // [type1 type2 LayoutGM M N enRelu]
+        current = "";
+        continue;
+      }
+      if (!std::isspace(c)) current.push_back(c);
+    }
+    ICHECK(!current.empty())
+        << "[Error]<WorkspaceReduction>: Empty parameter found in template!";
+    params.push_back(current);
+    return params;
+  }
+
+  CrossCoreCopyInfo CrossCoreCopyInfoCollector(
       const std::string &copy_stmt_name,
       const CallNode *call_node,
       const CallNode *src_access_ptr,
@@ -273,8 +299,8 @@ public:
     std::stringstream ss;
     ss << "workspace_" << context_.workspace_num_;
     ws_info.workspace_name = ss.str();
-    const std::string src_buffer_name = copy_info.src_buffer_name;
-    const std::string dst_buffer_name = copy_info.dst_buffer_name;
+    const std::string &src_buffer_name = copy_info.src_buffer_name;
+    const std::string &dst_buffer_name = copy_info.dst_buffer_name;
 
     ws_info.associated_dst_buffer_name = dst_buffer_name;
 
@@ -409,32 +435,6 @@ public:
         ws_info.workspace_name;
   }
 
-  std::vector<std::string> ParseTemplateParams(const std::string &func_name) {
-    std::vector<std::string> params;
-    size_t left = func_name.find('<');
-    size_t right = func_name.rfind('>');
-    ICHECK(left != std::string::npos && right != std::string::npos &&
-           left < right)
-        << "[Error]<WorkspaceReduction>: illegal template parameters scope!";
-    std::string content = func_name.substr(left + 1, right - left - 1);
-    std::string current;
-    for (auto &c : content) {
-      if (c == ',') {
-        ICHECK(!current.empty())
-            << "[Error]<WorkspaceReduction>: Empty parameter found in template!";
-        params.push_back(current);  // [type N M] or 
-                                    // [type1 type2 LayoutGM M N enRelu]
-        current = "";
-        continue;
-      }
-      if (!std::isspace(c)) current.push_back(c);
-    }
-    ICHECK(!current.empty())
-        << "[Error]<WorkspaceReduction>: Empty parameter found in template!";
-    params.push_back(current);
-    return params;
-  }
-
   int GetDtypeBytes(const std::string &dtype_str) {
     auto it = type_map_.find(dtype_str);
     ICHECK(it != type_map_.end())
@@ -453,6 +453,55 @@ public:
     return 1;
   }
 
+  void PipeInfoCollector(const CrossCoreCopyInfo &copy_info,
+                         const CallNode *call_node) {
+    const std::string &src_buffer_name = copy_info.src_buffer_name;
+    const std::string &dst_buffer_name = copy_info.dst_buffer_name;
+    bool is_ub_to_l1 = (copy_info.direction == CopyDirection::UbToL1);
+
+    CopyGlobalContext::PipeInfo info;
+    if (is_ub_to_l1) {
+      info.dir_type = 2;
+      info.op_name = "copy_pipe_to_l1";
+
+      // Check if tmp buffer is provided for A5 (ND->Nz conversion)
+      // After AscendCopy::Lower, args layout: [0]=func_name, [1]=src_ptr,
+      // [2]=dst_ptr, [3]=srcN, [4]=srcM, [5]=dstM, [6]=dstN, [7]=tmp_ptr,
+      // [8]=tmpM, [9]=tmpN
+      if (call_node->args.size() > 9) {
+        PrimExpr tmp_expr = call_node->args[7];
+        if (auto *tmp_call = tmp_expr.as<CallNode>()) {
+          info.has_tmp = true;
+          info.tmp_M_val = Downcast<IntImm>(call_node->args[8])->value;
+          info.tmp_N_val = Downcast<IntImm>(call_node->args[9])->value;
+        }
+      }
+    } else {
+      info.dir_type = 1;
+      info.op_name = "copy_pipe_to_ub";
+    }
+
+    info.dtype_str = copy_info.dtype_str;
+    info.src_N_val = copy_info.src_N;
+    info.src_M_val = copy_info.src_M;
+    info.dst_M_val = copy_info.dst_M;
+    info.dst_N_val = copy_info.dst_N;
+
+    info.flag_id = pipe_flag_id_counter_;
+    pipe_flag_id_counter_ += 2; // one pipe needs 2 FlagID
+    int dtype_bytes = GetDtypeBytes(info.dtype_str);
+    info.slot_size = copy_info.per_block_ele_nums * dtype_bytes;
+    info.slot_num = 2;
+    info.pipe_id = "pipe_" + std::to_string(info.flag_id) + "_"
+                   + (info.dir_type == 2 ? "V2C" : "C2V");
+    info.split_axis = ComputeSplitAxis(info.src_M_val, info.src_N_val,
+                                       info.dst_M_val, info.dst_N_val);
+    info.workspace_name = needs_gm_workspace_
+        ? context_.src_to_workspace_map_.at(src_buffer_name)
+        : "";
+    context_.pipe_info_map_[dst_buffer_name] = info;
+  }
+
   void VisitStmt(const Stmt &stmt) final { StmtExprVisitor::VisitStmt(stmt); }
 
   void VisitStmt_(const EvaluateNode *op) final {
@@ -467,7 +516,7 @@ public:
       // copy-back tracking, and PTO pipe metadata)
       auto [src_ptr, dst_ptr] = ExtractCopyAccessPtrs(call_node);
 
-      CrossCoreCopyInfo copy_info = CollectCrossCoreCopyInfo(
+      CrossCoreCopyInfo copy_info = CrossCoreCopyInfoCollector(
           copy_stmt_name, call_node, src_ptr, dst_ptr);
 
       // Layer 1: Workspace collection (differs per backend)
@@ -478,8 +527,8 @@ public:
       }
 
       // Layer 2: Shared copy-back tracking (AscendC + PTO both need this)
-      const std::string src_buffer_name = copy_info.src_buffer_name;
-      const std::string dst_buffer_name = copy_info.dst_buffer_name;
+      const std::string &src_buffer_name = copy_info.src_buffer_name;
+      const std::string &dst_buffer_name = copy_info.dst_buffer_name;
       context_.tracked_buffers_.insert(src_buffer_name);
       context_.src_to_dst_map_[src_buffer_name] = dst_buffer_name;
 
@@ -525,46 +574,7 @@ public:
 
       // Layer 3: PTO pipe metadata collection (for deferred pop emission)
       if (is_pto_) {
-        CopyGlobalContext::PipeInfo info;
-        if (is_ub_to_l1) {
-          info.dir_type = 2;
-          info.op_name = "copy_pipe_to_l1";
-
-          // Check if tmp buffer is provided for A5 (ND->Nz conversion)
-          // After AscendCopy::Lower, args layout: [0]=func_name, [1]=src_ptr, [2]=dst_ptr,
-          // [3]=srcN, [4]=srcM, [5]=dstM, [6]=dstN, [7]=tmp_ptr, [8]=tmpM, [9]=tmpN
-          if (call_node->args.size() > 9) {
-            PrimExpr tmp_expr = call_node->args[7];
-            if (auto *tmp_call = tmp_expr.as<CallNode>()) {
-              info.has_tmp = true;
-              info.tmp_M_val = Downcast<IntImm>(call_node->args[8])->value;
-              info.tmp_N_val = Downcast<IntImm>(call_node->args[9])->value;
-            }
-          }
-        } else {
-          info.dir_type = 1;
-          info.op_name = "copy_pipe_to_ub";
-        }
-
-        info.dtype_str = copy_info.dtype_str;
-        info.src_N_val = copy_info.src_N;
-        info.src_M_val = copy_info.src_M;
-        info.dst_M_val = copy_info.dst_M;
-        info.dst_N_val = copy_info.dst_N;
-
-        info.flag_id = pipe_flag_id_counter_;
-        pipe_flag_id_counter_ += 2; // one pipe needs 2 FlagID
-        int dtype_bytes = GetDtypeBytes(info.dtype_str);
-        info.slot_size = copy_info.per_block_ele_nums * dtype_bytes;
-        info.slot_num = 2;
-        info.pipe_id = "pipe_" + std::to_string(info.flag_id) + "_"
-                       + (info.dir_type == 2 ? "V2C" : "C2V");
-        info.split_axis = ComputeSplitAxis(info.src_M_val, info.src_N_val,
-                                           info.dst_M_val, info.dst_N_val);
-        info.workspace_name = needs_gm_workspace_
-            ? context_.src_to_workspace_map_.at(src_buffer_name)
-            : "";
-        context_.pipe_info_map_[dst_buffer_name] = info;
+        PipeInfoCollector(copy_info, call_node);
       }
     }
   }
