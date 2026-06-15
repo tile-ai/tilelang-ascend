@@ -341,6 +341,55 @@ ShapeInfo CodeGenTileLangAscendPto::GetSliceInfo(const CallNode *op) {
       extent, src_addr, offset,    type,      ub_name,         is_slice};
 }
 
+ShapeInfo CodeGenTileLangAscendPto::GetCompareMaskInfo(
+    const CallNode *dst_call, const ShapeInfo &src_info) {
+  ICHECK(dst_call);
+  ICHECK(dst_call->op.same_as(builtin::tvm_access_ptr()));
+
+  Var buffer_var = Downcast<Var>(dst_call->args[1]);
+  ICHECK(buffer_shapess_.count(buffer_var))
+      << "Buffer shape not found: " << buffer_var->name_hint;
+  auto shape = buffer_shapess_.at(buffer_var);
+
+  ICHECK(shape.size() == 4)
+      << "Expected a 4D PTO mask shape [M, N, Valid_M, Valid_N], but got "
+      << shape.size() << "D for " << buffer_var->name_hint;
+  ICHECK(shape[0]->IsInstance<IntImmNode>());
+  ICHECK(shape[1]->IsInstance<IntImmNode>());
+  ICHECK(shape[2]->IsInstance<IntImmNode>());
+  ICHECK(shape[3]->IsInstance<IntImmNode>());
+
+  int32_t row = shape[0].as<IntImmNode>()->value;
+  int32_t col = shape[1].as<IntImmNode>()->value;
+  int32_t valid_col = shape[3].as<IntImmNode>()->value;
+
+  int32_t slice_valid_row = src_info.slice_valid_row;
+  int32_t slice_valid_col =
+      std::min(valid_col, (src_info.slice_valid_col + 7) / 8);
+  int32_t slice_row = slice_valid_row;
+  int32_t slice_col = col;
+
+  ICHECK(buffer_address_map_.count(buffer_var))
+      << "Buffer address not found: " << buffer_var->name_hint;
+  auto src_addr = buffer_address_map_.at(buffer_var);
+  auto offset = PrintExpr(dst_call->args[2]);
+  auto type = getType(dst_call->args[0].dtype());
+  auto ub_name = var_idmap_[dst_call->args[1].as<VarNode>()];
+
+  return ShapeInfo{row,
+                   col,
+                   slice_row,
+                   slice_col,
+                   slice_valid_row,
+                   slice_valid_col,
+                   src_info.extent,
+                   src_addr,
+                   offset,
+                   type,
+                   ub_name,
+                   true};
+}
+
 CodeGenTileLangAscendPto::CodeGenTileLangAscendPto(std::string platform) {
   // restrict_keyword_ = "__gm__ uint8_t *";
   platform_ = platform;
@@ -1855,7 +1904,8 @@ void CodeGenTileLangAscendPto::CompareCodegen(const CallNode *op,
                                               const std::string &op_name) {
   ShapeInfo src0_shape_info = GetSliceInfo(op->args[1].as<CallNode>());
   ShapeInfo src1_shape_info = GetSliceInfo(op->args[2].as<CallNode>());
-  ShapeInfo dst_shape_info = GetSliceInfo(op->args[0].as<CallNode>());
+  ShapeInfo dst_shape_info =
+      GetCompareMaskInfo(op->args[0].as<CallNode>(), src0_shape_info);
   auto mode = Downcast<StringImm>(op->args[3])->value;
 
   std::string src0_name = ResolveUbSliceName(src0_shape_info);
@@ -1871,7 +1921,8 @@ void CodeGenTileLangAscendPto::CompareCodegen(const CallNode *op,
 void CodeGenTileLangAscendPto::CompareScalarCodegen(
     const CallNode *op, const std::string &op_name) {
   ShapeInfo src0_shape_info = GetSliceInfo(op->args[1].as<CallNode>());
-  ShapeInfo dst_shape_info = GetSliceInfo(op->args[0].as<CallNode>());
+  ShapeInfo dst_shape_info =
+      GetCompareMaskInfo(op->args[0].as<CallNode>(), src0_shape_info);
   auto src1_name = PrintExpr(op->args[2]);
   auto mode = Downcast<StringImm>(op->args[3])->value;
 
@@ -3157,8 +3208,10 @@ void CodeGenTileLangAscendPto::AutoFlagOpCodegen(const CallNode *op,
 void CodeGenTileLangAscendPto::SelectCodegen(const CallNode *op) {
   ShapeInfo src0_shape_info = GetSliceInfo(op->args[2].as<CallNode>());
   ShapeInfo dst_shape_info = GetSliceInfo(op->args[0].as<CallNode>());
+  ShapeInfo mask_shape_info =
+      GetCompareMaskInfo(op->args[1].as<CallNode>(), src0_shape_info);
 
-  std::string mask_name = PrintBufferOffset(op->args[1].as<CallNode>());
+  std::string mask_name = ResolveUbSliceName(mask_shape_info);
   std::string temp_name = PrintBufferOffset(op->args[3].as<CallNode>());
   std::string src1_name;
   std::string op_name;

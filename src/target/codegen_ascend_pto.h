@@ -184,6 +184,9 @@ private:
 
   void CompareScalarCodegen(const CallNode *op, const std::string &op_name);
 
+  ShapeInfo GetCompareMaskInfo(const CallNode *dst_call,
+                               const ShapeInfo &src_info);
+
   void TshCodegen(const CallNode *op, const std::string &op_name);
 
   void ArithProgressionCodegen(const CallNode *op, const std::string &op_name);
