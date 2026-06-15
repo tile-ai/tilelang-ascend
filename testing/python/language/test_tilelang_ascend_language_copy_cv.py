@@ -475,6 +475,21 @@ def test_ub_to_l1_expert_A5(target):
 
 
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
+def test_ub_to_l1_special_shapes(target, platform):
+    M, N, K = 16, 16, 16
+    print(f"Case: {M = }, {N = }, {K = }")
+    _ub_to_l1_case(_ub_to_l1_kernel, M=M, N=N, K=K, target=target, expert=False)
+
+    if target == "pto":
+        if platform != "A5":
+            M, N, K = 16, 16, 16
+        else:
+            M, N, K = 16, 16, 32
+        print(f"Case: {M = }, {N = }, {K = }")
+        _ub_to_l1_case(_ub_to_l1_kernel_lr, M=M, N=N, K=K, target=target, expert=False)
+
+
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
 def test_l0c_to_ub(target):
     M, N, K = 128, 128, 128
     _l0c_to_ub_case(_l0c_to_ub_kernel, M=M, N=N, K=K, target=target, expert=False)
@@ -490,6 +505,21 @@ def test_l0c_to_ub_drop_vid(target):
 def test_l0c_to_ub_lr(target):
     M, N, K = 128, 128, 128
     _l0c_to_ub_case(_l0c_to_ub_kernel_lr, M=M, N=N, K=K, target=target, expert=False)
+
+
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+def test_l0c_to_ub_special_shapes(target, platform):
+    M, N, K = 16, 16, 16
+    print(f"Case: {M = }, {N = }, {K = }")
+    _l0c_to_ub_case(_l0c_to_ub_kernel, M=M, N=N, K=K, target=target, expert=False)
+
+    if target == "pto":
+        if platform != "A5":
+            M, N, K = 16, 16, 16
+        else:
+            M, N, K = 16, 32, 16
+        print(f"Case: {M = }, {N = }, {K = }")
+        _l0c_to_ub_case(_l0c_to_ub_kernel_lr, M=M, N=N, K=K, target=target, expert=False)
 
 
 def _combined_case(kernel_func, M=128, N=128, K=128, target="pto"):
