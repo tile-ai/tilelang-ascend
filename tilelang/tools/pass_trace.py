@@ -84,11 +84,11 @@ class PassRecord:
 _records: list[PassRecord] = []
 
 # Pass.__call__ interception state
-_original_pass_call = None          # Saved original Pass.__call__ (None = not yet patched)
-_current_phase: str | None = None   # Active phase name during execution
-_pass_index: int = 0                # Auto-incrementing pass counter within a phase
-_phase_call_count: int = 0          # Tracks which phase is executing (1=first, 2=second, ...)
-_num_phases: int = 0                # Total number of phases discovered at patch time
+_original_pass_call = None  # Saved original Pass.__call__ (None = not yet patched)
+_current_phase: str | None = None  # Active phase name during execution
+_pass_index: int = 0  # Auto-incrementing pass counter within a phase
+_phase_call_count: int = 0  # Tracks which phase is executing (1=first, 2=second, ...)
+_num_phases: int = 0  # Total number of phases discovered at patch time
 
 
 # ---------------------------------------------------------------------------
@@ -2007,11 +2007,7 @@ def _discover_phases(lower_mod, lower_func):
         if instr.opname == "LOAD_GLOBAL" and instr.argval not in seen:
             name = instr.argval
             func = getattr(lower_mod, name, None)
-            if (
-                func is not None
-                and callable(func)
-                and getattr(func, "__module__", None) == phase_module
-            ):
+            if func is not None and callable(func) and getattr(func, "__module__", None) == phase_module:
                 phases.append((name, func))
                 seen.add(name)
     return phases
@@ -2052,8 +2048,7 @@ def patch():
         setattr(_lower_mod, name, _wrap_phase(func, i, _num_phases))
 
     phase_names = ", ".join(name for name, _ in phases)
-    print(f"[pass_trace] IR pass tracing patched ({_num_phases} phases: {phase_names}). "
-          f"Set TILELANG_DUMP_PASSES=1 to enable.")
+    print(f"[pass_trace] IR pass tracing patched ({_num_phases} phases: {phase_names}). Set TILELANG_DUMP_PASSES=1 to enable.")
 
 
 def reset():
