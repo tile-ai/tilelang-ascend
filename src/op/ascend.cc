@@ -435,6 +435,7 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
     new_args.push_back(validCol_dst);
     new_args.push_back(src->shape[src->shape.size() - 2]);
     new_args.push_back(src->shape[src->shape.size() - 1]);
+    new_args.push_back(Bool(enRelu)); // Add enable_relu parameter
   }
 
   if (config.gm2l1) {

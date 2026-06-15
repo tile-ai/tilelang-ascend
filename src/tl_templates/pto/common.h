@@ -236,7 +236,7 @@ AICORE PTO_INLINE void copy_gm_to_l1_dynamic(
 template <typename T1, typename T2, int32_t shape1, int32_t shape2,
           int32_t shape3, int32_t shape4, int32_t shape5, int32_t stride1,
           int32_t stride2, int32_t stride3, int32_t stride4, int32_t stride5,
-          uint32_t valid1, uint32_t valid2>
+          uint32_t valid1, uint32_t valid2, bool enRelu = false>
 AICORE PTO_INLINE void copy_l0c_to_gm_dynamic(
     __gm__ T1 *handle,
     const pto::Shape<shape1, shape2, shape3, shape4, shape5> &shape,
@@ -257,7 +257,16 @@ AICORE PTO_INLINE void copy_l0c_to_gm_dynamic(
       T1, pto::Shape<shape1, shape2, shape3, pto::DYNAMIC, pto::DYNAMIC>,
       pto::Stride<stride1, stride2, stride3, stride4, stride5>>
       global_tensor(handle, dynamic_shape, stride);
-  pto::TSTORE(global_tensor, L0c);
+
+  // Use TSTORE with ReluPreMode template parameter directly
+  constexpr auto reluMode =
+      enRelu ? pto::ReluPreMode::NormalRelu : pto::ReluPreMode::NoRelu;
+  pto::TSTORE<
+      pto::TileAcc<T2, shape4, shape5, pto::DYNAMIC, pto::DYNAMIC>,
+      pto::GlobalTensor<
+          T1, pto::Shape<shape1, shape2, shape3, pto::DYNAMIC, pto::DYNAMIC>,
+          pto::Stride<stride1, stride2, stride3, stride4, stride5>>,
+      pto::AtomicType::AtomicNone, reluMode>(global_tensor, L0c);
 }
 
 template <typename T1, typename T2, int32_t shape1, int32_t shape2,
@@ -1323,7 +1332,7 @@ AICORE PTO_INLINE void atomic_add_ub_to_gm_dynamic(
 template <typename T1, typename T2, int32_t shape1, int32_t shape2,
           int32_t shape3, int32_t shape4, int32_t shape5, int32_t stride1,
           int32_t stride2, int32_t stride3, int32_t stride4, int32_t stride5,
-          uint32_t l0c_shape1, uint32_t l0c_shape2>
+          uint32_t l0c_shape1, uint32_t l0c_shape2, bool enRelu = false>
 AICORE PTO_INLINE void atomic_add_l0c_to_gm_dynamic(
     __gm__ T1 *handle,
     const pto::Shape<shape1, shape2, shape3, shape4, shape5> &shape,
@@ -1342,8 +1351,11 @@ AICORE PTO_INLINE void atomic_add_l0c_to_gm_dynamic(
   pto::TileAcc<T2, l0c_shape1, l0c_shape2, pto::DYNAMIC, pto::DYNAMIC> temp_l0c(
       valid_row, valid_col);
   pto::TASSIGN(temp_l0c, l0c_shape_addr + l0c_offset * len);
+
+  constexpr auto reluMode =
+      enRelu ? pto::ReluPreMode::NormalRelu : pto::ReluPreMode::NoRelu;
   pto::TSTORE<decltype(temp_l0c), decltype(global_tensor),
-              pto::AtomicType::AtomicAdd>(global_tensor, temp_l0c);
+              pto::AtomicType::AtomicAdd, reluMode>(global_tensor, temp_l0c);
 }
 
 AICORE PTO_INLINE void sync_all() { pto::SYNCALL<pto::SyncCoreType::Mix>(); }
