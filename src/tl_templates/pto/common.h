@@ -80,6 +80,27 @@ AICORE PTO_INLINE void cvt_tile(int32_t src_addr, int32_t dst_addr,
   pto::TCVT(dst_temp_ub, src_temp_ub, rmode);
 }
 
+template <typename SrcT, typename DstT, int32_t TileRows, int32_t TileCols,
+          int32_t SrcAlignedCols, int32_t DstAlignedCols>
+AICORE PTO_INLINE void
+copy_ub_to_ub_strided(int32_t src_base, int32_t dst_base, int32_t src_buf_cols,
+                      int32_t dst_buf_cols, int32_t src_offset,
+                      int32_t dst_offset) {
+  TileUbDataND<SrcT, 1, SrcAlignedCols, 1, TileCols> row_src;
+  TileUbDataND<DstT, 1, DstAlignedCols, 1, TileCols> row_dst;
+  for (int32_t __i = 0; __i < TileRows; ++__i) {
+    pto::TASSIGN(row_src,
+                 src_base + (src_offset + __i * src_buf_cols) * sizeof(SrcT));
+    pto::TASSIGN(row_dst,
+                 dst_base + (dst_offset + __i * dst_buf_cols) * sizeof(DstT));
+    if constexpr (std::is_same_v<SrcT, DstT>) {
+      pto::TMOV(row_dst, row_src);
+    } else {
+      pto::TCVT(row_dst, row_src, pto::RoundMode::CAST_NONE);
+    }
+  }
+}
+
 template <typename T, uint32_t M, uint32_t N, uint32_t M_L1, uint32_t N_L1,
           bool transpose = false>
 AICORE PTO_INLINE void copy_l1_to_l0a(

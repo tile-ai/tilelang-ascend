@@ -1177,49 +1177,18 @@ void CodeGenTileLangAscendPto::CopyUBToUBCodegen(const CallNode *call) {
       int32_t src_aligned_cols = GetValidShape(tile_cols, src_type);
       int32_t dst_aligned_cols = GetValidShape(tile_cols, dst_type);
 
-      std::string src_row_name = GetTempVarName("ub_row_src");
-      std::string dst_row_name = GetTempVarName("ub_row_dst");
-
-      this->PrintIndent();
-      this->stream << kAscendPtoScope << "TileUbDataND<" << src_type << ", 1, "
-                   << src_aligned_cols << ", 1, " << tile_cols << "> "
-                   << src_row_name << ";\n";
-      this->PrintIndent();
-      this->stream << kAscendPtoScope << "TileUbDataND<" << dst_type << ", 1, "
-                   << dst_aligned_cols << ", 1, " << tile_cols << "> "
-                   << dst_row_name << ";\n";
-
-      this->PrintIndent();
-      this->stream << "for (int __i = 0; __i < " << tile_rows << "; ++__i) {\n";
-      int loop_scope = BeginScope();
-
       std::string src_offset_str = PrintExpr(src_info.offset);
       std::string dst_offset_str = PrintExpr(dst_info.offset);
       auto src_addr = buffer_address_map_.at(src_info.var);
       auto dst_addr = buffer_address_map_.at(dst_info.var);
-      int src_type_len = GetTypeLen(src_type);
-      int dst_type_len = GetTypeLen(dst_type);
 
       this->PrintIndent();
-      this->stream << "TASSIGN(" << src_row_name << ", " << PrintExpr(src_addr)
-                   << " + (" << src_offset_str << " + __i * " << src_buf_cols
-                   << ") * " << src_type_len << ");\n";
-
-      this->PrintIndent();
-      this->stream << "TASSIGN(" << dst_row_name << ", " << PrintExpr(dst_addr)
-                   << " + (" << dst_offset_str << " + __i * " << dst_buf_cols
-                   << ") * " << dst_type_len << ");\n";
-
-      this->PrintIndent();
-      this->stream << api_name << "(" << dst_row_name << ", " << src_row_name;
-      if (is_cast) {
-        this->stream << ", pto::RoundMode::CAST_NONE";
-      }
-      this->stream << ");\n";
-
-      this->EndScope(loop_scope);
-      this->PrintIndent();
-      this->stream << "}\n";
+      this->stream << kAscendPtoScope << "copy_ub_to_ub_strided<" << src_type
+                   << ", " << dst_type << ", " << tile_rows << ", " << tile_cols
+                   << ", " << src_aligned_cols << ", " << dst_aligned_cols
+                   << ">(" << PrintExpr(src_addr) << ", " << PrintExpr(dst_addr)
+                   << ", " << src_buf_cols << ", " << dst_buf_cols << ", "
+                   << src_offset_str << ", " << dst_offset_str << ");\n";
     }
   } else {
     ShapeInfo src_shape_info = GetSliceInfo(src_info.access_ptr);

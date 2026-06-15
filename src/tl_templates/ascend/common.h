@@ -285,8 +285,21 @@ copy_ub_to_ub(LocalTensor<T1> dstTensor, LocalTensor<T2> srcTensor,
         AscendC::DataCopy(dstTensor[i * dst_stride], srcTensor[i * src_stride],
                           src_cols);
       } else {
-        AscendC::Cast(dstTensor[i * dst_stride], srcTensor[i * src_stride],
-                      AscendC::RoundMode::CAST_NONE, src_cols);
+        if constexpr ((std::is_same_v<T1, float> && std::is_same_v<T2, half>) ||
+                      (std::is_same_v<T1, float> &&
+                       std::is_same_v<T2, bfloat16_t>) ||
+                      (std::is_same_v<T1, float> &&
+                       std::is_same_v<T2, int16_t>) ||
+                      (std::is_same_v<T1, half> &&
+                       std::is_same_v<T2, int8_t>) ||
+                      (std::is_same_v<T1, int16_t> &&
+                       std::is_same_v<T2, int32_t>)) {
+          AscendC::Cast(dstTensor[i * dst_stride], srcTensor[i * src_stride],
+                        AscendC::RoundMode::CAST_NONE, src_cols);
+        } else {
+          AscendC::Cast(dstTensor[i * dst_stride], srcTensor[i * src_stride],
+                        AscendC::RoundMode::CAST_RINT, src_cols);
+        }
       }
     }
   }
