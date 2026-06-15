@@ -24,6 +24,15 @@ def disable_cache():
     yield
 
 
+@pytest.fixture(scope="session")
+def platform():
+    return determine_platform()
+
+
+skip_A5 = pytest.mark.skipif(determine_platform() == "A5", reason="Only test for non-A5 platform")
+only_A5 = pytest.mark.skipif(determine_platform() != "A5", reason="Only test for A5 platform")
+
+
 def _compile(program, target="pto", expert=False):
     """Compile program with target and developing mode."""
     pass_config = None if expert else PASS_CONFIGS
@@ -451,14 +460,14 @@ def test_ub_to_l1_lr(target):
     _ub_to_l1_case(_ub_to_l1_kernel_lr, M=M, N=N, K=K, target=target, expert=False)
 
 
-@pytest.mark.skipif(determine_platform() == "A5", reason="Only test for non-A5 platform")
+@skip_A5
 @pytest.mark.parametrize("target", ["pto"])
 def test_ub_to_l1_expert_A2(target):
     M, N, K = 128, 128, 128
     _ub_to_l1_case(_ub_to_l1_kernel_expert_A2, M=M, N=N, K=K, target=target, expert=True, manual_workspace=True)
 
 
-@pytest.mark.skipif(determine_platform() != "A5", reason="Only test for A5 platform")
+@only_A5
 @pytest.mark.parametrize("target", ["pto"])
 def test_ub_to_l1_expert_A5(target):
     M, N, K = 128, 128, 128
@@ -596,14 +605,14 @@ def _copy_cv_experiment_kernel(M=128, N=128, K=128, dtype="float16", accum_dtype
     return main
 
 
-@pytest.mark.skipif(determine_platform() != "A5", reason="Only test for A5 platform")
+@only_A5
 @pytest.mark.parametrize("target", ["pto"])
 def test_copy_vc_experiment(target):
     M, N, K = 128, 128, 128
     _ub_to_l1_case(_copy_vc_experiment_kernel, M=M, N=N, K=K, target=target, expert=True)
 
 
-@pytest.mark.skipif(determine_platform() != "A5", reason="Only test for A5 platform")
+@only_A5
 @pytest.mark.parametrize("target", ["pto"])
 def test_copy_cv_experiment(target):
     M, N, K = 128, 128, 128
