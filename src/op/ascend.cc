@@ -169,6 +169,7 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
     bool virtual_channel = false;
     bool gm2ub = false;
     bool ub2gm = false;
+    bool ub2ub = false;
   } config;
 
   std::stringstream ss;
@@ -246,6 +247,7 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
       }
       ss << "copy_ub_to_ub<" << get_dtype(dst) << ", " << get_dtype(src) << ", "
          << len << ">";
+      config.ub2ub = true;
     }
   } else {
     LOG(FATAL) << "Unsupported scope: src = " << src.scope()
@@ -474,6 +476,25 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
         src->shape[src->shape.size() -
                    1]); // ub/l0c -> gm need realdstN which is equal to srcN in
                         // virtural channel scenario
+  }
+
+  if (config.ub2ub) {
+    PrimExpr src_tile_rows = src_extents.size() >= 2
+                                 ? src_extents[src_extents.size() - 2]
+                                 : Integer(1);
+    PrimExpr src_tile_cols = src_extents[src_extents.size() - 1];
+    PrimExpr src_buf_cols = src->shape[src->shape.size() - 1];
+    PrimExpr dst_tile_rows = dst_extents.size() >= 2
+                                 ? dst_extents[dst_extents.size() - 2]
+                                 : Integer(1);
+    PrimExpr dst_tile_cols = dst_extents[dst_extents.size() - 1];
+    PrimExpr dst_buf_cols = dst->shape[dst->shape.size() - 1];
+    new_args.push_back(src_tile_rows);
+    new_args.push_back(src_tile_cols);
+    new_args.push_back(src_buf_cols);
+    new_args.push_back(dst_tile_rows);
+    new_args.push_back(dst_tile_cols);
+    new_args.push_back(dst_buf_cols);
   }
   // if (config.l12l0) {
   //   ICHECK(src->shape.size() == dst->shape.size());

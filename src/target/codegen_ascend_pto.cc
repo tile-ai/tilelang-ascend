@@ -1157,19 +1157,81 @@ void CodeGenTileLangAscendPto::CopyUBToUBCodegen(const CallNode *call) {
   bool is_cast = src_info.dtype != dst_info.dtype;
   std::string api_name = is_cast ? "TCVT" : "TMOV";
 
-  ShapeInfo src_shape_info = GetSliceInfo(src_info.access_ptr);
-  ShapeInfo dst_shape_info = GetSliceInfo(dst_info.access_ptr);
+  if (call->args.size() > 6) {
+    auto src_tile_rows = Downcast<IntImm>(call->args[3])->value;
+    auto src_tile_cols = Downcast<IntImm>(call->args[4])->value;
+    auto src_buf_cols = Downcast<IntImm>(call->args[5])->value;
+    auto dst_tile_rows = Downcast<IntImm>(call->args[6])->value;
+    auto dst_tile_cols = Downcast<IntImm>(call->args[7])->value;
+    auto dst_buf_cols = Downcast<IntImm>(call->args[8])->value;
 
-  std::string src_name = ResolveUbSliceName(src_shape_info);
-  std::string dst_name = ResolveUbSliceName(dst_shape_info);
+    bool src_strided = (src_tile_cols != src_buf_cols);
+    bool dst_strided = (dst_tile_cols != dst_buf_cols);
 
-  this->PrintIndent();
-  this->stream << api_name << "(" << dst_name << ", " << src_name;
+    if (!src_strided && !dst_strided) {
+      ShapeInfo src_shape_info = GetSliceInfo(src_info.access_ptr);
+      ShapeInfo dst_shape_info = GetSliceInfo(dst_info.access_ptr);
 
-  if (is_cast) {
-    this->stream << ", pto::RoundMode::CAST_NONE";
+      src_shape_info.slice_valid_row = src_tile_rows;
+      src_shape_info.slice_valid_col = src_tile_cols;
+      src_shape_info.slice_row = src_tile_rows;
+      src_shape_info.slice_col =
+          GetValidShape(src_tile_cols, getType(src_info.dtype));
+      src_shape_info.is_slice = (src_tile_rows * src_tile_cols !=
+                                 src_shape_info.row * src_shape_info.col);
+
+      dst_shape_info.slice_valid_row = dst_tile_rows;
+      dst_shape_info.slice_valid_col = dst_tile_cols;
+      dst_shape_info.slice_row = dst_tile_rows;
+      dst_shape_info.slice_col =
+          GetValidShape(dst_tile_cols, getType(dst_info.dtype));
+      dst_shape_info.is_slice = (dst_tile_rows * dst_tile_cols !=
+                                 dst_shape_info.row * dst_shape_info.col);
+
+      std::string src_name = ResolveUbSliceName(src_shape_info);
+      std::string dst_name = ResolveUbSliceName(dst_shape_info);
+
+      this->PrintIndent();
+      this->stream << api_name << "(" << dst_name << ", " << src_name;
+      if (is_cast) {
+        this->stream << ", pto::RoundMode::CAST_NONE";
+      }
+      this->stream << ");\n";
+    } else {
+      auto src_type = getType(src_info.dtype);
+      auto dst_type = getType(dst_info.dtype);
+      int32_t tile_cols = src_tile_cols;
+      int32_t tile_rows = src_tile_rows;
+      int32_t src_aligned_cols = GetValidShape(tile_cols, src_type);
+      int32_t dst_aligned_cols = GetValidShape(tile_cols, dst_type);
+
+      std::string src_offset_str = PrintExpr(src_info.offset);
+      std::string dst_offset_str = PrintExpr(dst_info.offset);
+      auto src_addr = buffer_address_map_.at(src_info.var);
+      auto dst_addr = buffer_address_map_.at(dst_info.var);
+
+      this->PrintIndent();
+      this->stream << kAscendPtoScope << "copy_ub_to_ub_strided<" << src_type
+                   << ", " << dst_type << ", " << tile_rows << ", " << tile_cols
+                   << ", " << src_aligned_cols << ", " << dst_aligned_cols
+                   << ">(" << PrintExpr(src_addr) << ", " << PrintExpr(dst_addr)
+                   << ", " << src_buf_cols << ", " << dst_buf_cols << ", "
+                   << src_offset_str << ", " << dst_offset_str << ");\n";
+    }
+  } else {
+    ShapeInfo src_shape_info = GetSliceInfo(src_info.access_ptr);
+    ShapeInfo dst_shape_info = GetSliceInfo(dst_info.access_ptr);
+
+    std::string src_name = ResolveUbSliceName(src_shape_info);
+    std::string dst_name = ResolveUbSliceName(dst_shape_info);
+
+    this->PrintIndent();
+    this->stream << api_name << "(" << dst_name << ", " << src_name;
+    if (is_cast) {
+      this->stream << ", pto::RoundMode::CAST_NONE";
+    }
+    this->stream << ");\n";
   }
-  this->stream << ");\n";
 }
 
 // Returns the largest divisor of src_row that is >= min_row and < src_row.
@@ -1868,24 +1930,7 @@ void CodeGenTileLangAscendPto::TransposeCodegen(const CallNode *op,
   int32_t tmp_tile_w =
       (dst_tile_w + y_tile_size_elem - 1) / y_tile_size_elem * y_tile_size_elem;
 
-  int64_t src_bytes = static_cast<int64_t>(M) * N * elem_bytes;
-  int64_t dst_bytes = static_cast<int64_t>(N) * dst_tile_w * elem_bytes;
-
-  auto src_addr_imm = src_info.first_addr.as<IntImmNode>();
-  auto dst_addr_imm = dst_info.first_addr.as<IntImmNode>();
-
-  std::string tmp_addr_str;
-  if (src_addr_imm && dst_addr_imm) {
-    int64_t src_end = src_addr_imm->value + src_bytes;
-    int64_t dst_end = dst_addr_imm->value + dst_bytes;
-    tmp_addr_str = std::to_string(std::max(src_end, dst_end));
-  } else {
-    std::string src_addr = PrintExpr(src_info.first_addr);
-    std::string dst_addr = PrintExpr(dst_info.first_addr);
-    tmp_addr_str = "std::max(static_cast<int64_t>(" + src_addr + ") + " +
-                   std::to_string(src_bytes) + ", static_cast<int64_t>(" +
-                   dst_addr + ") + " + std::to_string(dst_bytes) + ")";
-  }
+  std::string tmp_addr_str = std::to_string(max_ub_addr_);
 
   this->PrintIndent();
   this->stream << "{\n";
