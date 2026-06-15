@@ -434,15 +434,17 @@ const std::unordered_map<std::string, DataType> CopyInfoCollector::type_map_ = {
     {"float", tvm::runtime::DataType::Float(32)},
     {"float32", tvm::runtime::DataType::Float(32)},
     {"float64", tvm::runtime::DataType::Float(64)},
-    {"int8", tvm::runtime::DataType::Int(8)},
-    {"int16", tvm::runtime::DataType::Int(16)},
+    {"bfloat16_t", tvm::runtime::DataType::BFloat(16)},
+    {"AscendC::int4b_t", tvm::runtime::DataType::Int(4)},
+    {"int8_t", tvm::runtime::DataType::Int(8)},
+    {"int16_t", tvm::runtime::DataType::Int(16)},
     {"int", tvm::runtime::DataType::Int(32)},
     {"int32", tvm::runtime::DataType::Int(32)},
-    {"int64", tvm::runtime::DataType::Int(64)},
-    {"uint8", tvm::runtime::DataType::UInt(8)},
-    {"uint16", tvm::runtime::DataType::UInt(16)},
-    {"uint32", tvm::runtime::DataType::UInt(32)},
-    {"uint64", tvm::runtime::DataType::UInt(64)}};
+    {"int64_t", tvm::runtime::DataType::Int(64)},
+    {"uint8_t", tvm::runtime::DataType::UInt(8)},
+    {"uint16_t", tvm::runtime::DataType::UInt(16)},
+    {"uint32_t", tvm::runtime::DataType::UInt(32)},
+    {"uint64_t", tvm::runtime::DataType::UInt(64)}};
 
 class AscendWorkspaceReductionPass : public arith::IRMutatorWithAnalyzer {
 public:
