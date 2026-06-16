@@ -56,6 +56,9 @@ class PassConfigKey(str, Enum):
     tile to compute only the valid region. Opt-in so non-tail kernels are
     unaffected. Default: False"""
 
+    TL_ASCEND_PTO_USE_PIPE_IN_CV_COPY = "tl.ascend_pto_use_pipe_in_cv_copy"
+    """Enable PTO copy-through-pipe path in cross CV copy. When False, PTO falls back to copy-through-GM path. Default: True"""
+
     # TIR related configs
     TIR_ENABLE_EQUIV_TERMS_IN_CSE = "tir.enable_equiv_terms_in_cse_tir"
     """Enable equivalent terms in TIR Common Subexpression Elimination. Default: True"""
