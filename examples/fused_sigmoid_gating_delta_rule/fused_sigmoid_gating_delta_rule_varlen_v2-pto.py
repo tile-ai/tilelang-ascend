@@ -16,7 +16,7 @@ NUM_CORES = 24
         tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
         tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
     },
-    target="ascendc"
+    target="pto"
 )
 def kernel(
     num_seqs,
@@ -107,6 +107,9 @@ def kernel(
             norm_sq = T.alloc_ub([1, dk], accum_dtype)  # [1, dk]  q² or k²
             norm_val = T.alloc_ub([1], accum_dtype)  # [1]  ||q||²
 
+            # -- debug probe --
+            dbg_buf = T.alloc_ub([1, 8], accum_dtype)
+
             # ===== work assignment: flat_idx → (seq, v_head, v_tile) =====
             for work_i in T.serial(max_work_per_block):
                 if work_i < count_work:
@@ -136,7 +139,9 @@ def kernel(
                     T.set_flag("mte2", "v", 2)
                     T.wait_flag("mte2", "v", 2)
                     T.copy(scalar_fp16, scalar_fp32)
+                    T.pipe_barrier("v")
                     T.tile.exp(softplus_val, scalar_fp32)
+                    T.barrier_all()
                     exp_A = softplus_val[0]  # exp_A ∈ ℝ
 
                     # -- dt_bias[v_head]  … per-head time delta bias --
@@ -145,7 +150,9 @@ def kernel(
                     T.copy(dt_bias[v_head_idx : v_head_idx + 1], scalar_fp16)
                     T.set_flag("mte2", "v", 4)
                     T.wait_flag("mte2", "v", 4)
+                    T.pipe_barrier("v")
                     T.copy(scalar_fp16, scalar_fp32)
+                    T.barrier_all()
                     dt_val = scalar_fp32[0]  # dt_bias ∈ ℝ
 
                     # -- prefetch first token's Q,K,V → ping-pong buf[0] --
@@ -170,32 +177,44 @@ def kernel(
                         T.wait_flag("mte2", "v", 5)
                         T.copy(scalar_fp16, scalar_fp32)
                         T.copy(scalar2_fp16, scalar2_fp32)
+                        T.barrier_all()
                         a_val = scalar_fp32[0]  # a_{t,v_head} ∈ ℝ
-                        b_val = scalar2_fp32[0]  # β_{t,v_head} ∈ ℝ
-
-                        # x = a + dt_bias,  then softplus(x, β)
-                        # sp = log(1 + exp(x·β)) / β  (≈ x when x·β > SOFTPLUS_THRESHOLD)
                         x = a_val + dt_val
-                        beta_x = x * softplus_beta
 
-                        if beta_x > SOFTPLUS_THRESHOLD:
+                        if x > SOFTPLUS_THRESHOLD:
                             softplus_val[0] = x
                         else:
-                            scalar_fp32[0] = beta_x
-                            T.tile.exp(alpha_val, scalar_fp32)  # exp(x·β)
-                            T.tile.add(alpha_val, alpha_val, 1.0)  # 1 + exp(x·β)
-                            T.tile.ln(alpha_val, alpha_val)  # ln(1+exp(x·β))
-                            softplus_val[0] = alpha_val[0] * inv_beta  # / β
+                            scalar_fp32[0] = x
+                            T.set_flag("s", "v", 7)
+                            T.wait_flag("s", "v", 7)
+                            T.tile.exp(alpha_val, scalar_fp32)  # exp(x)
+                            T.pipe_barrier("v")
+                            T.tile.add(alpha_val, alpha_val, 1.0)  # 1 + exp(x)
+                            T.pipe_barrier("v")
+                            T.tile.ln(alpha_val, alpha_val)  # ln(1+exp(x))
+                            T.pipe_barrier("v")
+                            T.tile.mul(softplus_val, alpha_val, inv_beta)  # / β (vector)
+                        T.barrier_all()
 
                         # -- state decay factor:  α = exp(−exp_A · softplus(x))  ∈ ℝ --
-                        scalar_fp32[0] = -exp_A * softplus_val[0]
+                        scalar_fp32[0] = -exp_A
+                        T.set_flag("s", "v", 0)
+                        T.wait_flag("s", "v", 0)
+                        T.tile.mul(scalar_fp32, scalar_fp32, softplus_val)  # -exp_A * softplus (vector)
+                        T.pipe_barrier("v")
                         T.tile.exp(alpha_val, scalar_fp32)
+                        T.pipe_barrier("v")
 
                         # -- sigmoid gate:  gate = σ(β) = 1 / (1 + exp(−β))  ∈ ℝ --
-                        scalar_fp32[0] = -b_val
-                        T.tile.exp(scalar_fp32, scalar_fp32)  # exp(−β)
-                        T.tile.add(scalar_fp32, scalar_fp32, 1.0)  # 1 + exp(−β)
-                        T.tile.reciprocal(scalar_fp32, scalar_fp32)  # 1 / (1+exp(−β))
+                        T.tile.mul(scalar_fp32, scalar2_fp32, -1.0)  # -β
+                        T.pipe_barrier("v")
+                        T.tile.exp(scalar_fp32, scalar_fp32)  # exp(-β)
+                        T.pipe_barrier("v")
+                        T.tile.add(scalar_fp32, scalar_fp32, 1.0)  # 1 + exp(-β)
+                        T.tile.fill(softplus_val, 1.0)
+                        T.pipe_barrier("v")
+                        T.tile.div(scalar_fp32, softplus_val, scalar_fp32)  # 1/(1+exp(-β))
+                        T.barrier_all()
                         beta_gate_scalar = scalar_fp32[0]
 
                         # -- q, k, v: fp16 → fp32  [dk] / [vec_block_v] --
@@ -215,16 +234,23 @@ def kernel(
                         # -- (optional) L2 norm:  q̂ = q / √(‖q‖²+ε),  k̂ = k / √(‖k‖²+ε) --
                         if use_qk_l2norm:
                             T.tile.mul(norm_sq[0, :], q_f, q_f)  # q²  [1, dk]
+                            T.pipe_barrier("v")
                             T.reduce_sum(norm_sq, norm_val, dim=-1)  # Σq² → [1]
+                            T.pipe_barrier("v")
                             T.tile.add(norm_val, norm_val, L2_NORM_EPS)  # Σq²+ε
+                            T.pipe_barrier("v")
                             T.tile.rsqrt(norm_val, norm_val)  # 1/√(Σq²+ε)
+                            T.barrier_all()
                             norm_scalar = norm_val[0]
                             T.tile.mul(q_f, q_f, norm_scalar)  # q̂ = q · 1/√(‖q‖²+ε)
-
                             T.tile.mul(norm_sq[0, :], k_f, k_f)  # k²  [1, dk]
+                            T.pipe_barrier("v")
                             T.reduce_sum(norm_sq, norm_val, dim=-1)  # Σk² → [1]
+                            T.pipe_barrier("v")
                             T.tile.add(norm_val, norm_val, L2_NORM_EPS)  # Σk²+ε
+                            T.pipe_barrier("v")
                             T.tile.rsqrt(norm_val, norm_val)
+                            T.barrier_all()
                             norm_scalar = norm_val[0]
                             T.tile.mul(k_f, k_f, norm_scalar)  # k̂ = k · 1/√(‖k‖²+ε)
 
@@ -233,37 +259,26 @@ def kernel(
 
                         # =====  state decay:  H = H · α   [dk, vec_block_v]  =====
                         T.tile.mul(h_vec, h_vec, alpha_val[0])
-
-                        # =====  pred = H @ k̂   [dk,vec_block_v]·[dk] → [vec_block_v]  =====
+                        T.pipe_barrier("v")
                         T.copy(k_f, k_1d[:, 0])  # → [dk, 1]
+                        T.pipe_barrier("v")
                         T.tile.broadcast(k_broadcasted, k_1d)  # → [dk, vec_block_v]
+                        T.pipe_barrier("v")
                         T.tile.mul(compute_buffer, h_vec, k_broadcasted)  # H⊙k
+                        T.pipe_barrier("v")
                         T.reduce_sum(compute_buffer, pred_1d[0, :], dim=0)  # Σ_i H[i,v]·k[i]
+                        T.pipe_barrier("v")
                         T.copy(pred_1d[0, :], pred_vec)  # pred_v
-                        
-                        # T.tile.broadcast(k_broadcasted_transpose, k_f, axis=0)  # → [dk, vec_block_v]
-                        # T.tile.transpose(k_broadcasted, k_broadcasted_transpose)
-                        # T.tile.mul(compute_buffer, h_vec, k_broadcasted)  # H⊙k
-                        # T.reduce_sum(compute_buffer, pred_1d[0, :], dim=0)  # Σ_i H[i,v]·k[i]
-                        # T.copy(pred_1d[0, :], pred_vec)  # pred_v
-                        
-
-                        # Δ = (v − pred) · gate   → [vec_block_v]
+                        T.pipe_barrier("v")
                         T.tile.sub(delta_vec, v_f, pred_vec)  # v − pred
+                        T.pipe_barrier("v")
                         T.tile.mul(delta_vec, delta_vec, beta_gate_scalar)  # (v−pred)·σ(β)
-
-                        # =====  H = H + k̂ ⊗ Δ  (outer-product update)  =====
-                        #   H[i,v] += k[i] · Δ[v]
+                        T.pipe_barrier("v")
                         T.copy(delta_vec, delta_1d[0, :])  # → [1, vec_block_v]
+                        T.pipe_barrier("v")
                         T.tile.broadcast(compute_buffer, delta_1d)  # broadcast to [dk,vec_block_v]
-                        # T.tile.mul_add_dst(h_vec, k_broadcasted, compute_buffer)
                         T.tile.mul(k_broadcasted, k_broadcasted, compute_buffer)
-                        T.barrier_all()
                         T.tile.add(h_vec, h_vec, k_broadcasted)
-                        T.barrier_all()
-
-                        # =====  o = H @ q̂   [dk,vec_block_v]·[dk] → [vec_block_v]  =====
-                        #   (q̂ was already multiplied by scale above)
                         T.copy(q_f, k_1d[:, 0])
                         T.tile.broadcast(k_broadcasted, k_1d)  # q̂ → [dk, vec_block_v]
                         T.tile.mul(compute_buffer, h_vec, k_broadcasted)  # H⊙q̂
@@ -313,12 +328,17 @@ def golden(
     out = torch.empty((1, total_tokens, nv, dv), dtype=torch.float32, device=query.device)
 
     exp_A = torch.exp(A_log.float())
+    dbg = (num_seqs > 0)
     for seq_idx in range(num_seqs):
         seq_start = cu_seqlens[seq_idx].item()
         seq_end = cu_seqlens[seq_idx + 1].item()
         for v_head_idx in range(nv):
             h = state[seq_idx, v_head_idx]
             k_head_idx = v_head_idx // v_per_k
+            if seq_idx == 0 and v_head_idx == 0:
+                print(f"[golden] H_init[0,0,:,:64]: first5={h[0,:5].tolist()}")
+                print(f"[golden] exp_A[0]={exp_A[v_head_idx].item()}")
+                print(f"[golden] dt_bias[0]={dt_bias[v_head_idx].item()}")
             for t in range(seq_end - seq_start):
                 token_idx = seq_start + t
                 q_t = query[0, token_idx, k_head_idx].float()
@@ -336,10 +356,28 @@ def golden(
                 else:
                     sp = torch.log1p(torch.exp(beta_x)) / softplus_beta
 
+                if seq_idx == 0 and v_head_idx == 0 and t == 0:
+                    print(f"[golden] a[0,0]={a[token_idx, v_head_idx].float().item()}")
+                    print(f"[golden] beta[0,0]={beta[token_idx, v_head_idx].float().item()}")
+                    print(f"[golden] x={x.item()}, beta_x={beta_x.item()}, softplus={sp.item()}")
+
                 h = h * torch.exp(-exp_A[v_head_idx] * sp)
+                if seq_idx == 0 and v_head_idx == 0 and t == 0:
+                    alpha = torch.exp(-exp_A[v_head_idx] * sp).item()
+                    print(f"[golden] alpha={alpha}")
+                    print(f"[golden] H_decay[0,0,:,:64]: first5={h[0,:5].tolist()}")
                 pred = k_t @ h
-                h = h + torch.outer(k_t, (v_t - pred) * torch.sigmoid(beta[token_idx, v_head_idx].float()))
+                if seq_idx == 0 and v_head_idx == 0 and t == 0:
+                    print(f"[golden] pred[0,0,:64]: first5={pred[:5].tolist()}")
+                delta = (v_t - pred) * torch.sigmoid(beta[token_idx, v_head_idx].float())
+                if seq_idx == 0 and v_head_idx == 0 and t == 0:
+                    print(f"[golden] delta[0,0,:64]: first5={delta[:5].tolist()}")
+                h = h + torch.outer(k_t, delta)
+                if seq_idx == 0 and v_head_idx == 0 and t == 0:
+                    print(f"[golden] H_update[0,0,:,:64]: first5={h[0,:5].tolist()}")
                 out[0, token_idx, v_head_idx] = (q_t * scale) @ h
+                if seq_idx == 0 and v_head_idx == 0 and t == 0:
+                    print(f"[golden] out[0,0,:64]: first5={out[0,token_idx,v_head_idx,:5].tolist()}")
             state[seq_idx, v_head_idx] = h
 
     return out.to(query.dtype), state.to(init_state.dtype)
