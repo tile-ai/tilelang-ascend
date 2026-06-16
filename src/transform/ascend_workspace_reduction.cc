@@ -7,6 +7,9 @@
 namespace tvm {
 namespace tl {
 
+static constexpr const char *ascendPtoUsePipeInCVCopy = "tl.ascend_pto_use_pipe_in_cv_copy";
+TVM_REGISTER_PASS_CONFIG_OPTION(ascendPtoUsePipeInCVCopy, Bool);
+
 enum class DstBufferScope { L1, Ub };
 
 enum class CopyDirection { None, UbToL1, L0cToUb };
@@ -100,7 +103,7 @@ struct CopyGlobalContext {
 class CopyInfoCollector : public StmtExprVisitor {
 private:
   CopyGlobalContext context_;
-  bool is_pto_;
+  bool pto_use_pipe_;
   std::string platform_;
   bool needs_gm_workspace_;
   int pipe_flag_id_counter_ = 0;  // FlagID starts from 0
@@ -119,7 +122,7 @@ public:
   explicit CopyInfoCollector(
       const std::unordered_set<std::string> &target_copy_stmts = {},
       const std::unordered_map<std::string, DstBufferScope> &scope_table = {},
-      bool is_pto = false,
+      bool pto_use_pipe = false,
       const std::string &platform = "A3")
       : platform_(platform), needs_gm_workspace_(false) {
     if (!target_copy_stmts.empty()) {
@@ -128,7 +131,7 @@ public:
     if (!scope_table.empty()) {
       this->scope_table_ = scope_table;
     }
-    this->is_pto_ = is_pto;
+    this->pto_use_pipe_ = pto_use_pipe;
     this->needs_gm_workspace_ = (platform != "A5");
   }
 
@@ -410,7 +413,7 @@ public:
     }
 
     Array<PrimExpr> real_shapes;
-    if (is_pto_) {
+    if (pto_use_pipe_) {
       // A2 PTO: flat 1D buffer with 2x size for FIFO double-buffering
       PrimExpr total_elems = context_.core_meta_info_.total_core_nums;
       for (const auto &shape : ws_info.shapes) {
@@ -522,7 +525,7 @@ public:
       // Layer 1: Workspace collection (differs per backend)
       // Ascend C || A2 PTO: collect workspace info for GM buffer allocation
       // A5 PTO: skip workspace collection
-      if (needs_gm_workspace_ || !is_pto_) {
+      if (needs_gm_workspace_ || !pto_use_pipe_) {
         WorkspaceInfoCollector(copy_info, dst_ptr);
       }
 
@@ -573,7 +576,7 @@ public:
       }
 
       // Layer 3: PTO pipe metadata collection (for deferred pop emission)
-      if (is_pto_) {
+      if (pto_use_pipe_) {
         PipeInfoCollector(copy_info, call_node);
       }
     }
@@ -629,7 +632,7 @@ const std::unordered_map<std::string, DataType> CopyInfoCollector::type_map_ = {
 
 class AscendWorkspaceReductionPass : public arith::IRMutatorWithAnalyzer {
 public:
-  static PrimFunc Substitute(PrimFunc f, bool is_pto = false, const std::string &platform = "A3") {
+  static PrimFunc Substitute(PrimFunc f, bool pto_use_pipe = false, const std::string &platform = "A3") {
     arith::Analyzer analyzer;
 
     // Read buffers_skip_vid_reduction from PrimFunc attrs
@@ -659,12 +662,12 @@ public:
       }
     }
 
-    CopyInfoCollector info_collector({}, {}, is_pto, platform);
+    CopyInfoCollector info_collector({}, {}, pto_use_pipe, platform);
     info_collector.SetSkipBuffers(skip_buffer_names);
     info_collector.SetBufferShapes(buffer_shapes);
     info_collector.VisitStmt(f->body);
     const CopyGlobalContext &context = info_collector.GetCopyGlobalContext();
-    AscendWorkspaceReductionPass substituter(&analyzer, context, is_pto, platform);
+    AscendWorkspaceReductionPass substituter(&analyzer, context, pto_use_pipe, platform);
 
     auto *f_mut = f.CopyOnWrite();
     f_mut->body = substituter.VisitStmt(f->body);
@@ -690,7 +693,7 @@ public:
                                             "auto_gm_indices", auto_gm_idx);
 
     // Serialize pipe metadata as PrimFunc attr for codegen access
-    if (is_pto && !context.pipe_info_map_.empty()) {
+    if (pto_use_pipe && !context.pipe_info_map_.empty()) {
       Map<IntImm, Map<String, ObjectRef>> pipe_infos;
       for (const auto &[dst_buf_name, info] : context.pipe_info_map_) {
         Map<String, ObjectRef> fields;
@@ -722,14 +725,14 @@ public:
 private:
   AscendWorkspaceReductionPass(arith::Analyzer *analyzer,
                                 const CopyGlobalContext &context,
-                                bool is_pto = false,
+                                bool pto_use_pipe = false,
                                 const std::string &platform = "A3")
       : arith::IRMutatorWithAnalyzer(analyzer), context_(context),
-        core_meta_info__(context.core_meta_info_), is_pto_(is_pto), platform_(platform) {}
+        core_meta_info__(context.core_meta_info_), pto_use_pipe_(pto_use_pipe), platform_(platform) {}
 
   const CopyGlobalContext &context_;
   const CoreMetaInfo core_meta_info__; // For vid offset calculation
-  bool is_pto_;
+  bool pto_use_pipe_;
   std::string platform_;
 
   std::unordered_set<std::string> inserted_buffers_;
@@ -1046,7 +1049,7 @@ private:
     }
 
     // PTO path: replace cross-core copies with pipe pairs
-    if (is_pto_ && orig_call->op == tir::builtin::call_extern() &&
+    if (pto_use_pipe_ && orig_call->op == tir::builtin::call_extern() &&
         orig_call->args.size() > 0 &&
         orig_call->args[0].as<StringImmNode>()) {
       std::string func_name_str =
@@ -1153,7 +1156,7 @@ private:
     }
     Array<Stmt> seq_stmts_array;
     for (const auto &buffer_name : buffer_names_vec) {
-      if (is_pto_) {
+      if (pto_use_pipe_) {
         // PTO: generate copy_pipe_to_xx from PipeInfo
         auto pipe_it = context_.pipe_info_map_.find(buffer_name);
         ICHECK(pipe_it != context_.pipe_info_map_.end())
@@ -1218,7 +1221,9 @@ tvm::transform::Pass AscendWorkspaceReduction() {
     if (platform_attr.defined()) {
       platform = platform_attr.value();
     }
-    return AscendWorkspaceReductionPass::Substitute(std::move(f), is_pto, platform);
+    bool use_pipe_config = ctx->GetConfig<Bool>(ascendPtoUsePipeInCVCopy, Bool(true)).value();
+    bool pto_use_pipe = is_pto && use_pipe_config;
+    return AscendWorkspaceReductionPass::Substitute(std::move(f), pto_use_pipe, platform);
   };
   return CreatePrimFuncPass(pass_func, 0, "tl.AscendWorkspaceReduction", {});
 }
