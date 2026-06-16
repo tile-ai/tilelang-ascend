@@ -352,16 +352,19 @@ def golden_{算子名}({参数}):
     {参考实现代码}
 ```
 
-### 9.2 测试用例
+### 9.2 L0 门槛测试计划
+
+> 设计阶段**只给出 L0 门槛用例**（规则 shape，block 整除），供 Stage 2 快速精度收敛。
+> L1（功能，含不规则/尾块 shape）/ L2（异常输入）/ Boundary（特殊值）的**完整分层套件由 `tilelang-op-test-design` 生成**——Stage 1（场景 A）产出本节 L0 计划，Stage 2（场景 B）在 L0 通过后读真实实现扩展 L1/L2/Boundary。**不在此手工枚举 L1/L2/Boundary。**
 
 | 用例名 | 级别 | Shape | dtype | 说明 |
 |--------|------|-------|-------|------|
-| {basic_small} | Level 0 | {(32, 32)} | {float16} | {最小功能验证} |
-| {typical_1} | Level 1 | {(1024, 1024)} | {float16} | {典型配置} |
-| {boundary} | Level 2 | {(1, 1)} | {float16} | {边界值测试} |
-| {large_scale} | Level 3 | {(8192, 8192)} | {float16} | {性能测试} |
+| {l0_basic} | L0 | {(32, 32)} | {float16} | {最小功能验证，规则 shape（block 整除）} |
+| {l0_typical} | L0 | {(128, 128)} | {float16} | {典型规则配置} |
 
 ### 9.3 精度标准
+
+> L0 用 baseline 标准即可；L1/L2/Boundary 扩展时由 `tilelang-op-test-design` 按算子类别（GEMM / Softmax / Normalization / Activation / Reduction / Fusion）套用更细的精度标准。
 
 | dtype | atol | rtol |
 |-------|------|------|
@@ -416,9 +419,9 @@ examples/{算子名}/
 
 ### 11.4 实现顺序
 
-1. ✅ 设计文档（design.md）
+1. ✅ 设计文档（design.md）+ L0 门槛测试计划（本文件 §9.2）
 2. ⬜ Golden 函数（验证基准）
-3. ⬜ 算子实现（example_{算子名}.py）
-4. ⬜ 基础测试（Level 0 + Level 1）
-5. ⬜ 边界测试（Level 2）
-6. ⬜ 性能测试（Level 3，可选）
+3. ⬜ 算子实现（example_{算子名}.py）+ 内嵌 L0 用例
+4. ⬜ L0 门槛测试通过（精度收敛）
+5. ⬜ 扩展分层套件（L1 功能 / L2 异常 / Boundary 特殊值，由 `tilelang-op-test-design` 场景 B 生成）
+6. ⬜ 全量套件运行（L0/L1 须通过；L2/Boundary 失败仅记录不阻塞）

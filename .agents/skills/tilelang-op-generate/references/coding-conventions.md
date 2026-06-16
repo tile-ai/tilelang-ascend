@@ -96,8 +96,12 @@ T.tile.broadcast(max_2d_ub, max_ub)
 
 ## 5. 测试模板
 
+分层结构、main 分发器、`--level` 与分层标记见 [examples/code-skeleton.md](../examples/code-skeleton.md) 的「测试（分层）」段。单个用例的 golden 对比写法：
+
 ```python
-# golden 对比
+# golden 对比（放在 try/except 内，按层打标记）
 ref_output = torch.nn.functional.softmax(input_data, dim=-1)  # 或手写 golden
 torch.testing.assert_close(output.cpu(), ref_output.cpu(), rtol=rtol, atol=atol)
+# L0/L1 通过 → print("[PRECISION_PASS] ...")；失败 → print("[PRECISION_FAIL] ...") 且 ok=False
+# L2/Boundary 通过 → print("[BOUNDARY_PASS] ...")；失败 → print("[BOUNDARY_WARN] ...") 后继续
 ```
