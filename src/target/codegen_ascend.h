@@ -108,6 +108,8 @@ private:
 
   void BrcbCodegen(const CallNode *op);
 
+  void MulMaskCodegen(const CallNode *op, const std::string &op_name);
+
   void SelectCodegen(const CallNode *op, const std::string &op_name);
 
   void MulAddDstCodegen(const CallNode *op);

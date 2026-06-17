@@ -218,6 +218,12 @@ GetOperationConfig() {
       {"tl.ascend_gatherb",
        {{{1, "write"}, {2, "read"}, {3, "read"}}, "PIPE_V"}},
       {"tl.ascend_brcb", {{{1, "write"}, {2, "read"}}, "PIPE_V"}},
+      {"tl.ascend_mul_mask",
+       {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
+      {"tl.ascend_sub_mask",
+       {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
+      {"tl.ascend_div_mask",
+       {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
       {"tl.ascend_duplicate", {{{0, "write"}}, "PIPE_V"}},
       {"tl.ascend_cast", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
 

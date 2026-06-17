@@ -1315,5 +1315,20 @@ TIR_DEFINE_TL_BUILTIN(ascend_brcb)
     .set_num_inputs(6)
     .set_attr<TCallEffectKind>("TCallEffectKind",
                                Integer(CallEffectKind::kOpaque));
+
+TIR_DEFINE_TL_BUILTIN(ascend_mul_mask)
+    .set_num_inputs(13)
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
+
+TIR_DEFINE_TL_BUILTIN(ascend_sub_mask)
+    .set_num_inputs(13)
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
+
+TIR_DEFINE_TL_BUILTIN(ascend_div_mask)
+    .set_num_inputs(13)
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 } // namespace tl
 } // namespace tvm

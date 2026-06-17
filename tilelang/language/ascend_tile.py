@@ -836,6 +836,170 @@ def mul(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, src1: Buffer | 
     return binary_op(dst, src0, src1, "mul")
 
 
+def mul_mask(
+    dst: Buffer | BufferRegion,
+    src0: Buffer | BufferRegion,
+    src1: Buffer | BufferRegion,
+    mask: list[int],
+    repeat_time: PrimExpr,
+    dst_blk_stride: PrimExpr,
+    src0_blk_stride: PrimExpr,
+    src1_blk_stride: PrimExpr,
+    dst_rep_stride: PrimExpr,
+    src0_rep_stride: PrimExpr,
+    src1_rep_stride: PrimExpr,
+):
+    """Performs element-wise multiplication with mask bit-by-bit mode and repeat params.
+
+    This is the "tensor高维切分计算 mask逐bit模式" variant of Mul.
+    Each bit in the mask controls whether the corresponding element participates in computation.
+
+    Args:
+        dst: The destination buffer.
+        src0: The first source buffer.
+        src1: The second source buffer.
+        mask: Mask array for bit-by-bit control. For 16-bit types: [mask0, mask1],
+              for 32-bit types: [mask0]. Bit value 1 means participate, 0 means skip.
+        repeat_time: Number of repeat iterations.
+        dst_blk_stride: Block stride for destination within one iteration.
+        src0_blk_stride: Block stride for src0 within one iteration.
+        src1_blk_stride: Block stride for src1 within one iteration.
+        dst_rep_stride: Repeat stride for destination between iterations.
+        src0_rep_stride: Repeat stride for src0 between iterations.
+        src1_rep_stride: Repeat stride for src1 between iterations.
+
+    Returns:
+        A TVM intrinsic call that performs the masked multiplication.
+    """
+    return _binary_mask_op(
+        dst, src0, src1, mask, repeat_time,
+        dst_blk_stride, src0_blk_stride, src1_blk_stride,
+        dst_rep_stride, src0_rep_stride, src1_rep_stride,
+        "mul",
+    )
+
+
+def sub_mask(
+    dst: Buffer | BufferRegion,
+    src0: Buffer | BufferRegion,
+    src1: Buffer | BufferRegion,
+    mask: list[int],
+    repeat_time: PrimExpr,
+    dst_blk_stride: PrimExpr,
+    src0_blk_stride: PrimExpr,
+    src1_blk_stride: PrimExpr,
+    dst_rep_stride: PrimExpr,
+    src0_rep_stride: PrimExpr,
+    src1_rep_stride: PrimExpr,
+):
+    """Performs element-wise subtraction with mask bit-by-bit mode and repeat params.
+
+    This is the "tensor高维切分计算 mask逐bit模式" variant of Sub.
+
+    Args:
+        dst: The destination buffer.
+        src0: The first source buffer.
+        src1: The second source buffer.
+        mask: Mask array for bit-by-bit control.
+        repeat_time: Number of repeat iterations.
+        dst_blk_stride: Block stride for destination within one iteration.
+        src0_blk_stride: Block stride for src0 within one iteration.
+        src1_blk_stride: Block stride for src1 within one iteration.
+        dst_rep_stride: Repeat stride for destination between iterations.
+        src0_rep_stride: Repeat stride for src0 between iterations.
+        src1_rep_stride: Repeat stride for src1 between iterations.
+
+    Returns:
+        A TVM intrinsic call that performs the masked subtraction.
+    """
+    return _binary_mask_op(
+        dst, src0, src1, mask, repeat_time,
+        dst_blk_stride, src0_blk_stride, src1_blk_stride,
+        dst_rep_stride, src0_rep_stride, src1_rep_stride,
+        "sub",
+    )
+
+
+def div_mask(
+    dst: Buffer | BufferRegion,
+    src0: Buffer | BufferRegion,
+    src1: Buffer | BufferRegion,
+    mask: list[int],
+    repeat_time: PrimExpr,
+    dst_blk_stride: PrimExpr,
+    src0_blk_stride: PrimExpr,
+    src1_blk_stride: PrimExpr,
+    dst_rep_stride: PrimExpr,
+    src0_rep_stride: PrimExpr,
+    src1_rep_stride: PrimExpr,
+):
+    """Performs element-wise division with mask bit-by-bit mode and repeat params.
+
+    This is the "tensor高维切分计算 mask逐bit模式" variant of Div.
+
+    Args:
+        dst: The destination buffer.
+        src0: The first source buffer.
+        src1: The second source buffer.
+        mask: Mask array for bit-by-bit control.
+        repeat_time: Number of repeat iterations.
+        dst_blk_stride: Block stride for destination within one iteration.
+        src0_blk_stride: Block stride for src0 within one iteration.
+        src1_blk_stride: Block stride for src1 within one iteration.
+        dst_rep_stride: Repeat stride for destination between iterations.
+        src0_rep_stride: Repeat stride for src0 between iterations.
+        src1_rep_stride: Repeat stride for src1 between iterations.
+
+    Returns:
+        A TVM intrinsic call that performs the masked division.
+    """
+    return _binary_mask_op(
+        dst, src0, src1, mask, repeat_time,
+        dst_blk_stride, src0_blk_stride, src1_blk_stride,
+        dst_rep_stride, src0_rep_stride, src1_rep_stride,
+        "div",
+    )
+
+
+def _binary_mask_op(
+    dst, src0, src1, mask, repeat_time,
+    dst_blk_stride, src0_blk_stride, src1_blk_stride,
+    dst_rep_stride, src0_rep_stride, src1_rep_stride,
+    op: str,
+):
+    if isinstance(dst, BufferRegion):
+        dst_ptr, _ = _handle_buffer_region(dst, "w")
+    else:
+        dst_ptr = dst.access_ptr("w")
+
+    if isinstance(src0, BufferRegion):
+        src0_ptr, _ = _handle_buffer_region(src0, "r")
+    else:
+        src0_ptr = src0.access_ptr("r")
+
+    if isinstance(src1, BufferRegion):
+        src1_ptr, _ = _handle_buffer_region(src1, "r")
+    else:
+        src1_ptr = src1.access_ptr("r")
+
+    return tir.call_intrin(
+        "handle",
+        tir.op.Op.get(f"tl.ascend_{op}_mask"),
+        dst_ptr,
+        src0_ptr,
+        src1_ptr,
+        mask[0] if len(mask) > 0 else 0,
+        mask[1] if len(mask) > 1 else 0,
+        repeat_time,
+        dst_blk_stride,
+        src0_blk_stride,
+        src1_blk_stride,
+        dst_rep_stride,
+        src0_rep_stride,
+        src1_rep_stride,
+    )
+
+
 def div(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, src1: Buffer | BufferRegion | BufferLoad):
     """Performs element-wise division: dst = src0 / src1.
 
