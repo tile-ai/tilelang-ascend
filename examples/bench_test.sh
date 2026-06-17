@@ -144,6 +144,7 @@ collect_test_scripts() {
         -not -name "__init__.py" \
         -not -name "*_golden.py" \
         -not -name "sfa_golden.py" \
+        -not -name "utils.py" \
         -not -path "*/bench_sfa/*" \
         | sort)
     for f in $py_files; do scripts+=("$f"); done
