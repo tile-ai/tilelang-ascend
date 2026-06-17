@@ -63,9 +63,7 @@ def _can_use_bulk_dma(num_heads: int, rows_per_iter: int) -> bool:
     if (rows_per_iter * num_heads) % f32_vec_elems != 0:
         return False
     bf16_block_elems = DATACOPY_MIN_BYTES // 2
-    if num_heads % bf16_block_elems != 0:
-        return False
-    return True
+    return num_heads % bf16_block_elems == 0
 
 
 UB_BUDGET_BYTES = 64 * 1024
@@ -132,7 +130,6 @@ def build_fused_gdn_gating_kernel(
             ub_tensor_dim = _align_count_to_vector_bytes(num_heads, acc_dtype)
     compare_select_mask_bytes = (ub_tensor_dim + 7) // 8
     multi_count = rows_per_iter * ub_tensor_dim
-    multi_cmp_mask = rows_per_iter * compare_select_mask_bytes
 
     @T.prim_func
     def fused_gdn_gating_kernel(
@@ -194,7 +191,7 @@ def build_fused_gdn_gating_kernel(
 
                 if use_bulk_dma:
                     for chunk_idx in T.serial(num_chunks):
-                        with T.If(chunk_idx > 0):
+                        with T.If(chunk_idx > 0):  # noqa: SIM117
                             with T.Then():
                                 mte2_wait_mte3(CHUNK_OUTPUT_STORED_EVENT)
                         base_row = (chunk_start + chunk_idx) * rows_per_iter
@@ -272,13 +269,13 @@ def build_fused_gdn_gating_kernel(
                                         b_half_ub[r, :num_heads],
                                         beta_out[base_row + r, :],
                                     )
-                        with T.If(chunk_idx < num_chunks - 1):
+                        with T.If(chunk_idx < num_chunks - 1):  # noqa: SIM117
                             with T.Then():
                                 mte3_notify_mte2(CHUNK_OUTPUT_STORED_EVENT)
 
                 else:
                     for chunk_idx in T.serial(num_chunks):
-                        with T.If(chunk_idx > 0):
+                        with T.If(chunk_idx > 0):  # noqa: SIM117
                             with T.Then():
                                 mte2_wait_mte3(CHUNK_OUTPUT_STORED_EVENT)
                         base_row = (chunk_start + chunk_idx) * rows_per_iter
@@ -350,7 +347,7 @@ def build_fused_gdn_gating_kernel(
                                 b_half_ub[r, :num_heads],
                                 beta_out[base_row + r, :],
                             )
-                        with T.If(chunk_idx < num_chunks - 1):
+                        with T.If(chunk_idx < num_chunks - 1):  # noqa: SIM117
                             with T.Then():
                                 mte3_notify_mte2(CHUNK_OUTPUT_STORED_EVENT)
 

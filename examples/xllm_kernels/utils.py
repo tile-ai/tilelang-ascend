@@ -1,6 +1,4 @@
-import tilelang
 import tilelang.language as T
-from typing import Any
 
 DEFAULT_ASCEND_PASS_CONFIGS = {
     # Use raw pass-config strings to avoid hard dependency on

@@ -21,13 +21,11 @@ from utils import (
     mte2_wait_mte3,
     mte2_wait_v,
     mte3_notify_mte2,
-    mte3_notify_v,
     mte3_wait_mte2,
     mte3_wait_v,
     v_notify_mte2,
     v_notify_mte3,
     v_wait_mte2,
-    v_wait_mte3,
 )
 
 
@@ -155,7 +153,6 @@ def build_split_qkv_rmsnorm_mrope_kernel(
     vec_core_num: int,
     max_num_tokens: int = COMPILE_MAX_TOKENS,
 ):
-    _validate_head_spec(head_size=head_size, rope_dim=rope_dim)
     if vec_core_num <= 0:
         raise ValueError(f"vec_core_num({vec_core_num}) must be > 0")
     if vec_core_num % VEC_NUM != 0:
@@ -168,8 +165,6 @@ def build_split_qkv_rmsnorm_mrope_kernel(
     half_rope_dim = rope_dim // 2
     q_size = num_q_heads * head_size
     kv_size = num_kv_heads * head_size
-    gate_size = q_size
-    qkv_stride = q_size * 2 + kv_size * 2
     qkv_head_slots = num_q_heads * 2 + num_kv_heads * 2
 
     acc_dtype = "float32"
@@ -341,22 +336,19 @@ def build_split_qkv_rmsnorm_mrope_kernel(
                 for row_local in T.serial(num_rows_per_vec):
                     row = row_start + row_local
                     # === Load phase
-                    with T.If(row_local > 0):
-                        with T.Then():
-                            mte2_wait_v(E.AXES_FREE)
+                    with T.If(row_local > 0), T.Then():
+                        mte2_wait_v(E.AXES_FREE)
                     T.copy(cos_sin[row, 0], axes_ub[0, 0 : 3 * rope_dim])
                     mte2_notify_v(E.COS_SIN_AXES)
 
                     # load q
-                    with T.If(row_local > 0):
-                        with T.Then():
-                            mte2_wait_mte3(E.Q_FREE)
+                    with T.If(row_local > 0), T.Then():
+                        mte2_wait_mte3(E.Q_FREE)
                     T.copy(qkvg_in[row, 0:num_q_heads, 0:head_size], q_heads_half_ub)
                     mte2_notify_v(E.HEAD_ROW_Q)
                     # load g
-                    with T.If(row_local > 0):
-                        with T.Then():
-                            mte2_wait_mte3(E.G_FREE)
+                    with T.If(row_local > 0), T.Then():
+                        mte2_wait_mte3(E.G_FREE)
                     T.copy(
                         qkvg_in[
                             row,
@@ -368,9 +360,8 @@ def build_split_qkv_rmsnorm_mrope_kernel(
                     mte2_notify_mte3(E.GATE_READY)
 
                     # load k
-                    with T.If(row_local > 0):
-                        with T.Then():
-                            mte2_wait_mte3(E.K_FREE)
+                    with T.If(row_local > 0), T.Then():
+                        mte2_wait_mte3(E.K_FREE)
                     T.copy(
                         qkvg_in[
                             row,
@@ -382,9 +373,8 @@ def build_split_qkv_rmsnorm_mrope_kernel(
                     mte2_notify_v(E.HEAD_ROW_K)
 
                     # load v
-                    with T.If(row_local > 0):
-                        with T.Then():
-                            mte2_wait_mte3(E.V_FREE)
+                    with T.If(row_local > 0), T.Then():
+                        mte2_wait_mte3(E.V_FREE)
                     T.copy(
                         qkvg_in[
                             row,
@@ -406,9 +396,8 @@ def build_split_qkv_rmsnorm_mrope_kernel(
                         sin_neg_tmp_ub,
                     )
                     # Release axes_ub after gather
-                    with T.If(row_local < num_rows_per_vec - 1):
-                        with T.Then():
-                            v_notify_mte2(E.AXES_FREE)
+                    with T.If(row_local < num_rows_per_vec - 1), T.Then():
+                        v_notify_mte2(E.AXES_FREE)
 
                     # === Q compute (V pipe) ===
                     v_wait_mte2(E.HEAD_ROW_Q)
@@ -463,27 +452,23 @@ def build_split_qkv_rmsnorm_mrope_kernel(
                     # === Store phase (MTE3 pipe)
                     mte3_wait_v(E.Q_CAST)
                     T.copy(q_heads_half_ub, q_out[row, 0, 0])
-                    with T.If(row_local < num_rows_per_vec - 1):
-                        with T.Then():
-                            mte3_notify_mte2(E.Q_FREE)
+                    with T.If(row_local < num_rows_per_vec - 1), T.Then():
+                        mte3_notify_mte2(E.Q_FREE)
 
                     mte3_wait_mte2(E.GATE_READY)
                     T.copy(gate_heads_half_ub, gate_out[row, 0, 0])
-                    with T.If(row_local < num_rows_per_vec - 1):
-                        with T.Then():
-                            mte3_notify_mte2(E.G_FREE)
+                    with T.If(row_local < num_rows_per_vec - 1), T.Then():
+                        mte3_notify_mte2(E.G_FREE)
 
                     mte3_wait_v(E.K_CAST)
                     T.copy(k_heads_half_ub, k_out[row, 0, 0])
-                    with T.If(row_local < num_rows_per_vec - 1):
-                        with T.Then():
-                            mte3_notify_mte2(E.K_FREE)
+                    with T.If(row_local < num_rows_per_vec - 1), T.Then():
+                        mte3_notify_mte2(E.K_FREE)
 
                     mte3_wait_mte2(E.V_READY)
                     T.copy(v_heads_half_ub, v_out[row, 0, 0])
-                    with T.If(row_local < num_rows_per_vec - 1):
-                        with T.Then():
-                            mte3_notify_mte2(E.V_FREE)
+                    with T.If(row_local < num_rows_per_vec - 1), T.Then():
+                        mte3_notify_mte2(E.V_FREE)
 
     return split_qkv_rmsnorm_mrope_kernel
 
