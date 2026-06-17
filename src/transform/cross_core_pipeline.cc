@@ -17,6 +17,8 @@
 #include <tvm/tir/transform.h>
 #include <tvm/tir/utils.h>
 
+#include <functional>
+
 #include "../op/ascend.h"
 #include "../op/builtin.h"
 #include "./common/collector.h"
@@ -43,7 +45,8 @@ std::unordered_map<std::string, std::string> callnodeMapPos_ = {
     {"wmma.matrix_b", "cube"},
     {"wmma.accumulator", "cube"},
     {"shared.dyn", "cube"},
-    {"shared", "vec"}};
+    {"shared", "vec"},
+    {"local.var", "vec"}};
 
 int32_t checkBufferScope(Map<Var, String> location_map, const Var &var) {
   if (location_map.find(var) != location_map.end()) {
@@ -177,6 +180,53 @@ private:
   Map<Var, String> location_map_;
   int32_t num_stages_;
 };
+
+static int32_t DetectScope(const Stmt &stmt,
+                           const Map<Var, String> &location_map) {
+  if (const auto *eval = stmt.as<EvaluateNode>()) {
+    if (const auto *call = eval->value.as<CallNode>()) {
+      int start = call->op.same_as(builtin::call_extern()) ? 1 : 0;
+      for (int i = start; i < static_cast<int>(call->args.size()); ++i) {
+        if (const auto *inner = call->args[i].as<CallNode>()) {
+          if (inner->args.size() >= 2) {
+            if (auto buf_var = inner->args[1].as<VarNode>()) {
+              Var var = GetRef<Var>(buf_var);
+              int32_t scope = checkBufferScope(location_map, var);
+              if (scope != INVALID_SCOPE)
+                return scope;
+            }
+          }
+        }
+      }
+    }
+  } else if (const auto *store = stmt.as<BufferStoreNode>()) {
+    Var buf_var = store->buffer->data;
+    int32_t scope = checkBufferScope(location_map, buf_var);
+    if (scope != INVALID_SCOPE)
+      return scope;
+  } else if (const auto *seq = stmt.as<SeqStmtNode>()) {
+    for (const auto &s : seq->seq) {
+      int32_t scope = DetectScope(s, location_map);
+      if (scope != INVALID_SCOPE)
+        return scope;
+    }
+  } else if (const auto *loop = stmt.as<ForNode>()) {
+    return DetectScope(loop->body, location_map);
+  } else if (const auto *ite = stmt.as<IfThenElseNode>()) {
+    int32_t scope = DetectScope(ite->then_case, location_map);
+    if (scope != INVALID_SCOPE)
+      return scope;
+    if (ite->else_case)
+      return DetectScope(ite->else_case.value(), location_map);
+  } else if (const auto *let = stmt.as<LetStmtNode>()) {
+    return DetectScope(let->body, location_map);
+  } else if (const auto *attr = stmt.as<AttrStmtNode>()) {
+    return DetectScope(attr->body, location_map);
+  } else if (const auto *realize = stmt.as<BlockRealizeNode>()) {
+    return DetectScope(realize->block->body, location_map);
+  }
+  return INVALID_SCOPE;
+}
 
 class LoopAnalyzer : public StmtVisitor {
 public:
@@ -313,6 +363,49 @@ public:
     }
   }
 
+  void VisitStmt_(const BufferStoreNode *op) override {
+    StmtInfo info;
+    info.type = "BufferStore";
+    info.stmt = GetRef<Stmt>(op);
+
+    Var buf_var = op->buffer->data;
+    core_scope_ = checkBufferScope(location_map_, buf_var);
+
+    if (core_scope_ == CUBE_SCOPE) {
+      info.idx = current_idx_C_++;
+    } else if (core_scope_ == VEC_SCOPE) {
+      info.idx = current_idx_V_++;
+    }
+
+    std::string buf_name = buf_var->name_hint;
+    if (location_map_.find(buf_var) != location_map_.end()) {
+      info.used_buffers.insert(buf_name);
+    }
+
+    CollectBuffersFromExpr(op->value, info.used_buffers, info.accesses);
+
+    AccessInfo access;
+    access.buffer_name = buf_name;
+    access.offset =
+        op->indices.empty() ? make_zero(op->buffer->dtype) : op->indices[0];
+    access.extent = make_const(DataType::Int(32), 1);
+    access.is_read = false;
+    access.is_write = true;
+    access.order = static_cast<int>(info.accesses.size());
+    info.accesses.push_back(access);
+
+    if (core_scope_ == CUBE_SCOPE) {
+      all_statements_C_.push_back(info);
+    } else if (core_scope_ == VEC_SCOPE) {
+      all_statements_V_.push_back(info);
+    }
+    if (core_scope_ != INVALID_SCOPE) {
+      info.idx = current_idx_++;
+      info.scope = core_scope_;
+      all_statements_.push_back(info);
+    }
+  }
+
   void VisitStmt_(const ForNode *op) override {
     StmtInfo for_info;
     for_info.type = "For";
@@ -353,7 +446,141 @@ public:
     this->VisitStmt(op->block);
   }
 
+  void VisitStmt_(const IfThenElseNode *op) override {
+    StmtInfo ite_info;
+    ite_info.type = "IfThenElse";
+    ite_info.stmt = GetRef<Stmt>(op);
+
+    std::vector<StmtInfo> saved_statements_C = all_statements_C_;
+    std::vector<StmtInfo> saved_statements_V = all_statements_V_;
+    std::vector<StmtInfo> saved_statements = all_statements_;
+    int saved_idx_C = current_idx_C_;
+    int saved_idx_V = current_idx_V_;
+    int saved_idx = current_idx_;
+
+    this->VisitStmt(op->then_case);
+    if (op->else_case) {
+      this->VisitStmt(op->else_case.value());
+    }
+
+    int32_t then_scope = DetectScope(op->then_case, location_map_);
+    int32_t else_scope = INVALID_SCOPE;
+    if (op->else_case) {
+      else_scope = DetectScope(op->else_case.value(), location_map_);
+    }
+
+    int32_t ite_scope = (then_scope != INVALID_SCOPE) ? then_scope : else_scope;
+    bool mixed_scope =
+        (then_scope != INVALID_SCOPE && else_scope != INVALID_SCOPE &&
+         then_scope != else_scope);
+
+    if (mixed_scope) {
+    } else if (ite_scope != INVALID_SCOPE) {
+      if (ite_scope == CUBE_SCOPE) {
+        ProcessInfo(workspace_writes_C_, all_statements_C_, saved_statements_C,
+                    saved_idx_C, ite_info);
+        current_idx_C_ = all_statements_C_.size();
+      } else {
+        ProcessInfo(workspace_writes_V_, all_statements_V_, saved_statements_V,
+                    saved_idx_V, ite_info);
+        current_idx_V_ = all_statements_V_.size();
+      }
+
+      CollectIfThenElseBuffers(op, ite_info.used_buffers, ite_info.accesses);
+
+      ite_info.scope = ite_scope;
+      ite_info.idx = current_idx_++;
+      all_statements_.push_back(ite_info);
+    }
+  }
+
 private:
+  void CollectBuffersFromExpr(const PrimExpr &expr,
+                              std::set<std::string> &used_buffers,
+                              std::vector<AccessInfo> &accesses) {
+    if (const auto *load = expr.as<BufferLoadNode>()) {
+      Var buf_var = load->buffer->data;
+      std::string buf_name = buf_var->name_hint;
+      if (location_map_.find(buf_var) != location_map_.end()) {
+        used_buffers.insert(buf_name);
+        AccessInfo access;
+        access.buffer_name = buf_name;
+        access.offset = load->indices.empty() ? make_zero(load->buffer->dtype)
+                                              : load->indices[0];
+        access.extent = make_const(DataType::Int(32), 1);
+        access.is_read = true;
+        access.is_write = false;
+        access.order = static_cast<int>(accesses.size());
+        accesses.push_back(access);
+      }
+    } else if (const auto *call = expr.as<CallNode>()) {
+      for (const auto &arg : call->args) {
+        CollectBuffersFromExpr(arg, used_buffers, accesses);
+      }
+    } else if (const auto *binop = expr.as<AddNode>()) {
+      CollectBuffersFromExpr(binop->a, used_buffers, accesses);
+      CollectBuffersFromExpr(binop->b, used_buffers, accesses);
+    } else if (const auto *binop = expr.as<SubNode>()) {
+      CollectBuffersFromExpr(binop->a, used_buffers, accesses);
+      CollectBuffersFromExpr(binop->b, used_buffers, accesses);
+    } else if (const auto *binop = expr.as<MulNode>()) {
+      CollectBuffersFromExpr(binop->a, used_buffers, accesses);
+      CollectBuffersFromExpr(binop->b, used_buffers, accesses);
+    } else if (const auto *binop = expr.as<DivNode>()) {
+      CollectBuffersFromExpr(binop->a, used_buffers, accesses);
+      CollectBuffersFromExpr(binop->b, used_buffers, accesses);
+    } else if (const auto *cast = expr.as<CastNode>()) {
+      CollectBuffersFromExpr(cast->value, used_buffers, accesses);
+    } else if (const auto *select = expr.as<SelectNode>()) {
+      CollectBuffersFromExpr(select->condition, used_buffers, accesses);
+      CollectBuffersFromExpr(select->true_value, used_buffers, accesses);
+      CollectBuffersFromExpr(select->false_value, used_buffers, accesses);
+    }
+  }
+
+  void CollectIfThenElseBuffers(const IfThenElseNode *op,
+                                std::set<std::string> &used_buffers,
+                                std::vector<AccessInfo> &accesses) {
+    CollectBuffersFromStmt(op->then_case, used_buffers, accesses);
+    if (op->else_case) {
+      CollectBuffersFromStmt(op->else_case.value(), used_buffers, accesses);
+    }
+  }
+
+  void CollectBuffersFromStmt(const Stmt &stmt,
+                              std::set<std::string> &used_buffers,
+                              std::vector<AccessInfo> &accesses) {
+    if (const auto *eval = stmt.as<EvaluateNode>()) {
+      if (const auto *call = eval->value.as<CallNode>()) {
+        CollectBuffersAndAccesses(call, used_buffers, accesses);
+      }
+    } else if (const auto *store = stmt.as<BufferStoreNode>()) {
+      Var buf_var = store->buffer->data;
+      std::string buf_name = buf_var->name_hint;
+      if (location_map_.find(buf_var) != location_map_.end()) {
+        used_buffers.insert(buf_name);
+      }
+      CollectBuffersFromExpr(store->value, used_buffers, accesses);
+    } else if (const auto *seq = stmt.as<SeqStmtNode>()) {
+      for (const auto &s : seq->seq) {
+        CollectBuffersFromStmt(s, used_buffers, accesses);
+      }
+    } else if (const auto *loop = stmt.as<ForNode>()) {
+      CollectBuffersFromStmt(loop->body, used_buffers, accesses);
+    } else if (const auto *ite = stmt.as<IfThenElseNode>()) {
+      CollectBuffersFromStmt(ite->then_case, used_buffers, accesses);
+      if (ite->else_case) {
+        CollectBuffersFromStmt(ite->else_case.value(), used_buffers, accesses);
+      }
+    } else if (const auto *let = stmt.as<LetStmtNode>()) {
+      CollectBuffersFromStmt(let->body, used_buffers, accesses);
+    } else if (const auto *attr = stmt.as<AttrStmtNode>()) {
+      CollectBuffersFromStmt(attr->body, used_buffers, accesses);
+    } else if (const auto *realize = stmt.as<BlockRealizeNode>()) {
+      CollectBuffersFromStmt(realize->block->body, used_buffers, accesses);
+    }
+  }
+
   void ProcessInfo(std::vector<WorkspaceWrite> &workspace_writes,
                    std::vector<StmtInfo> &all_statements,
                    std::vector<StmtInfo> &saved_statements, int saved_idx,
@@ -538,6 +765,39 @@ static bool RangeOverlaps(const PrimExpr &a_off, const PrimExpr &a_ext,
  * \brief Collect all read ranges of a specific buffer from an AST subtree.
  */
 static void
+CollectBufferReadsFromExpr(const PrimExpr &expr, const std::string &target_buf,
+                           std::vector<std::pair<PrimExpr, PrimExpr>> &reads) {
+  if (const auto *load = expr.as<BufferLoadNode>()) {
+    if (load->buffer->data->name_hint == target_buf) {
+      PrimExpr offset = load->indices.empty() ? make_zero(load->buffer->dtype)
+                                              : load->indices[0];
+      reads.push_back({offset, make_const(DataType::Int(32), 1)});
+    }
+  } else if (const auto *call = expr.as<CallNode>()) {
+    for (const auto &arg : call->args)
+      CollectBufferReadsFromExpr(arg, target_buf, reads);
+  } else if (const auto *binop = expr.as<AddNode>()) {
+    CollectBufferReadsFromExpr(binop->a, target_buf, reads);
+    CollectBufferReadsFromExpr(binop->b, target_buf, reads);
+  } else if (const auto *binop = expr.as<SubNode>()) {
+    CollectBufferReadsFromExpr(binop->a, target_buf, reads);
+    CollectBufferReadsFromExpr(binop->b, target_buf, reads);
+  } else if (const auto *binop = expr.as<MulNode>()) {
+    CollectBufferReadsFromExpr(binop->a, target_buf, reads);
+    CollectBufferReadsFromExpr(binop->b, target_buf, reads);
+  } else if (const auto *binop = expr.as<DivNode>()) {
+    CollectBufferReadsFromExpr(binop->a, target_buf, reads);
+    CollectBufferReadsFromExpr(binop->b, target_buf, reads);
+  } else if (const auto *cast = expr.as<CastNode>()) {
+    CollectBufferReadsFromExpr(cast->value, target_buf, reads);
+  } else if (const auto *select = expr.as<SelectNode>()) {
+    CollectBufferReadsFromExpr(select->condition, target_buf, reads);
+    CollectBufferReadsFromExpr(select->true_value, target_buf, reads);
+    CollectBufferReadsFromExpr(select->false_value, target_buf, reads);
+  }
+}
+
+static void
 CollectBufferReads(const Stmt &stmt, const std::string &target_buf,
                    std::vector<std::pair<PrimExpr, PrimExpr>> &reads) {
   if (const auto *eval = stmt.as<EvaluateNode>()) {
@@ -559,6 +819,8 @@ CollectBufferReads(const Stmt &stmt, const std::string &target_buf,
         }
       }
     }
+  } else if (const auto *store = stmt.as<BufferStoreNode>()) {
+    CollectBufferReadsFromExpr(store->value, target_buf, reads);
   } else if (const auto *seq = stmt.as<SeqStmtNode>()) {
     for (const auto &s : seq->seq)
       CollectBufferReads(s, target_buf, reads);
@@ -626,6 +888,49 @@ static std::pair<bool, bool> CheckExposedRead(const Stmt &stmt,
         }
       }
     }
+    return {reads && !covered, kills};
+  }
+
+  if (const auto *store = stmt.as<BufferStoreNode>()) {
+    bool reads = false, kills = false;
+    if (store->buffer->data->name_hint == target_buf) {
+      PrimExpr off = store->indices.empty() ? make_zero(store->buffer->dtype)
+                                            : store->indices[0];
+      PrimExpr ext = make_const(DataType::Int(32), 1);
+      if (RangeContains(off, ext, target_offset, target_extent)) {
+        kills = true;
+      }
+    }
+    std::function<bool(const PrimExpr &)> has_read = [&](const PrimExpr &expr) {
+      if (const auto *load = expr.as<BufferLoadNode>()) {
+        if (load->buffer->data->name_hint == target_buf) {
+          PrimExpr off = load->indices.empty() ? make_zero(load->buffer->dtype)
+                                               : load->indices[0];
+          PrimExpr ext = make_const(DataType::Int(32), 1);
+          return RangeOverlaps(off, ext, target_offset, target_extent);
+        }
+      } else if (const auto *call = expr.as<CallNode>()) {
+        for (const auto &arg : call->args) {
+          if (has_read(arg))
+            return true;
+        }
+      } else if (const auto *binop = expr.as<AddNode>()) {
+        return has_read(binop->a) || has_read(binop->b);
+      } else if (const auto *binop = expr.as<SubNode>()) {
+        return has_read(binop->a) || has_read(binop->b);
+      } else if (const auto *binop = expr.as<MulNode>()) {
+        return has_read(binop->a) || has_read(binop->b);
+      } else if (const auto *binop = expr.as<DivNode>()) {
+        return has_read(binop->a) || has_read(binop->b);
+      } else if (const auto *cast = expr.as<CastNode>()) {
+        return has_read(cast->value);
+      } else if (const auto *select = expr.as<SelectNode>()) {
+        return has_read(select->condition) || has_read(select->true_value) ||
+               has_read(select->false_value);
+      }
+      return false;
+    };
+    reads = has_read(store->value);
     return {reads && !covered, kills};
   }
 
@@ -1047,7 +1352,7 @@ private:
   Stmt AdjustBuffersAndAccess(Map<Var, Buffer> origin_map, const Stmt &stmt,
                               const std::set<std::string> &buffers_to_adjust,
                               int num_stages) {
-    class BufferAccessAdjuster : public StmtMutator {
+    class BufferAccessAdjuster : public StmtExprMutator {
     public:
       BufferAccessAdjuster(Map<Var, Buffer> origin_map,
                            const std::set<std::string> &buffers_to_adjust,
@@ -1094,6 +1399,69 @@ private:
           }
         }
         return StmtMutator::VisitStmt_(op);
+      }
+
+      Stmt VisitStmt_(const BufferStoreNode *op) override {
+        if (stage_var_.defined()) {
+          stage_idx_++;
+        }
+
+        BufferStore store = Downcast<BufferStore>(StmtMutator::VisitStmt_(op));
+
+        std::string buf_name = store->buffer->data->name_hint;
+        bool is_shared_buffer =
+            buffers_to_adjust_.find(buf_name) != buffers_to_adjust_.end();
+        bool is_workspace_buffer =
+            buf_name.find("workspace") != std::string::npos;
+
+        if ((is_shared_buffer || is_workspace_buffer) && stage_var_.defined()) {
+          for (auto &kv : origin_map_) {
+            Buffer buffer = kv.second;
+            if (buffer->name == buf_name) {
+              PrimExpr total_size = 1;
+              for (int i = 0; i < static_cast<int>(buffer->shape.size()); ++i) {
+                total_size = total_size * buffer->shape[i];
+              }
+              Array<PrimExpr> new_indices = store->indices;
+              if (!new_indices.empty()) {
+                new_indices.Set(0, new_indices[0] + stage_var_ * total_size);
+              }
+              return BufferStore(store->buffer, store->value, new_indices,
+                                 store->span);
+            }
+          }
+        }
+
+        return store;
+      }
+
+      PrimExpr VisitExpr_(const BufferLoadNode *op) override {
+        BufferLoad load = GetRef<BufferLoad>(op);
+
+        std::string buf_name = load->buffer->data->name_hint;
+        bool is_shared_buffer =
+            buffers_to_adjust_.find(buf_name) != buffers_to_adjust_.end();
+        bool is_workspace_buffer =
+            buf_name.find("workspace") != std::string::npos;
+
+        if ((is_shared_buffer || is_workspace_buffer) && stage_var_.defined()) {
+          for (auto &kv : origin_map_) {
+            Buffer buffer = kv.second;
+            if (buffer->name == buf_name) {
+              PrimExpr total_size = 1;
+              for (int i = 0; i < static_cast<int>(buffer->shape.size()); ++i) {
+                total_size = total_size * buffer->shape[i];
+              }
+              Array<PrimExpr> new_indices = load->indices;
+              if (!new_indices.empty()) {
+                new_indices.Set(0, new_indices[0] + stage_var_ * total_size);
+              }
+              return BufferLoad(load->buffer, new_indices, load->span);
+            }
+          }
+        }
+
+        return load;
       }
 
     private:

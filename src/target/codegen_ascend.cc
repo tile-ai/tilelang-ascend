@@ -20,6 +20,7 @@
 
 #include "../op/ascend.h"
 #include "../op/builtin.h"
+#include "../transform/common/attr.h"
 
 #include "arith/pattern_match.h"
 
@@ -562,6 +563,8 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
     PrintOpCall(op, "AscendC::Xor", {0, op->args.size() - 1}, {0, 0});
   } else if (op->op.same_as(tl::ascend_broadcast())) {
     BroadcastOpCodegen(op);
+  } else if (op->op.same_as(tl::ascend_row_expand_mul())) {
+    RowExpandMulCodegen(op);
   } else if (op->op.same_as(tl::ascend_wait_cross_flag())) {
     PrintOpCall(op, "AscendC::CrossCoreWaitFlag", {0, 0}, {0, 1});
   } else if (op->op.same_as(tl::ascend_set_cross_flag())) {
@@ -1104,6 +1107,9 @@ void CodeGenTileLangAscend::AddFunction(const GlobalVar &gvar,
   tiling_map_ = f->GetAttr<Map<Var, PrimExpr>>("tiling_map")
                     .value_or(Map<Var, PrimExpr>());
   var_sequence_ = f->GetAttr<Array<Var>>("var_sequence").value_or(Array<Var>());
+  buffer_shapes_ =
+      f->GetAttr<Map<Var, Array<PrimExpr>>>(tvm::tl::kLogicBufferShapes)
+          .value_or(Map<Var, Array<PrimExpr>>());
   ICHECK(global_symbol.defined())
       << "CodeGenC: Expect PrimFunc to have the global_symbol attribute";
   bool no_alias = f->HasNonzeroAttr(tir::attr::kNoAlias);
@@ -1427,17 +1433,33 @@ void CodeGenTileLangAscend::TransposeCodegen(const CallNode *op,
                                              const std::string &op_name) {
   DataType dtype = GetAccessPtrDtype(op->args[1].as<CallNode>());
 
+  auto *src_access_ptr = op->args[1].as<CallNode>();
+  Var src_var = Downcast<Var>(src_access_ptr->args[1]);
+
+  int M = 16;
+  int N = 16;
+  if (buffer_shapes_.count(src_var)) {
+    auto shape = buffer_shapes_.at(src_var);
+    if (shape.size() >= 2) {
+      if (shape[0].as<IntImmNode>() && shape[1].as<IntImmNode>()) {
+        int r = static_cast<int>(shape[0].as<IntImmNode>()->value);
+        int c = static_cast<int>(shape[1].as<IntImmNode>()->value);
+        if (r > 0 && c > 0) {
+          M = r;
+          N = c;
+        }
+      }
+    }
+  }
+
   std::vector<std::string> args;
   for (int i = 0; i < 2; ++i) {
     args.push_back(PrintBufferOffset(op->args[i].as<CallNode>(), true));
   }
 
   this->PrintIndent();
-  if (dtype.bits() == 32) {
-    this->stream << "tl::ascend::transpose<" << getType(dtype) << ">(";
-  } else {
-    this->stream << op_name << "(";
-  }
+  this->stream << "tl::ascend::transpose<" << getType(dtype) << ", " << M
+               << ", " << N << ">(";
   for (size_t i = 0; i < args.size(); ++i) {
     this->stream << args[i];
     if (i != args.size() - 1) {
@@ -1494,10 +1516,13 @@ void CodeGenTileLangAscend::TopKCodegen(const CallNode *op) {
   std::string op_name =
       "tl::ascend::" + Downcast<StringImm>(op->args[0])->value;
   int len = op->args.size();
-  // args: [name, dst, src, tmp, K, repeatTimes, actual_num]
-  // buffers: args[1..3] (dst, src, tmp), scalars: args[4..6] (K, repeatTimes,
-  // actual_num)
-  PrintOpCall(op, op_name, {1, 4}, {4, len});
+  // args: [name, dst, src, tmp, K, repeatTimes, actual_num, max_actual_num
+  // (optional)] buffers: args[1..3] (dst, src, tmp), scalars: args[4..6] (K,
+  // repeatTimes, actual_num) Note: max_actual_num (args[7]) is only needed for
+  // PTO dynamic-shape path.
+  //       For non-PTO target, Sort natively supports dynamic shapes via runtime
+  //       actualCount. We ignore max_actual_num here.
+  PrintOpCall(op, op_name, {1, 4}, {4, 7}); // Only pass first 6 scalars
 }
 
 void CodeGenTileLangAscend::ShmemCodegen(const CallNode *op) {
@@ -2003,6 +2028,10 @@ void CodeGenTileLangAscend::PowerOpCodegen(const CallNode *op,
   PrintOpCall(op, op_name, {0, op->args.size()}, {0, 0});
 }
 
+void CodeGenTileLangAscend::RowExpandMulCodegen(const CallNode *op) {
+  LOG(FATAL) << "TROWEXPANDMUL is only supported in the PTO codegen path.";
+}
+
 void CodeGenTileLangAscend::BroadcastOpCodegen(const CallNode *op) {
   std::string op_name =
       "tl::ascend::" + Downcast<StringImm>(op->args[0])->value;
@@ -2274,7 +2303,7 @@ void CodeGenTileLangAscend::CopyCodegen(const CallNode *op) {
       {"copy_l1_to_l0a", 2},      {"copy_l1_to_l0b", 2},
       {"copy_gm_to_ub", 4},       {"copy_ub_to_gm", 3},
       {"atomic_add_ub_to_gm", 3}, {"atomic_add_l0c_to_gm", 3},
-      {"copy_ub_to_ub", 0}};
+      {"copy_ub_to_ub", 6}};
 
   bool found = false;
   int extra_args = 0;

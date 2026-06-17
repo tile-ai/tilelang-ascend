@@ -67,6 +67,26 @@ def _handle_buffer_region(br: BufferRegion, mask):
     return bf.access_ptr(mask, offset=offset, extent=size_extent), extent
 
 
+def _handle_buffer_region_2d(br: BufferRegion, mask):
+    """Like _handle_buffer_region but flattens ND extents to 2D [rows, cols].
+
+    For a 3D buffer s_ub[T, 32, 512] sliced as s_ub[tile, :, :]:
+        extent_nd = [1, 32, 512]  →  extent_2d = [32, 512]
+
+    Leading dimensions are folded into rows; the innermost dimension is kept as cols.
+    """
+    bf = br.buffer
+    indices = [x.min for x in br.region]
+    offset = bf.offset_of(indices)[0]
+    extent_nd = [x.extent for x in br.region]
+    size_extent = math.prod(extent_nd)
+    if len(extent_nd) >= 2:
+        extent_2d = [math.prod(extent_nd[:-1]), extent_nd[-1]]
+    else:
+        extent_2d = [1, extent_nd[0]]
+    return bf.access_ptr(mask, offset=offset, extent=size_extent), extent_2d
+
+
 _ATOMIC_ADD_V1_ERR = "T.tile.atomic_add V1 only supports local tensor -> GM atomic add."
 
 
@@ -405,13 +425,29 @@ def topk(dst: Buffer, src: Buffer, K: PrimExpr, actual_num: PrimExpr):
         dst: Destination buffer for top K interleaved (value, index) pairs.
              Must have at least 2*K elements.
         src: Source buffer containing the data to find top K from.
+             Assumes src has static shape for buffer sizing.
         K: Number of top elements to extract.
-        actual_num: The number of valid elements in src.
+        actual_num: The number of valid elements in src (can be symbolic for dynamic shapes).
 
     Returns:
         A TVM intrinsic call that performs the TopK operation.
     """
-    repeatTimes = (actual_num + 31) // 32
+    from tvm.arith import Analyzer
+
+    analyzer = Analyzer()
+    max_actual_num = 0
+
+    for dim in src.shape:
+        dim_simplified = analyzer.simplify(dim)
+        if isinstance(dim_simplified, tir.IntImm):
+            max_actual_num += dim_simplified.value
+        else:
+            raise ValueError(
+                f"topk requires src buffer with static shape for buffer sizing. "
+                f"Found dynamic dimension: {dim}. Please ensure src buffer has compile-time constant shape."
+            )
+
+    repeatTimes = (max_actual_num + 31) // 32
     return tir.call_intrin(
         "handle",
         tir.op.Op.get("tl.ascend_topk"),
@@ -421,6 +457,7 @@ def topk(dst: Buffer, src: Buffer, K: PrimExpr, actual_num: PrimExpr):
         K,
         repeatTimes,
         actual_num,
+        max_actual_num,
     )
 
 
@@ -2024,6 +2061,91 @@ def broadcast(
         dst_dim,
         *dst_extent,
         *src_extent,
+    )
+
+
+def row_expand_mul(
+    dst: Buffer | BufferRegion,
+    src0: Buffer | BufferRegion,
+    src1: Buffer | BufferRegion,
+    tmp: Buffer | BufferRegion | None = None,
+):
+    """Performs row-wise broadcast multiply: dst[i, j] = src0[i, j] * src1[i].
+
+    This is a fused row-broadcast and multiply operation backed by the PTO
+    TROWEXPANDMUL instruction.  Each element in src1 is broadcast across all
+    columns of the corresponding row in src0.
+
+    Args:
+        dst: Destination buffer (UB, shape [rows, cols]).
+        src0: Source data buffer (UB, shape [rows, cols]).
+        src1: Per-row scalars. Accepts 1D [R] or 2D [1, R] (row vector);
+              both are treated as R scalars matching dst rows.
+        tmp: Optional temporary buffer for internal workspace.
+
+    Returns:
+        A TVM intrinsic call for the TROWEXPANDMUL operation.
+    """
+    if isinstance(dst, BufferRegion):
+        dst_ptr, dst_shape = _handle_buffer_region_2d(dst, "w")
+    else:
+        dst_ptr = dst.access_ptr("w")
+        dst_shape = list(dst.shape[-2:])
+
+    if isinstance(src0, BufferRegion):
+        src0_ptr, src0_shape = _handle_buffer_region_2d(src0, "r")
+    else:
+        src0_ptr = src0.access_ptr("r")
+        src0_shape = list(src0.shape[-2:])
+
+    if isinstance(src1, BufferRegion):
+        src1_ptr, src1_nd_extent = _handle_buffer_region(src1, "r")
+        src1_full_shape = [src1_nd_extent[-1]] if len(src1_nd_extent) >= 2 else src1_nd_extent
+    else:
+        src1_ptr = src1.access_ptr("r")
+        src1_full_shape = list(src1.shape)
+
+    if len(src1_full_shape) == 1:
+        # 1D [R] → R per-row scalars
+        src1_len = src1_full_shape[0]
+    elif len(src1_full_shape) == 2:
+        s0, s1 = src1_full_shape[-2], src1_full_shape[-1]
+        if s0 == 1:
+            src1_len = s1  # [1, R]
+        elif s1 == 1:
+            src1_len = s0  # [R, 1]
+        else:
+            raise ValueError(f"src1 must be 1D [R], [1, R], or [R, 1]; got {src1_full_shape}")
+    else:
+        raise ValueError(f"src1 must be 1D or 2D, got shape {src1_full_shape}")
+
+    if len(dst_shape) != 2 or len(src0_shape) != 2:
+        raise ValueError("row_expand_mul requires 2D buffers for dst and src0.")
+
+    if dst_shape != src0_shape:
+        raise ValueError(f"dst and src0 shapes must match: dst={dst_shape}, src0={src0_shape}")
+
+    if src1_len != dst_shape[0]:
+        raise ValueError(f"src1 scalar count must match dst rows: src1={src1_len}, dst[0]={dst_shape[0]}")
+
+    dtype = _dtype(src0)
+    args = [
+        f"RowExpandMul<{dtype}>",
+        dst_ptr,
+        src0_ptr,
+        src1_ptr,
+    ]
+    if tmp is not None:
+        if isinstance(tmp, BufferRegion):
+            tmp_ptr, _ = _handle_buffer_region(tmp, "rw")
+        else:
+            tmp_ptr = tmp.access_ptr("rw")
+        args.append(tmp_ptr)
+
+    return tir.call_intrin(
+        "handle",
+        tir.op.Op.get("tl.ascend_row_expand_mul"),
+        *args,
     )
 
 

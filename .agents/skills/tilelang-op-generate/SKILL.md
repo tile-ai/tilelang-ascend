@@ -112,9 +112,14 @@ design.md 可能很长，**只提取以下字段，忽略其余内容**：
 
 ### 步骤 4：运行验证
 
+本 skill 只负责 L0（精度收敛）。先只跑 L0：
+
 ```bash
-python examples/{op}/example_{op}.py
+python examples/{op}/example_{op}.py --level l0
 ```
+
+> L0 通过后，由 `tilelang-op-test-design`（场景 B）填充 L1/L2/Boundary 桩体，再 `--level all` 跑全量。
+> main 分发器与 `--level` 接口由本 skill 生成并保持稳定（模板见 code-skeleton.md），扩展时不改动。
 
 如果报错，查阅 [references/troubleshooting.md](references/troubleshooting.md) 进行排查：
 
@@ -134,7 +139,7 @@ python examples/{op}/example_{op}.py
 |--------|------|---------|
 | **Golden 实现一致** | 迁移算子必须使用原算子的 golden 实现 | #9 |
 | **tilelang.disable_cache()** | 放在 `__main__` 下方或 `main()` 内部 | #11 |
-| **最后一行输出** | `"Test Passed!"` 或 `"Kernel Output Match!"` | #16 |
+| **分层标记 + --level** | L0/L1 打 `[PRECISION_PASS/FAIL]`、L2/Boundary 打 `[BOUNDARY_PASS/WARN]`；main 支持 `--level`；L0/L1 全过才 `"Test Passed!"`+exit 0 | #14-17 |
 | **代码格式** | `ruff check` + `ruff format --check` 通过 | #18 |
 
 ---
