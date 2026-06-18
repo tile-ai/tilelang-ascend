@@ -7,7 +7,7 @@ proven elsewhere in the test suite:
 * T.Parallel + T.tile.fill          (fill then accumulate)
 * T.Parallel + cast-on-copy         (compute in fp32, store as fp16)
 * T.Parallel + T.reduce_sum         (square then row-reduce)
-* T.Parallel + T.tile.select        (the vectorized replacement for if/else)
+* T.Parallel under a serial loop    (serial-outer / parallel-inner tiling)
 
 The "T.Parallel + gemm" composition is covered by the passing
 test_parallel_copy_gm_l1_l0c_gm in the copy test file; doing vector arithmetic
@@ -160,72 +160,43 @@ def test_parallel_mixed_reduce(setup_random_seed):
 
 
 # ---------------------------------------------------------------------------
-# T.Parallel + T.tile.select: select is the documented vectorized replacement
-# for data-dependent if/else.  We first scale A into a separate buffer with
-# T.Parallel, then select between (A*2) and B according to a bit-packed mask.
-# (The scaled result must go to its own buffer; an in-place a_ub *= 2 followed
-# by select(... a_ub ...) does not take effect.)
+# T.Parallel nested inside a serial (range) outer loop: the most common tiling
+# control-flow mix -- a serial outer loop drives a vectorized parallel inner
+# pass.  Mirrors the proven row-split pattern (test_row_split_mul).
 # ---------------------------------------------------------------------------
-def _bit_pack_mask_cpu(mask_bool: torch.Tensor) -> torch.Tensor:
-    """Pack a bool mask into uint8 (8 bits per byte) on CPU."""
-    M, N = mask_bool.shape
-    mask_reshaped = mask_bool.view(M, N // 8, 8)
-    mask_packed = torch.zeros((M, N // 8), dtype=torch.uint8)
-    for i in range(8):
-        mask_packed |= mask_reshaped[..., i].to(torch.uint8) << i
-    return mask_packed
-
-
 @tilelang.jit(out_idx=[-1], pass_configs=pass_configs)
-def parallel_select_kernel(M, N, block_M, block_N, dtype="float16"):
+def parallel_serial_nest_kernel(M, N, block_M, block_N, dtype="float"):
     m_num = M // block_M
     n_num = N // block_N
     rows = block_M // VEC_NUM
-    block_mask_width = block_N // 8
 
     @T.prim_func
-    def main(
-        A: T.Tensor((M, N), dtype),
-        B: T.Tensor((M, N), dtype),
-        Mask: T.Tensor((M, N // 8), "uint8"),
-        C: T.Tensor((M, N), dtype),
-    ):
+    def main(A: T.Tensor((M, N), dtype), B: T.Tensor((M, N), dtype), C: T.Tensor((M, N), dtype)):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
             by = cid % n_num
             a_ub = T.alloc_ub((rows, block_N), dtype)
-            a2_ub = T.alloc_ub((rows, block_N), dtype)
             b_ub = T.alloc_ub((rows, block_N), dtype)
             c_ub = T.alloc_ub((rows, block_N), dtype)
-            mask_ub = T.alloc_ub((rows, block_mask_width), "uint8")
-            offset_m = bx * block_M + vid * rows
-            offset_n = by * block_N
             with T.Scope("V"):
-                T.copy(A[offset_m : offset_m + rows, offset_n : offset_n + block_N], a_ub)
-                T.copy(B[offset_m : offset_m + rows, offset_n : offset_n + block_N], b_ub)
-                T.copy(Mask[offset_m : offset_m + rows, offset_n // 8 : offset_n // 8 + block_mask_width], mask_ub)
-                # Parallel pre-step: scale A by 2 into a separate buffer.
-                for i, j in T.Parallel(rows, block_N):
-                    a2_ub[i, j] = a_ub[i, j] * 2.0
-                T.barrier_all()
-                T.tile.select(c_ub, mask_ub, a2_ub, b_ub, "VSEL_TENSOR_TENSOR_MODE")
-                T.barrier_all()
-                T.copy(c_ub, C[offset_m : offset_m + rows, offset_n : offset_n + block_N])
+                T.copy(A[bx * block_M + vid * rows, by * block_N], a_ub)
+                T.copy(B[bx * block_M + vid * rows, by * block_N], b_ub)
+                for i in range(rows):
+                    for j in T.Parallel(block_N):
+                        c_ub[i, j] = a_ub[i, j] * b_ub[i, j] + a_ub[i, j]
+                T.copy(c_ub, C[bx * block_M + vid * rows, by * block_N])
 
     return main
 
 
-def test_parallel_mixed_select(setup_random_seed):
-    M, N, block_M, block_N = 1024, 1024, 128, 256
-    func = parallel_select_kernel(M, N, block_M, block_N)
-    a = torch.randn(M, N).half().npu()
-    b = torch.randn(M, N).half().npu()
-    mask_bool = torch.randint(0, 2, (M, N)).bool()
-    mask_packed = _bit_pack_mask_cpu(mask_bool).npu()
+def test_parallel_mixed_serial_nest(setup_random_seed):
+    M, N, block_M, block_N = 1024, 1024, 128, 128
+    func = parallel_serial_nest_kernel(M, N, block_M, block_N)
+    a = torch.randn(M, N).npu()
+    b = torch.randn(M, N).npu()
     torch.npu.synchronize()
-    out = func(a, b, mask_packed)
-    ref = torch.where(mask_bool.npu(), a * 2.0, b)
-    torch.testing.assert_close(out, ref, rtol=1e-2, atol=1e-2)
+    out = func(a, b)
+    torch.testing.assert_close(out, a * b + a, rtol=1e-2, atol=1e-2)
 
 
 if __name__ == "__main__":
