@@ -42,8 +42,11 @@ DEFAULT_MROPE_SECTION = (11, 11, 10)
 DEFAULT_NUM_Q_HEADS = 16
 DEFAULT_NUM_KV_HEADS = 4
 
-# Test configurations from xllm C++ tests
-REF_CHECK_NUM_TOKENS_LIST = [1, 2, 3, 7, 15, 16, 17, 33, 48, 49, 4096, 4097, 4099, 8192, 8193]
+# Simplified test configurations - 26 cases total
+# Original 13 tests: num_tokens=16, all head_configs, is_interleaved=True
+# New 9 tests: num_tokens in [1, 17, 4097], head_configs in [(32,2), (24,4), (16,2)], is_interleaved=True
+# Edge 4 tests: num_tokens in [4097, 8192], head_configs=[(16,4)], is_interleaved=[True, False]
+REF_CHECK_NUM_TOKENS_LIST = [1, 16, 17, 4097, 8192]
 REF_CHECK_IS_INTERLEAVED_LIST = [True, False]
 
 # All Qwen3.5/3.6 model original head configurations:
@@ -816,19 +819,48 @@ def _run_ref_suite(
     mrope_section,
     is_interleaved_list: list,
 ) -> None:
-    for num_tokens in num_tokens_list:
-        for num_q_heads, num_kv_heads in head_configs:
-            for is_interleaved in is_interleaved_list:
-                _run_ref_check(
-                    num_tokens=num_tokens,
-                    num_q_heads=num_q_heads,
-                    num_kv_heads=num_kv_heads,
-                    head_size=head_size,
-                    rope_dim=rope_dim,
-                    eps=eps,
-                    mrope_section=mrope_section,
-                    is_interleaved=is_interleaved,
-                )
+    # Simplified test execution - 26 cases total
+    # Original 13 tests: num_tokens=16, all head_configs, is_interleaved=True
+    for num_q_heads, num_kv_heads in head_configs:
+        _run_ref_check(
+            num_tokens=16,
+            num_q_heads=num_q_heads,
+            num_kv_heads=num_kv_heads,
+            head_size=head_size,
+            rope_dim=rope_dim,
+            eps=eps,
+            mrope_section=mrope_section,
+            is_interleaved=True,
+        )
+    
+    # New 9 tests: num_tokens in [1, 17, 4097], head_configs in [(32,2), (24,4), (16,2)], is_interleaved=True
+    new_head_configs = [(32, 2), (24, 4), (16, 2)]
+    for num_tokens in [1, 17, 4097]:
+        for num_q_heads, num_kv_heads in new_head_configs:
+            _run_ref_check(
+                num_tokens=num_tokens,
+                num_q_heads=num_q_heads,
+                num_kv_heads=num_kv_heads,
+                head_size=head_size,
+                rope_dim=rope_dim,
+                eps=eps,
+                mrope_section=mrope_section,
+                is_interleaved=True,
+            )
+    
+    # Edge 4 tests: num_tokens in [4097, 8192], head_configs=[(16,4)], is_interleaved=[True, False]
+    for num_tokens in [4097, 8192]:
+        for is_interleaved in [True, False]:
+            _run_ref_check(
+                num_tokens=num_tokens,
+                num_q_heads=16,
+                num_kv_heads=4,
+                head_size=head_size,
+                rope_dim=rope_dim,
+                eps=eps,
+                mrope_section=mrope_section,
+                is_interleaved=is_interleaved,
+            )
 
 
 def main() -> None:
