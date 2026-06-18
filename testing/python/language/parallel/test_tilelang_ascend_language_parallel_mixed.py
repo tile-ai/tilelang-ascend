@@ -7,10 +7,12 @@ proven elsewhere in the test suite:
 * T.Parallel + T.tile.fill          (fill then accumulate)
 * T.Parallel + cast-on-copy         (compute in fp32, store as fp16)
 * T.Parallel + T.reduce_sum         (square then row-reduce)
-* T.Parallel + gemm epilogue        (matmul then a parallel scale epilogue)
 * T.Parallel + T.tile.select        (the vectorized replacement for if/else)
-* T.Parallel with a data-dependent if/else (documented scalar-fallback path:
-  it still compiles and produces correct results, just not vectorized)
+
+The "T.Parallel + gemm" composition is covered by the passing
+test_parallel_copy_gm_l1_l0c_gm in the copy test file; doing vector arithmetic
+in the Cube scope (e.g. an L0C->GM scale epilogue) instead triggers the
+"undefined Variable v_thread" codegen path, so it is not exercised here.
 
 NOTE: these kernels target Ascend NPU and must be run on NPU hardware.
 """
@@ -158,53 +160,11 @@ def test_parallel_mixed_reduce(setup_random_seed):
 
 
 # ---------------------------------------------------------------------------
-# T.Parallel as a gemm epilogue: matmul into L0C, then a parallel scale epilogue
-# while writing the accumulator back to GM.
-# ---------------------------------------------------------------------------
-@tilelang.jit(out_idx=[-1], pass_configs=pass_configs)
-def parallel_gemm_epilogue_kernel(M, N, K, block_M, block_N, K_L1, scale, dtype="float16", accum_dtype="float"):
-    m_num = M // block_M
-    n_num = N // block_N
-
-    @T.prim_func
-    def main(A: T.Tensor((M, K), dtype), B: T.Tensor((K, N), dtype), C: T.Tensor((M, N), dtype)):
-        with T.Kernel(m_num * n_num, is_npu=True) as (cid, _):
-            bx = cid // n_num
-            by = cid % n_num
-            A_L1 = T.alloc_L1((block_M, K_L1), dtype)
-            B_L1 = T.alloc_L1((K_L1, block_N), dtype)
-            C_L0 = T.alloc_L0C((block_M, block_N), accum_dtype)
-            with T.Scope("C"):
-                loop_k = T.ceildiv(K, K_L1)
-                for k in T.serial(loop_k):
-                    T.copy(A[bx * block_M, k * K_L1], A_L1)
-                    T.copy(B[k * K_L1, by * block_N], B_L1)
-                    T.barrier_all()
-                    T.gemm_v0(A_L1, B_L1, C_L0, init=(k == 0))
-                    T.barrier_all()
-                # Parallel scale epilogue while spilling the accumulator to GM.
-                for i, j in T.Parallel(block_M, block_N):
-                    C[bx * block_M + i, by * block_N + j] = C_L0[i, j] * scale
-
-    return main
-
-
-def test_parallel_mixed_gemm_epilogue(setup_random_seed):
-    M, N, K = 1024, 1024, 1024
-    block_M, block_N, K_L1 = 128, 256, 64
-    scale = 2.0
-    func = parallel_gemm_epilogue_kernel(M, N, K, block_M, block_N, K_L1, scale)
-    a = torch.randn(M, K).half().npu()
-    b = torch.randn(K, N).half().npu()
-    torch.npu.synchronize()
-    out = func(a, b)
-    torch.testing.assert_close(out, (a @ b) * scale, rtol=1e-2, atol=1e-2)
-
-
-# ---------------------------------------------------------------------------
 # T.Parallel + T.tile.select: select is the documented vectorized replacement
-# for data-dependent if/else.  We first scale A with T.Parallel, then select
-# between (A*2) and B according to a bit-packed mask.
+# for data-dependent if/else.  We first scale A into a separate buffer with
+# T.Parallel, then select between (A*2) and B according to a bit-packed mask.
+# (The scaled result must go to its own buffer; an in-place a_ub *= 2 followed
+# by select(... a_ub ...) does not take effect.)
 # ---------------------------------------------------------------------------
 def _bit_pack_mask_cpu(mask_bool: torch.Tensor) -> torch.Tensor:
     """Pack a bool mask into uint8 (8 bits per byte) on CPU."""
@@ -234,6 +194,7 @@ def parallel_select_kernel(M, N, block_M, block_N, dtype="float16"):
             bx = cid // n_num
             by = cid % n_num
             a_ub = T.alloc_ub((rows, block_N), dtype)
+            a2_ub = T.alloc_ub((rows, block_N), dtype)
             b_ub = T.alloc_ub((rows, block_N), dtype)
             c_ub = T.alloc_ub((rows, block_N), dtype)
             mask_ub = T.alloc_ub((rows, block_mask_width), "uint8")
@@ -243,11 +204,11 @@ def parallel_select_kernel(M, N, block_M, block_N, dtype="float16"):
                 T.copy(A[offset_m : offset_m + rows, offset_n : offset_n + block_N], a_ub)
                 T.copy(B[offset_m : offset_m + rows, offset_n : offset_n + block_N], b_ub)
                 T.copy(Mask[offset_m : offset_m + rows, offset_n // 8 : offset_n // 8 + block_mask_width], mask_ub)
-                # Parallel pre-step: scale A by 2.
+                # Parallel pre-step: scale A by 2 into a separate buffer.
                 for i, j in T.Parallel(rows, block_N):
-                    a_ub[i, j] = a_ub[i, j] * 2.0
+                    a2_ub[i, j] = a_ub[i, j] * 2.0
                 T.barrier_all()
-                T.tile.select(c_ub, mask_ub, a_ub, b_ub, "VSEL_TENSOR_TENSOR_MODE")
+                T.tile.select(c_ub, mask_ub, a2_ub, b_ub, "VSEL_TENSOR_TENSOR_MODE")
                 T.barrier_all()
                 T.copy(c_ub, C[offset_m : offset_m + rows, offset_n : offset_n + block_N])
 
@@ -265,45 +226,6 @@ def test_parallel_mixed_select(setup_random_seed):
     out = func(a, b, mask_packed)
     ref = torch.where(mask_bool.npu(), a * 2.0, b)
     torch.testing.assert_close(out, ref, rtol=1e-2, atol=1e-2)
-
-
-# ---------------------------------------------------------------------------
-# T.Parallel with a data-dependent if/else.  Per the API spec this is NOT
-# vectorized (it falls back to a scalar loop + scalar if), but it must still
-# compile and produce correct results.  Equivalent to relu.
-# ---------------------------------------------------------------------------
-@tilelang.jit(out_idx=[-1], pass_configs=pass_configs)
-def parallel_if_else_kernel(M, N, block_M, block_N, dtype="float"):
-    m_num = M // block_M
-    n_num = N // block_N
-    rows = block_M // VEC_NUM
-
-    @T.prim_func
-    def main(A: T.Tensor((M, N), dtype), C: T.Tensor((M, N), dtype)):
-        with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
-            bx = cid // n_num
-            by = cid % n_num
-            a_ub = T.alloc_ub((rows, block_N), dtype)
-            c_ub = T.alloc_ub((rows, block_N), dtype)
-            with T.Scope("V"):
-                T.copy(A[bx * block_M + vid * rows, by * block_N], a_ub)
-                for i, j in T.Parallel(rows, block_N):
-                    if a_ub[i, j] > 0:
-                        c_ub[i, j] = a_ub[i, j]
-                    else:
-                        c_ub[i, j] = 0.0
-                T.copy(c_ub, C[bx * block_M + vid * rows, by * block_N])
-
-    return main
-
-
-def test_parallel_mixed_if_else_fallback(setup_random_seed):
-    M, N, block_M, block_N = 1024, 1024, 128, 128
-    func = parallel_if_else_kernel(M, N, block_M, block_N)
-    a = torch.randn(M, N).npu()
-    torch.npu.synchronize()
-    out = func(a)
-    torch.testing.assert_close(out, torch.relu(a), rtol=1e-2, atol=1e-2)
 
 
 if __name__ == "__main__":

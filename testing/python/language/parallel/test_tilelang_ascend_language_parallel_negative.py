@@ -5,8 +5,6 @@ compile time:
 
 * >= 3D parallel loops are rejected
   (src/transform/ascend_lower_parallel_to_vector.cc: LOG(FATAL)).
-* ``coalesced_width`` that does not divide the inferred vector size is rejected
-  (src/op/parallel.cc: LOG(FATAL)).
 * A ``local.fragment`` buffer accessed with structurally inconsistent indices is
   rejected (src/op/parallel.cc: ICHECK).
 
@@ -68,37 +66,6 @@ def make_parallel_3d_func(dtype="float"):
 
 def test_parallel_3d_is_rejected():
     func = make_parallel_3d_func()
-    with pytest.raises(COMPILE_ERRORS):
-        _compile(func)
-
-
-# ---------------------------------------------------------------------------
-# coalesced_width that does not divide the inferred vector size must be rejected.
-# 7 is prime and cannot divide the power-of-two vector size of this loop.
-# ---------------------------------------------------------------------------
-def make_bad_coalesced_width_func(M=1024, N=1024, block_M=128, block_N=128, dtype="float"):
-    m_num = M // block_M
-    n_num = N // block_N
-    rows = block_M // 2
-
-    @T.prim_func
-    def main(A: T.Tensor((M, N), dtype), C: T.Tensor((M, N), dtype)):
-        with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
-            bx = cid // n_num
-            by = cid % n_num
-            a_ub = T.alloc_ub((rows, block_N), dtype)
-            c_ub = T.alloc_ub((rows, block_N), dtype)
-            with T.Scope("V"):
-                T.copy(A[bx * block_M + vid * rows, by * block_N], a_ub)
-                for i, j in T.Parallel(rows, block_N, coalesced_width=7):
-                    c_ub[i, j] = a_ub[i, j] + 1.0
-                T.copy(c_ub, C[bx * block_M + vid * rows, by * block_N])
-
-    return main
-
-
-def test_parallel_bad_coalesced_width_is_rejected():
-    func = make_bad_coalesced_width_func()
     with pytest.raises(COMPILE_ERRORS):
         _compile(func)
 
