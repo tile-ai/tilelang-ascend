@@ -37,11 +37,14 @@ VEC_NUM = 2
 MAX_VEC_CORE_NUM = detect_vec_core_num()
 MAX_LAUNCH_NUM_TOKENS = (MAX_VEC_CORE_NUM // VEC_NUM) * VEC_NUM
 NUM_TOKEN_SPECIALIZATIONS = tuple(range(VEC_NUM, MAX_LAUNCH_NUM_TOKENS + 1, VEC_NUM))
-REF_CHECK_NUM_TOKENS = 16
 REF_CHECK_EPS = 1e-6
 DEFAULT_MROPE_SECTION = (11, 11, 10)
 DEFAULT_NUM_Q_HEADS = 16
 DEFAULT_NUM_KV_HEADS = 4
+
+# Test configurations from xllm C++ tests
+REF_CHECK_NUM_TOKENS_LIST = [1, 2, 3, 7, 15, 16, 17, 33, 48, 49, 4096, 4097, 4099, 8192, 8193]
+REF_CHECK_IS_INTERLEAVED_LIST = [True, False]
 
 # All Qwen3.5/3.6 model original head configurations:
 #   Model              num_attention_heads  num_key_value_heads
@@ -805,25 +808,27 @@ def _run_ref_check(
 
 def _run_ref_suite(
     *,
-    num_tokens: int,
+    num_tokens_list: list,
     head_configs,
     head_size: int,
     rope_dim: int,
     eps: float,
     mrope_section,
-    is_interleaved: bool,
+    is_interleaved_list: list,
 ) -> None:
-    for num_q_heads, num_kv_heads in head_configs:
-        _run_ref_check(
-            num_tokens=num_tokens,
-            num_q_heads=num_q_heads,
-            num_kv_heads=num_kv_heads,
-            head_size=head_size,
-            rope_dim=rope_dim,
-            eps=eps,
-            mrope_section=mrope_section,
-            is_interleaved=is_interleaved,
-        )
+    for num_tokens in num_tokens_list:
+        for num_q_heads, num_kv_heads in head_configs:
+            for is_interleaved in is_interleaved_list:
+                _run_ref_check(
+                    num_tokens=num_tokens,
+                    num_q_heads=num_q_heads,
+                    num_kv_heads=num_kv_heads,
+                    head_size=head_size,
+                    rope_dim=rope_dim,
+                    eps=eps,
+                    mrope_section=mrope_section,
+                    is_interleaved=is_interleaved,
+                )
 
 
 def main() -> None:
@@ -835,13 +840,13 @@ def main() -> None:
     mrope_section = tuple(DEFAULT_MROPE_SECTION)
 
     _run_ref_suite(
-        num_tokens=REF_CHECK_NUM_TOKENS,
+        num_tokens_list=REF_CHECK_NUM_TOKENS_LIST,
         head_configs=REF_CHECK_HEAD_CONFIGS,
         head_size=head_size,
         rope_dim=rope_dim,
         eps=REF_CHECK_EPS,
         mrope_section=mrope_section,
-        is_interleaved=True,
+        is_interleaved_list=REF_CHECK_IS_INTERLEAVED_LIST,
     )
 
     print("=" * 70)

@@ -16,11 +16,38 @@ SECONDARY_HEAD_DIM = 128
 SECONDARY_ROPE_DIM = 128
 VEC_NUM = 2
 FIXED_UB_BUFFER_BYTES = 64 * 1024
-REF_CHECK_NUM_TOKENS = 16
 # AOT kernel tensor signatures still require static first-dim bounds.
 # Keep a sufficiently large compile-time upper bound so runtime rows
 # (`num_tokens * num_heads`) used by wrapper tests stay in-range.
 MIN_COMPILE_NUM_TOKENS = 65536
+
+# Test configurations from xllm C++ tests
+REF_CHECK_CONFIGS = [
+    # Variant 128x128 (10 cases)
+    {"num_tokens": 16, "num_heads": 4, "head_dim": 128, "rope_dim": 128, "start_dim": 0, "seed": 20260213},
+    {"num_tokens": 2051, "num_heads": 2, "head_dim": 128, "rope_dim": 128, "start_dim": 0, "seed": 20260214},
+    {"num_tokens": 1, "num_heads": 1, "head_dim": 128, "rope_dim": 128, "start_dim": 0, "seed": 101},
+    {"num_tokens": 7, "num_heads": 3, "head_dim": 128, "rope_dim": 128, "start_dim": 0, "seed": 102},
+    {"num_tokens": 64, "num_heads": 4, "head_dim": 128, "rope_dim": 128, "start_dim": 0, "seed": 107},
+    {"num_tokens": 8, "num_heads": 5, "head_dim": 128, "rope_dim": 128, "start_dim": 0, "seed": 103},
+    {"num_tokens": 9, "num_heads": 5, "head_dim": 128, "rope_dim": 128, "start_dim": 0, "seed": 104},
+    {"num_tokens": 4, "num_heads": 64, "head_dim": 128, "rope_dim": 128, "start_dim": 0, "seed": 108},
+    {"num_tokens": 127, "num_heads": 8, "head_dim": 128, "rope_dim": 128, "start_dim": 0, "seed": 105},
+    {"num_tokens": 33, "num_heads": 16, "head_dim": 128, "rope_dim": 128, "start_dim": 0, "seed": 106},
+    # Variant 576x64 (12 cases)
+    {"num_tokens": 1, "num_heads": 1, "head_dim": 576, "rope_dim": 64, "start_dim": 512, "seed": 20260226},
+    {"num_tokens": 8, "num_heads": 1, "head_dim": 576, "rope_dim": 64, "start_dim": 512, "seed": 20260227},
+    {"num_tokens": 47, "num_heads": 1, "head_dim": 576, "rope_dim": 64, "start_dim": 512, "seed": 20260301},
+    {"num_tokens": 48, "num_heads": 1, "head_dim": 576, "rope_dim": 64, "start_dim": 512, "seed": 20260302},
+    {"num_tokens": 49, "num_heads": 1, "head_dim": 576, "rope_dim": 64, "start_dim": 512, "seed": 20260303},
+    {"num_tokens": 95, "num_heads": 1, "head_dim": 576, "rope_dim": 64, "start_dim": 512, "seed": 20260304},
+    {"num_tokens": 96, "num_heads": 1, "head_dim": 576, "rope_dim": 64, "start_dim": 512, "seed": 20260305},
+    {"num_tokens": 97, "num_heads": 1, "head_dim": 576, "rope_dim": 64, "start_dim": 512, "seed": 20260306},
+    {"num_tokens": 128, "num_heads": 1, "head_dim": 576, "rope_dim": 64, "start_dim": 512, "seed": 20260228},
+    {"num_tokens": 512, "num_heads": 1, "head_dim": 576, "rope_dim": 64, "start_dim": 512, "seed": 20260307},
+    {"num_tokens": 1024, "num_heads": 1, "head_dim": 576, "rope_dim": 64, "start_dim": 512, "seed": 20260308},
+    {"num_tokens": 2048, "num_heads": 1, "head_dim": 576, "rope_dim": 64, "start_dim": 512, "seed": 20260225},
+]
 
 # Per-row bytes in UB for this kernel:
 # x_half(2) + x(4) + sin_half(2) + sin(4) + cos_half(2) + cos(4)
@@ -170,8 +197,11 @@ def _torch_rope_ref_rows(
 
 def _run_ref_check(
     num_tokens: int,
+    num_heads: int,
     head_dim: int,
     rope_dim: int,
+    start_dim: int,
+    seed: int,
     vec_core_num: int,
     ub_buffer_bytes: int,
 ) -> None:
@@ -179,26 +209,85 @@ def _run_ref_check(
         print("Skip RoPE reference check: NPU is not available")
         return
 
-    torch.manual_seed(42)
+    torch.manual_seed(seed)
     device = torch.device("npu")
-    x_in = torch.randn((num_tokens, head_dim), device=device, dtype=torch.bfloat16)
-    sin = torch.randn((num_tokens, rope_dim), device=device, dtype=torch.bfloat16)
-    cos = torch.randn((num_tokens, rope_dim), device=device, dtype=torch.bfloat16)
-    x_out = x_in.clone()
-    x_in_flat = x_in.view(1, -1)
-    x_out_flat = x_out.view(1, -1)
-    kernel = rope_in_place_kernel_jit(
-        head_dim=head_dim,
-        rope_dim=rope_dim,
-        vec_core_num=vec_core_num,
-        ub_buffer_bytes=ub_buffer_bytes,
-    )
-    kernel(x_in_flat, sin, cos, x_out_flat, num_tokens, head_dim)
-    torch.npu.synchronize()
+    
+    # For multi-head cases, we need to flatten the heads dimension
+    if num_heads > 1:
+        # Create input with shape (num_tokens, num_heads, head_dim)
+        x_in = torch.randn((num_tokens, num_heads, head_dim), device=device, dtype=torch.bfloat16)
+        sin = torch.randn((num_tokens, rope_dim), device=device, dtype=torch.bfloat16)
+        cos = torch.randn((num_tokens, rope_dim), device=device, dtype=torch.bfloat16)
+        
+        # Apply RoPE to the slice [start_dim:start_dim+rope_dim] for all heads
+        x_out = x_in.clone()
+        
+        # Flatten to (num_tokens * num_heads, head_dim) for kernel processing
+        x_in_flat = x_in.reshape(num_tokens * num_heads, head_dim)
+        x_out_flat = x_out.reshape(num_tokens * num_heads, head_dim)
+        
+        # Repeat sin/cos for each head
+        sin_repeated = sin.repeat_interleave(num_heads, dim=0)
+        cos_repeated = cos.repeat_interleave(num_heads, dim=0)
+        
+        kernel = rope_in_place_kernel_jit(
+            head_dim=head_dim,
+            rope_dim=rope_dim,
+            vec_core_num=vec_core_num,
+            ub_buffer_bytes=ub_buffer_bytes,
+        )
+        kernel(x_in_flat, sin_repeated, cos_repeated, x_out_flat, num_tokens * num_heads, head_dim)
+        torch.npu.synchronize()
+        
+        # Reshape back to (num_tokens, num_heads, head_dim)
+        x_out = x_out_flat.reshape(num_tokens, num_heads, head_dim)
+        
+        # Compute reference using torch
+        x_ref = _torch_rope_ref_rows(x_in_flat, sin_repeated, cos_repeated, start_dim)
+        x_ref = x_ref.reshape(num_tokens, num_heads, head_dim)
+        
+        torch.testing.assert_close(x_out, x_ref, rtol=1e-3, atol=1e-3)
+    else:
+        # Single head case - original logic
+        x_in = torch.randn((num_tokens, head_dim), device=device, dtype=torch.bfloat16)
+        sin = torch.randn((num_tokens, rope_dim), device=device, dtype=torch.bfloat16)
+        cos = torch.randn((num_tokens, rope_dim), device=device, dtype=torch.bfloat16)
+        x_out = x_in.clone()
+        
+        # Extract the slice to apply RoPE
+        x_slice = x_out[:, start_dim:start_dim + rope_dim].contiguous()
+        x_slice_flat = x_slice.view(1, -1)
+        
+        kernel = rope_in_place_kernel_jit(
+            head_dim=rope_dim,
+            rope_dim=rope_dim,
+            vec_core_num=vec_core_num,
+            ub_buffer_bytes=ub_buffer_bytes,
+        )
+        kernel(x_slice_flat, sin, cos, x_slice_flat, num_tokens, rope_dim)
+        torch.npu.synchronize()
+        
+        # Put the result back
+        x_out[:, start_dim:start_dim + rope_dim] = x_slice_flat.view(num_tokens, rope_dim)
+        
+        x_ref = _torch_rope_ref_rows(x_in, sin, cos, start_dim)
+        torch.testing.assert_close(x_out, x_ref, rtol=1e-3, atol=1e-3)
+    
+    print(f"[PASS] RoPE output matches torch reference (tokens={num_tokens}, heads={num_heads}, head_dim={head_dim}, rope_dim={rope_dim}, start_dim={start_dim})")
 
-    x_ref = _torch_rope_ref_rows(x_in, sin, cos, 0)
-    torch.testing.assert_close(x_out, x_ref, rtol=1e-3, atol=1e-3)
-    print("[PASS] RoPE output matches torch reference")
+
+def _run_ref_suite(vec_core_num: int, ub_buffer_bytes: int) -> None:
+    for config in REF_CHECK_CONFIGS:
+        _run_ref_check(
+            num_tokens=config["num_tokens"],
+            num_heads=config["num_heads"],
+            head_dim=config["head_dim"],
+            rope_dim=config["rope_dim"],
+            start_dim=config["start_dim"],
+            seed=config["seed"],
+            vec_core_num=vec_core_num,
+            ub_buffer_bytes=ub_buffer_bytes,
+        )
 
 
 def main() -> None:
@@ -209,10 +298,7 @@ def main() -> None:
     vec_core_num = detect_vec_core_num()
     ub_buffer_bytes = FIXED_UB_BUFFER_BYTES
 
-    _run_ref_check(
-        num_tokens=REF_CHECK_NUM_TOKENS,
-        head_dim=DEFAULT_HEAD_DIM,
-        rope_dim=DEFAULT_ROPE_DIM,
+    _run_ref_suite(
         vec_core_num=vec_core_num,
         ub_buffer_bytes=ub_buffer_bytes,
     )

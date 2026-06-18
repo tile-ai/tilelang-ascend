@@ -15,8 +15,12 @@ DEFAULT_NUM_HEADS = 32
 DEFAULT_DTYPE = "bf16"
 DEFAULT_MAX_BATCH = 262144
 DEFAULT_MAX_HEADS = 128
-REF_CHECK_NUM_BATCHES = 16
-REF_CHECK_NUM_HEADS = (4, 16, 32, 48, 64, 128)
+REF_CHECK_NUM_BATCHES_LIST = [1, 17, 29, 33, 131, 257, 275, 3716, 4096, 8192, 65536, 262144]
+REF_CHECK_NUM_HEADS = (4, 8, 16, 24, 32, 48, 64, 128)
+REF_CHECK_PARAM_COMBOS = [
+    {"beta": 1.0, "threshold": 20.0},
+    {"beta": 2.0, "threshold": 0.5},
+]
 VEC_NUM = 2
 VECTOR_BYTES_PER_ITER = 256
 SUPPORTED_NUM_HEADS = (4, 6, 8, 12, 16, 24, 32, 48, 64, 128)
@@ -452,20 +456,21 @@ def _run_ref_check(
 
 def _run_ref_suite(
     *,
-    num_batches: int,
+    num_batches_list: list,
     compile_max_batch: int,
-    softplus_beta: float,
-    softplus_threshold: float,
     ref_num_heads_list: list,
+    param_combos: list,
 ) -> None:
-    for num_heads in ref_num_heads_list:
-        _run_ref_check(
-            num_batches=num_batches,
-            num_heads=num_heads,
-            compile_max_batch=compile_max_batch,
-            softplus_beta=softplus_beta,
-            softplus_threshold=softplus_threshold,
-        )
+    for num_batches in num_batches_list:
+        for num_heads in ref_num_heads_list:
+            for params in param_combos:
+                _run_ref_check(
+                    num_batches=num_batches,
+                    num_heads=num_heads,
+                    compile_max_batch=compile_max_batch,
+                    softplus_beta=params["beta"],
+                    softplus_threshold=params["threshold"],
+                )
 
 
 def main() -> None:
@@ -475,15 +480,14 @@ def main() -> None:
     print("=" * 70)
 
     _run_ref_suite(
-        num_batches=REF_CHECK_NUM_BATCHES,
+        num_batches_list=REF_CHECK_NUM_BATCHES_LIST,
         compile_max_batch=DEFAULT_MAX_BATCH,
-        softplus_beta=1.0,
-        softplus_threshold=20.0,
         ref_num_heads_list=list(REF_CHECK_NUM_HEADS),
+        param_combos=REF_CHECK_PARAM_COMBOS,
     )
 
     print("=" * 70)
-    print("[PASS] fused_gdn_gating 所有 head 配置验证通过")
+    print("[PASS] fused_gdn_gating 所有配置验证通过")
     print("Kernel Output Match!")
     print("=" * 70)
 
