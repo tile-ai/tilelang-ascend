@@ -64,7 +64,7 @@ def _build_scatter_kernel_no_probs(
 
     B = min(B, TILE_E)
 
-    @tilelang.jit(out_idx=[2], pass_configs=PASS_CONFIGS_EXPERT)
+    @tilelang.jit(out_idx=[2], pass_configs=PASS_CONFIGS)
     def _build(
         E,
         hidden_size,
@@ -189,7 +189,7 @@ def _build_grad_kernel_with_probs(
     n_groups = topK // B
     remainder = topK % B
 
-    @tilelang.jit(out_idx=[4, 5], pass_configs=PASS_CONFIGS_EXPERT)
+    @tilelang.jit(out_idx=[4, 5], pass_configs=PASS_CONFIGS)
     def _build_fast(
         num_tokens,
         topK,
@@ -209,7 +209,6 @@ def _build_grad_kernel_with_probs(
         n_groups,
         remainder,
     ):
-
         perm_buf_shape = [B, HALF_H]
 
         @T.macro

@@ -316,9 +316,15 @@ Phase 4：分析测试空白
     ├─ 识别缺失场景（dtype组合/shape组合/异常场景）
     └─ 生成补充配置
 
-Phase 5：输出补充测试
-    └─ 在现有文件基础上补充缺失的测试函数
+Phase 5：输出补充测试（追加到现有 example_{op}.py，不新建文件）
+    ├─ 定位 generate 已生成的 example_{op}.py 中 test_{op}_l1/l2/boundary 三个桩函数
+    ├─ 用真实分层用例替换桩体（参 §9.1）：
+    │     L1 → 规则+不规则 shape（含尾块）；L2 → 异常输入；Boundary → INF/NAN/极值
+    ├─ L1 用 _run_precision（[PRECISION_*]，阻塞）；L2/Boundary 用 _run_boundary（[BOUNDARY_*]，非阻塞）
+    └─ 保持 main 分发器与 --level 接口不变（不改 generate 已写好的 main）
 ```
+
+> **场景 B 输出形式（强约束）**：**追加/填充到现有 `example_{op}.py`**，不新建独立 test 文件。generate 在 first_impl 已生成 `test_{op}_l1/l2/boundary` 桩 + 稳定的 `main` 分发器；场景 B 只替换这三个桩函数的函数体，**不改 main、不改 `--level` 接口、不动 L0 与 kernel**。替换后用 `--level all` 跑全量验证。
 
 ---
 
@@ -499,6 +505,9 @@ irregular_shapes = [
 ### 9.1 标准测试结构
 
 ```python
+import argparse
+import sys
+
 import tilelang
 import tilelang.language as T
 import torch
@@ -517,61 +526,99 @@ def golden_{op}(input_data):
     # 根据算子数学公式实现
     pass
 
-# ========== L0 测试：门槛测试（规则 shape）==========
+# ========== L0/L1：阻塞层（精度），失败打 [PRECISION_FAIL] 计入退出码 ==========
+def _run_precision(level, shape, dtype, block):
+    """L0/L1 单用例：通过打 [PRECISION_PASS]，失败打 [PRECISION_FAIL] 并返回 False。"""
+    atol, rtol = get_precision(dtype)
+    try:
+        # 运行 kernel + golden 对比
+        torch.testing.assert_close(out.cpu(), ref.cpu(), rtol=rtol, atol=atol)
+        print(f"[PRECISION_PASS] {level} shape={shape} dtype={dtype}")
+        return True
+    except Exception as e:
+        print(f"[PRECISION_FAIL] {level} shape={shape} dtype={dtype}: {e}")
+        return False
+
+# ========== L2/Boundary：非阻塞层，失败打 [BOUNDARY_WARN] 后继续，不改退出码 ==========
+def _run_boundary(level, name, fn):
+    """L2/Boundary 单用例：通过打 [BOUNDARY_PASS]，失败打 [BOUNDARY_WARN] 后继续。"""
+    try:
+        fn()
+        print(f"[BOUNDARY_PASS] {level} {name}")
+    except Exception as e:
+        print(f"[BOUNDARY_WARN] {level} {name}: {e}")
+
+# ========== L0 测试：门槛测试（规则 shape，block 整除）==========
 def test_{op}_l0():
-    """L0 门槛测试：快速冒烟"""
-    # 规则 shape 配置（block size 整除）
+    """L0 门槛测试：快速冒烟（来自 DESIGN.md §9.2 L0 计划）。返回是否全过。"""
     test_configs = [
         ("float16", {shape}, {block}),
         ("float32", {shape}, {block}),
     ]
+    ok = True
     for dtype, shape, block in test_configs:
-        # 运行 kernel + 验证精度
-        pass
+        ok &= _run_precision("l0", shape, dtype, block)
+    return ok
 
 # ========== L1 测试：功能测试（规则 + 不规则 shape）==========
 def test_{op}_l1():
-    """L1 功能测试：参数组合覆盖"""
-    # dtype 组合
+    """L1 功能测试：参数组合覆盖，⭐ 自然包含尾块。返回是否全过。"""
     dtypes = ["float16", "float32", "bfloat16"]
-    
-    # shape 组合（规则 + 不规则）⭐ 自然包含尾块
     shapes = [
         (128, 128),      # 规则 shape
         (512, 512),      # 规则 shape
         (100, 100),      # 不规则 shape（余数4）
         (32*3+30, 32*2), # 不规则 shape（余数30）
     ]
-    
+    ok = True
     for dtype in dtypes:
         for shape in shapes:
-            # 运行 kernel + 验证精度
-            pass
+            ok &= _run_precision("l1", shape, dtype, {block})
+    return ok
 
-# ========== L2 测试：异常测试 ==========
+# ========== L2 测试：异常测试（非阻塞）==========
 def test_{op}_l2():
-    """L2 异常测试"""
-    # 不支持的 dtype
-    # 不合法的 shape
-    pass
+    """L2 异常测试：不支持的 dtype / 不合法 shape。失败只记录，不阻塞。"""
+    _run_boundary("l2", "unsupported_dtype", lambda: ...)
+    _run_boundary("l2", "illegal_shape", lambda: ...)
 
-# ========== Boundary 测试：边界测试 ==========
+# ========== Boundary 测试：边界/特殊值（非阻塞）==========
 def test_{op}_boundary():
-    """Boundary 边界测试"""
-    # 极值（min/max）
-    # 空 tensor（可选）
-    pass
+    """Boundary 测试：INF/NAN/极值/空 tensor。失败只记录，不阻塞。"""
+    _run_boundary("boundary", "inf", lambda: ...)
+    _run_boundary("boundary", "nan", lambda: ...)
 
-# ========== 主函数 ==========
+# ========== 主函数：--level 分发 + 退出码 ==========
 def main():
-    test_{op}_l0()
-    test_{op}_l1()  # 自然包含规则和不规则 shape
-    test_{op}_l2()
-    test_{op}_boundary()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--level", default="all",
+                        choices=["l0", "l1", "l2", "boundary", "all"])
+    args = parser.parse_args()
+
+    tilelang.disable_cache()
+    torch.manual_seed(0)
+
+    blocking_ok = True  # 仅 L0/L1 计入退出码
+    if args.level in ("l0", "all"):
+        blocking_ok &= test_{op}_l0()
+    if args.level in ("l1", "all"):
+        blocking_ok &= test_{op}_l1()
+    if args.level in ("l2", "all"):
+        test_{op}_l2()         # 非阻塞
+    if args.level in ("boundary", "all"):
+        test_{op}_boundary()   # 非阻塞
+
+    if blocking_ok:
+        print("Test Passed!")  # L0/L1 全过；bench_test.sh 据此判定
+        sys.exit(0)
+    sys.exit(1)
 
 if __name__ == "__main__":
     main()
 ```
+
+> **导入**：文件顶部需 `import argparse, sys`（连同 `tilelang` / `torch`）。
+> **场景 B 扩展时**：保留 generate 生成的 `main` 分发器与 `--level` 接口不变，仅把 `test_{op}_l1/l2/boundary` 的桩体替换为上述真实实现（见 §4.2）。
 
 ---
 
@@ -585,6 +632,10 @@ if __name__ == "__main__":
 | **L1 测试** | 规则 + 不规则 shape，自然包含尾块（100-200 用例） |
 | **L2 测试** | 异常场景（≤20 用例） |
 | **Boundary 测试** | 极值、空 tensor（≤10 用例） |
+| **分层标记** | L0/L1 → `[PRECISION_PASS]`/`[PRECISION_FAIL]`（阻塞，计入退出码）；L2/Boundary → `[BOUNDARY_PASS]`/`[BOUNDARY_WARN]`（非阻塞，不改退出码） |
+| **退出码** | L0/L1 全过 → 打印 `"Test Passed!"` 且 `exit(0)`；L0/L1 任一失败 → `exit(1)`；L2/Boundary 失败不影响退出码 |
+| **--level 分发** | main 支持 `--level {l0,l1,l2,boundary,all}`；精度收敛跑 `l0`，扩展后跑 `all` |
+| **异常隔离** | L2/Boundary 用例必须 `try/except` 包裹，失败打 `[BOUNDARY_WARN]` 后继续，不得中断后续用例 |
 
 ---
 

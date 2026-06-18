@@ -80,6 +80,27 @@ AICORE PTO_INLINE void cvt_tile(int32_t src_addr, int32_t dst_addr,
   pto::TCVT(dst_temp_ub, src_temp_ub, rmode);
 }
 
+template <typename SrcT, typename DstT, int32_t TileRows, int32_t TileCols,
+          int32_t SrcAlignedCols, int32_t DstAlignedCols>
+AICORE PTO_INLINE void
+copy_ub_to_ub_strided(int32_t src_base, int32_t dst_base, int32_t src_buf_cols,
+                      int32_t dst_buf_cols, int32_t src_offset,
+                      int32_t dst_offset) {
+  TileUbDataND<SrcT, 1, SrcAlignedCols, 1, TileCols> row_src;
+  TileUbDataND<DstT, 1, DstAlignedCols, 1, TileCols> row_dst;
+  for (int32_t __i = 0; __i < TileRows; ++__i) {
+    pto::TASSIGN(row_src,
+                 src_base + (src_offset + __i * src_buf_cols) * sizeof(SrcT));
+    pto::TASSIGN(row_dst,
+                 dst_base + (dst_offset + __i * dst_buf_cols) * sizeof(DstT));
+    if constexpr (std::is_same_v<SrcT, DstT>) {
+      pto::TMOV(row_dst, row_src);
+    } else {
+      pto::TCVT(row_dst, row_src, pto::RoundMode::CAST_NONE);
+    }
+  }
+}
+
 template <typename T, uint32_t M, uint32_t N, uint32_t M_L1, uint32_t N_L1,
           bool transpose = false>
 AICORE PTO_INLINE void copy_l1_to_l0a(
@@ -236,7 +257,7 @@ AICORE PTO_INLINE void copy_gm_to_l1_dynamic(
 template <typename T1, typename T2, int32_t shape1, int32_t shape2,
           int32_t shape3, int32_t shape4, int32_t shape5, int32_t stride1,
           int32_t stride2, int32_t stride3, int32_t stride4, int32_t stride5,
-          uint32_t valid1, uint32_t valid2>
+          uint32_t valid1, uint32_t valid2, bool enRelu = false>
 AICORE PTO_INLINE void copy_l0c_to_gm_dynamic(
     __gm__ T1 *handle,
     const pto::Shape<shape1, shape2, shape3, shape4, shape5> &shape,
@@ -257,7 +278,16 @@ AICORE PTO_INLINE void copy_l0c_to_gm_dynamic(
       T1, pto::Shape<shape1, shape2, shape3, pto::DYNAMIC, pto::DYNAMIC>,
       pto::Stride<stride1, stride2, stride3, stride4, stride5>>
       global_tensor(handle, dynamic_shape, stride);
-  pto::TSTORE(global_tensor, L0c);
+
+  // Use TSTORE with ReluPreMode template parameter directly
+  constexpr auto reluMode =
+      enRelu ? pto::ReluPreMode::NormalRelu : pto::ReluPreMode::NoRelu;
+  pto::TSTORE<
+      pto::TileAcc<T2, shape4, shape5, pto::DYNAMIC, pto::DYNAMIC>,
+      pto::GlobalTensor<
+          T1, pto::Shape<shape1, shape2, shape3, pto::DYNAMIC, pto::DYNAMIC>,
+          pto::Stride<stride1, stride2, stride3, stride4, stride5>>,
+      pto::AtomicType::AtomicNone, reluMode>(global_tensor, L0c);
 }
 
 template <typename T1, typename T2, int32_t shape1, int32_t shape2,
@@ -564,6 +594,39 @@ AICORE PTO_INLINE void TROWEXPAND_with_slice_buffer(
 
   pto::TROWEXPAND(dst, src_temp_ub);
 }
+
+// Row-wise broadcast multiply helper.
+// Reinterprets src1 (RowMajor row vector [1, vecLen]) as a ColMajor column
+// vector [vecLen, 1] (same memory layout), then calls TROWEXPANDMUL.
+template <typename T, int32_t dstRows, int32_t dstCols, int32_t vecLen>
+AICORE PTO_INLINE void
+TROWEXPANDMUL_row_vec(TileUbDataND<T, dstRows, dstCols, dstRows, dstCols> &dst,
+                      TileUbDataND<T, dstRows, dstCols, dstRows, dstCols> &src0,
+                      TileUbDataND<T, 1, vecLen, 1, vecLen> &src1_vec,
+                      int32_t src1_addr, int32_t src1_offset) {
+  constexpr int32_t alignedRows =
+      ((vecLen * sizeof(T) + 31) / 32) * (32 / sizeof(T));
+  constexpr int32_t typeLen = sizeof(T);
+  TileUbDataDN<T, alignedRows, 1, vecLen, 1> src1_dn;
+  pto::TASSIGN(src1_dn, src1_addr + src1_offset * typeLen);
+  TROWEXPANDMUL(dst, src0, src1_dn);
+}
+
+template <typename T, int32_t dstRows, int32_t dstCols, int32_t vecLen,
+          typename TmpTile>
+AICORE PTO_INLINE void
+TROWEXPANDMUL_row_vec(TileUbDataND<T, dstRows, dstCols, dstRows, dstCols> &dst,
+                      TileUbDataND<T, dstRows, dstCols, dstRows, dstCols> &src0,
+                      TileUbDataND<T, 1, vecLen, 1, vecLen> &src1_vec,
+                      int32_t src1_addr, int32_t src1_offset, TmpTile &tmp) {
+  constexpr int32_t alignedRows =
+      ((vecLen * sizeof(T) + 31) / 32) * (32 / sizeof(T));
+  constexpr int32_t typeLen = sizeof(T);
+  TileUbDataDN<T, alignedRows, 1, vecLen, 1> src1_dn;
+  pto::TASSIGN(src1_dn, src1_addr + src1_offset * typeLen);
+  TROWEXPANDMUL(dst, src0, src1_dn, tmp);
+}
+
 template <pipe_t pipe>
 AICORE PTO_INLINE void set_cross_flag(int32_t flag, int32_t mode) {
   int config = 1 | (mode << 4) | (flag << 8);
@@ -1140,10 +1203,14 @@ AICORE PTO_INLINE void SortDynamic(int32_t dst_addr, int32_t src_addr,
   }
 }
 
-template <typename T, int32_t Rows, int32_t Cols>
-AICORE PTO_INLINE void transpose(TileUbDataND<T, Rows, Cols, Rows, Cols> &dst,
-                                 TileUbDataND<T, Rows, Cols, Rows, Cols> &src,
-                                 TileUbDataND<T, Rows, Cols, Rows, Cols> &tmp) {
+template <typename T, int32_t SrcRows, int32_t SrcCols, int32_t DstRows,
+          int32_t DstCols, int32_t DstRowValid, int32_t DstColValid,
+          int32_t TmpRows, int32_t TmpCols, int32_t TmpRowValid,
+          int32_t TmpColValid>
+AICORE PTO_INLINE void
+transpose(TileUbDataND<T, DstRows, DstCols, DstRowValid, DstColValid> &dst,
+          TileUbDataND<T, SrcRows, SrcCols, SrcRows, SrcCols> &src,
+          TileUbDataND<T, TmpRows, TmpCols, TmpRowValid, TmpColValid> &tmp) {
   pto::TTRANS(dst, src, tmp);
 }
 
@@ -1286,7 +1353,7 @@ AICORE PTO_INLINE void atomic_add_ub_to_gm_dynamic(
 template <typename T1, typename T2, int32_t shape1, int32_t shape2,
           int32_t shape3, int32_t shape4, int32_t shape5, int32_t stride1,
           int32_t stride2, int32_t stride3, int32_t stride4, int32_t stride5,
-          uint32_t l0c_shape1, uint32_t l0c_shape2>
+          uint32_t l0c_shape1, uint32_t l0c_shape2, bool enRelu = false>
 AICORE PTO_INLINE void atomic_add_l0c_to_gm_dynamic(
     __gm__ T1 *handle,
     const pto::Shape<shape1, shape2, shape3, shape4, shape5> &shape,
@@ -1305,8 +1372,21 @@ AICORE PTO_INLINE void atomic_add_l0c_to_gm_dynamic(
   pto::TileAcc<T2, l0c_shape1, l0c_shape2, pto::DYNAMIC, pto::DYNAMIC> temp_l0c(
       valid_row, valid_col);
   pto::TASSIGN(temp_l0c, l0c_shape_addr + l0c_offset * len);
+
+  constexpr auto reluMode =
+      enRelu ? pto::ReluPreMode::NormalRelu : pto::ReluPreMode::NoRelu;
   pto::TSTORE<decltype(temp_l0c), decltype(global_tensor),
-              pto::AtomicType::AtomicAdd>(global_tensor, temp_l0c);
+              pto::AtomicType::AtomicAdd, reluMode>(global_tensor, temp_l0c);
+}
+
+AICORE PTO_INLINE void sync_all() { pto::SYNCALL<pto::SyncCoreType::Mix>(); }
+
+AICORE PTO_INLINE void sync_all_aic() {
+  pto::SYNCALL<pto::SyncCoreType::AICOnly>();
+}
+
+AICORE PTO_INLINE void sync_all_aiv() {
+  pto::SYNCALL<pto::SyncCoreType::AIVOnly>();
 }
 
 AICORE PTO_INLINE void sync_all() { pto::SYNCALL<pto::SyncCoreType::Mix>(); }

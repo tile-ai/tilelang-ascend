@@ -15,7 +15,7 @@ description: "根据算子需求生成 TileLang-Ascend 算子设计文档（desi
 - **Tiling 策略**：Block 划分与 Tile Shape 设计
 - **循环结构**：T.Parallel / T.serial / T.Pipelined / T.Persistent 的选择
 - **同步策略**：自动同步 vs 手动同步标志
-- **验证方案**：Golden 函数与多级测试计划
+- **验证方案**：Golden 函数与 L0 门槛测试计划（完整分层套件 L1/L2/Boundary 由 tilelang-op-test-design 生成）
 
 ---
 
@@ -108,7 +108,7 @@ description: "根据算子需求生成 TileLang-Ascend 算子设计文档（desi
 6. 循环与调度结构
 7. 同步策略
 8. CV 融合设计（**按模式分支**：Developer 默认消除 workspace/vid——`threads=2` + 片上直连，不产出 workspace 规格；仅 Expert/混合或复杂场景回退才设计 workspace + `workspace_idx`。详见 design-template.md §8.2）
-9. 验证方案
+9. 验证方案（Golden + **L0 门槛测试计划**；完整分层套件 L1/L2/Boundary 交由 `tilelang-op-test-design`，不在此枚举）
 10. 风险点与注意事项
 11. 交付清单
 
