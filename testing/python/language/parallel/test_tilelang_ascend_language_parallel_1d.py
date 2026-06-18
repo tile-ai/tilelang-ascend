@@ -225,12 +225,15 @@ def test_parallel_1d_offset(setup_random_seed):
 
 # ---------------------------------------------------------------------------
 # NOTE: there is intentionally NO 1D discrete (gather) test.
-# A 1D gather ``a_ub[idx[j]]`` indexes the same dimension that T.Parallel
-# vectorizes, which yields an unaligned per-element UB access and traps at
-# runtime ("The UB address accessed by the VEC instruction is not aligned").
-# Discrete gather is only supported when the index dimension is an OUTER,
-# non-vectorized dimension (e.g. ``a[idx[i], j]``); see the 2D tests in
-# test_tilelang_ascend_language_parallel_discrete.py. There is no valid 1D
+# Ascend VEC/gather requires the source UB address to be 32B-aligned. A 1D
+# gather ``a_ub[idx[j]]`` reads single elements at byte offset idx*elemsize,
+# which is 32B-aligned only when idx is a multiple of 8 -- so arbitrary indices
+# trap at runtime ("The UB address accessed by the VEC instruction is not
+# aligned"). The 2D form ``a[idx[i], j]`` works because each gathered row starts
+# at idx*block_N*elemsize and the row stride (block_N*elemsize) is a multiple of
+# 32B, so every row start stays 32B-aligned regardless of idx. Discrete gather
+# therefore needs an OUTER, non-vectorized index dim (see
+# test_tilelang_ascend_language_parallel_discrete.py); there is no valid 1D
 # analog, so the discrete scenario stays 2D.
 # ---------------------------------------------------------------------------
 
