@@ -255,7 +255,7 @@ def _run_ref_check(
         x_out = x_in.clone()
 
         # Extract the slice to apply RoPE
-        x_slice = x_out[:, start_dim:start_dim + rope_dim].contiguous()
+        x_slice = x_out[:, start_dim : start_dim + rope_dim].contiguous()
         x_slice_flat = x_slice.view(1, -1)
 
         kernel = rope_in_place_kernel_jit(
@@ -268,12 +268,14 @@ def _run_ref_check(
         torch.npu.synchronize()
 
         # Put the result back
-        x_out[:, start_dim:start_dim + rope_dim] = x_slice_flat.view(num_tokens, rope_dim)
+        x_out[:, start_dim : start_dim + rope_dim] = x_slice_flat.view(num_tokens, rope_dim)
 
         x_ref = _torch_rope_ref_rows(x_in, sin, cos, start_dim)
         torch.testing.assert_close(x_out, x_ref, rtol=1e-3, atol=1e-3)
-    
-    print(f"[PASS] RoPE output matches torch reference (tokens={num_tokens}, heads={num_heads}, head_dim={head_dim}, rope_dim={rope_dim}, start_dim={start_dim})")
+
+    print(
+        f"[PASS] RoPE output matches torch reference (tokens={num_tokens}, heads={num_heads}, head_dim={head_dim}, rope_dim={rope_dim}, start_dim={start_dim})"
+    )
 
 
 def _run_ref_suite(vec_core_num: int, ub_buffer_bytes: int) -> None:
