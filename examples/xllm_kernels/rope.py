@@ -211,25 +211,25 @@ def _run_ref_check(
 
     torch.manual_seed(seed)
     device = torch.device("npu")
-    
+
     # For multi-head cases, we need to flatten the heads dimension
     if num_heads > 1:
         # Create input with shape (num_tokens, num_heads, head_dim)
         x_in = torch.randn((num_tokens, num_heads, head_dim), device=device, dtype=torch.bfloat16)
         sin = torch.randn((num_tokens, rope_dim), device=device, dtype=torch.bfloat16)
         cos = torch.randn((num_tokens, rope_dim), device=device, dtype=torch.bfloat16)
-        
+
         # Apply RoPE to the slice [start_dim:start_dim+rope_dim] for all heads
         x_out = x_in.clone()
-        
+
         # Flatten to (num_tokens * num_heads, head_dim) for kernel processing
         x_in_flat = x_in.reshape(num_tokens * num_heads, head_dim)
         x_out_flat = x_out.reshape(num_tokens * num_heads, head_dim)
-        
+
         # Repeat sin/cos for each head
         sin_repeated = sin.repeat_interleave(num_heads, dim=0)
         cos_repeated = cos.repeat_interleave(num_heads, dim=0)
-        
+
         kernel = rope_in_place_kernel_jit(
             head_dim=head_dim,
             rope_dim=rope_dim,
@@ -238,14 +238,14 @@ def _run_ref_check(
         )
         kernel(x_in_flat, sin_repeated, cos_repeated, x_out_flat, num_tokens * num_heads, head_dim)
         torch.npu.synchronize()
-        
+
         # Reshape back to (num_tokens, num_heads, head_dim)
         x_out = x_out_flat.reshape(num_tokens, num_heads, head_dim)
-        
+
         # Compute reference using torch
         x_ref = _torch_rope_ref_rows(x_in_flat, sin_repeated, cos_repeated, start_dim)
         x_ref = x_ref.reshape(num_tokens, num_heads, head_dim)
-        
+
         torch.testing.assert_close(x_out, x_ref, rtol=1e-3, atol=1e-3)
     else:
         # Single head case - original logic
@@ -253,11 +253,11 @@ def _run_ref_check(
         sin = torch.randn((num_tokens, rope_dim), device=device, dtype=torch.bfloat16)
         cos = torch.randn((num_tokens, rope_dim), device=device, dtype=torch.bfloat16)
         x_out = x_in.clone()
-        
+
         # Extract the slice to apply RoPE
         x_slice = x_out[:, start_dim:start_dim + rope_dim].contiguous()
         x_slice_flat = x_slice.view(1, -1)
-        
+
         kernel = rope_in_place_kernel_jit(
             head_dim=rope_dim,
             rope_dim=rope_dim,
@@ -266,10 +266,10 @@ def _run_ref_check(
         )
         kernel(x_slice_flat, sin, cos, x_slice_flat, num_tokens, rope_dim)
         torch.npu.synchronize()
-        
+
         # Put the result back
         x_out[:, start_dim:start_dim + rope_dim] = x_slice_flat.view(num_tokens, rope_dim)
-        
+
         x_ref = _torch_rope_ref_rows(x_in, sin, cos, start_dim)
         torch.testing.assert_close(x_out, x_ref, rtol=1e-3, atol=1e-3)
     

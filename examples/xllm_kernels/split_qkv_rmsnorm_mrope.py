@@ -832,7 +832,7 @@ def _run_ref_suite(
             mrope_section=mrope_section,
             is_interleaved=True,
         )
-    
+
     # New 9 tests: num_tokens in [1, 17, 4097], head_configs in [(32,2), (24,4), (16,2)], is_interleaved=True
     new_head_configs = [(32, 2), (24, 4), (16, 2)]
     for num_tokens in [1, 17, 4097]:
@@ -847,7 +847,7 @@ def _run_ref_suite(
                 mrope_section=mrope_section,
                 is_interleaved=True,
             )
-    
+
     # Edge 4 tests: num_tokens in [4097, 8192], head_configs=[(16,4)], is_interleaved=[True, False]
     for num_tokens in [4097, 8192]:
         for is_interleaved in [True, False]:
