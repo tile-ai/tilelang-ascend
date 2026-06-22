@@ -83,7 +83,7 @@ struct CopyGlobalContext {
     int flag_id;         // pipe flag token
     int dir_type;        // 1=C2V, 2=V2C
     int slot_size;       // max(src_elems, dst_elems) * dtype_bytes
-    int slot_num;        // 1
+    int slot_num;        // default 1 (A2/A3)  2 (A5)
     std::string pipe_id; // "pipe_X_V2C" or "pipe_X_C2V"
     std::string op_name; // "copy_pipe_to_l1" or "copy_pipe_to_ub"
     std::string dtype_str;
@@ -494,7 +494,7 @@ public:
     pipe_flag_id_counter_ += 2; // one pipe needs 2 FlagID
     int dtype_bytes = GetDtypeBytes(info.dtype_str);
     info.slot_size = copy_info.per_block_ele_nums * dtype_bytes;
-    info.slot_num = 1;
+    info.slot_num = platform_ == "A5" ? 2 : 1; // A5 gets npu timeout with 1 slot
     info.pipe_id = "pipe_" + std::to_string(info.flag_id) + "_"
                    + (info.dir_type == 2 ? "V2C" : "C2V");
     info.split_axis = ComputeSplitAxis(info.src_M_val, info.src_N_val,
