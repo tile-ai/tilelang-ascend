@@ -1652,10 +1652,9 @@ void CodeGenTileLangAscendPto::PreScanPipes(const PrimFunc &f) {
         auto *op_name_node = call->args[0].as<StringImmNode>();
         if (op_name_node) {
           std::string name = op_name_node->value;
-          if (name.find("copy_ub_to_pipe") != std::string::npos ||
-              name.find("copy_pipe_to_l1") != std::string::npos ||
-              name.find("copy_l0c_to_pipe") != std::string::npos ||
-              name.find("copy_pipe_to_ub") != std::string::npos) {
+          if (name.find("copy_pipe_to_l1") != std::string::npos ||
+              name.find("copy_pipe_to_ub") != std::string::npos ||
+              name.find("copy_pipe_to_ub_V") != std::string::npos) {
             int flag_id = Downcast<IntImm>(call->args[3])->value;
 
             auto it = pipe_registry_.find(flag_id);

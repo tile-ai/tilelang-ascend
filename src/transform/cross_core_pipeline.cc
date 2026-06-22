@@ -263,9 +263,14 @@ public:
       "copy_l0c_to_gm", "copy_ub_to_gm", "atomic_add_l0c_to_gm",
       "atomic_add_ub_to_gm"};
 
+  const std::vector<std::string> IS_PIPE_WRITE = {"copy_l0c_to_pipe",
+                                                  "copy_ub_to_pipe"};
+
   LoopAnalyzer(const ForNode *pipeline_loop,
-               const Map<Var, String> location_map)
-      : pipeline_loop_(pipeline_loop), location_map_(location_map) {}
+               const Map<Var, String> location_map,
+               const Map<IntImm, Map<String, ObjectRef>> &pipe_infos)
+      : pipeline_loop_(pipeline_loop), location_map_(location_map),
+        pipe_infos_(pipe_infos) {}
 
   void Analyze() {
     all_statements_C_.clear();
@@ -335,14 +340,28 @@ public:
         normalized_name = call_node->op.as<OpNode>()->name;
       }
 
-      bool exists = std::find(IS_WRITE_GM.begin(), IS_WRITE_GM.end(),
-                              normalized_name) != IS_WRITE_GM.end();
-      if (exists) {
+      bool is_gm_write = std::find(IS_WRITE_GM.begin(), IS_WRITE_GM.end(),
+                                   normalized_name) != IS_WRITE_GM.end();
+      bool is_pipe_write = std::find(IS_PIPE_WRITE.begin(), IS_PIPE_WRITE.end(),
+                                     normalized_name) != IS_PIPE_WRITE.end();
+
+      if (is_gm_write || is_pipe_write) {
         WorkspaceWrite write;
         write.stmt_idx = info.idx;
-        if (auto workspace_name = FindWorkspaceName(call_node)) {
-          write.buffer_name = workspace_name.value();
+
+        if (is_gm_write) {
+          if (auto workspace_name = FindWorkspaceName(call_node)) {
+            write.buffer_name = workspace_name.value();
+          }
+        } else {
+          if (auto flag_id = ExtractFlagId(call_node)) {
+            if (auto workspace_name =
+                    FindWorkspaceFromPipeInfos(flag_id.value())) {
+              write.buffer_name = workspace_name.value();
+            }
+          }
         }
+
         if (core_scope_ == CUBE_SCOPE) {
           workspace_writes_C_.push_back(write);
         } else if (core_scope_ == VEC_SCOPE) {
@@ -712,9 +731,37 @@ private:
     return result;
   }
 
+  std::optional<int> ExtractFlagId(const CallNode *call_node) {
+    if (!call_node->op.same_as(builtin::call_extern())) {
+      return std::nullopt;
+    }
+    if (call_node->args.size() >= 4) {
+      if (auto flag_imm = call_node->args[3].as<IntImmNode>()) {
+        return flag_imm->value;
+      }
+    }
+    return std::nullopt;
+  }
+
+  std::optional<std::string> FindWorkspaceFromPipeInfos(int flag_id) {
+    auto it = pipe_infos_.find(IntImm(DataType::Int(32), flag_id));
+    if (it != pipe_infos_.end()) {
+      auto fields = (*it).second;
+      auto ws_it = fields.find(String("workspace_name"));
+      if (ws_it != fields.end()) {
+        std::string workspace_name = Downcast<String>((*ws_it).second)->data;
+        if (!workspace_name.empty()) {
+          return workspace_name;
+        }
+      }
+    }
+    return std::nullopt;
+  }
+
 private:
   const ForNode *pipeline_loop_;
   Map<Var, String> location_map_;
+  Map<IntImm, Map<String, ObjectRef>> pipe_infos_;
   std::vector<StmtInfo> all_statements_C_;
   std::vector<StmtInfo> all_statements_V_;
   std::vector<StmtInfo> all_statements_;
@@ -1210,6 +1257,17 @@ public:
 
   PrimFunc Transform(PrimFunc f, PassContext ctx) {
     PrimFuncNode *fptr = f.CopyOnWrite();
+
+    if (auto opt =
+            f->GetAttr<Map<IntImm, Map<String, ObjectRef>>>("pipe_infos")) {
+      pipe_infos_ = opt.value();
+    }
+    if (auto opt = f->GetAttr<String>("npu_platform")) {
+      platform_ = opt.value()->data;
+    } else {
+      platform_ = "A3";
+    }
+
     tir::PostOrderVisit(f->body, [&](const ObjectRef &obj) {
       if (const auto *realize = obj.as<tir::BlockRealizeNode>()) {
         for (auto buf : realize->block->alloc_buffers) {
@@ -1243,6 +1301,9 @@ public:
 
     auto fn_attr = fptr->attrs.CopyOnWrite();
     fn_attr->dict.Set("buffer_versions", collected_buffer_versions_);
+    if (!pipe_infos_.empty()) {
+      fn_attr->dict.Set("pipe_infos", pipe_infos_);
+    }
 
     return f;
   }
@@ -1258,7 +1319,7 @@ private:
   }
 
   Stmt ProcessCrossCorePipeline(const ForNode *pipeline) {
-    LoopAnalyzer analyzer(pipeline, location_map_);
+    LoopAnalyzer analyzer(pipeline, location_map_, pipe_infos_);
     analyzer.Analyze();
     if (analyzer.workspace_writes_C().empty() &&
         analyzer.workspace_writes_V().empty()) {
@@ -1276,21 +1337,25 @@ private:
     const Var &outer_loop_var = rewriter.outer_loop_var();
     Stmt outer_loop =
         ModifyOuterLoop(pipeline, staged_loops, num_stages, outer_loop_var);
-    std::set<std::string> buffers_to_adjust = rewriter.GetAllBuffersToAdjust();
-    if (!buffers_to_adjust.empty()) {
-      // Build a combined buffer map that includes both function params
-      // (origin_map_) and locally allocated buffers (alloc_buffers), so
-      // AdjustBuffersAndAccess can look up shapes for on-chip buffers like
-      // r_factors, sumexp_is, etc.
-      Map<Var, Buffer> combined_map(origin_map_);
-      if (const BlockRealizeNode *realize =
-              pipeline->body.as<BlockRealizeNode>()) {
-        for (const auto &buf : realize->block->alloc_buffers) {
-          combined_map.Set(buf->data, buf);
+
+    if (platform_ != "A5") {
+      std::set<std::string> buffers_to_adjust =
+          rewriter.GetAllBuffersToAdjust();
+      if (!buffers_to_adjust.empty()) {
+        // Build a combined buffer map that includes both function params
+        // (origin_map_) and locally allocated buffers (alloc_buffers), so
+        // AdjustBuffersAndAccess can look up shapes for on-chip buffers like
+        // r_factors, sumexp_is, etc.
+        Map<Var, Buffer> combined_map(origin_map_);
+        if (const BlockRealizeNode *realize =
+                pipeline->body.as<BlockRealizeNode>()) {
+          for (const auto &buf : realize->block->alloc_buffers) {
+            combined_map.Set(buf->data, buf);
+          }
         }
+        outer_loop = AdjustBuffersAndAccess(combined_map, outer_loop,
+                                            buffers_to_adjust, num_stages);
       }
-      outer_loop = AdjustBuffersAndAccess(combined_map, outer_loop,
-                                          buffers_to_adjust, num_stages);
     }
 
     if (const BlockRealizeNode *original_realize =
@@ -1307,10 +1372,33 @@ private:
         Stmt new_realize =
             BlockRealize(original_realize->iter_values,
                          original_realize->predicate, extended_block);
+
+        if (!pipe_infos_.empty()) {
+          UpdatePipeInfosSlotNum(num_stages);
+        }
+
         return this->VisitStmt(new_realize);
       }
     }
     return this->VisitStmt(outer_loop);
+  }
+
+  void UpdatePipeInfosSlotNum(int num_stages) {
+    Map<IntImm, Map<String, ObjectRef>> new_pipe_infos;
+    for (const auto &[key, fields] : pipe_infos_) {
+      Map<String, ObjectRef> new_fields;
+      for (const auto &[field_key, field_value] : fields) {
+        if (field_key == "slot_num") {
+          int old_slot_num = Downcast<IntImm>(field_value)->value;
+          new_fields.Set(field_key,
+                         IntImm(DataType::Int(32), old_slot_num * num_stages));
+        } else {
+          new_fields.Set(field_key, field_value);
+        }
+      }
+      new_pipe_infos.Set(key, new_fields);
+    }
+    pipe_infos_ = new_pipe_infos;
   }
 
   Block ExtendAllBuffers(const Block &block, int num_stages,
@@ -1567,6 +1655,8 @@ private:
   Map<Var, Buffer> origin_map_;
   std::vector<PipelineInfo> cross_core_pipelines_;
   Map<Var, PrimExpr> collected_buffer_versions_;
+  Map<IntImm, Map<String, ObjectRef>> pipe_infos_;
+  std::string platform_;
 };
 
 tvm::transform::Pass CrossCorePipeline() {
