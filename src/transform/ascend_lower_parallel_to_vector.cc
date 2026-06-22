@@ -284,7 +284,14 @@ private:
       // parallel -> parallel -> (store | seq)
       const auto *inner_for = op->body.as<ForNode>();
       if (!inner_for || inner_for->kind != ForKind::kParallel) {
-        return arith::IRMutatorWithAnalyzer::VisitStmt_(op);
+        // Not a 2D parallel nest and the 1D path above could not vectorize it:
+        // lower this parallel loop to serial. Ascend has no native
+        // parallel-for, so a surviving kParallel would reach codegen and trip
+        // "Find undefined Variable v_thread".
+        auto serial = make_object<ForNode>(*op);
+        serial->kind = ForKind::kSerial;
+        serial->body = VisitStmt(op->body);
+        return Stmt(serial);
       }
 
       const auto *third_for = inner_for->body.as<ForNode>();
@@ -316,7 +323,16 @@ private:
           return v;
       }
 
-      return arith::IRMutatorWithAnalyzer::VisitStmt_(op);
+      // 2D parallel nest that could not be vectorized (e.g. a compact->aligned
+      // UB copy): lower both levels to serial instead of leaving kParallel
+      // loops for codegen.
+      auto outer = make_object<ForNode>(*op);
+      outer->kind = ForKind::kSerial;
+      auto inner = make_object<ForNode>(*inner_for);
+      inner->kind = ForKind::kSerial;
+      inner->body = VisitStmt(inner_for->body);
+      outer->body = Stmt(inner);
+      return Stmt(outer);
     }
 
     // Serial cases
@@ -756,7 +772,12 @@ private:
         parallel_vars, &row_stmts, is_2d, inner_vec_len);
 
     is_2d_vectorizing_ = saved_is_2d_vectorizing;
-    if (is_global_output && (!success || row_stmts.empty()))
+    // A failed decomposition (e.g. a compact->aligned UB->UB copy that cannot
+    // be lowered to copy_ub_to_ub) must bail regardless of the output scope so
+    // VisitStmt_ falls back to a scalar serial loop.
+    if (!success)
+      return NullOpt;
+    if (is_global_output && row_stmts.empty())
       return NullOpt;
 
     // If output is in GM, add ascend_copy to copy from temp UB to GM
@@ -879,6 +900,21 @@ private:
     // GM->UB GM->L1
     if (auto load = expr.as<BufferLoadNode>()) {
       Buffer input_buffer = load->buffer;
+
+      // Compact->aligned UB->UB copy (different inner/row width) cannot be
+      // lowered to copy_ub_to_ub safely: the strided variant needs 32B-aligned
+      // per-row UB addresses (sub-32B compact rows trap the VEC instruction),
+      // and using the dst width mispacks rows. Bail so VisitStmt_ falls back to
+      // a correct scalar serial loop.
+      if (IsUnifiedBuffer(input_buffer) && IsUnifiedBuffer(output_buffer) &&
+          input_buffer->shape.size() >= 2 && output_buffer->shape.size() >= 2) {
+        const auto *src_inner = input_buffer->shape.back().as<IntImmNode>();
+        const auto *dst_inner = output_buffer->shape.back().as<IntImmNode>();
+        if (src_inner && dst_inner && src_inner->value != dst_inner->value) {
+          return false;
+        }
+      }
+
       PrimExpr input_offset =
           CalculateBufferOffset(load->indices, input_buffer, parallel_vars);
 
