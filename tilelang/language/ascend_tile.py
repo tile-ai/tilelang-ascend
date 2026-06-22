@@ -1410,21 +1410,25 @@ def gather(dst: Buffer | BufferRegion, src: Buffer | BufferRegion, src_offset: B
         src_base_addr: The base address offset to be added to the gather indices.
     """
     if isinstance(dst, BufferRegion):
-        dst_ptr, _ = _handle_buffer_region(dst, "w")
+        dst_ptr, dst_extent = _handle_buffer_region(dst, "w")
+        dst_size = math.prod(dst_extent)
     else:
         dst_ptr = dst.access_ptr("w")
+        dst_size = math.prod(dst.shape)
 
     if isinstance(src, BufferRegion):
-        src_ptr, src_extent = _handle_buffer_region(src, "r")
-        size = math.prod(src_extent)
+        src_ptr, _ = _handle_buffer_region(src, "r")
     else:
         src_ptr = src.access_ptr("r")
-        size = math.prod(src.shape)
 
     if isinstance(src_offset, BufferRegion):
-        src_offset_ptr, _ = _handle_buffer_region(src_offset, "r")
+        src_offset_ptr, offset_extent = _handle_buffer_region(src_offset, "r")
+        offset_size = math.prod(offset_extent)
     else:
         src_offset_ptr = src_offset.access_ptr("r")
+        offset_size = math.prod(src_offset.shape)
+
+    size = tir.min(dst_size, offset_size)
 
     return T.call_intrin(
         "handle",
