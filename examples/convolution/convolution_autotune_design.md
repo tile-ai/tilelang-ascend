@@ -27,19 +27,19 @@ $$
 im2col 变换后转换为矩阵乘法：
 
 $$
-\text{Input\_flat} \in \mathbb{R}^{(C \cdot KH \cdot KW) \times (B \cdot HO \cdot WO)}
+\mathrm{Input\_flat} \in \mathbb{R}^{(C \cdot KH \cdot KW) \times (B \cdot HO \cdot WO)}
 $$
 
 $$
-\text{Kernel\_flat} \in \mathbb{R}^{OC \times (C \cdot KH \cdot KW)}
+\mathrm{Kernel\_flat} \in \mathbb{R}^{OC \times (C \cdot KH \cdot KW)}
 $$
 
 $$
-\text{Output\_flat} = \text{Kernel\_flat} \cdot \text{Input\_flat}
+\mathrm{Output\_flat} = \mathrm{Kernel\_flat} \cdot \mathrm{Input\_flat}
 $$
 
 $$
-\text{Output} \in \mathbb{R}^{B \times OC \times HO \times WO}
+\mathrm{Output} \in \mathbb{R}^{B \times OC \times HO \times WO}
 $$
 
 ### 1.4 算法描述
