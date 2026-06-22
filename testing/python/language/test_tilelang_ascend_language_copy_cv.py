@@ -21,7 +21,6 @@ PASS_CONFIGS = {
 @pytest.fixture(scope="session", autouse=True)
 def disable_cache():
     tilelang.disable_cache()
-    yield
 
 
 @pytest.fixture(scope="session")
