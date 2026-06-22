@@ -31,6 +31,8 @@ def platform():
 
 skip_A5 = pytest.mark.skipif(determine_platform() == "A5", reason="Only test for non-A5 platform")
 only_A5 = pytest.mark.skipif(determine_platform() != "A5", reason="Only test for A5 platform")
+target_skip_ascendc_in_A5 = pytest.mark.parametrize("target", [pytest.param("ascendc", marks=skip_A5), "pto"])
+# target = A2/A3: "ascend" & "pto"; A5: "pto" only
 
 
 def _compile(program, target="pto", expert=False):
@@ -450,14 +452,14 @@ def _l0c_to_ub_case(kernel_func, M=128, N=128, K=128, dtype = "float16", accum_d
     torch.testing.assert_close(c, ref_c, rtol=1e-3, atol=1e-3)
 
 
-@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@target_skip_ascendc_in_A5
 @pytest.mark.parametrize("dtype,accum_dtype", [("float16", "float"), ("bfloat16", "float")])
 def test_ub_to_l1(target, dtype, accum_dtype):
     M, N, K = 128, 128, 128
     _ub_to_l1_case(_ub_to_l1_kernel, M=M, N=N, K=K, dtype=dtype, accum_dtype=accum_dtype, target=target, expert=False)
 
 
-@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@target_skip_ascendc_in_A5
 def test_ub_to_l1_drop_vid(target):
     M, N, K = 128, 128, 128
     _ub_to_l1_case(_ub_to_l1_kernel_drop_vid, M=M, N=N, K=K, target=target, expert=False)
@@ -483,7 +485,7 @@ def test_ub_to_l1_expert_A5(target):
     _ub_to_l1_case(_ub_to_l1_kernel_expert_A5, M=M, N=N, K=K, target=target, expert=True)
 
 
-@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@target_skip_ascendc_in_A5
 def test_ub_to_l1_special_shapes(target, platform):
     M, N, K = 16, 16, 16
     print(f"Case: {M = }, {N = }, {K = }")
@@ -498,14 +500,14 @@ def test_ub_to_l1_special_shapes(target, platform):
         _ub_to_l1_case(_ub_to_l1_kernel_lr, M=M, N=N, K=K, target=target, expert=False)
 
 
-@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@target_skip_ascendc_in_A5
 @pytest.mark.parametrize("dtype,accum_dtype", [("float16", "float"), ("bfloat16", "float")])
 def test_l0c_to_ub(target, dtype, accum_dtype):
     M, N, K = 128, 128, 128
     _l0c_to_ub_case(_l0c_to_ub_kernel, M=M, N=N, K=K, dtype=dtype, accum_dtype=accum_dtype, target=target, expert=False)
 
 
-@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@target_skip_ascendc_in_A5
 def test_l0c_to_ub_drop_vid(target):
     M, N, K = 128, 128, 128
     _l0c_to_ub_case(_l0c_to_ub_kernel_drop_vid, M=M, N=N, K=K, target=target, expert=False)
@@ -517,7 +519,7 @@ def test_l0c_to_ub_lr(target):
     _l0c_to_ub_case(_l0c_to_ub_kernel_lr, M=M, N=N, K=K, target=target, expert=False)
 
 
-@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@target_skip_ascendc_in_A5
 def test_l0c_to_ub_special_shapes(target, platform):
     M, N, K = 16, 16, 16
     print(f"Case: {M = }, {N = }, {K = }")
@@ -559,7 +561,7 @@ def _combined_case(kernel_func, M=128, N=128, K=128, target="pto"):
     torch.testing.assert_close(d, ref_d, rtol=1e-3, atol=1e-3)
 
 
-@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@target_skip_ascendc_in_A5
 def test_combined(target):
     M, N, K = 128, 128, 128
     _combined_case(_combined_kernel, M=M, N=N, K=K, target=target)
