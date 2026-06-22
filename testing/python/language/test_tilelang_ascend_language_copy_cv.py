@@ -172,8 +172,8 @@ def _ub_to_l1_kernel_expert_A2(M=128, N=128, K=128, dtype="float16", accum_dtype
         workspace_1: T.Tensor((M * K * 2 ), dtype) # type: ignore
     ):
         with T.Kernel(1, is_npu=True) as (cid, vid):
-            T._srcCode("using Pipe_0_V2C = TPipe<0, pto::Direction::DIR_V2C, 32768, 2>;")
-            T._srcCode("Pipe_0_V2C pipe_0_V2C(workspace_1_handle, 0, 32768);")
+            T._src_code("using Pipe_0_V2C = TPipe<0, pto::Direction::DIR_V2C, 32768, 2>;")
+            T._src_code("Pipe_0_V2C pipe_0_V2C(workspace_1_handle, 0, 32768);")
 
             A_ub = T.alloc_ub((M_half, K), dtype)
             A_l1 = T.alloc_L1((M, K), dtype)
@@ -185,7 +185,7 @@ def _ub_to_l1_kernel_expert_A2(M=128, N=128, K=128, dtype="float16", accum_dtype
                 T.copy(B, B_l1)
 
                 # UB → L1
-                T._srcCode("tl::ascend_pto::copy_pipe_to_l1<pto::TileSplitAxis::TILE_UP_DOWN>(pipe_0_V2C, A_l1);")
+                T._src_code("tl::ascend_pto::copy_pipe_to_l1<pto::TileSplitAxis::TILE_UP_DOWN>(pipe_0_V2C, A_l1);")
                 T.set_flag("mte2", "m", 1)
                 T.wait_flag("mte2", "m", 1)
 
@@ -205,7 +205,7 @@ def _ub_to_l1_kernel_expert_A2(M=128, N=128, K=128, dtype="float16", accum_dtype
                 # T.copy(A_ub, A_l1)
                 T.set_flag("mte2", "mte3", 3)
                 T.wait_flag("mte2", "mte3", 3)
-                T._srcCode("tl::ascend_pto::copy_ub_to_pipe<pto::TileSplitAxis::TILE_UP_DOWN>(pipe_0_V2C, A_ub);")
+                T._src_code("tl::ascend_pto::copy_ub_to_pipe<pto::TileSplitAxis::TILE_UP_DOWN>(pipe_0_V2C, A_ub);")
 
     return main
 
@@ -222,8 +222,8 @@ def _ub_to_l1_kernel_expert_A5(M=128, N=128, K=128, dtype="float16", accum_dtype
         C: T.Tensor((M, N), dtype), # type: ignore
     ):
         with T.Kernel(1, is_npu=True) as (cid, vid):
-            T._srcCode("using Pipe_0_V2C = TPipe<0, pto::Direction::DIR_V2C, 32768, 2>;")
-            T._srcCode("Pipe_0_V2C pipe_0_V2C(nullptr, 0, 32768);")
+            T._src_code("using Pipe_0_V2C = TPipe<0, pto::Direction::DIR_V2C, 32768, 2>;")
+            T._src_code("Pipe_0_V2C pipe_0_V2C(nullptr, 0, 32768);")
 
             A_ub = T.alloc_ub((M_half, K), dtype)
             A_ub_Nz = T.alloc_ub((M_half, K), dtype)
@@ -236,7 +236,7 @@ def _ub_to_l1_kernel_expert_A5(M=128, N=128, K=128, dtype="float16", accum_dtype
                 T.copy(B, B_l1)
 
                 # UB → L1
-                T._srcCode("tl::ascend_pto::copy_pipe_to_l1<pto::TileSplitAxis::TILE_UP_DOWN>(pipe_0_V2C, A_l1);")
+                T._src_code("tl::ascend_pto::copy_pipe_to_l1<pto::TileSplitAxis::TILE_UP_DOWN>(pipe_0_V2C, A_l1);")
                 T.set_flag("mte2", "m", 1)
                 T.wait_flag("mte2", "m", 1)
 
@@ -256,10 +256,10 @@ def _ub_to_l1_kernel_expert_A5(M=128, N=128, K=128, dtype="float16", accum_dtype
                 # T.copy(A_ub, A_l1)
                 T.set_flag("mte2", "v", 3)
                 T.wait_flag("mte2", "v", 3)
-                T._srcCode("tl::ascend_pto::copy_ub_to_ub_Nz(A_ub, A_ub_Nz);", A_ub_Nz)
+                T._src_code("tl::ascend_pto::copy_ub_to_ub_Nz(A_ub, A_ub_Nz);", A_ub_Nz)
                 T.set_flag("v", "mte3", 4)
                 T.wait_flag("v", "mte3", 4)
-                T._srcCode("tl::ascend_pto::copy_ub_to_pipe<pto::TileSplitAxis::TILE_UP_DOWN>(pipe_0_V2C, A_ub, A_ub_Nz);")
+                T._src_code("tl::ascend_pto::copy_ub_to_pipe<pto::TileSplitAxis::TILE_UP_DOWN>(pipe_0_V2C, A_ub, A_ub_Nz);")
 
     return main
 
