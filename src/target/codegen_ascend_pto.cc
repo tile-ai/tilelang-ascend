@@ -1172,13 +1172,20 @@ void CodeGenTileLangAscendPto::CopyUBToUBCodegen(const CallNode *call) {
     auto dst_tile_cols = Downcast<IntImm>(call->args[7])->value;
     auto dst_buf_cols = Downcast<IntImm>(call->args[8])->value;
 
+    ICHECK_EQ(src_tile_rows, dst_tile_rows)
+        << "UB-to-UB copy requires matching source and destination row counts";
+    ICHECK_EQ(src_tile_cols, dst_tile_cols)
+        << "UB-to-UB copy requires matching source and destination column counts";
+
+    ShapeInfo src_shape_info = GetSliceInfo(src_info.access_ptr);
+    ShapeInfo dst_shape_info = GetSliceInfo(dst_info.access_ptr);
+    src_buf_cols = src_shape_info.col;
+    dst_buf_cols = dst_shape_info.col;
+
     bool src_strided = (src_tile_cols != src_buf_cols);
     bool dst_strided = (dst_tile_cols != dst_buf_cols);
 
     if (!src_strided && !dst_strided) {
-      ShapeInfo src_shape_info = GetSliceInfo(src_info.access_ptr);
-      ShapeInfo dst_shape_info = GetSliceInfo(dst_info.access_ptr);
-
       src_shape_info.slice_valid_row = src_tile_rows;
       src_shape_info.slice_valid_col = src_tile_cols;
       src_shape_info.slice_row = src_tile_rows;

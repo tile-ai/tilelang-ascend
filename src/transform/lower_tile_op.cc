@@ -439,7 +439,10 @@ private:
         tile_op->Lower(LowerArgs{target_, thread_bounds, thread_var_->var,
                                  callback, layout_map_, buffer_remap_,
                                  disable_tma_lower, resource_scope_},
-                       analyzer_);
+                        analyzer_);
+    if (thread_block_size_ == 0) {
+      lowered = tir::Substitute(lowered, {{thread_var_->var, Integer(0)}});
+    }
     return IRMutatorWithAnalyzer::VisitStmt(lowered);
   }
 

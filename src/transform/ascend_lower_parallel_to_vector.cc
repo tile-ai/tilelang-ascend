@@ -1753,8 +1753,12 @@ private:
         PrimExpr col = truncmod(src_offset, src_ub->shape[1]);
         actual_src_indices.push_back(row);
         actual_src_indices.push_back(col);
-        src_extents.push_back(dst_gm->shape[0]); // outer_extent
-        src_extents.push_back(dst_gm->shape[1]); // inner_vec_len
+        PrimExpr copy_cols = vector_dim_extent_ > 0
+                                 ? Integer(vector_dim_extent_)
+                                 : src_ub->shape[1];
+        PrimExpr rows = floordiv(Integer(element_count), copy_cols);
+        src_extents.push_back(analyzer_->Simplify(rows));
+        src_extents.push_back(copy_cols);
       }
     }
 
@@ -1781,13 +1785,15 @@ private:
       }
     } else {
       if (dst_gm->shape.size() == 1) {
-        dst_indices.push_back(IntImm(DataType::Int(32), 0));
+        dst_indices.push_back(dst_offset);
         dst_extents.push_back(IntImm(DataType::Int(32), element_count));
       } else if (dst_gm->shape.size() == 2) {
-        dst_indices.push_back(IntImm(DataType::Int(32), 0));
-        dst_indices.push_back(IntImm(DataType::Int(32), 0));
-        dst_extents.push_back(dst_gm->shape[0]);
-        dst_extents.push_back(dst_gm->shape[1]);
+        PrimExpr row = floordiv(dst_offset, dst_gm->shape[1]);
+        PrimExpr col = truncmod(dst_offset, dst_gm->shape[1]);
+        dst_indices.push_back(row);
+        dst_indices.push_back(col);
+        dst_extents.push_back(src_extents[0]);
+        dst_extents.push_back(src_extents[1]);
       }
     }
 
