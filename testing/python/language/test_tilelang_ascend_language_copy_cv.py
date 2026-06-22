@@ -40,9 +40,15 @@ def _compile(program, target="pto", expert=False):
 
 
 def _torch_dtype(dtype):
-    if dtype == "float16":
-        return torch.float16
-    return torch.float32
+    torch_dtype = getattr(torch, dtype)
+    assert isinstance(torch_dtype, torch.dtype), f"Unsupported dtype: {dtype!r}"
+    return torch_dtype
+
+
+def _torch_rand_tensor(shape, dtype: torch.dtype, device="npu"):
+    if dtype.is_floating_point:
+        return torch.randn(shape, dtype=dtype, device=device)
+    return torch.randint(0, 127, shape, dtype=dtype, device=device)
 
 
 def _ub_to_l1_kernel(M=128, N=128, K=128, dtype="float16", accum_dtype="float"):
@@ -394,15 +400,16 @@ def _combined_kernel(M=128, N=128, K=128, dtype="float16", accum_dtype="float"):
     return main
 
 
-def _ub_to_l1_case(kernel_func, M=128, N=128, K=128, target="pto", expert=False, manual_workspace=False):
-    dtype = "float16"
-    program = kernel_func(M=M, N=N, K=K, dtype=dtype)
+def _ub_to_l1_case(kernel_func, M=128, N=128, K=128, dtype = "float16", accum_dtype = "float", target="pto", expert=False, dtype_cast=False, manual_workspace=False):
+    program = kernel_func(M=M, N=N, K=K, dtype=dtype, accum_dtype=accum_dtype)
     kernel = _compile(program, target=target, expert=expert)
 
     torch_dtype = _torch_dtype(dtype)
+    torch_accum_dtype = _torch_dtype(accum_dtype)
+    a_dtype = torch_dtype if not dtype_cast else torch_accum_dtype
 
-    a = torch.randn((M, K), dtype=torch_dtype, device="npu")
-    b = torch.randn((K, N), dtype=torch_dtype, device="npu")
+    a = _torch_rand_tensor((M, K), dtype=a_dtype, device="npu")
+    b = _torch_rand_tensor((K, N), dtype=torch_dtype, device="npu")
     c = torch.empty((M, N), dtype=torch_dtype, device="npu")
     torch.npu.synchronize()
 
@@ -413,22 +420,22 @@ def _ub_to_l1_case(kernel_func, M=128, N=128, K=128, target="pto", expert=False,
         kernel(a, b, c, workspace_1)
     torch.npu.synchronize()
 
-    ref_c = a @ b
+    ref_c = (a @ b).to(torch_dtype)
+
     torch.testing.assert_close(c, ref_c, rtol=1e-3, atol=1e-3)
 
 
-def _l0c_to_ub_case(kernel_func, M=128, N=128, K=128, target="pto", expert=False, manual_workspace=False):
-    dtype = "float16"
-    accum_dtype = "float"
+def _l0c_to_ub_case(kernel_func, M=128, N=128, K=128, dtype = "float16", accum_dtype = "float", target="pto", expert=False, dtype_cast=False, manual_workspace=False):
     program = kernel_func(M=M, N=N, K=K, dtype=dtype, accum_dtype=accum_dtype)
     kernel = _compile(program, target=target, expert=expert)
 
     torch_dtype = _torch_dtype(dtype)
     torch_accum_dtype = _torch_dtype(accum_dtype)
+    c_dtype = torch_accum_dtype if not dtype_cast else torch_dtype
 
-    a = torch.randn((M, K), dtype=torch_dtype, device="npu")
-    b = torch.randn((K, N), dtype=torch_dtype, device="npu")
-    c = torch.empty((M, N), dtype=torch_accum_dtype, device="npu")
+    a = _torch_rand_tensor((M, K), dtype=torch_dtype, device="npu")
+    b = _torch_rand_tensor((K, N), dtype=torch_dtype, device="npu")
+    c = torch.empty((M, N), dtype=c_dtype, device="npu")
     torch.npu.synchronize()
 
     if not manual_workspace:
@@ -438,14 +445,16 @@ def _l0c_to_ub_case(kernel_func, M=128, N=128, K=128, target="pto", expert=False
         kernel(a, b, c, workspace_1)
     torch.npu.synchronize()
 
-    ref_c = (a @ b).to(torch_accum_dtype)
+    ref_c = a.to(c_dtype) @ b.to(c_dtype)
+
     torch.testing.assert_close(c, ref_c, rtol=1e-3, atol=1e-3)
 
 
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
-def test_ub_to_l1(target):
+@pytest.mark.parametrize("dtype,accum_dtype", [("float16", "float"), ("bfloat16", "float")])
+def test_ub_to_l1(target, dtype, accum_dtype):
     M, N, K = 128, 128, 128
-    _ub_to_l1_case(_ub_to_l1_kernel, M=M, N=N, K=K, target=target, expert=False)
+    _ub_to_l1_case(_ub_to_l1_kernel, M=M, N=N, K=K, dtype=dtype, accum_dtype=accum_dtype, target=target, expert=False)
 
 
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
@@ -490,9 +499,10 @@ def test_ub_to_l1_special_shapes(target, platform):
 
 
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
-def test_l0c_to_ub(target):
+@pytest.mark.parametrize("dtype,accum_dtype", [("float16", "float"), ("bfloat16", "float")])
+def test_l0c_to_ub(target, dtype, accum_dtype):
     M, N, K = 128, 128, 128
-    _l0c_to_ub_case(_l0c_to_ub_kernel, M=M, N=N, K=K, target=target, expert=False)
+    _l0c_to_ub_case(_l0c_to_ub_kernel, M=M, N=N, K=K, dtype=dtype, accum_dtype=accum_dtype, target=target, expert=False)
 
 
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
@@ -531,8 +541,8 @@ def _combined_case(kernel_func, M=128, N=128, K=128, target="pto"):
     torch_dtype = _torch_dtype(dtype)
     torch_accum_dtype = _torch_dtype(accum_dtype)
 
-    a = torch.randn((M, K), dtype=torch_dtype, device="npu")
-    b = torch.randn((K, N), dtype=torch_dtype, device="npu")
+    a = _torch_rand_tensor((M, K), dtype=torch_dtype, device="npu")
+    b = _torch_rand_tensor((K, N), dtype=torch_dtype, device="npu")
     c = torch.empty((M, N), dtype=torch_accum_dtype, device="npu")
     d = torch.empty((M, N), dtype=torch_dtype, device="npu")
     torch.npu.synchronize()
