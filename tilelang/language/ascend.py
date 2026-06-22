@@ -446,7 +446,7 @@ def printf(format_str: str, *args):
     return tir.call_intrin("handle", tir.op.Op.get("tl.ascend_printf"), *all_args)
 
 
-def _srcCode(source_code: str, *args):
+def _src_code(source_code: str, *args):
     """
     Inject raw source code directly into the generated C++ kernel.
 

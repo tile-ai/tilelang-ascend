@@ -2487,7 +2487,7 @@ void CodeGenTileLangAscendPto::DumpTensorCodegen(const CallNode *op,
 
 void CodeGenTileLangAscendPto::SrcCodeCodegen(const CallNode *op) {
   auto *str = op->args[0].as<StringImmNode>();
-  ICHECK(str) << "T._srcCode() expects a string literal argument";
+  ICHECK(str) << "T._src_code() expects a string literal argument";
   std::string code = str->value;
   std::istringstream iss(code);
   std::string line;
