@@ -1110,12 +1110,21 @@ void CodeGenTileLangAscendPto::GMCopyCall(const CallNode *call,
   // zeros to the full tile's non-valid region (cols beyond the slice),
   // corrupting adjacent column data or crossing buffer boundaries.
   if (op_name.rfind("copy_gm_to_ub", 0) == 0) {
-    stream << slice_info.slice_row << ", " << slice_info.slice_col << ", ";
-    stream << GetPadEnum(call->args[6]);
+    // Use buffer's full shape (row/col) for UB tile physical dimensions
+    // to ensure correct physical row stride for column slices.
+    stream << slice_info.row << ", " << slice_info.col << ", ";
+    // For sliced accesses, disable padding: TFILLPAD_INPLACE would write
+    // zeros to the full tile's non-valid region (cols beyond the slice),
+    // corrupting adjacent column data or crossing buffer boundaries.
+    if (slice_info.is_slice) {
+      stream << "pto::PadValue::Null";
+    } else {
+      stream << GetPadEnum(call->args[6]);
+    }
   } else if (op_name.rfind("copy_ub_to_gm", 0) == 0 ||
              op_name.find("atomic_add_ub_to_gm") != std::string::npos) {
-    // copy_ub_to_gm and atomic_add_ub_to_gm use slice_row, slice_col
-    stream << slice_info.slice_row << ", " << slice_info.slice_col;
+    // Use buffer's full shape for UB tile physical dimensions
+    stream << slice_info.row << ", " << slice_info.col;
   } else {
     // copy_l0c_to_gm / copy_gm_to_l1 / atomic_add_l0c_to_gm use valid size
     stream << slice_info.slice_valid_row << ", " << slice_info.slice_valid_col;
