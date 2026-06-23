@@ -488,7 +488,20 @@ private:
             break;
           }
         }
-        if (found_qualified_copy) {
+        bool is_dst_from_gm = false;
+        if (!found_qualified_copy) {
+          for (const auto &pair : pos_info.second_first_pairs) {
+            const VarNode *src_handle = pair.second;
+            BufferAllocationInfo *src_alloc =
+                collector_->GetAllocInfo(src_handle);
+            if (!src_alloc) {
+              is_dst_from_gm = true;
+              break;
+            }
+          }
+        }
+
+        if (found_qualified_copy || is_dst_from_gm) {
           alloc_info->corrected_scope = "shared.dyn";
         } else {
           alloc_info->corrected_scope = "shared";
