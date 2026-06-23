@@ -1228,11 +1228,81 @@ for h_i, j in T.Parallel(v_block, BI):
 ```
 
 这里有些例子:
-- [MatmulAddDeveloper](./examples/developer_mode/matmul_add_developer.py)
-- [SparseFlashAttnDeveloperVidReduce](./examples/developer_mode/sparse_flash_attn_developer_vid_reduce.py)
+- [MatmulAddDeveloper](../examples/developer_mode/matmul_add_developer.py)
+- [SparseFlashAttnDeveloperVidReduce](../examples/developer_mode/sparse_flash_attn_developer_vid_reduce.py)
 
 更多的细节，可以参考:
-- [vid_reduction_and_auto_cv_ratio.md](./docs/tutorials/vid_reduction_and_auto_cv_ratio.md)
+- [vid_reduction_and_auto_cv_ratio.md](./tutorials/vid_reduction_and_auto_cv_ratio.md)
+
+##### 4.1.5.2 Workspace消除
+
+###### 4.1.5.2.1 功能介绍
+
+在Ascend架构中，Cube核心和Vector核心之间不能直接进行数据交换。当Cube计算结果需要传递给Vector进行后续处理时，传统方式需要先写入Global Memory（GM），然后Vector再从GM读取。这种两阶段拷贝会引入额外的内存访问开销。
+
+TileLang通过**Workspace消除**（Workspace Reduction）机制来优化这类场景。该机制的核心思想是：
+
+1. **编译器自动分析**：识别需要跨核传递的数据流（如 `copy_l0c_to_ub` 和 `copy_ub_to_l1`）
+2. **Workspace分配**：为每个需要跨核传递的数据块分配GM上的workspace缓冲区
+3. **两阶段拷贝转换**：将原始的直接拷贝语句转换为通过workspace的两阶段拷贝
+4. **自动参数管理**：自动添加workspace参数到kernel，并标记为自动管理的GM参数
+
+###### 4.1.5.2.2 转换机制
+
+Workspace消除Pass会将以下拷贝语句进行转换：
+
+| 原始拷贝 | 转换后（第一阶段） | 转换后（第二阶段） |
+|---------|-------------------|-------------------|
+| `copy_ub_to_l1` | `copy_ub_to_gm`（写入workspace） | `copy_gm_to_l1`（从workspace读取） |
+| `copy_l0c_to_ub` | `copy_l0c_to_gm`（写入workspace） | `copy_gm_to_ub`（从workspace读取） |
+
+**关键特性**：
+
+1. **多核支持**：每个AI Core分配独立的workspace区域，通过`cid`计算偏移
+2. **双向量核支持**：当`threads=2`时，自动处理UB的vid分割，workspace存储完整数据
+3. **延迟回拷**：在数据消费者使用前插入回拷语句，而非生产者拷贝后立即插入
+4. **Skip UB处理**：支持跳过vid归约的特殊UB缓冲区，保持完整形状
+
+###### 4.1.5.2.3 使用示例
+
+以下示例展示了Workspace消除在FlashAttention算子中的应用：
+
+**前端脚本**：
+```python
+@T.prim_func
+def flash_attn_kernel(...):
+    with T.Kernel(..., threads=2, is_npu=True) as (cid):
+        # Cube核心计算
+        T.gemm_v0(q_l1, k_l1, acc_s_l0c, ...)
+        # L0C → UB：需要跨核传递
+        T.copy(acc_s_l0c, acc_s_ub)  # 会触发Workspace消除
+        
+        # Vector核心计算
+        T.tile.exp(acc_s_ub, acc_s_ub)
+        T.reduce_max(acc_s_ub, m_i, dim=-1)
+        ...
+```
+
+**Workspace参数说明**：
+- `workspace_1_handle`：自动添加的GM workspace参数
+- 形状：`[total_core_nums, M, N]`（支持多核）
+- 偏移计算：`cid * M * N + vid * M * N / vector_cnt`（支持双向量核）
+
+###### 4.1.5.2.4 编程建议
+
+1. **自动启用**：该Pass在编译流程中自动执行，无需用户手动配置
+2. **Vid消除协同**：需要与`threads`参数（Vid消除）配合使用，简化编程模型
+3. **内存管理**：编译器自动管理workspace生命周期，用户无需关心释放
+
+###### 4.1.5.2.5 参考示例
+
+相关示例代码：
+- [FlashAttention](../examples/developer_mode/flash_attn_bshd_developer.py)
+- [SparseFlashAttention](../examples/developer_mode/sparse_flash_attn_developer_vid_reduce.py)
+- [MatmulAddDeveloper](../examples/developer_mode/matmul_add_developer.py)
+
+更多的细节，可以参考:
+- [workspace_reduction_tutorial.md](./tutorials/workspace_reduction_tutorial.md)
 
 ### 4.2 Expert模式
 
