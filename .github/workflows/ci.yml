@@ -6,6 +6,10 @@ jobs:
   format-check:
     if: false
     runs-on: self-hosted
+    env:
+      UV_INDEX_STRATEGY: "unsafe-best-match"
+      UV_NO_CACHE: 1
+      UV_SYSTEM_PYTHON: 1
 
     steps:
     - name: Checkout repository
@@ -24,8 +28,9 @@ jobs:
     - name: Activate virtual environment and install dependencies
       run: |
         source tilelang_ci/bin/activate
-        python -m pip install --upgrade pip
-        if [ -f requirements-dev.txt ]; then python -m pip install -r requirements-dev.txt; fi
+        python -m pip install uv
+        python -m uv pip install --upgrade pip
+        if [ -f requirements-dev.txt ]; then python -m uv pip install -r requirements-dev.txt; fi
 
     - name: Update submodules recursively
       run: git submodule update --init --recursive
@@ -38,6 +43,10 @@ jobs:
   build-test:
     runs-on: self-hosted
     needs: format-check
+    env:
+      UV_INDEX_STRATEGY: "unsafe-best-match"
+      UV_NO_CACHE: 1
+      UV_SYSTEM_PYTHON: 1
 
     steps:
     - name: Checkout repository
@@ -56,13 +65,14 @@ jobs:
     - name: Activate virtual environment and install dependencies
       run: |
         source tilelang_ci/bin/activate
-        python -m pip install --upgrade pip
-        if [ -f requirements-test.txt ]; then python -m pip install -r requirements-test.txt; fi
+        python -m pip install uv
+        python -m uv pip install --upgrade pip
+        if [ -f requirements-test.txt ]; then python -m uv pip install -r requirements-test.txt; fi
 
     - name: Install project in wheel mode
       run: |
         source tilelang_ci/bin/activate
-        python -m pip install .
+        python -m uv pip install .
 
     - name: Run examples
       run: |

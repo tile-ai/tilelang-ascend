@@ -52,8 +52,9 @@ echo "Coverage enabled: $ENABLE_COVERAGE"
 
 # Step 1: Install Python requirements
 echo "Installing Python requirements from requirements.txt..."
-pip install -r requirements-build.txt
-pip install -r requirements.txt
+pip install uv
+uv pip install --system -r requirements-build.txt
+uv pip install --system -r requirements.txt
 if [ $? -ne 0 ]; then
     echo "Error: Failed to install Python requirements."
     exit 1
@@ -242,10 +243,10 @@ if $USE_SHMEM; then
     cd src/python
     python setup.py bdist_wheel
     cd dist
-    python -m pip install shmem*.whl
+    python -m uv pip install --system shmem*.whl
     if [ $? -ne 0 ]; then
-        echo "python -m pip install failed, try pip3 install ..."
-        pip3 install shmem*.whl
+        echo "python -m uv pip install failed, try uv pip install ..."
+        uv pip install --system shmem*.whl
         if [ $? -ne 0 ]; then
             echo "Error: shmem-xxx.whl install failed."
             exit 1
