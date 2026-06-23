@@ -15,6 +15,7 @@ Available allocation functions:
 Each function takes shape and dtype parameters and returns a TVM buffer object
 with the appropriate memory scope.
 """
+
 from __future__ import annotations
 
 import tvm
@@ -26,6 +27,7 @@ from typing import overload
 # from .dtypes import dtype as tl_dtype
 from tvm.tir.buffer import Buffer
 from tvm.tir.expr import FloatImm, IntImm
+
 
 def alloc_shared(shape, dtype, scope="shared.dyn"):
     """Allocate a shared memory buffer for inter-thread communication.
@@ -141,8 +143,7 @@ def alloc_var(dtype, *args, scope: str = "local.var", init: PrimExpr | int | flo
 """
 The following are memory scopes in Ascend.
 Here is the correspondence between TIR scopes and Ascend memory scopes:
-- shared.l1 -> L1
-- shared.dyn -> L1/UB
+- shared.dyn -> L1
 - wmma.matrix_a -> L0A
 - wmma.matrix_b -> L0B
 - wmma.accumulator -> L0C
