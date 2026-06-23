@@ -141,7 +141,8 @@ def alloc_var(dtype, *args, scope: str = "local.var", init: PrimExpr | int | flo
 """
 The following are memory scopes in Ascend.
 Here is the correspondence between TIR scopes and Ascend memory scopes:
-- shared.dyn -> L1
+- shared.l1 -> L1
+- shared.dyn -> L1/UB
 - wmma.matrix_a -> L0A
 - wmma.matrix_b -> L0B
 - wmma.accumulator -> L0C
@@ -150,7 +151,7 @@ Here is the correspondence between TIR scopes and Ascend memory scopes:
 
 
 def alloc_L1(shape, dtype):
-    return T.alloc_buffer(shape, dtype, scope="shared.dyn")
+    return T.alloc_buffer(shape, dtype, scope="shared.l1")
 
 
 def alloc_L0A(shape, dtype):

@@ -414,6 +414,8 @@ private:
         } else {
           corrected_scope = original_scope;
         }
+      } else if (original_scope == "shared.l1") {
+        corrected_scope = "shared.dyn";
       }
       alloc_info->corrected_scope = corrected_scope;
       if (corrected_scope != original_scope) {
@@ -484,20 +486,7 @@ private:
             break;
           }
         }
-        bool is_dst_from_gm = false;
-        if (!found_qualified_copy) {
-          for (const auto &pair : pos_info.second_first_pairs) {
-            const VarNode *src_handle = pair.second;
-            BufferAllocationInfo *src_alloc =
-                collector_->GetAllocInfo(src_handle);
-            if (!src_alloc) {
-              is_dst_from_gm = true;
-              break;
-            }
-          }
-        }
-
-        if (found_qualified_copy || is_dst_from_gm) {
+        if (found_qualified_copy) {
           alloc_info->corrected_scope = "shared.dyn";
         } else {
           alloc_info->corrected_scope = "shared";
@@ -573,6 +562,10 @@ private:
       std::string second_old_scope = second_alloc_info->corrected_scope.empty()
                                          ? second_alloc_info->original_scope
                                          : second_alloc_info->corrected_scope;
+
+      if (second_alloc_info->original_scope == "shared.l1") {
+        continue;
+      }
 
       second_alloc_info->corrected_scope = UB_SCOPE;
       handle_scope_corrections_[second_buf_handle] = UB_SCOPE;
