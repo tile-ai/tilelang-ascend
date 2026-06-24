@@ -107,6 +107,8 @@ private:
                                  Map<Var, Array<PrimExpr>> external_shape_map,
                                  bool auto_plan = false) {
       memory_auto_plan = auto_plan;
+      // Preserve layouts needed by CalculateBufferSize.
+      // PTO 4D shapes are [physical_M, physical_N, valid_M, valid_N].
       external_shape_map_ = external_shape_map;
       memory_limits_ = {{"shared.dyn", ASCEND_SHARED_DYN_MEM_SIZE},
                         {"wmma.matrix_a", ASCEND_WMMA_MATRIX_A_MEM_SIZE},
@@ -867,6 +869,7 @@ private:
         buffer_scopes_; // buffer scope(UB/L1..)
     std::unordered_map<const VarNode *, size_t>
         buffer_sizes_; // buffer bytes size
+    // Layout map used to size PTO 4D tiles by physical footprint.
     Map<Var, Array<PrimExpr>> external_shape_map_;
     std::unordered_map<const VarNode *, size_t>
         first_use_; // buffer first use stmt scope
