@@ -809,6 +809,8 @@ private:
       {"copy_l0c_to_pipe", "cube"},
       {"copy_pipe_to_ub", "vec"},
       {"copy_pipe_to_ub_V", "vec"},
+      {"free_pipe_C", "cube"},
+      {"free_pipe_V", "vec"},
     };
 };
 

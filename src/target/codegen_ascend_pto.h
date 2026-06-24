@@ -269,6 +269,8 @@ private:
 
   void CopyPipeCodegen(const CallNode *call, bool is_producer);
 
+  void FreePipeCodegen(const CallNode *call);
+
   void PreScanPipes(const PrimFunc &f);
 
   void CopyCVExperimentCodegen(const CallNode *op);
