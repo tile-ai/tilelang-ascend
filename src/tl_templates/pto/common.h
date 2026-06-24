@@ -1479,9 +1479,14 @@ AICORE PTO_INLINE void copy_ub_to_pipe(
     TileUbDataND<T, SrcRows, SrcCols, SrcRowValid, SrcColValid> &ub_tile,
     TileUbDataND<T, DstRows, DstCols, DstRowValid, DstColValid> &tmp_tile) {
   copy_ub_to_pipe<SplitAxis, Pipe, T, SrcRows, SrcCols, SrcRowValid,
-                  SrcColValid>(pipe, ub_tile);
+                   SrcColValid>(pipe, ub_tile);
 }
 #endif
+
+template <pto::TileSplitAxis SplitAxis, typename Pipe>
+AICORE PTO_INLINE void free_pipe(Pipe &pipe) {
+  pto::TFREE<Pipe, SplitAxis>(pipe);
+}
 
 #ifdef PTO_PLATFORM_A5
 template <int mode, typename T, int DstRows, int DstCols, int SrcRows,

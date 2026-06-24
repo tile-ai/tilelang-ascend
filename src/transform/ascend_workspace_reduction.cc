@@ -1,4 +1,5 @@
 #include <algorithm>
+#include "../op/ascend.h"
 #include "../op/builtin.h"
 #include "arith/ir_mutator_with_analyzer.h"
 #include <tvm/tir/builtin.h>
@@ -630,6 +631,233 @@ const std::unordered_map<std::string, DataType> CopyInfoCollector::type_map_ = {
     {"float8_e4m3_t", tvm::runtime::DataType::NVFloat8E4M3()},
     {"float8_e5m2_t", tvm::runtime::DataType::NVFloat8E5M2()}};
 
+// ============================================================================
+// Free Pipe Auto-Insertion: Buffer access-order tracking and free_pipe insertion
+//
+// For each copy-from-pipe (copy_pipe_to_l1, copy_pipe_to_ub,
+// copy_pipe_to_ub_V), inserts an ascend_free_pipe_C or ascend_free_pipe_V
+// call at the correct position based on buffer lifecycle analysis.
+//
+// Algorithm per SeqStmt scope:
+//   1. Find each copy-from-pipe call and its target buffer
+//   2. Scan forward for the first subsequent write to that buffer
+//   3. Before that write, find the last access (read or write)
+//   4. Insert free_pipe after that last access
+//   5. If no subsequent write, insert after the last access overall
+// ============================================================================
+
+// Collects per-buffer {has_read, has_write} in one AST pass.
+// filter=nullptr means collect all; non-null restricts to named buffers.
+struct AccessInfo {
+  bool has_read = false;
+  bool has_write = false;
+};
+
+class BufferAccessCollector : public StmtExprVisitor {
+public:
+  const std::unordered_set<std::string> *filter;
+  std::unordered_map<std::string, AccessInfo> accesses;
+
+  explicit BufferAccessCollector(
+      const std::unordered_set<std::string> *f = nullptr)
+      : filter(f) {}
+
+  void VisitExpr_(const BufferLoadNode *op) final {
+    const std::string &name = op->buffer->name;
+    if (!filter || filter->count(name)) {
+      accesses[name].has_read = true;
+    }
+    StmtExprVisitor::VisitExpr_(op);
+  }
+
+  void VisitStmt_(const BufferStoreNode *op) final {
+    const std::string &name = op->buffer->name;
+    if (!filter || filter->count(name)) {
+      accesses[name].has_write = true;
+    }
+    StmtExprVisitor::VisitStmt_(op);
+  }
+
+  void VisitExpr_(const CallNode *op) final {
+    for (const auto &arg : op->args) {
+      const CallNode *access_ptr = arg.as<CallNode>();
+      if (!access_ptr ||
+          !access_ptr->op.same_as(tir::builtin::tvm_access_ptr())) {
+        continue;
+      }
+      if (access_ptr->args.size() >= 5) {
+        const VarNode *var = access_ptr->args[1].as<VarNode>();
+        if (!var) continue;
+        const std::string &name = var->name_hint;
+        if (filter && !filter->count(name)) continue;
+        int rw_mask = Downcast<IntImm>(access_ptr->args[4])->value;
+        auto &info = accesses[name];
+        if (rw_mask & 1) info.has_read = true;
+        if (rw_mask & 2) info.has_write = true;
+      }
+    }
+    StmtExprVisitor::VisitExpr_(op);
+  }
+};
+
+// Mutator that inserts ascend_free_pipe_C/V calls after copy-from-pipes
+// (copy_pipe_to_l1 / copy_pipe_to_ub / copy_pipe_to_ub_V) buffer data has
+// been consumed.  Analysis is scoped to each SeqStmt; free_pipe never crosses
+// ForNode or IfThenElse boundaries.
+class FreePipeInserter : public StmtMutator {
+private:
+  // Check if a single Evaluate node is a copy-from-pipe call.
+  // Returns true if found, populating out params.
+  bool CheckEvaluateForCopyFromPipe(const Stmt &stmt, std::string &out_buffer,
+                            int &out_flag_id, bool &out_is_cube) {
+    const EvaluateNode *eval = stmt.as<EvaluateNode>();
+    if (!eval) return false;
+    const CallNode *call = eval->value.as<CallNode>();
+    if (!call || call->op != tir::builtin::call_extern()) return false;
+    if (call->args.size() < 4 || !call->args[0].as<StringImmNode>())
+      return false;
+
+    std::string func_name = Downcast<StringImm>(call->args[0])->value;
+    // Match copy-from-pipes: copy_pipe_to_l1, copy_pipe_to_ub,
+    // copy_pipe_to_ub_V
+    bool is_l1 = (func_name.find("copy_pipe_to_l1") != std::string::npos);
+    bool is_ub = (func_name.find("copy_pipe_to_ub") != std::string::npos);
+    if (!is_l1 && !is_ub) return false;
+
+    // Extract target buffer from access_ptr (args[1])
+    const CallNode *access_ptr = call->args[1].as<CallNode>();
+    if (!access_ptr ||
+        !access_ptr->op.same_as(tir::builtin::tvm_access_ptr())) {
+      return false;
+    }
+    if (access_ptr->args.size() < 2) return false;
+    const VarNode *var = access_ptr->args[1].as<VarNode>();
+    if (!var) return false;
+
+    out_buffer = var->name_hint;
+    out_flag_id = Downcast<IntImm>(call->args[3])->value;
+    out_is_cube = is_l1; // L1 target -> free_pipe_C, UB -> free_pipe_V
+    return true;
+  }
+
+  // Detect copy-from-pipes in a statement, looking one level into nested
+  // SeqStmt (VisitStmt_ wraps pipe op + orig_stmt in a SeqStmt).
+  bool DetectCopyFromPipe(const Stmt &stmt, std::string &out_buffer,
+                            int &out_flag_id, bool &out_is_cube) {
+    // Direct Evaluate node
+    if (CheckEvaluateForCopyFromPipe(stmt, out_buffer, out_flag_id, out_is_cube)) {
+      return true;
+    }
+    // Check inside one level of SeqStmt (the wrapper created by VisitStmt_)
+    if (const SeqStmtNode *seq = stmt.as<SeqStmtNode>()) {
+      for (const auto &child : seq->seq) {
+        if (CheckEvaluateForCopyFromPipe(child, out_buffer, out_flag_id, out_is_cube)) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  // Generate free_pipe Evaluate node using registered op:
+  //   Evaluate(Call(tl.ascend_free_pipe, {StringImm("free_pipe_C/V"), IntImm(flag_id)}))
+  Stmt MakeFreePipe(bool is_cube, int flag_id) {
+    std::string scope_hint = is_cube ? "free_pipe_C" : "free_pipe_V";
+    return Evaluate(
+        Call(DataType::Int(32), tl::ascend_free_pipe(),
+             {StringImm(scope_hint),
+              IntImm(DataType::Int(32), flag_id)}));
+  }
+
+public:
+  Stmt VisitStmt_(const SeqStmtNode *op) final {
+    // First, recursively visit all children to handle nested structures
+    Array<Stmt> visited_children;
+    for (const auto &child : op->seq) {
+      visited_children.push_back(StmtMutator::VisitStmt(child));
+    }
+
+    // Collect copy-from-pipe info from each child position, and gather target
+    // buffer names for filtered pre-scan.
+    struct CopyFromPipeEntry {
+      int pos;
+      std::string buffer;
+      int flag_id;
+      bool is_cube;
+    };
+    std::vector<CopyFromPipeEntry> copy_from_pipe_entries;
+    std::unordered_set<std::string> target_buffers;
+
+    for (int i = 0; i < static_cast<int>(visited_children.size()); ++i) {
+      std::string buf;
+      int fid = 0;
+      bool is_cube = false;
+      if (DetectCopyFromPipe(visited_children[i], buf, fid, is_cube)) {
+        copy_from_pipe_entries.push_back({i, buf, fid, is_cube});
+        target_buffers.insert(buf);
+      }
+    }
+
+    if (copy_from_pipe_entries.empty()) {
+      return SeqStmt(visited_children);
+    }
+
+    // Pre-scan: build access table for target buffers only (one pass).
+    std::vector<std::unordered_map<std::string, AccessInfo>> access_table(
+        visited_children.size());
+    for (int i = 0; i < static_cast<int>(visited_children.size()); ++i) {
+      BufferAccessCollector collector(&target_buffers);
+      collector(visited_children[i]);
+      access_table[i] = std::move(collector.accesses);
+    }
+
+    // For each copy-from-pipe, look up the pre-built table to find free_pipe insertion
+    // point: last access before first subsequent write, or last access
+    // overall if no subsequent write exists.
+    std::unordered_map<int, std::vector<Stmt>> pos_to_free_pipe;
+
+    for (const auto &entry : copy_from_pipe_entries) {
+      int entry_pos = entry.pos;
+      const std::string &target_buf = entry.buffer;
+
+      int first_write_pos = -1;
+      int last_access_pos = -1;
+
+      for (int j = entry_pos + 1;
+           j < static_cast<int>(visited_children.size()); ++j) {
+        auto it = access_table[j].find(target_buf);
+        if (it == access_table[j].end()) continue;
+
+        if (first_write_pos == -1 && it->second.has_write) {
+          first_write_pos = j;
+          break;
+        }
+        last_access_pos = j;
+      }
+
+      int insert_after =
+          (last_access_pos != -1) ? last_access_pos : entry_pos;
+
+      pos_to_free_pipe[insert_after].push_back(
+          MakeFreePipe(entry.is_cube, entry.flag_id));
+    }
+
+    // Build result array with free_pipe insertions
+    Array<Stmt> result;
+    for (int i = 0; i < static_cast<int>(visited_children.size()); ++i) {
+      result.push_back(visited_children[i]);
+      auto it = pos_to_free_pipe.find(i);
+      if (it != pos_to_free_pipe.end()) {
+        for (const auto &free_pipe : it->second) {
+          result.push_back(free_pipe);
+        }
+      }
+    }
+
+    return SeqStmt(result);
+  }
+};
+
 class AscendWorkspaceReductionPass : public arith::IRMutatorWithAnalyzer {
 public:
   static PrimFunc Substitute(PrimFunc f, bool pto_use_pipe = false, const std::string &platform = "A3") {
@@ -671,6 +899,12 @@ public:
 
     auto *f_mut = f.CopyOnWrite();
     f_mut->body = substituter.VisitStmt(f->body);
+
+    // free_pipe auto-insertion: after copy-from-pipe buffer data is consumed
+    if (pto_use_pipe && !context.pipe_info_map_.empty()) {
+      FreePipeInserter free_pipe_inserter;
+      f_mut->body = free_pipe_inserter(f_mut->body);
+    }
 
     Array<Var> new_params = f_mut->params;
     Array<IntImm> auto_gm_idx;

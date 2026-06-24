@@ -1196,6 +1196,11 @@ TIR_DEFINE_TL_BUILTIN(ascend_pipe_barrier)
     .set_attr<TCallEffectKind>("TCallEffectKind",
                                Integer(CallEffectKind::kOpaque));
 
+TIR_DEFINE_TL_BUILTIN(ascend_free_pipe)
+    .set_num_inputs(2)
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
+
 TIR_DEFINE_TL_BUILTIN(ascend_sync_all)
     .set_num_inputs(0)
     .set_attr<TCallEffectKind>("TCallEffectKind",

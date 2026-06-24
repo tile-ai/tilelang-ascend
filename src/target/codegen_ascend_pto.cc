@@ -812,6 +812,8 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op,
     this->stream << "break;\n";
   } else if (op->op.same_as(tl::ascend_gemm_v0())) {
     GemmV0Codegen(op);
+  } else if (op->op.same_as(tl::ascend_free_pipe())) {
+    FreePipeCodegen(op);
   } else if (op->op.same_as(tl::ascend_fill())) {
     FillCodegen(op);
 
@@ -1578,6 +1580,19 @@ void CodeGenTileLangAscendPto::CopyPipeCodegen(const CallNode *op,
                  << "pto::TileSplitAxis::" << SplitAxisToEnumStr(split_axis_val)
                  << ">(" << pipe_id << ", " << dst_name << ");\n";
   }
+}
+
+void CodeGenTileLangAscendPto::FreePipeCodegen(const CallNode *op) {
+  int flag_id = Downcast<IntImm>(op->args[1])->value;
+  ICHECK(pipe_registry_.count(flag_id)) << "Flag not found in free_pipe: " << flag_id;
+  const auto &pipe_info = pipe_registry_.at(flag_id);
+  std::string pipe_id = pipe_info.pipe_id;
+  int split_axis_val = pipe_info.split_axis;
+
+  this->PrintIndent();
+  this->stream << kAscendPtoScope << "free_pipe<"
+               << "pto::TileSplitAxis::" << SplitAxisToEnumStr(split_axis_val)
+               << ">(" << pipe_id << ");\n";
 }
 
 void CodeGenTileLangAscendPto::PreScanPipes(const PrimFunc &f) {
