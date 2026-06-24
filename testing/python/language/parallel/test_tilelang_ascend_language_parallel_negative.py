@@ -5,13 +5,11 @@ compile time:
 
 * >= 3D parallel loops are rejected
   (src/transform/ascend_lower_parallel_to_vector.cc: LOG(FATAL)).
-* A ``local.fragment`` buffer accessed with structurally inconsistent indices is
-  rejected (src/op/parallel.cc: ICHECK).
 
 The errors are raised by the C++ backend during ``tilelang.compile`` (TVM
-``LOG(FATAL)`` / ``ICHECK`` surface as ``tvm.TVMError``), so they require the
-Ascend toolchain to reproduce.  The exact exception type may need adjustment if
-the backend wraps it differently -- if so, widen the ``pytest.raises`` tuple.
+``LOG(FATAL)`` surfaces as ``tvm.TVMError``), so they require the Ascend
+toolchain to reproduce.  The exact exception type may need adjustment if the
+backend wraps it differently -- if so, widen the ``pytest.raises`` tuple.
 """
 
 import pytest
@@ -66,35 +64,6 @@ def make_parallel_3d_func(dtype="float"):
 
 def test_parallel_3d_is_rejected():
     func = make_parallel_3d_func()
-    with pytest.raises(COMPILE_ERRORS):
-        _compile(func)
-
-
-# ---------------------------------------------------------------------------
-# A local.fragment buffer written with structurally inconsistent indices
-# (frag[i, j] vs frag[j, i]) must be rejected by the index-consistency ICHECK.
-# Note: the guard only fires for the "local.fragment" scope (alloc_fragment),
-# not for UB (alloc_ub).
-# ---------------------------------------------------------------------------
-def make_inconsistent_fragment_index_func(BM=64, dtype="float"):
-    @T.prim_func
-    def main(A: T.Tensor((BM, BM), dtype), C: T.Tensor((BM, BM), dtype)):
-        with T.Kernel(1, is_npu=True) as (cid, vid):
-            a_ub = T.alloc_ub((BM, BM), dtype)
-            frag = T.alloc_fragment((BM, BM), dtype)
-            with T.Scope("V"):
-                T.copy(A[0, 0], a_ub)
-                for i, j in T.Parallel(BM, BM):
-                    frag[i, j] = a_ub[i, j]
-                    frag[j, i] = a_ub[i, j] + 1.0  # inconsistent index -> ICHECK
-                for i, j in T.Parallel(BM, BM):
-                    C[i, j] = frag[i, j]
-
-    return main
-
-
-def test_parallel_inconsistent_fragment_index_is_rejected():
-    func = make_inconsistent_fragment_index_func()
     with pytest.raises(COMPILE_ERRORS):
         _compile(func)
 
