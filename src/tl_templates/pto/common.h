@@ -8,6 +8,8 @@
 #define TL_PIPE_V_BARRIER() ((void)0)
 #else
 #define TL_PIPE_V_BARRIER() pipe_barrier(PIPE_V)
+using float8_e4m3_t = int8_t;
+using float8_e5m2_t = int8_t;
 #endif
 
 namespace tl::ascend_pto {
