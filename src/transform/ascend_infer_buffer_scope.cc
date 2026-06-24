@@ -414,8 +414,12 @@ private:
         } else {
           corrected_scope = original_scope;
         }
+      } else if (original_scope == "shared.l1") {
+        corrected_scope = "shared.dyn";
       }
+
       alloc_info->corrected_scope = corrected_scope;
+
       if (corrected_scope != original_scope) {
         alloc_info->corrected_scope = corrected_scope;
 
@@ -560,6 +564,10 @@ private:
       std::string second_old_scope = second_alloc_info->corrected_scope.empty()
                                          ? second_alloc_info->original_scope
                                          : second_alloc_info->corrected_scope;
+
+      if (second_alloc_info->original_scope == "shared.l1") {
+        continue;
+      }
 
       second_alloc_info->corrected_scope = UB_SCOPE;
       handle_scope_corrections_[second_buf_handle] = UB_SCOPE;

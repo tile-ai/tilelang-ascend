@@ -563,6 +563,8 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
     PrintOpCall(op, "AscendC::Xor", {0, op->args.size() - 1}, {0, 0});
   } else if (op->op.same_as(tl::ascend_broadcast())) {
     BroadcastOpCodegen(op);
+  } else if (op->op.same_as(tl::ascend_row_expand_mul())) {
+    RowExpandMulCodegen(op);
   } else if (op->op.same_as(tl::ascend_wait_cross_flag())) {
     PrintOpCall(op, "AscendC::CrossCoreWaitFlag", {0, 0}, {0, 1});
   } else if (op->op.same_as(tl::ascend_set_cross_flag())) {
@@ -2026,6 +2028,10 @@ void CodeGenTileLangAscend::PowerOpCodegen(const CallNode *op,
   PrintOpCall(op, op_name, {0, op->args.size()}, {0, 0});
 }
 
+void CodeGenTileLangAscend::RowExpandMulCodegen(const CallNode *op) {
+  LOG(FATAL) << "TROWEXPANDMUL is only supported in the PTO codegen path.";
+}
+
 void CodeGenTileLangAscend::BroadcastOpCodegen(const CallNode *op) {
   std::string op_name =
       "tl::ascend::" + Downcast<StringImm>(op->args[0])->value;
@@ -2297,7 +2303,7 @@ void CodeGenTileLangAscend::CopyCodegen(const CallNode *op) {
       {"copy_l1_to_l0a", 2},      {"copy_l1_to_l0b", 2},
       {"copy_gm_to_ub", 4},       {"copy_ub_to_gm", 3},
       {"atomic_add_ub_to_gm", 3}, {"atomic_add_l0c_to_gm", 3},
-      {"copy_ub_to_ub", 0}};
+      {"copy_ub_to_ub", 6}};
 
   bool found = false;
   int extra_args = 0;

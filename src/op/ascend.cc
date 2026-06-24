@@ -173,6 +173,7 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
     bool virtual_channel = false;
     bool gm2ub = false;
     bool ub2gm = false;
+    bool ub2ub = false;
   } config;
 
   std::stringstream ss;
@@ -250,6 +251,7 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
       }
       ss << "copy_ub_to_ub<" << get_dtype(dst) << ", " << get_dtype(src) << ", "
          << len << ">";
+      config.ub2ub = true;
     }
   } else {
     LOG(FATAL) << "Unsupported scope: src = " << src.scope()
@@ -439,6 +441,7 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
     new_args.push_back(validCol_dst);
     new_args.push_back(src->shape[src->shape.size() - 2]);
     new_args.push_back(src->shape[src->shape.size() - 1]);
+    new_args.push_back(Bool(enRelu)); // Add enable_relu parameter
   }
 
   if (config.gm2l1) {
@@ -477,6 +480,25 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
         src->shape[src->shape.size() -
                    1]); // ub/l0c -> gm need realdstN which is equal to srcN in
                         // virtural channel scenario
+  }
+
+  if (config.ub2ub) {
+    PrimExpr src_tile_rows = src_extents.size() >= 2
+                                 ? src_extents[src_extents.size() - 2]
+                                 : Integer(1);
+    PrimExpr src_tile_cols = src_extents[src_extents.size() - 1];
+    PrimExpr src_buf_cols = src->shape[src->shape.size() - 1];
+    PrimExpr dst_tile_rows = dst_extents.size() >= 2
+                                 ? dst_extents[dst_extents.size() - 2]
+                                 : Integer(1);
+    PrimExpr dst_tile_cols = dst_extents[dst_extents.size() - 1];
+    PrimExpr dst_buf_cols = dst->shape[dst->shape.size() - 1];
+    new_args.push_back(src_tile_rows);
+    new_args.push_back(src_tile_cols);
+    new_args.push_back(src_buf_cols);
+    new_args.push_back(dst_tile_rows);
+    new_args.push_back(dst_tile_cols);
+    new_args.push_back(dst_buf_cols);
   }
   // if (config.l12l0) {
   //   ICHECK(src->shape.size() == dst->shape.size());
@@ -1103,6 +1125,11 @@ TIR_DEFINE_TL_BUILTIN(ascend_bitwise_xor)
                                Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_broadcast)
+    .set_num_inputs(-1)
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
+
+TIR_DEFINE_TL_BUILTIN(ascend_row_expand_mul)
     .set_num_inputs(-1)
     .set_attr<TCallEffectKind>("TCallEffectKind",
                                Integer(CallEffectKind::kOpaque));

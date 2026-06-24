@@ -99,8 +99,6 @@ def OptimizeForTarget(mod: IRModule, target: Target, platform: str) -> IRModule:
     mod = tilelang.transform.FlattenBuffer()(mod)
     mod = tir.transform.Simplify()(mod)
     mod = tilelang.transform.VectorizeLoop(enable_vectorize=allow_vectorize(pass_ctx=pass_ctx))(mod)
-    # print("[PHASE] OptimizeForTarget - Before AscendStorageRewrite")
-    # print(mod)
     mod = tilelang.transform.AscendStorageRewrite(is_npu=check_npu_availability())(mod)
     mod = tir.transform.UnrollLoop()(mod)
     mod = tir.transform.RenormalizeSplitPattern()(mod)

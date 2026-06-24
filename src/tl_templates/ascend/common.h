@@ -272,6 +272,39 @@ CATLASS_DEVICE void copy_ub_to_ub(LocalTensor<T1> dstTensor,
   }
 }
 
+template <typename T1, typename T2, uint32_t len>
+CATLASS_DEVICE void
+copy_ub_to_ub(LocalTensor<T1> dstTensor, LocalTensor<T2> srcTensor,
+              uint32_t src_rows, uint32_t src_cols, uint32_t src_stride,
+              uint32_t dst_rows, uint32_t dst_cols, uint32_t dst_stride) {
+  if (src_cols == src_stride && dst_cols == dst_stride) {
+    copy_ub_to_ub<T1, T2, len>(dstTensor, srcTensor);
+  } else {
+    for (uint32_t i = 0; i < src_rows; i++) {
+      if constexpr (std::is_same_v<T1, T2>) {
+        AscendC::DataCopy(dstTensor[i * dst_stride], srcTensor[i * src_stride],
+                          src_cols);
+      } else {
+        if constexpr ((std::is_same_v<T1, float> && std::is_same_v<T2, half>) ||
+                      (std::is_same_v<T1, float> &&
+                       std::is_same_v<T2, bfloat16_t>) ||
+                      (std::is_same_v<T1, float> &&
+                       std::is_same_v<T2, int16_t>) ||
+                      (std::is_same_v<T1, half> &&
+                       std::is_same_v<T2, int8_t>) ||
+                      (std::is_same_v<T1, int16_t> &&
+                       std::is_same_v<T2, int32_t>)) {
+          AscendC::Cast(dstTensor[i * dst_stride], srcTensor[i * src_stride],
+                        AscendC::RoundMode::CAST_NONE, src_cols);
+        } else {
+          AscendC::Cast(dstTensor[i * dst_stride], srcTensor[i * src_stride],
+                        AscendC::RoundMode::CAST_RINT, src_cols);
+        }
+      }
+    }
+  }
+}
+
 template <typename T, uint32_t M, uint32_t N>
 CATLASS_DEVICE void copy_ub_to_l1(LocalTensor<T> dstTensor,
                                   LocalTensor<T> srcTensor) {
