@@ -270,6 +270,15 @@ GetOperationConfig() {
       {"tl.ascend_sum_experiment", {{{1, "write"}, {2, "read"}}, "PIPE_V"}},
       {"tl.ascend_datacachecleanandinvalid_experiment",
        {{{1, "write"}}, "PIPE_V"}},
+
+      // Internal tail-aware ops (AscendTailMaskPropagation). arg0 is the AscendC
+      // op-tag string, hence buffer indices start at 1.
+      {"tl.ascend_tail_unary", {{{1, "write"}, {2, "read"}}, "PIPE_V"}},
+      {"tl.ascend_tail_binary",
+       {{{1, "write"}, {2, "read"}, {3, "read"}}, "PIPE_V"}},
+      {"tl.ascend_tail_scalar", {{{1, "write"}, {2, "read"}}, "PIPE_V"}},
+      {"tl.ascend_tail_reduce",
+       {{{1, "write"}, {2, "read"}, {3, "read"}}, "PIPE_V"}},
   };
 
   return operation_config_;

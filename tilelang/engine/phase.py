@@ -68,6 +68,9 @@ def LowerAndLegalize(mod: IRModule, target: Target) -> IRModule:
     mod = tilelang.transform.CollectBufferShapes()(mod)
     # Lower high-level tile operations to low-level operations
     mod = tilelang.transform.LowerTileOp()(mod)
+    # Propagate UB tail valid-regions and rewrite vector ops to tail-aware
+    # variants (must run before passes that reorder copy/vector ops).
+    mod = tilelang.transform.AscendTailMaskPropagation()(mod)
     # Erase manual workspace allocations for virtual CV copy in Ascend
     mod = tilelang.transform.AscendWorkspaceReduction()(mod)
     # Legalize vectorized loops to ensure they are valid

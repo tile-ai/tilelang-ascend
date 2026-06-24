@@ -138,6 +138,14 @@ private:
 
   void BroadcastOpCodegen(const CallNode *op);
 
+  void TailUnaryOpCodegen(const CallNode *op);
+
+  void TailBinaryOpCodegen(const CallNode *op);
+
+  void TailScalarOpCodegen(const CallNode *op);
+
+  void TailReduceOpCodegen(const CallNode *op);
+
   void RowExpandMulCodegen(const CallNode *op);
 
   void SetCrossFlagCodegen(const CallNode *op);

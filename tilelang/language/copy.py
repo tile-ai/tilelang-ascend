@@ -198,7 +198,6 @@ def npu_copy_v2(
     dst: tir.Buffer | tir.BufferLoad,
     enable_relu: bool = False,
     transpose: bool | None = False,  # for copy_l1_to_l0 param: tranpose l1
-    pad_value: float | int | tir.PrimExpr | None = None,
 ):
     """Copy data between memory regions.
 
@@ -207,9 +206,12 @@ def npu_copy_v2(
         dst (Union[tir.Buffer, tir.BufferLoad]): Destination memory region
         enable_relu (bool): Whether to enable ReLU. Defaults to False.
         transpose (Optional[bool]): Whether to transpose for copy_l1_to_l0. Defaults to False.
-        pad_value (Optional[Union[float, int, tir.PrimExpr]]): Value to fill in UB unused area.
-            Supports float, int, tir.FloatImm, tir.IntImm, tir.PrimExpr (e.g., -T.infinity(dtype)).
-            Defaults to 0.
+
+    Tail blocks (when the copied region is smaller than the physical UB tile) no
+    longer require an explicit ``pad_value``: the backend records the valid
+    ``[row, col]`` extent on the destination UB buffer and the
+    ``AscendTailMaskPropagation`` pass makes downstream vector ops compute only
+    over the valid region, so the unused UB area never participates.
 
     Raises:
         TypeError: If copy extents cannot be deduced from arguments
@@ -272,14 +274,4 @@ def npu_copy_v2(
     src = _to_region(src, "r")
     dst = _to_region(dst, "w")
 
-    # Handle pad_value parameter
-    if pad_value is None:
-        pad_value = 0
-    if isinstance(pad_value, (tir.FloatImm, tir.IntImm, tir.PrimExpr)):
-        pad_value_expr = pad_value
-    elif isinstance(pad_value, float):
-        pad_value_expr = tir.FloatImm("float32", pad_value)
-    else:
-        pad_value_expr = tir.IntImm("int32", int(pad_value))
-
-    return tir.call_intrin("handle", tir.op.Op.get("tl.ascend_copy"), src, dst, enable_relu, transpose, pad_value_expr)
+    return tir.call_intrin("handle", tir.op.Op.get("tl.ascend_copy"), src, dst, enable_relu, transpose)

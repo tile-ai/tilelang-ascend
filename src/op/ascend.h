@@ -34,7 +34,6 @@ private:
   int srcN;
   bool enRelu;
   bool transposeL1;
-  PrimExpr padValue;
 };
 
 class AscendAtomicAdd : public Operator {
@@ -243,6 +242,23 @@ TVM_DLL const Op &ascend_fill_experiment();
 TVM_DLL const Op &ascend_sum_experiment();
 
 TVM_DLL const Op &ascend_datacachecleanandinvalid_experiment();
+
+// ---------------------------------------------------------------------------
+// Internal tail-aware vector ops produced by AscendTailMaskPropagation. These
+// are never emitted by the front-end; the pass rewrites the corresponding
+// plain tl.ascend_* op when its UB operand carries a tail valid-region. Each
+// carries the original buffer pointers plus the runtime tail rect
+// (valid_row, valid_col, physical_col) so the codegen can call the matching
+// tl::ascend::tail_* helper.
+// ---------------------------------------------------------------------------
+TVM_DLL const Op &ascend_tail_unary();
+
+TVM_DLL const Op &ascend_tail_binary();
+
+TVM_DLL const Op &ascend_tail_scalar();
+
+TVM_DLL const Op &ascend_tail_reduce();
+
 } // namespace tl
 } // namespace tvm
 
