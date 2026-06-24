@@ -314,7 +314,10 @@ ShapeInfo CodeGenTileLangAscendPto::GetSliceInfo(const CallNode *op) {
     col = shape[1].as<IntImmNode>()->value;
   }
 
-  int32_t extent = op->args[3].as<IntImmNode>()->value;
+  const auto *extent_imm = op->args[3].as<IntImmNode>();
+  bool has_dynamic_extent = (extent_imm == nullptr);
+  int32_t extent = extent_imm ? static_cast<int32_t>(extent_imm->value)
+                               : static_cast<int32_t>(row * col);
   int32_t slice_valid_row = (extent / col) > 1 ? (extent / col) : 1;
   int32_t slice_valid_col = extent > col ? col : extent;
 
@@ -326,7 +329,9 @@ ShapeInfo CodeGenTileLangAscendPto::GetSliceInfo(const CallNode *op) {
   auto type = getType(op->args[0].dtype());
 
   bool is_slice;
-  if (shape.size() == 1) {
+  if (has_dynamic_extent) {
+    is_slice = true;
+  } else if (shape.size() == 1) {
     is_slice = extent != col;
   } else {
     is_slice = extent != row * col;
@@ -1098,7 +1103,16 @@ void CodeGenTileLangAscendPto::GMCopyCall(const CallNode *call,
   // Always use dynamic version for unified codegen
   (void)is_dynamic; // stride dynamic-ness no longer affects dispatch
   op_name += "_dynamic";
+  // Pre-evaluate all potentially dynamic arguments before emitting the
+  // function call. Expressions derived from T.if_then_else or other
+  // dynamic values may contain LetStmt bindings that would otherwise be
+  // emitted inline inside the argument list, producing malformed C++.
   auto gm_offset_string = PrintExpr(gm_info.offset);
+  std::string local_addr_str =
+      PrintExpr(buffer_address_map_.at(local_info.var));
+  std::string local_offset_str = PrintExpr(local_info.offset);
+  std::string valid_rows_str = PrintExpr(call->args[4]);
+  std::string valid_cols_str = PrintExpr(call->args[5]);
   this->PrintIndent();
   stream << kAscendPtoScope << op_name << "<" << getType(gm_info.dtype) << ", "
          << getType(local_info.dtype) << ", " << shape_tmpl << ", "
@@ -1152,9 +1166,9 @@ void CodeGenTileLangAscendPto::GMCopyCall(const CallNode *call,
   stream << ", pto::Shape<" << shape_tmpl << ">()" << ", pto::Stride<"
          << stride_tmpl << ">(" << stride_param << ")";
 
-  stream << ", " << PrintExpr(buffer_address_map_.at(local_info.var)) << ", "
-         << PrintExpr(local_info.offset) << ", " << PrintExpr(call->args[4])
-         << ", " << PrintExpr(call->args[5]) << ");\n";
+  stream << ", " << local_addr_str << ", "
+         << local_offset_str << ", " << valid_rows_str
+         << ", " << valid_cols_str << ");\n";
 }
 
 void CodeGenTileLangAscendPto::CopyUBToUBCodegen(const CallNode *call) {

@@ -417,7 +417,9 @@ private:
       } else if (original_scope == "shared.l1") {
         corrected_scope = "shared.dyn";
       }
+
       alloc_info->corrected_scope = corrected_scope;
+
       if (corrected_scope != original_scope) {
         alloc_info->corrected_scope = corrected_scope;
 
