@@ -59,6 +59,15 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.event.issue.number || (github.event_name == 'schedule' && github.ref_name) || github.run_id }}
   # 同一组中有新运行时，自动取消旧的正在运行的 workflow 
   cancel-in-progress: true
+
+env:
+  UV_INDEX_URL: "http://cache-service.nginx-pypi-cache.svc.cluster.local/pypi/simple"
+  UV_EXTRA_INDEX_URL: "https://repo.huaweicloud.com/ascend/repos/pypi"
+  UV_INDEX_STRATEGY: "unsafe-best-match"
+  UV_INSECURE_HOST: "cache-service.nginx-pypi-cache.svc.cluster.local"
+  UV_HTTP_TIMEOUT: 120
+  UV_NO_CACHE: 1
+  UV_SYSTEM_PYTHON: 1
   
 jobs:
   check_changes:
@@ -205,7 +214,7 @@ jobs:
           changed_files=$(git diff --name-only origin/$BASE_REF HEAD)
           echo "Changed files:"
           echo "$changed_files"
-          
+
           run_examples=false
           run_pytest_only=false
           should_skip=true
@@ -388,7 +397,7 @@ jobs:
           BASE_REF="${{ github.base_ref }}"
           git fetch origin $BASE_REF
           changed_files=$(git diff --name-only origin/$BASE_REF HEAD)
-          
+
           skip_pytest=true
           
           for file in $changed_files; do

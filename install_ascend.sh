@@ -50,10 +50,20 @@ echo "SHMEM enabled: $USE_SHMEM"
 echo "Incremental build: $INCREMENTAL_BUILD"
 echo "Coverage enabled: $ENABLE_COVERAGE"
 
-# Step 1: Install Python requirements
+# Step 1: Install uv and Python requirements
 echo "Installing Python requirements from requirements.txt..."
-pip install -r requirements-build.txt
-pip install -r requirements.txt
+
+export UV_INDEX_URL="http://cache-service.nginx-pypi-cache.svc.cluster.local/pypi/simple"
+export UV_EXTRA_INDEX_URL="https://repo.huaweicloud.com/ascend/repos/pypi"
+export UV_INDEX_STRATEGY="unsafe-best-match"
+export UV_INSECURE_HOST="cache-service.nginx-pypi-cache.svc.cluster.local"
+export UV_HTTP_TIMEOUT=120
+export UV_NO_CACHE=1
+export UV_SYSTEM_PYTHON=1
+
+python3 -m pip install uv
+uv pip install -r requirements-build.txt
+uv pip install -r requirements.txt
 if [ $? -ne 0 ]; then
     echo "Error: Failed to install Python requirements."
     exit 1
@@ -234,24 +244,18 @@ if $USE_SHMEM; then
     echo "Starting installation shmem..."
     cd 3rdparty/shmem
     bash scripts/build.sh -python_extension -mf
-    pip show shmem >/dev/null 2>&1
+    uv pip show shmem >/dev/null 2>&1
     if [[ $? -eq 0 ]]; then
         echo "begin uninstall old shmem whl package"
-        pip uninstall --yes shmem
+        uv pip uninstall shmem
     fi
     cd src/python
     python setup.py bdist_wheel
     cd dist
-    python -m pip install shmem*.whl
+    uv pip install shmem*.whl --no-deps
     if [ $? -ne 0 ]; then
-        echo "python -m pip install failed, try pip3 install ..."
-        pip3 install shmem*.whl
-        if [ $? -ne 0 ]; then
-            echo "Error: shmem-xxx.whl install failed."
-            exit 1
-        else
-            echo "shmem-xxx.whl install success."
-        fi
+        echo "Error: shmem-xxx.whl install failed."
+        exit 1
     else
         echo "shmem-xxx.whl install success."
     fi
