@@ -317,7 +317,7 @@ ShapeInfo CodeGenTileLangAscendPto::GetSliceInfo(const CallNode *op) {
   const auto *extent_imm = op->args[3].as<IntImmNode>();
   bool has_dynamic_extent = (extent_imm == nullptr);
   int32_t extent = extent_imm ? static_cast<int32_t>(extent_imm->value)
-                               : static_cast<int32_t>(row * col);
+                              : static_cast<int32_t>(row * col);
   int32_t slice_valid_row = (extent / col) > 1 ? (extent / col) : 1;
   int32_t slice_valid_col = extent > col ? col : extent;
 
@@ -1166,9 +1166,8 @@ void CodeGenTileLangAscendPto::GMCopyCall(const CallNode *call,
   stream << ", pto::Shape<" << shape_tmpl << ">()" << ", pto::Stride<"
          << stride_tmpl << ">(" << stride_param << ")";
 
-  stream << ", " << local_addr_str << ", "
-         << local_offset_str << ", " << valid_rows_str
-         << ", " << valid_cols_str << ");\n";
+  stream << ", " << local_addr_str << ", " << local_offset_str << ", "
+         << valid_rows_str << ", " << valid_cols_str << ");\n";
 }
 
 void CodeGenTileLangAscendPto::CopyUBToUBCodegen(const CallNode *call) {
