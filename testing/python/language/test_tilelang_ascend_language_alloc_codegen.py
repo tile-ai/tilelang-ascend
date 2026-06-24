@@ -134,11 +134,12 @@ def dev_ub_explicit_splice(dim, block_N=128, block_size=128, live_max=64):
 
 def _compile_and_get_source(target):
     prim_func = dev_L1_explicit_splice(dim=64)
-    with patch(
-        "tilelang.jit.adapter.libgen.LibraryGenerator.compile_lib"
-    ) as mock_compile, patch(
-        "tilelang.jit.adapter.libgen.LibraryGenerator.load_lib",
-        return_value=None,
+    with (
+        patch("tilelang.jit.adapter.libgen.LibraryGenerator.compile_lib") as mock_compile,
+        patch(
+            "tilelang.jit.adapter.libgen.LibraryGenerator.load_lib",
+            return_value=None,
+        ),
     ):
         mock_compile.return_value = None
         compiled = tilelang.compile(
@@ -152,11 +153,12 @@ def _compile_and_get_source(target):
 
 def _compile_ub_and_get_source(target):
     prim_func = dev_ub_explicit_splice(dim=64)
-    with patch(
-        "tilelang.jit.adapter.libgen.LibraryGenerator.compile_lib"
-    ) as mock_compile, patch(
-        "tilelang.jit.adapter.libgen.LibraryGenerator.load_lib",
-        return_value=None,
+    with (
+        patch("tilelang.jit.adapter.libgen.LibraryGenerator.compile_lib") as mock_compile,
+        patch(
+            "tilelang.jit.adapter.libgen.LibraryGenerator.load_lib",
+            return_value=None,
+        ),
     ):
         mock_compile.return_value = None
         compiled = tilelang.compile(
@@ -174,30 +176,22 @@ def test_l1_splice_codegen(target):
 
     if target == "ascendc":
         assert "ascend_l1.GetWithOffset" in code, (
-            f"k_l1 should be allocated as ascend_l1 (L1 buffer), "
-            f"but 'ascend_l1.GetWithOffset' not found in generated AscendC code:\n{code}"
+            f"k_l1 should be allocated as ascend_l1 (L1 buffer), but 'ascend_l1.GetWithOffset' not found in generated AscendC code:\n{code}"
         )
-        k_l1_alloc_line = [
-            line for line in code.splitlines() if "k_l1" in line and "GetWithOffset" in line
-        ]
+        k_l1_alloc_line = [line for line in code.splitlines() if "k_l1" in line and "GetWithOffset" in line]
         assert len(k_l1_alloc_line) > 0, "k_l1 GetWithOffset line not found"
         assert "ascend_ub" not in k_l1_alloc_line[0], (
-            f"k_l1 was incorrectly allocated as ascend_ub instead of ascend_l1:\n"
-            f"{k_l1_alloc_line[0]}"
+            f"k_l1 was incorrectly allocated as ascend_ub instead of ascend_l1:\n{k_l1_alloc_line[0]}"
         )
 
     elif target == "pto":
         assert "TileMatL1" in code, (
-            f"k_l1 should be allocated as TileMatL1 (L1 buffer), "
-            f"but 'TileMatL1' not found in generated PTO code:\n{code}"
+            f"k_l1 should be allocated as TileMatL1 (L1 buffer), but 'TileMatL1' not found in generated PTO code:\n{code}"
         )
-        k_l1_alloc_line = [
-            line for line in code.splitlines() if "k_l1" in line and "TileMat" in line
-        ]
+        k_l1_alloc_line = [line for line in code.splitlines() if "k_l1" in line and "TileMat" in line]
         assert len(k_l1_alloc_line) > 0, "k_l1 TileMat declaration line not found"
         assert "TileUbDataND" not in k_l1_alloc_line[0], (
-            f"k_l1 was incorrectly allocated as TileUbDataND instead of TileMatL1:\n"
-            f"{k_l1_alloc_line[0]}"
+            f"k_l1 was incorrectly allocated as TileUbDataND instead of TileMatL1:\n{k_l1_alloc_line[0]}"
         )
 
 
@@ -207,30 +201,22 @@ def test_ub_splice_codegen(target):
 
     if target == "ascendc":
         assert "ascend_ub.GetWithOffset" in code, (
-            f"k_ub should be allocated as ascend_ub (UB buffer), "
-            f"but 'ascend_ub.GetWithOffset' not found in generated AscendC code:\n{code}"
+            f"k_ub should be allocated as ascend_ub (UB buffer), but 'ascend_ub.GetWithOffset' not found in generated AscendC code:\n{code}"
         )
-        k_ub_alloc_line = [
-            line for line in code.splitlines() if "k_ub" in line and "GetWithOffset" in line
-        ]
+        k_ub_alloc_line = [line for line in code.splitlines() if "k_ub" in line and "GetWithOffset" in line]
         assert len(k_ub_alloc_line) > 0, "k_ub GetWithOffset line not found"
         assert "ascend_l1" not in k_ub_alloc_line[0], (
-            f"k_ub was incorrectly allocated as ascend_l1 instead of ascend_ub:\n"
-            f"{k_ub_alloc_line[0]}"
+            f"k_ub was incorrectly allocated as ascend_l1 instead of ascend_ub:\n{k_ub_alloc_line[0]}"
         )
 
     elif target == "pto":
         assert "TileUbDataND" in code, (
-            f"k_ub should be allocated as TileUbDataND (UB buffer), "
-            f"but 'TileUbDataND' not found in generated PTO code:\n{code}"
+            f"k_ub should be allocated as TileUbDataND (UB buffer), but 'TileUbDataND' not found in generated PTO code:\n{code}"
         )
-        k_ub_alloc_line = [
-            line for line in code.splitlines() if "k_ub" in line and "Tile" in line
-        ]
+        k_ub_alloc_line = [line for line in code.splitlines() if "k_ub" in line and "Tile" in line]
         assert len(k_ub_alloc_line) > 0, "k_ub Tile declaration line not found"
         assert "TileMatL1" not in k_ub_alloc_line[0], (
-            f"k_ub was incorrectly allocated as TileMatL1 instead of TileUbDataND:\n"
-            f"{k_ub_alloc_line[0]}"
+            f"k_ub was incorrectly allocated as TileMatL1 instead of TileUbDataND:\n{k_ub_alloc_line[0]}"
         )
 
 
