@@ -98,6 +98,10 @@ static std::string getType(const DataType &dtype) {
     return "float8_e4m3_t";
   if (dtype.is_float8_e5m2())
     return "float8_e5m2_t";
+  if (dtype.is_float8_e4m3fn())
+    return "float8_e4m3_t";
+  if (dtype.is_float8_e5m2())
+    return "float8_e5m2_t";
 
   if (dtype.is_int()) {
     switch (dtype.bits()) {
