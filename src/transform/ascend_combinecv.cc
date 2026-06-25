@@ -811,7 +811,7 @@ private:
       {"copy_pipe_to_ub_V", "vec"},
       {"free_pipe_C", "cube"},
       {"free_pipe_V", "vec"},
-    };
+  };
 };
 
 class CombineCV : public arith::IRMutatorWithAnalyzer {

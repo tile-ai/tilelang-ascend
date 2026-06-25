@@ -894,12 +894,13 @@ private:
     }
 
     // Divide the extent at target_idx by threads_cnt_ when it is not 1.
-    // All other args are just visited.  
+    // All other args are just visited.
     //   target_idx = static_cast<size_t>(-1) skip extent reduction entirely
-    //   arg0_override (optional) replaces args[0] (typically a modified 
+    //   arg0_override (optional) replaces args[0] (typically a modified
     //     BufferLoad) before visiting.
     auto reduce_region_extents = [&](const Call &region, size_t target_idx,
-                                     PrimExpr arg0_override = PrimExpr()) -> Call {
+                                     PrimExpr arg0_override =
+                                         PrimExpr()) -> Call {
       Array<PrimExpr> args = region->args;
       for (size_t i = 0; i < args.size(); i++) {
         if (i == 0 && arg0_override.defined()) {
