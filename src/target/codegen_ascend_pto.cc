@@ -1390,9 +1390,32 @@ void CodeGenTileLangAscendPto::GemmV0Codegen(const CallNode *op) {
 
   std::map<std::string, std::string> params =
       extractTemplateParams(template_args);
+  uint32_t M = std::stoi(params["M"]);
+  uint32_t N = std::stoi(params["N"]);
   uint32_t K = std::stoi(params["K"]);
+  bool transpose_A = (params["transpose_A"] == "true");
+  bool transpose_B = (params["transpose_B"] == "true");
   uint32_t kL0split = (K + kL0SliceSize - 1) / kL0SliceSize;
   uint32_t kL0Tail = K - (kL0split - 1) * kL0SliceSize;
+
+  auto override_slice = [](ShapeInfo &info, int32_t slice_row,
+                           int32_t slice_col) {
+    if (info.slice_row != slice_row || info.slice_col != slice_col) {
+      info.slice_row = slice_row;
+      info.slice_col = slice_col;
+      info.slice_valid_row = slice_row;
+      info.slice_valid_col = slice_col;
+      info.is_slice = true;
+    }
+  };
+
+  int32_t a_row = transpose_A ? K : M;
+  int32_t a_col = transpose_A ? M : K;
+  int32_t b_row = transpose_B ? N : K;
+  int32_t b_col = transpose_B ? K : N;
+  override_slice(a_info, a_row, a_col);
+  override_slice(b_info, b_row, b_col);
+  override_slice(c_info, M, N);
 
   std::string a_name =
       ResolveCubeSliceName(a_info, kAscendPtoScope + "TileMatL1");
@@ -1405,10 +1428,10 @@ void CodeGenTileLangAscendPto::GemmV0Codegen(const CallNode *op) {
   this->stream << kAscendPtoScope << "gemm_v0" << "<"
                << params["data_type_input"] << ", "
                << params["data_type_output"] << ", "
-               << GetValid16BytesShape(std::stoi(params["M"])) << ", "
-               << GetValid16BytesShape(std::stoi(params["N"])) << ", "
-               << GetValidShape(std::stoi(params["K"]), data_type_input) << ", "
-               << params["M"] << ", " << params["N"] << ", " << params["K"]
+               << GetValid16BytesShape(M) << ", "
+               << GetValid16BytesShape(N) << ", "
+               << GetValidShape(K, data_type_input) << ", "
+               << M << ", " << N << ", " << K
                << ", " << kL0Tail << ", " << params["transpose_A"] << ", "
                << params["transpose_B"] << ">" << "(";
   this->stream << a_name << ", " << b_name << ", " << c_name << ", "
