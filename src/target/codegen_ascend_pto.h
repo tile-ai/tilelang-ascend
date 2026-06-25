@@ -120,7 +120,7 @@ public:
     int dst_M_val = 0;
     int dst_N_val = 0;
     int split_axis = 1; // 0=TILE_NO_SPLIT, 1=TILE_UP_DOWN, 2=TILE_LEFT_RIGHT
-    std::string workspace_name;  // e.g. "workspace_0" for A2 PTO, empty for A5
+    std::string workspace_name; // e.g. "workspace_0" for A2 PTO, empty for A5
     bool has_tmp = false;
     int tmp_M_val = 0;
     int tmp_N_val = 0;

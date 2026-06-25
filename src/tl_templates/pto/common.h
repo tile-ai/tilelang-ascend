@@ -1479,7 +1479,7 @@ AICORE PTO_INLINE void copy_ub_to_pipe(
     TileUbDataND<T, SrcRows, SrcCols, SrcRowValid, SrcColValid> &ub_tile,
     TileUbDataND<T, DstRows, DstCols, DstRowValid, DstColValid> &tmp_tile) {
   copy_ub_to_pipe<SplitAxis, Pipe, T, SrcRows, SrcCols, SrcRowValid,
-                   SrcColValid>(pipe, ub_tile);
+                  SrcColValid>(pipe, ub_tile);
 }
 #endif
 

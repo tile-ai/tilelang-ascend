@@ -365,7 +365,7 @@ ShapeInfo CodeGenTileLangAscendPto::GetSliceInfo(const CallNode *op) {
   // the logical (unpadded) access size.
   bool is_slice;
   if (has_dynamic_extent) {
-    is_slice = true;  
+    is_slice = true;
   } else if (shape.size() == 1) {
     is_slice = extent != valid_col;
   } else {
@@ -1557,8 +1557,8 @@ void CodeGenTileLangAscendPto::CopyPipeCodegen(const CallNode *op,
   }
 
   this->PrintIndent();
-  bool has_tmp =
-      is_producer && pipe_info.has_tmp && op->args.size() > 4 && op->args[4].as<CallNode>();
+  bool has_tmp = is_producer && pipe_info.has_tmp && op->args.size() > 4 &&
+                 op->args[4].as<CallNode>();
   if (has_tmp) {
     BufferInfo tmp_info = GetBufferInfo(op->args[4]);
     ShapeInfo tmp_shape_info = GetSliceInfo(tmp_info.access_ptr);
@@ -1584,7 +1584,8 @@ void CodeGenTileLangAscendPto::CopyPipeCodegen(const CallNode *op,
 
 void CodeGenTileLangAscendPto::FreePipeCodegen(const CallNode *op) {
   int flag_id = Downcast<IntImm>(op->args[1])->value;
-  ICHECK(pipe_registry_.count(flag_id)) << "Flag not found in free_pipe: " << flag_id;
+  ICHECK(pipe_registry_.count(flag_id))
+      << "Flag not found in free_pipe: " << flag_id;
   const auto &pipe_info = pipe_registry_.at(flag_id);
   std::string pipe_id = pipe_info.pipe_id;
   int split_axis_val = pipe_info.split_axis;
@@ -1608,7 +1609,8 @@ void CodeGenTileLangAscendPto::PreScanPipes(const PrimFunc &f) {
   }
 
   // Populate pipe metadata from PrimFunc attr
-  if (auto opt = f->GetAttr<Map<IntImm, Map<String, ObjectRef>>>("pipe_infos")) {
+  if (auto opt =
+          f->GetAttr<Map<IntImm, Map<String, ObjectRef>>>("pipe_infos")) {
     auto pipe_infos = opt.value();
     for (const auto &[flag_id_key, fields] : pipe_infos) {
       int flag_id = flag_id_key->value;
