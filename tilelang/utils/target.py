@@ -129,13 +129,18 @@ def determine_platform(platform: str = "auto") -> str:
     if env_platform:
         return env_platform
 
-    # Detect platform based on NPU device properties
+    # Detect platform based on NPU device name.
+    # NOTE: use get_device_name() instead of get_device_properties(current_device())
+    # because the latter triggers _lazy_init() which initializes the CANN device
+    # context. If that happens at module-import time (e.g. via pytest marks),
+    # the CANN handle becomes stale after fork() and the forked child crashes
+    # with SIGSEGV on the first NPU operation. get_device_name() does not
+    # trigger _lazy_init() and is fork-safe.
     try:
         import torch
 
         if hasattr(torch, "npu") and torch.npu.is_available():
-            props = torch.npu.get_device_properties(torch.npu.current_device())
-            name = props.name.upper()
+            name = torch.npu.get_device_name().upper()
 
             if "910B" in name:
                 return "A2"
