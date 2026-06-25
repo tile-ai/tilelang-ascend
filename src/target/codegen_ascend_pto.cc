@@ -163,7 +163,7 @@ int32_t GetTypeLen(std::string type) {
   } else if (type == "half") {
     typeSize = 2;
   } else if (type == "int8_t" || type == "uint8_t" || type == "float8_e4m3_t" ||
-             type == "float8_e5m2_t") {
+             type == "float8_e5m2_t" || type == "float8_e8m0_t") {
     typeSize = 1;
   } else if (type == "int16_t" || type == "uint16_t") {
     typeSize = 2;
@@ -1420,18 +1420,45 @@ void CodeGenTileLangAscendPto::GemmV0Codegen(const CallNode *op) {
       ResolveCubeSliceName(b_info, kAscendPtoScope + "TileMatL1");
   std::string c_name = ResolveCubeSliceName(c_info, "pto::TileAcc");
 
+  // Debug: Create new L1 tiles with float8_e8m0_t type pointing to same addresses
+  std::string forced_dtype = "float8_e8m0_t";
+  
+  std::string a_row = std::to_string(a_info.row);
+  std::string a_col = std::to_string(a_info.col);
+  std::string b_row = std::to_string(b_info.row);
+  std::string b_col = std::to_string(b_info.col);
+  
+  // Create new tile declarations for float8_e8m0_t
+  this->PrintIndent();
+  this->stream << kAscendPtoScope << "TileMatL1<" << forced_dtype << ", " 
+               << a_row << ", " << a_col << ", " << a_row << ", " << a_col 
+               << "> A_L1_e8m0;\n";
+  this->PrintIndent();
+  this->stream << kAscendPtoScope << "TileMatL1<" << forced_dtype << ", " 
+               << b_row << ", " << b_col << ", " << b_row << ", " << b_col 
+               << "> B_L1_e8m0;\n";
+  
+  // Use TASSIGN with first_addr + offset (aligned to virtual offset mode)
+  this->PrintIndent();
+  this->stream << "pto::TASSIGN(A_L1_e8m0, " << PrintExpr(a_info.first_addr) 
+               << " + " << a_info.offset << " * " << GetTypeLen(a_info.type) << ");\n";
+  this->PrintIndent();
+  this->stream << "pto::TASSIGN(B_L1_e8m0, " << PrintExpr(b_info.first_addr) 
+               << " + " << b_info.offset << " * " << GetTypeLen(b_info.type) << ");\n";
+
+  // Call gemm_v0 with new float8_e8m0_t tiles
   this->PrintIndent();
   std::string data_type_input = params["data_type_input"];
   this->stream << kAscendPtoScope << "gemm_v0" << "<"
-               << params["data_type_input"] << ", "
+               << forced_dtype << ", "
                << params["data_type_output"] << ", "
                << GetValid16BytesShape(std::stoi(params["M"])) << ", "
                << GetValid16BytesShape(std::stoi(params["N"])) << ", "
-               << GetValidShape(std::stoi(params["K"]), data_type_input) << ", "
+               << GetValidShape(std::stoi(params["K"]), forced_dtype) << ", "
                << params["M"] << ", " << params["N"] << ", " << params["K"]
                << ", " << kL0Tail << ", " << params["transpose_A"] << ", "
                << params["transpose_B"] << ">" << "(";
-  this->stream << a_name << ", " << b_name << ", " << c_name << ", "
+  this->stream << "A_L1_e8m0, B_L1_e8m0, " << c_name << ", "
                << PrintExpr(op->args[4]) << ");\n";
 }
 
