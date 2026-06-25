@@ -1192,21 +1192,9 @@ void CodeGenTileLangAscendPto::CopyUBToUBCodegen(const CallNode *call) {
       ShapeInfo src_shape_info = GetSliceInfo(src_info.access_ptr);
       ShapeInfo dst_shape_info = GetSliceInfo(dst_info.access_ptr);
 
-      src_shape_info.slice_valid_row = src_tile_rows;
-      src_shape_info.slice_valid_col = src_tile_cols;
-      src_shape_info.slice_row = src_tile_rows;
-      src_shape_info.slice_col =
-          GetValidShape(src_tile_cols, getType(src_info.dtype));
-      src_shape_info.is_slice = (src_tile_rows * src_tile_cols !=
-                                 src_shape_info.row * src_shape_info.col);
-
-      dst_shape_info.slice_valid_row = dst_tile_rows;
-      dst_shape_info.slice_valid_col = dst_tile_cols;
-      dst_shape_info.slice_row = dst_tile_rows;
-      dst_shape_info.slice_col =
-          GetValidShape(dst_tile_cols, getType(dst_info.dtype));
-      dst_shape_info.is_slice = (dst_tile_rows * dst_tile_cols !=
-                                 dst_shape_info.row * dst_shape_info.col);
+      // Use the GetSliceInfo results (derived from buffer_shapess_, which
+      // reflects the swapped/aligned physical layout) directly instead of
+      // overriding slice fields with the tile parameters from call->args.
 
       std::string src_name = ResolveUbSliceName(src_shape_info);
       std::string dst_name = ResolveUbSliceName(dst_shape_info);
