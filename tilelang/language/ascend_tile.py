@@ -1,6 +1,7 @@
 from __future__ import annotations
 import tilelang.language as T
-from tvm.tir import PrimExpr, Buffer, BufferRegion, BufferLoad, Call
+from tvm.ir import Range
+from tvm.tir import PrimExpr, Buffer, BufferRegion, BufferLoad, Call, IntImm, Ramp
 from tvm import tir
 from tilelang.language.ascend import _dtype
 import functools
@@ -65,6 +66,61 @@ def _handle_buffer_region(br: BufferRegion, mask):
     extent = [x.extent for x in br.region]
     size_extent = math.prod(extent)
     return bf.access_ptr(mask, offset=offset, extent=size_extent), extent
+
+
+def _buffer_load_has_ramp(load: BufferLoad) -> bool:
+    return any(isinstance(idx, Ramp) for idx in load.indices)
+
+
+def _buffer_load_to_buffer_region(load: BufferLoad) -> BufferRegion:
+    """Convert a contiguous buffer load to an equivalent BufferRegion.
+
+    Handles Ramp indices by expanding them to explicit ranges so that
+    downstream code can use _handle_buffer_region / _handle_buffer_region_2d.
+    """
+    buf = load.buffer
+    indices = []
+    for idx in load.indices:
+        if isinstance(idx, Ramp):
+            base = idx.base
+            stride = idx.stride
+            lanes = idx.lanes
+            if isinstance(stride, IntImm):
+                stride_val = int(stride)
+            else:
+                stride_val = stride
+            if isinstance(base, IntImm):
+                base_val = int(base)
+            else:
+                base_val = base
+            extent = (lanes - 1) * stride_val + 1
+            indices.append(Range.from_min_extent(base_val, extent))
+        elif isinstance(idx, IntImm):
+            indices.append(Range.from_min_extent(int(idx), 1))
+        else:
+            indices.append(Range.from_min_extent(idx, 1))
+    return BufferRegion(buf, indices)
+
+
+def _normalize_buffer_arg(obj: Buffer | BufferRegion | BufferLoad) -> Buffer | BufferRegion:
+    """Normalize Buffer / BufferRegion / BufferLoad into Buffer or BufferRegion."""
+    if isinstance(obj, BufferLoad):
+        return _buffer_load_to_buffer_region(obj)
+    return obj
+
+
+def _handle_buffer_load(load: BufferLoad, mask):
+    """Dispatch a BufferLoad to the appropriate handler.
+
+    If the load contains Ramp indices, convert to BufferRegion first.
+    Otherwise fall back to existing _handle_buffer_region logic.
+    """
+    if _buffer_load_has_ramp(load):
+        br = _buffer_load_to_buffer_region(load)
+        return _handle_buffer_region(br, mask)
+    else:
+        br = _buffer_load_to_buffer_region(load)
+        return _handle_buffer_region(br, mask)
 
 
 def _handle_buffer_region_2d(br: BufferRegion, mask):
@@ -709,7 +765,13 @@ def init_sort_buf(buffer: Buffer, num: PrimExpr, rsv: PrimExpr):
     )
 
 
-def brcb(dst: Buffer, src: Buffer, repeat_times: PrimExpr, dst_blk_stride: PrimExpr, dst_repeat_stride: PrimExpr):
+def brcb(
+    dst: Buffer | BufferRegion | BufferLoad,
+    src: Buffer | BufferRegion | BufferLoad,
+    repeat_times: PrimExpr,
+    dst_blk_stride: PrimExpr,
+    dst_repeat_stride: PrimExpr,
+):
     """Broadcast repeat copy block (BRCB) intrinsic.
 
     Each iteration reads 1 element from src and fills it into 8 data blocks
@@ -718,8 +780,8 @@ def brcb(dst: Buffer, src: Buffer, repeat_times: PrimExpr, dst_blk_stride: PrimE
     Args:
         dst: The destination buffer (VECIN/VECCALC/VECOUT). Start address must
              be 32-byte aligned.
-        src: The source buffer (VECIN/VECCALC/VECOUT). Start address must be
-             32-byte aligned. Must contain at least ``repeat_times`` elements.
+        src: The source buffer (VECIN/VECCALC/VECOUT). Start address must
+             be 32-byte aligned. Must contain at least ``repeat_times`` elements.
         repeat_times: Number of iterations. Each iteration fills 8 data blocks.
                       Range: [0, 255].
         dst_blk_stride: Stride between data blocks within one iteration.
@@ -729,15 +791,36 @@ def brcb(dst: Buffer, src: Buffer, repeat_times: PrimExpr, dst_blk_stride: PrimE
     Returns:
         A TVM intrinsic call that performs the BRCB operation.
     """
-    src_size = math.prod(src.shape)
-    assert src_size >= repeat_times, "src size must be not less than repeat_times"
+    if isinstance(dst, BufferLoad):
+        dst = _buffer_load_to_buffer_region(dst)
+    if isinstance(src, BufferLoad):
+        src = _buffer_load_to_buffer_region(src)
+
+    if isinstance(dst, BufferRegion):
+        dst_ptr, _ = _handle_buffer_region(dst, "w")
+    else:
+        dst_ptr = dst.access_ptr("w")
+
+    if isinstance(src, BufferRegion):
+        src_ptr, src_extent = _handle_buffer_region(src, "r")
+    else:
+        src_ptr = src.access_ptr("r")
+        src_extent = src.shape
+
+    try:
+        repeat_times_value = int(repeat_times)
+    except (TypeError, ValueError):
+        repeat_times_value = None
+    if repeat_times_value is not None:
+        src_size = math.prod(src_extent)
+        assert src_size >= repeat_times_value * 8, "src size must be not less than repeat_times * 8"
 
     return tir.call_intrin(
         "handle",
         tir.op.Op.get("tl.ascend_brcb"),
         f"brcb<{_dtype(src)}>",
-        dst.access_ptr("w"),
-        src.access_ptr("r"),
+        dst_ptr,
+        src_ptr,
         repeat_times,
         dst_blk_stride,
         dst_repeat_stride,
@@ -745,11 +828,16 @@ def brcb(dst: Buffer, src: Buffer, repeat_times: PrimExpr, dst_blk_stride: PrimE
 
 
 def binary_op(
-    dst: Buffer | BufferRegion,
-    src0: Buffer | BufferRegion,
+    dst: Buffer | BufferRegion | BufferLoad,
+    src0: Buffer | BufferRegion | BufferLoad,
     src1: Buffer | BufferRegion | BufferLoad | PrimExpr | float,
     op: str,
 ):
+    dst = _normalize_buffer_arg(dst)
+    src0 = _normalize_buffer_arg(src0)
+    if isinstance(src1, BufferLoad) and _buffer_load_has_ramp(src1):
+        src1 = _normalize_buffer_arg(src1)
+
     if isinstance(dst, BufferRegion):
         dst_ptr, dst_extent = _handle_buffer_region(dst, "w")
     else:
@@ -803,7 +891,7 @@ def binary_op(
         )
 
 
-def add(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, src1: Buffer | BufferRegion | BufferLoad | PrimExpr):
+def add(dst: Buffer | BufferRegion | BufferLoad, src0: Buffer | BufferRegion | BufferLoad, src1: Buffer | BufferRegion | BufferLoad | PrimExpr):
     """Performs element-wise addition: dst = src0 + src1.
 
     Args:
@@ -967,6 +1055,10 @@ def _binary_mask_op(
     dst_rep_stride, src0_rep_stride, src1_rep_stride,
     op: str,
 ):
+    dst = _normalize_buffer_arg(dst)
+    src0 = _normalize_buffer_arg(src0)
+    src1 = _normalize_buffer_arg(src1)
+
     if isinstance(dst, BufferRegion):
         dst_ptr, _ = _handle_buffer_region(dst, "w")
     else:
