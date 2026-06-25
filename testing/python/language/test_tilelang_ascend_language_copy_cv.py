@@ -59,9 +59,9 @@ def _ub_to_l1_kernel(M=128, N=128, K=128, dtype="float16", accum_dtype="float"):
 
     @T.prim_func
     def main(
-        A: T.Tensor((M, K), dtype), # type: ignore
-        B: T.Tensor((K, N), dtype), # type: ignore
-        C: T.Tensor((M, N), dtype), # type: ignore
+        A: T.Tensor((M, K), dtype),  # type: ignore
+        B: T.Tensor((K, N), dtype),  # type: ignore
+        C: T.Tensor((M, N), dtype),  # type: ignore
     ):
         with T.Kernel(1, is_npu=True) as (cid, vid):
             A_ub = T.alloc_ub((M_half, K), dtype)
@@ -71,7 +71,7 @@ def _ub_to_l1_kernel(M=128, N=128, K=128, dtype="float16", accum_dtype="float"):
             C_l0c = T.alloc_L0C((M, N), accum_dtype)
 
             # GM → UB
-            T.copy(A[vid * M_half: (vid + 1) * M_half, :], A_ub)
+            T.copy(A[vid * M_half : (vid + 1) * M_half, :], A_ub)
 
             # UB → L1
             T.copy(A_ub, A_l1, tmp=A_ub_Nz)
@@ -93,9 +93,9 @@ def _ub_to_l1_kernel_drop_vid(M=128, N=128, K=128, dtype="float16", accum_dtype=
 
     @T.prim_func
     def main(
-        A: T.Tensor((M, K), dtype), # type: ignore
-        B: T.Tensor((K, N), dtype), # type: ignore
-        C: T.Tensor((M, N), dtype), # type: ignore
+        A: T.Tensor((M, K), dtype),  # type: ignore
+        B: T.Tensor((K, N), dtype),  # type: ignore
+        C: T.Tensor((M, N), dtype),  # type: ignore
     ):
         with T.Kernel(1, threads=2, is_npu=True) as _cid:
             A_ub = T.alloc_ub((M, K), dtype)
@@ -129,9 +129,9 @@ def _ub_to_l1_kernel_lr(M=128, N=128, K=128, dtype="float16", accum_dtype="float
 
     @T.prim_func
     def main(
-        A: T.Tensor((M, K), dtype), # type: ignore
-        B: T.Tensor((K, N), dtype), # type: ignore
-        C: T.Tensor((M, N), dtype), # type: ignore
+        A: T.Tensor((M, K), dtype),  # type: ignore
+        B: T.Tensor((K, N), dtype),  # type: ignore
+        C: T.Tensor((M, N), dtype),  # type: ignore
     ):
         with T.Kernel(1, is_npu=True) as (cid, vid):
             A_ub = T.alloc_ub((M, K_half), dtype)
@@ -141,7 +141,7 @@ def _ub_to_l1_kernel_lr(M=128, N=128, K=128, dtype="float16", accum_dtype="float
             C_l0c = T.alloc_L0C((M, N), accum_dtype)
 
             # GM → UB
-            T.copy(A[:, vid * K_half: (vid + 1) * K_half], A_ub)
+            T.copy(A[:, vid * K_half : (vid + 1) * K_half], A_ub)
 
             # UB → L1
             T.copy(A_ub, A_l1, tmp=A_ub_Nz)
@@ -165,10 +165,10 @@ def _ub_to_l1_kernel_expert_A2(M=128, N=128, K=128, dtype="float16", accum_dtype
 
     @T.prim_func
     def main(
-        A: T.Tensor((M, K), dtype), # type: ignore
-        B: T.Tensor((K, N), dtype), # type: ignore
-        C: T.Tensor((M, N), dtype), # type: ignore
-        workspace_1: T.Tensor((M * K * 2 ), dtype) # type: ignore
+        A: T.Tensor((M, K), dtype),  # type: ignore
+        B: T.Tensor((K, N), dtype),  # type: ignore
+        C: T.Tensor((M, N), dtype),  # type: ignore
+        workspace_1: T.Tensor((M * K * 2), dtype),  # type: ignore
     ):
         with T.Kernel(1, is_npu=True) as (cid, vid):
             T._src_code("using Pipe_0_V2C = TPipe<0, pto::Direction::DIR_V2C, 32768, 2>;")
@@ -198,7 +198,7 @@ def _ub_to_l1_kernel_expert_A2(M=128, N=128, K=128, dtype="float16", accum_dtype
 
             with T.Scope("V"):
                 # GM → UB
-                T.copy(A[vid * M_half: (vid + 1) * M_half, :], A_ub)
+                T.copy(A[vid * M_half : (vid + 1) * M_half, :], A_ub)
 
                 # UB → L1
                 # T.copy(A_ub, A_l1)
@@ -216,9 +216,9 @@ def _ub_to_l1_kernel_expert_A5(M=128, N=128, K=128, dtype="float16", accum_dtype
 
     @T.prim_func
     def main(
-        A: T.Tensor((M, K), dtype), # type: ignore
-        B: T.Tensor((K, N), dtype), # type: ignore
-        C: T.Tensor((M, N), dtype), # type: ignore
+        A: T.Tensor((M, K), dtype),  # type: ignore
+        B: T.Tensor((K, N), dtype),  # type: ignore
+        C: T.Tensor((M, N), dtype),  # type: ignore
     ):
         with T.Kernel(1, is_npu=True) as (cid, vid):
             T._src_code("using Pipe_0_V2C = TPipe<0, pto::Direction::DIR_V2C, 32768, 2>;")
@@ -249,7 +249,7 @@ def _ub_to_l1_kernel_expert_A5(M=128, N=128, K=128, dtype="float16", accum_dtype
 
             with T.Scope("V"):
                 # GM → UB
-                T.copy(A[vid * M_half: (vid + 1) * M_half, :], A_ub)
+                T.copy(A[vid * M_half : (vid + 1) * M_half, :], A_ub)
 
                 # UB → L1
                 # T.copy(A_ub, A_l1)
@@ -270,9 +270,9 @@ def _l0c_to_ub_kernel(M=128, N=128, K=128, dtype="float16", accum_dtype="float")
 
     @T.prim_func
     def main(
-        A: T.Tensor((M, K), dtype), # type: ignore
-        B: T.Tensor((K, N), dtype), # type: ignore
-        C: T.Tensor((M, N), accum_dtype), # type: ignore
+        A: T.Tensor((M, K), dtype),  # type: ignore
+        B: T.Tensor((K, N), dtype),  # type: ignore
+        C: T.Tensor((M, N), accum_dtype),  # type: ignore
     ):
         with T.Kernel(1, is_npu=True) as (cid, vid):
             A_l1 = T.alloc_L1((M, K), dtype)
@@ -291,7 +291,7 @@ def _l0c_to_ub_kernel(M=128, N=128, K=128, dtype="float16", accum_dtype="float")
             T.copy(C_l0c, C_ub)
 
             # UB → GM
-            T.copy(C_ub, C[vid * M_half: (vid + 1) * M_half, :])
+            T.copy(C_ub, C[vid * M_half : (vid + 1) * M_half, :])
 
     return main
 
@@ -301,9 +301,9 @@ def _l0c_to_ub_kernel_drop_vid(M=128, N=128, K=128, dtype="float16", accum_dtype
 
     @T.prim_func
     def main(
-        A: T.Tensor((M, K), dtype), # type: ignore
-        B: T.Tensor((K, N), dtype), # type: ignore
-        C: T.Tensor((M, N), accum_dtype), # type: ignore
+        A: T.Tensor((M, K), dtype),  # type: ignore
+        B: T.Tensor((K, N), dtype),  # type: ignore
+        C: T.Tensor((M, N), accum_dtype),  # type: ignore
     ):
         with T.Kernel(1, threads=2, is_npu=True) as _cid:
             A_l1 = T.alloc_L1((M, K), dtype)
@@ -334,9 +334,9 @@ def _l0c_to_ub_kernel_lr(M=128, N=128, K=128, dtype="float16", accum_dtype="floa
 
     @T.prim_func
     def main(
-        A: T.Tensor((M, K), dtype), # type: ignore
-        B: T.Tensor((K, N), dtype), # type: ignore
-        C: T.Tensor((M, N), accum_dtype), # type: ignore
+        A: T.Tensor((M, K), dtype),  # type: ignore
+        B: T.Tensor((K, N), dtype),  # type: ignore
+        C: T.Tensor((M, N), accum_dtype),  # type: ignore
     ):
         with T.Kernel(1, is_npu=True) as (cid, vid):
             A_l1 = T.alloc_L1((M, K), dtype)
@@ -355,7 +355,7 @@ def _l0c_to_ub_kernel_lr(M=128, N=128, K=128, dtype="float16", accum_dtype="floa
             T.copy(C_l0c, C_ub)
 
             # UB → GM
-            T.copy(C_ub, C[:, vid * N_half: (vid + 1) * N_half])
+            T.copy(C_ub, C[:, vid * N_half : (vid + 1) * N_half])
 
     return main
 
@@ -367,10 +367,10 @@ def _combined_kernel(M=128, N=128, K=128, dtype="float16", accum_dtype="float"):
 
     @T.prim_func
     def main(
-        A: T.Tensor((M, K), dtype), # type: ignore
-        B: T.Tensor((K, N), dtype), # type: ignore
-        C: T.Tensor((M, N), accum_dtype), # type: ignore
-        D: T.Tensor((M, N), dtype), # type: ignore
+        A: T.Tensor((M, K), dtype),  # type: ignore
+        B: T.Tensor((K, N), dtype),  # type: ignore
+        C: T.Tensor((M, N), accum_dtype),  # type: ignore
+        D: T.Tensor((M, N), dtype),  # type: ignore
     ):
         with T.Kernel(1, is_npu=True) as (cid, vid):
             # UB↔L1 path buffers
@@ -384,7 +384,7 @@ def _combined_kernel(M=128, N=128, K=128, dtype="float16", accum_dtype="float"):
             C_ub = T.alloc_ub((M_half, N), accum_dtype)
 
             # Path A: GM → UB → L1
-            T.copy(A[vid * M_half: (vid + 1) * M_half, :], A_ub)
+            T.copy(A[vid * M_half : (vid + 1) * M_half, :], A_ub)
             T.copy(A_ub, A_l1, tmp=A_ub_Nz)
 
             # Path B: GM → L1 → GEMM → L0C → UB
@@ -393,7 +393,7 @@ def _combined_kernel(M=128, N=128, K=128, dtype="float16", accum_dtype="float"):
             T.copy(C_l0c, C_ub)
 
             # Output: UB → GM
-            T.copy(C_ub, C[vid * M_half: (vid + 1) * M_half, :])
+            T.copy(C_ub, C[vid * M_half : (vid + 1) * M_half, :])
 
             # Output: L0C → GM
             T.copy(C_l0c, D)
@@ -401,7 +401,18 @@ def _combined_kernel(M=128, N=128, K=128, dtype="float16", accum_dtype="float"):
     return main
 
 
-def _ub_to_l1_case(kernel_func, M=128, N=128, K=128, dtype = "float16", accum_dtype = "float", target="pto", expert=False, dtype_cast=False, manual_workspace=False):
+def _ub_to_l1_case(
+    kernel_func,
+    M=128,
+    N=128,
+    K=128,
+    dtype="float16",
+    accum_dtype="float",
+    target="pto",
+    expert=False,
+    dtype_cast=False,
+    manual_workspace=False,
+):
     program = kernel_func(M=M, N=N, K=K, dtype=dtype, accum_dtype=accum_dtype)
     kernel = _compile(program, target=target, expert=expert)
 
@@ -426,7 +437,18 @@ def _ub_to_l1_case(kernel_func, M=128, N=128, K=128, dtype = "float16", accum_dt
     torch.testing.assert_close(c, ref_c, rtol=1e-3, atol=1e-3)
 
 
-def _l0c_to_ub_case(kernel_func, M=128, N=128, K=128, dtype = "float16", accum_dtype = "float", target="pto", expert=False, dtype_cast=False, manual_workspace=False):
+def _l0c_to_ub_case(
+    kernel_func,
+    M=128,
+    N=128,
+    K=128,
+    dtype="float16",
+    accum_dtype="float",
+    target="pto",
+    expert=False,
+    dtype_cast=False,
+    manual_workspace=False,
+):
     program = kernel_func(M=M, N=N, K=K, dtype=dtype, accum_dtype=accum_dtype)
     kernel = _compile(program, target=target, expert=expert)
 
@@ -572,9 +594,9 @@ def _copy_vc_experiment_kernel(M=128, N=128, K=128, dtype="float16", accum_dtype
 
     @T.prim_func
     def main(
-        A: T.Tensor((M, K), dtype), # type: ignore
-        B: T.Tensor((K, N), dtype), # type: ignore
-        C: T.Tensor((M, N), dtype), # type: ignore
+        A: T.Tensor((M, K), dtype),  # type: ignore
+        B: T.Tensor((K, N), dtype),  # type: ignore
+        C: T.Tensor((M, N), dtype),  # type: ignore
     ):
         with T.Kernel(1, is_npu=True) as (cid, vid):
             A_ub = T.alloc_ub((M_half, K), dtype)
@@ -599,12 +621,13 @@ def _copy_vc_experiment_kernel(M=128, N=128, K=128, dtype="float16", accum_dtype
 
             with T.Scope("V"):
                 # GM → UB
-                T.copy(A[vid * M_half: (vid + 1) * M_half, :], A_ub)
+                T.copy(A[vid * M_half : (vid + 1) * M_half, :], A_ub)
                 # UB → L1 (TINSERT)
                 T.set_flag("mte2", "v", 3)
                 T.wait_flag("mte2", "v", 3)
                 T.copy_op.copy_vc_experiment(A_ub, A_l1[vid * M_half, 0], A_ub_nz_tmp)
                 T.set_cross_flag("MTE3", 0)
+
     return main
 
 
@@ -614,9 +637,9 @@ def _copy_cv_experiment_kernel(M=128, N=128, K=128, dtype="float16", accum_dtype
 
     @T.prim_func
     def main(
-        A: T.Tensor((M, K), dtype), # type: ignore
-        B: T.Tensor((K, N), dtype), # type: ignore
-        C: T.Tensor((M, N), accum_dtype), # type: ignore
+        A: T.Tensor((M, K), dtype),  # type: ignore
+        B: T.Tensor((K, N), dtype),  # type: ignore
+        C: T.Tensor((M, N), accum_dtype),  # type: ignore
     ):
         with T.Kernel(1, is_npu=True) as (cid, vid):
             A_l1 = T.alloc_L1((M, K), dtype)
@@ -642,7 +665,8 @@ def _copy_cv_experiment_kernel(M=128, N=128, K=128, dtype="float16", accum_dtype
                 # L0C → UB
                 T.wait_cross_flag(0, "MTE3")
                 # UB → GM
-                T.copy(C_ub, C[vid * M_half: (vid + 1) * M_half, :])
+                T.copy(C_ub, C[vid * M_half : (vid + 1) * M_half, :])
+
     return main
 
 
