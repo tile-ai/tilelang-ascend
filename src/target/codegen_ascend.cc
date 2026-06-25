@@ -228,8 +228,20 @@ void CodeGenTileLangAscend::PrintType(DataType t,
     if (!fail)
       return;
   } else if (t.is_float8()) {
-    // enable_fp8_ = true;
-    // os << GetFP8Type(t);
+    enable_fp8_ = true;
+    if (t.is_scalar()) {
+      if (t.is_float8_e4m3fn()) {
+        os << "float8_e4m3_t";
+      } else if (t.is_float8_e5m2()) {
+        os << "float8_e5m2_t";
+      } else {
+        fail = true;
+      }
+    } else {
+      fail = true;
+    }
+    if (!fail)
+      return;
     return;
   } else if (t == DataType::Bool()) {
     os << "bool";
