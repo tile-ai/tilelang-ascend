@@ -113,6 +113,10 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
       return "uint64_t";
     } else if (dtype.is_bfloat16()) {
       return "bfloat16_t";
+    } else if (dtype.is_float8_e4m3fn()) {
+      return "float8_e4m3_t";
+    } else if (dtype.is_float8_e5m2()) {
+      return "float8_e5m2_t";
     }
     LOG(FATAL) << "Unsupported data type: " << dtype;
     return "";
@@ -550,6 +554,10 @@ Stmt AscendAtomicAdd::Lower(const LowerArgs &T,
       return "uint64_t";
     } else if (dtype.is_bfloat16()) {
       return "bfloat16_t";
+    } else if (dtype.is_float8_e4m3fn()) {
+      return "float8_e4m3_t";
+    } else if (dtype.is_float8_e5m2()) {
+      return "float8_e5m2_t";
     }
     LOG(FATAL) << "Unsupported data type for tl.ascend_atomic_add: " << dtype;
     return "";
@@ -1163,6 +1171,11 @@ TIR_DEFINE_TL_BUILTIN(ascend_gemm_v0)
 
 TIR_DEFINE_TL_BUILTIN(ascend_gemm_v1)
     .set_num_inputs(5)
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
+
+TIR_DEFINE_TL_BUILTIN(ascend_gemm_mx)
+    .set_num_inputs(7)
     .set_attr<TCallEffectKind>("TCallEffectKind",
                                Integer(CallEffectKind::kOpaque));
 

@@ -94,6 +94,10 @@ static std::string getType(const DataType &dtype) {
     return "float";
   if (dtype.is_bfloat16())
     return "bfloat16_t";
+  if (dtype.is_float8_e4m3fn())
+    return "float8_e4m3_t";
+  if (dtype.is_float8_e5m2())
+    return "float8_e5m2_t";
 
   if (dtype.is_int()) {
     switch (dtype.bits()) {
@@ -154,7 +158,11 @@ int32_t GetTypeLen(std::string type) {
     typeSize = 2;
   } else if (type == "half") {
     typeSize = 2;
-  } else if (type == "int8_t" || type == "uint8_t") {
+  } else if (type == "int8_t" || type == "uint8_t" || type == "float8_e4m3_t" ||
+             type == "float8_e5m2_t" || type == "float4_e2m1x2_t" ||
+             type == "float4_e1m2x2_t") {
+    // float4_e{2m1,e1m2}x2_t are uint8 aliases: each byte packs two FP4
+    // elements, so byte-level address math still sees them as 1-byte units.
     typeSize = 1;
   } else if (type == "int16_t" || type == "uint16_t") {
     typeSize = 2;
@@ -476,9 +484,20 @@ void CodeGenTileLangAscendPto::PrintType(DataType t,
     if (!fail)
       return;
   } else if (t.is_float8()) {
-    // enable_fp8_ = true;
-    // os << GetFP8Type(t);
-    return;
+    enable_fp8_ = true;
+    if (t.is_scalar()) {
+      if (t.is_float8_e4m3fn()) {
+        os << "float8_e4m3_t";
+      } else if (t.is_float8_e5m2()) {
+        os << "float8_e5m2_t";
+      } else {
+        fail = true;
+      }
+    } else {
+      fail = true;
+    }
+    if (!fail)
+      return;
   } else if (t == DataType::Bool()) {
     os << "bool";
     return;
@@ -716,6 +735,8 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op,
     this->stream << "break;\n";
   } else if (op->op.same_as(tl::ascend_gemm_v0())) {
     GemmV0Codegen(op);
+  } else if (op->op.same_as(tl::ascend_gemm_mx())) {
+    GemmMxCodegen(op);
   } else if (op->op.same_as(tl::ascend_fill())) {
     FillCodegen(op);
 
@@ -1413,6 +1434,46 @@ void CodeGenTileLangAscendPto::GemmV0Codegen(const CallNode *op) {
                << params["transpose_B"] << ">" << "(";
   this->stream << a_name << ", " << b_name << ", " << c_name << ", "
                << PrintExpr(op->args[4]) << ");\n";
+}
+
+void CodeGenTileLangAscendPto::GemmMxCodegen(const CallNode *op) {
+  std::string template_args = Downcast<StringImm>(op->args[0])->value;
+
+  ShapeInfo a_info = GetSliceInfo(op->args[1].as<CallNode>());
+  ShapeInfo b_info = GetSliceInfo(op->args[2].as<CallNode>());
+  ShapeInfo c_info = GetSliceInfo(op->args[3].as<CallNode>());
+  ShapeInfo sa_info = GetSliceInfo(op->args[4].as<CallNode>());
+  ShapeInfo sb_info = GetSliceInfo(op->args[5].as<CallNode>());
+
+  std::map<std::string, std::string> params =
+      extractTemplateParams(template_args);
+  uint32_t K = std::stoi(params["K"]);
+  uint32_t kL0split = (K + kL0SliceSize - 1) / kL0SliceSize;
+  uint32_t kL0Tail = K - (kL0split - 1) * kL0SliceSize;
+
+  std::string a_name =
+      ResolveCubeSliceName(a_info, kAscendPtoScope + "TileMatL1");
+  std::string b_name =
+      ResolveCubeSliceName(b_info, kAscendPtoScope + "TileMatL1");
+  std::string c_name = ResolveCubeSliceName(c_info, "pto::TileAcc");
+  std::string sa_name =
+      ResolveCubeSliceName(sa_info, kAscendPtoScope + "TileScaleL1");
+  std::string sb_name =
+      ResolveCubeSliceName(sb_info, kAscendPtoScope + "TileScaleL1");
+
+  this->PrintIndent();
+  std::string data_type_input = params["data_type_input"];
+  this->stream << kAscendPtoScope << "gemm_mx" << "<"
+               << params["data_type_input"] << ", "
+               << params["data_type_output"] << ", "
+               << GetValid16BytesShape(std::stoi(params["M"])) << ", "
+               << GetValid16BytesShape(std::stoi(params["N"])) << ", "
+               << GetValidShape(std::stoi(params["K"]), data_type_input) << ", "
+               << params["M"] << ", " << params["N"] << ", " << params["K"]
+               << ", " << kL0Tail << ">"
+               << "(";
+  this->stream << a_name << ", " << b_name << ", " << c_name << ", " << sa_name
+               << ", " << sb_name << ", " << PrintExpr(op->args[6]) << ");\n";
 }
 
 void CodeGenTileLangAscendPto::SyncAllCodegen(const CallNode *op) {

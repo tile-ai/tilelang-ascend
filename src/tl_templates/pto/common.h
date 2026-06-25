@@ -1,6 +1,38 @@
 #include <pto/pto-inst.hpp>
 #include <type_traits>
 
+// On A5, the CCE compiler exposes float8_e4m3_t / float8_e5m2_t as built-in
+// types. On A2/A3 (and elsewhere), these names are not provided by the CCE.
+// PTO-ISA's internal headers `#define ... int8_t` inside `<pto/pto-inst.hpp>`
+// but `#undef` them afterwards, so user code cannot rely on those macros.
+// We therefore install byte-compatible aliases (int8_t, 1 byte per element)
+// on any platform that doesn't already define them, so that generated C++
+// code parses. Real FP8 TMATMUL is still A5-only (guarded by
+// `PTO_PLATFORM_A5` in CheckMadValid / TMATMUL_MX_IMPL).
+#ifndef PTO_PLATFORM_A5
+#include <cstdint>
+#ifndef __FLOAT8_E4M3_T__
+using float8_e4m3_t = int8_t;
+#endif
+#ifndef __FLOAT8_E5M2_T__
+using float8_e5m2_t = int8_t;
+#endif
+#ifndef __FLOAT8_E8M0_T__
+using float8_e8m0_t = int8_t;
+#endif
+// MXFP4 "x2" twin types: each byte packs two FP4 elements. For type-system
+// purposes on non-A5 (where the CCE does not expose these types), we alias
+// them to uint8_t. This lets generated code parse; actual MXFP4 TMATMUL_MX
+// is only correct on A5 (guarded by the `#ifdef PTO_PLATFORM_A5` on
+// gemm_mx below).
+#ifndef __FLOAT4_E2M1X2_T__
+using float4_e2m1x2_t = uint8_t;
+#endif
+#ifndef __FLOAT4_E1M2X2_T__
+using float4_e1m2x2_t = uint8_t;
+#endif
+#endif // !PTO_PLATFORM_A5
+
 #ifdef __CCE_AICORE__
 #define CUDART_INF_F 1.0f / 0.0f
 
@@ -43,6 +75,15 @@ template <typename T, int Rows, int Cols, int RowValid = Rows,
 using TileMatL0B = pto::Tile<pto::TileType::Right, T, Rows, Cols,
                              pto::BLayout::RowMajor, RowValid, ColValid,
                              pto::SLayout::ColMajor, 512, pto::PadValue::Zero>;
+
+// MX microscaling scale tile stored in L1 (e8m0 exponents stored as uint8).
+// Tiled in L1 just like a regular matrix; the MX-specific rebinding to
+// ScaleLeft / ScaleRight happens inside the gemm_mx template.
+template <typename T, int Rows, int Cols, int RowValid = Rows,
+          int ColValid = Cols>
+using TileScaleL1 = pto::Tile<pto::TileType::Mat, T, Rows, Cols,
+                              pto::BLayout::RowMajor, RowValid, ColValid,
+                              pto::SLayout::RowMajor, 512, pto::PadValue::Zero>;
 
 template <typename T, int Rows, int Cols, int RowValid = Rows,
           int ColValid = Cols, pto::PadValue PadVal = pto::PadValue::Null>
@@ -224,6 +265,113 @@ gemm_v0(std::conditional_t<transpose_A, TileMatL1<T1, K, M, validK, validM>,
   set_flag(PIPE_M, PIPE_FIX, war_event_id);
   wait_flag(PIPE_M, PIPE_FIX, war_event_id);
 }
+
+// ---------------------------------------------------------------------------
+// gemm_mx: OCP Microscaling GEMM (A5 only).
+//
+// Computes C += (A * scale_a) @ (B * scale_b) where:
+//   - A, B are MXFP8 (float8_e4m3_t / float8_e5m2_t) or MXFP4 data tiles in L1
+//   - scale_a, scale_b are e8m0 per-32-K-block exponents (stored as uint8) in
+//   L1
+//   - C is the float32 L0C accumulator
+//
+// Scale layout:
+//   scale_a : (M, K/32) — one e8m0 exponent per row per 32-element K slab
+//   scale_b : (K/32, N) — one e8m0 exponent per 32-element K slab per column
+//
+// Requires K divisible by 64.
+// ---------------------------------------------------------------------------
+constexpr uint32_t kMxScaleBlock = 32; // e8m0 block granularity (OCP MX spec)
+
+#ifdef PTO_PLATFORM_A5
+
+template <typename T1, typename T2, uint32_t M, uint32_t N, uint32_t K,
+          uint32_t validM, uint32_t validN, uint32_t validK, uint32_t K_tail>
+AICORE PTO_INLINE void gemm_mx(TileMatL1<T1, M, K, validM, validK> &A,
+                               TileMatL1<T1, K, N, validK, validN> &B,
+                               pto::TileAcc<T2, M, N, validM, validN> &C,
+                               TileScaleL1<uint8_t, M, K / kMxScaleBlock,
+                                           validM, validK / kMxScaleBlock> &sA,
+                               TileScaleL1<uint8_t, K / kMxScaleBlock, N,
+                                           validK / kMxScaleBlock, validN> &sB,
+                               bool clear) {
+  constexpr uint32_t kL0Size = 128;
+  const uint32_t kL0split = (K + kL0Size - 1) / kL0Size;
+  auto war_event_id = (event_t)(((int)EVENT_ID0 + 2) % 8);
+
+  set_flag(PIPE_MTE2, PIPE_MTE1, war_event_id);
+  wait_flag(PIPE_MTE2, PIPE_MTE1, war_event_id);
+
+  for (uint32_t kL0Idx = 0; kL0Idx < kL0split; kL0Idx++) {
+    const bool initflag = (clear && (kL0Idx == 0));
+    const bool is_tail_block = (kL0Idx == kL0split - 1);
+    constexpr uint32_t CurrentK = kL0Size; // tail dispatch happens in codegen
+
+    TileMatL0A<T1, M, CurrentK, M, CurrentK> l0a;
+    TileMatL0B<T1, CurrentK, N, CurrentK, N> l0b;
+    pto::TASSIGN(l0a, 0x0);
+    pto::TASSIGN(l0b, 0x0);
+
+    set_flag(PIPE_M, PIPE_MTE1, war_event_id);
+    wait_flag(PIPE_M, PIPE_MTE1, war_event_id);
+
+    copy_l1_to_l0a<T1, M, CurrentK, M, K, false>(l0a, A, 0, kL0Idx * CurrentK);
+    copy_l1_to_l0b<T1, CurrentK, N, K, N, false>(l0b, B, kL0Idx * CurrentK, 0);
+
+    pto::Tile<pto::TileType::ScaleLeft, uint8_t, M, CurrentK / kMxScaleBlock,
+              pto::BLayout::RowMajor, validM, CurrentK / kMxScaleBlock,
+              pto::SLayout::RowMajor, 512, pto::PadValue::Zero>
+        l0sa;
+    pto::Tile<pto::TileType::ScaleRight, uint8_t, CurrentK / kMxScaleBlock, N,
+              pto::BLayout::RowMajor, CurrentK / kMxScaleBlock, validN,
+              pto::SLayout::RowMajor, 512, pto::PadValue::Zero>
+        l0sb;
+    pto::TEXTRACT(l0sa, sA, 0, kL0Idx * (CurrentK / kMxScaleBlock));
+    pto::TEXTRACT(l0sb, sB, kL0Idx * (CurrentK / kMxScaleBlock), 0);
+
+    set_flag(PIPE_MTE1, PIPE_M, war_event_id);
+    wait_flag(PIPE_MTE1, PIPE_M, war_event_id);
+
+    if (initflag) {
+      pto::TMATMUL_MX(C, l0a, l0sa, l0b, l0sb);
+    } else {
+      pto::TMATMUL_MX(C, C, l0a, l0sa, l0b, l0sb);
+    }
+
+    if (!is_tail_block) {
+      set_flag(PIPE_MTE1, PIPE_MTE2, war_event_id);
+      wait_flag(PIPE_MTE1, PIPE_MTE2, war_event_id);
+    }
+  }
+
+  set_flag(PIPE_MTE1, PIPE_MTE2, war_event_id);
+  wait_flag(PIPE_MTE1, PIPE_MTE2, war_event_id);
+
+  set_flag(PIPE_M, PIPE_FIX, war_event_id);
+  wait_flag(PIPE_M, PIPE_FIX, war_event_id);
+}
+
+#else // !PTO_PLATFORM_A5
+
+// A2/A3 stub: keeps common.h parseable on all platforms and issues a clear
+// compile-time error if a user actually tries to instantiate an MX GEMM.
+template <typename T1, typename T2, uint32_t M, uint32_t N, uint32_t K,
+          uint32_t validM, uint32_t validN, uint32_t validK, uint32_t K_tail>
+AICORE PTO_INLINE void gemm_mx(TileMatL1<T1, M, K, validM, validK> &,
+                               TileMatL1<T1, K, N, validK, validN> &,
+                               pto::TileAcc<T2, M, N, validM, validN> &,
+                               TileScaleL1<uint8_t, M, K / kMxScaleBlock,
+                                           validM, validK / kMxScaleBlock> &,
+                               TileScaleL1<uint8_t, K / kMxScaleBlock, N,
+                                           validK / kMxScaleBlock, validN> &,
+                               bool) {
+  static_assert(sizeof(T1) == 0,
+                "gemm_mx (TMATMUL_MX) is only supported on the A5 platform "
+                "(PTO_PLATFORM_A5). A2/A3 (C220) does not provide the MX Cube "
+                "instruction.");
+}
+
+#endif // PTO_PLATFORM_A5
 
 template <typename T1, typename T2, int32_t shape1, int32_t shape2,
           int32_t shape3, int32_t shape4, int32_t shape5, int32_t stride1,

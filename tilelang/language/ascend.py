@@ -22,6 +22,8 @@ def _dtype(buf):
         "int16": "int16_t",
         "int64": "int64_t",
         "uint64": "uint64_t",
+        "e4m3_float8": "float8_e4m3_t",
+        "e5m2_float8": "float8_e5m2_t",
     }
     if isinstance(buf, BufferRegion):
         buf = buf.buffer
@@ -409,6 +411,104 @@ def gemm_v0(A, B, C, transpose_A=False, transpose_B=False, init=False):
         Aptr,
         Bptr,
         Cptr,
+        init,
+    )
+
+
+_MX_FORMAT_TO_CTYPE = {
+    "e4m3": "float8_e4m3_t",
+    "e5m2": "float8_e5m2_t",
+    "e2m1x2": "float4_e2m1x2_t",
+    "e1m2x2": "float4_e1m2x2_t",
+}
+
+_MX_FP4_FORMATS = ("e2m1x2", "e1m2x2")
+
+
+def gemm_mx(A, B, C, scale_a, scale_b, init=False, format=None):
+    """
+    OCP MX (Microscaling) block GEMM on the A5 Cube unit.
+
+    Computes C = (A * scale_a) @ (B * scale_b) where A, B are per-element low-precision
+    data (MXFP8 / MXFP4), and scale_a / scale_b are per-32-K-block e8m0 exponents.
+
+    Args:
+        A (Buffer | BufferRegion): MXFP data matrix.
+            For MXFP8 (format in {"e4m3", "e5m2"}): shape is (M, K_logical), dtype is uint8
+                (each byte holds one FP8 element in storage terms). The buffer is typed
+                as uint8 but interpreted as float8_e4m3_t / float8_e5m2_t at the Cube.
+            For MXFP4 (format in {"e2m1x2", "e1m2x2"}): shape is (M, K_logical) uint8
+                — each uint8 byte packs two FP4 values; only the first K_logical/2 bytes
+                in each row carry real data. K_logical must be even.
+        B (Buffer | BufferRegion): MXFP data matrix (K_logical, N). Same dtype convention
+            as A, mirrored along the K dimension.
+        C (Buffer | BufferRegion): Accumulator matrix (M, N), dtype must be float32.
+        scale_a (Buffer | BufferRegion): Per-row-per-32-K scale buffer (M, K_logical/32),
+            dtype uint8 (e8m0). Layout is logical-K-oriented, independent of data format.
+        scale_b (Buffer | BufferRegion): Per-32-K-per-col scale buffer (K_logical/32, N),
+            dtype uint8 (e8m0).
+        init (bool, optional): When True, clears the C L0C accumulator on first use.
+        format (str, optional): One of "e4m3", "e5m2", "e2m1x2", "e1m2x2".
+            When None, the format is inferred from the A buffer's dtype when it is
+            one of e4m3_float8 / e5m2_float8; otherwise it defaults to "e5m2" (MXFP8).
+
+    Returns:
+        tvm.tir.Call: A TIR intrinsic call to `tl.ascend_gemm_mx`.
+    """
+    A = _legalize_arguments(A)
+    B = _legalize_arguments(B)
+    C = _legalize_arguments(C)
+    scale_a = _legalize_arguments(scale_a)
+    scale_b = _legalize_arguments(scale_b)
+
+    A_shape = _retrieve_shape(A)
+    B_shape = _retrieve_shape(B)
+    C_shape = _retrieve_shape(C)
+    sA_shape = _retrieve_shape(scale_a)
+    sB_shape = _retrieve_shape(scale_b)
+
+    assert len(C_shape) == 2, "gemm_mx only supports C as a 2D tensor"
+    assert len(A_shape) == 2, "gemm_mx only supports A as a 2D tensor"
+    assert len(B_shape) == 2, "gemm_mx only supports B as a 2D tensor"
+    assert len(sA_shape) == 2, "gemm_mx only supports scale_a as a 2D tensor"
+    assert len(sB_shape) == 2, "gemm_mx only supports scale_b as a 2D tensor"
+
+    if format is None:
+        buf_dtype = A.buffer.dtype if isinstance(A, BufferRegion) else A.dtype
+        if buf_dtype == "e4m3_float8":
+            format = "e4m3"
+        elif buf_dtype == "e5m2_float8":
+            format = "e5m2"
+        else:
+            format = "e5m2"
+    assert format in _MX_FORMAT_TO_CTYPE, f"T.gemm_mx unknown format {format!r}; expected one of {sorted(_MX_FORMAT_TO_CTYPE.keys())}"
+
+    M, N = C_shape
+    K = A_shape[-1]
+    K_B = B_shape[-2]
+    assert K == K_B, f"T.gemm_mx K shape check failed: K_A = {K}, K_B = {K_B}"
+    if format in _MX_FP4_FORMATS:
+        assert K % 2 == 0, f"T.gemm_mx MXFP4 requires K divisible by 2 (packed bytes), got K={K}"
+    assert K % 64 == 0, f"T.gemm_mx requires K divisible by 64, got K={K}"
+    assert tuple(sA_shape) == (M, K // 32), f"scale_a shape must be (M={M}, K//32={K // 32}), got {sA_shape}"
+    assert tuple(sB_shape) == (K // 32, N), f"scale_b shape must be (K//32={K // 32}, N={N}), got {sB_shape}"
+
+    Aptr = _retrieve_ptr(A, "r")
+    Bptr = _retrieve_ptr(B, "r")
+    Cptr = _retrieve_ptr(C, "w" if init is True else "rw")
+    sAptr = _retrieve_ptr(scale_a, "r")
+    sBptr = _retrieve_ptr(scale_b, "r")
+
+    data_type_input = _MX_FORMAT_TO_CTYPE[format]
+    return T.call_intrin(
+        "handle",
+        tir.op.Op.get("tl.ascend_gemm_mx"),
+        f"gemm_mx<{data_type_input}, {_dtype(C)}, {M}, {N}, {K}>",
+        Aptr,
+        Bptr,
+        Cptr,
+        sAptr,
+        sBptr,
         init,
     )
 
