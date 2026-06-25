@@ -32,7 +32,7 @@ def prepare_chunk_offsets(cu_seqlens: torch.Tensor, chunk_size: int) -> torch.Te
 # ==========================================
 # 2. TileLang Unified Kernel (Fully 1D Packed)
 # ==========================================
-@tilelang.jit(workspace_idx=[9, 10, 11, 12], pass_configs=pass_configs,target="pto")
+@tilelang.jit(workspace_idx=[9, 10, 11, 12], pass_configs=pass_configs)
 def chunk_gated_delta_rule_fwd_kernel(
     N,
     H,
