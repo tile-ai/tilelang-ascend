@@ -199,7 +199,7 @@ def _is_cross_cv_copy(src: tir.Buffer, dst: tir.Buffer) -> bool:
     src_scope: str = src.scope()
     dst_scope: str = dst.scope()
     return (
-        (src_scope == "shared" and dst_scope == "shared.dyn")  # UB → L1
+        (src_scope == "shared" and dst_scope == "shared.l1")  # UB → L1
         or (src_scope == "wmma.accumulator" and dst_scope == "shared")  # L0C → UB
     )
 
