@@ -54,7 +54,7 @@ const VarNode *GetPtrVar(const PrimExpr &e) {
 }
 
 /*! \brief Map a plain binary tl op to its AscendC op tag, or "" if not one. */
-std::string BinaryTag(const Call *call) {
+std::string BinaryTag(const CallNode *call) {
   if (call->op.same_as(ascend_add()))
     return "Add";
   if (call->op.same_as(ascend_sub()))
@@ -73,7 +73,7 @@ std::string BinaryTag(const Call *call) {
 }
 
 /*! \brief Map a plain unary tl op to its AscendC op tag, or "" if not one. */
-std::string UnaryTag(const Call *call) {
+std::string UnaryTag(const CallNode *call) {
   if (call->op.same_as(ascend_exp()))
     return "Exp";
   if (call->op.same_as(ascend_ln()))
@@ -93,7 +93,7 @@ std::string UnaryTag(const Call *call) {
 }
 
 /*! \brief Map a plain scalar tl op (immediate form) to its AscendC op tag. */
-std::string ScalarTag(const Call *call) {
+std::string ScalarTag(const CallNode *call) {
   if (call->op.same_as(ascend_adds()))
     return "Adds";
   if (call->op.same_as(ascend_muls()))
@@ -106,7 +106,7 @@ std::string ScalarTag(const Call *call) {
 }
 
 /*! \brief Extract the external helper name from a call_extern's first arg. */
-std::string ExternName(const Call *call) {
+std::string ExternName(const CallNode *call) {
   if (!call->op.same_as(builtin::call_extern()))
     return "";
   if (call->args.empty())
