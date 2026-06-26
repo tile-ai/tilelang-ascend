@@ -42,7 +42,7 @@ template <typename T> AICORE inline const __gm__ char *TypeName() {
   return "unknown";
 }
 #define TL_PTO_TYPENAME_SPECIALIZE(CppType, NameStr)                           \
-  template <> AICORE inline const __gm__ char *TypeName<CppType>() {       \
+  template <> AICORE inline const __gm__ char *TypeName<CppType>() {           \
     return NameStr;                                                            \
   }
 TL_PTO_DTYPE_LIST(TL_PTO_TYPENAME_SPECIALIZE)
@@ -52,7 +52,7 @@ TL_PTO_DTYPE_LIST(TL_PTO_TYPENAME_SPECIALIZE)
 
 template <typename Tile>
 AICORE inline void DumpTensor(Tile &src, uint32_t desc, uint32_t dumpSize,
-                                  uint8_t dim, const uint32_t shapeInfo[]) {
+                              uint8_t dim, const uint32_t shapeInfo[]) {
   pipe_barrier(PIPE_ALL);
   cce::printf("=== DumpTensor [desc=%u] UB tile, dumpSize=%u ===\n", desc,
               dumpSize);
@@ -60,9 +60,8 @@ AICORE inline void DumpTensor(Tile &src, uint32_t desc, uint32_t dumpSize,
 }
 
 template <typename T>
-AICORE inline void DumpTensor(__gm__ T *src, uint32_t desc,
-                                  uint32_t dumpSize, uint8_t dim,
-                                  const uint32_t shapeInfo[]) {
+AICORE inline void DumpTensor(__gm__ T *src, uint32_t desc, uint32_t dumpSize,
+                              uint8_t dim, const uint32_t shapeInfo[]) {
   if (dumpSize == 0)
     return;
   pipe_barrier(PIPE_ALL);
@@ -101,11 +100,11 @@ AICORE inline void DumpTensor(__gm__ T *src, uint32_t desc,
 
 template <typename Tile>
 AICORE inline void DumpTensor(Tile &, uint32_t, uint32_t, uint8_t,
-                                  const uint32_t[]) {}
+                              const uint32_t[]) {}
 
 template <typename T>
 AICORE inline void DumpTensor(__gm__ T *, uint32_t, uint32_t, uint8_t,
-                                  const uint32_t[]) {}
+                              const uint32_t[]) {}
 
 #endif // defined(_DEBUG) || defined(__CPU_SIM)
 
