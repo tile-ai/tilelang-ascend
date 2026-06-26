@@ -51,11 +51,11 @@ for each stage i from 0 to log2(n)-1:
 
 ```
 n ≤ block_size:
-  GM[A] → UB[data_ub] → 蝶形计算(块内串行) → GM[B]
+  GM[A] → UB[data_ub] → butterfly(intra-block serial) → GM[B]
 
 n > block_size:
-  GM[A] → UB[data_ub] → 蝶形计算(块内) → GM[B]
-  GM → UB[data_ub/data2_ub] → 蝶形计算(跨块配对) → GM[B]  （每级跨块调用一次 kernel）
+  GM[A] → UB[data_ub] → butterfly(intra-block) → GM[B]
+  GM → UB[data_ub/data2_ub] → butterfly(cross-block pair) → GM[B]  (one kernel call per stage)
 ```
 
 ---
@@ -151,10 +151,10 @@ def hadamard_block_intra(b, n, block_size, dtype):
 
                 data_ub = T.alloc_ub((block_size,), dtype)
 
-                # 1. 加载
+                # 1. Load
                 T.copy(A[batch_id, offset : offset + block_size], data_ub)
 
-                # 2. 块内串行蝶形
+                # 2. Intra-block serial butterfly
                 for stage in T.serial(log_block):
                     chunk_size = 1 << (stage + 1)
                     chunk_num = block_size // chunk_size
@@ -167,7 +167,7 @@ def hadamard_block_intra(b, n, block_size, dtype):
                             data_ub[base + k] = a_val + b_val
                             data_ub[base + k + half] = a_val - b_val
 
-                # 3. 写回
+                # 3. Write back
                 T.copy(data_ub, B[batch_id, offset : offset + block_size])
 
     return main
@@ -196,16 +196,16 @@ def hadamard_cross_block_pair(b, n, block_size, cross_stage, dtype):
             src_offset = chunk_id_in_batch * chunk_size
             dst_offset = src_offset + half
 
-            # 1. 加载配对两个 half
+            # 1. Load paired halves
             T.copy(A[batch_id, src_offset : src_offset + half], data_ub)
             T.copy(A[batch_id, dst_offset : dst_offset + half], data2_ub)
 
-            # 2. 蝶形加 + 写回上半
+            # 2. Butterfly add + write back upper half
             for k in T.serial(half):
                 tmp_ub[k] = data_ub[k] + data2_ub[k]
             T.copy(tmp_ub, B[batch_id, src_offset : src_offset + half])
 
-            # 3. 蝶形减 + 写回下半
+            # 3. Butterfly subtract + write back lower half
             for k in T.serial(half):
                 tmp_ub[k] = data_ub[k] - data2_ub[k]
             T.copy(tmp_ub, B[batch_id, dst_offset : dst_offset + half])
@@ -246,7 +246,7 @@ def hadamard_transform_complete(b, n, dtype="float", block_size=1024):
 | T.alloc_ub | tilelang/language/allocate.py | ✅ | 用于分配 UB 内存（Vector 缓冲），蝶形计算数据缓冲 |
 | T.copy | tilelang/language/copy.py | ✅ | GM↔UB 数据搬运 |
 | T.serial | tilelang/language | ✅ | 串行循环，用于蝶形迭代 |
-| T.Kernel | tilelang/language/kernel.py | ✅ | Kernel 定义，`is_npu=True`，返回 (cid, vid) |
+| T.Kernel | tilelang/language/kernel.py | ✅ | Kernel 定义，支持 threads 参数, 用法参考`with T.Kernel(..., threads=2, is_npu=True) as (cid):` |
 | T.ceildiv | tilelang/language | ✅ | 整除向上取整 |
 | T.barrier_all | tilelang/language/ascend.py | ✅ | 同步屏障（自动同步开启时由编译器插入） |
 
@@ -287,13 +287,13 @@ def hadamard_transform_complete(b, n, dtype="float", block_size=1024):
 ### 4.4 内存搬运路径
 
 ```
-块内蝶形:
-  GM[A] --T.copy--> UB[data_ub] --串行蝶形--> UB[data_ub] --T.copy--> GM[B]
+intra-block butterfly:
+  GM[A] --T.copy--> UB[data_ub] --serial butterfly--> UB[data_ub] --T.copy--> GM[B]
 
-跨块蝶形（每级一次 kernel）:
+cross-block butterfly (one kernel per stage):
   GM[A_src] --T.copy--> UB[data_ub]
   GM[A_dst] --T.copy--> UB[data2_ub]
-  UB[data_ub/data2_ub] --蝶形加减--> UB[tmp_ub] --T.copy--> GM[B_src/B_dst]
+  UB[data_ub/data2_ub] --butterfly add/sub--> UB[tmp_ub] --T.copy--> GM[B_src/B_dst]
 ```
 
 ### 4.5 UB 内存预算
@@ -349,12 +349,12 @@ def hadamard_block_intra(b, n, block_size, dtype="float"):
 ### 5.2 Block 划分
 
 ```python
-# block_size 为块内蝶形处理的元素数，须为 2 的幂次
-# n ≤ block_size: 单 kernel 完成全部蝶形
-# n > block_size: 块内蝶形 + 多级跨块蝶形
-block_size = 1024  # 默认值，受 UB 容量约束
+# block_size is the number of elements for intra-block butterfly, must be a power of 2
+# n ≤ block_size: single kernel completes all butterfly stages
+# n > block_size: intra-block butterfly + multi-stage cross-block butterfly
+block_size = 1024  # default, constrained by UB capacity
 num_blocks_per_batch = n // block_size
-total_blocks = b * num_blocks_per_batch  # 每个 Block 处理 block_size 个元素
+total_blocks = b * num_blocks_per_batch  # each Block processes block_size elements
 ```
 
 **选择理由**：
@@ -401,7 +401,7 @@ total_blocks = b * num_blocks_per_batch  # 每个 Block 处理 block_size 个元
 
 ### 6.2 循环伪代码
 
-**块内蝶形核心逻辑**：
+**Intra-block butterfly core logic**:
 ```python
 for stage in T.serial(log_block):       # log_block = log2(block_size)
     chunk_size = 1 << (stage + 1)
@@ -416,18 +416,18 @@ for stage in T.serial(log_block):       # log_block = log2(block_size)
             data_ub[base + k + half] = a_val - b_val
 ```
 
-**跨块蝶形核心逻辑**：
+**Cross-block butterfly core logic**:
 ```python
-# 加载配对两个 half
+# Load paired halves
 T.copy(A[batch_id, src_offset : src_offset + half], data_ub)
 T.copy(A[batch_id, dst_offset : dst_offset + half], data2_ub)
 
-# 蝶形加，写回上半
+# Butterfly add, write back upper half
 for k in T.serial(half):
     tmp_ub[k] = data_ub[k] + data2_ub[k]
 T.copy(tmp_ub, B[batch_id, src_offset : src_offset + half])
 
-# 蝶形减，写回下半
+# Butterfly subtract, write back lower half
 for k in T.serial(half):
     tmp_ub[k] = data_ub[k] - data2_ub[k]
 T.copy(tmp_ub, B[batch_id, dst_offset : dst_offset + half])
@@ -478,7 +478,7 @@ pass_configs = {
 
 ```python
 def ref_hadamard(x: torch.Tensor):
-    """基于 scipy 的参考实现"""
+    """Reference implementation based on scipy"""
     import scipy.linalg
     assert x.ndim == 2
     dim = x.shape[-1]
@@ -540,9 +540,9 @@ def ref_hadamard(x: torch.Tensor):
 
 ```
 examples/hadamard_transform/
-├── example_hadamard_transform.py  # 算子实现 + 简单测试
-├── design.md                      # 本设计文档
-└── README.md                      # 使用说明（可选）
+├── example_hadamard_transform.py  # operator implementation + basic tests
+├── design.md                      # this design document
+└── README.md                      # usage instructions (optional)
 ```
 
 ### 10.2 文件清单
@@ -614,12 +614,12 @@ examples/hadamard_transform/
 
 **示例：n=2048, block_size=1024**
 ```
-阶段 1 (Kernel 1): 前 10 级蝶形（块内）
-  Block 0: 处理元素 0-1023
-  Block 1: 处理元素 1024-2047
+Stage 1 (Kernel 1): first 10 butterfly stages (intra-block)
+  Block 0: processes elements 0-1023
+  Block 1: processes elements 1024-2047
   
-阶段 2 (Kernel 2): 第 11 级蝶形（跨块）
-  元素 0-1023 与元素 1024-2047 进行蝶形
+Stage 2 (Kernel 2): 11th butterfly stage (cross-block)
+  elements 0-1023 paired with elements 1024-2047 for butterfly
   a[i] + b[i], a[i] - b[i]
 ```
 
@@ -631,10 +631,10 @@ def hadamard_cross_block_pair(b, n, block_size, cross_stage, dtype):
     chunk_size = 1 << (cross_stage + 1)
     half = chunk_size // 2
 
-    # 每个 chunk 对应一个 Block
+    # Each chunk maps to one Block
     # src_offset = chunk_id * chunk_size
     # dst_offset = src_offset + half
-    # 蝶形: src 与 dst 配对
+    # Butterfly: src paired with dst
 ```
 
 ### 性能特性
