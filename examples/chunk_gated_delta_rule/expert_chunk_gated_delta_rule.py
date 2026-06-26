@@ -178,7 +178,6 @@ def chunk_gated_delta_rule_fwd_kernel(
                     T.copy(g[i_h, vec_global_start : vec_global_start + vec_chunk_len], g_chunk_ub[0, :])
                 T.pipe_barrier("mte2")
                 T.set_flag("mte2", "v", 0)
-                T.barrier_all()
 
                 for i in T.serial(NT_i):
                     pid = i % 2
@@ -217,7 +216,6 @@ def chunk_gated_delta_rule_fwd_kernel(
                         T.set_cross_flag("MTE3", SEM_H_V2C + j)
 
                     # save h[t]
-                    T.barrier_all()
                     for j in T.serial(2):
                         T.copy(h_state_ub[j, :, :], h[i_n, i, i_h, K // 2 * vid : K // 2 * vid + K // 2, j * V_half : (j + 1) * V_half])
 
@@ -301,7 +299,6 @@ def chunk_gated_delta_rule_fwd_kernel(
                         T.pipe_barrier("v")
                         T.copy(h_state_ub_float[j, :, :], h_state_ub[j, :, :])
 
-                    T.barrier_all()
                     T.set_flag("v", "mte3", 2)
                     T.wait_flag("v", "mte3", 2)
 
