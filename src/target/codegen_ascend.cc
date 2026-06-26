@@ -2344,6 +2344,17 @@ void CodeGenTileLangAscend::CopyCodegen(const CallNode *op) {
       this->stream << ", " << var_names[i];
     }
 
+    // copy_gm_to_l1: append a `need_clear` flag so the helper only zero-inits
+    // the full L1 tile for the primary copy (dst offset 0). Sub-region copies
+    // (non-zero dst offset, e.g. the second DMA of a splice / vertical-merge
+    // pattern) must skip the clear, otherwise they clobber data already written
+    // into the same NZ tile. dst_offset_expr is the scalar start offset of the
+    // destination tile; when it is 0 this DMA targets the tile base and is the
+    // natural owner of the tail-padding clear.
+    if (op_name.find("copy_gm_to_l1") != std::string::npos) {
+      this->stream << ", " << (is_zero(dst_offset_expr) ? "true" : "false");
+    }
+
     this->stream << ");\n";
   } else {
     this->PrintIndent();

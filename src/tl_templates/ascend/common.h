@@ -56,10 +56,17 @@ template <typename T, uint32_t dstM, uint32_t dstN>
 CATLASS_DEVICE void copy_gm_to_l1(LocalTensor<T> dstTensor,
                                   GlobalTensor<T> srcTensor,
                                   uint32_t realSrcN = 1, uint32_t realTailM = 0,
-                                  uint32_t realTailN = 0) {
+                                  uint32_t realTailN = 0,
+                                  bool need_clear = true) {
   uint32_t tailM = realTailM == 0 ? dstM : realTailM;
   uint32_t tailN = realTailN == 0 ? dstN : realTailN;
-  if (tailM != dstM || tailN != dstN) {
+  // Only the primary copy (dst offset 0, i.e. need_clear == true) is allowed to
+  // zero-init the full L1 tile. Sub-region copies (need_clear == false, e.g. the
+  // second DMA of a splice / vertical-merge pattern) must NOT clear, otherwise
+  // they clobber data already written into the same NZ tile. The full-tile clear
+  // is only correct when it targets the tile base, which the codegen guarantees
+  // by passing need_clear = (dst_offset == 0).
+  if (need_clear && (tailM != dstM || tailN != dstN)) {
     AscendC::InitConstValue(
         dstTensor,
         {1, static_cast<uint16_t>(dstM * dstN * sizeof(T) / 32), 0, 0});
