@@ -1427,13 +1427,11 @@ void CodeGenTileLangAscendPto::GemmV0Codegen(const CallNode *op) {
   std::string data_type_input = params["data_type_input"];
   this->stream << kAscendPtoScope << "gemm_v0" << "<"
                << params["data_type_input"] << ", "
-               << params["data_type_output"] << ", "
-               << GetValid16BytesShape(M) << ", "
-               << GetValid16BytesShape(N) << ", "
-               << GetValidShape(K, data_type_input) << ", "
-               << M << ", " << N << ", " << K
-               << ", " << kL0Tail << ", " << params["transpose_A"] << ", "
-               << params["transpose_B"] << ">" << "(";
+               << params["data_type_output"] << ", " << GetValid16BytesShape(M)
+               << ", " << GetValid16BytesShape(N) << ", "
+               << GetValidShape(K, data_type_input) << ", " << M << ", " << N
+               << ", " << K << ", " << kL0Tail << ", " << params["transpose_A"]
+               << ", " << params["transpose_B"] << ">" << "(";
   this->stream << a_name << ", " << b_name << ", " << c_name << ", "
                << PrintExpr(op->args[4]) << ");\n";
 }
