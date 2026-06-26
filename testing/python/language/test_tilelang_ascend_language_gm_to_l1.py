@@ -106,10 +106,12 @@ def full_copy_annotated(block_M, block_N, dim, dtype, accum_dtype):
             q_l1 = T.alloc_L1([block_M, dim], dtype)
             k_l1 = T.alloc_L1([block_N, dim], dtype)
             l0c = T.alloc_L0C([block_M, block_N], accum_dtype)
-            T.annotate_layout({
-                q_l1: make_zn_layout(q_l1),
-                k_l1: make_nz_layout(k_l1),
-            })
+            T.annotate_layout(
+                {
+                    q_l1: make_zn_layout(q_l1),
+                    k_l1: make_nz_layout(k_l1),
+                }
+            )
             T.copy(Q[0, :, :], q_l1[:, :])
             T.copy(K[0, :, :], k_l1[:, :])
             T.gemm_v0(q_l1, k_l1, l0c, transpose_B=True, init=True)
@@ -169,18 +171,24 @@ def run_test_full_copy_plain(M, N, K, block_M, block_N, K_L1, dtype, accum_dtype
     torch.testing.assert_close(c, ref, rtol=1e-2, atol=1e-2)
 
 
-@pytest.mark.parametrize("dtype,accum_dtype", [
-    ("bfloat16", "float32"),
-    ("float16", "float32"),
-])
+@pytest.mark.parametrize(
+    "dtype,accum_dtype",
+    [
+        ("bfloat16", "float32"),
+        ("float16", "float32"),
+    ],
+)
 def test_full_copy_annotated(dtype, accum_dtype):
     run_test_full_copy_annotated(64, 128, 128, dtype, accum_dtype)
 
 
-@pytest.mark.parametrize("dtype,accum_dtype", [
-    ("float16", "float"),
-    ("bfloat16", "float"),
-])
+@pytest.mark.parametrize(
+    "dtype,accum_dtype",
+    [
+        ("float16", "float"),
+        ("bfloat16", "float"),
+    ],
+)
 def test_full_copy_plain(dtype, accum_dtype):
     run_test_full_copy_plain(128, 128, 128, 128, 128, 128, dtype, accum_dtype)
 
@@ -206,9 +214,9 @@ def run_test_k_tail_gemm(M, N, K, block_M, block_N, K_L1, dtype, accum_dtype):
 
 # (M, N, K, block_M, block_N, K_L1) -- K deliberately non-divisible.
 k_tail_configs = [
-    (128, 128, 160, 128, 128, 64),   # K=160, last tile K=32 (half tile)
-    (128, 256, 96, 128, 256, 64),    # K=96,  last tile K=32
-    (128, 128, 176, 128, 128, 64),   # K=176, last tile K=48
+    (128, 128, 160, 128, 128, 64),  # K=160, last tile K=32 (half tile)
+    (128, 256, 96, 128, 256, 64),  # K=96,  last tile K=32
+    (128, 128, 176, 128, 128, 64),  # K=176, last tile K=48
 ]
 
 
@@ -242,10 +250,12 @@ def splice_2way_nz(block_M, block_N, dim, split, dtype, accum_dtype):
             q_l1 = T.alloc_L1([block_M, dim], dtype)
             k_l1 = T.alloc_L1([block_N, dim], dtype)
             l0c = T.alloc_L0C([block_M, block_N], accum_dtype)
-            T.annotate_layout({
-                q_l1: make_zn_layout(q_l1),
-                k_l1: make_nz_layout(k_l1),
-            })
+            T.annotate_layout(
+                {
+                    q_l1: make_zn_layout(q_l1),
+                    k_l1: make_nz_layout(k_l1),
+                }
+            )
             T.copy(Q[0, :, :], q_l1[:, :])
             T.copy(K_src0[0, :, :], k_l1[0:split, :])
             T.copy(K_src1[0, :, :], k_l1[split:block_N, :])
@@ -314,14 +324,16 @@ def splice_3way_tail(block_M, block_N, dim, s0, s1, s2, dtype, accum_dtype):
             q_l1 = T.alloc_L1([block_M, dim], dtype)
             k_l1 = T.alloc_L1([block_N, dim], dtype)
             l0c = T.alloc_L0C([block_M, block_N], accum_dtype)
-            T.annotate_layout({
-                q_l1: make_zn_layout(q_l1),
-                k_l1: make_nz_layout(k_l1),
-            })
+            T.annotate_layout(
+                {
+                    q_l1: make_zn_layout(q_l1),
+                    k_l1: make_nz_layout(k_l1),
+                }
+            )
             T.copy(Q[0, :, :], q_l1[:, :])
             T.copy(K_src0[0, :, :], k_l1[0:s0, :])
-            T.copy(K_src1[0, :, :], k_l1[s0:s0 + s1, :])
-            T.copy(K_src2[0, :, :], k_l1[s0 + s1:total, :])
+            T.copy(K_src1[0, :, :], k_l1[s0 : s0 + s1, :])
+            T.copy(K_src2[0, :, :], k_l1[s0 + s1 : total, :])
             T.gemm_v0(q_l1, k_l1, l0c, transpose_B=True, init=True)
             T.copy(l0c, S[0, :, :])
 
@@ -342,17 +354,17 @@ def run_test_splice_3way_tail(block_M, block_N, dim, s0, s1, s2, dtype, accum_dt
     # Reference: assemble full K with zero-padded tail
     k_full = torch.zeros(1, block_N, dim, dtype=td).npu().float()
     k_full[0, 0:s0, :] = k0[0].float()
-    k_full[0, s0:s0 + s1, :] = k1[0].float()
-    k_full[0, s0 + s1:s0 + s1 + s2, :] = k2[0].float()
+    k_full[0, s0 : s0 + s1, :] = k1[0].float()
+    k_full[0, s0 + s1 : s0 + s1 + s2, :] = k2[0].float()
     ref = torch.einsum("bqd,bkd->bqk", q.float(), k_full).to(torch.float32)
     torch.testing.assert_close(s, ref, rtol=1e-2, atol=1e-2)
 
 
 # (s0, s1, s2, block_N) -- total < block_N, tail must be zero-padded.
 splice_3way_configs = [
-    (48, 48, 24, 128),   # total=120, tail=8  (aligned groups + sub-group tail)
-    (32, 32, 32, 128),   # total=96,  tail=32 (clean group boundary)
-    (16, 16, 1, 128),    # total=33,  tail=95 (heavy tail, non-aligned last)
+    (48, 48, 24, 128),  # total=120, tail=8  (aligned groups + sub-group tail)
+    (32, 32, 32, 128),  # total=96,  tail=32 (clean group boundary)
+    (16, 16, 1, 128),  # total=33,  tail=95 (heavy tail, non-aligned last)
 ]
 
 
@@ -382,10 +394,12 @@ def splice_2way_zn(block_M, block_N, K, split, dtype, accum_dtype):
             a_l1 = T.alloc_L1([block_M, K], dtype)
             b_l1 = T.alloc_L1([K, block_N], dtype)
             l0c = T.alloc_L0C([block_M, block_N], accum_dtype)
-            T.annotate_layout({
-                a_l1: make_zn_layout(a_l1),
-                b_l1: make_zn_layout(b_l1),
-            })
+            T.annotate_layout(
+                {
+                    a_l1: make_zn_layout(a_l1),
+                    b_l1: make_zn_layout(b_l1),
+                }
+            )
             T.copy(A_src0[0, :, :], a_l1[0:split, :])
             T.copy(A_src1[0, :, :], a_l1[split:block_M, :])
             T.copy(B[0, :, :], b_l1[:, :])
@@ -442,10 +456,12 @@ def splice_with_k_tail(block_M, block_N, dim, split, K_L1, dtype, accum_dtype):
             q_l1 = T.alloc_L1([block_M, K_L1], dtype)
             k_l1 = T.alloc_L1([block_N, K_L1], dtype)
             l0c = T.alloc_L0C([block_M, block_N], accum_dtype)
-            T.annotate_layout({
-                q_l1: make_zn_layout(q_l1),
-                k_l1: make_nz_layout(k_l1),
-            })
+            T.annotate_layout(
+                {
+                    q_l1: make_zn_layout(q_l1),
+                    k_l1: make_nz_layout(k_l1),
+                }
+            )
             loop_k = T.ceildiv(dim, K_L1)
             for k in T.serial(loop_k):
                 T.copy(Q[0, k * K_L1], q_l1[:, :])
@@ -474,8 +490,8 @@ def run_test_splice_with_k_tail(block_M, block_N, dim, split, K_L1, dtype, accum
 
 # dim (=K) is non-divisible by K_L1; split divides N.
 splice_ktail_configs = [
-    (64, 128, 160, 64, 64),   # K=160, K_L1=64, last K-tile=32; split=64
-    (64, 128, 96, 64, 32),    # K=96,  K_L1=32, last K-tile=32; split=64
+    (64, 128, 160, 64, 64),  # K=160, K_L1=64, last K-tile=32; split=64
+    (64, 128, 96, 64, 32),  # K=96,  K_L1=32, last K-tile=32; split=64
 ]
 
 
