@@ -804,8 +804,6 @@ CATLASS_DEVICE void tail_reduce_sum(LocalTensor<T> out, LocalTensor<T> src,
                                     uint32_t physCol, bool clear) {
   if (validRow == 0 || validCol == 0)
     return;
-  constexpr uint32_t vl = 256 / sizeof(T);
-  constexpr uint32_t blk = 32 / sizeof(T);
   if (dim == 0) {
     uint32_t r0 = 0;
     if (clear) {
@@ -817,28 +815,31 @@ CATLASS_DEVICE void tail_reduce_sum(LocalTensor<T> out, LocalTensor<T> src,
     }
     return;
   }
-  uint32_t srcRepStride = physCol / blk;
-  bool narrow = validCol <= vl && validRow <= 255 && (physCol % blk == 0) &&
-                srcRepStride <= 255;
-  auto work = tmp.template ReinterpretCast<T>();
-  // Per-row reductions land in `dstResult`: `out` directly when clearing,
-  // otherwise a contiguous scratch that is then merged into the old `out`.
-  LocalTensor<T> dstResult = clear ? out : work;
-  if (narrow) {
-    AscendC::WholeReduceSum<T>(dstResult, src, static_cast<int32_t>(validCol),
-                               static_cast<int32_t>(validRow), 1, 1,
-                               static_cast<int32_t>(srcRepStride));
+  // dim == -1: reduce each row over its valid columns -> out[0..validRow).
+  // Use the proven Pattern-AR reduce: one contiguous block reduce when
+  // validCol == physCol, otherwise per-row (each row is contiguous internally).
+  // clear == false is handled by backing up the old result and merging.
+  constexpr uint32_t kTailMaxRows = 256;
+  T backup[kTailMaxRows];
+  bool merge = (!clear) && (validRow <= kTailMaxRows);
+  if (merge) {
+    for (uint32_t r = 0; r < validRow; ++r)
+      backup[r] = out.GetValue(r);
+  }
+  if (validCol == physCol) {
+    uint32_t shape[2] = {validRow, validCol};
+    AscendC::ReduceSum<T, AscendC::Pattern::Reduce::AR>(out, src, tmp, shape,
+                                                        true);
   } else {
-    // For !clear keep results in work[0..validRow) and use work[validRow..] as
-    // the per-row reduce scratch.
-    LocalTensor<T> scratch = clear ? work : work[validRow];
+    uint32_t rshape[2] = {1, validCol};
     for (uint32_t r = 0; r < validRow; ++r) {
-      AscendC::ReduceSum<T>(dstResult[r], src[r * physCol], scratch,
-                            static_cast<int32_t>(validCol));
+      AscendC::ReduceSum<T, AscendC::Pattern::Reduce::AR>(
+          out[r], src[r * physCol], tmp, rshape, true);
     }
   }
-  if (!clear) {
-    AscendC::Add(out, out, work, static_cast<int32_t>(validRow));
+  if (merge) {
+    for (uint32_t r = 0; r < validRow; ++r)
+      out.SetValue(r, static_cast<T>(out.GetValue(r) + backup[r]));
   }
 }
 
@@ -849,8 +850,6 @@ CATLASS_DEVICE void tail_reduce_max(LocalTensor<T> out, LocalTensor<T> src,
                                     uint32_t physCol, bool clear) {
   if (validRow == 0 || validCol == 0)
     return;
-  constexpr uint32_t vl = 256 / sizeof(T);
-  constexpr uint32_t blk = 32 / sizeof(T);
   if (dim == 0) {
     uint32_t r0 = 0;
     if (clear) {
@@ -862,24 +861,28 @@ CATLASS_DEVICE void tail_reduce_max(LocalTensor<T> out, LocalTensor<T> src,
     }
     return;
   }
-  uint32_t srcRepStride = physCol / blk;
-  bool narrow = validCol <= vl && validRow <= 255 && (physCol % blk == 0) &&
-                srcRepStride <= 255;
-  auto work = tmp.template ReinterpretCast<T>();
-  LocalTensor<T> dstResult = clear ? out : work;
-  if (narrow) {
-    AscendC::WholeReduceMax<T>(dstResult, src, static_cast<int32_t>(validCol),
-                               static_cast<int32_t>(validRow), 1, 1,
-                               static_cast<int32_t>(srcRepStride));
+  // dim == -1: reduce each row over its valid columns (Pattern-AR).
+  constexpr uint32_t kTailMaxRows = 256;
+  T backup[kTailMaxRows];
+  bool merge = (!clear) && (validRow <= kTailMaxRows);
+  if (merge) {
+    for (uint32_t r = 0; r < validRow; ++r)
+      backup[r] = out.GetValue(r);
+  }
+  if (validCol == physCol) {
+    uint32_t shape[2] = {validRow, validCol};
+    AscendC::ReduceMax<T, AscendC::Pattern::Reduce::AR>(out, src, tmp, shape,
+                                                        true);
   } else {
-    LocalTensor<T> scratch = clear ? work : work[validRow];
+    uint32_t rshape[2] = {1, validCol};
     for (uint32_t r = 0; r < validRow; ++r) {
-      AscendC::ReduceMax<T>(dstResult[r], src[r * physCol], scratch,
-                            static_cast<int32_t>(validCol));
+      AscendC::ReduceMax<T, AscendC::Pattern::Reduce::AR>(
+          out[r], src[r * physCol], tmp, rshape, true);
     }
   }
-  if (!clear) {
-    AscendC::Max(out, out, work, static_cast<int32_t>(validRow));
+  if (merge) {
+    for (uint32_t r = 0; r < validRow; ++r)
+      out.SetValue(r, reduce_scalar_max_safe(out.GetValue(r), backup[r]));
   }
 }
 
@@ -890,8 +893,6 @@ CATLASS_DEVICE void tail_reduce_min(LocalTensor<T> out, LocalTensor<T> src,
                                     uint32_t physCol, bool clear) {
   if (validRow == 0 || validCol == 0)
     return;
-  constexpr uint32_t vl = 256 / sizeof(T);
-  constexpr uint32_t blk = 32 / sizeof(T);
   if (dim == 0) {
     uint32_t r0 = 0;
     if (clear) {
@@ -903,24 +904,28 @@ CATLASS_DEVICE void tail_reduce_min(LocalTensor<T> out, LocalTensor<T> src,
     }
     return;
   }
-  uint32_t srcRepStride = physCol / blk;
-  bool narrow = validCol <= vl && validRow <= 255 && (physCol % blk == 0) &&
-                srcRepStride <= 255;
-  auto work = tmp.template ReinterpretCast<T>();
-  LocalTensor<T> dstResult = clear ? out : work;
-  if (narrow) {
-    AscendC::WholeReduceMin<T>(dstResult, src, static_cast<int32_t>(validCol),
-                               static_cast<int32_t>(validRow), 1, 1,
-                               static_cast<int32_t>(srcRepStride));
+  // dim == -1: reduce each row over its valid columns (Pattern-AR).
+  constexpr uint32_t kTailMaxRows = 256;
+  T backup[kTailMaxRows];
+  bool merge = (!clear) && (validRow <= kTailMaxRows);
+  if (merge) {
+    for (uint32_t r = 0; r < validRow; ++r)
+      backup[r] = out.GetValue(r);
+  }
+  if (validCol == physCol) {
+    uint32_t shape[2] = {validRow, validCol};
+    AscendC::ReduceMin<T, AscendC::Pattern::Reduce::AR>(out, src, tmp, shape,
+                                                        true);
   } else {
-    LocalTensor<T> scratch = clear ? work : work[validRow];
+    uint32_t rshape[2] = {1, validCol};
     for (uint32_t r = 0; r < validRow; ++r) {
-      AscendC::ReduceMin<T>(dstResult[r], src[r * physCol], scratch,
-                            static_cast<int32_t>(validCol));
+      AscendC::ReduceMin<T, AscendC::Pattern::Reduce::AR>(
+          out[r], src[r * physCol], tmp, rshape, true);
     }
   }
-  if (!clear) {
-    AscendC::Min(out, out, work, static_cast<int32_t>(validRow));
+  if (merge) {
+    for (uint32_t r = 0; r < validRow; ++r)
+      out.SetValue(r, reduce_scalar_min_safe(out.GetValue(r), backup[r]));
   }
 }
 
