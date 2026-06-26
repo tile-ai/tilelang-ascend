@@ -55,6 +55,29 @@ Scenarios covered (all GM -> L1, target = ascendc)
   Group 5 - 2-way vertical splice (zN layout, transpose_B=False):
       Same splice pattern but with zN layout on the spliced buffer (A matrix,
       M-dimension split) and a non-transposed GEMM.
+
+  Group 7 - Dynamic batch + dynamic split (symbolic batch & split):
+      Mirrors Group 3 but with batch = T.symbolic("batch") and
+      split = T.symbolic("split").  Both the batch loop and the splice offset
+      are runtime variables, so need_clear = (split == 0) is a runtime
+      expression evaluated inside the dynamic batch loop.  Verifies that the
+      splice clear logic (need_clear per copy) works correctly when iterated
+      over a runtime-determined batch dimension with a runtime-determined
+      splice offset.
+
+  Group 8 - Dynamic K K-tail GEMM (symbolic K):
+      Mirrors Group 2 but with K = T.symbolic("K").  The K dimension is not
+      known at compile time, so the K-tail clearing (realTailN, need_clear) must
+      be evaluated at runtime.  Verifies the clearing mechanism with a dynamic
+      reduction dimension.
+
+  Group 9 - Dynamic split splice (symbolic split):
+      Mirrors Group 3 but with split = T.symbolic("split").  The splice offset
+      itself is a runtime variable, so need_clear = (split == 0) is a runtime
+      expression.  The kernel is compiled once and called with multiple split
+      values to verify the dynamic need_clear path.  This is the most direct
+      test of the bug fix: the second copy must not clear regardless of the
+      runtime split value.
 """
 
 TARGET = "ascendc"
@@ -365,6 +388,7 @@ splice_3way_configs = [
     (48, 48, 24, 128),  # total=120, tail=8  (aligned groups + sub-group tail)
     (32, 32, 32, 128),  # total=96,  tail=32 (clean group boundary)
     (16, 16, 1, 128),  # total=33,  tail=95 (heavy tail, non-aligned last)
+    (32, 32, 17, 128),  # total=81,  tail=47 (non-aligned last)
 ]
 
 
@@ -498,6 +522,226 @@ splice_ktail_configs = [
 @pytest.mark.parametrize("block_M,block_N,dim,split,K_L1", splice_ktail_configs)
 def test_splice_with_k_tail(block_M, block_N, dim, split, K_L1):
     run_test_splice_with_k_tail(block_M, block_N, dim, split, K_L1, "float16", "float")
+
+
+# =============================================================================
+# Group 7 - Dynamic batch + dynamic split (symbolic batch & split) [risk: high]
+# Mirrors Group 3 but with batch = T.symbolic("batch") and
+# split = T.symbolic("split").  Both the batch loop and the splice offset are
+# runtime variables, so need_clear = (split == 0) is a runtime expression
+# evaluated inside the dynamic batch loop.  This verifies that the splice clear
+# logic (need_clear per copy) works correctly when the kernel body is iterated
+# over a runtime-determined batch dimension with a runtime-determined splice
+# offset.
+# =============================================================================
+def splice_2way_nz_dynamic_batch(block_M, block_N, dim, split, dtype, accum_dtype):
+    """nZ-layout splice with transpose_B=True and symbolic batch & split.
+
+    Both the splice split and the batch dimension are T.symbolic variables;
+    the batch dimension is iterated via T.serial(batch), and the split offset
+    (hence need_clear = (split == 0)) is a runtime expression."""
+
+    batch = T.symbolic("batch")
+    split = T.symbolic("split")
+
+    @T.prim_func
+    def main(
+        Q: T.Tensor([batch, block_M, dim], dtype),  # type: ignore
+        K_src0: T.Tensor([batch, split, dim], dtype),  # type: ignore
+        K_src1: T.Tensor([batch, block_N - split, dim], dtype),  # type: ignore
+        S: T.Tensor([batch, block_M, block_N], accum_dtype),  # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (cid, vid):
+            q_l1 = T.alloc_L1([block_M, dim], dtype)
+            k_l1 = T.alloc_L1([block_N, dim], dtype)
+            l0c = T.alloc_L0C([block_M, block_N], accum_dtype)
+            T.annotate_layout(
+                {
+                    q_l1: make_zn_layout(q_l1),
+                    k_l1: make_nz_layout(k_l1),
+                }
+            )
+            for b_i in T.serial(batch):
+                T.copy(Q[b_i, :, :], q_l1[:, :])
+                T.copy(K_src0[b_i, :, :], k_l1[0:split, :])
+                T.copy(K_src1[b_i, :, :], k_l1[split:block_N, :])
+                T.gemm_v0(q_l1, k_l1, l0c, transpose_B=True, init=True)
+                T.copy(l0c, S[b_i, :, :])
+
+    return main
+
+
+def run_test_splice_2way_nz_dynamic_batch(block_M, block_N, dim, split, batch, dtype, accum_dtype):
+    torch.manual_seed(0)
+    func = splice_2way_nz_dynamic_batch(block_M, block_N, dim, split, dtype, accum_dtype)
+    func = tilelang.compile(func, out_idx=[-1], pass_configs=DEV_CONFIGS, target=TARGET)
+    td = _torch_dtype(dtype)
+    q = torch.randn(batch, block_M, dim, dtype=td).npu()
+    k_src0 = torch.randn(batch, split, dim, dtype=td).npu()
+    k_src1 = torch.randn(batch, block_N - split, dim, dtype=td).npu()
+    torch.npu.synchronize()
+    s = func(q, k_src0, k_src1)
+    k_full = torch.cat([k_src0, k_src1], dim=1).float()
+    ref = torch.einsum("bqd,bkd->bqk", q.float(), k_full).to(torch.float32)
+    torch.testing.assert_close(s, ref, rtol=1e-2, atol=1e-2)
+
+
+@pytest.mark.parametrize("batch", [1, 2, 3])
+@pytest.mark.parametrize("split", [11, 32, 57, 96])
+def test_splice_2way_nz_dynamic_batch(batch, split):
+    run_test_splice_2way_nz_dynamic_batch(64, 128, 128, split, batch, "bfloat16", "float32")
+
+
+# =============================================================================
+# Group 8 - Dynamic K K-tail GEMM (symbolic K)            [risk: medium]
+# Mirrors Group 2 but with K = T.symbolic("K").  The K dimension is not known
+# at compile time, so ceildiv(K, K_L1) and the last-tail realTailN are runtime
+# expressions.  The clearing mechanism (need_clear == true for offset-0 copies)
+# must zero-pad the K-tail at runtime so that 0 * B = 0 keeps the matmul correct.
+# =============================================================================
+def full_copy_plain_dynamic_k(M, N, block_M, block_N, K_L1, dtype, accum_dtype):
+    """Plain GEMM with symbolic K (default zN), transpose_B=False.
+
+    K is a T.symbolic variable; the K-loop bound and K-tail clearing are
+    evaluated at runtime."""
+
+    K = T.symbolic("K")
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((M, K), dtype),  # type: ignore
+        B: T.Tensor((K, N), dtype),  # type: ignore
+        C: T.Tensor((M, N), dtype),  # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (cid, _):
+            A_L1 = T.alloc_L1((block_M, K_L1), dtype)
+            B_L1 = T.alloc_L1((K_L1, block_N), dtype)
+            C_L0 = T.alloc_L0C((block_M, block_N), accum_dtype)
+            with T.Scope("C"):
+                loop_k = T.ceildiv(K, K_L1)
+                for k in T.serial(loop_k):
+                    T.copy(A[0, k * K_L1], A_L1)
+                    T.copy(B[k * K_L1, 0], B_L1)
+                    T.gemm_v0(A_L1, B_L1, C_L0, init=(k == 0))
+                T.copy(C_L0, C[0, 0])
+
+    return main
+
+
+def run_test_k_tail_gemm_dynamic_k(M, N, K, block_M, block_N, K_L1, dtype, accum_dtype):
+    torch.manual_seed(0)
+    func = full_copy_plain_dynamic_k(M, N, block_M, block_N, K_L1, dtype, accum_dtype)
+    func = tilelang.compile(func, out_idx=[-1], pass_configs=CUBE_CONFIGS, target=TARGET)
+    td = _torch_dtype(dtype)
+    a = torch.randn(M, K, dtype=td).npu()
+    b = torch.randn(K, N, dtype=td).npu()
+    torch.npu.synchronize()
+    c = func(a, b)
+    ref = a @ b
+    torch.testing.assert_close(c, ref, rtol=1e-2, atol=1e-2)
+
+
+# K is symbolic; values are non-divisible by K_L1 to exercise the K-tail.
+dynamic_k_configs = [
+    (128, 128, 160, 128, 128, 64),  # K=160, last tile K=32
+    (128, 256, 96, 128, 256, 64),  # K=96,  last tile K=32
+    (128, 128, 176, 128, 128, 64),  # K=176, last tile K=48
+]
+
+
+@pytest.mark.parametrize("M,N,K,block_M,block_N,K_L1", dynamic_k_configs)
+def test_k_tail_gemm_dynamic_k(M, N, K, block_M, block_N, K_L1):
+    run_test_k_tail_gemm_dynamic_k(M, N, K, block_M, block_N, K_L1, "float16", "float")
+
+
+# =============================================================================
+# Group 9 - Dynamic split splice (symbolic split)          [risk: high]
+# Mirrors Group 3 but with split = T.symbolic("split").  The splice offset
+# itself is a runtime variable, so need_clear = (split == 0) is a runtime
+# expression in the generated code.  The kernel is compiled ONCE with the
+# symbolic split and then called with multiple concrete split values, verifying
+# that the second copy correctly skips the clear for any non-zero runtime split.
+# =============================================================================
+def splice_2way_nz_dynamic_split(block_M, block_N, dim, dtype, accum_dtype):
+    """nZ-layout splice with transpose_B=True and a symbolic split.
+
+    The split point is a T.symbolic variable; both K_src0 and K_src1 have
+    dynamic shapes ([1, split, dim] and [1, block_N - split, dim]).  At runtime,
+    split is bound from K_src0's first dimension.  The need_clear flag for the
+    second copy becomes (split == 0), evaluated at runtime."""
+
+    split = T.symbolic("split")
+
+    @T.prim_func
+    def main(
+        Q: T.Tensor([1, block_M, dim], dtype),  # type: ignore
+        K_src0: T.Tensor([1, split, dim], dtype),  # type: ignore
+        K_src1: T.Tensor([1, block_N - split, dim], dtype),  # type: ignore
+        S: T.Tensor([1, block_M, block_N], accum_dtype),  # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (cid, vid):
+            q_l1 = T.alloc_L1([block_M, dim], dtype)
+            k_l1 = T.alloc_L1([block_N, dim], dtype)
+            l0c = T.alloc_L0C([block_M, block_N], accum_dtype)
+            T.annotate_layout(
+                {
+                    q_l1: make_zn_layout(q_l1),
+                    k_l1: make_nz_layout(k_l1),
+                }
+            )
+            T.copy(Q[0, :, :], q_l1[:, :])
+            T.copy(K_src0[0, :, :], k_l1[0:split, :])
+            T.copy(K_src1[0, :, :], k_l1[split:block_N, :])
+            T.gemm_v0(q_l1, k_l1, l0c, transpose_B=True, init=True)
+            T.copy(l0c, S[0, :, :])
+
+    return main
+
+
+def run_test_splice_2way_nz_dynamic_split(block_M, block_N, dim, split, dtype, accum_dtype):
+    torch.manual_seed(0)
+    func = splice_2way_nz_dynamic_split(block_M, block_N, dim, dtype, accum_dtype)
+    func = tilelang.compile(func, out_idx=[-1], pass_configs=DEV_CONFIGS, target=TARGET)
+    td = _torch_dtype(dtype)
+    q = torch.randn(1, block_M, dim, dtype=td).npu()
+    k_src0 = torch.randn(1, split, dim, dtype=td).npu()
+    k_src1 = torch.randn(1, block_N - split, dim, dtype=td).npu()
+    torch.npu.synchronize()
+    s = func(q, k_src0, k_src1)
+    k_full = torch.cat([k_src0, k_src1], dim=1).float()
+    ref = torch.einsum("bqd,bkd->bqk", q.float(), k_full).to(torch.float32)
+    torch.testing.assert_close(s, ref, rtol=1e-2, atol=1e-2)
+
+
+@pytest.mark.parametrize("split", [16, 32, 64, 96, 127])
+def test_splice_2way_nz_dynamic_split(split):
+    run_test_splice_2way_nz_dynamic_split(64, 128, 128, split, "bfloat16", "float32")
+
+
+def test_splice_2way_nz_dynamic_split_multi():
+    """Compile once with symbolic split, then call with multiple runtime values.
+
+    This is the strongest test of the dynamic need_clear path: a single compiled
+    kernel (with split as a symbolic variable) is invoked with several concrete
+    split values.  Each invocation exercises the runtime (split == 0) check in
+    the second copy's need_clear flag."""
+    block_M, block_N, dim = 64, 128, 128
+    dtype, accum_dtype = "bfloat16", "float32"
+
+    func = splice_2way_nz_dynamic_split(block_M, block_N, dim, dtype, accum_dtype)
+    func = tilelang.compile(func, out_idx=[-1], pass_configs=DEV_CONFIGS, target=TARGET)
+    td = _torch_dtype(dtype)
+
+    for split in [16, 32, 64, 96, 127]:
+        torch.manual_seed(0)
+        q = torch.randn(1, block_M, dim, dtype=td).npu()
+        k_src0 = torch.randn(1, split, dim, dtype=td).npu()
+        k_src1 = torch.randn(1, block_N - split, dim, dtype=td).npu()
+        torch.npu.synchronize()
+        s = func(q, k_src0, k_src1)
+        k_full = torch.cat([k_src0, k_src1], dim=1).float()
+        ref = torch.einsum("bqd,bkd->bqk", q.float(), k_full).to(torch.float32)
+        torch.testing.assert_close(s, ref, rtol=1e-2, atol=1e-2)
 
 
 if __name__ == "__main__":
