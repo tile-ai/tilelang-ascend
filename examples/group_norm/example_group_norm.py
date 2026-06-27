@@ -25,9 +25,7 @@ CAST_HIGH2LOW = "CAST_RINT"
 
 
 @tilelang.jit(out_idx=[3], pass_configs=pass_configs)
-def group_norm_kernel_serial(
-    N, G, cpg_padded, S_padded, block_S, s_num, eps=1e-5, cpg=0, S_orig=0, dtype="float32"
-):
+def group_norm_kernel_serial(N, G, cpg_padded, S_padded, block_S, s_num, eps=1e-5, cpg=0, S_orig=0, dtype="float32"):
     """Original serial kernel: T.serial + double-buffer + MTE2/V/MTE3 3-stage."""
     block_num = N * G
     tile_elem = cpg * block_S
@@ -154,8 +152,10 @@ def group_norm_kernel_serial(
                         T.wait_flag("mte2", "v", cur)
                         if use_fp32:
                             T.tile.cast(
-                                data_cal_p2, data_buf_p2[cur, :, :],
-                                CAST_LOW2HIGH, tile_elem,
+                                data_cal_p2,
+                                data_buf_p2[cur, :, :],
+                                CAST_LOW2HIGH,
+                                tile_elem,
                             )
                         else:
                             T.copy(data_buf_p2[cur, :, :], data_cal_p2)
@@ -165,8 +165,10 @@ def group_norm_kernel_serial(
                         T.tile.add(data_cal_p2, data_cal_p2, beta_bc)
                         if use_fp32:
                             T.tile.cast(
-                                out_buf_p2[cur, :, :], data_cal_p2,
-                                CAST_HIGH2LOW, tile_elem,
+                                out_buf_p2[cur, :, :],
+                                data_cal_p2,
+                                CAST_HIGH2LOW,
+                                tile_elem,
                             )
                         else:
                             T.copy(data_cal_p2, out_buf_p2[cur, :, :])
@@ -187,7 +189,15 @@ def group_norm_kernel_serial(
 
 @tilelang.jit(out_idx=[3], pass_configs=pass_configs)
 def group_norm_kernel_cpipeline(
-    N, G, cpg_padded, S_padded, block_S, eps=1e-5, cpg=0, S_orig=0, dtype="float32",
+    N,
+    G,
+    cpg_padded,
+    S_padded,
+    block_S,
+    eps=1e-5,
+    cpg=0,
+    S_orig=0,
+    dtype="float32",
 ):
     """Cpipeline kernel: s_num==1 + T.Pipelined + parity-split + cpg-dim pipeline."""
     # Force block_C=128 max to ensure 2-tile pipeline even when block_S=1
@@ -237,9 +247,6 @@ def group_norm_kernel_cpipeline(
                 beta_bc_full = T.alloc_ub([cpg_padded, block_S], cal_dtype)
                 gamma_bc = T.alloc_ub([cpg, block_S], cal_dtype)
                 beta_bc = T.alloc_ub([cpg, block_S], cal_dtype)
-                data_buf_p2 = T.alloc_ub([2, cpg, block_S], dtype)
-                data_cal_p2 = T.alloc_ub([cpg, block_S], cal_dtype)
-                out_buf_p2 = T.alloc_ub([2, cpg, block_S], dtype)
 
                 with T.Scope("V"):
                     T.tile.fill(sum_a, 0.0)
@@ -451,7 +458,7 @@ def group_norm(x, gamma, beta, num_groups, eps=1e-5):
     block_C = ((block_C // 16) * 16) if s_num == 1 else 0
     block_C = max(16, min(cpg, block_C)) if s_num == 1 else 0
     cpg_full_tiles = (cpg // block_C) if s_num == 1 else 0
-    use_cpipeline = (s_num == 1 and cpg_full_tiles >= 2)
+    use_cpipeline = s_num == 1 and cpg_full_tiles >= 2
 
     x_4d = x.reshape(N, num_groups, cpg, S)
     gamma_2d = gamma.reshape(num_groups, cpg)
@@ -459,15 +466,11 @@ def group_norm(x, gamma, beta, num_groups, eps=1e-5):
 
     if use_cpipeline:
         # Only pad when S < block_S to match kernel's memory access pattern
-        if S < block_S:
+        if block_S > S:
             x_4d = torch.nn.functional.pad(x_4d, (0, block_S - S))
-        func = group_norm_kernel_cpipeline(
-            N, num_groups, cpg_padded, S_padded, block_S, eps, cpg, S, dtype_str
-        )
+        func = group_norm_kernel_cpipeline(N, num_groups, cpg_padded, S_padded, block_S, eps, cpg, S, dtype_str)
     else:
-        func = group_norm_kernel_serial(
-            N, num_groups, cpg_padded, S_padded, block_S, s_num, eps, cpg, S, dtype_str
-        )
+        func = group_norm_kernel_serial(N, num_groups, cpg_padded, S_padded, block_S, s_num, eps, cpg, S, dtype_str)
     y_4d = func(x_4d, gamma_2d, beta_2d)
 
     y_4d = y_4d[:, :, :, :S]
@@ -477,9 +480,7 @@ def group_norm(x, gamma, beta, num_groups, eps=1e-5):
 def golden_group_norm(x, gamma, beta, num_groups, eps=1e-5):
     """PyTorch reference implementation."""
     if x.ndim == 2:
-        return torch.nn.functional.group_norm(
-            x.unsqueeze(-1), num_groups, gamma, beta, eps
-        ).squeeze(-1)
+        return torch.nn.functional.group_norm(x.unsqueeze(-1), num_groups, gamma, beta, eps).squeeze(-1)
     return torch.nn.functional.group_norm(x, num_groups, gamma, beta, eps)
 
 
