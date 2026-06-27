@@ -9,6 +9,7 @@
 | Pass 名称 | 注册名 | Python 函数 | C++ 文件 | 配置键 |
 |-----------|--------|-------------|---------|--------|
 | AscendSyncInsert | tl.transform.AscendSyncInsert | `AscendSyncInsert(target, platform)` | `ascend_sync_insert.cc` | `tl.ascend_auto_sync` |
+| AscendSyncInsertVS | tl.transform.AscendSyncInsertVS | `AscendSyncInsertVS(target, platform)` | `ascend_sync_insert_vs.cc` | `tl.ascend_auto_sync_vs` |
 | AscendMemoryPlanning | tl.transform.AscendMemoryPlanning | `AscendMemoryPlanning()` | `ascend_memory_planning.cc` | `tl.ascend_memory_planning` |
 | CombineCV | tl.transform.CombineCV | `CombineCV()` | `ascend_combinecv.cc` | `tl.ascend_auto_cv_combine` |
 | CrossCorePipeline | tl.transform.CrossCorePipeline | `CrossCorePipeline()` | `cross_core_pipeline.cc` | `tl.ascend_auto_cross_core_sync` |
@@ -44,6 +45,33 @@
 - `EventPair_<src>_<dst>` - 跨 pipeline 同步（共26种组合，见 operation_config.h:264-300）
 
 **功能简述：** 通过循环展开分析内存依赖，在 VisitStmt_(EvaluateNode) 中完成依赖检测、同步选择和插入，确保多 pipeline 异步执行的正确性。
+
+---
+
+### AscendSyncInsertVS
+
+**核心类：** `AscendSyncInsertVS` (继承 `arith::IRMutatorWithAnalyzer`) + 嵌套类 `BufferLoadCollector` (继承 `ExprVisitor`)
+
+**核心方法：**
+- `Substitute()` - Pass 入口，读取 `tl.ascend_auto_sync_vs` 配置，初始化 address_map/size_map
+- `VisitStmt_(EvaluateNode)` - 处理 `T.tile.xxx` lowering 后的 `Evaluate(Call)` 语句
+- `VisitStmt_(BufferStoreNode)` - 处理标量赋值，通过 `ScanBufferLoads(op->value)` 收集 RHS 中的 BufferLoad
+- `ScanBufferLoads()` - 基于 `BufferLoadCollector`（ExprVisitor）递归遍历表达式树，收集所有嵌套的 BufferLoad 读访问
+- `AnalyzeStmtAccesses()` - 基于 `OperationConfig` 分析 Call 语句的 buffer 读写
+- `FindRelatedBuffers()` - 基于 address_map 查找地址重叠的 buffer
+- `HasDataDependency()` - 判断 prev/curr 是否存在数据依赖（共享内存 + 读写冲突）
+- `GetRequiredSyncType()` - 根据依赖类型选择 `PipeBarrier_<pipeline>` 或 `EventPair_<src>_<dst>`
+
+**同步类型：**
+- `PipeBarrier_V` - V→V 同流水线同步
+- `EventPair_V_S` / `EventPair_S_V` - V 与 S 之间的跨流水线同步
+- `EventPair_S_MTE3` / `EventPair_MTE2_S` - S 与 MTE2/MTE3 之间的跨流水线同步
+
+**跟踪的流水线：** `PIPE_V` / `PIPE_S` / `PIPE_MTE2` / `PIPE_MTE3`（PIPE_M/MTE1/FIX 透明穿透）
+
+**与 AscendSyncInsert 的关系：** 互补协同，非互斥。`AscendSyncInsert` 处理 MTE2→V、V→MTE3 等部分跨流水线依赖及 `PIPE_ALL` barrier，但不覆盖 V→V 同流水线与 S↔其他 场景；`AscendSyncInsertVS` 精准补位这两类盲区。Pipeline 中 `AscendSyncInsert` 先执行、`AscendSyncInsertVS` 后执行补位，二者可同时开启。纯 V/S 算子可只开 VS（配套 `TL_CCE_AUTO_SYNC=off`）。开启 VS 时需配套设置环境变量 `TL_CCE_AUTO_SYNC=off` 关闭 CCE 编译器自带同步。
+
+**功能简述：** 基于 `IRMutatorWithAnalyzer` 遍历 IR，通过 `BufferLoadCollector` 收集表达式中的 buffer 读访问，结合 `address_map`/`size_map` 检测跨流水线数据依赖，在依赖点插入 `PipeBarrier` 或 `EventPair` 同步指令。
 
 ---
 
@@ -173,6 +201,7 @@ tilelang_root → 创建两个 Emitter(is_aiv=true/false)
 | 配置键 | 默认值 | 说明 |
 |--------|--------|------|
 | `tl.ascend_auto_sync` | `false` | 启用 AscendSyncInsert |
+| `tl.ascend_auto_sync_vs` | `false` | 启用 AscendSyncInsertVS（与 `tl.ascend_auto_sync` 互补协同，可同开；需配套 `TL_CCE_AUTO_SYNC=off`）|
 | `tl.ascend_memory_planning` | `false` | 启用 AscendMemoryPlanning |
 | `tl.ascend_auto_cv_combine` | `false` | 启用 CombineCV |
 | `tl.ascend_auto_cross_core_sync` | `false` | 启用 CrossCorePipeline |
@@ -184,6 +213,7 @@ tilelang_root → 创建两个 Emitter(is_aiv=true/false)
 ```
 src/transform/
 ├── ascend_sync_insert.cc          (1559 行)
+├── ascend_sync_insert_vs.cc       (~798 行)
 ├── ascend_memory_planning.cc      (884 行)
 ├── ascend_combinecv.cc            (~700 行)
 ├── cross_core_pipeline.cc         (~1200 行)

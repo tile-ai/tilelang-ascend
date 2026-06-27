@@ -160,6 +160,8 @@ AscendMemoryPlanning
   ↓ (output: **address_map**, **size_map**, 使用 buffer_shapess)
 AscendSyncInsert
   ↓ (使用 address_map, size_map)
+AscendSyncInsertVS
+  ↓ (使用 address_map, size_map; 可选，由 tl.ascend_auto_sync_vs 控制)
 Phase 2 Final IR
 ```
 
@@ -172,7 +174,8 @@ Phase 2 Final IR
 | `InjectSoftwarePipeline` | pipeline layout | software pipeline | **性能优化 Pass**：依赖 layout 信息 |
 | `AscendStorageRewrite` | vectorized loops | optimized storage | **内存优化 Pass**：为 memory planning 提供优化的 IR |
 | `AscendMemoryPlanning` | **`buffer_shapess`** (来自 Phase 1) | **`address_map`**, **`size_map`** | **关键 Pass**：跨阶段依赖，使用 Phase 1 输出 |
-| `AscendSyncInsert` | **`address_map`**, **`size_map`** | final IR with syncs | **最后一环**：依赖 memory planning 的输出 |
+| `AscendSyncInsert` | **`address_map`**, **`size_map`** | final IR with syncs | **末环之一**：依赖 memory planning 的输出，处理部分跨流水线依赖及 `PIPE_ALL` barrier |
+| `AscendSyncInsertVS` | **`address_map`**, **`size_map`** | final IR with syncs | **可选末环**：补位 V→V 与 S↔其他 场景，与 `AscendSyncInsert` 互补协同（可同开），需配套 `TL_CCE_AUTO_SYNC=off` |
 
 ---
 
@@ -335,7 +338,8 @@ DSL IR
   ├─ InjectSoftwarePipeline ← pipeline layout
   ├─ AscendStorageRewrite → optimized storage
   ├─ AscendMemoryPlanning ← buffer_shapess → address_map, size_map ★
-  └─ AscendSyncInsert ← address_map, size_map
+  ├─ AscendSyncInsert ← address_map, size_map
+  └─ AscendSyncInsertVS ← address_map, size_map (可选)
   ↓
 Final IR
 ```
@@ -355,6 +359,7 @@ CollectBufferShapes → buffer_shapess
 AscendMemoryPlanning ← buffer_shapess → address_map, size_map
   ↓ [Phase 2 内部]
 AscendSyncInsert ← address_map, size_map
+AscendSyncInsertVS ← address_map, size_map (可选，与 AscendSyncInsert 互补协同，可同开)
 ```
 
 ---
@@ -368,8 +373,9 @@ AscendSyncInsert ← address_map, size_map
    - Phase 2 不能独立运行
 
 2. **Phase 2 内部顺序严格**
-   - `AscendMemoryPlanning` 必须在 `AscendSyncInsert` 前执行
+   - `AscendMemoryPlanning` 必须在 `AscendSyncInsert` / `AscendSyncInsertVS` 前执行
    - `CrossCorePipeline` 必须在 `CombineCV` 前执行
+   - `AscendSyncInsert` 与 `AscendSyncInsertVS` 互补协同，可同时开启；前者先执行处理部分跨流水线依赖，后者补位 V→V 与 S↔其他 场景
 
 3. **跨阶段依赖不可打破**
    - 不能在 Phase 1 之前添加需要 Phase 2 输入的 Pass

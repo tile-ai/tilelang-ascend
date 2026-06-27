@@ -19,7 +19,8 @@
 
 | Pass | 功能简述 | 配置项 | 核心类 |
 |------|---------|--------|--------|
-| AscendSyncInsert | 自动插入同步指令，确保数据依赖正确 | `tl.ascend_auto_sync` | AscendSyncInsert |
+| AscendSyncInsert | 自动插入部分跨流水线同步（MTE2→V、V→MTE3 等）及 `PIPE_ALL` barrier，不覆盖 V→V 与 S↔其他 场景 | `tl.ascend_auto_sync` | AscendSyncInsert |
+| AscendSyncInsertVS | 补位版插同步，仅跟踪 PIPE_V/S/MTE2/MTE3，处理 V→V 与 S↔其他（与 AscendSyncInsert 互补协同，可同开；需配套 `TL_CCE_AUTO_SYNC=off`） | `tl.ascend_auto_sync_vs` | AscendSyncInsertVS |
 | CrossCorePipeline | 跨核 (Cube-Vector) 流水线同步调度 | `tl.ascend_auto_cross_core_sync` | CrossCorePipeline |
 | CombineCV | 分离 Cube/Vector 操作，拆分为两块独立代码 | `tl.ascend_auto_cv_combine` | CVCombineEmitter |
 

@@ -141,6 +141,8 @@ class LibraryGenerator:
                 "--shared",
                 src.name,
             ]
+            if os.environ.get("TL_CCE_AUTO_SYNC", "on").lower() == "off":
+                command.append("--cce-auto-sync=off")
         elif self.target == "pto":
             ccec = "dav-c310" if self.platform == "A5" else "dav-c220"
             memory = "REGISTER_BASE" if self.platform == "A5" else "MEMORY_BASE"
