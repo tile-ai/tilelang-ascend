@@ -476,8 +476,7 @@ private:
 
       for (size_t i = 0; i < linear_seq_.size(); ++i) {
         for (const VarNode *buf : linear_seq_[i].touched) {
-          buffer_touch_indices_[buf].insert(
-              static_cast<int64_t>(i));
+          buffer_touch_indices_[buf].insert(static_cast<int64_t>(i));
         }
       }
     }
