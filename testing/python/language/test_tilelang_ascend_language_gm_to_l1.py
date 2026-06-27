@@ -56,28 +56,33 @@ Scenarios covered (all GM -> L1, target = ascendc)
       Same splice pattern but with zN layout on the spliced buffer (A matrix,
       M-dimension split) and a non-transposed GEMM.
 
-  Group 7 - Dynamic batch + dynamic split (symbolic batch & split):
-      Mirrors Group 3 but with batch = T.symbolic("batch") and
-      split = T.symbolic("split").  Both the batch loop and the splice offset
-      are runtime variables, so need_clear = (split == 0) is a runtime
-      expression evaluated inside the dynamic batch loop.  Verifies that the
-      splice clear logic (need_clear per copy) works correctly when iterated
-      over a runtime-determined batch dimension with a runtime-determined
-      splice offset.
+  Group 7 - Dynamic split splice with constant batch (symbolic split):
+      Mirrors Group 3 but with split = T.symbolic("split") and a constant batch
+      iterated via T.serial(batch).  The splice offset (split) is a runtime
+      variable, but need_clear is a COMPILE-TIME constant: the codegen evaluates
+      is_zero(dst_offset) at compile time, and since dst_offset = split * C0_SIZE
+      is not provably zero, the second copy always gets need_clear = false.
+      The first copy (dst offset 0) always gets need_clear = true, which clears
+      the full L1 tile; subsequent copies skip the clear so they do not clobber
+      the first copy's data.  Verifies splice correctness when the kernel body
+      is repeated across a constant batch loop.
 
   Group 8 - Dynamic K K-tail GEMM (symbolic K):
       Mirrors Group 2 but with K = T.symbolic("K").  The K dimension is not
-      known at compile time, so the K-tail clearing (realTailN, need_clear) must
-      be evaluated at runtime.  Verifies the clearing mechanism with a dynamic
-      reduction dimension.
+      known at compile time, so ceildiv(K, K_L1) and realTailN become runtime
+      expressions.  need_clear is a compile-time true (dst offset 0) for every
+      K-tile copy; the clearing mechanism zero-pads the K-tail at runtime so
+      that 0 * B = 0 keeps the matmul correct.
 
   Group 9 - Dynamic split splice (symbolic split):
       Mirrors Group 3 but with split = T.symbolic("split").  The splice offset
-      itself is a runtime variable, so need_clear = (split == 0) is a runtime
-      expression.  The kernel is compiled once and called with multiple split
-      values to verify the dynamic need_clear path.  This is the most direct
-      test of the bug fix: the second copy must not clear regardless of the
-      runtime split value.
+      is a runtime variable, but need_clear is a COMPILE-TIME constant: the codegen
+      evaluates is_zero(dst_offset) at compile time.  The first copy (dst offset 0)
+      gets need_clear = true (clears full tile); the second copy (dst offset =
+      split * C0_SIZE, not provably zero) gets need_clear = false (skips clear).
+      The kernel is compiled ONCE and called with multiple concrete split values,
+      verifying the second copy never clobbers the first regardless of the runtime
+      split value.
 """
 
 TARGET = "ascendc"
@@ -525,23 +530,26 @@ def test_splice_with_k_tail(block_M, block_N, dim, split, K_L1):
 
 
 # =============================================================================
-# Group 7 - Dynamic batch + dynamic split (symbolic batch & split) [risk: high]
-# Mirrors Group 3 but with batch = T.symbolic("batch") and
-# split = T.symbolic("split").  Both the batch loop and the splice offset are
-# runtime variables, so need_clear = (split == 0) is a runtime expression
-# evaluated inside the dynamic batch loop.  This verifies that the splice clear
-# logic (need_clear per copy) works correctly when the kernel body is iterated
-# over a runtime-determined batch dimension with a runtime-determined splice
-# offset.
+# Group 7 - Dynamic split splice with constant batch      [risk: high]
+# Mirrors Group 3 but with split = T.symbolic("split") and a constant batch
+# iterated via T.serial(batch).  The splice offset (split) is a runtime
+# variable, but need_clear is a COMPILE-TIME constant: the codegen evaluates
+# is_zero(dst_offset) at compile time.  The first copy (dst offset 0) always
+# gets need_clear = true (clears the full L1 tile); the second copy (dst offset
+# = split * C0_SIZE, not provably zero) always gets need_clear = false (skips
+# clear).  This verifies splice correctness when the splice body is repeated
+# across a constant batch loop: each batch iteration re-clears the full tile
+# via the first copy, then the second copy fills its sub-region without
+# clobbering the first.
 # =============================================================================
-def splice_2way_nz_dynamic_batch(block_M, block_N, dim, dtype, accum_dtype):
-    """nZ-layout splice with transpose_B=True and symbolic batch & split.
+def splice_2way_nz_dynamic_batch(block_M, block_N, dim, batch, dtype, accum_dtype):
+    """nZ-layout splice with transpose_B=True, a symbolic split, and a constant batch.
 
-    Both the splice split and the batch dimension are T.symbolic variables;
-    the batch dimension is iterated via T.serial(batch), and the split offset
-    (hence need_clear = (split == 0)) is a runtime expression."""
+    The split point is a T.symbolic variable; batch is a Python int constant.
+    The batch dimension is iterated via T.serial(batch).  need_clear is a
+    compile-time constant determined by is_zero(dst_offset): true for the first
+    copy (offset 0), false for the second copy (offset = split * C0_SIZE)."""
 
-    batch = T.symbolic("batch")
     split = T.symbolic("split")
 
     @T.prim_func
@@ -573,7 +581,7 @@ def splice_2way_nz_dynamic_batch(block_M, block_N, dim, dtype, accum_dtype):
 
 def run_test_splice_2way_nz_dynamic_batch(block_M, block_N, dim, split, batch, dtype, accum_dtype):
     torch.manual_seed(0)
-    func = splice_2way_nz_dynamic_batch(block_M, block_N, dim, dtype, accum_dtype)
+    func = splice_2way_nz_dynamic_batch(block_M, block_N, dim, batch, dtype, accum_dtype)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=DEV_CONFIGS, target=TARGET)
     td = _torch_dtype(dtype)
     q = torch.randn(batch, block_M, dim, dtype=td).npu()
@@ -595,15 +603,17 @@ def test_splice_2way_nz_dynamic_batch(batch, split):
 # =============================================================================
 # Group 8 - Dynamic K K-tail GEMM (symbolic K)            [risk: medium]
 # Mirrors Group 2 but with K = T.symbolic("K").  The K dimension is not known
-# at compile time, so ceildiv(K, K_L1) and the last-tail realTailN are runtime
-# expressions.  The clearing mechanism (need_clear == true for offset-0 copies)
-# must zero-pad the K-tail at runtime so that 0 * B = 0 keeps the matmul correct.
+# at compile time, so ceildiv(K, K_L1) and realTailN become runtime expressions.
+# need_clear is a compile-time true (dst offset 0) for every K-tile copy; the
+# clearing mechanism zero-pads the K-tail at runtime so that 0 * B = 0 keeps
+# the matmul correct.
 # =============================================================================
 def full_copy_plain_dynamic_k(M, N, block_M, block_N, K_L1, dtype, accum_dtype):
     """Plain GEMM with symbolic K (default zN), transpose_B=False.
 
-    K is a T.symbolic variable; the K-loop bound and K-tail clearing are
-    evaluated at runtime."""
+    K is a T.symbolic variable; the K-loop bound and realTailN are evaluated at
+    runtime.  need_clear is always true (dst offset 0) so each K-tile copy
+    zero-pads its tail."""
 
     K = T.symbolic("K")
 
@@ -656,19 +666,22 @@ def test_k_tail_gemm_dynamic_k(M, N, K, block_M, block_N, K_L1):
 
 # =============================================================================
 # Group 9 - Dynamic split splice (symbolic split)          [risk: high]
-# Mirrors Group 3 but with split = T.symbolic("split").  The splice offset
-# itself is a runtime variable, so need_clear = (split == 0) is a runtime
-# expression in the generated code.  The kernel is compiled ONCE with the
-# symbolic split and then called with multiple concrete split values, verifying
-# that the second copy correctly skips the clear for any non-zero runtime split.
+# Mirrors Group 3 but with split = T.symbolic("split").  The splice offset is
+# a runtime variable, but need_clear is a COMPILE-TIME constant: the codegen
+# evaluates is_zero(dst_offset) at compile time.  The first copy (dst offset 0)
+# gets need_clear = true (clears the full L1 tile); the second copy (dst offset
+# = split * C0_SIZE, not provably zero) gets need_clear = false (skips clear).
+# The kernel is compiled ONCE and called with multiple concrete split values,
+# verifying the second copy never clobbers the first regardless of the runtime
+# split value.
 # =============================================================================
 def splice_2way_nz_dynamic_split(block_M, block_N, dim, dtype, accum_dtype):
     """nZ-layout splice with transpose_B=True and a symbolic split.
 
     The split point is a T.symbolic variable; both K_src0 and K_src1 have
-    dynamic shapes ([1, split, dim] and [1, block_N - split, dim]).  At runtime,
-    split is bound from K_src0's first dimension.  The need_clear flag for the
-    second copy becomes (split == 0), evaluated at runtime."""
+    dynamic shapes ([1, split, dim] and [1, block_N - split, dim]).  need_clear
+    is a compile-time constant: true for the first copy (dst offset 0), false
+    for the second copy (dst offset = split * C0_SIZE, not provably zero)."""
 
     split = T.symbolic("split")
 
@@ -721,10 +734,11 @@ def test_splice_2way_nz_dynamic_split(split):
 def test_splice_2way_nz_dynamic_split_multi():
     """Compile once with symbolic split, then call with multiple runtime values.
 
-    This is the strongest test of the dynamic need_clear path: a single compiled
-    kernel (with split as a symbolic variable) is invoked with several concrete
-    split values.  Each invocation exercises the runtime (split == 0) check in
-    the second copy's need_clear flag."""
+    A single compiled kernel (with split as a symbolic variable) is invoked
+    with several concrete split values.  need_clear is a compile-time constant
+    (true for offset 0, false for non-zero offset), so every invocation
+    exercises the same clear/skip-clear path.  This verifies the compiled
+    kernel produces correct results for any runtime split value."""
     block_M, block_N, dim = 64, 128, 128
     dtype, accum_dtype = "bfloat16", "float32"
 
