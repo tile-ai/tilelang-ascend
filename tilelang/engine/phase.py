@@ -108,5 +108,6 @@ def OptimizeForTarget(mod: IRModule, target: Target, platform: str) -> IRModule:
     mod = tir.transform.HoistIfThenElse()(mod)
     mod = tilelang.transform.AscendMemoryPlanning()(mod)
     mod = tilelang.transform.AscendSyncInsert(target, platform)(mod)
+    mod = tilelang.transform.AscendSyncInsertVS(target, platform)(mod)
     # print(mod)
     return mod

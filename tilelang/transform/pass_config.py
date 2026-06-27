@@ -7,6 +7,7 @@ from enum import Enum
 
 class PassConfigKey(str, Enum):
     """Pass configuration keys for TileLang compiler."""
+
     # TileLang specific configs
     TL_SIMPLIFY = "tl.Simplify"
     """Enable/disable TileLang simplification passes. Default: True"""
@@ -31,10 +32,13 @@ class PassConfigKey(str, Enum):
 
     TL_DEBUG_MERGE_SHARED_MEMORY_ALLOCATIONS = "tl.debug_merge_shared_memory_allocations"
     """Enable debug information for merge shared memory allocations. Default: False"""
-    
+
     TL_ASCEND_AUTO_SYNC = "tl.ascend_auto_sync"
     """Enable/disable TileLang AscendSyncInsert pass. Default: False"""
-    
+
+    TL_ASCEND_AUTO_SYNC_VS = "tl.ascend_auto_sync_vs"
+    """Enable/disable TileLang AscendSyncInsertVS pass (V->V and S<->others sync only). Default: False"""
+
     TL_ASCEND_MEMORY_PLANNING = "tl.ascend_memory_planning"
     """Enable/disable TileLang AscendMemoryPlanning pass. Default: False"""
 

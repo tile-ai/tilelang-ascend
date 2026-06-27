@@ -147,6 +147,7 @@ CANN 工具链 → NPU 执行
 | 19 | `tir.transform.HoistIfThenElse()` | 提升 if-then-else | safe select | hoisted conditionals | 提升 if-then-else 以减少分支开销 |
 | 20 | `AscendMemoryPlanning()` | 内存规划 | `buffer_shapess` | `address_map`, `size_map` | **关键 Pass**：规划 buffer 地址，输出地址映射 |
 | 21 | `AscendSyncInsert()` | 同步插入 | `address_map`, `size_map` | final IR with syncs | **最后一环**：插入同步指令 |
+| 22 | `AscendSyncInsertVS()` | 补位版同步插入（仅 V/S/MTE2/MTE3） | `address_map`, `size_map` | final IR with syncs | 可选，由 `tl.ascend_auto_sync_vs` 控制，与 21 互补协同可同开，需配套 `TL_CCE_AUTO_SYNC=off` |
 
 ### Phase 2 关键 Pass 说明
 
@@ -203,6 +204,18 @@ CANN 工具链 → NPU 执行
   2. 分析操作的依赖关系
   3. 在必要位置插入同步（`T.barrier_all`、`T.set_flag`、`T.wait_flag`）
 - **重要性**：Pipeline 的最后一环，确保执行正确性
+
+#### `AscendSyncInsertVS`
+
+- **功能**：补位版同步插入，与 `AscendSyncInsert` 互补协同（非互斥，可同开）
+- **核心逻辑**：
+  1. 使用 `address_map` 和 `size_map`（来自 `AscendMemoryPlanning`）
+  2. 仅跟踪 `PIPE_V` / `PIPE_S` / `PIPE_MTE2` / `PIPE_MTE3` 四条流水线（PIPE_M/MTE1/FIX 透明穿透）
+  3. 基于 `BufferLoadCollector`（`ExprVisitor`）递归收集表达式中的 buffer 读访问
+  4. 在 V→V 同流水线或 S↔其他流水线依赖点插入 `PipeBarrier` 或 `EventPair`
+- **配置**：`tl.ascend_auto_sync_vs`（默认 False），与 `tl.ascend_auto_sync` 互补协同，可同时开启
+- **配套环境变量**：开启时需设 `TL_CCE_AUTO_SYNC=off`，关闭 CCE 编译器自带同步
+- **适用场景**：纯 Vector 算子（elementwise、softmax 等），不涉及 Cube/Vector 核间协作
 
 ---
 
@@ -264,6 +277,9 @@ with tvm.transform.PassContext(opt_level=3, config=pass_configs):
 class PassConfigKey(str, Enum):
     TL_ASCEND_AUTO_SYNC = "tl.ascend_auto_sync"
     """Enable/disable AscendSyncInsert. Default: False"""
+    
+    TL_ASCEND_AUTO_SYNC_VS = "tl.ascend_auto_sync_vs"
+    """Enable/disable AscendSyncInsertVS (simplified V/S-only sync). Default: False"""
     
     TL_ASCEND_MEMORY_PLANNING = "tl.ascend_memory_planning"
     """Enable/disable AscendMemoryPlanning. Default: False"""
