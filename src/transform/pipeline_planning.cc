@@ -443,11 +443,18 @@ private:
           }
         }
         for (const BufferRegion &write : pipeline_stage_infos[i].writes) {
-          if (std::find_if(pinfo.writes.begin(), pinfo.writes.end(),
+          auto it = std::find_if(pinfo.writes.begin(), pinfo.writes.end(),
                            [&](const BufferRegion &r) {
                              return r->buffer == write->buffer &&
                                     MayConflict(r->region, write->region);
-                           }) != pinfo.writes.end()) {
+                           });
+          if (it != pinfo.writes.end()) {
+            bool exact_match = is_zero((*it)->region[0]->extent - write->region[0]->extent)
+                               && is_zero((*it)->region[0]->min - write->region[0]->min);
+            if (exact_match) {
+              // two write are exactly the same region
+              continue;
+            }
             LOG(FATAL) << "Pipeline planning error: Multiple writes to "
                           "overlapping buffer regions detected. "
                        << "Stage " << pinfo.original_order << " and stage " << i

@@ -498,6 +498,27 @@ private:
         num_versions--;
       }
     }
+
+    // Special handling for output buffers. If a buffer is written in the last 
+    // stage and not read by any later stage, we can keep one more version to avoid unnecessary synchronization
+    if (num_versions == 1 && buffer_info.use == max_stage_) {
+      // Check if this buffer is written in the last stage
+      for (const auto& pair: pipeline_info_) {
+        const Block &block = pair.first;
+        const auto &info = pair.second;
+        if (info.stage == max_stage_) {
+          auto it = std::find_if(block->writes.begin(), block->writes.end(),
+                                  [&](const BufferRegion &buffer_region) {
+                                    return buffer_region->buffer.same_as(buffer);
+                                  });
+          if (it != block->writes.end()) {
+            num_versions = max_stage_;
+            break;
+          }
+        }
+      }
+    }
+
     return num_versions;
   }
 
