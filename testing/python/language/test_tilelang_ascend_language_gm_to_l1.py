@@ -534,7 +534,7 @@ def test_splice_with_k_tail(block_M, block_N, dim, split, K_L1):
 # over a runtime-determined batch dimension with a runtime-determined splice
 # offset.
 # =============================================================================
-def splice_2way_nz_dynamic_batch(block_M, block_N, dim, split, dtype, accum_dtype):
+def splice_2way_nz_dynamic_batch(block_M, block_N, dim, dtype, accum_dtype):
     """nZ-layout splice with transpose_B=True and symbolic batch & split.
 
     Both the splice split and the batch dimension are T.symbolic variables;
@@ -573,7 +573,7 @@ def splice_2way_nz_dynamic_batch(block_M, block_N, dim, split, dtype, accum_dtyp
 
 def run_test_splice_2way_nz_dynamic_batch(block_M, block_N, dim, split, batch, dtype, accum_dtype):
     torch.manual_seed(0)
-    func = splice_2way_nz_dynamic_batch(block_M, block_N, dim, split, dtype, accum_dtype)
+    func = splice_2way_nz_dynamic_batch(block_M, block_N, dim, dtype, accum_dtype)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=DEV_CONFIGS, target=TARGET)
     td = _torch_dtype(dtype)
     q = torch.randn(batch, block_M, dim, dtype=td).npu()
