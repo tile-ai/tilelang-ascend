@@ -12,6 +12,8 @@
 
 #include <algorithm>
 #include <iostream>
+#include <set>
+#include <sstream>
 #include <string>
 #include <tuple>
 #include <unordered_map>
@@ -146,6 +148,13 @@ private:
   Call CallNodeAddReduceOutputTmp(const CallNode *op,
                                   int64_t tmp_buffer_param_offset,
                                   int64_t rw_mask) {
+    if (!reduce_out_tmp_buf_.defined()) {
+      LOG(FATAL) << "InjectTmpBuffer: pto reduce with clear=False requires "
+                 << "a reduce_out tmp buffer ('tmp_ub_reduce_out'), but it "
+                 << "is not defined. If TL_ASCEND_INJECT_TMP_BUFFER is "
+                 << "disabled, manually allocate "
+                 << "'tmp_ub_reduce_out' = T.alloc_ub((size,), 'uint8').";
+    }
     Array<PrimExpr> new_args = this->InsertExprAt_(
         op->args, tmp_buffer_param_offset, this->AddTmpArgs_(op, rw_mask));
     new_args = this->InsertExprAt_(
@@ -256,11 +265,22 @@ private:
       tmp_buffer = tmp_buf_;
     }
 
+    if (!tmp_buffer.defined()) {
+      LOG(FATAL) << "InjectTmpBuffer: no suitable tmp buffer found for "
+                 << "operation. If TL_ASCEND_INJECT_TMP_BUFFER is disabled, "
+                 << "ensure all required tmp buffers (tmp_ub, tmp_ub_1, ...) "
+                 << "are manually allocated with correct dtypes.";
+    }
+
     return MakeAccessPtrFromBuffer_(tmp_buffer, rw_mask);
   }
 
   PrimExpr MakeAccessPtrFromBuffer_(const Buffer &tmp_buffer, int64_t rw_mask) {
-    ICHECK(tmp_buffer.defined()) << "Expected tmp buffer to be defined.";
+    if (!tmp_buffer.defined()) {
+      LOG(FATAL) << "InjectTmpBuffer: tmp buffer is not defined. "
+                 << "If TL_ASCEND_INJECT_TMP_BUFFER is disabled, ensure all "
+                 << "required tmp buffers are manually allocated.";
+    }
 
     int64_t shape_size = 0;
     for (size_t j = 0; j < tmp_buffer.get()->shape.size(); j++) {
@@ -281,9 +301,8 @@ private:
   }
 
   bool NeedReduceOutputTmp(const CallNode *op) const {
-    return "pto" == target_ && reduce_out_tmp_buf_.defined() &&
-           op->op.same_as(tl::ascend_reduce()) && op->args.size() >= 4 &&
-           IsConstFalse(op->args[op->args.size() - 1]);
+    return "pto" == target_ && op->op.same_as(tl::ascend_reduce()) &&
+           op->args.size() >= 4 && IsConstFalse(op->args[op->args.size() - 1]);
   }
 
   Buffer tmp_buf_;
@@ -299,6 +318,11 @@ public:
                                   bool inject_enabled) {
     TmpBufferInjector injector;
     injector.target_ = Downcast<String>(target.get()->attrs["model"]);
+    if (injector.target_ != "pto" && injector.target_ != "ascendc" &&
+        injector.target_ != "auto") {
+      LOG(FATAL) << "InjectTmpBuffer: unsupported target '" << injector.target_
+                 << "'. Supported targets: pto, ascendc, auto.";
+    }
     injector.inject_enabled_ = inject_enabled;
     PrimFuncNode *fptr = f.CopyOnWrite();
     injector.calls_ = CallNodeCollector::Collect(f, target);
@@ -1218,24 +1242,19 @@ private:
     }
 
     if (tmp_buf_.defined()) {
-      std::string scope = GetPtrStorageScope(tmp_buf_->data);
-      if (scope != "shared") {
-        LOG(FATAL) << "User-provided tmp buffer '" << buffer_name_
-                   << "' must be in 'shared' (UB) scope, but got '" << scope
-                   << "'. Use T.alloc_ub() to allocate a UB buffer.";
-      }
+      ValidateTmpBufferProperties_(tmp_buf_, buffer_name_);
       if (tmp_buf_->dtype != DataType::UInt(8)) {
         LOG(FATAL) << "User-provided tmp buffer '" << buffer_name_
                    << "' must be uint8 dtype, but got " << tmp_buf_->dtype
                    << ".";
       }
-      ValidateTmpBufferSize_(alloc_buffers);
     }
 
     for (int i = 1;; i++) {
       std::string name = buffer_name_ + "_" + std::to_string(i);
       Buffer buf = FindUserProvidedBuffer_(alloc_buffers, name);
       if (buf.defined()) {
+        ValidateTmpBufferProperties_(buf, name);
         tmp_bufs_.push_back(buf);
       } else {
         break;
@@ -1245,6 +1264,20 @@ private:
     if ("pto" == target_) {
       reduce_out_tmp_buf_ =
           FindUserProvidedBuffer_(alloc_buffers, buffer_name_ + "_reduce_out");
+      if (reduce_out_tmp_buf_.defined()) {
+        ValidateTmpBufferProperties_(reduce_out_tmp_buf_,
+                                     buffer_name_ + "_reduce_out");
+        if (reduce_out_tmp_buf_->dtype != DataType::UInt(8)) {
+          LOG(FATAL) << "User-provided tmp buffer '" << buffer_name_
+                     << "_reduce_out"
+                     << "' must be uint8 dtype, but got "
+                     << reduce_out_tmp_buf_->dtype << ".";
+        }
+      }
+    }
+
+    if (tmp_buf_.defined()) {
+      ValidateTmpBufferSize_(alloc_buffers);
     }
 
     bool needs_dtype_tmp = false;
@@ -1266,15 +1299,167 @@ private:
                  << buffer_name_ << "_1', '" << buffer_name_
                  << "_2', etc. with appropriate dtypes.";
     }
+
+    if (needs_dtype_tmp) {
+      ValidateDtypeTmpCoverage_(alloc_buffers);
+    }
+
+    bool needs_reduce_out = false;
+    if ("pto" == target_) {
+      for (const auto &call : calls_) {
+        if (call->op.same_as(tl::ascend_reduce()) && call->args.size() >= 4 &&
+            IsConstFalse(call->args[call->args.size() - 1])) {
+          needs_reduce_out = true;
+          break;
+        }
+      }
+    }
+    if (needs_reduce_out && !reduce_out_tmp_buf_.defined()) {
+      LOG(FATAL) << "InjectTmpBuffer pass is disabled but pto reduce with "
+                 << "clear=False requires a 'tmp_ub_reduce_out' buffer. "
+                 << "Please manually allocate "
+                 << "'tmp_ub_reduce_out' = T.alloc_ub((size,), 'uint8').";
+    }
+  }
+
+  void ValidateTmpBufferProperties_(const Buffer &buf,
+                                    const std::string &name) {
+    std::string scope = GetPtrStorageScope(buf->data);
+    if (scope != "shared") {
+      LOG(FATAL) << "User-provided tmp buffer '" << name
+                 << "' must be in 'shared' (UB) scope, but got '" << scope
+                 << "'. Use T.alloc_ub() to allocate a UB buffer.";
+    }
+  }
+
+  void ValidateDtypeTmpCoverage_(const Array<Buffer> &alloc_buffers) {
+    for (const auto &call : calls_) {
+      bool need_dtype_tmp = call->op.same_as(tl::ascend_sort()) ||
+                            call->op.same_as(tl::ascend_topk()) ||
+                            call->op.same_as(tl::ascend_bitwise_xor()) ||
+                            call->op.same_as(tl::ascend_merge_sort()) ||
+                            call->op.same_as(tl::ascend_gather()) ||
+                            call->op.same_as(tl::ascend_gather_mask());
+      if (!need_dtype_tmp) {
+        continue;
+      }
+
+      DataType dtype = DataType::Void();
+      std::string op_desc;
+
+      if (call->op.same_as(tl::ascend_sort()) ||
+          call->op.same_as(tl::ascend_topk())) {
+        const CallNode *src_access_ptr = Downcast<Call>(call->args[2]).get();
+        std::string src_name = src_access_ptr->args[1].as<VarNode>()->name_hint;
+        const BufferNode *node = GetBufferNodeByName_(alloc_buffers, src_name);
+        if (node) {
+          dtype = node->dtype;
+          op_desc = "sort/topk";
+        } else {
+          LOG(FATAL) << "InjectTmpBuffer: cannot find source buffer '"
+                     << src_name << "' for sort/topk operation during "
+                     << "dtype-specific tmp validation.";
+        }
+      } else if (call->op.same_as(tl::ascend_bitwise_xor())) {
+        const CallNode *src_access_ptr = Downcast<Call>(call->args[1]).get();
+        std::string src_name = src_access_ptr->args[1].as<VarNode>()->name_hint;
+        const BufferNode *node = GetBufferNodeByName_(alloc_buffers, src_name);
+        if (node) {
+          dtype = node->dtype;
+          op_desc = "bitwise_xor";
+        } else {
+          LOG(FATAL) << "InjectTmpBuffer: cannot find source buffer '"
+                     << src_name << "' for bitwise_xor operation during "
+                     << "dtype-specific tmp validation.";
+        }
+      } else if (call->op.same_as(tl::ascend_merge_sort())) {
+        const CallNode *dst_access_ptr = Downcast<Call>(call->args[2]).get();
+        std::string dst_name = dst_access_ptr->args[1].as<VarNode>()->name_hint;
+        const BufferNode *node = GetBufferNodeByName_(alloc_buffers, dst_name);
+        if (node) {
+          dtype = node->dtype;
+          op_desc = "merge_sort";
+        } else {
+          LOG(FATAL) << "InjectTmpBuffer: cannot find destination buffer '"
+                     << dst_name << "' for merge_sort operation during "
+                     << "dtype-specific tmp validation.";
+        }
+      } else if (call->op.same_as(tl::ascend_gather())) {
+        const CallNode *idx_access_ptr = Downcast<Call>(call->args[2]).get();
+        std::string idx_name = idx_access_ptr->args[1].as<VarNode>()->name_hint;
+        const BufferNode *node = GetBufferNodeByName_(alloc_buffers, idx_name);
+        if (node) {
+          dtype = node->dtype;
+          op_desc = "gather";
+        } else {
+          LOG(FATAL) << "InjectTmpBuffer: cannot find indices buffer '"
+                     << idx_name << "' for gather operation during "
+                     << "dtype-specific tmp validation.";
+        }
+      } else if (call->op.same_as(tl::ascend_gather_mask())) {
+        if (!call->args[3].as<CallNode>()) {
+          continue;
+        }
+        const CallNode *pattern_access_ptr =
+            Downcast<Call>(call->args[3]).get();
+        std::string pattern_name =
+            pattern_access_ptr->args[1].as<VarNode>()->name_hint;
+        const BufferNode *node =
+            GetBufferNodeByName_(alloc_buffers, pattern_name);
+        if (node) {
+          dtype = node->dtype;
+          op_desc = "gather_mask";
+        } else {
+          LOG(FATAL) << "InjectTmpBuffer: cannot find pattern buffer '"
+                     << pattern_name << "' for gather_mask operation during "
+                     << "dtype-specific tmp validation.";
+        }
+      }
+
+      if (dtype == DataType::Void()) {
+        continue;
+      }
+      if (dtype == DataType::UInt(8)) {
+        continue;
+      }
+
+      bool found = false;
+      for (const auto &tmp_buf : tmp_bufs_) {
+        if (tmp_buf->dtype == dtype) {
+          found = true;
+          break;
+        }
+      }
+      if (!found) {
+        std::ostringstream oss;
+        oss << "User-provided dtype-specific tmp buffers do not cover "
+            << "the required dtype " << dtype << " for " << op_desc
+            << " operation. Please allocate a buffer named '" << buffer_name_
+            << "_N' with dtype " << dtype << ".";
+        LOG(FATAL) << oss.str();
+      }
+    }
   }
 
   void ValidateTmpBufferSize_(const Array<Buffer> &alloc_buffers) {
+    std::vector<Call> saved_calls = calls_;
+    calls_.erase(std::remove_if(calls_.begin(), calls_.end(),
+                                [](const Call &call) {
+                                  return call->op.same_as(tl::ascend_sort()) ||
+                                         call->op.same_as(tl::ascend_topk()) ||
+                                         call->op.same_as(
+                                             tl::ascend_merge_sort());
+                                }),
+                 calls_.end());
+
     Array<PrimExpr> required_shape;
     if ("pto" == target_) {
       required_shape = GetPTOTmpBufferSize_(alloc_buffers);
     } else if ("ascendc" == target_ || "auto" == target_) {
       required_shape = GetAscendCTmpBufferSize_(alloc_buffers);
     }
+
+    calls_ = saved_calls;
 
     if (required_shape.empty()) {
       return;
