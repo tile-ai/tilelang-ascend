@@ -124,13 +124,12 @@ sm_scale = (1.0 / D) ** 0.5
 
 q_shape = [BEAM_SIZE, NUM_HEADS, D]
 q_unshared_shape = [BEAM_SIZE * NUM_HEADS, D]
-k_shared_shape = [SHARED_CACHE_BLOCKS, BLOCK_N, KV_HEADS, D]
-v_shared_shape = [SHARED_CACHE_BLOCKS, BLOCK_N, KV_HEADS, D]
+k_shared_shape = [KV_LEN, KV_HEADS, D]
+v_shared_shape = [KV_LEN, KV_HEADS, D]
 MERGE_ROWS = BEAM_SIZE * NUM_HEADS
 o_shape = [MERGE_ROWS, D]
 k_unshared_shape = [MAX_REQUEST_NUM * UNSHARED_GROUPS_PER_REQUEST * DECODE_STEP, D]
 v_unshared_shape = [MAX_REQUEST_NUM * UNSHARED_GROUPS_PER_REQUEST * DECODE_STEP, D]
-shared_block_table_shape = [REQUEST_BATCH, SHARED_BLOCKS_PER_BATCH]
 unshared_block_table_shape = [REQUEST_BATCH]
 shared_kv_lens_shape = [REQUEST_BATCH]
 decode_step_shape = [1]
@@ -178,7 +177,6 @@ def x_attention_decode_v_parallel_p0_stack4_3stage():
         unshared_gm_flat: T.Tensor([MERGE_ROWS], accum_dtype),
         unshared_gl_flat: T.Tensor([MERGE_ROWS], accum_dtype),
         block_mask_ws: T.Tensor([Q_BATCH, KV_BATCH], accum_dtype),
-        shared_block_table: T.Tensor(shared_block_table_shape, "int32"),
         unshared_block_table: T.Tensor(unshared_block_table_shape, "int32"),
         shared_kv_lens: T.Tensor(shared_kv_lens_shape, "int32"),
         decode_step: T.Tensor(decode_step_shape, "int32"),
@@ -419,10 +417,7 @@ def x_attention_decode_v_parallel_p0_stack4_3stage():
                                     T.wait_flag("MTE1", "MTE2", 0)
                                     T.copy(
                                         K_shared[
-                                            shared_block_table[
-                                                task_beam_chunk, task_k * STACK_NUM
-                                            ],
-                                            :,
+                                            (task_k * STACK_NUM) * BLOCK_N : (task_k * STACK_NUM + 1) * BLOCK_N,
                                             task_kv_head_idx,
                                             :D,
                                         ],
@@ -433,11 +428,7 @@ def x_attention_decode_v_parallel_p0_stack4_3stage():
                                     T.wait_flag("MTE1", "MTE2", 1)
                                     T.copy(
                                         K_shared[
-                                            shared_block_table[
-                                                task_beam_chunk,
-                                                task_k * STACK_NUM + 1
-                                            ],
-                                            :,
+                                            (task_k * STACK_NUM + 1) * BLOCK_N : (task_k * STACK_NUM + 2) * BLOCK_N,
                                             task_kv_head_idx,
                                             :D,
                                         ],
@@ -464,11 +455,7 @@ def x_attention_decode_v_parallel_p0_stack4_3stage():
                                     T.wait_flag("MTE1", "MTE2", 0)
                                     T.copy(
                                         K_shared[
-                                            shared_block_table[
-                                                task_beam_chunk,
-                                                task_k * STACK_NUM + 2
-                                            ],
-                                            :,
+                                            (task_k * STACK_NUM + 2) * BLOCK_N : (task_k * STACK_NUM + 3) * BLOCK_N,
                                             task_kv_head_idx,
                                             :D,
                                         ],
@@ -495,11 +482,7 @@ def x_attention_decode_v_parallel_p0_stack4_3stage():
                                     T.wait_flag("MTE1", "MTE2", 1)
                                     T.copy(
                                         K_shared[
-                                            shared_block_table[
-                                                task_beam_chunk,
-                                                task_k * STACK_NUM + 3
-                                            ],
-                                            :,
+                                            (task_k * STACK_NUM + 3) * BLOCK_N : (task_k * STACK_NUM + 4) * BLOCK_N,
                                             task_kv_head_idx,
                                             :D,
                                         ],
@@ -602,12 +585,7 @@ def x_attention_decode_v_parallel_p0_stack4_3stage():
                                         for chunk in T.serial(STACK_NUM):
                                             T.copy(
                                                 V_shared[
-                                                    shared_block_table[
-                                                        shared_pv_request_idx,
-                                                        shared_pv_k_cur * STACK_NUM
-                                                        + chunk
-                                                    ],
-                                                    :,
+                                                    (shared_pv_k_cur * STACK_NUM + chunk) * BLOCK_N : (shared_pv_k_cur * STACK_NUM + chunk + 1) * BLOCK_N,
                                                     shared_pv_kv_head_cur,
                                                     :D,
                                                 ],
@@ -1754,7 +1732,6 @@ if __name__ == "__main__":
     runtime_decode_step = DECODE_STEP
     shared_kv_len = KV_LEN
     shared_kv_lens_values = [shared_kv_len] * REQUEST_BATCH
-    shared_block_offset = 0
     unshared_physical_request = 0
 
     if _is_simulator():
@@ -1762,13 +1739,13 @@ if __name__ == "__main__":
             (BEAM_SIZE, NUM_HEADS, D), 0.1, dtype=TORCH_DTYPE, device="cpu"
         ).npu()
         K_shared = torch.full(
-            (SHARED_CACHE_BLOCKS, BLOCK_N, KV_HEADS, D),
+            (KV_LEN, KV_HEADS, D),
             0.1,
             dtype=TORCH_DTYPE,
             device="cpu",
         ).npu()
         V_shared = torch.full(
-            (SHARED_CACHE_BLOCKS, BLOCK_N, KV_HEADS, D),
+            (KV_LEN, KV_HEADS, D),
             0.1,
             dtype=TORCH_DTYPE,
             device="cpu",
@@ -1789,10 +1766,10 @@ if __name__ == "__main__":
         torch.set_default_device("npu")
         Q = torch.randn(BEAM_SIZE, NUM_HEADS, D, dtype=TORCH_DTYPE).uniform_(-1, 1)
         K_shared = torch.randn(
-            SHARED_CACHE_BLOCKS, BLOCK_N, KV_HEADS, D, dtype=TORCH_DTYPE
+            KV_LEN, KV_HEADS, D, dtype=TORCH_DTYPE
         ).uniform_(-1, 1)
         V_shared = torch.randn(
-            SHARED_CACHE_BLOCKS, BLOCK_N, KV_HEADS, D, dtype=TORCH_DTYPE
+            KV_LEN, KV_HEADS, D, dtype=TORCH_DTYPE
         ).uniform_(-1, 1)
         K_unshared = torch.randn(
             MAX_REQUEST_NUM,
@@ -1818,12 +1795,6 @@ if __name__ == "__main__":
     V_unshared_kernel = V_unshared.reshape(
         MAX_REQUEST_NUM * UNSHARED_GROUPS_PER_REQUEST * DECODE_STEP, D
     )
-    shared_block_table = torch.arange(
-        shared_block_offset,
-        shared_block_offset + REQUEST_BATCH * SHARED_BLOCKS_PER_BATCH,
-        dtype=torch.int32,
-        device="npu",
-    ).reshape(REQUEST_BATCH, SHARED_BLOCKS_PER_BATCH)
     unshared_block_table = torch.full(
         (REQUEST_BATCH,), unshared_physical_request, dtype=torch.int32, device="npu"
     )
@@ -1901,7 +1872,6 @@ if __name__ == "__main__":
             unshared_gm_flat,
             unshared_gl_flat,
             block_mask_ws,
-            shared_block_table,
             unshared_block_table,
             shared_kv_lens,
             decode_step_t,
@@ -1932,7 +1902,6 @@ if __name__ == "__main__":
             unshared_gm_flat,
             unshared_gl_flat,
             block_mask_ws,
-            shared_block_table,
             unshared_block_table,
             shared_kv_lens,
             decode_step_t,
@@ -1950,7 +1919,7 @@ if __name__ == "__main__":
         NUM_HEADS,
         KV_HEADS,
         runtime_decode_step,
-        shared_block_table=shared_block_table,
+        shared_block_table=None,
         shared_kv_lens=shared_kv_lens,
         unshared_block_table=unshared_block_table,
         return_parts=False,
