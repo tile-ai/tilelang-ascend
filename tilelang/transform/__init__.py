@@ -525,3 +525,68 @@ def InjectTmpBuffer(target: Target):
     ----
     """
     return _ffi_api.InjectTmpBuffer(target)  # type: ignore
+
+
+_DTYPE_BYTES = {
+    "float16": 2,
+    "bfloat16": 2,
+    "float32": 4,
+    "float": 4,
+    "int8": 1,
+    "uint8": 1,
+    "int16": 2,
+    "uint16": 2,
+    "int32": 4,
+    "uint32": 4,
+    "int64": 8,
+    "uint64": 8,
+}
+
+
+def get_tmp_buffer_size(
+    src_buffer_shape,
+    src_buffer_dtype: str,
+    op_type: str = "reduce",
+) -> int:
+    """Calculate the minimum required tmp_buffer size in bytes.
+
+    When TL_ASCEND_INJECT_TMP_BUFFER is disabled, users must manually
+    allocate a UB buffer named ``tmp_ub`` with ``uint8`` dtype. This
+    helper computes the minimum size needed for common operations
+    (reduce, broadcast, sigmoid, etc.).
+
+    Parameters
+    ----------
+    src_buffer_shape : tuple or list
+        Shape of the source buffer used in the operation.
+    src_buffer_dtype : str
+        Data type of the source buffer (e.g. "float16", "float32").
+    op_type : str
+        Type of operation: "reduce", "broadcast", "sigmoid", "sin",
+        "cos", "pow", "sort", "topk". Defaults to "reduce".
+
+    Returns
+    -------
+    int
+        Minimum required size in bytes. The user should allocate
+        ``tmp_ub = T.alloc_ub((size,), "uint8")`` with this size.
+
+    Note
+    ----
+    This is a conservative estimate. For operations with multiple
+    source buffers, use the largest source buffer's shape. The actual
+    required size may be smaller due to internal optimizations.
+    """
+    dtype_bytes = _DTYPE_BYTES.get(src_buffer_dtype, 4)
+    total_elements = 1
+    for dim in src_buffer_shape:
+        total_elements *= int(dim)
+
+    if op_type == "broadcast":
+        return total_elements * dtype_bytes // 4
+    elif op_type == "sort":
+        return total_elements * dtype_bytes * 8
+    elif op_type == "topk":
+        return total_elements * 4
+    else:
+        return total_elements * dtype_bytes
