@@ -1,4 +1,4 @@
-"""1
+"""
 Paged Block Sparse MQA Attention Kernel — Decode, Flat Grid
 [Optimization 1] 4×K L1 + 4×L0C + MTE2∥V overlap + DMA reorder
 
