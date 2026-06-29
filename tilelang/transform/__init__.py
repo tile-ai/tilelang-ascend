@@ -527,22 +527,6 @@ def InjectTmpBuffer(target: Target):
     return _ffi_api.InjectTmpBuffer(target)  # type: ignore
 
 
-_DTYPE_BYTES = {
-    "float16": 2,
-    "bfloat16": 2,
-    "float32": 4,
-    "float": 4,
-    "int8": 1,
-    "uint8": 1,
-    "int16": 2,
-    "uint16": 2,
-    "int32": 4,
-    "uint32": 4,
-    "int64": 8,
-    "uint64": 8,
-}
-
-
 def get_tmp_buffer_size(
     src_buffer_shape,
     src_buffer_dtype: str,
@@ -577,7 +561,9 @@ def get_tmp_buffer_size(
     source buffers, use the largest source buffer's shape. The actual
     required size may be smaller due to internal optimizations.
     """
-    dtype_bytes = _DTYPE_BYTES.get(src_buffer_dtype, 4)
+    from tvm import DataType
+
+    dtype_bytes = DataType(src_buffer_dtype).bits // 8
     total_elements = 1
     for dim in src_buffer_shape:
         total_elements *= int(dim)
