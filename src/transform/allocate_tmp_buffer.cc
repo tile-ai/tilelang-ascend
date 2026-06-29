@@ -8,6 +8,8 @@
 #include <tvm/tir/stmt_functor.h>
 #include <tvm/tir/transform.h>
 
+#include "tir/transforms/ir_utils.h"
+
 #include <algorithm>
 #include <iostream>
 #include <string>
@@ -24,6 +26,11 @@ namespace tl {
 
 using namespace tir;
 using namespace tir::transform;
+
+static constexpr const char *kAscendInjectTmpBuffer =
+    "tl.ascend_inject_tmp_buffer";
+
+TVM_REGISTER_PASS_CONFIG_OPTION(kAscendInjectTmpBuffer, Bool);
 
 namespace {
 
@@ -288,9 +295,11 @@ private:
 
 class TmpBufferInjector : public StmtExprMutator {
 public:
-  static PrimFunc TmpBufferInject(PrimFunc f, Target target) {
+  static PrimFunc TmpBufferInject(PrimFunc f, Target target,
+                                  bool inject_enabled) {
     TmpBufferInjector injector;
     injector.target_ = Downcast<String>(target.get()->attrs["model"]);
+    injector.inject_enabled_ = inject_enabled;
     PrimFuncNode *fptr = f.CopyOnWrite();
     injector.calls_ = CallNodeCollector::Collect(f, target);
     Stmt new_body = injector.inject(f->body);
@@ -299,6 +308,20 @@ public:
                                         injector.tmp_bufs_,
                                         injector.reduce_out_tmp_buf_);
     fptr->body = new_body;
+
+    if (inject_enabled && injector.tmp_buf_.defined()) {
+      auto fn_attr = fptr->attrs.CopyOnWrite();
+      Array<Var> tmp_buffer_vars;
+      tmp_buffer_vars.push_back(injector.tmp_buf_->data);
+      for (const auto &buf : injector.tmp_bufs_) {
+        tmp_buffer_vars.push_back(buf->data);
+      }
+      if (injector.reduce_out_tmp_buf_.defined()) {
+        tmp_buffer_vars.push_back(injector.reduce_out_tmp_buf_->data);
+      }
+      fn_attr->dict.Set("tmp_buffer_vars", tmp_buffer_vars);
+    }
+
     return f;
   }
 
@@ -312,27 +335,31 @@ private:
       // Insert a tmp buffer into the alloc_buffers of the Block
       Array<Buffer> new_alloc_buffers = op->alloc_buffers;
 
-      tmp_buf_ = createTmpBuffer_(op->alloc_buffers);
-      if (tmp_buf_.defined()) {
-        new_alloc_buffers.push_back(tmp_buf_);
-      }
+      if (inject_enabled_) {
+        tmp_buf_ = createTmpBuffer_(op->alloc_buffers);
+        if (tmp_buf_.defined()) {
+          new_alloc_buffers.push_back(tmp_buf_);
+        }
 
-      if ("pto" == target_) {
-        reduce_out_tmp_buf_ =
-            createPTOClearReduceOutputTmpBuffer_(op->alloc_buffers);
-        if (reduce_out_tmp_buf_.defined()) {
-          new_alloc_buffers.push_back(reduce_out_tmp_buf_);
+        if ("pto" == target_) {
+          reduce_out_tmp_buf_ =
+              createPTOClearReduceOutputTmpBuffer_(op->alloc_buffers);
+          if (reduce_out_tmp_buf_.defined()) {
+            new_alloc_buffers.push_back(reduce_out_tmp_buf_);
+          }
+          tmp_bufs_ = createPTOXORAndMergeSortAndGatherMaskTmpBuffer_(
+              op->alloc_buffers);
+          for (const Buffer &tmp_buffer : tmp_bufs_) {
+            new_alloc_buffers.push_back(tmp_buffer);
+          }
+        } else if ("ascendc" == target_ || "auto" == target_) {
+          tmp_bufs_ = createASCTopKAndSortTmpBuffer_(op->alloc_buffers);
+          for (const Buffer &tmp_buffer : tmp_bufs_) {
+            new_alloc_buffers.push_back(tmp_buffer);
+          }
         }
-        tmp_bufs_ =
-            createPTOXORAndMergeSortAndGatherMaskTmpBuffer_(op->alloc_buffers);
-        for (const Buffer &tmp_buffer : tmp_bufs_) {
-          new_alloc_buffers.push_back(tmp_buffer);
-        }
-      } else if ("ascendc" == target_ || "auto" == target_) {
-        tmp_bufs_ = createASCTopKAndSortTmpBuffer_(op->alloc_buffers);
-        for (const Buffer &tmp_buffer : tmp_bufs_) {
-          new_alloc_buffers.push_back(tmp_buffer);
-        }
+      } else {
+        CollectUserProvidedTmpBuffers_(op->alloc_buffers);
       }
 
       // return new Block
@@ -1153,11 +1180,130 @@ private:
   Buffer tmp_buf_;
   Array<Buffer> tmp_bufs_;
   Buffer reduce_out_tmp_buf_;
+  bool inject_enabled_ = true;
+
+  Buffer FindUserProvidedBuffer_(const Array<Buffer> &alloc_buffers,
+                                 const std::string &name) {
+    for (const auto &buf : alloc_buffers) {
+      if (buf->name == name) {
+        return buf;
+      }
+    }
+    return Buffer();
+  }
+
+  int64_t BufferSizeInBytes_(const Buffer &buf) {
+    int64_t size = 1;
+    for (const auto &dim : buf->shape) {
+      const auto *imm = dim.as<IntImmNode>();
+      ICHECK(imm) << "Buffer extent must be integer constant for tmp buffer "
+                  << buf->name;
+      size *= imm->value;
+    }
+    return size * buf->dtype.bytes();
+  }
+
+  void CollectUserProvidedTmpBuffers_(const Array<Buffer> &alloc_buffers) {
+    tmp_buf_ = FindUserProvidedBuffer_(alloc_buffers, buffer_name_);
+
+    bool needs_tmp = !calls_.empty();
+    if (needs_tmp && !tmp_buf_.defined()) {
+      LOG(FATAL) << "InjectTmpBuffer pass is disabled "
+                 << "(TL_ASCEND_INJECT_TMP_BUFFER=False) but the kernel "
+                 << "contains operations (reduce/broadcast/sigmoid/etc.) "
+                 << "that require a temporary buffer. Please manually "
+                 << "allocate a UB buffer named '" << buffer_name_ << "' "
+                 << "with uint8 dtype and sufficient size, e.g.: "
+                 << "tmp_ub = T.alloc_ub((size,), 'uint8')";
+    }
+
+    if (tmp_buf_.defined()) {
+      std::string scope = GetPtrStorageScope(tmp_buf_->data);
+      if (scope != "shared") {
+        LOG(FATAL) << "User-provided tmp buffer '" << buffer_name_
+                   << "' must be in 'shared' (UB) scope, but got '" << scope
+                   << "'. Use T.alloc_ub() to allocate a UB buffer.";
+      }
+      if (tmp_buf_->dtype != DataType::UInt(8)) {
+        LOG(FATAL) << "User-provided tmp buffer '" << buffer_name_
+                   << "' must be uint8 dtype, but got " << tmp_buf_->dtype
+                   << ".";
+      }
+      ValidateTmpBufferSize_(alloc_buffers);
+    }
+
+    for (int i = 1;; i++) {
+      std::string name = buffer_name_ + "_" + std::to_string(i);
+      Buffer buf = FindUserProvidedBuffer_(alloc_buffers, name);
+      if (buf.defined()) {
+        tmp_bufs_.push_back(buf);
+      } else {
+        break;
+      }
+    }
+
+    if ("pto" == target_) {
+      reduce_out_tmp_buf_ =
+          FindUserProvidedBuffer_(alloc_buffers, buffer_name_ + "_reduce_out");
+    }
+
+    bool needs_dtype_tmp = false;
+    for (const auto &call : calls_) {
+      if (call->op.same_as(tl::ascend_sort()) ||
+          call->op.same_as(tl::ascend_topk()) ||
+          call->op.same_as(tl::ascend_bitwise_xor()) ||
+          call->op.same_as(tl::ascend_merge_sort()) ||
+          call->op.same_as(tl::ascend_gather()) ||
+          call->op.same_as(tl::ascend_gather_mask())) {
+        needs_dtype_tmp = true;
+        break;
+      }
+    }
+    if (needs_dtype_tmp && tmp_bufs_.empty()) {
+      LOG(FATAL) << "InjectTmpBuffer pass is disabled but sort/topk/xor/"
+                 << "merge_sort operations require dtype-specific tmp "
+                 << "buffers. Please also allocate buffers named '"
+                 << buffer_name_ << "_1', '" << buffer_name_
+                 << "_2', etc. with appropriate dtypes.";
+    }
+  }
+
+  void ValidateTmpBufferSize_(const Array<Buffer> &alloc_buffers) {
+    Array<PrimExpr> required_shape;
+    if ("pto" == target_) {
+      required_shape = GetPTOTmpBufferSize_(alloc_buffers);
+    } else if ("ascendc" == target_ || "auto" == target_) {
+      required_shape = GetAscendCTmpBufferSize_(alloc_buffers);
+    }
+
+    if (required_shape.empty()) {
+      return;
+    }
+
+    int64_t required_bytes = 1;
+    for (const auto &dim : required_shape) {
+      const auto *imm = dim.as<IntImmNode>();
+      if (!imm) {
+        return;
+      }
+      required_bytes *= imm->value;
+    }
+
+    int64_t user_bytes = BufferSizeInBytes_(tmp_buf_);
+    if (user_bytes < required_bytes) {
+      LOG(FATAL) << "User-provided tmp buffer '" << buffer_name_
+                 << "' is too small: " << user_bytes << " bytes, but at "
+                 << "least " << required_bytes << " bytes are required.";
+    }
+  }
 };
 
 tvm::transform::Pass InjectTmpBuffer(Target target) {
   auto pass_func = [=](PrimFunc f, IRModule m, PassContext ctx) {
-    return TmpBufferInjector::TmpBufferInject(std::move(f), target);
+    bool inject_enabled =
+        ctx->GetConfig<Bool>(kAscendInjectTmpBuffer, Bool(true)).value();
+    return TmpBufferInjector::TmpBufferInject(std::move(f), target,
+                                              inject_enabled);
   };
   return CreatePrimFuncPass(pass_func, 0, "tl.InjectTmpBuffer", {});
 }
