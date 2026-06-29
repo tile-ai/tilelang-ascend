@@ -1,5 +1,4 @@
 import os
-from datetime import datetime
 
 import tilelang
 from tilelang import language as T
@@ -547,8 +546,7 @@ def x_attention_decode_v_parallel_p0_stack4_3stage():
                                         T.set_flag("MTE1", "MTE2", 2)
                                     T.set_cross_flag("FIX", SHARED_QK_READY_BASE, 2)
 
-                            if pipe_step >= PRE_LAUNCH:
-                                if pipe_step < shared_local_total_steps:
+                            if pipe_step >= PRE_LAUNCH and pipe_step < shared_local_total_steps:
                                     pv_task_idx = pipe_step - PRE_LAUNCH
                                     p_slot = pv_task_idx % SHARED_P_SLOTS
                                     o_slot = pv_task_idx % SHARED_O_SLOTS
@@ -904,8 +902,7 @@ def x_attention_decode_v_parallel_p0_stack4_3stage():
                                         T.set_flag("mte3", "v", 3)
                                     T.set_cross_flag("MTE3", SHARED_V_READY_BASE, 2)
 
-                            if loop_idx >= PRE_LAUNCH:
-                                if loop_idx < shared_local_total_steps:
+                            if loop_idx >= PRE_LAUNCH and loop_idx < shared_local_total_steps:
                                     rescale_task_idx = loop_idx - PRE_LAUNCH
                                     o_slot = rescale_task_idx % SHARED_O_SLOTS
                                     add_side = delayed_stage
