@@ -93,9 +93,7 @@ SHARED_Q_TILES_PER_KV_HEAD = GROUP_SIZE // SHARED_Q_HEADS_PER_TILE
 SHARED_BEAM_KV_PAIRS = SHARED_BEAM_CHUNKS * KV_HEADS
 SHARED_TOTAL_PAIRS = SHARED_BEAM_KV_PAIRS * SHARED_Q_TILES_PER_KV_HEAD
 SHARED_RESIDENT_GROUPS = SHARED_BEAM_KV_PAIRS
-SHARED_RESIDENT_GROUPS_PER_CORE = (
-    SHARED_RESIDENT_GROUPS + SHARED_CORES - 1
-) // SHARED_CORES
+SHARED_RESIDENT_GROUPS_PER_CORE = (SHARED_RESIDENT_GROUPS + SHARED_CORES - 1) // SHARED_CORES
 SHARED_ACTIVE_RESIDENT_CORES = min(SHARED_RESIDENT_GROUPS, SHARED_CORES)
 SHARED_CURRENT_KV_LOAD_UNITS = SHARED_TOTAL_PAIRS * SHARED_KV_TILES * STACK_NUM
 SHARED_QGROUP_KV_LOAD_UNITS = SHARED_RESIDENT_GROUPS * SHARED_KV_TILES * STACK_NUM
@@ -135,21 +133,15 @@ def x_attention_decode_v_parallel_p0_stack4_3stage():
         K_shared: T.Tensor(k_shared_shape, dtype),
         V_shared: T.Tensor(v_shared_shape, dtype),
         Output: T.Tensor(o_shape, dtype),
-        s_buf: T.Tensor(
-            [SHARED_S_SLOTS, block_num, BM, EFFECTIVE_BLOCK_N], accum_dtype
-        ),
+        s_buf: T.Tensor([SHARED_S_SLOTS, block_num, BM, EFFECTIVE_BLOCK_N], accum_dtype),
         p_buf: T.Tensor([SHARED_P_SLOTS, block_num, BM, EFFECTIVE_BLOCK_N], dtype),
         o_buf: T.Tensor([SHARED_O_SLOTS, block_num, BM, D], accum_dtype),
         K_unshared: T.Tensor(k_unshared_shape, dtype),
         V_unshared: T.Tensor(v_unshared_shape, dtype),
         Q_unshared_flat: T.Tensor(q_unshared_shape, dtype),
         shared_O_merge_ws: T.Tensor([BEAM_SIZE, NUM_HEADS, D], accum_dtype),
-        shared_gm_merge_ws: T.Tensor(
-            [BEAM_SIZE, NUM_HEADS, UB_ALIGN_ELEMS], accum_dtype
-        ),
-        shared_gl_merge_ws: T.Tensor(
-            [BEAM_SIZE, NUM_HEADS, UB_ALIGN_ELEMS], accum_dtype
-        ),
+        shared_gm_merge_ws: T.Tensor([BEAM_SIZE, NUM_HEADS, UB_ALIGN_ELEMS], accum_dtype),
+        shared_gl_merge_ws: T.Tensor([BEAM_SIZE, NUM_HEADS, UB_ALIGN_ELEMS], accum_dtype),
         unshared_O_ws: T.Tensor([UNSHARED_BEAM, NUM_HEADS, D], accum_dtype),
         unshared_gm_ws: T.Tensor([UNSHARED_BEAM, NUM_HEADS], accum_dtype),
         unshared_gl_ws: T.Tensor([UNSHARED_BEAM, NUM_HEADS], accum_dtype),
@@ -177,14 +169,10 @@ def x_attention_decode_v_parallel_p0_stack4_3stage():
             m_i = T.alloc_ub([v_p, 1], accum_dtype)
             m_i_tiles = T.alloc_ub([SHARED_S_ROW_TILES, SHARED_S_ROWS, 1], accum_dtype)
             sumexp = T.alloc_ub([v_p, 1], accum_dtype)
-            sumexp_tiles = T.alloc_ub(
-                [SHARED_S_ROW_TILES, SHARED_S_ROWS, 1], accum_dtype
-            )
+            sumexp_tiles = T.alloc_ub([SHARED_S_ROW_TILES, SHARED_S_ROWS, 1], accum_dtype)
             m_i_prev = T.alloc_ub([v_p, 1], accum_dtype)
             m_i_prev_chunk = T.alloc_ub([v_p, 1], accum_dtype)
-            m_i_prev_chunk_tiles = T.alloc_ub(
-                [SHARED_S_ROW_TILES, SHARED_S_ROWS, 1], accum_dtype
-            )
+            m_i_prev_chunk_tiles = T.alloc_ub([SHARED_S_ROW_TILES, SHARED_S_ROWS, 1], accum_dtype)
             sumexp_i = T.alloc_ub([1, SHARED_S_ROWS, 1], accum_dtype)
             m_i_next = T.alloc_ub([1, SHARED_S_ROWS, 1], accum_dtype)
             shared_s_brcb_buf = T.alloc_ub([SHARED_S_ROWS, UB_ALIGN_ELEMS], accum_dtype)
@@ -228,16 +216,10 @@ def x_attention_decode_v_parallel_p0_stack4_3stage():
             unshared_s = T.alloc_ub([UNSHARED_V_ROWS, KV_BATCH], accum_dtype)
             unshared_s_half = T.alloc_ub([UNSHARED_V_ROWS, KV_BATCH], dtype)
             unshared_m = T.alloc_ub([UNSHARED_V_ROWS, 1], accum_dtype)
-            unshared_m_pack = T.alloc_ub(
-                [UNSHARED_BEAMS_PER_VEC, NUM_HEADS], accum_dtype
-            )
-            unshared_m_broadcast = T.alloc_ub(
-                [UNSHARED_V_ROWS, UB_ALIGN_ELEMS], accum_dtype
-            )
+            unshared_m_pack = T.alloc_ub([UNSHARED_BEAMS_PER_VEC, NUM_HEADS], accum_dtype)
+            unshared_m_broadcast = T.alloc_ub([UNSHARED_V_ROWS, UB_ALIGN_ELEMS], accum_dtype)
             unshared_sum = T.alloc_ub([UNSHARED_V_ROWS, 1], accum_dtype)
-            unshared_sum_pack = T.alloc_ub(
-                [UNSHARED_BEAMS_PER_VEC, NUM_HEADS], accum_dtype
-            )
+            unshared_sum_pack = T.alloc_ub([UNSHARED_BEAMS_PER_VEC, NUM_HEADS], accum_dtype)
             unshared_mask = T.alloc_ub([UNSHARED_V_ROWS, KV_BATCH], accum_dtype)
             precision_dump_f32 = T.alloc_ub([1, D], accum_dtype)
             precision_dump_bf16 = T.alloc_ub([1, D], dtype)
@@ -246,12 +228,8 @@ def x_attention_decode_v_parallel_p0_stack4_3stage():
             merge_u_O = T.alloc_ub([2, MERGE_ROW_TILE, D], accum_dtype)
             merge_s_gm_lane = T.alloc_ub([MERGE_ROW_TILE, UB_ALIGN_ELEMS], accum_dtype)
             merge_s_gl_lane = T.alloc_ub([MERGE_ROW_TILE, UB_ALIGN_ELEMS], accum_dtype)
-            merge_s_gm_load_lane = T.alloc_ub(
-                [2, MERGE_ROW_TILE, UB_ALIGN_ELEMS], accum_dtype
-            )
-            merge_s_gl_load_lane = T.alloc_ub(
-                [2, MERGE_ROW_TILE, UB_ALIGN_ELEMS], accum_dtype
-            )
+            merge_s_gm_load_lane = T.alloc_ub([2, MERGE_ROW_TILE, UB_ALIGN_ELEMS], accum_dtype)
+            merge_s_gl_load_lane = T.alloc_ub([2, MERGE_ROW_TILE, UB_ALIGN_ELEMS], accum_dtype)
             merge_s_gm = T.alloc_ub([MERGE_ROW_TILE, 1], accum_dtype)
             merge_u_gm = T.alloc_ub([2, MERGE_ROW_TILE, 1], accum_dtype)
             merge_s_gl = T.alloc_ub([MERGE_ROW_TILE, 1], accum_dtype)
@@ -322,9 +300,7 @@ def x_attention_decode_v_parallel_p0_stack4_3stage():
             )
 
             if cid < SHARED_CORES:
-                shared_local_pair_count = (
-                    SHARED_TOTAL_PAIRS + SHARED_CORES - 1 - cid
-                ) // SHARED_CORES
+                shared_local_pair_count = (SHARED_TOTAL_PAIRS + SHARED_CORES - 1 - cid) // SHARED_CORES
                 shared_local_real_steps = shared_local_pair_count * SHARED_KV_TILES
                 shared_local_total_steps = shared_local_real_steps + PRE_LAUNCH
                 for _shared_launch in range(1):
@@ -355,21 +331,11 @@ def x_attention_decode_v_parallel_p0_stack4_3stage():
                                     shared_c_pair_slot2 = SHARED_TOTAL_PAIRS
                                     shared_c_k_slot2 = task_k
                                 if task_pair_idx < SHARED_TOTAL_PAIRS:
-                                    task_beam_kv_idx = (
-                                        task_pair_idx // SHARED_Q_TILES_PER_KV_HEAD
-                                    )
-                                    task_q_tile = (
-                                        task_pair_idx
-                                        - task_beam_kv_idx * SHARED_Q_TILES_PER_KV_HEAD
-                                    )
+                                    task_beam_kv_idx = task_pair_idx // SHARED_Q_TILES_PER_KV_HEAD
+                                    task_q_tile = task_pair_idx - task_beam_kv_idx * SHARED_Q_TILES_PER_KV_HEAD
                                     task_beam_chunk = task_beam_kv_idx // KV_HEADS
-                                    task_kv_head_idx = (
-                                        task_beam_kv_idx - task_beam_chunk * KV_HEADS
-                                    )
-                                    task_head_idx = (
-                                        task_kv_head_idx * GROUP_SIZE
-                                        + task_q_tile * SHARED_Q_HEADS_PER_TILE
-                                    )
+                                    task_kv_head_idx = task_beam_kv_idx - task_beam_chunk * KV_HEADS
+                                    task_head_idx = task_kv_head_idx * GROUP_SIZE + task_q_tile * SHARED_Q_HEADS_PER_TILE
                                     if side == 0:
                                         shared_c_pair_slot0 = task_pair_idx
                                         shared_c_kv_head_slot0 = task_kv_head_idx
@@ -384,10 +350,7 @@ def x_attention_decode_v_parallel_p0_stack4_3stage():
                                         T.wait_flag("MTE1", "MTE2", 2)
                                         T.copy(
                                             Q[
-                                                task_beam_chunk * BM : (
-                                                    task_beam_chunk + 1
-                                                )
-                                                * BM,
+                                                task_beam_chunk * BM : (task_beam_chunk + 1) * BM,
                                                 task_head_idx,
                                                 :D,
                                             ],
@@ -397,10 +360,7 @@ def x_attention_decode_v_parallel_p0_stack4_3stage():
                                     T.wait_flag("MTE1", "MTE2", 0)
                                     T.copy(
                                         K_shared[
-                                            task_k * STACK_NUM * BLOCK_N : (
-                                                task_k * STACK_NUM + 1
-                                            )
-                                            * BLOCK_N,
+                                            task_k * STACK_NUM * BLOCK_N : (task_k * STACK_NUM + 1) * BLOCK_N,
                                             task_kv_head_idx,
                                             :D,
                                         ],
@@ -411,10 +371,7 @@ def x_attention_decode_v_parallel_p0_stack4_3stage():
                                     T.wait_flag("MTE1", "MTE2", 1)
                                     T.copy(
                                         K_shared[
-                                            (task_k * STACK_NUM + 1) * BLOCK_N : (
-                                                task_k * STACK_NUM + 2
-                                            )
-                                            * BLOCK_N,
+                                            (task_k * STACK_NUM + 1) * BLOCK_N : (task_k * STACK_NUM + 2) * BLOCK_N,
                                             task_kv_head_idx,
                                             :D,
                                         ],
@@ -441,10 +398,7 @@ def x_attention_decode_v_parallel_p0_stack4_3stage():
                                     T.wait_flag("MTE1", "MTE2", 0)
                                     T.copy(
                                         K_shared[
-                                            (task_k * STACK_NUM + 2) * BLOCK_N : (
-                                                task_k * STACK_NUM + 3
-                                            )
-                                            * BLOCK_N,
+                                            (task_k * STACK_NUM + 2) * BLOCK_N : (task_k * STACK_NUM + 3) * BLOCK_N,
                                             task_kv_head_idx,
                                             :D,
                                         ],
@@ -471,10 +425,7 @@ def x_attention_decode_v_parallel_p0_stack4_3stage():
                                     T.wait_flag("MTE1", "MTE2", 1)
                                     T.copy(
                                         K_shared[
-                                            (task_k * STACK_NUM + 3) * BLOCK_N : (
-                                                task_k * STACK_NUM + 4
-                                            )
-                                            * BLOCK_N,
+                                            (task_k * STACK_NUM + 3) * BLOCK_N : (task_k * STACK_NUM + 4) * BLOCK_N,
                                             task_kv_head_idx,
                                             :D,
                                         ],
@@ -529,17 +480,13 @@ def x_attention_decode_v_parallel_p0_stack4_3stage():
                                     T.wait_flag("M", "FIX", 5)
                                     T.copy(
                                         mma_l0c[0, :, :],
-                                        s_buf[
-                                            s_slot, cid, :, 2 * BLOCK_N : 3 * BLOCK_N
-                                        ],
+                                        s_buf[s_slot, cid, :, 2 * BLOCK_N : 3 * BLOCK_N],
                                     )
                                     T.set_flag("FIX", "M", 5)
                                     T.wait_flag("M", "FIX", 6)
                                     T.copy(
                                         mma_l0c[1, :, :],
-                                        s_buf[
-                                            s_slot, cid, :, 3 * BLOCK_N : 4 * BLOCK_N
-                                        ],
+                                        s_buf[s_slot, cid, :, 3 * BLOCK_N : 4 * BLOCK_N],
                                     )
                                     T.set_flag("FIX", "M", 6)
                                     if task_k == SHARED_KV_TILES - 1:
@@ -547,97 +494,88 @@ def x_attention_decode_v_parallel_p0_stack4_3stage():
                                     T.set_cross_flag("FIX", SHARED_QK_READY_BASE, 2)
 
                             if pipe_step >= PRE_LAUNCH and pipe_step < shared_local_total_steps:
-                                    pv_task_idx = pipe_step - PRE_LAUNCH
-                                    p_slot = pv_task_idx % SHARED_P_SLOTS
-                                    o_slot = pv_task_idx % SHARED_O_SLOTS
-                                    pv_side = delayed_stage
-                                    shared_pv_pair_cur = SHARED_TOTAL_PAIRS
-                                    if pv_side == 0:
-                                        shared_pv_pair_cur = shared_c_pair_slot0
-                                        shared_pv_k_cur = shared_c_k_slot0
-                                        shared_pv_kv_head_cur = shared_c_kv_head_slot0
-                                    if pv_side == 1:
-                                        shared_pv_pair_cur = shared_c_pair_slot1
-                                        shared_pv_k_cur = shared_c_k_slot1
-                                        shared_pv_kv_head_cur = shared_c_kv_head_slot1
-                                    if pv_side == 2:
-                                        shared_pv_pair_cur = shared_c_pair_slot2
-                                        shared_pv_k_cur = shared_c_k_slot2
-                                        shared_pv_kv_head_cur = shared_c_kv_head_slot2
-                                    if shared_pv_pair_cur < SHARED_TOTAL_PAIRS:
-                                        T.wait_flag("MTE1", "MTE2", 3)
-                                        for chunk in T.serial(STACK_NUM):
-                                            T.copy(
-                                                V_shared[
-                                                    (
-                                                        shared_pv_k_cur * STACK_NUM
-                                                        + chunk
-                                                    )
-                                                    * BLOCK_N : (
-                                                        shared_pv_k_cur * STACK_NUM
-                                                        + chunk
-                                                        + 1
-                                                    )
-                                                    * BLOCK_N,
-                                                    shared_pv_kv_head_cur,
-                                                    :D,
-                                                ],
-                                                shared_v_stack_l1[chunk, :, :],
-                                            )
-                                        T.set_flag("MTE2", "MTE1", 3)
-
-                                        T.wait_cross_flag(SHARED_V_READY_BASE)
-                                        T.wait_flag("FIX", "M", 5)
-                                        T.wait_flag("MTE2", "MTE1", 3)
-                                        for chunk in T.serial(STACK_NUM):
-                                            mma_slot = chunk % 2
-                                            T.wait_flag("MTE1", "MTE2", mma_slot)
-                                            T.copy(
-                                                p_buf[
-                                                    p_slot,
-                                                    cid,
-                                                    :,
-                                                    chunk * BLOCK_N : (chunk + 1)
-                                                    * BLOCK_N,
-                                                ],
-                                                acc_s_l1[mma_slot, :, :],
-                                            )
-                                            T.set_flag("MTE2", "MTE1", mma_slot)
-                                            T.wait_flag("MTE2", "MTE1", mma_slot)
-                                            T.wait_flag("M", "MTE1", 3 + mma_slot)
-                                            T.copy(
-                                                acc_s_l1[mma_slot, :, :],
-                                                mma_l0a[mma_slot, :, :],
-                                            )
-                                            T.copy(
-                                                shared_v_stack_l1[chunk, :, :],
-                                                mma_l0b[mma_slot, :, :],
-                                            )
-                                            T.set_flag("MTE1", "MTE2", mma_slot)
-                                            T.set_flag("MTE1", "M", 3 + mma_slot)
-                                            T.wait_flag("MTE1", "M", 3 + mma_slot)
-                                            T.mma(
-                                                mma_l0a[mma_slot, :, :],
-                                                mma_l0b[mma_slot, :, :],
-                                                mma_l0c[0, :, :],
-                                                init=(chunk == 0),
-                                            )
-                                            T.set_flag("M", "MTE1", 3 + mma_slot)
-
-                                        T.set_flag("MTE1", "MTE2", 3)
-                                        T.set_flag("M", "FIX", 5)
-                                        T.wait_flag("M", "FIX", 5)
+                                pv_task_idx = pipe_step - PRE_LAUNCH
+                                p_slot = pv_task_idx % SHARED_P_SLOTS
+                                o_slot = pv_task_idx % SHARED_O_SLOTS
+                                pv_side = delayed_stage
+                                shared_pv_pair_cur = SHARED_TOTAL_PAIRS
+                                if pv_side == 0:
+                                    shared_pv_pair_cur = shared_c_pair_slot0
+                                    shared_pv_k_cur = shared_c_k_slot0
+                                    shared_pv_kv_head_cur = shared_c_kv_head_slot0
+                                if pv_side == 1:
+                                    shared_pv_pair_cur = shared_c_pair_slot1
+                                    shared_pv_k_cur = shared_c_k_slot1
+                                    shared_pv_kv_head_cur = shared_c_kv_head_slot1
+                                if pv_side == 2:
+                                    shared_pv_pair_cur = shared_c_pair_slot2
+                                    shared_pv_k_cur = shared_c_k_slot2
+                                    shared_pv_kv_head_cur = shared_c_kv_head_slot2
+                                if shared_pv_pair_cur < SHARED_TOTAL_PAIRS:
+                                    T.wait_flag("MTE1", "MTE2", 3)
+                                    for chunk in T.serial(STACK_NUM):
                                         T.copy(
-                                            mma_l0c[0, :, :],
-                                            o_buf[
-                                                o_slot,
+                                            V_shared[
+                                                (shared_pv_k_cur * STACK_NUM + chunk) * BLOCK_N : (shared_pv_k_cur * STACK_NUM + chunk + 1)
+                                                * BLOCK_N,
+                                                shared_pv_kv_head_cur,
+                                                :D,
+                                            ],
+                                            shared_v_stack_l1[chunk, :, :],
+                                        )
+                                    T.set_flag("MTE2", "MTE1", 3)
+
+                                    T.wait_cross_flag(SHARED_V_READY_BASE)
+                                    T.wait_flag("FIX", "M", 5)
+                                    T.wait_flag("MTE2", "MTE1", 3)
+                                    for chunk in T.serial(STACK_NUM):
+                                        mma_slot = chunk % 2
+                                        T.wait_flag("MTE1", "MTE2", mma_slot)
+                                        T.copy(
+                                            p_buf[
+                                                p_slot,
                                                 cid,
                                                 :,
-                                                :,
+                                                chunk * BLOCK_N : (chunk + 1) * BLOCK_N,
                                             ],
+                                            acc_s_l1[mma_slot, :, :],
                                         )
-                                        T.set_flag("FIX", "M", 5)
-                                        T.set_cross_flag("FIX", SHARED_PV_READY_BASE, 2)
+                                        T.set_flag("MTE2", "MTE1", mma_slot)
+                                        T.wait_flag("MTE2", "MTE1", mma_slot)
+                                        T.wait_flag("M", "MTE1", 3 + mma_slot)
+                                        T.copy(
+                                            acc_s_l1[mma_slot, :, :],
+                                            mma_l0a[mma_slot, :, :],
+                                        )
+                                        T.copy(
+                                            shared_v_stack_l1[chunk, :, :],
+                                            mma_l0b[mma_slot, :, :],
+                                        )
+                                        T.set_flag("MTE1", "MTE2", mma_slot)
+                                        T.set_flag("MTE1", "M", 3 + mma_slot)
+                                        T.wait_flag("MTE1", "M", 3 + mma_slot)
+                                        T.mma(
+                                            mma_l0a[mma_slot, :, :],
+                                            mma_l0b[mma_slot, :, :],
+                                            mma_l0c[0, :, :],
+                                            init=(chunk == 0),
+                                        )
+                                        T.set_flag("M", "MTE1", 3 + mma_slot)
+
+                                    T.set_flag("MTE1", "MTE2", 3)
+                                    T.set_flag("M", "FIX", 5)
+                                    T.wait_flag("M", "FIX", 5)
+                                    T.copy(
+                                        mma_l0c[0, :, :],
+                                        o_buf[
+                                            o_slot,
+                                            cid,
+                                            :,
+                                            :,
+                                        ],
+                                    )
+                                    T.set_flag("FIX", "M", 5)
+                                    T.set_cross_flag("FIX", SHARED_PV_READY_BASE, 2)
 
                         for final_m_event in T.serial(2):
                             T.wait_flag("M", "MTE1", 3 + final_m_event)
@@ -672,21 +610,11 @@ def x_attention_decode_v_parallel_p0_stack4_3stage():
                                     shared_v_pair_slot2 = SHARED_TOTAL_PAIRS
                                     shared_v_k_slot2 = task_k
                                 if task_pair_idx < SHARED_TOTAL_PAIRS:
-                                    task_beam_kv_idx = (
-                                        task_pair_idx // SHARED_Q_TILES_PER_KV_HEAD
-                                    )
-                                    task_q_tile = (
-                                        task_pair_idx
-                                        - task_beam_kv_idx * SHARED_Q_TILES_PER_KV_HEAD
-                                    )
+                                    task_beam_kv_idx = task_pair_idx // SHARED_Q_TILES_PER_KV_HEAD
+                                    task_q_tile = task_pair_idx - task_beam_kv_idx * SHARED_Q_TILES_PER_KV_HEAD
                                     task_beam_chunk = task_beam_kv_idx // KV_HEADS
-                                    task_kv_head_idx = (
-                                        task_beam_kv_idx - task_beam_chunk * KV_HEADS
-                                    )
-                                    task_head_idx = (
-                                        task_kv_head_idx * GROUP_SIZE
-                                        + task_q_tile * SHARED_Q_HEADS_PER_TILE
-                                    )
+                                    task_kv_head_idx = task_beam_kv_idx - task_beam_chunk * KV_HEADS
+                                    task_head_idx = task_kv_head_idx * GROUP_SIZE + task_q_tile * SHARED_Q_HEADS_PER_TILE
                                     if side == 0:
                                         shared_v_pair_slot0 = task_pair_idx
                                         shared_v_beam_chunk_slot0 = task_beam_chunk
@@ -716,16 +644,13 @@ def x_attention_decode_v_parallel_p0_stack4_3stage():
                                     for row_pipe in T.serial(SHARED_S_ROW_TILES + 1):
                                         if row_pipe < SHARED_S_ROW_TILES:
                                             load_side = row_pipe % SHARED_SOFTMAX_DB
-                                            load_row_offset = (
-                                                vid * v_p + row_pipe * SHARED_S_ROWS
-                                            )
+                                            load_row_offset = vid * v_p + row_pipe * SHARED_S_ROWS
                                             T.wait_flag("v", "mte2", load_side)
                                             T.copy(
                                                 s_buf[
                                                     s_slot,
                                                     cid,
-                                                    load_row_offset : load_row_offset
-                                                    + SHARED_S_ROWS,
+                                                    load_row_offset : load_row_offset + SHARED_S_ROWS,
                                                     :EFFECTIVE_BLOCK_N,
                                                 ],
                                                 acc_s_ub[load_side, :, :],
@@ -735,9 +660,7 @@ def x_attention_decode_v_parallel_p0_stack4_3stage():
                                         if row_pipe >= 1:
                                             row_tile = row_pipe - 1
                                             compute_side = row_tile % SHARED_SOFTMAX_DB
-                                            row_offset = (
-                                                vid * v_p + row_tile * SHARED_S_ROWS
-                                            )
+                                            row_offset = vid * v_p + row_tile * SHARED_S_ROWS
                                             T.wait_flag("mte2", "v", compute_side)
                                             T.tile.mul(
                                                 acc_s_ub[compute_side, :, :],
@@ -763,29 +686,19 @@ def x_attention_decode_v_parallel_p0_stack4_3stage():
                                             T.pipe_barrier("v")
                                             if task_k > 0:
                                                 T.tile.sub(
-                                                    m_i_prev_chunk_tiles[
-                                                        row_tile, :, :
-                                                    ],
-                                                    m_i_prev_chunk_tiles[
-                                                        row_tile, :, :
-                                                    ],
+                                                    m_i_prev_chunk_tiles[row_tile, :, :],
+                                                    m_i_prev_chunk_tiles[row_tile, :, :],
                                                     m_i_tiles[row_tile, :, :],
                                                 )
                                                 T.tile.exp(
-                                                    m_i_prev_chunk_tiles[
-                                                        row_tile, :, :
-                                                    ],
-                                                    m_i_prev_chunk_tiles[
-                                                        row_tile, :, :
-                                                    ],
+                                                    m_i_prev_chunk_tiles[row_tile, :, :],
+                                                    m_i_prev_chunk_tiles[row_tile, :, :],
                                                 )
                                                 T.pipe_barrier("v")
                                                 T.tile.mul(
                                                     sumexp_tiles[row_tile, :, :],
                                                     sumexp_tiles[row_tile, :, :],
-                                                    m_i_prev_chunk_tiles[
-                                                        row_tile, :, :
-                                                    ],
+                                                    m_i_prev_chunk_tiles[row_tile, :, :],
                                                 )
                                                 T.pipe_barrier("v")
                                             T.tile.brcb_experiment(
@@ -796,25 +709,18 @@ def x_attention_decode_v_parallel_p0_stack4_3stage():
                                                 8,
                                             )
                                             T.pipe_barrier("v")
-                                            for sub_chunk in T.serial(
-                                                EFFECTIVE_BLOCK_N
-                                                // SHARED_S_VECTOR_ELEMS
-                                            ):
-                                                sub_col = (
-                                                    sub_chunk * SHARED_S_VECTOR_ELEMS
-                                                )
+                                            for sub_chunk in T.serial(EFFECTIVE_BLOCK_N // SHARED_S_VECTOR_ELEMS):
+                                                sub_col = sub_chunk * SHARED_S_VECTOR_ELEMS
                                                 T.tile.row_expand_sub_experiment(
                                                     acc_s_ub[
                                                         compute_side,
                                                         :,
-                                                        sub_col : sub_col
-                                                        + SHARED_S_VECTOR_ELEMS,
+                                                        sub_col : sub_col + SHARED_S_VECTOR_ELEMS,
                                                     ],
                                                     acc_s_ub[
                                                         compute_side,
                                                         :,
-                                                        sub_col : sub_col
-                                                        + SHARED_S_VECTOR_ELEMS,
+                                                        sub_col : sub_col + SHARED_S_VECTOR_ELEMS,
                                                     ],
                                                     shared_s_brcb_buf,
                                                 )
@@ -849,8 +755,7 @@ def x_attention_decode_v_parallel_p0_stack4_3stage():
                                                 p_buf[
                                                     p_slot,
                                                     cid,
-                                                    row_offset : row_offset
-                                                    + SHARED_S_ROWS,
+                                                    row_offset : row_offset + SHARED_S_ROWS,
                                                     :EFFECTIVE_BLOCK_N,
                                                 ],
                                             )
@@ -882,9 +787,7 @@ def x_attention_decode_v_parallel_p0_stack4_3stage():
                                         T.copy(
                                             shared_gm_store_buf[:, :],
                                             shared_gm_merge_ws[
-                                                task_beam_chunk * BM
-                                                + vid * v_p : task_beam_chunk * BM
-                                                + (vid + 1) * v_p,
+                                                task_beam_chunk * BM + vid * v_p : task_beam_chunk * BM + (vid + 1) * v_p,
                                                 task_head_idx,
                                                 :,
                                             ],
@@ -892,9 +795,7 @@ def x_attention_decode_v_parallel_p0_stack4_3stage():
                                         T.copy(
                                             shared_gl_store_buf[:, :],
                                             shared_gl_merge_ws[
-                                                task_beam_chunk * BM
-                                                + vid * v_p : task_beam_chunk * BM
-                                                + (vid + 1) * v_p,
+                                                task_beam_chunk * BM + vid * v_p : task_beam_chunk * BM + (vid + 1) * v_p,
                                                 task_head_idx,
                                                 :,
                                             ],
@@ -903,107 +804,95 @@ def x_attention_decode_v_parallel_p0_stack4_3stage():
                                     T.set_cross_flag("MTE3", SHARED_V_READY_BASE, 2)
 
                             if loop_idx >= PRE_LAUNCH and loop_idx < shared_local_total_steps:
-                                    rescale_task_idx = loop_idx - PRE_LAUNCH
-                                    o_slot = rescale_task_idx % SHARED_O_SLOTS
-                                    add_side = delayed_stage
-                                    shared_add_pair_cur = SHARED_TOTAL_PAIRS
-                                    if add_side == 0:
-                                        shared_add_pair_cur = shared_v_pair_slot0
-                                        shared_add_k_cur = shared_v_k_slot0
-                                        shared_add_beam_chunk_cur = (
-                                            shared_v_beam_chunk_slot0
-                                        )
-                                        shared_add_head_cur = shared_v_head_slot0
-                                    if add_side == 1:
-                                        shared_add_pair_cur = shared_v_pair_slot1
-                                        shared_add_k_cur = shared_v_k_slot1
-                                        shared_add_beam_chunk_cur = (
-                                            shared_v_beam_chunk_slot1
-                                        )
-                                        shared_add_head_cur = shared_v_head_slot1
-                                    if add_side == 2:
-                                        shared_add_pair_cur = shared_v_pair_slot2
-                                        shared_add_k_cur = shared_v_k_slot2
-                                        shared_add_beam_chunk_cur = (
-                                            shared_v_beam_chunk_slot2
-                                        )
-                                        shared_add_head_cur = shared_v_head_slot2
-                                    if shared_add_pair_cur < SHARED_TOTAL_PAIRS:
-                                        add_k = shared_add_k_cur
-                                        add_beam_chunk = shared_add_beam_chunk_cur
-                                        add_head_idx = shared_add_head_cur
-                                        T.wait_cross_flag(SHARED_PV_READY_BASE)
-                                        T.wait_flag("v", "mte2", SHARED_RESCALE_EVENT)
+                                rescale_task_idx = loop_idx - PRE_LAUNCH
+                                o_slot = rescale_task_idx % SHARED_O_SLOTS
+                                add_side = delayed_stage
+                                shared_add_pair_cur = SHARED_TOTAL_PAIRS
+                                if add_side == 0:
+                                    shared_add_pair_cur = shared_v_pair_slot0
+                                    shared_add_k_cur = shared_v_k_slot0
+                                    shared_add_beam_chunk_cur = shared_v_beam_chunk_slot0
+                                    shared_add_head_cur = shared_v_head_slot0
+                                if add_side == 1:
+                                    shared_add_pair_cur = shared_v_pair_slot1
+                                    shared_add_k_cur = shared_v_k_slot1
+                                    shared_add_beam_chunk_cur = shared_v_beam_chunk_slot1
+                                    shared_add_head_cur = shared_v_head_slot1
+                                if add_side == 2:
+                                    shared_add_pair_cur = shared_v_pair_slot2
+                                    shared_add_k_cur = shared_v_k_slot2
+                                    shared_add_beam_chunk_cur = shared_v_beam_chunk_slot2
+                                    shared_add_head_cur = shared_v_head_slot2
+                                if shared_add_pair_cur < SHARED_TOTAL_PAIRS:
+                                    add_k = shared_add_k_cur
+                                    add_beam_chunk = shared_add_beam_chunk_cur
+                                    add_head_idx = shared_add_head_cur
+                                    T.wait_cross_flag(SHARED_PV_READY_BASE)
+                                    T.wait_flag("v", "mte2", SHARED_RESCALE_EVENT)
+                                    T.copy(
+                                        o_buf[
+                                            o_slot,
+                                            cid,
+                                            vid * v_p : (vid + 1) * v_p,
+                                            :,
+                                        ],
+                                        acc_o_ub[0, :, :],
+                                    )
+                                    T.set_flag("mte2", "v", SHARED_RESCALE_EVENT)
+                                    T.wait_flag("mte2", "v", SHARED_RESCALE_EVENT)
+                                    if add_k == 0:
+                                        T.wait_flag("mte3", "v", 2)
+                                        T.tile.fill(shared_O_ub[0, :, :], 0.0)
+                                    else:
                                         T.copy(
-                                            o_buf[
-                                                o_slot,
-                                                cid,
-                                                vid * v_p : (vid + 1) * v_p,
-                                                :,
-                                            ],
-                                            acc_o_ub[0, :, :],
-                                        )
-                                        T.set_flag("mte2", "v", SHARED_RESCALE_EVENT)
-                                        T.wait_flag("mte2", "v", SHARED_RESCALE_EVENT)
-                                        if add_k == 0:
-                                            T.wait_flag("mte3", "v", 2)
-                                            T.tile.fill(shared_O_ub[0, :, :], 0.0)
-                                        else:
-                                            T.copy(
-                                                shared_o_scale_slots[o_slot, :, :],
-                                                m_i_prev,
-                                            )
-                                            T.pipe_barrier("v")
-                                            T.tile.brcb_experiment(
-                                                shared_m_broadcast_buf,
-                                                m_i_prev,
-                                                SHARED_GMGL_BRCB_REPEAT,
-                                                1,
-                                                8,
-                                            )
-                                            T.pipe_barrier("v")
-                                            for o_chunk in T.serial(
-                                                D // SHARED_O_VECTOR_ELEMS
-                                            ):
-                                                o_col = o_chunk * SHARED_O_VECTOR_ELEMS
-                                                T.tile.row_expand_mul_experiment(
-                                                    shared_O_ub[
-                                                        0,
-                                                        :,
-                                                        o_col : o_col
-                                                        + SHARED_O_VECTOR_ELEMS,
-                                                    ],
-                                                    shared_O_ub[
-                                                        0,
-                                                        :,
-                                                        o_col : o_col
-                                                        + SHARED_O_VECTOR_ELEMS,
-                                                    ],
-                                                    shared_m_broadcast_buf,
-                                                )
-                                            T.pipe_barrier("v")
-                                        T.tile.add(
-                                            shared_O_ub[0, :, :],
-                                            shared_O_ub[0, :, :],
-                                            acc_o_ub[0, :, :],
+                                            shared_o_scale_slots[o_slot, :, :],
+                                            m_i_prev,
                                         )
                                         T.pipe_barrier("v")
-                                        T.set_flag("v", "mte2", SHARED_RESCALE_EVENT)
-                                        if add_k == SHARED_KV_TILES - 1:
-                                            T.set_flag("v", "mte3", 2)
-                                            T.wait_flag("v", "mte3", 2)
-                                            T.copy(
-                                                shared_O_ub[0, :, :D],
-                                                shared_O_merge_ws[
-                                                    add_beam_chunk * BM
-                                                    + vid * v_p : add_beam_chunk * BM
-                                                    + (vid + 1) * v_p,
-                                                    add_head_idx,
-                                                    :D,
+                                        T.tile.brcb_experiment(
+                                            shared_m_broadcast_buf,
+                                            m_i_prev,
+                                            SHARED_GMGL_BRCB_REPEAT,
+                                            1,
+                                            8,
+                                        )
+                                        T.pipe_barrier("v")
+                                        for o_chunk in T.serial(D // SHARED_O_VECTOR_ELEMS):
+                                            o_col = o_chunk * SHARED_O_VECTOR_ELEMS
+                                            T.tile.row_expand_mul_experiment(
+                                                shared_O_ub[
+                                                    0,
+                                                    :,
+                                                    o_col : o_col + SHARED_O_VECTOR_ELEMS,
                                                 ],
+                                                shared_O_ub[
+                                                    0,
+                                                    :,
+                                                    o_col : o_col + SHARED_O_VECTOR_ELEMS,
+                                                ],
+                                                shared_m_broadcast_buf,
                                             )
-                                            T.set_flag("mte3", "v", 2)
                                         T.pipe_barrier("v")
+                                    T.tile.add(
+                                        shared_O_ub[0, :, :],
+                                        shared_O_ub[0, :, :],
+                                        acc_o_ub[0, :, :],
+                                    )
+                                    T.pipe_barrier("v")
+                                    T.set_flag("v", "mte2", SHARED_RESCALE_EVENT)
+                                    if add_k == SHARED_KV_TILES - 1:
+                                        T.set_flag("v", "mte3", 2)
+                                        T.wait_flag("v", "mte3", 2)
+                                        T.copy(
+                                            shared_O_ub[0, :, :D],
+                                            shared_O_merge_ws[
+                                                add_beam_chunk * BM + vid * v_p : add_beam_chunk * BM + (vid + 1) * v_p,
+                                                add_head_idx,
+                                                :D,
+                                            ],
+                                        )
+                                        T.set_flag("mte3", "v", 2)
+                                    T.pipe_barrier("v")
 
                         for final_mte3_event in T.serial(4):
                             T.wait_flag("mte3", "v", final_mte3_event)
@@ -1015,9 +904,7 @@ def x_attention_decode_v_parallel_p0_stack4_3stage():
 
                 with T.Scope("V"):
                     T.copy(
-                        block_mask_ws[
-                            vid * UNSHARED_V_ROWS : (vid + 1) * UNSHARED_V_ROWS, :
-                        ],
+                        block_mask_ws[vid * UNSHARED_V_ROWS : (vid + 1) * UNSHARED_V_ROWS, :],
                         unshared_mask,
                     )
                     T.set_flag("mte2", "v", 1)
@@ -1078,9 +965,7 @@ def x_attention_decode_v_parallel_p0_stack4_3stage():
                             T.wait_flag("M", "FIX", 5 + mma_slot)
                             if i >= TASKQUE_SLOTS:
                                 T.wait_cross_flag(UNSHARED_STAGE_RELEASE_BASE + side)
-                            T.copy(
-                                mma_l0c[mma_slot, :, :], s_buf[side, cid, :, :BLOCK_N]
-                            )
+                            T.copy(mma_l0c[mma_slot, :, :], s_buf[side, cid, :, :BLOCK_N])
                             T.set_flag("FIX", "M", 5 + mma_slot)
                             T.set_flag("FIX", "M", 2)
                             T.wait_flag("FIX", "M", 2)
@@ -1092,9 +977,7 @@ def x_attention_decode_v_parallel_p0_stack4_3stage():
                             T.wait_flag("MTE1", "MTE2", 1)
                             prev_kv_row_base = prev_group_base * DECODE_STEP
                             T.copy(
-                                V_unshared[
-                                    prev_kv_row_base : prev_kv_row_base + KV_BATCH, :D
-                                ],
+                                V_unshared[prev_kv_row_base : prev_kv_row_base + KV_BATCH, :D],
                                 v_l1_u[0:KV_BATCH, :D],
                             )
                             T.wait_cross_flag(UNSHARED_SOFTMAX_READY_BASE + prev_side)
@@ -1130,9 +1013,7 @@ def x_attention_decode_v_parallel_p0_stack4_3stage():
                                 prev_o_row_base = prev_beam_base * NUM_HEADS
                                 T.copy(
                                     mma_l0c[pv_l0c_slot, :, :],
-                                    unshared_O_flat[
-                                        prev_o_row_base : prev_o_row_base + Q_BATCH, :D
-                                    ],
+                                    unshared_O_flat[prev_o_row_base : prev_o_row_base + Q_BATCH, :D],
                                 )
                             T.set_flag("FIX", "M", pv_fix_event)
                             T.set_flag("FIX", "M", 2)
@@ -1187,9 +1068,7 @@ def x_attention_decode_v_parallel_p0_stack4_3stage():
                             8,
                         )
                         T.pipe_barrier("v")
-                        for unshared_sub_chunk in T.serial(
-                            KV_BATCH // UNSHARED_VECTOR_ELEMS
-                        ):
+                        for unshared_sub_chunk in T.serial(KV_BATCH // UNSHARED_VECTOR_ELEMS):
                             unshared_col = unshared_sub_chunk * UNSHARED_VECTOR_ELEMS
                             T.tile.row_expand_sub_experiment(
                                 unshared_s[
@@ -1233,16 +1112,14 @@ def x_attention_decode_v_parallel_p0_stack4_3stage():
                             T.copy(
                                 unshared_m_pack,
                                 unshared_gm_ws[
-                                    vec_beam_base : vec_beam_base
-                                    + UNSHARED_BEAMS_PER_VEC,
+                                    vec_beam_base : vec_beam_base + UNSHARED_BEAMS_PER_VEC,
                                     0:NUM_HEADS,
                                 ],
                             )
                             T.copy(
                                 unshared_sum_pack,
                                 unshared_gl_ws[
-                                    vec_beam_base : vec_beam_base
-                                    + UNSHARED_BEAMS_PER_VEC,
+                                    vec_beam_base : vec_beam_base + UNSHARED_BEAMS_PER_VEC,
                                     0:NUM_HEADS,
                                 ],
                             )
@@ -1259,24 +1136,18 @@ def x_attention_decode_v_parallel_p0_stack4_3stage():
                 for merge_store_event in T.serial(2):
                     T.set_flag("MTE3", "V", 2 + merge_store_event)
 
-                merge_worker_tile_count = (
-                    MERGE_TOTAL_TILES + MERGE_WORKERS - 1 - merge_worker_idx
-                ) // MERGE_WORKERS
+                merge_worker_tile_count = (MERGE_TOTAL_TILES + MERGE_WORKERS - 1 - merge_worker_idx) // MERGE_WORKERS
                 merge_worker_first_tile = merge_worker_idx
 
                 if merge_worker_tile_count > 0:
                     first_merge_row = merge_worker_first_tile * MERGE_ROW_TILE
                     T.wait_flag("v", "mte2", 0)
                     T.copy(
-                        shared_O_merge_flat[
-                            first_merge_row : first_merge_row + MERGE_ROW_TILE, :D
-                        ],
+                        shared_O_merge_flat[first_merge_row : first_merge_row + MERGE_ROW_TILE, :D],
                         merge_s_O[0, :, :],
                     )
                     T.copy(
-                        unshared_O_flat[
-                            first_merge_row : first_merge_row + MERGE_ROW_TILE, :D
-                        ],
+                        unshared_O_flat[first_merge_row : first_merge_row + MERGE_ROW_TILE, :D],
                         merge_u_O[0, :, :],
                     )
                     T.copy(
@@ -1294,24 +1165,18 @@ def x_attention_decode_v_parallel_p0_stack4_3stage():
                         merge_s_gl_load_lane[0, :, :],
                     )
                     T.copy(
-                        unshared_gm_flat[
-                            first_merge_row : first_merge_row + MERGE_ROW_TILE
-                        ],
+                        unshared_gm_flat[first_merge_row : first_merge_row + MERGE_ROW_TILE],
                         merge_u_gm[0, :, 0],
                     )
                     T.copy(
-                        unshared_gl_flat[
-                            first_merge_row : first_merge_row + MERGE_ROW_TILE
-                        ],
+                        unshared_gl_flat[first_merge_row : first_merge_row + MERGE_ROW_TILE],
                         merge_u_gl[0, :, 0],
                     )
                     T.set_flag("mte2", "v", 0)
 
                 for merge_slot in T.serial(MERGE_TILES_PER_WORKER):
                     if merge_slot < merge_worker_tile_count:
-                        merge_tile = (
-                            merge_worker_first_tile + merge_slot * MERGE_WORKERS
-                        )
+                        merge_tile = merge_worker_first_tile + merge_slot * MERGE_WORKERS
                         merge_row = merge_tile * MERGE_ROW_TILE
                         merge_buf = merge_slot % 2
                         merge_next_buf = (merge_slot + 1) % 2
@@ -1321,15 +1186,11 @@ def x_attention_decode_v_parallel_p0_stack4_3stage():
                             next_merge_row = merge_row + MERGE_WORKERS * MERGE_ROW_TILE
                             T.wait_flag("v", "mte2", merge_next_buf)
                             T.copy(
-                                shared_O_merge_flat[
-                                    next_merge_row : next_merge_row + MERGE_ROW_TILE, :D
-                                ],
+                                shared_O_merge_flat[next_merge_row : next_merge_row + MERGE_ROW_TILE, :D],
                                 merge_s_O[merge_next_buf, :, :],
                             )
                             T.copy(
-                                unshared_O_flat[
-                                    next_merge_row : next_merge_row + MERGE_ROW_TILE, :D
-                                ],
+                                unshared_O_flat[next_merge_row : next_merge_row + MERGE_ROW_TILE, :D],
                                 merge_u_O[merge_next_buf, :, :],
                             )
                             T.copy(
@@ -1347,15 +1208,11 @@ def x_attention_decode_v_parallel_p0_stack4_3stage():
                                 merge_s_gl_load_lane[merge_next_buf, :, :],
                             )
                             T.copy(
-                                unshared_gm_flat[
-                                    next_merge_row : next_merge_row + MERGE_ROW_TILE
-                                ],
+                                unshared_gm_flat[next_merge_row : next_merge_row + MERGE_ROW_TILE],
                                 merge_u_gm[merge_next_buf, :, 0],
                             )
                             T.copy(
-                                unshared_gl_flat[
-                                    next_merge_row : next_merge_row + MERGE_ROW_TILE
-                                ],
+                                unshared_gl_flat[next_merge_row : next_merge_row + MERGE_ROW_TILE],
                                 merge_u_gl[merge_next_buf, :, 0],
                             )
                             T.set_flag("mte2", "v", merge_next_buf)
@@ -1404,14 +1261,12 @@ def x_attention_decode_v_parallel_p0_stack4_3stage():
                                 merge_s_O[
                                     merge_buf,
                                     :,
-                                    merge_vec_col : merge_vec_col
-                                    + MERGE_FLOAT_VECTOR_ELEMS,
+                                    merge_vec_col : merge_vec_col + MERGE_FLOAT_VECTOR_ELEMS,
                                 ],
                                 merge_s_O[
                                     merge_buf,
                                     :,
-                                    merge_vec_col : merge_vec_col
-                                    + MERGE_FLOAT_VECTOR_ELEMS,
+                                    merge_vec_col : merge_vec_col + MERGE_FLOAT_VECTOR_ELEMS,
                                 ],
                                 merge_s_gm_lane,
                             )
@@ -1430,14 +1285,12 @@ def x_attention_decode_v_parallel_p0_stack4_3stage():
                                 merge_u_O[
                                     merge_buf,
                                     :,
-                                    merge_vec_col : merge_vec_col
-                                    + MERGE_FLOAT_VECTOR_ELEMS,
+                                    merge_vec_col : merge_vec_col + MERGE_FLOAT_VECTOR_ELEMS,
                                 ],
                                 merge_u_O[
                                     merge_buf,
                                     :,
-                                    merge_vec_col : merge_vec_col
-                                    + MERGE_FLOAT_VECTOR_ELEMS,
+                                    merge_vec_col : merge_vec_col + MERGE_FLOAT_VECTOR_ELEMS,
                                 ],
                                 merge_s_gl_lane,
                             )
@@ -1462,14 +1315,12 @@ def x_attention_decode_v_parallel_p0_stack4_3stage():
                                 merge_s_O[
                                     merge_buf,
                                     :,
-                                    merge_vec_col : merge_vec_col
-                                    + MERGE_FLOAT_VECTOR_ELEMS,
+                                    merge_vec_col : merge_vec_col + MERGE_FLOAT_VECTOR_ELEMS,
                                 ],
                                 merge_s_O[
                                     merge_buf,
                                     :,
-                                    merge_vec_col : merge_vec_col
-                                    + MERGE_FLOAT_VECTOR_ELEMS,
+                                    merge_vec_col : merge_vec_col + MERGE_FLOAT_VECTOR_ELEMS,
                                 ],
                                 merge_s_gm_lane,
                             )
@@ -1543,11 +1394,7 @@ def ref_x_attention_decode(
             next_m = torch.maximum(running_m, tile_max)
             old_scale = torch.exp(running_m - next_m)
             tile_exp = torch.exp(tile_scores - next_m)
-            running_o = (
-                running_o * old_scale
-                + tile_exp.to(Q.dtype).float()
-                @ V_sf[tile_start:tile_end, kv_h, :].float()
-            )
+            running_o = running_o * old_scale + tile_exp.to(Q.dtype).float() @ V_sf[tile_start:tile_end, kv_h, :].float()
             running_l = running_l * old_scale + tile_exp.sum(dim=-1, keepdim=True)
             running_m = next_m
         s_O_kernel[:, h, :] = running_o
@@ -1564,9 +1411,7 @@ def ref_x_attention_decode(
             scores_exp = torch.exp(scores - row_max)
             row_sum = scores_exp.sum(dim=-1, keepdim=True)
             u_O[b, h, :] = scores_exp @ V_uf[b, kv_h, :decode_step, :].float()
-            u_O_kernel[b, h, :] = (
-                scores_exp.to(Q.dtype).float() @ V_uf[b, kv_h, :decode_step, :].float()
-            )
+            u_O_kernel[b, h, :] = scores_exp.to(Q.dtype).float() @ V_uf[b, kv_h, :decode_step, :].float()
             u_gm[b, h, :] = row_max
             u_gl[b, h, :] = row_sum
 
@@ -1597,15 +1442,9 @@ if __name__ == "__main__":
     tilelang.disable_cache()
 
     if _is_simulator():
-        Q = torch.full(
-            (BEAM_SIZE, NUM_HEADS, D), 0.1, dtype=torch.bfloat16, device="cpu"
-        ).npu()
-        K_shared = torch.full(
-            (KV_LEN, KV_HEADS, D), 0.1, dtype=torch.bfloat16, device="cpu"
-        ).npu()
-        V_shared = torch.full(
-            (KV_LEN, KV_HEADS, D), 0.1, dtype=torch.bfloat16, device="cpu"
-        ).npu()
+        Q = torch.full((BEAM_SIZE, NUM_HEADS, D), 0.1, dtype=torch.bfloat16, device="cpu").npu()
+        K_shared = torch.full((KV_LEN, KV_HEADS, D), 0.1, dtype=torch.bfloat16, device="cpu").npu()
+        V_shared = torch.full((KV_LEN, KV_HEADS, D), 0.1, dtype=torch.bfloat16, device="cpu").npu()
         K_unshared = torch.full(
             (UNSHARED_BEAM, KV_HEADS, DECODE_STEP, D),
             0.1,
@@ -1621,26 +1460,16 @@ if __name__ == "__main__":
     else:
         torch.set_default_device("npu")
         Q = torch.randn(BEAM_SIZE, NUM_HEADS, D, dtype=torch.bfloat16).uniform_(-1, 1)
-        K_shared = torch.randn(KV_LEN, KV_HEADS, D, dtype=torch.bfloat16).uniform_(
-            -1, 1
-        )
-        V_shared = torch.randn(KV_LEN, KV_HEADS, D, dtype=torch.bfloat16).uniform_(
-            -1, 1
-        )
-        K_unshared = torch.randn(
-            UNSHARED_BEAM, KV_HEADS, DECODE_STEP, D, dtype=torch.bfloat16
-        ).uniform_(-1, 1)
-        V_unshared = torch.randn(
-            UNSHARED_BEAM, KV_HEADS, DECODE_STEP, D, dtype=torch.bfloat16
-        ).uniform_(-1, 1)
+        K_shared = torch.randn(KV_LEN, KV_HEADS, D, dtype=torch.bfloat16).uniform_(-1, 1)
+        V_shared = torch.randn(KV_LEN, KV_HEADS, D, dtype=torch.bfloat16).uniform_(-1, 1)
+        K_unshared = torch.randn(UNSHARED_BEAM, KV_HEADS, DECODE_STEP, D, dtype=torch.bfloat16).uniform_(-1, 1)
+        V_unshared = torch.randn(UNSHARED_BEAM, KV_HEADS, DECODE_STEP, D, dtype=torch.bfloat16).uniform_(-1, 1)
 
     Q_unshared_kernel = Q.reshape(MERGE_ROWS, D)
     K_unshared_kernel = K_unshared.reshape(TOTAL_UNSHARED_GROUPS * DECODE_STEP, D)
     V_unshared_kernel = V_unshared.reshape(TOTAL_UNSHARED_GROUPS * DECODE_STEP, D)
 
-    block_mask_ws = torch.full(
-        (Q_BATCH, KV_BATCH), -1e10, dtype=torch.float32, device="npu"
-    )
+    block_mask_ws = torch.full((Q_BATCH, KV_BATCH), -1e10, dtype=torch.float32, device="npu")
     for b in range(UNSHARED_GROUPS_PER_TASK):
         for q_row in range(GROUP_SIZE):
             for kv_col in range(DECODE_STEP):
@@ -1670,24 +1499,12 @@ if __name__ == "__main__":
         dtype=torch.float32,
         device="npu",
     )
-    shared_O_merge_ws = torch.zeros(
-        BEAM_SIZE, NUM_HEADS, D, dtype=torch.float32, device="npu"
-    )
-    shared_gm_merge_ws = torch.zeros(
-        BEAM_SIZE, NUM_HEADS, UB_ALIGN_ELEMS, dtype=torch.float32, device="npu"
-    )
-    shared_gl_merge_ws = torch.zeros(
-        BEAM_SIZE, NUM_HEADS, UB_ALIGN_ELEMS, dtype=torch.float32, device="npu"
-    )
-    unshared_O_ws = torch.zeros(
-        UNSHARED_BEAM, NUM_HEADS, D, dtype=torch.float32, device="npu"
-    )
-    unshared_gm_ws = torch.zeros(
-        UNSHARED_BEAM, NUM_HEADS, dtype=torch.float32, device="npu"
-    )
-    unshared_gl_ws = torch.zeros(
-        UNSHARED_BEAM, NUM_HEADS, dtype=torch.float32, device="npu"
-    )
+    shared_O_merge_ws = torch.zeros(BEAM_SIZE, NUM_HEADS, D, dtype=torch.float32, device="npu")
+    shared_gm_merge_ws = torch.zeros(BEAM_SIZE, NUM_HEADS, UB_ALIGN_ELEMS, dtype=torch.float32, device="npu")
+    shared_gl_merge_ws = torch.zeros(BEAM_SIZE, NUM_HEADS, UB_ALIGN_ELEMS, dtype=torch.float32, device="npu")
+    unshared_O_ws = torch.zeros(UNSHARED_BEAM, NUM_HEADS, D, dtype=torch.float32, device="npu")
+    unshared_gm_ws = torch.zeros(UNSHARED_BEAM, NUM_HEADS, dtype=torch.float32, device="npu")
+    unshared_gl_ws = torch.zeros(UNSHARED_BEAM, NUM_HEADS, dtype=torch.float32, device="npu")
     shared_O_merge_flat = shared_O_merge_ws.reshape(MERGE_ROWS, D)
     shared_gm_merge_flat = shared_gm_merge_ws.reshape(MERGE_ROWS, UB_ALIGN_ELEMS)
     shared_gl_merge_flat = shared_gl_merge_ws.reshape(MERGE_ROWS, UB_ALIGN_ELEMS)

@@ -2262,6 +2262,7 @@ def _const_equal(a, b) -> bool:
     if isinstance(a, IntImm) and isinstance(b, (int, float)):
         return a.value == b
     import tvm
+
     return tvm.ir.structural_equal(a, b)
 
 
@@ -2273,7 +2274,13 @@ def _shapes_equal(shape1, shape2) -> bool:
 
 
 def _row_expand_binop_experiment(
-    dst, src0, src1, tmp, op_name: str, ir_op_name: str, desc: str,
+    dst,
+    src0,
+    src1,
+    tmp,
+    op_name: str,
+    ir_op_name: str,
+    desc: str,
 ):
     dst = _normalize_buffer_arg(dst)
     src0 = _normalize_buffer_arg(src0)
@@ -2355,8 +2362,12 @@ def row_expand_mul_experiment(
     PTO: TROWEXPANDMUL_row_vec(dst, src0, src1).
     """
     return _row_expand_binop_experiment(
-        dst, src0, src1, tmp,
-        "RowExpandMulExperiment", "tl.ascend_row_expand_mul_experiment",
+        dst,
+        src0,
+        src1,
+        tmp,
+        "RowExpandMulExperiment",
+        "tl.ascend_row_expand_mul_experiment",
         "multiply",
     )
 
@@ -2373,8 +2384,12 @@ def row_expand_sub_experiment(
     PTO: TROWEXPANDSUB_row_vec(dst, src0, src1).
     """
     return _row_expand_binop_experiment(
-        dst, src0, src1, tmp,
-        "RowExpandSubExperiment", "tl.ascend_row_expand_sub_experiment",
+        dst,
+        src0,
+        src1,
+        tmp,
+        "RowExpandSubExperiment",
+        "tl.ascend_row_expand_sub_experiment",
         "subtract",
     )
 
@@ -2391,8 +2406,12 @@ def row_expand_div_experiment(
     PTO: TROWEXPANDDIV_row_vec(dst, src0, src1).
     """
     return _row_expand_binop_experiment(
-        dst, src0, src1, tmp,
-        "RowExpandDivExperiment", "tl.ascend_row_expand_div_experiment",
+        dst,
+        src0,
+        src1,
+        tmp,
+        "RowExpandDivExperiment",
+        "tl.ascend_row_expand_div_experiment",
         "divide",
     )
 
