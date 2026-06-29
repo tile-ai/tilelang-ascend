@@ -101,8 +101,8 @@ def paged_block_sparse_mqa_attn_return_logits(
     SIG_L0C_2 = 2
     SIG_L0C_3 = 3
     # V scope: V↔MTE2  (s_ub double-buffered + weights)
-    SIG_S_E = 0   # s_ub_e — early block (0 or 1)
-    SIG_S_L = 1   # s_ub_l — late  block (2 or 3)
+    SIG_S_E = 0  # s_ub_e — early block (0 or 1)
+    SIG_S_L = 1  # s_ub_l — late  block (2 or 3)
     SIG_W_UB = 2
     # V scope: MTE3↔V  (logits output)
     SIG_LOGITS_E = 0
@@ -504,22 +504,13 @@ def test_paged_block_sparse_mqa_attn(
         kv_cache_cpu = torch.rand((num_phys_blocks, kv_block_size, 1, index_dim), dtype=torch.float16)
         weights_cpu = torch.rand((batch, seq_len, heads), dtype=torch.float16)
 
-        context_lens_cpu = torch.randint(
-            kv_block_size, num_phys_blocks * kv_block_size + 1, (batch,), dtype=torch.int32
-        )
+        context_lens_cpu = torch.randint(kv_block_size, num_phys_blocks * kv_block_size + 1, (batch,), dtype=torch.int32)
 
-        block_tables_cpu = (
-            torch.arange(max_blocks, dtype=torch.int32)
-            .unsqueeze(0)
-            .expand(batch, -1)
-            .contiguous()
-        )
+        block_tables_cpu = torch.arange(max_blocks, dtype=torch.int32).unsqueeze(0).expand(batch, -1).contiguous()
 
         max_logical_block = (context_lens_cpu.max().item() + kv_block_size - 1) // kv_block_size
         max_logical_block = min(max_logical_block, max_blocks)
-        topk_block_indices_cpu = torch.randint(
-            0, max_logical_block, (batch, seq_len, topk), dtype=torch.int32
-        )
+        topk_block_indices_cpu = torch.randint(0, max_logical_block, (batch, seq_len, topk), dtype=torch.int32)
 
     # Copy to NPU (plain H2D, no compute kernel needed)
     q = q_cpu.to(device)
@@ -566,9 +557,7 @@ def test_paged_block_sparse_mqa_attn(
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="Paged Sparse MQA Attention — Opt1: WS Double-buffer + Padded Mask"
-    )
+    parser = argparse.ArgumentParser(description="Paged Sparse MQA Attention — Opt1: WS Double-buffer + Padded Mask")
     parser.add_argument("--batch", type=int, default=1)
     parser.add_argument("--seq_len", type=int, default=1)
     parser.add_argument("--num_phys_blocks", type=int, default=1024)
@@ -591,15 +580,18 @@ if __name__ == "__main__":
     print(f"  batch={args.batch}, heads={args.heads}, index_dim={args.index_dim}")
     print(f"  kv_block_size={args.kv_block_size}, topk={args.topk}")
     print(f"  grid={args.batch * args.topk // 4} tasks")
-    print(f"  cross flags: BLK0..BLK3 (per-block, immediate)")
-    print(f"  V UB: s_ub_e + s_ub_l per AIV (DMA ∥ compute)")
+    print("  cross flags: BLK0..BLK3 (per-block, immediate)")
+    print("  V UB: s_ub_e + s_ub_l per AIV (DMA ∥ compute)")
     print()
 
     test_paged_block_sparse_mqa_attn(
-        batch=args.batch, seq_len=args.seq_len,
-        num_phys_blocks=args.num_phys_blocks, heads=args.heads,
-        index_dim=args.index_dim, kv_block_size=args.kv_block_size,
-        topk=args.topk, max_blocks=args.max_blocks,
+        batch=args.batch,
+        seq_len=args.seq_len,
+        num_phys_blocks=args.num_phys_blocks,
+        heads=args.heads,
+        index_dim=args.index_dim,
+        kv_block_size=args.kv_block_size,
+        topk=args.topk,
+        max_blocks=args.max_blocks,
     )
     print("Kernel Output Match!")
-
