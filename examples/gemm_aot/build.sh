@@ -13,6 +13,8 @@ bisheng --cce-aicore-arch=dav-c220 \
     -I${ASCEND_HOME_PATH}/compiler/tikcpp/tikcfw/interface \
     -I${ASCEND_HOME_PATH}/include \
     -I${ASCEND_HOME_PATH}/include/experiment/msprof \
+    -I${ASCEND_HOME_PATH}/include/experiment/msprof/toolchain \
+    -I${ASCEND_HOME_PATH}/pkg_inc \
     -I../../3rdparty/catlass/include \
     -I../../3rdparty/shmem/include \
     -I../../3rdparty/shmem/src/device \
