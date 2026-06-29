@@ -104,3 +104,8 @@ docs/notebook/*.cpp
 
 .agents/reports
 
+# Generated AOT example kernel sources and compiled libraries
+examples/gemm_aot/example_gemm.cpp
+examples/gemm_aot/kernel_lib.so
+examples/fused_sigmoid_gating_delta_rule/ascendc.cpp
+
