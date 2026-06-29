@@ -776,8 +776,10 @@ def brcb_experiment(
         repeat_times_value = int(repeat_times)
     except (TypeError, ValueError):
         repeat_times_value = None
-    if repeat_times_value is not None:
-        src_size = math.prod(src_extent)
+    if repeat_times_value is not None and all(isinstance(x, (int, IntImm)) for x in src_extent):
+        src_size = 1
+        for x in src_extent:
+            src_size *= int(x) if isinstance(x, IntImm) else x
         assert src_size >= repeat_times_value * 8, "src size must be not less than repeat_times * 8"
 
     return tir.call_intrin(
@@ -2240,6 +2242,36 @@ def _normalize_buffer_arg(obj: Buffer | BufferRegion | BufferLoad) -> Buffer | B
     return obj
 
 
+def _is_const_one(val) -> bool:
+    """Check if a value is constant 1 (int or IntImm)."""
+    if isinstance(val, (int, float)):
+        return val == 1
+    if isinstance(val, IntImm):
+        return val.value == 1
+    return False
+
+
+def _const_equal(a, b) -> bool:
+    """Compare two values that may be int, IntImm, or symbolic PrimExpr."""
+    if isinstance(a, (int, float)) and isinstance(b, (int, float)):
+        return a == b
+    if isinstance(a, IntImm) and isinstance(b, IntImm):
+        return a.value == b.value
+    if isinstance(a, (int, float)) and isinstance(b, IntImm):
+        return a == b.value
+    if isinstance(a, IntImm) and isinstance(b, (int, float)):
+        return a.value == b
+    import tvm
+    return tvm.ir.structural_equal(a, b)
+
+
+def _shapes_equal(shape1, shape2) -> bool:
+    """Compare two shape lists that may contain symbolic PrimExpr."""
+    if len(shape1) != len(shape2):
+        return False
+    return all(_const_equal(x, y) for x, y in zip(shape1, shape2))
+
+
 def _row_expand_binop_experiment(
     dst, src0, src1, tmp, op_name: str, ir_op_name: str, desc: str,
 ):
@@ -2272,11 +2304,9 @@ def _row_expand_binop_experiment(
         src1_len = src1_full_shape[0]
     elif len(src1_full_shape) == 2:
         s0, s1 = src1_full_shape[-2], src1_full_shape[-1]
-        if s0 == 1:
+        if _is_const_one(s0):
             src1_len = s1
-        elif s1 == 1:
-            src1_len = s0
-        elif s0 == dst_shape[0]:
+        elif _is_const_one(s1) or _const_equal(s0, dst_shape[0]):
             src1_len = s0
         else:
             raise ValueError(f"src1 must be 1D [R], [1, R], or [R, 1]; got {src1_full_shape}")
@@ -2286,10 +2316,10 @@ def _row_expand_binop_experiment(
     if len(dst_shape) != 2 or len(src0_shape) != 2:
         raise ValueError(f"{op_name} requires 2D buffers for dst and src0.")
 
-    if dst_shape != src0_shape:
+    if not _shapes_equal(dst_shape, src0_shape):
         raise ValueError(f"dst and src0 shapes must match: dst={dst_shape}, src0={src0_shape}")
 
-    if src1_len != dst_shape[0]:
+    if not _const_equal(src1_len, dst_shape[0]):
         raise ValueError(f"src1 scalar count must match dst rows: src1={src1_len}, dst[0]={dst_shape[0]}")
 
     dtype = _dtype(src0)

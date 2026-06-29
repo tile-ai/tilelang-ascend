@@ -607,6 +607,7 @@ TROWEXPANDMUL_row_vec(TileUbDataND<T, dstRows, dstCols, dstRows, dstCols> &dst,
   constexpr int32_t alignedRows =
       ((vecLen * sizeof(T) + 31) / 32) * (32 / sizeof(T));
   constexpr int32_t typeLen = sizeof(T);
+  (void)src1_vec;
   TileUbDataDN<T, alignedRows, 1, vecLen, 1> src1_dn;
   pto::TASSIGN(src1_dn, src1_addr + src1_offset * typeLen);
   TROWEXPANDMUL(dst, src0, src1_dn);
@@ -622,6 +623,7 @@ TROWEXPANDMUL_row_vec(TileUbDataND<T, dstRows, dstCols, dstRows, dstCols> &dst,
   constexpr int32_t alignedRows =
       ((vecLen * sizeof(T) + 31) / 32) * (32 / sizeof(T));
   constexpr int32_t typeLen = sizeof(T);
+  (void)src1_vec;
   TileUbDataDN<T, alignedRows, 1, vecLen, 1> src1_dn;
   pto::TASSIGN(src1_dn, src1_addr + src1_offset * typeLen);
   TROWEXPANDMUL(dst, src0, src1_dn, tmp);
@@ -637,6 +639,7 @@ TROWEXPANDSUB_row_vec(TileUbDataND<T, dstRows, dstCols, dstRows, dstCols> &dst,
   constexpr int32_t alignedRows =
       ((vecLen * sizeof(T) + 31) / 32) * (32 / sizeof(T));
   constexpr int32_t typeLen = sizeof(T);
+  (void)src1_vec;
   TileUbDataDN<T, alignedRows, 1, vecLen, 1> src1_dn;
   pto::TASSIGN(src1_dn, src1_addr + src1_offset * typeLen);
   TROWEXPANDSUB(dst, src0, src1_dn);
@@ -652,6 +655,7 @@ TROWEXPANDSUB_row_vec(TileUbDataND<T, dstRows, dstCols, dstRows, dstCols> &dst,
   constexpr int32_t alignedRows =
       ((vecLen * sizeof(T) + 31) / 32) * (32 / sizeof(T));
   constexpr int32_t typeLen = sizeof(T);
+  (void)src1_vec;
   TileUbDataDN<T, alignedRows, 1, vecLen, 1> src1_dn;
   pto::TASSIGN(src1_dn, src1_addr + src1_offset * typeLen);
   TROWEXPANDSUB(dst, src0, src1_dn, tmp);
@@ -667,6 +671,7 @@ TROWEXPANDDIV_row_vec(TileUbDataND<T, dstRows, dstCols, dstRows, dstCols> &dst,
   constexpr int32_t alignedRows =
       ((vecLen * sizeof(T) + 31) / 32) * (32 / sizeof(T));
   constexpr int32_t typeLen = sizeof(T);
+  (void)src1_vec;
   TileUbDataDN<T, alignedRows, 1, vecLen, 1> src1_dn;
   pto::TASSIGN(src1_dn, src1_addr + src1_offset * typeLen);
   TROWEXPANDDIV(dst, src0, src1_dn);
@@ -682,6 +687,7 @@ TROWEXPANDDIV_row_vec(TileUbDataND<T, dstRows, dstCols, dstRows, dstCols> &dst,
   constexpr int32_t alignedRows =
       ((vecLen * sizeof(T) + 31) / 32) * (32 / sizeof(T));
   constexpr int32_t typeLen = sizeof(T);
+  (void)src1_vec;
   TileUbDataDN<T, alignedRows, 1, vecLen, 1> src1_dn;
   pto::TASSIGN(src1_dn, src1_addr + src1_offset * typeLen);
   TROWEXPANDDIV(dst, src0, src1_dn, tmp);

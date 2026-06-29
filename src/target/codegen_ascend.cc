@@ -2095,7 +2095,14 @@ void CodeGenTileLangAscend::RowExpandBinOpExperimentCodegen(
   int repeat_time = 0;
   if (auto *extent_imm = dst_access->args[3].as<IntImmNode>()) {
     int extent = static_cast<int>(extent_imm->value);
-    repeat_time = extent / (8 * elems_per_block);
+    int elems_per_repeat = 8 * elems_per_block;
+    ICHECK(extent > 0 && extent % elems_per_repeat == 0)
+        << "RowExpandBinOpExperimentCodegen: extent=" << extent
+        << " must be a positive multiple of " << elems_per_repeat;
+    repeat_time = extent / elems_per_repeat;
+  } else {
+    ICHECK(false)
+        << "RowExpandBinOpExperimentCodegen: dynamic extent not supported";
   }
   int rows = repeat_time;
   int brcb_repeat = rows / 8;
