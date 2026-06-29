@@ -824,6 +824,51 @@ CATLASS_DEVICE void brcb(const LocalTensor<T> &dst, const LocalTensor<T> &src0,
   AscendC::Brcb<T>(dst, src0, repeatTime, repeatParams);
 }
 
+template <typename T>
+CATLASS_DEVICE void
+mul_mask(const LocalTensor<T> &dst, const LocalTensor<T> &src0,
+         const LocalTensor<T> &src1, const uint64_t mask0, const uint64_t mask1,
+         const uint8_t repeatTime, const uint8_t dstBlkStride,
+         const uint8_t src0BlkStride, const uint8_t src1BlkStride,
+         const uint8_t dstRepStride, const uint8_t src0RepStride,
+         const uint8_t src1RepStride) {
+  uint64_t mask[2] = {mask0, mask1};
+  AscendC::BinaryRepeatParams params(dstBlkStride, src0BlkStride, src1BlkStride,
+                                     dstRepStride, src0RepStride,
+                                     src1RepStride);
+  AscendC::Mul<T, false>(dst, src0, src1, mask, repeatTime, params);
+}
+
+template <typename T>
+CATLASS_DEVICE void
+sub_mask(const LocalTensor<T> &dst, const LocalTensor<T> &src0,
+         const LocalTensor<T> &src1, const uint64_t mask0, const uint64_t mask1,
+         const uint8_t repeatTime, const uint8_t dstBlkStride,
+         const uint8_t src0BlkStride, const uint8_t src1BlkStride,
+         const uint8_t dstRepStride, const uint8_t src0RepStride,
+         const uint8_t src1RepStride) {
+  uint64_t mask[2] = {mask0, mask1};
+  AscendC::BinaryRepeatParams params(dstBlkStride, src0BlkStride, src1BlkStride,
+                                     dstRepStride, src0RepStride,
+                                     src1RepStride);
+  AscendC::Sub<T, false>(dst, src0, src1, mask, repeatTime, params);
+}
+
+template <typename T>
+CATLASS_DEVICE void
+div_mask(const LocalTensor<T> &dst, const LocalTensor<T> &src0,
+         const LocalTensor<T> &src1, const uint64_t mask0, const uint64_t mask1,
+         const uint8_t repeatTime, const uint8_t dstBlkStride,
+         const uint8_t src0BlkStride, const uint8_t src1BlkStride,
+         const uint8_t dstRepStride, const uint8_t src0RepStride,
+         const uint8_t src1RepStride) {
+  uint64_t mask[2] = {mask0, mask1};
+  AscendC::BinaryRepeatParams params(dstBlkStride, src0BlkStride, src1BlkStride,
+                                     dstRepStride, src0RepStride,
+                                     src1RepStride);
+  AscendC::Div<T, false>(dst, src0, src1, mask, repeatTime, params);
+}
+
 template <typename T1, typename T2, typename LayOutL1, typename LayoutGM,
           uint32_t M, uint32_t N, uint32_t K, uint32_t baseM, uint32_t baseN,
           uint32_t baseK, bool init, bool is_transpose_A = false,

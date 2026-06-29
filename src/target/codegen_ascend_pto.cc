@@ -951,6 +951,14 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op,
     ArithProgressionCodegen(op, "TCI");
   } else if (op->op.same_as(tl::ascend_row_expand_mul())) {
     RowExpandMulCodegen(op);
+  } else if (op->op.same_as(tl::ascend_row_expand_mul_experiment())) {
+    RowExpandMulExperimentCodegen(op);
+  } else if (op->op.same_as(tl::ascend_row_expand_sub_experiment())) {
+    RowExpandSubExperimentCodegen(op);
+  } else if (op->op.same_as(tl::ascend_row_expand_div_experiment())) {
+    RowExpandDivExperimentCodegen(op);
+  } else if (op->op.same_as(tl::ascend_brcb_experiment())) {
+    BrcbExperimentCodegen(op);
 
     // --- broadcast / select ---
   } else if (op->op.same_as(tl::ascend_broadcast())) {
@@ -2262,6 +2270,11 @@ void CodeGenTileLangAscendPto::CodegenColBroadcast(const ShapeInfo &dst,
 }
 
 void CodeGenTileLangAscendPto::RowExpandMulCodegen(const CallNode *op) {
+  RowExpandBinOpExperimentCodegenPto(op, "TROWEXPANDMUL_row_vec");
+}
+
+void CodeGenTileLangAscendPto::RowExpandBinOpExperimentCodegenPto(
+    const CallNode *op, const std::string &pto_op_name) {
   ShapeInfo dst = GetSliceInfo(op->args[1].as<CallNode>());
   ShapeInfo src0 = GetSliceInfo(op->args[2].as<CallNode>());
   ShapeInfo src1 = GetSliceInfo(op->args[3].as<CallNode>());
@@ -2272,10 +2285,6 @@ void CodeGenTileLangAscendPto::RowExpandMulCodegen(const CallNode *op) {
     tmp = GetSliceInfo(op->args[4].as<CallNode>());
   }
 
-  // Fix ND→2D flattening for 3D+ buffers.
-  // GetSliceInfo only handles up to 2D shapes; for 3D+ buffers it drops
-  // trailing dimensions, swapping rows/cols.  Re-derive the correct 2D
-  // dimensions from the access extent and the innermost buffer dimension.
   auto fix_nd_2d = [&](ShapeInfo &info, const CallNode *access_ptr) {
     if (!info.is_slice)
       return;
@@ -2292,8 +2301,6 @@ void CodeGenTileLangAscendPto::RowExpandMulCodegen(const CallNode *op) {
   fix_nd_2d(dst, op->args[1].as<CallNode>());
   fix_nd_2d(src0, op->args[2].as<CallNode>());
 
-  // src1: for a sliced 1D row-vector from a 2D+ buffer, pick the last
-  // dimension size as the vector length.
   auto fix_src1_nd = [&](ShapeInfo &info, const CallNode *access_ptr) {
     if (!info.is_slice)
       return;
@@ -2305,12 +2312,12 @@ void CodeGenTileLangAscendPto::RowExpandMulCodegen(const CallNode *op) {
   };
   fix_src1_nd(src1, op->args[3].as<CallNode>());
 
-  // Handle ND slices; src1 stays ND — the helper in common.h creates the DN
-  // column-vector tile in-place.
   std::string src1_name = src1.ub_name;
   if (src1.is_slice) {
     src1_name = GetTempVarName(src1.ub_name);
-    CreateUbVariableND(src1_name, src1);
+    ShapeInfo src1_aligned = src1;
+    src1_aligned.slice_valid_col = src1.slice_col;
+    CreateUbVariableND(src1_name, src1_aligned);
   }
 
   std::string dst_name = dst.ub_name;
@@ -2325,19 +2332,46 @@ void CodeGenTileLangAscendPto::RowExpandMulCodegen(const CallNode *op) {
     CreateUbVariableND(src0_name, src0);
   }
 
-  int32_t src1_len = src1.is_slice ? src1.slice_valid_col : src1.col;
+  int32_t src1_len = src1.slice_col;
   int32_t dst_rows = dst.is_slice ? dst.slice_valid_row : dst.row;
   int32_t dst_cols = dst.is_slice ? dst.slice_valid_col : dst.col;
 
   this->PrintIndent();
-  this->stream << kAscendPtoScope << "TROWEXPANDMUL_row_vec<" << src1.type
-               << ", " << dst_rows << ", " << dst_cols << ", " << src1_len
-               << ">(" << dst_name << ", " << src0_name << ", " << src1_name
-               << ", " << PrintExpr(src1.first_addr) << ", " << src1.offset;
+  this->stream << kAscendPtoScope << pto_op_name << "<" << src1.type << ", "
+               << dst_rows << ", " << dst_cols << ", " << src1_len << ">("
+               << dst_name << ", " << src0_name << ", " << src1_name << ", "
+               << PrintExpr(src1.first_addr) << ", " << src1.offset;
   if (has_tmp) {
     this->stream << ", " << tmp.ub_name;
   }
   this->stream << ");\n";
+}
+
+void CodeGenTileLangAscendPto::RowExpandMulExperimentCodegen(
+    const CallNode *op) {
+  RowExpandBinOpExperimentCodegenPto(op, "TROWEXPANDMUL_row_vec");
+}
+
+void CodeGenTileLangAscendPto::RowExpandSubExperimentCodegen(
+    const CallNode *op) {
+  RowExpandBinOpExperimentCodegenPto(op, "TROWEXPANDSUB_row_vec");
+}
+
+void CodeGenTileLangAscendPto::RowExpandDivExperimentCodegen(
+    const CallNode *op) {
+  RowExpandBinOpExperimentCodegenPto(op, "TROWEXPANDDIV_row_vec");
+}
+
+void CodeGenTileLangAscendPto::BrcbExperimentCodegen(const CallNode *op) {
+  // PTO: brcb = row broadcast → TROWEXPAND.
+  // brcb semantics: dst[i,:] = src[i] (each scalar broadcast across a row).
+  // TROWEXPAND: dst[i,j] = src[i,0] — identical when src is a column vector.
+  // Convert src to DN (ColMajor [N,1]) so TROWEXPAND reads src[i,0] per row.
+  // args[0] = op name string, args[1] = dst, args[2] = src.
+  ShapeInfo dst_info = GetSliceInfo(op->args[1].as<CallNode>());
+  ShapeInfo src_info = GetSliceInfo(op->args[2].as<CallNode>());
+
+  CodegenRowBroadcast(dst_info, src_info);
 }
 
 void CodeGenTileLangAscendPto::BroadcastOpCodegen(const CallNode *op) {

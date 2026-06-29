@@ -199,6 +199,17 @@ private:
 
   void RowExpandMulCodegen(const CallNode *op);
 
+  void BrcbExperimentCodegen(const CallNode *op);
+
+  void RowExpandMulExperimentCodegen(const CallNode *op);
+
+  void RowExpandSubExperimentCodegen(const CallNode *op);
+
+  void RowExpandDivExperimentCodegen(const CallNode *op);
+
+  void RowExpandBinOpExperimentCodegenPto(const CallNode *op,
+                                          const std::string &pto_op_name);
+
   void SelectCodegen(const CallNode *op);
 
   void SetDeqScaleCodegen(const CallNode *op);

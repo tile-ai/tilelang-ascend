@@ -577,6 +577,12 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
     BroadcastOpCodegen(op);
   } else if (op->op.same_as(tl::ascend_row_expand_mul())) {
     RowExpandMulCodegen(op);
+  } else if (op->op.same_as(tl::ascend_row_expand_mul_experiment())) {
+    RowExpandMulExperimentCodegen(op);
+  } else if (op->op.same_as(tl::ascend_row_expand_sub_experiment())) {
+    RowExpandSubExperimentCodegen(op);
+  } else if (op->op.same_as(tl::ascend_row_expand_div_experiment())) {
+    RowExpandDivExperimentCodegen(op);
   } else if (op->op.same_as(tl::ascend_wait_cross_flag())) {
     PrintOpCall(op, "AscendC::CrossCoreWaitFlag", {0, 0}, {0, 1});
   } else if (op->op.same_as(tl::ascend_set_cross_flag())) {
@@ -649,6 +655,8 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
     SumExperimentCodegen(op);
   } else if (op->op.same_as(tl::ascend_datacachecleanandinvalid_experiment())) {
     CreateDatacacheExperimentCodegen(op);
+  } else if (op->op.same_as(tl::ascend_brcb_experiment())) {
+    BrcbExperimentCodegen(op);
   } else {
     // tvm::Dump(op);
     CodeGenC::VisitExpr_(op, os);
@@ -2044,6 +2052,91 @@ void CodeGenTileLangAscend::RowExpandMulCodegen(const CallNode *op) {
   LOG(FATAL) << "TROWEXPANDMUL is only supported in the PTO codegen path.";
 }
 
+void CodeGenTileLangAscend::RowExpandMulExperimentCodegen(const CallNode *op) {
+  RowExpandBinOpExperimentCodegen(op, "mul_mask");
+}
+
+void CodeGenTileLangAscend::RowExpandSubExperimentCodegen(const CallNode *op) {
+  RowExpandBinOpExperimentCodegen(op, "sub_mask");
+}
+
+void CodeGenTileLangAscend::RowExpandDivExperimentCodegen(const CallNode *op) {
+  RowExpandBinOpExperimentCodegen(op, "div_mask");
+}
+
+void CodeGenTileLangAscend::RowExpandBinOpExperimentCodegen(
+    const CallNode *op, const std::string &mask_op_name) {
+  // args[0] = op name string, args[1] = dst, args[2] = src0,
+  // args[3] = src1, args[4] = tmp (required for AscendC)
+  //
+  // AscendC path: src1 is 1D [R] scalars, but {mul,sub,div}_mask requires
+  // a 2D [R, elems_per_block] broadcast buffer. Use tmp as intermediate:
+  // brcb(src1 → tmp) then {op}_mask(dst, src0, tmp).
+  DataType dtype = GetAccessPtrDtype(op->args[1].as<CallNode>());
+  std::string type_str = getType(dtype);
+  int elems_per_block = 32 / (dtype.bits() / 8);
+
+  // Query dst buffer shape for rows/cols.
+  // buffer_shapes_ stores flattened shape where shape[-1] = physical cols.
+  // rep_stride = physical_cols / elems_per_block (for hardware addressing).
+  // repeat_time = extent / (8 * elems_per_block) — each repeat processes
+  // 8 blocks = 8 * elems_per_block elements (= one logical row when slice
+  // width == 8 * elems_per_block).
+  auto *dst_access = op->args[1].as<CallNode>();
+  Var dst_var = Downcast<Var>(dst_access->args[1]);
+  int cols = 0;
+  if (buffer_shapes_.count(dst_var)) {
+    auto shape = buffer_shapes_.at(dst_var);
+    if (shape.size() >= 1 && shape[shape.size() - 1].as<IntImmNode>()) {
+      cols = static_cast<int>(shape[shape.size() - 1].as<IntImmNode>()->value);
+    }
+  }
+  int rep_stride = cols / elems_per_block;
+  int repeat_time = 0;
+  if (auto *extent_imm = dst_access->args[3].as<IntImmNode>()) {
+    int extent = static_cast<int>(extent_imm->value);
+    repeat_time = extent / (8 * elems_per_block);
+  }
+  int rows = repeat_time;
+  int brcb_repeat = rows / 8;
+  ICHECK(rows > 0 && cols > 0)
+      << "RowExpandBinOpExperimentCodegen: failed to derive rows/cols";
+
+  uint64_t mask0 = 0xFFFFFFFFFFFFFFFF;
+  uint64_t mask1 = (dtype.bits() == 16) ? 0xFFFFFFFFFFFFFFFF : 0;
+
+  std::string dst_name = PrintBufferOffset(op->args[1].as<CallNode>(), true);
+  std::string src0_name = PrintBufferOffset(op->args[2].as<CallNode>(), true);
+  std::string src1_name = PrintBufferOffset(op->args[3].as<CallNode>(), true);
+
+  // If tmp is provided, use it as broadcast buffer: brcb + {op}_mask
+  if (op->args.size() >= 5) {
+    std::string tmp_name = PrintBufferOffset(op->args[4].as<CallNode>(), true);
+    // Step 1: brcb src1 → tmp (broadcast scalars to [rows, elems_per_block])
+    this->PrintIndent();
+    this->stream << "tl::ascend::brcb<" << type_str << ">(" << tmp_name << ", "
+                 << src1_name << ", " << brcb_repeat << ", 1, 8);\n";
+    // Step 2: pipe_barrier to ensure brcb completes before mask op
+    this->PrintIndent();
+    this->stream << "AscendC::PipeBarrier<PIPE_V>();\n";
+    // Step 3: {op}_mask(dst, src0, tmp) with all-ones mask
+    this->PrintIndent();
+    this->stream << "tl::ascend::" << mask_op_name << "<" << type_str << ">("
+                 << dst_name << ", " << src0_name << ", " << tmp_name
+                 << ", 0xFFFFFFFFFFFFFFFF, " << mask1 << ", " << repeat_time
+                 << ", 1, 1, 0, " << rep_stride << ", " << rep_stride
+                 << ", 1);\n";
+  } else {
+    // No tmp: assume src1 is already a broadcast buffer
+    this->PrintIndent();
+    this->stream << "tl::ascend::" << mask_op_name << "<" << type_str << ">("
+                 << dst_name << ", " << src0_name << ", " << src1_name
+                 << ", 0xFFFFFFFFFFFFFFFF, " << mask1 << ", " << repeat_time
+                 << ", 1, 1, 0, " << rep_stride << ", " << rep_stride
+                 << ", 1);\n";
+  }
+}
+
 void CodeGenTileLangAscend::BroadcastOpCodegen(const CallNode *op) {
   std::string op_name =
       "tl::ascend::" + Downcast<StringImm>(op->args[0])->value;
@@ -2479,6 +2572,12 @@ void CodeGenTileLangAscend::CreateDatacacheExperimentCodegen(
   this->stream << op_name << "(";
   this->stream << PrintBufferOffset(op->args[1].as<CallNode>());
   this->stream << ");\n";
+}
+
+void CodeGenTileLangAscend::BrcbExperimentCodegen(const CallNode *op) {
+  std::string op_name =
+      "tl::ascend::" + Downcast<StringImm>(op->args[0])->value;
+  PrintOpCall(op, op_name, {1, 3}, {3, 6});
 }
 
 } // namespace codegen

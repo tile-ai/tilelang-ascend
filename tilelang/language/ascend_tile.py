@@ -1,6 +1,7 @@
 from __future__ import annotations
 import tilelang.language as T
-from tvm.tir import PrimExpr, Buffer, BufferRegion, BufferLoad, Call
+from tvm.ir import Range
+from tvm.tir import PrimExpr, Buffer, BufferRegion, BufferLoad, Call, IntImm, Ramp
 from tvm import tir
 from tilelang.language.ascend import _dtype
 import functools
@@ -736,6 +737,59 @@ def brcb(dst: Buffer, src: Buffer, repeat_times: PrimExpr, dst_blk_stride: PrimE
     dst_ptr = dst.access_ptr("w")
 
     return T.call_extern("handle", f"tl::ascend::brcb<{_dtype(src)}>", dst_ptr, src_ptr, repeat_times, dst_blk_stride, dst_repeat_stride)
+
+
+def brcb_experiment(
+    dst: Buffer | BufferRegion | BufferLoad,
+    src: Buffer | BufferRegion | BufferLoad,
+    repeat_times: PrimExpr,
+    dst_blk_stride: PrimExpr,
+    dst_repeat_stride: PrimExpr,
+):
+    """Broadcast repeat copy block (BRCB) intrinsic with dual-backend support.
+
+    AscendC backend: emits ``tl::ascend::brcb<dtype>(dst, src, repeat, blk_stride, rep_stride)``.
+    PTO backend: emits ``TROWEXPAND(dst, src)`` (ignoring hardware stride params).
+
+    Args:
+        dst: Destination buffer. Start address must be 32-byte aligned.
+        src: Source buffer. Must contain at least ``repeat_times * 8`` elements.
+        repeat_times: Number of iterations. Each iteration fills 8 data blocks.
+        dst_blk_stride: Stride between data blocks within one iteration.
+        dst_repeat_stride: Stride between iterations for the same data block.
+
+    Returns:
+        A TVM intrinsic call for the BRCB operation.
+    """
+    if isinstance(dst, BufferRegion):
+        dst_ptr, _ = _handle_buffer_region(dst, "w")
+    else:
+        dst_ptr = dst.access_ptr("w")
+
+    if isinstance(src, BufferRegion):
+        src_ptr, src_extent = _handle_buffer_region(src, "r")
+    else:
+        src_ptr = src.access_ptr("r")
+        src_extent = src.shape
+
+    try:
+        repeat_times_value = int(repeat_times)
+    except (TypeError, ValueError):
+        repeat_times_value = None
+    if repeat_times_value is not None:
+        src_size = math.prod(src_extent)
+        assert src_size >= repeat_times_value * 8, "src size must be not less than repeat_times * 8"
+
+    return tir.call_intrin(
+        "handle",
+        tir.op.Op.get("tl.ascend_brcb_experiment"),
+        f"brcb<{_dtype(src)}>",
+        dst_ptr,
+        src_ptr,
+        repeat_times,
+        dst_blk_stride,
+        dst_repeat_stride,
+    )
 
 
 def binary_op(
@@ -2150,6 +2204,166 @@ def row_expand_mul(
         "handle",
         tir.op.Op.get("tl.ascend_row_expand_mul"),
         *args,
+    )
+
+
+def _buffer_load_to_buffer_region(load: BufferLoad) -> BufferRegion:
+    """Convert a contiguous buffer load to an equivalent BufferRegion."""
+    buf = load.buffer
+    indices = []
+    for idx in load.indices:
+        if isinstance(idx, Ramp):
+            base = idx.base
+            stride = idx.stride
+            lanes = idx.lanes
+            if isinstance(stride, IntImm):
+                stride_val = int(stride)
+            else:
+                stride_val = stride
+            if isinstance(base, IntImm):
+                base_val = int(base)
+            else:
+                base_val = base
+            extent = (lanes - 1) * stride_val + 1
+            indices.append(Range.from_min_extent(base_val, extent))
+        elif isinstance(idx, IntImm):
+            indices.append(Range.from_min_extent(int(idx), 1))
+        else:
+            indices.append(Range.from_min_extent(idx, 1))
+    return BufferRegion(buf, indices)
+
+
+def _normalize_buffer_arg(obj: Buffer | BufferRegion | BufferLoad) -> Buffer | BufferRegion:
+    """Normalize Buffer / BufferRegion / BufferLoad into Buffer or BufferRegion."""
+    if isinstance(obj, BufferLoad):
+        return _buffer_load_to_buffer_region(obj)
+    return obj
+
+
+def _row_expand_binop_experiment(
+    dst, src0, src1, tmp, op_name: str, ir_op_name: str, desc: str,
+):
+    dst = _normalize_buffer_arg(dst)
+    src0 = _normalize_buffer_arg(src0)
+    src1 = _normalize_buffer_arg(src1)
+    if tmp is not None:
+        tmp = _normalize_buffer_arg(tmp)
+
+    if isinstance(dst, BufferRegion):
+        dst_ptr, dst_shape = _handle_buffer_region_2d(dst, "w")
+    else:
+        dst_ptr = dst.access_ptr("w")
+        dst_shape = list(dst.shape[-2:])
+
+    if isinstance(src0, BufferRegion):
+        src0_ptr, src0_shape = _handle_buffer_region_2d(src0, "r")
+    else:
+        src0_ptr = src0.access_ptr("r")
+        src0_shape = list(src0.shape[-2:])
+
+    if isinstance(src1, BufferRegion):
+        src1_ptr, src1_nd_extent = _handle_buffer_region(src1, "r")
+        src1_full_shape = [src1_nd_extent[-1]] if len(src1_nd_extent) >= 2 else src1_nd_extent
+    else:
+        src1_ptr = src1.access_ptr("r")
+        src1_full_shape = list(src1.shape)
+
+    if len(src1_full_shape) == 1:
+        src1_len = src1_full_shape[0]
+    elif len(src1_full_shape) == 2:
+        s0, s1 = src1_full_shape[-2], src1_full_shape[-1]
+        if s0 == 1:
+            src1_len = s1
+        elif s1 == 1:
+            src1_len = s0
+        elif s0 == dst_shape[0]:
+            src1_len = s0
+        else:
+            raise ValueError(f"src1 must be 1D [R], [1, R], or [R, 1]; got {src1_full_shape}")
+    else:
+        raise ValueError(f"src1 must be 1D or 2D, got shape {src1_full_shape}")
+
+    if len(dst_shape) != 2 or len(src0_shape) != 2:
+        raise ValueError(f"{op_name} requires 2D buffers for dst and src0.")
+
+    if dst_shape != src0_shape:
+        raise ValueError(f"dst and src0 shapes must match: dst={dst_shape}, src0={src0_shape}")
+
+    if src1_len != dst_shape[0]:
+        raise ValueError(f"src1 scalar count must match dst rows: src1={src1_len}, dst[0]={dst_shape[0]}")
+
+    dtype = _dtype(src0)
+    args = [
+        f"{op_name}<{dtype}>",
+        dst_ptr,
+        src0_ptr,
+        src1_ptr,
+    ]
+    if tmp is not None:
+        if isinstance(tmp, BufferRegion):
+            tmp_ptr, _ = _handle_buffer_region(tmp, "rw")
+        else:
+            tmp_ptr = tmp.access_ptr("rw")
+        args.append(tmp_ptr)
+
+    return tir.call_intrin(
+        "handle",
+        tir.op.Op.get(ir_op_name),
+        *args,
+    )
+
+
+def row_expand_mul_experiment(
+    dst: Buffer | BufferRegion,
+    src0: Buffer | BufferRegion,
+    src1: Buffer | BufferRegion,
+    tmp: Buffer | BufferRegion | None = None,
+):
+    """Performs row-wise broadcast multiply: dst[i,j] = src0[i,j] * src1[i].
+
+    AscendC: brcb(src1→tmp) + mul_mask(dst, src0, tmp).
+    PTO: TROWEXPANDMUL_row_vec(dst, src0, src1).
+    """
+    return _row_expand_binop_experiment(
+        dst, src0, src1, tmp,
+        "RowExpandMulExperiment", "tl.ascend_row_expand_mul_experiment",
+        "multiply",
+    )
+
+
+def row_expand_sub_experiment(
+    dst: Buffer | BufferRegion,
+    src0: Buffer | BufferRegion,
+    src1: Buffer | BufferRegion,
+    tmp: Buffer | BufferRegion | None = None,
+):
+    """Performs row-wise broadcast subtract: dst[i,j] = src0[i,j] - src1[i].
+
+    AscendC: brcb(src1→tmp) + sub_mask(dst, src0, tmp).
+    PTO: TROWEXPANDSUB_row_vec(dst, src0, src1).
+    """
+    return _row_expand_binop_experiment(
+        dst, src0, src1, tmp,
+        "RowExpandSubExperiment", "tl.ascend_row_expand_sub_experiment",
+        "subtract",
+    )
+
+
+def row_expand_div_experiment(
+    dst: Buffer | BufferRegion,
+    src0: Buffer | BufferRegion,
+    src1: Buffer | BufferRegion,
+    tmp: Buffer | BufferRegion | None = None,
+):
+    """Performs row-wise broadcast divide: dst[i,j] = src0[i,j] / src1[i].
+
+    AscendC: brcb(src1→tmp) + div_mask(dst, src0, tmp).
+    PTO: TROWEXPANDDIV_row_vec(dst, src0, src1).
+    """
+    return _row_expand_binop_experiment(
+        dst, src0, src1, tmp,
+        "RowExpandDivExperiment", "tl.ascend_row_expand_div_experiment",
+        "divide",
     )
 
 
