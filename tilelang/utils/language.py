@@ -2,7 +2,6 @@
 # Licensed under the MIT License.
 
 from tvm.tir import Buffer
-from typing import List  # noqa: UP035
 from functools import reduce
 from tvm import IRModule
 from tvm.tir import PrimFunc
