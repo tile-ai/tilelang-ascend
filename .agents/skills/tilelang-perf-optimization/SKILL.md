@@ -80,6 +80,17 @@ print(func.get_kernel_source())
 
 如无法满足性能要求，再使用 **Expert 模式**手动控制（显式指定 L1/UB/L0 层级、手动同步、细粒度调度），参考同一文档。
 
+**Cube 核算子优化路径**：
+
+对于 Cube 型算子（GEMM、MatMul、FlashAttention 等），根据编程模式选择对应优化路径，参考 [cube_optimization_path](references/best-practices/cube_optimization_path.md)：
+
+| 算子类型 | 编程模式 | 优化路径 | 参考章节 |
+|---------|---------|---------|---------|
+| Cube 型 | Expert (T.mma) | T.mma 逐步优化（4 步） | cube_optimization_path.md §2 |
+| Cube 型 | Developer (T.gemm_v0) | gemm_v0 参数调优 + 升级路径 | cube_optimization_path.md §3 |
+
+**模式识别方法**：检查 kernel 代码中是否使用 `T.mma`（Expert）或 `T.gemm_v0`（Developer），据此路由到对应优化路径。
+
 - 调用 `/tilelang-api-best-practices` 查阅相关 API 用法
 
 #### 最佳实践案例参考
