@@ -333,7 +333,7 @@ public:
                                         injector.reduce_out_tmp_buf_);
     fptr->body = new_body;
 
-    if (inject_enabled && injector.tmp_buf_.defined()) {
+    if (injector.tmp_buf_.defined()) {
       auto fn_attr = fptr->attrs.CopyOnWrite();
       Array<Var> tmp_buffer_vars;
       tmp_buffer_vars.push_back(injector.tmp_buf_->data);
@@ -1224,7 +1224,7 @@ private:
                   << buf->name;
       size *= imm->value;
     }
-    return size * buf->dtype.bytes();
+    return size * buf->dtype.bytes() * buf->dtype.lanes();
   }
 
   void CollectUserProvidedTmpBuffers_(const Array<Buffer> &alloc_buffers) {
