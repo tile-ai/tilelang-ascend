@@ -337,6 +337,109 @@ def _elementwise_add(M, N, block_M, block_N, dtype="float32"):
     return main
 
 
+def _reduce_max_inside_if_auto(M, N, block_M, dtype="float32"):
+    """Reduce_max inside if-else branch with auto-injected tmp_ub."""
+    m_num = M // block_M
+    sub_block_M = block_M // VEC_NUM
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((M, N), dtype),  # type: ignore
+        B: T.Tensor((M,), dtype),  # type: ignore
+    ):
+        with T.Kernel(m_num, is_npu=True) as (cid, vid):
+            row_base = cid * block_M + vid * sub_block_M
+            a_ub = T.alloc_ub((sub_block_M, N), dtype)
+            b_ub = T.alloc_ub((sub_block_M,), dtype)
+            T.copy(A[row_base : row_base + sub_block_M, :], a_ub)
+            if vid == 0:
+                T.reduce_max(a_ub, b_ub, dim=-1)
+            else:
+                T.reduce_sum(a_ub, b_ub, dim=-1)
+            T.copy(b_ub, B[row_base : row_base + sub_block_M])
+
+    return main
+
+
+def _reduce_max_inside_if_manual_tmp(M, N, block_M, dtype="float32"):
+    """Reduce_max inside if-else branch with manually allocated tmp_ub."""
+    m_num = M // block_M
+    sub_block_M = block_M // VEC_NUM
+    tmp_size = get_tmp_buffer_size((sub_block_M, N), dtype, "reduce")
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((M, N), dtype),  # type: ignore
+        B: T.Tensor((M,), dtype),  # type: ignore
+    ):
+        with T.Kernel(m_num, is_npu=True) as (cid, vid):
+            row_base = cid * block_M + vid * sub_block_M
+            tmp_ub = T.alloc_ub((tmp_size,), "uint8")  # noqa: F841
+            a_ub = T.alloc_ub((sub_block_M, N), dtype)
+            b_ub = T.alloc_ub((sub_block_M,), dtype)
+            T.copy(A[row_base : row_base + sub_block_M, :], a_ub)
+            if vid == 0:
+                T.reduce_max(a_ub, b_ub, dim=-1)
+            else:
+                T.reduce_sum(a_ub, b_ub, dim=-1)
+            T.copy(b_ub, B[row_base : row_base + sub_block_M])
+
+    return main
+
+
+def _reduce_inside_if_with_loop_auto(M, N, block_M, dtype="float32"):
+    """Reduce inside if-else, where the if-else is inside a loop.
+    Tests tmp_ub availability across loop iterations with branching."""
+    m_num = M // block_M
+    sub_block_M = block_M // VEC_NUM
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((M, N), dtype),  # type: ignore
+        B: T.Tensor((M,), dtype),  # type: ignore
+    ):
+        with T.Kernel(m_num, is_npu=True) as (cid, vid):
+            row_base = cid * block_M + vid * sub_block_M
+            a_ub = T.alloc_ub((sub_block_M, N), dtype)
+            b_ub = T.alloc_ub((sub_block_M,), dtype)
+            for k in T.serial(2):
+                T.copy(A[row_base + k * sub_block_M : row_base + (k + 1) * sub_block_M, :], a_ub)
+                if k == 0:
+                    T.reduce_max(a_ub, b_ub, dim=-1)
+                else:
+                    T.reduce_sum(a_ub, b_ub, dim=-1)
+                T.copy(b_ub, B[row_base + k * sub_block_M : row_base + (k + 1) * sub_block_M])
+
+    return main
+
+
+def _reduce_inside_if_with_loop_manual_tmp(M, N, block_M, dtype="float32"):
+    """Reduce inside if-else within a loop, with manual tmp_ub."""
+    m_num = M // block_M
+    sub_block_M = block_M // VEC_NUM
+    tmp_size = get_tmp_buffer_size((sub_block_M, N), dtype, "reduce")
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((M, N), dtype),  # type: ignore
+        B: T.Tensor((M,), dtype),  # type: ignore
+    ):
+        with T.Kernel(m_num, is_npu=True) as (cid, vid):
+            row_base = cid * block_M + vid * sub_block_M
+            tmp_ub = T.alloc_ub((tmp_size,), "uint8")  # noqa: F841
+            a_ub = T.alloc_ub((sub_block_M, N), dtype)
+            b_ub = T.alloc_ub((sub_block_M,), dtype)
+            for k in T.serial(2):
+                T.copy(A[row_base + k * sub_block_M : row_base + (k + 1) * sub_block_M, :], a_ub)
+                if k == 0:
+                    T.reduce_max(a_ub, b_ub, dim=-1)
+                else:
+                    T.reduce_sum(a_ub, b_ub, dim=-1)
+                T.copy(b_ub, B[row_base + k * sub_block_M : row_base + (k + 1) * sub_block_M])
+
+    return main
+
+
 # ---------------------------------------------------------------------------
 # Compile-level tests (no NPU required for compilation)
 # ---------------------------------------------------------------------------
@@ -573,6 +676,142 @@ def test_npu_elementwise_pass_disabled_no_tmp():
     c = kernel(a, b)
     ref = a + b
     torch.testing.assert_close(c, ref, rtol=1e-2, atol=1e-2)
+
+
+# ---------------------------------------------------------------------------
+# If-else branch tests: verify tmp_buffer works inside conditional branches
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+def test_pass_enabled_reduce_inside_if_else_compiles(target):
+    """Pass enabled + reduce inside if-else: tmp_ub auto-injected, compiles."""
+    program = _reduce_max_inside_if_auto(128, 256, 128, dtype="float32")
+    kernel = tilelang.compile(program, pass_configs=PASS_CONFIGS_ENABLED, target=target, out_idx=[1])
+    source = kernel.get_kernel_source()
+    assert "tmp_ub" in source, "tmp_ub should be auto-injected even when reduce is inside if-else"
+
+
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+def test_pass_disabled_reduce_inside_if_else_manual_tmp_compiles(target):
+    """Pass disabled + manual tmp_ub + reduce inside if-else: compiles."""
+    program = _reduce_max_inside_if_manual_tmp(128, 256, 128, dtype="float32")
+    kernel = tilelang.compile(program, pass_configs=PASS_CONFIGS_DISABLED, target=target, out_idx=[1])
+    assert kernel is not None
+
+
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+def test_pass_enabled_reduce_inside_if_else_with_loop_compiles(target):
+    """Pass enabled + reduce inside if-else inside loop: tmp_ub works
+    across loop iterations with branching."""
+    program = _reduce_inside_if_with_loop_auto(128, 256, 128, dtype="float32")
+    kernel = tilelang.compile(program, pass_configs=PASS_CONFIGS_ENABLED, target=target, out_idx=[1])
+    source = kernel.get_kernel_source()
+    assert "tmp_ub" in source
+
+
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+def test_pass_disabled_reduce_inside_if_else_with_loop_manual_tmp_compiles(target):
+    """Pass disabled + manual tmp_ub + reduce inside if-else inside loop."""
+    program = _reduce_inside_if_with_loop_manual_tmp(128, 256, 128, dtype="float32")
+    kernel = tilelang.compile(program, pass_configs=PASS_CONFIGS_DISABLED, target=target, out_idx=[1])
+    assert kernel is not None
+
+
+def test_pass_disabled_reduce_inside_if_else_without_tmp_fails():
+    """Pass disabled + reduce inside if-else + no tmp_ub: must fail."""
+    program = _reduce_max_inside_if_auto(128, 256, 128, dtype="float32")
+    with pytest.raises(Exception, match=r".*tmp_ub.*|.*tmp.*buffer.*"):
+        tilelang.compile(program, pass_configs=PASS_CONFIGS_DISABLED, target="ascendc", out_idx=[1])
+
+
+@pytest.mark.skipif(
+    not NPU_AVAILABLE,
+    reason="Reduce correctness requires an Ascend NPU runtime",
+)
+def test_npu_reduce_inside_if_else_pass_enabled():
+    """NPU correctness: reduce inside if-else with pass enabled.
+    vid=0 → reduce_max, vid=1 → reduce_sum."""
+    M, N = 128, 256
+    program = _reduce_max_inside_if_auto(M, N, 128, dtype="float32")
+    kernel = tilelang.compile(program, pass_configs=PASS_CONFIGS_ENABLED, target="ascendc", out_idx=[1])
+
+    a = torch.randn(M, N, dtype=torch.float32, device="npu")
+    b = kernel(a)
+    ref = torch.zeros(M, dtype=torch.float32, device="npu")
+    ref[:64] = torch.max(a[:64, :], dim=-1).values
+    ref[64:] = torch.sum(a[64:, :], dim=-1)
+    torch.testing.assert_close(b, ref, rtol=1e-2, atol=1e-2)
+
+
+@pytest.mark.skipif(
+    not NPU_AVAILABLE,
+    reason="Reduce correctness requires an Ascend NPU runtime",
+)
+def test_npu_reduce_inside_if_else_pass_disabled_manual_tmp():
+    """NPU correctness: reduce inside if-else with pass disabled + manual tmp_ub."""
+    M, N = 128, 256
+    program = _reduce_max_inside_if_manual_tmp(M, N, 128, dtype="float32")
+    kernel = tilelang.compile(program, pass_configs=PASS_CONFIGS_DISABLED, target="ascendc", out_idx=[1])
+
+    a = torch.randn(M, N, dtype=torch.float32, device="npu")
+    b = kernel(a)
+    ref = torch.zeros(M, dtype=torch.float32, device="npu")
+    ref[:64] = torch.max(a[:64, :], dim=-1).values
+    ref[64:] = torch.sum(a[64:, :], dim=-1)
+    torch.testing.assert_close(b, ref, rtol=1e-2, atol=1e-2)
+
+
+@pytest.mark.skipif(
+    not NPU_AVAILABLE,
+    reason="Reduce correctness requires an Ascend NPU runtime",
+)
+def test_npu_reduce_inside_if_else_both_modes_match():
+    """NPU correctness: reduce inside if-else produces same results
+    in both pass enabled and disabled modes."""
+    M, N = 128, 256
+    program_enabled = _reduce_max_inside_if_auto(M, N, 128, dtype="float32")
+    program_disabled = _reduce_max_inside_if_manual_tmp(M, N, 128, dtype="float32")
+
+    kernel_enabled = tilelang.compile(program_enabled, pass_configs=PASS_CONFIGS_ENABLED, target="ascendc", out_idx=[1])
+    kernel_disabled = tilelang.compile(program_disabled, pass_configs=PASS_CONFIGS_DISABLED, target="ascendc", out_idx=[1])
+
+    a = torch.randn(M, N, dtype=torch.float32, device="npu")
+    b_enabled = kernel_enabled(a)
+    b_disabled = kernel_disabled(a)
+    torch.testing.assert_close(b_enabled, b_disabled, rtol=1e-2, atol=1e-2)
+
+
+@pytest.mark.skipif(
+    not NPU_AVAILABLE,
+    reason="Reduce correctness requires an Ascend NPU runtime",
+)
+def test_npu_reduce_inside_if_else_with_loop_correctness():
+    """NPU correctness: reduce inside if-else inside loop, both
+    pass-enabled and manual-tmp modes produce correct results."""
+    M, N = 128, 256
+    program_auto = _reduce_inside_if_with_loop_auto(M, N, 128, dtype="float32")
+    program_manual = _reduce_inside_if_with_loop_manual_tmp(M, N, 128, dtype="float32")
+
+    kernel_auto = tilelang.compile(program_auto, pass_configs=PASS_CONFIGS_ENABLED, target="ascendc", out_idx=[1])
+    kernel_manual = tilelang.compile(program_manual, pass_configs=PASS_CONFIGS_DISABLED, target="ascendc", out_idx=[1])
+
+    a = torch.randn(M, N, dtype=torch.float32, device="npu")
+    b_auto = kernel_auto(a)
+    b_manual = kernel_manual(a)
+
+    ref = torch.zeros(M, dtype=torch.float32, device="npu")
+    sub = 64
+    for k in range(2):
+        start = k * sub
+        end = (k + 1) * sub
+        if k == 0:
+            ref[start:end] = torch.max(a[start:end, :], dim=-1).values
+        else:
+            ref[start:end] = torch.sum(a[start:end, :], dim=-1)
+
+    torch.testing.assert_close(b_auto, ref, rtol=1e-2, atol=1e-2)
+    torch.testing.assert_close(b_manual, ref, rtol=1e-2, atol=1e-2)
 
 
 if __name__ == "__main__":
