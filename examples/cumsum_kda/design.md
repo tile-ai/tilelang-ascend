@@ -87,7 +87,7 @@ vector fast path 额外要求：
 - `tilelang/language/__init__.py`
 - `tilelang/language/reduce.py`
 
-并且 `src/op/reduce.cc` 中已存在 `shared/shared.dyn` lowering。
+并且 `src/op/reduce.cc` 中已存在 `shared.ub/shared` lowering。
 
 当前 KDA example 没有直接采用 `T.cumsum`，主要原因是：
 
