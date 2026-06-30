@@ -14,7 +14,6 @@
 
 - **API 用法**：查阅 [tilelang-api-best-practices SKILL.md](../../tilelang-custom-skill/tilelang-api-best-practices/SKILL.md) 及其 references 目录
 - **编程模式和 pass_configs**：查阅 [tilelang-expert-to-developer SKILL.md](../../tilelang-custom-skill/tilelang-expert-to-developer/SKILL.md) 及其 references 目录
-- **同步原语（set_flag / wait_flag / barrier_all）**：查阅 [sync-primitives-guide.md](../sync-primitives-guide.md)
 
 ---
 
