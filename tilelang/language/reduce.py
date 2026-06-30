@@ -1,6 +1,7 @@
 # Copyright (c) Tile-AI Corporation.
 # Licensed under the MIT License.
 """The language interface for tl programs."""
+from __future__ import annotations
 
 from tvm import tir
 from typing import Optional

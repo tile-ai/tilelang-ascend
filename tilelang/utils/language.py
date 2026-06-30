@@ -2,7 +2,7 @@
 # Licensed under the MIT License.
 
 from tvm.tir import Buffer
-from typing import List
+from typing import List  # noqa: UP035
 from functools import reduce
 from tvm import IRModule
 from tvm.tir import PrimFunc
@@ -87,7 +87,7 @@ def get_buffer_elems(buffer: Buffer) -> int:
     return reduce(lambda x, y: x * y, buffer.shape)
 
 
-def array_reduce(array: List[int]) -> int:
+def array_reduce(array: list[int]) -> int:
     """
     Reduce an array of integers to a single integer.
 

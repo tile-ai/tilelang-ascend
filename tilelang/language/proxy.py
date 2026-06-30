@@ -3,7 +3,8 @@
 """The language interface for tl programs."""
 
 from __future__ import annotations
-from typing import Any, Optional, Sequence, SupportsIndex, TYPE_CHECKING
+from typing import Any, Optional, SupportsIndex, TYPE_CHECKING
+from collections.abc import Sequence
 from typing_extensions import Self
 
 from tvm import tir
@@ -213,7 +214,7 @@ else:
     LocalBuffer = LocalBufferProxy()  # pylint: disable=invalid-name
 
 
-def ptr(dtype: Optional[str] = None, storage_scope: str = "global", *, is_size_var: bool = False) -> Var:
+def ptr(dtype: str | None = None, storage_scope: str = "global", *, is_size_var: bool = False) -> Var:
     """Create a TIR var that represents a pointer.
 
     Parameters
