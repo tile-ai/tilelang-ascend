@@ -52,10 +52,7 @@ class BufferProxy:
             return self(keys)
         return self(*keys)  # type: ignore[attr-defined] # pylint: disable=no-member
 
-    def from_ptr(self,
-                 pointer_var: Var,
-                 shape: tuple[PrimExpr, ...],
-                 dtype: str = "float32") -> Buffer:
+    def from_ptr(self, pointer_var: Var, shape: tuple[PrimExpr, ...], dtype: str = "float32") -> Buffer:
         """Create a buffer from a pointer, shape, and data type.
 
         Args:
@@ -71,11 +68,12 @@ class BufferProxy:
 
 class BaseTensorProxy:
     """Base proxy class for tensor types with configurable defaults.
-    
+
     This class serves as a foundation for different tensor proxy types, providing
     customizable default values for scope, alignment, and offset factors. It implements
     the core functionality for creating TIR buffers with specific memory configurations.
     """
+
     default_scope = "global"
     default_align = 0
     default_offset_factor = 0
@@ -118,10 +116,7 @@ class BaseTensorProxy:
             return self(keys)
         return self(*keys)
 
-    def from_ptr(self,
-                 pointer_var: Var,
-                 shape: tuple[PrimExpr, ...],
-                 dtype: str = "float32") -> tir.Buffer:
+    def from_ptr(self, pointer_var: Var, shape: tuple[PrimExpr, ...], dtype: str = "float32") -> tir.Buffer:
         """Create a buffer from a pointer, shape, and data type.
 
         Args:
@@ -137,7 +132,7 @@ class BaseTensorProxy:
 
 class TensorProxy(BaseTensorProxy):
     """Main tensor proxy class for global scope buffers.
-    
+
     This class implements the default tensor proxy with global memory scope,
     inheriting all functionality from BaseTensorProxy without modifications.
     """
@@ -145,28 +140,31 @@ class TensorProxy(BaseTensorProxy):
 
 class FragmentBufferProxy(BaseTensorProxy):
     """Proxy class for fragment memory buffers.
-    
+
     This class represents tensor proxies specifically for local fragment memory,
     typically used in GPU tensor core operations.
     """
+
     default_scope = "local.fragment"
 
 
 class SharedBufferProxy(BaseTensorProxy):
     """Proxy class for shared memory buffers.
-    
+
     This class represents tensor proxies for dynamic shared memory,
     commonly used in GPU shared memory operations.
     """
+
     default_scope = "shared"
 
 
 class LocalBufferProxy(BaseTensorProxy):
     """Proxy class for local memory buffers.
-    
+
     This class represents tensor proxies for local memory scope,
     typically used for temporary computations in GPU kernels.
     """
+
     default_scope = "local"
 
 
@@ -177,15 +175,12 @@ Buffer = BufferProxy()  # pylint: disable=invalid-name
 if TYPE_CHECKING:
 
     class BaseTensor:
-
         def __class_getitem__(cls, key):
             return cls
 
-        def __getitem__(self, key) -> Any:
-            ...
+        def __getitem__(self, key) -> Any: ...
 
-        def __setitem__(self, key, value) -> None:
-            ...
+        def __setitem__(self, key, value) -> None: ...
 
         def __init__(
             self,
@@ -199,27 +194,18 @@ if TYPE_CHECKING:
             offset_factor=None,
             buffer_type="",
             axis_separators=None,
-        ):
-            ...
+        ): ...
 
         @classmethod
-        def from_ptr(cls,
-                     pointer_var: Var,
-                     shape: Sequence[PrimExpr, ...],
-                     dtype: str = "float32") -> Self:
-            ...
+        def from_ptr(cls, pointer_var: Var, shape: Sequence[PrimExpr, ...], dtype: str = "float32") -> Self: ...
 
-    class Tensor(BaseTensor):
-        ...
+    class Tensor(BaseTensor): ...
 
-    class FragmentBuffer(BaseTensor):
-        ...
+    class FragmentBuffer(BaseTensor): ...
 
-    class SharedBuffer(BaseTensor):
-        ...
+    class SharedBuffer(BaseTensor): ...
 
-    class LocalBuffer(BaseTensor):
-        ...
+    class LocalBuffer(BaseTensor): ...
 else:
     Tensor = TensorProxy()  # pylint: disable=invalid-name
     FragmentBuffer = FragmentBufferProxy()  # pylint: disable=invalid-name
@@ -227,10 +213,7 @@ else:
     LocalBuffer = LocalBufferProxy()  # pylint: disable=invalid-name
 
 
-def ptr(dtype: Optional[str] = None,
-        storage_scope: str = "global",
-        *,
-        is_size_var: bool = False) -> Var:
+def ptr(dtype: Optional[str] = None, storage_scope: str = "global", *, is_size_var: bool = False) -> Var:
     """Create a TIR var that represents a pointer.
 
     Parameters

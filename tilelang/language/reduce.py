@@ -86,8 +86,8 @@ def reduce_sum(buffer: tir.Buffer, out: tir.Buffer, dim: int = -1, clear: bool =
         clear (bool, optional): If True, output buffer will be cleared before reduction.
                               If False, results will be accumulated on existing values.
                               Defaults to True.
-    Note: When clear=True, reduce_sum will not compute directly on the output buffer. This is because 
-          during warp reduction, the same value would be accumulated multiple times (number of threads 
+    Note: When clear=True, reduce_sum will not compute directly on the output buffer. This is because
+          during warp reduction, the same value would be accumulated multiple times (number of threads
           in the warp). Therefore, the implementation with clear=True follows these steps:
         1. create a temp buffer with same shape and dtype as out
         2. copy out to temp buffer

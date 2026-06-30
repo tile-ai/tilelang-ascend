@@ -36,7 +36,6 @@ namespace tl {
 
 using namespace tir;
 
-
 /*!
  * \brief Check whether two regions have intersections.
  * \param region1 The first region.
@@ -77,7 +76,7 @@ public:
   PrimExpr GetConditonalExpr() const { return conditonal_expr; }
 
 private:
-  std::string NormalizeFunctionName(const std::string& func_name) {
+  std::string NormalizeFunctionName(const std::string &func_name) {
     std::string result = func_name;
     size_t template_pos = result.find('<');
     if (template_pos != std::string::npos) {
@@ -128,13 +127,13 @@ private:
     }
   }
 
-  bool is_func_in_operation_config(const CallNode *op){
+  bool is_func_in_operation_config(const CallNode *op) {
     bool result = false;
-    if (auto* op_ptr = op->op.as<OpNode>()){
+    if (auto *op_ptr = op->op.as<OpNode>()) {
       std::string op_name = op_ptr->name;
       auto config_it = GetOperationConfig().find(op_name);
       if (config_it != GetOperationConfig().end()) {
-          result = true;
+        result = true;
       }
     }
     return result;
@@ -173,18 +172,19 @@ private:
       std::string normalized_name = NormalizeFunctionName(func_str);
       auto config_it = GetOperationConfig().find(normalized_name);
       if (config_it != GetOperationConfig().end()) {
-        const auto& config = config_it->second;
-        for (const auto& buffer_config: config.buffer_accesses) {
+        const auto &config = config_it->second;
+        for (const auto &buffer_config : config.buffer_accesses) {
           size_t arg_index = buffer_config.first;
-          const std::string& access_type = buffer_config.second;
-          if (const auto* access_ptr = op->args[arg_index + 1].as<CallNode>()) {
+          const std::string &access_type = buffer_config.second;
+          if (const auto *access_ptr = op->args[arg_index + 1].as<CallNode>()) {
             if (access_ptr->op.same_as(builtin::tvm_access_ptr())) {
-              const VarNode* buffer_var = access_ptr->args[1].as<VarNode>();
+              const VarNode *buffer_var = access_ptr->args[1].as<VarNode>();
               if (buffer_var) {
                 auto it = buffer_data_to_buffer_.find(GetRef<Var>(buffer_var));
                 if (it != buffer_data_to_buffer_.end()) {
-                  const Buffer& buffer = (*it).second;
-                  const BufferRegion buffer_region = BufferRegion::FullRegion(buffer);
+                  const Buffer &buffer = (*it).second;
+                  const BufferRegion buffer_region =
+                      BufferRegion::FullRegion(buffer);
                   if (access_type == "read") {
                     reads_.push_back(buffer_region);
                     if (buffer.scope() == "global") {
@@ -193,8 +193,8 @@ private:
                   } else if (access_type == "write") {
                     writes_.push_back(buffer_region);
                     if (is_global_read_ && (buffer.scope() == "shared.ub" ||
-                        buffer.scope() == "shared")) {
-                          is_global_copy_pattern_ = true;
+                                            buffer.scope() == "shared")) {
+                      is_global_copy_pattern_ = true;
                     }
                   }
                 }
@@ -204,21 +204,22 @@ private:
         }
       }
     } else if (is_func_in_operation_config(op)) {
-      auto* op_ptr = op->op.as<OpNode>();
+      auto *op_ptr = op->op.as<OpNode>();
       std::string op_name = op_ptr->name;
       auto config_it = GetOperationConfig().find(op_name);
-      const auto& config = config_it->second;
-      for (const auto& buffer_config: config.buffer_accesses) {
+      const auto &config = config_it->second;
+      for (const auto &buffer_config : config.buffer_accesses) {
         size_t arg_index = buffer_config.first;
-        const std::string& access_type = buffer_config.second;
-        if (const auto* access_ptr = op->args[arg_index].as<CallNode>()) {
+        const std::string &access_type = buffer_config.second;
+        if (const auto *access_ptr = op->args[arg_index].as<CallNode>()) {
           if (access_ptr->op.same_as(builtin::tvm_access_ptr())) {
-            const VarNode* buffer_var = access_ptr->args[1].as<VarNode>();
+            const VarNode *buffer_var = access_ptr->args[1].as<VarNode>();
             if (buffer_var) {
               auto it = buffer_data_to_buffer_.find(GetRef<Var>(buffer_var));
               if (it != buffer_data_to_buffer_.end()) {
-                const Buffer& buffer = (*it).second;
-                const BufferRegion buffer_region = BufferRegion::FullRegion(buffer);
+                const Buffer &buffer = (*it).second;
+                const BufferRegion buffer_region =
+                    BufferRegion::FullRegion(buffer);
                 if (access_type == "read") {
                   reads_.push_back(buffer_region);
                   if (buffer.scope() == "global") {
@@ -227,8 +228,8 @@ private:
                 } else if (access_type == "write") {
                   writes_.push_back(buffer_region);
                   if (is_global_read_ && (buffer.scope() == "shared.ub" ||
-                      buffer.scope() == "shared")) {
-                        is_global_copy_pattern_ = true;
+                                          buffer.scope() == "shared")) {
+                    is_global_copy_pattern_ = true;
                   }
                 }
               }
