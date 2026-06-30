@@ -63,6 +63,7 @@ def setup_random_seed():
 # Pass: a_ub first dim halved, GM indices get vid offset.
 # ============================================================
 
+
 def gm_ub_gm_identity(M, N, block_M, block_N, dtype="float16"):
     m_num = M // block_M
     n_num = N // block_N
@@ -97,6 +98,7 @@ def test_vid_reduction_gm_ub_gm_identity(setup_random_seed, target):
 #              m_i[i] = T.max(m_i[i], m_i_prev[i])
 # Pass: a_ub/c_ub first (only) dim halved, tile op size halved.
 # ============================================================
+
 
 def parallel_elementwise_1d(M, block_M, dtype="float16"):
     m_num = M // block_M
@@ -153,6 +155,7 @@ def test_vid_reduction_parallel_elementwise_1d(setup_random_seed, target):
 # ws1/ws2 are declared as outputs (out_idx) to avoid GM->GM copy.
 # ============================================================
 
+
 def gm_gather_skip_set_dual(B, SKV, G, D_full, D_main, D_tail, BI, dtype="float16"):
     block_num = B * 4
 
@@ -189,7 +192,9 @@ def test_vid_reduction_skip_set_dual_buffer(setup_random_seed, target):
     B, SKV, G, D_full, D_main, D_tail, BI = 1, 256, 1, 128, 64, 64, 64
     block_num = B * 4
 
-    func = tilelang.compile(gm_gather_skip_set_dual(B, SKV, G, D_full, D_main, D_tail, BI), out_idx=[2, 3], pass_configs=pass_configs, target=target)
+    func = tilelang.compile(
+        gm_gather_skip_set_dual(B, SKV, G, D_full, D_main, D_tail, BI), out_idx=[2, 3], pass_configs=pass_configs, target=target
+    )
     kv = torch.randn(B, SKV, G, D_full, dtype=torch.float16).npu()
     idx = torch.arange(BI, dtype=torch.int32).npu().repeat(B * 4 * G).reshape(B, 4, G, BI)
     torch.npu.synchronize()
@@ -227,6 +232,7 @@ def test_vid_reduction_skip_set_dual_buffer(setup_random_seed, target):
 #   compare:   compare(GT) — Pass processes size, result not in output chain
 # ============================================================
 
+
 def tile_ops_kernel(M, N, block_M, block_N, dtype="float16"):
     m_num = M // block_M
     n_num = N // block_N
@@ -243,27 +249,27 @@ def tile_ops_kernel(M, N, block_M, block_N, dtype="float16"):
             T.copy(A[bx * block_M, by * block_N], a_ub)
 
             # binary_op: add/sub/max/min/mul/div — chain: temp = 1
-            T.tile.add(temp_ub, a_ub, a_ub)       # temp = 2a
-            T.tile.sub(temp_ub, temp_ub, a_ub)    # temp = a
-            T.tile.max(temp_ub, temp_ub, a_ub)    # temp = a
-            T.tile.min(temp_ub, temp_ub, a_ub)    # temp = a
-            T.tile.mul(temp_ub, temp_ub, a_ub)    # temp = a^2
-            T.tile.add(temp_ub, temp_ub, 1.0)     # temp = a^2 + 1
-            T.tile.div(temp_ub, temp_ub, temp_ub) # temp = 1
+            T.tile.add(temp_ub, a_ub, a_ub)  # temp = 2a
+            T.tile.sub(temp_ub, temp_ub, a_ub)  # temp = a
+            T.tile.max(temp_ub, temp_ub, a_ub)  # temp = a
+            T.tile.min(temp_ub, temp_ub, a_ub)  # temp = a
+            T.tile.mul(temp_ub, temp_ub, a_ub)  # temp = a^2
+            T.tile.add(temp_ub, temp_ub, 1.0)  # temp = a^2 + 1
+            T.tile.div(temp_ub, temp_ub, temp_ub)  # temp = 1
 
             # unary_op: exp/sqrt/relu — temp = sqrt(e)
-            T.tile.exp(temp_ub, temp_ub)           # temp = e
-            T.tile.sqrt(temp_ub, temp_ub)          # temp = sqrt(e)
-            T.tile.relu(temp_ub, temp_ub)          # temp = sqrt(e)
+            T.tile.exp(temp_ub, temp_ub)  # temp = e
+            T.tile.sqrt(temp_ub, temp_ub)  # temp = sqrt(e)
+            T.tile.relu(temp_ub, temp_ub)  # temp = sqrt(e)
 
             # scalar_op: leaky_relu/axpy — temp = a + sqrt(e)
             T.tile.leaky_relu(temp_ub, temp_ub, 0.1)  # temp = sqrt(e)
-            T.tile.axpy(temp_ub, a_ub, 1.0)            # temp = a + sqrt(e)
+            T.tile.axpy(temp_ub, a_ub, 1.0)  # temp = a + sqrt(e)
 
             # sin/cos: b = sin(temp) + cos(a) = sin(a + sqrt(e)) + cos(a)
-            T.tile.sin(b_ub, temp_ub)               # b = sin(a + sqrt(e))
-            T.tile.cos(temp_ub, a_ub)               # temp = cos(a)
-            T.tile.add(b_ub, b_ub, temp_ub)         # b = sin(a + sqrt(e)) + cos(a)
+            T.tile.sin(b_ub, temp_ub)  # b = sin(a + sqrt(e))
+            T.tile.cos(temp_ub, a_ub)  # temp = cos(a)
+            T.tile.add(b_ub, b_ub, temp_ub)  # b = sin(a + sqrt(e)) + cos(a)
 
             # compare (Pass processes its size; result not in output chain)
             T.tile.compare(temp_ub, a_ub, 0.0, "GT")
@@ -294,6 +300,7 @@ def test_vid_reduction_tile_ops(setup_random_seed, target):
 #              acc_o[h_i, j] = acc_o[h_i, j] * m_i_prev[h_i]
 # Pass: UB first dim halved, T.Parallel extent halved.
 # ============================================================
+
 
 def tile_parallel_kernel(M, N, block_M, block_N, dtype="float16"):
     m_num = M // block_M
@@ -336,6 +343,7 @@ def test_vid_reduction_tile_parallel(setup_random_seed, target):
 #              T.tile.div(acc_o[h_i, :], acc_o[h_i, :], sumexp[h_i])
 # Pass: UB first dim halved, for range extent halved.
 # ============================================================
+
 
 def tile_range_kernel(M, N, block_M, block_N, dtype="float16"):
     m_num = M // block_M
@@ -380,6 +388,7 @@ def test_vid_reduction_tile_range(setup_random_seed, target):
 #       region extent halved.
 # ============================================================
 
+
 def buffer_region_kernel(M, N, block_M, block_N, dtype="float16"):
     m_num = M // block_M
     n_num = N // block_N
@@ -407,7 +416,9 @@ def buffer_region_kernel(M, N, block_M, block_N, dtype="float16"):
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 def test_vid_reduction_buffer_region(setup_random_seed, target):
     M, N, block_M, block_N = 256, 128, 128, 128
-    func = tilelang.compile(buffer_region_kernel(M, N, block_M, block_N), out_idx=[1], workspace_idx=[2], pass_configs=pass_configs, target=target)
+    func = tilelang.compile(
+        buffer_region_kernel(M, N, block_M, block_N), out_idx=[1], workspace_idx=[2], pass_configs=pass_configs, target=target
+    )
     a = torch.randn(M, N, dtype=torch.float16).npu()
     torch.npu.synchronize()
     c = func(a)
@@ -421,6 +432,7 @@ def test_vid_reduction_buffer_region(setup_random_seed, target):
 # With threads=1 the Pass is a no-op.  The kernel should produce
 # correct results without any UB halving or vid offset injection.
 # ============================================================
+
 
 def gm_ub_gm_identity_t1(M, N, block_M, block_N, dtype="float16"):
     m_num = M // block_M
