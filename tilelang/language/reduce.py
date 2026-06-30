@@ -133,7 +133,7 @@ def reduce_absmax(buffer: tir.Buffer, out: tir.Buffer, dim: int = -1, clear: boo
 
 @macro
 def cumsum_fragment(src: tir.Buffer, dst: tir.Buffer, dim: int, reverse: bool) -> tir.PrimExpr:
-    cumsum_smem = alloc_shared(src.shape, src.dtype, "shared.dyn")
+    cumsum_smem = alloc_shared(src.shape, src.dtype, "shared")
     copy(src, cumsum_smem)
     tir.call_intrin(
         "handle",

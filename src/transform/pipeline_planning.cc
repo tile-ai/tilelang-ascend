@@ -105,8 +105,8 @@ private:
 
     is_global_read_ = false;
     this->VisitExpr(op->value);
-    if (is_global_read_ && (store_buffer.scope() == "shared" ||
-                            store_buffer.scope() == "shared.dyn")) {
+    if (is_global_read_ && (store_buffer.scope() == "shared.ub" ||
+                            store_buffer.scope() == "shared")) {
       is_global_copy_pattern_ = true;
     }
     is_global_read_ = false;
@@ -192,8 +192,8 @@ private:
                     }
                   } else if (access_type == "write") {
                     writes_.push_back(buffer_region);
-                    if (is_global_read_ && (buffer.scope() == "shared" ||
-                        buffer.scope() == "shared.dyn")) {
+                    if (is_global_read_ && (buffer.scope() == "shared.ub" ||
+                        buffer.scope() == "shared")) {
                           is_global_copy_pattern_ = true;
                     }
                   }
@@ -226,8 +226,8 @@ private:
                   }
                 } else if (access_type == "write") {
                   writes_.push_back(buffer_region);
-                  if (is_global_read_ && (buffer.scope() == "shared" ||
-                      buffer.scope() == "shared.dyn")) {
+                  if (is_global_read_ && (buffer.scope() == "shared.ub" ||
+                      buffer.scope() == "shared")) {
                         is_global_copy_pattern_ = true;
                   }
                 }

@@ -237,7 +237,7 @@ private:
 
   bool isSharedBuffer(const Buffer &buffer) {
     String scope = buffer.scope();
-    return scope == "shared" || scope == "shared.dyn";
+    return scope == "shared.ub" || scope == "shared";
   }
 
   bool IsGlobalBuffer(const Buffer &buffer) {

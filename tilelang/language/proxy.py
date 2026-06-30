@@ -158,7 +158,7 @@ class SharedBufferProxy(BaseTensorProxy):
     This class represents tensor proxies for dynamic shared memory,
     commonly used in GPU shared memory operations.
     """
-    default_scope = "shared.dyn"
+    default_scope = "shared"
 
 
 class LocalBufferProxy(BaseTensorProxy):

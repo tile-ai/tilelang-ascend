@@ -395,19 +395,19 @@ private:
         } else {
           corrected_scope = "wmma.accumulator";
         }
-      } else if (original_scope == "shared.dyn") {
+      } else if (original_scope == "shared") {
         if (use_info) {
           bool only_in_ascend_copy = false;
           if (use_info->used_in_vector && !use_info->used_in_cube) {
-            corrected_scope = "shared";
+            corrected_scope = "shared.ub";
           } else if (use_info->used_in_cube && !use_info->used_in_vector) {
-            corrected_scope = "shared.dyn";
+            corrected_scope = "shared";
           } else if (use_info->used_in_cube && use_info->used_in_vector) {
             bool has_conflict = CheckSharedBufferConflict(use_info);
             if (has_conflict) {
               // todo
             }
-            corrected_scope = "shared.dyn";
+            corrected_scope = "shared";
           } else {
             corrected_scope = original_scope;
           }
@@ -415,7 +415,7 @@ private:
           corrected_scope = original_scope;
         }
       } else if (original_scope == "shared.l1") {
-        corrected_scope = "shared.dyn";
+        corrected_scope = "shared";
       }
 
       alloc_info->corrected_scope = corrected_scope;
@@ -433,7 +433,7 @@ private:
       for (const auto &kv : collector_->alloc_info) {
         const VarNode *handle = kv.first;
         BufferAllocationInfo *alloc_info = collector_->GetAllocInfo(handle);
-        if (!alloc_info || alloc_info->original_scope != "shared.dyn") {
+        if (!alloc_info || alloc_info->original_scope != "shared") {
           continue;
         }
 
@@ -489,9 +489,9 @@ private:
           }
         }
         if (found_qualified_copy) {
-          alloc_info->corrected_scope = "shared.dyn";
-        } else {
           alloc_info->corrected_scope = "shared";
+        } else {
+          alloc_info->corrected_scope = "shared.ub";
         }
 
         bool has_dump_tensor = false;
@@ -505,7 +505,7 @@ private:
         }
 
         bool should_apply = false;
-        if (has_dump_tensor && alloc_info->corrected_scope == "shared.dyn") {
+        if (has_dump_tensor && alloc_info->corrected_scope == "shared") {
           should_apply = true;
         } else if (alloc_info->corrected_scope != alloc_info->original_scope) {
           should_apply = true;
@@ -520,7 +520,7 @@ private:
         }
       }
     }
-    const std::string UB_SCOPE = "shared";
+    const std::string UB_SCOPE = "shared.ub";
 
     for (const auto &buf_pair : collector_->ascend_copy_buffer_pairs_) {
       const VarNode *first_buf_handle = buf_pair.first;
@@ -738,7 +738,7 @@ private:
   }
 
   /*!
-   * \brief Ensure all L1-level (shared.dyn) Buffers have physical memory layout
+   * \brief Ensure all L1-level (shared) Buffers have physical memory layout
    * descriptions.
    *
    * \note
@@ -769,7 +769,7 @@ private:
 
       // Only data entering L1 Buffer needs to participate in Cube operations
       // and requires fractal layout transformation.
-      if (scope == "shared.dyn") {
+      if (scope == "shared") {
         // Avoid overwriting user-defined layouts (e.g., user intentionally
         // specified nZ instead of zN).
         if (layout_map.count(buf->data) == 0) {

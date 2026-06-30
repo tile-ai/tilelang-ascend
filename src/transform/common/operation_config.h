@@ -316,13 +316,13 @@ inline const std::unordered_map<std::string, std::string> &GetEventMapping() {
 /*! \brief A set of memory scopes that require their layout to be flattened.
  */
 const std::unordered_set<std::string> kScopesToFlatten = {
-    "shared", "shared.dyn", "wmma.matrix_a", "wmma.matrix_b",
+    "shared.ub", "shared", "wmma.matrix_a", "wmma.matrix_b",
     "wmma.accumulator"};
 
 /*! \brief The memory scope that requires alignment for its inner
  * dimension. */
 const std::unordered_map<std::string, int> kScopeForAlignment = {
-    {"shared", 32 * 8}};
+    {"shared.ub", 32 * 8}};
 
 const std::unordered_map<const tvm::OpNode *, int64_t> ascendc_tmp_arg_ops = {
     {tl::ascend_clamp().get(), 3},

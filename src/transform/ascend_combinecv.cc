@@ -755,13 +755,13 @@ public:
   Stmt VisitStmt_(const BufferStoreNode *op) final {
     auto buf_scope = op->buffer.scope();
     if (is_aiv_) {
-      if (buf_scope == "shared") {
+      if (buf_scope == "shared.ub") {
         return StmtMutator::VisitStmt_(op);
       } else {
         return Evaluate(0);
       }
     } else {
-      if (buf_scope == "shared") {
+      if (buf_scope == "shared.ub") {
         return Evaluate(0);
       } else {
         return StmtMutator::VisitStmt_(op);
@@ -801,8 +801,8 @@ private:
       {"wmma.matrix_a", "cube"},
       {"wmma.matrix_b", "cube"},
       {"wmma.accumulator", "cube"},
-      {"shared.dyn", "cube"},
-      {"shared", "vec"}};
+      {"shared", "cube"},
+      {"shared.ub", "vec"}};
 };
 
 class CombineCV : public arith::IRMutatorWithAnalyzer {

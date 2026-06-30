@@ -44,8 +44,8 @@ std::unordered_map<std::string, std::string> callnodeMapPos_ = {
     {"wmma.matrix_a", "cube"},
     {"wmma.matrix_b", "cube"},
     {"wmma.accumulator", "cube"},
-    {"shared.dyn", "cube"},
-    {"shared", "vec"},
+    {"shared", "cube"},
+    {"shared.ub", "vec"},
     {"local.var", "vec"}};
 
 int32_t checkBufferScope(Map<Var, String> location_map, const Var &var) {

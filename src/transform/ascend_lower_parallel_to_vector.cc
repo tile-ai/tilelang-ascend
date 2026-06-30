@@ -160,7 +160,7 @@ private:
     }
 
     Var data(ref->name + "_tmp_" + std::to_string(temp_buffer_id_++) + "_data",
-             PointerType(PrimType(dtype), "shared"));
+             PointerType(PrimType(dtype), "shared.ub"));
 
     // Determine the shape based on the actual computation size (loop extent)
     Array<PrimExpr> shape;
@@ -1587,7 +1587,7 @@ private:
 
     Var data(ref->name + "_broadcast_" + std::to_string(temp_buffer_id_++) +
                  "_data",
-             PointerType(PrimType(dtype), "shared"));
+             PointerType(PrimType(dtype), "shared.ub"));
 
     // Create 2D shape for broadcast
     int64_t total_elements = outer_extent * inner_vec_len;
@@ -1615,7 +1615,7 @@ private:
 
     Var data("broadcast_workspace_" + std::to_string(temp_buffer_id_++) +
                  "_data",
-             PointerType(PrimType(dtype), "shared"));
+             PointerType(PrimType(dtype), "shared.ub"));
 
     // Workspace buffer should be 2x the size of the dst buffer
     // Create 1D shape (vector operations expect contiguous buffers)
@@ -1735,7 +1735,7 @@ private:
   // Check if a buffer is Unified Buffer(UB)
   bool IsUnifiedBuffer(const Buffer &buffer) {
     if (auto *ptr_type = buffer->data->type_annotation.as<PointerTypeNode>()) {
-      return ptr_type->storage_scope == "shared";
+      return ptr_type->storage_scope == "shared.ub";
     }
     return false;
   }
@@ -1743,7 +1743,7 @@ private:
   // Check if a buffer is L1
   bool IsL1Buffer(const Buffer &buffer) {
     if (auto *ptr_type = buffer->data->type_annotation.as<PointerTypeNode>()) {
-      return ptr_type->storage_scope == "shared.dyn";
+      return ptr_type->storage_scope == "shared";
     }
     return false;
   }

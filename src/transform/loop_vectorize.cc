@@ -69,8 +69,8 @@ private:
   }
 
   void VisitExpr_(const BufferLoadNode *node) final {
-    if (node->buffer.scope() == "shared" || node->buffer.scope() == "global" ||
-        node->buffer.scope() == "shared.dyn")
+    if (node->buffer.scope() == "shared.ub" ||
+        node->buffer.scope() == "global" || node->buffer.scope() == "shared")
       has_nonlocal_memory_access_ = true;
     if (node->buffer->shape.size() == 1) {
       // TODO(lei): This should be improved as
@@ -84,8 +84,8 @@ private:
   }
 
   void VisitStmt_(const BufferStoreNode *node) final {
-    if (node->buffer.scope() == "shared" || node->buffer.scope() == "global" ||
-        node->buffer.scope() == "shared.dyn")
+    if (node->buffer.scope() == "shared.ub" ||
+        node->buffer.scope() == "global" || node->buffer.scope() == "shared")
       has_nonlocal_memory_access_ = true;
     UpdateVectorSize(node->indices, node->buffer);
     return arith::IRVisitorWithAnalyzer::VisitExpr(node->value);

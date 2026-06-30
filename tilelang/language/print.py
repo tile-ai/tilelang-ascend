@@ -102,7 +102,7 @@ def print_fragment_buffer_with_condition(condition: tir.PrimExpr,
     Returns:
         tir.PrimExpr: The TIR expression for the debug print operation.
     """
-    smem = alloc_shared(buffer.shape, buffer.dtype, "shared")
+    smem = alloc_shared(buffer.shape, buffer.dtype, "shared.ub")
     copy(buffer, smem)
     if condition:
         # Iterate through the buffer elements and print each one.
@@ -179,7 +179,7 @@ def print(obj: Any, msg: str = "") -> tir.PrimExpr:
             if not msg:
                 msg = f"buffer<{buffer.name}, {buffer.dtype}>"
             return print_fragment_buffer_with_condition(condition, buffer, elems, msg)
-        elif buffer.scope() in {"shared", "shared.dyn"}:
+        elif buffer.scope() in {"shared.ub", "shared"}:
             # Get the number of elements in the buffer.
             elems = 1
             for dim in buffer.shape:

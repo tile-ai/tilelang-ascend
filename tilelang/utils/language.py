@@ -35,7 +35,7 @@ def is_shared(buffer: Buffer, allow_dynamic: bool = True) -> bool:
         bool: True if the buffer is in shared memory, False otherwise.
     """
     conditions = [False]
-    conditions.append(buffer.scope() == "shared")
+    conditions.append(buffer.scope() == "shared.ub")
     if allow_dynamic:
         conditions.append(is_shared_dynamic(buffer))
     return any(conditions)
@@ -51,7 +51,7 @@ def is_shared_dynamic(buffer: Buffer) -> bool:
     Returns:
         bool: True if the buffer is in dynamic shared memory, False otherwise.
     """
-    return buffer.scope() == "shared.dyn"
+    return buffer.scope() == "shared"
 
 
 def is_local(buffer: Buffer) -> bool:
