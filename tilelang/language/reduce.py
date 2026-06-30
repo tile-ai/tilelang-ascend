@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 from tvm import tir
-from typing import Optional
 from tilelang.language import copy, macro, alloc_shared
 
 
