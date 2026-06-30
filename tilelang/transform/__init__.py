@@ -438,6 +438,19 @@ def AscendWorkspaceReduction():
     return _ffi_api.AscendWorkspaceReduction()  # type: ignore
 
 
+def AscendTailMaskPropagation():
+    """Propagate UB tail valid-regions and rewrite vector ops to tail-aware
+    variants for the Ascend backend.
+
+    Returns
+    -------
+    fpass : tvm.transform.Pass
+        The result pass
+    ----
+    """
+    return _ffi_api.AscendTailMaskPropagation()  # type: ignore
+
+
 def AscendInferBufferScope():
     """Infer Buffer Scope for Ascend.
 

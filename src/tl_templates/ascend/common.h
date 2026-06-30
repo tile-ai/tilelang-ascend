@@ -198,29 +198,23 @@ template <typename T, uint32_t dstN, uint32_t dstM = 1>
 CATLASS_DEVICE void
 copy_gm_to_ub(LocalTensor<T> dstTensor, GlobalTensor<T> srcTensor,
               uint32_t realSrcN = 1, uint32_t maskShapeM = dstM,
-              uint32_t maskShapeN = dstN, T padValue = T(0)) {
-
+              uint32_t maskShapeN = dstN) {
+  // Tail blocks are no longer materialised by filling the UB gap with a pad
+  // value.  The unused columns [maskShapeN, dstN) and rows [maskShapeM, dstM)
+  // are left untouched; AscendTailMaskPropagation rewrites downstream vector
+  // ops to tail_* helpers that compute only over [maskShapeM, maskShapeN], so
+  // the gap never affects valid results and is never written back.  The only
+  // padding still applied is the sub-32B DMA remainder needed for alignment.
   bool isPad = true;
   uint32_t rightPadding = 1;
   if (maskShapeN == dstN || (maskShapeN * sizeof(T)) % 32 == 0) {
     isPad = false;
     rightPadding = 0;
   }
-  if (maskShapeM != dstM || maskShapeN != dstN) {
-    if constexpr (IsDuplicateSupported_v<T>) {
-      SetFlag<HardEvent::MTE2_V>(0);
-      WaitFlag<HardEvent::MTE2_V>(0);
-      SetFlag<HardEvent::MTE3_V>(0);
-      WaitFlag<HardEvent::MTE3_V>(0);
-      AscendC::Duplicate<T>(dstTensor, padValue, dstM * dstN);
-      SetFlag<HardEvent::V_MTE2>(0);
-      WaitFlag<HardEvent::V_MTE2>(0);
-    }
-  }
   AscendC::DataCopyExtParams dataCopyParams(
       maskShapeM, maskShapeN * sizeof(T), (realSrcN - maskShapeN) * sizeof(T),
       (dstN - maskShapeN) * sizeof(T) / 32, 0);
-  AscendC::DataCopyPadExtParams<T> padParams(isPad, 0, rightPadding, padValue);
+  AscendC::DataCopyPadExtParams<T> padParams(isPad, 0, rightPadding, T(0));
   AscendC::DataCopyPad(dstTensor, srcTensor, dataCopyParams, padParams);
 }
 
@@ -583,6 +577,436 @@ reduce_min(LocalTensor<T> const &dstTensor, LocalTensor<T> const &srcTensor,
     T reducedValue = dstTensor.GetValue(i);
     T backupValue = dstBackup[i];
     dstTensor.SetValue(i, reduce_scalar_min_safe(reducedValue, backupValue));
+  }
+}
+
+// ===================== Tail-aware vector helpers =========================
+// AscendTailMaskPropagation rewrites vector ops on tail UB tiles to these
+// helpers. A tail tile carries a valid rectangle [validRow, validCol] laid out
+// with a physical row pitch of physCol (the allocated tile width). We choose
+// the cheapest correct execution:
+//   - full rows (validCol == physCol): one contiguous count call;
+//   - narrow tail (validCol <= elements-per-256B-repeat): native mask + repeat,
+//     one repeat per row with the repeat stride derived from physCol;
+//   - otherwise: per-row contiguous fallback (skips only the gap rows).
+// Masking does not make a single repeat cheaper; the saving comes from issuing
+// fewer 256B repeats (fewer rows and/or fewer whole column blocks).
+
+enum class TailVecUnOp { Exp, Ln, Abs, Reciprocal, Sqrt, Rsqrt, Relu };
+enum class TailVecBinOp { Add, Sub, Mul, Div, Max, Min };
+enum class TailVecScalarOp { Adds, Muls, Maxs, Mins };
+
+template <typename T> struct TailIsFloatLike {
+  static constexpr bool value = std::is_same_v<T, float> ||
+                                std::is_same_v<T, half> ||
+                                std::is_same_v<T, bfloat16_t>;
+};
+
+// ---- binary ----
+template <typename T>
+CATLASS_DEVICE void TailApplyBinCount(TailVecBinOp op, LocalTensor<T> d,
+                                      LocalTensor<T> s0, LocalTensor<T> s1,
+                                      int32_t n) {
+  switch (op) {
+  case TailVecBinOp::Add:
+    AscendC::Add(d, s0, s1, n);
+    break;
+  case TailVecBinOp::Sub:
+    AscendC::Sub(d, s0, s1, n);
+    break;
+  case TailVecBinOp::Mul:
+    AscendC::Mul(d, s0, s1, n);
+    break;
+  case TailVecBinOp::Div:
+    AscendC::Div(d, s0, s1, n);
+    break;
+  case TailVecBinOp::Max:
+    AscendC::Max(d, s0, s1, n);
+    break;
+  case TailVecBinOp::Min:
+    AscendC::Min(d, s0, s1, n);
+    break;
+  }
+}
+
+template <typename T>
+CATLASS_DEVICE void TailApplyBinMask(TailVecBinOp op, LocalTensor<T> d,
+                                     LocalTensor<T> s0, LocalTensor<T> s1,
+                                     uint64_t mask, uint8_t repeat,
+                                     const AscendC::BinaryRepeatParams &rp) {
+  switch (op) {
+  case TailVecBinOp::Add:
+    AscendC::Add(d, s0, s1, mask, repeat, rp);
+    break;
+  case TailVecBinOp::Sub:
+    AscendC::Sub(d, s0, s1, mask, repeat, rp);
+    break;
+  case TailVecBinOp::Mul:
+    AscendC::Mul(d, s0, s1, mask, repeat, rp);
+    break;
+  case TailVecBinOp::Div:
+    AscendC::Div(d, s0, s1, mask, repeat, rp);
+    break;
+  case TailVecBinOp::Max:
+    AscendC::Max(d, s0, s1, mask, repeat, rp);
+    break;
+  case TailVecBinOp::Min:
+    AscendC::Min(d, s0, s1, mask, repeat, rp);
+    break;
+  }
+}
+
+template <typename T>
+CATLASS_DEVICE void tail_binary(TailVecBinOp op, LocalTensor<T> dst,
+                                LocalTensor<T> src0, LocalTensor<T> src1,
+                                uint32_t validRow, uint32_t validCol,
+                                uint32_t physCol) {
+  if (validRow == 0 || validCol == 0)
+    return;
+  if (validCol == physCol) {
+    TailApplyBinCount<T>(op, dst, src0, src1,
+                         static_cast<int32_t>(validRow * physCol));
+    return;
+  }
+  constexpr uint32_t vl = 256 / sizeof(T);
+  constexpr uint32_t blk = 32 / sizeof(T);
+  uint32_t repStride = physCol / blk;
+  if (validCol <= vl && validRow <= 255 && (physCol % blk == 0) &&
+      repStride <= 255) {
+    AscendC::BinaryRepeatParams rp;
+    rp.dstBlkStride = 1;
+    rp.src0BlkStride = 1;
+    rp.src1BlkStride = 1;
+    rp.dstRepStride = repStride;
+    rp.src0RepStride = repStride;
+    rp.src1RepStride = repStride;
+    TailApplyBinMask<T>(op, dst, src0, src1, static_cast<uint64_t>(validCol),
+                        static_cast<uint8_t>(validRow), rp);
+    return;
+  }
+  for (uint32_t r = 0; r < validRow; ++r) {
+    TailApplyBinCount<T>(op, dst[r * physCol], src0[r * physCol],
+                         src1[r * physCol], static_cast<int32_t>(validCol));
+  }
+}
+
+// ---- unary ----
+template <typename T>
+CATLASS_DEVICE void TailApplyUnCount(TailVecUnOp op, LocalTensor<T> d,
+                                     LocalTensor<T> s, int32_t n) {
+  if constexpr (TailIsFloatLike<T>::value) {
+    switch (op) {
+    case TailVecUnOp::Exp:
+      AscendC::Exp(d, s, n);
+      break;
+    case TailVecUnOp::Ln:
+      AscendC::Ln(d, s, n);
+      break;
+    case TailVecUnOp::Abs:
+      AscendC::Abs(d, s, n);
+      break;
+    case TailVecUnOp::Reciprocal:
+      AscendC::Reciprocal(d, s, n);
+      break;
+    case TailVecUnOp::Sqrt:
+      AscendC::Sqrt(d, s, n);
+      break;
+    case TailVecUnOp::Rsqrt:
+      AscendC::Rsqrt(d, s, n);
+      break;
+    case TailVecUnOp::Relu:
+      AscendC::Relu(d, s, n);
+      break;
+    }
+  } else {
+    switch (op) {
+    case TailVecUnOp::Abs:
+      AscendC::Abs(d, s, n);
+      break;
+    default:
+      break;
+    }
+  }
+}
+
+template <typename T>
+CATLASS_DEVICE void TailApplyUnMask(TailVecUnOp op, LocalTensor<T> d,
+                                    LocalTensor<T> s, uint64_t mask,
+                                    uint8_t repeat,
+                                    const AscendC::UnaryRepeatParams &rp) {
+  if constexpr (TailIsFloatLike<T>::value) {
+    switch (op) {
+    case TailVecUnOp::Exp:
+      AscendC::Exp(d, s, mask, repeat, rp);
+      break;
+    case TailVecUnOp::Ln:
+      AscendC::Ln(d, s, mask, repeat, rp);
+      break;
+    case TailVecUnOp::Abs:
+      AscendC::Abs(d, s, mask, repeat, rp);
+      break;
+    case TailVecUnOp::Reciprocal:
+      AscendC::Reciprocal(d, s, mask, repeat, rp);
+      break;
+    case TailVecUnOp::Sqrt:
+      AscendC::Sqrt(d, s, mask, repeat, rp);
+      break;
+    case TailVecUnOp::Rsqrt:
+      AscendC::Rsqrt(d, s, mask, repeat, rp);
+      break;
+    case TailVecUnOp::Relu:
+      AscendC::Relu(d, s, mask, repeat, rp);
+      break;
+    }
+  } else {
+    switch (op) {
+    case TailVecUnOp::Abs:
+      AscendC::Abs(d, s, mask, repeat, rp);
+      break;
+    default:
+      break;
+    }
+  }
+}
+
+template <typename T>
+CATLASS_DEVICE void tail_unary(TailVecUnOp op, LocalTensor<T> dst,
+                               LocalTensor<T> src, uint32_t validRow,
+                               uint32_t validCol, uint32_t physCol) {
+  if (validRow == 0 || validCol == 0)
+    return;
+  if (validCol == physCol) {
+    TailApplyUnCount<T>(op, dst, src, static_cast<int32_t>(validRow * physCol));
+    return;
+  }
+  constexpr uint32_t vl = 256 / sizeof(T);
+  constexpr uint32_t blk = 32 / sizeof(T);
+  uint32_t repStride = physCol / blk;
+  if (validCol <= vl && validRow <= 255 && (physCol % blk == 0) &&
+      repStride <= 255) {
+    AscendC::UnaryRepeatParams rp;
+    rp.dstBlkStride = 1;
+    rp.srcBlkStride = 1;
+    rp.dstRepStride = repStride;
+    rp.srcRepStride = repStride;
+    TailApplyUnMask<T>(op, dst, src, static_cast<uint64_t>(validCol),
+                       static_cast<uint8_t>(validRow), rp);
+    return;
+  }
+  for (uint32_t r = 0; r < validRow; ++r) {
+    TailApplyUnCount<T>(op, dst[r * physCol], src[r * physCol],
+                        static_cast<int32_t>(validCol));
+  }
+}
+
+// ---- scalar ----
+template <typename T>
+CATLASS_DEVICE void TailApplyScalarCount(TailVecScalarOp op, LocalTensor<T> d,
+                                         LocalTensor<T> s, T v, int32_t n) {
+  switch (op) {
+  case TailVecScalarOp::Adds:
+    AscendC::Adds(d, s, v, n);
+    break;
+  case TailVecScalarOp::Muls:
+    AscendC::Muls(d, s, v, n);
+    break;
+  case TailVecScalarOp::Maxs:
+    AscendC::Maxs(d, s, v, n);
+    break;
+  case TailVecScalarOp::Mins:
+    AscendC::Mins(d, s, v, n);
+    break;
+  }
+}
+
+template <typename T>
+CATLASS_DEVICE void TailApplyScalarMask(TailVecScalarOp op, LocalTensor<T> d,
+                                        LocalTensor<T> s, T v, uint64_t mask,
+                                        uint8_t repeat,
+                                        const AscendC::UnaryRepeatParams &rp) {
+  switch (op) {
+  case TailVecScalarOp::Adds:
+    AscendC::Adds(d, s, v, mask, repeat, rp);
+    break;
+  case TailVecScalarOp::Muls:
+    AscendC::Muls(d, s, v, mask, repeat, rp);
+    break;
+  case TailVecScalarOp::Maxs:
+    AscendC::Maxs(d, s, v, mask, repeat, rp);
+    break;
+  case TailVecScalarOp::Mins:
+    AscendC::Mins(d, s, v, mask, repeat, rp);
+    break;
+  }
+}
+
+template <typename T>
+CATLASS_DEVICE void tail_scalar(TailVecScalarOp op, LocalTensor<T> dst,
+                                LocalTensor<T> src, T scalar, uint32_t validRow,
+                                uint32_t validCol, uint32_t physCol) {
+  if (validRow == 0 || validCol == 0)
+    return;
+  if (validCol == physCol) {
+    TailApplyScalarCount<T>(op, dst, src, scalar,
+                            static_cast<int32_t>(validRow * physCol));
+    return;
+  }
+  constexpr uint32_t vl = 256 / sizeof(T);
+  constexpr uint32_t blk = 32 / sizeof(T);
+  uint32_t repStride = physCol / blk;
+  if (validCol <= vl && validRow <= 255 && (physCol % blk == 0) &&
+      repStride <= 255) {
+    AscendC::UnaryRepeatParams rp;
+    rp.dstBlkStride = 1;
+    rp.srcBlkStride = 1;
+    rp.dstRepStride = repStride;
+    rp.srcRepStride = repStride;
+    TailApplyScalarMask<T>(op, dst, src, scalar,
+                           static_cast<uint64_t>(validCol),
+                           static_cast<uint8_t>(validRow), rp);
+    return;
+  }
+  for (uint32_t r = 0; r < validRow; ++r) {
+    TailApplyScalarCount<T>(op, dst[r * physCol], src[r * physCol], scalar,
+                            static_cast<int32_t>(validCol));
+  }
+}
+
+// ---- reduce ----
+// dim == -1 : reduce each row over its valid columns -> out[0..validRow).
+// dim == 0  : reduce down the valid rows           -> out[0..validCol).
+template <typename T>
+CATLASS_DEVICE void tail_reduce_sum(LocalTensor<T> out, LocalTensor<T> src,
+                                    LocalTensor<uint8_t> tmp, int dim,
+                                    uint32_t validRow, uint32_t validCol,
+                                    uint32_t physCol, bool clear) {
+  if (validRow == 0 || validCol == 0)
+    return;
+  if (dim == 0) {
+    uint32_t r0 = 0;
+    if (clear) {
+      AscendC::Adds(out, src, static_cast<T>(0),
+                    static_cast<int32_t>(validCol));
+      r0 = 1;
+    }
+    for (uint32_t r = r0; r < validRow; ++r) {
+      AscendC::Add(out, out, src[r * physCol], static_cast<int32_t>(validCol));
+    }
+    return;
+  }
+  // dim == -1: reduce each row over its valid columns -> out[0..validRow).
+  // Use the proven Pattern-AR reduce: one contiguous block reduce when
+  // validCol == physCol, otherwise per-row (each row is contiguous internally).
+  // clear == false is handled by backing up the old result and merging.
+  constexpr uint32_t kTailMaxRows = 256;
+  T backup[kTailMaxRows];
+  bool merge = (!clear) && (validRow <= kTailMaxRows);
+  if (merge) {
+    for (uint32_t r = 0; r < validRow; ++r)
+      backup[r] = out.GetValue(r);
+  }
+  if (validCol == physCol) {
+    uint32_t shape[2] = {validRow, validCol};
+    AscendC::ReduceSum<T, AscendC::Pattern::Reduce::AR>(out, src, tmp, shape,
+                                                        true);
+  } else {
+    uint32_t rshape[2] = {1, validCol};
+    for (uint32_t r = 0; r < validRow; ++r) {
+      AscendC::ReduceSum<T, AscendC::Pattern::Reduce::AR>(
+          out[r], src[r * physCol], tmp, rshape, true);
+    }
+  }
+  if (merge) {
+    for (uint32_t r = 0; r < validRow; ++r)
+      out.SetValue(r, static_cast<T>(out.GetValue(r) + backup[r]));
+  }
+}
+
+template <typename T>
+CATLASS_DEVICE void tail_reduce_max(LocalTensor<T> out, LocalTensor<T> src,
+                                    LocalTensor<uint8_t> tmp, int dim,
+                                    uint32_t validRow, uint32_t validCol,
+                                    uint32_t physCol, bool clear) {
+  if (validRow == 0 || validCol == 0)
+    return;
+  if (dim == 0) {
+    uint32_t r0 = 0;
+    if (clear) {
+      AscendC::Adds(out, src, static_cast<T>(0),
+                    static_cast<int32_t>(validCol));
+      r0 = 1;
+    }
+    for (uint32_t r = r0; r < validRow; ++r) {
+      AscendC::Max(out, out, src[r * physCol], static_cast<int32_t>(validCol));
+    }
+    return;
+  }
+  // dim == -1: reduce each row over its valid columns (Pattern-AR).
+  constexpr uint32_t kTailMaxRows = 256;
+  T backup[kTailMaxRows];
+  bool merge = (!clear) && (validRow <= kTailMaxRows);
+  if (merge) {
+    for (uint32_t r = 0; r < validRow; ++r)
+      backup[r] = out.GetValue(r);
+  }
+  if (validCol == physCol) {
+    uint32_t shape[2] = {validRow, validCol};
+    AscendC::ReduceMax<T, AscendC::Pattern::Reduce::AR>(out, src, tmp, shape,
+                                                        true);
+  } else {
+    uint32_t rshape[2] = {1, validCol};
+    for (uint32_t r = 0; r < validRow; ++r) {
+      AscendC::ReduceMax<T, AscendC::Pattern::Reduce::AR>(
+          out[r], src[r * physCol], tmp, rshape, true);
+    }
+  }
+  if (merge) {
+    for (uint32_t r = 0; r < validRow; ++r)
+      out.SetValue(r, reduce_scalar_max_safe(out.GetValue(r), backup[r]));
+  }
+}
+
+template <typename T>
+CATLASS_DEVICE void tail_reduce_min(LocalTensor<T> out, LocalTensor<T> src,
+                                    LocalTensor<uint8_t> tmp, int dim,
+                                    uint32_t validRow, uint32_t validCol,
+                                    uint32_t physCol, bool clear) {
+  if (validRow == 0 || validCol == 0)
+    return;
+  if (dim == 0) {
+    uint32_t r0 = 0;
+    if (clear) {
+      AscendC::Adds(out, src, static_cast<T>(0),
+                    static_cast<int32_t>(validCol));
+      r0 = 1;
+    }
+    for (uint32_t r = r0; r < validRow; ++r) {
+      AscendC::Min(out, out, src[r * physCol], static_cast<int32_t>(validCol));
+    }
+    return;
+  }
+  // dim == -1: reduce each row over its valid columns (Pattern-AR).
+  constexpr uint32_t kTailMaxRows = 256;
+  T backup[kTailMaxRows];
+  bool merge = (!clear) && (validRow <= kTailMaxRows);
+  if (merge) {
+    for (uint32_t r = 0; r < validRow; ++r)
+      backup[r] = out.GetValue(r);
+  }
+  if (validCol == physCol) {
+    uint32_t shape[2] = {validRow, validCol};
+    AscendC::ReduceMin<T, AscendC::Pattern::Reduce::AR>(out, src, tmp, shape,
+                                                        true);
+  } else {
+    uint32_t rshape[2] = {1, validCol};
+    for (uint32_t r = 0; r < validRow; ++r) {
+      AscendC::ReduceMin<T, AscendC::Pattern::Reduce::AR>(
+          out[r], src[r * physCol], tmp, rshape, true);
+    }
+  }
+  if (merge) {
+    for (uint32_t r = 0; r < validRow; ++r)
+      out.SetValue(r, reduce_scalar_min_safe(out.GetValue(r), backup[r]));
   }
 }
 
