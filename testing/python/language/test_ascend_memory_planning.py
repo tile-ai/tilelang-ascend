@@ -512,14 +512,12 @@ def test_npu_sequential_ops_correctness():
 
 
 # ---------------------------------------------------------------------------
-# 9. If-else branch memory planning
+# 9. If-else branch and T.if_then_else memory planning
 # ---------------------------------------------------------------------------
 
 
 def test_if_else_branch_exclusive_buffers_can_reuse():
-    """Buffers allocated in mutually exclusive if-else branches should
-    be able to share memory in auto-plan mode, since their lifetimes
-    never overlap at runtime."""
+    """Buffers in mutually exclusive if-else branches can share memory."""
 
     @T.prim_func
     def main(
@@ -537,15 +535,12 @@ def test_if_else_branch_exclusive_buffers_can_reuse():
                 T.copy(buf_b, B[1, :])
 
     offsets, _ = _compile_and_get_offsets(main, PASS_AUTO, out_idx=[1])
-    # buf_a and buf_b are in mutually exclusive branches; auto-plan
-    # should recognize they can share (or at minimum not crash).
-    # Both may get offset 0 since they never coexist.
-    assert "buf_a" in offsets or "buf_b" in offsets, "At least one branch buffer must be allocated"
+    assert "buf_a" in offsets or "buf_b" in offsets
 
 
 def test_if_else_shared_buffer_before_branch_not_reused():
-    """Buffer defined before an if-else and used inside both branches
-    must NOT be reused by a buffer allocated inside a branch."""
+    """Buffer defined before if-else, used inside both branches,
+    must NOT be reused by branch-internal buffers."""
 
     @T.prim_func
     def main(
@@ -571,40 +566,57 @@ def test_if_else_shared_buffer_before_branch_not_reused():
     buf_size = 32 * 4
     for name in ("work_a_ub", "work_b_ub"):
         if name in offsets:
-            assert offsets["shared_ub"] + buf_size <= offsets[name] or offsets[
-                name
-            ] + buf_size <= offsets["shared_ub"], (
+            assert offsets["shared_ub"] + buf_size <= offsets[name] or offsets[name] + buf_size <= offsets["shared_ub"], (
                 f"shared_ub and {name} must not overlap"
             )
 
 
-def test_if_else_reduce_inside_branch_compiles():
-    """Reduce operation inside an if-else branch must compile
-    correctly with tmp_buffer support."""
+def test_if_then_else_expr_dynamic_offset_compiles():
+    """T.if_then_else as a dynamic index expression — buffers with
+    conditional access must still get valid addresses."""
 
     @T.prim_func
     def main(
-        A: T.Tensor((128, 256), "float32"),  # type: ignore
-        B: T.Tensor((128,), "float32"),  # type: ignore
+        A: T.Tensor((2, 64), "float32"),  # type: ignore
+        B: T.Tensor((2, 64), "float32"),  # type: ignore
     ):
-        with T.Kernel(2, is_npu=True) as (cid, vid):
-            rb = cid * 128 + vid * 64
-            a_ub = T.alloc_ub((64, 256), "float32")
-            b_ub = T.alloc_ub((64,), "float32")
-            T.copy(A[rb : rb + 64, :], a_ub)
-            if vid == 0:
-                T.reduce_max(a_ub, b_ub, dim=-1)
-            else:
-                T.reduce_sum(a_ub, b_ub, dim=-1)
-            T.copy(b_ub, B[rb : rb + 64])
+        with T.Kernel(1, is_npu=True) as (cid, vid):
+            a_ub = T.alloc_ub((64,), "float32")
+            src_row = T.if_then_else(vid == 0, 0, 1)
+            T.copy(A[src_row, :], a_ub)
+            T.copy(a_ub, B[0, :])
 
     offsets, _ = _compile_and_get_offsets(main, PASS_AUTO, out_idx=[1])
-    assert "tmp_ub" in offsets, "tmp_ub must be injected for reduce inside if-else"
+    assert "a_ub" in offsets
+    assert offsets["a_ub"] == 0
+
+
+def test_if_then_else_expr_in_loop_with_reduce_compiles():
+    """T.if_then_else inside a loop with reduce — tmp_ub must be
+    injected and buffers must not overlap."""
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((4, 64), "float32"),  # type: ignore
+        B: T.Tensor((4,), "float32"),  # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (cid, vid):
+            a_ub = T.alloc_ub((64,), "float32")
+            b_ub = T.alloc_ub((1,), "float32")
+            for k in T.serial(3):
+                src = T.if_then_else(k < 2, k, 2)
+                T.copy(A[src, :], a_ub)
+                T.reduce_max(a_ub, b_ub, dim=-1)
+                T.copy(b_ub, B[k : k + 1])
+
+    offsets, _ = _compile_and_get_offsets(main, PASS_AUTO, out_idx=[1])
+    assert "tmp_ub" in offsets
+    buf_size = 64 * 4
+    assert offsets["a_ub"] + buf_size <= offsets["b_ub"] or offsets["b_ub"] + buf_size <= offsets["a_ub"], "a_ub and b_ub must not overlap"
 
 
 def test_if_else_branch_with_loop_nested():
-    """If-else branch containing a loop, with a buffer defined before
-    the if and used inside the loop within a branch."""
+    """If-else with loop inside, buffer before if used in loop body."""
 
     @T.prim_func
     def main(
@@ -630,13 +642,36 @@ def test_if_else_branch_with_loop_nested():
         )
 
 
+def test_if_then_else_conditional_store_compiles():
+    """T.if_then_else used for conditional store offset — two buffers
+    with conditional access must get distinct addresses when overlapping."""
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((4, 32), "float32"),  # type: ignore
+        B: T.Tensor((4, 32), "float32"),  # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (cid, vid):
+            a_ub = T.alloc_ub((32,), "float32")
+            b_ub = T.alloc_ub((32,), "float32")
+            T.copy(A[0, :], a_ub)
+            T.copy(A[1, :], b_ub)
+            dst = T.if_then_else(vid == 0, 0, 1)
+            T.copy(a_ub, B[dst, :])
+            T.copy(b_ub, B[dst + 2, :])
+
+    offsets, _ = _compile_and_get_offsets(main, PASS_AUTO, out_idx=[1])
+    assert "a_ub" in offsets and "b_ub" in offsets
+    buf_size = 32 * 4
+    assert offsets["a_ub"] + buf_size <= offsets["b_ub"] or offsets["b_ub"] + buf_size <= offsets["a_ub"], "a_ub and b_ub must not overlap"
+
+
 @pytest.mark.skipif(
     not NPU_AVAILABLE,
     reason="NPU correctness requires an Ascend NPU runtime",
 )
 def test_npu_if_else_reduce_correctness():
-    """NPU correctness: reduce inside if-else branch produces correct
-    results — max for vid=0, sum for vid=1."""
+    """NPU: reduce inside if-else — max for vid=0, sum for vid=1."""
 
     @T.prim_func
     def main(
@@ -655,7 +690,6 @@ def test_npu_if_else_reduce_correctness():
             T.copy(b_ub, B[rb : rb + 64])
 
     kernel = tilelang.compile(main, pass_configs=PASS_AUTO, target="ascendc", out_idx=[1])
-
     a = torch.randn(128, 256, dtype=torch.float32, device="npu")
     b = kernel(a)
     ref = torch.zeros(128, dtype=torch.float32, device="npu")
@@ -669,8 +703,7 @@ def test_npu_if_else_reduce_correctness():
     reason="NPU correctness requires an Ascend NPU runtime",
 )
 def test_npu_if_else_with_loop_correctness():
-    """NPU correctness: if-else with loop inside branch, buffer defined
-    before if-else and used inside loop — no data corruption."""
+    """NPU: if-else with loop, buffer before if used in loop — no corruption."""
 
     @T.prim_func
     def main(
@@ -688,12 +721,67 @@ def test_npu_if_else_with_loop_correctness():
                     T.copy(tmp_ub, B[k, :])
 
     kernel = tilelang.compile(main, pass_configs=PASS_AUTO, target="ascendc", out_idx=[1])
-
     a = torch.randn(4, 32, dtype=torch.float32, device="npu")
     b = kernel(a)
     ref = torch.zeros_like(a)
     ref[:3, :] = a[:3, :] + a[0, :].unsqueeze(0)
     torch.testing.assert_close(b[:3, :], ref[:3, :], rtol=1e-3, atol=1e-3)
+
+
+@pytest.mark.skipif(
+    not NPU_AVAILABLE,
+    reason="NPU correctness requires an Ascend NPU runtime",
+)
+def test_npu_if_then_else_dynamic_index_correctness():
+    """NPU: T.if_then_else as dynamic source index — correct data loaded."""
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((2, 64), "float32"),  # type: ignore
+        B: T.Tensor((2, 64), "float32"),  # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (cid, vid):
+            a_ub = T.alloc_ub((64,), "float32")
+            src_row = T.if_then_else(vid == 0, 0, 1)
+            T.copy(A[src_row, :], a_ub)
+            T.copy(a_ub, B[vid, :])
+
+    kernel = tilelang.compile(main, pass_configs=PASS_AUTO, target="ascendc", out_idx=[1])
+    a = torch.randn(2, 64, dtype=torch.float32, device="npu")
+    b = kernel(a)
+    torch.testing.assert_close(b[0, :], a[0, :], rtol=1e-3, atol=1e-3)
+    torch.testing.assert_close(b[1, :], a[1, :], rtol=1e-3, atol=1e-3)
+
+
+@pytest.mark.skipif(
+    not NPU_AVAILABLE,
+    reason="NPU correctness requires an Ascend NPU runtime",
+)
+def test_npu_if_then_else_in_loop_reduce_correctness():
+    """NPU: T.if_then_else in a loop with reduce — correct results."""
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((4, 64), "float32"),  # type: ignore
+        B: T.Tensor((4,), "float32"),  # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (cid, vid):
+            a_ub = T.alloc_ub((64,), "float32")
+            b_ub = T.alloc_ub((1,), "float32")
+            for k in T.serial(3):
+                src = T.if_then_else(k < 2, k, 2)
+                T.copy(A[src, :], a_ub)
+                T.reduce_max(a_ub, b_ub, dim=-1)
+                T.copy(b_ub, B[k : k + 1])
+
+    kernel = tilelang.compile(main, pass_configs=PASS_AUTO, target="ascendc", out_idx=[1])
+    a = torch.randn(4, 64, dtype=torch.float32, device="npu")
+    b = kernel(a)
+    ref = torch.zeros(4, dtype=torch.float32, device="npu")
+    ref[0] = a[0, :].max()
+    ref[1] = a[1, :].max()
+    ref[2] = a[2, :].max()
+    torch.testing.assert_close(b[:3], ref[:3], rtol=1e-2, atol=1e-2)
 
 
 if __name__ == "__main__":
