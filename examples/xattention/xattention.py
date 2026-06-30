@@ -21,15 +21,15 @@ HALF_STACK = STACK_NUM // 2
 EFFECTIVE_BLOCK_N = BLOCK_N * STACK_NUM
 HALF_BLOCK_N = BLOCK_N * HALF_STACK
 BM = 128
-NUM_CORES = 20
-SHARED_CORES = 12
-UNSHARED_CORES = NUM_CORES - SHARED_CORES
+NUM_CORES = int(torch.npu.get_device_properties("npu").cube_core_num)
+UNSHARED_CORES = 4
+SHARED_CORES = NUM_CORES - UNSHARED_CORES
 
 UNSHARED_BEAM = BEAM_SIZE
 DECODE_STEP = 4
 REQUEST_BATCH = 1
 BEAMS_PER_REQUEST = BEAM_SIZE // REQUEST_BATCH
-SHARED_BM = BEAMS_PER_REQUEST
+SHARED_BM = BM
 UNSHARED_Q_TILE = 128
 UNSHARED_KV_TILE = 256
 FLOAT_BLOCK_SIZE = 8
@@ -55,9 +55,9 @@ NUM_RUNS = 10
 
 tilelang.disable_cache()
 VEC_NUM = 2
-if SHARED_BM % VEC_NUM != 0:
-    raise ValueError("BEAMS_PER_REQUEST must be divisible by VEC_NUM")
-v_p = SHARED_BM // VEC_NUM
+if BM % VEC_NUM != 0:
+    raise ValueError("BM must be divisible by VEC_NUM")
+v_p = BM // VEC_NUM
 if v_p < UB_ALIGN_ELEMS:
     raise ValueError("BEAMS_PER_REQUEST is too small for the shared vector path")
 SHARED_S_UB_ELEMS = 8192
@@ -96,9 +96,10 @@ SHARED_O_SLOTS = TASKQUE_SLOTS
 SHARED_KV_TILES = KV_LEN // EFFECTIVE_BLOCK_N
 SHARED_BLOCKS_PER_BATCH = KV_LEN // BLOCK_N
 SHARED_CACHE_BLOCKS = REQUEST_BATCH * SHARED_BLOCKS_PER_BATCH
-SHARED_BEAM_CHUNKS = (BEAM_SIZE + SHARED_BM - 1) // SHARED_BM
-if SHARED_BEAM_CHUNKS != REQUEST_BATCH:
-    raise ValueError("shared beam chunking must match XA_REQUEST_BATCH")
+if BEAMS_PER_REQUEST % BM != 0:
+    raise ValueError("BEAMS_PER_REQUEST must be divisible by BM")
+SHARED_BEAM_CHUNKS_PER_REQUEST = (BEAMS_PER_REQUEST + BM - 1) // BM
+SHARED_BEAM_CHUNKS = REQUEST_BATCH * SHARED_BEAM_CHUNKS_PER_REQUEST
 SHARED_Q_HEADS_PER_TILE = 1
 SHARED_Q_TILES_PER_KV_HEAD = GROUP_SIZE // SHARED_Q_HEADS_PER_TILE
 SHARED_BEAM_KV_PAIRS = SHARED_BEAM_CHUNKS * KV_HEADS
@@ -120,8 +121,8 @@ sm_scale = (1.0 / D) ** 0.5
 
 q_shape = [BEAM_SIZE, NUM_HEADS, D]
 q_unshared_shape = [BEAM_SIZE * NUM_HEADS, D]
-k_shared_shape = [KV_LEN, KV_HEADS, D]
-v_shared_shape = [KV_LEN, KV_HEADS, D]
+k_shared_shape = [SHARED_CACHE_BLOCKS * BLOCK_N, KV_HEADS, D]
+v_shared_shape = [SHARED_CACHE_BLOCKS * BLOCK_N, KV_HEADS, D]
 MERGE_ROWS = BEAM_SIZE * NUM_HEADS
 o_shape = [MERGE_ROWS, D]
 k_unshared_shape = [MAX_REQUEST_NUM * UNSHARED_GROUPS_PER_REQUEST * DECODE_STEP, D]
@@ -139,7 +140,7 @@ pass_configs = {
     workspace_idx=[],
     pass_configs=pass_configs,
 )
-def x_attention_decode_v_parallel_p0_stack4_3stage():
+def xattention():
     block_num = NUM_CORES
 
     @T.prim_func
@@ -352,6 +353,7 @@ def x_attention_decode_v_parallel_p0_stack4_3stage():
                                     task_beam_kv_idx = task_pair_idx // SHARED_Q_TILES_PER_KV_HEAD
                                     task_q_tile = task_pair_idx - task_beam_kv_idx * SHARED_Q_TILES_PER_KV_HEAD
                                     task_beam_chunk = task_beam_kv_idx // KV_HEADS
+                                    task_request_idx = task_beam_chunk // SHARED_BEAM_CHUNKS_PER_REQUEST
                                     task_kv_head_idx = task_beam_kv_idx - task_beam_chunk * KV_HEADS
                                     task_head_idx = task_kv_head_idx * GROUP_SIZE + task_q_tile * SHARED_Q_HEADS_PER_TILE
                                     if side == 0:
@@ -378,7 +380,8 @@ def x_attention_decode_v_parallel_p0_stack4_3stage():
                                     T.wait_flag("MTE1", "MTE2", 0)
                                     T.copy(
                                         K_shared[
-                                            (task_k * STACK_NUM) * BLOCK_N : (task_k * STACK_NUM + 1) * BLOCK_N,
+                                            task_request_idx * KV_LEN + (task_k * STACK_NUM) * BLOCK_N : task_request_idx * KV_LEN
+                                            + (task_k * STACK_NUM + 1) * BLOCK_N,
                                             task_kv_head_idx,
                                             :D,
                                         ],
@@ -389,7 +392,8 @@ def x_attention_decode_v_parallel_p0_stack4_3stage():
                                     T.wait_flag("MTE1", "MTE2", 1)
                                     T.copy(
                                         K_shared[
-                                            (task_k * STACK_NUM + 1) * BLOCK_N : (task_k * STACK_NUM + 2) * BLOCK_N,
+                                            task_request_idx * KV_LEN + (task_k * STACK_NUM + 1) * BLOCK_N : task_request_idx * KV_LEN
+                                            + (task_k * STACK_NUM + 2) * BLOCK_N,
                                             task_kv_head_idx,
                                             :D,
                                         ],
@@ -416,7 +420,8 @@ def x_attention_decode_v_parallel_p0_stack4_3stage():
                                     T.wait_flag("MTE1", "MTE2", 0)
                                     T.copy(
                                         K_shared[
-                                            (task_k * STACK_NUM + 2) * BLOCK_N : (task_k * STACK_NUM + 3) * BLOCK_N,
+                                            task_request_idx * KV_LEN + (task_k * STACK_NUM + 2) * BLOCK_N : task_request_idx * KV_LEN
+                                            + (task_k * STACK_NUM + 3) * BLOCK_N,
                                             task_kv_head_idx,
                                             :D,
                                         ],
@@ -443,7 +448,8 @@ def x_attention_decode_v_parallel_p0_stack4_3stage():
                                     T.wait_flag("MTE1", "MTE2", 1)
                                     T.copy(
                                         K_shared[
-                                            (task_k * STACK_NUM + 3) * BLOCK_N : (task_k * STACK_NUM + 4) * BLOCK_N,
+                                            task_request_idx * KV_LEN + (task_k * STACK_NUM + 3) * BLOCK_N : task_request_idx * KV_LEN
+                                            + (task_k * STACK_NUM + 4) * BLOCK_N,
                                             task_kv_head_idx,
                                             :D,
                                         ],
@@ -531,13 +537,15 @@ def x_attention_decode_v_parallel_p0_stack4_3stage():
                                     shared_pv_kv_head_cur = shared_c_kv_head_slot2
                                 if shared_pv_pair_cur < SHARED_TOTAL_PAIRS:
                                     shared_pv_beam_kv_idx = shared_pv_pair_cur // SHARED_Q_TILES_PER_KV_HEAD
-                                    shared_pv_beam_kv_idx // KV_HEADS
+                                    shared_pv_beam_chunk = shared_pv_beam_kv_idx // KV_HEADS
+                                    shared_pv_request_idx = shared_pv_beam_chunk // SHARED_BEAM_CHUNKS_PER_REQUEST
                                     T.wait_flag("MTE1", "MTE2", 3)
                                     for chunk in T.serial(STACK_NUM):
                                         T.copy(
                                             V_shared[
-                                                (shared_pv_k_cur * STACK_NUM + chunk) * BLOCK_N : (shared_pv_k_cur * STACK_NUM + chunk + 1)
-                                                * BLOCK_N,
+                                                shared_pv_request_idx * KV_LEN
+                                                + (shared_pv_k_cur * STACK_NUM + chunk) * BLOCK_N : shared_pv_request_idx * KV_LEN
+                                                + (shared_pv_k_cur * STACK_NUM + chunk + 1) * BLOCK_N,
                                                 shared_pv_kv_head_cur,
                                                 :D,
                                             ],
@@ -633,6 +641,7 @@ def x_attention_decode_v_parallel_p0_stack4_3stage():
                                     task_beam_kv_idx = task_pair_idx // SHARED_Q_TILES_PER_KV_HEAD
                                     task_q_tile = task_pair_idx - task_beam_kv_idx * SHARED_Q_TILES_PER_KV_HEAD
                                     task_beam_chunk = task_beam_kv_idx // KV_HEADS
+                                    task_request_idx = task_beam_chunk // SHARED_BEAM_CHUNKS_PER_REQUEST
                                     task_kv_head_idx = task_beam_kv_idx - task_beam_chunk * KV_HEADS
                                     task_head_idx = task_kv_head_idx * GROUP_SIZE + task_q_tile * SHARED_Q_HEADS_PER_TILE
                                     if side == 0:
@@ -687,11 +696,11 @@ def x_attention_decode_v_parallel_p0_stack4_3stage():
                                                 acc_s_ub[compute_side, :, :],
                                                 sm_scale,
                                             )
-                                            if (task_k + 1) * EFFECTIVE_BLOCK_N > shared_kv_lens[task_beam_chunk]:
+                                            if (task_k + 1) * EFFECTIVE_BLOCK_N > shared_kv_lens[task_request_idx]:
                                                 for mask_row in T.serial(SHARED_S_ROWS):
                                                     for mask_col in T.serial(EFFECTIVE_BLOCK_N):
                                                         shared_kv_col = task_k * EFFECTIVE_BLOCK_N + mask_col
-                                                        if shared_kv_col >= shared_kv_lens[task_beam_chunk]:
+                                                        if shared_kv_col >= shared_kv_lens[task_request_idx]:
                                                             acc_s_ub[
                                                                 compute_side,
                                                                 mask_row,
@@ -1424,6 +1433,10 @@ def ref_x_attention_decode(
     K_sf = K_shared.float()
     V_sf = V_shared.float()
     if K_sf.dim() == 4:
+        shared_kv_stride = K_sf.shape[1]
+    else:
+        shared_kv_stride = K_sf.shape[0] // REQUEST_BATCH
+    if K_sf.dim() == 4:
         K_sf = K_sf.reshape(-1, K_sf.shape[-2], K_sf.shape[-1])
         V_sf = V_sf.reshape(-1, V_sf.shape[-2], V_sf.shape[-1])
     K_uf = K_unshared.float()
@@ -1433,7 +1446,7 @@ def ref_x_attention_decode(
     decode_step = int(decode_step)
     beams_per_request = BEAMS_PER_REQUEST
     if shared_kv_lens is None:
-        shared_kv_lens = torch.full((REQUEST_BATCH,), K_sf.shape[0], dtype=torch.int32, device=Q.device)
+        shared_kv_lens = torch.full((REQUEST_BATCH,), shared_kv_stride, dtype=torch.int32, device=Q.device)
 
     s_O = torch.zeros(beam_size, num_heads, D, dtype=torch.float32, device=Q.device)
     s_O_kernel = torch.zeros_like(s_O)
@@ -1445,7 +1458,7 @@ def ref_x_attention_decode(
         if shared_len <= 0:
             continue
         if shared_block_table is None:
-            shared_token_idx = torch.arange(shared_len, device=Q.device)
+            shared_token_idx = request_idx * shared_kv_stride + torch.arange(shared_len, device=Q.device)
         else:
             block_count = (shared_len + BLOCK_N - 1) // BLOCK_N
             block_ids = shared_block_table[request_idx, :block_count].long()
@@ -1534,18 +1547,17 @@ if __name__ == "__main__":
     runtime_decode_step = DECODE_STEP
     shared_kv_len = KV_LEN
     shared_kv_lens_values = [shared_kv_len] * REQUEST_BATCH
-    unshared_physical_request = 0
 
     if _is_simulator():
         Q = torch.full((BEAM_SIZE, NUM_HEADS, D), 0.1, dtype=TORCH_DTYPE, device="cpu").npu()
         K_shared = torch.full(
-            (KV_LEN, KV_HEADS, D),
+            tuple(k_shared_shape),
             0.1,
             dtype=TORCH_DTYPE,
             device="cpu",
         ).npu()
         V_shared = torch.full(
-            (KV_LEN, KV_HEADS, D),
+            tuple(v_shared_shape),
             0.1,
             dtype=TORCH_DTYPE,
             device="cpu",
@@ -1565,8 +1577,8 @@ if __name__ == "__main__":
     else:
         torch.set_default_device("npu")
         Q = torch.randn(BEAM_SIZE, NUM_HEADS, D, dtype=TORCH_DTYPE).uniform_(-1, 1)
-        K_shared = torch.randn(KV_LEN, KV_HEADS, D, dtype=TORCH_DTYPE).uniform_(-1, 1)
-        V_shared = torch.randn(KV_LEN, KV_HEADS, D, dtype=TORCH_DTYPE).uniform_(-1, 1)
+        K_shared = torch.randn(*k_shared_shape, dtype=TORCH_DTYPE).uniform_(-1, 1)
+        V_shared = torch.randn(*v_shared_shape, dtype=TORCH_DTYPE).uniform_(-1, 1)
         K_unshared = torch.randn(
             MAX_REQUEST_NUM,
             BEAMS_PER_REQUEST,
@@ -1587,7 +1599,7 @@ if __name__ == "__main__":
     Q_unshared_kernel = Q.reshape(MERGE_ROWS, D)
     K_unshared_kernel = K_unshared.reshape(MAX_REQUEST_NUM * UNSHARED_GROUPS_PER_REQUEST * DECODE_STEP, D)
     V_unshared_kernel = V_unshared.reshape(MAX_REQUEST_NUM * UNSHARED_GROUPS_PER_REQUEST * DECODE_STEP, D)
-    unshared_block_table = torch.full((REQUEST_BATCH,), unshared_physical_request, dtype=torch.int32, device="npu")
+    unshared_block_table = torch.arange(REQUEST_BATCH, dtype=torch.int32, device="npu")
     shared_kv_lens = torch.tensor(shared_kv_lens_values, dtype=torch.int32, device="npu")
     decode_step_t = torch.tensor([runtime_decode_step], dtype=torch.int32, device="npu")
 
@@ -1612,7 +1624,7 @@ if __name__ == "__main__":
     unshared_O_flat = unshared_O_ws.reshape(MERGE_ROWS, D)
     unshared_gm_flat = unshared_gm_ws.reshape(MERGE_ROWS)
     unshared_gl_flat = unshared_gl_ws.reshape(MERGE_ROWS)
-    func = x_attention_decode_v_parallel_p0_stack4_3stage()
+    func = xattention()
 
     for _ in range(WARMUP_RUNS):
         Output_flat = func(
