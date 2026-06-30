@@ -64,6 +64,8 @@ def {PassName}(target=None, is_npu: bool = False):
 
 ```python
 def LowerAndLegalize(mod: IRModule, target: Target) -> IRModule:
+    # InjectTmpBuffer 受 TL_ASCEND_INJECT_TMP_BUFFER 控制（默认 True）
+    # 关闭后用户需手动分配 tmp_ub
     mod = tilelang.transform.InjectTmpBuffer(target)(mod)
     mod = tilelang.transform.AscendInferBufferScope()(mod)
     mod = tilelang.transform.AscendVidReduction()(mod)

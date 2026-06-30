@@ -37,11 +37,13 @@
 `tilelang/engine/phase.py` 中的执行顺序：
 
 ```python
-mod = tilelang.transform.InjectTmpBuffer(target)(mod)
+mod = tilelang.transform.InjectTmpBuffer(target)(mod)  # 可通过 TL_ASCEND_INJECT_TMP_BUFFER 开关控制
 mod = tilelang.transform.AscendInferBufferScope()(mod)   # ← 本 pass
 mod = tilelang.transform.AscendVidReduction()(mod)
 mod = tilelang.transform.BufferShapeCollector()(mod)
 ```
+
+> **注**：`InjectTmpBuffer` 可通过 `TL_ASCEND_INJECT_TMP_BUFFER`（默认 `True`）关闭。关闭后用户需手动分配 `tmp_ub`，`AscendInferBufferScope` 仍正常工作（用户提供的 tmp buffer 已在 IR 中声明）。
 
 ### 2.2 框架架构图
 

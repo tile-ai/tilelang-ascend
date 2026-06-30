@@ -92,7 +92,63 @@ pass_configs = {
     tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,   # 自动内存规划
     tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,   # 自动CV分离（核间流水线需要）
     tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_SYNC: True,      # 自动同步插入（CV核间）
+    # TL_ASCEND_INJECT_TMP_BUFFER 默认 True，无需显式设置
+    # 关闭后需手动分配 tmp_ub，详见下方 tmp_buffer 机制
 }
+```
+
+#### tmp_buffer 机制
+
+`reduce`/`broadcast`/`sigmoid`/`sort`/`topk` 等操作需要框架内部临时缓冲区。`InjectTmpBuffer` pass 负责自动注入，可通过 `TL_ASCEND_INJECT_TMP_BUFFER` 开关控制。
+
+**自动注入模式（默认）**：框架自动创建 `tmp_ub`（uint8, UB scope），用户无需干预。
+
+**手动分配模式**（`TL_ASCEND_INJECT_TMP_BUFFER: False`）：
+
+```python
+from tilelang.transform import get_tmp_buffer_size
+
+pass_configs = {
+    tilelang.PassConfigKey.TL_ASCEND_INJECT_TMP_BUFFER: False,
+    # ... 其他配置
+}
+
+@tilelang.jit(out_idx=[-1], pass_configs=pass_configs)
+def my_kernel(M, N, block_M, dtype="float32"):
+    @T.prim_func
+    def main(A: T.Tensor((M, N), dtype), B: T.Tensor((M,), dtype)):
+        with T.Kernel(M // block_M, is_npu=True) as (cid, vid):
+            # 手动分配 tmp_ub，名称必须为 "tmp_ub"，dtype 必须为 uint8
+            tmp_size = get_tmp_buffer_size((block_M, N), dtype, "reduce")
+            tmp_ub = T.alloc_ub((tmp_size,), "uint8")
+
+            a_ub = T.alloc_ub((block_M, N), dtype)
+            b_ub = T.alloc_ub((block_M,), dtype)
+            T.copy(A[cid * block_M, :], a_ub)
+            T.reduce_max(a_ub, b_ub, dim=-1)
+            T.copy(b_ub, B[cid * block_M])
+    return main
+```
+
+手动模式下，框架按名称匹配并校验 tmp buffer：
+
+| tmp buffer 名称 | dtype | 用途 |
+|:--------------:|:-----:|:----:|
+| `tmp_ub` | uint8 | 通用 tmp（reduce/broadcast/sigmoid 等） |
+| `tmp_ub_1`, `tmp_ub_2`, ... | 按 op dtype | sort/topk/xor/merge_sort 等需 dtype 匹配 |
+| `tmp_ub_reduce_out` | uint8 | pto target 下 reduce clear=False 输出 |
+
+`get_tmp_buffer_size(shape, dtype, op_type)` 辅助函数计算所需最小字节数：
+
+```python
+from tilelang.transform import get_tmp_buffer_size
+
+# reduce: elements × dtype_bytes
+get_tmp_buffer_size((64, 256), "float32", "reduce")   # → 65536
+# broadcast: elements × dtype_bytes / 4
+get_tmp_buffer_size((64, 256), "float32", "broadcast") # → 16384
+# sort: elements × dtype_bytes × 8
+get_tmp_buffer_size((64, 256), "float32", "sort")      # → 524288
 ```
 
 #### workspace 机制
