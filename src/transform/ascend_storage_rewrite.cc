@@ -62,18 +62,22 @@ using namespace tir;
  */
 class AllocateCollector : public StmtExprVisitor {
 private:
+  // On Ascend, "dynamic shared memory" corresponds to L1 buffers (scope
+  // "shared.l1", tag ".l1") and "static shared memory" to UB buffers (scope
+  // "shared.ub", tag ".ub"). The CUDA-centric names are kept for parity with
+  // the upstream storage-rewrite logic.
   bool IsDynamicSharedMemory(Var buffer_var) {
     StorageScope storage_scope =
         runtime::StorageScope::Create(GetPtrStorageScope(buffer_var));
     return storage_scope.rank == runtime::StorageRank::kShared &&
-           storage_scope.tag == ".dyn";
+           storage_scope.tag == ".l1";
   }
 
   bool IsStaticSharedMemory(Var buffer_var) {
     StorageScope storage_scope =
         runtime::StorageScope::Create(GetPtrStorageScope(buffer_var));
     return storage_scope.rank == runtime::StorageRank::kShared &&
-           storage_scope.tag == "";
+           storage_scope.tag == ".ub";
   }
 
 public:
@@ -641,8 +645,9 @@ private:
   // Checks whether the storage_scope is especially tagged for a specific
   // memory. Special memory is all combined into a single allocation.
   bool IsSpecialTaggedMemory(const StorageScope &scope) {
-    return scope.tag.length() != 0 && scope.tag != ".dyn" &&
-           scope.tag != ".workspace" && scope.tag != ".vtcm";
+    return scope.tag.length() != 0 && scope.tag != ".l1" &&
+           scope.tag != ".ub" && scope.tag != ".workspace" &&
+           scope.tag != ".vtcm";
   }
 
   // Alllocate entry of node.

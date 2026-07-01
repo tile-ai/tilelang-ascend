@@ -28,7 +28,6 @@
 #include <tvm/tir/utils.h>
 
 #include "../op/builtin.h"
-#include "./common/attr.h"
 #include "./common/collector.h"
 
 #define ASCEND_SHARED_MEM_SIZE 196352
@@ -68,18 +67,23 @@ public:
     }
 
     Map<Var, Array<PrimExpr>> external_shape_map;
-    if (fn_attr->dict.count(kLogicBufferShapes)) {
-      external_shape_map = fn_attr->dict.at(kLogicBufferShapes)
-                               .as<Map<Var, Array<PrimExpr>>>()
-                               .value();
-    } else if (fn_attr->dict.count("buffer_shapess")) {
+    if (fn_attr->dict.count("buffer_shapess")) {
       external_shape_map = fn_attr->dict.at("buffer_shapess")
                                .as<Map<Var, Array<PrimExpr>>>()
                                .value();
     }
 
+    std::unordered_set<const VarNode *> injected_tmp_vars;
+    if (fn_attr->dict.count("tmp_buffer_vars")) {
+      Array<Var> tmp_vars =
+          fn_attr->dict.at("tmp_buffer_vars").as<Array<Var>>().value();
+      for (const auto &var : tmp_vars) {
+        injected_tmp_vars.insert(var.get());
+      }
+    }
+
     AscendMemoryPlanner planner(f, external_address_map, external_shape_map,
-                                auto_ascend_memory_planning);
+                                auto_ascend_memory_planning, injected_tmp_vars);
     auto address_map = planner.GetAddressMap();
     auto buffer_sizes = planner.GetBufferSizes();
 
@@ -102,19 +106,17 @@ public:
 private:
   class AscendMemoryPlanner : public StmtExprVisitor {
   public:
-    explicit AscendMemoryPlanner(const PrimFunc &func,
-                                 Map<Var, PrimExpr> external_address_map,
-                                 Map<Var, Array<PrimExpr>> external_shape_map,
-                                 bool auto_plan = false) {
+    explicit AscendMemoryPlanner(
+        const PrimFunc &func, Map<Var, PrimExpr> external_address_map,
+        Map<Var, Array<PrimExpr>> external_shape_map, bool auto_plan = false,
+        std::unordered_set<const VarNode *> injected_tmp_vars = {}) {
       memory_auto_plan = auto_plan;
-      // Preserve layouts needed by CalculateBufferSize.
-      // PTO 4D shapes are [physical_M, physical_N, valid_M, valid_N].
-      external_shape_map_ = external_shape_map;
-      memory_limits_ = {{"shared.dyn", ASCEND_SHARED_DYN_MEM_SIZE},
+      injected_tmp_vars_ = std::move(injected_tmp_vars);
+      memory_limits_ = {{"shared.l1", ASCEND_SHARED_DYN_MEM_SIZE},
                         {"wmma.matrix_a", ASCEND_WMMA_MATRIX_A_MEM_SIZE},
                         {"wmma.matrix_b", ASCEND_WMMA_MATRIX_B_MEM_SIZE},
                         {"wmma.accumulator", ASCEND_WMMA_ACCUMULATOR_MEM_SIZE},
-                        {"shared", ASCEND_SHARED_MEM_SIZE}};
+                        {"shared.ub", ASCEND_SHARED_MEM_SIZE}};
 
       SetPreAllocBuffer(external_address_map);
       SetTmpBuffers(external_shape_map);
@@ -292,7 +294,7 @@ private:
       for (auto &kv : external_shape_map) {
         const VarNode *buf = kv.first.get();
         std::string scope = GetPtrStorageScope(kv.first);
-        if (!pre_alloc_buffer_.count(buf->name_hint) && scope == "shared") {
+        if (!pre_alloc_buffer_.count(buf->name_hint) && scope == "shared.ub") {
           tmp_buffers.push_back(buf);
         }
       }
@@ -300,6 +302,7 @@ private:
 
     void PlanMemory() {
       LivenessAnalysis();
+      CollectLoopInfo();
 
       std::unordered_map<std::string, std::vector<const VarNode *>>
           scope_groups;
@@ -453,6 +456,91 @@ private:
       return -1;
     }
 
+    /*!
+     * \brief Collect loop intervals and buffer touch indices for
+     *        loop-aware liveness extension.
+     *
+     * After LivenessAnalysis, the KILL point of a buffer is set to its
+     * last touch in the linearized IR.  However, when a buffer is
+     * defined *before* a loop and touched *inside* the loop body, it
+     * is actually live across every iteration — its real KILL should
+     * be the loop's end, not the textual last touch inside the body.
+     *
+     * This method pre-computes:
+     *   1. loop_intervals_  — [begin, end] index pairs for every
+     *      ForNode / WhileNode in linear_seq_.
+     *   2. buffer_touch_indices_ — for every buffer, a sorted set of
+     *      all linear_seq_ indices where it is touched.
+     */
+    void CollectLoopInfo() {
+      for (size_t i = 0; i < linear_seq_.size(); ++i) {
+        const StmtEntry &s = linear_seq_[i];
+        if (s.scope_pair_offset > 0 && s.stmt &&
+            (s.stmt->IsInstance<ForNode>() ||
+             s.stmt->IsInstance<WhileNode>())) {
+          int64_t begin = static_cast<int64_t>(i);
+          int64_t end = begin + s.scope_pair_offset;
+          loop_intervals_.push_back({begin, end});
+        }
+      }
+
+      for (size_t i = 0; i < linear_seq_.size(); ++i) {
+        for (const VarNode *buf : linear_seq_[i].touched) {
+          buffer_touch_indices_[buf].insert(static_cast<int64_t>(i));
+        }
+      }
+    }
+
+    /*!
+     * \brief Extend a buffer's KILL index to cover loops in which it
+     *        is live across iterations.
+     *
+     * The linearized IR represents a loop body as a single pass, so the
+     * liveness analysis computes a buffer's KILL as the last touch
+     * *within one iteration*.  However, when a buffer is defined
+     * *before* a loop and touched *inside* the loop body, it is
+     * actually live across every iteration — its real KILL should be
+     * the loop's end, not the textual last touch inside the body.
+     *
+     * This handles the case where a buffer (e.g. index_ub) is
+     * initialized once before a segment loop and read in every
+     * iteration.  Without this extension, the planner may reuse the
+     * buffer's memory for another buffer (e.g. merged_ub) that is
+     * written inside the same loop, causing silent data corruption.
+     *
+     * For each loop [loop_begin, loop_end] where:
+     *   - GEN < loop_begin  (buffer defined before the loop)
+     *   - loop_begin <= KILL < loop_end  (buffer's last touch is inside)
+     * the KILL is extended to loop_end.  This applies to all enclosing
+     * loops, so we take the maximum loop_end.
+     */
+    int64_t ExtendKillIndex(const VarNode *buffer, int64_t gen_idx,
+                            int64_t kill_idx) {
+      if (kill_idx < 0) {
+        return kill_idx;
+      }
+      auto it = buffer_touch_indices_.find(buffer);
+      if (it == buffer_touch_indices_.end()) {
+        return kill_idx;
+      }
+      const std::set<int64_t> &touches = it->second;
+
+      int64_t extended = kill_idx;
+      for (const auto &loop : loop_intervals_) {
+        int64_t loop_begin = loop.first;
+        int64_t loop_end = loop.second;
+
+        if (gen_idx < loop_begin && kill_idx >= loop_begin &&
+            kill_idx < loop_end) {
+          auto touch_it = touches.upper_bound(loop_begin);
+          if (touch_it != touches.end() && *touch_it < loop_end) {
+            extended = std::max(extended, loop_end);
+          }
+        }
+      }
+      return extended;
+    }
+
     void PlanMemoryForScope(const std::string &scope,
                             const std::vector<const VarNode *> &buffers) {
       DLOG(DEBUG) << "Planning memory for scope: " << scope;
@@ -468,6 +556,7 @@ private:
         int64_t end = FindEventIndex(buffer, false);
 
         if (start != -1 && end != -1) {
+          end = ExtendKillIndex(buffer, start, end);
           intervals.emplace_back(buffer, start, end, buffer_sizes_[buffer]);
           DLOG(DEBUG) << "Buffer " << buffer->name_hint << ": [" << start
                       << ", " << end << "], size=" << buffer_sizes_[buffer];
@@ -538,7 +627,7 @@ private:
               max_offset,
               static_cast<int64_t>(pre_alloc_buffer_[buffer->name_hint] +
                                    buffer_sizes_[buffer]));
-        } else if (scope != "shared") {
+        } else if (scope != "shared.ub") {
           alloc_buffer(buffer, current_offset,
                        "Linear memory allocation failed!");
           max_offset = std::max(max_offset, current_offset);
@@ -546,13 +635,34 @@ private:
       }
       // Allocate tmp buffer/default buffer after origin buffer to avoid
       // fragmention in shared memory
-      if (scope == "shared") {
+      if (scope == "shared.ub") {
         for (const VarNode *buffer : origin_buffer) {
           if (std::find(tmp_buffers.begin(), tmp_buffers.end(), buffer) !=
                   tmp_buffers.end() &&
               !address_map_.count(buffer)) {
-            alloc_buffer(buffer, max_offset,
-                         "Linear tmp memory allocation failed!");
+            int64_t buf_size = buffer_sizes_[buffer];
+            bool is_injected_tmp = injected_tmp_vars_.count(buffer) > 0;
+            if (is_injected_tmp &&
+                max_offset + buf_size > memory_limits_[scope]) {
+              LOG(FATAL)
+                  << "Linear tmp memory allocation failed!"
+                  << " Out of memory in scope: " << scope
+                  << "\nBuffer: " << buffer->name_hint
+                  << "\nRequired size: " << buf_size
+                  << "\nCurrent offset: " << max_offset
+                  << "\nMemory limit: " << memory_limits_[scope]
+                  << "\n\nThis may be caused by tmp buffer (auto-injected "
+                  << "or user-provided) conflicting with manually "
+                  << "annotated addresses. Consider:\n"
+                  << "  1. Adjust buffer addresses in annotate_address\n"
+                  << "  2. Enable TL_ASCEND_MEMORY_PLANNING for auto "
+                  << "planning\n"
+                  << "  3. Disable TL_ASCEND_INJECT_TMP_BUFFER and "
+                  << "manually allocate tmp_ub with annotate_address";
+            }
+            address_map_[buffer] = max_offset;
+            max_offset =
+                static_cast<int64_t>(AlignUp(max_offset + buf_size, 32));
           }
         }
       }
@@ -712,7 +822,11 @@ private:
     private:
       bool CheckConflict(size_t offset, const LiveInterval &current) {
         for (const auto &kv : pre_alloc_buffer_) {
-          const LiveInterval *pre_interval = buffer_map_.at(kv.first);
+          auto map_it = buffer_map_.find(kv.first);
+          if (map_it == buffer_map_.end()) {
+            continue;
+          }
+          const LiveInterval *pre_interval = map_it->second;
           if (pre_interval->buffer == current.buffer)
             continue;
 
@@ -831,20 +945,10 @@ private:
 
     size_t CalculateBufferSize(const AllocateNode *alloc) {
       size_t size_elements = 1;
-      auto shape_it = external_shape_map_.find(alloc->buffer_var);
-      if (shape_it != external_shape_map_.end() &&
-          (*shape_it).second.size() == 4) {
-        const auto &shape = (*shape_it).second;
-        const IntImmNode *row = shape[0].as<IntImmNode>();
-        const IntImmNode *col = shape[1].as<IntImmNode>();
-        ICHECK(row && col) << "PTO physical buffer shape must be constant";
-        size_elements = row->value * col->value;
-      } else {
-        for (const auto &extent : alloc->extents) {
-          const IntImmNode *int_imm = extent.as<IntImmNode>();
-          ICHECK(int_imm) << "Extent must be an integer constant";
-          size_elements *= int_imm->value;
-        }
+      for (const auto &extent : alloc->extents) {
+        const IntImmNode *int_imm = extent.as<IntImmNode>();
+        ICHECK(int_imm) << "Extent must be an integer constant";
+        size_elements *= int_imm->value;
       }
 
       size_t size_bytes =
@@ -869,8 +973,6 @@ private:
         buffer_scopes_; // buffer scope(UB/L1..)
     std::unordered_map<const VarNode *, size_t>
         buffer_sizes_; // buffer bytes size
-    // Layout map used to size PTO 4D tiles by physical footprint.
-    Map<Var, Array<PrimExpr>> external_shape_map_;
     std::unordered_map<const VarNode *, size_t>
         first_use_; // buffer first use stmt scope
     std::unordered_map<std::string, int>
@@ -888,9 +990,14 @@ private:
         buffer_names_; // buffer names for duplicate check
     std::vector<const VarNode *>
         tmp_buffers; // temp buffer list for memory planning
+    std::vector<std::pair<int64_t, int64_t>>
+        loop_intervals_; // [begin, end] index pairs for each loop
+    std::unordered_map<const VarNode *, std::set<int64_t>>
+        buffer_touch_indices_; // buffer -> sorted touch indices
 
     size_t scope_level_{0};
     bool memory_auto_plan{false};
+    std::unordered_set<const VarNode *> injected_tmp_vars_;
   };
 };
 

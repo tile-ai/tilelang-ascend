@@ -3046,8 +3046,8 @@ const std::unordered_map<std::string, std::string> scope_to_tile = {
     {"wmma.matrix_a", kAscendPtoScope + "TileMatL0A"},
     {"wmma.matrix_b", kAscendPtoScope + "TileMatL0B"},
     {"wmma.accumulator", "TileAcc"},
-    {"shared.dyn", kAscendPtoScope + "TileMatL1"},
-    {"shared", kAscendPtoScope + "TileUbDataND"},
+    {"shared.l1", kAscendPtoScope + "TileMatL1"},
+    {"shared.ub", kAscendPtoScope + "TileUbDataND"},
 };
 
 void CodeGenTileLangAscendPto::AllocateLocalVar(const AllocateNode *op,
@@ -3131,7 +3131,7 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
   buffer_address_map_.Set(op->buffer_var, target_address);
 
   // Track max UB end address for internal scratch buffer allocation
-  if (scope == "shared") {
+  if (scope == "shared.ub") {
     if (auto *addr_int = target_address.as<IntImmNode>()) {
       int64_t size = op->ConstantAllocationSize() * op->dtype.bytes();
       int64_t end_addr = addr_int->value + size;

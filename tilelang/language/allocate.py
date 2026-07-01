@@ -28,13 +28,13 @@ from tvm.tir.buffer import Buffer
 from tvm.tir.expr import FloatImm, IntImm
 
 
-def alloc_shared(shape, dtype, scope="shared.dyn"):
+def alloc_shared(shape, dtype, scope="shared"):
     """Allocate a shared memory buffer for inter-thread communication.
 
     Args:
         shape (tuple): The shape of the buffer to allocate
         dtype (str): The data type of the buffer (e.g., 'float32', 'int32')
-        scope (str, optional): The memory scope. Defaults to "shared.dyn"
+        scope (str, optional): The memory scope. Defaults to "shared"
 
     Returns:
         T.Buffer: A TVM buffer object allocated in shared memory
@@ -42,7 +42,7 @@ def alloc_shared(shape, dtype, scope="shared.dyn"):
     if dtype == "bool":
         # lei: This is a hack to handle bool type.
         # Because tilelang's merge smem pass cannot merge bool type currently.
-        scope = "shared"
+        scope = "shared.ub"
     return T.alloc_buffer(shape, dtype, scope=scope)
 
 
@@ -128,11 +128,17 @@ def alloc_var(dtype, *args, scope: str = "local.var", init: PrimExpr | int | flo
 """
 The following are memory scopes in Ascend.
 Here is the correspondence between TIR scopes and Ascend memory scopes:
-- shared.dyn -> L1
+- shared -> abstract/inferred (the compiler infers it to L1 or UB based on use context)
+- shared.l1 -> L1 (Cube cache)
+- shared.ub -> UB (Vector buffer)
 - wmma.matrix_a -> L0A
 - wmma.matrix_b -> L0B
 - wmma.accumulator -> L0C
-- shared -> UB
+
+The AscendInferBufferScope pass resolves the abstract "shared" scope (produced by
+alloc_shared) into the concrete "shared.l1" (L1) or "shared.ub" (UB) based on
+whether the buffer participates in Cube or Vector computation. After inference,
+no buffer should retain the bare "shared" scope.
 """
 
 
@@ -153,4 +159,4 @@ def alloc_L0C(shape, dtype):
 
 
 def alloc_ub(shape, dtype):
-    return T.alloc_buffer(shape, dtype, scope="shared")
+    return T.alloc_buffer(shape, dtype, scope="shared.ub")

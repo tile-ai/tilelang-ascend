@@ -200,8 +200,8 @@ std::unordered_map<std::string, std::string> callnodeMapPos_ = {
     {"wmma.matrix_a", "cube"},      // WMMA矩阵A缓冲区
     {"wmma.matrix_b", "cube"},      // WMMA矩阵B缓冲区
     {"wmma.accumulator", "cube"},   // WMMA累加器
-    {"shared.dyn", "cube"},         // 动态共享内存(cube)
-    {"shared", "vec"}               // 共享内存(vector)
+    {"shared.l1", "cube"},          // L1 共享内存(cube)
+    {"shared.ub", "vec"}            // UB 统一缓冲(vector)
 };
 ```
 
@@ -226,7 +226,7 @@ std::unordered_map<std::string, std::pair<bool, std::string>> GM_COPY_CFG_INFOS 
 
 对同一个IR生成两个代码路径：
 - **CubeEmitter**：保留Cube核心操作（矩阵计算、L1/L0相关），过滤Vector操作
-- **VecEmitter**：保留Vector核心操作（UB相关、shared scope），过滤Cube操作
+- **VecEmitter**：保留Vector核心操作（UB相关、shared.ub scope），过滤Cube操作
 
 判断逻辑：
 1. **API名称匹配**：根据预定义的API分类表判断属于cube还是vec

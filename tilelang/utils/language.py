@@ -2,7 +2,6 @@
 # Licensed under the MIT License.
 
 from tvm.tir import Buffer
-from typing import List
 from functools import reduce
 from tvm import IRModule
 from tvm.tir import PrimFunc
@@ -35,7 +34,7 @@ def is_shared(buffer: Buffer, allow_dynamic: bool = True) -> bool:
         bool: True if the buffer is in shared memory, False otherwise.
     """
     conditions = [False]
-    conditions.append(buffer.scope() == "shared")
+    conditions.append(buffer.scope() == "shared.ub")
     if allow_dynamic:
         conditions.append(is_shared_dynamic(buffer))
     return any(conditions)
@@ -51,7 +50,7 @@ def is_shared_dynamic(buffer: Buffer) -> bool:
     Returns:
         bool: True if the buffer is in dynamic shared memory, False otherwise.
     """
-    return buffer.scope() == "shared.dyn"
+    return buffer.scope() == "shared"
 
 
 def is_local(buffer: Buffer) -> bool:
@@ -87,7 +86,7 @@ def get_buffer_elems(buffer: Buffer) -> int:
     return reduce(lambda x, y: x * y, buffer.shape)
 
 
-def array_reduce(array: List[int]) -> int:
+def array_reduce(array: list[int]) -> int:
     """
     Reduce an array of integers to a single integer.
 
@@ -117,7 +116,6 @@ def retrieve_func_from_module(ir_module: IRModule) -> PrimFunc:
     """
     if not isinstance(ir_module, IRModule):
         raise ValueError("Not supported type: ", type(ir_module))
-    assert len(ir_module.get_global_vars()) == 1, (
-        "The optimized module should only have one global variable for default schedule.")
+    assert len(ir_module.get_global_vars()) == 1, "The optimized module should only have one global variable for default schedule."
     func = list(ir_module.functions.values())[0]
     return func

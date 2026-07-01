@@ -2,8 +2,9 @@
 # Licensed under the MIT License.
 """The language interface for tl programs."""
 
+from __future__ import annotations
+
 from tvm import tir
-from typing import Optional
 from tilelang.language import copy, macro, alloc_shared
 
 
@@ -86,8 +87,8 @@ def reduce_sum(buffer: tir.Buffer, out: tir.Buffer, dim: int = -1, clear: bool =
         clear (bool, optional): If True, output buffer will be cleared before reduction.
                               If False, results will be accumulated on existing values.
                               Defaults to True.
-    Note: When clear=True, reduce_sum will not compute directly on the output buffer. This is because 
-          during warp reduction, the same value would be accumulated multiple times (number of threads 
+    Note: When clear=True, reduce_sum will not compute directly on the output buffer. This is because
+          during warp reduction, the same value would be accumulated multiple times (number of threads
           in the warp). Therefore, the implementation with clear=True follows these steps:
         1. create a temp buffer with same shape and dtype as out
         2. copy out to temp buffer
@@ -133,7 +134,7 @@ def reduce_absmax(buffer: tir.Buffer, out: tir.Buffer, dim: int = -1, clear: boo
 
 @macro
 def cumsum_fragment(src: tir.Buffer, dst: tir.Buffer, dim: int, reverse: bool) -> tir.PrimExpr:
-    cumsum_smem = alloc_shared(src.shape, src.dtype, "shared.dyn")
+    cumsum_smem = alloc_shared(src.shape, src.dtype, "shared")
     copy(src, cumsum_smem)
     tir.call_intrin(
         "handle",
@@ -146,7 +147,7 @@ def cumsum_fragment(src: tir.Buffer, dst: tir.Buffer, dim: int, reverse: bool) -
     copy(cumsum_smem, dst)
 
 
-def cumsum(src: tir.Buffer, dst: Optional[tir.Buffer] = None, dim: int = 0, reverse: bool = False):
+def cumsum(src: tir.Buffer, dst: tir.Buffer | None = None, dim: int = 0, reverse: bool = False):
     """Perform cumulative sum on input buffer, store the result to output buffer.
 
     Args:

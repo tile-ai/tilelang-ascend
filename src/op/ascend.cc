@@ -180,15 +180,15 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
   ss << "tl::ascend::";
   PrimExpr strideN;
 
-  if (src.scope() == "global" && dst.scope() == "shared.dyn") {
+  if (src.scope() == "global" && dst.scope() == "shared.l1") {
     ss << "copy_gm_to_l1";
     config.gm2l1 = true;
-  } else if (src.scope() == "shared.dyn" && dst.scope() == "wmma.matrix_a") {
+  } else if (src.scope() == "shared.l1" && dst.scope() == "wmma.matrix_a") {
     ss << "copy_l1_to_l0a";
     // config.print_src_layout = true;
     config.l12l0 = true;
     config.l0_dst_split = true;
-  } else if (src.scope() == "shared.dyn" && dst.scope() == "wmma.matrix_b") {
+  } else if (src.scope() == "shared.l1" && dst.scope() == "wmma.matrix_b") {
     ss << "copy_l1_to_l0b";
     // config.print_src_layout = true;
     config.l12l0 = true;
@@ -197,7 +197,7 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
     ss << "copy_l0c_to_gm";
     config.l0c2gm = true;
     config.print_gm_layout = true;
-  } else if (src.scope() == "shared" || dst.scope() == "shared") {
+  } else if (src.scope() == "shared.ub" || dst.scope() == "shared.ub") {
     config.print_ub = true;
 
     if (src.scope() == "global") {
@@ -226,7 +226,7 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
         ss << ", " << compute_blocklen(src, src_extents);
       }
       ss << ">";
-    } else if (dst.scope() == "shared.dyn") {
+    } else if (dst.scope() == "shared.l1") {
       config.virtual_channel = true;
       ss << "copy_ub_to_l1<"; // real channel is "ub -> gm -> l1"
       ss << get_dtype(dst) << ", ";
@@ -635,8 +635,9 @@ Stmt AscendAtomicAdd::Lower(const LowerArgs &T,
 
   ICHECK(dst.scope() == "global")
       << "tl.ascend_atomic_add V1 requires global dst, got " << dst.scope();
-  ICHECK(src.scope() == "shared" || src.scope() == "wmma.accumulator")
-      << "tl.ascend_atomic_add V1 requires UB/shared or L0C/wmma.accumulator "
+  ICHECK(src.scope() == "shared.ub" || src.scope() == "wmma.accumulator")
+      << "tl.ascend_atomic_add V1 requires UB/shared.ub or "
+         "L0C/wmma.accumulator "
          "src, got "
       << src.scope();
   ICHECK(src->dtype == dst->dtype)
@@ -650,7 +651,7 @@ Stmt AscendAtomicAdd::Lower(const LowerArgs &T,
          "destination buffer rank";
 
   std::stringstream ss;
-  if (src.scope() == "shared") {
+  if (src.scope() == "shared.ub") {
     ss << "tl::ascend::atomic_add_ub_to_gm<";
     ss << get_dtype(dst) << ", " << src_extents[src->shape.size() - 1];
     if (src->shape.size() > 1) {

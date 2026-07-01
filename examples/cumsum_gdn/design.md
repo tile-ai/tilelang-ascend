@@ -91,7 +91,7 @@ $$
 - `tilelang/language/__init__.py`
 - `tilelang/language/reduce.py`
 
-同时，`src/op/reduce.cc` 中已经存在针对 `shared/shared.dyn` 的 lowering。
+同时，`src/op/reduce.cc` 中已经存在针对 `shared.ub/shared.l1` 的 lowering。
 
 因此，这个 example 当前**没有**使用 `T.cumsum`，并不是因为“API 不存在”或“完全没有后端”，而是因为：
 
