@@ -1,21 +1,18 @@
 # Copyright (c) Tile-AI Corporation.
 # Licensed under the MIT License.
 """
-This module provides an auto-tuning infrastructure for TileLang (tl) programs. 
-It includes functionality to JIT-compile TileLang programs into a runnable 
+This module provides an auto-tuning infrastructure for TileLang (tl) programs.
+It includes functionality to JIT-compile TileLang programs into a runnable
 kernel adapter using TVM.
 """
 
+from __future__ import annotations
+
 from typing import (
     Any,
-    List,
-    Union,
     Callable,
-    Tuple,
     overload,
     Literal,
-    Dict,  # For type hinting dicts
-    Optional,
 )
 from tilelang import tvm as tvm
 from tvm.tir import PrimFunc
@@ -28,21 +25,20 @@ from logging import getLogger
 import functools
 import inspect
 from tilelang.jit.param import Kernel, _P, _RProg
-from tilelang.utils.target import determine_platform
 
 logger = getLogger(__name__)
 
 
 def compile(
     func: PrimFunc = None,
-    out_idx: Union[List[int], int, None] = None,
-    workspace_idx: Union[List[int], int, None] = None,
+    out_idx: list[int] | int | None = None,
+    workspace_idx: list[int] | int | None = None,
     execution_backend: Literal["dlpack", "ctypes", "cython"] = "cython",
-    target: Union[str, Target] = "auto",
-    target_host: Union[str, Target] = None,
+    target: str | Target = "auto",
+    target_host: str | Target = None,
     platform: str = "auto",
     verbose: bool = False,
-    pass_configs: Optional[Dict[str, Any]] = None,
+    pass_configs: dict[str, Any] | None = None,
 ) -> JITKernel:
     """
     Compile the given TileLang PrimFunc with TVM and build a JITKernel.
@@ -50,9 +46,9 @@ def compile(
     ----------
     func : tvm.tir.PrimFunc, optional
         The TileLang TIR function to compile and wrap.
-    out_idx : Union[List[int], int], optional
+    out_idx : Union[list[int], int], optional
         Index(es) of the output tensors to return (default: None).
-    workspace_idx : Union[List[int], int], optional
+    workspace_idx : Union[list[int], int], optional
         Index(es) of the auto-allocated workspace tensors.
     execution_backend : Literal["dlpack", "ctypes"], optional
         Execution backend to use for kernel execution (default: "dlpack").
@@ -75,6 +71,7 @@ def compile(
             "tl.dynamic_vectorize_size_bits": int, default: 128
             "tl.disable_safe_memory_legalize": bool, default: False
             "tl.ascend_auto_sync": bool, default: False
+            "tl.ascend_auto_sync_vs": bool, default: False
             "tl.ascend_memory_planning": bool, default: False
     """
 
@@ -92,30 +89,31 @@ def compile(
 
 
 class _JitImplementation:
-
     out_idx: Any
     workspace_idx: Any
-    target: Union[str, Target]
-    target_host: Union[str, Target]
+    target: str | Target
+    target_host: str | Target
     platform: str
     execution_backend: Literal["dlpack", "ctypes", "cython"]
     verbose: bool
-    pass_configs: Optional[Dict[str, Any]]
-    debug_root_path: Optional[str]
-    func: Optional[Callable] = None  # Store the original function
-    signature: Optional[Any] = None  # Store the signature
-    wrapper: Optional[Callable] = None  # Store the wrapped function for autotuner access
+    pass_configs: dict[str, Any] | None
+    debug_root_path: str | None
+    func: Callable | None = None  # Store the original function
+    signature: Any | None = None  # Store the signature
+    wrapper: Callable | None = None  # Store the wrapped function for autotuner access
 
-    def __init__(self,
-                 out_idx: Any = None,
-                 workspace_idx: Any = None,
-                 target: Union[str, Target] = "auto",
-                 target_host: Union[str, Target] = None,
-                 platform: str = "auto",
-                 execution_backend: Literal["dlpack", "ctypes", "cython"] = "cython",
-                 verbose: bool = False,
-                 pass_configs: Optional[Dict[str, Any]] = None,
-                 debug_root_path: Optional[str] = None):
+    def __init__(
+        self,
+        out_idx: Any = None,
+        workspace_idx: Any = None,
+        target: str | Target = "auto",
+        target_host: str | Target = None,
+        platform: str = "auto",
+        execution_backend: Literal["dlpack", "ctypes", "cython"] = "cython",
+        verbose: bool = False,
+        pass_configs: dict[str, Any] | None = None,
+        debug_root_path: str | None = None,
+    ):
         """
         Initializes the JIT compiler decorator.
 
@@ -141,7 +139,7 @@ class _JitImplementation:
             (default: "cython").
         verbose : bool, optional
             If True, enables verbose logging during compilation (default: False).
-        pass_configs : Optional[Dict[str, Any]], optional
+        pass_configs : Optional[dict[str, Any]], optional
             A dictionary of configurations for TVM's pass context. These can fine-tune
             the compilation process. Examples include "tir.disable_vectorize"
             (default: None).
@@ -173,22 +171,20 @@ class _JitImplementation:
             except NameError:
                 self.debug_root_path = path.abspath(self.debug_root_path)
 
-        self._kernel_cache: Dict[tuple, Kernel] = {}
+        self._kernel_cache: dict[tuple, Kernel] = {}
 
     # This tells the type checker what the *wrapper* function will return.
     # this is for linting, please do not remove it.
     @overload
-    def __call__(self, func: Callable[_P, _RProg]) -> Callable[_P, Tuple[_RProg, Kernel]]:
-        ...
+    def __call__(self, func: Callable[_P, _RProg]) -> Callable[_P, tuple[_RProg, Kernel]]: ...
 
     @overload
-    def __call__(self, func: Callable[_P, _RProg]) -> Callable[_P, Kernel]:
-        ...
+    def __call__(self, func: Callable[_P, _RProg]) -> Callable[_P, Kernel]: ...
 
     # Actual implementation of __call__
     def __call__(
         self,
-        func: Callable[_P, _RProg]  # func is Union[Callable[_P, _RProg], PrimFunc] in original
+        func: Callable[_P, _RProg],  # func is Union[Callable[_P, _RProg], PrimFunc] in original
     ) -> Callable[_P, Any]:
         # Store the function and its signature for autotuner access
         self.func = func
@@ -197,7 +193,7 @@ class _JitImplementation:
         @functools.wraps(func)
         def wrapper(*args: _P.args, **kwargs: _P.kwargs) -> Any:
             # Separate out the tuning parameters from the user's kwargs
-            tune_params = kwargs.pop('__tune_params', {})
+            tune_params = kwargs.pop("__tune_params", {})
 
             key_args_tuple = args
             key_kwargs_tuple = tuple(sorted(kwargs.items()))
@@ -226,13 +222,13 @@ class _JitImplementation:
                 )
 
                 if self.debug_root_path:
-                    func_name = getattr(func, '__name__', 'jit_kernel')  # Use func for name
-                    kernel_file = f'tilelang_jit_kernel_{func_name}.c'
-                    program_file = f'tilelang_jit_program_{func_name}.py'
+                    func_name = getattr(func, "__name__", "jit_kernel")  # Use func for name
+                    kernel_file = f"tilelang_jit_kernel_{func_name}.c"
+                    program_file = f"tilelang_jit_program_{func_name}.py"
                     makedirs(self.debug_root_path, exist_ok=True)
-                    with open(path.join(self.debug_root_path, kernel_file), 'w') as f:
+                    with open(path.join(self.debug_root_path, kernel_file), "w") as f:
                         print(kernel_result.get_kernel_source(), file=f)
-                    with open(path.join(self.debug_root_path, program_file), 'w') as f:
+                    with open(path.join(self.debug_root_path, program_file), "w") as f:
                         print(program_result.script(), file=f)
 
                 self._kernel_cache[key] = kernel_result
@@ -248,17 +244,18 @@ class _JitImplementation:
 
 
 def jit(  # This is the new public interface
-        func: Union[Callable[_P, _RProg], PrimFunc, None] = None,
-        *,  # Indicates subsequent arguments are keyword-only
-        out_idx: Any = None,
-        workspace_idx: Any = None,
-        target: Union[str, Target] = "auto",
-        target_host: Union[str, Target] = None,
-        platform: str = "auto",
-        execution_backend: Literal["dlpack", "ctypes", "cython"] = "cython",
-        verbose: bool = False,
-        pass_configs: Optional[Dict[str, Any]] = None,
-        debug_root_path: Optional[str] = None):
+    func: Callable[_P, _RProg] | PrimFunc | None = None,
+    *,  # Indicates subsequent arguments are keyword-only
+    out_idx: Any = None,
+    workspace_idx: Any = None,
+    target: str | Target = "auto",
+    target_host: str | Target = None,
+    platform: str = "auto",
+    execution_backend: Literal["dlpack", "ctypes", "cython"] = "cython",
+    verbose: bool = False,
+    pass_configs: dict[str, Any] | None = None,
+    debug_root_path: str | None = None,
+):
     """
     Just-In-Time (JIT) compiler decorator for TileLang functions.
 
@@ -283,7 +280,7 @@ def jit(  # This is the new public interface
         Backend for kernel execution and argument passing. Defaults to "cython".
     verbose : bool, optional
         Enables verbose logging during compilation. Defaults to False.
-    pass_configs : Optional[Dict[str, Any]], optional
+    pass_configs : Optional[dict[str, Any]], optional
         Configurations for TVM's pass context. Defaults to None.
     debug_root_path : Optional[str], optional
         Directory to save compiled kernel source for debugging. Defaults to None.
@@ -306,7 +303,8 @@ def jit(  # This is the new public interface
             execution_backend=execution_backend,
             verbose=verbose,
             pass_configs=pass_configs,
-            debug_root_path=debug_root_path)
+            debug_root_path=debug_root_path,
+        )
         return default_decorator(func)
     elif isinstance(func, PrimFunc):
         raise ValueError("Use tilelang.jit to decorate prim_func is not supported yet.")
@@ -323,5 +321,6 @@ def jit(  # This is the new public interface
             execution_backend=execution_backend,
             verbose=verbose,
             pass_configs=pass_configs,
-            debug_root_path=debug_root_path)
+            debug_root_path=debug_root_path,
+        )
         return configured_decorator

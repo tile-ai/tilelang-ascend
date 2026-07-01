@@ -380,6 +380,18 @@ def AscendSyncInsert(target: Target, platform: str):
     return _ffi_api.AscendSyncInsert(target, platform)  # type: ignore
 
 
+def AscendSyncInsertVS(target: Target, platform: str):
+    """Simplified auto insert sync for Ascend (V/S/MTE2/MTE3 pipelines only).
+
+    Returns
+    -------
+    fpass : tvm.transform.Pass
+        The result pass
+    ----
+    """
+    return _ffi_api.AscendSyncInsertVS(target, platform)  # type: ignore
+
+
 def CombineCV():
     """CombineCV
 
