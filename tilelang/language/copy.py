@@ -197,7 +197,7 @@ def npu_copy_v2(
     src: tir.Buffer | tir.BufferLoad | tir.BufferRegion,
     dst: tir.Buffer | tir.BufferLoad,
     enable_relu: bool = False,
-    transpose: bool | None = False,  # for copy_l1_to_l0 param: tranpose l1
+    transpose: bool | None = False,  # for copy_l1_to_l0 param: transpose l1
     pad_value: float | int | tir.PrimExpr | None = None,
 ):
     """Copy data between memory regions.
@@ -209,7 +209,10 @@ def npu_copy_v2(
         transpose (Optional[bool]): Whether to transpose for copy_l1_to_l0. Defaults to False.
         pad_value (Optional[Union[float, int, tir.PrimExpr]]): Value to fill in UB unused area.
             Supports float, int, tir.FloatImm, tir.IntImm, tir.PrimExpr (e.g., -T.infinity(dtype)).
-            Defaults to 0.
+            Defaults to 0. The gap fill ensures downstream reduce / broadcast / compare / select
+            ops (which read the full tile) observe a defined value; AscendTailMaskPropagation
+            additionally rewrites unary / binary / scalar ops to compute only over the valid
+            region so the pad value is preserved in the gap.
 
     Raises:
         TypeError: If copy extents cannot be deduced from arguments

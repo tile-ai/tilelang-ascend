@@ -460,6 +460,9 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
       pad_val = Cast(dst->dtype, pad_val);
     }
     new_args.push_back(pad_val);
+    // Physical UB tile dims (row pitch). These trail pad_val and are consumed
+    // by AscendTailMaskPropagation to model the tail rect; CopyCodegen prints
+    // only the first 4 extra args (strideN, validRow, validCol, pad_val).
     if (dst->shape.size() > 1) {
       new_args.push_back(dst->shape[dst->shape.size() - 2]);
     }
@@ -1335,6 +1338,28 @@ TIR_DEFINE_TL_BUILTIN(ascend_row_expand_sub_experiment)
                                Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_row_expand_div_experiment)
+    .set_num_inputs(-1)
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
+
+// Internal tail-aware ops (see ascend.h). Variadic: they carry an AscendC op
+// tag string, buffer pointers, and the runtime tail rect.
+TIR_DEFINE_TL_BUILTIN(ascend_tail_unary)
+    .set_num_inputs(-1)
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
+
+TIR_DEFINE_TL_BUILTIN(ascend_tail_binary)
+    .set_num_inputs(-1)
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
+
+TIR_DEFINE_TL_BUILTIN(ascend_tail_scalar)
+    .set_num_inputs(-1)
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
+
+TIR_DEFINE_TL_BUILTIN(ascend_tail_reduce)
     .set_num_inputs(-1)
     .set_attr<TCallEffectKind>("TCallEffectKind",
                                Integer(CallEffectKind::kOpaque));

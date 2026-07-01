@@ -70,6 +70,19 @@ VEC_PASS_CONFIGS = {
 }
 
 
+def _vec_configs(tail_mask):
+    """Vector pass configs, optionally enabling the opt-in tail-block scheme.
+
+    Every vector tail case is run twice (see the ``tail_mask`` parametrize):
+      * ``tail_mask=False`` -> the existing path (manual pad_value / ub2gm
+        re-clamp / real_shape), i.e. the behaviour these tests already guarded.
+      * ``tail_mask=True``  -> additionally exercises AscendTailMaskPropagation,
+        so the same kernel + reference also covers the new valid-region rewrite
+        (unary/binary/scalar). The result must match either way.
+    """
+    return {**VEC_PASS_CONFIGS, tilelang.PassConfigKey.TL_ASCEND_TAIL_MASK: tail_mask}
+
+
 @pytest.fixture(scope="session", autouse=True)
 def clear_cache():
     """Clear tilelang cache before the session."""
@@ -178,10 +191,10 @@ def vec_add_tail(M, N, block_M, block_N, dtype="float"):
     return main
 
 
-def run_test_vec_add_tail(M, N, block_M, block_N, dtype, target):
+def run_test_vec_add_tail(M, N, block_M, block_N, dtype, target, tail_mask):
     torch.manual_seed(0)
     func = vec_add_tail(M, N, block_M, block_N, dtype)
-    func = tilelang.compile(func, out_idx=[-1], pass_configs=VEC_PASS_CONFIGS, target=target)
+    func = tilelang.compile(func, out_idx=[-1], pass_configs=_vec_configs(tail_mask), target=target)
 
     td = _torch_dtype(dtype)
     a = torch.randn(M, N, dtype=td).npu()
@@ -220,10 +233,10 @@ def vec_abs_tail(M, N, block_M, block_N, dtype="float"):
     return main
 
 
-def run_test_vec_abs_tail(M, N, block_M, block_N, dtype, target):
+def run_test_vec_abs_tail(M, N, block_M, block_N, dtype, target, tail_mask):
     torch.manual_seed(0)
     func = vec_abs_tail(M, N, block_M, block_N, dtype)
-    func = tilelang.compile(func, out_idx=[-1], pass_configs=VEC_PASS_CONFIGS, target=target)
+    func = tilelang.compile(func, out_idx=[-1], pass_configs=_vec_configs(tail_mask), target=target)
 
     td = _torch_dtype(dtype)
     a = torch.randn(M, N, dtype=td).npu()
@@ -249,18 +262,20 @@ vec_tail_configs = [
 ]
 
 
+@pytest.mark.parametrize("tail_mask", [False, True])
 @pytest.mark.parametrize("dtype", ["float", "float16"])
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("M,N,block_M,block_N", vec_tail_configs)
-def test_vec_add_tail(M, N, block_M, block_N, dtype, target):
-    run_test_vec_add_tail(M, N, block_M, block_N, dtype, target=target)
+def test_vec_add_tail(M, N, block_M, block_N, dtype, target, tail_mask):
+    run_test_vec_add_tail(M, N, block_M, block_N, dtype, target=target, tail_mask=tail_mask)
 
 
+@pytest.mark.parametrize("tail_mask", [False, True])
 @pytest.mark.parametrize("dtype", ["float", "float16"])
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("M,N,block_M,block_N", vec_tail_configs)
-def test_vec_abs_tail(M, N, block_M, block_N, dtype, target):
-    run_test_vec_abs_tail(M, N, block_M, block_N, dtype, target=target)
+def test_vec_abs_tail(M, N, block_M, block_N, dtype, target, tail_mask):
+    run_test_vec_abs_tail(M, N, block_M, block_N, dtype, target=target, tail_mask=tail_mask)
 
 
 # =============================================================================
@@ -294,10 +309,10 @@ def reduce_max_tail(rows_valid, rows_phys, cols, dtype="float"):
     return main
 
 
-def run_test_reduce_max_tail(rows_valid, rows_phys, cols, dtype, target):
+def run_test_reduce_max_tail(rows_valid, rows_phys, cols, dtype, target, tail_mask):
     torch.manual_seed(0)
     func = reduce_max_tail(rows_valid, rows_phys, cols, dtype)
-    func = tilelang.compile(func, out_idx=[-1], pass_configs=VEC_PASS_CONFIGS, target=target)
+    func = tilelang.compile(func, out_idx=[-1], pass_configs=_vec_configs(tail_mask), target=target)
 
     td = _torch_dtype(dtype)
     a = torch.randn(rows_phys, cols, dtype=td).npu()
@@ -319,11 +334,14 @@ reduce_tail_configs = [
 ]
 
 
+# tail_mask=True also asserts that enabling the switch does not disturb the
+# real_shape reduce (reduce is not rewritten while rewrite_reduce=False).
+@pytest.mark.parametrize("tail_mask", [False, True])
 @pytest.mark.parametrize("dtype", ["float"])
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("rows_valid,rows_phys,cols", reduce_tail_configs)
-def test_reduce_max_tail(rows_valid, rows_phys, cols, dtype, target):
-    run_test_reduce_max_tail(rows_valid, rows_phys, cols, dtype, target=target)
+def test_reduce_max_tail(rows_valid, rows_phys, cols, dtype, target, tail_mask):
+    run_test_reduce_max_tail(rows_valid, rows_phys, cols, dtype, target=target, tail_mask=tail_mask)
 
 
 # =============================================================================
