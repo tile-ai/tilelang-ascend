@@ -195,34 +195,34 @@ gemm_v0(std::conditional_t<transpose_A, TileMatL1<T1, K, M, validK, validM>,
         std::conditional_t<transpose_B, TileMatL1<T1, N, K, validN, validK>,
                            TileMatL1<T1, K, N, validK, validN>> &B,
         pto::TileAcc<T2, M, N, validM, validN> &C, bool clear) {
-  constexpr uint32_t kL0Size =
-      128; // L0 slice size, adapted to 64K memory limit
-  const uint32_t kL0split = (K + kL0Size - 1) / kL0Size; // Number of slices
-  auto war_event_id = (event_t)(((int)EVENT_ID0 + 1) % 8);
+  // constexpr uint32_t kL0Size =
+  //     128; // L0 slice size, adapted to 64K memory limit
+  // const uint32_t kL0split = (K + kL0Size - 1) / kL0Size; // Number of slices
+  // auto war_event_id = (event_t)(((int)EVENT_ID0 + 1) % 8);
 
-  set_flag(PIPE_MTE2, PIPE_MTE1, war_event_id);
-  wait_flag(PIPE_MTE2, PIPE_MTE1, war_event_id);
+  // set_flag(PIPE_MTE2, PIPE_MTE1, war_event_id);
+  // wait_flag(PIPE_MTE2, PIPE_MTE1, war_event_id);
 
-  for (uint32_t kL0Idx = 0; kL0Idx < kL0split; kL0Idx++) {
-    const bool initflag = (clear && (kL0Idx == 0));
-    const bool is_tail_block = (kL0Idx == kL0split - 1);
+  // for (uint32_t kL0Idx = 0; kL0Idx < kL0split; kL0Idx++) {
+  //   const bool initflag = (clear && (kL0Idx == 0));
+  //   const bool is_tail_block = (kL0Idx == kL0split - 1);
 
-    if (is_tail_block) {
-      gemm_v0_inner<T1, T2, M, N, K, validM, validN, validK, K_tail,
-                    transpose_A, transpose_B>(A, B, C, kL0Idx, initflag,
-                                              war_event_id, true);
-    } else {
-      gemm_v0_inner<T1, T2, M, N, K, validM, validN, validK, kL0Size,
-                    transpose_A, transpose_B>(A, B, C, kL0Idx, initflag,
-                                              war_event_id, false);
-    }
-  }
+  //   if (is_tail_block) {
+  //     gemm_v0_inner<T1, T2, M, N, K, validM, validN, validK, K_tail,
+  //                   transpose_A, transpose_B>(A, B, C, kL0Idx, initflag,
+  //                                             war_event_id, true);
+  //   } else {
+  //     gemm_v0_inner<T1, T2, M, N, K, validM, validN, validK, kL0Size,
+  //                   transpose_A, transpose_B>(A, B, C, kL0Idx, initflag,
+  //                                             war_event_id, false);
+  //   }
+  // }
 
-  set_flag(PIPE_MTE1, PIPE_MTE2, war_event_id);
-  wait_flag(PIPE_MTE1, PIPE_MTE2, war_event_id);
+  // set_flag(PIPE_MTE1, PIPE_MTE2, war_event_id);
+  // wait_flag(PIPE_MTE1, PIPE_MTE2, war_event_id);
 
-  set_flag(PIPE_M, PIPE_FIX, war_event_id);
-  wait_flag(PIPE_M, PIPE_FIX, war_event_id);
+  // set_flag(PIPE_M, PIPE_FIX, war_event_id);
+  // wait_flag(PIPE_M, PIPE_FIX, war_event_id);
 }
 
 template <typename T1, typename T2, int32_t shape1, int32_t shape2,

@@ -404,10 +404,12 @@ def gemm_v0(A, B, C, transpose_A=False, transpose_B=False, init=False):
     Cptr = _retrieve_ptr(C, "w" if init is True else "rw")
 
     # assert _dtype(A) == _dtype(B), f"gemm A and B dtype mismatch: {_dtype(A)} vs {_dtype(B)}"
+    # Force dtype to float8_e8m0_t for debugging MX format
+    forced_dtype = "float8_e8m0_t"
     return T.call_intrin(
         "handle",
         tir.op.Op.get("tl.ascend_gemm_v0"),
-        f"gemm_v0<{_dtype(A)}, {_dtype(C)}, {M}, {N}, {K}, {str(transpose_A).lower()}, {str(transpose_B).lower()}>",
+        f"gemm_v0<{forced_dtype}, {_dtype(C)}, {M}, {N}, {K}, {str(transpose_A).lower()}, {str(transpose_B).lower()}>",
         Aptr,
         Bptr,
         Cptr,

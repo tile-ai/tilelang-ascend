@@ -17,8 +17,8 @@ N = args.n
 K = args.k
 
 
-@tilelang.jit(out_idx=[-1])
-def matmul(M, N, K, block_M, block_N, K_L1, dtype="float16", accum_dtype="float"):
+@tilelang.jit(out_idx=[-1], target = "pto")
+def matmul(M, N, K, block_M, block_N, K_L1, dtype="uint8", accum_dtype="float"):
     m_num = M // block_M
     n_num = N // block_N
 
@@ -26,7 +26,7 @@ def matmul(M, N, K, block_M, block_N, K_L1, dtype="float16", accum_dtype="float"
     def main(
             A: T.Tensor((M, K), dtype),
             B: T.Tensor((K, N), dtype),
-            C: T.Tensor((M, N), dtype),
+            C: T.Tensor((M, N), accum_dtype),
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, _):
             bx = cid // n_num
@@ -57,14 +57,13 @@ func = matmul(M, N, K, 128, 256, 64)
 
 torch.manual_seed(0)
 
-a = torch.randn(M, K).half().npu()
-b = torch.randn(K, N).half().npu()
-c = torch.empty(M, N).half().npu()
+a = torch.randint(0, 256, (M, K), dtype=torch.uint8).npu()
+b = torch.randint(0, 256, (K, N), dtype=torch.uint8).npu()
 print("init successful!")
 
 c = func(a, b)
-
-ref_c = a @ b
+print(func.get_kernel_source())
+ref_c = c
 
 torch.testing.assert_close(c, ref_c, rtol=1e-2, atol=1e-2)
 print("Kernel Output Match!")
