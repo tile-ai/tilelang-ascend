@@ -162,7 +162,7 @@ def print(obj: Any, msg: str = "") -> tir.PrimExpr:
             if not msg:
                 msg = f"buffer<{buffer.name}, {buffer.dtype}>"
             return print_fragment_buffer_with_condition(condition, buffer, elems, msg)
-        elif buffer.scope() in {"shared.ub", "shared"}:
+        elif buffer.scope() in {"shared.ub", "shared.l1", "shared"}:
             # Get the number of elements in the buffer.
             elems = 1
             for dim in buffer.shape:

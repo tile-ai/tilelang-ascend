@@ -801,7 +801,7 @@ private:
       {"wmma.matrix_a", "cube"},
       {"wmma.matrix_b", "cube"},
       {"wmma.accumulator", "cube"},
-      {"shared", "cube"},
+      {"shared.l1", "cube"},
       {"shared.ub", "vec"}};
 };
 

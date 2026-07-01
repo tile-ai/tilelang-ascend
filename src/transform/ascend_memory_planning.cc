@@ -112,7 +112,7 @@ private:
         std::unordered_set<const VarNode *> injected_tmp_vars = {}) {
       memory_auto_plan = auto_plan;
       injected_tmp_vars_ = std::move(injected_tmp_vars);
-      memory_limits_ = {{"shared", ASCEND_SHARED_DYN_MEM_SIZE},
+      memory_limits_ = {{"shared.l1", ASCEND_SHARED_DYN_MEM_SIZE},
                         {"wmma.matrix_a", ASCEND_WMMA_MATRIX_A_MEM_SIZE},
                         {"wmma.matrix_b", ASCEND_WMMA_MATRIX_B_MEM_SIZE},
                         {"wmma.accumulator", ASCEND_WMMA_ACCUMULATOR_MEM_SIZE},

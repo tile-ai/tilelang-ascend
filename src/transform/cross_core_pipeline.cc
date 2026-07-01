@@ -42,7 +42,7 @@ struct PipelineInfo {
 
 std::unordered_map<std::string, std::string> callnodeMapPos_ = {
     {"wmma.matrix_a", "cube"},    {"wmma.matrix_b", "cube"},
-    {"wmma.accumulator", "cube"}, {"shared", "cube"},
+    {"wmma.accumulator", "cube"}, {"shared.l1", "cube"},
     {"shared.ub", "vec"},         {"local.var", "vec"}};
 
 int32_t checkBufferScope(Map<Var, String> location_map, const Var &var) {

@@ -50,7 +50,7 @@ static Buffer makeBufferWithLayout(const Buffer &buffer, const Layout &layout,
   Array<PrimExpr> output_shape = layout_shape;
 
   if (ptr_type->storage_scope == "shared.ub" ||
-      ptr_type->storage_scope == "shared") {
+      ptr_type->storage_scope == "shared.l1") {
     int replicate_extent = 1;
     Array<PrimExpr> buffer_shape = buffer->shape;
     int buffer_extent = 1;
@@ -411,7 +411,7 @@ private:
       return IRMutatorWithAnalyzer::VisitStmt_(op);
     AddWorkspaceCallback callback = [this](int num_elem, DataType dtype) {
       auto workspace =
-          decl_buffer({PrimExpr(num_elem)}, dtype, "workspace", "shared");
+          decl_buffer({PrimExpr(num_elem)}, dtype, "workspace", "shared.l1");
       workspaces_.push_back(workspace);
       return workspace.access_ptr(2); // write
     };

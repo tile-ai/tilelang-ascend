@@ -769,7 +769,7 @@ void CodeGenTileLangAscend::VisitStmt_(const AllocateNode *op) {
     print_buffer("ascend_l0b");
   } else if (scope == "wmma.accumulator") {
     print_buffer("ascend_l0c");
-  } else if (scope == "shared") {
+  } else if (scope == "shared.l1") {
     print_buffer("ascend_l1");
   } else if (scope == "shared.ub") {
     print_buffer("ascend_ub");

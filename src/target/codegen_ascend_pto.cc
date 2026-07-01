@@ -3012,7 +3012,7 @@ const std::unordered_map<std::string, std::string> scope_to_tile = {
     {"wmma.matrix_a", kAscendPtoScope + "TileMatL0A"},
     {"wmma.matrix_b", kAscendPtoScope + "TileMatL0B"},
     {"wmma.accumulator", "TileAcc"},
-    {"shared", kAscendPtoScope + "TileMatL1"},
+    {"shared.l1", kAscendPtoScope + "TileMatL1"},
     {"shared.ub", kAscendPtoScope + "TileUbDataND"},
 };
 

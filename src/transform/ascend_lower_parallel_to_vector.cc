@@ -1743,7 +1743,7 @@ private:
   // Check if a buffer is L1
   bool IsL1Buffer(const Buffer &buffer) {
     if (auto *ptr_type = buffer->data->type_annotation.as<PointerTypeNode>()) {
-      return ptr_type->storage_scope == "shared";
+      return ptr_type->storage_scope == "shared.l1";
     }
     return false;
   }

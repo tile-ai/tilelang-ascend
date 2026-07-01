@@ -128,12 +128,17 @@ def alloc_var(dtype, *args, scope: str = "local.var", init: PrimExpr | int | flo
 """
 The following are memory scopes in Ascend.
 Here is the correspondence between TIR scopes and Ascend memory scopes:
-- shared -> L1 (inferred; the compiler decides L1/UB based on use context)
-- shared.l1 -> L1
-- shared.ub -> UB
+- shared -> abstract/inferred (the compiler infers it to L1 or UB based on use context)
+- shared.l1 -> L1 (Cube cache)
+- shared.ub -> UB (Vector buffer)
 - wmma.matrix_a -> L0A
 - wmma.matrix_b -> L0B
 - wmma.accumulator -> L0C
+
+The AscendInferBufferScope pass resolves the abstract "shared" scope (produced by
+alloc_shared) into the concrete "shared.l1" (L1) or "shared.ub" (UB) based on
+whether the buffer participates in Cube or Vector computation. After inference,
+no buffer should retain the bare "shared" scope.
 """
 
 

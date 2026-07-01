@@ -180,15 +180,15 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
   ss << "tl::ascend::";
   PrimExpr strideN;
 
-  if (src.scope() == "global" && dst.scope() == "shared") {
+  if (src.scope() == "global" && dst.scope() == "shared.l1") {
     ss << "copy_gm_to_l1";
     config.gm2l1 = true;
-  } else if (src.scope() == "shared" && dst.scope() == "wmma.matrix_a") {
+  } else if (src.scope() == "shared.l1" && dst.scope() == "wmma.matrix_a") {
     ss << "copy_l1_to_l0a";
     // config.print_src_layout = true;
     config.l12l0 = true;
     config.l0_dst_split = true;
-  } else if (src.scope() == "shared" && dst.scope() == "wmma.matrix_b") {
+  } else if (src.scope() == "shared.l1" && dst.scope() == "wmma.matrix_b") {
     ss << "copy_l1_to_l0b";
     // config.print_src_layout = true;
     config.l12l0 = true;
@@ -226,7 +226,7 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
         ss << ", " << compute_blocklen(src, src_extents);
       }
       ss << ">";
-    } else if (dst.scope() == "shared") {
+    } else if (dst.scope() == "shared.l1") {
       config.virtual_channel = true;
       ss << "copy_ub_to_l1<"; // real channel is "ub -> gm -> l1"
       ss << get_dtype(dst) << ", ";

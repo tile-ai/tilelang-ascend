@@ -401,21 +401,23 @@ private:
           if (use_info->used_in_vector && !use_info->used_in_cube) {
             corrected_scope = "shared.ub";
           } else if (use_info->used_in_cube && !use_info->used_in_vector) {
-            corrected_scope = "shared";
+            corrected_scope = "shared.l1";
           } else if (use_info->used_in_cube && use_info->used_in_vector) {
             bool has_conflict = CheckSharedBufferConflict(use_info);
             if (has_conflict) {
               // todo
             }
-            corrected_scope = "shared";
+            corrected_scope = "shared.l1";
           } else {
-            corrected_scope = original_scope;
+            corrected_scope = "shared.l1";
           }
         } else {
-          corrected_scope = original_scope;
+          corrected_scope = "shared.l1";
         }
       } else if (original_scope == "shared.l1") {
-        corrected_scope = "shared";
+        corrected_scope = "shared.l1";
+      } else if (original_scope == "shared.ub") {
+        corrected_scope = "shared.ub";
       }
 
       alloc_info->corrected_scope = corrected_scope;
@@ -489,7 +491,7 @@ private:
           }
         }
         if (found_qualified_copy) {
-          alloc_info->corrected_scope = "shared";
+          alloc_info->corrected_scope = "shared.l1";
         } else {
           alloc_info->corrected_scope = "shared.ub";
         }
@@ -505,7 +507,7 @@ private:
         }
 
         bool should_apply = false;
-        if (has_dump_tensor && alloc_info->corrected_scope == "shared") {
+        if (has_dump_tensor && alloc_info->corrected_scope == "shared.l1") {
           should_apply = true;
         } else if (alloc_info->corrected_scope != alloc_info->original_scope) {
           should_apply = true;
@@ -738,7 +740,7 @@ private:
   }
 
   /*!
-   * \brief Ensure all L1-level (shared) Buffers have physical memory layout
+   * \brief Ensure all L1-level (shared.l1) Buffers have physical memory layout
    * descriptions.
    *
    * \note
@@ -769,7 +771,7 @@ private:
 
       // Only data entering L1 Buffer needs to participate in Cube operations
       // and requires fractal layout transformation.
-      if (scope == "shared") {
+      if (scope == "shared.l1") {
         // Avoid overwriting user-defined layouts (e.g., user intentionally
         // specified nZ instead of zN).
         if (layout_map.count(buf->data) == 0) {
