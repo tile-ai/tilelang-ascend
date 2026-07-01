@@ -4373,8 +4373,23 @@ def run_test_transpose(M, N, block_M, block_N, dtype, target):
     assert_close_npu(b, ref_b, dtype, rtol=1e-2, atol=1e-2)
 
 
-@pytest.mark.parametrize("dtype", ["int16", "uint16", "float16", "int32", "uint32", "float"])
-@pytest.mark.parametrize("target", ["ascendc", "pto"])
+transpose_dtype_target_params = [
+    ("int16", "ascendc"),
+    ("int16", "pto"),
+    ("uint16", "ascendc"),
+    ("uint16", "pto"),
+    ("float16", "ascendc"),
+    ("float16", "pto"),
+    ("int32", "ascendc"),
+    pytest.param("int32", "pto", marks=pytest.mark.lowpriority),
+    ("uint32", "ascendc"),
+    ("uint32", "pto"),
+    ("float", "ascendc"),
+    ("float", "pto"),
+]
+
+
+@pytest.mark.parametrize("dtype,target", transpose_dtype_target_params)
 @pytest.mark.parametrize("shape", [(16, 16)])
 def test_transpose(dtype, target, shape):
     M, N = shape
@@ -4623,6 +4638,7 @@ def run_test_generate_arithmetic_progression(N, block_size, target):
     torch.testing.assert_close(result, ref_result, rtol=0, atol=0)
 
 
+@pytest.mark.lowpriority
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("shape", [1024])
 def test_generate_arithmetic_progression(target, shape):
