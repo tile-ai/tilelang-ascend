@@ -2105,6 +2105,9 @@ void CodeGenTileLangAscend::RowExpandBinOpExperimentCodegen(
         << "RowExpandBinOpExperimentCodegen: dynamic extent not supported";
   }
   int rows = repeat_time;
+  ICHECK(rows % 8 == 0)
+      << "RowExpandBinOpExperimentCodegen: rows=" << rows
+      << " must be a multiple of 8 (BRCB processes 8 scalars per repeat)";
   int brcb_repeat = rows / 8;
   ICHECK(rows > 0 && cols > 0)
       << "RowExpandBinOpExperimentCodegen: failed to derive rows/cols";
