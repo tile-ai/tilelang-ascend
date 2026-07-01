@@ -104,3 +104,6 @@ docs/notebook/*.cpp
 
 .agents/reports
 
+# Generated AOT example build artifacts
+examples/gemm_aot/kernel_lib.so
+
