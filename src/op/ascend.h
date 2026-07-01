@@ -34,6 +34,7 @@ private:
   int srcN;
   bool enRelu;
   bool transposeL1;
+  PrimExpr padValue;
 };
 
 class AscendAtomicAdd : public Operator {

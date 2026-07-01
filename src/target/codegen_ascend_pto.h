@@ -125,6 +125,16 @@ private:
 
   void BinaryVecOpsCodegen(const CallNode *op, const std::string &op_name);
 
+  // Tail-aware vector ops produced by AscendTailMaskPropagation. The pass
+  // rewrites unary / binary / scalar ops on tail UB tiles to these internal
+  // ops carrying the runtime valid rectangle; reduce / broadcast / compare /
+  // select are NOT rewritten (hybrid scheme) so only these three are needed.
+  void TailUnaryOpCodegen(const CallNode *op);
+
+  void TailBinaryOpCodegen(const CallNode *op);
+
+  void TailScalarOpCodegen(const CallNode *op);
+
   void CallExternCodegen(const CallNode *op);
 
   void GemmV0Codegen(const CallNode *op);
@@ -223,6 +233,13 @@ private:
                           const ShapeInfo &shape_info);
   void CreateUbVariableDN(const std::string &temp_name,
                           const ShapeInfo &shape_info);
+  // Emits a TileUbDataND bound to the buffer address whose valid region is the
+  // runtime (valid_row, valid_col) pair (pto::DYNAMIC). Used by the tail-aware
+  // vector op codegen so PTO op macros compute only over the valid rectangle,
+  // leaving the gap (filled with pad_value by copy_gm_to_ub) untouched.
+  std::string CreateUbVariableDynamic(const ShapeInfo &shape_info,
+                                      const std::string &valid_row,
+                                      const std::string &valid_col);
   void CreateCubeVariable(const std::string &temp_name,
                           const ShapeInfo &shape_info,
                           const std::string &tile_name);

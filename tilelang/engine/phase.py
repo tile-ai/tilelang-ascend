@@ -69,8 +69,10 @@ def LowerAndLegalize(mod: IRModule, target: Target) -> IRModule:
     # Lower high-level tile operations to low-level operations
     mod = tilelang.transform.LowerTileOp()(mod)
     # Propagate UB tail valid-regions and rewrite vector ops to tail-aware
-    # variants (must run before passes that reorder copy/vector ops).
-    mod = tilelang.transform.AscendTailMaskPropagation()(mod)
+    # variants (must run before passes that reorder copy/vector ops). Reduce is
+    # only rewritten for the AscendC backend; PTO reduce is handled natively.
+    is_pto = getattr(target, "model", "") == "pto"
+    mod = tilelang.transform.AscendTailMaskPropagation(rewrite_reduce=not is_pto)(mod)
     # Erase manual workspace allocations for virtual CV copy in Ascend
     mod = tilelang.transform.AscendWorkspaceReduction()(mod)
     # Legalize vectorized loops to ensure they are valid

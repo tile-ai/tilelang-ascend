@@ -438,9 +438,15 @@ def AscendWorkspaceReduction():
     return _ffi_api.AscendWorkspaceReduction()  # type: ignore
 
 
-def AscendTailMaskPropagation():
+def AscendTailMaskPropagation(rewrite_reduce: bool = True):
     """Propagate UB tail valid-regions and rewrite vector ops to tail-aware
     variants for the Ascend backend.
+
+    Parameters
+    ----------
+    rewrite_reduce : bool
+        Whether reduce ops may be rewritten to tail_reduce. Disabled for the PTO
+        backend, whose reduce codegen handles valid shapes natively.
 
     Returns
     -------
@@ -448,7 +454,7 @@ def AscendTailMaskPropagation():
         The result pass
     ----
     """
-    return _ffi_api.AscendTailMaskPropagation()  # type: ignore
+    return _ffi_api.AscendTailMaskPropagation(rewrite_reduce)  # type: ignore
 
 
 def AscendInferBufferScope():

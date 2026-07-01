@@ -52,6 +52,11 @@ AscendCopy::AscendCopy(Array<PrimExpr> args, BufferMap vmap) : args_(args) {
   if (args.size() >= 4) {
     transposeL1 = args[3].as<Bool>().value();
   }
+  if (args.size() >= 5) {
+    padValue = args[4];
+  } else {
+    padValue = Integer(0);
+  }
   std::tie(this->src, this->dst) = std::tie(bf[0], bf[1]);
   std::tie(this->src_range, this->dst_range) = std::tie(rgs[0], rgs[1]);
   std::tie(this->src_extents, this->dst_extents) = std::tie(ets[0], ets[1]);
@@ -450,9 +455,14 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
   if (config.gm2ub) {
     new_args.push_back(validRow_src);
     new_args.push_back(validCol_src);
-    // Physical UB tile dims (row pitch). These trail validRow/validCol and are
-    // consumed by AscendTailMaskPropagation to model the tail rect; CopyCodegen
-    // ignores them (copy_gm_to_ub extra_args = 3).
+    PrimExpr pad_val = padValue;
+    if (pad_val->dtype != dst->dtype) {
+      pad_val = Cast(dst->dtype, pad_val);
+    }
+    new_args.push_back(pad_val);
+    // Physical UB tile dims (row pitch). These trail pad_val and are consumed
+    // by AscendTailMaskPropagation to model the tail rect; CopyCodegen prints
+    // only the first 4 extra args (strideN, validRow, validCol, pad_val).
     if (dst->shape.size() > 1) {
       new_args.push_back(dst->shape[dst->shape.size() - 2]);
     }

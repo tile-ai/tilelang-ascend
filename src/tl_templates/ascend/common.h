@@ -198,23 +198,35 @@ template <typename T, uint32_t dstN, uint32_t dstM = 1>
 CATLASS_DEVICE void
 copy_gm_to_ub(LocalTensor<T> dstTensor, GlobalTensor<T> srcTensor,
               uint32_t realSrcN = 1, uint32_t maskShapeM = dstM,
-              uint32_t maskShapeN = dstN) {
-  // Tail blocks are no longer materialised by filling the UB gap with a pad
-  // value.  The unused columns [maskShapeN, dstN) and rows [maskShapeM, dstM)
-  // are left untouched; AscendTailMaskPropagation rewrites downstream vector
-  // ops to tail_* helpers that compute only over [maskShapeM, maskShapeN], so
-  // the gap never affects valid results and is never written back.  The only
-  // padding still applied is the sub-32B DMA remainder needed for alignment.
+              uint32_t maskShapeN = dstN, T padValue = T(0)) {
+  // Hybrid scheme: the UB gap ([maskShapeN, dstN) / [maskShapeM, dstM)) is
+  // filled with ``padValue`` via Duplicate so that downstream reduce /
+  // broadcast / compare / select ops (which still read the full tile) observe a
+  // defined value. AscendTailMaskPropagation additionally rewrites unary /
+  // binary / scalar ops to tail_* helpers that compute only over the valid
+  // region, so the pad value in the gap is preserved (not corrupted by
+  // elementwise ops) and reaches the unreduced readers intact.
   bool isPad = true;
   uint32_t rightPadding = 1;
   if (maskShapeN == dstN || (maskShapeN * sizeof(T)) % 32 == 0) {
     isPad = false;
     rightPadding = 0;
   }
+  if (maskShapeM != dstM || maskShapeN != dstN) {
+    if constexpr (IsDuplicateSupported_v<T>) {
+      SetFlag<HardEvent::MTE2_V>(0);
+      WaitFlag<HardEvent::MTE2_V>(0);
+      SetFlag<HardEvent::MTE3_V>(0);
+      WaitFlag<HardEvent::MTE3_V>(0);
+      AscendC::Duplicate<T>(dstTensor, padValue, dstM * dstN);
+      SetFlag<HardEvent::V_MTE2>(0);
+      WaitFlag<HardEvent::V_MTE2>(0);
+    }
+  }
   AscendC::DataCopyExtParams dataCopyParams(
       maskShapeM, maskShapeN * sizeof(T), (realSrcN - maskShapeN) * sizeof(T),
       (dstN - maskShapeN) * sizeof(T) / 32, 0);
-  AscendC::DataCopyPadExtParams<T> padParams(isPad, 0, rightPadding, T(0));
+  AscendC::DataCopyPadExtParams<T> padParams(isPad, 0, rightPadding, padValue);
   AscendC::DataCopyPad(dstTensor, srcTensor, dataCopyParams, padParams);
 }
 

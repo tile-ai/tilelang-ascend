@@ -259,6 +259,22 @@ void CodeGenTileLangAscendPto::CreateUbVariableDN(const std::string &temp_name,
                << GetTypeLen(shape_info.type) << ");\n";
 }
 
+std::string CodeGenTileLangAscendPto::CreateUbVariableDynamic(
+    const ShapeInfo &shape_info, const std::string &valid_row,
+    const std::string &valid_col) {
+  std::string temp = GetTempVarName(shape_info.ub_name);
+  this->PrintIndent();
+  this->stream << kAscendPtoScope << "TileUbDataND<" << shape_info.type << ", "
+               << shape_info.row << ", " << shape_info.col
+               << ", pto::DYNAMIC, pto::DYNAMIC> " << temp << "(" << valid_row
+               << ", " << valid_col << ");\n";
+  this->PrintIndent();
+  this->stream << "TASSIGN(" << temp << ", " << shape_info.first_addr << " + "
+               << shape_info.offset << " * " << GetTypeLen(shape_info.type)
+               << ");\n";
+  return temp;
+}
+
 std::string
 CodeGenTileLangAscendPto::ResolveUbSliceName(const ShapeInfo &info) {
   if (!info.is_slice)
@@ -846,6 +862,16 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op,
     BinaryVecOpsCodegen(op, "TMAXS");
   } else if (op->op.same_as(tl::ascend_mins())) {
     BinaryVecOpsCodegen(op, "TMINS");
+
+    // --- tail-aware vector ops (AscendTailMaskPropagation) ---
+    // Only unary / binary / scalar are rewritten; reduce / broadcast / compare
+    // / select stay on the full-tile path (gap filled with pad_value).
+  } else if (op->op.same_as(tl::ascend_tail_unary())) {
+    TailUnaryOpCodegen(op);
+  } else if (op->op.same_as(tl::ascend_tail_binary())) {
+    TailBinaryOpCodegen(op);
+  } else if (op->op.same_as(tl::ascend_tail_scalar())) {
+    TailScalarOpCodegen(op);
 
     // --- sync / barrier ---
   } else if (op->op.same_as(tl::ascend_sync_all())) {
@@ -2496,6 +2522,90 @@ void CodeGenTileLangAscendPto::UnaryVecOpCodegen(const CallNode *op,
 
   this->PrintIndent();
   this->stream << op_name << "(" << dst_name << ", " << src_name << ");\n";
+}
+
+void CodeGenTileLangAscendPto::TailUnaryOpCodegen(const CallNode *op) {
+  // args: tag(0) dst(1) src(2) validRow(3) validCol(4) physCol(5)
+  static const std::unordered_map<std::string, std::string> kUnaryIntr = {
+      {"Exp", "TEXP"},          {"Ln", "TLOG"},    {"Abs", "TABS"},
+      {"Reciprocal", "TRECIP"}, {"Sqrt", "TSQRT"}, {"Rsqrt", "TRSQRT"},
+      {"Relu", "TRELU"}};
+  const auto *tag_imm = op->args[0].as<StringImmNode>();
+  ICHECK(tag_imm) << "tail_unary: tag must be a string";
+  auto it = kUnaryIntr.find(tag_imm->value);
+  ICHECK(it != kUnaryIntr.end())
+      << "Unsupported tail_unary tag: " << tag_imm->value;
+
+  std::string vrow = PrintExpr(op->args[3]);
+  std::string vcol = PrintExpr(op->args[4]);
+  ShapeInfo dst_info = GetSliceInfo(op->args[1].as<CallNode>());
+  ShapeInfo src_info = GetSliceInfo(op->args[2].as<CallNode>());
+  std::string dst = CreateUbVariableDynamic(dst_info, vrow, vcol);
+  std::string src = CreateUbVariableDynamic(src_info, vrow, vcol);
+
+  this->PrintIndent();
+  this->stream << it->second << "(" << dst << ", " << src << ");\n";
+}
+
+void CodeGenTileLangAscendPto::TailBinaryOpCodegen(const CallNode *op) {
+  // args: tag(0) dst(1) src0(2) src1(3) validRow(4) validCol(5) physCol(6)
+  static const std::unordered_map<std::string, std::string> kBinaryIntr = {
+      {"Add", "TADD"}, {"Sub", "TSUB"}, {"Mul", "TMUL"},
+      {"Div", "TDIV"}, {"Max", "TMAX"}, {"Min", "TMIN"}};
+  const auto *tag_imm = op->args[0].as<StringImmNode>();
+  ICHECK(tag_imm) << "tail_binary: tag must be a string";
+  auto it = kBinaryIntr.find(tag_imm->value);
+  ICHECK(it != kBinaryIntr.end())
+      << "Unsupported tail_binary tag: " << tag_imm->value;
+
+  std::string vrow = PrintExpr(op->args[4]);
+  std::string vcol = PrintExpr(op->args[5]);
+  ShapeInfo dst_info = GetSliceInfo(op->args[1].as<CallNode>());
+  ShapeInfo src0_info = GetSliceInfo(op->args[2].as<CallNode>());
+  ShapeInfo src1_info = GetSliceInfo(op->args[3].as<CallNode>());
+  std::string dst = CreateUbVariableDynamic(dst_info, vrow, vcol);
+  std::string src0 = CreateUbVariableDynamic(src0_info, vrow, vcol);
+  std::string src1 = CreateUbVariableDynamic(src1_info, vrow, vcol);
+
+  this->PrintIndent();
+  this->stream << it->second << "(" << dst << ", " << src0 << ", " << src1
+               << ");\n";
+}
+
+void CodeGenTileLangAscendPto::TailScalarOpCodegen(const CallNode *op) {
+  // args: tag(0) dst(1) src(2) scalar(3) validRow(4) validCol(5) physCol(6)
+  // subs/divs are never rewritten by the pass, so only Adds/Muls/Maxs/Mins.
+  static const std::unordered_map<std::string, std::string> kScalarIntr = {
+      {"Adds", "TADDS"},
+      {"Muls", "TMULS"},
+      {"Maxs", "TMAXS"},
+      {"Mins", "TMINS"}};
+  const auto *tag_imm = op->args[0].as<StringImmNode>();
+  ICHECK(tag_imm) << "tail_scalar: tag must be a string";
+  auto it = kScalarIntr.find(tag_imm->value);
+  ICHECK(it != kScalarIntr.end())
+      << "Unsupported tail_scalar tag: " << tag_imm->value;
+
+  std::string vrow = PrintExpr(op->args[4]);
+  std::string vcol = PrintExpr(op->args[5]);
+  ShapeInfo dst_info = GetSliceInfo(op->args[1].as<CallNode>());
+  ShapeInfo src_info = GetSliceInfo(op->args[2].as<CallNode>());
+  std::string dst = CreateUbVariableDynamic(dst_info, vrow, vcol);
+  std::string src = CreateUbVariableDynamic(src_info, vrow, vcol);
+
+  DataType dtype0 = GetAccessPtrDtypePto(op->args[1].as<CallNode>());
+  std::string scalar = PrintExpr(op->args[3]);
+  if (op->args[3].dtype() != dtype0) {
+    if (dtype0.is_float16()) {
+      scalar = "float(" + scalar + ")";
+    } else {
+      scalar = dst_info.type + "(" + scalar + ")";
+    }
+  }
+
+  this->PrintIndent();
+  this->stream << it->second << "(" << dst << ", " << src << ", " << scalar
+               << ");\n";
 }
 
 void CodeGenTileLangAscendPto::ScalarOpCodegen(const CallNode *op,

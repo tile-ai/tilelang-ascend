@@ -120,19 +120,54 @@ std::string ExternName(const CallNode *call) {
 
 class AscendTailMaskPropagator : public arith::IRMutatorWithAnalyzer {
 public:
-  static PrimFunc Substitute(PrimFunc f) {
+  static PrimFunc Substitute(PrimFunc f, bool rewrite_reduce) {
     arith::Analyzer analyzer;
-    AscendTailMaskPropagator m(&analyzer);
+    AscendTailMaskPropagator m(&analyzer, rewrite_reduce);
     f.CopyOnWrite()->body = m.VisitStmt(f->body);
     return f;
   }
 
-  explicit AscendTailMaskPropagator(arith::Analyzer *analyzer)
-      : arith::IRMutatorWithAnalyzer(analyzer) {}
+  AscendTailMaskPropagator(arith::Analyzer *analyzer, bool rewrite_reduce)
+      : arith::IRMutatorWithAnalyzer(analyzer),
+        rewrite_reduce_(rewrite_reduce) {}
 
 private:
   // Per UB data Var -> current valid region. Absent => full (untracked).
   std::unordered_map<const VarNode *, TailMaskInfo> state_;
+  // Whether reduce ops may be rewritten to tail_reduce. Disabled for the PTO
+  // backend, whose reduce codegen handles valid shapes natively.
+  bool rewrite_reduce_ = true;
+
+  // --- conservative guards -------------------------------------------------
+  // Only float-like dtypes have validated tail helpers; int/uint stay on the
+  // full-tile path to avoid unsupported AscendC intrinsic instantiations.
+  static bool SupportedTailDtype(DataType dt) {
+    return dt.is_float() || dt.is_bfloat16();
+  }
+  // Element dtype behind an access_ptr (mirrors GetAccessPtrDtype in codegen).
+  static DataType PtrDtype(const PrimExpr &e) {
+    const auto *ap = e.as<CallNode>();
+    if (ap == nullptr || ap->args.empty())
+      return DataType::Handle();
+    if (const auto *c = ap->args[0].as<CallNode>())
+      return c->dtype;
+    return DataType::Handle();
+  }
+  // Element count (extent) behind an access_ptr.
+  static PrimExpr PtrExtent(const PrimExpr &e) {
+    if (const auto *ap = e.as<CallNode>())
+      if (ap->op.same_as(builtin::tvm_access_ptr()) && ap->args.size() >= 4)
+        return ap->args[3];
+    return PrimExpr();
+  }
+  // The 2D tail model only holds when the op's element count equals the
+  // physical tile (physical_row * physical_col). For 3D / mismatched tiles the
+  // rewrite would compute the wrong region, so we bail to the full-tile path.
+  bool CleanTail(const PrimExpr &count, const TailMaskInfo &m) {
+    return m.is_tail() && m.physical_row.defined() &&
+           m.physical_col.defined() && count.defined() &&
+           analyzer_->CanProveEqual(count, m.physical_row * m.physical_col);
+  }
 
   TailMaskInfo GetMask(const VarNode *v) const {
     if (v == nullptr)
@@ -175,8 +210,9 @@ private:
 
   void HandleGmToUbCopy(const CallNode *call) {
     // args: name(0) src_ptr(1) dst_ptr(2) strideN(3) validRow(4) validCol(5)
-    //       [physRow(6) physCol(7)]   (physRow omitted for 1D tiles)
-    if (call->args.size() < 6)
+    //       pad_val(6) [physRow(7) physCol(8)]   (physRow omitted for 1D tiles;
+    //       pad_val is always present in the hybrid scheme)
+    if (call->args.size() < 7)
       return;
     const VarNode *dst_v = GetPtrVar(call->args[2]);
     if (dst_v == nullptr)
@@ -184,12 +220,12 @@ private:
     PrimExpr valid_row = call->args[4];
     PrimExpr valid_col = call->args[5];
     PrimExpr phys_row, phys_col;
-    if (call->args.size() >= 8) {
-      phys_row = call->args[6];
-      phys_col = call->args[7];
-    } else if (call->args.size() == 7) {
+    if (call->args.size() >= 9) {
+      phys_row = call->args[7];
+      phys_col = call->args[8];
+    } else if (call->args.size() == 8) {
       phys_row = IntImm(DataType::Int(32), 1);
-      phys_col = call->args[6];
+      phys_col = call->args[7];
     } else {
       return;
     }
@@ -236,9 +272,11 @@ private:
       return Stmt();
     const VarNode *dst_v = GetPtrVar(call->args[0]);
     TailMaskInfo in = GetMask(GetPtrVar(call->args[1]));
+    bool ok = CleanTail(call->args[2], in) &&
+              SupportedTailDtype(PtrDtype(call->args[0]));
     if (dst_v != nullptr)
-      state_[dst_v] = in;
-    if (!in.is_tail() || !in.physical_col.defined())
+      state_[dst_v] = ok ? in : TailMaskInfo{};
+    if (!ok)
       return Stmt();
     Array<PrimExpr> a = {StringImm(tag), call->args[0], call->args[1],
                          in.valid_row,   in.valid_col,  in.physical_col};
@@ -252,9 +290,11 @@ private:
     TailMaskInfo lhs = GetMask(GetPtrVar(call->args[1]));
     TailMaskInfo rhs = GetMask(GetPtrVar(call->args[2]));
     TailMaskInfo out = IntersectMasks(lhs, rhs, analyzer_);
+    bool ok = CleanTail(call->args[3], out) &&
+              SupportedTailDtype(PtrDtype(call->args[0]));
     if (dst_v != nullptr)
-      state_[dst_v] = out;
-    if (!out.is_tail() || !out.physical_col.defined())
+      state_[dst_v] = ok ? out : TailMaskInfo{};
+    if (!ok)
       return Stmt();
     Array<PrimExpr> a = {StringImm(tag),  call->args[0], call->args[1],
                          call->args[2],   out.valid_row, out.valid_col,
@@ -271,9 +311,11 @@ private:
       return Stmt();
     const VarNode *dst_v = GetPtrVar(call->args[0]);
     TailMaskInfo in = GetMask(GetPtrVar(call->args[1]));
+    bool ok = CleanTail(call->args[3], in) &&
+              SupportedTailDtype(PtrDtype(call->args[0]));
     if (dst_v != nullptr)
-      state_[dst_v] = in;
-    if (!in.is_tail() || !in.physical_col.defined())
+      state_[dst_v] = ok ? in : TailMaskInfo{};
+    if (!ok)
       return Stmt();
     Array<PrimExpr> a = {StringImm(tag), call->args[0], call->args[1],
                          call->args[2],  in.valid_row,  in.valid_col,
@@ -298,9 +340,15 @@ private:
     const VarNode *out_v = GetPtrVar(call->args[1]);
     TailMaskInfo in = GetMask(GetPtrVar(call->args[2]));
 
-    // Output rectangle for downstream propagation.
+    // Reduce is rewritten to a valid-region tail_reduce (which needs no pad)
+    // only on the AscendC backend, for a clean 2D float tile. On PTO, or for
+    // 3D / int tiles, it stays the native reduce over the pad-filled tile.
+    bool ok = rewrite_reduce_ && CleanTail(PtrExtent(call->args[2]), in) &&
+              SupportedTailDtype(PtrDtype(call->args[2]));
+
+    // Output rectangle for downstream propagation (only when rewriting).
     TailMaskInfo out;
-    if (in.is_tail()) {
+    if (ok) {
       out.kind = TailMaskKind::kTail;
       if (dim == 0) {
         out.valid_row = IntImm(DataType::Int(32), 1);
@@ -318,7 +366,7 @@ private:
     if (out_v != nullptr)
       state_[out_v] = out;
 
-    if (!in.is_tail() || !in.physical_col.defined())
+    if (!ok)
       return Stmt();
 
     // tail_reduce: kind(0) out(1) src(2) tmp(3) dim(4)
@@ -398,9 +446,9 @@ namespace transform {
 
 using namespace tir::transform;
 
-tvm::transform::Pass AscendTailMaskPropagation() {
+tvm::transform::Pass AscendTailMaskPropagation(bool rewrite_reduce) {
   auto pass_func = [=](PrimFunc f, IRModule m, PassContext ctx) {
-    return AscendTailMaskPropagator::Substitute(std::move(f));
+    return AscendTailMaskPropagator::Substitute(std::move(f), rewrite_reduce);
   };
   return CreatePrimFuncPass(pass_func, 0, "tl.AscendTailMaskPropagation", {});
 }
