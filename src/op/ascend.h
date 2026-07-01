@@ -35,6 +35,9 @@ private:
   bool enRelu;
   bool transposeL1;
   PrimExpr padValue;
+  Buffer tmp;
+  Array<Range> tmp_range;
+  Array<PrimExpr> tmp_extents;
 };
 
 class AscendAtomicAdd : public Operator {
@@ -182,6 +185,8 @@ TVM_DLL const Op &ascend_wait_flag();
 
 TVM_DLL const Op &ascend_pipe_barrier();
 
+TVM_DLL const Op &ascend_free_pipe();
+
 TVM_DLL const Op &ascend_sync_all();
 
 TVM_DLL const Op &ascend_gemm_v0();
@@ -191,6 +196,8 @@ TVM_DLL const Op &ascend_gemm_v1();
 TVM_DLL const Op &ascend_printf();
 
 TVM_DLL const Op &ascend_dump_tensor();
+
+TVM_DLL const Op &ascend_src_code();
 
 TVM_DLL const Op &ascend_bilinear_interpolation();
 
@@ -243,6 +250,10 @@ TVM_DLL const Op &ascend_fill_experiment();
 TVM_DLL const Op &ascend_sum_experiment();
 
 TVM_DLL const Op &ascend_datacachecleanandinvalid_experiment();
+
+TVM_DLL const Op &ascend_copy_cv_experiment();
+
+TVM_DLL const Op &ascend_copy_vc_experiment();
 } // namespace tl
 } // namespace tvm
 

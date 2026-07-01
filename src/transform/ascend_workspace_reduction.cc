@@ -1,10 +1,16 @@
+#include "../op/ascend.h"
 #include "../op/builtin.h"
 #include "arith/ir_mutator_with_analyzer.h"
+#include <algorithm>
 #include <tvm/tir/builtin.h>
 #include <tvm/tir/transform.h>
 
 namespace tvm {
 namespace tl {
+
+static constexpr const char *ascendPtoUsePipeInCVCopy =
+    "tl.ascend_pto_use_pipe_in_cv_copy";
+TVM_REGISTER_PASS_CONFIG_OPTION(ascendPtoUsePipeInCVCopy, Bool);
 
 enum class DstBufferScope { L1, Ub };
 
@@ -33,6 +39,24 @@ struct CoreMetaInfo {
   int vector_cnt = 1;
 };
 
+// Shared by WorkspaceInfo and PipeInfo
+struct CrossCoreCopyInfo {
+  std::string copy_stmt_name;
+  CopyDirection direction; // UbToL1 / L0cToUb
+  std::string src_buffer_name;
+  std::string dst_buffer_name;
+  std::string dtype_str;           // dst dtype
+  std::vector<std::string> params; // template params (parsed, UbToL1 swapped)
+  Array<PrimExpr> shapes;          // workspace shapes (C-core dimensions)
+
+  // runtime args from ascend.cc virtual_channel
+  int src_M = 0, src_N = 0;
+  int dst_M = 0, dst_N = 0;
+
+  // C-core element count
+  int64_t per_block_ele_nums = 0;
+};
+
 struct CopyGlobalContext {
   // Maps workspace name to the corresponding detailed workspace information
   std::map<std::string, WorkspaceInfo> workspace_map_;
@@ -56,13 +80,36 @@ struct CopyGlobalContext {
   std::unordered_set<std::string> buffers_skip_vid_reduction_;
   // Buffer shapes (from PrimFunc attrs)
   std::unordered_map<std::string, Array<PrimExpr>> buffer_shapes_;
+  // PTO pipe metadata: maps dst buffer name to pipe info for deferred pop
+  // emission
+  struct PipeInfo {
+    int flag_id;         // pipe flag token
+    int dir_type;        // 1=C2V, 2=V2C
+    int slot_size;       // max(src_elems, dst_elems) * dtype_bytes
+    int slot_num;        // 1
+    std::string pipe_id; // "pipe_X_V2C" or "pipe_X_C2V"
+    std::string op_name; // "copy_pipe_to_l1" or "copy_pipe_to_ub"
+    std::string dtype_str;
+    int src_M_val;
+    int src_N_val;
+    int dst_M_val;
+    int dst_N_val;
+    int split_axis = 1; // 0=TILE_NO_SPLIT, 1=TILE_UP_DOWN, 2=TILE_LEFT_RIGHT
+    std::string workspace_name;
+    bool has_tmp = false;
+    int tmp_M_val = 0;
+    int tmp_N_val = 0;
+  };
+  std::unordered_map<std::string, PipeInfo> pipe_info_map_;
 };
 
 class CopyInfoCollector : public StmtExprVisitor {
 private:
   CopyGlobalContext context_;
-
-  static const std::unordered_map<std::string, DataType> type_map_;
+  bool pto_use_pipe_;
+  std::string platform_;
+  bool needs_gm_workspace_;
+  int pipe_flag_id_counter_ = 0; // FlagID starts from 0
 
   std::unordered_set<std::string> target_copy_stmts_ = {"copy_ub_to_l1",
                                                         "copy_l0c_to_ub"};
@@ -71,17 +118,23 @@ private:
       {"copy_l0c_to_ub", DstBufferScope::Ub}};
 
 public:
+  static const std::unordered_map<std::string, DataType> type_map_;
+
   const CopyGlobalContext &GetCopyGlobalContext() const { return context_; }
 
   explicit CopyInfoCollector(
       const std::unordered_set<std::string> &target_copy_stmts = {},
-      const std::unordered_map<std::string, DstBufferScope> &scope_table = {}) {
+      const std::unordered_map<std::string, DstBufferScope> &scope_table = {},
+      bool pto_use_pipe = false, const std::string &platform = "A3")
+      : platform_(platform), needs_gm_workspace_(false) {
     if (!target_copy_stmts.empty()) {
       this->target_copy_stmts_ = target_copy_stmts;
     }
     if (!scope_table.empty()) {
       this->scope_table_ = scope_table;
     }
+    this->pto_use_pipe_ = pto_use_pipe;
+    this->needs_gm_workspace_ = (platform != "A5");
   }
 
   void SetSkipBuffers(const std::unordered_set<std::string> &skip_buffers) {
@@ -121,209 +174,344 @@ public:
     return "";
   }
 
-  void WorkspaceInfoCollector(const std::string &copy_stmt,
-                              const CallNode *src_access_ptr,
+  std::pair<const CallNode *, const CallNode *>
+  ExtractCopyAccessPtrs(const CallNode *call_node) {
+    Array<PrimExpr> call_node_args = call_node->args;
+    const CallNode *src_ptr = call_node_args[1].as<CallNode>();
+    const CallNode *dst_ptr = call_node_args[2].as<CallNode>();
+    ICHECK(src_ptr != nullptr && dst_ptr != nullptr)
+        << "[Error]<WorkspaceReduction>: src_ptr or dst_ptr is "
+           "nullptr!";
+    ICHECK(src_ptr->op.same_as(tvm::tir::builtin::tvm_access_ptr()) &&
+           src_ptr->args.size() >= 2)
+        << "[Error]<WorkspaceReduction>: src is not access ptr or "
+           "its size of args is too small";
+    ICHECK(dst_ptr->op.same_as(tvm::tir::builtin::tvm_access_ptr()) &&
+           dst_ptr->args.size() >= 2)
+        << "[Error]<WorkspaceReduction>: dst is not access ptr or "
+           "its size of args is too small";
+    return {src_ptr, dst_ptr};
+  }
+
+  std::vector<std::string> ParseTemplateParams(const std::string &func_name) {
+    std::vector<std::string> params;
+    size_t left = func_name.find('<');
+    size_t right = func_name.rfind('>');
+    ICHECK(left != std::string::npos && right != std::string::npos &&
+           left < right)
+        << "[Error]<WorkspaceReduction>: illegal template parameters scope!";
+    std::string content = func_name.substr(left + 1, right - left - 1);
+    std::string current;
+    for (auto &c : content) {
+      if (c == ',') {
+        ICHECK(!current.empty()) << "[Error]<WorkspaceReduction>: Empty "
+                                    "parameter found in template!";
+        params.push_back(current); // [type N M] or
+                                   // [type1 type2 LayoutGM M N enRelu]
+        current = "";
+        continue;
+      }
+      if (!std::isspace(c))
+        current.push_back(c);
+    }
+    ICHECK(!current.empty())
+        << "[Error]<WorkspaceReduction>: Empty parameter found in template!";
+    params.push_back(current);
+    return params;
+  }
+
+  CrossCoreCopyInfo CrossCoreCopyInfoCollector(
+      const std::string &copy_stmt_name, const CallNode *call_node,
+      const CallNode *src_access_ptr, const CallNode *dst_access_ptr) {
+    const VarNode *src_name_var_node = (src_access_ptr->args[1].as<VarNode>());
+    const VarNode *dst_name_var_node = (dst_access_ptr->args[1].as<VarNode>());
+    ICHECK(src_name_var_node != nullptr && dst_name_var_node != nullptr)
+        << "[Error]<WorkspaceReduction>: src or dst args[1] is not VarNode!";
+
+    CrossCoreCopyInfo copy_info;
+    copy_info.copy_stmt_name = copy_stmt_name;
+    copy_info.src_buffer_name = src_name_var_node->name_hint;
+    copy_info.dst_buffer_name = dst_name_var_node->name_hint;
+
+    copy_info.params = ParseTemplateParams(copy_stmt_name);
+
+    if (copy_stmt_name.find("copy_ub_to_l1") != std::string::npos) {
+      ICHECK(copy_info.params.size() >= 2)
+          << "[Error]<WorkspaceReduction> PTO: copy_ub_to_l1 template expects "
+             "2+ params, got "
+          << copy_info.params.size();
+      copy_info.direction = CopyDirection::UbToL1;
+      copy_info.dtype_str =
+          copy_info.params[0]; // UbToL1: [dtype, N, M] or [dtype, N]
+
+      if (copy_info.params.size() >= 3) {
+        // Normal UbToL1: [dtype, N, M] -> swap to [dtype, M, N]
+        std::swap(copy_info.params[1], copy_info.params[2]);
+        int M = std::stoi(copy_info.params[1]);
+        int N = std::stoi(copy_info.params[2]);
+        if (context_.core_meta_info_.vid_var.defined() &&
+            context_.core_meta_info_.vector_cnt > 1) {
+          M *= context_.core_meta_info_.vector_cnt;
+        }
+        copy_info.shapes.push_back(IntImm(DataType::Int(32), M));
+        copy_info.shapes.push_back(IntImm(DataType::Int(32), N));
+        copy_info.per_block_ele_nums = M * N;
+      } else {
+        // UbToL1 with 2 params: [dtype, N]
+        int N = std::stoi(copy_info.params[1]);
+        copy_info.shapes.push_back(IntImm(DataType::Int(32), N));
+        copy_info.per_block_ele_nums = N;
+      }
+    } else {
+      ICHECK(copy_info.params.size() >= 5)
+          << "[Error]<WorkspaceReduction> PTO: copy_l0c_to_ub template expects "
+             "5+ params, got "
+          << copy_info.params.size();
+      copy_info.direction = CopyDirection::L0cToUb;
+      copy_info.dtype_str =
+          copy_info.params[1]; // L0cToUb: [src_dtype, dst_dtype,
+                               // LayoutGM, M, N, enRelu]
+
+      int M = std::stoi(copy_info.params[3]);
+      int N = std::stoi(copy_info.params[4]);
+      copy_info.shapes.push_back(IntImm(DataType::Int(32), M));
+      copy_info.shapes.push_back(IntImm(DataType::Int(32), N));
+      copy_info.per_block_ele_nums = M * N;
+    }
+
+    if (call_node->args.size() >= 7) {
+      // Read src/dst extents from runtime args (pushed by ascend.cc
+      // virtual_channel)
+      auto src_N_imm = call_node->args[3].as<IntImmNode>();
+      auto src_M_imm = call_node->args[4].as<IntImmNode>();
+      auto dst_M_imm = call_node->args[5].as<IntImmNode>();
+      auto dst_N_imm = call_node->args[6].as<IntImmNode>();
+      ICHECK(src_N_imm && src_M_imm && dst_M_imm && dst_N_imm)
+          << "[Error]<WorkspaceReduction>: virtual_channel args must be "
+             "IntImm, "
+          << "got non-IntImm PrimExpr. Dynamic shapes not yet supported.";
+      copy_info.src_N = src_N_imm->value;
+      copy_info.src_M = src_M_imm->value;
+      copy_info.dst_M = dst_M_imm->value;
+      copy_info.dst_N = dst_N_imm->value;
+    }
+
+    return copy_info;
+  }
+
+  void WorkspaceInfoCollector(const CrossCoreCopyInfo &copy_info,
                               const CallNode *dst_access_ptr) {
-    ICHECK(src_access_ptr != nullptr && dst_access_ptr != nullptr)
-        << "[Error]<WorkspaceReduction>: src_access_ptr or "
-           "dst_access_ptr is nullptr!";
-    for (auto &target_copy_stmt : target_copy_stmts_) {
-      std::vector<std::string> params_vec;
-      if (copy_stmt.find(target_copy_stmt) != std::string::npos) {
-        CopyDirection copy_direction = CopyDirection::None;
-        std::string current_param;
-        std::string src_buffer_name =
-            src_access_ptr->args[1].as<VarNode>()->name_hint;
-        std::string dst_buffer_name =
-            dst_access_ptr->args[1].as<VarNode>()->name_hint;
-        if (target_copy_stmt == "copy_ub_to_l1") {
-          copy_direction = CopyDirection::UbToL1;
-        } else if (target_copy_stmt == "copy_l0c_to_ub") {
-          copy_direction = CopyDirection::L0cToUb;
+    ICHECK(dst_access_ptr != nullptr)
+        << "[Error]<WorkspaceReduction>: dst_access_ptr is nullptr!";
+
+    ++context_.workspace_num_;
+    WorkspaceInfo ws_info;
+    std::stringstream ss;
+    ss << "workspace_" << context_.workspace_num_;
+    ws_info.workspace_name = ss.str();
+    const std::string &src_buffer_name = copy_info.src_buffer_name;
+    const std::string &dst_buffer_name = copy_info.dst_buffer_name;
+
+    ws_info.associated_dst_buffer_name = dst_buffer_name;
+
+    // Check if src_buffer is in skip set (must be defined before switch)
+    bool is_skip_ub =
+        context_.buffers_skip_vid_reduction_.count(src_buffer_name) > 0;
+
+    switch (copy_info.direction) {
+    case CopyDirection::UbToL1:
+      ws_info.dtype_str = copy_info.dtype_str;
+      ws_info.dtype = ConvertStringToDataType(ws_info.dtype_str);
+
+      if (is_skip_ub) {
+        // Skip UB scenario: use full L1 shape from buffer_shapess
+        // Template params for skip UB: [dtype, size] (no M, N)
+
+        // dst_access_ptr args: [type_annotation, var, offset, extent, ...]
+        // args.size() should be at least 4
+
+        // Check args size before accessing
+        ICHECK(dst_access_ptr->args.size() >= 4)
+            << "[ERROR]<WorkspaceReduction>: dst_access_ptr args size "
+               "should be at least 4, got "
+            << dst_access_ptr->args.size();
+
+        PrimExpr dst_offset = dst_access_ptr->args[2]; // row offset
+
+        // Get dst buffer full shape from buffer_shapes_
+        auto shape_it = context_.buffer_shapes_.find(dst_buffer_name);
+        ICHECK(shape_it != context_.buffer_shapes_.end())
+            << "[ERROR]<WorkspaceReduction>: dst_buffer " << dst_buffer_name
+            << " not found in buffer_shapes_";
+        Array<PrimExpr> dst_full_shape = shape_it->second;
+
+        // Shape must be 2D [M, N] for current Skip UB UbToL1 scenario
+        // Future: Extend to support multi-dimensional shapes based on
+        // buffer scope
+        ICHECK(dst_full_shape.size() == 2)
+            << "[ERROR]<WorkspaceReduction>: Skip UB UbToL1 expects "
+               "dst_full_shape to be 2D, "
+               "got "
+            << dst_full_shape.size();
+
+        PrimExpr M = dst_full_shape[0]; // rows
+        PrimExpr N = dst_full_shape[1]; // cols
+
+        ws_info.shapes.push_back(M);
+        ws_info.shapes.push_back(N);
+
+        // per_block_ele_nums = M * N
+        int64_t M_val = 0, N_val = 0;
+        if (const IntImmNode *M_imm = M.as<IntImmNode>()) {
+          M_val = M_imm->value;
         }
-        size_t left_bracket = copy_stmt.find('<');
-        size_t right_bracket = copy_stmt.rfind('>');
-        ICHECK(left_bracket != std::string::npos &&
-               right_bracket != std::string::npos &&
-               left_bracket < right_bracket)
-            << "[Error]<WorkspaceReduction>: illegal template "
-               "parameters scope!"
-            << std::endl;
-        std::string template_content = copy_stmt.substr(
-            left_bracket + 1, right_bracket - left_bracket - 1);
-        for (auto &c : template_content) {
-          if (c == ',') {
-            ICHECK(!current_param.empty())
-                << "[Error]<WorkspaceReduction>: Empty parameter found in "
-                   "template!";
-            params_vec.push_back(current_param); // [type N M] or [type1 type2
-                                                 // LayoutGM M N enRelu]
-            current_param = "";
-            continue;
-          }
-          if (std::isspace(c)) {
-            continue;
-          }
-          current_param.push_back(c);
+        if (const IntImmNode *N_imm = N.as<IntImmNode>()) {
+          N_val = N_imm->value;
         }
-        params_vec.push_back(current_param);
-        // Only swap for normal UbToL1 with 3+ params (skip UB has only 2
-        // params)
-        if (copy_direction == CopyDirection::UbToL1 && params_vec.size() >= 3) {
-          std::swap(params_vec[1], params_vec[2]);
-        }
-        ++context_.workspace_num_;
-        WorkspaceInfo ws_info;
-        std::stringstream ss;
-        ss << "workspace_" << context_.workspace_num_;
-        ws_info.workspace_name = ss.str();
+        ws_info.per_block_ele_nums = M_val * N_val;
 
-        ws_info.associated_dst_buffer_name = dst_buffer_name;
+        // dst_extent for workspace = M * N (full L1 size)
+        PrimExpr dst_full_extent = M * N;
 
-        // Check if src_buffer is in skip set (must be defined before switch)
-        bool is_skip_ub =
-            context_.buffers_skip_vid_reduction_.count(src_buffer_name) > 0;
+        // base offset: cid * dst_full_extent (for workspace declaration,
+        // excludes dst_offset) workspace declaration)
+        ws_info.offset = context_.core_meta_info_.cid_var * dst_full_extent;
 
-        switch (copy_direction) {
-        case CopyDirection::UbToL1:
-          ws_info.dtype_str = params_vec[0]; // UbToL1: [dtype, M, N]
-          ws_info.dtype = ConvertStringToDataType(ws_info.dtype_str);
+        // Store row offset separately, added during UbToL1 in-place
+        // transform
+        ws_info.dst_l1_row_offset = dst_offset;
 
-          if (is_skip_ub) {
-            // Skip UB scenario: use full L1 shape from buffer_shapess
-            // Template params for skip UB: [dtype, size] (no M, N)
+        // extent: total_core_nums * dst_full_extent - base_offset
+        ws_info.extent =
+            context_.core_meta_info_.total_core_nums * dst_full_extent -
+            ws_info.offset;
 
-            // dst_access_ptr args: [type_annotation, var, offset, extent, ...]
-            // args.size() should be at least 4
+      } else {
+        // Normal UB scenario: use shapes from copy_info
+        ws_info.shapes = copy_info.shapes;
+        ws_info.per_block_ele_nums = copy_info.per_block_ele_nums;
 
-            // Check args size before accessing
-            ICHECK(dst_access_ptr->args.size() >= 4)
-                << "[ERROR]<WorkspaceReduction>: dst_access_ptr args size "
-                   "should be at least 4, got "
-                << dst_access_ptr->args.size();
+        ws_info.offset = context_.core_meta_info_.cid_var *
+                         IntImm(DataType::Int(64), ws_info.per_block_ele_nums);
 
-            PrimExpr dst_offset = dst_access_ptr->args[2]; // row offset
+        ws_info.extent =
+            context_.core_meta_info_.total_core_nums *
+                IntImm(DataType::Int(64), ws_info.per_block_ele_nums) -
+            ws_info.offset;
+      }
+      break;
+    case CopyDirection::L0cToUb:
+      ws_info.dtype_str =
+          copy_info.dtype_str; // L0cToUb: [src_dtype, dst_dtype,
+                               // LayoutGM, M, N, enRelu]
+      ws_info.dtype = ConvertStringToDataType(ws_info.dtype_str);
+      ws_info.shapes = copy_info.shapes;
+      ws_info.per_block_ele_nums = copy_info.per_block_ele_nums;
 
-            // Get dst buffer full shape from buffer_shapes_
-            auto shape_it = context_.buffer_shapes_.find(dst_buffer_name);
-            ICHECK(shape_it != context_.buffer_shapes_.end())
-                << "[ERROR]<WorkspaceReduction>: dst_buffer " << dst_buffer_name
-                << " not found in buffer_shapes_";
-            Array<PrimExpr> dst_full_shape = shape_it->second;
+      ws_info.offset = context_.core_meta_info_.cid_var *
+                       IntImm(DataType::Int(64), ws_info.per_block_ele_nums);
 
-            // Shape must be 2D [M, N] for current Skip UB UbToL1 scenario
-            // Future: Extend to support multi-dimensional shapes based on
-            // buffer scope
-            ICHECK(dst_full_shape.size() == 2)
-                << "[ERROR]<WorkspaceReduction>: Skip UB UbToL1 expects "
-                   "dst_full_shape to be 2D, "
-                   "got "
-                << dst_full_shape.size();
+      ws_info.extent =
+          context_.core_meta_info_.total_core_nums *
+              IntImm(DataType::Int(64), ws_info.per_block_ele_nums) -
+          ws_info.offset;
+      break;
+    }
 
-            PrimExpr M = dst_full_shape[0]; // rows
-            PrimExpr N = dst_full_shape[1]; // cols
-
-            ws_info.shapes.push_back(M);
-            ws_info.shapes.push_back(N);
-
-            // per_block_ele_nums = M * N
-            int64_t M_val = 0, N_val = 0;
-            if (const IntImmNode *M_imm = M.as<IntImmNode>()) {
-              M_val = M_imm->value;
-            }
-            if (const IntImmNode *N_imm = N.as<IntImmNode>()) {
-              N_val = N_imm->value;
-            }
-            ws_info.per_block_ele_nums = M_val * N_val;
-
-            // dst_extent for workspace = M * N (full L1 size)
-            PrimExpr dst_full_extent = M * N;
-
-            // base offset: cid * dst_full_extent (for workspace declaration,
-            // excludes dst_offset) workspace declaration)
-            ws_info.offset = context_.core_meta_info_.cid_var * dst_full_extent;
-
-            // Store row offset separately, added during UbToL1 in-place
-            // transform
-            ws_info.dst_l1_row_offset = dst_offset;
-
-            // extent: total_core_nums * dst_full_extent - base_offset
-            ws_info.extent =
-                context_.core_meta_info_.total_core_nums * dst_full_extent -
-                ws_info.offset;
-
-          } else {
-            // Normal UB scenario: use M, N from template params
-            for (int i = 1; i < params_vec.size(); ++i) {
-              int shapeI = std::stoi(params_vec[i]);
-              // UbToL1 scenario: UB is halved by VidReduction (due to two
-              // vector cores), but GM workspace needs to store complete data,
-              // first dim needs to multiply vector_cnt
-              if (i == 1 && context_.core_meta_info_.vid_var.defined() &&
-                  context_.core_meta_info_.vector_cnt > 1) {
-                shapeI *= context_.core_meta_info_.vector_cnt;
-              }
-              ws_info.shapes.push_back(IntImm(DataType::Int(32), shapeI));
-            }
-
-            ws_info.per_block_ele_nums = 1;
-            for (auto &i : ws_info.shapes) {
-              const IntImmNode *i_node = i.as<IntImmNode>();
-              ICHECK(i_node != nullptr)
-                  << "[Error]<WorkspaceReduction>: Shape dimension is not "
-                     "a "
-                     "valid IntImm, cannot extract value\n";
-              ws_info.per_block_ele_nums *= i_node->value;
-            }
-
-            ws_info.offset =
-                context_.core_meta_info_.cid_var *
-                IntImm(DataType::Int(64), ws_info.per_block_ele_nums);
-
-            ws_info.extent =
-                context_.core_meta_info_.total_core_nums *
-                    IntImm(DataType::Int(64), ws_info.per_block_ele_nums) -
-                ws_info.offset;
-          }
-          break;
-        case CopyDirection::L0cToUb:
-          ws_info.dtype_str = params_vec[1]; // L0cToUb: [src_dtype, dst_dtype,
-                                             // LayoutGM, M, N, enRelu]
-          ws_info.dtype = ConvertStringToDataType(ws_info.dtype_str);
-          int shapeM = std::stoi(params_vec[3]);
-          int shapeN = std::stoi(params_vec[4]);
-          ws_info.shapes.push_back(IntImm(DataType::Int(32), shapeM));
-          ws_info.shapes.push_back(IntImm(DataType::Int(32), shapeN));
-
-          ws_info.per_block_ele_nums = shapeM * shapeN;
-
-          ws_info.offset =
-              context_.core_meta_info_.cid_var *
-              IntImm(DataType::Int(64), ws_info.per_block_ele_nums);
-
-          ws_info.extent =
-              context_.core_meta_info_.total_core_nums *
-                  IntImm(DataType::Int(64), ws_info.per_block_ele_nums) -
-              ws_info.offset;
-          break;
-        }
-
-        ws_info.dim = IntImm(DataType::Int(64), ws_info.shapes.size());
-
-        Array<PrimExpr> real_shapes{context_.core_meta_info_.total_core_nums};
-        for (const auto &shape : ws_info.shapes) {
-          real_shapes.push_back(shape);
-        }
-        ws_info.workspace_buffer = decl_buffer(
-            real_shapes, ws_info.dtype, ws_info.workspace_name, "global");
-
-        context_.workspace_map_[ws_info.workspace_name] = ws_info;
-        context_.src_to_workspace_map_[src_buffer_name] =
-            ws_info.workspace_name;
-        context_.dst_to_workspace_map_[dst_buffer_name] =
-            ws_info.workspace_name;
+    Array<PrimExpr> real_shapes;
+    if (pto_use_pipe_) {
+      // A2 PTO: flat 1D buffer with 2x size for FIFO double-buffering
+      PrimExpr total_elems = context_.core_meta_info_.total_core_nums;
+      for (const auto &shape : ws_info.shapes) {
+        total_elems = total_elems * shape;
+      }
+      total_elems = total_elems * IntImm(DataType::Int(64), 2);
+      real_shapes.push_back(total_elems);
+    } else {
+      real_shapes.push_back(context_.core_meta_info_.total_core_nums);
+      for (const auto &shape : ws_info.shapes) {
+        real_shapes.push_back(shape);
       }
     }
+    ws_info.dim = IntImm(DataType::Int(64), real_shapes.size());
+    ws_info.workspace_buffer = decl_buffer(real_shapes, ws_info.dtype,
+                                           ws_info.workspace_name, "global");
+
+    context_.workspace_map_[ws_info.workspace_name] = ws_info;
+    context_.src_to_workspace_map_[copy_info.src_buffer_name] =
+        ws_info.workspace_name;
+    context_.dst_to_workspace_map_[copy_info.dst_buffer_name] =
+        ws_info.workspace_name;
+  }
+
+  int GetDtypeBytes(const std::string &dtype_str) {
+    auto it = type_map_.find(dtype_str);
+    ICHECK(it != type_map_.end())
+        << "[Error]<WorkspaceReduction> PTO: Unsupported dtype: " << dtype_str;
+    return it->second.bytes();
+  }
+
+  // Returns:
+  //   0 = TILE_NO_SPLIT (shapes equal)
+  //   1 = TILE_UP_DOWN (M differs by 2x)
+  //   2 = TILE_LEFT_RIGHT (N differs by 2x)
+  static int ComputeSplitAxis(int src_M, int src_N, int dst_M, int dst_N) {
+    if (src_M == dst_M && src_N == dst_N)
+      return 0;
+    if (src_M * 2 == dst_M || dst_M * 2 == src_M)
+      return 1;
+    if (src_N * 2 == dst_N || dst_N * 2 == src_N)
+      return 2;
+    return 1;
+  }
+
+  void PipeInfoCollector(const CrossCoreCopyInfo &copy_info,
+                         const CallNode *call_node) {
+    const std::string &src_buffer_name = copy_info.src_buffer_name;
+    const std::string &dst_buffer_name = copy_info.dst_buffer_name;
+    bool is_ub_to_l1 = (copy_info.direction == CopyDirection::UbToL1);
+
+    CopyGlobalContext::PipeInfo info;
+    if (is_ub_to_l1) {
+      info.dir_type = 2;
+      info.op_name = "copy_pipe_to_l1";
+
+      // Check if tmp buffer is provided for A5 (ND->Nz conversion)
+      // After AscendCopy::Lower, args layout: [0]=func_name, [1]=src_ptr,
+      // [2]=dst_ptr, [3]=srcN, [4]=srcM, [5]=dstM, [6]=dstN, [7]=tmp_ptr,
+      // [8]=tmpM, [9]=tmpN
+      if (call_node->args.size() > 9) {
+        PrimExpr tmp_expr = call_node->args[7];
+        if (auto *tmp_call = tmp_expr.as<CallNode>()) {
+          info.has_tmp = true;
+          info.tmp_M_val = Downcast<IntImm>(call_node->args[8])->value;
+          info.tmp_N_val = Downcast<IntImm>(call_node->args[9])->value;
+        }
+      }
+    } else {
+      info.dir_type = 1;
+      info.op_name = "copy_pipe_to_ub";
+    }
+
+    info.dtype_str = copy_info.dtype_str;
+    info.src_N_val = copy_info.src_N;
+    info.src_M_val = copy_info.src_M;
+    info.dst_M_val = copy_info.dst_M;
+    info.dst_N_val = copy_info.dst_N;
+
+    info.flag_id = pipe_flag_id_counter_;
+    pipe_flag_id_counter_ += 2; // one pipe needs 2 FlagID
+    int dtype_bytes = GetDtypeBytes(info.dtype_str);
+    info.slot_size = copy_info.per_block_ele_nums * dtype_bytes;
+    info.slot_num = 1;
+    info.pipe_id = "pipe_" + std::to_string(info.flag_id) + "_" +
+                   (info.dir_type == 2 ? "V2C" : "C2V");
+    info.split_axis = ComputeSplitAxis(info.src_M_val, info.src_N_val,
+                                       info.dst_M_val, info.dst_N_val);
+    info.workspace_name =
+        needs_gm_workspace_ ? context_.src_to_workspace_map_.at(src_buffer_name)
+                            : "";
+    context_.pipe_info_map_[dst_buffer_name] = info;
   }
 
   void VisitStmt(const Stmt &stmt) final { StmtExprVisitor::VisitStmt(stmt); }
@@ -336,37 +524,30 @@ public:
 
     std::string copy_stmt_name = IsTargetCopyExpr(call_node);
     if (!copy_stmt_name.empty()) {
-      Array<PrimExpr> call_node_args = call_node->args;
+      // Extract copy access ptrs ONCE (shared by workspace collection,
+      // copy-back tracking, and PTO pipe metadata)
+      auto [src_ptr, dst_ptr] = ExtractCopyAccessPtrs(call_node);
 
-      const CallNode *src_ptr = call_node_args[1].as<CallNode>();
-      const CallNode *dst_ptr = call_node_args[2].as<CallNode>();
-      ICHECK(src_ptr != nullptr && dst_ptr != nullptr)
-          << "[Error]<WorkspaceReduction>: src_ptr or dst_ptr is nullptr!";
-      ICHECK(src_ptr->op.same_as(tvm::tir::builtin::tvm_access_ptr()) &&
-             src_ptr->args.size() >= 2)
-          << "[Error]<WorkspaceReduction>: src is not access ptr or its "
-             "size of args is too small";
-      ICHECK(dst_ptr->op.same_as(tvm::tir::builtin::tvm_access_ptr()) &&
-             dst_ptr->args.size() >= 2)
-          << "[Error]<WorkspaceReduction>: dst is not access ptr or its "
-             "size of args is too small";
-      const VarNode *src_name_var_node = (src_ptr->args[1].as<VarNode>());
-      const VarNode *dst_name_var_node = (dst_ptr->args[1].as<VarNode>());
-      ICHECK(src_name_var_node != nullptr && dst_name_var_node != nullptr)
-          << "[Error]<WorkspaceReduction>: src or dst args[1] is not VarNode!";
+      CrossCoreCopyInfo copy_info = CrossCoreCopyInfoCollector(
+          copy_stmt_name, call_node, src_ptr, dst_ptr);
 
-      WorkspaceInfoCollector(copy_stmt_name, src_ptr, dst_ptr);
+      // Layer 1: Workspace collection (differs per backend)
+      // Ascend C || A2 PTO: collect workspace info for GM buffer allocation
+      // A5 PTO: skip workspace collection
+      if (needs_gm_workspace_ || !pto_use_pipe_) {
+        WorkspaceInfoCollector(copy_info, dst_ptr);
+      }
 
-      const std::string src_buffer_name = src_name_var_node->name_hint;
-      const std::string dst_buffer_name = dst_name_var_node->name_hint;
+      // Layer 2: Shared copy-back tracking (AscendC + PTO both need this)
+      const std::string &src_buffer_name = copy_info.src_buffer_name;
+      const std::string &dst_buffer_name = copy_info.dst_buffer_name;
       context_.tracked_buffers_.insert(src_buffer_name);
       context_.src_to_dst_map_[src_buffer_name] = dst_buffer_name;
 
       // skip UB + UbToL1: reconstruct dst_access_ptr
       bool is_skip_ub =
           context_.buffers_skip_vid_reduction_.count(src_buffer_name) > 0;
-      bool is_ub_to_l1 =
-          (copy_stmt_name.find("copy_ub_to_l1") != std::string::npos);
+      bool is_ub_to_l1 = (copy_info.direction == CopyDirection::UbToL1);
 
       if (is_skip_ub && is_ub_to_l1) {
         // Get dst full shape [M, N] from buffer_shapes_
@@ -395,12 +576,18 @@ public:
         context_.dst_to_access_map_[dst_buffer_name] = GetRef<Call>(dst_ptr);
       }
 
-      std::string copy_func_name = call_node_args[0].as<StringImmNode>()->value;
+      std::string copy_func_name =
+          call_node->args[0].as<StringImmNode>()->value;
       for (auto &target_copy_stmt : target_copy_stmts_) {
         if (copy_func_name.find(target_copy_stmt) != std::string::npos) {
           context_.dst_to_scope_map_[dst_buffer_name] =
               scope_table_[target_copy_stmt];
         }
+      }
+
+      // Layer 3: PTO pipe metadata collection (for deferred pop emission)
+      if (pto_use_pipe_) {
+        PipeInfoCollector(copy_info, call_node);
       }
     }
   }
@@ -419,7 +606,12 @@ public:
         if (iter_var->thread_tag == "threadIdx.x") {
           context_.core_meta_info_.vid_var = iter_var->var;
           context_.core_meta_info_.vector_cnt =
-              Downcast<IntImm>(op->value)->value;
+              Downcast<IntImm>(op->value)->value; // 1 or 2
+        }
+        if (iter_var->thread_tag == "blockIdx.y") {
+          context_.core_meta_info_.vid_var = iter_var->var;
+          context_.core_meta_info_.vector_cnt =
+              Downcast<IntImm>(op->value)->value; // 2
         }
       }
     }
@@ -448,9 +640,249 @@ const std::unordered_map<std::string, DataType> CopyInfoCollector::type_map_ = {
     {"float8_e4m3_t", tvm::runtime::DataType::NVFloat8E4M3()},
     {"float8_e5m2_t", tvm::runtime::DataType::NVFloat8E5M2()}};
 
+// ============================================================================
+// Free Pipe Auto-Insertion: Buffer access-order tracking and free_pipe
+// insertion
+//
+// For each copy-from-pipe (copy_pipe_to_l1, copy_pipe_to_ub,
+// copy_pipe_to_ub_V), inserts an ascend_free_pipe_C or ascend_free_pipe_V
+// call at the correct position based on buffer lifecycle analysis.
+//
+// Algorithm per SeqStmt scope:
+//   1. Find each copy-from-pipe call and its target buffer
+//   2. Scan forward for the first subsequent write to that buffer
+//   3. Before that write, find the last access (read or write)
+//   4. Insert free_pipe after that last access
+//   5. If no subsequent write, insert after the last access overall
+// ============================================================================
+
+// Collects per-buffer {has_read, has_write} in one AST pass.
+// filter=nullptr means collect all; non-null restricts to named buffers.
+struct AccessInfo {
+  bool has_read = false;
+  bool has_write = false;
+};
+
+class BufferAccessCollector : public StmtExprVisitor {
+public:
+  const std::unordered_set<std::string> *filter;
+  std::unordered_map<std::string, AccessInfo> accesses;
+
+  explicit BufferAccessCollector(
+      const std::unordered_set<std::string> *f = nullptr)
+      : filter(f) {}
+
+  void VisitExpr_(const BufferLoadNode *op) final {
+    const std::string &name = op->buffer->name;
+    if (!filter || filter->count(name)) {
+      accesses[name].has_read = true;
+    }
+    StmtExprVisitor::VisitExpr_(op);
+  }
+
+  void VisitStmt_(const BufferStoreNode *op) final {
+    const std::string &name = op->buffer->name;
+    if (!filter || filter->count(name)) {
+      accesses[name].has_write = true;
+    }
+    StmtExprVisitor::VisitStmt_(op);
+  }
+
+  void VisitExpr_(const CallNode *op) final {
+    for (const auto &arg : op->args) {
+      const CallNode *access_ptr = arg.as<CallNode>();
+      if (!access_ptr ||
+          !access_ptr->op.same_as(tir::builtin::tvm_access_ptr())) {
+        continue;
+      }
+      if (access_ptr->args.size() >= 5) {
+        const VarNode *var = access_ptr->args[1].as<VarNode>();
+        if (!var)
+          continue;
+        const std::string &name = var->name_hint;
+        if (filter && !filter->count(name))
+          continue;
+        int rw_mask = Downcast<IntImm>(access_ptr->args[4])->value;
+        auto &info = accesses[name];
+        if (rw_mask & 1)
+          info.has_read = true;
+        if (rw_mask & 2)
+          info.has_write = true;
+      }
+    }
+    StmtExprVisitor::VisitExpr_(op);
+  }
+};
+
+// Mutator that inserts ascend_free_pipe_C/V calls after copy-from-pipes
+// (copy_pipe_to_l1 / copy_pipe_to_ub / copy_pipe_to_ub_V) buffer data has
+// been consumed.  Analysis is scoped to each SeqStmt; free_pipe never crosses
+// ForNode or IfThenElse boundaries.
+class FreePipeInserter : public StmtMutator {
+private:
+  // Check if a single Evaluate node is a copy-from-pipe call.
+  // Returns true if found, populating out params.
+  bool CheckEvaluateForCopyFromPipe(const Stmt &stmt, std::string &out_buffer,
+                                    int &out_flag_id, bool &out_is_cube) {
+    const EvaluateNode *eval = stmt.as<EvaluateNode>();
+    if (!eval)
+      return false;
+    const CallNode *call = eval->value.as<CallNode>();
+    if (!call || call->op != tir::builtin::call_extern())
+      return false;
+    if (call->args.size() < 4 || !call->args[0].as<StringImmNode>())
+      return false;
+
+    std::string func_name = Downcast<StringImm>(call->args[0])->value;
+    // Match copy-from-pipes: copy_pipe_to_l1, copy_pipe_to_ub,
+    // copy_pipe_to_ub_V
+    bool is_l1 = (func_name.find("copy_pipe_to_l1") != std::string::npos);
+    bool is_ub = (func_name.find("copy_pipe_to_ub") != std::string::npos);
+    if (!is_l1 && !is_ub)
+      return false;
+
+    // Extract target buffer from access_ptr (args[1])
+    const CallNode *access_ptr = call->args[1].as<CallNode>();
+    if (!access_ptr ||
+        !access_ptr->op.same_as(tir::builtin::tvm_access_ptr())) {
+      return false;
+    }
+    if (access_ptr->args.size() < 2)
+      return false;
+    const VarNode *var = access_ptr->args[1].as<VarNode>();
+    if (!var)
+      return false;
+
+    out_buffer = var->name_hint;
+    out_flag_id = Downcast<IntImm>(call->args[3])->value;
+    out_is_cube = is_l1; // L1 target -> free_pipe_C, UB -> free_pipe_V
+    return true;
+  }
+
+  // Detect copy-from-pipes in a statement, looking one level into nested
+  // SeqStmt (VisitStmt_ wraps pipe op + orig_stmt in a SeqStmt).
+  bool DetectCopyFromPipe(const Stmt &stmt, std::string &out_buffer,
+                          int &out_flag_id, bool &out_is_cube) {
+    // Direct Evaluate node
+    if (CheckEvaluateForCopyFromPipe(stmt, out_buffer, out_flag_id,
+                                     out_is_cube)) {
+      return true;
+    }
+    // Check inside one level of SeqStmt (the wrapper created by VisitStmt_)
+    if (const SeqStmtNode *seq = stmt.as<SeqStmtNode>()) {
+      for (const auto &child : seq->seq) {
+        if (CheckEvaluateForCopyFromPipe(child, out_buffer, out_flag_id,
+                                         out_is_cube)) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  // Generate free_pipe Evaluate node using registered op:
+  //   Evaluate(Call(tl.ascend_free_pipe, {StringImm("free_pipe_C/V"),
+  //   IntImm(flag_id)}))
+  Stmt MakeFreePipe(bool is_cube, int flag_id) {
+    std::string scope_hint = is_cube ? "free_pipe_C" : "free_pipe_V";
+    return Evaluate(
+        Call(DataType::Int(32), tl::ascend_free_pipe(),
+             {StringImm(scope_hint), IntImm(DataType::Int(32), flag_id)}));
+  }
+
+public:
+  Stmt VisitStmt_(const SeqStmtNode *op) final {
+    // First, recursively visit all children to handle nested structures
+    Array<Stmt> visited_children;
+    for (const auto &child : op->seq) {
+      visited_children.push_back(StmtMutator::VisitStmt(child));
+    }
+
+    // Collect copy-from-pipe info from each child position, and gather target
+    // buffer names for filtered pre-scan.
+    struct CopyFromPipeEntry {
+      int pos;
+      std::string buffer;
+      int flag_id;
+      bool is_cube;
+    };
+    std::vector<CopyFromPipeEntry> copy_from_pipe_entries;
+    std::unordered_set<std::string> target_buffers;
+
+    for (int i = 0; i < static_cast<int>(visited_children.size()); ++i) {
+      std::string buf;
+      int fid = 0;
+      bool is_cube = false;
+      if (DetectCopyFromPipe(visited_children[i], buf, fid, is_cube)) {
+        copy_from_pipe_entries.push_back({i, buf, fid, is_cube});
+        target_buffers.insert(buf);
+      }
+    }
+
+    if (copy_from_pipe_entries.empty()) {
+      return SeqStmt(visited_children);
+    }
+
+    // Pre-scan: build access table for target buffers only (one pass).
+    std::vector<std::unordered_map<std::string, AccessInfo>> access_table(
+        visited_children.size());
+    for (int i = 0; i < static_cast<int>(visited_children.size()); ++i) {
+      BufferAccessCollector collector(&target_buffers);
+      collector(visited_children[i]);
+      access_table[i] = std::move(collector.accesses);
+    }
+
+    // For each copy-from-pipe, look up the pre-built table to find free_pipe
+    // insertion point: last access before first subsequent write, or last
+    // access overall if no subsequent write exists.
+    std::unordered_map<int, std::vector<Stmt>> pos_to_free_pipe;
+
+    for (const auto &entry : copy_from_pipe_entries) {
+      int entry_pos = entry.pos;
+      const std::string &target_buf = entry.buffer;
+
+      int first_write_pos = -1;
+      int last_access_pos = -1;
+
+      for (int j = entry_pos + 1; j < static_cast<int>(visited_children.size());
+           ++j) {
+        auto it = access_table[j].find(target_buf);
+        if (it == access_table[j].end())
+          continue;
+
+        if (first_write_pos == -1 && it->second.has_write) {
+          first_write_pos = j;
+          break;
+        }
+        last_access_pos = j;
+      }
+
+      int insert_after = (last_access_pos != -1) ? last_access_pos : entry_pos;
+
+      pos_to_free_pipe[insert_after].push_back(
+          MakeFreePipe(entry.is_cube, entry.flag_id));
+    }
+
+    // Build result array with free_pipe insertions
+    Array<Stmt> result;
+    for (int i = 0; i < static_cast<int>(visited_children.size()); ++i) {
+      result.push_back(visited_children[i]);
+      auto it = pos_to_free_pipe.find(i);
+      if (it != pos_to_free_pipe.end()) {
+        for (const auto &free_pipe : it->second) {
+          result.push_back(free_pipe);
+        }
+      }
+    }
+
+    return SeqStmt(result);
+  }
+};
+
 class AscendWorkspaceReductionPass : public arith::IRMutatorWithAnalyzer {
 public:
-  static PrimFunc Substitute(PrimFunc f) {
+  static PrimFunc Substitute(PrimFunc f, bool pto_use_pipe = false,
+                             const std::string &platform = "A3") {
     arith::Analyzer analyzer;
 
     // Read buffers_skip_vid_reduction from PrimFunc attrs
@@ -480,15 +912,22 @@ public:
       }
     }
 
-    CopyInfoCollector info_collector;
+    CopyInfoCollector info_collector({}, {}, pto_use_pipe, platform);
     info_collector.SetSkipBuffers(skip_buffer_names);
     info_collector.SetBufferShapes(buffer_shapes);
     info_collector.VisitStmt(f->body);
     const CopyGlobalContext &context = info_collector.GetCopyGlobalContext();
-    AscendWorkspaceReductionPass substituter(&analyzer, context);
+    AscendWorkspaceReductionPass substituter(&analyzer, context, pto_use_pipe,
+                                             platform);
 
     auto *f_mut = f.CopyOnWrite();
     f_mut->body = substituter.VisitStmt(f->body);
+
+    // free_pipe auto-insertion: after copy-from-pipe buffer data is consumed
+    if (pto_use_pipe && !context.pipe_info_map_.empty()) {
+      FreePipeInserter free_pipe_inserter;
+      f_mut->body = free_pipe_inserter(f_mut->body);
+    }
 
     Array<Var> new_params = f_mut->params;
     Array<IntImm> auto_gm_idx;
@@ -510,17 +949,49 @@ public:
     prim_func_with_new_attr = tvm::WithAttr(std::move(prim_func_with_new_attr),
                                             "auto_gm_indices", auto_gm_idx);
 
+    // Serialize pipe metadata as PrimFunc attr for codegen access
+    if (pto_use_pipe && !context.pipe_info_map_.empty()) {
+      Map<IntImm, Map<String, ObjectRef>> pipe_infos;
+      for (const auto &[dst_buf_name, info] : context.pipe_info_map_) {
+        Map<String, ObjectRef> fields;
+        fields.Set("flag_id", IntImm(DataType::Int(32), info.flag_id));
+        fields.Set("dir_type", IntImm(DataType::Int(32), info.dir_type));
+        fields.Set("slot_size", IntImm(DataType::Int(32), info.slot_size));
+        fields.Set("slot_num", IntImm(DataType::Int(32), info.slot_num));
+        fields.Set("pipe_id", String(info.pipe_id));
+        fields.Set("op_name", String(info.op_name));
+        fields.Set("dtype_str", String(info.dtype_str));
+        fields.Set("src_M_val", IntImm(DataType::Int(32), info.src_M_val));
+        fields.Set("src_N_val", IntImm(DataType::Int(32), info.src_N_val));
+        fields.Set("dst_M_val", IntImm(DataType::Int(32), info.dst_M_val));
+        fields.Set("dst_N_val", IntImm(DataType::Int(32), info.dst_N_val));
+        fields.Set("split_axis", IntImm(DataType::Int(32), info.split_axis));
+        fields.Set("workspace_name", String(info.workspace_name));
+        fields.Set("has_tmp", IntImm(DataType::Int(32), info.has_tmp ? 1 : 0));
+        fields.Set("tmp_M_val", IntImm(DataType::Int(32), info.tmp_M_val));
+        fields.Set("tmp_N_val", IntImm(DataType::Int(32), info.tmp_N_val));
+        pipe_infos.Set(IntImm(DataType::Int(32), info.flag_id), fields);
+      }
+      prim_func_with_new_attr = WithAttr(std::move(prim_func_with_new_attr),
+                                         "pipe_infos", pipe_infos);
+    }
+
     return prim_func_with_new_attr;
   }
 
 private:
   AscendWorkspaceReductionPass(arith::Analyzer *analyzer,
-                               const CopyGlobalContext &context)
+                               const CopyGlobalContext &context,
+                               bool pto_use_pipe = false,
+                               const std::string &platform = "A3")
       : arith::IRMutatorWithAnalyzer(analyzer), context_(context),
-        core_meta_info__(context.core_meta_info_) {}
+        core_meta_info__(context.core_meta_info_), pto_use_pipe_(pto_use_pipe),
+        platform_(platform) {}
 
   const CopyGlobalContext &context_;
   const CoreMetaInfo core_meta_info__; // For vid offset calculation
+  bool pto_use_pipe_;
+  std::string platform_;
 
   std::unordered_set<std::string> inserted_buffers_;
 
@@ -531,6 +1002,67 @@ private:
 
   std::unordered_map<std::string, std::string> copy_replace_table_ = {
       {"copy_ub_to_l1", "copy_ub_to_gm"}, {"copy_l0c_to_ub", "copy_l0c_to_gm"}};
+
+  Stmt GenerateCopyToPipe(const CallNode *orig_call,
+                          const std::string &func_name_str) {
+    Array<PrimExpr> orig_args = orig_call->args;
+    PrimExpr src_access = orig_args[1];
+    PrimExpr dst_access = orig_args[2];
+
+    // Get dst buffer name for pipe_info_map_ lookup
+    const CallNode *dst_access_ptr = dst_access.as<CallNode>();
+    ICHECK(dst_access_ptr && dst_access_ptr->args.size() >= 2);
+    const VarNode *dst_var = dst_access_ptr->args[1].as<VarNode>();
+    ICHECK(dst_var);
+    std::string dst_buffer_name = dst_var->name_hint;
+
+    auto pipe_it = context_.pipe_info_map_.find(dst_buffer_name);
+    ICHECK(pipe_it != context_.pipe_info_map_.end())
+        << "[Error]<WorkspaceReduction> PTO: No pipe info found for: "
+        << dst_buffer_name;
+    const auto &pipe = pipe_it->second;
+
+    bool is_ub_to_l1 =
+        (func_name_str.find("copy_ub_to_l1") != std::string::npos);
+    std::string pipe_op1 = is_ub_to_l1 ? "copy_ub_to_pipe" : "copy_l0c_to_pipe";
+
+    std::stringstream ss;
+    ss << "tl::ascend::" << pipe_op1;
+    Array<PrimExpr> args = {StringImm(ss.str()), src_access, src_access,
+                            IntImm(DataType::Int(32), pipe.flag_id)};
+    if (is_ub_to_l1 && pipe.has_tmp && orig_args.size() > 7) {
+      PrimExpr tmp_expr = orig_args[7];
+      if (tmp_expr.as<CallNode>()) {
+        args.push_back(tmp_expr);
+      }
+    }
+    Call call(DataType::Handle(), tir::builtin::call_extern(), args);
+
+    if (is_ub_to_l1 && pipe.has_tmp && platform_ == "A5" &&
+        orig_args.size() > 7 && orig_args[7].as<CallNode>()) {
+      Array<PrimExpr> args_nz = {StringImm("tl::ascend::copy_ub_to_ub_Nz"),
+                                 src_access, orig_args[7]};
+      Call call_nz(DataType::Handle(), tir::builtin::call_extern(), args_nz);
+      return SeqStmt({Evaluate(call_nz), Evaluate(call)});
+    }
+
+    return Evaluate(call);
+  }
+
+  Stmt GenerateCopyFromPipe(const CopyGlobalContext::PipeInfo &pipe,
+                            const Call &dst_access) {
+    std::string op_name = pipe.op_name;
+    if (platform_ == "A5" && op_name == "copy_pipe_to_ub") {
+      op_name = "copy_pipe_to_ub_V";
+    }
+    std::stringstream ss;
+    ss << "tl::ascend::" << op_name;
+
+    Array<PrimExpr> args = {StringImm(ss.str()), dst_access, dst_access,
+                            IntImm(DataType::Int(32), pipe.flag_id)};
+    Call call(DataType::Handle(), tir::builtin::call_extern(), args);
+    return Evaluate(call);
+  }
 
   std::string PrintDstScope(const DstBufferScope &dst_scope) {
     switch (dst_scope) {
@@ -766,9 +1298,31 @@ private:
       return orig_stmt;
     }
 
-    // In-place transform
+    // PTO path: replace cross-core copies with pipe pairs
+    if (pto_use_pipe_ && orig_call->op == tir::builtin::call_extern() &&
+        orig_call->args.size() > 0 && orig_call->args[0].as<StringImmNode>()) {
+      std::string func_name_str =
+          Downcast<StringImm>(orig_call->args[0])->value;
+      if (func_name_str.find("copy_ub_to_l1") != std::string::npos ||
+          func_name_str.find("copy_l0c_to_ub") != std::string::npos) {
+        return GenerateCopyToPipe(orig_call, func_name_str);
+      }
+    }
+
+    // In-place transform (AscendC path)
     if (IsTargetCopyExpr(orig_call)) {
-      Array<PrimExpr> new_args = orig_call->args;
+      // Build new_args from scratch keeping only the first 4 original args.
+      // Extra runtime args (src_M/dst_M/dst_N at orig_call->args[4..6])
+      // from ascend.cc are dropped here. AscendC codegen expects positional
+      // args[3..5] = (count, maskShapeM, maskShapeN) appended via push_back
+      // below.
+      Array<PrimExpr> new_args;
+      new_args.push_back(orig_call->args[0]); // function name string
+      new_args.push_back(orig_call->args[1]); // src access_ptr
+      new_args.push_back(orig_call->args[2]); // dst access_ptr (replaced below)
+      new_args.push_back(
+          orig_call
+              ->args[3]); // src_N (element count, used as count in codegen)
       StringImm orig_func_name = Downcast<StringImm>(new_args[0]);
       const CallNode *src_access_ptr = new_args[1].as<CallNode>();
       std::string src_buffer_name =
@@ -846,14 +1400,25 @@ private:
       return Evaluate(new_call);
     }
 
-    // Insert copy-back statements
+    // Insert copy-back statements (for both AscendC and PTO)
     std::vector<std::string> buffer_names_vec = IsTargetAccessNode(orig_call);
-    if (!buffer_names_vec.empty()) {
-      Array<Stmt> seq_stmts_array;
-      for (const auto &buffer_name : buffer_names_vec) {
-
+    if (buffer_names_vec.empty()) {
+      return orig_stmt;
+    }
+    Array<Stmt> seq_stmts_array;
+    for (const auto &buffer_name : buffer_names_vec) {
+      if (pto_use_pipe_) {
+        // PTO: generate copy_pipe_to_xx from PipeInfo
+        auto pipe_it = context_.pipe_info_map_.find(buffer_name);
+        ICHECK(pipe_it != context_.pipe_info_map_.end())
+            << "[Error]<WorkspaceReduction> PTO: No pipe metadata found for "
+               "buffer: "
+            << buffer_name;
+        seq_stmts_array.push_back(GenerateCopyFromPipe(
+            pipe_it->second, context_.dst_to_access_map_.at(buffer_name)));
+      } else {
+        // AscendC: existing copy_gm_to_dst logic
         auto buffer_scope_it = context_.dst_to_scope_map_.find(buffer_name);
-
         ICHECK(buffer_scope_it != context_.dst_to_scope_map_.end())
             << "[Error]<WorkspaceReduction>: Dst scope is not found for "
                "buffer: "
@@ -876,10 +1441,9 @@ private:
             buffer_scope, strideN);
         seq_stmts_array.push_back(insert_eval_stmt);
       }
-      seq_stmts_array.push_back(orig_stmt);
-      return SeqStmt(seq_stmts_array);
     }
-    return orig_stmt;
+    seq_stmts_array.push_back(orig_stmt);
+    return SeqStmt(seq_stmts_array);
   }
 };
 
@@ -889,7 +1453,26 @@ using namespace tir::transform;
 
 tvm::transform::Pass AscendWorkspaceReduction() {
   auto pass_func = [=](PrimFunc f, IRModule m, PassContext ctx) {
-    return AscendWorkspaceReductionPass::Substitute(std::move(f));
+    bool is_pto = false;
+    if (auto opt_target = f->GetAttr<Target>(tvm::attr::kTarget)) {
+      Target target = opt_target.value();
+      if (target->attrs.defined()) {
+        auto model_attr = target->attrs.Get("model");
+        if (model_attr.defined()) {
+          is_pto = (Downcast<String>(model_attr) == "pto");
+        }
+      }
+    }
+    std::string platform = "A3";
+    auto platform_attr = f->GetAttr<String>("npu_platform");
+    if (platform_attr.defined()) {
+      platform = platform_attr.value();
+    }
+    bool use_pipe_config =
+        ctx->GetConfig<Bool>(ascendPtoUsePipeInCVCopy, Bool(true)).value();
+    bool pto_use_pipe = is_pto && use_pipe_config;
+    return AscendWorkspaceReductionPass::Substitute(std::move(f), pto_use_pipe,
+                                                    platform);
   };
   return CreatePrimFuncPass(pass_func, 0, "tl.AscendWorkspaceReduction", {});
 }

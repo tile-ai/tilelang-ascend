@@ -1,60 +1,39 @@
-import unittest
-from unittest.mock import MagicMock, patch
 import sys
+from unittest.mock import MagicMock
+
 from tilelang.utils.target import determine_platform
 
 
-class TestAutoPlatform(unittest.TestCase):
-    def test_determine_platform_explicit(self):
-        self.assertEqual(determine_platform("A2"), "A2")
-        self.assertEqual(determine_platform("A3"), "A3")
-        self.assertEqual(determine_platform("A5"), "A5")
-
-    @patch.dict(sys.modules, {"torch": MagicMock(), "torch.npu": MagicMock()})
-    def test_determine_platform_auto_910B(self):
-        import torch
-
-        torch.npu.is_available.return_value = True
-
-        mock_props = MagicMock()
-        mock_props.name = "Ascend910B"
-        torch.npu.get_device_properties.return_value = mock_props
-
-        self.assertEqual(determine_platform("auto"), "A2")
-
-    @patch.dict(sys.modules, {"torch": MagicMock(), "torch.npu": MagicMock()})
-    def test_determine_platform_auto_910C(self):
-        import torch
-
-        torch.npu.is_available.return_value = True
-
-        mock_props = MagicMock()
-        mock_props.name = "Ascend910_93"
-        torch.npu.get_device_properties.return_value = mock_props
-
-        self.assertEqual(determine_platform("auto"), "A3")
-
-    @patch.dict(sys.modules, {"torch": MagicMock(), "torch.npu": MagicMock()})
-    def test_determine_platform_auto_950D(self):
-        import torch
-
-        torch.npu.is_available.return_value = True
-
-        mock_props = MagicMock()
-        mock_props.name = "Ascend950"
-        torch.npu.get_device_properties.return_value = mock_props
-
-        self.assertEqual(determine_platform("auto"), "A5")
-
-    @patch.dict(sys.modules, {"torch": MagicMock(), "torch.npu": MagicMock()})
-    def test_determine_platform_auto_fallback(self):
-        import torch
-
-        torch.npu.is_available.return_value = False
-
-        # When NPU is not available, it should fallback to A3
-        self.assertEqual(determine_platform("auto"), "A3")
+def _mock_npu(monkeypatch, device_name=None, available=True):
+    mock_torch = MagicMock()
+    mock_torch.npu.is_available.return_value = available
+    if device_name is not None:
+        mock_torch.npu.get_device_name.return_value = device_name
+    monkeypatch.setitem(sys.modules, "torch", mock_torch)
+    monkeypatch.delenv("TL_PLATFORM", raising=False)
 
 
-if __name__ == "__main__":
-    unittest.main()
+def test_determine_platform_explicit():
+    assert determine_platform("A2") == "A2"
+    assert determine_platform("A3") == "A3"
+    assert determine_platform("A5") == "A5"
+
+
+def test_determine_platform_auto_910B(monkeypatch):
+    _mock_npu(monkeypatch, device_name="Ascend910B")
+    assert determine_platform("auto") == "A2"
+
+
+def test_determine_platform_auto_910C(monkeypatch):
+    _mock_npu(monkeypatch, device_name="Ascend910_93")
+    assert determine_platform("auto") == "A3"
+
+
+def test_determine_platform_auto_950D(monkeypatch):
+    _mock_npu(monkeypatch, device_name="Ascend950")
+    assert determine_platform("auto") == "A5"
+
+
+def test_determine_platform_auto_fallback(monkeypatch):
+    _mock_npu(monkeypatch, available=False)
+    assert determine_platform("auto") == "A3"

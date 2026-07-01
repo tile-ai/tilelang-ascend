@@ -11,7 +11,6 @@ pass_configs = {
     tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
     tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
     tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_SYNC: True,
-    tilelang.PassConfigKey.TL_ASCEND_PTO_USE_PIPE_IN_CV_COPY: False,
 }
 
 parser = argparse.ArgumentParser(description="NPU Kernel Compilation")
@@ -25,17 +24,17 @@ N = args.n
 K = args.k
 
 
-@tilelang.jit(out_idx=[2], pass_configs=pass_configs)
+@tilelang.jit(out_idx=[2], pass_configs=pass_configs, target="pto")
 def matmul_add(M, N, K, block_M, block_N, block_K, dtype="float16", accum_dtype="float"):
     m_num = M // block_M
     n_num = N // block_N
 
     @T.prim_func
     def main(
-        A: T.Tensor((M, K), dtype),
-        B: T.Tensor((K, N), dtype),
-        C: T.Tensor((M, N), dtype),
-        D: T.Tensor((M, N), dtype),
+        A: T.Tensor((M, K), dtype),  # type: ignore
+        B: T.Tensor((K, N), dtype),  # type: ignore
+        C: T.Tensor((M, N), dtype),  # type: ignore
+        D: T.Tensor((M, N), dtype),  # type: ignore
     ):
         with T.Kernel(m_num * n_num, threads=2, is_npu=True) as (cid):
             bx = cid // n_num
@@ -46,6 +45,7 @@ def matmul_add(M, N, K, block_M, block_N, block_K, dtype="float16", accum_dtype=
             C_L0 = T.alloc_fragment((block_M, block_N), accum_dtype)
 
             d_ub = T.alloc_shared((block_M, block_N), dtype)
+            c_ub_32 = T.alloc_shared((block_M, block_N), accum_dtype)
             c_ub = T.alloc_shared((block_M, block_N), dtype)
 
             loop_k = T.ceildiv(K, block_K)
@@ -58,8 +58,10 @@ def matmul_add(M, N, K, block_M, block_N, block_K, dtype="float16", accum_dtype=
                 else:
                     T.gemm_v0(A_L1, B_L1, C_L0)
 
-            T.copy(C_L0, c_ub)
+            T.copy(C_L0, c_ub_32)
             T.copy(D[bx * block_M, by * block_N], d_ub)
+
+            T.tile.cast(c_ub, c_ub_32, "CAST_NONE", block_M * block_N)
 
             T.tile.add(c_ub, c_ub, d_ub)
 

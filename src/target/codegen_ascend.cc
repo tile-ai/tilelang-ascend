@@ -14,6 +14,7 @@
 #include <tvm/tir/expr.h>
 
 #include <cmath>
+#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -595,6 +596,8 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
     PrintfOpCodegen(op, "AscendC::PRINTF");
   } else if (op->op.same_as(tl::ascend_dump_tensor())) {
     DumpTensorCodegen(op);
+  } else if (op->op.same_as(tl::ascend_src_code())) {
+    SrcCodeCodegen(op);
   } else if (op->op.same_as(tl::ascend_bilinear_interpolation())) {
     BilinearInterpolationCodegen(op);
   } else if (op->op.same_as(tl::ascend_wholereducemax())) {
@@ -2170,6 +2173,18 @@ void CodeGenTileLangAscend::DumpTensorCodegen(const CallNode *op) {
   }
 
   this->stream << ");\n";
+}
+
+void CodeGenTileLangAscend::SrcCodeCodegen(const CallNode *op) {
+  auto *str = op->args[0].as<StringImmNode>();
+  ICHECK(str) << "T._src_code() expects a string literal argument";
+  std::string code = str->value;
+  std::istringstream iss(code);
+  std::string line;
+  while (std::getline(iss, line)) {
+    this->PrintIndent();
+    this->stream << line << "\n";
+  }
 }
 
 void CodeGenTileLangAscend::BilinearInterpolationCodegen(const CallNode *op) {
