@@ -104,6 +104,7 @@ docs/notebook/*.cpp
 
 .agents/reports
 
-# Generated AOT example kernel source
+# Generated AOT example artifacts
+examples/gemm_aot/kernel_lib.so
 examples/fused_sigmoid_gating_delta_rule/ascendc.cpp
 
