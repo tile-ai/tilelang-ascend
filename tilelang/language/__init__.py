@@ -41,7 +41,6 @@ from .kernel import (
 )
 from .warpgroup import ws, Scope  # noqa: F401
 from .allocate import (
-    alloc_local,  # noqa: F401
     alloc_shared,  # noqa: F401
     alloc_fragment,  # noqa: F401
     alloc_var,  # noqa: F401
@@ -226,3 +225,16 @@ def use_swizzle(cid, m, n, k, block_m, block_n, off=1, dir=0, in_loop=False):
 def annotate_address(address_map: Dict):
     address_map = {buffer.data: address for buffer, address in address_map.items()}
     return block_attr({"address_map": address_map})
+
+
+def __getattr__(name: str):
+    if name == "alloc_local":
+        raise AttributeError(
+            "'T.alloc_local' is no longer supported and has been removed. "
+            "This interface is not supported on Ascend NPU. For scalar or "
+            "thread-private storage use 'T.alloc_var'; for tile buffers use "
+            "'T.alloc_shared' / 'T.alloc_fragment', or the Ascend-specific "
+            "'T.alloc_ub' / 'T.alloc_L1' / 'T.alloc_L0A' / 'T.alloc_L0B' / "
+            "'T.alloc_L0C'."
+        )
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

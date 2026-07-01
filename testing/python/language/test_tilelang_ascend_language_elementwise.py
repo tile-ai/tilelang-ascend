@@ -2345,6 +2345,89 @@ def test_gather(dtype, target, shape):
     run_test_gather(M, N, block_M, block_N, dtype, target)
 
 
+def gather_larger_src(M, N_src, N, block_M, block_N_src, block_N, dtype="float32"):
+    m_num = M // block_M
+    n_num = 1
+
+    VEC_NUM = 2
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((M, N_src), dtype),
+        B: T.Tensor((M, N), "uint32"),
+        C: T.Tensor((M, N), dtype),
+    ):
+        with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
+            bx = cid // n_num
+
+            a_ub = T.alloc_ub((block_M // VEC_NUM, block_N_src), dtype)
+            b_ub = T.alloc_ub((block_M // VEC_NUM, block_N), "uint32")
+            c_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
+
+            T.copy(A[bx * block_M + vid * block_M // VEC_NUM, 0], a_ub)
+            T.copy(B[bx * block_M + vid * block_M // VEC_NUM, 0], b_ub)
+
+            T.tile.gather(c_ub, a_ub, b_ub, 0)
+
+            T.copy(c_ub, C[bx * block_M + vid * block_M // VEC_NUM, 0])
+
+    return main
+
+
+def generate_golden_gather_larger_src(a, b, N):
+    result = torch.zeros(a.size(0), N, dtype=a.dtype)
+    element_size = a.element_size()
+    a_flat = a.flatten()
+    for i in range(a.size(0)):
+        for j in range(N):
+            byte_offset = b[i, j].to(torch.int32).item()
+            elem_idx = byte_offset // element_size
+            result[i, j] = a_flat[elem_idx]
+    return result
+
+
+def run_test_gather_larger_src(M, N_src, N, block_M, block_N_src, block_N, dtype, target):
+    func = gather_larger_src(M, N_src, N, block_M, block_N_src, block_N, dtype)
+    func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
+
+    dtype_map = {
+        "float": torch.float32,
+        "float16": torch.float16,
+        "bfloat16": torch.bfloat16,
+    }
+    element_sizes = {
+        "float": 4,
+        "float16": 2,
+        "bfloat16": 2,
+    }
+    torch_dtype = dtype_map[dtype]
+    element_size = element_sizes[dtype]
+
+    a = torch.arange(N_src, dtype=torch_dtype).unsqueeze(0).expand(M, -1).contiguous().npu()
+
+    all_multiples = torch.arange(0, element_size * N_src, element_size)
+    random_indices = torch.randperm(len(all_multiples))[:N]
+    random_multiples = all_multiples[random_indices].to(torch.uint32)
+    b = random_multiples.reshape(1, N).repeat(M, 1).npu()
+
+    torch.npu.synchronize()
+
+    c = func(a, b)
+    ref_c = generate_golden_gather_larger_src(a, b, N).npu()
+
+    torch.testing.assert_close(c, ref_c, rtol=1e-2, atol=1e-2)
+
+
+@pytest.mark.parametrize("dtype", ["float", "float16"])
+@pytest.mark.parametrize("target", ["ascendc"])
+def test_gather_larger_src(dtype, target):
+    M, N_src, N = 128, 2048, 1024
+    block_M = 16
+    block_N_src = N_src
+    block_N = N
+    run_test_gather_larger_src(M, N_src, N, block_M, block_N_src, block_N, dtype, target)
+
+
 def gather(M, N, block_M, block_N, dtype="int32"):  # noqa: F811
     m_num = M // block_M
     n_num = N // block_N

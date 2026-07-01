@@ -1,3 +1,7 @@
+---
+disable: true
+---
+
 # TileLang-Ascend 算子开发代理体系
 
 基于 OpenCode 多代理框架的端到端算子开发流程：从需求 → 设计 → 代码实现+测试+精度调试（一站式）→ （可选）性能调优，全程由 Orchestrator 编排，Subagent 在隔离上下文中执行各阶段。

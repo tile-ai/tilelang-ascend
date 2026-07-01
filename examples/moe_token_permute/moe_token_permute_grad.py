@@ -49,7 +49,7 @@ def _build_gather_reduce_kernel_cast_group_pipelined(
     assert hidden_size == TILE_H, "group-pipelined kernel assumes single h-tile"
     assert HALF_H * 2 == TILE_H, "HALF_H must be TILE_H/2"
 
-    @tilelang.jit(out_idx=[2], pass_configs=PASS_CONFIGS_EXPERT)
+    @tilelang.jit(out_idx=[2], pass_configs=PASS_CONFIGS)
     def _build(
         num_tokens,
         topK,
@@ -188,7 +188,7 @@ def _build_gather_reduce_kernel_cast_pipelined(
     assert hidden_size == TILE_H
     assert HALF_H * 2 == TILE_H
 
-    @tilelang.jit(out_idx=[2], pass_configs=PASS_CONFIGS_EXPERT)
+    @tilelang.jit(out_idx=[2], pass_configs=PASS_CONFIGS)
     def _build(
         num_tokens,
         topK,
@@ -345,7 +345,7 @@ def _build_gather_reduce_kernel_cast(
     n_iters = topK // LANES_PER_ITER
     rem = topK % LANES_PER_ITER
 
-    @tilelang.jit(out_idx=[2], pass_configs=PASS_CONFIGS_EXPERT)
+    @tilelang.jit(out_idx=[2], pass_configs=PASS_CONFIGS)
     def _build(
         num_tokens,
         topK,

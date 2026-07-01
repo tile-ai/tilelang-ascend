@@ -96,7 +96,7 @@ def _build_gather_kernel_with_probs(
     n_iters = topK // LANES_PER_ITER
     rem = topK % LANES_PER_ITER
 
-    @tilelang.jit(out_idx=[3], pass_configs=PASS_CONFIGS_EXPERT)
+    @tilelang.jit(out_idx=[3], pass_configs=PASS_CONFIGS)
     def _build(
         num_tokens,
         topK,
@@ -374,7 +374,7 @@ def _build_gather_kernel_no_probs(
 ):
     HALF_H = TILE_H // 2
 
-    @tilelang.jit(out_idx=[2], pass_configs=PASS_CONFIGS_EXPERT)
+    @tilelang.jit(out_idx=[2], pass_configs=PASS_CONFIGS)
     def _build(
         E,
         hidden_size,

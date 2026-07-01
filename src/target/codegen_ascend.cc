@@ -228,8 +228,20 @@ void CodeGenTileLangAscend::PrintType(DataType t,
     if (!fail)
       return;
   } else if (t.is_float8()) {
-    // enable_fp8_ = true;
-    // os << GetFP8Type(t);
+    enable_fp8_ = true;
+    if (t.is_scalar()) {
+      if (t.is_float8_e4m3fn()) {
+        os << "float8_e4m3_t";
+      } else if (t.is_float8_e5m2()) {
+        os << "float8_e5m2_t";
+      } else {
+        fail = true;
+      }
+    } else {
+      fail = true;
+    }
+    if (!fail)
+      return;
     return;
   } else if (t == DataType::Bool()) {
     os << "bool";
@@ -2330,6 +2342,17 @@ void CodeGenTileLangAscend::CopyCodegen(const CallNode *op) {
 
     for (int i = 0; i < extra_args; ++i) {
       this->stream << ", " << var_names[i];
+    }
+
+    // copy_gm_to_l1: append a `need_clear` flag so the helper only zero-inits
+    // the full L1 tile for the primary copy (dst offset 0). Sub-region copies
+    // (non-zero dst offset, e.g. the second DMA of a splice / vertical-merge
+    // pattern) must skip the clear, otherwise they clobber data already written
+    // into the same NZ tile. dst_offset_expr is the scalar start offset of the
+    // destination tile; when it is 0 this DMA targets the tile base and is the
+    // natural owner of the tail-padding clear.
+    if (op_name.find("copy_gm_to_l1") != std::string::npos) {
+      this->stream << ", " << (is_zero(dst_offset_expr) ? "true" : "false");
     }
 
     this->stream << ");\n";
