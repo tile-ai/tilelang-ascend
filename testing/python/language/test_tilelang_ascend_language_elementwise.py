@@ -4939,6 +4939,155 @@ def test_reduce_slice_buffer_physical_output_shape_is_accepted(input_shape, real
     assert result.op.same_as(tir.op.Op.get("tl.ascend_reduce"))
 
 
+def brcb_experiment_kernel(M, dtype="float"):
+    elems_per_block = 8 if dtype == "float" else 16
+    repeat_times = M // 8
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((M,), dtype),  # type: ignore
+        C: T.Tensor((M, elems_per_block), dtype),  # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (cid, vid):
+            a_ub = T.alloc_ub((M,), dtype)
+            c_ub = T.alloc_ub((M, elems_per_block), dtype)
+
+            T.copy(A, a_ub)
+            T.tile.brcb_experiment(c_ub, a_ub, repeat_times, 1, 8)
+            T.copy(c_ub, C)
+
+    return main
+
+
+def generate_golden_brcb(src, repeat_times, dtype):
+    elems_per_block = 32 // src.element_size()
+    total_dst = repeat_times * 8 * elems_per_block
+    result = torch.zeros(total_dst, dtype=src.dtype)
+    for rep in range(repeat_times):
+        for blk in range(8):
+            src_idx = rep * 8 + blk
+            dst_base = (rep * 8 + blk) * elems_per_block
+            for j in range(elems_per_block):
+                result[dst_base + j] = src[src_idx]
+    return result
+
+
+@pytest.mark.parametrize("dtype", ["float16", "float"])
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+def test_brcb_experiment(dtype, target):
+    torch_dtype = torch.float16 if dtype == "float16" else torch.float32
+    elems_per_block = 32 // torch.tensor([], dtype=torch_dtype).element_size()
+    M = 64
+    repeat_times = M // 8
+
+    func = brcb_experiment_kernel(M, dtype)
+    func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
+
+    a = torch.arange(1, M + 1, dtype=torch_dtype).npu()
+    torch.npu.synchronize()
+
+    c = func(a)
+    torch.npu.synchronize()
+    ref_c = generate_golden_brcb(a.cpu(), repeat_times, torch_dtype).reshape(M, elems_per_block).npu()
+
+    torch.testing.assert_close(c.cpu(), ref_c.cpu(), rtol=1e-2, atol=1e-2)
+
+
+def _row_expand_binop_experiment_kernel(M, N, op_name, dtype="float16"):
+    block_M = 16
+    VEC_NUM = 2
+    elems_per_block = 16 if dtype == "float16" else 8
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((M, N), dtype),  # type: ignore
+        S: T.Tensor((M,), dtype),  # type: ignore
+        C: T.Tensor((M, N), dtype),  # type: ignore
+    ):
+        with T.Kernel(M // block_M, is_npu=True) as (cid, vid):
+            a_ub = T.alloc_ub((block_M // VEC_NUM, N), dtype)
+            s_ub = T.alloc_ub((block_M // VEC_NUM,), dtype)
+            tmp_ub = T.alloc_ub((block_M // VEC_NUM, elems_per_block), dtype)
+            c_ub = T.alloc_ub((block_M // VEC_NUM, N), dtype)
+
+            T.copy(A[cid * block_M + vid * block_M // VEC_NUM, 0], a_ub)
+            T.copy(S[cid * block_M + vid * block_M // VEC_NUM], s_ub)
+            getattr(T.tile, op_name)(c_ub, a_ub, s_ub, tmp_ub)
+            T.copy(c_ub, C[cid * block_M + vid * block_M // VEC_NUM, 0])
+
+    return main
+
+
+def row_expand_mul_experiment_kernel(M, N, dtype="float16"):
+    return _row_expand_binop_experiment_kernel(M, N, "row_expand_mul_experiment", dtype)
+
+
+def row_expand_sub_experiment_kernel(M, N, dtype="float16"):
+    return _row_expand_binop_experiment_kernel(M, N, "row_expand_sub_experiment", dtype)
+
+
+def row_expand_div_experiment_kernel(M, N, dtype="float16"):
+    return _row_expand_binop_experiment_kernel(M, N, "row_expand_div_experiment", dtype)
+
+
+@pytest.mark.parametrize("dtype,shape", [("float16", (16, 128)), ("float", (16, 64))])
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+def test_row_expand_mul_experiment(dtype, target, shape):
+    M, N = shape
+    func = row_expand_mul_experiment_kernel(M, N, dtype)
+    func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
+
+    torch_dtype = torch.float16 if dtype == "float16" else torch.float32
+    a = torch.randn(M, N, dtype=torch_dtype).npu()
+    s = torch.randn(M, dtype=torch_dtype).npu()
+    torch.npu.synchronize()
+
+    c = func(a, s)
+    torch.npu.synchronize()
+    ref_c = a * s.unsqueeze(1).expand(M, N)
+
+    torch.testing.assert_close(c.cpu(), ref_c.cpu(), rtol=1e-2, atol=1e-2)
+
+
+@pytest.mark.parametrize("dtype,shape", [("float16", (16, 128)), ("float", (16, 64))])
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+def test_row_expand_sub_experiment(dtype, target, shape):
+    M, N = shape
+    func = row_expand_sub_experiment_kernel(M, N, dtype)
+    func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
+
+    torch_dtype = torch.float16 if dtype == "float16" else torch.float32
+    a = torch.randn(M, N, dtype=torch_dtype).npu()
+    s = torch.randn(M, dtype=torch_dtype).npu()
+    torch.npu.synchronize()
+
+    c = func(a, s)
+    torch.npu.synchronize()
+    ref_c = a - s.unsqueeze(1).expand(M, N)
+
+    torch.testing.assert_close(c.cpu(), ref_c.cpu(), rtol=1e-2, atol=1e-2)
+
+
+@pytest.mark.parametrize("dtype,shape", [("float16", (16, 128)), ("float", (16, 64))])
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+def test_row_expand_div_experiment(dtype, target, shape):
+    M, N = shape
+    func = row_expand_div_experiment_kernel(M, N, dtype)
+    func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
+
+    torch_dtype = torch.float16 if dtype == "float16" else torch.float32
+    a = torch.randn(M, N, dtype=torch_dtype).npu()
+    s = torch.randn(M, dtype=torch_dtype).npu()
+    s = torch.clamp(s, min=0.1)
+    torch.npu.synchronize()
+
+    c = func(a, s)
+    torch.npu.synchronize()
+    ref_c = a / s.unsqueeze(1).expand(M, N)
+
+    torch.testing.assert_close(c.cpu(), ref_c.cpu(), rtol=1e-2, atol=1e-2)
+
+
 if __name__ == "__main__":
     current_dir = os.path.dirname(os.path.abspath(__file__))
     elementwise_test_path = os.path.join(current_dir, "test_tilelang_ascend_language_elementwise.py")
