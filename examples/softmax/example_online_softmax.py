@@ -70,8 +70,7 @@ def online_softmax(M, N, block_M, block_N, dtype="float"):
                 T.copy(
                     A[bx * block_M + vid * sub_block_M : bx * block_M + (vid + 1) * sub_block_M, by * block_N : (by + 1) * block_N],
                     a,
-                    pad_value=-T.infinity(cal_dtype),
-                )  # Load input
+                )  # Load input (tail handled automatically by valid-region compute)
                 cast_or_copy(a_cal, a, CAST_MODE_LOW2HIGH, sub_block_M * block_N)  # Cast to compute dtype if needed
                 T.reduce_max(a_cal, tile_max, dim=-1)  # Compute tile max
                 T.tile.max(tile_max, prev_max, tile_max)  # m_j = max(m_{j-1}, x_j)

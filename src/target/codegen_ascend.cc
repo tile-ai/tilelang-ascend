@@ -575,6 +575,14 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
     PrintOpCall(op, "AscendC::Xor", {0, op->args.size() - 1}, {0, 0});
   } else if (op->op.same_as(tl::ascend_broadcast())) {
     BroadcastOpCodegen(op);
+  } else if (op->op.same_as(tl::ascend_tail_unary())) {
+    TailUnaryOpCodegen(op);
+  } else if (op->op.same_as(tl::ascend_tail_binary())) {
+    TailBinaryOpCodegen(op);
+  } else if (op->op.same_as(tl::ascend_tail_scalar())) {
+    TailScalarOpCodegen(op);
+  } else if (op->op.same_as(tl::ascend_tail_reduce())) {
+    TailReduceOpCodegen(op);
   } else if (op->op.same_as(tl::ascend_row_expand_mul())) {
     RowExpandMulCodegen(op);
   } else if (op->op.same_as(tl::ascend_wait_cross_flag())) {
@@ -2065,6 +2073,67 @@ void CodeGenTileLangAscend::BroadcastOpCodegen(const CallNode *op) {
   this->stream << ");\n";
 }
 
+void CodeGenTileLangAscend::TailUnaryOpCodegen(const CallNode *op) {
+  // args: tag(0) dst(1) src(2) validRow(3) validCol(4) physCol(5)
+  std::string tag = Downcast<StringImm>(op->args[0])->value;
+  std::string dtype = getType(GetAccessPtrDtype(op->args[1].as<CallNode>()));
+  std::string dst = PrintBufferOffset(op->args[1].as<CallNode>());
+  std::string src = PrintBufferOffset(op->args[2].as<CallNode>());
+  this->PrintIndent();
+  this->stream << "tl::ascend::tail_unary<" << dtype
+               << ">(tl::ascend::TailVecUnOp::" << tag << ", " << dst << ", "
+               << src << ", " << PrintExpr(op->args[3]) << ", "
+               << PrintExpr(op->args[4]) << ", " << PrintExpr(op->args[5])
+               << ");\n";
+}
+
+void CodeGenTileLangAscend::TailBinaryOpCodegen(const CallNode *op) {
+  // args: tag(0) dst(1) src0(2) src1(3) validRow(4) validCol(5) physCol(6)
+  std::string tag = Downcast<StringImm>(op->args[0])->value;
+  std::string dtype = getType(GetAccessPtrDtype(op->args[1].as<CallNode>()));
+  std::string dst = PrintBufferOffset(op->args[1].as<CallNode>());
+  std::string src0 = PrintBufferOffset(op->args[2].as<CallNode>());
+  std::string src1 = PrintBufferOffset(op->args[3].as<CallNode>());
+  this->PrintIndent();
+  this->stream << "tl::ascend::tail_binary<" << dtype
+               << ">(tl::ascend::TailVecBinOp::" << tag << ", " << dst << ", "
+               << src0 << ", " << src1 << ", " << PrintExpr(op->args[4]) << ", "
+               << PrintExpr(op->args[5]) << ", " << PrintExpr(op->args[6])
+               << ");\n";
+}
+
+void CodeGenTileLangAscend::TailScalarOpCodegen(const CallNode *op) {
+  // args: tag(0) dst(1) src(2) scalar(3) validRow(4) validCol(5) physCol(6)
+  std::string tag = Downcast<StringImm>(op->args[0])->value;
+  std::string dtype = getType(GetAccessPtrDtype(op->args[1].as<CallNode>()));
+  std::string dst = PrintBufferOffset(op->args[1].as<CallNode>());
+  std::string src = PrintBufferOffset(op->args[2].as<CallNode>());
+  std::string scalar = dtype + "(" + PrintExpr(op->args[3]) + ")";
+  this->PrintIndent();
+  this->stream << "tl::ascend::tail_scalar<" << dtype
+               << ">(tl::ascend::TailVecScalarOp::" << tag << ", " << dst
+               << ", " << src << ", " << scalar << ", "
+               << PrintExpr(op->args[4]) << ", " << PrintExpr(op->args[5])
+               << ", " << PrintExpr(op->args[6]) << ");\n";
+}
+
+void CodeGenTileLangAscend::TailReduceOpCodegen(const CallNode *op) {
+  // args: kind(0) out(1) src(2) tmp(3) dim(4) validRow(5) validCol(6)
+  //       physCol(7) clear(8)
+  std::string kind = Downcast<StringImm>(op->args[0])->value; // reduce_sum/...
+  std::string dtype = getType(GetAccessPtrDtype(op->args[1].as<CallNode>()));
+  std::string out = PrintBufferOffset(op->args[1].as<CallNode>());
+  std::string src = PrintBufferOffset(op->args[2].as<CallNode>());
+  std::string tmp = PrintBufferOffset(op->args[3].as<CallNode>(), false);
+  std::string clear_str = is_zero(op->args[8]) ? "false" : "true";
+  this->PrintIndent();
+  this->stream << "tl::ascend::tail_" << kind << "<" << dtype << ">(" << out
+               << ", " << src << ", " << tmp << ", " << PrintExpr(op->args[4])
+               << ", " << PrintExpr(op->args[5]) << ", "
+               << PrintExpr(op->args[6]) << ", " << PrintExpr(op->args[7])
+               << ", " << clear_str << ");\n";
+}
+
 void CodeGenTileLangAscend::SetCrossFlagCodegen(const CallNode *op) {
   std::string pipe = Downcast<StringImm>(op->args[0])->value;
   int mode = op->args[2].as<IntImmNode>()->value;
@@ -2313,7 +2382,7 @@ void CodeGenTileLangAscend::CopyCodegen(const CallNode *op) {
   static const std::unordered_map<std::string, int> kCopyOpExtraArgs = {
       {"copy_l0c_to_gm", 3},      {"copy_gm_to_l1", 3},
       {"copy_l1_to_l0a", 2},      {"copy_l1_to_l0b", 2},
-      {"copy_gm_to_ub", 4},       {"copy_ub_to_gm", 3},
+      {"copy_gm_to_ub", 3},       {"copy_ub_to_gm", 3},
       {"atomic_add_ub_to_gm", 3}, {"atomic_add_l0c_to_gm", 3},
       {"copy_ub_to_ub", 6}};
 
