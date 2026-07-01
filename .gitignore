@@ -104,3 +104,9 @@ docs/notebook/*.cpp
 
 .agents/reports
 
+# gemm_aot AOT build output
+examples/gemm_aot/kernel_lib.so
+
+# Kernel-source debug dump written via get_kernel_source()
+examples/fused_sigmoid_gating_delta_rule/ascendc.cpp
+
