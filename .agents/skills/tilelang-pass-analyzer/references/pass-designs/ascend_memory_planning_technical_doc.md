@@ -130,7 +130,7 @@ vector<pair<size_t, size_t>> free_blocks_;               // 空闲块列表
 | 内存域 | 限制（字节）| 典型缓冲区 | 来源操作 |
 |-------|-----------|----------|---------|
 | shared.l1 | 524032 | L1 缓冲区 | alloc_shared, alloc_L1, copy_gm_to_l1 |
-| shared.ub | 196352 | UB 统一缓冲 | alloc_ub, copy_gm_to_ub |
+| shared.ub | 196352 | UB 统一缓冲 | alloc_shared, alloc_ub, copy_gm_to_ub |
 | wmma.matrix_a | 65536 | L0A | alloc_L0A, copy_l1_to_l0a |
 | wmma.matrix_b | 65536 | L0B | alloc_L0B, copy_l1_to_l0b |
 | wmma.accumulator | 131072 | L0C | alloc_fragment, mma 输出 |
@@ -517,8 +517,8 @@ print('size_map:', mod['main'].attrs.get('size_map'))
 ## 附录 A：内存限制常量
 
 ```
-ASCEND_SHARED_MEM_SIZE           = 196352   // shared.ub (UB)
-ASCEND_SHARED_DYN_MEM_SIZE       = 524032   // shared.l1 (L1)
+SHARED_UB_MEM_SIZE           = 196352   // shared.ub (UB)
+SHARED_L1_MEM_SIZE       = 524032   // shared.l1 (L1)
 ASCEND_WMMA_MATRIX_A_MEM_SIZE    = 65536    // wmma.matrix_a
 ASCEND_WMMA_MATRIX_B_MEM_SIZE    = 65536    // wmma.matrix_b
 ASCEND_WMMA_ACCUMULATOR_MEM_SIZE = 131072   // wmma.accumulator
