@@ -82,7 +82,7 @@ PrimFunc {
 
 # Buffer 声明
 Buffer A[scope, dtype, shape]
-  - scope: global / shared / L1 / UB / L0A / L0B / L0C
+  - scope: global / shared / shared.l1 / shared.ub / L1 / UB / L0A / L0B / L0C
   - dtype: float16 / float32 / int32 (可省略)
   - shape: [N, M] (可简化)
 
@@ -260,7 +260,7 @@ Phase 1: AscendMemoryPlanner (StmtExprVisitor)
   → 收集 buffer 信息
   
   VisitStmt_(AllocateNode):
-    1. 记录 buffer scope (shared/wmma.matrix_a/wmma.matrix_b/wmma.accumulator)
+    1. 记录 buffer scope (shared.l1/shared.ub/wmma.matrix_a/wmma.matrix_b/wmma.accumulator)
     2. 计算 buffer size
     3. 记录到 buffer_sizes_[buf]
   
@@ -295,9 +295,9 @@ Phase 2: PlanMemory()
 
 **输入伪 IR：**
 ```
-Allocate A[shared, 1024]
-Allocate B[shared, 512]
-Allocate C[shared, 2048]
+Allocate A[shared.l1, 1024]
+Allocate B[shared.l1, 512]
+Allocate C[shared.l1, 2048]
 
 Stmt1: 使用 A
 Stmt2: 使用 B
@@ -366,6 +366,7 @@ Phase 2: CVCombineEmitter.VisitStmt_(EvaluateNode)
   3. 判断 2 - 根据 Buffer Scope:
      checkBufferScope(var):
        if scope == "wmma.*":    → Cube
+       if scope == "shared.l1": → Cube
        if scope == "shared.ub":    → Vector
        返回 1(保留)/0(丢弃)/-1(未知)
   
@@ -558,7 +559,7 @@ VectorAdd {                        ← Vector 核指令
 
 ### InferAllocScope
 
-**Pass 目标：** 根据 buffer 的使用方式推断正确的 scope（L0A/L0B/L0C/shared/shared.ub）。
+**Pass 目标：** 根据 buffer 的使用方式推断正确的 scope（L0A/L0B/L0C/shared.l1/shared.ub）。
 
 **核心类：** `ScopeCorrector` (继承 `StmtExprMutator`) + `BufferUseCollector` (继承 `StmtExprVisitor`)
 
@@ -598,7 +599,7 @@ Phase 2: InferCorrectScopes()
        if used_in_vector && !used_in_cube:
          → corrected_scope = "shared.ub"          # Vector 专用
        elif used_in_cube:
-         → corrected_scope = "shared"      # Cube 可用
+         → corrected_scope = "shared.l1"      # Cube 可用
 
 Phase 3: ScopeCorrector (StmtExprMutator)
   → 应用 scope 修正
@@ -613,7 +614,7 @@ Phase 3: ScopeCorrector (StmtExprMutator)
     2. 返回修正后的 Var
   
   InjectDefaultLayoutMap():
-    1. 为 shared buffer 注入默认 zN Layout
+    1. 为 shared.l1 buffer 注入默认 zN Layout
     2. 避免用户未指定 layout 时后端无法计算地址
 ```
 
@@ -645,7 +646,7 @@ Allocate C[wmma.accumulator, float32] # L0C
 
 **变换要点：**
 - 分析 buffer 在 gemm 中的位置推断 L0A/L0B/L0C
-- 分析 Cube/Vector 使用情况推断 shared/shared.ub
+- 分析 Cube/Vector 使用情况推断 shared.l1/shared.ub
 - 为 L1 buffer 注入默认 zN Layout 用于后端地址计算
 
 ---
@@ -748,7 +749,7 @@ Allocate A[...] {
 # 三阶段处理流程
 
 Phase 1: AllocateCollector (StmtExprVisitor)
-  → 收集 shared 和 shared.ub 分配
+  → 收集 shared.l1 和 shared.ub 分配
   
   VisitStmt_(AllocateNode):
     if IsDynamicSharedMemory(buffer_var):
@@ -792,7 +793,7 @@ Phase 3: StoragePlanRewriter (StmtExprMutator)
 
 **变换要点：**
 - 构建线性访问序列用于生命周期分析
-- 分析 shared 和 shared.ub memory 使用
+- 分析 shared.l1 和 shared.ub memory 使用
 - 检测可以合并或共享的存储
 - 重写 buffer 访问以实现存储优化
 
@@ -805,17 +806,17 @@ Phase 3: StoragePlanRewriter (StmtExprMutator)
 **输入伪 IR：**
 ```
 # 变换前：多维 buffer
-Buffer A[shared, float16, [64, 64, 64]]   # 3D → 需要扁平化
-Buffer B[shared, float16, [1024]]         # 1D → 需要扁平化
-Buffer C[shared, float16, [128, 256]]     # 2D → 无需变换
+Buffer A[shared.ub, float16, [64, 64, 64]]   # 3D → 需要扁平化
+Buffer B[shared.ub, float16, [1024]]         # 1D → 需要扁平化
+Buffer C[shared.ub, float16, [128, 256]]     # 2D → 无需变换
 ```
 
 **输出伪 IR：**
 ```
 # 变换后：统一为 2D
-Buffer A[shared, float16, [4096, 64]]     ← [64*64, 64]
-Buffer B[shared, float16, [1, 1024]]      ← [1, 1024]
-Buffer C[shared, float16, [128, 256]]     ← 保持不变
+Buffer A[shared.ub, float16, [4096, 64]]     ← [64*64, 64]
+Buffer B[shared.ub, float16, [1, 1024]]      ← [1, 1024]
+Buffer C[shared.ub, float16, [128, 256]]     ← 保持不变
 ```
 
 **变换要点：**

@@ -510,7 +510,7 @@ evaluate(call tl.ascend_add(
 |--------------|---------|------|
 | `global` / 空 | `IsGlobalMemoryBuffer()` | GM（全局内存） |
 | `shared.ub` | `IsUnifiedBuffer()` | UB（片上缓冲） |
-| `shared` | `IsL1Buffer()` | L1（Cube核缓存） |
+| `shared.l1` | `IsL1Buffer()` | L1（Cube核缓存） |
 | `wmma.accumulator` | `IsL0CBuffer()` | L0C（矩阵输出寄存器） |
 
 ### 5.3 关键限制

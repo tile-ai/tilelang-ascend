@@ -16,8 +16,8 @@
 ### 1.3 技术目标
 
 1. **GEMM 角色识别**：根据 buffer 在 `gemm/mma/matmul` 函数调用中所处的参数位置，把 `local.fragment` 改写为 `wmma.matrix_a`（L0A）、`wmma.matrix_b`（L0B）或 `wmma.accumulator`（L0C）。
-2. **L1 / UB 区分**：根据 buffer 是否参与 Cube（GEMM）或 Vector（逐元素）计算，把 `shared` 改写为 `shared`（L1）或 `shared.ub`（UB）。
-3. **ascend_copy 链推断**：对仅参与搬运、自身不直接进入 cube/vector 算子的 `shared` buffer，根据其在 `tl.ascend_copy` pair 中的对端 scope 进一步细化（例如对端是 L0A/B 则保持 L1，否则降级为 UB）。
+2. **L1 / UB 区分**：根据 buffer 是否参与 Cube（GEMM）或 Vector（逐元素）计算，把 `shared`（UB/L1 抽象）改写为 `shared.l1`（L1）或 `shared.ub`（UB）。
+3. **ascend_copy 链推断**：对仅参与搬运、自身不直接进入 cube/vector 算子的 `shared` buffer，根据其在 `tl.ascend_copy` pair 中的对端 scope 进一步细化（例如对端是 L0A/B 则推断为 `shared.l1`（L1），否则降级为 `shared.ub`（UB））。
 4. **IR 全局重写**：把推断出的新 scope 同步反映到 `Allocate`、`Block.alloc_buffers`、`Var` 类型注解、`BufferLoad/Store` 和 `tvm_access_ptr` 中，保证 IR 内部一致性。
 
 ---
@@ -102,8 +102,8 @@ flowchart TD
     B -- 否 --> D{shared?}
     D -- 是 --> E{使用模式}
     E -- 仅 Vector --> E1[shared.ub / UB]
-    E -- 仅 Cube --> E2[shared / L1]
-    E -- Cube+Vector --> E3[shared / L1]
+    E -- 仅 Cube --> E2[shared.l1 / L1]
+    E -- Cube+Vector --> E3[shared.l1 / L1]
 
     E1 --> F[ascend_copy 链推断]
     E2 --> F
@@ -111,7 +111,7 @@ flowchart TD
 
     F --> G{仅作为 ascend_copy 的端点?}
     G -- 是 --> H{对端是 L0A/L0B?}
-    H -- 是 --> H1[保留 shared / L1]
+    H -- 是 --> H1[推断为 shared.l1 / L1]
     H -- 否 --> H2[改为 shared.ub / UB]
     G -- 否 --> I[保留当前 scope]
 ```
@@ -270,8 +270,8 @@ class ScopeCorrector : public StmtExprMutator {
 
     elif orig == "shared":
       if use.used_in_vector and not use.used_in_cube: corrected = "shared.ub"     # UB
-      elif use.used_in_cube and not use.used_in_vector: corrected = "shared" # L1
-      elif use.used_in_cube and use.used_in_vector: corrected = "shared"   # L1（保守）
+      elif use.used_in_cube and not use.used_in_vector: corrected = "shared.l1" # L1
+      elif use.used_in_cube and use.used_in_vector: corrected = "shared.l1"   # L1（保守）
       else: corrected = orig
 
     alloc.corrected_scope = corrected
@@ -288,7 +288,7 @@ class ScopeCorrector : public StmtExprMutator {
       qualified = any(second_alloc.scope ∈ {wmma.matrix_a, wmma.matrix_b}
                       for (_, second) in pos.first_second_pairs)
 
-      if qualified: alloc.corrected_scope = "shared"   # 保留 L1
+      if qualified: alloc.corrected_scope = "shared.l1"   # 推断为 L1
       else:         alloc.corrected_scope = "shared.ub"       # 降级为 UB
 
   # ===== 第三阶段：UB 邻接传播 =====
@@ -309,9 +309,9 @@ class ScopeCorrector : public StmtExprMutator {
 | `local.fragment` | gemm[B] | - | `wmma.matrix_b` (L0B) |
 | `local.fragment` | gemm[C] / 默认 | - | `wmma.accumulator` (L0C) |
 | `shared` | 仅 Vector | - | `shared.ub` (UB) |
-| `shared` | 仅 Cube | - | `shared` (L1) |
-| `shared` | Cube + Vector | - | `shared` (L1, 保守) |
-| `shared` | 仅 ascend_copy | 对端是 L0A/L0B | `shared` (L1) |
+| `shared` | 仅 Cube | - | `shared.l1` (L1) |
+| `shared` | Cube + Vector | - | `shared.l1` (L1, 保守) |
+| `shared` | 仅 ascend_copy | 对端是 L0A/L0B | `shared.l1` (L1) |
 | `shared` | 仅 ascend_copy | 对端非 L0A/L0B | `shared.ub` (UB) |
 | 任意 | 与 UB 配对，自身无 cube/vector 使用 | 对端是 UB | 跟随对端改为 `shared.ub` |
 
@@ -394,7 +394,7 @@ def InferByAscendCopy(handle, alloc, pos_info):
             break
 
     if qualified:
-        alloc.corrected_scope = "shared"   # L1（参与 Cube 搬运链）
+        alloc.corrected_scope = "shared.l1"   # L1（参与 Cube 搬运链）
     else:
         alloc.corrected_scope = "shared.ub"       # UB（普通 Vector 中转）
 ```
@@ -437,18 +437,18 @@ call_extern("copy_l0c_to_gm", access_ptr(C_l0c), access_ptr(C_gm), ...)
 **输出伪 IR：**
 
 ```tir
-allocate(A_l1, "float16", "shared", [M, K])         ← 保留 L1
-allocate(B_l1, "float16", "shared", [K, N])         ← 保留 L1
+allocate(A_l1, "float16", "shared.l1", [M, K])         ← 推断为 L1
+allocate(B_l1, "float16", "shared.l1", [K, N])         ← 推断为 L1
 allocate(C_l0c, "float32", "wmma.accumulator", [M, N])  ← local.fragment → L0C
 
 # Block.annotations 中插入默认 zN Layout
 attr "layout_map" = {A_l1: zN_layout(M, K), B_l1: zN_layout(K, N)}
 
-call_extern("copy_gm_to_l1", access_ptr(A_gm), access_ptr(A_l1[shared]), ...)
-call_extern("copy_gm_to_l1", access_ptr(B_gm), access_ptr(B_l1[shared]), ...)
+call_extern("copy_gm_to_l1", access_ptr(A_gm), access_ptr(A_l1[shared.l1]), ...)
+call_extern("copy_gm_to_l1", access_ptr(B_gm), access_ptr(B_l1[shared.l1]), ...)
 call_extern("gemm_v0",
-            access_ptr(A_l1[shared]),    # 仍为 L1（gemm 输入语义）
-            access_ptr(B_l1[shared]),    # 仍为 L1
+            access_ptr(A_l1[shared.l1]),    # 推断为 L1（gemm 输入语义）
+            access_ptr(B_l1[shared.l1]),    # 推断为 L1
             access_ptr(C_l0c[wmma.accumulator]),  # ← L0C
             M, N, K)
 call_extern("copy_l0c_to_gm",
@@ -459,7 +459,7 @@ call_extern("copy_l0c_to_gm",
 **变换要点：**
 
 * `C_l0c` 在 `gemm_v0` 第 3 个 access_ptr 位置（pos=2）→ `wmma.accumulator` (L0C)。
-* `A_l1` / `B_l1` 用作 `gemm_v0` 输入，`used_in_cube=true`，保留 `shared` (L1)。
+* `A_l1` / `B_l1` 用作 `gemm_v0` 输入，`used_in_cube=true`，推断为 `shared.l1` (L1)。
 * L1 buffer 的 `Block.annotations` 中追加默认 zN Layout，便于后续 `LowerTileOp` 计算物理地址。
 * 所有 `tvm_access_ptr` 第二参数 `buffer_var` 的 `PointerType.storage_scope` 同步更新。
 
@@ -490,9 +490,9 @@ call_extern("copy_l0c_to_gm",
 | UT-03 | local.fragment 作为 GEMM C | 出现在 gemm_v0 第 2 个 access_ptr | scope = `wmma.accumulator` |
 | UT-04 | local.fragment 未进入 GEMM | 未在任何 GEMM 调用中出现 | scope = `wmma.accumulator`（默认） |
 | UT-05 | shared 仅 vector 使用 | 仅在 Vector 函数（非 copy/dma）中出现 | scope = `shared.ub` (UB) |
-| UT-06 | shared 仅 cube 使用 | 仅在 GEMM 中出现 | scope = `shared` (L1) |
-| UT-07 | shared cube + vector | 同时在 GEMM 和 Vector 中出现 | scope = `shared` (L1，保守) |
-| UT-08 | shared 中转到 L0A/B | 仅作为 ascend_copy src，对端是 wmma.matrix_a/b | scope = `shared` (L1) |
+| UT-06 | shared 仅 cube 使用 | 仅在 GEMM 中出现 | scope = `shared.l1` (L1) |
+| UT-07 | shared cube + vector | 同时在 GEMM 和 Vector 中出现 | scope = `shared.l1` (L1，保守) |
+| UT-08 | shared 中转到 L0A/B | 仅作为 ascend_copy src，对端是 wmma.matrix_a/b | scope = `shared.l1` (L1) |
 | UT-09 | shared 普通中转 | 仅作为 ascend_copy 端点，对端非 L0A/B | scope = `shared.ub` (UB) |
 | UT-10 | UB 配对传播 | 与 shared.ub(UB) 通过 ascend_copy 配对，自身无 cube/vector 使用 | 跟随对端改为 `shared.ub` (UB) |
 | UT-11 | dump_tensor 端点 | 仅出现在 `tl.ascend_dump_tensor` 中 | 走 ascend_copy 链路径，按对端推断 |
@@ -507,7 +507,7 @@ call_extern("copy_l0c_to_gm",
 | OP-01 | 简单 Matmul | A→L0A, B→L0B, C→L0C，A_l1/B_l1→L1 + zN Layout |
 | OP-02 | Matmul + Elementwise | Cube 路径 L1/L0*，Vector 路径 UB，跨核通过 workspace 在 GM |
 | OP-03 | FlashAttention | 多个 L1 buffer 共存，部分中转到 L0A/B，部分降级为 UB |
-| OP-04 | 纯 Vector 算子 | 全部 shared → UB，无 L1 buffer，无需 zN Layout |
+| OP-04 | 纯 Vector 算子 | 全部 shared → shared.ub(UB)，无 L1 buffer，无需 zN Layout |
 
 ---
 
@@ -520,9 +520,10 @@ call_extern("copy_l0c_to_gm",
 | `local.fragment` | `wmma.matrix_a` | L0A，Cube 矩阵 A 寄存器 |
 | `local.fragment` | `wmma.matrix_b` | L0B，Cube 矩阵 B 寄存器 |
 | `local.fragment` | `wmma.accumulator` | L0C，Cube 累加器 |
-| `shared` | `shared` | L1，Cube 侧片上缓存 |
-| `shared.l1` | `shared` | L1，Cube 侧片上缓存（显式指定） |
-| `shared` | `shared.ub` | UB，Vector 侧统一缓冲 |
+| `shared` | `shared.l1` | L1，Cube 侧片上缓存（编译器推断） |
+| `shared.l1` | `shared.l1` | L1，Cube 侧片上缓存（显式指定） |
+| `shared` | `shared.ub` | UB，Vector 侧统一缓冲（编译器推断） |
+| `shared.ub` | `shared.ub` | UB，Vector 侧统一缓冲（显式指定） |
 
 ### 5.2 与其他 Pass 的关系
 
@@ -547,8 +548,8 @@ InjectTmpBuffer → AscendInferBufferScope → AscendVidReduction → BufferShap
 | 下游 Pass | 依赖项 | 用途 |
 |-----------|-------|------|
 | `LayoutInference` | 所有 buffer 的精确 scope | 根据 scope 推断访问 layout |
-| `LowerTileOp` | `shared` (L1) 的 zN Layout | 计算 1D 物理地址偏移 |
+| `LowerTileOp` | `shared.l1` (L1) 的 zN Layout | 计算 1D 物理地址偏移 |
 | `AscendMemoryPlanning` | 各 buffer 落在 L0A / L0B / L0C / L1 / UB | 分级别规划地址、做内存复用 |
 | `AscendSyncInsert` | scope 决定 pipeline 类型（MTE1/MTE2/MTE3/M/V/FIX） | 选择 `set_flag` / `wait_flag` 指令 |
-| `CombineCV` | scope 区分 Cube/Vector 操作 | 把 `shared` 归 Cube，`shared.ub` 归 Vector |
+| `CombineCV` | scope 区分 Cube/Vector 操作 | 把 `shared.l1` 归 Cube，`shared.ub` 归 Vector |
 

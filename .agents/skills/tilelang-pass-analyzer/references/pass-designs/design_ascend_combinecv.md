@@ -200,7 +200,7 @@ std::unordered_map<std::string, std::string> callnodeMapPos_ = {
     {"wmma.matrix_a", "cube"},      // WMMA矩阵A缓冲区
     {"wmma.matrix_b", "cube"},      // WMMA矩阵B缓冲区
     {"wmma.accumulator", "cube"},   // WMMA累加器
-    {"shared", "cube"},             // L1 共享内存(cube)
+    {"shared.l1", "cube"},          // L1 共享内存(cube)
     {"shared.ub", "vec"}            // UB 统一缓冲(vector)
 };
 ```
