@@ -649,6 +649,14 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
     SumExperimentCodegen(op);
   } else if (op->op.same_as(tl::ascend_datacachecleanandinvalid_experiment())) {
     CreateDatacacheExperimentCodegen(op);
+  } else if (op->op.same_as(tl::ascend_brcb())) {
+    BrcbCodegen(op);
+  } else if (op->op.same_as(tl::ascend_mul_mask())) {
+    MulMaskCodegen(op, "mul_mask");
+  } else if (op->op.same_as(tl::ascend_sub_mask())) {
+    MulMaskCodegen(op, "sub_mask");
+  } else if (op->op.same_as(tl::ascend_div_mask())) {
+    MulMaskCodegen(op, "div_mask");
   } else {
     // tvm::Dump(op);
     CodeGenC::VisitExpr_(op, os);
@@ -1593,6 +1601,34 @@ void CodeGenTileLangAscend::GatherbCodegen(const CallNode *op) {
   std::string op_name =
       "tl::ascend::" + Downcast<StringImm>(op->args[0])->value;
   PrintOpCall(op, op_name, {1, 4}, {4, 7});
+}
+
+void CodeGenTileLangAscend::BrcbCodegen(const CallNode *op) {
+  std::string op_name =
+      "tl::ascend::" + Downcast<StringImm>(op->args[0])->value;
+  PrintOpCall(op, op_name, {1, 3}, {3, 6});
+}
+
+void CodeGenTileLangAscend::MulMaskCodegen(const CallNode *op, const std::string &op_name) {
+  std::string full_op_name = "tl::ascend::" + op_name;
+
+  std::vector<std::string> args;
+  for (int i = 0; i <= 2; ++i) {
+    args.push_back(PrintBufferOffset(op->args[i].as<CallNode>(), true));
+  }
+  for (int i = 3; i < 12; ++i) {
+    args.push_back(PrintExpr(op->args[i]));
+  }
+
+  this->PrintIndent();
+  this->stream << full_op_name << "(";
+  for (size_t i = 0; i < args.size(); ++i) {
+    this->stream << args[i];
+    if (i != args.size() - 1) {
+      this->stream << ", ";
+    }
+  }
+  this->stream << ");\n";
 }
 
 void CodeGenTileLangAscend::InitSortBufCodegen(const CallNode *op) {
