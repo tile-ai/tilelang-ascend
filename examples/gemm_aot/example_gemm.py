@@ -45,9 +45,9 @@ def matmul(M, N, K, block_M, block_N, K_L1, dtype="float16", accum_dtype="float"
 
     @T.prim_func
     def main(
-            A: T.Tensor((M, K), dtype),
-            B: T.Tensor((K, N), dtype),
-            C: T.Tensor((M, N), dtype),
+        A: T.Tensor((M, K), dtype),
+        B: T.Tensor((K, N), dtype),
+        C: T.Tensor((M, N), dtype),
     ):
 
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, _):
@@ -62,7 +62,7 @@ def matmul(M, N, K, block_M, block_N, K_L1, dtype="float16", accum_dtype="float"
             with T.Scope("C"):
                 loop_k = T.ceildiv(K, K_L1)
                 for k in T.serial(loop_k):
-                    T.copy(A[bx * block_M:(bx + 1) * block_M, k * K_L1:(k + 1) * K_L1], A_L1)
+                    T.copy(A[bx * block_M : (bx + 1) * block_M, k * K_L1 : (k + 1) * K_L1], A_L1)
                     T.copy(B[k * K_L1, by * block_N], B_L1)
 
                     T.barrier_all()
