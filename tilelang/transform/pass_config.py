@@ -7,6 +7,7 @@ from enum import Enum
 
 class PassConfigKey(str, Enum):
     """Pass configuration keys for TileLang compiler."""
+
     # TileLang specific configs
     TL_SIMPLIFY = "tl.Simplify"
     """Enable/disable TileLang simplification passes. Default: True"""
@@ -31,10 +32,10 @@ class PassConfigKey(str, Enum):
 
     TL_DEBUG_MERGE_SHARED_MEMORY_ALLOCATIONS = "tl.debug_merge_shared_memory_allocations"
     """Enable debug information for merge shared memory allocations. Default: False"""
-    
+
     TL_ASCEND_AUTO_SYNC = "tl.ascend_auto_sync"
     """Enable/disable TileLang AscendSyncInsert pass. Default: False"""
-    
+
     TL_ASCEND_MEMORY_PLANNING = "tl.ascend_memory_planning"
     """Enable/disable TileLang AscendMemoryPlanning pass. Default: False"""
 
@@ -42,7 +43,13 @@ class PassConfigKey(str, Enum):
     """Enable/disable TileLang CombineCV pass. Default: False"""
 
     TL_ASCEND_AUTO_CV_SYNC = "tl.ascend_auto_cross_core_sync"
-    """Enable/disable TileLang Auto CV Syncronization. Default: False"""
+    """Enable/disable TileLang Auto CV Synchronization. Default: False"""
+
+    TL_ASCEND_TAIL_MASK = "tl.ascend_tail_mask"
+    """Enable/disable the AscendC tail-block valid-region scheme
+    (AscendTailMaskPropagation): rewrites unary/binary/scalar ops on a UB tail
+    tile to compute only the valid region. Opt-in so non-tail kernels are
+    unaffected. Default: False"""
 
     # TIR related configs
     TIR_ENABLE_EQUIV_TERMS_IN_CSE = "tir.enable_equiv_terms_in_cse_tir"

@@ -53,6 +53,8 @@ public:
   void VisitExpr_(const FloorModNode *op, std::ostream &os);
   void VisitExpr_(const MulNode *op, std::ostream &os) final;
   void VisitExpr_(const SelectNode *op, std::ostream &os) final;
+  void VisitExpr_(const MinNode *op, std::ostream &os) final;
+  void VisitExpr_(const MaxNode *op, std::ostream &os) final;
   void VisitExpr_(const BufferLoadNode *op, std::ostream &os) final;
   void VisitStmt_(const BufferStoreNode *op) final;
   void VisitStmt_(const AllocateNode *op) final;
@@ -137,6 +139,14 @@ private:
   void PowerOpCodegen(const CallNode *op, const std::string &op_name);
 
   void BroadcastOpCodegen(const CallNode *op);
+
+  void TailUnaryOpCodegen(const CallNode *op);
+
+  void TailBinaryOpCodegen(const CallNode *op);
+
+  void TailScalarOpCodegen(const CallNode *op);
+
+  void TailReduceOpCodegen(const CallNode *op);
 
   void RowExpandMulCodegen(const CallNode *op);
 
