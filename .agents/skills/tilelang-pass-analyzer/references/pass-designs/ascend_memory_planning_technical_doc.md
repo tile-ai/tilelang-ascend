@@ -517,8 +517,8 @@ print('size_map:', mod['main'].attrs.get('size_map'))
 ## 附录 A：内存限制常量
 
 ```
-SHARED_UB_MEM_SIZE           = 196352   // shared.ub (UB)
-SHARED_L1_MEM_SIZE       = 524032   // shared.l1 (L1)
+SHARED_UB_MEM_SIZE               = 196352   // shared.ub (UB)
+SHARED_L1_MEM_SIZE               = 524032   // shared.l1 (L1)
 ASCEND_WMMA_MATRIX_A_MEM_SIZE    = 65536    // wmma.matrix_a
 ASCEND_WMMA_MATRIX_B_MEM_SIZE    = 65536    // wmma.matrix_b
 ASCEND_WMMA_ACCUMULATOR_MEM_SIZE = 131072   // wmma.accumulator
