@@ -1126,6 +1126,20 @@ FormatStrides(CodeGenTileLangAscendPto *codegen, const Array<PrimExpr> &shape,
 }
 
 std::string CodeGenTileLangAscendPto::GetPadEnum(const PrimExpr value) {
+  if (!value.defined()) {
+    return "pto::PadValue::Null";
+  }
+  if (const auto *int_value = value.as<IntImmNode>()) {
+    if (int_value->value == 0) {
+      return "pto::PadValue::Zero";
+    }
+  }
+  if (const auto *float_value = value.as<FloatImmNode>()) {
+    if (float_value->value == 0.0) {
+      return "pto::PadValue::Zero";
+    }
+  }
+
   std::string value_str = PrintExpr(value);
 
   std::string pad_value_enum = "pto::PadValue::Null";
@@ -1139,9 +1153,7 @@ std::string CodeGenTileLangAscendPto::GetPadEnum(const PrimExpr value) {
              value_str.find("INFINITY") != std::string::npos ||
              value_str == "std::numeric_limits<float>::infinity()") {
     pad_value_enum = "pto::PadValue::Max";
-  } else if (value_str == "0" || value_str == "0.0" || value_str == "0.0f" ||
-             value_str.find("0.000000e+00") != std::string::npos ||
-             value_str.find("0e+00") != std::string::npos) {
+  } else if (value_str == "0" || value_str == "0.0" || value_str == "0.0f") {
     pad_value_enum = "pto::PadValue::Zero";
   }
 
@@ -1204,14 +1216,15 @@ void CodeGenTileLangAscendPto::GMCopyCall(const CallNode *call,
   if (op_name.rfind("copy_gm_to_ub", 0) == 0) {
     // Use buffer's full shape (row/col) for UB tile physical dimensions
     // to ensure correct physical row stride for column slices.
-    stream << slice_info.row << ", " << slice_info.col << ", ";
-    // For sliced accesses, disable padding: TFILLPAD_INPLACE would write
-    // zeros to the full tile's non-valid region (cols beyond the slice),
-    // corrupting adjacent column data or crossing buffer boundaries.
+    stream << slice_info.row << "," << slice_info.col << ",";
+
+    // For sliced accesses, disable padding. TFILLPAD_INPLACE would write
+    // zeros to the full tile's non-valid region, corrupting adjacent column
+    // data or crossing buffer boundaries.
     if (slice_info.is_slice) {
       stream << "pto::PadValue::Null";
     } else {
-      stream << GetPadEnum(call->args[6]);
+      stream << GetPadEnum(call->args.size() > 6 ? call->args[6] : PrimExpr());
     }
   } else if (op_name.rfind("copy_ub_to_gm", 0) == 0 ||
              op_name.find("atomic_add_ub_to_gm") != std::string::npos) {
