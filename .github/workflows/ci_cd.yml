@@ -371,7 +371,7 @@ jobs:
         needs.check_changes.outputs.merged != 'true' &&
         needs.check_changes.outputs.should_skip != 'true'
       )
-    timeout-minutes: 60
+    timeout-minutes: ${{ (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 360 || 60 }}
     env:
       FULL_BUILD: ${{ github.event_name == 'schedule' || github.event.inputs.full_build == 'true' }}
     steps:
@@ -489,6 +489,15 @@ jobs:
             fi
           fi
 
+          # 确定 pytest marker 过滤策略
+          # push/schedule/workflow_dispatch 事件：全量测试（包含 lowpriority）
+          # PR 事件：跳过 lowpriority 测试用例
+          if [[ "$GITHUB_EVENT_NAME" == "push" ]] || [[ "$GITHUB_EVENT_NAME" == "schedule" ]] || [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            PYTEST_MARKERS=""
+          elif [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+            PYTEST_MARKERS="not lowpriority"
+          fi
+
           docker exec \
             -w $GITHUB_WORKSPACE \
             -e GITHUB_ENV=$GITHUB_ENV \
@@ -500,6 +509,7 @@ jobs:
             -e PYTEST_FILES_ARG="$PYTEST_FILES_ARG" \
             -e RUN_EXAMPLES="$RUN_EXAMPLES" \
             -e RUN_PYTEST_ONLY="$RUN_PYTEST_ONLY" \
+            -e PYTEST_MARKERS="$PYTEST_MARKERS" \
             tilelang_x1 \
             bash -c "
               set -e
@@ -529,16 +539,23 @@ jobs:
               cd examples
               chmod +x bench_test.sh
               
+              # 构建 pytest marker 过滤参数
+              PYTEST_MARKER_ARGS=()
+              if [ -n \"\$PYTEST_MARKERS\" ]; then
+                PYTEST_MARKER_ARGS+=(-m \"\$PYTEST_MARKERS\")
+                echo 'Applying pytest marker filter: -m '\$PYTEST_MARKERS
+              fi
+
               if [ \"\$RUN_PYTEST_ONLY\" = true ]; then
                 # 只跑 pytest（testing/ 修改）
                 if [ -n \"\$PYTEST_FILES_ARG\" ]; then
                   echo 'Running incremental pytest for: '\$PYTEST_FILES_ARG
                   set +e
-                  pytest --forked ../\$PYTEST_FILES_ARG -v -n 4 2>&1 | tee test_output.log
+                  pytest --forked ../\$PYTEST_FILES_ARG -v -n 4 \"\${PYTEST_MARKER_ARGS[@]}\" 2>&1 | tee test_output.log
                 else
                   echo 'Running full pytest (testing/ modified)'
                   set +e
-                  pytest --forked ../testing/python/ -v -n 8 2>&1 | tee test_output.log
+                  pytest --forked ../testing/python/ -v -n 8 \"\${PYTEST_MARKER_ARGS[@]}\" 2>&1 | tee test_output.log
                 fi
                 TEST_EXIT_CODE=\${PIPESTATUS[0]}
                 set -e
@@ -549,7 +566,11 @@ jobs:
                 if [ \"\$SKIP_PYTEST\" = true ]; then
                   ./bench_test.sh --skip-pytest \$TEST_DIRS_ARG 2>&1 | tee test_output.log
                 else
-                  ./bench_test.sh \$TEST_DIRS_ARG 2>&1 | tee test_output.log
+                  if [ -n \"\$PYTEST_MARKERS\" ]; then
+                    ./bench_test.sh --pytest-markers \"\$PYTEST_MARKERS\" \$TEST_DIRS_ARG 2>&1 | tee test_output.log
+                  else
+                    ./bench_test.sh \$TEST_DIRS_ARG 2>&1 | tee test_output.log
+                  fi
                 fi
                 TEST_EXIT_CODE=\${PIPESTATUS[0]}
                 set -e

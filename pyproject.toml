@@ -21,6 +21,11 @@ skip = [
     ".venv"
 ]
 
+[tool.pytest.ini_options]
+markers = [
+    "lowpriority: marks tests as low priority (only run in full test and scheduled tasks)",
+]
+
 [tool.ruff]
 target-version = "py39"
 line-length = 140
