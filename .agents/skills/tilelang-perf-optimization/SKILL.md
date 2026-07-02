@@ -29,6 +29,7 @@ Step 1: 基线采集（性能 + 精度）
 - **同步原语**：[sync-primitives-guide.md](references/sync-primitives-guide.md)
 - **API 用法**：[tilelang-api-best-practices](../tilelang-custom-skill/tilelang-api-best-practices/SKILL.md)
 - **编程模式**：[tilelang-expert-to-developer](../tilelang-custom-skill/tilelang-expert-to-developer/SKILL.md)
+- **cube最佳实践**：[tilelang-expert-to-developer](references/best-practices/cube_optimization_path.md)
 
 ---
 
@@ -65,7 +66,7 @@ print(func.get_kernel_source())
 
 ### Step 3: 识别优化点（强制，禁止与 Step 4 合并）
 
-根据算子类型阅读 `optimization-guide.md` 对应章节 + `performance-antipatterns.md`，在 `optimization_log.md` 中输出：
+根据算子类型阅读 `optimization-guide.md` 对应章节 + `performance-antipatterns.md`，如果是 cube 核额外参考最佳实践 `best-practices/cube_optimization_path.md`，在 `optimization_log.md` 中输出：
 
 **Part A 优化点清单**：逐条标注适用/不适用 + 原因 + 参考文件行号。`pass_configs` 不是独立优化点，是伴随修改。
 
