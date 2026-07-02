@@ -80,7 +80,7 @@ def gm_ub_gm_identity(M, N, block_M, block_N, dtype="float16"):
     return main
 
 
-@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.lowpriority)])
 def test_vid_reduction_gm_ub_gm_identity(setup_random_seed, target):
     M, N, block_M, block_N = 1024, 128, 128, 128
     func = tilelang.compile(gm_ub_gm_identity(M, N, block_M, block_N), out_idx=[1], pass_configs=pass_configs, target=target)
@@ -117,7 +117,7 @@ def parallel_elementwise_1d(M, block_M, dtype="float16"):
     return main
 
 
-@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.lowpriority)])
 def test_vid_reduction_parallel_elementwise_1d(setup_random_seed, target):
     M, block_M = 1024, 128
     func = tilelang.compile(parallel_elementwise_1d(M, block_M), out_idx=[1], pass_configs=pass_configs, target=target)
@@ -186,7 +186,7 @@ def gm_gather_skip_set_dual(B, SKV, G, D_full, D_main, D_tail, BI, dtype="float1
     return main
 
 
-@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.lowpriority)])
 def test_vid_reduction_skip_set_dual_buffer(setup_random_seed, target):
     """kv_ub/kv_tail_ub in skip set; gather via 4D GM index; ws loop offset."""
     B, SKV, G, D_full, D_main, D_tail, BI = 1, 256, 1, 128, 64, 64, 64
@@ -324,7 +324,7 @@ def tile_parallel_kernel(M, N, block_M, block_N, dtype="float16"):
     return main
 
 
-@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.lowpriority)])
 def test_vid_reduction_tile_parallel(setup_random_seed, target):
     M, N, block_M, block_N = 256, 128, 128, 128
     func = tilelang.compile(tile_parallel_kernel(M, N, block_M, block_N), out_idx=[1], pass_configs=pass_configs, target=target)
@@ -368,7 +368,7 @@ def tile_range_kernel(M, N, block_M, block_N, dtype="float16"):
     return main
 
 
-@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.lowpriority)])
 def test_vid_reduction_tile_range(setup_random_seed, target):
     M, N, block_M, block_N = 256, 128, 128, 128
     func = tilelang.compile(tile_range_kernel(M, N, block_M, block_N), out_idx=[1], pass_configs=pass_configs, target=target)
@@ -413,7 +413,7 @@ def buffer_region_kernel(M, N, block_M, block_N, dtype="float16"):
     return main
 
 
-@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.lowpriority)])
 def test_vid_reduction_buffer_region(setup_random_seed, target):
     M, N, block_M, block_N = 256, 128, 128, 128
     func = tilelang.compile(
@@ -450,7 +450,7 @@ def gm_ub_gm_identity_t1(M, N, block_M, block_N, dtype="float16"):
     return main
 
 
-@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.lowpriority)])
 def test_no_vid_reduction_threads1_identity(setup_random_seed, target):
     M, N, block_M, block_N = 1024, 128, 128, 128
     func = tilelang.compile(gm_ub_gm_identity_t1(M, N, block_M, block_N), out_idx=[1], pass_configs=pass_configs, target=target)
@@ -478,7 +478,7 @@ def parallel_elementwise_1d_t1(M, block_M, dtype="float16"):
     return main
 
 
-@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.lowpriority)])
 def test_no_vid_reduction_threads1_elementwise(setup_random_seed, target):
     M, block_M = 1024, 128
     func = tilelang.compile(parallel_elementwise_1d_t1(M, block_M), out_idx=[1], pass_configs=pass_configs, target=target)
