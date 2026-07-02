@@ -21,10 +21,18 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --dirs)
+            if [[ $# -lt 2 ]]; then
+                echo "Error: --dirs requires an argument" >&2
+                exit 1
+            fi
             TEST_DIRS="$2"
             shift 2
             ;;
         --pytest-markers)
+            if [[ $# -lt 2 ]]; then
+                echo "Error: --pytest-markers requires an argument" >&2
+                exit 1
+            fi
             PYTEST_MARKERS="$2"
             shift 2
             ;;
