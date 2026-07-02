@@ -95,12 +95,19 @@ for k in T.serial(loop_k):
 | 算子类型 | 判断条件 | AUTO_SYNC | 需要同步的 flag 对 |
 |---------|---------|-----------|------------------|
 | **纯 AIV Vector 算子** | MSProf 报告 aicore compute < 20%，无 MMA/Conv | **False** | `mte3→mte2`、`mte2→v`、`v→mte3` |
-| **纯 AIC Cube 算子** | 只有 MMA/Cast 等 Cube 指令 | **True** 起步即可 | MTE1/M/Cube 层 flag 复杂，自动同步更安全 |
+| **纯 AIC Cube 算子（`T.gemm_v0`）** | 使用 `T.gemm_v0`（C++ 模板内部已处理双 buffer 流水同步） | **True** 即可 | 模板内部处理，无需手动 flag |
+| **纯 AIC Cube 算子（`T.mma`）** | 使用 `T.mma` 原语 | **False** | MTE1/M/Cube 层 flag，需手动控制 |
 | **CV 融合算子** | 同时有 AIC+AIV（`KERNEL_TYPE_MIX`） | **False** | `mte3→mte2`、`mte2→v`、`v→mte3`（AIV 侧）+ cross flag（核间） |
+| **任何需要 MTE2↔MTE1 overlap 的场景** | 需要 MTE2 与 MTE1 搬运重叠 | **False** | 手动控制 MTE1/MTE2 flag |
 
-> **铁律**：纯 AIV Vector 算子实施 Double Buffer 时，`AUTO_SYNC=True` 的编译器会在每个 stage 之间自动插入冗余 `barrier_all`，使 MTE2/V/MTE3 三条流水线无法并行重叠，导致双缓冲形同虚设（性能与基线持平）。**Vector 核 Double Buffer 必须从 `AUTO_SYNC=False` 开始。**
+> **铁律**：`AUTO_SYNC=True` 时编译器会在每个 stage 之间自动插入冗余同步，破坏流水线并行重叠。以下场景 **必须从 `AUTO_SYNC=False` 开始**：
+> - **纯 AIV Vector 算子**：使 MTE2/V/MTE3 三条流水线无法并行重叠，双缓冲形同虚设
+> - **使用 `T.mma` 的 Cube 算子**：与 AIV 侧同理，冗余同步破坏 L0 层流水
+> - **需要 MTE2 与 MTE1 overlap 的场景**：无论 `T.gemm_v0` 还是 `T.mma`，均需关闭自动同步
 >
-> **自检**：实施 Vector Double Buffer 后性能无明显提升（相对基线 < 10%），第一时间检查 `AUTO_SYNC` 是否为 True。
+> 唯一例外：使用 `T.gemm_v0` 且不需要 MTE2↔MTE1 overlap 时，可保持 `AUTO_SYNC=True`（模板内部已处理 L1 内部流水同步）。
+>
+> **自检**：实施 Double Buffer 后性能无明显提升（相对基线 < 10%），第一时间检查 `AUTO_SYNC` 是否为 True。
 
 **原理**：
 ```
@@ -122,7 +129,7 @@ for k in T.serial(loop_k):
     T.mma(l0a[:, :], l0b[:, :], l0c[:, :])
 ```
 
-**优化后**（手写 Ping-Pong 双缓冲，开启自动同步）：
+**优化后 A**（`T.gemm_v0` + 自动同步，模板内部已处理双 buffer 流水）：
 ```python
 pass_configs = {
     tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
@@ -136,10 +143,12 @@ l0c = T.alloc_L0C([2, block_M, block_N], accum_dtype)
 for k in T.serial(loop_k):
     side = k % 2
     T.copy(k_l1, l0b[side, :, :])
-    T.mma(l0a[side, :, :], l0b[side, :, :], l0c[side, :, :])
+    T.gemm_v0(l0a[side, :, :], l0b[side, :, :], l0c[side, :, :])
 ```
 
-**优化后**（手写 Ping-Pong 双缓冲 + 手动同步，自动同步不符合预期时使用）：
+> `T.gemm_v0` 的 C++ 模板内部已处理 L1 层双 buffer 流水同步，开启 `AUTO_SYNC=True` 不影响 L1 内部流水。但若需要 MTE2 与 MTE1 overlap，仍需关闭 `AUTO_SYNC`。
+
+**优化后 B**（`T.mma` + 手动同步，`AUTO_SYNC=False`）：
 ```python
 pass_configs = {
     tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: False,
