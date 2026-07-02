@@ -629,6 +629,32 @@ Here is some examples:
 For a more detailed feature introduction, please see:
 - [vid_reduction_and_auto_cv_ratio.md](./docs/tutorials/vid_reduction_and_auto_cv_ratio.md)
 
+### Workspace reduction
+
+Workspace Reduction is **automatically enabled** in the compilation pipeline. No manual configuration required. It automates workspace allocation for cross-core data transfer (L0C → UB), eliminating the need for users to manually write two-stage GM copy scripts and manage workspace buffers.
+
+```python
+@T.prim_func
+def flash_attn(...):
+    with T.Kernel(..., threads=2, is_npu=True) as (cid):
+        # Cube computation
+        T.gemm_v0(q_l1, k_l1, acc_s_l0c, transpose_B=True, init=True)
+
+        # Single copy statement — Workspace Reduction automatically handles GM transfer
+        T.copy(acc_s_l0c, acc_s_ub)
+
+        # Vector computation
+        T.tile.exp(acc_s_ub, acc_s_ub)
+        T.reduce_max(acc_s_ub, m_i, dim=-1)
+        T.tile.sub(acc_s_ub, acc_s_ub, m_i)
+```
+
+Here are some examples:
+- [FlashAttnDeveloper](./examples/developer_mode/flash_attn_bshd_developer.py)
+
+For a more detailed feature introduction, please see:
+- [workspace_reduction_tutorial.md](./docs/tutorials/workspace_reduction_tutorial.md)
+
 ## Contributing
 
 We welcome contributions of new operators and framework improvements! Please follow the guidelines below to ensure your changes integrate smoothly.

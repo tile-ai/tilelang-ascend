@@ -32,11 +32,10 @@ $$
 
 ### 1.4 算法描述
 
-快速 Hadamard 变换采用蝶形网络结构，分为三个层次：
+快速 Hadamard 变换采用蝶形网络结构。Ascend NPU 无 CUDA 线程/warp 模型，采用 **Block 级并行 + 串行蝶形** 的实现方式，分为两个阶段：
 
-1. **线程内计算（n ≤ 8）**：每个线程处理 thread_elem 个元素，在寄存器内完成前 log2(thread_elem) 级蝶形操作
-2. **Block 内 Warp 级交换（n ≤ 512）**：通过共享内存实现 Warp 间数据交换，完成 log2(threads/warps) 级蝶形操作
-3. **Block 级交换（n ≤ 32768）**：通过共享内存实现跨 Warp 数据交换，完成 log2(warps) 级蝶形操作
+1. **块内蝶形（log2(block_size) 级）**：每个 Block（cid）处理 block_size 个元素，数据加载到 UB 后串行完成块内蝶形操作
+2. **跨块蝶形（log2(n) - log2(block_size) 级）**：当 n > block_size 时，由 Host 端协调，每级跨块蝶形调用一次 kernel，配对两个 block 的数据进行蝶形
 
 **蝶形操作公式**：
 ```
@@ -51,7 +50,12 @@ for each stage i from 0 to log2(n)-1:
 ### 1.5 数据流图
 
 ```
-GM[A] → UB[local] → 蝶形计算(线程内) → 共享内存交换(Warp级) → 蝶形计算(Warp级) → 共享内存交换(Block级) → 蝶形计算(Block级) → UB[local] → GM[B]
+n ≤ block_size:
+  GM[A] → UB[data_ub] → butterfly(intra-block serial) → GM[B]
+
+n > block_size:
+  GM[A] → UB[data_ub] → butterfly(intra-block) → GM[B]
+  GM → UB[data_ub/data2_ub] → butterfly(cross-block pair) → GM[B]  (one kernel call per stage)
 ```
 
 ---
@@ -67,20 +71,20 @@ GM[A] → UB[local] → 蝶形计算(线程内) → 共享内存交换(Warp级) 
 1. **计算类型判定**：纯 Vector 算子（element-wise 加减操作），无 matmul
 2. **复杂度级别**：多步迭代计算（log2(n) 级蝶形操作），需要中间缓冲
 3. **平台特性约束**：
-   - Ascend NPU **不支持 CUDA warp shuffle 指令**
-   - Ascend 使用 Block 级并行模型，每个 Block 有 cid（计算任务 ID）和 vid（Vector 单元索引）
-   - 线程间数据交换必须通过共享内存（shared memory）实现
-4. **同步需求**：多级蝶形计算需要同步，Developer 模式自动同步更方便
+   - Ascend NPU **不支持 CUDA warp shuffle 指令和 threads 线程模型**
+   - Ascend 使用 Block 级并行模型，每个 Block 有 cid（计算任务 ID）和 vid（Vector 单元索引，固定 2 个）
+   - 数据计算在 UB 中完成，Block 间数据交换通过 GM 中转（Host 协调多 kernel 调用）
+4. **同步需求**：块内蝶形串行执行无需额外同步；跨块蝶形由 Host 端串行调用 kernel，天然有序
 
 ### 2.3 模式影响
 
 | 维度 | 本算子的选择 |
 |------|-------------|
-| 内存分配 | T.alloc_shared（共享内存）+ T.alloc_local（寄存器内存） |
-| 计算方式 | T.Parallel + T.serial + 符号运算（加减） |
+| 内存分配 | T.alloc_ub（UB 内存，Vector 缓冲） |
+| 计算方式 | T.serial 串行蝶形 + 符号运算（加减） |
 | 作用域 | 编译器自动分离，无需手动 T.Scope |
-| 同步方式 | Developer 模式自动同步（T.barrier_all 在关键点） |
-| 数据交换 | 使用共享内存替代 warp shuffle |
+| 同步方式 | Developer 模式自动同步（TL_ASCEND_AUTO_SYNC） |
+| 数据交换 | 块内串行蝶形；跨块通过 Host 协调多 kernel 调用经 GM 中转 |
 
 ---
 
@@ -88,82 +92,165 @@ GM[A] → UB[local] → 蝶形计算(线程内) → 共享内存交换(Warp级) 
 
 ### 3.1 公式拆解
 
+**块内蝶形（n ≤ block_size 或块内阶段）**：
+
 | 步骤 | 数学表达 | 说明 |
 |------|----------|------|
-| 1 | 加载：local[i] = A[bx, offset + i] | 从 GM 加载到寄存器 |
-| 2 | 线程内蝶形：log2(thread_elem) 级迭代 | 在寄存器内完成蝶形操作 |
-| 3 | Warp 级数据交换：shared[tx, :] = local; local = shared[another_tx, :] | 通过共享内存交换数据 |
-| 4 | Warp 级蝶形：log2(warp_size) 级迭代 | 完成 Warp 内蝶形操作 |
-| 5 | Block 级数据交换：shared[src_tx, :] = local; local = shared[tgt_tx, :] | 跨 Warp 数据交换 |
-| 6 | Block 级蝶形：log2(warps) 级迭代 | 完成 Block 内蝶形操作 |
-| 7 | 写回：B[bx, offset + i] = local[i] | 从寄存器写回 GM |
+| 1 | 加载：data_ub[i] = A[batch, offset + i] | 从 GM 加载 block_size 个元素到 UB |
+| 2 | 块内蝶形：log2(block_size) 级迭代 | 在 UB 内串行完成蝶形操作 |
+| 3 | 写回：B[batch, offset + i] = data_ub[i] | 从 UB 写回 GM |
+
+**跨块蝶形（n > block_size 的跨块阶段，每级一次 kernel）**：
+
+| 步骤 | 数学表达 | 说明 |
+|------|----------|------|
+| 1 | 加载：data_ub[k] = A[batch, src_offset + k]; data2_ub[k] = A[batch, dst_offset + k] | 加载配对两个 half 到 UB |
+| 2 | 蝶形：tmp_ub[k] = data_ub[k] + data2_ub[k] | 蝶形加法，结果写 tmp_ub |
+| 3 | 写回上半：B[batch, src_offset + k] = tmp_ub[k] | 写回 GM |
+| 4 | 蝶形：tmp_ub[k] = data_ub[k] - data2_ub[k] | 蝶形减法，结果写 tmp_ub |
+| 5 | 写回下半：B[batch, dst_offset + k] = tmp_ub[k] | 写回 GM |
 
 ### 3.2 TileLang API 映射
 
+**块内蝶形 kernel（hadamard_block_intra）**：
+
 | 步骤 | 数学表达 | TileLang API | 参数 | 模式 |
 |------|----------|-------------|------|------|
-| 1 | 加载 | T.copy 或 T.vectorized 循环 | A[bx, offset:offset+thread_elem] → local | Developer |
-| 2 | 线程内蝶形 | T.serial(thread_round) + T.serial 循环 | 蝶形加减操作 | Developer |
-| 3 | Warp 级数据交换 | T.alloc_shared + T.copy | shared[threads, thread_elem] 存储交换数据 | Developer |
-| 4 | Warp 级蝶形 | T.serial(warp_round) + T.serial 循环 | 蝶形加减操作 | Developer |
-| 5 | Block 级数据交换 | T.alloc_shared + T.copy | 跨 Warp 数据交换 | Developer |
-| 6 | Block 级蝶形 | T.serial(block_round) + T.serial 循环 | 蝶形加减操作 | Developer |
-| 7 | 写回 | T.copy 或 T.vectorized 循环 | local → B[bx, offset:offset+thread_elem] | Developer |
+| 1 | 加载 | T.copy | A[batch, offset:offset+block_size] → data_ub | Developer |
+| 2 | 块内蝶形 | T.serial(log_block) + T.serial 内层 | 蝶形加减操作 | Developer |
+| 3 | 写回 | T.copy | data_ub → B[batch, offset:offset+block_size] | Developer |
+
+**跨块蝶形 kernel（hadamard_cross_block_pair）**：
+
+| 步骤 | 数学表达 | TileLang API | 参数 | 模式 |
+|------|----------|-------------|------|------|
+| 1 | 加载配对 | T.copy ×2 | A[src] → data_ub; A[dst] → data2_ub | Developer |
+| 2 | 蝶形加 | T.serial(half) | tmp_ub[k] = data_ub[k] + data2_ub[k] | Developer |
+| 3 | 写回上半 | T.copy | tmp_ub → B[src] | Developer |
+| 4 | 蝶形减 | T.serial(half) | tmp_ub[k] = data_ub[k] - data2_ub[k] | Developer |
+| 5 | 写回下半 | T.copy | tmp_ub → B[dst] | Developer |
 
 ### 3.3 计算伪代码
 
+**块内蝶形 kernel（hadamard_block_intra）**：
+
 ```python
-@tilelang.jit(out_idx=[1])
-def hadamard(b, n, dtype):
-    logN = int(math.log2(n))
-    threads = [...]  # 根据 n 确定 threads 数量
-    thread_elem = n // threads
-    
+@tilelang.jit(out_idx=[1], pass_configs=pass_configs)
+def hadamard_block_intra(b, n, block_size, dtype):
+    log_block = int(math.log2(block_size))
+    num_blocks_per_batch = n // block_size
+    total_blocks = b * num_blocks_per_batch
+
     @T.prim_func
     def main(A: T.Tensor((b, n), dtype), B: T.Tensor((b, n), dtype)):
-        with T.Kernel(b, threads=threads) as bx:
-            local = T.alloc_local((thread_elem,), dtype)
-            shared = T.alloc_shared((threads, thread_elem), dtype)
-            tx = T.get_thread_binding(0)
-            
-            # 1. 加载
-            for i in T.vectorized(thread_elem):
-                local[i] = A[bx, tx * thread_elem + i]
-            
-            # 2. 线程内蝶形
-            for i in T.serial(thread_round):
-                # 蝶形操作逻辑
-                ...
-            
-            # 3. Warp 级数据交换 + 蝶形
-            for i in T.serial(warp_round):
-                # 通过 shared 交换数据
-                T.barrier_all()
-                ...
-            
-            # 4. Block 级数据交换 + 蝶形
-            if block_round > 0:
-                ...
-            
-            # 5. 写回
-            for i in T.vectorized(thread_elem):
-                B[bx, tx * thread_elem + i] = local[i]
-    
+        with T.Kernel(total_blocks, is_npu=True) as (cid, vid):
+            if vid == 0:
+                batch_id = cid // num_blocks_per_batch
+                block_id_in_batch = cid % num_blocks_per_batch
+                offset = block_id_in_batch * block_size
+
+                data_ub = T.alloc_ub((block_size,), dtype)
+
+                # 1. Load
+                T.copy(A[batch_id, offset : offset + block_size], data_ub)
+
+                # 2. Intra-block serial butterfly
+                for stage in T.serial(log_block):
+                    chunk_size = 1 << (stage + 1)
+                    chunk_num = block_size // chunk_size
+                    for chunk_idx in T.serial(chunk_num):
+                        base = chunk_idx * chunk_size
+                        half = chunk_size // 2
+                        for k in T.serial(half):
+                            a_val = data_ub[base + k]
+                            b_val = data_ub[base + k + half]
+                            data_ub[base + k] = a_val + b_val
+                            data_ub[base + k + half] = a_val - b_val
+
+                # 3. Write back
+                T.copy(data_ub, B[batch_id, offset : offset + block_size])
+
     return main
+```
+
+**跨块蝶形 kernel（hadamard_cross_block_pair）**：
+
+```python
+@tilelang.jit(out_idx=[1], pass_configs=pass_configs)
+def hadamard_cross_block_pair(b, n, block_size, cross_stage, dtype):
+    chunk_size = 1 << (cross_stage + 1)
+    half = chunk_size // 2
+    num_chunks_per_batch = n // chunk_size
+    total_chunks = b * num_chunks_per_batch
+
+    @T.prim_func
+    def main(A: T.Tensor((b, n), dtype), B: T.Tensor((b, n), dtype)):
+        with T.Kernel(total_chunks, is_npu=True) as (cid, vid):
+            batch_id = cid // num_chunks_per_batch
+            chunk_id_in_batch = cid % num_chunks_per_batch
+
+            data_ub = T.alloc_ub((half,), dtype)
+            data2_ub = T.alloc_ub((half,), dtype)
+            tmp_ub = T.alloc_ub((half,), dtype)
+
+            src_offset = chunk_id_in_batch * chunk_size
+            dst_offset = src_offset + half
+
+            # 1. Load paired halves
+            T.copy(A[batch_id, src_offset : src_offset + half], data_ub)
+            T.copy(A[batch_id, dst_offset : dst_offset + half], data2_ub)
+
+            # 2. Butterfly add + write back upper half
+            for k in T.serial(half):
+                tmp_ub[k] = data_ub[k] + data2_ub[k]
+            T.copy(tmp_ub, B[batch_id, src_offset : src_offset + half])
+
+            # 3. Butterfly subtract + write back lower half
+            for k in T.serial(half):
+                tmp_ub[k] = data_ub[k] - data2_ub[k]
+            T.copy(tmp_ub, B[batch_id, dst_offset : dst_offset + half])
+
+    return main
+```
+
+**Host 端协调完整变换（n > block_size 时多级跨块调用）**：
+
+```python
+def hadamard_transform_complete(b, n, dtype="float", block_size=1024):
+    if n <= block_size:
+        kernel = hadamard_block_intra(b, n, n, dtype)
+        return lambda x: kernel(x)
+
+    log_n = int(math.log2(n))
+    log_block = int(math.log2(block_size))
+
+    kernel_intra = hadamard_block_intra(b, n, block_size, dtype)
+    cross_kernels = [
+        hadamard_cross_block_pair(b, n, block_size, stage, dtype)
+        for stage in range(log_block, log_n)
+    ]
+
+    def full_transform(x):
+        y = kernel_intra(x)
+        for kernel_cross in cross_kernels:
+            y = kernel_cross(y)
+        return y
+
+    return full_transform
 ```
 
 ### 3.4 API 可行性确认
 
 | API | 来源 | 是否可用 | 说明 |
 |-----|------|---------|------|
-| T.alloc_local | tilelang/language/allocate.py | ✅ | 用于分配线程私有寄存器内存 |
-| T.alloc_shared | tilelang/language/allocate.py | ✅ | 用于分配共享内存（对应 Ascend UB） |
-| T.get_thread_binding | tilelang/language | ✅ | 获取线程绑定（获取 tx） |
-| T.serial | tilelang/language | ✅ | 普通循环 |
-| T.vectorized | tilelang/language | ✅ | 向量化循环（加速数据搬运） |
-| T.barrier_all | tilelang/language | ✅ | 同步屏障 |
-| T.Kernel | tilelang/language | ✅ | Kernel 定义，支持 threads 参数 |
-| T.macro | tilelang/language | ✅ | 宏定义（可选，用于封装蝶形操作） |
+| T.alloc_ub | tilelang/language/allocate.py | ✅ | 用于分配 UB 内存（Vector 缓冲），蝶形计算数据缓冲 |
+| T.copy | tilelang/language/copy.py | ✅ | GM↔UB 数据搬运 |
+| T.serial | tilelang/language | ✅ | 串行循环，用于蝶形迭代 |
+| T.Kernel | tilelang/language/kernel.py | ✅ | Kernel 定义，支持 threads 参数, 用法参考`with T.Kernel(..., threads=2, is_npu=True) as (cid):` |
+| T.ceildiv | tilelang/language | ✅ | 整除向上取整 |
+| T.barrier_all | tilelang/language/ascend.py | ✅ | 同步屏障（自动同步开启时由编译器插入） |
+
+> **注意**：`T.alloc_local` 已从 TileLang-Ascend 移除，不再支持。Ascend 上使用 `T.alloc_ub` 分配 Vector 缓冲，使用 `T.alloc_var` 分配标量变量。`T.alloc_shared` 在 Ascend 上由编译器自动映射到 L1/UB，本算子纯 Vector 计算显式使用 `T.alloc_ub` 更清晰。
 
 ---
 
@@ -183,33 +270,51 @@ def hadamard(b, n, dtype):
 
 ### 4.3 中间缓冲区
 
+**块内蝶形 kernel（hadamard_block_intra）**：
+
 | Buffer 名 | Shape | dtype | 存储层级 | 用途 |
 |-----------|-------|-------|----------|------|
-| local | (thread_elem,) | float32 | UB/寄存器 | 线程私有数据缓冲 |
-| shared | (threads, thread_elem) | float32 | UB | 蝶形操作数据交换缓冲 |
-| another_val | (thread_elem,) | float32 | UB/寄存器 | 蝶形操作临时缓冲 |
+| data_ub | (block_size,) | float32 | UB | 块内蝶形数据缓冲 |
+
+**跨块蝶形 kernel（hadamard_cross_block_pair）**：
+
+| Buffer 名 | Shape | dtype | 存储层级 | 用途 |
+|-----------|-------|-------|----------|------|
+| data_ub | (half,) | float32 | UB | 蝶形上半数据（src） |
+| data2_ub | (half,) | float32 | UB | 蝶形下半数据（dst） |
+| tmp_ub | (half,) | float32 | UB | 蝶形结果临时缓冲 |
 
 ### 4.4 内存搬运路径
 
 ```
-GM[A] --T.vectorized--> UB[local] --线程内蝶形--> UB[local]
-UB[local] --T.copy--> UB[shared] --交换--> UB[local] --蝶形--> UB[local]
-UB[local] --T.copy--> UB[shared] --跨Warp交换--> UB[local] --蝶形--> UB[local]
-UB[local] --T.vectorized--> GM[B]
+intra-block butterfly:
+  GM[A] --T.copy--> UB[data_ub] --serial butterfly--> UB[data_ub] --T.copy--> GM[B]
+
+cross-block butterfly (one kernel per stage):
+  GM[A_src] --T.copy--> UB[data_ub]
+  GM[A_dst] --T.copy--> UB[data2_ub]
+  UB[data_ub/data2_ub] --butterfly add/sub--> UB[tmp_ub] --T.copy--> GM[B_src/B_dst]
 ```
 
 ### 4.5 UB 内存预算
 
-假设 n=32768, threads=256, thread_elem=128, dtype=float32：
+**块内蝶形 kernel**（假设 block_size=1024, dtype=float32）：
 
 | Buffer | Shape | dtype | 大小 (Bytes) |
 |--------|-------|-------|-------------|
-| local | (128,) | float32 | 512 |
-| shared | (256, 128) | float32 | 131072 |
-| another_val | (128,) | float32 | 512 |
-| **总计** | | | 132096 / ~128KB UB |
+| data_ub | (1024,) | float32 | 4096 |
+| **总计** | | | 4096 / 192KB UB |
 
-**约束**：shared buffer 最大 128KB，当 n * elem_size > 128KB 时需要分批交换。
+**跨块蝶形 kernel**（假设 half=block_size/2=512, dtype=float32）：
+
+| Buffer | Shape | dtype | 大小 (Bytes) |
+|--------|-------|-------|-------------|
+| data_ub | (512,) | float32 | 2048 |
+| data2_ub | (512,) | float32 | 2048 |
+| tmp_ub | (512,) | float32 | 2048 |
+| **总计** | | | 6144 / 192KB UB |
+
+**约束**：UB 容量 192KB，block_size 受 UB 限制。当 block_size * elem_size 接近 UB 上限时需减小 block_size。
 
 ### 4.6 动态轴定义
 
@@ -220,14 +325,14 @@ UB[local] --T.vectorized--> GM[B]
 ### 4.7 JIT 配置
 
 ```python
-@tilelang.jit(
-    out_idx=[1],
-    pass_configs={
-        tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
-        tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
-    },
-)
-def hadamard(b, n, dtype):
+pass_configs = {
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
+    tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
+}
+
+@tilelang.jit(out_idx=[1], pass_configs=pass_configs)
+def hadamard_block_intra(b, n, block_size, dtype="float"):
     ...
 ```
 
@@ -244,35 +349,33 @@ def hadamard(b, n, dtype):
 ### 5.2 Block 划分
 
 ```python
-# 线程数量根据 n 动态确定
-threads_table = {
-    2: 1, 4: 1, 8: 1, 16: 2, 32: 4, 64: 8, 128: 16,
-    256: 32, 512: 32, 1024: 128, 2048: 256,
-    4096: 256, 8192: 256, 16384: 256, 32768: 256
-}
-threads = threads_table[logN]
-thread_elem = n // threads  # 每个线程处理的元素数
+# block_size is the number of elements for intra-block butterfly, must be a power of 2
+# n ≤ block_size: single kernel completes all butterfly stages
+# n > block_size: intra-block butterfly + multi-stage cross-block butterfly
+block_size = 1024  # default, constrained by UB capacity
+num_blocks_per_batch = n // block_size
+total_blocks = b * num_blocks_per_batch  # each Block processes block_size elements
 ```
 
 **选择理由**：
-- n 较小时使用少量线程，避免资源浪费
-- n 较大时使用足够线程以并行化计算
-- 约束：thread_elem 应为 2 的幂次，便于蝶形操作
+- block_size 取 2 的幂次，便于蝶形操作
+- block_size 受 UB 容量约束：block_size * elem_size ≤ 192KB
+- 跨块阶段由 Host 端串行调用 kernel，每级跨块一次 kernel 调用
 
 ### 5.3 约束分析
 
-- **对齐约束**: n 必须是 2 的幂次 ✓
-- **UB 容量**: shared buffer = threads * thread_elem * elem_size
-  - 当 n=32768, float32: 256 * 128 * 4 = 128KB，刚好满 UB
-  - 需要分批交换策略（exchange_round）
+- **对齐约束**: n、block_size 必须是 2 的幂次，n % block_size == 0 ✓
+- **UB 容量**: 块内 kernel data_ub = block_size * elem_size
+  - block_size=1024, float32: 1024 * 4 = 4KB，远小于 192KB UB
+  - 跨块 kernel: 3 * half * elem_size，half = chunk_size / 2
 - **L0 容量**: 无 Cube 计算，不适用
-- **Ascend Block 模型**: threads 对应 Block 内的并行单元
+- **Ascend Block 模型**: 每个 Block 由 cid 标识，vid 取 0/1，用 `vid == 0` 守卫执行
 
 ### 5.4 注意事项
 
-1. **分批交换**：当 n * elem_size > 128KB 时，需要分多批进行数据交换
-2. **Warp 概念映射**：Ascend 没有 CUDA warp 概念，但可以类似分组（假设 warp_size=32）
-3. **线程索引**：Ascend 使用 T.get_thread_binding 获取线程索引，而非 CUDA threadIdx.x
+1. **跨块蝶形 Host 协调**：n > block_size 时，跨块每级需单独调用一次 kernel，由 Host 串行调度
+2. **无线程模型**：Ascend 无 CUDA warp/threads 概念，块内蝶形全部串行执行
+3. **vid 守卫**：纯 Vector 计算，用 `if vid == 0:` 确保只在 vid=0 的 Vector 核上执行
 
 ---
 
@@ -280,43 +383,54 @@ thread_elem = n // threads  # 每个线程处理的元素数
 
 ### 6.1 循环结构总结
 
+**块内蝶形 kernel**：
+
 | 维度 | 循环类型 | API | 理由 |
 |------|----------|-----|------|
-| Batch 维度 | Block 级并行 | T.Kernel(b, threads=threads) | 每个 Block 处理一个 batch |
-| 线程级 | 隐式并行 | T.Kernel threads 参数 | Block 内 threads 个并行单元 |
-| 蝶形迭代 | 串行迭代 | T.serial(logN) | logN 级蝶形操作串行执行 |
-| 元素访问 | 向量化 | T.vectorized(thread_elem) | 加速数据搬运 |
-| 蝶形内循环 | 串行 | T.serial(chunknum/half) | 蝶形操作内部循环 |
+| Block 并行 | Block 级并行 | T.Kernel(total_blocks, is_npu=True) | 每个 Block 处理一个 block_size 数据块 |
+| 蝶形 stage | 串行迭代 | T.serial(log_block) | log2(block_size) 级蝶形串行执行 |
+| chunk 遍历 | 串行 | T.serial(chunk_num) | 每 stage 内 chunk 串行 |
+| 蝶形对 | 串行 | T.serial(half) | chunk 内蝶形对串行 |
+
+**跨块蝶形 kernel**：
+
+| 维度 | 循环类型 | API | 理由 |
+|------|----------|-----|------|
+| Chunk 并行 | Block 级并行 | T.Kernel(total_chunks, is_npu=True) | 每个 Block 处理一对 half |
+| 蝶形加减 | 串行 | T.serial(half) | half 个元素串行蝶形 |
 
 ### 6.2 循环伪代码
 
+**Intra-block butterfly core logic**:
 ```python
-# 蝶形操作核心逻辑
-for i in T.serial(thread_round):  # thread_round = log2(thread_elem)
-    chunksize = 1 << (i + 1)
-    chunknum = thread_elem // chunksize
-    for j in T.serial(chunknum):
-        chunkbase = j * chunksize
-        for k in T.serial(chunksize // 2):
-            # 蝶形操作
-            a = local[chunkbase + k]
-            b = local[chunkbase + k + chunksize // 2]
-            local[chunkbase + k] = a + b
-            local[chunkbase + k + chunksize // 2] = a - b
+for stage in T.serial(log_block):       # log_block = log2(block_size)
+    chunk_size = 1 << (stage + 1)
+    chunk_num = block_size // chunk_size
+    for chunk_idx in T.serial(chunk_num):
+        base = chunk_idx * chunk_size
+        half = chunk_size // 2
+        for k in T.serial(half):
+            a_val = data_ub[base + k]
+            b_val = data_ub[base + k + half]
+            data_ub[base + k] = a_val + b_val
+            data_ub[base + k + half] = a_val - b_val
+```
 
-# 共享内存数据交换 + 蝶形
-for i in T.serial(warp_round):
-    # 数据交换（通过 shared）
-    T.barrier_all()
-    for j in T.vectorized(thread_elem):
-        shared[tx, j] = local[j]
-    T.barrier_all()
-    another_tx = tx ^ (1 << i)  # 异或计算配对线程
-    for j in T.vectorized(thread_elem):
-        local[j] = shared[another_tx, j]
-    T.barrier_all()
-    # 蝶形操作
-    ...
+**Cross-block butterfly core logic**:
+```python
+# Load paired halves
+T.copy(A[batch_id, src_offset : src_offset + half], data_ub)
+T.copy(A[batch_id, dst_offset : dst_offset + half], data2_ub)
+
+# Butterfly add, write back upper half
+for k in T.serial(half):
+    tmp_ub[k] = data_ub[k] + data2_ub[k]
+T.copy(tmp_ub, B[batch_id, src_offset : src_offset + half])
+
+# Butterfly subtract, write back lower half
+for k in T.serial(half):
+    tmp_ub[k] = data_ub[k] - data2_ub[k]
+T.copy(tmp_ub, B[batch_id, dst_offset : dst_offset + half])
 ```
 
 ### 6.3 流水线优化
@@ -364,7 +478,7 @@ pass_configs = {
 
 ```python
 def ref_hadamard(x: torch.Tensor):
-    """基于 scipy 的参考实现"""
+    """Reference implementation based on scipy"""
     import scipy.linalg
     assert x.ndim == 2
     dim = x.shape[-1]
@@ -398,24 +512,24 @@ def ref_hadamard(x: torch.Tensor):
 
 ### 9.1 已知约束
 
-1. **Ascend 不支持 warp shuffle**：必须使用共享内存替代，性能可能受影响
+1. **Ascend 不支持 warp shuffle / threads 线程模型**：块内蝶形全部串行执行，跨块由 Host 协调多 kernel 调用
 2. **n 必须是 2 的幂次**：算法依赖蝶形网络结构
-3. **UB 容量限制**：当 n * elem_size > 128KB 时需要分批交换
-4. **线程模型差异**：Ascend 的并行模型与 CUDA warp 不同
+3. **UB 容量限制**：block_size * elem_size 受 192KB UB 约束
+4. **跨块 kernel 调用开销**：n > block_size 时每级跨块需一次 kernel 调用，级数多时 Host 调度开销增大
 
 ### 9.2 常见错误
 
 | 错误 | 触发场景 | 影响 | 解决方案 |
 |------|----------|------|----------|
-| UB 溢出 | n 过大，shared buffer 超限 | 编译/运行失败 | 分批交换，减小 thread_elem |
-| 同步缺失 | 数据交换未同步 | 数据错乱 | 添加 T.barrier_all() |
+| UB 溢出 | block_size 过大，data_ub 超限 | 编译/运行失败 | 减小 block_size |
+| 跨块配对错位 | src_offset/dst_offset 计算错误 | 数据错乱 | 按 chunk_size 对齐计算 offset |
 | 非幂次输入 | n 不是 2 的幂次 | 算法错误 | 前端验证或 zero-padding |
-| 线程索引错误 | Ascend 线程索引获取方式错误 | 数据错位 | 使用 T.get_thread_binding(0) |
+| vid 守卫缺失 | 未用 `if vid == 0` 守卫 | 重复执行/数据错乱 | 纯 Vector 计算加 `if vid == 0:` |
 
 ### 9.3 特殊场景处理
 
-1. **大规模输入（n > 8192）**：需要分批交换策略
-2. **混合精度**：需要注意 UB 容量变化（float16 节省空间）
+1. **大规模输入（n > block_size）**：块内蝶形 + 多级跨块蝶形，Host 串行调度
+2. **混合精度**：float16 节省 UB 空间，可增大 block_size
 3. **动态 shape**：JIT 支持动态 n，但需保证是 2 的幂次
 
 ---
@@ -426,9 +540,9 @@ def ref_hadamard(x: torch.Tensor):
 
 ```
 examples/hadamard_transform/
-├── example_hadamard.py     # 算子实现 + 简单测试
-├── design.md               # 本设计文档
-└── README.md               # 使用说明（可选）
+├── example_hadamard_transform.py  # operator implementation + basic tests
+├── design.md                      # this design document
+└── README.md                      # usage instructions (optional)
 ```
 
 ### 10.2 文件清单
@@ -436,20 +550,20 @@ examples/hadamard_transform/
 | 文件 | 状态 | 说明 |
 |------|------|------|
 | design.md | ✅ 已完成 | 设计文档 |
-| example_hadamard.py | ⬜ 待实现 | 算子实现 |
+| example_hadamard_transform.py | ✅ 已完成 | 算子实现（块内 + 跨块完整方案） |
 | test_hadamard.py | ⬜ 待实现 | 测试文件（可选，放入 testing/） |
 
 ### 10.3 命名规范
 
 - 目录名: hadamard_transform（snake_case）
-- 实现文件: example_hadamard.py
+- 实现文件: example_hadamard_transform.py
 - 测试文件: test_hadamard.py
 
 ### 10.4 实现顺序
 
 1. ✅ 设计文档（design.md）
-2. ⬜ Golden 函数（验证基准）
-3. ⬜ 算子实现（example_hadamard.py）
+2. ✅ Golden 函数（验证基准，见 example_hadamard_transform.py 中 ref_hadamard）
+3. ✅ 算子实现（example_hadamard_transform.py）
 4. ⬜ 基础测试（Level 0 + Level 1）
 5. ⬜ 边界测试（Level 2）
 6. ⬜ 性能测试（Level 3，可选）
@@ -482,9 +596,7 @@ examples/hadamard_transform/
 
 | 文件 | 说明 | 支持范围 |
 |------|------|---------|
-| example_hadamard.py | 基础版本（单 Block） | n ≤ 1024 |
-| example_hadamard_optimized.py | 多 Block 框架（n > 1024 部分实现） | n ≤ 1024 完整，n > 1024 仅块内 |
-| example_hadamard_complete.py | **完整版本（Host 协调跨块蝶形）** | **任意 n（2 的幂次）** |
+| example_hadamard_transform.py | **完整版本（块内 + Host 协调跨块蝶形）** | **任意 n（2 的幂次）** |
 
 ### 完整实现方案（n > 1024）
 
@@ -502,27 +614,27 @@ examples/hadamard_transform/
 
 **示例：n=2048, block_size=1024**
 ```
-阶段 1 (Kernel 1): 前 10 级蝶形（块内）
-  Block 0: 处理元素 0-1023
-  Block 1: 处理元素 1024-2047
+Stage 1 (Kernel 1): first 10 butterfly stages (intra-block)
+  Block 0: processes elements 0-1023
+  Block 1: processes elements 1024-2047
   
-阶段 2 (Kernel 2): 第 11 级蝶形（跨块）
-  元素 0-1023 与元素 1024-2047 进行蝶形
+Stage 2 (Kernel 2): 11th butterfly stage (cross-block)
+  elements 0-1023 paired with elements 1024-2047 for butterfly
   a[i] + b[i], a[i] - b[i]
 ```
 
 ### 跨块蝶形 Kernel 设计
 
 ```python
-@tilelang.jit
+@tilelang.jit(out_idx=[1], pass_configs=pass_configs)
 def hadamard_cross_block_pair(b, n, block_size, cross_stage, dtype):
-    chunk_size = 2^(cross_stage + 1)
+    chunk_size = 1 << (cross_stage + 1)
     half = chunk_size // 2
-    
-    # 每个 chunk 对应一个 Block
+
+    # Each chunk maps to one Block
     # src_offset = chunk_id * chunk_size
     # dst_offset = src_offset + half
-    # 蝶形: src 与 dst 配对
+    # Butterfly: src paired with dst
 ```
 
 ### 性能特性

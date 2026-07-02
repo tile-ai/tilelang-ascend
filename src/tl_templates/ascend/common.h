@@ -53,13 +53,19 @@ CATLASS_DEVICE void disable_dma_atomic_compat() {
 }
 
 template <typename T, uint32_t dstM, uint32_t dstN>
-CATLASS_DEVICE void copy_gm_to_l1(LocalTensor<T> dstTensor,
-                                  GlobalTensor<T> srcTensor,
-                                  uint32_t realSrcN = 1, uint32_t realTailM = 0,
-                                  uint32_t realTailN = 0) {
+CATLASS_DEVICE void
+copy_gm_to_l1(LocalTensor<T> dstTensor, GlobalTensor<T> srcTensor,
+              uint32_t realSrcN = 1, uint32_t realTailM = 0,
+              uint32_t realTailN = 0, bool need_clear = true) {
   uint32_t tailM = realTailM == 0 ? dstM : realTailM;
   uint32_t tailN = realTailN == 0 ? dstN : realTailN;
-  if (tailM != dstM || tailN != dstN) {
+  // Only the primary copy (dst offset 0, i.e. need_clear == true) is allowed to
+  // zero-init the full L1 tile. Sub-region copies (need_clear == false, e.g.
+  // the second DMA of a splice / vertical-merge pattern) must NOT clear,
+  // otherwise they clobber data already written into the same NZ tile. The
+  // full-tile clear is only correct when it targets the tile base, which the
+  // codegen guarantees by passing need_clear = (dst_offset == 0).
+  if (need_clear && (tailM != dstM || tailN != dstN)) {
     AscendC::InitConstValue(
         dstTensor,
         {1, static_cast<uint16_t>(dstM * dstN * sizeof(T) / 32), 0, 0});
@@ -822,6 +828,51 @@ CATLASS_DEVICE void brcb(const LocalTensor<T> &dst, const LocalTensor<T> &src0,
                          const uint16_t dstRepStride) {
   AscendC::BrcbRepeatParams repeatParams(dstBlkStride, dstRepStride);
   AscendC::Brcb<T>(dst, src0, repeatTime, repeatParams);
+}
+
+template <typename T>
+CATLASS_DEVICE void
+mul_mask(const LocalTensor<T> &dst, const LocalTensor<T> &src0,
+         const LocalTensor<T> &src1, const uint64_t mask0, const uint64_t mask1,
+         const uint8_t repeatTime, const uint8_t dstBlkStride,
+         const uint8_t src0BlkStride, const uint8_t src1BlkStride,
+         const uint8_t dstRepStride, const uint8_t src0RepStride,
+         const uint8_t src1RepStride) {
+  uint64_t mask[2] = {mask0, mask1};
+  AscendC::BinaryRepeatParams params(dstBlkStride, src0BlkStride, src1BlkStride,
+                                     dstRepStride, src0RepStride,
+                                     src1RepStride);
+  AscendC::Mul<T, false>(dst, src0, src1, mask, repeatTime, params);
+}
+
+template <typename T>
+CATLASS_DEVICE void
+sub_mask(const LocalTensor<T> &dst, const LocalTensor<T> &src0,
+         const LocalTensor<T> &src1, const uint64_t mask0, const uint64_t mask1,
+         const uint8_t repeatTime, const uint8_t dstBlkStride,
+         const uint8_t src0BlkStride, const uint8_t src1BlkStride,
+         const uint8_t dstRepStride, const uint8_t src0RepStride,
+         const uint8_t src1RepStride) {
+  uint64_t mask[2] = {mask0, mask1};
+  AscendC::BinaryRepeatParams params(dstBlkStride, src0BlkStride, src1BlkStride,
+                                     dstRepStride, src0RepStride,
+                                     src1RepStride);
+  AscendC::Sub<T, false>(dst, src0, src1, mask, repeatTime, params);
+}
+
+template <typename T>
+CATLASS_DEVICE void
+div_mask(const LocalTensor<T> &dst, const LocalTensor<T> &src0,
+         const LocalTensor<T> &src1, const uint64_t mask0, const uint64_t mask1,
+         const uint8_t repeatTime, const uint8_t dstBlkStride,
+         const uint8_t src0BlkStride, const uint8_t src1BlkStride,
+         const uint8_t dstRepStride, const uint8_t src0RepStride,
+         const uint8_t src1RepStride) {
+  uint64_t mask[2] = {mask0, mask1};
+  AscendC::BinaryRepeatParams params(dstBlkStride, src0BlkStride, src1BlkStride,
+                                     dstRepStride, src0RepStride,
+                                     src1RepStride);
+  AscendC::Div<T, false>(dst, src0, src1, mask, repeatTime, params);
 }
 
 template <typename T1, typename T2, typename LayOutL1, typename LayoutGM,

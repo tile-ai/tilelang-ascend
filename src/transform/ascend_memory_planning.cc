@@ -28,6 +28,7 @@
 #include <tvm/tir/utils.h>
 
 #include "../op/builtin.h"
+#include "./common/attr.h"
 #include "./common/collector.h"
 
 #define ASCEND_SHARED_MEM_SIZE 196352
@@ -67,7 +68,11 @@ public:
     }
 
     Map<Var, Array<PrimExpr>> external_shape_map;
-    if (fn_attr->dict.count("buffer_shapess")) {
+    if (fn_attr->dict.count(kLogicBufferShapes)) {
+      external_shape_map = fn_attr->dict.at(kLogicBufferShapes)
+                               .as<Map<Var, Array<PrimExpr>>>()
+                               .value();
+    } else if (fn_attr->dict.count("buffer_shapess")) {
       external_shape_map = fn_attr->dict.at("buffer_shapess")
                                .as<Map<Var, Array<PrimExpr>>>()
                                .value();
@@ -102,6 +107,9 @@ private:
                                  Map<Var, Array<PrimExpr>> external_shape_map,
                                  bool auto_plan = false) {
       memory_auto_plan = auto_plan;
+      // Preserve layouts needed by CalculateBufferSize.
+      // PTO 4D shapes are [physical_M, physical_N, valid_M, valid_N].
+      external_shape_map_ = external_shape_map;
       memory_limits_ = {{"shared.dyn", ASCEND_SHARED_DYN_MEM_SIZE},
                         {"wmma.matrix_a", ASCEND_WMMA_MATRIX_A_MEM_SIZE},
                         {"wmma.matrix_b", ASCEND_WMMA_MATRIX_B_MEM_SIZE},
@@ -823,10 +831,20 @@ private:
 
     size_t CalculateBufferSize(const AllocateNode *alloc) {
       size_t size_elements = 1;
-      for (const auto &extent : alloc->extents) {
-        const IntImmNode *int_imm = extent.as<IntImmNode>();
-        ICHECK(int_imm) << "Extent must be an integer constant";
-        size_elements *= int_imm->value;
+      auto shape_it = external_shape_map_.find(alloc->buffer_var);
+      if (shape_it != external_shape_map_.end() &&
+          (*shape_it).second.size() == 4) {
+        const auto &shape = (*shape_it).second;
+        const IntImmNode *row = shape[0].as<IntImmNode>();
+        const IntImmNode *col = shape[1].as<IntImmNode>();
+        ICHECK(row && col) << "PTO physical buffer shape must be constant";
+        size_elements = row->value * col->value;
+      } else {
+        for (const auto &extent : alloc->extents) {
+          const IntImmNode *int_imm = extent.as<IntImmNode>();
+          ICHECK(int_imm) << "Extent must be an integer constant";
+          size_elements *= int_imm->value;
+        }
       }
 
       size_t size_bytes =
@@ -851,6 +869,8 @@ private:
         buffer_scopes_; // buffer scope(UB/L1..)
     std::unordered_map<const VarNode *, size_t>
         buffer_sizes_; // buffer bytes size
+    // Layout map used to size PTO 4D tiles by physical footprint.
+    Map<Var, Array<PrimExpr>> external_shape_map_;
     std::unordered_map<const VarNode *, size_t>
         first_use_; // buffer first use stmt scope
     std::unordered_map<std::string, int>

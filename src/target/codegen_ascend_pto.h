@@ -184,6 +184,9 @@ private:
 
   void CompareScalarCodegen(const CallNode *op, const std::string &op_name);
 
+  ShapeInfo GetCompareMaskInfo(const CallNode *dst_call,
+                               const ShapeInfo &src_info);
+
   void TshCodegen(const CallNode *op, const std::string &op_name);
 
   void ArithProgressionCodegen(const CallNode *op, const std::string &op_name);
@@ -195,6 +198,17 @@ private:
   void BroadcastOpCodegen(const CallNode *op);
 
   void RowExpandMulCodegen(const CallNode *op);
+
+  void BrcbExperimentCodegen(const CallNode *op);
+
+  void RowExpandMulExperimentCodegen(const CallNode *op);
+
+  void RowExpandSubExperimentCodegen(const CallNode *op);
+
+  void RowExpandDivExperimentCodegen(const CallNode *op);
+
+  void RowExpandBinOpExperimentCodegenPto(const CallNode *op,
+                                          const std::string &pto_op_name);
 
   void SelectCodegen(const CallNode *op);
 
