@@ -10,6 +10,15 @@ Covers:
   6. tmp_buffer address planning
   7. Nested loop liveness
   8. NPU correctness for loop scenarios
+  9. if/else branch liveness: branch-internal buffers must not overlap
+     each other nor with outer-scope live buffers
+  10. T.if_then_else dynamic index: memory planning stays correct under
+      runtime-computed indices
+  11. Boundary cases: tail-block if/else, minimum-aligned buffer
+  12. NPU correctness for if/else and T.if_then_else scenarios
+
+All new offset-checking cases are parametrized over both codegen targets
+(``ascendc`` and ``pto``) to ensure the planning pass is backend-agnostic.
 """
 
 import re
@@ -43,13 +52,22 @@ def clear_cache():
 
 
 def _get_buffer_offsets(kernel_source: str) -> dict[str, int]:
-    """Parse buffer offsets from generated AscendC source code."""
+    """Parse buffer offsets from generated AscendC/PTO source code.
+
+    AscendC emits ``auto <name> = <scope>.GetWithOffset<type>(size, offset)``
+    while PTO emits ``TASSIGN(<name>, <offset>)``. Both use byte offsets, so
+    the returned map is directly comparable across targets.
+    """
     offsets = {}
     for line in kernel_source.split("\n"):
         m = re.search(
             r"auto\s+(\w+)\s*=.*GetWithOffset<[^>]+>\(\s*\d+\s*,\s*(\d+)\s*\)",
             line,
         )
+        if m:
+            offsets[m.group(1)] = int(m.group(2))
+            continue
+        m = re.search(r"TASSIGN\(\s*(\w+)\s*,\s*(\d+)\s*\)", line)
         if m:
             offsets[m.group(1)] = int(m.group(2))
     return offsets
@@ -66,6 +84,13 @@ def _get_buffer_sizes(kernel_source: str) -> dict[str, int]:
         if m:
             sizes[m.group(1)] = int(m.group(2))
     return sizes
+
+
+def _assert_no_overlap(name1: str, off1: int, size1: int, name2: str, off2: int, size2: int):
+    """Assert two buffer address ranges do not overlap."""
+    assert off1 + size1 <= off2 or off2 + size2 <= off1, (
+        f"Buffers {name1} [{off1}, {off1 + size1}) and {name2} [{off2}, {off2 + size2}) overlap"
+    )
 
 
 def _compile_and_get_offsets(program, pass_configs, target="ascendc", out_idx=None):
@@ -386,6 +411,204 @@ def test_multiple_scopes_independent_allocation():
 
 
 # ---------------------------------------------------------------------------
+# 9. if/else branch liveness
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+def test_if_else_branch_buffers_no_overlap(target):
+    """if/else branches each allocate a buffer; their addresses must not
+    overlap so that runtime branch selection never corrupts data."""
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((2, 64), "float32"),  # type: ignore
+        B: T.Tensor((1, 64), "float32"),  # type: ignore
+        sel: T.Tensor((1,), "int32"),  # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (cid, vid):
+            s = sel[0]
+            if s > 0:
+                x_ub = T.alloc_ub((64,), "float32")
+                T.copy(A[0, :], x_ub)
+                T.copy(x_ub, B[0, :])
+            else:
+                y_ub = T.alloc_ub((64,), "float32")
+                T.copy(A[1, :], y_ub)
+                T.copy(y_ub, B[0, :])
+
+    offsets, _ = _compile_and_get_offsets(main, PASS_AUTO, target=target, out_idx=[1])
+    assert "x_ub" in offsets, f"x_ub missing in {target} source"
+    assert "y_ub" in offsets, f"y_ub missing in {target} source"
+    buf_size = 64 * 4
+    _assert_no_overlap("x_ub", offsets["x_ub"], buf_size, "y_ub", offsets["y_ub"], buf_size)
+
+
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+def test_if_else_branch_buffer_not_reuse_outer(target):
+    """Buffer allocated before if/else and read inside a branch must not
+    share memory with branch-internal buffers."""
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((2, 64), "float32"),  # type: ignore
+        B: T.Tensor((2, 64), "float32"),  # type: ignore
+        sel: T.Tensor((1,), "int32"),  # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (cid, vid):
+            base_ub = T.alloc_ub((64,), "float32")
+            T.copy(A[0, :], base_ub)
+            s = sel[0]
+            if s > 0:
+                inner_ub = T.alloc_ub((64,), "float32")
+                T.copy(A[1, :], inner_ub)
+                T.tile.add(inner_ub, inner_ub, base_ub)
+                T.copy(inner_ub, B[0, :])
+            else:
+                inner2_ub = T.alloc_ub((64,), "float32")
+                T.copy(A[1, :], inner2_ub)
+                T.tile.sub(inner2_ub, inner2_ub, base_ub)
+                T.copy(inner2_ub, B[1, :])
+
+    offsets, _ = _compile_and_get_offsets(main, PASS_AUTO, target=target, out_idx=[1])
+    buf_size = 64 * 4
+    _assert_no_overlap(
+        "base_ub",
+        offsets["base_ub"],
+        buf_size,
+        "inner_ub",
+        offsets["inner_ub"],
+        buf_size,
+    )
+    _assert_no_overlap(
+        "base_ub",
+        offsets["base_ub"],
+        buf_size,
+        "inner2_ub",
+        offsets["inner2_ub"],
+        buf_size,
+    )
+
+
+# ---------------------------------------------------------------------------
+# 10. T.if_then_else dynamic index liveness
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+def test_if_then_else_dynamic_index_buffers_no_overlap(target):
+    """T.if_then_else computed dynamic index must not break memory planning:
+    simultaneously-live buffers must not overlap."""
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((128, 64), "float32"),  # type: ignore
+        B: T.Tensor((128, 64), "float32"),  # type: ignore
+        n: T.Tensor((1,), "int32"),  # type: ignore
+    ):
+        with T.Kernel(2, is_npu=True) as (cid, vid):
+            row = T.if_then_else(n[0] > 64, cid * 64, cid * 32)
+            a_ub = T.alloc_ub((64, 64), "float32")
+            b_ub = T.alloc_ub((64, 64), "float32")
+            T.copy(A[row : row + 64, :], a_ub)
+            T.copy(a_ub, b_ub)
+            T.copy(b_ub, B[row : row + 64, :])
+
+    offsets, _ = _compile_and_get_offsets(main, PASS_AUTO, target=target, out_idx=[1])
+    buf_size = 64 * 64 * 4
+    _assert_no_overlap("a_ub", offsets["a_ub"], buf_size, "b_ub", offsets["b_ub"], buf_size)
+
+
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+def test_if_then_else_in_loop_buffer_liveness(target):
+    """Buffer defined before a loop that uses T.if_then_else for dynamic
+    indexing must not be reused by loop-internal buffers."""
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((4, 64), "float32"),  # type: ignore
+        B: T.Tensor((4, 64), "float32"),  # type: ignore
+        sel: T.Tensor((1,), "int32"),  # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (cid, vid):
+            base_ub = T.alloc_ub((64,), "float32")
+            T.copy(A[0, :], base_ub)
+            for k in T.serial(3):
+                src_row = T.if_then_else(sel[0] > 0, k, 3 - k)
+                work_ub = T.alloc_ub((64,), "float32")
+                T.copy(A[src_row, :], work_ub)
+                T.tile.add(work_ub, work_ub, base_ub)
+                T.copy(work_ub, B[k, :])
+
+    offsets, _ = _compile_and_get_offsets(main, PASS_AUTO, target=target, out_idx=[1])
+    buf_size = 64 * 4
+    _assert_no_overlap(
+        "base_ub",
+        offsets["base_ub"],
+        buf_size,
+        "work_ub",
+        offsets["work_ub"],
+        buf_size,
+    )
+
+
+# ---------------------------------------------------------------------------
+# 11. Boundary cases
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+def test_if_else_boundary_last_block(target):
+    """Boundary: the last block takes a different code path via if/else,
+    allocating an extra buffer. Memory planning must keep it non-overlapping
+    with the outer buffer."""
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((192, 32), "float32"),  # type: ignore
+        B: T.Tensor((192, 32), "float32"),  # type: ignore
+    ):
+        with T.Kernel(3, is_npu=True) as (cid, vid):
+            a_ub = T.alloc_ub((64, 32), "float32")
+            start = cid * 64
+            T.copy(A[start : start + 64, :], a_ub)
+            if cid == 2:
+                b_ub = T.alloc_ub((64, 32), "float32")
+                T.tile.mul(b_ub, a_ub, 2.0)
+                T.copy(b_ub, B[start : start + 64, :])
+            else:
+                T.copy(a_ub, B[start : start + 64, :])
+
+    offsets, _ = _compile_and_get_offsets(main, PASS_AUTO, target=target, out_idx=[1])
+    assert "a_ub" in offsets
+    assert "b_ub" in offsets
+    buf_size = 64 * 32 * 4
+    _assert_no_overlap("a_ub", offsets["a_ub"], buf_size, "b_ub", offsets["b_ub"], buf_size)
+
+
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+def test_if_then_else_min_buffer_boundary(target):
+    """Boundary: minimum 32B-aligned buffer (8 float32 elements) together
+    with T.if_then_else index guard must compile and plan correctly."""
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((16, 8), "float32"),  # type: ignore
+        B: T.Tensor((16, 8), "float32"),  # type: ignore
+        n: T.Tensor((1,), "int32"),  # type: ignore
+    ):
+        with T.Kernel(2, is_npu=True) as (cid, vid):
+            row = T.if_then_else(n[0] > 8, cid * 8, 0)
+            a_ub = T.alloc_ub((8, 8), "float32")
+            T.copy(A[row : row + 8, :], a_ub)
+            T.copy(a_ub, B[row : row + 8, :])
+
+    offsets, _ = _compile_and_get_offsets(main, PASS_AUTO, target=target, out_idx=[1])
+    assert "a_ub" in offsets
+    assert offsets["a_ub"] >= 0
+
+
+# ---------------------------------------------------------------------------
 # 8. NPU correctness tests
 # ---------------------------------------------------------------------------
 
@@ -509,6 +732,123 @@ def test_npu_sequential_ops_correctness():
     b = kernel(a)
     ref = a * a[0, :].unsqueeze(0)
     torch.testing.assert_close(b, ref, rtol=1e-3, atol=1e-3)
+
+
+# ---------------------------------------------------------------------------
+# 12. NPU correctness for if/else and T.if_then_else
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(
+    not NPU_AVAILABLE,
+    reason="NPU correctness requires an Ascend NPU runtime",
+)
+def test_npu_if_else_branch_correctness():
+    """NPU correctness: runtime-selected if/else branch must produce the
+    expected output, proving branch buffers are not corrupted by planning."""
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((2, 64), "float32"),  # type: ignore
+        sel: T.Tensor((1,), "int32"),  # type: ignore
+        B: T.Tensor((1, 64), "float32"),  # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (cid, vid):
+            s = sel[0]
+            if s > 0:
+                x_ub = T.alloc_ub((64,), "float32")
+                T.copy(A[0, :], x_ub)
+                T.tile.mul(x_ub, x_ub, 2.0)
+                T.copy(x_ub, B[0, :])
+            else:
+                y_ub = T.alloc_ub((64,), "float32")
+                T.copy(A[1, :], y_ub)
+                T.tile.mul(y_ub, y_ub, 3.0)
+                T.copy(y_ub, B[0, :])
+
+    kernel = tilelang.compile(main, pass_configs=PASS_AUTO, target="ascendc", out_idx=[2])
+
+    a = torch.randn(2, 64, dtype=torch.float32, device="npu")
+    sel_pos = torch.tensor([1], dtype=torch.int32, device="npu")
+    sel_neg = torch.tensor([0], dtype=torch.int32, device="npu")
+    b_pos = kernel(a, sel_pos)
+    b_neg = kernel(a, sel_neg)
+    torch.testing.assert_close(b_pos[0], a[0] * 2, rtol=1e-3, atol=1e-3)
+    torch.testing.assert_close(b_neg[0], a[1] * 3, rtol=1e-3, atol=1e-3)
+
+
+@pytest.mark.skipif(
+    not NPU_AVAILABLE,
+    reason="NPU correctness requires an Ascend NPU runtime",
+)
+def test_npu_if_then_else_dynamic_index_correctness():
+    """NPU correctness: T.if_then_else computed offset selects the right
+    source tile, proving dynamic indexing + planning is sound."""
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((128, 64), "float32"),  # type: ignore
+        n: T.Tensor((1,), "int32"),  # type: ignore
+        B: T.Tensor((64, 64), "float32"),  # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (cid, vid):
+            offset = T.if_then_else(n[0] > 64, 0, 64)
+            a_ub = T.alloc_ub((64, 64), "float32")
+            T.copy(A[offset : offset + 64, :], a_ub)
+            T.copy(a_ub, B[:, :])
+
+    kernel = tilelang.compile(main, pass_configs=PASS_AUTO, target="ascendc", out_idx=[2])
+
+    a = torch.randn(128, 64, dtype=torch.float32, device="npu")
+    n_hi = torch.tensor([100], dtype=torch.int32, device="npu")
+    n_lo = torch.tensor([10], dtype=torch.int32, device="npu")
+    b_hi = kernel(a, n_hi)
+    b_lo = kernel(a, n_lo)
+    torch.testing.assert_close(b_hi, a[0:64, :], rtol=1e-3, atol=1e-3)
+    torch.testing.assert_close(b_lo, a[64:128, :], rtol=1e-3, atol=1e-3)
+
+
+@pytest.mark.skipif(
+    not NPU_AVAILABLE,
+    reason="NPU correctness requires an Ascend NPU runtime",
+)
+def test_npu_if_else_in_loop_correctness():
+    """NPU correctness: if/else inside a loop with a cross-iteration base
+    buffer; both branches must keep the base buffer intact."""
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((4, 64), "float32"),  # type: ignore
+        sel: T.Tensor((1,), "int32"),  # type: ignore
+        B: T.Tensor((4, 64), "float32"),  # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (cid, vid):
+            base_ub = T.alloc_ub((64,), "float32")
+            T.copy(A[0, :], base_ub)
+            for k in T.serial(4):
+                s = sel[0]
+                if s > 0:
+                    add_ub = T.alloc_ub((64,), "float32")
+                    T.copy(A[k, :], add_ub)
+                    T.tile.add(add_ub, add_ub, base_ub)
+                    T.copy(add_ub, B[k, :])
+                else:
+                    sub_ub = T.alloc_ub((64,), "float32")
+                    T.copy(A[k, :], sub_ub)
+                    T.tile.sub(sub_ub, sub_ub, base_ub)
+                    T.copy(sub_ub, B[k, :])
+
+    kernel = tilelang.compile(main, pass_configs=PASS_AUTO, target="ascendc", out_idx=[2])
+
+    a = torch.randn(4, 64, dtype=torch.float32, device="npu")
+    sel_pos = torch.tensor([1], dtype=torch.int32, device="npu")
+    sel_neg = torch.tensor([0], dtype=torch.int32, device="npu")
+    b_pos = kernel(a, sel_pos)
+    b_neg = kernel(a, sel_neg)
+    ref_pos = a + a[0, :].unsqueeze(0)
+    ref_neg = a - a[0, :].unsqueeze(0)
+    torch.testing.assert_close(b_pos, ref_pos, rtol=1e-3, atol=1e-3)
+    torch.testing.assert_close(b_neg, ref_neg, rtol=1e-3, atol=1e-3)
 
 
 if __name__ == "__main__":
