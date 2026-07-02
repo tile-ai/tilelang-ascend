@@ -47,7 +47,9 @@ CI 流水线（`.github/workflows/ci_cd.yml`）根据触发事件自动应用不
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("shape", [1024])
 def test_generate_arithmetic_progression(target, shape):
-    ...
+    N = shape
+    block_size = 64
+    run_test_generate_arithmetic_progression(N, block_size, target)
 ```
 
 效果：`test_generate_arithmetic_progression[ascendc-1024]` 和 `test_generate_arithmetic_progression[pto-1024]` 均被标记为 `lowpriority`。
@@ -57,45 +59,43 @@ def test_generate_arithmetic_progression(target, shape):
 对 `@pytest.mark.parametrize` 中的**单个参数值**打标签。该参数值参与的所有组合均继承标签。
 
 ```python
-@pytest.mark.parametrize("dtype", [
-    "int16", "int32",
-    pytest.param("uint16", marks=pytest.mark.lowpriority),
-    pytest.param("uint32", marks=pytest.mark.lowpriority),
-])
-@pytest.mark.parametrize("target", ["ascendc", "pto"])
-def test_bitwise_lshift(dtype, target, shape):
+@pytest.mark.parametrize(
+    "target",
+    ["ascendc", pytest.param("pto", marks=pytest.mark.lowpriority)],
+)
+def test_vid_reduction_gm_ub_gm_identity(setup_random_seed, target):
     ...
 ```
 
-效果（笛卡尔积，OR 语义）：
-
-| dtype | target | 是否 lowpriority | 原因 |
-|-------|--------|------------------|------|
-| int16 | ascendc | 否 | — |
-| int16 | pto | 否 | — |
-| int32 | ascendc | 否 | — |
-| int32 | pto | 否 | — |
-| uint16 | ascendc | **是** | dtype=uint16 |
-| uint16 | pto | **是** | dtype=uint16 |
-| uint32 | ascendc | **是** | dtype=uint32 |
-| uint32 | pto | **是** | dtype=uint32 |
+效果：仅 `target=pto` 的用例被标记为 `lowpriority`，`target=ascendc` 不受影响。
 
 ### 3. 笛卡尔积标签（多参数分别标注，OR 叠加）
 
 当**多个 parametrize 分别对参数值打标签**时，标签按 OR 逻辑叠加：任一参数命中即生效。
 
 ```python
-@pytest.mark.parametrize("dtype", [
-    "int16", "int32",
-    pytest.param("uint16", marks=pytest.mark.lowpriority),
-    pytest.param("uint32", marks=pytest.mark.lowpriority),
-])
-@pytest.mark.parametrize("target", [
-    "ascendc",
-    pytest.param("pto", marks=pytest.mark.lowpriority),
-])
-def test_bitwise_rshift(dtype, target, shape):
-    ...
+@pytest.mark.parametrize(
+    "dtype",
+    [
+        "int16",
+        "int32",
+        pytest.param("uint16", marks=pytest.mark.lowpriority),
+        pytest.param("uint32", marks=pytest.mark.lowpriority),
+    ],
+)
+@pytest.mark.parametrize(
+    "target",
+    [
+        "ascendc",
+        pytest.param("pto", marks=pytest.mark.lowpriority),
+    ],
+)
+@pytest.mark.parametrize("shape", [(1024, 1024)])
+def test_bitwise_lshift(dtype, target, shape):
+    M, N = shape
+    max_shift = 16 if dtype in ["int16", "uint16"] else 32
+    scalarvalue = random.randint(1, max_shift)
+    run_test_bitwise_lshift(M, N, 128, 256, scalarvalue=scalarvalue, dtype=dtype, target=target)
 ```
 
 效果：
@@ -126,17 +126,19 @@ transpose_dtype_target_params = [
     ("float16", "ascendc"),
     ("float16", "pto"),
     ("int32", "ascendc"),
-    pytest.param("int32", "pto", marks=pytest.mark.lowpriority),  # 仅此组合标记
+    pytest.param("int32", "pto", marks=pytest.mark.lowpriority),
     ("uint32", "ascendc"),
     ("uint32", "pto"),
     ("float", "ascendc"),
     ("float", "pto"),
 ]
 
+
 @pytest.mark.parametrize("dtype,target", transpose_dtype_target_params)
 @pytest.mark.parametrize("shape", [(16, 16)])
 def test_transpose(dtype, target, shape):
-    ...
+    M, N = shape
+    run_test_transpose(M, N, 16, 16, dtype, target)
 ```
 
 效果：仅 `test_transpose[int32-pto-16-16]` 被标记为 `lowpriority`，其余 11 个组合不受影响。
@@ -148,15 +150,19 @@ def test_transpose(dtype, target, shape):
 ```python
 # 整体跳过
 @pytest.mark.skiptest
-def test_unstable_feature(...):
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+def test_unstable_feature(target):
     ...
 
 # 特定参数组合跳过
-@pytest.mark.parametrize("dtype,target", [
-    ("float", "ascendc"),
-    ("float", "pto"),
-    pytest.param("float16", "pto", marks=pytest.mark.skiptest),  # 该组合在所有 CI 场景跳过
-])
+@pytest.mark.parametrize(
+    "dtype,target",
+    [
+        ("float", "ascendc"),
+        ("float", "pto"),
+        pytest.param("float16", "pto", marks=pytest.mark.skiptest),
+    ],
+)
 def test_known_issue(dtype, target):
     ...
 ```
