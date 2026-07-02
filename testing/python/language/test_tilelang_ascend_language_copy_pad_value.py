@@ -21,12 +21,11 @@ def copy_pad_value_kernel(valid_cols=63, gm_cols=64, ub_cols=64, pad_value=None,
         with T.Kernel(1, is_npu=True) as (cid, vid):
             a_ub = T.alloc_ub((1, ub_cols), "float16")
 
-            with T.Scope("V"):
-                if explicit_pad_value:
-                    T.copy(A[0, 0:valid_cols], a_ub[0, 0:valid_cols], pad_value=pad_value)
-                else:
-                    T.copy(A[0, 0:valid_cols], a_ub[0, 0:valid_cols])
-                T.copy(a_ub[0, 0:valid_cols], B[0, 0:valid_cols])
+            if explicit_pad_value:
+                T.copy(A[0, 0:valid_cols], a_ub[0, 0:valid_cols], pad_value=pad_value)
+            else:
+                T.copy(A[0, 0:valid_cols], a_ub[0, 0:valid_cols])
+            T.copy(a_ub[0, 0:valid_cols], B[0, 0:valid_cols])
 
     return main
 
