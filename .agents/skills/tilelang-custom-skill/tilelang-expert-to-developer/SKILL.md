@@ -77,6 +77,14 @@ pass_configs = {
 - **开启时**：无需手写核间同步
 - **关闭时**：必须手动管理核间同步
 
+#### ⑤ TL_ASCEND_INJECT_TMP_BUFFER（自动 tmp buffer 注入）
+
+- **底层 key**：`"tl.ascend_inject_tmp_buffer"`，默认 True
+- **功能**：自动为 `reduce`/`broadcast`/`sigmoid`/`sort`/`topk` 等操作注入临时缓冲区 `tmp_ub`
+- **开启时**：框架自动创建 `tmp_ub`（uint8, UB scope），用户无需干预
+- **关闭时**：用户需手动 `tmp_ub = T.alloc_ub((size,), "uint8")`，可配合 `get_tmp_buffer_size()` 计算所需大小和 `T.annotate_address` 精确控制地址
+- **适用场景**：需要用 `T.annotate_address` 精确控制 UB 地址布局时（如 Flash Attention），关闭自动注入避免 tmp_ub 打乱地址排布
+
 ### 2.2 按场景选择 pass_configs
 
 | 场景 | AUTO_SYNC | MEMORY_PLANNING | AUTO_CV_COMBINE | AUTO_CV_SYNC | 手动 Scope |
