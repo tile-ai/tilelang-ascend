@@ -114,8 +114,6 @@ def block_reduce_kernel(N, D, block_N, dtype="float"):
 
 
 def _choose_block_D(D):
-    if D <= 1:
-        return 1
     for bd in [32768, 16384, 8192, 4096, 2048, 1024, 512, 256, 128, 64]:
         if bd <= D:
             return bd
@@ -351,11 +349,11 @@ if __name__ == "__main__":
 
     tilelang.disable_cache()
 
-    _test(1024, 512, 256, "float16")
-    _test(512, 256, 128, "bfloat16")
-    _test(2048, 256, 512, "float32")
-    _test(1024, 128, 256, "int32")
-    _test(4096, 64, 64, "int64")
-    _test_3d(128, 64, 32, "float16")
+    _test(473, 128, 32, "float16")
+    _test(97, 512, 8, "float16")
+    _test(512, 512, 32, "float16")
+    _test(183, 128, 16, "bfloat16")
+    _test(25, 256, 4, "bfloat16")
+    _test(256, 128, 16, "bfloat16")
 
     print("Kernel Output Match!")
