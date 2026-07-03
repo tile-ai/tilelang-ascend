@@ -316,8 +316,19 @@ private:
           }
         }
       }
-      if (func_name.find("gemm") != std::string::npos ||
-          func_name.find("mma") != std::string::npos) {
+      if (func_name.find("gemm_mx") != std::string::npos) {
+        if (access_ptr_count == 0)
+          return 0; // A -> L0A
+        if (access_ptr_count == 1)
+          return 3; // scaleA -> shared.dyn
+        if (access_ptr_count == 2)
+          return 1; // B -> L0B
+        if (access_ptr_count == 3)
+          return 4; // scaleB -> shared.dyn
+        if (access_ptr_count == 4)
+          return 2; // C -> L0C
+      } else if (func_name.find("gemm") != std::string::npos ||
+                 func_name.find("mma") != std::string::npos) {
         if (access_ptr_count == 0)
           return 0; // A -> L0A
         if (access_ptr_count == 1)
@@ -394,6 +405,13 @@ private:
           }
         } else {
           corrected_scope = "wmma.accumulator";
+        }
+      } else if (original_scope == "shared") {
+        if (use_info && !use_info->gemm_positions.empty()) {
+          if (use_info->gemm_positions.count(3) > 0 ||
+              use_info->gemm_positions.count(4) > 0) {
+            corrected_scope = "shared.dyn";
+          }
         }
       } else if (original_scope == "shared.dyn") {
         if (use_info) {

@@ -760,7 +760,7 @@ extractTemplateParams(const std::string &input) {
     params.push_back(param);
   }
   std::vector<std::string> paramNames = {
-      "data_type_input", "data_type_output", "M", "N", "K",
+      "data_type_input", "data_type_output", "M", "N", "K", "K_full",
       "transpose_A",     "transpose_B"};
   for (size_t i = 0; i < params.size() && i < paramNames.size(); ++i) {
     result[paramNames[i]] = params[i];
@@ -782,6 +782,8 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op,
     this->stream << "break;\n";
   } else if (op->op.same_as(tl::ascend_gemm_v0())) {
     GemmV0Codegen(op);
+  } else if (op->op.same_as(tl::ascend_gemm_mx())) {
+    GemmMxCodegen(op);
   } else if (op->op.same_as(tl::ascend_fill())) {
     FillCodegen(op);
 
@@ -1496,6 +1498,66 @@ void CodeGenTileLangAscendPto::GemmV0Codegen(const CallNode *op) {
                << ", " << params["transpose_B"] << ">" << "(";
   this->stream << a_name << ", " << b_name << ", " << c_name << ", "
                << PrintExpr(op->args[4]) << ");\n";
+}
+
+void CodeGenTileLangAscendPto::GemmMxCodegen(const CallNode *op) {
+  std::string template_args = Downcast<StringImm>(op->args[0])->value;
+
+  ShapeInfo a_info = GetSliceInfo(op->args[1].as<CallNode>());
+  ShapeInfo b_info = GetSliceInfo(op->args[3].as<CallNode>());
+  ShapeInfo c_info = GetSliceInfo(op->args[5].as<CallNode>());
+
+  std::map<std::string, std::string> params =
+      extractTemplateParams(template_args);
+  uint32_t M = std::stoi(params["M"]);
+  uint32_t N = std::stoi(params["N"]);
+  uint32_t K = std::stoi(params["K"]);
+  uint32_t K_full = std::stoi(params["K_full"]);
+  constexpr uint32_t kMxBaseK = 64;
+  uint32_t kSplit = (K_full + kMxBaseK - 1) / kMxBaseK;
+  uint32_t kTail = K_full - (kSplit - 1) * kMxBaseK;
+
+  std::string a_name =
+      ResolveCubeSliceName(a_info, kAscendPtoScope + "TileMatL1");
+  std::string b_name =
+      ResolveCubeSliceName(b_info, kAscendPtoScope + "TileMatL1");
+  std::string c_name = ResolveCubeSliceName(c_info, "pto::TileAcc");
+
+  uint32_t scale_l1_offset =
+      a_info.slice_valid_row * a_info.slice_valid_col *
+          GetTypeLen(a_info.type) +
+      b_info.slice_valid_row * b_info.slice_valid_col *
+          GetTypeLen(b_info.type);
+
+  auto extract_gm_ptr = [&](const PrimExpr &expr) -> std::string {
+    auto *call = expr.as<CallNode>();
+    ICHECK(call && call->op.same_as(builtin::tvm_access_ptr()));
+    Var buf_var = Downcast<Var>(call->args[1]);
+    std::string handle = buf_var.get()->name_hint + "_handle";
+    std::string offset = PrintExpr(call->args[2]);
+    return "reinterpret_cast<__gm__ float8_e8m0_t*>(" + handle + " + " +
+           offset + ")";
+  };
+
+  std::string sa_ptr = extract_gm_ptr(op->args[2]);
+  std::string sb_ptr = extract_gm_ptr(op->args[4]);
+
+  this->PrintIndent();
+  std::string data_type_input = params["data_type_input"];
+  this->stream << kAscendPtoScope << "gemm_mx" << "<"
+               << data_type_input << ", "
+               << params["data_type_output"] << ", "
+               << M << ", " << N << ", " << K << ", "
+               << GetValid16BytesShape(M) << ", "
+               << GetValid16BytesShape(N) << ", "
+               << GetValidShape(K, data_type_input) << ", "
+               << K_full << ", " << kTail << ", " << params["transpose_A"] << ", "
+               << params["transpose_B"] << ", "
+               << scale_l1_offset << ">(";
+  this->stream << a_name << ", " << sa_ptr << ", "
+               << b_name << ", " << sb_ptr << ", "
+               << c_name << ", "
+               << PrintExpr(op->args[6]) << ");\n";
 }
 
 void CodeGenTileLangAscendPto::SyncAllCodegen(const CallNode *op) {

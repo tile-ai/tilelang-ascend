@@ -128,6 +128,7 @@ private:
   void CallExternCodegen(const CallNode *op);
 
   void GemmV0Codegen(const CallNode *op);
+  void GemmMxCodegen(const CallNode *op);
 
   void SyncAllCodegen(const CallNode *op);
 

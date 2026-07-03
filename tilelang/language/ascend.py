@@ -415,6 +415,67 @@ def gemm_v0(A, B, C, transpose_A=False, transpose_B=False, init=False):
     )
 
 
+_MX_FORMAT_TO_CTYPE = {
+    "e4m3": "float8_e4m3_t",
+    "e5m2": "float8_e5m2_t",
+}
+
+
+def gemm_mx(A, B, C, scale_a, scale_b, init=False,
+            transpose_A=False, transpose_B=False, format=None):
+    """
+    MXFP8 GEMM: C = A @ B with per-32-element scaling.
+
+    Args:
+        A: Input matrix A, shape [M, K], dtype e5m2_float8 or e4m3_float8
+        B: Input matrix B, shape [K, N], dtype e5m2_float8 or e4m3_float8
+        C: Output matrix C, shape [M, N], dtype float32
+        scale_a: Scale factors for A, shape [M, K_MX], dtype uint8 (e8m0 format)
+                 where K_MX = K // 32
+        scale_b: Scale factors for B, shape [K_MX, N], dtype uint8 (e8m0 format)
+        init: If True, initialize C to zero before accumulation
+        transpose_A: If True, A is transposed
+        transpose_B: If True, B is transposed
+        format: Data format, "e5m2" or "e4m3"
+    """
+    A = _legalize_arguments(A)
+    B = _legalize_arguments(B)
+    C = _legalize_arguments(C)
+    scale_a = _legalize_arguments(scale_a)
+    scale_b = _legalize_arguments(scale_b)
+
+    C_shape = _retrieve_shape(C)
+    A_shape = _retrieve_shape(A)
+    B_shape = _retrieve_shape(B)
+    scale_a_shape = _retrieve_shape(scale_a)
+
+    M, N = C_shape[-2], C_shape[-1]
+    # Infer full K from scale shape: K = K_MX * 32
+    K_MX = scale_a_shape[-1]
+    K = K_MX * 32
+    K_L1 = B_shape[-1] if transpose_B else B_shape[-2]
+    assert K % K_L1 == 0, f"gemm_mx K must be multiple of K_L1, got K={K}, K_L1={K_L1}"
+    assert K % 64 == 0, f"K must be multiple of 64 for MX GEMM, got {K}"
+
+    if format is None:
+        format = "e5m2"
+    ctype = _MX_FORMAT_TO_CTYPE[format]
+
+    Aptr = _retrieve_ptr(A, "r")
+    Bptr = _retrieve_ptr(B, "r")
+    Cptr = _retrieve_ptr(C, "w" if init is True else "rw")
+    sAptr = _retrieve_ptr(scale_a, "r")
+    sBptr = _retrieve_ptr(scale_b, "r")
+
+    return T.call_intrin(
+        "handle",
+        tir.op.Op.get("tl.ascend_gemm_mx"),
+        f"gemm_mx<{ctype}, {_dtype(C)}, {M}, {N}, {K_L1}, {K}, "
+        f"{str(transpose_A).lower()}, {str(transpose_B).lower()}>",
+        Aptr, sAptr, Bptr, sBptr, Cptr, init,
+    )
+
+
 def printf(format_str: str, *args):
     """
     Prints formatted output.

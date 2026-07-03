@@ -135,6 +135,159 @@ AICORE PTO_INLINE void mma(TileMatL0A<T1, M, K> l0a, TileMatL0B<T1, K, N> l0b,
   }
 }
 
+#ifdef PTO_PLATFORM_A5
+template <typename T, int Rows, int Cols, int RowValid = Rows,
+          int ColValid = Cols>
+using TileScaleL1Left = pto::Tile<pto::TileType::Mat, T, Rows, Cols,
+    pto::BLayout::RowMajor, RowValid, ColValid, pto::SLayout::RowMajor, 32,
+    pto::PadValue::Zero>;
+
+template <typename T, int Rows, int Cols, int RowValid = Rows,
+          int ColValid = Cols>
+using TileScaleL1Right = pto::Tile<pto::TileType::Mat, T, Rows, Cols,
+    pto::BLayout::ColMajor, RowValid, ColValid, pto::SLayout::ColMajor, 32,
+    pto::PadValue::Zero>;
+
+template <typename T, int Rows, int Cols, int RowValid = Rows,
+          int ColValid = Cols>
+using TileScaleLeft = pto::Tile<pto::TileType::ScaleLeft, T, Rows, Cols,
+    pto::BLayout::RowMajor, RowValid, ColValid, pto::SLayout::RowMajor, 32,
+    pto::PadValue::Zero>;
+
+template <typename T, int Rows, int Cols, int RowValid = Rows,
+          int ColValid = Cols>
+using TileScaleRight = pto::Tile<pto::TileType::ScaleRight, T, Rows, Cols,
+    pto::BLayout::ColMajor, RowValid, ColValid, pto::SLayout::ColMajor, 32,
+    pto::PadValue::Zero>;
+
+template <typename T1, typename T2, uint32_t M, uint32_t N, uint32_t K,
+          uint32_t validM = M, uint32_t validN = N, uint32_t validK = K,
+          uint32_t K_full = K, uint32_t K_tail = 64, bool transpose_A = false,
+          bool transpose_B = false, uint32_t ScaleL1Offset = 0>
+AICORE PTO_INLINE void
+gemm_mx(std::conditional_t<transpose_A, TileMatL1<T1, K, M, validK, validM>,
+                            TileMatL1<T1, M, K, validM, validK>> &A,
+        __gm__ float8_e8m0_t *scaleA_gm,
+        std::conditional_t<transpose_B, TileMatL1<T1, N, K, validN, validK>,
+                            TileMatL1<T1, K, N, validK, validN>> &B,
+        __gm__ float8_e8m0_t *scaleB_gm,
+        pto::TileAcc<T2, M, N, validM, validN> &C, bool clear) {
+  constexpr uint32_t kMxBaseK = 64;
+  constexpr uint32_t KMX = K_full / 32;
+  const uint32_t kSplit = (K_full + kMxBaseK - 1) / kMxBaseK;
+  auto war_event_id = (event_t)(((int)EVENT_ID0 + 1) % 8);
+
+  set_flag(PIPE_MTE2, PIPE_MTE1, war_event_id);
+  wait_flag(PIPE_MTE2, PIPE_MTE1, war_event_id);
+
+  constexpr uint32_t baseKMX = kMxBaseK / 32;
+  constexpr uint32_t scaleB_offset =
+      ScaleL1Offset + validM * baseKMX * sizeof(float8_e8m0_t);
+
+  // L1 tiles for scale - defined outside loop (like pto-isa SPLIT_K kernel)
+  TileScaleL1Left<float8_e8m0_t, validM, baseKMX, validM, baseKMX> l1_scaleA;
+  TileScaleL1Right<float8_e8m0_t, baseKMX, validN, baseKMX, validN> l1_scaleB;
+  pto::TASSIGN(l1_scaleA, ScaleL1Offset);
+  pto::TASSIGN(l1_scaleB, scaleB_offset);
+
+  // L0 tiles for data - defined outside loop (like pto-isa SPLIT_K kernel)
+  TileMatL0A<T1, M, kMxBaseK, M, kMxBaseK> l0a;
+  TileMatL0B<T1, kMxBaseK, N, kMxBaseK, N> l0b;
+  pto::TASSIGN(l0a, 0x0);
+  pto::TASSIGN(l0b, 0x0);
+
+  // Scale tiles - defined outside loop, GetScaleAddr called once
+  TileScaleLeft<float8_e8m0_t, M, baseKMX, M, baseKMX> l0a_scale;
+  TileScaleRight<float8_e8m0_t, baseKMX, N, baseKMX, N> l0b_scale;
+  pto::TASSIGN(l0a_scale, pto::GetScaleAddr(l0a.data()));
+  pto::TASSIGN(l0b_scale, pto::GetScaleAddr(l0b.data()));
+
+  for (uint32_t kIdx = 0; kIdx < kSplit; kIdx++) {
+    const bool initflag = (clear && (kIdx == 0));
+    const bool is_tail = (kIdx == kSplit - 1);
+    constexpr uint32_t cK = kMxBaseK;
+    constexpr uint32_t cKMX = cK / 32;
+
+    set_flag(PIPE_M, PIPE_MTE1, war_event_id);
+    wait_flag(PIPE_M, PIPE_MTE1, war_event_id);
+
+    if (!is_tail) {
+      set_flag(PIPE_FIX, PIPE_M, war_event_id);
+      wait_flag(PIPE_FIX, PIPE_M, war_event_id);
+    }
+
+    // Load scale data for current K iteration from GM to L1
+    using GlobalScaleACur = pto::GlobalTensor<
+        float8_e8m0_t,
+        pto::TileShape2D<float8_e8m0_t, validM, cKMX, pto::Layout::MX_A_ZZ>,
+        pto::BaseShape2D<float8_e8m0_t, validM, KMX, pto::Layout::MX_A_ZZ>,
+        pto::Layout::MX_A_ZZ>;
+    using GlobalScaleBCur = pto::GlobalTensor<
+        float8_e8m0_t,
+        pto::TileShape2D<float8_e8m0_t, cKMX, validN, pto::Layout::MX_B_NN>,
+        pto::BaseShape2D<float8_e8m0_t, KMX, validN, pto::Layout::MX_B_NN>,
+        pto::Layout::MX_B_NN>;
+
+    const uint32_t offsetA = kIdx * baseKMX * 16;
+    const uint32_t offsetB = 16 * kIdx * baseKMX;
+    GlobalScaleACur gSA(scaleA_gm + offsetA);
+    GlobalScaleBCur gSB(scaleB_gm + offsetB);
+    pto::TLOAD(l1_scaleA, gSA);
+    pto::TLOAD(l1_scaleB, gSB);
+
+    set_flag(PIPE_MTE2, PIPE_MTE1, war_event_id);
+    wait_flag(PIPE_MTE2, PIPE_MTE1, war_event_id);
+
+    if constexpr (!transpose_A)
+      copy_l1_to_l0a<T1, M, cK, M, K, false>(l0a, A, 0, kIdx * kMxBaseK);
+    else {
+      TileMatL1ZN<T1, M, K, validM, validK> A_t;
+      pto::TRESHAPE(A_t, A);
+      copy_l1_to_l0a<T1, M, cK, M, K, true>(l0a, A_t, 0, kIdx * kMxBaseK);
+    }
+    if constexpr (!transpose_B)
+      copy_l1_to_l0b<T1, cK, N, K, N, false>(l0b, B, kIdx * kMxBaseK, 0);
+    else {
+      TileMatL1ZN<T1, K, N, validK, validN> B_t;
+      pto::TRESHAPE(B_t, B);
+      copy_l1_to_l0b<T1, cK, N, K, N, true>(l0b, B_t, kIdx * kMxBaseK, 0);
+    }
+
+    // Move scale data to ScaleLeft/ScaleRight
+    pto::TMOV(l0a_scale, l1_scaleA);
+    pto::TMOV(l0b_scale, l1_scaleB);
+
+    set_flag(PIPE_MTE1, PIPE_M, war_event_id);
+    wait_flag(PIPE_MTE1, PIPE_M, war_event_id);
+
+    if (initflag)
+      pto::TMATMUL_MX(C, l0a, l0a_scale, l0b, l0b_scale);
+    else
+      pto::TMATMUL_MX(C, C, l0a, l0a_scale, l0b, l0b_scale);
+
+    if (!is_tail) {
+      set_flag(PIPE_M, PIPE_MTE2, war_event_id);
+      wait_flag(PIPE_M, PIPE_MTE2, war_event_id);
+    }
+  }
+
+  set_flag(PIPE_MTE1, PIPE_MTE2, war_event_id);
+  wait_flag(PIPE_MTE1, PIPE_MTE2, war_event_id);
+
+  set_flag(PIPE_M, PIPE_FIX, war_event_id);
+  wait_flag(PIPE_M, PIPE_FIX, war_event_id);
+}
+#else
+template <typename T1, typename T2, uint32_t M, uint32_t N, uint32_t K,
+          uint32_t validM = M, uint32_t validN = N, uint32_t validK = K,
+          uint32_t K_tail = 64, bool transpose_A = false,
+          bool transpose_B = false, uint32_t ScaleL1Offset = 0>
+AICORE PTO_INLINE void gemm_mx(...) {
+  static_assert(sizeof(T1) == 0,
+                "gemm_mx is only supported on A5 platform");
+}
+#endif
+
 template <typename T1, typename T2, uint32_t M, uint32_t N, uint32_t K,
           uint32_t validM, uint32_t validN, uint32_t validK, uint32_t CurrentK,
           bool transpose_A, bool transpose_B>
