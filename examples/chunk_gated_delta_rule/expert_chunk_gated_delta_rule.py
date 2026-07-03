@@ -107,7 +107,6 @@ def chunk_gated_delta_rule_fwd_kernel(
                 actual_len = T.if_then_else(T_len < BT, T_len, BT)
                 T.copy(w[bos : bos + actual_len, i_h, :], w_chunk_l1[0, :, :])
                 T.copy(k[bos : bos + actual_len, k_head, :], k_chunk_l1[0, :, :])
-                T.pipe_barrier("mte2")
                 T.set_flag("mte2", "m", 0)
 
                 for i in T.serial(NT_i):
@@ -121,7 +120,6 @@ def chunk_gated_delta_rule_fwd_kernel(
                         next_len = T.if_then_else((i + 1) * BT + BT > T_len, T_len - (i + 1) * BT, BT)
                         T.copy(w[chunk_start_next : chunk_start_next + next_len, i_h, :], w_chunk_l1[next_pid, :, :])
                         T.copy(k[chunk_start_next : chunk_start_next + next_len, k_head, :], k_chunk_l1[next_pid, :, :])
-                        T.pipe_barrier("mte2")
                         T.set_flag("mte2", "m", next_pid)
 
                     # w @ h
@@ -129,30 +127,24 @@ def chunk_gated_delta_rule_fwd_kernel(
                     for j in T.serial(2):
                         T.wait_cross_flag(SEM_H_V2C + j)
                         T.copy(ws_h[i_n, i_h, j, :, :], h_state_l1[j, :, :])
-                        T.pipe_barrier("mte2")
                         T.set_flag("mte2", "m", 2)
                         T.wait_flag("mte2", "m", 2)
                         T.gemm_v0(w_chunk_l1[pid, :, :], h_state_l1[j, :, :], wh_frag[j, :, :], init=True)
-                        T.pipe_barrier("m")
                         T.set_flag("m", "fix", 3)
                         T.wait_flag("m", "fix", 3)
                         T.copy(wh_frag[j, :, :], ws_wh[i_n, i_h, j, :, :])
-                        T.pipe_barrier("fix")
                         T.set_cross_flag("FIX", SEM_WH_C2V + j)
 
                     # k @ v_new
                     for j in T.serial(2):
                         T.wait_cross_flag(SEM_VNEW_V2C + j)
                         T.copy(ws_vnew[i_n, i_h, j, :chunk_len, :], v_new_l1[j, :, :])
-                        T.pipe_barrier("mte2")
                         T.set_flag("mte2", "m", 4)
                         T.wait_flag("mte2", "m", 4)
                         T.gemm_v0(k_chunk_l1[pid, :, :], v_new_l1[j, :, :], hupd_frag[j, :, :], transpose_A=True, init=True)
-                        T.pipe_barrier("m")
                         T.set_flag("m", "fix", 5)
                         T.wait_flag("m", "fix", 5)
                         T.copy(hupd_frag[j, :, :], ws_hupd[i_n, i_h, j, :, :])
-                        T.pipe_barrier("fix")
                         T.set_cross_flag("FIX", SEM_HUPD_C2V + j)
 
             with T.Scope("V"):
@@ -176,7 +168,6 @@ def chunk_gated_delta_rule_fwd_kernel(
                     )
                 if USE_G:
                     T.copy(g[i_h, vec_global_start : vec_global_start + vec_chunk_len], g_chunk_ub[0, :])
-                T.pipe_barrier("mte2")
                 T.set_flag("mte2", "v", 0)
 
                 for i in T.serial(NT_i):
@@ -205,14 +196,12 @@ def chunk_gated_delta_rule_fwd_kernel(
                             )
                         if USE_G:
                             T.copy(g[i_h, next_vec_global_start : next_vec_global_start + next_vec_chunk_len], g_chunk_ub[next_pid, :])
-                        T.pipe_barrier("mte2")
                         T.set_flag("mte2", "v", v_flag_next)
 
                     # h to cube
                     T.barrier_all()
                     for j in T.serial(2):
                         T.copy(h_state_ub[j, :, :], ws_h[i_n, i_h, j, K // 2 * vid : K // 2 * vid + K // 2, :])
-                        T.pipe_barrier("mte3")
                         T.set_cross_flag("MTE3", SEM_H_V2C + j)
 
                     # save h[t]
@@ -244,16 +233,12 @@ def chunk_gated_delta_rule_fwd_kernel(
                         # v_new = v - w @ h
                         T.wait_cross_flag(SEM_WH_C2V + j)
                         T.copy(ws_wh[i_n, i_h, j, vec_start_in_chunk : vec_start_in_chunk + BT // 2, :], wh_ub_float[j, :, :])
-                        T.pipe_barrier("mte2")
                         T.set_flag("mte2", "v", 3)
                         T.wait_flag("mte2", "v", 3)
-                        T.pipe_barrier("v")
                         T.tile.sub(v_chunk_ub_float[j, :, :], v_chunk_ub_float[j, :, :], wh_ub_float[j, :, :])
 
                         if SAVE_NEW_VALUE:
-                            T.pipe_barrier("v")
                             T.copy(v_chunk_ub_float[j, :, :], v_chunk_ub[pid, j, :, :])
-                            T.pipe_barrier("v")
                             T.set_flag("v", "mte3", 0)
                             T.wait_flag("v", "mte3", 0)
                             T.copy(
@@ -267,36 +252,28 @@ def chunk_gated_delta_rule_fwd_kernel(
 
                         if USE_G:
                             # v_new *= exp(g_last - g)
-                            T.pipe_barrier("v")
                             T.tile.mul(v_chunk_ub_float[j, :, :], v_chunk_ub_float[j, :, :], g_exp_ub_broc)
                             # h *= exp(g_last)
                             T.copy(h_state_ub[j, :, :], h_state_ub_float[j, :, :])
-                            T.pipe_barrier("v")
                             T.tile.mul(h_state_ub_float[j, :, :], h_state_ub_float[j, :, :], g_last_scalar[0])
                         else:
                             T.copy(h_state_ub[j, :, :], h_state_ub_float[j, :, :])
 
                         T.set_flag("mte3", "v", 0)
                         T.wait_flag("mte3", "v", 0)
-                        T.pipe_barrier("v")
                         T.copy(v_chunk_ub_float[j, :, :], v_chunk_ub[pid, j, :, :])
-                        T.pipe_barrier("v")
                         T.set_flag("v", "mte3", 1)
                         T.wait_flag("v", "mte3", 1)
                         T.copy(v_chunk_ub[pid, j, :, :], ws_vnew[i_n, i_h, j, vec_start_in_chunk : vec_start_in_chunk + BT // 2, :])
-                        T.pipe_barrier("mte3")
                         T.set_cross_flag("MTE3", SEM_VNEW_V2C + j)
 
                     for j in T.serial(2):
                         # h += k @ v_new
                         T.wait_cross_flag(SEM_HUPD_C2V + j)
                         T.copy(ws_hupd[i_n, i_h, j, K // 2 * vid : K // 2 * vid + K // 2, :], hupd_ub_float[j, :, :])
-                        T.pipe_barrier("mte2")
                         T.set_flag("mte2", "v", 4)
                         T.wait_flag("mte2", "v", 4)
-                        T.pipe_barrier("v")
                         T.tile.add(h_state_ub_float[j, :, :], h_state_ub_float[j, :, :], hupd_ub_float[j, :, :])
-                        T.pipe_barrier("v")
                         T.copy(h_state_ub_float[j, :, :], h_state_ub[j, :, :])
 
                     T.set_flag("v", "mte3", 2)
