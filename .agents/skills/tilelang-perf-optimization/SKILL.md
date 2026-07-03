@@ -8,34 +8,44 @@ description: TileLang 算子性能调优与潜在性能劣化模式检查。提�
 ## 工作流程
 
 ```
-Step 1: 精度校验（强制前置）→ Step 2: 性能数据采集 → Step 3: 算子类型判断
-         ↓
-Step 4: 优化实施 → Step 5: 精度再验证 → Step 6: 效果验证
+Step 1: 基线采集（性能 + 精度）
+  → Step 2: 算子类型判断
+  → Step 3: 阅读参考文档并识别优化点（输出到 optimization_log.md）
+  → Step 4: 逐项实施优化点
+  → Step 5: 效果验证（性能 + 精度）
 ```
 
 ## 核心约束
 
-- **精度优先**：精度未通过禁止性能优化；每次优化后必须重新验证精度
-- **性能验证口径**：验证性能必须使用 `msprof op`，禁止使用 Python 或 Torch 中的接口计时作为性能验证依据
-- **迭代验证**：每次只修改一个参数/配置，修改后立即验证，性能回退则回退
-- **记录可追溯**：中间文件保存在 `examples/{op_name}/perf_tuning/` 目录
+- **逐项实施**：每次 Edit 只改一个优化点，改完立即验证
+- **精度优先**：精度未通过禁止性能优化
+- **性能验证**：必须使用 `msprof op`，禁止用 Python/Torch 计时
+- **Host 轻量化**：禁止 host 侧全量数据搬运（`F.pad`、`.contiguous()`、`.to(dtype)` 等），必须移入 kernel
+
+## 参考文档
+
+- **优化指南**：[optimization-guide.md](references/optimization-guide.md)
+- **反模式清单**：[performance-antipatterns.md](references/performance-antipatterns.md)
+- **同步原语**：[sync-primitives-guide.md](references/sync-primitives-guide.md)
+- **API 用法**：[tilelang-api-best-practices](../tilelang-custom-skill/tilelang-api-best-practices/SKILL.md)
+- **编程模式**：[tilelang-expert-to-developer](../tilelang-custom-skill/tilelang-expert-to-developer/SKILL.md)
+- **cube最佳实践**：[tilelang-expert-to-developer](references/best-practices/cube_optimization_path.md)
+
+---
 
 ## 执行步骤
 
-### Step 1: 精度校验（强制前置）
+### Step 1: 基线采集
 
-- 运行命令：`python examples/{op_name}/<script_name>.py`
-- **`<script_name>` 获取**：在 `examples/{op_name}/` 目录下查找包含 `@tilelang.jit` 装饰器的 Python 脚本。若存在多个，询问用户确认使用哪一个，后续步骤自动复用该选择。
-- 算子必须包含与参考实现的精度对比逻辑
-- 精度未通过 → 禁止进入后续步骤
-
-### Step 2: 性能数据采集
+在 `examples/{op_name}/` 下查找含 `@tilelang.jit` 的脚本，运行：
 
 ```bash
 msprof op --kernel-name="main_kernel" --output=./msprof_output python ./examples/{op_name}/<script_name>.py
 ```
 
-### Step 3: 算子类型判断
+精度未通过 → 禁止后续步骤。
+
+### Step 2: 算子类型判断
 
 **生成翻译后的 Ascend C 代码**：
 
@@ -54,94 +64,70 @@ print(func.get_kernel_source())
 | `IS_ASCEND_AIV` 出现 | Vector 型 | RoPE、Softmax、Add |
 | 两者均出现 | 混合型 | FlashAttention、SparseFlashAttention |
 
-### Step 4: 优化实施
+### Step 3: 识别优化点（强制，禁止与 Step 4 合并）
 
-根据算子类型选择优化手段（详见 [optimization-guide](references/optimization-guide.md)）：
+根据算子类型阅读 `optimization-guide.md` 对应章节 + `performance-antipatterns.md`，如果是 cube 核额外参考最佳实践 `best-practices/cube_optimization_path.md`，在 `optimization_log.md` 中输出：
 
-**生成/改写算子前的性能关注项检查**：
+**Part A 优化点清单**：逐条标注适用/不适用 + 原因 + 参考文件行号。`pass_configs` 不是独立优化点，是伴随修改。
 
-- 若正在生成、改写或评审 kernel，先阅读 [performance-antipatterns](references/performance-antipatterns.md)，对照其中的常见性能劣化模式示例检查当前代码是否存在类似 pattern
-- 文档中的 pattern 不是正确性错误，而是需要重点关注的性能风险点；确需临时保留时，在 `optimization_log.md` 中记录 shape、dtype、保留原因和后续替换方案
-- Vector 算子需要手写 MTE2/V/MTE3 核内流水时，优先参考 [vector_add_pipeline](references/best-practices/vector_add_pipeline.md)，按 prefetch → main body → epilogue 三阶段组织代码
+```
+[#1] [名称]（参考: optimization-guide.md L445-L650 §2.13）：[适用/不适用] — [原因]
+```
 
-| 优化方向 | 说明 | 典型手段 |
-|---------|------|---------|
-| pass_configs 调优 | 调整编译器 pass 行为 | 关闭自动同步、关闭内存规划 |
-| 核内优化 | 提升单核内指令并行度 | Double Buffer、L1 常驻、指令向量化、Split-K pipelined GEMM |
-| 核间优化 | 优化 Cube/Vector 核间协作 | num_stages 调优、同步优化、Fixed Core 模式 |
-| 流水线优化 | 计算与访存重叠 | T.Pipelined（核内/核间流水）、T.Persistent（数据块调度） |
-| Fixed Core | 按物理核数 launch，减少冗余初始化和显存膨胀 | `T.Kernel(core_num, is_npu=True)`、Workspace 按物理核分配 |
-| 指令融合 | 减少指令下发次数 | AXPY 融合指令、broadcast 向量化 |
-| 稀疏访存优化 | 离散数据高效搬运 | 双 vector 核访存、Gather + 连续搬出、异步拷贝 |
+**Part B `[ORDER-PLAN]`**：分析依赖关系，排出实施顺序链。依赖分析三条规则：
+1. **布局依赖**：改变 layout 的优化排在依赖此 layout 的优化之前
+2. **数量依赖**：涉及预算的优化排在改变 buffer 数量的优化之后
+3. **配置依赖**：涉及 pass_configs 的优化在相关功能实施后才改动
 
-**编程模式选择**：
+```
+[ORDER-PLAN] 实施顺序：
+1. [#N] [名称] — 前置依赖: [无] — 理由: [...]
+2. [#M] [名称] — 前置依赖: [#N] — 理由: [...]
+```
 
-优先使用 **Developer 模式**（自动内存规划、自动同步、编译器自动分离 Cube/Vector），参考 [tilelang-expert-to-developer](../tilelang-custom-skill/tilelang-expert-to-developer/SKILL.md)。
+### Step 4: 逐项实施
 
-如无法满足性能要求，再使用 **Expert 模式**手动控制（显式指定 L1/UB/L0 层级、手动同步、细粒度调度），参考同一文档。
+**固定优先级**：先静态分析（对照 `performance-antipatterns.md`），再 P0 Host 侧优化（`optimization-guide.md` §2.12）。P0 完成后 Host 侧只允许零拷贝形状变换。
 
-- 调用 `/tilelang-api-best-practices` 查阅相关 API 用法
+**后续优化点**按 `[ORDER-PLAN]` 逐个实施，每个走 6 子步骤：
 
-#### 最佳实践案例参考
+```
+0: ORDER-CHECK → A: Read 文档 → B: Edit 代码 → C: msprof op 验证 → D: 记录结果 → (失败) E: 重读文档修复
+```
 
-参考以下算子的优化实践文档，学习具体优化技巧：
+**门禁**：`[ORDER-CHECK]` 未写禁止 Read；`[IMPL-#N]` 未写禁止 Edit；`[RESULT-#N]` 未写禁止下一个。
 
-| 算子类型 | 最佳实践文档 | 核心优化技术 |
-|---------|-------------|-------------|
-| **Vector 型** | [RoPE 优化实践](references/best-practices/rope-developer-mode.md) | NPU 内动态生成 Mask、Tile API 向量化、参数简化 |
-| **Cube 型** | [GEMM Intrinsic 优化](references/best-practices/gemm_intrinsic_optimize.md) | 多缓冲流水线、细粒度 Flag 同步、MMA intrinsic、L0 分块、负载均衡 |
-| **CV 融合型** | [Flash Attention 优化](references/best-practices/flash_attn_optimize.md) | num_stages 流水线、批量 Softmax、Cross-core Semaphore、数据布局优化 |
+**日志格式**：
+```
+[ORDER-CHECK] 准备实施: [#N] [名称] | 前置依赖: [#1 ✅ / #2 ❌] | 结论: [✅/❌]
+[IMPL-#N] 已阅读 <文件> L行号（§X.X），关键约束: ...
+[SELF-CHECK] 本次 Edit 只涉及 [#N]
+[RESULT-#N] 优化点: [名称] | 精度: [pass/fail] | 性能: [X us] | 对比: [+/-X%]
+```
 
-**文档内容涵盖**：
-- 优化前后对比（代码示例）
-- 性能收益量化分析
-- 关键 API 使用方法
-- 参数配置指南
-- 适用场景说明
+**Double Buffer 特殊要求**：实施前必须完成 `[DB-ANALYSIS]`（Q1: 循环内有 MTE3？Q2: 有跨迭代累加器？Q3: 选同步方式），未完成禁止写代码。
 
-### Step 5: 精度再验证
+**最佳实践参考**：
 
-- 运行命令：`python examples/{op_name}/<script_name>.py`（`<script_name>` 为 `examples/{op_name}/` 目录下的 Python 脚本文件名）
-- 精度失败时：在保持已实施优化手段前提下调试精度，不能为修复精度撤销优化
+| 算子类型 | 文档 |
+|---------|------|
+| Vector 型 | [RoPE 优化](references/best-practices/rope-developer-mode.md) |
+| Cube 型 | [GEMM Intrinsic](references/best-practices/gemm_intrinsic_optimize.md) |
+| CV 融合型 | [Flash Attention](references/best-practices/flash_attn_optimize.md) |
 
-**调试手段**：
+### Step 5: 效果验证
 
-| 方法 | 用途 | 示例 |
-|------|------|------|
-| `T.printf(fmt, *args)` | 设备端打印中间值 | `T.printf("val=%d\n", val)` |
-| `T.dump_tensor(tensor, desc, size, shape_info)` | 转储张量内容到文件 | `T.dump_tensor(acc_o, "acc_o", 128, (128, 128))` |
-| 查看生成的 Ascend C 代码 | 分析编译器生成逻辑 | `print(func.get_kernel_source())` |
+每个优化点后执行：精度验证 → `msprof op` → 记录 → 对比基线。精度失败时保持优化调试，不撤销。
 
-详细说明参考 [TileLang-Ascend Programming Guide](../../../docs/TileLang-Ascend%20Programming%20Guide.md)。
+调试手段：`T.printf`、`T.dump_tensor`、`get_kernel_source()`，详见 [Programming Guide](../../../docs/TileLang-Ascend%20Programming%20Guide.md)。
 
-### Step 6: 效果验证
+迭代终止：达到目标或连续 3 次无提升则中断上报。
 
-- 对比基线性能，记录优化结果
-- 迭代终止条件：
-  - 有明确目标：达到目标 OR 连续 3 次无提升 → 中断并上报用户
-  - 无明确目标：做完所有可优化手段后输出最终性能值
-
-**性能目标要求**：
-- 用户提出性能需求时，必须明确指定对应的 **shape** 和 **dtype**
-- 性能标准可以是：
-  - 具体的耗时时间（如 `< 100 us`）
-  - 对应 AscendC 接口的调用脚本（用于对比性能）
-
-## pass_configs 参数参考
-
-| 参数 | 默认值 | 调优建议 |
-|-----|-------|---------|
-| `TL_ASCEND_AUTO_SYNC` | True | 关闭可提升性能，手动插入同步避免冗余 |
+---
 
 ## 优化记录
 
-中间文件统一保存在 `examples/{op_name}/perf_tuning/` 目录：
-- `baseline.json` - 基线性能数据
-- `optimization_log.md` - 优化记录（每轮详情）
-- `final_report.md` - 最终优化报告（必须包含验收 shape、dtype 及性能标准对比）
-
-## 与其他 Skill 的协作
-
-| 调用时机 | 调用 Skill | 用途 |
-|---------|-----------|------|
-| Step 4 优化实施 | `/tilelang-api-best-practices` | 查阅内存、计算、调度 API 用法 |
+保存在 `examples/{op_name}/perf_tuning/`：
+- `baseline.json` - 基线性能
+- `optimization_log.md` - 优化记录
+- `final_report.md` - 最终报告

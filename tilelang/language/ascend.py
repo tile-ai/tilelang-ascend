@@ -22,6 +22,8 @@ def _dtype(buf):
         "int16": "int16_t",
         "int64": "int64_t",
         "uint64": "uint64_t",
+        "e4m3_float8": "float8_e4m3_t",
+        "e5m2_float8": "float8_e5m2_t",
     }
     if isinstance(buf, BufferRegion):
         buf = buf.buffer

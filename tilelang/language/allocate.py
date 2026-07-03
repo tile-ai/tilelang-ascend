@@ -8,7 +8,6 @@ interfaces for different memory scopes.
 
 Available allocation functions:
     - alloc_shared: Allocates shared memory buffers for inter-thread communication
-    - alloc_local: Allocates local memory buffers for thread-private storage
     - alloc_fragment: Allocates fragment memory buffers for specialized operations
     - alloc_var: Allocates single-element variable buffers
 
@@ -44,20 +43,6 @@ def alloc_shared(shape, dtype, scope="shared.dyn"):
         # lei: This is a hack to handle bool type.
         # Because tilelang's merge smem pass cannot merge bool type currently.
         scope = "shared"
-    return T.alloc_buffer(shape, dtype, scope=scope)
-
-
-def alloc_local(shape, dtype, scope="local"):
-    """Allocate a local memory buffer for thread-private storage.
-
-    Args:
-        shape (tuple): The shape of the buffer to allocate
-        dtype (str): The data type of the buffer (e.g., 'float32', 'int32')
-        scope (str, optional): The memory scope. Defaults to "local"
-
-    Returns:
-        T.Buffer: A TVM buffer object allocated in local memory
-    """
     return T.alloc_buffer(shape, dtype, scope=scope)
 
 

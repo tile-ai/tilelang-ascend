@@ -140,6 +140,15 @@ private:
 
   void RowExpandMulCodegen(const CallNode *op);
 
+  void RowExpandMulExperimentCodegen(const CallNode *op);
+
+  void RowExpandSubExperimentCodegen(const CallNode *op);
+
+  void RowExpandDivExperimentCodegen(const CallNode *op);
+
+  void RowExpandBinOpExperimentCodegen(const CallNode *op,
+                                       const std::string &mask_op_name);
+
   void SetCrossFlagCodegen(const CallNode *op);
 
   void FlagOpCodegen(const CallNode *op, std::string op_name);
@@ -199,6 +208,8 @@ private:
   void SumExperimentCodegen(const CallNode *op);
 
   void CreateDatacacheExperimentCodegen(const CallNode *op);
+
+  void BrcbExperimentCodegen(const CallNode *op);
 
 private:
   // Whether scope such as "__shared__" or "__constant__"  is part of type.

@@ -444,7 +444,9 @@ const std::unordered_map<std::string, DataType> CopyInfoCollector::type_map_ = {
     {"uint8_t", tvm::runtime::DataType::UInt(8)},
     {"uint16_t", tvm::runtime::DataType::UInt(16)},
     {"uint32_t", tvm::runtime::DataType::UInt(32)},
-    {"uint64_t", tvm::runtime::DataType::UInt(64)}};
+    {"uint64_t", tvm::runtime::DataType::UInt(64)},
+    {"float8_e4m3_t", tvm::runtime::DataType::NVFloat8E4M3()},
+    {"float8_e5m2_t", tvm::runtime::DataType::NVFloat8E5M2()}};
 
 class AscendWorkspaceReductionPass : public arith::IRMutatorWithAnalyzer {
 public:

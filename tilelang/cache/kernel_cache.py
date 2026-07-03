@@ -26,6 +26,7 @@ KERNEL_PATH = "kernel.cu"
 WRAPPED_KERNEL_PATH = "wrapped_kernel.cu"
 KERNEL_LIB_PATH = "kernel_lib.so"
 PARAMS_PATH = "params.pkl"
+AUTO_GM_IDX_PATH = "auto_gm_idx.pkl"
 
 
 class KernelCache:
@@ -295,6 +296,14 @@ class KernelCache:
         except Exception as e:
             self.logger.error(f"Error saving kernel parameters to disk: {e}")
 
+        # Save auto_gm_idx (workspace reduction indices needed for runtime allocation)
+        try:
+            auto_gm_idx_path = os.path.join(cache_path, AUTO_GM_IDX_PATH)
+            with open(auto_gm_idx_path, "w") as f:
+                json.dump(kernel.auto_gm_idx, f)
+        except Exception as e:
+            self.logger.error(f"Error saving auto_gm_idx to disk: {e}")
+
     def _load_kernel_from_disk(
         self,
         key: str,
@@ -350,6 +359,19 @@ class KernelCache:
                 kernel_params = cloudpickle.load(f)
         except Exception as e:
             self.logger.error(f"Error loading kernel parameters from disk: {e}")
+
+        # Load auto_gm_idx (workspace reduction indices for runtime allocation)
+        try:
+            auto_gm_idx_path = os.path.join(cache_path, AUTO_GM_IDX_PATH)
+            with open(auto_gm_idx_path) as f:
+                loaded_idx = json.load(f)
+                if loaded_idx is not None:
+                    auto_gm_idx = loaded_idx
+        except Exception as e:
+            self.logger.error(f"Error loading auto_gm_idx from disk: {e}")
+
+        if not auto_gm_idx:
+            auto_gm_idx = []
 
         if kernel_global_source and kernel_params:
             return JITKernel.from_database(

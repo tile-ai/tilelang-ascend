@@ -104,3 +104,6 @@ docs/notebook/*.cpp
 
 .agents/reports
 
+# gemm_aot AOT build output
+examples/gemm_aot/kernel_lib.so
+

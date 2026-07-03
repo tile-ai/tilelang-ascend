@@ -607,6 +607,7 @@ TROWEXPANDMUL_row_vec(TileUbDataND<T, dstRows, dstCols, dstRows, dstCols> &dst,
   constexpr int32_t alignedRows =
       ((vecLen * sizeof(T) + 31) / 32) * (32 / sizeof(T));
   constexpr int32_t typeLen = sizeof(T);
+  (void)src1_vec;
   TileUbDataDN<T, alignedRows, 1, vecLen, 1> src1_dn;
   pto::TASSIGN(src1_dn, src1_addr + src1_offset * typeLen);
   TROWEXPANDMUL(dst, src0, src1_dn);
@@ -622,9 +623,74 @@ TROWEXPANDMUL_row_vec(TileUbDataND<T, dstRows, dstCols, dstRows, dstCols> &dst,
   constexpr int32_t alignedRows =
       ((vecLen * sizeof(T) + 31) / 32) * (32 / sizeof(T));
   constexpr int32_t typeLen = sizeof(T);
+  (void)src1_vec;
   TileUbDataDN<T, alignedRows, 1, vecLen, 1> src1_dn;
   pto::TASSIGN(src1_dn, src1_addr + src1_offset * typeLen);
   TROWEXPANDMUL(dst, src0, src1_dn, tmp);
+}
+
+// Row-wise broadcast subtract helper.
+template <typename T, int32_t dstRows, int32_t dstCols, int32_t vecLen>
+AICORE PTO_INLINE void
+TROWEXPANDSUB_row_vec(TileUbDataND<T, dstRows, dstCols, dstRows, dstCols> &dst,
+                      TileUbDataND<T, dstRows, dstCols, dstRows, dstCols> &src0,
+                      TileUbDataND<T, 1, vecLen, 1, vecLen> &src1_vec,
+                      int32_t src1_addr, int32_t src1_offset) {
+  constexpr int32_t alignedRows =
+      ((vecLen * sizeof(T) + 31) / 32) * (32 / sizeof(T));
+  constexpr int32_t typeLen = sizeof(T);
+  (void)src1_vec;
+  TileUbDataDN<T, alignedRows, 1, vecLen, 1> src1_dn;
+  pto::TASSIGN(src1_dn, src1_addr + src1_offset * typeLen);
+  TROWEXPANDSUB(dst, src0, src1_dn);
+}
+
+template <typename T, int32_t dstRows, int32_t dstCols, int32_t vecLen,
+          typename TmpTile>
+AICORE PTO_INLINE void
+TROWEXPANDSUB_row_vec(TileUbDataND<T, dstRows, dstCols, dstRows, dstCols> &dst,
+                      TileUbDataND<T, dstRows, dstCols, dstRows, dstCols> &src0,
+                      TileUbDataND<T, 1, vecLen, 1, vecLen> &src1_vec,
+                      int32_t src1_addr, int32_t src1_offset, TmpTile &tmp) {
+  constexpr int32_t alignedRows =
+      ((vecLen * sizeof(T) + 31) / 32) * (32 / sizeof(T));
+  constexpr int32_t typeLen = sizeof(T);
+  (void)src1_vec;
+  TileUbDataDN<T, alignedRows, 1, vecLen, 1> src1_dn;
+  pto::TASSIGN(src1_dn, src1_addr + src1_offset * typeLen);
+  TROWEXPANDSUB(dst, src0, src1_dn, tmp);
+}
+
+// Row-wise broadcast divide helper.
+template <typename T, int32_t dstRows, int32_t dstCols, int32_t vecLen>
+AICORE PTO_INLINE void
+TROWEXPANDDIV_row_vec(TileUbDataND<T, dstRows, dstCols, dstRows, dstCols> &dst,
+                      TileUbDataND<T, dstRows, dstCols, dstRows, dstCols> &src0,
+                      TileUbDataND<T, 1, vecLen, 1, vecLen> &src1_vec,
+                      int32_t src1_addr, int32_t src1_offset) {
+  constexpr int32_t alignedRows =
+      ((vecLen * sizeof(T) + 31) / 32) * (32 / sizeof(T));
+  constexpr int32_t typeLen = sizeof(T);
+  (void)src1_vec;
+  TileUbDataDN<T, alignedRows, 1, vecLen, 1> src1_dn;
+  pto::TASSIGN(src1_dn, src1_addr + src1_offset * typeLen);
+  TROWEXPANDDIV(dst, src0, src1_dn);
+}
+
+template <typename T, int32_t dstRows, int32_t dstCols, int32_t vecLen,
+          typename TmpTile>
+AICORE PTO_INLINE void
+TROWEXPANDDIV_row_vec(TileUbDataND<T, dstRows, dstCols, dstRows, dstCols> &dst,
+                      TileUbDataND<T, dstRows, dstCols, dstRows, dstCols> &src0,
+                      TileUbDataND<T, 1, vecLen, 1, vecLen> &src1_vec,
+                      int32_t src1_addr, int32_t src1_offset, TmpTile &tmp) {
+  constexpr int32_t alignedRows =
+      ((vecLen * sizeof(T) + 31) / 32) * (32 / sizeof(T));
+  constexpr int32_t typeLen = sizeof(T);
+  (void)src1_vec;
+  TileUbDataDN<T, alignedRows, 1, vecLen, 1> src1_dn;
+  pto::TASSIGN(src1_dn, src1_addr + src1_offset * typeLen);
+  TROWEXPANDDIV(dst, src0, src1_dn, tmp);
 }
 
 template <pipe_t pipe>
@@ -1215,24 +1281,26 @@ transpose(TileUbDataND<T, DstRows, DstCols, DstRowValid, DstColValid> &dst,
 }
 
 template <typename DstT, typename SrcT, int32_t DstRows, int32_t DstCols,
-          int32_t SrcRows, int32_t SrcCols>
+          int32_t DstRowValid, int32_t DstColValid, int32_t SrcRows,
+          int32_t SrcCols, int32_t SrcRowValid, int32_t SrcColValid>
 AICORE PTO_INLINE void
-compare(TileUbDataND<DstT, DstRows, DstCols, DstRows, DstCols> &dst,
-        TileUbDataND<SrcT, SrcRows, SrcCols, SrcRows, SrcCols> &src0,
-        TileUbDataND<SrcT, SrcRows, SrcCols, SrcRows, SrcCols> &src1,
+compare(TileUbDataND<DstT, DstRows, DstCols, DstRowValid, DstColValid> &dst,
+        TileUbDataND<SrcT, SrcRows, SrcCols, SrcRowValid, SrcColValid> &src0,
+        TileUbDataND<SrcT, SrcRows, SrcCols, SrcRowValid, SrcColValid> &src1,
         pto::CmpMode mode) {
   pto::TCMP(dst, src0, src1, mode);
 }
 
-template <typename SrcT, int32_t DstRows, int32_t DstCols, int32_t SrcRows,
-          int32_t SrcCols>
+template <typename SrcT, int32_t DstRows, int32_t DstCols, int32_t DstRowValid,
+          int32_t DstColValid, int32_t SrcRows, int32_t SrcCols,
+          int32_t SrcRowValid, int32_t SrcColValid>
 AICORE PTO_INLINE void
-compare(TileUbDataND<int8_t, DstRows, DstCols, DstRows, DstCols> &dst,
-        TileUbDataND<SrcT, SrcRows, SrcCols, SrcRows, SrcCols> &src0,
-        TileUbDataND<SrcT, SrcRows, SrcCols, SrcRows, SrcCols> &src1,
+compare(TileUbDataND<int8_t, DstRows, DstCols, DstRowValid, DstColValid> &dst,
+        TileUbDataND<SrcT, SrcRows, SrcCols, SrcRowValid, SrcColValid> &src0,
+        TileUbDataND<SrcT, SrcRows, SrcCols, SrcRowValid, SrcColValid> &src1,
         pto::CmpMode mode) {
   auto &dst_uint8 = reinterpret_cast<
-      TileUbDataND<uint8_t, DstRows, DstCols, DstRows, DstCols> &>(dst);
+      TileUbDataND<uint8_t, DstRows, DstCols, DstRowValid, DstColValid> &>(dst);
   pto::TCMP(dst_uint8, src0, src1, mode);
 }
 

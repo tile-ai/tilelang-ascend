@@ -422,8 +422,6 @@ def main(
         dtype_str,
         "float",
     )
-    with open("./ascendc.cpp", "w") as fp:
-        fp.write(ker.get_kernel_source())
 
     A_log = A_log_cpu.to(device)
     a = pad_tensor_cpu(a_cpu).to(device)

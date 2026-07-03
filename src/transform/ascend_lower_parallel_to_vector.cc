@@ -1497,6 +1497,10 @@ private:
         return "uint32_t";
       if (dtype.bits() == 64)
         return "uint64_t";
+    } else if (dtype.is_float8_e4m3fn()) {
+      return "float8_e4m3_t";
+    } else if (dtype.is_float8_e5m2()) {
+      return "float8_e5m2_t";
     }
     return "";
   }
