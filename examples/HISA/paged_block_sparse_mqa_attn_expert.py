@@ -468,7 +468,7 @@ def ref_paged_block_sparse_mqa_attn(
     return logits_out.view(batch, seq_len, topk * kv_block_size)
 
 
-def test_paged_block_sparse_mqa_attn(
+def run_paged_block_sparse_mqa_attn(
     batch: int,
     seq_len: int,
     num_phys_blocks: int,
@@ -584,7 +584,7 @@ if __name__ == "__main__":
     print("  V UB: s_ub_e + s_ub_l per AIV (DMA ∥ compute)")
     print()
 
-    test_paged_block_sparse_mqa_attn(
+    run_paged_block_sparse_mqa_attn(
         batch=args.batch,
         seq_len=args.seq_len,
         num_phys_blocks=args.num_phys_blocks,

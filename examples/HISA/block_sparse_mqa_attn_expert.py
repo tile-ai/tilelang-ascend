@@ -570,7 +570,7 @@ def ref_block_sparse_mqa_attn(
     return logits
 
 
-def test_block_sparse_mqa_attn(
+def run_block_sparse_mqa_attn(
     seq_len: int,
     seq_len_kv: int,
     heads: int,
@@ -669,7 +669,7 @@ if __name__ == "__main__":
     print(f"  dtype: {args.dtype}")
     print()
 
-    test_block_sparse_mqa_attn(
+    run_block_sparse_mqa_attn(
         seq_len=args.seq_len,
         seq_len_kv=args.seq_len_kv,
         heads=args.heads,
