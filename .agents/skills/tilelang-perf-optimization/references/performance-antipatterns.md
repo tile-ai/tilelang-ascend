@@ -380,6 +380,42 @@ for i in T.serial(loop_n):
 
 ---
 
+## 多行 tile 循环内逐块归约
+
+**识别特征**：多行 tile（`[rows, block_S]`，`rows > 1`）的循环内，每块都在执行 `reduce_sum`：
+
+```python
+# ❌ 多行 tile 循环内逐块归约
+for si in T.serial(s_num):
+    T.copy(src[...], buf_cal)               # [rows, block_S]
+    T.reduce_sum(buf_cal, col_buf, dim=-1)  # [rows, 1]
+    T.reduce_sum(col_buf, scalar, dim=0)    # dim=0 行为不确定！
+    T.tile.add(total, total, scalar)
+```
+
+**性能/正确性原因**：（1）`reduce_sum(dim=0)` 在 `[rows, 1]` 形状上行为不确定，可能产生 NaN；（2）每轮额外发射 2 条归约指令，抵消了多行 tile 的收益。
+
+**替代写法**：循环内只用 `tile.add` 累积到完整 `[rows, block_S]` buffer，循环外用 `reduce_sum(dim=-1)` 两步归约：
+
+```python
+# ✅ 循环内累积 → 循环外归约
+accum = T.alloc_ub([rows, block_S], cal_dtype)
+T.tile.fill(accum, 0.0)
+for si in T.serial(s_num):
+    T.copy(src[...], buf_cal)
+    T.tile.add(accum, accum, buf_cal)   # 只累积
+
+# 循环外
+row_buf = T.alloc_ub([rows], cal_dtype)
+result = T.alloc_ub([1], cal_dtype)
+T.reduce_sum(accum, row_buf, dim=-1)   # [rows, block_S] → [rows]
+T.reduce_sum(row_buf, result, dim=-1)  # [rows] → scalar
+```
+
+**检查点**：循环内是否有 `reduce_sum` 调用？循环外是否只用 `dim=-1`？详见 optimization-guide.md §2.13 铁律 P1。
+
+---
+
 ## 评审记录模板
 
 发现性能关注项但暂不修改时，在优化记录中写清楚：

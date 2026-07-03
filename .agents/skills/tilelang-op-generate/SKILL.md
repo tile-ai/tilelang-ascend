@@ -68,6 +68,10 @@ design.md 可能很长，**只提取以下字段，忽略其余内容**：
 
 ## 3. 代码生成流程
 
+> **⚠️ 核心原则：算子的主要操作必须全部在 kernel 内实现**
+>
+> 算子的所有核心计算逻辑（包括数据搬运、数学运算、归约、归一化等）必须在 `@tilelang.jit` 装饰的 kernel 函数内部完成。**禁止**将算子的主要操作放在 kernel 外部（如 host 端 Python 代码）来实现。kernel 外部只允许做数据准备（输入 tensor 创建）、kernel 调用和结果验证。
+
 ### 步骤 1：读取设计文档
 
 读取 `design.md`，按 §1 的表格提取字段。
@@ -133,7 +137,13 @@ python examples/{op}/example_{op}.py --level l0
 
 ### 步骤 5：上库前检查清单
 
-运行通过后，必须按 [references/checklist.md](references/checklist.md) 全部 22 项检查。**最容易踩坑的 4 项重点提醒**：
+运行通过后，必须按 [references/checklist.md](references/checklist.md) 全部 22 项检查。
+
+**⚠️ 首先检查：算子主要操作是否全部在 kernel 内实现**
+
+逐项检查前，先回顾生成的代码，确认算子的所有核心计算逻辑（数据搬运、数学运算、归约、归一化等）都在 `@tilelang.jit` 装饰的 kernel 函数内部完成。若发现有任何主要操作被放在 kernel 外部（host 端 Python 代码）实现，**必须立即修改**，将这些操作移入 kernel 内部，直到满足要求后才能继续后续检查。kernel 外部只允许做数据准备（输入 tensor 创建）、kernel 调用和结果验证。
+
+**最容易踩坑的 4 项重点提醒**：
 
 | 关键项 | 说明 | checklist 编号 |
 |--------|------|---------|

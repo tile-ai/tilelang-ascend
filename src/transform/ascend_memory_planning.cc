@@ -300,6 +300,7 @@ private:
 
     void PlanMemory() {
       LivenessAnalysis();
+      CollectLoopInfo();
 
       std::unordered_map<std::string, std::vector<const VarNode *>>
           scope_groups;
@@ -453,6 +454,91 @@ private:
       return -1;
     }
 
+    /*!
+     * \brief Collect loop intervals and buffer touch indices for
+     *        loop-aware liveness extension.
+     *
+     * After LivenessAnalysis, the KILL point of a buffer is set to its
+     * last touch in the linearized IR.  However, when a buffer is
+     * defined *before* a loop and touched *inside* the loop body, it
+     * is actually live across every iteration — its real KILL should
+     * be the loop's end, not the textual last touch inside the body.
+     *
+     * This method pre-computes:
+     *   1. loop_intervals_  — [begin, end] index pairs for every
+     *      ForNode / WhileNode in linear_seq_.
+     *   2. buffer_touch_indices_ — for every buffer, a sorted set of
+     *      all linear_seq_ indices where it is touched.
+     */
+    void CollectLoopInfo() {
+      for (size_t i = 0; i < linear_seq_.size(); ++i) {
+        const StmtEntry &s = linear_seq_[i];
+        if (s.scope_pair_offset > 0 && s.stmt &&
+            (s.stmt->IsInstance<ForNode>() ||
+             s.stmt->IsInstance<WhileNode>())) {
+          int64_t begin = static_cast<int64_t>(i);
+          int64_t end = begin + s.scope_pair_offset;
+          loop_intervals_.push_back({begin, end});
+        }
+      }
+
+      for (size_t i = 0; i < linear_seq_.size(); ++i) {
+        for (const VarNode *buf : linear_seq_[i].touched) {
+          buffer_touch_indices_[buf].insert(static_cast<int64_t>(i));
+        }
+      }
+    }
+
+    /*!
+     * \brief Extend a buffer's KILL index to cover loops in which it
+     *        is live across iterations.
+     *
+     * The linearized IR represents a loop body as a single pass, so the
+     * liveness analysis computes a buffer's KILL as the last touch
+     * *within one iteration*.  However, when a buffer is defined
+     * *before* a loop and touched *inside* the loop body, it is
+     * actually live across every iteration — its real KILL should be
+     * the loop's end, not the textual last touch inside the body.
+     *
+     * This handles the case where a buffer (e.g. index_ub) is
+     * initialized once before a segment loop and read in every
+     * iteration.  Without this extension, the planner may reuse the
+     * buffer's memory for another buffer (e.g. merged_ub) that is
+     * written inside the same loop, causing silent data corruption.
+     *
+     * For each loop [loop_begin, loop_end] where:
+     *   - GEN < loop_begin  (buffer defined before the loop)
+     *   - loop_begin <= KILL < loop_end  (buffer's last touch is inside)
+     * the KILL is extended to loop_end.  This applies to all enclosing
+     * loops, so we take the maximum loop_end.
+     */
+    int64_t ExtendKillIndex(const VarNode *buffer, int64_t gen_idx,
+                            int64_t kill_idx) {
+      if (kill_idx < 0) {
+        return kill_idx;
+      }
+      auto it = buffer_touch_indices_.find(buffer);
+      if (it == buffer_touch_indices_.end()) {
+        return kill_idx;
+      }
+      const std::set<int64_t> &touches = it->second;
+
+      int64_t extended = kill_idx;
+      for (const auto &loop : loop_intervals_) {
+        int64_t loop_begin = loop.first;
+        int64_t loop_end = loop.second;
+
+        if (gen_idx < loop_begin && kill_idx >= loop_begin &&
+            kill_idx < loop_end) {
+          auto touch_it = touches.upper_bound(loop_begin);
+          if (touch_it != touches.end() && *touch_it < loop_end) {
+            extended = std::max(extended, loop_end);
+          }
+        }
+      }
+      return extended;
+    }
+
     void PlanMemoryForScope(const std::string &scope,
                             const std::vector<const VarNode *> &buffers) {
       DLOG(DEBUG) << "Planning memory for scope: " << scope;
@@ -468,6 +554,7 @@ private:
         int64_t end = FindEventIndex(buffer, false);
 
         if (start != -1 && end != -1) {
+          end = ExtendKillIndex(buffer, start, end);
           intervals.emplace_back(buffer, start, end, buffer_sizes_[buffer]);
           DLOG(DEBUG) << "Buffer " << buffer->name_hint << ": [" << start
                       << ", " << end << "], size=" << buffer_sizes_[buffer];
@@ -888,6 +975,10 @@ private:
         buffer_names_; // buffer names for duplicate check
     std::vector<const VarNode *>
         tmp_buffers; // temp buffer list for memory planning
+    std::vector<std::pair<int64_t, int64_t>>
+        loop_intervals_; // [begin, end] index pairs for each loop
+    std::unordered_map<const VarNode *, std::set<int64_t>>
+        buffer_touch_indices_; // buffer -> sorted touch indices
 
     size_t scope_level_{0};
     bool memory_auto_plan{false};
