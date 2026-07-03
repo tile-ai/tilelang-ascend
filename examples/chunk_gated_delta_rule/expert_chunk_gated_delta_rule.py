@@ -216,7 +216,7 @@ def chunk_gated_delta_rule_fwd_kernel(
                         T.tile.fill(g_exp_ub, g_last)
                         T.set_flag("mte2", "v", 2)
                         T.wait_flag("mte2", "v", 2)
-                        T.barrier_all()
+                        T.pipe_barrier("v")
                         T.tile.sub(g_exp_ub, g_exp_ub, g_chunk_ub[pid, :])
                         T.pipe_barrier("v")
                         T.tile.exp(g_exp_ub, g_exp_ub)
@@ -224,7 +224,7 @@ def chunk_gated_delta_rule_fwd_kernel(
                         T.tile.broadcast(g_exp_ub_broc, g_exp_ub, axis=1)
 
                         T.tile.fill(g_last_scalar, g_last)
-                        T.barrier_all()
+                        T.pipe_barrier("v")
                         T.tile.exp(g_last_scalar, g_last_scalar)
 
                     for j in T.serial(2):
