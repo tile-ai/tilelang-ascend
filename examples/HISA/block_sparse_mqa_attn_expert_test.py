@@ -637,7 +637,7 @@ def test_block_sparse_mqa_attn(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Block Sparse MQA Attention Kernel Test")
-    parser.add_argument("--seq_len", type=int, default=32, help="Query sequence length")
+    parser.add_argument("--seq_len", type=int, default=1024, help="Query sequence length")
     parser.add_argument("--seq_len_kv", type=int, default=128 * 1024, help="KV sequence length")
     parser.add_argument("--heads", type=int, default=32, help="Number of attention heads")
     parser.add_argument("--index_dim", type=int, default=128, help="Index dimension")
