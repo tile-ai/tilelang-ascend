@@ -2332,14 +2332,17 @@ void CodeGenTileLangAscendPto::RowExpandBinOpExperimentCodegenPto(
     CreateUbVariableND(src0_name, src0);
   }
 
-  int32_t src1_len = src1.slice_col;
   int32_t dst_rows = dst.is_slice ? dst.slice_valid_row : dst.row;
   int32_t dst_cols = dst.is_slice ? dst.slice_valid_col : dst.col;
+  int32_t src1_len = dst_rows;
+  int32_t dst_row_valid = dst.is_slice ? dst.slice_valid_row : dst.row;
+  int32_t dst_col_valid = dst.is_slice ? dst.slice_valid_col : dst.col;
 
   this->PrintIndent();
   this->stream << kAscendPtoScope << pto_op_name << "<" << src1.type << ", "
-               << dst_rows << ", " << dst_cols << ", " << src1_len << ">("
-               << dst_name << ", " << src0_name << ", " << src1_name << ", "
+               << dst_rows << ", " << dst_cols << ", " << dst_row_valid << ", "
+               << dst_col_valid << ", " << src1_len << ">(" << dst_name << ", "
+               << src0_name << ", " << src1_name << ", "
                << PrintExpr(src1.first_addr) << ", " << src1.offset;
   if (has_tmp) {
     this->stream << ", " << tmp.ub_name;
@@ -3100,15 +3103,17 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
   ICHECK(shape.size() == 4)
       << "Expected a 4D shape [M, N, Valid_M, Valid_N] for PTO, but got "
       << shape.size() << "D for " << op->buffer_var->name_hint;
-  const auto &M = shape[0];
-  const auto &N = shape[1];
-  const auto &valid_M = shape[2];
-  const auto &valid_N = shape[3];
+  int32_t M_int = shape[0].as<IntImmNode>()->value;
+  int32_t N_int = shape[1].as<IntImmNode>()->value;
+  int32_t valid_M_int = shape[2].as<IntImmNode>()->value;
+  int32_t valid_N_int = shape[3].as<IntImmNode>()->value;
+  int32_t N_aligned = GetValidShape(N_int, type);
 
-  // Print the Tile object declaration
+  // Print the Tile object declaration. Cols (N) must be 32B-aligned for PTO
+  // tile static assertions; valid_N keeps the logical (unpadded) column count.
   this->PrintIndent();
-  stream << op_name << "<" << type << ", " << M << ", " << N << ", " << valid_M
-         << ", " << valid_N << "> " << vid << ";\n";
+  stream << op_name << "<" << type << ", " << M_int << ", " << N_aligned
+         << ", " << valid_M_int << ", " << valid_N_int << "> " << vid << ";\n";
 
   // address_map, use name_hint as key
   Map<String, PrimExpr> address_map_name_hint;

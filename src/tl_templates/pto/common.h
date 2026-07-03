@@ -598,12 +598,14 @@ AICORE PTO_INLINE void TROWEXPAND_with_slice_buffer(
 // Row-wise broadcast multiply helper.
 // Reinterprets src1 (RowMajor row vector [1, vecLen]) as a ColMajor column
 // vector [vecLen, 1] (same memory layout), then calls TROWEXPANDMUL.
-template <typename T, int32_t dstRows, int32_t dstCols, int32_t vecLen>
+template <typename T, int32_t dstRows, int32_t dstCols, int32_t dstRowValid,
+          int32_t dstColValid, int32_t vecLen, int32_t Src1Col>
 AICORE PTO_INLINE void
-TROWEXPANDMUL_row_vec(TileUbDataND<T, dstRows, dstCols, dstRows, dstCols> &dst,
-                      TileUbDataND<T, dstRows, dstCols, dstRows, dstCols> &src0,
-                      TileUbDataND<T, 1, vecLen, 1, vecLen> &src1_vec,
-                      int32_t src1_addr, int32_t src1_offset) {
+TROWEXPANDMUL_row_vec(
+    TileUbDataND<T, dstRows, dstCols, dstRowValid, dstColValid> &dst,
+    TileUbDataND<T, dstRows, dstCols, dstRowValid, dstColValid> &src0,
+    TileUbDataND<T, 1, Src1Col, 1, vecLen> &src1_vec, int32_t src1_addr,
+    int32_t src1_offset) {
   constexpr int32_t alignedRows =
       ((vecLen * sizeof(T) + 31) / 32) * (32 / sizeof(T));
   constexpr int32_t typeLen = sizeof(T);
@@ -613,13 +615,14 @@ TROWEXPANDMUL_row_vec(TileUbDataND<T, dstRows, dstCols, dstRows, dstCols> &dst,
   TROWEXPANDMUL(dst, src0, src1_dn);
 }
 
-template <typename T, int32_t dstRows, int32_t dstCols, int32_t vecLen,
-          typename TmpTile>
+template <typename T, int32_t dstRows, int32_t dstCols, int32_t dstRowValid,
+          int32_t dstColValid, int32_t vecLen, int32_t Src1Col, typename TmpTile>
 AICORE PTO_INLINE void
-TROWEXPANDMUL_row_vec(TileUbDataND<T, dstRows, dstCols, dstRows, dstCols> &dst,
-                      TileUbDataND<T, dstRows, dstCols, dstRows, dstCols> &src0,
-                      TileUbDataND<T, 1, vecLen, 1, vecLen> &src1_vec,
-                      int32_t src1_addr, int32_t src1_offset, TmpTile &tmp) {
+TROWEXPANDMUL_row_vec(
+    TileUbDataND<T, dstRows, dstCols, dstRowValid, dstColValid> &dst,
+    TileUbDataND<T, dstRows, dstCols, dstRowValid, dstColValid> &src0,
+    TileUbDataND<T, 1, Src1Col, 1, vecLen> &src1_vec, int32_t src1_addr,
+    int32_t src1_offset, TmpTile &tmp) {
   constexpr int32_t alignedRows =
       ((vecLen * sizeof(T) + 31) / 32) * (32 / sizeof(T));
   constexpr int32_t typeLen = sizeof(T);
@@ -630,12 +633,14 @@ TROWEXPANDMUL_row_vec(TileUbDataND<T, dstRows, dstCols, dstRows, dstCols> &dst,
 }
 
 // Row-wise broadcast subtract helper.
-template <typename T, int32_t dstRows, int32_t dstCols, int32_t vecLen>
+template <typename T, int32_t dstRows, int32_t dstCols, int32_t dstRowValid,
+          int32_t dstColValid, int32_t vecLen, int32_t Src1Col>
 AICORE PTO_INLINE void
-TROWEXPANDSUB_row_vec(TileUbDataND<T, dstRows, dstCols, dstRows, dstCols> &dst,
-                      TileUbDataND<T, dstRows, dstCols, dstRows, dstCols> &src0,
-                      TileUbDataND<T, 1, vecLen, 1, vecLen> &src1_vec,
-                      int32_t src1_addr, int32_t src1_offset) {
+TROWEXPANDSUB_row_vec(
+    TileUbDataND<T, dstRows, dstCols, dstRowValid, dstColValid> &dst,
+    TileUbDataND<T, dstRows, dstCols, dstRowValid, dstColValid> &src0,
+    TileUbDataND<T, 1, Src1Col, 1, vecLen> &src1_vec, int32_t src1_addr,
+    int32_t src1_offset) {
   constexpr int32_t alignedRows =
       ((vecLen * sizeof(T) + 31) / 32) * (32 / sizeof(T));
   constexpr int32_t typeLen = sizeof(T);
@@ -645,13 +650,14 @@ TROWEXPANDSUB_row_vec(TileUbDataND<T, dstRows, dstCols, dstRows, dstCols> &dst,
   TROWEXPANDSUB(dst, src0, src1_dn);
 }
 
-template <typename T, int32_t dstRows, int32_t dstCols, int32_t vecLen,
-          typename TmpTile>
+template <typename T, int32_t dstRows, int32_t dstCols, int32_t dstRowValid,
+          int32_t dstColValid, int32_t vecLen, int32_t Src1Col, typename TmpTile>
 AICORE PTO_INLINE void
-TROWEXPANDSUB_row_vec(TileUbDataND<T, dstRows, dstCols, dstRows, dstCols> &dst,
-                      TileUbDataND<T, dstRows, dstCols, dstRows, dstCols> &src0,
-                      TileUbDataND<T, 1, vecLen, 1, vecLen> &src1_vec,
-                      int32_t src1_addr, int32_t src1_offset, TmpTile &tmp) {
+TROWEXPANDSUB_row_vec(
+    TileUbDataND<T, dstRows, dstCols, dstRowValid, dstColValid> &dst,
+    TileUbDataND<T, dstRows, dstCols, dstRowValid, dstColValid> &src0,
+    TileUbDataND<T, 1, Src1Col, 1, vecLen> &src1_vec, int32_t src1_addr,
+    int32_t src1_offset, TmpTile &tmp) {
   constexpr int32_t alignedRows =
       ((vecLen * sizeof(T) + 31) / 32) * (32 / sizeof(T));
   constexpr int32_t typeLen = sizeof(T);
@@ -662,12 +668,14 @@ TROWEXPANDSUB_row_vec(TileUbDataND<T, dstRows, dstCols, dstRows, dstCols> &dst,
 }
 
 // Row-wise broadcast divide helper.
-template <typename T, int32_t dstRows, int32_t dstCols, int32_t vecLen>
+template <typename T, int32_t dstRows, int32_t dstCols, int32_t dstRowValid,
+          int32_t dstColValid, int32_t vecLen, int32_t Src1Col>
 AICORE PTO_INLINE void
-TROWEXPANDDIV_row_vec(TileUbDataND<T, dstRows, dstCols, dstRows, dstCols> &dst,
-                      TileUbDataND<T, dstRows, dstCols, dstRows, dstCols> &src0,
-                      TileUbDataND<T, 1, vecLen, 1, vecLen> &src1_vec,
-                      int32_t src1_addr, int32_t src1_offset) {
+TROWEXPANDDIV_row_vec(
+    TileUbDataND<T, dstRows, dstCols, dstRowValid, dstColValid> &dst,
+    TileUbDataND<T, dstRows, dstCols, dstRowValid, dstColValid> &src0,
+    TileUbDataND<T, 1, Src1Col, 1, vecLen> &src1_vec, int32_t src1_addr,
+    int32_t src1_offset) {
   constexpr int32_t alignedRows =
       ((vecLen * sizeof(T) + 31) / 32) * (32 / sizeof(T));
   constexpr int32_t typeLen = sizeof(T);
@@ -677,13 +685,14 @@ TROWEXPANDDIV_row_vec(TileUbDataND<T, dstRows, dstCols, dstRows, dstCols> &dst,
   TROWEXPANDDIV(dst, src0, src1_dn);
 }
 
-template <typename T, int32_t dstRows, int32_t dstCols, int32_t vecLen,
-          typename TmpTile>
+template <typename T, int32_t dstRows, int32_t dstCols, int32_t dstRowValid,
+          int32_t dstColValid, int32_t vecLen, int32_t Src1Col, typename TmpTile>
 AICORE PTO_INLINE void
-TROWEXPANDDIV_row_vec(TileUbDataND<T, dstRows, dstCols, dstRows, dstCols> &dst,
-                      TileUbDataND<T, dstRows, dstCols, dstRows, dstCols> &src0,
-                      TileUbDataND<T, 1, vecLen, 1, vecLen> &src1_vec,
-                      int32_t src1_addr, int32_t src1_offset, TmpTile &tmp) {
+TROWEXPANDDIV_row_vec(
+    TileUbDataND<T, dstRows, dstCols, dstRowValid, dstColValid> &dst,
+    TileUbDataND<T, dstRows, dstCols, dstRowValid, dstColValid> &src0,
+    TileUbDataND<T, 1, Src1Col, 1, vecLen> &src1_vec, int32_t src1_addr,
+    int32_t src1_offset, TmpTile &tmp) {
   constexpr int32_t alignedRows =
       ((vecLen * sizeof(T) + 31) / 32) * (32 / sizeof(T));
   constexpr int32_t typeLen = sizeof(T);
