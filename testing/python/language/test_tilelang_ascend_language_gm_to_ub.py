@@ -574,8 +574,14 @@ def dyn_mn_copy(block_M, block_N, dtype):
 
 def run_test_dyn_m(N, block_M, block_N, dtype, target, M_values):
     torch.manual_seed(0)
+    # Disable cache for symbolic-var kernels: KernelCache uses threading.Lock
+    # (thread-safe) but NOT file-level locking (process-safe), so pytest-xdist
+    # workers racing on the same disk cache entry can corrupt params.pkl and
+    # lose the dynamic_symbolic_map -> KeyError: 'Unfounded symbolic var: M'.
+    tilelang.disable_cache()
     func = dyn_m_copy(N, block_M, block_N, dtype)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=VEC_PASS_CONFIGS, target=target)
+    tilelang.enable_cache()
     td = _torch_dtype(dtype)
     for M in M_values:
         if dtype in ("int32", "int16"):
@@ -589,8 +595,13 @@ def run_test_dyn_m(N, block_M, block_N, dtype, target, M_values):
 
 def run_test_dyn_mn(block_M, block_N, dtype, target, shapes):
     torch.manual_seed(0)
+    # Same cache-disable rationale as run_test_dyn_m: two symbolic vars (M+N)
+    # make the dynamic_symbolic_map even more sensitive to cross-process
+    # cache corruption under pytest-xdist.
+    tilelang.disable_cache()
     func = dyn_mn_copy(block_M, block_N, dtype)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=VEC_PASS_CONFIGS, target=target)
+    tilelang.enable_cache()
     td = _torch_dtype(dtype)
     for M, N in shapes:
         a = torch.randn(M, N, dtype=td).npu()
