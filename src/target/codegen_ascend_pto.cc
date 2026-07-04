@@ -1630,7 +1630,41 @@ void CodeGenTileLangAscendPto::FillCodegen(const CallNode *op) {
   this->PrintIndent();
   this->stream << "wait_flag(PIPE_V, PIPE_S, EVENT_ID0);\n";
 
-  ShapeInfo dst_shape_info = GetSliceInfo(op->args[1].as<CallNode>());
+  const CallNode *dst_access = op->args[1].as<CallNode>();
+  ShapeInfo dst_shape_info = GetSliceInfo(dst_access);
+
+  // A runtime-dynamic slice length (e.g. T.tile.fill(buf[0, 0:idx], v))
+  // cannot be baked into the tile's static valid dims. For such an access
+  // GetSliceInfo falls back to the full tile shape, which makes TEXPANDS
+  // over-fill: it fills the descriptor's *valid* region (there is no
+  // separate count argument). Emit a pto::DYNAMIC descriptor whose valid
+  // rows/cols are computed from the dynamic length at runtime, so exactly
+  // the requested elements are filled.
+  if (dst_access->args[3].as<IntImmNode>() == nullptr) {
+    const std::string type = dst_shape_info.type;
+    const std::string col = std::to_string(dst_shape_info.col);
+    const std::string ext = "(" + PrintExpr(dst_access->args[3]) + ")";
+    const std::string valid_row =
+        "(" + ext + " / " + col + " > 1 ? " + ext + " / " + col + " : 1)";
+    const std::string valid_col =
+        "(" + ext + " > " + col + " ? " + col + " : " + ext + ")";
+    const std::string temp = GetTempVarName(dst_shape_info.ub_name);
+
+    this->PrintIndent();
+    this->stream << kAscendPtoScope << "TileUbDataND<" << type << ", "
+                 << dst_shape_info.slice_row << ", " << dst_shape_info.slice_col
+                 << ", pto::DYNAMIC, pto::DYNAMIC> " << temp << "(" << valid_row
+                 << ", " << valid_col << ");\n";
+    this->PrintIndent();
+    this->stream << "TASSIGN(" << temp << ", " << dst_shape_info.first_addr
+                 << " + " << dst_shape_info.offset << " * " << GetTypeLen(type)
+                 << ");\n";
+    this->PrintIndent();
+    this->stream << "TEXPANDS(" << temp << ", " << PrintExpr(op->args[2])
+                 << ");\n";
+    return;
+  }
+
   std::string dst_name = ResolveUbSliceName(dst_shape_info);
 
   this->PrintIndent();

@@ -173,6 +173,41 @@ echo "Cloning TVM repository and initializing submodules..."
 # clone and build tvm
 git submodule update --init --recursive
 
+# Apply local patches to the tvm submodule (kept under 3rdparty/patches/).
+# These are minimal fixes we cannot land in the pinned submodule commit, e.g.
+# dynamic-slice support in Buffer.__getitem__ (issue #1207). Applying here means
+# every build (including CI) picks them up right after the submodule checkout.
+#
+# Behaviour:
+#   - idempotent: an already-applied patch is detected (reverse --check) and skipped,
+#     so re-running install / incremental builds is safe;
+#   - FATAL on failure: if a patch cannot apply (e.g. the pinned tvm was bumped and
+#     the context no longer matches) we exit non-zero instead of silently building
+#     an unpatched TVM.
+TVM_PATCH_DIR="3rdparty/patches"
+if [ -d "$TVM_PATCH_DIR" ]; then
+    for patch in "$TVM_PATCH_DIR"/tvm_*.patch; do
+        [ -e "$patch" ] || continue
+        patch_name="$(basename "$patch")"
+        patch_abs="$(cd "$(dirname "$patch")" && pwd)/$patch_name"
+        if git -C 3rdparty/tvm apply --reverse --check "$patch_abs" >/dev/null 2>&1; then
+            echo "  [patch] $patch_name already applied, skipping"
+        elif git -C 3rdparty/tvm apply --check "$patch_abs" >/dev/null 2>&1; then
+            git -C 3rdparty/tvm apply "$patch_abs"
+            if git -C 3rdparty/tvm apply --reverse --check "$patch_abs" >/dev/null 2>&1; then
+                echo "  [patch] $patch_name applied"
+            else
+                echo "  [patch] ERROR: $patch_name did not apply cleanly" >&2
+                exit 1
+            fi
+        else
+            echo "  [patch] ERROR: cannot apply $patch_name to 3rdparty/tvm" >&2
+            echo "          (the pinned tvm submodule may have changed; regenerate the patch)" >&2
+            exit 1
+        fi
+    done
+fi
+
 # 根据增量编译选项决定是否清理 build 目录
 if $INCREMENTAL_BUILD; then
     if [ -d build ]; then
