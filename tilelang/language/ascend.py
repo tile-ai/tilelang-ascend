@@ -430,9 +430,8 @@ def gemm_mx(A, B, C, scale_a, scale_b, init=False,
         A: Input matrix A, shape [M, K], dtype e5m2_float8 or e4m3_float8
         B: Input matrix B, shape [K, N], dtype e5m2_float8 or e4m3_float8
         C: Output matrix C, shape [M, N], dtype float32
-        scale_a: Scale factors for A, shape [M, K_MX], dtype uint8 (e8m0 format)
-                 where K_MX = K // 32
-        scale_b: Scale factors for B, shape [K_MX, N], dtype uint8 (e8m0 format)
+        scale_a: Scale factors for A, shape [M, K//64, 2], dtype uint8 (e8m0 format)
+        scale_b: Scale factors for B, shape [K//64, N, 2], dtype uint8 (e8m0 format)
         init: If True, initialize C to zero before accumulation
         transpose_A: If True, A is transposed
         transpose_B: If True, B is transposed
@@ -450,9 +449,10 @@ def gemm_mx(A, B, C, scale_a, scale_b, init=False,
     scale_a_shape = _retrieve_shape(scale_a)
 
     M, N = C_shape[-2], C_shape[-1]
-    # Infer full K from scale shape: K = K_MX * 32
-    K_MX = scale_a_shape[-1]
-    K = K_MX * 32
+    assert len(scale_a_shape) == 3, \
+        f"scale_a must be 3D [M, K//64, 2], got {len(scale_a_shape)}D"
+    kScale = scale_a_shape[-2]
+    K = kScale * 64
     K_L1 = B_shape[-1] if transpose_B else B_shape[-2]
     assert K % K_L1 == 0, f"gemm_mx K must be multiple of K_L1, got K={K}, K_L1={K_L1}"
     assert K % 64 == 0, f"K must be multiple of 64 for MX GEMM, got {K}"

@@ -174,33 +174,45 @@ gemm_mx(std::conditional_t<transpose_A, TileMatL1<T1, K, M, validK, validM>,
         pto::TileAcc<T2, M, N, validM, validN> &C, bool clear) {
   constexpr uint32_t kMxBaseK = 64;
   constexpr uint32_t KMX = K_full / 32;
-  const uint32_t kSplit = (K_full + kMxBaseK - 1) / kMxBaseK;
+  const uint32_t kSplit = (K + kMxBaseK - 1) / kMxBaseK;
   auto war_event_id = (event_t)(((int)EVENT_ID0 + 1) % 8);
 
   set_flag(PIPE_MTE2, PIPE_MTE1, war_event_id);
   wait_flag(PIPE_MTE2, PIPE_MTE1, war_event_id);
 
   constexpr uint32_t baseKMX = kMxBaseK / 32;
+  constexpr uint32_t SHAPE_DIM2 = 2;
   constexpr uint32_t scaleB_offset =
       ScaleL1Offset + validM * baseKMX * sizeof(float8_e8m0_t);
 
-  // L1 tiles for scale - defined outside loop (like pto-isa SPLIT_K kernel)
-  TileScaleL1Left<float8_e8m0_t, validM, baseKMX, validM, baseKMX> l1_scaleA;
-  TileScaleL1Right<float8_e8m0_t, baseKMX, validN, baseKMX, validN> l1_scaleB;
-  pto::TASSIGN(l1_scaleA, ScaleL1Offset);
-  pto::TASSIGN(l1_scaleB, scaleB_offset);
-
-  // L0 tiles for data - defined outside loop (like pto-isa SPLIT_K kernel)
+  // L0 tiles for data - defined outside loop
   TileMatL0A<T1, M, kMxBaseK, M, kMxBaseK> l0a;
   TileMatL0B<T1, kMxBaseK, N, kMxBaseK, N> l0b;
   pto::TASSIGN(l0a, 0x0);
   pto::TASSIGN(l0b, 0x0);
 
-  // Scale tiles - defined outside loop, GetScaleAddr called once
-  TileScaleLeft<float8_e8m0_t, M, baseKMX, M, baseKMX> l0a_scale;
-  TileScaleRight<float8_e8m0_t, baseKMX, N, baseKMX, N> l0b_scale;
+  // L0 scale tiles
+  pto::TileLeftScaleCompact<float8_e8m0_t, validM, baseKMX,
+                            validM, baseKMX> l0a_scale;
+  pto::TileRightScaleCompact<float8_e8m0_t, baseKMX, validN,
+                             baseKMX, validN> l0b_scale;
   pto::TASSIGN(l0a_scale, pto::GetScaleAddr(l0a.data()));
   pto::TASSIGN(l0b_scale, pto::GetScaleAddr(l0b.data()));
+
+  // L1 scale tiles
+  using L1ScaleATile = pto::Tile<
+      pto::TileType::Mat, float8_e8m0_t, validM, baseKMX,
+      pto::BLayout::RowMajor, validM, baseKMX,
+      pto::SLayout::RowMajor, pto::TileConfig::alignedSize>;
+  using L1ScaleBTile = pto::Tile<
+      pto::TileType::Mat, float8_e8m0_t, baseKMX, validN,
+      pto::BLayout::ColMajor, baseKMX, validN,
+      pto::SLayout::ColMajor, pto::TileConfig::alignedSize>;
+
+  L1ScaleATile l1_scaleA_tmp;
+  L1ScaleBTile l1_scaleB_tmp;
+  pto::TASSIGN(l1_scaleA_tmp, ScaleL1Offset);
+  pto::TASSIGN(l1_scaleB_tmp, scaleB_offset);
 
   for (uint32_t kIdx = 0; kIdx < kSplit; kIdx++) {
     const bool initflag = (clear && (kIdx == 0));
@@ -216,27 +228,34 @@ gemm_mx(std::conditional_t<transpose_A, TileMatL1<T1, K, M, validK, validM>,
       wait_flag(PIPE_FIX, PIPE_M, war_event_id);
     }
 
-    // Load scale data for current K iteration from GM to L1
-    using GlobalScaleACur = pto::GlobalTensor<
-        float8_e8m0_t,
-        pto::TileShape2D<float8_e8m0_t, validM, cKMX, pto::Layout::MX_A_ZZ>,
-        pto::BaseShape2D<float8_e8m0_t, validM, KMX, pto::Layout::MX_A_ZZ>,
-        pto::Layout::MX_A_ZZ>;
-    using GlobalScaleBCur = pto::GlobalTensor<
-        float8_e8m0_t,
-        pto::TileShape2D<float8_e8m0_t, cKMX, validN, pto::Layout::MX_B_NN>,
-        pto::BaseShape2D<float8_e8m0_t, KMX, validN, pto::Layout::MX_B_NN>,
-        pto::Layout::MX_B_NN>;
+    using ScaleShape5D = pto::Shape<1, 1, -1, -1, SHAPE_DIM2>;
+    using ScaleStride5D = pto::Stride<-1, -1, -1, SHAPE_DIM2, 1>;
 
-    const uint32_t offsetA = kIdx * baseKMX * 16;
-    const uint32_t offsetB = 16 * kIdx * baseKMX;
-    GlobalScaleACur gSA(scaleA_gm + offsetA);
-    GlobalScaleBCur gSB(scaleB_gm + offsetB);
-    pto::TLOAD(l1_scaleA, gSA);
-    pto::TLOAD(l1_scaleB, gSB);
+    using GlobalScaleACur = pto::GlobalTensor<
+        float8_e8m0_t, ScaleShape5D, ScaleStride5D, pto::Layout::MX_A_ND>;
+    using GlobalScaleBCur = pto::GlobalTensor<
+        float8_e8m0_t, ScaleShape5D, ScaleStride5D, pto::Layout::MX_B_ND>;
+
+    const uint32_t offsetA = kIdx * baseKMX;
+    const uint32_t offsetB = kIdx * baseKMX * validN;
+
+    GlobalScaleACur gSA(
+        scaleA_gm + offsetA,
+        ScaleShape5D(validM, baseKMX / SHAPE_DIM2),
+        ScaleStride5D(validM * KMX, validM * KMX, KMX));
+    GlobalScaleBCur gSB(
+        scaleB_gm + offsetB,
+        ScaleShape5D(baseKMX / SHAPE_DIM2, validN),
+        ScaleStride5D(KMX * validN * SHAPE_DIM2, KMX * validN * SHAPE_DIM2, validN * SHAPE_DIM2));
+
+    pto::TLOAD(l1_scaleA_tmp, gSA);
+    pto::TLOAD(l1_scaleB_tmp, gSB);
 
     set_flag(PIPE_MTE2, PIPE_MTE1, war_event_id);
     wait_flag(PIPE_MTE2, PIPE_MTE1, war_event_id);
+
+    pto::TEXTRACT(l0a_scale, l1_scaleA_tmp, 0, 0);
+    pto::TEXTRACT(l0b_scale, l1_scaleB_tmp, 0, 0);
 
     if constexpr (!transpose_A)
       copy_l1_to_l0a<T1, M, cK, M, K, false>(l0a, A, 0, kIdx * kMxBaseK);
@@ -252,10 +271,6 @@ gemm_mx(std::conditional_t<transpose_A, TileMatL1<T1, K, M, validK, validM>,
       pto::TRESHAPE(B_t, B);
       copy_l1_to_l0b<T1, cK, N, K, N, true>(l0b, B_t, kIdx * kMxBaseK, 0);
     }
-
-    // Move scale data to ScaleLeft/ScaleRight
-    pto::TMOV(l0a_scale, l1_scaleA);
-    pto::TMOV(l0b_scale, l1_scaleB);
 
     set_flag(PIPE_MTE1, PIPE_M, war_event_id);
     wait_flag(PIPE_MTE1, PIPE_M, war_event_id);
