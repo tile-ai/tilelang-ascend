@@ -35,6 +35,8 @@ private:
   bool enRelu;
   bool transposeL1;
   PrimExpr padValue;
+  std::string src_layout_;
+  int kmx_;
 };
 
 class AscendAtomicAdd : public Operator {

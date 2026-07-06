@@ -163,35 +163,39 @@ using TileScaleRight = pto::Tile<pto::TileType::ScaleRight, T, Rows, Cols,
 template <typename T1, typename T2, uint32_t M, uint32_t N, uint32_t K,
           uint32_t validM = M, uint32_t validN = N, uint32_t validK = K,
           uint32_t K_full = K, uint32_t K_tail = 64, bool transpose_A = false,
-          bool transpose_B = false, uint32_t ScaleL1Offset = 0>
+          bool transpose_B = false, uint32_t ScaleAL1Addr = 0, uint32_t ScaleBL1Addr = 0>
 AICORE PTO_INLINE void
 gemm_mx(std::conditional_t<transpose_A, TileMatL1<T1, K, M, validK, validM>,
                             TileMatL1<T1, M, K, validM, validK>> &A,
-        __gm__ float8_e8m0_t *scaleA_gm,
+        TileScaleL1Left<uint8_t, validM, K / 32> &l1_scaleA_buf,
         std::conditional_t<transpose_B, TileMatL1<T1, N, K, validN, validK>,
                             TileMatL1<T1, K, N, validK, validN>> &B,
-        __gm__ float8_e8m0_t *scaleB_gm,
+        TileScaleL1Right<uint8_t, K / 32, validN> &l1_scaleB_buf,
         pto::TileAcc<T2, M, N, validM, validN> &C, bool clear) {
   constexpr uint32_t kMxBaseK = 64;
-  constexpr uint32_t KMX = K_full / 32;
+  constexpr uint32_t baseKMX = kMxBaseK / 32;
+  // Use K (aligned K) to calculate kSplit, not K_full (actual K)
   const uint32_t kSplit = (K + kMxBaseK - 1) / kMxBaseK;
   auto war_event_id = (event_t)(((int)EVENT_ID0 + 1) % 8);
+
+  // Create float8_e8m0_t tiles at the addresses passed as template parameters
+  using L1ScaleATile = pto::Tile<pto::TileType::Mat, float8_e8m0_t, validM, K / 32,
+      pto::BLayout::RowMajor, validM, K / 32, pto::SLayout::RowMajor, pto::TileConfig::alignedSize>;
+  using L1ScaleBTile = pto::Tile<pto::TileType::Mat, float8_e8m0_t, K / 32, validN,
+      pto::BLayout::ColMajor, K / 32, validN, pto::SLayout::ColMajor, pto::TileConfig::alignedSize>;
+  L1ScaleATile l1_scaleA;
+  L1ScaleBTile l1_scaleB;
+  pto::TASSIGN(l1_scaleA, ScaleAL1Addr);
+  pto::TASSIGN(l1_scaleB, ScaleBL1Addr);
 
   set_flag(PIPE_MTE2, PIPE_MTE1, war_event_id);
   wait_flag(PIPE_MTE2, PIPE_MTE1, war_event_id);
 
-  constexpr uint32_t baseKMX = kMxBaseK / 32;
-  constexpr uint32_t SHAPE_DIM2 = 2;
-  constexpr uint32_t scaleB_offset =
-      ScaleL1Offset + validM * baseKMX * sizeof(float8_e8m0_t);
-
-  // L0 tiles for data - defined outside loop
   TileMatL0A<T1, M, kMxBaseK, M, kMxBaseK> l0a;
   TileMatL0B<T1, kMxBaseK, N, kMxBaseK, N> l0b;
   pto::TASSIGN(l0a, 0x0);
   pto::TASSIGN(l0b, 0x0);
 
-  // L0 scale tiles
   pto::TileLeftScaleCompact<float8_e8m0_t, validM, baseKMX,
                             validM, baseKMX> l0a_scale;
   pto::TileRightScaleCompact<float8_e8m0_t, baseKMX, validN,
@@ -199,26 +203,10 @@ gemm_mx(std::conditional_t<transpose_A, TileMatL1<T1, K, M, validK, validM>,
   pto::TASSIGN(l0a_scale, pto::GetScaleAddr(l0a.data()));
   pto::TASSIGN(l0b_scale, pto::GetScaleAddr(l0b.data()));
 
-  // L1 scale tiles
-  using L1ScaleATile = pto::Tile<
-      pto::TileType::Mat, float8_e8m0_t, validM, baseKMX,
-      pto::BLayout::RowMajor, validM, baseKMX,
-      pto::SLayout::RowMajor, pto::TileConfig::alignedSize>;
-  using L1ScaleBTile = pto::Tile<
-      pto::TileType::Mat, float8_e8m0_t, baseKMX, validN,
-      pto::BLayout::ColMajor, baseKMX, validN,
-      pto::SLayout::ColMajor, pto::TileConfig::alignedSize>;
-
-  L1ScaleATile l1_scaleA_tmp;
-  L1ScaleBTile l1_scaleB_tmp;
-  pto::TASSIGN(l1_scaleA_tmp, ScaleL1Offset);
-  pto::TASSIGN(l1_scaleB_tmp, scaleB_offset);
-
   for (uint32_t kIdx = 0; kIdx < kSplit; kIdx++) {
     const bool initflag = (clear && (kIdx == 0));
     const bool is_tail = (kIdx == kSplit - 1);
     constexpr uint32_t cK = kMxBaseK;
-    constexpr uint32_t cKMX = cK / 32;
 
     set_flag(PIPE_M, PIPE_MTE1, war_event_id);
     wait_flag(PIPE_M, PIPE_MTE1, war_event_id);
@@ -228,34 +216,8 @@ gemm_mx(std::conditional_t<transpose_A, TileMatL1<T1, K, M, validK, validM>,
       wait_flag(PIPE_FIX, PIPE_M, war_event_id);
     }
 
-    using ScaleShape5D = pto::Shape<1, 1, -1, -1, SHAPE_DIM2>;
-    using ScaleStride5D = pto::Stride<-1, -1, -1, SHAPE_DIM2, 1>;
-
-    using GlobalScaleACur = pto::GlobalTensor<
-        float8_e8m0_t, ScaleShape5D, ScaleStride5D, pto::Layout::MX_A_ND>;
-    using GlobalScaleBCur = pto::GlobalTensor<
-        float8_e8m0_t, ScaleShape5D, ScaleStride5D, pto::Layout::MX_B_ND>;
-
-    const uint32_t offsetA = kIdx * baseKMX;
-    const uint32_t offsetB = kIdx * baseKMX * validN;
-
-    GlobalScaleACur gSA(
-        scaleA_gm + offsetA,
-        ScaleShape5D(validM, baseKMX / SHAPE_DIM2),
-        ScaleStride5D(validM * KMX, validM * KMX, KMX));
-    GlobalScaleBCur gSB(
-        scaleB_gm + offsetB,
-        ScaleShape5D(baseKMX / SHAPE_DIM2, validN),
-        ScaleStride5D(KMX * validN * SHAPE_DIM2, KMX * validN * SHAPE_DIM2, validN * SHAPE_DIM2));
-
-    pto::TLOAD(l1_scaleA_tmp, gSA);
-    pto::TLOAD(l1_scaleB_tmp, gSB);
-
-    set_flag(PIPE_MTE2, PIPE_MTE1, war_event_id);
-    wait_flag(PIPE_MTE2, PIPE_MTE1, war_event_id);
-
-    pto::TEXTRACT(l0a_scale, l1_scaleA_tmp, 0, 0);
-    pto::TEXTRACT(l0b_scale, l1_scaleB_tmp, 0, 0);
+    pto::TEXTRACT(l0a_scale, l1_scaleA, 0, kIdx * baseKMX);
+    pto::TEXTRACT(l0b_scale, l1_scaleB, kIdx * baseKMX, 0);
 
     if constexpr (!transpose_A)
       copy_l1_to_l0a<T1, M, cK, M, K, false>(l0a, A, 0, kIdx * kMxBaseK);
@@ -295,8 +257,8 @@ gemm_mx(std::conditional_t<transpose_A, TileMatL1<T1, K, M, validK, validM>,
 #else
 template <typename T1, typename T2, uint32_t M, uint32_t N, uint32_t K,
           uint32_t validM = M, uint32_t validN = N, uint32_t validK = K,
-          uint32_t K_tail = 64, bool transpose_A = false,
-          bool transpose_B = false, uint32_t ScaleL1Offset = 0>
+          uint32_t K_full = K, uint32_t K_tail = 64, bool transpose_A = false,
+          bool transpose_B = false, uint32_t ScaleAL1Addr = 0, uint32_t ScaleBL1Addr = 0>
 AICORE PTO_INLINE void gemm_mx(...) {
   static_assert(sizeof(T1) == 0,
                 "gemm_mx is only supported on A5 platform");
@@ -422,6 +384,41 @@ AICORE PTO_INLINE void copy_gm_to_l1_dynamic(
   if (useTail && (tailM != shape4 || tailN != shape5)) {
     pto::TFILLPAD(L1, L1);
   }
+}
+
+template <typename T1, typename T2, uint32_t validM, uint32_t baseKMX,
+          uint32_t KMX>
+AICORE PTO_INLINE void copy_gm_to_l1_mx_scale_a_dynamic(
+    __gm__ T1 *handle, int32_t buffer_addr, int32_t offset) {
+  using L1ScaleTile = pto::Tile<
+      pto::TileType::Mat, float8_e8m0_t, validM, baseKMX, pto::BLayout::RowMajor, validM,
+      baseKMX, pto::SLayout::RowMajor, pto::TileConfig::alignedSize>;
+  L1ScaleTile l1_scale;
+  pto::TASSIGN(l1_scale, buffer_addr + offset);
+  using ScaleShape5D = pto::Shape<1, 1, -1, -1, 2>;
+  using ScaleStride5D = pto::Stride<-1, -1, -1, 2, 1>;
+  pto::GlobalTensor<T2, ScaleShape5D, ScaleStride5D, pto::Layout::MX_A_ND> gt(
+      reinterpret_cast<__gm__ T2 *>(handle), ScaleShape5D(validM, baseKMX),
+      ScaleStride5D(validM * KMX, validM * KMX, KMX));
+  pto::TLOAD(l1_scale, gt);
+}
+
+template <typename T1, typename T2, uint32_t baseKMX, uint32_t validN,
+          uint32_t KMX>
+AICORE PTO_INLINE void copy_gm_to_l1_mx_scale_b_dynamic(
+    __gm__ T1 *handle, int32_t buffer_addr, int32_t offset) {
+  using L1ScaleTile = pto::Tile<
+      pto::TileType::Mat, float8_e8m0_t, baseKMX, validN, pto::BLayout::ColMajor, baseKMX,
+      validN, pto::SLayout::ColMajor, pto::TileConfig::alignedSize>;
+  L1ScaleTile l1_scale;
+  pto::TASSIGN(l1_scale, buffer_addr + offset);
+  using ScaleShape5D = pto::Shape<1, 1, -1, -1, 2>;
+  using ScaleStride5D = pto::Stride<-1, -1, -1, 2, 1>;
+  pto::GlobalTensor<T2, ScaleShape5D, ScaleStride5D, pto::Layout::MX_B_ND> gt(
+      reinterpret_cast<__gm__ T2 *>(handle),
+      ScaleShape5D(baseKMX, validN),
+      ScaleStride5D(KMX * validN * 2, KMX * validN * 2, validN * 2));
+  pto::TLOAD(l1_scale, gt);
 }
 
 template <typename T1, typename T2, int32_t shape1, int32_t shape2,

@@ -44,6 +44,8 @@ inline const std::unordered_map<std::string, OperationConfig> &
 GetOperationConfig() {
   static std::unordered_map<std::string, OperationConfig> operation_config_ = {
       {"copy_gm_to_l1", {{{0, "read"}, {1, "write"}}, "PIPE_MTE2"}},
+      {"copy_gm_to_l1_mx_scale_a", {{{0, "read"}, {1, "write"}}, "PIPE_MTE2"}},
+      {"copy_gm_to_l1_mx_scale_b", {{{0, "read"}, {1, "write"}}, "PIPE_MTE2"}},
       {"copy_gm_to_l0a", {{{0, "read"}, {1, "write"}}, "PIPE_MTE2"}},
       {"copy_gm_to_l0b", {{{0, "read"}, {1, "write"}}, "PIPE_MTE2"}},
       {"copy_gm_to_ub", {{{0, "read"}, {1, "write"}}, "PIPE_MTE2"}},

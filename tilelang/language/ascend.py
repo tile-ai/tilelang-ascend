@@ -17,6 +17,7 @@ def _dtype(buf):
         "bfloat16": "bfloat16_t",
         "uint16": "uint16_t",
         "uint8": "uint8_t",
+        "e8m0_float8": "float8_e8m0_t",
         "int4": "int4b_t",
         "int8": "int8_t",
         "int16": "int16_t",
@@ -430,12 +431,24 @@ def gemm_mx(A, B, C, scale_a, scale_b, init=False,
         A: Input matrix A, shape [M, K], dtype e5m2_float8 or e4m3_float8
         B: Input matrix B, shape [K, N], dtype e5m2_float8 or e4m3_float8
         C: Output matrix C, shape [M, N], dtype float32
-        scale_a: Scale factors for A, shape [M, K//64, 2], dtype uint8 (e8m0 format)
-        scale_b: Scale factors for B, shape [K//64, N, 2], dtype uint8 (e8m0 format)
+        scale_a: Scale factors for A. 
+                 For 3D format: shape [M, kScale, 2], dtype uint8
+                 For 2D format: shape [M, K_L1//32], dtype uint8
+                 where kScale = ceil(K/64), K_L1 = kScale * 64
+                 (pre-loaded to L1 via T.copy with src_layout="MX_A_ND")
+        scale_b: Scale factors for B.
+                 For 3D format: shape [kScale, N, 2], dtype uint8
+                 For 2D format: shape [K_L1//32, N], dtype uint8
+                 (pre-loaded to L1 via T.copy with src_layout="MX_B_ND")
         init: If True, initialize C to zero before accumulation
         transpose_A: If True, A is transposed
         transpose_B: If True, B is transposed
         format: Data format, "e5m2" or "e4m3"
+    
+    Note:
+        K can be any positive integer (non-aligned K is supported).
+        K_L1 will be automatically calculated as ceil(K/64) * 64.
+        The L1 buffer should be allocated with K_L1 (aligned) dimension.
     """
     A = _legalize_arguments(A)
     B = _legalize_arguments(B)
@@ -445,17 +458,29 @@ def gemm_mx(A, B, C, scale_a, scale_b, init=False,
 
     C_shape = _retrieve_shape(C)
     A_shape = _retrieve_shape(A)
-    B_shape = _retrieve_shape(B)
     scale_a_shape = _retrieve_shape(scale_a)
 
     M, N = C_shape[-2], C_shape[-1]
-    assert len(scale_a_shape) == 3, \
-        f"scale_a must be 3D [M, K//64, 2], got {len(scale_a_shape)}D"
-    kScale = scale_a_shape[-2]
-    K = kScale * 64
-    K_L1 = B_shape[-1] if transpose_B else B_shape[-2]
-    assert K % K_L1 == 0, f"gemm_mx K must be multiple of K_L1, got K={K}, K_L1={K_L1}"
-    assert K % 64 == 0, f"K must be multiple of 64 for MX GEMM, got {K}"
+
+    # K is the actual K dimension (can be any value)
+    K = A_shape[-1] if not transpose_A else A_shape[-2]
+    
+    # K_L1 is the aligned K for L1 buffer allocation (must be multiple of 64)
+    # User provides scale_a with shape [M, kScale, 2] (3D) or [M, K_MX] (2D)
+    # where kScale = ceil(K/64), K_MX = kScale * 2
+    # K_L1 = kScale * 64
+    if len(scale_a_shape) == 3:
+        # 3D format: [M, kScale, 2]
+        kScale = scale_a_shape[-2]
+    else:
+        # 2D format: [M, K_MX] where K_MX = kScale * 2
+        K_MX = scale_a_shape[-1]
+        kScale = K_MX // 2
+    K_L1 = kScale * 64
+    
+    # K_L1 must be >= K and multiple of 64
+    assert K_L1 >= K, f"K_L1 ({K_L1}) must be >= K ({K})"
+    assert K_L1 % 64 == 0, f"K_L1 must be multiple of 64, got {K_L1}"
 
     if format is None:
         format = "e5m2"
@@ -470,7 +495,7 @@ def gemm_mx(A, B, C, scale_a, scale_b, init=False,
     return T.call_intrin(
         "handle",
         tir.op.Op.get("tl.ascend_gemm_mx"),
-        f"gemm_mx<{ctype}, {_dtype(C)}, {M}, {N}, {K_L1}, {K}, "
+        f"gemm_mx<{ctype}, {_dtype(C)}, {M}, {N}, {K}, {K_L1}, "
         f"{str(transpose_A).lower()}, {str(transpose_B).lower()}>",
         Aptr, sAptr, Bptr, sBptr, Cptr, init,
     )

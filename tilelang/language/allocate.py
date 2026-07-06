@@ -140,6 +140,16 @@ def alloc_L1(shape, dtype):
     return T.alloc_buffer(shape, dtype, scope="shared.l1")
 
 
+def alloc_L1_scale_a(shape, dtype):
+    """Allocate L1 buffer for MX scale A (RowMajor layout)."""
+    return T.alloc_buffer(shape, dtype, scope="shared.dyn.scale_a")
+
+
+def alloc_L1_scale_b(shape, dtype):
+    """Allocate L1 buffer for MX scale B (ColMajor layout)."""
+    return T.alloc_buffer(shape, dtype, scope="shared.dyn.scale_b")
+
+
 def alloc_L0A(shape, dtype):
     return T.alloc_buffer(shape, dtype, scope="wmma.matrix_a")
 

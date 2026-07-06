@@ -159,7 +159,7 @@ int32_t GetTypeLen(std::string type) {
   } else if (type == "half") {
     typeSize = 2;
   } else if (type == "int8_t" || type == "uint8_t" || type == "float8_e4m3_t" ||
-             type == "float8_e5m2_t") {
+             type == "float8_e5m2_t" || type == "float8_e8m0_t") {
     typeSize = 1;
   } else if (type == "int16_t" || type == "uint16_t") {
     typeSize = 2;
@@ -1246,6 +1246,35 @@ void CodeGenTileLangAscendPto::GMCopyCall(const CallNode *call,
          << valid_rows_str << ", " << valid_cols_str << ");\n";
 }
 
+void CodeGenTileLangAscendPto::ScaleCopyCall(const CallNode *call,
+                                              const std::string &layout) {
+  BufferInfo src_info = GetBufferInfo(call->args[1]);
+  BufferInfo dst_info = GetBufferInfo(call->args[2]);
+
+  std::string gm_offset = PrintExpr(src_info.offset);
+  std::string l1_addr = PrintExpr(buffer_address_map_.at(dst_info.var));
+  std::string l1_offset = PrintExpr(dst_info.offset);
+
+  std::string valid_dim0 = PrintExpr(call->args[6]);
+  std::string valid_dim1 = PrintExpr(call->args[7]);
+  std::string kmx_str = PrintExpr(call->args[8]);
+
+  this->PrintIndent();
+  if (layout == "MX_A_ND") {
+    stream << kAscendPtoScope
+           << "copy_gm_to_l1_mx_scale_a_dynamic<uint8_t, float8_e8m0_t, "
+           << valid_dim0 << ", " << valid_dim1 << ", " << kmx_str << ">("
+           << copy_base_addr_map_.at(src_info.id) << " + " << gm_offset
+           << ", " << l1_addr << ", " << l1_offset << ");\n";
+  } else {
+    stream << kAscendPtoScope
+           << "copy_gm_to_l1_mx_scale_b_dynamic<uint8_t, float8_e8m0_t, "
+           << valid_dim0 << ", " << valid_dim1 << ", " << kmx_str << ">("
+           << copy_base_addr_map_.at(src_info.id) << " + " << gm_offset
+           << ", " << l1_addr << ", " << l1_offset << ");\n";
+  }
+}
+
 void CodeGenTileLangAscendPto::CopyUBToUBCodegen(const CallNode *call) {
   BufferInfo src_info = GetBufferInfo(call->args[1]);
   BufferInfo dst_info = GetBufferInfo(call->args[2]);
@@ -1426,6 +1455,12 @@ void CodeGenTileLangAscendPto::CallExternCodegen(const CallNode *op) {
     GMCopyCall(op, "copy_gm_to_ub");
   } else if (op_name.find("tl::ascend::copy_ub_to_gm") != std::string::npos) {
     GMCopyCall(op, "copy_ub_to_gm");
+  } else if (op_name.find("tl::ascend::copy_gm_to_l1_mx_scale_a") !=
+             std::string::npos) {
+    ScaleCopyCall(op, "MX_A_ND");
+  } else if (op_name.find("tl::ascend::copy_gm_to_l1_mx_scale_b") !=
+             std::string::npos) {
+    ScaleCopyCall(op, "MX_B_ND");
   } else if (op_name.find("tl::ascend::copy_gm_to_l1") != std::string::npos) {
     GMCopyCall(op, "copy_gm_to_l1");
   } else if (op_name.find("tl::ascend::copy_l0c_to_gm") != std::string::npos) {
@@ -1514,8 +1549,7 @@ void CodeGenTileLangAscendPto::GemmMxCodegen(const CallNode *op) {
   uint32_t K = std::stoi(params["K"]);
   uint32_t K_full = std::stoi(params["K_full"]);
   constexpr uint32_t kMxBaseK = 64;
-  uint32_t kSplit = (K_full + kMxBaseK - 1) / kMxBaseK;
-  uint32_t kTail = K_full - (kSplit - 1) * kMxBaseK;
+  uint32_t kTail = K_full - ((K_full + kMxBaseK - 1) / kMxBaseK - 1) * kMxBaseK;
 
   std::string a_name =
       ResolveCubeSliceName(a_info, kAscendPtoScope + "TileMatL1");
@@ -1523,27 +1557,48 @@ void CodeGenTileLangAscendPto::GemmMxCodegen(const CallNode *op) {
       ResolveCubeSliceName(b_info, kAscendPtoScope + "TileMatL1");
   std::string c_name = ResolveCubeSliceName(c_info, "pto::TileAcc");
 
-  uint32_t scale_l1_offset =
-      a_info.slice_valid_row * a_info.slice_valid_col *
-          GetTypeLen(a_info.type) +
-      b_info.slice_valid_row * b_info.slice_valid_col *
-          GetTypeLen(b_info.type);
-
-  auto extract_gm_ptr = [&](const PrimExpr &expr) -> std::string {
-    auto *call = expr.as<CallNode>();
-    ICHECK(call && call->op.same_as(builtin::tvm_access_ptr()));
-    Var buf_var = Downcast<Var>(call->args[1]);
-    std::string handle = buf_var.get()->name_hint + "_handle";
-    std::string offset = PrintExpr(call->args[2]);
-    return "reinterpret_cast<__gm__ float8_e8m0_t*>(" + handle + " + " +
-           offset + ")";
-  };
-
-  std::string sa_ptr = extract_gm_ptr(op->args[2]);
-  std::string sb_ptr = extract_gm_ptr(op->args[4]);
+  std::string data_type_input = params["data_type_input"];
 
   this->PrintIndent();
-  std::string data_type_input = params["data_type_input"];
+
+  // L1 scale path only
+  BufferInfo sa_buf_info = GetBufferInfo(op->args[2]);
+  BufferInfo sb_buf_info = GetBufferInfo(op->args[4]);
+  ShapeInfo sa_info = GetSliceInfo(op->args[2].as<CallNode>());
+  ShapeInfo sb_info = GetSliceInfo(op->args[4].as<CallNode>());
+  std::string sa_name =
+      ResolveCubeSliceName(sa_info, kAscendPtoScope + "TileScaleL1Left");
+  std::string sb_name =
+      ResolveCubeSliceName(sb_info, kAscendPtoScope + "TileScaleL1Right");
+
+  // Get the L1 addresses of the scale buffers (base + offset)
+  PrimExpr sa_base_addr = buffer_address_map_.at(sa_buf_info.var);
+  PrimExpr sb_base_addr = buffer_address_map_.at(sb_buf_info.var);
+  
+  // Add offset if present
+  PrimExpr sa_full_addr = sa_base_addr;
+  PrimExpr sb_full_addr = sb_base_addr;
+  if (sa_buf_info.offset.defined() && !is_zero(sa_buf_info.offset)) {
+    sa_full_addr = sa_base_addr + sa_buf_info.offset;
+  }
+  if (sb_buf_info.offset.defined() && !is_zero(sb_buf_info.offset)) {
+    sb_full_addr = sb_base_addr + sb_buf_info.offset;
+  }
+  
+  // Evaluate to constant if possible
+  arith::Analyzer analyzer;
+  sa_full_addr = analyzer.Simplify(sa_full_addr);
+  sb_full_addr = analyzer.Simplify(sb_full_addr);
+  
+  uint64_t scale_a_l1_addr = 0;
+  uint64_t scale_b_l1_addr = 0;
+  if (auto* sa_imm = sa_full_addr.as<IntImmNode>()) {
+    scale_a_l1_addr = sa_imm->value;
+  }
+  if (auto* sb_imm = sb_full_addr.as<IntImmNode>()) {
+    scale_b_l1_addr = sb_imm->value;
+  }
+
   this->stream << kAscendPtoScope << "gemm_mx" << "<"
                << data_type_input << ", "
                << params["data_type_output"] << ", "
@@ -1553,9 +1608,9 @@ void CodeGenTileLangAscendPto::GemmMxCodegen(const CallNode *op) {
                << GetValidShape(K, data_type_input) << ", "
                << K_full << ", " << kTail << ", " << params["transpose_A"] << ", "
                << params["transpose_B"] << ", "
-               << scale_l1_offset << ">(";
-  this->stream << a_name << ", " << sa_ptr << ", "
-               << b_name << ", " << sb_ptr << ", "
+               << scale_a_l1_addr << ", " << scale_b_l1_addr << ">(";
+  this->stream << a_name << ", " << sa_name << ", "
+               << b_name << ", " << sb_name << ", "
                << c_name << ", "
                << PrintExpr(op->args[6]) << ");\n";
 }
@@ -3126,6 +3181,8 @@ const std::unordered_map<std::string, std::string> scope_to_tile = {
     {"wmma.matrix_b", kAscendPtoScope + "TileMatL0B"},
     {"wmma.accumulator", "TileAcc"},
     {"shared.dyn", kAscendPtoScope + "TileMatL1"},
+    {"shared.dyn.scale_a", kAscendPtoScope + "TileScaleL1Left"},
+    {"shared.dyn.scale_b", kAscendPtoScope + "TileScaleL1Right"},
     {"shared", kAscendPtoScope + "TileUbDataND"},
 };
 
@@ -3171,23 +3228,52 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
       << ", variable: " << op->buffer_var->name_hint;
   std::string op_name = scope_to_tile.at(scope);
 
-  // 3. Retrieve and validate the 4D physical layout [M, N, Valid_M, Valid_N]
+  // 3. Retrieve and validate the physical layout
   ICHECK(buffer_shapess_.count(op->buffer_var))
       << "Buffer shape not found for variable: " << op->buffer_var->name_hint;
   const auto &shape = buffer_shapess_.at(op->buffer_var);
 
-  ICHECK(shape.size() == 4)
-      << "Expected a 4D shape [M, N, Valid_M, Valid_N] for PTO, but got "
-      << shape.size() << "D for " << op->buffer_var->name_hint;
-  const auto &M = shape[0];
-  const auto &N = shape[1];
-  const auto &valid_M = shape[2];
-  const auto &valid_N = shape[3];
+  // Handle scale buffers specially (2D or 3D shape)
+  bool is_scale_buffer = (scope == "shared.dyn.scale_a" || scope == "shared.dyn.scale_b");
 
-  // Print the Tile object declaration
-  this->PrintIndent();
-  stream << op_name << "<" << type << ", " << M << ", " << N << ", " << valid_M
-         << ", " << valid_N << "> " << vid << ";\n";
+  if (is_scale_buffer) {
+    if (shape.size() == 2) {
+      // 2D shape: [M, N]
+      const auto &M = shape[0];
+      const auto &N = shape[1];
+
+      // Print the Tile object declaration
+      this->PrintIndent();
+      stream << op_name << "<" << type << ", " << M << ", " << N << ", " << M
+             << ", " << N << "> " << vid << ";\n";
+    } else if (shape.size() == 3) {
+      // 3D shape: [M, kScale, 2] for scale_a or [kScale, N, 2] for scale_b
+      const auto &dim0 = shape[0];
+      const auto &dim1 = shape[1];
+      const auto &dim2 = shape[2];
+
+      // Print the Tile object declaration
+      this->PrintIndent();
+      stream << op_name << "<" << type << ", " << dim0 << ", " << dim1 << ", " << dim2 << ", "
+             << dim0 << ", " << dim1 << ", " << dim2 << "> " << vid << ";\n";
+    } else {
+      LOG(FATAL) << "Expected a 2D or 3D shape for scale buffer, but got "
+                 << shape.size() << "D for " << op->buffer_var->name_hint;
+    }
+  } else {
+    ICHECK(shape.size() == 4)
+        << "Expected a 4D shape [M, N, Valid_M, Valid_N] for PTO, but got "
+        << shape.size() << "D for " << op->buffer_var->name_hint;
+    const auto &M = shape[0];
+    const auto &N = shape[1];
+    const auto &valid_M = shape[2];
+    const auto &valid_N = shape[3];
+
+    // Print the Tile object declaration
+    this->PrintIndent();
+    stream << op_name << "<" << type << ", " << M << ", " << N << ", " << valid_M
+           << ", " << valid_N << "> " << vid << ";\n";
+  }
 
   // address_map, use name_hint as key
   Map<String, PrimExpr> address_map_name_hint;
@@ -3199,13 +3285,32 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
   PrimExpr target_address;
   if (address_map_name_hint.count(op->buffer_var->name_hint)) {
     target_address = address_map_name_hint.at(op->buffer_var->name_hint);
+    // Track the end address of pre-assigned buffers
+    if (scope == "shared.dyn" || scope == "shared.dyn.scale_a" || scope == "shared.dyn.scale_b") {
+      if (auto* addr_imm = target_address.as<IntImmNode>()) {
+        int64_t alloc_bytes = op->ConstantAllocationSize() * op->dtype.bytes();
+        int64_t end_addr = addr_imm->value + alloc_bytes;
+        PrimExpr current_max = address_offset_.Get(String("shared.dyn")).value_or(Integer(0));
+        if (auto* max_imm = current_max.as<IntImmNode>()) {
+          if (end_addr > max_imm->value) {
+            address_offset_.Set(String("shared.dyn"), Integer(end_addr));
+          }
+        }
+      }
+    }
   } else {
+    // Use unified address space for all shared.dyn* scopes
+    String addr_scope = scope;
+    if (scope == "shared.dyn.scale_a" || scope == "shared.dyn.scale_b") {
+      addr_scope = "shared.dyn";
+    }
+    
     PrimExpr current_offset =
-        address_offset_.Get(String(scope)).value_or(Integer(0));
+        address_offset_.Get(addr_scope).value_or(Integer(0));
     target_address = current_offset;
 
     int64_t alloc_bytes = op->ConstantAllocationSize() * op->dtype.bytes();
-    address_offset_.Set(String(scope), current_offset + Integer(alloc_bytes));
+    address_offset_.Set(addr_scope, current_offset + Integer(alloc_bytes));
   }
   buffer_address_map_.Set(op->buffer_var, target_address);
 

@@ -37,6 +37,8 @@ AscendCopy::AscendCopy(Array<PrimExpr> args, BufferMap vmap) : args_(args) {
   Buffer bf[2];
   Array<PrimExpr> ets[2];
   transposeL1 = 0;
+  src_layout_ = "";
+  kmx_ = 0;
   for (int i = 0; i < 2; i++) {
     auto expr = args[i];
     auto call = expr.as<CallNode>();
@@ -56,6 +58,16 @@ AscendCopy::AscendCopy(Array<PrimExpr> args, BufferMap vmap) : args_(args) {
     padValue = args[4];
   } else {
     padValue = Integer(0);
+  }
+  if (args.size() >= 6) {
+    if (auto *str_imm = args[5].as<StringImmNode>()) {
+      src_layout_ = str_imm->value;
+    }
+  }
+  if (args.size() >= 7) {
+    if (auto *int_imm = args[6].as<IntImmNode>()) {
+      kmx_ = static_cast<int>(int_imm->value);
+    }
   }
   std::tie(this->src, this->dst) = std::tie(bf[0], bf[1]);
   std::tie(this->src_range, this->dst_range) = std::tie(rgs[0], rgs[1]);
@@ -180,8 +192,16 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
   ss << "tl::ascend::";
   PrimExpr strideN;
 
-  if (src.scope() == "global" && dst.scope() == "shared.dyn") {
-    ss << "copy_gm_to_l1";
+  if (src.scope() == "global" &&
+      (dst.scope() == "shared.dyn" || dst.scope() == "shared.dyn.scale_a" ||
+       dst.scope() == "shared.dyn.scale_b")) {
+    if (src_layout_ == "MX_A_ND") {
+      ss << "copy_gm_to_l1_mx_scale_a";
+    } else if (src_layout_ == "MX_B_ND") {
+      ss << "copy_gm_to_l1_mx_scale_b";
+    } else {
+      ss << "copy_gm_to_l1";
+    }
     config.gm2l1 = true;
   } else if (src.scope() == "shared.dyn" && dst.scope() == "wmma.matrix_a") {
     ss << "copy_l1_to_l0a";
@@ -450,6 +470,9 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
     new_args.push_back(validCol_src);
     new_args.push_back(dst->shape[dst->shape.size() - 2]);
     new_args.push_back(dst->shape[dst->shape.size() - 1]);
+    if (!src_layout_.empty()) {
+      new_args.push_back(Integer(kmx_));
+    }
   }
 
   if (config.gm2ub) {
