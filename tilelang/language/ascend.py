@@ -474,7 +474,7 @@ def gemm_mx(A, B, C, scale_a, scale_b, init=False, transpose_A=False, transpose_
     else:
         # 2D format: [M, K_MX] where K_MX = kScale * 2
         K_MX = scale_a_shape[-1]
-        kScale = K_MX // 2
+        kScale = (K_MX + 1) // 2
     K_L1 = kScale * 64
 
     # K_L1 must be >= K and multiple of 64

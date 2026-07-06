@@ -1592,12 +1592,12 @@ void CodeGenTileLangAscendPto::GemmMxCodegen(const CallNode *op) {
 
   uint64_t scale_a_l1_addr = 0;
   uint64_t scale_b_l1_addr = 0;
-  if (auto *sa_imm = sa_full_addr.as<IntImmNode>()) {
-    scale_a_l1_addr = sa_imm->value;
-  }
-  if (auto *sb_imm = sb_full_addr.as<IntImmNode>()) {
-    scale_b_l1_addr = sb_imm->value;
-  }
+  ICHECK(sa_full_addr.as<IntImmNode>())
+      << "Scale A L1 address must resolve to a constant, got: " << sa_full_addr;
+  ICHECK(sb_full_addr.as<IntImmNode>())
+      << "Scale B L1 address must resolve to a constant, got: " << sb_full_addr;
+  scale_a_l1_addr = sa_full_addr.as<IntImmNode>()->value;
+  scale_b_l1_addr = sb_full_addr.as<IntImmNode>()->value;
 
   this->stream << kAscendPtoScope << "gemm_mx" << "<" << data_type_input << ", "
                << params["data_type_output"] << ", " << M << ", " << N << ", "

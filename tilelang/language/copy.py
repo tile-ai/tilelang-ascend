@@ -236,7 +236,7 @@ def npu_copy_v2(
             full_src_shape = src.buffer.shape
         else:
             full_src_shape = None
-        if full_src_shape is not None:
+        if full_src_shape is not None and len(full_src_shape) == 3:
             if src_layout == "MX_A_ND":
                 mx_kmx = full_src_shape[1] * full_src_shape[2]
             elif src_layout == "MX_B_ND":
