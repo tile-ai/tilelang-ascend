@@ -831,7 +831,13 @@ def load_compute_scale(M, N, block_M, block_N, dtype):
     """Load A from GM into UB, compute C = A * scalar via ``T.tile.mul`` (the
     scalar is a Python literal), then store C back to GM.  Exercises the
     buffer-scalar binary variant of T.tile.mul and confirms the loaded tile
-    is correctly multiplied element-wise by a constant."""
+    is correctly multiplied element-wise by a constant.
+
+    The scalar literal is chosen to match ``dtype``: ``2`` for integer buffers
+    and ``2.0`` for floating-point buffers, so the TIR scalar carries the
+    buffer's dtype instead of relying on backend coercion."""
+
+    scalar = 2 if dtype in ("int32", "int16") else 2.0
 
     @T.prim_func
     def main(A: T.Tensor((M, N), dtype), C: T.Tensor((M, N), dtype)):
@@ -841,8 +847,8 @@ def load_compute_scale(M, N, block_M, block_N, dtype):
             a_ub = T.alloc_ub((block_M, block_N), dtype)
             c_ub = T.alloc_ub((block_M, block_N), dtype)
             T.copy(A[bx * block_M, by * block_N], a_ub)
-            # Scalar multiply: c_ub = a_ub * 2.0.
-            T.tile.mul(c_ub, a_ub, 2.0)
+            # Scalar multiply: c_ub = a_ub * scalar.
+            T.tile.mul(c_ub, a_ub, scalar)
             T.copy(c_ub, C[bx * block_M, by * block_N])
 
     return main
