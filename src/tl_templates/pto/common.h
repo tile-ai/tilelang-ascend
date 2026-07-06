@@ -600,8 +600,7 @@ AICORE PTO_INLINE void TROWEXPAND_with_slice_buffer(
 // vector [vecLen, 1] (same memory layout), then calls TROWEXPANDMUL.
 template <typename T, int32_t dstRows, int32_t dstCols, int32_t dstRowValid,
           int32_t dstColValid, int32_t vecLen, int32_t Src1Col>
-AICORE PTO_INLINE void
-TROWEXPANDMUL_row_vec(
+AICORE PTO_INLINE void TROWEXPANDMUL_row_vec(
     TileUbDataND<T, dstRows, dstCols, dstRowValid, dstColValid> &dst,
     TileUbDataND<T, dstRows, dstCols, dstRowValid, dstColValid> &src0,
     TileUbDataND<T, 1, Src1Col, 1, vecLen> &src1_vec, int32_t src1_addr,
@@ -616,9 +615,9 @@ TROWEXPANDMUL_row_vec(
 }
 
 template <typename T, int32_t dstRows, int32_t dstCols, int32_t dstRowValid,
-          int32_t dstColValid, int32_t vecLen, int32_t Src1Col, typename TmpTile>
-AICORE PTO_INLINE void
-TROWEXPANDMUL_row_vec(
+          int32_t dstColValid, int32_t vecLen, int32_t Src1Col,
+          typename TmpTile>
+AICORE PTO_INLINE void TROWEXPANDMUL_row_vec(
     TileUbDataND<T, dstRows, dstCols, dstRowValid, dstColValid> &dst,
     TileUbDataND<T, dstRows, dstCols, dstRowValid, dstColValid> &src0,
     TileUbDataND<T, 1, Src1Col, 1, vecLen> &src1_vec, int32_t src1_addr,
@@ -635,8 +634,7 @@ TROWEXPANDMUL_row_vec(
 // Row-wise broadcast subtract helper.
 template <typename T, int32_t dstRows, int32_t dstCols, int32_t dstRowValid,
           int32_t dstColValid, int32_t vecLen, int32_t Src1Col>
-AICORE PTO_INLINE void
-TROWEXPANDSUB_row_vec(
+AICORE PTO_INLINE void TROWEXPANDSUB_row_vec(
     TileUbDataND<T, dstRows, dstCols, dstRowValid, dstColValid> &dst,
     TileUbDataND<T, dstRows, dstCols, dstRowValid, dstColValid> &src0,
     TileUbDataND<T, 1, Src1Col, 1, vecLen> &src1_vec, int32_t src1_addr,
@@ -651,9 +649,9 @@ TROWEXPANDSUB_row_vec(
 }
 
 template <typename T, int32_t dstRows, int32_t dstCols, int32_t dstRowValid,
-          int32_t dstColValid, int32_t vecLen, int32_t Src1Col, typename TmpTile>
-AICORE PTO_INLINE void
-TROWEXPANDSUB_row_vec(
+          int32_t dstColValid, int32_t vecLen, int32_t Src1Col,
+          typename TmpTile>
+AICORE PTO_INLINE void TROWEXPANDSUB_row_vec(
     TileUbDataND<T, dstRows, dstCols, dstRowValid, dstColValid> &dst,
     TileUbDataND<T, dstRows, dstCols, dstRowValid, dstColValid> &src0,
     TileUbDataND<T, 1, Src1Col, 1, vecLen> &src1_vec, int32_t src1_addr,
@@ -670,8 +668,7 @@ TROWEXPANDSUB_row_vec(
 // Row-wise broadcast divide helper.
 template <typename T, int32_t dstRows, int32_t dstCols, int32_t dstRowValid,
           int32_t dstColValid, int32_t vecLen, int32_t Src1Col>
-AICORE PTO_INLINE void
-TROWEXPANDDIV_row_vec(
+AICORE PTO_INLINE void TROWEXPANDDIV_row_vec(
     TileUbDataND<T, dstRows, dstCols, dstRowValid, dstColValid> &dst,
     TileUbDataND<T, dstRows, dstCols, dstRowValid, dstColValid> &src0,
     TileUbDataND<T, 1, Src1Col, 1, vecLen> &src1_vec, int32_t src1_addr,
@@ -686,9 +683,9 @@ TROWEXPANDDIV_row_vec(
 }
 
 template <typename T, int32_t dstRows, int32_t dstCols, int32_t dstRowValid,
-          int32_t dstColValid, int32_t vecLen, int32_t Src1Col, typename TmpTile>
-AICORE PTO_INLINE void
-TROWEXPANDDIV_row_vec(
+          int32_t dstColValid, int32_t vecLen, int32_t Src1Col,
+          typename TmpTile>
+AICORE PTO_INLINE void TROWEXPANDDIV_row_vec(
     TileUbDataND<T, dstRows, dstCols, dstRowValid, dstColValid> &dst,
     TileUbDataND<T, dstRows, dstCols, dstRowValid, dstColValid> &src0,
     TileUbDataND<T, 1, Src1Col, 1, vecLen> &src1_vec, int32_t src1_addr,
