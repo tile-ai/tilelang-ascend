@@ -3103,17 +3103,15 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
   ICHECK(shape.size() == 4)
       << "Expected a 4D shape [M, N, Valid_M, Valid_N] for PTO, but got "
       << shape.size() << "D for " << op->buffer_var->name_hint;
-  int32_t M_int = shape[0].as<IntImmNode>()->value;
-  int32_t N_int = shape[1].as<IntImmNode>()->value;
-  int32_t valid_M_int = shape[2].as<IntImmNode>()->value;
-  int32_t valid_N_int = shape[3].as<IntImmNode>()->value;
-  int32_t N_aligned = GetValidShape(N_int, type);
+  const auto &M = shape[0];
+  const auto &N = shape[1];
+  const auto &valid_M = shape[2];
+  const auto &valid_N = shape[3];
 
-  // Print the Tile object declaration. Cols (N) must be 32B-aligned for PTO
-  // tile static assertions; valid_N keeps the logical (unpadded) column count.
+  // Print the Tile object declaration
   this->PrintIndent();
-  stream << op_name << "<" << type << ", " << M_int << ", " << N_aligned
-         << ", " << valid_M_int << ", " << valid_N_int << "> " << vid << ";\n";
+  stream << op_name << "<" << type << ", " << M << ", " << N << ", " << valid_M
+         << ", " << valid_N << "> " << vid << ";\n";
 
   // address_map, use name_hint as key
   Map<String, PrimExpr> address_map_name_hint;
