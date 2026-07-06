@@ -2315,9 +2315,7 @@ void CodeGenTileLangAscendPto::RowExpandBinOpExperimentCodegenPto(
   std::string src1_name = src1.ub_name;
   if (src1.is_slice) {
     src1_name = GetTempVarName(src1.ub_name);
-    ShapeInfo src1_aligned = src1;
-    src1_aligned.slice_valid_col = src1.slice_col;
-    CreateUbVariableND(src1_name, src1_aligned);
+    CreateUbVariableND(src1_name, src1);
   }
 
   std::string dst_name = dst.ub_name;
