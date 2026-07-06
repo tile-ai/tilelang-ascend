@@ -490,12 +490,12 @@ jobs:
           fi
 
           # 确定 pytest marker 过滤策略
-          # push/schedule/workflow_dispatch 事件：跳过 skiptest，保留 lowpriority
-          # PR 事件：跳过 lowpriority 和 skiptest
+          # push/schedule/workflow_dispatch 事件：跳过 ci_skip，保留 low_priority
+          # PR 事件：跳过 low_priority 和 ci_skip
           if [[ "$GITHUB_EVENT_NAME" == "push" ]] || [[ "$GITHUB_EVENT_NAME" == "schedule" ]] || [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
-            PYTEST_MARKERS="not skiptest"
+            PYTEST_MARKERS="not ci_skip"
           elif [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
-            PYTEST_MARKERS="not (lowpriority or skiptest)"
+            PYTEST_MARKERS="not (low_priority or ci_skip)"
           fi
 
           docker exec \

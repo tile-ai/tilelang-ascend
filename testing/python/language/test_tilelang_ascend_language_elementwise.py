@@ -721,15 +721,15 @@ def run_test_bitwise_lshift(M, N, block_M, block_N, scalarvalue, dtype, target):
     [
         "int16",
         "int32",
-        pytest.param("uint16", marks=pytest.mark.lowpriority),
-        pytest.param("uint32", marks=pytest.mark.lowpriority),
+        pytest.param("uint16", marks=pytest.mark.low_priority),
+        pytest.param("uint32", marks=pytest.mark.low_priority),
     ],
 )
 @pytest.mark.parametrize(
     "target",
     [
         "ascendc",
-        pytest.param("pto", marks=pytest.mark.lowpriority),
+        pytest.param("pto", marks=pytest.mark.low_priority),
     ],
 )
 @pytest.mark.parametrize("shape", [(1024, 1024)])
@@ -915,15 +915,15 @@ def run_test_bitwise_rshift(M, N, block_M, block_N, scalarvalue, dtype, target):
     [
         "int16",
         "int32",
-        pytest.param("uint16", marks=pytest.mark.lowpriority),
-        pytest.param("uint32", marks=pytest.mark.lowpriority),
+        pytest.param("uint16", marks=pytest.mark.low_priority),
+        pytest.param("uint32", marks=pytest.mark.low_priority),
     ],
 )
 @pytest.mark.parametrize(
     "target",
     [
         "ascendc",
-        pytest.param("pto", marks=pytest.mark.lowpriority),
+        pytest.param("pto", marks=pytest.mark.low_priority),
     ],
 )
 @pytest.mark.parametrize("shape", [(1024, 1024)])
@@ -1168,7 +1168,7 @@ def run_test_block_reduce_max(M, N, block_M, block_N, repeat, mask, dstRepStride
     torch.testing.assert_close(b, ref_b, rtol=1e-2, atol=1e-2)
 
 
-@pytest.mark.lowpriority
+@pytest.mark.low_priority
 @pytest.mark.parametrize("dtype", ["float16"])
 @pytest.mark.parametrize("target", ["ascendc"])
 def test_block_reduce_max(dtype, target):
@@ -1238,7 +1238,7 @@ def run_test_block_reduce_min(M, N, block_M, block_N, repeat, mask, dstRepStride
     torch.testing.assert_close(b, ref_b, rtol=1e-2, atol=1e-2)
 
 
-@pytest.mark.lowpriority
+@pytest.mark.low_priority
 @pytest.mark.parametrize("dtype", ["float16"])
 @pytest.mark.parametrize("target", ["ascendc"])
 def test_block_reduce_min(dtype, target):
@@ -1308,7 +1308,7 @@ def run_test_block_reduce_sum(M, N, block_M, block_N, repeat, mask, dstRepStride
     torch.testing.assert_close(b, ref_b, rtol=1e-2, atol=1e-2)
 
 
-@pytest.mark.lowpriority
+@pytest.mark.low_priority
 @pytest.mark.parametrize("dtype", ["float16"])
 @pytest.mark.parametrize("target", ["ascendc"])
 def test_block_reduce_sum(dtype, target):
@@ -1962,7 +1962,7 @@ def run_test_cos(dtype, target):
         torch.testing.assert_close(b, ref_b, rtol=1e-4, atol=1e-4)
 
 
-@pytest.mark.lowpriority
+@pytest.mark.low_priority
 @pytest.mark.parametrize("dtype", ["float", "float16"])
 @pytest.mark.parametrize("target", ["ascendc"])
 def test_cos(dtype, target):
@@ -2013,7 +2013,7 @@ def run_test_cos_slice(dtype, target):
         torch.testing.assert_close(b, ref_b, rtol=1e-4, atol=1e-4)
 
 
-@pytest.mark.lowpriority
+@pytest.mark.low_priority
 @pytest.mark.parametrize("dtype", ["float", "float16"])
 @pytest.mark.parametrize("target", ["ascendc"])
 def test_cos_slice(dtype, target):
@@ -3903,7 +3903,7 @@ def run_test_sin(dtype, target):
         torch.testing.assert_close(b, ref_b, rtol=1e-4, atol=1e-4)
 
 
-@pytest.mark.lowpriority
+@pytest.mark.low_priority
 @pytest.mark.parametrize("dtype", ["float", "float16"])
 @pytest.mark.parametrize("target", ["ascendc"])
 def test_sin(dtype, target):
@@ -3953,7 +3953,7 @@ def run_test_sin_slice(dtype, target):
         torch.testing.assert_close(b, ref_b, rtol=1e-4, atol=1e-4)
 
 
-@pytest.mark.lowpriority
+@pytest.mark.low_priority
 @pytest.mark.parametrize("dtype", ["float", "float16"])
 @pytest.mark.parametrize("target", ["ascendc"])
 def test_sin_slice(dtype, target):
@@ -4416,7 +4416,7 @@ transpose_dtype_target_params = [
     ("float16", "ascendc"),
     ("float16", "pto"),
     ("int32", "ascendc"),
-    pytest.param("int32", "pto", marks=pytest.mark.lowpriority),
+    pytest.param("int32", "pto", marks=pytest.mark.low_priority),
     ("uint32", "ascendc"),
     ("uint32", "pto"),
     ("float", "ascendc"),
@@ -4492,7 +4492,7 @@ def run_test_wholereducemax(M, N, block_M, block_N, mask, repeatTimes, dstRepStr
     torch.testing.assert_close(b, ref_b, rtol=1e-2, atol=1e-2)
 
 
-@pytest.mark.lowpriority
+@pytest.mark.low_priority
 @pytest.mark.parametrize("target", ["ascendc"])
 def test_wholereducemax(target):
     M = 2
@@ -4560,7 +4560,7 @@ def run_test_wholereducemin(M, N, block_M, block_N, mask, repeatTimes, dstRepStr
     torch.testing.assert_close(b, ref_b, rtol=1e-2, atol=1e-2)
 
 
-@pytest.mark.lowpriority
+@pytest.mark.low_priority
 @pytest.mark.parametrize("target", ["ascendc"])
 def test_wholereducemin(target):
     M = 2
@@ -4625,7 +4625,7 @@ def run_test_wholereducesum(M, N, block_M, block_N, mask, repeatTimes, dstRepStr
     torch.testing.assert_close(b, ref_b, rtol=1e-2, atol=1e-2)
 
 
-@pytest.mark.lowpriority
+@pytest.mark.low_priority
 @pytest.mark.parametrize("target", ["ascendc"])
 def test_wholereducesum(target):
     M = 2
@@ -4676,7 +4676,7 @@ def run_test_generate_arithmetic_progression(N, block_size, target):
     torch.testing.assert_close(result, ref_result, rtol=0, atol=0)
 
 
-@pytest.mark.lowpriority
+@pytest.mark.low_priority
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("shape", [1024])
 def test_generate_arithmetic_progression(target, shape):

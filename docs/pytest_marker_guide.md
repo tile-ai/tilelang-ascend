@@ -11,8 +11,8 @@
 ```toml
 [tool.pytest.ini_options]
 markers = [
-    "lowpriority: marks tests as low priority (only run in full test and scheduled tasks)",
-    "skiptest: marks tests to be skipped in all CI test scenarios",
+    "low_priority: marks tests as low priority (only run in full test and scheduled tasks)",
+    "ci_skip: marks tests to be skipped in all CI test scenarios",
 ]
 ```
 
@@ -20,8 +20,8 @@ markers = [
 
 | 标签 | 作用 | PR 事件 | 全量测试 / 定时任务 |
 |------|------|---------|---------------------|
-| `lowpriority` | 低优先级测试用例 | **跳过** | 执行 |
-| `skiptest` | 跳过测试用例 | **跳过** | **跳过** |
+| `low_priority` | 低优先级测试用例 | **跳过** | 执行 |
+| `ci_skip` | 跳过测试用例 | **跳过** | **跳过** |
 
 ### CI 事件与标签过滤策略
 
@@ -29,10 +29,10 @@ CI 流水线（`.github/workflows/ci_cd.yml`）根据触发事件自动应用不
 
 | 事件 | marker 表达式 | 含义 |
 |------|---------------|------|
-| `push` / `schedule` / `workflow_dispatch` | `not skiptest` | 跳过 skiptest，保留 lowpriority |
-| `pull_request` | `not (lowpriority or skiptest)` | 跳过 lowpriority 和 skiptest |
+| `push` / `schedule` / `workflow_dispatch` | `not ci_skip` | 跳过 ci_skip，保留 low_priority |
+| `pull_request` | `not (low_priority or ci_skip)` | 跳过 low_priority 和 ci_skip |
 
-**说明：** `lowpriority` 标签的用例，只有每天定时任务（`schedule`）及全量测试（`push` / `workflow_dispatch`）才会触发执行，通常的 PR 提交（`pull_request`）不会触发，从而在 PR 阶段减少不必要的测试耗时。`skiptest` 标签的用例在所有 CI 场景均跳过，适用于存在已知问题或环境限制暂不执行的用例。
+**说明：** `low_priority` 标签的用例，只有每天定时任务（`schedule`）及全量测试（`push` / `workflow_dispatch`）才会触发执行，通常的 PR 提交（`pull_request`）不会触发，从而在 PR 阶段减少不必要的测试耗时。`ci_skip` 标签的用例在所有 CI 场景均跳过，适用于存在已知问题或环境限制暂不执行的用例。
 
 ---
 
@@ -43,7 +43,7 @@ CI 流水线（`.github/workflows/ci_cd.yml`）根据触发事件自动应用不
 对整个测试函数打标签，**所有参数组合**均继承该标签。
 
 ```python
-@pytest.mark.lowpriority
+@pytest.mark.low_priority
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("shape", [1024])
 def test_generate_arithmetic_progression(target, shape):
@@ -52,7 +52,7 @@ def test_generate_arithmetic_progression(target, shape):
     run_test_generate_arithmetic_progression(N, block_size, target)
 ```
 
-效果：`test_generate_arithmetic_progression[ascendc-1024]` 和 `test_generate_arithmetic_progression[pto-1024]` 均被标记为 `lowpriority`。
+效果：`test_generate_arithmetic_progression[ascendc-1024]` 和 `test_generate_arithmetic_progression[pto-1024]` 均被标记为 `low_priority`。
 
 ### 2. 单参数标签
 
@@ -61,13 +61,13 @@ def test_generate_arithmetic_progression(target, shape):
 ```python
 @pytest.mark.parametrize(
     "target",
-    ["ascendc", pytest.param("pto", marks=pytest.mark.lowpriority)],
+    ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)],
 )
 def test_vid_reduction_gm_ub_gm_identity(setup_random_seed, target):
     ...
 ```
 
-效果：仅 `target=pto` 的用例被标记为 `lowpriority`，`target=ascendc` 不受影响。
+效果：仅 `target=pto` 的用例被标记为 `low_priority`，`target=ascendc` 不受影响。
 
 ### 3. 笛卡尔积标签（多参数分别标注，OR 叠加）
 
@@ -79,15 +79,15 @@ def test_vid_reduction_gm_ub_gm_identity(setup_random_seed, target):
     [
         "int16",
         "int32",
-        pytest.param("uint16", marks=pytest.mark.lowpriority),
-        pytest.param("uint32", marks=pytest.mark.lowpriority),
+        pytest.param("uint16", marks=pytest.mark.low_priority),
+        pytest.param("uint32", marks=pytest.mark.low_priority),
     ],
 )
 @pytest.mark.parametrize(
     "target",
     [
         "ascendc",
-        pytest.param("pto", marks=pytest.mark.lowpriority),
+        pytest.param("pto", marks=pytest.mark.low_priority),
     ],
 )
 @pytest.mark.parametrize("shape", [(1024, 1024)])
@@ -100,7 +100,7 @@ def test_bitwise_lshift(dtype, target, shape):
 
 效果：
 
-| dtype | target | 是否 lowpriority | 命中原因 |
+| dtype | target | 是否 low_priority | 命中原因 |
 |-------|--------|------------------|----------|
 | int16 | ascendc | 否 | — |
 | int16 | pto | **是** | target=pto |
@@ -126,7 +126,7 @@ transpose_dtype_target_params = [
     ("float16", "ascendc"),
     ("float16", "pto"),
     ("int32", "ascendc"),
-    pytest.param("int32", "pto", marks=pytest.mark.lowpriority),
+    pytest.param("int32", "pto", marks=pytest.mark.low_priority),
     ("uint32", "ascendc"),
     ("uint32", "pto"),
     ("float", "ascendc"),
@@ -141,15 +141,15 @@ def test_transpose(dtype, target, shape):
     run_test_transpose(M, N, 16, 16, dtype, target)
 ```
 
-效果：仅 `test_transpose[int32-pto-16-16]` 被标记为 `lowpriority`，其余 11 个组合不受影响。
+效果：仅 `test_transpose[int32-pto-16-16]` 被标记为 `low_priority`，其余 11 个组合不受影响。
 
-### 5. skiptest 标签
+### 5. ci_skip 标签
 
-`skiptest` 用法与 `lowpriority` 完全一致，区别在于**所有 CI 场景均跳过**：
+`ci_skip` 用法与 `low_priority` 完全一致，区别在于**所有 CI 场景均跳过**：
 
 ```python
 # 整体跳过
-@pytest.mark.skiptest
+@pytest.mark.ci_skip
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 def test_unstable_feature(target):
     ...
@@ -160,7 +160,7 @@ def test_unstable_feature(target):
     [
         ("float", "ascendc"),
         ("float", "pto"),
-        pytest.param("float16", "pto", marks=pytest.mark.skiptest),
+        pytest.param("float16", "pto", marks=pytest.mark.ci_skip),
     ],
 )
 def test_known_issue(dtype, target):
@@ -173,10 +173,10 @@ def test_known_issue(dtype, target):
 
 | 场景 | 推荐标签 | 示例 |
 |------|----------|------|
-| 测试用例耗时较长，PR 阶段无需验证 | `lowpriority` | pto 后端的 uint16/uint32 组合 |
-| 测试用例不稳定，存在已知 bug 待修复 | `skiptest` | 特定 dtype+target 组合下结果异常 |
-| 新增接口仅全量测试验证 | `lowpriority` | 新 API 的非核心 dtype 覆盖 |
-| 测试用例因环境/硬件限制无法运行 | `skiptest` | 需要特定硬件版本才支持的特性 |
+| 测试用例耗时较长，PR 阶段无需验证 | `low_priority` | pto 后端的 uint16/uint32 组合 |
+| 测试用例不稳定，存在已知 bug 待修复 | `ci_skip` | 特定 dtype+target 组合下结果异常 |
+| 新增接口仅全量测试验证 | `low_priority` | 新 API 的非核心 dtype 覆盖 |
+| 测试用例因环境/硬件限制无法运行 | `ci_skip` | 需要特定硬件版本才支持的特性 |
 
 ## 本地验证
 
@@ -184,15 +184,15 @@ def test_known_issue(dtype, target):
 # 查看已注册的标签
 pytest --markers
 
-# 模拟 PR 场景（跳过 lowpriority 和 skiptest）
-pytest -m "not (lowpriority or skiptest)" testing/python/ -v
+# 模拟 PR 场景（跳过 low_priority 和 ci_skip）
+pytest -m "not (low_priority or ci_skip)" testing/python/ -v
 
-# 模拟全量测试场景（仅跳过 skiptest）
-pytest -m "not skiptest" testing/python/ -v
+# 模拟全量测试场景（仅跳过 ci_skip）
+pytest -m "not ci_skip" testing/python/ -v
 
-# 仅运行 lowpriority 用例
-pytest -m "lowpriority" testing/python/ -v
+# 仅运行 low_priority 用例
+pytest -m "low_priority" testing/python/ -v
 
 # 查看哪些用例被标记（不执行）
-pytest --collect-only -m "lowpriority" testing/python/ -q
+pytest --collect-only -m "low_priority" testing/python/ -q
 ```
