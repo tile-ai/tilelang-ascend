@@ -2332,11 +2332,11 @@ void CodeGenTileLangAscendPto::RowExpandBinOpExperimentCodegenPto(
     CreateUbVariableND(src0_name, src0);
   }
 
-  int32_t dst_rows = dst.is_slice ? dst.slice_valid_row : dst.row;
-  int32_t dst_cols = dst.is_slice ? dst.slice_valid_col : dst.col;
-  int32_t src1_len = dst_rows;
+  int32_t dst_rows = dst.is_slice ? dst.slice_row : dst.row;
+  int32_t dst_cols = dst.is_slice ? dst.slice_col : dst.col;
   int32_t dst_row_valid = dst.is_slice ? dst.slice_valid_row : dst.row;
   int32_t dst_col_valid = dst.is_slice ? dst.slice_valid_col : dst.col;
+  int32_t src1_len = dst_row_valid;
 
   this->PrintIndent();
   this->stream << kAscendPtoScope << pto_op_name << "<" << src1.type << ", "
