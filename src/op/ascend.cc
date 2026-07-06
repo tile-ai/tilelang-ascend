@@ -125,10 +125,13 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
   auto compute_strideN = [](const Buffer &buf,
                             const Array<PrimExpr> &extents) -> PrimExpr {
     PrimExpr strideN = buf->shape[buf->shape.size() - 1];
+    if (buf->shape.size() == 2) {
+      return strideN;
+    }
     if (extents.size() > 1) {
-      for (int i = extents.size() - 2; i >= 0; --i) {
-        auto *extent = extents[i].as<IntImmNode>();
-        if (!extent || extent->value != 1) {
+      for (int i = static_cast<int>(extents.size()) - 2; i >= 0; --i) {
+        const auto *extent = extents[i].as<IntImmNode>();
+        if (extent == nullptr || extent->value != 1) {
           break;
         }
         strideN = strideN * buf->shape[i];
@@ -566,10 +569,13 @@ Stmt AscendAtomicAdd::Lower(const LowerArgs &T,
   auto compute_strideN = [](const Buffer &buf,
                             const Array<PrimExpr> &extents) -> PrimExpr {
     PrimExpr strideN = buf->shape[buf->shape.size() - 1];
+    if (buf->shape.size() == 2) {
+      return strideN;
+    }
     if (extents.size() > 1) {
-      for (int i = extents.size() - 2; i >= 0; --i) {
-        auto *extent = extents[i].as<IntImmNode>();
-        if (!extent || extent->value != 1) {
+      for (int i = static_cast<int>(extents.size()) - 2; i >= 0; --i) {
+        const auto *extent = extents[i].as<IntImmNode>();
+        if (extent == nullptr || extent->value != 1) {
           break;
         }
         strideN = strideN * buf->shape[i];
