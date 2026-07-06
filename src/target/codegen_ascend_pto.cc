@@ -2680,6 +2680,7 @@ void CodeGenTileLangAscendPto::SiluCodegen(const CallNode *op) {
   // Update max_ub_addr_ after allocating temporary buffer
   int32_t elem_bytes = GetTypeLen(dst_shape_info.type);
   int32_t tmp_buffer_size = row * col * elem_bytes;
+  int32_t tmp_addr = max_ub_addr_;  // Save original address before alignment
   max_ub_addr_ += tmp_buffer_size;
   // Align to 32-byte boundary
   max_ub_addr_ = ((max_ub_addr_ + kUbAlignmentBytes - 1) / kUbAlignmentBytes) *
@@ -2689,8 +2690,7 @@ void CodeGenTileLangAscendPto::SiluCodegen(const CallNode *op) {
   this->stream << "tl::ascend_pto::TileUbDataND<" << dst_shape_info.type << ", "
                << row << ", " << col << "> " << tmp_name << ";\n";
   this->PrintIndent();
-  this->stream << "TASSIGN(" << tmp_name << ", "
-               << max_ub_addr_ - tmp_buffer_size << ");\n";
+  this->stream << "TASSIGN(" << tmp_name << ", " << tmp_addr << ");\n";
   this->PrintIndent();
   this->stream << kAscendPtoScope << "TSILU<" << dst_shape_info.type << ", "
                << row << ", " << col << ">(" << dst_name << ", " << src_name
@@ -2716,6 +2716,7 @@ void CodeGenTileLangAscendPto::MulAddDstCodegen(const CallNode *op) {
   // Update max_ub_addr_ after allocating temporary buffer
   int32_t elem_bytes = GetTypeLen(dst_shape_info.type);
   int32_t tmp_buffer_size = row * col * elem_bytes;
+  int32_t tmp_addr = max_ub_addr_;  // Save original address before alignment
   max_ub_addr_ += tmp_buffer_size;
   // Align to 32-byte boundary
   max_ub_addr_ = ((max_ub_addr_ + kUbAlignmentBytes - 1) / kUbAlignmentBytes) *
@@ -2725,8 +2726,7 @@ void CodeGenTileLangAscendPto::MulAddDstCodegen(const CallNode *op) {
   this->stream << "tl::ascend_pto::TileUbDataND<" << dst_shape_info.type << ", "
                << row << ", " << col << "> " << tmp_name << ";\n";
   this->PrintIndent();
-  this->stream << "TASSIGN(" << tmp_name << ", "
-               << max_ub_addr_ - tmp_buffer_size << ");\n";
+  this->stream << "TASSIGN(" << tmp_name << ", " << tmp_addr << ");\n";
   this->PrintIndent();
   this->stream << kAscendPtoScope << "MulAddDst<" << dst_shape_info.type << ", "
                << row << ", " << col << ">(" << dst_name << ", " << src0_name
