@@ -2042,7 +2042,8 @@ void CodeGenTileLangAscendPto::TransposeCodegen(const CallNode *op,
   int32_t tmp_buffer_size = N * tmp_tile_w * elem_bytes;
   max_ub_addr_ += tmp_buffer_size;
   // Align to 32-byte boundary
-  max_ub_addr_ = ((max_ub_addr_ + kUbAlignmentBytes - 1) / kUbAlignmentBytes) * kUbAlignmentBytes;
+  max_ub_addr_ = ((max_ub_addr_ + kUbAlignmentBytes - 1) / kUbAlignmentBytes) *
+                 kUbAlignmentBytes;
 
   this->PrintIndent();
   this->stream << "{\n";
@@ -2681,13 +2682,15 @@ void CodeGenTileLangAscendPto::SiluCodegen(const CallNode *op) {
   int32_t tmp_buffer_size = row * col * elem_bytes;
   max_ub_addr_ += tmp_buffer_size;
   // Align to 32-byte boundary
-  max_ub_addr_ = ((max_ub_addr_ + kUbAlignmentBytes - 1) / kUbAlignmentBytes) * kUbAlignmentBytes;
+  max_ub_addr_ = ((max_ub_addr_ + kUbAlignmentBytes - 1) / kUbAlignmentBytes) *
+                 kUbAlignmentBytes;
 
   this->PrintIndent();
   this->stream << "tl::ascend_pto::TileUbDataND<" << dst_shape_info.type << ", "
                << row << ", " << col << "> " << tmp_name << ";\n";
   this->PrintIndent();
-  this->stream << "TASSIGN(" << tmp_name << ", " << max_ub_addr_ - tmp_buffer_size << ");\n";
+  this->stream << "TASSIGN(" << tmp_name << ", "
+               << max_ub_addr_ - tmp_buffer_size << ");\n";
   this->PrintIndent();
   this->stream << kAscendPtoScope << "TSILU<" << dst_shape_info.type << ", "
                << row << ", " << col << ">(" << dst_name << ", " << src_name
@@ -2715,13 +2718,15 @@ void CodeGenTileLangAscendPto::MulAddDstCodegen(const CallNode *op) {
   int32_t tmp_buffer_size = row * col * elem_bytes;
   max_ub_addr_ += tmp_buffer_size;
   // Align to 32-byte boundary
-  max_ub_addr_ = ((max_ub_addr_ + kUbAlignmentBytes - 1) / kUbAlignmentBytes) * kUbAlignmentBytes;
+  max_ub_addr_ = ((max_ub_addr_ + kUbAlignmentBytes - 1) / kUbAlignmentBytes) *
+                 kUbAlignmentBytes;
 
   this->PrintIndent();
   this->stream << "tl::ascend_pto::TileUbDataND<" << dst_shape_info.type << ", "
                << row << ", " << col << "> " << tmp_name << ";\n";
   this->PrintIndent();
-  this->stream << "TASSIGN(" << tmp_name << ", " << max_ub_addr_ - tmp_buffer_size << ");\n";
+  this->stream << "TASSIGN(" << tmp_name << ", "
+               << max_ub_addr_ - tmp_buffer_size << ");\n";
   this->PrintIndent();
   this->stream << kAscendPtoScope << "MulAddDst<" << dst_shape_info.type << ", "
                << row << ", " << col << ">(" << dst_name << ", " << src0_name
