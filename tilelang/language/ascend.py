@@ -422,8 +422,7 @@ _MX_FORMAT_TO_CTYPE = {
 }
 
 
-def gemm_mx(A, B, C, scale_a, scale_b, init=False,
-            transpose_A=False, transpose_B=False, format=None):
+def gemm_mx(A, B, C, scale_a, scale_b, init=False, transpose_A=False, transpose_B=False, format=None):
     """
     MXFP8 GEMM: C = A @ B with per-32-element scaling.
 
@@ -431,7 +430,7 @@ def gemm_mx(A, B, C, scale_a, scale_b, init=False,
         A: Input matrix A, shape [M, K], dtype e5m2_float8 or e4m3_float8
         B: Input matrix B, shape [K, N], dtype e5m2_float8 or e4m3_float8
         C: Output matrix C, shape [M, N], dtype float32
-        scale_a: Scale factors for A. 
+        scale_a: Scale factors for A.
                  For 3D format: shape [M, kScale, 2], dtype uint8
                  For 2D format: shape [M, K_L1//32], dtype uint8
                  where kScale = ceil(K/64), K_L1 = kScale * 64
@@ -444,7 +443,7 @@ def gemm_mx(A, B, C, scale_a, scale_b, init=False,
         transpose_A: If True, A is transposed
         transpose_B: If True, B is transposed
         format: Data format, "e5m2" or "e4m3"
-    
+
     Note:
         K can be any positive integer (non-aligned K is supported).
         K_L1 will be automatically calculated as ceil(K/64) * 64.
@@ -464,7 +463,7 @@ def gemm_mx(A, B, C, scale_a, scale_b, init=False,
 
     # K is the actual K dimension (can be any value)
     K = A_shape[-1] if not transpose_A else A_shape[-2]
-    
+
     # K_L1 is the aligned K for L1 buffer allocation (must be multiple of 64)
     # User provides scale_a with shape [M, kScale, 2] (3D) or [M, K_MX] (2D)
     # where kScale = ceil(K/64), K_MX = kScale * 2
@@ -477,7 +476,7 @@ def gemm_mx(A, B, C, scale_a, scale_b, init=False,
         K_MX = scale_a_shape[-1]
         kScale = K_MX // 2
     K_L1 = kScale * 64
-    
+
     # K_L1 must be >= K and multiple of 64
     assert K_L1 >= K, f"K_L1 ({K_L1}) must be >= K ({K})"
     assert K_L1 % 64 == 0, f"K_L1 must be multiple of 64, got {K_L1}"
@@ -495,9 +494,13 @@ def gemm_mx(A, B, C, scale_a, scale_b, init=False,
     return T.call_intrin(
         "handle",
         tir.op.Op.get("tl.ascend_gemm_mx"),
-        f"gemm_mx<{ctype}, {_dtype(C)}, {M}, {N}, {K}, {K_L1}, "
-        f"{str(transpose_A).lower()}, {str(transpose_B).lower()}>",
-        Aptr, sAptr, Bptr, sBptr, Cptr, init,
+        f"gemm_mx<{ctype}, {_dtype(C)}, {M}, {N}, {K}, {K_L1}, {str(transpose_A).lower()}, {str(transpose_B).lower()}>",
+        Aptr,
+        sAptr,
+        Bptr,
+        sBptr,
+        Cptr,
+        init,
     )
 
 
@@ -569,7 +572,6 @@ def dump_tensor(tensor: Buffer, desc: int, dump_size: int, shape_info: tuple = (
 
 
 def reinterpretcast(dst: Buffer, src: Buffer, casttype: str):
-
     # return T.call_extern("handle", f"ReinterpretCast", dst.access_ptr("w"), src.access_ptr("r"),
     #                      casttype)
     return T.call_intrin("handle", tir.op.Op.get("tl.ascend_reinterpretcast"), dst.access_ptr("w"), src.access_ptr("r"), casttype)
