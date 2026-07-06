@@ -760,8 +760,8 @@ extractTemplateParams(const std::string &input) {
     params.push_back(param);
   }
   std::vector<std::string> paramNames = {
-      "data_type_input", "data_type_output", "M", "N", "K", "K_full",
-      "transpose_A",     "transpose_B"};
+      "data_type_input", "data_type_output", "M",          "N", "K",
+      "K_full",          "transpose_A",      "transpose_B"};
   for (size_t i = 0; i < params.size() && i < paramNames.size(); ++i) {
     result[paramNames[i]] = params[i];
   }
@@ -1247,7 +1247,7 @@ void CodeGenTileLangAscendPto::GMCopyCall(const CallNode *call,
 }
 
 void CodeGenTileLangAscendPto::ScaleCopyCall(const CallNode *call,
-                                              const std::string &layout) {
+                                             const std::string &layout) {
   BufferInfo src_info = GetBufferInfo(call->args[1]);
   BufferInfo dst_info = GetBufferInfo(call->args[2]);
 
@@ -1264,14 +1264,14 @@ void CodeGenTileLangAscendPto::ScaleCopyCall(const CallNode *call,
     stream << kAscendPtoScope
            << "copy_gm_to_l1_mx_scale_a_dynamic<uint8_t, float8_e8m0_t, "
            << valid_dim0 << ", " << valid_dim1 << ", " << kmx_str << ">("
-           << copy_base_addr_map_.at(src_info.id) << " + " << gm_offset
-           << ", " << l1_addr << ", " << l1_offset << ");\n";
+           << copy_base_addr_map_.at(src_info.id) << " + " << gm_offset << ", "
+           << l1_addr << ", " << l1_offset << ");\n";
   } else {
     stream << kAscendPtoScope
            << "copy_gm_to_l1_mx_scale_b_dynamic<uint8_t, float8_e8m0_t, "
            << valid_dim0 << ", " << valid_dim1 << ", " << kmx_str << ">("
-           << copy_base_addr_map_.at(src_info.id) << " + " << gm_offset
-           << ", " << l1_addr << ", " << l1_offset << ");\n";
+           << copy_base_addr_map_.at(src_info.id) << " + " << gm_offset << ", "
+           << l1_addr << ", " << l1_offset << ");\n";
   }
 }
 
@@ -1574,7 +1574,7 @@ void CodeGenTileLangAscendPto::GemmMxCodegen(const CallNode *op) {
   // Get the L1 addresses of the scale buffers (base + offset)
   PrimExpr sa_base_addr = buffer_address_map_.at(sa_buf_info.var);
   PrimExpr sb_base_addr = buffer_address_map_.at(sb_buf_info.var);
-  
+
   // Add offset if present
   PrimExpr sa_full_addr = sa_base_addr;
   PrimExpr sb_full_addr = sb_base_addr;
@@ -1584,35 +1584,31 @@ void CodeGenTileLangAscendPto::GemmMxCodegen(const CallNode *op) {
   if (sb_buf_info.offset.defined() && !is_zero(sb_buf_info.offset)) {
     sb_full_addr = sb_base_addr + sb_buf_info.offset;
   }
-  
+
   // Evaluate to constant if possible
   arith::Analyzer analyzer;
   sa_full_addr = analyzer.Simplify(sa_full_addr);
   sb_full_addr = analyzer.Simplify(sb_full_addr);
-  
+
   uint64_t scale_a_l1_addr = 0;
   uint64_t scale_b_l1_addr = 0;
-  if (auto* sa_imm = sa_full_addr.as<IntImmNode>()) {
+  if (auto *sa_imm = sa_full_addr.as<IntImmNode>()) {
     scale_a_l1_addr = sa_imm->value;
   }
-  if (auto* sb_imm = sb_full_addr.as<IntImmNode>()) {
+  if (auto *sb_imm = sb_full_addr.as<IntImmNode>()) {
     scale_b_l1_addr = sb_imm->value;
   }
 
-  this->stream << kAscendPtoScope << "gemm_mx" << "<"
-               << data_type_input << ", "
-               << params["data_type_output"] << ", "
-               << M << ", " << N << ", " << K << ", "
-               << GetValid16BytesShape(M) << ", "
+  this->stream << kAscendPtoScope << "gemm_mx" << "<" << data_type_input << ", "
+               << params["data_type_output"] << ", " << M << ", " << N << ", "
+               << K << ", " << GetValid16BytesShape(M) << ", "
                << GetValid16BytesShape(N) << ", "
-               << GetValidShape(K, data_type_input) << ", "
-               << K_full << ", " << kTail << ", " << params["transpose_A"] << ", "
-               << params["transpose_B"] << ", "
-               << scale_a_l1_addr << ", " << scale_b_l1_addr << ">(";
-  this->stream << a_name << ", " << sa_name << ", "
-               << b_name << ", " << sb_name << ", "
-               << c_name << ", "
-               << PrintExpr(op->args[6]) << ");\n";
+               << GetValidShape(K, data_type_input) << ", " << K_full << ", "
+               << kTail << ", " << params["transpose_A"] << ", "
+               << params["transpose_B"] << ", " << scale_a_l1_addr << ", "
+               << scale_b_l1_addr << ">(";
+  this->stream << a_name << ", " << sa_name << ", " << b_name << ", " << sb_name
+               << ", " << c_name << ", " << PrintExpr(op->args[6]) << ");\n";
 }
 
 void CodeGenTileLangAscendPto::SyncAllCodegen(const CallNode *op) {
@@ -3234,7 +3230,8 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
   const auto &shape = buffer_shapess_.at(op->buffer_var);
 
   // Handle scale buffers specially (2D or 3D shape)
-  bool is_scale_buffer = (scope == "shared.dyn.scale_a" || scope == "shared.dyn.scale_b");
+  bool is_scale_buffer =
+      (scope == "shared.dyn.scale_a" || scope == "shared.dyn.scale_b");
 
   if (is_scale_buffer) {
     if (shape.size() == 2) {
@@ -3254,8 +3251,9 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
 
       // Print the Tile object declaration
       this->PrintIndent();
-      stream << op_name << "<" << type << ", " << dim0 << ", " << dim1 << ", " << dim2 << ", "
-             << dim0 << ", " << dim1 << ", " << dim2 << "> " << vid << ";\n";
+      stream << op_name << "<" << type << ", " << dim0 << ", " << dim1 << ", "
+             << dim2 << ", " << dim0 << ", " << dim1 << ", " << dim2 << "> "
+             << vid << ";\n";
     } else {
       LOG(FATAL) << "Expected a 2D or 3D shape for scale buffer, but got "
                  << shape.size() << "D for " << op->buffer_var->name_hint;
@@ -3271,8 +3269,8 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
 
     // Print the Tile object declaration
     this->PrintIndent();
-    stream << op_name << "<" << type << ", " << M << ", " << N << ", " << valid_M
-           << ", " << valid_N << "> " << vid << ";\n";
+    stream << op_name << "<" << type << ", " << M << ", " << N << ", "
+           << valid_M << ", " << valid_N << "> " << vid << ";\n";
   }
 
   // address_map, use name_hint as key
@@ -3286,12 +3284,14 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
   if (address_map_name_hint.count(op->buffer_var->name_hint)) {
     target_address = address_map_name_hint.at(op->buffer_var->name_hint);
     // Track the end address of pre-assigned buffers
-    if (scope == "shared.dyn" || scope == "shared.dyn.scale_a" || scope == "shared.dyn.scale_b") {
-      if (auto* addr_imm = target_address.as<IntImmNode>()) {
+    if (scope == "shared.dyn" || scope == "shared.dyn.scale_a" ||
+        scope == "shared.dyn.scale_b") {
+      if (auto *addr_imm = target_address.as<IntImmNode>()) {
         int64_t alloc_bytes = op->ConstantAllocationSize() * op->dtype.bytes();
         int64_t end_addr = addr_imm->value + alloc_bytes;
-        PrimExpr current_max = address_offset_.Get(String("shared.dyn")).value_or(Integer(0));
-        if (auto* max_imm = current_max.as<IntImmNode>()) {
+        PrimExpr current_max =
+            address_offset_.Get(String("shared.dyn")).value_or(Integer(0));
+        if (auto *max_imm = current_max.as<IntImmNode>()) {
           if (end_addr > max_imm->value) {
             address_offset_.Set(String("shared.dyn"), Integer(end_addr));
           }
@@ -3304,7 +3304,7 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
     if (scope == "shared.dyn.scale_a" || scope == "shared.dyn.scale_b") {
       addr_scope = "shared.dyn";
     }
-    
+
     PrimExpr current_offset =
         address_offset_.Get(addr_scope).value_or(Integer(0));
     target_address = current_offset;
