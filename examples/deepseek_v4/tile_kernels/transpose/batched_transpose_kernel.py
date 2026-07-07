@@ -1,4 +1,3 @@
-import os
 import tilelang
 import tilelang.language as T
 import torch
@@ -21,7 +20,7 @@ MAX_NPU_BLOCKS = 65535
 GRID_THRESHOLD = 2048  # 超过此块数阈值自动激活网格收缩策略
 _BLOCK_LARGE = 128
 _BLOCK_SMALL = 64
-_CORE_NUM = 24         # NPU 物理 AI Core 数 (A2/A3)
+_CORE_NUM = 24  # NPU 物理 AI Core 数 (A2/A3)
 
 
 def _ceil_div(x: int, y: int) -> int:
@@ -35,7 +34,12 @@ def _align_up(x: int, y: int) -> int:
 # ==================== 1. FP32 经典内核 (借道 FP16 硬件转置管道) ====================
 @tilelang.jit(out_idx=[-1], pass_configs=_PASS_CONFIGS)
 def _batched_transpose_kernel_fp32_vector(
-    num_batches: int, shape_x: int, shape_y: int, block_M: int, block_N: int, dtype: str = "float32",
+    num_batches: int,
+    shape_x: int,
+    shape_y: int,
+    block_M: int,
+    block_N: int,
+    dtype: str = "float32",
 ):
     m_blocks = shape_x // block_M
     n_blocks = shape_y // block_N
@@ -59,12 +63,11 @@ def _batched_transpose_kernel_fp32_vector(
             src_pong = T.alloc_ub((TILE, TILE), dtype)
             dst_ping = T.alloc_ub((TILE, TILE), dtype)
             dst_pong = T.alloc_ub((TILE, TILE), dtype)
-            
             src_ping_16 = T.alloc_ub((TILE, TILE), "float16")
             src_pong_16 = T.alloc_ub((TILE, TILE), "float16")
             dst_ping_16 = T.alloc_ub((TILE, TILE), "float16")
             dst_pong_16 = T.alloc_ub((TILE, TILE), "float16")
-            
+
             idx_ping = vid * 2 + 0
             idx_pong = vid * 2 + 1
 
@@ -143,7 +146,12 @@ def _batched_transpose_kernel_fp32_vector(
 # ==================== 2. FP32 约束网格内核 (一维平坦化长流水 + 借道 FP16) ====================
 @tilelang.jit(out_idx=[-1], pass_configs=_PASS_CONFIGS)
 def _batched_transpose_kernel_fp32_serial(
-    num_batches: int, shape_x: int, shape_y: int, block_M: int, block_N: int, dtype: str = "float32",
+    num_batches: int,
+    shape_x: int,
+    shape_y: int,
+    block_M: int,
+    block_N: int,
+    dtype: str = "float32",
 ):
     m_blocks = shape_x // block_M
     n_blocks = shape_y // block_N
@@ -171,7 +179,7 @@ def _batched_transpose_kernel_fp32_serial(
             src_pong_16 = T.alloc_ub((TILE, TILE), "float16")
             dst_ping_16 = T.alloc_ub((TILE, TILE), "float16")
             dst_pong_16 = T.alloc_ub((TILE, TILE), "float16")
-            
+
             idx_ping = vid * 2 + 0
             idx_pong = vid * 2 + 1
 
@@ -249,10 +257,15 @@ def _batched_transpose_kernel_fp32_serial(
     return transpose_fp32_serial_kernel
 
 
-# ==================== 3. BF16/FP16 经典与约束内核 (保持原样) ====================
+# ==================== 3. BF16/FP16 经典与约束内核,大shape防止OOM ====================
 @tilelang.jit(out_idx=[-1], pass_configs=_PASS_CONFIGS)
 def _batched_transpose_kernel_db(
-    num_batches: int, shape_x: int, shape_y: int, block_M: int, block_N: int, dtype: str = "bfloat16",
+    num_batches: int,
+    shape_x: int,
+    shape_y: int,
+    block_M: int,
+    block_N: int,
+    dtype: str = "bfloat16",
 ):
     m_blocks = shape_x // block_M
     n_blocks = shape_y // block_N
@@ -348,7 +361,12 @@ def _batched_transpose_kernel_db(
 
 @tilelang.jit(out_idx=[-1], pass_configs=_PASS_CONFIGS)
 def _batched_transpose_kernel_db_serial(
-    num_batches: int, shape_x: int, shape_y: int, block_M: int, block_N: int, dtype: str = "bfloat16",
+    num_batches: int,
+    shape_x: int,
+    shape_y: int,
+    block_M: int,
+    block_N: int,
+    dtype: str = "bfloat16",
 ):
     m_blocks = shape_x // block_M
     n_blocks = shape_y // block_N
@@ -446,7 +464,12 @@ def _batched_transpose_kernel_db_serial(
 # ==================== 4. 8-Bit 内核 (保持原样) ====================
 @tilelang.jit(out_idx=[-1], pass_configs=_PASS_CONFIGS)
 def _batched_transpose_kernel_8bit(
-    num_batches: int, shape_x: int, shape_y: int, block_M: int, block_N: int, dtype: str,
+    num_batches: int,
+    shape_x: int,
+    shape_y: int,
+    block_M: int,
+    block_N: int,
+    dtype: str,
 ):
     m_blocks = shape_x // block_M
     n_blocks = shape_y // block_N
@@ -501,7 +524,7 @@ def _run_kernel(x_contig: torch.Tensor, shape_x: int, shape_y: int) -> torch.Ten
     n_blocks = padded_y // block_N
     total_blocks = num_batches * m_blocks * n_blocks
     grid_blocks = num_batches * m_blocks
-    
+
     use_serial_grid = total_blocks > GRID_THRESHOLD
     limit_exceeded = (use_serial_grid and grid_blocks > MAX_NPU_BLOCKS) or (not use_serial_grid and total_blocks > MAX_NPU_BLOCKS)
 
@@ -518,7 +541,7 @@ def _run_kernel(x_contig: torch.Tensor, shape_x: int, shape_y: int) -> torch.Ten
                     result = torch.empty((num_batches, shape_y, shape_x), dtype=x_contig.dtype, device=x_contig.device)
                 except (torch.OutOfMemoryError, RuntimeError, ImportError):
                     return _transpose_via_pytorch(x_contig)
-            
+
             for start in range(0, num_batches, max_batches_per_launch):
                 end = min(start + max_batches_per_launch, num_batches)
                 chunk = x_contig[start:end]
@@ -556,13 +579,13 @@ def _run_kernel_single(
         x_padded = torch.zeros((num_batches, padded_x, padded_y), dtype=x_contig.dtype, device=x_contig.device)
         x_padded[:, :shape_x, :shape_y] = x_contig
         x_contig = x_padded
-        
+
     m_blocks = padded_x // block_M
     n_blocks = padded_y // block_N
     total_blocks = num_batches * m_blocks * n_blocks
     use_serial_grid = total_blocks > GRID_THRESHOLD
 
-    # 核心修改：利用 @tilelang.jit 的缓存机制拉取已编译好的 Module，阻断内存膨胀
+    # 核心修改：利用 _get_compiled_kernel 从全局缓存中拉取已编译好的 Module，阻断内存膨胀
     if x_contig.dtype in (torch.bfloat16, torch.float16):
         if use_serial_grid:
             kernel = _batched_transpose_kernel_db_serial(num_batches, padded_x, padded_y, block_M, block_N, dtype_str)
@@ -638,7 +661,6 @@ def _main_assert_equal(actual: torch.Tensor, expected: torch.Tensor, case_name: 
 
 if __name__ == "__main__":
     import os as _os
-    import sys as _sys
 
     _os.environ.setdefault("TK_DEVICE", "npu")
     _os.environ.setdefault("TILELANG_PRINT_ON_COMPILATION", "0")
