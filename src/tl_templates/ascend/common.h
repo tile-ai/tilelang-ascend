@@ -602,6 +602,67 @@ gemm_v0(LocalTensor<T1> const &A, LocalTensor<T1> const &B,
   uint32_t kL0Tail = K - (kL0split - 1) * kL0Size;
   bool initflag = false;
 
+  // ---- N tiling -----------------------------------------------------------
+  // The B operand tile loaded into L0B is (kL0Size x nTile); L0B holds 64KB,
+  // and with the kL0 ping-pong the per-slot budget is 32KB. So a single mma
+  // over the whole N (l0b slot = N*kL0Size) overflows L0B once N is large
+  // (e.g. the PV matmul's N = headDim = 512 -> 512*128*2 = 128KB). Tile N into
+  // nTile columns just like the Ascend C reference (N_SPLIT_SIZE = 128): each
+  // tile loads its own (kL0Size x nTile) B sub-block and writes its own column
+  // band of the L0C accumulator. Only the non-transpose-B path is tiled; the
+  // transpose-B callers (e.g. QK with N = block_I <= 128) already fit, so they
+  // keep nTile == N (a single pass, byte-for-byte the original behaviour) and
+  // need no L1 column-offset formula. Compatibility: any existing caller with
+  // N <= nMaxByL0B (transpose or not) sees nL0split == 1 and identical codegen.
+  //
+  // Sub-tile offsets come straight from the catlass tla fractal layouts:
+  //   L0C column n0  ->  n0 * roundUp16(M)   (tla::MakeLayoutL0C N1 stride)
+  //   L1 zN B col n0 ->  n0 * roundUp16(K)   (tla::MakeLayout<zN>  C1 stride)
+  // both of which are consistent with the original K-offset
+  // B[kL0Idx*16*kL0Size] (zN K-row stride) already used below.
+  constexpr uint32_t nMaxByL0B = (32u * 1024u) / (kL0Size * sizeof(T1));
+  constexpr uint32_t nTile = (transpose_B || N <= nMaxByL0B) ? N : nMaxByL0B;
+  static_assert(transpose_B || (N % nTile == 0),
+                "gemm_v0 N-tiling requires N divisible by the N tile size");
+  constexpr uint32_t nL0split = N / nTile;
+  // L0A and L0B are each 64KB. The kL0/N ping-pong uses two slots only when
+  // there is more than one (N-tile, K-tile) step; a single step uses one slot
+  // and may occupy the whole 64KB -- which is why a transpose-B caller with a
+  // single K-tile and N up to 64KB/(kL0Size*sizeof(T)) fits (e.g. fp32 N=128 =
+  // 64KB). So the per-slot budget is 64KB for a single step, 32KB once the
+  // ping-pong actually alternates.
+  constexpr uint32_t kNumSteps = ((K + kL0Size - 1) / kL0Size) * nL0split;
+  constexpr uint32_t kL0Budget = (64u * 1024u) / (kNumSteps > 1 ? 2u : 1u);
+  // The B tile in L0B is (kL0Size x nTile) -- only the transpose-B path keeps
+  // nTile == N, so a large-N transpose-B caller could overflow its L0B slot.
+  static_assert(nTile * kL0Size * sizeof(T1) <= kL0Budget,
+                "gemm_v0: the (kL0Size x nTile) B tile does not fit its L0B "
+                "ping-pong slot");
+  // M is not tiled, so a large M would overflow its L0A slot.
+  static_assert(M * kL0Size * sizeof(T1) <= kL0Budget,
+                "gemm_v0: the (M x kL0Size) A tile does not fit its L0A "
+                "ping-pong slot");
+  // L0C is caller-allocated (the `C` operand) and holds the full (M x N)
+  // accumulator: roundUp16(M) * N * sizeof(T2). It must fit the target's L0C
+  // (A2/A3 128KB, A5 256KB) -- e.g. M=128, N=512, fp32 needs 256KB and only
+  // fits A5. Unlike the L0A/L0B guards above this can't be a static_assert
+  // here: L0C capacity is device-dependent, whereas L0A/L0B are 64KB on both
+  // archs (which is why those two use a literal budget). This device-side
+  // template has no arch macro or L0C-size constant to branch on
+  // (ASCEND_*_L0C_SIZE live in the host codegen), so a literal guard would
+  // reject a valid A5 caller or silently pass on A2/A3. The constraint is
+  // therefore documented here; the caller sizes its L0C tile accordingly.
+  constexpr uint32_t mRound = ((M + 15u) / 16u) * 16u;
+  constexpr uint32_t kRound = ((K + 15u) / 16u) * 16u;
+
+  // ---- Pipelined main loop. Prime/drain the L0A/L0B ping-pong buffers ONCE
+  // and let the ping-pong run continuously across the WHOLE (N-tile, K-tile)
+  // sequence (flattened by tileIdx). Each tile's L1->L0 load goes into the
+  // free buffer while the previous tile's mma runs, so N-tiles overlap with K
+  // exactly like the Ascend C matmul pipeline -- a per-N-tile drain (the first
+  // N-tiling version) instead serialised the tiles. For nL0split == 1 (every
+  // pre-existing caller, and the QK transpose-B path) tileIdx == kL0Idx, so
+  // this is byte-for-byte the original K ping-pong.
   SetFlag<HardEvent::MTE2_MTE1>(L0AB_EVENT);
   WaitFlag<HardEvent::MTE2_MTE1>(L0AB_EVENT);
   SetFlag<HardEvent::FIX_M>(L0AB_EVENT);
@@ -610,35 +671,48 @@ gemm_v0(LocalTensor<T1> const &A, LocalTensor<T1> const &B,
   SetFlag<HardEvent::M_MTE1>(L0AB_EVENT);
   SetFlag<HardEvent::M_MTE1>(L0AB_EVENT + 1);
 
-  for (uint32_t kL0Idx = 0; kL0Idx < kL0split; kL0Idx++) {
-    initflag = (clear && (kL0Idx == 0));
-    uint32_t kSize = (kL0Idx == kL0split - 1) ? kL0Tail : kL0Size;
-    uint32_t pp = (kL0Idx & 1);
+  uint32_t tileIdx = 0;
+  for (uint32_t nL0Idx = 0; nL0Idx < nL0split; nL0Idx++) {
+    // Non-transpose B is zN in L1: its column n0 lives at n0 * roundUp16(K)
+    // (the zN C1 stride), so this N-tile's B sub-block starts at
+    // nL0Idx*nTile*kRound. This column-offset formula is correct only for a zN
+    // B_L1; a different B layout would need a different per-column stride here.
+    uint32_t bNOffset = transpose_B ? 0u : (nL0Idx * nTile * kRound);
+    uint32_t cNOffset = nL0Idx * nTile * mRound;
 
-    uint32_t l0a_base = pp * (M * kL0Size);
-    uint32_t l0b_base = pp * (N * kL0Size);
+    for (uint32_t kL0Idx = 0; kL0Idx < kL0split; kL0Idx++) {
+      // clear THIS N-tile's C column band on its first K-tile (each band is an
+      // independent accumulation over K).
+      initflag = (clear && (kL0Idx == 0));
+      uint32_t kSize = (kL0Idx == kL0split - 1) ? kL0Tail : kL0Size;
+      uint32_t pp = (tileIdx & 1);
 
-    WaitFlag<HardEvent::M_MTE1>(L0AB_EVENT + pp);
-    if constexpr (!transpose_A) {
-      tl::ascend::copy_l1_to_l0a<T1, M, K>(l0a[l0a_base],
-                                           A[kL0Idx * M * kL0Size], M, kSize);
-    } else {
-      tl::ascend::copy_l1_to_l0a<T1, K, M, true>(
-          l0a[l0a_base], A[kL0Idx * 16 * kL0Size], M, kSize);
+      uint32_t l0a_base = pp * (M * kL0Size);
+      uint32_t l0b_base = pp * (nTile * kL0Size);
+
+      WaitFlag<HardEvent::M_MTE1>(L0AB_EVENT + pp);
+      if constexpr (!transpose_A) {
+        tl::ascend::copy_l1_to_l0a<T1, M, K>(l0a[l0a_base],
+                                             A[kL0Idx * M * kL0Size], M, kSize);
+      } else {
+        tl::ascend::copy_l1_to_l0a<T1, K, M, true>(
+            l0a[l0a_base], A[kL0Idx * 16 * kL0Size], M, kSize);
+      }
+      if constexpr (!transpose_B) {
+        tl::ascend::copy_l1_to_l0b<T1, K, N>(
+            l0b[l0b_base], B[bNOffset + kL0Idx * 16 * kL0Size], kSize, nTile);
+      } else {
+        tl::ascend::copy_l1_to_l0b<T1, N, K, true>(
+            l0b[l0b_base], B[kL0Idx * N * kL0Size], kSize, N);
+      }
+      SetFlag<HardEvent::MTE1_M>(L0AB_EVENT + pp);
+      WaitFlag<HardEvent::MTE1_M>(L0AB_EVENT + pp);
+      PipeBarrier<PIPE_M>();
+      tl::ascend::mma<T1, T2, M, nTile>(l0a[l0a_base], l0b[l0b_base],
+                                        C[cNOffset], initflag, kSize);
+      SetFlag<HardEvent::M_MTE1>(L0AB_EVENT + pp);
+      tileIdx++;
     }
-    if constexpr (!transpose_B) {
-      tl::ascend::copy_l1_to_l0b<T1, K, N>(l0b[l0b_base],
-                                           B[kL0Idx * 16 * kL0Size], kSize, N);
-    } else {
-      tl::ascend::copy_l1_to_l0b<T1, N, K, true>(
-          l0b[l0b_base], B[kL0Idx * N * kL0Size], kSize, N);
-    }
-    SetFlag<HardEvent::MTE1_M>(L0AB_EVENT + pp);
-    WaitFlag<HardEvent::MTE1_M>(L0AB_EVENT + pp);
-    PipeBarrier<PIPE_M>();
-    tl::ascend::mma<T1, T2, M, N>(l0a[l0a_base], l0b[l0b_base], C, initflag,
-                                  kSize);
-    SetFlag<HardEvent::M_MTE1>(L0AB_EVENT + pp);
   }
   WaitFlag<HardEvent::M_MTE1>(L0AB_EVENT);
   WaitFlag<HardEvent::M_MTE1>(L0AB_EVENT + 1);
