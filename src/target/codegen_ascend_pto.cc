@@ -33,11 +33,7 @@ using ShapeInfo = CodeGenTileLangAscendPto::ShapeInfo;
 using BufferInfo = CodeGenTileLangAscendPto::BufferInfo;
 
 namespace {
-// Recursively collects every VarNode referenced in a buffer shape expression.
-// Unlike a top-level `as<VarNode>()` check, this traverses composite
-// expressions such as `batch + 1` so that symbolic dimensions used inside
-// arithmetic are still registered as kernel parameters before any shape is
-// printed. 
+
 class ShapeVarCollector : public tir::ExprVisitor {
 public:
   std::vector<const tir::VarNode *> vars;
