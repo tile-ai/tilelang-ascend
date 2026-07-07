@@ -523,7 +523,7 @@ def _run_kernel(x_contig: torch.Tensor, shape_x: int, shape_y: int) -> torch.Ten
                     import torch_npu
                     torch.npu.empty_cache()
                     result = torch.empty((num_batches, shape_y, shape_x), dtype=x_contig.dtype, device=x_contig.device)
-                except (torch.OutOfMemoryError, RuntimeError):
+                except (torch.OutOfMemoryError, RuntimeError, ImportError):
                     return _transpose_via_pytorch(x_contig)
             
             for start in range(0, num_batches, max_batches_per_launch):
